@@ -1,0 +1,19 @@
+{
+	"compilerOptions": {
+		"target": "ES2024",
+		"lib": ["ES2024", "DOM", "DOM.Iterable"],
+		"module": "ESNext",
+		"moduleResolution": "bundler",
+		"jsx": "react-jsx",
+		"strict": true,
+		"noUncheckedIndexedAccess": true,
+		"noImplicitOverride": true,
+		"verbatimModuleSyntax": true,
+		"isolatedModules": true,
+		"skipLibCheck": true,
+		"resolveJsonModule": true,
+		"types": ["node", "vite/client", "@testing-library/jest-dom/vitest"],
+		"noEmit": true
+	},
+	"include": ["src", "e2e", "test", "*.config.ts"]
+}
