@@ -29,8 +29,18 @@ These guide every feature. If a change conflicts with one of them, stop and rais
    operations that walk every ref, like `git log --all`, may be affected. Keep
    storage per review small (measure it when the format changes), never fetch
    `refs/crb/*` as a whole, and keep each review isolated: working on one review
-   must not get slower as others accumulate. Design:
-   `docs/superpowers/specs/2026-10-22-review-storage-design.md`.
+   must not get slower as others accumulate. Before changing how anything is
+   stored in git, read `docs/gitdb-design-principles.md` and follow it or say
+   which principle you're departing from and why. Current design:
+   `docs/review-data-storage.md`.
+
+4. **No central carbonless server.** carbonless stays true to git's distributed
+   design: there is no carbonless-run service in the middle. It runs on the
+   reviewer's machine, stores its data in an ordinary git remote, and shares it
+   by pushing and fetching refs. Integrations with hosts like GitHub (through
+   `gh`) naturally need those hosts to be reachable, and that's fine. Full
+   offline work is not a goal. What matters is that carbonless itself never
+   adds a server of its own.
 
 ## Development
 
@@ -42,3 +52,7 @@ These guide every feature. If a change conflicts with one of them, stop and rais
   Playwright tests. Playwright tests run the built CLI against throwaway git repos
   (`test/git-fixture.ts`, `e2e/fixtures.ts`).
 - Planned work lives in `docs/todo.md`.
+- Core design docs, kept current (update them in the same change that alters
+  what they describe):
+  - `docs/review-data-storage.md`: how review data is stored in git.
+  - `docs/gitdb-design-principles.md`: the principles behind storing data in git.

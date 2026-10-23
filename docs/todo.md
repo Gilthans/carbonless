@@ -12,15 +12,18 @@ Foundation for everything below.
 - **Commenting** from carbonless.
 - **Re-review after new pushes:** one of GitHub's weakest spots.
 - **Store review state in git refs** (`refs/crb/...`). Design:
-  `docs/superpowers/specs/2026-10-22-review-storage-design.md`. Carry-over after
-  pushes is deferred to the re-review item above (ideas so far: Gerrit-style
-  change kinds and `copyCondition`, carries recorded as events, pinned patch set
-  heads).
+  `docs/review-data-storage.md`. Carry-over after pushes is deferred to the
+  re-review item above (ideas so far: Gerrit-style change kinds and
+  `copyCondition`, carries recorded as events, pinned patch set heads).
+- **Sync review refs with the remote:** squash before push, narrow fetches,
+  "who else started" from other reviewers' refs. Left out of the PR review view
+  milestone, which keeps refs local. See "Sync with the remote" in
+  `docs/review-data-storage.md`.
 - **Compact a review when its PR is merged:** rewrite each of the review's refs
   to a single commit holding all its events, so git can garbage-collect the old
   commits. Triggered when the PR is merged or closed. No event may be lost;
   clients that see a compacted ref replace their copy instead of merging it.
-  See "Compaction" in the storage design.
+  See "Compaction" in `docs/review-data-storage.md`.
 
 ## 1. Split a change into review groups
 
