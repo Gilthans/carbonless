@@ -1,0 +1,231 @@
+import { describe, expect, it } from "vitest";
+import {
+	type CrbEvent,
+	newEvent,
+	parseEventLines,
+	serializeCommitMessage,
+	validateForWrite,
+} from "./events.js";
+
+const payload = {
+	patchset: "f".repeat(64),
+	cluster: "c1",
+	path: "src/a.ts",
+	state: "reviewed" as const,
+};
+const ev = newEvent("cluster-state", "dan", payload);
+const msg = (events: unknown[]) =>
+	`crb: summary\n\n${events.map((e) => JSON.stringify(e)).join("\n")}\n`;
+
+describe("newEvent", () => {
+	it("fills version, lowercase ULID id, timestamp and by", () => {
+		const before = Date.now();
+		const e = newEvent("patchset-started", "dan", {
+			patchset: 1,
+			revision: "r".repeat(64),
+			mergeBase: "a".repeat(40),
+			head: "b".repeat(40),
+		});
+		expect(e).toMatchObject({
+			v: 1,
+			type: "patchset-started",
+			by: "human",
+			actor: "dan",
+			patchset: 1,
+		});
+		expect(e.id).toMatch(/^[0-9a-hjkmnp-tv-z]{26}$/);
+		expect(e.ts).toBeGreaterThanOrEqual(before);
+		expect(e.ts).toBeLessThanOrEqual(Date.now());
+	});
+
+	it("gives events created together increasing ids", () => {
+		const ids = Array.from(
+			{ length: 50 },
+			() => newEvent("cluster-state", "dan", payload).id,
+		);
+		expect([...ids].sort()).toEqual(ids);
+		expect(new Set(ids).size).toBe(50);
+	});
+});
+
+describe("commit messages", () => {
+	it("round-trips events through a commit message", () => {
+		const created = newEvent("review-created", "dan", {
+			source: "github-pr",
+			key: "acme/widgets#7",
+			pr: {
+				owner: "acme",
+				repo: "widgets",
+				number: 7,
+				url: "https://github.com/acme/widgets/pull/7",
+				baseBranch: "main",
+				headBranch: "feature",
+				headRepo: "acme/widgets",
+			},
+		});
+		const crossed = newEvent("cluster-state", "dan", {
+			...payload,
+			state: "crossed-off",
+			reason: "generated",
+			details: { note: 'ü "quoted"\nnewline' },
+		});
+		const message = serializeCommitMessage("crb: reviewed 1 cluster", [
+			created,
+			ev,
+			crossed,
+		]);
+		expect(message.split("\n")[0]).toBe("crb: reviewed 1 cluster");
+		expect(message.split("\n")[1]).toBe("");
+		expect(parseEventLines(message)).toEqual([created, ev, crossed]);
+	});
+
+	it("keeps the summary on one line", () => {
+		const message = serializeCommitMessage("one\ntwo\r\nthree", [ev]);
+		expect(message.split("\n")[0]).toBe("one two three");
+		expect(parseEventLines(message)).toEqual([ev]);
+	});
+
+	it("reads a message with only the summary line", () => {
+		expect(parseEventLines("crb: nothing")).toEqual([]);
+		expect(parseEventLines(serializeCommitMessage("crb: nothing", []))).toEqual(
+			[],
+		);
+		expect(parseEventLines("")).toEqual([]);
+	});
+
+	it("never reads the summary line as an event", () => {
+		expect(parseEventLines(`${JSON.stringify(ev)}\n`)).toEqual([]);
+	});
+
+	it("reads CRLF line endings", () => {
+		expect(parseEventLines(msg([ev, ev]).replaceAll("\n", "\r\n"))).toEqual([
+			ev,
+			ev,
+		]);
+	});
+
+	it("reads many events", () => {
+		const many = Array.from({ length: 2000 }, () =>
+			newEvent("cluster-state", "dan", payload),
+		);
+		expect(parseEventLines(serializeCommitMessage("s", many))).toEqual(many);
+	});
+
+	it("skips unknown types and versions", () =>
+		expect(
+			parseEventLines(msg([{ ...ev, type: "future" }, { ...ev, v: 2 }, ev])),
+		).toEqual([ev]));
+
+	it("skips invalid JSON lines", () => {
+		const message = `crb: s\n\n{not json\n${JSON.stringify(ev)}\n[1,2]\nnull\n"str"\n42\n{"v":1\n`;
+		expect(parseEventLines(message)).toEqual([ev]);
+	});
+
+	it("drops cluster-state written by ai on read", () => {
+		const ai = { ...ev, by: "ai" };
+		const auto = { ...ev, by: "auto" };
+		const missing = { ...ev, by: undefined };
+		expect(parseEventLines(msg([ai, auto, missing, ev]))).toEqual([ev]);
+	});
+
+	it("drops events with missing or ill-typed fields", () => {
+		const bad: unknown[] = [
+			{ ...ev, id: "NOT-A-ULID" },
+			{ ...ev, id: ev.id.toUpperCase() },
+			{ ...ev, ts: "123" },
+			{ ...ev, ts: -1 },
+			{ ...ev, ts: 1.5 },
+			{ ...ev, actor: "Real Name <me@example.com>" },
+			{ ...ev, actor: "" },
+			{ ...ev, state: "done" },
+			{ ...ev, cluster: 5 },
+			{ ...ev, path: undefined },
+			{ ...ev, patchset: 1 },
+			{ ...ev, reason: 7 },
+			{
+				...ev,
+				type: "patchset-started",
+				patchset: 0,
+				revision: "r",
+				mergeBase: "a",
+				head: "b",
+			},
+			{
+				...ev,
+				type: "patchset-started",
+				patchset: "1",
+				revision: "r",
+				mergeBase: "a",
+				head: "b",
+			},
+			{
+				...ev,
+				type: "review-created",
+				source: "github-pr",
+				key: "k",
+				pr: null,
+			},
+			{ ...ev, type: "review-created", source: "gitlab-mr", key: "k", pr: {} },
+			{ ...ev, type: "review-closed", outcome: "abandoned" },
+		];
+		expect(parseEventLines(msg([...bad, ev]))).toEqual([ev]);
+	});
+
+	it("ignores unknown keys but keeps details", () => {
+		const extra = { ...ev, surprise: true, details: { future: 1 } };
+		const badDetails = { ...ev, details: [1] };
+		expect(parseEventLines(msg([extra, badDetails]))).toEqual([
+			{ ...ev, details: { future: 1 } },
+			ev,
+		]);
+	});
+
+	it("keeps duplicate ids for the fold to deduplicate", () => {
+		expect(parseEventLines(msg([ev, ev]))).toEqual([ev, ev]);
+	});
+
+	it("reads review-closed events", () => {
+		const closed = {
+			v: 1,
+			id: ev.id,
+			type: "review-closed",
+			ts: 1,
+			by: "human",
+			actor: "dan",
+			outcome: "merged",
+			mergeCommit: "c".repeat(40),
+		};
+		expect(parseEventLines(msg([closed]))).toEqual([closed]);
+	});
+});
+
+describe("validateForWrite", () => {
+	it("refuses to write cluster-state by ai", () =>
+		expect(() =>
+			validateForWrite(newEvent("cluster-state", "dan", payload, "ai")),
+		).toThrow());
+
+	it("allows other events by ai", () =>
+		expect(() =>
+			validateForWrite(
+				newEvent(
+					"patchset-started",
+					"dan",
+					{
+						patchset: 1,
+						revision: "r",
+						mergeBase: "a",
+						head: "b",
+					},
+					"ai",
+				),
+			),
+		).not.toThrow());
+
+	it("refuses events readers would drop", () => {
+		expect(() => validateForWrite({ ...ev, actor: "Dan Smith" })).toThrow();
+		expect(() =>
+			validateForWrite({ ...ev, state: "done" } as unknown as CrbEvent),
+		).toThrow();
+	});
+});

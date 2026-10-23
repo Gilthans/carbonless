@@ -77,3 +77,13 @@ export function createGitFixture(commits: FixtureCommit[]): GitFixture {
 		cleanup: () => rmSync(path, { recursive: true, force: true }),
 	};
 }
+
+/** Creates an empty throwaway bare repository, like carbonless's private clone. */
+export function createBareRepo(): { path: string; cleanup: () => void } {
+	const path = mkdtempSync(join(tmpdir(), "carbonless-bare-"));
+	execFileSync("git", ["init", "--quiet", "--bare", path]);
+	return {
+		path,
+		cleanup: () => rmSync(path, { recursive: true, force: true }),
+	};
+}

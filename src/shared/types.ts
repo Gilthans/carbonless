@@ -19,6 +19,8 @@ export type FileStatus =
 	| "renamed"
 	| "type-changed";
 
+export type ClusterState = "unreviewed" | "reviewed" | "crossed-off";
+
 export interface Cluster {
 	/** Identity, see Task 2. */
 	key: string;
