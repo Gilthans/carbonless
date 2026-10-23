@@ -65,6 +65,8 @@ test("progress survives a restart", async ({ page, pr, startCrb }) => {
 	const first = await startCrb();
 	await openFiles(page, first.url);
 	await checkFirstCluster(page);
+	// Leave first: its page would poll the stopped server.
+	await page.goto("about:blank");
 	await first.stop();
 
 	const second = await startCrb();

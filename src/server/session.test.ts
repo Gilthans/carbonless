@@ -1,6 +1,9 @@
+import { execFileSync } from "node:child_process";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { prView } from "../../test/fake-gh/scenario";
+import { testGitEnv } from "../../test/git-fixture";
 import { createPrFixture, type PrFixture } from "../../test/pr-fixture";
+import { clonePath } from "./clone";
 import { GhError } from "./errors";
 import { StaleSnapshotError } from "./review/reviews";
 import { Session } from "./session";
@@ -55,6 +58,61 @@ describe("Session", () => {
 		await expect(Session.open(pr.arg, process.cwd())).rejects.toThrow(
 			"PR acme/widget#12 is already merged into main; nothing to review",
 		);
+	});
+
+	it("refuses a merged PR without creating a review", async () => {
+		pr.moveMain();
+		await expect(Session.open(pr.arg, process.cwd())).rejects.toThrow(
+			"already merged",
+		);
+		const clone = clonePath("acme", "widget");
+		expect(
+			execFileSync("git", ["-C", clone, "for-each-ref", "refs/crb"], {
+				encoding: "utf8",
+				env: testGitEnv(),
+			}),
+		).toBe("");
+	});
+
+	it("opens a started review even once the PR is merged", async () => {
+		const s = await Session.open(pr.arg, process.cwd());
+		const reviewed = pr.head();
+		await s.setStates(s.snapshot().revision, [
+			{ key: firstKey(s), state: "reviewed" },
+		]);
+		pr.moveMain();
+		const again = await Session.open(pr.arg, process.cwd());
+		expect(again.info()).toMatchObject({
+			snapshotHead: reviewed,
+			currentHead: reviewed,
+			headMoved: false,
+			patchset: 1,
+		});
+		expect(again.snapshot().base).toBe(pr.mergeBase);
+		expect((await again.review()).progress.clusters.reviewed).toBe(1);
+	});
+
+	it("keeps an unstarted review's snapshot when the new head is already merged", async () => {
+		const s = await Session.open(pr.arg, process.cwd());
+		const before = s.snapshot();
+		const newHead = pr.moveHead({ "later.txt": "later\n" });
+		pr.moveMain(newHead);
+		expect(await s.refresh()).toMatchObject({
+			snapshotHead: before.head,
+			currentHead: newHead,
+			headMoved: true,
+			patchset: null,
+		});
+		expect(s.snapshot()).toBe(before);
+	});
+
+	it("reports startup progress: cloning only on the first open", async () => {
+		const first: string[] = [];
+		await Session.open(pr.arg, process.cwd(), (m) => first.push(m));
+		expect(first).toEqual(["cloning acme/widget…", "fetching PR #12…"]);
+		const second: string[] = [];
+		await Session.open(pr.arg, process.cwd(), (m) => second.push(m));
+		expect(second).toEqual(["fetching PR #12…"]);
 	});
 
 	it("names a logged out gh", async () => {

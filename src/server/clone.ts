@@ -177,10 +177,14 @@ const exists = (path: string) =>
 		() => false,
 	);
 
-/** The bare clone of `owner/repo`, cloning it through `gh` the first time. */
+/**
+ * The bare clone of `owner/repo`, cloning it through `gh` the first time
+ * (calling `onClone` just before).
+ */
 export async function ensureClone(
 	owner: string,
 	repo: string,
+	onClone: () => void = () => {},
 ): Promise<string> {
 	const path = clonePath(owner, repo);
 	await withRepoLock(path, async () => {
@@ -193,6 +197,7 @@ export async function ensureClone(
 		// never leaves something at `path` that looks like a complete clone.
 		// Only the lock holder touches `.partial`, so a leftover is safe to wipe.
 		const partial = `${path}.partial`;
+		onClone();
 		await rm(partial, { recursive: true, force: true });
 		try {
 			await runGh(

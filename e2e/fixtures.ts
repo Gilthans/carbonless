@@ -50,7 +50,8 @@ export interface Pr {
 export interface Crb {
 	url: string;
 	output(): string;
-	stop(): Promise<void>;
+	/** SIGTERMs crb; rejects unless it exits promptly with 0. */
+	stop(): Promise<CrbExit | null>;
 }
 
 /** startCrb's rejection when the CLI exits before printing its URL. */
@@ -77,15 +78,41 @@ const DEFAULT_COMMITS: FixtureCommit[] = [
 const CLI = resolve(import.meta.dirname, "../dist/cli.js");
 const START_TIMEOUT_MS = 20_000;
 
-function stopChild(child: ChildProcess): Promise<void> {
+/** How long crb may take to exit after SIGTERM before the harness kills it. */
+const STOP_GRACE_MS = 3_000;
+
+export interface CrbExit {
+	code: number | null;
+	/** Milliseconds from SIGTERM to exit. */
+	ms: number;
+}
+
+/**
+ * Sends SIGTERM and waits for the exit. Rejects (failing the test) when crb
+ * needed a SIGKILL or exited with anything but 0: Ctrl-C must stop it even
+ * while a browser tab holds connections open.
+ */
+function stopChild(child: ChildProcess): Promise<CrbExit | null> {
 	if (child.exitCode !== null || child.signalCode !== null) {
-		return Promise.resolve();
+		return Promise.resolve(null);
 	}
-	return new Promise((done) => {
-		const force = setTimeout(() => child.kill("SIGKILL"), 5_000);
-		child.once("exit", () => {
+	return new Promise((done, fail) => {
+		const started = Date.now();
+		let killed = false;
+		const force = setTimeout(() => {
+			killed = true;
+			child.kill("SIGKILL");
+		}, STOP_GRACE_MS);
+		child.once("exit", (code) => {
 			clearTimeout(force);
-			done();
+			const ms = Date.now() - started;
+			if (killed) {
+				fail(new Error(`crb ignored SIGTERM for ${STOP_GRACE_MS} ms`));
+			} else if (code !== 0) {
+				fail(new Error(`crb exited with ${code} after SIGTERM`));
+			} else {
+				done({ code, ms });
+			}
 		});
 		child.kill("SIGTERM");
 	});
@@ -178,7 +205,7 @@ export const test = base.extend<{
 		for (const repo of repos) repo.cleanup();
 	},
 
-	startCrb: async ({ workdir }, use) => {
+	startCrb: async ({ workdir, context }, use) => {
 		const children: ChildProcess[] = [];
 		await use(async (arg = `${OWNER_REPO}#${PR_NUMBER}`, extraArgs = []) => {
 			const child = spawn(
@@ -222,6 +249,10 @@ export const test = base.extend<{
 			});
 			return { url, output: () => output, stop: () => stopChild(child) };
 		});
+		// Pages would keep polling the stopped server and log connection errors.
+		await Promise.all(
+			context.pages().map((p) => p.goto("about:blank").catch(() => {})),
+		);
 		await Promise.all(children.map(stopChild));
 	},
 

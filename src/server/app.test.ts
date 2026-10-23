@@ -1,4 +1,5 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { FastifyInstance } from "fastify";
@@ -270,6 +271,38 @@ describe("API", () => {
 		expect(read.statusCode).toBe(200);
 	});
 
+	const SECURITY_HEADERS = {
+		"x-frame-options": "DENY",
+		"content-security-policy": "frame-ancestors 'none'",
+		"referrer-policy": "no-referrer",
+	};
+
+	it("sends security headers on every response", async () => {
+		const responses = [
+			await inject("/api/session"),
+			await inject("/api/nope"),
+			await inject("/api/files/x/hunks"),
+			await inject("/api/session", { headers: { host: "evil.example" } }),
+		];
+		expect(responses.map((r) => r.statusCode)).toEqual([200, 404, 400, 403]);
+		for (const res of responses)
+			expect(res.headers).toMatchObject(SECURITY_HEADERS);
+	});
+
+	it("closes without waiting for an open browser connection", async () => {
+		// A browser keeps preconnected and keep-alive sockets open; a socket
+		// stuck mid-request is the worst case.
+		const [hostname, port] = host.split(":");
+		const socket = connect(Number(port), hostname);
+		await new Promise<void>((done) => socket.once("connect", () => done()));
+		socket.write(`GET /api/session HTTP/1.1\r\nHost: ${host}\r\n`);
+		socket.on("error", () => {});
+		const started = Date.now();
+		await app.close();
+		expect(Date.now() - started).toBeLessThan(1000);
+		socket.destroy();
+	});
+
 	it("maps a gh failure to 502", async () => {
 		pr.scenario({ prs: {} });
 		const res = await inject("/api/head");
@@ -302,6 +335,19 @@ describe("API", () => {
 			expect(page.body).toBe("js();");
 			const api = await keyed.inject({ url: "/api/session", cookies });
 			expect(api.statusCode).toBe(200);
+		});
+
+		it("sends security headers on static, 401 and SPA responses", async () => {
+			const cookies = { crb_key: "k3y" };
+			const responses = [
+				await keyed.inject("/files"),
+				await keyed.inject({ url: "/assets/app.js", cookies }),
+				await keyed.inject({ url: "/files", cookies }),
+			];
+			expect(responses.map((r) => r.statusCode)).toEqual([401, 200, 200]);
+			for (const res of responses) {
+				expect(res.headers).toMatchObject(SECURITY_HEADERS);
+			}
 		});
 
 		it("serves index.html for client routes and 404 JSON for unknown API paths", async () => {

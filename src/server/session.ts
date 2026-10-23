@@ -58,22 +58,39 @@ export class Session {
 		this.#patchset = patchset;
 	}
 
-	static async open(arg: string, cwd: string): Promise<Session> {
+	/**
+	 * Opens the PR's review. `progress` gets one line per slow startup step
+	 * (crb prints them to stderr).
+	 */
+	static async open(
+		arg: string,
+		cwd: string,
+		progress: (message: string) => void = () => {},
+	): Promise<Session> {
 		await runGh(["auth", "status"]);
 		const ref = await resolvePrRef(arg, cwd);
 		const viewer = await viewerSlug();
 		const meta = await fetchPrMeta(ref);
-		const repo = await ensureClone(meta.owner, meta.repo);
+		const repo = await ensureClone(meta.owner, meta.repo, () =>
+			progress(`cloning ${meta.owner}/${meta.repo}…`),
+		);
+		progress(`fetching PR #${meta.number}…`);
 		const fetched = await fetchPr(repo, meta);
-		if (fetched.mergeBase === fetched.head) {
+		const merged = fetched.mergeBase === fetched.head;
+		const reviews = new ReviewService(new RefStore(repo));
+		// A started review stays open once the PR is merged; an unstarted one
+		// has nothing left to show, so don't create it.
+		const reviewId = merged
+			? await reviews.findReview(meta)
+			: await reviews.findOrCreateReview(meta, viewer);
+		const state =
+			reviewId === null ? null : await reviews.getProgress(reviewId, viewer);
+		if (reviewId === null || state === null || (merged && !state.patchset)) {
 			throw new Error(
 				`PR ${meta.owner}/${meta.repo}#${meta.number} is already merged into ${meta.baseBranch}; nothing to review`,
 			);
 		}
-		const reviews = new ReviewService(new RefStore(repo));
-		const reviewId = await reviews.findOrCreateReview(meta, viewer);
-		const progress = await reviews.getProgress(reviewId, viewer);
-		const { mergeBase, head } = progress.patchset ?? fetched;
+		const { mergeBase, head } = state.patchset ?? fetched;
 		const snapshot = await buildSnapshot(repo, mergeBase, head);
 		return new Session(
 			repo,
@@ -82,7 +99,7 @@ export class Session {
 			reviews,
 			meta,
 			snapshot,
-			progress.patchset?.number ?? null,
+			state.patchset?.number ?? null,
 		);
 	}
 
@@ -164,7 +181,8 @@ export class Session {
 
 	/**
 	 * Fetches the PR again. A review without a patch set moves to the new
-	 * head; a started one stays on its patch set.
+	 * head (unless that head is already merged); a started one stays on its
+	 * patch set.
 	 */
 	refresh(): Promise<SessionInfo> {
 		return this.#exclusive(async () => {
@@ -172,7 +190,14 @@ export class Session {
 			const meta = await fetchPrMeta(this.#ref());
 			const fetched = await fetchPr(this.repo, meta);
 			this.#setMeta(seq, meta);
-			await this.#moveTo(await this.#progress(), fetched);
+			const progress = await this.#progress();
+			// An unstarted review whose new head is already merged has nothing to
+			// move to: keep the current snapshot (headMoved tells the UI).
+			if (!progress.patchset && fetched.mergeBase === fetched.head) {
+				this.#patchset = null;
+				return this.info();
+			}
+			await this.#moveTo(progress, fetched);
 			return this.info();
 		});
 	}

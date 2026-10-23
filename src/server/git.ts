@@ -10,11 +10,15 @@ export interface RunGitOptions {
 }
 
 /**
- * Inherited GIT_* variables that only affect transport and diagnostics. Every
+ * Inherited GIT_* variables that only affect transport, diagnostics and where
+ * the user keeps their git config (GIT_CONFIG_GLOBAL, GIT_CONFIG_SYSTEM,
+ * GIT_CONFIG_NOSYSTEM: a relocated config is still the user's config). Every
  * other GIT_* variable is dropped: GIT_DIR, GIT_NAMESPACE, GIT_OBJECT_DIRECTORY
  * and friends would redirect reads and writes to another repository (for
  * example when crb runs from a git hook or alias), and GIT_AUTHOR_*,
- * GIT_COMMITTER_* and GIT_CONFIG_* would change what we write.
+ * GIT_COMMITTER_*, GIT_CONFIG_COUNT/KEY_<n>/VALUE_<n> and
+ * GIT_CONFIG_PARAMETERS (config injected by a parent git process) would
+ * change what we write.
  */
 const INHERITED_GIT_VARS = new Set([
 	"GIT_ASKPASS",
@@ -34,6 +38,9 @@ const INHERITED_GIT_VARS = new Set([
 	"GIT_HTTP_LOW_SPEED_TIME",
 	"GIT_EXEC_PATH",
 	"GIT_CURL_VERBOSE",
+	"GIT_CONFIG_GLOBAL",
+	"GIT_CONFIG_SYSTEM",
+	"GIT_CONFIG_NOSYSTEM",
 ]);
 
 /** process.env minus the GIT_* variables that could redirect or change git. */

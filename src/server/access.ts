@@ -2,14 +2,24 @@ import { createHash, timingSafeEqual } from "node:crypto";
 import fastifyCookie from "@fastify/cookie";
 import type { FastifyInstance } from "fastify";
 
-const COOKIE = "crb_key";
+/**
+ * Cookies ignore ports, so every crb instance on a host would share one
+ * `crb_key` cookie and opening a second PR would lock the first tab out.
+ * Naming the cookie after the listening port keeps instances apart.
+ */
+function cookieName(app: FastifyInstance): string {
+	const address = app.server.address();
+	return address && typeof address === "object"
+		? `crb_key_${address.port}`
+		: "crb_key";
+}
 
 const digest = (value: string) => createHash("sha256").update(value).digest();
 
 /**
  * Requires `key` on every request (API and static) when it's set: as
- * `?key=<key>`, which also sets an HttpOnly cookie for the page's later
- * requests, or as that cookie. Used when crb listens beyond loopback.
+ * `?key=<key>`, which also sets an HttpOnly cookie (named per listening
+ * port) for the page's later requests, or as that cookie. Used when crb listens beyond loopback.
  */
 export async function registerAccessKey(
 	app: FastifyInstance,
@@ -23,16 +33,17 @@ export async function registerAccessKey(
 
 	await app.register(fastifyCookie);
 	app.addHook("onRequest", async (request, reply) => {
+		const cookie = cookieName(app);
 		const query = request.query as Record<string, unknown> | undefined;
 		if (matches(query?.key)) {
-			reply.setCookie(COOKIE, key, {
+			reply.setCookie(cookie, key, {
 				httpOnly: true,
 				sameSite: "strict",
 				path: "/",
 			});
 			return;
 		}
-		if (matches(request.cookies[COOKIE])) return;
+		if (matches(request.cookies[cookie])) return;
 		return reply.code(401).send({ error: "Missing or wrong access key" });
 	});
 }

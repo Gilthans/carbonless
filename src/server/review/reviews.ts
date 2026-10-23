@@ -37,6 +37,10 @@ const VERBS = {
 	"crossed-off": "crossed off",
 } as const;
 
+const prKey = (pr: ReviewPr) =>
+	`${pr.owner.toLowerCase()}/${pr.repo.toLowerCase()}#${pr.number}`;
+const lookupRef = (pr: ReviewPr) =>
+	`refs/crb/lookup/github-pr/${createHash("sha256").update(prKey(pr)).digest("hex")}`;
 const reviewRef = (id: string) => `refs/crb/reviews/${id}`;
 const reviewerRef = (id: string, slug: string) =>
 	`${reviewRef(id)}/reviewers/${slug}`;
@@ -48,12 +52,16 @@ const reviewerRef = (id: string, slug: string) =>
 export class ReviewService {
 	constructor(private readonly store: RefStore) {}
 
+	/** The review of this PR, or null if nobody started one. */
+	findReview(pr: ReviewPr): Promise<string | null> {
+		return this.#readLookup(lookupRef(pr));
+	}
+
 	/** The review of this PR, created (meta and lookup refs) on first use. */
 	async findOrCreateReview(pr: ReviewPr, actor: string): Promise<string> {
 		checkSlug(actor);
-		const key = `${pr.owner.toLowerCase()}/${pr.repo.toLowerCase()}#${pr.number}`;
-		const hash = createHash("sha256").update(key).digest("hex");
-		const lookup = `refs/crb/lookup/github-pr/${hash}`;
+		const key = prKey(pr);
+		const lookup = lookupRef(pr);
 		const found = await this.#readLookup(lookup);
 		if (found) return found;
 

@@ -26,6 +26,13 @@ export interface AppOptions {
 /** A malformed request (HTTP 400). */
 class BadRequestError extends Error {}
 
+/** No framing (clickjacking) and no Referer leaking the access key. */
+const SECURITY_HEADERS = {
+	"x-frame-options": "DENY",
+	"content-security-policy": "frame-ancestors 'none'",
+	"referrer-policy": "no-referrer",
+};
+
 const MAX_CHANGES = 1000;
 const MAX_REASON = 500;
 const STATES: readonly string[] = [
@@ -42,8 +49,19 @@ export async function buildApp(
 	session: Session,
 	options: AppOptions,
 ): Promise<FastifyInstance> {
-	// No logger: request URLs can carry the access key.
-	const app = Fastify({ logger: false, bodyLimit: 4 * 1024 * 1024 });
+	const app = Fastify({
+		// No logger: request URLs can carry the access key.
+		logger: false,
+		bodyLimit: 4 * 1024 * 1024,
+		// close() must not wait for the browser to drop its keep-alive and
+		// preconnected sockets. Every write is already an atomic git commit,
+		// so there's nothing to drain.
+		forceCloseConnections: true,
+	});
+	// First hook, so even the access checks' 401/403 replies carry them.
+	app.addHook("onRequest", async (_request, reply) => {
+		reply.headers(SECURITY_HEADERS);
+	});
 	registerHostCheck(app, options.accessKey === null);
 	await registerAccessKey(app, options.accessKey);
 

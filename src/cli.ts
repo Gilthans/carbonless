@@ -54,7 +54,10 @@ async function main(): Promise<void> {
 		? null
 		: randomBytes(24).toString("base64url");
 
-	const session = await Session.open(pr, process.cwd());
+	// Progress goes to stderr: stdout's only line is the listening URL.
+	const session = await Session.open(pr, process.cwd(), (message) =>
+		console.error(`crb: ${message}`),
+	);
 	const app = await buildApp(session, {
 		accessKey,
 		webRoot: values["api-only"]
@@ -70,17 +73,11 @@ async function main(): Promise<void> {
 		throw error;
 	}
 
-	const address = app.server.address();
-	const actualPort =
-		typeof address === "object" && address ? address.port : port;
-	const urlHost = host.includes(":") ? `[${host}]` : host;
-	const url = `http://${urlHost}:${actualPort}/${accessKey ? `?key=${accessKey}` : ""}`;
-	// Tests and agents parse this line to find the server.
-	console.log(`carbonless listening on ${url}`);
-
+	// Before printing the URL: whoever reads it may signal us right away.
 	let closing = false;
 	const shutdown = async () => {
-		if (closing) return;
+		// A second Ctrl-C means "now": don't wait for anything.
+		if (closing) process.exit(1);
 		closing = true;
 		try {
 			await app.close();
@@ -92,6 +89,14 @@ async function main(): Promise<void> {
 	};
 	process.on("SIGINT", shutdown);
 	process.on("SIGTERM", shutdown);
+
+	const address = app.server.address();
+	const actualPort =
+		typeof address === "object" && address ? address.port : port;
+	const urlHost = host.includes(":") ? `[${host}]` : host;
+	const url = `http://${urlHost}:${actualPort}/${accessKey ? `?key=${accessKey}` : ""}`;
+	// Tests and agents parse this line to find the server.
+	console.log(`carbonless listening on ${url}`);
 
 	if (values.open) {
 		await open(url).catch((error: unknown) => {

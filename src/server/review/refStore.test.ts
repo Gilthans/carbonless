@@ -1,7 +1,10 @@
 import { execFileSync } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createBareRepo } from "../../../test/git-fixture.js";
-import { GitError, runGit } from "../git.js";
+import { GitError, inheritedEnv, runGit } from "../git.js";
 import { type CrbEvent, newEvent } from "./events.js";
 import { RefConflictError, RefStore } from "./refStore.js";
 
@@ -300,6 +303,47 @@ describe("RefStore", () => {
 		} finally {
 			process.env = saved;
 			other.cleanup();
+		}
+	});
+
+	it("keeps the inherited config-location variables, drops injected config", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "crb-gitconfig-"));
+		const global = join(dir, "global");
+		writeFileSync(global, "[crb]\n\tprobe = from-global\n");
+		const saved = { ...process.env };
+		try {
+			Object.assign(process.env, {
+				GIT_CONFIG_GLOBAL: global,
+				GIT_CONFIG_SYSTEM: "/nonexistent-system-config",
+				GIT_CONFIG_NOSYSTEM: "1",
+				GIT_CONFIG_COUNT: "1",
+				GIT_CONFIG_KEY_0: "crb.injected",
+				GIT_CONFIG_VALUE_0: "yes",
+				GIT_CONFIG_PARAMETERS: "'crb.params'='yes'",
+			});
+			const env = inheritedEnv();
+			expect(env.GIT_CONFIG_GLOBAL).toBe(global);
+			expect(env.GIT_CONFIG_SYSTEM).toBe("/nonexistent-system-config");
+			expect(env.GIT_CONFIG_NOSYSTEM).toBe("1");
+			for (const name of [
+				"GIT_CONFIG_COUNT",
+				"GIT_CONFIG_KEY_0",
+				"GIT_CONFIG_VALUE_0",
+				"GIT_CONFIG_PARAMETERS",
+			]) {
+				expect(env[name]).toBeUndefined();
+			}
+			expect(await runGit(repo, ["config", "--get", "crb.probe"])).toBe(
+				"from-global\n",
+			);
+			for (const key of ["crb.injected", "crb.params"]) {
+				expect(
+					await runGit(repo, ["config", "--get", key], { allowFailure: true }),
+				).toBe("");
+			}
+		} finally {
+			process.env = saved;
+			rmSync(dir, { recursive: true, force: true });
 		}
 	});
 
