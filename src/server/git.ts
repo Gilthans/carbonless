@@ -10,11 +10,20 @@ export interface RunGitOptions {
 	allowFailure?: boolean;
 }
 
-export function runGit(
+export async function runGit(
 	repoPath: string,
 	args: string[],
 	opts: RunGitOptions = {},
 ): Promise<string> {
+	return (await runGitBuffer(repoPath, args, opts)).toString("utf8");
+}
+
+/** Like `runGit`, but returns stdout as raw bytes. */
+export function runGitBuffer(
+	repoPath: string,
+	args: string[],
+	opts: RunGitOptions = {},
+): Promise<Buffer> {
 	return new Promise((resolve, reject) => {
 		const child = spawn("git", ["-C", repoPath, ...args], {
 			env: { ...process.env, ...opts.env },
@@ -26,14 +35,14 @@ export function runGit(
 		child.stderr.on("data", (chunk: Buffer) => err.push(chunk));
 		child.stdin.on("error", () => {});
 		child.on("error", (error) => {
-			if (opts.allowFailure) resolve("");
+			if (opts.allowFailure) resolve(Buffer.alloc(0));
 			else reject(new GitError(error.message));
 		});
 		child.on("close", (code) => {
 			if (code === 0) {
-				resolve(Buffer.concat(out).toString("utf8"));
+				resolve(Buffer.concat(out));
 			} else if (opts.allowFailure) {
-				resolve("");
+				resolve(Buffer.alloc(0));
 			} else {
 				const stderr = Buffer.concat(err).toString("utf8").trim();
 				reject(new GitError(stderr || `git exited with code ${code}`));

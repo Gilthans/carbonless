@@ -49,3 +49,31 @@ export interface FileSummary {
 	deletions: number;
 	clusters: Cluster[];
 }
+
+export interface Snapshot {
+	base: string;
+	head: string;
+	revision: string;
+	files: FileSummary[];
+}
+
+export interface DiffLine {
+	kind: "context" | "add" | "del";
+	oldNo?: number;
+	newNo?: number;
+	text: string;
+	clusterKey?: string;
+}
+
+export interface DisplayHunk {
+	oldStart: number;
+	oldCount: number;
+	newStart: number;
+	newCount: number;
+	lines: DiffLine[];
+}
+
+export interface FileHunks {
+	hunks: DisplayHunk[];
+	newLineCount: number;
+}

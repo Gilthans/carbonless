@@ -3,14 +3,16 @@ import { symlinkSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
+	createDiffFixture,
+	SUB_SHA,
+	SUB_SHA2,
+} from "../../../test/diff-fixture.js";
+import {
 	createGitFixture,
 	type GitFixture,
 } from "../../../test/git-fixture.js";
 import { buildClusters } from "./clusters.js";
 import { type ChangedFile, listChangedFiles } from "./files.js";
-
-const SUB_SHA = "c".repeat(40);
-const SUB_SHA2 = "d".repeat(40);
 
 let fixture: GitFixture;
 let files: ChangedFile[];
@@ -21,58 +23,12 @@ const byPath = (path: string) => {
 };
 
 beforeAll(async () => {
-	const numbered = (n: number) =>
-		`${Array.from({ length: n }, (_, i) => `line ${i + 1}`).join("\n")}\n`;
-	fixture = createGitFixture([
-		{
-			message: "base",
-			files: {
-				"mod.ts": numbered(10),
-				"gone.ts": "bye\n",
-				"old-name.ts": numbered(20),
-				"script.sh": "echo hi\n",
-				"dir/my file.ts": "one\n",
-				"docs/über.md": "eins\n",
-				'q"uote.txt': "x\n",
-			},
-			binary: { "img.bin": new Uint8Array([0, 1, 2, 3]) },
-			submodule: { vendor: SUB_SHA },
-		},
-		{
-			message: "head",
-			files: {
-				"mod.ts": numbered(10)
-					.replace("line 2\n", "LINE 2\n")
-					.replace("line 9\n", "LINE 9\n"),
-				"added.ts": "new\n",
-				"empty.txt": "",
-				"dir/my file.ts": "one\ntwo\n",
-				"docs/über.md": "zwei\n",
-				'q"uote.txt': "y\n",
-			},
-			rename: { "old-name.ts": "new-name.ts" },
-			delete: ["gone.ts"],
-			chmod: { "script.sh": "755" },
-			binary: { "img.bin": new Uint8Array([0, 9, 9, 9, 9]) },
-			submodule: { vendor: SUB_SHA2 },
-		},
-	]);
-	// Edit the renamed file too (kept similar enough for rename detection).
-	const { writeFileSync } = await import("node:fs");
-	writeFileSync(
-		`${fixture.path}/new-name.ts`,
-		numbered(20).replace("line 5\n", "LINE 5\n"),
+	fixture = createDiffFixture();
+	files = await listChangedFiles(
+		fixture.path,
+		fixture.shas[0] as string,
+		fixture.shas[1] as string,
 	);
-	execFileSync("git", ["add", "new-name.ts"], { cwd: fixture.path });
-	execFileSync("git", ["commit", "-q", "--amend", "--no-edit"], {
-		cwd: fixture.path,
-	});
-	const head = execFileSync("git", ["rev-parse", "HEAD"], {
-		cwd: fixture.path,
-		encoding: "utf8",
-	}).trim();
-	fixture.shas[1] = head;
-	files = await listChangedFiles(fixture.path, fixture.shas[0] as string, head);
 });
 
 afterAll(() => fixture.cleanup());
