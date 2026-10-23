@@ -140,10 +140,16 @@ export interface PrOverview {
 	headBranch: string;
 	mergeable: "MERGEABLE" | "CONFLICTING" | "UNKNOWN";
 	requestedReviewers: { name: string; team: boolean }[];
-	/** Latest review per author, newest first. */
+	/**
+	 * One entry per reviewer, newest activity first. `state` and `submittedAt`
+	 * are the reviewer's latest review; `opinion` is their latest approving,
+	 * blocking or dismissed review, so a later plain comment doesn't hide a
+	 * change request.
+	 */
 	reviews: {
 		author: string;
 		state: "APPROVED" | "CHANGES_REQUESTED" | "COMMENTED" | "DISMISSED";
+		opinion?: "APPROVED" | "CHANGES_REQUESTED" | "DISMISSED";
 		submittedAt: string;
 		you: boolean;
 	}[];

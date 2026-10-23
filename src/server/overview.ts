@@ -1,5 +1,6 @@
 import type { PrOverview } from "../shared/types.js";
 import { GhError } from "./errors.js";
+import { slugify } from "./slug.js";
 
 type Json = Record<string, unknown>;
 
@@ -21,12 +22,18 @@ function login(value: unknown): string {
 	return str(obj(value).login);
 }
 
-/** `xyz[bot]` or `app/xyz`, as `gh pr view` spells GitHub App accounts. */
-function isBotLogin(name: string): boolean {
-	return name.endsWith("[bot]") || name.startsWith("app/");
+/**
+ * GraphQL says `__typename: "Bot"`; the login spellings `xyz[bot]` and
+ * `app/xyz` are a fallback only (REST-style and `gh pr view` author fields).
+ */
+function isBotAuthor(author: Json): boolean {
+	const name = str(author.login);
+	return (
+		author.__typename === "Bot" ||
+		name.endsWith("[bot]") ||
+		name.startsWith("app/")
+	);
 }
-
-const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
 
 const REVIEW_STATES = new Set([
 	"APPROVED",
@@ -72,49 +79,65 @@ function mapCheck(raw: unknown): Check | null {
 
 const CHECK_ORDER = { failing: 0, pending: 1, passing: 2 } as const;
 
-function mapThreads(threads: unknown): PrOverview["threads"] {
-	const nodes = arr(
-		obj(obj(obj(obj(obj(threads).data).repository).pullRequest).reviewThreads)
-			.nodes,
-	);
+function mapThreads(nodes: unknown[]): PrOverview["threads"] {
 	const result: PrOverview["threads"] = [];
 	for (const raw of nodes) {
 		const t = obj(raw);
 		if (t.isResolved === true) continue;
-		const comments = obj(t.comments);
-		const first = obj(arr(comments.nodes)[0]);
+		const comments = arr(obj(t.comments).nodes).map(obj);
+		const first = comments[0] ?? {};
 		const author = obj(first.author);
-		const total =
-			typeof comments.totalCount === "number" ? comments.totalCount : 0;
+		const firstLogin = str(author.login);
 		result.push({
 			path: str(t.path),
 			line: typeof t.line === "number" ? t.line : null,
 			excerpt: str(first.body).slice(0, 200),
-			author: str(author.login),
-			bot: author.__typename === "Bot",
-			hasReply: total > 1,
+			author: firstLogin,
+			bot: isBotAuthor(author),
+			// Someone other than the thread's opener answered.
+			hasReply: comments.some((c) => str(obj(c.author).login) !== firstLogin),
 			outdated: t.isOutdated === true,
 		});
 	}
 	return result;
 }
 
+/** The GraphQL connections `fetchOverview` collects, already flattened to node lists. */
+export interface PrGraph {
+	reviewThreads: unknown[];
+	comments: unknown[];
+	reviews: unknown[];
+}
+
 /**
- * Pure mapping from `gh pr view --json` output and the review-threads GraphQL
- * response to a PrOverview. Both inputs are untrusted: unknown or missing
- * fields fall back to empty values instead of throwing.
+ * Pure mapping from `gh pr view --json` output plus the paginated GraphQL
+ * nodes to a PrOverview. Inputs are untrusted: unknown or missing fields fall
+ * back to empty values, but a missing connection throws so a broken response
+ * never reads as "no threads".
  */
 export function mapOverview(
 	view: unknown,
-	threads: unknown,
+	graph: unknown,
 	viewer: string,
 ): PrOverview {
 	if (typeof view !== "object" || view === null || Array.isArray(view)) {
 		throw new GhError("gh returned an unexpected response for the PR");
 	}
+	const g = obj(graph);
+	if (
+		!Array.isArray(g.reviewThreads) ||
+		!Array.isArray(g.comments) ||
+		!Array.isArray(g.reviews)
+	) {
+		throw new GhError("gh returned an unexpected response for the PR threads");
+	}
 	const v = obj(view);
 	const author = login(v.author);
-	const isYou = (name: string) => same(name, viewer);
+	// The viewer is a login or its slug; compare slugs so both spellings match.
+	const viewerSlug = slugify(viewer);
+	const isYou = (name: string) => slugify(name) === viewerSlug;
+	const isAuthor = (name: string) =>
+		name.toLowerCase() === author.toLowerCase();
 
 	const state = ["OPEN", "CLOSED", "MERGED"].includes(str(v.state))
 		? (str(v.state) as PrOverview["state"])
@@ -134,50 +157,73 @@ export function mapOverview(
 		}
 	}
 
-	const latest = new Map<string, PrOverview["reviews"][number]>();
-	for (const raw of arr(v.reviews)) {
+	type Review = PrOverview["reviews"][number];
+	const byReviewer = new Map<string, Review & { bot: boolean }>();
+	const opinions = new Map<
+		string,
+		{ at: string; state: NonNullable<Review["opinion"]> }
+	>();
+	for (const raw of g.reviews) {
 		const r = obj(raw);
-		const name = login(r.author);
+		const who = obj(r.author);
+		const name = str(who.login);
 		const reviewState = str(r.state);
 		if (!name || !REVIEW_STATES.has(reviewState)) continue;
-		const submittedAt = str(r.submittedAt);
+		const at = str(r.submittedAt);
 		const key = name.toLowerCase();
-		const prev = latest.get(key);
-		if (prev && prev.submittedAt > submittedAt) continue;
-		latest.set(key, {
-			author: name,
-			state: reviewState as PrOverview["reviews"][number]["state"],
-			submittedAt,
-			you: isYou(name),
-		});
+		const prev = byReviewer.get(key);
+		if (!prev || prev.submittedAt <= at) {
+			byReviewer.set(key, {
+				author: name,
+				state: reviewState as Review["state"],
+				submittedAt: at,
+				you: isYou(name),
+				bot: isBotAuthor(who),
+			});
+		}
+		if (reviewState !== "COMMENTED") {
+			const prevOp = opinions.get(key);
+			if (!prevOp || prevOp.at <= at) {
+				opinions.set(key, {
+					at,
+					state: reviewState as NonNullable<Review["opinion"]>,
+				});
+			}
+		}
 	}
-	const reviews = [...latest.values()].sort((a, b) =>
-		b.submittedAt.localeCompare(a.submittedAt),
+	const reviewers = [...byReviewer.entries()].sort((a, b) =>
+		b[1].submittedAt.localeCompare(a[1].submittedAt),
 	);
+	const reviews: Review[] = reviewers.map(([key, { bot: _bot, ...review }]) => {
+		const opinion = opinions.get(key)?.state;
+		return opinion ? { ...review, opinion } : review;
+	});
 
-	const last = new Map<string, { author: string; lastAt: string }>();
-	for (const raw of arr(v.comments)) {
+	const last = new Map<
+		string,
+		{ author: string; lastAt: string; bot: boolean }
+	>();
+	for (const raw of g.comments) {
 		const c = obj(raw);
-		const name = login(c.author);
+		const who = obj(c.author);
+		const name = str(who.login);
 		if (!name) continue;
 		const at = str(c.createdAt);
 		const key = name.toLowerCase();
 		const prev = last.get(key);
-		if (!prev || prev.lastAt < at) last.set(key, { author: name, lastAt: at });
+		if (!prev || prev.lastAt < at) {
+			last.set(key, { author: name, lastAt: at, bot: isBotAuthor(who) });
+		}
 	}
 	const commenters = [...last.values()]
-		.map((c) => ({
-			...c,
-			bot: isBotLogin(c.author),
-			you: isYou(c.author),
-		}))
+		.map((c) => ({ ...c, you: isYou(c.author) }))
 		.sort((a, b) => b.lastAt.localeCompare(a.lastAt));
 
-	const isOtherHuman = (name: string) =>
-		!isBotLogin(name) && !same(name, author) && !isYou(name);
+	const isOtherHuman = (name: string, bot: boolean) =>
+		!bot && !isAuthor(name) && !isYou(name);
 	const humanStarted =
-		reviews.some((r) => isOtherHuman(r.author)) ||
-		commenters.some((c) => isOtherHuman(c.author));
+		reviewers.some(([, r]) => isOtherHuman(r.author, r.bot)) ||
+		commenters.some((c) => isOtherHuman(c.author, c.bot));
 
 	const checks = arr(v.statusCheckRollup)
 		.map(mapCheck)
@@ -202,6 +248,6 @@ export function mapOverview(
 		commenters,
 		humanStarted,
 		checks,
-		threads: mapThreads(threads),
+		threads: mapThreads(g.reviewThreads),
 	};
 }

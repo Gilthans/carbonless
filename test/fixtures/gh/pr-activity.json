@@ -1,0 +1,66 @@
+{
+	"reviews": [
+		{
+			"author": {
+				"login": "rev1",
+				"__typename": "User"
+			},
+			"state": "CHANGES_REQUESTED",
+			"submittedAt": "2026-01-03T09:00:00Z"
+		},
+		{
+			"author": {
+				"login": "jdoe_acme",
+				"__typename": "User"
+			},
+			"state": "CHANGES_REQUESTED",
+			"submittedAt": "2026-01-03T10:00:00Z"
+		},
+		{
+			"author": {
+				"login": "rev1",
+				"__typename": "User"
+			},
+			"state": "COMMENTED",
+			"submittedAt": "2026-01-04T09:00:00Z"
+		},
+		{
+			"author": {
+				"login": "github-actions",
+				"__typename": "Bot"
+			},
+			"state": "COMMENTED",
+			"submittedAt": "2026-01-02T11:00:00Z"
+		}
+	],
+	"comments": [
+		{
+			"author": {
+				"login": "codecov",
+				"__typename": "Bot"
+			},
+			"createdAt": "2026-01-02T11:30:00Z"
+		},
+		{
+			"author": {
+				"login": "octo-author",
+				"__typename": "User"
+			},
+			"createdAt": "2026-01-03T08:00:00Z"
+		},
+		{
+			"author": {
+				"login": "codecov",
+				"__typename": "Bot"
+			},
+			"createdAt": "2026-01-04T08:00:00Z"
+		},
+		{
+			"author": {
+				"login": "jdoe_acme",
+				"__typename": "User"
+			},
+			"createdAt": "2026-01-04T10:00:00Z"
+		}
+	]
+}

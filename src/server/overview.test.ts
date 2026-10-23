@@ -1,14 +1,21 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import { GhError } from "./errors";
 import { mapOverview } from "./overview";
 
-const load = (name: string): unknown =>
+const load = (name: string): any =>
 	JSON.parse(readFileSync(`test/fixtures/gh/${name}`, "utf8"));
-const view = () => load("pr-view.json") as Record<string, unknown>;
-const threads = () => load("review-threads.json");
+const view = () => load("pr-view.json");
+const graph = () => ({
+	reviewThreads: load("review-threads.json") as any[],
+	comments: load("pr-activity.json").comments as any[],
+	reviews: load("pr-activity.json").reviews as any[],
+});
+// The viewer's login has an underscore; callers may pass the login or its slug.
+const VIEWER = "jdoe_acme";
 
 describe("mapOverview", () => {
-	const o = mapOverview(view(), threads(), "me");
+	const o = mapOverview(view(), graph(), VIEWER);
 
 	it("maps the plain fields", () => {
 		expect(o).toMatchObject({
@@ -27,22 +34,24 @@ describe("mapOverview", () => {
 		]);
 	});
 
-	it("keeps the latest review per reviewer, newest first, and marks you", () => {
+	it("keeps the latest activity and the latest opinion per reviewer, newest first, and marks you", () => {
 		expect(o.reviews).toEqual([
 			{
 				author: "rev1",
-				state: "APPROVED",
+				state: "COMMENTED",
+				opinion: "CHANGES_REQUESTED",
 				submittedAt: "2026-01-04T09:00:00Z",
 				you: false,
 			},
 			{
-				author: "me",
+				author: "jdoe_acme",
 				state: "CHANGES_REQUESTED",
+				opinion: "CHANGES_REQUESTED",
 				submittedAt: "2026-01-03T10:00:00Z",
 				you: true,
 			},
 			{
-				author: "ci-bot[bot]",
+				author: "github-actions",
 				state: "COMMENTED",
 				submittedAt: "2026-01-02T11:00:00Z",
 				you: false,
@@ -50,11 +59,24 @@ describe("mapOverview", () => {
 		]);
 	});
 
+	it("recognises the viewer by login or by slug", () => {
+		for (const viewer of ["jdoe_acme", "jdoe-acme", "JDoe_Acme"]) {
+			const r = mapOverview(view(), graph(), viewer);
+			expect(r.reviews.find((x) => x.you)?.author).toBe("jdoe_acme");
+			expect(r.commenters.find((x) => x.you)?.author).toBe("jdoe_acme");
+		}
+	});
+
 	it("lists commenters with last time, bot and you flags", () => {
 		expect(o.commenters).toEqual([
-			{ author: "me", lastAt: "2026-01-04T10:00:00Z", bot: false, you: true },
 			{
-				author: "ci-bot[bot]",
+				author: "jdoe_acme",
+				lastAt: "2026-01-04T10:00:00Z",
+				bot: false,
+				you: true,
+			},
+			{
+				author: "codecov",
 				lastAt: "2026-01-04T08:00:00Z",
 				bot: true,
 				you: false,
@@ -103,44 +125,65 @@ describe("mapOverview", () => {
 				hasReply: false,
 				outdated: true,
 			},
+			{
+				path: "src/self.ts",
+				line: 3,
+				excerpt: "First",
+				author: "rev1",
+				bot: false,
+				hasReply: false,
+				outdated: false,
+			},
 		]);
 	});
 
 	it("cuts thread excerpts at 200 characters", () => {
-		const t = threads() as any;
-		t.data.repository.pullRequest.reviewThreads.nodes[0].comments.nodes[0].body =
-			"x".repeat(300);
-		expect(mapOverview(view(), t, "me").threads[0]?.excerpt).toHaveLength(200);
+		const g = graph();
+		g.reviewThreads[0].comments.nodes[0].body = "x".repeat(300);
+		expect(mapOverview(view(), g, VIEWER).threads[0]?.excerpt).toHaveLength(
+			200,
+		);
 	});
 
-	it("humanStarted ignores the author, the viewer and bots", () => {
+	it("humanStarted ignores the author, the viewer and bots (by __typename)", () => {
 		expect(o.humanStarted).toBe(true); // rev1
-		const v = view() as any;
-		v.reviews = v.reviews.filter((r: any) => r.author.login !== "rev1");
-		expect(mapOverview(v, threads(), "me").humanStarted).toBe(false);
-		v.comments.push({
-			author: { login: "rev3" },
+		const g = graph();
+		g.reviews = g.reviews.filter((r) => r.author.login !== "rev1");
+		expect(mapOverview(view(), g, VIEWER).humanStarted).toBe(false);
+		g.comments.push({
+			author: { login: "rev3", __typename: "User" },
 			createdAt: "2026-01-05T00:00:00Z",
 		});
-		expect(mapOverview(v, threads(), "me").humanStarted).toBe(true);
+		expect(mapOverview(view(), g, VIEWER).humanStarted).toBe(true);
 	});
 
-	it("treats app/ logins as bots", () => {
-		const v = view() as any;
-		v.comments = [
+	it("does not count the viewer's own underscore login as another human", () => {
+		const g = graph();
+		g.reviews = g.reviews.filter((r) => r.author.login !== "rev1");
+		expect(mapOverview(view(), g, "jdoe-acme").humanStarted).toBe(false);
+	});
+
+	it("falls back to login spellings for bots without a __typename", () => {
+		const g = graph();
+		g.reviews = [];
+		g.comments = [
 			{
 				author: { login: "app/dependabot" },
 				createdAt: "2026-01-05T00:00:00Z",
 			},
+			{ author: { login: "x[bot]" }, createdAt: "2026-01-05T00:00:00Z" },
 		];
-		v.reviews = [];
-		const r = mapOverview(v, threads(), "me");
-		expect(r.commenters[0]?.bot).toBe(true);
+		const r = mapOverview(view(), g, VIEWER);
+		expect(r.commenters.every((c) => c.bot)).toBe(true);
 		expect(r.humanStarted).toBe(false);
 	});
 
 	it("does not throw on missing optional fields", () => {
-		const r = mapOverview({ number: 1, title: "t" }, null, "me");
+		const r = mapOverview(
+			{ number: 1, title: "t" },
+			{ reviewThreads: [], comments: [], reviews: [] },
+			"me",
+		);
 		expect(r).toMatchObject({
 			number: 1,
 			title: "t",
@@ -152,8 +195,18 @@ describe("mapOverview", () => {
 		});
 	});
 
+	it("fails closed when the GraphQL connections are missing", () => {
+		expect(() => mapOverview(view(), null, VIEWER)).toThrow(GhError);
+		expect(() => mapOverview(view(), {}, VIEWER)).toThrow(
+			"unexpected response",
+		);
+		expect(() =>
+			mapOverview(view(), { ...graph(), reviewThreads: undefined }, VIEWER),
+		).toThrow(GhError);
+	});
+
 	it("rejects a non-object view", () => {
-		expect(() => mapOverview("nope", null, "me")).toThrow(
+		expect(() => mapOverview("nope", graph(), VIEWER)).toThrow(
 			"unexpected response",
 		);
 	});

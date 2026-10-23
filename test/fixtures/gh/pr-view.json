@@ -2,7 +2,9 @@
 	"number": 12,
 	"title": "Add widget cache",
 	"url": "https://github.com/acme/widget/pull/12",
-	"author": { "login": "octo-author" },
+	"author": {
+		"login": "octo-author"
+	},
 	"body": "Caches widgets.\n\nFixes a slow path.",
 	"state": "OPEN",
 	"isDraft": false,
@@ -12,45 +14,15 @@
 	"headRefName": "feature/cache",
 	"mergeable": "MERGEABLE",
 	"reviewRequests": [
-		{ "__typename": "User", "login": "rev2" },
-		{ "__typename": "Team", "name": "Core Team", "slug": "core-team" }
-	],
-	"reviews": [
 		{
-			"author": { "login": "rev1" },
-			"state": "COMMENTED",
-			"submittedAt": "2026-01-03T09:00:00Z"
+			"__typename": "User",
+			"login": "rev2"
 		},
 		{
-			"author": { "login": "me" },
-			"state": "CHANGES_REQUESTED",
-			"submittedAt": "2026-01-03T10:00:00Z"
-		},
-		{
-			"author": { "login": "rev1" },
-			"state": "APPROVED",
-			"submittedAt": "2026-01-04T09:00:00Z"
-		},
-		{
-			"author": { "login": "ci-bot[bot]" },
-			"state": "COMMENTED",
-			"submittedAt": "2026-01-02T11:00:00Z"
+			"__typename": "Team",
+			"name": "Core Team",
+			"slug": "core-team"
 		}
-	],
-	"comments": [
-		{
-			"author": { "login": "ci-bot[bot]" },
-			"createdAt": "2026-01-02T11:30:00Z"
-		},
-		{
-			"author": { "login": "octo-author" },
-			"createdAt": "2026-01-03T08:00:00Z"
-		},
-		{
-			"author": { "login": "ci-bot[bot]" },
-			"createdAt": "2026-01-04T08:00:00Z"
-		},
-		{ "author": { "login": "me" }, "createdAt": "2026-01-04T10:00:00Z" }
 	],
 	"statusCheckRollup": [
 		{
