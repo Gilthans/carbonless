@@ -184,6 +184,44 @@ describe("RefStore", () => {
 		expect((await mine.readEvents(ref)).map((e) => e.id)).not.toContain(ev.id);
 	});
 
+	it("past the minimum tries, never sleeps beyond the time budget", async () => {
+		// A fake clock: each try takes 400 ms, sleeping advances the clock.
+		let clock = 0;
+		const sleeps: { ms: number; at: number }[] = [];
+		const mine = new RefStore(repo, {
+			minTries: 1,
+			budgetMs: 1_000,
+			maxTries: 50,
+			now: () => clock,
+			sleep: async (ms) => {
+				sleeps.push({ ms, at: clock });
+				clock += ms;
+			},
+		});
+		vi.spyOn(Math, "random").mockReturnValue(0.999);
+		const other = new RefStore(repo);
+		const original = mine.commit.bind(mine);
+		let n = 0;
+		vi.spyOn(mine, "commit").mockImplementation(async (...args) => {
+			const oid = await original(...args);
+			clock += 400;
+			await other.appendEvent(ref, "other", evN(++n), "dan");
+			return oid;
+		});
+		await expect(
+			mine.appendEvent(ref, "mine", ev, "dan"),
+		).rejects.toBeInstanceOf(RefConflictError);
+		// Unclamped, the first backoff would be ~400 × 2 = 800 ms; only the
+		// 600 ms left of the budget are slept.
+		expect(sleeps[0]?.ms).toBeCloseTo(600);
+		for (const s of sleeps) {
+			expect(s.at + s.ms).toBeLessThanOrEqual(1_000);
+		}
+		// Gives up within the budget plus one more try.
+		expect(clock).toBeLessThanOrEqual(1_000 + 400);
+		expect(mine.commit).toHaveBeenCalledTimes(sleeps.length + 1);
+	});
+
 	it("refuses to write cluster-state by ai", async () => {
 		const ai = newEvent(
 			"cluster-state",

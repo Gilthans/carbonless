@@ -28,6 +28,7 @@ const oneFile: FileView = {
 	additions: 1,
 	deletions: 1,
 	done: false,
+	reviewed: false,
 	crossedOff: false,
 	clusters: [
 		{

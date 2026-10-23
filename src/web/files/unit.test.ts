@@ -5,6 +5,7 @@ import {
 	type FormatOptions,
 	fileUnitProgress,
 	formatFileProgress,
+	nothingLeft,
 	pageCounts,
 	pagePercent,
 	percent,
@@ -41,6 +42,7 @@ const file = (clusters: ClusterView[]): FileView => ({
 	deletions: 0,
 	clusters,
 	done: clusters.every((c) => c.state !== "unreviewed"),
+	reviewed: clusters.every((c) => c.state === "reviewed"),
 	crossedOff: clusters.every((c) => c.state === "crossed-off"),
 });
 
@@ -87,6 +89,29 @@ describe("pageCounts and pagePercent", () => {
 	});
 });
 
+describe("nothingLeft", () => {
+	it("is true only when everything the unit counts is crossed off and no cluster is left", () => {
+		const all = {
+			clusters: { total: 2, reviewed: 0, crossedOff: 2 },
+			lines: { total: 4, reviewed: 0, crossedOff: 4 },
+			files: { total: 1, reviewed: 0, crossedOff: 1, done: 1 },
+		};
+		expect(nothingLeft(all, "lines")).toBe(true);
+		expect(nothingLeft(all, "files")).toBe(true);
+		const empty = {
+			clusters: { total: 0, reviewed: 0, crossedOff: 0 },
+			lines: { total: 0, reviewed: 0, crossedOff: 0 },
+			files: { total: 0, reviewed: 0, crossedOff: 0, done: 0 },
+		};
+		expect(nothingLeft(empty, "lines")).toBe(false);
+		const renameLeft = {
+			...all,
+			clusters: { total: 3, reviewed: 0, crossedOff: 2 },
+		};
+		expect(nothingLeft(renameLeft, "lines")).toBe(false);
+	});
+});
+
 describe("fileUnitProgress", () => {
 	const mixed = file([
 		cluster("reviewed", 3),
@@ -117,13 +142,30 @@ describe("fileUnitProgress", () => {
 	});
 
 	it("counts a done file with a crossed-off cluster as crossed off, not reviewed", () => {
-		const partly = file([cluster("reviewed", 3), cluster("crossed-off", 2)]);
+		const partly = file([
+			cluster("reviewed", 3),
+			cluster("crossed-off", 2),
+			cluster("crossed-off", 1),
+		]);
 		expect(fileUnitProgress(partly, "files").counts).toEqual({
 			total: 1,
 			reviewed: 0,
 			crossedOff: 1,
 		});
-		expect(text(partly, "files")).toBe("crossed off");
+		expect(text(partly, "files")).toBe("done · 2 crossed off");
+		expect(text(partly, "files", { short: true })).toBe("done · ⊘2");
+	});
+
+	it("says done when all a file's lines left were crossed off", () => {
+		const f = file([cluster("reviewed", 0, "file"), cluster("crossed-off", 4)]);
+		expect(text(f, "lines", { withUnit: true })).toBe("done · 1 crossed off");
+	});
+
+	it("takes whether a file is reviewed from the server", () => {
+		// The rule lives in one place (coverage.ts): a file the server doesn't
+		// call reviewed never counts as reviewed here.
+		const f = { ...file([cluster("reviewed", 3)]), reviewed: false };
+		expect(fileUnitProgress(f, "files").counts.reviewed).toBe(0);
 	});
 
 	it("never calls a crossed-off file done or reviewed", () => {

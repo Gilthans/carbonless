@@ -115,10 +115,10 @@ describe("buildReviewView", () => {
 			lines: { total: 30, reviewed: 12, crossedOff: 5 },
 			files: { total: 3, reviewed: 1, crossedOff: 1, done: 2 },
 		});
-		expect(view.files.map((f) => [f.done, f.crossedOff])).toEqual([
-			[true, false],
-			[true, true],
-			[false, false],
+		expect(view.files.map((f) => [f.done, f.reviewed, f.crossedOff])).toEqual([
+			[true, true, false],
+			[true, false, true],
+			[false, false, false],
 		]);
 		expect(view.files[1]?.clusters[0]).toMatchObject({
 			state: "crossed-off",
@@ -134,7 +134,11 @@ describe("buildReviewView", () => {
 			snap,
 			progress({ k1: "reviewed", k2: ["crossed-off", "generated"] }),
 		);
-		expect(view.files[0]).toMatchObject({ done: true, crossedOff: false });
+		expect(view.files[0]).toMatchObject({
+			done: true,
+			reviewed: false,
+			crossedOff: false,
+		});
 		// Crossing off shrinks the work left but never raises reviewed.
 		expect(view.progress.files).toEqual({
 			total: 1,

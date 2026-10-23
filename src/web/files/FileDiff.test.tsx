@@ -49,6 +49,7 @@ const file = (
 	deletions: 1,
 	clusters,
 	done: clusters.every((c) => c.state !== "unreviewed"),
+	reviewed: clusters.every((c) => c.state === "reviewed"),
 	crossedOff: clusters.every((c) => c.state === "crossed-off"),
 	...over,
 });
@@ -407,6 +408,17 @@ describe("FileDiff", () => {
 		expect(progress).toHaveTextContent("1 cluster left");
 		expect(progress).not.toHaveTextContent("0 / 1");
 		expect(progress).toHaveAttribute("aria-valuenow", "0");
+	});
+
+	it("says done and how much was crossed off for a partly crossed-off file", () => {
+		const f = file([
+			cluster("k1", { state: "reviewed" }),
+			cluster("k2", { state: "crossed-off" }),
+		]);
+		setup(f, undefined, hunks, "files");
+		const progress = screen.getByRole("progressbar", { name: "File progress" });
+		expect(progress).toHaveTextContent("done · 1 crossed off");
+		expect(progress).toHaveAttribute("aria-valuetext", "done · 1 crossed off");
 	});
 
 	it("puts the full path in a scroll box", () => {

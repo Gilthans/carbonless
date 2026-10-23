@@ -79,6 +79,19 @@ function capped(value: number, counts: Counts, left: number): number {
 	return counts.total === counts.crossedOff ? 0 : Math.min(value, 99);
 }
 
+/**
+ * Everything the unit still counts was crossed off, and no cluster is left:
+ * say "nothing left to review" rather than a bare 100%.
+ */
+export function nothingLeft(progress: Progress, unit: Unit): boolean {
+	const counts = pageCounts(progress, unit);
+	return (
+		counts.total > 0 &&
+		counts.total === counts.crossedOff &&
+		clustersLeft(progress) === 0
+	);
+}
+
 export interface FileUnitProgress {
 	/** Counts behind the meter: clusters when the file has no changed lines. */
 	counts: Counts;
@@ -86,10 +99,15 @@ export interface FileUnitProgress {
 	percent: number;
 	/** "3 / 8" (reviewed / not crossed off), or null when `status` says it all. */
 	fraction: string | null;
-	/** "done", "crossed off" or "1 cluster left", when there's no fraction. */
+	/**
+	 * "done", "crossed off" or "1 cluster left", when there's no fraction
+	 * (see formatFileProgress for a partly crossed-off "done").
+	 */
 	status: string | null;
 	/** Unreviewed clusters. */
 	clustersLeft: number;
+	/** Crossed-off clusters of a done file that isn't wholly crossed off. */
+	partlyCrossedOff: number;
 	/** The fraction looks finished but clusters without changed lines are left. */
 	hiddenLeft: boolean;
 }
@@ -117,12 +135,16 @@ export function fileUnitProgress(file: FileView, unit: Unit): FileUnitProgress {
 	const clustersLeft = file.clusters.filter(
 		(c) => c.state === "unreviewed",
 	).length;
-	const allReviewed =
-		file.clusters.length > 0 &&
-		file.clusters.every((c) => c.state === "reviewed");
-	const finished = file.done
-		? { status: allReviewed ? "done" : "crossed off", fraction: null }
-		: null;
+	// The server's rule (FileView.reviewed), not re-derived here.
+	const allReviewed = file.reviewed;
+	const partlyCrossedOff =
+		file.done && !allReviewed && !file.crossedOff
+			? file.clusters.filter((c) => c.state === "crossed-off").length
+			: 0;
+	const base = { clustersLeft, partlyCrossedOff, hiddenLeft: false };
+	// A finished file: "crossed off" when all of it is, else "done" (plus
+	// how much was crossed off, when formatted).
+	const finished = file.crossedOff ? "crossed off" : "done";
 	if (unit === "files") {
 		const counts = {
 			total: 1,
@@ -130,36 +152,34 @@ export function fileUnitProgress(file: FileView, unit: Unit): FileUnitProgress {
 			crossedOff: file.done && !allReviewed ? 1 : 0,
 		};
 		return {
+			...base,
 			counts,
 			percent: percent(counts),
-			fraction: finished ? null : "0 / 1",
-			status: finished?.status ?? null,
-			clustersLeft,
-			hiddenLeft: false,
+			fraction: file.done ? null : "0 / 1",
+			status: file.done ? finished : null,
 		};
 	}
 	let counts = clusterCounts(file, unit === "lines" ? (n) => n : () => 1);
 	const noLines = counts.total === 0;
 	if (noLines) counts = clusterCounts(file, () => 1);
 	const value = capped(percent(counts), counts, clustersLeft);
-	if (file.crossedOff || noLines) {
+	// Nothing to show as a fraction: no changed lines, or all of what's left
+	// in the unit was crossed off.
+	if (file.crossedOff || noLines || counts.total === counts.crossedOff) {
 		return {
+			...base,
 			counts,
 			percent: value,
 			fraction: null,
-			status: file.crossedOff
-				? "crossed off"
-				: (finished?.status ?? `${clustersPhrase(clustersLeft)} left`),
-			clustersLeft,
-			hiddenLeft: false,
+			status: file.done ? finished : `${clustersPhrase(clustersLeft)} left`,
 		};
 	}
 	return {
+		...base,
 		counts,
 		percent: value,
 		fraction: `${counts.reviewed} / ${counts.total - counts.crossedOff}`,
 		status: null,
-		clustersLeft,
 		hiddenLeft:
 			clustersLeft > 0 &&
 			counts.total - counts.reviewed - counts.crossedOff === 0,
@@ -181,6 +201,11 @@ export function formatFileProgress(
 	unit: Unit,
 	opts: FormatOptions = {},
 ): string {
+	if (p.status === "done" && p.partlyCrossedOff > 0) {
+		return opts.short
+			? `done · ⊘${p.partlyCrossedOff}`
+			: `done · ${p.partlyCrossedOff} crossed off`;
+	}
 	if (p.status !== null || p.fraction === null) return p.status ?? "";
 	let text = p.fraction;
 	if (opts.withUnit && unit !== "files") text += ` ${unitWord(unit)}`;

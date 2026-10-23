@@ -2,6 +2,7 @@ import { useId } from "react";
 import type { Counts, Progress } from "../../shared/types";
 import {
 	clustersLeft,
+	nothingLeft,
 	pageCounts,
 	pagePercent,
 	UNITS,
@@ -100,7 +101,11 @@ export function ProgressBar(props: {
 	const counts = pageCounts(progress, unit);
 	const value = pagePercent(progress, unit);
 	const word = unitWord(unit);
-	const summary = `${counts.reviewed} / ${counts.total - counts.crossedOff} ${word} reviewed`;
+	// Everything the unit counts was crossed off: no bare 100%.
+	const empty = nothingLeft(progress, unit);
+	const summary = empty
+		? `${counts.crossedOff} ${word} crossed off, ${counts.reviewed} reviewed`
+		: `${counts.reviewed} / ${counts.total - counts.crossedOff} ${word} reviewed`;
 	const left = clustersLeft(progress);
 	// In lines, a rename or mode change weighs nothing: say it's still there.
 	const hiddenLeft =
@@ -118,12 +123,22 @@ export function ProgressBar(props: {
 					aria-valuenow={value}
 					aria-valuemin={0}
 					aria-valuemax={100}
-					aria-valuetext={`${value}%, ${summary}${hiddenLeft ? `, ${note}` : ""}`}
+					aria-valuetext={
+						empty
+							? `Nothing left to review: ${summary}`
+							: `${value}%, ${summary}${hiddenLeft ? `, ${note}` : ""}`
+					}
 					className="flex min-w-0 flex-1 basis-64 flex-wrap items-center gap-x-3 gap-y-1.5 sm:flex-nowrap"
 				>
-					<span className="w-11 shrink-0 text-right text-base font-semibold tabular-nums">
-						{value}%
-					</span>
+					{empty ? (
+						<span className="shrink-0 text-base font-semibold">
+							Nothing left to review
+						</span>
+					) : (
+						<span className="w-11 shrink-0 text-right text-base font-semibold tabular-nums">
+							{value}%
+						</span>
+					)}
 					<Meter
 						counts={counts}
 						incomplete={left > 0}

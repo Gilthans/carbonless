@@ -82,6 +82,11 @@ export interface FileView extends Omit<FileSummary, "clusters"> {
 	clusters: ClusterView[];
 	/** Every cluster is reviewed or crossed off. */
 	done: boolean;
+	/**
+	 * Every cluster is reviewed: the file counts as reviewed in the files
+	 * unit. A done file that isn't reviewed counts as crossed off.
+	 */
+	reviewed: boolean;
 	/** Every cluster is crossed off. */
 	crossedOff: boolean;
 }

@@ -10,18 +10,26 @@ import {
 /**
  * Retry budget per append; each lost race re-reads the tip (see appendEvent).
  * An append keeps trying while it has made fewer than `minTries` tries or is
- * still inside `budgetMs`, and never more than `maxTries`: a slow,
- * loaded machine gets time, not just a count, and it still ends.
+ * still inside `budgetMs`, and never more than `maxTries`: a slow, loaded
+ * machine gets time, not just a count, and it still ends. Past `minTries`,
+ * each backoff sleep is clamped to what's left of the budget, so a failing
+ * append gives up after the longer of its first `minTries` tries and
+ * `budgetMs` plus one more try.
  */
 export interface RetryOptions {
 	minTries: number;
 	budgetMs: number;
 	maxTries: number;
+	/** Test hooks: the clock and the backoff sleep. */
+	now: () => number;
+	sleep: (ms: number) => Promise<void>;
 }
 const RETRY_DEFAULTS: RetryOptions = {
 	minTries: 5,
 	budgetMs: 5_000,
 	maxTries: 50,
+	now: () => performance.now(),
+	sleep,
 };
 /** Backoff stops doubling after this many tries. */
 const MAX_BACKOFF_EXPONENT = 6;
@@ -174,11 +182,12 @@ export class RefStore {
 	): Promise<string> {
 		checkRef(ref);
 		let lastError: unknown;
-		const begun = performance.now();
+		const { minTries, budgetMs, maxTries, now, sleep: wait } = this.#retry;
+		const begun = now();
 		let attempt = 0;
 		for (;;) {
 			attempt++;
-			const started = performance.now();
+			const started = now();
 			const tip = await this.tip(ref);
 			const oid = await this.commit(tip, summary, [event], author);
 			try {
@@ -187,15 +196,19 @@ export class RefStore {
 			} catch (error) {
 				if (!(error instanceof RefConflictError)) throw error;
 				lastError = error;
-				const { minTries, budgetMs, maxTries } = this.#retry;
-				const inBudget =
-					attempt < minTries || performance.now() - begun < budgetMs;
+				const elapsed = now() - begun;
+				const inBudget = attempt < minTries || elapsed < budgetMs;
 				if (!inBudget || attempt >= maxTries) break;
 				// Randomized exponential backoff, scaled to how long a try takes,
 				// spreads out writers that keep colliding.
-				const tryMs = performance.now() - started;
+				const tryMs = now() - started;
 				const exponent = Math.min(attempt, MAX_BACKOFF_EXPONENT);
-				await sleep(Math.random() * tryMs * 2 ** exponent);
+				let backoff = Math.random() * tryMs * 2 ** exponent;
+				// Past the minimum, never sleep beyond the budget.
+				if (attempt >= minTries) {
+					backoff = Math.min(backoff, Math.max(0, budgetMs - elapsed));
+				}
+				await wait(backoff);
 			}
 		}
 		throw new RefConflictError(

@@ -34,6 +34,7 @@ function file(
 		deletions: 1,
 		clusters,
 		done: states.every((s) => s !== "unreviewed"),
+		reviewed: states.every((s) => s === "reviewed"),
 		crossedOff: states.every((s) => s === "crossed-off"),
 	};
 }

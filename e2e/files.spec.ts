@@ -165,7 +165,7 @@ test("crossing off keeps reviewed clusters, and undoing leaves clusters unreview
 	await chooseUnit(page, "Files");
 	await expect(bar).toContainText("0 / 2 files reviewed");
 	await expect(bar).toHaveAttribute("aria-valuenow", "0");
-	await expect(fileProgress(section)).toContainText("crossed off");
+	await expect(fileProgress(section)).toContainText("done · 1 crossed off");
 	await chooseUnit(page, "Clusters");
 
 	// Undo through the cluster's box: unreviewed, not reviewed.

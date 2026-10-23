@@ -59,7 +59,7 @@ describe("ProgressBar", () => {
 		expect(onUnitChange).toHaveBeenCalledWith("files");
 	});
 
-	it("shows 100% when everything is crossed off", () => {
+	it("says nothing is left to review when everything is crossed off", () => {
 		render(
 			<ProgressBar
 				progress={{
@@ -71,9 +71,14 @@ describe("ProgressBar", () => {
 				onUnitChange={() => {}}
 			/>,
 		);
-		expect(
-			screen.getByRole("progressbar", { name: "Review progress" }),
-		).toHaveAttribute("aria-valuenow", "100");
+		const bar = screen.getByRole("progressbar", { name: "Review progress" });
+		expect(bar).toHaveAttribute("aria-valuenow", "100");
+		expect(bar).toHaveTextContent("Nothing left to review");
+		expect(bar).not.toHaveTextContent("100%");
+		expect(bar).toHaveAttribute(
+			"aria-valuetext",
+			"Nothing left to review: 2 clusters crossed off, 0 reviewed",
+		);
 	});
 
 	it("says when clusters without changed lines are left", () => {

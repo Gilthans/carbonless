@@ -92,8 +92,9 @@ function FileProgress({ file, unit }: { file: FileView; unit: Unit }) {
 		? `, ${p.clustersLeft} ${p.clustersLeft === 1 ? "cluster" : "clusters"} without changed lines left`
 		: "";
 	const sentence =
-		p.status ??
-		`${counts.reviewed} of ${counts.total - counts.crossedOff} ${word} reviewed${crossed}${left}`;
+		p.status !== null
+			? formatFileProgress(p, unit)
+			: `${counts.reviewed} of ${counts.total - counts.crossedOff} ${word} reviewed${crossed}${left}`;
 	return (
 		<div
 			role="progressbar"

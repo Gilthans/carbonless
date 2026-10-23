@@ -73,7 +73,13 @@ export function buildReviewView(
 		if (allReviewed) files.reviewed++;
 		else if (done) files.crossedOff++;
 		const { clusters: _, ...summary } = file;
-		return { ...summary, clusters: views, done, crossedOff };
+		return {
+			...summary,
+			clusters: views,
+			done,
+			reviewed: allReviewed,
+			crossedOff,
+		};
 	});
 
 	return {

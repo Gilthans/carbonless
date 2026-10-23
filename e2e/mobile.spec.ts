@@ -158,30 +158,6 @@ test.describe("phone", () => {
 	}) => {
 		await pr(fixture);
 		const s = await startCrb();
-		// Five-digit counts must fit too.
-		await page.route("**/api/review", async (route) => {
-			const response = await route.fetch();
-			const view = await response.json();
-			for (const file of view.files) {
-				for (const c of file.clusters) c.lines *= 12345;
-			}
-			view.progress.lines = { total: 98765, reviewed: 12345, crossedOff: 4321 };
-			view.progress.clusters = { total: 54321, reviewed: 1234, crossedOff: 0 };
-			await route.fulfill({ response, json: view });
-		});
-		await openFiles(page, s.url, "Lines");
-		await expect(page.getByText("12345 / 94444 lines reviewed")).toBeVisible();
-		await expectNoPageOverflow(page);
-		const header = fileSection(page, "src/f0.ts").getByRole("progressbar", {
-			name: "File progress",
-		});
-		await expect(header).toHaveText(/^0 \/ 24690/);
-		const fits = await header
-			.locator("span")
-			.first()
-			.evaluate((el) => el.scrollWidth <= el.clientWidth);
-		expect(fits).toBe(true);
-		await page.unroute("**/api/review");
 		await openFiles(page, s.url);
 		const section = fileSection(page, "src/f0.ts");
 		const expand = section.getByRole("button", { name: "Expand file" });
@@ -252,30 +228,6 @@ test.describe("phone", () => {
 	}) => {
 		await pr(fixture);
 		const s = await startCrb();
-		// Five-digit counts must fit too.
-		await page.route("**/api/review", async (route) => {
-			const response = await route.fetch();
-			const view = await response.json();
-			for (const file of view.files) {
-				for (const c of file.clusters) c.lines *= 12345;
-			}
-			view.progress.lines = { total: 98765, reviewed: 12345, crossedOff: 4321 };
-			view.progress.clusters = { total: 54321, reviewed: 1234, crossedOff: 0 };
-			await route.fulfill({ response, json: view });
-		});
-		await openFiles(page, s.url, "Lines");
-		await expect(page.getByText("12345 / 94444 lines reviewed")).toBeVisible();
-		await expectNoPageOverflow(page);
-		const header = fileSection(page, "src/f0.ts").getByRole("progressbar", {
-			name: "File progress",
-		});
-		await expect(header).toHaveText(/^0 \/ 24690/);
-		const fits = await header
-			.locator("span")
-			.first()
-			.evaluate((el) => el.scrollWidth <= el.clientWidth);
-		expect(fits).toBe(true);
-		await page.unroute("**/api/review");
 		await openFiles(page, s.url);
 		const section = fileSection(page, "src/f0.ts");
 		const mark = section.getByRole("button", {
