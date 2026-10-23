@@ -17,6 +17,8 @@ export interface Scenario {
 	nameWithOwner?: string;
 	/** Every `gh` call fails as if no account were logged in. */
 	loggedOut?: boolean;
+	/** `gh repo clone` fails with this as git's last stderr line. */
+	cloneError?: string;
 	/** Nodes per GraphQL page (default 100, like gh.ts asks for). */
 	pageSize?: number;
 	prs: Record<

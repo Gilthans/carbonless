@@ -1,5 +1,16 @@
-import { mkdir, open, rename, rm, stat } from "node:fs/promises";
-import { homedir } from "node:os";
+import { randomUUID } from "node:crypto";
+import {
+	type FileHandle,
+	link,
+	mkdir,
+	open,
+	readFile,
+	rename,
+	rm,
+	stat,
+	utimes,
+} from "node:fs/promises";
+import { homedir, hostname } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import { GhError } from "./errors.js";
 import type { PrMeta } from "./gh.js";
@@ -33,39 +44,89 @@ export function clonePath(owner: string, repo: string): string {
 	);
 }
 
-const LOCK_RETRY_MS = 100;
-const LOCK_TIMEOUT_MS = 120_000;
-const LOCK_STALE_MS = 10 * 60_000;
-
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+export interface LockOptions {
+	/** How long to wait for another holder before giving up. */
+	timeoutMs?: number;
+	/** A lock whose mtime is older than this belongs to a hung or dead holder. */
+	staleMs?: number;
+	/** How often the holder refreshes the lock's mtime. */
+	heartbeatMs?: number;
+}
+
+const LOCK_DEFAULTS = {
+	timeoutMs: 120_000,
+	staleMs: 10 * 60_000,
+	heartbeatMs: 30_000,
+};
+
+const readLock = (lock: string) =>
+	readFile(lock, "utf8").then(
+		(text) => text,
+		() => undefined,
+	);
+
+/** Lock content is `<host> <pid> <token>`; older or foreign content has no pid. */
+function deadHolder(content: string): boolean {
+	const [host, pid] = content.trim().split(" ");
+	if (host !== hostname() || !pid || !/^\d+$/.test(pid)) return false;
+	try {
+		process.kill(Number(pid), 0);
+		return false;
+	} catch (error) {
+		return (error as NodeJS.ErrnoException).code === "ESRCH";
+	}
+}
+
+/**
+ * Removes `lock` only if it still holds `content`. The lock is first renamed
+ * aside, so two waiters that both judged the same lock stale can't remove a
+ * fresh lock the other one has just taken; a wrongly moved lock is put back.
+ */
+async function removeIfUnchanged(lock: string, content: string) {
+	const aside = `${lock}.${randomUUID()}`;
+	try {
+		await rename(lock, aside);
+	} catch {
+		return;
+	}
+	if ((await readLock(aside)) !== content) {
+		await link(aside, lock).catch(() => {});
+	}
+	await rm(aside, { force: true });
+}
 
 /**
  * Runs `fn` while holding `<path>.lock`, so concurrent crb processes never
- * clone or fetch into the same repository at once.
+ * clone or fetch into the same repository at once. The holder refreshes the
+ * lock's mtime while `fn` runs; a lock is stale when that stopped long ago or
+ * when its process on this host is gone (Ctrl-C, crash).
  */
 export async function withRepoLock<T>(
 	path: string,
 	fn: () => Promise<T>,
+	options: LockOptions = {},
 ): Promise<T> {
+	const { timeoutMs, staleMs, heartbeatMs } = { ...LOCK_DEFAULTS, ...options };
 	const lock = `${path}.lock`;
+	const mine = `${hostname()} ${process.pid} ${randomUUID()}\n`;
 	await mkdir(dirname(lock), { recursive: true });
-	const deadline = Date.now() + LOCK_TIMEOUT_MS;
+	const deadline = Date.now() + timeoutMs;
 	for (;;) {
-		try {
-			const handle = await open(lock, "wx");
-			await handle.writeFile(`${process.pid}\n`);
-			await handle.close();
-			break;
-		} catch (error) {
-			if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-		}
-		const age = await stat(lock).then(
-			(s) => Date.now() - s.mtimeMs,
-			() => 0,
-		);
-		if (age > LOCK_STALE_MS) {
-			// A crashed holder; nobody legitimately holds a lock this long.
-			await rm(lock, { force: true });
+		if (await tryCreate(lock, mine)) break;
+		const [content, mtime] = await Promise.all([
+			readLock(lock),
+			stat(lock).then(
+				(s) => s.mtimeMs,
+				() => Date.now(),
+			),
+		]);
+		if (
+			content !== undefined &&
+			(Date.now() - mtime > staleMs || deadHolder(content))
+		) {
+			await removeIfUnchanged(lock, content);
 			continue;
 		}
 		if (Date.now() >= deadline) {
@@ -73,13 +134,41 @@ export async function withRepoLock<T>(
 				`Timed out waiting for ${lock}. If no other crb is running, delete it.`,
 			);
 		}
-		await sleep(LOCK_RETRY_MS);
+		await sleep(100);
 	}
+	const heartbeat = setInterval(() => {
+		const now = new Date();
+		readLock(lock).then((c) => {
+			if (c === mine) utimes(lock, now, now).catch(() => {});
+		});
+	}, heartbeatMs);
+	heartbeat.unref();
 	try {
 		return await fn();
 	} finally {
-		await rm(lock, { force: true });
+		clearInterval(heartbeat);
+		if ((await readLock(lock)) === mine) await rm(lock, { force: true });
 	}
+}
+
+/** Creates `lock` with `content`; false if someone else holds it. */
+async function tryCreate(lock: string, content: string): Promise<boolean> {
+	let handle: FileHandle;
+	try {
+		handle = await open(lock, "wx");
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "EEXIST") return false;
+		throw error;
+	}
+	try {
+		await handle.writeFile(content);
+	} catch (error) {
+		await rm(lock, { force: true });
+		throw error;
+	} finally {
+		await handle.close();
+	}
+	return true;
 }
 
 const exists = (path: string) =>
@@ -95,7 +184,11 @@ export async function ensureClone(
 ): Promise<string> {
 	const path = clonePath(owner, repo);
 	await withRepoLock(path, async () => {
-		if (await exists(path)) return;
+		if (await exists(path)) {
+			// Clones made before auto gc was turned off.
+			await disableAutoGc(path);
+			return;
+		}
 		// Clone next to the target and rename on success, so a crash mid-clone
 		// never leaves something at `path` that looks like a complete clone.
 		// Only the lock holder touches `.partial`, so a leftover is safe to wipe.
@@ -103,19 +196,39 @@ export async function ensureClone(
 		await rm(partial, { recursive: true, force: true });
 		try {
 			await runGh(
-				["repo", "clone", `${owner}/${repo}`, partial, "--", "--bare"],
+				[
+					"repo",
+					"clone",
+					`${owner}/${repo}`,
+					partial,
+					"--",
+					"--bare",
+					"--quiet",
+				],
 				{
 					cwd: dirname(path),
 					// gh runs git; GIT_DIR and friends must not redirect the clone.
 					env: inheritedEnv(),
 				},
 			);
+			await disableAutoGc(partial);
 			await rename(partial, path);
 		} finally {
 			await rm(partial, { recursive: true, force: true });
 		}
 	});
 	return path;
+}
+
+/**
+ * PR heads are used by OID without a local ref (docs/review-data-storage.md),
+ * so the `gc --auto` that a fetch can trigger must never prune them.
+ */
+async function disableAutoGc(path: string) {
+	const current = await runGit(path, ["config", "--get", "gc.auto"], {
+		allowFailure: true,
+	});
+	if (current.trim() !== "0") await runGit(path, ["config", "gc.auto", "0"]);
 }
 
 /** Makes `git fetch` authenticate with the reviewer's `gh` login. */
@@ -157,8 +270,7 @@ export async function fetchPr(
 				"--no-tags",
 				"origin",
 				`+refs/heads/${base}:${baseRef}`,
-				// Kept under GitHub's own name so later reads and gc keep the head.
-				`+refs/pull/${meta.number}/head:refs/pull/${meta.number}/head`,
+				`refs/pull/${meta.number}/head`,
 			],
 			{ env: { GIT_TERMINAL_PROMPT: "0" } },
 		);

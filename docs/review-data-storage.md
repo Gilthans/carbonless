@@ -129,9 +129,9 @@ refs/crb/lookup/<source>/<key-hash>                               lookup: source
 - **No PR head refs.** `refs/crb/` is the tool's only namespace. PR heads are
   fetched when needed (`git fetch <remote> refs/pull/<n>/head`) and used by OID,
   without keeping a local ref. This replaces the parity spec's
-  `refs/carbonless/pr/<n>/head`. Unreferenced objects stay safe from `git gc`
-  for its grace period (two weeks by default), which is plenty for a fetch
-  that's redone on every open.
+  `refs/carbonless/pr/<n>/head`. The private clone sets `gc.auto=0`, so the
+  `gc --auto` a fetch may trigger never prunes an unreferenced head, and the
+  fetch is redone on every open anyway.
 
 Ref name limits with the default loose-file ref storage (tested on Linux): about
 250 bytes per path component (git adds `.lock` to the filename while writing),

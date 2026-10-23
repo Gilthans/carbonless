@@ -90,7 +90,15 @@ function spawnGh(
 const LOGGED_OUT =
 	/not logged in|not logged into|gh auth login|no oauth token|authentication failed|bad credentials|token .*(invalid|expired)/i;
 
-const firstLine = (text: string) => text.split("\n")[0]?.trim() ?? "";
+/**
+ * The line that names the problem: git (run by gh) prints progress first and
+ * its `fatal:`/`error:` line last; otherwise gh's own first line.
+ */
+function problemLine(text: string): string {
+	const lines = text.split("\n").map((line) => line.trim());
+	const fatal = lines.filter((line) => /^(fatal|error):/.test(line)).at(-1);
+	return fatal ?? lines[0] ?? "";
+}
 
 export async function runGh(
 	args: string[],
@@ -113,7 +121,7 @@ export async function runGh(
 		}
 	}
 	throw new GhError(
-		firstLine(result.stderr) || `gh exited with code ${result.code}`,
+		problemLine(result.stderr) || `gh exited with code ${result.code}`,
 	);
 }
 

@@ -77,8 +77,12 @@ switch (cmd) {
 		print({ nameWithOwner: s.nameWithOwner });
 		break;
 	case "repo clone": {
-		const [, , , path, dashes, bare, ...extra] = args;
-		if (dashes !== "--" || bare !== "--bare" || extra.length) unsupported();
+		const [, , , path, ...flags] = args;
+		if (flags.join(" ") !== "-- --bare --quiet") unsupported();
+		// Like a real clone failing: git's progress line, then its fatal line.
+		if (s.cloneError) {
+			fail(`Cloning into bare repository '${path}'...\n${s.cloneError}`, 128);
+		}
 		try {
 			execFileSync("git", ["clone", "--quiet", "--bare", s.repoPath, path], {
 				stdio: ["ignore", "ignore", "pipe"],

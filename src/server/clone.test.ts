@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import {
 	existsSync,
 	mkdirSync,
@@ -9,7 +9,7 @@ import {
 	utimesSync,
 	writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
+import { hostname, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
@@ -19,7 +19,7 @@ import {
 } from "../../test/fake-gh/scenario";
 import { createGitFixture, type GitFixture } from "../../test/git-fixture";
 import { clonePath, ensureClone, fetchPr, withRepoLock } from "./clone";
-import type { PrMeta } from "./gh";
+import { GhError, type PrMeta } from "./gh";
 
 const git = (cwd: string, ...args: string[]) =>
 	execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
@@ -142,7 +142,7 @@ describe("private clone", () => {
 		expect(statSync(join(path, "HEAD")).ino).toBe(inode);
 		expect(ghLog().match(/^repo clone /gm)).toHaveLength(1);
 		expect(ghLog()).toContain(
-			`repo clone Acme/Widget ${path}.partial -- --bare`,
+			`repo clone Acme/Widget ${path}.partial -- --bare --quiet`,
 		);
 		expect(existsSync(`${path}.partial`)).toBe(false);
 		expect(existsSync(`${path}.lock`)).toBe(false);
@@ -190,7 +190,31 @@ describe("private clone", () => {
 		expect(git(path, "rev-parse", "refs/remotes/origin/release/v1")).toBe(
 			shas.branchPoint,
 		);
-		expect(git(path, "rev-parse", "refs/pull/7/head")).toBe(shas.head);
+		// The head is used by OID only; refs/crb/ is carbonless's own namespace.
+		const refs = git(path, "for-each-ref", "--format=%(refname)").split("\n");
+		expect(refs.filter((r) => !/^refs\/(heads|remotes|crb)\//.test(r))).toEqual(
+			[],
+		);
+		expect(git(path, "config", "--get", "gc.auto")).toBe("0");
+	});
+
+	it("turns off auto gc in clones made before it was", async () => {
+		const path = await ensureClone("acme", "widget");
+		git(path, "config", "--unset", "gc.auto");
+		await ensureClone("acme", "widget");
+		expect(git(path, "config", "--get", "gc.auto")).toBe("0");
+	});
+
+	it("reports git's fatal line when cloning fails", async () => {
+		scenario({
+			cloneError:
+				"fatal: unable to access 'https://github.com/acme/widget/': Could not resolve host: github.com",
+		});
+		await expect(ensureClone("acme", "widget")).rejects.toThrow(
+			new GhError(
+				"fatal: unable to access 'https://github.com/acme/widget/': Could not resolve host: github.com",
+			),
+		);
 	});
 
 	it("works when the base branch moved after the PR branched", async () => {
@@ -292,10 +316,46 @@ describe("withRepoLock", () => {
 		expect(Date.now() - started).toBeLessThan(1000);
 	});
 
+	it("takes a fresh lock at once when its process is gone", async () => {
+		const path = join(tmp, "repo.git");
+		const dead = spawnSync(process.execPath, ["-e", ""]).pid;
+		writeFileSync(`${path}.lock`, `${hostname()} ${dead} token\n`);
+		const started = Date.now();
+		await withRepoLock(path, async () => {});
+		expect(Date.now() - started).toBeLessThan(1000);
+	});
+
+	it("keeps a long-running holder's lock fresh", async () => {
+		const path = join(tmp, "repo.git");
+		const order: string[] = [];
+		const opts = { staleMs: 300, heartbeatMs: 50 };
+		const slow = withRepoLock(
+			path,
+			async () => {
+				order.push("slow+");
+				await new Promise((r) => setTimeout(r, 1000));
+				order.push("slow-");
+			},
+			opts,
+		);
+		await new Promise((r) => setTimeout(r, 50));
+		await withRepoLock(path, async () => order.push("next"), opts);
+		await slow;
+		expect(order).toEqual(["slow+", "slow-", "next"]);
+	});
+
+	it("does not release a lock that is no longer its own", async () => {
+		const path = join(tmp, "repo.git");
+		await withRepoLock(path, async () => {
+			writeFileSync(`${path}.lock`, "otherhost 1 theirs\n");
+		});
+		expect(readFileSync(`${path}.lock`, "utf8")).toBe("otherhost 1 theirs\n");
+	});
+
 	it("waits for a fresh lock held by someone else", async () => {
 		const path = join(tmp, "repo.git");
 		mkdirSync(dirname(path), { recursive: true });
-		writeFileSync(`${path}.lock`, "12345\n");
+		writeFileSync(`${path}.lock`, `${hostname()} ${process.pid} live\n`);
 		setTimeout(() => rmSync(`${path}.lock`), 300);
 		const started = Date.now();
 		await withRepoLock(path, async () => {});

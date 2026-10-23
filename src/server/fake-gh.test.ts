@@ -159,6 +159,7 @@ describe("fake gh", () => {
 			join(tmp, "c.git"),
 			"--",
 			"--bare",
+			"--quiet",
 		]);
 		expect(
 			execFileSync(
