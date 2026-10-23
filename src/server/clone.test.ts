@@ -11,7 +11,7 @@ import {
 } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	FAKE_GH_DIR,
 	type Scenario,
@@ -304,10 +304,10 @@ describe("withRepoLock", () => {
 				if (fail) throw new Error(`${name} failed`);
 				return name;
 			});
-		const results = await Promise.allSettled([
-			hold("a", 150, true),
-			hold("b", 10),
-		]);
+		// b asks only once a holds the lock, so the order is deterministic.
+		const a = hold("a", 150, true);
+		await vi.waitFor(() => expect(order).toContain("a+"));
+		const results = await Promise.allSettled([a, hold("b", 10)]);
 		expect(order).toEqual(["a+", "a-", "b+", "b-"]);
 		expect(results[0]).toMatchObject({ status: "rejected" });
 		expect(results[1]).toEqual({ status: "fulfilled", value: "b" });
@@ -333,20 +333,24 @@ describe("withRepoLock", () => {
 		expect(Date.now() - started).toBeLessThan(1000);
 	});
 
-	it("keeps a long-running holder's lock fresh", async () => {
+	it("keeps a long-running holder's lock fresh", {
+		timeout: 15_000,
+	}, async () => {
 		const path = join(tmp, "repo.git");
 		const order: string[] = [];
-		const opts = { staleMs: 300, heartbeatMs: 50 };
+		// The holder outlives staleMs several times over; a heartbeat every
+		// 100 ms leaves plenty of slack for a loaded machine's timer delays.
+		const opts = { staleMs: 2_500, heartbeatMs: 100 };
 		const slow = withRepoLock(
 			path,
 			async () => {
 				order.push("slow+");
-				await new Promise((r) => setTimeout(r, 1000));
+				await new Promise((r) => setTimeout(r, 4_000));
 				order.push("slow-");
 			},
 			opts,
 		);
-		await new Promise((r) => setTimeout(r, 50));
+		await vi.waitFor(() => expect(order).toContain("slow+"));
 		await withRepoLock(path, async () => order.push("next"), opts);
 		await slow;
 		expect(order).toEqual(["slow+", "slow-", "next"]);

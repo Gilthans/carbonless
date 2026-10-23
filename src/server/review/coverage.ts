@@ -64,10 +64,14 @@ export function buildReviewView(
 		const any = views.length > 0;
 		const done = any && views.every((c) => c.state !== "unreviewed");
 		const crossedOff = any && views.every((c) => c.state === "crossed-off");
+		// A file counts reviewed only when every cluster is reviewed; a done file
+		// with any crossed-off cluster counts as crossed off (out of the work
+		// left), so crossing off never raises reviewed.
+		const allReviewed = any && views.every((c) => c.state === "reviewed");
 		files.total++;
 		if (done) files.done++;
-		if (crossedOff) files.crossedOff++;
-		else if (done) files.reviewed++;
+		if (allReviewed) files.reviewed++;
+		else if (done) files.crossedOff++;
 		const { clusters: _, ...summary } = file;
 		return { ...summary, clusters: views, done, crossedOff };
 	});

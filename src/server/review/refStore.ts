@@ -7,8 +7,24 @@ import {
 	validateForWrite,
 } from "./events.js";
 
-/** Tries per append; each lost race re-reads the tip (see appendEvent). */
-const MAX_TRIES = 5;
+/**
+ * Retry budget per append; each lost race re-reads the tip (see appendEvent).
+ * An append keeps trying while it has made fewer than `minTries` tries or is
+ * still inside `budgetMs`, and never more than `maxTries`: a slow,
+ * loaded machine gets time, not just a count, and it still ends.
+ */
+export interface RetryOptions {
+	minTries: number;
+	budgetMs: number;
+	maxTries: number;
+}
+const RETRY_DEFAULTS: RetryOptions = {
+	minTries: 5,
+	budgetMs: 5_000,
+	maxTries: 50,
+};
+/** Backoff stops doubling after this many tries. */
+const MAX_BACKOFF_EXPONENT = 6;
 
 /** Parsed event lists kept in memory (see readEvents). */
 const MAX_CACHED = 64;
@@ -44,7 +60,14 @@ export class RefStore {
 	 */
 	#events = new Map<string, readonly CrbEvent[]>();
 
-	constructor(readonly repo: string) {}
+	readonly #retry: RetryOptions;
+
+	constructor(
+		readonly repo: string,
+		retry: Partial<RetryOptions> = {},
+	) {
+		this.#retry = { ...RETRY_DEFAULTS, ...retry };
+	}
 
 	/** The empty tree's OID (SHA-1 or SHA-256, whatever the repo uses). */
 	emptyTree(): Promise<string> {
@@ -151,7 +174,10 @@ export class RefStore {
 	): Promise<string> {
 		checkRef(ref);
 		let lastError: unknown;
-		for (let attempt = 1; attempt <= MAX_TRIES; attempt++) {
+		const begun = performance.now();
+		let attempt = 0;
+		for (;;) {
+			attempt++;
 			const started = performance.now();
 			const tip = await this.tip(ref);
 			const oid = await this.commit(tip, summary, [event], author);
@@ -161,15 +187,19 @@ export class RefStore {
 			} catch (error) {
 				if (!(error instanceof RefConflictError)) throw error;
 				lastError = error;
-				if (attempt === MAX_TRIES) break;
+				const { minTries, budgetMs, maxTries } = this.#retry;
+				const inBudget =
+					attempt < minTries || performance.now() - begun < budgetMs;
+				if (!inBudget || attempt >= maxTries) break;
 				// Randomized exponential backoff, scaled to how long a try takes,
 				// spreads out writers that keep colliding.
 				const tryMs = performance.now() - started;
-				await sleep(Math.random() * tryMs * 2 ** attempt);
+				const exponent = Math.min(attempt, MAX_BACKOFF_EXPONENT);
+				await sleep(Math.random() * tryMs * 2 ** exponent);
 			}
 		}
 		throw new RefConflictError(
-			`Could not append to ${ref} after ${MAX_TRIES} tries: ${String(lastError)}`,
+			`Could not append to ${ref} after ${attempt} tries: ${String(lastError)}`,
 		);
 	}
 

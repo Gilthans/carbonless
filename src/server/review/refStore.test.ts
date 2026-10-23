@@ -160,20 +160,28 @@ describe("RefStore", () => {
 		expect(await runGit(repo, ["rev-list", "--merges", ref])).toBe("");
 	});
 
-	it("gives up after 5 tries", async () => {
+	it.each([
+		["at least 5 tries", { budgetMs: 0 }, 5],
+		[
+			"the try cap, even inside the time budget",
+			{ budgetMs: 60_000, maxTries: 8 },
+			8,
+		],
+	])("gives up after %s", async (_, retry, tries) => {
+		const mine = new RefStore(repo, retry);
 		const other = new RefStore(repo);
-		const original = store.commit.bind(store);
+		const original = mine.commit.bind(mine);
 		let n = 0;
-		vi.spyOn(store, "commit").mockImplementation(async (...args) => {
+		vi.spyOn(mine, "commit").mockImplementation(async (...args) => {
 			const oid = await original(...args);
 			await other.appendEvent(ref, "other", evN(++n), "dan");
 			return oid;
 		});
 		await expect(
-			store.appendEvent(ref, "mine", ev, "dan"),
+			mine.appendEvent(ref, "mine", ev, "dan"),
 		).rejects.toBeInstanceOf(RefConflictError);
-		expect(store.commit).toHaveBeenCalledTimes(5);
-		expect((await store.readEvents(ref)).map((e) => e.id)).not.toContain(ev.id);
+		expect(mine.commit).toHaveBeenCalledTimes(tries);
+		expect((await mine.readEvents(ref)).map((e) => e.id)).not.toContain(ev.id);
 	});
 
 	it("refuses to write cluster-state by ai", async () => {

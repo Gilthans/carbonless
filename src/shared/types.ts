@@ -95,7 +95,10 @@ export interface Counts {
 export interface Progress {
 	clusters: Counts;
 	lines: Counts;
-	/** `reviewed`: done files that aren't entirely crossed off. */
+	/**
+	 * `reviewed`: files whose clusters are all reviewed. `crossedOff`: done
+	 * files with at least one crossed-off cluster. `done`: both together.
+	 */
 	files: Counts & { done: number };
 }
 

@@ -112,7 +112,9 @@ Shown first. Read-only. Data from `gh` (`gh pr view --json …` and `gh api grap
 
 > Revised by `2026-10-24-files-view-ux-and-mobile.md`: one progress bar with a
 > Lines / Clusters / Files unit selector, no crossed-off legend line, cross off
-> without a reason (per file or per cluster), and mobile layout.
+> without a reason (per file or per cluster), and mobile layout. In files, a
+> file counts as reviewed only when all its clusters are reviewed; a done file
+> with any crossed-off cluster counts as crossed off.
 
 ### Layout
 
