@@ -156,7 +156,7 @@ function WhatItDoes({ pr }: { pr: PrOverview }) {
 					<span>
 						<span className="font-medium text-slate-900">{pr.author}</span>{" "}
 						wants to merge{" "}
-						<code className="rounded bg-slate-100 px-1">
+						<code className="rounded bg-slate-100 px-1 [overflow-wrap:anywhere]">
 							{pr.baseBranch} ← {pr.headBranch}
 						</code>
 					</span>

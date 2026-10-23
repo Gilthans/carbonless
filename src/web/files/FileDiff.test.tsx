@@ -1,12 +1,6 @@
 // @vitest-environment jsdom
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import {
-	cleanup,
-	render,
-	screen,
-	waitFor,
-	within,
-} from "@testing-library/react";
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
@@ -18,6 +12,7 @@ import type {
 } from "../../shared/types";
 import { reviewQuery } from "../api";
 import { FileDiff } from "./FileDiff";
+import type { Unit } from "./unit";
 
 vi.mock("./highlight", () => ({
 	languageFor: () => null,
@@ -105,6 +100,7 @@ function setup(
 	f: FileView,
 	handler: Handler = () => ({ status: 404, body: {} }),
 	fileHunks: FileHunks = hunks,
+	unit: Unit = "clusters",
 ) {
 	const fetchMock = vi.fn(
 		async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -125,7 +121,12 @@ function setup(
 	const onStaleChange = vi.fn();
 	render(
 		<QueryClientProvider client={queryClient}>
-			<FileDiff file={f} revision="r1" onStaleChange={onStaleChange} />
+			<FileDiff
+				file={f}
+				revision="r1"
+				unit={unit}
+				onStaleChange={onStaleChange}
+			/>
 		</QueryClientProvider>,
 	);
 	const posts = () =>
@@ -155,7 +156,9 @@ describe("FileDiff", () => {
 	it("starts collapsed and fetches hunks only on expand", async () => {
 		const { paths, user } = setup(file([cluster("k1")]));
 		expect(screen.getByText("src/a.ts")).toBeInTheDocument();
-		expect(screen.getByText("0 of 1 clusters reviewed")).toBeInTheDocument();
+		expect(
+			screen.getByRole("progressbar", { name: "File progress" }),
+		).toHaveTextContent("0 / 1 clusters");
 		expect(screen.queryByRole("checkbox")).toBeNull();
 		expect(paths()).toEqual([]);
 		await user.click(screen.getByRole("button", { name: "Expand file" }));
@@ -297,32 +300,90 @@ describe("FileDiff", () => {
 		expect(posts()[0]?.body.changes).toHaveLength(1000);
 	});
 
-	it("crosses off a file only with a reason, keeping reviewed clusters", async () => {
+	it("crosses off a file at once, without a reason, keeping reviewed clusters", async () => {
 		const f = file([
 			cluster("k0", { state: "reviewed" }),
 			cluster("k1"),
 			{ ...cluster("r"), kind: "file", label: "Renamed from b.ts", lines: 0 },
 		]);
 		const { posts, user } = setup(f, () => ({ status: 200, body: view(f) }));
-		await user.click(screen.getByRole("button", { name: "Cross off file…" }));
-		const dialog = screen.getByRole("dialog", { name: "Cross off file" });
-		await user.type(within(dialog).getByLabelText("Reason"), "   ");
-		await user.click(within(dialog).getByRole("button", { name: "Cross off" }));
-		expect(
-			await within(dialog).findByText("A reason is required"),
-		).toBeInTheDocument();
-		expect(posts()).toEqual([]);
-		await user.click(
-			within(dialog).getByRole("button", { name: "rename only" }),
-		);
-		await user.click(within(dialog).getByRole("button", { name: "Cross off" }));
+		await user.click(screen.getByRole("button", { name: "Cross off file" }));
+		expect(screen.queryByRole("dialog")).toBeNull();
 		await waitFor(() =>
 			expect(posts()[0]?.body.changes).toEqual([
-				{ key: "k1", state: "crossed-off", reason: "rename only" },
-				{ key: "r", state: "crossed-off", reason: "rename only" },
+				{ key: "k1", state: "crossed-off" },
+				{ key: "r", state: "crossed-off" },
 			]),
 		);
-		await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+	});
+
+	it("crosses off one cluster, and undoes it to unreviewed", async () => {
+		const f = file([cluster("k1")]);
+		const { posts, user } = setup(f, () => ({ status: 200, body: view(f) }));
+		await user.click(screen.getByRole("button", { name: "Expand file" }));
+		const control = await screen.findByRole("button", {
+			name: "Cross off cluster",
+		});
+		expect(control).toHaveAttribute("aria-pressed", "false");
+		await user.click(control);
+		await waitFor(() =>
+			expect(posts()[0]?.body.changes).toEqual([
+				{ key: "k1", state: "crossed-off" },
+			]),
+		);
+		cleanup();
+
+		const crossed = file([cluster("k1", { state: "crossed-off" })]);
+		const second = setup(crossed, () => ({ status: 200, body: view(f) }));
+		await second.user.click(
+			screen.getByRole("button", { name: "Expand file" }),
+		);
+		const pressed = await screen.findByRole("button", {
+			name: "Cross off cluster",
+		});
+		expect(pressed).toHaveAttribute("aria-pressed", "true");
+		expect(screen.getByText("Crossed off")).toBeInTheDocument();
+		await second.user.click(pressed);
+		await waitFor(() =>
+			expect(second.posts()[0]?.body.changes).toEqual([
+				{ key: "k1", state: "unreviewed" },
+			]),
+		);
+	});
+
+	it("can't cross off a reviewed cluster", async () => {
+		setup(file([cluster("k1", { state: "reviewed" })]));
+		await userEvent.click(screen.getByRole("button", { name: "Expand file" }));
+		expect(
+			await screen.findByRole("button", { name: "Cross off cluster" }),
+		).toBeDisabled();
+	});
+
+	it("shows the file's progress in the selected unit", () => {
+		const f = file([
+			cluster("k1", { state: "reviewed", lines: 3 }),
+			cluster("k2", { state: "crossed-off", lines: 2 }),
+			cluster("k3", { lines: 5 }),
+		]);
+		setup(f, undefined, hunks, "lines");
+		const progress = screen.getByRole("progressbar", { name: "File progress" });
+		expect(progress).toHaveTextContent("3 / 8 lines");
+		expect(progress).toHaveAttribute(
+			"aria-valuetext",
+			"3 of 8 lines reviewed, 2 crossed off",
+		);
+		cleanup();
+		setup(f, undefined, hunks, "files");
+		expect(
+			screen.getByRole("progressbar", { name: "File progress" }),
+		).toHaveTextContent("0 / 1");
+	});
+
+	it("puts the full path in a scroll box", () => {
+		setup(file([cluster("k1")], { path: "a/very/long/path/to/the/file.ts" }));
+		const path = screen.getByTestId("file-path");
+		expect(path).toHaveTextContent("a/very/long/path/to/the/file.ts");
+		expect(path).toHaveAttribute("title", "a/very/long/path/to/the/file.ts");
 	});
 
 	it("undoes a cross-off to unreviewed, never reviewed", async () => {

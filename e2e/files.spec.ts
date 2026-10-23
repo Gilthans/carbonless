@@ -1,4 +1,13 @@
 import type { Page } from "@playwright/test";
+import {
+	chooseUnit,
+	fileAction,
+	fileProgress,
+	fileSection,
+	openFiles,
+	progress,
+	withTree,
+} from "./files-ui";
 import { expect, type PrOptions, test } from "./fixtures";
 
 const core = Array.from({ length: 78 }, (_, i) => `core ${i + 1}`);
@@ -39,16 +48,6 @@ const fixture: PrOptions = {
 	],
 };
 
-const fileSection = (page: Page, path: string) =>
-	page.getByRole("region", { name: path });
-
-async function openFiles(page: Page, url: string) {
-	await page.goto(new URL("/files", url).href);
-	await expect(
-		page.getByRole("progressbar", { name: "Clusters" }),
-	).toBeVisible();
-}
-
 async function expand(page: Page, path: string) {
 	const section = fileSection(page, path);
 	await section.getByRole("button", { name: "Expand file" }).click();
@@ -63,8 +62,8 @@ test("checking a cluster updates file and overall progress", async ({
 	await pr(fixture);
 	const s = await startCrb();
 	await openFiles(page, s.url);
-	const clusters = page.getByRole("progressbar", { name: "Clusters" });
-	await expect(clusters).toHaveAttribute("aria-valuenow", "0");
+	const bar = progress(page);
+	await expect(bar).toHaveAttribute("aria-valuenow", "0");
 	const section = await expand(page, "src/core.ts");
 	const boxes = section.getByRole("checkbox", {
 		name: "Mark cluster reviewed",
@@ -72,49 +71,67 @@ test("checking a cluster updates file and overall progress", async ({
 	await expect(boxes).toHaveCount(2);
 	await boxes.first().click();
 	await expect(boxes.first()).toBeChecked();
-	await expect(clusters).toHaveAttribute("aria-valuenow", "25");
-	await expect(clusters).toContainText("1 / 4 reviewed");
-	await expect(page.getByRole("progressbar", { name: "Lines" })).toContainText(
-		"3 / 7 reviewed",
+	await expect(bar).toHaveAttribute("aria-valuenow", "25");
+	await expect(bar).toContainText("1 / 4 clusters reviewed");
+	await expect(fileProgress(section)).toContainText("1 / 2 clusters");
+	await withTree(page, (tree) =>
+		expect(tree.getByRole("button", { name: /core\.ts/ })).toContainText(
+			"1 / 2",
+		),
 	);
-	await expect(section).toContainText("1 of 2 clusters reviewed");
-	await expect(page.getByTestId("file-tree")).toContainText("1/2");
+
+	// Every count follows the unit.
+	await chooseUnit(page, "Lines");
+	await expect(bar).toContainText("3 / 7 lines reviewed");
+	await expect(bar).toHaveAttribute("aria-valuenow", "42");
+	await expect(fileProgress(section)).toContainText("3 / 5 lines");
+	await withTree(page, (tree) =>
+		expect(tree.getByRole("button", { name: /core\.ts/ })).toContainText(
+			"3 / 5",
+		),
+	);
+	await chooseUnit(page, "Files");
+	await expect(bar).toContainText("0 / 3 files reviewed");
+	await expect(fileProgress(section)).toContainText("0 / 1");
+	await chooseUnit(page, "Clusters");
 
 	// Undo, and the state survives a reload.
 	await boxes.first().click();
-	await expect(clusters).toHaveAttribute("aria-valuenow", "0");
+	await expect(bar).toHaveAttribute("aria-valuenow", "0");
 	await boxes.last().click();
-	await expect(clusters).toHaveAttribute("aria-valuenow", "25");
+	await expect(bar).toHaveAttribute("aria-valuenow", "25");
 	await page.reload();
+	await expect(progress(page)).toHaveAttribute("aria-valuenow", "25");
+	// The unit is remembered.
 	await expect(
-		page.getByRole("progressbar", { name: "Clusters" }),
-	).toHaveAttribute("aria-valuenow", "25");
+		page.getByRole("radio", { name: "Clusters", exact: true }),
+	).toBeChecked();
 });
 
-test("cross off a file with a reason", async ({ page, pr, startCrb }) => {
+test("cross off a file without a reason", async ({ page, pr, startCrb }) => {
 	await pr(fixture);
 	const s = await startCrb();
 	await openFiles(page, s.url);
 	const section = fileSection(page, "docs/new.md");
 	await expect(section).toContainText("docs/old.md → docs/new.md");
-	await section.getByRole("button", { name: "Cross off file…" }).click();
-	const dialog = page.getByRole("dialog", { name: "Cross off file" });
-	await dialog.getByRole("button", { name: "rename only" }).click();
-	await dialog.getByRole("button", { name: "Cross off" }).click();
-	await expect(dialog).toBeHidden();
+	await fileAction(section, "Cross off file");
+	await expect(page.getByRole("dialog")).toHaveCount(0);
+	await expect(fileProgress(section)).toContainText("crossed off");
 
-	const entry = page
-		.getByTestId("file-tree")
-		.getByRole("button", { name: /new\.md/ });
-	await expect(entry.locator("s")).toHaveText("new.md");
-	await expect(entry).toContainText("rename only");
-	await expect(entry.getByRole("img", { name: "crossed off" })).toBeVisible();
-	await expect(page.getByText(/^Crossed off, not reviewed:/)).toHaveText(
-		"Crossed off, not reviewed: 1 clusters · 0 lines · 1 files",
-	);
-	const clusters = page.getByRole("progressbar", { name: "Clusters" });
-	await expect(clusters).toHaveAttribute("aria-valuenow", "0");
-	await expect(clusters).toContainText("0 / 3 reviewed");
+	await withTree(page, async (tree) => {
+		const entry = tree.getByRole("button", { name: /new\.md/ });
+		await expect(entry.locator("s")).toHaveText("new.md");
+		await expect(entry.getByRole("img", { name: "crossed off" })).toBeVisible();
+	});
+	await expect(page.getByText(/Crossed off, not reviewed/)).toHaveCount(0);
+	const bar = progress(page);
+	await expect(bar).toHaveAttribute("aria-valuenow", "0");
+	await expect(bar).toContainText("0 / 3 clusters reviewed");
+
+	await section.getByRole("button", { name: "Expand file" }).click();
+	await expect(
+		section.getByRole("checkbox", { name: "Undo cross-off" }),
+	).toHaveAccessibleDescription("Crossed off");
 });
 
 test("crossing off keeps reviewed clusters, and undoing leaves clusters unreviewed", async ({
@@ -125,48 +142,67 @@ test("crossing off keeps reviewed clusters, and undoing leaves clusters unreview
 	await pr(fixture);
 	const s = await startCrb();
 	await openFiles(page, s.url);
-	const clusters = page.getByRole("progressbar", { name: "Clusters" });
+	const bar = progress(page);
 	const section = await expand(page, "src/core.ts");
 	await section
 		.getByRole("checkbox", { name: "Mark cluster reviewed" })
 		.first()
 		.click();
-	await expect(clusters).toContainText("1 / 4 reviewed");
-
-	const crossOff = async () => {
-		await section.getByRole("button", { name: "Cross off file…" }).click();
-		const dialog = page.getByRole("dialog", { name: "Cross off file" });
-		await dialog.getByRole("button", { name: "generated" }).click();
-		await dialog.getByRole("button", { name: "Cross off" }).click();
-		await expect(dialog).toBeHidden();
-	};
+	await expect(bar).toContainText("1 / 4 clusters reviewed");
 
 	// The cluster already read stays reviewed; only the other is crossed off.
-	await crossOff();
-	await expect(section).toContainText(
-		"1 of 2 clusters reviewed · 1 crossed off",
+	await fileAction(section, "Cross off file");
+	await expect(fileProgress(section)).toHaveAttribute(
+		"aria-valuetext",
+		"1 of 1 clusters reviewed, 1 crossed off",
 	);
-	await expect(clusters).toContainText("1 / 3 reviewed");
+	await expect(bar).toContainText("1 / 3 clusters reviewed");
 
 	// Undo through the cluster's box: unreviewed, not reviewed.
 	const undoBox = section.getByRole("checkbox", { name: "Undo cross-off" });
-	await expect(undoBox).toHaveAccessibleDescription("Crossed off: generated");
+	await expect(undoBox).toHaveAccessibleDescription("Crossed off");
 	await undoBox.click();
-	await expect(clusters).toContainText("1 / 4 reviewed");
-	await expect(section).not.toContainText("crossed off");
+	await expect(bar).toContainText("1 / 4 clusters reviewed");
+	await expect(section.getByText("Crossed off")).toHaveCount(0);
 	await expect(
 		section.getByRole("checkbox", { name: "Mark cluster reviewed" }).last(),
 	).not.toBeChecked();
 
 	// Undo for the whole file.
-	await crossOff();
-	await expect(clusters).toContainText("1 / 3 reviewed");
-	await section.getByRole("button", { name: "Undo cross-off" }).click();
-	await expect(clusters).toContainText("1 / 4 reviewed");
-	await expect(clusters).toHaveAttribute("aria-valuenow", "25");
+	await fileAction(section, "Cross off file");
+	await expect(bar).toContainText("1 / 3 clusters reviewed");
+	await fileAction(section, "Undo cross-off");
+	await expect(bar).toContainText("1 / 4 clusters reviewed");
+	await expect(bar).toHaveAttribute("aria-valuenow", "25");
 	await expect(
 		section.getByRole("button", { name: "Undo cross-off" }),
 	).toHaveCount(0);
+});
+
+test("cross off a single cluster, and undo it", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	await pr(fixture);
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	const bar = progress(page);
+	const section = await expand(page, "src/core.ts");
+	const controls = section.getByRole("button", { name: "Cross off cluster" });
+	await expect(controls).toHaveCount(2);
+	await controls.last().click();
+	await expect(controls.last()).toHaveAttribute("aria-pressed", "true");
+	await expect(bar).toContainText("0 / 3 clusters reviewed");
+	await expect(section.getByText("Crossed off", { exact: true })).toBeVisible();
+	await expect(fileProgress(section)).toContainText("0 / 1 clusters");
+
+	await controls.last().click();
+	await expect(controls.last()).toHaveAttribute("aria-pressed", "false");
+	await expect(bar).toContainText("0 / 4 clusters reviewed");
+	await expect(
+		section.getByRole("checkbox", { name: "Mark cluster reviewed" }),
+	).toHaveCount(2);
 });
 
 test("mark remaining reviewed", async ({ page, pr, startCrb }) => {
@@ -174,20 +210,18 @@ test("mark remaining reviewed", async ({ page, pr, startCrb }) => {
 	const s = await startCrb();
 	await openFiles(page, s.url);
 	const section = fileSection(page, "src/core.ts");
-	await section
-		.getByRole("button", { name: "Mark remaining reviewed" })
-		.click();
-	await expect(section).toContainText("2 of 2 clusters reviewed");
-	const entry = page
-		.getByTestId("file-tree")
-		.getByRole("button", { name: /core\.ts/ });
-	await expect(entry).toContainText("2/2");
-	await expect(entry.getByRole("img", { name: "done" })).toBeVisible();
-	await expect(
-		page.getByRole("progressbar", { name: "Clusters" }),
-	).toHaveAttribute("aria-valuenow", "50");
+	await fileAction(section, "Mark remaining reviewed");
+	await expect(fileProgress(section)).toContainText("2 / 2 clusters");
+	await withTree(page, async (tree) => {
+		const entry = tree.getByRole("button", { name: /core\.ts/ });
+		await expect(entry).toContainText("2 / 2");
+		await expect(entry.getByRole("img", { name: "done" })).toBeVisible();
+	});
+	await expect(progress(page)).toHaveAttribute("aria-valuenow", "50");
+	await chooseUnit(page, "Files");
+	await expect(fileProgress(section)).toContainText("done");
+	await expect(progress(page)).toContainText("1 / 3 files reviewed");
 });
-
 test("loading more lines", async ({ page, pr, startCrb }) => {
 	await pr(fixture);
 	const s = await startCrb();
@@ -233,8 +267,8 @@ test("files start collapsed", async ({ page, pr, startCrb }) => {
 	}
 	await expect(page.getByTestId("diff-line")).toHaveCount(0);
 	await expect(page.getByRole("checkbox")).toHaveCount(0);
-	await expect(page.getByTestId("file-tree").getByRole("button")).toHaveCount(
-		3,
+	await withTree(page, (tree) =>
+		expect(tree.getByRole("button")).toHaveCount(3),
 	);
 });
 
@@ -265,8 +299,6 @@ test("a write from a tab on an old snapshot reloads it", async ({
 	await expect(
 		page.getByText("The review moved to a new snapshot; reloaded."),
 	).toBeVisible();
-	await expect(page.getByTestId("file-tree")).toContainText("b.txt");
-	await expect(
-		page.getByRole("progressbar", { name: "Clusters" }),
-	).toContainText("0 / 5 reviewed");
+	await withTree(page, (tree) => expect(tree).toContainText("b.txt"));
+	await expect(progress(page)).toContainText("0 / 5 clusters reviewed");
 });

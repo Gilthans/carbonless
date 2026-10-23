@@ -11,7 +11,7 @@ import { HeadBanner } from "./HeadBanner";
 import { ErrorMessage, safeHref } from "./ui";
 
 const tabClass =
-	"-mb-px border-b-2 border-transparent px-3 py-2 text-sm text-slate-600 hover:text-slate-900 focus-visible:outline-2 focus-visible:outline-blue-600";
+	"-mb-px flex min-h-10 items-center border-b-2 border-transparent px-3 py-2 text-sm text-slate-600 hover:text-slate-900 focus-visible:outline-2 focus-visible:outline-blue-600";
 const activeTabClass = "border-orange-500 font-semibold text-slate-900";
 
 /** Layout: PR header, tabs and the current page. */
@@ -40,16 +40,16 @@ export function App() {
 	return (
 		<div className="min-h-screen bg-white font-sans text-slate-900">
 			<header className="border-b border-slate-200 bg-slate-50">
-				<div className="mx-auto flex max-w-5xl items-start gap-4 px-6 pt-6 pb-3">
+				<div className="mx-auto flex max-w-5xl items-start gap-3 px-4 pt-4 pb-3 sm:gap-4 sm:px-6 sm:pt-6">
 					<div className="min-w-0 flex-1">
 						{session.isPending && <p className="text-slate-500">Loading…</p>}
 						{session.isError && <ErrorMessage error={session.error} />}
 						{pr && (
 							<div className="flex flex-wrap items-baseline gap-x-2">
-								<h1 className="text-2xl font-semibold break-words">
+								<h1 className="text-xl font-semibold break-words sm:text-2xl">
 									{pr.title}
 								</h1>
-								<span className="text-2xl text-slate-500">
+								<span className="text-xl text-slate-500 sm:text-2xl">
 									{prUrl ? (
 										<a
 											href={prUrl}
@@ -66,7 +66,7 @@ export function App() {
 							</div>
 						)}
 						{pr && (
-							<p className="mt-1 text-sm text-slate-600">
+							<p className="mt-1 text-sm break-all text-slate-600">
 								{pr.owner}/{pr.repo}
 							</p>
 						)}
@@ -75,20 +75,20 @@ export function App() {
 						type="button"
 						onClick={() => refresh.mutate()}
 						disabled={refresh.isPending}
-						className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium shadow-sm hover:bg-slate-100 focus-visible:outline-2 focus-visible:outline-blue-600 disabled:opacity-60"
+						className="min-h-10 shrink-0 rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium shadow-sm hover:bg-slate-100 focus-visible:outline-2 focus-visible:outline-blue-600 disabled:opacity-60"
 					>
 						{refresh.isPending ? "Refreshing…" : "Refresh"}
 					</button>
 				</div>
 				{refresh.isError && (
-					<div className="mx-auto max-w-5xl px-6 pb-2">
+					<div className="mx-auto max-w-5xl px-4 pb-2 sm:px-6">
 						<ErrorMessage error={refresh.error} />
 					</div>
 				)}
 				{session.data && <HeadBanner info={session.data} />}
 				<nav
 					aria-label="PR pages"
-					className="mx-auto flex max-w-5xl gap-1 px-6"
+					className="mx-auto flex max-w-5xl gap-1 px-4 sm:px-6"
 				>
 					<Link
 						to="/"
@@ -109,7 +109,7 @@ export function App() {
 			</header>
 			{/* The diff gets the whole window; the overview stays readable. */}
 			<main
-				className={`mx-auto px-6 py-6 ${wide ? "max-w-screen-2xl" : "max-w-5xl"}`}
+				className={`mx-auto px-3 py-4 sm:px-6 sm:py-6 ${wide ? "max-w-screen-2xl" : "max-w-5xl"}`}
 			>
 				<Outlet />
 			</main>

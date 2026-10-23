@@ -49,7 +49,14 @@ describe("FileTree", () => {
 	afterEach(cleanup);
 
 	it("nests files under folders, in snapshot order, with their status", () => {
-		render(<FileTree files={files} current={2} onSelect={() => {}} />);
+		render(
+			<FileTree
+				files={files}
+				unit="clusters"
+				current={2}
+				onSelect={() => {}}
+			/>,
+		);
 		const tree = screen.getByTestId("file-tree");
 		expect(within(tree).getByText("src")).toBeInTheDocument();
 		expect(within(tree).getByText("a/deep")).toBeInTheDocument();
@@ -63,7 +70,7 @@ describe("FileTree", () => {
 			"api",
 		]);
 		const one = within(tree).getByRole("button", { name: /one\.ts/ });
-		expect(one).toHaveTextContent("1/2");
+		expect(one).toHaveTextContent("1 / 2");
 		expect(one).toHaveTextContent("+3");
 		expect(
 			within(one).getByRole("img", { name: "partly done" }),
@@ -83,7 +90,14 @@ describe("FileTree", () => {
 	});
 
 	it("strikes crossed-off files through and tags them with the reason", () => {
-		render(<FileTree files={files} current={null} onSelect={() => {}} />);
+		render(
+			<FileTree
+				files={files}
+				unit="clusters"
+				current={null}
+				onSelect={() => {}}
+			/>,
+		);
 		const gen = screen.getByRole("button", { name: /api\.g\.cs/ });
 		expect(within(gen).getByText("api.g.cs").closest("s")).not.toBeNull();
 		expect(gen).toHaveTextContent("generated");
@@ -92,9 +106,44 @@ describe("FileTree", () => {
 		).toBeInTheDocument();
 	});
 
+	it("counts in the selected unit", () => {
+		const { rerender } = render(
+			<FileTree
+				files={files}
+				unit="lines"
+				current={null}
+				onSelect={() => {}}
+			/>,
+		);
+		const one = () => screen.getByRole("button", { name: /one\.ts/ });
+		expect(one()).toHaveTextContent("2 / 4");
+		rerender(
+			<FileTree
+				files={files}
+				unit="files"
+				current={null}
+				onSelect={() => {}}
+			/>,
+		);
+		expect(one()).toHaveTextContent("0 / 1");
+		expect(screen.getByRole("button", { name: /two\.ts/ })).toHaveTextContent(
+			"done",
+		);
+		expect(
+			screen.getByRole("button", { name: /api\.g\.cs/ }),
+		).toHaveTextContent("crossed off");
+	});
+
 	it("selects a file", async () => {
 		const onSelect = vi.fn();
-		render(<FileTree files={files} current={null} onSelect={onSelect} />);
+		render(
+			<FileTree
+				files={files}
+				unit="clusters"
+				current={null}
+				onSelect={onSelect}
+			/>,
+		);
 		await userEvent.click(screen.getByRole("button", { name: /two\.ts/ }));
 		expect(onSelect).toHaveBeenCalledWith(1);
 	});

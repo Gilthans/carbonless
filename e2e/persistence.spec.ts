@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import type { Page } from "@playwright/test";
 import { testGitEnv } from "../test/git-fixture";
+import { openFiles, progress } from "./files-ui";
 import { expect, OWNER_REPO, type PrOptions, test } from "./fixtures";
 
 const core = Array.from({ length: 78 }, (_, i) => `core ${i + 1}`);
@@ -37,13 +38,7 @@ const fixture: PrOptions = {
 	],
 };
 
-const clusters = (page: Page) =>
-	page.getByRole("progressbar", { name: "Clusters" });
-
-async function openFiles(page: Page, url: string) {
-	await page.goto(new URL("/files", url).href);
-	await expect(clusters(page)).toBeVisible();
-}
+const clusters = progress;
 
 async function checkFirstCluster(page: Page) {
 	await page
@@ -124,7 +119,7 @@ test("opening without checking anything off creates no snapshot", async ({
 	const p = await pr(fixture);
 	const s = await startCrb();
 	await openFiles(page, s.url);
-	await expect(clusters(page)).toContainText("0 / 4 reviewed");
+	await expect(clusters(page)).toContainText("0 / 4 clusters reviewed");
 
 	p.moveHead({
 		message: "later push",
@@ -132,7 +127,7 @@ test("opening without checking anything off creates no snapshot", async ({
 	});
 	await page.getByRole("button", { name: "Refresh" }).click();
 	// The unpinned review follows the new head: five clusters, no banner.
-	await expect(clusters(page)).toContainText("0 / 5 reviewed");
+	await expect(clusters(page)).toContainText("0 / 5 clusters reviewed");
 	await expect(banner(page)).toBeHidden();
 	await expect(
 		page.getByRole("region", { name: "src/extra.ts" }),
@@ -158,7 +153,7 @@ test("a push found by the head poll on an unstarted review asks for a Refresh", 
 	const s = await startCrb();
 	await page.clock.install();
 	await openFiles(page, s.url);
-	await expect(clusters(page)).toContainText("0 / 4 reviewed");
+	await expect(clusters(page)).toContainText("0 / 4 clusters reviewed");
 
 	p.moveHead({
 		message: "later push",
@@ -172,5 +167,5 @@ test("a push found by the head poll on an unstarted review asks for a Refresh", 
 	).toBeVisible();
 	await expect(page.getByText("snapshot from")).toBeHidden();
 	// Nothing changed under the reader.
-	await expect(clusters(page)).toContainText("0 / 4 reviewed");
+	await expect(clusters(page)).toContainText("0 / 4 clusters reviewed");
 });

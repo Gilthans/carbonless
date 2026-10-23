@@ -11,5 +11,10 @@ export default defineConfig({
 	use: {
 		trace: "retain-on-failure",
 	},
-	projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],
+	// The whole suite runs on desktop and on a phone. Pixel 7 is Chromium, so
+	// no other browser needs installing; layout-specific tests skip on `isMobile`.
+	projects: [
+		{ name: "chromium", use: { ...devices["Desktop Chrome"] } },
+		{ name: "phone", use: { ...devices["Pixel 7"] } },
+	],
 });

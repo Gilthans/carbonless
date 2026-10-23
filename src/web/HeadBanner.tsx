@@ -14,7 +14,7 @@ export function HeadBanner({ info }: { info: SessionInfo }) {
 				role="status"
 				className="border-y border-sky-200 bg-sky-50 text-sm text-sky-900"
 			>
-				<p className="mx-auto max-w-5xl px-6 py-2">
+				<p className="mx-auto max-w-5xl px-4 py-2 break-words sm:px-6">
 					New commits were pushed to this PR. Press Refresh to load them.
 				</p>
 			</div>
@@ -26,7 +26,7 @@ export function HeadBanner({ info }: { info: SessionInfo }) {
 			role="status"
 			className="border-y border-amber-200 bg-amber-50 text-sm text-amber-900"
 		>
-			<p className="mx-auto max-w-5xl px-6 py-2">
+			<p className="mx-auto max-w-5xl px-4 py-2 break-words sm:px-6">
 				<span>
 					New commits were pushed to this PR. You're reviewing the snapshot from{" "}
 					{info.snapshotHead.slice(0, 7)}; there's no way to move to the new

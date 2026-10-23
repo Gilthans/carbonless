@@ -1,5 +1,6 @@
 import type { FileView } from "../../shared/types";
-import { AddDel, crossOffReasons, finishedCount, StatusIcon } from "./status";
+import { AddDel, crossOffReasons, StatusIcon } from "./status";
+import { fileUnitProgress, type Unit } from "./unit";
 
 type Node =
 	| { kind: "folder"; folder: Folder }
@@ -61,6 +62,7 @@ const indent = (depth: number) => ({
 
 function FileItem(props: {
 	file: FileView;
+	unit: Unit;
 	depth: number;
 	current: boolean;
 	onSelect: (index: number) => void;
@@ -75,7 +77,7 @@ function FileItem(props: {
 				aria-current={props.current ? "true" : undefined}
 				onClick={() => props.onSelect(file.index)}
 				style={indent(props.depth)}
-				className={`flex w-full items-center gap-1.5 rounded py-0.5 pr-1 text-left text-sm hover:bg-slate-100 focus-visible:outline-2 focus-visible:outline-blue-600 ${
+				className={`flex w-full items-center gap-1.5 rounded py-0.5 pr-1 pointer-coarse:min-h-10 text-left text-sm hover:bg-slate-100 focus-visible:outline-2 focus-visible:outline-blue-600 ${
 					props.current ? "bg-blue-50 font-medium text-blue-900" : ""
 				}`}
 			>
@@ -93,7 +95,7 @@ function FileItem(props: {
 						))}
 				</span>
 				<span className="shrink-0 text-xs text-slate-500 tabular-nums">
-					{finishedCount(file)}/{file.clusters.length}
+					{fileUnitProgress(file, props.unit).text}
 				</span>
 				<AddDel file={file} />
 			</button>
@@ -103,6 +105,7 @@ function FileItem(props: {
 
 function Children(props: {
 	nodes: Node[];
+	unit: Unit;
 	depth: number;
 	current: number | null;
 	onSelect: (index: number) => void;
@@ -114,6 +117,7 @@ function Children(props: {
 					<FileItem
 						key={`f:${node.file.index}`}
 						file={node.file}
+						unit={props.unit}
 						depth={props.depth}
 						current={props.current === node.file.index}
 						onSelect={props.onSelect}
@@ -132,6 +136,7 @@ function Children(props: {
 						</div>
 						<Children
 							nodes={node.folder.children}
+							unit={props.unit}
 							depth={props.depth + 1}
 							current={props.current}
 							onSelect={props.onSelect}
@@ -146,6 +151,7 @@ function Children(props: {
 /** The changed files as a folder tree, in snapshot order, with review status. */
 export function FileTree(props: {
 	files: FileView[];
+	unit: Unit;
 	current: number | null;
 	onSelect: (index: number) => void;
 }) {
@@ -153,6 +159,7 @@ export function FileTree(props: {
 		<nav aria-label="Files" data-testid="file-tree">
 			<Children
 				nodes={buildTree(props.files).children}
+				unit={props.unit}
 				depth={0}
 				current={props.current}
 				onSelect={props.onSelect}

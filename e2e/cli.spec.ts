@@ -79,7 +79,7 @@ test("exits promptly on SIGTERM while a page is open", async ({
 	const s = await startCrb();
 	await page.goto(new URL("/files", s.url).href);
 	await expect(
-		page.getByRole("progressbar", { name: "Clusters" }),
+		page.getByRole("progressbar", { name: "Review progress" }),
 	).toBeVisible();
 	// Browsers also keep preconnected sockets that never send a request.
 	const { hostname, port } = new URL(s.url);

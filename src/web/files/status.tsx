@@ -14,10 +14,6 @@ export function fileProgress(file: FileView): FileProgress {
 		: "not started";
 }
 
-/** Reviewed or crossed off. */
-export const finishedCount = (file: FileView) =>
-	file.clusters.filter((c) => c.state !== "unreviewed").length;
-
 /** The distinct reasons the file's clusters were crossed off with. */
 export function crossOffReasons(file: FileView): string[] {
 	const reasons = file.clusters.flatMap((c) =>

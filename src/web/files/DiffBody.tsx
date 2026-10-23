@@ -84,7 +84,9 @@ function LineRow(props: {
 		<>
 			<tr data-testid="diff-line" className={ROW_BG[line.kind]}>
 				<Rail state={state} />
-				<td className="w-6 px-1 align-top">{props.checkbox}</td>
+				<td className="w-11 px-1 align-top whitespace-nowrap">
+					{props.checkbox}
+				</td>
 				<td
 					data-testid="old"
 					className={`w-12 px-2 text-right align-top select-none ${NUMBER_BG[line.kind]} ${dim}`}
@@ -117,32 +119,52 @@ function LineRow(props: {
 }
 
 /**
- * A cluster's checkbox: checked when reviewed. A crossed-off cluster shows a
- * mixed box named "Undo cross-off" and described by its note; clicking it
- * makes the cluster unreviewed again, never reviewed.
+ * A cluster's controls. The checkbox is checked when reviewed; a crossed-off
+ * cluster shows a mixed box named "Undo cross-off" and described by its note,
+ * and clicking it makes the cluster unreviewed again, never reviewed. Next to
+ * it, a toggle crosses the cluster off or undoes that (to unreviewed); a
+ * reviewed cluster must be unchecked first.
  */
-function ClusterCheckbox(props: {
+function ClusterControls(props: {
 	cluster: ClusterView;
 	noteId?: string;
 	disabled: boolean;
 	onToggle: (cluster: ClusterView) => void;
+	onCrossOff: (cluster: ClusterView) => void;
 }) {
 	const crossedOff = props.cluster.state === "crossed-off";
 	return (
-		<input
-			type="checkbox"
-			aria-label={crossedOff ? "Undo cross-off" : "Mark cluster reviewed"}
-			aria-describedby={crossedOff ? props.noteId : undefined}
-			ref={(box) => {
-				if (box) box.indeterminate = crossedOff;
-			}}
-			checked={props.cluster.state === "reviewed"}
-			disabled={props.disabled}
-			onChange={() => props.onToggle(props.cluster)}
-			className={`mt-0.5 h-3.5 w-3.5 cursor-pointer disabled:cursor-wait ${
-				crossedOff ? "accent-purple-600" : "accent-green-600"
-			}`}
-		/>
+		<span className="inline-flex items-center gap-1">
+			<input
+				type="checkbox"
+				aria-label={crossedOff ? "Undo cross-off" : "Mark cluster reviewed"}
+				aria-describedby={crossedOff ? props.noteId : undefined}
+				ref={(box) => {
+					if (box) box.indeterminate = crossedOff;
+				}}
+				checked={props.cluster.state === "reviewed"}
+				disabled={props.disabled}
+				onChange={() => props.onToggle(props.cluster)}
+				className={`h-3.5 w-3.5 cursor-pointer disabled:cursor-wait ${
+					crossedOff ? "accent-purple-600" : "accent-green-600"
+				}`}
+			/>
+			<button
+				type="button"
+				aria-label="Cross off cluster"
+				aria-pressed={crossedOff}
+				title={crossedOff ? "Undo cross-off" : "Cross off cluster"}
+				disabled={props.disabled || props.cluster.state === "reviewed"}
+				onClick={() => props.onCrossOff(props.cluster)}
+				className={`flex h-4 w-4 items-center justify-center rounded font-sans text-xs leading-none focus-visible:outline-2 focus-visible:outline-blue-600 disabled:cursor-not-allowed disabled:opacity-30 ${
+					crossedOff
+						? "bg-purple-600 text-white"
+						: "text-purple-700 hover:bg-purple-100"
+				}`}
+			>
+				⊘
+			</button>
+		</span>
 	);
 }
 
@@ -153,7 +175,9 @@ function CrossedOffNote(props: { cluster: ClusterView; id?: string }) {
 			id={props.id}
 			className="ml-2 rounded bg-purple-100 px-1 font-sans text-purple-800"
 		>
-			Crossed off: {props.cluster.reason}
+			{props.cluster.reason
+				? `Crossed off: ${props.cluster.reason}`
+				: "Crossed off"}
 		</span>
 	);
 }
@@ -214,6 +238,7 @@ export function DiffBody(props: {
 	revision: string;
 	disabled: boolean;
 	onToggle: (cluster: ClusterView) => void;
+	onCrossOff: (cluster: ClusterView) => void;
 }) {
 	const { file, revision } = props;
 	const hunks = useQuery(hunksQuery(revision, file.index));
@@ -260,11 +285,12 @@ export function DiffBody(props: {
 		);
 
 	const checkbox = (cluster: ClusterView) => (
-		<ClusterCheckbox
+		<ClusterControls
 			cluster={cluster}
 			noteId={noteId(cluster)}
 			disabled={props.disabled}
 			onToggle={props.onToggle}
+			onCrossOff={props.onCrossOff}
 		/>
 	);
 
@@ -346,7 +372,9 @@ export function DiffBody(props: {
 					<tbody key={cluster.key} className="group">
 						<tr className={cluster.state === "reviewed" ? "opacity-60" : ""}>
 							<Rail state={cluster.state} />
-							<td className="w-6 px-1 py-1 align-top">{checkbox(cluster)}</td>
+							<td className="w-11 px-1 py-1 align-top whitespace-nowrap">
+								{checkbox(cluster)}
+							</td>
 							<td colSpan={COLUMNS - 2} className="px-2 py-1 font-sans text-sm">
 								{cluster.label}
 								<CrossedOffNote cluster={cluster} id={noteId(cluster)} />

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { FileView, ReviewView } from "../../shared/types";
@@ -78,7 +78,7 @@ describe("FilesPage", () => {
 			await screen.findByText("This PR changes no files."),
 		).toBeInTheDocument();
 		expect(
-			screen.getByRole("progressbar", { name: "Clusters" }),
+			screen.getByRole("progressbar", { name: "Review progress" }),
 		).toHaveAttribute("aria-valuenow", "100");
 	});
 
@@ -136,5 +136,59 @@ describe("FilesPage", () => {
 				screen.queryByText("The review moved to a new snapshot; reloaded."),
 			).toBeNull(),
 		);
+	});
+
+	it("remembers the unit and counts the file tree in it", async () => {
+		renderPage({
+			"/api/review": () => ({
+				status: 200,
+				body: { ...emptyReview, files: [oneFile] },
+			}),
+		});
+		const user = userEvent.setup();
+		const tree = await screen.findByTestId("file-tree");
+		expect(screen.getByRole("radio", { name: "Lines" })).toBeChecked();
+		expect(tree).toHaveTextContent("0 / 2");
+		await user.click(screen.getByRole("radio", { name: "Files" }));
+		expect(tree).toHaveTextContent("0 / 1");
+		expect(localStorage.getItem("crb.files.unit")).toBe("files");
+		cleanup();
+		renderPage({
+			"/api/review": () => ({
+				status: 200,
+				body: { ...emptyReview, files: [oneFile] },
+			}),
+		});
+		expect(await screen.findByRole("radio", { name: "Files" })).toBeChecked();
+		localStorage.clear();
+	});
+
+	it("on a narrow screen, opens the file tree from a floating button", async () => {
+		vi.stubGlobal(
+			"matchMedia",
+			(query: string) =>
+				({
+					matches: false,
+					media: query,
+					addEventListener: () => {},
+					removeEventListener: () => {},
+				}) as unknown as MediaQueryList,
+		);
+		const scrolled = vi.fn();
+		Element.prototype.scrollIntoView = scrolled;
+		renderPage({
+			"/api/review": () => ({
+				status: 200,
+				body: { ...emptyReview, files: [oneFile] },
+			}),
+		});
+		const user = userEvent.setup();
+		const button = await screen.findByRole("button", { name: "Files" });
+		expect(screen.queryByRole("dialog")).toBeNull();
+		await user.click(button);
+		const sheet = screen.getByRole("dialog", { name: "Files" });
+		await user.click(within(sheet).getByRole("button", { name: /a\.txt/ }));
+		await vi.waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+		await vi.waitFor(() => expect(scrolled).toHaveBeenCalled());
 	});
 });
