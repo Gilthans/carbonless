@@ -6,7 +6,7 @@ In priority order.
 
 Foundation for everything below.
 
-- **PR review view:** open a PR, see the overview, review it cluster by cluster
+- **PR review view (done):** open a PR, see the overview, review it cluster by cluster
   with progress tracking. Design:
   `docs/superpowers/specs/2026-10-21-pr-review-parity-design.md`.
 - **Commenting** from carbonless.

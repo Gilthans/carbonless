@@ -51,6 +51,13 @@ These guide every feature. If a change conflicts with one of them, stop and rais
 - New features get unit tests and, when they change what the user sees or does,
   Playwright tests. Playwright tests run the built CLI against throwaway git repos
   (`test/git-fixture.ts`, `e2e/fixtures.ts`).
+- Run it on a PR: `pnpm build && node dist/cli.js <pr>` (`crb <pr>` when
+  installed), or `CRB_PR=<pr> pnpm dev` for watch mode. It clones into its own
+  cache (`~/.cache/carbonless`), never into the reviewer's working copies, and
+  only reads from GitHub.
+- Tests never call the real `gh`: `test/fake-gh/gh` serves a scenario
+  (`test/fake-gh/scenario.ts`) via `$CRB_FAKE_GH`. The e2e harness
+  (`e2e/fixtures.ts`) wires it onto `PATH` and drives the built CLI.
 - Planned work lives in `docs/todo.md`.
 - Core design docs, kept current (update them in the same change that alters
   what they describe):

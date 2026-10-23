@@ -26,6 +26,12 @@ and opens the browser.
 | `--no-open` | Don't open the browser |
 | `--api-only` | Serve only the API (used by `pnpm dev`) |
 
+The page opens on the PR overview (checks, reviews, unresolved threads). The
+Files changed view lists every changed line grouped into clusters; mark clusters
+or files reviewed, or cross them off, and progress is saved as git refs
+(`refs/crb/...`) in crb's private clone, so it survives restarts. crb only
+reads from GitHub; it never pushes or comments.
+
 ## Development
 
 Requires Node 24 (`nvm use`) and pnpm.
@@ -38,6 +44,11 @@ Requires Node 24 (`nvm use`) and pnpm.
 | `pnpm lint` / `pnpm fix` | Biome lint + format check / auto-fix |
 | `pnpm typecheck` | TypeScript |
 | `pnpm verify` | All of the above |
+
+Tests never call the real `gh`: `test/fake-gh/gh` answers from a scenario JSON
+(`$CRB_FAKE_GH`, optional call log in `$CRB_FAKE_GH_LOG`). The Playwright
+harness (`e2e/fixtures.ts`) puts it first on `PATH` and runs the built CLI
+against throwaway git repos.
 
 Layout: `src/cli.ts` (entry), `src/server` (Fastify + git + gh), `src/web` (React),
 `src/shared` (types used by both), `test/` (shared test helpers), `e2e/` (Playwright).
