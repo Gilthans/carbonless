@@ -94,8 +94,9 @@ export function newEvent<T extends CrbEventType>(
 	actor: string,
 	payload: EventPayload<T>,
 	by: By = "human",
+	/** Milliseconds since epoch; defaults to now. */
+	ts: number = Date.now(),
 ): EventOf<T> {
-	const ts = Date.now();
 	return {
 		v: 1,
 		id: nextUlid(ts).toLowerCase(),

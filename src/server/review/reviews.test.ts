@@ -15,6 +15,7 @@ import type { Snapshot, StateChange } from "../../shared/types.js";
 import { buildSnapshot } from "../diff/snapshot.js";
 import { runGit } from "../git.js";
 import { buildReviewView } from "./coverage.js";
+import { newEvent } from "./events.js";
 import { RefStore } from "./refStore.js";
 import {
 	InvalidChangeError,
@@ -193,6 +194,43 @@ describe("recordStates", () => {
 		expect(progress.states.get(k2)?.state).toBe("reviewed");
 		const events = await store.readEvents(progressRef());
 		expect(events.filter((e) => e.type === "patchset-started")).toHaveLength(1);
+	});
+
+	it("a reset after a backward clock step still wins over the earlier state", async () => {
+		await svc.recordStates(id, "dan", snap, [{ key: k2, state: "reviewed" }]);
+		// A "reviewed" stamped a minute ahead, as if the clock then stepped back.
+		const future = newEvent(
+			"cluster-state",
+			"dan",
+			{ patchset: snap.revision, cluster: k1, path: "x", state: "reviewed" },
+			"human",
+			Date.now() + 60_000,
+		);
+		await store.appendEvent(progressRef(), "crb: future", future, "dan");
+		expect((await svc.getProgress(id, "dan")).states.get(k1)?.state).toBe(
+			"reviewed",
+		);
+		const progress = await svc.recordStates(id, "dan", snap, [
+			{ key: k1, state: "unreviewed" },
+		]);
+		expect(progress.states.get(k1)?.state).toBe("unreviewed");
+		const events = await store.readEvents(progressRef());
+		expect(events.at(-1)?.ts).toBeGreaterThan(future.ts);
+	});
+
+	it("several changes to one cluster in one batch resolve to the last", async () => {
+		const ch: StateChange[] = [
+			{ key: k1, state: "reviewed" },
+			{ key: k1, state: "unreviewed" },
+			{ key: k1, state: "crossed-off", reason: "generated" },
+			{ key: k1, state: "reviewed" },
+			{ key: k1, state: "unreviewed" },
+		];
+		const progress = await svc.recordStates(id, "dan", snap, ch);
+		expect(progress.states.get(k1)?.state).toBe("unreviewed");
+		const ts = (await store.readEvents(progressRef())).map((e) => e.ts);
+		expect(ts).toEqual([...ts].sort((a, b) => a - b));
+		expect(new Set(ts).size).toBe(ts.length);
 	});
 
 	it("rejects unknown cluster keys", async () => {

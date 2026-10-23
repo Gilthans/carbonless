@@ -112,7 +112,7 @@ export class ReviewService {
 		for (const file of snapshot.files) {
 			for (const c of file.clusters) pathOf.set(c.key, file.path);
 		}
-		const events = changes.map(({ key, state, reason }): ClusterStateEvent => {
+		const payloads = changes.map(({ key, state, reason }) => {
 			const path = pathOf.get(key);
 			if (path === undefined) {
 				throw new UnknownClusterError(`No cluster ${key} in this snapshot`);
@@ -123,25 +123,42 @@ export class ReviewService {
 			if (state === "crossed-off" && !reason?.trim()) {
 				throw new InvalidChangeError("Crossing off needs a reason");
 			}
-			return newEvent("cluster-state", slug, {
+			return {
 				patchset: snapshot.revision,
 				cluster: key,
 				path,
 				state,
 				...(state === "crossed-off" ? { reason: reason?.trim() } : {}),
-			});
+			};
 		});
 
 		const ref = `${reviewerRef(reviewId, slug)}/progress`;
-		const progress = await this.getProgress(reviewId, slug);
+		const existing = await this.store.readEvents(ref);
+		const progress = foldProgress(existing);
+		// The fold orders by (ts, id): stamp every new event after everything
+		// already stored, so a backward clock step can't put a reset before the
+		// state it undoes.
+		let lastTs = Math.max(-1, ...existing.map((e) => e.ts));
+		const stamp = () => {
+			lastTs = Math.max(Date.now(), lastTs + 1);
+			return lastTs;
+		};
 		if (progress.patchset) checkRevision(progress, snapshot);
-		else if (events.length > 0) await this.#startPatchset(ref, slug, snapshot);
+		else if (payloads.length > 0) {
+			await this.#startPatchset(ref, slug, snapshot, stamp());
+		}
 
-		for (const event of events) {
-			const verb = VERBS[event.state];
+		for (const payload of payloads) {
+			const event: ClusterStateEvent = newEvent(
+				"cluster-state",
+				slug,
+				payload,
+				"human",
+				stamp(),
+			);
 			await this.store.appendEvent(
 				ref,
-				`crb: ${verb} 1 cluster in ${event.path}`,
+				`crb: ${VERBS[event.state]} 1 cluster in ${event.path}`,
 				event,
 				slug,
 			);
@@ -154,14 +171,21 @@ export class ReviewService {
 		ref: string,
 		slug: string,
 		snapshot: Snapshot,
+		ts: number,
 	): Promise<void> {
 		const tip = await this.store.tip(ref);
-		const event = newEvent("patchset-started", slug, {
-			patchset: 1,
-			revision: snapshot.revision,
-			mergeBase: snapshot.base,
-			head: snapshot.head,
-		});
+		const event = newEvent(
+			"patchset-started",
+			slug,
+			{
+				patchset: 1,
+				revision: snapshot.revision,
+				mergeBase: snapshot.base,
+				head: snapshot.head,
+			},
+			"human",
+			ts,
+		);
 		const commit = await this.store.commit(
 			tip,
 			"crb: started PS1",
