@@ -1,0 +1,65 @@
+{
+	"data": {
+		"repository": {
+			"pullRequest": {
+				"reviewThreads": {
+					"nodes": [
+						{
+							"isResolved": false,
+							"isOutdated": false,
+							"path": "src/cache.ts",
+							"line": 42,
+							"comments": {
+								"totalCount": 2,
+								"nodes": [
+									{
+										"author": { "login": "rev1", "__typename": "User" },
+										"body": "Should this expire?",
+										"createdAt": "2026-01-03T09:00:00Z"
+									},
+									{
+										"author": { "login": "octo-author", "__typename": "User" },
+										"body": "Yes, fixed.",
+										"createdAt": "2026-01-03T10:00:00Z"
+									}
+								]
+							}
+						},
+						{
+							"isResolved": true,
+							"isOutdated": false,
+							"path": "src/done.ts",
+							"line": 1,
+							"comments": {
+								"totalCount": 1,
+								"nodes": [
+									{
+										"author": { "login": "rev1", "__typename": "User" },
+										"body": "Nit",
+										"createdAt": "2026-01-03T09:00:00Z"
+									}
+								]
+							}
+						},
+						{
+							"isResolved": false,
+							"isOutdated": true,
+							"path": "src/old.ts",
+							"line": null,
+							"comments": {
+								"totalCount": 1,
+								"nodes": [
+									{
+										"author": { "login": "ci-bot", "__typename": "Bot" },
+										"body": "Coverage dropped",
+										"createdAt": "2026-01-02T12:00:00Z"
+									}
+								]
+							}
+						}
+					]
+				}
+			}
+		}
+	}
+}

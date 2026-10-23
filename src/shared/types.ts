@@ -125,3 +125,45 @@ export interface StateChange {
 	state: ClusterState;
 	reason?: string;
 }
+
+export interface PrOverview {
+	title: string;
+	number: number;
+	url: string;
+	author: string;
+	body: string;
+	isDraft: boolean;
+	state: "OPEN" | "CLOSED" | "MERGED";
+	createdAt: string;
+	updatedAt: string;
+	baseBranch: string;
+	headBranch: string;
+	mergeable: "MERGEABLE" | "CONFLICTING" | "UNKNOWN";
+	requestedReviewers: { name: string; team: boolean }[];
+	/** Latest review per author, newest first. */
+	reviews: {
+		author: string;
+		state: "APPROVED" | "CHANGES_REQUESTED" | "COMMENTED" | "DISMISSED";
+		submittedAt: string;
+		you: boolean;
+	}[];
+	commenters: { author: string; lastAt: string; bot: boolean; you: boolean }[];
+	/** Any review or comment by a non-bot who is neither the PR author nor the viewer. */
+	humanStarted: boolean;
+	/** Failing first, then pending, then passing. */
+	checks: {
+		name: string;
+		status: "failing" | "pending" | "passing";
+		url?: string;
+	}[];
+	/** Unresolved threads only. */
+	threads: {
+		path: string;
+		line: number | null;
+		excerpt: string;
+		author: string;
+		bot: boolean;
+		hasReply: boolean;
+		outdated: boolean;
+	}[];
+}
