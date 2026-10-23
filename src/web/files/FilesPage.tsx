@@ -92,7 +92,7 @@ export function FilesPage() {
 										key={`${data.revision}:${file.index}`}
 										file={file}
 										revision={data.revision}
-										onStale={() => setStale(true)}
+										onStaleChange={setStale}
 									/>
 								))}
 							</div>

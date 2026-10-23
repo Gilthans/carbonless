@@ -71,11 +71,25 @@ export function languageFor(path: string): string | null {
 	return EXTENSIONS[name.slice(dot + 1).toLowerCase()] ?? null;
 }
 
-let highlighter: Promise<HighlighterCore> | undefined;
-const loading = new Map<string, Promise<void>>();
+/**
+ * Caches what `load` resolves to. A rejection is forgotten, so the next call
+ * tries again (a chunk that failed to load once isn't failed forever).
+ */
+export function cacheUntilRejected<T>(
+	load: () => Promise<T>,
+): () => Promise<T> {
+	let pending: Promise<T> | undefined;
+	return () => {
+		pending ??= load().catch((error: unknown) => {
+			pending = undefined;
+			throw error;
+		});
+		return pending;
+	};
+}
 
-function getHighlighter(): Promise<HighlighterCore> {
-	highlighter ??= (async () => {
+const getHighlighter = cacheUntilRejected(
+	async (): Promise<HighlighterCore> => {
 		const [{ createHighlighterCore }, { createJavaScriptRegexEngine }, theme] =
 			await Promise.all([
 				import("shiki/core"),
@@ -87,23 +101,19 @@ function getHighlighter(): Promise<HighlighterCore> {
 			langs: [],
 			engine: createJavaScriptRegexEngine(),
 		});
-	})();
-	return highlighter;
-}
+	},
+);
 
-async function loadLanguage(
-	core: HighlighterCore,
-	lang: string,
-): Promise<void> {
-	let pending = loading.get(lang);
-	if (!pending) {
-		const load = LANGUAGES[lang];
-		if (!load) throw new Error(`No grammar for ${lang}`);
-		pending = load().then((module) => core.loadLanguage(module.default));
-		loading.set(lang, pending);
-	}
-	return pending;
-}
+const languageLoaders = new Map(
+	Object.entries(LANGUAGES).map(([lang, load]) => [
+		lang,
+		cacheUntilRejected(async () => {
+			const [core, module] = await Promise.all([getHighlighter(), load()]);
+			await core.loadLanguage(module.default);
+			return core;
+		}),
+	]),
+);
 
 /**
  * Tokens of one line. Lines are highlighted on their own, so constructs that
@@ -113,8 +123,8 @@ export async function highlightLine(
 	text: string,
 	lang: string | null,
 ): Promise<ThemedToken[]> {
-	if (!lang || !LANGUAGES[lang]) return [{ content: text, offset: 0 }];
-	const core = await getHighlighter();
-	await loadLanguage(core, lang);
+	const loadLanguage = lang ? languageLoaders.get(lang) : undefined;
+	if (!lang || !loadLanguage) return [{ content: text, offset: 0 }];
+	const core = await loadLanguage();
 	return core.codeToTokensBase(text, { lang, theme: THEME })[0] ?? [];
 }

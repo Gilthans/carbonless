@@ -117,6 +117,58 @@ test("cross off a file with a reason", async ({ page, pr, startCrb }) => {
 	await expect(clusters).toContainText("0 / 3 reviewed");
 });
 
+test("crossing off keeps reviewed clusters, and undoing leaves clusters unreviewed", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	await pr(fixture);
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	const clusters = page.getByRole("progressbar", { name: "Clusters" });
+	const section = await expand(page, "src/core.ts");
+	await section
+		.getByRole("checkbox", { name: "Mark cluster reviewed" })
+		.first()
+		.click();
+	await expect(clusters).toContainText("1 / 4 reviewed");
+
+	const crossOff = async () => {
+		await section.getByRole("button", { name: "Cross off file…" }).click();
+		const dialog = page.getByRole("dialog", { name: "Cross off file" });
+		await dialog.getByRole("button", { name: "generated" }).click();
+		await dialog.getByRole("button", { name: "Cross off" }).click();
+		await expect(dialog).toBeHidden();
+	};
+
+	// The cluster already read stays reviewed; only the other is crossed off.
+	await crossOff();
+	await expect(section).toContainText(
+		"1 of 2 clusters reviewed · 1 crossed off",
+	);
+	await expect(clusters).toContainText("1 / 3 reviewed");
+
+	// Undo through the cluster's box: unreviewed, not reviewed.
+	const undoBox = section.getByRole("checkbox", { name: "Undo cross-off" });
+	await expect(undoBox).toHaveAccessibleDescription("Crossed off: generated");
+	await undoBox.click();
+	await expect(clusters).toContainText("1 / 4 reviewed");
+	await expect(section).not.toContainText("crossed off");
+	await expect(
+		section.getByRole("checkbox", { name: "Mark cluster reviewed" }).last(),
+	).not.toBeChecked();
+
+	// Undo for the whole file.
+	await crossOff();
+	await expect(clusters).toContainText("1 / 3 reviewed");
+	await section.getByRole("button", { name: "Undo cross-off" }).click();
+	await expect(clusters).toContainText("1 / 4 reviewed");
+	await expect(clusters).toHaveAttribute("aria-valuenow", "25");
+	await expect(
+		section.getByRole("button", { name: "Undo cross-off" }),
+	).toHaveCount(0);
+});
+
 test("mark remaining reviewed", async ({ page, pr, startCrb }) => {
 	await pr(fixture);
 	const s = await startCrb();

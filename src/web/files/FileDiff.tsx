@@ -12,34 +12,35 @@ const buttonClass =
 /**
  * One file of the diff: header with review status and bulk actions, and the
  * diff once expanded. Every file starts collapsed; collapsing is only a view
- * setting. `onStale`: a write was refused because the snapshot moved.
+ * setting. `onStaleChange(true)`: a write was refused because the snapshot
+ * moved; `onStaleChange(false)`: a later write was stored.
  */
 export function FileDiff(props: {
 	file: FileView;
 	revision: string;
-	onStale?: () => void;
+	onStaleChange?: (stale: boolean) => void;
 }) {
 	const { file, revision } = props;
 	const [expanded, setExpanded] = useState(false);
 	const [crossingOff, setCrossingOff] = useState(false);
-	const setStates = useSetStates({ onStale: props.onStale });
+	const setStates = useSetStates({ onStaleChange: props.onStaleChange });
 	const pending = setStates.isPending;
 
 	const save = (changes: StateChange[]) =>
 		setStates.mutateAsync({ revision, changes });
+	// Only an unreviewed cluster's box marks it reviewed: unchecking a reviewed
+	// one or undoing a cross-off makes it unreviewed (R21).
 	const toggle = (cluster: ClusterView) => {
 		save([
 			{
 				key: cluster.key,
-				state: cluster.state === "reviewed" ? "unreviewed" : "reviewed",
+				state: cluster.state === "unreviewed" ? "reviewed" : "unreviewed",
 			},
 		]).catch(() => {});
 	};
 	const unreviewed = file.clusters.filter((c) => c.state === "unreviewed");
+	const crossed = file.clusters.filter((c) => c.state === "crossed-off");
 	const reviewed = file.clusters.filter((c) => c.state === "reviewed").length;
-	const crossedOff = file.clusters.filter(
-		(c) => c.state === "crossed-off",
-	).length;
 
 	return (
 		<section
@@ -67,15 +68,36 @@ export function FileDiff(props: {
 					<span>
 						{reviewed} of {file.clusters.length} clusters reviewed
 					</span>
-					{crossedOff > 0 && (
-						<span className="text-purple-700"> · {crossedOff} crossed off</span>
+					{crossed.length > 0 && (
+						<span className="text-purple-700">
+							{" "}
+							· {crossed.length} crossed off
+						</span>
 					)}
 				</span>
 				<span className="ml-auto flex gap-2">
+					{crossed.length > 0 && (
+						<button
+							type="button"
+							disabled={pending}
+							onClick={() => {
+								save(
+									crossed.map((c) => ({ key: c.key, state: "unreviewed" })),
+								).catch(() => {});
+							}}
+							className={buttonClass}
+						>
+							Undo cross-off
+						</button>
+					)}
 					<button
 						type="button"
 						onClick={() => setCrossingOff(true)}
-						disabled={pending || crossingOff}
+						disabled={
+							pending ||
+							crossingOff ||
+							file.clusters.every((c) => c.state === "reviewed")
+						}
 						className={buttonClass}
 					>
 						Cross off file…
@@ -100,12 +122,11 @@ export function FileDiff(props: {
 					disabled={pending}
 					onCancel={() => setCrossingOff(false)}
 					onConfirm={(reason) =>
+						// What the reviewer already read stays reviewed (R21).
 						save(
-							file.clusters.map((c) => ({
-								key: c.key,
-								state: "crossed-off",
-								reason,
-							})),
+							file.clusters
+								.filter((c) => c.state !== "reviewed")
+								.map((c) => ({ key: c.key, state: "crossed-off", reason })),
 						).then(
 							() => setCrossingOff(false),
 							() => {},

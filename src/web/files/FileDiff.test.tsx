@@ -98,10 +98,8 @@ const view = (f: FileView): ReviewView => ({
 	},
 });
 
-type Handler = (
-	url: URL,
-	init?: RequestInit,
-) => { status: number; body: unknown };
+type Result = { status: number; body: unknown };
+type Handler = (url: URL, init?: RequestInit) => Result | Promise<Result>;
 
 function setup(
 	f: FileView,
@@ -114,7 +112,7 @@ function setup(
 			const result =
 				url.pathname === "/api/files/0/hunks"
 					? { status: 200, body: fileHunks }
-					: handler(url, init);
+					: await handler(url, init);
 			return new Response(JSON.stringify(result.body), {
 				status: result.status,
 			});
@@ -124,10 +122,10 @@ function setup(
 	const queryClient = new QueryClient({
 		defaultOptions: { queries: { retry: false } },
 	});
-	const onStale = vi.fn();
+	const onStaleChange = vi.fn();
 	render(
 		<QueryClientProvider client={queryClient}>
-			<FileDiff file={f} revision="r1" onStale={onStale} />
+			<FileDiff file={f} revision="r1" onStaleChange={onStaleChange} />
 		</QueryClientProvider>,
 	);
 	const posts = () =>
@@ -141,7 +139,7 @@ function setup(
 	return {
 		fetchMock,
 		queryClient,
-		onStale,
+		onStaleChange,
 		posts,
 		paths,
 		user: userEvent.setup(),
@@ -215,7 +213,7 @@ describe("FileDiff", () => {
 	});
 
 	it("shows other errors inline and keeps the checkbox unchecked", async () => {
-		const { user, onStale } = setup(file([cluster("k1")]), () => ({
+		const { user, onStaleChange } = setup(file([cluster("k1")]), () => ({
 			status: 500,
 			body: { error: "git exploded" },
 		}));
@@ -226,11 +224,11 @@ describe("FileDiff", () => {
 		await user.click(box);
 		expect(await screen.findByRole("alert")).toHaveTextContent("git exploded");
 		expect(box).not.toBeChecked();
-		expect(onStale).not.toHaveBeenCalled();
+		expect(onStaleChange).not.toHaveBeenCalledWith(true);
 	});
 
 	it("reports a stale snapshot", async () => {
-		const { user, onStale } = setup(file([cluster("k1")]), () => ({
+		const { user, onStaleChange } = setup(file([cluster("k1")]), () => ({
 			status: 409,
 			body: { error: "stale" },
 		}));
@@ -238,7 +236,7 @@ describe("FileDiff", () => {
 		await user.click(
 			await screen.findByRole("checkbox", { name: "Mark cluster reviewed" }),
 		);
-		await waitFor(() => expect(onStale).toHaveBeenCalled());
+		await waitFor(() => expect(onStaleChange).toHaveBeenCalledWith(true));
 	});
 
 	it("marks the remaining clusters reviewed", async () => {
@@ -260,8 +258,9 @@ describe("FileDiff", () => {
 		);
 	});
 
-	it("crosses off a file only with a reason", async () => {
+	it("crosses off a file only with a reason, keeping reviewed clusters", async () => {
 		const f = file([
+			cluster("k0", { state: "reviewed" }),
 			cluster("k1"),
 			{ ...cluster("r"), kind: "file", label: "Renamed from b.ts", lines: 0 },
 		]);
@@ -285,6 +284,112 @@ describe("FileDiff", () => {
 			]),
 		);
 		await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+	});
+
+	it("undoes a cross-off to unreviewed, never reviewed", async () => {
+		const { posts, user } = setup(
+			file([cluster("k1", { state: "crossed-off", reason: "generated" })]),
+			() => ({ status: 200, body: view(file([cluster("k1")])) }),
+		);
+		await user.click(screen.getByRole("button", { name: "Expand file" }));
+		const box = await screen.findByRole("checkbox", { name: "Undo cross-off" });
+		expect(box).toHaveAccessibleDescription("Crossed off: generated");
+		expect(box).not.toBeChecked();
+		expect((box as HTMLInputElement).indeterminate).toBe(true);
+		await user.click(box);
+		await waitFor(() =>
+			expect(posts()[0]?.body.changes).toEqual([
+				{ key: "k1", state: "unreviewed" },
+			]),
+		);
+	});
+
+	it("undoes the file's cross-offs, and only those", async () => {
+		const f = file([
+			cluster("k1", { state: "reviewed" }),
+			cluster("k2", { state: "crossed-off", reason: "generated" }),
+			cluster("k3"),
+			cluster("k4", { state: "crossed-off", reason: "generated" }),
+		]);
+		const { posts, user } = setup(f, () => ({ status: 200, body: view(f) }));
+		await user.click(screen.getByRole("button", { name: "Undo cross-off" }));
+		await waitFor(() =>
+			expect(posts()[0]?.body.changes).toEqual([
+				{ key: "k2", state: "unreviewed" },
+				{ key: "k4", state: "unreviewed" },
+			]),
+		);
+	});
+
+	it("has no file-level undo without cross-offs", () => {
+		setup(file([cluster("k1")]));
+		expect(screen.queryByRole("button", { name: "Undo cross-off" })).toBeNull();
+	});
+
+	it("keeps a write's answer over a review read that was answered before it", async () => {
+		const before = view(file([cluster("k1")]));
+		const after = view(file([cluster("k1", { state: "reviewed" })]));
+		let answerRead: (() => void) | undefined;
+		const { user, queryClient } = setup(file([cluster("k1")]), async (url) => {
+			if (url.pathname === "/api/review") {
+				await new Promise<void>((resolve) => {
+					answerRead = resolve;
+				});
+				return { status: 200, body: before };
+			}
+			return { status: 200, body: after };
+		});
+		void queryClient.prefetchQuery(reviewQuery);
+		await waitFor(() => expect(answerRead).toBeDefined());
+		await user.click(screen.getByRole("button", { name: "Expand file" }));
+		await user.click(
+			await screen.findByRole("checkbox", { name: "Mark cluster reviewed" }),
+		);
+		await waitFor(() =>
+			expect(queryClient.getQueryData(reviewQuery.queryKey)).toEqual(after),
+		);
+		answerRead?.();
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		expect(queryClient.getQueryData(reviewQuery.queryKey)).toEqual(after);
+	});
+
+	it("retries a context range that failed", async () => {
+		let calls = 0;
+		const { user } = setup(file([cluster("k1")]), (url) => {
+			calls++;
+			if (calls === 1) return { status: 500, body: { error: "git hiccup" } };
+			const from = Number(url.searchParams.get("newFrom"));
+			const to = Number(url.searchParams.get("newTo"));
+			const lines = [];
+			for (let n = from; n <= to; n++) lines.push(ctx(n, n));
+			return { status: 200, body: lines };
+		});
+		await user.click(screen.getByRole("button", { name: "Expand file" }));
+		await user.click(
+			await screen.findByRole("button", { name: "Load 20 lines below" }),
+		);
+		expect(await screen.findByRole("alert")).toHaveTextContent("git hiccup");
+		expect(screen.queryByText("Loading…")).toBeNull();
+		await user.click(screen.getByRole("button", { name: "Retry" }));
+		expect(await screen.findByText("line 28")).toBeInTheDocument();
+		expect(screen.queryByRole("alert")).toBeNull();
+	});
+
+	it("keeps lines the server didn't return loadable", async () => {
+		const { user } = setup(file([cluster("k1")]), () => ({
+			status: 200,
+			body: [9, 10, 11, 12, 13, 14, 15, 16, 17, 18].map((n) => ctx(n, n)),
+		}));
+		await user.click(screen.getByRole("button", { name: "Expand file" }));
+		await user.click(
+			await screen.findByRole("button", { name: "Load 20 lines below" }),
+		);
+		expect(await screen.findByText("line 18")).toBeInTheDocument();
+		expect(screen.queryByText("Loading…")).toBeNull();
+		expect(screen.getByText("32 hidden lines")).toBeInTheDocument();
+		expect(
+			screen.getByRole("button", { name: "Load 20 lines below" }),
+		).toBeInTheDocument();
 	});
 
 	it("loads 20 more lines below a hunk", async () => {

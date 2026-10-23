@@ -82,8 +82,9 @@ describe("FilesPage", () => {
 		).toHaveAttribute("aria-valuenow", "100");
 	});
 
-	it("reloads and says so when the snapshot moved", async () => {
+	it("reloads and says so when the snapshot moved, until a write is stored", async () => {
 		let reads = 0;
+		let writes = 0;
 		const fetchMock = renderPage({
 			"/api/review": () => {
 				reads++;
@@ -109,7 +110,10 @@ describe("FilesPage", () => {
 					],
 				},
 			}),
-			"/api/review/states": () => ({ status: 409, body: { error: "stale" } }),
+			"/api/review/states": () =>
+				writes++ === 0
+					? { status: 409, body: { error: "stale" } }
+					: { status: 200, body: { ...emptyReview, files: [oneFile] } },
 		});
 		const user = userEvent.setup();
 		await user.click(
@@ -123,5 +127,14 @@ describe("FilesPage", () => {
 		).toBeInTheDocument();
 		await vi.waitFor(() => expect(reads).toBe(2));
 		expect(fetchMock).toHaveBeenCalled();
+		// The next stored write clears the notice.
+		const box = screen.getByRole("checkbox", { name: "Mark cluster reviewed" });
+		await vi.waitFor(() => expect(box).toBeEnabled());
+		await user.click(box);
+		await vi.waitFor(() =>
+			expect(
+				screen.queryByText("The review moved to a new snapshot; reloaded."),
+			).toBeNull(),
+		);
 	});
 });

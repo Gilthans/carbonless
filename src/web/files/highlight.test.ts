@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { highlightLine, languageFor } from "./highlight";
+import { cacheUntilRejected, highlightLine, languageFor } from "./highlight";
 
 describe("languageFor", () => {
 	it("maps the reference PR's file types", () => {
@@ -36,5 +36,20 @@ describe("highlightLine", () => {
 		expect(await highlightLine("x < y", null)).toEqual([
 			{ content: "x < y", offset: 0 },
 		]);
+	});
+});
+
+describe("cacheUntilRejected", () => {
+	it("shares one load, and loads again after a failure", async () => {
+		let calls = 0;
+		const load = cacheUntilRejected(async () => {
+			calls++;
+			if (calls === 1) throw new Error("chunk failed");
+			return calls;
+		});
+		await expect(load()).rejects.toThrow("chunk failed");
+		expect(await load()).toBe(2);
+		expect(await load()).toBe(2);
+		expect(calls).toBe(2);
 	});
 });

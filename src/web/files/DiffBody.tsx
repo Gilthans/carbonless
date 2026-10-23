@@ -1,5 +1,5 @@
 import { useQueries, useQuery } from "@tanstack/react-query";
-import { Fragment, type ReactNode, useState } from "react";
+import { Fragment, type ReactNode, useId, useState } from "react";
 import type {
 	ClusterView,
 	DiffLine,
@@ -116,33 +116,44 @@ function LineRow(props: {
 	);
 }
 
+/**
+ * A cluster's checkbox: checked when reviewed. A crossed-off cluster shows a
+ * mixed box named "Undo cross-off" and described by its note; clicking it
+ * makes the cluster unreviewed again, never reviewed.
+ */
 function ClusterCheckbox(props: {
 	cluster: ClusterView;
+	noteId?: string;
 	disabled: boolean;
 	onToggle: (cluster: ClusterView) => void;
 }) {
+	const crossedOff = props.cluster.state === "crossed-off";
 	return (
 		<input
 			type="checkbox"
-			aria-label="Mark cluster reviewed"
-			title={
-				props.cluster.state === "crossed-off"
-					? `Crossed off: ${props.cluster.reason ?? ""}`
-					: undefined
-			}
+			aria-label={crossedOff ? "Undo cross-off" : "Mark cluster reviewed"}
+			aria-describedby={crossedOff ? props.noteId : undefined}
+			ref={(box) => {
+				if (box) box.indeterminate = crossedOff;
+			}}
 			checked={props.cluster.state === "reviewed"}
 			disabled={props.disabled}
 			onChange={() => props.onToggle(props.cluster)}
-			className="mt-0.5 h-3.5 w-3.5 cursor-pointer accent-green-600 disabled:cursor-wait"
+			className={`mt-0.5 h-3.5 w-3.5 cursor-pointer disabled:cursor-wait ${
+				crossedOff ? "accent-purple-600" : "accent-green-600"
+			}`}
 		/>
 	);
 }
 
-function CrossedOffNote({ cluster }: { cluster: ClusterView }) {
-	if (cluster.state !== "crossed-off") return null;
+function CrossedOffNote(props: { cluster: ClusterView; id?: string }) {
+	if (props.cluster.state !== "crossed-off") return null;
 	return (
-		<span className="ml-2 rounded bg-purple-100 px-1 font-sans text-purple-800">
-			Crossed off: {cluster.reason}
+		<span
+			id={props.id}
+			className="ml-2 rounded bg-purple-100 px-1 font-sans text-purple-800"
+		>
+			Crossed off: {props.cluster.reason}
 		</span>
 	);
 }
@@ -214,22 +225,44 @@ export function DiffBody(props: {
 	});
 	const lang = languageFor(file.path);
 	const clusters = new Map(file.clusters.map((c) => [c.key, c]));
+	const idBase = useId();
+	const noteIds = new Map(
+		file.clusters.map((c, i) => [c.key, `${idBase}-note-${i}`]),
+	);
+	const noteId = (cluster: ClusterView) => noteIds.get(cluster.key);
 	const fileClusters = file.clusters.filter((c) => c.kind === "file");
 
-	const requested = new Set<number>();
-	for (const [from, to] of ranges)
-		for (let n = from; n <= to; n++) requested.add(n);
 	const loaded = new Map<number, DiffLine>();
 	for (const result of contexts) {
 		for (const line of result.data ?? []) {
 			if (line.newNo !== undefined) loaded.set(line.newNo, line);
 		}
 	}
-	const contextError = contexts.find((c) => c.error)?.error;
+	/**
+	 * Lines that are shown, on their way, or failed (and wait for Retry). A
+	 * line a finished range didn't return stays hidden, so it can be loaded
+	 * again instead of waiting forever.
+	 */
+	const taken = new Set(loaded.keys());
+	const loadedRanges = ranges.map(([from, to], i) => ({
+		from,
+		to,
+		result: contexts[i],
+	}));
+	for (const { from, to, result } of loadedRanges) {
+		if (result && !result.isSuccess) {
+			for (let n = from; n <= to; n++) taken.add(n);
+		}
+	}
+	const addRange = (from: number, to: number) =>
+		setRanges((r) =>
+			r.some(([f, t]) => f === from && t === to) ? r : [...r, [from, to]],
+		);
 
 	const checkbox = (cluster: ClusterView) => (
 		<ClusterCheckbox
 			cluster={cluster}
+			noteId={noteId(cluster)}
 			disabled={props.disabled}
 			onToggle={props.onToggle}
 		/>
@@ -246,16 +279,17 @@ export function DiffBody(props: {
 
 	const gapRows = (gap: Gap | undefined) => {
 		if (!gap) return null;
-		const { top, bottom, remaining } = gapState(gap, requested);
-		let missing = false;
-		for (let n = gap.from; n < gap.from + top; n++) missing ||= !loaded.has(n);
-		for (let n = gap.to - bottom + 1; n <= gap.to; n++)
-			missing ||= !loaded.has(n);
+		const { top, bottom, remaining } = gapState(gap, taken);
+		const inGap = loadedRanges.filter(
+			(r) => r.from <= gap.to && r.to >= gap.from,
+		);
+		const failed = inGap.flatMap((r) => (r.result?.isError ? [r.result] : []));
+		const pending = inGap.some((r) => r.result?.isPending);
 		const buttons = expansions(gap, top, bottom, remaining);
 		return (
 			<tbody key={`gap${gap.index}`}>
 				{contextRows(gap.from, gap.from + top - 1)}
-				{(remaining > 0 || missing) && (
+				{(remaining > 0 || pending || failed.length > 0) && (
 					<tr className="bg-blue-50 text-slate-600">
 						<td colSpan={2} className="px-1">
 							<div className="flex">
@@ -265,7 +299,7 @@ export function DiffBody(props: {
 										type="button"
 										aria-label={b.label}
 										title={b.label}
-										onClick={() => setRanges((r) => [...r, [b.from, b.to]])}
+										onClick={() => addRange(b.from, b.to)}
 										className="rounded px-1 hover:bg-blue-200 focus-visible:outline-2 focus-visible:outline-blue-600"
 									>
 										{b.glyph}
@@ -274,9 +308,24 @@ export function DiffBody(props: {
 							</div>
 						</td>
 						<td colSpan={COLUMNS - 2} className="px-2 font-sans">
-							{missing
-								? "Loading…"
-								: `${remaining} hidden ${remaining === 1 ? "line" : "lines"}`}
+							{failed.length > 0 ? (
+								<span role="alert" className="text-red-800">
+									{failed[0]?.error?.message}{" "}
+									<button
+										type="button"
+										onClick={() => {
+											for (const f of failed) void f.refetch();
+										}}
+										className="rounded border border-red-300 bg-white px-1.5 text-xs hover:bg-red-50 focus-visible:outline-2 focus-visible:outline-blue-600"
+									>
+										Retry
+									</button>
+								</span>
+							) : pending ? (
+								"Loading…"
+							) : (
+								`${remaining} hidden ${remaining === 1 ? "line" : "lines"}`
+							)}
 						</td>
 					</tr>
 				)}
@@ -300,7 +349,7 @@ export function DiffBody(props: {
 							<td className="w-6 px-1 py-1 align-top">{checkbox(cluster)}</td>
 							<td colSpan={COLUMNS - 2} className="px-2 py-1 font-sans text-sm">
 								{cluster.label}
-								<CrossedOffNote cluster={cluster} />
+								<CrossedOffNote cluster={cluster} id={noteId(cluster)} />
 							</td>
 						</tr>
 					</tbody>
@@ -313,6 +362,7 @@ export function DiffBody(props: {
 							clusters={clusters}
 							lang={lang}
 							checkbox={checkbox}
+							noteId={noteId}
 						/>
 					</Fragment>
 				))}
@@ -326,11 +376,6 @@ export function DiffBody(props: {
 					<ErrorMessage error={hunks.error} />
 				</div>
 			)}
-			{contextError && (
-				<div className="p-2">
-					<ErrorMessage error={contextError} />
-				</div>
-			)}
 		</div>
 	);
 }
@@ -341,6 +386,7 @@ function HunkRows(props: {
 	clusters: Map<string, ClusterView>;
 	lang: string | null;
 	checkbox: (cluster: ClusterView) => ReactNode;
+	noteId: (cluster: ClusterView) => string | undefined;
 }) {
 	return (
 		<>
@@ -376,7 +422,10 @@ function HunkRows(props: {
 							<tr>
 								<Rail state={cluster.state} />
 								<td colSpan={COLUMNS - 1} className="px-2 text-xs">
-									<CrossedOffNote cluster={cluster} />
+									<CrossedOffNote
+										cluster={cluster}
+										id={props.noteId(cluster)}
+									/>
 								</td>
 							</tr>
 						)}
