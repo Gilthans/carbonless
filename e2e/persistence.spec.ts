@@ -87,9 +87,21 @@ test("a started review stays on its snapshot after a push", async ({
 		message: "later push",
 		files: { "src/util.ts": text(util.map((l) => `${l} pushed`)) },
 	});
+	const refreshed = page.waitForResponse(
+		(r) => r.url().endsWith("/api/refresh") && r.ok(),
+	);
+	const reloaded = page.waitForResponse(
+		(r) => r.url().endsWith("/api/review") && r.ok(),
+	);
 	await page.getByRole("button", { name: "Refresh" }).click();
+	await refreshed;
+	await reloaded;
+	await expect(page.getByRole("button", { name: "Refresh" })).toBeEnabled();
 	await expect(banner(page)).toBeVisible();
 	await expect(banner(page)).toContainText("snapshot from");
+	await expect(
+		page.getByRole("region", { name: "src/util.ts" }),
+	).not.toContainText("pushed");
 	await expect(clusters(page)).toHaveAttribute("aria-valuenow", "25");
 	await expect(
 		page.getByRole("link", { name: "Open the PR on GitHub" }),
@@ -130,5 +142,33 @@ test("opening without checking anything off creates no snapshot", async ({
 		encoding: "utf8",
 		env: testGitEnv(),
 	});
+	// Positive control: the review exists, it just has no reviewer refs.
+	expect(refs).toMatch(/refs\/crb\/reviews\/[^/\s]+\/meta/);
 	expect(refs).not.toContain("/reviewers/");
+});
+
+test("a push found by the head poll on an unstarted review asks for a Refresh", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	const p = await pr(fixture);
+	const s = await startCrb();
+	await page.clock.install();
+	await openFiles(page, s.url);
+	await expect(clusters(page)).toContainText("0 / 4 reviewed");
+
+	p.moveHead({
+		message: "later push",
+		files: { "src/extra.ts": "export const extra = 1;\n" },
+	});
+	await page.clock.fastForward("05:01");
+	await expect(
+		page.getByText(
+			"New commits were pushed to this PR. Press Refresh to load them.",
+		),
+	).toBeVisible();
+	await expect(page.getByText("snapshot from")).toBeHidden();
+	// Nothing changed under the reader.
+	await expect(clusters(page)).toContainText("0 / 4 reviewed");
 });

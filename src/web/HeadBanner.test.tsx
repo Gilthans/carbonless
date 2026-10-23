@@ -39,6 +39,16 @@ describe("HeadBanner", () => {
 		expect(link).toHaveAttribute("rel", "noreferrer");
 	});
 
+	it("only asks for a Refresh on a review that has not started", () => {
+		render(<HeadBanner info={{ ...info, patchset: null }} />);
+		const note = screen.getByRole("status");
+		expect(note).toHaveTextContent(
+			"New commits were pushed to this PR. Press Refresh to load them.",
+		);
+		expect(note).not.toHaveTextContent("snapshot");
+		expect(screen.queryByRole("link")).toBeNull();
+	});
+
 	it("shows nothing while the head has not moved", () => {
 		const { container } = render(
 			<HeadBanner info={{ ...info, headMoved: false }} />,
@@ -63,6 +73,7 @@ describe("headQuery", () => {
 	it("polls every 5 minutes and writes its answer into the session cache", async () => {
 		expect(headQuery.refetchInterval).toBe(300_000);
 		expect(headQuery.refetchOnWindowFocus).toBe(true);
+		expect(headQuery.staleTime).toBe(30_000);
 		vi.stubGlobal(
 			"fetch",
 			vi.fn(async () => new Response(JSON.stringify(info), { status: 200 })),

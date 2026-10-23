@@ -100,6 +100,8 @@ export const headQuery = queryOptions({
 		client.setQueryData(sessionQuery.queryKey, info);
 		return info;
 	},
+	// Focus switching must not spam gh.
+	staleTime: 30_000,
 	refetchInterval: 300_000,
 	refetchOnWindowFocus: true,
 });
