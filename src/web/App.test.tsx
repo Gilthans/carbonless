@@ -1,7 +1,13 @@
 // @vitest-environment jsdom
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { RouterProvider } from "@tanstack/react-router";
-import { cleanup, render, screen, within } from "@testing-library/react";
+import {
+	cleanup,
+	render,
+	screen,
+	waitFor,
+	within,
+} from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PrOverview, ReviewView, SessionInfo } from "../shared/types";
 import { createAppRouter } from "./router";
@@ -177,6 +183,29 @@ describe("App", () => {
 		await screen.findByRole("region", { name: "What it does" });
 		expect(calls("/api/overview")).toBe(1);
 		expect(calls("/api/session")).toBe(1);
+	});
+
+	it("shows the moved-head banner once the head check reports new commits", async () => {
+		renderApp({
+			"/api/head": ok({
+				...info,
+				currentHead: "c".repeat(40),
+				headMoved: true,
+			}),
+		});
+		expect(await screen.findByRole("status")).toHaveTextContent(
+			"New commits were pushed",
+		);
+	});
+
+	it("shows no banner, and no error, when the head check fails", async () => {
+		renderApp({
+			"/api/head": { status: 502, body: { error: "gh is down" } },
+		});
+		await screen.findByRole("heading", { level: 1 });
+		await waitFor(() => expect(calls("/api/head")).toBe(1));
+		expect(screen.queryByRole("status")).toBeNull();
+		expect(screen.queryByRole("alert")).toBeNull();
 	});
 
 	it("shows the server's error message", async () => {

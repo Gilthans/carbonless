@@ -1,6 +1,13 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, Outlet, useRouterState } from "@tanstack/react-router";
-import { overviewQuery, postRefresh, reviewQuery, sessionQuery } from "./api";
+import {
+	headQuery,
+	overviewQuery,
+	postRefresh,
+	reviewQuery,
+	sessionQuery,
+} from "./api";
+import { HeadBanner } from "./HeadBanner";
 import { ErrorMessage, safeHref } from "./ui";
 
 const tabClass =
@@ -11,6 +18,9 @@ const activeTabClass = "border-orange-500 font-semibold text-slate-900";
 export function App() {
 	const queryClient = useQueryClient();
 	const session = useQuery(sessionQuery);
+	// Writes into the session cache (so only once the session has loaded, or
+	// its answer could overwrite ours); a failed check leaves the last answer.
+	useQuery({ ...headQuery, enabled: session.isSuccess });
 	const refresh = useMutation({
 		mutationFn: postRefresh,
 		onSuccess: (info) => {
@@ -75,7 +85,7 @@ export function App() {
 						<ErrorMessage error={refresh.error} />
 					</div>
 				)}
-				{/* Task 10: the moved-head banner goes here. */}
+				{session.data && <HeadBanner info={session.data} />}
 				<nav
 					aria-label="PR pages"
 					className="mx-auto flex max-w-5xl gap-1 px-6"

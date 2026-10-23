@@ -88,6 +88,22 @@ export const sessionQuery = queryOptions({
 	staleTime: Number.POSITIVE_INFINITY,
 });
 
+/**
+ * The head check: polled every 5 minutes and on window focus, and each answer
+ * is the new session info, so it goes straight into the session cache (the
+ * banner reads it from there).
+ */
+export const headQuery = queryOptions({
+	queryKey: ["head"],
+	queryFn: async ({ client }) => {
+		const info = await fetchHead();
+		client.setQueryData(sessionQuery.queryKey, info);
+		return info;
+	},
+	refetchInterval: 300_000,
+	refetchOnWindowFocus: true,
+});
+
 export const overviewQuery = queryOptions({
 	queryKey: ["overview"],
 	queryFn: fetchOverview,
