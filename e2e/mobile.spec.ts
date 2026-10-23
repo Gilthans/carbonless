@@ -58,6 +58,30 @@ test("no horizontal page scroll on the overview and files pages", async ({
 			page.getByRole("region", { name: "What it does" }),
 		).toBeVisible();
 		await expectNoPageOverflow(page);
+		// Five-digit counts must fit too.
+		await page.route("**/api/review", async (route) => {
+			const response = await route.fetch();
+			const view = await response.json();
+			for (const file of view.files) {
+				for (const c of file.clusters) c.lines *= 12345;
+			}
+			view.progress.lines = { total: 98765, reviewed: 12345, crossedOff: 4321 };
+			view.progress.clusters = { total: 54321, reviewed: 1234, crossedOff: 0 };
+			await route.fulfill({ response, json: view });
+		});
+		await openFiles(page, s.url, "Lines");
+		await expect(page.getByText("12345 / 94444 lines reviewed")).toBeVisible();
+		await expectNoPageOverflow(page);
+		const header = fileSection(page, "src/f0.ts").getByRole("progressbar", {
+			name: "File progress",
+		});
+		await expect(header).toHaveText(/^0 \/ 24690/);
+		const fits = await header
+			.locator("span")
+			.first()
+			.evaluate((el) => el.scrollWidth <= el.clientWidth);
+		expect(fits).toBe(true);
+		await page.unroute("**/api/review");
 		await openFiles(page, s.url);
 		const section = fileSection(page, "src/f0.ts");
 		await section.getByRole("button", { name: "Expand file" }).click();
@@ -96,6 +120,95 @@ test.describe("phone", () => {
 		await sheet.getByRole("button", { name: /f23\.ts/ }).click();
 		await expect(sheet).toBeHidden();
 		await expect(target).toBeInViewport();
+		await expect(
+			target.getByRole("button", { name: "Expand file" }),
+		).toBeFocused();
+	});
+
+	test("the sheet locks the page scroll and closes when the screen widens", async ({
+		page,
+		pr,
+		startCrb,
+	}) => {
+		await pr(fixture);
+		const s = await startCrb();
+		await openFiles(page, s.url);
+		await page.getByRole("button", { name: "Files", exact: true }).click();
+		const sheet = page.getByRole("dialog", { name: "Files" });
+		await expect(sheet).toBeVisible();
+		expect(
+			await page.evaluate(() => document.documentElement.style.overflow),
+		).toBe("hidden");
+		await page.setViewportSize({ width: 1024, height: 800 });
+		await expect(sheet).toHaveCount(0);
+		expect(
+			await page.evaluate(() => document.documentElement.style.overflow),
+		).toBe("");
+		await page.setViewportSize({ width: 412, height: 800 });
+		await expect(
+			page.getByRole("button", { name: "Files", exact: true }),
+		).toBeVisible();
+		await expect(page.getByRole("dialog", { name: "Files" })).toBeHidden();
+	});
+
+	test("cluster controls have separate 40px touch targets", async ({
+		page,
+		pr,
+		startCrb,
+	}) => {
+		await pr(fixture);
+		const s = await startCrb();
+		// Five-digit counts must fit too.
+		await page.route("**/api/review", async (route) => {
+			const response = await route.fetch();
+			const view = await response.json();
+			for (const file of view.files) {
+				for (const c of file.clusters) c.lines *= 12345;
+			}
+			view.progress.lines = { total: 98765, reviewed: 12345, crossedOff: 4321 };
+			view.progress.clusters = { total: 54321, reviewed: 1234, crossedOff: 0 };
+			await route.fulfill({ response, json: view });
+		});
+		await openFiles(page, s.url, "Lines");
+		await expect(page.getByText("12345 / 94444 lines reviewed")).toBeVisible();
+		await expectNoPageOverflow(page);
+		const header = fileSection(page, "src/f0.ts").getByRole("progressbar", {
+			name: "File progress",
+		});
+		await expect(header).toHaveText(/^0 \/ 24690/);
+		const fits = await header
+			.locator("span")
+			.first()
+			.evaluate((el) => el.scrollWidth <= el.clientWidth);
+		expect(fits).toBe(true);
+		await page.unroute("**/api/review");
+		await openFiles(page, s.url);
+		const section = fileSection(page, "src/f0.ts");
+		const expand = section.getByRole("button", { name: "Expand file" });
+		const expandBox = await expand.boundingBox();
+		expect(expandBox?.width).toBeGreaterThanOrEqual(40);
+		expect(expandBox?.height).toBeGreaterThanOrEqual(40);
+		await expand.click();
+		const box = await section.getByTestId("cluster-box-target").boundingBox();
+		const toggle = await section
+			.getByRole("button", { name: "Cross off cluster" })
+			.boundingBox();
+		if (!box || !toggle) throw new Error("controls not rendered");
+		for (const b of [box, toggle]) {
+			expect(b.width).toBeGreaterThanOrEqual(40);
+			expect(b.height).toBeGreaterThanOrEqual(40);
+		}
+		const overlap =
+			box.x < toggle.x + toggle.width &&
+			toggle.x < box.x + box.width &&
+			box.y < toggle.y + toggle.height &&
+			toggle.y < box.y + box.height;
+		expect(overlap).toBe(false);
+		// Tapping the box's target checks the box, not the toggle.
+		await page.touchscreen.tap(box.x + 4, box.y + box.height / 2);
+		await expect(
+			section.getByRole("checkbox", { name: "Mark cluster reviewed" }),
+		).toBeChecked();
 	});
 
 	test("a long path starts scrolled to the file name", async ({
@@ -118,6 +231,13 @@ test.describe("phone", () => {
 				})),
 			)
 			.toEqual({ scrolled: true, atEnd: true });
+		await expect(
+			fileSection(page, `${LONG_DIR}/compatibility.ts`).getByTestId(
+				"path-fade",
+			),
+		).toBeVisible();
+		await path.focus();
+		await expect(path).toBeFocused();
 		// The rest of the path is reachable by scrolling left.
 		await path.evaluate((el) => {
 			el.scrollLeft = 0;
@@ -132,6 +252,30 @@ test.describe("phone", () => {
 	}) => {
 		await pr(fixture);
 		const s = await startCrb();
+		// Five-digit counts must fit too.
+		await page.route("**/api/review", async (route) => {
+			const response = await route.fetch();
+			const view = await response.json();
+			for (const file of view.files) {
+				for (const c of file.clusters) c.lines *= 12345;
+			}
+			view.progress.lines = { total: 98765, reviewed: 12345, crossedOff: 4321 };
+			view.progress.clusters = { total: 54321, reviewed: 1234, crossedOff: 0 };
+			await route.fulfill({ response, json: view });
+		});
+		await openFiles(page, s.url, "Lines");
+		await expect(page.getByText("12345 / 94444 lines reviewed")).toBeVisible();
+		await expectNoPageOverflow(page);
+		const header = fileSection(page, "src/f0.ts").getByRole("progressbar", {
+			name: "File progress",
+		});
+		await expect(header).toHaveText(/^0 \/ 24690/);
+		const fits = await header
+			.locator("span")
+			.first()
+			.evaluate((el) => el.scrollWidth <= el.clientWidth);
+		expect(fits).toBe(true);
+		await page.unroute("**/api/review");
 		await openFiles(page, s.url);
 		const section = fileSection(page, "src/f0.ts");
 		const mark = section.getByRole("button", {

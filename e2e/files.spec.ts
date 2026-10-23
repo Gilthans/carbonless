@@ -127,6 +127,9 @@ test("cross off a file without a reason", async ({ page, pr, startCrb }) => {
 	const bar = progress(page);
 	await expect(bar).toHaveAttribute("aria-valuenow", "0");
 	await expect(bar).toContainText("0 / 3 clusters reviewed");
+	await chooseUnit(page, "Files");
+	await expect(bar).toContainText("0 / 2 files reviewed");
+	await chooseUnit(page, "Clusters");
 
 	await section.getByRole("button", { name: "Expand file" }).click();
 	await expect(
@@ -157,6 +160,13 @@ test("crossing off keeps reviewed clusters, and undoing leaves clusters unreview
 		"1 of 1 clusters reviewed, 1 crossed off",
 	);
 	await expect(bar).toContainText("1 / 3 clusters reviewed");
+	// In files, a file with a crossed-off cluster counts as crossed off, never
+	// reviewed: crossing off shrinks the work left only.
+	await chooseUnit(page, "Files");
+	await expect(bar).toContainText("0 / 2 files reviewed");
+	await expect(bar).toHaveAttribute("aria-valuenow", "0");
+	await expect(fileProgress(section)).toContainText("crossed off");
+	await chooseUnit(page, "Clusters");
 
 	// Undo through the cluster's box: unreviewed, not reviewed.
 	const undoBox = section.getByRole("checkbox", { name: "Undo cross-off" });

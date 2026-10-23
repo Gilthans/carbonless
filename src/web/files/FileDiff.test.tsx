@@ -379,6 +379,36 @@ describe("FileDiff", () => {
 		).toHaveTextContent("0 / 1");
 	});
 
+	it("doesn't show a renamed and edited file as finished while the rename is unreviewed", () => {
+		const f = file([
+			{ ...cluster("r"), kind: "file", label: "Renamed from b.ts", lines: 0 },
+			cluster("k1", { state: "reviewed", lines: 3 }),
+		]);
+		setup(f, undefined, hunks, "lines");
+		const progress = screen.getByRole("progressbar", { name: "File progress" });
+		expect(progress).toHaveTextContent("3 / 3 lines · 1 cluster left");
+		expect(progress).toHaveAttribute("aria-valuenow", "99");
+		const reviewed = progress.querySelector<HTMLElement>(
+			'[data-part="reviewed"]',
+		);
+		expect(Number.parseFloat(reviewed?.style.width ?? "100")).toBeLessThan(100);
+	});
+
+	it("shows a status phrase for a pure rename in lines", () => {
+		setup(
+			file([
+				{ ...cluster("r"), kind: "file", label: "Renamed from b.ts", lines: 0 },
+			]),
+			undefined,
+			hunks,
+			"lines",
+		);
+		const progress = screen.getByRole("progressbar", { name: "File progress" });
+		expect(progress).toHaveTextContent("1 cluster left");
+		expect(progress).not.toHaveTextContent("0 / 1");
+		expect(progress).toHaveAttribute("aria-valuenow", "0");
+	});
+
 	it("puts the full path in a scroll box", () => {
 		setup(file([cluster("k1")], { path: "a/very/long/path/to/the/file.ts" }));
 		const path = screen.getByTestId("file-path");

@@ -55,6 +55,16 @@ function FilesSheet(props: {
 			else d.removeAttribute("open");
 		}
 	}, [props.open]);
+	// The page behind the sheet doesn't scroll while it's open.
+	useEffect(() => {
+		if (!props.open) return;
+		const root = document.documentElement;
+		const before = root.style.overflow;
+		root.style.overflow = "hidden";
+		return () => {
+			root.style.overflow = before;
+		};
+	}, [props.open]);
 	return (
 		<dialog
 			ref={dialog}
@@ -138,6 +148,11 @@ export function FilesPage() {
 	const wide = useMedia(WIDE);
 	const [sheetOpen, setSheetOpen] = useState(false);
 
+	// Widening to the sidebar layout closes the sheet; narrowing doesn't reopen it.
+	useEffect(() => {
+		if (wide) setSheetOpen(false);
+	}, [wide]);
+
 	const scrollTo = (index: number) =>
 		document
 			.getElementById(`file-${index}`)
@@ -146,8 +161,14 @@ export function FilesPage() {
 		setCurrent(index);
 		if (sheetOpen) {
 			setSheetOpen(false);
-			// Scroll once the sheet has closed and focus went back to its button.
-			requestAnimationFrame(() => scrollTo(index));
+			// Once the sheet has closed (and handed focus back to its button),
+			// move focus to the picked file's header and scroll there.
+			requestAnimationFrame(() => {
+				document
+					.querySelector<HTMLElement>(`#file-${index} header button`)
+					?.focus({ preventScroll: true });
+				scrollTo(index);
+			});
 		} else {
 			scrollTo(index);
 		}

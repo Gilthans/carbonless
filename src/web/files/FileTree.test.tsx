@@ -134,6 +134,31 @@ describe("FileTree", () => {
 		).toHaveTextContent("crossed off");
 	});
 
+	it("shows a status phrase, not a fraction, for a file without changed lines in lines", () => {
+		const rename: FileView = {
+			...file(4, "docs/new.md", ["unreviewed"]),
+			clusters: [
+				{
+					...(file(4, "x", ["unreviewed"])
+						.clusters[0] as FileView["clusters"][number]),
+					kind: "file",
+					lines: 0,
+				},
+			],
+		};
+		render(
+			<FileTree
+				files={[rename]}
+				unit="lines"
+				current={null}
+				onSelect={() => {}}
+			/>,
+		);
+		const entry = screen.getByRole("button", { name: /new\.md/ });
+		expect(entry).toHaveTextContent("1 cluster left");
+		expect(entry).not.toHaveTextContent("0 / 1");
+	});
+
 	it("selects a file", async () => {
 		const onSelect = vi.fn();
 		render(

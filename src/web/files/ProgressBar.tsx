@@ -6,21 +6,42 @@ import {
 	pagePercent,
 	UNITS,
 	type Unit,
+	unitWord,
 } from "./unit";
 
 export const HATCH =
 	"bg-[repeating-linear-gradient(135deg,#a855f7_0_3px,#d8b4fe_3px_6px)]";
 
-/** Reviewed fills from the left; crossed off is hatched at the right end. */
+/** The gap a meter keeps open while anything is unreviewed, in percent. */
+const OPEN_GAP = 6;
+
+/**
+ * Reviewed fills from the left; crossed off is hatched at the right end.
+ * `incomplete`: something is still unreviewed even if the counts look full
+ * (a rename weighs nothing in lines), so the meter is never shown full.
+ */
 export function Meter({
 	counts,
+	incomplete = false,
 	className = "",
 }: {
 	counts: Counts;
+	incomplete?: boolean;
 	className?: string;
 }) {
-	const share = (n: number) =>
+	const raw = (n: number) =>
 		counts.total === 0 ? 0 : (n / counts.total) * 100;
+	let reviewed = raw(counts.reviewed);
+	let crossed = raw(counts.crossedOff);
+	if (incomplete) {
+		const over = reviewed + crossed - (100 - OPEN_GAP);
+		if (over > 0) {
+			const fromReviewed = Math.min(reviewed, over);
+			reviewed -= fromReviewed;
+			crossed = Math.max(0, crossed - (over - fromReviewed));
+		}
+	}
+	const widths = { reviewed, crossed };
 	return (
 		<div
 			aria-hidden
@@ -28,11 +49,13 @@ export function Meter({
 		>
 			<div
 				className="absolute inset-y-0 left-0 bg-green-600"
-				style={{ width: `${share(counts.reviewed)}%` }}
+				data-part="reviewed"
+				style={{ width: `${widths.reviewed}%` }}
 			/>
 			<div
 				className={`absolute inset-y-0 right-0 ${HATCH}`}
-				style={{ width: `${share(counts.crossedOff)}%` }}
+				data-part="crossed-off"
+				style={{ width: `${widths.crossed}%` }}
 			/>
 		</div>
 	);
@@ -76,7 +99,7 @@ export function ProgressBar(props: {
 	const { progress, unit } = props;
 	const counts = pageCounts(progress, unit);
 	const value = pagePercent(progress, unit);
-	const word = UNITS.find((u) => u.id === unit)?.label.toLowerCase() ?? unit;
+	const word = unitWord(unit);
 	const summary = `${counts.reviewed} / ${counts.total - counts.crossedOff} ${word} reviewed`;
 	const left = clustersLeft(progress);
 	// In lines, a rename or mode change weighs nothing: say it's still there.
@@ -84,6 +107,7 @@ export function ProgressBar(props: {
 		unit === "lines" &&
 		counts.total - counts.reviewed - counts.crossedOff === 0 &&
 		left > 0;
+	const note = `${left} ${left === 1 ? "cluster" : "clusters"} without changed lines left`;
 	return (
 		<div className="sticky top-0 z-20 border-b border-slate-200 bg-white/95 py-2 backdrop-blur">
 			<div className="flex flex-wrap items-center gap-x-3 gap-y-2">
@@ -94,24 +118,23 @@ export function ProgressBar(props: {
 					aria-valuenow={value}
 					aria-valuemin={0}
 					aria-valuemax={100}
-					aria-valuetext={`${value}%, ${summary}`}
-					className="flex min-w-0 flex-1 basis-72 items-center gap-3"
+					aria-valuetext={`${value}%, ${summary}${hiddenLeft ? `, ${note}` : ""}`}
+					className="flex min-w-0 flex-1 basis-64 flex-wrap items-center gap-x-3 gap-y-1.5 sm:flex-nowrap"
 				>
 					<span className="w-11 shrink-0 text-right text-base font-semibold tabular-nums">
 						{value}%
 					</span>
-					<Meter counts={counts} className="h-2.5 min-w-8 flex-1" />
-					<span className="shrink-0 text-sm whitespace-nowrap text-slate-600 tabular-nums">
+					<Meter
+						counts={counts}
+						incomplete={left > 0}
+						className="order-last h-2.5 w-full sm:order-none sm:w-auto sm:min-w-8 sm:flex-1"
+					/>
+					<span className="min-w-0 text-sm text-slate-600 tabular-nums">
 						{summary}
 					</span>
 				</div>
 			</div>
-			{hiddenLeft && (
-				<p className="mt-1 text-xs text-amber-800">
-					{left} {left === 1 ? "cluster" : "clusters"} without changed lines
-					left
-				</p>
-			)}
+			{hiddenLeft && <p className="mt-1 text-xs text-amber-800">{note}</p>}
 		</div>
 	);
 }

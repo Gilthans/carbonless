@@ -84,7 +84,7 @@ function LineRow(props: {
 		<>
 			<tr data-testid="diff-line" className={ROW_BG[line.kind]}>
 				<Rail state={state} />
-				<td className="w-11 px-1 align-top whitespace-nowrap">
+				<td className="w-11 px-1 align-top whitespace-nowrap pointer-coarse:w-20">
 					{props.checkbox}
 				</td>
 				<td
@@ -133,22 +133,32 @@ function ClusterControls(props: {
 	onCrossOff: (cluster: ClusterView) => void;
 }) {
 	const crossedOff = props.cluster.state === "crossed-off";
+	// On touch each control gets its own 40×40 target, side by side so a
+	// mis-tap can't reach the other one; the negative margins keep the row
+	// height. With a mouse they stay compact.
+	const target =
+		"flex items-center justify-center pointer-coarse:-my-2.5 pointer-coarse:h-10 pointer-coarse:w-10";
 	return (
-		<span className="inline-flex items-center gap-1">
-			<input
-				type="checkbox"
-				aria-label={crossedOff ? "Undo cross-off" : "Mark cluster reviewed"}
-				aria-describedby={crossedOff ? props.noteId : undefined}
-				ref={(box) => {
-					if (box) box.indeterminate = crossedOff;
-				}}
-				checked={props.cluster.state === "reviewed"}
-				disabled={props.disabled}
-				onChange={() => props.onToggle(props.cluster)}
-				className={`h-3.5 w-3.5 cursor-pointer disabled:cursor-wait ${
-					crossedOff ? "accent-purple-600" : "accent-green-600"
-				}`}
-			/>
+		<span className="flex items-center gap-1 pointer-coarse:gap-0">
+			<label
+				data-testid="cluster-box-target"
+				className={`${target} cursor-pointer`}
+			>
+				<input
+					type="checkbox"
+					aria-label={crossedOff ? "Undo cross-off" : "Mark cluster reviewed"}
+					aria-describedby={crossedOff ? props.noteId : undefined}
+					ref={(box) => {
+						if (box) box.indeterminate = crossedOff;
+					}}
+					checked={props.cluster.state === "reviewed"}
+					disabled={props.disabled}
+					onChange={() => props.onToggle(props.cluster)}
+					className={`h-3.5 w-3.5 cursor-pointer disabled:cursor-wait ${
+						crossedOff ? "accent-purple-600" : "accent-green-600"
+					}`}
+				/>
+			</label>
 			<button
 				type="button"
 				aria-label="Cross off cluster"
@@ -156,13 +166,18 @@ function ClusterControls(props: {
 				title={crossedOff ? "Undo cross-off" : "Cross off cluster"}
 				disabled={props.disabled || props.cluster.state === "reviewed"}
 				onClick={() => props.onCrossOff(props.cluster)}
-				className={`flex h-4 w-4 items-center justify-center rounded font-sans text-xs leading-none focus-visible:outline-2 focus-visible:outline-blue-600 disabled:cursor-not-allowed disabled:opacity-30 ${
-					crossedOff
-						? "bg-purple-600 text-white"
-						: "text-purple-700 hover:bg-purple-100"
-				}`}
+				className={`${target} group/x rounded focus-visible:outline-2 focus-visible:outline-blue-600 disabled:cursor-not-allowed disabled:opacity-30`}
 			>
-				⊘
+				<span
+					aria-hidden
+					className={`flex h-4 w-4 items-center justify-center rounded font-sans text-xs leading-none ${
+						crossedOff
+							? "bg-purple-600 text-white"
+							: "text-purple-700 group-hover/x:bg-purple-100"
+					}`}
+				>
+					⊘
+				</span>
 			</button>
 		</span>
 	);
@@ -372,7 +387,7 @@ export function DiffBody(props: {
 					<tbody key={cluster.key} className="group">
 						<tr className={cluster.state === "reviewed" ? "opacity-60" : ""}>
 							<Rail state={cluster.state} />
-							<td className="w-11 px-1 py-1 align-top whitespace-nowrap">
+							<td className="w-11 px-1 py-1 align-top whitespace-nowrap pointer-coarse:w-20">
 								{checkbox(cluster)}
 							</td>
 							<td colSpan={COLUMNS - 2} className="px-2 py-1 font-sans text-sm">

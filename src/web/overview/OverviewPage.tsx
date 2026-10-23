@@ -117,7 +117,7 @@ function progressText(progress: Progress): string {
 	const denominator = total - crossedOff;
 	const percent =
 		denominator === 0 ? 100 : Math.floor((reviewed / denominator) * 100);
-	return `${reviewed} / ${denominator} · ${percent}%`;
+	return `${reviewed} / ${denominator} clusters · ${percent}%`;
 }
 
 // ---- What it does ----

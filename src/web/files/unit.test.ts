@@ -2,12 +2,15 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ClusterState, ClusterView, FileView } from "../../shared/types";
 import {
+	type FormatOptions,
 	fileUnitProgress,
+	formatFileProgress,
 	pageCounts,
 	pagePercent,
 	percent,
 	readUnit,
 	UNIT_STORAGE_KEY,
+	type Unit,
 	writeUnit,
 } from "./unit";
 
@@ -90,43 +93,72 @@ describe("fileUnitProgress", () => {
 		cluster("crossed-off", 2),
 		cluster("unreviewed", 5),
 	]);
+	const text = (f: FileView, unit: Unit, opts?: FormatOptions) =>
+		formatFileProgress(fileUnitProgress(f, unit), unit, opts);
 
 	it("counts lines and clusters, leaving crossed off out of the total", () => {
 		expect(fileUnitProgress(mixed, "lines")).toMatchObject({
-			unit: "lines",
 			counts: { total: 10, reviewed: 3, crossedOff: 2 },
-			text: "3 / 8",
+			percent: 37,
 		});
-		expect(fileUnitProgress(mixed, "clusters")).toMatchObject({
-			unit: "clusters",
-			text: "1 / 2",
-		});
+		expect(text(mixed, "lines")).toBe("3 / 8");
+		expect(text(mixed, "lines", { withUnit: true })).toBe("3 / 8 lines");
+		expect(text(mixed, "clusters", { withUnit: true })).toBe("1 / 2 clusters");
 	});
 
 	it("shows a file as done or not done in the files unit", () => {
-		expect(fileUnitProgress(mixed, "files").text).toBe("0 / 1");
-		const done = file([cluster("reviewed", 3), cluster("crossed-off", 2)]);
-		expect(fileUnitProgress(done, "files")).toMatchObject({
-			text: "done",
+		expect(text(mixed, "files")).toBe("0 / 1");
+		const reviewed = file([cluster("reviewed", 3), cluster("reviewed", 2)]);
+		expect(fileUnitProgress(reviewed, "files")).toMatchObject({
 			counts: { total: 1, reviewed: 1, crossedOff: 0 },
+			percent: 100,
 		});
+		expect(text(reviewed, "files")).toBe("done");
+	});
+
+	it("counts a done file with a crossed-off cluster as crossed off, not reviewed", () => {
+		const partly = file([cluster("reviewed", 3), cluster("crossed-off", 2)]);
+		expect(fileUnitProgress(partly, "files").counts).toEqual({
+			total: 1,
+			reviewed: 0,
+			crossedOff: 1,
+		});
+		expect(text(partly, "files")).toBe("crossed off");
 	});
 
 	it("never calls a crossed-off file done or reviewed", () => {
 		const crossed = file([cluster("crossed-off", 2)]);
 		for (const unit of ["lines", "clusters", "files"] as const) {
 			const p = fileUnitProgress(crossed, unit);
-			expect(p.text).toBe("crossed off");
+			expect(formatFileProgress(p, unit)).toBe("crossed off");
 			expect(p.counts.reviewed).toBe(0);
 		}
 	});
 
-	it("falls back to clusters when a file has no changed lines", () => {
+	it("a renamed and edited file isn't finished in lines while the rename is unreviewed", () => {
+		const renamedAndEdited = file([
+			cluster("unreviewed", 0, "file"),
+			cluster("reviewed", 3),
+		]);
+		const p = fileUnitProgress(renamedAndEdited, "lines");
+		expect(p.percent).toBe(99);
+		expect(p.clustersLeft).toBe(1);
+		expect(text(renamedAndEdited, "lines", { withUnit: true })).toBe(
+			"3 / 3 lines · 1 cluster left",
+		);
+		expect(text(renamedAndEdited, "lines", { short: true })).toBe(
+			"3 / 3 · 1 left",
+		);
+	});
+
+	it("shows a status phrase for a file without changed lines in lines", () => {
 		const rename = file([cluster("unreviewed", 0, "file")]);
-		expect(fileUnitProgress(rename, "lines")).toMatchObject({
-			unit: "clusters",
-			text: "0 / 1",
-		});
+		expect(fileUnitProgress(rename, "lines").percent).toBe(0);
+		expect(text(rename, "lines", { withUnit: true })).toBe("1 cluster left");
+		expect(text(rename, "lines", { short: true })).toBe("1 cluster left");
+		const reviewed = file([cluster("reviewed", 0, "file")]);
+		expect(text(reviewed, "lines")).toBe("done");
+		expect(fileUnitProgress(reviewed, "lines").percent).toBe(100);
 	});
 });
 

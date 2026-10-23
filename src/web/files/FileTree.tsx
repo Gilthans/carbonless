@@ -1,6 +1,6 @@
 import type { FileView } from "../../shared/types";
 import { AddDel, crossOffReasons, StatusIcon } from "./status";
-import { fileUnitProgress, type Unit } from "./unit";
+import { fileUnitProgress, formatFileProgress, type Unit } from "./unit";
 
 type Node =
 	| { kind: "folder"; folder: Folder }
@@ -95,7 +95,9 @@ function FileItem(props: {
 						))}
 				</span>
 				<span className="shrink-0 text-xs text-slate-500 tabular-nums">
-					{fileUnitProgress(file, props.unit).text}
+					{formatFileProgress(fileUnitProgress(file, props.unit), props.unit, {
+						short: true,
+					})}
 				</span>
 				<AddDel file={file} />
 			</button>

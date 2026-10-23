@@ -90,6 +90,13 @@ describe("ProgressBar", () => {
 		);
 		const bar = screen.getByRole("progressbar", { name: "Review progress" });
 		expect(bar).toHaveAttribute("aria-valuenow", "99");
+		expect(bar).toHaveAttribute(
+			"aria-valuetext",
+			"99%, 4 / 4 lines reviewed, 1 cluster without changed lines left",
+		);
+		// The meter keeps a gap open: it never looks full.
+		const reviewed = bar.querySelector<HTMLElement>('[data-part="reviewed"]');
+		expect(Number.parseFloat(reviewed?.style.width ?? "100")).toBeLessThan(100);
 		expect(
 			screen.getByText("1 cluster without changed lines left"),
 		).toBeInTheDocument();

@@ -20,9 +20,14 @@ export async function openFiles(
 }
 
 export async function chooseUnit(page: Page, unit: UnitName) {
-	const radio = page.getByRole("radio", { name: unit, exact: true });
-	await radio.check({ force: true });
-	await expect(radio).toBeChecked();
+	// The radio itself is visually hidden: tap its label like a person would.
+	await page
+		.getByRole("group", { name: "Count progress in" })
+		.getByText(unit, { exact: true })
+		.click();
+	await expect(
+		page.getByRole("radio", { name: unit, exact: true }),
+	).toBeChecked();
 }
 
 export const fileSection = (page: Page, path: string) =>

@@ -10,7 +10,12 @@ import { ErrorMessage } from "../ui";
 import { DiffBody } from "./DiffBody";
 import { Meter } from "./ProgressBar";
 import { AddDel, StatusIcon } from "./status";
-import { fileUnitProgress, percent, UNITS, type Unit } from "./unit";
+import {
+	fileUnitProgress,
+	formatFileProgress,
+	type Unit,
+	unitWord,
+} from "./unit";
 import { isStale, useSetStates } from "./useSetStates";
 
 /** The server's limit on changes per request (MAX_CHANGES in app.ts). */
@@ -27,12 +32,15 @@ const buttonClass =
 function PathScroller({ text }: { text: string }) {
 	const box = useRef<HTMLDivElement>(null);
 	const inner = useRef<HTMLSpanElement>(null);
+	// More of the path sits to the left: fade the left edge to say so.
+	const [clipped, setClipped] = useState(false);
 	// biome-ignore lint/correctness/useExhaustiveDependencies: re-pin on a new path.
 	useLayoutEffect(() => {
 		const el = box.current;
 		if (!el) return;
 		const toEnd = () => {
 			el.scrollLeft = el.scrollWidth;
+			setClipped(el.scrollLeft > 0);
 		};
 		toEnd();
 		if (typeof ResizeObserver === "undefined") return;
@@ -42,41 +50,74 @@ function PathScroller({ text }: { text: string }) {
 		return () => observer.disconnect();
 	}, [text]);
 	return (
-		<div
-			ref={box}
-			data-testid="file-path"
-			title={text}
-			className="min-w-0 flex-1 overflow-x-auto font-mono text-sm whitespace-nowrap [scrollbar-width:thin]"
-		>
-			<span ref={inner} className="inline-block py-1">
-				{text}
-			</span>
+		<div className="relative min-w-0 flex-1">
+			{/* biome-ignore lint/a11y/useSemanticElements: a named group; a fieldset is for form controls, not a path. */}
+			<div
+				ref={box}
+				role="group"
+				aria-label={`Path: ${text}`}
+				// A scroll box must be reachable by keyboard to scroll it (WCAG 2.1.1).
+				// biome-ignore lint/a11y/noNoninteractiveTabindex: see above.
+				tabIndex={0}
+				data-testid="file-path"
+				title={text}
+				onScroll={(event) => setClipped(event.currentTarget.scrollLeft > 0)}
+				className="overflow-x-auto rounded font-mono text-sm whitespace-nowrap [scrollbar-width:thin] focus-visible:outline-2 focus-visible:outline-blue-600"
+			>
+				<span ref={inner} className="inline-block py-1">
+					{text}
+				</span>
+			</div>
+			{clipped && (
+				<span
+					aria-hidden
+					data-testid="path-fade"
+					className="pointer-events-none absolute inset-y-0 left-0 flex w-6 items-center bg-gradient-to-r from-slate-50 from-40% to-transparent font-mono text-sm text-slate-400"
+				>
+					…
+				</span>
+			)}
 		</div>
 	);
 }
 
 /** The file's progress in the unit: fixed size, pinned right, so headers line up. */
 function FileProgress({ file, unit }: { file: FileView; unit: Unit }) {
-	const { unit: shown, counts, text } = fileUnitProgress(file, unit);
-	const word = UNITS.find((u) => u.id === shown)?.label.toLowerCase() ?? shown;
-	const label = /\d/.test(text) && unit !== "files" ? `${text} ${word}` : text;
+	const p = fileUnitProgress(file, unit);
+	const { counts } = p;
+	const word = p.status === null ? unitWord(unit) : "clusters";
 	const crossed =
 		counts.crossedOff > 0 ? `, ${counts.crossedOff} crossed off` : "";
+	const left = p.hiddenLeft
+		? `, ${p.clustersLeft} ${p.clustersLeft === 1 ? "cluster" : "clusters"} without changed lines left`
+		: "";
+	const sentence =
+		p.status ??
+		`${counts.reviewed} of ${counts.total - counts.crossedOff} ${word} reviewed${crossed}${left}`;
 	return (
 		<div
 			role="progressbar"
 			aria-label="File progress"
-			aria-valuenow={percent(counts)}
+			aria-valuenow={p.percent}
 			aria-valuemin={0}
 			aria-valuemax={100}
-			aria-valuetext={`${counts.reviewed} of ${counts.total - counts.crossedOff} ${word} reviewed${crossed}`}
-			title={`${counts.reviewed} of ${counts.total - counts.crossedOff} ${word} reviewed${crossed}`}
-			className="flex h-9 w-24 shrink-0 flex-col justify-center gap-1 @2xl:w-36"
+			aria-valuetext={sentence}
+			title={sentence}
+			className="flex h-9 w-28 shrink-0 flex-col justify-center gap-1 @2xl:w-48"
 		>
 			<span className="truncate text-right text-xs text-slate-600 tabular-nums">
-				{label}
+				<span className="@2xl:hidden">
+					{formatFileProgress(p, unit, { short: true })}
+				</span>
+				<span className="hidden @2xl:inline">
+					{formatFileProgress(p, unit, { withUnit: true })}
+				</span>
 			</span>
-			<Meter counts={counts} className="h-1.5" />
+			<Meter
+				counts={counts}
+				incomplete={p.clustersLeft > 0}
+				className="h-1.5"
+			/>
 		</div>
 	);
 }
@@ -129,7 +170,7 @@ function FileActions({ children }: { children: ReactNode }) {
 				⋯
 			</button>
 			<div
-				className={`${open ? "flex" : "hidden"} absolute top-full right-0 z-30 mt-1 w-max flex-col items-stretch gap-1 rounded-md border border-slate-200 bg-white p-1 shadow-lg @2xl:static @2xl:mt-0 @2xl:flex @2xl:flex-row @2xl:items-center @2xl:gap-2 @2xl:border-0 @2xl:bg-transparent @2xl:p-0 @2xl:shadow-none`}
+				className={`${open ? "flex" : "hidden"} absolute top-full right-0 z-40 mt-1 w-max flex-col items-stretch gap-1 rounded-md border border-slate-200 bg-white p-1 shadow-lg @2xl:static @2xl:mt-0 @2xl:flex @2xl:flex-row @2xl:items-center @2xl:gap-2 @2xl:border-0 @2xl:bg-transparent @2xl:p-0 @2xl:shadow-none`}
 			>
 				{children}
 			</div>
@@ -209,7 +250,7 @@ export function FileDiff(props: {
 						aria-expanded={expanded}
 						aria-label={expanded ? "Collapse file" : "Expand file"}
 						onClick={() => setExpanded((e) => !e)}
-						className="flex h-10 w-8 shrink-0 items-center justify-center rounded text-slate-600 hover:bg-slate-200 focus-visible:outline-2 focus-visible:outline-blue-600"
+						className="flex h-10 w-10 shrink-0 items-center justify-center rounded text-slate-600 hover:bg-slate-200 focus-visible:outline-2 focus-visible:outline-blue-600"
 					>
 						{expanded ? "▾" : "▸"}
 					</button>
