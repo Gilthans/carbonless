@@ -38,7 +38,12 @@ export function App() {
 								</h1>
 								<span className="text-2xl text-slate-500">
 									{prUrl ? (
-										<a href={prUrl} className="hover:underline">
+										<a
+											href={prUrl}
+											target="_blank"
+											rel="noreferrer"
+											className="hover:underline"
+										>
 											#{pr.number}
 										</a>
 									) : (

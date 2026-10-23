@@ -30,11 +30,35 @@ export interface GitFixture {
 	cleanup: () => void;
 }
 
+/**
+ * process.env without any GIT_* variable (GIT_DIR, GIT_INDEX_FILE,
+ * GIT_WORK_TREE... leak in when tests run from a git hook) and without the
+ * user's global and system git config. Fixture repos set their own identity.
+ */
+export function testGitEnv(
+	extra: Record<string, string> = {},
+): NodeJS.ProcessEnv {
+	const env: NodeJS.ProcessEnv = {};
+	for (const [key, value] of Object.entries(process.env)) {
+		if (!key.startsWith("GIT_")) env[key] = value;
+	}
+	return {
+		...env,
+		GIT_CONFIG_GLOBAL: "/dev/null",
+		GIT_CONFIG_NOSYSTEM: "1",
+		...extra,
+	};
+}
+
 /** Creates a throwaway git repository with the given commits. */
 export function createGitFixture(commits: FixtureCommit[]): GitFixture {
 	const path = mkdtempSync(join(tmpdir(), "carbonless-fixture-"));
 	const git = (...args: string[]) =>
-		execFileSync("git", args, { cwd: path, encoding: "utf8" }).trim();
+		execFileSync("git", args, {
+			cwd: path,
+			encoding: "utf8",
+			env: testGitEnv(),
+		}).trim();
 
 	git("init", "--quiet", "--initial-branch=main");
 	git("config", "user.name", "Fixture Author");
@@ -81,7 +105,9 @@ export function createGitFixture(commits: FixtureCommit[]): GitFixture {
 /** Creates an empty throwaway bare repository, like carbonless's private clone. */
 export function createBareRepo(): { path: string; cleanup: () => void } {
 	const path = mkdtempSync(join(tmpdir(), "carbonless-bare-"));
-	execFileSync("git", ["init", "--quiet", "--bare", path]);
+	execFileSync("git", ["init", "--quiet", "--bare", path], {
+		env: testGitEnv(),
+	});
 	return {
 		path,
 		cleanup: () => rmSync(path, { recursive: true, force: true }),

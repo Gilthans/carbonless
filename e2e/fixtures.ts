@@ -14,6 +14,7 @@ import {
 	createGitFixture,
 	type FixtureCommit,
 	type GitFixture,
+	testGitEnv,
 } from "../test/git-fixture";
 
 /** Fields of a `gh pr view --json` object (see test/fixtures/gh/pr-view.json). */
@@ -27,6 +28,7 @@ export const PR_NUMBER = 7;
 export interface PrOptions {
 	/** Commits on the PR branch, on top of `main`'s single base commit. */
 	files?: FixtureCommit[];
+	/** `gh pr view` fields; `headRefOid` is always the fixture's PR head. */
 	overview?: Partial<ViewJson>;
 	threads?: ThreadJson[];
 	/** Other scenario fields (loggedOut, comments, reviews, ...). */
@@ -91,8 +93,13 @@ export const test = base.extend<{
 	workdir: string;
 	pr: (opts?: PrOptions) => Promise<Pr>;
 	startCrb: (arg?: string, extraArgs?: string[]) => Promise<Crb>;
-	/** Fails the test on browser console errors and uncaught page errors. */
-	consoleErrors: undefined;
+	/**
+	 * Auto fixture: fails the test on browser console errors and uncaught page
+	 * errors, except those matching a pattern declared with
+	 * `expectConsoleError(/409/)` (Chromium logs "Failed to load resource"
+	 * for every non-2xx fetch).
+	 */
+	expectConsoleError: (pattern: RegExp) => void;
 }>({
 	// biome-ignore lint/correctness/noEmptyPattern: Playwright requires a destructuring pattern.
 	workdir: async ({}, use) => {
@@ -110,7 +117,11 @@ export const test = base.extend<{
 			]);
 			repos.push(repo);
 			const git = (...args: string[]) =>
-				execFileSync("git", args, { cwd: repo.path, encoding: "utf8" }).trim();
+				execFileSync("git", args, {
+					cwd: repo.path,
+					encoding: "utf8",
+					env: testGitEnv(),
+				}).trim();
 			const mergeBase = repo.shas[0] ?? "";
 			let head = repo.shas.at(-1) ?? "";
 			// The PR head lives only under refs/pull/<n>/head, like on GitHub.
@@ -149,9 +160,11 @@ export const test = base.extend<{
 				moveHead: (commit) => {
 					const work = join(workdir, "work");
 					git("worktree", "add", "--quiet", "--detach", work, head);
-					const created = commitInWorktree(work, commit);
-					git("worktree", "remove", "--force", work);
-					head = created;
+					try {
+						head = commitInWorktree(work, commit);
+					} finally {
+						git("worktree", "remove", "--force", work);
+					}
 					git("update-ref", `refs/pull/${PR_NUMBER}/head`, head);
 					write();
 				},
@@ -169,12 +182,11 @@ export const test = base.extend<{
 				{
 					cwd: workdir,
 					stdio: ["ignore", "pipe", "pipe"],
-					env: {
-						...process.env,
+					env: testGitEnv({
 						PATH: `${FAKE_GH_DIR}:${process.env.PATH ?? ""}`,
 						CRB_FAKE_GH: join(workdir, "fake-gh-scenario.json"),
 						XDG_CACHE_HOME: join(workdir, "cache"),
-					},
+					}),
 				},
 			);
 			children.push(child);
@@ -198,21 +210,31 @@ export const test = base.extend<{
 					clearTimeout(timer);
 					fail(new CrbExitError(code, output));
 				});
+				child.once("error", (error) => {
+					clearTimeout(timer);
+					fail(new Error(`could not start crb: ${error.message}`));
+				});
 			});
 			return { url, output: () => output, stop: () => stopChild(child) };
 		});
 		await Promise.all(children.map(stopChild));
 	},
 
-	consoleErrors: [
+	expectConsoleError: [
 		async ({ page }, use) => {
 			const errors: string[] = [];
+			const expected: RegExp[] = [];
 			page.on("console", (message) => {
 				if (message.type() === "error") errors.push(message.text());
 			});
 			page.on("pageerror", (error) => errors.push(error.message));
-			await use(undefined);
-			expect(errors, "browser console errors").toEqual([]);
+			await use((pattern) => {
+				expected.push(pattern);
+			});
+			const unexpected = errors.filter(
+				(text) => !expected.some((pattern) => pattern.test(text)),
+			);
+			expect(unexpected, "unexpected browser console errors").toEqual([]);
 		},
 		{ auto: true },
 	],
@@ -224,7 +246,11 @@ export const test = base.extend<{
  */
 function commitInWorktree(dir: string, commit: FixtureCommit): string {
 	const git = (...args: string[]) =>
-		execFileSync("git", args, { cwd: dir, encoding: "utf8" }).trim();
+		execFileSync("git", args, {
+			cwd: dir,
+			encoding: "utf8",
+			env: testGitEnv(),
+		}).trim();
 	for (const name of commit.delete ?? []) {
 		rmSync(join(dir, name), { force: true });
 	}

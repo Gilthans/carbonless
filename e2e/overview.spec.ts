@@ -37,6 +37,12 @@ test("shows what the PR does, who's on it and whether it's ready", async ({
 	await expect(
 		page.getByRole("region", { name: "Is it ready" }).getByText("No reply"),
 	).toBeVisible();
+	const noReply = page
+		.getByRole("region", { name: "Is it ready" })
+		.getByRole("list", { name: "No reply" });
+	await expect(noReply.getByRole("listitem")).toHaveCount(1);
+	await expect(noReply).toContainText("src/bot.ts:3");
+	await expect(noReply).not.toContainText("src/cache.ts");
 });
 
 test("shows who started reviewing and the description as markdown", async ({

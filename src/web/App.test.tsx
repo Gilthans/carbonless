@@ -110,6 +110,8 @@ const review: ReviewView = {
 
 type Routes = Record<string, { status: number; body: unknown }>;
 
+let fetchMock: ReturnType<typeof mockApi>;
+
 function mockApi(routes: Routes) {
 	const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
 		const path = new URL(String(input), "http://test").pathname;
@@ -126,7 +128,7 @@ function mockApi(routes: Routes) {
 const ok = (body: unknown) => ({ status: 200, body });
 
 function renderApp(routes: Partial<Routes> = {}, path = "/") {
-	mockApi({
+	fetchMock = mockApi({
 		"/api/session": ok(info),
 		"/api/overview": ok(overview),
 		"/api/review": ok(review),
@@ -136,12 +138,16 @@ function renderApp(routes: Partial<Routes> = {}, path = "/") {
 		defaultOptions: { queries: { retry: false } },
 	});
 	const router = createAppRouter({ initialPath: path });
-	return render(
+	const view = render(
 		<QueryClientProvider client={queryClient}>
 			<RouterProvider router={router} />
 		</QueryClientProvider>,
 	);
+	return { ...view, router };
 }
+
+const calls = (path: string) =>
+	fetchMock.mock.calls.filter(([input]) => String(input) === path).length;
 
 describe("App", () => {
 	afterEach(() => {
@@ -157,7 +163,20 @@ describe("App", () => {
 				name: "Add widget cache",
 			}),
 		).toBeInTheDocument();
-		expect(screen.getByText("#12")).toBeInTheDocument();
+		const number = screen.getByRole("link", { name: "#12" });
+		expect(number).toHaveAttribute("target", "_blank");
+		expect(number).toHaveAttribute("rel", "noreferrer");
+	});
+
+	it("does not ask GitHub again when the overview remounts", async () => {
+		const { router } = renderApp();
+		await screen.findByRole("region", { name: "What it does" });
+		await router.navigate({ to: "/files" });
+		await screen.findByRole("region", { name: "Files changed" });
+		await router.navigate({ to: "/" });
+		await screen.findByRole("region", { name: "What it does" });
+		expect(calls("/api/overview")).toBe(1);
+		expect(calls("/api/session")).toBe(1);
 	});
 
 	it("shows the server's error message", async () => {

@@ -77,14 +77,21 @@ export const postStates = (revision: string, changes: StateChange[]) =>
 export const postRefresh = () => post<SessionInfo>("/api/refresh");
 export const fetchHead = () => request<SessionInfo>("/api/head");
 
+/**
+ * Session and overview change only through Refresh (and the head check,
+ * which writes its own answer), and each overview read costs several gh
+ * calls, so neither refetches on remount or tab switches.
+ */
 export const sessionQuery = queryOptions({
 	queryKey: ["session"],
 	queryFn: fetchSession,
+	staleTime: Number.POSITIVE_INFINITY,
 });
 
 export const overviewQuery = queryOptions({
 	queryKey: ["overview"],
 	queryFn: fetchOverview,
+	staleTime: Number.POSITIVE_INFINITY,
 });
 
 export const reviewQuery = queryOptions({
