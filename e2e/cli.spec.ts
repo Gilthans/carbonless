@@ -1,0 +1,63 @@
+import { CrbExitError, expect, test } from "./fixtures";
+
+async function exitOf(promise: Promise<unknown>): Promise<CrbExitError> {
+	const error = await promise.then(
+		() => {
+			throw new Error("crb started but should have exited");
+		},
+		(e: unknown) => e,
+	);
+	if (!(error instanceof CrbExitError)) throw error;
+	return error;
+}
+
+test("rejects an argument that is not a PR", async ({ pr, startCrb }) => {
+	await pr();
+	const exit = await exitOf(startCrb("not-a-pr"));
+	expect(exit.code).toBe(1);
+	expect(exit.output).toContain("crb: Not a PR");
+});
+
+test("says when gh is not logged in", async ({ pr, startCrb }) => {
+	await pr({ scenario: { loggedOut: true } });
+	const exit = await exitOf(startCrb());
+	expect(exit.code).toBe(1);
+	expect(exit.output).toContain("gh is not logged in");
+});
+
+test("says when the PR does not exist", async ({ pr, startCrb }) => {
+	await pr();
+	const exit = await exitOf(startCrb("acme/widget#99"));
+	expect(exit.code).toBe(1);
+	expect(exit.output).toMatch(/crb: .*not found/);
+});
+
+test("a non-loopback host needs the access key", async ({
+	page,
+	pr,
+	request,
+	startCrb,
+}) => {
+	await pr();
+	const s = await startCrb(undefined, ["--host", "0.0.0.0"]);
+	expect(s.url).toContain("?key=");
+	const url = new URL(s.url);
+	const port = url.port;
+	const bare = await request.get(`http://127.0.0.1:${port}/api/session`);
+	expect(bare.status()).toBe(401);
+	await page.goto(s.url.replace("0.0.0.0", "127.0.0.1"));
+	await expect(
+		page.getByRole("region", { name: "What it does" }),
+	).toBeVisible();
+});
+
+test("can be restarted on the same PR", async ({ page, pr, startCrb }) => {
+	await pr();
+	const first = await startCrb();
+	await first.stop();
+	const second = await startCrb();
+	await page.goto(second.url);
+	await expect(
+		page.getByRole("region", { name: "What it does" }),
+	).toBeVisible();
+});

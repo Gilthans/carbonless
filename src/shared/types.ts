@@ -138,6 +138,7 @@ export interface PrOverview {
 		opinion?: "APPROVED" | "CHANGES_REQUESTED" | "DISMISSED";
 		submittedAt: string;
 		you: boolean;
+		bot: boolean;
 	}[];
 	commenters: { author: string; lastAt: string; bot: boolean; you: boolean }[];
 	/** Any review or comment by a non-bot who is neither the PR author nor the viewer. */

@@ -64,6 +64,7 @@ describe("mapOverview", () => {
 				opinion: "CHANGES_REQUESTED",
 				submittedAt: "2026-01-04T09:00:00Z",
 				you: false,
+				bot: false,
 			},
 			{
 				author: "jdoe_acme",
@@ -71,12 +72,14 @@ describe("mapOverview", () => {
 				opinion: "CHANGES_REQUESTED",
 				submittedAt: "2026-01-03T10:00:00Z",
 				you: true,
+				bot: false,
 			},
 			{
 				author: "github-actions",
 				state: "COMMENTED",
 				submittedAt: "2026-01-02T11:00:00Z",
 				you: false,
+				bot: true,
 			},
 		]);
 	});

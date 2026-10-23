@@ -158,7 +158,7 @@ export function mapOverview(
 	}
 
 	type Review = PrOverview["reviews"][number];
-	const byReviewer = new Map<string, Review & { bot: boolean }>();
+	const byReviewer = new Map<string, Review>();
 	const opinions = new Map<
 		string,
 		{ at: string; state: NonNullable<Review["opinion"]> }
@@ -194,7 +194,7 @@ export function mapOverview(
 	const reviewers = [...byReviewer.entries()].sort((a, b) =>
 		b[1].submittedAt.localeCompare(a[1].submittedAt),
 	);
-	const reviews: Review[] = reviewers.map(([key, { bot: _bot, ...review }]) => {
+	const reviews: Review[] = reviewers.map(([key, review]) => {
 		const opinion = opinions.get(key)?.state;
 		return opinion ? { ...review, opinion } : review;
 	});
