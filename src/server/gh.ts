@@ -131,16 +131,7 @@ export function parsePrArg(
 	if (!full) return { number };
 	const [, owner, repo] = full;
 	// Task 6 builds cache paths from these, so they must be plain path segments.
-	if (
-		!owner ||
-		!repo ||
-		!OWNER.test(owner) ||
-		!REPO.test(repo) ||
-		repo === "." ||
-		repo === ".."
-	) {
-		throw fail();
-	}
+	if (!owner || !repo || !validOwnerRepo(owner, repo)) throw fail();
 	return { owner, repo, number };
 }
 
@@ -208,43 +199,58 @@ async function prView(ref: PrRef, fields: string): Promise<unknown> {
 	}
 }
 
+function rec(value: unknown): Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value)
+		? (value as Record<string, unknown>)
+		: {};
+}
+
+function validOwnerRepo(owner: string, repo: string): boolean {
+	return OWNER.test(owner) && REPO.test(repo) && repo !== "." && repo !== "..";
+}
+
 export async function fetchPrMeta(ref: PrRef): Promise<PrMeta> {
-	const v = (await prView(
-		ref,
-		"number,title,url,state,baseRefName,headRefName,headRefOid,headRepository,headRepositoryOwner",
-	)) as Record<string, any> | null;
-	if (!v || typeof v !== "object") {
+	const v = rec(
+		await prView(
+			ref,
+			"number,title,url,state,baseRefName,headRefName,headRefOid,headRepository,headRepositoryOwner",
+		),
+	);
+	const { headRefOid, baseRefName, headRefName } = v;
+	if (
+		typeof headRefOid !== "string" ||
+		typeof baseRefName !== "string" ||
+		typeof headRefName !== "string"
+	) {
 		throw new GhError("gh returned an unexpected response for the PR");
 	}
-	const headOwner = v.headRepositoryOwner?.login;
-	const headName = v.headRepository?.name;
+	const headOwner = rec(v.headRepositoryOwner).login;
+	const headName = rec(v.headRepository).name;
 	// A deleted fork has no head repository; the PR head still lives in the base repo.
 	const headRepo =
 		typeof headOwner === "string" && typeof headName === "string"
 			? `${headOwner}/${headName}`
 			: `${ref.owner}/${ref.repo}`;
-	if (
-		typeof v.headRefOid !== "string" ||
-		typeof v.baseRefName !== "string" ||
-		typeof v.headRefName !== "string"
-	) {
-		throw new GhError("gh returned an unexpected response for the PR");
-	}
 	// The PR's own URL carries GitHub's canonical owner/repo spelling (and
 	// follows renames); use it so every spelling maps to one cache dir and key.
-	const url = String(v.url ?? "");
+	const url = typeof v.url === "string" ? v.url : "";
 	const canonical = PR_URL.exec(url);
+	const owner = canonical?.[1] ?? ref.owner;
+	const repo = canonical?.[2] ?? ref.repo;
+	if (!validOwnerRepo(owner, repo)) {
+		throw new GhError("gh returned an unexpected response for the PR");
+	}
 	return {
-		owner: canonical?.[1] ?? ref.owner,
-		repo: canonical?.[2] ?? ref.repo,
+		owner,
+		repo,
 		number: ref.number,
 		url,
-		title: String(v.title ?? ""),
-		baseBranch: v.baseRefName,
-		headBranch: v.headRefName,
+		title: typeof v.title === "string" ? v.title : "",
+		baseBranch: baseRefName,
+		headBranch: headRefName,
 		headRepo,
-		headOid: v.headRefOid,
-		state: ["CLOSED", "MERGED"].includes(v.state) ? v.state : "OPEN",
+		headOid: headRefOid,
+		state: v.state === "CLOSED" || v.state === "MERGED" ? v.state : "OPEN",
 	};
 }
 
@@ -296,17 +302,21 @@ async function fetchConnection(
 				`number=${ref.number}`,
 				...(after ? ["-f", `endCursor=${after}`] : []),
 			]),
-		) as any;
-		const conn = out?.data?.repository?.pullRequest?.[connection];
-		if (!conn || !Array.isArray(conn.nodes)) {
+		);
+		const conn = rec(rec(rec(rec(out).data).repository).pullRequest)[
+			connection
+		];
+		const { nodes: pageNodes, pageInfo } = rec(conn);
+		if (!Array.isArray(pageNodes)) {
 			throw new GhError(
 				`gh returned an unexpected response for the PR ${connection}`,
 			);
 		}
-		nodes.push(...conn.nodes);
-		if (conn.pageInfo?.hasNextPage !== true) return nodes;
-		if (typeof conn.pageInfo.endCursor !== "string") break;
-		after = conn.pageInfo.endCursor;
+		nodes.push(...pageNodes);
+		const info = rec(pageInfo);
+		if (info.hasNextPage !== true) return nodes;
+		if (typeof info.endCursor !== "string") break;
+		after = info.endCursor;
 	}
 	throw new GhError(`Too many ${connection} to read for this PR`);
 }

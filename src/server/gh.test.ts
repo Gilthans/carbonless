@@ -244,6 +244,20 @@ describe("runGh with a fake gh", () => {
 		});
 	});
 
+	it("rejects a PR url with an unsafe owner", async () => {
+		setEnv({
+			FAKE_VIEW: JSON.stringify({
+				number: 12,
+				url: "https://github.com/../widget/pull/12",
+				state: "OPEN",
+				baseRefName: "main",
+				headRefName: "f",
+				headRefOid: "abc",
+			}),
+		});
+		await expect(fetchPrMeta(ref)).rejects.toThrow(GhError);
+	});
+
 	it("follows pagination for review threads", async () => {
 		const page = (nodes: unknown[], next: boolean) =>
 			JSON.stringify({

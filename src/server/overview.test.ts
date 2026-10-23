@@ -3,14 +3,36 @@ import { describe, expect, it } from "vitest";
 import { GhError } from "./errors";
 import { mapOverview } from "./overview";
 
-const load = (name: string): any =>
+interface Actor {
+	login: string;
+	__typename?: string;
+}
+interface Review {
+	author: Actor;
+	state: string;
+	submittedAt: string;
+}
+interface Comment {
+	author: Actor;
+	createdAt: string;
+}
+interface Thread {
+	comments: { nodes: { body: string }[] };
+}
+
+const load = <T>(name: string): T =>
 	JSON.parse(readFileSync(`test/fixtures/gh/${name}`, "utf8"));
 const view = () => load("pr-view.json");
-const graph = () => ({
-	reviewThreads: load("review-threads.json") as any[],
-	comments: load("pr-activity.json").comments as any[],
-	reviews: load("pr-activity.json").reviews as any[],
-});
+const graph = () => {
+	const activity = load<{ comments: Comment[]; reviews: Review[] }>(
+		"pr-activity.json",
+	);
+	return {
+		reviewThreads: load<Thread[]>("review-threads.json"),
+		comments: activity.comments,
+		reviews: activity.reviews,
+	};
+};
 // The viewer's login has an underscore; callers may pass the login or its slug.
 const VIEWER = "jdoe_acme";
 
@@ -139,7 +161,8 @@ describe("mapOverview", () => {
 
 	it("cuts thread excerpts at 200 characters", () => {
 		const g = graph();
-		g.reviewThreads[0].comments.nodes[0].body = "x".repeat(300);
+		const first = g.reviewThreads[0]?.comments.nodes[0];
+		if (first) first.body = "x".repeat(300);
 		expect(mapOverview(view(), g, VIEWER).threads[0]?.excerpt).toHaveLength(
 			200,
 		);
