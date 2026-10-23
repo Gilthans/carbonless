@@ -1,0 +1,134 @@
+#!/usr/bin/env node
+// A fake `gh` for tests. It answers exactly the calls src/server/gh.ts and
+// src/server/clone.ts make, from the scenario JSON at $CRB_FAKE_GH (see
+// scenario.ts). Every call is appended to $CRB_FAKE_GH_LOG when set.
+import { execFileSync } from "node:child_process";
+import { appendFileSync, readFileSync } from "node:fs";
+
+const args = process.argv.slice(2);
+if (process.env.CRB_FAKE_GH_LOG) {
+	appendFileSync(process.env.CRB_FAKE_GH_LOG, `${args.join(" ")}\n`);
+}
+const s = JSON.parse(readFileSync(process.env.CRB_FAKE_GH, "utf8"));
+
+function fail(message, code = 1) {
+	process.stderr.write(`${message}\n`);
+	process.exit(code);
+}
+function print(value) {
+	process.stdout.write(`${JSON.stringify(value)}\n`);
+	process.exit(0);
+}
+const unsupported = () => fail(`fake gh: unsupported: ${args.join(" ")}`, 2);
+const notFound = (n) =>
+	fail(
+		`GraphQL: Could not resolve to a PullRequest with the number of ${n}. (repository.pullRequest)`,
+	);
+
+/** Values of `-f key=value` / `-F key=value` pairs. */
+function fields() {
+	const out = {};
+	for (let i = 0; i < args.length - 1; i++) {
+		if (args[i] !== "-f" && args[i] !== "-F") continue;
+		const [key, ...rest] = args[i + 1].split("=");
+		out[key] = rest.join("=");
+	}
+	return out;
+}
+
+const cmd = `${args[0]} ${args[1]}`;
+const known = [
+	"auth status",
+	"api user",
+	"api graphql",
+	"repo view",
+	"repo clone",
+	"pr view",
+];
+if (!known.includes(cmd)) unsupported();
+
+if (s.loggedOut) {
+	if (cmd === "auth status") {
+		fail(
+			"You are not logged into any GitHub hosts. To log in, run: gh auth login",
+		);
+	}
+	fail("To get started with GitHub CLI, please run:  gh auth login", 4);
+}
+
+switch (cmd) {
+	case "auth status":
+		process.stdout.write(
+			`github.com\n  ✓ Logged in to github.com account ${s.user.login}\n`,
+		);
+		process.exit(0);
+		break;
+	case "api user":
+		if (args.length !== 2) unsupported();
+		print(s.user);
+		break;
+	case "repo view":
+		if (args.slice(2).join(" ") !== "--json nameWithOwner") unsupported();
+		if (!s.nameWithOwner) {
+			fail(
+				"none of the git remotes configured for this repository point to a known GitHub host",
+			);
+		}
+		print({ nameWithOwner: s.nameWithOwner });
+		break;
+	case "repo clone": {
+		const [, , , path, dashes, bare, ...extra] = args;
+		if (dashes !== "--" || bare !== "--bare" || extra.length) unsupported();
+		try {
+			execFileSync("git", ["clone", "--quiet", "--bare", s.repoPath, path], {
+				stdio: ["ignore", "ignore", "pipe"],
+			});
+		} catch (error) {
+			fail(String(error.stderr).trim() || "git clone failed");
+		}
+		process.exit(0);
+		break;
+	}
+	case "pr view": {
+		const [, , n, r, , json, wanted, ...extra] = args;
+		if (r !== "-R" || json !== "--json" || !wanted || extra.length) {
+			unsupported();
+		}
+		const pr = s.prs[n];
+		if (!pr) notFound(n);
+		const out = {};
+		for (const f of wanted.split(",")) if (f in pr.view) out[f] = pr.view[f];
+		print(out);
+		break;
+	}
+	case "api graphql": {
+		const f = fields();
+		const conn = /(\w+)\(first: \d+, after: \$endCursor\)/.exec(f.query)?.[1];
+		if (!["reviewThreads", "comments", "reviews"].includes(conn)) {
+			unsupported();
+		}
+		const pr = s.prs[f.number];
+		if (!pr) notFound(f.number);
+		const all = pr.graphql?.[conn] ?? [];
+		const size = s.pageSize ?? 100;
+		const start = f.endCursor ? Number(f.endCursor.replace("cursor:", "")) : 0;
+		const end = start + size;
+		const hasNextPage = end < all.length;
+		print({
+			data: {
+				repository: {
+					pullRequest: {
+						[conn]: {
+							pageInfo: {
+								hasNextPage,
+								endCursor: hasNextPage ? `cursor:${end}` : null,
+							},
+							nodes: all.slice(start, end),
+						},
+					},
+				},
+			},
+		});
+		break;
+	}
+}

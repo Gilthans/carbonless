@@ -1,0 +1,304 @@
+import { execFileSync } from "node:child_process";
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	statSync,
+	utimesSync,
+	writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import {
+	FAKE_GH_DIR,
+	type Scenario,
+	writeScenario,
+} from "../../test/fake-gh/scenario";
+import { createGitFixture, type GitFixture } from "../../test/git-fixture";
+import { clonePath, ensureClone, fetchPr, withRepoLock } from "./clone";
+import type { PrMeta } from "./gh";
+
+const git = (cwd: string, ...args: string[]) =>
+	execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
+
+/** Every ref, HEAD and the working tree status: what fetching must not change. */
+const repoState = (path: string) =>
+	[
+		git(path, "for-each-ref", "--format=%(refname) %(objectname)"),
+		git(path, "symbolic-ref", "HEAD"),
+		git(path, "rev-parse", "HEAD"),
+		git(path, "status", "--porcelain"),
+	].join("\n");
+
+describe("private clone", () => {
+	let tmp: string;
+	let fixture: GitFixture;
+	let scenarioPath: string;
+	let shas: { branchPoint: string; head: string; base: string };
+	const saved: Record<string, string | undefined> = {};
+	const setEnv = (vars: Record<string, string>) => {
+		for (const [k, v] of Object.entries(vars)) {
+			if (!(k in saved)) saved[k] = process.env[k];
+			process.env[k] = v;
+		}
+	};
+	const ghLog = () => {
+		const path = join(tmp, "gh.log");
+		return existsSync(path) ? readFileSync(path, "utf8") : "";
+	};
+	const scenario = (over: Partial<Scenario> = {}) => {
+		scenarioPath = writeScenario(tmp, {
+			repoPath: fixture.path,
+			user: { login: "octo" },
+			prs: {},
+			...over,
+		});
+		setEnv({ CRB_FAKE_GH: scenarioPath });
+	};
+	const meta = (over: Partial<PrMeta> = {}): PrMeta => ({
+		owner: "Acme",
+		repo: "Widget",
+		number: 7,
+		url: "https://github.com/acme/widget/pull/7",
+		title: "t",
+		baseBranch: "release/v1",
+		headBranch: "deleted-branch",
+		headRepo: "acme/widget",
+		headOid: shas.head,
+		state: "OPEN",
+		...over,
+	});
+
+	beforeEach(() => {
+		tmp = mkdtempSync(join(tmpdir(), "crb-clone-"));
+		// c0 - c1 (branch point) - c2 (PR head, reachable only via refs/pull/7/head)
+		fixture = createGitFixture([
+			{ message: "c0", files: { "a.txt": "a\n" } },
+			{ message: "c1", files: { "a.txt": "a\nb\n" } },
+			{ message: "c2", files: { "a.txt": "a\nb\nhead\n" } },
+		]);
+		const [, branchPoint = "", head = ""] = fixture.shas;
+		git(fixture.path, "update-ref", "refs/pull/7/head", head);
+		git(fixture.path, "branch", "release/v1", branchPoint);
+		// main moves on after the PR branched off c1.
+		git(fixture.path, "reset", "--quiet", "--hard", branchPoint);
+		writeFileSync(join(fixture.path, "b.txt"), "moved\n");
+		git(fixture.path, "add", "b.txt");
+		git(fixture.path, "commit", "--quiet", "-m", "c3");
+		shas = { branchPoint, head, base: git(fixture.path, "rev-parse", "HEAD") };
+		setEnv({
+			PATH: `${FAKE_GH_DIR}:${process.env.PATH ?? ""}`,
+			XDG_CACHE_HOME: join(tmp, "cache"),
+			CRB_FAKE_GH_LOG: join(tmp, "gh.log"),
+		});
+		scenario();
+	});
+
+	afterEach(() => {
+		for (const [k, v] of Object.entries(saved)) {
+			if (v === undefined) delete process.env[k];
+			else process.env[k] = v;
+		}
+		for (const k of Object.keys(saved)) delete saved[k];
+		fixture.cleanup();
+		rmSync(tmp, { recursive: true, force: true });
+	});
+
+	it("puts clones under XDG_CACHE_HOME, owner and repo lowercased", () => {
+		expect(clonePath("Acme", "Wid.get")).toBe(
+			join(tmp, "cache", "carbonless", "repos", "acme", "wid.get.git"),
+		);
+	});
+
+	it("falls back to ~/.cache when XDG_CACHE_HOME is unset or relative", () => {
+		setEnv({ HOME: join(tmp, "home"), XDG_CACHE_HOME: "relative/dir" });
+		const expected = join(tmp, "home", ".cache", "carbonless", "repos");
+		expect(clonePath("a", "b")).toBe(join(expected, "a", "b.git"));
+		delete process.env.XDG_CACHE_HOME;
+		expect(clonePath("a", "b")).toBe(join(expected, "a", "b.git"));
+	});
+
+	it.each([
+		["a/b", "c"],
+		["a", "b/c"],
+		["a", "b\\c"],
+		["..", "c"],
+		["a", ".."],
+		["a", "."],
+		["", "c"],
+	])("refuses owner %j repo %j as path segments", (owner, repo) => {
+		expect(() => clonePath(owner, repo)).toThrow();
+	});
+
+	it("clones bare into the cache dir once", async () => {
+		const path = await ensureClone("Acme", "Widget");
+		expect(path).toBe(clonePath("acme", "widget"));
+		expect(git(path, "rev-parse", "--is-bare-repository")).toBe("true");
+		const inode = statSync(join(path, "HEAD")).ino;
+		expect(await ensureClone("acme", "widget")).toBe(path);
+		expect(statSync(join(path, "HEAD")).ino).toBe(inode);
+		expect(ghLog().match(/^repo clone /gm)).toHaveLength(1);
+		expect(ghLog()).toContain(
+			`repo clone Acme/Widget ${path}.partial -- --bare`,
+		);
+		expect(existsSync(`${path}.partial`)).toBe(false);
+		expect(existsSync(`${path}.lock`)).toBe(false);
+	});
+
+	it("serializes concurrent opens with the lock", async () => {
+		const [a, b] = await Promise.all([
+			ensureClone("acme", "widget"),
+			ensureClone("acme", "widget"),
+		]);
+		expect(a).toBe(b);
+		expect(ghLog().match(/^repo clone /gm)).toHaveLength(1);
+	});
+
+	it("leaves no clone behind when cloning fails, and recovers a half clone", async () => {
+		scenario({ repoPath: join(tmp, "does-not-exist") });
+		await expect(ensureClone("acme", "widget")).rejects.toThrow();
+		const path = clonePath("acme", "widget");
+		expect(existsSync(path)).toBe(false);
+		expect(existsSync(`${path}.lock`)).toBe(false);
+
+		// A crash mid-clone leaves the temporary dir; it never counts as a clone.
+		mkdirSync(join(`${path}.partial`, "objects"), { recursive: true });
+		scenario();
+		await ensureClone("acme", "widget");
+		expect(git(path, "rev-parse", "main")).toBe(shas.base);
+		expect(existsSync(`${path}.partial`)).toBe(false);
+	});
+
+	it("reports a logged out gh", async () => {
+		scenario({ loggedOut: true });
+		await expect(ensureClone("acme", "widget")).rejects.toThrow(
+			"gh is not logged in. Run: gh auth login",
+		);
+	});
+
+	it("fetches the PR head and computes the merge base", async () => {
+		const path = await ensureClone("acme", "widget");
+		const r = await fetchPr(path, meta());
+		expect(r).toEqual({
+			baseTip: shas.branchPoint,
+			head: shas.head,
+			mergeBase: shas.branchPoint,
+		});
+		expect(git(path, "rev-parse", "refs/remotes/origin/release/v1")).toBe(
+			shas.branchPoint,
+		);
+		expect(git(path, "rev-parse", "refs/pull/7/head")).toBe(shas.head);
+	});
+
+	it("works when the base branch moved after the PR branched", async () => {
+		const path = await ensureClone("acme", "widget");
+		const r = await fetchPr(path, meta({ baseBranch: "main" }));
+		expect(r).toEqual({
+			baseTip: shas.base,
+			head: shas.head,
+			mergeBase: shas.branchPoint,
+		});
+	});
+
+	it("fetches again on every open, following force-pushes", async () => {
+		const path = await ensureClone("acme", "widget");
+		await fetchPr(path, meta({ baseBranch: "main" }));
+		// main is rewritten to drop c3 and gain c4.
+		git(fixture.path, "reset", "--quiet", "--hard", shas.branchPoint);
+		git(fixture.path, "commit", "--quiet", "--allow-empty", "-m", "c4");
+		const c4 = git(fixture.path, "rev-parse", "HEAD");
+		const r = await fetchPr(path, meta({ baseBranch: "main" }));
+		expect(r.baseTip).toBe(c4);
+		expect(ghLog().match(/^repo clone /gm)).toHaveLength(1);
+	});
+
+	it("fails clearly when the PR head is not on GitHub", async () => {
+		const path = await ensureClone("acme", "widget");
+		await expect(
+			fetchPr(path, meta({ headOid: "1".repeat(40) })),
+		).rejects.toThrow(/PR head 1{40} is not on GitHub/);
+		await expect(fetchPr(path, meta({ headOid: "HEAD" }))).rejects.toThrow(
+			/unexpected PR head/,
+		);
+	});
+
+	it("rejects a base branch name that is not a valid ref", async () => {
+		const path = await ensureClone("acme", "widget");
+		await expect(
+			fetchPr(path, meta({ baseBranch: "main:refs/heads/x" })),
+		).rejects.toThrow(/base branch/);
+	});
+
+	it("never writes outside the cache dir", async () => {
+		const before = repoState(fixture.path);
+		const path = await ensureClone("acme", "widget");
+		await fetchPr(path, meta());
+		await fetchPr(path, meta({ baseBranch: "main" }));
+		expect(repoState(fixture.path)).toBe(before);
+		const outside = execFileSync(
+			"find",
+			[tmp, "-mindepth", "1", "-newer", scenarioPath],
+			{
+				encoding: "utf8",
+			},
+		)
+			.split("\n")
+			.filter(
+				(p) =>
+					p && !p.startsWith(join(tmp, "cache")) && p !== join(tmp, "gh.log"),
+			);
+		expect(outside).toEqual([]);
+	});
+});
+
+describe("withRepoLock", () => {
+	let tmp: string;
+	beforeEach(() => {
+		tmp = mkdtempSync(join(tmpdir(), "crb-lock-"));
+	});
+	afterEach(() => rmSync(tmp, { recursive: true, force: true }));
+
+	it("runs one holder at a time and releases on failure", async () => {
+		const path = join(tmp, "nested", "repo.git");
+		const order: string[] = [];
+		const hold = (name: string, ms: number, fail = false) =>
+			withRepoLock(path, async () => {
+				order.push(`${name}+`);
+				await new Promise((r) => setTimeout(r, ms));
+				order.push(`${name}-`);
+				if (fail) throw new Error(`${name} failed`);
+				return name;
+			});
+		const results = await Promise.allSettled([
+			hold("a", 150, true),
+			hold("b", 10),
+		]);
+		expect(order).toEqual(["a+", "a-", "b+", "b-"]);
+		expect(results[0]).toMatchObject({ status: "rejected" });
+		expect(results[1]).toEqual({ status: "fulfilled", value: "b" });
+		expect(existsSync(`${path}.lock`)).toBe(false);
+	});
+
+	it("removes a lock older than 10 minutes as stale", async () => {
+		const path = join(tmp, "repo.git");
+		writeFileSync(`${path}.lock`, "12345\n");
+		const old = new Date(Date.now() - 11 * 60 * 1000);
+		utimesSync(`${path}.lock`, old, old);
+		const started = Date.now();
+		expect(await withRepoLock(path, async () => "got it")).toBe("got it");
+		expect(Date.now() - started).toBeLessThan(1000);
+	});
+
+	it("waits for a fresh lock held by someone else", async () => {
+		const path = join(tmp, "repo.git");
+		mkdirSync(dirname(path), { recursive: true });
+		writeFileSync(`${path}.lock`, "12345\n");
+		setTimeout(() => rmSync(`${path}.lock`), 300);
+		const started = Date.now();
+		await withRepoLock(path, async () => {});
+		expect(Date.now() - started).toBeGreaterThanOrEqual(250);
+	});
+});

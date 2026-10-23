@@ -26,11 +26,20 @@ const INHERITED_GIT_VARS = new Set([
 	"GIT_PROXY_COMMAND",
 	"GIT_SSL_CAINFO",
 	"GIT_SSL_CAPATH",
+	"GIT_SSL_CERT",
+	"GIT_SSL_KEY",
+	"GIT_SSL_CERT_PASSWORD_PROTECTED",
+	"GIT_SSL_NO_VERIFY",
+	"GIT_HTTP_PROXY_AUTHMETHOD",
+	"GIT_HTTP_USER_AGENT",
+	"GIT_HTTP_LOW_SPEED_LIMIT",
+	"GIT_HTTP_LOW_SPEED_TIME",
 	"GIT_EXEC_PATH",
 	"GIT_CURL_VERBOSE",
 ]);
 
-function inheritedEnv(): NodeJS.ProcessEnv {
+/** process.env minus the GIT_* variables that could redirect or change git. */
+export function inheritedEnv(): NodeJS.ProcessEnv {
 	const env: NodeJS.ProcessEnv = {};
 	for (const [key, value] of Object.entries(process.env)) {
 		if (

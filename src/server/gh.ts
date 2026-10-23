@@ -35,8 +35,8 @@ const NOT_LOGGED_IN = "gh is not logged in. Run: gh auth login";
  * they are how the reviewer points gh at their account. Only what could make
  * gh prompt, page, colour or redirect `-R`-less commands is overridden.
  */
-function ghEnv(): NodeJS.ProcessEnv {
-	const env: NodeJS.ProcessEnv = { ...process.env };
+function ghEnv(base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+	const env: NodeJS.ProcessEnv = { ...base };
 	delete env.GH_REPO;
 	delete env.GH_FORCE_TTY;
 	delete env.CLICOLOR_FORCE;
@@ -56,11 +56,15 @@ interface GhResult {
 	stderr: string;
 }
 
-function spawnGh(args: string[], cwd?: string): Promise<GhResult> {
+function spawnGh(
+	args: string[],
+	cwd?: string,
+	baseEnv?: NodeJS.ProcessEnv,
+): Promise<GhResult> {
 	return new Promise((resolve, reject) => {
 		const child = spawn("gh", args, {
 			cwd,
-			env: ghEnv(),
+			env: ghEnv(baseEnv),
 			stdio: ["ignore", "pipe", "pipe"],
 		});
 		const out: Buffer[] = [];
@@ -90,9 +94,10 @@ const firstLine = (text: string) => text.split("\n")[0]?.trim() ?? "";
 
 export async function runGh(
 	args: string[],
-	opts: { cwd?: string } = {},
+	/** `env` replaces process.env as the base environment for gh. */
+	opts: { cwd?: string; env?: NodeJS.ProcessEnv } = {},
 ): Promise<string> {
-	const result = await spawnGh(args, opts.cwd);
+	const result = await spawnGh(args, opts.cwd, opts.env);
 	if (result.code === 0) return result.stdout;
 	if (LOGGED_OUT.test(result.stderr)) throw new GhError(NOT_LOGGED_IN);
 	const isAuthStatus = args[0] === "auth" && args[1] === "status";
@@ -101,6 +106,7 @@ export async function runGh(
 		const auth = await spawnGh(
 			["auth", "status", "--active", "--hostname", host],
 			opts.cwd,
+			opts.env,
 		);
 		if (auth.code !== 0 && LOGGED_OUT.test(auth.stderr)) {
 			throw new GhError(NOT_LOGGED_IN);
