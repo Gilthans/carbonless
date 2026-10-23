@@ -1,0 +1,216 @@
+import { createHash } from "node:crypto";
+import { ulid } from "ulid";
+import type { Snapshot, StateChange } from "../../shared/types.js";
+import { runGit } from "../git.js";
+import { type ClusterStateEvent, isSlug, newEvent } from "./events.js";
+import { foldProgress, type ProgressState } from "./fold.js";
+import { RefConflictError, type RefStore } from "./refStore.js";
+
+/** The pull request fields a review records (Task 5's PrMeta fits this). */
+export interface ReviewPr {
+	owner: string;
+	repo: string;
+	number: number;
+	url: string;
+	baseBranch: string;
+	headBranch: string;
+	headRepo: string;
+}
+
+/** A state change names a cluster the snapshot doesn't have (HTTP 400). */
+export class UnknownClusterError extends Error {}
+
+/** A state change is malformed, e.g. crossed off without a reason (HTTP 400). */
+export class InvalidChangeError extends Error {}
+
+/**
+ * The write targets a snapshot other than the reviewer's patch set (HTTP 409):
+ * a stale tab, or another tab started a patch set on a different revision.
+ */
+export class StaleSnapshotError extends Error {}
+
+const REVIEW_ID = /^[0-9a-hjkmnp-tv-z]{26}$/;
+const STATES = new Set(["unreviewed", "reviewed", "crossed-off"]);
+const VERBS = {
+	unreviewed: "reset",
+	reviewed: "reviewed",
+	"crossed-off": "crossed off",
+} as const;
+
+const reviewRef = (id: string) => `refs/crb/reviews/${id}`;
+const reviewerRef = (id: string, slug: string) =>
+	`${reviewRef(id)}/reviewers/${slug}`;
+
+/**
+ * Reviews of GitHub pull requests and each reviewer's patch sets and cluster
+ * states, stored in crb refs. See docs/review-data-storage.md.
+ */
+export class ReviewService {
+	constructor(private readonly store: RefStore) {}
+
+	/** The review of this PR, created (meta and lookup refs) on first use. */
+	async findOrCreateReview(pr: ReviewPr, actor: string): Promise<string> {
+		checkSlug(actor);
+		const key = `${pr.owner.toLowerCase()}/${pr.repo.toLowerCase()}#${pr.number}`;
+		const hash = createHash("sha256").update(key).digest("hex");
+		const lookup = `refs/crb/lookup/github-pr/${hash}`;
+		const found = await this.#readLookup(lookup);
+		if (found) return found;
+
+		const id = ulid().toLowerCase();
+		const { owner, repo, number, url, baseBranch, headBranch, headRepo } = pr;
+		const event = newEvent("review-created", actor, {
+			source: "github-pr",
+			key,
+			pr: { owner, repo, number, url, baseBranch, headBranch, headRepo },
+		});
+		const commit = await this.store.commit(
+			null,
+			`crb: created review of ${key}`,
+			[event],
+			actor,
+		);
+		const blob = await this.store.writeBlob(`${id}\n`);
+		try {
+			await this.store.transaction([
+				{ ref: `${reviewRef(id)}/meta`, newOid: commit, oldOid: null },
+				{ ref: lookup, newOid: blob, oldOid: null },
+			]);
+			return id;
+		} catch (error) {
+			if (!(error instanceof RefConflictError)) throw error;
+			// Someone else created the review first: use theirs.
+			const winner = await this.#readLookup(lookup);
+			if (winner) return winner;
+			throw error;
+		}
+	}
+
+	async getProgress(reviewId: string, slug: string): Promise<ProgressState> {
+		checkReviewId(reviewId);
+		checkSlug(slug);
+		return foldProgress(
+			await this.store.readEvents(`${reviewerRef(reviewId, slug)}/progress`),
+		);
+	}
+
+	/**
+	 * Records the reviewer's cluster state changes against `snapshot`. The
+	 * first change starts patch set 1 on the snapshot's revision and pins its
+	 * head; after that, only that revision's snapshot is accepted. Every
+	 * change is validated before anything is written.
+	 */
+	async recordStates(
+		reviewId: string,
+		slug: string,
+		snapshot: Snapshot,
+		changes: StateChange[],
+	): Promise<ProgressState> {
+		checkReviewId(reviewId);
+		checkSlug(slug);
+		const pathOf = new Map<string, string>();
+		for (const file of snapshot.files) {
+			for (const c of file.clusters) pathOf.set(c.key, file.path);
+		}
+		const events = changes.map(({ key, state, reason }): ClusterStateEvent => {
+			const path = pathOf.get(key);
+			if (path === undefined) {
+				throw new UnknownClusterError(`No cluster ${key} in this snapshot`);
+			}
+			if (!STATES.has(state)) {
+				throw new InvalidChangeError(`Unknown cluster state: ${state}`);
+			}
+			if (state === "crossed-off" && !reason?.trim()) {
+				throw new InvalidChangeError("Crossing off needs a reason");
+			}
+			return newEvent("cluster-state", slug, {
+				patchset: snapshot.revision,
+				cluster: key,
+				path,
+				state,
+				...(state === "crossed-off" ? { reason: reason?.trim() } : {}),
+			});
+		});
+
+		const ref = `${reviewerRef(reviewId, slug)}/progress`;
+		const progress = await this.getProgress(reviewId, slug);
+		if (progress.patchset) checkRevision(progress, snapshot);
+		else if (events.length > 0) await this.#startPatchset(ref, slug, snapshot);
+
+		for (const event of events) {
+			const verb = VERBS[event.state];
+			await this.store.appendEvent(
+				ref,
+				`crb: ${verb} 1 cluster in ${event.path}`,
+				event,
+				slug,
+			);
+		}
+		return this.getProgress(reviewId, slug);
+	}
+
+	/** Starts patch set 1 on the snapshot, unless another tab just did. */
+	async #startPatchset(
+		ref: string,
+		slug: string,
+		snapshot: Snapshot,
+	): Promise<void> {
+		const tip = await this.store.tip(ref);
+		const event = newEvent("patchset-started", slug, {
+			patchset: 1,
+			revision: snapshot.revision,
+			mergeBase: snapshot.base,
+			head: snapshot.head,
+		});
+		const commit = await this.store.commit(
+			tip,
+			"crb: started PS1",
+			[event],
+			slug,
+		);
+		try {
+			await this.store.transaction([
+				{ ref, newOid: commit, oldOid: tip },
+				{
+					ref: ref.replace(/\/progress$/, "/patchsets/1"),
+					newOid: snapshot.head,
+					oldOid: null,
+				},
+			]);
+		} catch (error) {
+			if (!(error instanceof RefConflictError)) throw error;
+			const progress = foldProgress(await this.store.readEvents(ref));
+			if (!progress.patchset) throw error;
+			checkRevision(progress, snapshot);
+		}
+	}
+
+	async #readLookup(ref: string): Promise<string | null> {
+		const oid = await this.store.tip(ref);
+		if (!oid) return null;
+		const id = (
+			await runGit(this.store.repo, ["cat-file", "blob", oid])
+		).trim();
+		if (!REVIEW_ID.test(id)) {
+			throw new Error(`Lookup ref ${ref} doesn't hold a review id`);
+		}
+		return id;
+	}
+}
+
+function checkRevision(progress: ProgressState, snapshot: Snapshot): void {
+	const { patchset } = progress;
+	if (patchset && patchset.revision !== snapshot.revision) {
+		throw new StaleSnapshotError(
+			`Patch set ${patchset.number} is on another revision; reload the review`,
+		);
+	}
+}
+
+function checkSlug(slug: string): void {
+	if (!isSlug(slug)) throw new Error(`Invalid reviewer slug: ${slug}`);
+}
+
+function checkReviewId(id: string): void {
+	if (!REVIEW_ID.test(id)) throw new Error(`Invalid review id: ${id}`);
+}

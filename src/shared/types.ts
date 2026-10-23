@@ -85,3 +85,43 @@ export interface FileHunks {
 	hunks: DisplayHunk[];
 	newLineCount: number;
 }
+
+export interface ClusterView extends Cluster {
+	state: ClusterState;
+	/** Only for crossed-off clusters. */
+	reason?: string;
+}
+
+export interface FileView extends Omit<FileSummary, "clusters"> {
+	clusters: ClusterView[];
+	/** Every cluster is reviewed or crossed off. */
+	done: boolean;
+	/** Every cluster is crossed off. */
+	crossedOff: boolean;
+}
+
+export interface Counts {
+	total: number;
+	reviewed: number;
+	crossedOff: number;
+}
+
+export interface Progress {
+	clusters: Counts;
+	lines: Counts;
+	/** `reviewed`: done files that aren't entirely crossed off. */
+	files: Counts & { done: number };
+}
+
+export interface ReviewView {
+	revision: string;
+	patchset: number | null;
+	files: FileView[];
+	progress: Progress;
+}
+
+export interface StateChange {
+	key: string;
+	state: ClusterState;
+	reason?: string;
+}

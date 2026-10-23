@@ -251,7 +251,9 @@ everything reachable from the ref, so merging two copies never conflicts.
 **Coverage** is computed exactly as in the parity spec: clusters come from the
 git diff of the revision being reviewed. A cluster with no folded state is
 unreviewed. A folded state with no matching cluster is ignored. Only the
-reviewer's own progress ref is folded.
+reviewer's own progress ref is folded. States only count against the patch set's own
+revision, and anything ambiguous stays unreviewed: a `crossed-off` state
+without a reason, or two clusters sharing one identity (never expected).
 
 ## After a push
 
