@@ -10,6 +10,9 @@ import {
 /** Tries per append; each lost race re-reads the tip (see appendEvent). */
 const MAX_TRIES = 5;
 
+/** Parsed event lists kept in memory (see readEvents). */
+const MAX_CACHED = 64;
+
 /**
  * Thrown when a ref was not at the expected old value (another writer moved,
  * created or deleted it, or held its lock), as opposed to a real failure.
@@ -34,6 +37,12 @@ export interface RefUpdate {
  */
 export class RefStore {
 	#emptyTree: Promise<string> | undefined;
+	/**
+	 * `<ref>@<tip OID>` → the events reachable from that tip. A commit's
+	 * history never changes, so an entry stays valid; a moved ref just gets a
+	 * new key. Oldest entries go first once MAX_CACHED is reached.
+	 */
+	#events = new Map<string, readonly CrbEvent[]>();
 
 	constructor(readonly repo: string) {}
 
@@ -63,6 +72,19 @@ export class RefStore {
 	async readEvents(ref: string): Promise<CrbEvent[]> {
 		const tip = await this.tip(ref);
 		if (!tip) return [];
+		const key = `${ref}@${tip}`;
+		const cached = this.#events.get(key);
+		if (cached) return [...cached];
+		const events = await this.#logEvents(tip);
+		if (this.#events.size >= MAX_CACHED) {
+			const oldest = this.#events.keys().next().value;
+			if (oldest !== undefined) this.#events.delete(oldest);
+		}
+		this.#events.set(key, events);
+		return [...events];
+	}
+
+	async #logEvents(tip: string): Promise<CrbEvent[]> {
 		// Pin everything user config could change about the bytes we read.
 		const out = await runGit(this.repo, [
 			"--no-replace-objects",

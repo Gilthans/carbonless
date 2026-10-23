@@ -15,7 +15,7 @@ import {
 	type Scenario,
 	writeScenario,
 } from "./fake-gh/scenario";
-import { createGitFixture, type GitFixture } from "./git-fixture";
+import { createGitFixture, type GitFixture, testGitEnv } from "./git-fixture";
 
 export interface PrFixture {
 	/** What to pass to Session.open / crb. */
@@ -59,7 +59,11 @@ export function createPrFixture(): PrFixture {
 		},
 	]);
 	const git = (...args: string[]) =>
-		execFileSync("git", args, { cwd: repo.path, encoding: "utf8" }).trim();
+		execFileSync("git", args, {
+			cwd: repo.path,
+			encoding: "utf8",
+			env: testGitEnv(),
+		}).trim();
 	const [mergeBase = "", first = ""] = repo.shas;
 	// The PR head lives only under refs/pull/<n>/head, like on GitHub.
 	git("update-ref", `refs/pull/${NUMBER}/head`, first);
@@ -107,6 +111,7 @@ export function createPrFixture(): PrFixture {
 				["worktree", "add", "--quiet", "--detach", work, head],
 				{
 					cwd: repo.path,
+					env: testGitEnv(),
 				},
 			);
 			for (const [name, content] of Object.entries(files)) {
@@ -114,7 +119,11 @@ export function createPrFixture(): PrFixture {
 				writeFileSync(join(work, name), content);
 			}
 			const w = (...args: string[]) =>
-				execFileSync("git", args, { cwd: work, encoding: "utf8" }).trim();
+				execFileSync("git", args, {
+					cwd: work,
+					encoding: "utf8",
+					env: testGitEnv(),
+				}).trim();
 			w("add", "--all");
 			w("commit", "--quiet", "-m", "PR update");
 			head = w("rev-parse", "HEAD");

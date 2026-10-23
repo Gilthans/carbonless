@@ -10,6 +10,7 @@ import {
 	type Scenario,
 	writeScenario,
 } from "../../test/fake-gh/scenario";
+import { testGitEnv } from "../../test/git-fixture";
 import {
 	fetchOverview,
 	fetchPrMeta,
@@ -150,24 +151,27 @@ describe("fake gh", () => {
 	});
 
 	it("clones the scenario repo bare", () => {
-		execFileSync("git", ["init", "--quiet", join(tmp, "src")]);
+		const env = testGitEnv();
+		execFileSync("git", ["init", "--quiet", join(tmp, "src")], { env });
 		scenario({ repoPath: join(tmp, "src") });
-		execFileSync("gh", [
-			"repo",
-			"clone",
-			"acme/widget",
-			join(tmp, "c.git"),
-			"--",
-			"--bare",
-			"--quiet",
-		]);
+		execFileSync(
+			"gh",
+			[
+				"repo",
+				"clone",
+				"acme/widget",
+				join(tmp, "c.git"),
+				"--",
+				"--bare",
+				"--quiet",
+			],
+			{ env: testGitEnv() },
+		);
 		expect(
 			execFileSync(
 				"git",
 				["-C", join(tmp, "c.git"), "rev-parse", "--is-bare-repository"],
-				{
-					encoding: "utf8",
-				},
+				{ encoding: "utf8", env },
 			).trim(),
 		).toBe("true");
 	});

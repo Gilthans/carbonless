@@ -3,8 +3,15 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createBareRepo } from "../../../test/git-fixture.js";
+import { createBareRepo, testGitEnv } from "../../../test/git-fixture.js";
 import { GitError, inheritedEnv, runGit } from "../git.js";
+
+// Pass-through spy, so a test can count the git calls RefStore makes.
+vi.mock("../git.js", async (importOriginal) => {
+	const git = await importOriginal<typeof import("../git.js")>();
+	return { ...git, runGit: vi.fn(git.runGit) };
+});
+
 import { type CrbEvent, newEvent } from "./events.js";
 import { RefConflictError, RefStore } from "./refStore.js";
 
@@ -34,6 +41,26 @@ afterEach(() => {
 });
 
 describe("RefStore", () => {
+	it("reads a ref's events once per tip", async () => {
+		const logs = () =>
+			vi.mocked(runGit).mock.calls.filter(([, args]) => args.includes("log"))
+				.length;
+		await store.appendEvent(ref, "s", ev, "dan");
+		const before = logs();
+		expect(await store.readEvents(ref)).toEqual([ev]);
+		expect(logs()).toBe(before + 1);
+		// Unchanged tip: served from memory, and callers can't corrupt it.
+		const cached = await store.readEvents(ref);
+		expect(cached).toEqual([ev]);
+		cached.pop();
+		expect(await store.readEvents(ref)).toEqual([ev]);
+		expect(logs()).toBe(before + 1);
+		// A new tip is read again.
+		await store.appendEvent(ref, "s", evN(1), "dan");
+		expect(await store.readEvents(ref)).toEqual([ev, evN(1)]);
+		expect(logs()).toBe(before + 2);
+	});
+
 	it("commits carry only slug and tool identities", async () => {
 		await runGit(repo, ["config", "user.name", "Real Name"]);
 		await runGit(repo, ["config", "user.email", "real@example.com"]);
@@ -244,7 +271,9 @@ describe("RefStore", () => {
 		for (const name of names) {
 			let gitOk = true;
 			try {
-				execFileSync("git", ["check-ref-format", name]);
+				execFileSync("git", ["check-ref-format", name], {
+					env: testGitEnv(),
+				});
 			} catch {
 				gitOk = false;
 			}
@@ -263,9 +292,7 @@ describe("RefStore", () => {
 			const before = execFileSync(
 				"git",
 				["-C", other.path, "count-objects", "-v"],
-				{
-					encoding: "utf8",
-				},
+				{ encoding: "utf8", env: testGitEnv() },
 			);
 			Object.assign(process.env, {
 				GIT_DIR: other.path,
@@ -298,6 +325,7 @@ describe("RefStore", () => {
 			expect(
 				execFileSync("git", ["-C", other.path, "count-objects", "-v"], {
 					encoding: "utf8",
+					env: testGitEnv(),
 				}),
 			).toBe(before);
 		} finally {

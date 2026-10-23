@@ -10,6 +10,7 @@ import {
 import {
 	createGitFixture,
 	type GitFixture,
+	testGitEnv,
 } from "../../../test/git-fixture.js";
 import { buildClusters } from "./clusters.js";
 import { type ChangedFile, listChangedFiles } from "./files.js";
@@ -181,7 +182,11 @@ describe("tricky changes", () => {
 			},
 		]);
 		const git = (...args: string[]) =>
-			execFileSync("git", args, { cwd: fx.path, encoding: "utf8" }).trim();
+			execFileSync("git", args, {
+				cwd: fx.path,
+				encoding: "utf8",
+				env: testGitEnv(),
+			}).trim();
 		symlinkSync("five.ts", join(fx.path, "link.txt"));
 		git("add", "--all");
 		git("commit", "-q", "--amend", "--no-edit");
@@ -210,6 +215,7 @@ describe("tricky changes", () => {
 	it("is not affected by diff.interHunkContext in repo config", async () => {
 		execFileSync("git", ["config", "diff.interHunkContext", "5"], {
 			cwd: fx.path,
+			env: testGitEnv(),
 		});
 		const clusters = await clustersOf("five.ts");
 		expect(clusters.map((c) => c.added)).toEqual([["TWO"], ["FOUR"]]);
@@ -218,12 +224,18 @@ describe("tricky changes", () => {
 	it.each(["diff.noprefix", "diff.mnemonicPrefix"])(
 		"is not affected by %s in repo config",
 		async (key) => {
-			execFileSync("git", ["config", key, "true"], { cwd: fx.path });
+			execFileSync("git", ["config", key, "true"], {
+				cwd: fx.path,
+				env: testGitEnv(),
+			});
 			try {
 				const clusters = await clustersOf("five.ts");
 				expect(clusters.map((c) => c.added)).toEqual([["TWO"], ["FOUR"]]);
 			} finally {
-				execFileSync("git", ["config", "--unset", key], { cwd: fx.path });
+				execFileSync("git", ["config", "--unset", key], {
+					cwd: fx.path,
+					env: testGitEnv(),
+				});
 			}
 		},
 	);

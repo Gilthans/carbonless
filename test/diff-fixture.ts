@@ -1,7 +1,11 @@
 import { execFileSync } from "node:child_process";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { createGitFixture, type GitFixture } from "./git-fixture.js";
+import {
+	createGitFixture,
+	type GitFixture,
+	testGitEnv,
+} from "./git-fixture.js";
 
 export const SUB_SHA = "c".repeat(40);
 export const SUB_SHA2 = "d".repeat(40);
@@ -55,7 +59,11 @@ export function createDiffFixture(): GitFixture {
 		numbered(20).replace("line 5\n", "LINE 5\n"),
 	);
 	const git = (...args: string[]) =>
-		execFileSync("git", args, { cwd: fixture.path, encoding: "utf8" }).trim();
+		execFileSync("git", args, {
+			cwd: fixture.path,
+			encoding: "utf8",
+			env: testGitEnv(),
+		}).trim();
 	git("add", "new-name.ts");
 	git("commit", "-q", "--amend", "--no-edit");
 	fixture.shas[1] = git("rev-parse", "HEAD");

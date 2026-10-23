@@ -10,7 +10,11 @@ import {
 	it,
 } from "vitest";
 import { createDiffFixture } from "../../../test/diff-fixture.js";
-import { createBareRepo, type GitFixture } from "../../../test/git-fixture.js";
+import {
+	createBareRepo,
+	type GitFixture,
+	testGitEnv,
+} from "../../../test/git-fixture.js";
 import type { Snapshot, StateChange } from "../../shared/types.js";
 import { buildSnapshot } from "../diff/snapshot.js";
 import { runGit } from "../git.js";
@@ -49,7 +53,11 @@ let k2: string;
 let id: string;
 
 const fixtureGit = (...args: string[]) =>
-	execFileSync("git", args, { cwd: fixture.path, encoding: "utf8" }).trim();
+	execFileSync("git", args, {
+		cwd: fixture.path,
+		encoding: "utf8",
+		env: testGitEnv(),
+	}).trim();
 
 beforeAll(() => {
 	fixture = createDiffFixture();

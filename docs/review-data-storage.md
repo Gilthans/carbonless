@@ -242,7 +242,10 @@ Write rules, enforced in code and tested:
    `git log --format=%B` or `git cat-file --batch` call).
 2. Parse events, drop duplicates by `id`, and sort by `(ts, id)`.
 3. Fold into state. For each `(patch set, cluster)`, the last event wins.
-4. Cache the result in memory, keyed by the ref's tip OID.
+4. Cache the parsed events in memory, keyed by the ref and its tip OID
+   (`RefStore.readEvents`, a bounded map). A commit's history never changes,
+   so an unchanged tip skips `git log`; folding the cached events again is
+   cheap.
 
 This is the same idea as git's `cat_sort_uniq` notes merge (concatenate, sort,
 drop duplicates), applied to the commit graph: the set of events is the union of

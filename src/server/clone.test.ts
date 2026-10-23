@@ -17,12 +17,20 @@ import {
 	type Scenario,
 	writeScenario,
 } from "../../test/fake-gh/scenario";
-import { createGitFixture, type GitFixture } from "../../test/git-fixture";
+import {
+	createGitFixture,
+	type GitFixture,
+	testGitEnv,
+} from "../../test/git-fixture";
 import { clonePath, ensureClone, fetchPr, withRepoLock } from "./clone";
 import { GhError, type PrMeta } from "./gh";
 
 const git = (cwd: string, ...args: string[]) =>
-	execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
+	execFileSync("git", args, {
+		cwd,
+		encoding: "utf8",
+		env: testGitEnv(),
+	}).trim();
 
 /** Every ref, HEAD and the working tree status: what fetching must not change. */
 const repoState = (path: string) =>
