@@ -15,8 +15,9 @@ import type { ProgressState } from "./fold.js";
  * - a cluster with no stored state is unreviewed;
  * - a stored state with no matching cluster is ignored;
  * - states of a patch set on another revision are ignored;
- * - clusters sharing a key (never expected) stay unreviewed;
- * - a crossed-off state without a reason counts as unreviewed.
+ * - clusters sharing a key (never expected) stay unreviewed.
+ * A crossed-off state counts as crossed off with or without a reason (a blank
+ * reason is dropped). Crossed off never counts as reviewed.
  */
 export function buildReviewView(
 	snapshot: Snapshot,
@@ -41,8 +42,11 @@ export function buildReviewView(
 					? progress.states.get(c.key)
 					: undefined;
 			if (stored?.state === "reviewed") return { ...c, state: "reviewed" };
-			if (stored?.state === "crossed-off" && stored.reason?.trim()) {
-				return { ...c, state: "crossed-off", reason: stored.reason };
+			if (stored?.state === "crossed-off") {
+				const reason = stored.reason?.trim();
+				return reason
+					? { ...c, state: "crossed-off", reason }
+					: { ...c, state: "crossed-off" };
 			}
 			return { ...c, state: "unreviewed" };
 		});

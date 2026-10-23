@@ -143,16 +143,24 @@ describe("buildReviewView", () => {
 		});
 	});
 
-	it("a crossed-off state without a reason counts as unreviewed", () => {
+	it("a crossed-off state without a reason counts as crossed off, never reviewed", () => {
 		const view = buildReviewView(
 			three,
-			progress({ k1: "crossed-off", k2: ["crossed-off", ""] }),
+			progress({ k1: "crossed-off", k2: ["crossed-off", "  "] }),
 		);
-		expect(view.progress.clusters.crossedOff).toBe(0);
+		expect(view.progress.clusters).toEqual({
+			total: 3,
+			reviewed: 0,
+			crossedOff: 2,
+		});
 		expect(view.files[0]?.clusters.map((c) => c.state)).toEqual([
-			"unreviewed",
-			"unreviewed",
+			"crossed-off",
+			"crossed-off",
 		]);
+		// No reason, and a blank one, show as no reason at all.
+		for (const c of view.files[0]?.clusters ?? []) {
+			expect(c).not.toHaveProperty("reason");
+		}
 	});
 
 	it("a reason on a reviewed cluster is dropped", () => {

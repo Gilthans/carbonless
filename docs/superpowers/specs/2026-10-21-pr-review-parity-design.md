@@ -57,7 +57,7 @@ These would make the milestone a failure even if everything else works:
 
 - *unreviewed*: the default, and the only state a cluster ever starts in.
 - *reviewed*: the reviewer checked it.
-- *crossed off*: the reviewer chose not to review it, with a short reason (free text, with quick picks such as "generated" and "rename only").
+- *crossed off*: the reviewer chose not to review it. A short reason is optional (the UI no longer asks for one; see `2026-10-24-files-view-ux-and-mobile.md`).
 
 A file is *done* when every one of its clusters is reviewed or crossed off. Only an explicit reviewer action changes a cluster's state. Actions on several clusters at once ("Mark remaining reviewed", "Cross off file…") are allowed because the reviewer explicitly takes them.
 
@@ -109,6 +109,10 @@ Shown first. Read-only. Data from `gh` (`gh pr view --json …` and `gh api grap
 4. A clear way into "Files changed", with the overall progress shown.
 
 ## Files changed view
+
+> Revised by `2026-10-24-files-view-ux-and-mobile.md`: one progress bar with a
+> Lines / Clusters / Files unit selector, no crossed-off legend line, cross off
+> without a reason (per file or per cluster), and mobile layout.
 
 ### Layout
 

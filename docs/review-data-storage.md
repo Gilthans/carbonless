@@ -202,7 +202,7 @@ Initial event types:
 | meta | `review-closed` | `merged` or `closed`, merge commit if any |
 | meta | `compacted` | see "Compaction" |
 | progress | `patchset-started` | patch set number, revision ID, merge base, head |
-| progress | `cluster-state` | patch set ID, cluster identity hash, file path, state (`unreviewed`, `reviewed`, `crossed-off`), reason for crossed off |
+| progress | `cluster-state` | patch set ID, cluster identity hash, file path, state (`unreviewed`, `reviewed`, `crossed-off`), optional reason for crossed off |
 
 Later features (carry-over, AI groupings, the reviewer's corrections to them)
 add their own types.
@@ -255,8 +255,9 @@ everything reachable from the ref, so merging two copies never conflicts.
 git diff of the revision being reviewed. A cluster with no folded state is
 unreviewed. A folded state with no matching cluster is ignored. Only the
 reviewer's own progress ref is folded. States only count against the patch set's own
-revision, and anything ambiguous stays unreviewed: a `crossed-off` state
-without a reason, or two clusters sharing one identity (never expected).
+revision, and anything ambiguous stays unreviewed: two clusters sharing one
+identity (never expected). A `crossed-off` state counts as crossed off with or
+without a reason; crossed off never counts as reviewed.
 
 ## After a push
 

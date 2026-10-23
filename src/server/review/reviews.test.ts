@@ -251,18 +251,23 @@ describe("recordStates", () => {
 		expect(await store.tip(progressRef())).toBeNull();
 	});
 
-	it("rejects crossing off without a reason and unknown states", async () => {
-		const bad: StateChange[][] = [
-			[{ key: k1, state: "crossed-off" }],
-			[{ key: k1, state: "crossed-off", reason: "  " }],
-			[{ key: k1, state: "done" as never }],
-		];
-		for (const changes of bad) {
-			await expect(
-				svc.recordStates(id, "dan", snap, changes),
-			).rejects.toBeInstanceOf(InvalidChangeError);
-		}
+	it("rejects unknown states", async () => {
+		await expect(
+			svc.recordStates(id, "dan", snap, [{ key: k1, state: "done" as never }]),
+		).rejects.toBeInstanceOf(InvalidChangeError);
 		expect(await store.tip(progressRef())).toBeNull();
+	});
+
+	it("crosses off without a reason; a blank reason is not stored", async () => {
+		const progress = await svc.recordStates(id, "dan", snap, [
+			{ key: k1, state: "crossed-off" },
+			{ key: k2, state: "crossed-off", reason: "  " },
+		]);
+		expect(progress.states.get(k1)).toEqual({ state: "crossed-off" });
+		expect(progress.states.get(k2)).toEqual({ state: "crossed-off" });
+		const view = buildReviewView(snap, progress);
+		expect(view.progress.clusters.reviewed).toBe(0);
+		expect(view.progress.clusters.crossedOff).toBe(2);
 	});
 
 	it("rejects writes against a different snapshot once a patch set exists", async () => {
@@ -369,7 +374,9 @@ describe("recordStates", () => {
 		await runGit(repo, ["update-ref", progressRef(), commit, tip]);
 		const view = buildReviewView(snap, await svc.getProgress(id, "dan"));
 		expect(view.progress.clusters.reviewed).toBe(1);
-		expect(view.progress.clusters.crossedOff).toBe(0);
+		// The human, reasonless cross-off is valid: it crosses k2 off, and
+		// crossed off never counts as reviewed.
+		expect(view.progress.clusters.crossedOff).toBe(1);
 		// The reviewer can keep working on top of the foreign commit.
 		await svc.recordStates(id, "dan", snap, [{ key: k2, state: "reviewed" }]);
 		expect(

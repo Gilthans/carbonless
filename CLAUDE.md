@@ -42,6 +42,11 @@ These guide every feature. If a change conflicts with one of them, stop and rais
    offline work is not a goal. What matters is that carbonless itself never
    adds a server of its own.
 
+5. **Mobile is supported.** The reviewer also reads PRs on a phone. Every page
+   works down to ~360px wide with no horizontal page scroll (diff lines may
+   scroll inside their own container), tap targets are at least 40px, and the
+   Playwright suite runs in a phone project as well as desktop.
+
 ## Development
 
 - Node 24 (`nvm use`), pnpm. Stack: Fastify server + git CLI (`src/server`),

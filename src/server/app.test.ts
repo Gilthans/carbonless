@@ -119,13 +119,20 @@ describe("API", () => {
 		expect(res.json().error).toBeTruthy();
 	});
 
-	it("rejects crossing off without a reason with 400", async () => {
+	it("crosses off without a reason", async () => {
 		const [key = ""] = keys(await get("/api/review"));
 		const res = await post("/api/review/states", {
 			revision: await revision(),
-			changes: [{ key, state: "crossed-off", reason: "  " }],
+			changes: [{ key, state: "crossed-off" }],
 		});
-		expect(res.statusCode).toBe(400);
+		expect(res.statusCode).toBe(200);
+		const view: ReviewView = res.json();
+		const cluster = view.files
+			.flatMap((f) => f.clusters)
+			.find((c) => c.key === key);
+		expect(cluster?.state).toBe("crossed-off");
+		expect(cluster).not.toHaveProperty("reason");
+		expect(view.progress.clusters.reviewed).toBe(0);
 	});
 
 	it("rejects a write from a review the PR has moved off with 409", async () => {

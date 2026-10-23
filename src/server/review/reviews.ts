@@ -20,7 +20,7 @@ export interface ReviewPr {
 /** A state change names a cluster the snapshot doesn't have (HTTP 400). */
 export class UnknownClusterError extends Error {}
 
-/** A state change is malformed, e.g. crossed off without a reason (HTTP 400). */
+/** A state change is malformed, e.g. an unknown state (HTTP 400). */
 export class InvalidChangeError extends Error {}
 
 /**
@@ -128,15 +128,14 @@ export class ReviewService {
 			if (!STATES.has(state)) {
 				throw new InvalidChangeError(`Unknown cluster state: ${state}`);
 			}
-			if (state === "crossed-off" && !reason?.trim()) {
-				throw new InvalidChangeError("Crossing off needs a reason");
-			}
+			// The reason is optional; a blank one isn't stored.
+			const trimmed = state === "crossed-off" ? reason?.trim() : undefined;
 			return {
 				patchset: snapshot.revision,
 				cluster: key,
 				path,
 				state,
-				...(state === "crossed-off" ? { reason: reason?.trim() } : {}),
+				...(trimmed ? { reason: trimmed } : {}),
 			};
 		});
 
