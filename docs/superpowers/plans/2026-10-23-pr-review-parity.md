@@ -6,7 +6,7 @@
 
 **Architecture:** A Fastify server owns everything that touches git or `gh`: a private bare clone per repo, the diff model (files, clusters, identities, display hunks), the review store (append-only events in `refs/crb/` commits) and the coverage join that turns clusters + stored states into progress. The React app only renders what the server returns and posts reviewer actions back. Files load lazily: the summary endpoint never reads blobs, a file's hunks load when it's expanded.
 
-**Tech Stack:** Node 24, TypeScript 7, Fastify 5 (+ `@fastify/static`, `@fastify/cookie`), git CLI, `gh` CLI, React 19, TanStack Query, Tailwind 4, Shiki, `react-markdown` + `remark-gfm`, `ulid`, Vitest, Playwright, Biome.
+**Tech Stack:** Node 24, TypeScript 7, Fastify 5 (+ `@fastify/static`, `@fastify/cookie`), git CLI, `gh` CLI, React 19, TanStack Query (all server state, mutations, invalidation), TanStack Router (pages), TanStack Form (forms), TanStack Virtual (only if long diffs need it), Tailwind 4, Shiki, `react-markdown` + `remark-gfm`, `ulid`, Vitest, Playwright, Biome.
 
 **Spec:** `docs/superpowers/specs/2026-10-21-pr-review-parity-design.md`, with the storage subset described there and detailed in `docs/review-data-storage.md` (principles: `docs/gitdb-design-principles.md`). Read all three before starting.
 
@@ -29,6 +29,7 @@
 - Non-loopback `--host` requires a per-launch random access key (`?key=`, then an HttpOnly SameSite=Strict cookie `crb_key`); every request, API and static, checks it.
 - Never copy code or data from `gytpol/active-directory-domain-agent` into this repo, tests or fixtures. All `gh` JSON fixtures are synthetic.
 - `pnpm verify` must pass at the end of every task.
+- Web UI uses the TanStack family wherever it fits (reviewer's preference): TanStack Query for every server read and write (`useQuery`/`useMutation`, invalidate on success, no hand-rolled fetch state), TanStack Router for pages, TanStack Form for forms. Don't add TanStack Table/Start.
 
 ## Review Focus
 
@@ -447,6 +448,7 @@ it("never writes outside the cache dir", ...);  // fixture repo's refs and HEAD 
   - `open` order: `runGh(["auth","status"])` → `resolvePrRef` → `viewerSlug` → `fetchPrMeta` → `ensureClone` → `fetchPr` → `findOrCreateReview` → `getProgress` → snapshot = patch set's `(mergeBase, head)` if one exists, else `(fetchPr.mergeBase, fetchPr.head)` → `buildSnapshot`.
   - `refresh` = `fetchPrMeta` + `fetchPr`; with no patch set, rebuild the snapshot on the new head; with a patch set keep it. `headMoved = currentHead !== snapshotHead`. `checkHead` = `fetchPrMeta` only (no fetch).
   - `setStates` throws `StaleSnapshotError` when `snapshotHead !== snapshot().head`, then delegates to `ReviewService.recordStates`.
+  - SPA fallback: with `webRoot` set, any non-`/api/` GET that matches no file serves `index.html` (TanStack Router owns client paths `/` and `/files`); unknown `/api/` paths return 404 JSON.
   - `registerAccessKey(app: FastifyInstance, key: string | null)` in `access.ts`: when `key` is null do nothing; otherwise an `onRequest` hook accepts `?key=<key>` (and sets the `crb_key` cookie: HttpOnly, SameSite=Strict, Path=/) or a matching cookie, else replies 401 `{ error: "Missing or wrong access key" }`. Compare with `crypto.timingSafeEqual`.
   - `buildApp(session: Session, opts: { webRoot?: string; accessKey: string | null }): Promise<FastifyInstance>` with routes:
     | Route | Returns |
@@ -504,7 +506,8 @@ CLI checks go in the e2e suite (Task 8) since they need the built binary.
 - Produces:
   - `e2e/fixtures.ts` exports `test` with fixtures `pr: (opts?: { files?: FixtureCommit[]; overview?: Partial<ViewJson>; threads?: ThreadJson[] }) => Promise<{ repo: GitFixture; scenarioPath: string; number: 7; moveHead: (commit: FixtureCommit) => void }>` (builds a fixture repo with `main` + PR branch, `refs/pull/7/head`, writes a scenario) and `startCrb: (arg?: string, extraArgs?: string[]) => Promise<{ url: string; output(): string; stop(): Promise<void> }>` (spawns `node dist/cli.js` with `PATH=test/fake-gh:…`, `CRB_FAKE_GH`, temp `XDG_CACHE_HOME`; `stop` sends SIGTERM and waits). `startCrb` can be called twice on the same scenario to test restarts.
   - `api.ts`: `fetchSession`, `fetchOverview`, `fetchReview`, `fetchHunks(index)`, `fetchContext(index, from, to)`, `postStates(snapshotHead, changes)`, `postRefresh()`, `fetchHead()`, all throwing `ApiError { status: number; message: string }`.
-  - `App.tsx`: header with PR title, `#<n>`, Refresh button; tabs "Overview" | "Files changed" (state in URL hash `#overview` / `#files`, default overview); the moved-head banner slot (Task 10).
+  - `App.tsx`: header with PR title, `#<n>`, Refresh button; tabs "Overview" | "Files changed" as TanStack Router `Link`s; the moved-head banner slot (Task 10).
+  - `src/web/router.tsx`: code-based TanStack Router route tree — root route renders `App` (layout with `<Outlet/>`), `/` → `OverviewPage`, `/files` → `FilesPage` (placeholder until Task 9); browser history; `main.tsx` renders `RouterProvider` inside `QueryClientProvider`. Query options live next to the fetchers in `api.ts` as `queryOptions(...)` factories (`sessionQuery`, `overviewQuery`, `reviewQuery`, `hunksQuery(revision, index)`, `contextQuery(...)`) so components and route loaders share keys.
   - `OverviewPage` sections, each a `<section aria-label=…>`: **"What it does"** (title, author, `base ← head`, draft badge, times, GitHub link, description via `react-markdown` + `remark-gfm` with no raw HTML), **"Who's on it"** (requested reviewers, latest reviews, commenters, "you" shown separately, a clear line "No one else has started reviewing" / "<names> already started"), **"Is it ready"** (draft, conflicts, checks failing first then pending then passing collapsed in `<details>`, unresolved threads split Bots/AI and Humans, and a "No reply" list), and a **"Review files"** button showing overall cluster progress (`reviewed / total − crossedOff`).
 
 - [ ] **Step 1: Write failing tests**
@@ -543,7 +546,8 @@ test("shows what the PR does, who's on it and whether it's ready", async ({ page
   - `ProgressBar({ progress }: { progress: Progress })` — sticky top; two bars "Clusters" and "Lines", each with the percentage (`reviewed ÷ (total − crossedOff)`, 100% at 0/0), `reviewed / (total − crossedOff) reviewed`; green fill from the left, hatched purple crossed-off segment at the right end; legend "Left: N clusters · N lines · N files" and "Crossed off, not reviewed: N clusters · N lines · N files". `role="progressbar"` with `aria-label` "Clusters" / "Lines" and `aria-valuenow` = percentage.
   - `FileTree({ files, current, onSelect })` — folder tree in snapshot order, per file: status icon (not started / partly done / done / crossed off, crossed off struck through with the reason as a tag), `done/total` clusters, `+a −d`; current file highlighted.
   - `FileDiff({ file, snapshotHead, onChange })` — header: path (`old → new` for renames), `+/−`, "N of M clusters reviewed", "Cross off file…", "Mark remaining reviewed", collapse toggle. Starts collapsed; expanding fetches hunks (TanStack Query key `["hunks", revision, index]`). Body: unified lines with old/new numbers, add/del backgrounds, `@@ -a,b +c,d @@` rows; each line cluster gets a left rail (grey unreviewed, green reviewed and dimmed, purple crossed off, blue focused) with a checkbox on its first line (`aria-label="Mark cluster reviewed"`); file-level clusters render as a row with their label and the same checkbox. Expand rows between hunks: ↓ loads the next 20 lines below the previous hunk, ↑ the 20 above the next, ↕ fills a gap ≤ 20; ↑ at the top and ↓ at the bottom of the file (`newLineCount` bounds). Loaded lines are context only.
-  - "Cross off file…" opens a small dialog: reason text field with quick picks "generated" and "rename only"; confirming posts `crossed-off` for every cluster in the file. "Mark remaining reviewed" posts `reviewed` for every `unreviewed` cluster. A checked checkbox click posts `unreviewed` (undo).
+  - "Cross off file…" opens a small dialog built with TanStack Form (`useForm`; reason required, trimmed, non-empty): reason text field with quick picks "generated" and "rename only"; confirming posts `crossed-off` for every cluster in the file. "Mark remaining reviewed" posts `reviewed` for every `unreviewed` cluster. A checked checkbox click posts `unreviewed` (undo).
+  - All writes go through one `useMutation` (`useSetStates`) whose `onSuccess` writes the returned `ReviewView` into the `reviewQuery` cache (`setQueryData`).
   - `postStates` failure 409 → invalidate session + review and show "The review moved to a new snapshot; reloaded." Other failures show the error inline; the checkbox reverts.
   - `highlight.ts`: `highlightLine(text: string, lang: string | null): Promise<ThemedToken[]>` using a Shiki core highlighter with only these languages loaded lazily: `csharp, xml, powershell, markdown, typescript, tsx, javascript, json, yaml, css, html, shellscript, python, go, rust, java, sql`; extension map includes `.wxs .wxl .csproj .props .targets → xml`, `.ps1 .psm1 → powershell`, `.cs → csharp`; unknown → plain text. Lines are highlighted one at a time (multi-line constructs may lose state; acceptable for this milestone).
 
@@ -554,7 +558,7 @@ Component tests (jsdom): `ProgressBar` shows 51% for clusters `{ total: 39, revi
 `e2e/files.spec.ts` (fixture PR: one file with two clusters 10 lines apart, one file with a single cluster, one renamed file with no edits, a 60-line unchanged gap for expansion):
 ```ts
 test("checking a cluster updates file and overall progress", async ({ page, pr, startCrb }) => {
-	// open #files, expand file 1, check its first cluster
+	// open /files, expand file 1, check its first cluster
 	await expect(page.getByRole("progressbar", { name: "Clusters" })).toHaveAttribute("aria-valuenow", "25");
 	await expect(page.getByTestId("file-tree")).toContainText("1/2");
 });
