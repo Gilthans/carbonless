@@ -1,8 +1,9 @@
+import { execFileSync } from "node:child_process";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createBareRepo } from "../../../test/git-fixture.js";
-import { runGit } from "../git.js";
+import { GitError, runGit } from "../git.js";
 import { type CrbEvent, newEvent } from "./events.js";
-import { RefStore } from "./refStore.js";
+import { RefConflictError, RefStore } from "./refStore.js";
 
 const ref = "refs/crb/reviews/r1/reviewers/dan/progress";
 const all: CrbEvent[] = Array.from({ length: 20 }, (_, i) =>
@@ -138,7 +139,9 @@ describe("RefStore", () => {
 			await other.appendEvent(ref, "other", evN(++n), "dan");
 			return oid;
 		});
-		await expect(store.appendEvent(ref, "mine", ev, "dan")).rejects.toThrow();
+		await expect(
+			store.appendEvent(ref, "mine", ev, "dan"),
+		).rejects.toBeInstanceOf(RefConflictError);
 		expect(store.commit).toHaveBeenCalledTimes(5);
 		expect((await store.readEvents(ref)).map((e) => e.id)).not.toContain(ev.id);
 	});
@@ -191,12 +194,132 @@ describe("RefStore", () => {
 				{ ref, newOid: b, oldOid: a },
 				{ ref: meta, newOid: b, oldOid: b },
 			]),
-		).rejects.toThrow();
+		).rejects.toBeInstanceOf(RefConflictError);
 		expect(await store.tip(ref)).toBe(a);
 		expect(await store.tip(meta)).toBe(a);
 		await expect(
 			store.transaction([{ ref: "refs/crb/new", newOid: b, oldOid: a }]),
-		).rejects.toThrow();
+		).rejects.toBeInstanceOf(RefConflictError);
 		expect(await store.tip("refs/crb/new")).toBeNull();
+	});
+
+	it("fails fast on errors that aren't lost races", async () => {
+		await store.appendEvent("refs/crb/a", "s", ev, "dan");
+		const commits = vi.spyOn(store, "commit");
+		// refs/crb/a exists, so refs/crb/a/b can never be created.
+		const error = await store
+			.appendEvent("refs/crb/a/b", "s", evN(1), "dan")
+			.catch((e: unknown) => e);
+		expect(error).toBeInstanceOf(GitError);
+		expect(error).not.toBeInstanceOf(RefConflictError);
+		expect(commits).toHaveBeenCalledTimes(1);
+	});
+
+	it("rejects invalid ref names before running git", async () => {
+		const commits = vi.spyOn(store, "commit");
+		await expect(
+			store.appendEvent("refs/crb/x.lock", "s", ev, "dan"),
+		).rejects.toThrow(/Not a valid crb ref/);
+		expect(commits).not.toHaveBeenCalled();
+		expect(await runGit(repo, ["for-each-ref"])).toBe("");
+	});
+
+	it("accepts exactly the crb refs git accepts", async () => {
+		const names = [
+			"refs/crb/x.lock",
+			"refs/crb/.hidden",
+			"refs/crb/a..b",
+			"refs/crb/a//b",
+			"refs/crb/a/",
+			"refs/crb/a.",
+			"refs/crb/a b",
+			"refs/crb/a@{1}",
+			"refs/crb/lookup/github-pr/0123abcd",
+			"refs/crb/reviews/01jb/reviewers/dan-2/patchsets/3",
+			"refs/crb/a.b/c_d-E",
+		];
+		for (const name of names) {
+			let gitOk = true;
+			try {
+				execFileSync("git", ["check-ref-format", name]);
+			} catch {
+				gitOk = false;
+			}
+			const oursOk = await store.tip(name).then(
+				() => true,
+				() => false,
+			);
+			expect({ name, ok: oursOk }).toEqual({ name, ok: gitOk });
+		}
+	});
+
+	it("ignores inherited GIT_* variables that would redirect writes", async () => {
+		const other = createBareRepo();
+		const saved = { ...process.env };
+		try {
+			const before = execFileSync(
+				"git",
+				["-C", other.path, "count-objects", "-v"],
+				{
+					encoding: "utf8",
+				},
+			);
+			Object.assign(process.env, {
+				GIT_DIR: other.path,
+				GIT_NAMESPACE: "evil",
+				GIT_COMMITTER_DATE: "2005-04-07T22:13:13Z",
+				GIT_AUTHOR_DATE: "2005-04-07T22:13:13Z",
+				GIT_AUTHOR_EMAIL: "real@example.com",
+				GIT_CONFIG_COUNT: "1",
+				GIT_CONFIG_KEY_0: "user.email",
+				GIT_CONFIG_VALUE_0: "real@example.com",
+			});
+			const tip = await store.appendEvent(ref, "s", ev, "dan");
+			process.env = saved;
+			expect(
+				await runGit(repo, [
+					"for-each-ref",
+					"--format=%(refname) %(objectname)",
+				]),
+			).toBe(`${ref} ${tip}\n`);
+			const [ct, at, email] = (
+				await runGit(repo, ["log", "-1", "--format=%ct|%at|%ae", tip])
+			)
+				.trim()
+				.split("|");
+			const now = Date.now() / 1000;
+			expect(Math.abs(Number(ct) - now)).toBeLessThan(300);
+			expect(Math.abs(Number(at) - now)).toBeLessThan(300);
+			expect(email).toBe("dan@crb");
+			expect(await runGit(other.path, ["for-each-ref"])).toBe("");
+			expect(
+				execFileSync("git", ["-C", other.path, "count-objects", "-v"], {
+					encoding: "utf8",
+				}),
+			).toBe(before);
+		} finally {
+			process.env = saved;
+			other.cleanup();
+		}
+	});
+
+	it("reads UTF-8 whatever the log output encoding is", async () => {
+		await runGit(repo, ["config", "i18n.logOutputEncoding", "ISO-8859-1"]);
+		await runGit(repo, ["config", "i18n.commitEncoding", "ISO-8859-1"]);
+		const e = newEvent("cluster-state", "dan", {
+			patchset: "f".repeat(64),
+			cluster: "c",
+			path: "docs/über.md",
+			state: "reviewed",
+		});
+		await store.appendEvent(ref, "crb: reviewed docs/über.md", e, "dan");
+		expect(await store.readEvents(ref)).toEqual([e]);
+	});
+
+	it("reads history as stored, ignoring replace refs", async () => {
+		const first = await store.appendEvent(ref, "s", ev, "dan");
+		const fake = await store.commit(null, "fake", [evN(5)], "dan");
+		await runGit(repo, ["update-ref", `refs/replace/${first}`, fake]);
+		expect(await store.readEvents(ref)).toEqual([ev]);
 	});
 });

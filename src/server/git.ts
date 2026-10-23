@@ -10,6 +10,40 @@ export interface RunGitOptions {
 	allowFailure?: boolean;
 }
 
+/**
+ * Inherited GIT_* variables that only affect transport and diagnostics. Every
+ * other GIT_* variable is dropped: GIT_DIR, GIT_NAMESPACE, GIT_OBJECT_DIRECTORY
+ * and friends would redirect reads and writes to another repository (for
+ * example when crb runs from a git hook or alias), and GIT_AUTHOR_*,
+ * GIT_COMMITTER_* and GIT_CONFIG_* would change what we write.
+ */
+const INHERITED_GIT_VARS = new Set([
+	"GIT_ASKPASS",
+	"GIT_TERMINAL_PROMPT",
+	"GIT_SSH",
+	"GIT_SSH_COMMAND",
+	"GIT_SSH_VARIANT",
+	"GIT_PROXY_COMMAND",
+	"GIT_SSL_CAINFO",
+	"GIT_SSL_CAPATH",
+	"GIT_EXEC_PATH",
+	"GIT_CURL_VERBOSE",
+]);
+
+function inheritedEnv(): NodeJS.ProcessEnv {
+	const env: NodeJS.ProcessEnv = {};
+	for (const [key, value] of Object.entries(process.env)) {
+		if (
+			!key.startsWith("GIT_") ||
+			INHERITED_GIT_VARS.has(key) ||
+			key.startsWith("GIT_TRACE")
+		) {
+			env[key] = value;
+		}
+	}
+	return env;
+}
+
 export async function runGit(
 	repoPath: string,
 	args: string[],
@@ -26,7 +60,7 @@ export function runGitBuffer(
 ): Promise<Buffer> {
 	return new Promise((resolve, reject) => {
 		const child = spawn("git", ["-C", repoPath, ...args], {
-			env: { ...process.env, ...opts.env },
+			env: { ...inheritedEnv(), ...opts.env },
 			stdio: ["pipe", "pipe", "pipe"],
 		});
 		const out: Buffer[] = [];

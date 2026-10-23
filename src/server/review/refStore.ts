@@ -7,8 +7,18 @@ import {
 	validateForWrite,
 } from "./events.js";
 
-/** Tries per append; each failed try re-reads the tip (see appendEvent). */
+/** Tries per append; each lost race re-reads the tip (see appendEvent). */
 const MAX_TRIES = 5;
+
+/**
+ * Thrown when a ref was not at the expected old value (another writer moved,
+ * created or deleted it, or held its lock), as opposed to a real failure.
+ */
+export class RefConflictError extends GitError {}
+
+/** update-ref's wording (under LC_ALL=C) for a lost compare-and-swap race. */
+const LOST_RACE =
+	/cannot lock ref '[^']*': (?:is at \S+ but expected|reference already exists|unable to resolve reference|Unable to create '[^']*\.lock': File exists)/;
 
 export interface RefUpdate {
 	ref: string;
@@ -53,9 +63,13 @@ export class RefStore {
 	async readEvents(ref: string): Promise<CrbEvent[]> {
 		const tip = await this.tip(ref);
 		if (!tip) return [];
+		// Pin everything user config could change about the bytes we read.
 		const out = await runGit(this.repo, [
+			"--no-replace-objects",
 			"-c",
 			"log.showSignature=false",
+			"-c",
+			"i18n.logOutputEncoding=UTF-8",
 			"log",
 			"-z",
 			"--reverse",
@@ -123,7 +137,7 @@ export class RefStore {
 				await this.transaction([{ ref, newOid: oid, oldOid: tip }]);
 				return oid;
 			} catch (error) {
-				if (!(error instanceof GitError)) throw error;
+				if (!(error instanceof RefConflictError)) throw error;
 				lastError = error;
 				if (attempt === MAX_TRIES) break;
 				// Randomized exponential backoff, scaled to how long a try takes,
@@ -132,7 +146,7 @@ export class RefStore {
 				await sleep(Math.random() * tryMs * 2 ** attempt);
 			}
 		}
-		throw new GitError(
+		throw new RefConflictError(
 			`Could not append to ${ref} after ${MAX_TRIES} tries: ${String(lastError)}`,
 		);
 	}
@@ -147,9 +161,18 @@ export class RefStore {
 			if (oldOid !== null) checkOid(oldOid);
 			return `update ${ref} ${newOid} ${oldOid ?? zero}\n`;
 		});
-		await runGit(this.repo, ["update-ref", "--stdin"], {
-			input: `start\n${lines.join("")}commit\n`,
-		});
+		try {
+			await runGit(this.repo, ["update-ref", "--stdin"], {
+				input: `start\n${lines.join("")}commit\n`,
+				// English messages, so LOST_RACE can recognize them.
+				env: { LC_ALL: "C" },
+			});
+		} catch (error) {
+			if (error instanceof GitError && LOST_RACE.test(error.message)) {
+				throw new RefConflictError(error.message);
+			}
+			throw error;
+		}
 	}
 
 	async writeBlob(content: string): Promise<string> {
@@ -160,10 +183,19 @@ export class RefStore {
 	}
 }
 
+/**
+ * A crb ref that also passes `git check-ref-format`: a safe character set, no
+ * empty component, no component starting with "." or ending in ".lock", no
+ * "..", and no trailing ".".
+ */
 function checkRef(ref: string): void {
-	if (!/^refs\/crb\/[A-Za-z0-9._/-]+$/.test(ref) || ref.includes("..")) {
-		throw new Error(`Not a crb ref: ${ref}`);
-	}
+	const parts = ref.split("/");
+	const valid =
+		/^refs\/crb\/[A-Za-z0-9._/-]+$/.test(ref) &&
+		!ref.includes("..") &&
+		!ref.endsWith(".") &&
+		parts.every((p) => p !== "" && !p.startsWith(".") && !p.endsWith(".lock"));
+	if (!valid) throw new Error(`Not a valid crb ref: ${ref}`);
 }
 
 function checkOid(oid: string): void {
