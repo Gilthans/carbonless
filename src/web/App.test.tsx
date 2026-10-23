@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render, screen, within } from "@testing-library/react";
+import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { Comparison } from "../shared/types";
+import type { SessionInfo } from "../shared/types";
 import { App } from "./App";
 
 function renderApp() {
@@ -23,22 +23,19 @@ function mockFetch(status: number, body: unknown) {
 	);
 }
 
-const comparison: Comparison = {
-	repoPath: "/repos/example",
-	base: {
-		sha: "a".repeat(40),
-		shortSha: "aaaaaaa",
-		subject: "Base subject",
-		author: "Ada",
-		date: "2026-01-01T00:00:00Z",
+const info: SessionInfo = {
+	pr: {
+		owner: "acme",
+		repo: "widget",
+		number: 12,
+		title: "Add widget cache",
+		url: "https://github.com/acme/widget/pull/12",
 	},
-	head: {
-		sha: "b".repeat(40),
-		shortSha: "bbbbbbb",
-		subject: "Head subject",
-		author: "Grace",
-		date: "2026-01-02T00:00:00Z",
-	},
+	viewer: "octo",
+	snapshotHead: "b".repeat(40),
+	currentHead: "b".repeat(40),
+	headMoved: false,
+	patchset: null,
 };
 
 describe("App", () => {
@@ -47,25 +44,19 @@ describe("App", () => {
 		vi.unstubAllGlobals();
 	});
 
-	it("shows both commits", async () => {
-		mockFetch(200, comparison);
+	it("shows the PR title", async () => {
+		mockFetch(200, info);
 		renderApp();
-
-		const base = await screen.findByRole("region", { name: "Base" });
-		expect(within(base).getByText("aaaaaaa")).toBeInTheDocument();
-		expect(within(base).getByText("Base subject")).toBeInTheDocument();
-
-		const head = screen.getByRole("region", { name: "Head" });
-		expect(within(head).getByText("Head subject")).toBeInTheDocument();
-		expect(screen.getByTestId("repo-path")).toHaveTextContent("/repos/example");
+		expect(
+			await screen.findByRole("heading", { name: "Add widget cache" }),
+		).toBeInTheDocument();
 	});
 
 	it("shows the server's error message", async () => {
-		mockFetch(400, { error: "unknown revision" });
+		mockFetch(502, { error: "gh is not logged in" });
 		renderApp();
-
 		expect(await screen.findByRole("alert")).toHaveTextContent(
-			"unknown revision",
+			"gh is not logged in",
 		);
 	});
 });

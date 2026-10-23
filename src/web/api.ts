@@ -1,4 +1,4 @@
-import type { Comparison } from "../shared/types";
+import type { SessionInfo } from "../shared/types";
 
 async function getJson<T>(path: string): Promise<T> {
 	const response = await fetch(path);
@@ -9,4 +9,4 @@ async function getJson<T>(path: string): Promise<T> {
 	return body as T;
 }
 
-export const fetchComparison = () => getJson<Comparison>("/api/comparison");
+export const fetchSession = () => getJson<SessionInfo>("/api/session");

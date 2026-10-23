@@ -1,17 +1,3 @@
-export interface CommitInfo {
-	sha: string;
-	shortSha: string;
-	subject: string;
-	author: string;
-	date: string;
-}
-
-export interface Comparison {
-	repoPath: string;
-	base: CommitInfo;
-	head: CommitInfo;
-}
-
 export type FileStatus =
 	| "added"
 	| "deleted"
@@ -172,4 +158,22 @@ export interface PrOverview {
 		hasReply: boolean;
 		outdated: boolean;
 	}[];
+}
+
+export interface SessionInfo {
+	pr: {
+		owner: string;
+		repo: string;
+		number: number;
+		title: string;
+		url: string;
+	};
+	/** The reviewer's slug. */
+	viewer: string;
+	/** Head of the snapshot being reviewed (the patch set's, once started). */
+	snapshotHead: string;
+	/** The PR's head on GitHub, as last fetched or checked. */
+	currentHead: string;
+	headMoved: boolean;
+	patchset: number | null;
 }
