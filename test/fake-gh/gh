@@ -6,10 +6,12 @@ import { execFileSync } from "node:child_process";
 import { appendFileSync, readFileSync } from "node:fs";
 
 const args = process.argv.slice(2);
+const s = JSON.parse(readFileSync(process.env.CRB_FAKE_GH, "utf8"));
+// Logged after reading the scenario: once a call shows in the log, a test may
+// rewrite the scenario without affecting that call.
 if (process.env.CRB_FAKE_GH_LOG) {
 	appendFileSync(process.env.CRB_FAKE_GH_LOG, `${args.join(" ")}\n`);
 }
-const s = JSON.parse(readFileSync(process.env.CRB_FAKE_GH, "utf8"));
 
 function fail(message, code = 1) {
 	process.stderr.write(`${message}\n`);
@@ -100,6 +102,9 @@ switch (cmd) {
 		}
 		const pr = s.prs[n];
 		if (!pr) notFound(n);
+		if (s.prViewDelayMs) {
+			Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, s.prViewDelayMs);
+		}
 		const out = {};
 		for (const f of wanted.split(",")) if (f in pr.view) out[f] = pr.view[f];
 		print(out);

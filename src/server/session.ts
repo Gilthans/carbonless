@@ -38,6 +38,9 @@ export class Session {
 	#meta: PrMeta;
 	#snapshot: Snapshot;
 	#patchset: number | null;
+	/** Order of PR metadata requests, by start; see #setMeta. */
+	#metaSeq = 0;
+	#metaSeqApplied = 0;
 	/** Serializes everything that writes or swaps the snapshot. */
 	#queue: Promise<unknown> = Promise.resolve();
 
@@ -110,25 +113,31 @@ export class Session {
 		return view;
 	}
 
-	fileHunks(index: number): Promise<FileHunks> {
-		return loadFileHunks(this.repo, this.#snapshot, index);
+	/** Display hunks of a file of the snapshot with this `revision`. */
+	async fileHunks(revision: string, index: number): Promise<FileHunks> {
+		return loadFileHunks(this.repo, this.#current(revision), index);
 	}
 
-	context(index: number, newFrom: number, newTo: number): Promise<DiffLine[]> {
-		return loadContext(this.repo, this.#snapshot, index, newFrom, newTo);
+	/** Unchanged lines of a file of the snapshot with this `revision`. */
+	async context(
+		revision: string,
+		index: number,
+		newFrom: number,
+		newTo: number,
+	): Promise<DiffLine[]> {
+		const snapshot = this.#current(revision);
+		return loadContext(this.repo, snapshot, index, newFrom, newTo);
 	}
 
 	/**
-	 * Records state changes made against the snapshot whose head is
-	 * `snapshotHead`. A tab still showing a snapshot the session has moved off
-	 * gets a StaleSnapshotError, so no state lands on the wrong snapshot.
+	 * Records state changes made against the snapshot with this `revision`
+	 * (ReviewView.revision). A tab still showing a snapshot the session has
+	 * moved off, by head or by base, gets a StaleSnapshotError, so no state
+	 * lands on a snapshot the reviewer never saw.
 	 */
-	setStates(snapshotHead: string, changes: StateChange[]): Promise<ReviewView> {
+	setStates(revision: string, changes: StateChange[]): Promise<ReviewView> {
 		return this.#exclusive(async () => {
-			const snapshot = this.#snapshot;
-			if (snapshotHead !== snapshot.head) {
-				throw new StaleSnapshotError("The review moved to another snapshot");
-			}
+			const snapshot = this.#current(revision);
 			try {
 				const progress = await this.reviews.recordStates(
 					this.reviewId,
@@ -159,9 +168,10 @@ export class Session {
 	 */
 	refresh(): Promise<SessionInfo> {
 		return this.#exclusive(async () => {
+			const seq = ++this.#metaSeq;
 			const meta = await fetchPrMeta(this.#ref());
 			const fetched = await fetchPr(this.repo, meta);
-			this.#meta = meta;
+			this.#setMeta(seq, meta);
 			await this.#moveTo(await this.#progress(), fetched);
 			return this.info();
 		});
@@ -169,8 +179,25 @@ export class Session {
 
 	/** Asks GitHub for the PR's head without fetching anything. */
 	async checkHead(): Promise<SessionInfo> {
-		this.#meta = await fetchPrMeta(this.#ref());
+		const seq = ++this.#metaSeq;
+		this.#setMeta(seq, await fetchPrMeta(this.#ref()));
 		return this.info();
+	}
+
+	/** Keeps the newest answer: a slow check started earlier can't undo a refresh. */
+	#setMeta(seq: number, meta: PrMeta): void {
+		if (seq < this.#metaSeqApplied) return;
+		this.#metaSeqApplied = seq;
+		this.#meta = meta;
+	}
+
+	/** The snapshot, if it's the one the client is on. */
+	#current(revision: string): Snapshot {
+		const snapshot = this.#snapshot;
+		if (revision !== snapshot.revision) {
+			throw new StaleSnapshotError("The review moved to another snapshot");
+		}
+		return snapshot;
 	}
 
 	#ref(): PrRef {

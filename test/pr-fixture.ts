@@ -1,5 +1,12 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import {
@@ -21,8 +28,10 @@ export interface PrFixture {
 	head: () => string;
 	/** Pushes a commit onto the PR and points the fake gh at it. */
 	moveHead: (files: Record<string, string>) => string;
-	/** Fast-forwards main to the PR head, as merging it would. */
-	merge: () => void;
+	/** Moves main to `sha`, by default the PR head (as merging it would). */
+	moveMain: (sha?: string) => void;
+	/** Every gh call so far, one per line. */
+	ghLog: () => string;
 	/** Rewrites the fake gh scenario with these overrides. */
 	scenario: (over?: Partial<Scenario>) => void;
 	cleanup: () => void;
@@ -81,6 +90,7 @@ export function createPrFixture(): PrFixture {
 	setEnv({
 		PATH: `${FAKE_GH_DIR}:${process.env.PATH ?? ""}`,
 		XDG_CACHE_HOME: join(tmp, "cache"),
+		CRB_FAKE_GH_LOG: join(tmp, "gh.log"),
 	});
 	scenario();
 
@@ -113,8 +123,12 @@ export function createPrFixture(): PrFixture {
 			scenario();
 			return head;
 		},
-		merge: () => {
-			git("reset", "--quiet", "--hard", head);
+		moveMain: (sha = head) => {
+			git("reset", "--quiet", "--hard", sha);
+		},
+		ghLog: () => {
+			const log = join(tmp, "gh.log");
+			return existsSync(log) ? readFileSync(log, "utf8") : "";
 		},
 		scenario,
 		cleanup: () => {

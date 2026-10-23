@@ -1,4 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { prView } from "../../test/fake-gh/scenario";
 import { createPrFixture, type PrFixture } from "../../test/pr-fixture";
 import { GhError } from "./errors";
 import { StaleSnapshotError } from "./review/reviews";
@@ -50,7 +51,7 @@ describe("Session", () => {
 	});
 
 	it("refuses a PR already merged into its base", async () => {
-		pr.merge();
+		pr.moveMain();
 		await expect(Session.open(pr.arg, process.cwd())).rejects.toThrow(
 			"PR acme/widget#12 is already merged into main; nothing to review",
 		);
@@ -78,7 +79,7 @@ describe("Session", () => {
 	it("keeps a started review on its patch set when the PR moves", async () => {
 		const s = await Session.open(pr.arg, process.cwd());
 		const oldHead = pr.head();
-		const view = await s.setStates(oldHead, [
+		const view = await s.setStates(s.snapshot().revision, [
 			{ key: firstKey(s), state: "reviewed" },
 		]);
 		expect(view.patchset).toBe(1);
@@ -110,22 +111,69 @@ describe("Session", () => {
 
 	it("rejects a write against a head the session has moved off", async () => {
 		const s = await Session.open(pr.arg, process.cwd());
-		const oldHead = pr.head();
+		const old = s.snapshot().revision;
 		const key = firstKey(s);
 		pr.moveHead({ "later.txt": "later\n" });
 		await s.refresh();
 		await expect(
-			s.setStates(oldHead, [{ key, state: "reviewed" }]),
+			s.setStates(old, [{ key, state: "reviewed" }]),
+		).rejects.toBeInstanceOf(StaleSnapshotError);
+		await expect(s.fileHunks(old, 0)).rejects.toBeInstanceOf(
+			StaleSnapshotError,
+		);
+		await expect(s.context(old, 0, 1, 2)).rejects.toBeInstanceOf(
+			StaleSnapshotError,
+		);
+		expect(s.info().patchset).toBeNull();
+	});
+
+	it("rejects a write against a base the session has moved off", async () => {
+		const first = pr.head();
+		pr.moveHead({ "later.txt": "later\n" });
+		const s = await Session.open(pr.arg, process.cwd());
+		const old = s.snapshot().revision;
+		const key = firstKey(s);
+		// main takes the PR's first commit: same head, new merge base.
+		pr.moveMain(first);
+		await s.refresh();
+		expect(s.snapshot()).toMatchObject({ base: first, head: pr.head() });
+		await expect(
+			s.setStates(old, [{ key, state: "reviewed" }]),
 		).rejects.toBeInstanceOf(StaleSnapshotError);
 		expect(s.info().patchset).toBeNull();
 	});
 
+	it("keeps a refresh's head over a slower check that started before it", async () => {
+		const s = await Session.open(pr.arg, process.cwd());
+		pr.scenario({
+			prs: {
+				12: { view: prView({ headRefOid: pr.head(), baseRefName: "main" }) },
+			},
+			prViewDelayMs: 1500,
+		});
+		const views = () => (pr.ghLog().match(/^pr view /gm) ?? []).length;
+		const before = views();
+		const check = s.checkHead();
+		// The check's gh has read the old head and is now sleeping.
+		await vi.waitFor(() => expect(views()).toBe(before + 1), {
+			timeout: 5000,
+		});
+		const newHead = pr.moveHead({ "later.txt": "later\n" });
+		expect((await s.refresh()).currentHead).toBe(newHead);
+		expect((await check).currentHead).toBe(newHead);
+		expect(s.info()).toMatchObject({
+			currentHead: newHead,
+			snapshotHead: newHead,
+		});
+	});
+
 	it("serves hunks and context of a file", async () => {
 		const s = await Session.open(pr.arg, process.cwd());
-		const hunks = await s.fileHunks(0);
+		const rev = s.snapshot().revision;
+		const hunks = await s.fileHunks(rev, 0);
 		expect(hunks.newLineCount).toBe(30);
 		expect(hunks.hunks).toHaveLength(2);
-		const lines = await s.context(0, 10, 12);
+		const lines = await s.context(rev, 0, 10, 12);
 		expect(lines.map((l) => l.text)).toEqual(["line 10", "line 11", "line 12"]);
 	});
 });

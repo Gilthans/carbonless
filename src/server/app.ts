@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import fastifyStatic from "@fastify/static";
 import Fastify, { type FastifyInstance } from "fastify";
 import type { ClusterState, StateChange } from "../shared/types.js";
-import { registerAccessKey } from "./access.js";
+import { registerAccessKey, registerHostCheck } from "./access.js";
 import { GhError } from "./errors.js";
 import { GitError } from "./git.js";
 import {
@@ -15,14 +15,18 @@ import type { Session } from "./session.js";
 export interface AppOptions {
 	/** Directory with the built web UI. Omit to serve only the API. */
 	webRoot?: string;
-	/** Required on every request when set (see access.ts). */
+	/**
+	 * Required on every request when set (see access.ts). Without a key the
+	 * server must be bound to loopback, and only loopback Host headers for the
+	 * listening port are accepted.
+	 */
 	accessKey: string | null;
 }
 
 /** A malformed request (HTTP 400). */
 class BadRequestError extends Error {}
 
-const MAX_CHANGES = 10_000;
+const MAX_CHANGES = 1000;
 const MAX_REASON = 500;
 const STATES: readonly string[] = [
 	"unreviewed",
@@ -40,6 +44,7 @@ export async function buildApp(
 ): Promise<FastifyInstance> {
 	// No logger: request URLs can carry the access key.
 	const app = Fastify({ logger: false, bodyLimit: 4 * 1024 * 1024 });
+	registerHostCheck(app, options.accessKey === null);
 	await registerAccessKey(app, options.accessKey);
 
 	app.setErrorHandler((error, _request, reply) => {
@@ -70,14 +75,20 @@ export async function buildApp(
 	app.get("/api/session", async () => session.info());
 	app.get("/api/overview", () => session.overview());
 	app.get("/api/review", () => session.review());
-	app.get<{ Params: { index: string } }>("/api/files/:index/hunks", (request) =>
-		session.fileHunks(fileIndex(request.params.index)),
+	app.get<{ Params: { index: string }; Querystring: { revision?: unknown } }>(
+		"/api/files/:index/hunks",
+		(request) =>
+			session.fileHunks(
+				revisionParam(request.query.revision),
+				fileIndex(request.params.index),
+			),
 	);
 	app.get<{
 		Params: { index: string };
-		Querystring: { newFrom?: string; newTo?: string };
+		Querystring: { revision?: unknown; newFrom?: string; newTo?: string };
 	}>("/api/files/:index/context", (request) => {
 		const index = fileIndex(request.params.index);
+		const revision = revisionParam(request.query.revision);
 		const { newFrom, newTo } = request.query;
 		if (
 			!POSITIVE.test(newFrom ?? "") ||
@@ -88,11 +99,11 @@ export async function buildApp(
 				"newFrom and newTo must be line numbers with newFrom <= newTo",
 			);
 		}
-		return session.context(index, Number(newFrom), Number(newTo));
+		return session.context(revision, index, Number(newFrom), Number(newTo));
 	});
 	app.post("/api/review/states", (request) => {
-		const { snapshotHead, changes } = parseStatesBody(request.body);
-		return session.setStates(snapshotHead, changes);
+		const { revision, changes } = parseStatesBody(request.body);
+		return session.setStates(revision, changes);
 	});
 	app.post("/api/refresh", () => session.refresh());
 	app.get("/api/head", () => session.checkHead());
@@ -121,22 +132,29 @@ function fileIndex(raw: string): number {
 	return Number(raw);
 }
 
+function revisionParam(raw: unknown): string {
+	if (typeof raw !== "string" || !raw) {
+		throw new BadRequestError("revision is required");
+	}
+	return raw;
+}
+
 function parseStatesBody(body: unknown): {
-	snapshotHead: string;
+	revision: string;
 	changes: StateChange[];
 } {
 	const fail = (message: string) => new BadRequestError(message);
 	if (typeof body !== "object" || body === null) {
 		throw fail("Expected a JSON body");
 	}
-	const { snapshotHead, changes } = body as Record<string, unknown>;
-	if (typeof snapshotHead !== "string") throw fail("snapshotHead is required");
+	const { revision, changes } = body as Record<string, unknown>;
+	if (typeof revision !== "string") throw fail("revision is required");
 	if (!Array.isArray(changes)) throw fail("changes must be an array");
 	if (changes.length > MAX_CHANGES) {
 		throw fail(`At most ${MAX_CHANGES} changes per request`);
 	}
 	return {
-		snapshotHead,
+		revision,
 		changes: changes.map((change: unknown): StateChange => {
 			if (typeof change !== "object" || change === null) {
 				throw fail("Each change must be an object");

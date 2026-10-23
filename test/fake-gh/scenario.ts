@@ -19,6 +19,8 @@ export interface Scenario {
 	loggedOut?: boolean;
 	/** `gh repo clone` fails with this as git's last stderr line. */
 	cloneError?: string;
+	/** `gh pr view` answers only after this many milliseconds. */
+	prViewDelayMs?: number;
 	/** Nodes per GraphQL page (default 100, like gh.ts asks for). */
 	pageSize?: number;
 	prs: Record<

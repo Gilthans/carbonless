@@ -82,8 +82,13 @@ async function main(): Promise<void> {
 	const shutdown = async () => {
 		if (closing) return;
 		closing = true;
-		await app.close();
-		process.exit(0);
+		try {
+			await app.close();
+			process.exit(0);
+		} catch (error) {
+			console.error(`crb: shutdown failed: ${(error as Error).message}`);
+			process.exit(1);
+		}
 	};
 	process.on("SIGINT", shutdown);
 	process.on("SIGTERM", shutdown);

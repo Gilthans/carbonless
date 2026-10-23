@@ -12,7 +12,13 @@ export default defineConfig({
 	server: {
 		port: 5173,
 		proxy: {
-			"/api": "http://127.0.0.1:4747",
+			// The API only accepts its own loopback Host and Origin (DNS
+			// rebinding guard), so the dev proxy presents itself as the API.
+			"/api": {
+				target: "http://127.0.0.1:4747",
+				changeOrigin: true,
+				headers: { origin: "http://127.0.0.1:4747" },
+			},
 		},
 	},
 });

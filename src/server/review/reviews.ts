@@ -138,7 +138,9 @@ export class ReviewService {
 		// The fold orders by (ts, id): stamp every new event after everything
 		// already stored, so a backward clock step can't put a reset before the
 		// state it undoes.
-		let lastTs = Math.max(-1, ...existing.map((e) => e.ts));
+		// A loop, not Math.max(...): spreading ~100k events overflows the stack.
+		let lastTs = -1;
+		for (const e of existing) if (e.ts > lastTs) lastTs = e.ts;
 		const stamp = () => {
 			lastTs = Math.max(Date.now(), lastTs + 1);
 			return lastTs;
