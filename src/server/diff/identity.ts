@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { Cluster } from "../../shared/types.js";
+import { byteString, type TextEncoding } from "./text.js";
 
 const CONTEXT = 3;
 
@@ -28,16 +29,31 @@ export function contextAround(
 	};
 }
 
+export interface KeyOptions {
+	/** How `removed`, `added` and `newLines` were decoded (default UTF-8). */
+	encoding?: TextEncoding;
+	/**
+	 * Old and new object IDs, for file-level clusters whose content change is
+	 * not visible as lines (binary, submodule, type change without lines).
+	 */
+	contentOids?: [string, string];
+}
+
 /**
- * Identity of each cluster: path, kind, label, exact removed and added lines,
- * and the surrounding context (none for file-level clusters). Repeats of the
- * same identity in file order get `:2`, `:3`… so every key is unique.
+ * Identity of each cluster: path, kind, label, the exact bytes of the removed
+ * and added lines and of the surrounding context (none for file-level
+ * clusters), the missing-newline-at-end flags, and for content changes
+ * without lines the old and new object IDs. Repeats of the same identity in
+ * file order get `:2`, `:3`… so every key is unique.
  */
 export function clusterKeys(
 	path: string,
 	clusters: Omit<Cluster, "key">[],
 	newLines: string[],
+	{ encoding = "utf8", contentOids }: KeyOptions = {},
 ): string[] {
+	const bytes = (lines: string[]) =>
+		lines.map((line) => byteString(line, encoding));
 	const seen = new Map<string, number>();
 	return clusters.map((c) => {
 		const { before, after } =
@@ -50,10 +66,13 @@ export function clusterKeys(
 					path,
 					c.kind,
 					c.label ?? null,
-					c.removed,
-					c.added,
-					before,
-					after,
+					bytes(c.removed),
+					bytes(c.added),
+					bytes(before),
+					bytes(after),
+					c.noNewlineOld === true,
+					c.noNewlineNew === true,
+					c.kind === "file" ? (contentOids ?? null) : null,
 				]),
 			)
 			.digest("hex");

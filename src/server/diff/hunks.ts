@@ -42,6 +42,7 @@ function context(
 	newLines: string[],
 	newNo: number,
 	shift: number,
+	noNewlineAtEnd: boolean,
 ): DiffLine {
 	const oldNo = newNo - shift;
 	const text = newLines[newNo - 1];
@@ -50,19 +51,25 @@ function context(
 			`Unchanged line ${newNo} (old ${oldNo}) differs between the two sides`,
 		);
 	}
-	return { kind: "context", oldNo, newNo, text };
+	const line: DiffLine = { kind: "context", oldNo, newNo, text };
+	if (noNewlineAtEnd && newNo === newLines.length) line.noNewline = true;
+	return line;
 }
 
 /**
  * GitHub/git style hunks: each line cluster plus up to `context` unchanged
  * lines either side, merged when the expansions touch or overlap (so
  * clusters ≤ 2 × context unchanged lines apart share a hunk).
+ * `noNewlineAtEnd`: the new file (and so an unchanged last line) has no
+ * newline at the end. Lines followed by git's "No newline at end of file"
+ * get `noNewline`.
  */
 export function buildDisplayHunks(
 	oldLines: string[],
 	newLines: string[],
 	clusters: Cluster[],
 	contextSize = 3,
+	noNewlineAtEnd = false,
 ): DisplayHunk[] {
 	const groups: Span[][] = [];
 	for (const span of spans(clusters)) {
@@ -83,31 +90,41 @@ export function buildDisplayHunks(
 		let next = from;
 		for (const span of group) {
 			for (; next <= span.newAbove; next++) {
-				lines.push(context(oldLines, newLines, next, span.shiftBefore));
+				lines.push(
+					context(oldLines, newLines, next, span.shiftBefore, noNewlineAtEnd),
+				);
 			}
 			const { cluster } = span;
 			cluster.removed.forEach((text, i) => {
-				lines.push({
+				const line: DiffLine = {
 					kind: "del",
 					oldNo: cluster.oldStart + i,
 					text,
 					clusterKey: cluster.key,
-				});
+				};
+				if (cluster.noNewlineOld && i === cluster.removed.length - 1) {
+					line.noNewline = true;
+				}
+				lines.push(line);
 			});
 			cluster.added.forEach((text, i) => {
-				lines.push({
+				const line: DiffLine = {
 					kind: "add",
 					newNo: cluster.newStart + i,
 					text,
 					clusterKey: cluster.key,
-				});
+				};
+				if (cluster.noNewlineNew && i === cluster.added.length - 1) {
+					line.noNewline = true;
+				}
+				lines.push(line);
 			});
 			next = span.newBelow;
 		}
 		const shiftAfter =
 			last.shiftBefore + last.cluster.newCount - last.cluster.oldCount;
 		for (; next <= to; next++)
-			lines.push(context(oldLines, newLines, next, shiftAfter));
+			lines.push(context(oldLines, newLines, next, shiftAfter, noNewlineAtEnd));
 
 		const oldCount = lines.filter((l) => l.kind !== "add").length;
 		const newCount = lines.filter((l) => l.kind !== "del").length;
@@ -133,6 +150,7 @@ export function contextLines(
 	clusters: Cluster[],
 	newFrom: number,
 	newTo: number,
+	noNewlineAtEnd = false,
 ): DiffLine[] {
 	const all = spans(clusters);
 	const lines: DiffLine[] = [];
@@ -150,7 +168,9 @@ export function contextLines(
 			span !== undefined &&
 			span.cluster.newCount > 0 &&
 			n >= span.cluster.newStart;
-		if (!added) lines.push(context(oldLines, newLines, n, shift));
+		if (!added) {
+			lines.push(context(oldLines, newLines, n, shift, noNewlineAtEnd));
+		}
 	}
 	return lines;
 }

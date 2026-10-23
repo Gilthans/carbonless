@@ -128,6 +128,62 @@ describe("buildDisplayHunks", () => {
 	});
 });
 
+describe("missing newline at end of file", () => {
+	const change = (flags: Partial<Cluster>): Cluster => ({
+		key: "k",
+		kind: "lines",
+		oldStart: 2,
+		oldCount: 1,
+		newStart: 2,
+		newCount: 1,
+		removed: ["b"],
+		added: ["b"],
+		lines: 2,
+		...flags,
+	});
+	const marked = (hunks: DisplayHunk[]) =>
+		hunks
+			.flatMap((h) => h.lines)
+			.filter((l) => l.noNewline)
+			.map((l) => l.kind);
+
+	it("flags the removed line when the newline was added", () => {
+		const hunks = buildDisplayHunks(
+			["a", "b"],
+			["a", "b"],
+			[change({ noNewlineOld: true })],
+		);
+		expect(marked(hunks)).toEqual(["del"]);
+	});
+
+	it("flags the added line when the newline was removed", () => {
+		const hunks = buildDisplayHunks(
+			["a", "b"],
+			["a", "b"],
+			[change({ noNewlineNew: true })],
+		);
+		expect(marked(hunks)).toEqual(["add"]);
+	});
+
+	it("flags an unchanged last line, also in loaded context", () => {
+		const old = ["a", "b", "c"];
+		const next = ["A", "b", "c"];
+		const c: Cluster = {
+			...change({}),
+			oldStart: 1,
+			newStart: 1,
+			removed: ["a"],
+			added: ["A"],
+		};
+		const hunks = buildDisplayHunks(old, next, [c], 3, true);
+		expect(hunks[0]?.lines.at(-1)).toMatchObject({ newNo: 3, noNewline: true });
+		expect(contextLines(old, next, [c], 2, 3, true)).toEqual([
+			{ kind: "context", oldNo: 2, newNo: 2, text: "b" },
+			{ kind: "context", oldNo: 3, newNo: 3, text: "c", noNewline: true },
+		]);
+	});
+});
+
 describe("contextLines", () => {
 	it("context lines map old numbers through earlier clusters", () => {
 		expect(contextLines(oldLines, newLines, clusters, 20, 21)).toEqual([
@@ -187,6 +243,9 @@ function parseU3(patch: string): DisplayHunk[] {
 			hunk.lines.push({ kind: "del", oldNo: oldNo++, text: line.slice(1) });
 		} else if (line.startsWith("+")) {
 			hunk.lines.push({ kind: "add", newNo: newNo++, text: line.slice(1) });
+		} else if (line.startsWith("\\")) {
+			const previous = hunk.lines[hunk.lines.length - 1];
+			if (previous) previous.noNewline = true;
 		}
 	}
 	return hunks;
@@ -211,6 +270,7 @@ describe("buildDisplayHunks matches git diff -U3", () => {
 		"nonl.txt": text(["a", "b"], false),
 		"gaps.txt": text(gap),
 		"whole.txt": text(["x", "y"]),
+		"tail-nonl.txt": text(numbered(8), false),
 	};
 	const after: Record<string, string> = {
 		"Program.cs": text(newLines),
@@ -222,6 +282,8 @@ describe("buildDisplayHunks matches git diff -U3", () => {
 			gap.map((l, i) => ([9, 16, 29, 37].includes(i) ? `${l} changed` : l)),
 		),
 		"whole.txt": text(["p", "q", "r"]),
+		// The unchanged last line has no newline on either side.
+		"tail-nonl.txt": text(["changed", ...numbered(8).slice(1)], false),
 	};
 	let fx: GitFixture;
 
@@ -241,6 +303,7 @@ describe("buildDisplayHunks matches git diff -U3", () => {
 		"nonl.txt",
 		"gaps.txt",
 		"whole.txt",
+		"tail-nonl.txt",
 	])("%s", async (path) => {
 		const [base, head] = fx.shas as [string, string];
 		const file = (await listChangedFiles(fx.path, base, head)).find(
@@ -259,10 +322,13 @@ describe("buildDisplayHunks matches git diff -U3", () => {
 		]);
 		const expected = parseU3(patch);
 		expect(expected.length).toBeGreaterThan(0);
+		const newText = after[path] ?? "";
 		const hunks = buildDisplayHunks(
 			toLines(before[path] ?? ""),
-			toLines(after[path] ?? ""),
+			toLines(newText),
 			keyed,
+			3,
+			newText !== "" && !newText.endsWith("\n"),
 		);
 		const changed = hunks
 			.flatMap((h) => h.lines)

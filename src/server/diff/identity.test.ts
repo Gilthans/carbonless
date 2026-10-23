@@ -114,7 +114,20 @@ describe("clusterKeys", () => {
 		const first = clusterKeys("x.ts", [cluster], newLines);
 		expect(clusterKeys("x.ts", [cluster], newLines)).toEqual(first);
 		const expected = createHash("sha256")
-			.update(JSON.stringify(["x.ts", "lines", null, [], ["}"], ["a"], ["b"]]))
+			.update(
+				JSON.stringify([
+					"x.ts",
+					"lines",
+					null,
+					[],
+					["}"],
+					["a"],
+					["b"],
+					false,
+					false,
+					null,
+				]),
+			)
 			.digest("hex");
 		expect(first).toEqual([expected]);
 	});
@@ -134,7 +147,18 @@ describe("clusterKeys", () => {
 		const [key] = clusterKeys("b.ts", [file], ["one", "two"]);
 		const expected = createHash("sha256")
 			.update(
-				JSON.stringify(["b.ts", "file", "Renamed from a.ts", [], [], [], []]),
+				JSON.stringify([
+					"b.ts",
+					"file",
+					"Renamed from a.ts",
+					[],
+					[],
+					[],
+					[],
+					false,
+					false,
+					null,
+				]),
 			)
 			.digest("hex");
 		expect(key).toBe(expected);
@@ -144,5 +168,69 @@ describe("clusterKeys", () => {
 			["one", "two"],
 		);
 		expect(other).not.toBe(key);
+	});
+
+	it("adding and removing the newline at end of file get different keys", () => {
+		const change: Unkeyed = {
+			kind: "lines",
+			oldStart: 2,
+			oldCount: 1,
+			newStart: 2,
+			newCount: 1,
+			removed: ["b"],
+			added: ["b"],
+			lines: 2,
+		};
+		const newLines = ["a", "b"];
+		const [adds] = clusterKeys(
+			"x.ts",
+			[{ ...change, noNewlineOld: true }],
+			newLines,
+		);
+		const [removes] = clusterKeys(
+			"x.ts",
+			[{ ...change, noNewlineNew: true }],
+			newLines,
+		);
+		expect(adds).not.toBe(removes);
+	});
+
+	it("hashes the bytes, whatever the display encoding", () => {
+		const change = addition(1, ["café"]);
+		const [utf8] = clusterKeys("x.ts", [change], ["café"]);
+		const [latin1] = clusterKeys("x.ts", [change], ["café"], {
+			encoding: "latin1",
+		});
+		// "é" is C3 A9 in UTF-8 but E9 in latin1: different bytes, different keys.
+		expect(utf8).not.toBe(latin1);
+		const [sameBytes] = clusterKeys(
+			"x.ts",
+			[addition(1, ["cafÃ©"])],
+			["cafÃ©"],
+			{
+				encoding: "latin1",
+			},
+		);
+		expect(sameBytes).toBe(utf8);
+	});
+
+	it("content OIDs separate file-level changes that share a label", () => {
+		const binary: Unkeyed = {
+			kind: "file",
+			label: "Binary file changed",
+			oldStart: 0,
+			oldCount: 0,
+			newStart: 0,
+			newCount: 0,
+			removed: [],
+			added: [],
+			lines: 0,
+		};
+		const key = (newOid: string) =>
+			clusterKeys("img.bin", [binary], [], {
+				contentOids: ["1".repeat(40), newOid],
+			})[0];
+		expect(key("2".repeat(40))).not.toBe(key("3".repeat(40)));
+		expect(key("2".repeat(40))).toBe(key("2".repeat(40)));
 	});
 });

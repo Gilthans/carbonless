@@ -10,36 +10,31 @@ import { buildClusters } from "./clusters.js";
 import { type ChangedFile, listChangedFiles } from "./files.js";
 import { buildDisplayHunks, contextLines } from "./hunks.js";
 import { clusterKeys } from "./identity.js";
+import { chooseEncoding, decodeLines, type TextEncoding } from "./text.js";
 
 const MAX_CACHED_BLOBS = 200;
 const CLUSTER_CONCURRENCY = 8;
 
-/** Blob lines by OID, least recently used first. */
-const blobCache = new Map<string, string[]>();
+/** Blob contents by OID, least recently used first. */
+const blobCache = new Map<string, Buffer>();
 
-function remember(oid: string, lines: string[]): void {
+function remember(oid: string, bytes: Buffer): void {
 	blobCache.delete(oid);
-	blobCache.set(oid, lines);
+	blobCache.set(oid, bytes);
 	while (blobCache.size > MAX_CACHED_BLOBS) {
 		const oldest = blobCache.keys().next().value as string;
 		blobCache.delete(oldest);
 	}
 }
 
-/** Splits text into lines the way git counts them. */
-function toLines(text: string): string[] {
-	if (text === "") return [];
-	const lines = text.split("\n");
-	if (lines[lines.length - 1] === "") lines.pop();
-	return lines;
-}
+const isZeroOid = (oid: string) => /^0+$/.test(oid);
 
 /** Reads blobs by OID with one `git cat-file --batch` for all cache misses. */
 async function readBlobs(
 	repo: string,
 	oids: string[],
-): Promise<Map<string, string[]>> {
-	const result = new Map<string, string[]>();
+): Promise<Map<string, Buffer>> {
+	const result = new Map<string, Buffer>();
 	const missing = [...new Set(oids)].filter((oid) => {
 		const cached = blobCache.get(oid);
 		if (cached) {
@@ -62,9 +57,9 @@ async function readBlobs(
 		}
 		const start = eol + 1;
 		const end = start + Number(match[3]);
-		const lines = toLines(out.toString("utf8", start, end));
-		remember(oid, lines);
-		result.set(oid, lines);
+		const bytes = Buffer.from(out.subarray(start, end));
+		remember(oid, bytes);
+		result.set(oid, bytes);
 		pos = end + 1;
 	}
 	return result;
@@ -104,9 +99,32 @@ async function mapLimit<T, R>(
 	return results;
 }
 
+/** Old and new text of a file, decoded the same way on both sides. */
+interface FileText {
+	encoding: TextEncoding;
+	oldLines: string[];
+	newLines: string[];
+	noNewlineAtEnd: boolean;
+}
+
+function fileText(oldBytes: Buffer, newBytes: Buffer): FileText {
+	const encoding = chooseEncoding(oldBytes, newBytes);
+	const after = decodeLines(newBytes, encoding);
+	return {
+		encoding,
+		oldLines: decodeLines(oldBytes, encoding).lines,
+		newLines: after.lines,
+		noNewlineAtEnd: after.noNewlineAtEnd,
+	};
+}
+
+const EMPTY = Buffer.alloc(0);
+
 /**
  * Every changed file between `base` and `head`, in raw diff order, with its
- * clusters and their identity keys.
+ * clusters and their identity keys. Text files' blobs are read (one
+ * `git cat-file --batch` for all) to pick each file's encoding and to hash
+ * the context around clusters.
  */
 export async function buildSnapshot(
 	repo: string,
@@ -114,21 +132,37 @@ export async function buildSnapshot(
 	head: string,
 ): Promise<Snapshot> {
 	const changed = await listChangedFiles(repo, base, head);
-	const unkeyed = await mapLimit(changed, CLUSTER_CONCURRENCY, (file) =>
-		buildClusters(repo, base, head, file),
-	);
-	const needsNewSide = (file: ChangedFile, i: number) =>
-		file.status !== "deleted" &&
-		(unkeyed[i] ?? []).some((c) => c.kind === "lines");
+	const isText = (f: ChangedFile) => !f.binary && !f.submodule;
 	const blobs = await readBlobs(
 		repo,
-		changed.filter(needsNewSide).map((f) => f.newOid),
+		changed
+			.filter(isText)
+			.flatMap((f) => [f.oldOid, f.newOid])
+			.filter((oid) => !isZeroOid(oid)),
+	);
+	const bytesOf = (oid: string) => blobs.get(oid) ?? EMPTY;
+	const texts = changed.map((f) =>
+		isText(f) ? fileText(bytesOf(f.oldOid), bytesOf(f.newOid)) : null,
+	);
+	const unkeyed = await mapLimit(
+		changed.map((file, i) => ({ file, text: texts[i] })),
+		CLUSTER_CONCURRENCY,
+		({ file, text }) => buildClusters(repo, base, head, file, text?.encoding),
 	);
 	const files = changed.map((file, index): FileSummary => {
 		const { oldOid, newOid, ...summary } = file;
 		const clusters = unkeyed[index] ?? [];
-		const newLines = needsNewSide(file, index) ? (blobs.get(newOid) ?? []) : [];
-		const keys = clusterKeys(file.path, clusters, newLines);
+		const text = texts[index];
+		const hasLines = clusters.some((c) => c.kind === "lines");
+		const keys = clusterKeys(file.path, clusters, text?.newLines ?? [], {
+			encoding: text?.encoding ?? "utf8",
+			// Without lines, a binary, submodule or type change would otherwise
+			// look the same whatever the content.
+			contentOids:
+				!text || (file.status === "type-changed" && !hasLines)
+					? [oldOid, newOid]
+					: undefined,
+		});
 		return {
 			index,
 			...summary,
@@ -149,12 +183,12 @@ function fileAt(snapshot: Snapshot, index: number): FileSummary {
 	return file;
 }
 
-/** Old and new lines of a text file (empty for a missing side). */
-async function fileLines(
+/** Old and new text of a file in the snapshot (empty for a missing side). */
+async function loadText(
 	repo: string,
 	snapshot: Snapshot,
 	file: FileSummary,
-): Promise<{ oldLines: string[]; newLines: string[] }> {
+): Promise<FileText> {
 	const names: string[] = [];
 	if (file.status !== "added") {
 		names.push(`${snapshot.base}:${file.oldPath ?? file.path}`);
@@ -162,10 +196,10 @@ async function fileLines(
 	if (file.status !== "deleted") names.push(`${snapshot.head}:${file.path}`);
 	const oids = await resolveBlobs(repo, names);
 	const blobs = await readBlobs(repo, oids);
-	const [first, second] = oids.map((oid) => blobs.get(oid) ?? []);
-	if (file.status === "added") return { oldLines: [], newLines: first ?? [] };
-	if (file.status === "deleted") return { oldLines: first ?? [], newLines: [] };
-	return { oldLines: first ?? [], newLines: second ?? [] };
+	const [first, second] = oids.map((oid) => blobs.get(oid) ?? EMPTY);
+	if (file.status === "added") return fileText(EMPTY, first ?? EMPTY);
+	if (file.status === "deleted") return fileText(first ?? EMPTY, EMPTY);
+	return fileText(first ?? EMPTY, second ?? EMPTY);
 }
 
 /** Display hunks for one file of the snapshot. */
@@ -176,10 +210,16 @@ export async function loadFileHunks(
 ): Promise<FileHunks> {
 	const file = fileAt(snapshot, index);
 	if (file.binary || file.submodule) return { hunks: [], newLineCount: 0 };
-	const { oldLines, newLines } = await fileLines(repo, snapshot, file);
+	const text = await loadText(repo, snapshot, file);
 	return {
-		hunks: buildDisplayHunks(oldLines, newLines, file.clusters),
-		newLineCount: newLines.length,
+		hunks: buildDisplayHunks(
+			text.oldLines,
+			text.newLines,
+			file.clusters,
+			3,
+			text.noNewlineAtEnd,
+		),
+		newLineCount: text.newLines.length,
 	};
 }
 
@@ -193,6 +233,13 @@ export async function loadContext(
 ): Promise<DiffLine[]> {
 	const file = fileAt(snapshot, index);
 	if (file.binary || file.submodule) return [];
-	const { oldLines, newLines } = await fileLines(repo, snapshot, file);
-	return contextLines(oldLines, newLines, file.clusters, newFrom, newTo);
+	const text = await loadText(repo, snapshot, file);
+	return contextLines(
+		text.oldLines,
+		text.newLines,
+		file.clusters,
+		newFrom,
+		newTo,
+		text.noNewlineAtEnd,
+	);
 }

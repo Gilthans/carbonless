@@ -34,6 +34,10 @@ export interface Cluster {
 	added: string[];
 	/** removed.length + added.length (0 for file-level). */
 	lines: number;
+	/** The last removed line had no newline at end of file. */
+	noNewlineOld?: boolean;
+	/** The last added line has no newline at end of file. */
+	noNewlineNew?: boolean;
 }
 
 export interface FileSummary {
@@ -63,6 +67,8 @@ export interface DiffLine {
 	newNo?: number;
 	text: string;
 	clusterKey?: string;
+	/** Git's "\\ No newline at end of file" follows this line. */
+	noNewline?: boolean;
 }
 
 export interface DisplayHunk {

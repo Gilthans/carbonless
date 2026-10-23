@@ -1,6 +1,9 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createDiffFixture } from "../../../test/diff-fixture.js";
-import type { GitFixture } from "../../../test/git-fixture.js";
+import {
+	createGitFixture,
+	type GitFixture,
+} from "../../../test/git-fixture.js";
 import type { Snapshot } from "../../shared/types.js";
 import { listChangedFiles } from "./files.js";
 import { buildSnapshot, loadContext, loadFileHunks } from "./snapshot.js";
@@ -140,6 +143,116 @@ describe("loadContext", () => {
 			{ kind: "context", oldNo: 4, newNo: 4, text: "line 4" },
 			{ kind: "context", oldNo: 5, newNo: 5, text: "line 5" },
 			{ kind: "context", oldNo: 6, newNo: 6, text: "line 6" },
+		]);
+	});
+});
+
+describe("distinct changes never share a key", () => {
+	let fx: GitFixture;
+	const bytes = (text: string) => Buffer.from(text, "latin1");
+	const keyOf = (snap: Snapshot, path: string) =>
+		snap.files.find((f) => f.path === path)?.clusters.map((c) => c.key);
+	const addedText = async (snap: Snapshot, path: string) => {
+		const index = snap.files.findIndex((f) => f.path === path);
+		const { hunks } = await loadFileHunks(fx.path, snap, index);
+		return hunks.flatMap((h) => h.lines).filter((l) => l.kind === "add");
+	};
+	let toE8: Snapshot;
+	let toEA: Snapshot;
+
+	beforeAll(async () => {
+		fx = createGitFixture([
+			{
+				message: "base",
+				files: { "utf8.txt": "café\n", "nl.txt": "a\nb" },
+				// Windows-1252 text: not valid UTF-8.
+				binary: {
+					"cp1252.txt": bytes("first\ncaf\xE9\nlast\n"),
+					"img.bin": new Uint8Array([0, 1]),
+				},
+			},
+			{
+				message: "e8",
+				files: { "utf8.txt": "cafè\n", "nl.txt": "a\nb\n" },
+				binary: {
+					"cp1252.txt": bytes("first\ncaf\xE8\nlast\n"),
+					"img.bin": new Uint8Array([0, 2]),
+				},
+			},
+			{
+				message: "ea",
+				files: { "utf8.txt": "cafè\n" },
+				binary: {
+					"cp1252.txt": bytes("first\ncaf\xEA\nlast\n"),
+					"img.bin": new Uint8Array([0, 3]),
+				},
+			},
+		]);
+		const [base, e8, ea] = fx.shas as [string, string, string];
+		toE8 = await buildSnapshot(fx.path, base, e8);
+		toEA = await buildSnapshot(fx.path, base, ea);
+	});
+	afterAll(() => fx.cleanup());
+
+	it("non-UTF-8 changes keep their bytes in keys and display", async () => {
+		expect(keyOf(toE8, "cp1252.txt")).not.toEqual(keyOf(toEA, "cp1252.txt"));
+		const e8 = await addedText(toE8, "cp1252.txt");
+		const ea = await addedText(toEA, "cp1252.txt");
+		expect(e8.map((l) => l.text)).toEqual(["caf\u00e8"]);
+		expect(ea.map((l) => l.text)).toEqual(["caf\u00ea"]);
+		const [cluster] =
+			toE8.files.find((f) => f.path === "cp1252.txt")?.clusters ?? [];
+		expect(cluster).toMatchObject({
+			removed: ["caf\u00e9"],
+			added: ["caf\u00e8"],
+		});
+		const index = toE8.files.findIndex((f) => f.path === "cp1252.txt");
+		expect(await loadContext(fx.path, toE8, index, 1, 3)).toEqual([
+			{ kind: "context", oldNo: 1, newNo: 1, text: "first" },
+			{ kind: "context", oldNo: 3, newNo: 3, text: "last" },
+		]);
+	});
+
+	it("UTF-8 files decode as UTF-8", async () => {
+		expect(
+			toE8.files.find((f) => f.path === "utf8.txt")?.clusters[0],
+		).toMatchObject({ removed: ["café"], added: ["cafè"] });
+		expect((await addedText(toE8, "utf8.txt")).map((l) => l.text)).toEqual([
+			"cafè",
+		]);
+	});
+
+	it("different binary contents get different keys", () => {
+		expect(keyOf(toE8, "img.bin")).toHaveLength(1);
+		expect(keyOf(toE8, "img.bin")).not.toEqual(keyOf(toEA, "img.bin"));
+	});
+
+	it("adding and removing the final newline get different keys", async () => {
+		const [base, e8] = fx.shas as [string, string];
+		const back = await buildSnapshot(fx.path, e8, base);
+		const added = toE8.files.find((f) => f.path === "nl.txt")?.clusters[0];
+		const removed = back.files.find((f) => f.path === "nl.txt")?.clusters[0];
+		expect(added).toMatchObject({
+			removed: ["b"],
+			added: ["b"],
+			noNewlineOld: true,
+		});
+		expect(removed).toMatchObject({
+			removed: ["b"],
+			added: ["b"],
+			noNewlineNew: true,
+		});
+		expect(added?.key).not.toBe(removed?.key);
+		const index = back.files.findIndex((f) => f.path === "nl.txt");
+		const { hunks } = await loadFileHunks(fx.path, back, index);
+		expect(hunks[0]?.lines.filter((l) => l.noNewline)).toEqual([
+			{
+				kind: "add",
+				newNo: 2,
+				text: "b",
+				clusterKey: removed?.key,
+				noNewline: true,
+			},
 		]);
 	});
 });

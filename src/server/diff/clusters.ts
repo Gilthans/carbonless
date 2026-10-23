@@ -1,11 +1,9 @@
 import type { Cluster } from "../../shared/types.js";
-import { GitError, runGit } from "../git.js";
+import { GitError, runGitBuffer } from "../git.js";
 import { type ChangedFile, DIFF_ARGS } from "./files.js";
+import { chooseEncoding, type TextEncoding } from "./text.js";
 
-export type LineCluster = Omit<Cluster, "key" | "kind" | "label"> & {
-	noNewlineOld?: boolean;
-	noNewlineNew?: boolean;
-};
+export type LineCluster = Omit<Cluster, "key" | "kind" | "label">;
 
 const HUNK_HEADER = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/;
 
@@ -118,37 +116,55 @@ const quoteHeaderPath = (path: string) =>
 				.replace(/\t/g, "\\t")}"`
 		: path;
 
-/** Keeps only the `diff --git` sections that belong to this exact file. */
-function sectionsFor(patch: string, file: ChangedFile): string {
+const NEWLINE = Buffer.from("\n");
+const DIFF_HEADER = Buffer.from("diff --git ");
+
+/**
+ * Keeps only the `diff --git` sections that belong to this exact file. Works
+ * on bytes so content lines stay byte-exact until decoded.
+ */
+function sectionsFor(patch: Buffer, file: ChangedFile): Buffer {
 	const oldPath = file.oldPath ?? file.path;
 	const wanted = new Set([
 		`diff --git a/${oldPath} b/${file.path}`,
 		`diff --git ${quoteHeaderPath(`a/${oldPath}`)} ${quoteHeaderPath(`b/${file.path}`)}`,
 	]);
-	const kept: string[] = [];
+	const kept: Buffer[] = [];
 	let keep = false;
-	for (const line of patch.split("\n")) {
-		if (line.startsWith("diff --git ")) keep = wanted.has(line);
-		if (keep) kept.push(line);
+	for (let pos = 0; pos < patch.length; ) {
+		const found = patch.indexOf(0x0a, pos);
+		const eol = found < 0 ? patch.length : found;
+		const line = patch.subarray(pos, eol);
+		if (line.subarray(0, DIFF_HEADER.length).equals(DIFF_HEADER)) {
+			keep = wanted.has(line.toString("utf8"));
+		}
+		if (keep)
+			kept.push(kept.length > 0 ? Buffer.concat([NEWLINE, line]) : line);
+		pos = eol + 1;
 	}
-	return kept.join("\n");
+	return Buffer.concat(kept);
 }
 
 const literal = (path: string) => `:(literal)${path}`;
 
-/** File-level cluster first (if any), then line clusters in file order. */
+/**
+ * File-level cluster first (if any), then line clusters in file order.
+ * Changed lines are decoded with `encoding` (by default: UTF-8 if this
+ * file's diff is valid UTF-8, else latin1).
+ */
 export async function buildClusters(
 	repo: string,
 	base: string,
 	head: string,
 	file: ChangedFile,
+	encoding?: TextEncoding,
 ): Promise<Omit<Cluster, "key">[]> {
 	let lineClusters: Omit<Cluster, "key">[] = [];
 	if (!file.binary && !file.submodule) {
 		const paths = [file.oldPath, file.path]
 			.filter((p): p is string => p !== undefined)
 			.map(literal);
-		const patch = await runGit(repo, [
+		const patch = await runGitBuffer(repo, [
 			...DIFF_ARGS,
 			"-U0",
 			base,
@@ -156,7 +172,12 @@ export async function buildClusters(
 			"--",
 			...paths,
 		]);
-		const parsed = parseU0Patch(sectionsFor(patch, file));
+		const section = sectionsFor(patch, file);
+		// Non-strict decoding: header lines may hold non-UTF-8 path bytes;
+		// content lines are valid in the chosen encoding.
+		const parsed = parseU0Patch(
+			section.toString(encoding ?? chooseEncoding(section)),
+		);
 		const removed = parsed.reduce((n, c) => n + c.removed.length, 0);
 		const added = parsed.reduce((n, c) => n + c.added.length, 0);
 		if (removed !== file.deletions || added !== file.additions) {
@@ -164,10 +185,7 @@ export async function buildClusters(
 				`Could not extract line clusters for ${file.path}: expected -${file.deletions}/+${file.additions} lines, parsed -${removed}/+${added}`,
 			);
 		}
-		lineClusters = parsed.map(({ noNewlineOld, noNewlineNew, ...c }) => ({
-			...c,
-			kind: "lines" as const,
-		}));
+		lineClusters = parsed.map((c) => ({ ...c, kind: "lines" as const }));
 	}
 	const fileCluster = fileLevelCluster(file, lineClusters.length > 0);
 	return fileCluster ? [fileCluster, ...lineClusters] : lineClusters;
