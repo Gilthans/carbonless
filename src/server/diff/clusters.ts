@@ -9,15 +9,26 @@ export type LineCluster = Omit<Cluster, "key" | "kind" | "label"> & {
 
 const HUNK_HEADER = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/;
 
-/** Parses `git diff -U0` output: every hunk is one cluster. */
+/**
+ * Parses `git diff -U0` output: every hunk is one cluster. Each hunk consumes
+ * exactly the line counts from its header; everything outside a hunk (file
+ * headers, `diff --git` lines) is ignored.
+ */
 export function parseU0Patch(patch: string): LineCluster[] {
 	const clusters: LineCluster[] = [];
 	let current: LineCluster | null = null;
+	let oldLeft = 0;
+	let newLeft = 0;
 	let last: "-" | "+" | null = null;
 	const lines = patch.split("\n");
 	if (lines[lines.length - 1] === "") lines.pop();
 	for (const line of lines) {
-		const header = HUNK_HEADER.exec(line);
+		if (line.startsWith("diff --git ")) {
+			current = null;
+			continue;
+		}
+		const inHunk = current !== null && (oldLeft > 0 || newLeft > 0);
+		const header = inHunk ? null : HUNK_HEADER.exec(line);
 		if (header) {
 			current = {
 				oldStart: Number(header[1]),
@@ -28,16 +39,20 @@ export function parseU0Patch(patch: string): LineCluster[] {
 				added: [],
 				lines: 0,
 			};
+			oldLeft = current.oldCount;
+			newLeft = current.newCount;
 			clusters.push(current);
 			last = null;
 		} else if (!current) {
-		} else if (line.startsWith("-")) {
+		} else if (line.startsWith("-") && oldLeft > 0) {
 			current.removed.push(line.slice(1));
 			current.lines++;
+			oldLeft--;
 			last = "-";
-		} else if (line.startsWith("+")) {
+		} else if (line.startsWith("+") && newLeft > 0) {
 			current.added.push(line.slice(1));
 			current.lines++;
+			newLeft--;
 			last = "+";
 		} else if (line.startsWith("\\")) {
 			if (last === "-") current.noNewlineOld = true;
@@ -61,23 +76,24 @@ export function fileLevelCluster(
 		file.oldMode !== undefined &&
 		file.newMode !== undefined &&
 		file.oldMode !== file.newMode;
-	let label: string | null = null;
+	const parts: string[] = [];
+	const add = (text: string) =>
+		parts.push(parts.length === 0 ? text : text.toLowerCase());
 	if (file.submodule) {
-		label = `Submodule moved ${short(file.oldOid)} → ${short(file.newOid)}`;
-	} else if (file.status === "renamed") {
-		label = `Renamed from ${file.oldPath}`;
-		if (modeChanged) {
-			label += ` (mode ${file.oldMode} → ${file.newMode})`;
-		}
-	} else if (file.binary) {
-		label = "Binary file changed";
-	} else if (modeChanged) {
-		label = `Mode changed ${file.oldMode} → ${file.newMode}`;
-	} else if (!hasLineClusters && file.additions === 0 && file.deletions === 0) {
-		if (file.status === "added") label = "Empty file added";
-		else if (file.status === "deleted") label = "Empty file deleted";
+		add(`Submodule moved ${short(file.oldOid)} → ${short(file.newOid)}`);
+	} else {
+		if (file.status === "renamed") add(`Renamed from ${file.oldPath}`);
+		if (file.binary) add("Binary file changed");
+		if (modeChanged) add(`Mode changed ${file.oldMode} → ${file.newMode}`);
 	}
-	if (label === null) return null;
+	if (parts.length === 0 && !hasLineClusters) {
+		if (file.additions === 0 && file.deletions === 0) {
+			if (file.status === "added") add("Empty file added");
+			else if (file.status === "deleted") add("Empty file deleted");
+		}
+	}
+	if (parts.length === 0) return null;
+	const label = parts.join(", ");
 	return {
 		kind: "file",
 		label,
@@ -89,6 +105,31 @@ export function fileLevelCluster(
 		added: [],
 		lines: 0,
 	};
+}
+
+const quoteHeaderPath = (path: string) =>
+	/["\\\x00-\x1f]/.test(path)
+		? `"${path
+				.replace(/\\/g, "\\\\")
+				.replace(/"/g, '\\"')
+				.replace(/\n/g, "\\n")
+				.replace(/\t/g, "\\t")}"`
+		: path;
+
+/** Keeps only the `diff --git` sections that belong to this exact file. */
+function sectionsFor(patch: string, file: ChangedFile): string {
+	const oldPath = file.oldPath ?? file.path;
+	const wanted = new Set([
+		`diff --git a/${oldPath} b/${file.path}`,
+		`diff --git ${quoteHeaderPath(`a/${oldPath}`)} ${quoteHeaderPath(`b/${file.path}`)}`,
+	]);
+	const kept: string[] = [];
+	let keep = false;
+	for (const line of patch.split("\n")) {
+		if (line.startsWith("diff --git ")) keep = wanted.has(line);
+		if (keep) kept.push(line);
+	}
+	return kept.join("\n");
 }
 
 const literal = (path: string) => `:(literal)${path}`;
@@ -113,7 +154,7 @@ export async function buildClusters(
 			"--",
 			...paths,
 		]);
-		lineClusters = parseU0Patch(patch).map(
+		lineClusters = parseU0Patch(sectionsFor(patch, file)).map(
 			({ noNewlineOld, noNewlineNew, ...c }) => ({
 				...c,
 				kind: "lines" as const,

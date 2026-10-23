@@ -13,6 +13,8 @@ export const DIFF_ARGS = [
 	"--diff-algorithm=myers",
 	"-M",
 	"--ignore-submodules=none",
+	"--inter-hunk-context=0",
+	"--indent-heuristic",
 ];
 
 export type ChangedFile = Omit<FileSummary, "index" | "clusters"> & {

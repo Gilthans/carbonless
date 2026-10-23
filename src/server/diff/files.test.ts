@@ -1,3 +1,6 @@
+import { execFileSync } from "node:child_process";
+import { symlinkSync } from "node:fs";
+import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
 	createGitFixture,
@@ -56,7 +59,6 @@ beforeAll(async () => {
 	]);
 	// Edit the renamed file too (kept similar enough for rename detection).
 	const { writeFileSync } = await import("node:fs");
-	const { execFileSync } = await import("node:child_process");
 	writeFileSync(
 		`${fixture.path}/new-name.ts`,
 		numbered(20).replace("line 5\n", "LINE 5\n"),
@@ -178,5 +180,92 @@ describe("buildClusters", () => {
 			byPath('q"uote.txt'),
 		);
 		expect(q).toMatchObject({ removed: ["x"], added: ["y"] });
+	});
+});
+
+describe("tricky changes", () => {
+	let fx: GitFixture;
+	let changed: ChangedFile[];
+	const get = (path: string) => {
+		const f = changed.find((x) => x.path === path);
+		if (!f) throw new Error(`no ${path}`);
+		return f;
+	};
+	const clustersOf = (path: string) =>
+		buildClusters(
+			fx.path,
+			fx.shas[0] as string,
+			fx.shas[1] as string,
+			get(path),
+		);
+
+	beforeAll(async () => {
+		const bytes = (last: number) => {
+			const b = new Uint8Array(500);
+			b[499] = last;
+			return b;
+		};
+		fx = createGitFixture([
+			{
+				message: "base",
+				files: {
+					foo: "x\n",
+					"link.txt": "target\n",
+					"five.ts": "1\n2\n3\n4\n5\n",
+				},
+				binary: { "a.bin": bytes(1), "b.bin": bytes(1) },
+			},
+			{
+				message: "head",
+				files: { "foo/bar": "inner\n", "five.ts": "1\nTWO\n3\nFOUR\n5\n" },
+				delete: ["foo", "link.txt"],
+				rename: { "a.bin": "c.bin" },
+				binary: { "c.bin": bytes(2), "b.bin": bytes(2) },
+				chmod: { "b.bin": "755" },
+			},
+		]);
+		const git = (...args: string[]) =>
+			execFileSync("git", args, { cwd: fx.path, encoding: "utf8" }).trim();
+		symlinkSync("five.ts", join(fx.path, "link.txt"));
+		git("add", "--all");
+		git("commit", "-q", "--amend", "--no-edit");
+		fx.shas[1] = git("rev-parse", "HEAD");
+		changed = await listChangedFiles(
+			fx.path,
+			fx.shas[0] as string,
+			fx.shas[1] as string,
+		);
+	});
+
+	afterAll(() => fx.cleanup());
+
+	it("keeps file-to-symlink headers out of cluster content", async () => {
+		expect(get("link.txt").status).toBe("type-changed");
+		const clusters = await clustersOf("link.txt");
+		const content = clusters.flatMap((c) => [...c.removed, ...c.added]);
+		expect(content).toEqual(["target", "five.ts"]);
+	});
+
+	it("does not leak a directory's files into a same-named deleted file", async () => {
+		const clusters = await clustersOf("foo");
+		expect(clusters.map((c) => [c.removed, c.added])).toEqual([[["x"], []]]);
+	});
+
+	it("is not affected by diff.interHunkContext in repo config", async () => {
+		execFileSync("git", ["config", "diff.interHunkContext", "5"], {
+			cwd: fx.path,
+		});
+		const clusters = await clustersOf("five.ts");
+		expect(clusters.map((c) => c.added)).toEqual([["TWO"], ["FOUR"]]);
+	});
+
+	it("names both a rename and a binary content change", async () => {
+		const [c] = await clustersOf("c.bin");
+		expect(c?.label).toBe("Renamed from a.bin, binary file changed");
+	});
+
+	it("names both a binary change and a mode change", async () => {
+		const [c] = await clustersOf("b.bin");
+		expect(c?.label).toBe("Binary file changed, mode changed 100644 → 100755");
 	});
 });
