@@ -25,6 +25,7 @@
 	"dependencies": {
 		"@fastify/cookie": "^11.1.3",
 		"@fastify/static": "^10.1.6",
+		"@tanstack/react-form": "^1.33.5",
 		"@tanstack/react-query": "^5.104.5",
 		"@tanstack/react-router": "1.170.40",
 		"fastify": "^5.12.7",
@@ -33,6 +34,7 @@
 		"react-dom": "^19.3.1",
 		"react-markdown": "^10.1.0",
 		"remark-gfm": "^4.0.1",
+		"shiki": "^4.5.0",
 		"ulid": "^3.0.2"
 	},
 	"devDependencies": {

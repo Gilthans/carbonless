@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Link, Outlet } from "@tanstack/react-router";
+import { Link, Outlet, useRouterState } from "@tanstack/react-router";
 import { overviewQuery, postRefresh, reviewQuery, sessionQuery } from "./api";
 import { ErrorMessage, safeHref } from "./ui";
 
@@ -20,6 +20,9 @@ export function App() {
 				queryClient.invalidateQueries({ queryKey: reviewQuery.queryKey }),
 			]);
 		},
+	});
+	const wide = useRouterState({
+		select: (state) => state.location.pathname === "/files",
 	});
 	const pr = session.data?.pr;
 	const prUrl = safeHref(pr?.url);
@@ -94,7 +97,10 @@ export function App() {
 					</Link>
 				</nav>
 			</header>
-			<main className="mx-auto max-w-5xl px-6 py-6">
+			{/* The diff gets the whole window; the overview stays readable. */}
+			<main
+				className={`mx-auto px-6 py-6 ${wide ? "max-w-screen-2xl" : "max-w-5xl"}`}
+			>
 				<Outlet />
 			</main>
 		</div>

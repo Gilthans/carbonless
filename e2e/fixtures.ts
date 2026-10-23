@@ -26,6 +26,8 @@ export const OWNER_REPO = "acme/widget";
 export const PR_NUMBER = 7;
 
 export interface PrOptions {
+	/** Extra files in `main`'s base commit, next to `a.txt`. */
+	base?: Record<string, string>;
 	/** Commits on the PR branch, on top of `main`'s single base commit. */
 	files?: FixtureCommit[];
 	/** `gh pr view` fields; `headRefOid` is always the fixture's PR head. */
@@ -112,7 +114,10 @@ export const test = base.extend<{
 		const repos: GitFixture[] = [];
 		await use(async (opts = {}) => {
 			const repo = createGitFixture([
-				{ message: "base", files: { "a.txt": `${BASE_FILE.join("\n")}\n` } },
+				{
+					message: "base",
+					files: { "a.txt": `${BASE_FILE.join("\n")}\n`, ...opts.base },
+				},
 				...(opts.files ?? DEFAULT_COMMITS),
 			]);
 			repos.push(repo);

@@ -5,10 +5,9 @@ import {
 	createRoute,
 	createRouter,
 	Link,
+	lazyRouteComponent,
 } from "@tanstack/react-router";
 import { App } from "./App";
-import { FilesPage } from "./files/FilesPage";
-import { OverviewPage } from "./overview/OverviewPage";
 
 function NotFound() {
 	return (
@@ -29,13 +28,17 @@ const rootRoute = createRootRoute({
 const overviewRoute = createRoute({
 	getParentRoute: () => rootRoute,
 	path: "/",
-	component: OverviewPage,
+	// Pages load on demand: the shell renders before markdown or diff code arrives.
+	component: lazyRouteComponent(
+		() => import("./overview/OverviewPage"),
+		"OverviewPage",
+	),
 });
 
 const filesRoute = createRoute({
 	getParentRoute: () => rootRoute,
 	path: "/files",
-	component: FilesPage,
+	component: lazyRouteComponent(() => import("./files/FilesPage"), "FilesPage"),
 });
 
 const routeTree = rootRoute.addChildren([overviewRoute, filesRoute]);
