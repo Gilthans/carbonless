@@ -245,6 +245,22 @@ describe("OverviewPage", () => {
 		expect(who).toHaveTextContent("Core Team");
 	});
 
+	it("shows when each review was submitted and each commenter last commented", async () => {
+		renderApp();
+		const who = await screen.findByRole("region", { name: "Who's on it" });
+		const timeIn = (name: string) =>
+			within(who).getByText(name).closest("li")?.querySelector("time");
+		expect(timeIn("rev1")).toHaveAttribute("dateTime", "2026-01-04T09:00:00Z");
+		expect(timeIn("github-actions")).toHaveAttribute(
+			"dateTime",
+			"2026-01-02T11:00:00Z",
+		);
+		expect(timeIn("codecov")).toHaveAttribute(
+			"dateTime",
+			"2026-01-04T08:00:00Z",
+		);
+	});
+
 	it("says when no one else has started", async () => {
 		renderApp({
 			"/api/overview": ok({

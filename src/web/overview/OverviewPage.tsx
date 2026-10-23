@@ -255,6 +255,9 @@ function WhosOnIt({ pr }: { pr: PrOverview }) {
 									<span>{r.author}</span>
 									{r.bot && <Badge tone="gray">bot</Badge>}
 									<ReviewBadge review={r} />
+									<span className="text-xs text-slate-500">
+										<When iso={r.submittedAt} />
+									</span>
 								</li>
 							))}
 						</ul>
@@ -287,9 +290,15 @@ function WhosOnIt({ pr }: { pr: PrOverview }) {
 					{commenters.length ? (
 						<ul aria-label="Commenters" className="mt-1 space-y-1 text-sm">
 							{commenters.map((c) => (
-								<li key={c.author} className="flex items-center gap-2">
-									{c.author}
+								<li
+									key={c.author}
+									className="flex flex-wrap items-center gap-2"
+								>
+									<span>{c.author}</span>
 									{c.bot && <Badge tone="gray">bot</Badge>}
+									<span className="text-xs text-slate-500">
+										<When iso={c.lastAt} />
+									</span>
 								</li>
 							))}
 						</ul>

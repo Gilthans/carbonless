@@ -6,6 +6,9 @@ import { DiffBody } from "./DiffBody";
 import { AddDel, StatusIcon } from "./status";
 import { isStale, useSetStates } from "./useSetStates";
 
+/** The server's limit on changes per request (MAX_CHANGES in app.ts). */
+const MAX_CHANGES = 1000;
+
 const buttonClass =
 	"rounded-md border border-slate-300 bg-white px-2 py-0.5 text-xs font-medium hover:bg-slate-100 focus-visible:outline-2 focus-visible:outline-blue-600 disabled:opacity-50";
 
@@ -24,10 +27,26 @@ export function FileDiff(props: {
 	const [expanded, setExpanded] = useState(false);
 	const [crossingOff, setCrossingOff] = useState(false);
 	const setStates = useSetStates({ onStaleChange: props.onStaleChange });
-	const pending = setStates.isPending;
+	// Also true between a split batch's requests.
+	const [batching, setBatching] = useState(false);
+	const pending = setStates.isPending || batching;
 
 	const save = (changes: StateChange[]) =>
 		setStates.mutateAsync({ revision, changes });
+	/**
+	 * A file-wide action: requests of at most MAX_CHANGES, one after another
+	 * through the same mutation scope, stopping at the first failure.
+	 */
+	const saveAll = async (changes: StateChange[]) => {
+		setBatching(true);
+		try {
+			for (let i = 0; i < changes.length; i += MAX_CHANGES) {
+				await save(changes.slice(i, i + MAX_CHANGES));
+			}
+		} finally {
+			setBatching(false);
+		}
+	};
 	// Only an unreviewed cluster's box marks it reviewed: unchecking a reviewed
 	// one or undoing a cross-off makes it unreviewed (R21).
 	const toggle = (cluster: ClusterView) => {
@@ -81,7 +100,7 @@ export function FileDiff(props: {
 							type="button"
 							disabled={pending}
 							onClick={() => {
-								save(
+								saveAll(
 									crossed.map((c) => ({ key: c.key, state: "unreviewed" })),
 								).catch(() => {});
 							}}
@@ -106,7 +125,7 @@ export function FileDiff(props: {
 						type="button"
 						disabled={pending || unreviewed.length === 0}
 						onClick={() => {
-							save(
+							saveAll(
 								unreviewed.map((c) => ({ key: c.key, state: "reviewed" })),
 							).catch(() => {});
 						}}
@@ -123,7 +142,7 @@ export function FileDiff(props: {
 					onCancel={() => setCrossingOff(false)}
 					onConfirm={(reason) =>
 						// What the reviewer already read stays reviewed (R21).
-						save(
+						saveAll(
 							file.clusters
 								.filter((c) => c.state !== "reviewed")
 								.map((c) => ({ key: c.key, state: "crossed-off", reason })),

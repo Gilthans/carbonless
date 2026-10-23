@@ -258,6 +258,45 @@ describe("FileDiff", () => {
 		);
 	});
 
+	it("splits a batch over 1000 clusters into sequential requests", async () => {
+		const many = Array.from({ length: 2500 }, (_, i) => cluster(`k${i}`));
+		const f = file(many);
+		let inFlight = 0;
+		let maxInFlight = 0;
+		const { posts, user } = setup(f, async () => {
+			inFlight++;
+			maxInFlight = Math.max(maxInFlight, inFlight);
+			await new Promise((r) => setTimeout(r, 5));
+			inFlight--;
+			return { status: 200, body: view(f) };
+		});
+		await user.click(
+			screen.getByRole("button", { name: "Mark remaining reviewed" }),
+		);
+		await waitFor(() => expect(posts()).toHaveLength(3));
+		const batches = posts().map((p) => p.body.changes as { key: string }[]);
+		expect(batches.map((b) => b.length)).toEqual([1000, 1000, 500]);
+		expect(batches.flat().map((c) => c.key)).toEqual(many.map((c) => c.key));
+		expect(posts().every((p) => p.body.revision === "r1")).toBe(true);
+		expect(maxInFlight).toBe(1);
+	});
+
+	it("stops a split batch at the first failed request", async () => {
+		const f = file(
+			Array.from({ length: 1500 }, (_, i) =>
+				cluster(`k${i}`, { state: "crossed-off", reason: "generated" }),
+			),
+		);
+		const { posts, user } = setup(f, () => ({
+			status: 500,
+			body: { error: "boom" },
+		}));
+		await user.click(screen.getByRole("button", { name: "Undo cross-off" }));
+		expect(await screen.findByText(/boom/)).toBeInTheDocument();
+		expect(posts()).toHaveLength(1);
+		expect(posts()[0]?.body.changes).toHaveLength(1000);
+	});
+
 	it("crosses off a file only with a reason, keeping reviewed clusters", async () => {
 		const f = file([
 			cluster("k0", { state: "reviewed" }),
