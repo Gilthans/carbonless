@@ -22,7 +22,7 @@ const byPath = (path: string) => {
 
 beforeAll(async () => {
 	const numbered = (n: number) =>
-		Array.from({ length: n }, (_, i) => `line ${i + 1}`).join("\n") + "\n";
+		`${Array.from({ length: n }, (_, i) => `line ${i + 1}`).join("\n")}\n`;
 	fixture = createGitFixture([
 		{
 			message: "base",

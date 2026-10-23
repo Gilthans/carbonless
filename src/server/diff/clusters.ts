@@ -16,7 +16,7 @@ const HUNK_HEADER = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/;
  */
 export function parseU0Patch(patch: string): LineCluster[] {
 	const clusters: LineCluster[] = [];
-	let current: LineCluster | null = null;
+	let current = null as LineCluster | null;
 	let oldLeft = 0;
 	let newLeft = 0;
 	let last: "-" | "+" | null = null;
@@ -27,8 +27,10 @@ export function parseU0Patch(patch: string): LineCluster[] {
 			current = null;
 			continue;
 		}
-		const inHunk = current !== null && (oldLeft > 0 || newLeft > 0);
-		const header = inHunk ? null : HUNK_HEADER.exec(line);
+		const inHunk: boolean = current !== null && (oldLeft > 0 || newLeft > 0);
+		const header: RegExpExecArray | null = inHunk
+			? null
+			: HUNK_HEADER.exec(line);
 		if (header) {
 			current = {
 				oldStart: Number(header[1]),
@@ -108,7 +110,7 @@ export function fileLevelCluster(
 }
 
 const quoteHeaderPath = (path: string) =>
-	/["\\\x00-\x1f]/.test(path)
+	/["\\]/.test(path) || [...path].some((ch) => ch.charCodeAt(0) < 32)
 		? `"${path
 				.replace(/\\/g, "\\\\")
 				.replace(/"/g, '\\"')
