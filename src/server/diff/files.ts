@@ -15,6 +15,8 @@ export const DIFF_ARGS = [
 	"--ignore-submodules=none",
 	"--inter-hunk-context=0",
 	"--indent-heuristic",
+	"--src-prefix=a/",
+	"--dst-prefix=b/",
 ];
 
 export type ChangedFile = Omit<FileSummary, "index" | "clusters"> & {

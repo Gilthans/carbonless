@@ -1,5 +1,5 @@
 import type { Cluster } from "../../shared/types.js";
-import { runGit } from "../git.js";
+import { GitError, runGit } from "../git.js";
 import { type ChangedFile, DIFF_ARGS } from "./files.js";
 
 export type LineCluster = Omit<Cluster, "key" | "kind" | "label"> & {
@@ -156,12 +156,18 @@ export async function buildClusters(
 			"--",
 			...paths,
 		]);
-		lineClusters = parseU0Patch(sectionsFor(patch, file)).map(
-			({ noNewlineOld, noNewlineNew, ...c }) => ({
-				...c,
-				kind: "lines" as const,
-			}),
-		);
+		const parsed = parseU0Patch(sectionsFor(patch, file));
+		const removed = parsed.reduce((n, c) => n + c.removed.length, 0);
+		const added = parsed.reduce((n, c) => n + c.added.length, 0);
+		if (removed !== file.deletions || added !== file.additions) {
+			throw new GitError(
+				`Could not extract line clusters for ${file.path}: expected -${file.deletions}/+${file.additions} lines, parsed -${removed}/+${added}`,
+			);
+		}
+		lineClusters = parsed.map(({ noNewlineOld, noNewlineNew, ...c }) => ({
+			...c,
+			kind: "lines" as const,
+		}));
 	}
 	const fileCluster = fileLevelCluster(file, lineClusters.length > 0);
 	return fileCluster ? [fileCluster, ...lineClusters] : lineClusters;

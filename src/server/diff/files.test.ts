@@ -259,6 +259,26 @@ describe("tricky changes", () => {
 		expect(clusters.map((c) => c.added)).toEqual([["TWO"], ["FOUR"]]);
 	});
 
+	it.each(["diff.noprefix", "diff.mnemonicPrefix"])(
+		"is not affected by %s in repo config",
+		async (key) => {
+			execFileSync("git", ["config", key, "true"], { cwd: fx.path });
+			try {
+				const clusters = await clustersOf("five.ts");
+				expect(clusters.map((c) => c.added)).toEqual([["TWO"], ["FOUR"]]);
+			} finally {
+				execFileSync("git", ["config", "--unset", key], { cwd: fx.path });
+			}
+		},
+	);
+
+	it("throws when the parsed lines don't match the file's counts", async () => {
+		const wrong = { ...get("five.ts"), additions: 99 };
+		await expect(
+			buildClusters(fx.path, fx.shas[0] as string, fx.shas[1] as string, wrong),
+		).rejects.toThrow(/five\.ts/);
+	});
+
 	it("names both a rename and a binary content change", async () => {
 		const [c] = await clustersOf("c.bin");
 		expect(c?.label).toBe("Renamed from a.bin, binary file changed");
@@ -267,5 +287,33 @@ describe("tricky changes", () => {
 	it("names both a binary change and a mode change", async () => {
 		const [c] = await clustersOf("b.bin");
 		expect(c?.label).toBe("Binary file changed, mode changed 100644 → 100755");
+	});
+});
+
+describe("control characters in paths", () => {
+	it("clusters a path containing a carriage return or throws", async () => {
+		const name = "cr\rname.txt";
+		const fx = createGitFixture([
+			{ message: "a", files: { [name]: "old\n" } },
+			{ message: "b", files: { [name]: "new\n" } },
+		]);
+		try {
+			const [base, head] = fx.shas as [string, string];
+			const [file] = await listChangedFiles(fx.path, base, head);
+			expect(file?.path).toBe(name);
+			const result = await buildClusters(
+				fx.path,
+				base,
+				head,
+				file as ChangedFile,
+			).catch((e: unknown) => e);
+			if (Array.isArray(result)) {
+				expect(result[0]).toMatchObject({ removed: ["old"], added: ["new"] });
+			} else {
+				expect(result).toBeInstanceOf(Error);
+			}
+		} finally {
+			fx.cleanup();
+		}
 	});
 });
