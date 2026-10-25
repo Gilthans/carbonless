@@ -57,6 +57,40 @@ describe("fullDate", () => {
 			}),
 		).toBe("2026 Mar 1, 00:04:03 Eastern Time");
 	});
+
+	it("calls UTC UTC, not an offset", () => {
+		const d = new Date("2026-08-31T19:11:13Z");
+		expect(fullDate(d, { timeZone: "UTC" })).toBe("2026 Aug 31, 19:11:13 UTC");
+		expect(fullDate(d, { timeZone: "Etc/UTC" })).toBe(
+			"2026 Aug 31, 19:11:13 UTC",
+		);
+	});
+
+	it("falls back to the long zone name where generic names are missing", () => {
+		const Real = Intl.DateTimeFormat;
+		// An engine that doesn't know generic zone names.
+		class Old extends Real {
+			constructor(
+				locale?: string | string[],
+				options?: Intl.DateTimeFormatOptions,
+			) {
+				if (options?.timeZoneName === "longGeneric") {
+					throw new RangeError("Value longGeneric out of range");
+				}
+				super(locale, options);
+			}
+		}
+		Intl.DateTimeFormat = Old as typeof Intl.DateTimeFormat;
+		try {
+			expect(
+				fullDate(new Date("2026-01-04T09:30:15Z"), {
+					timeZone: "Europe/Paris",
+				}),
+			).toBe("2026 Jan 4, 10:30:15 Central European Standard Time");
+		} finally {
+			Intl.DateTimeFormat = Real;
+		}
+	});
 });
 
 describe("RelativeTime", () => {

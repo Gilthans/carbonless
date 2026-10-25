@@ -119,7 +119,7 @@ export function ProgressBar(props: {
 	return (
 		<div
 			ref={props.ref}
-			className="sticky top-[var(--app-header,0px)] z-20 border-b border-slate-200 bg-white/95 py-2 backdrop-blur"
+			className="sticky top-[var(--app-header,0px)] z-20 border-b border-slate-200 bg-white py-2"
 		>
 			<div className="flex flex-wrap items-center gap-x-3 gap-y-2">
 				<UnitPicker unit={unit} onChange={props.onUnitChange} />

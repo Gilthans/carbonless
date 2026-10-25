@@ -100,25 +100,52 @@ export function relativeTime(
  * fixed); the viewer's own zone unless `timeZone` is given.
  */
 export function fullDate(date: Date, opts: { timeZone?: string } = {}): string {
-	const parts = cached(
-		`full:${opts.timeZone}`,
-		() =>
-			new Intl.DateTimeFormat("en", {
-				year: "numeric",
-				month: "short",
-				day: "numeric",
-				hour: "2-digit",
-				minute: "2-digit",
-				second: "2-digit",
-				hourCycle: "h23",
+	const format = cached(`full:${opts.timeZone}`, () => {
+		const options: Intl.DateTimeFormatOptions = {
+			year: "numeric",
+			month: "short",
+			day: "numeric",
+			hour: "2-digit",
+			minute: "2-digit",
+			second: "2-digit",
+			hourCycle: "h23",
+			timeZone: opts.timeZone,
+		};
+		try {
+			return new Intl.DateTimeFormat("en", {
+				...options,
 				timeZoneName: "longGeneric",
-				timeZone: opts.timeZone,
-			}),
-	).formatToParts(date);
+			});
+		} catch {
+			// An engine without generic zone names.
+			return new Intl.DateTimeFormat("en", {
+				...options,
+				timeZoneName: "long",
+			});
+		}
+	});
+	const parts = format.formatToParts(date);
 	const part = (type: Intl.DateTimeFormatPartTypes) =>
 		parts.find((p) => p.type === type)?.value ?? "";
-	return `${part("year")} ${part("month")} ${part("day")}, ${part("hour")}:${part("minute")}:${part("second")} ${part("timeZoneName")}`;
+	let zone = part("timeZoneName");
+	// UTC has no generic name: Intl says "GMT+00:00" or the like.
+	if (
+		UTC_ZONES.has(format.resolvedOptions().timeZone) &&
+		/^(GMT|UTC)([+-]0?0(:?00)?)?$/.test(zone)
+	) {
+		zone = "UTC";
+	}
+	return `${part("year")} ${part("month")} ${part("day")}, ${part("hour")}:${part("minute")}:${part("second")} ${zone}`;
 }
+
+const UTC_ZONES = new Set([
+	"UTC",
+	"Etc/UTC",
+	"Etc/GMT",
+	"GMT",
+	"Etc/Universal",
+	"Etc/Zulu",
+]);
 
 /**
  * A date as short relative text that stays current, with the exact local date,

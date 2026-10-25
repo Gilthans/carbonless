@@ -66,7 +66,8 @@ const MARGIN = 8;
 
 /**
  * A text tooltip that opens on hover and on keyboard focus (or a tap, which
- * focuses), closes on Escape, blur, mouse leave and scroll, and is the
+ * focuses), closes on Escape, blur, mouse leave and a scroll that moves its
+ * trigger, and is the
  * trigger's accessible description (unless `describe` is false). It is `position: fixed` and kept inside
  * the viewport, so it never widens the page on a phone.
  */
@@ -111,11 +112,25 @@ export function Tooltip(props: {
 	useEffect(() => {
 		if (!open) return;
 		const close = () => setOpen(false);
+		// A scroll closes it only once its trigger has moved: one on a sticky
+		// header stays put (focusing it can fire a scroll that moves nothing).
+		const at = trigger.current?.getBoundingClientRect();
+		const onScroll = () => {
+			const now = trigger.current?.getBoundingClientRect();
+			if (
+				!at ||
+				!now ||
+				Math.abs(now.top - at.top) > 1 ||
+				Math.abs(now.left - at.left) > 1
+			) {
+				close();
+			}
+		};
 		// Escape dismisses it wherever focus is (a hover-opened one has none).
 		const onKey = (e: globalThis.KeyboardEvent) => {
 			if (e.key === "Escape") close();
 		};
-		window.addEventListener("scroll", close, true);
+		window.addEventListener("scroll", onScroll, true);
 		window.addEventListener("resize", close);
 		window.addEventListener("keydown", onKey);
 		// A focused button that becomes disabled gets no blur in Chrome.
@@ -129,7 +144,7 @@ export function Tooltip(props: {
 			});
 		}
 		return () => {
-			window.removeEventListener("scroll", close, true);
+			window.removeEventListener("scroll", onScroll, true);
 			window.removeEventListener("resize", close);
 			window.removeEventListener("keydown", onKey);
 			observer.disconnect();

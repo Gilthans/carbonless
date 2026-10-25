@@ -70,18 +70,25 @@ tool on a real PR. Everything not mentioned here stays as it is.
 ## App header
 
 - The header (PR title, repo, banners, the Overview / Files changed tabs,
-  Refresh) is sticky on every page. It scrolls until only its last row is
-  left: the tabs, a small title that fades in (transform/opacity, instant
-  under reduced motion) and Refresh as an icon (its word shows from `sm`).
-  That compact row is about 43px, so one tap reaches the other page from
-  anywhere.
+  Refresh) is sticky on every page. It scrolls until only its last row (and
+  its bottom border) is left: the tabs, a small title and Refresh as an icon
+  (its word shows from `sm`). That compact row is 44px, so one tap reaches
+  the other page from anywhere.
+- The small title fades and slides in, linked to the scroll, over the last
+  40px before the header sticks (`--compact`, set once per frame; no height
+  tweening). Under reduced motion it just appears once stuck. It is a button
+  ("Back to top: <title> #N") with the full title as its tooltip, up to two
+  short lines on a phone; it scrolls back to the top (smooth unless reduced
+  motion) and focuses the full title. It is inert until the header sticks.
+- Every sticky layer (app header, page bar, open file header, floating
+  cluster controls) is opaque: the diff never shows through.
 - The sticky stack, top down: app header row → page progress bar → open file
   header → floating cluster controls. Every offset is measured
   (ResizeObserver): the app row's height is `--app-header` on the root and
   `AppHeaderHeight` in React, the bar's is `--files-bar`, the page's own
   sticky height is `--page-sticky`; scroll-padding-top, the tree-pick scroll
   and the current-file tracking all add them up. On a 360×780 phone, inside
-  a long cluster of an open file, the stack ends at 179px (app row 43, bar
+  a long cluster of an open file, the stack ends at 180px (app row 44, bar
   63, file header 73), with the floating controls just below.
 
 ## File header
@@ -126,4 +133,7 @@ tool on a real PR. Everything not mentioned here stays as it is.
   description) gives the exact moment as "2026 Aug 31, 22:11:13 Israel Time":
   year, short month, day, 24-hour time with seconds, then the time zone's
   generic name (`Intl` `timeZoneName: "longGeneric"`), always in English and
-  in the viewer's own zone (`src/web/RelativeTime.tsx`).
+  in the viewer's own zone (`src/web/RelativeTime.tsx`). Where generic names
+  are missing it falls back to the long name; UTC reads "UTC".
+- A tooltip closes on scroll only when its trigger moved, so one on a sticky
+  header stays open.

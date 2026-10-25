@@ -4,7 +4,12 @@ import { type RefObject, useEffect, useLayoutEffect, useRef } from "react";
 export const SLOT = "data-sticky-slot";
 /** Marks the controls that move; `data-stuck="true"` while they float. */
 export const CONTROLS = "data-sticky-controls";
-/** Room kept between floating controls and the cluster's end, in px. */
+/**
+ * Room kept between floating controls and the cluster's end, in px. The
+ * placement runs on the main thread (once per frame), so on a fast fling the
+ * switch into or out of floating can trail the compositor's scroll by a
+ * frame; while floating they are position: fixed and don't trail.
+ */
 const END_GAP = 2;
 
 /** Where one cluster's controls go for the stack bottom `top` (viewport px). */

@@ -2,7 +2,7 @@ import { SyncIcon } from "@primer/octicons-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, Outlet, useRouterState } from "@tanstack/react-router";
 import {
-	useCallback,
+	type RefObject,
 	useEffect,
 	useLayoutEffect,
 	useRef,
@@ -16,7 +16,7 @@ import {
 	sessionQuery,
 } from "./api";
 import { HeadBanner } from "./HeadBanner";
-import { AppHeaderHeight, useHeight } from "./sticky";
+import { AppHeaderHeight } from "./sticky";
 import { Tooltip } from "./Tooltip";
 import { ErrorMessage, safeHref } from "./ui";
 
@@ -24,29 +24,81 @@ const tabClass =
 	"-mb-px flex min-h-11 shrink-0 items-center border-b-2 border-transparent px-2.5 text-sm whitespace-nowrap text-slate-600 hover:text-slate-900 focus-visible:outline-2 focus-visible:outline-blue-600 sm:px-3";
 const activeTabClass = "border-orange-500 font-semibold text-slate-900";
 
+/** Scroll distance over which the compact title fades in before sticking. */
+export const COMPACT_RAMP = 40;
+
 /**
- * Whether the header is stuck in its compact form: scrolled until only its
- * last row (`row` px) is left on screen.
+ * How far the compact row's title has faded in, 0 to 1, for the distance
+ * `dist` px still to scroll before the header sticks. Reduced motion skips
+ * the ramp: hidden, then shown once stuck.
  */
-function useStuck(header: () => HTMLElement | null, row: number, full: number) {
+export function compactProgress(dist: number, reduced: boolean): number {
+	if (dist <= 0.5) return 1;
+	if (reduced) return 0;
+	return Math.min(1, Math.max(0, 1 - dist / COMPACT_RAMP));
+}
+
+/**
+ * Measures the sticky header and follows the scroll. `offset`: the last
+ * row's top inside the header (the header sticks at `-offset`, leaving that
+ * row and the border below it); `stick`: what's left on screen once stuck,
+ * the top of the page's sticky stack. While scrolling it sets `--compact`
+ * (compactProgress) on the header, once per frame, without re-rendering.
+ */
+function useStickyHeader(
+	header: RefObject<HTMLElement | null>,
+	row: RefObject<HTMLElement | null>,
+) {
+	const [size, setSize] = useState({ offset: 0, stick: 0 });
 	const [stuck, setStuck] = useState(false);
-	// biome-ignore lint/correctness/useExhaustiveDependencies: checked again when the header's height changes.
+	useLayoutEffect(() => {
+		const h = header.current;
+		const r = row.current;
+		if (!h || !r) return;
+		const measure = () => {
+			const offset = r.offsetTop;
+			const stick = h.offsetHeight - offset;
+			setSize((old) =>
+				old.offset === offset && old.stick === stick ? old : { offset, stick },
+			);
+		};
+		measure();
+		if (typeof ResizeObserver === "undefined") return;
+		const observer = new ResizeObserver(measure);
+		observer.observe(h);
+		observer.observe(r);
+		return () => observer.disconnect();
+	}, [header, row]);
 	useEffect(() => {
-		const check = () => {
-			const el = header();
-			if (!el) return;
-			// Stuck at top = row − full height; a pixel of slack for rounding.
-			setStuck(el.getBoundingClientRect().bottom <= row + 0.5 && row > 0);
+		const h = header.current;
+		if (!h) return;
+		const reduced =
+			typeof window.matchMedia === "function"
+				? window.matchMedia("(prefers-reduced-motion: reduce)")
+				: null;
+		let frame = 0;
+		const update = () => {
+			frame = 0;
+			// Stuck when its top reaches -offset.
+			const dist = h.getBoundingClientRect().top + size.offset;
+			const progress =
+				size.stick > 0 ? compactProgress(dist, reduced?.matches ?? false) : 0;
+			h.style.setProperty("--compact", String(progress));
+			setStuck(size.stick > 0 && dist <= 0.5);
 		};
-		check();
-		window.addEventListener("scroll", check, { passive: true });
-		window.addEventListener("resize", check);
+		const schedule = () => {
+			if (!frame) frame = requestAnimationFrame(update);
+		};
+		update();
+		window.addEventListener("scroll", schedule, { passive: true });
+		window.addEventListener("resize", schedule);
 		return () => {
-			window.removeEventListener("scroll", check);
-			window.removeEventListener("resize", check);
+			cancelAnimationFrame(frame);
+			window.removeEventListener("scroll", schedule);
+			window.removeEventListener("resize", schedule);
 		};
-	}, [header, row, full]);
-	return stuck;
+	}, [header, size]);
+	return { ...size, stuck };
 }
 
 /**
@@ -79,10 +131,8 @@ export function App() {
 
 	const header = useRef<HTMLElement>(null);
 	const row = useRef<HTMLDivElement>(null);
-	const full = useHeight(() => header.current, null);
-	const compact = useHeight(() => row.current, null);
-	const findHeader = useCallback(() => header.current, []);
-	const stuck = useStuck(findHeader, compact, full);
+	const h1 = useRef<HTMLHeadingElement>(null);
+	const { offset, stick: compact, stuck } = useStickyHeader(header, row);
 	useLayoutEffect(() => {
 		const root = document.documentElement;
 		root.style.setProperty("--app-header", `${compact}px`);
@@ -90,14 +140,22 @@ export function App() {
 			root.style.removeProperty("--app-header");
 		};
 	}, [compact]);
+	/** Back to the top, where the full title is; focus goes to it. */
+	const toTop = () => {
+		const reduced =
+			typeof window.matchMedia === "function" &&
+			window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+		h1.current?.focus({ preventScroll: true });
+		window.scrollTo({ top: 0, behavior: reduced ? "auto" : "smooth" });
+	};
 
 	return (
 		<AppHeaderHeight.Provider value={compact}>
 			<div className="min-h-screen bg-white font-sans text-slate-900">
 				<header
 					ref={header}
-					// Sticks once only the last row is left on screen.
-					style={{ top: `${Math.min(0, compact - full)}px` }}
+					// Sticks once only the last row (and the border) is left on screen.
+					style={{ top: `${-offset}px` }}
 					className={`sticky z-30 border-b border-slate-200 bg-slate-50 transition-shadow duration-200 motion-reduce:transition-none ${
 						stuck ? "shadow-sm" : ""
 					}`}
@@ -107,7 +165,12 @@ export function App() {
 						{session.isError && <ErrorMessage error={session.error} />}
 						{pr && (
 							<div className="flex flex-wrap items-baseline gap-x-2">
-								<h1 className="text-xl font-semibold break-words sm:text-2xl">
+								<h1
+									ref={h1}
+									// Focused by the compact title's "back to top".
+									tabIndex={-1}
+									className="text-xl font-semibold break-words outline-none sm:text-2xl"
+								>
 									{pr.title}
 								</h1>
 								<span className="text-xl text-slate-500 sm:text-2xl">
@@ -160,21 +223,41 @@ export function App() {
 								Files changed
 							</Link>
 						</nav>
-						{/* The title again, small, once the big one has scrolled away. */}
-						<p
-							aria-hidden
-							data-testid="compact-title"
-							className={`min-w-0 flex-1 truncate text-sm font-semibold text-slate-700 transition-[opacity,transform] duration-200 motion-reduce:transition-none ${
-								stuck ? "opacity-100" : "translate-y-1 opacity-0"
-							}`}
-						>
+						{/*
+						 * The title again, small, fading in over the last stretch before
+						 * the header sticks (--compact, scroll-linked). It takes you back
+						 * to the top, to the full title. Inert until stuck.
+						 */}
+						<div className="flex min-w-0 flex-1">
 							{pr && (
-								<>
-									{pr.title}{" "}
-									<span className="text-slate-500">#{pr.number}</span>
-								</>
+								<Tooltip content={`${pr.title} #${pr.number}`} describe={false}>
+									{(trigger) => (
+										<button
+											type="button"
+											{...trigger}
+											inert={!stuck}
+											aria-label={`Back to top: ${pr.title} #${pr.number}`}
+											data-testid="compact-title"
+											onClick={toTop}
+											style={{
+												opacity: "var(--compact, 0)",
+												transform:
+													"translateY(calc((1 - var(--compact, 0)) * 0.375rem))",
+											}}
+											className="flex min-h-10 max-w-full min-w-0 items-center rounded-md px-1 text-left text-xs leading-4 font-semibold text-slate-700 hover:bg-slate-200 focus-visible:outline-2 focus-visible:outline-blue-600 sm:text-sm sm:leading-5"
+										>
+											{/* Two short lines on a phone, one on wider screens. */}
+											<span className="line-clamp-2 break-words sm:line-clamp-1">
+												{pr.title}{" "}
+												<span className="font-normal text-slate-500">
+													#{pr.number}
+												</span>
+											</span>
+										</button>
+									)}
+								</Tooltip>
 							)}
-						</p>
+						</div>
 						<Tooltip content="Reload the PR from GitHub" describe={false}>
 							{(trigger) => (
 								<button

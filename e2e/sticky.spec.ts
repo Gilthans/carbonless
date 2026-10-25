@@ -8,6 +8,7 @@ const long = Array.from({ length: 300 }, (_, i) => `long ${i + 1}`);
 
 /** b/long.ts: a 150-line cluster, then a one-line cluster 50 lines later. */
 const fixture: PrOptions = {
+	overview: { title: "Make the review header sticky" },
 	base: {
 		"a/one.ts": text(short),
 		"b/long.ts": text(long),
@@ -48,9 +49,9 @@ async function expectNoPageOverflow(page: Page) {
 }
 
 /** Scrolls deep into the long cluster of b/long.ts, opened. */
-async function deepInLongCluster(page: Page) {
+async function deepInLongCluster(page: Page, open = true) {
 	const section = fileSection(page, "b/long.ts");
-	await section.getByRole("button", { name: "Expand file" }).click();
+	if (open) await section.getByRole("button", { name: "Expand file" }).click();
 	await section
 		.getByTestId("diff-line")
 		.filter({ hasText: /long 90 changed$/ })
@@ -79,6 +80,8 @@ test("the app header compacts after scrolling and its tabs work from deep down",
 		.poll(async () => (await box(appHeader(page))).bottom)
 		.toBe((await box(appRow(page))).bottom + 1);
 	const header = await box(appHeader(page));
+	// The whole row shows: nothing clipped at the top; its border below it.
+	expect((await box(appRow(page))).top).toBe(0);
 	expect(header.bottom).toBeLessThan(full.bottom);
 	expect(header.bottom).toBeLessThanOrEqual(isMobile ? 48 : 56);
 	await expect(page.getByRole("heading", { level: 1 })).not.toBeInViewport();
@@ -100,6 +103,21 @@ test("the app header compacts after scrolling and its tabs work from deep down",
 		fileSection(page, "b/long.ts").locator("header"),
 	);
 	expect(Math.abs(fileHeader.top - bar)).toBeLessThanOrEqual(1);
+
+	// The small title has the full one as its tooltip and takes you back
+	// to the top, focusing the full title.
+	// Keyboard focus (a key press first marks the input as the keyboard).
+	await page.keyboard.press("Shift");
+	await compactTitle(page).focus();
+	// (Not its description: the name already says it.)
+	await expect(page.locator("[role=tooltip]:not([hidden])")).toHaveText(
+		"Make the review header sticky #7",
+	);
+	await compactTitle(page).click();
+	await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(0);
+	await expect(page.getByRole("heading", { level: 1 })).toBeFocused();
+	await expect(compactTitle(page)).toHaveCSS("opacity", "0");
+	await deepInLongCluster(page, false);
 
 	// One tap back to the overview, and back to the files.
 	await page.getByRole("link", { name: "Overview" }).click();
@@ -169,9 +187,13 @@ test("a long cluster's checkbox and cross-off stay below the file header", async
 		.filter({ hasText: /long 95 changed$/ });
 	const lineTop = (await box(line)).top;
 
-	// Still operable there.
+	// Still operable there: it marks its own cluster, not the next one.
 	await checkbox.click();
 	await expect(checkbox).toBeChecked();
+	const later = section
+		.getByRole("checkbox", { name: "Mark cluster reviewed" })
+		.nth(1);
+	await expect(later).not.toBeChecked();
 	await expect((await box(line)).top).toBe(lineTop);
 	await expect(
 		section.getByRole("progressbar", { name: "File progress" }),
@@ -193,4 +215,54 @@ test("a long cluster's checkbox and cross-off stay below the file header", async
 		.poll(async () => (await box(checkbox)).bottom)
 		.toBeLessThanOrEqual((await box(section.locator("header"))).bottom);
 	await expectNoPageOverflow(page);
+});
+
+test("every sticky layer is opaque: the diff never shows through", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	if (isMobile) await page.setViewportSize({ width: 360, height: 780 });
+	await pr(fixture);
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	const section = await deepInLongCluster(page);
+	await expect(
+		section.getByRole("checkbox", { name: "Mark cluster reviewed" }).first(),
+	).toBeInViewport();
+	const layers = {
+		app: appHeader(page),
+		bar: progress(page).locator(
+			"xpath=ancestor::div[contains(@class,'sticky')][1]",
+		),
+		file: section.locator("header"),
+		controls: section.locator("[data-stuck=fixed]"),
+	};
+	for (const [name, layer] of Object.entries(layers)) {
+		// What's on top at points spread over the layer is part of it.
+		const misses = await layer.evaluate((el) => {
+			const r = el.getBoundingClientRect();
+			const out: string[] = [];
+			for (const fx of [0.05, 0.3, 0.5, 0.7, 0.95]) {
+				for (const fy of [0.2, 0.5, 0.8]) {
+					const x = r.left + r.width * fx;
+					const y = Math.max(0, r.top) + (r.bottom - Math.max(0, r.top)) * fy;
+					const hit = document.elementFromPoint(x, y);
+					if (!hit || !el.contains(hit)) {
+						out.push(
+							`${Math.round(x)},${Math.round(y)}: ${hit?.textContent?.slice(0, 30)}`,
+						);
+					}
+				}
+			}
+			return out;
+		});
+		expect(misses, name).toEqual([]);
+		// And it paints a solid background.
+		const bg = await layer.evaluate(
+			(el) => getComputedStyle(el).backgroundColor,
+		);
+		expect(bg, name).not.toMatch(/\/|rgba|transparent/);
+	}
 });

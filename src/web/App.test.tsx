@@ -11,6 +11,7 @@ import {
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PrOverview, ReviewView, SessionInfo } from "../shared/types";
+import { COMPACT_RAMP, compactProgress } from "./App";
 import { createAppRouter } from "./router";
 
 const info: SessionInfo = {
@@ -473,5 +474,36 @@ describe("OverviewPage", () => {
 		const link = await screen.findByRole("link", { name: /Review files/ });
 		expect(await within(link).findByText(/2 \/ 5/)).toBeInTheDocument();
 		expect(link).toHaveAttribute("href", "/files");
+	});
+});
+
+describe("compactProgress", () => {
+	it("fades the compact title in over the last stretch before sticking", () => {
+		expect(compactProgress(COMPACT_RAMP + 10, false)).toBe(0);
+		expect(compactProgress(COMPACT_RAMP, false)).toBe(0);
+		expect(compactProgress(COMPACT_RAMP / 2, false)).toBe(0.5);
+		expect(compactProgress(0, false)).toBe(1);
+		expect(compactProgress(-5, false)).toBe(1);
+	});
+
+	it("skips the ramp under reduced motion", () => {
+		expect(compactProgress(COMPACT_RAMP / 2, true)).toBe(0);
+		expect(compactProgress(0, true)).toBe(1);
+	});
+});
+
+describe("App header", () => {
+	afterEach(() => {
+		cleanup();
+		vi.unstubAllGlobals();
+	});
+
+	it("offers the title again as a back-to-top button, inert until stuck", async () => {
+		renderApp();
+		await screen.findByRole("heading", { level: 1 });
+		// jsdom has no layout: never stuck, so it is out of reach.
+		const compact = screen.getByTestId("compact-title");
+		expect(compact).toHaveAttribute("inert");
+		expect(compact).toHaveAccessibleName("Back to top: Add widget cache #12");
 	});
 });

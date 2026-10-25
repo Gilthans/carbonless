@@ -175,4 +175,29 @@ describe("Tooltip dismissal and clicks", () => {
 		expect(errors).not.toHaveBeenCalled();
 		errors.mockRestore();
 	});
+
+	it("closes on a scroll only once its trigger has moved (sticky triggers stay)", () => {
+		const { button } = setup();
+		let top = 10;
+		button.getBoundingClientRect = () =>
+			({
+				top,
+				left: 5,
+				bottom: top + 20,
+				right: 50,
+				width: 45,
+				height: 20,
+			}) as DOMRect;
+		act(() => button.focus());
+		expect(screen.getByRole("tooltip")).toBeVisible();
+		act(() => {
+			window.dispatchEvent(new Event("scroll"));
+		});
+		expect(screen.getByRole("tooltip")).toBeVisible();
+		top = 200;
+		act(() => {
+			window.dispatchEvent(new Event("scroll"));
+		});
+		expect(screen.queryByRole("tooltip")).toBeNull();
+	});
 });
