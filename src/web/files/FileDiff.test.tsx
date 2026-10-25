@@ -163,7 +163,7 @@ describe("FileDiff", () => {
 		expect(screen.getByText("src/a.ts")).toBeInTheDocument();
 		expect(
 			screen.getByRole("progressbar", { name: "File progress" }),
-		).toHaveTextContent("0 / 1 clusters");
+		).toHaveTextContent("0 / 1 cluster");
 		expect(screen.queryByRole("checkbox")).toBeNull();
 		expect(paths()).toEqual([]);
 		await user.click(screen.getByRole("button", { name: "Expand file" }));
@@ -423,6 +423,22 @@ describe("FileDiff", () => {
 		const progress = screen.getByRole("progressbar", { name: "File progress" });
 		expect(progress).toHaveTextContent("done · 1 crossed off");
 		expect(progress).toHaveAttribute("aria-valuetext", "done · 1 crossed off");
+	});
+
+	it("tabs through the header in the narrow layout's order: path first", async () => {
+		const { user } = setup(file([cluster("k1")]));
+		await user.tab();
+		expect(screen.getByTestId("file-path")).toHaveFocus();
+		await user.tab();
+		expect(screen.getByRole("button", { name: "Expand file" })).toHaveFocus();
+		await user.tab();
+		expect(
+			screen.getByRole("button", { name: "Cross off file" }),
+		).toHaveFocus();
+		await user.tab();
+		expect(
+			screen.getByRole("button", { name: "Mark remaining reviewed" }),
+		).toHaveFocus();
 	});
 
 	it("puts the full path in a scroll box", () => {

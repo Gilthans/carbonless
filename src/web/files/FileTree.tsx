@@ -1,4 +1,5 @@
 import type { FileView } from "../../shared/types";
+import { Tooltip } from "../Tooltip";
 import { Meter } from "./ProgressBar";
 import { ChangeCount, crossOffReasons, StatusIcon } from "./status";
 import { describeFileProgress, fileUnitProgress, type Unit } from "./unit";
@@ -62,32 +63,10 @@ const indent = (depth: number) => ({
 });
 
 /**
- * The file's progress as a mini bar like the page's, its exact numbers in the
- * tooltip and accessible value. Same cap: never full while a cluster is left.
+ * One file: status, name, change count and a mini progress bar like the
+ * page's (same cap: never full while a cluster is left). The exact numbers end
+ * the row's accessible name and show in a tooltip on hover and keyboard focus.
  */
-function FileMeter({ file, unit }: { file: FileView; unit: Unit }) {
-	const p = fileUnitProgress(file, unit);
-	const sentence = describeFileProgress(file, unit);
-	return (
-		<span
-			role="progressbar"
-			aria-label="File progress"
-			aria-valuenow={p.percent}
-			aria-valuemin={0}
-			aria-valuemax={100}
-			aria-valuetext={sentence}
-			title={sentence}
-			className="flex h-4 w-10 shrink-0 items-center"
-		>
-			<Meter
-				counts={p.counts}
-				incomplete={p.clustersLeft > 0}
-				className="h-1.5 w-full"
-			/>
-		</span>
-	);
-}
-
 function FileItem(props: {
 	file: FileView;
 	unit: Unit;
@@ -95,36 +74,61 @@ function FileItem(props: {
 	current: boolean;
 	onSelect: (index: number) => void;
 }) {
-	const { file } = props;
+	const { file, unit } = props;
 	const name = file.path.slice(file.path.lastIndexOf("/") + 1);
+	const p = fileUnitProgress(file, unit);
+	const numbers = describeFileProgress(file, unit);
+	const path = file.oldPath ? `${file.oldPath} → ${file.path}` : file.path;
 	return (
 		<li>
-			<button
-				type="button"
-				title={file.oldPath ? `${file.oldPath} → ${file.path}` : file.path}
-				aria-current={props.current ? "true" : undefined}
-				onClick={() => props.onSelect(file.index)}
-				style={indent(props.depth)}
-				className={`flex w-full items-center gap-1.5 rounded py-0.5 pr-1 pointer-coarse:min-h-10 text-left text-sm hover:bg-slate-100 focus-visible:outline-2 focus-visible:outline-blue-600 ${
-					props.current ? "bg-blue-50 font-medium text-blue-900" : ""
-				}`}
-			>
-				<StatusIcon file={file} />
-				<span className="min-w-0 flex-1 truncate">
-					{file.crossedOff ? <s className="text-slate-500">{name}</s> : name}
-					{file.crossedOff &&
-						crossOffReasons(file).map((reason) => (
-							<span
-								key={reason}
-								className="ml-1 rounded bg-purple-100 px-1 text-xs text-purple-800"
-							>
-								{reason}
-							</span>
-						))}
-				</span>
-				<ChangeCount file={file} unit={props.unit} />
-				<FileMeter file={file} unit={props.unit} />
-			</button>
+			{/* The numbers are in the name already: the tooltip only shows them. */}
+			<Tooltip content={`${path} · ${numbers}`} describe={false}>
+				{(trigger) => (
+					<button
+						type="button"
+						{...trigger}
+						aria-current={props.current ? "true" : undefined}
+						onClick={() => props.onSelect(file.index)}
+						style={indent(props.depth)}
+						className={`flex w-full items-center gap-1.5 rounded py-0.5 pr-1 pointer-coarse:min-h-10 text-left text-sm hover:bg-slate-100 focus-visible:outline-2 focus-visible:outline-blue-600 ${
+							props.current ? "bg-blue-50 font-medium text-blue-900" : ""
+						}`}
+					>
+						<StatusIcon file={file} />
+						<span className="min-w-0 flex-1 truncate">
+							{file.crossedOff ? (
+								<s className="text-slate-500">{name}</s>
+							) : (
+								name
+							)}
+							{file.crossedOff &&
+								crossOffReasons(file).map((reason) => (
+									<span
+										key={reason}
+										className="ml-1 rounded bg-purple-100 px-1 text-xs text-purple-800"
+									>
+										{reason}
+									</span>
+								))}
+						</span>
+						<ChangeCount file={file} unit={unit} />
+						<span data-testid="tree-numbers" className="sr-only">
+							{numbers}
+						</span>
+						<span
+							aria-hidden
+							data-testid="tree-meter"
+							className="flex h-4 w-10 shrink-0 items-center"
+						>
+							<Meter
+								counts={p.counts}
+								incomplete={p.clustersLeft > 0}
+								className="h-1.5 w-full"
+							/>
+						</span>
+					</button>
+				)}
+			</Tooltip>
 		</li>
 	);
 }

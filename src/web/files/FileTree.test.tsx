@@ -39,8 +39,12 @@ function file(
 	};
 }
 
+/** The row's mini bar (decorative: the numbers are in the row's name). */
 const bar = (row: HTMLElement) =>
-	within(row).getByRole("progressbar", { name: "File progress" });
+	row.querySelector<HTMLElement>('[data-testid="tree-meter"]') as HTMLElement;
+/** The exact numbers, as they end the row's accessible name. */
+const numbers = (row: HTMLElement) =>
+	row.querySelector('[data-testid="tree-numbers"]')?.textContent;
 /** A meter part's width in percent. */
 const part = (meter: HTMLElement, name: string) =>
 	Number.parseFloat(
@@ -80,10 +84,7 @@ describe("FileTree", () => {
 			"api",
 		]);
 		const one = within(tree).getByRole("button", { name: /one\.ts/ });
-		expect(bar(one)).toHaveAttribute(
-			"aria-valuetext",
-			"1 of 2 clusters reviewed",
-		);
+		expect(numbers(one)).toBe("1 of 2 clusters reviewed");
 		expect(one).not.toHaveTextContent("1 / 2");
 		expect(
 			within(one).getByRole("img", { name: "partly done" }),
@@ -128,16 +129,52 @@ describe("FileTree", () => {
 				onSelect={() => {}}
 			/>,
 		);
-		const one = bar(screen.getByRole("button", { name: /one\.ts/ }));
-		expect(one).toHaveAttribute("title", "1 of 2 clusters reviewed");
-		expect(one).toHaveAttribute("aria-valuenow", "50");
-		expect(part(one, "reviewed")).toBe(50);
-		const gen = bar(screen.getByRole("button", { name: /api\.g\.cs/ }));
-		expect(gen).toHaveAttribute("aria-valuetext", "crossed off");
-		expect(part(gen, "crossed-off")).toBe(100);
-		// The bar is the row's last part, so bars line up down the tree.
 		const row = screen.getByRole("button", { name: /one\.ts/ });
+		expect(row).toHaveAccessibleName(/one\.ts.*1 of 2 clusters reviewed$/);
+		// No progressbar inside the button: the name carries the numbers.
+		expect(within(row).queryByRole("progressbar")).toBeNull();
+		const one = bar(row);
+		expect(one).toHaveAttribute("aria-hidden", "true");
+		expect(part(one, "reviewed")).toBe(50);
+		const gen = screen.getByRole("button", { name: /api\.g\.cs/ });
+		expect(numbers(gen)).toBe("crossed off");
+		expect(part(bar(gen), "crossed-off")).toBe(100);
+		// The bar is the row's last visible part, so bars line up down the tree.
 		expect(row.lastElementChild).toBe(one);
+	});
+
+	it("shows the exact numbers in a tooltip on keyboard focus and hover", async () => {
+		const user = userEvent.setup();
+		render(
+			<FileTree
+				files={files}
+				unit="clusters"
+				current={null}
+				onSelect={() => {}}
+			/>,
+		);
+		// Decorative for screen readers (the numbers are in the row's name),
+		// so found by the DOM rather than by role.
+		const shown = () =>
+			[...document.querySelectorAll('[role="tooltip"]')].filter(
+				(t) => !t.hasAttribute("hidden"),
+			);
+		expect(shown()).toHaveLength(0);
+		await user.tab();
+		const first = screen.getByRole("button", { name: /one\.ts/ });
+		expect(first).toHaveFocus();
+		expect(shown()).toHaveLength(1);
+		expect(shown()[0]).toHaveTextContent("1 of 2 clusters reviewed");
+		await user.tab();
+		expect(screen.getByRole("button", { name: /two\.ts/ })).toHaveFocus();
+		expect(shown()).toHaveLength(1);
+		expect(shown()[0]).toHaveTextContent("1 of 1 cluster reviewed");
+		await user.keyboard("{Escape}");
+		expect(shown()).toHaveLength(0);
+		await user.click(document.body);
+		await user.hover(screen.getByRole("button", { name: /api\.g\.cs/ }));
+		expect(shown()).toHaveLength(1);
+		expect(shown()[0]).toHaveTextContent("crossed off");
 	});
 
 	it("never shows a file's bar full while anything in it is unreviewed", () => {
@@ -157,12 +194,9 @@ describe("FileTree", () => {
 				onSelect={() => {}}
 			/>,
 		);
-		const b = bar(screen.getByRole("button", { name: /new\.md/ }));
-		expect(b).toHaveAttribute("aria-valuenow", "99");
-		expect(b.getAttribute("aria-valuetext")).toMatch(
-			/1 cluster without changed lines left/,
-		);
-		expect(part(b, "reviewed")).toBeLessThan(100);
+		const row = screen.getByRole("button", { name: /new\.md/ });
+		expect(numbers(row)).toMatch(/1 cluster without changed lines left/);
+		expect(part(bar(row), "reviewed")).toBeLessThan(100);
 	});
 
 	it("counts changes in the selected unit", () => {
@@ -176,10 +210,7 @@ describe("FileTree", () => {
 		);
 		const one = () => screen.getByRole("button", { name: /one\.ts/ });
 		expect(one()).toHaveTextContent("+3 −1");
-		expect(bar(one())).toHaveAttribute(
-			"aria-valuetext",
-			"2 of 4 lines reviewed",
-		);
+		expect(numbers(one())).toBe("2 of 4 lines reviewed");
 		rerender(
 			<FileTree
 				files={files}
@@ -207,13 +238,10 @@ describe("FileTree", () => {
 		);
 		expect(one()).not.toHaveTextContent("+3");
 		expect(within(one()).queryByRole("img", { name: /clusters?$/ })).toBeNull();
-		expect(bar(one())).toHaveAttribute(
-			"aria-valuetext",
-			"0 of 1 files reviewed",
+		expect(numbers(one())).toBe("0 of 1 file reviewed");
+		expect(numbers(screen.getByRole("button", { name: /two\.ts/ }))).toBe(
+			"done",
 		);
-		expect(
-			bar(screen.getByRole("button", { name: /two\.ts/ })),
-		).toHaveAttribute("aria-valuetext", "done");
 	});
 
 	it("describes a file without changed lines by its status in lines", () => {
@@ -236,9 +264,9 @@ describe("FileTree", () => {
 				onSelect={() => {}}
 			/>,
 		);
-		const entry = bar(screen.getByRole("button", { name: /new\.md/ }));
-		expect(entry).toHaveAttribute("aria-valuetext", "1 cluster left");
-		expect(entry).toHaveAttribute("aria-valuenow", "0");
+		const entry = screen.getByRole("button", { name: /new\.md/ });
+		expect(numbers(entry)).toBe("1 cluster left");
+		expect(part(bar(entry), "reviewed")).toBe(0);
 	});
 
 	it("selects a file", async () => {

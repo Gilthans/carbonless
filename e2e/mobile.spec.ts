@@ -362,12 +362,18 @@ test.describe("phone", () => {
 		await section.getByRole("button", { name: "Expand file" }).click();
 		await section.getByTestId("diff-line").last().scrollIntoViewIfNeeded();
 		await page.mouse.wheel(0, 300);
-		const header = await section.locator("header").boundingBox();
-		const bar = await barBottom(page);
-		if (!header) throw new Error("header not rendered");
-		expect(Math.abs(header.y - bar)).toBeLessThanOrEqual(1);
-		// Together under a quarter of the screen... roughly.
-		expect(header.y + header.height).toBeLessThanOrEqual(740 * 0.3);
+		const header = section.locator("header");
+		// Once the wheel scroll settles, the header sits right below the bar.
+		await expect
+			.poll(async () => {
+				const box = await header.boundingBox();
+				return Math.round(Math.abs((box?.y ?? 1e9) - (await barBottom(page))));
+			})
+			.toBeLessThanOrEqual(1);
+		const box = await header.boundingBox();
+		if (!box) throw new Error("header not rendered");
+		// The bar and the header together take under 30% of the screen.
+		expect(box.y + box.height).toBeLessThanOrEqual(740 * 0.3);
 	});
 });
 

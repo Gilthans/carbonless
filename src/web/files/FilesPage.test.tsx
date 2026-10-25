@@ -2,7 +2,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { FileView, ReviewView } from "../../shared/types";
 import { FilesPage } from "./FilesPage";
 
@@ -71,9 +71,14 @@ function renderPage(
 }
 
 describe("FilesPage", () => {
+	beforeEach(() => {
+		// jsdom has no layout: every element is 40px tall.
+		vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockReturnValue(40);
+	});
 	afterEach(() => {
 		cleanup();
 		vi.unstubAllGlobals();
+		vi.restoreAllMocks();
 	});
 
 	it("says when the PR changes no files", async () => {
@@ -151,13 +156,12 @@ describe("FilesPage", () => {
 		});
 		const user = userEvent.setup();
 		const tree = await screen.findByTestId("file-tree");
-		const bar = () =>
-			within(tree).getByRole("progressbar", { name: "File progress" });
+		const bar = () => within(tree).getByRole("button", { name: /a\.txt/ });
 		expect(screen.getByRole("radio", { name: "Lines" })).toBeChecked();
-		expect(bar()).toHaveAttribute("aria-valuetext", "0 of 2 lines reviewed");
+		expect(bar()).toHaveAccessibleName(/0 of 2 lines reviewed$/);
 		expect(tree).toHaveTextContent("+1 −1");
 		await user.click(screen.getByRole("radio", { name: "Files" }));
-		expect(bar()).toHaveAttribute("aria-valuetext", "0 of 1 files reviewed");
+		expect(bar()).toHaveAccessibleName(/0 of 1 file reviewed$/);
 		expect(tree).not.toHaveTextContent("+1");
 		expect(localStorage.getItem("crb.files.unit")).toBe("files");
 		cleanup();
@@ -173,7 +177,7 @@ describe("FilesPage", () => {
 
 	it("opens one file at a time", async () => {
 		const scrolled = vi.fn();
-		Element.prototype.scrollIntoView = scrolled;
+		vi.stubGlobal("scrollTo", scrolled);
 		renderPage({
 			"/api/review": () => ({
 				status: 200,
@@ -198,10 +202,13 @@ describe("FilesPage", () => {
 		).toBeInTheDocument();
 		// Opening by its header doesn't jump to it.
 		expect(scrolled).not.toHaveBeenCalled();
+		// Focus scrolling clears the sticky bar and the open file's header.
+		expect(document.documentElement.style.scrollPaddingTop).toBe("80px");
 		await user.click(within(b).getByRole("button", { name: "Collapse file" }));
 		expect(
 			within(b).getByRole("button", { name: "Expand file" }),
 		).toBeInTheDocument();
+		expect(document.documentElement.style.scrollPaddingTop).toBe("40px");
 		expect(
 			within(a).getByRole("button", { name: "Expand file" }),
 		).toBeInTheDocument();
@@ -209,7 +216,7 @@ describe("FilesPage", () => {
 
 	it("picking a file in the tree opens it, closes the others and scrolls to it", async () => {
 		const scrolled = vi.fn();
-		Element.prototype.scrollIntoView = scrolled;
+		vi.stubGlobal("scrollTo", scrolled);
 		renderPage({
 			"/api/review": () => ({
 				status: 200,
@@ -221,6 +228,7 @@ describe("FilesPage", () => {
 		const user = userEvent.setup();
 		const a = await screen.findByRole("region", { name: "a.txt" });
 		const b = screen.getByRole("region", { name: "b.txt" });
+		b.getBoundingClientRect = () => ({ top: 500 }) as DOMRect;
 		await user.click(within(a).getByRole("button", { name: "Expand file" }));
 		const tree = screen.getByTestId("file-tree");
 		await user.click(within(tree).getByRole("button", { name: /b\.txt/ }));
@@ -231,8 +239,8 @@ describe("FilesPage", () => {
 			within(a).getByRole("button", { name: "Expand file" }),
 		).toBeInTheDocument();
 		await vi.waitFor(() => expect(scrolled).toHaveBeenCalled());
-		expect(scrolled.mock.contexts.at(-1)).toBe(b);
-		expect(scrolled.mock.calls.at(-1)?.[0]).toMatchObject({ block: "start" });
+		// Its header lands right below the sticky bar (40px, mocked).
+		expect(scrolled.mock.calls.at(-1)?.[0]).toEqual({ top: 500 - 40 + 1 });
 		// Picking the open file keeps it open.
 		await user.click(within(tree).getByRole("button", { name: /b\.txt/ }));
 		expect(
@@ -252,7 +260,7 @@ describe("FilesPage", () => {
 				}) as unknown as MediaQueryList,
 		);
 		const scrolled = vi.fn();
-		Element.prototype.scrollIntoView = scrolled;
+		vi.stubGlobal("scrollTo", scrolled);
 		renderPage({
 			"/api/review": () => ({
 				status: 200,

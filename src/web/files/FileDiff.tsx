@@ -141,7 +141,7 @@ function FileProgress({ file, unit }: { file: FileView; unit: Unit }) {
 			aria-valuemax={100}
 			aria-valuetext={sentence}
 			title={sentence}
-			className="flex h-9 w-28 shrink-0 flex-col justify-center gap-1 @2xl:w-48"
+			className="flex h-9 w-28 shrink-0 flex-col justify-center gap-1 @lg:order-6 @2xl:w-48"
 		>
 			<span className="truncate text-right text-xs text-slate-600 tabular-nums">
 				<span className="@2xl:hidden">
@@ -242,7 +242,7 @@ export function FileDiff(props: {
 			id={`file-${file.index}`}
 			data-file-index={file.index}
 			aria-label={file.path}
-			className="scroll-mt-[calc(var(--files-bar,0px)-1px)] overflow-clip rounded-md border border-slate-200"
+			className="overflow-clip rounded-md border border-slate-200"
 		>
 			<header
 				// Square corners: the section clips them at the top, and a stuck
@@ -251,27 +251,33 @@ export function FileDiff(props: {
 					expanded ? "sticky top-[var(--files-bar,0px)] z-10" : ""
 				}`}
 			>
-				{/* Narrow: the path on its own row, everything else below it. */}
+				{/*
+				 * DOM (and tab) order is the narrow layout's: the path on its own
+				 * row, everything else below it. Wide headers are one row, reordered
+				 * to toggle, status, path, count, actions, progress.
+				 */}
 				<div className="flex min-h-11 flex-wrap items-center gap-x-1.5 pt-1 @lg:flex-nowrap @lg:pt-0 @2xl:gap-x-3">
+					<PathScroller
+						text={path}
+						className="basis-full @lg:order-3 @lg:basis-0"
+					/>
 					<button
 						type="button"
 						aria-expanded={expanded}
 						aria-label={expanded ? "Collapse file" : "Expand file"}
 						onClick={() => setExpanded(!expanded)}
-						className="flex h-10 w-10 shrink-0 items-center justify-center rounded text-slate-600 hover:bg-slate-200 focus-visible:outline-2 focus-visible:outline-blue-600"
+						className="flex h-10 w-10 shrink-0 items-center justify-center rounded text-slate-600 hover:bg-slate-200 focus-visible:outline-2 focus-visible:outline-blue-600 @lg:order-1"
 					>
 						{expanded ? "▾" : "▸"}
 					</button>
-					<StatusIcon file={file} />
-					<PathScroller
-						text={path}
-						className="order-first basis-full @lg:order-none @lg:basis-0"
-					/>
+					<span className="flex shrink-0 @lg:order-2">
+						<StatusIcon file={file} />
+					</span>
 					{/* Left out of a phone's second row, where it wouldn't fit. */}
-					<span className="ml-auto hidden shrink-0 @sm:flex @lg:ml-0">
+					<span className="ml-auto hidden shrink-0 @sm:flex @lg:order-4 @lg:ml-0">
 						<ChangeCount file={file} unit={props.unit} />
 					</span>
-					<div className="ml-auto flex shrink-0 items-center gap-1.5 @sm:ml-0">
+					<div className="ml-auto flex shrink-0 items-center gap-1.5 @sm:ml-0 @lg:order-5">
 						{crossToggle.undo ? (
 							<HeaderIconButton
 								label="Undo cross-off"

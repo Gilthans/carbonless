@@ -102,12 +102,13 @@ export function ProgressBar(props: {
 	const { progress, unit } = props;
 	const counts = pageCounts(progress, unit);
 	const value = pagePercent(progress, unit);
-	const word = unitWord(unit);
+	const shown = counts.total - counts.crossedOff;
+	const word = unitWord(unit, shown);
 	// Everything the unit counts was crossed off: no bare 100%.
 	const empty = nothingLeft(progress, unit);
 	const summary = empty
-		? `${counts.crossedOff} ${word} crossed off, ${counts.reviewed} reviewed`
-		: `${counts.reviewed} / ${counts.total - counts.crossedOff} ${word} reviewed`;
+		? `${counts.crossedOff} ${unitWord(unit, counts.crossedOff)} crossed off, ${counts.reviewed} reviewed`
+		: `${counts.reviewed} / ${shown} ${word} reviewed`;
 	const left = clustersLeft(progress);
 	// In lines, a rename or mode change weighs nothing: say it's still there.
 	const hiddenLeft =
@@ -155,7 +156,7 @@ export function ProgressBar(props: {
 							summary
 						) : (
 							<>
-								{counts.reviewed} / {counts.total - counts.crossedOff}
+								{counts.reviewed} / {shown}
 								{/* The picker beside it names the unit on a phone. */}
 								<span className="hidden sm:inline"> {word} reviewed</span>
 							</>

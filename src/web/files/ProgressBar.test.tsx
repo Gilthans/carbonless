@@ -38,6 +38,37 @@ describe("ProgressBar", () => {
 		expect(bar).toHaveTextContent("2 / 9 files reviewed");
 	});
 
+	it("names the unit in the singular for one", () => {
+		const one: Progress = {
+			clusters: { total: 1, reviewed: 0, crossedOff: 0 },
+			lines: { total: 2, reviewed: 1, crossedOff: 1 },
+			files: { total: 1, reviewed: 0, crossedOff: 0, done: 0 },
+		};
+		const { rerender } = render(
+			<ProgressBar progress={one} unit="files" onUnitChange={() => {}} />,
+		);
+		const bar = screen.getByRole("progressbar", { name: "Review progress" });
+		expect(bar).toHaveTextContent("0 / 1 file reviewed");
+		rerender(
+			<ProgressBar progress={one} unit="lines" onUnitChange={() => {}} />,
+		);
+		expect(bar).toHaveTextContent("1 / 1 line reviewed");
+		rerender(
+			<ProgressBar
+				progress={{
+					...one,
+					clusters: { total: 1, reviewed: 0, crossedOff: 1 },
+				}}
+				unit="clusters"
+				onUnitChange={() => {}}
+			/>,
+		);
+		expect(bar).toHaveAttribute(
+			"aria-valuetext",
+			"Nothing left to review: 1 cluster crossed off, 0 reviewed",
+		);
+	});
+
 	it("has no crossed-off legend line", () => {
 		render(
 			<ProgressBar progress={sample} unit="lines" onUnitChange={() => {}} />,

@@ -9,7 +9,7 @@ import {
 	openFiles,
 	pickInTree,
 	progress,
-	treeBar,
+	treeNumbers,
 	withTree,
 } from "./files-ui";
 import { expect, type PrOptions, test } from "./fixtures";
@@ -79,8 +79,7 @@ test("checking a cluster updates file and overall progress", async ({
 	await expect(bar).toContainText("1 / 4 clusters reviewed");
 	await expect(fileProgress(section)).toContainText("1 / 2 clusters");
 	await withTree(page, (tree) =>
-		expect(treeBar(tree, /core\.ts/)).toHaveAttribute(
-			"aria-valuetext",
+		expect(treeNumbers(tree, /core\.ts/)).toHaveText(
 			"1 of 2 clusters reviewed",
 		),
 	);
@@ -91,10 +90,7 @@ test("checking a cluster updates file and overall progress", async ({
 	await expect(bar).toHaveAttribute("aria-valuenow", "42");
 	await expect(fileProgress(section)).toContainText("3 / 5 lines");
 	await withTree(page, (tree) =>
-		expect(treeBar(tree, /core\.ts/)).toHaveAttribute(
-			"aria-valuetext",
-			"3 of 5 lines reviewed",
-		),
+		expect(treeNumbers(tree, /core\.ts/)).toHaveText("3 of 5 lines reviewed"),
 	);
 	await chooseUnit(page, "Files");
 	await expect(bar).toContainText("0 / 3 files reviewed");
@@ -163,7 +159,7 @@ test("crossing off keeps reviewed clusters, and undoing leaves clusters unreview
 	await fileAction(section, "Cross off file");
 	await expect(fileProgress(section)).toHaveAttribute(
 		"aria-valuetext",
-		"1 of 1 clusters reviewed, 1 crossed off",
+		"1 of 1 cluster reviewed, 1 crossed off",
 	);
 	await expect(bar).toContainText("1 / 3 clusters reviewed");
 	// In files, a file with a crossed-off cluster counts as crossed off, never
@@ -232,7 +228,7 @@ test("cross off a single cluster, and undo it", async ({
 	await expect(controls.last()).toHaveAttribute("aria-pressed", "true");
 	await expect(bar).toContainText("0 / 3 clusters reviewed");
 	await expect(section.getByText("Crossed off", { exact: true })).toBeVisible();
-	await expect(fileProgress(section)).toContainText("0 / 1 clusters");
+	await expect(fileProgress(section)).toContainText("0 / 1 cluster");
 
 	await controls.last().click();
 	await expect(controls.last()).toHaveAttribute("aria-pressed", "false");
@@ -257,8 +253,7 @@ test("mark remaining reviewed", async ({ page, pr, startCrb }) => {
 	).toBeDisabled();
 	await withTree(page, async (tree) => {
 		const entry = tree.getByRole("button", { name: /core\.ts/ });
-		await expect(treeBar(tree, /core\.ts/)).toHaveAttribute(
-			"aria-valuetext",
+		await expect(treeNumbers(tree, /core\.ts/)).toHaveText(
 			"2 of 2 clusters reviewed",
 		);
 		await expect(entry.getByRole("img", { name: "done" })).toBeVisible();
@@ -383,14 +378,24 @@ test("one file is open at a time", async ({ page, pr, startCrb }) => {
 	await openFiles(page, s.url);
 	const core = await expand(page, "src/core.ts");
 	await expect(core.getByTestId("diff-line").first()).toBeVisible();
-	const util = await expand(page, "src/util.ts");
+	// Opening the next file closes core.ts above it; the header just used
+	// stays where it was on screen.
+	const util = fileSection(page, "src/util.ts");
+	const header = util.locator("header");
+	// A short window, scrolled down to util.ts: room to keep its header put.
+	const width = page.viewportSize()?.width ?? 1280;
+	await page.setViewportSize({ width, height: 360 });
+	await header.scrollIntoViewIfNeeded();
+	const before = (await header.boundingBox())?.y ?? Number.NaN;
+	await util.getByRole("button", { name: "Expand file" }).click();
 	await expect(util.getByTestId("diff-line").first()).toBeVisible();
 	await expect(core.getByRole("button", { name: "Expand file" })).toBeVisible();
 	await expect(core.getByTestId("diff-line")).toHaveCount(0);
-	// The header just used stays in view.
-	await expect(
-		util.getByRole("button", { name: "Collapse file" }),
-	).toBeInViewport();
+	await expect
+		.poll(async () =>
+			Math.abs(((await header.boundingBox())?.y ?? 1e9) - before),
+		)
+		.toBeLessThanOrEqual(3);
 	await util.getByRole("button", { name: "Collapse file" }).click();
 	await expect(page.getByTestId("diff-line")).toHaveCount(0);
 });
@@ -486,32 +491,30 @@ test("tree rows show progress as aligned mini bars and counts in the unit", asyn
 	await fileAction(fileSection(page, "src/util.ts"), "Mark remaining reviewed");
 	await withTree(page, async (tree) => {
 		const core = tree.getByRole("button", { name: /core\.ts/ });
-		const bar = treeBar(tree, /core\.ts/);
-		await expect(bar).toHaveAttribute(
-			"aria-valuetext",
-			"0 of 5 lines reviewed",
-		);
-		await expect(bar).toHaveAttribute("title", "0 of 5 lines reviewed");
-		await expect(treeBar(tree, /util\.ts/)).toHaveAttribute(
-			"aria-valuetext",
+		const bar = treeNumbers(tree, /core\.ts/);
+		await expect(bar).toHaveText("0 of 5 lines reviewed");
+		// The row's name ends with the numbers, and focus shows them.
+		await expect(core).toHaveAccessibleName(/core\.ts.*0 of 5 lines reviewed$/);
+		await core.focus();
+		await expect(
+			page.getByText("src/core.ts · 0 of 5 lines reviewed"),
+		).toBeVisible();
+		await expect(treeNumbers(tree, /util\.ts/)).toHaveText(
 			"2 of 2 lines reviewed",
 		);
 		// A rename has no lines: the bar is not full while it's unreviewed.
-		await expect(treeBar(tree, /new\.md/)).toHaveAttribute(
-			"aria-valuetext",
-			"1 cluster left",
-		);
+		await expect(treeNumbers(tree, /new\.md/)).toHaveText("1 cluster left");
 		await expect(core).toContainText("+3 −2");
 		await expect(core).not.toContainText("/");
 		// Bars line up at the right edge.
 		const rights = await tree
-			.getByRole("progressbar", { name: "File progress" })
+			.getByTestId("tree-meter")
 			.evaluateAll((els) =>
 				els.map((el) => Math.round(el.getBoundingClientRect().right)),
 			);
 		expect(new Set(rights).size).toBe(1);
 		const widths = await tree
-			.getByRole("progressbar", { name: "File progress" })
+			.getByTestId("tree-meter")
 			.evaluateAll((els) => els.map((el) => el.getBoundingClientRect().width));
 		for (const w of widths) expect(w).toBeGreaterThan(20);
 	});
@@ -525,8 +528,7 @@ test("tree rows show progress as aligned mini bars and counts in the unit", asyn
 		const count = core.getByRole("img", { name: "2 clusters" });
 		await expect(count).toHaveText("2");
 		await expect(count).toHaveAttribute("title", "2 clusters");
-		await expect(treeBar(tree, /core\.ts/)).toHaveAttribute(
-			"aria-valuetext",
+		await expect(treeNumbers(tree, /core\.ts/)).toHaveText(
 			"0 of 2 clusters reviewed",
 		);
 	});
@@ -540,10 +542,57 @@ test("tree rows show progress as aligned mini bars and counts in the unit", asyn
 		const core = tree.getByRole("button", { name: /core\.ts/ });
 		await expect(core).not.toContainText("+3");
 		await expect(core.getByRole("img", { name: /clusters?$/ })).toHaveCount(0);
-		await expect(treeBar(tree, /util\.ts/)).toHaveAttribute(
-			"aria-valuetext",
-			"done",
-		);
+		await expect(treeNumbers(tree, /util\.ts/)).toHaveText("done");
 	});
 	await expect(header).not.toContainText("+3");
+});
+
+const many = Array.from({ length: 200 }, (_, i) => `many ${i + 1}`);
+
+test("keyboard focus inside an open diff is never hidden under the sticky headers", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	// Every 10th line changed: 20 clusters, each with its own checkbox.
+	await pr({
+		base: { "many.ts": text(many) },
+		files: [
+			{
+				message: "PR change",
+				files: {
+					"many.ts": text(
+						many.map((l, i) => (i % 10 === 5 ? `${l} changed` : l)),
+					),
+				},
+			},
+		],
+	});
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	const section = await expand(page, "many.ts");
+	const boxes = section.getByRole("checkbox", {
+		name: "Mark cluster reviewed",
+	});
+	await expect(boxes).toHaveCount(20);
+	const header = section.locator("header");
+	const target = boxes.nth(10);
+	// Scroll so the checkbox sits right under the stuck header.
+	await target.scrollIntoViewIfNeeded();
+	await expect(header).toBeInViewport();
+	const headerBottom = async () => {
+		const box = await header.boundingBox();
+		return (box?.y ?? 0) + (box?.height ?? 0);
+	};
+	const targetTop = async () => (await target.boundingBox())?.y ?? 0;
+	await page.evaluate(
+		(by) => window.scrollBy(0, by),
+		(await targetTop()) - (await headerBottom()) + 10,
+	);
+	await expect.poll(targetTop).toBeLessThan(await headerBottom());
+	await target.focus();
+	await expect(target).toBeFocused();
+	await expect
+		.poll(async () => (await targetTop()) >= (await headerBottom()) - 1)
+		.toBe(true);
 });

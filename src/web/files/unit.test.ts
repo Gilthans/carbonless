@@ -218,7 +218,22 @@ describe("describeFileProgress", () => {
 		expect(describeFileProgress(f, "clusters")).toBe(
 			"1 of 2 clusters reviewed, 1 crossed off",
 		);
-		expect(describeFileProgress(f, "files")).toBe("0 of 1 files reviewed");
+		expect(describeFileProgress(f, "files")).toBe("0 of 1 file reviewed");
+		const one = file([cluster("reviewed", 1), cluster("crossed-off", 1)]);
+		expect(describeFileProgress(one, "lines")).toBe(
+			"1 of 1 line reviewed, 1 crossed off",
+		);
+		expect(
+			formatFileProgress(fileUnitProgress(f, "clusters"), "clusters", {
+				withUnit: true,
+			}),
+		).toBe("1 / 2 clusters");
+		const single = file([cluster("unreviewed", 3)]);
+		expect(
+			formatFileProgress(fileUnitProgress(single, "clusters"), "clusters", {
+				withUnit: true,
+			}),
+		).toBe("0 / 1 cluster");
 	});
 
 	it("says clusters without changed lines are left", () => {

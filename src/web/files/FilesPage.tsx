@@ -104,11 +104,12 @@ function FilesSheet(props: {
 
 /**
  * Tracks the file in view: the first file section crossing the band just
- * below the sticky progress bar.
+ * below the sticky progress bar (`top` px tall).
  */
 function useCurrentFile(
 	container: RefObject<HTMLElement | null>,
 	sections: string,
+	top: number,
 ) {
 	const [current, setCurrent] = useState<number | null>(null);
 	// `sections` changes when the rendered file sections do: observe the new ones.
@@ -126,33 +127,37 @@ function useCurrentFile(
 				}
 				if (visible.size > 0) setCurrent(Math.min(...visible));
 			},
-			{ rootMargin: "-120px 0px -60% 0px" },
+			{ rootMargin: `-${Math.round(top) + 1}px 0px -60% 0px` },
 		);
 		for (const section of root.querySelectorAll("[data-file-index]")) {
 			observer.observe(section);
 		}
 		return () => observer.disconnect();
-	}, [container, sections]);
+	}, [container, sections, top]);
 	return [current, setCurrent] as const;
 }
 
 /**
- * The rendered height of `el` in px, kept current as it changes (the sticky
- * progress bar wraps differently by width and unit).
+ * The rendered height in px of the element `find` returns, kept current as it
+ * changes (the sticky bar wraps differently by width and unit). `key` says
+ * when to look the element up again.
  */
-function useHeight(el: RefObject<HTMLElement | null>, present: boolean) {
+function useHeight(find: () => HTMLElement | null, key: unknown) {
 	const [height, setHeight] = useState(0);
-	// biome-ignore lint/correctness/useExhaustiveDependencies: re-measure once the element exists.
+	// biome-ignore lint/correctness/useExhaustiveDependencies: looked up again when `key` changes.
 	useLayoutEffect(() => {
-		const node = el.current;
-		if (!node) return;
+		const node = find();
+		if (!node) {
+			setHeight(0);
+			return;
+		}
 		const measure = () => setHeight(node.offsetHeight);
 		measure();
 		if (typeof ResizeObserver === "undefined") return;
 		const observer = new ResizeObserver(measure);
 		observer.observe(node);
 		return () => observer.disconnect();
-	}, [el, present]);
+	}, [key]);
 	return height;
 }
 
@@ -164,25 +169,46 @@ export function FilesPage() {
 	const [stale, setStale] = useState(false);
 	const diffs = useRef<HTMLDivElement>(null);
 	const data = review.data;
+	const bar = useRef<HTMLDivElement>(null);
+	// Open file headers stick right below the progress bar.
+	const barHeight = useHeight(() => bar.current, data !== undefined);
 	const [current, setCurrent] = useCurrentFile(
 		diffs,
 		data ? `${data.revision}:${data.files.length}` : "",
+		barHeight,
 	);
 
 	const [unit, setUnit] = useUnit();
 	const wide = useMedia(WIDE);
 	const [sheetOpen, setSheetOpen] = useState(false);
-	const bar = useRef<HTMLDivElement>(null);
-	// Open file headers stick right below the progress bar.
-	const barHeight = useHeight(bar, data !== undefined);
 
 	// One file open at a time, by snapshot and index: a new snapshot starts
 	// with every file closed.
 	const [open, setOpen] = useState<string | null>(null);
 	const keyOf = (index: number) => `${data?.revision}:${index}`;
+	const openIndex =
+		data && open?.startsWith(`${data.revision}:`)
+			? Number(open.slice(data.revision.length + 1))
+			: null;
+	const openHeader = useHeight(
+		() => (openIndex === null ? null : headerOf(openIndex)),
+		openIndex,
+	);
+	// Keyboard focus scrolling keeps focused controls clear of the sticky bar
+	// and the open file's sticky header (WCAG 2.4.11).
+	const stickyTop = barHeight + openHeader;
+	useEffect(() => {
+		const root = document.documentElement;
+		root.style.scrollPaddingTop = `${stickyTop}px`;
+		return () => {
+			root.style.scrollPaddingTop = "";
+		};
+	}, [stickyTop]);
 	/** The header to keep where it was on screen as files open and close. */
 	const anchor = useRef<{ index: number; top: number } | null>(null);
+	const sectionOf = (index: number) => document.getElementById(`file-${index}`);
 	const toggleFile = (index: number, expanded: boolean) => {
+		// Where the reader sees the header, stuck or not.
 		const header = headerOf(index);
 		anchor.current = header
 			? { index, top: header.getBoundingClientRect().top }
@@ -196,9 +222,13 @@ export function FilesPage() {
 		const a = anchor.current;
 		anchor.current = null;
 		if (!a) return;
-		const header = headerOf(a.index);
-		if (!header) return;
-		const delta = header.getBoundingClientRect().top - a.top;
+		// Afterwards, measured where the header lies in the flow (the section's
+		// top, inside its border): a header that just stuck reports where it's
+		// stuck, not where it is.
+		const section = sectionOf(a.index);
+		if (!section) return;
+		const natural = section.getBoundingClientRect().top + section.clientTop;
+		const delta = natural - a.top;
 		if (Math.abs(delta) >= 1) window.scrollBy(0, delta);
 	}, [open]);
 
@@ -207,10 +237,13 @@ export function FilesPage() {
 		if (wide) setSheetOpen(false);
 	}, [wide]);
 
-	const scrollTo = (index: number) =>
-		document
-			.getElementById(`file-${index}`)
-			?.scrollIntoView?.({ block: "start" });
+	/** Puts the file's header right below the sticky bar (its border under it). */
+	const scrollTo = (index: number) => {
+		const section = document.getElementById(`file-${index}`);
+		if (!section) return;
+		const top = section.getBoundingClientRect().top + window.scrollY;
+		window.scrollTo({ top: top - barHeight + 1 });
+	};
 	/** A file picked in the tree: open it alone and bring its header to the top. */
 	const select = (index: number) => {
 		setCurrent(index);

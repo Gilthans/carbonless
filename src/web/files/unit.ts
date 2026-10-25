@@ -193,8 +193,11 @@ export interface FormatOptions {
 	short?: boolean;
 }
 
-export const unitWord = (unit: Unit) =>
-	UNITS.find((u) => u.id === unit)?.label.toLowerCase() ?? unit;
+/** "lines", or "line" when `count` is 1. */
+export function unitWord(unit: Unit, count?: number): string {
+	const plural = UNITS.find((u) => u.id === unit)?.label.toLowerCase() ?? unit;
+	return count === 1 ? plural.replace(/s$/, "") : plural;
+}
 
 export function formatFileProgress(
 	p: FileUnitProgress,
@@ -208,7 +211,10 @@ export function formatFileProgress(
 	}
 	if (p.status !== null || p.fraction === null) return p.status ?? "";
 	let text = p.fraction;
-	if (opts.withUnit && unit !== "files") text += ` ${unitWord(unit)}`;
+	if (opts.withUnit && unit !== "files") {
+		const shown = p.counts.total - p.counts.crossedOff;
+		text += ` ${unitWord(unit, shown)}`;
+	}
 	if (p.hiddenLeft) {
 		text += opts.short
 			? ` · ${p.clustersLeft} left`
@@ -230,5 +236,6 @@ export function describeFileProgress(file: FileView, unit: Unit): string {
 	const left = p.hiddenLeft
 		? `, ${p.clustersLeft} ${p.clustersLeft === 1 ? "cluster" : "clusters"} without changed lines left`
 		: "";
-	return `${counts.reviewed} of ${counts.total - counts.crossedOff} ${unitWord(unit)} reviewed${crossed}${left}`;
+	const shown = counts.total - counts.crossedOff;
+	return `${counts.reviewed} of ${shown} ${unitWord(unit, shown)} reviewed${crossed}${left}`;
 }

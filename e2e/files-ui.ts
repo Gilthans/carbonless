@@ -76,11 +76,9 @@ export const fileActionButton = (section: Locator, name: string) =>
 export const fileProgress = (section: Locator) =>
 	section.getByRole("progressbar", { name: "File progress" });
 
-/** A file's mini progress bar in the tree. */
-export const treeBar = (tree: Locator, name: RegExp) =>
-	tree
-		.getByRole("button", { name })
-		.getByRole("progressbar", { name: "File progress" });
+/** A tree row's exact numbers (the end of its accessible name). */
+export const treeNumbers = (tree: Locator, name: RegExp) =>
+	tree.getByRole("button", { name }).getByTestId("tree-numbers");
 
 /** The sticky page progress bar's bottom edge, in viewport px. */
 export const barBottom = (page: Page) =>

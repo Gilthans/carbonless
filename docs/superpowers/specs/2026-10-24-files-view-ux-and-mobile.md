@@ -42,8 +42,9 @@ tool on a real PR. Everything not mentioned here stays as it is.
   the change count, then a mini progress bar at the right edge in the page
   bar's style (green reviewed, hatched crossed off), so the bars line up. Same
   cap as the page: never full while anything in the file is unreviewed. The
-  exact numbers are its tooltip and accessible value ("1 of 2 clusters
-  reviewed"); there is no "X / Y" text.
+  bar is decorative: the exact numbers ("1 of 2 clusters reviewed") end the
+  row's accessible name and show in a tooltip on hover and keyboard focus;
+  there is no "X / Y" text. Unit words are singular for one ("1 file").
 - Picking a file opens it, closes every other file, and scrolls so its header
   sits right below the sticky page bar (from the sidebar or the phone sheet).
 
@@ -54,7 +55,9 @@ tool on a real PR. Everything not mentioned here stays as it is.
   screen. A new snapshot starts with every file closed.
 - The open file's header sticks right below the sticky page progress bar (no
   gap, no overlap) while its diff scrolls, so it can be closed from anywhere.
-  Closing it from deep inside keeps the header in view.
+  Closing it from deep inside keeps the header in view. The page's
+  scroll-padding-top covers the bar plus the open header, so keyboard focus
+  never lands hidden under them.
 
 ## File header
 
@@ -73,7 +76,8 @@ tool on a real PR. Everything not mentioned here stays as it is.
   clusters as reviewed" is disabled when none are unreviewed ("Nothing
   unreviewed"). A file without clusters disables both ("No clusters in this
   file") and has no undo.
-- Wide headers are one row. Narrow headers (phones) are two: the path across
+- Wide headers are one row. Narrow headers (phones) are two (the DOM and tab
+  order follow the narrow layout, path first): the path across
   the full width, then the collapse toggle, status, progress and ⊘ ✓ as 40px
   icon buttons (the change count joins them where it fits).
 
