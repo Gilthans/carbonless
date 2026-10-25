@@ -211,7 +211,7 @@ describe("App", () => {
 		expect(what).toBeInTheDocument();
 		expect(screen.queryByRole("region", { name: "What it does" })).toBeNull();
 		await router.navigate({ to: "/" });
-		// The same elements come back: nothing remounted, nothing refetched.
+		// The same elements come back: nothing remounted.
 		expect(await screen.findByRole("region", { name: "What it does" })).toBe(
 			what,
 		);
@@ -223,7 +223,10 @@ describe("App", () => {
 		);
 		expect(files.closest("[data-page]")).not.toHaveAttribute("aria-hidden");
 		expect(what.closest("[data-page]")).toHaveAttribute("aria-hidden", "true");
-		expect(calls("/api/review")).toBe(reads);
+		// The files page reads the review again as it shows (writes made
+		// elsewhere appear); the overview, staying, does not refetch.
+		await waitFor(() => expect(calls("/api/review")).toBe(reads + 1));
+		expect(screen.getByRole("region", { name: "Files changed" })).toBe(files);
 		expect(calls("/api/overview")).toBe(1);
 	});
 

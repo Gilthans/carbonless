@@ -9,3 +9,11 @@ import { createContext, useContext } from "react";
 export const PageActive = createContext(true);
 
 export const usePageActive = () => useContext(PageActive);
+
+/**
+ * Forgets the window scroll saved for this page, so it shows from the top
+ * next time (its layout changed while hidden). A no-op outside a kept page.
+ */
+export const ForgetPageScroll = createContext<() => void>(() => {});
+
+export const useForgetPageScroll = () => useContext(ForgetPageScroll);

@@ -308,3 +308,113 @@ test("the compact title is centered between the tabs and Refresh, on a pill", as
 		});
 	}
 });
+
+const WIDE_PATH = "w/a/rather/deep/directory/for/the/wide/file/wide.ts";
+const wideLine = (i: number) => `const line${i} = "${"wide ".repeat(60)}";`;
+const wide = Array.from({ length: 6 }, (_, i) => wideLine(i + 1));
+const wideFixture: PrOptions = {
+	...fixture,
+	base: { ...fixture.base, [WIDE_PATH]: text(wide) },
+	files: [
+		{
+			message: "PR change",
+			files: {
+				...fixture.files?.[0]?.files,
+				[WIDE_PATH]: text(wide.map((l) => l.replace("wide ", "WIDE "))),
+			},
+		},
+	],
+};
+
+/** The open file's diff scroller (not its path scroller). */
+const diffScroller = (section: Locator) =>
+	section.locator("div.overflow-x-auto:has(table)");
+
+/** Every path scroller is pinned fully right (the file name shows). */
+async function expectPathsPinned(page: Page) {
+	const offsets = await page
+		.getByTestId("file-path")
+		.evaluateAll((els) =>
+			els.map((el) => el.scrollWidth - el.clientWidth - el.scrollLeft),
+		);
+	expect(offsets.length).toBeGreaterThan(0);
+	for (const gap of offsets) expect(Math.abs(gap)).toBeLessThanOrEqual(1);
+}
+
+test("a diff scrolled sideways is still scrolled there after visiting the overview", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	if (isMobile) await page.setViewportSize({ width: 360, height: 780 });
+	await pr(wideFixture);
+	const s = await startCrb();
+	// Land on the files first: the overview mounts later, before it in the DOM.
+	await openFiles(page, s.url);
+	const section = fileSection(page, WIDE_PATH);
+	await section.getByRole("button", { name: "Expand file" }).click();
+	const scroller = diffScroller(section);
+	await scroller.evaluate((el) => {
+		el.scrollLeft = 120;
+	});
+	await expect.poll(() => scroller.evaluate((el) => el.scrollLeft)).toBe(120);
+	await tab(page, "Overview").click();
+	await expect(whatItDoes(page)).toBeVisible();
+	await tab(page, "Files changed").click();
+	await expect(progress(page)).toBeVisible();
+	await page.evaluate(
+		() => new Promise((r) => requestAnimationFrame(() => setTimeout(r, 100))),
+	);
+	expect(await scroller.evaluate((el) => el.scrollLeft)).toBe(120);
+	await expectPathsPinned(page);
+});
+
+test("a new snapshot loaded from the overview shows the files from the top", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	if (isMobile) await page.setViewportSize({ width: 360, height: 780 });
+	const p = await pr(wideFixture);
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	// Room to scroll even with every file closed, so a stale offset would show.
+	await page.addStyleTag({ content: "main { padding-bottom: 300vh; }" });
+	const section = fileSection(page, WIDE_PATH);
+	await section.getByRole("button", { name: "Expand file" }).click();
+	await diffScroller(section).evaluate((el) => {
+		el.scrollLeft = 120;
+	});
+	const long = fileSection(page, "b/long.ts");
+	await long.getByRole("button", { name: "Expand file" }).click();
+	await long
+		.getByTestId("diff-line")
+		.filter({ hasText: /long 120 changed$/ })
+		.scrollIntoViewIfNeeded();
+	expect(await scrollY(page)).toBeGreaterThan(1000);
+
+	await tab(page, "Overview").click();
+	await expect(whatItDoes(page)).toBeVisible();
+	p.moveHead({
+		message: "later push",
+		files: { "c/last.ts": text(short.map((l) => `${l} pushed`)) },
+	});
+	const reviewed = page.waitForResponse(
+		(r) => r.url().endsWith("/api/review") && r.ok(),
+	);
+	await page.getByRole("button", { name: "Refresh" }).click();
+	await reviewed;
+
+	await tab(page, "Files changed").click();
+	await expect(progress(page)).toBeVisible();
+	await expectScroll(page, 0);
+	// A new snapshot starts with every file closed; nothing keeps an old offset.
+	await expect(page.getByRole("button", { name: "Collapse file" })).toHaveCount(
+		0,
+	);
+	await section.getByRole("button", { name: "Expand file" }).click();
+	expect(await diffScroller(section).evaluate((el) => el.scrollLeft)).toBe(0);
+	await expectPathsPinned(page);
+});

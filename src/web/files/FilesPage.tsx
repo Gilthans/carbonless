@@ -10,7 +10,7 @@ import {
 	useSyncExternalStore,
 } from "react";
 import { reviewQuery } from "../api";
-import { usePageActive } from "../pageActive";
+import { useForgetPageScroll, usePageActive } from "../pageActive";
 import { useAppHeaderHeight, useHeight } from "../sticky";
 import { ErrorMessage } from "../ui";
 import { FileDiff } from "./FileDiff";
@@ -113,7 +113,7 @@ function FilesSheet(props: {
  * Not while the page is hidden (`active` false): nothing is in view then,
  * and the file in view when it shows again is the one it was left on.
  */
-function useCurrentFile(
+export function useCurrentFile(
 	container: RefObject<HTMLElement | null>,
 	sections: string,
 	top: number,
@@ -169,6 +169,25 @@ export function FilesPage() {
 		appHeader + barHeight,
 		active,
 	);
+
+	// Back on this page: read the review again, so writes made elsewhere (another
+	// tab or device) show. Unchanged data keeps its identity: nothing moves.
+	const wasActive = useRef(active);
+	const { refetch } = review;
+	useEffect(() => {
+		if (active && !wasActive.current) void refetch();
+		wasActive.current = active;
+	}, [active, refetch]);
+	// A new snapshot arrived while hidden (Refresh on the overview): the saved
+	// scroll belongs to another layout, so the page shows from the top.
+	const forgetScroll = useForgetPageScroll();
+	const revision = data?.revision;
+	const lastRevision = useRef(revision);
+	useEffect(() => {
+		if (revision === lastRevision.current) return;
+		if (lastRevision.current !== undefined && !active) forgetScroll();
+		lastRevision.current = revision;
+	}, [revision, active, forgetScroll]);
 
 	const [unit, setUnit] = useUnit();
 	const wide = useMedia(WIDE);

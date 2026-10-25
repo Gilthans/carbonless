@@ -55,11 +55,11 @@ export function createAppRouter(options: { initialPath?: string } = {}) {
 		history: options.initialPath
 			? createMemoryHistory({ initialEntries: [options.initialPath] })
 			: createBrowserHistory(),
-		// Each page keeps its own window scroll: going back to a page (tab,
-		// link or browser back/forward) puts it where it was left. Saved on
-		// leaving, restored once the kept page shows again, before paint.
-		scrollRestoration: true,
-		getScrollRestorationKey: (location) => location.pathname,
+		// Kept pages restore their own window scroll (`KeptPages`). The
+		// router's restoration would also replay inner scrollers by DOM path
+		// (stale once pages mount or a snapshot changes), and without it the
+		// router scrolls to the top after each navigation: off for every page.
+		scrollRestoration: () => false,
 	});
 }
 

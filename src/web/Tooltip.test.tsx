@@ -9,6 +9,7 @@ import {
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { PageActive } from "./pageActive";
 import { HOVER_DELAY_MS, Tooltip } from "./Tooltip";
 
 function setup(hoverDelay?: number) {
@@ -40,6 +41,31 @@ describe("Tooltip", () => {
 		act(() => vi.advanceTimersByTime(1));
 		expect(screen.getByRole("tooltip")).toHaveTextContent("Explains it");
 		fireEvent.mouseLeave(button);
+		expect(screen.queryByRole("tooltip")).toBeNull();
+	});
+
+	it("closes when its page is hidden, and a pending hover never opens it", () => {
+		const page = (active: boolean) => (
+			<PageActive value={active}>
+				<Tooltip content="Explains it">
+					{(trigger) => (
+						<button type="button" {...trigger}>
+							Go
+						</button>
+					)}
+				</Tooltip>
+			</PageActive>
+		);
+		const { rerender } = render(page(true));
+		const button = screen.getByRole("button", { name: "Go" });
+		act(() => button.focus());
+		expect(screen.getByRole("tooltip")).toHaveTextContent("Explains it");
+		rerender(page(false));
+		expect(screen.queryByRole("tooltip")).toBeNull();
+		rerender(page(true));
+		fireEvent.mouseEnter(button);
+		rerender(page(false));
+		act(() => vi.advanceTimersByTime(HOVER_DELAY_MS * 2));
 		expect(screen.queryByRole("tooltip")).toBeNull();
 	});
 
