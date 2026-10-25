@@ -1,6 +1,7 @@
 /**
  * React keys for threads, which have no id: path, opening time and author
- * name one, numbered apart in the unlikely case two share all three.
+ * name one, numbered apart when two share all three (threads posted in one
+ * review submission share its time).
  */
 export function threadKeys<
 	T extends { path: string; createdAt: string; author: string },

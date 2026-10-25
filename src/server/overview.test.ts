@@ -151,6 +151,7 @@ describe("mapOverview", () => {
 				resolved: false,
 				code: {
 					diffHunk: expect.stringMatching(/^@@ -38,5 \+38,7 @@/),
+					commit: "",
 					side: "RIGHT",
 					startSide: "RIGHT",
 					startLine: 42,
@@ -206,6 +207,7 @@ describe("mapOverview", () => {
 				resolved: false,
 				code: {
 					diffHunk: expect.stringContaining("-  // legacy path"),
+					commit: "",
 					side: "LEFT",
 					startSide: "LEFT",
 					startLine: 7,
@@ -263,6 +265,14 @@ describe("mapOverview", () => {
 			line: 42,
 			code: { startLine: 42, endLine: 42 },
 		});
+		// GraphQL's thread-level startLine can name a line past the current
+		// one (PR #99: line 120, startLine 124, REST start_line null): just
+		// the line, never a range made backwards.
+		Object.assign(t, { originalLine: null, line: 120, startLine: 124 });
+		expect(mapOverview(view(), g, VIEWER).threads[0]?.code).toMatchObject({
+			startLine: 120,
+			endLine: 120,
+		});
 		// No original line: the current pair, both ends of it.
 		Object.assign(t, { originalLine: null, line: 42, startLine: 41 });
 		expect(mapOverview(view(), g, VIEWER).threads[0]?.code).toMatchObject({
@@ -281,6 +291,18 @@ describe("mapOverview", () => {
 			line: 17,
 			code: null,
 		});
+		// GitHub kept no hunk for a line comment: its original commit, for the
+		// server to rebuild the code from (threadCode.ts).
+		const oid = "a".repeat(40);
+		if (firstNode) Object.assign(firstNode, { originalCommit: { oid } });
+		expect(mapOverview(view(), noHunk, VIEWER).threads[0]).toMatchObject({
+			line: 30,
+			code: { diffHunk: "", commit: oid, side: "RIGHT", endLine: 30 },
+		});
+		// A file comment by subject has no code, whatever its fields say.
+		Object.assign(t, { subjectType: "FILE" });
+		expect(mapOverview(view(), g, VIEWER).threads[0]?.code).toBeNull();
+		Object.assign(t, { subjectType: "LINE" });
 		// A file comment: no line, no code.
 		Object.assign(t, { line: null, originalLine: null });
 		expect(mapOverview(view(), g, VIEWER).threads[0]).toMatchObject({

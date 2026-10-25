@@ -75,11 +75,15 @@ export interface CommentNode {
 	createdAt: string;
 	/** GitHub's diff hunk ending at the commented line; "" for a file comment. */
 	diffHunk?: string;
+	/** The commit the comment was written on. */
+	originalCommit?: { oid: string };
 }
 
 /** A reviewThreads node, as gh.ts queries it. */
 export interface ThreadNode {
 	isResolved: boolean;
+	/** "LINE" or "FILE"; missing in older fixtures (taken from the line). */
+	subjectType?: string;
 	isOutdated: boolean;
 	path: string;
 	line: number | null;
@@ -146,6 +150,8 @@ export function threadComment(c: {
 	html?: string;
 	createdAt?: string;
 	diffHunk?: string;
+	/** The commit it was written on (GitHub's originalCommit). */
+	commit?: string;
 }): CommentNode {
 	const escaped = c.text
 		.replaceAll("&", "&amp;")
@@ -157,5 +163,6 @@ export function threadComment(c: {
 		bodyHTML: c.html ?? `<p dir="auto">${escaped}</p>`,
 		createdAt: c.createdAt ?? "2026-01-03T09:00:00Z",
 		...(c.diffHunk === undefined ? {} : { diffHunk: c.diffHunk }),
+		...(c.commit === undefined ? {} : { originalCommit: { oid: c.commit } }),
 	};
 }

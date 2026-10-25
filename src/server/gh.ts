@@ -288,8 +288,9 @@ const QUERIES = {
 		"reviewThreads",
 		// The opening comment's text and code; only authors and times for the
 		// rest (reply detection, and counting as of a cutoff), and the latest
-		// comment's time (last activity past the first 100).
-		`isResolved isOutdated path line originalLine originalStartLine diffSide startDiffSide first: comments(first: 1) { nodes { ${AUTHOR} bodyText bodyHTML createdAt diffHunk } } latest: comments(last: 1) { nodes { createdAt } } comments(first: 100) { totalCount nodes { ${AUTHOR} createdAt } }`,
+		// comment's time (last activity past the first 100). The opener's
+		// original commit rebuilds its code when GitHub kept no diff hunk.
+		`isResolved isOutdated path subjectType line originalLine originalStartLine diffSide startDiffSide first: comments(first: 1) { nodes { ${AUTHOR} bodyText bodyHTML createdAt diffHunk originalCommit { oid } } } latest: comments(last: 1) { nodes { createdAt } } comments(first: 100) { totalCount nodes { ${AUTHOR} createdAt } }`,
 	),
 	comments: connectionQuery("comments", `${AUTHOR} createdAt`),
 	// The commit a review was made on dates the PR's head (as-of mode).

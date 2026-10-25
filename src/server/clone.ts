@@ -317,6 +317,32 @@ export async function fetchPr(
 	});
 }
 
+/**
+ * Whether `oid` is a commit in the clone, fetching it by OID from GitHub
+ * once if not (a commit a force-push dropped from the PR). Never throws.
+ */
+export async function ensureCommit(
+	path: string,
+	oid: string,
+): Promise<boolean> {
+	if (!OID.test(oid)) return false;
+	const present = () =>
+		runGit(path, ["cat-file", "-e", `${oid}^{commit}`]).then(
+			() => true,
+			() => false,
+		);
+	if (await present()) return true;
+	return withRepoLock(path, async () => {
+		if (await present()) return true;
+		await runGit(
+			path,
+			[...GH_CREDENTIALS, "fetch", "--quiet", "--no-tags", "origin", oid],
+			{ env: { GIT_TERMINAL_PROMPT: "0" }, allowFailure: true },
+		);
+		return present();
+	}).catch(() => false);
+}
+
 /** The base branch's tip at `cutoff`: its last first-parent commit by then. */
 export async function baseTipAt(
 	path: string,

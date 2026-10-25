@@ -21,6 +21,7 @@ const right = (
 	extra: Partial<ThreadCode> = {},
 ): ThreadCode => ({
 	diffHunk: HUNK,
+	commit: "",
 	side: "RIGHT",
 	startSide: "RIGHT",
 	startLine,

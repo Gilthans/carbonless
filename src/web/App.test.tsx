@@ -119,6 +119,7 @@ const overview: PrOverview = {
 			code: {
 				diffHunk:
 					"@@ -40,2 +40,3 @@ class Cache {\n   get() {}\n-  old() {}\n+  set() {}\n+  ttl = 5;",
+				commit: "",
 				side: "RIGHT",
 				startSide: "RIGHT",
 				startLine: 42,
@@ -750,6 +751,7 @@ describe("OverviewPage", () => {
 						code: {
 							// The range (9) isn't in the hunk: its last line is marked.
 							diffHunk: "@@ -1,1 +1,2 @@\n a\n+b",
+							commit: "",
 							side: "RIGHT",
 							startSide: "RIGHT",
 							startLine: 9,
@@ -779,6 +781,7 @@ describe("OverviewPage", () => {
 						code: {
 							// The range (9) isn't in the hunk, whose last line is a deletion.
 							diffHunk: "@@ -1,2 +1,2 @@\n+a\n b\n-c",
+							commit: "",
 							side: "RIGHT",
 							startSide: "RIGHT",
 							startLine: 9,
@@ -799,6 +802,7 @@ describe("OverviewPage", () => {
 			humanThread(path, {
 				code: {
 					diffHunk: "@@ -1,0 +1,1 @@\n+\tx",
+					commit: "",
 					side: "RIGHT",
 					startSide: "RIGHT",
 					startLine: 1,

@@ -709,3 +709,46 @@ test("an opened long hunk scrolls inside its pane to the marked line, never the 
 	await expect(code).toHaveAttribute("tabindex", "0");
 	expect(await page.evaluate(() => window.scrollY)).toBe(before);
 });
+
+test("a line comment GitHub kept no hunk for shows its code from the clone; a file comment shows none", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	const p = await pr();
+	const head = p.repo.shas.at(-1) ?? "";
+	p.editScenario((s) => {
+		const graph = s.prs[7]?.graphql;
+		if (!graph) throw new Error("no PR in the scenario");
+		graph.reviewThreads = [
+			reviewThread({ path: "a.txt", line: 2, subjectType: "LINE" }, [
+				threadComment({
+					login: "rev1",
+					text: "Here",
+					diffHunk: "",
+					commit: head,
+				}),
+			]),
+			reviewThread({ path: "new.txt", line: 1, subjectType: "FILE" }, [
+				threadComment({
+					login: "rev2",
+					text: "Whole file",
+					diffHunk: "",
+					commit: head,
+					createdAt: "2026-01-01T00:00:00Z",
+				}),
+			]),
+		];
+	});
+	const s = await startCrb();
+	await page.goto(s.url);
+	const threads = page
+		.getByRole("region", { name: "Human reviews" })
+		.getByTestId("thread");
+	const code = threads.first().getByTestId("thread-code");
+	await expect(code.locator("[data-marked]")).toHaveText(/line 2 changed/);
+	await expect(code.getByTestId("thread-code-line").first()).toContainText(
+		"line 1",
+	);
+	await expect(threads.nth(1).getByTestId("thread-code")).toHaveCount(0);
+});

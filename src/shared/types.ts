@@ -203,10 +203,15 @@ export interface PrOverview {
 		 * The code the first comment was written on: GitHub's diff hunk, which
 		 * ends at the commented line, and the commented range in the hunk's own
 		 * numbering (the old side's for a "LEFT" side; a range may start on the
-		 * other side). Null for a file comment.
+		 * other side). Null for a file comment. When GitHub kept no hunk (it
+		 * sometimes stores none for a line comment), the server rebuilds one
+		 * from the clone at `commit`; a thread whose code can't be rebuilt
+		 * has none.
 		 */
 		code: {
 			diffHunk: string;
+			/** The commit the first comment was written on (GitHub's original commit); "" if unknown. */
+			commit: string;
 			side: "LEFT" | "RIGHT";
 			startSide: "LEFT" | "RIGHT";
 			startLine: number;

@@ -23,6 +23,7 @@ import { buildReviewView } from "./review/coverage.js";
 import type { ProgressState } from "./review/fold.js";
 import { RefStore } from "./review/refStore.js";
 import { ReviewService, StaleSnapshotError } from "./review/reviews.js";
+import { fillThreadCode } from "./threadCode.js";
 
 /** Hidden dev options (crb --as-of, --viewer). */
 export interface SessionOptions {
@@ -161,13 +162,15 @@ export class Session {
 		return this.#snapshot;
 	}
 
-	overview(): Promise<PrOverview> {
+	async overview(): Promise<PrOverview> {
 		const { asOf, viewer } = this.options;
-		return fetchOverview(
+		const overview = await fetchOverview(
 			this.#ref(),
 			viewer ?? this.viewer,
 			asOf ? { at: asOf, head: this.#meta.headOid } : undefined,
 		);
+		// GitHub sometimes keeps no diff hunk for a line comment: rebuild it.
+		return fillThreadCode(this.repo, this.#snapshot.base, overview);
 	}
 
 	async review(): Promise<ReviewView> {

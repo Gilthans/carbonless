@@ -111,18 +111,25 @@ function lineNumber(value: unknown): number | null {
 		: null;
 }
 
+const OID = /^[0-9a-f]{40}([0-9a-f]{24})?$/;
+
 /**
  * The code a thread's first comment was written on. GitHub's diff hunk is
  * of the commit the comment was made on and ends at `originalLine`, so the
  * range is the `original*` pair; the current `line`/`startLine` pair only
  * stands in when there is no original line. The two pairs are never mixed.
- * Null for a file comment (no hunk or no line).
+ * Null for a file comment (subject FILE, or no line). A line comment GitHub
+ * kept no hunk for gets an empty `diffHunk` with its original commit, for
+ * `fillThreadCode` to rebuild from the clone.
  */
 function threadCode(t: Json, first: Json): Thread["code"] {
+	if (t.subjectType === "FILE") return null;
 	const diffHunk = str(first.diffHunk);
 	const original = lineNumber(t.originalLine);
 	const endLine = original ?? lineNumber(t.line);
-	if (!diffHunk.trim() || endLine === null) return null;
+	const oid = str(obj(first.originalCommit).oid);
+	const commit = OID.test(oid) ? oid : "";
+	if (endLine === null || (!diffHunk.trim() && !commit)) return null;
 	const side: Side = SIDES.has(str(t.diffSide))
 		? (str(t.diffSide) as Side)
 		: "RIGHT";
@@ -133,7 +140,8 @@ function threadCode(t: Json, first: Json): Thread["code"] {
 		? (str(t.startDiffSide) as Side)
 		: side;
 	return {
-		diffHunk,
+		diffHunk: diffHunk.trim() ? diffHunk : "",
+		commit,
 		side,
 		startSide: start === null ? side : startSide,
 		startLine:
