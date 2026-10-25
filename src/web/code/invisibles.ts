@@ -137,33 +137,147 @@ const PICTOGRAPHIC = /^\p{Extended_Pictographic}$/u;
 const MODIFIER = /^\p{Emoji_Modifier}$/u;
 const MODIFIER_BASE = /^\p{Emoji_Modifier_Base}$/u;
 const REGIONAL = /^\p{Regional_Indicator}$/u;
-const IDEOGRAPHIC = /^\p{Ideographic}$/u;
 const MARK = /^\p{M}$/u;
 const LETTER = /^\p{L}$/u;
 const KEYCAP_BASE = /^[0-9#*]$/;
 const KEYCAP = String.fromCharCode(0x20e3);
 const VS15 = String.fromCharCode(0xfe0e);
 const VS16 = String.fromCharCode(0xfe0f);
-const IDEOGRAPHIC_VS = /^[\u{E0100}-\u{E01EF}]$/u;
-/** Canonical_Combining_Class=Virama (Unicode 15.1). */
-const VIRAMA =
-	/^[्্੍્୍்్್഻഼്්ฺ຺྄္်᜔᜕᜴្᩠᭄᮪᮫᯲᯳⵿꠆꠬꣄꥓꧀꫶꯭\u{10A3F}\u{11046}\u{11070}\u{1107F}\u{110B9}\u{11133}\u{11134}\u{111C0}\u{11235}\u{112EA}\u{1134D}\u{11442}\u{114C2}\u{115BF}\u{1163F}\u{116B6}\u{1172B}\u{11839}\u{1193D}\u{1193E}\u{119E0}\u{11A34}\u{11A47}\u{11A99}\u{11C3F}\u{11D44}\u{11D45}\u{11D97}\u{11F41}\u{11F42}]$/u;
-/** Scripts whose letters join, where ZWJ/ZWNJ pick a letter's form. */
-const JOINING_SCRIPTS = [
-	"Arabic",
-	"Syriac",
-	"Nko",
-	"Mongolian",
-	"Mandaic",
-	"Manichaean",
-	"Psalter_Pahlavi",
-	"Hanifi_Rohingya",
-	"Sogdian",
-	"Old_Uyghur",
-	"Chorasmian",
-	"Adlam",
-	"Phags_Pa",
-].map((script) => new RegExp(`^\\p{Script=${script}}$`, "u"));
+/**
+ * Viramas (Canonical_Combining_Class=Virama) by script: a joiner after one
+ * picks a half form or conjunct. Thai phinthu and the Tamil pulli are left
+ * out (no joiner use worth the risk); so is any script not listed.
+ */
+const VIRAMAS: [script: string, codePoints: number[]][] = [
+	["Devanagari", [0x094d]],
+	["Bengali", [0x09cd]],
+	["Gurmukhi", [0x0a4d]],
+	["Gujarati", [0x0acd]],
+	["Oriya", [0x0b4d]],
+	["Telugu", [0x0c4d]],
+	["Kannada", [0x0ccd]],
+	["Malayalam", [0x0d3b, 0x0d3c, 0x0d4d]],
+	["Sinhala", [0x0dca]],
+	["Lao", [0x0eba]],
+	["Tibetan", [0x0f84]],
+	["Myanmar", [0x1039, 0x103a]],
+	["Tagalog", [0x1714, 0x1715]],
+	["Hanunoo", [0x1734]],
+	["Khmer", [0x17d2]],
+	["Tai_Tham", [0x1a60]],
+	["Balinese", [0x1b44]],
+	["Sundanese", [0x1baa, 0x1bab]],
+	["Batak", [0x1bf2, 0x1bf3]],
+	["Syloti_Nagri", [0xa806, 0xa82c]],
+	["Saurashtra", [0xa8c4]],
+	["Rejang", [0xa953]],
+	["Javanese", [0xa9c0]],
+	["Meetei_Mayek", [0xaaf6, 0xabed]],
+	["Kharoshthi", [0x10a3f]],
+	["Brahmi", [0x11046, 0x11070, 0x1107f]],
+	["Kaithi", [0x110b9]],
+	["Chakma", [0x11133, 0x11134]],
+	["Sharada", [0x111c0]],
+	["Khojki", [0x11235]],
+	["Khudawadi", [0x112ea]],
+	["Grantha", [0x1134d]],
+	["Newa", [0x11442]],
+	["Tirhuta", [0x114c2]],
+	["Siddham", [0x115bf]],
+	["Modi", [0x1163f]],
+	["Takri", [0x116b6]],
+	["Ahom", [0x1172b]],
+	["Dogra", [0x11839]],
+	["Dives_Akuru", [0x1193d, 0x1193e]],
+	["Nandinagari", [0x119e0]],
+	["Zanabazar_Square", [0x11a34, 0x11a47]],
+	["Soyombo", [0x11a99]],
+	["Bhaiksuki", [0x11c3f]],
+	["Masaram_Gondi", [0x11d44, 0x11d45]],
+	["Gunjala_Gondi", [0x11d97]],
+	["Kawi", [0x11f41, 0x11f42]],
+];
+/** Virama code point to a test for a letter of its script. */
+const VIRAMA_SCRIPT = new Map<number, RegExp>(
+	VIRAMAS.flatMap(([script, codePoints]) => {
+		const re = new RegExp(`^\\p{Script=${script}}$`, "u");
+		return codePoints.map((cp) => [cp, re] as [number, RegExp]);
+	}),
+);
+
+/**
+ * Letters that join on both sides (Joining_Type D) or only to the letter
+ * before (R), for the scripts a ZWNJ may split: Arabic, Syriac, N'Ko,
+ * Mongolian. A letter of these scripts not in `RIGHT` or `NON_JOINING` is
+ * dual-joining. Other joining scripts aren't trusted: their ZWNJ is escaped.
+ */
+const JOINING_LETTER =
+	/^[\p{Script=Arabic}\p{Script=Syriac}\p{Script=Nko}\p{Script=Mongolian}]$/u;
+const range = (lo: number, hi: number) =>
+	Array.from({ length: hi - lo + 1 }, (_, k) => lo + k);
+/** Joining_Type R: alef, dal, thal, ra, zain, waw, teh marbuta... */
+const RIGHT = new Set<number>([
+	// Arabic.
+	...range(0x0622, 0x0625),
+	0x0627,
+	0x0629,
+	...range(0x062f, 0x0632),
+	0x0648,
+	...range(0x0671, 0x0673),
+	...range(0x0675, 0x0677),
+	...range(0x0688, 0x0699),
+	0x06c0,
+	...range(0x06c3, 0x06cb),
+	0x06cd,
+	0x06cf,
+	0x06d2,
+	0x06d3,
+	0x06d5,
+	0x06ee,
+	0x06ef,
+	...range(0x0759, 0x075b),
+	0x076b,
+	0x076c,
+	0x0771,
+	0x0773,
+	0x0774,
+	0x0778,
+	0x0779,
+	...range(0x08aa, 0x08ac),
+	0x08ae,
+	0x08b1,
+	0x08b2,
+	0x08b9,
+	// Syriac.
+	0x0710,
+	...range(0x0715, 0x0719),
+	0x071e,
+	0x0728,
+	0x072a,
+	0x072c,
+	0x072f,
+	0x074d,
+]);
+/** Letters of those scripts that don't join (Joining_Type U or C). */
+const NON_JOINING = new Set<number>([
+	0x0621,
+	0x0674,
+	0x07fa,
+	0x1807,
+	0x180a,
+	...range(0x1880, 0x1884),
+]);
+const TRANSPARENT = /^[\p{Mn}\p{Me}]$/u;
+
+/** Joining_Type of a letter: "D", "R" or undefined (doesn't join, or unknown). */
+function joiningType(ch: string | undefined): "D" | "R" | undefined {
+	if (!visible(ch) || !is(LETTER, ch) || !JOINING_LETTER.test(ch)) {
+		return undefined;
+	}
+	const cp = ch.codePointAt(0) as number;
+	if (NON_JOINING.has(cp)) return undefined;
+	return RIGHT.has(cp) ? "R" : "D";
+}
 /** The tags of the RGI subdivision flags (England, Scotland, Wales). */
 const FLAG_TAGS = ["gbeng", "gbsct", "gbwls"].map((code) =>
 	[...code]
@@ -182,12 +296,6 @@ function baseBefore(chars: string[], i: number): number {
 	while (j >= 0 && is(MARK, chars[j]) && visible(chars[j])) j--;
 	return j;
 }
-/** Index of the letter after a run of marks after `i`, or chars.length. */
-function baseAfter(chars: string[], i: number): number {
-	let j = i + 1;
-	while (j < chars.length && is(MARK, chars[j]) && visible(chars[j])) j++;
-	return j;
-}
 
 /** An emoji that shows as one: emoji presentation, or text made emoji by VS16. */
 const emojiAt = (chars: string[], j: number) => {
@@ -199,21 +307,35 @@ const emojiAt = (chars: string[], j: number) => {
 	);
 };
 
-/** A joiner (ZWJ or ZWNJ) after a virama: Indic half forms and conjuncts. */
+/**
+ * A joiner (ZWJ or ZWNJ) after a virama, on a letter of the virama's own
+ * script: Indic half forms and conjuncts.
+ */
 function afterVirama(chars: string[], i: number): boolean {
-	const prev = chars[i - 1];
-	if (!is(VIRAMA, prev)) return false;
+	const virama = chars[i - 1];
+	const script =
+		virama === undefined
+			? undefined
+			: VIRAMA_SCRIPT.get(virama.codePointAt(0) as number);
+	if (!script) return false;
 	const base = chars[baseBefore(chars, i - 1)];
-	return visible(base) && is(LETTER, base) && nonAscii(base);
+	return visible(base) && is(LETTER, base) && script.test(base);
 }
 
-/** A joiner between two letters of the same joining script (Arabic, ...). */
+/**
+ * A ZWNJ between letters that would otherwise join (IDNA CONTEXTJ): the
+ * letter before joins on its left (Joining_Type D; L is unused in these
+ * scripts), the one after on its right (R or D), transparent marks between.
+ */
 function betweenJoiningLetters(chars: string[], i: number): boolean {
-	const before = chars[baseBefore(chars, i)];
-	const after = chars[baseAfter(chars, i)];
-	if (!visible(before) || !visible(after)) return false;
-	if (!is(LETTER, before) || !is(LETTER, after)) return false;
-	return JOINING_SCRIPTS.some((re) => re.test(before) && re.test(after));
+	let before = i - 1;
+	while (before >= 0 && is(TRANSPARENT, chars[before])) before--;
+	let after = i + 1;
+	while (after < chars.length && is(TRANSPARENT, chars[after])) after++;
+	return (
+		joiningType(chars[before]) === "D" &&
+		joiningType(chars[after]) !== undefined
+	);
 }
 
 /** A ZWJ inside an emoji ZWJ sequence: emoji (skin tone, VS16) ZWJ emoji. */
@@ -237,13 +359,12 @@ function attached(chars: string[], i: number, inFlag: boolean): boolean {
 		if (visible(prev) && nonAscii(prev) && is(EMOJI, prev)) return true;
 		return is(KEYCAP_BASE, prev) && chars[i + 1] === KEYCAP;
 	}
-	if (IDEOGRAPHIC_VS.test(ch)) return visible(prev) && is(IDEOGRAPHIC, prev);
-	if (ch === ZWJ || ch === ZWNJ) {
-		return (
-			afterVirama(chars, i) ||
-			betweenJoiningLetters(chars, i) ||
-			(ch === ZWJ && inEmojiSequence(chars, i))
-		);
+	// Ideographic variation selectors are always escaped: rare in code.
+	if (ch === ZWNJ) {
+		return afterVirama(chars, i) || betweenJoiningLetters(chars, i);
+	}
+	if (ch === ZWJ) {
+		return afterVirama(chars, i) || inEmojiSequence(chars, i);
 	}
 	return inFlag && is(TAG, ch);
 }

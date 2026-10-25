@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { extname, join, relative } from "node:path";
 import { describe, expect, it } from "vitest";
 import { escapeLabel, INVISIBLE } from "./invisibles";
@@ -9,7 +9,9 @@ import { escapeLabel, INVISIBLE } from "./invisibles";
  * the code it is meant to expose: this fails on any raw one.
  */
 const ROOT = join(import.meta.dirname, "../../..");
-const DIRS = ["src", "test", "e2e", "docs"];
+const DIRS = ["src", "test", "e2e", "docs", "scripts", ".github"].filter(
+	(dir) => existsSync(join(ROOT, dir)),
+);
 const TEXT = new Set([
 	".ts",
 	".tsx",
@@ -24,6 +26,7 @@ const TEXT = new Set([
 	".yml",
 	".yaml",
 	".txt",
+	".toml",
 	"",
 ]);
 /** Whitespace a source file legitimately holds. */
@@ -33,7 +36,7 @@ const ALLOWED = new Set<string>();
 
 function* files(dir: string): Generator<string> {
 	for (const entry of readdirSync(dir, { withFileTypes: true })) {
-		if (entry.name === "node_modules" || entry.name.startsWith(".")) continue;
+		if (entry.name === "node_modules") continue;
 		const path = join(dir, entry.name);
 		if (entry.isDirectory()) yield* files(path);
 		else if (TEXT.has(extname(entry.name))) yield path;
@@ -44,21 +47,30 @@ describe("sources", () => {
 	it("hold no raw invisible, bidi, tag or variation-selector characters", () => {
 		const found: string[] = [];
 		let checked = 0;
-		for (const dir of DIRS) {
-			for (const path of files(join(ROOT, dir))) {
-				checked++;
-				const lines = readFileSync(path, "utf8").split("\n");
-				lines.forEach((line, i) => {
-					for (const ch of line) {
-						if (ORDINARY.has(ch) || !INVISIBLE.test(ch)) continue;
-						const where = `${relative(ROOT, path)}:${i + 1}`;
-						if (ALLOWED.has(where)) continue;
-						found.push(`${where} ${escapeLabel(ch.codePointAt(0) ?? 0)}`);
-					}
-				});
-			}
+		const rootFiles = readdirSync(ROOT, { withFileTypes: true })
+			.filter((e) => e.isFile() && TEXT.has(extname(e.name)))
+			.map((e) => join(ROOT, e.name));
+		const all = [
+			...rootFiles,
+			...DIRS.flatMap((dir) => [...files(join(ROOT, dir))]),
+		];
+		for (const path of all) {
+			checked++;
+			const lines = readFileSync(path, "utf8").split("\n");
+			lines.forEach((line, i) => {
+				for (const ch of line) {
+					if (ORDINARY.has(ch) || !INVISIBLE.test(ch)) continue;
+					const where = `${relative(ROOT, path)}:${i + 1}`;
+					if (ALLOWED.has(where)) continue;
+					found.push(`${where} ${escapeLabel(ch.codePointAt(0) ?? 0)}`);
+				}
+			});
 		}
 		expect(checked).toBeGreaterThan(50);
+		// The root's own files are covered (CLAUDE.md, package.json...).
+		expect(rootFiles.map((p) => relative(ROOT, p))).toEqual(
+			expect.arrayContaining(["CLAUDE.md", "package.json", "vitest.config.ts"]),
+		);
 		expect(found).toEqual([]);
 	});
 

@@ -206,8 +206,10 @@ describe("renderInvisibles", () => {
 			"क\u094D\u200Cष",
 			// Persian: the ZWNJ in "mi-khaham".
 			"می\u200Cخواهم",
-			// Arabic letters around a ZWJ, with a vowel mark between.
-			"ب\u064E\u200Dت",
+			// Arabic ZWNJ after a dual-joining letter, a vowel mark between.
+			"ب\u064E\u200Cت",
+			// ...before a right-joining one (beh, ZWNJ, alef).
+			"ب\u200Cا",
 			"👨\u200D👩\u200D👧",
 			"❤\uFE0F\u200D🔥",
 		]) {
@@ -230,12 +232,24 @@ describe("renderInvisibles", () => {
 			// Escaped neighbours never count.
 			["x\u034F\u200D\u034Fy", `x\\u034F${zwj}\\u034Fy`],
 			["a\uFE0F\u200D\uFE0Fb", `a\\uFE0F${zwj}\\uFE0Fb`],
-			["ب\u200B\u200Dت", `ب\\u200B${zwj}ت`],
+			["ب\u200B\u200Cت", "ب\\u200B\\u200Cت"],
 			// Text-style symbols aren't an emoji sequence.
 			["©\u200D®", `©${zwj}®`],
 			["ab\u200Dcd", `ab${zwj}cd`],
-			// Arabic next to Syriac: two scripts.
-			["ب\u200Dܒ", `ب${zwj}ܒ`],
+			// Never a ZWJ between letters, even in a joining script.
+			["ب\u200Dب", `ب${zwj}ب`],
+			["ب\u064E\u200D\u064Eب", `ب\u064E${zwj}\u064Eب`],
+			["ᠠ\u200Dᠠ", `ᠠ${zwj}ᠠ`],
+			// ZWNJ after a right-joining letter (alef) or before a non-letter.
+			["ا\u200Cب", "ا\\u200Cب"],
+			["ب\u200C1", "ب\\u200C1"],
+			["ء\u200Cب", "ء\\u200Cب"],
+			// A virama of another script, or one not trusted.
+			["e\u0301\u094D\u200D", `e\u0301\u094D${zwj}`],
+			["ب\u094D\u200Dب", `ب\u094D${zwj}ب`],
+			["\u00E9\u094D\u200D", `\u00E9\u094D${zwj}`],
+			["ก\u0E3A\u200D", `ก\u0E3A${zwj}`],
+			["க\u0BCD\u200D", `க\u0BCD${zwj}`],
 		];
 		for (const [text, look] of cases) {
 			expect(shown(text, 4, false), text).toBe(look);
@@ -248,7 +262,6 @@ describe("renderInvisibles", () => {
 			"☺\uFE0E",
 			"1\uFE0F\u20E3",
 			"#\uFE0F\u20E3",
-			"葛\u{E0100}",
 		]) {
 			expect(shown(text, 4, false)).toBe(text);
 		}
@@ -259,7 +272,8 @@ describe("renderInvisibles", () => {
 			["*\uFE0F*", "*\\uFE0F*"],
 			// Other standardized selectors aren't worth the risk.
 			["≩\uFE00", "≩\\uFE00"],
-			// An ideographic selector off an ideograph.
+			// Ideographic selectors, even on an ideograph.
+			["葛\u{E0100}", "葛\\u{E0100}"],
 			["a\u{E0100}", "a\\u{E0100}"],
 			["❤\u{E0100}", "❤\\u{E0100}"],
 		] as const) {

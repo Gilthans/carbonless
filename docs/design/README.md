@@ -50,7 +50,8 @@ box marking them.
 
 Code shows what it is made of, Notepad++ style (`src/web/code/`): spaces
 as `·`, tabs as `\t` padded to the next tab stop (the head's
-`.editorconfig` `tab_width`, else a numeric `indent_size`, else 4; wide
+`.editorconfig` `tab_width`, else a numeric `indent_size`, else 4; a
+config over 64 KB is ignored; wide
 characters and emoji count two columns), line endings as `\n` / `\r\n`,
 all in `faint`. Characters that would print as nothing or as a lookalike
 blank (controls, zero widths, BOM, soft hyphen, tags, unusual spaces,
@@ -58,11 +59,11 @@ separators, stray variation selectors) show as `\uXXXX`, named in a
 tooltip (hover or tap); bidi controls also get a `warn` tint. The ¶ toggle
 in the Files bar hides only spaces, tabs and line endings: escapes always
 show (principle 2). Only a short list of invisibles doing their job stays
-unescaped, and anything unsure is escaped: ZWJ/ZWNJ after a virama or
-between letters of a joining script (Arabic, Syriac, ...), ZWJ inside an
-emoji sequence, VS15/VS16 after an emoji or in a keycap, an ideographic
-variation selector after an ideograph, and the tags of the three RGI
-subdivision flags. Markers are generated content, so a copy gives the
+unescaped, and anything unsure is escaped: ZWJ/ZWNJ after a virama on a
+letter of its own script, ZWNJ between letters that would join (IDNA
+CONTEXTJ: Arabic, Syriac, N'Ko, Mongolian), ZWJ inside an emoji sequence,
+VS15/VS16 after an emoji or in a keycap, and the tags of the three RGI
+subdivision flags. Ideographic variation selectors are always escaped. Markers are generated content, so a copy gives the
 original text. Sources spell such characters as `\u` escapes; a test fails
 on any raw one.
 
