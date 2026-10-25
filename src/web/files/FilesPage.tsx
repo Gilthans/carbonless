@@ -134,6 +134,9 @@ export function useCurrentFile(
 const headerOf = (index: number) =>
 	document.querySelector<HTMLElement>(`#file-${index} > header`);
 
+/** How long "<path> isn't in this diff" stays. */
+export const MISSING_HINT_MS = 8000;
+
 export function FilesPage() {
 	const review = useQuery(reviewQuery);
 	// False while another page shows (kept mounted, hidden): measuring and
@@ -294,6 +297,18 @@ export function FilesPage() {
 		anchor.current = null;
 		setOpen(keyOf(file.index));
 	}, [active, data, search.path, search.line, search.side, search.moved]);
+
+	// "Not in this diff" is about the link just followed: it goes after a
+	// while, or when the page is left.
+	useEffect(() => {
+		if (landing?.index !== null || landing === null) return;
+		if (!active) {
+			setLanding(null);
+			return;
+		}
+		const timer = window.setTimeout(() => setLanding(null), MISSING_HINT_MS);
+		return () => window.clearTimeout(timer);
+	}, [landing, active]);
 
 	const tree = data && (
 		<FileTree

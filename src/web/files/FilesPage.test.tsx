@@ -8,12 +8,13 @@ import {
 	Outlet,
 	RouterProvider,
 } from "@tanstack/react-router";
-import { cleanup, render, screen, within } from "@testing-library/react";
+import { act, cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { FileView, ReviewView } from "../../shared/types";
 import { AppHeaderHeight } from "../sticky";
-import { FilesPage } from "./FilesPage";
+import { LANDED_MS } from "./DiffBody";
+import { FilesPage, MISSING_HINT_MS } from "./FilesPage";
 import { parseFilesSearch } from "./landing";
 
 vi.mock("./highlight", () => ({
@@ -382,6 +383,22 @@ describe("FilesPage", () => {
 			expect(screen.queryByTestId("landing-hint")).toBeNull();
 		});
 
+		it("fades the highlight out after a moment (React renders it, no DOM edits)", async () => {
+			vi.useFakeTimers({ shouldAdvanceTime: true });
+			try {
+				land("path=b.txt&line=2&side=RIGHT");
+				const landed = await row("b.txt", "data-landed");
+				act(() => vi.advanceTimersByTime(LANDED_MS));
+				expect(landed).not.toHaveAttribute("data-landed");
+				expect(landed).not.toHaveClass("mark-tint");
+				expect(landed.className).toMatch(/transition-shadow/);
+				act(() => vi.advanceTimersByTime(1000));
+				expect(landed.className).not.toMatch(/transition-shadow/);
+			} finally {
+				vi.useRealTimers();
+			}
+		});
+
 		it("takes an old line number on the left side", async () => {
 			land("path=a.txt&line=2&side=LEFT");
 			const landed = await row("a.txt", "data-landed");
@@ -403,11 +420,18 @@ describe("FilesPage", () => {
 			expect(document.querySelector("tr[data-landed]")).toBeNull();
 		});
 
-		it("says when the file isn't in the diff", async () => {
-			land("path=gone.txt&line=2");
-			expect(await screen.findByTestId("landing-hint")).toHaveTextContent(
-				"gone.txt isn't in this diff",
-			);
+		it("says when the file isn't in the diff, for a while", async () => {
+			vi.useFakeTimers({ shouldAdvanceTime: true });
+			try {
+				land("path=gone.txt&line=2");
+				expect(await screen.findByTestId("landing-hint")).toHaveTextContent(
+					"gone.txt isn't in this diff",
+				);
+				act(() => vi.advanceTimersByTime(MISSING_HINT_MS));
+				expect(screen.queryByTestId("landing-hint")).toBeNull();
+			} finally {
+				vi.useRealTimers();
+			}
 		});
 	});
 });

@@ -821,11 +821,11 @@ test("a thread's file:line opens Files changed at that line, highlighted; a move
 		section.getByRole("button", { name: "Collapse file" }),
 	).toBeVisible();
 	const row = section.locator('tr[data-new-no="60"]');
-	await expect(row).toHaveAttribute("data-landed", "");
+	await expect(row).toHaveAttribute("data-landed");
 	await expect(row).toBeInViewport();
 	await expect(section.getByTestId("landing-hint")).toHaveCount(0);
 	// The highlight fades after a moment.
-	await expect(row).not.toHaveAttribute("data-landed", "", { timeout: 5000 });
+	await expect(row).not.toHaveAttribute("data-landed", { timeout: 5000 });
 
 	await page.getByRole("link", { name: "Overview" }).click();
 	await threads.nth(1).getByRole("link", { name: "b.txt:10" }).click();

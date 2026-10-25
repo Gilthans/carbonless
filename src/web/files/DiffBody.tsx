@@ -82,6 +82,8 @@ function LineRow(props: {
 	tabWidth?: number;
 	state?: ClusterView["state"];
 	checkbox?: ReactNode;
+	/** Landed on from a thread link (useLanding). */
+	landed?: Landed["phase"];
 }) {
 	const { line, state } = props;
 	const reviewed = state === "reviewed";
@@ -94,7 +96,8 @@ function LineRow(props: {
 				data-reviewed={reviewed || undefined}
 				data-old-no={line.oldNo}
 				data-new-no={line.newNo}
-				className={rowBg}
+				data-landed={props.landed === "on" || undefined}
+				className={`${rowBg} ${props.landed ? LANDED_CLASS[props.landed] : ""}`}
 			>
 				<Rail state={state} />
 				<td className="w-11 px-1 align-top whitespace-nowrap pointer-coarse:w-20">
@@ -309,7 +312,7 @@ export function DiffBody(props: {
 	const root = useRef<HTMLDivElement>(null);
 	const scroller = useRef<HTMLDivElement>(null);
 	useStickyControls(root, scroller);
-	const hint = useLanding(root, props.landing, hunks.isSuccess);
+	const { hint, landed } = useLanding(root, props.landing, hunks.isSuccess);
 
 	const loaded = new Map<number, DiffLine>();
 	for (const result of contexts) {
@@ -359,6 +362,7 @@ export function DiffBody(props: {
 						line={line}
 						lang={lang}
 						tabWidth={file.tabWidth}
+						landed={landedPhase(landed, line)}
 					/>,
 				);
 			}
@@ -463,6 +467,7 @@ export function DiffBody(props: {
 								tabWidth={file.tabWidth}
 								checkbox={checkbox}
 								noteId={noteId}
+								landed={landed}
 							/>
 						</Fragment>
 					))}
@@ -487,11 +492,30 @@ export function DiffBody(props: {
 
 /** How long a landed-on line stays highlighted before it fades. */
 export const LANDED_MS = 2500;
-// The tint, and the accent rail over the cluster's own while it lasts.
-const LANDED = "mark-tint";
-const LANDED_RAIL = "[&>td:first-child]:bg-accent!";
-const LANDED_ROW =
-	"[&>td]:transition-shadow [&>td]:duration-1000 motion-reduce:[&>td]:transition-none";
+/** How long its fade takes (the row's transition, below). */
+const FADE_MS = 1000;
+/**
+ * A landed row: the tint and the accent rail over the cluster's own while
+ * it lasts; while fading, only the transition, so the tint fades out (and
+ * never in: it shows at once).
+ */
+const LANDED_CLASS = {
+	on: "mark-tint [&>td:first-child]:bg-accent!",
+	fading:
+		"[&>td]:transition-shadow [&>td]:duration-1000 motion-reduce:[&>td]:transition-none",
+} as const;
+
+/** The landed-on line, by its number on one side, and how far along it is. */
+export interface Landed {
+	old: boolean;
+	line: number;
+	phase: keyof typeof LANDED_CLASS;
+}
+
+const landedPhase = (landed: Landed | null, line: DiffLine) =>
+	landed && (landed.old ? line.oldNo : line.newNo) === landed.line
+		? landed.phase
+		: undefined;
 
 /** Why a landing found no line: the text and its tooltip. */
 interface Hint {
@@ -509,8 +533,9 @@ function useLanding(
 	root: RefObject<HTMLDivElement | null>,
 	landing: Landing | undefined,
 	ready: boolean,
-): Hint | null {
+): { hint: Hint | null; landed: Landed | null } {
 	const [hint, setHint] = useState<Hint | null>(null);
+	const [landed, setLanded] = useState<Landed | null>(null);
 	const done = useRef(0);
 	useEffect(() => {
 		const el = root.current;
@@ -556,21 +581,20 @@ function useLanding(
 		setHint(null);
 		// A few lines of context above it stay in view.
 		scrollTo(row, 60);
-		// On at once; the fade (LANDED_ROW's transition) only on the way out.
-		row.classList.add(LANDED, LANDED_RAIL);
-		row.setAttribute("data-landed", "");
-		const timer = window.setTimeout(() => {
-			row.classList.add(...LANDED_ROW.split(" "));
-			row.classList.remove(LANDED, LANDED_RAIL);
-			row.removeAttribute("data-landed");
-		}, LANDED_MS);
+		const line = landing.line as number;
+		setLanded({ old, line, phase: "on" });
+		const fade = window.setTimeout(
+			() => setLanded({ old, line, phase: "fading" }),
+			LANDED_MS,
+		);
+		const end = window.setTimeout(() => setLanded(null), LANDED_MS + FADE_MS);
 		return () => {
-			window.clearTimeout(timer);
-			row.classList.remove(LANDED, LANDED_RAIL);
-			row.removeAttribute("data-landed");
+			window.clearTimeout(fade);
+			window.clearTimeout(end);
+			setLanded(null);
 		};
 	}, [root, landing, ready]);
-	return hint;
+	return { hint, landed };
 }
 
 function LandingHint({ hint }: { hint: Hint }) {
@@ -601,6 +625,7 @@ function HunkRows(props: {
 	tabWidth?: number;
 	checkbox: (cluster: ClusterView) => ReactNode;
 	noteId: (cluster: ClusterView) => string | undefined;
+	landed: Landed | null;
 }) {
 	return (
 		<>
@@ -628,6 +653,7 @@ function HunkRows(props: {
 								lang={props.lang}
 								tabWidth={props.tabWidth}
 								state={state}
+								landed={landedPhase(props.landed, line)}
 								checkbox={
 									i === 0 && cluster ? props.checkbox(cluster) : undefined
 								}
