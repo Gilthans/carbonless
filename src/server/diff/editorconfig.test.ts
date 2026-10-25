@@ -4,15 +4,15 @@ import {
 	type GitFixture,
 } from "../../../test/git-fixture.js";
 import {
-	globToRegExp,
+	compileGlob,
 	parseEditorConfig,
 	readTabWidths,
 	tabWidthFor,
 } from "./editorconfig.js";
 import { buildSnapshot } from "./snapshot.js";
 
-describe("globToRegExp", () => {
-	const matches = (glob: string, path: string) => globToRegExp(glob).test(path);
+describe("compileGlob", () => {
+	const matches = (glob: string, path: string) => compileGlob(glob).test(path);
 
 	it("matches a name without a slash in any directory", () => {
 		expect(matches("*", "a.go")).toBe(true);
@@ -39,6 +39,43 @@ describe("globToRegExp", () => {
 		expect(matches("file{1..3}.txt", "file2.txt")).toBe(true);
 		expect(matches("file{1..3}.txt", "file4.txt")).toBe(false);
 		expect(matches("a.{x}", "a.{x}")).toBe(true);
+		expect(matches("f{-3..3}.txt", "f-2.txt")).toBe(true);
+		expect(matches("f{-3..3}.txt", "f4.txt")).toBe(false);
+		expect(matches("{a,{b,c}d}.go", "cd.go")).toBe(true);
+		expect(matches("{a,{b,c}d}.go", "c.go")).toBe(false);
+	});
+
+	it("collapses runs of stars", () => {
+		expect(matches("***.js", "a/b/c.js")).toBe(true);
+		expect(matches("lib/***/x", "lib/x")).toBe(true);
+		expect(matches("lib/*/x", "lib/x")).toBe(false);
+	});
+
+	it("matches pathological headers in linear time", () => {
+		const path = `${"a/".repeat(100)}${"a".repeat(500)}${"1".repeat(400)}`;
+		for (const glob of [
+			"*".repeat(30),
+			`${"*".repeat(30)}x`,
+			`${"*a".repeat(60)}x`,
+			`${"**a".repeat(40)}x`,
+			`*{1..9999}*{1..9999}*{1..9999}*{1..9999}x`,
+			`${"{a,*}".repeat(30)}x`,
+		]) {
+			const glob_ = compileGlob(glob);
+			const start = performance.now();
+			glob_.test(path);
+			expect(performance.now() - start, glob).toBeLessThan(50);
+		}
+	});
+
+	it("refuses headers too large to match safely", () => {
+		expect(() => compileGlob("{1..2}".repeat(17))).toThrow();
+		expect(() => compileGlob("{a,b}".repeat(5000))).toThrow();
+		// The section is ignored: the default width stays.
+		const config = parseEditorConfig(
+			`[*]\ntab_width = 2\n[${"{1..2}".repeat(17)}]\ntab_width = 8\n`,
+		);
+		expect(config.sections).toHaveLength(1);
 	});
 });
 
