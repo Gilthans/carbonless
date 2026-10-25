@@ -25,7 +25,8 @@
  * and borders. Its alert and syntax colors stay GitHub's.
  */
 .markdown-body.markdown-body {
-	font-size: 14px;
+	font-size: 15px;
+	line-height: 1.6;
 	background-color: transparent;
 	color: var(--color-ink);
 	font-family: var(--font-sans);

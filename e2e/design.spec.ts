@@ -186,7 +186,11 @@ test("design screenshots", async ({ page, pr, startCrb, isMobile }) => {
 	await shot(page, "overview", isMobile, true);
 	// The checks list open, and the long thread expanded.
 	await page.getByRole("button", { name: /failing/ }).click();
-	await page.getByRole("button", { name: "Show more" }).click();
+	await page
+		.getByTestId("thread")
+		.filter({ hasText: "Point 1:" })
+		.getByRole("button", { name: "Show more" })
+		.click();
 	await page.evaluate(() => window.scrollTo(0, 0));
 	await shot(page, "overview-open", isMobile, true);
 

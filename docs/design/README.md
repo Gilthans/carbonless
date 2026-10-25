@@ -62,8 +62,12 @@ original text.
 
 ## Typography
 
-- Outfit (variable, bundled via `@fontsource-variable/outfit`, no CDN) for UI
-  text and headings; `font-display` for titles and the wordmark (ExtraBold).
+- Atkinson Hyperlegible Next (variable, bundled via
+  `@fontsource-variable/atkinson-hyperlegible-next`, no CDN) for all UI text,
+  headings (`font-display`) and comment and description bodies. Body text is
+  15px with a 1.6 line height, GitHub-rendered Markdown included.
+- Outfit (`@fontsource-variable/outfit`, `font-brand`) only for the
+  wordmark (ExtraBold).
 - Code, file names, paths and SHAs stay in the system monospace stack
   (`font-mono`, `<code>`), in tooltips too (`TooltipPath`).
 

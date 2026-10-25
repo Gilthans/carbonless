@@ -41,7 +41,7 @@ function StarO() {
 export function Wordmark({ className = "" }: { className?: string }) {
 	return (
 		<span
-			className={`inline-block whitespace-nowrap font-display leading-none font-extrabold tracking-[-0.01em] text-ink ${className}`}
+			className={`inline-block whitespace-nowrap font-brand leading-none font-extrabold tracking-[-0.01em] text-ink ${className}`}
 		>
 			<span className="sr-only">carbonless</span>
 			<span aria-hidden>carb</span>
