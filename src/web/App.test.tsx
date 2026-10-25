@@ -768,6 +768,32 @@ describe("OverviewPage", () => {
 		).toBeVisible();
 	});
 
+	it("numbers a fallen-back header on the comment's own side", async () => {
+		renderApp({
+			"/api/overview": ok({
+				...overview,
+				threads: [
+					humanThread("src/side.ts", {
+						line: 9,
+						currentLine: null,
+						code: {
+							// The range (9) isn't in the hunk, whose last line is a deletion.
+							diffHunk: "@@ -1,2 +1,2 @@\n+a\n b\n-c",
+							side: "RIGHT",
+							startSide: "RIGHT",
+							startLine: 9,
+							endLine: 9,
+						},
+					}),
+				],
+			}),
+		});
+		const humans = await screen.findByRole("region", { name: "Human reviews" });
+		expect(
+			within(humans).getByTestId("thread").querySelector("code"),
+		).toHaveTextContent("src/side.ts:2");
+	});
+
 	it("lays out tabs in a code pane at the file's .editorconfig width", async () => {
 		const tabbed = (path: string) =>
 			humanThread(path, {

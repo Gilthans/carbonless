@@ -1060,11 +1060,17 @@ function headerLine(
 	thread: Thread,
 	clipped: (HunkLine & { marked: boolean })[],
 ): number | null {
-	const end = clipped.at(-1);
-	if (!end || !thread.code) return thread.line;
-	return thread.code.side === "LEFT"
-		? (end.oldNo ?? end.newNo)
-		: (end.newNo ?? end.oldNo);
+	const { code } = thread;
+	if (!code) return thread.line;
+	// The comment's own side: the last shown line numbered on it (the marked
+	// end, unless the range fell back to a line of the other side).
+	const own = (l: HunkLine) => (code.side === "LEFT" ? l.oldNo : l.newNo);
+	for (let i = clipped.length - 1; i >= 0; i--) {
+		const l = clipped[i];
+		const n = l ? own(l) : null;
+		if (n !== null) return n;
+	}
+	return thread.line;
 }
 
 /** path:line; where the line is now, when it moved, in a tooltip. */

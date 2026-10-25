@@ -497,6 +497,20 @@ describe("mapOverview as of a cutoff", () => {
 		expect(mapOverview(view(), g, VIEWER, CUTOFF).threads).toHaveLength(4);
 	});
 
+	it("never shows today's line as of a cutoff: where it was written, and no current line", () => {
+		const g = { ...graph(), checks };
+		// Carried forward since, no code pane.
+		Object.assign(g.reviewThreads[3] as object, { line: 17, originalLine: 3 });
+		const t = mapOverview(view(), g, VIEWER, CUTOFF).threads.find(
+			(x) => x.path === "src/self.ts",
+		);
+		expect(t).toMatchObject({ line: 3, currentLine: null, code: null });
+		const now = mapOverview(view(), graph(), VIEWER).threads.find(
+			(x) => x.path === "src/self.ts",
+		);
+		expect(now?.currentLine).toBe(3);
+	});
+
 	it("shows the PR open, mergeability unknown, and updated at its last activity by then", () => {
 		expect(o.state).toBe("OPEN");
 		expect(o.mergeable).toBe("UNKNOWN");

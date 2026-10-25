@@ -189,9 +189,14 @@ function mapThreads(nodes: unknown[], asOf: string | undefined): Thread[] {
 		threads.push({
 			path: str(t.path),
 			// The marked line when the code is shown (a carried-forward
-			// comment's current line may differ), else where it is now or was.
-			line: code?.endLine ?? lineNumber(t.line) ?? lineNumber(t.originalLine),
-			currentLine: lineNumber(t.line),
+			// comment's current line may differ), else where it is now or was;
+			// as of a cutoff, where it was (today's line is past the cutoff).
+			line:
+				code?.endLine ??
+				(asOf
+					? (lineNumber(t.originalLine) ?? lineNumber(t.line))
+					: (lineNumber(t.line) ?? lineNumber(t.originalLine))),
+			currentLine: asOf ? null : lineNumber(t.line),
 			excerpt: text.replace(/\s+/g, " ").trim().slice(0, 200),
 			html: str(first.bodyHTML),
 			createdAt,
