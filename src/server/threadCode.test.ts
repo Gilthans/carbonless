@@ -11,7 +11,7 @@ vi.mock("./git.js", async (importOriginal) => {
 	return { ...git, runGit: vi.fn(git.runGit) };
 });
 
-import { type DiffBase, ThreadCodeSource } from "./threadCode";
+import { type DiffBase, Memo, ThreadCodeSource } from "./threadCode";
 
 const numbered = (n: number, tag = "") =>
 	`${Array.from({ length: n }, (_, i) => `line ${i + 1}${tag}`).join("\n")}\n`;
@@ -27,13 +27,15 @@ const fx = createGitFixture([
 			"a.txt": numbered(20),
 			"keep.txt": numbered(5),
 			"old-name.txt": numbered(12, " moved"),
+			"as-is.txt": numbered(6, " as is"),
 			"i.tsx": numbered(3, " plain i"),
 			"ab.ts": numbered(3, " plain ab"),
 		},
 	},
 	{
 		message: "pr",
-		rename: { "old-name.txt": "new-name.txt" },
+		// One rename with an edit, one with none.
+		rename: { "old-name.txt": "new-name.txt", "as-is.txt": "moved-as-is.txt" },
 		files: {
 			"a.txt": numbered(20)
 				.replace("line 10\n", "line 10 changed\n")
@@ -262,11 +264,56 @@ describe("ThreadCodeSource.window", () => {
 		}
 	});
 
-	it("gives up on a renamed file rather than show it all added", async () => {
+	it("diffs a renamed file against its old path, as the whole diff pairs them", async () => {
 		const s = source();
+		const edited = [
+			" 1/1 line 1 moved",
+			" 2/2 line 2 moved",
+			" 3/. line 3 moved",
+			">./3 line 3 moved, edited",
+			" 4/4 line 4 moved",
+			" 5/5 line 5 moved",
+			" 6/6 line 6 moved",
+		];
 		expect(
-			await s.window(at({ path: "new-name.txt", line: 3, startLine: 3 }), BASE),
-		).toBeNull();
+			shown(
+				await s.window(
+					at({ path: "new-name.txt", line: 3, startLine: 3 }),
+					BASE,
+				),
+			),
+		).toEqual(edited);
+		// The old side of the renamed file, by the new path (as GitHub names it).
+		expect(
+			shown(
+				await s.window(
+					at({
+						path: "new-name.txt",
+						side: "LEFT",
+						startSide: "LEFT",
+						line: 3,
+						startLine: 3,
+					}),
+					BASE,
+				),
+			)?.find((r) => r.startsWith(">")),
+		).toBe(">3/. line 3 moved");
+		// Renamed with no change: the file as context.
+		expect(
+			shown(
+				await s.window(
+					at({ path: "moved-as-is.txt", line: 2, startLine: 2 }),
+					BASE,
+				),
+			),
+		).toEqual([
+			" 1/1 line 1 as is",
+			">2/2 line 2 as is",
+			" 3/3 line 3 as is",
+			" 4/4 line 4 as is",
+			" 5/5 line 5 as is",
+		]);
+		// The old path alone isn't in the PR's new side: no code.
 		expect(
 			await s.window(
 				at({
@@ -355,22 +402,23 @@ describe("ThreadCodeSource.fill", () => {
 	});
 
 	it("keeps GitHub's hunk, marked as GitHub's, when the clone can't give the code", async () => {
-		const renamed = hosted(
-			at({ path: "new-name.txt", line: 3, startLine: 3 }),
-			"@@ -0,0 +1,3 @@\n+line 1 moved\n+line 2 moved\n+line 3 moved, edited",
+		// A path that isn't at the comment's commit (GitHub names today's).
+		const elsewhere = hosted(
+			at({ path: "elsewhere.txt", line: 3, startLine: 3 }),
+			"@@ -0,0 +1,3 @@\n+line 1\n+line 2\n+line 3",
 		);
 		const filled = await source().fill(
 			overview([
-				thread("new-name.txt", renamed),
-				// Neither: no hunk, and the clone can't (a rename).
+				thread("elsewhere.txt", elsewhere),
+				// Neither: no hunk, and the clone can't.
 				thread(
-					"new-name.txt",
-					hosted(at({ path: "new-name.txt", line: 3, startLine: 3 })),
+					"elsewhere.txt",
+					hosted(at({ path: "elsewhere.txt", line: 3, startLine: 3 })),
 				),
 			]),
 			BASE,
 		);
-		expect(filled.threads[0]?.code).toBe(renamed);
+		expect(filled.threads[0]?.code).toBe(elsewhere);
 		expect(filled.threads[0]?.code?.source).toBe("github");
 		expect(filled.threads[1]?.code).toBeNull();
 	});
@@ -442,5 +490,35 @@ describe("ThreadCodeSource.fill", () => {
 		s.forgetFailures();
 		await s.fill(ov, BASE);
 		expect(fetchCommit).toHaveBeenCalledTimes(1);
+	});
+});
+
+describe("Memo", () => {
+	it("makes each answer once, and keeps at most max, dropping the least recently used", async () => {
+		const memo = new Memo<string>(() => false, 2);
+		const make = vi.fn(async () => "x");
+		await memo.get("a", make);
+		await memo.get("b", make);
+		// a is now the most recent.
+		await memo.get("a", make);
+		expect(make).toHaveBeenCalledTimes(2);
+		// Drops b.
+		await memo.get("c", make);
+		expect(memo.size).toBe(2);
+		await memo.get("a", make);
+		expect(make).toHaveBeenCalledTimes(3);
+		await memo.get("b", make);
+		expect(make).toHaveBeenCalledTimes(4);
+	});
+
+	it("keeps a failure until its failures are forgotten", async () => {
+		const memo = new Memo<string | null>((v) => v === null, 10);
+		const make = vi.fn(async () => null);
+		await memo.get("a", make);
+		await memo.get("a", make);
+		expect(make).toHaveBeenCalledTimes(1);
+		memo.forgetFailures();
+		await memo.get("a", make);
+		expect(make).toHaveBeenCalledTimes(2);
 	});
 });

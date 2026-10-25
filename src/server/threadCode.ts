@@ -18,26 +18,44 @@ export interface DiffBase {
 /**
  * Promises by key, each made once. A failed answer (`failed`) stays until
  * `forgetFailures`, so what can't be had is asked for once per Refresh.
+ * Holds at most `max` keys, dropping the least recently used: a long
+ * session with many Refreshes doesn't grow without bound (a dropped answer
+ * is just asked for again).
  */
-class Memo<T> {
+export class Memo<T> {
 	readonly #map = new Map<string, Promise<T>>();
 	readonly #failed = new Set<string>();
 
-	constructor(private readonly failed: (value: T) => boolean) {}
+	constructor(
+		private readonly failed: (value: T) => boolean,
+		private readonly max: number,
+	) {}
+
+	get size(): number {
+		return this.#map.size;
+	}
 
 	get(key: string, make: () => Promise<T>): Promise<T> {
-		let known = this.#map.get(key);
-		if (!known) {
-			const made: Promise<T> = make().then((value) => {
-				if (this.failed(value) && this.#map.get(key) === made) {
-					this.#failed.add(key);
-				}
-				return value;
-			});
-			known = made;
-			this.#map.set(key, made);
+		const known = this.#map.get(key);
+		if (known) {
+			// Most recently used last.
+			this.#map.delete(key);
+			this.#map.set(key, known);
+			return known;
 		}
-		return known;
+		const made: Promise<T> = make().then((value) => {
+			if (this.failed(value) && this.#map.get(key) === made) {
+				this.#failed.add(key);
+			}
+			return value;
+		});
+		this.#map.set(key, made);
+		for (const oldest of this.#map.keys()) {
+			if (this.#map.size <= this.max) break;
+			this.#map.delete(oldest);
+			this.#failed.delete(oldest);
+		}
+		return made;
 	}
 
 	forgetFailures(): void {
@@ -76,15 +94,21 @@ const LITERAL = "--literal-pathspecs";
 
 const OID = /^[0-9a-f]{40}([0-9a-f]{24})?$/;
 
+/** The renames between two commits: new path → old path, and the old paths. */
+interface Renames {
+	from: Map<string, string>;
+	old: Set<string>;
+}
+
 /**
- * Paths a rename touched between two commits (either end), from
- * `git diff -M --name-status -z`. Null when git fails.
+ * The renames between two commits, from `git diff -M --name-status -z`
+ * (as the Files page pairs them). Null when git fails.
  */
 async function renamedPaths(
 	repo: string,
 	left: string,
 	right: string,
-): Promise<Set<string> | null> {
+): Promise<Renames | null> {
 	const out = await tryGit(repo, [
 		LITERAL,
 		"diff",
@@ -98,19 +122,20 @@ async function renamedPaths(
 	]);
 	if (out === null) return null;
 	const fields = out.split("\0");
-	const paths = new Set<string>();
+	const renames: Renames = { from: new Map(), old: new Set() };
 	for (let i = 0; i < fields.length; ) {
 		const status = fields[i] ?? "";
 		if (!status) break;
 		if (status.startsWith("R")) {
-			paths.add(fields[i + 1] ?? "");
-			paths.add(fields[i + 2] ?? "");
+			const [from = "", to = ""] = [fields[i + 1], fields[i + 2]];
+			renames.from.set(to, from);
+			renames.old.add(from);
 			i += 3;
 		} else {
 			i += 2;
 		}
 	}
-	return paths;
+	return renames;
 }
 
 /**
@@ -122,12 +147,13 @@ async function renamedPaths(
  * Refresh). `fetchCommit` is the clone's (tests swap it).
  */
 export class ThreadCodeSource {
-	readonly #commits = new Memo<boolean>((ok) => !ok);
-	readonly #bases = new Memo<string | null>((oid) => oid === null);
+	// Bounded: a whole file's diff each in #files; the rest are small.
+	readonly #commits = new Memo<boolean>((ok) => !ok, 1024);
+	readonly #bases = new Memo<string | null>((oid) => oid === null, 2048);
 	/** The base branch's tip at a time: moves when a Refresh fetches it. */
-	readonly #tips = new Memo<string | null>(() => false);
-	readonly #renames = new Memo<Set<string> | null>((set) => set === null);
-	readonly #files = new Memo<HunkLine[] | null>((lines) => lines === null);
+	readonly #tips = new Memo<string | null>(() => false, 1024);
+	readonly #renames = new Memo<Renames | null>((r) => r === null, 64);
+	readonly #files = new Memo<HunkLine[] | null>((lines) => lines === null, 256);
 
 	constructor(
 		private readonly repo: string,
@@ -198,9 +224,10 @@ export class ThreadCodeSource {
 
 	/**
 	 * Every line of `path`'s diff between `left` and `commit` (the whole
-	 * file as context when it's unchanged). Null, never a guess, when any
-	 * git step fails, the file is missing, it was renamed (its old side is
-	 * another path), or the diff isn't exactly one file.
+	 * file as context when it's unchanged). A file renamed to `path` is
+	 * diffed against its old path, paired as the whole diff pairs it. Null,
+	 * never a guess, when any git step fails, the file is missing, `path` is
+	 * only a rename's old path, or the diff isn't exactly that one file.
 	 */
 	#fileLines(
 		left: string,
@@ -209,10 +236,14 @@ export class ThreadCodeSource {
 	): Promise<HunkLine[] | null> {
 		const { repo } = this;
 		return this.#files.get(JSON.stringify([left, commit, path]), async () => {
-			const renamed = await this.#renames.get(`${left} ${commit}`, () =>
+			const renames = await this.#renames.get(`${left} ${commit}`, () =>
 				renamedPaths(repo, left, commit),
 			);
-			if (!renamed || renamed.has(path)) return null;
+			if (!renames) return null;
+			const from = renames.from.get(path);
+			if (from !== undefined)
+				return this.#renamedLines(left, commit, from, path);
+			if (renames.old.has(path)) return null;
 			const diff = await tryGit(repo, [
 				LITERAL,
 				"diff",
@@ -239,6 +270,46 @@ export class ThreadCodeSource {
 			const content = await tryGit(repo, ["cat-file", "blob", blob]);
 			return content === null ? null : contextLines(content);
 		});
+	}
+
+	/**
+	 * A renamed file's diff: `from` at `left` against `to` at `commit`, the
+	 * pathspec limited to the pair, so the one rename found is theirs. A
+	 * rename with no change is the whole file as context.
+	 */
+	async #renamedLines(
+		left: string,
+		commit: string,
+		from: string,
+		to: string,
+	): Promise<HunkLine[] | null> {
+		const { repo } = this;
+		const diff = await tryGit(repo, [
+			LITERAL,
+			"diff",
+			"--no-color",
+			"--no-ext-diff",
+			"-M",
+			"--unified=100000000",
+			left,
+			commit,
+			"--",
+			from,
+			to,
+		]);
+		if (diff === null) return null;
+		const files = diff.match(/^diff --git /gm)?.length ?? 0;
+		if (
+			files !== 1 ||
+			!/^rename from /m.test(diff) ||
+			!/^rename to /m.test(diff)
+		) {
+			return null;
+		}
+		if (/^@@ /m.test(diff)) return parseDiffHunk(diff);
+		// Renamed as it was: the file itself.
+		const content = await tryGit(repo, ["cat-file", "blob", `${commit}:${to}`]);
+		return content === null ? null : contextLines(content);
 	}
 
 	/**
