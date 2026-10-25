@@ -79,32 +79,50 @@ function mapCheck(raw: unknown): Check | null {
 
 const CHECK_ORDER = { failing: 0, pending: 1, passing: 2 } as const;
 
-function mapThreads(nodes: unknown[]): PrOverview["threads"] {
-	const result: PrOverview["threads"] = [];
+/**
+ * Unresolved threads in full, and resolved ones only counted, by the opening
+ * comment's author: bot or human.
+ */
+function mapThreads(nodes: unknown[]): {
+	threads: PrOverview["threads"];
+	resolved: PrOverview["resolved"];
+} {
+	const threads: PrOverview["threads"] = [];
+	const resolved = { human: 0, bot: 0 };
 	for (const raw of nodes) {
 		const t = obj(raw);
-		if (t.isResolved === true) continue;
-		const comments = arr(obj(t.comments).nodes).map(obj);
+		const listed = obj(t.comments);
+		const comments = arr(listed.nodes).map(obj);
 		// `first` is the aliased comments(first: 1) with the opening comment's text.
 		const first = obj(arr(obj(t.first).nodes)[0] ?? comments[0]);
 		const author = obj(first.author);
+		const bot = isBotAuthor(author);
+		if (t.isResolved === true) {
+			resolved[bot ? "bot" : "human"]++;
+			continue;
+		}
 		const firstLogin = str(author.login);
 		// bodyText is GitHub's plain-text rendering; the raw body is a fallback.
 		const text = str(first.bodyText) || str(first.body);
-		result.push({
+		threads.push({
 			path: str(t.path),
 			line: typeof t.line === "number" ? t.line : null,
 			excerpt: text.replace(/\s+/g, " ").trim().slice(0, 200),
 			html: str(first.bodyHTML),
 			createdAt: str(first.createdAt),
 			author: firstLogin,
-			bot: isBotAuthor(author),
+			bot,
+			// The author list stops at 100; the total doesn't.
+			commentCount:
+				typeof listed.totalCount === "number"
+					? listed.totalCount
+					: Math.max(1, comments.length),
 			// Someone other than the thread's opener answered.
 			hasReply: comments.some((c) => str(obj(c.author).login) !== firstLogin),
 			outdated: t.isOutdated === true,
 		});
 	}
-	return result;
+	return { threads, resolved };
 }
 
 /** The GraphQL connections `fetchOverview` collects, already flattened to node lists. */
@@ -256,6 +274,6 @@ export function mapOverview(
 		commenters,
 		humanStarted,
 		checks,
-		threads: mapThreads(g.reviewThreads),
+		...mapThreads(g.reviewThreads),
 	};
 }

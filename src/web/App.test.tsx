@@ -91,6 +91,7 @@ const overview: PrOverview = {
 			createdAt: "2026-01-02T12:00:00Z",
 			author: "ci-bot",
 			bot: true,
+			commentCount: 1,
 			hasReply: false,
 			outdated: true,
 		},
@@ -102,10 +103,12 @@ const overview: PrOverview = {
 			createdAt: "2026-01-03T09:00:00Z",
 			author: "rev1",
 			bot: false,
+			commentCount: 3,
 			hasReply: true,
 			outdated: false,
 		},
 	],
+	resolved: { human: 4, bot: 0 },
 };
 
 const counts = (total: number, reviewed: number, crossedOff: number) => ({
@@ -408,54 +411,181 @@ describe("OverviewPage", () => {
 		expect(who).toHaveTextContent("No one else has started reviewing");
 	});
 
-	it("lists checks failing, then pending, then passing, with safe links only", async () => {
+	it("sums up readiness in one row of chips: conflicts and CI", async () => {
 		renderApp();
 		const ready = await screen.findByRole("region", { name: "Is it ready" });
-		const names = within(ready)
+		const row = within(ready).getByRole("list", { name: "Readiness" });
+		expect(
+			within(row)
+				.getAllByRole("listitem")
+				.map((li) => li.textContent),
+		).toEqual(["No conflicts", "1 failing", "1 pending", "1 passing"]);
+		// The list of checks stays closed until a CI chip is pressed.
+		expect(within(ready).queryByRole("list", { name: "Checks" })).toBeNull();
+		expect(within(ready).queryAllByTestId("check")).toHaveLength(0);
+	});
+
+	it("opens the checks, failing first, from any CI chip, with safe links only", async () => {
+		const user = userEvent.setup();
+		renderApp();
+		const ready = await screen.findByRole("region", { name: "Is it ready" });
+		const failing = within(ready).getByRole("button", { name: /1 failing/ });
+		expect(failing).toHaveAttribute("aria-expanded", "false");
+		await user.click(failing);
+		expect(failing).toHaveAttribute("aria-expanded", "true");
+		const list = within(ready).getByRole("list", { name: "Checks" });
+		expect(failing).toHaveAttribute("aria-controls", list.id);
+		const names = within(list)
 			.getAllByTestId("check")
 			.map((li) => li.textContent);
 		expect(
 			names.map((n) => n?.match(/lint|deploy\/preview|build/)?.[0]),
 		).toEqual(["lint", "deploy/preview", "build"]);
-		expect(within(ready).getByRole("link", { name: /lint/ })).toHaveAttribute(
+		expect(within(list).getByRole("link", { name: /lint/ })).toHaveAttribute(
 			"href",
 			"https://ci.example/lint",
 		);
-		expect(within(ready).queryByRole("link", { name: /deploy/ })).toBeNull();
+		expect(within(list).queryByRole("link", { name: /deploy/ })).toBeNull();
+		await user.click(within(ready).getByRole("button", { name: /1 passing/ }));
+		expect(within(ready).queryByRole("list", { name: "Checks" })).toBeNull();
 	});
 
-	it("splits unresolved threads into bots and humans and lists those without reply", async () => {
-		renderApp();
+	it("shows all-passing CI as one chip, and draft and conflicts in red or grey", async () => {
+		renderApp({
+			"/api/overview": ok({
+				...overview,
+				isDraft: true,
+				mergeable: "CONFLICTING",
+				checks: [
+					{ name: "a", status: "passing" },
+					{ name: "b", status: "passing" },
+				],
+			}),
+		});
 		const ready = await screen.findByRole("region", { name: "Is it ready" });
-		const bots = within(ready).getByRole("list", { name: "Bots" });
-		const humans = within(ready).getByRole("list", { name: "Humans" });
-		expect(bots).toHaveTextContent("Coverage dropped");
-		expect(humans).toHaveTextContent("Should this expire?");
-		const noReply = within(ready).getByRole("list", { name: "No reply" });
-		expect(noReply).toHaveTextContent("src/old.ts");
-		expect(noReply).not.toHaveTextContent("src/cache.ts");
-	});
-
-	it("previews a thread's first comment and expands it to GitHub's HTML", async () => {
-		const user = userEvent.setup();
-		renderApp();
-		const ready = await screen.findByRole("region", { name: "Is it ready" });
-		const bots = within(ready).getByRole("list", { name: "Bots" });
-		const details = bots.querySelector("details");
-		if (!details) throw new Error("no details");
-		expect(details.open).toBe(false);
-		expect(details.querySelector("summary")).toHaveTextContent(
-			"Coverage dropped",
+		const row = within(ready).getByRole("list", { name: "Readiness" });
+		expect(
+			within(row)
+				.getAllByRole("listitem")
+				.map((li) => li.textContent),
+		).toEqual(["Draft", "Conflicts", "2/2 passing"]);
+		expect(within(row).getByText("Conflicts").closest("span")).toHaveClass(
+			"text-bad",
 		);
-		expect(bots.querySelector("time")).toHaveAttribute(
+		cleanup();
+		renderApp({
+			"/api/overview": ok({ ...overview, mergeable: "UNKNOWN", checks: [] }),
+		});
+		const again = await screen.findByRole("region", { name: "Is it ready" });
+		expect(
+			within(within(again).getByRole("list", { name: "Readiness" }))
+				.getAllByRole("listitem")
+				.map((li) => li.textContent),
+		).toEqual(["Conflicts unknown", "No checks"]);
+	});
+
+	it("explains a chip in a tooltip on focus", async () => {
+		renderApp();
+		const ready = await screen.findByRole("region", { name: "Is it ready" });
+		within(ready)
+			.getByText("No conflicts")
+			.closest<HTMLElement>("[tabindex]")
+			?.focus();
+		expect(
+			await screen.findByText("Merges cleanly into main", {
+				selector: "[role=tooltip]",
+			}),
+		).toBeVisible();
+	});
+
+	it("puts unresolved threads under human and bot reviews, with resolved counts", async () => {
+		renderApp();
+		const humans = await screen.findByRole("region", { name: "Human reviews" });
+		const bots = screen.getByRole("region", { name: "Bot reviews" });
+		expect(
+			within(humans).getByRole("list", { name: "Thread counts" }),
+		).toHaveTextContent("1 unresolved4 resolved");
+		expect(
+			within(bots).getByRole("list", { name: "Thread counts" }),
+		).toHaveTextContent("1 unresolved0 resolved");
+		const human = within(humans).getByTestId("thread");
+		expect(human).toHaveTextContent("src/cache.ts:42");
+		expect(human.querySelector("code")).toHaveTextContent("src/cache.ts:42");
+		expect(human).toHaveTextContent("rev1");
+		expect(human.querySelector("time")).toHaveAttribute(
 			"dateTime",
-			"2026-01-02T12:00:00Z",
+			"2026-01-03T09:00:00Z",
 		);
-		await user.click(within(bots).getByText("Coverage dropped"));
-		expect(details.open).toBe(true);
-		const body = details.querySelector(".markdown-body");
-		expect(body?.querySelector("em")).toHaveTextContent("dropped");
-		expect(body).toHaveTextContent("Coverage dropped by 2%");
+		const count = within(human).getByRole("img", { name: "3 comments" });
+		expect(count).toHaveTextContent("3");
+		expect(human).not.toHaveTextContent("no reply");
+		const bot = within(bots).getByTestId("thread");
+		expect(bot).toHaveTextContent("no reply");
+		expect(bot).toHaveTextContent("outdated");
+		expect(within(bot).getByRole("img", { name: "1 comment" })).toBeVisible();
+		// The per-thread chip replaces the separate list.
+		expect(screen.queryByRole("list", { name: "No reply" })).toBeNull();
+		expect(screen.queryByText("Unresolved threads")).toBeNull();
+	});
+
+	it("says so when a group has no threads at all", async () => {
+		renderApp({
+			"/api/overview": ok({
+				...overview,
+				threads: [],
+				resolved: { human: 2, bot: 0 },
+			}),
+		});
+		const bots = await screen.findByRole("region", { name: "Bot reviews" });
+		expect(bots).toHaveTextContent("No threads");
+		const humans = screen.getByRole("region", { name: "Human reviews" });
+		expect(humans).toHaveTextContent("2 resolved");
+		expect(
+			within(humans).queryByRole("list", { name: "Unresolved threads" }),
+		).toBeNull();
+	});
+
+	it("previews a thread as GitHub renders it, clipped, with a toggle when it is long", async () => {
+		const user = userEvent.setup();
+		// jsdom has no layout: make every clipped body look taller than its box.
+		const scroll = vi
+			.spyOn(HTMLElement.prototype, "scrollHeight", "get")
+			.mockReturnValue(400);
+		const client = vi
+			.spyOn(HTMLElement.prototype, "clientHeight", "get")
+			.mockReturnValue(128);
+		try {
+			renderApp();
+			const bots = await screen.findByRole("region", { name: "Bot reviews" });
+			const body = within(bots).getByTestId("thread-body");
+			expect(body.querySelector(".markdown-body em")).toHaveTextContent(
+				"dropped",
+			);
+			expect(body).toHaveClass("max-h-32", "overflow-hidden");
+			const toggle = within(bots).getByRole("button", { name: "Show more" });
+			expect(toggle).toHaveAttribute("aria-expanded", "false");
+			expect(toggle).toHaveAttribute("aria-controls", body.id);
+			await user.click(toggle);
+			expect(body).not.toHaveClass("max-h-32");
+			const less = within(bots).getByRole("button", { name: "Show less" });
+			expect(less).toHaveAttribute("aria-expanded", "true");
+			await user.click(less);
+			expect(body).toHaveClass("max-h-32");
+		} finally {
+			scroll.mockRestore();
+			client.mockRestore();
+		}
+	});
+
+	it("offers no toggle for a short thread", async () => {
+		renderApp();
+		const bots = await screen.findByRole("region", { name: "Bot reviews" });
+		expect(within(bots).getByTestId("thread-body")).toHaveTextContent(
+			"Coverage dropped by 2%",
+		);
+		expect(
+			within(bots).queryByRole("button", { name: "Show more" }),
+		).toBeNull();
 	});
 
 	it("refetches the overview when a GitHub image breaks in a page left open (signed URLs expire)", async () => {
@@ -487,8 +617,10 @@ describe("OverviewPage", () => {
 	});
 
 	it("marks check status with a named icon instead of a word", async () => {
+		const user = userEvent.setup();
 		renderApp();
 		const ready = await screen.findByRole("region", { name: "Is it ready" });
+		await user.click(within(ready).getByRole("button", { name: /1 failing/ }));
 		const lint = within(ready).getAllByTestId("check")[0];
 		if (!lint) throw new Error("no check");
 		expect(within(lint).getByRole("img", { name: "failing" })).toBeVisible();
@@ -510,6 +642,18 @@ describe("OverviewPage", () => {
 		expect(await screen.findByRole("alert")).toHaveTextContent(
 			"PR acme/widget#12 not found",
 		);
+	});
+
+	it("marks the Overview tab current on a URL with a query (the first load's ?key=)", async () => {
+		renderApp({}, "/?key=abc");
+		await screen.findByRole("region", { name: "What it does" });
+		expect(screen.getByRole("link", { name: "Overview" })).toHaveAttribute(
+			"aria-current",
+			"page",
+		);
+		expect(
+			screen.getByRole("link", { name: "Files changed" }),
+		).not.toHaveAttribute("aria-current");
 	});
 
 	it("shows review progress on the Review files button", async () => {

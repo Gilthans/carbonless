@@ -243,7 +243,9 @@ export function App() {
 							<nav aria-label="PR pages" className="flex shrink-0 self-stretch">
 								<Link
 									to="/"
-									activeOptions={{ exact: true }}
+									// Matched on the path only: a query (the first
+									// load's ?key=) must not unmark the tab.
+									activeOptions={{ exact: true, includeSearch: false }}
 									className={tabClass}
 									activeProps={{ className: activeTabClass }}
 								>
@@ -251,6 +253,7 @@ export function App() {
 								</Link>
 								<Link
 									to="/files"
+									activeOptions={{ includeSearch: false }}
 									className={tabClass}
 									activeProps={{ className: activeTabClass }}
 								>

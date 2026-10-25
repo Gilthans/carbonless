@@ -1,7 +1,7 @@
 import {
 	CheckCircleIcon,
 	CheckIcon,
-	ChevronRightIcon,
+	ChevronDownIcon,
 	ClockIcon,
 	CodeReviewIcon,
 	CommentDiscussionIcon,
@@ -17,9 +17,9 @@ import {
 	type Icon,
 	MarkGithubIcon,
 	PeopleIcon,
-	PersonIcon,
 	QuestionIcon,
 	SkipIcon,
+	TriangleDownIcon,
 	XIcon,
 } from "@primer/octicons-react";
 import {
@@ -28,7 +28,15 @@ import {
 	useQueryClient,
 } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
-import { type ReactNode, useCallback, useState } from "react";
+import {
+	type ReactNode,
+	useCallback,
+	useEffect,
+	useId,
+	useLayoutEffect,
+	useRef,
+	useState,
+} from "react";
 import type { PrOverview, Progress } from "../../shared/types";
 import { overviewQuery, reviewQuery } from "../api";
 import { GithubHtml, ImageErrorContext } from "../GithubHtml";
@@ -80,6 +88,16 @@ function OverviewContent({
 					<WhatItDoes pr={overview.data} />
 					<WhosOnIt pr={overview.data} />
 					<IsItReady pr={overview.data} />
+					<ThreadGroup
+						label="Human reviews"
+						threads={overview.data.threads.filter((t) => !t.bot)}
+						resolved={overview.data.resolved.human}
+					/>
+					<ThreadGroup
+						label="Bot reviews"
+						threads={overview.data.threads.filter((t) => t.bot)}
+						resolved={overview.data.resolved.bot}
+					/>
 				</>
 			)}
 			<ReviewFilesButton />
@@ -101,11 +119,9 @@ function Section(props: { label: string; children: ReactNode }) {
 	);
 }
 
-function Badge(props: {
-	tone: "gray" | "red" | "yellow" | "green" | "purple";
-	icon?: Icon;
-	children: ReactNode;
-}) {
+type BadgeTone = "gray" | "red" | "yellow" | "green" | "purple";
+
+function Badge(props: { tone: BadgeTone; icon?: Icon; children: ReactNode }) {
 	const tones = {
 		gray: "border-line-strong/60 bg-overlay text-ink-soft",
 		red: "border-bad/40 bg-bad/10 text-bad",
@@ -132,6 +148,8 @@ function LabeledIcon(props: {
 	icon: Icon;
 	label: string;
 	size?: 12 | 16;
+	/** Shown after the icon (e.g. a count); the label stays the name. */
+	text?: string;
 	className?: string;
 }) {
 	const IconEl = props.icon;
@@ -148,6 +166,7 @@ function LabeledIcon(props: {
 					className={`relative inline-flex shrink-0 cursor-help items-center rounded-sm after:absolute after:top-1/2 after:left-1/2 after:h-10 after:w-8 after:-translate-x-1/2 after:-translate-y-1/2 focus-visible:outline-2 focus-visible:outline-accent ${props.className ?? ""}`}
 				>
 					<IconEl size={props.size ?? 16} aria-hidden />
+					{props.text && <span aria-hidden>{props.text}</span>}
 				</span>
 			)}
 		</Tooltip>
@@ -201,7 +220,7 @@ function GithubLink({ url }: { url: string }) {
 function ReviewFilesButton() {
 	const review = useQuery(reviewQuery);
 	return (
-		<div className="flex flex-wrap items-center gap-3">
+		<div className="flex flex-col items-center gap-3">
 			<Link
 				to="/files"
 				className="cta inline-flex min-h-10 items-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold text-ink transition-[filter] hover:brightness-110 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent motion-reduce:transition-none"
@@ -504,33 +523,211 @@ function WhosOnIt({ pr }: { pr: PrOverview }) {
 function IsItReady({ pr }: { pr: PrOverview }) {
 	return (
 		<Section label="Is it ready">
-			<ul className="flex flex-wrap gap-2">
-				{pr.isDraft && (
-					<li>
-						<Badge tone="yellow" icon={GitPullRequestDraftIcon}>
-							Draft
-						</Badge>
-					</li>
-				)}
-				<li>
-					{pr.mergeable === "CONFLICTING" ? (
-						<Badge tone="red" icon={XIcon}>
-							Merge conflicts
-						</Badge>
-					) : pr.mergeable === "MERGEABLE" ? (
-						<Badge tone="green" icon={CheckIcon}>
-							No conflicts
-						</Badge>
-					) : (
-						<Badge tone="gray" icon={QuestionIcon}>
-							Conflicts unknown
-						</Badge>
-					)}
-				</li>
-			</ul>
-			<Checks checks={pr.checks} />
-			<Threads threads={pr.threads} />
+			<Checks pr={pr} />
 		</Section>
+	);
+}
+
+/**
+ * A chip with a tooltip. Interactive (`onClick`) chips are buttons; the rest
+ * take focus only so keyboard and touch users can read the tooltip. Either
+ * way the hit area is 40px tall.
+ */
+function Chip(props: {
+	tone: BadgeTone;
+	icon: Icon;
+	tip: string;
+	children: ReactNode;
+	testId?: string;
+	toggle?: { expanded: boolean; controls: string; onClick: () => void };
+}) {
+	const { toggle } = props;
+	const className =
+		"inline-flex min-h-10 items-center rounded-full focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent";
+	const badge = (
+		<Badge tone={props.tone} icon={props.icon}>
+			{props.children}
+			{toggle && (
+				<TriangleDownIcon
+					size={12}
+					aria-hidden
+					className={`-mr-0.5 transition-transform motion-reduce:transition-none ${toggle.expanded ? "rotate-180" : ""}`}
+				/>
+			)}
+		</Badge>
+	);
+	return (
+		<Tooltip content={props.tip} hoverDelay={400}>
+			{(trigger) =>
+				toggle ? (
+					<button
+						type="button"
+						{...trigger}
+						data-testid={props.testId}
+						aria-expanded={toggle.expanded}
+						aria-controls={toggle.controls}
+						onClick={toggle.onClick}
+						className={`${className} cursor-pointer hover:brightness-125`}
+					>
+						{badge}
+					</button>
+				) : (
+					<span
+						{...trigger}
+						data-testid={props.testId}
+						// biome-ignore lint/a11y/noNoninteractiveTabindex: the tooltip opens on focus.
+						tabIndex={0}
+						className={className}
+					>
+						{badge}
+					</span>
+				)
+			}
+		</Tooltip>
+	);
+}
+
+const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
+
+/**
+ * One row of chips: draft, conflicts and a CI summary. A CI chip opens the
+ * list of checks, failing first.
+ */
+function Checks({ pr }: { pr: PrOverview }) {
+	const [open, setOpen] = useState(false);
+	const listId = useId();
+	const { checks } = pr;
+	const count = (status: Check["status"]) =>
+		checks.filter((c) => c.status === status).length;
+	const failing = count("failing");
+	const pending = count("pending");
+	const passing = count("passing");
+	const toggle = {
+		expanded: open,
+		controls: listId,
+		onClick: () => setOpen((o) => !o),
+	};
+	const tip = open ? "Hide checks" : "Show checks";
+	const ci: ReactNode[] = [];
+	if (checks.length === 0) {
+		ci.push(
+			<Chip
+				key="none"
+				tone="gray"
+				icon={DotFillIcon}
+				tip="No CI checks reported"
+			>
+				No checks
+			</Chip>,
+		);
+	} else if (passing === checks.length) {
+		ci.push(
+			<Chip key="all" tone="green" icon={CheckIcon} tip={tip} toggle={toggle}>
+				{passing}/{checks.length} passing
+			</Chip>,
+		);
+	} else {
+		if (failing) {
+			ci.push(
+				<Chip key="failing" tone="red" icon={XIcon} tip={tip} toggle={toggle}>
+					{failing} failing
+				</Chip>,
+			);
+		}
+		if (pending) {
+			ci.push(
+				<Chip
+					key="pending"
+					tone="yellow"
+					icon={DotFillIcon}
+					tip={tip}
+					toggle={toggle}
+				>
+					{pending} pending
+				</Chip>,
+			);
+		}
+		if (passing) {
+			ci.push(
+				<Chip
+					key="passing"
+					tone="green"
+					icon={CheckIcon}
+					tip={tip}
+					toggle={toggle}
+				>
+					{passing} passing
+				</Chip>,
+			);
+		}
+	}
+	return (
+		<div>
+			<div className="flex flex-wrap items-center gap-x-2">
+				<h3 className="mr-1 text-sm font-semibold text-ink-soft">Checks</h3>
+				<ul
+					aria-label="Readiness"
+					className="flex min-w-0 flex-wrap items-center gap-x-2"
+				>
+					{pr.isDraft && (
+						<li>
+							<Chip
+								tone="yellow"
+								icon={GitPullRequestDraftIcon}
+								tip="Still a draft on GitHub"
+							>
+								Draft
+							</Chip>
+						</li>
+					)}
+					<li>
+						<ConflictsChip pr={pr} />
+					</li>
+					{ci.map((chip, i) => (
+						// Fixed order: failing, pending, passing.
+						// biome-ignore lint/suspicious/noArrayIndexKey: see above.
+						<li key={i}>{chip}</li>
+					))}
+				</ul>
+			</div>
+			{open && checks.length > 0 && (
+				<ul id={listId} aria-label="Checks" className="mt-1 space-y-1 text-sm">
+					{checks.map((c) => (
+						<CheckItem key={`${c.status}:${c.name}`} check={c} />
+					))}
+				</ul>
+			)}
+		</div>
+	);
+}
+
+function ConflictsChip({ pr }: { pr: PrOverview }) {
+	if (pr.mergeable === "CONFLICTING") {
+		return (
+			<Chip tone="red" icon={XIcon} tip={`Conflicts with ${pr.baseBranch}`}>
+				Conflicts
+			</Chip>
+		);
+	}
+	if (pr.mergeable === "MERGEABLE") {
+		return (
+			<Chip
+				tone="green"
+				icon={CheckIcon}
+				tip={`Merges cleanly into ${pr.baseBranch}`}
+			>
+				No conflicts
+			</Chip>
+		);
+	}
+	return (
+		<Chip
+			tone="gray"
+			icon={QuestionIcon}
+			tip="GitHub hasn't worked out whether it merges cleanly"
+		>
+			Conflicts unknown
+		</Chip>
 	);
 }
 
@@ -556,62 +753,80 @@ function CheckItem({ check }: { check: Check }) {
 	);
 }
 
-function Checks({ checks }: { checks: Check[] }) {
-	const of = (status: Check["status"]) =>
-		checks.filter((c) => c.status === status);
-	const failing = of("failing");
-	const pending = of("pending");
-	const passing = of("passing");
+// ---- Human and bot reviews ----
+
+/** One group's review threads: resolved ones counted, unresolved ones listed. */
+function ThreadGroup(props: {
+	label: string;
+	threads: Thread[];
+	resolved: number;
+}) {
+	const { threads, resolved } = props;
 	return (
-		<div>
-			<h3 className="text-sm font-semibold text-ink-soft">Checks</h3>
-			{checks.length === 0 ? (
-				<None />
+		<Section label={props.label}>
+			{threads.length === 0 && resolved === 0 ? (
+				<p className="text-sm text-faint">No threads</p>
 			) : (
-				<div className="mt-1 space-y-1 text-sm">
-					{failing.length + pending.length > 0 && (
-						<ul aria-label="Failing and pending checks" className="space-y-1">
-							{[...failing, ...pending].map((c) => (
-								<CheckItem key={`${c.status}:${c.name}`} check={c} />
-							))}
-						</ul>
+				<ul aria-label="Thread counts" className="flex flex-wrap gap-2">
+					{threads.length > 0 && (
+						<li>
+							<Badge tone="yellow" icon={CommentDiscussionIcon}>
+								{threads.length} unresolved
+							</Badge>
+						</li>
 					)}
-					{passing.length > 0 && (
-						<details>
-							<summary className="flex min-h-10 cursor-pointer items-center gap-2 text-muted sm:min-h-0">
-								<CheckIcon size={16} aria-hidden className="text-ok" />
-								{passing.length} passing
-							</summary>
-							<ul aria-label="Passing checks" className="mt-1 space-y-1 pl-4">
-								{passing.map((c) => (
-									<CheckItem key={c.name} check={c} />
-								))}
-							</ul>
-						</details>
-					)}
-				</div>
+					<li>
+						<Badge tone={resolved ? "green" : "gray"} icon={CheckIcon}>
+							{resolved} resolved
+						</Badge>
+					</li>
+				</ul>
 			)}
-		</div>
+			{threads.length > 0 && (
+				<ul aria-label="Unresolved threads" className="space-y-3">
+					{threads.map((t, i) => (
+						// Threads have no id; their order is stable per response.
+						// biome-ignore lint/suspicious/noArrayIndexKey: see above.
+						<ThreadItem key={i} thread={t} />
+					))}
+				</ul>
+			)}
+		</Section>
 	);
 }
 
 /**
- * One unresolved thread: where, who, when, and the first comment as a short
- * plain-text preview that expands to the comment as GitHub renders it.
+ * One unresolved thread: where, who, when, how many comments, whether anyone
+ * answered, and the first comment as GitHub renders it, clipped.
  */
 function ThreadItem({ thread }: { thread: Thread }) {
+	const n = thread.commentCount;
 	return (
-		<li className="min-w-0 rounded-lg border border-line bg-raised px-3 py-2">
-			<div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted">
-				<code className="break-all text-ink-soft">
+		<li
+			data-testid="thread"
+			className="min-w-0 space-y-2 rounded-lg border border-line bg-raised px-3 py-3"
+		>
+			<div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted">
+				<code className="font-mono break-all text-ink-soft">
 					{thread.path}
 					{thread.line !== null && `:${thread.line}`}
 				</code>
-				<span className="inline-flex items-center gap-1">
+				<span className="inline-flex items-center gap-1 text-ink-soft">
 					{thread.author}
 					{thread.bot && <BotIcon />}
 				</span>
 				<RelativeTime iso={thread.createdAt} />
+				<LabeledIcon
+					icon={CommentIcon}
+					label={plural(n, "comment")}
+					text={String(n)}
+					className="gap-1 text-muted"
+				/>
+				{!thread.hasReply && (
+					<Badge tone="yellow" icon={CommentIcon}>
+						no reply
+					</Badge>
+				)}
 				{thread.outdated && (
 					<Badge tone="gray" icon={HistoryIcon}>
 						outdated
@@ -619,81 +834,75 @@ function ThreadItem({ thread }: { thread: Thread }) {
 				)}
 			</div>
 			{thread.html.trim() ? (
-				<details className="group mt-1">
-					<summary className="flex min-h-10 cursor-pointer list-none items-center gap-1 text-sm [&::-webkit-details-marker]:hidden">
-						<ChevronRightIcon
-							size={16}
-							aria-hidden
-							className="shrink-0 text-muted transition-transform group-open:rotate-90"
-						/>
-						<span className="line-clamp-2 min-w-0 break-words group-open:hidden">
-							{thread.excerpt}
-						</span>
-						<span className="sr-only hidden group-open:inline">
-							Hide comment
-						</span>
-					</summary>
-					<GithubHtml html={thread.html} className="pb-1 pl-5" />
-				</details>
+				<ClippedHtml html={thread.html} />
 			) : (
-				<p className="mt-1 text-sm break-words">{thread.excerpt}</p>
+				<p className="text-sm break-words">{thread.excerpt}</p>
 			)}
 		</li>
 	);
 }
 
-function ThreadList(props: { label: string; icon: Icon; threads: Thread[] }) {
-	const IconEl = props.icon;
-	return (
-		<div className="min-w-0">
-			<h4 className="flex items-center gap-1.5 text-sm font-medium">
-				<IconEl size={16} aria-hidden className="text-muted" />
-				{props.label}
-				<span className="text-muted">({props.threads.length})</span>
-			</h4>
-			{props.threads.length ? (
-				<ul aria-label={props.label} className="mt-1 space-y-2">
-					{props.threads.map((t, i) => (
-						// Threads have no id; their order is stable per response.
-						// biome-ignore lint/suspicious/noArrayIndexKey: see above.
-						<ThreadItem key={i} thread={t} />
-					))}
-				</ul>
-			) : (
-				<None />
-			)}
-		</div>
-	);
-}
-
-function Threads({ threads }: { threads: Thread[] }) {
+/**
+ * GitHub's HTML cut to about six lines with a fade, and a toggle to show it
+ * all (only when there is more). Focus moving inside opens it, so a keyboard
+ * user never lands on a clipped link.
+ */
+function ClippedHtml({ html }: { html: string }) {
+	const [open, setOpen] = useState(false);
+	const [more, setMore] = useState(false);
+	const box = useRef<HTMLDivElement>(null);
+	const id = useId();
+	useLayoutEffect(() => {
+		const el = box.current;
+		if (!el || open) return;
+		const measure = () => setMore(el.scrollHeight > el.clientHeight + 1);
+		measure();
+		if (typeof ResizeObserver === "undefined") return;
+		const observer = new ResizeObserver(measure);
+		observer.observe(el);
+		const inner = el.firstElementChild;
+		if (inner) observer.observe(inner);
+		return () => observer.disconnect();
+	}, [open]);
+	useEffect(() => {
+		const el = box.current;
+		if (!el) return;
+		const reveal = () => setOpen(true);
+		el.addEventListener("focusin", reveal);
+		return () => el.removeEventListener("focusin", reveal);
+	}, []);
+	const clipped = more && !open;
 	return (
 		<div>
-			<h3 className="text-sm font-semibold text-ink-soft">
-				Unresolved threads
-			</h3>
-			{threads.length === 0 ? (
-				<None />
-			) : (
-				<div className="mt-1 space-y-3">
-					<div className="grid gap-3 sm:grid-cols-2">
-						<ThreadList
-							label="Bots"
-							icon={HubotIcon}
-							threads={threads.filter((t) => t.bot)}
-						/>
-						<ThreadList
-							label="Humans"
-							icon={PersonIcon}
-							threads={threads.filter((t) => !t.bot)}
-						/>
-					</div>
-					<ThreadList
-						label="No reply"
-						icon={CommentDiscussionIcon}
-						threads={threads.filter((t) => !t.hasReply)}
+			<div
+				ref={box}
+				id={id}
+				data-testid="thread-body"
+				className={`relative ${open ? "" : "max-h-32 overflow-hidden"}`}
+			>
+				<GithubHtml html={html} />
+				{clipped && (
+					<div
+						aria-hidden
+						className="pointer-events-none absolute inset-x-0 bottom-0 h-10 bg-gradient-to-b from-transparent to-raised"
 					/>
-				</div>
+				)}
+			</div>
+			{(more || open) && (
+				<button
+					type="button"
+					aria-expanded={open}
+					aria-controls={id}
+					onClick={() => setOpen((o) => !o)}
+					className="-mb-2 flex min-h-10 items-center gap-1 rounded-md text-xs font-medium text-link hover:underline focus-visible:outline-2 focus-visible:outline-accent"
+				>
+					<ChevronDownIcon
+						size={16}
+						aria-hidden
+						className={`transition-transform motion-reduce:transition-none ${open ? "rotate-180" : ""}`}
+					/>
+					{open ? "Show less" : "Show more"}
+				</button>
 			)}
 		</div>
 	);

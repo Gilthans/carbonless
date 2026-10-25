@@ -26,7 +26,12 @@ const fixture: PrOptions = {
 				login: "lint-bot",
 				bot: true,
 				text: "Unused import of fs in this module",
-				html: '<p dir="auto">Unused import of <code class="notranslate">fs</code> in this module</p>',
+				// Long enough to be clipped, with a toggle to show it all.
+				html: Array.from(
+					{ length: 12 },
+					(_, i) =>
+						`<p dir="auto">Unused import ${i + 1} of <code class="notranslate">fs</code></p>`,
+				).join("\n"),
 			}),
 		]),
 	],
@@ -91,11 +96,11 @@ const filesKept = (page: Page) => page.locator('[data-page="/files"]');
 const overviewKept = (page: Page) => page.locator('[data-page="/"]');
 const whatItDoes = (page: Page) =>
 	page.getByRole("region", { name: "What it does" });
+/** The bot thread's show more / show less toggle. */
 const botPreview = (page: Page) =>
 	page
-		.getByRole("region", { name: "Is it ready" })
-		.getByRole("list", { name: "Bots" })
-		.locator("details");
+		.getByRole("region", { name: "Bot reviews" })
+		.getByRole("button", { name: /^Show (more|less)$/ });
 
 /** The hidden page: out of layout, inert, and not in the accessibility tree. */
 async function expectHidden(page: Page, kept: Locator, mark: string) {
@@ -179,8 +184,8 @@ test("switching pages and back puts each one exactly where it was left", async (
 	await expectHidden(page, filesKept(page), "Review progress");
 	await expectTabSkips(page, filesKept(page));
 	// Open a thread's preview and scroll down there.
-	await botPreview(page).locator("summary").click();
-	await expect(botPreview(page)).toHaveAttribute("open", "");
+	await botPreview(page).click();
+	await expect(botPreview(page)).toHaveAttribute("aria-expanded", "true");
 	await page.evaluate(() => window.scrollTo(0, 300));
 	const overviewY = await scrollY(page);
 	expect(overviewY).toBeGreaterThan(100);
@@ -206,7 +211,7 @@ test("switching pages and back puts each one exactly where it was left", async (
 	await tab(page, "Overview").click();
 	await expect(whatItDoes(page)).toBeVisible();
 	await expectScroll(page, overviewY);
-	await expect(botPreview(page)).toHaveAttribute("open", "");
+	await expect(botPreview(page)).toHaveAttribute("aria-expanded", "true");
 	await shot(page, "keepalive-overview-back", project);
 
 	// Browser back and forward do the same.
@@ -219,7 +224,7 @@ test("switching pages and back puts each one exactly where it was left", async (
 	await expect(page).toHaveURL(/\/$/);
 	await expect(whatItDoes(page)).toBeVisible();
 	await expectScroll(page, overviewY);
-	await expect(botPreview(page)).toHaveAttribute("open", "");
+	await expect(botPreview(page)).toHaveAttribute("aria-expanded", "true");
 	await page.goForward();
 	await expect(page).toHaveURL(/\/files$/);
 	await expectScroll(page, filesY);

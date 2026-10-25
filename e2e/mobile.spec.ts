@@ -156,10 +156,11 @@ test("GitHub-rendered descriptions and threads never widen the page", async ({
 			true,
 		);
 	}
-	await page.getByRole("list", { name: "Humans" }).locator("summary").click();
-	await expect(
-		page.getByRole("list", { name: "Humans" }).locator(".markdown-body table"),
-	).toBeVisible();
+	const humans = page.getByRole("region", { name: "Human reviews" });
+	await expect(humans.locator(".markdown-body table")).toBeAttached();
+	const more = humans.getByRole("button", { name: "Show more" });
+	await more.click();
+	await expect(humans.locator(".markdown-body table")).toBeVisible();
 	await expectNoPageOverflow(page);
 });
 

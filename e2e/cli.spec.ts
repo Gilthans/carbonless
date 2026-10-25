@@ -52,6 +52,31 @@ test("a non-loopback host needs the access key", async ({
 	).toBeVisible();
 });
 
+test("the access key leaves the address bar once loaded, and Overview is the current tab", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	await pr();
+	const s = await startCrb(undefined, ["--host", "0.0.0.0"]);
+	await page.goto(s.url.replace("0.0.0.0", "127.0.0.1"));
+	const overview = page.getByRole("link", { name: "Overview" });
+	await expect(overview).toHaveAttribute("aria-current", "page");
+	await expect(page).toHaveURL(/^http:\/\/127\.0\.0\.1:\d+\/$/);
+	// The cookie carries the key from here on.
+	await page.reload();
+	await expect(
+		page.getByRole("region", { name: "What it does" }),
+	).toBeVisible();
+	await expect(overview).toHaveAttribute("aria-current", "page");
+	await page.getByRole("link", { name: "Files changed" }).click();
+	await expect(page).toHaveURL(/\/files$/);
+	await page.reload();
+	await expect(
+		page.getByRole("link", { name: "Files changed" }),
+	).toHaveAttribute("aria-current", "page");
+});
+
 test("can be restarted on the same PR", async ({ page, pr, startCrb }) => {
 	await pr();
 	const first = await startCrb();

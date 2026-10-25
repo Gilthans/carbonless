@@ -17,8 +17,9 @@ interface Comment {
 	createdAt: string;
 }
 interface Thread {
+	isResolved: boolean;
 	first: { nodes: { bodyText?: string; bodyHTML?: string; body?: string }[] };
-	comments: { nodes: { author: Actor }[] };
+	comments: { totalCount?: number; nodes: { author: Actor }[] };
 }
 
 const load = <T>(name: string): T =>
@@ -142,6 +143,7 @@ describe("mapOverview", () => {
 				createdAt: "2026-01-03T09:00:00Z",
 				author: "rev1",
 				bot: false,
+				commentCount: 2,
 				hasReply: true,
 				outdated: false,
 			},
@@ -153,6 +155,7 @@ describe("mapOverview", () => {
 				createdAt: "2026-01-02T12:00:00Z",
 				author: "ci-bot",
 				bot: true,
+				commentCount: 1,
 				hasReply: false,
 				outdated: true,
 			},
@@ -164,10 +167,34 @@ describe("mapOverview", () => {
 				createdAt: "2026-01-03T09:00:00Z",
 				author: "rev1",
 				bot: false,
+				commentCount: 2,
 				hasReply: false,
 				outdated: false,
 			},
 		]);
+	});
+
+	it("counts resolved threads by whether a bot opened them", () => {
+		expect(o.resolved).toEqual({ human: 1, bot: 0 });
+		const g = graph();
+		const resolvedBot = structuredClone(g.reviewThreads[2]);
+		if (!resolvedBot) throw new Error("fixture has no bot thread");
+		resolvedBot.isResolved = true;
+		g.reviewThreads.push(resolvedBot);
+		const mapped = mapOverview(view(), g, VIEWER);
+		expect(mapped.resolved).toEqual({ human: 1, bot: 1 });
+		expect(mapped.threads).toHaveLength(3);
+	});
+
+	it("counts a thread's comments from the total, past the 100 authors listed", () => {
+		const g = graph();
+		const thread = g.reviewThreads[0];
+		if (!thread) throw new Error("fixture has no thread");
+		thread.comments.totalCount = 140;
+		expect(mapOverview(view(), g, VIEWER).threads[0]?.commentCount).toBe(140);
+		const { totalCount: _, ...noTotal } = thread.comments;
+		thread.comments = noTotal as typeof thread.comments;
+		expect(mapOverview(view(), g, VIEWER).threads[0]?.commentCount).toBe(2);
 	});
 
 	it("cuts thread excerpts at 200 characters", () => {

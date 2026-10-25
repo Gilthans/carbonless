@@ -175,9 +175,14 @@ export interface PrOverview {
 		createdAt: string;
 		author: string;
 		bot: boolean;
+		/** Comments in the thread, the opening one included. */
+		commentCount: number;
+		/** Someone other than the opener commented. */
 		hasReply: boolean;
 		outdated: boolean;
 	}[];
+	/** Resolved threads, counted by whether a bot opened them. */
+	resolved: { human: number; bot: number };
 }
 
 export interface SessionInfo {

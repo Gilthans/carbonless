@@ -44,18 +44,17 @@ test("shows what the PR does, who's on it and whether it's ready", async ({
 	await expect(
 		page.getByRole("region", { name: "What it does" }),
 	).toContainText("Add widgets");
-	await expect(page.getByRole("region", { name: "Is it ready" })).toContainText(
+	const ready = page.getByRole("region", { name: "Is it ready" });
+	await expect(ready.getByRole("list", { name: "Readiness" })).toContainText(
 		"Draft",
 	);
-	await expect(
-		page.getByRole("region", { name: "Is it ready" }).getByText("No reply"),
-	).toBeVisible();
-	const noReply = page
-		.getByRole("region", { name: "Is it ready" })
-		.getByRole("list", { name: "No reply" });
-	await expect(noReply.getByRole("listitem")).toHaveCount(1);
-	await expect(noReply).toContainText("src/bot.ts:3");
-	await expect(noReply).not.toContainText("src/cache.ts");
+	const bots = page.getByRole("region", { name: "Bot reviews" });
+	const humans = page.getByRole("region", { name: "Human reviews" });
+	await expect(bots.getByTestId("thread")).toContainText("src/bot.ts:3");
+	await expect(bots.getByTestId("thread")).toContainText("no reply");
+	await expect(humans.getByTestId("thread")).toContainText("src/cache.ts:42");
+	await expect(humans.getByTestId("thread")).not.toContainText("no reply");
+	await expect(page.getByRole("list", { name: "No reply" })).toHaveCount(0);
 });
 
 test("shows the description as GitHub renders it, and who started reviewing", async ({
@@ -163,26 +162,212 @@ test.describe("in Israel's time zone", () => {
 	});
 });
 
-test("a thread previews its first comment and expands to GitHub's rendering", async ({
+test("a thread previews its first comment as GitHub renders it, clipped, with a toggle", async ({
 	page,
 	pr,
 	startCrb,
 }) => {
-	await pr({ threads: [botThreadNoReply] });
+	const long = Array.from(
+		{ length: 14 },
+		(_, i) =>
+			`<p dir="auto">Point ${i + 1}: use <code class="notranslate">fs/promises</code></p>`,
+	).join("\n");
+	await pr({
+		threads: [
+			botThreadNoReply,
+			reviewThread({ path: "src/cache.ts", line: 42 }, [
+				threadComment({ login: "rev1", text: "Points", html: long }),
+				threadComment({ login: "octo-author", text: "Done" }),
+				threadComment({ login: "rev1", text: "Thanks" }),
+			]),
+		],
+	});
 	const s = await startCrb();
 	await page.goto(s.url);
-	const bots = page
-		.getByRole("region", { name: "Is it ready" })
-		.getByRole("list", { name: "Bots" });
-	const preview = bots.locator("summary");
-	await expect(preview).toContainText("Unused import of fs in this module");
-	await expect(bots.locator("code.notranslate")).toBeHidden();
-	await preview.click();
+	const bots = page.getByRole("region", { name: "Bot reviews" });
+	// Short: shown in full as GitHub's HTML, nothing to expand.
 	await expect(bots.locator(".markdown-body code")).toHaveText("fs");
+	await expect(bots.getByRole("button", { name: "Show more" })).toHaveCount(0);
 	await expect(bots.locator("time")).toHaveAttribute(
 		"datetime",
 		"2026-01-03T09:00:00Z",
 	);
+	await expect(bots.getByRole("img", { name: "1 comment" })).toBeVisible();
+
+	const humans = page.getByRole("region", { name: "Human reviews" });
+	await expect(humans.getByRole("img", { name: "3 comments" })).toHaveText("3");
+	const body = humans.getByTestId("thread-body");
+	const last = body.getByText("Point 14:");
+	await expect(body.getByText("Point 1:")).toBeVisible();
+	const clipped = await body.boundingBox();
+	expect(clipped?.height).toBeLessThanOrEqual(130);
+	await expect(last).not.toBeInViewport({ ratio: 1 });
+	const more = humans.getByRole("button", { name: "Show more" });
+	await more.click();
+	await expect(
+		humans.getByRole("button", { name: "Show less" }),
+	).toHaveAttribute("aria-expanded", "true");
+	const full = await body.boundingBox();
+	expect(full?.height).toBeGreaterThan((clipped?.height ?? 0) + 100);
+	await humans.getByRole("button", { name: "Show less" }).click();
+	await expect(more).toHaveAttribute("aria-expanded", "false");
+	expect((await body.boundingBox())?.height).toBeLessThanOrEqual(130);
+	const box = await more.boundingBox();
+	expect(box?.height).toBeGreaterThanOrEqual(40);
+});
+
+test("human and bot reviews count resolved threads and list unresolved ones", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	const resolved = (bot: boolean, path: string) =>
+		reviewThread({ path, isResolved: true }, [
+			threadComment({ login: bot ? "lint-bot" : "rev2", bot, text: "ok" }),
+		]);
+	await pr({
+		threads: [
+			botThreadNoReply,
+			humanThreadWithReply,
+			resolved(false, "src/a.ts"),
+			resolved(false, "src/b.ts"),
+			resolved(true, "src/c.ts"),
+		],
+	});
+	const s = await startCrb();
+	await page.goto(s.url);
+	const humans = page.getByRole("region", { name: "Human reviews" });
+	const bots = page.getByRole("region", { name: "Bot reviews" });
+	await expect(humans.getByRole("list", { name: "Thread counts" })).toHaveText(
+		"1 unresolved2 resolved",
+	);
+	await expect(bots.getByRole("list", { name: "Thread counts" })).toHaveText(
+		"1 unresolved1 resolved",
+	);
+	await expect(humans.getByTestId("thread")).toHaveCount(1);
+	await expect(bots.getByTestId("thread")).toHaveCount(1);
+	await expect(page.getByText("src/a.ts")).toHaveCount(0);
+	// After "Is it ready", humans first.
+	const order = await page
+		.getByRole("region")
+		.evaluateAll((els) => els.map((el) => el.getAttribute("aria-label")));
+	expect(order).toEqual([
+		"What it does",
+		"Who's on it",
+		"Is it ready",
+		"Human reviews",
+		"Bot reviews",
+	]);
+});
+
+test("checks are one row of chips; a CI chip opens the list, failing first", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	await pr({
+		overview: {
+			mergeable: "CONFLICTING",
+			statusCheckRollup: [
+				{
+					__typename: "CheckRun",
+					name: "build",
+					status: "COMPLETED",
+					conclusion: "SUCCESS",
+					detailsUrl: "https://ci.example/build",
+				},
+				{
+					__typename: "CheckRun",
+					name: "lint",
+					status: "COMPLETED",
+					conclusion: "FAILURE",
+					detailsUrl: "javascript:alert(1)",
+				},
+				{
+					__typename: "StatusContext",
+					context: "deploy",
+					state: "PENDING",
+					targetUrl: "https://ci.example/deploy",
+				},
+			],
+		},
+	});
+	const s = await startCrb();
+	await page.goto(s.url);
+	const ready = page.getByRole("region", { name: "Is it ready" });
+	const row = ready.getByRole("list", { name: "Readiness" });
+	await expect(row.getByRole("listitem")).toHaveText([
+		"Conflicts",
+		"1 failing",
+		"1 pending",
+		"1 passing",
+	]);
+	await expect(ready.getByTestId("check")).toHaveCount(0);
+	const pending = row.getByRole("button", { name: "1 pending" });
+	const pbox = await pending.boundingBox();
+	expect(pbox?.height).toBeGreaterThanOrEqual(40);
+	await pending.click();
+	await expect(ready.getByTestId("check")).toHaveText([
+		"lint",
+		"deploy",
+		"build",
+	]);
+	await expect(ready.getByRole("link", { name: "build" })).toHaveAttribute(
+		"href",
+		"https://ci.example/build",
+	);
+	await expect(ready.getByRole("link", { name: "lint" })).toHaveCount(0);
+	await row.getByRole("button", { name: "1 failing" }).click();
+	await expect(ready.getByTestId("check")).toHaveCount(0);
+});
+
+test("all-passing CI is one chip", async ({ page, pr, startCrb }) => {
+	const pass = (name: string) => ({
+		__typename: "CheckRun",
+		name,
+		status: "COMPLETED",
+		conclusion: "SUCCESS",
+	});
+	await pr({ overview: { statusCheckRollup: [pass("a"), pass("b")] } });
+	const s = await startCrb();
+	await page.goto(s.url);
+	const row = page
+		.getByRole("region", { name: "Is it ready" })
+		.getByRole("list", { name: "Readiness" });
+	await expect(row.getByRole("listitem")).toHaveText([
+		"No conflicts",
+		"2/2 passing",
+	]);
+});
+
+test("the Overview stays inside a 360px screen", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	await page.setViewportSize({ width: 360, height: 780 });
+	await pr({
+		overview: { isDraft: true, mergeable: "CONFLICTING" },
+		threads: [
+			botThreadNoReply,
+			reviewThread(
+				{
+					path: "src/some/very/long/directory/name/that/keeps/going/file.ts",
+					line: 12345,
+					isOutdated: true,
+				},
+				[threadComment({ login: "a-reviewer-with-a-long-login", text: "Hm" })],
+			),
+		],
+	});
+	const s = await startCrb();
+	await page.goto(s.url);
+	await expect(page.getByRole("region", { name: "Bot reviews" })).toBeVisible();
+	const { scrollWidth, clientWidth } = await page.evaluate(() => ({
+		scrollWidth: document.documentElement.scrollWidth,
+		clientWidth: document.documentElement.clientWidth,
+	}));
+	expect(scrollWidth).toBeLessThanOrEqual(clientWidth);
 });
 
 test("Review files opens the files tab, which survives a reload", async ({
@@ -266,12 +451,16 @@ test("the logo shares the title's line, both pages end with a footer, and Review
 
 	const review = page.getByRole("link", { name: /Review files/ });
 	const last = await page
-		.getByRole("region", { name: "Is it ready" })
+		.getByRole("region", { name: "Bot reviews" })
 		.boundingBox();
 	const r = await review.boundingBox();
 	const f = await footer.boundingBox();
 	if (!last || !r || !f) throw new Error("no boxes");
 	expect(r.y).toBeGreaterThanOrEqual(last.y + last.height);
+	// Centered under the sections.
+	expect(Math.abs(r.x + r.width / 2 - (last.x + last.width / 2))).toBeLessThan(
+		2,
+	);
 	expect(f.y).toBeGreaterThanOrEqual(r.y + r.height);
 
 	await page.getByRole("link", { name: "Files changed" }).click();

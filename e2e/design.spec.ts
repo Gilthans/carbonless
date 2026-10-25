@@ -138,6 +138,18 @@ node bench.js --runs 20
 			}),
 		]),
 		reviewThread({ path: "src/cache/store.ts", line: 15 }),
+		reviewThread({ path: "src/cache/index.ts", line: 2 }, [
+			threadComment({
+				login: "devon",
+				text: "Long",
+				html: Array.from(
+					{ length: 9 },
+					(_, i) =>
+						`<p dir="auto">Point ${i + 1}: the cache should be keyed by <code class="notranslate">widgetId</code>.</p>`,
+				).join("\n"),
+			}),
+			threadComment({ login: "octo-author", text: "Agreed" }),
+		]),
 	],
 	reviews: [
 		{
@@ -172,6 +184,11 @@ test("design screenshots", async ({ page, pr, startCrb, isMobile }) => {
 	await page.goto(s.url);
 	await expect(page.getByRole("region", { name: "Is it ready" })).toBeVisible();
 	await shot(page, "overview", isMobile, true);
+	// The checks list open, and the long thread expanded.
+	await page.getByRole("button", { name: /failing/ }).click();
+	await page.getByRole("button", { name: "Show more" }).click();
+	await page.evaluate(() => window.scrollTo(0, 0));
+	await shot(page, "overview-open", isMobile, true);
 
 	// A tooltip: the compact Refresh button's.
 	await page.getByRole("button", { name: "Refresh" }).focus();

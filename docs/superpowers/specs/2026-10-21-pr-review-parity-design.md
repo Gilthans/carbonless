@@ -101,12 +101,13 @@ Shown first. Read-only. Data from `gh` (`gh pr view --json …` and `gh api grap
 
 1. **What it does:** title, number, author, base ← head branches, draft badge, created/updated times, link to GitHub, and the description rendered as GitHub-flavored Markdown. Sanitize the rendered HTML: the description is untrusted.
 2. **Who's on it:** requested reviewers (users and teams); submitted reviews with reviewer, state (approved / changes requested / commented) and time, latest per reviewer first; and recent commenters. Make it obvious at a glance whether any human already started. The reviewer's own activity (logged-in user from `gh api user`) is shown separately as "you" and doesn't count as someone else having started. *(Claude's call.)*
-3. **Is it ready:**
-   - draft status;
-   - merge conflicts (mergeable state);
-   - CI checks: failing first, then pending, then passing (collapsed), each linking to its details;
-   - review threads: count unresolved; each unresolved thread shows file and line, first comment excerpt, author, whether it has a reply, and whether it's outdated; split by bots/AI (author `__typename == "Bot"`) and humans. Also list unresolved threads that have **no reply**, since that's the specific thing the reviewer looks for.
-4. A clear way into "Files changed", with the overall progress shown.
+3. **Is it ready:** one "Checks" row of chips, each with a tooltip:
+   - "Draft" when the PR is a draft;
+   - merge conflicts: "No conflicts" (green), "Conflicts" (red) or "Conflicts unknown" (grey);
+   - CI: "6/6 passing" when all pass, else separate "1 failing" (red), "2 pending" (yellow) and "3 passing" (green) chips. Pressing any CI chip opens the list of checks, failing first, then pending, then passing, each linking (http(s) only) to its details.
+   - More readiness items join this row later.
+4. **Human reviews** and **Bot reviews** (a thread belongs to the group of its opening comment's author, `__typename == "Bot"` for bots): each shows "N resolved" (resolved threads are only counted) and lists the group's unresolved threads. Each thread shows file:line, author, relative time, its comment count, a "no reply" chip when nobody but the opener commented (this replaces a separate "no reply" list), "outdated" when it is, and the first comment as GitHub renders it (sanitized), clipped to about six lines with a fade and a show more / show less toggle.
+5. A clear way into "Files changed", with the overall progress shown, centered at the bottom.
 
 ## Files changed view
 
