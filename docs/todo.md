@@ -88,3 +88,11 @@ Not scheduled yet; after everything above.
 - `rangeText` (copy) adds no line breaks at `<p>`, `<div>` or `<br>`, only between table rows.
 - Some UAX #11 wide ranges are missing from the tab-stop width table.
 - No keyboard path reaches the escape markers (their tooltips open on hover and tap only).
+
+## Files view: parked
+
+- Keyboard focus into a stuck file header ("Collapse file", "Mark remaining
+  reviewed") lets focus-scroll chase the header back to the file's start; give
+  those controls a negative `scroll-margin-top` of the header's own height and
+  cover it with an e2e test that tabs into a stuck header.
+- Unit-switch scroll fixes are tested on Chromium only; check iOS Safari.
