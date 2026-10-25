@@ -84,5 +84,6 @@ These guide every feature. If a change conflicts with one of them, stop and rais
   what they describe):
   - `docs/review-data-storage.md`: how review data is stored in git.
   - `docs/gitdb-design-principles.md`: the principles behind storing data in git.
+  - `docs/faq.md`: answers to questions people ask (e.g. why line counts differ from GitHub).
   - `docs/git-methodology.md`: git-methodology independence, merged handling
     and the methodology test matrix.
