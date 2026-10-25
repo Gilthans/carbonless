@@ -436,6 +436,11 @@ describe("OverviewPage", () => {
 		expect(failing).toHaveAttribute("aria-expanded", "true");
 		const list = within(ready).getByRole("list", { name: "Checks" });
 		expect(failing).toHaveAttribute("aria-controls", list.id);
+		// Named by the visible heading; the chip's tip isn't its description.
+		expect(
+			document.getElementById(list.getAttribute("aria-labelledby") ?? ""),
+		).toHaveTextContent("Checks");
+		expect(failing).not.toHaveAttribute("aria-describedby");
 		const names = within(list)
 			.getAllByTestId("check")
 			.map((li) => li.textContent);
@@ -522,6 +527,12 @@ describe("OverviewPage", () => {
 		expect(human).not.toHaveTextContent("no reply");
 		const bot = within(bots).getByTestId("thread");
 		expect(bot).toHaveTextContent("no reply");
+		// Its icon isn't the comment count's.
+		const noReply = within(bot).getByText("no reply");
+		expect(noReply.querySelector("svg")).toHaveClass("octicon-reply");
+		expect(
+			within(bot).getByRole("img", { name: "1 comment" }).querySelector("svg"),
+		).toHaveClass("octicon-comment");
 		expect(bot).toHaveTextContent("outdated");
 		expect(within(bot).getByRole("img", { name: "1 comment" })).toBeVisible();
 		// The per-thread chip replaces the separate list.

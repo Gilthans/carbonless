@@ -18,6 +18,7 @@ import {
 	MarkGithubIcon,
 	PeopleIcon,
 	QuestionIcon,
+	ReplyIcon,
 	SkipIcon,
 	TriangleDownIcon,
 	XIcon,
@@ -557,7 +558,8 @@ function Chip(props: {
 		</Badge>
 	);
 	return (
-		<Tooltip content={props.tip} hoverDelay={400}>
+		// A toggle's tip only says what pressing does; its state is aria-expanded.
+		<Tooltip content={props.tip} hoverDelay={400} describe={!toggle}>
 			{(trigger) =>
 				toggle ? (
 					<button
@@ -596,6 +598,7 @@ const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
 function Checks({ pr }: { pr: PrOverview }) {
 	const [open, setOpen] = useState(false);
 	const listId = useId();
+	const headingId = useId();
 	const { checks } = pr;
 	const count = (status: Check["status"]) =>
 		checks.filter((c) => c.status === status).length;
@@ -664,7 +667,9 @@ function Checks({ pr }: { pr: PrOverview }) {
 	return (
 		<div>
 			<div className="flex flex-wrap items-center gap-x-2">
-				<h3 className="mr-1 text-sm font-semibold text-ink-soft">Checks</h3>
+				<h3 id={headingId} className="mr-1 text-sm font-semibold text-ink-soft">
+					Checks
+				</h3>
 				<ul
 					aria-label="Readiness"
 					className="flex min-w-0 flex-wrap items-center gap-x-2"
@@ -691,7 +696,11 @@ function Checks({ pr }: { pr: PrOverview }) {
 				</ul>
 			</div>
 			{open && checks.length > 0 && (
-				<ul id={listId} aria-label="Checks" className="mt-1 space-y-1 text-sm">
+				<ul
+					id={listId}
+					aria-labelledby={headingId}
+					className="mt-1 space-y-1 text-sm"
+				>
 					{checks.map((c) => (
 						<CheckItem key={`${c.status}:${c.name}`} check={c} />
 					))}
@@ -836,7 +845,7 @@ function ThreadItem({ thread }: { thread: Thread }) {
 					className="gap-1 text-muted"
 				/>
 				{!thread.hasReply && (
-					<Badge tone="yellow" icon={CommentIcon}>
+					<Badge tone="yellow" icon={ReplyIcon}>
 						no reply
 					</Badge>
 				)}
@@ -877,14 +886,14 @@ function ClippedHtml({ html }: { html: string }) {
 		if (inner) observer.observe(inner);
 		return () => observer.disconnect();
 	}, [open]);
+	const clipped = more && !open;
 	useEffect(() => {
 		const el = box.current;
-		if (!el) return;
+		if (!el || !clipped) return;
 		const reveal = () => setOpen(true);
 		el.addEventListener("focusin", reveal);
 		return () => el.removeEventListener("focusin", reveal);
-	}, []);
-	const clipped = more && !open;
+	}, [clipped]);
 	return (
 		<div>
 			<div
@@ -901,7 +910,7 @@ function ClippedHtml({ html }: { html: string }) {
 					/>
 				)}
 			</div>
-			{(more || open) && (
+			{more && (
 				<button
 					type="button"
 					aria-expanded={open}
