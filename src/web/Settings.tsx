@@ -54,7 +54,7 @@ function SettingsList() {
 /**
  * The gear in the app bar's last row (so it stays in the compact sticky
  * header): a popover under it, a bottom sheet on a phone. Closed by the gear,
- * Escape or a click outside (the backdrop on a phone).
+ * Escape from anywhere, a click or focus outside (the backdrop on a phone).
  */
 export function Settings() {
 	const [open, setOpen] = useState(false);
@@ -76,14 +76,28 @@ export function Settings() {
 		else d.setAttribute("open", "");
 		d.querySelector<HTMLElement>("[role=switch]")?.focus();
 	}, [open, phone]);
-	// A popover closes on a click anywhere else.
+	// A popover closes on a click or focus anywhere else, and on Escape
+	// wherever focus is (back to the gear). The sheet is modal: its own
+	// Escape, backdrop and Close do it.
 	useEffect(() => {
 		if (!open || phone) return;
-		const outside = (event: PointerEvent) => {
+		const outside = (event: Event) => {
 			if (!wrapper.current?.contains(event.target as Node)) setOpen(false);
 		};
+		const escape = (event: KeyboardEvent) => {
+			if (event.key !== "Escape") return;
+			event.preventDefault();
+			setOpen(false);
+			button.current?.focus();
+		};
 		document.addEventListener("pointerdown", outside);
-		return () => document.removeEventListener("pointerdown", outside);
+		document.addEventListener("focusin", outside);
+		document.addEventListener("keydown", escape);
+		return () => {
+			document.removeEventListener("pointerdown", outside);
+			document.removeEventListener("focusin", outside);
+			document.removeEventListener("keydown", escape);
+		};
 	}, [open, phone]);
 	const close = () => {
 		setOpen(false);
@@ -120,7 +134,8 @@ export function Settings() {
 					close();
 				}}
 				onKeyDown={(event) => {
-					if (event.key === "Escape") {
+					// The popover's Escape is the document's (above).
+					if (phone && event.key === "Escape") {
 						event.preventDefault();
 						close();
 					}

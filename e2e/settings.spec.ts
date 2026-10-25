@@ -72,7 +72,12 @@ test("Settings sits in the app bar, compact header included, and switches hidden
 	await expect(toggle).toHaveAttribute("aria-checked", "false");
 	await toggle.click();
 	await expect(toggle).toHaveAttribute("aria-checked", "true");
-	if (!isMobile) {
+	if (isMobile) {
+		// A tap on the sheet's backdrop closes it.
+		await page.mouse.click(180, 60);
+		await expect(dialog).toBeHidden();
+		await expect(gear).toHaveAttribute("aria-expanded", "false");
+	} else {
 		// A click outside closes the popover.
 		await page.mouse.click(10, 500);
 		await expect(dialog).toBeHidden();

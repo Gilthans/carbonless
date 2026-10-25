@@ -344,6 +344,25 @@ describe("App", () => {
 		act(() => setShowInvisibles(true));
 	});
 
+	it("closes the Settings popover when focus leaves it, and on Escape from anywhere", async () => {
+		const user = userEvent.setup();
+		renderApp();
+		const gear = await within(
+			await screen.findByTestId("app-header-row"),
+		).findByRole("button", { name: "Settings" });
+		await user.click(gear);
+		expect(gear).toHaveAttribute("aria-expanded", "true");
+		// Focus moves on, out of the popover.
+		await user.tab();
+		expect(gear).toHaveAttribute("aria-expanded", "false");
+		await user.click(gear);
+		expect(gear).toHaveAttribute("aria-expanded", "true");
+		act(() => (document.activeElement as HTMLElement | null)?.blur());
+		await user.keyboard("{Escape}");
+		expect(gear).toHaveAttribute("aria-expanded", "false");
+		expect(gear).toHaveFocus();
+	});
+
 	it("shows the server's error message", async () => {
 		renderApp({
 			"/api/session": { status: 502, body: { error: "gh is not logged in" } },
