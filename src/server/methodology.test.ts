@@ -11,7 +11,12 @@ import {
 	expect,
 	it,
 } from "vitest";
-import { FAKE_GH_DIR, writeScenario } from "../../test/fake-gh/scenario";
+import {
+	FAKE_GH_DIR,
+	reviewThread,
+	threadComment,
+	writeScenario,
+} from "../../test/fake-gh/scenario";
 import { testGitEnv } from "../../test/git-fixture";
 import {
 	BEFORE_LANDING,
@@ -21,6 +26,7 @@ import {
 	METHODOLOGIES,
 	type MethodologyRepo,
 	type Stage,
+	TIMES,
 } from "../../test/methodology-fixture";
 import type { Snapshot } from "../shared/types";
 import { clonePath } from "./clone";
@@ -155,6 +161,84 @@ describe.each(METHODOLOGIES)("$name", (m) => {
 		});
 		expectPrOwnChanges(again);
 		expect((await again.review()).progress.clusters.reviewed).toBe(1);
+	});
+
+	it("builds thread code from the clone: the PR's own diff at each comment's commit, through the update and the landing", async () => {
+		/** A RIGHT line comment on a.txt, on `commit`, made `at`. */
+		const thread = (line: number, commit: string, at: string) =>
+			reviewThread({ path: "a.txt", line, diffSide: "RIGHT" }, [
+				threadComment({
+					login: "rev1",
+					text: `On ${line}`,
+					commit,
+					createdAt: at,
+				}),
+			]);
+		const threads = [
+			// On the first head, before the base moved.
+			thread(30, repo.heads.opened, TIMES.review),
+			// On the updated head, after the update: next to the base's line 15.
+			thread(14, repo.heads.updated, "2026-01-04T12:00:00Z"),
+		];
+		const withThreads = (s: Stage) => {
+			repo.setStage(s);
+			const entry = repo.prEntry(s);
+			process.env.CRB_FAKE_GH = writeScenario(tmp, {
+				repoPath: repo.path,
+				user: { login: "Octo_Cat" },
+				nameWithOwner: "acme/widget",
+				prs: {
+					[NUMBER]: {
+						...entry,
+						graphql: { ...entry.graphql, reviewThreads: threads },
+					},
+				},
+			});
+		};
+		const rows = async (s: Session) =>
+			(await s.overview(0)).threads.map((t) => ({
+				source: t.code?.source,
+				rows: t.code?.rows.map(
+					(r) =>
+						`${r.marked ? ">" : " "}${r.kind[0]} ${r.oldNo ?? "."}/${r.newNo ?? "."} ${r.text}`,
+				),
+			}));
+		const base15 = m.update === "none" ? "line 15" : "line 15 base";
+		const want = [
+			{
+				source: "clone",
+				rows: [
+					" c 27/27 line 27",
+					" c 28/28 line 28",
+					" c 29/29 line 29",
+					" d 30/. line 30",
+					">a ./30 line 30 changed",
+					" c 31/31 line 31",
+					" c 32/32 line 32",
+					" c 33/33 line 33",
+				].slice(1),
+			},
+			{
+				// The base's own change is context on both sides: never the PR's.
+				source: "clone",
+				rows: [
+					" c 11/11 line 11",
+					" c 12/12 line 12",
+					" c 13/13 line 13",
+					">c 14/14 line 14",
+					` c 15/15 ${base15}`,
+					" c 16/16 line 16",
+					" c 17/17 line 17",
+				],
+			},
+		];
+		withThreads("updated");
+		const s = await open();
+		// Most recent activity first.
+		expect((await rows(s)).reverse()).toEqual(want);
+		withThreads("landed");
+		await s.refresh();
+		expect((await rows(s)).reverse()).toEqual(want);
 	});
 
 	it("as of before any review, the head is the last of the commits sharing a second", async () => {

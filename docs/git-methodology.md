@@ -30,6 +30,23 @@ history.
 - **Force-push.** A started review stays on its patch set; the pinned head is
   held by the review's refs, so gc never prunes it
   (`docs/review-data-storage.md`).
+- **Thread code** (`src/server/threadCode.ts`). A line comment's code pane is
+  the PR's diff of its file at the commit the comment was made on, from the
+  clone (a commit a force-push dropped is fetched by OID): its old side is
+  `merge-base(commit, snapshot base)`, and that must be the merge base with
+  the base branch *as it stood when the comment was made*, or the old-side
+  rows could be ones the commenter never saw. "As it stood" is the last
+  first-parent commit of `origin/<base>` with a committer date at or before
+  the comment (`rev-list -1 --first-parent --before=<time>`). That holds for
+  merge commits, squash and rebase-and-merge landings, which GitHub commits
+  at landing time, and for a rebased or base-merged PR branch (both merge
+  bases are the fork point the commit was on). It can be wrong when commits
+  reach the base with older committer dates (a direct fast-forward push of
+  commits made earlier) or the base's history was rewritten: then the two
+  merge bases differ and the pane is GitHub's own diff hunk (`source:
+  "github"`), never a guess. Without a GitHub hunk, a range wholly on the new
+  side takes the snapshot's merge base alone (its own rows are right either
+  way; rows of the old side around it could be off in those cases).
 
 ## Test matrix
 
@@ -53,7 +70,7 @@ state, head, commits (with dates) and a review on the first head.
 
 Every permutation proves:
 
-- `src/server/methodology.test.ts` (unit, 4 tests × 12):
+- `src/server/methodology.test.ts` (unit, 6 tests × 12):
   - the snapshot equals the reference (B0 → the PR's first head: same files,
     same clusters and keys) at the opened and the updated stage, through a
     refresh and a fresh open;
@@ -63,7 +80,11 @@ Every permutation proves:
     the landing, survives `reflog expire` + `gc --prune=now`, and keeps its
     progress;
   - as of a cutoff before the update / before the landing shows the head and
-    comparison of then.
+    comparison of then;
+  - thread code comes from the clone at the updated stage and after the
+    landing: a comment on the first head (force-pushed away by a rebase)
+    shows that head's diff, and one on the updated head next to the base's
+    own change shows that change as context on both sides.
 - `e2e/methodology.spec.ts` (Playwright, desktop and phone, 12 each): the
   updated PR's Files page lists only the PR's files; once landed `crb`
   refuses exactly when merged.
