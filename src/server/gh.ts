@@ -293,11 +293,15 @@ function validOwnerRepo(owner: string, repo: string): boolean {
 	return OWNER.test(owner) && REPO.test(repo) && repo !== "." && repo !== "..";
 }
 
-export async function fetchPrMeta(ref: PrRef): Promise<PrMeta> {
+export async function fetchPrMeta(
+	ref: PrRef,
+	read: ReadSignal = {},
+): Promise<PrMeta> {
 	const v = rec(
 		await prView(
 			ref,
 			"number,title,url,state,baseRefName,headRefName,headRefOid,headRepository,headRepositoryOwner",
+			read,
 		),
 	);
 	const { headRefOid, baseRefName, headRefName } = v;
@@ -729,10 +733,14 @@ export function onlyMissingNodes(stdout: string): boolean {
 		errors.length > 0 &&
 		errors.every((e) => {
 			const path = rec(e).path;
+			// A missing entry itself (["nodes", i]); one inside a node that
+			// came back is a real failure.
 			return (
 				rec(e).type === "NOT_FOUND" &&
 				Array.isArray(path) &&
-				path[0] === "nodes"
+				path.length === 2 &&
+				path[0] === "nodes" &&
+				Number.isInteger(path[1])
 			);
 		})
 	);

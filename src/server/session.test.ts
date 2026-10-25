@@ -467,6 +467,47 @@ describe("Session", () => {
 			await expect(s.overview(0)).rejects.toThrow(/closed/);
 		});
 
+		it("stops on close the reads it no longer keeps: a failed overview's, and those pushed out", async () => {
+			const slowThreads = (over: Record<string, unknown> = {}) =>
+				pr.scenario({
+					threadsDelayMs: 1500,
+					...over,
+					prs: {
+						12: {
+							view: prView({ headRefOid: pr.head(), baseRefName: "main" }),
+							graphql: { reviewThreads: [reviewThread({ path: "a.txt" })] },
+						},
+					},
+				});
+			const s = await Session.open(pr.arg, process.cwd());
+			// Its overview fails (no description) while its threads go on.
+			slowThreads({ failGraphql: "{ bodyHTML }" });
+			await expect(s.overview(0)).rejects.toThrow();
+			// More reads than are kept: the oldest is pushed out, still running.
+			slowThreads();
+			for (let i = 0; i < 4; i++) await s.overview(0);
+			const started = Date.now();
+			await s.close();
+			expect(Date.now() - started).toBeLessThan(1200);
+			// Past when every summary would have come in: no content or other
+			// gh call follows, from any of them.
+			const calls = pr.ghLog();
+			await new Promise((r) => setTimeout(r, 1800));
+			expect(pr.ghLog()).toBe(calls);
+		});
+
+		it("stops a Refresh under way on close, not waiting for its gh", async () => {
+			const s = await Session.open(pr.arg, process.cwd());
+			pr.scenario({ prViewDelayMs: 3000 });
+			const refreshing = s.refresh();
+			refreshing.catch(() => {});
+			await new Promise((r) => setTimeout(r, 200));
+			const started = Date.now();
+			await s.close();
+			expect(Date.now() - started).toBeLessThan(2000);
+			await expect(refreshing).rejects.toThrow();
+		});
+
 		it("builds thread code from the clone, with rows after the range", async () => {
 			const head = pr.head();
 			pr.scenario({

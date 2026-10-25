@@ -84,6 +84,8 @@ export class Session {
 	readonly #threadCode: ThreadCodeSource;
 	/** Reads of GitHub, oldest first; see overview(). */
 	#reads: OverviewRead[] = [];
+	/** Every read not settled yet, kept or not: close() stops them all. */
+	readonly #live = new Set<OverviewRead>();
 	/** Reads a Refresh replaced: their threads still serve, their overview not. */
 	readonly #superseded = new WeakSet<OverviewRead>();
 	/** Serializes everything that writes or swaps the snapshot. */
@@ -109,6 +111,8 @@ export class Session {
 	/** Sessions not closed yet (closeAll). */
 	static readonly #open = new Set<Session>();
 	#closed: Promise<void> | null = null;
+	/** Stops the session's own reads (Refresh, head check) on close. */
+	readonly #stop = new AbortController();
 
 	/**
 	 * Stops its background reads of GitHub and the clone and waits until
@@ -117,9 +121,14 @@ export class Session {
 	close(): Promise<void> {
 		this.#closed ??= (async () => {
 			Session.#open.delete(this);
-			for (const read of this.#reads) read.abort();
+			for (const read of this.#live) read.abort();
+			// A Refresh or head check under way: its gh and fetch too.
+			this.#stop.abort();
 			this.#threadCode.close();
-			await Promise.all([...this.#reads.map((r) => r.settled), this.#queue]);
+			await Promise.all([
+				...[...this.#live].map((r) => r.settled),
+				this.#queue,
+			]);
 		})();
 		return this.#closed;
 	}
@@ -264,6 +273,9 @@ export class Session {
 				};
 			},
 		});
+		// Until it has settled, whether kept or not (close() stops it).
+		this.#live.add(read);
+		void read.settled.then(() => this.#live.delete(read));
 		// The newest few, so a page still showing an older one gets its threads.
 		this.#reads = [...this.#reads, read].slice(-KEPT_READS);
 		read.overview.catch(() => {
@@ -351,8 +363,9 @@ export class Session {
 		// GitHub is read while the snapshot moves; its code once it has.
 		const moved = this.#exclusive(async () => {
 			const seq = ++this.#metaSeq;
-			const meta = await fetchPrMeta(this.#ref());
-			const fetched = await fetchPr(this.repo, meta);
+			const signal = this.#stop.signal;
+			const meta = await fetchPrMeta(this.#ref(), { signal });
+			const fetched = await fetchPr(this.repo, meta, undefined, signal);
 			this.#setMeta(seq, meta);
 			const progress = await this.#progress();
 			// An unstarted review of a merged or closed PR has nothing to move
@@ -374,7 +387,10 @@ export class Session {
 	async checkHead(): Promise<SessionInfo> {
 		if (this.options.asOf) return this.info();
 		const seq = ++this.#metaSeq;
-		this.#setMeta(seq, await fetchPrMeta(this.#ref()));
+		this.#setMeta(
+			seq,
+			await fetchPrMeta(this.#ref(), { signal: this.#stop.signal }),
+		);
 		return this.info();
 	}
 

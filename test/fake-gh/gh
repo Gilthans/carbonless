@@ -117,6 +117,9 @@ switch (cmd) {
 	}
 	case "api graphql": {
 		const f = fields();
+		if (s.failGraphql && f.query?.includes(s.failGraphql)) {
+			fail("GraphQL: Something went wrong while executing your query.");
+		}
 		// Threads' opening-comment content by node id (any PR's threads).
 		const byIds = /nodes\(ids: \[([^\]]*)\]\)/.exec(f.query);
 		if (byIds) {

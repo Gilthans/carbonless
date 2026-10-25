@@ -261,6 +261,8 @@ export async function fetchPr(
 	path: string,
 	meta: PrMeta,
 	asOf?: string,
+	/** Stops the fetch (a session closing). */
+	signal?: AbortSignal,
 ): Promise<{ baseTip: string; head: string; mergeBase: string }> {
 	const base = meta.baseBranch;
 	const head = meta.headOid;
@@ -285,7 +287,7 @@ export async function fetchPr(
 				`+refs/heads/${base}:${baseRef}`,
 				`refs/pull/${meta.number}/head`,
 			],
-			{ env: { GIT_TERMINAL_PROMPT: "0" } },
+			{ env: { GIT_TERMINAL_PROMPT: "0" }, signal },
 		);
 		const present = () =>
 			runGit(path, ["cat-file", "-e", `${head}^{commit}`]).then(

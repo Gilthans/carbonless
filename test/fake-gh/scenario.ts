@@ -30,6 +30,8 @@ export interface Scenario {
 	 * content comes back null with a NOT_FOUND error, and gh exits 1.
 	 */
 	deletedThreads?: string[];
+	/** Every GraphQL query containing this text fails (gh exits 1). */
+	failGraphql?: string;
 	/** Nodes per GraphQL page (default 100, like gh.ts asks for). */
 	pageSize?: number;
 	/**

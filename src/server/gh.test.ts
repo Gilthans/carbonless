@@ -563,6 +563,12 @@ describe("onlyMissingNodes", () => {
 			onlyMissingNodes(answer([{ type: "FORBIDDEN", path: ["nodes", 0] }])),
 		).toBe(false);
 		expect(onlyMissingNodes(answer([missing(["repository"])]))).toBe(false);
+		// Inside a node that came back: a real failure, not a missing thread.
+		expect(
+			onlyMissingNodes(answer([missing(["nodes", 0, "first", "nodes", 0])])),
+		).toBe(false);
+		expect(onlyMissingNodes(answer([missing(["nodes", "0"])]))).toBe(false);
+		expect(onlyMissingNodes(answer([missing(["nodes"])]))).toBe(false);
 		expect(onlyMissingNodes(answer([missing(["nodes", 0])], null))).toBe(false);
 		expect(onlyMissingNodes("gh: not json")).toBe(false);
 	});
