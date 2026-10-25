@@ -343,7 +343,7 @@ describe("runGh with a fake gh", () => {
 		);
 	});
 
-	it("reads up to 200 threads in one round trip: the first and last pages together", async () => {
+	it("reads up to 199 threads in one round trip: the first and last pages together, overlapping", async () => {
 		const page = (paths: string[], next: boolean) =>
 			JSON.stringify({
 				data: {
@@ -433,18 +433,37 @@ describe("joinEnds", () => {
 	const ids = (nodes: unknown[] | null) =>
 		nodes?.map((n) => (n as { id: string }).id) ?? null;
 
-	it("joins the first and last pages when they cover the connection", () => {
-		expect(ids(joinEnds(page(["a", "b"], 4), page(["c", "d"], 4)))).toEqual([
-			"a",
-			"b",
-			"c",
-			"d",
-		]);
+	it("joins the first and last pages when they overlap and cover the connection", () => {
 		expect(ids(joinEnds(page(["a", "b"], 3), page(["b", "c"], 3)))).toEqual([
 			"a",
 			"b",
 			"c",
 		]);
+		const t = (from: number, to: number) =>
+			Array.from({ length: to - from }, (_, i) => `t${from + i}`);
+		expect(ids(joinEnds(page(t(0, 100), 199), page(t(99, 199), 199)))).toEqual(
+			t(0, 199),
+		);
+	});
+
+	it("refuses two pages that just meet: nothing shows the list didn't shift between them", () => {
+		const t = (from: number, to: number) =>
+			Array.from({ length: to - from }, (_, i) => `t${from + i}`);
+		// 200 threads, read as they are: no overlap to check, so not joined.
+		expect(joinEnds(page(t(0, 100), 200), page(t(100, 200), 200))).toBeNull();
+		// t50 deleted and t200 added between the reads: same total, and joining
+		// would silently drop t100.
+		expect(joinEnds(page(t(0, 100), 200), page(t(101, 201), 200))).toBeNull();
+		expect(joinEnds(page(["a", "b"], 4), page(["c", "d"], 4))).toBeNull();
+	});
+
+	it("refuses an overlap without ids", () => {
+		const bare = (n: number, total: number) => ({
+			nodes: Array.from({ length: n }, () => ({})),
+			next: "c",
+			total,
+		});
+		expect(joinEnds(bare(2, 3), bare(2, 3))).toBeNull();
 	});
 
 	it("refuses a gap, a changed total, an unknown total or a mismatched overlap", () => {

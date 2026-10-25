@@ -406,16 +406,18 @@ async function fetchPage(
 
 /**
  * The first and last pages as the whole connection, when together they
- * hold all of it: both count the same total, and where they overlap they
- * have the same nodes. Null otherwise (more than two pages, or it changed
- * between the two reads).
+ * hold all of it: both count the same total, they overlap by at least one
+ * node, and the overlap is the same nodes by id. Null otherwise: more than
+ * two pages, or no overlap to show nothing moved between the two reads (a
+ * thread deleted and another added keeps the total but shifts the pages,
+ * which would drop one).
  */
 export function joinEnds(first: Page, last: Page): unknown[] | null {
 	const total = first.total;
 	if (total === null || last.total !== total) return null;
 	const skip = first.nodes.length + last.nodes.length - total;
 	if (
-		skip < 0 ||
+		skip < 1 ||
 		skip > last.nodes.length ||
 		first.nodes.length > total ||
 		last.nodes.length > total
@@ -425,7 +427,7 @@ export function joinEnds(first: Page, last: Page): unknown[] | null {
 	for (let j = 0; j < skip; j++) {
 		const a = rec(first.nodes[total - last.nodes.length + j]).id;
 		const b = rec(last.nodes[j]).id;
-		if (a !== b) return null;
+		if (typeof a !== "string" || a !== b) return null;
 	}
 	return [...first.nodes, ...last.nodes.slice(skip)];
 }
@@ -433,7 +435,7 @@ export function joinEnds(first: Page, last: Page): unknown[] | null {
 /**
  * Every node of one PR connection, following `pageInfo` until the end.
  * Review threads are the slow read (about two seconds a page), so their
- * last page is read alongside the first: up to 200 threads take one round
+ * last page is read alongside the first: up to 199 threads take one round
  * trip. Past that, or if the two don't join, the pages are read in turn.
  */
 async function fetchConnection(
