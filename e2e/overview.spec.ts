@@ -984,6 +984,11 @@ test("suggested changes show as mini diffs of the commented lines, highlighted l
 	await expect(first.nth(0)).toContainText("7");
 	await expect(first.nth(0)).toContainText("const hit = this.map.get(key);");
 	await expect(first.nth(3)).toContainText("!expired(hit)");
+	// Opened, the comment's suggestions wrap like the code pane.
+	await expect(first.nth(3).locator("td").last()).toHaveCSS(
+		"white-space",
+		"pre-wrap",
+	);
 	// Same rendering as the code pane: highlighted, invisibles shown.
 	await expect(
 		first.nth(3).locator("span[style*=color]").first(),

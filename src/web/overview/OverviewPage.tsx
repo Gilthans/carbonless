@@ -991,7 +991,7 @@ function ThreadItem({ thread }: { thread: Thread }) {
 			data-testid="thread-body"
 			className={`relative ${commentSurface} ${open ? "" : "max-h-32 overflow-hidden"}`}
 		>
-			<CommentBody thread={thread} />
+			<CommentBody thread={thread} open={open} />
 			{commentClipped && (
 				<div
 					aria-hidden
@@ -1323,6 +1323,8 @@ function SuggestedChange(props: {
 	path: string;
 	removed: HunkLine[];
 	added: HunkLine[];
+	/** Wrapped once the comment is opened, like the code pane. */
+	wrap: boolean;
 }) {
 	const lines = [...props.removed, ...props.added];
 	return (
@@ -1341,7 +1343,7 @@ function SuggestedChange(props: {
 						<CodeRows
 							lines={lines}
 							path={props.path}
-							wrap={false}
+							wrap={props.wrap}
 							testId="suggestion-line"
 						/>
 					</table>
@@ -1392,7 +1394,7 @@ export function suggestionRemoved(
  * mini diffs (suggestions.ts). Whenever that can't be done exactly, the
  * whole comment is GitHub's HTML, as it was: nothing is dropped.
  */
-function CommentBody({ thread }: { thread: Thread }) {
+function CommentBody({ thread, open }: { thread: Thread; open: boolean }) {
 	const parts = useMemo(() => {
 		const split = splitSuggestions(thread.html, thread.body);
 		if (!split) return null;
@@ -1436,6 +1438,7 @@ function CommentBody({ thread }: { thread: Thread }) {
 						path={thread.path}
 						removed={part.removed}
 						added={part.added}
+						wrap={open}
 					/>
 				),
 			)}

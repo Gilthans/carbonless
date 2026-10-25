@@ -83,8 +83,8 @@ const rowText = (cell: Element) => cell.textContent ?? "";
  * between and after each block (still to be sanitized), and each block with
  * its lines from `body`. Null (show GitHub's HTML) unless every block GitHub
  * drew sits at the top level of the comment, they match the markdown's
- * blocks one for one, and each has as many added rows as its markdown has
- * lines.
+ * blocks one for one, and each block's added rows are its markdown lines,
+ * row for row (a trailing CR aside).
  */
 export function splitSuggestions(
 	html: string,
@@ -115,6 +115,11 @@ export function splitSuggestions(
 			// GitHub draws an empty suggestion with no added rows; a block of
 			// empty lines with as many empty rows.
 			if (addedRows.length !== added.length) return null;
+			// And the same text, row for row (a CR can't show in HTML).
+			const bare = (t: string) => t.replace(/\r$/, "");
+			if (addedRows.some((row, i) => bare(row) !== bare(added[i] ?? ""))) {
+				return null;
+			}
 			flush();
 			parts.push({ kind: "suggestion", added, removed: cells("deletion") });
 			continue;

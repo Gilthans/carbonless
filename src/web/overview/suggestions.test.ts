@@ -67,14 +67,23 @@ describe("splitSuggestions", () => {
 		]);
 	});
 
-	it("takes the text from the markdown, exactly, not from the highlighted HTML", () => {
+	it("takes the text from the markdown, exactly, once GitHub's rows agree", () => {
 		const parts = splitSuggestions(
-			suggestionHtml(["x"], ["a  b"]),
-			"```suggestion\na \u00a0b\t\n```",
+			suggestionHtml(["x"], ["a \u00a0b\t"]),
+			"```suggestion\r\na \u00a0b\t\r\n```",
 		);
 		expect(parts).toEqual([
 			{ kind: "suggestion", added: ["a \u00a0b\t"], removed: ["x"] },
 		]);
+	});
+
+	it("falls back when GitHub's added rows say something else", () => {
+		expect(
+			splitSuggestions(
+				suggestionHtml(["x"], ["a  b"]),
+				"```suggestion\na b\n```",
+			),
+		).toBeNull();
 	});
 
 	it("fails closed: no blocks, a count mismatch, a nested block, a short block", () => {
