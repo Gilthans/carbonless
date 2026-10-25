@@ -16,6 +16,7 @@ const TEXT = new Set([
 	".ts",
 	".tsx",
 	".js",
+	".jsx",
 	".mjs",
 	".cjs",
 	".json",
@@ -32,7 +33,7 @@ const TEXT = new Set([
 /** Whitespace a source file legitimately holds. */
 const ORDINARY = new Set([" ", "\t", "\n", "\r"]);
 /** Code files, where a raw combining mark must sit on a letter. */
-const CODE = new Set([".ts", ".tsx", ".js", ".mjs", ".cjs"]);
+const CODE = new Set([".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"]);
 const NONSPACING = /^[\p{Mn}\p{Me}]$/u;
 const LETTER = /^\p{L}$/u;
 

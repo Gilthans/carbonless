@@ -79,3 +79,10 @@ Not scheduled yet; after everything above.
 - **Custom agent pre-review actions and instructions:** let the reviewer define
   their own AI steps to run before a review starts (and standing instructions for
   how their agent should help), so each reviewer's workflow is their own.
+
+## Invisible characters: parked
+
+- ZWJ between emoji that aren't a known emoji sequence, and a redundant VS16, stay unescaped.
+- `rangeText` (copy) adds no line breaks at `<p>`, `<div>` or `<br>`, only between table rows.
+- Some UAX #11 wide ranges are missing from the tab-stop width table.
+- No keyboard path reaches the escape markers (their tooltips open on hover and tap only).

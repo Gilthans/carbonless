@@ -6,7 +6,11 @@ import {
 	type Piece,
 	renderInvisibles,
 } from "./invisibles";
-import { JOINING_SCRIPTS, JOINING_TYPES } from "./joiningTypes";
+import {
+	JOINING_SCRIPTS,
+	JOINING_TYPES,
+	JOINING_UNICODE,
+} from "./joiningTypes";
 
 /** What a line looks like: escapes and markers inline, tabs as `\t` + dots of padding. */
 function look(pieces: Piece[]): string {
@@ -377,6 +381,16 @@ describe("renderInvisibles", () => {
 });
 
 describe("JOINING_TYPES", () => {
+	it("is no newer than Node's Unicode (an older one fails closed)", () => {
+		const version = (v: string) => {
+			const [major = 0, minor = 0] = v.split(".").map(Number);
+			return major * 1000 + minor;
+		};
+		expect(version(JOINING_UNICODE)).toBeLessThanOrEqual(
+			version(process.versions.unicode ?? "0.0"),
+		);
+	});
+
 	it("is sorted and non-overlapping", () => {
 		let prev = -1;
 		for (const [first, last, type] of JOINING_TYPES) {
