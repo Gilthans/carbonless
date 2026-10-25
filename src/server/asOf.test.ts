@@ -78,6 +78,18 @@ describe("headAsOf", () => {
 		expect(headAsOf(commits, reviews, cutoff)).toBe(B);
 	});
 
+	it("takes the later commit in GitHub's list when commits share a second (a rebase)", () => {
+		const at = "2026-09-10T00:00:00Z";
+		const commits = [commit(A, at), commit(B, at), commit(C, at)];
+		expect(headAsOf(commits, [], cutoff)).toBe(C);
+	});
+
+	it("takes the later review in the list on a tie, and a review over a commit either way", () => {
+		const at = "2026-09-10T00:00:00Z";
+		expect(headAsOf([], [review(A, at), review(B, at)], cutoff)).toBe(B);
+		expect(headAsOf([commit(C, at)], [review(A, at)], cutoff)).toBe(A);
+	});
+
 	it("prefers the review on a tie", () => {
 		const at = "2026-09-12T00:00:00Z";
 		expect(headAsOf([commit(A, at)], [review(B, at)], cutoff)).toBe(B);

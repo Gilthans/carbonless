@@ -51,13 +51,15 @@ export const TIMES = {
 	review: "2026-01-02T12:00:00Z",
 	baseMoved: "2026-01-03T00:00:00Z",
 	updated: "2026-01-04T00:00:00Z",
-	/** The rebased PR's last commit. */
-	updatedLast: "2026-01-04T00:00:01Z",
 	baseMovedAgain: "2026-01-05T00:00:00Z",
 	landed: "2026-01-06T00:00:00Z",
 } as const;
 
-/** As-of cutoffs: the "opened" and "updated" stages as they were. */
+/**
+ * As-of cutoffs: the "opened" stage before and after rev1's review (before
+ * it, only the commit dates can tell the head), and the "updated" stage.
+ */
+export const BEFORE_REVIEW = "2026-01-02T06:00:00Z";
 export const BEFORE_UPDATE = "2026-01-03T12:00:00Z";
 export const BEFORE_LANDING = "2026-01-05T12:00:00Z";
 
@@ -165,16 +167,16 @@ export function createMethodologyRepo(
 		{ oid: p1b, at: TIMES.pr },
 	];
 	if (m.update === "rebase") {
-		// One second apart: as-of breaks a tie between commits by list order
-		// (see docs/git-methodology.md).
+		// Both in one second, as a rebase usually makes them: as-of takes the
+		// later one in GitHub's list.
 		checkout(b1);
 		run(["cherry-pick", p1a], TIMES.updated);
 		const p1aRebased = head();
-		run(["cherry-pick", p1b], TIMES.updatedLast);
+		run(["cherry-pick", p1b], TIMES.updated);
 		updated = head();
 		updatedCommits = [
 			{ oid: p1aRebased, at: TIMES.updated },
-			{ oid: updated, at: TIMES.updatedLast },
+			{ oid: updated, at: TIMES.updated },
 		];
 	} else if (m.update === "merge-base-in") {
 		checkout(p1b);

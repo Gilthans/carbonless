@@ -42,7 +42,8 @@ const OID = /^[0-9a-f]{40}([0-9a-f]{24})?$/;
  * - each review (`submittedAt`) with the commit it was made on, and
  * - each commit of the PR (`pushedDate`, else `committedDate`).
  * On a tie a review wins (a review at exactly the cutoff names the commit
- * that was reviewed). Reviews cover commits a later force-push dropped from
+ * that was reviewed); otherwise the later one in GitHub's list wins (both
+ * lists are oldest first, and a rebase pushes commits within one second). Reviews cover commits a later force-push dropped from
  * the PR's commit list; commit dates cover pushes nobody reviewed.
  * `committedDate` approximates the push time (GitHub no longer reports
  * pushes), so a commit made long before it was pushed counts from when it
@@ -58,7 +59,9 @@ export function headAsOf(
 		if (typeof oid !== "string" || !OID.test(oid)) return;
 		if (!atOrBefore(at, cutoff)) return;
 		const t = Date.parse(at as string);
-		if (!best || t > best.at || (t === best.at && review && !best.review)) {
+		// Commits are considered before reviews, each list in order: on a tie
+		// the later one wins, except that a commit never displaces a review.
+		if (!best || t > best.at || (t === best.at && (review || !best.review))) {
 			best = { at: t, oid, review };
 		}
 	};

@@ -70,9 +70,11 @@ Every permutation proves:
 Add new history-sensitive behaviour to the matrix rather than to a single
 fixture shape.
 
-## Known limitation
+## Commits in one second
 
 As-of picks the PR's head from commit dates (`src/server/asOf.ts`). Commits
-sharing one date (a rebase often gives them the same committer second) tie,
-and the first in GitHub's list wins, not the last. The fixture spaces the
-rebased commits a second apart to keep that out of the matrix.
+sharing one date (a rebase often gives them the same committer second) tie;
+the later one in GitHub's list (oldest first) wins, and a review at the same
+moment wins over both. The fixture gives the PR's own commits, and the
+rebased ones, one shared second each, and checks as of a moment before any
+review, so only the commit dates can name the head.

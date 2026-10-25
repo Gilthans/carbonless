@@ -15,6 +15,7 @@ import { FAKE_GH_DIR, writeScenario } from "../../test/fake-gh/scenario";
 import { testGitEnv } from "../../test/git-fixture";
 import {
 	BEFORE_LANDING,
+	BEFORE_REVIEW,
 	BEFORE_UPDATE,
 	createMethodologyRepo,
 	METHODOLOGIES,
@@ -154,6 +155,13 @@ describe.each(METHODOLOGIES)("$name", (m) => {
 		});
 		expectPrOwnChanges(again);
 		expect((await again.review()).progress.clusters.reviewed).toBe(1);
+	});
+
+	it("as of before any review, the head is the last of the commits sharing a second", async () => {
+		stage("opened");
+		const beforeReview = await open(BEFORE_REVIEW);
+		expect(beforeReview.info().snapshotHead).toBe(repo.heads.opened);
+		expectPrOwnChanges(beforeReview);
 	});
 
 	it("as of before the update and before the landing shows those snapshots", async () => {
