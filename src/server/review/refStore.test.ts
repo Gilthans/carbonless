@@ -168,7 +168,14 @@ describe("RefStore", () => {
 			8,
 		],
 	])("gives up after %s", async (_, retry, tries) => {
-		const mine = new RefStore(repo, retry);
+		// A frozen clock and no-op sleeps: the outcome must hinge on the retry
+		// options alone, not on how loaded the machine is (real backoff sleeps
+		// grow with each try's duration and timed this test out under load).
+		const mine = new RefStore(repo, {
+			...retry,
+			now: () => 0,
+			sleep: async () => {},
+		});
 		const other = new RefStore(repo);
 		const original = mine.commit.bind(mine);
 		let n = 0;
