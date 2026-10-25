@@ -159,7 +159,7 @@ test("crossing off keeps reviewed clusters, and undoing leaves clusters unreview
 	await fileAction(section, "Cross off file");
 	await expect(fileProgress(section)).toHaveAttribute(
 		"aria-valuetext",
-		"1 of 1 cluster reviewed, 1 crossed off",
+		/^done · 2 clusters · 1 of 1 cluster reviewed, 1 crossed off$/,
 	);
 	await expect(bar).toContainText("1 / 3 clusters reviewed");
 	// In files, a file with a crossed-off cluster counts as crossed off, never
@@ -539,8 +539,9 @@ test("tree rows show progress as aligned mini bars and counts in the unit", asyn
 		);
 	});
 	// A phone's two-row header leaves the count to the tree.
+	// (Decorative: the progress summary carries the name.)
 	await expect(
-		header.getByRole("img", { name: "2 clusters", includeHidden: true }),
+		header.locator("[aria-hidden=true]").filter({ hasText: /^2$/ }),
 	).toBeVisible({ visible: !isMobile });
 
 	await chooseUnit(page, "Files");
@@ -614,4 +615,42 @@ test("no element on the Files page uses a native title tooltip", async ({
 	await expand(page, "src/core.ts");
 	// SVG <title> children are names, not tooltips.
 	await expect(page.locator("[title]")).toHaveCount(0);
+});
+
+test("a header tooltip is above a stuck header and the diff", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	await pr(longFixture);
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	const section = await expand(page, "b/long.ts");
+	await section
+		.getByTestId("diff-line")
+		.filter({ hasText: /long 250 changed$/ })
+		.scrollIntoViewIfNeeded();
+	const mark = section.getByRole("button", { name: "Mark remaining reviewed" });
+	await mark.hover();
+	const tip = page.getByRole("tooltip").filter({ visible: true });
+	await expect(tip).toContainText("Mark all unreviewed");
+	// It lives outside the sticky header's stacking context, and the topmost
+	// thing at its centre is the tooltip itself (hit-testing skips it while it
+	// ignores the pointer, so let it take hits just for this check).
+	const topmost = await tip.evaluate((el) => {
+		el.style.pointerEvents = "auto";
+		const r = el.getBoundingClientRect();
+		const hit = document.elementFromPoint(
+			r.left + r.width / 2,
+			r.top + r.height / 2,
+		);
+		el.style.pointerEvents = "";
+		return {
+			top: hit === el,
+			inBody: el.parentElement === document.body,
+			z: getComputedStyle(el).zIndex,
+		};
+	});
+	expect(topmost.top).toBe(true);
+	expect(topmost.inBody).toBe(true);
 });

@@ -33,6 +33,24 @@ const fixture: PrOptions = {
 	],
 };
 
+/** Waits until the page has stopped scrolling (smooth scrolls take a while). */
+async function settled(page: Page) {
+	await page.evaluate(
+		() =>
+			new Promise<void>((done) => {
+				let last = Number.NaN;
+				let still = 0;
+				const tick = () => {
+					still = window.scrollY === last ? still + 1 : 0;
+					last = window.scrollY;
+					if (still >= 5) done();
+					else requestAnimationFrame(tick);
+				};
+				tick();
+			}),
+	);
+}
+
 async function expectNoPageOverflow(page: Page) {
 	const { scrollWidth, clientWidth } = await page.evaluate(() => ({
 		scrollWidth: document.documentElement.scrollWidth,
@@ -406,4 +424,40 @@ test("desktop keeps the file tree in a sidebar", async ({
 	expect(
 		Math.abs(path.y + path.height / 2 - (mark.y + mark.height / 2)),
 	).toBeLessThanOrEqual(2);
+});
+
+test("an open tooltip causes no horizontal page overflow", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	test.skip(!isMobile, "phone layout only");
+	await page.setViewportSize({ width: 360, height: 740 });
+	await pr(fixture);
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	const section = fileSection(page, `${LONG_DIR}/compatibility.ts`);
+	for (const name of ["Cross off file", "Mark remaining reviewed"]) {
+		// Focus, not tap: a tap would also run the action (which then hides it).
+		const button = section.getByRole("button", { name });
+		// Already in view, so focusing doesn't scroll (a scroll closes it).
+		await button.scrollIntoViewIfNeeded();
+		await settled(page);
+		await button.focus();
+		await expect(
+			page.getByRole("tooltip").filter({ visible: true }),
+		).toBeVisible();
+		await expectNoPageOverflow(page);
+	}
+	await settled(page);
+	await section.getByRole("progressbar", { name: "File progress" }).focus();
+	// Its text is the progressbar's value text, so it is hidden from the a11y tree.
+	const tip = page
+		.locator("[role=tooltip]:not([hidden])")
+		.filter({ hasText: "not started · 1 cluster" });
+	await expect(tip).toBeVisible();
+	await expectNoPageOverflow(page);
+	const box = await tip.boundingBox();
+	expect(box && box.x >= 0 && box.x + box.width <= 360).toBe(true);
 });

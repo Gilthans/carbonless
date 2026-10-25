@@ -1,10 +1,15 @@
 import { useLayoutEffect, useRef, useState } from "react";
 import type { ClusterView, FileView, StateChange } from "../../shared/types";
-import { Tooltip } from "../Tooltip";
+import { Tooltip, type TooltipTriggerProps } from "../Tooltip";
 import { ErrorMessage } from "../ui";
 import { DiffBody } from "./DiffBody";
 import { Meter } from "./ProgressBar";
-import { ChangeCount, StatusIcon } from "./status";
+import {
+	ChangeCount,
+	clusterCount,
+	fileProgress as fileStatus,
+	StatusIcon,
+} from "./status";
 import {
 	describeFileProgress,
 	fileUnitProgress,
@@ -149,43 +154,48 @@ function PathScroller({
 	);
 }
 
-/** The file's progress in the unit: fixed size, pinned right, so headers line up. */
-function FileProgress({ file, unit }: { file: FileView; unit: Unit }) {
+/**
+ * The file's progress in the unit: fixed size, pinned right, so headers line
+ * up. It is the header's one focusable summary (status, count and progress in
+ * one tooltip sentence), so keyboard and tap users get it in a single stop.
+ */
+function FileProgress(props: {
+	file: FileView;
+	unit: Unit;
+	summary: string;
+	trigger: TooltipTriggerProps;
+}) {
+	const { file, unit, summary, trigger } = props;
 	const p = fileUnitProgress(file, unit);
 	const { counts } = p;
-	const sentence = describeFileProgress(file, unit);
 	return (
-		<Tooltip content={sentence} describe={false}>
-			{(trigger) => (
-				<div
-					{...trigger}
-					role="progressbar"
-					aria-label="File progress"
-					aria-valuenow={p.percent}
-					aria-valuemin={0}
-					aria-valuemax={100}
-					aria-valuetext={sentence}
-					// Focusable so keyboard and touch users can read the tooltip.
-					// biome-ignore lint/a11y/noNoninteractiveTabindex: the tooltip opens on focus.
-					tabIndex={0}
-					className="flex h-9 w-28 shrink-0 flex-col justify-center gap-1 @lg:order-6 @2xl:w-48"
-				>
-					<span className="truncate text-right text-xs text-slate-600 tabular-nums">
-						<span className="@2xl:hidden">
-							{formatFileProgress(p, unit, { short: true })}
-						</span>
-						<span className="hidden @2xl:inline">
-							{formatFileProgress(p, unit, { withUnit: true })}
-						</span>
-					</span>
-					<Meter
-						counts={counts}
-						incomplete={p.clustersLeft > 0}
-						className="h-1.5"
-					/>
-				</div>
-			)}
-		</Tooltip>
+		<div
+			{...trigger}
+			role="progressbar"
+			aria-label="File progress"
+			aria-valuenow={p.percent}
+			aria-valuemin={0}
+			aria-valuemax={100}
+			aria-valuetext={summary}
+			// Focusable so keyboard and touch users can read the tooltip.
+			// biome-ignore lint/a11y/noNoninteractiveTabindex: the tooltip opens on focus.
+			tabIndex={0}
+			className="flex h-9 w-28 shrink-0 flex-col justify-center gap-1 rounded-sm focus-visible:outline-2 focus-visible:outline-blue-600 @lg:order-6 @2xl:w-48"
+		>
+			<span className="truncate text-right text-xs text-slate-600 tabular-nums">
+				<span className="@2xl:hidden">
+					{formatFileProgress(p, unit, { short: true })}
+				</span>
+				<span className="hidden @2xl:inline">
+					{formatFileProgress(p, unit, { withUnit: true })}
+				</span>
+			</span>
+			<Meter
+				counts={counts}
+				incomplete={p.clustersLeft > 0}
+				className="h-1.5"
+			/>
+		</div>
 	);
 }
 
@@ -261,6 +271,16 @@ export function FileDiff(props: {
 		none: unreviewed.length === 0 && crossed.length === 0,
 	};
 	const path = file.oldPath ? `${file.oldPath} → ${file.path}` : file.path;
+	// One sentence for the header's status, count and progress.
+	const status = fileStatus(file);
+	const sentence = describeFileProgress(file, props.unit);
+	const summary = [
+		sentence.startsWith(status) ? null : status,
+		props.unit === "clusters" ? clusterCount(file) : null,
+		sentence,
+	]
+		.filter(Boolean)
+		.join(" · ");
 	const idle =
 		file.clusters.length === 0
 			? "No clusters in this file"
@@ -285,85 +305,104 @@ export function FileDiff(props: {
 				 * row, everything else below it. Wide headers are one row, reordered
 				 * to toggle, status, path, count, actions, progress.
 				 */}
-				<div className="flex min-h-11 flex-wrap items-center gap-x-1.5 pt-1 @lg:flex-nowrap @lg:pt-0 @2xl:gap-x-3">
-					<PathScroller
-						text={path}
-						className="basis-full @lg:order-3 @lg:basis-0"
-					/>
-					<button
-						type="button"
-						aria-expanded={expanded}
-						aria-label={expanded ? "Collapse file" : "Expand file"}
-						onClick={() => setExpanded(!expanded)}
-						className="flex h-10 w-10 shrink-0 items-center justify-center rounded text-slate-600 hover:bg-slate-200 focus-visible:outline-2 focus-visible:outline-blue-600 @lg:order-1"
-					>
-						{expanded ? "▾" : "▸"}
-					</button>
-					<span className="flex shrink-0 @lg:order-2">
-						<StatusIcon file={file} tooltip />
-					</span>
-					{/* Left out of a phone's second row, where it wouldn't fit. */}
-					<span className="ml-auto hidden shrink-0 @sm:flex @lg:order-4 @lg:ml-0">
-						<ChangeCount file={file} unit={props.unit} tooltip />
-					</span>
-					<div className="ml-auto flex shrink-0 items-center gap-1.5 @sm:ml-0 @lg:order-5">
-						{crossToggle.undo ? (
-							<HeaderIconButton
-								label="Undo cross-off"
-								tooltip="Set crossed-off clusters back to unreviewed"
-								icon="⊘"
-								tone="purple"
-								pressed
-								disabled={pending}
-								onClick={() => {
-									// Back to unreviewed, never reviewed (R21).
-									saveAll(
-										crossed.map((c) => ({ key: c.key, state: "unreviewed" })),
-									).catch(() => {});
-								}}
+				<Tooltip content={summary} describe={false}>
+					{(summaryTrigger) => (
+						<div className="flex min-h-11 flex-wrap items-center gap-x-1.5 pt-1 @lg:flex-nowrap @lg:pt-0 @2xl:gap-x-3">
+							<PathScroller
+								text={path}
+								className="basis-full @lg:order-3 @lg:basis-0"
 							/>
-						) : (
-							<HeaderIconButton
-								label="Cross off file"
-								tooltip={
-									crossToggle.none
-										? idle
-										: "Mark all unreviewed clusters as not needing review"
-								}
-								icon="⊘"
-								tone="purple"
-								pressed={false}
-								disabled={pending || crossToggle.none}
-								onClick={() => {
-									// What the reviewer already read stays reviewed (R21).
-									saveAll(
-										unreviewed.map((c) => ({
-											key: c.key,
-											state: "crossed-off",
-										})),
-									).catch(() => {});
-								}}
+							<button
+								type="button"
+								aria-expanded={expanded}
+								aria-label={expanded ? "Collapse file" : "Expand file"}
+								onClick={() => setExpanded(!expanded)}
+								className="flex h-10 w-10 shrink-0 items-center justify-center rounded text-slate-600 hover:bg-slate-200 focus-visible:outline-2 focus-visible:outline-blue-600 @lg:order-1"
+							>
+								{expanded ? "▾" : "▸"}
+							</button>
+							<span className="flex shrink-0 @lg:order-2">
+								<StatusIcon file={file} hover={summaryTrigger} />
+							</span>
+							{/* Left out of a phone's second row, where it wouldn't fit. */}
+							<span className="ml-auto hidden shrink-0 @sm:flex @lg:order-4 @lg:ml-0">
+								<ChangeCount
+									file={file}
+									unit={props.unit}
+									hover={summaryTrigger}
+								/>
+							</span>
+							<div className="ml-auto flex shrink-0 items-center gap-1.5 @sm:ml-0 @lg:order-5">
+								{crossToggle.undo ? (
+									<HeaderIconButton
+										label="Undo cross-off"
+										tooltip="Set crossed-off clusters back to unreviewed"
+										icon="⊘"
+										tone="purple"
+										pressed
+										disabled={pending}
+										onClick={() => {
+											// Back to unreviewed, never reviewed (R21).
+											saveAll(
+												crossed.map((c) => ({
+													key: c.key,
+													state: "unreviewed",
+												})),
+											).catch(() => {});
+										}}
+									/>
+								) : (
+									<HeaderIconButton
+										label="Cross off file"
+										tooltip={
+											crossToggle.none
+												? idle
+												: "Mark all unreviewed clusters as not needing review"
+										}
+										icon="⊘"
+										tone="purple"
+										pressed={false}
+										disabled={pending || crossToggle.none}
+										onClick={() => {
+											// What the reviewer already read stays reviewed (R21).
+											saveAll(
+												unreviewed.map((c) => ({
+													key: c.key,
+													state: "crossed-off",
+												})),
+											).catch(() => {});
+										}}
+									/>
+								)}
+								<HeaderIconButton
+									label="Mark remaining reviewed"
+									tooltip={
+										unreviewed.length === 0
+											? idle
+											: "Mark all unreviewed clusters as reviewed"
+									}
+									icon="✓"
+									tone="green"
+									disabled={pending || unreviewed.length === 0}
+									onClick={() => {
+										saveAll(
+											unreviewed.map((c) => ({
+												key: c.key,
+												state: "reviewed",
+											})),
+										).catch(() => {});
+									}}
+								/>
+							</div>
+							<FileProgress
+								file={file}
+								unit={props.unit}
+								summary={summary}
+								trigger={summaryTrigger}
 							/>
-						)}
-						<HeaderIconButton
-							label="Mark remaining reviewed"
-							tooltip={
-								unreviewed.length === 0
-									? idle
-									: "Mark all unreviewed clusters as reviewed"
-							}
-							icon="✓"
-							tone="green"
-							disabled={pending || unreviewed.length === 0}
-							onClick={() => {
-								saveAll(
-									unreviewed.map((c) => ({ key: c.key, state: "reviewed" })),
-								).catch(() => {});
-							}}
-						/>
-					</div>
-					<FileProgress file={file} unit={props.unit} />
-				</div>
+						</div>
+					)}
+				</Tooltip>
 			</header>
 			{setStates.isError && !isStale(setStates.error) && (
 				<div className="px-2 py-1.5">

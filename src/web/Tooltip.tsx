@@ -8,6 +8,7 @@ import {
 	useRef,
 	useState,
 } from "react";
+import { createPortal } from "react-dom";
 
 /** Props the trigger element spreads onto itself. */
 export interface TooltipTriggerProps {
@@ -22,6 +23,43 @@ export interface TooltipTriggerProps {
 
 /** How long the pointer rests on a trigger before its tooltip shows. */
 export const HOVER_DELAY_MS = 150;
+
+// Whether the last input was the keyboard or a touch (focus-visible's own
+// heuristic, tracked here so it also holds where :focus-visible is missing).
+// Their focus keeps a tooltip open until blur; a mouse click's focus does not.
+let lastInputKeepsOpen = false;
+let lastPointerType = "";
+if (typeof window !== "undefined") {
+	window.addEventListener(
+		"keydown",
+		(e) => {
+			if (e.key !== "Escape") lastInputKeepsOpen = true;
+		},
+		true,
+	);
+	window.addEventListener(
+		"pointerdown",
+		(e) => {
+			lastPointerType = e.pointerType;
+			lastInputKeepsOpen = e.pointerType === "touch";
+		},
+		true,
+	);
+	// A mouse event after a touch is emulated; one with no pointer event
+	// before it (old engines, test tools) is a plain click.
+	window.addEventListener(
+		"mousedown",
+		() => {
+			lastInputKeepsOpen = lastPointerType === "touch";
+		},
+		true,
+	);
+}
+
+/** Whether the element has focus that should hold its tooltip open. */
+function keepOpenFocus(el: HTMLElement | null): boolean {
+	return !!el && el.contains(document.activeElement) && lastInputKeepsOpen;
+}
 
 const GAP = 6;
 const MARGIN = 8;
@@ -73,11 +111,28 @@ export function Tooltip(props: {
 	useEffect(() => {
 		if (!open) return;
 		const close = () => setOpen(false);
+		// Escape dismisses it wherever focus is (a hover-opened one has none).
+		const onKey = (e: globalThis.KeyboardEvent) => {
+			if (e.key === "Escape") close();
+		};
 		window.addEventListener("scroll", close, true);
 		window.addEventListener("resize", close);
+		window.addEventListener("keydown", onKey);
+		// A focused button that becomes disabled gets no blur in Chrome.
+		const el = trigger.current;
+		const observer = new MutationObserver(close);
+		if (el) {
+			observer.observe(el, {
+				attributes: true,
+				attributeFilter: ["disabled"],
+				subtree: true,
+			});
+		}
 		return () => {
 			window.removeEventListener("scroll", close, true);
 			window.removeEventListener("resize", close);
+			window.removeEventListener("keydown", onKey);
+			observer.disconnect();
 		};
 	}, [open]);
 
@@ -108,7 +163,8 @@ export function Tooltip(props: {
 				},
 				onMouseLeave: () => {
 					clearTimeout(timer.current);
-					if (trigger.current !== document.activeElement) setOpen(false);
+					// Keyboard or touch focus keeps it open; a click's focus does not.
+					if (!keepOpenFocus(trigger.current)) setOpen(false);
 				},
 				onFocus: show,
 				onBlur: hide,
@@ -116,21 +172,24 @@ export function Tooltip(props: {
 					if (e.key === "Escape") hide();
 				},
 			})}
-			<span
-				ref={tip}
-				id={id}
-				role="tooltip"
-				aria-hidden={props.describe === false ? true : undefined}
-				hidden={!open}
-				style={{
-					left: pos?.left ?? 0,
-					top: pos?.top ?? 0,
-					visibility: pos ? "visible" : "hidden",
-				}}
-				className="pointer-events-none fixed z-50 w-max max-w-[min(20rem,calc(100vw-1rem))] rounded-md bg-slate-900 px-2 py-1 text-xs leading-5 font-normal whitespace-normal text-white shadow-lg"
-			>
-				{props.content}
-			</span>
+			{createPortal(
+				<span
+					ref={tip}
+					id={id}
+					role="tooltip"
+					aria-hidden={props.describe === false ? true : undefined}
+					hidden={!open}
+					style={{
+						left: pos?.left ?? 0,
+						top: pos?.top ?? 0,
+						visibility: pos ? "visible" : "hidden",
+					}}
+					className="pointer-events-none fixed z-[1000] w-max max-w-[min(20rem,calc(100vw-1rem))] rounded-md bg-slate-900 px-2 py-1 text-xs leading-5 font-normal whitespace-normal text-white shadow-lg"
+				>
+					{props.content}
+				</span>,
+				document.body,
+			)}
 		</>
 	);
 }

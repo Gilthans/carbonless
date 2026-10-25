@@ -375,7 +375,7 @@ describe("FileDiff", () => {
 		expect(progress).toHaveTextContent("3 / 8 lines");
 		expect(progress).toHaveAttribute(
 			"aria-valuetext",
-			"3 of 8 lines reviewed, 2 crossed off",
+			"partly done · 3 of 8 lines reviewed, 2 crossed off",
 		);
 		cleanup();
 		setup(f, undefined, hunks, "files");
@@ -431,12 +431,6 @@ describe("FileDiff", () => {
 		expect(screen.getByTestId("file-path")).toHaveFocus();
 		await user.tab();
 		expect(screen.getByRole("button", { name: "Expand file" })).toHaveFocus();
-		// The icons that only carry a tooltip are focusable so touch and
-		// keyboard users can read it: status, count, then the actions.
-		await user.tab();
-		expect(screen.getByRole("img", { name: "not started" })).toHaveFocus();
-		await user.tab();
-		expect(screen.getByRole("img", { name: "1 cluster" })).toHaveFocus();
 		await user.tab();
 		expect(
 			screen.getByRole("button", { name: "Cross off file" }),
@@ -445,6 +439,19 @@ describe("FileDiff", () => {
 		expect(
 			screen.getByRole("button", { name: "Mark remaining reviewed" }),
 		).toHaveFocus();
+		// Status, count and progress are one stop, with one tooltip.
+		await user.tab();
+		const summary = screen.getByRole("progressbar", { name: "File progress" });
+		expect(summary).toHaveFocus();
+		const open = [...document.querySelectorAll("[role=tooltip]")].filter(
+			(t) => !t.hasAttribute("hidden"),
+		);
+		expect(open).toHaveLength(1);
+		expect(open[0]).toHaveTextContent(
+			"not started · 1 cluster · 0 of 1 cluster reviewed",
+		);
+		await user.tab();
+		expect(document.body).toHaveFocus();
 	});
 
 	it("puts the full path in a scroll box", () => {
@@ -658,9 +665,11 @@ describe("FileDiff", () => {
 		cleanup();
 		setup(f, undefined, hunks, "clusters");
 		expect(header()).not.toHaveTextContent("+4");
-		expect(screen.getByRole("img", { name: "2 clusters" })).toHaveTextContent(
-			"2",
-		);
+		// The count is decorative: the summary stop names it.
+		expect(screen.queryByRole("img", { name: "2 clusters" })).toBeNull();
+		expect(
+			screen.getByRole("progressbar", { name: "File progress" }),
+		).toHaveAttribute("aria-valuetext", expect.stringContaining("2 clusters"));
 		cleanup();
 		setup(f, undefined, hunks, "files");
 		expect(header()).not.toHaveTextContent("+4");

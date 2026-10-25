@@ -317,7 +317,11 @@ describe("OverviewPage", () => {
 		});
 		// Keyboard and touch reach the tooltip too: the icon takes focus.
 		changes.focus();
-		expect(await within(rev1).findByText("Changes requested")).toBeVisible();
+		expect(
+			await screen.findByText("Changes requested", {
+				selector: "[role=tooltip]",
+			}),
+		).toBeVisible();
 		// The later comment is secondary: smaller, after a short "then".
 		const then = within(rev1).getByRole("img", { name: "then commented" });
 		expect(then.querySelector("svg")).toHaveAttribute("width", "12");
@@ -445,7 +449,11 @@ describe("OverviewPage", () => {
 		if (!lint) throw new Error("no check");
 		expect(within(lint).getByRole("img", { name: "failing" })).toBeVisible();
 		expect(within(lint).getByRole("link")).toHaveTextContent(/^lint$/);
-		expect(within(lint).queryByText("failing")).not.toBeVisible();
+		// The tooltip lives in a portal, hidden until opened.
+		expect(within(lint).queryByText("failing")).toBeNull();
+		expect(
+			screen.getAllByText("failing", { selector: "[role=tooltip]" })[0],
+		).not.toBeVisible();
 	});
 
 	it("shows the overview's error message", async () => {

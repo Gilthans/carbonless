@@ -1,7 +1,6 @@
 import { StackIcon } from "@primer/octicons-react";
 import type { ReactNode } from "react";
 import type { FileView } from "../../shared/types";
-import { Tooltip } from "../Tooltip";
 import type { Unit } from "./unit";
 
 export type FileProgress =
@@ -33,17 +32,24 @@ const ICON: Record<FileProgress, { glyph: string; className: string }> = {
 	"crossed off": { glyph: "⊘", className: "text-purple-600" },
 };
 
+/** Mouse handlers a decorative piece forwards to the header's one tooltip. */
+export interface HoverProps {
+	onMouseEnter: () => void;
+	onMouseLeave: () => void;
+}
+
 /**
- * A glyph named by `label`. With `tooltip` it is focusable and shows the label
- * as a tooltip (alone, not inside another control).
+ * A glyph named by `label`. With `hover` it is decorative (hidden from
+ * assistive tech): the header's one focusable summary carries the name, and
+ * hovering the glyph shows that same tooltip.
  */
 function NamedGlyph(props: {
 	label: string;
-	tooltip?: boolean;
+	hover?: HoverProps;
 	className: string;
 	children: ReactNode;
 }) {
-	if (!props.tooltip) {
+	if (!props.hover) {
 		return (
 			<span role="img" aria-label={props.label} className={props.className}>
 				{props.children}
@@ -51,42 +57,41 @@ function NamedGlyph(props: {
 		);
 	}
 	return (
-		<Tooltip content={props.label} describe={false}>
-			{(trigger) => (
-				<span
-					{...trigger}
-					role="img"
-					aria-label={props.label}
-					// Focusable so keyboard and touch users can read the tooltip.
-					// biome-ignore lint/a11y/noNoninteractiveTabindex: the tooltip opens on focus.
-					tabIndex={0}
-					className={`${props.className} cursor-help rounded-sm focus-visible:outline-2 focus-visible:outline-blue-600`}
-				>
-					{props.children}
-				</span>
-			)}
-		</Tooltip>
+		<span
+			aria-hidden
+			onMouseEnter={props.hover.onMouseEnter}
+			onMouseLeave={props.hover.onMouseLeave}
+			className={`${props.className} cursor-help`}
+		>
+			{props.children}
+		</span>
 	);
 }
 
 export function StatusIcon({
 	file,
-	tooltip,
+	hover,
 }: {
 	file: FileView;
-	tooltip?: boolean;
+	hover?: HoverProps;
 }) {
 	const progress = fileProgress(file);
 	const icon = ICON[progress];
 	return (
 		<NamedGlyph
 			label={progress}
-			tooltip={tooltip}
+			hover={hover}
 			className={`inline-block w-4 shrink-0 text-center ${icon.className}`}
 		>
 			{icon.glyph}
 		</NamedGlyph>
 	);
+}
+
+/** "2 clusters". */
+export function clusterCount(file: FileView): string {
+	const n = file.clusters.length;
+	return `${n} ${n === 1 ? "cluster" : "clusters"}`;
 }
 
 export function AddDel({ file }: { file: FileView }) {
@@ -105,23 +110,22 @@ export function AddDel({ file }: { file: FileView }) {
 export function ChangeCount({
 	file,
 	unit,
-	tooltip,
+	hover,
 }: {
 	file: FileView;
 	unit: Unit;
-	tooltip?: boolean;
+	hover?: HoverProps;
 }) {
 	if (unit === "lines") return <AddDel file={file} />;
 	if (unit === "files") return null;
-	const n = file.clusters.length;
-	const label = `${n} ${n === 1 ? "cluster" : "clusters"}`;
+	const label = clusterCount(file);
 	return (
 		<NamedGlyph
 			label={label}
-			tooltip={tooltip}
+			hover={hover}
 			className="inline-flex shrink-0 items-center gap-0.5 font-mono text-xs text-slate-600 tabular-nums"
 		>
-			{n}
+			{file.clusters.length}
 			<StackIcon size={12} className="text-slate-400" />
 		</NamedGlyph>
 	);
