@@ -63,12 +63,41 @@
 	--color-del: #2d1221;
 	--color-del-gutter: #3e172c;
 	--color-del-ink: #ff94aa;
+	/* Reviewed lines: the add/del tints, quieter. */
+	--color-add-done: #121c1b;
+	--color-del-done: #1b1420;
 	--color-hunk: #151936;
 	--color-hunk-ink: #a7b0e8;
 
 	/* The primary action's gradient ends (white text on both). */
 	--color-cta-from: #6a3fe0;
 	--color-cta-to: #c0177a;
+
+	/* Shadows: black at the strength each layer needs. */
+	--color-shade: #000000;
+	--shadow-float: 0 8px 24px -6px
+		color-mix(in srgb, var(--color-shade) 70%, transparent);
+	--shadow-control: 0 6px 18px -4px
+		color-mix(in srgb, var(--color-shade) 70%, transparent);
+	--shadow-header: 0 12px 32px -16px
+		color-mix(in srgb, var(--color-shade) 90%, transparent);
+	--shadow-sheet: 0 -12px 40px
+		color-mix(in srgb, var(--color-shade) 60%, transparent);
+}
+
+/* The header's faint brand glow, over its solid surface color. */
+@utility header-glow {
+	background-image:
+		radial-gradient(
+			48rem 10rem at 0% 0%,
+			color-mix(in srgb, var(--color-violet) 13%, transparent),
+			transparent 70%
+		),
+		radial-gradient(
+			36rem 9rem at 100% 0%,
+			color-mix(in srgb, var(--color-magenta) 7%, transparent),
+			transparent 70%
+		);
 }
 
 @utility hatch {
@@ -98,8 +127,8 @@
 		var(--color-cta-to)
 	);
 	box-shadow:
-		0 0 0 1px rgb(255 255 255 / 0.08) inset,
-		0 6px 24px -6px rgb(238 31 145 / 0.45);
+		0 0 0 1px color-mix(in srgb, var(--color-ink) 8%, transparent) inset,
+		0 6px 24px -6px color-mix(in srgb, var(--color-magenta) 45%, transparent);
 }
 
 @layer base {
@@ -117,7 +146,7 @@
 	}
 
 	::selection {
-		background-color: rgb(115 59 246 / 0.5);
+		background-color: color-mix(in srgb, var(--color-violet) 50%, transparent);
 		color: var(--color-ink);
 	}
 

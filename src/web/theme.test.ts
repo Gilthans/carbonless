@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
-import { SYNTAX } from "./files/syntaxTheme";
+import { SYNTAX, syntaxTheme } from "./files/syntaxTheme";
 
 /** The color tokens, read from index.css's @theme block. */
 const css = readFileSync(resolve(import.meta.dirname, "index.css"), "utf8");
@@ -48,6 +48,25 @@ function over(fg: string, alpha: number, bg: string): string {
 }
 
 const SURFACES = ["canvas", "surface", "raised"];
+
+/** Hue in degrees, and the circular distance between two hues. */
+function hue(hex: string): number {
+	const [r = 0, g = 0, b = 0] = rgb(hex).map((v) => v / 255);
+	const max = Math.max(r, g, b);
+	const d = max - Math.min(r, g, b);
+	if (d === 0) return 0;
+	const h =
+		max === r
+			? ((g - b) / d) % 6
+			: max === g
+				? (b - r) / d + 2
+				: (r - g) / d + 4;
+	return (h * 60 + 360) % 360;
+}
+const hueGap = (a: string, b: string) => {
+	const d = Math.abs(hue(a) - hue(b));
+	return Math.min(d, 360 - d);
+};
 
 describe("color tokens", () => {
 	it("text reads at 4.5:1 on every surface", () => {
@@ -123,6 +142,36 @@ describe("color tokens", () => {
 		}
 	});
 
+	it("the focus ring shows at 3:1 on everything it can sit on", () => {
+		const behind = [
+			...SURFACES,
+			"overlay",
+			"pressed",
+			"code",
+			"hunk",
+			"add",
+			"del",
+			"add-done",
+			"del-done",
+			"add-gutter",
+			"del-gutter",
+		].map((name) => [name, token(name)] as const);
+		// The tree's current row: accent/12 over the sidebar and the sheet.
+		for (const bg of ["canvas", "surface"]) {
+			behind.push([
+				`current row over ${bg}`,
+				over(token("accent"), 0.12, token(bg)),
+			]);
+		}
+		for (const [name, color] of behind) {
+			expect(contrast(token("accent"), color), name).toBeGreaterThanOrEqual(3);
+		}
+	});
+
+	it("errors read on the hunk rows they can appear in", () => {
+		expect(contrast(token("bad"), token("hunk"))).toBeGreaterThanOrEqual(4.5);
+	});
+
 	it("pressed and selected controls keep their label readable", () => {
 		expect(
 			contrast(token("ink"), token("crossed-strong")),
@@ -135,12 +184,18 @@ describe("color tokens", () => {
 				contrast(token("ink"), token(end)),
 				`ink on ${end}`,
 			).toBeGreaterThanOrEqual(4.5);
+			// The progress chip inside "Review files": canvas/35 over the gradient.
+			expect(
+				contrast(token("ink"), over(token("canvas"), 0.35, token(end))),
+				`ink on the chip over ${end}`,
+			).toBeGreaterThanOrEqual(4.5);
 		}
 	});
 });
 
 describe("diff colors", () => {
-	const CODE_BGS = ["code", "add", "del"];
+	// Reviewed clusters keep full text contrast on their quieter tints.
+	const CODE_BGS = ["code", "add", "del", "add-done", "del-done"];
 
 	it("code text and every syntax color read at 4.5:1 on context, added and deleted lines", () => {
 		for (const [name, color] of Object.entries(SYNTAX)) {
@@ -165,6 +220,8 @@ describe("diff colors", () => {
 			["add-ink", "add"],
 			["del-ink", "del-gutter"],
 			["del-ink", "del"],
+			["add-ink", "add-done"],
+			["del-ink", "del-done"],
 			["hunk-ink", "hunk"],
 		];
 		for (const [fg = "", bg = ""] of pairs) {
@@ -176,18 +233,6 @@ describe("diff colors", () => {
 	});
 
 	it("keeps added green and deleted red apart from each other", () => {
-		const hue = (hex: string) => {
-			const [r = 0, g = 0, b = 0] = rgb(hex).map((v) => v / 255);
-			const max = Math.max(r, g, b);
-			const d = max - Math.min(r, g, b);
-			const h =
-				max === r
-					? ((g - b) / d) % 6
-					: max === g
-						? (b - r) / d + 2
-						: (r - g) / d + 4;
-			return (h * 60 + 360) % 360;
-		};
 		// Green: between yellow-green and teal; red: between magenta and red.
 		for (const green of ["ok", "ok-fill", "add-ink"]) {
 			expect(hue(token(green))).toBeGreaterThan(120);
@@ -196,5 +241,31 @@ describe("diff colors", () => {
 		for (const red of ["bad", "del-ink"]) {
 			expect(hue(token(red))).toBeGreaterThan(330);
 		}
+	});
+
+	it("keeps every syntax hue at least 25° from the added and deleted inks", () => {
+		for (const [name, color] of Object.entries(SYNTAX)) {
+			for (const ink of ["add-ink", "del-ink"]) {
+				expect(
+					hueGap(color, token(ink)),
+					`${name} vs ${ink}`,
+				).toBeGreaterThanOrEqual(25);
+			}
+		}
+	});
+});
+
+describe("literal colors that mirror tokens", () => {
+	it("the theme-color meta is the header surface", () => {
+		const html = readFileSync(
+			resolve(import.meta.dirname, "index.html"),
+			"utf8",
+		);
+		const meta = html.match(/name="theme-color" content="(#[0-9a-f]{6})"/i);
+		expect(meta?.[1]?.toLowerCase()).toBe(token("surface"));
+	});
+
+	it("the syntax theme's background is the code background", () => {
+		expect(syntaxTheme.colors?.["editor.background"]).toBe(token("code"));
 	});
 });

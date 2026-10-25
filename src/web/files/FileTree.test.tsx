@@ -291,3 +291,26 @@ describe("FileTree", () => {
 		expect(onSelect).toHaveBeenCalledWith(1);
 	});
 });
+
+describe("tooltip paths", () => {
+	afterEach(cleanup);
+
+	it("shows file and folder paths in tooltips in monospace", () => {
+		render(
+			<FileTree
+				files={[file(0, "src/a/x.ts", ["unreviewed"]), file(1, "y.ts", [])]}
+				unit="lines"
+				current={null}
+				onSelect={() => {}}
+			/>,
+		);
+		const paths = [
+			...document.querySelectorAll('[role="tooltip"] [data-tooltip-path]'),
+		].map((el) => [el.textContent, el.tagName, el.className]);
+		expect(paths).toEqual([
+			["src/a", "CODE", expect.stringContaining("font-mono")],
+			["src/a/x.ts", "CODE", expect.stringContaining("font-mono")],
+			["y.ts", "CODE", expect.stringContaining("font-mono")],
+		]);
+	});
+});

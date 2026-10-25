@@ -2,20 +2,22 @@ import type { ThemeRegistration } from "shiki/core";
 
 /**
  * Syntax colors from the brand palette, lightened so each one reads at
- * 4.5:1 or more on the code, added and deleted line backgrounds (checked by
- * src/web/theme.test.ts). No greens or reds: those mean added and deleted.
+ * 4.5:1 or more on the code, added and deleted line backgrounds. Green and
+ * red mean added and deleted, so every hue stays at least 25° from the
+ * add/del inks (both checked by src/web/theme.test.ts): keywords are orchid,
+ * not pink.
  */
 export const SYNTAX = {
 	text: "#e6e3f2",
 	comment: "#9497bd",
-	keyword: "#ff7ac2",
+	keyword: "#d69cff",
 	string: "#ffd479",
 	number: "#ffa466",
-	func: "#5ee6da",
-	type: "#c3aeff",
-	property: "#afc3ff",
+	func: "#5cd3f5",
+	type: "#9fb4ff",
+	property: "#cdd3f5",
 	punctuation: "#b3b5d6",
-	invalid: "#ff8fa6",
+	invalid: "#ffb454",
 } as const;
 
 const c = SYNTAX;
@@ -25,6 +27,7 @@ export const syntaxTheme: ThemeRegistration = {
 	type: "dark",
 	colors: {
 		"editor.foreground": c.text,
+		// Unused (the diff paints its own backgrounds); --color-code in index.css.
 		"editor.background": "#0e1019",
 	},
 	settings: [

@@ -81,7 +81,7 @@ function FilesSheet(props: {
 			onKeyDown={(event) => {
 				if (event.key === "Escape") props.onClose();
 			}}
-			className="m-0 mt-auto h-[85dvh] max-h-none w-full max-w-none overflow-hidden rounded-t-2xl border-t border-edge bg-surface p-0 text-ink shadow-[0_-12px_40px_rgb(0_0_0/0.6)] backdrop:bg-canvas/70 backdrop:backdrop-blur-[2px]"
+			className="m-0 mt-auto h-[85dvh] max-h-none w-full max-w-none overflow-hidden rounded-t-2xl border-t border-edge bg-surface p-0 text-ink shadow-sheet backdrop:bg-canvas/70 backdrop:backdrop-blur-[2px]"
 		>
 			<div className="flex h-full flex-col">
 				<div className="flex items-center justify-between border-b border-line px-4 py-1">

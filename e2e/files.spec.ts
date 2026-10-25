@@ -656,3 +656,32 @@ test("a header tooltip is above a stuck header and the diff", async ({
 	expect(topmost.top).toBe(true);
 	expect(topmost.inBody).toBe(true);
 });
+
+test("paths in tooltips are monospace, like paths everywhere", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	await pr(fixture);
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	// The open tooltip's path (closed ones are hidden, out of the a11y tree).
+	const pathFont = () =>
+		page.evaluate(() => {
+			const path = document.querySelector(
+				'[role="tooltip"]:not([hidden]) [data-tooltip-path]',
+			);
+			return path ? getComputedStyle(path).fontFamily : "";
+		});
+
+	// The file header's full path.
+	await fileSection(page, "src/core.ts").getByTestId("file-path").focus();
+	await expect.poll(pathFont).toMatch(/monospace/);
+	await page.keyboard.press("Escape");
+
+	// A tree file.
+	await withTree(page, async (tree) => {
+		await tree.getByRole("button", { name: /util\.ts/ }).focus();
+		await expect.poll(pathFont).toMatch(/monospace/);
+	});
+});

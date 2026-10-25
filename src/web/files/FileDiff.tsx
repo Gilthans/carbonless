@@ -1,6 +1,6 @@
 import { useLayoutEffect, useRef, useState } from "react";
 import type { ClusterView, FileView, StateChange } from "../../shared/types";
-import { Tooltip, type TooltipTriggerProps } from "../Tooltip";
+import { Tooltip, TooltipPath, type TooltipTriggerProps } from "../Tooltip";
 import { ErrorMessage } from "../ui";
 import { DiffBody } from "./DiffBody";
 import { Meter } from "./ProgressBar";
@@ -117,7 +117,7 @@ function PathScroller({
 	}, [text]);
 	return (
 		<div className={`relative min-w-0 flex-1 ${className}`}>
-			<Tooltip content={text} describe={false}>
+			<Tooltip content={<TooltipPath>{text}</TooltipPath>} describe={false}>
 				{(trigger) => (
 					// biome-ignore lint/a11y/useSemanticElements: a named group; a fieldset is for form controls, not a path.
 					<div

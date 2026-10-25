@@ -20,8 +20,8 @@ export function Mark({ className = "" }: { className?: string }) {
  * 0.016em below the baseline to 0.516em above it).
  */
 function StarO() {
-	const r = 168;
-	const k = 0.2 * r;
+	const r = 190;
+	const k = 0.29 * r;
 	const star = `M297 ${266 - r}Q${297 + k} ${266 - k} ${297 + r} 266Q${297 + k} ${266 + k} 297 ${266 + r}Q${297 - k} ${266 + k} ${297 - r} 266Q${297 - k} ${266 - k} 297 ${266 - r}Z`;
 	return (
 		<svg

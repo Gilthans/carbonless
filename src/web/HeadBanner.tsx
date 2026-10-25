@@ -29,8 +29,8 @@ export function HeadBanner({ info }: { info: SessionInfo }) {
 			<p className="mx-auto max-w-5xl px-4 py-2 break-words sm:px-6">
 				<span>
 					New commits were pushed to this PR. You're reviewing the snapshot from{" "}
-					{info.snapshotHead.slice(0, 7)}; there's no way to move to the new
-					head yet.
+					<code className="font-mono">{info.snapshotHead.slice(0, 7)}</code>
+					{"; "}there's no way to move to the new head yet.
 				</span>
 				{href && (
 					<>

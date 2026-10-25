@@ -1,5 +1,5 @@
 import type { FileView } from "../../shared/types";
-import { Tooltip } from "../Tooltip";
+import { Tooltip, TooltipPath } from "../Tooltip";
 import { Meter } from "./ProgressBar";
 import { ChangeCount, crossOffReasons, StatusIcon } from "./status";
 import { describeFileProgress, fileUnitProgress, type Unit } from "./unit";
@@ -82,7 +82,14 @@ function FileItem(props: {
 	return (
 		<li>
 			{/* The numbers are in the name already: the tooltip only shows them. */}
-			<Tooltip content={`${path} · ${numbers}`} describe={false}>
+			<Tooltip
+				content={
+					<>
+						<TooltipPath>{path}</TooltipPath> · {numbers}
+					</>
+				}
+				describe={false}
+			>
 				{(trigger) => (
 					<button
 						type="button"
@@ -156,7 +163,10 @@ function Children(props: {
 					/>
 				) : (
 					<li key={`d:${node.folder.name}`}>
-						<Tooltip content={node.folder.name} describe={false}>
+						<Tooltip
+							content={<TooltipPath>{node.folder.name}</TooltipPath>}
+							describe={false}
+						>
 							{(trigger) => (
 								<div
 									{...trigger}

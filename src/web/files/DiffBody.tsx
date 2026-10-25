@@ -21,6 +21,21 @@ const RAIL: Record<ClusterView["state"], string> = {
 	"crossed-off": "hatch",
 };
 
+/**
+ * A reviewed cluster's lines settle down: their added/deleted tint fades to
+ * a quieter one, the text keeping full contrast (the green rail and checked
+ * box say it's reviewed).
+ */
+const REVIEWED_ROW_BG: Record<DiffLine["kind"], string> = {
+	context: "",
+	add: "bg-add-done",
+	del: "bg-del-done",
+};
+const REVIEWED_NUMBER_BG: Record<DiffLine["kind"], string> = {
+	context: "text-faint",
+	add: "bg-add-done text-add-ink",
+	del: "bg-del-done text-del-ink",
+};
 const ROW_BG: Record<DiffLine["kind"], string> = {
 	context: "",
 	add: "bg-add",
@@ -86,27 +101,33 @@ function LineRow(props: {
 	checkbox?: ReactNode;
 }) {
 	const { line, state } = props;
-	const dim = state === "reviewed" ? "opacity-60" : "";
+	const reviewed = state === "reviewed";
+	const rowBg = (reviewed ? REVIEWED_ROW_BG : ROW_BG)[line.kind];
+	const numberBg = (reviewed ? REVIEWED_NUMBER_BG : NUMBER_BG)[line.kind];
 	return (
 		<>
-			<tr data-testid="diff-line" className={ROW_BG[line.kind]}>
+			<tr
+				data-testid="diff-line"
+				data-reviewed={reviewed || undefined}
+				className={rowBg}
+			>
 				<Rail state={state} />
 				<td className="w-11 px-1 align-top whitespace-nowrap pointer-coarse:w-20">
 					{props.checkbox}
 				</td>
 				<td
 					data-testid="old"
-					className={`w-12 px-2 text-right align-top select-none ${NUMBER_BG[line.kind]} ${dim}`}
+					className={`w-12 px-2 text-right align-top select-none ${numberBg}`}
 				>
 					{line.oldNo}
 				</td>
 				<td
 					data-testid="new"
-					className={`w-12 px-2 text-right align-top select-none ${NUMBER_BG[line.kind]} ${dim}`}
+					className={`w-12 px-2 text-right align-top select-none ${numberBg}`}
 				>
 					{line.newNo}
 				</td>
-				<td className={`px-2 whitespace-pre ${dim}`}>
+				<td className="px-2 whitespace-pre">
 					<span
 						aria-hidden
 						className={`mr-2 select-none ${SIGN_COLOR[line.kind]}`}
@@ -153,7 +174,7 @@ function ClusterControls(props: {
 		<span {...{ [SLOT]: "" }} className="block">
 			<span
 				{...{ [CONTROLS]: "" }}
-				className="z-[5] flex w-fit items-center gap-1 rounded-md pointer-coarse:gap-0 data-[stuck]:bg-raised data-[stuck]:shadow-[0_6px_18px_-4px_rgb(0_0_0/0.7)] data-[stuck]:ring-1 data-[stuck]:ring-line-strong"
+				className="z-[5] flex w-fit items-center gap-1 rounded-md pointer-coarse:gap-0 data-[stuck]:bg-raised data-[stuck]:shadow-control data-[stuck]:ring-1 data-[stuck]:ring-line-strong"
 			>
 				<label
 					data-testid="cluster-box-target"
@@ -415,7 +436,7 @@ export function DiffBody(props: {
 				<table className="min-w-full border-collapse bg-code font-mono text-xs leading-5 text-code-ink">
 					{fileClusters.map((cluster) => (
 						<tbody key={cluster.key} className="group">
-							<tr className={cluster.state === "reviewed" ? "opacity-60" : ""}>
+							<tr className={cluster.state === "reviewed" ? "text-muted" : ""}>
 								<Rail state={cluster.state} />
 								<td className="w-11 px-1 py-1 align-top whitespace-nowrap pointer-coarse:w-20">
 									{checkbox(cluster)}
