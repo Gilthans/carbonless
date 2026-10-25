@@ -41,9 +41,10 @@ import {
 	useState,
 } from "react";
 import type { PrOverview, Progress } from "../../shared/types";
-import { overviewQuery, reviewQuery } from "../api";
+import { overviewQuery, reviewQuery, sessionQuery } from "../api";
 import { CodeLine } from "../code/Invisibles";
 import { languageFor } from "../files/highlight";
+import { type FilesSearch, threadTarget } from "../files/landing";
 import { GithubHtml, ImageErrorContext } from "../GithubHtml";
 import { RelativeTime } from "../RelativeTime";
 import { Tooltip } from "../Tooltip";
@@ -796,6 +797,15 @@ function CheckItem({ check }: { check: Check }) {
 const THREAD_PAGE = 5;
 
 /**
+ * "Load X more comments out of Y": Y threads not listed yet, X the next
+ * page of them. Each item is a thread; the owner asked for "comments".
+ */
+export function loadMoreText(hidden: number): string {
+	const next = Math.min(hidden, THREAD_PAGE);
+	return `Load ${plural(next, "more comment")} out of ${hidden}`;
+}
+
+/**
  * One group's review threads, inside "Is it ready": unresolved ones listed,
  * or resolved ones while their count is pressed; five at a time. As of a
  * cutoff no thread is known to be resolved.
@@ -819,16 +829,17 @@ function ThreadGroup(props: {
 	const toggleOff = !showResolved && resolved.length === 0;
 	const IconEl = props.icon;
 	return (
-		<section
-			aria-labelledby={headingId}
-			className="space-y-3 border-t border-line pt-4"
-		>
-			<div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+		<section aria-labelledby={headingId} className="space-y-3">
+			{/* A band across the section, quieter than the section's own title. */}
+			<div
+				data-testid="thread-group-band"
+				className="-mx-4 flex flex-wrap items-center gap-x-3 gap-y-1 border-y border-line bg-band px-4 py-1"
+			>
 				<h3
 					id={headingId}
-					className="flex items-center gap-1.5 text-sm font-semibold text-ink-soft"
+					className="flex min-h-10 items-center gap-2 text-base font-semibold text-ink"
 				>
-					<IconEl size={16} aria-hidden className="text-muted" />
+					<IconEl size={18} aria-hidden className="text-label" />
 					{props.label}
 				</h3>
 				{threads.length === 0 ? (
@@ -900,7 +911,7 @@ function ThreadGroup(props: {
 						className="mt-1 flex min-h-10 items-center gap-1 rounded-md px-1 text-sm font-medium text-link hover:underline focus-visible:outline-2 focus-visible:outline-accent"
 					>
 						<ChevronDownIcon size={16} aria-hidden />
-						Load more
+						{loadMoreText(listed.length - limit)}
 					</button>
 				)}
 			</div>
@@ -967,12 +978,15 @@ function ThreadItem({ thread }: { thread: Thread }) {
 		el.addEventListener("focusin", reveal);
 		return () => el.removeEventListener("focusin", reveal);
 	}, [commentClipped]);
+	// GitHub's text: its own raised surface, apart from the card and the code.
+	const commentSurface =
+		"min-w-0 rounded-md border border-edge bg-raised px-3 py-2";
 	const comment = thread.html.trim() ? (
 		<div
 			ref={commentBox}
 			id={commentId}
 			data-testid="thread-body"
-			className={`relative min-w-0 ${open ? "" : "max-h-32 overflow-hidden"}`}
+			className={`relative ${commentSurface} ${open ? "" : "max-h-32 overflow-hidden"}`}
 		>
 			<GithubHtml html={thread.html} />
 			{commentClipped && (
@@ -983,70 +997,113 @@ function ThreadItem({ thread }: { thread: Thread }) {
 			)}
 		</div>
 	) : (
-		<p ref={commentBox} id={commentId} className="min-w-0 text-sm break-words">
+		<p
+			ref={commentBox}
+			id={commentId}
+			data-testid="thread-body"
+			className={`${commentSurface} text-sm break-words`}
+		>
 			{thread.excerpt}
 		</p>
 	);
+	const session = useQuery(sessionQuery);
+	const target = threadTarget(thread, session.data, line);
+	const status = thread.resolved ? "Resolved" : "Unresolved";
 	return (
 		<li
 			data-testid="thread"
-			className="min-w-0 space-y-2 rounded-lg border border-line bg-raised px-3 py-3"
+			className="min-w-0 overflow-hidden rounded-lg border border-edge bg-surface"
 		>
-			<div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted">
-				<ThreadPlace thread={thread} line={line} />
-				<span className="inline-flex items-center gap-1 text-ink-soft">
-					{thread.author}
-					{thread.bot && <BotIcon />}
-				</span>
-				<RelativeTime iso={thread.lastActivityAt} />
-				<LabeledIcon
-					icon={CommentIcon}
-					label={plural(n, "comment")}
-					text={String(n)}
-					className="gap-1 text-muted"
-				/>
-				{!thread.hasReply && !thread.resolved && (
-					<Badge tone="yellow" icon={ReplyIcon}>
-						no reply
-					</Badge>
+			<div
+				data-testid="thread-head"
+				className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-line bg-band px-3 py-1.5 text-xs text-muted"
+			>
+				<p className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5">
+					{thread.resolved ? (
+						<CheckCircleIcon size={14} aria-hidden className="text-ok" />
+					) : (
+						<CommentDiscussionIcon
+							size={14}
+							aria-hidden
+							className="text-warn"
+						/>
+					)}
+					<span>
+						<span className="font-semibold text-ink-soft">{status} thread</span>{" "}
+						by{" "}
+						<span className="inline-flex items-center gap-1 font-medium text-ink-soft">
+							{thread.author}
+							{thread.bot && <BotIcon />}
+						</span>
+					</span>
+					<span aria-hidden>·</span>
+					<span>
+						opened <RelativeTime iso={thread.createdAt} />
+					</span>
+					{thread.lastActivityAt !== thread.createdAt && (
+						<>
+							<span aria-hidden>·</span>
+							<span>
+								updated <RelativeTime iso={thread.lastActivityAt} />
+							</span>
+						</>
+					)}
+				</p>
+				<div className="ml-auto flex items-center gap-2">
+					<LabeledIcon
+						icon={CommentIcon}
+						label={plural(n, "comment")}
+						text={String(n)}
+						className="gap-1 text-muted"
+					/>
+					{!thread.hasReply && !thread.resolved && (
+						<Badge tone="yellow" icon={ReplyIcon}>
+							no reply
+						</Badge>
+					)}
+					{thread.outdated && (
+						<Badge tone="gray" icon={HistoryIcon}>
+							outdated
+						</Badge>
+					)}
+				</div>
+			</div>
+			<div className="space-y-2 px-3 pt-1 pb-3">
+				<ThreadPlace thread={thread} line={line} target={target} />
+				{excerpt.length > 0 ? (
+					<div className="grid gap-3 md:grid-cols-2 md:items-start">
+						<ThreadCodePane
+							ref={codeBox}
+							id={codeId}
+							path={thread.path}
+							lines={excerpt}
+							open={open}
+							scrollable={open ? codeOverflowsOpen : codeMore}
+						/>
+						{comment}
+					</div>
+				) : (
+					comment
 				)}
-				{thread.outdated && (
-					<Badge tone="gray" icon={HistoryIcon}>
-						outdated
-					</Badge>
+				{more && (
+					<button
+						type="button"
+						aria-expanded={open}
+						aria-controls={
+							excerpt.length ? `${codeId} ${commentId}` : commentId
+						}
+						onClick={() => setOpen((o) => !o)}
+						className="-mb-2 flex min-h-10 items-center gap-1 rounded-md text-xs font-medium text-link hover:underline focus-visible:outline-2 focus-visible:outline-accent"
+					>
+						<ChevronDownIcon
+							size={16}
+							aria-hidden
+							className={`transition-transform motion-reduce:transition-none ${open ? "rotate-180" : ""}`}
+						/>
+						{open ? "Show less" : "Show more"}
+					</button>
 				)}
 			</div>
-			{excerpt.length > 0 ? (
-				<div className="grid gap-3 md:grid-cols-2 md:items-start">
-					<ThreadCodePane
-						ref={codeBox}
-						id={codeId}
-						path={thread.path}
-						lines={excerpt}
-						open={open}
-						scrollable={open ? codeOverflowsOpen : codeMore}
-					/>
-					{comment}
-				</div>
-			) : (
-				comment
-			)}
-			{more && (
-				<button
-					type="button"
-					aria-expanded={open}
-					aria-controls={excerpt.length ? `${codeId} ${commentId}` : commentId}
-					onClick={() => setOpen((o) => !o)}
-					className="-mb-2 flex min-h-10 items-center gap-1 rounded-md text-xs font-medium text-link hover:underline focus-visible:outline-2 focus-visible:outline-accent"
-				>
-					<ChevronDownIcon
-						size={16}
-						aria-hidden
-						className={`transition-transform motion-reduce:transition-none ${open ? "rotate-180" : ""}`}
-					/>
-					{open ? "Show less" : "Show more"}
-				</button>
-			)}
 		</li>
 	);
 }
@@ -1073,40 +1130,41 @@ function headerLine(
 	return thread.line;
 }
 
-/** path:line; where the line is now, when it moved, in a tooltip. */
+/**
+ * path:line, a link to that line in Files changed (files/landing.ts); where
+ * the line is now, when it moved, in its tooltip.
+ */
 function ThreadPlace({
 	thread,
 	line,
+	target,
 }: {
 	thread: Thread;
 	line: number | null;
+	target: FilesSearch;
 }) {
-	const text = (
-		<>
-			{thread.path}
-			{line !== null && `:${line}`}
-		</>
-	);
-	const className = "font-mono break-all text-ink-soft";
 	const moved =
 		!thread.outdated &&
 		thread.currentLine !== null &&
 		line !== null &&
 		thread.currentLine !== line;
-	if (!moved) return <code className={className}>{text}</code>;
+	const open =
+		line === null ? "Open the file in Files changed" : "Open in Files changed";
 	return (
-		<Tooltip content={`Now at line ${thread.currentLine}`}>
+		<Tooltip content={moved ? `Now at line ${thread.currentLine}` : open}>
 			{(trigger) => (
-				<code
+				<Link
 					{...trigger}
+					to="/files"
+					search={target}
 					data-testid="thread-place"
-					// Focusable so keyboard and touch users can read the tooltip.
-					// biome-ignore lint/a11y/noNoninteractiveTabindex: the tooltip opens on focus.
-					tabIndex={0}
-					className={`${className} cursor-help rounded-sm underline decoration-dotted underline-offset-2 focus-visible:outline-2 focus-visible:outline-accent`}
+					className="inline-flex min-h-10 max-w-full items-center rounded-sm font-mono text-xs break-all text-link hover:underline focus-visible:outline-2 focus-visible:outline-accent"
 				>
-					{text}
-				</code>
+					<code>
+						{thread.path}
+						{line !== null && `:${line}`}
+					</code>
+				</Link>
 			)}
 		</Tooltip>
 	);
@@ -1192,7 +1250,7 @@ function ThreadCodePane(props: {
 							key={i}
 							data-testid="thread-code-line"
 							data-marked={line.marked || undefined}
-							className={ROW_BG[line.kind]}
+							className={`${ROW_BG[line.kind]} ${line.marked ? "mark-tint" : ""}`}
 						>
 							<td
 								aria-hidden

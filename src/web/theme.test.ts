@@ -71,12 +71,34 @@ const hueGap = (a: string, b: string) => {
 describe("color tokens", () => {
 	it("text reads at 4.5:1 on every surface", () => {
 		for (const text of ["ink", "ink-soft", "muted", "faint", "label", "link"]) {
-			for (const bg of [...SURFACES, "overlay"]) {
+			for (const bg of [...SURFACES, "overlay", "band"]) {
 				expect(
 					contrast(token(text), token(bg)),
 					`${text} on ${bg}`,
 				).toBeGreaterThanOrEqual(4.5);
 			}
+		}
+	});
+
+	it("the thread band sits between the surface and the raised comment", () => {
+		// Thread-group bands and card headers: a step up from the surface,
+		// below the comment's raised surface and the section's title band.
+		const l = (name: string) => luminance(token(name));
+		expect(l("band")).toBeGreaterThan(l("surface"));
+		expect(l("band")).toBeLessThan(l("raised"));
+		// Their status icons and the accent on a hint.
+		for (const tone of ["ok", "warn", "accent", "label"]) {
+			expect(
+				contrast(token(tone), token("band")),
+				`${tone} on band`,
+			).toBeGreaterThanOrEqual(4.5);
+		}
+		// A badge (tone/10) inside a card header.
+		for (const tone of ["ok", "bad", "warn", "done"]) {
+			expect(
+				contrast(token(tone), over(token(tone), 0.1, token("band"))),
+				`${tone} badge on band`,
+			).toBeGreaterThanOrEqual(4.5);
 		}
 	});
 
@@ -245,6 +267,44 @@ describe("diff colors", () => {
 				`warn on warn/15 over ${bg}`,
 			).toBeGreaterThanOrEqual(4.5);
 		}
+	});
+
+	it("the commented-line tint (mark-tint, accent/8) keeps every code color readable", () => {
+		// Over context, added and deleted lines, and their gutters' numbers.
+		const tinted = (bg: string) => over(token("accent"), 0.08, token(bg));
+		for (const [fg, bg] of [
+			["add-ink", "add-gutter"],
+			["del-ink", "del-gutter"],
+		] as const) {
+			expect(
+				contrast(token(fg), tinted(bg)),
+				`${fg} on tinted ${bg}`,
+			).toBeGreaterThanOrEqual(4.5);
+		}
+		for (const bg of CODE_BGS) {
+			const back = tinted(bg);
+			for (const fg of ["code-ink", "faint", "add-ink", "del-ink"]) {
+				expect(
+					contrast(token(fg), back),
+					`${fg} on tinted ${bg}`,
+				).toBeGreaterThanOrEqual(4.5);
+			}
+			for (const [name, color] of Object.entries(SYNTAX)) {
+				expect(
+					contrast(color, back),
+					`${name} on tinted ${bg}`,
+				).toBeGreaterThanOrEqual(4.5);
+			}
+			// The focus ring still shows on it.
+			expect(contrast(token("accent"), back)).toBeGreaterThanOrEqual(3);
+		}
+		// Added and deleted rows stay apart: tinted, the add row is still the
+		// greenest and the delete row the reddest.
+		const [ar = 0, ag = 0] = rgb(tinted("add"));
+		const [dr = 0, dg = 0] = rgb(tinted("del"));
+		expect(ag).toBeGreaterThan(ar);
+		expect(dr).toBeGreaterThan(dg);
+		expect(hueGap(tinted("add"), tinted("del"))).toBeGreaterThan(90);
 	});
 
 	it("keeps added green and deleted red apart from each other", () => {

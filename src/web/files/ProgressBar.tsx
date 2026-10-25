@@ -1,6 +1,5 @@
 import { type Ref, useId } from "react";
 import type { Counts, Progress } from "../../shared/types";
-import { InvisiblesToggle } from "../code/Invisibles";
 import {
 	clustersLeft,
 	nothingLeft,
@@ -125,7 +124,6 @@ export function ProgressBar(props: {
 			<div className="flex flex-wrap items-center gap-x-3 gap-y-2">
 				<div className="flex shrink-0 items-center gap-2">
 					<UnitPicker unit={unit} onChange={props.onUnitChange} />
-					<InvisiblesToggle />
 				</div>
 				<div
 					role="progressbar"

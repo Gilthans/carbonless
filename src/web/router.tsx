@@ -7,6 +7,7 @@ import {
 	Link,
 } from "@tanstack/react-router";
 import { App } from "./App";
+import { parseFilesSearch } from "./files/landing";
 import { FilesPage, OverviewPage } from "./pages";
 
 function NotFound() {
@@ -42,6 +43,8 @@ const overviewRoute = createRoute({
 const filesRoute = createRoute({
 	getParentRoute: () => rootRoute,
 	path: "/files",
+	// A thread's file:line link lands here (files/landing.ts).
+	validateSearch: parseFilesSearch,
 	loader: () => FilesPage.preload?.(),
 	component: keptPage,
 });

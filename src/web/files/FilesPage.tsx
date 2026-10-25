@@ -1,4 +1,6 @@
+import { InfoIcon } from "@primer/octicons-react";
 import { useQuery } from "@tanstack/react-query";
+import { useNavigate, useSearch } from "@tanstack/react-router";
 import {
 	type CSSProperties,
 	type ReactNode,
@@ -7,36 +9,18 @@ import {
 	useLayoutEffect,
 	useRef,
 	useState,
-	useSyncExternalStore,
 } from "react";
 import { reviewQuery } from "../api";
 import { useForgetPageScroll, usePageActive } from "../pageActive";
 import { useAppHeaderHeight, useHeight } from "../sticky";
 import { ErrorMessage } from "../ui";
+import { useMedia, WIDE } from "../useMedia";
 import { FileDiff } from "./FileDiff";
 import { FileTree } from "./FileTree";
+import { type FilesSearch, type Landing, landingFile } from "./landing";
 import { ProgressBar } from "./ProgressBar";
 import { useUnit } from "./unit";
 import { STALE_MESSAGE } from "./useSetStates";
-
-/** Tailwind's `md`: the file tree gets a sidebar from here up. */
-const WIDE = "(min-width: 768px)";
-
-/** Whether the media query matches; true where matchMedia is unavailable. */
-function useMedia(query: string): boolean {
-	return useSyncExternalStore(
-		(onChange) => {
-			if (typeof window.matchMedia !== "function") return () => {};
-			const list = window.matchMedia(query);
-			list.addEventListener("change", onChange);
-			return () => list.removeEventListener("change", onChange);
-		},
-		() =>
-			typeof window.matchMedia === "function"
-				? window.matchMedia(query).matches
-				: true,
-	);
-}
 
 /**
  * The file tree on narrow screens: a modal sheet over the diffs, closed by
@@ -282,6 +266,35 @@ export function FilesPage() {
 		});
 	};
 
+	// A thread's file:line link (landing.ts): open that file alone; its diff
+	// scrolls to the line and highlights it, or says the line isn't there.
+	// The params are dropped once read, so the same link works again.
+	const search = useSearch({ strict: false }) as FilesSearch;
+	const navigate = useNavigate();
+	const [landing, setLanding] = useState<Landing | null>(null);
+	const landingSeq = useRef(0);
+	// biome-ignore lint/correctness/useExhaustiveDependencies: runs per landing.
+	useEffect(() => {
+		if (!active || !data || !search.path) return;
+		const file = landingFile(data.files, search);
+		landingSeq.current += 1;
+		setLanding({
+			...search,
+			index: file?.index ?? null,
+			seq: landingSeq.current,
+		});
+		void navigate({
+			to: "/files",
+			search: {},
+			replace: true,
+			resetScroll: false,
+		});
+		if (!file) return;
+		setCurrent(file.index);
+		anchor.current = null;
+		setOpen(keyOf(file.index));
+	}, [active, data, search.path, search.line, search.side, search.moved]);
+
 	const tree = data && (
 		<FileTree
 			files={data.files}
@@ -315,6 +328,19 @@ export function FilesPage() {
 							{STALE_MESSAGE}
 						</p>
 					)}
+					{landing && landing.index === null && (
+						<p
+							role="status"
+							data-testid="landing-hint"
+							className="mt-3 flex items-center gap-2 rounded-md border border-line bg-band px-3 py-2 text-sm text-muted"
+						>
+							<InfoIcon aria-hidden className="shrink-0 text-accent" />
+							<span className="min-w-0 break-all">
+								<code className="font-mono text-ink-soft">{landing.path}</code>{" "}
+								isn't in this diff
+							</span>
+						</p>
+					)}
 					{data.files.length === 0 ? (
 						<p className="mt-4 text-muted">This PR changes no files.</p>
 					) : (
@@ -340,6 +366,9 @@ export function FilesPage() {
 											toggleFile(file.index, expanded)
 										}
 										onStaleChange={setStale}
+										landing={
+											landing?.index === file.index ? landing : undefined
+										}
 									/>
 								))}
 							</div>

@@ -59,6 +59,13 @@ async function copyLine(page: Page, cell: Locator): Promise<string> {
 	return page.evaluate(() => navigator.clipboard.readText());
 }
 
+/** The "Show hidden characters" switch, in Settings (opened if closed). */
+async function hiddenChars(page: Page): Promise<Locator> {
+	const gear = page.getByRole("button", { name: "Settings" });
+	if ((await gear.getAttribute("aria-expanded")) !== "true") await gear.click();
+	return page.getByRole("switch", { name: "Show hidden characters" });
+}
+
 const glyphs = (section: Locator, kind: string) =>
 	section
 		.locator(`[data-inv="${kind}"]`)
@@ -83,12 +90,21 @@ test("code shows invisible characters, and copying gives back the original", asy
 	const section = fileSection(page, "src/inv.ts");
 	await section.getByRole("button", { name: "Expand file" }).click();
 	await expect(section.getByTestId("diff-line").first()).toBeVisible();
-	const toggle = page.getByRole("button", { name: "Show all characters" });
-	await expect(toggle).toHaveAttribute("aria-pressed", "true");
+	const toggle = await hiddenChars(page);
+	await expect(toggle).toHaveAttribute("aria-checked", "true");
+	await page.keyboard.press("Escape");
+	await expect(toggle).toBeHidden();
 
 	// Markers are generated content (CSS alt text keeps them out of screen readers).
 	expect(await glyphs(section, "tab")).toContain('"\\\\t" / ""');
 	expect(await glyphs(section, "space")).toContain('"·" / ""');
+	// A lone space between printing characters has no dot; a trailing run does.
+	expect(
+		await glyphs(
+			section.getByTestId("diff-line").filter({ hasText: "let s" }),
+			"space",
+		),
+	).toEqual(['"···" / ""']);
 	expect(await glyphs(section, "eol")).toEqual(
 		expect.arrayContaining(['"\\\\n" / ""', '"\\\\r\\\\n" / ""']),
 	);
@@ -163,8 +179,10 @@ test("code shows invisible characters, and copying gives back the original", asy
 	}
 
 	// ¶ off: whitespace and endings go, what would print as nothing stays.
-	await toggle.click();
-	await expect(toggle).toHaveAttribute("aria-pressed", "false");
+	await (await hiddenChars(page)).click();
+	await expect(toggle).toHaveAttribute("aria-checked", "false");
+	await page.keyboard.press("Escape");
+	await expect(toggle).toBeHidden();
 	expect(await glyphs(section, "space")).toEqual([]);
 	expect(await glyphs(section, "tab")).not.toContain('"\\\\t" / ""');
 	expect(await glyphs(section, "escape")).toEqual(
@@ -192,7 +210,8 @@ test("code shows invisible characters, and copying gives back the original", asy
 
 	// Remembered across a reload.
 	await page.reload();
-	await expect(
-		page.getByRole("button", { name: "Show all characters" }),
-	).toHaveAttribute("aria-pressed", "false");
+	await expect(await hiddenChars(page)).toHaveAttribute(
+		"aria-checked",
+		"false",
+	);
 });

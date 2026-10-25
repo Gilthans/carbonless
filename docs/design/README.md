@@ -14,11 +14,13 @@ uses is checked for WCAG AA in `src/web/theme.test.ts`; add new pairs there.
 | Token | Use |
 | --- | --- |
 | `canvas` `surface` `raised` `overlay` `pressed` | page, cards/header, section and file headers, tooltips/hover, pressed |
+| `band` | subsection bands (Human/Bot reviews) and thread card headers: between `surface` and `raised` |
 | `line` / `line-strong` / `edge` | decorative dividers / outlines of controls (3:1) / floating layers, scrollbars |
 | `ink` `ink-soft` `muted` `faint` | text, strongest to weakest (all 4.5:1 on every surface) |
 | `label` | letter-spaced violet capitals for section labels |
 | `accent` `link` | focus rings, the pointed-at cluster rail, selected segment, current file; links |
 | `add-done` `del-done` | reviewed lines: quieter add/del tints, text at full contrast |
+| `mark-tint` (utility) | `accent` at 8% as an inset shadow over every cell of a row: a thread's commented lines, and a line landed on from a thread link (it fades, instantly with reduced motion). Over add/del/context it keeps all code text at 4.5:1 and green/red apart |
 | `shade`, `shadow-*` | the one shadow color and the shadows built from it |
 | `magenta` `orange` `yellow` `teal` `violet` | brand: logo, gradients (`brand-rule`, `cta`), never meaning |
 
@@ -49,16 +51,19 @@ box marking them.
 ## Invisible characters
 
 Code shows what it is made of, Notepad++ style (`src/web/code/`): spaces
-as `·`, tabs as `\t` padded to the next tab stop (the head's
+as `·` (a lone space between two printing characters stays plain: it is
+ordinary spacing; runs of two or more, and a space at either end of the
+line or next to another blank, keep their dots, so a trailing space that is
+a line's only change still shows), tabs as `\t` padded to the next tab stop (the head's
 `.editorconfig` `tab_width`, else a numeric `indent_size`, else 4; a
 config over 64 KB is ignored; wide
 characters and emoji count two columns), line endings as `\n` / `\r\n`,
 all in `faint`. Characters that would print as nothing or as a lookalike
 blank (controls, zero widths, BOM, soft hyphen, tags, unusual spaces,
 separators, stray variation selectors) show as `\uXXXX`, named in a
-tooltip (hover or tap); bidi controls also get a `warn` tint. The ¶ toggle
-in the Files bar hides only spaces, tabs and line endings: escapes always
-show (principle 2). Only a short list of invisibles doing their job stays
+tooltip (hover or tap); bidi controls also get a `warn` tint. Settings' "Show
+hidden characters" switch hides only spaces, tabs and line endings: escapes
+always show (principle 2). Only a short list of invisibles doing their job stays
 unescaped, and anything unsure is escaped: ZWJ/ZWNJ after a virama on a
 letter of its own script, ZWNJ between joining letters of one
 script (IDNA CONTEXTJ, Joining_Type generated from Unicode data by
@@ -71,6 +76,35 @@ on any raw one.
 Out of scope: homoglyphs (a Cyrillic `а` for a Latin `a` shows as itself),
 and the ordinary bidi of natural right-to-left text, which can reorder
 neutral punctuation next to it without any override.
+
+## Settings
+
+A gear (tooltip "Settings", 40px) at the right of the app bar's last row,
+so it stays in the compact sticky header too. It opens a small popover
+under it, a bottom sheet on a phone (`<dialog>`; Escape, a click outside or
+the backdrop, and Close on the sheet close it, focus back on the gear).
+Each setting is a full-width switch row (`role="switch"`, 44px); today
+there is one, "Show hidden characters", stored in `localStorage`
+(`crb.code.invisibles`). More rows go into `SettingsList` (`src/web/Settings.tsx`).
+
+## Thread cards (Overview)
+
+"Human reviews" / "Bot reviews" each open with a `band` strip across the
+section (icon in `label`, title in `ink`, then the unresolved/resolved
+chips), quieter than the section's `raised` title band. Each thread is a
+bordered (`edge`) card on `surface`:
+
+1. a `band` header row: status icon (yellow unresolved, green resolved),
+   "Unresolved thread by <author> · opened <time> · updated <time>"
+   (`RelativeTime`; "updated" only when it differs), then the comment count
+   and the "no reply" / "outdated" chips on the right; wraps on a phone;
+2. path:line in mono `link`, a 40px link to that line in Files changed;
+3. the code pane (`code`, commented lines with the accent rail and
+   `mark-tint`) beside the first comment, stacked on a phone. The comment
+   sits on its own `raised` surface with an `edge` border: GitHub's text,
+   apart from the card and the code.
+
+Lists show five threads, then "Load X more comments out of Y".
 
 ## Typography
 

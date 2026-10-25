@@ -1,0 +1,161 @@
+import { GearIcon } from "@primer/octicons-react";
+import { useEffect, useId, useRef, useState } from "react";
+import { setShowInvisibles, useShowInvisibles } from "./code/Invisibles";
+import { Tooltip } from "./Tooltip";
+import { NOT_PHONE, useMedia } from "./useMedia";
+
+/** One on/off setting: a switch row, the whole row its 40px+ target. */
+function SwitchRow(props: {
+	label: string;
+	checked: boolean;
+	onChange: (next: boolean) => void;
+}) {
+	return (
+		<button
+			type="button"
+			role="switch"
+			aria-checked={props.checked}
+			onClick={() => props.onChange(!props.checked)}
+			className="flex min-h-11 w-full items-center justify-between gap-4 rounded-md px-2 text-left text-sm text-ink hover:bg-overlay focus-visible:outline-2 focus-visible:outline-accent"
+		>
+			{props.label}
+			<span
+				aria-hidden
+				className={`relative h-5 w-9 shrink-0 rounded-full border transition-colors motion-reduce:transition-none ${
+					props.checked
+						? "border-accent bg-accent"
+						: "border-line-strong bg-pressed"
+				}`}
+			>
+				<span
+					className={`absolute top-0.5 h-3.5 w-3.5 rounded-full transition-[left] motion-reduce:transition-none ${
+						props.checked ? "left-[1.125rem] bg-canvas" : "left-0.5 bg-muted"
+					}`}
+				/>
+			</span>
+		</button>
+	);
+}
+
+/** The settings themselves; more rows go here. */
+function SettingsList() {
+	const invisibles = useShowInvisibles();
+	return (
+		<div className="space-y-1">
+			<SwitchRow
+				label="Show hidden characters"
+				checked={invisibles}
+				onChange={setShowInvisibles}
+			/>
+		</div>
+	);
+}
+
+/**
+ * The gear in the app bar's last row (so it stays in the compact sticky
+ * header): a popover under it, a bottom sheet on a phone. Closed by the gear,
+ * Escape or a click outside (the backdrop on a phone).
+ */
+export function Settings() {
+	const [open, setOpen] = useState(false);
+	const phone = !useMedia(NOT_PHONE);
+	const dialog = useRef<HTMLDialogElement>(null);
+	const wrapper = useRef<HTMLDivElement>(null);
+	const button = useRef<HTMLButtonElement>(null);
+	const titleId = useId();
+	useEffect(() => {
+		const d = dialog.current;
+		if (!d) return;
+		if (d.open) {
+			if (typeof d.close === "function") d.close();
+			else d.removeAttribute("open");
+		}
+		if (!open) return;
+		if (phone && typeof d.showModal === "function") d.showModal();
+		else if (typeof d.show === "function") d.show();
+		else d.setAttribute("open", "");
+		d.querySelector<HTMLElement>("[role=switch]")?.focus();
+	}, [open, phone]);
+	// A popover closes on a click anywhere else.
+	useEffect(() => {
+		if (!open || phone) return;
+		const outside = (event: PointerEvent) => {
+			if (!wrapper.current?.contains(event.target as Node)) setOpen(false);
+		};
+		document.addEventListener("pointerdown", outside);
+		return () => document.removeEventListener("pointerdown", outside);
+	}, [open, phone]);
+	const close = () => {
+		setOpen(false);
+		button.current?.focus();
+	};
+	return (
+		<div ref={wrapper} className="relative shrink-0">
+			<Tooltip content="Settings" describe={false}>
+				{(trigger) => (
+					<button
+						type="button"
+						{...trigger}
+						ref={(el) => {
+							button.current = el;
+							trigger.ref(el);
+						}}
+						aria-label="Settings"
+						aria-haspopup="dialog"
+						aria-expanded={open}
+						onClick={() => setOpen((o) => !o)}
+						className="flex h-10 w-10 items-center justify-center rounded-md text-ink-soft transition-colors hover:bg-overlay hover:text-ink focus-visible:outline-2 focus-visible:outline-accent aria-expanded:bg-overlay aria-expanded:text-ink motion-reduce:transition-none"
+					>
+						<GearIcon aria-hidden />
+					</button>
+				)}
+			</Tooltip>
+			<dialog
+				ref={dialog}
+				aria-labelledby={titleId}
+				data-testid="settings"
+				onClose={() => setOpen(false)}
+				onCancel={(event) => {
+					event.preventDefault();
+					close();
+				}}
+				onKeyDown={(event) => {
+					if (event.key === "Escape") {
+						event.preventDefault();
+						close();
+					}
+				}}
+				onClick={(event) => {
+					// A click on the sheet's backdrop lands on the dialog itself.
+					if (phone && event.target === dialog.current) close();
+				}}
+				className={
+					phone
+						? "m-0 mt-auto max-h-[85dvh] w-full max-w-none rounded-t-2xl border-t border-edge bg-surface p-0 text-ink shadow-sheet backdrop:bg-canvas/70 backdrop:backdrop-blur-[2px]"
+						: "absolute top-full right-0 left-auto z-40 m-0 mt-1 w-72 rounded-lg border border-edge bg-surface p-0 text-ink shadow-float"
+				}
+			>
+				<div className="flex items-center justify-between border-b border-line py-1 pr-1 pl-4">
+					<h2
+						id={titleId}
+						className="text-xs font-semibold tracking-[0.18em] text-label uppercase"
+					>
+						Settings
+					</h2>
+					{phone && (
+						<button
+							type="button"
+							onClick={close}
+							className="h-10 rounded-md px-3 text-sm font-medium hover:bg-overlay focus-visible:outline-2 focus-visible:outline-accent"
+						>
+							Close
+						</button>
+					)}
+				</div>
+				<div className={phone ? "px-2 pt-2 pb-6" : "p-2"}>
+					<SettingsList />
+				</div>
+			</dialog>
+		</div>
+	);
+}

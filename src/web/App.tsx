@@ -19,6 +19,7 @@ import { Logo, Mark, Wordmark } from "./brand/Brand";
 import { HeadBanner } from "./HeadBanner";
 import { KeptPages, useActivePage } from "./pages";
 import { fullDate } from "./RelativeTime";
+import { Settings } from "./Settings";
 import { AppHeaderHeight } from "./sticky";
 import { Tooltip } from "./Tooltip";
 import { ErrorMessage, safeHref } from "./ui";
@@ -354,6 +355,7 @@ export function App() {
 								</button>
 							)}
 						</Tooltip>
+						<Settings />
 					</div>
 				</header>
 				{/* The diff gets the whole window; the overview stays readable. */}

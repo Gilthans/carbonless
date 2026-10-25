@@ -335,10 +335,12 @@ test("threads come latest activity first, five at a time", async ({
 		"src/f8.ts:1",
 	]);
 	await expect(paths).toBeVisible();
-	const more = humans.getByRole("button", { name: "Load more" });
+	const more = humans.getByRole("button", { name: /^Load \d+ more/ });
+	await expect(more).toHaveText("Load 5 more comments out of 7");
 	expect((await more.boundingBox())?.height).toBeGreaterThanOrEqual(40);
 	await more.click();
 	await expect(humans.getByTestId("thread")).toHaveCount(10);
+	await expect(more).toHaveText("Load 2 more comments out of 2");
 	await more.click();
 	await expect(humans.getByTestId("thread")).toHaveCount(12);
 	await expect(more).toHaveCount(0);
@@ -751,4 +753,174 @@ test("a line comment GitHub kept no hunk for shows its code from the clone; a fi
 		"line 1",
 	);
 	await expect(threads.nth(1).getByTestId("thread-code")).toHaveCount(0);
+});
+
+test("a thread's file:line opens Files changed at that line, highlighted; a moved line says so", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	if (isMobile) await page.setViewportSize({ width: 360, height: 780 });
+	const p = await pr({
+		base: {
+			"b.txt": `${Array.from({ length: 80 }, (_, i) => `b ${i + 1}`).join("\n")}\n`,
+		},
+		files: [
+			{
+				message: "PR change",
+				files: {
+					"b.txt": `${Array.from({ length: 80 }, (_, i) => (i === 59 ? "b 60 changed" : `b ${i + 1}`)).join("\n")}\n`,
+				},
+			},
+		],
+	});
+	const head = p.repo.shas.at(-1) ?? "";
+	p.editScenario((s) => {
+		const graph = s.prs[7]?.graphql;
+		if (!graph) throw new Error("no PR in the scenario");
+		graph.reviewThreads = [
+			reviewThread({ path: "b.txt", line: 60 }, [
+				threadComment({
+					login: "rev1",
+					text: "Here",
+					diffHunk: "",
+					commit: head,
+				}),
+			]),
+			// Written on another commit and outdated: its number may not hold.
+			reviewThread(
+				{ path: "b.txt", line: null, originalLine: 10, isOutdated: true },
+				[
+					threadComment({
+						login: "rev2",
+						text: "Earlier",
+						diffHunk: "@@ -8,3 +8,3 @@\n b 8\n b 9\n-b 10\n+b ten",
+						commit: "e".repeat(40),
+						createdAt: "2026-01-01T00:00:00Z",
+					}),
+				],
+			),
+		];
+	});
+	const s = await startCrb();
+	await page.goto(s.url);
+	const threads = page
+		.getByRole("region", { name: "Human reviews" })
+		.getByTestId("thread");
+	const place = threads.first().getByRole("link", { name: "b.txt:60" });
+	expect((await place.boundingBox())?.height).toBeGreaterThanOrEqual(40);
+	await place.click();
+	await expect(page).toHaveURL(/\/files$/);
+	const section = page.getByRole("region", { name: "b.txt" });
+	await expect(
+		section.getByRole("button", { name: "Collapse file" }),
+	).toBeVisible();
+	const row = section.locator('tr[data-new-no="60"]');
+	await expect(row).toHaveAttribute("data-landed", "");
+	await expect(row).toBeInViewport();
+	await expect(section.getByTestId("landing-hint")).toHaveCount(0);
+	// The highlight fades after a moment.
+	await expect(row).not.toHaveAttribute("data-landed", "", { timeout: 5000 });
+
+	await page.getByRole("link", { name: "Overview" }).click();
+	await threads.nth(1).getByRole("link", { name: "b.txt:10" }).click();
+	await expect(section.getByTestId("landing-hint")).toHaveText(
+		"Line 10 is from another commit",
+	);
+	await expect(section.locator("tr[data-landed]")).toHaveCount(0);
+	const overflow = await page.evaluate(
+		() =>
+			document.documentElement.scrollWidth -
+			document.documentElement.clientWidth,
+	);
+	expect(overflow).toBeLessThanOrEqual(0);
+});
+
+test("a thread card: status, author and times on a tinted header, then file:line, code and comment", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	if (isMobile) await page.setViewportSize({ width: 360, height: 780 });
+	await pr({
+		threads: [
+			reviewThread(
+				{
+					path: "src/cache.ts",
+					line: null,
+					originalLine: 8,
+					originalStartLine: 7,
+				},
+				[
+					threadComment({
+						login: "Gilthans",
+						text: "Points",
+						diffHunk: CODE_HUNK,
+						createdAt: "2026-01-02T09:00:00Z",
+					}),
+					threadComment({
+						login: "octo-author",
+						text: "Done",
+						createdAt: "2026-01-03T09:00:00Z",
+					}),
+				],
+			),
+		],
+	});
+	const s = await startCrb();
+	await page.goto(s.url);
+	const humans = page.getByRole("region", { name: "Human reviews" });
+	const band = humans.getByTestId("thread-group-band");
+	await expect(band).toContainText("Human reviews");
+	await expect(band).toContainText("1 unresolved");
+	const thread = humans.getByTestId("thread");
+	const head = thread.getByTestId("thread-head");
+	await expect(head).toContainText(
+		/^Unresolved thread by Gilthans\s*·\s*opened .+·\s*updated .+ago2$/,
+	);
+	await expect(head.locator("time")).toHaveCount(2);
+	const bg = (l: typeof head) =>
+		l.evaluate((el) => getComputedStyle(el).backgroundColor);
+	const [cardBg, headBg, bodyBg, codeBg] = await Promise.all([
+		bg(thread),
+		bg(head),
+		bg(thread.getByTestId("thread-body")),
+		bg(thread.getByTestId("thread-code")),
+	]);
+	expect(new Set([cardBg, headBg, bodyBg, codeBg]).size).toBe(4);
+	// The commented range is tinted across the whole row.
+	const marked = thread.getByTestId("thread-code").locator("[data-marked]");
+	await expect(marked).toHaveCount(2);
+	expect(
+		await marked
+			.first()
+			.locator("td")
+			.last()
+			.evaluate((el) => getComputedStyle(el).boxShadow),
+	).toMatch(/inset/);
+	const boxes = await Promise.all(
+		[
+			head,
+			thread.getByTestId("thread-place"),
+			thread.getByTestId("thread-code"),
+		].map((l) => l.boundingBox()),
+	);
+	const [h, p, c] = boxes.map((b) => b?.y ?? 0);
+	expect(h).toBeLessThan(p ?? 0);
+	expect(p).toBeLessThan(c ?? 0);
+	const overflow = await page.evaluate(
+		() =>
+			document.documentElement.scrollWidth -
+			document.documentElement.clientWidth,
+	);
+	expect(overflow).toBeLessThanOrEqual(0);
+	const shots = process.env.DESIGN_SHOTS;
+	if (shots) {
+		await thread.scrollIntoViewIfNeeded();
+		await page.screenshot({
+			path: `${shots}/thread-card-${isMobile ? "phone" : "desktop"}.png`,
+		});
+	}
 });

@@ -1,0 +1,79 @@
+import type { FileView, PrOverview, SessionInfo } from "../../shared/types";
+
+/**
+ * Files changed's search params: land on `path`, at `line` on `side` ("LEFT"
+ * numbers the old file). `moved`: the line was commented on another commit,
+ * so its number may not hold in this diff; the file opens at its top with a
+ * hint instead.
+ */
+export interface FilesSearch {
+	path?: string;
+	line?: number;
+	side?: "LEFT" | "RIGHT";
+	moved?: boolean;
+}
+
+/** Untrusted URL params to FilesSearch; anything odd is dropped. */
+export function parseFilesSearch(raw: Record<string, unknown>): FilesSearch {
+	const out: FilesSearch = {};
+	if (typeof raw.path === "string" && raw.path) out.path = raw.path;
+	const line = typeof raw.line === "string" ? Number(raw.line) : raw.line;
+	if (typeof line === "number" && Number.isInteger(line) && line > 0) {
+		out.line = line;
+	}
+	if (raw.side === "LEFT" || raw.side === "RIGHT") out.side = raw.side;
+	if (raw.moved === true || raw.moved === "true" || raw.moved === 1) {
+		out.moved = true;
+	}
+	return out;
+}
+
+type Thread = PrOverview["threads"][number];
+
+/**
+ * Where a thread's file:line link lands. The line only counts as this
+ * diff's when it was numbered on the snapshot's head: the code's own commit
+ * is the head, or GitHub's current line is of the head the snapshot is at
+ * (not as of a cutoff, not outdated). Otherwise it's `moved`.
+ */
+export function threadTarget(
+	thread: Thread,
+	session:
+		| Pick<SessionInfo, "snapshotHead" | "currentHead" | "asOf">
+		| undefined,
+	line: number | null,
+): FilesSearch {
+	const { code } = thread;
+	const side = code?.side ?? "RIGHT";
+	if (line === null) return { path: thread.path };
+	if (code?.commit && code.commit === session?.snapshotHead) {
+		return { path: thread.path, line, side };
+	}
+	if (
+		session &&
+		!session.asOf &&
+		!thread.outdated &&
+		thread.currentLine !== null &&
+		session.currentHead === session.snapshotHead
+	) {
+		return { path: thread.path, line: thread.currentLine, side };
+	}
+	return { path: thread.path, line, side, moved: true };
+}
+
+/** The file a landing names: by path, or by its old path for the old side. */
+export function landingFile(
+	files: FileView[],
+	search: FilesSearch,
+): FileView | undefined {
+	return (
+		files.find((f) => f.path === search.path) ??
+		files.find((f) => f.oldPath === search.path)
+	);
+}
+
+/**
+ * A landing being shown: where to, the file's index (null: not in this
+ * diff) and a sequence number, new for each link followed.
+ */
+export type Landing = FilesSearch & { index: number | null; seq: number };

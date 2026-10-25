@@ -41,7 +41,33 @@ const hidden = (text: string, tabWidth = 4, newline = true) =>
 
 describe("renderInvisibles", () => {
 	it("marks spaces and the line ending", () => {
-		expect(shown("a b  ")).toBe("a·b··⏎\\n");
+		expect(shown("a b  ")).toBe("a b··⏎\\n");
+	});
+
+	it("leaves a lone space between printing characters undotted, and dots every other", () => {
+		// Between two printing characters: plain spacing.
+		expect(shown("if (a) b", 4, false)).toBe("if (a) b");
+		// Runs of two or more.
+		expect(shown("a  b", 4, false)).toBe("a··b");
+		// At either end of the line, a trailing one included (it can be the
+		// only change in a line), before a CRLF too.
+		expect(shown(" a", 4, false)).toBe("·a");
+		expect(shown("a ", 4, false)).toBe("a·");
+		expect(shown("a \r")).toBe("a·⏎\\r\\n");
+		expect(shown(" ", 4, false)).toBe("·");
+		// Next to another blank: a tab, a no-break space, an escape.
+		expect(shown("a \tb", 4, false)).toBe("a·\\tb");
+		expect(shown("a \u00a0b", 4, false)).toBe("a·\\u00A0b");
+		expect(shown("a \u200bb", 4, false)).toBe("a·\\u200Bb");
+		// The lone space stays text: one piece, same columns, same copy.
+		const pieces = renderInvisibles("a b\tc", 4, { newline: false });
+		expect(pieces.map((p) => [p.kind, p.raw])).toEqual([
+			["text", "a b"],
+			["tab", "\t"],
+			["text", "c"],
+		]);
+		expect(pieces[1]).toMatchObject({ columns: 5 });
+		expect(joinPieces(pieces)).toBe("a b\tc");
 	});
 
 	it("draws a run of spaces as one piece", () => {
@@ -178,7 +204,7 @@ describe("renderInvisibles", () => {
 	});
 
 	it("leaves combining marks alone", () => {
-		expect(shown("e\u0301 n\u0303", 4, false)).toBe("e\u0301·n\u0303");
+		expect(shown("e\u0301  n\u0303", 4, false)).toBe("e\u0301··n\u0303");
 	});
 
 	it("leaves emoji intact: presentation selectors, ZWJ sequences, skin tones, flags", () => {
@@ -370,8 +396,8 @@ describe("renderInvisibles", () => {
 	});
 
 	it("records each piece's offset in the line", () => {
-		const pieces = renderInvisibles("ab 👍\tc\r", 4);
-		expect(pieces.map((p) => p.start)).toEqual([0, 2, 3, 5, 6, 7]);
+		const pieces = renderInvisibles("ab  👍\tc\r", 4);
+		expect(pieces.map((p) => p.start)).toEqual([0, 2, 4, 6, 7, 8]);
 	});
 
 	it("clamps odd tab widths", () => {

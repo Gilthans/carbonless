@@ -23,6 +23,8 @@
 	--color-canvas: #0b0d16;
 	--color-surface: #12141f;
 	--color-raised: #191c2b;
+	/* Subsection bands and thread card headers: between surface and raised. */
+	--color-band: #161927;
 	--color-overlay: #23263a;
 	--color-pressed: #2c3048;
 	/* Decorative dividers; borders that outline a control use line-strong. */
@@ -35,7 +37,7 @@
 	--color-ink: #f4f1ec;
 	--color-ink-soft: #d0cde2;
 	--color-muted: #a0a2c6;
-	--color-faint: #8a8db3;
+	--color-faint: #9396b9;
 	--color-label: #a397f7;
 
 	/* Interaction: links, focus rings, the pointer's cluster. */
@@ -90,6 +92,19 @@
 		color-mix(in srgb, var(--color-shade) 90%, transparent);
 	--shadow-sheet: 0 -12px 40px
 		color-mix(in srgb, var(--color-shade) 60%, transparent);
+}
+
+/*
+ * The commented lines of a thread's code, and a line landed on from a
+ * thread link: a soft accent tint over each cell, whatever its own
+ * background (added, deleted, gutters), under the text. A shadow, so it can
+ * fade out (theme.test.ts checks the text on it).
+ */
+@utility mark-tint {
+	& > td {
+		box-shadow: inset 0 0 0 100vmax
+			color-mix(in srgb, var(--color-accent) 8%, transparent);
+	}
 }
 
 /* The header's faint brand glow, over its solid surface color. */

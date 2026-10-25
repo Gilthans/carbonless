@@ -1,11 +1,20 @@
 // @vitest-environment jsdom
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import {
+	createMemoryHistory,
+	createRootRoute,
+	createRoute,
+	createRouter,
+	Outlet,
+	RouterProvider,
+} from "@tanstack/react-router";
 import { cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { FileView, ReviewView } from "../../shared/types";
 import { AppHeaderHeight } from "../sticky";
 import { FilesPage } from "./FilesPage";
+import { parseFilesSearch } from "./landing";
 
 vi.mock("./highlight", () => ({
 	languageFor: () => null,
@@ -54,6 +63,7 @@ function renderPage(
 	responses: Record<string, () => { status: number; body: unknown }>,
 	/** The app header's compact height, as App provides it. */
 	appHeader = 0,
+	initialPath = "/files",
 ) {
 	const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
 		const path = new URL(String(input), "http://test").pathname;
@@ -65,10 +75,25 @@ function renderPage(
 	const queryClient = new QueryClient({
 		defaultOptions: { queries: { retry: false } },
 	});
+	// FilesPage reads its search params (thread-link landings): a router
+	// with just this page at /files.
+	const root = createRootRoute({ component: Outlet });
+	const files = createRoute({
+		getParentRoute: () => root,
+		path: "/files",
+		validateSearch: parseFilesSearch,
+		component: FilesPage,
+	});
+	const router = createRouter({
+		routeTree: root.addChildren([files]),
+		history: createMemoryHistory({ initialEntries: [initialPath] }),
+		// As in the app (router.tsx): the router never scrolls the window.
+		scrollRestoration: () => false,
+	});
 	render(
 		<QueryClientProvider client={queryClient}>
 			<AppHeaderHeight.Provider value={appHeader}>
-				<FilesPage />
+				<RouterProvider router={router} />
 			</AppHeaderHeight.Provider>
 		</QueryClientProvider>,
 	);
@@ -289,5 +314,97 @@ describe("FilesPage", () => {
 		await user.click(within(sheet).getByRole("button", { name: /a\.txt/ }));
 		await vi.waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
 		await vi.waitFor(() => expect(scrolled).toHaveBeenCalled());
+	});
+
+	describe("landing from a thread link", () => {
+		const hunks = {
+			newLineCount: 3,
+			hunks: [
+				{
+					oldStart: 1,
+					oldCount: 3,
+					newStart: 1,
+					newCount: 3,
+					lines: [
+						{ kind: "context", oldNo: 1, newNo: 1, text: "x" },
+						{ kind: "del", oldNo: 2, text: "a", clusterKey: "k1" },
+						{ kind: "add", newNo: 2, text: "b", clusterKey: "k1" },
+						{ kind: "context", oldNo: 3, newNo: 3, text: "y" },
+					],
+				},
+			],
+		};
+		const land = (query: string) => {
+			const scrolled = vi.fn();
+			vi.stubGlobal("scrollTo", scrolled);
+			renderPage(
+				{
+					"/api/review": () => ({
+						status: 200,
+						body: { ...emptyReview, files: [oneFile, otherFile] },
+					}),
+					"/api/files/0/hunks": () => ({ status: 200, body: hunks }),
+					"/api/files/1/hunks": () => ({ status: 200, body: hunks }),
+				},
+				0,
+				`/files?${query}`,
+			);
+			return scrolled;
+		};
+		const section = (path: string) =>
+			screen.findByRole("region", { name: path });
+		const row = async (path: string, attr: string) => {
+			const s = await section(path);
+			await vi.waitFor(() =>
+				expect(s.querySelector(`tr[${attr}]`)).not.toBeNull(),
+			);
+			return s.querySelector(`tr[${attr}]`) as HTMLElement;
+		};
+
+		it("opens the file and highlights the line on its side, scrolled to", async () => {
+			const scrolled = land("path=b.txt&line=2&side=RIGHT");
+			const s = await section("b.txt");
+			expect(
+				await within(s).findByRole("button", { name: "Collapse file" }),
+			).toBeInTheDocument();
+			expect(
+				within(await section("a.txt")).getByRole("button", {
+					name: "Expand file",
+				}),
+			).toBeInTheDocument();
+			const landed = await row("b.txt", "data-landed");
+			expect(landed.dataset.newNo).toBe("2");
+			expect(landed).toHaveClass("mark-tint");
+			expect(scrolled).toHaveBeenCalled();
+			expect(screen.queryByTestId("landing-hint")).toBeNull();
+		});
+
+		it("takes an old line number on the left side", async () => {
+			land("path=a.txt&line=2&side=LEFT");
+			const landed = await row("a.txt", "data-landed");
+			expect(landed.dataset.oldNo).toBe("2");
+			expect(landed).toHaveTextContent("a");
+		});
+
+		it("says when the line isn't in the diff, or was numbered on another commit", async () => {
+			land("path=a.txt&line=40&side=RIGHT");
+			expect(await screen.findByTestId("landing-hint")).toHaveTextContent(
+				"Line 40 isn't in this diff",
+			);
+			expect(document.querySelector("tr[data-landed]")).toBeNull();
+			cleanup();
+			land("path=a.txt&line=2&side=LEFT&moved=true");
+			expect(await screen.findByTestId("landing-hint")).toHaveTextContent(
+				"Old line 2 is from another commit",
+			);
+			expect(document.querySelector("tr[data-landed]")).toBeNull();
+		});
+
+		it("says when the file isn't in the diff", async () => {
+			land("path=gone.txt&line=2");
+			expect(await screen.findByTestId("landing-hint")).toHaveTextContent(
+				"gone.txt isn't in this diff",
+			);
+		});
 	});
 });

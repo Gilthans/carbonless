@@ -308,6 +308,38 @@ describe("App", () => {
 		expect(screen.queryByRole("alert")).toBeNull();
 	});
 
+	it("has a Settings gear in the app bar whose switch shows hidden characters", async () => {
+		const user = userEvent.setup();
+		renderApp();
+		const row = await screen.findByTestId("app-header-row");
+		const gear = within(row).getByRole("button", { name: "Settings" });
+		expect(gear).toHaveAttribute("aria-expanded", "false");
+		await user.click(gear);
+		expect(gear).toHaveAttribute("aria-expanded", "true");
+		const dialog = screen.getByRole("dialog", { name: "Settings" });
+		const toggle = within(dialog).getByRole("switch", {
+			name: "Show hidden characters",
+		});
+		expect(toggle).toHaveAttribute("aria-checked", "true");
+		const humans = await screen.findByRole("region", { name: "Human reviews" });
+		const code = within(humans).getByRole("figure", {
+			name: "Code at src/cache.ts",
+		});
+		await waitFor(() =>
+			expect(code.querySelectorAll("[data-inv]").length).toBeGreaterThan(0),
+		);
+		await user.click(toggle);
+		expect(toggle).toHaveAttribute("aria-checked", "false");
+		await waitFor(() =>
+			expect(code.querySelectorAll("[data-inv]")).toHaveLength(0),
+		);
+		// Escape closes it, focus back on the gear.
+		await user.keyboard("{Escape}");
+		expect(gear).toHaveAttribute("aria-expanded", "false");
+		expect(gear).toHaveFocus();
+		act(() => setShowInvisibles(true));
+	});
+
 	it("shows the server's error message", async () => {
 		renderApp({
 			"/api/session": { status: 502, body: { error: "gh is not logged in" } },
@@ -562,10 +594,23 @@ describe("OverviewPage", () => {
 		expect(human).toHaveTextContent("src/cache.ts:42");
 		expect(human.querySelector("code")).toHaveTextContent("src/cache.ts:42");
 		expect(human).toHaveTextContent("rev1");
-		// Last active, which the threads are sorted by.
-		expect(human.querySelector("time")).toHaveAttribute(
-			"dateTime",
-			"2026-01-03T11:00:00Z",
+		// Header: status, opener, opened and last active (the sort key).
+		const head = within(human).getByTestId("thread-head");
+		expect(head).toHaveTextContent(
+			/^Unresolved thread by rev1·opened .+·updated /,
+		);
+		expect(
+			Array.from(head.querySelectorAll("time")).map((t) =>
+				t.getAttribute("dateTime"),
+			),
+		).toEqual(["2026-01-03T09:00:00Z", "2026-01-03T11:00:00Z"]);
+		// file:line below the header links to that line in Files changed.
+		const place = within(human).getByRole("link", { name: "src/cache.ts:42" });
+		expect(place).toHaveAttribute(
+			"href",
+			expect.stringMatching(
+				/^\/files\?path=src%2Fcache\.ts&line=42&side=RIGHT/,
+			),
 		);
 		const count = within(human).getByRole("img", { name: "3 comments" });
 		expect(count).toHaveTextContent("3");
@@ -680,19 +725,23 @@ describe("OverviewPage", () => {
 				.getAllByTestId("thread")
 				.map((t) => t.querySelector("code")?.textContent);
 		expect(shown()).toEqual([0, 1, 2, 3, 4].map((i) => `src/u${i}.ts:1`));
-		const more = within(humans).getByRole("button", { name: "Load more" });
+		const more = within(humans).getByRole("button", { name: /^Load / });
+		expect(more).toHaveTextContent("Load 5 more comments out of 7");
 		await user.click(more);
 		expect(shown()).toHaveLength(10);
+		expect(more).toHaveTextContent("Load 2 more comments out of 2");
 		await user.click(more);
 		expect(shown()).toHaveLength(12);
-		expect(
-			within(humans).queryByRole("button", { name: "Load more" }),
-		).toBeNull();
+		expect(within(humans).queryByRole("button", { name: /^Load / })).toBeNull();
 		await user.click(
 			within(humans).getByRole("button", { name: "7 resolved" }),
 		);
 		expect(shown()).toEqual([0, 1, 2, 3, 4].map((i) => `src/r${i}.ts:1`));
-		await user.click(within(humans).getByRole("button", { name: "Load more" }));
+		await user.click(
+			within(humans).getByRole("button", {
+				name: "Load 2 more comments out of 2",
+			}),
+		);
 		expect(shown()).toHaveLength(7);
 		await user.click(
 			within(humans).getByRole("button", { name: "7 resolved" }),

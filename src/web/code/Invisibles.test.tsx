@@ -3,12 +3,12 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { Settings } from "../Settings";
 import {
 	CodeLine,
 	colorPieces,
 	copyWithOriginals,
 	INVISIBLES_STORAGE_KEY,
-	InvisiblesToggle,
 	readShowInvisibles,
 	resetShowInvisibles,
 	setShowInvisibles,
@@ -20,7 +20,7 @@ function renderLine(props: Parameters<typeof CodeLine>[0]) {
 	const client = new QueryClient();
 	return render(
 		<QueryClientProvider client={client}>
-			<InvisiblesToggle />
+			<Settings />
 			<code data-testid="line" className="whitespace-pre">
 				<CodeLine {...props} />
 			</code>
@@ -29,6 +29,13 @@ function renderLine(props: Parameters<typeof CodeLine>[0]) {
 }
 
 const line = () => screen.getByTestId("line");
+/** The Settings switch, opening Settings first. */
+async function hiddenCharacters(): Promise<HTMLElement> {
+	const gear = screen.getByRole("button", { name: "Settings" });
+	if (gear.getAttribute("aria-expanded") !== "true")
+		await userEvent.click(gear);
+	return screen.getByRole("switch", { name: "Show hidden characters" });
+}
 /** What the reader sees: each marker's generated glyph instead of its character. */
 const seen = (el: Element): string =>
 	Array.from(el.childNodes)
@@ -55,7 +62,7 @@ describe("CodeLine", () => {
 	it("draws spaces, tabs and line endings, keeping the original text in the DOM", () => {
 		const text = "\tif (a  b)\r";
 		renderLine({ text, lang: null });
-		expect(seen(line())).toBe("\\tif·(a··b)\\r\\n");
+		expect(seen(line())).toBe("\\tif (a··b)\\r\\n");
 		// The copyable text is the original, character for character.
 		expect(line().textContent).toBe(text);
 		const tab = line().querySelector<HTMLElement>('[data-inv="tab"]');
@@ -73,7 +80,7 @@ describe("CodeLine", () => {
 	it("escapes invisibles, tinting and naming bidi controls", () => {
 		const text = 'x = "\u202Eabc\u200B\u00A0"';
 		renderLine({ text, lang: null, newline: false });
-		expect(seen(line())).toBe('x·=·"\\u202Eabc\\u200B\\u00A0"');
+		expect(seen(line())).toBe('x = "\\u202Eabc\\u200B\\u00A0"');
 		expect(line().textContent).toBe(text);
 		const bidi = line().querySelector<HTMLElement>('[data-inv="bidi"]');
 		expect(bidi).toHaveAccessibleName(/U\+202E right-to-left override/);
@@ -115,7 +122,7 @@ describe("CodeLine", () => {
 			expect(line().querySelector("span[style*='color']")).not.toBeNull(),
 		);
 		expect(line().textContent).toBe(text);
-		expect(seen(line())).toBe("const··x\\t=·1;");
+		expect(seen(line())).toBe("const··x\\t= 1;");
 		const colored = Array.from(
 			line().querySelectorAll<HTMLElement>("span[style*='color']"),
 		);
@@ -129,18 +136,14 @@ describe("CodeLine", () => {
 			expect(line().querySelector("span[style*='color']")).not.toBeNull(),
 		);
 		expect(line().textContent).toBe(text);
-		expect(seen(line())).toBe("let·a\\rb·=·2;");
+		expect(seen(line())).toBe("let a\\rb = 2;");
 	});
 
 	it("hides whitespace with ¶ off but still escapes what would be invisible", async () => {
 		const text = "\ta b\u202E\u200B\u00A0\u2066\r";
 		renderLine({ text, lang: null });
-		await userEvent.click(
-			screen.getByRole("button", { name: "Show all characters" }),
-		);
-		expect(
-			screen.getByRole("button", { name: "Show all characters" }),
-		).toHaveAttribute("aria-pressed", "false");
+		await userEvent.click(await hiddenCharacters());
+		expect(await hiddenCharacters()).toHaveAttribute("aria-checked", "false");
 		expect(seen(line())).toBe("a b\\u202E\\u200B\\u00A0\\u2066");
 		expect(kinds()).toEqual(["tab", "bidi", "escape", "escape", "bidi", "eol"]);
 		expect(line().textContent).toBe(text);
@@ -162,15 +165,9 @@ describe("colorPieces", () => {
 				? (out[i] ?? []).map((s) => `${s.token?.color ?? ""}:${s.text}`)
 				: p.kind,
 		);
-		expect(texts).toEqual([
-			["red:const"],
-			"space",
-			[":x"],
-			"space",
-			["blue:="],
-			"space",
-			[":1;"],
-		]);
+		// A lone space between printing characters stays in its text run,
+		// which the tokens then cut.
+		expect(texts).toEqual([["red:const"], "space", [":x ", "blue:=", ": 1;"]]);
 	});
 
 	it("is linear in the pieces and tokens of a 100 KB line", () => {
@@ -257,14 +254,15 @@ describe("copying", () => {
 	it("keeps no-break spaces in a partial, multi-line selection, without touching the DOM", () => {
 		table(["let a\u00A0= 1;", "b\u202F c", "x\u3000y"]);
 		const before = document.body.innerHTML;
-		select([textNode(0, "a"), 0], [textNode(2, "y"), 1]);
+		// "let a" is one text node: a lone space between letters gets no dot.
+		select([textNode(0, "let a"), 4], [textNode(2, "y"), 1]);
 		const copied = copy();
 		expect(copied.prevented).toBe(true);
 		expect(copied.plain).toBe("a\u00A0= 1;\nb\u202F c\nx\u3000y");
 		expect(copied.html).toContain("1;");
 		expect(document.body.innerHTML).toBe(before);
 		const selection = document.getSelection();
-		expect(selection?.anchorNode).toBe(textNode(0, "a"));
+		expect(selection?.anchorNode).toBe(textNode(0, "let a"));
 		expect(selection?.toString()).toContain("1;");
 	});
 
@@ -292,17 +290,15 @@ describe("copying", () => {
 describe("the ¶ choice", () => {
 	it("is on by default and remembered", async () => {
 		expect(readShowInvisibles()).toBe(true);
-		renderLine({ text: "a b", lang: null });
-		const toggle = screen.getByRole("button", { name: "Show all characters" });
-		expect(toggle).toHaveAttribute("aria-pressed", "true");
+		renderLine({ text: "a  b", lang: null });
+		const toggle = await hiddenCharacters();
+		expect(toggle).toHaveAttribute("aria-checked", "true");
 		await userEvent.click(toggle);
 		expect(localStorage.getItem(INVISIBLES_STORAGE_KEY)).toBe("off");
 		cleanup();
 		resetShowInvisibles();
-		renderLine({ text: "a b", lang: null });
-		expect(
-			screen.getByRole("button", { name: "Show all characters" }),
-		).toHaveAttribute("aria-pressed", "false");
+		renderLine({ text: "a  b", lang: null });
+		expect(await hiddenCharacters()).toHaveAttribute("aria-checked", "false");
 		expect(kinds()).toEqual([]);
 		act(() => setShowInvisibles(true));
 		expect(kinds()).toEqual(["space", "eol"]);

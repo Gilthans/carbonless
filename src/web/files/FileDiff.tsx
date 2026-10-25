@@ -3,6 +3,7 @@ import type { ClusterView, FileView, StateChange } from "../../shared/types";
 import { Tooltip, TooltipPath, type TooltipTriggerProps } from "../Tooltip";
 import { ErrorMessage } from "../ui";
 import { DiffBody } from "./DiffBody";
+import type { Landing } from "./landing";
 import { Meter } from "./ProgressBar";
 import {
 	ChangeCount,
@@ -215,6 +216,8 @@ export function FileDiff(props: {
 	expanded?: boolean;
 	onExpandedChange?: (expanded: boolean) => void;
 	onStaleChange?: (stale: boolean) => void;
+	/** A thread link landing in this file (FilesPage). */
+	landing?: Landing;
 }) {
 	const { file, revision } = props;
 	const [ownExpanded, setOwnExpanded] = useState(false);
@@ -419,6 +422,7 @@ export function FileDiff(props: {
 					disabled={pending}
 					onToggle={toggle}
 					onCrossOff={crossOff}
+					landing={props.landing}
 				/>
 			)}
 		</section>

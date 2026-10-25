@@ -1,6 +1,7 @@
 /**
  * Shows the characters code is made of, the way Notepad++'s "Show All
- * Characters" does: spaces as `·`, tabs as `\t` padded to the next tab stop,
+ * Characters" does: spaces as `·` (except a lone space between two printing
+ * characters), tabs as `\t` padded to the next tab stop,
  * line endings as `\n` / `\r\n` / `\r`, and anything that would print as
  * nothing (or deceive) as a `\uXXXX` escape.
  *
@@ -20,7 +21,10 @@ export const DEFAULT_TAB_WIDTH = 4;
 export type Piece =
 	/** Ordinary text, `start` its UTF-16 offset in the line. */
 	| { kind: "text"; raw: string; start: number }
-	/** A run of U+0020, one `·` each (only while invisibles show). */
+	/**
+	 * A run of U+0020, one `·` each (only while invisibles show). A lone
+	 * space between two printing characters is part of the text instead.
+	 */
 	| { kind: "space"; raw: string; start: number }
 	/**
 	 * A tab: `columns` wide, up to the next tab stop. While invisibles show,
@@ -386,6 +390,10 @@ const isWide = (codePoint: number, ch: string) =>
 	WIDE.some(([lo, hi]) => codePoint >= lo && codePoint <= hi) ||
 	EMOJI_PRESENTATION.test(ch);
 
+/** A character that prints (not a space, tab or other blank, nor invisible). */
+const solid = (ch: string | undefined): boolean =>
+	ch !== undefined && !/^\s$/u.test(ch) && !INVISIBLE.test(ch);
+
 /**
  * Splits one line (without its "\n"; a CRLF line keeps its "\r") into pieces.
  * Tab stops count display columns (wide characters and emoji two, an emoji
@@ -457,7 +465,12 @@ export function renderInvisibles(
 			last = columns;
 		} else if (ch === " ") {
 			const prior = pieces[pieces.length - 1];
-			if (!show) pushText(ch, 1);
+			// A lone space between two printing characters is ordinary
+			// spacing: no dot. Runs of two or more, and a space at either end
+			// of the line or next to another blank, keep theirs (a trailing
+			// space can be all that changed in a line).
+			if (!show || (solid(chars[i - 1]) && i + 1 < body && solid(chars[i + 1])))
+				pushText(ch, 1);
 			else if (!run && prior?.kind === "space") {
 				prior.raw += " ";
 				column += 1;

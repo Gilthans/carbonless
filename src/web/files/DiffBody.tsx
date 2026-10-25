@@ -1,5 +1,14 @@
+import { InfoIcon } from "@primer/octicons-react";
 import { useQueries, useQuery } from "@tanstack/react-query";
-import { Fragment, type ReactNode, useId, useRef, useState } from "react";
+import {
+	Fragment,
+	type ReactNode,
+	type RefObject,
+	useEffect,
+	useId,
+	useRef,
+	useState,
+} from "react";
 import type {
 	ClusterView,
 	DiffLine,
@@ -12,6 +21,7 @@ import { Tooltip } from "../Tooltip";
 import { ErrorMessage } from "../ui";
 import { EXPAND_STEP, fileGaps, type Gap, gapState } from "./gaps";
 import { languageFor } from "./highlight";
+import type { Landing } from "./landing";
 import { CONTROLS, SLOT, useStickyControls } from "./stickyControls";
 
 const COLUMNS = 5;
@@ -82,6 +92,8 @@ function LineRow(props: {
 			<tr
 				data-testid="diff-line"
 				data-reviewed={reviewed || undefined}
+				data-old-no={line.oldNo}
+				data-new-no={line.newNo}
 				className={rowBg}
 			>
 				<Rail state={state} />
@@ -276,6 +288,7 @@ export function DiffBody(props: {
 	disabled: boolean;
 	onToggle: (cluster: ClusterView) => void;
 	onCrossOff: (cluster: ClusterView) => void;
+	landing?: Landing;
 }) {
 	const { file, revision } = props;
 	const hunks = useQuery(hunksQuery(revision, file.index));
@@ -296,6 +309,7 @@ export function DiffBody(props: {
 	const root = useRef<HTMLDivElement>(null);
 	const scroller = useRef<HTMLDivElement>(null);
 	useStickyControls(root, scroller);
+	const hint = useLanding(root, props.landing, hunks.isSuccess);
 
 	const loaded = new Map<number, DiffLine>();
 	for (const result of contexts) {
@@ -419,6 +433,7 @@ export function DiffBody(props: {
 
 	return (
 		<div ref={root}>
+			{hint && <LandingHint hint={hint} />}
 			<div ref={scroller} className="overflow-x-auto">
 				<table className="min-w-full border-collapse bg-code font-mono text-xs leading-5 text-code-ink">
 					{fileClusters.map((cluster) => (
@@ -467,6 +482,110 @@ export function DiffBody(props: {
 				</div>
 			)}
 		</div>
+	);
+}
+
+/** How long a landed-on line stays highlighted before it fades. */
+export const LANDED_MS = 2500;
+const LANDED = "mark-tint";
+const LANDED_ROW =
+	"[&>td]:transition-shadow [&>td]:duration-1000 motion-reduce:[&>td]:transition-none";
+
+/** Why a landing found no line: the text and its tooltip. */
+interface Hint {
+	text: string;
+	tip: string;
+}
+
+/**
+ * Follows a thread link's landing once the hunks are in: scrolls the line
+ * just below the sticky headers and highlights it for a moment, or, when the
+ * line isn't shown (or was numbered on another commit), scrolls to the file
+ * and returns the hint to show at its top. Each landing (`seq`) runs once.
+ */
+function useLanding(
+	root: RefObject<HTMLDivElement | null>,
+	landing: Landing | undefined,
+	ready: boolean,
+): Hint | null {
+	const [hint, setHint] = useState<Hint | null>(null);
+	const done = useRef(0);
+	useEffect(() => {
+		const el = root.current;
+		if (!landing || !ready || !el || done.current === landing.seq) return;
+		done.current = landing.seq;
+		const section = el.closest("section");
+		const header = section?.querySelector("header");
+		const vars = getComputedStyle(el);
+		const sticky =
+			(Number.parseFloat(vars.getPropertyValue("--app-header")) || 0) +
+			(Number.parseFloat(vars.getPropertyValue("--files-bar")) || 0) +
+			(header?.offsetHeight ?? 0);
+		const scrollTo = (target: Element, margin: number) =>
+			window.scrollTo({
+				top:
+					target.getBoundingClientRect().top + window.scrollY - sticky - margin,
+			});
+		const old = landing.side === "LEFT";
+		const where = `${old ? "Old line" : "Line"} ${landing.line}`;
+		const row =
+			landing.line === undefined || landing.moved
+				? null
+				: el.querySelector(
+						`tr[data-${old ? "old" : "new"}-no="${landing.line}"]`,
+					);
+		if (!row) {
+			setHint(
+				landing.line === undefined
+					? null
+					: landing.moved
+						? {
+								text: `${where} is from another commit`,
+								tip: "Commented on another commit: the line may have moved",
+							}
+						: {
+								text: `${where} isn't in this diff`,
+								tip: "Outdated, or an unchanged line the diff doesn't show",
+							},
+			);
+			if (section) scrollTo(section, -1);
+			return;
+		}
+		setHint(null);
+		// A few lines of context above it stay in view.
+		scrollTo(row, 60);
+		row.classList.add(...LANDED_ROW.split(" "), LANDED);
+		row.setAttribute("data-landed", "");
+		const timer = window.setTimeout(() => {
+			row.classList.remove(LANDED);
+			row.removeAttribute("data-landed");
+		}, LANDED_MS);
+		return () => {
+			window.clearTimeout(timer);
+			row.classList.remove(LANDED);
+			row.removeAttribute("data-landed");
+		};
+	}, [root, landing, ready]);
+	return hint;
+}
+
+function LandingHint({ hint }: { hint: Hint }) {
+	return (
+		<Tooltip content={hint.tip}>
+			{(trigger) => (
+				<p
+					{...trigger}
+					role="status"
+					data-testid="landing-hint"
+					// biome-ignore lint/a11y/noNoninteractiveTabindex: the tooltip opens on focus.
+					tabIndex={0}
+					className="flex min-h-10 items-center gap-2 border-b border-line bg-band px-3 text-xs text-muted focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent"
+				>
+					<InfoIcon size={14} aria-hidden className="shrink-0 text-accent" />
+					{hint.text}
+				</p>
+			)}
+		</Tooltip>
 	);
 }
 

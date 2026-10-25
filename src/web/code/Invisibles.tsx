@@ -12,7 +12,7 @@ import { DEFAULT_TAB_WIDTH, type Piece, renderInvisibles } from "./invisibles";
 
 export const INVISIBLES_STORAGE_KEY = "crb.code.invisibles";
 
-/** The remembered ¶ choice: shown unless turned off (or storage is unavailable). */
+/** The remembered "Show hidden characters" setting: shown unless turned off (or storage is unavailable). */
 export function readShowInvisibles(): boolean {
 	try {
 		return localStorage.getItem(INVISIBLES_STORAGE_KEY) !== "off";
@@ -24,7 +24,7 @@ export function readShowInvisibles(): boolean {
 let show: boolean | undefined;
 const listeners = new Set<() => void>();
 
-/** Every code view shares one ¶ choice, remembered for this viewer. */
+/** Every code view shares one choice (Settings), remembered for this viewer. */
 export function setShowInvisibles(next: boolean): void {
 	show = next;
 	try {
@@ -50,27 +50,6 @@ export function useShowInvisibles(): boolean {
 			show ??= readShowInvisibles();
 			return show;
 		},
-	);
-}
-
-/** The ¶ toggle (Notepad++'s "Show All Characters"). */
-export function InvisiblesToggle() {
-	const on = useShowInvisibles();
-	return (
-		<Tooltip content="Show all characters" describe={false}>
-			{(trigger) => (
-				<button
-					type="button"
-					{...trigger}
-					aria-label="Show all characters"
-					aria-pressed={on}
-					onClick={() => setShowInvisibles(!on)}
-					className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-line-strong text-sm font-semibold text-muted hover:text-ink focus-visible:outline-2 focus-visible:outline-accent aria-pressed:bg-accent aria-pressed:text-canvas pointer-coarse:h-10 pointer-coarse:w-10"
-				>
-					<span aria-hidden>¶</span>
-				</button>
-			)}
-		</Tooltip>
 	);
 }
 
