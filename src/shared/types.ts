@@ -186,6 +186,8 @@ export interface PrOverview {
 		excerpt: string;
 		/** The first comment as GitHub renders it. Untrusted, like `bodyHtml`. */
 		html: string;
+		/** The first comment's markdown (suggested changes are read from it). */
+		body: string;
 		/** When the first comment was written. */
 		createdAt: string;
 		/** The thread's latest comment (as-of mode: by the cutoff). */

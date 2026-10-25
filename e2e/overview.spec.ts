@@ -1,5 +1,9 @@
 import type { Page } from "@playwright/test";
-import { reviewThread, threadComment } from "../test/fake-gh/scenario";
+import {
+	reviewThread,
+	suggestionHtml,
+	threadComment,
+} from "../test/fake-gh/scenario";
 import { expect, test } from "./fixtures";
 
 const botThreadNoReply = reviewThread({ path: "src/bot.ts", line: 3 }, [
@@ -921,6 +925,86 @@ test("a thread card: status, author and times on a tinted header, then file:line
 		await thread.scrollIntoViewIfNeeded();
 		await page.screenshot({
 			path: `${shots}/thread-card-${isMobile ? "phone" : "desktop"}.png`,
+		});
+	}
+});
+
+test("suggested changes show as mini diffs of the commented lines, highlighted like the code", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	if (isMobile) await page.setViewportSize({ width: 360, height: 780 });
+	const removed = [
+		"    const hit = this.map.get(key);",
+		"    if (hit && Date.now() - hit.at < this.ttl) return hit.value;",
+	];
+	const added = [
+		"    const hit = this.map.get(key);\t// cached",
+		"    if (hit && !expired(hit)) return hit.value;",
+	];
+	await pr({
+		threads: [
+			reviewThread(
+				{
+					path: "src/cache.ts",
+					line: null,
+					originalLine: 8,
+					originalStartLine: 7,
+					isOutdated: true,
+				},
+				[
+					threadComment({
+						login: "rev1",
+						text: "Simpler: Suggested change ... or drop them",
+						html: [
+							'<p dir="auto">Simpler:</p>',
+							suggestionHtml(removed, added),
+							'<p dir="auto">or drop them:</p>',
+							suggestionHtml(removed, []),
+						].join("\n"),
+						body: `Simpler:\r\n\`\`\`suggestion\r\n${added.join("\r\n")}\r\n\`\`\`\r\nor drop them:\r\n\`\`\`suggestion\r\n\`\`\``,
+						diffHunk: CODE_HUNK,
+					}),
+				],
+			),
+		],
+	});
+	const s = await startCrb();
+	await page.goto(s.url);
+	const thread = page
+		.getByRole("region", { name: "Human reviews" })
+		.getByTestId("thread");
+	await thread.getByRole("button", { name: "Show more" }).click();
+	const blocks = thread.getByRole("figure", { name: "Suggested change" });
+	await expect(blocks).toHaveCount(2);
+	const first = blocks.first().getByTestId("suggestion-line");
+	await expect(first).toHaveCount(4);
+	await expect(first.nth(0)).toContainText("7");
+	await expect(first.nth(0)).toContainText("const hit = this.map.get(key);");
+	await expect(first.nth(3)).toContainText("!expired(hit)");
+	// Same rendering as the code pane: highlighted, invisibles shown.
+	await expect(
+		first.nth(3).locator("span[style*=color]").first(),
+	).toBeVisible();
+	await expect(first.nth(2).locator('[data-inv="tab"]')).toHaveCount(1);
+	await expect(blocks.nth(1).getByTestId("suggestion-line")).toHaveCount(2);
+	await expect(thread.getByTestId("thread-body")).toContainText(
+		"or drop them:",
+	);
+	await expect(thread.getByRole("button", { name: /apply/i })).toHaveCount(0);
+	const overflow = await page.evaluate(
+		() =>
+			document.documentElement.scrollWidth -
+			document.documentElement.clientWidth,
+	);
+	expect(overflow).toBeLessThanOrEqual(0);
+	const shots = process.env.DESIGN_SHOTS;
+	if (shots) {
+		await blocks.first().scrollIntoViewIfNeeded();
+		await page.screenshot({
+			path: `${shots}/suggestion-${isMobile ? "phone" : "desktop"}.png`,
 		});
 	}
 });

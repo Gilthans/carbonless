@@ -70,6 +70,8 @@ export function prView(
 /** A review comment with its text, as the aliased `first` query returns it. */
 export interface CommentNode {
 	author: { login: string; __typename: string };
+	/** The markdown (suggested changes are read from it). */
+	body?: string;
 	bodyText: string;
 	bodyHTML: string;
 	createdAt: string;
@@ -152,6 +154,8 @@ export function threadComment(c: {
 	diffHunk?: string;
 	/** The commit it was written on (GitHub's originalCommit). */
 	commit?: string;
+	/** The markdown, when it differs from `text`. */
+	body?: string;
 }): CommentNode {
 	const escaped = c.text
 		.replaceAll("&", "&amp;")
@@ -159,10 +163,30 @@ export function threadComment(c: {
 		.replaceAll(">", "&gt;");
 	return {
 		author: { login: c.login, __typename: c.bot ? "Bot" : "User" },
+		body: c.body ?? c.text,
 		bodyText: c.text,
 		bodyHTML: c.html ?? `<p dir="auto">${escaped}</p>`,
 		createdAt: c.createdAt ?? "2026-01-03T09:00:00Z",
 		...(c.diffHunk === undefined ? {} : { diffHunk: c.diffHunk }),
 		...(c.commit === undefined ? {} : { originalCommit: { oid: c.commit } }),
 	};
+}
+
+/**
+ * A "suggested change" block as GitHub's bodyHTML draws one (its structure
+ * and classes, synthetic text): `removed` lines as deletions, `added` as
+ * additions, each cell's text escaped.
+ */
+export function suggestionHtml(removed: string[], added: string[]): string {
+	const esc = (t: string) =>
+		t.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+	const row = (kind: "deletion" | "addition", text: string, n: number) =>
+		`<tr class="border-0"><td class="blob-num blob-num-${kind} text-right border-0 px-2 py-1 lh-default" data-line-number="${n}"></td><td class="border-0 px-2 py-1 blob-code-inner blob-code-${kind} js-blob-code-${kind} blob-code-marker-${kind}">${esc(text)}</td></tr>`;
+	return `<div class="my-2 border rounded-2 js-suggested-changes-blob diff-view js-check-hidden-unicode" id="">
+    <div class="f6 p-2 lh-condensed border-bottom d-flex"><div class="flex-auto flex-items-center color-fg-muted">
+        Suggested change
+      </div></div>
+    <div itemprop="text" class="blob-wrapper data file rounded-0"><table class="d-table tab-size mb-0 width-full" data-paste-markdown-skip=""><tbody>${removed.map((t, i) => row("deletion", t, i + 1)).join("")}${added.map((t, i) => row("addition", t, i + 1)).join("")}</tbody></table></div>
+    <div class="js-apply-changes"></div>
+  </div>`;
 }

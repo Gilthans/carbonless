@@ -207,6 +207,8 @@ function mapThreads(nodes: unknown[], asOf: string | undefined): Thread[] {
 			currentLine: asOf ? null : lineNumber(t.line),
 			excerpt: text.replace(/\s+/g, " ").trim().slice(0, 200),
 			html: str(first.bodyHTML),
+			// The raw markdown: suggested changes come from it exactly.
+			body: str(first.body),
 			createdAt,
 			lastActivityAt,
 			author: firstLogin,

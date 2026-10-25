@@ -10,6 +10,7 @@ const thread = (extra: Partial<Thread> = {}): Thread => ({
 	currentLine: 12,
 	excerpt: "",
 	html: "",
+	body: "",
 	createdAt: "",
 	lastActivityAt: "",
 	author: "rev1",

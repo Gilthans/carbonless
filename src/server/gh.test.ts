@@ -330,7 +330,7 @@ describe("runGh with a fake gh", () => {
 		// Text and code only for each thread's opening comment; the latest
 		// one's time; authors for the rest.
 		expect(log()).toContain(
-			"path subjectType line originalLine originalStartLine diffSide startDiffSide first: comments(first: 1) { nodes { author { login __typename } bodyText bodyHTML createdAt diffHunk originalCommit { oid } } }",
+			"path subjectType line originalLine originalStartLine diffSide startDiffSide first: comments(first: 1) { nodes { author { login __typename } body bodyText bodyHTML createdAt diffHunk originalCommit { oid } } }",
 		);
 		expect(log()).toContain(
 			"latest: comments(last: 1) { nodes { createdAt } }",

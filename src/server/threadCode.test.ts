@@ -131,6 +131,7 @@ describe("fillThreadCode", () => {
 		currentLine: null,
 		excerpt: "",
 		html: "",
+		body: "",
 		createdAt: "",
 		lastActivityAt: "",
 		author: "rev1",

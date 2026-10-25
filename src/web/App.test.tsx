@@ -11,6 +11,7 @@ import {
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { suggestionHtml } from "../../test/fake-gh/scenario";
 import type { PrOverview, ReviewView, SessionInfo } from "../shared/types";
 import { COMPACT_RAMP, compactProgress } from "./App";
 import { resetShowInvisibles, setShowInvisibles } from "./code/Invisibles";
@@ -92,6 +93,7 @@ const overview: PrOverview = {
 			currentLine: null,
 			excerpt: "Coverage dropped",
 			html: '<p dir="auto">Coverage <em>dropped</em> by 2%</p>',
+			body: "",
 			createdAt: "2026-01-02T12:00:00Z",
 			author: "ci-bot",
 			bot: true,
@@ -108,6 +110,7 @@ const overview: PrOverview = {
 			currentLine: 42,
 			excerpt: "Should this expire?",
 			html: '<p dir="auto">Should this <strong>expire</strong>?</p>',
+			body: "",
 			createdAt: "2026-01-03T09:00:00Z",
 			author: "rev1",
 			bot: false,
@@ -142,6 +145,7 @@ function humanThread(
 		currentLine: 1,
 		excerpt: path,
 		html: `<p>${path}</p>`,
+		body: "",
 		createdAt: "2026-01-01T09:00:00Z",
 		lastActivityAt: "2026-01-01T09:00:00Z",
 		author: "rev2",
@@ -747,6 +751,76 @@ describe("OverviewPage", () => {
 			within(humans).getByRole("button", { name: "7 resolved" }),
 		);
 		expect(shown()).toHaveLength(5);
+	});
+
+	it("draws suggested changes as mini diffs, and GitHub's HTML when they don't line up", async () => {
+		const code = {
+			diffHunk:
+				"@@ -40,2 +40,3 @@ class Cache {\n   get() {}\n-  old() {}\n+  set() {}\n+  ttl = 5;",
+			commit: "",
+			side: "RIGHT" as const,
+			startSide: "RIGHT" as const,
+			startLine: 41,
+			endLine: 42,
+		};
+		const html = [
+			'<p dir="auto">Use:</p>',
+			suggestionHtml(
+				["  set() {}", "  ttl = 5;"],
+				["  set(v) {}", "  ttl = 10;"],
+			),
+			'<p dir="auto">or drop them:</p>',
+			suggestionHtml(["  set() {}", "  ttl = 5;"], []),
+		].join("\n");
+		const body =
+			"Use:\r\n```suggestion\r\n  set(v) {}\r\n  ttl = 10;\r\n```\r\nor drop them:\r\n```suggestion\r\n```";
+		renderApp({
+			"/api/overview": ok({
+				...overview,
+				threads: [
+					humanThread("src/cache.ts", { line: 42, code, html, body }),
+					humanThread("src/other.ts", {
+						code,
+						// GitHub's block replaces other lines than the thread's.
+						html: suggestionHtml(["something else"], ["x"]),
+						body: "```suggestion\nx\n```",
+						createdAt: "2026-01-01T08:00:00Z",
+						lastActivityAt: "2026-01-01T08:00:00Z",
+					}),
+				],
+			}),
+		});
+		const humans = await screen.findByRole("region", { name: "Human reviews" });
+		const [first, second] = within(humans).getAllByTestId("thread");
+		if (!first || !second) throw new Error("two threads");
+		const blocks = within(first).getAllByRole("figure", {
+			name: "Suggested change",
+		});
+		expect(blocks).toHaveLength(2);
+		const rows = (block: HTMLElement) =>
+			within(block)
+				.getAllByTestId("suggestion-line")
+				.map((r) => r.textContent?.replace(/\s+/g, " ").trim());
+		expect(rows(blocks[0] as HTMLElement)).toEqual([
+			"41− set() {}",
+			"42− ttl = 5;",
+			"41+ set(v) {}",
+			"42+ ttl = 10;",
+		]);
+		// An empty suggestion deletes the lines.
+		expect(rows(blocks[1] as HTMLElement)).toEqual([
+			"41− set() {}",
+			"42− ttl = 5;",
+		]);
+		expect(first).toHaveTextContent("or drop them:");
+		expect(within(first).queryByRole("button", { name: /apply/i })).toBeNull();
+		// Not the thread's lines: GitHub's HTML as is, nothing dropped.
+		expect(
+			within(second).queryByRole("figure", { name: "Suggested change" }),
+		).toBeNull();
+		expect(within(second).getByTestId("thread-body")).toHaveTextContent(
+			/Suggested change\s*something else\s*x/,
+		);
 	});
 
 	it("shows the code a comment was written on beside it, the commented line marked; a file comment has none", async () => {

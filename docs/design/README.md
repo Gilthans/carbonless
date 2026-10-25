@@ -104,6 +104,10 @@ bordered (`edge`) card on `surface`:
    sits on its own `raised` surface with an `edge` border: GitHub's text,
    apart from the card and the code.
 
+A suggested change in the comment is a small `code` figure: a `band`
+caption (yellow light bulb, "Suggested change"), then the commented lines as
+deleted rows and the suggestion as added rows, drawn like the code pane.
+
 Lists show five threads, then "Load X more comments out of Y".
 
 ## Typography

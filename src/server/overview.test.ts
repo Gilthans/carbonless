@@ -141,6 +141,7 @@ describe("mapOverview", () => {
 				currentLine: 42,
 				excerpt: "Should this expire?",
 				html: '<p dir="auto">Should this <strong>expire</strong>?</p>',
+				body: "",
 				createdAt: "2026-01-03T09:00:00Z",
 				lastActivityAt: "2026-01-03T11:00:00Z",
 				author: "rev1",
@@ -164,6 +165,7 @@ describe("mapOverview", () => {
 				currentLine: 3,
 				excerpt: "First",
 				html: '<p dir="auto">First</p>',
+				body: "",
 				createdAt: "2026-01-03T09:00:00Z",
 				lastActivityAt: "2026-01-03T11:00:00Z",
 				author: "rev1",
@@ -180,6 +182,7 @@ describe("mapOverview", () => {
 				currentLine: 1,
 				excerpt: "Nit",
 				html: '<p dir="auto">Nit</p>',
+				body: "",
 				createdAt: "2026-01-03T09:00:00Z",
 				lastActivityAt: "2026-01-03T09:00:00Z",
 				author: "rev1",
@@ -197,6 +200,7 @@ describe("mapOverview", () => {
 				currentLine: null,
 				excerpt: "Coverage dropped",
 				html: '<p dir="auto">Coverage dropped</p>',
+				body: "",
 				createdAt: "2026-01-02T12:00:00Z",
 				lastActivityAt: "2026-01-02T12:00:00Z",
 				author: "ci-bot",
@@ -320,6 +324,18 @@ describe("mapOverview", () => {
 		const { totalCount: _, ...noTotal } = thread.comments;
 		thread.comments = noTotal as typeof thread.comments;
 		expect(mapOverview(view(), g, VIEWER).threads[0]?.commentCount).toBe(2);
+	});
+
+	it("passes the opener's markdown on for suggested changes", () => {
+		const g = graph();
+		const t = g.reviewThreads[0] as unknown as {
+			first: { nodes: { body?: string }[] };
+		};
+		const node = t.first.nodes[0];
+		if (node) node.body = "```suggestion\r\nx\r\n```";
+		expect(mapOverview(view(), g, VIEWER).threads[0]?.body).toBe(
+			"```suggestion\r\nx\r\n```",
+		);
 	});
 
 	it("cuts thread excerpts at 200 characters", () => {
