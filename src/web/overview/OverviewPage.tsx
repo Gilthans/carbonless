@@ -50,6 +50,7 @@ import { Tooltip } from "../Tooltip";
 import { ErrorMessage, safeHref } from "../ui";
 import { codeExcerpt, type HunkLine } from "./diffHunk";
 import { createImageRefresher } from "./imageRefresh";
+import { threadKeys } from "./threadKeys";
 
 type Review = PrOverview["reviews"][number];
 type Check = PrOverview["checks"][number];
@@ -907,20 +908,6 @@ function ThreadGroup(props: {
 	);
 }
 
-/**
- * Threads have no id: path, opening time and author name one, numbered
- * apart in the unlikely case two share all three.
- */
-function threadKeys(threads: Thread[]): [string, Thread][] {
-	const seen = new Map<string, number>();
-	return threads.map((t) => {
-		const base = `${t.path}\u0000${t.createdAt}\u0000${t.author}`;
-		const n = seen.get(base) ?? 0;
-		seen.set(base, n + 1);
-		return [n ? `${base}\u0000${n}` : base, t];
-	});
-}
-
 /** Overflowing `el` (when `axis` is "both", sideways too), re-measured as it resizes. */
 function useOverflow(
 	el: RefObject<HTMLElement | null>,
@@ -959,6 +946,7 @@ function ThreadItem({ thread }: { thread: Thread }) {
 	const codeBox = useRef<HTMLElement>(null);
 	const commentBox = useRef<HTMLDivElement>(null);
 	const codeMore = useOverflow(codeBox, !open, "both");
+	const codeOverflowsOpen = useOverflow(codeBox, open, "both");
 	const commentMore = useOverflow(commentBox, !open, "y");
 	const commentId = useId();
 	const codeId = useId();
@@ -967,6 +955,7 @@ function ThreadItem({ thread }: { thread: Thread }) {
 		? codeExcerpt(thread.code, Number.POSITIVE_INFINITY).lines
 		: [];
 	const excerpt = open ? whole : clipped;
+	const line = headerLine(thread, clipped);
 	// Opening also shows the hunk's earlier lines.
 	const more = codeMore || commentMore || whole.length > clipped.length;
 	const commentClipped = commentMore && !open;
@@ -1004,10 +993,7 @@ function ThreadItem({ thread }: { thread: Thread }) {
 			className="min-w-0 space-y-2 rounded-lg border border-line bg-raised px-3 py-3"
 		>
 			<div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted">
-				<code className="font-mono break-all text-ink-soft">
-					{thread.path}
-					{thread.line !== null && `:${thread.line}`}
-				</code>
+				<ThreadPlace thread={thread} line={line} />
 				<span className="inline-flex items-center gap-1 text-ink-soft">
 					{thread.author}
 					{thread.bot && <BotIcon />}
@@ -1038,7 +1024,7 @@ function ThreadItem({ thread }: { thread: Thread }) {
 						path={thread.path}
 						lines={excerpt}
 						open={open}
-						scrollable={codeMore && !open}
+						scrollable={open ? codeOverflowsOpen : codeMore}
 					/>
 					{comment}
 				</div>
@@ -1062,6 +1048,61 @@ function ThreadItem({ thread }: { thread: Thread }) {
 				</button>
 			)}
 		</li>
+	);
+}
+
+/**
+ * The line number the header shows: the marked line's own number when the
+ * code is shown (even if the range fell back to the hunk's last line),
+ * else the server's.
+ */
+function headerLine(
+	thread: Thread,
+	clipped: (HunkLine & { marked: boolean })[],
+): number | null {
+	const end = clipped.at(-1);
+	if (!end || !thread.code) return thread.line;
+	return thread.code.side === "LEFT"
+		? (end.oldNo ?? end.newNo)
+		: (end.newNo ?? end.oldNo);
+}
+
+/** path:line; where the line is now, when it moved, in a tooltip. */
+function ThreadPlace({
+	thread,
+	line,
+}: {
+	thread: Thread;
+	line: number | null;
+}) {
+	const text = (
+		<>
+			{thread.path}
+			{line !== null && `:${line}`}
+		</>
+	);
+	const className = "font-mono break-all text-ink-soft";
+	const moved =
+		!thread.outdated &&
+		thread.currentLine !== null &&
+		line !== null &&
+		thread.currentLine !== line;
+	if (!moved) return <code className={className}>{text}</code>;
+	return (
+		<Tooltip content={`Now at line ${thread.currentLine}`}>
+			{(trigger) => (
+				<code
+					{...trigger}
+					data-testid="thread-place"
+					// Focusable so keyboard and touch users can read the tooltip.
+					// biome-ignore lint/a11y/noNoninteractiveTabindex: the tooltip opens on focus.
+					tabIndex={0}
+					className={`${className} cursor-help rounded-sm underline decoration-dotted underline-offset-2 focus-visible:outline-2 focus-visible:outline-accent`}
+				>
+					{text}
+				</code>
+			)}
+		</Tooltip>
 	);
 }
 
@@ -1108,10 +1149,21 @@ function ThreadCodePane(props: {
 		(f) => f.path === props.path,
 	)?.tabWidth;
 	const table = useRef<HTMLTableElement>(null);
-	useEffect(() => {
-		if (!props.open) return;
-		const marked = table.current?.querySelector("[data-marked]");
-		marked?.scrollIntoView?.({ block: "nearest" });
+	// Opened, the pane scrolls itself (never the window) to the marked range:
+	// its end at the bottom, or its start at the top when it doesn't fit.
+	useLayoutEffect(() => {
+		const pane = table.current?.parentElement;
+		const marked = table.current?.querySelectorAll("[data-marked]");
+		const first = marked?.[0];
+		const last = marked?.[marked.length - 1];
+		if (!props.open || !pane || !first || !last) return;
+		const top = pane.getBoundingClientRect().top - pane.scrollTop;
+		const firstTop = first.getBoundingClientRect().top - top;
+		const lastBottom = last.getBoundingClientRect().bottom - top;
+		pane.scrollTop = Math.max(
+			0,
+			Math.min(firstTop, lastBottom - pane.clientHeight),
+		);
 	}, [props.open]);
 	return (
 		<figure
@@ -1120,9 +1172,10 @@ function ThreadCodePane(props: {
 			aria-label={`Code at ${props.path}`}
 			data-testid="thread-code"
 			tabIndex={props.scrollable ? 0 : undefined}
-			// Six 20px lines, the border and a thin sideways scrollbar fit
-			// without a vertical one; only a longer range scrolls down.
-			className={`min-w-0 rounded-md border border-line bg-code font-mono text-xs leading-5 text-code-ink [scrollbar-width:thin] focus-visible:outline-2 focus-visible:outline-accent ${props.open ? "" : "max-h-[8.75rem] overflow-auto"}`}
+			// Clipped: six 20px lines, the border and a thin sideways scrollbar
+			// fit without a vertical one. Opened: up to 24 lines (or 60% of
+			// the screen), wrapped, so the comment stays beside its code.
+			className={`min-w-0 overflow-auto rounded-md border border-line bg-code font-mono text-xs leading-5 text-code-ink [scrollbar-width:thin] focus-visible:outline-2 focus-visible:outline-accent ${props.open ? "max-h-[min(30.75rem,60vh)]" : "max-h-[8.75rem]"}`}
 		>
 			<table ref={table} className="w-full border-collapse">
 				<tbody>

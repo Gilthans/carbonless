@@ -445,13 +445,12 @@ test("a thread shows the code it was written on beside the comment, stacked on a
 	await expect(lines.first()).toContainText("import { load }");
 	await expect(code.locator("[data-marked]")).toHaveCount(2);
 	await expect(code).not.toHaveAttribute("tabindex");
-	const opened = await code.evaluate((el) => ({
-		over:
+	const opened = await code.evaluate(
+		(el) =>
 			el.scrollHeight > el.clientHeight + 1 ||
 			el.scrollWidth > el.clientWidth + 1,
-		overflow: getComputedStyle(el).overflow,
-	}));
-	expect(opened).toEqual({ over: false, overflow: "visible" });
+	);
+	expect(opened).toBe(false);
 	expect((await body.boundingBox())?.height).toBeGreaterThan(b.height + 100);
 });
 
@@ -671,4 +670,42 @@ test("the logo shares the title's line, both pages end with a footer, and Review
 	await expect(footer2).toContainText("Diff by");
 	await expect(footer2).toContainText("carbonless");
 	await expect(footer2.locator("img")).toHaveCount(1);
+});
+
+test("an opened long hunk scrolls inside its pane to the marked line, never the window", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	const hunk = [
+		"@@ -0,0 +1,60 @@",
+		...Array.from({ length: 60 }, (_, i) => `+export const v${i + 1} = ${i};`),
+	].join("\n");
+	await pr({
+		threads: [
+			reviewThread({ path: "src/long.ts", line: 60 }, [
+				threadComment({ login: "rev1", text: "Here", diffHunk: hunk }),
+			]),
+		],
+	});
+	const s = await startCrb();
+	await page.goto(s.url);
+	const thread = page
+		.getByRole("region", { name: "Human reviews" })
+		.getByTestId("thread");
+	const more = thread.getByRole("button", { name: "Show more" });
+	await more.scrollIntoViewIfNeeded();
+	const before = await page.evaluate(() => window.scrollY);
+	await more.click();
+	const code = thread.getByTestId("thread-code");
+	await expect(code.getByTestId("thread-code-line")).toHaveCount(60);
+	const marked = code.locator("[data-marked]");
+	await expect(marked).toHaveText(/v60/);
+	const [pane, row] = [await code.boundingBox(), await marked.boundingBox()];
+	if (!pane || !row) throw new Error("no boxes");
+	expect(row.y).toBeGreaterThanOrEqual(pane.y);
+	expect(row.y + row.height).toBeLessThanOrEqual(pane.y + pane.height + 1);
+	expect(pane.height).toBeLessThan(600);
+	await expect(code).toHaveAttribute("tabindex", "0");
+	expect(await page.evaluate(() => window.scrollY)).toBe(before);
 });

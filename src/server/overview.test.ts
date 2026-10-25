@@ -138,6 +138,7 @@ describe("mapOverview", () => {
 			{
 				path: "src/cache.ts",
 				line: 42,
+				currentLine: 42,
 				excerpt: "Should this expire?",
 				html: '<p dir="auto">Should this <strong>expire</strong>?</p>',
 				createdAt: "2026-01-03T09:00:00Z",
@@ -159,6 +160,7 @@ describe("mapOverview", () => {
 			{
 				path: "src/self.ts",
 				line: 3,
+				currentLine: 3,
 				excerpt: "First",
 				html: '<p dir="auto">First</p>',
 				createdAt: "2026-01-03T09:00:00Z",
@@ -174,6 +176,7 @@ describe("mapOverview", () => {
 			{
 				path: "src/done.ts",
 				line: 1,
+				currentLine: 1,
 				excerpt: "Nit",
 				html: '<p dir="auto">Nit</p>',
 				createdAt: "2026-01-03T09:00:00Z",
@@ -190,6 +193,7 @@ describe("mapOverview", () => {
 				path: "src/old.ts",
 				// Outdated: where it was written.
 				line: 7,
+				currentLine: null,
 				excerpt: "Coverage dropped",
 				html: '<p dir="auto">Coverage dropped</p>',
 				createdAt: "2026-01-02T12:00:00Z",

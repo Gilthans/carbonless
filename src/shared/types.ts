@@ -174,8 +174,14 @@ export interface PrOverview {
 	 */
 	threads: {
 		path: string;
-		/** The commented line now, else where it was written; null for a file comment. */
+		/**
+		 * The marked line when `code` is shown (the hunk's own numbering),
+		 * else the commented line now, else where it was written; null for a
+		 * file comment.
+		 */
 		line: number | null;
+		/** GitHub's current line for the comment; null when outdated or a file comment. */
+		currentLine: number | null;
 		/** The first comment as plain text, whitespace collapsed, ≤200 chars. */
 		excerpt: string;
 		/** The first comment as GitHub renders it. Untrusted, like `bodyHtml`. */

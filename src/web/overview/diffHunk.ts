@@ -16,13 +16,16 @@ const HEADER = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/;
 /**
  * GitHub's diff hunk as numbered lines. A hunk header (re)starts the
  * numbering; lines before any header are dropped, and a "\ No newline"
- * marker flags the line before it. An empty line is context (some tools strip its leading space).
+ * marker flags the line before it. An empty line is context (some tools
+ * strip its leading space). Lines split on "\n" only: a CR stays in the
+ * text, so the invisibles renderer shows CRLF endings and lone CRs as the
+ * Files page does.
  */
 export function parseDiffHunk(hunk: string): HunkLine[] {
 	const out: HunkLine[] = [];
 	let oldNo: number | null = null;
 	let newNo: number | null = null;
-	for (const raw of hunk.replace(/\r\n?/g, "\n").split("\n")) {
+	for (const raw of hunk.split("\n")) {
 		const header = HEADER.exec(raw);
 		if (header) {
 			oldNo = Number(header[1]);

@@ -89,6 +89,7 @@ const overview: PrOverview = {
 		{
 			path: "src/old.ts",
 			line: null,
+			currentLine: null,
 			excerpt: "Coverage dropped",
 			html: '<p dir="auto">Coverage <em>dropped</em> by 2%</p>',
 			createdAt: "2026-01-02T12:00:00Z",
@@ -104,6 +105,7 @@ const overview: PrOverview = {
 		{
 			path: "src/cache.ts",
 			line: 42,
+			currentLine: 42,
 			excerpt: "Should this expire?",
 			html: '<p dir="auto">Should this <strong>expire</strong>?</p>',
 			createdAt: "2026-01-03T09:00:00Z",
@@ -136,6 +138,7 @@ function humanThread(
 	return {
 		path,
 		line: 1,
+		currentLine: 1,
 		excerpt: path,
 		html: `<p>${path}</p>`,
 		createdAt: "2026-01-01T09:00:00Z",
@@ -318,6 +321,7 @@ describe("OverviewPage", () => {
 	afterEach(() => {
 		cleanup();
 		vi.unstubAllGlobals();
+		resetShowInvisibles();
 	});
 
 	it("renders the description as GitHub renders it, sanitized", async () => {
@@ -733,7 +737,80 @@ describe("OverviewPage", () => {
 		await waitFor(() =>
 			expect(code.querySelectorAll("[data-inv]")).toHaveLength(0),
 		);
-		resetShowInvisibles();
+	});
+
+	it("numbers the header by the marked line, and says where a carried-forward comment is now", async () => {
+		renderApp({
+			"/api/overview": ok({
+				...overview,
+				threads: [
+					humanThread("src/moved.ts", {
+						line: 9,
+						currentLine: 3,
+						code: {
+							// The range (9) isn't in the hunk: its last line is marked.
+							diffHunk: "@@ -1,1 +1,2 @@\n a\n+b",
+							side: "RIGHT",
+							startSide: "RIGHT",
+							startLine: 9,
+							endLine: 9,
+						},
+					}),
+				],
+			}),
+		});
+		const humans = await screen.findByRole("region", { name: "Human reviews" });
+		const place = within(humans).getByTestId("thread-place");
+		expect(place).toHaveTextContent("src/moved.ts:2");
+		place.focus();
+		expect(
+			await screen.findByRole("tooltip", { name: "Now at line 3" }),
+		).toBeVisible();
+	});
+
+	it("lays out tabs in a code pane at the file's .editorconfig width", async () => {
+		const tabbed = (path: string) =>
+			humanThread(path, {
+				code: {
+					diffHunk: "@@ -1,0 +1,1 @@\n+\tx",
+					side: "RIGHT",
+					startSide: "RIGHT",
+					startLine: 1,
+					endLine: 1,
+				},
+			});
+		const file = (path: string, tabWidth?: number) =>
+			({
+				index: 0,
+				path,
+				status: "modified",
+				binary: false,
+				submodule: false,
+				additions: 1,
+				deletions: 0,
+				...(tabWidth ? { tabWidth } : {}),
+				clusters: [],
+				done: false,
+				reviewed: false,
+				crossedOff: false,
+			}) as ReviewView["files"][number];
+		renderApp({
+			"/api/overview": ok({
+				...overview,
+				threads: [tabbed("src/two.ts"), tabbed("src/default.ts")],
+			}),
+			"/api/review": ok({
+				...review,
+				files: [file("src/two.ts", 2), file("src/default.ts")],
+			}),
+		});
+		const humans = await screen.findByRole("region", { name: "Human reviews" });
+		const tab = (path: string) =>
+			within(humans)
+				.getByRole("figure", { name: `Code at ${path}` })
+				.querySelector<HTMLElement>('[data-inv="tab"]');
+		await waitFor(() => expect(tab("src/two.ts")?.style.width).toBe("2ch"));
+		expect(tab("src/default.ts")?.style.width).toBe("4ch");
 	});
 
 	it("previews a thread as GitHub renders it, clipped, with a toggle when it is long", async () => {

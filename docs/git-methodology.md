@@ -76,6 +76,7 @@ fixture shape.
 As-of picks the PR's head from commit dates (`src/server/asOf.ts`). Commits
 sharing one date (a rebase often gives them the same committer second) tie;
 the later one in GitHub's list (oldest first) wins, and a review at the same
-moment wins over both. The fixture gives the PR's own commits, and the
+moment wins over both. This assumes GitHub lists a PR's commits in history
+order, oldest first, as its `commits` connection does. The fixture gives the PR's own commits, and the
 rebased ones, one shared second each, and checks as of a moment before any
 review, so only the commit dates can name the head.

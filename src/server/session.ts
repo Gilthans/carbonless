@@ -42,11 +42,6 @@ interface Endpoints {
 }
 
 /**
- * One reviewer's review of one PR, as served by `crb`. The snapshot is the
- * reviewer's patch set once they started one, else the PR's head; it only
- * moves on an explicit refresh, and never off a started patch set.
- */
-/**
  * Why a PR has no review to open: merged, closed (reopening it on GitHub is
  * the way back), or, for an open PR, that its review couldn't be read.
  */
@@ -64,6 +59,11 @@ export function refusal(
 	}
 }
 
+/**
+ * One reviewer's review of one PR, as served by `crb`. The snapshot is the
+ * reviewer's patch set once they started one, else the PR's head; it only
+ * moves on an explicit refresh, and never off a started patch set.
+ */
 export class Session {
 	#meta: PrMeta;
 	#snapshot: Snapshot;

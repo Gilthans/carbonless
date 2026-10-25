@@ -45,14 +45,22 @@ describe("parseDiffHunk", () => {
 		]);
 	});
 
-	it("handles one-line headers, CRLF, no-newline markers, and an empty context line", () => {
+	it("handles one-line headers, no-newline markers, and an empty context line", () => {
 		const lines = parseDiffHunk(
-			"@@ -0,0 +1 @@\r\n+x\r\n\\ No newline at end of file\r\n\n+y\n",
+			"@@ -0,0 +1 @@\n+x\n\\ No newline at end of file\n\n+y\n",
 		);
 		expect(lines).toEqual([
 			{ kind: "add", oldNo: null, newNo: 1, text: "x", noNewline: true },
 			{ kind: "context", oldNo: 0, newNo: 2, text: "" },
 			{ kind: "add", oldNo: null, newNo: 3, text: "y" },
+		]);
+	});
+
+	it("keeps CRs in the text: a CRLF ending and a lone CR stay visible", () => {
+		const lines = parseDiffHunk("@@ -1,1 +1,2 @@ x\r\n a\r\n+b\rc");
+		expect(lines).toEqual([
+			{ kind: "context", oldNo: 1, newNo: 1, text: "a\r" },
+			{ kind: "add", oldNo: null, newNo: 2, text: "b\rc" },
 		]);
 	});
 

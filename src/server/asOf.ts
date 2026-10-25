@@ -43,8 +43,9 @@ const OID = /^[0-9a-f]{40}([0-9a-f]{24})?$/;
  * - each commit of the PR (`pushedDate`, else `committedDate`).
  * On a tie a review wins (a review at exactly the cutoff names the commit
  * that was reviewed); otherwise the later one in GitHub's list wins (both
- * lists are oldest first, and a rebase pushes commits within one second). Reviews cover commits a later force-push dropped from
- * the PR's commit list; commit dates cover pushes nobody reviewed.
+ * lists are oldest first, and a rebase pushes commits within one second).
+ * Reviews cover commits a later force-push dropped from the PR's commit
+ * list; commit dates cover pushes nobody reviewed.
  * `committedDate` approximates the push time (GitHub no longer reports
  * pushes), so a commit made long before it was pushed counts from when it
  * was made.

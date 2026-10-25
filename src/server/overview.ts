@@ -191,6 +191,7 @@ function mapThreads(nodes: unknown[], asOf: string | undefined): Thread[] {
 			// The marked line when the code is shown (a carried-forward
 			// comment's current line may differ), else where it is now or was.
 			line: code?.endLine ?? lineNumber(t.line) ?? lineNumber(t.originalLine),
+			currentLine: lineNumber(t.line),
 			excerpt: text.replace(/\s+/g, " ").trim().slice(0, 200),
 			html: str(first.bodyHTML),
 			createdAt,
