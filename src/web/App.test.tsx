@@ -620,7 +620,7 @@ describe("OverviewPage", () => {
 		// Header: status, opener, opened and last active (the sort key).
 		const head = within(human).getByTestId("thread-head");
 		expect(head).toHaveTextContent(
-			/^Unresolved thread by rev1\s*·\s*opened .+·\s*updated /,
+			/^Unresolved thread by rev1\s*opened\s.+updated\s/,
 		);
 		expect(
 			Array.from(head.querySelectorAll("time")).map((t) =>
@@ -866,7 +866,7 @@ describe("OverviewPage", () => {
 		expect(within(bots).getByTestId("thread")).toHaveTextContent("src/old.ts");
 	});
 
-	it("the ¶ choice shared with Files shows invisible characters in the code panes", async () => {
+	it("the hidden-characters setting shows invisible characters in the code panes", async () => {
 		renderApp();
 		const humans = await screen.findByRole("region", { name: "Human reviews" });
 		const code = within(humans).getByRole("figure", {

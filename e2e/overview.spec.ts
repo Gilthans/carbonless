@@ -882,9 +882,24 @@ test("a thread card: status, author and times on a tinted header, then file:line
 	const thread = humans.getByTestId("thread");
 	const head = thread.getByTestId("thread-head");
 	await expect(head).toContainText(
-		/^Unresolved thread by Gilthans\s*·\s*opened .+·\s*updated .+ago2$/,
+		/^Unresolved thread by Gilthans\s*opened\s.+ago\s*updated\s.+ago2$/,
 	);
 	await expect(head.locator("time")).toHaveCount(2);
+	// Every part after the first has a "·" before it, except one that starts
+	// a line (its dot is clipped): no line starts with a separator.
+	const dots = await head.locator("p > span").evaluateAll((parts) => {
+		const box = parts[0]?.parentElement?.parentElement;
+		if (!box) throw new Error("no header line");
+		const clip = box.getBoundingClientRect().left;
+		return parts.map((part) => {
+			const left = part.getBoundingClientRect().left;
+			const shown = left + 12 > clip + 3;
+			const starts = Math.abs(left + 12 - clip) < 4 || left + 12 < clip + 3;
+			return { shown, starts };
+		});
+	});
+	expect(dots[0]?.shown).toBe(false);
+	for (const d of dots) expect(d.shown).toBe(!d.starts);
 	const bg = (l: typeof head) =>
 		l.evaluate((el) => getComputedStyle(el).backgroundColor);
 	const [cardBg, headBg, bodyBg, codeBg] = await Promise.all([

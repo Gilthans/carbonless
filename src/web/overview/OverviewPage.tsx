@@ -949,6 +949,13 @@ function useOverflow(
 }
 
 /**
+ * A part of a thread's header line, with its "·" before it (read as a
+ * comma, so the parts don't run together).
+ */
+const HEAD_PART =
+	"inline-flex items-center before:inline-block before:w-3 before:shrink-0 before:text-center before:content-['·'_/_',']";
+
+/**
  * One thread: where, who, when it was last active, how many comments,
  * whether anyone answered; then the code it was written on beside the first
  * comment as GitHub renders it (stacked on a phone), both clipped until
@@ -1019,38 +1026,51 @@ function ThreadItem({ thread }: { thread: Thread }) {
 		>
 			<div
 				data-testid="thread-head"
-				className="flex flex-wrap items-center gap-x-1.5 gap-y-1 border-b border-line bg-band px-3 py-1.5 text-xs text-muted"
+				className="flex flex-wrap items-center gap-x-1.5 gap-y-1 border-b border-line bg-band px-2.5 py-1.5 text-xs text-muted"
 			>
-				{/* One flow: a separator stays with the part it introduces. */}
-				<p className="contents">
-					{thread.resolved ? (
-						<CheckCircleIcon size={14} aria-hidden className="text-ok" />
-					) : (
-						<CommentDiscussionIcon
-							size={14}
-							aria-hidden
-							className="text-warn"
-						/>
-					)}
-					<span>
-						<span className="font-semibold text-ink-soft">{status} thread</span>{" "}
-						by{" "}
-						<span className="inline-flex items-center gap-1 font-medium text-ink-soft">
-							{thread.author}
-							{thread.bot && <BotIcon />}
+				{/*
+				 * Each part draws its "·" before itself; the first part on a line
+				 * has its dot in the clipped margin, so no line starts with one.
+				 */}
+				<div className="min-w-0 flex-[1_1_auto] overflow-hidden px-0.5">
+					<p className="-ml-3 flex flex-wrap items-center gap-y-0.5">
+						<span className={HEAD_PART}>
+							{thread.resolved ? (
+								<CheckCircleIcon
+									size={14}
+									aria-hidden
+									className="mr-1.5 shrink-0 text-ok"
+								/>
+							) : (
+								<CommentDiscussionIcon
+									size={14}
+									aria-hidden
+									className="mr-1.5 shrink-0 text-warn"
+								/>
+							)}
+							<span>
+								<span className="font-semibold text-ink-soft">
+									{status} thread
+								</span>{" "}
+								by{" "}
+								<span className="inline-flex items-center gap-1 font-medium text-ink-soft">
+									{thread.author}
+									{thread.bot && <BotIcon />}
+								</span>
+							</span>
 						</span>
-					</span>
-					<span className="whitespace-nowrap">
-						<span aria-hidden>· </span>opened{" "}
-						<RelativeTime iso={thread.createdAt} />
-					</span>
-					{thread.lastActivityAt !== thread.createdAt && (
-						<span className="whitespace-nowrap">
-							<span aria-hidden>· </span>updated{" "}
-							<RelativeTime iso={thread.lastActivityAt} />
+						<span className={`${HEAD_PART} whitespace-nowrap`}>
+							opened&nbsp;
+							<RelativeTime iso={thread.createdAt} />
 						</span>
-					)}
-				</p>
+						{thread.lastActivityAt !== thread.createdAt && (
+							<span className={`${HEAD_PART} whitespace-nowrap`}>
+								updated&nbsp;
+								<RelativeTime iso={thread.lastActivityAt} />
+							</span>
+						)}
+					</p>
+				</div>
 				<div className="ml-auto flex items-center gap-2 pl-1.5">
 					<LabeledIcon
 						icon={CommentIcon}
