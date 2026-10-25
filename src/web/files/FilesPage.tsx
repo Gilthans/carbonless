@@ -19,7 +19,12 @@ import { FileDiff } from "./FileDiff";
 import { FileTree } from "./FileTree";
 import { type FilesSearch, type Landing, landingFile } from "./landing";
 import { ProgressBar } from "./ProgressBar";
-import { useUnit } from "./unit";
+import {
+	captureAnchor,
+	restoreAnchor,
+	type ScrollAnchor,
+} from "./scrollAnchor";
+import { type Unit, useUnit } from "./unit";
 import { STALE_MESSAGE } from "./useSetStates";
 
 /**
@@ -176,7 +181,7 @@ export function FilesPage() {
 		lastRevision.current = revision;
 	}, [revision, active, forgetScroll]);
 
-	const [unit, setUnit] = useUnit();
+	const [unit, saveUnit] = useUnit();
 	const wide = useMedia(WIDE);
 	const [sheetOpen, setSheetOpen] = useState(false);
 
@@ -205,6 +210,23 @@ export function FilesPage() {
 			root.style.removeProperty("--page-sticky");
 		};
 	}, [pageSticky, active]);
+	// Switching the unit keeps the row being read where it is on screen,
+	// whatever the counts' new widths do to the sticky bar or headers above it.
+	const unitAnchor = useRef<ScrollAnchor | null>(null);
+	const setUnit = (next: Unit) => {
+		const root = diffs.current;
+		unitAnchor.current =
+			root && next !== unit
+				? captureAnchor(root, appHeader + pageSticky)
+				: null;
+		saveUnit(next);
+	};
+	// biome-ignore lint/correctness/useExhaustiveDependencies: runs after each unit switch.
+	useLayoutEffect(() => {
+		const a = unitAnchor.current;
+		unitAnchor.current = null;
+		if (a && diffs.current) restoreAnchor(a, diffs.current);
+	}, [unit]);
 	/** The header to keep where it was on screen as files open and close. */
 	const anchor = useRef<{ index: number; top: number } | null>(null);
 	const sectionOf = (index: number) => document.getElementById(`file-${index}`);
