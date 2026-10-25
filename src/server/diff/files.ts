@@ -4,6 +4,12 @@ import { GitError, runGit } from "../git.js";
 export const DIFF_ARGS = [
 	"-c",
 	"core.quotePath=false",
+	// Zero context unless a call asks for more: git's change counts can
+	// depend on the context size (blank lines may align differently), so
+	// --numstat must count with the same zero context as the -U0 patch the
+	// clusters come from.
+	"-c",
+	"diff.context=0",
 	"-c",
 	"diff.renames=true",
 	"diff",

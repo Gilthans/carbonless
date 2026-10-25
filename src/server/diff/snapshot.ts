@@ -6,14 +6,13 @@ import type {
 	Snapshot,
 } from "../../shared/types.js";
 import { GitError, runGit, runGitBuffer } from "../git.js";
-import { buildClusters } from "./clusters.js";
+import { buildAllClusters } from "./clusters.js";
 import { type ChangedFile, listChangedFiles } from "./files.js";
 import { buildDisplayHunks, contextLines } from "./hunks.js";
 import { clusterKeys } from "./identity.js";
 import { chooseEncoding, decodeLines, type TextEncoding } from "./text.js";
 
 const MAX_CACHED_BLOBS = 200;
-const CLUSTER_CONCURRENCY = 8;
 
 /** Blob contents by OID, least recently used first. */
 const blobCache = new Map<string, Buffer>();
@@ -80,25 +79,6 @@ async function resolveBlobs(repo: string, names: string[]): Promise<string[]> {
 	});
 }
 
-async function mapLimit<T, R>(
-	items: T[],
-	limit: number,
-	fn: (item: T) => Promise<R>,
-): Promise<R[]> {
-	const results: R[] = new Array(items.length);
-	let next = 0;
-	const worker = async () => {
-		while (next < items.length) {
-			const i = next++;
-			results[i] = await fn(items[i] as T);
-		}
-	};
-	await Promise.all(
-		Array.from({ length: Math.min(limit, items.length) }, worker),
-	);
-	return results;
-}
-
 /** Old and new text of a file, decoded the same way on both sides. */
 interface FileText {
 	encoding: TextEncoding;
@@ -144,10 +124,13 @@ export async function buildSnapshot(
 	const texts = changed.map((f) =>
 		isText(f) ? fileText(bytesOf(f.oldOid), bytesOf(f.newOid)) : null,
 	);
-	const unkeyed = await mapLimit(
-		changed.map((file, i) => ({ file, text: texts[i] })),
-		CLUSTER_CONCURRENCY,
-		({ file, text }) => buildClusters(repo, base, head, file, text?.encoding),
+	// One whole-diff patch for every file: renames pair as in the listing.
+	const unkeyed = await buildAllClusters(
+		repo,
+		base,
+		head,
+		changed,
+		texts.map((t) => t?.encoding),
 	);
 	const files = changed.map((file, index): FileSummary => {
 		const { oldOid, newOid, ...summary } = file;

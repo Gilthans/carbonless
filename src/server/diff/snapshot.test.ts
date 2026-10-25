@@ -1,8 +1,11 @@
+import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createDiffFixture } from "../../../test/diff-fixture.js";
 import {
 	createGitFixture,
 	type GitFixture,
+	testGitEnv,
 } from "../../../test/git-fixture.js";
 import type { Snapshot } from "../../shared/types.js";
 import { listChangedFiles } from "./files.js";
@@ -254,5 +257,95 @@ describe("distinct changes never share a key", () => {
 				noNewline: true,
 			},
 		]);
+	});
+});
+
+describe("cross-renames and context-dependent counts", () => {
+	/**
+	 * Two files move to a new directory under each other's names, both
+	 * edited; another is renamed and edited; one carries a change git counts
+	 * differently with and without context (synthetic text).
+	 */
+	const quirk = JSON.parse(
+		readFileSync("test/fixtures/diff/context-quirk.json", "utf8"),
+	) as { old: string; new: string };
+	const body = (name: string, n: number) =>
+		`${Array.from({ length: n }, (_, i) => `${name} line ${i + 1}`).join("\n")}\n`;
+	let fx: GitFixture;
+	let snap: Snapshot;
+	const [b, h] = [() => fx.shas[0] as string, () => fx.shas[1] as string];
+
+	beforeAll(async () => {
+		fx = createGitFixture([
+			{
+				message: "base",
+				files: {
+					"pages/login_page.py": `${body("page", 20)}${quirk.old}`,
+					"actions/login_actions.py": body("actions", 20),
+					"util.py": body("util", 20),
+				},
+			},
+			{
+				message: "head",
+				delete: ["pages/login_page.py", "actions/login_actions.py", "util.py"],
+				files: {
+					// Each other's content under each other's name, edited.
+					"src/actions/login_actions.py": `${body("page", 20).replace("page line 3\n", "PAGE 3\n")}${quirk.new}`,
+					"src/pages/login_page.py": body("actions", 20).replace(
+						"actions line 7\n",
+						"ACTIONS 7\nextra\n",
+					),
+					"src/util.py": body("util", 20).replace("util line 1\n", ""),
+				},
+			},
+		]);
+		snap = await buildSnapshot(fx.path, b(), h());
+	});
+	afterAll(() => fx.cleanup());
+
+	it("pairs each rename as the listing does, and its clusters add up to its counts", async () => {
+		const pairs = Object.fromEntries(
+			snap.files.map((f) => [f.path, f.oldPath]),
+		);
+		expect(pairs).toEqual({
+			"src/actions/login_actions.py": "pages/login_page.py",
+			"src/pages/login_page.py": "actions/login_actions.py",
+			"src/util.py": "util.py",
+		});
+		for (const file of snap.files) {
+			const lines = file.clusters.filter((c) => c.kind === "lines");
+			expect(lines.flatMap((c) => c.added)).toHaveLength(file.additions);
+			expect(lines.flatMap((c) => c.removed)).toHaveLength(file.deletions);
+			expect(file.additions + file.deletions).toBeGreaterThan(0);
+			// Display hunks check every unchanged line against both blobs.
+			const { hunks } = await loadFileHunks(fx.path, snap, file.index);
+			const changed = hunks
+				.flatMap((hk) => hk.lines)
+				.filter((l) => l.kind !== "context");
+			expect(changed).toHaveLength(file.additions + file.deletions);
+		}
+	});
+
+	it("counts with zero context, like the clusters (git's default context counts differently here)", () => {
+		const file = snap.files.find(
+			(f) => f.path === "src/actions/login_actions.py",
+		);
+		const withContext = execFileSync(
+			"git",
+			[
+				"diff",
+				"--numstat",
+				"-M",
+				b(),
+				h(),
+				"--",
+				"src/actions/login_actions.py",
+				"pages/login_page.py",
+			],
+			{ cwd: fx.path, encoding: "utf8", env: testGitEnv() },
+		);
+		const [add, del] = withContext.split("\t").map(Number);
+		expect([file?.additions, file?.deletions]).not.toEqual([add, del]);
+		expect(file).toMatchObject({ additions: 8, deletions: 3 });
 	});
 });

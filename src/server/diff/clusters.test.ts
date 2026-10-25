@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { fileLevelCluster, parseU0Patch } from "./clusters.js";
+import { fileLevelCluster, parseU0Patch, splitPatch } from "./clusters.js";
 import type { ChangedFile } from "./files.js";
 
 function file(partial: Partial<ChangedFile>): ChangedFile {
@@ -122,5 +122,44 @@ describe("fileLevelCluster", () => {
 		expect(
 			fileLevelCluster(file({ status: "added", additions: 0 }), true),
 		).toBeNull();
+	});
+});
+
+describe("splitPatch", () => {
+	const patch = Buffer.from(
+		[
+			"diff --git a/x.ts b/x.ts",
+			"index 1..2 100644",
+			"@@ -1 +1 @@",
+			"-a",
+			"+b",
+			"diff --git a/old.ts b/new.ts",
+			"similarity index 90%",
+			"diff --git a/link b/link",
+			"deleted file mode 100644",
+			"diff --git a/link b/link",
+			"new file mode 120000",
+			"",
+		].join("\n"),
+	);
+
+	it("splits by header and keeps a type change's two halves together", () => {
+		const sections = splitPatch(patch);
+		expect([...sections.keys()]).toEqual([
+			"diff --git a/x.ts b/x.ts",
+			"diff --git a/old.ts b/new.ts",
+			"diff --git a/link b/link",
+		]);
+		expect(sections.get("diff --git a/link b/link")?.toString()).toBe(
+			"diff --git a/link b/link\ndeleted file mode 100644\ndiff --git a/link b/link\nnew file mode 120000",
+		);
+		const x = sections.get("diff --git a/x.ts b/x.ts");
+		expect(parseU0Patch(x?.toString() ?? "")).toHaveLength(1);
+	});
+
+	it("refuses text before the first file", () => {
+		expect(() => splitPatch(Buffer.from("junk\ndiff --git a/x b/x\n"))).toThrow(
+			/before its first file/,
+		);
 	});
 });

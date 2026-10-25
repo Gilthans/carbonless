@@ -119,60 +119,55 @@ const quoteHeaderPath = (path: string) =>
 const NEWLINE = Buffer.from("\n");
 const DIFF_HEADER = Buffer.from("diff --git ");
 
-/**
- * Keeps only the `diff --git` sections that belong to this exact file. Works
- * on bytes so content lines stay byte-exact until decoded.
- */
-function sectionsFor(patch: Buffer, file: ChangedFile): Buffer {
+/** The `diff --git` header lines git can print for this file. */
+function headersFor(file: ChangedFile): string[] {
 	const oldPath = file.oldPath ?? file.path;
-	const wanted = new Set([
+	return [
 		`diff --git a/${oldPath} b/${file.path}`,
 		`diff --git ${quoteHeaderPath(`a/${oldPath}`)} ${quoteHeaderPath(`b/${file.path}`)}`,
-	]);
-	const kept: Buffer[] = [];
-	let keep = false;
+	];
+}
+
+/**
+ * Splits a whole-diff patch into its `diff --git` sections, by header line.
+ * Works on bytes so content lines stay byte-exact until decoded. A type
+ * change (file ↔ symlink) prints a deletion and an addition under one
+ * header: they stay together, as that one file's section.
+ */
+export function splitPatch(patch: Buffer): Map<string, Buffer> {
+	const sections = new Map<string, Buffer[]>();
+	let current: Buffer[] | null = null;
 	for (let pos = 0; pos < patch.length; ) {
 		const found = patch.indexOf(0x0a, pos);
 		const eol = found < 0 ? patch.length : found;
 		const line = patch.subarray(pos, eol);
 		if (line.subarray(0, DIFF_HEADER.length).equals(DIFF_HEADER)) {
-			keep = wanted.has(line.toString("utf8"));
+			const header = line.toString("utf8");
+			current = sections.get(header) ?? [];
+			sections.set(header, current);
 		}
-		if (keep)
-			kept.push(kept.length > 0 ? Buffer.concat([NEWLINE, line]) : line);
+		if (current) {
+			current.push(current.length > 0 ? Buffer.concat([NEWLINE, line]) : line);
+		} else if (line.length > 0) {
+			throw new GitError("git diff printed text before its first file");
+		}
 		pos = eol + 1;
 	}
-	return Buffer.concat(kept);
+	return new Map([...sections].map(([h, parts]) => [h, Buffer.concat(parts)]));
 }
 
-const literal = (path: string) => `:(literal)${path}`;
-
 /**
- * File-level cluster first (if any), then line clusters in file order.
- * Changed lines are decoded with `encoding` (by default: UTF-8 if this
- * file's diff is valid UTF-8, else latin1).
+ * One file's clusters from its own `-U0` section. The changed lines parsed
+ * must add up to the file's numstat counts (taken with the same diff
+ * options and zero context), or this throws: a cluster can never go missing.
  */
-export async function buildClusters(
-	repo: string,
-	base: string,
-	head: string,
+export function clustersFromSection(
+	section: Buffer,
 	file: ChangedFile,
 	encoding?: TextEncoding,
-): Promise<Omit<Cluster, "key">[]> {
+): Omit<Cluster, "key">[] {
 	let lineClusters: Omit<Cluster, "key">[] = [];
 	if (!file.binary && !file.submodule) {
-		const paths = [file.oldPath, file.path]
-			.filter((p): p is string => p !== undefined)
-			.map(literal);
-		const patch = await runGitBuffer(repo, [
-			...DIFF_ARGS,
-			"-U0",
-			base,
-			head,
-			"--",
-			...paths,
-		]);
-		const section = sectionsFor(patch, file);
 		// Non-strict decoding: header lines may hold non-UTF-8 path bytes;
 		// content lines are valid in the chosen encoding.
 		const parsed = parseU0Patch(
@@ -189,4 +184,70 @@ export async function buildClusters(
 	}
 	const fileCluster = fileLevelCluster(file, lineClusters.length > 0);
 	return fileCluster ? [fileCluster, ...lineClusters] : lineClusters;
+}
+
+/**
+ * Clusters of every file in `files` (the raw listing of base..head, in
+ * order), from ONE whole-diff `-U0` patch, so renames pair exactly as in
+ * the listing. Each file must have exactly one section and every section
+ * must belong to a listed file, or this throws.
+ * `encodings[i]`: how to decode file i's lines (default: per section).
+ */
+export async function buildAllClusters(
+	repo: string,
+	base: string,
+	head: string,
+	files: ChangedFile[],
+	encodings: (TextEncoding | undefined)[] = [],
+): Promise<Omit<Cluster, "key">[][]> {
+	const patch = await runGitBuffer(repo, [
+		...DIFF_ARGS,
+		"-U0",
+		base,
+		head,
+		"--",
+	]);
+	const sections = splitPatch(patch);
+	const result = files.map((file, i) => {
+		const header = headersFor(file).find((h) => sections.has(h));
+		if (header === undefined) {
+			throw new GitError(`git diff printed no section for ${file.path}`);
+		}
+		const section = sections.get(header) as Buffer;
+		sections.delete(header);
+		return clustersFromSection(section, file, encodings[i]);
+	});
+	if (sections.size > 0) {
+		const [extra] = sections.keys();
+		throw new GitError(
+			`git diff printed a section not in the listing: ${extra}`,
+		);
+	}
+	return result;
+}
+
+/**
+ * File-level cluster first (if any), then line clusters in file order, for
+ * one file of base..head (`buildAllClusters` for all of them at once).
+ */
+export async function buildClusters(
+	repo: string,
+	base: string,
+	head: string,
+	file: ChangedFile,
+	encoding?: TextEncoding,
+): Promise<Omit<Cluster, "key">[]> {
+	const patch = await runGitBuffer(repo, [
+		...DIFF_ARGS,
+		"-U0",
+		base,
+		head,
+		"--",
+	]);
+	const sections = splitPatch(patch);
+	const header = headersFor(file).find((h) => sections.has(h));
+	if (header === undefined) {
+		throw new GitError(`git diff printed no section for ${file.path}`);
+	}
+	return clustersFromSection(sections.get(header) as Buffer, file, encoding);
 }

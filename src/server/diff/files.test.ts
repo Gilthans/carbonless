@@ -12,7 +12,7 @@ import {
 	type GitFixture,
 	testGitEnv,
 } from "../../../test/git-fixture.js";
-import { buildClusters } from "./clusters.js";
+import { buildAllClusters, buildClusters } from "./clusters.js";
 import { type ChangedFile, listChangedFiles } from "./files.js";
 
 let fixture: GitFixture;
@@ -245,6 +245,23 @@ describe("tricky changes", () => {
 		await expect(
 			buildClusters(fx.path, fx.shas[0] as string, fx.shas[1] as string, wrong),
 		).rejects.toThrow(/five\.ts/);
+	});
+
+	it("fails closed when the listing and the patch disagree on files", async () => {
+		const [base, head] = [fx.shas[0] as string, fx.shas[1] as string];
+		const all = await listChangedFiles(fx.path, base, head);
+		// A file the patch doesn't have.
+		const ghost = { ...get("five.ts"), path: "ghost.ts" };
+		await expect(
+			buildAllClusters(fx.path, base, head, [...all, ghost]),
+		).rejects.toThrow(/no section for ghost\.ts/);
+		// A section no listed file claims.
+		await expect(
+			buildAllClusters(fx.path, base, head, all.slice(1)),
+		).rejects.toThrow(/not in the listing/);
+		expect(await buildAllClusters(fx.path, base, head, all)).toHaveLength(
+			all.length,
+		);
 	});
 
 	it("names both a rename and a binary content change", async () => {
