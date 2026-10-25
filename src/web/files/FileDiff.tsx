@@ -21,8 +21,58 @@ import { isStale, useSetStates } from "./useSetStates";
 /** The server's limit on changes per request (MAX_CHANGES in app.ts). */
 const MAX_CHANGES = 1000;
 
-const buttonClass =
-	"rounded-md border border-slate-300 bg-white px-2 py-0.5 text-xs font-medium whitespace-nowrap hover:bg-slate-100 focus-visible:outline-2 focus-visible:outline-blue-600 disabled:opacity-50 pointer-coarse:min-h-10 pointer-coarse:px-3 pointer-coarse:text-sm";
+const tones = {
+	purple: {
+		idle: "border-purple-400 bg-white text-purple-700 group-[:enabled:hover]:bg-purple-50",
+		pressed:
+			"border-purple-600 bg-purple-600 text-white group-[:enabled:hover]:bg-purple-700",
+	},
+	green: {
+		idle: "border-green-500 bg-white text-green-700 group-[:enabled:hover]:bg-green-50",
+		pressed: "",
+	},
+};
+
+/**
+ * A file-wide action shown as an outlined icon, named by `label` and
+ * explained by `tooltip` (the native title, also its accessible description).
+ * Inline in a wide header it is the icon alone (40×40 on touch); in the
+ * compact menu the label is written next to it.
+ */
+function HeaderIconButton(props: {
+	label: string;
+	tooltip: string;
+	icon: string;
+	tone: keyof typeof tones;
+	pressed?: boolean;
+	disabled: boolean;
+	onClick: () => void;
+}) {
+	const tone = tones[props.tone];
+	return (
+		<button
+			type="button"
+			aria-label={props.label}
+			aria-pressed={props.pressed}
+			title={props.tooltip}
+			disabled={props.disabled}
+			onClick={props.onClick}
+			className="group flex h-10 shrink-0 items-center gap-2 rounded-md pr-3 pl-1 text-sm whitespace-nowrap text-slate-800 hover:bg-slate-100 focus-visible:outline-2 focus-visible:outline-blue-600 disabled:cursor-not-allowed disabled:text-slate-400 disabled:hover:bg-transparent @lg:h-8 @lg:w-8 @lg:justify-center @lg:p-0 @lg:hover:bg-transparent pointer-coarse:@lg:h-10 pointer-coarse:@lg:w-10"
+		>
+			<span
+				aria-hidden
+				className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-md border-2 font-sans text-base leading-none group-disabled:border-slate-300 group-disabled:bg-transparent group-disabled:text-slate-400 ${
+					props.pressed ? tone.pressed : tone.idle
+				}`}
+			>
+				{props.icon}
+			</span>
+			<span aria-hidden className="@lg:hidden">
+				{props.label}
+			</span>
+		</button>
+	);
+}
 
 /**
  * The path in its own horizontal scroller, kept scrolled fully right so the
@@ -124,8 +174,9 @@ function FileProgress({ file, unit }: { file: FileView; unit: Unit }) {
 }
 
 /**
- * The header's bulk actions: inline when the header is wide enough, otherwise
- * behind a compact "File actions" menu.
+ * The header's bulk actions: inline icons when the header is wide enough,
+ * otherwise behind a compact "File actions" menu, so a phone keeps room for
+ * the path.
  */
 function FileActions({ children }: { children: ReactNode }) {
 	const [open, setOpen] = useState(false);
@@ -166,12 +217,12 @@ function FileActions({ children }: { children: ReactNode }) {
 				aria-label="File actions"
 				aria-expanded={open}
 				onClick={() => setOpen((o) => !o)}
-				className="flex h-10 w-10 items-center justify-center rounded-md text-lg text-slate-600 hover:bg-slate-200 focus-visible:outline-2 focus-visible:outline-blue-600 @2xl:hidden"
+				className="flex h-10 w-10 items-center justify-center rounded-md text-lg text-slate-600 hover:bg-slate-200 focus-visible:outline-2 focus-visible:outline-blue-600 @lg:hidden"
 			>
 				⋯
 			</button>
 			<div
-				className={`${open ? "flex" : "hidden"} absolute top-full right-0 z-40 mt-1 w-max flex-col items-stretch gap-1 rounded-md border border-slate-200 bg-white p-1 shadow-lg @2xl:static @2xl:mt-0 @2xl:flex @2xl:flex-row @2xl:items-center @2xl:gap-2 @2xl:border-0 @2xl:bg-transparent @2xl:p-0 @2xl:shadow-none`}
+				className={`${open ? "flex" : "hidden"} absolute top-full right-0 z-40 mt-1 w-max flex-col items-stretch gap-1 rounded-md border border-slate-200 bg-white p-1 shadow-lg @lg:static @lg:mt-0 @lg:flex @lg:flex-row @lg:items-center @lg:gap-1.5 @lg:border-0 @lg:bg-transparent @lg:p-0 @lg:shadow-none`}
 			>
 				{children}
 			</div>
@@ -235,6 +286,12 @@ export function FileDiff(props: {
 	};
 	const unreviewed = file.clusters.filter((c) => c.state === "unreviewed");
 	const crossed = file.clusters.filter((c) => c.state === "crossed-off");
+	// One toggle: cross off what's unreviewed; once nothing is, undo the
+	// cross-offs; with neither (all reviewed) there is nothing to do.
+	const crossToggle = {
+		undo: unreviewed.length === 0 && crossed.length > 0,
+		none: unreviewed.length === 0 && crossed.length === 0,
+	};
 	const path = file.oldPath ? `${file.oldPath} → ${file.path}` : file.path;
 
 	return (
@@ -261,45 +318,60 @@ export function FileDiff(props: {
 						<AddDel file={file} />
 					</span>
 					<FileActions>
-						{crossed.length > 0 && (
-							<button
-								type="button"
+						{crossToggle.undo ? (
+							<HeaderIconButton
+								label="Undo cross-off"
+								tooltip="Undo cross-off — set this file's crossed-off clusters back to unreviewed"
+								icon="⊘"
+								tone="purple"
+								pressed
 								disabled={pending}
 								onClick={() => {
+									// Back to unreviewed, never reviewed (R21).
 									saveAll(
 										crossed.map((c) => ({ key: c.key, state: "unreviewed" })),
 									).catch(() => {});
 								}}
-								className={buttonClass}
-							>
-								Undo cross-off
-							</button>
+							/>
+						) : (
+							<HeaderIconButton
+								label="Cross off file"
+								tooltip={
+									crossToggle.none
+										? "Cross off file — every cluster in this file is reviewed"
+										: "Cross off file — mark every unreviewed cluster in this file as not needing review"
+								}
+								icon="⊘"
+								tone="purple"
+								pressed={false}
+								disabled={pending || crossToggle.none}
+								onClick={() => {
+									// What the reviewer already read stays reviewed (R21).
+									saveAll(
+										unreviewed.map((c) => ({
+											key: c.key,
+											state: "crossed-off",
+										})),
+									).catch(() => {});
+								}}
+							/>
 						)}
-						<button
-							type="button"
-							disabled={pending || unreviewed.length === 0}
-							onClick={() => {
-								// What the reviewer already read stays reviewed (R21).
-								saveAll(
-									unreviewed.map((c) => ({ key: c.key, state: "crossed-off" })),
-								).catch(() => {});
-							}}
-							className={buttonClass}
-						>
-							Cross off file
-						</button>
-						<button
-							type="button"
+						<HeaderIconButton
+							label="Mark remaining reviewed"
+							tooltip={
+								unreviewed.length === 0
+									? "Mark remaining reviewed — nothing in this file is unreviewed"
+									: "Mark remaining reviewed — mark every unreviewed cluster in this file as reviewed"
+							}
+							icon="✓"
+							tone="green"
 							disabled={pending || unreviewed.length === 0}
 							onClick={() => {
 								saveAll(
 									unreviewed.map((c) => ({ key: c.key, state: "reviewed" })),
 								).catch(() => {});
 							}}
-							className={buttonClass}
-						>
-							Mark remaining reviewed
-						</button>
+						/>
 					</FileActions>
 					<FileProgress file={file} unit={props.unit} />
 				</div>

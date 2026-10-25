@@ -120,16 +120,19 @@ function setup(
 		defaultOptions: { queries: { retry: false } },
 	});
 	const onStaleChange = vi.fn();
-	render(
+	const tree = (shown: FileView) => (
 		<QueryClientProvider client={queryClient}>
 			<FileDiff
-				file={f}
+				file={shown}
 				revision="r1"
 				unit={unit}
 				onStaleChange={onStaleChange}
 			/>
-		</QueryClientProvider>,
+		</QueryClientProvider>
 	);
+	const rendered = render(tree(f));
+	/** Shows `next` as the file, like the page does after a write. */
+	const rerender = (next: FileView) => rendered.rerender(tree(next));
 	const posts = () =>
 		fetchMock.mock.calls
 			.filter(([, init]) => init?.method === "POST")
@@ -144,6 +147,7 @@ function setup(
 		onStaleChange,
 		posts,
 		paths,
+		rerender,
 		user: userEvent.setup(),
 	};
 }
@@ -450,11 +454,17 @@ describe("FileDiff", () => {
 		const f = file([
 			cluster("k1", { state: "reviewed" }),
 			cluster("k2", { state: "crossed-off", reason: "generated" }),
-			cluster("k3"),
-			cluster("k4", { state: "crossed-off", reason: "generated" }),
+			cluster("k3", { state: "reviewed" }),
+			cluster("k4", { state: "crossed-off" }),
 		]);
 		const { posts, user } = setup(f, () => ({ status: 200, body: view(f) }));
-		await user.click(screen.getByRole("button", { name: "Undo cross-off" }));
+		expect(screen.queryByRole("button", { name: "Cross off file" })).toBeNull();
+		const undo = screen.getByRole("button", { name: "Undo cross-off" });
+		expect(undo).toHaveAttribute("aria-pressed", "true");
+		expect(undo).toHaveAccessibleDescription(
+			"Undo cross-off — set this file's crossed-off clusters back to unreviewed",
+		);
+		await user.click(undo);
 		await waitFor(() =>
 			expect(posts()[0]?.body.changes).toEqual([
 				{ key: "k2", state: "unreviewed" },
@@ -466,6 +476,133 @@ describe("FileDiff", () => {
 	it("has no file-level undo without cross-offs", () => {
 		setup(file([cluster("k1")]));
 		expect(screen.queryByRole("button", { name: "Undo cross-off" })).toBeNull();
+	});
+
+	it("keeps crossing off while anything is unreviewed, even with cross-offs", async () => {
+		const f = file([cluster("k1", { state: "crossed-off" }), cluster("k2")]);
+		const { posts, user } = setup(f, () => ({ status: 200, body: view(f) }));
+		expect(screen.queryByRole("button", { name: "Undo cross-off" })).toBeNull();
+		const cross = screen.getByRole("button", { name: "Cross off file" });
+		expect(cross).toHaveAttribute("aria-pressed", "false");
+		await user.click(cross);
+		await waitFor(() =>
+			expect(posts()[0]?.body.changes).toEqual([
+				{ key: "k2", state: "crossed-off" },
+			]),
+		);
+	});
+
+	it("flips the file's cross-off button to undo and back", async () => {
+		const before = file([cluster("k1", { state: "reviewed" }), cluster("k2")]);
+		const crossedOff = file([
+			cluster("k1", { state: "reviewed" }),
+			cluster("k2", { state: "crossed-off" }),
+		]);
+		const { posts, rerender, user } = setup(before, () => ({
+			status: 200,
+			body: view(before),
+		}));
+		const cross = screen.getByRole("button", { name: "Cross off file" });
+		expect(cross).toHaveAttribute("aria-pressed", "false");
+		expect(cross).toHaveAccessibleDescription(
+			"Cross off file — mark every unreviewed cluster in this file as not needing review",
+		);
+		await user.click(cross);
+		await waitFor(() =>
+			expect(posts()[0]?.body.changes).toEqual([
+				{ key: "k2", state: "crossed-off" },
+			]),
+		);
+
+		rerender(crossedOff);
+		// The same button, now undoing.
+		const undo = screen.getByRole("button", { name: "Undo cross-off" });
+		expect(undo).toBe(cross);
+		expect(undo).toHaveAttribute("aria-pressed", "true");
+		await waitFor(() => expect(undo).toBeEnabled());
+		await user.click(undo);
+		await waitFor(() =>
+			expect(posts()[1]?.body.changes).toEqual([
+				{ key: "k2", state: "unreviewed" },
+			]),
+		);
+
+		rerender(before);
+		expect(
+			screen.getByRole("button", { name: "Cross off file" }),
+		).toHaveAttribute("aria-pressed", "false");
+		expect(screen.queryByRole("button", { name: "Undo cross-off" })).toBeNull();
+	});
+
+	it("disables the file actions when there's nothing to do", () => {
+		setup(
+			file([
+				cluster("k1", { state: "reviewed" }),
+				cluster("k2", { state: "reviewed" }),
+			]),
+		);
+		const cross = screen.getByRole("button", { name: "Cross off file" });
+		expect(cross).toBeDisabled();
+		expect(cross).toHaveAttribute("aria-pressed", "false");
+		expect(
+			screen.getByRole("button", { name: "Mark remaining reviewed" }),
+		).toBeDisabled();
+		expect(screen.queryByRole("button", { name: "Undo cross-off" })).toBeNull();
+	});
+
+	it("disables mark remaining reviewed once nothing is unreviewed", () => {
+		setup(file([cluster("k1", { state: "crossed-off" })]));
+		expect(
+			screen.getByRole("button", { name: "Mark remaining reviewed" }),
+		).toBeDisabled();
+		expect(
+			screen.getByRole("button", { name: "Undo cross-off" }),
+		).toBeEnabled();
+	});
+
+	it("names the file actions and explains them in a tooltip", () => {
+		setup(file([cluster("k1")]));
+		const mark = screen.getByRole("button", {
+			name: "Mark remaining reviewed",
+		});
+		expect(mark).toBeEnabled();
+		expect(mark).toHaveAttribute(
+			"title",
+			"Mark remaining reviewed — mark every unreviewed cluster in this file as reviewed",
+		);
+		expect(mark).toHaveAccessibleDescription(mark.getAttribute("title") ?? "");
+		expect(
+			screen.getByRole("button", { name: "Cross off file" }),
+		).toHaveAttribute("title", expect.stringContaining("not needing review"));
+	});
+
+	it("disables the file actions while a write is pending", async () => {
+		let answer: (() => void) | undefined;
+		const f = file([cluster("k1"), cluster("k2")]);
+		const { user } = setup(
+			f,
+			() =>
+				new Promise<Result>((resolve) => {
+					answer = () => resolve({ status: 200, body: view(f) });
+				}),
+		);
+		await user.click(
+			screen.getByRole("button", { name: "Mark remaining reviewed" }),
+		);
+		await waitFor(() =>
+			expect(
+				screen.getByRole("button", { name: "Cross off file" }),
+			).toBeDisabled(),
+		);
+		expect(
+			screen.getByRole("button", { name: "Mark remaining reviewed" }),
+		).toBeDisabled();
+		answer?.();
+		await waitFor(() =>
+			expect(
+				screen.getByRole("button", { name: "Cross off file" }),
+			).toBeEnabled(),
+		);
 	});
 
 	it("keeps a write's answer over a review read that was answered before it", async () => {

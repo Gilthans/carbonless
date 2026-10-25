@@ -38,6 +38,13 @@ tool on a real PR. Everything not mentioned here stays as it is.
   the path.
 - The file's progress section has a fixed width and height and is pinned to the
   right of the header, so headers line up down the page.
+- The file actions are outlined icon buttons with a tooltip: ⊘ crosses off the
+  file's unreviewed clusters; once none are unreviewed and some are crossed
+  off, the same button turns into a pressed "Undo cross-off" that sets exactly
+  the crossed-off clusters back to unreviewed; with nothing unreviewed or
+  crossed off it is disabled. ✓ marks the remaining clusters reviewed and is
+  disabled when none are unreviewed. On narrow headers they sit in the "File
+  actions" menu, each icon labelled in words.
 
 ## Mobile
 

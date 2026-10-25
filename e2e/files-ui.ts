@@ -63,5 +63,12 @@ export async function fileAction(section: Locator, name: string) {
 	await section.getByRole("button", { name, exact: true }).click();
 }
 
+/**
+ * A file header action, found whether or not the compact menu is open (for
+ * checking its state, not for clicking).
+ */
+export const fileActionButton = (section: Locator, name: string) =>
+	section.getByRole("button", { name, exact: true, includeHidden: true });
+
 export const fileProgress = (section: Locator) =>
 	section.getByRole("progressbar", { name: "File progress" });

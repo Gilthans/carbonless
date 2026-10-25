@@ -2,6 +2,7 @@ import type { Page } from "@playwright/test";
 import {
 	chooseUnit,
 	fileAction,
+	fileActionButton,
 	fileProgress,
 	fileSection,
 	openFiles,
@@ -178,15 +179,36 @@ test("crossing off keeps reviewed clusters, and undoing leaves clusters unreview
 		section.getByRole("checkbox", { name: "Mark cluster reviewed" }).last(),
 	).not.toBeChecked();
 
-	// Undo for the whole file.
+	// Undo for the whole file: the cross-off button flips to undo once nothing
+	// is unreviewed, and back once something is.
+	await expect(fileActionButton(section, "Cross off file")).toHaveAttribute(
+		"aria-pressed",
+		"false",
+	);
 	await fileAction(section, "Cross off file");
 	await expect(bar).toContainText("1 / 3 clusters reviewed");
+	const undo = fileActionButton(section, "Undo cross-off");
+	await expect(undo).toHaveAttribute("aria-pressed", "true");
+	await expect(fileActionButton(section, "Cross off file")).toHaveCount(0);
+	await expect(
+		fileActionButton(section, "Mark remaining reviewed"),
+	).toBeDisabled();
 	await fileAction(section, "Undo cross-off");
+	// Only the crossed-off cluster went back to unreviewed.
 	await expect(bar).toContainText("1 / 4 clusters reviewed");
 	await expect(bar).toHaveAttribute("aria-valuenow", "25");
+	await expect(fileActionButton(section, "Undo cross-off")).toHaveCount(0);
+	await expect(fileActionButton(section, "Cross off file")).toHaveAttribute(
+		"aria-pressed",
+		"false",
+	);
+	await expect(fileActionButton(section, "Cross off file")).toBeEnabled();
 	await expect(
-		section.getByRole("button", { name: "Undo cross-off" }),
-	).toHaveCount(0);
+		section.getByRole("checkbox", { name: "Mark cluster reviewed" }).first(),
+	).toBeChecked();
+	await expect(
+		section.getByRole("checkbox", { name: "Mark cluster reviewed" }).last(),
+	).not.toBeChecked();
 });
 
 test("cross off a single cluster, and undo it", async ({
@@ -222,6 +244,12 @@ test("mark remaining reviewed", async ({ page, pr, startCrb }) => {
 	const section = fileSection(page, "src/core.ts");
 	await fileAction(section, "Mark remaining reviewed");
 	await expect(fileProgress(section)).toContainText("2 / 2 clusters");
+	// All reviewed: nothing to cross off, undo or mark.
+	await expect(fileActionButton(section, "Cross off file")).toBeDisabled();
+	await expect(fileActionButton(section, "Undo cross-off")).toHaveCount(0);
+	await expect(
+		fileActionButton(section, "Mark remaining reviewed"),
+	).toBeDisabled();
 	await withTree(page, async (tree) => {
 		const entry = tree.getByRole("button", { name: /core\.ts/ });
 		await expect(entry).toContainText("2 / 2");
@@ -232,6 +260,33 @@ test("mark remaining reviewed", async ({ page, pr, startCrb }) => {
 	await expect(fileProgress(section)).toContainText("done");
 	await expect(progress(page)).toContainText("1 / 3 files reviewed");
 });
+
+test("file actions are outlined icon buttons with tooltips", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	test.skip(isMobile, "desktop layout: the actions sit inline");
+	await pr(fixture);
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	const section = fileSection(page, "src/core.ts");
+	const cross = section.getByRole("button", { name: "Cross off file" });
+	const mark = section.getByRole("button", {
+		name: "Mark remaining reviewed",
+	});
+	await expect(cross).toBeVisible();
+	await expect(cross).toHaveText("⊘", { useInnerText: true });
+	await expect(cross).toHaveAttribute("title", /not needing review/);
+	await expect(mark).toBeVisible();
+	await expect(mark).toHaveText("✓", { useInnerText: true });
+	await expect(mark).toHaveAttribute("title", /as reviewed/);
+	await expect(
+		section.getByRole("button", { name: "File actions" }),
+	).toBeHidden();
+});
+
 test("loading more lines", async ({ page, pr, startCrb }) => {
 	await pr(fixture);
 	const s = await startCrb();

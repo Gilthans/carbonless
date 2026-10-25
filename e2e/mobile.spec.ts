@@ -239,6 +239,14 @@ test.describe("phone", () => {
 		expect(box?.height).toBeGreaterThanOrEqual(40);
 		await menu.click();
 		await expect(mark).toBeVisible();
+		// Inside the menu each icon is labelled in words, on a 40px row.
+		await expect(mark).toContainText("Mark remaining reviewed");
+		const cross = section.getByRole("button", { name: "Cross off file" });
+		await expect(cross).toContainText("Cross off file");
+		for (const item of [mark, cross]) {
+			expect((await item.boundingBox())?.height).toBeGreaterThanOrEqual(40);
+		}
+		await expectNoPageOverflow(page);
 		await page.keyboard.press("Escape");
 		await expect(mark).toBeHidden();
 	});
