@@ -214,6 +214,8 @@ export async function ensureClone(
 					cwd: dirname(path),
 					// gh runs git; GIT_DIR and friends must not redirect the clone.
 					env: inheritedEnv(),
+					// A first clone of a big repo can take long: no limit.
+					timeoutMs: 0,
 				},
 			);
 			await disableAutoGc(partial);

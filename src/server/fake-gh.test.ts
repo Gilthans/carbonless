@@ -14,6 +14,8 @@ import { testGitEnv } from "../../test/git-fixture";
 import {
 	fetchOverview,
 	fetchPrMeta,
+	fetchThreadContents,
+	fetchThreadSummaries,
 	resolvePrRef,
 	runGh,
 	viewerSlug,
@@ -116,15 +118,30 @@ describe("fake gh", () => {
 			},
 		});
 		const o = await fetchOverview(ref, "me");
-		expect(o.threads.map((t) => t.path)).toEqual([
+		expect(o.bodyHtml).toBe("<h2>Cache</h2>");
+		const summaries = (await fetchThreadSummaries(ref)) as {
+			id: string;
+			path: string;
+			first: { nodes: Record<string, unknown>[] };
+		}[];
+		expect(summaries.map((t) => t.path)).toEqual([
 			"one.ts",
 			"two.ts",
 			"three.ts",
 		]);
-		expect(o.bodyHtml).toBe("<h2>Cache</h2>");
-		expect(o.threads[0]?.html).toBe(
-			'<p dir="auto">Should this <strong>expire</strong>?</p>',
-		);
+		// A summary only: the text comes by id.
+		expect(summaries[0]?.first.nodes[0]).not.toHaveProperty("bodyHTML");
+		const ids = summaries.map((t) => t.id);
+		expect(new Set(ids).size).toBe(3);
+		const contents = await fetchThreadContents([ids[0] ?? "", "gone"]);
+		expect(contents.size).toBe(1);
+		expect(
+			(
+				contents.get(ids[0] ?? "") as {
+					first: { nodes: { bodyHTML: string }[] };
+				}
+			).first.nodes[0]?.bodyHTML,
+		).toBe('<p dir="auto">Should this <strong>expire</strong>?</p>');
 	});
 
 	it("reports a missing PR the way gh does", async () => {

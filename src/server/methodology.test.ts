@@ -83,7 +83,12 @@ describe.each(METHODOLOGIES)("$name", (m) => {
 			if (v === undefined) delete process.env[k];
 			else process.env[k] = v;
 		}
-		rmSync(tmp, { recursive: true, force: true });
+		rmSync(tmp, {
+			recursive: true,
+			force: true,
+			maxRetries: 20,
+			retryDelay: 50,
+		});
 	});
 
 	/** The snapshot shows exactly the PR's own changes. */
@@ -196,13 +201,15 @@ describe.each(METHODOLOGIES)("$name", (m) => {
 			});
 		};
 		const rows = async (s: Session) =>
-			(await s.overview(0)).threads.map((t) => ({
-				source: t.code?.source,
-				rows: t.code?.rows.map(
-					(r) =>
-						`${r.marked ? ">" : " "}${r.kind[0]} ${r.oldNo ?? "."}/${r.newNo ?? "."} ${r.text}`,
-				),
-			}));
+			(await s.threads((await s.overview(0)).readId, "full")).threads.map(
+				(t) => ({
+					source: t.code?.source,
+					rows: t.code?.rows.map(
+						(r) =>
+							`${r.marked ? ">" : " "}${r.kind[0]} ${r.oldNo ?? "."}/${r.newNo ?? "."} ${r.text}`,
+					),
+				}),
+			);
 		const base15 = m.update === "none" ? "line 15" : "line 15 base";
 		const want = [
 			{

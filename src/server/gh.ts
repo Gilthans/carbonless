@@ -57,10 +57,14 @@ interface GhResult {
 	stderr: string;
 }
 
+/** How long a GitHub read may take before gh is killed (0: no limit). */
+export const GH_TIMEOUT_MS = 60_000;
+
 function spawnGh(
 	args: string[],
 	cwd?: string,
 	baseEnv?: NodeJS.ProcessEnv,
+	timeoutMs = 0,
 ): Promise<GhResult> {
 	return new Promise((resolve, reject) => {
 		const child = spawn("gh", args, {
@@ -70,14 +74,26 @@ function spawnGh(
 		});
 		const out: Buffer[] = [];
 		const err: Buffer[] = [];
+		// A hung read fails rather than hold the page's data forever.
+		const timer =
+			timeoutMs > 0
+				? setTimeout(() => {
+						child.kill("SIGKILL");
+						child.stdout.destroy();
+						child.stderr.destroy();
+						reject(new GhError(`gh took longer than ${timeoutMs / 1000} s`));
+					}, timeoutMs)
+				: undefined;
 		child.stdout.on("data", (c: Buffer) => out.push(c));
 		child.stderr.on("data", (c: Buffer) => err.push(c));
 		child.on("error", (error: NodeJS.ErrnoException) => {
+			clearTimeout(timer);
 			reject(
 				new GhError(error.code === "ENOENT" ? NOT_INSTALLED : error.message),
 			);
 		});
 		child.on("close", (code) => {
+			clearTimeout(timer);
 			resolve({
 				code,
 				stdout: Buffer.concat(out).toString("utf8"),
@@ -103,10 +119,18 @@ function problemLine(text: string): string {
 
 export async function runGh(
 	args: string[],
-	/** `env` replaces process.env as the base environment for gh. */
-	opts: { cwd?: string; env?: NodeJS.ProcessEnv } = {},
+	/**
+	 * `env` replaces process.env as the base environment for gh; `timeoutMs`
+	 * (default GH_TIMEOUT_MS, 0 for none) kills a gh that hangs.
+	 */
+	opts: { cwd?: string; env?: NodeJS.ProcessEnv; timeoutMs?: number } = {},
 ): Promise<string> {
-	const result = await spawnGh(args, opts.cwd, opts.env);
+	const result = await spawnGh(
+		args,
+		opts.cwd,
+		opts.env,
+		opts.timeoutMs ?? GH_TIMEOUT_MS,
+	);
 	if (result.code === 0) return result.stdout;
 	if (LOGGED_OUT.test(result.stderr)) throw new GhError(NOT_LOGGED_IN);
 	const isAuthStatus = args[0] === "auth" && args[1] === "status";
@@ -296,11 +320,19 @@ function connectionQuery(
 }
 
 const AUTHOR = "author { login __typename }";
-// The opening comment's text and code; only authors and times for the rest
-// (reply detection, and counting as of a cutoff), and the latest comment's
-// time (last activity past the first 100). The opener's original commit is
-// where the clone takes its code from; its diff hunk is the fallback.
-const THREAD_FIELDS = `id isResolved isOutdated path subjectType line originalLine originalStartLine diffSide startDiffSide first: comments(first: 1) { nodes { ${AUTHOR} body bodyText bodyHTML createdAt diffHunk originalCommit { oid } } } latest: comments(last: 1) { nodes { createdAt } } comments(first: 100) { totalCount nodes { ${AUTHOR} createdAt } }`;
+// A thread's summary: everything the lists need (grouping, sorting,
+// counts, the card's header) and the anchor of its code, without the
+// opening comment's text and diff hunk (threadContents reads those). Only
+// authors and times for the comments (reply detection, and counting as of
+// a cutoff), and the latest comment's time (last activity past the first
+// 100). The opener's original commit is where the clone takes its code from.
+const THREAD_FIELDS = `id isResolved isOutdated path subjectType line originalLine startLine originalStartLine diffSide startDiffSide first: comments(first: 1) { nodes { ${AUTHOR} createdAt originalCommit { oid } } } latest: comments(last: 1) { nodes { createdAt } } comments(first: 100) { totalCount nodes { ${AUTHOR} createdAt } }`;
+/** The opening comment's text and GitHub's diff hunk, by thread id. */
+const CONTENT_FIELDS =
+	"id first: comments(first: 1) { nodes { body bodyText bodyHTML diffHunk } }";
+/** Threads whose content one query reads (about 1 s for 50). */
+const CONTENT_BATCH = 50;
+const NODE_ID = /^[A-Za-z0-9_=-]{1,100}$/;
 /** The last page of threads, asked for alongside the first (fetchConnection). */
 const LAST_THREADS_QUERY = connectionQuery(
 	"reviewThreads",
@@ -547,39 +579,92 @@ async function fetchBodyHtml(ref: PrRef): Promise<string> {
 	return html;
 }
 
+/** The overview's own fields, without the read's stamps. */
+export type OverviewFields = Omit<
+	PrOverview,
+	"readId" | "fetchedAt" | "servedAt"
+>;
+
+/**
+ * The PR's overview but its review threads (fetchThreadSummaries,
+ * fetchThreadContents): the fast part, a few calls at once.
+ */
 export async function fetchOverview(
 	ref: PrRef,
 	viewer: string,
 	/** As-of mode: the cutoff, and the snapshot head whose checks to show. */
 	asOf?: { at: string; head: string },
-): Promise<PrOverview> {
-	const fetchedAt = new Date().toISOString();
-	try {
-		const [view, bodyHTML, reviewThreads, comments, reviews, checks] =
-			await Promise.all([
-				prView(
-					ref,
-					"number,title,url,author,body,state,isDraft,createdAt,updatedAt,baseRefName,headRefName,mergeable,reviewRequests,statusCheckRollup",
-				),
-				fetchBodyHtml(ref),
-				fetchConnection(ref, "reviewThreads"),
-				fetchConnection(ref, "comments"),
-				fetchConnection(ref, "reviews"),
-				asOf ? fetchCommitChecks(ref, asOf.head) : undefined,
-			]);
-		return {
-			...mapOverview(
-				view,
-				{ bodyHTML, reviewThreads, comments, reviews, checks },
-				viewer,
-				asOf?.at,
+): Promise<OverviewFields> {
+	return notFoundAsPr(ref, async () => {
+		const [view, bodyHTML, comments, reviews, checks] = await Promise.all([
+			prView(
+				ref,
+				"number,title,url,author,body,state,isDraft,createdAt,updatedAt,baseRefName,headRefName,mergeable,reviewRequests,statusCheckRollup",
 			),
-			fetchedAt,
-		};
+			fetchBodyHtml(ref),
+			fetchConnection(ref, "comments"),
+			fetchConnection(ref, "reviews"),
+			asOf ? fetchCommitChecks(ref, asOf.head) : undefined,
+		]);
+		return mapOverview(
+			view,
+			{ bodyHTML, comments, reviews, checks },
+			viewer,
+			asOf?.at,
+		);
+	});
+}
+
+async function notFoundAsPr<T>(ref: PrRef, read: () => Promise<T>) {
+	try {
+		return await read();
 	} catch (error) {
 		if (isNotFound(error)) {
 			throw new GhError(`PR ${ref.owner}/${ref.repo}#${ref.number} not found`);
 		}
 		throw error;
 	}
+}
+
+/**
+ * Every review thread's summary node (THREAD_FIELDS): all a list needs,
+ * without the opening comments' text, the slow part of the read.
+ */
+export function fetchThreadSummaries(ref: PrRef): Promise<unknown[]> {
+	return notFoundAsPr(ref, () => fetchConnection(ref, "reviewThreads"));
+}
+
+/**
+ * The opening comments' content (CONTENT_FIELDS) of the threads with these
+ * ids, by id, read CONTENT_BATCH at a time, all at once. A thread GitHub
+ * no longer has is left out.
+ */
+export async function fetchThreadContents(
+	ids: string[],
+): Promise<Map<string, unknown>> {
+	const wanted = ids.filter((id) => NODE_ID.test(id));
+	const batches: string[][] = [];
+	for (let i = 0; i < wanted.length; i += CONTENT_BATCH) {
+		batches.push(wanted.slice(i, i + CONTENT_BATCH));
+	}
+	const found = new Map<string, unknown>();
+	await Promise.all(
+		batches.map(async (batch) => {
+			// Ids are checked above: plain text in the query is safe.
+			const query = `query { nodes(ids: [${batch.map((id) => `"${id}"`).join(", ")}]) { ... on PullRequestReviewThread { ${CONTENT_FIELDS} } } }`;
+			const out = safeJson(
+				await runGh(["api", "graphql", "-f", `query=${query}`]),
+			);
+			const nodes = rec(out).data;
+			const list = rec(nodes).nodes;
+			if (!Array.isArray(list)) {
+				throw new GhError("gh returned an unexpected response for the threads");
+			}
+			for (const node of list) {
+				const id = rec(node).id;
+				if (typeof id === "string") found.set(id, node);
+			}
+		}),
+	);
+	return found;
 }

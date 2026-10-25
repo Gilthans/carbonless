@@ -6,6 +6,8 @@ import type {
 	ReviewView,
 	SessionInfo,
 	StateChange,
+	ThreadsStage,
+	ThreadsView,
 } from "../shared/types";
 
 /** A failed API call: the HTTP status and the server's `error` message. */
@@ -23,7 +25,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 	let response: Response;
 	try {
 		response = await fetch(path, init);
-	} catch {
+	} catch (error) {
+		// Cancelled (a Refresh supersedes a re-read): not a lost server.
+		if (init?.signal?.aborted) throw error;
 		throw new ApiError(0, "Could not reach carbonless. Is crb still running?");
 	}
 	const body: unknown = await response.json().catch(() => null);
@@ -49,11 +53,12 @@ export const fetchSession = () => request<SessionInfo>("/api/session");
  * The server's last overview read, or with `maxAge` (ms) one read from
  * GitHub at most that long ago.
  */
-export const fetchOverview = (maxAge?: number) =>
+export const fetchOverview = (maxAge?: number, signal?: AbortSignal) =>
 	request<PrOverview>(
 		maxAge === undefined
 			? "/api/overview"
 			: `/api/overview?${new URLSearchParams({ maxAge: String(maxAge) })}`,
+		{ signal },
 	);
 export const fetchReview = () => request<ReviewView>("/api/review");
 
@@ -116,36 +121,86 @@ export const headQuery = queryOptions({
 });
 
 /**
- * The overview as the server last read it from GitHub (fast: it keeps it).
- * Its `fetchedAt` says how old it is; see revalidateOverviewQuery.
+ * The overview as the server last read it from GitHub (fast: it keeps it),
+ * without its review threads (threadsQuery). Its age is `servedAt -
+ * fetchedAt`, both the server's clock; see revalidateOverviewQuery.
  */
 export const overviewQuery = queryOptions({
 	queryKey: ["overview"],
-	queryFn: () => fetchOverview(),
+	queryFn: ({ signal }) => fetchOverview(undefined, signal),
 	staleTime: Number.POSITIVE_INFINITY,
 });
+
+/** How old a read is, by the server's clock (never the browser's). */
+export const overviewAge = (o: Pick<PrOverview, "fetchedAt" | "servedAt">) =>
+	Date.parse(o.servedAt) - Date.parse(o.fetchedAt);
 
 /** An overview read longer ago than this is read again on load (not as of a cutoff). */
 export const OVERVIEW_FRESH_MS = 15_000;
 
+/** The stages the page asks for at once; it shows the furthest in. */
+export const THREAD_STAGES: ThreadsStage[] = [
+	"summary",
+	"first",
+	"firstCode",
+	"full",
+];
+
+export const fetchThreads = (
+	readId: string,
+	stage: ThreadsStage,
+	signal?: AbortSignal,
+) =>
+	request<ThreadsView>(
+		`/api/threads?${new URLSearchParams({ read: readId, stage })}`,
+		{ signal },
+	);
+
+/**
+ * Read `readId`'s review threads once `stage` is in. A read the server no
+ * longer keeps (410) reads the overview again, so the page moves to a
+ * kept one.
+ */
+export const threadsQuery = (readId: string, stage: ThreadsStage) =>
+	queryOptions({
+		queryKey: ["threads", readId, stage],
+		queryFn: async ({ client, signal }) => {
+			try {
+				return await fetchThreads(readId, stage, signal);
+			} catch (error) {
+				if (error instanceof ApiError && error.status === 410) {
+					void client.invalidateQueries({ queryKey: overviewQuery.queryKey });
+				}
+				throw error;
+			}
+		},
+		staleTime: Number.POSITIVE_INFINITY,
+	});
+
 /**
  * Brings the overview read at `fetchedAt` up to date: asks for one read at
- * most `maxAge` ago (the server reads GitHub again if its own is older) and
- * puts it in the overview's cache. Keyed by the read it replaces, so it runs
- * once per read; its own key is apart from the overview's so a Refresh's
- * invalidation doesn't rerun it.
+ * most `maxAge` ago (the server reads GitHub again if its own is older),
+ * waits for all its threads, then puts both in the cache at once, so the
+ * page swaps from the old read to the new one whole. Keyed by the read it
+ * replaces, so it runs once per read; its own key is apart from the
+ * overview's so a Refresh doesn't rerun it, and a Refresh cancels it.
  */
 export const revalidateOverviewQuery = (fetchedAt: string, maxAge: number) =>
 	queryOptions({
 		queryKey: ["overview-revalidate", fetchedAt, maxAge],
-		queryFn: async ({ client }) => {
-			const fresh = await fetchOverview(maxAge);
+		queryFn: async ({ client, signal }) => {
+			const fresh = await fetchOverview(maxAge, signal);
+			const threads = await fetchThreads(fresh.readId, "full", signal);
 			// A Refresh may have brought a newer one meanwhile: keep that.
 			const shown = client.getQueryData(overviewQuery.queryKey);
 			if (
 				!shown ||
 				!(Date.parse(shown.fetchedAt) > Date.parse(fresh.fetchedAt))
 			) {
+				client.setQueryData(
+					threadsQuery(fresh.readId, "full").queryKey,
+					threads,
+				);
 				client.setQueryData(overviewQuery.queryKey, fresh);
 			}
 			return fresh.fetchedAt;

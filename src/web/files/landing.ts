@@ -1,4 +1,4 @@
-import type { FileView, PrOverview, SessionInfo } from "../../shared/types";
+import type { FileView, ReviewThread, SessionInfo } from "../../shared/types";
 
 /**
  * Files changed's search params: land on `path`, at `line` on `side` ("LEFT"
@@ -28,7 +28,7 @@ export function parseFilesSearch(raw: Record<string, unknown>): FilesSearch {
 	return out;
 }
 
-type Thread = PrOverview["threads"][number];
+type Thread = ReviewThread;
 
 /**
  * Where a thread's file:line link lands. The line only counts as this

@@ -13,7 +13,12 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { codeFromHunk } from "../../test/code-window";
 import { suggestionHtml } from "../../test/fake-gh/scenario";
-import type { PrOverview, ReviewView, SessionInfo } from "../shared/types";
+import type {
+	PrOverview,
+	ReviewThread,
+	ReviewView,
+	SessionInfo,
+} from "../shared/types";
 import { COMPACT_RAMP, compactProgress } from "./App";
 import { resetShowInvisibles, setShowInvisibles } from "./code/Invisibles";
 import { createAppRouter } from "./router";
@@ -34,7 +39,10 @@ const info: SessionInfo = {
 	asOf: null,
 };
 
-const overview: PrOverview = {
+/** An overview and its threads, as the page gets them from two routes. */
+type OverviewFixture = PrOverview & { threads: ReviewThread[] };
+
+const overview: OverviewFixture = {
 	title: "Add widget cache",
 	number: 12,
 	url: "https://github.com/acme/widget/pull/12",
@@ -82,8 +90,10 @@ const overview: PrOverview = {
 		},
 	],
 	humanStarted: true,
+	readId: "read1",
 	// Just read: the page doesn't read it again.
-	fetchedAt: new Date().toISOString(),
+	fetchedAt: "2026-01-05T12:00:00Z",
+	servedAt: "2026-01-05T12:00:01Z",
 	checks: [
 		{ name: "lint", status: "failing", url: "https://ci.example/lint" },
 		{ name: "deploy/preview", status: "pending", url: "javascript:alert(1)" },
@@ -91,6 +101,8 @@ const overview: PrOverview = {
 	],
 	threads: [
 		{
+			id: "T-old",
+			loaded: true,
 			path: "src/old.ts",
 			line: null,
 			currentLine: null,
@@ -108,6 +120,8 @@ const overview: PrOverview = {
 			code: null,
 		},
 		{
+			id: "T-cache",
+			loaded: true,
 			path: "src/cache.ts",
 			line: 42,
 			currentLine: 42,
@@ -135,9 +149,11 @@ const overview: PrOverview = {
 
 function humanThread(
 	path: string,
-	extra: Partial<PrOverview["threads"][number]> = {},
-): PrOverview["threads"][number] {
+	extra: Partial<ReviewThread> = {},
+): ReviewThread {
 	return {
+		id: path,
+		loaded: true,
 		path,
 		line: 1,
 		currentLine: 1,
@@ -180,13 +196,15 @@ const NEVER = Symbol("never");
 let fetchMock: ReturnType<typeof mockApi>;
 
 function mockApi(routes: Routes) {
-	const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
-		const path = new URL(String(input), "http://test").pathname;
-		const route = routes[path];
-		if (!route) return new Response("{}", { status: 404 });
-		if (route.body === NEVER) return new Promise<Response>(() => {});
-		return new Response(JSON.stringify(route.body), { status: route.status });
-	});
+	const fetchMock = vi.fn(
+		async (input: RequestInfo | URL, _init?: RequestInit) => {
+			const path = new URL(String(input), "http://test").pathname;
+			const route = routes[path];
+			if (!route) return new Response("{}", { status: 404 });
+			if (route.body === NEVER) return new Promise<Response>(() => {});
+			return new Response(JSON.stringify(route.body), { status: route.status });
+		},
+	);
 	vi.stubGlobal("fetch", fetchMock);
 	// jsdom lacks scrolling; the router restores scroll on navigation.
 	vi.stubGlobal("scrollTo", vi.fn());
@@ -195,13 +213,26 @@ function mockApi(routes: Routes) {
 
 const ok = (body: unknown) => ({ status: 200, body });
 
+/**
+ * The page's routes: an overview fixture's threads are served apart, as
+ * the server does (every stage at once, complete), unless a test gives
+ * `/api/threads` itself.
+ */
 function renderApp(routes: Partial<Routes> = {}, path = "/") {
-	fetchMock = mockApi({
+	const all = {
 		"/api/session": ok(info),
 		"/api/overview": ok(overview),
 		"/api/review": ok(review),
 		...routes,
-	} as Routes);
+	} as Routes;
+	const shown = all["/api/overview"];
+	const body = shown?.body as Partial<OverviewFixture> | undefined;
+	if (body && typeof body === "object" && "threads" in body) {
+		const { threads, ...rest } = body;
+		all["/api/overview"] = { status: shown?.status ?? 200, body: rest };
+		all["/api/threads"] ??= ok({ threads, complete: true });
+	}
+	fetchMock = mockApi(all);
 	const queryClient = new QueryClient({
 		defaultOptions: { queries: { retry: false } },
 	});
@@ -1061,7 +1092,11 @@ describe("OverviewPage", () => {
 		});
 		try {
 			renderApp({
-				"/api/overview": ok({ ...overview, fetchedAt: "2026-01-05T18:00:00Z" }),
+				"/api/overview": ok({
+					...overview,
+					fetchedAt: "2026-01-05T18:00:00Z",
+					servedAt: "2026-01-05T18:00:00Z",
+				}),
 			});
 			const what = await screen.findByRole("region", {
 				name: "What it does",
@@ -1102,44 +1137,82 @@ describe("OverviewPage", () => {
 		).not.toBeVisible();
 	});
 
-	it("shows an old kept overview at once and brings it up to date, Refresh spinning meanwhile", async () => {
-		const ago = (ms: number) => new Date(Date.now() - ms).toISOString();
+	/**
+	 * An overview read ten minutes ago (by the server's clock, whatever this
+	 * browser's says) and a re-read that waits for `gate`.
+	 */
+	const oldRead = () => {
+		const served = "2026-01-05T12:10:00Z";
 		renderApp({
 			"/api/overview": ok({
 				...overview,
 				title: "Then",
-				fetchedAt: ago(600_000),
+				fetchedAt: "2026-01-05T12:00:00Z",
+				servedAt: served,
 			}),
 		});
 		let release = () => {};
 		const gate = new Promise<void>((r) => {
 			release = r;
 		});
-		const served = fetchMock.getMockImplementation();
-		fetchMock.mockImplementation(async (input) => {
+		const signals: AbortSignal[] = [];
+		const routes = fetchMock.getMockImplementation();
+		fetchMock.mockImplementation(async (input, init) => {
 			if (String(input) === "/api/overview?maxAge=15000") {
+				if (init?.signal) signals.push(init.signal);
 				await gate;
+				init?.signal?.throwIfAborted();
 				return new Response(
-					JSON.stringify({ ...overview, title: "Now", fetchedAt: ago(0) }),
+					JSON.stringify({
+						...overview,
+						title: "Now",
+						readId: "read2",
+						fetchedAt: served,
+						servedAt: served,
+					}),
 				);
 			}
-			if (!served) throw new Error("no mock");
-			return served(input);
+			if (!routes) throw new Error("no mock");
+			return routes(input, init);
 		});
+		return { release, signals };
+	};
+
+	it("shows an old kept overview at once and brings it up to date, Refresh spinning meanwhile", async () => {
+		const { release } = oldRead();
 		const what = await screen.findByRole("region", { name: "What it does" });
 		expect(within(what).getByRole("heading", { level: 3 })).toHaveTextContent(
 			"Then",
 		);
-		const refresh = await screen.findByRole("button", { name: "Refreshing…" });
-		expect(refresh).toBeDisabled();
+		// Refresh shows the re-read (its icon spins) but stays a button to press.
+		const refresh = await screen.findByRole("button", { name: "Refresh" });
+		await waitFor(() => expect(refresh).toHaveAttribute("data-updating"));
+		expect(refresh.querySelector("svg")).toHaveClass("animate-spin");
+		expect(refresh).toBeEnabled();
 		release();
 		await waitFor(() =>
 			expect(within(what).getByRole("heading", { level: 3 })).toHaveTextContent(
 				"Now",
 			),
 		);
-		expect(screen.getByRole("button", { name: "Refresh" })).toBeEnabled();
+		expect(refresh).not.toHaveAttribute("data-updating");
 		expect(calls("/api/overview?maxAge=15000")).toBe(1);
+		// The new read's threads, all at once.
+		expect(
+			fetchMock.mock.calls.some(([i]) =>
+				String(i).includes("read=read2&stage=full"),
+			),
+		).toBe(true);
+	});
+
+	it("lets Refresh supersede a re-read that hangs: it cancels it and reads anew", async () => {
+		const user = userEvent.setup();
+		const { signals } = oldRead();
+		const refresh = await screen.findByRole("button", { name: "Refresh" });
+		await waitFor(() => expect(refresh).toHaveAttribute("data-updating"));
+		await user.click(refresh);
+		await waitFor(() => expect(signals[0]?.aborted).toBe(true));
+		await waitFor(() => expect(calls("/api/refresh")).toBe(1));
 	});
 
 	it("doesn't read an overview again when it's young, or as of a cutoff", async () => {
@@ -1170,6 +1243,78 @@ describe("OverviewPage", () => {
 			/What it does.*Who's on it.*Is it ready/,
 		);
 		expect(screen.queryByRole("region", { name: "What it does" })).toBeNull();
+	});
+
+	it("never waits for the threads: the rest shows, each thread list shows its frame", async () => {
+		renderApp({ "/api/threads": ok(NEVER) });
+		const what = await screen.findByRole("region", { name: "What it does" });
+		expect(what).toHaveTextContent("Add widget cache");
+		expect(screen.getByRole("region", { name: "Who's on it" })).toBeVisible();
+		const ready = screen.getByRole("region", { name: "Is it ready" });
+		expect(
+			within(ready).getByRole("button", { name: /1 failing/ }),
+		).toBeVisible();
+		expect(within(ready).getAllByTestId("threads-loading")).toHaveLength(2);
+		expect(within(ready).queryByTestId("thread")).toBeNull();
+	});
+
+	it("fills threads in as they come: headers from the summary, then the text, then the code", async () => {
+		const full = overview.threads;
+		// The summary: every thread, its text and code still on their way.
+		const summary = full.map((t) => ({
+			...t,
+			loaded: false,
+			excerpt: "",
+			html: "",
+			body: "",
+			code: t.code && { ...t.code, rows: [], source: "pending" },
+		}));
+		renderApp({ "/api/threads": ok(NEVER) });
+		let release = () => {};
+		const gate = new Promise<void>((r) => {
+			release = r;
+		});
+		const routes = fetchMock.getMockImplementation();
+		fetchMock.mockImplementation(async (input, init) => {
+			const url = String(input);
+			if (url.startsWith("/api/threads")) {
+				if (url.includes("stage=summary")) {
+					return new Response(
+						JSON.stringify({ threads: summary, complete: false }),
+					);
+				}
+				await gate;
+				return new Response(JSON.stringify({ threads: full, complete: true }));
+			}
+			if (!routes) throw new Error("no mock");
+			return routes(input, init);
+		});
+		const humans = await screen.findByRole("region", { name: "Human reviews" });
+		const card = await within(humans).findByTestId("thread");
+		// The header and place are there, exact; the text and code are frames.
+		expect(card).toHaveTextContent("rev1");
+		expect(within(card).getByTestId("thread-place")).toHaveTextContent(
+			"src/cache.ts:42",
+		);
+		expect(within(card).getByTestId("thread-body-loading")).toBeVisible();
+		expect(within(card).getByTestId("thread-code-loading")).toBeVisible();
+		expect(within(humans).getByText("1 unresolved")).toBeVisible();
+		release();
+		expect(
+			await within(humans).findByRole("figure", {
+				name: "Code at src/cache.ts",
+			}),
+		).toBeVisible();
+		expect(within(card).getByTestId("thread-body")).toHaveTextContent(
+			"Should this expire?",
+		);
+		expect(within(card).queryByTestId("thread-body-loading")).toBeNull();
+	});
+
+	it("says when the threads couldn't all be read, keeping those that were", async () => {
+		renderApp({ "/api/threads": { status: 502, body: { error: "gh broke" } } });
+		const ready = await screen.findByRole("region", { name: "Is it ready" });
+		expect(await within(ready).findByText("gh broke")).toBeVisible();
 	});
 
 	it("shows the overview's error message", async () => {

@@ -150,6 +150,9 @@ export function App() {
 	useQuery({ ...headQuery, enabled: session.isSuccess });
 	const refresh = useMutation({
 		mutationFn: postRefresh,
+		// A Refresh supersedes a re-read under way: it reads GitHub anew.
+		onMutate: () =>
+			queryClient.cancelQueries({ queryKey: ["overview-revalidate"] }),
 		onSuccess: (info) => {
 			queryClient.setQueryData(sessionQuery.queryKey, info);
 			return Promise.all([
@@ -345,9 +348,10 @@ export function App() {
 								<button
 									type="button"
 									{...trigger}
-									aria-label={refreshing ? "Refreshing…" : "Refresh"}
+									aria-label={refresh.isPending ? "Refreshing…" : "Refresh"}
 									onClick={() => refresh.mutate()}
-									disabled={refreshing}
+									data-updating={revalidating || undefined}
+									disabled={refresh.isPending}
 									className="flex h-10 shrink-0 items-center gap-1.5 rounded-md px-2.5 text-sm font-medium text-ink-soft transition-colors hover:bg-overlay hover:text-ink focus-visible:outline-2 focus-visible:outline-accent disabled:opacity-60 motion-reduce:transition-none"
 								>
 									<SyncIcon
@@ -359,7 +363,7 @@ export function App() {
 										}
 									/>
 									<span className="hidden sm:inline">
-										{refreshing ? "Refreshing…" : "Refresh"}
+										{refresh.isPending ? "Refreshing…" : "Refresh"}
 									</span>
 								</button>
 							)}

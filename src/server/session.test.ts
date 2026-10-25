@@ -340,6 +340,65 @@ describe("Session", () => {
 			expect((await s.overview(0)).title).toBe("Back");
 		});
 
+		it("reads the threads apart, in stages: every summary, then the listed-first text, then the rest", async () => {
+			const head = pr.head();
+			// Twelve human threads, the later the more recent.
+			const at = (i: number) =>
+				`2026-01-0${1 + Math.floor(i / 10)}T0${i % 10}:00:00Z`;
+			pr.scenario({
+				threadContentDelayMs: 300,
+				prs: {
+					12: {
+						view: prView({ headRefOid: head, baseRefName: "main" }),
+						graphql: {
+							reviewThreads: Array.from({ length: 12 }, (_, i) =>
+								reviewThread({ path: `f${i}.txt`, line: 1 }, [
+									threadComment({
+										login: "rev1",
+										text: `On ${i}`,
+										commit: head,
+										createdAt: at(i),
+										diffHunk: "@@ -1 +1 @@\n+x",
+									}),
+								]),
+							),
+						},
+					},
+				},
+			});
+			const s = await Session.open(pr.arg, process.cwd());
+			const { readId } = await s.overview();
+			const summary = await s.threads(readId, "summary");
+			expect(summary.threads).toHaveLength(12);
+			expect(summary.complete).toBe(false);
+			// Most recent first; counts and headers there, text on its way.
+			expect(summary.threads[0]?.path).toBe("f11.txt");
+			expect(summary.threads.some((t) => t.loaded)).toBe(false);
+			expect(summary.threads[0]?.code?.anchor.line).toBe(1);
+			const first = await s.threads(readId, "first");
+			const loaded = first.threads.filter((t) => t.loaded).map((t) => t.path);
+			expect(loaded).toEqual(
+				expect.arrayContaining(
+					Array.from({ length: 10 }, (_, i) => `f${11 - i}.txt`),
+				),
+			);
+			const full = await s.threads(readId, "full");
+			expect(full.complete).toBe(true);
+			expect(full.threads.every((t) => t.loaded)).toBe(true);
+			expect(full.threads.every((t) => t.code?.source !== "pending")).toBe(
+				true,
+			);
+			expect(full.threads[0]?.html).toContain("On 11");
+			// The listed-first ten were asked for on their own, ahead.
+			const batches = pr
+				.ghLog()
+				.split("\n")
+				.filter((l) => l.includes("nodes(ids:"))
+				.map((l) => (l.match(/"T12-\d+"/g) ?? []).length)
+				.sort((a, b) => a - b);
+			expect(batches).toEqual([2, 10]);
+		});
+
 		it("builds thread code from the clone, with rows after the range", async () => {
 			const head = pr.head();
 			pr.scenario({
@@ -365,7 +424,8 @@ describe("Session", () => {
 				},
 			});
 			const s = await Session.open(pr.arg, process.cwd());
-			const code = (await s.overview()).threads[0]?.code;
+			const { threads } = await s.threads((await s.overview()).readId, "full");
+			const code = threads[0]?.code;
 			expect(code?.source).toBe("clone");
 			expect(code?.rows.map((r) => `${r.marked ? ">" : " "}${r.text}`)).toEqual(
 				[

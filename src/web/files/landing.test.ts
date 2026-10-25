@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { codeFromHunk } from "../../../test/code-window";
-import type { FileView, PrOverview } from "../../shared/types";
+import type { FileView, ReviewThread } from "../../shared/types";
 import { landingFile, parseFilesSearch, threadTarget } from "./landing";
 
-type Thread = PrOverview["threads"][number];
+type Thread = ReviewThread;
 
 const thread = (extra: Partial<Thread> = {}): Thread => ({
+	id: "T1",
+	loaded: true,
 	path: "src/a.ts",
 	line: 10,
 	currentLine: 12,

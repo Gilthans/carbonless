@@ -1,4 +1,9 @@
-import type { CodeAnchor, DiffSide, PrOverview } from "../shared/types.js";
+import type {
+	CodeAnchor,
+	DiffSide,
+	PrOverview,
+	ReviewThread,
+} from "../shared/types.js";
 import { atOrBefore } from "./asOf.js";
 import { hunkWindowRows } from "./codeWindow.js";
 import { GhError } from "./errors.js";
@@ -117,7 +122,8 @@ const OID = /^[0-9a-f]{40}([0-9a-f]{24})?$/;
 /**
  * GitHub's side of a thread's code: the anchor (GitHub's fields mapped to
  * the source-neutral CodeAnchor) and the window of GitHub's own diff hunk,
- * the fallback (`source: "github"`) to the clone's (threadCode.ts). The
+ * the fallback (`source: "github"`) to the clone's (threadCode.ts); until
+ * the comment's content is read (`loaded` false), `source: "pending"`. The
  * hunk is of the commit the comment was made on and ends at
  * `originalLine`, so the range is the `original*` pair; the current
  * `line`/`startLine` pair only stands in when there is no original line.
@@ -130,6 +136,7 @@ function threadCode(
 	first: Json,
 	path: string,
 	at: string,
+	loaded: boolean,
 ): Thread["code"] {
 	if (t.subjectType === "FILE") return null;
 	const diffHunk = str(first.diffHunk);
@@ -137,7 +144,7 @@ function threadCode(
 	const line = original ?? lineNumber(t.line);
 	const oid = str(obj(first.originalCommit).oid);
 	const commit = OID.test(oid) ? oid : "";
-	if (line === null || (!diffHunk.trim() && !commit)) return null;
+	if (line === null || (loaded && !diffHunk.trim() && !commit)) return null;
 	const side: Side = SIDES.has(str(t.diffSide))
 		? (str(t.diffSide) as Side)
 		: "RIGHT";
@@ -157,6 +164,7 @@ function threadCode(
 			start === null || (startSide === side && start > line) ? line : start,
 		at,
 	};
+	if (!loaded) return { anchor, rows: [], source: "pending" };
 	return {
 		anchor,
 		rows: diffHunk.trim() ? hunkWindowRows(diffHunk, anchor) : [],
@@ -164,7 +172,30 @@ function threadCode(
 	};
 }
 
-type Thread = PrOverview["threads"][number];
+type Thread = ReviewThread;
+
+/**
+ * Whether a thread node carries its opening comment's content (the
+ * summary query leaves it out; threadContents reads it).
+ */
+function hasContent(first: Json): boolean {
+	return (
+		typeof first.bodyHTML === "string" ||
+		typeof first.body === "string" ||
+		typeof first.bodyText === "string"
+	);
+}
+
+/**
+ * A summary node with its content node (by the same id) merged in, as the
+ * single query used to return them.
+ */
+export function withContent(summary: unknown, content: unknown): unknown {
+	const t = obj(summary);
+	const first = obj(arr(obj(t.first).nodes)[0]);
+	const more = obj(arr(obj(obj(content).first).nodes)[0]);
+	return { ...t, first: { nodes: [{ ...first, ...more }] } };
+}
 
 /** The later of two ISO times; a missing or invalid one loses. */
 function later(a: string, b: string): string {
@@ -179,9 +210,13 @@ function later(a: string, b: string): string {
  * Every thread with its first comment, grouped later by the opener (bot or
  * human), most recent activity first. As of a cutoff: threads opened by
  * then, counting only comments made by then, none resolved (GitHub keeps no
- * resolution history).
+ * resolution history). A node without its opening comment's content (a
+ * summary) gives a thread that isn't `loaded`.
  */
-function mapThreads(nodes: unknown[], asOf: string | undefined): Thread[] {
+export function mapThreads(
+	nodes: unknown[],
+	asOf: string | undefined,
+): Thread[] {
 	const threads: Thread[] = [];
 	for (const raw of nodes) {
 		const t = obj(raw);
@@ -203,10 +238,12 @@ function mapThreads(nodes: unknown[], asOf: string | undefined): Thread[] {
 			createdAt,
 		);
 		const firstLogin = str(author.login);
-		const code = threadCode(t, first, str(t.path), createdAt);
+		const loaded = hasContent(first);
+		const code = threadCode(t, first, str(t.path), createdAt, loaded);
 		// bodyText is GitHub's plain-text rendering; the raw body is a fallback.
 		const text = str(first.bodyText) || str(first.body);
 		threads.push({
+			id: str(t.id),
 			path: str(t.path),
 			// The commented line on the comment's own commit when there is
 			// code (a carried-forward comment's current line may differ),
@@ -218,6 +255,7 @@ function mapThreads(nodes: unknown[], asOf: string | undefined): Thread[] {
 					? (lineNumber(t.originalLine) ?? lineNumber(t.line))
 					: (lineNumber(t.line) ?? lineNumber(t.originalLine))),
 			currentLine: asOf ? null : lineNumber(t.line),
+			loaded,
 			excerpt: text.replace(/\s+/g, " ").trim().slice(0, 200),
 			html: str(first.bodyHTML),
 			// The raw markdown: suggested changes come from it exactly.
@@ -258,7 +296,6 @@ export function sortThreads<T extends { lastActivityAt: string }>(
 export interface PrGraph {
 	/** The description as GitHub renders it; "" falls back to the plain body. */
 	bodyHTML: string;
-	reviewThreads: unknown[];
 	comments: unknown[];
 	reviews: unknown[];
 	/**
@@ -270,31 +307,28 @@ export interface PrGraph {
 
 /**
  * Pure mapping from `gh pr view --json` output plus the paginated GraphQL
- * nodes to a PrOverview. Inputs are untrusted: unknown or missing fields fall
- * back to empty values, but a missing connection throws so a broken response
- * never reads as "no threads".
+ * nodes to a PrOverview (its review threads are mapThreads'). Inputs are
+ * untrusted: unknown or missing fields fall back to empty values, but a
+ * missing connection throws so a broken response never reads as "no
+ * reviews".
  */
 export function mapOverview(
 	view: unknown,
 	graph: unknown,
 	viewer: string,
 	/**
-	 * As-of mode's cutoff: only reviews, comments and threads made by then
-	 * count, threads all show unresolved, mergeability is unknown and the
-	 * checks are `graph.checks`, the snapshot head's.
+	 * As-of mode's cutoff: only reviews and comments made by then count,
+	 * mergeability is unknown and the checks are `graph.checks`, the
+	 * snapshot head's.
 	 */
 	asOf?: string,
-): Omit<PrOverview, "fetchedAt"> {
+): Omit<PrOverview, "readId" | "fetchedAt" | "servedAt"> {
 	if (typeof view !== "object" || view === null || Array.isArray(view)) {
 		throw new GhError("gh returned an unexpected response for the PR");
 	}
 	const g = obj(graph);
-	if (
-		!Array.isArray(g.reviewThreads) ||
-		!Array.isArray(g.comments) ||
-		!Array.isArray(g.reviews)
-	) {
-		throw new GhError("gh returned an unexpected response for the PR threads");
+	if (!Array.isArray(g.comments) || !Array.isArray(g.reviews)) {
+		throw new GhError("gh returned an unexpected response for the PR reviews");
 	}
 	if (asOf && !Array.isArray(g.checks)) {
 		throw new GhError("gh returned an unexpected response for the checks");
@@ -405,13 +439,12 @@ export function mapOverview(
 		.filter((c): c is Check => c !== null)
 		.sort((a, b) => CHECK_ORDER[a.status] - CHECK_ORDER[b.status]);
 
-	const threads = mapThreads(g.reviewThreads, asOf);
-	// As of a cutoff, "updated" is the last activity seen by then.
+	// As of a cutoff, "updated" is the last activity seen by then (the page
+	// adds the review threads' once they are in).
 	const updatedAt = asOf
 		? [
 				...reviews.map((r) => r.submittedAt),
 				...commenters.map((c) => c.lastAt),
-				...threads.map((t) => t.lastActivityAt),
 			].reduce(
 				(latest, at) => (Date.parse(at) > Date.parse(latest) ? at : latest),
 				str(v.createdAt),
@@ -437,7 +470,6 @@ export function mapOverview(
 		commenters,
 		humanStarted,
 		checks,
-		threads,
 		...(asOf ? { asOf } : {}),
 	};
 }

@@ -11,6 +11,8 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	fetchOverview,
 	fetchPrMeta,
+	fetchThreadContents,
+	fetchThreadSummaries,
 	GhError,
 	joinEnds,
 	parsePrArg,
@@ -114,7 +116,7 @@ case "$1 $2" in
   printf '%s' "$FAKE_VIEW"; exit 0 ;;
 "api graphql")
   [ -n "$FAKE_GQL_ERR" ] && { printf '%s\\n' "$FAKE_GQL_ERR" >&2; exit 1; }
-  case "$*" in *"{ bodyHTML }"*) c=body;; *"reviewThreads(last"*) c=reviewThreadsLast;; *"reviewThreads("*) c=reviewThreads;; *"comments(first: 100, after"*) c=comments;; *) c=reviews;; esac
+  case "$*" in *"nodes(ids:"*) c=content;; *"{ bodyHTML }"*) c=body;; *"reviewThreads(last"*) c=reviewThreadsLast;; *"reviewThreads("*) c=reviewThreads;; *"comments(first: 100, after"*) c=comments;; *) c=reviews;; esac
   case "$*" in *endCursor=*) p=2;; *) p=1;; esac
   cat "$FAKE_GQL_DIR/$c-$p.json" || exit 1; exit 0 ;;
 esac
@@ -323,18 +325,25 @@ describe("runGh with a fake gh", () => {
 			FAKE_VIEW: readFileSync("test/fixtures/gh/pr-view.json", "utf8"),
 		});
 		const o = await fetchOverview(ref, "me");
-		expect(o.threads.map((t) => t.path)).toEqual(["one.ts", "two.ts"]);
 		expect(o.bodyHtml).toBe("<p>Hi</p>");
+		// The overview reads no threads: they come apart.
+		expect(log()).not.toContain("reviewThreads");
+		const nodes = await fetchThreadSummaries(ref);
+		expect(nodes.map((t) => (t as { path: string }).path)).toEqual([
+			"one.ts",
+			"two.ts",
+		]);
 		// One description query; the threads' last page asked for alongside
 		// the first (it had no answer here), then the second page.
 		expect(log().match(/\{ bodyHTML \}/g)).toHaveLength(1);
 		expect(log().match(/reviewThreads\(first/g)).toHaveLength(2);
 		expect(log().match(/reviewThreads\(last: 100\)/g)).toHaveLength(1);
-		// Text and code only for each thread's opening comment; the latest
-		// one's time; authors for the rest.
+		// A summary: no opening comment's text or hunk (threadContents), its
+		// author, time and commit; the latest one's time; authors for the rest.
 		expect(log()).toContain(
-			"id isResolved isOutdated path subjectType line originalLine originalStartLine diffSide startDiffSide first: comments(first: 1) { nodes { author { login __typename } body bodyText bodyHTML createdAt diffHunk originalCommit { oid } } }",
+			"id isResolved isOutdated path subjectType line originalLine startLine originalStartLine diffSide startDiffSide first: comments(first: 1) { nodes { author { login __typename } createdAt originalCommit { oid } } }",
 		);
+		expect(log()).not.toContain("bodyText");
 		expect(log()).toContain(
 			"latest: comments(last: 1) { nodes { createdAt } }",
 		);
@@ -387,10 +396,43 @@ describe("runGh with a fake gh", () => {
 			FAKE_GQL_DIR: gql,
 			FAKE_VIEW: readFileSync("test/fixtures/gh/pr-view.json", "utf8"),
 		});
-		const o = await fetchOverview(ref, "me");
-		expect(o.threads.map((t) => t.path).sort()).toEqual(["a", "b", "c"]);
+		const nodes = await fetchThreadSummaries(ref);
+		expect(nodes.map((t) => (t as { path: string }).path)).toEqual([
+			"a",
+			"b",
+			"c",
+		]);
 		expect(log()).not.toContain("endCursor=");
-		expect(o.fetchedAt).toMatch(/^\d{4}-\d\d-\d\dT/);
+	});
+
+	it("reads threads' content by id, fifty a query, all at once, and only well-formed ids", async () => {
+		const gql = join(dir, "gql");
+		const { mkdirSync } = await import("node:fs");
+		mkdirSync(gql);
+		writeFileSync(
+			join(gql, "content-1.json"),
+			JSON.stringify({
+				data: {
+					nodes: [
+						{ id: "T0", first: { nodes: [{ bodyHTML: "<p>zero</p>" }] } },
+						null,
+					],
+				},
+			}),
+		);
+		setEnv({ FAKE_GQL_DIR: gql });
+		const ids = [
+			...Array.from({ length: 120 }, (_, i) => `T${i}`),
+			'x"]) { evil }',
+		];
+		const found = await fetchThreadContents(ids);
+		expect(found.get("T0")).toMatchObject({ id: "T0" });
+		const queries = log()
+			.split("\n")
+			.filter((l) => l.includes("nodes(ids:"));
+		expect(queries).toHaveLength(3);
+		expect(queries[0]?.match(/"T\d+"/g)).toHaveLength(50);
+		expect(log()).not.toContain("evil");
 	});
 
 	it("fails rather than show an empty description when bodyHTML is missing", async () => {

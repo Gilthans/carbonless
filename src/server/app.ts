@@ -1,7 +1,11 @@
 import { existsSync } from "node:fs";
 import fastifyStatic from "@fastify/static";
 import Fastify, { type FastifyInstance } from "fastify";
-import type { ClusterState, StateChange } from "../shared/types.js";
+import type {
+	ClusterState,
+	StateChange,
+	ThreadsStage,
+} from "../shared/types.js";
 import { registerAccessKey, registerHostCheck } from "./access.js";
 import { GhError } from "./errors.js";
 import { GitError } from "./git.js";
@@ -10,7 +14,7 @@ import {
 	StaleSnapshotError,
 	UnknownClusterError,
 } from "./review/reviews.js";
-import type { Session } from "./session.js";
+import { type Session, UnknownReadError } from "./session.js";
 
 export interface AppOptions {
 	/** Directory with the built web UI. Omit to serve only the API. */
@@ -35,6 +39,12 @@ const SECURITY_HEADERS = {
 
 const MAX_CHANGES = 1000;
 const MAX_REASON = 500;
+const STAGES: readonly string[] = [
+	"summary",
+	"first",
+	"firstCode",
+	"full",
+] satisfies ThreadsStage[];
 const STATES: readonly string[] = [
 	"unreviewed",
 	"reviewed",
@@ -69,6 +79,7 @@ export async function buildApp(
 		const send = (status: number, message: string) =>
 			reply.status(status).send({ error: message });
 		if (error instanceof StaleSnapshotError) return send(409, "stale");
+		if (error instanceof UnknownReadError) return send(410, "read gone");
 		if (
 			error instanceof BadRequestError ||
 			error instanceof UnknownClusterError ||
@@ -92,14 +103,32 @@ export async function buildApp(
 
 	app.get("/api/session", async () => session.info());
 	// The last overview read; `maxAge` (ms) asks for one read at most that long ago.
-	app.get<{ Querystring: { maxAge?: string } }>("/api/overview", (request) => {
-		const { maxAge } = request.query;
-		if (maxAge === undefined) return session.overview();
-		if (!INDEX.test(maxAge)) {
-			throw new BadRequestError("maxAge must be a number of milliseconds");
-		}
-		return session.overview(Number(maxAge));
-	});
+	app.get<{ Querystring: { maxAge?: string } }>(
+		"/api/overview",
+		async (request) => {
+			const { maxAge } = request.query;
+			if (maxAge !== undefined && !INDEX.test(maxAge)) {
+				throw new BadRequestError("maxAge must be a number of milliseconds");
+			}
+			const overview = await session.overview(
+				maxAge === undefined ? undefined : Number(maxAge),
+			);
+			// The server's clock: the page judges the age by it, not its own.
+			return { ...overview, servedAt: new Date().toISOString() };
+		},
+	);
+	// A read's review threads, once `stage` is in (OverviewRead).
+	app.get<{ Querystring: { read?: string; stage?: string } }>(
+		"/api/threads",
+		(request) => {
+			const { read, stage } = request.query;
+			if (!read) throw new BadRequestError("read is required");
+			if (!STAGES.includes(stage ?? "")) {
+				throw new BadRequestError(`Unknown stage: ${String(stage)}`);
+			}
+			return session.threads(read, stage as ThreadsStage);
+		},
+	);
 	app.get("/api/review", () => session.review());
 	app.get<{ Params: { index: string }; Querystring: { revision?: unknown } }>(
 		"/api/files/:index/hunks",

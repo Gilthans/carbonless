@@ -6,12 +6,13 @@ import type {
 	SessionInfo,
 	Snapshot,
 	StateChange,
+	ThreadsStage,
+	ThreadsView,
 } from "../shared/types.js";
 import { ensureClone, fetchPr } from "./clone.js";
 import { buildSnapshot, loadContext, loadFileHunks } from "./diff/snapshot.js";
 import {
 	fetchHeadAsOf,
-	fetchOverview,
 	fetchPrMeta,
 	type PrMeta,
 	type PrRef,
@@ -19,11 +20,18 @@ import {
 	runGh,
 	viewerSlug,
 } from "./gh.js";
+import { OverviewRead } from "./overviewRead.js";
 import { buildReviewView } from "./review/coverage.js";
 import type { ProgressState } from "./review/fold.js";
 import { RefStore } from "./review/refStore.js";
 import { ReviewService, StaleSnapshotError } from "./review/reviews.js";
 import { ThreadCodeSource } from "./threadCode.js";
+
+/** Reads kept for pages still showing them (see Session.threads). */
+const KEPT_READS = 3;
+
+/** A read of the overview that is no longer kept (HTTP 410). */
+export class UnknownReadError extends Error {}
 
 /** Hidden dev options (crb --as-of, --viewer). */
 export interface SessionOptions {
@@ -74,12 +82,10 @@ export class Session {
 	#metaSeqApplied = 0;
 	/** Thread code from the clone; a Refresh retries what failed. */
 	readonly #threadCode: ThreadCodeSource;
-	/** The last overview read, by when its read started; see overview(). */
-	#overviewDone: { started: number; value: PrOverview } | null = null;
-	#overviewReading: { started: number; promise: Promise<PrOverview> } | null =
-		null;
-	/** Bumped by a Refresh: reads started before it aren't kept. */
-	#overviewGeneration = 0;
+	/** Reads of GitHub, oldest first; see overview(). */
+	#reads: OverviewRead[] = [];
+	/** Reads a Refresh replaced: their threads still serve, their overview not. */
+	readonly #superseded = new WeakSet<OverviewRead>();
 	/** Serializes everything that writes or swaps the snapshot. */
 	#queue: Promise<unknown> = Promise.resolve();
 
@@ -176,64 +182,72 @@ export class Session {
 	}
 
 	/**
-	 * The PR's overview. Reading it takes several gh calls (seconds), so the
-	 * last one read is kept and served while it is at most `maxAgeMs` old
-	 * (by default at any age: it moves on with a Refresh); older, it is read
-	 * again. A read under way that is young enough is shared. A failed read
-	 * isn't kept.
+	 * The PR's overview from a read of GitHub (OverviewRead; its review
+	 * threads come apart, `threads`). Reads take seconds, so the last one is
+	 * kept: its overview is served while it is at most `maxAgeMs` old,
+	 * counted from when it came in (by default at any age: it moves on with
+	 * a Refresh); else a read under way that started at most that long ago;
+	 * else a new read. A read whose overview failed isn't kept.
 	 */
-	overview(maxAgeMs = Number.POSITIVE_INFINITY): Promise<PrOverview> {
-		const young = (started: number) => Date.now() - started <= maxAgeMs;
-		const done = this.#overviewDone;
-		if (done && young(done.started)) return Promise.resolve(done.value);
-		const reading = this.#overviewReading;
-		if (reading && young(reading.started)) return reading.promise;
-		return this.#readOverview();
+	overview(
+		maxAgeMs = Number.POSITIVE_INFINITY,
+	): Promise<Omit<PrOverview, "servedAt">> {
+		const now = Date.now();
+		// 0: a new read, even if the last came in this very millisecond.
+		if (maxAgeMs <= 0) return this.#read().overview;
+		const current = this.#reads.filter((r) => !this.#superseded.has(r));
+		const done = current.findLast(
+			(r) => r.ended !== null && now - r.ended <= maxAgeMs,
+		);
+		if (done) return done.overview;
+		const reading = current.findLast(
+			(r) => r.ended === null && now - r.started <= maxAgeMs,
+		);
+		return (reading ?? this.#read()).overview;
 	}
 
 	/**
-	 * Reads the overview from GitHub, then its code from the clone once
-	 * `ready` (a Refresh moving the snapshot) has settled.
+	 * The review threads of read `readId` (the overview's), once `stage` is
+	 * in. An UnknownReadError when the read is no longer kept (the page
+	 * reads the overview again).
 	 */
-	#readOverview(ready?: Promise<unknown>): Promise<PrOverview> {
-		const { asOf, viewer } = this.options;
-		const generation = this.#overviewGeneration;
-		const started = Date.now();
-		const promise = (async () => {
-			const overview = await fetchOverview(
-				this.#ref(),
-				viewer ?? this.viewer,
-				asOf ? { at: asOf, head: this.#meta.headOid } : undefined,
-			);
-			await ready?.catch(() => {});
-			return this.#threadCode.fill(overview, {
-				snapshot: this.#snapshot.base,
-				ref: `refs/remotes/origin/${this.#meta.baseBranch}`,
-			});
-		})();
-		const reading = { started, promise };
-		this.#overviewReading = reading;
-		promise.then(
-			(value) => {
-				if (this.#overviewReading === reading) this.#overviewReading = null;
-				if (generation !== this.#overviewGeneration) return;
-				const done = this.#overviewDone;
-				if (!done || done.started < started) {
-					this.#overviewDone = { started, value };
-				}
-			},
-			() => {
-				if (this.#overviewReading === reading) this.#overviewReading = null;
-			},
-		);
-		return promise;
+	threads(readId: string, stage: ThreadsStage): Promise<ThreadsView> {
+		const read = this.#reads.find((r) => r.id === readId);
+		if (!read) throw new UnknownReadError(`No read ${readId}`);
+		return read.threads(stage);
 	}
 
-	/** Drops the kept overview and reads it again (after `ready`). */
+	/**
+	 * Starts a read of GitHub; its thread code waits for `ready` (a Refresh
+	 * moving the snapshot) to know the diff base.
+	 */
+	#read(ready?: Promise<unknown>): OverviewRead {
+		const { asOf, viewer } = this.options;
+		const read = new OverviewRead({
+			ref: this.#ref(),
+			viewer: viewer ?? this.viewer,
+			asOf: asOf ? { at: asOf, head: this.#meta.headOid } : undefined,
+			code: this.#threadCode,
+			base: async () => {
+				await ready?.catch(() => {});
+				return {
+					snapshot: this.#snapshot.base,
+					ref: `refs/remotes/origin/${this.#meta.baseBranch}`,
+				};
+			},
+		});
+		// The newest few, so a page still showing an older one gets its threads.
+		this.#reads = [...this.#reads, read].slice(-KEPT_READS);
+		read.overview.catch(() => {
+			this.#reads = this.#reads.filter((r) => r !== read);
+		});
+		return read;
+	}
+
+	/** Reads GitHub again (after `ready`); older reads aren't served any more. */
 	#rereadOverview(ready?: Promise<unknown>): void {
-		this.#overviewGeneration++;
-		this.#overviewDone = null;
-		this.#readOverview(ready).catch(() => {});
+		for (const read of this.#reads) this.#superseded.add(read);
+		this.#read(ready);
 	}
 
 	async review(): Promise<ReviewView> {

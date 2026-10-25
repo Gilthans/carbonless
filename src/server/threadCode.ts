@@ -1,11 +1,8 @@
 import { type HunkLine, parseDiffHunk } from "../shared/diffHunk.js";
-import type { CodeAnchor, CodeRow, PrOverview } from "../shared/types.js";
+import type { CodeAnchor, CodeRow, CodeWindow } from "../shared/types.js";
 import { ensureCommit } from "./clone.js";
-import { touchesOldSide, windowRows } from "./codeWindow.js";
+import { hunkWindowRows, touchesOldSide, windowRows } from "./codeWindow.js";
 import { runGit } from "./git.js";
-
-/** Windows built at once. */
-const CONCURRENCY = 8;
 
 /** What the PR's diff is taken against. */
 export interface DiffBase {
@@ -336,32 +333,22 @@ export class ThreadCodeSource {
 	}
 
 	/**
-	 * Every thread's code from the clone, a few at a time. Where the clone
-	 * can't give it for certain, the comment host's own rows stay (marked
-	 * `source: "github"`); a range on the new side with no such rows takes
-	 * the clone's anyway (#left's `lenient`). A thread with neither gets no
-	 * code.
+	 * A comment's code: the clone's. Where the clone can't give it for
+	 * certain, the comment host's own hunk (`hostHunk`, asked for only then;
+	 * `source: "github"`); with no hunk, a range on the new side from the
+	 * clone anyway (#left's `lenient`); else none.
 	 */
-	async fill(overview: PrOverview, base: DiffBase): Promise<PrOverview> {
-		const threads = [...overview.threads];
-		let next = 0;
-		const work = async () => {
-			for (let i = next++; i < threads.length; i = next++) {
-				const thread = threads[i];
-				const code = thread?.code;
-				if (!thread || !code) continue;
-				const { anchor } = code;
-				const hosted = code.rows.length > 0;
-				const rows =
-					(await this.window(anchor, base)) ??
-					(hosted ? null : await this.window(anchor, base, true));
-				threads[i] = {
-					...thread,
-					code: rows ? { anchor, rows, source: "clone" } : hosted ? code : null,
-				};
-			}
-		};
-		await Promise.all(Array.from({ length: CONCURRENCY }, work));
-		return { ...overview, threads };
+	async code(
+		anchor: CodeAnchor,
+		base: DiffBase,
+		hostHunk: () => Promise<string>,
+	): Promise<CodeWindow | null> {
+		const rows = await this.window(anchor, base);
+		if (rows) return { anchor, rows, source: "clone" };
+		const hunk = await hostHunk();
+		const hosted = hunk.trim() ? hunkWindowRows(hunk, anchor) : [];
+		if (hosted.length) return { anchor, rows: hosted, source: "github" };
+		const lenient = await this.window(anchor, base, true);
+		return lenient ? { anchor, rows: lenient, source: "clone" } : null;
 	}
 }

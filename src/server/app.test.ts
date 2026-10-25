@@ -59,9 +59,18 @@ describe("API", () => {
 
 	it("serves the kept overview, or one read at most maxAge ms ago", async () => {
 		const first = await get("/api/overview");
-		expect(await get("/api/overview")).toEqual(first);
-		expect(await get("/api/overview?maxAge=600000")).toEqual(first);
+		const same = (o: { readId: string; fetchedAt: string }) => [
+			o.readId,
+			o.fetchedAt,
+		];
+		expect(same(await get("/api/overview"))).toEqual(same(first));
+		expect(same(await get("/api/overview?maxAge=600000"))).toEqual(same(first));
+		// Its age, by the server's clock.
+		expect(Date.parse(first.servedAt)).toBeGreaterThanOrEqual(
+			Date.parse(first.fetchedAt),
+		);
 		const fresh = await get("/api/overview?maxAge=0");
+		expect(fresh.readId).not.toBe(first.readId);
 		expect(Date.parse(fresh.fetchedAt)).toBeGreaterThanOrEqual(
 			Date.parse(first.fetchedAt),
 		);
@@ -69,6 +78,27 @@ describe("API", () => {
 			const res = await inject(`/api/overview?maxAge=${bad}`);
 			expect(res.statusCode, bad).toBe(400);
 		}
+	});
+
+	it("serves a read's threads by stage; a read no longer kept is gone (410)", async () => {
+		const { readId } = await get("/api/overview");
+		for (const stage of ["summary", "first", "firstCode", "full"]) {
+			const view = await get(
+				`/api/threads?${new URLSearchParams({ read: readId, stage })}`,
+			);
+			expect(Array.isArray(view.threads), stage).toBe(true);
+		}
+		const full = await get(
+			`/api/threads?${new URLSearchParams({ read: readId, stage: "full" })}`,
+		);
+		expect(full.complete).toBe(true);
+		expect((await inject("/api/threads?read=nope&stage=full")).statusCode).toBe(
+			410,
+		);
+		expect(
+			(await inject(`/api/threads?read=${readId}&stage=soon`)).statusCode,
+		).toBe(400);
+		expect((await inject("/api/threads?stage=full")).statusCode).toBe(400);
 	});
 
 	it("records a state and returns updated progress", async () => {

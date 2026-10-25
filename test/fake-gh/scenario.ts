@@ -21,6 +21,10 @@ export interface Scenario {
 	cloneError?: string;
 	/** `gh pr view` answers only after this many milliseconds. */
 	prViewDelayMs?: number;
+	/** Each page of review threads (their summaries) answers this late. */
+	threadsDelayMs?: number;
+	/** Each read of threads' opening comments by id answers this late. */
+	threadContentDelayMs?: number;
 	/** Nodes per GraphQL page (default 100, like gh.ts asks for). */
 	pageSize?: number;
 	/**

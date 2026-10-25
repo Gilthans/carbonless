@@ -171,8 +171,9 @@ export interface CodeWindow {
 	 * "clone": rebuilt from carbonless's clone (the normal case).
 	 * "github": GitHub's own diff hunk, when the clone can't give the code
 	 * for certain; it ends at the commented line (no rows after it).
+	 * "pending": not built yet (no rows); the pane shows its frame.
 	 */
-	source: "clone" | "github";
+	source: "clone" | "github" | "pending";
 }
 
 export interface PrOverview {
@@ -218,51 +219,90 @@ export interface PrOverview {
 		status: "failing" | "pending" | "passing";
 		url?: string;
 	}[];
+	/** As-of mode: the cutoff everything here is filtered to. */
+	asOf?: string;
+	/**
+	 * This read of the PR from GitHub; its review threads come apart
+	 * (`GET /api/threads?read=<readId>`), as they take longer.
+	 */
+	readId: string;
+	/** When the server finished reading this from GitHub (its clock). */
+	fetchedAt: string;
+	/** When the server sent it (its clock): `servedAt - fetchedAt` is its age. */
+	servedAt: string;
+}
+
+/** Threads listed at first in each list, and added by each "Load more". */
+export const THREAD_PAGE = 5;
+/**
+ * Threads of each list whose text and code are read first: those listed at
+ * first and one "Load more" page; the rest follow.
+ */
+export const THREADS_FIRST = 2 * THREAD_PAGE;
+
+/** One review thread of the PR. */
+export interface ReviewThread {
+	/** The comment host's id for the thread ("" if it gave none). */
+	id: string;
+	path: string;
+	/**
+	 * The commented line on the commit the comment was made on when there
+	 * is code, else the commented line now, else where it was written;
+	 * null for a file comment.
+	 */
+	line: number | null;
+	/** GitHub's current line for the comment; null when outdated or a file comment. */
+	currentLine: number | null;
+	/**
+	 * Whether the opening comment's text (`excerpt`, `html`, `body`) has been
+	 * read; until then they are "" (the card shows its frame).
+	 */
+	loaded: boolean;
+	/** The first comment as plain text, whitespace collapsed, ≤200 chars. */
+	excerpt: string;
+	/** The first comment as GitHub renders it. Untrusted, like `bodyHtml`. */
+	html: string;
+	/** The first comment's markdown (suggested changes are read from it). */
+	body: string;
+	/** When the first comment was written. */
+	createdAt: string;
+	/** The thread's latest comment (as-of mode: by the cutoff). */
+	lastActivityAt: string;
+	author: string;
+	bot: boolean;
+	/** Comments in the thread, the opening one included. */
+	commentCount: number;
+	/** Someone other than the opener commented. */
+	hasReply: boolean;
+	outdated: boolean;
+	/** Resolved on GitHub (as-of mode: always false, the history is unknown). */
+	resolved: boolean;
+	/**
+	 * The code the first comment was written on, from the clone (GitHub's
+	 * diff hunk when the clone can't give it for certain). The anchor is
+	 * GitHub's original range, on the commit the comment was made on.
+	 * Null for a file comment, or when neither source has the code;
+	 * `source: "pending"` (no rows) while it is still being built.
+	 */
+	code: CodeWindow | null;
+}
+
+/** How far a read's review threads have come. */
+export type ThreadsStage = "summary" | "first" | "firstCode" | "full";
+
+/**
+ * A read's review threads. Every thread is listed from the start (its
+ * summary: lists, counts and card headers are exact); the text and code of
+ * some may still be on their way (`loaded`, code `source: "pending"`).
+ */
+export interface ThreadsView {
 	/**
 	 * Every review thread, most recent activity first (as-of mode: those
 	 * opened by the cutoff, all unresolved).
 	 */
-	threads: {
-		path: string;
-		/**
-		 * The commented line on the commit the comment was made on when there
-		 * is code, else the commented line now, else where it was written;
-		 * null for a file comment.
-		 */
-		line: number | null;
-		/** GitHub's current line for the comment; null when outdated or a file comment. */
-		currentLine: number | null;
-		/** The first comment as plain text, whitespace collapsed, ≤200 chars. */
-		excerpt: string;
-		/** The first comment as GitHub renders it. Untrusted, like `bodyHtml`. */
-		html: string;
-		/** The first comment's markdown (suggested changes are read from it). */
-		body: string;
-		/** When the first comment was written. */
-		createdAt: string;
-		/** The thread's latest comment (as-of mode: by the cutoff). */
-		lastActivityAt: string;
-		author: string;
-		bot: boolean;
-		/** Comments in the thread, the opening one included. */
-		commentCount: number;
-		/** Someone other than the opener commented. */
-		hasReply: boolean;
-		outdated: boolean;
-		/** Resolved on GitHub (as-of mode: always false, the history is unknown). */
-		resolved: boolean;
-		/**
-		 * The code the first comment was written on, from the clone (GitHub's
-		 * diff hunk when the clone can't give it for certain). The anchor is
-		 * GitHub's original range, on the commit the comment was made on.
-		 * Null for a file comment, or when neither source has the code.
-		 */
-		code: CodeWindow | null;
-	}[];
-	/** As-of mode: the cutoff everything here is filtered to. */
-	asOf?: string;
-	/** When the server started reading this from GitHub. */
-	fetchedAt: string;
+	threads: ReviewThread[];
+	/** Every thread's text and code are in. */
+	complete: boolean;
 }
 
 export interface SessionInfo {

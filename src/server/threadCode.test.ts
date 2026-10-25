@@ -1,8 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { afterAll, describe, expect, it, vi } from "vitest";
 import { createGitFixture, testGitEnv } from "../../test/git-fixture";
-import type { CodeAnchor, CodeRow, PrOverview } from "../shared/types";
-import { hunkWindowRows } from "./codeWindow";
+import type { CodeAnchor, CodeRow, CodeWindow } from "../shared/types";
 import { runGit } from "./git.js";
 
 // Pass-through spy, so a test can count the git calls.
@@ -342,153 +341,111 @@ describe("ThreadCodeSource.window", () => {
 	});
 });
 
-describe("ThreadCodeSource.fill", () => {
-	const thread = (
-		path: string,
-		code: PrOverview["threads"][number]["code"],
-	): PrOverview["threads"][number] => ({
-		path,
-		line: code?.anchor.line ?? null,
-		currentLine: null,
-		excerpt: "",
-		html: "",
-		body: "",
-		createdAt: "",
-		lastActivityAt: "",
-		author: "rev1",
-		bot: false,
-		commentCount: 1,
-		hasReply: false,
-		outdated: false,
-		resolved: false,
-		code,
-	});
-	/** As GitHub's adapter makes it: the anchor and GitHub's own hunk. */
-	const hosted = (anchor: CodeAnchor, hunk = "") => ({
-		anchor,
-		rows: hunkWindowRows(hunk, anchor),
-		source: "github" as const,
-	});
-	const overview = (threads: PrOverview["threads"]) =>
-		({ threads }) as PrOverview;
+describe("ThreadCodeSource.code", () => {
+	/** A comment: its anchor and GitHub's own hunk ("" for none). */
+	const comment = (anchor: CodeAnchor, hunk = "") => ({ anchor, hunk });
+	/** Every comment's code, as a read builds them. */
+	const fill = (
+		s: ThreadCodeSource,
+		comments: ReturnType<typeof comment>[],
+	): Promise<(CodeWindow | null)[]> =>
+		Promise.all(
+			comments.map((c) => s.code(c.anchor, BASE, async () => c.hunk)),
+		);
 
-	it("builds every thread's code from the clone, GitHub's hunk or not", async () => {
-		const withHunk = hosted(
+	it("builds every comment's code from the clone, GitHub's hunk or not, asking for the hunk only if needed", async () => {
+		const hostHunk = vi.fn(
+			async () => "@@ -0,0 +1,2 @@\n+line 1 new\n+line 2 new",
+		);
+		const s = source();
+		const a = await s.code(
 			at({ path: "new.txt", line: 2, startLine: 2 }),
-			"@@ -0,0 +1,2 @@\n+line 1 new\n+line 2 new",
-		);
-		const filled = await source().fill(
-			overview([
-				thread("new.txt", withHunk),
-				thread(
-					"new.txt",
-					hosted(at({ path: "new.txt", line: 5, startLine: 5 })),
-				),
-				thread("a.txt", null),
-			]),
 			BASE,
+			hostHunk,
 		);
-		const [a, b, c] = filled.threads;
-		expect(a?.code?.source).toBe("clone");
-		expect(shown(a?.code?.rows ?? null)).toEqual([
+		expect(a?.source).toBe("clone");
+		expect(shown(a?.rows ?? null)).toEqual([
 			" ./1 line 1 new",
 			">./2 line 2 new",
 			" ./3 line 3 new",
 			" ./4 line 4 new",
 			" ./5 line 5 new",
 		]);
-		expect(b?.code?.source).toBe("clone");
-		expect(c?.code).toBeNull();
+		expect(hostHunk).not.toHaveBeenCalled();
+		const [b] = await fill(s, [
+			comment(at({ path: "new.txt", line: 5, startLine: 5 })),
+		]);
+		expect(b?.source).toBe("clone");
 	});
 
-	it("keeps GitHub's hunk, marked as GitHub's, when the clone can't give the code", async () => {
+	it("takes GitHub's hunk, marked as GitHub's, when the clone can't give the code", async () => {
 		// A path that isn't at the comment's commit (GitHub names today's).
-		const elsewhere = hosted(
-			at({ path: "elsewhere.txt", line: 3, startLine: 3 }),
-			"@@ -0,0 +1,3 @@\n+line 1\n+line 2\n+line 3",
-		);
-		const filled = await source().fill(
-			overview([
-				thread("elsewhere.txt", elsewhere),
-				// Neither: no hunk, and the clone can't.
-				thread(
-					"elsewhere.txt",
-					hosted(at({ path: "elsewhere.txt", line: 3, startLine: 3 })),
-				),
-			]),
-			BASE,
-		);
-		expect(filled.threads[0]?.code).toBe(elsewhere);
-		expect(filled.threads[0]?.code?.source).toBe("github");
-		expect(filled.threads[1]?.code).toBeNull();
+		const anchor = at({ path: "elsewhere.txt", line: 3, startLine: 3 });
+		const [hosted, neither] = await fill(source(), [
+			comment(anchor, "@@ -0,0 +1,3 @@\n+line 1\n+line 2\n+line 3"),
+			// Neither: no hunk, and the clone can't.
+			comment(anchor),
+		]);
+		expect(hosted?.source).toBe("github");
+		expect(shown(hosted?.rows ?? null)).toEqual([
+			" ./1 line 1",
+			" ./2 line 2",
+			">./3 line 3",
+		]);
+		expect(neither).toBeNull();
 	});
 
 	it("falls back to a hunkless new-side range's own commit when the base then is unknown", async () => {
-		const filled = await source().fill(
-			overview([
-				thread(
-					"new.txt",
-					hosted(at({ path: "new.txt", line: 2, startLine: 2, at: "" })),
-				),
-				thread(
-					"a.txt",
-					hosted(
-						at({
-							side: "LEFT",
-							startSide: "LEFT",
-							line: 10,
-							startLine: 10,
-							at: "",
-						}),
-					),
-				),
-			]),
-			BASE,
-		);
-		expect(filled.threads[0]?.code?.source).toBe("clone");
-		expect(filled.threads[1]?.code).toBeNull();
+		const [right, left] = await fill(source(), [
+			comment(at({ path: "new.txt", line: 2, startLine: 2, at: "" })),
+			comment(
+				at({
+					side: "LEFT",
+					startSide: "LEFT",
+					line: 10,
+					startLine: 10,
+					at: "",
+				}),
+			),
+		]);
+		expect(right?.source).toBe("clone");
+		expect(left).toBeNull();
 	});
 
 	it("asks for a commit it can't get once, until its failures are forgotten (a Refresh)", async () => {
 		const fetchCommit = vi.fn(async () => false);
 		const s = new ThreadCodeSource(fx.path, fetchCommit);
 		const lost = "d".repeat(40);
-		const ov = overview(
-			Array.from({ length: 9 }, (_, i) =>
-				thread(
-					`f${i}.txt`,
-					hosted(at({ commit: lost, line: i + 1, startLine: i + 1 })),
-				),
+		const comments = Array.from({ length: 9 }, (_, i) =>
+			comment(
+				at({ path: `f${i}.txt`, commit: lost, line: i + 1, startLine: i + 1 }),
 			),
 		);
-		const filled = await s.fill(ov, BASE);
-		expect(filled.threads.every((t) => t.code === null)).toBe(true);
-		await s.fill(ov, BASE);
+		expect((await fill(s, comments)).every((c) => c === null)).toBe(true);
+		await fill(s, comments);
 		expect(fetchCommit).toHaveBeenCalledTimes(1);
 		s.forgetFailures();
-		await s.fill(ov, BASE);
+		await fill(s, comments);
 		expect(fetchCommit).toHaveBeenCalledTimes(2);
 	});
 
-	it("reads git once for the same code: a second fill is served from the cache", async () => {
+	it("reads git once for the same code: a second build is served from the cache", async () => {
 		const fetchCommit = vi.fn(async () => true);
 		const s = new ThreadCodeSource(fx.path, fetchCommit);
-		const ov = overview([
-			thread("a.txt", hosted(at({ line: 10, startLine: 10 }))),
-			thread("a.txt", hosted(at({ line: 18, startLine: 16 }))),
-		]);
-		const first = await s.fill(ov, BASE);
-		expect(first.threads.every((t) => t.code?.source === "clone")).toBe(true);
+		const comments = [
+			comment(at({ line: 10, startLine: 10 })),
+			comment(at({ line: 18, startLine: 16 })),
+		];
+		const first = await fill(s, comments);
+		expect(first.every((c) => c?.source === "clone")).toBe(true);
 		vi.mocked(runGit).mockClear();
-		const again = await s.fill(ov, BASE);
-		expect(again.threads.map((t) => t.code?.rows)).toEqual(
-			first.threads.map((t) => t.code?.rows),
-		);
+		const again = await fill(s, comments);
+		expect(again.map((c) => c?.rows)).toEqual(first.map((c) => c?.rows));
 		expect(runGit).not.toHaveBeenCalled();
 		expect(fetchCommit).toHaveBeenCalledTimes(1);
 		// Forgetting failures keeps what succeeded.
 		s.forgetFailures();
-		await s.fill(ov, BASE);
+		await fill(s, comments);
 		expect(fetchCommit).toHaveBeenCalledTimes(1);
 	});
 });

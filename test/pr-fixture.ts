@@ -146,7 +146,13 @@ export function createPrFixture(): PrFixture {
 				else process.env[k] = v;
 			}
 			repo.cleanup();
-			rmSync(tmp, { recursive: true, force: true });
+			// A read's threads may still be writing to the clone: retry.
+			rmSync(tmp, {
+				recursive: true,
+				force: true,
+				maxRetries: 20,
+				retryDelay: 50,
+			});
 		},
 	};
 }

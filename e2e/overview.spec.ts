@@ -735,6 +735,72 @@ test("an opened long range scrolls inside its pane to the marked lines, never th
 	expect(await page.evaluate(() => window.scrollY)).toBe(before);
 });
 
+test("the page never waits for the threads: lists, then cards, fill in as they come", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	if (isMobile) await page.setViewportSize({ width: 360, height: 780 });
+	const p = await pr({
+		threads: Array.from({ length: 12 }, (_, i) =>
+			reviewThread({ path: `src/f${i}.ts`, line: 1 }, [
+				threadComment({
+					login: "rev1",
+					text: `Point ${i}`,
+					diffHunk: "@@ -0,0 +1 @@\n+x",
+					createdAt: `2026-01-01T${String(10 + i).padStart(2, "0")}:00:00Z`,
+				}),
+			]),
+		),
+	});
+	// The summaries are slow, the comments' text slower.
+	p.editScenario((s) => {
+		s.threadsDelayMs = 1500;
+		s.threadContentDelayMs = 2500;
+	});
+	const s = await startCrb();
+	await page.goto(s.url);
+	const ready = page.getByRole("region", { name: "Is it ready" });
+	const humans = page.getByRole("region", { name: "Human reviews" });
+	// Everything but the threads, with each list's frame.
+	await expect(
+		page.getByRole("region", { name: "What it does" }),
+	).toBeVisible();
+	await expect(ready.getByTestId("threads-loading")).toHaveCount(2);
+	await expect(humans.getByTestId("thread")).toHaveCount(0);
+	// Then every card's header (the counts exact), the text still a frame.
+	await expect(humans.getByTestId("thread")).toHaveCount(5);
+	await expect(humans.getByText("12 unresolved")).toBeVisible();
+	await expect(
+		humans.getByTestId("thread").first().getByTestId("thread-place"),
+	).toHaveText("src/f11.ts:1");
+	await expect(humans.getByTestId("thread-body-loading").first()).toBeVisible();
+	expect(
+		await page.evaluate(
+			() =>
+				document.documentElement.scrollWidth -
+				document.documentElement.clientWidth,
+		),
+	).toBe(0);
+	// Then the text and code.
+	await expect(humans.getByTestId("thread-body").first()).toHaveText(
+		"Point 11",
+		{
+			timeout: 10_000,
+		},
+	);
+	await expect(humans.getByTestId("thread-body-loading")).toHaveCount(0);
+	await expect(humans.getByTestId("thread-code").first()).toBeVisible();
+	// Past the listed-first ones too, once all are in.
+	await humans.getByRole("button", { name: /^Load / }).click();
+	await humans.getByRole("button", { name: /^Load / }).click();
+	await expect(humans.getByTestId("thread")).toHaveCount(12);
+	await expect(humans.getByTestId("thread-body").last()).toHaveText("Point 0", {
+		timeout: 10_000,
+	});
+});
+
 test("a line comment GitHub kept no hunk for shows its code from the clone; a file comment shows none", async ({
 	page,
 	pr,

@@ -22,6 +22,11 @@ function print(value) {
 	process.exit(0);
 }
 const unsupported = () => fail(`fake gh: unsupported: ${args.join(" ")}`, 2);
+const sleep = (ms) =>
+	Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+/** A PR's thread nodes, each with an id (`T<pr>-<index>` unless it has one). */
+const threadNodes = (pr, nodes) =>
+	nodes.map((t, i) => ({ ...t, id: t.id ?? `T${pr}-${i}` }));
 const notFound = (n) =>
 	fail(
 		`GraphQL: Could not resolve to a PullRequest with the number of ${n}. (repository.pullRequest)`,
@@ -112,6 +117,37 @@ switch (cmd) {
 	}
 	case "api graphql": {
 		const f = fields();
+		// Threads' opening-comment content by node id (any PR's threads).
+		const byIds = /nodes\(ids: \[([^\]]*)\]\)/.exec(f.query);
+		if (byIds) {
+			if (s.threadContentDelayMs) sleep(s.threadContentDelayMs);
+			const ids = [...byIds[1].matchAll(/"([^"]*)"/g)].map((m) => m[1]);
+			const all = Object.entries(s.prs).flatMap(([n, p]) =>
+				threadNodes(n, p.graphql?.reviewThreads ?? []),
+			);
+			print({
+				data: {
+					nodes: ids.map((id) => {
+						const node = all.find((t) => t.id === id);
+						if (!node) return null;
+						const first = node.first?.nodes?.[0] ?? {};
+						return {
+							id,
+							first: {
+								nodes: [
+									{
+										body: first.body ?? "",
+										bodyText: first.bodyText ?? "",
+										bodyHTML: first.bodyHTML ?? "",
+										diffHunk: first.diffHunk ?? "",
+									},
+								],
+							},
+						};
+					}),
+				},
+			});
+		}
 		const conn = /(\w+)\((?:first: \d+, after: \$endCursor|last: \d+)\)/.exec(
 			f.query,
 		)?.[1];
@@ -163,7 +199,22 @@ switch (cmd) {
 			unsupported();
 		}
 		if (!pr) notFound(f.number);
-		const all = pr.graphql?.[conn] ?? [];
+		let all = pr.graphql?.[conn] ?? [];
+		if (conn === "reviewThreads") {
+			if (s.threadsDelayMs) sleep(s.threadsDelayMs);
+			all = threadNodes(f.number, all);
+			// Only the fields asked for: a summary has no opening-comment text.
+			if (!f.query.includes("bodyHTML")) {
+				all = all.map((t) => ({
+					...t,
+					first: {
+						nodes: (t.first?.nodes ?? []).map(
+							({ body, bodyText, bodyHTML, diffHunk, ...rest }) => rest,
+						),
+					},
+				}));
+			}
+		}
 		const size = s.pageSize ?? 100;
 		const start = fromEnd
 			? Math.max(0, all.length - size)

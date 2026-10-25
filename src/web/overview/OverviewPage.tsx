@@ -26,6 +26,7 @@ import {
 } from "@primer/octicons-react";
 import {
 	type UseQueryResult,
+	useQueries,
 	useQuery,
 	useQueryClient,
 } from "@tanstack/react-query";
@@ -43,18 +44,24 @@ import {
 	useState,
 } from "react";
 import { type HunkLine, numberOn } from "../../shared/diffHunk";
-import type {
-	CodeRow,
-	CodeWindow,
-	PrOverview,
-	Progress,
+import {
+	type CodeRow,
+	type CodeWindow,
+	type PrOverview,
+	type Progress,
+	type ReviewThread,
+	THREAD_PAGE,
+	type ThreadsView,
 } from "../../shared/types";
 import {
 	OVERVIEW_FRESH_MS,
+	overviewAge,
 	overviewQuery,
 	revalidateOverviewQuery,
 	reviewQuery,
 	sessionQuery,
+	THREAD_STAGES,
+	threadsQuery,
 } from "../api";
 import { CodeLine } from "../code/Invisibles";
 import { languageFor } from "../files/highlight";
@@ -69,29 +76,48 @@ import { threadKeys } from "./threadKeys";
 
 type Review = PrOverview["reviews"][number];
 type Check = PrOverview["checks"][number];
-type Thread = PrOverview["threads"][number];
+type Thread = ReviewThread;
 
 /** How old the overview's HTML may be before a broken image reads it again. */
 const IMAGE_MAX_AGE_MS = 60_000;
 
+/**
+ * A read's review threads, as far as they have come: every stage is asked
+ * for at once and the furthest in is shown (OverviewRead on the server).
+ */
+function useThreads(readId: string | undefined): {
+	view: ThreadsView | undefined;
+	/** A stage failed and the threads aren't all in. */
+	error: Error | null;
+} {
+	const stages = useQueries({
+		queries: THREAD_STAGES.map((stage) => ({
+			...threadsQuery(readId ?? "", stage),
+			enabled: Boolean(readId),
+		})),
+	});
+	const view = stages.findLast((q) => q.data)?.data;
+	const failed = stages.find((q) => q.isError);
+	return {
+		view,
+		error: view?.complete ? null : (failed?.error ?? null),
+	};
+}
+
 export function OverviewPage() {
 	const overview = useQuery(overviewQuery);
 	const queryClient = useQueryClient();
-	const fetchedAt = overview.data?.fetchedAt ?? "";
+	const data = overview.data;
+	const fetchedAt = data?.fetchedAt ?? "";
 	// The server keeps its last read: an old one shows at once and is read
 	// again meanwhile (the header's Refresh spins). Not as of a cutoff,
-	// where nothing changes. Judged once per read.
-	const stale = useMemo(
-		() =>
-			!!fetchedAt &&
-			!overview.data?.asOf &&
-			!(Date.now() - Date.parse(fetchedAt) <= OVERVIEW_FRESH_MS),
-		[fetchedAt, overview.data?.asOf],
-	);
+	// where nothing changes. The age is by the server's clock.
+	const stale = !!data && !data.asOf && overviewAge(data) > OVERVIEW_FRESH_MS;
 	const revalidate = useQuery({
 		...revalidateOverviewQuery(fetchedAt, OVERVIEW_FRESH_MS),
 		enabled: stale,
 	});
+	const threads = useThreads(data?.readId);
 	const latest = useRef(fetchedAt);
 	latest.current = fetchedAt;
 	const [refreshImages] = useState(() =>
@@ -102,14 +128,17 @@ export function OverviewPage() {
 					.catch(() => {}),
 		}),
 	);
+	// When it was read, on this browser's clock: received, less its age then.
+	const readAt = data ? overview.dataUpdatedAt - overviewAge(data) : 0;
 	const onImageError = useCallback(
-		() => refreshImages(Date.parse(fetchedAt)),
-		[refreshImages, fetchedAt],
+		() => refreshImages(readAt),
+		[refreshImages, readAt],
 	);
 	return (
 		<ImageErrorContext value={onImageError}>
 			<OverviewContent
 				overview={overview}
+				threads={threads}
 				updateError={revalidate.isError ? revalidate.error : null}
 			/>
 		</ImageErrorContext>
@@ -118,9 +147,11 @@ export function OverviewPage() {
 
 function OverviewContent({
 	overview,
+	threads,
 	updateError,
 }: {
 	overview: UseQueryResult<PrOverview>;
+	threads: ReturnType<typeof useThreads>;
 	/** The overview shown couldn't be brought up to date. */
 	updateError: Error | null;
 }) {
@@ -131,9 +162,13 @@ function OverviewContent({
 			{updateError && <ErrorMessage error={updateError} />}
 			{overview.data && (
 				<>
-					<WhatItDoes pr={overview.data} />
+					<WhatItDoes pr={overview.data} threads={threads.view} />
 					<WhosOnIt pr={overview.data} />
-					<IsItReady pr={overview.data} />
+					<IsItReady
+						pr={overview.data}
+						threads={threads.view}
+						error={threads.error}
+					/>
 				</>
 			)}
 			<ReviewFilesButton />
@@ -323,8 +358,15 @@ const STATE_BADGE = {
 	CLOSED: { tone: "red", icon: GitPullRequestClosedIcon, label: "Closed" },
 } as const;
 
-function WhatItDoes({ pr }: { pr: PrOverview }) {
+function WhatItDoes({
+	pr,
+	threads,
+}: {
+	pr: PrOverview;
+	threads: ThreadsView | undefined;
+}) {
 	const stateBadge = pr.state === "OPEN" ? undefined : STATE_BADGE[pr.state];
+	const updatedAt = lastUpdate(pr, threads);
 	return (
 		<Section label="What it does">
 			<div>
@@ -365,15 +407,30 @@ function WhatItDoes({ pr }: { pr: PrOverview }) {
 					<span>
 						opened <RelativeTime iso={pr.createdAt} />
 					</span>
-					{pr.updatedAt && pr.updatedAt !== pr.createdAt && (
+					{updatedAt && updatedAt !== pr.createdAt && (
 						<span>
-							updated <RelativeTime iso={pr.updatedAt} />
+							updated <RelativeTime iso={updatedAt} />
 						</span>
 					)}
 				</p>
 			</div>
 			<Description pr={pr} />
 		</Section>
+	);
+}
+
+/**
+ * When the PR was last updated: GitHub's time, or as of a cutoff the last
+ * activity seen by then, the review threads' too once they are in.
+ */
+function lastUpdate(pr: PrOverview, threads: ThreadsView | undefined): string {
+	if (!pr.asOf) return pr.updatedAt;
+	return (threads?.threads ?? []).reduce(
+		(latest, t) =>
+			Date.parse(t.lastActivityAt) > Date.parse(latest)
+				? t.lastActivityAt
+				: latest,
+		pr.updatedAt,
 	);
 }
 
@@ -587,23 +644,45 @@ function WhosOnIt({ pr }: { pr: PrOverview }) {
 
 // ---- Is it ready ----
 
-function IsItReady({ pr }: { pr: PrOverview }) {
+function IsItReady({
+	pr,
+	threads,
+	error,
+}: {
+	pr: PrOverview;
+	/** Undefined until every thread's summary is in. */
+	threads: ThreadsView | undefined;
+	/** The threads couldn't all be read. */
+	error: Error | null;
+}) {
+	const list = threads?.threads;
 	return (
 		<Section label="Is it ready">
 			<Checks pr={pr} />
+			{error && <ErrorMessage error={error} />}
 			<ThreadGroup
 				label="Human reviews"
 				icon={CommentDiscussionIcon}
-				threads={pr.threads.filter((t) => !t.bot)}
+				threads={list?.filter((t) => !t.bot)}
 				asOf={Boolean(pr.asOf)}
 			/>
 			<ThreadGroup
 				label="Bot reviews"
 				icon={HubotIcon}
-				threads={pr.threads.filter((t) => t.bot)}
+				threads={list?.filter((t) => t.bot)}
 				asOf={Boolean(pr.asOf)}
 			/>
 		</Section>
+	);
+}
+
+/** A grey bar where text is still on its way. */
+function SkeletonBar(props: { className: string }) {
+	return (
+		<div
+			aria-hidden
+			className={`h-3 animate-pulse rounded bg-overlay motion-reduce:animate-none ${props.className}`}
+		/>
 	);
 }
 
@@ -862,9 +941,6 @@ function CheckItem({ check }: { check: Check }) {
 
 // ---- Human and bot reviews ----
 
-/** Threads listed at first, and added by each "Load more". */
-const THREAD_PAGE = 5;
-
 /**
  * "Load X more comments out of Y": Y threads not listed yet, X the next
  * page of them. Each item is a thread; the owner asked for "comments".
@@ -882,10 +958,13 @@ export function loadMoreText(hidden: number): string {
 function ThreadGroup(props: {
 	label: string;
 	icon: Icon;
-	threads: Thread[];
+	/** Undefined while the threads are read: the list's frame shows. */
+	threads: Thread[] | undefined;
 	asOf: boolean;
 }) {
-	const { threads, asOf } = props;
+	const { asOf } = props;
+	const loading = props.threads === undefined;
+	const threads = props.threads ?? [];
 	const [showResolved, setShowResolved] = useState(false);
 	const [limit, setLimit] = useState(THREAD_PAGE);
 	const listId = useId();
@@ -911,7 +990,9 @@ function ThreadGroup(props: {
 					<IconEl size={18} aria-hidden className="text-label" />
 					{props.label}
 				</h3>
-				{threads.length === 0 ? (
+				{loading ? (
+					<SkeletonBar className="w-32" />
+				) : threads.length === 0 ? (
 					<p className="text-sm text-faint">No threads</p>
 				) : (
 					<ul
@@ -956,6 +1037,25 @@ function ThreadGroup(props: {
 				)}
 			</div>
 			<div id={listId}>
+				{loading && (
+					<ul
+						aria-label="Loading threads"
+						aria-busy="true"
+						data-testid="threads-loading"
+						className="space-y-3"
+					>
+						{[0, 1].map((i) => (
+							<li
+								key={i}
+								className="space-y-2.5 rounded-lg border border-edge bg-surface px-3 py-3"
+							>
+								<SkeletonBar className="w-1/2" />
+								<SkeletonBar className="w-full" />
+								<SkeletonBar className="w-3/4" />
+							</li>
+						))}
+					</ul>
+				)}
 				{threads.length > 0 && listed.length === 0 && (
 					<p className="text-sm text-faint">
 						{showResolved ? "No resolved threads" : "No unresolved threads"}
@@ -1054,7 +1154,19 @@ function ThreadItem({ thread }: { thread: Thread }) {
 	// GitHub's text: its own raised surface, apart from the card and the code.
 	const commentSurface =
 		"min-w-0 rounded-md border border-edge bg-raised px-3 py-2";
-	const comment = thread.html.trim() ? (
+	const comment = !thread.loaded ? (
+		// Its text is still on its way: the comment's frame.
+		<div
+			id={commentId}
+			data-testid="thread-body-loading"
+			aria-busy="true"
+			className={`${commentSurface} space-y-2.5 py-3`}
+		>
+			<SkeletonBar className="w-full" />
+			<SkeletonBar className="w-4/5" />
+			<SkeletonBar className="w-2/3" />
+		</div>
+	) : thread.html.trim() ? (
 		<div
 			ref={commentBox}
 			id={commentId}
@@ -1155,7 +1267,21 @@ function ThreadItem({ thread }: { thread: Thread }) {
 			</div>
 			<div className="space-y-2 px-3 pt-1 pb-3">
 				<ThreadPlace thread={thread} line={line} target={target} />
-				{thread.code && rows.length > 0 ? (
+				{thread.code?.source === "pending" ? (
+					<div className="grid gap-3 md:grid-cols-2 md:items-start">
+						{/* The code is still being built: the pane's frame. */}
+						<div
+							data-testid="thread-code-loading"
+							aria-busy="true"
+							className="min-w-0 space-y-2 rounded-md border border-line bg-code px-3 py-3"
+						>
+							{["w-3/5", "w-4/5", "w-full", "w-2/3", "w-3/4"].map((w) => (
+								<SkeletonBar key={w} className={w} />
+							))}
+						</div>
+						{comment}
+					</div>
+				) : thread.code && rows.length > 0 ? (
 					<div className="grid gap-3 md:grid-cols-2 md:items-start">
 						<ThreadCodePane
 							ref={codeBox}
