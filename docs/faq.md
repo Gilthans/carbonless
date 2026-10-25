@@ -31,3 +31,19 @@ rather than hiding anything (CLAUDE.md principle 2).
 **Where this matters in code.** Anything that maps GitHub's positions onto
 carbonless clusters (review comments, line anchors) must expect small alignment
 differences and be covered by tests for them.
+
+## Why does a thread's code look different from GitHub's?
+
+The code beside a review thread on the Overview is the PR's own diff of that
+file, at the commit the comment was made on, from carbonless's clone: the
+commented lines, marked, and three rows before and after them. GitHub's thread
+shows the diff hunk it stored with the comment, which ends at the commented line
+and is of whatever view the reviewer commented from. A comment made while
+looking at "changes since your last review" or at a single commit stores that
+view's hunk, so GitHub may show lines as added that the PR's diff has as
+unchanged, or old lines from an earlier commit of the PR.
+
+The commented lines themselves are the same either way. When carbonless can't
+build the code for certain (the commit can't be fetched, the file was renamed,
+or the base branch's history doesn't say which old side the commenter saw), it
+falls back to GitHub's hunk (`source: "github"` in `/api/overview`).
