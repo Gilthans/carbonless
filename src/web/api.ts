@@ -45,7 +45,16 @@ const post = <T>(path: string, body?: unknown) =>
 	});
 
 export const fetchSession = () => request<SessionInfo>("/api/session");
-export const fetchOverview = () => request<PrOverview>("/api/overview");
+/**
+ * The server's last overview read, or with `maxAge` (ms) one read from
+ * GitHub at most that long ago.
+ */
+export const fetchOverview = (maxAge?: number) =>
+	request<PrOverview>(
+		maxAge === undefined
+			? "/api/overview"
+			: `/api/overview?${new URLSearchParams({ maxAge: String(maxAge) })}`,
+	);
 export const fetchReview = () => request<ReviewView>("/api/review");
 
 export const fetchHunks = (revision: string, index: number) =>
@@ -106,11 +115,43 @@ export const headQuery = queryOptions({
 	refetchOnWindowFocus: true,
 });
 
+/**
+ * The overview as the server last read it from GitHub (fast: it keeps it).
+ * Its `fetchedAt` says how old it is; see revalidateOverviewQuery.
+ */
 export const overviewQuery = queryOptions({
 	queryKey: ["overview"],
-	queryFn: fetchOverview,
+	queryFn: () => fetchOverview(),
 	staleTime: Number.POSITIVE_INFINITY,
 });
+
+/** An overview read longer ago than this is read again on load (not as of a cutoff). */
+export const OVERVIEW_FRESH_MS = 15_000;
+
+/**
+ * Brings the overview read at `fetchedAt` up to date: asks for one read at
+ * most `maxAge` ago (the server reads GitHub again if its own is older) and
+ * puts it in the overview's cache. Keyed by the read it replaces, so it runs
+ * once per read; its own key is apart from the overview's so a Refresh's
+ * invalidation doesn't rerun it.
+ */
+export const revalidateOverviewQuery = (fetchedAt: string, maxAge: number) =>
+	queryOptions({
+		queryKey: ["overview-revalidate", fetchedAt, maxAge],
+		queryFn: async ({ client }) => {
+			const fresh = await fetchOverview(maxAge);
+			// A Refresh may have brought a newer one meanwhile: keep that.
+			const shown = client.getQueryData(overviewQuery.queryKey);
+			if (
+				!shown ||
+				!(Date.parse(shown.fetchedAt) > Date.parse(fresh.fetchedAt))
+			) {
+				client.setQueryData(overviewQuery.queryKey, fresh);
+			}
+			return fresh.fetchedAt;
+		},
+		staleTime: Number.POSITIVE_INFINITY,
+	});
 
 export const reviewQuery = queryOptions({
 	queryKey: ["review"],

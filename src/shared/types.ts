@@ -125,6 +125,56 @@ export interface StateChange {
 	reason?: string;
 }
 
+/** A side of a diff: "LEFT" numbers the old file, "RIGHT" the new one. */
+export type DiffSide = "LEFT" | "RIGHT";
+
+/**
+ * Where a comment points in the PR's code, whoever hosts the comment: a
+ * line range of `path` in the PR's diff at `commit`. The diff's old side is
+ * the base as it stood at `at`. Each comment source maps its own fields to
+ * this (GitHub's is src/server/overview.ts).
+ */
+export interface CodeAnchor {
+	path: string;
+	/** The commit the comment was made on; "" if unknown. */
+	commit: string;
+	/** The range's last line. */
+	side: DiffSide;
+	line: number;
+	/** The range's first line (the last one for a single line). */
+	startSide: DiffSide;
+	startLine: number;
+	/** When the comment was made. */
+	at: string;
+}
+
+/** One row of a diff: its numbers on each side, and whether it's commented on. */
+export interface CodeRow {
+	kind: "context" | "add" | "del";
+	oldNo: number | null;
+	newNo: number | null;
+	text: string;
+	/** Git's "\ No newline at end of file" follows this line. */
+	noNewline?: boolean;
+	/** In the commented range. */
+	marked: boolean;
+}
+
+/**
+ * The code a comment points at: the diff rows of its range and up to three
+ * rows before and after it (fewer at the file's edges).
+ */
+export interface CodeWindow {
+	anchor: CodeAnchor;
+	rows: CodeRow[];
+	/**
+	 * "clone": rebuilt from carbonless's clone (the normal case).
+	 * "github": GitHub's own diff hunk, when the clone can't give the code
+	 * for certain; it ends at the commented line (no rows after it).
+	 */
+	source: "clone" | "github";
+}
+
 export interface PrOverview {
 	title: string;
 	number: number;
@@ -175,9 +225,9 @@ export interface PrOverview {
 	threads: {
 		path: string;
 		/**
-		 * The marked line when `code` is shown (the hunk's own numbering),
-		 * else the commented line now, else where it was written; null for a
-		 * file comment.
+		 * The commented line on the commit the comment was made on when there
+		 * is code, else the commented line now, else where it was written;
+		 * null for a file comment.
 		 */
 		line: number | null;
 		/** GitHub's current line for the comment; null when outdated or a file comment. */
@@ -202,26 +252,17 @@ export interface PrOverview {
 		/** Resolved on GitHub (as-of mode: always false, the history is unknown). */
 		resolved: boolean;
 		/**
-		 * The code the first comment was written on: GitHub's diff hunk, which
-		 * ends at the commented line, and the commented range in the hunk's own
-		 * numbering (the old side's for a "LEFT" side; a range may start on the
-		 * other side). Null for a file comment. When GitHub kept no hunk (it
-		 * sometimes stores none for a line comment), the server rebuilds one
-		 * from the clone at `commit`; a thread whose code can't be rebuilt
-		 * has none.
+		 * The code the first comment was written on, from the clone (GitHub's
+		 * diff hunk when the clone can't give it for certain). The anchor is
+		 * GitHub's original range, on the commit the comment was made on.
+		 * Null for a file comment, or when neither source has the code.
 		 */
-		code: {
-			diffHunk: string;
-			/** The commit the first comment was written on (GitHub's original commit); "" if unknown. */
-			commit: string;
-			side: "LEFT" | "RIGHT";
-			startSide: "LEFT" | "RIGHT";
-			startLine: number;
-			endLine: number;
-		} | null;
+		code: CodeWindow | null;
 	}[];
 	/** As-of mode: the cutoff everything here is filtered to. */
 	asOf?: string;
+	/** When the server started reading this from GitHub. */
+	fetchedAt: string;
 }
 
 export interface SessionInfo {

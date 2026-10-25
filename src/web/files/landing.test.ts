@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { codeFromHunk } from "../../../test/code-window";
 import type { FileView, PrOverview } from "../../shared/types";
 import { landingFile, parseFilesSearch, threadTarget } from "./landing";
 
@@ -19,14 +20,7 @@ const thread = (extra: Partial<Thread> = {}): Thread => ({
 	hasReply: false,
 	outdated: false,
 	resolved: false,
-	code: {
-		diffHunk: "@@ -1 +1 @@\n x",
-		commit: "c1",
-		side: "RIGHT",
-		startSide: "RIGHT",
-		startLine: 10,
-		endLine: 10,
-	},
+	code: codeFromHunk("@@ -10 +10 @@\n x", { commit: "c1", line: 10 }),
 	...extra,
 });
 const at = (
@@ -86,7 +80,11 @@ describe("threadTarget", () => {
 
 	it("keeps the comment's side, and lands a file comment on the file", () => {
 		const left = thread({
-			code: { ...(thread().code as NonNullable<Thread["code"]>), side: "LEFT" },
+			code: codeFromHunk("@@ -10 +10 @@\n x", {
+				commit: "c1",
+				side: "LEFT",
+				line: 10,
+			}),
 		});
 		expect(threadTarget(left, at("c1"), 10)).toMatchObject({ side: "LEFT" });
 		expect(threadTarget(thread({ code: null }), at("c1"), null)).toEqual({

@@ -426,8 +426,11 @@ test("a thread shows the code it was written on beside the comment, stacked on a
 	await expect(thread.locator("code").first()).toHaveText("src/cache.ts:8");
 	const code = thread.getByRole("figure", { name: "Code at src/cache.ts" });
 	const lines = code.getByTestId("thread-code-line");
-	await expect(lines).toHaveCount(6);
-	await expect(lines.first()).toContainText("private map = new Map();");
+	// No commit to rebuild it from: GitHub's hunk, three rows before the
+	// range (it ends at the range).
+	await expect(code).toHaveAttribute("data-source", "github");
+	await expect(lines).toHaveCount(5);
+	await expect(lines.first()).toContainText("Map<string, Widget>();");
 	await expect(lines.last()).toContainText("if (hit &&");
 	await expect(code.locator("[data-marked]")).toHaveCount(2);
 	await expect(lines.last()).toHaveAttribute("data-marked", "true");
@@ -449,8 +452,8 @@ test("a thread shows the code it was written on beside the comment, stacked on a
 		expect(Math.abs(c.y - b.y)).toBeLessThan(2);
 		expect(b.x).toBeGreaterThan(c.x + c.width);
 	}
-	// Clipped: six lines fit with no vertical scrollbar; a sideways one
-	// makes it focusable.
+	// Clipped: up to seven lines fit with no vertical scrollbar; a sideways
+	// one makes it focusable.
 	const clipped = await code.evaluate((el) => ({
 		down: el.scrollHeight > el.clientHeight,
 		sideways: el.scrollWidth > el.clientWidth,
@@ -458,11 +461,10 @@ test("a thread shows the code it was written on beside the comment, stacked on a
 	}));
 	expect(clipped.down).toBe(false);
 	expect(clipped.tabIndex).toBe(clipped.sideways ? "0" : null);
-	expect(c.height).toBeLessThanOrEqual(140);
-	// Show more opens both, the whole hunk without scrollbars, the range still marked.
+	expect(c.height).toBeLessThanOrEqual(160);
+	// Show more opens both, wrapped, without scrollbars, the range still marked.
 	await thread.getByRole("button", { name: "Show more" }).click();
-	await expect(lines).toHaveCount(9);
-	await expect(lines.first()).toContainText("import { load }");
+	await expect(lines).toHaveCount(5);
 	await expect(code.locator("[data-marked]")).toHaveCount(2);
 	await expect(code).not.toHaveAttribute("tabindex");
 	const opened = await code.evaluate(
@@ -692,7 +694,7 @@ test("the logo shares the title's line, both pages end with a footer, and Review
 	await expect(footer2.locator("img")).toHaveCount(1);
 });
 
-test("an opened long hunk scrolls inside its pane to the marked line, never the window", async ({
+test("an opened long range scrolls inside its pane to the marked lines, never the window", async ({
 	page,
 	pr,
 	startCrb,
@@ -703,7 +705,7 @@ test("an opened long hunk scrolls inside its pane to the marked line, never the 
 	].join("\n");
 	await pr({
 		threads: [
-			reviewThread({ path: "src/long.ts", line: 60 }, [
+			reviewThread({ path: "src/long.ts", line: 60, originalStartLine: 1 }, [
 				threadComment({ login: "rev1", text: "Here", diffHunk: hunk }),
 			]),
 		],
@@ -720,8 +722,11 @@ test("an opened long hunk scrolls inside its pane to the marked line, never the 
 	const code = thread.getByTestId("thread-code");
 	await expect(code.getByTestId("thread-code-line")).toHaveCount(60);
 	const marked = code.locator("[data-marked]");
-	await expect(marked).toHaveText(/v60/);
-	const [pane, row] = [await code.boundingBox(), await marked.boundingBox()];
+	await expect(marked).toHaveCount(60);
+	// Too long to fit: the range's start at the top.
+	const first = marked.first();
+	await expect(first).toHaveText(/v1 /);
+	const [pane, row] = [await code.boundingBox(), await first.boundingBox()];
 	if (!pane || !row) throw new Error("no boxes");
 	expect(row.y).toBeGreaterThanOrEqual(pane.y);
 	expect(row.y + row.height).toBeLessThanOrEqual(pane.y + pane.height + 1);
@@ -771,6 +776,92 @@ test("a line comment GitHub kept no hunk for shows its code from the clone; a fi
 		"line 1",
 	);
 	await expect(threads.nth(1).getByTestId("thread-code")).toHaveCount(0);
+});
+
+test("a thread's code comes from the clone, three rows before and after its line; GitHub's hunk only when the clone can't", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	if (isMobile) await page.setViewportSize({ width: 360, height: 780 });
+	const b = (i: number) => `b ${i + 1}`;
+	const p = await pr({
+		base: {
+			"b.txt": `${Array.from({ length: 80 }, (_, i) => b(i)).join("\n")}\n`,
+		},
+		files: [
+			{
+				message: "PR change",
+				files: {
+					"b.txt": `${Array.from({ length: 80 }, (_, i) => (i === 59 ? "b 60 changed" : b(i))).join("\n")}\n`,
+				},
+			},
+		],
+	});
+	const head = p.repo.shas.at(-1) ?? "";
+	p.editScenario((s) => {
+		const graph = s.prs[7]?.graphql;
+		if (!graph) throw new Error("no PR in the scenario");
+		graph.reviewThreads = [
+			reviewThread({ path: "b.txt", line: 60 }, [
+				threadComment({
+					login: "rev1",
+					text: "Here",
+					// GitHub's hunk ends at the line; the clone's code goes on.
+					diffHunk: "@@ -59,2 +59,2 @@\n b 59\n-b 60\n+b 60 changed",
+					commit: head,
+					// After the fixture's commits, so the base then is the base now.
+					createdAt: "2099-01-01T00:00:00Z",
+				}),
+			]),
+			// Written on a commit the clone can't get: GitHub's hunk.
+			reviewThread({ path: "b.txt", line: 10, isOutdated: true }, [
+				threadComment({
+					login: "rev2",
+					text: "Earlier",
+					diffHunk: "@@ -8,3 +8,3 @@\n b 8\n b 9\n-b 10\n+b ten",
+					commit: "e".repeat(40),
+					createdAt: "2026-01-01T00:00:00Z",
+				}),
+			]),
+		];
+	});
+	const s = await startCrb();
+	await page.goto(s.url);
+	const threads = page
+		.getByRole("region", { name: "Human reviews" })
+		.getByTestId("thread");
+	const code = threads.first().getByTestId("thread-code");
+	await expect(code).toHaveAttribute("data-source", "clone");
+	const rows = code.getByTestId("thread-code-line");
+	await expect(rows).toHaveText([
+		/b 58/,
+		/b 59/,
+		/b 60$/,
+		/b 60 changed/,
+		/b 61/,
+		/b 62/,
+		/b 63/,
+	]);
+	await expect(code.locator("[data-marked]")).toHaveText(/b 60 changed/);
+	await expect(threads.first().getByTestId("thread-place")).toHaveText(
+		"b.txt:60",
+	);
+	// Seven rows fit clipped, no scrolling.
+	expect(await code.evaluate((el) => el.scrollHeight > el.clientHeight)).toBe(
+		false,
+	);
+	const github = threads.nth(1).getByTestId("thread-code");
+	await expect(github).toHaveAttribute("data-source", "github");
+	await expect(github.locator("[data-marked]")).toHaveText(/b ten/);
+	expect(
+		await page.evaluate(
+			() =>
+				document.documentElement.scrollWidth -
+				document.documentElement.clientWidth,
+		),
+	).toBe(0);
 });
 
 test("a thread's file:line opens Files changed at that line, highlighted; a moved line says so", async ({

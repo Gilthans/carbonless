@@ -91,7 +91,15 @@ export async function buildApp(
 	});
 
 	app.get("/api/session", async () => session.info());
-	app.get("/api/overview", () => session.overview());
+	// The last overview read; `maxAge` (ms) asks for one read at most that long ago.
+	app.get<{ Querystring: { maxAge?: string } }>("/api/overview", (request) => {
+		const { maxAge } = request.query;
+		if (maxAge === undefined) return session.overview();
+		if (!INDEX.test(maxAge)) {
+			throw new BadRequestError("maxAge must be a number of milliseconds");
+		}
+		return session.overview(Number(maxAge));
+	});
 	app.get("/api/review", () => session.review());
 	app.get<{ Params: { index: string }; Querystring: { revision?: unknown } }>(
 		"/api/files/:index/hunks",

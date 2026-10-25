@@ -1,70 +1,54 @@
-import { type HunkLine, numberOn, parseDiffHunk } from "../shared/diffHunk.js";
-import type { PrOverview } from "../shared/types.js";
+import { type HunkLine, parseDiffHunk } from "../shared/diffHunk.js";
+import type { CodeAnchor, CodeRow, PrOverview } from "../shared/types.js";
 import { ensureCommit } from "./clone.js";
+import { touchesOldSide, windowRows } from "./codeWindow.js";
 import { runGit } from "./git.js";
 
-type Code = NonNullable<PrOverview["threads"][number]["code"]>;
+/** Windows built at once. */
+const CONCURRENCY = 8;
 
-/** Lines a rebuilt hunk keeps before the commented range. */
-const LEAD = 3;
-/** …and at least this many lines in all, like GitHub's hunks. */
-const MIN_LINES = 8;
-/** Threads rebuilt at once. */
-const CONCURRENCY = 4;
-
-/** Index of the last line numbered `no` on `side`, at or before `upTo`. */
-function lastIndex(
-	lines: HunkLine[],
-	upTo: number,
-	side: Code["side"],
-	no: number,
-): number {
-	for (let i = upTo; i >= 0; i--) {
-		const line = lines[i];
-		if (line && numberOn(line, side) === no) return i;
-	}
-	return -1;
+/** What the PR's diff is taken against. */
+export interface DiffBase {
+	/** The snapshot's base (Snapshot.base). */
+	snapshot: string;
+	/** The base branch's ref in the clone, as it stood at a comment's time. */
+	ref: string;
 }
 
 /**
- * A GitHub-style diff hunk cut from `lines` (one whole-file hunk): a few
- * lines before the commented range, ending at its last line. Null when
- * either end of the range isn't in the file: a range is shown whole or not
- * at all.
+ * Promises by key, each made once. A failed answer (`failed`) stays until
+ * `forgetFailures`, so what can't be had is asked for once per Refresh.
  */
-export function cutHunk(lines: HunkLine[], code: Code): string | null {
-	const end = lastIndex(lines, lines.length - 1, code.side, code.endLine);
-	if (end === -1) return null;
-	const start = lastIndex(lines, end, code.startSide, code.startLine);
-	if (start === -1) return null;
-	const from = Math.max(0, Math.min(start - LEAD, end - MIN_LINES + 1));
-	const kept = lines.slice(from, end + 1);
-	// Where each side's numbering stands at the first kept line.
-	let oldStart = 1;
-	let newStart = 1;
-	for (let i = from; i >= 0; i--) {
-		const line = lines[i];
-		if (line?.oldNo != null) {
-			oldStart = line.oldNo + (i < from ? 1 : 0);
-			break;
+class Memo<T> {
+	readonly #map = new Map<string, Promise<T>>();
+	readonly #failed = new Set<string>();
+
+	constructor(private readonly failed: (value: T) => boolean) {}
+
+	get(key: string, make: () => Promise<T>): Promise<T> {
+		let known = this.#map.get(key);
+		if (!known) {
+			const made: Promise<T> = make().then((value) => {
+				if (this.failed(value) && this.#map.get(key) === made) {
+					this.#failed.add(key);
+				}
+				return value;
+			});
+			known = made;
+			this.#map.set(key, made);
 		}
+		return known;
 	}
-	for (let i = from; i >= 0; i--) {
-		const line = lines[i];
-		if (line?.newNo != null) {
-			newStart = line.newNo + (i < from ? 1 : 0);
-			break;
-		}
+
+	forgetFailures(): void {
+		for (const key of this.#failed) this.#map.delete(key);
+		this.#failed.clear();
 	}
-	const oldCount = kept.filter((l) => l.oldNo !== null).length;
-	const newCount = kept.filter((l) => l.newNo !== null).length;
-	// Git's convention: an empty side starts one line earlier (-0,0 for a new file).
-	const header = `@@ -${oldCount ? oldStart : oldStart - 1},${oldCount} +${newCount ? newStart : newStart - 1},${newCount} @@`;
-	const body = kept.flatMap((l) => [
-		`${l.kind === "add" ? "+" : l.kind === "del" ? "-" : " "}${l.text}`,
-		...(l.noNewline ? ["\\ No newline at end of file"] : []),
-	]);
-	return [header, ...body].join("\n");
+
+	clear(): void {
+		this.#map.clear();
+		this.#failed.clear();
+	}
 }
 
 /** One side of the whole file as context lines (the file is unchanged there). */
@@ -89,6 +73,8 @@ const tryGit = (repo: string, args: string[]) =>
 
 /** Paths are GitHub's, not patterns: `[id].tsx` must not match `i.tsx`. */
 const LITERAL = "--literal-pathspecs";
+
+const OID = /^[0-9a-f]{40}([0-9a-f]{24})?$/;
 
 /**
  * Paths a rename touched between two commits (either end), from
@@ -128,16 +114,20 @@ async function renamedPaths(
 }
 
 /**
- * Rebuilds the code of line comments GitHub kept no diff hunk for, from the
- * clone. One per session (a Refresh starts a new one): every answer is
- * cached, a failure too, so a commit GitHub can't give us is fetched once.
- * `fetchCommit` is the clone's (tests swap it).
+ * The code comments point at, from the clone: for an anchor, the PR's diff
+ * of its file at its commit, windowed to its range (codeWindow.ts). One per
+ * session. Everything git answers is cached (commits, merge bases and diffs
+ * don't change), so a reload costs no git; a failure is cached too, so a
+ * commit GitHub can't give us is fetched once, until `forgetFailures` (a
+ * Refresh). `fetchCommit` is the clone's (tests swap it).
  */
 export class ThreadCodeSource {
-	readonly #commits = new Map<string, Promise<boolean>>();
-	readonly #hunks = new Map<string, Promise<string | null>>();
-	readonly #bases = new Map<string, Promise<string | null>>();
-	readonly #renames = new Map<string, Promise<Set<string> | null>>();
+	readonly #commits = new Memo<boolean>((ok) => !ok);
+	readonly #bases = new Memo<string | null>((oid) => oid === null);
+	/** The base branch's tip at a time: moves when a Refresh fetches it. */
+	readonly #tips = new Memo<string | null>(() => false);
+	readonly #renames = new Memo<Set<string> | null>((set) => set === null);
+	readonly #files = new Memo<HunkLine[] | null>((lines) => lines === null);
 
 	constructor(
 		private readonly repo: string,
@@ -147,178 +137,156 @@ export class ThreadCodeSource {
 		) => Promise<boolean> = ensureCommit,
 	) {}
 
+	/** Lets a Refresh retry what failed, and re-date the base branch. */
+	forgetFailures(): void {
+		this.#commits.forgetFailures();
+		this.#bases.forgetFailures();
+		this.#tips.clear();
+		this.#renames.forgetFailures();
+		this.#files.forgetFailures();
+	}
+
 	#commit(oid: string): Promise<boolean> {
-		let known = this.#commits.get(oid);
-		if (!known) {
-			known = this.fetchCommit(this.repo, oid).catch(() => false);
-			this.#commits.set(oid, known);
-		}
-		return known;
-	}
-
-	#cached<T>(
-		map: Map<string, Promise<T>>,
-		key: string,
-		make: () => Promise<T>,
-	) {
-		let known = map.get(key);
-		if (!known) {
-			known = make();
-			map.set(key, known);
-		}
-		return known;
-	}
-
-	/**
-	 * The code of a line comment GitHub kept no hunk for: the file's diff at
-	 * the comment's commit against that commit's merge base with `base` (the
-	 * snapshot's), cut like GitHub's hunk. A range on the old side also needs
-	 * `then` to show that old side is the one the comment saw. Null, never a
-	 * guess, when any git step fails, the commit or file or either end of
-	 * the range is missing, the file was renamed (its old side is another
-	 * path), or the diff isn't exactly one file.
-	 */
-	rebuild(
-		base: string,
-		code: Code,
-		path: string,
-		/** For a range on the old side: the base branch and the comment's time. */
-		then?: { baseRef: string; at: string },
-	): Promise<string | null> {
-		const key = JSON.stringify([
-			base,
-			then?.baseRef,
-			then?.at,
-			code.commit,
-			path,
-			code.side,
-			code.startSide,
-			code.startLine,
-			code.endLine,
-		]);
-		return this.#cached(this.#hunks, key, () =>
-			this.#rebuild(base, code, path, then).catch(() => null),
+		return this.#commits.get(oid, () =>
+			this.fetchCommit(this.repo, oid).catch(() => false),
 		);
 	}
 
 	#mergeBase(commit: string, other: string): Promise<string | null> {
-		return this.#cached(this.#bases, `${commit} ${other}`, async () => {
+		return this.#bases.get(`${commit} ${other}`, async () => {
 			const out = await tryGit(this.repo, ["merge-base", commit, other]);
 			const oid = out?.trim() ?? "";
-			return /^[0-9a-f]{40,64}$/.test(oid) ? oid : null;
+			return OID.test(oid) ? oid : null;
+		});
+	}
+
+	/** The base branch's last first-parent commit by `at`. */
+	#tip(ref: string, at: string): Promise<string | null> {
+		if (Number.isNaN(Date.parse(at))) return Promise.resolve(null);
+		return this.#tips.get(`${ref} ${at}`, async () => {
+			const out = await tryGit(this.repo, [
+				"rev-list",
+				"-1",
+				"--first-parent",
+				`--before=${at}`,
+				ref,
+				"--",
+			]);
+			const oid = out?.trim() ?? "";
+			return OID.test(oid) ? oid : null;
 		});
 	}
 
 	/**
-	 * Whether the old side the comment was written against is `left`: the
-	 * merge base with the base branch as it stood when the comment was made
-	 * (its last first-parent commit by then) must be the same commit.
+	 * The diff's old side for a comment: the merge base of its commit with
+	 * the snapshot's base, which must be the one the base branch as it stood
+	 * at the comment's time gives (so old-side rows are right). `lenient`
+	 * skips that check for a range wholly on the new side, whose own rows
+	 * are right either way.
 	 */
-	async #sameOldSide(
-		commit: string,
-		left: string,
-		then: { baseRef: string; at: string } | undefined,
-	): Promise<boolean> {
-		if (!then || Number.isNaN(Date.parse(then.at))) return false;
-		const tip = await this.#cached(
-			this.#bases,
-			`tip ${then.baseRef} ${then.at}`,
-			async () =>
-				(
-					await tryGit(this.repo, [
-						"rev-list",
-						"-1",
-						"--first-parent",
-						`--before=${then.at}`,
-						then.baseRef,
-						"--",
-					])
-				)?.trim() || null,
-		);
-		return tip !== null && (await this.#mergeBase(commit, tip)) === left;
-	}
-
-	async #rebuild(
-		base: string,
-		code: Code,
-		path: string,
-		then: { baseRef: string; at: string } | undefined,
-	) {
-		const { repo } = this;
-		if (!(await this.#commit(code.commit))) return null;
-		const left = await this.#mergeBase(code.commit, base);
-		if (!left) return null;
-		// Old-side text must be right or absent: only when the base then
-		// gives the same old side as the snapshot's does.
-		const old = code.side === "LEFT" || code.startSide === "LEFT";
-		if (old && !(await this.#sameOldSide(code.commit, left, then))) {
-			return null;
-		}
-		const renamed = await this.#cached(
-			this.#renames,
-			`${left} ${code.commit}`,
-			() => renamedPaths(repo, left, code.commit),
-		);
-		if (!renamed || renamed.has(path)) return null;
-		const diff = await tryGit(repo, [
-			LITERAL,
-			"diff",
-			"--no-color",
-			"--no-ext-diff",
-			"--no-renames",
-			"--unified=100000000",
-			left,
-			code.commit,
-			"--",
-			path,
-		]);
-		if (diff === null) return null;
-		const files = diff.match(/^diff --git /gm)?.length ?? 0;
-		if (files > 1) return null;
-		if (files === 1) return cutHunk(parseDiffHunk(diff), code);
-		// No change: only when the file is the same blob on both sides.
-		const [oldBlob, newBlob] = await Promise.all([
-			tryGit(repo, ["rev-parse", "--verify", "--quiet", `${left}:${path}`]),
-			tryGit(repo, [
-				"rev-parse",
-				"--verify",
-				"--quiet",
-				`${code.commit}:${path}`,
-			]),
-		]);
-		const blob = newBlob?.trim();
-		if (!blob || oldBlob?.trim() !== blob) return null;
-		const content = await tryGit(repo, ["cat-file", "blob", blob]);
-		if (content === null) return null;
-		return cutHunk(contextLines(content), code);
+	async #left(
+		anchor: CodeAnchor,
+		base: DiffBase,
+		lenient: boolean,
+	): Promise<string | null> {
+		const left = await this.#mergeBase(anchor.commit, base.snapshot);
+		if (!left || (lenient && !touchesOldSide(anchor))) return left;
+		const tip = await this.#tip(base.ref, anchor.at);
+		if (!tip) return null;
+		return (await this.#mergeBase(anchor.commit, tip)) === left ? left : null;
 	}
 
 	/**
-	 * Fills in the code of every thread GitHub returned without a diff hunk,
-	 * a few at a time; a thread whose code can't be rebuilt gets none.
+	 * Every line of `path`'s diff between `left` and `commit` (the whole
+	 * file as context when it's unchanged). Null, never a guess, when any
+	 * git step fails, the file is missing, it was renamed (its old side is
+	 * another path), or the diff isn't exactly one file.
 	 */
-	async fill(
-		base: string,
-		overview: PrOverview,
-		/** The base branch's ref, for ranges on the old side. */
-		baseRef?: string,
-	): Promise<PrOverview> {
+	#fileLines(
+		left: string,
+		commit: string,
+		path: string,
+	): Promise<HunkLine[] | null> {
+		const { repo } = this;
+		return this.#files.get(JSON.stringify([left, commit, path]), async () => {
+			const renamed = await this.#renames.get(`${left} ${commit}`, () =>
+				renamedPaths(repo, left, commit),
+			);
+			if (!renamed || renamed.has(path)) return null;
+			const diff = await tryGit(repo, [
+				LITERAL,
+				"diff",
+				"--no-color",
+				"--no-ext-diff",
+				"--no-renames",
+				"--unified=100000000",
+				left,
+				commit,
+				"--",
+				path,
+			]);
+			if (diff === null) return null;
+			const files = diff.match(/^diff --git /gm)?.length ?? 0;
+			if (files > 1) return null;
+			if (files === 1) return parseDiffHunk(diff);
+			// No change: only when the file is the same blob on both sides.
+			const [oldBlob, newBlob] = await Promise.all([
+				tryGit(repo, ["rev-parse", "--verify", "--quiet", `${left}:${path}`]),
+				tryGit(repo, ["rev-parse", "--verify", "--quiet", `${commit}:${path}`]),
+			]);
+			const blob = newBlob?.trim();
+			if (!blob || oldBlob?.trim() !== blob) return null;
+			const content = await tryGit(repo, ["cat-file", "blob", blob]);
+			return content === null ? null : contextLines(content);
+		});
+	}
+
+	/**
+	 * The rows of `anchor`'s window in the PR's diff at its commit. Null,
+	 * never a guess, when the commit can't be had, the old side isn't
+	 * certain (see #left), the file's diff can't be had (#fileLines) or
+	 * either end of the range isn't in it.
+	 */
+	async window(
+		anchor: CodeAnchor,
+		base: DiffBase,
+		lenient = false,
+	): Promise<CodeRow[] | null> {
+		try {
+			if (!OID.test(anchor.commit)) return null;
+			if (!(await this.#commit(anchor.commit))) return null;
+			const left = await this.#left(anchor, base, lenient);
+			if (!left) return null;
+			const lines = await this.#fileLines(left, anchor.commit, anchor.path);
+			return lines && windowRows(lines, anchor);
+		} catch {
+			return null;
+		}
+	}
+
+	/**
+	 * Every thread's code from the clone, a few at a time. Where the clone
+	 * can't give it for certain, the comment host's own rows stay (marked
+	 * `source: "github"`); a range on the new side with no such rows takes
+	 * the clone's anyway (#left's `lenient`). A thread with neither gets no
+	 * code.
+	 */
+	async fill(overview: PrOverview, base: DiffBase): Promise<PrOverview> {
 		const threads = [...overview.threads];
 		let next = 0;
 		const work = async () => {
 			for (let i = next++; i < threads.length; i = next++) {
 				const thread = threads[i];
 				const code = thread?.code;
-				if (!thread || !code || code.diffHunk) continue;
-				const diffHunk = await this.rebuild(
-					base,
-					code,
-					thread.path,
-					baseRef ? { baseRef, at: thread.createdAt } : undefined,
-				);
+				if (!thread || !code) continue;
+				const { anchor } = code;
+				const hosted = code.rows.length > 0;
+				const rows =
+					(await this.window(anchor, base)) ??
+					(hosted ? null : await this.window(anchor, base, true));
 				threads[i] = {
 					...thread,
-					code: diffHunk ? { ...code, diffHunk } : null,
+					code: rows ? { anchor, rows, source: "clone" } : hosted ? code : null,
 				};
 			}
 		};

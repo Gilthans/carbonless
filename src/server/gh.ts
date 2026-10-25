@@ -269,11 +269,24 @@ export async function fetchPrMeta(ref: PrRef): Promise<PrMeta> {
 	};
 }
 
-function connectionQuery(connection: string, nodeFields: string): string {
-	return `query($owner: String!, $name: String!, $number: Int!, $endCursor: String) {
+/**
+ * A page of a PR connection: from the start (after a cursor), or `last`,
+ * the final page.
+ */
+function connectionQuery(
+	connection: string,
+	nodeFields: string,
+	end: "first" | "last" = "first",
+): string {
+	const [cursor, page] =
+		end === "first"
+			? [", $endCursor: String", "first: 100, after: $endCursor"]
+			: ["", "last: 100"];
+	return `query($owner: String!, $name: String!, $number: Int!${cursor}) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
-      ${connection}(first: 100, after: $endCursor) {
+      ${connection}(${page}) {
+        totalCount
         pageInfo { hasNextPage endCursor }
         nodes { ${nodeFields} }
       }
@@ -283,15 +296,19 @@ function connectionQuery(connection: string, nodeFields: string): string {
 }
 
 const AUTHOR = "author { login __typename }";
+// The opening comment's text and code; only authors and times for the rest
+// (reply detection, and counting as of a cutoff), and the latest comment's
+// time (last activity past the first 100). The opener's original commit is
+// where the clone takes its code from; its diff hunk is the fallback.
+const THREAD_FIELDS = `id isResolved isOutdated path subjectType line originalLine originalStartLine diffSide startDiffSide first: comments(first: 1) { nodes { ${AUTHOR} body bodyText bodyHTML createdAt diffHunk originalCommit { oid } } } latest: comments(last: 1) { nodes { createdAt } } comments(first: 100) { totalCount nodes { ${AUTHOR} createdAt } }`;
+/** The last page of threads, asked for alongside the first (fetchConnection). */
+const LAST_THREADS_QUERY = connectionQuery(
+	"reviewThreads",
+	THREAD_FIELDS,
+	"last",
+);
 const QUERIES = {
-	reviewThreads: connectionQuery(
-		"reviewThreads",
-		// The opening comment's text and code; only authors and times for the
-		// rest (reply detection, and counting as of a cutoff), and the latest
-		// comment's time (last activity past the first 100). The opener's
-		// original commit rebuilds its code when GitHub kept no diff hunk.
-		`isResolved isOutdated path subjectType line originalLine originalStartLine diffSide startDiffSide first: comments(first: 1) { nodes { ${AUTHOR} body bodyText bodyHTML createdAt diffHunk originalCommit { oid } } } latest: comments(last: 1) { nodes { createdAt } } comments(first: 100) { totalCount nodes { ${AUTHOR} createdAt } }`,
-	),
+	reviewThreads: connectionQuery("reviewThreads", THREAD_FIELDS),
 	comments: connectionQuery("comments", `${AUTHOR} createdAt`),
 	// The commit a review was made on dates the PR's head (as-of mode).
 	reviews: connectionQuery(
@@ -333,44 +350,113 @@ const BODY_HTML_QUERY = `query($owner: String!, $name: String!, $number: Int!) {
 
 const MAX_PAGES = 200;
 
-/** Every node of one PR connection, following `pageInfo` until the end. */
+export interface Page {
+	nodes: unknown[];
+	/** The cursor to read on from; null at the end. */
+	next: string | null;
+	/** Nodes in the whole connection, when GitHub said. */
+	total: number | null;
+}
+
+/** One page of a PR connection. */
+async function fetchPage(
+	ref: PrRef,
+	connection: keyof typeof QUERIES,
+	query: string,
+	after?: string,
+): Promise<Page> {
+	const out = safeJson(
+		await runGh([
+			"api",
+			"graphql",
+			"-f",
+			`query=${query}`,
+			// -f keeps a numeric-looking owner a string; only the number is typed.
+			"-f",
+			`owner=${ref.owner}`,
+			"-f",
+			`name=${ref.repo}`,
+			"-F",
+			`number=${ref.number}`,
+			...(after ? ["-f", `endCursor=${after}`] : []),
+		]),
+	);
+	const conn = rec(rec(rec(rec(out).data).repository).pullRequest)[connection];
+	const { nodes, pageInfo, totalCount } = rec(conn);
+	if (!Array.isArray(nodes)) {
+		throw new GhError(
+			`gh returned an unexpected response for the PR ${connection}`,
+		);
+	}
+	const info = rec(pageInfo);
+	return {
+		nodes,
+		next:
+			info.hasNextPage !== true
+				? null
+				: typeof info.endCursor === "string"
+					? info.endCursor
+					: "",
+		total:
+			typeof totalCount === "number" && Number.isInteger(totalCount)
+				? totalCount
+				: null,
+	};
+}
+
+/**
+ * The first and last pages as the whole connection, when together they
+ * hold all of it: both count the same total, and where they overlap they
+ * have the same nodes. Null otherwise (more than two pages, or it changed
+ * between the two reads).
+ */
+export function joinEnds(first: Page, last: Page): unknown[] | null {
+	const total = first.total;
+	if (total === null || last.total !== total) return null;
+	const skip = first.nodes.length + last.nodes.length - total;
+	if (
+		skip < 0 ||
+		skip > last.nodes.length ||
+		first.nodes.length > total ||
+		last.nodes.length > total
+	) {
+		return null;
+	}
+	for (let j = 0; j < skip; j++) {
+		const a = rec(first.nodes[total - last.nodes.length + j]).id;
+		const b = rec(last.nodes[j]).id;
+		if (a !== b) return null;
+	}
+	return [...first.nodes, ...last.nodes.slice(skip)];
+}
+
+/**
+ * Every node of one PR connection, following `pageInfo` until the end.
+ * Review threads are the slow read (about two seconds a page), so their
+ * last page is read alongside the first: up to 200 threads take one round
+ * trip. Past that, or if the two don't join, the pages are read in turn.
+ */
 async function fetchConnection(
 	ref: PrRef,
 	connection: keyof typeof QUERIES,
 ): Promise<unknown[]> {
-	const nodes: unknown[] = [];
-	let after: string | undefined;
-	for (let page = 0; page < MAX_PAGES; page++) {
-		const out = safeJson(
-			await runGh([
-				"api",
-				"graphql",
-				"-f",
-				`query=${QUERIES[connection]}`,
-				// -f keeps a numeric-looking owner a string; only the number is typed.
-				"-f",
-				`owner=${ref.owner}`,
-				"-f",
-				`name=${ref.repo}`,
-				"-F",
-				`number=${ref.number}`,
-				...(after ? ["-f", `endCursor=${after}`] : []),
-			]),
-		);
-		const conn = rec(rec(rec(rec(out).data).repository).pullRequest)[
-			connection
-		];
-		const { nodes: pageNodes, pageInfo } = rec(conn);
-		if (!Array.isArray(pageNodes)) {
-			throw new GhError(
-				`gh returned an unexpected response for the PR ${connection}`,
-			);
-		}
-		nodes.push(...pageNodes);
-		const info = rec(pageInfo);
-		if (info.hasNextPage !== true) return nodes;
-		if (typeof info.endCursor !== "string") break;
-		after = info.endCursor;
+	const query = QUERIES[connection];
+	const [first, last] = await Promise.all([
+		fetchPage(ref, connection, query),
+		connection === "reviewThreads"
+			? fetchPage(ref, connection, LAST_THREADS_QUERY).catch(() => null)
+			: null,
+	]);
+	if (first.next === null) return first.nodes;
+	const joined = last && joinEnds(first, last);
+	if (joined) return joined;
+	const nodes = [...first.nodes];
+	let after = first.next;
+	for (let page = 1; page < MAX_PAGES && after; page++) {
+		const next = await fetchPage(ref, connection, query, after);
+		nodes.push(...next.nodes);
+		if (next.next === null) return nodes;
+		after = next.next;
 	}
 	throw new GhError(`Too many ${connection} to read for this PR`);
 }
@@ -465,6 +551,7 @@ export async function fetchOverview(
 	/** As-of mode: the cutoff, and the snapshot head whose checks to show. */
 	asOf?: { at: string; head: string },
 ): Promise<PrOverview> {
+	const fetchedAt = new Date().toISOString();
 	try {
 		const [view, bodyHTML, reviewThreads, comments, reviews, checks] =
 			await Promise.all([
@@ -478,12 +565,15 @@ export async function fetchOverview(
 				fetchConnection(ref, "reviews"),
 				asOf ? fetchCommitChecks(ref, asOf.head) : undefined,
 			]);
-		return mapOverview(
-			view,
-			{ bodyHTML, reviewThreads, comments, reviews, checks },
-			viewer,
-			asOf?.at,
-		);
+		return {
+			...mapOverview(
+				view,
+				{ bodyHTML, reviewThreads, comments, reviews, checks },
+				viewer,
+				asOf?.at,
+			),
+			fetchedAt,
+		};
 	} catch (error) {
 		if (isNotFound(error)) {
 			throw new GhError(`PR ${ref.owner}/${ref.repo}#${ref.number} not found`);

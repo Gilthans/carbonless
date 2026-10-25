@@ -11,6 +11,7 @@ import {
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { codeFromHunk } from "../../test/code-window";
 import { suggestionHtml } from "../../test/fake-gh/scenario";
 import type { PrOverview, ReviewView, SessionInfo } from "../shared/types";
 import { COMPACT_RAMP, compactProgress } from "./App";
@@ -81,6 +82,8 @@ const overview: PrOverview = {
 		},
 	],
 	humanStarted: true,
+	// Just read: the page doesn't read it again.
+	fetchedAt: new Date().toISOString(),
 	checks: [
 		{ name: "lint", status: "failing", url: "https://ci.example/lint" },
 		{ name: "deploy/preview", status: "pending", url: "javascript:alert(1)" },
@@ -119,15 +122,10 @@ const overview: PrOverview = {
 			outdated: false,
 			lastActivityAt: "2026-01-03T11:00:00Z",
 			resolved: false,
-			code: {
-				diffHunk:
-					"@@ -40,2 +40,3 @@ class Cache {\n   get() {}\n-  old() {}\n+  set() {}\n+  ttl = 5;",
-				commit: "",
-				side: "RIGHT",
-				startSide: "RIGHT",
-				startLine: 42,
-				endLine: 42,
-			},
+			code: codeFromHunk(
+				"@@ -40,2 +40,3 @@ class Cache {\n   get() {}\n-  old() {}\n+  set() {}\n+  ttl = 5;",
+				{ path: "src/cache.ts", line: 42 },
+			),
 		},
 		...[1, 2, 3, 4].map((i) =>
 			humanThread(`src/done${i}.ts`, { resolved: true }),
@@ -176,6 +174,8 @@ const review: ReviewView = {
 };
 
 type Routes = Record<string, { status: number; body: unknown }>;
+/** A route's body that never comes. */
+const NEVER = Symbol("never");
 
 let fetchMock: ReturnType<typeof mockApi>;
 
@@ -184,6 +184,7 @@ function mockApi(routes: Routes) {
 		const path = new URL(String(input), "http://test").pathname;
 		const route = routes[path];
 		if (!route) return new Response("{}", { status: 404 });
+		if (route.body === NEVER) return new Promise<Response>(() => {});
 		return new Response(JSON.stringify(route.body), { status: route.status });
 	});
 	vi.stubGlobal("fetch", fetchMock);
@@ -776,15 +777,10 @@ describe("OverviewPage", () => {
 	});
 
 	it("draws suggested changes as mini diffs, and GitHub's HTML when they don't line up", async () => {
-		const code = {
-			diffHunk:
-				"@@ -40,2 +40,3 @@ class Cache {\n   get() {}\n-  old() {}\n+  set() {}\n+  ttl = 5;",
-			commit: "",
-			side: "RIGHT" as const,
-			startSide: "RIGHT" as const,
-			startLine: 41,
-			endLine: 42,
-		};
+		const code = codeFromHunk(
+			"@@ -40,2 +40,3 @@ class Cache {\n   get() {}\n-  old() {}\n+  set() {}\n+  ttl = 5;",
+			{ path: "src/cache.ts", startLine: 41, line: 42 },
+		);
 		const html = [
 			'<p dir="auto">Use:</p>',
 			suggestionHtml(
@@ -869,6 +865,46 @@ describe("OverviewPage", () => {
 		expect(within(bots).getByTestId("thread")).toHaveTextContent("src/old.ts");
 	});
 
+	it("shows the rows around the commented range, before and after it, and where they came from", async () => {
+		const code = codeFromHunk(
+			"@@ -1,7 +1,7 @@\n a\n b\n c\n-d\n+D\n e\n f\n g",
+			{ path: "src/ctx.ts", line: 4 },
+		);
+		renderApp({
+			"/api/overview": ok({
+				...overview,
+				threads: [humanThread("src/ctx.ts", { line: 4, code })],
+			}),
+		});
+		const humans = await screen.findByRole("region", { name: "Human reviews" });
+		const pane = within(humans).getByRole("figure", {
+			name: "Code at src/ctx.ts",
+		});
+		expect(pane).toHaveAttribute("data-source", "clone");
+		const rows = within(pane).getAllByTestId("thread-code-line");
+		expect(rows.map((r) => r.textContent?.replace(/\s+/g, " "))).toEqual([
+			"22 b",
+			"33 c",
+			"4−d",
+			"4+D",
+			"55 e",
+			"66 f",
+			"77 g",
+		]);
+		expect(rows.map((r) => r.hasAttribute("data-marked"))).toEqual([
+			false,
+			false,
+			false,
+			true,
+			false,
+			false,
+			false,
+		]);
+		expect(within(humans).getByTestId("thread-place")).toHaveTextContent(
+			"src/ctx.ts:4",
+		);
+	});
+
 	it("the hidden-characters setting shows invisible characters in the code panes", async () => {
 		renderApp();
 		const humans = await screen.findByRole("region", { name: "Human reviews" });
@@ -893,15 +929,12 @@ describe("OverviewPage", () => {
 					humanThread("src/moved.ts", {
 						line: 9,
 						currentLine: 3,
-						code: {
-							// The range (9) isn't in the hunk: its last line is marked.
-							diffHunk: "@@ -1,1 +1,2 @@\n a\n+b",
-							commit: "",
-							side: "RIGHT",
-							startSide: "RIGHT",
-							startLine: 9,
-							endLine: 9,
-						},
+						// The range (9) isn't in GitHub's hunk: its last line is marked.
+						code: codeFromHunk(
+							"@@ -1,1 +1,2 @@\n a\n+b",
+							{ line: 9 },
+							"github",
+						),
 					}),
 				],
 			}),
@@ -923,15 +956,12 @@ describe("OverviewPage", () => {
 					humanThread("src/side.ts", {
 						line: 9,
 						currentLine: null,
-						code: {
-							// The range (9) isn't in the hunk, whose last line is a deletion.
-							diffHunk: "@@ -1,2 +1,2 @@\n+a\n b\n-c",
-							commit: "",
-							side: "RIGHT",
-							startSide: "RIGHT",
-							startLine: 9,
-							endLine: 9,
-						},
+						// The range (9) isn't in GitHub's hunk, whose last line is a deletion.
+						code: codeFromHunk(
+							"@@ -1,2 +1,2 @@\n+a\n b\n-c",
+							{ line: 9 },
+							"github",
+						),
 					}),
 				],
 			}),
@@ -945,14 +975,7 @@ describe("OverviewPage", () => {
 	it("lays out tabs in a code pane at the file's .editorconfig width", async () => {
 		const tabbed = (path: string) =>
 			humanThread(path, {
-				code: {
-					diffHunk: "@@ -1,0 +1,1 @@\n+\tx",
-					commit: "",
-					side: "RIGHT",
-					startSide: "RIGHT",
-					startLine: 1,
-					endLine: 1,
-				},
+				code: codeFromHunk("@@ -1,0 +1,1 @@\n+\tx", { path, line: 1 }),
 			});
 		const file = (path: string, tabWidth?: number) =>
 			({
@@ -1037,23 +1060,27 @@ describe("OverviewPage", () => {
 			toFake: ["Date"],
 		});
 		try {
-			renderApp();
+			renderApp({
+				"/api/overview": ok({ ...overview, fetchedAt: "2026-01-05T18:00:00Z" }),
+			});
 			const what = await screen.findByRole("region", {
 				name: "What it does",
 			});
 			const img = () => within(what).getByAltText(":shipit:");
+			// A read at most a minute old, so its signed URLs are fresh.
+			const reads = () => calls("/api/overview?maxAge=60000");
 			expect(calls("/api/overview")).toBe(1);
-			// Breaking right after the fetch: not an expired URL, no refetch.
+			// Breaking right after the read: not an expired URL, no refetch.
 			img().dispatchEvent(new Event("error"));
-			expect(calls("/api/overview")).toBe(1);
+			expect(reads()).toBe(0);
 			vi.setSystemTime(new Date("2026-01-05T18:06:00Z"));
 			img().dispatchEvent(new Event("error"));
-			await waitFor(() => expect(calls("/api/overview")).toBe(2));
+			await waitFor(() => expect(reads()).toBe(1));
 			// Throttled: more broken images within the minute don't refetch.
 			vi.setSystemTime(new Date("2026-01-05T18:06:30Z"));
 			img().dispatchEvent(new Event("error"));
 			await new Promise((r) => setTimeout(r, 50));
-			expect(calls("/api/overview")).toBe(2);
+			expect(reads()).toBe(1);
 		} finally {
 			vi.useRealTimers();
 		}
@@ -1073,6 +1100,76 @@ describe("OverviewPage", () => {
 		expect(
 			screen.getAllByText("failing", { selector: "[role=tooltip]" })[0],
 		).not.toBeVisible();
+	});
+
+	it("shows an old kept overview at once and brings it up to date, Refresh spinning meanwhile", async () => {
+		const ago = (ms: number) => new Date(Date.now() - ms).toISOString();
+		renderApp({
+			"/api/overview": ok({
+				...overview,
+				title: "Then",
+				fetchedAt: ago(600_000),
+			}),
+		});
+		let release = () => {};
+		const gate = new Promise<void>((r) => {
+			release = r;
+		});
+		const served = fetchMock.getMockImplementation();
+		fetchMock.mockImplementation(async (input) => {
+			if (String(input) === "/api/overview?maxAge=15000") {
+				await gate;
+				return new Response(
+					JSON.stringify({ ...overview, title: "Now", fetchedAt: ago(0) }),
+				);
+			}
+			if (!served) throw new Error("no mock");
+			return served(input);
+		});
+		const what = await screen.findByRole("region", { name: "What it does" });
+		expect(within(what).getByRole("heading", { level: 3 })).toHaveTextContent(
+			"Then",
+		);
+		const refresh = await screen.findByRole("button", { name: "Refreshing…" });
+		expect(refresh).toBeDisabled();
+		release();
+		await waitFor(() =>
+			expect(within(what).getByRole("heading", { level: 3 })).toHaveTextContent(
+				"Now",
+			),
+		);
+		expect(screen.getByRole("button", { name: "Refresh" })).toBeEnabled();
+		expect(calls("/api/overview?maxAge=15000")).toBe(1);
+	});
+
+	it("doesn't read an overview again when it's young, or as of a cutoff", async () => {
+		renderApp({
+			"/api/overview": ok({
+				...overview,
+				asOf: "2026-01-04T00:00:00Z",
+				fetchedAt: "2026-01-04T00:00:00Z",
+			}),
+		});
+		await screen.findByRole("region", { name: "What it does" });
+		await new Promise((r) => setTimeout(r, 50));
+		expect(fetchMock.mock.calls.map(([i]) => String(i))).not.toContainEqual(
+			expect.stringContaining("maxAge"),
+		);
+		cleanup();
+		renderApp();
+		await screen.findByRole("region", { name: "What it does" });
+		await new Promise((r) => setTimeout(r, 50));
+		expect(fetchMock.mock.calls.map(([i]) => String(i))).not.toContainEqual(
+			expect.stringContaining("maxAge"),
+		);
+	});
+
+	it("shows the frame of each section while GitHub is read", async () => {
+		renderApp({ "/api/overview": ok(NEVER) });
+		expect(await screen.findByTestId("overview-loading")).toHaveTextContent(
+			/What it does.*Who's on it.*Is it ready/,
+		);
+		expect(screen.queryByRole("region", { name: "What it does" })).toBeNull();
 	});
 
 	it("shows the overview's error message", async () => {

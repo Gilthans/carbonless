@@ -44,9 +44,9 @@ export function threadTarget(
 	line: number | null,
 ): FilesSearch {
 	const { code } = thread;
-	const side = code?.side ?? "RIGHT";
+	const side = code?.anchor.side ?? "RIGHT";
 	if (line === null) return { path: thread.path };
-	if (code?.commit && code.commit === session?.snapshotHead) {
+	if (code?.anchor.commit && code.anchor.commit === session?.snapshotHead) {
 		return { path: thread.path, line, side };
 	}
 	if (

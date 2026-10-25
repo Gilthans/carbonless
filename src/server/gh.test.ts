@@ -12,6 +12,7 @@ import {
 	fetchOverview,
 	fetchPrMeta,
 	GhError,
+	joinEnds,
 	parsePrArg,
 	runGh,
 	slugify,
@@ -113,9 +114,9 @@ case "$1 $2" in
   printf '%s' "$FAKE_VIEW"; exit 0 ;;
 "api graphql")
   [ -n "$FAKE_GQL_ERR" ] && { printf '%s\\n' "$FAKE_GQL_ERR" >&2; exit 1; }
-  case "$*" in *"{ bodyHTML }"*) c=body;; *"reviewThreads("*) c=reviewThreads;; *"comments(first: 100, after"*) c=comments;; *) c=reviews;; esac
+  case "$*" in *"{ bodyHTML }"*) c=body;; *"reviewThreads(last"*) c=reviewThreadsLast;; *"reviewThreads("*) c=reviewThreads;; *"comments(first: 100, after"*) c=comments;; *) c=reviews;; esac
   case "$*" in *endCursor=*) p=2;; *) p=1;; esac
-  cat "$FAKE_GQL_DIR/$c-$p.json"; exit 0 ;;
+  cat "$FAKE_GQL_DIR/$c-$p.json" || exit 1; exit 0 ;;
 esac
 echo "unexpected: $*" >&2; exit 2
 `;
@@ -324,13 +325,15 @@ describe("runGh with a fake gh", () => {
 		const o = await fetchOverview(ref, "me");
 		expect(o.threads.map((t) => t.path)).toEqual(["one.ts", "two.ts"]);
 		expect(o.bodyHtml).toBe("<p>Hi</p>");
-		// One description query; the threads query paged twice.
+		// One description query; the threads' last page asked for alongside
+		// the first (it had no answer here), then the second page.
 		expect(log().match(/\{ bodyHTML \}/g)).toHaveLength(1);
-		expect(log().match(/reviewThreads\(/g)).toHaveLength(2);
+		expect(log().match(/reviewThreads\(first/g)).toHaveLength(2);
+		expect(log().match(/reviewThreads\(last: 100\)/g)).toHaveLength(1);
 		// Text and code only for each thread's opening comment; the latest
 		// one's time; authors for the rest.
 		expect(log()).toContain(
-			"path subjectType line originalLine originalStartLine diffSide startDiffSide first: comments(first: 1) { nodes { author { login __typename } body bodyText bodyHTML createdAt diffHunk originalCommit { oid } } }",
+			"id isResolved isOutdated path subjectType line originalLine originalStartLine diffSide startDiffSide first: comments(first: 1) { nodes { author { login __typename } body bodyText bodyHTML createdAt diffHunk originalCommit { oid } } }",
 		);
 		expect(log()).toContain(
 			"latest: comments(last: 1) { nodes { createdAt } }",
@@ -338,6 +341,56 @@ describe("runGh with a fake gh", () => {
 		expect(log()).toContain(
 			"comments(first: 100) { totalCount nodes { author { login __typename } createdAt } }",
 		);
+	});
+
+	it("reads up to 200 threads in one round trip: the first and last pages together", async () => {
+		const page = (paths: string[], next: boolean) =>
+			JSON.stringify({
+				data: {
+					repository: {
+						pullRequest: {
+							reviewThreads: {
+								totalCount: 3,
+								pageInfo: { hasNextPage: next, endCursor: "c1" },
+								nodes: paths.map((path) => ({
+									id: path,
+									path,
+									line: 1,
+									first: { nodes: [{ author: { login: "a" }, createdAt: "" }] },
+									comments: { totalCount: 1, nodes: [] },
+								})),
+							},
+							comments: { pageInfo: { hasNextPage: false }, nodes: [] },
+							reviews: { pageInfo: { hasNextPage: false }, nodes: [] },
+						},
+					},
+				},
+			});
+		const gql = join(dir, "gql");
+		const { mkdirSync } = await import("node:fs");
+		mkdirSync(gql);
+		writeFileSync(join(gql, "reviewThreads-1.json"), page(["a", "b"], true));
+		// The last page overlaps the first by one thread.
+		writeFileSync(
+			join(gql, "reviewThreadsLast-1.json"),
+			page(["b", "c"], false),
+		);
+		writeFileSync(join(gql, "comments-1.json"), page([], false));
+		writeFileSync(join(gql, "reviews-1.json"), page([], false));
+		writeFileSync(
+			join(gql, "body-1.json"),
+			JSON.stringify({
+				data: { repository: { pullRequest: { bodyHTML: "" } } },
+			}),
+		);
+		setEnv({
+			FAKE_GQL_DIR: gql,
+			FAKE_VIEW: readFileSync("test/fixtures/gh/pr-view.json", "utf8"),
+		});
+		const o = await fetchOverview(ref, "me");
+		expect(o.threads.map((t) => t.path).sort()).toEqual(["a", "b", "c"]);
+		expect(log()).not.toContain("endCursor=");
+		expect(o.fetchedAt).toMatch(/^\d{4}-\d\d-\d\dT/);
 	});
 
 	it("fails rather than show an empty description when bodyHTML is missing", async () => {
@@ -368,5 +421,37 @@ describe("runGh with a fake gh", () => {
 		await expect(fetchOverview(ref, "me")).rejects.toThrow(
 			"unexpected response for the PR body",
 		);
+	});
+});
+
+describe("joinEnds", () => {
+	const page = (ids: string[], total: number | null) => ({
+		nodes: ids.map((id) => ({ id })),
+		next: "c",
+		total,
+	});
+	const ids = (nodes: unknown[] | null) =>
+		nodes?.map((n) => (n as { id: string }).id) ?? null;
+
+	it("joins the first and last pages when they cover the connection", () => {
+		expect(ids(joinEnds(page(["a", "b"], 4), page(["c", "d"], 4)))).toEqual([
+			"a",
+			"b",
+			"c",
+			"d",
+		]);
+		expect(ids(joinEnds(page(["a", "b"], 3), page(["b", "c"], 3)))).toEqual([
+			"a",
+			"b",
+			"c",
+		]);
+	});
+
+	it("refuses a gap, a changed total, an unknown total or a mismatched overlap", () => {
+		expect(joinEnds(page(["a", "b"], 5), page(["d", "e"], 5))).toBeNull();
+		expect(joinEnds(page(["a", "b"], 3), page(["b", "c"], 4))).toBeNull();
+		expect(joinEnds(page(["a", "b"], null), page(["b", "c"], null))).toBeNull();
+		expect(joinEnds(page(["a", "b"], 3), page(["x", "c"], 3))).toBeNull();
+		expect(joinEnds(page(["a", "b", "c"], 2), page(["b", "c"], 2))).toBeNull();
 	});
 });

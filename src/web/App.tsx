@@ -1,5 +1,10 @@
 import { HistoryIcon, InfoIcon, SyncIcon } from "@primer/octicons-react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+	useIsFetching,
+	useMutation,
+	useQuery,
+	useQueryClient,
+} from "@tanstack/react-query";
 import { Link, Outlet } from "@tanstack/react-router";
 import {
 	type RefObject,
@@ -153,6 +158,10 @@ export function App() {
 			]);
 		},
 	});
+	// The overview page bringing an old read up to date reads the PR from
+	// GitHub too: Refresh shows it (its data is on screen, not yet fresh).
+	const revalidating = useIsFetching({ queryKey: ["overview-revalidate"] }) > 0;
+	const refreshing = refresh.isPending || revalidating;
 	// Follows the page showing, which switches only once it can render.
 	const wide = useActivePage() === "/files";
 	const pr = session.data?.pr;
@@ -336,21 +345,21 @@ export function App() {
 								<button
 									type="button"
 									{...trigger}
-									aria-label={refresh.isPending ? "Refreshing…" : "Refresh"}
+									aria-label={refreshing ? "Refreshing…" : "Refresh"}
 									onClick={() => refresh.mutate()}
-									disabled={refresh.isPending}
+									disabled={refreshing}
 									className="flex h-10 shrink-0 items-center gap-1.5 rounded-md px-2.5 text-sm font-medium text-ink-soft transition-colors hover:bg-overlay hover:text-ink focus-visible:outline-2 focus-visible:outline-accent disabled:opacity-60 motion-reduce:transition-none"
 								>
 									<SyncIcon
 										aria-hidden
 										className={
-											refresh.isPending
+											refreshing
 												? "animate-spin motion-reduce:animate-none"
 												: ""
 										}
 									/>
 									<span className="hidden sm:inline">
-										{refresh.isPending ? "Refreshing…" : "Refresh"}
+										{refreshing ? "Refreshing…" : "Refresh"}
 									</span>
 								</button>
 							)}

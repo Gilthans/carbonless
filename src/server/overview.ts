@@ -1,5 +1,6 @@
-import type { PrOverview } from "../shared/types.js";
+import type { CodeAnchor, DiffSide, PrOverview } from "../shared/types.js";
 import { atOrBefore } from "./asOf.js";
+import { hunkWindowRows } from "./codeWindow.js";
 import { GhError } from "./errors.js";
 import { slugify } from "./slug.js";
 
@@ -103,7 +104,7 @@ function checksAsOf(nodes: unknown[], cutoff: string): unknown[] {
 const CHECK_ORDER = { failing: 0, pending: 1, passing: 2 } as const;
 
 const SIDES = new Set(["LEFT", "RIGHT"]);
-type Side = "LEFT" | "RIGHT";
+type Side = DiffSide;
 
 function lineNumber(value: unknown): number | null {
 	return typeof value === "number" && Number.isInteger(value) && value > 0
@@ -114,22 +115,29 @@ function lineNumber(value: unknown): number | null {
 const OID = /^[0-9a-f]{40}([0-9a-f]{24})?$/;
 
 /**
- * The code a thread's first comment was written on. GitHub's diff hunk is
- * of the commit the comment was made on and ends at `originalLine`, so the
- * range is the `original*` pair; the current `line`/`startLine` pair only
- * stands in when there is no original line. The two pairs are never mixed.
- * Null for a file comment (subject FILE, or no line). A line comment GitHub
- * kept no hunk for gets an empty `diffHunk` with its original commit, for
- * `fillThreadCode` to rebuild from the clone.
+ * GitHub's side of a thread's code: the anchor (GitHub's fields mapped to
+ * the source-neutral CodeAnchor) and the window of GitHub's own diff hunk,
+ * the fallback (`source: "github"`) to the clone's (threadCode.ts). The
+ * hunk is of the commit the comment was made on and ends at
+ * `originalLine`, so the range is the `original*` pair; the current
+ * `line`/`startLine` pair only stands in when there is no original line.
+ * The two pairs are never mixed. Null for a file comment (subject FILE, or
+ * no line), or with neither a hunk nor a commit. GitHub sometimes keeps no
+ * hunk for a line comment: no rows then.
  */
-function threadCode(t: Json, first: Json): Thread["code"] {
+function threadCode(
+	t: Json,
+	first: Json,
+	path: string,
+	at: string,
+): Thread["code"] {
 	if (t.subjectType === "FILE") return null;
 	const diffHunk = str(first.diffHunk);
 	const original = lineNumber(t.originalLine);
-	const endLine = original ?? lineNumber(t.line);
+	const line = original ?? lineNumber(t.line);
 	const oid = str(obj(first.originalCommit).oid);
 	const commit = OID.test(oid) ? oid : "";
-	if (endLine === null || (!diffHunk.trim() && !commit)) return null;
+	if (line === null || (!diffHunk.trim() && !commit)) return null;
 	const side: Side = SIDES.has(str(t.diffSide))
 		? (str(t.diffSide) as Side)
 		: "RIGHT";
@@ -139,16 +147,20 @@ function threadCode(t: Json, first: Json): Thread["code"] {
 	const startSide: Side = SIDES.has(str(t.startDiffSide))
 		? (str(t.startDiffSide) as Side)
 		: side;
-	return {
-		diffHunk: diffHunk.trim() ? diffHunk : "",
+	const anchor: CodeAnchor = {
+		path,
 		commit,
 		side,
+		line,
 		startSide: start === null ? side : startSide,
 		startLine:
-			start === null || (startSide === side && start > endLine)
-				? endLine
-				: start,
-		endLine,
+			start === null || (startSide === side && start > line) ? line : start,
+		at,
+	};
+	return {
+		anchor,
+		rows: diffHunk.trim() ? hunkWindowRows(diffHunk, anchor) : [],
+		source: "github",
 	};
 }
 
@@ -191,16 +203,17 @@ function mapThreads(nodes: unknown[], asOf: string | undefined): Thread[] {
 			createdAt,
 		);
 		const firstLogin = str(author.login);
-		const code = threadCode(t, first);
+		const code = threadCode(t, first, str(t.path), createdAt);
 		// bodyText is GitHub's plain-text rendering; the raw body is a fallback.
 		const text = str(first.bodyText) || str(first.body);
 		threads.push({
 			path: str(t.path),
-			// The marked line when the code is shown (a carried-forward
-			// comment's current line may differ), else where it is now or was;
-			// as of a cutoff, where it was (today's line is past the cutoff).
+			// The commented line on the comment's own commit when there is
+			// code (a carried-forward comment's current line may differ),
+			// else where it is now or was; as of a cutoff, where it was
+			// (today's line is past the cutoff).
 			line:
-				code?.endLine ??
+				code?.anchor.line ??
 				(asOf
 					? (lineNumber(t.originalLine) ?? lineNumber(t.line))
 					: (lineNumber(t.line) ?? lineNumber(t.originalLine))),
@@ -271,7 +284,7 @@ export function mapOverview(
 	 * checks are `graph.checks`, the snapshot head's.
 	 */
 	asOf?: string,
-): PrOverview {
+): Omit<PrOverview, "fetchedAt"> {
 	if (typeof view !== "object" || view === null || Array.isArray(view)) {
 		throw new GhError("gh returned an unexpected response for the PR");
 	}

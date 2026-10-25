@@ -1,13 +1,9 @@
-/** GitHub review-comment diff hunks, parsed the same way on the server and in the page. */
+/** Unified diff hunks (git's, and GitHub's review-comment ones) as numbered lines. */
 
-export interface HunkLine {
-	kind: "context" | "add" | "del";
-	oldNo: number | null;
-	newNo: number | null;
-	text: string;
-	/** Git's "\ No newline at end of file" follows this line. */
-	noNewline?: boolean;
-}
+import type { CodeRow, DiffSide } from "./types.js";
+
+/** A diff line, numbered on each side it is on. */
+export type HunkLine = Omit<CodeRow, "marked">;
 
 const HEADER = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/;
 
@@ -60,9 +56,6 @@ export function parseDiffHunk(hunk: string): HunkLine[] {
 }
 
 /** A line's number on one side of the diff ("LEFT" is the old side). */
-export function numberOn(
-	line: HunkLine,
-	side: "LEFT" | "RIGHT",
-): number | null {
+export function numberOn(line: HunkLine, side: DiffSide): number | null {
 	return side === "LEFT" ? line.oldNo : line.newNo;
 }

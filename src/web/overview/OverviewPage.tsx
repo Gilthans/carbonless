@@ -42,8 +42,20 @@ import {
 	useRef,
 	useState,
 } from "react";
-import type { PrOverview, Progress } from "../../shared/types";
-import { overviewQuery, reviewQuery, sessionQuery } from "../api";
+import { type HunkLine, numberOn } from "../../shared/diffHunk";
+import type {
+	CodeRow,
+	CodeWindow,
+	PrOverview,
+	Progress,
+} from "../../shared/types";
+import {
+	OVERVIEW_FRESH_MS,
+	overviewQuery,
+	revalidateOverviewQuery,
+	reviewQuery,
+	sessionQuery,
+} from "../api";
 import { CodeLine } from "../code/Invisibles";
 import { languageFor } from "../files/highlight";
 import { type FilesSearch, threadTarget } from "../files/landing";
@@ -51,7 +63,6 @@ import { GithubHtml, ImageErrorContext } from "../GithubHtml";
 import { RelativeTime } from "../RelativeTime";
 import { Tooltip } from "../Tooltip";
 import { ErrorMessage, safeHref } from "../ui";
-import { codeExcerpt, type HunkLine } from "./diffHunk";
 import { createImageRefresher } from "./imageRefresh";
 import { splitSuggestions } from "./suggestions";
 import { threadKeys } from "./threadKeys";
@@ -60,40 +71,64 @@ type Review = PrOverview["reviews"][number];
 type Check = PrOverview["checks"][number];
 type Thread = PrOverview["threads"][number];
 
+/** How old the overview's HTML may be before a broken image reads it again. */
+const IMAGE_MAX_AGE_MS = 60_000;
+
 export function OverviewPage() {
 	const overview = useQuery(overviewQuery);
 	const queryClient = useQueryClient();
+	const fetchedAt = overview.data?.fetchedAt ?? "";
+	// The server keeps its last read: an old one shows at once and is read
+	// again meanwhile (the header's Refresh spins). Not as of a cutoff,
+	// where nothing changes. Judged once per read.
+	const stale = useMemo(
+		() =>
+			!!fetchedAt &&
+			!overview.data?.asOf &&
+			!(Date.now() - Date.parse(fetchedAt) <= OVERVIEW_FRESH_MS),
+		[fetchedAt, overview.data?.asOf],
+	);
+	const revalidate = useQuery({
+		...revalidateOverviewQuery(fetchedAt, OVERVIEW_FRESH_MS),
+		enabled: stale,
+	});
+	const latest = useRef(fetchedAt);
+	latest.current = fetchedAt;
 	const [refreshImages] = useState(() =>
 		createImageRefresher({
 			refetch: () =>
-				void queryClient.invalidateQueries({
-					queryKey: overviewQuery.queryKey,
-				}),
+				void queryClient
+					.fetchQuery(revalidateOverviewQuery(latest.current, IMAGE_MAX_AGE_MS))
+					.catch(() => {}),
 		}),
 	);
-	const { dataUpdatedAt } = overview;
 	const onImageError = useCallback(
-		() => refreshImages(dataUpdatedAt),
-		[refreshImages, dataUpdatedAt],
+		() => refreshImages(Date.parse(fetchedAt)),
+		[refreshImages, fetchedAt],
 	);
 	return (
 		<ImageErrorContext value={onImageError}>
-			<OverviewContent overview={overview} />
+			<OverviewContent
+				overview={overview}
+				updateError={revalidate.isError ? revalidate.error : null}
+			/>
 		</ImageErrorContext>
 	);
 }
 
 function OverviewContent({
 	overview,
+	updateError,
 }: {
 	overview: UseQueryResult<PrOverview>;
+	/** The overview shown couldn't be brought up to date. */
+	updateError: Error | null;
 }) {
 	return (
 		<div className="space-y-6">
-			{overview.isPending && (
-				<p className="text-muted">Loading the PR from GitHub…</p>
-			)}
+			{overview.isPending && <OverviewSkeleton />}
 			{overview.isError && <ErrorMessage error={overview.error} />}
+			{updateError && <ErrorMessage error={updateError} />}
 			{overview.data && (
 				<>
 					<WhatItDoes pr={overview.data} />
@@ -117,6 +152,37 @@ function Section(props: { label: string; children: ReactNode }) {
 			</h2>
 			<div className="space-y-4 px-4 py-3">{props.children}</div>
 		</section>
+	);
+}
+
+/** The sections' frames while GitHub is read: grey bars where text will be. */
+function OverviewSkeleton() {
+	const bar = (width: string) => (
+		<div
+			className={`h-3 animate-pulse rounded bg-overlay motion-reduce:animate-none ${width}`}
+		/>
+	);
+	return (
+		<div data-testid="overview-loading" aria-busy="true" className="space-y-6">
+			<p className="sr-only">Loading the PR from GitHub…</p>
+			{/* Section's frame, not its region: nothing to read in it yet. */}
+			{["What it does", "Who's on it", "Is it ready"].map((label) => (
+				<div
+					key={label}
+					aria-hidden
+					className="rounded-xl border border-line bg-surface"
+				>
+					<div className="rounded-t-xl border-b border-line bg-raised px-4 py-3 text-center text-[0.8125rem] font-semibold tracking-[0.2em] text-label uppercase">
+						{label}
+					</div>
+					<div className="space-y-2.5 px-4 py-4">
+						{bar("w-2/3")}
+						{bar("w-full")}
+						{bar("w-5/6")}
+					</div>
+				</div>
+			))}
+		</div>
 	);
 }
 
@@ -973,14 +1039,9 @@ function ThreadItem({ thread }: { thread: Thread }) {
 	const commentMore = useOverflow(commentBox, !open, "y");
 	const commentId = useId();
 	const codeId = useId();
-	const clipped = thread.code ? codeExcerpt(thread.code).lines : [];
-	const whole = thread.code
-		? codeExcerpt(thread.code, Number.POSITIVE_INFINITY).lines
-		: [];
-	const excerpt = open ? whole : clipped;
-	const line = headerLine(thread, clipped);
-	// Opening also shows the hunk's earlier lines.
-	const more = codeMore || commentMore || whole.length > clipped.length;
+	const rows = thread.code?.rows ?? [];
+	const line = headerLine(thread);
+	const more = codeMore || commentMore;
 	const commentClipped = commentMore && !open;
 	useEffect(() => {
 		const el = commentBox.current;
@@ -1094,13 +1155,14 @@ function ThreadItem({ thread }: { thread: Thread }) {
 			</div>
 			<div className="space-y-2 px-3 pt-1 pb-3">
 				<ThreadPlace thread={thread} line={line} target={target} />
-				{excerpt.length > 0 ? (
+				{thread.code && rows.length > 0 ? (
 					<div className="grid gap-3 md:grid-cols-2 md:items-start">
 						<ThreadCodePane
 							ref={codeBox}
 							id={codeId}
 							path={thread.path}
-							lines={excerpt}
+							lines={rows}
+							source={thread.code.source}
 							open={open}
 							scrollable={open ? codeOverflowsOpen : codeMore}
 						/>
@@ -1113,9 +1175,7 @@ function ThreadItem({ thread }: { thread: Thread }) {
 					<button
 						type="button"
 						aria-expanded={open}
-						aria-controls={
-							excerpt.length ? `${codeId} ${commentId}` : commentId
-						}
+						aria-controls={rows.length ? `${codeId} ${commentId}` : commentId}
 						onClick={() => setOpen((o) => !o)}
 						className="-mb-2 flex min-h-10 items-center gap-1 rounded-md text-xs font-medium text-link hover:underline focus-visible:outline-2 focus-visible:outline-accent"
 					>
@@ -1133,22 +1193,19 @@ function ThreadItem({ thread }: { thread: Thread }) {
 }
 
 /**
- * The line number the header shows: the marked line's own number when the
- * code is shown (even if the range fell back to the hunk's last line),
- * else the server's.
+ * The line number the header shows: the marked range's last number on the
+ * comment's own side when code is shown (GitHub's hunk may have marked its
+ * last line in place of a range it didn't hold), else the server's.
  */
-function headerLine(
-	thread: Thread,
-	clipped: (HunkLine & { marked: boolean })[],
-): number | null {
+export function headerLine(thread: Thread): number | null {
 	const { code } = thread;
 	if (!code) return thread.line;
-	// The comment's own side: the last shown line numbered on it (the marked
-	// end, unless the range fell back to a line of the other side).
-	const own = (l: HunkLine) => (code.side === "LEFT" ? l.oldNo : l.newNo);
-	for (let i = clipped.length - 1; i >= 0; i--) {
-		const l = clipped[i];
-		const n = l ? own(l) : null;
+	// The last row numbered on that side, up to the range's end (a hunk
+	// fallen back to a deleted last line: the line above it).
+	const end = code.rows.findLastIndex((row) => row.marked);
+	for (let i = end; i >= 0; i--) {
+		const row = code.rows[i];
+		const n = row ? numberOn(row, code.anchor.side) : null;
 		if (n !== null) return n;
 	}
 	return thread.line;
@@ -1216,36 +1273,37 @@ const SIGN_COLOR: Record<HunkLine["kind"], string> = {
 };
 
 /**
- * The code a comment was written on: the end of GitHub's diff hunk, the
- * commented lines marked by an accent rail. Clipped, it scrolls (sideways,
- * and down past six lines); opened, it shows the whole hunk, wrapped, and
- * keeps the commented lines in view.
+ * The code a comment was written on: its range, marked by an accent rail,
+ * and three rows before and after it. Clipped, it scrolls (sideways, and
+ * down past seven lines); opened, it wraps and grows. Either way it keeps
+ * the commented lines in view.
  */
 function ThreadCodePane(props: {
 	ref: Ref<HTMLElement>;
 	id: string;
 	path: string;
-	lines: (HunkLine & { marked: boolean })[];
+	lines: CodeRow[];
+	source: CodeWindow["source"];
 	open: boolean;
 	/** It overflows while clipped: focusable so the keyboard can scroll it. */
 	scrollable: boolean;
 }) {
 	const table = useRef<HTMLTableElement>(null);
-	// Opened, the pane scrolls itself (never the window) to the marked range:
-	// its end at the bottom, or its start at the top when it doesn't fit.
+	// The pane scrolls itself (never the window) to the marked range:
+	// centred, or its start at the top when it doesn't fit. Again when it
+	// opens or closes: its height and wrapping change.
+	// biome-ignore lint/correctness/useExhaustiveDependencies: reruns on open.
 	useLayoutEffect(() => {
 		const pane = table.current?.parentElement;
 		const marked = table.current?.querySelectorAll("[data-marked]");
 		const first = marked?.[0];
 		const last = marked?.[marked.length - 1];
-		if (!props.open || !pane || !first || !last) return;
+		if (!pane || !first || !last) return;
 		const top = pane.getBoundingClientRect().top - pane.scrollTop;
 		const firstTop = first.getBoundingClientRect().top - top;
 		const lastBottom = last.getBoundingClientRect().bottom - top;
-		pane.scrollTop = Math.max(
-			0,
-			Math.min(firstTop, lastBottom - pane.clientHeight),
-		);
+		const spare = pane.clientHeight - (lastBottom - firstTop);
+		pane.scrollTop = Math.max(0, firstTop - Math.max(0, spare / 2));
 	}, [props.open]);
 	return (
 		<figure
@@ -1253,11 +1311,12 @@ function ThreadCodePane(props: {
 			id={props.id}
 			aria-label={`Code at ${props.path}`}
 			data-testid="thread-code"
+			data-source={props.source}
 			tabIndex={props.scrollable ? 0 : undefined}
-			// Clipped: six 20px lines, the border and a thin sideways scrollbar
-			// fit without a vertical one. Opened: up to 24 lines (or 60% of
-			// the screen), wrapped, so the comment stays beside its code.
-			className={`min-w-0 overflow-auto rounded-md border border-line bg-code font-mono text-xs leading-5 text-code-ink [scrollbar-width:thin] focus-visible:outline-2 focus-visible:outline-accent ${props.open ? "max-h-[min(30.75rem,60vh)]" : "max-h-[8.75rem]"}`}
+			// Clipped: seven 20px lines, the border and a thin sideways
+			// scrollbar fit without a vertical one. Opened: up to 24 lines (or
+			// 60% of the screen), wrapped, so the comment stays beside its code.
+			className={`min-w-0 overflow-auto rounded-md border border-line bg-code font-mono text-xs leading-5 text-code-ink [scrollbar-width:thin] focus-visible:outline-2 focus-visible:outline-accent ${props.open ? "max-h-[min(30.75rem,60vh)]" : "max-h-[10rem]"}`}
 		>
 			<table ref={table} className="w-full border-collapse">
 				<CodeRows
@@ -1386,7 +1445,7 @@ export function suggestionRemoved(
 	removed: string[],
 ): HunkLine[] | null {
 	const strip = (t: string) => t.replace(/\r$/, "");
-	if (!code) {
+	if (!code || code.rows.length === 0) {
 		return removed.map((text) => ({
 			kind: "del",
 			oldNo: null,
@@ -1394,9 +1453,8 @@ export function suggestionRemoved(
 			text,
 		}));
 	}
-	const own = codeExcerpt(code)
-		.lines.filter((l) => l.marked)
-		.filter((l) => (code.side === "LEFT" ? l.oldNo : l.newNo) !== null);
+	const side = code.anchor.side;
+	const own = code.rows.filter((l) => l.marked && numberOn(l, side) !== null);
 	if (
 		own.length !== removed.length ||
 		own.some((l, i) => strip(l.text) !== strip(removed[i] ?? ""))
@@ -1405,7 +1463,7 @@ export function suggestionRemoved(
 	}
 	return own.map((l) => ({
 		kind: "del",
-		oldNo: code.side === "LEFT" ? l.oldNo : l.newNo,
+		oldNo: numberOn(l, side),
 		newNo: null,
 		text: l.text,
 	}));

@@ -57,6 +57,20 @@ describe("API", () => {
 		});
 	});
 
+	it("serves the kept overview, or one read at most maxAge ms ago", async () => {
+		const first = await get("/api/overview");
+		expect(await get("/api/overview")).toEqual(first);
+		expect(await get("/api/overview?maxAge=600000")).toEqual(first);
+		const fresh = await get("/api/overview?maxAge=0");
+		expect(Date.parse(fresh.fetchedAt)).toBeGreaterThanOrEqual(
+			Date.parse(first.fetchedAt),
+		);
+		for (const bad of ["-1", "1.5", "soon", ""]) {
+			const res = await inject(`/api/overview?maxAge=${bad}`);
+			expect(res.statusCode, bad).toBe(400);
+		}
+	});
+
 	it("records a state and returns updated progress", async () => {
 		const [key = ""] = keys(await get("/api/review"));
 		const res = await post("/api/review/states", {

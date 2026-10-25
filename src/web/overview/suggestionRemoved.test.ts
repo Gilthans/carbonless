@@ -1,14 +1,11 @@
 import { describe, expect, it } from "vitest";
+import { codeFromHunk } from "../../../test/code-window";
 import { suggestionRemoved } from "./OverviewPage";
 
-const code = {
-	diffHunk: "@@ -10,3 +10,3 @@\n a\n-b\n+B\n c",
-	commit: "",
-	side: "RIGHT" as const,
-	startSide: "RIGHT" as const,
+const code = codeFromHunk("@@ -10,3 +10,3 @@\n a\n-b\n+B\n c", {
 	startLine: 11,
-	endLine: 12,
-};
+	line: 12,
+});
 
 describe("suggestionRemoved", () => {
 	it("deletes the thread's commented lines on its own side, numbered", () => {
@@ -29,10 +26,20 @@ describe("suggestionRemoved", () => {
 		expect(suggestionRemoved(code, ["B", "C"])).toBeNull();
 	});
 
+	it("reads only the marked rows: context around the range isn't replaced", () => {
+		const wide = codeFromHunk("@@ -10,5 +10,5 @@\n a\n b\n-c\n+C\n d\n e", {
+			line: 12,
+		});
+		expect(wide.rows.length).toBeGreaterThan(1);
+		expect(suggestionRemoved(wide, ["C"])).toEqual([
+			{ kind: "del", oldNo: 12, newNo: null, text: "C" },
+		]);
+	});
+
 	it("ignores a CR GitHub's HTML can't carry", () => {
-		const crlf = { ...code, diffHunk: "@@ -10,2 +10,2 @@\n a\r\n+B\r" };
-		expect(
-			suggestionRemoved({ ...crlf, startLine: 11, endLine: 11 }, ["B"]),
-		).toEqual([{ kind: "del", oldNo: 11, newNo: null, text: "B\r" }]);
+		const crlf = codeFromHunk("@@ -10,2 +10,2 @@\n a\r\n+B\r", { line: 11 });
+		expect(suggestionRemoved(crlf, ["B"])).toEqual([
+			{ kind: "del", oldNo: 11, newNo: null, text: "B\r" },
+		]);
 	});
 });

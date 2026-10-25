@@ -112,7 +112,11 @@ switch (cmd) {
 	}
 	case "api graphql": {
 		const f = fields();
-		const conn = /(\w+)\(first: \d+, after: \$endCursor\)/.exec(f.query)?.[1];
+		const conn = /(\w+)\((?:first: \d+, after: \$endCursor|last: \d+)\)/.exec(
+			f.query,
+		)?.[1];
+		// A connection's last page (`last: N`), not one after a cursor.
+		const fromEnd = f.query.includes(`${conn}(last: `);
 		const pr = s.prs[f.number];
 		// The description query: pullRequest { bodyHTML }, no connection.
 		if (!conn && /pullRequest\(number: \$number\) \{ bodyHTML \}/.test(f.query)) {
@@ -161,14 +165,19 @@ switch (cmd) {
 		if (!pr) notFound(f.number);
 		const all = pr.graphql?.[conn] ?? [];
 		const size = s.pageSize ?? 100;
-		const start = f.endCursor ? Number(f.endCursor.replace("cursor:", "")) : 0;
+		const start = fromEnd
+			? Math.max(0, all.length - size)
+			: f.endCursor
+				? Number(f.endCursor.replace("cursor:", ""))
+				: 0;
 		const end = start + size;
-		const hasNextPage = end < all.length;
+		const hasNextPage = !fromEnd && end < all.length;
 		print({
 			data: {
 				repository: {
 					pullRequest: {
 						[conn]: {
+							totalCount: all.length,
 							pageInfo: {
 								hasNextPage,
 								endCursor: hasNextPage ? `cursor:${end}` : null,

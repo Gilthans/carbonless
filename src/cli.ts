@@ -75,6 +75,9 @@ async function main(): Promise<void> {
 		(message) => console.error(`crb: ${message}`),
 		{ asOf, viewer },
 	);
+	// The overview's GitHub reads take seconds: start them while the
+	// browser opens. A failure isn't kept; the page's own read reports it.
+	session.overview().catch(() => {});
 	const app = await buildApp(session, {
 		accessKey,
 		webRoot: values["api-only"]

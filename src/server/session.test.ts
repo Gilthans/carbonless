@@ -1,6 +1,10 @@
 import { execFileSync } from "node:child_process";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { prView } from "../../test/fake-gh/scenario";
+import {
+	prView,
+	reviewThread,
+	threadComment,
+} from "../../test/fake-gh/scenario";
 import { testGitEnv } from "../../test/git-fixture";
 import { createPrFixture, type PrFixture } from "../../test/pr-fixture";
 import { clonePath } from "./clone";
@@ -282,6 +286,100 @@ describe("Session", () => {
 		});
 	});
 
+	describe("overview", () => {
+		/** gh calls reading the overview (its `pr view` asks for the author). */
+		const reads = () => (pr.ghLog().match(/^pr view .*author/gm) ?? []).length;
+		const titled = (title: string) =>
+			pr.scenario({
+				prs: {
+					12: {
+						view: prView({
+							headRefOid: pr.head(),
+							baseRefName: "main",
+							title,
+						}),
+					},
+				},
+			});
+
+		it("keeps the last read: served again without gh, or read anew past maxAge", async () => {
+			const s = await Session.open(pr.arg, process.cwd());
+			const [a, b] = await Promise.all([s.overview(), s.overview()]);
+			expect(a).toBe(b);
+			expect(reads()).toBe(1);
+			expect(Date.parse(a.fetchedAt)).not.toBeNaN();
+			titled("Renamed on GitHub");
+			const kept = await s.overview();
+			expect(kept).toBe(a);
+			expect(reads()).toBe(1);
+			// Young enough: still the kept one.
+			expect(await s.overview(60_000)).toBe(a);
+			const fresh = await s.overview(0);
+			expect(reads()).toBe(2);
+			expect(fresh.title).toBe("Renamed on GitHub");
+			expect(Date.parse(fresh.fetchedAt)).toBeGreaterThanOrEqual(
+				Date.parse(a.fetchedAt),
+			);
+			// The fresh read is the one kept now.
+			expect(await s.overview()).toBe(fresh);
+		});
+
+		it("reads again on Refresh, and doesn't keep a failed read", async () => {
+			const s = await Session.open(pr.arg, process.cwd());
+			const first = await s.overview();
+			titled("After refresh");
+			await s.refresh();
+			const after = await s.overview();
+			expect(after).not.toBe(first);
+			expect(after.title).toBe("After refresh");
+			pr.scenario({ loggedOut: true });
+			await expect(s.overview(0)).rejects.toThrow(GhError);
+			// The failure isn't kept: the last good read is served.
+			expect(await s.overview()).toBe(after);
+			titled("Back");
+			expect((await s.overview(0)).title).toBe("Back");
+		});
+
+		it("builds thread code from the clone, with rows after the range", async () => {
+			const head = pr.head();
+			pr.scenario({
+				prs: {
+					12: {
+						view: prView({ headRefOid: head, baseRefName: "main" }),
+						graphql: {
+							reviewThreads: [
+								reviewThread({ path: "a.txt", line: 2, diffSide: "RIGHT" }, [
+									threadComment({
+										login: "rev1",
+										text: "Why?",
+										commit: head,
+										// After the commits: the base then is the base now.
+										createdAt: "2099-01-01T00:00:00Z",
+										diffHunk:
+											"@@ -1,2 +1,2 @@\n line 1\n-line 2\n+line 2 changed",
+									}),
+								]),
+							],
+						},
+					},
+				},
+			});
+			const s = await Session.open(pr.arg, process.cwd());
+			const code = (await s.overview()).threads[0]?.code;
+			expect(code?.source).toBe("clone");
+			expect(code?.rows.map((r) => `${r.marked ? ">" : " "}${r.text}`)).toEqual(
+				[
+					" line 1",
+					" line 2",
+					">line 2 changed",
+					" line 3",
+					" line 4",
+					" line 5",
+				],
+			);
+		});
+	});
+
 	it("serves hunks and context of a file", async () => {
 		const s = await Session.open(pr.arg, process.cwd());
 		const rev = s.snapshot().revision;
@@ -359,15 +457,22 @@ describe("Session", () => {
 				asOf: CUTOFF,
 			});
 			expect(s.snapshot().files.map((f) => f.path)).not.toContain("later.txt");
-			const calls = pr.ghLog().split("\n").length;
+			// Neither asks GitHub for the head (Refresh only reads the overview again).
+			const metas = () =>
+				(pr.ghLog().match(/^pr view .*headRefOid/gm) ?? []).length;
+			const calls = metas();
 			expect(await s.checkHead()).toMatchObject({ headMoved: false });
 			expect(await s.refresh()).toMatchObject({ snapshotHead: then });
-			expect(pr.ghLog().split("\n").length).toBe(calls);
+			expect(metas()).toBe(calls);
 			const o = await s.overview();
 			expect(o.asOf).toBe(CUTOFF);
 			expect(o.state).toBe("OPEN");
 			expect(o.reviews.map((r) => r.author)).toEqual(["Octo_Cat"]);
 			expect(o.checks).toEqual([{ name: "ci", status: "passing" }]);
+			// Nothing moves as of a cutoff: the read is kept, gh isn't asked again.
+			const ghCalls = pr.ghLog().length;
+			expect(await s.overview()).toBe(o);
+			expect(pr.ghLog().length).toBe(ghCalls);
 		});
 
 		it("treats --viewer as you, so the gh login shows as a third party", async () => {
@@ -414,7 +519,8 @@ describe("Session", () => {
 			]);
 			sc.commits = {};
 			writeFileSync(scenarioPath, JSON.stringify(sc));
-			await expect(s.overview()).rejects.toThrow(/is missing on GitHub/);
+			// Read again (the last read is kept otherwise).
+			await expect(s.overview(0)).rejects.toThrow(/is missing on GitHub/);
 		});
 
 		it("doesn't refuse a PR merged since", async () => {

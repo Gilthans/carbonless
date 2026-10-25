@@ -72,8 +72,14 @@ export class Session {
 	/** Order of PR metadata requests, by start; see #setMeta. */
 	#metaSeq = 0;
 	#metaSeqApplied = 0;
-	/** Rebuilds hunkless thread code; new on each Refresh, so it may retry. */
-	#threadCode: ThreadCodeSource;
+	/** Thread code from the clone; a Refresh retries what failed. */
+	readonly #threadCode: ThreadCodeSource;
+	/** The last overview read, by when its read started; see overview(). */
+	#overviewDone: { started: number; value: PrOverview } | null = null;
+	#overviewReading: { started: number; promise: Promise<PrOverview> } | null =
+		null;
+	/** Bumped by a Refresh: reads started before it aren't kept. */
+	#overviewGeneration = 0;
 	/** Serializes everything that writes or swaps the snapshot. */
 	#queue: Promise<unknown> = Promise.resolve();
 
@@ -165,19 +171,65 @@ export class Session {
 		return this.#snapshot;
 	}
 
-	async overview(): Promise<PrOverview> {
+	/**
+	 * The PR's overview. Reading it takes several gh calls (seconds), so the
+	 * last one read is kept and served while it is at most `maxAgeMs` old
+	 * (by default at any age: it moves on with a Refresh); older, it is read
+	 * again. A read under way that is young enough is shared. A failed read
+	 * isn't kept.
+	 */
+	overview(maxAgeMs = Number.POSITIVE_INFINITY): Promise<PrOverview> {
+		const young = (started: number) => Date.now() - started <= maxAgeMs;
+		const done = this.#overviewDone;
+		if (done && young(done.started)) return Promise.resolve(done.value);
+		const reading = this.#overviewReading;
+		if (reading && young(reading.started)) return reading.promise;
+		return this.#readOverview();
+	}
+
+	/**
+	 * Reads the overview from GitHub, then its code from the clone once
+	 * `ready` (a Refresh moving the snapshot) has settled.
+	 */
+	#readOverview(ready?: Promise<unknown>): Promise<PrOverview> {
 		const { asOf, viewer } = this.options;
-		const overview = await fetchOverview(
-			this.#ref(),
-			viewer ?? this.viewer,
-			asOf ? { at: asOf, head: this.#meta.headOid } : undefined,
+		const generation = this.#overviewGeneration;
+		const started = Date.now();
+		const promise = (async () => {
+			const overview = await fetchOverview(
+				this.#ref(),
+				viewer ?? this.viewer,
+				asOf ? { at: asOf, head: this.#meta.headOid } : undefined,
+			);
+			await ready?.catch(() => {});
+			return this.#threadCode.fill(overview, {
+				snapshot: this.#snapshot.base,
+				ref: `refs/remotes/origin/${this.#meta.baseBranch}`,
+			});
+		})();
+		const reading = { started, promise };
+		this.#overviewReading = reading;
+		promise.then(
+			(value) => {
+				if (this.#overviewReading === reading) this.#overviewReading = null;
+				if (generation !== this.#overviewGeneration) return;
+				const done = this.#overviewDone;
+				if (!done || done.started < started) {
+					this.#overviewDone = { started, value };
+				}
+			},
+			() => {
+				if (this.#overviewReading === reading) this.#overviewReading = null;
+			},
 		);
-		// GitHub sometimes keeps no diff hunk for a line comment: rebuild it.
-		return this.#threadCode.fill(
-			this.#snapshot.base,
-			overview,
-			`refs/remotes/origin/${this.#meta.baseBranch}`,
-		);
+		return promise;
+	}
+
+	/** Drops the kept overview and reads it again (after `ready`). */
+	#rereadOverview(ready?: Promise<unknown>): void {
+		this.#overviewGeneration++;
+		this.#overviewDone = null;
+		this.#readOverview(ready).catch(() => {});
 	}
 
 	async review(): Promise<ReviewView> {
@@ -243,10 +295,14 @@ export class Session {
 	 */
 	refresh(): Promise<SessionInfo> {
 		// Commits and code that couldn't be had may be there now.
-		this.#threadCode = new ThreadCodeSource(this.repo);
-		// As of a cutoff nothing moves; the overview reloads on its own.
-		if (this.options.asOf) return Promise.resolve(this.info());
-		return this.#exclusive(async () => {
+		this.#threadCode.forgetFailures();
+		// As of a cutoff nothing moves but the overview is read again.
+		if (this.options.asOf) {
+			this.#rereadOverview();
+			return Promise.resolve(this.info());
+		}
+		// GitHub is read while the snapshot moves; its code once it has.
+		const moved = this.#exclusive(async () => {
 			const seq = ++this.#metaSeq;
 			const meta = await fetchPrMeta(this.#ref());
 			const fetched = await fetchPr(this.repo, meta);
@@ -263,6 +319,8 @@ export class Session {
 			await this.#moveTo(progress, fetched);
 			return this.info();
 		});
+		this.#rereadOverview(moved);
+		return moved;
 	}
 
 	/** Asks GitHub for the PR's head without fetching anything. */

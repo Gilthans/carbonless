@@ -150,13 +150,24 @@ describe("mapOverview", () => {
 				hasReply: true,
 				outdated: false,
 				resolved: false,
+				// GitHub's hunk, the fallback to the clone's (threadCode.ts).
 				code: {
-					diffHunk: expect.stringMatching(/^@@ -38,5 \+38,7 @@/),
-					commit: "",
-					side: "RIGHT",
-					startSide: "RIGHT",
-					startLine: 42,
-					endLine: 42,
+					anchor: {
+						path: "src/cache.ts",
+						commit: "",
+						side: "RIGHT",
+						line: 42,
+						startSide: "RIGHT",
+						startLine: 42,
+						at: "2026-01-03T09:00:00Z",
+					},
+					rows: [
+						expect.objectContaining({ newNo: 39, marked: false }),
+						expect.objectContaining({ newNo: 40, marked: false }),
+						expect.objectContaining({ newNo: 41, marked: false }),
+						expect.objectContaining({ newNo: 42, marked: true }),
+					],
+					source: "github",
 				},
 			},
 			{
@@ -210,12 +221,22 @@ describe("mapOverview", () => {
 				outdated: true,
 				resolved: false,
 				code: {
-					diffHunk: expect.stringContaining("-  // legacy path"),
-					commit: "",
-					side: "LEFT",
-					startSide: "LEFT",
-					startLine: 7,
-					endLine: 7,
+					anchor: expect.objectContaining({
+						side: "LEFT",
+						line: 7,
+						startSide: "LEFT",
+						startLine: 7,
+					}),
+					rows: expect.arrayContaining([
+						{
+							kind: "del",
+							oldNo: 7,
+							newNo: null,
+							text: "  // legacy path",
+							marked: true,
+						},
+					]),
+					source: "github",
 				},
 			},
 		]);
@@ -245,18 +266,24 @@ describe("mapOverview", () => {
 		});
 		expect(mapOverview(view(), g, VIEWER).threads[0]).toMatchObject({
 			line: 42,
-			code: { side: "RIGHT", startSide: "RIGHT", startLine: 41, endLine: 42 },
+			code: {
+				anchor: { side: "RIGHT", startSide: "RIGHT", startLine: 41, line: 42 },
+			},
 		});
 		Object.assign(t, { originalStartLine: 39, startDiffSide: "LEFT" });
-		expect(mapOverview(view(), g, VIEWER).threads[0]?.code).toMatchObject({
+		expect(
+			mapOverview(view(), g, VIEWER).threads[0]?.code?.anchor,
+		).toMatchObject({
 			startSide: "LEFT",
 			startLine: 39,
 		});
 		// A start after the end on the same side is nonsense: just the line.
 		Object.assign(t, { originalStartLine: 50, startDiffSide: "RIGHT" });
-		expect(mapOverview(view(), g, VIEWER).threads[0]?.code).toMatchObject({
+		expect(
+			mapOverview(view(), g, VIEWER).threads[0]?.code?.anchor,
+		).toMatchObject({
 			startLine: 42,
-			endLine: 42,
+			line: 42,
 		});
 		// Carried forward: the header follows the code's own numbering.
 		Object.assign(t, {
@@ -267,21 +294,25 @@ describe("mapOverview", () => {
 		});
 		expect(mapOverview(view(), g, VIEWER).threads[0]).toMatchObject({
 			line: 42,
-			code: { startLine: 42, endLine: 42 },
+			code: { anchor: { startLine: 42, line: 42 } },
 		});
 		// GraphQL's thread-level startLine can name a line past the current
 		// one (synthetic: line 120, startLine 124, no REST start_line): just
 		// the line, never a range made backwards.
 		Object.assign(t, { originalLine: null, line: 120, startLine: 124 });
-		expect(mapOverview(view(), g, VIEWER).threads[0]?.code).toMatchObject({
+		expect(
+			mapOverview(view(), g, VIEWER).threads[0]?.code?.anchor,
+		).toMatchObject({
 			startLine: 120,
-			endLine: 120,
+			line: 120,
 		});
 		// No original line: the current pair, both ends of it.
 		Object.assign(t, { originalLine: null, line: 42, startLine: 41 });
-		expect(mapOverview(view(), g, VIEWER).threads[0]?.code).toMatchObject({
+		expect(
+			mapOverview(view(), g, VIEWER).threads[0]?.code?.anchor,
+		).toMatchObject({
 			startLine: 41,
-			endLine: 42,
+			line: 42,
 		});
 		// No code: the current line.
 		const noHunk = structuredClone(g);
@@ -295,13 +326,17 @@ describe("mapOverview", () => {
 			line: 17,
 			code: null,
 		});
-		// GitHub kept no hunk for a line comment: its original commit, for the
-		// server to rebuild the code from (threadCode.ts).
+		// GitHub kept no hunk for a line comment: no rows, but the anchor on
+		// its original commit, for the clone's code (threadCode.ts).
 		const oid = "a".repeat(40);
 		if (firstNode) Object.assign(firstNode, { originalCommit: { oid } });
 		expect(mapOverview(view(), noHunk, VIEWER).threads[0]).toMatchObject({
 			line: 30,
-			code: { diffHunk: "", commit: oid, side: "RIGHT", endLine: 30 },
+			code: {
+				anchor: { commit: oid, side: "RIGHT", line: 30 },
+				rows: [],
+				source: "github",
+			},
 		});
 		// A file comment by subject has no code, whatever its fields say.
 		Object.assign(t, { subjectType: "FILE" });
