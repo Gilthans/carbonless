@@ -111,9 +111,13 @@ export class Session {
 	): Promise<Session> {
 		await runGh(["auth", "status"]);
 		const ref = await resolvePrRef(arg, cwd);
-		const viewer = await viewerSlug();
+		// Independent reads: at once (each gh call is a few hundred ms).
+		const [viewer, prMeta] = await Promise.all([
+			viewerSlug(),
+			fetchPrMeta(ref),
+		]);
 		const { asOf } = options;
-		let meta = await fetchPrMeta(ref);
+		let meta = prMeta;
 		if (asOf) {
 			// The PR as it was: open, at its head of then.
 			const headOid = await fetchHeadAsOf(meta, asOf);
