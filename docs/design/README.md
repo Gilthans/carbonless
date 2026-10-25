@@ -60,8 +60,9 @@ tooltip (hover or tap); bidi controls also get a `warn` tint. The ¶ toggle
 in the Files bar hides only spaces, tabs and line endings: escapes always
 show (principle 2). Only a short list of invisibles doing their job stays
 unescaped, and anything unsure is escaped: ZWJ/ZWNJ after a virama on a
-letter of its own script, ZWNJ between letters that would join (IDNA
-CONTEXTJ: Arabic, Syriac, N'Ko, Mongolian), ZWJ inside an emoji sequence,
+letter of its own script, ZWNJ between joining letters of one
+script (IDNA CONTEXTJ, Joining_Type generated from Unicode data by
+`scripts/gen-joining-types.mjs`), ZWJ inside an emoji sequence,
 VS15/VS16 after an emoji or in a keycap, and the tags of the three RGI
 subdivision flags. Ideographic variation selectors are always escaped. Markers are generated content, so a copy gives the
 original text. Sources spell such characters as `\u` escapes; a test fails

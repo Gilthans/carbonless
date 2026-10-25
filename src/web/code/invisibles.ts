@@ -9,6 +9,12 @@
  * copied. Rendering lives in Invisibles.tsx.
  */
 
+import {
+	JOINING_SCRIPTS,
+	JOINING_TYPES,
+	type JoiningType,
+} from "./joiningTypes";
+
 export const DEFAULT_TAB_WIDTH = 4;
 
 export type Piece =
@@ -205,79 +211,62 @@ const VIRAMA_SCRIPT = new Map<number, RegExp>(
 	}),
 );
 
-/**
- * Letters that join on both sides (Joining_Type D) or only to the letter
- * before (R), for the scripts a ZWNJ may split: Arabic, Syriac, N'Ko,
- * Mongolian. A letter of these scripts not in `RIGHT` or `NON_JOINING` is
- * dual-joining. Other joining scripts aren't trusted: their ZWNJ is escaped.
- */
-const JOINING_LETTER =
-	/^[\p{Script=Arabic}\p{Script=Syriac}\p{Script=Nko}\p{Script=Mongolian}]$/u;
-const range = (lo: number, hi: number) =>
-	Array.from({ length: hi - lo + 1 }, (_, k) => lo + k);
-/** Joining_Type R: alef, dal, thal, ra, zain, waw, teh marbuta... */
-const RIGHT = new Set<number>([
-	// Arabic.
-	...range(0x0622, 0x0625),
-	0x0627,
-	0x0629,
-	...range(0x062f, 0x0632),
-	0x0648,
-	...range(0x0671, 0x0673),
-	...range(0x0675, 0x0677),
-	...range(0x0688, 0x0699),
-	0x06c0,
-	...range(0x06c3, 0x06cb),
-	0x06cd,
-	0x06cf,
-	0x06d2,
-	0x06d3,
-	0x06d5,
-	0x06ee,
-	0x06ef,
-	...range(0x0759, 0x075b),
-	0x076b,
-	0x076c,
-	0x0771,
-	0x0773,
-	0x0774,
-	0x0778,
-	0x0779,
-	...range(0x08aa, 0x08ac),
-	0x08ae,
-	0x08b1,
-	0x08b2,
-	0x08b9,
-	// Syriac.
-	0x0710,
-	...range(0x0715, 0x0719),
-	0x071e,
-	0x0728,
-	0x072a,
-	0x072c,
-	0x072f,
-	0x074d,
-]);
-/** Letters of those scripts that don't join (Joining_Type U or C). */
-const NON_JOINING = new Set<number>([
-	0x0621,
-	0x0674,
-	0x07fa,
-	0x1807,
-	0x180a,
-	...range(0x1880, 0x1884),
-]);
-const TRANSPARENT = /^[\p{Mn}\p{Me}]$/u;
-
-/** Joining_Type of a letter: "D", "R" or undefined (doesn't join, or unknown). */
-function joiningType(ch: string | undefined): "D" | "R" | undefined {
-	if (!visible(ch) || !is(LETTER, ch) || !JOINING_LETTER.test(ch)) {
-		return undefined;
-	}
+/** Joining_Type of a code point (generated from Unicode data), or undefined. */
+function joiningType(ch: string | undefined): JoiningType | undefined {
+	if (!visible(ch)) return undefined;
 	const cp = ch.codePointAt(0) as number;
-	if (NON_JOINING.has(cp)) return undefined;
-	return RIGHT.has(cp) ? "R" : "D";
+	let lo = 0;
+	let hi = JOINING_TYPES.length - 1;
+	while (lo <= hi) {
+		const mid = (lo + hi) >> 1;
+		const [first, last, type] = JOINING_TYPES[mid] as readonly [
+			number,
+			number,
+			JoiningType,
+		];
+		if (cp < first) hi = mid - 1;
+		else if (cp > last) lo = mid + 1;
+		else return type;
+	}
+	return undefined;
 }
+
+/** Script_Extensions tests for the scripts whose letters join. */
+const SCRIPT_EXTENSIONS = JOINING_SCRIPTS.map(
+	(script) => new RegExp(`^\\p{Script_Extensions=${script}}$`, "u"),
+);
+const INHERITED = /^\p{Script=Inherited}$/u;
+const NONSPACING = /^[\p{Mn}\p{Me}]$/u;
+
+/** Indices of the joining scripts `ch` belongs to. */
+const joiningScripts = (ch: string) =>
+	SCRIPT_EXTENSIONS.flatMap((re, k) => (re.test(ch) ? [k] : []));
+
+/**
+ * The letter next to a ZWNJ (step -1: before, 1: after), past nonspacing
+ * marks that show and belong to it (inherited, or of its own script). An
+ * invisible mark (CGJ, a variation selector) or a foreign one ends the
+ * search: no letter.
+ */
+function joiningNeighbour(
+	chars: string[],
+	i: number,
+	step: -1 | 1,
+): string | undefined {
+	const marks: string[] = [];
+	let j = i + step;
+	while (is(NONSPACING, chars[j]) && visible(chars[j])) {
+		marks.push(chars[j] as string);
+		j += step;
+	}
+	const letter = chars[j];
+	if (!visible(letter) || !is(LETTER, letter)) return undefined;
+	const own = joiningScripts(letter);
+	const belongs = (mark: string) =>
+		INHERITED.test(mark) || joiningScripts(mark).some((k) => own.includes(k));
+	return marks.every(belongs) ? letter : undefined;
+}
+
 /** The tags of the RGI subdivision flags (England, Scotland, Wales). */
 const FLAG_TAGS = ["gbeng", "gbsct", "gbwls"].map((code) =>
 	[...code]
@@ -323,19 +312,20 @@ function afterVirama(chars: string[], i: number): boolean {
 }
 
 /**
- * A ZWNJ between letters that would otherwise join (IDNA CONTEXTJ): the
- * letter before joins on its left (Joining_Type D; L is unused in these
- * scripts), the one after on its right (R or D), transparent marks between.
+ * A ZWNJ between letters of one script that would otherwise join (IDNA
+ * CONTEXTJ): the letter before joins on its left (Joining_Type L or D), the
+ * one after on its right (R or D).
  */
 function betweenJoiningLetters(chars: string[], i: number): boolean {
-	let before = i - 1;
-	while (before >= 0 && is(TRANSPARENT, chars[before])) before--;
-	let after = i + 1;
-	while (after < chars.length && is(TRANSPARENT, chars[after])) after++;
-	return (
-		joiningType(chars[before]) === "D" &&
-		joiningType(chars[after]) !== undefined
-	);
+	const before = joiningNeighbour(chars, i, -1);
+	const after = joiningNeighbour(chars, i, 1);
+	const left = joiningType(before);
+	const right = joiningType(after);
+	if (!(left === "L" || left === "D") || !(right === "R" || right === "D")) {
+		return false;
+	}
+	const scripts = joiningScripts(before as string);
+	return joiningScripts(after as string).some((k) => scripts.includes(k));
 }
 
 /** A ZWJ inside an emoji ZWJ sequence: emoji (skin tone, VS16) ZWJ emoji. */

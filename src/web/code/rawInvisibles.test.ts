@@ -31,6 +31,32 @@ const TEXT = new Set([
 ]);
 /** Whitespace a source file legitimately holds. */
 const ORDINARY = new Set([" ", "\t", "\n", "\r"]);
+/** Code files, where a raw combining mark must sit on a letter. */
+const CODE = new Set([".ts", ".tsx", ".js", ".mjs", ".cjs"]);
+const NONSPACING = /^[\p{Mn}\p{Me}]$/u;
+const LETTER = /^\p{L}$/u;
+
+/**
+ * Raw nonspacing marks in `line` not sitting on a non-ASCII letter (after
+ * other marks): one on a quote or an ASCII letter hides in the code.
+ */
+function orphanMarks(line: string): string[] {
+	const chars = Array.from(line);
+	const found: string[] = [];
+	chars.forEach((ch, i) => {
+		if (!NONSPACING.test(ch)) return;
+		let j = i - 1;
+		while (j >= 0 && NONSPACING.test(chars[j] as string)) j--;
+		const base = chars[j];
+		const onLetter =
+			base !== undefined &&
+			LETTER.test(base) &&
+			(base.codePointAt(0) as number) > 0x7f;
+		if (!onLetter) found.push(ch);
+	});
+	return found;
+}
+
 /** "path:line": raw characters allowed there (none so far). */
 const ALLOWED = new Set<string>();
 
@@ -58,11 +84,17 @@ describe("sources", () => {
 			checked++;
 			const lines = readFileSync(path, "utf8").split("\n");
 			lines.forEach((line, i) => {
+				const where = `${relative(ROOT, path)}:${i + 1}`;
+				if (ALLOWED.has(where)) return;
 				for (const ch of line) {
 					if (ORDINARY.has(ch) || !INVISIBLE.test(ch)) continue;
-					const where = `${relative(ROOT, path)}:${i + 1}`;
-					if (ALLOWED.has(where)) continue;
 					found.push(`${where} ${escapeLabel(ch.codePointAt(0) ?? 0)}`);
+				}
+				if (!CODE.has(extname(path))) return;
+				for (const ch of orphanMarks(line)) {
+					found.push(
+						`${where} ${escapeLabel(ch.codePointAt(0) ?? 0)} (orphan mark)`,
+					);
 				}
 			});
 		}
@@ -72,6 +104,15 @@ describe("sources", () => {
 			expect.arrayContaining(["CLAUDE.md", "package.json", "vitest.config.ts"]),
 		);
 		expect(found).toEqual([]);
+	});
+
+	it("flags a raw mark that sits on no letter", () => {
+		expect(orphanMarks('"\u0301"')).toEqual(["\u0301"]);
+		expect(orphanMarks("e\u0301")).toEqual(["\u0301"]);
+		expect(orphanMarks("\u0301")).toEqual(["\u0301"]);
+		// On a non-ASCII letter, after other marks too, it is just text.
+		expect(orphanMarks("क\u094D\u0901")).toEqual([]);
+		expect(orphanMarks("é")).toEqual([]);
 	});
 
 	it("would catch one", () => {

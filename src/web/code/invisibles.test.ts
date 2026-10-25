@@ -6,6 +6,7 @@ import {
 	type Piece,
 	renderInvisibles,
 } from "./invisibles";
+import { JOINING_SCRIPTS, JOINING_TYPES } from "./joiningTypes";
 
 /** What a line looks like: escapes and markers inline, tabs as `\t` + dots of padding. */
 function look(pieces: Piece[]): string {
@@ -256,6 +257,43 @@ describe("renderInvisibles", () => {
 		}
 	});
 
+	it("keeps a ZWNJ only between joining letters of one script (Unicode data)", () => {
+		const kept = [
+			// Mongolian A + ZWNJ + A; an inherited mark on the letter before.
+			"\u1820\u200C\u1820",
+			"ب\u0301\u200Cب",
+			// Syriac Supplement: dual-joining nga before right-joining ra.
+			"\u0860\u200C\u0867",
+			// Arabic Extended-B: right-joining alef with fatha after.
+			"ب\u200C\u0870",
+		];
+		for (const text of kept) {
+			expect(shown(text, 4, false), text).toBe(text);
+		}
+		const escaped = [
+			// Two scripts: Arabic beside Syriac, Mongolian, N'Ko.
+			"ب\u200Cܒ",
+			"ب\u200C\u1820",
+			"ب\u200C\u07CA",
+			// Between them an invisible mark (CGJ, VS1, Mongolian FVS1) or a
+			// mark of another script (Devanagari candrabindu).
+			"ب\u034F\u200Cب",
+			"ب\u200C\uFE00ب",
+			"\u1820\u180B\u200C\u1820",
+			"ب\u0901\u200Cب",
+			// Non-joining in the data: presentation forms, Arabic math letters,
+			// Syriac Supplement's non-joining letter.
+			"ب\u200C\uFEDF",
+			"ب\u200C\u{1EE01}",
+			"\u0860\u200C\u0861",
+			// Right-joining before the ZWNJ.
+			"\u0870\u200Cب",
+		];
+		for (const text of escaped) {
+			expect(shown(text, 4, false), text).toContain("\\u200C");
+		}
+	});
+
 	it("keeps variation selectors only where they select", () => {
 		for (const text of [
 			"❤\uFE0F",
@@ -335,6 +373,22 @@ describe("renderInvisibles", () => {
 	it("clamps odd tab widths", () => {
 		expect(shown("\t", 0, false)).toBe("\\t");
 		expect(shown("\t", Number.NaN, false)).toBe("\\t__");
+	});
+});
+
+describe("JOINING_TYPES", () => {
+	it("is sorted and non-overlapping", () => {
+		let prev = -1;
+		for (const [first, last, type] of JOINING_TYPES) {
+			expect(first).toBeGreaterThan(prev);
+			expect(last).toBeGreaterThanOrEqual(first);
+			expect(["D", "R", "L"]).toContain(type);
+			prev = last;
+		}
+		expect(JOINING_TYPES.length).toBeGreaterThan(50);
+		expect(JOINING_SCRIPTS).toEqual(
+			expect.arrayContaining(["Arabic", "Syriac", "Nko", "Mongolian"]),
+		);
 	});
 });
 
