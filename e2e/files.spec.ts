@@ -584,7 +584,7 @@ test("keyboard focus inside an open diff is never hidden under the sticky header
 	await expect(boxes).toHaveCount(20);
 	const header = section.locator("header");
 	const target = boxes.nth(10);
-	// Scroll so the checkbox sits right under the stuck header.
+	// Scroll so the checkbox sits under the stuck header.
 	await target.scrollIntoViewIfNeeded();
 	await expect(header).toBeInViewport();
 	const headerBottom = async () => {
@@ -592,9 +592,11 @@ test("keyboard focus inside an open diff is never hidden under the sticky header
 		return (box?.y ?? 0) + (box?.height ?? 0);
 	};
 	const targetTop = async () => (await target.boundingBox())?.y ?? 0;
+	// Its whole cluster (two rows) goes under the header, so its controls
+	// stop floating and go under with it.
 	await page.evaluate(
 		(by) => window.scrollBy(0, by),
-		(await targetTop()) - (await headerBottom()) + 10,
+		(await targetTop()) - (await headerBottom()) + 50,
 	);
 	await expect.poll(targetTop).toBeLessThan(await headerBottom());
 	await target.focus();

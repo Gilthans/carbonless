@@ -4,6 +4,7 @@ import { cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { FileView, ReviewView } from "../../shared/types";
+import { AppHeaderHeight } from "../sticky";
 import { FilesPage } from "./FilesPage";
 
 vi.mock("./highlight", () => ({
@@ -51,6 +52,8 @@ const noHunks = { newLineCount: 0, hunks: [] };
 
 function renderPage(
 	responses: Record<string, () => { status: number; body: unknown }>,
+	/** The app header's compact height, as App provides it. */
+	appHeader = 0,
 ) {
 	const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
 		const path = new URL(String(input), "http://test").pathname;
@@ -64,7 +67,9 @@ function renderPage(
 	});
 	render(
 		<QueryClientProvider client={queryClient}>
-			<FilesPage />
+			<AppHeaderHeight.Provider value={appHeader}>
+				<FilesPage />
+			</AppHeaderHeight.Provider>
 		</QueryClientProvider>,
 	);
 	return fetchMock;
@@ -202,13 +207,16 @@ describe("FilesPage", () => {
 		).toBeInTheDocument();
 		// Opening by its header doesn't jump to it.
 		expect(scrolled).not.toHaveBeenCalled();
-		// Focus scrolling clears the sticky bar and the open file's header.
-		expect(document.documentElement.style.scrollPaddingTop).toBe("80px");
+		// Focus scrolling clears the sticky bar and the open file's header
+		// (the page's scroll-padding-top adds the app header to this).
+		const pageSticky = () =>
+			document.documentElement.style.getPropertyValue("--page-sticky");
+		expect(pageSticky()).toBe("80px");
 		await user.click(within(b).getByRole("button", { name: "Collapse file" }));
 		expect(
 			within(b).getByRole("button", { name: "Expand file" }),
 		).toBeInTheDocument();
-		expect(document.documentElement.style.scrollPaddingTop).toBe("40px");
+		expect(pageSticky()).toBe("40px");
 		expect(
 			within(a).getByRole("button", { name: "Expand file" }),
 		).toBeInTheDocument();
@@ -217,14 +225,17 @@ describe("FilesPage", () => {
 	it("picking a file in the tree opens it, closes the others and scrolls to it", async () => {
 		const scrolled = vi.fn();
 		vi.stubGlobal("scrollTo", scrolled);
-		renderPage({
-			"/api/review": () => ({
-				status: 200,
-				body: { ...emptyReview, files: [oneFile, otherFile] },
-			}),
-			"/api/files/0/hunks": () => ({ status: 200, body: noHunks }),
-			"/api/files/1/hunks": () => ({ status: 200, body: noHunks }),
-		});
+		renderPage(
+			{
+				"/api/review": () => ({
+					status: 200,
+					body: { ...emptyReview, files: [oneFile, otherFile] },
+				}),
+				"/api/files/0/hunks": () => ({ status: 200, body: noHunks }),
+				"/api/files/1/hunks": () => ({ status: 200, body: noHunks }),
+			},
+			48,
+		);
 		const user = userEvent.setup();
 		const a = await screen.findByRole("region", { name: "a.txt" });
 		const b = screen.getByRole("region", { name: "b.txt" });
@@ -239,8 +250,11 @@ describe("FilesPage", () => {
 			within(a).getByRole("button", { name: "Expand file" }),
 		).toBeInTheDocument();
 		await vi.waitFor(() => expect(scrolled).toHaveBeenCalled());
-		// Its header lands right below the sticky bar (40px, mocked).
-		expect(scrolled.mock.calls.at(-1)?.[0]).toEqual({ top: 500 - 40 + 1 });
+		// Its header lands right below the app header (48px) and the sticky
+		// bar (40px, mocked).
+		expect(scrolled.mock.calls.at(-1)?.[0]).toEqual({
+			top: 500 - 48 - 40 + 1,
+		});
 		// Picking the open file keeps it open.
 		await user.click(within(tree).getByRole("button", { name: /b\.txt/ }));
 		expect(

@@ -203,7 +203,8 @@ function FileProgress(props: {
  * One file of the diff: header with review status and bulk actions, and the
  * diff once expanded. Every file starts collapsed; collapsing is only a view
  * setting. The owner may control it (`expanded`, `onExpandedChange`). An open
- * file's header sticks below the page's progress bar (`--files-bar`) while
+ * file's header sticks below the app header and the page's progress bar
+ * (`--app-header`, `--files-bar`) while
  * its diff scrolls. `onStaleChange(true)`: a write was refused because the snapshot
  * moved; `onStaleChange(false)`: a later write was stored.
  */
@@ -297,7 +298,9 @@ export function FileDiff(props: {
 				// Square corners: the section clips them at the top, and a stuck
 				// header must not let lines show through.
 				className={`@container border-b border-slate-200 bg-slate-50 px-1.5 ${
-					expanded ? "sticky top-[var(--files-bar,0px)] z-10" : ""
+					expanded
+						? "sticky top-[calc(var(--app-header,0px)+var(--files-bar,0px))] z-10"
+						: ""
 				}`}
 			>
 				{/*

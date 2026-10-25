@@ -1,1 +1,10 @@
 @import "tailwindcss";
+
+/*
+ * Keyboard focus scrolling keeps focused controls clear of the sticky stack:
+ * the app header's compact row (App) plus the page's own sticky bars
+ * (`--page-sticky`, set by the Files page).
+ */
+html {
+	scroll-padding-top: calc(var(--app-header, 0px) + var(--page-sticky, 0px));
+}

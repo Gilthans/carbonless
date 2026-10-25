@@ -10,6 +10,7 @@ import {
 	useSyncExternalStore,
 } from "react";
 import { reviewQuery } from "../api";
+import { useAppHeaderHeight, useHeight } from "../sticky";
 import { ErrorMessage } from "../ui";
 import { FileDiff } from "./FileDiff";
 import { FileTree } from "./FileTree";
@@ -104,7 +105,7 @@ function FilesSheet(props: {
 
 /**
  * Tracks the file in view: the first file section crossing the band just
- * below the sticky progress bar (`top` px tall).
+ * below the sticky app header and progress bar (`top` px tall together).
  */
 function useCurrentFile(
 	container: RefObject<HTMLElement | null>,
@@ -137,30 +138,6 @@ function useCurrentFile(
 	return [current, setCurrent] as const;
 }
 
-/**
- * The rendered height in px of the element `find` returns, kept current as it
- * changes (the sticky bar wraps differently by width and unit). `key` says
- * when to look the element up again.
- */
-function useHeight(find: () => HTMLElement | null, key: unknown) {
-	const [height, setHeight] = useState(0);
-	// biome-ignore lint/correctness/useExhaustiveDependencies: looked up again when `key` changes.
-	useLayoutEffect(() => {
-		const node = find();
-		if (!node) {
-			setHeight(0);
-			return;
-		}
-		const measure = () => setHeight(node.offsetHeight);
-		measure();
-		if (typeof ResizeObserver === "undefined") return;
-		const observer = new ResizeObserver(measure);
-		observer.observe(node);
-		return () => observer.disconnect();
-	}, [key]);
-	return height;
-}
-
 const headerOf = (index: number) =>
 	document.querySelector<HTMLElement>(`#file-${index} > header`);
 
@@ -170,12 +147,14 @@ export function FilesPage() {
 	const diffs = useRef<HTMLDivElement>(null);
 	const data = review.data;
 	const bar = useRef<HTMLDivElement>(null);
-	// Open file headers stick right below the progress bar.
+	// The sticky stack, top down: the app header's compact row, the progress
+	// bar, then the open file's header.
+	const appHeader = useAppHeaderHeight();
 	const barHeight = useHeight(() => bar.current, data !== undefined);
 	const [current, setCurrent] = useCurrentFile(
 		diffs,
 		data ? `${data.revision}:${data.files.length}` : "",
-		barHeight,
+		appHeader + barHeight,
 	);
 
 	const [unit, setUnit] = useUnit();
@@ -194,16 +173,17 @@ export function FilesPage() {
 		() => (openIndex === null ? null : headerOf(openIndex)),
 		openIndex,
 	);
-	// Keyboard focus scrolling keeps focused controls clear of the sticky bar
-	// and the open file's sticky header (WCAG 2.4.11).
-	const stickyTop = barHeight + openHeader;
+	// Keyboard focus scrolling keeps focused controls clear of the sticky
+	// stack (WCAG 2.4.11): the page's scroll-padding-top adds this to the app
+	// header's height (index.css).
+	const pageSticky = barHeight + openHeader;
 	useEffect(() => {
 		const root = document.documentElement;
-		root.style.scrollPaddingTop = `${stickyTop}px`;
+		root.style.setProperty("--page-sticky", `${pageSticky}px`);
 		return () => {
-			root.style.scrollPaddingTop = "";
+			root.style.removeProperty("--page-sticky");
 		};
-	}, [stickyTop]);
+	}, [pageSticky]);
 	/** The header to keep where it was on screen as files open and close. */
 	const anchor = useRef<{ index: number; top: number } | null>(null);
 	const sectionOf = (index: number) => document.getElementById(`file-${index}`);
@@ -237,12 +217,15 @@ export function FilesPage() {
 		if (wide) setSheetOpen(false);
 	}, [wide]);
 
-	/** Puts the file's header right below the sticky bar (its border under it). */
+	/**
+	 * Puts the file's header right below the app header and the sticky bar
+	 * (its border under the bar's).
+	 */
 	const scrollTo = (index: number) => {
 		const section = document.getElementById(`file-${index}`);
 		if (!section) return;
 		const top = section.getBoundingClientRect().top + window.scrollY;
-		window.scrollTo({ top: top - barHeight + 1 });
+		window.scrollTo({ top: top - appHeader - barHeight + 1 });
 	};
 	/** A file picked in the tree: open it alone and bring its header to the top. */
 	const select = (index: number) => {
@@ -301,7 +284,7 @@ export function FilesPage() {
 					) : (
 						<div className="mt-4 flex gap-4">
 							{wide && (
-								<aside className="sticky top-[calc(var(--files-bar,0px)+1rem)] max-h-[calc(100dvh-var(--files-bar,0px)-2rem)] w-72 shrink-0 self-start overflow-y-auto">
+								<aside className="sticky top-[calc(var(--app-header,0px)+var(--files-bar,0px)+1rem)] max-h-[calc(100dvh-var(--app-header,0px)-var(--files-bar,0px)-2rem)] w-72 shrink-0 self-start overflow-y-auto">
 									{tree}
 								</aside>
 							)}

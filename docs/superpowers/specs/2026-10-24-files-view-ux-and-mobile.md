@@ -46,7 +46,8 @@ tool on a real PR. Everything not mentioned here stays as it is.
   row's accessible name and show in a tooltip on hover and keyboard focus;
   there is no "X / Y" text. Unit words are singular for one ("1 file").
 - Picking a file opens it, closes every other file, and scrolls so its header
-  sits right below the sticky page bar (from the sidebar or the phone sheet).
+  sits right below the sticky app header and page bar (from the sidebar or
+  the phone sheet).
 
 ## Opening files
 
@@ -56,8 +57,32 @@ tool on a real PR. Everything not mentioned here stays as it is.
 - The open file's header sticks right below the sticky page progress bar (no
   gap, no overlap) while its diff scrolls, so it can be closed from anywhere.
   Closing it from deep inside keeps the header in view. The page's
-  scroll-padding-top covers the bar plus the open header, so keyboard focus
-  never lands hidden under them.
+  scroll-padding-top covers the whole sticky stack (app header, bar, open
+  header), so keyboard focus never lands hidden under them.
+- A cluster's checkbox and ⊘ cross-off stay on screen while any of its rows
+  are: in a cluster taller than what's left of the screen they float right
+  below the open file's header, then scroll away with the cluster's end, and
+  the next cluster's controls take over. Only the controls move (they keep
+  their 40px targets on touch); the diff text never shifts. CSS sticky can't
+  do this inside the diff's horizontal scroller, so `stickyControls.ts`
+  places them (fixed while floating, translated at the cluster's end).
+
+## App header
+
+- The header (PR title, repo, banners, the Overview / Files changed tabs,
+  Refresh) is sticky on every page. It scrolls until only its last row is
+  left: the tabs, a small title that fades in (transform/opacity, instant
+  under reduced motion) and Refresh as an icon (its word shows from `sm`).
+  That compact row is about 43px, so one tap reaches the other page from
+  anywhere.
+- The sticky stack, top down: app header row → page progress bar → open file
+  header → floating cluster controls. Every offset is measured
+  (ResizeObserver): the app row's height is `--app-header` on the root and
+  `AppHeaderHeight` in React, the bar's is `--files-bar`, the page's own
+  sticky height is `--page-sticky`; scroll-padding-top, the tree-pick scroll
+  and the current-file tracking all add them up. On a 360×780 phone, inside
+  a long cluster of an open file, the stack ends at 179px (app row 43, bar
+  63, file header 73), with the floating controls just below.
 
 ## File header
 

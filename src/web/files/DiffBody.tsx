@@ -1,5 +1,5 @@
 import { useQueries, useQuery } from "@tanstack/react-query";
-import { Fragment, type ReactNode, useId, useState } from "react";
+import { Fragment, type ReactNode, useId, useRef, useState } from "react";
 import type {
 	ClusterView,
 	DiffLine,
@@ -11,6 +11,7 @@ import { Tooltip } from "../Tooltip";
 import { ErrorMessage } from "../ui";
 import { EXPAND_STEP, fileGaps, type Gap, gapState } from "./gaps";
 import { highlightLine, languageFor } from "./highlight";
+import { CONTROLS, SLOT, useStickyControls } from "./stickyControls";
 
 const COLUMNS = 5;
 
@@ -140,53 +141,59 @@ function ClusterControls(props: {
 	const target =
 		"flex items-center justify-center pointer-coarse:-my-2.5 pointer-coarse:h-10 pointer-coarse:w-10";
 	return (
-		<span className="flex items-center gap-1 pointer-coarse:gap-0">
-			<label
-				data-testid="cluster-box-target"
-				className={`${target} cursor-pointer`}
+		// The slot keeps its size while the controls float (stickyControls.ts).
+		<span {...{ [SLOT]: "" }} className="block">
+			<span
+				{...{ [CONTROLS]: "" }}
+				className="z-[5] flex w-fit items-center gap-1 rounded-md pointer-coarse:gap-0 data-[stuck]:bg-white data-[stuck]:shadow-md data-[stuck]:ring-1 data-[stuck]:ring-slate-300"
 			>
-				<input
-					type="checkbox"
-					aria-label={crossedOff ? "Undo cross-off" : "Mark cluster reviewed"}
-					aria-describedby={crossedOff ? props.noteId : undefined}
-					ref={(box) => {
-						if (box) box.indeterminate = crossedOff;
-					}}
-					checked={props.cluster.state === "reviewed"}
-					disabled={props.disabled}
-					onChange={() => props.onToggle(props.cluster)}
-					className={`h-3.5 w-3.5 cursor-pointer disabled:cursor-wait ${
-						crossedOff ? "accent-purple-600" : "accent-green-600"
-					}`}
-				/>
-			</label>
-			<Tooltip
-				content={crossedOff ? "Undo cross-off" : "Cross off cluster"}
-				describe={false}
-			>
-				{(trigger) => (
-					<button
-						type="button"
-						{...trigger}
-						aria-label="Cross off cluster"
-						aria-pressed={crossedOff}
-						disabled={props.disabled || props.cluster.state === "reviewed"}
-						onClick={() => props.onCrossOff(props.cluster)}
-						className={`${target} group/x rounded focus-visible:outline-2 focus-visible:outline-blue-600 disabled:cursor-not-allowed disabled:opacity-30`}
-					>
-						<span
-							aria-hidden
-							className={`flex h-4 w-4 items-center justify-center rounded font-sans text-xs leading-none ${
-								crossedOff
-									? "bg-purple-600 text-white"
-									: "text-purple-700 group-hover/x:bg-purple-100"
-							}`}
+				<label
+					data-testid="cluster-box-target"
+					className={`${target} cursor-pointer`}
+				>
+					<input
+						type="checkbox"
+						aria-label={crossedOff ? "Undo cross-off" : "Mark cluster reviewed"}
+						aria-describedby={crossedOff ? props.noteId : undefined}
+						ref={(box) => {
+							if (box) box.indeterminate = crossedOff;
+						}}
+						checked={props.cluster.state === "reviewed"}
+						disabled={props.disabled}
+						onChange={() => props.onToggle(props.cluster)}
+						className={`h-3.5 w-3.5 cursor-pointer disabled:cursor-wait ${
+							crossedOff ? "accent-purple-600" : "accent-green-600"
+						}`}
+					/>
+				</label>
+				<Tooltip
+					content={crossedOff ? "Undo cross-off" : "Cross off cluster"}
+					describe={false}
+				>
+					{(trigger) => (
+						<button
+							type="button"
+							{...trigger}
+							aria-label="Cross off cluster"
+							aria-pressed={crossedOff}
+							disabled={props.disabled || props.cluster.state === "reviewed"}
+							onClick={() => props.onCrossOff(props.cluster)}
+							className={`${target} group/x rounded focus-visible:outline-2 focus-visible:outline-blue-600 disabled:cursor-not-allowed disabled:opacity-30`}
 						>
-							⊘
-						</span>
-					</button>
-				)}
-			</Tooltip>
+							<span
+								aria-hidden
+								className={`flex h-4 w-4 items-center justify-center rounded font-sans text-xs leading-none ${
+									crossedOff
+										? "bg-purple-600 text-white"
+										: "text-purple-700 group-hover/x:bg-purple-100"
+								}`}
+							>
+								⊘
+							</span>
+						</button>
+					)}
+				</Tooltip>
+			</span>
 		</span>
 	);
 }
@@ -279,6 +286,9 @@ export function DiffBody(props: {
 	);
 	const noteId = (cluster: ClusterView) => noteIds.get(cluster.key);
 	const fileClusters = file.clusters.filter((c) => c.kind === "file");
+	const root = useRef<HTMLDivElement>(null);
+	const scroller = useRef<HTMLDivElement>(null);
+	useStickyControls(root, scroller);
 
 	const loaded = new Map<number, DiffLine>();
 	for (const result of contexts) {
@@ -392,36 +402,41 @@ export function DiffBody(props: {
 	const gapAt = (index: number) => gaps.find((g) => g.index === index);
 
 	return (
-		<div className="overflow-x-auto">
-			<table className="min-w-full border-collapse font-mono text-xs leading-5">
-				{fileClusters.map((cluster) => (
-					<tbody key={cluster.key} className="group">
-						<tr className={cluster.state === "reviewed" ? "opacity-60" : ""}>
-							<Rail state={cluster.state} />
-							<td className="w-11 px-1 py-1 align-top whitespace-nowrap pointer-coarse:w-20">
-								{checkbox(cluster)}
-							</td>
-							<td colSpan={COLUMNS - 2} className="px-2 py-1 font-sans text-sm">
-								{cluster.label}
-								<CrossedOffNote cluster={cluster} id={noteId(cluster)} />
-							</td>
-						</tr>
-					</tbody>
-				))}
-				{hunks.data?.hunks.map((hunk, index) => (
-					<Fragment key={hunkHeader(hunk)}>
-						{gapRows(gapAt(index))}
-						<HunkRows
-							hunk={hunk}
-							clusters={clusters}
-							lang={lang}
-							checkbox={checkbox}
-							noteId={noteId}
-						/>
-					</Fragment>
-				))}
-				{hunks.data && gapRows(gapAt(hunks.data.hunks.length))}
-			</table>
+		<div ref={root}>
+			<div ref={scroller} className="overflow-x-auto">
+				<table className="min-w-full border-collapse font-mono text-xs leading-5">
+					{fileClusters.map((cluster) => (
+						<tbody key={cluster.key} className="group">
+							<tr className={cluster.state === "reviewed" ? "opacity-60" : ""}>
+								<Rail state={cluster.state} />
+								<td className="w-11 px-1 py-1 align-top whitespace-nowrap pointer-coarse:w-20">
+									{checkbox(cluster)}
+								</td>
+								<td
+									colSpan={COLUMNS - 2}
+									className="px-2 py-1 font-sans text-sm"
+								>
+									{cluster.label}
+									<CrossedOffNote cluster={cluster} id={noteId(cluster)} />
+								</td>
+							</tr>
+						</tbody>
+					))}
+					{hunks.data?.hunks.map((hunk, index) => (
+						<Fragment key={hunkHeader(hunk)}>
+							{gapRows(gapAt(index))}
+							<HunkRows
+								hunk={hunk}
+								clusters={clusters}
+								lang={lang}
+								checkbox={checkbox}
+								noteId={noteId}
+							/>
+						</Fragment>
+					))}
+					{hunks.data && gapRows(gapAt(hunks.data.hunks.length))}
+				</table>
+			</div>
 			{hunks.isPending && (
 				// A screen tall while loading, so a file picked in the tree can
 				// scroll its header to the top before its lines arrive.
