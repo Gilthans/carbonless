@@ -1,6 +1,6 @@
 import { SyncIcon } from "@primer/octicons-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Link, Outlet, useRouterState } from "@tanstack/react-router";
+import { Link, Outlet } from "@tanstack/react-router";
 import {
 	type RefObject,
 	useEffect,
@@ -16,6 +16,7 @@ import {
 	sessionQuery,
 } from "./api";
 import { HeadBanner } from "./HeadBanner";
+import { KeptPages, useActivePage } from "./pages";
 import { AppHeaderHeight } from "./sticky";
 import { Tooltip } from "./Tooltip";
 import { ErrorMessage, safeHref } from "./ui";
@@ -123,9 +124,8 @@ export function App() {
 			]);
 		},
 	});
-	const wide = useRouterState({
-		select: (state) => state.location.pathname === "/files",
-	});
+	// Follows the page showing, which switches only once it can render.
+	const wide = useActivePage() === "/files";
 	const pr = session.data?.pr;
 	const prUrl = safeHref(pr?.url);
 
@@ -154,6 +154,7 @@ export function App() {
 			<div className="min-h-screen bg-white font-sans text-slate-900">
 				<header
 					ref={header}
+					data-app-header
 					// Sticks once only the last row (and the border) is left on screen.
 					style={{ top: `${-offset}px` }}
 					className={`sticky z-30 border-b border-slate-200 bg-slate-50 transition-shadow duration-200 motion-reduce:transition-none ${
@@ -224,11 +225,12 @@ export function App() {
 							</Link>
 						</nav>
 						{/*
-						 * The title again, small, fading in over the last stretch before
-						 * the header sticks (--compact, scroll-linked). It takes you back
-						 * to the top, to the full title. Inert until stuck.
+						 * The title again, small, centered between the tabs and Refresh
+						 * on a light pill, fading in over the last stretch before the
+						 * header sticks (--compact, scroll-linked). It takes you back to
+						 * the top, to the full title. Inert until stuck.
 						 */}
-						<div className="flex min-w-0 flex-1">
+						<div className="flex min-w-0 flex-1 justify-center">
 							{pr && (
 								<Tooltip content={`${pr.title} #${pr.number}`} describe={false}>
 									{(trigger) => (
@@ -244,13 +246,18 @@ export function App() {
 												transform:
 													"translateY(calc((1 - var(--compact, 0)) * 0.375rem))",
 											}}
-											className="flex min-h-10 max-w-full min-w-0 items-center rounded-md px-1 text-left text-xs leading-4 font-semibold text-slate-700 hover:bg-slate-200 focus-visible:outline-2 focus-visible:outline-blue-600 sm:text-sm sm:leading-5"
+											className="group flex min-h-10 max-w-full min-w-0 items-center rounded-md focus-visible:outline-2 focus-visible:outline-blue-600"
 										>
-											{/* Two short lines on a phone, one on wider screens. */}
-											<span className="line-clamp-2 break-words sm:line-clamp-1">
-												{pr.title}{" "}
-												<span className="font-normal text-slate-500">
-													#{pr.number}
+											<span
+												data-testid="compact-title-pill"
+												className="min-w-0 rounded-md bg-slate-200/70 px-2 py-0.5 text-center text-xs leading-4 font-semibold text-slate-800 group-hover:bg-slate-300/70 sm:px-2.5 sm:text-sm sm:leading-5"
+											>
+												{/* Two short lines on a phone, one on wider screens. */}
+												<span className="line-clamp-2 break-words sm:line-clamp-1">
+													{pr.title}{" "}
+													<span className="font-medium text-slate-500">
+														#{pr.number}
+													</span>
 												</span>
 											</span>
 										</button>
@@ -266,7 +273,7 @@ export function App() {
 									aria-label={refresh.isPending ? "Refreshing…" : "Refresh"}
 									onClick={() => refresh.mutate()}
 									disabled={refresh.isPending}
-									className="ml-auto flex h-10 shrink-0 items-center gap-1.5 rounded-md px-2.5 text-sm font-medium text-slate-700 hover:bg-slate-200 focus-visible:outline-2 focus-visible:outline-blue-600 disabled:opacity-60"
+									className="flex h-10 shrink-0 items-center gap-1.5 rounded-md px-2.5 text-sm font-medium text-slate-700 hover:bg-slate-200 focus-visible:outline-2 focus-visible:outline-blue-600 disabled:opacity-60"
 								>
 									<SyncIcon
 										aria-hidden
@@ -288,6 +295,8 @@ export function App() {
 				<main
 					className={`mx-auto px-3 py-4 sm:px-6 sm:py-6 ${wide ? "max-w-screen-2xl" : "max-w-5xl"}`}
 				>
+					<KeptPages />
+					{/* Only what isn't a kept page: not found. */}
 					<Outlet />
 				</main>
 			</div>

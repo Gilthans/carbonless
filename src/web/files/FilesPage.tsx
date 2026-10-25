@@ -10,6 +10,7 @@ import {
 	useSyncExternalStore,
 } from "react";
 import { reviewQuery } from "../api";
+import { usePageActive } from "../pageActive";
 import { useAppHeaderHeight, useHeight } from "../sticky";
 import { ErrorMessage } from "../ui";
 import { FileDiff } from "./FileDiff";
@@ -106,18 +107,23 @@ function FilesSheet(props: {
 /**
  * Tracks the file in view: the first file section crossing the band just
  * below the sticky app header and progress bar (`top` px tall together).
+ * Not while the page is hidden (`active` false): nothing is in view then,
+ * and the file in view when it shows again is the one it was left on.
  */
 function useCurrentFile(
 	container: RefObject<HTMLElement | null>,
 	sections: string,
 	top: number,
+	active: boolean,
 ) {
 	const [current, setCurrent] = useState<number | null>(null);
 	// `sections` changes when the rendered file sections do: observe the new ones.
 	// biome-ignore lint/correctness/useExhaustiveDependencies: see above.
 	useEffect(() => {
 		const root = container.current;
-		if (!root || typeof IntersectionObserver === "undefined") return;
+		if (!active || !root || typeof IntersectionObserver === "undefined") {
+			return;
+		}
 		const visible = new Set<number>();
 		const observer = new IntersectionObserver(
 			(entries) => {
@@ -134,7 +140,7 @@ function useCurrentFile(
 			observer.observe(section);
 		}
 		return () => observer.disconnect();
-	}, [container, sections, top]);
+	}, [container, sections, top, active]);
 	return [current, setCurrent] as const;
 }
 
@@ -143,6 +149,9 @@ const headerOf = (index: number) =>
 
 export function FilesPage() {
 	const review = useQuery(reviewQuery);
+	// False while another page shows (kept mounted, hidden): measuring and
+	// tracking pause, root styles are given back, the sheet closes.
+	const active = usePageActive();
 	const [stale, setStale] = useState(false);
 	const diffs = useRef<HTMLDivElement>(null);
 	const data = review.data;
@@ -150,11 +159,12 @@ export function FilesPage() {
 	// The sticky stack, top down: the app header's compact row, the progress
 	// bar, then the open file's header.
 	const appHeader = useAppHeaderHeight();
-	const barHeight = useHeight(() => bar.current, data !== undefined);
+	const barHeight = useHeight(() => bar.current, data !== undefined, !active);
 	const [current, setCurrent] = useCurrentFile(
 		diffs,
 		data ? `${data.revision}:${data.files.length}` : "",
 		appHeader + barHeight,
+		active,
 	);
 
 	const [unit, setUnit] = useUnit();
@@ -172,18 +182,20 @@ export function FilesPage() {
 	const openHeader = useHeight(
 		() => (openIndex === null ? null : headerOf(openIndex)),
 		openIndex,
+		!active,
 	);
 	// Keyboard focus scrolling keeps focused controls clear of the sticky
 	// stack (WCAG 2.4.11): the page's scroll-padding-top adds this to the app
 	// header's height (index.css).
 	const pageSticky = barHeight + openHeader;
-	useEffect(() => {
+	useLayoutEffect(() => {
+		if (!active) return;
 		const root = document.documentElement;
 		root.style.setProperty("--page-sticky", `${pageSticky}px`);
 		return () => {
 			root.style.removeProperty("--page-sticky");
 		};
-	}, [pageSticky]);
+	}, [pageSticky, active]);
 	/** The header to keep where it was on screen as files open and close. */
 	const anchor = useRef<{ index: number; top: number } | null>(null);
 	const sectionOf = (index: number) => document.getElementById(`file-${index}`);
@@ -212,10 +224,12 @@ export function FilesPage() {
 		if (Math.abs(delta) >= 1) window.scrollBy(0, delta);
 	}, [open]);
 
-	// Widening to the sidebar layout closes the sheet; narrowing doesn't reopen it.
-	useEffect(() => {
-		if (wide) setSheetOpen(false);
-	}, [wide]);
+	// Widening to the sidebar layout closes the sheet; narrowing doesn't reopen
+	// it. Leaving the page (browser back) closes it too: a hidden modal would
+	// leave the shown page inert.
+	useLayoutEffect(() => {
+		if (wide || !active) setSheetOpen(false);
+	}, [wide, active]);
 
 	/**
 	 * Puts the file's header right below the app header and the sticky bar

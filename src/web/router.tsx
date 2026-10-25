@@ -5,9 +5,9 @@ import {
 	createRoute,
 	createRouter,
 	Link,
-	lazyRouteComponent,
 } from "@tanstack/react-router";
 import { App } from "./App";
+import { FilesPage, OverviewPage } from "./pages";
 
 function NotFound() {
 	return (
@@ -25,20 +25,25 @@ const rootRoute = createRootRoute({
 	notFoundComponent: NotFound,
 });
 
+/*
+ * The pages render in the root layout, kept alive once visited (`KeptPages`),
+ * not in its <Outlet>. A route's loader loads its page's code, so the router
+ * switches pages only once it can render (`preload` is gone once loaded).
+ */
+const keptPage = () => null;
+
 const overviewRoute = createRoute({
 	getParentRoute: () => rootRoute,
 	path: "/",
-	// Pages load on demand: the shell renders before markdown or diff code arrives.
-	component: lazyRouteComponent(
-		() => import("./overview/OverviewPage"),
-		"OverviewPage",
-	),
+	loader: () => OverviewPage.preload?.(),
+	component: keptPage,
 });
 
 const filesRoute = createRoute({
 	getParentRoute: () => rootRoute,
 	path: "/files",
-	component: lazyRouteComponent(() => import("./files/FilesPage"), "FilesPage"),
+	loader: () => FilesPage.preload?.(),
+	component: keptPage,
 });
 
 const routeTree = rootRoute.addChildren([overviewRoute, filesRoute]);
@@ -50,6 +55,11 @@ export function createAppRouter(options: { initialPath?: string } = {}) {
 		history: options.initialPath
 			? createMemoryHistory({ initialEntries: [options.initialPath] })
 			: createBrowserHistory(),
+		// Each page keeps its own window scroll: going back to a page (tab,
+		// link or browser back/forward) puts it where it was left. Saved on
+		// leaving, restored once the kept page shows again, before paint.
+		scrollRestoration: true,
+		getScrollRestorationKey: (location) => location.pathname,
 	});
 }
 

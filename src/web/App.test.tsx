@@ -195,6 +195,46 @@ describe("App", () => {
 		expect(calls("/api/session")).toBe(1);
 	});
 
+	it("keeps a visited page mounted, hidden and inert, while the other shows", async () => {
+		const { router } = renderApp();
+		const what = await screen.findByRole("region", { name: "What it does" });
+		await router.navigate({ to: "/files" });
+		const files = await screen.findByRole("region", { name: "Files changed" });
+		await screen.findByRole("progressbar", { name: "Review progress" });
+		const reads = calls("/api/review");
+		// The overview is still there, as it was, but out of reach.
+		const kept = what.closest("[data-page]");
+		expect(kept).toHaveAttribute("data-page", "/");
+		expect(kept).toHaveAttribute("hidden");
+		expect(kept).toHaveAttribute("inert");
+		expect(kept).toHaveAttribute("aria-hidden", "true");
+		expect(what).toBeInTheDocument();
+		expect(screen.queryByRole("region", { name: "What it does" })).toBeNull();
+		await router.navigate({ to: "/" });
+		// The same elements come back: nothing remounted, nothing refetched.
+		expect(await screen.findByRole("region", { name: "What it does" })).toBe(
+			what,
+		);
+		expect(files.closest("[data-page]")).toHaveAttribute("hidden");
+		expect(screen.queryByRole("region", { name: "Files changed" })).toBeNull();
+		await router.navigate({ to: "/files" });
+		expect(await screen.findByRole("region", { name: "Files changed" })).toBe(
+			files,
+		);
+		expect(files.closest("[data-page]")).not.toHaveAttribute("aria-hidden");
+		expect(what.closest("[data-page]")).toHaveAttribute("aria-hidden", "true");
+		expect(calls("/api/review")).toBe(reads);
+		expect(calls("/api/overview")).toBe(1);
+	});
+
+	it("shows no kept page on an unknown path", async () => {
+		const { router } = renderApp();
+		await screen.findByRole("region", { name: "What it does" });
+		await router.navigate({ to: "/nope" as "/" });
+		expect(await screen.findByText(/No such page/)).toBeInTheDocument();
+		expect(screen.queryByRole("region", { name: "What it does" })).toBeNull();
+	});
+
 	it("shows the moved-head banner once the head check reports new commits", async () => {
 		renderApp({
 			"/api/head": ok({

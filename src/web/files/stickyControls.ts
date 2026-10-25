@@ -1,4 +1,5 @@
 import { type RefObject, useEffect, useLayoutEffect, useRef } from "react";
+import { usePageActive } from "../pageActive";
 
 /** Marks the slot a cluster's controls sit in (first row of the cluster). */
 export const SLOT = "data-sticky-slot";
@@ -63,9 +64,12 @@ export function useStickyControls(
 	scroller: RefObject<HTMLElement | null>,
 ) {
 	const kick = useRef<(() => void) | null>(null);
+	// While the page is hidden nothing is placed: the controls keep their
+	// places for when it shows again at the same scroll.
+	const active = usePageActive();
 	useEffect(() => {
 		const box = root.current;
-		if (!box) return;
+		if (!box || !active) return;
 		let frame = 0;
 		const update = () => {
 			frame = 0;
@@ -154,7 +158,7 @@ export function useStickyControls(
 			scrollBox?.removeEventListener("scroll", schedule);
 			observer?.disconnect();
 		};
-	}, [root, scroller]);
+	}, [root, scroller, active]);
 	// Rows change (lines load, a cluster's state flips): place them again.
 	useLayoutEffect(() => {
 		kick.current?.();

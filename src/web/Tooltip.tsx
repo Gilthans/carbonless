@@ -9,6 +9,7 @@ import {
 	useState,
 } from "react";
 import { createPortal } from "react-dom";
+import { usePageActive } from "./pageActive";
 
 /** Props the trigger element spreads onto itself. */
 export interface TooltipTriggerProps {
@@ -152,6 +153,15 @@ export function Tooltip(props: {
 	}, [open]);
 
 	useEffect(() => () => clearTimeout(timer.current), []);
+
+	// Its page was hidden (another page shows): nothing to point at.
+	const active = usePageActive();
+	useEffect(() => {
+		if (!active) {
+			clearTimeout(timer.current);
+			setOpen(false);
+		}
+	}, [active]);
 
 	const show = () => {
 		clearTimeout(timer.current);

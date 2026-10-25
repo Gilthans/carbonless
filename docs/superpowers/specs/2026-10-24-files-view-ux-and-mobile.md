@@ -73,7 +73,10 @@ tool on a real PR. Everything not mentioned here stays as it is.
   Refresh) is sticky on every page. It scrolls until only its last row (and
   its bottom border) is left: the tabs, a small title and Refresh as an icon
   (its word shows from `sm`). That compact row is 44px, so one tap reaches
-  the other page from anywhere.
+  the other page from anywhere. The small title (number included) is
+  centered between the tabs and Refresh on a light pill, slightly bolder.
+  Focusing anything in the header never scrolls the page (a negative
+  scroll-margin cancels the page's scroll-padding there).
 - The small title fades and slides in, linked to the scroll, over the last
   40px before the header sticks (`--compact`, set once per frame; no height
   tweening). Under reduced motion it just appears once stuck. It is a button
@@ -90,6 +93,24 @@ tool on a real PR. Everything not mentioned here stays as it is.
   and the current-file tracking all add them up. On a 360×780 phone, inside
   a long cluster of an open file, the stack ends at 180px (app row 44, bar
   63, file header 73), with the floating controls just below.
+
+## Switching pages
+
+- Switching Files → Overview → Files (tabs, links, browser back/forward)
+  finds each page exactly as it was left: window scroll, the open file, the
+  context lines loaded, the unit, floating cluster controls, opened thread
+  previews. The tree sheet is closed (leaving the page closes it).
+- Both pages stay mounted once visited (`KeptPages`, `src/web/pages.tsx`):
+  the router's routes render nothing and their loaders load the page code;
+  the root layout shows the active route's page and hides the other
+  (`hidden`, `inert`, `aria-hidden`: out of layout, focus and the
+  accessibility tree). A hidden page (`usePageActive()` false) pauses its
+  measurements (keeping the last heights), current-file tracking and
+  floating controls, gives back `--page-sticky`, and closes its tooltips.
+  Queries are shared by key, so nothing polls twice.
+- Window scroll per page is TanStack Router's scroll restoration keyed by
+  path: saved before the route changes, restored after the kept page shows,
+  before paint.
 
 ## File header
 

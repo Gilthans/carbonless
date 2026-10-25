@@ -3,12 +3,18 @@ import { createContext, useContext, useLayoutEffect, useState } from "react";
 /**
  * The rendered height in px of the element `find` returns, kept current as it
  * changes (sticky bars wrap differently by width and content). `key` says
- * when to look the element up again.
+ * when to look the element up again. While `paused` (its page is hidden, so
+ * it measures 0) it keeps the last height, and measures again once resumed.
  */
-export function useHeight(find: () => HTMLElement | null, key: unknown) {
+export function useHeight(
+	find: () => HTMLElement | null,
+	key: unknown,
+	paused = false,
+) {
 	const [height, setHeight] = useState(0);
 	// biome-ignore lint/correctness/useExhaustiveDependencies: looked up again when `key` changes.
 	useLayoutEffect(() => {
+		if (paused) return;
 		const node = find();
 		if (!node) {
 			setHeight(0);
@@ -20,7 +26,7 @@ export function useHeight(find: () => HTMLElement | null, key: unknown) {
 		const observer = new ResizeObserver(measure);
 		observer.observe(node);
 		return () => observer.disconnect();
-	}, [key]);
+	}, [key, paused]);
 	return height;
 }
 

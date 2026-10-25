@@ -8,3 +8,16 @@
 html {
 	scroll-padding-top: calc(var(--app-header, 0px) + var(--page-sticky, 0px));
 }
+
+/*
+ * The app header is sticky, so it is always on screen; its compact row sits
+ * inside that scroll-padding, though, and focusing a tab, the compact title
+ * or Refresh would scroll the page by it. A negative scroll margin as tall
+ * as the padding keeps the page where it is.
+ */
+[data-app-header] * {
+	scroll-margin-top: calc(
+		-1 *
+		(var(--app-header, 0px) + var(--page-sticky, 0px))
+	);
+}
