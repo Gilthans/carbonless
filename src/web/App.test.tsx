@@ -623,9 +623,37 @@ describe("OverviewPage", () => {
 			"src/done3.ts:1",
 			"src/done4.ts:1",
 		]);
+		// Resolved threads need no reply.
+		expect(list).not.toHaveTextContent("no reply");
 		await user.click(toggle);
 		expect(toggle).toHaveAttribute("aria-pressed", "false");
 		expect(within(humans).getAllByTestId("thread")).toHaveLength(1);
+		// Nothing resolved: the toggle can't lead to an empty list.
+		const bots = screen.getByRole("region", { name: "Bot reviews" });
+		const none = within(bots).getByRole("button", { name: "0 resolved" });
+		expect(none).toHaveAttribute("aria-disabled", "true");
+		await user.click(none);
+		expect(none).toHaveAttribute("aria-pressed", "false");
+		expect(within(bots).getAllByTestId("thread")).toHaveLength(1);
+	});
+
+	it("with only resolved threads, says none is unresolved and can still show them", async () => {
+		const user = userEvent.setup();
+		renderApp({
+			"/api/overview": ok({
+				...overview,
+				threads: [humanThread("src/r.ts", { resolved: true })],
+			}),
+		});
+		const humans = await screen.findByRole("region", { name: "Human reviews" });
+		expect(humans).toHaveTextContent("No unresolved threads");
+		const toggle = within(humans).getByRole("button", { name: "1 resolved" });
+		expect(toggle).not.toHaveAttribute("aria-disabled");
+		await user.click(toggle);
+		expect(within(humans).getAllByTestId("thread")).toHaveLength(1);
+		await user.click(toggle);
+		expect(toggle).toHaveAttribute("aria-pressed", "false");
+		expect(humans).toHaveTextContent("No unresolved threads");
 	});
 
 	it("lists five threads at a time; Load more adds five; the toggle starts over", async () => {
@@ -849,6 +877,7 @@ describe("OverviewPage", () => {
 		expect(resolved).toHaveAccessibleDescription(
 			/Resolution history isn't known/,
 		);
+		expect(resolved).toHaveAttribute("aria-disabled", "true");
 		expect(screen.queryByRole("status")).toBeNull();
 	});
 

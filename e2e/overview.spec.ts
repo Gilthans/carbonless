@@ -429,9 +429,22 @@ test("a thread shows the code it was written on beside the comment, stacked on a
 		expect(Math.abs(c.y - b.y)).toBeLessThan(2);
 		expect(b.x).toBeGreaterThan(c.x + c.width);
 	}
-	// Clipped, the code scrolls; Show more opens both, without scrollbars.
-	expect(c.height).toBeLessThanOrEqual(130);
+	// Clipped: six lines fit with no vertical scrollbar; a sideways one
+	// makes it focusable.
+	const clipped = await code.evaluate((el) => ({
+		down: el.scrollHeight > el.clientHeight,
+		sideways: el.scrollWidth > el.clientWidth,
+		tabIndex: el.getAttribute("tabindex"),
+	}));
+	expect(clipped.down).toBe(false);
+	expect(clipped.tabIndex).toBe(clipped.sideways ? "0" : null);
+	expect(c.height).toBeLessThanOrEqual(140);
+	// Show more opens both, the whole hunk without scrollbars, the range still marked.
 	await thread.getByRole("button", { name: "Show more" }).click();
+	await expect(lines).toHaveCount(9);
+	await expect(lines.first()).toContainText("import { load }");
+	await expect(code.locator("[data-marked]")).toHaveCount(2);
+	await expect(code).not.toHaveAttribute("tabindex");
 	const opened = await code.evaluate((el) => ({
 		over:
 			el.scrollHeight > el.clientHeight + 1 ||

@@ -248,6 +248,35 @@ describe("mapOverview", () => {
 			startLine: 42,
 			endLine: 42,
 		});
+		// Carried forward: the header follows the code's own numbering.
+		Object.assign(t, {
+			line: 17,
+			originalLine: 42,
+			originalStartLine: null,
+			startLine: 42,
+		});
+		expect(mapOverview(view(), g, VIEWER).threads[0]).toMatchObject({
+			line: 42,
+			code: { startLine: 42, endLine: 42 },
+		});
+		// No original line: the current pair, both ends of it.
+		Object.assign(t, { originalLine: null, line: 42, startLine: 41 });
+		expect(mapOverview(view(), g, VIEWER).threads[0]?.code).toMatchObject({
+			startLine: 41,
+			endLine: 42,
+		});
+		// No code: the current line.
+		const noHunk = structuredClone(g);
+		const nt = noHunk.reviewThreads[0] as unknown as {
+			first: { nodes: { diffHunk?: string }[] };
+		};
+		const firstNode = nt.first.nodes[0];
+		if (firstNode) firstNode.diffHunk = "";
+		Object.assign(nt, { line: 17, originalLine: 30 });
+		expect(mapOverview(view(), noHunk, VIEWER).threads[0]).toMatchObject({
+			line: 17,
+			code: null,
+		});
 		// A file comment: no line, no code.
 		Object.assign(t, { line: null, originalLine: null });
 		expect(mapOverview(view(), g, VIEWER).threads[0]).toMatchObject({

@@ -113,17 +113,22 @@ function lineNumber(value: unknown): number | null {
 
 /**
  * The code a thread's first comment was written on. GitHub's diff hunk is
- * of the commit the comment was made on, so the range is the `original*`
- * one; null for a file comment (no hunk or no line).
+ * of the commit the comment was made on and ends at `originalLine`, so the
+ * range is the `original*` pair; the current `line`/`startLine` pair only
+ * stands in when there is no original line. The two pairs are never mixed.
+ * Null for a file comment (no hunk or no line).
  */
 function threadCode(t: Json, first: Json): Thread["code"] {
 	const diffHunk = str(first.diffHunk);
-	const endLine = lineNumber(t.originalLine) ?? lineNumber(t.line);
+	const original = lineNumber(t.originalLine);
+	const endLine = original ?? lineNumber(t.line);
 	if (!diffHunk.trim() || endLine === null) return null;
 	const side: Side = SIDES.has(str(t.diffSide))
 		? (str(t.diffSide) as Side)
 		: "RIGHT";
-	const start = lineNumber(t.originalStartLine);
+	const start = lineNumber(
+		original === null ? t.startLine : t.originalStartLine,
+	);
 	const startSide: Side = SIDES.has(str(t.startDiffSide))
 		? (str(t.startDiffSide) as Side)
 		: side;
@@ -178,11 +183,14 @@ function mapThreads(nodes: unknown[], asOf: string | undefined): Thread[] {
 			createdAt,
 		);
 		const firstLogin = str(author.login);
+		const code = threadCode(t, first);
 		// bodyText is GitHub's plain-text rendering; the raw body is a fallback.
 		const text = str(first.bodyText) || str(first.body);
 		threads.push({
 			path: str(t.path),
-			line: lineNumber(t.line) ?? lineNumber(t.originalLine),
+			// The marked line when the code is shown (a carried-forward
+			// comment's current line may differ), else where it is now or was.
+			line: code?.endLine ?? lineNumber(t.line) ?? lineNumber(t.originalLine),
 			excerpt: text.replace(/\s+/g, " ").trim().slice(0, 200),
 			html: str(first.bodyHTML),
 			createdAt,
@@ -200,7 +208,7 @@ function mapThreads(nodes: unknown[], asOf: string | undefined): Thread[] {
 			// GitHub's flag is about today's head, not the cutoff's.
 			outdated: !asOf && t.isOutdated === true,
 			resolved: !asOf && t.isResolved === true,
-			code: threadCode(t, first),
+			code,
 		});
 	}
 	return sortThreads(threads);

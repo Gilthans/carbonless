@@ -551,6 +551,8 @@ function Chip(props: {
 	toggle?: {
 		expanded?: boolean;
 		pressed?: boolean;
+		/** Inert but still focusable, so its tip can say why. */
+		disabled?: boolean;
 		controls?: string;
 		onClick: () => void;
 	};
@@ -587,9 +589,10 @@ function Chip(props: {
 						data-testid={props.testId}
 						aria-expanded={toggle.expanded}
 						aria-pressed={toggle.pressed}
+						aria-disabled={toggle.disabled || undefined}
 						aria-controls={toggle.controls}
-						onClick={toggle.onClick}
-						className={`${className} cursor-pointer hover:brightness-125 ${toggle.pressed ? "[&>span]:ring-2 [&>span]:ring-current" : ""}`}
+						onClick={toggle.disabled ? undefined : toggle.onClick}
+						className={`${className} ${toggle.disabled ? "cursor-default" : "cursor-pointer hover:brightness-125"} ${toggle.pressed ? "[&>span]:ring-2 [&>span]:ring-current" : ""}`}
 					>
 						{badge}
 					</button>
@@ -810,6 +813,9 @@ function ThreadGroup(props: {
 	const unresolved = threads.filter((t) => !t.resolved);
 	const resolved = threads.filter((t) => t.resolved);
 	const listed = showResolved ? resolved : unresolved;
+	// Pressing never leads to an empty list (as of a cutoff, none is resolved);
+	// pressed, it can always go back.
+	const toggleOff = !showResolved && resolved.length === 0;
 	const IconEl = props.icon;
 	return (
 		<section
@@ -845,13 +851,16 @@ function ThreadGroup(props: {
 								tip={
 									asOf
 										? "Resolution history isn't known for a past moment: every thread counts as unresolved"
-										: showResolved
-											? "Show unresolved threads"
-											: "Show resolved threads"
+										: toggleOff
+											? "No resolved threads"
+											: showResolved
+												? "Show unresolved threads"
+												: "Show resolved threads"
 								}
-								describeTip={asOf}
+								describeTip={asOf || toggleOff}
 								toggle={{
 									pressed: showResolved,
+									disabled: toggleOff,
 									controls: listId,
 									onClick: () => {
 										setShowResolved((on) => !on);
@@ -866,6 +875,11 @@ function ThreadGroup(props: {
 				)}
 			</div>
 			<div id={listId}>
+				{threads.length > 0 && listed.length === 0 && (
+					<p className="text-sm text-faint">
+						{showResolved ? "No resolved threads" : "No unresolved threads"}
+					</p>
+				)}
 				{listed.length > 0 && (
 					<ul
 						aria-label={
@@ -873,10 +887,8 @@ function ThreadGroup(props: {
 						}
 						className="space-y-3"
 					>
-						{listed.slice(0, limit).map((t, i) => (
-							// Threads have no id; their order is stable per response.
-							// biome-ignore lint/suspicious/noArrayIndexKey: see above.
-							<ThreadItem key={`${showResolved}:${i}`} thread={t} />
+						{threadKeys(listed.slice(0, limit)).map(([key, t]) => (
+							<ThreadItem key={key} thread={t} />
 						))}
 					</ul>
 				)}
@@ -893,6 +905,20 @@ function ThreadGroup(props: {
 			</div>
 		</section>
 	);
+}
+
+/**
+ * Threads have no id: path, opening time and author name one, numbered
+ * apart in the unlikely case two share all three.
+ */
+function threadKeys(threads: Thread[]): [string, Thread][] {
+	const seen = new Map<string, number>();
+	return threads.map((t) => {
+		const base = `${t.path}\u0000${t.createdAt}\u0000${t.author}`;
+		const n = seen.get(base) ?? 0;
+		seen.set(base, n + 1);
+		return [n ? `${base}\u0000${n}` : base, t];
+	});
 }
 
 /** Overflowing `el` (when `axis` is "both", sideways too), re-measured as it resizes. */
@@ -934,10 +960,15 @@ function ThreadItem({ thread }: { thread: Thread }) {
 	const commentBox = useRef<HTMLDivElement>(null);
 	const codeMore = useOverflow(codeBox, !open, "both");
 	const commentMore = useOverflow(commentBox, !open, "y");
-	const more = codeMore || commentMore;
 	const commentId = useId();
 	const codeId = useId();
-	const excerpt = thread.code ? codeExcerpt(thread.code).lines : [];
+	const clipped = thread.code ? codeExcerpt(thread.code).lines : [];
+	const whole = thread.code
+		? codeExcerpt(thread.code, Number.POSITIVE_INFINITY).lines
+		: [];
+	const excerpt = open ? whole : clipped;
+	// Opening also shows the hunk's earlier lines.
+	const more = codeMore || commentMore || whole.length > clipped.length;
 	const commentClipped = commentMore && !open;
 	useEffect(() => {
 		const el = commentBox.current;
@@ -988,7 +1019,7 @@ function ThreadItem({ thread }: { thread: Thread }) {
 					text={String(n)}
 					className="gap-1 text-muted"
 				/>
-				{!thread.hasReply && (
+				{!thread.hasReply && !thread.resolved && (
 					<Badge tone="yellow" icon={ReplyIcon}>
 						no reply
 					</Badge>
@@ -1007,6 +1038,7 @@ function ThreadItem({ thread }: { thread: Thread }) {
 						path={thread.path}
 						lines={excerpt}
 						open={open}
+						scrollable={codeMore && !open}
 					/>
 					{comment}
 				</div>
@@ -1056,8 +1088,9 @@ const SIGN_COLOR: Record<HunkLine["kind"], string> = {
 
 /**
  * The code a comment was written on: the end of GitHub's diff hunk, the
- * commented lines marked by an accent rail. Scrolls while clipped; opened,
- * it shows every line, wrapped.
+ * commented lines marked by an accent rail. Clipped, it scrolls (sideways,
+ * and down past six lines); opened, it shows the whole hunk, wrapped, and
+ * keeps the commented lines in view.
  */
 function ThreadCodePane(props: {
 	ref: Ref<HTMLElement>;
@@ -1065,6 +1098,8 @@ function ThreadCodePane(props: {
 	path: string;
 	lines: (HunkLine & { marked: boolean })[];
 	open: boolean;
+	/** It overflows while clipped: focusable so the keyboard can scroll it. */
+	scrollable: boolean;
 }) {
 	const lang = languageFor(props.path);
 	// The file's tab width (.editorconfig), once the review has loaded.
@@ -1072,17 +1107,24 @@ function ThreadCodePane(props: {
 	const tabWidth = review.data?.files.find(
 		(f) => f.path === props.path,
 	)?.tabWidth;
+	const table = useRef<HTMLTableElement>(null);
+	useEffect(() => {
+		if (!props.open) return;
+		const marked = table.current?.querySelector("[data-marked]");
+		marked?.scrollIntoView?.({ block: "nearest" });
+	}, [props.open]);
 	return (
 		<figure
 			ref={props.ref}
 			id={props.id}
 			aria-label={`Code at ${props.path}`}
 			data-testid="thread-code"
-			// Focusable so the keyboard can scroll it while it's clipped.
-			tabIndex={props.open ? undefined : 0}
-			className={`min-w-0 rounded-md border border-line bg-code font-mono text-xs leading-5 text-code-ink focus-visible:outline-2 focus-visible:outline-accent ${props.open ? "" : "max-h-32 overflow-auto"}`}
+			tabIndex={props.scrollable ? 0 : undefined}
+			// Six 20px lines, the border and a thin sideways scrollbar fit
+			// without a vertical one; only a longer range scrolls down.
+			className={`min-w-0 rounded-md border border-line bg-code font-mono text-xs leading-5 text-code-ink [scrollbar-width:thin] focus-visible:outline-2 focus-visible:outline-accent ${props.open ? "" : "max-h-[8.75rem] overflow-auto"}`}
 		>
-			<table className="w-full border-collapse">
+			<table ref={table} className="w-full border-collapse">
 				<tbody>
 					{props.lines.map((line, i) => (
 						<tr
