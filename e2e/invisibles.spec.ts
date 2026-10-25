@@ -99,10 +99,17 @@ test("code shows invisible characters, and copying gives back the original", asy
 	expect(await glyphs(section, "bidi")).toEqual(
 		expect.arrayContaining(['"\\\\u202E" / ""', '"\\\\u2066" / ""']),
 	);
-	await expect(section.locator('[data-inv="bidi"]').first()).toHaveAttribute(
-		"title",
-		/right-to-left override/,
-	);
+	// Each escape is named, and a hover or tap shows the name.
+	const bidiMarker = section.locator('[data-inv="bidi"]').first();
+	await expect(bidiMarker).toHaveAccessibleName(/right-to-left override/);
+	if (isMobile) await bidiMarker.tap();
+	else await bidiMarker.hover();
+	await expect(
+		page.locator('[role="tooltip"]:not([hidden])', {
+			hasText: /right-to-left override/,
+		}),
+	).toBeVisible();
+	await page.keyboard.press("Escape");
 	// The .editorconfig's 8 columns: a leading tab is 8 characters wide.
 	const tab = section.locator('[data-inv="tab"]').first();
 	const ch = await tab.evaluate((el) => {

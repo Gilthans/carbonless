@@ -5,12 +5,16 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	CodeLine,
+	colorPieces,
+	copyWithOriginals,
 	INVISIBLES_STORAGE_KEY,
 	InvisiblesToggle,
 	readShowInvisibles,
 	resetShowInvisibles,
 	setShowInvisibles,
+	type Token,
 } from "./Invisibles";
+import { renderInvisibles } from "./invisibles";
 
 function renderLine(props: Parameters<typeof CodeLine>[0]) {
 	const client = new QueryClient();
@@ -72,11 +76,36 @@ describe("CodeLine", () => {
 		expect(seen(line())).toBe('x·=·"\\u202Eabc\\u200B\\u00A0"');
 		expect(line().textContent).toBe(text);
 		const bidi = line().querySelector<HTMLElement>('[data-inv="bidi"]');
-		expect(bidi?.title).toMatch(/U\+202E right-to-left override/);
+		expect(bidi).toHaveAccessibleName(/U\+202E right-to-left override/);
 		expect(bidi?.className).toMatch(/text-warn/);
 		expect(
-			line().querySelector<HTMLElement>('[data-inv="escape"]')?.title,
-		).toBe("U+200B zero width space");
+			line().querySelector<HTMLElement>('[data-inv="escape"]'),
+		).toHaveAccessibleName("U+200B zero width space");
+	});
+
+	it("names an escape in a tooltip on hover and tap, with no element until then", async () => {
+		renderLine({ text: "a\u200Bb", lang: null, newline: false });
+		const tips = () =>
+			Array.from(document.querySelectorAll('[role="tooltip"]')).filter((t) =>
+				t.textContent?.includes("U+200B"),
+			);
+		expect(tips()).toHaveLength(0);
+		const marker = line().querySelector<HTMLElement>('[data-inv="escape"]');
+		if (!marker) throw new Error("no escape");
+		await userEvent.hover(marker);
+		await waitFor(() =>
+			expect(tips().map((t) => t.textContent)).toEqual([
+				"U+200B zero width space",
+			]),
+		);
+		await userEvent.unhover(marker);
+		await waitFor(() => expect(tips()).toHaveLength(0));
+		// A tap focuses it (no tab stop), which opens the tooltip.
+		expect(marker.tabIndex).toBe(-1);
+		act(() => marker.focus());
+		expect(tips().map((t) => t.textContent)).toEqual([
+			"U+200B zero width space",
+		]);
 	});
 
 	it("keeps highlighting, split around the markers", async () => {
@@ -116,6 +145,148 @@ describe("CodeLine", () => {
 		expect(kinds()).toEqual(["tab", "bidi", "escape", "escape", "bidi", "eol"]);
 		expect(line().textContent).toBe(text);
 	});
+});
+
+describe("colorPieces", () => {
+	it("cuts text pieces by the tokens they overlap", () => {
+		const pieces = renderInvisibles("const  x = 1;", 4, { newline: false });
+		const tokens: Token[] = [
+			{ content: "const", offset: 0, color: "red" },
+			{ content: "  x ", offset: 5 },
+			{ content: "=", offset: 9, color: "blue" },
+			{ content: " 1;", offset: 10 },
+		];
+		const out = colorPieces(pieces, tokens);
+		const texts = pieces.map((p, i) =>
+			p.kind === "text"
+				? (out[i] ?? []).map((s) => `${s.token?.color ?? ""}:${s.text}`)
+				: p.kind,
+		);
+		expect(texts).toEqual([
+			["red:const"],
+			"space",
+			[":x"],
+			"space",
+			["blue:="],
+			"space",
+			[":1;"],
+		]);
+	});
+
+	it("is linear in the pieces and tokens of a 100 KB line", () => {
+		const text = "let a = b;  ".repeat(9000);
+		const tokens: Token[] = [];
+		for (let at = 0; at < text.length; at += 3) {
+			tokens.push({ content: text.slice(at, at + 3), offset: at });
+		}
+		const start = performance.now();
+		const pieces = renderInvisibles(text, 4);
+		const out = colorPieces(pieces, tokens);
+		expect(performance.now() - start).toBeLessThan(200);
+		const joined = pieces
+			.map((p, i) =>
+				p.kind === "text" ? (out[i] ?? []).map((s) => s.text).join("") : p.raw,
+			)
+			.join("");
+		expect(joined).toBe(text);
+	});
+});
+
+describe("copying", () => {
+	function table(rows: string[]) {
+		const client = new QueryClient();
+		return render(
+			<QueryClientProvider client={client}>
+				<table>
+					<tbody>
+						{rows.map((text, i) => (
+							// biome-ignore lint/suspicious/noArrayIndexKey: static rows
+							<tr key={i} data-testid="row">
+								<td className="select-none">{i + 1}</td>
+								<td className="whitespace-pre">
+									<span className="select-none">+</span>
+									<CodeLine text={text} lang={null} />
+								</td>
+							</tr>
+						))}
+					</tbody>
+				</table>
+			</QueryClientProvider>,
+		);
+	}
+
+	/** Copies the selection, giving what lands on the clipboard. */
+	function copy(): { plain?: string; html?: string; prevented: boolean } {
+		const data = new Map<string, string>();
+		const event = new Event("copy", { cancelable: true }) as ClipboardEvent;
+		Object.defineProperty(event, "clipboardData", {
+			value: {
+				setData: (type: string, value: string) => data.set(type, value),
+			},
+		});
+		copyWithOriginals(event);
+		return {
+			plain: data.get("text/plain"),
+			html: data.get("text/html"),
+			prevented: event.defaultPrevented,
+		};
+	}
+
+	function select(start: [Node, number], end: [Node, number]) {
+		const range = document.createRange();
+		range.setStart(...start);
+		range.setEnd(...end);
+		const selection = document.getSelection();
+		selection?.removeAllRanges();
+		selection?.addRange(range);
+	}
+
+	/** The text node holding `text` inside the n-th row's code. */
+	function textNode(row: number, text: string): Text {
+		const rows = screen.getAllByTestId("row");
+		const walker = document.createTreeWalker(
+			rows[row] as Node,
+			NodeFilter.SHOW_TEXT,
+		);
+		for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+			if ((n as Text).data.includes(text)) return n as Text;
+		}
+		throw new Error(`no ${text}`);
+	}
+
+	it("keeps no-break spaces in a partial, multi-line selection, without touching the DOM", () => {
+		table(["let a\u00A0= 1;", "b\u202F c", "x\u3000y"]);
+		const before = document.body.innerHTML;
+		select([textNode(0, "a"), 0], [textNode(2, "y"), 1]);
+		const copied = copy();
+		expect(copied.prevented).toBe(true);
+		expect(copied.plain).toBe("a\u00A0= 1;\nb\u202F c\nx\u3000y");
+		expect(copied.html).toContain("1;");
+		expect(document.body.innerHTML).toBe(before);
+		const selection = document.getSelection();
+		expect(selection?.anchorNode).toBe(textNode(0, "a"));
+		expect(selection?.toString()).toContain("1;");
+	});
+
+	it("starts inside a no-break space's own element", () => {
+		table(["a\u00A0b"]);
+		const nbsp = line0Escape();
+		select([nbsp, 0], [nbsp, 1]);
+		expect(copy().plain).toBe("\u00A0");
+	});
+
+	it("leaves a copy without blanks to the browser", () => {
+		table(["let a = 1;"]);
+		select([textNode(0, "let"), 0], [textNode(0, "1;"), 1]);
+		const copied = copy();
+		expect(copied.prevented).toBe(false);
+		expect(copied.plain).toBeUndefined();
+	});
+
+	function line0Escape(): Text {
+		const span = document.querySelector('[data-inv="escape"] > span');
+		return span?.firstChild as Text;
+	}
 });
 
 describe("the ¶ choice", () => {

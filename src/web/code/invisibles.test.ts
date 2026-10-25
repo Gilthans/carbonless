@@ -15,7 +15,7 @@ function look(pieces: Piece[]): string {
 				case "text":
 					return p.raw;
 				case "space":
-					return "·";
+					return "·".repeat(p.raw.length);
 				case "tab":
 					return p.marker
 						? `\\t${"_".repeat(p.columns - 2)}`
@@ -39,6 +39,28 @@ describe("renderInvisibles", () => {
 		expect(shown("a b  ")).toBe("a·b··⏎\\n");
 	});
 
+	it("draws a run of spaces as one piece", () => {
+		const pieces = renderInvisibles("a    b  \tc", 4, { newline: false });
+		expect(pieces.map((p) => [p.kind, p.raw])).toEqual([
+			["text", "a"],
+			["space", "    "],
+			["text", "b"],
+			["space", "  "],
+			["tab", "\t"],
+			["text", "c"],
+		]);
+		// The tab still counts the spaces: "a····b··" is 8 columns.
+		expect(pieces[4]).toMatchObject({ columns: 4 });
+	});
+
+	it("splits a 100 KB line quickly", () => {
+		const text = "const value = call(a, b);\t// note  ".repeat(3000);
+		const start = performance.now();
+		const pieces = renderInvisibles(text, 4);
+		expect(performance.now() - start).toBeLessThan(200);
+		expect(joinPieces(pieces)).toBe(text);
+	});
+
 	it("shows CRLF as \\r\\n, and no ending on a last line without newline", () => {
 		expect(shown("x\r")).toBe("x⏎\\r\\n");
 		expect(shown("x", 4, false)).toBe("x");
@@ -59,6 +81,27 @@ describe("renderInvisibles", () => {
 		expect(shown("a\u200B\tx")).toBe("a\\u200B\\t___x⏎\\n");
 		expect(shown("\t\t")).toBe("\\t__\\t__⏎\\n");
 		expect(shown("ab\t", 8)).toBe("ab\\t____⏎\\n");
+	});
+
+	it("counts wide characters and emoji as two columns before a tab", () => {
+		// Ideographs and fullwidth forms.
+		expect(shown("確\tx")).toBe("確\\tx⏎\\n");
+		expect(shown("ＡＢ\tx")).toBe("ＡＢ\\t__x⏎\\n");
+		// An emoji, a VS16 emoji, a ZWJ family, a skin tone, a flag: two each.
+		for (const emoji of [
+			"👍",
+			"❤\uFE0F",
+			"👨\u200D👩\u200D👧",
+			"👩🏽\u200D💻",
+			"🇫🇷",
+			"1\uFE0F\u20E3",
+		]) {
+			expect(shown(`${emoji}\tx`), emoji).toBe(`${emoji}\\tx⏎\\n`);
+		}
+		// Two flags: four columns.
+		expect(shown("🇫🇷🇩🇪\tx")).toBe("🇫🇷🇩🇪\\t__x⏎\\n");
+		// A text-style symbol is one column.
+		expect(shown("❤\tx")).toBe("❤\\t_x⏎\\n");
 	});
 
 	it("counts marks as zero columns before a tab", () => {
@@ -150,15 +193,107 @@ describe("renderInvisibles", () => {
 		expect(shown("a\uFE0F", 4, false)).toBe("a\\uFE0F");
 		expect(shown("❤\uFE0F\uFE0F", 4, false)).toBe("❤\uFE0F\\uFE0F");
 		expect(shown("a\u200Db", 4, false)).toBe("a\\u200Db");
-		// Tags after a flag's terminator are smuggled again.
+		// Tags that aren't an RGI flag's are smuggled text.
 		expect(shown("🏴\u{E0067}\u{E007F}\u{E0041}", 4, false)).toBe(
-			"🏴\u{E0067}\u{E007F}\\u{E0041}",
+			"🏴\\u{E0067}\\u{E007F}\\u{E0041}",
 		);
 	});
 
 	it("keeps joiners in scripts that need them", () => {
-		// Devanagari half form: KA + VIRAMA + ZWJ + SSA.
-		expect(shown("क\u094D\u200Dष", 4, false)).toBe("क\u094D\u200Dष");
+		for (const text of [
+			// Devanagari half form: KA + VIRAMA + ZWJ + SSA; and with ZWNJ.
+			"क\u094D\u200Dष",
+			"क\u094D\u200Cष",
+			// Persian: the ZWNJ in "mi-khaham".
+			"می\u200Cخواهم",
+			// Arabic letters around a ZWJ, with a vowel mark between.
+			"ب\u064E\u200Dت",
+			"👨\u200D👩\u200D👧",
+			"❤\uFE0F\u200D🔥",
+		]) {
+			expect(shown(text, 4, false)).toBe(text);
+		}
+	});
+
+	it("escapes joiners anywhere else", () => {
+		const zwj = "\\u200D";
+		const cases: [string, string][] = [
+			// CJK, Hebrew, Thai don't join.
+			["確\u200D認", `確${zwj}認`],
+			["変\u200C数", "変\\u200C数"],
+			["של\u200Dום", `של${zwj}ום`],
+			["ก\u200Dข", `ก${zwj}ข`],
+			// A combining mark on ASCII is no virama.
+			["e\u0301\u200D\u0301", `e\u0301${zwj}\u0301`],
+			// A virama on ASCII.
+			["a\u094D\u200D", `a\u094D${zwj}`],
+			// Escaped neighbours never count.
+			["x\u034F\u200D\u034Fy", `x\\u034F${zwj}\\u034Fy`],
+			["a\uFE0F\u200D\uFE0Fb", `a\\uFE0F${zwj}\\uFE0Fb`],
+			["ب\u200B\u200Dت", `ب\\u200B${zwj}ت`],
+			// Text-style symbols aren't an emoji sequence.
+			["©\u200D®", `©${zwj}®`],
+			["ab\u200Dcd", `ab${zwj}cd`],
+			// Arabic next to Syriac: two scripts.
+			["ب\u200Dܒ", `ب${zwj}ܒ`],
+		];
+		for (const [text, look] of cases) {
+			expect(shown(text, 4, false), text).toBe(look);
+		}
+	});
+
+	it("keeps variation selectors only where they select", () => {
+		for (const text of [
+			"❤\uFE0F",
+			"☺\uFE0E",
+			"1\uFE0F\u20E3",
+			"#\uFE0F\u20E3",
+			"葛\u{E0100}",
+		]) {
+			expect(shown(text, 4, false)).toBe(text);
+		}
+		for (const [text, look] of [
+			["x1\uFE0F", "x1\\uFE0F"],
+			["x1\uFE00", "x1\\uFE00"],
+			["#\uFE0F", "#\\uFE0F"],
+			["*\uFE0F*", "*\\uFE0F*"],
+			// Other standardized selectors aren't worth the risk.
+			["≩\uFE00", "≩\\uFE00"],
+			// An ideographic selector off an ideograph.
+			["a\u{E0100}", "a\\u{E0100}"],
+			["❤\u{E0100}", "❤\\u{E0100}"],
+		] as const) {
+			expect(shown(text, 4, false), text).toBe(look);
+		}
+	});
+
+	it("keeps tag characters only in the RGI subdivision flags", () => {
+		const tags = (s: string) =>
+			[...s]
+				.map((c) => String.fromCodePoint(0xe0000 + (c.codePointAt(0) ?? 0)))
+				.join("");
+		const cancel = "\u{E007F}";
+		for (const code of ["gbeng", "gbsct", "gbwls"]) {
+			const flag = `🏴${tags(code)}${cancel}`;
+			expect(shown(flag, 4, false)).toBe(flag);
+		}
+		// ASCII smuggled behind a black flag.
+		const smuggled = `🏴${tags("ignore")}${cancel}`;
+		expect(shown(smuggled, 4, false)).toBe(
+			`🏴${[...tags("ignore"), cancel].map((t) => escapeLabel(t.codePointAt(0) ?? 0)).join("")}`,
+		);
+		// An unknown subdivision, a missing cancel tag, a flag cut short.
+		expect(shown(`🏴${tags("usca")}${cancel}`, 4, false)).not.toContain(
+			tags("u"),
+		);
+		expect(shown(`🏴${tags("gbeng")}x`, 4, false)).not.toContain(tags("g"));
+		expect(shown(`🏴${tags("gbe")}${cancel}`, 4, false)).not.toContain(
+			tags("g"),
+		);
+		// Tags after a valid flag are smuggled again.
+		expect(shown(`🏴${tags("gbeng")}${cancel}${tags("a")}`, 4, false)).toBe(
+			`🏴${tags("gbeng")}${cancel}\\u{E0061}`,
+		);
 	});
 
 	it("always gives back the original text", () => {

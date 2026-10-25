@@ -50,15 +50,25 @@ box marking them.
 
 Code shows what it is made of, Notepad++ style (`src/web/code/`): spaces
 as `·`, tabs as `\t` padded to the next tab stop (the head's
-`.editorconfig` `tab_width`, else a numeric `indent_size`, else 4), line
-endings as `\n` / `\r\n`, all in `faint`. Characters that would print as
-nothing or as a lookalike blank (controls, zero widths, BOM, soft hyphen,
-tags, unusual spaces, separators, stray variation selectors) show as
-`\uXXXX`; bidi controls also get a `warn` tint and a tooltip. The ¶ toggle
+`.editorconfig` `tab_width`, else a numeric `indent_size`, else 4; wide
+characters and emoji count two columns), line endings as `\n` / `\r\n`,
+all in `faint`. Characters that would print as nothing or as a lookalike
+blank (controls, zero widths, BOM, soft hyphen, tags, unusual spaces,
+separators, stray variation selectors) show as `\uXXXX`, named in a
+tooltip (hover or tap); bidi controls also get a `warn` tint. The ¶ toggle
 in the Files bar hides only spaces, tabs and line endings: escapes always
-show (principle 2). Emoji sequences and joiners in scripts that need them
-are left alone. Markers are generated content, so a copy gives the
-original text.
+show (principle 2). Only a short list of invisibles doing their job stays
+unescaped, and anything unsure is escaped: ZWJ/ZWNJ after a virama or
+between letters of a joining script (Arabic, Syriac, ...), ZWJ inside an
+emoji sequence, VS15/VS16 after an emoji or in a keycap, an ideographic
+variation selector after an ideograph, and the tags of the three RGI
+subdivision flags. Markers are generated content, so a copy gives the
+original text. Sources spell such characters as `\u` escapes; a test fails
+on any raw one.
+
+Out of scope: homoglyphs (a Cyrillic `а` for a Latin `a` shows as itself),
+and the ordinary bidi of natural right-to-left text, which can reorder
+neutral punctuation next to it without any override.
 
 ## Typography
 

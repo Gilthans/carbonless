@@ -14,8 +14,8 @@ export const DEFAULT_TAB_WIDTH = 4;
 export type Piece =
 	/** Ordinary text, `start` its UTF-16 offset in the line. */
 	| { kind: "text"; raw: string; start: number }
-	/** U+0020, drawn as `·` (only while invisibles show). */
-	| { kind: "space"; raw: " "; start: number }
+	/** A run of U+0020, one `·` each (only while invisibles show). */
+	| { kind: "space"; raw: string; start: number }
 	/**
 	 * A tab: `columns` wide, up to the next tab stop. While invisibles show,
 	 * it starts with the `\t` marker (so it is at least 2 columns).
@@ -60,7 +60,7 @@ const ZWNJ = "\u200C";
  * separators, other default-ignorable code points (variation selectors,
  * Hangul fillers), lone surrogates and the braille blank.
  */
-const INVISIBLE =
+export const INVISIBLE =
 	/^[\p{Cc}\u2800\p{Cf}\p{Zs}\p{Zl}\p{Zp}\p{Cs}\p{Default_Ignorable_Code_Point}]$/u;
 
 const NAMES = new Map<number, string>([
@@ -132,51 +132,153 @@ export function describeCodePoint(codePoint: number): string {
 const is = (re: RegExp, ch: string | undefined) =>
 	ch !== undefined && re.test(ch);
 const EMOJI = /^\p{Emoji}$/u;
+const EMOJI_PRESENTATION = /^\p{Emoji_Presentation}$/u;
 const PICTOGRAPHIC = /^\p{Extended_Pictographic}$/u;
 const MODIFIER = /^\p{Emoji_Modifier}$/u;
+const MODIFIER_BASE = /^\p{Emoji_Modifier_Base}$/u;
+const REGIONAL = /^\p{Regional_Indicator}$/u;
 const IDEOGRAPHIC = /^\p{Ideographic}$/u;
-/** Letters and marks of scripts that join with ZWJ/ZWNJ (Indic, Arabic...). */
-const JOINING = /^[\p{Lo}\p{M}]$/u;
 const MARK = /^\p{M}$/u;
+const LETTER = /^\p{L}$/u;
+const KEYCAP_BASE = /^[0-9#*]$/;
+const KEYCAP = String.fromCharCode(0x20e3);
+const VS15 = String.fromCharCode(0xfe0e);
+const VS16 = String.fromCharCode(0xfe0f);
+const IDEOGRAPHIC_VS = /^[\u{E0100}-\u{E01EF}]$/u;
+/** Canonical_Combining_Class=Virama (Unicode 15.1). */
+const VIRAMA =
+	/^[्্੍્୍்్್഻഼്්ฺ຺྄္်᜔᜕᜴្᩠᭄᮪᮫᯲᯳⵿꠆꠬꣄꥓꧀꫶꯭\u{10A3F}\u{11046}\u{11070}\u{1107F}\u{110B9}\u{11133}\u{11134}\u{111C0}\u{11235}\u{112EA}\u{1134D}\u{11442}\u{114C2}\u{115BF}\u{1163F}\u{116B6}\u{1172B}\u{11839}\u{1193D}\u{1193E}\u{119E0}\u{11A34}\u{11A47}\u{11A99}\u{11C3F}\u{11D44}\u{11D45}\u{11D97}\u{11F41}\u{11F42}]$/u;
+/** Scripts whose letters join, where ZWJ/ZWNJ pick a letter's form. */
+const JOINING_SCRIPTS = [
+	"Arabic",
+	"Syriac",
+	"Nko",
+	"Mongolian",
+	"Mandaic",
+	"Manichaean",
+	"Psalter_Pahlavi",
+	"Hanifi_Rohingya",
+	"Sogdian",
+	"Old_Uyghur",
+	"Chorasmian",
+	"Adlam",
+	"Phags_Pa",
+].map((script) => new RegExp(`^\\p{Script=${script}}$`, "u"));
+/** The tags of the RGI subdivision flags (England, Scotland, Wales). */
+const FLAG_TAGS = ["gbeng", "gbsct", "gbwls"].map((code) =>
+	[...code]
+		.map((c) => String.fromCodePoint(0xe0000 + (c.codePointAt(0) as number)))
+		.concat("\u{E007F}"),
+);
+
+/** Neither invisible (escaped or default-ignorable) nor undefined. */
+const visible = (ch: string | undefined): ch is string =>
+	ch !== undefined && !INVISIBLE.test(ch);
+const nonAscii = (ch: string) => (ch.codePointAt(0) as number) > 0x7f;
+
+/** Index of the letter a run of marks before `i` sits on, or -1. */
+function baseBefore(chars: string[], i: number): number {
+	let j = i - 1;
+	while (j >= 0 && is(MARK, chars[j]) && visible(chars[j])) j--;
+	return j;
+}
+/** Index of the letter after a run of marks after `i`, or chars.length. */
+function baseAfter(chars: string[], i: number): number {
+	let j = i + 1;
+	while (j < chars.length && is(MARK, chars[j]) && visible(chars[j])) j++;
+	return j;
+}
+
+/** An emoji that shows as one: emoji presentation, or text made emoji by VS16. */
+const emojiAt = (chars: string[], j: number) => {
+	const ch = chars[j];
+	if (!visible(ch) || !nonAscii(ch)) return false;
+	return (
+		is(EMOJI_PRESENTATION, ch) ||
+		(is(PICTOGRAPHIC, ch) && chars[j + 1] === VS16)
+	);
+};
+
+/** A joiner (ZWJ or ZWNJ) after a virama: Indic half forms and conjuncts. */
+function afterVirama(chars: string[], i: number): boolean {
+	const prev = chars[i - 1];
+	if (!is(VIRAMA, prev)) return false;
+	const base = chars[baseBefore(chars, i - 1)];
+	return visible(base) && is(LETTER, base) && nonAscii(base);
+}
+
+/** A joiner between two letters of the same joining script (Arabic, ...). */
+function betweenJoiningLetters(chars: string[], i: number): boolean {
+	const before = chars[baseBefore(chars, i)];
+	const after = chars[baseAfter(chars, i)];
+	if (!visible(before) || !visible(after)) return false;
+	if (!is(LETTER, before) || !is(LETTER, after)) return false;
+	return JOINING_SCRIPTS.some((re) => re.test(before) && re.test(after));
+}
+
+/** A ZWJ inside an emoji ZWJ sequence: emoji (skin tone, VS16) ZWJ emoji. */
+function inEmojiSequence(chars: string[], i: number): boolean {
+	let j = i - 1;
+	if (chars[j] === VS16) j--;
+	else if (is(MODIFIER, chars[j]) && is(MODIFIER_BASE, chars[j - 1])) j--;
+	return emojiAt(chars, j) && emojiAt(chars, i + 1);
+}
 
 /**
  * Whether an invisible character is doing its legitimate job, so escaping it
- * would break text that displays correctly: a variation selector right after
- * an emoji or ideograph, a ZWJ inside an emoji sequence, a joiner in a
- * script that needs one, an emoji flag's tag sequence.
+ * would break text that displays correctly. Anything else, and anything this
+ * isn't sure about, is escaped.
  */
-function attached(chars: string[], i: number, inFlagTags: boolean): boolean {
+function attached(chars: string[], i: number, inFlag: boolean): boolean {
 	const ch = chars[i] as string;
 	const prev = chars[i - 1];
-	if (is(VARIATION, ch)) {
+	if (ch === VS15 || ch === VS16) {
+		// After an emoji, or a keycap's digit, # or *.
+		if (visible(prev) && nonAscii(prev) && is(EMOJI, prev)) return true;
+		return is(KEYCAP_BASE, prev) && chars[i + 1] === KEYCAP;
+	}
+	if (IDEOGRAPHIC_VS.test(ch)) return visible(prev) && is(IDEOGRAPHIC, prev);
+	if (ch === ZWJ || ch === ZWNJ) {
 		return (
-			prev !== undefined &&
-			!is(VARIATION, prev) &&
-			(is(EMOJI, prev) || is(IDEOGRAPHIC, prev))
+			afterVirama(chars, i) ||
+			betweenJoiningLetters(chars, i) ||
+			(ch === ZWJ && inEmojiSequence(chars, i))
 		);
 	}
-	if (ch === ZWJ) {
-		// Back over a variation selector or skin tone to the emoji.
-		let j = i - 1;
-		while (j >= 0 && (is(VARIATION, chars[j]) || is(MODIFIER, chars[j]))) j--;
-		if (is(PICTOGRAPHIC, chars[j]) && is(PICTOGRAPHIC, chars[i + 1])) {
-			return true;
-		}
-	}
-	if (ch === ZWJ || ch === ZWNJ) {
-		return is(JOINING, prev) && is(JOINING, chars[i + 1]);
-	}
-	return inFlagTags && is(TAG, ch);
+	return inFlag && is(TAG, ch);
 }
 
-/** Display columns of ordinary text: one per code point, none for a mark. */
-function textColumns(ch: string): number {
-	return MARK.test(ch) ? 0 : 1;
-}
+/** East Asian Wide and Fullwidth (UAX #11), outside emoji. */
+const WIDE: [number, number][] = [
+	[0x1100, 0x115f],
+	[0x2329, 0x232a],
+	[0x2e80, 0x303e],
+	[0x3041, 0x33ff],
+	[0x3400, 0x4dbf],
+	[0x4e00, 0x9fff],
+	[0xa000, 0xa4cf],
+	[0xa960, 0xa97f],
+	[0xac00, 0xd7a3],
+	[0xf900, 0xfaff],
+	[0xfe10, 0xfe19],
+	[0xfe30, 0xfe6f],
+	[0xff00, 0xff60],
+	[0xffe0, 0xffe6],
+	[0x16fe0, 0x16fe4],
+	[0x17000, 0x18cff],
+	[0x1aff0, 0x1b2ff],
+	[0x1f200, 0x1f2ff],
+	[0x20000, 0x2fffd],
+	[0x30000, 0x3fffd],
+];
+const isWide = (codePoint: number, ch: string) =>
+	WIDE.some(([lo, hi]) => codePoint >= lo && codePoint <= hi) ||
+	EMOJI_PRESENTATION.test(ch);
 
 /**
  * Splits one line (without its "\n"; a CRLF line keeps its "\r") into pieces.
- * Tab stops count display columns, so a tab after an escape still lands on
+ * Tab stops count display columns (wide characters and emoji two, an emoji
+ * sequence as one), so a tab after an escape or an ideograph still lands on
  * the next stop of what is on screen.
  */
 export function renderInvisibles(
@@ -195,40 +297,70 @@ export function renderInvisibles(
 	const pieces: Piece[] = [];
 	let offset = 0;
 	let column = 0;
-	let inFlagTags = false;
-	const pushText = (ch: string) => {
-		const last = pieces[pieces.length - 1];
-		if (last?.kind === "text") last.raw += ch;
-		else pieces.push({ kind: "text", raw: ch, start: offset });
-		column += textColumns(ch);
+	// Tags of an RGI subdivision flag run up to this index.
+	let flagEnd = -1;
+	// Columns of the last character drawn (VS16 can widen it to two).
+	let last = 0;
+	// The last character was a kept ZWJ: an emoji after it joins that glyph.
+	let joined = false;
+	// A regional indicator waits for its pair (a flag is one glyph).
+	let regional = false;
+	let run: { kind: "text"; raw: string; start: number } | undefined;
+	const pushText = (ch: string, columns: number) => {
+		if (run) run.raw += ch;
+		else {
+			run = { kind: "text", raw: ch, start: offset };
+			pieces.push(run);
+		}
+		column += columns;
+		if (columns > 0) last = columns;
+	};
+	const push = (piece: Piece) => {
+		run = undefined;
+		pieces.push(piece);
 	};
 	for (let i = 0; i < body; i++) {
 		const ch = chars[i] as string;
 		const codePoint = ch.codePointAt(0) as number;
-		if (codePoint === BLACK_FLAG) inFlagTags = true;
-		else if (!is(TAG, ch)) inFlagTags = false;
+		// Printable ASCII: the common case, kept fast.
+		if (codePoint > 0x20 && codePoint < 0x7f) {
+			pushText(ch, 1);
+			joined = false;
+			regional = false;
+			offset += 1;
+			continue;
+		}
+		if (codePoint === BLACK_FLAG) {
+			const tags = chars.slice(i + 1, i + 7).join("");
+			if (FLAG_TAGS.some((seq) => seq.join("") === tags)) flagEnd = i + 6;
+		}
+		const wasJoined: boolean = joined;
+		const wasRegional: boolean = regional;
+		joined = false;
+		regional = false;
 		if (ch === "\t") {
 			let columns = width - (column % width);
 			if (show && columns < 2) columns += width;
-			pieces.push({
-				kind: "tab",
-				raw: "\t",
-				start: offset,
-				columns,
-				marker: show,
-			});
+			push({ kind: "tab", raw: "\t", start: offset, columns, marker: show });
 			column += columns;
+			last = columns;
 		} else if (ch === " ") {
-			if (show) {
-				pieces.push({ kind: "space", raw: " ", start: offset });
+			const prior = pieces[pieces.length - 1];
+			if (!show) pushText(ch, 1);
+			else if (!run && prior?.kind === "space") {
+				prior.raw += " ";
 				column += 1;
-			} else pushText(ch);
+			} else {
+				push({ kind: "space", raw: " ", start: offset });
+				column += 1;
+			}
+			last = 1;
 		} else if (
 			ch === "\r" ||
-			(INVISIBLE.test(ch) && !attached(chars, i, inFlagTags))
+			(INVISIBLE.test(ch) && !attached(chars, i, i <= flagEnd))
 		) {
 			const label = ch === "\r" ? "\\r" : escapeLabel(codePoint);
-			pieces.push({
+			push({
 				kind: "escape",
 				raw: ch,
 				start: offset,
@@ -237,10 +369,26 @@ export function renderInvisibles(
 				bidi: BIDI.test(ch),
 			});
 			column += label.length;
+			last = label.length;
+		} else if (INVISIBLE.test(ch)) {
+			// A kept joiner, selector or tag draws nothing, but VS16 turns a
+			// one-column symbol into a two-column emoji.
+			if (ch === VS16 && last === 1) pushText(ch, 1);
+			else pushText(ch, 0);
+			if (ch === VS16) last = 2;
+			joined = ch === ZWJ;
+		} else if (
+			is(MARK, ch) ||
+			(wasJoined && is(PICTOGRAPHIC, ch)) ||
+			(is(MODIFIER, ch) && is(MODIFIER_BASE, chars[i - 1]))
+		) {
+			pushText(ch, 0);
+		} else if (is(REGIONAL, ch)) {
+			pushText(ch, wasRegional ? 0 : 2);
+			regional = !wasRegional;
 		} else {
-			pushText(ch);
+			pushText(ch, isWide(codePoint, ch) ? 2 : 1);
 		}
-		if (codePoint === 0xe007f) inFlagTags = false;
 		offset += ch.length;
 	}
 	if (crlf) {
@@ -255,7 +403,6 @@ export function renderInvisibles(
 	}
 	return pieces;
 }
-
 /** The original text back from its pieces (what a copy must yield). */
 export const joinPieces = (pieces: Piece[]) =>
 	pieces.map((p) => p.raw).join("");

@@ -82,6 +82,11 @@ export function Tooltip(props: {
 	describe?: boolean;
 	/** Mouse-hover delay in ms (focus and tap show at once). */
 	hoverDelay?: number;
+	/**
+	 * No element while closed (for many triggers, e.g. every escape in code).
+	 * Only with `describe` false: a description must always exist.
+	 */
+	lazy?: boolean;
 	children: (trigger: TooltipTriggerProps) => ReactNode;
 }) {
 	const id = useId();
@@ -198,24 +203,26 @@ export function Tooltip(props: {
 					if (e.key === "Escape") hide();
 				},
 			})}
-			{createPortal(
-				<span
-					ref={tip}
-					id={id}
-					role="tooltip"
-					aria-hidden={props.describe === false ? true : undefined}
-					hidden={!open}
-					style={{
-						left: pos?.left ?? 0,
-						top: pos?.top ?? 0,
-						visibility: pos ? "visible" : "hidden",
-					}}
-					className="pointer-events-none fixed z-[1000] w-max max-w-[min(20rem,calc(100vw-1rem))] rounded-md border border-edge bg-overlay px-2 py-1 text-xs leading-5 font-normal whitespace-normal text-ink shadow-float"
-				>
-					{props.content}
-				</span>,
-				document.body,
-			)}
+			{/* A lazy tooltip has no element while closed. */}
+			{(open || !props.lazy) &&
+				createPortal(
+					<span
+						ref={tip}
+						id={id}
+						role="tooltip"
+						aria-hidden={props.describe === false ? true : undefined}
+						hidden={!open}
+						style={{
+							left: pos?.left ?? 0,
+							top: pos?.top ?? 0,
+							visibility: pos ? "visible" : "hidden",
+						}}
+						className="pointer-events-none fixed z-[1000] w-max max-w-[min(20rem,calc(100vw-1rem))] rounded-md border border-edge bg-overlay px-2 py-1 text-xs leading-5 font-normal whitespace-normal text-ink shadow-float"
+					>
+						{props.content}
+					</span>,
+					document.body,
+				)}
 		</>
 	);
 }

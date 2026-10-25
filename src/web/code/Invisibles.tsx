@@ -3,6 +3,7 @@ import {
 	type CSSProperties,
 	type ReactNode,
 	useEffect,
+	useMemo,
 	useSyncExternalStore,
 } from "react";
 import { highlightLine } from "../files/highlight";
@@ -89,7 +90,11 @@ function Marker(props: { piece: Exclude<Piece, { kind: "text" }> }): ReactNode {
 	switch (piece.kind) {
 		case "space":
 			return (
-				<span data-inv="space" data-glyph="·" className={MARK}>
+				<span
+					data-inv="space"
+					data-glyph={"·".repeat(piece.raw.length)}
+					className={MARK}
+				>
 					{raw}
 				</span>
 			);
@@ -104,21 +109,29 @@ function Marker(props: { piece: Exclude<Piece, { kind: "text" }> }): ReactNode {
 					{raw}
 				</span>
 			);
-		case "escape":
+		case "escape": {
+			const name = piece.bidi
+				? `${piece.name}: reorders how the code displays`
+				: piece.name;
 			return (
-				<span
-					data-inv={piece.bidi ? "bidi" : "escape"}
-					data-glyph={piece.label}
-					title={
-						piece.bidi
-							? `${piece.name}: reorders how the code displays`
-							: piece.name
-					}
-					className={`${MARK} ${piece.bidi ? BIDI : ""}`}
-				>
-					{raw}
-				</span>
+				<Tooltip content={name} describe={false} lazy>
+					{(trigger) => (
+						// Focusable without a tab stop, so a tap shows the name.
+						<span
+							{...trigger}
+							role="img"
+							aria-label={name}
+							tabIndex={-1}
+							data-inv={piece.bidi ? "bidi" : "escape"}
+							data-glyph={piece.label}
+							className={`${MARK} ${piece.bidi ? BIDI : ""} focus-visible:outline-2 focus-visible:outline-accent`}
+						>
+							{raw}
+						</span>
+					)}
+				</Tooltip>
 			);
+		}
 		case "eol":
 			return (
 				<span data-inv="eol" data-glyph={piece.label} className={MARK}>
@@ -129,69 +142,97 @@ function Marker(props: { piece: Exclude<Piece, { kind: "text" }> }): ReactNode {
 }
 
 /** Blanks that a browser's plain-text copy turns into ordinary spaces. */
-const BLANK = /^[\p{Zs}\p{Zl}\p{Zp}]$/u;
+const BLANK = /(?! )[\p{Zs}\p{Zl}\p{Zp}]/u;
+
+/** Content a browser leaves out of a copy. */
+function unselectable(el: Element): boolean {
+	if (el.classList.contains("select-none")) return true;
+	const style = getComputedStyle(el);
+	return (
+		style.userSelect === "none" ||
+		style.getPropertyValue("-webkit-user-select") === "none" ||
+		style.display === "none"
+	);
+}
 
 /**
- * Chrome copies a no-break space (and its kin) as a plain space. While a
- * selection holding one is copied, each such character is swapped for an
- * unused private-use character, the selection is read as text, and the
- * originals are put back, in the DOM and in what is copied.
+ * The text of a range, the way a copy should give it: every character as it
+ * is, rows on their own lines, cells apart by a tab, unselectable content
+ * left out. Reads the DOM only.
+ */
+export function rangeText(range: Range): string {
+	const root = range.commonAncestorContainer;
+	const scope = root.nodeType === Node.TEXT_NODE ? root.parentNode : root;
+	if (!scope) return "";
+	let out = "";
+	let row: Element | null = null;
+	let cell: Element | null = null;
+	const walker = document.createTreeWalker(
+		scope,
+		NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT,
+		{
+			acceptNode: (node) =>
+				node instanceof Element && unselectable(node)
+					? NodeFilter.FILTER_REJECT
+					: NodeFilter.FILTER_ACCEPT,
+		},
+	);
+	const visit = (node: Node) => {
+		if (!(node instanceof Text) || !range.intersectsNode(node)) return;
+		let data = node.data;
+		if (node === range.endContainer) data = data.slice(0, range.endOffset);
+		if (node === range.startContainer) {
+			data = data.slice(range.startOffset);
+		}
+		if (data === "") return;
+		const parent = node.parentElement;
+		const nextRow = parent?.closest("tr, [role=row]") ?? null;
+		const nextCell = parent?.closest("td, th, [role=cell]") ?? null;
+		if (out !== "" && nextRow !== row) out += "\n";
+		else if (out !== "" && nextCell !== cell) out += "\t";
+		row = nextRow;
+		cell = nextCell;
+		out += data;
+	};
+	for (let n = walker.nextNode(); n; n = walker.nextNode()) visit(n);
+	return out;
+}
+
+/**
+ * Chrome copies a no-break space (and its kin) as a plain space. When a
+ * selection holds one inside code, the copied text is read from the DOM
+ * instead (without touching it), and the HTML the browser would copy is
+ * kept alongside.
  */
 export function copyWithOriginals(event: ClipboardEvent): void {
 	const selection = document.getSelection();
 	if (!selection || selection.rangeCount === 0 || !event.clipboardData) return;
-	const raws: Text[] = [];
-	for (let i = 0; i < selection.rangeCount; i++) {
-		const range = selection.getRangeAt(i);
+	const ranges = Array.from({ length: selection.rangeCount }, (_, i) =>
+		selection.getRangeAt(i),
+	);
+	const needed = ranges.some((range) => {
 		const root = range.commonAncestorContainer;
 		const scope = root instanceof Element ? root : root.parentElement;
-		const candidates = [
+		const raws = [
 			...(scope?.querySelectorAll("[data-inv] > span") ?? []),
 			...(scope?.closest("[data-inv] > span") ? [scope] : []),
 		];
-		for (const span of candidates) {
-			const text = span.firstChild;
-			if (
-				text instanceof Text &&
-				BLANK.test(text.data) &&
-				range.intersectsNode(text)
-			) {
-				raws.push(text);
-			}
-		}
-	}
-	if (raws.length === 0) return;
-	const plain = selection.toString();
-	const originals = new Map<string, string>();
-	let next = 0xe000;
-	const swapped: [Text, string][] = [];
-	for (const text of raws) {
-		const original = text.data;
-		let sentinel = [...originals].find(([, o]) => o === original)?.[0];
-		if (!sentinel) {
-			while (plain.includes(String.fromCharCode(next))) next++;
-			sentinel = String.fromCharCode(next++);
-			originals.set(sentinel, original);
-		}
-		swapped.push([text, original]);
-		text.data = sentinel;
-	}
-	let copied: string;
-	try {
-		copied = selection.toString();
-	} finally {
-		for (const [text, original] of swapped) text.data = original;
-	}
-	for (const [sentinel, original] of originals) {
-		copied = copied.replaceAll(sentinel, original);
-	}
-	event.clipboardData.setData("text/plain", copied);
+		return raws.some(
+			(span) =>
+				BLANK.test(span.textContent ?? "") && range.intersectsNode(span),
+		);
+	});
+	if (!needed) return;
+	const html = document.createElement("div");
+	for (const range of ranges) html.append(range.cloneContents());
+	event.clipboardData.setData("text/plain", ranges.map(rangeText).join("\n"));
+	event.clipboardData.setData("text/html", html.innerHTML);
 	event.preventDefault();
 }
 
 let copyFixInstalled = false;
 
-type Token = {
+export type Token = {
 	content: string;
 	offset: number;
 	color?: string;
@@ -204,27 +245,63 @@ const tokenStyle = (token: Token): CSSProperties => ({
 	fontWeight: token.fontStyle && token.fontStyle & 2 ? "bold" : undefined,
 });
 
-/** A run of ordinary text, colored by the highlighting tokens it overlaps. */
-function TextRun(props: { raw: string; start: number; tokens?: Token[] }) {
-	const { raw, start, tokens } = props;
-	if (!tokens?.length) return <>{raw}</>;
-	const end = start + raw.length;
-	const parts: ReactNode[] = [];
-	let at = start;
-	for (const token of tokens) {
-		const from = Math.max(at, token.offset);
-		const to = Math.min(end, token.offset + token.content.length);
-		if (to <= from) continue;
-		if (from > at) parts.push(raw.slice(at - start, from - start));
-		parts.push(
-			<span key={from} style={tokenStyle(token)}>
-				{raw.slice(from - start, to - start)}
-			</span>,
-		);
-		at = to;
+/** A run of text, and the highlighting token that colors it (if any). */
+export type Segment = { text: string; token?: Token };
+
+/**
+ * Cuts each text piece by the highlighting tokens it overlaps, walking pieces
+ * and tokens once together (both are in line order).
+ */
+export function colorPieces(pieces: Piece[], tokens: Token[]): Segment[][] {
+	const out: Segment[][] = [];
+	let t = 0;
+	for (const piece of pieces) {
+		const segments: Segment[] = [];
+		out.push(segments);
+		if (piece.kind !== "text") continue;
+		const { raw, start } = piece;
+		const end = start + raw.length;
+		while (
+			t < tokens.length &&
+			(tokens[t] as Token).offset + (tokens[t] as Token).content.length <= start
+		) {
+			t++;
+		}
+		let at = start;
+		for (let k = t; k < tokens.length; k++) {
+			const token = tokens[k] as Token;
+			if (token.offset >= end) break;
+			const from = Math.max(at, token.offset);
+			const to = Math.min(end, token.offset + token.content.length);
+			if (to <= from) continue;
+			if (from > at)
+				segments.push({ text: raw.slice(at - start, from - start) });
+			segments.push({ text: raw.slice(from - start, to - start), token });
+			at = to;
+		}
+		if (at < end) segments.push({ text: raw.slice(at - start) });
 	}
-	if (at < end) parts.push(raw.slice(at - start));
-	return <>{parts}</>;
+	return out;
+}
+
+/** A run of ordinary text, colored by the highlighting tokens it overlaps. */
+function TextRun(props: { start: number; segments: Segment[] }) {
+	let at = props.start;
+	return (
+		<>
+			{props.segments.map((segment) => {
+				const key = at;
+				at += segment.text.length;
+				return segment.token ? (
+					<span key={key} style={tokenStyle(segment.token)}>
+						{segment.text}
+					</span>
+				) : (
+					segment.text
+				);
+			})}
+		</>
+	);
 }
 
 /**
@@ -254,20 +331,28 @@ export function CodeLine(props: {
 		enabled: lang !== null && text.length > 0,
 		staleTime: Number.POSITIVE_INFINITY,
 	});
-	const pieces = renderInvisibles(text, props.tabWidth ?? DEFAULT_TAB_WIDTH, {
-		newline,
-		show,
-	});
+	const tabWidth = props.tabWidth ?? DEFAULT_TAB_WIDTH;
+	const pieces = useMemo(
+		() => renderInvisibles(text, tabWidth, { newline, show }),
+		[text, tabWidth, newline, show],
+	);
+	const segments = useMemo(
+		() => colorPieces(pieces, tokens.data ?? []),
+		[pieces, tokens.data],
+	);
 	return (
 		<>
-			{pieces.map((piece) =>
+			{pieces.map((piece, i) =>
 				piece.kind === "text" ? (
-					<TextRun
-						key={piece.start}
-						raw={piece.raw}
-						start={piece.start}
-						tokens={tokens.data}
-					/>
+					tokens.data?.length ? (
+						<TextRun
+							key={piece.start}
+							start={piece.start}
+							segments={segments[i] ?? []}
+						/>
+					) : (
+						piece.raw
+					)
 				) : (
 					<Marker key={`${piece.kind}${piece.start}`} piece={piece} />
 				),
