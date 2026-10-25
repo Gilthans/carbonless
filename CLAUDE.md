@@ -49,9 +49,11 @@ These guide every feature. If a change conflicts with one of them, stop and rais
 
 6. **Concise, icon-first UI.** Keep text short. Icons (each with a tooltip and
    an accessible name) and color carry meaning; no disclaimers, legends or
-   explanatory sentences that the visuals already convey. Dates are short
-   relative text with the exact date and time zone on hover/focus
-   (`src/web/RelativeTime.tsx`).
+   explanatory sentences that the visuals already convey. Colors come from the
+   design tokens only; code-review conventions (green added/reviewed, red
+   deleted/failing, yellow pending) beat the brand palette
+   (`docs/design/README.md`). Dates are short relative text with the exact
+   date and time zone on hover/focus (`src/web/RelativeTime.tsx`).
 
 ## Development
 
