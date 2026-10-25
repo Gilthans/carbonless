@@ -11,7 +11,7 @@
 		"node": ">=24"
 	},
 	"scripts": {
-		"dev": "concurrently -k -n api,web -c blue,magenta \"tsx watch src/cli.ts $CRB_PR --port 4747 --no-open --api-only\" \"vite\"",
+		"dev": "concurrently -k -n api,web -c blue,magenta \"tsx watch src/cli.ts $CRB_PR --port ${CRB_API_PORT:-4747} --no-open --api-only\" \"vite\"",
 		"build": "rm -rf dist && tsc -p tsconfig.build.json && vite build",
 		"start": "node dist/cli.js",
 		"typecheck": "tsc -p tsconfig.json",
@@ -19,8 +19,10 @@
 		"fix": "biome check --write .",
 		"test": "vitest run",
 		"test:watch": "vitest",
+		"test:changed": "vitest run --changed",
 		"test:e2e": "pnpm build && playwright test",
 		"verify": "pnpm lint && pnpm typecheck && pnpm test && pnpm test:e2e",
+		"verify:fast": "node scripts/verify-fast.mjs",
 		"icons": "tsx scripts/render-icons.ts"
 	},
 	"dependencies": {

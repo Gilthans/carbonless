@@ -69,6 +69,21 @@ These guide every feature. If a change conflicts with one of them, stop and rais
   React + Vite + TanStack Query + Tailwind (`src/web`), shared types (`src/shared`).
 - `pnpm verify` runs lint (Biome), typecheck, unit tests (Vitest) and Playwright
   tests. Run it before saying work is done.
+- While iterating, run only what a change touches:
+  - `pnpm verify:fast [base]`: lint, typecheck, the unit tests related to files
+    changed since `base`, and the e2e specs mapped to them (`E2E_MAP` in
+    `scripts/verify-fast.mjs`; unmapped source runs all). `base` defaults to
+    `$CRB_BASE`, else the local branch this one forked from. `--dry-run` shows
+    the plan; other `--` flags go to Playwright (`--project=chromium`).
+  - `pnpm test:changed [ref]`: Vitest on files related to changes since `ref`
+    (uncommitted ones without it). `pnpm test <path or name>` for one file.
+  - `pnpm test:e2e e2e/files.spec.ts -g "<title>" --project=chromium`: builds,
+    then runs the given specs only.
+- Agent worktrees: `scripts/agent-worktree.sh <name> [base]` makes
+  `.worktrees/<name>` on branch `<name>` and installs from the shared pnpm
+  store. Playwright browsers are global. Tests take random ports and their own
+  temp dirs and `XDG_CACHE_HOME`, so `pnpm verify` runs in parallel worktrees;
+  for `pnpm dev` in two at once, set `CRB_API_PORT`.
 - New features get unit tests and, when they change what the user sees or does,
   Playwright tests. Playwright tests run the built CLI against throwaway git repos
   (`test/git-fixture.ts`, `e2e/fixtures.ts`).
