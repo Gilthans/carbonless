@@ -750,6 +750,9 @@ describe("OverviewPage", () => {
 		expect(shown()).toEqual([0, 1, 2, 3, 4].map((i) => `src/u${i}.ts:1`));
 		const more = within(humans).getByRole("button", { name: /^Load / });
 		expect(more).toHaveTextContent("Load 5 more comments out of 7");
+		// Its own button under the list (not a list item), led by a chevron.
+		expect(more.closest("ul")).toBeNull();
+		expect(more.querySelector("svg[aria-hidden]")).not.toBeNull();
 		await user.click(more);
 		expect(shown()).toHaveLength(10);
 		expect(more).toHaveTextContent("Load 2 more comments out of 2");

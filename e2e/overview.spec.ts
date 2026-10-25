@@ -341,7 +341,21 @@ test("threads come latest activity first, five at a time", async ({
 	await expect(paths).toBeVisible();
 	const more = humans.getByRole("button", { name: /^Load \d+ more/ });
 	await expect(more).toHaveText("Load 5 more comments out of 7");
-	expect((await more.boundingBox())?.height).toBeGreaterThanOrEqual(40);
+	// A prominent button: at least 40px tall, outlined, centred under the list.
+	const box = await more.boundingBox();
+	const list = await humans
+		.getByRole("list", { name: "Unresolved threads" })
+		.boundingBox();
+	if (!box || !list) throw new Error("no layout");
+	expect(box.height).toBeGreaterThanOrEqual(40);
+	expect(box.y).toBeGreaterThanOrEqual(list.y + list.height);
+	expect(
+		Math.abs(box.x + box.width / 2 - (list.x + list.width / 2)),
+	).toBeLessThanOrEqual(2);
+	expect(box.width).toBeLessThan(list.width);
+	await expect(more).not.toHaveCSS("border-top-width", "0px");
+	await more.focus();
+	await expect(more).not.toHaveCSS("outline-style", "none");
 	await more.click();
 	await expect(humans.getByTestId("thread")).toHaveCount(10);
 	await expect(more).toHaveText("Load 2 more comments out of 2");

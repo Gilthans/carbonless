@@ -908,14 +908,16 @@ function ThreadGroup(props: {
 					</ul>
 				)}
 				{listed.length > limit && (
-					<button
-						type="button"
-						onClick={() => setLimit((n) => n + THREAD_PAGE)}
-						className="mt-1 flex min-h-10 items-center gap-1 rounded-md px-1 text-sm font-medium text-link hover:underline focus-visible:outline-2 focus-visible:outline-accent"
-					>
-						<ChevronDownIcon size={16} aria-hidden />
-						{loadMoreText(listed.length - limit)}
-					</button>
+					<div className="mt-3 flex justify-center">
+						<button
+							type="button"
+							onClick={() => setLimit((n) => n + THREAD_PAGE)}
+							className="flex min-h-10 max-w-full items-center justify-center gap-2 rounded-lg border border-line-strong bg-raised px-4 py-2 text-center text-sm font-semibold text-link shadow-control transition-colors hover:border-accent hover:bg-overlay focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent motion-reduce:transition-none"
+						>
+							<ChevronDownIcon size={16} aria-hidden className="shrink-0" />
+							{loadMoreText(listed.length - limit)}
+						</button>
+					</div>
 				)}
 			</div>
 		</section>
