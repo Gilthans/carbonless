@@ -320,9 +320,13 @@ export function tabWidthFor(
 	return width(props.tab_width) ?? width(props.indent_size);
 }
 
+/** A larger .editorconfig is ignored: no real one comes near. */
+export const MAX_CONFIG_BYTES = 64 * 1024;
+
 /**
- * Reads every .editorconfig above `paths` in `commit` (one `git cat-file
- * --batch`) and gives each path's tab width, or undefined.
+ * Reads every .editorconfig above `paths` in `commit` (`git cat-file
+ * --batch-check` for sizes, then one `--batch` for those up to 64 KB) and
+ * gives each path's tab width, or undefined.
  */
 export async function readTabWidths(
 	repo: string,
@@ -335,25 +339,40 @@ export async function readTabWidths(
 	);
 	const configs = new Map<string, EditorConfig>();
 	if (dirs.length > 0) {
-		const out = await runGitBuffer(repo, ["cat-file", "--batch"], {
-			input: dirs.map((d) => `${commit}:${d}.editorconfig\n`).join(""),
+		const specs = dirs.map((d) => `${commit}:${d}.editorconfig\n`);
+		// Sizes first: an oversized config is never read (default width).
+		const sizes = (
+			await runGitBuffer(repo, ["cat-file", "--batch-check"], {
+				input: specs.join(""),
+			})
+		)
+			.toString("utf8")
+			.split("\n");
+		const wanted = dirs.filter((_, k) => {
+			const match = / blob (\d+)$/.exec(sizes[k] ?? "");
+			return match !== null && Number(match[1]) <= MAX_CONFIG_BYTES;
 		});
-		let pos = 0;
-		for (const dir of dirs) {
-			const eol = out.indexOf(0x0a, pos);
-			if (eol < 0) break;
-			const header = out.toString("utf8", pos, eol);
-			const match = / (\w+) (\d+)$/.exec(header);
-			if (!match || header.endsWith(" missing")) {
-				pos = eol + 1;
-				continue;
+		if (wanted.length > 0) {
+			const out = await runGitBuffer(repo, ["cat-file", "--batch"], {
+				input: wanted.map((d) => `${commit}:${d}.editorconfig\n`).join(""),
+			});
+			let pos = 0;
+			for (const dir of wanted) {
+				const eol = out.indexOf(0x0a, pos);
+				if (eol < 0) break;
+				const header = out.toString("utf8", pos, eol);
+				const match = / (\w+) (\d+)$/.exec(header);
+				if (!match || header.endsWith(" missing")) {
+					pos = eol + 1;
+					continue;
+				}
+				const start = eol + 1;
+				const end = start + Number(match[2]);
+				if (match[1] === "blob" && Number(match[2]) <= MAX_CONFIG_BYTES) {
+					configs.set(dir, parseEditorConfig(out.toString("utf8", start, end)));
+				}
+				pos = end + 1;
 			}
-			const start = eol + 1;
-			const end = start + Number(match[2]);
-			if (match[1] === "blob") {
-				configs.set(dir, parseEditorConfig(out.toString("utf8", start, end)));
-			}
-			pos = end + 1;
 		}
 	}
 	return paths.map((path) => tabWidthFor(path, configs));

@@ -138,6 +138,11 @@ describe("readTabWidths", () => {
 					"a.go": "x\n\tz\n",
 					"b/c.ts": "y\n\tz\n",
 					"d.md": "md\n",
+					// Over 64 KB: ignored, so its width never applies.
+					"big/.editorconfig": `[*]\ntab_width = 3\n${"# padding\n".repeat(7000)}`,
+					"big/x.ts": "z\n",
+					"small/.editorconfig": `[*]\ntab_width = 3\n${"#\n".repeat(100)}`,
+					"small/x.ts": "z\n",
 				},
 			},
 		]);
@@ -153,6 +158,13 @@ describe("readTabWidths", () => {
 		expect(
 			await readTabWidths(fixture.path, fixture.shas[0] as string, ["a.go"]),
 		).toEqual([undefined]);
+	});
+
+	it("ignores a config over 64 KB", async () => {
+		const head = fixture.shas[1] as string;
+		expect(
+			await readTabWidths(fixture.path, head, ["big/x.ts", "small/x.ts"]),
+		).toEqual([undefined, 3]);
 	});
 
 	it("puts them on the snapshot's files", async () => {
