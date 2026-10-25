@@ -7,6 +7,8 @@ export interface RunGitOptions {
 	input?: string;
 	/** Return "" instead of throwing when git exits non-zero. */
 	allowFailure?: boolean;
+	/** Kill git after this long; that counts as a failure. */
+	timeoutMs?: number;
 }
 
 /**
@@ -79,15 +81,34 @@ export function runGitBuffer(
 		});
 		const out: Buffer[] = [];
 		const err: Buffer[] = [];
+		// A timeout settles at once: a killed git's own children (a credential
+		// helper, an alias) can keep its pipes open long after.
+		let timedOut = false;
+		const timer =
+			opts.timeoutMs === undefined
+				? undefined
+				: setTimeout(() => {
+						timedOut = true;
+						child.kill("SIGKILL");
+						child.stdout.destroy();
+						child.stderr.destroy();
+						if (opts.allowFailure) resolve(Buffer.alloc(0));
+						else
+							reject(new GitError(`git timed out after ${opts.timeoutMs} ms`));
+					}, opts.timeoutMs);
 		child.stdout.on("data", (chunk: Buffer) => out.push(chunk));
 		child.stderr.on("data", (chunk: Buffer) => err.push(chunk));
 		child.stdin.on("error", () => {});
 		child.on("error", (error) => {
+			clearTimeout(timer);
 			if (opts.allowFailure) resolve(Buffer.alloc(0));
 			else reject(new GitError(error.message));
 		});
 		child.on("close", (code) => {
-			if (code === 0) {
+			clearTimeout(timer);
+			if (timedOut) {
+				// Already settled.
+			} else if (code === 0) {
 				resolve(Buffer.concat(out));
 			} else if (opts.allowFailure) {
 				resolve(Buffer.alloc(0));

@@ -317,9 +317,14 @@ export async function fetchPr(
 	});
 }
 
+/** How long fetching one commit by OID may hold the repo lock. */
+export const FETCH_COMMIT_TIMEOUT_MS = 60_000;
+
 /**
  * Whether `oid` is a commit in the clone, fetching it by OID from GitHub
- * once if not (a commit a force-push dropped from the PR). Never throws.
+ * if not (a commit a force-push dropped from the PR), within
+ * FETCH_COMMIT_TIMEOUT_MS. Never throws. Callers cache the answer
+ * (threadCode.ts), so a missing commit is asked for once.
  */
 export async function ensureCommit(
 	path: string,
@@ -337,7 +342,11 @@ export async function ensureCommit(
 		await runGit(
 			path,
 			[...GH_CREDENTIALS, "fetch", "--quiet", "--no-tags", "origin", oid],
-			{ env: { GIT_TERMINAL_PROMPT: "0" }, allowFailure: true },
+			{
+				env: { GIT_TERMINAL_PROMPT: "0" },
+				allowFailure: true,
+				timeoutMs: FETCH_COMMIT_TIMEOUT_MS,
+			},
 		);
 		return present();
 	}).catch(() => false);

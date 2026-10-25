@@ -23,7 +23,7 @@ import { buildReviewView } from "./review/coverage.js";
 import type { ProgressState } from "./review/fold.js";
 import { RefStore } from "./review/refStore.js";
 import { ReviewService, StaleSnapshotError } from "./review/reviews.js";
-import { fillThreadCode } from "./threadCode.js";
+import { ThreadCodeSource } from "./threadCode.js";
 
 /** Hidden dev options (crb --as-of, --viewer). */
 export interface SessionOptions {
@@ -72,6 +72,8 @@ export class Session {
 	/** Order of PR metadata requests, by start; see #setMeta. */
 	#metaSeq = 0;
 	#metaSeqApplied = 0;
+	/** Rebuilds hunkless thread code; new on each Refresh, so it may retry. */
+	#threadCode: ThreadCodeSource;
 	/** Serializes everything that writes or swaps the snapshot. */
 	#queue: Promise<unknown> = Promise.resolve();
 
@@ -88,6 +90,7 @@ export class Session {
 		this.#meta = meta;
 		this.#snapshot = snapshot;
 		this.#patchset = patchset;
+		this.#threadCode = new ThreadCodeSource(repo);
 	}
 
 	/**
@@ -170,7 +173,7 @@ export class Session {
 			asOf ? { at: asOf, head: this.#meta.headOid } : undefined,
 		);
 		// GitHub sometimes keeps no diff hunk for a line comment: rebuild it.
-		return fillThreadCode(this.repo, this.#snapshot.base, overview);
+		return this.#threadCode.fill(this.#snapshot.base, overview);
 	}
 
 	async review(): Promise<ReviewView> {
@@ -235,6 +238,8 @@ export class Session {
 	 * patch set.
 	 */
 	refresh(): Promise<SessionInfo> {
+		// Commits and code that couldn't be had may be there now.
+		this.#threadCode = new ThreadCodeSource(this.repo);
 		// As of a cutoff nothing moves; the overview reloads on its own.
 		if (this.options.asOf) return Promise.resolve(this.info());
 		return this.#exclusive(async () => {
