@@ -70,6 +70,29 @@ function killGroup(child: ChildProcess): void {
 	}
 }
 
+/**
+ * Timed gits still running. They are in their own process groups, so a
+ * Ctrl-C to crb no longer reaches them: crb kills them on its way out.
+ */
+const detached = new Set<ChildProcess>();
+let killOnExit = false;
+
+/** Kills every timed git still running, with its children. */
+export function killDetachedGits(): void {
+	for (const child of detached) killGroup(child);
+	detached.clear();
+}
+
+function trackDetached(child: ChildProcess): void {
+	detached.add(child);
+	child.on("close", () => detached.delete(child));
+	if (!killOnExit) {
+		killOnExit = true;
+		// However crb ends (a signal handler's exit, an uncaught error).
+		process.on("exit", killDetachedGits);
+	}
+}
+
 export async function runGit(
 	repoPath: string,
 	args: string[],
@@ -90,9 +113,11 @@ export function runGitBuffer(
 			stdio: ["pipe", "pipe", "pipe"],
 			// A timed git gets its own process group, so the timeout kills its
 			// children too (a credential helper, an alias, a remote helper).
-			// An untimed one stays in ours and goes with a Ctrl-C.
+			// An untimed one stays in ours and goes with a Ctrl-C; a timed one
+			// is killed when crb exits (killDetachedGits).
 			detached: opts.timeoutMs !== undefined,
 		});
+		if (opts.timeoutMs !== undefined) trackDetached(child);
 		const out: Buffer[] = [];
 		const err: Buffer[] = [];
 		// A timeout settles at once, without waiting for the pipes to close.

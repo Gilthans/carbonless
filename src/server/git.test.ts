@@ -1,8 +1,15 @@
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import {
+	existsSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
-import { runGit } from "./git";
+import { killDetachedGits, runGit } from "./git";
 
 const alive = (pid: number) => {
 	try {
@@ -46,6 +53,61 @@ describe("runGit timeoutMs", () => {
 		);
 		const pid = Number(readFileSync(pidFile, "utf8").trim());
 		expect(pid).toBeGreaterThan(0);
+		await expect
+			.poll(() => alive(pid), { timeout: 2000, interval: 50 })
+			.toBe(false);
+	});
+
+	/** A timed git whose alias leaves a grandchild, its pid in `pidFile`. */
+	const hanging = (pidFile: string) => [
+		"-c",
+		`alias.hang=!sleep 30 & echo $! > '${pidFile}'; wait`,
+		"hang",
+	];
+	const pidOf = async (pidFile: string) => {
+		await expect
+			.poll(() => existsSync(pidFile) && readFileSync(pidFile, "utf8").trim(), {
+				timeout: 5000,
+				interval: 20,
+			})
+			.toBeTruthy();
+		return Number(readFileSync(pidFile, "utf8").trim());
+	};
+
+	it("kills timed gits still running when crb shuts down (Ctrl-C misses their group)", async () => {
+		const pidFile = join(dir, "shutdown.pid");
+		const run = runGit(".", hanging(pidFile), { timeoutMs: 30_000 });
+		const pid = await pidOf(pidFile);
+		expect(alive(pid)).toBe(true);
+		killDetachedGits();
+		await expect(run).rejects.toThrow();
+		await expect
+			.poll(() => alive(pid), { timeout: 2000, interval: 50 })
+			.toBe(false);
+	});
+
+	it("kills them when the process exits, however it exits", async () => {
+		const pidFile = join(dir, "exit.pid");
+		const script = join(dir, "exit.mts");
+		writeFileSync(
+			script,
+			`import { readFileSync } from "node:fs";
+import { runGit } from ${JSON.stringify(join(process.cwd(), "src/server/git.ts"))};
+runGit(".", ${JSON.stringify(hanging(pidFile))}, { timeoutMs: 30_000 }).catch(() => {});
+const wait = setInterval(() => {
+	try {
+		if (readFileSync(${JSON.stringify(pidFile)}, "utf8").trim()) {
+			clearInterval(wait);
+			process.exit(0);
+		}
+	} catch {}
+}, 20);
+`,
+		);
+		execFileSync(join(process.cwd(), "node_modules/.bin/tsx"), [script], {
+			timeout: 20_000,
+		});
+		const pid = Number(readFileSync(pidFile, "utf8").trim());
 		await expect
 			.poll(() => alive(pid), { timeout: 2000, interval: 50 })
 			.toBe(false);

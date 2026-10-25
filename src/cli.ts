@@ -5,6 +5,7 @@ import { parseArgs } from "node:util";
 import open from "open";
 import { buildApp } from "./server/app.js";
 import { parseAsOf } from "./server/asOf.js";
+import { killDetachedGits } from "./server/git.js";
 import { Session } from "./server/session.js";
 
 const USAGE = `Usage: crb <pr> [options]
@@ -99,6 +100,8 @@ async function main(): Promise<void> {
 		// A second Ctrl-C means "now": don't wait for anything.
 		if (closing) process.exit(1);
 		closing = true;
+		// Timed gits run in their own process groups: Ctrl-C missed them.
+		killDetachedGits();
 		try {
 			await app.close();
 			process.exit(0);
