@@ -62,18 +62,44 @@ export function prView(
 
 type ThreadNode = (typeof threadsFixture)[number];
 
-/** A reviewThreads node shaped like the synthetic fixture's first thread. */
-export function reviewThread(partial: Partial<ThreadNode> = {}): ThreadNode {
+/** A review comment with its text, as the aliased `first` query returns it. */
+export interface CommentNode {
+	author: { login: string; __typename: string };
+	bodyText: string;
+	bodyHTML: string;
+	createdAt: string;
+}
+
+/**
+ * A reviewThreads node shaped like the synthetic fixture's first thread.
+ * `comments` (opener first) fills both the aliased `first` comment and the
+ * authors-only list.
+ */
+export function reviewThread(
+	partial: Partial<Omit<ThreadNode, "first" | "comments">> = {},
+	comments?: CommentNode[],
+): ThreadNode {
 	const base = threadsFixture[0];
 	if (!base) throw new Error("review-threads.json is empty");
-	return { ...base, ...partial };
+	const opener = comments?.[0];
+	return {
+		...base,
+		...partial,
+		...(comments && opener
+			? {
+					first: { nodes: [opener] },
+					comments: {
+						totalCount: comments.length,
+						nodes: comments.map((c) => ({ author: c.author })),
+					},
+				}
+			: {}),
+	};
 }
 
 /** GitHub's rendering of the synthetic fixture's description. */
 export const FIXTURE_BODY_HTML =
 	'<p dir="auto">Caches widgets.</p>\n<p dir="auto">Fixes a slow path.</p>';
-
-type CommentNode = ThreadNode["comments"]["nodes"][number];
 
 /**
  * A review comment node: `text` is the plain text, `html` GitHub's rendering
@@ -92,7 +118,6 @@ export function threadComment(c: {
 		.replaceAll(">", "&gt;");
 	return {
 		author: { login: c.login, __typename: c.bot ? "Bot" : "User" },
-		body: c.text,
 		bodyText: c.text,
 		bodyHTML: c.html ?? `<p dir="auto">${escaped}</p>`,
 		createdAt: c.createdAt ?? "2026-01-03T09:00:00Z",

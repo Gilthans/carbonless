@@ -12,7 +12,7 @@ import {
 /** Props the trigger element spreads onto itself. */
 export interface TooltipTriggerProps {
 	ref: (el: HTMLElement | null) => void;
-	"aria-describedby": string;
+	"aria-describedby"?: string;
 	onMouseEnter: () => void;
 	onMouseLeave: () => void;
 	onFocus: (e: FocusEvent) => void;
@@ -26,11 +26,16 @@ const MARGIN = 8;
 /**
  * A text tooltip that opens on hover and on keyboard focus (or a tap, which
  * focuses), closes on Escape, blur, mouse leave and scroll, and is the
- * trigger's accessible description. It is `position: fixed` and kept inside
+ * trigger's accessible description (unless `describe` is false). It is `position: fixed` and kept inside
  * the viewport, so it never widens the page on a phone.
  */
 export function Tooltip(props: {
 	content: string;
+	/**
+	 * Whether the text is the trigger's accessible description. Turn it off
+	 * when it repeats the trigger's accessible name.
+	 */
+	describe?: boolean;
 	children: (trigger: TooltipTriggerProps) => ReactNode;
 }) {
 	const id = useId();
@@ -76,7 +81,7 @@ export function Tooltip(props: {
 				ref: (el) => {
 					trigger.current = el;
 				},
-				"aria-describedby": id,
+				"aria-describedby": props.describe === false ? undefined : id,
 				onMouseEnter: () => setOpen(true),
 				onMouseLeave: () => {
 					if (trigger.current !== document.activeElement) setOpen(false);
@@ -91,6 +96,7 @@ export function Tooltip(props: {
 				ref={tip}
 				id={id}
 				role="tooltip"
+				aria-hidden={props.describe === false ? true : undefined}
 				hidden={!open}
 				style={{
 					left: pos?.left ?? 0,

@@ -269,10 +269,12 @@ describe("OverviewPage", () => {
 		const what = await screen.findByRole("region", { name: "What it does" });
 		const link = within(what).getByRole("link", { name: "View on GitHub" });
 		expect(link).toHaveAttribute("href", overview.url);
-		expect(link).toHaveAttribute("title", "View on GitHub");
 		expect(link).toHaveAttribute("target", "_blank");
 		expect(link.querySelector("svg")).not.toBeNull();
-		expect(link).not.toHaveTextContent("View on GitHub");
+		expect(link).not.toHaveTextContent(/\S/);
+		const user = userEvent.setup();
+		await user.hover(link);
+		expect(screen.getByText("View on GitHub")).toBeVisible();
 	});
 
 	it("shows PR dates as relative <time>s", async () => {
@@ -305,12 +307,17 @@ describe("OverviewPage", () => {
 		expect(who).toHaveTextContent("rev1 already started");
 		const rev1 = within(who).getByText("rev1").closest("li");
 		if (!rev1) throw new Error("no rev1 row");
-		expect(
-			within(rev1).getByRole("img", { name: "Changes requested" }),
-		).toHaveAttribute("title", "Changes requested");
-		expect(
-			within(rev1).getByRole("img", { name: "then commented" }),
-		).toBeInTheDocument();
+		const changes = within(rev1).getByRole("img", {
+			name: "Changes requested",
+		});
+		// Keyboard and touch reach the tooltip too: the icon takes focus.
+		changes.focus();
+		expect(await within(rev1).findByText("Changes requested")).toBeVisible();
+		// The later comment is secondary: smaller, after a short "then".
+		const then = within(rev1).getByRole("img", { name: "then commented" });
+		expect(then.querySelector("svg")).toHaveAttribute("width", "12");
+		expect(then.parentElement).toHaveTextContent(/^then/);
+		expect(changes.querySelector("svg")).toHaveAttribute("width", "16");
 		expect(who).toHaveTextContent("rev2");
 		expect(who).toHaveTextContent("Core Team");
 		expect(within(who).getByRole("img", { name: "team" })).toBeInTheDocument();
@@ -398,13 +405,42 @@ describe("OverviewPage", () => {
 		expect(body).toHaveTextContent("Coverage dropped by 2%");
 	});
 
+	it("refetches the overview when a GitHub image breaks in a page left open (signed URLs expire)", async () => {
+		vi.useFakeTimers({
+			now: new Date("2026-01-05T18:00:00Z"),
+			toFake: ["Date"],
+		});
+		try {
+			renderApp();
+			const what = await screen.findByRole("region", {
+				name: "What it does",
+			});
+			const img = () => within(what).getByAltText(":shipit:");
+			expect(calls("/api/overview")).toBe(1);
+			// Breaking right after the fetch: not an expired URL, no refetch.
+			img().dispatchEvent(new Event("error"));
+			expect(calls("/api/overview")).toBe(1);
+			vi.setSystemTime(new Date("2026-01-05T18:06:00Z"));
+			img().dispatchEvent(new Event("error"));
+			await waitFor(() => expect(calls("/api/overview")).toBe(2));
+			// Throttled: more broken images within the minute don't refetch.
+			vi.setSystemTime(new Date("2026-01-05T18:06:30Z"));
+			img().dispatchEvent(new Event("error"));
+			await new Promise((r) => setTimeout(r, 50));
+			expect(calls("/api/overview")).toBe(2);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	it("marks check status with a named icon instead of a word", async () => {
 		renderApp();
 		const ready = await screen.findByRole("region", { name: "Is it ready" });
 		const lint = within(ready).getAllByTestId("check")[0];
 		if (!lint) throw new Error("no check");
 		expect(within(lint).getByRole("img", { name: "failing" })).toBeVisible();
-		expect(lint).toHaveTextContent(/^lint$/);
+		expect(within(lint).getByRole("link")).toHaveTextContent(/^lint$/);
+		expect(within(lint).queryByText("failing")).not.toBeVisible();
 	});
 
 	it("shows the overview's error message", async () => {

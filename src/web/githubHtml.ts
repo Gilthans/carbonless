@@ -9,7 +9,8 @@ import DOMPurify from "dompurify";
  *   data-*, forms, media, frames or scripts;
  * - links keep only absolute http(s)/mailto hrefs and always open in a new
  *   tab with rel="noreferrer noopener";
- * - images load only from https; any other image is dropped;
+ * - images load only from https (any host: bots link their own icons);
+ *   any other image is dropped;
  * - classes are kept only when github-markdown-css styles them, so content
  *   can't borrow the app's own (Tailwind) classes to restyle the page.
  */
@@ -173,7 +174,7 @@ export function sanitizeGithubHtml(html: string): string {
 		}
 		img.setAttribute("src", url.href);
 		img.setAttribute("referrerpolicy", "no-referrer");
-		img.setAttribute("loading", "lazy");
+		// Not lazy: private-repo images are signed URLs that expire in minutes.
 	}
 	for (const input of body.querySelectorAll("input")) {
 		// Task-list checkboxes show state; nothing else is an input here.

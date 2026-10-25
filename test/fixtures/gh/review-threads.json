@@ -4,6 +4,19 @@
 		"isOutdated": false,
 		"path": "src/cache.ts",
 		"line": 42,
+		"first": {
+			"nodes": [
+				{
+					"author": {
+						"login": "rev1",
+						"__typename": "User"
+					},
+					"bodyText": "Should this expire?",
+					"bodyHTML": "<p dir=\"auto\">Should this <strong>expire</strong>?</p>",
+					"createdAt": "2026-01-03T09:00:00Z"
+				}
+			]
+		},
 		"comments": {
 			"totalCount": 2,
 			"nodes": [
@@ -11,21 +24,13 @@
 					"author": {
 						"login": "rev1",
 						"__typename": "User"
-					},
-					"body": "Should this **expire**?",
-					"bodyText": "Should this expire?",
-					"bodyHTML": "<p dir=\"auto\">Should this <strong>expire</strong>?</p>",
-					"createdAt": "2026-01-03T09:00:00Z"
+					}
 				},
 				{
 					"author": {
 						"login": "octo-author",
 						"__typename": "User"
-					},
-					"body": "Yes, fixed.",
-					"bodyText": "Yes, fixed.",
-					"bodyHTML": "<p dir=\"auto\">Yes, fixed.</p>",
-					"createdAt": "2026-01-03T10:00:00Z"
+					}
 				}
 			]
 		}
@@ -35,6 +40,19 @@
 		"isOutdated": false,
 		"path": "src/done.ts",
 		"line": 1,
+		"first": {
+			"nodes": [
+				{
+					"author": {
+						"login": "rev1",
+						"__typename": "User"
+					},
+					"bodyText": "Nit",
+					"bodyHTML": "<p dir=\"auto\">Nit</p>",
+					"createdAt": "2026-01-03T09:00:00Z"
+				}
+			]
+		},
 		"comments": {
 			"totalCount": 1,
 			"nodes": [
@@ -42,11 +60,7 @@
 					"author": {
 						"login": "rev1",
 						"__typename": "User"
-					},
-					"body": "Nit",
-					"bodyText": "Nit",
-					"bodyHTML": "<p dir=\"auto\">Nit</p>",
-					"createdAt": "2026-01-03T09:00:00Z"
+					}
 				}
 			]
 		}
@@ -56,6 +70,19 @@
 		"isOutdated": true,
 		"path": "src/old.ts",
 		"line": null,
+		"first": {
+			"nodes": [
+				{
+					"author": {
+						"login": "ci-bot",
+						"__typename": "Bot"
+					},
+					"bodyText": "Coverage dropped",
+					"bodyHTML": "<p dir=\"auto\">Coverage dropped</p>",
+					"createdAt": "2026-01-02T12:00:00Z"
+				}
+			]
+		},
 		"comments": {
 			"totalCount": 1,
 			"nodes": [
@@ -63,11 +90,7 @@
 					"author": {
 						"login": "ci-bot",
 						"__typename": "Bot"
-					},
-					"body": "Coverage dropped",
-					"bodyText": "Coverage dropped",
-					"bodyHTML": "<p dir=\"auto\">Coverage dropped</p>",
-					"createdAt": "2026-01-02T12:00:00Z"
+					}
 				}
 			]
 		}
@@ -77,6 +100,19 @@
 		"isOutdated": false,
 		"path": "src/self.ts",
 		"line": 3,
+		"first": {
+			"nodes": [
+				{
+					"author": {
+						"login": "rev1",
+						"__typename": "User"
+					},
+					"bodyText": "First",
+					"bodyHTML": "<p dir=\"auto\">First</p>",
+					"createdAt": "2026-01-03T09:00:00Z"
+				}
+			]
+		},
 		"comments": {
 			"totalCount": 2,
 			"nodes": [
@@ -84,21 +120,13 @@
 					"author": {
 						"login": "rev1",
 						"__typename": "User"
-					},
-					"body": "First",
-					"bodyText": "First",
-					"bodyHTML": "<p dir=\"auto\">First</p>",
-					"createdAt": "2026-01-03T09:00:00Z"
+					}
 				},
 				{
 					"author": {
 						"login": "rev1",
 						"__typename": "User"
-					},
-					"body": "Also this",
-					"bodyText": "Also this",
-					"bodyHTML": "<p dir=\"auto\">Also this</p>",
-					"createdAt": "2026-01-03T09:05:00Z"
+					}
 				}
 			]
 		}

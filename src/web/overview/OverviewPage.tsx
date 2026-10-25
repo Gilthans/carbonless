@@ -22,14 +22,20 @@ import {
 	SkipIcon,
 	XIcon,
 } from "@primer/octicons-react";
-import { useQuery } from "@tanstack/react-query";
+import {
+	type UseQueryResult,
+	useQuery,
+	useQueryClient,
+} from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
-import type { ReactNode } from "react";
+import { type ReactNode, useCallback, useState } from "react";
 import type { PrOverview, Progress } from "../../shared/types";
 import { overviewQuery, reviewQuery } from "../api";
-import { GithubHtml } from "../GithubHtml";
+import { GithubHtml, ImageErrorContext } from "../GithubHtml";
 import { RelativeTime } from "../RelativeTime";
+import { Tooltip } from "../Tooltip";
 import { ErrorMessage, safeHref } from "../ui";
+import { createImageRefresher } from "./imageRefresh";
 
 type Review = PrOverview["reviews"][number];
 type Check = PrOverview["checks"][number];
@@ -37,6 +43,32 @@ type Thread = PrOverview["threads"][number];
 
 export function OverviewPage() {
 	const overview = useQuery(overviewQuery);
+	const queryClient = useQueryClient();
+	const [refreshImages] = useState(() =>
+		createImageRefresher({
+			refetch: () =>
+				void queryClient.invalidateQueries({
+					queryKey: overviewQuery.queryKey,
+				}),
+		}),
+	);
+	const { dataUpdatedAt } = overview;
+	const onImageError = useCallback(
+		() => refreshImages(dataUpdatedAt),
+		[refreshImages, dataUpdatedAt],
+	);
+	return (
+		<ImageErrorContext value={onImageError}>
+			<OverviewContent overview={overview} />
+		</ImageErrorContext>
+	);
+}
+
+function OverviewContent({
+	overview,
+}: {
+	overview: UseQueryResult<PrOverview>;
+}) {
 	return (
 		<div className="space-y-6">
 			<ReviewFilesButton />
@@ -72,8 +104,6 @@ function Section(props: { label: string; children: ReactNode }) {
 function Badge(props: {
 	tone: "gray" | "red" | "yellow" | "green" | "purple";
 	icon?: Icon;
-	/** Tooltip, when the badge's text alone is terse. */
-	title?: string;
 	children: ReactNode;
 }) {
 	const tones = {
@@ -86,7 +116,6 @@ function Badge(props: {
 	const IconEl = props.icon;
 	return (
 		<span
-			title={props.title}
 			className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium ${tones[props.tone]}`}
 		>
 			{IconEl && <IconEl size={12} aria-hidden />}
@@ -95,18 +124,33 @@ function Badge(props: {
 	);
 }
 
-/** An icon that carries meaning: named for screen readers, titled for the mouse. */
-function LabeledIcon(props: { icon: Icon; label: string; className?: string }) {
+/**
+ * An icon that carries meaning. Named for screen readers; its name shows in a
+ * tooltip on hover, keyboard focus and tap (a 40px-tall hit area that stops at the usual 8px gap).
+ */
+function LabeledIcon(props: {
+	icon: Icon;
+	label: string;
+	size?: 12 | 16;
+	className?: string;
+}) {
 	const IconEl = props.icon;
 	return (
-		<span
-			role="img"
-			aria-label={props.label}
-			title={props.label}
-			className={`inline-flex shrink-0 items-center ${props.className ?? ""}`}
-		>
-			<IconEl size={16} aria-hidden />
-		</span>
+		<Tooltip content={props.label} describe={false}>
+			{(trigger) => (
+				<span
+					{...trigger}
+					role="img"
+					aria-label={props.label}
+					// Focusable so keyboard and touch users can read the tooltip.
+					// biome-ignore lint/a11y/noNoninteractiveTabindex: the tooltip opens on focus.
+					tabIndex={0}
+					className={`relative inline-flex shrink-0 cursor-help items-center rounded-sm after:absolute after:top-1/2 after:left-1/2 after:h-10 after:w-8 after:-translate-x-1/2 after:-translate-y-1/2 focus-visible:outline-2 focus-visible:outline-blue-600 ${props.className ?? ""}`}
+				>
+					<IconEl size={props.size ?? 16} aria-hidden />
+				</span>
+			)}
+		</Tooltip>
 	);
 }
 
@@ -139,16 +183,20 @@ function GithubLink({ url }: { url: string }) {
 	const href = safeHref(url);
 	if (!href) return null;
 	return (
-		<a
-			href={href}
-			target="_blank"
-			rel="noreferrer noopener"
-			aria-label="View on GitHub"
-			title="View on GitHub"
-			className="-my-2 inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-md text-slate-700 hover:bg-slate-100 hover:text-slate-950 focus-visible:outline-2 focus-visible:outline-blue-600"
-		>
-			<MarkGithubIcon size={20} aria-hidden />
-		</a>
+		<Tooltip content="View on GitHub" describe={false}>
+			{(trigger) => (
+				<a
+					{...trigger}
+					href={href}
+					target="_blank"
+					rel="noreferrer noopener"
+					aria-label="View on GitHub"
+					className="-my-2 inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-md text-slate-700 hover:bg-slate-100 hover:text-slate-950 focus-visible:outline-2 focus-visible:outline-blue-600"
+				>
+					<MarkGithubIcon size={20} aria-hidden />
+				</a>
+			)}
+		</Tooltip>
 	);
 }
 
@@ -285,11 +333,15 @@ function ReviewState({ review }: { review: Review }) {
 				className={shown.className}
 			/>
 			{then && (
-				<LabeledIcon
-					icon={then.icon}
-					label={`then ${then.label.toLowerCase()}`}
-					className="text-slate-400"
-				/>
+				// Secondary: smaller and muted, after a short "then".
+				<span className="inline-flex items-center gap-0.5 text-xs text-slate-400">
+					<span aria-hidden>then</span>
+					<LabeledIcon
+						icon={then.icon}
+						size={12}
+						label={`then ${then.label.toLowerCase()}`}
+					/>
+				</span>
 			)}
 		</>
 	);
@@ -465,11 +517,7 @@ function IsItReady({ pr }: { pr: PrOverview }) {
 							No conflicts
 						</Badge>
 					) : (
-						<Badge
-							tone="gray"
-							icon={QuestionIcon}
-							title="GitHub hasn't computed mergeability yet"
-						>
+						<Badge tone="gray" icon={QuestionIcon}>
 							Conflicts unknown
 						</Badge>
 					)}

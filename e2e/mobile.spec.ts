@@ -117,15 +117,9 @@ test("GitHub-rendered descriptions and threads never widen the page", async ({
 	await pr({
 		bodyHTML: WIDE_HTML,
 		threads: [
-			reviewThread({
-				path: `${LONG_DIR}/compatibility.ts`,
-				comments: {
-					totalCount: 1,
-					nodes: [
-						threadComment({ login: "rev1", text: WIDE, html: WIDE_HTML }),
-					],
-				},
-			}),
+			reviewThread({ path: `${LONG_DIR}/compatibility.ts` }, [
+				threadComment({ login: "rev1", text: WIDE, html: WIDE_HTML }),
+			]),
 		],
 	});
 	const s = await startCrb();

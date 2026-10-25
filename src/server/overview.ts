@@ -85,7 +85,8 @@ function mapThreads(nodes: unknown[]): PrOverview["threads"] {
 		const t = obj(raw);
 		if (t.isResolved === true) continue;
 		const comments = arr(obj(t.comments).nodes).map(obj);
-		const first = comments[0] ?? {};
+		// `first` is the aliased comments(first: 1) with the opening comment's text.
+		const first = obj(arr(obj(t.first).nodes)[0] ?? comments[0]);
 		const author = obj(first.author);
 		const firstLogin = str(author.login);
 		// bodyText is GitHub's plain-text rendering; the raw body is a fallback.

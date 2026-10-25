@@ -40,29 +40,58 @@ export function useNow(): number {
 	return useSyncExternalStore(subscribe, getNow, getNow);
 }
 
-// ---- Formatting
+// ---- Formatting (formatters are cached: many dates render each minute)
 
-const UNITS: [Intl.RelativeTimeFormatUnit, number][] = [
-	["year", 365 * 24 * 60 * MINUTE],
-	["month", 30 * 24 * 60 * MINUTE],
-	["day", 24 * 60 * MINUTE],
-	["hour", 60 * MINUTE],
-	["minute", MINUTE],
-];
+const cache = new Map<string, Intl.RelativeTimeFormat | Intl.DateTimeFormat>();
 
-/** "just now", "6 hours ago", "3 days ago" (or "in 2 minutes" for clock skew). */
+function cached<T extends Intl.RelativeTimeFormat | Intl.DateTimeFormat>(
+	key: string,
+	make: () => T,
+): T {
+	let format = cache.get(key) as T | undefined;
+	if (!format) {
+		format = make();
+		cache.set(key, format);
+	}
+	return format;
+}
+
+/**
+ * Rounded like GitHub: "now", "6 hours ago", "2 days ago" (47 hours), or
+ * "in 2 minutes" for clock skew. Localized by Intl.RelativeTimeFormat.
+ */
 export function relativeTime(
 	date: Date,
 	nowMs: number,
 	locale?: string,
 ): string {
 	const diff = date.getTime() - nowMs;
-	const format = new Intl.RelativeTimeFormat(locale, { numeric: "always" });
-	for (const [unit, ms] of UNITS) {
-		const amount = Math.trunc(diff / ms);
-		if (amount !== 0) return format.format(amount, unit);
+	const sign = diff < 0 ? -1 : 1;
+	const seconds = Math.round(Math.abs(diff) / 1000);
+	if (seconds < 45) {
+		return cached(
+			`rel-auto:${locale}`,
+			() => new Intl.RelativeTimeFormat(locale, { numeric: "auto" }),
+		).format(0, "second");
 	}
-	return "just now";
+	const minutes = Math.round(seconds / 60);
+	const hours = Math.round(minutes / 60);
+	const days = Math.round(hours / 24);
+	const months = Math.round(days / 30.44);
+	const [amount, unit]: [number, Intl.RelativeTimeFormatUnit] =
+		minutes < 45
+			? [Math.max(1, minutes), "minute"]
+			: hours < 22
+				? [Math.max(1, hours), "hour"]
+				: days < 26
+					? [Math.max(1, days), "day"]
+					: months < 11
+						? [Math.max(1, months), "month"]
+						: [Math.max(1, Math.round(days / 365.25)), "year"];
+	return cached(
+		`rel:${locale}`,
+		() => new Intl.RelativeTimeFormat(locale, { numeric: "always" }),
+	).format(sign * amount, unit);
 }
 
 /** "Sunday, January 4, 2026 at 11:00:00 AM Israel Standard Time". */
@@ -70,17 +99,21 @@ export function fullDate(
 	date: Date,
 	opts: { locale?: string; timeZone?: string } = {},
 ): string {
-	return new Intl.DateTimeFormat(opts.locale, {
-		weekday: "long",
-		year: "numeric",
-		month: "long",
-		day: "numeric",
-		hour: "numeric",
-		minute: "2-digit",
-		second: "2-digit",
-		timeZoneName: "long",
-		timeZone: opts.timeZone,
-	}).format(date);
+	return cached(
+		`full:${opts.locale}:${opts.timeZone}`,
+		() =>
+			new Intl.DateTimeFormat(opts.locale, {
+				weekday: "long",
+				year: "numeric",
+				month: "long",
+				day: "numeric",
+				hour: "numeric",
+				minute: "2-digit",
+				second: "2-digit",
+				timeZoneName: "long",
+				timeZone: opts.timeZone,
+			}),
+	).format(date);
 }
 
 /**

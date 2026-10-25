@@ -88,6 +88,58 @@ describe("sanitizeGithubHtml", () => {
 		expect(d.querySelector("span")).not.toHaveAttribute("class");
 	});
 
+	it("defuses known XSS shapes", () => {
+		const cases = [
+			'<svg><a href="javascript:alert(1)"><text>svg link</text></a></svg>',
+			'<svg><animate attributeName="href" to="javascript:alert(1)"/><set attributeName="onload" to="alert(1)"/></svg>',
+			"<math><mtext><table><mglyph><style><img src=x onerror=alert(1)></style></mglyph></table></mtext></math>",
+			'<svg><foreignObject><iframe src="javascript:alert(1)"></iframe><img src=x onerror=alert(1)></foreignObject></svg>',
+			'<svg><a xlink:href="javascript:alert(1)">x</a><use xlink:href="data:image/svg+xml,<svg/>"/></svg>',
+			'<a href="&#106;avascript&#58;alert(1)">entity</a>',
+			'<a href="  javascript:alert(1)  ">padded</a>',
+			'<a href="java\tscript:alert(1)">tabbed</a>',
+			'<img srcset="https://x.example/a.png 1x, javascript:alert(1) 2x" src="https://x.example/a.png">',
+			'<input type="text" value="x" autofocus onfocus="alert(1)"><input type="image" src="https://x.example/a.png">',
+			'<noscript><p title="</noscript><img src=x onerror=alert(1)>"></noscript>',
+		];
+		for (const html of cases) {
+			const d = dom(html);
+			const out = d.innerHTML;
+			expect(out, html).not.toMatch(
+				/javascript:|onerror|onload|onfocus|autofocus/i,
+			);
+			expect(
+				d.querySelector(
+					"animate, set, use, foreignObject, iframe, math, style, mglyph, noscript",
+				),
+				html,
+			).toBeNull();
+			expect(d.querySelector("[srcset], [xlink\\:href]"), html).toBeNull();
+			expect(d.querySelector('input:not([type="checkbox"])'), html).toBeNull();
+			for (const a of d.querySelectorAll("a[href]")) {
+				expect(a.getAttribute("href"), html).toMatch(/^(https?|mailto):/);
+			}
+			for (const img of d.querySelectorAll("img")) {
+				expect(img.getAttribute("src"), html).toMatch(/^https:/);
+			}
+		}
+	});
+
+	it("keeps a plain http link (only images need https)", () => {
+		const a = dom('<a href="http://example.com/x">plain</a>').querySelector(
+			"a",
+		);
+		expect(a).toHaveAttribute("href", "http://example.com/x");
+		expect(a).toHaveAttribute("rel", "noreferrer noopener");
+	});
+
+	it("loads images eagerly: signed URLs expire", () => {
+		const img = dom(
+			'<img src="https://private-user-images.githubusercontent.com/1/a.png?jwt=x">',
+		).querySelector("img");
+		expect(img).not.toHaveAttribute("loading");
+	});
+
 	it("returns an empty string for empty input", () => {
 		expect(sanitizeGithubHtml("")).toBe("");
 	});

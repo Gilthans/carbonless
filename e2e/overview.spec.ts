@@ -2,21 +2,14 @@ import type { Page } from "@playwright/test";
 import { reviewThread, threadComment } from "../test/fake-gh/scenario";
 import { expect, test } from "./fixtures";
 
-const botThreadNoReply = reviewThread({
-	path: "src/bot.ts",
-	line: 3,
-	comments: {
-		totalCount: 1,
-		nodes: [
-			threadComment({
-				login: "lint-bot",
-				bot: true,
-				text: "Unused import of fs in this module",
-				html: '<p dir="auto">Unused import of <code class="notranslate">fs</code> in this module</p>',
-			}),
-		],
-	},
-});
+const botThreadNoReply = reviewThread({ path: "src/bot.ts", line: 3 }, [
+	threadComment({
+		login: "lint-bot",
+		bot: true,
+		text: "Unused import of fs in this module",
+		html: '<p dir="auto">Unused import of <code class="notranslate">fs</code> in this module</p>',
+	}),
+]);
 
 /** What GitHub renders for a description with a comment, emoji and a task list. */
 const RICH_BODY_HTML = [
@@ -69,6 +62,7 @@ test("shows the description as GitHub renders it, and who started reviewing", as
 	page,
 	pr,
 	startCrb,
+	isMobile,
 }) => {
 	await stubImages(page);
 	await pr({
@@ -101,8 +95,13 @@ test("shows the description as GitHub renders it, and who started reviewing", as
 	await expect(what).not.toContainText("reviewer note");
 	const who = page.getByRole("region", { name: "Who's on it" });
 	await expect(who).toContainText("rev1 already started");
+	const changes = who.getByRole("img", { name: "Changes requested" });
+	await expect(changes).toBeVisible();
+	// The icon's name shows on tap (phone) or keyboard focus, not only on hover.
+	if (isMobile) await changes.tap();
+	else await changes.focus();
 	await expect(
-		who.getByRole("img", { name: "Changes requested" }),
+		page.getByText("Changes requested", { exact: true }),
 	).toBeVisible();
 });
 
@@ -121,7 +120,6 @@ test("links to GitHub with its mark and shows dates as relative times", async ({
 		"href",
 		"https://github.com/acme/widget/pull/7",
 	);
-	await expect(github).toHaveAttribute("title", "View on GitHub");
 	await expect(github).not.toHaveText(/\S/);
 	const box = await github.boundingBox();
 	expect(box?.width).toBeGreaterThanOrEqual(40);

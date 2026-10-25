@@ -13,16 +13,22 @@ const DAY = 24 * HOUR;
 describe("relativeTime", () => {
 	const at = (ms: number) => relativeTime(ago(ms), NOW.getTime(), "en-US");
 
-	it("says just now under a minute, in either direction", () => {
-		expect(at(0)).toBe("just now");
-		expect(at(59_000)).toBe("just now");
-		expect(at(-30_000)).toBe("just now");
+	it("says now under 45 seconds, in either direction, localized", () => {
+		expect(at(0)).toBe("now");
+		expect(at(44_000)).toBe("now");
+		expect(at(-30_000)).toBe("now");
+		expect(relativeTime(ago(0), NOW.getTime(), "de")).toBe("jetzt");
 	});
 
-	it("uses the largest whole unit", () => {
+	it("rounds to the nearest unit, like GitHub", () => {
+		expect(at(45_000)).toBe("1 minute ago");
 		expect(at(MIN)).toBe("1 minute ago");
-		expect(at(59 * MIN)).toBe("59 minutes ago");
+		expect(at(44 * MIN)).toBe("44 minutes ago");
+		expect(at(50 * MIN)).toBe("1 hour ago");
 		expect(at(6 * HOUR)).toBe("6 hours ago");
+		expect(at(21 * HOUR)).toBe("21 hours ago");
+		expect(at(23 * HOUR)).toBe("1 day ago");
+		expect(at(47 * HOUR)).toBe("2 days ago");
 		expect(at(3 * DAY)).toBe("3 days ago");
 		expect(at(45 * DAY)).toBe("1 month ago");
 		expect(at(800 * DAY)).toBe("2 years ago");
@@ -76,7 +82,7 @@ describe("RelativeTime", () => {
 			</>,
 		);
 		const [first, second] = container.querySelectorAll("time");
-		expect(first).toHaveTextContent("just now");
+		expect(first).toHaveTextContent("now");
 		expect(spy).toHaveBeenCalledTimes(1);
 		act(() => {
 			vi.advanceTimersByTime(60 * MIN);

@@ -285,7 +285,8 @@ const AUTHOR = "author { login __typename }";
 const QUERIES = {
 	reviewThreads: connectionQuery(
 		"reviewThreads",
-		`isResolved isOutdated path line comments(first: 100) { totalCount nodes { ${AUTHOR} body bodyText bodyHTML createdAt } }`,
+		// The opening comment's text; only authors for the rest (reply detection).
+		`isResolved isOutdated path line first: comments(first: 1) { nodes { ${AUTHOR} bodyText bodyHTML createdAt } } comments(first: 100) { totalCount nodes { ${AUTHOR} } }`,
 	),
 	comments: connectionQuery("comments", `${AUTHOR} createdAt`),
 	reviews: connectionQuery("reviews", `${AUTHOR} state submittedAt`),

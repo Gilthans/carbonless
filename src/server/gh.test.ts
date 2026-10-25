@@ -280,15 +280,19 @@ describe("runGh with a fake gh", () => {
 			isOutdated: false,
 			path,
 			line: 1,
-			comments: {
-				totalCount: 1,
+			first: {
 				nodes: [
 					{
 						author: { login: "a", __typename: "User" },
-						body: "b",
+						bodyText: "b",
+						bodyHTML: "<p>b</p>",
 						createdAt: "",
 					},
 				],
+			},
+			comments: {
+				totalCount: 1,
+				nodes: [{ author: { login: "a", __typename: "User" } }],
 			},
 		});
 		const gql = join(dir, "gql");
@@ -323,6 +327,13 @@ describe("runGh with a fake gh", () => {
 		// One description query; the threads query paged twice.
 		expect(log().match(/\{ bodyHTML \}/g)).toHaveLength(1);
 		expect(log().match(/reviewThreads\(/g)).toHaveLength(2);
+		// Text only for each thread's opening comment; authors for the rest.
+		expect(log()).toContain(
+			"first: comments(first: 1) { nodes { author { login __typename } bodyText bodyHTML createdAt } }",
+		);
+		expect(log()).toContain(
+			"comments(first: 100) { totalCount nodes { author { login __typename } } }",
+		);
 	});
 
 	it("fails rather than show an empty description when bodyHTML is missing", async () => {

@@ -17,7 +17,8 @@ interface Comment {
 	createdAt: string;
 }
 interface Thread {
-	comments: { nodes: { body: string; bodyText?: string; bodyHTML?: string }[] };
+	first: { nodes: { bodyText?: string; bodyHTML?: string; body?: string }[] };
+	comments: { nodes: { author: Actor }[] };
 }
 
 const load = <T>(name: string): T =>
@@ -171,7 +172,7 @@ describe("mapOverview", () => {
 
 	it("cuts thread excerpts at 200 characters", () => {
 		const g = graph();
-		const first = g.reviewThreads[0]?.comments.nodes[0];
+		const first = g.reviewThreads[0]?.first.nodes[0];
 		if (first) first.bodyText = "x".repeat(300);
 		expect(mapOverview(view(), g, VIEWER).threads[0]?.excerpt).toHaveLength(
 			200,
@@ -180,7 +181,7 @@ describe("mapOverview", () => {
 
 	it("builds the excerpt from bodyText with whitespace collapsed, else from the body", () => {
 		const g = graph();
-		const first = g.reviewThreads[0]?.comments.nodes[0];
+		const first = g.reviewThreads[0]?.first.nodes[0];
 		if (!first) throw new Error("fixture has no thread");
 		first.bodyText = "  Line one\n\n  line\ttwo  ";
 		expect(mapOverview(view(), g, VIEWER).threads[0]?.excerpt).toBe(
@@ -188,9 +189,21 @@ describe("mapOverview", () => {
 		);
 		delete first.bodyText;
 		delete first.bodyHTML;
+		first.body = "Should this **expire**?";
 		const t = mapOverview(view(), g, VIEWER).threads[0];
 		expect(t?.excerpt).toBe("Should this **expire**?");
 		expect(t?.html).toBe("");
+	});
+
+	it("takes the opener's text from the aliased first comment and replies from the author list", () => {
+		const g = graph();
+		const thread = g.reviewThreads[0];
+		if (!thread) throw new Error("fixture has no thread");
+		// Without the alias, the first node of the full list still names the opener.
+		const { first: _, ...noAlias } = thread;
+		g.reviewThreads[0] = noAlias as typeof thread;
+		const t = mapOverview(view(), g, VIEWER).threads[0];
+		expect(t).toMatchObject({ author: "rev1", hasReply: true, html: "" });
 	});
 
 	it("passes the description as GitHub's HTML next to the markdown", () => {
