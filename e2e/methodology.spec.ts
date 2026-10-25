@@ -46,7 +46,9 @@ for (const m of METHODOLOGIES) {
 
 			stage("landed");
 			if (m.landing === "open") {
-				await expectPrFiles((await startCrb()).url);
+				const again = await startCrb();
+				await expectPrFiles(again.url);
+				await again.stop();
 			} else {
 				const exit = await startCrb().then(
 					() => null,

@@ -6,7 +6,7 @@ import { createPrFixture, type PrFixture } from "../../test/pr-fixture";
 import { clonePath } from "./clone";
 import { GhError } from "./errors";
 import { StaleSnapshotError } from "./review/reviews";
-import { Session } from "./session";
+import { refusal, Session } from "./session";
 
 describe("Session", () => {
 	let pr: PrFixture;
@@ -76,7 +76,20 @@ describe("Session", () => {
 	it("refuses a closed PR", async () => {
 		land("CLOSED");
 		await expect(Session.open(pr.arg, process.cwd())).rejects.toThrow(
-			"PR acme/widget#12 is closed; nothing to review",
+			"PR acme/widget#12 is closed; reopen it on GitHub to review",
+		);
+	});
+
+	it("words a refusal by GitHub's state, neutrally for an open PR", () => {
+		const meta = { owner: "acme", repo: "widget", number: 12 };
+		expect(refusal({ ...meta, state: "MERGED" })).toBe(
+			"PR acme/widget#12 is already merged; nothing to review",
+		);
+		expect(refusal({ ...meta, state: "CLOSED" })).toBe(
+			"PR acme/widget#12 is closed; reopen it on GitHub to review",
+		);
+		expect(refusal({ ...meta, state: "OPEN" })).toBe(
+			"Could not open the review of PR acme/widget#12",
 		);
 	});
 

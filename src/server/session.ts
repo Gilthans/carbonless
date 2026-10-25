@@ -46,6 +46,24 @@ interface Endpoints {
  * reviewer's patch set once they started one, else the PR's head; it only
  * moves on an explicit refresh, and never off a started patch set.
  */
+/**
+ * Why a PR has no review to open: merged, closed (reopening it on GitHub is
+ * the way back), or, for an open PR, that its review couldn't be read.
+ */
+export function refusal(
+	meta: Pick<PrMeta, "owner" | "repo" | "number" | "state">,
+): string {
+	const pr = `PR ${meta.owner}/${meta.repo}#${meta.number}`;
+	switch (meta.state) {
+		case "MERGED":
+			return `${pr} is already merged; nothing to review`;
+		case "CLOSED":
+			return `${pr} is closed; reopen it on GitHub to review`;
+		default:
+			return `Could not open the review of ${pr}`;
+	}
+}
+
 export class Session {
 	#meta: PrMeta;
 	#snapshot: Snapshot;
@@ -109,12 +127,7 @@ export class Session {
 		const state =
 			reviewId === null ? null : await reviews.getProgress(reviewId, viewer);
 		if (reviewId === null || state === null || (over && !state.patchset)) {
-			const pr = `PR ${meta.owner}/${meta.repo}#${meta.number}`;
-			throw new Error(
-				meta.state === "CLOSED"
-					? `${pr} is closed; nothing to review`
-					: `${pr} is already merged; nothing to review`,
-			);
+			throw new Error(refusal(meta));
 		}
 		const { mergeBase, head } = state.patchset ?? fetched;
 		const snapshot = await buildSnapshot(repo, mergeBase, head);

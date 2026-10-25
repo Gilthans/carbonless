@@ -14,8 +14,9 @@ history.
   squash or rebase-and-merge leaves the PR head outside the base, so "head is
   reachable from the base" misses them.
   - `MERGED` / `CLOSED` and the reviewer has no patch set: `crb` refuses with
-    "PR o/r#n is already merged; nothing to review" (or "is closed"), and
-    creates no review.
+    "PR o/r#n is already merged; nothing to review" (or "PR o/r#n is closed;
+    reopen it on GitHub to review"), and creates no review. Reopening a closed
+    PR on GitHub is the way to review it again.
   - The reviewer has a patch set: it opens pinned on that patch set, as always.
   - A running session with no patch set keeps its snapshot on refresh once the
     PR is merged or closed (a merge commit would otherwise empty it).
