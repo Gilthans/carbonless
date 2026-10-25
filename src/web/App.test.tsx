@@ -274,7 +274,12 @@ describe("OverviewPage", () => {
 		expect(link).not.toHaveTextContent(/\S/);
 		const user = userEvent.setup();
 		await user.hover(link);
-		expect(screen.getByText("View on GitHub")).toBeVisible();
+		// Its text repeats the link's name, so it is hidden from the a11y tree.
+		await waitFor(() =>
+			expect(
+				screen.getByText("View on GitHub", { selector: "[role=tooltip]" }),
+			).toBeVisible(),
+		);
 	});
 
 	it("shows PR dates as relative <time>s", async () => {

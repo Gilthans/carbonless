@@ -1,5 +1,7 @@
 import { StackIcon } from "@primer/octicons-react";
+import type { ReactNode } from "react";
 import type { FileView } from "../../shared/types";
+import { Tooltip } from "../Tooltip";
 import type { Unit } from "./unit";
 
 export type FileProgress =
@@ -31,18 +33,59 @@ const ICON: Record<FileProgress, { glyph: string; className: string }> = {
 	"crossed off": { glyph: "⊘", className: "text-purple-600" },
 };
 
-export function StatusIcon({ file }: { file: FileView }) {
+/**
+ * A glyph named by `label`. With `tooltip` it is focusable and shows the label
+ * as a tooltip (alone, not inside another control).
+ */
+function NamedGlyph(props: {
+	label: string;
+	tooltip?: boolean;
+	className: string;
+	children: ReactNode;
+}) {
+	if (!props.tooltip) {
+		return (
+			<span role="img" aria-label={props.label} className={props.className}>
+				{props.children}
+			</span>
+		);
+	}
+	return (
+		<Tooltip content={props.label} describe={false}>
+			{(trigger) => (
+				<span
+					{...trigger}
+					role="img"
+					aria-label={props.label}
+					// Focusable so keyboard and touch users can read the tooltip.
+					// biome-ignore lint/a11y/noNoninteractiveTabindex: the tooltip opens on focus.
+					tabIndex={0}
+					className={`${props.className} cursor-help rounded-sm focus-visible:outline-2 focus-visible:outline-blue-600`}
+				>
+					{props.children}
+				</span>
+			)}
+		</Tooltip>
+	);
+}
+
+export function StatusIcon({
+	file,
+	tooltip,
+}: {
+	file: FileView;
+	tooltip?: boolean;
+}) {
 	const progress = fileProgress(file);
 	const icon = ICON[progress];
 	return (
-		<span
-			role="img"
-			aria-label={progress}
-			title={progress}
+		<NamedGlyph
+			label={progress}
+			tooltip={tooltip}
 			className={`inline-block w-4 shrink-0 text-center ${icon.className}`}
 		>
 			{icon.glyph}
-		</span>
+		</NamedGlyph>
 	);
 }
 
@@ -59,20 +102,27 @@ export function AddDel({ file }: { file: FileView }) {
  * How much the file changes, in the unit: "+X −Y" in lines, the cluster count
  * in clusters, nothing in files.
  */
-export function ChangeCount({ file, unit }: { file: FileView; unit: Unit }) {
+export function ChangeCount({
+	file,
+	unit,
+	tooltip,
+}: {
+	file: FileView;
+	unit: Unit;
+	tooltip?: boolean;
+}) {
 	if (unit === "lines") return <AddDel file={file} />;
 	if (unit === "files") return null;
 	const n = file.clusters.length;
 	const label = `${n} ${n === 1 ? "cluster" : "clusters"}`;
 	return (
-		<span
-			role="img"
-			aria-label={label}
-			title={label}
+		<NamedGlyph
+			label={label}
+			tooltip={tooltip}
 			className="inline-flex shrink-0 items-center gap-0.5 font-mono text-xs text-slate-600 tabular-nums"
 		>
 			{n}
 			<StackIcon size={12} className="text-slate-400" />
-		</span>
+		</NamedGlyph>
 	);
 }

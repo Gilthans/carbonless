@@ -260,7 +260,7 @@ test.describe("phone", () => {
 		const path = fileSection(page, `${LONG_DIR}/compatibility.ts`).getByTestId(
 			"file-path",
 		);
-		await expect(path).toHaveAttribute("title", `${LONG_DIR}/compatibility.ts`);
+		await expect(path).not.toHaveAttribute("title");
 		await expect
 			.poll(() =>
 				path.evaluate((el) => ({

@@ -20,6 +20,9 @@ export interface TooltipTriggerProps {
 	onKeyDown: (e: KeyboardEvent) => void;
 }
 
+/** How long the pointer rests on a trigger before its tooltip shows. */
+export const HOVER_DELAY_MS = 150;
+
 const GAP = 6;
 const MARGIN = 8;
 
@@ -36,12 +39,15 @@ export function Tooltip(props: {
 	 * when it repeats the trigger's accessible name.
 	 */
 	describe?: boolean;
+	/** Mouse-hover delay in ms (focus and tap show at once). */
+	hoverDelay?: number;
 	children: (trigger: TooltipTriggerProps) => ReactNode;
 }) {
 	const id = useId();
 	const [open, setOpen] = useState(false);
 	const trigger = useRef<HTMLElement | null>(null);
 	const tip = useRef<HTMLSpanElement>(null);
+	const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 	const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
 
 	useLayoutEffect(() => {
@@ -75,6 +81,17 @@ export function Tooltip(props: {
 		};
 	}, [open]);
 
+	useEffect(() => () => clearTimeout(timer.current), []);
+
+	const show = () => {
+		clearTimeout(timer.current);
+		setOpen(true);
+	};
+	const hide = () => {
+		clearTimeout(timer.current);
+		setOpen(false);
+	};
+
 	return (
 		<>
 			{props.children({
@@ -82,14 +99,21 @@ export function Tooltip(props: {
 					trigger.current = el;
 				},
 				"aria-describedby": props.describe === false ? undefined : id,
-				onMouseEnter: () => setOpen(true),
+				onMouseEnter: () => {
+					clearTimeout(timer.current);
+					timer.current = setTimeout(
+						() => setOpen(true),
+						props.hoverDelay ?? HOVER_DELAY_MS,
+					);
+				},
 				onMouseLeave: () => {
+					clearTimeout(timer.current);
 					if (trigger.current !== document.activeElement) setOpen(false);
 				},
-				onFocus: () => setOpen(true),
-				onBlur: () => setOpen(false),
+				onFocus: show,
+				onBlur: hide,
 				onKeyDown: (e) => {
-					if (e.key === "Escape") setOpen(false);
+					if (e.key === "Escape") hide();
 				},
 			})}
 			<span

@@ -154,16 +154,20 @@ function Children(props: {
 					/>
 				) : (
 					<li key={`d:${node.folder.name}`}>
-						<div
-							style={indent(props.depth)}
-							title={node.folder.name}
-							className="truncate py-0.5 text-sm text-slate-600"
-						>
-							<span aria-hidden className="mr-1 text-slate-400">
-								▾
-							</span>
-							{node.folder.name}
-						</div>
+						<Tooltip content={node.folder.name} describe={false}>
+							{(trigger) => (
+								<div
+									{...trigger}
+									style={indent(props.depth)}
+									className="truncate py-0.5 text-sm text-slate-600"
+								>
+									<span aria-hidden className="mr-1 text-slate-400">
+										▾
+									</span>
+									{node.folder.name}
+								</div>
+							)}
+						</Tooltip>
 						<Children
 							nodes={node.folder.children}
 							unit={props.unit}

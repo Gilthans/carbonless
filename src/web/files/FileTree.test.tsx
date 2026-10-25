@@ -1,5 +1,11 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen, within } from "@testing-library/react";
+import {
+	cleanup,
+	render,
+	screen,
+	waitFor,
+	within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ClusterState, FileView } from "../../shared/types";
@@ -72,8 +78,10 @@ describe("FileTree", () => {
 			/>,
 		);
 		const tree = screen.getByTestId("file-tree");
-		expect(within(tree).getByText("src")).toBeInTheDocument();
-		expect(within(tree).getByText("a/deep")).toBeInTheDocument();
+		const folders = (name: string) =>
+			within(tree).getAllByText(name, { selector: ":not([role=tooltip])" });
+		expect(folders("src")).toHaveLength(1);
+		expect(folders("a/deep")).toHaveLength(1);
 		const items = within(tree)
 			.getAllByRole("button")
 			.map((b) => b.textContent);
@@ -173,7 +181,7 @@ describe("FileTree", () => {
 		expect(shown()).toHaveLength(0);
 		await user.click(document.body);
 		await user.hover(screen.getByRole("button", { name: /api\.g\.cs/ }));
-		expect(shown()).toHaveLength(1);
+		await waitFor(() => expect(shown()).toHaveLength(1));
 		expect(shown()[0]).toHaveTextContent("crossed off");
 	});
 
@@ -222,7 +230,7 @@ describe("FileTree", () => {
 		expect(one()).not.toHaveTextContent("+3");
 		const count = within(one()).getByRole("img", { name: "2 clusters" });
 		expect(count).toHaveTextContent("2");
-		expect(count).toHaveAttribute("title", "2 clusters");
+		expect(count).not.toHaveAttribute("title");
 		expect(
 			within(screen.getByRole("button", { name: /two\.ts/ })).getByRole("img", {
 				name: "1 cluster",

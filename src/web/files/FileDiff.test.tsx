@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
@@ -160,7 +160,7 @@ describe("FileDiff", () => {
 
 	it("starts collapsed and fetches hunks only on expand", async () => {
 		const { paths, user } = setup(file([cluster("k1")]));
-		expect(screen.getByText("src/a.ts")).toBeInTheDocument();
+		expect(screen.getByTestId("file-path")).toHaveTextContent("src/a.ts");
 		expect(
 			screen.getByRole("progressbar", { name: "File progress" }),
 		).toHaveTextContent("0 / 1 cluster");
@@ -431,6 +431,12 @@ describe("FileDiff", () => {
 		expect(screen.getByTestId("file-path")).toHaveFocus();
 		await user.tab();
 		expect(screen.getByRole("button", { name: "Expand file" })).toHaveFocus();
+		// The icons that only carry a tooltip are focusable so touch and
+		// keyboard users can read it: status, count, then the actions.
+		await user.tab();
+		expect(screen.getByRole("img", { name: "not started" })).toHaveFocus();
+		await user.tab();
+		expect(screen.getByRole("img", { name: "1 cluster" })).toHaveFocus();
 		await user.tab();
 		expect(
 			screen.getByRole("button", { name: "Cross off file" }),
@@ -445,7 +451,7 @@ describe("FileDiff", () => {
 		setup(file([cluster("k1")], { path: "a/very/long/path/to/the/file.ts" }));
 		const path = screen.getByTestId("file-path");
 		expect(path).toHaveTextContent("a/very/long/path/to/the/file.ts");
-		expect(path).toHaveAttribute("title", "a/very/long/path/to/the/file.ts");
+		expect(path).not.toHaveAttribute("title");
 	});
 
 	it("undoes a cross-off to unreviewed, never reviewed", async () => {
@@ -576,24 +582,31 @@ describe("FileDiff", () => {
 		).toBeEnabled();
 	});
 
-	it("names the file actions and explains them in a short tooltip", () => {
-		setup(file([cluster("k1")]));
+	it("names the file actions and explains them in a short tooltip", async () => {
+		const { user } = setup(file([cluster("k1")]));
 		const mark = screen.getByRole("button", {
 			name: "Mark remaining reviewed",
 		});
 		expect(mark).toBeEnabled();
-		expect(mark).toHaveAttribute(
-			"title",
-			"Mark all unreviewed clusters as reviewed",
-		);
+		expect(mark).not.toHaveAttribute("title");
 		expect(mark).toHaveAccessibleDescription(
 			"Mark all unreviewed clusters as reviewed",
 		);
 		expect(
 			screen.getByRole("button", { name: "Cross off file" }),
-		).toHaveAttribute(
-			"title",
+		).toHaveAccessibleDescription(
 			"Mark all unreviewed clusters as not needing review",
+		);
+		// Focus shows it at once.
+		act(() => mark.focus());
+		expect(screen.getByRole("tooltip")).toHaveTextContent(
+			"Mark all unreviewed clusters as reviewed",
+		);
+		act(() => mark.blur());
+		// Hover shows it after the delay.
+		await user.hover(mark);
+		expect(await screen.findByRole("tooltip")).toHaveTextContent(
+			"Mark all unreviewed clusters as reviewed",
 		);
 		// Inline, never behind a menu.
 		expect(screen.queryByRole("button", { name: "File actions" })).toBeNull();
@@ -601,27 +614,36 @@ describe("FileDiff", () => {
 		setup(file([cluster("k1", { state: "crossed-off" })]));
 		expect(
 			screen.getByRole("button", { name: "Undo cross-off" }),
-		).toHaveAttribute("title", "Set crossed-off clusters back to unreviewed");
+		).toHaveAccessibleDescription(
+			"Set crossed-off clusters back to unreviewed",
+		);
 		expect(
 			screen.getByRole("button", { name: "Mark remaining reviewed" }),
-		).toHaveAttribute("title", "Nothing unreviewed");
+		).toHaveAccessibleDescription("Nothing unreviewed");
 		cleanup();
 		setup(file([cluster("k1", { state: "reviewed" })]));
 		expect(
 			screen.getByRole("button", { name: "Cross off file" }),
-		).toHaveAttribute("title", "Nothing unreviewed");
+		).toHaveAccessibleDescription("Nothing unreviewed");
 	});
 
-	it("has nothing to do, in neutral words, for a file without clusters", () => {
-		setup(file([]));
+	it("has nothing to do, in neutral words, for a file without clusters", async () => {
+		const { user } = setup(file([]));
 		const cross = screen.getByRole("button", { name: "Cross off file" });
 		const mark = screen.getByRole("button", {
 			name: "Mark remaining reviewed",
 		});
 		for (const b of [cross, mark]) {
 			expect(b).toBeDisabled();
-			expect(b).toHaveAttribute("title", "No clusters in this file");
+			expect(b).toHaveAccessibleDescription("No clusters in this file");
 		}
+		// A disabled button still explains itself on hover (its wrapper takes it).
+		const wrapper = cross.parentElement;
+		if (!wrapper) throw new Error("no wrapper");
+		await user.hover(wrapper);
+		expect(await screen.findByRole("tooltip")).toHaveTextContent(
+			"No clusters in this file",
+		);
 		expect(screen.queryByRole("button", { name: "Undo cross-off" })).toBeNull();
 	});
 

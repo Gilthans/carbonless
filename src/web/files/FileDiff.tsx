@@ -1,5 +1,6 @@
 import { useLayoutEffect, useRef, useState } from "react";
 import type { ClusterView, FileView, StateChange } from "../../shared/types";
+import { Tooltip } from "../Tooltip";
 import { ErrorMessage } from "../ui";
 import { DiffBody } from "./DiffBody";
 import { Meter } from "./ProgressBar";
@@ -29,7 +30,7 @@ const tones = {
 
 /**
  * A file-wide action shown as an outlined icon, named by `label` and
- * explained by `tooltip` (the native title, also its accessible description).
+ * explained by `tooltip` (a tooltip, also its accessible description).
  * 40×40 on touch and in a narrow header.
  */
 function HeaderIconButton(props: {
@@ -43,24 +44,38 @@ function HeaderIconButton(props: {
 }) {
 	const tone = tones[props.tone];
 	return (
-		<button
-			type="button"
-			aria-label={props.label}
-			aria-pressed={props.pressed}
-			title={props.tooltip}
-			disabled={props.disabled}
-			onClick={props.onClick}
-			className="group flex h-10 w-10 shrink-0 items-center justify-center rounded-md focus-visible:outline-2 focus-visible:outline-blue-600 disabled:cursor-not-allowed @lg:h-8 @lg:w-8 pointer-coarse:@lg:h-10 pointer-coarse:@lg:w-10"
-		>
-			<span
-				aria-hidden
-				className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-md border-2 font-sans text-base leading-none group-disabled:border-slate-300 group-disabled:bg-transparent group-disabled:text-slate-400 ${
-					props.pressed ? tone.pressed : tone.idle
-				}`}
-			>
-				{props.icon}
-			</span>
-		</button>
+		<Tooltip content={props.tooltip}>
+			{({ ref, onMouseEnter, onMouseLeave, ...rest }) => (
+				// The wrapper takes the hover so a disabled button still explains
+				// itself; focus (and so tap) goes to the button.
+				// biome-ignore lint/a11y/noStaticElementInteractions: hover only; the button inside is the control.
+				<span
+					ref={ref}
+					onMouseEnter={onMouseEnter}
+					onMouseLeave={onMouseLeave}
+					className="flex shrink-0 [&>button:disabled]:pointer-events-none"
+				>
+					<button
+						type="button"
+						{...rest}
+						aria-label={props.label}
+						aria-pressed={props.pressed}
+						disabled={props.disabled}
+						onClick={props.onClick}
+						className="group flex h-10 w-10 shrink-0 items-center justify-center rounded-md focus-visible:outline-2 focus-visible:outline-blue-600 disabled:cursor-not-allowed @lg:h-8 @lg:w-8 pointer-coarse:@lg:h-10 pointer-coarse:@lg:w-10"
+					>
+						<span
+							aria-hidden
+							className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-md border-2 font-sans text-base leading-none group-disabled:border-slate-300 group-disabled:bg-transparent group-disabled:text-slate-400 ${
+								props.pressed ? tone.pressed : tone.idle
+							}`}
+						>
+							{props.icon}
+						</span>
+					</button>
+				</span>
+			)}
+		</Tooltip>
 	);
 }
 
@@ -97,23 +112,30 @@ function PathScroller({
 	}, [text]);
 	return (
 		<div className={`relative min-w-0 flex-1 ${className}`}>
-			{/* biome-ignore lint/a11y/useSemanticElements: a named group; a fieldset is for form controls, not a path. */}
-			<div
-				ref={box}
-				role="group"
-				aria-label={`Path: ${text}`}
-				// A scroll box must be reachable by keyboard to scroll it (WCAG 2.1.1).
-				// biome-ignore lint/a11y/noNoninteractiveTabindex: see above.
-				tabIndex={0}
-				data-testid="file-path"
-				title={text}
-				onScroll={(event) => setClipped(event.currentTarget.scrollLeft > 0)}
-				className="overflow-x-auto rounded font-mono text-sm whitespace-nowrap [scrollbar-width:thin] focus-visible:outline-2 focus-visible:outline-blue-600"
-			>
-				<span ref={inner} className="inline-block py-1">
-					{text}
-				</span>
-			</div>
+			<Tooltip content={text} describe={false}>
+				{(trigger) => (
+					// biome-ignore lint/a11y/useSemanticElements: a named group; a fieldset is for form controls, not a path.
+					<div
+						{...trigger}
+						ref={(el) => {
+							box.current = el;
+							trigger.ref(el);
+						}}
+						role="group"
+						aria-label={`Path: ${text}`}
+						// A scroll box must be reachable by keyboard to scroll it (WCAG 2.1.1).
+						// biome-ignore lint/a11y/noNoninteractiveTabindex: see above.
+						tabIndex={0}
+						data-testid="file-path"
+						onScroll={(event) => setClipped(event.currentTarget.scrollLeft > 0)}
+						className="overflow-x-auto rounded font-mono text-sm whitespace-nowrap [scrollbar-width:thin] focus-visible:outline-2 focus-visible:outline-blue-600"
+					>
+						<span ref={inner} className="inline-block py-1">
+							{text}
+						</span>
+					</div>
+				)}
+			</Tooltip>
 			{clipped && (
 				<span
 					aria-hidden
@@ -133,30 +155,37 @@ function FileProgress({ file, unit }: { file: FileView; unit: Unit }) {
 	const { counts } = p;
 	const sentence = describeFileProgress(file, unit);
 	return (
-		<div
-			role="progressbar"
-			aria-label="File progress"
-			aria-valuenow={p.percent}
-			aria-valuemin={0}
-			aria-valuemax={100}
-			aria-valuetext={sentence}
-			title={sentence}
-			className="flex h-9 w-28 shrink-0 flex-col justify-center gap-1 @lg:order-6 @2xl:w-48"
-		>
-			<span className="truncate text-right text-xs text-slate-600 tabular-nums">
-				<span className="@2xl:hidden">
-					{formatFileProgress(p, unit, { short: true })}
-				</span>
-				<span className="hidden @2xl:inline">
-					{formatFileProgress(p, unit, { withUnit: true })}
-				</span>
-			</span>
-			<Meter
-				counts={counts}
-				incomplete={p.clustersLeft > 0}
-				className="h-1.5"
-			/>
-		</div>
+		<Tooltip content={sentence} describe={false}>
+			{(trigger) => (
+				<div
+					{...trigger}
+					role="progressbar"
+					aria-label="File progress"
+					aria-valuenow={p.percent}
+					aria-valuemin={0}
+					aria-valuemax={100}
+					aria-valuetext={sentence}
+					// Focusable so keyboard and touch users can read the tooltip.
+					// biome-ignore lint/a11y/noNoninteractiveTabindex: the tooltip opens on focus.
+					tabIndex={0}
+					className="flex h-9 w-28 shrink-0 flex-col justify-center gap-1 @lg:order-6 @2xl:w-48"
+				>
+					<span className="truncate text-right text-xs text-slate-600 tabular-nums">
+						<span className="@2xl:hidden">
+							{formatFileProgress(p, unit, { short: true })}
+						</span>
+						<span className="hidden @2xl:inline">
+							{formatFileProgress(p, unit, { withUnit: true })}
+						</span>
+					</span>
+					<Meter
+						counts={counts}
+						incomplete={p.clustersLeft > 0}
+						className="h-1.5"
+					/>
+				</div>
+			)}
+		</Tooltip>
 	);
 }
 
@@ -271,11 +300,11 @@ export function FileDiff(props: {
 						{expanded ? "▾" : "▸"}
 					</button>
 					<span className="flex shrink-0 @lg:order-2">
-						<StatusIcon file={file} />
+						<StatusIcon file={file} tooltip />
 					</span>
 					{/* Left out of a phone's second row, where it wouldn't fit. */}
 					<span className="ml-auto hidden shrink-0 @sm:flex @lg:order-4 @lg:ml-0">
-						<ChangeCount file={file} unit={props.unit} />
+						<ChangeCount file={file} unit={props.unit} tooltip />
 					</span>
 					<div className="ml-auto flex shrink-0 items-center gap-1.5 @sm:ml-0 @lg:order-5">
 						{crossToggle.undo ? (

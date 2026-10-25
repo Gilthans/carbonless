@@ -104,7 +104,7 @@ describe("RelativeTime", () => {
 		expect(screen.queryByRole("tooltip")).toBeNull();
 
 		await user.hover(time);
-		expect(screen.getByRole("tooltip")).toHaveTextContent(full);
+		expect(await screen.findByRole("tooltip")).toHaveTextContent(full);
 		await user.unhover(time);
 		expect(screen.queryByRole("tooltip")).toBeNull();
 

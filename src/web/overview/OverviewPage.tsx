@@ -262,12 +262,22 @@ function WhatItDoes({ pr }: { pr: PrOverview }) {
 						</Badge>
 					)}
 					<span className="font-medium text-slate-900">{pr.author}</span>
-					<code
-						title={`Merge ${pr.headBranch} into ${pr.baseBranch}`}
-						className="rounded bg-slate-100 px-1 [overflow-wrap:anywhere]"
+					<Tooltip
+						content={`Merge ${pr.headBranch} into ${pr.baseBranch}`}
+						describe={false}
 					>
-						{pr.baseBranch} ← {pr.headBranch}
-					</code>
+						{(trigger) => (
+							<code
+								{...trigger}
+								// Focusable so keyboard and touch users can read the tooltip.
+								// biome-ignore lint/a11y/noNoninteractiveTabindex: the tooltip opens on focus.
+								tabIndex={0}
+								className="rounded bg-slate-100 px-1 [overflow-wrap:anywhere] focus-visible:outline-2 focus-visible:outline-blue-600"
+							>
+								{pr.baseBranch} ← {pr.headBranch}
+							</code>
+						)}
+					</Tooltip>
 					<span>
 						opened <RelativeTime iso={pr.createdAt} />
 					</span>

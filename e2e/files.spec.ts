@@ -279,13 +279,19 @@ test("file actions are outlined icon buttons with tooltips", async ({
 	});
 	await expect(cross).toBeVisible();
 	await expect(cross).toHaveText("⊘", { useInnerText: true });
-	await expect(cross).toHaveAttribute("title", /not needing review/);
+	await expect(cross).not.toHaveAttribute("title");
+	await expect(cross).toHaveAccessibleDescription(/not needing review/);
 	await expect(mark).toBeVisible();
 	await expect(mark).toHaveText("✓", { useInnerText: true });
-	await expect(mark).toHaveAttribute(
-		"title",
+	await expect(mark).not.toHaveAttribute("title");
+	await expect(mark).toHaveAccessibleDescription(
 		"Mark all unreviewed clusters as reviewed",
 	);
+	// Hover shows the tooltip (after a short delay), above the sticky header.
+	await cross.hover();
+	await expect(page.getByRole("tooltip")).toContainText(/not needing review/);
+	await page.mouse.move(0, 0);
+	await expect(page.getByRole("tooltip")).toBeHidden();
 	await expect(
 		section.getByRole("button", { name: "File actions" }),
 	).toHaveCount(0);
@@ -527,7 +533,7 @@ test("tree rows show progress as aligned mini bars and counts in the unit", asyn
 		await expect(core).not.toContainText("+3");
 		const count = core.getByRole("img", { name: "2 clusters" });
 		await expect(count).toHaveText("2");
-		await expect(count).toHaveAttribute("title", "2 clusters");
+		await expect(count).not.toHaveAttribute("title");
 		await expect(treeNumbers(tree, /core\.ts/)).toHaveText(
 			"0 of 2 clusters reviewed",
 		);
@@ -595,4 +601,17 @@ test("keyboard focus inside an open diff is never hidden under the sticky header
 	await expect
 		.poll(async () => (await targetTop()) >= (await headerBottom()) - 1)
 		.toBe(true);
+});
+
+test("no element on the Files page uses a native title tooltip", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	await pr(fixture);
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	await expand(page, "src/core.ts");
+	// SVG <title> children are names, not tooltips.
+	await expect(page.locator("[title]")).toHaveCount(0);
 });

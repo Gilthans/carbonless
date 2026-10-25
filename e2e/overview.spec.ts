@@ -210,3 +210,19 @@ test("Refresh reloads the PR from GitHub", async ({ page, pr, startCrb }) => {
 		"0 / 3",
 	);
 });
+
+test("no element on the Overview page uses a native title tooltip", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	await pr({});
+	const s = await startCrb();
+	await page.goto(s.url);
+	await expect(
+		page.getByRole("region", { name: "What it does" }),
+	).toBeVisible();
+	// The description is GitHub's own HTML (emoji images carry their title);
+	// everything the app renders itself has none.
+	await expect(page.locator("[title]:not(.markdown-body *)")).toHaveCount(0);
+});

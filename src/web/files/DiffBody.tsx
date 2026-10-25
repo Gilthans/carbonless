@@ -7,6 +7,7 @@ import type {
 	FileView,
 } from "../../shared/types";
 import { contextQuery, hunksQuery } from "../api";
+import { Tooltip } from "../Tooltip";
 import { ErrorMessage } from "../ui";
 import { EXPAND_STEP, fileGaps, type Gap, gapState } from "./gaps";
 import { highlightLine, languageFor } from "./highlight";
@@ -159,26 +160,33 @@ function ClusterControls(props: {
 					}`}
 				/>
 			</label>
-			<button
-				type="button"
-				aria-label="Cross off cluster"
-				aria-pressed={crossedOff}
-				title={crossedOff ? "Undo cross-off" : "Cross off cluster"}
-				disabled={props.disabled || props.cluster.state === "reviewed"}
-				onClick={() => props.onCrossOff(props.cluster)}
-				className={`${target} group/x rounded focus-visible:outline-2 focus-visible:outline-blue-600 disabled:cursor-not-allowed disabled:opacity-30`}
+			<Tooltip
+				content={crossedOff ? "Undo cross-off" : "Cross off cluster"}
+				describe={false}
 			>
-				<span
-					aria-hidden
-					className={`flex h-4 w-4 items-center justify-center rounded font-sans text-xs leading-none ${
-						crossedOff
-							? "bg-purple-600 text-white"
-							: "text-purple-700 group-hover/x:bg-purple-100"
-					}`}
-				>
-					⊘
-				</span>
-			</button>
+				{(trigger) => (
+					<button
+						type="button"
+						{...trigger}
+						aria-label="Cross off cluster"
+						aria-pressed={crossedOff}
+						disabled={props.disabled || props.cluster.state === "reviewed"}
+						onClick={() => props.onCrossOff(props.cluster)}
+						className={`${target} group/x rounded focus-visible:outline-2 focus-visible:outline-blue-600 disabled:cursor-not-allowed disabled:opacity-30`}
+					>
+						<span
+							aria-hidden
+							className={`flex h-4 w-4 items-center justify-center rounded font-sans text-xs leading-none ${
+								crossedOff
+									? "bg-purple-600 text-white"
+									: "text-purple-700 group-hover/x:bg-purple-100"
+							}`}
+						>
+							⊘
+						</span>
+					</button>
+				)}
+			</Tooltip>
 		</span>
 	);
 }
@@ -335,16 +343,19 @@ export function DiffBody(props: {
 						<td colSpan={2} className="px-1">
 							<div className="flex">
 								{buttons.map((b) => (
-									<button
-										key={b.glyph}
-										type="button"
-										aria-label={b.label}
-										title={b.label}
-										onClick={() => addRange(b.from, b.to)}
-										className="rounded px-1 hover:bg-blue-200 focus-visible:outline-2 focus-visible:outline-blue-600"
-									>
-										{b.glyph}
-									</button>
+									<Tooltip key={b.glyph} content={b.label} describe={false}>
+										{(trigger) => (
+											<button
+												type="button"
+												{...trigger}
+												aria-label={b.label}
+												onClick={() => addRange(b.from, b.to)}
+												className="rounded px-1 hover:bg-blue-200 focus-visible:outline-2 focus-visible:outline-blue-600"
+											>
+												{b.glyph}
+											</button>
+										)}
+									</Tooltip>
 								))}
 							</div>
 						</td>
