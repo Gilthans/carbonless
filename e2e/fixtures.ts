@@ -1,5 +1,11 @@
 import { type ChildProcess, execFileSync, spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { test as base, expect } from "@playwright/test";
@@ -29,6 +35,8 @@ export const PR_NUMBER = 7;
 export interface PrOptions {
 	/** Extra files in `main`'s base commit, next to `a.txt`. */
 	base?: Record<string, string>;
+	/** The base commit's date (ISO); now by default. */
+	baseDate?: string;
 	/** Commits on the PR branch, on top of `main`'s single base commit. */
 	files?: FixtureCommit[];
 	/** `gh pr view` fields; `headRefOid` is always the fixture's PR head. */
@@ -46,8 +54,10 @@ export interface Pr {
 	repo: GitFixture;
 	scenarioPath: string;
 	number: typeof PR_NUMBER;
-	/** Pushes a commit (its files and deletions) onto the PR and points the fake gh at it. */
-	moveHead: (commit: FixtureCommit) => void;
+	/** Pushes a commit (its files and deletions) onto the PR and points the fake gh at it; returns its SHA. */
+	moveHead: (commit: FixtureCommit) => string;
+	/** Edits the fake gh's scenario in place (lost on the next moveHead). */
+	editScenario: (edit: (s: Scenario) => void) => void;
 }
 
 export interface Crb {
@@ -147,6 +157,7 @@ export const test = base.extend<{
 				{
 					message: "base",
 					files: { "a.txt": `${BASE_FILE.join("\n")}\n`, ...opts.base },
+					date: opts.baseDate,
 				},
 				...(opts.files ?? DEFAULT_COMMITS),
 			]);
@@ -203,6 +214,12 @@ export const test = base.extend<{
 					}
 					git("update-ref", `refs/pull/${PR_NUMBER}/head`, head);
 					write();
+					return head;
+				},
+				editScenario: (edit) => {
+					const s = JSON.parse(readFileSync(scenarioPath, "utf8")) as Scenario;
+					edit(s);
+					writeFileSync(scenarioPath, JSON.stringify(s, null, "\t"));
 				},
 			};
 		});

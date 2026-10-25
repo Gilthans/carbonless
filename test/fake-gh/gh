@@ -123,7 +123,39 @@ switch (cmd) {
 				},
 			});
 		}
-		if (!["reviewThreads", "comments", "reviews"].includes(conn)) {
+		// One commit's checks: object(oid) { ... statusCheckRollup { contexts } }.
+		if (conn === "contexts") {
+			const commit = s.commits?.[f.oid];
+			if (commit === undefined) {
+				print({ data: { repository: { object: null } } });
+			}
+			if (commit.contexts === null) {
+				print({ data: { repository: { object: { statusCheckRollup: null } } } });
+			}
+			const all = commit.contexts ?? [];
+			const size = s.pageSize ?? 100;
+			const start = f.endCursor ? Number(f.endCursor.replace("cursor:", "")) : 0;
+			const end = start + size;
+			const hasNextPage = end < all.length;
+			print({
+				data: {
+					repository: {
+						object: {
+							statusCheckRollup: {
+								contexts: {
+									pageInfo: {
+										hasNextPage,
+										endCursor: hasNextPage ? `cursor:${end}` : null,
+									},
+									nodes: all.slice(start, end),
+								},
+							},
+						},
+					},
+				},
+			});
+		}
+		if (!["reviewThreads", "comments", "reviews", "commits"].includes(conn)) {
 			unsupported();
 		}
 		if (!pr) notFound(f.number);

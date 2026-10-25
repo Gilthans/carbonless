@@ -109,6 +109,17 @@ Shown first. Read-only. Data from `gh` (`gh pr view --json …` and `gh api grap
 4. **Human reviews** and **Bot reviews** (a thread belongs to the group of its opening comment's author, `__typename == "Bot"` for bots): each shows "N resolved" (resolved threads are only counted) and lists the group's unresolved threads. Each thread shows file:line, author, relative time, its comment count, a "no reply" chip when nobody but the opener commented (this replaces a separate "no reply" list), "outdated" when it is, and the first comment as GitHub renders it (sanitized), clipped to about six lines with a fade and a show more / show less toggle.
 5. A clear way into "Files changed", with the overall progress shown, centered at the bottom.
 
+### As-of mode (hidden dev flags)
+
+`crb <pr> --as-of <ISO time with zone> [--viewer <login>]` shows the PR as it was at a past moment, for testing the overview against a real PR's history. Neither flag is in `crb -h`.
+
+- `--viewer` replaces the gh login for "you" detection on the overview, so the reviewer's own reviews show as a third party's. Review refs still use the gh login's slug.
+- **Head:** the commit of the latest event at or before the cutoff, where events are the PR's reviews (`submittedAt`, with the commit they were made on) and its commits (`pushedDate`, else `committedDate`; GitHub no longer reports pushes, so `committedDate` stands in for the push time). On a tie the review wins, so a cutoff equal to a review's time gives the commit that review was on. It is fetched by OID when `refs/pull/<n>/head` has moved past it or force-pushed it away; if GitHub can't serve it, crb fails clearly.
+- **Base:** merge-base(base tip at the cutoff, head), where the base tip at the cutoff is `git rev-list -1 --first-parent --before=<cutoff> origin/<base>`.
+- **Overview:** reviews, comments and threads made at or before the cutoff only (a thread counts if its first comment does; only comments by then count toward its comment count and reply detection). GitHub keeps no resolution history, so every included thread shows unresolved and resolved counts are "unknown"; mergeability is unknown; the PR shows open; "updated" is the last activity by then. Checks are the snapshot head's `statusCheckRollup`: contexts started after the cutoff are left out, those finished after it show pending. The header shows "as of <date>" with a tooltip saying what can't be known.
+- No "already merged" refusal, no "new commits" banner, and Refresh / the head check never move the snapshot.
+- **Isolation:** the review's lookup key gets `@<cutoff>` (see `docs/review-data-storage.md`), so as-of mode has its own review and patch set refs and never touches the PR's real review.
+
 ## Files changed view
 
 > Revised by `2026-10-24-files-view-ux-and-mobile.md`: one progress bar with a

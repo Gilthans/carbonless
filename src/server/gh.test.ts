@@ -332,7 +332,7 @@ describe("runGh with a fake gh", () => {
 			"first: comments(first: 1) { nodes { author { login __typename } bodyText bodyHTML createdAt } }",
 		);
 		expect(log()).toContain(
-			"comments(first: 100) { totalCount nodes { author { login __typename } } }",
+			"comments(first: 100) { totalCount nodes { author { login __typename } createdAt } }",
 		);
 	});
 

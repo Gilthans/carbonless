@@ -249,10 +249,16 @@ const OID = /^[0-9a-f]{40}([0-9a-f]{24})?$/;
 /**
  * Fetches the PR's base branch and head into the bare clone and returns the
  * comparison endpoints: merge-base(origin/<base>, head) → head.
+ *
+ * As of a cutoff (`asOf`), `meta.headOid` is the head at the cutoff, which
+ * refs/pull/<n>/head may have moved past (or force-pushed away): it is then
+ * fetched by OID. The base is the base branch's tip at the cutoff, the last
+ * first-parent commit committed by then.
  */
 export async function fetchPr(
 	path: string,
 	meta: PrMeta,
+	asOf?: string,
 ): Promise<{ baseTip: string; head: string; mergeBase: string }> {
 	const base = meta.baseBranch;
 	const head = meta.headOid;
@@ -279,24 +285,58 @@ export async function fetchPr(
 			],
 			{ env: { GIT_TERMINAL_PROMPT: "0" } },
 		);
-		try {
-			await runGit(path, ["cat-file", "-e", `${head}^{commit}`]);
-		} catch {
-			throw new GhError(
-				`PR head ${head} is not on GitHub yet (the PR may have just been updated); try again`,
+		const present = () =>
+			runGit(path, ["cat-file", "-e", `${head}^{commit}`]).then(
+				() => true,
+				() => false,
+			);
+		if (asOf && !(await present())) {
+			await runGit(
+				path,
+				[...GH_CREDENTIALS, "fetch", "--quiet", "--no-tags", "origin", head],
+				{ env: { GIT_TERMINAL_PROMPT: "0" }, allowFailure: true },
 			);
 		}
-		const baseTip = (
-			await runGit(path, ["rev-parse", "--verify", baseRef])
-		).trim();
+		if (!(await present())) {
+			throw new GhError(
+				asOf
+					? `PR head ${head} as of ${asOf} could not be fetched from GitHub`
+					: `PR head ${head} is not on GitHub yet (the PR may have just been updated); try again`,
+			);
+		}
+		const baseTip = asOf
+			? await baseTipAt(path, baseRef, asOf)
+			: (await runGit(path, ["rev-parse", "--verify", baseRef])).trim();
 		const mergeBase = (
-			await runGit(path, ["merge-base", baseRef, head], { allowFailure: true })
+			await runGit(path, ["merge-base", baseTip, head], { allowFailure: true })
 		).trim();
 		if (!mergeBase) {
 			throw new GhError(`PR head ${head} shares no history with ${base}`);
 		}
 		return { baseTip, head, mergeBase };
 	});
+}
+
+/** The base branch's tip at `cutoff`: its last first-parent commit by then. */
+export async function baseTipAt(
+	path: string,
+	baseRef: string,
+	cutoff: string,
+): Promise<string> {
+	const tip = (
+		await runGit(path, [
+			"rev-list",
+			"-1",
+			"--first-parent",
+			`--before=${cutoff}`,
+			baseRef,
+			"--",
+		])
+	).trim();
+	if (!tip) {
+		throw new GhError(`${baseRef} has no commit at or before ${cutoff}`);
+	}
+	return tip;
 }
 
 async function refFormatOk(path: string, base: string): Promise<boolean> {

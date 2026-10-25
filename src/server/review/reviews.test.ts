@@ -139,6 +139,30 @@ describe("findOrCreateReview", () => {
 		);
 	});
 
+	it("keeps a review as of a cutoff apart from the PR's own, under its own key", async () => {
+		const cutoff = "2026-09-15T11:35:52Z";
+		expect(await svc.findReview(pr, cutoff)).toBeNull();
+		const asOf = await svc.findOrCreateReview(pr, "dan", cutoff);
+		expect(asOf).not.toBe(id);
+		expect(await svc.findOrCreateReview(pr, "dan", cutoff)).toBe(asOf);
+		expect(await svc.findReview(pr, cutoff)).toBe(asOf);
+		expect(await svc.findReview(pr)).toBe(id);
+		const key = `acme/widgets#42@${cutoff}`;
+		const hash = createHash("sha256").update(key).digest("hex");
+		const blob = await runGit(repo, [
+			"cat-file",
+			"blob",
+			`refs/crb/lookup/github-pr/${hash}`,
+		]);
+		expect(blob.trim()).toBe(asOf);
+		const [created] = await store.readEvents(`refs/crb/reviews/${asOf}/meta`);
+		expect(created).toMatchObject({ key, details: { asOf: cutoff } });
+		// Progress on one never shows on the other.
+		await svc.recordStates(asOf, "dan", snap, [{ key: k1, state: "reviewed" }]);
+		expect((await svc.getProgress(id, "dan")).patchset).toBeNull();
+		expect((await svc.getProgress(asOf, "dan")).patchset).not.toBeNull();
+	});
+
 	it("two concurrent openings of a new PR agree on one review", async () => {
 		const other = { ...pr, number: 7 };
 		const ids = await Promise.all(

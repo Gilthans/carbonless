@@ -24,13 +24,15 @@
 					"author": {
 						"login": "rev1",
 						"__typename": "User"
-					}
+					},
+					"createdAt": "2026-01-03T09:00:00Z"
 				},
 				{
 					"author": {
 						"login": "octo-author",
 						"__typename": "User"
-					}
+					},
+					"createdAt": "2026-01-03T11:00:00Z"
 				}
 			]
 		}
@@ -60,7 +62,8 @@
 					"author": {
 						"login": "rev1",
 						"__typename": "User"
-					}
+					},
+					"createdAt": "2026-01-03T09:00:00Z"
 				}
 			]
 		}
@@ -90,7 +93,8 @@
 					"author": {
 						"login": "ci-bot",
 						"__typename": "Bot"
-					}
+					},
+					"createdAt": "2026-01-02T12:00:00Z"
 				}
 			]
 		}
@@ -120,13 +124,15 @@
 					"author": {
 						"login": "rev1",
 						"__typename": "User"
-					}
+					},
+					"createdAt": "2026-01-03T09:00:00Z"
 				},
 				{
 					"author": {
 						"login": "rev1",
 						"__typename": "User"
-					}
+					},
+					"createdAt": "2026-01-03T11:00:00Z"
 				}
 			]
 		}

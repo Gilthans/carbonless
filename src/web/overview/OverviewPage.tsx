@@ -91,12 +91,12 @@ function OverviewContent({
 					<ThreadGroup
 						label="Human reviews"
 						threads={overview.data.threads.filter((t) => !t.bot)}
-						resolved={overview.data.resolved.human}
+						resolved={overview.data.resolved?.human ?? null}
 					/>
 					<ThreadGroup
 						label="Bot reviews"
 						threads={overview.data.threads.filter((t) => t.bot)}
-						resolved={overview.data.resolved.bot}
+						resolved={overview.data.resolved?.bot ?? null}
 					/>
 				</>
 			)}
@@ -724,7 +724,11 @@ function ConflictsChip({ pr }: { pr: PrOverview }) {
 		<Chip
 			tone="gray"
 			icon={QuestionIcon}
-			tip="GitHub hasn't worked out whether it merges cleanly"
+			tip={
+				pr.asOf
+					? "Unknown as of then"
+					: "GitHub hasn't worked out whether it merges cleanly"
+			}
 		>
 			Conflicts unknown
 		</Chip>
@@ -755,11 +759,14 @@ function CheckItem({ check }: { check: Check }) {
 
 // ---- Human and bot reviews ----
 
-/** One group's review threads: resolved ones counted, unresolved ones listed. */
+/**
+ * One group's review threads: resolved ones counted, unresolved ones listed.
+ * `resolved` is null when unknown (as-of mode).
+ */
 function ThreadGroup(props: {
 	label: string;
 	threads: Thread[];
-	resolved: number;
+	resolved: number | null;
 }) {
 	const { threads, resolved } = props;
 	return (
@@ -776,9 +783,15 @@ function ThreadGroup(props: {
 						</li>
 					)}
 					<li>
-						<Badge tone={resolved ? "green" : "gray"} icon={CheckIcon}>
-							{resolved} resolved
-						</Badge>
+						{resolved === null ? (
+							<Badge tone="gray" icon={QuestionIcon}>
+								resolved unknown
+							</Badge>
+						) : (
+							<Badge tone={resolved ? "green" : "gray"} icon={CheckIcon}>
+								{resolved} resolved
+							</Badge>
+						)}
 					</li>
 				</ul>
 			)}

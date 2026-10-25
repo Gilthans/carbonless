@@ -116,3 +116,17 @@ test("exits promptly on SIGTERM while a page is open", async ({
 	expect(exit?.code).toBe(0);
 	expect(exit?.ms).toBeLessThan(2_000);
 });
+
+test("--as-of needs an ISO time with a zone, and stays out of the usage", async ({
+	pr,
+	startCrb,
+}) => {
+	await pr();
+	const exit = await exitOf(startCrb(undefined, ["--as-of", "2026-01-03"]));
+	expect(exit.code).toBe(1);
+	expect(exit.output).toMatch(/crb: Invalid --as-of: 2026-01-03/);
+	const help = await exitOf(startCrb(undefined, ["--help"]));
+	expect(help.output).toContain("Usage: crb");
+	expect(help.output).not.toContain("as-of");
+	expect(help.output).not.toContain("viewer");
+});

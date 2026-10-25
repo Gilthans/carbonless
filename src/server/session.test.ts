@@ -37,6 +37,7 @@ describe("Session", () => {
 			currentHead: pr.head(),
 			headMoved: false,
 			patchset: null,
+			asOf: null,
 		});
 		expect(s.snapshot().base).toBe(pr.mergeBase);
 		expect(s.snapshot().files.map((f) => f.path)).toEqual(["a.txt", "new.txt"]);
@@ -233,5 +234,167 @@ describe("Session", () => {
 		expect(hunks.hunks).toHaveLength(2);
 		const lines = await s.context(rev, 0, 10, 12);
 		expect(lines.map((l) => l.text)).toEqual(["line 10", "line 11", "line 12"]);
+	});
+
+	describe("as of a cutoff", () => {
+		const CUTOFF = "2098-01-01T00:00:00Z";
+		const user = (login: string) => ({ login, __typename: "User" });
+		/** The PR moved on after the cutoff: `then` was its head, `now` is. */
+		const scenarioAsOf = (then: string, now: string) =>
+			pr.scenario({
+				prs: {
+					12: {
+						view: prView({
+							headRefOid: now,
+							baseRefName: "main",
+							state: "MERGED",
+						}),
+						graphql: {
+							commits: [
+								{
+									commit: { oid: then, committedDate: "2026-01-02T00:00:00Z" },
+								},
+								{ commit: { oid: now, committedDate: "2099-01-01T00:00:00Z" } },
+							],
+							reviews: [
+								{
+									author: user("Octo_Cat"),
+									state: "APPROVED",
+									submittedAt: "2026-01-03T00:00:00Z",
+									commit: { oid: then },
+								},
+								{
+									author: user("rev9"),
+									state: "COMMENTED",
+									submittedAt: "2099-01-02T00:00:00Z",
+									commit: { oid: now },
+								},
+							],
+							reviewThreads: [],
+							comments: [],
+						},
+					},
+				},
+				commits: {
+					[then]: {
+						contexts: [
+							{
+								__typename: "StatusContext",
+								context: "ci",
+								state: "SUCCESS",
+								createdAt: "2026-01-02T01:00:00Z",
+							},
+						],
+					},
+				},
+			});
+
+		it("opens on the head of then, never reports it moved, and refreshes in place", async () => {
+			const then = pr.head();
+			const now = pr.moveHead({ "later.txt": "later\n" });
+			scenarioAsOf(then, now);
+			const s = await Session.open(pr.arg, process.cwd(), () => {}, {
+				asOf: CUTOFF,
+			});
+			expect(s.info()).toMatchObject({
+				snapshotHead: then,
+				currentHead: then,
+				headMoved: false,
+				asOf: CUTOFF,
+			});
+			expect(s.snapshot().files.map((f) => f.path)).not.toContain("later.txt");
+			const calls = pr.ghLog().split("\n").length;
+			expect(await s.checkHead()).toMatchObject({ headMoved: false });
+			expect(await s.refresh()).toMatchObject({ snapshotHead: then });
+			expect(pr.ghLog().split("\n").length).toBe(calls);
+			const o = await s.overview();
+			expect(o.asOf).toBe(CUTOFF);
+			expect(o.state).toBe("OPEN");
+			expect(o.reviews.map((r) => r.author)).toEqual(["Octo_Cat"]);
+			expect(o.checks).toEqual([{ name: "ci", status: "passing" }]);
+		});
+
+		it("treats --viewer as you, so the gh login shows as a third party", async () => {
+			const then = pr.head();
+			scenarioAsOf(then, pr.moveHead({ "later.txt": "later\n" }));
+			const mine = await Session.open(pr.arg, process.cwd(), () => {}, {
+				asOf: CUTOFF,
+			});
+			expect((await mine.overview()).reviews[0]).toMatchObject({ you: true });
+			const theirs = await Session.open(pr.arg, process.cwd(), () => {}, {
+				asOf: CUTOFF,
+				viewer: "someone-else",
+			});
+			const o = await theirs.overview();
+			expect(o.reviews[0]).toMatchObject({ author: "Octo_Cat", you: false });
+			expect(o.humanStarted).toBe(true);
+			// Refs still belong to the gh login.
+			expect(theirs.info().viewer).toBe("octo-cat");
+		});
+
+		it("pages through the head's checks, and fails when GitHub lacks the commit", async () => {
+			const then = pr.head();
+			const now = pr.moveHead({ "later.txt": "later\n" });
+			scenarioAsOf(then, now);
+			const scenarioPath = process.env.CRB_FAKE_GH ?? "";
+			const { readFileSync, writeFileSync } = await import("node:fs");
+			const sc = JSON.parse(readFileSync(scenarioPath, "utf8"));
+			const ctx = (name: string) => ({
+				__typename: "StatusContext",
+				context: name,
+				state: "PENDING",
+				createdAt: "2026-01-02T01:00:00Z",
+			});
+			sc.pageSize = 1;
+			sc.commits[then].contexts = [ctx("a"), ctx("b"), ctx("c")];
+			writeFileSync(scenarioPath, JSON.stringify(sc));
+			const s = await Session.open(pr.arg, process.cwd(), () => {}, {
+				asOf: CUTOFF,
+			});
+			expect((await s.overview()).checks.map((c) => c.name)).toEqual([
+				"a",
+				"b",
+				"c",
+			]);
+			sc.commits = {};
+			writeFileSync(scenarioPath, JSON.stringify(sc));
+			await expect(s.overview()).rejects.toThrow(/is missing on GitHub/);
+		});
+
+		it("doesn't refuse a PR merged since", async () => {
+			const then = pr.head();
+			const now = pr.moveHead({ "later.txt": "later\n" });
+			pr.moveMain(now);
+			scenarioAsOf(then, now);
+			const s = await Session.open(pr.arg, process.cwd(), () => {}, {
+				asOf: CUTOFF,
+			});
+			expect(s.info().snapshotHead).toBe(then);
+		});
+
+		it("keeps its progress apart from the real review", async () => {
+			const normal = await Session.open(pr.arg, process.cwd());
+			await normal.setStates(normal.snapshot().revision, [
+				{ key: firstKey(normal), state: "reviewed" },
+			]);
+			const then = pr.head();
+			const now = pr.moveHead({ "later.txt": "later\n" });
+			scenarioAsOf(then, now);
+			const s = await Session.open(pr.arg, process.cwd(), () => {}, {
+				asOf: CUTOFF,
+			});
+			const view = await s.review();
+			expect(view.patchset).toBeNull();
+			expect(view.progress.clusters.reviewed).toBe(0);
+			await s.setStates(s.snapshot().revision, [
+				{ key: firstKey(s), state: "crossed-off" },
+			]);
+			const again = await Session.open(pr.arg, process.cwd());
+			const real = await again.review();
+			expect(real.progress.clusters).toMatchObject({
+				reviewed: 1,
+				crossedOff: 0,
+			});
+		});
 	});
 });

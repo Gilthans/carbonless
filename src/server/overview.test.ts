@@ -307,3 +307,103 @@ describe("mapOverview", () => {
 		);
 	});
 });
+
+describe("mapOverview as of a cutoff", () => {
+	const CUTOFF = "2026-01-03T10:30:00Z";
+	const checks = [
+		{
+			__typename: "CheckRun",
+			name: "done-before",
+			status: "COMPLETED",
+			conclusion: "FAILURE",
+			startedAt: "2026-01-03T08:00:00Z",
+			completedAt: "2026-01-03T08:05:00Z",
+		},
+		{
+			__typename: "CheckRun",
+			name: "running-then",
+			status: "COMPLETED",
+			conclusion: "SUCCESS",
+			startedAt: "2026-01-03T10:00:00Z",
+			completedAt: "2026-01-03T11:00:00Z",
+		},
+		{
+			__typename: "CheckRun",
+			name: "started-later",
+			status: "COMPLETED",
+			conclusion: "SUCCESS",
+			startedAt: "2026-01-04T00:00:00Z",
+			completedAt: "2026-01-04T00:05:00Z",
+		},
+		{
+			__typename: "StatusContext",
+			context: "status-before",
+			state: "SUCCESS",
+			createdAt: "2026-01-03T09:00:00Z",
+		},
+		{
+			__typename: "StatusContext",
+			context: "status-later",
+			state: "SUCCESS",
+			createdAt: "2026-01-05T09:00:00Z",
+		},
+	];
+	const merged = () => ({
+		...(view() as object),
+		state: "MERGED",
+		mergeable: "MERGEABLE",
+	});
+	const o = mapOverview(merged(), { ...graph(), checks }, VIEWER, CUTOFF);
+
+	it("keeps only reviews and comments made by then", () => {
+		expect(o.reviews.map((r) => [r.author, r.state, r.submittedAt])).toEqual([
+			["jdoe_acme", "CHANGES_REQUESTED", "2026-01-03T10:00:00Z"],
+			["rev1", "CHANGES_REQUESTED", "2026-01-03T09:00:00Z"],
+			["github-actions", "COMMENTED", "2026-01-02T11:00:00Z"],
+		]);
+		expect(o.commenters.map((c) => [c.author, c.lastAt])).toEqual([
+			["octo-author", "2026-01-03T08:00:00Z"],
+			["codecov", "2026-01-02T11:30:00Z"],
+		]);
+	});
+
+	it("shows every thread opened by then as unresolved, counting only comments made by then", () => {
+		expect(o.resolved).toBeNull();
+		expect(
+			o.threads.map((t) => [t.path, t.commentCount, t.hasReply, t.outdated]),
+		).toEqual([
+			// The author's reply came at 11:00, after the cutoff.
+			["src/cache.ts", 1, false, false],
+			// Resolved today; when isn't known, so it shows.
+			["src/done.ts", 1, false, false],
+			["src/old.ts", 1, false, false],
+			["src/self.ts", 1, false, false],
+		]);
+		const g = { ...graph(), checks };
+		const later = structuredClone(g.reviewThreads[0]);
+		if (!later) throw new Error("no thread");
+		const first = later.first.nodes[0] as { createdAt?: string };
+		first.createdAt = "2026-01-03T10:31:00Z";
+		g.reviewThreads.push(later);
+		expect(mapOverview(view(), g, VIEWER, CUTOFF).threads).toHaveLength(4);
+	});
+
+	it("shows the PR open, mergeability unknown, and updated at its last activity by then", () => {
+		expect(o.state).toBe("OPEN");
+		expect(o.mergeable).toBe("UNKNOWN");
+		expect(o.updatedAt).toBe("2026-01-03T10:00:00Z");
+		expect(o.asOf).toBe(CUTOFF);
+	});
+
+	it("takes the snapshot head's checks as they stood then", () => {
+		expect(o.checks.map((c) => [c.name, c.status])).toEqual([
+			["done-before", "failing"],
+			["running-then", "pending"],
+			["status-before", "passing"],
+		]);
+	});
+
+	it("fails closed without the head's checks", () => {
+		expect(() => mapOverview(view(), graph(), VIEWER, CUTOFF)).toThrow(GhError);
+	});
+});

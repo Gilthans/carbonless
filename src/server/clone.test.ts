@@ -257,6 +257,62 @@ describe("private clone", () => {
 		);
 	});
 
+	it("as of a cutoff: main's tip then, and a head the PR has force-pushed away, fetched by OID", async () => {
+		const path = await ensureClone("acme", "widget");
+		const cutoff = new Date(Date.now() + 1000).toISOString();
+		// After the cutoff: main moves on, and the PR is force-pushed onto c1.
+		execFileSync("git", ["commit", "--quiet", "--allow-empty", "-m", "c4"], {
+			cwd: fixture.path,
+			env: testGitEnv({
+				GIT_AUTHOR_DATE: "2099-01-01T00:00:00Z",
+				GIT_COMMITTER_DATE: "2099-01-01T00:00:00Z",
+			}),
+		});
+		const c4 = git(fixture.path, "rev-parse", "HEAD");
+		const rewritten = git(
+			fixture.path,
+			"commit-tree",
+			`${shas.branchPoint}^{tree}`,
+			"-p",
+			shas.branchPoint,
+			"-m",
+			"rewritten",
+		);
+		git(fixture.path, "update-ref", "refs/pull/7/head", rewritten);
+		// GitHub keeps the old head (and serves it by OID).
+		git(fixture.path, "update-ref", "refs/keep/old", shas.head);
+		git(fixture.path, "config", "uploadpack.allowAnySHA1InWant", "true");
+		const r = await fetchPr(
+			path,
+			meta({ baseBranch: "main", headOid: shas.head }),
+			cutoff,
+		);
+		expect(git(path, "rev-parse", "refs/remotes/origin/main")).toBe(c4);
+		expect(r).toEqual({
+			baseTip: shas.base,
+			head: shas.head,
+			mergeBase: shas.branchPoint,
+		});
+	});
+
+	it("as of a cutoff before the base branch existed: fails clearly", async () => {
+		const path = await ensureClone("acme", "widget");
+		await expect(
+			fetchPr(path, meta({ baseBranch: "main" }), "2000-01-01T00:00:00Z"),
+		).rejects.toThrow(/no commit at or before 2000-01-01T00:00:00Z/);
+	});
+
+	it("as of a cutoff: fails clearly when the head can't be fetched", async () => {
+		const path = await ensureClone("acme", "widget");
+		await expect(
+			fetchPr(
+				path,
+				meta({ baseBranch: "main", headOid: "1".repeat(40) }),
+				new Date().toISOString(),
+			),
+		).rejects.toThrow(/as of .* could not be fetched/);
+	});
+
 	it("rejects a base branch name that is not a valid ref", async () => {
 		const path = await ensureClone("acme", "widget");
 		await expect(

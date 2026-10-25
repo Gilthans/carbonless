@@ -1,4 +1,5 @@
 import type { PrOverview } from "../shared/types.js";
+import { atOrBefore } from "./asOf.js";
 import { GhError } from "./errors.js";
 import { slugify } from "./slug.js";
 
@@ -77,13 +78,38 @@ function mapCheck(raw: unknown): Check | null {
 	return url ? { name, status, url } : { name, status };
 }
 
+/**
+ * A commit's check contexts as they stood at `cutoff`: started later, left
+ * out; finished later, pending.
+ */
+function checksAsOf(nodes: unknown[], cutoff: string): unknown[] {
+	const out: unknown[] = [];
+	for (const raw of nodes) {
+		const c = obj(raw);
+		if (c.__typename === "StatusContext" || "context" in c) {
+			if (atOrBefore(c.createdAt, cutoff)) out.push(c);
+			continue;
+		}
+		if (!atOrBefore(c.startedAt, cutoff)) continue;
+		out.push(
+			atOrBefore(c.completedAt, cutoff)
+				? c
+				: { ...c, status: "IN_PROGRESS", conclusion: null },
+		);
+	}
+	return out;
+}
+
 const CHECK_ORDER = { failing: 0, pending: 1, passing: 2 } as const;
 
 /**
  * Unresolved threads in full, and resolved ones only counted, by the opening
  * comment's author: bot or human.
  */
-function mapThreads(nodes: unknown[]): {
+function mapThreads(
+	nodes: unknown[],
+	asOf: string | undefined,
+): {
 	threads: PrOverview["threads"];
 	resolved: PrOverview["resolved"];
 } {
@@ -92,12 +118,18 @@ function mapThreads(nodes: unknown[]): {
 	for (const raw of nodes) {
 		const t = obj(raw);
 		const listed = obj(t.comments);
-		const comments = arr(listed.nodes).map(obj);
+		const all = arr(listed.nodes).map(obj);
 		// `first` is the aliased comments(first: 1) with the opening comment's text.
-		const first = obj(arr(obj(t.first).nodes)[0] ?? comments[0]);
+		const first = obj(arr(obj(t.first).nodes)[0] ?? all[0]);
 		const author = obj(first.author);
 		const bot = isBotAuthor(author);
-		if (t.isResolved === true) {
+		// As of a cutoff: threads opened by then, counting only comments made
+		// by then. When a thread was resolved isn't known: none is.
+		if (asOf && !atOrBefore(first.createdAt, asOf)) continue;
+		const comments = asOf
+			? all.filter((c) => atOrBefore(c.createdAt, asOf))
+			: all;
+		if (!asOf && t.isResolved === true) {
 			resolved[bot ? "bot" : "human"]++;
 			continue;
 		}
@@ -112,17 +144,19 @@ function mapThreads(nodes: unknown[]): {
 			createdAt: str(first.createdAt),
 			author: firstLogin,
 			bot,
-			// The author list stops at 100; the total doesn't.
+			// The author list stops at 100; the total doesn't (as of a cutoff,
+			// only the first 100 can be dated).
 			commentCount:
-				typeof listed.totalCount === "number"
+				!asOf && typeof listed.totalCount === "number"
 					? listed.totalCount
 					: Math.max(1, comments.length),
 			// Someone other than the thread's opener answered.
 			hasReply: comments.some((c) => str(obj(c.author).login) !== firstLogin),
-			outdated: t.isOutdated === true,
+			// GitHub's flag is about today's head, not the cutoff's.
+			outdated: !asOf && t.isOutdated === true,
 		});
 	}
-	return { threads, resolved };
+	return { threads, resolved: asOf ? null : resolved };
 }
 
 /** The GraphQL connections `fetchOverview` collects, already flattened to node lists. */
@@ -132,6 +166,11 @@ export interface PrGraph {
 	reviewThreads: unknown[];
 	comments: unknown[];
 	reviews: unknown[];
+	/**
+	 * As-of mode only: the snapshot head's check contexts (its
+	 * statusCheckRollup), in place of the PR's current ones.
+	 */
+	checks?: unknown[];
 }
 
 /**
@@ -144,6 +183,12 @@ export function mapOverview(
 	view: unknown,
 	graph: unknown,
 	viewer: string,
+	/**
+	 * As-of mode's cutoff: only reviews, comments and threads made by then
+	 * count, threads all show unresolved, mergeability is unknown and the
+	 * checks are `graph.checks`, the snapshot head's.
+	 */
+	asOf?: string,
 ): PrOverview {
 	if (typeof view !== "object" || view === null || Array.isArray(view)) {
 		throw new GhError("gh returned an unexpected response for the PR");
@@ -156,6 +201,10 @@ export function mapOverview(
 	) {
 		throw new GhError("gh returned an unexpected response for the PR threads");
 	}
+	if (asOf && !Array.isArray(g.checks)) {
+		throw new GhError("gh returned an unexpected response for the checks");
+	}
+	const inTime = (at: unknown) => !asOf || atOrBefore(at, asOf);
 	const v = obj(view);
 	const author = login(v.author);
 	// The viewer is a login or its slug; compare slugs so both spellings match.
@@ -164,12 +213,15 @@ export function mapOverview(
 	const isAuthor = (name: string) =>
 		name.toLowerCase() === author.toLowerCase();
 
-	const state = ["OPEN", "CLOSED", "MERGED"].includes(str(v.state))
-		? (str(v.state) as PrOverview["state"])
-		: "OPEN";
-	const mergeable = ["MERGEABLE", "CONFLICTING"].includes(str(v.mergeable))
-		? (str(v.mergeable) as PrOverview["mergeable"])
-		: "UNKNOWN";
+	// As of a cutoff, the PR was open then (the snapshot exists).
+	const state =
+		!asOf && ["OPEN", "CLOSED", "MERGED"].includes(str(v.state))
+			? (str(v.state) as PrOverview["state"])
+			: "OPEN";
+	const mergeable =
+		!asOf && ["MERGEABLE", "CONFLICTING"].includes(str(v.mergeable))
+			? (str(v.mergeable) as PrOverview["mergeable"])
+			: "UNKNOWN";
 
 	const requestedReviewers: PrOverview["requestedReviewers"] = [];
 	for (const raw of arr(v.reviewRequests)) {
@@ -194,6 +246,7 @@ export function mapOverview(
 		const name = str(who.login);
 		const reviewState = str(r.state);
 		if (!name || !REVIEW_STATES.has(reviewState)) continue;
+		if (!inTime(r.submittedAt)) continue;
 		const at = str(r.submittedAt);
 		const key = name.toLowerCase();
 		const prev = byReviewer.get(key);
@@ -232,7 +285,7 @@ export function mapOverview(
 		const c = obj(raw);
 		const who = obj(c.author);
 		const name = str(who.login);
-		if (!name) continue;
+		if (!name || !inTime(c.createdAt)) continue;
 		const at = str(c.createdAt);
 		const key = name.toLowerCase();
 		const prev = last.get(key);
@@ -250,10 +303,25 @@ export function mapOverview(
 		reviewers.some(([, r]) => isOtherHuman(r.author, r.bot)) ||
 		commenters.some((c) => isOtherHuman(c.author, c.bot));
 
-	const checks = arr(v.statusCheckRollup)
+	const checks = (
+		asOf ? checksAsOf(arr(g.checks), asOf) : arr(v.statusCheckRollup)
+	)
 		.map(mapCheck)
 		.filter((c): c is Check => c !== null)
 		.sort((a, b) => CHECK_ORDER[a.status] - CHECK_ORDER[b.status]);
+
+	const threads = mapThreads(g.reviewThreads, asOf);
+	// As of a cutoff, "updated" is the last activity seen by then.
+	const updatedAt = asOf
+		? [
+				...reviews.map((r) => r.submittedAt),
+				...commenters.map((c) => c.lastAt),
+				...threads.threads.map((t) => t.createdAt),
+			].reduce(
+				(latest, at) => (Date.parse(at) > Date.parse(latest) ? at : latest),
+				str(v.createdAt),
+			)
+		: str(v.updatedAt);
 
 	return {
 		title: str(v.title),
@@ -265,7 +333,7 @@ export function mapOverview(
 		isDraft: v.isDraft === true,
 		state,
 		createdAt: str(v.createdAt),
-		updatedAt: str(v.updatedAt),
+		updatedAt,
 		baseBranch: str(v.baseRefName),
 		headBranch: str(v.headRefName),
 		mergeable,
@@ -274,6 +342,7 @@ export function mapOverview(
 		commenters,
 		humanStarted,
 		checks,
-		...mapThreads(g.reviewThreads),
+		...threads,
+		...(asOf ? { asOf } : {}),
 	};
 }

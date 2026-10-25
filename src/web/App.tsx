@@ -1,4 +1,4 @@
-import { SyncIcon } from "@primer/octicons-react";
+import { HistoryIcon, InfoIcon, SyncIcon } from "@primer/octicons-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, Outlet } from "@tanstack/react-router";
 import {
@@ -18,6 +18,7 @@ import {
 import { Logo, Mark, Wordmark } from "./brand/Brand";
 import { HeadBanner } from "./HeadBanner";
 import { KeptPages, useActivePage } from "./pages";
+import { fullDate } from "./RelativeTime";
 import { AppHeaderHeight } from "./sticky";
 import { Tooltip } from "./Tooltip";
 import { ErrorMessage, safeHref } from "./ui";
@@ -27,6 +28,30 @@ const tabClass =
 // The active tab's underline is the brand gradient, over the header's border.
 const activeTabClass =
 	"font-semibold text-ink after:absolute after:inset-x-1.5 after:-bottom-px after:h-0.5 after:rounded-full after:brand-rule";
+
+/**
+ * As-of mode's marker: the PR is shown as it was at `iso`. Its tooltip says
+ * what can't be known about then.
+ */
+function AsOf({ iso }: { iso: string }) {
+	return (
+		<Tooltip content="Shown as it was then. Thread resolution and merge conflicts aren't known for a past moment: every thread shows unresolved.">
+			{(trigger) => (
+				<span
+					{...trigger}
+					data-testid="as-of"
+					// biome-ignore lint/a11y/noNoninteractiveTabindex: the tooltip opens on focus.
+					tabIndex={0}
+					className="inline-flex min-h-10 items-center gap-1 rounded-md text-xs text-warn focus-visible:outline-2 focus-visible:outline-accent sm:min-h-0"
+				>
+					<HistoryIcon size={12} aria-hidden />
+					as of {fullDate(new Date(iso))}
+					<InfoIcon size={12} aria-hidden className="text-muted" />
+				</span>
+			)}
+		</Tooltip>
+	);
+}
 
 /** Scroll distance over which the compact title fades in before sticking. */
 export const COMPACT_RAMP = 40;
@@ -208,8 +233,11 @@ export function App() {
 							</div>
 						)}
 						{pr && (
-							<p className="mt-1 text-sm break-all text-muted">
-								{pr.owner}/{pr.repo}
+							<p className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-muted">
+								<span className="break-all">
+									{pr.owner}/{pr.repo}
+								</span>
+								{session.data?.asOf && <AsOf iso={session.data.asOf} />}
 							</p>
 						)}
 					</div>

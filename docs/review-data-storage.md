@@ -117,8 +117,12 @@ refs/crb/lookup/<source>/<key-hash>                               lookup: source
   metadata (which would grow with the number of reviews). It points at a blob
   containing the review ID. `<source>` is the source name (`github-pr`) and
   `<key-hash>` is a hex hash of the source's key (for `github-pr`,
-  `<owner>/<repo>#<number>`), so no name can cause ref name conflicts, invalid
-  ref names or case collisions. A `github-pr` lookup ref is kept after the PR
+  `<owner>/<repo>#<number>`, lowercased), so no name can cause ref name
+  conflicts, invalid ref names or case collisions. The hidden dev mode
+  `--as-of <cutoff>` uses the key `<owner>/<repo>#<number>@<cutoff>` (cutoff
+  in canonical UTC ISO, e.g. `2026-09-15T11:35:52Z`), so a view of the PR as
+  of a past moment gets a review of its own (its `review-created` event
+  carries `details.asOf`) and never touches the PR's real one. A `github-pr` lookup ref is kept after the PR
   closes, since PR numbers aren't reused (reviewer's decision, 2026-10-23:
   look up by PR number for now).
 - All refs live in carbonless's private bare clone (see the parity spec), never

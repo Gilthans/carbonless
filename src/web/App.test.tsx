@@ -27,6 +27,7 @@ const info: SessionInfo = {
 	currentHead: "b".repeat(40),
 	headMoved: false,
 	patchset: null,
+	asOf: null,
 };
 
 const overview: PrOverview = {
@@ -654,6 +655,35 @@ describe("OverviewPage", () => {
 		expect(
 			screen.getByRole("link", { name: "Files changed" }),
 		).not.toHaveAttribute("aria-current");
+	});
+
+	it("as of a cutoff: marks the header with the date and says resolution is unknown", async () => {
+		renderApp({
+			"/api/session": ok({ ...info, asOf: "2026-09-15T11:35:52Z" }),
+			"/api/overview": ok({
+				...overview,
+				resolved: null,
+				mergeable: "UNKNOWN",
+				asOf: "2026-09-15T11:35:52Z",
+			}),
+		});
+		const marker = await screen.findByTestId("as-of");
+		expect(marker).toHaveTextContent(/^as of 2026 Sep 15, \d\d:35:52 /);
+		marker.focus();
+		expect(
+			await screen.findByText(/Thread resolution and merge conflicts/, {
+				selector: "[role=tooltip]",
+			}),
+		).toBeVisible();
+		const humans = screen.getByRole("region", { name: "Human reviews" });
+		expect(humans).toHaveTextContent("resolved unknown");
+		expect(screen.queryByRole("status")).toBeNull();
+	});
+
+	it("has no as-of marker normally", async () => {
+		renderApp();
+		await screen.findByRole("heading", { level: 1 });
+		expect(screen.queryByTestId("as-of")).toBeNull();
 	});
 
 	it("shows review progress on the Review files button", async () => {

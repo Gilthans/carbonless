@@ -23,6 +23,11 @@ export interface Scenario {
 	prViewDelayMs?: number;
 	/** Nodes per GraphQL page (default 100, like gh.ts asks for). */
 	pageSize?: number;
+	/**
+	 * Commits by OID, for `object(oid) { statusCheckRollup }` (as-of mode):
+	 * `contexts` null means the commit has no rollup; a missing OID, no commit.
+	 */
+	commits?: Record<string, { contexts: unknown[] | null }>;
 	prs: Record<
 		string,
 		{
@@ -35,6 +40,8 @@ export interface Scenario {
 				reviewThreads?: unknown[];
 				comments?: unknown[];
 				reviews?: unknown[];
+				/** `commits` nodes: `{ commit: { oid, committedDate, pushedDate } }`. */
+				commits?: unknown[];
 			};
 		}
 	>;
@@ -90,7 +97,10 @@ export function reviewThread(
 					first: { nodes: [opener] },
 					comments: {
 						totalCount: comments.length,
-						nodes: comments.map((c) => ({ author: c.author })),
+						nodes: comments.map((c) => ({
+							author: c.author,
+							createdAt: c.createdAt,
+						})),
 					},
 				}
 			: {}),

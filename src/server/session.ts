@@ -10,6 +10,7 @@ import type {
 import { ensureClone, fetchPr } from "./clone.js";
 import { buildSnapshot, loadContext, loadFileHunks } from "./diff/snapshot.js";
 import {
+	fetchHeadAsOf,
 	fetchOverview,
 	fetchPrMeta,
 	type PrMeta,
@@ -22,6 +23,17 @@ import { buildReviewView } from "./review/coverage.js";
 import type { ProgressState } from "./review/fold.js";
 import { RefStore } from "./review/refStore.js";
 import { ReviewService, StaleSnapshotError } from "./review/reviews.js";
+
+/** Hidden dev options (crb --as-of, --viewer). */
+export interface SessionOptions {
+	/**
+	 * Show the PR as of this cutoff (canonical ISO, see parseAsOf): head and
+	 * base as they were, overview filtered to it, its own review.
+	 */
+	asOf?: string;
+	/** The GitHub login treated as "you" on the overview, in place of the gh login. */
+	viewer?: string;
+}
 
 /** Comparison endpoints: merge-base(origin/<base>, head) → head. */
 interface Endpoints {
@@ -52,6 +64,7 @@ export class Session {
 		meta: PrMeta,
 		snapshot: Snapshot,
 		patchset: number | null,
+		private readonly options: SessionOptions,
 	) {
 		this.#meta = meta;
 		this.#snapshot = snapshot;
@@ -66,23 +79,31 @@ export class Session {
 		arg: string,
 		cwd: string,
 		progress: (message: string) => void = () => {},
+		options: SessionOptions = {},
 	): Promise<Session> {
 		await runGh(["auth", "status"]);
 		const ref = await resolvePrRef(arg, cwd);
 		const viewer = await viewerSlug();
-		const meta = await fetchPrMeta(ref);
+		const { asOf } = options;
+		let meta = await fetchPrMeta(ref);
+		if (asOf) {
+			// The PR as it was: open, at its head of then.
+			const headOid = await fetchHeadAsOf(meta, asOf);
+			meta = { ...meta, headOid, state: "OPEN" };
+		}
 		const repo = await ensureClone(meta.owner, meta.repo, () =>
 			progress(`cloning ${meta.owner}/${meta.repo}…`),
 		);
 		progress(`fetching PR #${meta.number}…`);
-		const fetched = await fetchPr(repo, meta);
-		const merged = fetched.mergeBase === fetched.head;
+		const fetched = await fetchPr(repo, meta, asOf);
+		// As of a cutoff the PR wasn't merged yet, whatever it is now.
+		const merged = !asOf && fetched.mergeBase === fetched.head;
 		const reviews = new ReviewService(new RefStore(repo));
 		// A started review stays open once the PR is merged; an unstarted one
 		// has nothing left to show, so don't create it.
 		const reviewId = merged
 			? await reviews.findReview(meta)
-			: await reviews.findOrCreateReview(meta, viewer);
+			: await reviews.findOrCreateReview(meta, viewer, asOf);
 		const state =
 			reviewId === null ? null : await reviews.getProgress(reviewId, viewer);
 		if (reviewId === null || state === null || (merged && !state.patchset)) {
@@ -100,6 +121,7 @@ export class Session {
 			meta,
 			snapshot,
 			state.patchset?.number ?? null,
+			options,
 		);
 	}
 
@@ -110,8 +132,10 @@ export class Session {
 			viewer: this.viewer,
 			snapshotHead: this.#snapshot.head,
 			currentHead: headOid,
-			headMoved: headOid !== this.#snapshot.head,
+			// As of a cutoff the PR has obviously moved on since: never say so.
+			headMoved: !this.options.asOf && headOid !== this.#snapshot.head,
 			patchset: this.#patchset,
+			asOf: this.options.asOf ?? null,
 		};
 	}
 
@@ -120,7 +144,12 @@ export class Session {
 	}
 
 	overview(): Promise<PrOverview> {
-		return fetchOverview(this.#ref(), this.viewer);
+		const { asOf, viewer } = this.options;
+		return fetchOverview(
+			this.#ref(),
+			viewer ?? this.viewer,
+			asOf ? { at: asOf, head: this.#meta.headOid } : undefined,
+		);
 	}
 
 	async review(): Promise<ReviewView> {
@@ -185,6 +214,8 @@ export class Session {
 	 * patch set.
 	 */
 	refresh(): Promise<SessionInfo> {
+		// As of a cutoff nothing moves; the overview reloads on its own.
+		if (this.options.asOf) return Promise.resolve(this.info());
 		return this.#exclusive(async () => {
 			const seq = ++this.#metaSeq;
 			const meta = await fetchPrMeta(this.#ref());
@@ -204,6 +235,7 @@ export class Session {
 
 	/** Asks GitHub for the PR's head without fetching anything. */
 	async checkHead(): Promise<SessionInfo> {
+		if (this.options.asOf) return this.info();
 		const seq = ++this.#metaSeq;
 		this.#setMeta(seq, await fetchPrMeta(this.#ref()));
 		return this.info();

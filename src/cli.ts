@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import open from "open";
 import { buildApp } from "./server/app.js";
+import { parseAsOf } from "./server/asOf.js";
 import { Session } from "./server/session.js";
 
 const USAGE = `Usage: crb <pr> [options]
@@ -34,6 +35,10 @@ async function main(): Promise<void> {
 			open: { type: "boolean", default: true },
 			"api-only": { type: "boolean", default: false },
 			help: { type: "boolean", short: "h", default: false },
+			// Hidden dev flags, not in the usage: view the PR as of a past
+			// moment, with another login as "you".
+			"as-of": { type: "string" },
+			viewer: { type: "string" },
 		},
 	});
 
@@ -49,14 +54,26 @@ async function main(): Promise<void> {
 	if (!/^\d+$/.test(values.port) || port > 65535) {
 		throw new Error(`Invalid port: ${values.port}`);
 	}
+	const asOf =
+		values["as-of"] === undefined ? undefined : parseAsOf(values["as-of"]);
+	const viewer = values.viewer;
+	if (
+		viewer !== undefined &&
+		!/^[A-Za-z0-9][A-Za-z0-9_-]{0,38}$/.test(viewer)
+	) {
+		throw new Error(`Invalid --viewer: ${viewer}`);
+	}
 	const host = values.host;
 	const accessKey = LOOPBACK.has(host)
 		? null
 		: randomBytes(24).toString("base64url");
 
 	// Progress goes to stderr: stdout's only line is the listening URL.
-	const session = await Session.open(pr, process.cwd(), (message) =>
-		console.error(`crb: ${message}`),
+	const session = await Session.open(
+		pr,
+		process.cwd(),
+		(message) => console.error(`crb: ${message}`),
+		{ asOf, viewer },
 	);
 	const app = await buildApp(session, {
 		accessKey,

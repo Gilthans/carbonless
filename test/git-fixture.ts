@@ -21,6 +21,8 @@ export interface FixtureCommit {
 	binary?: Record<string, Uint8Array>;
 	/** Path to commit SHA, recorded as a gitlink (mode 160000). */
 	submodule?: Record<string, string>;
+	/** Author and committer date (ISO); now by default. */
+	date?: string;
 }
 
 export interface GitFixture {
@@ -91,7 +93,18 @@ export function createGitFixture(commits: FixtureCommit[]): GitFixture {
 		for (const [name, sha] of Object.entries(commit.submodule ?? {})) {
 			git("update-index", "--add", "--cacheinfo", `160000,${sha},${name}`);
 		}
-		git("commit", "--quiet", "--allow-empty", "-m", commit.message);
+		execFileSync(
+			"git",
+			["commit", "--quiet", "--allow-empty", "-m", commit.message],
+			{
+				cwd: path,
+				env: testGitEnv(
+					commit.date
+						? { GIT_AUTHOR_DATE: commit.date, GIT_COMMITTER_DATE: commit.date }
+						: {},
+				),
+			},
+		);
 		return git("rev-parse", "HEAD");
 	});
 

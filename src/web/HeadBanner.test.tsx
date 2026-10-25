@@ -19,6 +19,7 @@ const info: SessionInfo = {
 	currentHead: "f".repeat(40),
 	headMoved: true,
 	patchset: 1,
+	asOf: null,
 };
 
 describe("HeadBanner", () => {

@@ -37,10 +37,15 @@ const VERBS = {
 	"crossed-off": "crossed off",
 } as const;
 
-const prKey = (pr: ReviewPr) =>
-	`${pr.owner.toLowerCase()}/${pr.repo.toLowerCase()}#${pr.number}`;
-const lookupRef = (pr: ReviewPr) =>
-	`refs/crb/lookup/github-pr/${createHash("sha256").update(prKey(pr)).digest("hex")}`;
+/**
+ * The source key: `<owner>/<repo>#<number>`, lowercased. As of a cutoff
+ * (dev mode), `@<cutoff>` follows, so that view gets a review of its own and
+ * never touches the PR's real one.
+ */
+export const prKey = (pr: ReviewPr, asOf?: string) =>
+	`${pr.owner.toLowerCase()}/${pr.repo.toLowerCase()}#${pr.number}${asOf ? `@${asOf}` : ""}`;
+const lookupRef = (key: string) =>
+	`refs/crb/lookup/github-pr/${createHash("sha256").update(key).digest("hex")}`;
 const reviewRef = (id: string) => `refs/crb/reviews/${id}`;
 const reviewerRef = (id: string, slug: string) =>
 	`${reviewRef(id)}/reviewers/${slug}`;
@@ -53,15 +58,22 @@ export class ReviewService {
 	constructor(private readonly store: RefStore) {}
 
 	/** The review of this PR, or null if nobody started one. */
-	findReview(pr: ReviewPr): Promise<string | null> {
-		return this.#readLookup(lookupRef(pr));
+	findReview(pr: ReviewPr, asOf?: string): Promise<string | null> {
+		return this.#readLookup(lookupRef(prKey(pr, asOf)));
 	}
 
-	/** The review of this PR, created (meta and lookup refs) on first use. */
-	async findOrCreateReview(pr: ReviewPr, actor: string): Promise<string> {
+	/**
+	 * The review of this PR, created (meta and lookup refs) on first use.
+	 * `asOf`: the separate review of the PR as of that cutoff.
+	 */
+	async findOrCreateReview(
+		pr: ReviewPr,
+		actor: string,
+		asOf?: string,
+	): Promise<string> {
 		checkSlug(actor);
-		const key = prKey(pr);
-		const lookup = lookupRef(pr);
+		const key = prKey(pr, asOf);
+		const lookup = lookupRef(key);
 		const found = await this.#readLookup(lookup);
 		if (found) return found;
 
@@ -71,6 +83,7 @@ export class ReviewService {
 			source: "github-pr",
 			key,
 			pr: { owner, repo, number, url, baseBranch, headBranch, headRepo },
+			...(asOf ? { details: { asOf } } : {}),
 		});
 		const commit = await this.store.commit(
 			null,

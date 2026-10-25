@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import type { PrOverview } from "../shared/types.js";
+import { headAsOf } from "./asOf.js";
 import { GhError } from "./errors.js";
 import { mapOverview } from "./overview.js";
 import { slugify } from "./slug.js";
@@ -285,12 +286,41 @@ const AUTHOR = "author { login __typename }";
 const QUERIES = {
 	reviewThreads: connectionQuery(
 		"reviewThreads",
-		// The opening comment's text; only authors for the rest (reply detection).
-		`isResolved isOutdated path line first: comments(first: 1) { nodes { ${AUTHOR} bodyText bodyHTML createdAt } } comments(first: 100) { totalCount nodes { ${AUTHOR} } }`,
+		// The opening comment's text; only authors and times for the rest
+		// (reply detection, and counting as of a cutoff).
+		`isResolved isOutdated path line first: comments(first: 1) { nodes { ${AUTHOR} bodyText bodyHTML createdAt } } comments(first: 100) { totalCount nodes { ${AUTHOR} createdAt } }`,
 	),
 	comments: connectionQuery("comments", `${AUTHOR} createdAt`),
-	reviews: connectionQuery("reviews", `${AUTHOR} state submittedAt`),
+	// The commit a review was made on dates the PR's head (as-of mode).
+	reviews: connectionQuery(
+		"reviews",
+		`${AUTHOR} state submittedAt commit { oid }`,
+	),
+	commits: connectionQuery(
+		"commits",
+		"commit { oid committedDate pushedDate }",
+	),
 };
+
+/** One commit's check contexts (as-of mode), paged like the PR connections. */
+const COMMIT_CHECKS_QUERY = `query($owner: String!, $name: String!, $oid: GitObjectID!, $endCursor: String) {
+  repository(owner: $owner, name: $name) {
+    object(oid: $oid) {
+      ... on Commit {
+        statusCheckRollup {
+          contexts(first: 100, after: $endCursor) {
+            pageInfo { hasNextPage endCursor }
+            nodes {
+              __typename
+              ... on CheckRun { name status conclusion detailsUrl startedAt completedAt }
+              ... on StatusContext { context state targetUrl createdAt }
+            }
+          }
+        }
+      }
+    }
+  }
+}`;
 
 /** The description as GitHub renders it (HTML comments dropped, emoji and images resolved). */
 const BODY_HTML_QUERY = `query($owner: String!, $name: String!, $number: Int!) {
@@ -343,6 +373,68 @@ async function fetchConnection(
 	throw new GhError(`Too many ${connection} to read for this PR`);
 }
 
+/** Every check context of commit `oid`; [] when it has none. */
+async function fetchCommitChecks(ref: PrRef, oid: string): Promise<unknown[]> {
+	const nodes: unknown[] = [];
+	let after: string | undefined;
+	for (let page = 0; page < MAX_PAGES; page++) {
+		const out = safeJson(
+			await runGh([
+				"api",
+				"graphql",
+				"-f",
+				`query=${COMMIT_CHECKS_QUERY}`,
+				"-f",
+				`owner=${ref.owner}`,
+				"-f",
+				`name=${ref.repo}`,
+				"-f",
+				`oid=${oid}`,
+				...(after ? ["-f", `endCursor=${after}`] : []),
+			]),
+		);
+		const object = rec(rec(rec(out).data).repository).object;
+		if (object === null || typeof object !== "object") {
+			throw new GhError(`Commit ${oid} is missing on GitHub`);
+		}
+		const rollup = rec(object).statusCheckRollup;
+		// No checks ever reported for this commit.
+		if (rollup === null) return nodes;
+		const { nodes: pageNodes, pageInfo } = rec(rec(rollup).contexts);
+		if (!Array.isArray(pageNodes)) {
+			throw new GhError("gh returned an unexpected response for the checks");
+		}
+		nodes.push(...pageNodes);
+		const info = rec(pageInfo);
+		if (info.hasNextPage !== true) return nodes;
+		if (typeof info.endCursor !== "string") break;
+		after = info.endCursor;
+	}
+	throw new GhError("Too many checks to read for this commit");
+}
+
+/**
+ * The PR's head commit at `cutoff` (as-of mode), from its commits and its
+ * reviews' commits; see headAsOf.
+ */
+export async function fetchHeadAsOf(
+	ref: PrRef,
+	cutoff: string,
+): Promise<string> {
+	try {
+		const [commits, reviews] = await Promise.all([
+			fetchConnection(ref, "commits"),
+			fetchConnection(ref, "reviews"),
+		]);
+		return headAsOf(commits, reviews, cutoff);
+	} catch (error) {
+		if (isNotFound(error)) {
+			throw new GhError(`PR ${ref.owner}/${ref.repo}#${ref.number} not found`);
+		}
+		throw error;
+	}
+}
+
 async function fetchBodyHtml(ref: PrRef): Promise<string> {
 	const out = safeJson(
 		await runGh([
@@ -368,9 +460,11 @@ async function fetchBodyHtml(ref: PrRef): Promise<string> {
 export async function fetchOverview(
 	ref: PrRef,
 	viewer: string,
+	/** As-of mode: the cutoff, and the snapshot head whose checks to show. */
+	asOf?: { at: string; head: string },
 ): Promise<PrOverview> {
 	try {
-		const [view, bodyHTML, reviewThreads, comments, reviews] =
+		const [view, bodyHTML, reviewThreads, comments, reviews, checks] =
 			await Promise.all([
 				prView(
 					ref,
@@ -380,11 +474,13 @@ export async function fetchOverview(
 				fetchConnection(ref, "reviewThreads"),
 				fetchConnection(ref, "comments"),
 				fetchConnection(ref, "reviews"),
+				asOf ? fetchCommitChecks(ref, asOf.head) : undefined,
 			]);
 		return mapOverview(
 			view,
-			{ bodyHTML, reviewThreads, comments, reviews },
+			{ bodyHTML, reviewThreads, comments, reviews, checks },
 			viewer,
+			asOf?.at,
 		);
 	} catch (error) {
 		if (isNotFound(error)) {

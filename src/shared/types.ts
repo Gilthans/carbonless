@@ -163,7 +163,7 @@ export interface PrOverview {
 		status: "failing" | "pending" | "passing";
 		url?: string;
 	}[];
-	/** Unresolved threads only. */
+	/** Unresolved threads only (as-of mode: every thread opened by the cutoff). */
 	threads: {
 		path: string;
 		line: number | null;
@@ -181,8 +181,13 @@ export interface PrOverview {
 		hasReply: boolean;
 		outdated: boolean;
 	}[];
-	/** Resolved threads, counted by whether a bot opened them. */
-	resolved: { human: number; bot: number };
+	/**
+	 * Resolved threads, counted by whether a bot opened them; null when
+	 * unknown (as-of mode: GitHub keeps no resolution history).
+	 */
+	resolved: { human: number; bot: number } | null;
+	/** As-of mode: the cutoff everything here is filtered to. */
+	asOf?: string;
 }
 
 export interface SessionInfo {
@@ -201,4 +206,9 @@ export interface SessionInfo {
 	currentHead: string;
 	headMoved: boolean;
 	patchset: number | null;
+	/**
+	 * As-of mode (dev flag): the cutoff the PR is shown at. The snapshot never
+	 * moves, so headMoved stays false.
+	 */
+	asOf: string | null;
 }
