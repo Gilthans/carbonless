@@ -1,8 +1,10 @@
 import { useQuery } from "@tanstack/react-query";
 import {
+	type CSSProperties,
 	type ReactNode,
 	type RefObject,
 	useEffect,
+	useLayoutEffect,
 	useRef,
 	useState,
 	useSyncExternalStore,
@@ -134,6 +136,29 @@ function useCurrentFile(
 	return [current, setCurrent] as const;
 }
 
+/**
+ * The rendered height of `el` in px, kept current as it changes (the sticky
+ * progress bar wraps differently by width and unit).
+ */
+function useHeight(el: RefObject<HTMLElement | null>, present: boolean) {
+	const [height, setHeight] = useState(0);
+	// biome-ignore lint/correctness/useExhaustiveDependencies: re-measure once the element exists.
+	useLayoutEffect(() => {
+		const node = el.current;
+		if (!node) return;
+		const measure = () => setHeight(node.offsetHeight);
+		measure();
+		if (typeof ResizeObserver === "undefined") return;
+		const observer = new ResizeObserver(measure);
+		observer.observe(node);
+		return () => observer.disconnect();
+	}, [el, present]);
+	return height;
+}
+
+const headerOf = (index: number) =>
+	document.querySelector<HTMLElement>(`#file-${index} > header`);
+
 export function FilesPage() {
 	const review = useQuery(reviewQuery);
 	const [stale, setStale] = useState(false);
@@ -147,6 +172,35 @@ export function FilesPage() {
 	const [unit, setUnit] = useUnit();
 	const wide = useMedia(WIDE);
 	const [sheetOpen, setSheetOpen] = useState(false);
+	const bar = useRef<HTMLDivElement>(null);
+	// Open file headers stick right below the progress bar.
+	const barHeight = useHeight(bar, data !== undefined);
+
+	// One file open at a time, by snapshot and index: a new snapshot starts
+	// with every file closed.
+	const [open, setOpen] = useState<string | null>(null);
+	const keyOf = (index: number) => `${data?.revision}:${index}`;
+	/** The header to keep where it was on screen as files open and close. */
+	const anchor = useRef<{ index: number; top: number } | null>(null);
+	const toggleFile = (index: number, expanded: boolean) => {
+		const header = headerOf(index);
+		anchor.current = header
+			? { index, top: header.getBoundingClientRect().top }
+			: null;
+		setOpen(expanded ? keyOf(index) : null);
+	};
+	// Closing the file above, or the one being read, would move the header
+	// that was just used: scroll so it stays under the pointer.
+	// biome-ignore lint/correctness/useExhaustiveDependencies: runs after each open/close.
+	useLayoutEffect(() => {
+		const a = anchor.current;
+		anchor.current = null;
+		if (!a) return;
+		const header = headerOf(a.index);
+		if (!header) return;
+		const delta = header.getBoundingClientRect().top - a.top;
+		if (Math.abs(delta) >= 1) window.scrollBy(0, delta);
+	}, [open]);
 
 	// Widening to the sidebar layout closes the sheet; narrowing doesn't reopen it.
 	useEffect(() => {
@@ -157,21 +211,23 @@ export function FilesPage() {
 		document
 			.getElementById(`file-${index}`)
 			?.scrollIntoView?.({ block: "start" });
+	/** A file picked in the tree: open it alone and bring its header to the top. */
 	const select = (index: number) => {
 		setCurrent(index);
-		if (sheetOpen) {
-			setSheetOpen(false);
-			// Once the sheet has closed (and handed focus back to its button),
-			// move focus to the picked file's header and scroll there.
-			requestAnimationFrame(() => {
-				document
-					.querySelector<HTMLElement>(`#file-${index} header button`)
+		anchor.current = null;
+		setOpen(keyOf(index));
+		const fromSheet = sheetOpen;
+		if (fromSheet) setSheetOpen(false);
+		// Once the other files have closed (and the sheet has handed focus
+		// back to its button), scroll there, focusing the header after a sheet.
+		requestAnimationFrame(() => {
+			if (fromSheet) {
+				headerOf(index)
+					?.querySelector("button")
 					?.focus({ preventScroll: true });
-				scrollTo(index);
-			});
-		} else {
+			}
 			scrollTo(index);
-		}
+		});
 	};
 
 	const tree = data && (
@@ -184,13 +240,17 @@ export function FilesPage() {
 	);
 
 	return (
-		<section aria-label="Files changed">
+		<section
+			aria-label="Files changed"
+			style={{ "--files-bar": `${barHeight}px` } as CSSProperties}
+		>
 			<h2 className="sr-only">Files changed</h2>
 			{review.isPending && <p className="text-slate-500">Loading the diff…</p>}
 			{review.isError && <ErrorMessage error={review.error} />}
 			{data && (
 				<>
 					<ProgressBar
+						ref={bar}
 						progress={data.progress}
 						unit={unit}
 						onUnitChange={setUnit}
@@ -208,7 +268,7 @@ export function FilesPage() {
 					) : (
 						<div className="mt-4 flex gap-4">
 							{wide && (
-								<aside className="sticky top-20 max-h-[calc(100vh-6rem)] w-72 shrink-0 self-start overflow-y-auto">
+								<aside className="sticky top-[calc(var(--files-bar,0px)+1rem)] max-h-[calc(100dvh-var(--files-bar,0px)-2rem)] w-72 shrink-0 self-start overflow-y-auto">
 									{tree}
 								</aside>
 							)}
@@ -223,6 +283,10 @@ export function FilesPage() {
 										file={file}
 										revision={data.revision}
 										unit={unit}
+										expanded={open === keyOf(file.index)}
+										onExpandedChange={(expanded) =>
+											toggleFile(file.index, expanded)
+										}
 										onStaleChange={setStale}
 									/>
 								))}

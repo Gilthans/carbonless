@@ -1,20 +1,14 @@
-import {
-	type ReactNode,
-	useEffect,
-	useLayoutEffect,
-	useRef,
-	useState,
-} from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import type { ClusterView, FileView, StateChange } from "../../shared/types";
 import { ErrorMessage } from "../ui";
 import { DiffBody } from "./DiffBody";
 import { Meter } from "./ProgressBar";
-import { AddDel, StatusIcon } from "./status";
+import { ChangeCount, StatusIcon } from "./status";
 import {
+	describeFileProgress,
 	fileUnitProgress,
 	formatFileProgress,
 	type Unit,
-	unitWord,
 } from "./unit";
 import { isStale, useSetStates } from "./useSetStates";
 
@@ -36,8 +30,7 @@ const tones = {
 /**
  * A file-wide action shown as an outlined icon, named by `label` and
  * explained by `tooltip` (the native title, also its accessible description).
- * Inline in a wide header it is the icon alone (40×40 on touch); in the
- * compact menu the label is written next to it.
+ * 40×40 on touch and in a narrow header.
  */
 function HeaderIconButton(props: {
 	label: string;
@@ -57,7 +50,7 @@ function HeaderIconButton(props: {
 			title={props.tooltip}
 			disabled={props.disabled}
 			onClick={props.onClick}
-			className="group flex h-10 shrink-0 items-center gap-2 rounded-md pr-3 pl-1 text-sm whitespace-nowrap text-slate-800 hover:bg-slate-100 focus-visible:outline-2 focus-visible:outline-blue-600 disabled:cursor-not-allowed disabled:text-slate-400 disabled:hover:bg-transparent @lg:h-8 @lg:w-8 @lg:justify-center @lg:p-0 @lg:hover:bg-transparent pointer-coarse:@lg:h-10 pointer-coarse:@lg:w-10"
+			className="group flex h-10 w-10 shrink-0 items-center justify-center rounded-md focus-visible:outline-2 focus-visible:outline-blue-600 disabled:cursor-not-allowed @lg:h-8 @lg:w-8 pointer-coarse:@lg:h-10 pointer-coarse:@lg:w-10"
 		>
 			<span
 				aria-hidden
@@ -66,9 +59,6 @@ function HeaderIconButton(props: {
 				}`}
 			>
 				{props.icon}
-			</span>
-			<span aria-hidden className="@lg:hidden">
-				{props.label}
 			</span>
 		</button>
 	);
@@ -79,7 +69,13 @@ function HeaderIconButton(props: {
  * file name shows; scrolling left reveals the rest. Re-pinned when the path
  * or the available width changes.
  */
-function PathScroller({ text }: { text: string }) {
+function PathScroller({
+	text,
+	className = "",
+}: {
+	text: string;
+	className?: string;
+}) {
 	const box = useRef<HTMLDivElement>(null);
 	const inner = useRef<HTMLSpanElement>(null);
 	// More of the path sits to the left: fade the left edge to say so.
@@ -100,7 +96,7 @@ function PathScroller({ text }: { text: string }) {
 		return () => observer.disconnect();
 	}, [text]);
 	return (
-		<div className="relative min-w-0 flex-1">
+		<div className={`relative min-w-0 flex-1 ${className}`}>
 			{/* biome-ignore lint/a11y/useSemanticElements: a named group; a fieldset is for form controls, not a path. */}
 			<div
 				ref={box}
@@ -135,16 +131,7 @@ function PathScroller({ text }: { text: string }) {
 function FileProgress({ file, unit }: { file: FileView; unit: Unit }) {
 	const p = fileUnitProgress(file, unit);
 	const { counts } = p;
-	const word = p.status === null ? unitWord(unit) : "clusters";
-	const crossed =
-		counts.crossedOff > 0 ? `, ${counts.crossedOff} crossed off` : "";
-	const left = p.hiddenLeft
-		? `, ${p.clustersLeft} ${p.clustersLeft === 1 ? "cluster" : "clusters"} without changed lines left`
-		: "";
-	const sentence =
-		p.status !== null
-			? formatFileProgress(p, unit)
-			: `${counts.reviewed} of ${counts.total - counts.crossedOff} ${word} reviewed${crossed}${left}`;
+	const sentence = describeFileProgress(file, unit);
 	return (
 		<div
 			role="progressbar"
@@ -174,76 +161,28 @@ function FileProgress({ file, unit }: { file: FileView; unit: Unit }) {
 }
 
 /**
- * The header's bulk actions: inline icons when the header is wide enough,
- * otherwise behind a compact "File actions" menu, so a phone keeps room for
- * the path.
- */
-function FileActions({ children }: { children: ReactNode }) {
-	const [open, setOpen] = useState(false);
-	const root = useRef<HTMLDivElement>(null);
-	const toggle = useRef<HTMLButtonElement>(null);
-	useEffect(() => {
-		const el = root.current;
-		if (!open || !el) return;
-		const close = () => {
-			setOpen(false);
-			toggle.current?.focus();
-		};
-		const away = (event: PointerEvent) => {
-			if (!el.contains(event.target as Node)) setOpen(false);
-		};
-		const onEscape = (event: KeyboardEvent) => {
-			if (event.key === "Escape") close();
-		};
-		// An action picked from the menu closes it.
-		const picked = (event: MouseEvent) => {
-			const button = (event.target as Element).closest("button");
-			if (button && button !== toggle.current) close();
-		};
-		document.addEventListener("pointerdown", away);
-		el.addEventListener("keydown", onEscape);
-		el.addEventListener("click", picked);
-		return () => {
-			document.removeEventListener("pointerdown", away);
-			el.removeEventListener("keydown", onEscape);
-			el.removeEventListener("click", picked);
-		};
-	}, [open]);
-	return (
-		<div ref={root} className="relative shrink-0">
-			<button
-				ref={toggle}
-				type="button"
-				aria-label="File actions"
-				aria-expanded={open}
-				onClick={() => setOpen((o) => !o)}
-				className="flex h-10 w-10 items-center justify-center rounded-md text-lg text-slate-600 hover:bg-slate-200 focus-visible:outline-2 focus-visible:outline-blue-600 @lg:hidden"
-			>
-				⋯
-			</button>
-			<div
-				className={`${open ? "flex" : "hidden"} absolute top-full right-0 z-40 mt-1 w-max flex-col items-stretch gap-1 rounded-md border border-slate-200 bg-white p-1 shadow-lg @lg:static @lg:mt-0 @lg:flex @lg:flex-row @lg:items-center @lg:gap-1.5 @lg:border-0 @lg:bg-transparent @lg:p-0 @lg:shadow-none`}
-			>
-				{children}
-			</div>
-		</div>
-	);
-}
-
-/**
  * One file of the diff: header with review status and bulk actions, and the
  * diff once expanded. Every file starts collapsed; collapsing is only a view
- * setting. `onStaleChange(true)`: a write was refused because the snapshot
+ * setting. The owner may control it (`expanded`, `onExpandedChange`). An open
+ * file's header sticks below the page's progress bar (`--files-bar`) while
+ * its diff scrolls. `onStaleChange(true)`: a write was refused because the snapshot
  * moved; `onStaleChange(false)`: a later write was stored.
  */
 export function FileDiff(props: {
 	file: FileView;
 	revision: string;
 	unit: Unit;
+	expanded?: boolean;
+	onExpandedChange?: (expanded: boolean) => void;
 	onStaleChange?: (stale: boolean) => void;
 }) {
 	const { file, revision } = props;
-	const [expanded, setExpanded] = useState(false);
+	const [ownExpanded, setOwnExpanded] = useState(false);
+	const expanded = props.expanded ?? ownExpanded;
+	const setExpanded = (next: boolean) => {
+		if (props.expanded === undefined) setOwnExpanded(next);
+		props.onExpandedChange?.(next);
+	};
 	const setStates = useSetStates({ onStaleChange: props.onStaleChange });
 	// Also true between a split batch's requests.
 	const [batching, setBatching] = useState(false);
@@ -293,35 +232,50 @@ export function FileDiff(props: {
 		none: unreviewed.length === 0 && crossed.length === 0,
 	};
 	const path = file.oldPath ? `${file.oldPath} → ${file.path}` : file.path;
+	const idle =
+		file.clusters.length === 0
+			? "No clusters in this file"
+			: "Nothing unreviewed";
 
 	return (
 		<section
 			id={`file-${file.index}`}
 			data-file-index={file.index}
 			aria-label={file.path}
-			className="scroll-mt-28 rounded-md border border-slate-200"
+			className="scroll-mt-[calc(var(--files-bar,0px)-1px)] overflow-clip rounded-md border border-slate-200"
 		>
-			<header className="@container rounded-t-md border-b border-slate-200 bg-slate-50 px-1.5">
-				<div className="flex min-h-11 items-center gap-1.5 @2xl:gap-3">
+			<header
+				// Square corners: the section clips them at the top, and a stuck
+				// header must not let lines show through.
+				className={`@container border-b border-slate-200 bg-slate-50 px-1.5 ${
+					expanded ? "sticky top-[var(--files-bar,0px)] z-10" : ""
+				}`}
+			>
+				{/* Narrow: the path on its own row, everything else below it. */}
+				<div className="flex min-h-11 flex-wrap items-center gap-x-1.5 pt-1 @lg:flex-nowrap @lg:pt-0 @2xl:gap-x-3">
 					<button
 						type="button"
 						aria-expanded={expanded}
 						aria-label={expanded ? "Collapse file" : "Expand file"}
-						onClick={() => setExpanded((e) => !e)}
+						onClick={() => setExpanded(!expanded)}
 						className="flex h-10 w-10 shrink-0 items-center justify-center rounded text-slate-600 hover:bg-slate-200 focus-visible:outline-2 focus-visible:outline-blue-600"
 					>
 						{expanded ? "▾" : "▸"}
 					</button>
 					<StatusIcon file={file} />
-					<PathScroller text={path} />
-					<span className="hidden @md:inline">
-						<AddDel file={file} />
+					<PathScroller
+						text={path}
+						className="order-first basis-full @lg:order-none @lg:basis-0"
+					/>
+					{/* Left out of a phone's second row, where it wouldn't fit. */}
+					<span className="ml-auto hidden shrink-0 @sm:flex @lg:ml-0">
+						<ChangeCount file={file} unit={props.unit} />
 					</span>
-					<FileActions>
+					<div className="ml-auto flex shrink-0 items-center gap-1.5 @sm:ml-0">
 						{crossToggle.undo ? (
 							<HeaderIconButton
 								label="Undo cross-off"
-								tooltip="Undo cross-off — set this file's crossed-off clusters back to unreviewed"
+								tooltip="Set crossed-off clusters back to unreviewed"
 								icon="⊘"
 								tone="purple"
 								pressed
@@ -338,8 +292,8 @@ export function FileDiff(props: {
 								label="Cross off file"
 								tooltip={
 									crossToggle.none
-										? "Cross off file — every cluster in this file is reviewed"
-										: "Cross off file — mark every unreviewed cluster in this file as not needing review"
+										? idle
+										: "Mark all unreviewed clusters as not needing review"
 								}
 								icon="⊘"
 								tone="purple"
@@ -360,8 +314,8 @@ export function FileDiff(props: {
 							label="Mark remaining reviewed"
 							tooltip={
 								unreviewed.length === 0
-									? "Mark remaining reviewed — nothing in this file is unreviewed"
-									: "Mark remaining reviewed — mark every unreviewed cluster in this file as reviewed"
+									? idle
+									: "Mark all unreviewed clusters as reviewed"
 							}
 							icon="✓"
 							tone="green"
@@ -372,7 +326,7 @@ export function FileDiff(props: {
 								).catch(() => {});
 							}}
 						/>
-					</FileActions>
+					</div>
 					<FileProgress file={file} unit={props.unit} />
 				</div>
 			</header>

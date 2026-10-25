@@ -462,7 +462,7 @@ describe("FileDiff", () => {
 		const undo = screen.getByRole("button", { name: "Undo cross-off" });
 		expect(undo).toHaveAttribute("aria-pressed", "true");
 		expect(undo).toHaveAccessibleDescription(
-			"Undo cross-off — set this file's crossed-off clusters back to unreviewed",
+			"Set crossed-off clusters back to unreviewed",
 		);
 		await user.click(undo);
 		await waitFor(() =>
@@ -505,7 +505,7 @@ describe("FileDiff", () => {
 		const cross = screen.getByRole("button", { name: "Cross off file" });
 		expect(cross).toHaveAttribute("aria-pressed", "false");
 		expect(cross).toHaveAccessibleDescription(
-			"Cross off file — mark every unreviewed cluster in this file as not needing review",
+			"Mark all unreviewed clusters as not needing review",
 		);
 		await user.click(cross);
 		await waitFor(() =>
@@ -560,7 +560,7 @@ describe("FileDiff", () => {
 		).toBeEnabled();
 	});
 
-	it("names the file actions and explains them in a tooltip", () => {
+	it("names the file actions and explains them in a short tooltip", () => {
 		setup(file([cluster("k1")]));
 		const mark = screen.getByRole("button", {
 			name: "Mark remaining reviewed",
@@ -568,12 +568,96 @@ describe("FileDiff", () => {
 		expect(mark).toBeEnabled();
 		expect(mark).toHaveAttribute(
 			"title",
-			"Mark remaining reviewed — mark every unreviewed cluster in this file as reviewed",
+			"Mark all unreviewed clusters as reviewed",
 		);
-		expect(mark).toHaveAccessibleDescription(mark.getAttribute("title") ?? "");
+		expect(mark).toHaveAccessibleDescription(
+			"Mark all unreviewed clusters as reviewed",
+		);
 		expect(
 			screen.getByRole("button", { name: "Cross off file" }),
-		).toHaveAttribute("title", expect.stringContaining("not needing review"));
+		).toHaveAttribute(
+			"title",
+			"Mark all unreviewed clusters as not needing review",
+		);
+		// Inline, never behind a menu.
+		expect(screen.queryByRole("button", { name: "File actions" })).toBeNull();
+		cleanup();
+		setup(file([cluster("k1", { state: "crossed-off" })]));
+		expect(
+			screen.getByRole("button", { name: "Undo cross-off" }),
+		).toHaveAttribute("title", "Set crossed-off clusters back to unreviewed");
+		expect(
+			screen.getByRole("button", { name: "Mark remaining reviewed" }),
+		).toHaveAttribute("title", "Nothing unreviewed");
+		cleanup();
+		setup(file([cluster("k1", { state: "reviewed" })]));
+		expect(
+			screen.getByRole("button", { name: "Cross off file" }),
+		).toHaveAttribute("title", "Nothing unreviewed");
+	});
+
+	it("has nothing to do, in neutral words, for a file without clusters", () => {
+		setup(file([]));
+		const cross = screen.getByRole("button", { name: "Cross off file" });
+		const mark = screen.getByRole("button", {
+			name: "Mark remaining reviewed",
+		});
+		for (const b of [cross, mark]) {
+			expect(b).toBeDisabled();
+			expect(b).toHaveAttribute("title", "No clusters in this file");
+		}
+		expect(screen.queryByRole("button", { name: "Undo cross-off" })).toBeNull();
+	});
+
+	it("counts the file's changes in the selected unit", () => {
+		const f = file([cluster("k1"), cluster("k2")], {
+			additions: 4,
+			deletions: 2,
+		});
+		const header = () => document.querySelector("header") as HTMLElement;
+		setup(f, undefined, hunks, "lines");
+		expect(header()).toHaveTextContent("+4 −2");
+		cleanup();
+		setup(f, undefined, hunks, "clusters");
+		expect(header()).not.toHaveTextContent("+4");
+		expect(screen.getByRole("img", { name: "2 clusters" })).toHaveTextContent(
+			"2",
+		);
+		cleanup();
+		setup(f, undefined, hunks, "files");
+		expect(header()).not.toHaveTextContent("+4");
+		expect(screen.queryByRole("img", { name: /clusters$/ })).toBeNull();
+	});
+
+	it("can be opened and closed by its owner", async () => {
+		const onExpandedChange = vi.fn();
+		const queryClient = new QueryClient();
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => new Response(JSON.stringify(hunks), { status: 200 })),
+		);
+		const shown = (expanded: boolean) => (
+			<QueryClientProvider client={queryClient}>
+				<FileDiff
+					file={file([cluster("k1")])}
+					revision="r1"
+					unit="clusters"
+					expanded={expanded}
+					onExpandedChange={onExpandedChange}
+				/>
+			</QueryClientProvider>
+		);
+		const { rerender } = render(shown(false));
+		await userEvent.click(screen.getByRole("button", { name: "Expand file" }));
+		expect(onExpandedChange).toHaveBeenLastCalledWith(true);
+		// Still closed until the owner opens it.
+		expect(screen.queryByRole("checkbox")).toBeNull();
+		rerender(shown(true));
+		expect(await screen.findByText("new five")).toBeInTheDocument();
+		await userEvent.click(
+			screen.getByRole("button", { name: "Collapse file" }),
+		);
+		expect(onExpandedChange).toHaveBeenLastCalledWith(false);
 	});
 
 	it("disables the file actions while a write is pending", async () => {

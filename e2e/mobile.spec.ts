@@ -1,6 +1,6 @@
 import type { Page } from "@playwright/test";
 import { reviewThread, threadComment } from "../test/fake-gh/scenario";
-import { fileSection, openFiles } from "./files-ui";
+import { barBottom, fileSection, openFiles } from "./files-ui";
 import { expect, type PrOptions, test } from "./fixtures";
 
 const LONG_DIR = "src/server/review/storage/adapters/git/refs/internal/legacy";
@@ -181,9 +181,16 @@ test.describe("phone", () => {
 		await sheet.getByRole("button", { name: /f23\.ts/ }).click();
 		await expect(sheet).toBeHidden();
 		await expect(target).toBeInViewport();
-		await expect(
-			target.getByRole("button", { name: "Expand file" }),
-		).toBeFocused();
+		// Opened, its header at the top below the page bar, focused.
+		const collapse = target.getByRole("button", { name: "Collapse file" });
+		await expect(collapse).toBeFocused();
+		await expect(target.getByTestId("diff-line").first()).toBeVisible();
+		await expect
+			.poll(async () => {
+				const top = (await target.locator("header").boundingBox())?.y ?? 0;
+				return Math.round(top - (await barBottom(page)));
+			})
+			.toBe(0);
 	});
 
 	test("the sheet locks the page scroll and closes when the screen widens", async ({
@@ -282,34 +289,91 @@ test.describe("phone", () => {
 		expect(await path.evaluate((el) => el.scrollLeft)).toBe(0);
 	});
 
-	test("file actions sit behind a compact menu", async ({
+	test("file actions sit inline as 40px icons under a full-width path", async ({
 		page,
 		pr,
 		startCrb,
 	}) => {
 		await pr(fixture);
 		const s = await startCrb();
-		await openFiles(page, s.url);
-		const section = fileSection(page, "src/f0.ts");
-		const mark = section.getByRole("button", {
-			name: "Mark remaining reviewed",
-		});
-		await expect(mark).toBeHidden();
-		const menu = section.getByRole("button", { name: "File actions" });
-		const box = await menu.boundingBox();
-		expect(box?.height).toBeGreaterThanOrEqual(40);
-		await menu.click();
-		await expect(mark).toBeVisible();
-		// Inside the menu each icon is labelled in words, on a 40px row.
-		await expect(mark).toContainText("Mark remaining reviewed");
-		const cross = section.getByRole("button", { name: "Cross off file" });
-		await expect(cross).toContainText("Cross off file");
-		for (const item of [mark, cross]) {
-			expect((await item.boundingBox())?.height).toBeGreaterThanOrEqual(40);
+		for (const width of [360, 412]) {
+			await page.setViewportSize({ width, height: 800 });
+			await openFiles(page, s.url);
+			const section = fileSection(page, `${LONG_DIR}/compatibility.ts`);
+			await expect(
+				section.getByRole("button", { name: "File actions" }),
+			).toHaveCount(0);
+			const path = section.getByTestId("file-path");
+			const pathBox = await path.boundingBox();
+			const headerBox = await section.locator("header").boundingBox();
+			if (!pathBox || !headerBox) throw new Error("header not rendered");
+			// Row 1: the path, the header's full width.
+			expect(pathBox.width).toBeGreaterThanOrEqual(headerBox.width - 16);
+			// Row 2: progress plus ⊘ ✓, 40px each, below the path.
+			for (const name of ["Cross off file", "Mark remaining reviewed"]) {
+				const button = section.getByRole("button", { name, exact: true });
+				await expect(button).toBeVisible();
+				const box = await button.boundingBox();
+				expect(box?.width).toBeGreaterThanOrEqual(40);
+				expect(box?.height).toBeGreaterThanOrEqual(40);
+				expect(box?.y).toBeGreaterThanOrEqual(pathBox.y + pathBox.height - 1);
+			}
+			const fileProgress = section.getByRole("progressbar", {
+				name: "File progress",
+			});
+			const progressBox = await fileProgress.boundingBox();
+			expect(progressBox?.y).toBeGreaterThanOrEqual(
+				pathBox.y + pathBox.height - 1,
+			);
+			// Two rows only, everything inside the header.
+			expect(headerBox.height).toBeLessThanOrEqual(100);
+			const inside = await section
+				.locator("header button, header [role=progressbar]")
+				.evaluateAll(
+					(els, right) =>
+						els.every((el) => el.getBoundingClientRect().right <= right + 0.5),
+					headerBox.x + headerBox.width,
+				);
+			expect(inside).toBe(true);
+			// The file name and a good part of the path are readable.
+			const shown = await path.evaluate((el) => el.clientWidth);
+			expect(shown).toBeGreaterThanOrEqual(width - 64);
+			await expectNoPageOverflow(page);
+			await section
+				.getByRole("button", { name: "Mark remaining reviewed" })
+				.click();
+			await expect(fileProgress).toHaveAttribute("aria-valuenow", "100");
+			await expect(
+				section.getByRole("button", { name: "Cross off file" }),
+			).toBeDisabled();
+			// Undo for the next width.
+			await section.getByRole("button", { name: "Expand file" }).click();
+			await section
+				.getByRole("checkbox", { name: "Mark cluster reviewed" })
+				.click();
+			await expect(fileProgress).toHaveAttribute("aria-valuenow", "0");
 		}
-		await expectNoPageOverflow(page);
-		await page.keyboard.press("Escape");
-		await expect(mark).toBeHidden();
+	});
+
+	test("the sticky headers stay compact on a phone", async ({
+		page,
+		pr,
+		startCrb,
+	}) => {
+		await pr(fixture);
+		const s = await startCrb();
+		await page.setViewportSize({ width: 360, height: 740 });
+		await openFiles(page, s.url);
+		const section = fileSection(page, "src/f3.ts");
+		await section.getByRole("button", { name: "Expand file" }).click();
+		await section.getByTestId("diff-line").last().scrollIntoViewIfNeeded();
+		await page.mouse.wheel(0, 300);
+		const header = await section.locator("header").boundingBox();
+		const bar = await barBottom(page);
+		if (!header) throw new Error("header not rendered");
+		expect(Math.abs(header.y - bar)).toBeLessThanOrEqual(1);
+		// Together under a quarter of the screen... roughly.
+		expect(header.y + header.height).toBeLessThanOrEqual(740 * 0.3);
 	});
 });
 
@@ -332,4 +396,14 @@ test("desktop keeps the file tree in a sidebar", async ({
 			name: "Mark remaining reviewed",
 		}),
 	).toBeVisible();
+	// Wide headers keep one row: the path beside the actions.
+	const section = fileSection(page, `${LONG_DIR}/compatibility.ts`);
+	const path = await section.getByTestId("file-path").boundingBox();
+	const mark = await section
+		.getByRole("button", { name: "Mark remaining reviewed" })
+		.boundingBox();
+	if (!path || !mark) throw new Error("header not rendered");
+	expect(
+		Math.abs(path.y + path.height / 2 - (mark.y + mark.height / 2)),
+	).toBeLessThanOrEqual(2);
 });

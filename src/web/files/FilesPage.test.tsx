@@ -46,6 +46,9 @@ const oneFile: FileView = {
 	],
 };
 
+const otherFile: FileView = { ...oneFile, index: 1, path: "b.txt" };
+const noHunks = { newLineCount: 0, hunks: [] };
+
 function renderPage(
 	responses: Record<string, () => { status: number; body: unknown }>,
 ) {
@@ -148,10 +151,14 @@ describe("FilesPage", () => {
 		});
 		const user = userEvent.setup();
 		const tree = await screen.findByTestId("file-tree");
+		const bar = () =>
+			within(tree).getByRole("progressbar", { name: "File progress" });
 		expect(screen.getByRole("radio", { name: "Lines" })).toBeChecked();
-		expect(tree).toHaveTextContent("0 / 2");
+		expect(bar()).toHaveAttribute("aria-valuetext", "0 of 2 lines reviewed");
+		expect(tree).toHaveTextContent("+1 −1");
 		await user.click(screen.getByRole("radio", { name: "Files" }));
-		expect(tree).toHaveTextContent("0 / 1");
+		expect(bar()).toHaveAttribute("aria-valuetext", "0 of 1 files reviewed");
+		expect(tree).not.toHaveTextContent("+1");
 		expect(localStorage.getItem("crb.files.unit")).toBe("files");
 		cleanup();
 		renderPage({
@@ -162,6 +169,75 @@ describe("FilesPage", () => {
 		});
 		expect(await screen.findByRole("radio", { name: "Files" })).toBeChecked();
 		localStorage.clear();
+	});
+
+	it("opens one file at a time", async () => {
+		const scrolled = vi.fn();
+		Element.prototype.scrollIntoView = scrolled;
+		renderPage({
+			"/api/review": () => ({
+				status: 200,
+				body: { ...emptyReview, files: [oneFile, otherFile] },
+			}),
+			"/api/files/0/hunks": () => ({ status: 200, body: noHunks }),
+			"/api/files/1/hunks": () => ({ status: 200, body: noHunks }),
+		});
+		const user = userEvent.setup();
+		const a = await screen.findByRole("region", { name: "a.txt" });
+		const b = screen.getByRole("region", { name: "b.txt" });
+		await user.click(within(a).getByRole("button", { name: "Expand file" }));
+		expect(
+			within(a).getByRole("button", { name: "Collapse file" }),
+		).toBeInTheDocument();
+		await user.click(within(b).getByRole("button", { name: "Expand file" }));
+		expect(
+			within(b).getByRole("button", { name: "Collapse file" }),
+		).toBeInTheDocument();
+		expect(
+			within(a).getByRole("button", { name: "Expand file" }),
+		).toBeInTheDocument();
+		// Opening by its header doesn't jump to it.
+		expect(scrolled).not.toHaveBeenCalled();
+		await user.click(within(b).getByRole("button", { name: "Collapse file" }));
+		expect(
+			within(b).getByRole("button", { name: "Expand file" }),
+		).toBeInTheDocument();
+		expect(
+			within(a).getByRole("button", { name: "Expand file" }),
+		).toBeInTheDocument();
+	});
+
+	it("picking a file in the tree opens it, closes the others and scrolls to it", async () => {
+		const scrolled = vi.fn();
+		Element.prototype.scrollIntoView = scrolled;
+		renderPage({
+			"/api/review": () => ({
+				status: 200,
+				body: { ...emptyReview, files: [oneFile, otherFile] },
+			}),
+			"/api/files/0/hunks": () => ({ status: 200, body: noHunks }),
+			"/api/files/1/hunks": () => ({ status: 200, body: noHunks }),
+		});
+		const user = userEvent.setup();
+		const a = await screen.findByRole("region", { name: "a.txt" });
+		const b = screen.getByRole("region", { name: "b.txt" });
+		await user.click(within(a).getByRole("button", { name: "Expand file" }));
+		const tree = screen.getByTestId("file-tree");
+		await user.click(within(tree).getByRole("button", { name: /b\.txt/ }));
+		expect(
+			within(b).getByRole("button", { name: "Collapse file" }),
+		).toBeInTheDocument();
+		expect(
+			within(a).getByRole("button", { name: "Expand file" }),
+		).toBeInTheDocument();
+		await vi.waitFor(() => expect(scrolled).toHaveBeenCalled());
+		expect(scrolled.mock.contexts.at(-1)).toBe(b);
+		expect(scrolled.mock.calls.at(-1)?.[0]).toMatchObject({ block: "start" });
+		// Picking the open file keeps it open.
+		await user.click(within(tree).getByRole("button", { name: /b\.txt/ }));
+		expect(
+			within(b).getByRole("button", { name: "Collapse file" }),
+		).toBeInTheDocument();
 	});
 
 	it("on a narrow screen, opens the file tree from a floating button", async () => {

@@ -39,6 +39,15 @@ function file(
 	};
 }
 
+const bar = (row: HTMLElement) =>
+	within(row).getByRole("progressbar", { name: "File progress" });
+/** A meter part's width in percent. */
+const part = (meter: HTMLElement, name: string) =>
+	Number.parseFloat(
+		meter.querySelector<HTMLElement>(`[data-part="${name}"]`)?.style.width ??
+			"NaN",
+	);
+
 const files = [
 	file(0, "src/a/deep/one.ts", ["reviewed", "unreviewed"]),
 	file(1, "src/a/deep/two.ts", ["reviewed"]),
@@ -71,8 +80,11 @@ describe("FileTree", () => {
 			"api",
 		]);
 		const one = within(tree).getByRole("button", { name: /one\.ts/ });
-		expect(one).toHaveTextContent("1 / 2");
-		expect(one).toHaveTextContent("+3");
+		expect(bar(one)).toHaveAttribute(
+			"aria-valuetext",
+			"1 of 2 clusters reviewed",
+		);
+		expect(one).not.toHaveTextContent("1 / 2");
 		expect(
 			within(one).getByRole("img", { name: "partly done" }),
 		).toBeInTheDocument();
@@ -107,7 +119,53 @@ describe("FileTree", () => {
 		).toBeInTheDocument();
 	});
 
-	it("counts in the selected unit", () => {
+	it("shows progress as a mini bar with the exact numbers on hover and focus", () => {
+		render(
+			<FileTree
+				files={files}
+				unit="clusters"
+				current={null}
+				onSelect={() => {}}
+			/>,
+		);
+		const one = bar(screen.getByRole("button", { name: /one\.ts/ }));
+		expect(one).toHaveAttribute("title", "1 of 2 clusters reviewed");
+		expect(one).toHaveAttribute("aria-valuenow", "50");
+		expect(part(one, "reviewed")).toBe(50);
+		const gen = bar(screen.getByRole("button", { name: /api\.g\.cs/ }));
+		expect(gen).toHaveAttribute("aria-valuetext", "crossed off");
+		expect(part(gen, "crossed-off")).toBe(100);
+		// The bar is the row's last part, so bars line up down the tree.
+		const row = screen.getByRole("button", { name: /one\.ts/ });
+		expect(row.lastElementChild).toBe(one);
+	});
+
+	it("never shows a file's bar full while anything in it is unreviewed", () => {
+		const renamed: FileView = {
+			...file(5, "docs/new.md", ["reviewed", "unreviewed"]),
+		};
+		const [edit, rename] = renamed.clusters as [
+			FileView["clusters"][number],
+			FileView["clusters"][number],
+		];
+		renamed.clusters = [edit, { ...rename, kind: "file", lines: 0 }];
+		render(
+			<FileTree
+				files={[renamed]}
+				unit="lines"
+				current={null}
+				onSelect={() => {}}
+			/>,
+		);
+		const b = bar(screen.getByRole("button", { name: /new\.md/ }));
+		expect(b).toHaveAttribute("aria-valuenow", "99");
+		expect(b.getAttribute("aria-valuetext")).toMatch(
+			/1 cluster without changed lines left/,
+		);
+		expect(part(b, "reviewed")).toBeLessThan(100);
+	});
+
+	it("counts changes in the selected unit", () => {
 		const { rerender } = render(
 			<FileTree
 				files={files}
@@ -117,7 +175,28 @@ describe("FileTree", () => {
 			/>,
 		);
 		const one = () => screen.getByRole("button", { name: /one\.ts/ });
-		expect(one()).toHaveTextContent("2 / 4");
+		expect(one()).toHaveTextContent("+3 −1");
+		expect(bar(one())).toHaveAttribute(
+			"aria-valuetext",
+			"2 of 4 lines reviewed",
+		);
+		rerender(
+			<FileTree
+				files={files}
+				unit="clusters"
+				current={null}
+				onSelect={() => {}}
+			/>,
+		);
+		expect(one()).not.toHaveTextContent("+3");
+		const count = within(one()).getByRole("img", { name: "2 clusters" });
+		expect(count).toHaveTextContent("2");
+		expect(count).toHaveAttribute("title", "2 clusters");
+		expect(
+			within(screen.getByRole("button", { name: /two\.ts/ })).getByRole("img", {
+				name: "1 cluster",
+			}),
+		).toBeInTheDocument();
 		rerender(
 			<FileTree
 				files={files}
@@ -126,16 +205,18 @@ describe("FileTree", () => {
 				onSelect={() => {}}
 			/>,
 		);
-		expect(one()).toHaveTextContent("0 / 1");
-		expect(screen.getByRole("button", { name: /two\.ts/ })).toHaveTextContent(
-			"done",
+		expect(one()).not.toHaveTextContent("+3");
+		expect(within(one()).queryByRole("img", { name: /clusters?$/ })).toBeNull();
+		expect(bar(one())).toHaveAttribute(
+			"aria-valuetext",
+			"0 of 1 files reviewed",
 		);
 		expect(
-			screen.getByRole("button", { name: /api\.g\.cs/ }),
-		).toHaveTextContent("crossed off");
+			bar(screen.getByRole("button", { name: /two\.ts/ })),
+		).toHaveAttribute("aria-valuetext", "done");
 	});
 
-	it("shows a status phrase, not a fraction, for a file without changed lines in lines", () => {
+	it("describes a file without changed lines by its status in lines", () => {
 		const rename: FileView = {
 			...file(4, "docs/new.md", ["unreviewed"]),
 			clusters: [
@@ -155,9 +236,9 @@ describe("FileTree", () => {
 				onSelect={() => {}}
 			/>,
 		);
-		const entry = screen.getByRole("button", { name: /new\.md/ });
-		expect(entry).toHaveTextContent("1 cluster left");
-		expect(entry).not.toHaveTextContent("0 / 1");
+		const entry = bar(screen.getByRole("button", { name: /new\.md/ }));
+		expect(entry).toHaveAttribute("aria-valuetext", "1 cluster left");
+		expect(entry).toHaveAttribute("aria-valuenow", "0");
 	});
 
 	it("selects a file", async () => {

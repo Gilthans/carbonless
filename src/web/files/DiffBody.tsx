@@ -412,7 +412,11 @@ export function DiffBody(props: {
 				{hunks.data && gapRows(gapAt(hunks.data.hunks.length))}
 			</table>
 			{hunks.isPending && (
-				<p className="px-3 py-2 text-sm text-slate-500">Loading diff…</p>
+				// A screen tall while loading, so a file picked in the tree can
+				// scroll its header to the top before its lines arrive.
+				<p className="min-h-[100dvh] px-3 py-2 text-sm text-slate-500">
+					Loading diff…
+				</p>
 			)}
 			{hunks.isError && (
 				<div className="p-2">

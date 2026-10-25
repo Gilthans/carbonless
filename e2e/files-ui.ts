@@ -56,19 +56,38 @@ export async function withTree(
 	}
 }
 
-/** Clicks a file header action, opening the compact menu first if it's shown. */
+/** Picks a file in the tree (from the sheet on a phone, which then closes). */
+export async function pickInTree(page: Page, name: RegExp) {
+	const button = page.getByRole("button", { name: "Files", exact: true });
+	if (await button.isVisible()) await button.click();
+	await page.getByTestId("file-tree").getByRole("button", { name }).click();
+	await expect(page.getByRole("dialog", { name: "Files" })).toBeHidden();
+}
+
+/** Clicks a file header action (always inline icons). */
 export async function fileAction(section: Locator, name: string) {
-	const menu = section.getByRole("button", { name: "File actions" });
-	if (await menu.isVisible()) await menu.click();
 	await section.getByRole("button", { name, exact: true }).click();
 }
 
-/**
- * A file header action, found whether or not the compact menu is open (for
- * checking its state, not for clicking).
- */
+/** A file header action, for checking its state. */
 export const fileActionButton = (section: Locator, name: string) =>
-	section.getByRole("button", { name, exact: true, includeHidden: true });
+	section.getByRole("button", { name, exact: true });
 
 export const fileProgress = (section: Locator) =>
 	section.getByRole("progressbar", { name: "File progress" });
+
+/** A file's mini progress bar in the tree. */
+export const treeBar = (tree: Locator, name: RegExp) =>
+	tree
+		.getByRole("button", { name })
+		.getByRole("progressbar", { name: "File progress" });
+
+/** The sticky page progress bar's bottom edge, in viewport px. */
+export const barBottom = (page: Page) =>
+	page.evaluate(
+		() =>
+			document
+				.querySelector('[role="progressbar"][aria-label="Review progress"]')
+				?.closest(".sticky")
+				?.getBoundingClientRect().bottom ?? Number.NaN,
+	);

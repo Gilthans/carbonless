@@ -1,4 +1,4 @@
-import { useId } from "react";
+import { type Ref, useId } from "react";
 import type { Counts, Progress } from "../../shared/types";
 import {
 	clustersLeft,
@@ -43,22 +43,23 @@ export function Meter({
 		}
 	}
 	const widths = { reviewed, crossed };
+	// Spans, so a meter can sit inside a button (a tree row).
 	return (
-		<div
+		<span
 			aria-hidden
-			className={`relative overflow-hidden rounded-full bg-slate-200 ${className}`}
+			className={`relative block overflow-hidden rounded-full bg-slate-200 ${className}`}
 		>
-			<div
-				className="absolute inset-y-0 left-0 bg-green-600"
+			<span
+				className="absolute inset-y-0 left-0 block bg-green-600"
 				data-part="reviewed"
 				style={{ width: `${widths.reviewed}%` }}
 			/>
-			<div
-				className={`absolute inset-y-0 right-0 ${HATCH}`}
+			<span
+				className={`absolute inset-y-0 right-0 block ${HATCH}`}
 				data-part="crossed-off"
 				style={{ width: `${widths.crossed}%` }}
 			/>
-		</div>
+		</span>
 	);
 }
 
@@ -93,6 +94,7 @@ function UnitPicker(props: { unit: Unit; onChange: (unit: Unit) => void }) {
  * isn't crossed off.
  */
 export function ProgressBar(props: {
+	ref?: Ref<HTMLDivElement>;
 	progress: Progress;
 	unit: Unit;
 	onUnitChange: (unit: Unit) => void;
@@ -114,7 +116,10 @@ export function ProgressBar(props: {
 		left > 0;
 	const note = `${left} ${left === 1 ? "cluster" : "clusters"} without changed lines left`;
 	return (
-		<div className="sticky top-0 z-20 border-b border-slate-200 bg-white/95 py-2 backdrop-blur">
+		<div
+			ref={props.ref}
+			className="sticky top-0 z-20 border-b border-slate-200 bg-white/95 py-2 backdrop-blur"
+		>
 			<div className="flex flex-wrap items-center gap-x-3 gap-y-2">
 				<UnitPicker unit={unit} onChange={props.onUnitChange} />
 				<div
@@ -128,7 +133,8 @@ export function ProgressBar(props: {
 							? `Nothing left to review: ${summary}`
 							: `${value}%, ${summary}${hiddenLeft ? `, ${note}` : ""}`
 					}
-					className="flex min-w-0 flex-1 basis-64 flex-wrap items-center gap-x-3 gap-y-1.5 sm:flex-nowrap"
+					// Beside the unit picker even on a phone: the bar stays compact.
+					className="flex min-w-0 flex-1 basis-0 flex-wrap items-center gap-x-3 gap-y-1 sm:flex-nowrap"
 				>
 					{empty ? (
 						<span className="shrink-0 text-base font-semibold">
@@ -145,7 +151,15 @@ export function ProgressBar(props: {
 						className="order-last h-2.5 w-full sm:order-none sm:w-auto sm:min-w-8 sm:flex-1"
 					/>
 					<span className="min-w-0 text-sm text-slate-600 tabular-nums">
-						{summary}
+						{empty ? (
+							summary
+						) : (
+							<>
+								{counts.reviewed} / {counts.total - counts.crossedOff}
+								{/* The picker beside it names the unit on a phone. */}
+								<span className="hidden sm:inline"> {word} reviewed</span>
+							</>
+						)}
 					</span>
 				</div>
 			</div>

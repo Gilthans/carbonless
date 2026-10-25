@@ -1,6 +1,7 @@
 import type { FileView } from "../../shared/types";
-import { AddDel, crossOffReasons, StatusIcon } from "./status";
-import { fileUnitProgress, formatFileProgress, type Unit } from "./unit";
+import { Meter } from "./ProgressBar";
+import { ChangeCount, crossOffReasons, StatusIcon } from "./status";
+import { describeFileProgress, fileUnitProgress, type Unit } from "./unit";
 
 type Node =
 	| { kind: "folder"; folder: Folder }
@@ -60,6 +61,33 @@ const indent = (depth: number) => ({
 	paddingLeft: `${depth * 0.75 + 0.25}rem`,
 });
 
+/**
+ * The file's progress as a mini bar like the page's, its exact numbers in the
+ * tooltip and accessible value. Same cap: never full while a cluster is left.
+ */
+function FileMeter({ file, unit }: { file: FileView; unit: Unit }) {
+	const p = fileUnitProgress(file, unit);
+	const sentence = describeFileProgress(file, unit);
+	return (
+		<span
+			role="progressbar"
+			aria-label="File progress"
+			aria-valuenow={p.percent}
+			aria-valuemin={0}
+			aria-valuemax={100}
+			aria-valuetext={sentence}
+			title={sentence}
+			className="flex h-4 w-10 shrink-0 items-center"
+		>
+			<Meter
+				counts={p.counts}
+				incomplete={p.clustersLeft > 0}
+				className="h-1.5 w-full"
+			/>
+		</span>
+	);
+}
+
 function FileItem(props: {
 	file: FileView;
 	unit: Unit;
@@ -94,12 +122,8 @@ function FileItem(props: {
 							</span>
 						))}
 				</span>
-				<span className="shrink-0 text-xs text-slate-500 tabular-nums">
-					{formatFileProgress(fileUnitProgress(file, props.unit), props.unit, {
-						short: true,
-					})}
-				</span>
-				<AddDel file={file} />
+				<ChangeCount file={file} unit={props.unit} />
+				<FileMeter file={file} unit={props.unit} />
 			</button>
 		</li>
 	);

@@ -2,6 +2,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ClusterState, ClusterView, FileView } from "../../shared/types";
 import {
+	describeFileProgress,
 	type FormatOptions,
 	fileUnitProgress,
 	formatFileProgress,
@@ -201,6 +202,33 @@ describe("fileUnitProgress", () => {
 		const reviewed = file([cluster("reviewed", 0, "file")]);
 		expect(text(reviewed, "lines")).toBe("done");
 		expect(fileUnitProgress(reviewed, "lines").percent).toBe(100);
+	});
+});
+
+describe("describeFileProgress", () => {
+	it("gives the exact numbers in the unit", () => {
+		const f = file([
+			cluster("reviewed", 3),
+			cluster("crossed-off", 2),
+			cluster("unreviewed", 5),
+		]);
+		expect(describeFileProgress(f, "lines")).toBe(
+			"3 of 8 lines reviewed, 2 crossed off",
+		);
+		expect(describeFileProgress(f, "clusters")).toBe(
+			"1 of 2 clusters reviewed, 1 crossed off",
+		);
+		expect(describeFileProgress(f, "files")).toBe("0 of 1 files reviewed");
+	});
+
+	it("says clusters without changed lines are left", () => {
+		const f = file([cluster("unreviewed", 0, "file"), cluster("reviewed", 3)]);
+		expect(describeFileProgress(f, "lines")).toBe(
+			"3 of 3 lines reviewed, 1 cluster without changed lines left",
+		);
+		expect(
+			describeFileProgress(file([cluster("unreviewed", 0, "file")]), "lines"),
+		).toBe("1 cluster left");
 	});
 });
 

@@ -1,12 +1,15 @@
 import type { Page } from "@playwright/test";
 import {
+	barBottom,
 	chooseUnit,
 	fileAction,
 	fileActionButton,
 	fileProgress,
 	fileSection,
 	openFiles,
+	pickInTree,
 	progress,
+	treeBar,
 	withTree,
 } from "./files-ui";
 import { expect, type PrOptions, test } from "./fixtures";
@@ -76,8 +79,9 @@ test("checking a cluster updates file and overall progress", async ({
 	await expect(bar).toContainText("1 / 4 clusters reviewed");
 	await expect(fileProgress(section)).toContainText("1 / 2 clusters");
 	await withTree(page, (tree) =>
-		expect(tree.getByRole("button", { name: /core\.ts/ })).toContainText(
-			"1 / 2",
+		expect(treeBar(tree, /core\.ts/)).toHaveAttribute(
+			"aria-valuetext",
+			"1 of 2 clusters reviewed",
 		),
 	);
 
@@ -87,8 +91,9 @@ test("checking a cluster updates file and overall progress", async ({
 	await expect(bar).toHaveAttribute("aria-valuenow", "42");
 	await expect(fileProgress(section)).toContainText("3 / 5 lines");
 	await withTree(page, (tree) =>
-		expect(tree.getByRole("button", { name: /core\.ts/ })).toContainText(
-			"3 / 5",
+		expect(treeBar(tree, /core\.ts/)).toHaveAttribute(
+			"aria-valuetext",
+			"3 of 5 lines reviewed",
 		),
 	);
 	await chooseUnit(page, "Files");
@@ -252,7 +257,10 @@ test("mark remaining reviewed", async ({ page, pr, startCrb }) => {
 	).toBeDisabled();
 	await withTree(page, async (tree) => {
 		const entry = tree.getByRole("button", { name: /core\.ts/ });
-		await expect(entry).toContainText("2 / 2");
+		await expect(treeBar(tree, /core\.ts/)).toHaveAttribute(
+			"aria-valuetext",
+			"2 of 2 clusters reviewed",
+		);
 		await expect(entry.getByRole("img", { name: "done" })).toBeVisible();
 	});
 	await expect(progress(page)).toHaveAttribute("aria-valuenow", "50");
@@ -265,9 +273,7 @@ test("file actions are outlined icon buttons with tooltips", async ({
 	page,
 	pr,
 	startCrb,
-	isMobile,
 }) => {
-	test.skip(isMobile, "desktop layout: the actions sit inline");
 	await pr(fixture);
 	const s = await startCrb();
 	await openFiles(page, s.url);
@@ -281,10 +287,13 @@ test("file actions are outlined icon buttons with tooltips", async ({
 	await expect(cross).toHaveAttribute("title", /not needing review/);
 	await expect(mark).toBeVisible();
 	await expect(mark).toHaveText("✓", { useInnerText: true });
-	await expect(mark).toHaveAttribute("title", /as reviewed/);
+	await expect(mark).toHaveAttribute(
+		"title",
+		"Mark all unreviewed clusters as reviewed",
+	);
 	await expect(
 		section.getByRole("button", { name: "File actions" }),
-	).toBeHidden();
+	).toHaveCount(0);
 });
 
 test("loading more lines", async ({ page, pr, startCrb }) => {
@@ -366,4 +375,175 @@ test("a write from a tab on an old snapshot reloads it", async ({
 	).toBeVisible();
 	await withTree(page, (tree) => expect(tree).toContainText("b.txt"));
 	await expect(progress(page)).toContainText("0 / 5 clusters reviewed");
+});
+
+test("one file is open at a time", async ({ page, pr, startCrb }) => {
+	await pr(fixture);
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	const core = await expand(page, "src/core.ts");
+	await expect(core.getByTestId("diff-line").first()).toBeVisible();
+	const util = await expand(page, "src/util.ts");
+	await expect(util.getByTestId("diff-line").first()).toBeVisible();
+	await expect(core.getByRole("button", { name: "Expand file" })).toBeVisible();
+	await expect(core.getByTestId("diff-line")).toHaveCount(0);
+	// The header just used stays in view.
+	await expect(
+		util.getByRole("button", { name: "Collapse file" }),
+	).toBeInViewport();
+	await util.getByRole("button", { name: "Collapse file" }).click();
+	await expect(page.getByTestId("diff-line")).toHaveCount(0);
+});
+
+const long = Array.from({ length: 300 }, (_, i) => `long ${i + 1}`);
+/** A file with a 300-line change, after two short ones. */
+const longFixture: PrOptions = {
+	base: {
+		"a/one.ts": text(util),
+		"a/two.ts": text(util),
+		"b/long.ts": text(long),
+		"c/last.ts": text(util),
+	},
+	files: [
+		{
+			message: "PR change",
+			files: {
+				"a/one.ts": text(util.map((l) => `${l} x`)),
+				"a/two.ts": text(util.map((l) => `${l} y`)),
+				"b/long.ts": text(long.map((l) => `${l} changed`)),
+				"c/last.ts": text(util.map((l) => `${l} z`)),
+			},
+		},
+	],
+};
+
+test("an open file's header sticks below the progress bar", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	await pr(longFixture);
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	const section = await expand(page, "b/long.ts");
+	await expect(section.getByTestId("diff-line")).toHaveCount(600);
+	// Deep into the diff, the header is still on screen, right below the bar.
+	await section
+		.getByTestId("diff-line")
+		.filter({ hasText: /long 250 changed$/ })
+		.scrollIntoViewIfNeeded();
+	const header = section.locator("header");
+	await expect(header).toBeInViewport();
+	const top = (await header.boundingBox())?.y ?? Number.NaN;
+	expect(Math.abs(top - (await barBottom(page)))).toBeLessThanOrEqual(1);
+	const sectionTop = (await section.boundingBox())?.y ?? 0;
+	expect(sectionTop).toBeLessThan(-1000);
+	// Nothing hides the bar or covers the header's controls.
+	await expect(progress(page)).toBeInViewport();
+	const collapse = section.getByRole("button", { name: "Collapse file" });
+	await collapse.click();
+	await expect(section.getByTestId("diff-line")).toHaveCount(0);
+	// Closed from deep inside it, the header stays where it was.
+	const expandButton = section.getByRole("button", { name: "Expand file" });
+	await expect(expandButton).toBeInViewport();
+	await expect(fileSection(page, "c/last.ts")).toBeInViewport();
+});
+
+test("picking a file in the tree opens it alone, its header at the top", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	await pr(longFixture);
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	const first = await expand(page, "a/one.ts");
+	await expect(first.getByTestId("diff-line").first()).toBeVisible();
+	await pickInTree(page, /long\.ts/);
+	const last = fileSection(page, "b/long.ts");
+	await expect(last.getByTestId("diff-line").first()).toBeVisible();
+	await expect(first.getByTestId("diff-line")).toHaveCount(0);
+	await expect(
+		first.getByRole("button", { name: "Expand file" }),
+	).toBeAttached();
+	await expect
+		.poll(async () => {
+			const top = (await last.locator("header").boundingBox())?.y ?? 0;
+			return Math.round(top - (await barBottom(page)));
+		})
+		.toBe(0);
+});
+
+test("tree rows show progress as aligned mini bars and counts in the unit", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	await pr(fixture);
+	const s = await startCrb();
+	await openFiles(page, s.url, "Lines");
+	await fileAction(fileSection(page, "src/util.ts"), "Mark remaining reviewed");
+	await withTree(page, async (tree) => {
+		const core = tree.getByRole("button", { name: /core\.ts/ });
+		const bar = treeBar(tree, /core\.ts/);
+		await expect(bar).toHaveAttribute(
+			"aria-valuetext",
+			"0 of 5 lines reviewed",
+		);
+		await expect(bar).toHaveAttribute("title", "0 of 5 lines reviewed");
+		await expect(treeBar(tree, /util\.ts/)).toHaveAttribute(
+			"aria-valuetext",
+			"2 of 2 lines reviewed",
+		);
+		// A rename has no lines: the bar is not full while it's unreviewed.
+		await expect(treeBar(tree, /new\.md/)).toHaveAttribute(
+			"aria-valuetext",
+			"1 cluster left",
+		);
+		await expect(core).toContainText("+3 −2");
+		await expect(core).not.toContainText("/");
+		// Bars line up at the right edge.
+		const rights = await tree
+			.getByRole("progressbar", { name: "File progress" })
+			.evaluateAll((els) =>
+				els.map((el) => Math.round(el.getBoundingClientRect().right)),
+			);
+		expect(new Set(rights).size).toBe(1);
+		const widths = await tree
+			.getByRole("progressbar", { name: "File progress" })
+			.evaluateAll((els) => els.map((el) => el.getBoundingClientRect().width));
+		for (const w of widths) expect(w).toBeGreaterThan(20);
+	});
+	const header = fileSection(page, "src/core.ts").locator("header");
+	await expect(header).toContainText("+3 −2");
+
+	await chooseUnit(page, "Clusters");
+	await withTree(page, async (tree) => {
+		const core = tree.getByRole("button", { name: /core\.ts/ });
+		await expect(core).not.toContainText("+3");
+		const count = core.getByRole("img", { name: "2 clusters" });
+		await expect(count).toHaveText("2");
+		await expect(count).toHaveAttribute("title", "2 clusters");
+		await expect(treeBar(tree, /core\.ts/)).toHaveAttribute(
+			"aria-valuetext",
+			"0 of 2 clusters reviewed",
+		);
+	});
+	// A phone's two-row header leaves the count to the tree.
+	await expect(
+		header.getByRole("img", { name: "2 clusters", includeHidden: true }),
+	).toBeVisible({ visible: !isMobile });
+
+	await chooseUnit(page, "Files");
+	await withTree(page, async (tree) => {
+		const core = tree.getByRole("button", { name: /core\.ts/ });
+		await expect(core).not.toContainText("+3");
+		await expect(core.getByRole("img", { name: /clusters?$/ })).toHaveCount(0);
+		await expect(treeBar(tree, /util\.ts/)).toHaveAttribute(
+			"aria-valuetext",
+			"done",
+		);
+	});
+	await expect(header).not.toContainText("+3");
 });

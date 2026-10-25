@@ -216,3 +216,19 @@ export function formatFileProgress(
 	}
 	return text;
 }
+
+/**
+ * The file's progress as a sentence with the exact numbers, for tooltips and
+ * screen readers: "3 of 8 lines reviewed, 2 crossed off", or the status.
+ */
+export function describeFileProgress(file: FileView, unit: Unit): string {
+	const p = fileUnitProgress(file, unit);
+	if (p.status !== null) return formatFileProgress(p, unit);
+	const { counts } = p;
+	const crossed =
+		counts.crossedOff > 0 ? `, ${counts.crossedOff} crossed off` : "";
+	const left = p.hiddenLeft
+		? `, ${p.clustersLeft} ${p.clustersLeft === 1 ? "cluster" : "clusters"} without changed lines left`
+		: "";
+	return `${counts.reviewed} of ${counts.total - counts.crossedOff} ${unitWord(unit)} reviewed${crossed}${left}`;
+}
