@@ -54,15 +54,58 @@ describe("Session", () => {
 		expect(s.info().pr.number).toBe(12);
 	});
 
-	it("refuses a PR already merged into its base", async () => {
-		pr.moveMain();
+	/** GitHub reports the PR as `state` (by default merged, at its head). */
+	const land = (state: "MERGED" | "CLOSED" = "MERGED") => {
+		if (state === "MERGED") pr.moveMain();
+		pr.scenario({
+			prs: {
+				12: {
+					view: prView({ headRefOid: pr.head(), baseRefName: "main", state }),
+				},
+			},
+		});
+	};
+
+	it("refuses a PR GitHub reports merged", async () => {
+		land();
 		await expect(Session.open(pr.arg, process.cwd())).rejects.toThrow(
-			"PR acme/widget#12 is already merged into main; nothing to review",
+			"PR acme/widget#12 is already merged; nothing to review",
 		);
 	});
 
-	it("refuses a merged PR without creating a review", async () => {
+	it("refuses a closed PR", async () => {
+		land("CLOSED");
+		await expect(Session.open(pr.arg, process.cwd())).rejects.toThrow(
+			"PR acme/widget#12 is closed; nothing to review",
+		);
+	});
+
+	it("refuses a squash-merged PR, though its head isn't in the base", async () => {
+		pr.scenario({
+			prs: {
+				12: {
+					view: prView({
+						headRefOid: pr.head(),
+						baseRefName: "main",
+						state: "MERGED",
+					}),
+				},
+			},
+		});
+		await expect(Session.open(pr.arg, process.cwd())).rejects.toThrow(
+			"already merged",
+		);
+	});
+
+	it("opens an open PR whose head is already in the base, with no changes", async () => {
 		pr.moveMain();
+		const s = await Session.open(pr.arg, process.cwd());
+		expect(s.snapshot()).toMatchObject({ base: pr.head(), head: pr.head() });
+		expect(s.snapshot().files).toEqual([]);
+	});
+
+	it("refuses a merged PR without creating a review", async () => {
+		land();
 		await expect(Session.open(pr.arg, process.cwd())).rejects.toThrow(
 			"already merged",
 		);
@@ -81,7 +124,7 @@ describe("Session", () => {
 		await s.setStates(s.snapshot().revision, [
 			{ key: firstKey(s), state: "reviewed" },
 		]);
-		pr.moveMain();
+		land();
 		const again = await Session.open(pr.arg, process.cwd());
 		expect(again.info()).toMatchObject({
 			snapshotHead: reviewed,
@@ -93,11 +136,11 @@ describe("Session", () => {
 		expect((await again.review()).progress.clusters.reviewed).toBe(1);
 	});
 
-	it("keeps an unstarted review's snapshot when the new head is already merged", async () => {
+	it("keeps an unstarted review's snapshot when the PR is merged at a new head", async () => {
 		const s = await Session.open(pr.arg, process.cwd());
 		const before = s.snapshot();
 		const newHead = pr.moveHead({ "later.txt": "later\n" });
-		pr.moveMain(newHead);
+		land();
 		expect(await s.refresh()).toMatchObject({
 			snapshotHead: before.head,
 			currentHead: newHead,

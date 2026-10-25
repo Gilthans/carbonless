@@ -55,6 +55,14 @@ These guide every feature. If a change conflicts with one of them, stop and rais
    (`docs/design/README.md`). Dates are short relative text with the exact
    date and time zone on hover/focus (`src/web/RelativeTime.tsx`).
 
+7. **Independent of git methodology.** carbonless behaves the same however a
+   team uses git: rebasing a PR branch onto the base or merging the base into
+   it, landing by merge commit, squash or rebase-and-merge, force-pushes, a
+   base that moves on. Behaviour depends on GitHub's PR facts (state, head,
+   base) and the three-dot comparison, never on the shape of history (e.g.
+   "merged" is GitHub's PR state, not ancestry). The methodology matrix
+   (`docs/git-methodology.md`) proves it; history-sensitive changes extend it.
+
 ## Development
 
 - Node 24 (`nvm use`), pnpm. Stack: Fastify server + git CLI (`src/server`),
@@ -76,3 +84,5 @@ These guide every feature. If a change conflicts with one of them, stop and rais
   what they describe):
   - `docs/review-data-storage.md`: how review data is stored in git.
   - `docs/gitdb-design-principles.md`: the principles behind storing data in git.
+  - `docs/git-methodology.md`: git-methodology independence, merged handling
+    and the methodology test matrix.

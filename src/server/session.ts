@@ -96,19 +96,24 @@ export class Session {
 		);
 		progress(`fetching PR #${meta.number}…`);
 		const fetched = await fetchPr(repo, meta, asOf);
-		// As of a cutoff the PR wasn't merged yet, whatever it is now.
-		const merged = !asOf && fetched.mergeBase === fetched.head;
+		// Whether the PR is over comes from GitHub's PR state, never from
+		// history shape: squash and rebase merges leave the head outside the
+		// base (docs/git-methodology.md). As of a cutoff, meta says OPEN.
+		const over = meta.state !== "OPEN";
 		const reviews = new ReviewService(new RefStore(repo));
-		// A started review stays open once the PR is merged; an unstarted one
-		// has nothing left to show, so don't create it.
-		const reviewId = merged
+		// A started review stays open once the PR is merged or closed; an
+		// unstarted one has nothing left to show, so don't create it.
+		const reviewId = over
 			? await reviews.findReview(meta)
 			: await reviews.findOrCreateReview(meta, viewer, asOf);
 		const state =
 			reviewId === null ? null : await reviews.getProgress(reviewId, viewer);
-		if (reviewId === null || state === null || (merged && !state.patchset)) {
+		if (reviewId === null || state === null || (over && !state.patchset)) {
+			const pr = `PR ${meta.owner}/${meta.repo}#${meta.number}`;
 			throw new Error(
-				`PR ${meta.owner}/${meta.repo}#${meta.number} is already merged into ${meta.baseBranch}; nothing to review`,
+				meta.state === "CLOSED"
+					? `${pr} is closed; nothing to review`
+					: `${pr} is already merged; nothing to review`,
 			);
 		}
 		const { mergeBase, head } = state.patchset ?? fetched;
@@ -210,7 +215,7 @@ export class Session {
 
 	/**
 	 * Fetches the PR again. A review without a patch set moves to the new
-	 * head (unless that head is already merged); a started one stays on its
+	 * head (unless the PR is merged or closed); a started one stays on its
 	 * patch set.
 	 */
 	refresh(): Promise<SessionInfo> {
@@ -222,9 +227,11 @@ export class Session {
 			const fetched = await fetchPr(this.repo, meta);
 			this.#setMeta(seq, meta);
 			const progress = await this.#progress();
-			// An unstarted review whose new head is already merged has nothing to
-			// move to: keep the current snapshot (headMoved tells the UI).
-			if (!progress.patchset && fetched.mergeBase === fetched.head) {
+			// An unstarted review of a merged or closed PR has nothing to move
+			// to (a merge commit empties the comparison): keep the current
+			// snapshot (headMoved tells the UI). An open PR always moves, even
+			// to an empty comparison.
+			if (!progress.patchset && meta.state !== "OPEN") {
 				this.#patchset = null;
 				return this.info();
 			}

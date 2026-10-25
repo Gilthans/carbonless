@@ -159,7 +159,12 @@ test("shows the PR as of a cutoff, with another login as you, in a review of its
 	).toHaveAttribute("aria-valuenow", /^[1-9]/);
 	await s.stop();
 
-	// The PR's own review is untouched by what was marked as of then.
+	// The PR's own review is untouched by what was marked as of then. It has no
+	// patch set, so crb would refuse the merged PR: GitHub says open again.
+	p.editScenario((s) => {
+		const view = s.prs[p.number]?.view;
+		if (view) view.state = "OPEN";
+	});
 	const normal = await startCrb();
 	await page.goto(normal.url);
 	await expect(page.getByTestId("as-of")).toHaveCount(0);
