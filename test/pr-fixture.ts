@@ -9,6 +9,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { Session } from "../src/server/session";
 import {
 	FAKE_GH_DIR,
 	prView,
@@ -34,7 +35,8 @@ export interface PrFixture {
 	ghLog: () => string;
 	/** Rewrites the fake gh scenario with these overrides. */
 	scenario: (over?: Partial<Scenario>) => void;
-	cleanup: () => void;
+	/** Closes every session first (Session.closeAll), then restores the env. */
+	cleanup: () => Promise<void>;
 }
 
 const OWNER_REPO = "acme/widget";
@@ -140,19 +142,16 @@ export function createPrFixture(): PrFixture {
 			return existsSync(log) ? readFileSync(log, "utf8") : "";
 		},
 		scenario,
-		cleanup: () => {
+		cleanup: async () => {
+			// Sessions' background reads stop before the fake gh and the
+			// throwaway cache go: none may reach the real gh.
+			await Session.closeAll();
 			for (const [k, v] of Object.entries(saved)) {
 				if (v === undefined) delete process.env[k];
 				else process.env[k] = v;
 			}
 			repo.cleanup();
-			// A read's threads may still be writing to the clone: retry.
-			rmSync(tmp, {
-				recursive: true,
-				force: true,
-				maxRetries: 20,
-				retryDelay: 50,
-			});
+			rmSync(tmp, { recursive: true, force: true });
 		},
 	};
 }

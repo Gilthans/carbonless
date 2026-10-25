@@ -112,4 +112,22 @@ const wait = setInterval(() => {
 			.poll(() => alive(pid), { timeout: 2000, interval: 50 })
 			.toBe(false);
 	});
+
+	it("stops git when aborted, and never starts it once aborted", async () => {
+		const stop = new AbortController();
+		const started = Date.now();
+		const run = runGit(".", slow, { signal: stop.signal });
+		setTimeout(() => stop.abort(), 100);
+		await expect(run).rejects.toThrow(/stopped/);
+		expect(Date.now() - started).toBeLessThan(3000);
+		await expect(
+			runGit(".", ["rev-parse", "HEAD"], { signal: stop.signal }),
+		).rejects.toThrow(/stopped/);
+		expect(
+			await runGit(".", ["rev-parse", "HEAD"], {
+				signal: stop.signal,
+				allowFailure: true,
+			}),
+		).toBe("");
+	});
 });

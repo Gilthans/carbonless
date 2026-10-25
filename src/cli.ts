@@ -104,6 +104,8 @@ async function main(): Promise<void> {
 		killDetachedGits();
 		try {
 			await app.close();
+			// Its background reads of GitHub and the clone stop with it.
+			await session.close();
 			process.exit(0);
 		} catch (error) {
 			console.error(`crb: shutdown failed: ${(error as Error).message}`);

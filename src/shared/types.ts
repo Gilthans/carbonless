@@ -258,6 +258,12 @@ export interface ReviewThread {
 	 * read; until then they are "" (the card shows its frame).
 	 */
 	loaded: boolean;
+	/**
+	 * Its text will never come (it stays "", `loaded` true): "deleted",
+	 * GitHub no longer has the thread (deleted since the list was read);
+	 * "unreadable", GitHub gave no id to read it by.
+	 */
+	unavailable?: "deleted" | "unreadable";
 	/** The first comment as plain text, whitespace collapsed, ≤200 chars. */
 	excerpt: string;
 	/** The first comment as GitHub renders it. Untrusted, like `bodyHtml`. */

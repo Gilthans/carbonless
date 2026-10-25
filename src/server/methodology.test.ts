@@ -78,17 +78,14 @@ describe.each(METHODOLOGIES)("$name", (m) => {
 		process.env.XDG_CACHE_HOME = join(tmp, "cache");
 		stage("opened");
 	});
-	afterEach(() => {
+	afterEach(async () => {
+		// Background reads stop before the fake gh and the cache go.
+		await Session.closeAll();
 		for (const [k, v] of Object.entries(saved)) {
 			if (v === undefined) delete process.env[k];
 			else process.env[k] = v;
 		}
-		rmSync(tmp, {
-			recursive: true,
-			force: true,
-			maxRetries: 20,
-			retryDelay: 50,
-		});
+		rmSync(tmp, { recursive: true, force: true });
 	});
 
 	/** The snapshot shows exactly the PR's own changes. */

@@ -13,8 +13,10 @@ import {
 	fetchPrMeta,
 	fetchThreadContents,
 	fetchThreadSummaries,
+	GhAbortedError,
 	GhError,
 	joinEnds,
+	onlyMissingNodes,
 	parsePrArg,
 	runGh,
 	slugify,
@@ -106,6 +108,7 @@ describe("runGh", () => {
  */
 const FAKE_GH = `#!/bin/sh
 echo "$*" >> "$FAKE_LOG"
+[ -n "$FAKE_SLEEP" ] && sleep "$FAKE_SLEEP"
 case "$1 $2" in
 "auth status")
   [ "$FAKE_AUTH" = out ] && { echo "You are not logged into any GitHub hosts. To log in, run: gh auth login" >&2; exit 1; }
@@ -435,6 +438,27 @@ describe("runGh with a fake gh", () => {
 		expect(log()).not.toContain("evil");
 	});
 
+	it("names the read that took too long, and stops a read that is aborted", async () => {
+		setEnv({ FAKE_SLEEP: "5" });
+		await expect(
+			runGh(["api", "graphql"], { timeoutMs: 200, what: "the review threads" }),
+		).rejects.toThrow(
+			"GitHub took longer than 0.2 s to answer for the review threads",
+		);
+		const stop = new AbortController();
+		const started = Date.now();
+		const read = runGh(["api", "graphql"], { signal: stop.signal });
+		setTimeout(() => stop.abort(), 100);
+		await expect(read).rejects.toBeInstanceOf(GhAbortedError);
+		expect(Date.now() - started).toBeLessThan(2000);
+		// Once aborted, gh isn't started at all.
+		const before = log();
+		await expect(
+			runGh(["api", "graphql"], { signal: stop.signal }),
+		).rejects.toBeInstanceOf(GhAbortedError);
+		expect(log()).toBe(before);
+	});
+
 	it("fails rather than show an empty description when bodyHTML is missing", async () => {
 		const gql = join(dir, "gql");
 		const { mkdirSync } = await import("node:fs");
@@ -514,5 +538,32 @@ describe("joinEnds", () => {
 		expect(joinEnds(page(["a", "b"], null), page(["b", "c"], null))).toBeNull();
 		expect(joinEnds(page(["a", "b"], 3), page(["x", "c"], 3))).toBeNull();
 		expect(joinEnds(page(["a", "b", "c"], 2), page(["b", "c"], 2))).toBeNull();
+	});
+});
+
+describe("onlyMissingNodes", () => {
+	const answer = (errors: unknown[], data: unknown = { nodes: [null] }) =>
+		JSON.stringify({ data, errors });
+	const missing = (path: unknown[]) => ({
+		type: "NOT_FOUND",
+		path,
+		message: "Could not resolve to a node",
+	});
+
+	it("takes data whose every error is a nodes entry GitHub doesn't have", () => {
+		expect(onlyMissingNodes(answer([missing(["nodes", 0])]))).toBe(true);
+		expect(
+			onlyMissingNodes(answer([missing(["nodes", 0]), missing(["nodes", 2])])),
+		).toBe(true);
+	});
+
+	it("refuses any other failure", () => {
+		expect(onlyMissingNodes(answer([]))).toBe(false);
+		expect(
+			onlyMissingNodes(answer([{ type: "FORBIDDEN", path: ["nodes", 0] }])),
+		).toBe(false);
+		expect(onlyMissingNodes(answer([missing(["repository"])]))).toBe(false);
+		expect(onlyMissingNodes(answer([missing(["nodes", 0])], null))).toBe(false);
+		expect(onlyMissingNodes("gh: not json")).toBe(false);
 	});
 });

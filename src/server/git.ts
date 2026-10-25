@@ -9,6 +9,11 @@ export interface RunGitOptions {
 	allowFailure?: boolean;
 	/** Kill git after this long; that counts as a failure. */
 	timeoutMs?: number;
+	/**
+	 * Kill git when aborted (a session closing), a failure too; once
+	 * aborted, git isn't started.
+	 */
+	signal?: AbortSignal;
 }
 
 /**
@@ -108,6 +113,14 @@ export function runGitBuffer(
 	opts: RunGitOptions = {},
 ): Promise<Buffer> {
 	return new Promise((resolve, reject) => {
+		const fail = (message: string) => {
+			if (opts.allowFailure) resolve(Buffer.alloc(0));
+			else reject(new GitError(message));
+		};
+		if (opts.signal?.aborted) {
+			fail("git was stopped");
+			return;
+		}
 		const child = spawn("git", ["-C", repoPath, ...args], {
 			env: { ...inheritedEnv(), ...opts.env },
 			stdio: ["pipe", "pipe", "pipe"],
@@ -120,30 +133,38 @@ export function runGitBuffer(
 		if (opts.timeoutMs !== undefined) trackDetached(child);
 		const out: Buffer[] = [];
 		const err: Buffer[] = [];
-		// A timeout settles at once, without waiting for the pipes to close.
+		// A timeout or an abort settles at once, without waiting for the
+		// pipes to close.
 		let timedOut = false;
+		const stop = (message: string) => {
+			timedOut = true;
+			if (opts.timeoutMs !== undefined) killGroup(child);
+			else child.kill("SIGKILL");
+			child.stdout.destroy();
+			child.stderr.destroy();
+			fail(message);
+		};
 		const timer =
 			opts.timeoutMs === undefined
 				? undefined
-				: setTimeout(() => {
-						timedOut = true;
-						killGroup(child);
-						child.stdout.destroy();
-						child.stderr.destroy();
-						if (opts.allowFailure) resolve(Buffer.alloc(0));
-						else
-							reject(new GitError(`git timed out after ${opts.timeoutMs} ms`));
-					}, opts.timeoutMs);
+				: setTimeout(
+						() => stop(`git timed out after ${opts.timeoutMs} ms`),
+						opts.timeoutMs,
+					);
+		const onAbort = () => stop("git was stopped");
+		opts.signal?.addEventListener("abort", onAbort, { once: true });
 		child.stdout.on("data", (chunk: Buffer) => out.push(chunk));
 		child.stderr.on("data", (chunk: Buffer) => err.push(chunk));
 		child.stdin.on("error", () => {});
 		child.on("error", (error) => {
 			clearTimeout(timer);
+			opts.signal?.removeEventListener("abort", onAbort);
 			if (opts.allowFailure) resolve(Buffer.alloc(0));
 			else reject(new GitError(error.message));
 		});
 		child.on("close", (code) => {
 			clearTimeout(timer);
+			opts.signal?.removeEventListener("abort", onAbort);
 			if (timedOut) {
 				// Already settled.
 			} else if (code === 0) {

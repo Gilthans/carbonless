@@ -27,7 +27,7 @@ describe("API", () => {
 	});
 	afterEach(async () => {
 		await app.close();
-		pr.cleanup();
+		await pr.cleanup();
 	});
 
 	const inject = (url: string, extra: Record<string, unknown> = {}) =>

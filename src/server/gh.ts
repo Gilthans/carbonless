@@ -60,40 +60,73 @@ interface GhResult {
 /** How long a GitHub read may take before gh is killed (0: no limit). */
 export const GH_TIMEOUT_MS = 60_000;
 
-function spawnGh(
-	args: string[],
-	cwd?: string,
-	baseEnv?: NodeJS.ProcessEnv,
-	timeoutMs = 0,
-): Promise<GhResult> {
+/** How a gh call is run. */
+interface GhRun {
+	cwd?: string;
+	/** Replaces process.env as the base environment for gh. */
+	env?: NodeJS.ProcessEnv;
+	/** Kills a gh that hangs (default GH_TIMEOUT_MS; 0 for no limit). */
+	timeoutMs?: number;
+	/** Kills gh when aborted (a session closing); it never starts once aborted. */
+	signal?: AbortSignal;
+	/** What is being read, for the messages ("the review threads"). */
+	what?: string;
+}
+
+/** The error an aborted gh call fails with. */
+export class GhAbortedError extends GhError {}
+
+function spawnGh(args: string[], run: GhRun = {}): Promise<GhResult> {
+	const { signal } = run;
+	const timeoutMs = run.timeoutMs ?? 0;
+	const what = run.what ?? `gh ${args.slice(0, 2).join(" ")}`;
 	return new Promise((resolve, reject) => {
+		if (signal?.aborted) {
+			reject(new GhAbortedError(`Stopped reading ${what}`));
+			return;
+		}
 		const child = spawn("gh", args, {
-			cwd,
-			env: ghEnv(baseEnv),
+			cwd: run.cwd,
+			env: ghEnv(run.env),
 			stdio: ["ignore", "pipe", "pipe"],
 		});
 		const out: Buffer[] = [];
 		const err: Buffer[] = [];
+		const stop = (error: GhError) => {
+			child.kill("SIGKILL");
+			child.stdout.destroy();
+			child.stderr.destroy();
+			reject(error);
+		};
 		// A hung read fails rather than hold the page's data forever.
 		const timer =
 			timeoutMs > 0
-				? setTimeout(() => {
-						child.kill("SIGKILL");
-						child.stdout.destroy();
-						child.stderr.destroy();
-						reject(new GhError(`gh took longer than ${timeoutMs / 1000} s`));
-					}, timeoutMs)
+				? setTimeout(
+						() =>
+							stop(
+								new GhError(
+									`GitHub took longer than ${timeoutMs / 1000} s to answer for ${what}`,
+								),
+							),
+						timeoutMs,
+					)
 				: undefined;
+		const onAbort = () => stop(new GhAbortedError(`Stopped reading ${what}`));
+		signal?.addEventListener("abort", onAbort, { once: true });
+		const done = () => {
+			clearTimeout(timer);
+			signal?.removeEventListener("abort", onAbort);
+		};
 		child.stdout.on("data", (c: Buffer) => out.push(c));
 		child.stderr.on("data", (c: Buffer) => err.push(c));
 		child.on("error", (error: NodeJS.ErrnoException) => {
-			clearTimeout(timer);
+			done();
 			reject(
 				new GhError(error.code === "ENOENT" ? NOT_INSTALLED : error.message),
 			);
 		});
 		child.on("close", (code) => {
-			clearTimeout(timer);
+			done();
 			resolve({
 				code,
 				stdout: Buffer.concat(out).toString("utf8"),
@@ -119,27 +152,27 @@ function problemLine(text: string): string {
 
 export async function runGh(
 	args: string[],
-	/**
-	 * `env` replaces process.env as the base environment for gh; `timeoutMs`
-	 * (default GH_TIMEOUT_MS, 0 for none) kills a gh that hangs.
-	 */
-	opts: { cwd?: string; env?: NodeJS.ProcessEnv; timeoutMs?: number } = {},
+	opts: GhRun & {
+		/**
+		 * Takes a failed call's output anyway when this says it holds an
+		 * answer (GraphQL's partial data, which gh exits 1 on).
+		 */
+		partial?: (stdout: string) => boolean;
+	} = {},
 ): Promise<string> {
-	const result = await spawnGh(
-		args,
-		opts.cwd,
-		opts.env,
-		opts.timeoutMs ?? GH_TIMEOUT_MS,
-	);
+	const result = await spawnGh(args, {
+		...opts,
+		timeoutMs: opts.timeoutMs ?? GH_TIMEOUT_MS,
+	});
 	if (result.code === 0) return result.stdout;
+	if (opts.partial?.(result.stdout)) return result.stdout;
 	if (LOGGED_OUT.test(result.stderr)) throw new GhError(NOT_LOGGED_IN);
 	const isAuthStatus = args[0] === "auth" && args[1] === "status";
 	if (!isAuthStatus) {
 		const host = process.env.GH_HOST || "github.com";
 		const auth = await spawnGh(
 			["auth", "status", "--active", "--hostname", host],
-			opts.cwd,
-			opts.env,
+			{ cwd: opts.cwd, env: opts.env, signal: opts.signal },
 		);
 		if (auth.code !== 0 && LOGGED_OUT.test(auth.stderr)) {
 			throw new GhError(NOT_LOGGED_IN);
@@ -217,18 +250,30 @@ function isNotFound(error: unknown): boolean {
 	);
 }
 
-async function prView(ref: PrRef, fields: string): Promise<unknown> {
+/** A read's way to stop its gh calls (Session.close). */
+export interface ReadSignal {
+	signal?: AbortSignal;
+}
+
+async function prView(
+	ref: PrRef,
+	fields: string,
+	read: ReadSignal = {},
+): Promise<unknown> {
 	try {
 		return safeJson(
-			await runGh([
-				"pr",
-				"view",
-				String(ref.number),
-				"-R",
-				`${ref.owner}/${ref.repo}`,
-				"--json",
-				fields,
-			]),
+			await runGh(
+				[
+					"pr",
+					"view",
+					String(ref.number),
+					"-R",
+					`${ref.owner}/${ref.repo}`,
+					"--json",
+					fields,
+				],
+				{ ...read, what: "the PR" },
+			),
 		);
 	} catch (error) {
 		if (isNotFound(error)) {
@@ -332,7 +377,7 @@ const CONTENT_FIELDS =
 	"id first: comments(first: 1) { nodes { body bodyText bodyHTML diffHunk } }";
 /** Threads whose content one query reads (about 1 s for 50). */
 const CONTENT_BATCH = 50;
-const NODE_ID = /^[A-Za-z0-9_=-]{1,100}$/;
+export const NODE_ID = /^[A-Za-z0-9_=-]{1,100}$/;
 /** The last page of threads, asked for alongside the first (fetchConnection). */
 const LAST_THREADS_QUERY = connectionQuery(
 	"reviewThreads",
@@ -351,6 +396,13 @@ const QUERIES = {
 		"commits",
 		"commit { oid committedDate pushedDate }",
 	),
+};
+/** Each connection as the messages name it. */
+const CONNECTION_NAMES: Record<keyof typeof QUERIES, string> = {
+	reviewThreads: "the review threads",
+	comments: "the PR's comments",
+	reviews: "the PR's reviews",
+	commits: "the PR's commits",
 };
 
 /** One commit's check contexts (as-of mode), paged like the PR connections. */
@@ -395,23 +447,27 @@ async function fetchPage(
 	ref: PrRef,
 	connection: keyof typeof QUERIES,
 	query: string,
-	after?: string,
+	after: string | undefined,
+	read: ReadSignal,
 ): Promise<Page> {
 	const out = safeJson(
-		await runGh([
-			"api",
-			"graphql",
-			"-f",
-			`query=${query}`,
-			// -f keeps a numeric-looking owner a string; only the number is typed.
-			"-f",
-			`owner=${ref.owner}`,
-			"-f",
-			`name=${ref.repo}`,
-			"-F",
-			`number=${ref.number}`,
-			...(after ? ["-f", `endCursor=${after}`] : []),
-		]),
+		await runGh(
+			[
+				"api",
+				"graphql",
+				"-f",
+				`query=${query}`,
+				// -f keeps a numeric-looking owner a string; only the number is typed.
+				"-f",
+				`owner=${ref.owner}`,
+				"-f",
+				`name=${ref.repo}`,
+				"-F",
+				`number=${ref.number}`,
+				...(after ? ["-f", `endCursor=${after}`] : []),
+			],
+			{ ...read, what: CONNECTION_NAMES[connection] },
+		),
 	);
 	const conn = rec(rec(rec(rec(out).data).repository).pullRequest)[connection];
 	const { nodes, pageInfo, totalCount } = rec(conn);
@@ -473,12 +529,15 @@ export function joinEnds(first: Page, last: Page): unknown[] | null {
 async function fetchConnection(
 	ref: PrRef,
 	connection: keyof typeof QUERIES,
+	read: ReadSignal = {},
 ): Promise<unknown[]> {
 	const query = QUERIES[connection];
 	const [first, last] = await Promise.all([
-		fetchPage(ref, connection, query),
+		fetchPage(ref, connection, query, undefined, read),
 		connection === "reviewThreads"
-			? fetchPage(ref, connection, LAST_THREADS_QUERY).catch(() => null)
+			? fetchPage(ref, connection, LAST_THREADS_QUERY, undefined, read).catch(
+					() => null,
+				)
 			: null,
 	]);
 	if (first.next === null) return first.nodes;
@@ -487,7 +546,7 @@ async function fetchConnection(
 	const nodes = [...first.nodes];
 	let after = first.next;
 	for (let page = 1; page < MAX_PAGES && after; page++) {
-		const next = await fetchPage(ref, connection, query, after);
+		const next = await fetchPage(ref, connection, query, after, read);
 		nodes.push(...next.nodes);
 		if (next.next === null) return nodes;
 		after = next.next;
@@ -496,24 +555,31 @@ async function fetchConnection(
 }
 
 /** Every check context of commit `oid`; [] when it has none. */
-async function fetchCommitChecks(ref: PrRef, oid: string): Promise<unknown[]> {
+async function fetchCommitChecks(
+	ref: PrRef,
+	oid: string,
+	read: ReadSignal = {},
+): Promise<unknown[]> {
 	const nodes: unknown[] = [];
 	let after: string | undefined;
 	for (let page = 0; page < MAX_PAGES; page++) {
 		const out = safeJson(
-			await runGh([
-				"api",
-				"graphql",
-				"-f",
-				`query=${COMMIT_CHECKS_QUERY}`,
-				"-f",
-				`owner=${ref.owner}`,
-				"-f",
-				`name=${ref.repo}`,
-				"-f",
-				`oid=${oid}`,
-				...(after ? ["-f", `endCursor=${after}`] : []),
-			]),
+			await runGh(
+				[
+					"api",
+					"graphql",
+					"-f",
+					`query=${COMMIT_CHECKS_QUERY}`,
+					"-f",
+					`owner=${ref.owner}`,
+					"-f",
+					`name=${ref.repo}`,
+					"-f",
+					`oid=${oid}`,
+					...(after ? ["-f", `endCursor=${after}`] : []),
+				],
+				{ ...read, what: "the checks" },
+			),
 		);
 		const object = rec(rec(rec(out).data).repository).object;
 		if (object === null || typeof object !== "object") {
@@ -557,20 +623,26 @@ export async function fetchHeadAsOf(
 	}
 }
 
-async function fetchBodyHtml(ref: PrRef): Promise<string> {
+async function fetchBodyHtml(
+	ref: PrRef,
+	read: ReadSignal = {},
+): Promise<string> {
 	const out = safeJson(
-		await runGh([
-			"api",
-			"graphql",
-			"-f",
-			`query=${BODY_HTML_QUERY}`,
-			"-f",
-			`owner=${ref.owner}`,
-			"-f",
-			`name=${ref.repo}`,
-			"-F",
-			`number=${ref.number}`,
-		]),
+		await runGh(
+			[
+				"api",
+				"graphql",
+				"-f",
+				`query=${BODY_HTML_QUERY}`,
+				"-f",
+				`owner=${ref.owner}`,
+				"-f",
+				`name=${ref.repo}`,
+				"-F",
+				`number=${ref.number}`,
+			],
+			{ ...read, what: "the description" },
+		),
 	);
 	const html = rec(rec(rec(rec(out).data).repository).pullRequest).bodyHTML;
 	if (typeof html !== "string") {
@@ -594,17 +666,19 @@ export async function fetchOverview(
 	viewer: string,
 	/** As-of mode: the cutoff, and the snapshot head whose checks to show. */
 	asOf?: { at: string; head: string },
+	read: ReadSignal = {},
 ): Promise<OverviewFields> {
 	return notFoundAsPr(ref, async () => {
 		const [view, bodyHTML, comments, reviews, checks] = await Promise.all([
 			prView(
 				ref,
 				"number,title,url,author,body,state,isDraft,createdAt,updatedAt,baseRefName,headRefName,mergeable,reviewRequests,statusCheckRollup",
+				read,
 			),
-			fetchBodyHtml(ref),
-			fetchConnection(ref, "comments"),
-			fetchConnection(ref, "reviews"),
-			asOf ? fetchCommitChecks(ref, asOf.head) : undefined,
+			fetchBodyHtml(ref, read),
+			fetchConnection(ref, "comments", read),
+			fetchConnection(ref, "reviews", read),
+			asOf ? fetchCommitChecks(ref, asOf.head, read) : undefined,
 		]);
 		return mapOverview(
 			view,
@@ -630,17 +704,48 @@ async function notFoundAsPr<T>(ref: PrRef, read: () => Promise<T>) {
  * Every review thread's summary node (THREAD_FIELDS): all a list needs,
  * without the opening comments' text, the slow part of the read.
  */
-export function fetchThreadSummaries(ref: PrRef): Promise<unknown[]> {
-	return notFoundAsPr(ref, () => fetchConnection(ref, "reviewThreads"));
+export function fetchThreadSummaries(
+	ref: PrRef,
+	read: ReadSignal = {},
+): Promise<unknown[]> {
+	return notFoundAsPr(ref, () => fetchConnection(ref, "reviewThreads", read));
+}
+
+/**
+ * Whether a GraphQL answer gh failed on (exit 1) still holds the answer:
+ * `data` with every error a NOT_FOUND of a `nodes(ids:)` entry (a thread
+ * deleted since its id was read).
+ */
+export function onlyMissingNodes(stdout: string): boolean {
+	let answer: unknown;
+	try {
+		answer = JSON.parse(stdout);
+	} catch {
+		return false;
+	}
+	const { data, errors } = rec(answer);
+	if (!Array.isArray(rec(data).nodes) || !Array.isArray(errors)) return false;
+	return (
+		errors.length > 0 &&
+		errors.every((e) => {
+			const path = rec(e).path;
+			return (
+				rec(e).type === "NOT_FOUND" &&
+				Array.isArray(path) &&
+				path[0] === "nodes"
+			);
+		})
+	);
 }
 
 /**
  * The opening comments' content (CONTENT_FIELDS) of the threads with these
  * ids, by id, read CONTENT_BATCH at a time, all at once. A thread GitHub
- * no longer has is left out.
+ * no longer has (deleted since its id was read) maps to null.
  */
 export async function fetchThreadContents(
 	ids: string[],
+	read: ReadSignal = {},
 ): Promise<Map<string, unknown>> {
 	const wanted = ids.filter((id) => NODE_ID.test(id));
 	const batches: string[][] = [];
@@ -653,17 +758,25 @@ export async function fetchThreadContents(
 			// Ids are checked above: plain text in the query is safe.
 			const query = `query { nodes(ids: [${batch.map((id) => `"${id}"`).join(", ")}]) { ... on PullRequestReviewThread { ${CONTENT_FIELDS} } } }`;
 			const out = safeJson(
-				await runGh(["api", "graphql", "-f", `query=${query}`]),
+				await runGh(["api", "graphql", "-f", `query=${query}`], {
+					...read,
+					what: "the review threads' comments",
+					partial: onlyMissingNodes,
+				}),
 			);
 			const nodes = rec(out).data;
 			const list = rec(nodes).nodes;
 			if (!Array.isArray(list)) {
 				throw new GhError("gh returned an unexpected response for the threads");
 			}
-			for (const node of list) {
+			// In the order asked; null for a thread GitHub no longer has.
+			list.forEach((node, i) => {
 				const id = rec(node).id;
 				if (typeof id === "string") found.set(id, node);
-			}
+				else if (node === null && batch[i] !== undefined) {
+					found.set(batch[i], null);
+				}
+			});
 		}),
 	);
 	return found;

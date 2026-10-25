@@ -331,10 +331,12 @@ export const FETCH_COMMIT_TIMEOUT_MS = 60_000;
 export async function ensureCommit(
 	path: string,
 	oid: string,
+	/** Stops the fetch (a session closing); then false. */
+	signal?: AbortSignal,
 ): Promise<boolean> {
 	if (!OID.test(oid)) return false;
 	const present = () =>
-		runGit(path, ["cat-file", "-e", `${oid}^{commit}`]).then(
+		runGit(path, ["cat-file", "-e", `${oid}^{commit}`], { signal }).then(
 			() => true,
 			() => false,
 		);
@@ -348,6 +350,7 @@ export async function ensureCommit(
 				env: { GIT_TERMINAL_PROMPT: "0" },
 				allowFailure: true,
 				timeoutMs: FETCH_COMMIT_TIMEOUT_MS,
+				signal,
 			},
 		);
 		return present();

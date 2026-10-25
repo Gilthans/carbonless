@@ -133,8 +133,21 @@ describe("fake gh", () => {
 		expect(summaries[0]?.first.nodes[0]).not.toHaveProperty("bodyHTML");
 		const ids = summaries.map((t) => t.id);
 		expect(new Set(ids).size).toBe(3);
+		// A thread GitHub no longer has: null, though gh exits 1 as GitHub's
+		// answer carries a NOT_FOUND error for it.
 		const contents = await fetchThreadContents([ids[0] ?? "", "gone"]);
-		expect(contents.size).toBe(1);
+		expect(contents.size).toBe(2);
+		expect(contents.get("gone")).toBeNull();
+		const raw = spawnSync(
+			join(FAKE_GH_DIR, "gh"),
+			["api", "graphql", "-f", 'query=query { nodes(ids: ["gone"]) { id } }'],
+			{ encoding: "utf8" },
+		);
+		expect(raw.status).toBe(1);
+		expect(JSON.parse(raw.stdout)).toMatchObject({
+			data: { nodes: [null] },
+			errors: [{ type: "NOT_FOUND", path: ["nodes", 0] }],
+		});
 		expect(
 			(
 				contents.get(ids[0] ?? "") as {

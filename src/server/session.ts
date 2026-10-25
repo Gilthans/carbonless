@@ -103,6 +103,30 @@ export class Session {
 		this.#snapshot = snapshot;
 		this.#patchset = patchset;
 		this.#threadCode = new ThreadCodeSource(repo);
+		Session.#open.add(this);
+	}
+
+	/** Sessions not closed yet (closeAll). */
+	static readonly #open = new Set<Session>();
+	#closed: Promise<void> | null = null;
+
+	/**
+	 * Stops its background reads of GitHub and the clone and waits until
+	 * nothing of them runs: after this no gh or git starts for it.
+	 */
+	close(): Promise<void> {
+		this.#closed ??= (async () => {
+			Session.#open.delete(this);
+			for (const read of this.#reads) read.abort();
+			this.#threadCode.close();
+			await Promise.all([...this.#reads.map((r) => r.settled), this.#queue]);
+		})();
+		return this.#closed;
+	}
+
+	/** Closes every open session (crb's shutdown; test fixtures' cleanup). */
+	static async closeAll(): Promise<void> {
+		await Promise.all([...Session.#open].map((s) => s.close()));
 	}
 
 	/**
@@ -192,6 +216,9 @@ export class Session {
 	overview(
 		maxAgeMs = Number.POSITIVE_INFINITY,
 	): Promise<Omit<PrOverview, "servedAt">> {
+		if (this.#closed) {
+			return Promise.reject(new Error("The session is closed"));
+		}
 		const now = Date.now();
 		// 0: a new read, even if the last came in this very millisecond.
 		if (maxAgeMs <= 0) return this.#read().overview;
@@ -222,6 +249,7 @@ export class Session {
 	 * moving the snapshot) to know the diff base.
 	 */
 	#read(ready?: Promise<unknown>): OverviewRead {
+		if (this.#closed) throw new Error("The session is closed");
 		const { asOf, viewer } = this.options;
 		const read = new OverviewRead({
 			ref: this.#ref(),
@@ -246,6 +274,7 @@ export class Session {
 
 	/** Reads GitHub again (after `ready`); older reads aren't served any more. */
 	#rereadOverview(ready?: Promise<unknown>): void {
+		if (this.#closed) return;
 		for (const read of this.#reads) this.#superseded.add(read);
 		this.#read(ready);
 	}

@@ -399,6 +399,74 @@ describe("Session", () => {
 			expect(batches).toEqual([2, 10]);
 		});
 
+		it("says which threads' text will never come: deleted since the list was read, or with no id", async () => {
+			const head = pr.head();
+			const thread = (path: string, at: string) =>
+				reviewThread({ path, line: 1 }, [
+					threadComment({
+						login: "rev1",
+						text: path,
+						commit: head,
+						createdAt: at,
+					}),
+				]);
+			pr.scenario({
+				// The second thread is deleted between the summary and its text.
+				deletedThreads: ["T12-1"],
+				prs: {
+					12: {
+						view: prView({ headRefOid: head, baseRefName: "main" }),
+						graphql: {
+							reviewThreads: [
+								thread("kept.txt", "2026-01-01T03:00:00Z"),
+								thread("deleted.txt", "2026-01-01T02:00:00Z"),
+								// GitHub gave no usable id.
+								{ ...thread("no-id.txt", "2026-01-01T01:00:00Z"), id: "" },
+							],
+						},
+					},
+				},
+			});
+			const s = await Session.open(pr.arg, process.cwd());
+			const { readId } = await s.overview();
+			const full = await s.threads(readId, "full");
+			expect(full.complete).toBe(true);
+			expect(
+				full.threads.map((t) => [t.path, t.loaded, t.unavailable, t.excerpt]),
+			).toEqual([
+				["kept.txt", true, undefined, "kept.txt"],
+				["deleted.txt", true, "deleted", ""],
+				["no-id.txt", true, "unreadable", ""],
+			]);
+			// Each stage gets there, none fails on the deleted thread.
+			expect((await s.threads(readId, "first")).threads[1]?.unavailable).toBe(
+				"deleted",
+			);
+		});
+
+		it("stops its background reads on close: no gh or git starts after", async () => {
+			pr.scenario({
+				threadsDelayMs: 1500,
+				prs: {
+					12: {
+						view: prView({ headRefOid: pr.head(), baseRefName: "main" }),
+						graphql: { reviewThreads: [reviewThread({ path: "a.txt" })] },
+					},
+				},
+			});
+			const s = await Session.open(pr.arg, process.cwd());
+			const { readId } = await s.overview();
+			const started = Date.now();
+			await s.close();
+			// The slow summary was killed, not waited for.
+			expect(Date.now() - started).toBeLessThan(1200);
+			await expect(s.threads(readId, "full")).rejects.toThrow();
+			const calls = pr.ghLog();
+			await new Promise((r) => setTimeout(r, 200));
+			expect(pr.ghLog()).toBe(calls);
+			await expect(s.overview(0)).rejects.toThrow(/closed/);
+		});
+
 		it("builds thread code from the clone, with rows after the range", async () => {
 			const head = pr.head();
 			pr.scenario({

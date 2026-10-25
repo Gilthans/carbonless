@@ -1,4 +1,5 @@
 import {
+	AlertIcon,
 	CheckCircleIcon,
 	CheckIcon,
 	ChevronDownIcon,
@@ -89,6 +90,11 @@ function useThreads(readId: string | undefined): {
 	view: ThreadsView | undefined;
 	/** A stage failed and the threads aren't all in. */
 	error: Error | null;
+	/**
+	 * `view` is the previous read's, kept on screen (and in place) until the
+	 * new read's summaries land, as after a Refresh.
+	 */
+	previous: boolean;
 } {
 	const stages = useQueries({
 		queries: THREAD_STAGES.map((stage) => ({
@@ -98,10 +104,14 @@ function useThreads(readId: string | undefined): {
 	});
 	const view = stages.findLast((q) => q.data)?.data;
 	const failed = stages.find((q) => q.isError);
-	return {
-		view,
-		error: view?.complete ? null : (failed?.error ?? null),
-	};
+	const error = view?.complete ? null : (failed?.error ?? null);
+	const last = useRef<{ readId: string; view: ThreadsView } | null>(null);
+	if (view && readId) last.current = { readId, view };
+	const kept =
+		!view && !error && last.current && last.current.readId !== readId
+			? last.current.view
+			: undefined;
+	return { view: view ?? kept, error, previous: Boolean(kept) };
 }
 
 export function OverviewPage() {
@@ -168,6 +178,7 @@ function OverviewContent({
 						pr={overview.data}
 						threads={threads.view}
 						error={threads.error}
+						previous={threads.previous}
 					/>
 				</>
 			)}
@@ -648,28 +659,48 @@ function IsItReady({
 	pr,
 	threads,
 	error,
+	previous,
 }: {
 	pr: PrOverview;
 	/** Undefined until every thread's summary is in. */
 	threads: ThreadsView | undefined;
 	/** The threads couldn't all be read. */
 	error: Error | null;
+	/** `threads` are the previous read's, until this one's land. */
+	previous: boolean;
 }) {
 	const list = threads?.threads;
+	const unreadable =
+		list?.filter((t) => t.unavailable === "unreadable").length ?? 0;
+	// Failed with nothing to show: the error alone, no frames left busy.
+	const failed = Boolean(error) && !list;
 	return (
 		<Section label="Is it ready">
 			<Checks pr={pr} />
 			{error && <ErrorMessage error={error} />}
+			{unreadable > 0 && (
+				<ErrorMessage
+					error={
+						new Error(
+							`${plural(unreadable, "thread")} couldn't be read from GitHub`,
+						)
+					}
+				/>
+			)}
 			<ThreadGroup
 				label="Human reviews"
 				icon={CommentDiscussionIcon}
 				threads={list?.filter((t) => !t.bot)}
+				failed={failed}
+				previous={previous}
 				asOf={Boolean(pr.asOf)}
 			/>
 			<ThreadGroup
 				label="Bot reviews"
 				icon={HubotIcon}
 				threads={list?.filter((t) => t.bot)}
+				failed={failed}
+				previous={previous}
 				asOf={Boolean(pr.asOf)}
 			/>
 		</Section>
@@ -960,10 +991,14 @@ function ThreadGroup(props: {
 	icon: Icon;
 	/** Undefined while the threads are read: the list's frame shows. */
 	threads: Thread[] | undefined;
+	/** They couldn't be read: no frame (the error says so). */
+	failed: boolean;
+	/** They are the previous read's, until this one's land. */
+	previous: boolean;
 	asOf: boolean;
 }) {
 	const { asOf } = props;
-	const loading = props.threads === undefined;
+	const loading = props.threads === undefined && !props.failed;
 	const threads = props.threads ?? [];
 	const [showResolved, setShowResolved] = useState(false);
 	const [limit, setLimit] = useState(THREAD_PAGE);
@@ -992,7 +1027,7 @@ function ThreadGroup(props: {
 				</h3>
 				{loading ? (
 					<SkeletonBar className="w-32" />
-				) : threads.length === 0 ? (
+				) : props.threads === undefined ? null : threads.length === 0 ? (
 					<p className="text-sm text-faint">No threads</p>
 				) : (
 					<ul
@@ -1044,6 +1079,7 @@ function ThreadGroup(props: {
 						data-testid="threads-loading"
 						className="space-y-3"
 					>
+						<li className="sr-only">Loading…</li>
 						{[0, 1].map((i) => (
 							<li
 								key={i}
@@ -1066,6 +1102,8 @@ function ThreadGroup(props: {
 						aria-label={
 							showResolved ? "Resolved threads" : "Unresolved threads"
 						}
+						// The previous read's, until this one's land (a Refresh).
+						aria-busy={props.previous || undefined}
 						className="space-y-3"
 					>
 						{threadKeys(listed.slice(0, limit)).map(([key, t]) => (
@@ -1154,7 +1192,19 @@ function ThreadItem({ thread }: { thread: Thread }) {
 	// GitHub's text: its own raised surface, apart from the card and the code.
 	const commentSurface =
 		"min-w-0 rounded-md border border-edge bg-raised px-3 py-2";
-	const comment = !thread.loaded ? (
+	const comment = thread.unavailable ? (
+		// Its text will never come: said so, plainly.
+		<p
+			id={commentId}
+			data-testid="thread-body-unavailable"
+			className={`${commentSurface} flex items-center gap-1.5 text-sm text-muted italic`}
+		>
+			<AlertIcon size={14} aria-hidden className="shrink-0 text-warn" />
+			{thread.unavailable === "deleted"
+				? "Deleted on GitHub"
+				: "Couldn't be read from GitHub"}
+		</p>
+	) : !thread.loaded ? (
 		// Its text is still on its way: the comment's frame.
 		<div
 			id={commentId}
@@ -1162,6 +1212,7 @@ function ThreadItem({ thread }: { thread: Thread }) {
 			aria-busy="true"
 			className={`${commentSurface} space-y-2.5 py-3`}
 		>
+			<span className="sr-only">Loading…</span>
 			<SkeletonBar className="w-full" />
 			<SkeletonBar className="w-4/5" />
 			<SkeletonBar className="w-2/3" />
@@ -1275,6 +1326,7 @@ function ThreadItem({ thread }: { thread: Thread }) {
 							aria-busy="true"
 							className="min-w-0 space-y-2 rounded-md border border-line bg-code px-3 py-3"
 						>
+							<span className="sr-only">Loading…</span>
 							{["w-3/5", "w-4/5", "w-full", "w-2/3", "w-3/4"].map((w) => (
 								<SkeletonBar key={w} className={w} />
 							))}

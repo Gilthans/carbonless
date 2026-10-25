@@ -10,6 +10,7 @@ import {
 	fetchOverview,
 	fetchThreadContents,
 	fetchThreadSummaries,
+	NODE_ID,
 	type PrRef,
 } from "./gh.js";
 import { mapThreads, withContent } from "./overview.js";
@@ -29,10 +30,15 @@ export interface ReadSources {
 /** Thread code built at once. */
 const CODE_CONCURRENCY = 8;
 
-/** A thread whose content GitHub didn't return (deleted since): no text. */
-const NO_CONTENT = {
-	first: { nodes: [{ body: "", bodyText: "", bodyHTML: "", diffHunk: "" }] },
-};
+/** A thread GitHub no longer has (deleted since the list was read). */
+const GONE = Symbol("gone");
+
+/** The opening comment's GitHub diff hunk in a content node, or "". */
+function hunkOf(content: unknown): string {
+	const first = (content as { first?: { nodes?: { diffHunk?: unknown }[] } })
+		?.first?.nodes?.[0];
+	return typeof first?.diffHunk === "string" ? first.diffHunk : "";
+}
 
 let sequence = 0;
 
@@ -57,13 +63,19 @@ export class OverviewRead {
 	readonly #contents = new Map<string, unknown>();
 	readonly #codes = new Map<string, CodeWindow | null>();
 	readonly #stages: Record<ThreadsStage, Promise<void>>;
+	/** Stops its gh calls (abort). */
+	readonly #stop = new AbortController();
+	/** Once every part has come in or failed: nothing of it runs any more. */
+	readonly settled: Promise<void>;
 
 	constructor(sources: ReadSources) {
 		this.#asOf = sources.asOf?.at;
+		const read = { signal: this.#stop.signal };
 		this.overview = fetchOverview(
 			sources.ref,
 			sources.viewer,
 			sources.asOf,
+			read,
 		).then((fields) => {
 			this.ended = Date.now();
 			return {
@@ -72,30 +84,32 @@ export class OverviewRead {
 				fetchedAt: new Date(this.ended).toISOString(),
 			};
 		});
-		const summary = fetchThreadSummaries(sources.ref).then((nodes) => {
+		const summary = fetchThreadSummaries(sources.ref, read).then((nodes) => {
 			this.#nodes = nodes;
 		});
 		// Threads with code, listed-first ones ahead, and which those are.
 		const plan = summary.then(() => {
 			const threads = this.#map();
 			const first = new Set(listedFirst(threads).map((t) => t.id));
-			const ids = threads.map((t) => t.id).filter(Boolean);
+			// A thread without a well-formed id can't be read by it (#view).
+			const readable = threads.filter((t) => NODE_ID.test(t.id));
+			const ids = readable.map((t) => t.id);
 			return {
 				first: ids.filter((id) => first.has(id)),
 				rest: ids.filter((id) => !first.has(id)),
 				coded: [
-					...threads.filter((t) => t.code && first.has(t.id)),
-					...threads.filter((t) => t.code && !first.has(t.id)),
+					...readable.filter((t) => t.code && first.has(t.id)),
+					...readable.filter((t) => t.code && !first.has(t.id)),
 				],
 			};
 		});
-		const read = (ids: string[]) =>
-			fetchThreadContents(ids).then((found) => {
-				for (const id of ids)
-					this.#contents.set(id, found.get(id) ?? NO_CONTENT);
+		const readText = (ids: string[]) =>
+			fetchThreadContents(ids, read).then((found) => {
+				// Not returned, or null: GitHub no longer has the thread.
+				for (const id of ids) this.#contents.set(id, found.get(id) ?? GONE);
 			});
-		const firstText = plan.then((p) => read(p.first));
-		const restText = plan.then((p) => read(p.rest));
+		const firstText = plan.then((p) => readText(p.first));
+		const restText = plan.then((p) => readText(p.rest));
 		// Each thread's code, a few at a time, listed-first ones ahead.
 		const codes = plan.then((p) => {
 			const limit = limiter(CODE_CONCURRENCY);
@@ -127,6 +141,17 @@ export class OverviewRead {
 		// Each is awaited by whoever asks; none may go unhandled.
 		for (const stage of Object.values(this.#stages)) stage.catch(() => {});
 		this.overview.catch(() => {});
+		this.settled = Promise.allSettled([
+			this.overview,
+			firstText,
+			restText,
+			codes.then((c) => c.all),
+		]).then(done);
+	}
+
+	/** Stops its reads of GitHub (the session closing); see `settled`. */
+	abort(): void {
+		this.#stop.abort();
 	}
 
 	/** The threads once `stage` is in, with all that is in by then. */
@@ -141,14 +166,21 @@ export class OverviewRead {
 			const id = (node as { id?: unknown })?.id;
 			const content =
 				typeof id === "string" ? this.#contents.get(id) : undefined;
-			return content ? withContent(node, content) : node;
+			return content && content !== GONE ? withContent(node, content) : node;
 		});
 		return mapThreads(nodes, this.#asOf);
 	}
 
 	#view(): ThreadsView {
 		let complete = true;
-		const threads = this.#map().map((t) => {
+		const threads = this.#map().map((t): ReviewThread => {
+			// Never coming: said so on the card, not a frame forever.
+			if (!NODE_ID.test(t.id)) {
+				return { ...t, loaded: true, unavailable: "unreadable", code: null };
+			}
+			if (this.#contents.get(t.id) === GONE) {
+				t = { ...t, loaded: true, unavailable: "deleted" };
+			}
 			if (!t.loaded) complete = false;
 			if (!t.code) return t;
 			if (this.#codes.has(t.id))
@@ -176,11 +208,7 @@ export class OverviewRead {
 		const code = await sources.code.code(
 			thread.code.anchor,
 			await sources.base(),
-			async () => {
-				const content = (await textOf(thread.id)) as typeof NO_CONTENT;
-				const hunk = content?.first?.nodes?.[0]?.diffHunk;
-				return typeof hunk === "string" ? hunk : "";
-			},
+			async () => hunkOf(await textOf(thread.id)),
 		);
 		this.#codes.set(thread.id, code);
 	}

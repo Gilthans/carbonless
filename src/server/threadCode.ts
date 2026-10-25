@@ -80,8 +80,8 @@ function contextLines(content: string): HunkLine[] {
 }
 
 /** git output, or null when git fails (never a guess). */
-const tryGit = (repo: string, args: string[]) =>
-	runGit(repo, args).then(
+const tryGit = (repo: string, signal: AbortSignal, args: string[]) =>
+	runGit(repo, args, { signal }).then(
 		(out) => out,
 		() => null,
 	);
@@ -103,10 +103,11 @@ interface Renames {
  */
 async function renamedPaths(
 	repo: string,
+	signal: AbortSignal,
 	left: string,
 	right: string,
 ): Promise<Renames | null> {
-	const out = await tryGit(repo, [
+	const out = await tryGit(repo, signal, [
 		LITERAL,
 		"diff",
 		"--no-color",
@@ -152,13 +153,22 @@ export class ThreadCodeSource {
 	readonly #renames = new Memo<Renames | null>((r) => r === null, 64);
 	readonly #files = new Memo<HunkLine[] | null>((lines) => lines === null, 256);
 
+	/** Stops every git call (close). */
+	readonly #stop = new AbortController();
+
 	constructor(
 		private readonly repo: string,
 		private readonly fetchCommit: (
 			repo: string,
 			oid: string,
+			signal?: AbortSignal,
 		) => Promise<boolean> = ensureCommit,
 	) {}
+
+	/** Stops its git calls, under way and to come (the session closing). */
+	close(): void {
+		this.#stop.abort();
+	}
 
 	/** Lets a Refresh retry what failed, and re-date the base branch. */
 	forgetFailures(): void {
@@ -171,13 +181,17 @@ export class ThreadCodeSource {
 
 	#commit(oid: string): Promise<boolean> {
 		return this.#commits.get(oid, () =>
-			this.fetchCommit(this.repo, oid).catch(() => false),
+			this.fetchCommit(this.repo, oid, this.#stop.signal).catch(() => false),
 		);
 	}
 
 	#mergeBase(commit: string, other: string): Promise<string | null> {
 		return this.#bases.get(`${commit} ${other}`, async () => {
-			const out = await tryGit(this.repo, ["merge-base", commit, other]);
+			const out = await tryGit(this.repo, this.#stop.signal, [
+				"merge-base",
+				commit,
+				other,
+			]);
 			const oid = out?.trim() ?? "";
 			return OID.test(oid) ? oid : null;
 		});
@@ -187,7 +201,7 @@ export class ThreadCodeSource {
 	#tip(ref: string, at: string): Promise<string | null> {
 		if (Number.isNaN(Date.parse(at))) return Promise.resolve(null);
 		return this.#tips.get(`${ref} ${at}`, async () => {
-			const out = await tryGit(this.repo, [
+			const out = await tryGit(this.repo, this.#stop.signal, [
 				"rev-list",
 				"-1",
 				"--first-parent",
@@ -234,14 +248,14 @@ export class ThreadCodeSource {
 		const { repo } = this;
 		return this.#files.get(JSON.stringify([left, commit, path]), async () => {
 			const renames = await this.#renames.get(`${left} ${commit}`, () =>
-				renamedPaths(repo, left, commit),
+				renamedPaths(repo, this.#stop.signal, left, commit),
 			);
 			if (!renames) return null;
 			const from = renames.from.get(path);
 			if (from !== undefined)
 				return this.#renamedLines(left, commit, from, path);
 			if (renames.old.has(path)) return null;
-			const diff = await tryGit(repo, [
+			const diff = await tryGit(repo, this.#stop.signal, [
 				LITERAL,
 				"diff",
 				"--no-color",
@@ -259,12 +273,26 @@ export class ThreadCodeSource {
 			if (files === 1) return parseDiffHunk(diff);
 			// No change: only when the file is the same blob on both sides.
 			const [oldBlob, newBlob] = await Promise.all([
-				tryGit(repo, ["rev-parse", "--verify", "--quiet", `${left}:${path}`]),
-				tryGit(repo, ["rev-parse", "--verify", "--quiet", `${commit}:${path}`]),
+				tryGit(repo, this.#stop.signal, [
+					"rev-parse",
+					"--verify",
+					"--quiet",
+					`${left}:${path}`,
+				]),
+				tryGit(repo, this.#stop.signal, [
+					"rev-parse",
+					"--verify",
+					"--quiet",
+					`${commit}:${path}`,
+				]),
 			]);
 			const blob = newBlob?.trim();
 			if (!blob || oldBlob?.trim() !== blob) return null;
-			const content = await tryGit(repo, ["cat-file", "blob", blob]);
+			const content = await tryGit(repo, this.#stop.signal, [
+				"cat-file",
+				"blob",
+				blob,
+			]);
 			return content === null ? null : contextLines(content);
 		});
 	}
@@ -281,7 +309,7 @@ export class ThreadCodeSource {
 		to: string,
 	): Promise<HunkLine[] | null> {
 		const { repo } = this;
-		const diff = await tryGit(repo, [
+		const diff = await tryGit(repo, this.#stop.signal, [
 			LITERAL,
 			"diff",
 			"--no-color",
@@ -305,7 +333,11 @@ export class ThreadCodeSource {
 		}
 		if (/^@@ /m.test(diff)) return parseDiffHunk(diff);
 		// Renamed as it was: the file itself.
-		const content = await tryGit(repo, ["cat-file", "blob", `${commit}:${to}`]);
+		const content = await tryGit(repo, this.#stop.signal, [
+			"cat-file",
+			"blob",
+			`${commit}:${to}`,
+		]);
 		return content === null ? null : contextLines(content);
 	}
 

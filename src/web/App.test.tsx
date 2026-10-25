@@ -1296,7 +1296,9 @@ describe("OverviewPage", () => {
 		expect(within(card).getByTestId("thread-place")).toHaveTextContent(
 			"src/cache.ts:42",
 		);
-		expect(within(card).getByTestId("thread-body-loading")).toBeVisible();
+		expect(within(card).getByTestId("thread-body-loading")).toHaveTextContent(
+			"Loading…",
+		);
 		expect(within(card).getByTestId("thread-code-loading")).toBeVisible();
 		expect(within(humans).getByText("1 unresolved")).toBeVisible();
 		release();
@@ -1311,10 +1313,76 @@ describe("OverviewPage", () => {
 		expect(within(card).queryByTestId("thread-body-loading")).toBeNull();
 	});
 
-	it("says when the threads couldn't all be read, keeping those that were", async () => {
+	it("says when the threads couldn't be read, leaving no list busy forever", async () => {
 		renderApp({ "/api/threads": { status: 502, body: { error: "gh broke" } } });
 		const ready = await screen.findByRole("region", { name: "Is it ready" });
 		expect(await within(ready).findByText("gh broke")).toBeVisible();
+		expect(within(ready).queryByTestId("threads-loading")).toBeNull();
+		expect(ready.querySelector("[aria-busy]")).toBeNull();
+	});
+
+	it("says which threads' text will never come, on the card and over the list", async () => {
+		renderApp({
+			"/api/overview": ok({
+				...overview,
+				threads: [
+					humanThread("src/gone.ts", {
+						unavailable: "deleted",
+						excerpt: "",
+						html: "",
+						createdAt: "2026-01-01T09:00:00Z",
+					}),
+					humanThread("src/no-id.ts", {
+						id: "",
+						unavailable: "unreadable",
+						excerpt: "",
+						html: "",
+						createdAt: "2026-01-01T08:00:00Z",
+					}),
+				],
+			}),
+		});
+		const ready = await screen.findByRole("region", { name: "Is it ready" });
+		const [gone, noId] = await within(ready).findAllByTestId(
+			"thread-body-unavailable",
+		);
+		expect(gone).toHaveTextContent("Deleted on GitHub");
+		expect(noId).toHaveTextContent("Couldn't be read from GitHub");
+		expect(
+			within(ready).getByText("1 thread couldn't be read from GitHub"),
+		).toBeVisible();
+		expect(within(ready).queryByTestId("thread-body-loading")).toBeNull();
+	});
+
+	it("keeps the previous read's threads in place, busy, until a Refresh's land", async () => {
+		const user = userEvent.setup();
+		renderApp({ "/api/refresh": ok(info) });
+		const humans = await screen.findByRole("region", { name: "Human reviews" });
+		expect(await within(humans).findAllByTestId("thread")).not.toHaveLength(0);
+		const routes = fetchMock.getMockImplementation();
+		fetchMock.mockImplementation(async (input, init) => {
+			const url = String(input);
+			if (url === "/api/overview") {
+				const { threads: _, ...rest } = overview;
+				return new Response(JSON.stringify({ ...rest, readId: "read2" }));
+			}
+			// The new read's threads take their time.
+			if (url.includes("read=read2")) return new Promise<Response>(() => {});
+			if (!routes) throw new Error("no mock");
+			return routes(input, init);
+		});
+		await user.click(screen.getByRole("button", { name: "Refresh" }));
+		await waitFor(() =>
+			expect(
+				fetchMock.mock.calls.some(([i]) => String(i).includes("read=read2")),
+			).toBe(true),
+		);
+		// Still the old cards, marked busy; no frames in their place.
+		expect(within(humans).getAllByTestId("thread")).not.toHaveLength(0);
+		expect(
+			within(humans).getByRole("list", { name: "Unresolved threads" }),
+		).toHaveAttribute("aria-busy", "true");
+		expect(within(humans).queryByTestId("threads-loading")).toBeNull();
 	});
 
 	it("shows the overview's error message", async () => {

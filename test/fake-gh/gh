@@ -125,11 +125,10 @@ switch (cmd) {
 			const all = Object.entries(s.prs).flatMap(([n, p]) =>
 				threadNodes(n, p.graphql?.reviewThreads ?? []),
 			);
-			print({
-				data: {
-					nodes: ids.map((id) => {
-						const node = all.find((t) => t.id === id);
-						if (!node) return null;
+			const gone = new Set(s.deletedThreads ?? []);
+			const nodes = ids.map((id) => {
+				const node = gone.has(id) ? undefined : all.find((t) => t.id === id);
+				if (!node) return null;
 						const first = node.first?.nodes?.[0] ?? {};
 						return {
 							id,
@@ -144,9 +143,26 @@ switch (cmd) {
 								],
 							},
 						};
-					}),
-				},
 			});
+			const missing = ids.flatMap((id, i) => (nodes[i] ? [] : [[id, i]]));
+			if (missing.length) {
+				// Like GitHub: the data, an error per missing node, and gh exits 1.
+				process.stdout.write(
+					`${JSON.stringify({
+						data: { nodes },
+						errors: missing.map(([id, i]) => ({
+							type: "NOT_FOUND",
+							path: ["nodes", i],
+							locations: [{ line: 1, column: 9 }],
+							message: `Could not resolve to a node with the global id of '${id}'`,
+						})),
+					})}\n`,
+				);
+				fail(
+					`gh: Could not resolve to a node with the global id of '${missing[0][0]}'`,
+				);
+			}
+			print({ data: { nodes } });
 		}
 		const conn = /(\w+)\((?:first: \d+, after: \$endCursor|last: \d+)\)/.exec(
 			f.query,

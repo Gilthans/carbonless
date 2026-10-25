@@ -25,6 +25,11 @@ export interface Scenario {
 	threadsDelayMs?: number;
 	/** Each read of threads' opening comments by id answers this late. */
 	threadContentDelayMs?: number;
+	/**
+	 * Thread ids (`T<pr>-<index>`) deleted since their list was read: their
+	 * content comes back null with a NOT_FOUND error, and gh exits 1.
+	 */
+	deletedThreads?: string[];
 	/** Nodes per GraphQL page (default 100, like gh.ts asks for). */
 	pageSize?: number;
 	/**
