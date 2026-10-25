@@ -87,9 +87,10 @@ describe("ThreadCodeSource.rebuild", () => {
 			startLine: 10,
 			endLine: 10,
 		});
-		expect(marked(left, (await s.rebuild(base, left, "a.txt")) ?? "")).toEqual([
-			"line 10",
-		]);
+		const then = { baseRef: base, at: new Date().toISOString() };
+		expect(
+			marked(left, (await s.rebuild(base, left, "a.txt", then)) ?? ""),
+		).toEqual(["line 10"]);
 		// Numbers past an addition differ per side; each side keeps its own.
 		const after = code({ endLine: 18, startLine: 18 });
 		expect(
@@ -134,6 +135,31 @@ describe("ThreadCodeSource.rebuild", () => {
 		}
 	});
 
+	it("shows the old side only when the base then gives the same one", async () => {
+		const left = code({
+			side: "LEFT",
+			startSide: "LEFT",
+			startLine: 10,
+			endLine: 10,
+		});
+		// Without the base then, or with no base commit by then: no code.
+		expect(await source().rebuild(base, left, "a.txt")).toBeNull();
+		expect(
+			await source().rebuild(base, left, "a.txt", {
+				baseRef: base,
+				at: "2000-01-01T00:00:00Z",
+			}),
+		).toBeNull();
+		// A range starting on the old side counts too.
+		expect(
+			await source().rebuild(
+				base,
+				code({ startSide: "LEFT", startLine: 10, endLine: 10 }),
+				"a.txt",
+			),
+		).toBeNull();
+	});
+
 	it("gives up on a renamed file rather than show it all added", async () => {
 		expect(
 			await source().rebuild(
@@ -156,11 +182,7 @@ describe("ThreadCodeSource.rebuild", () => {
 		expect(await s.rebuild(base, code({ endLine: 99 }), "a.txt")).toBeNull();
 		// The end is there but not the start: never a shrunken range.
 		expect(
-			await s.rebuild(
-				base,
-				code({ startLine: 99, endLine: 10, startSide: "LEFT" }),
-				"a.txt",
-			),
+			await s.rebuild(base, code({ startLine: 12, endLine: 10 }), "a.txt"),
 		).toBeNull();
 		expect(await s.rebuild(base, code({}), "gone.txt")).toBeNull();
 		expect(

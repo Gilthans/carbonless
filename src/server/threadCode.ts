@@ -172,14 +172,23 @@ export class ThreadCodeSource {
 	/**
 	 * The code of a line comment GitHub kept no hunk for: the file's diff at
 	 * the comment's commit against that commit's merge base with `base` (the
-	 * snapshot's), cut like GitHub's hunk. Null, never a guess, when any git
-	 * step fails, the commit or file or either end of the range is missing,
-	 * the file was renamed (its old side is another path),
-	 * or the diff isn't exactly one file.
+	 * snapshot's), cut like GitHub's hunk. A range on the old side also needs
+	 * `then` to show that old side is the one the comment saw. Null, never a
+	 * guess, when any git step fails, the commit or file or either end of
+	 * the range is missing, the file was renamed (its old side is another
+	 * path), or the diff isn't exactly one file.
 	 */
-	rebuild(base: string, code: Code, path: string): Promise<string | null> {
+	rebuild(
+		base: string,
+		code: Code,
+		path: string,
+		/** For a range on the old side: the base branch and the comment's time. */
+		then?: { baseRef: string; at: string },
+	): Promise<string | null> {
 		const key = JSON.stringify([
 			base,
+			then?.baseRef,
+			then?.at,
 			code.commit,
 			path,
 			code.side,
@@ -188,23 +197,63 @@ export class ThreadCodeSource {
 			code.endLine,
 		]);
 		return this.#cached(this.#hunks, key, () =>
-			this.#rebuild(base, code, path).catch(() => null),
+			this.#rebuild(base, code, path, then).catch(() => null),
 		);
 	}
 
-	async #rebuild(base: string, code: Code, path: string) {
+	#mergeBase(commit: string, other: string): Promise<string | null> {
+		return this.#cached(this.#bases, `${commit} ${other}`, async () => {
+			const out = await tryGit(this.repo, ["merge-base", commit, other]);
+			const oid = out?.trim() ?? "";
+			return /^[0-9a-f]{40,64}$/.test(oid) ? oid : null;
+		});
+	}
+
+	/**
+	 * Whether the old side the comment was written against is `left`: the
+	 * merge base with the base branch as it stood when the comment was made
+	 * (its last first-parent commit by then) must be the same commit.
+	 */
+	async #sameOldSide(
+		commit: string,
+		left: string,
+		then: { baseRef: string; at: string } | undefined,
+	): Promise<boolean> {
+		if (!then || Number.isNaN(Date.parse(then.at))) return false;
+		const tip = await this.#cached(
+			this.#bases,
+			`tip ${then.baseRef} ${then.at}`,
+			async () =>
+				(
+					await tryGit(this.repo, [
+						"rev-list",
+						"-1",
+						"--first-parent",
+						`--before=${then.at}`,
+						then.baseRef,
+						"--",
+					])
+				)?.trim() || null,
+		);
+		return tip !== null && (await this.#mergeBase(commit, tip)) === left;
+	}
+
+	async #rebuild(
+		base: string,
+		code: Code,
+		path: string,
+		then: { baseRef: string; at: string } | undefined,
+	) {
 		const { repo } = this;
 		if (!(await this.#commit(code.commit))) return null;
-		const left = await this.#cached(
-			this.#bases,
-			`${code.commit} ${base}`,
-			async () => {
-				const out = await tryGit(repo, ["merge-base", code.commit, base]);
-				const oid = out?.trim() ?? "";
-				return /^[0-9a-f]{40,64}$/.test(oid) ? oid : null;
-			},
-		);
+		const left = await this.#mergeBase(code.commit, base);
 		if (!left) return null;
+		// Old-side text must be right or absent: only when the base then
+		// gives the same old side as the snapshot's does.
+		const old = code.side === "LEFT" || code.startSide === "LEFT";
+		if (old && !(await this.#sameOldSide(code.commit, left, then))) {
+			return null;
+		}
 		const renamed = await this.#cached(
 			this.#renames,
 			`${left} ${code.commit}`,
@@ -248,7 +297,12 @@ export class ThreadCodeSource {
 	 * Fills in the code of every thread GitHub returned without a diff hunk,
 	 * a few at a time; a thread whose code can't be rebuilt gets none.
 	 */
-	async fill(base: string, overview: PrOverview): Promise<PrOverview> {
+	async fill(
+		base: string,
+		overview: PrOverview,
+		/** The base branch's ref, for ranges on the old side. */
+		baseRef?: string,
+	): Promise<PrOverview> {
 		const threads = [...overview.threads];
 		let next = 0;
 		const work = async () => {
@@ -256,7 +310,12 @@ export class ThreadCodeSource {
 				const thread = threads[i];
 				const code = thread?.code;
 				if (!thread || !code || code.diffHunk) continue;
-				const diffHunk = await this.rebuild(base, code, thread.path);
+				const diffHunk = await this.rebuild(
+					base,
+					code,
+					thread.path,
+					baseRef ? { baseRef, at: thread.createdAt } : undefined,
+				);
 				threads[i] = {
 					...thread,
 					code: diffHunk ? { ...code, diffHunk } : null,

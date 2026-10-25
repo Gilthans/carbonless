@@ -173,7 +173,11 @@ export class Session {
 			asOf ? { at: asOf, head: this.#meta.headOid } : undefined,
 		);
 		// GitHub sometimes keeps no diff hunk for a line comment: rebuild it.
-		return this.#threadCode.fill(this.#snapshot.base, overview);
+		return this.#threadCode.fill(
+			this.#snapshot.base,
+			overview,
+			`refs/remotes/origin/${this.#meta.baseBranch}`,
+		);
 	}
 
 	async review(): Promise<ReviewView> {
