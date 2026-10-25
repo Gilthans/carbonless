@@ -209,7 +209,7 @@ export function Tooltip(props: {
 						top: pos?.top ?? 0,
 						visibility: pos ? "visible" : "hidden",
 					}}
-					className="pointer-events-none fixed z-[1000] w-max max-w-[min(20rem,calc(100vw-1rem))] rounded-md bg-slate-900 px-2 py-1 text-xs leading-5 font-normal whitespace-normal text-white shadow-lg"
+					className="pointer-events-none fixed z-[1000] w-max max-w-[min(20rem,calc(100vw-1rem))] rounded-md border border-edge bg-overlay px-2 py-1 text-xs leading-5 font-normal whitespace-normal text-ink shadow-[0_8px_24px_-6px_rgb(0_0_0/0.7)]"
 				>
 					{props.content}
 				</span>,

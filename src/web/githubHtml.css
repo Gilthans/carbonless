@@ -19,11 +19,47 @@
 	list-style-type: decimal;
 }
 
-/* The doubled class wins regardless of stylesheet order. */
+/*
+ * The doubled class wins regardless of stylesheet order. GitHub's dark
+ * theme, moved onto the app's tokens: text, links, code and table surfaces,
+ * and borders. Its alert and syntax colors stay GitHub's.
+ */
 .markdown-body.markdown-body {
 	font-size: 14px;
 	background-color: transparent;
+	color: var(--color-ink);
+	font-family: var(--font-sans);
 	overflow-wrap: anywhere;
+}
+
+.markdown-body.markdown-body a {
+	color: var(--color-link);
+}
+
+.markdown-body.markdown-body :is(code, tt, pre, .highlight pre) {
+	background-color: var(--color-overlay);
+}
+
+.markdown-body.markdown-body pre code {
+	background-color: transparent;
+}
+
+.markdown-body.markdown-body :is(h1, h2, hr, table th, table td, img) {
+	border-color: var(--color-line);
+}
+
+.markdown-body.markdown-body table tr {
+	background-color: var(--color-surface);
+	border-color: var(--color-line);
+}
+
+.markdown-body.markdown-body table tr:nth-child(2n) {
+	background-color: var(--color-raised);
+}
+
+.markdown-body.markdown-body blockquote {
+	color: var(--color-muted);
+	border-left-color: var(--color-edge);
 }
 
 /* No horizontal page scroll on phones: wide content scrolls in place. */

@@ -81,17 +81,20 @@ function FilesSheet(props: {
 			onKeyDown={(event) => {
 				if (event.key === "Escape") props.onClose();
 			}}
-			className="m-0 mt-auto h-[85dvh] max-h-none w-full max-w-none overflow-hidden rounded-t-xl bg-white p-0 shadow-xl backdrop:bg-slate-900/40"
+			className="m-0 mt-auto h-[85dvh] max-h-none w-full max-w-none overflow-hidden rounded-t-2xl border-t border-edge bg-surface p-0 text-ink shadow-[0_-12px_40px_rgb(0_0_0/0.6)] backdrop:bg-canvas/70 backdrop:backdrop-blur-[2px]"
 		>
 			<div className="flex h-full flex-col">
-				<div className="flex items-center justify-between border-b border-slate-200 px-4 py-1">
-					<h2 id="files-sheet-title" className="font-semibold">
+				<div className="flex items-center justify-between border-b border-line px-4 py-1">
+					<h2
+						id="files-sheet-title"
+						className="text-xs font-semibold tracking-[0.18em] text-label uppercase"
+					>
 						Files
 					</h2>
 					<button
 						type="button"
 						onClick={props.onClose}
-						className="h-10 rounded-md px-3 text-sm font-medium hover:bg-slate-100 focus-visible:outline-2 focus-visible:outline-blue-600"
+						className="h-10 rounded-md px-3 text-sm font-medium hover:bg-overlay focus-visible:outline-2 focus-visible:outline-accent"
 					>
 						Close
 					</button>
@@ -275,7 +278,7 @@ export function FilesPage() {
 			style={{ "--files-bar": `${barHeight}px` } as CSSProperties}
 		>
 			<h2 className="sr-only">Files changed</h2>
-			{review.isPending && <p className="text-slate-500">Loading the diff…</p>}
+			{review.isPending && <p className="text-muted">Loading the diff…</p>}
 			{review.isError && <ErrorMessage error={review.error} />}
 			{data && (
 				<>
@@ -288,13 +291,13 @@ export function FilesPage() {
 					{stale && (
 						<p
 							role="status"
-							className="mt-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900"
+							className="mt-3 rounded-md border border-warn/30 bg-warn/10 px-3 py-2 text-sm text-ink"
 						>
 							{STALE_MESSAGE}
 						</p>
 					)}
 					{data.files.length === 0 ? (
-						<p className="mt-4 text-slate-600">This PR changes no files.</p>
+						<p className="mt-4 text-muted">This PR changes no files.</p>
 					) : (
 						<div className="mt-4 flex gap-4">
 							{wide && (
@@ -330,7 +333,7 @@ export function FilesPage() {
 								aria-label="Files"
 								aria-haspopup="dialog"
 								onClick={() => setSheetOpen(true)}
-								className="fixed right-4 bottom-4 z-30 flex h-12 items-center gap-2 rounded-full bg-slate-900 px-5 text-sm font-semibold text-white shadow-lg hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-600"
+								className="fixed right-4 bottom-4 z-30 flex h-12 items-center gap-2 cta rounded-full px-5 text-sm font-semibold text-ink hover:brightness-110 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
 							>
 								<span aria-hidden>☰</span>
 								Files

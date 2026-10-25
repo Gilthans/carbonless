@@ -26,10 +26,10 @@ export function crossOffReasons(file: FileView): string[] {
 }
 
 const ICON: Record<FileProgress, { glyph: string; className: string }> = {
-	"not started": { glyph: "○", className: "text-slate-400" },
-	"partly done": { glyph: "◐", className: "text-amber-600" },
-	done: { glyph: "✓", className: "text-green-700" },
-	"crossed off": { glyph: "⊘", className: "text-purple-600" },
+	"not started": { glyph: "○", className: "text-unreviewed" },
+	"partly done": { glyph: "◐", className: "text-warn" },
+	done: { glyph: "✓", className: "text-ok" },
+	"crossed off": { glyph: "⊘", className: "text-done" },
 };
 
 /** Mouse handlers a decorative piece forwards to the header's one tooltip. */
@@ -97,8 +97,8 @@ export function clusterCount(file: FileView): string {
 export function AddDel({ file }: { file: FileView }) {
 	return (
 		<span className="shrink-0 font-mono text-xs tabular-nums">
-			<span className="text-green-700">+{file.additions}</span>{" "}
-			<span className="text-red-700">−{file.deletions}</span>
+			<span className="text-ok">+{file.additions}</span>{" "}
+			<span className="text-bad">−{file.deletions}</span>
 		</span>
 	);
 }
@@ -123,10 +123,10 @@ export function ChangeCount({
 		<NamedGlyph
 			label={label}
 			hover={hover}
-			className="inline-flex shrink-0 items-center gap-0.5 font-mono text-xs text-slate-600 tabular-nums"
+			className="inline-flex shrink-0 items-center gap-0.5 font-mono text-xs text-muted tabular-nums"
 		>
 			{file.clusters.length}
-			<StackIcon size={12} className="text-slate-400" />
+			<StackIcon size={12} className="text-faint" />
 		</NamedGlyph>
 	);
 }

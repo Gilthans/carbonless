@@ -172,7 +172,7 @@ export function RelativeTime(props: {
 					// Focusable so keyboard users can open the exact date too.
 					// biome-ignore lint/a11y/noNoninteractiveTabindex: the tooltip opens on focus.
 					tabIndex={0}
-					className={`cursor-help rounded-sm underline decoration-slate-300 decoration-dotted underline-offset-2 focus-visible:outline-2 focus-visible:outline-blue-600 ${props.className ?? ""}`}
+					className={`cursor-help rounded-sm underline decoration-faint decoration-dotted underline-offset-2 focus-visible:outline-2 focus-visible:outline-accent ${props.className ?? ""}`}
 				>
 					{relativeTime(date, nowMs, props.locale)}
 				</time>

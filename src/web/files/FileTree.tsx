@@ -90,14 +90,16 @@ function FileItem(props: {
 						aria-current={props.current ? "true" : undefined}
 						onClick={() => props.onSelect(file.index)}
 						style={indent(props.depth)}
-						className={`flex w-full items-center gap-1.5 rounded py-0.5 pr-1 pointer-coarse:min-h-10 text-left text-sm hover:bg-slate-100 focus-visible:outline-2 focus-visible:outline-blue-600 ${
-							props.current ? "bg-blue-50 font-medium text-blue-900" : ""
+						className={`flex w-full items-center gap-1.5 rounded-md py-0.5 pr-1 pointer-coarse:min-h-10 text-left text-sm transition-colors hover:bg-overlay focus-visible:outline-2 focus-visible:outline-accent motion-reduce:transition-none ${
+							props.current
+								? "bg-accent/12 text-ink shadow-[inset_2px_0_0_var(--color-accent)]"
+								: "text-ink-soft"
 						}`}
 					>
 						<StatusIcon file={file} />
-						<span className="min-w-0 flex-1 truncate">
+						<span className="min-w-0 flex-1 truncate font-mono text-[0.8125rem]">
 							{file.crossedOff ? (
-								<s className="text-slate-500">{name}</s>
+								<s className="text-muted decoration-done">{name}</s>
 							) : (
 								name
 							)}
@@ -105,7 +107,7 @@ function FileItem(props: {
 								crossOffReasons(file).map((reason) => (
 									<span
 										key={reason}
-										className="ml-1 rounded bg-purple-100 px-1 text-xs text-purple-800"
+										className="ml-1 rounded bg-crossed/20 px-1 font-sans text-xs text-done"
 									>
 										{reason}
 									</span>
@@ -159,9 +161,9 @@ function Children(props: {
 								<div
 									{...trigger}
 									style={indent(props.depth)}
-									className="truncate py-0.5 text-sm text-slate-600"
+									className="truncate py-0.5 font-mono text-[0.8125rem] text-muted"
 								>
-									<span aria-hidden className="mr-1 text-slate-400">
+									<span aria-hidden className="mr-1 text-faint">
 										▾
 									</span>
 									{node.folder.name}

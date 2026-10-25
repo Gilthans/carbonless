@@ -16,20 +16,25 @@ import { CONTROLS, SLOT, useStickyControls } from "./stickyControls";
 const COLUMNS = 5;
 
 const RAIL: Record<ClusterView["state"], string> = {
-	unreviewed: "bg-slate-300",
-	reviewed: "bg-green-500",
-	"crossed-off": "bg-purple-500",
+	unreviewed: "bg-unreviewed",
+	reviewed: "bg-ok-fill",
+	"crossed-off": "hatch",
 };
 
 const ROW_BG: Record<DiffLine["kind"], string> = {
 	context: "",
-	add: "bg-green-50",
-	del: "bg-red-50",
+	add: "bg-add",
+	del: "bg-del",
 };
 const NUMBER_BG: Record<DiffLine["kind"], string> = {
-	context: "text-slate-400",
-	add: "bg-green-100 text-green-800",
-	del: "bg-red-100 text-red-800",
+	context: "text-faint",
+	add: "bg-add-gutter text-add-ink",
+	del: "bg-del-gutter text-del-ink",
+};
+const SIGN_COLOR: Record<DiffLine["kind"], string> = {
+	context: "text-faint",
+	add: "text-add-ink",
+	del: "text-del-ink",
 };
 const SIGN: Record<DiffLine["kind"], string> = {
 	context: " ",
@@ -66,10 +71,10 @@ function Code({ text, lang }: { text: string; lang: string | null }) {
 	);
 }
 
-/** The left rail: cluster state, blue while the cluster has focus or the pointer. */
+/** The left rail: cluster state, the accent while the cluster has focus or the pointer. */
 function Rail({ state }: { state?: ClusterView["state"] }) {
 	const color = state
-		? `${RAIL[state]} group-hover:bg-blue-500 group-focus-within:bg-blue-500`
+		? `${RAIL[state]} group-hover:bg-accent group-hover:bg-none group-focus-within:bg-accent group-focus-within:bg-none`
 		: "";
 	return <td aria-hidden className={`w-1 min-w-1 p-0 ${color}`} />;
 }
@@ -102,7 +107,10 @@ function LineRow(props: {
 					{line.newNo}
 				</td>
 				<td className={`px-2 whitespace-pre ${dim}`}>
-					<span aria-hidden className="mr-2 select-none text-slate-400">
+					<span
+						aria-hidden
+						className={`mr-2 select-none ${SIGN_COLOR[line.kind]}`}
+					>
 						{SIGN[line.kind]}
 					</span>
 					<Code text={line.text} lang={props.lang} />
@@ -111,7 +119,7 @@ function LineRow(props: {
 			{line.noNewline && (
 				<tr>
 					<Rail state={state} />
-					<td colSpan={COLUMNS - 1} className="px-2 text-slate-500 italic">
+					<td colSpan={COLUMNS - 1} className="px-2 text-muted italic">
 						{"\\ No newline at end of file"}
 					</td>
 				</tr>
@@ -145,7 +153,7 @@ function ClusterControls(props: {
 		<span {...{ [SLOT]: "" }} className="block">
 			<span
 				{...{ [CONTROLS]: "" }}
-				className="z-[5] flex w-fit items-center gap-1 rounded-md pointer-coarse:gap-0 data-[stuck]:bg-white data-[stuck]:shadow-md data-[stuck]:ring-1 data-[stuck]:ring-slate-300"
+				className="z-[5] flex w-fit items-center gap-1 rounded-md pointer-coarse:gap-0 data-[stuck]:bg-raised data-[stuck]:shadow-[0_6px_18px_-4px_rgb(0_0_0/0.7)] data-[stuck]:ring-1 data-[stuck]:ring-line-strong"
 			>
 				<label
 					data-testid="cluster-box-target"
@@ -162,7 +170,7 @@ function ClusterControls(props: {
 						disabled={props.disabled}
 						onChange={() => props.onToggle(props.cluster)}
 						className={`h-3.5 w-3.5 cursor-pointer disabled:cursor-wait ${
-							crossedOff ? "accent-purple-600" : "accent-green-600"
+							crossedOff ? "accent-crossed" : "accent-ok-fill"
 						}`}
 					/>
 				</label>
@@ -178,14 +186,14 @@ function ClusterControls(props: {
 							aria-pressed={crossedOff}
 							disabled={props.disabled || props.cluster.state === "reviewed"}
 							onClick={() => props.onCrossOff(props.cluster)}
-							className={`${target} group/x rounded focus-visible:outline-2 focus-visible:outline-blue-600 disabled:cursor-not-allowed disabled:opacity-30`}
+							className={`${target} group/x rounded focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-30`}
 						>
 							<span
 								aria-hidden
 								className={`flex h-4 w-4 items-center justify-center rounded font-sans text-xs leading-none ${
 									crossedOff
-										? "bg-purple-600 text-white"
-										: "text-purple-700 group-hover/x:bg-purple-100"
+										? "bg-crossed-strong text-ink"
+										: "text-done group-hover/x:bg-crossed/25"
 								}`}
 							>
 								⊘
@@ -203,7 +211,7 @@ function CrossedOffNote(props: { cluster: ClusterView; id?: string }) {
 	return (
 		<span
 			id={props.id}
-			className="ml-2 rounded bg-purple-100 px-1 font-sans text-purple-800"
+			className="ml-2 rounded bg-crossed/20 px-1 font-sans text-done"
 		>
 			{props.cluster.reason
 				? `Crossed off: ${props.cluster.reason}`
@@ -349,7 +357,7 @@ export function DiffBody(props: {
 			<tbody key={`gap${gap.index}`}>
 				{contextRows(gap.from, gap.from + top - 1)}
 				{(remaining > 0 || pending || failed.length > 0) && (
-					<tr className="bg-blue-50 text-slate-600">
+					<tr className="bg-hunk text-hunk-ink">
 						<td colSpan={2} className="px-1">
 							<div className="flex">
 								{buttons.map((b) => (
@@ -360,7 +368,7 @@ export function DiffBody(props: {
 												{...trigger}
 												aria-label={b.label}
 												onClick={() => addRange(b.from, b.to)}
-												className="rounded px-1 hover:bg-blue-200 focus-visible:outline-2 focus-visible:outline-blue-600"
+												className="rounded px-1 hover:bg-pressed hover:text-ink focus-visible:outline-2 focus-visible:outline-accent"
 											>
 												{b.glyph}
 											</button>
@@ -371,14 +379,14 @@ export function DiffBody(props: {
 						</td>
 						<td colSpan={COLUMNS - 2} className="px-2 font-sans">
 							{failed.length > 0 ? (
-								<span role="alert" className="text-red-800">
+								<span role="alert" className="text-bad">
 									{failed[0]?.error?.message}{" "}
 									<button
 										type="button"
 										onClick={() => {
 											for (const f of failed) void f.refetch();
 										}}
-										className="rounded border border-red-300 bg-white px-1.5 text-xs hover:bg-red-50 focus-visible:outline-2 focus-visible:outline-blue-600"
+										className="rounded border border-bad/60 px-1.5 text-xs hover:bg-bad/15 focus-visible:outline-2 focus-visible:outline-accent"
 									>
 										Retry
 									</button>
@@ -404,7 +412,7 @@ export function DiffBody(props: {
 	return (
 		<div ref={root}>
 			<div ref={scroller} className="overflow-x-auto">
-				<table className="min-w-full border-collapse font-mono text-xs leading-5">
+				<table className="min-w-full border-collapse bg-code font-mono text-xs leading-5 text-code-ink">
 					{fileClusters.map((cluster) => (
 						<tbody key={cluster.key} className="group">
 							<tr className={cluster.state === "reviewed" ? "opacity-60" : ""}>
@@ -440,7 +448,7 @@ export function DiffBody(props: {
 			{hunks.isPending && (
 				// A screen tall while loading, so a file picked in the tree can
 				// scroll its header to the top before its lines arrive.
-				<p className="min-h-[100dvh] px-3 py-2 text-sm text-slate-500">
+				<p className="min-h-[100dvh] px-3 py-2 text-sm text-muted">
 					Loading diff…
 				</p>
 			)}
@@ -464,7 +472,7 @@ function HunkRows(props: {
 	return (
 		<>
 			<tbody>
-				<tr className="bg-blue-50 text-slate-500">
+				<tr className="bg-hunk text-hunk-ink">
 					<td colSpan={COLUMNS} className="px-2 py-0.5">
 						{hunkHeader(props.hunk)}
 					</td>

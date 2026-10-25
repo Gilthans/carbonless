@@ -12,7 +12,7 @@ export function HeadBanner({ info }: { info: SessionInfo }) {
 		return (
 			<div
 				role="status"
-				className="border-y border-sky-200 bg-sky-50 text-sm text-sky-900"
+				className="border-y border-accent/30 bg-accent/10 text-sm text-ink"
 			>
 				<p className="mx-auto max-w-5xl px-4 py-2 break-words sm:px-6">
 					New commits were pushed to this PR. Press Refresh to load them.
@@ -24,7 +24,7 @@ export function HeadBanner({ info }: { info: SessionInfo }) {
 	return (
 		<div
 			role="status"
-			className="border-y border-amber-200 bg-amber-50 text-sm text-amber-900"
+			className="border-y border-warn/30 bg-warn/10 text-sm text-ink"
 		>
 			<p className="mx-auto max-w-5xl px-4 py-2 break-words sm:px-6">
 				<span>
@@ -39,7 +39,7 @@ export function HeadBanner({ info }: { info: SessionInfo }) {
 							href={href}
 							target="_blank"
 							rel="noreferrer"
-							className="font-medium underline"
+							className="font-medium text-link underline"
 						>
 							Open the PR on GitHub
 						</a>

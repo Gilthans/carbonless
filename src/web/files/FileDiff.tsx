@@ -23,12 +23,12 @@ const MAX_CHANGES = 1000;
 
 const tones = {
 	purple: {
-		idle: "border-purple-400 bg-white text-purple-700 group-[:enabled:hover]:bg-purple-50",
+		idle: "border-crossed text-done group-[:enabled:hover]:bg-crossed/20",
 		pressed:
-			"border-purple-600 bg-purple-600 text-white group-[:enabled:hover]:bg-purple-700",
+			"border-crossed-strong bg-crossed-strong text-ink group-[:enabled:hover]:border-crossed group-[:enabled:hover]:bg-crossed",
 	},
 	green: {
-		idle: "border-green-500 bg-white text-green-700 group-[:enabled:hover]:bg-green-50",
+		idle: "border-ok-fill text-ok group-[:enabled:hover]:bg-ok/15",
 		pressed: "",
 	},
 };
@@ -67,11 +67,11 @@ function HeaderIconButton(props: {
 						aria-pressed={props.pressed}
 						disabled={props.disabled}
 						onClick={props.onClick}
-						className="group flex h-10 w-10 shrink-0 items-center justify-center rounded-md focus-visible:outline-2 focus-visible:outline-blue-600 disabled:cursor-not-allowed @lg:h-8 @lg:w-8 pointer-coarse:@lg:h-10 pointer-coarse:@lg:w-10"
+						className="group flex h-10 w-10 shrink-0 items-center justify-center rounded-md focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-not-allowed @lg:h-8 @lg:w-8 pointer-coarse:@lg:h-10 pointer-coarse:@lg:w-10"
 					>
 						<span
 							aria-hidden
-							className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-md border-2 font-sans text-base leading-none group-disabled:border-slate-300 group-disabled:bg-transparent group-disabled:text-slate-400 ${
+							className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-md border-2 font-sans text-base leading-none transition-colors group-disabled:border-line group-disabled:bg-transparent group-disabled:text-faint motion-reduce:transition-none ${
 								props.pressed ? tone.pressed : tone.idle
 							}`}
 						>
@@ -133,7 +133,7 @@ function PathScroller({
 						tabIndex={0}
 						data-testid="file-path"
 						onScroll={(event) => setClipped(event.currentTarget.scrollLeft > 0)}
-						className="overflow-x-auto rounded font-mono text-sm whitespace-nowrap [scrollbar-width:thin] focus-visible:outline-2 focus-visible:outline-blue-600"
+						className="overflow-x-auto rounded font-mono text-sm whitespace-nowrap text-ink [scrollbar-width:thin] focus-visible:outline-2 focus-visible:outline-accent"
 					>
 						<span ref={inner} className="inline-block py-1">
 							{text}
@@ -145,7 +145,7 @@ function PathScroller({
 				<span
 					aria-hidden
 					data-testid="path-fade"
-					className="pointer-events-none absolute inset-y-0 left-0 flex w-6 items-center bg-gradient-to-r from-slate-50 from-40% to-transparent font-mono text-sm text-slate-400"
+					className="pointer-events-none absolute inset-y-0 left-0 flex w-6 items-center bg-gradient-to-r from-raised from-40% to-transparent font-mono text-sm text-faint"
 				>
 					…
 				</span>
@@ -180,9 +180,9 @@ function FileProgress(props: {
 			// Focusable so keyboard and touch users can read the tooltip.
 			// biome-ignore lint/a11y/noNoninteractiveTabindex: the tooltip opens on focus.
 			tabIndex={0}
-			className="flex h-9 w-28 shrink-0 flex-col justify-center gap-1 rounded-sm focus-visible:outline-2 focus-visible:outline-blue-600 @lg:order-6 @2xl:w-48"
+			className="flex h-9 w-28 shrink-0 flex-col justify-center gap-1 rounded-sm focus-visible:outline-2 focus-visible:outline-accent @lg:order-6 @2xl:w-48"
 		>
-			<span className="truncate text-right text-xs text-slate-600 tabular-nums">
+			<span className="truncate text-right text-xs text-muted tabular-nums">
 				<span className="@2xl:hidden">
 					{formatFileProgress(p, unit, { short: true })}
 				</span>
@@ -292,12 +292,12 @@ export function FileDiff(props: {
 			id={`file-${file.index}`}
 			data-file-index={file.index}
 			aria-label={file.path}
-			className="overflow-clip rounded-md border border-slate-200"
+			className="overflow-clip rounded-lg border border-line bg-surface"
 		>
 			<header
 				// Square corners: the section clips them at the top, and a stuck
 				// header must not let lines show through.
-				className={`@container border-b border-slate-200 bg-slate-50 px-1.5 ${
+				className={`@container border-b border-line bg-raised px-1.5 ${
 					expanded
 						? "sticky top-[calc(var(--app-header,0px)+var(--files-bar,0px))] z-10"
 						: ""
@@ -320,7 +320,7 @@ export function FileDiff(props: {
 								aria-expanded={expanded}
 								aria-label={expanded ? "Collapse file" : "Expand file"}
 								onClick={() => setExpanded(!expanded)}
-								className="flex h-10 w-10 shrink-0 items-center justify-center rounded text-slate-600 hover:bg-slate-200 focus-visible:outline-2 focus-visible:outline-blue-600 @lg:order-1"
+								className="flex h-10 w-10 shrink-0 items-center justify-center rounded text-muted hover:bg-overlay hover:text-ink focus-visible:outline-2 focus-visible:outline-accent @lg:order-1"
 							>
 								{expanded ? "▾" : "▸"}
 							</button>

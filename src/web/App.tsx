@@ -15,6 +15,7 @@ import {
 	reviewQuery,
 	sessionQuery,
 } from "./api";
+import { Logo, Mark, Wordmark } from "./brand/Brand";
 import { HeadBanner } from "./HeadBanner";
 import { KeptPages, useActivePage } from "./pages";
 import { AppHeaderHeight } from "./sticky";
@@ -22,8 +23,10 @@ import { Tooltip } from "./Tooltip";
 import { ErrorMessage, safeHref } from "./ui";
 
 const tabClass =
-	"-mb-px flex min-h-11 shrink-0 items-center border-b-2 border-transparent px-2.5 text-sm whitespace-nowrap text-slate-600 hover:text-slate-900 focus-visible:outline-2 focus-visible:outline-blue-600 sm:px-3";
-const activeTabClass = "border-orange-500 font-semibold text-slate-900";
+	"relative flex min-h-11 shrink-0 items-center rounded-t-md px-2.5 text-sm font-medium whitespace-nowrap text-muted transition-colors hover:text-ink focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent motion-reduce:transition-none sm:px-3";
+// The active tab's underline is the brand gradient, over the header's border.
+const activeTabClass =
+	"font-semibold text-ink after:absolute after:inset-x-1.5 after:-bottom-px after:h-0.5 after:rounded-full after:brand-rule";
 
 /** Scroll distance over which the compact title fades in before sticking. */
 export const COMPACT_RAMP = 40;
@@ -128,6 +131,14 @@ export function App() {
 	const wide = useActivePage() === "/files";
 	const pr = session.data?.pr;
 	const prUrl = safeHref(pr?.url);
+	// The tab names the PR, so several reviews open side by side tell apart.
+	useEffect(() => {
+		if (!pr) return;
+		document.title = `${pr.title} #${pr.number} · carbonless`;
+		return () => {
+			document.title = "carbonless";
+		};
+	}, [pr]);
 
 	const header = useRef<HTMLElement>(null);
 	const row = useRef<HTMLDivElement>(null);
@@ -151,18 +162,22 @@ export function App() {
 
 	return (
 		<AppHeaderHeight.Provider value={compact}>
-			<div className="min-h-screen bg-white font-sans text-slate-900">
+			<div className="min-h-screen bg-canvas font-sans text-ink">
 				<header
 					ref={header}
 					data-app-header
 					// Sticks once only the last row (and the border) is left on screen.
 					style={{ top: `${-offset}px` }}
-					className={`sticky z-30 border-b border-slate-200 bg-slate-50 transition-shadow duration-200 motion-reduce:transition-none ${
-						stuck ? "shadow-sm" : ""
+					className={`sticky z-30 border-b border-line bg-surface bg-[radial-gradient(48rem_10rem_at_0%_0%,rgb(115_59_246/0.13),transparent_70%),radial-gradient(36rem_9rem_at_100%_0%,rgb(238_31_145/0.07),transparent_70%)] transition-shadow duration-200 motion-reduce:transition-none ${
+						stuck ? "shadow-[0_12px_32px_-16px_rgb(0_0_0/0.9)]" : ""
 					}`}
 				>
-					<div className="mx-auto max-w-5xl px-4 pt-4 pb-2 sm:px-6 sm:pt-6">
-						{session.isPending && <p className="text-slate-500">Loading…</p>}
+					<div className="mx-auto max-w-5xl px-4 pt-3 pb-2 sm:px-6 sm:pt-4">
+						<div className="mb-3 flex items-center gap-2 sm:mb-4">
+							<Logo className="-my-1.5 h-11 w-11 shrink-0 sm:h-12 sm:w-12" />
+							<Wordmark className="text-[1.375rem] sm:text-[1.625rem]" />
+						</div>
+						{session.isPending && <p className="text-muted">Loading…</p>}
 						{session.isError && <ErrorMessage error={session.error} />}
 						{pr && (
 							<div className="flex flex-wrap items-baseline gap-x-2">
@@ -170,17 +185,17 @@ export function App() {
 									ref={h1}
 									// Focused by the compact title's "back to top".
 									tabIndex={-1}
-									className="text-xl font-semibold break-words outline-none sm:text-2xl"
+									className="font-display text-xl font-bold tracking-tight break-words outline-none sm:text-2xl"
 								>
 									{pr.title}
 								</h1>
-								<span className="text-xl text-slate-500 sm:text-2xl">
+								<span className="font-display text-xl text-muted sm:text-2xl">
 									{prUrl ? (
 										<a
 											href={prUrl}
 											target="_blank"
 											rel="noreferrer"
-											className="hover:underline"
+											className="hover:text-link hover:underline"
 										>
 											#{pr.number}
 										</a>
@@ -191,7 +206,7 @@ export function App() {
 							</div>
 						)}
 						{pr && (
-							<p className="mt-1 text-sm break-all text-slate-600">
+							<p className="mt-1 text-sm break-all text-muted">
 								{pr.owner}/{pr.repo}
 							</p>
 						)}
@@ -207,23 +222,39 @@ export function App() {
 						data-testid="app-header-row"
 						className="mx-auto flex max-w-5xl items-center gap-1 px-2 sm:gap-2 sm:px-6"
 					>
-						<nav aria-label="PR pages" className="flex shrink-0 self-stretch">
-							<Link
-								to="/"
-								activeOptions={{ exact: true }}
-								className={tabClass}
-								activeProps={{ className: activeTabClass }}
+						{/*
+						 * The mark joins the compact row as the header sticks (--compact),
+						 * where the full logo above has scrolled away.
+						 */}
+						<div className="flex shrink-0 items-center self-stretch">
+							<span
+								aria-hidden
+								className="flex shrink-0 overflow-hidden"
+								style={{
+									width: "calc(var(--compact, 0) * 1.875rem)",
+									opacity: "var(--compact, 0)",
+								}}
 							>
-								Overview
-							</Link>
-							<Link
-								to="/files"
-								className={tabClass}
-								activeProps={{ className: activeTabClass }}
-							>
-								Files changed
-							</Link>
-						</nav>
+								<Mark className="ml-1 h-6 w-6 max-w-none" />
+							</span>
+							<nav aria-label="PR pages" className="flex shrink-0 self-stretch">
+								<Link
+									to="/"
+									activeOptions={{ exact: true }}
+									className={tabClass}
+									activeProps={{ className: activeTabClass }}
+								>
+									Overview
+								</Link>
+								<Link
+									to="/files"
+									className={tabClass}
+									activeProps={{ className: activeTabClass }}
+								>
+									Files changed
+								</Link>
+							</nav>
+						</div>
 						{/*
 						 * The title again, small, centered between the tabs and Refresh
 						 * on a light pill, fading in over the last stretch before the
@@ -246,16 +277,16 @@ export function App() {
 												transform:
 													"translateY(calc((1 - var(--compact, 0)) * 0.375rem))",
 											}}
-											className="group flex min-h-10 max-w-full min-w-0 items-center rounded-md focus-visible:outline-2 focus-visible:outline-blue-600"
+											className="group flex min-h-10 max-w-full min-w-0 items-center rounded-full focus-visible:outline-2 focus-visible:outline-accent"
 										>
 											<span
 												data-testid="compact-title-pill"
-												className="min-w-0 rounded-md bg-slate-200/70 px-2 py-0.5 text-center text-xs leading-4 font-semibold text-slate-800 group-hover:bg-slate-300/70 sm:px-2.5 sm:text-sm sm:leading-5"
+												className="min-w-0 rounded-full bg-raised px-2.5 py-0.5 text-center text-xs leading-4 font-semibold text-ink ring-1 ring-line group-hover:bg-overlay group-hover:ring-line-strong sm:px-3 sm:text-sm sm:leading-5"
 											>
 												{/* Two short lines on a phone, one on wider screens. */}
 												<span className="line-clamp-2 break-words sm:line-clamp-1">
 													{pr.title}{" "}
-													<span className="font-medium text-slate-500">
+													<span className="font-medium text-muted">
 														#{pr.number}
 													</span>
 												</span>
@@ -273,7 +304,7 @@ export function App() {
 									aria-label={refresh.isPending ? "Refreshing…" : "Refresh"}
 									onClick={() => refresh.mutate()}
 									disabled={refresh.isPending}
-									className="flex h-10 shrink-0 items-center gap-1.5 rounded-md px-2.5 text-sm font-medium text-slate-700 hover:bg-slate-200 focus-visible:outline-2 focus-visible:outline-blue-600 disabled:opacity-60"
+									className="flex h-10 shrink-0 items-center gap-1.5 rounded-md px-2.5 text-sm font-medium text-ink-soft transition-colors hover:bg-overlay hover:text-ink focus-visible:outline-2 focus-visible:outline-accent disabled:opacity-60 motion-reduce:transition-none"
 								>
 									<SyncIcon
 										aria-hidden

@@ -73,7 +73,7 @@ function OverviewContent({
 		<div className="space-y-6">
 			<ReviewFilesButton />
 			{overview.isPending && (
-				<p className="text-slate-500">Loading the PR from GitHub…</p>
+				<p className="text-muted">Loading the PR from GitHub…</p>
 			)}
 			{overview.isError && <ErrorMessage error={overview.error} />}
 			{overview.data && (
@@ -91,9 +91,9 @@ function Section(props: { label: string; children: ReactNode }) {
 	return (
 		<section
 			aria-label={props.label}
-			className="rounded-lg border border-slate-200"
+			className="rounded-xl border border-line bg-surface"
 		>
-			<h2 className="border-b border-slate-200 bg-slate-50 px-4 py-2 text-base font-semibold">
+			<h2 className="border-b border-line px-4 py-2.5 text-xs font-semibold tracking-[0.18em] text-label uppercase">
 				{props.label}
 			</h2>
 			<div className="space-y-4 px-4 py-3">{props.children}</div>
@@ -107,11 +107,11 @@ function Badge(props: {
 	children: ReactNode;
 }) {
 	const tones = {
-		gray: "border-slate-300 bg-slate-100 text-slate-700",
-		red: "border-red-200 bg-red-50 text-red-800",
-		yellow: "border-amber-200 bg-amber-50 text-amber-800",
-		green: "border-green-200 bg-green-50 text-green-800",
-		purple: "border-purple-200 bg-purple-50 text-purple-800",
+		gray: "border-line-strong/60 bg-overlay text-ink-soft",
+		red: "border-bad/40 bg-bad/10 text-bad",
+		yellow: "border-warn/40 bg-warn/10 text-warn",
+		green: "border-ok/40 bg-ok/10 text-ok",
+		purple: "border-done/40 bg-done/10 text-done",
 	};
 	const IconEl = props.icon;
 	return (
@@ -145,7 +145,7 @@ function LabeledIcon(props: {
 					// Focusable so keyboard and touch users can read the tooltip.
 					// biome-ignore lint/a11y/noNoninteractiveTabindex: the tooltip opens on focus.
 					tabIndex={0}
-					className={`relative inline-flex shrink-0 cursor-help items-center rounded-sm after:absolute after:top-1/2 after:left-1/2 after:h-10 after:w-8 after:-translate-x-1/2 after:-translate-y-1/2 focus-visible:outline-2 focus-visible:outline-blue-600 ${props.className ?? ""}`}
+					className={`relative inline-flex shrink-0 cursor-help items-center rounded-sm after:absolute after:top-1/2 after:left-1/2 after:h-10 after:w-8 after:-translate-x-1/2 after:-translate-y-1/2 focus-visible:outline-2 focus-visible:outline-accent ${props.className ?? ""}`}
 				>
 					<IconEl size={props.size ?? 16} aria-hidden />
 				</span>
@@ -155,9 +155,7 @@ function LabeledIcon(props: {
 }
 
 function BotIcon() {
-	return (
-		<LabeledIcon icon={HubotIcon} label="bot" className="text-slate-500" />
-	);
+	return <LabeledIcon icon={HubotIcon} label="bot" className="text-muted" />;
 }
 
 function ExternalLink(props: {
@@ -171,7 +169,7 @@ function ExternalLink(props: {
 			href={href}
 			target="_blank"
 			rel="noreferrer noopener"
-			className="text-blue-700 hover:underline"
+			className="text-link hover:underline"
 		>
 			{props.children}
 		</a>
@@ -191,7 +189,7 @@ function GithubLink({ url }: { url: string }) {
 					target="_blank"
 					rel="noreferrer noopener"
 					aria-label="View on GitHub"
-					className="-my-2 inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-md text-slate-700 hover:bg-slate-100 hover:text-slate-950 focus-visible:outline-2 focus-visible:outline-blue-600"
+					className="-my-2 inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-md text-ink-soft transition-colors hover:bg-overlay hover:text-ink focus-visible:outline-2 focus-visible:outline-accent"
 				>
 					<MarkGithubIcon size={20} aria-hidden />
 				</a>
@@ -206,17 +204,17 @@ function ReviewFilesButton() {
 		<div className="flex flex-wrap items-center gap-3">
 			<Link
 				to="/files"
-				className="inline-flex items-center gap-2 rounded-md bg-green-700 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-green-800 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-600"
+				className="cta inline-flex min-h-10 items-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold text-ink transition-[filter] hover:brightness-110 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent motion-reduce:transition-none"
 			>
 				Review files
 				{review.data && (
-					<span className="rounded-full bg-white/20 px-2 text-xs">
+					<span className="rounded-full bg-canvas/35 px-2 text-xs tabular-nums">
 						{progressText(review.data.progress)}
 					</span>
 				)}
 			</Link>
 			{review.isPending && (
-				<span className="text-sm text-slate-500">Loading progress…</span>
+				<span className="text-sm text-muted">Loading progress…</span>
 			)}
 			{review.isError && <ErrorMessage error={review.error} />}
 		</div>
@@ -245,12 +243,12 @@ function WhatItDoes({ pr }: { pr: PrOverview }) {
 		<Section label="What it does">
 			<div>
 				<div className="flex items-start gap-2">
-					<h3 className="min-w-0 flex-1 text-lg font-semibold break-words">
+					<h3 className="min-w-0 flex-1 font-display text-lg font-semibold break-words">
 						{pr.title}
 					</h3>
 					<GithubLink url={pr.url} />
 				</div>
-				<p className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-slate-600">
+				<p className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-muted">
 					{pr.isDraft && (
 						<Badge tone="gray" icon={GitPullRequestDraftIcon}>
 							Draft
@@ -261,7 +259,7 @@ function WhatItDoes({ pr }: { pr: PrOverview }) {
 							{stateBadge.label}
 						</Badge>
 					)}
-					<span className="font-medium text-slate-900">{pr.author}</span>
+					<span className="font-medium text-ink">{pr.author}</span>
 					<Tooltip
 						content={`Merge ${pr.headBranch} into ${pr.baseBranch}`}
 						describe={false}
@@ -272,7 +270,7 @@ function WhatItDoes({ pr }: { pr: PrOverview }) {
 								// Focusable so keyboard and touch users can read the tooltip.
 								// biome-ignore lint/a11y/noNoninteractiveTabindex: the tooltip opens on focus.
 								tabIndex={0}
-								className="rounded bg-slate-100 px-1 [overflow-wrap:anywhere] focus-visible:outline-2 focus-visible:outline-blue-600"
+								className="rounded bg-overlay px-1 text-ink-soft [overflow-wrap:anywhere] focus-visible:outline-2 focus-visible:outline-accent"
 							>
 								{pr.baseBranch} ← {pr.headBranch}
 							</code>
@@ -301,7 +299,7 @@ function Description({ pr }: { pr: PrOverview }) {
 	if (pr.body.trim()) {
 		return <p className="text-sm break-words whitespace-pre-wrap">{pr.body}</p>;
 	}
-	return <p className="text-sm text-slate-500 italic">No description</p>;
+	return <p className="text-sm text-muted italic">No description</p>;
 }
 
 // ---- Who's on it ----
@@ -310,21 +308,21 @@ const REVIEW_ICON: Record<
 	Review["state"],
 	{ icon: Icon; label: string; className: string }
 > = {
-	APPROVED: { icon: CheckIcon, label: "Approved", className: "text-green-700" },
+	APPROVED: { icon: CheckIcon, label: "Approved", className: "text-ok" },
 	CHANGES_REQUESTED: {
 		icon: FileDiffIcon,
 		label: "Changes requested",
-		className: "text-red-700",
+		className: "text-bad",
 	},
 	COMMENTED: {
 		icon: CommentIcon,
 		label: "Commented",
-		className: "text-slate-500",
+		className: "text-muted",
 	},
 	DISMISSED: {
 		icon: SkipIcon,
 		label: "Dismissed",
-		className: "text-slate-500",
+		className: "text-muted",
 	},
 };
 
@@ -344,7 +342,7 @@ function ReviewState({ review }: { review: Review }) {
 			/>
 			{then && (
 				// Secondary: smaller and muted, after a short "then".
-				<span className="inline-flex items-center gap-0.5 text-xs text-slate-400">
+				<span className="inline-flex items-center gap-0.5 text-xs text-faint">
 					<span aria-hidden>then</span>
 					<LabeledIcon
 						icon={then.icon}
@@ -371,8 +369,8 @@ function Column(props: { icon: Icon; title: string; children: ReactNode }) {
 	const IconEl = props.icon;
 	return (
 		<div>
-			<h3 className="flex items-center gap-1.5 text-sm font-semibold text-slate-700">
-				<IconEl size={16} aria-hidden className="text-slate-500" />
+			<h3 className="flex items-center gap-1.5 text-sm font-semibold text-ink-soft">
+				<IconEl size={16} aria-hidden className="text-muted" />
 				{props.title}
 			</h3>
 			{props.children}
@@ -381,7 +379,7 @@ function Column(props: { icon: Icon; title: string; children: ReactNode }) {
 }
 
 function None() {
-	return <p className="mt-1 text-sm text-slate-400">None</p>;
+	return <p className="mt-1 text-sm text-faint">None</p>;
 }
 
 function WhosOnIt({ pr }: { pr: PrOverview }) {
@@ -402,12 +400,12 @@ function WhosOnIt({ pr }: { pr: PrOverview }) {
 			<p className="flex items-center gap-2 font-medium">
 				{pr.humanStarted ? (
 					<>
-						<EyeIcon size={16} aria-hidden className="text-amber-600" />
+						<EyeIcon size={16} aria-hidden className="text-warn" />
 						{`${names.length ? names.join(", ") : "Someone else"} already started`}
 					</>
 				) : (
 					<>
-						<CheckCircleIcon size={16} aria-hidden className="text-green-700" />
+						<CheckCircleIcon size={16} aria-hidden className="text-ok" />
 						No one else has started reviewing
 					</>
 				)}
@@ -426,7 +424,7 @@ function WhosOnIt({ pr }: { pr: PrOverview }) {
 									<ReviewState review={r} />
 									<RelativeTime
 										iso={r.submittedAt}
-										className="text-xs text-slate-500"
+										className="text-xs text-muted"
 									/>
 								</li>
 							))}
@@ -448,7 +446,7 @@ function WhosOnIt({ pr }: { pr: PrOverview }) {
 										<LabeledIcon
 											icon={PeopleIcon}
 											label="team"
-											className="text-slate-500"
+											className="text-muted"
 										/>
 									)}
 								</li>
@@ -468,10 +466,7 @@ function WhosOnIt({ pr }: { pr: PrOverview }) {
 								>
 									<span>{c.author}</span>
 									{c.bot && <BotIcon />}
-									<RelativeTime
-										iso={c.lastAt}
-										className="text-xs text-slate-500"
-									/>
+									<RelativeTime iso={c.lastAt} className="text-xs text-muted" />
 								</li>
 							))}
 						</ul>
@@ -480,24 +475,24 @@ function WhosOnIt({ pr }: { pr: PrOverview }) {
 					)}
 				</Column>
 			</div>
-			<p className="flex flex-wrap items-center gap-2 text-sm text-slate-700">
+			<p className="flex flex-wrap items-center gap-2 text-sm text-ink-soft">
 				<span className="font-semibold">You</span>
 				{yourReview ? (
 					<>
 						<ReviewState review={yourReview} />
 						<RelativeTime
 							iso={yourReview.submittedAt}
-							className="text-xs text-slate-500"
+							className="text-xs text-muted"
 						/>
 					</>
 				) : youCommented ? (
 					<LabeledIcon
 						icon={CommentIcon}
 						label="Commented"
-						className="text-slate-500"
+						className="text-muted"
 					/>
 				) : (
-					<span className="text-slate-500">not started on GitHub</span>
+					<span className="text-muted">not started on GitHub</span>
 				)}
 			</p>
 		</Section>
@@ -540,9 +535,9 @@ function IsItReady({ pr }: { pr: PrOverview }) {
 }
 
 const CHECK_ICON = {
-	failing: { icon: XIcon, className: "text-red-700" },
-	pending: { icon: DotFillIcon, className: "text-amber-600" },
-	passing: { icon: CheckIcon, className: "text-green-700" },
+	failing: { icon: XIcon, className: "text-bad" },
+	pending: { icon: DotFillIcon, className: "text-warn" },
+	passing: { icon: CheckIcon, className: "text-ok" },
 } as const;
 
 function CheckItem({ check }: { check: Check }) {
@@ -569,7 +564,7 @@ function Checks({ checks }: { checks: Check[] }) {
 	const passing = of("passing");
 	return (
 		<div>
-			<h3 className="text-sm font-semibold text-slate-700">Checks</h3>
+			<h3 className="text-sm font-semibold text-ink-soft">Checks</h3>
 			{checks.length === 0 ? (
 				<None />
 			) : (
@@ -583,8 +578,8 @@ function Checks({ checks }: { checks: Check[] }) {
 					)}
 					{passing.length > 0 && (
 						<details>
-							<summary className="flex min-h-10 cursor-pointer items-center gap-2 text-slate-600 sm:min-h-0">
-								<CheckIcon size={16} aria-hidden className="text-green-700" />
+							<summary className="flex min-h-10 cursor-pointer items-center gap-2 text-muted sm:min-h-0">
+								<CheckIcon size={16} aria-hidden className="text-ok" />
 								{passing.length} passing
 							</summary>
 							<ul aria-label="Passing checks" className="mt-1 space-y-1 pl-4">
@@ -606,9 +601,9 @@ function Checks({ checks }: { checks: Check[] }) {
  */
 function ThreadItem({ thread }: { thread: Thread }) {
 	return (
-		<li className="min-w-0 rounded-md border border-slate-200 px-3 py-2">
-			<div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-slate-600">
-				<code className="break-all">
+		<li className="min-w-0 rounded-lg border border-line bg-raised px-3 py-2">
+			<div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted">
+				<code className="break-all text-ink-soft">
 					{thread.path}
 					{thread.line !== null && `:${thread.line}`}
 				</code>
@@ -629,7 +624,7 @@ function ThreadItem({ thread }: { thread: Thread }) {
 						<ChevronRightIcon
 							size={16}
 							aria-hidden
-							className="shrink-0 text-slate-500 transition-transform group-open:rotate-90"
+							className="shrink-0 text-muted transition-transform group-open:rotate-90"
 						/>
 						<span className="line-clamp-2 min-w-0 break-words group-open:hidden">
 							{thread.excerpt}
@@ -652,9 +647,9 @@ function ThreadList(props: { label: string; icon: Icon; threads: Thread[] }) {
 	return (
 		<div className="min-w-0">
 			<h4 className="flex items-center gap-1.5 text-sm font-medium">
-				<IconEl size={16} aria-hidden className="text-slate-500" />
+				<IconEl size={16} aria-hidden className="text-muted" />
 				{props.label}
-				<span className="text-slate-500">({props.threads.length})</span>
+				<span className="text-muted">({props.threads.length})</span>
 			</h4>
 			{props.threads.length ? (
 				<ul aria-label={props.label} className="mt-1 space-y-2">
@@ -674,7 +669,7 @@ function ThreadList(props: { label: string; icon: Icon; threads: Thread[] }) {
 function Threads({ threads }: { threads: Thread[] }) {
 	return (
 		<div>
-			<h3 className="text-sm font-semibold text-slate-700">
+			<h3 className="text-sm font-semibold text-ink-soft">
 				Unresolved threads
 			</h3>
 			{threads.length === 0 ? (

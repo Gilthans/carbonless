@@ -1,4 +1,131 @@
 @import "tailwindcss";
+@import "@fontsource-variable/outfit";
+
+/*
+ * Design tokens: the one place colors and fonts are defined (see
+ * docs/design/README.md for what each is for). Tailwind's own palette is
+ * switched off, so every color in the UI comes from here, and the contrast
+ * test (src/web/theme.test.ts) reads this block to check the pairs used.
+ */
+@theme {
+	--color-*: initial;
+	--font-sans: "Outfit Variable", ui-sans-serif, system-ui, sans-serif;
+	--font-display: "Outfit Variable", ui-sans-serif, system-ui, sans-serif;
+
+	/* Surfaces, darkest first. */
+	--color-canvas: #0b0d16;
+	--color-surface: #12141f;
+	--color-raised: #191c2b;
+	--color-overlay: #23263a;
+	--color-pressed: #2c3048;
+	/* Decorative dividers; borders that outline a control use line-strong. */
+	--color-line: #262a3d;
+	--color-line-strong: #666c90;
+	/* Edges of floating layers (tooltips, sheets) and scrollbars. */
+	--color-edge: #363a54;
+
+	/* Text. */
+	--color-ink: #f4f1ec;
+	--color-ink-soft: #d0cde2;
+	--color-muted: #a0a2c6;
+	--color-faint: #8a8db3;
+	--color-label: #a397f7;
+
+	/* Interaction: links, focus rings, the pointer's cluster. */
+	--color-accent: #8fa6ff;
+	--color-link: #a9b9ff;
+
+	/* Brand (sampled from the board): logo, gradients, decoration only. */
+	--color-magenta: #ee1f91;
+	--color-orange: #f17d25;
+	--color-yellow: #f5b625;
+	--color-teal: #06c5c0;
+	--color-violet: #733bf6;
+
+	/* Review semantics (GitHub's conventions, tuned to the palette). */
+	--color-ok: #4ad894;
+	--color-ok-fill: #2fbf78;
+	--color-bad: #ff6f8c;
+	--color-warn: #f5b625;
+	--color-done: #b9a2ff;
+	--color-crossed: #8b66f5;
+	/* A pressed cross-off control (the brand violet, nudged to 3:1). */
+	--color-crossed-strong: #7742f6;
+	--color-crossed-light: #b49bff;
+	--color-unreviewed: #6f7497;
+
+	/* Diff. */
+	--color-code: #0e1019;
+	--color-code-ink: #e6e3f2;
+	--color-add: #0f2b22;
+	--color-add-gutter: #153a2d;
+	--color-add-ink: #74e8ac;
+	--color-del: #2d1221;
+	--color-del-gutter: #3e172c;
+	--color-del-ink: #ff94aa;
+	--color-hunk: #151936;
+	--color-hunk-ink: #a7b0e8;
+
+	/* The primary action's gradient ends (white text on both). */
+	--color-cta-from: #6a3fe0;
+	--color-cta-to: #c0177a;
+}
+
+@utility hatch {
+	background-image: repeating-linear-gradient(
+		135deg,
+		var(--color-crossed) 0 3px,
+		var(--color-crossed-light) 3px 6px
+	);
+}
+
+/* The brand gradient as a 2px rule (active tab, accents). */
+@utility brand-rule {
+	background-image: linear-gradient(
+		90deg,
+		var(--color-magenta),
+		var(--color-orange),
+		var(--color-yellow),
+		var(--color-teal),
+		var(--color-violet)
+	);
+}
+
+@utility cta {
+	background-image: linear-gradient(
+		120deg,
+		var(--color-cta-from),
+		var(--color-cta-to)
+	);
+	box-shadow:
+		0 0 0 1px rgb(255 255 255 / 0.08) inset,
+		0 6px 24px -6px rgb(238 31 145 / 0.45);
+}
+
+@layer base {
+	html {
+		color-scheme: dark;
+		background-color: var(--color-canvas);
+		color: var(--color-ink);
+		scrollbar-color: var(--color-edge) transparent;
+		-webkit-font-smoothing: antialiased;
+		-moz-osx-font-smoothing: grayscale;
+	}
+
+	body {
+		background-color: var(--color-canvas);
+	}
+
+	::selection {
+		background-color: rgb(115 59 246 / 0.5);
+		color: var(--color-ink);
+	}
+
+	/* Focus rings (focus-visible:outline-2) take the accent unless set. */
+	:focus-visible {
+		outline-color: var(--color-accent);
+	}
+}
 
 /*
  * Keyboard focus scrolling keeps focused controls clear of the sticky stack:

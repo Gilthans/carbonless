@@ -3,6 +3,7 @@ import type {
 	LanguageRegistration,
 	ThemedToken,
 } from "shiki/core";
+import { syntaxTheme } from "./syntaxTheme";
 
 type LangModule = { default: LanguageRegistration[] };
 
@@ -61,7 +62,7 @@ const EXTENSIONS: Record<string, string> = {
 	sql: "sql",
 };
 
-const THEME = "github-light";
+const THEME = syntaxTheme.name ?? "carbonless-dark";
 
 /** Shiki language for a path, or null for plain text. */
 export function languageFor(path: string): string | null {
@@ -90,14 +91,13 @@ export function cacheUntilRejected<T>(
 
 const getHighlighter = cacheUntilRejected(
 	async (): Promise<HighlighterCore> => {
-		const [{ createHighlighterCore }, { createJavaScriptRegexEngine }, theme] =
+		const [{ createHighlighterCore }, { createJavaScriptRegexEngine }] =
 			await Promise.all([
 				import("shiki/core"),
 				import("shiki/engine/javascript"),
-				import("shiki/themes/github-light.mjs"),
 			]);
 		return createHighlighterCore({
-			themes: [theme.default],
+			themes: [syntaxTheme],
 			langs: [],
 			engine: createJavaScriptRegexEngine(),
 		});

@@ -11,9 +11,9 @@ import { FilesPage, OverviewPage } from "./pages";
 
 function NotFound() {
 	return (
-		<p className="text-slate-600">
+		<p className="text-muted">
 			No such page.{" "}
-			<Link to="/" className="text-blue-700 underline">
+			<Link to="/" className="text-link underline">
 				Back to the overview
 			</Link>
 		</p>

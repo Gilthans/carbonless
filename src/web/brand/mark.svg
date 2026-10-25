@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <title>carbonless</title>
+  <defs>
+    <linearGradient id="ring" x1="0.1" y1="0.05" x2="0.95" y2="0.95">
+      <stop offset="0" stop-color="#F5B625"/>
+      <stop offset="0.3" stop-color="#F17D25"/>
+      <stop offset="0.6" stop-color="#EE1F91"/>
+      <stop offset="1" stop-color="#A33BEE"/>
+    </linearGradient>
+    <linearGradient id="handle" x1="1" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#A43FEA"/>
+      <stop offset="0.5" stop-color="#EE1F91"/>
+      <stop offset="1" stop-color="#F59A2A"/>
+    </linearGradient>
+  </defs>
+  <line x1="21" y1="21" x2="27.6" y2="27.6" stroke="url(#handle)" stroke-width="4.6" stroke-linecap="round"/>
+  <circle cx="13.5" cy="13.5" r="8.4" fill="#14162C"/>
+  <g stroke-width="1.8" stroke-linecap="round">
+    <line x1="13.5" y1="7.8" x2="13.5" y2="19.2" stroke="#8C84D8" stroke-width="0.9"/>
+    <line x1="8.6" y1="10" x2="11.6" y2="10" stroke="#06C5C0"/>
+    <line x1="7.2" y1="13.5" x2="11.6" y2="13.5" stroke="#9C94E8"/>
+    <line x1="8.6" y1="17" x2="11.6" y2="17" stroke="#06C5C0"/>
+    <line x1="15.4" y1="10" x2="18.4" y2="10" stroke="#EE1F91"/>
+    <line x1="15.4" y1="13.5" x2="19.8" y2="13.5" stroke="#F5B625"/>
+    <line x1="15.4" y1="17" x2="18.4" y2="17" stroke="#FF5A7E"/>
+  </g>
+  <circle cx="13.5" cy="13.5" r="9.9" fill="none" stroke="url(#ring)" stroke-width="3.4"/>
+</svg>

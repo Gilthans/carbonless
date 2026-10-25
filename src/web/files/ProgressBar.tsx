@@ -10,8 +10,8 @@ import {
 	unitWord,
 } from "./unit";
 
-export const HATCH =
-	"bg-[repeating-linear-gradient(135deg,#a855f7_0_3px,#d8b4fe_3px_6px)]";
+/** Crossed off: violet stripes (the `hatch` utility, index.css). */
+export const HATCH = "hatch";
 
 /** The gap a meter keeps open while anything is unreviewed, in percent. */
 const OPEN_GAP = 6;
@@ -47,15 +47,15 @@ export function Meter({
 	return (
 		<span
 			aria-hidden
-			className={`relative block overflow-hidden rounded-full bg-slate-200 ${className}`}
+			className={`relative block overflow-hidden rounded-full bg-overlay ${className}`}
 		>
 			<span
-				className="absolute inset-y-0 left-0 block bg-green-600"
+				className="absolute inset-y-0 left-0 block rounded-r-full bg-ok-fill transition-[width] duration-300 ease-out motion-reduce:transition-none"
 				data-part="reviewed"
 				style={{ width: `${widths.reviewed}%` }}
 			/>
 			<span
-				className={`absolute inset-y-0 right-0 block ${HATCH}`}
+				className={`absolute inset-y-0 right-0 block ${HATCH} transition-[width] duration-300 ease-out motion-reduce:transition-none`}
 				data-part="crossed-off"
 				style={{ width: `${widths.crossed}%` }}
 			/>
@@ -67,12 +67,12 @@ export function Meter({
 function UnitPicker(props: { unit: Unit; onChange: (unit: Unit) => void }) {
 	const name = useId();
 	return (
-		<fieldset className="flex shrink-0 rounded-md border border-slate-300 bg-white p-0.5 text-xs">
+		<fieldset className="flex shrink-0 rounded-lg border border-line-strong bg-surface p-0.5 text-xs">
 			<legend className="sr-only">Count progress in</legend>
 			{UNITS.map((u) => (
 				<label
 					key={u.id}
-					className="flex cursor-pointer items-center rounded px-2 py-1 font-medium text-slate-600 has-checked:bg-slate-800 has-checked:text-white has-focus-visible:outline-2 has-focus-visible:outline-blue-600 pointer-coarse:min-h-10 pointer-coarse:px-3"
+					className="flex cursor-pointer items-center rounded px-2 py-1 font-medium text-muted transition-colors hover:text-ink has-checked:bg-accent has-checked:text-canvas motion-reduce:transition-none has-focus-visible:outline-2 has-focus-visible:outline-accent pointer-coarse:min-h-10 pointer-coarse:px-3"
 				>
 					<input
 						type="radio"
@@ -119,7 +119,7 @@ export function ProgressBar(props: {
 	return (
 		<div
 			ref={props.ref}
-			className="sticky top-[var(--app-header,0px)] z-20 border-b border-slate-200 bg-white py-2"
+			className="sticky top-[var(--app-header,0px)] z-20 border-b border-line bg-canvas py-2"
 		>
 			<div className="flex flex-wrap items-center gap-x-3 gap-y-2">
 				<UnitPicker unit={unit} onChange={props.onUnitChange} />
@@ -138,11 +138,11 @@ export function ProgressBar(props: {
 					className="flex min-w-0 flex-1 basis-0 flex-wrap items-center gap-x-3 gap-y-1 sm:flex-nowrap"
 				>
 					{empty ? (
-						<span className="shrink-0 text-base font-semibold">
+						<span className="shrink-0 font-display text-base font-semibold">
 							Nothing left to review
 						</span>
 					) : (
-						<span className="w-11 shrink-0 text-right text-base font-semibold tabular-nums">
+						<span className="w-11 shrink-0 text-right font-display text-base font-semibold tabular-nums">
 							{value}%
 						</span>
 					)}
@@ -151,7 +151,7 @@ export function ProgressBar(props: {
 						incomplete={left > 0}
 						className="order-last h-2.5 w-full sm:order-none sm:w-auto sm:min-w-8 sm:flex-1"
 					/>
-					<span className="min-w-0 text-sm text-slate-600 tabular-nums">
+					<span className="min-w-0 text-sm text-muted tabular-nums">
 						{empty ? (
 							summary
 						) : (
@@ -164,7 +164,7 @@ export function ProgressBar(props: {
 					</span>
 				</div>
 			</div>
-			{hiddenLeft && <p className="mt-1 text-xs text-amber-800">{note}</p>}
+			{hiddenLeft && <p className="mt-1 text-xs text-warn">{note}</p>}
 		</div>
 	);
 }

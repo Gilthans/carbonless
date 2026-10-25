@@ -1,0 +1,73 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="carbonless">
+  <defs>
+    <linearGradient id="ring" x1="0.1" y1="0.05" x2="0.95" y2="0.95">
+      <stop offset="0" stop-color="#F5B625"/>
+      <stop offset="0.28" stop-color="#F17D25"/>
+      <stop offset="0.52" stop-color="#EE1F91"/>
+      <stop offset="0.82" stop-color="#E8239A"/>
+      <stop offset="1" stop-color="#9B3BF0"/>
+    </linearGradient>
+    <linearGradient id="handle" x1="1" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#8E4FF0"/>
+      <stop offset="0.45" stop-color="#D52A9E"/>
+      <stop offset="1" stop-color="#F59A2A"/>
+    </linearGradient>
+    <radialGradient id="lens" cx="0.4" cy="0.32" r="0.75">
+      <stop offset="0" stop-color="#22264A"/>
+      <stop offset="1" stop-color="#0C0E1C"/>
+    </radialGradient>
+  </defs>
+  <!-- Paint splashes: drops point at the lens. -->
+  <g>
+    <path d="M0 0C2.6 3.4 6.4 7.2 6.4 11.4A6.4 6.4 0 0 1-6.4 11.4C-6.4 7.2-2.6 3.4 0 0Z" fill="#06C5C0" transform="translate(37.5 26.1) rotate(-218) scale(1.05)"/>
+    <path d="M0 0C2.6 3.4 6.4 7.2 6.4 11.4A6.4 6.4 0 0 1-6.4 11.4C-6.4 7.2-2.6 3.4 0 0Z" fill="#F17D25" transform="translate(20.1 56.9) rotate(94)"/>
+    <path d="M0 0C2.6 3.4 6.4 7.2 6.4 11.4A6.4 6.4 0 0 1-6.4 11.4C-6.4 7.2-2.6 3.4 0 0Z" fill="#7B4DF2" transform="translate(23.2 76.5) rotate(68) scale(0.85)"/>
+    <path d="M0 0C2.6 3.4 6.4 7.2 6.4 11.4A6.4 6.4 0 0 1-6.4 11.4C-6.4 7.2-2.6 3.4 0 0Z" fill="#8A4FF5" transform="translate(90.5 26.1) rotate(-142)"/>
+    <path d="M0 0C2.6 3.4 6.4 7.2 6.4 11.4A6.4 6.4 0 0 1-6.4 11.4C-6.4 7.2-2.6 3.4 0 0Z" fill="#F5A025" transform="translate(106.7 49.4) rotate(-104) scale(0.95)"/>
+    <path d="M0 0C2.6 3.4 6.4 7.2 6.4 11.4A6.4 6.4 0 0 1-6.4 11.4C-6.4 7.2-2.6 3.4 0 0Z" fill="#EE1F91" transform="translate(105.3 75) rotate(-70) scale(0.85)"/>
+    <path d="M0 0C2.6 3.4 6.4 7.2 6.4 11.4A6.4 6.4 0 0 1-6.4 11.4C-6.4 7.2-2.6 3.4 0 0Z" fill="#06C5C0" transform="translate(87.3 97.3) rotate(-32) scale(0.9)"/>
+    <circle cx="55.8" cy="13.7" r="2.6" fill="#EE1F91"/>
+    <circle cx="75.4" cy="14.4" r="2.2" fill="#5B7CFA"/>
+    <circle cx="105.9" cy="32.8" r="2" fill="#F5B625"/>
+    <circle cx="8.2" cy="44" r="2.2" fill="#EE1F91"/>
+    <circle cx="107.7" cy="91.7" r="1.6" fill="#8A4FF5"/>
+    <circle cx="15.5" cy="32" r="1.6" fill="#F17D25"/>
+  </g>
+  <!-- Handle, neck and grip. -->
+  <line x1="31" y1="93" x2="16" y2="108" stroke="url(#handle)" stroke-width="13" stroke-linecap="round"/>
+  <line x1="28" y1="96" x2="19.5" y2="104.5" stroke="#3A1C6B" stroke-opacity="0.65" stroke-width="3.2" stroke-linecap="round"/>
+  <line x1="39" y1="85" x2="32" y2="92" stroke="#8E4FF0" stroke-width="8"/>
+  <!-- Lens with a split diff. -->
+  <circle cx="64" cy="60" r="29" fill="url(#lens)"/>
+  <g stroke-width="3.2" stroke-linecap="round">
+    <line x1="64" y1="35.5" x2="64" y2="84.5" stroke="#8C84D8" stroke-width="1.6"/>
+    <line x1="49" y1="42" x2="60" y2="42" stroke="#06C5C0"/>
+    <line x1="43.5" y1="48" x2="60" y2="48" stroke="#9C94E8"/>
+    <line x1="44" y1="54" x2="51.5" y2="54" stroke="#9C94E8"/>
+    <line x1="56.5" y1="54" x2="60" y2="54" stroke="#9C94E8"/>
+    <line x1="40.5" y1="60" x2="60" y2="60" stroke="#06C5C0"/>
+    <line x1="47" y1="66" x2="60" y2="66" stroke="#9C94E8"/>
+    <line x1="43.5" y1="72" x2="53.5" y2="72" stroke="#9C94E8"/>
+    <line x1="58.5" y1="72" x2="60" y2="72" stroke="#9C94E8"/>
+    <line x1="49" y1="78" x2="60" y2="78" stroke="#06C5C0"/>
+    <line x1="68" y1="42" x2="79.5" y2="42" stroke="#EE1F91"/>
+    <line x1="68" y1="48" x2="72" y2="48" stroke="#06C5C0"/>
+    <line x1="77" y1="48" x2="85.5" y2="48" stroke="#06C5C0"/>
+    <line x1="72.5" y1="54" x2="87.5" y2="54" stroke="#EE1F91"/>
+    <line x1="68" y1="60" x2="81" y2="60" stroke="#FF5A7E"/>
+    <line x1="68" y1="66" x2="68.5" y2="66" stroke="#F17D25"/>
+    <line x1="73.5" y1="66" x2="88" y2="66" stroke="#F5B625"/>
+    <line x1="72.5" y1="72" x2="79" y2="72" stroke="#06C5C0"/>
+    <line x1="83.5" y1="72" x2="86" y2="72" stroke="#06C5C0"/>
+    <line x1="68" y1="78" x2="72" y2="78" stroke="#FF5A7E"/>
+    <line x1="77" y1="78" x2="82" y2="78" stroke="#FF5A7E"/>
+  </g>
+  <!-- Ring: a gradient with paint strokes over it. -->
+  <circle cx="64" cy="60" r="33" fill="none" stroke="url(#ring)" stroke-width="9"/>
+  <path d="M33 48.7A33 33 0 0 1 52.7 29" fill="none" stroke="#F8C93A" stroke-opacity="0.85" stroke-width="4" stroke-linecap="round"/>
+  <path d="M74.6 30.9A31 31 0 0 1 90.8 44.5" fill="none" stroke="#FFFFFF" stroke-opacity="0.32" stroke-width="2" stroke-linecap="round"/>
+  <path d="M38.5 81.5A33 33 0 0 1 32 66" fill="none" stroke="#C4248F" stroke-opacity="0.55" stroke-width="3.5" stroke-linecap="round"/>
+  <circle cx="95" cy="71.3" r="1.5" fill="#7B6BFF"/>
+  <circle cx="91" cy="78.9" r="1.9" fill="#5B7CFA" fill-opacity="0.9"/>
+  <circle cx="85.2" cy="85.3" r="1.3" fill="#A27BFF"/>
+</svg>

@@ -1,0 +1,200 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { describe, expect, it } from "vitest";
+import { SYNTAX } from "./files/syntaxTheme";
+
+/** The color tokens, read from index.css's @theme block. */
+const css = readFileSync(resolve(import.meta.dirname, "index.css"), "utf8");
+const TOKENS = Object.fromEntries(
+	[...css.matchAll(/--color-([a-z0-9-]+):\s*(#[0-9a-f]{6});/gi)].map((m) => [
+		m[1],
+		m[2],
+	]),
+) as Record<string, string>;
+
+const token = (name: string): string => {
+	const value = TOKENS[name];
+	if (!value) throw new Error(`no --color-${name} in index.css`);
+	return value;
+};
+
+const rgb = (hex: string) =>
+	[1, 3, 5].map((i) => Number.parseInt(hex.slice(i, i + 2), 16));
+
+function luminance(hex: string): number {
+	const [r = 0, g = 0, b = 0] = rgb(hex).map((v) => {
+		const c = v / 255;
+		return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+	});
+	return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+
+function contrast(a: string, b: string): number {
+	const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x);
+	return ((hi ?? 0) + 0.05) / ((lo ?? 0) + 0.05);
+}
+
+/** `fg` at `alpha` over `bg`, like Tailwind's `bg-x/10` on a surface. */
+function over(fg: string, alpha: number, bg: string): string {
+	const f = rgb(fg);
+	const b = rgb(bg);
+	return `#${f
+		.map((v, i) =>
+			Math.round(v * alpha + (b[i] ?? 0) * (1 - alpha))
+				.toString(16)
+				.padStart(2, "0"),
+		)
+		.join("")}`;
+}
+
+const SURFACES = ["canvas", "surface", "raised"];
+
+describe("color tokens", () => {
+	it("text reads at 4.5:1 on every surface", () => {
+		for (const text of ["ink", "ink-soft", "muted", "faint", "label", "link"]) {
+			for (const bg of [...SURFACES, "overlay"]) {
+				expect(
+					contrast(token(text), token(bg)),
+					`${text} on ${bg}`,
+				).toBeGreaterThanOrEqual(4.5);
+			}
+		}
+	});
+
+	it("status text and icons read at 4.5:1 on surfaces", () => {
+		for (const text of ["ok", "bad", "warn", "done", "accent"]) {
+			for (const bg of SURFACES) {
+				expect(
+					contrast(token(text), token(bg)),
+					`${text} on ${bg}`,
+				).toBeGreaterThanOrEqual(4.5);
+			}
+		}
+	});
+
+	it("tinted badges and notices keep their text at 4.5:1", () => {
+		// Badge: tone/10 over the section surface; notices over the canvas.
+		for (const tone of ["ok", "bad", "warn", "done"]) {
+			for (const bg of ["surface", "canvas"]) {
+				const tint = over(token(tone), 0.1, token(bg));
+				expect(
+					contrast(token(tone), tint),
+					`${tone} on ${tone}/10 over ${bg}`,
+				).toBeGreaterThanOrEqual(4.5);
+			}
+		}
+		for (const [tone, text] of [
+			["warn", "ink"],
+			["accent", "ink"],
+			["crossed", "done"],
+		] as const) {
+			const tint = over(token(tone), 0.2, token("surface"));
+			expect(
+				contrast(token(text), tint),
+				`${text} on ${tone}/20`,
+			).toBeGreaterThanOrEqual(4.5);
+		}
+	});
+
+	it("controls, fills and indicators stand out at 3:1", () => {
+		const parts = [
+			"line-strong",
+			"accent",
+			"ok-fill",
+			"crossed",
+			"crossed-light",
+			"unreviewed",
+			"crossed-strong",
+		];
+		for (const part of parts) {
+			for (const bg of [...SURFACES, "code"]) {
+				expect(
+					contrast(token(part), token(bg)),
+					`${part} on ${bg}`,
+				).toBeGreaterThanOrEqual(3);
+			}
+		}
+		// Meter fills against their track.
+		for (const fill of ["ok-fill", "crossed", "crossed-light"]) {
+			expect(
+				contrast(token(fill), token("overlay")),
+				`${fill} on the meter track`,
+			).toBeGreaterThanOrEqual(3);
+		}
+	});
+
+	it("pressed and selected controls keep their label readable", () => {
+		expect(
+			contrast(token("ink"), token("crossed-strong")),
+		).toBeGreaterThanOrEqual(4.5);
+		expect(contrast(token("canvas"), token("accent"))).toBeGreaterThanOrEqual(
+			4.5,
+		);
+		for (const end of ["cta-from", "cta-to"]) {
+			expect(
+				contrast(token("ink"), token(end)),
+				`ink on ${end}`,
+			).toBeGreaterThanOrEqual(4.5);
+		}
+	});
+});
+
+describe("diff colors", () => {
+	const CODE_BGS = ["code", "add", "del"];
+
+	it("code text and every syntax color read at 4.5:1 on context, added and deleted lines", () => {
+		for (const [name, color] of Object.entries(SYNTAX)) {
+			for (const bg of CODE_BGS) {
+				expect(
+					contrast(color, token(bg)),
+					`${name} on ${bg}`,
+				).toBeGreaterThanOrEqual(4.5);
+			}
+		}
+		for (const bg of CODE_BGS) {
+			expect(contrast(token("code-ink"), token(bg))).toBeGreaterThanOrEqual(
+				4.5,
+			);
+		}
+	});
+
+	it("line numbers and signs read at 4.5:1 in their gutters", () => {
+		const pairs = [
+			["faint", "code"],
+			["add-ink", "add-gutter"],
+			["add-ink", "add"],
+			["del-ink", "del-gutter"],
+			["del-ink", "del"],
+			["hunk-ink", "hunk"],
+		];
+		for (const [fg = "", bg = ""] of pairs) {
+			expect(
+				contrast(token(fg), token(bg)),
+				`${fg} on ${bg}`,
+			).toBeGreaterThanOrEqual(4.5);
+		}
+	});
+
+	it("keeps added green and deleted red apart from each other", () => {
+		const hue = (hex: string) => {
+			const [r = 0, g = 0, b = 0] = rgb(hex).map((v) => v / 255);
+			const max = Math.max(r, g, b);
+			const d = max - Math.min(r, g, b);
+			const h =
+				max === r
+					? ((g - b) / d) % 6
+					: max === g
+						? (b - r) / d + 2
+						: (r - g) / d + 4;
+			return (h * 60 + 360) % 360;
+		};
+		// Green: between yellow-green and teal; red: between magenta and red.
+		for (const green of ["ok", "ok-fill", "add-ink"]) {
+			expect(hue(token(green))).toBeGreaterThan(120);
+			expect(hue(token(green))).toBeLessThan(165);
+		}
+		for (const red of ["bad", "del-ink"]) {
+			expect(hue(token(red))).toBeGreaterThan(330);
+		}
+	});
+});

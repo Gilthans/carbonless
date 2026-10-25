@@ -1,4 +1,4 @@
-import "github-markdown-css/github-markdown-light.css";
+import "github-markdown-css/github-markdown-dark.css";
 import "./githubHtml.css";
 import { createContext, useContext, useEffect, useMemo, useRef } from "react";
 import { sanitizeGithubHtml } from "./githubHtml";
