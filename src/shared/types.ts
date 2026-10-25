@@ -163,9 +163,13 @@ export interface PrOverview {
 		status: "failing" | "pending" | "passing";
 		url?: string;
 	}[];
-	/** Unresolved threads only (as-of mode: every thread opened by the cutoff). */
+	/**
+	 * Every review thread, most recent activity first (as-of mode: those
+	 * opened by the cutoff, all unresolved).
+	 */
 	threads: {
 		path: string;
+		/** The commented line now, else where it was written; null for a file comment. */
 		line: number | null;
 		/** The first comment as plain text, whitespace collapsed, ≤200 chars. */
 		excerpt: string;
@@ -173,6 +177,8 @@ export interface PrOverview {
 		html: string;
 		/** When the first comment was written. */
 		createdAt: string;
+		/** The thread's latest comment (as-of mode: by the cutoff). */
+		lastActivityAt: string;
 		author: string;
 		bot: boolean;
 		/** Comments in the thread, the opening one included. */
@@ -180,12 +186,22 @@ export interface PrOverview {
 		/** Someone other than the opener commented. */
 		hasReply: boolean;
 		outdated: boolean;
+		/** Resolved on GitHub (as-of mode: always false, the history is unknown). */
+		resolved: boolean;
+		/**
+		 * The code the first comment was written on: GitHub's diff hunk, which
+		 * ends at the commented line, and the commented range in the hunk's own
+		 * numbering (the old side's for a "LEFT" side; a range may start on the
+		 * other side). Null for a file comment.
+		 */
+		code: {
+			diffHunk: string;
+			side: "LEFT" | "RIGHT";
+			startSide: "LEFT" | "RIGHT";
+			startLine: number;
+			endLine: number;
+		} | null;
 	}[];
-	/**
-	 * Resolved threads, counted by whether a bot opened them; null when
-	 * unknown (as-of mode: GitHub keeps no resolution history).
-	 */
-	resolved: { human: number; bot: number } | null;
 	/** As-of mode: the cutoff everything here is filtered to. */
 	asOf?: string;
 }

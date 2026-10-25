@@ -102,19 +102,62 @@ function checksAsOf(nodes: unknown[], cutoff: string): unknown[] {
 
 const CHECK_ORDER = { failing: 0, pending: 1, passing: 2 } as const;
 
+const SIDES = new Set(["LEFT", "RIGHT"]);
+type Side = "LEFT" | "RIGHT";
+
+function lineNumber(value: unknown): number | null {
+	return typeof value === "number" && Number.isInteger(value) && value > 0
+		? value
+		: null;
+}
+
 /**
- * Unresolved threads in full, and resolved ones only counted, by the opening
- * comment's author: bot or human.
+ * The code a thread's first comment was written on. GitHub's diff hunk is
+ * of the commit the comment was made on, so the range is the `original*`
+ * one; null for a file comment (no hunk or no line).
  */
-function mapThreads(
-	nodes: unknown[],
-	asOf: string | undefined,
-): {
-	threads: PrOverview["threads"];
-	resolved: PrOverview["resolved"];
-} {
-	const threads: PrOverview["threads"] = [];
-	const resolved = { human: 0, bot: 0 };
+function threadCode(t: Json, first: Json): Thread["code"] {
+	const diffHunk = str(first.diffHunk);
+	const endLine = lineNumber(t.originalLine) ?? lineNumber(t.line);
+	if (!diffHunk.trim() || endLine === null) return null;
+	const side: Side = SIDES.has(str(t.diffSide))
+		? (str(t.diffSide) as Side)
+		: "RIGHT";
+	const start = lineNumber(t.originalStartLine);
+	const startSide: Side = SIDES.has(str(t.startDiffSide))
+		? (str(t.startDiffSide) as Side)
+		: side;
+	return {
+		diffHunk,
+		side,
+		startSide: start === null ? side : startSide,
+		startLine:
+			start === null || (startSide === side && start > endLine)
+				? endLine
+				: start,
+		endLine,
+	};
+}
+
+type Thread = PrOverview["threads"][number];
+
+/** The later of two ISO times; a missing or invalid one loses. */
+function later(a: string, b: string): string {
+	const ta = Date.parse(a);
+	const tb = Date.parse(b);
+	if (Number.isNaN(tb)) return a;
+	if (Number.isNaN(ta)) return b;
+	return tb > ta ? b : a;
+}
+
+/**
+ * Every thread with its first comment, grouped later by the opener (bot or
+ * human), most recent activity first. As of a cutoff: threads opened by
+ * then, counting only comments made by then, none resolved (GitHub keeps no
+ * resolution history).
+ */
+function mapThreads(nodes: unknown[], asOf: string | undefined): Thread[] {
+	const threads: Thread[] = [];
 	for (const raw of nodes) {
 		const t = obj(raw);
 		const listed = obj(t.comments);
@@ -123,25 +166,27 @@ function mapThreads(
 		const first = obj(arr(obj(t.first).nodes)[0] ?? all[0]);
 		const author = obj(first.author);
 		const bot = isBotAuthor(author);
-		// As of a cutoff: threads opened by then, counting only comments made
-		// by then. When a thread was resolved isn't known: none is.
 		if (asOf && !atOrBefore(first.createdAt, asOf)) continue;
 		const comments = asOf
 			? all.filter((c) => atOrBefore(c.createdAt, asOf))
 			: all;
-		if (!asOf && t.isResolved === true) {
-			resolved[bot ? "bot" : "human"]++;
-			continue;
-		}
+		// `latest` is the aliased comments(last: 1): past the first 100 listed.
+		const latest = asOf ? [] : arr(obj(t.latest).nodes).map(obj);
+		const createdAt = str(first.createdAt);
+		const lastActivityAt = [...comments, ...latest].reduce(
+			(at, c) => later(at, str(c.createdAt)),
+			createdAt,
+		);
 		const firstLogin = str(author.login);
 		// bodyText is GitHub's plain-text rendering; the raw body is a fallback.
 		const text = str(first.bodyText) || str(first.body);
 		threads.push({
 			path: str(t.path),
-			line: typeof t.line === "number" ? t.line : null,
+			line: lineNumber(t.line) ?? lineNumber(t.originalLine),
 			excerpt: text.replace(/\s+/g, " ").trim().slice(0, 200),
 			html: str(first.bodyHTML),
-			createdAt: str(first.createdAt),
+			createdAt,
+			lastActivityAt,
 			author: firstLogin,
 			bot,
 			// The author list stops at 100; the total doesn't (as of a cutoff,
@@ -154,9 +199,22 @@ function mapThreads(
 			hasReply: comments.some((c) => str(obj(c.author).login) !== firstLogin),
 			// GitHub's flag is about today's head, not the cutoff's.
 			outdated: !asOf && t.isOutdated === true,
+			resolved: !asOf && t.isResolved === true,
+			code: threadCode(t, first),
 		});
 	}
-	return { threads, resolved: asOf ? null : resolved };
+	return sortThreads(threads);
+}
+
+/** Most recent activity first; stable for ties. */
+export function sortThreads<T extends { lastActivityAt: string }>(
+	threads: T[],
+): T[] {
+	const time = (t: T) => {
+		const ms = Date.parse(t.lastActivityAt);
+		return Number.isNaN(ms) ? Number.NEGATIVE_INFINITY : ms;
+	};
+	return [...threads].sort((a, b) => time(b) - time(a));
 }
 
 /** The GraphQL connections `fetchOverview` collects, already flattened to node lists. */
@@ -316,7 +374,7 @@ export function mapOverview(
 		? [
 				...reviews.map((r) => r.submittedAt),
 				...commenters.map((c) => c.lastAt),
-				...threads.threads.map((t) => t.createdAt),
+				...threads.map((t) => t.lastActivityAt),
 			].reduce(
 				(latest, at) => (Date.parse(at) > Date.parse(latest) ? at : latest),
 				str(v.createdAt),
@@ -342,7 +400,7 @@ export function mapOverview(
 		commenters,
 		humanStarted,
 		checks,
-		...threads,
+		threads,
 		...(asOf ? { asOf } : {}),
 	};
 }

@@ -67,34 +67,58 @@ export function prView(
 	};
 }
 
-type ThreadNode = (typeof threadsFixture)[number];
-
 /** A review comment with its text, as the aliased `first` query returns it. */
 export interface CommentNode {
 	author: { login: string; __typename: string };
 	bodyText: string;
 	bodyHTML: string;
 	createdAt: string;
+	/** GitHub's diff hunk ending at the commented line; "" for a file comment. */
+	diffHunk?: string;
+}
+
+/** A reviewThreads node, as gh.ts queries it. */
+export interface ThreadNode {
+	isResolved: boolean;
+	isOutdated: boolean;
+	path: string;
+	line: number | null;
+	originalLine: number | null;
+	originalStartLine: number | null;
+	diffSide: string;
+	startDiffSide: string | null;
+	first: { nodes: CommentNode[] };
+	latest: { nodes: { createdAt: string }[] };
+	comments: {
+		totalCount: number;
+		nodes: { author: CommentNode["author"]; createdAt: string }[];
+	};
 }
 
 /**
  * A reviewThreads node shaped like the synthetic fixture's first thread.
- * `comments` (opener first) fills both the aliased `first` comment and the
- * authors-only list.
+ * `comments` (opener first) fills the aliased `first` comment (with the
+ * opener's diff hunk, if any), the aliased `latest` one and the authors-only
+ * list. A `line` without an `originalLine` is taken as both.
  */
 export function reviewThread(
 	partial: Partial<Omit<ThreadNode, "first" | "comments">> = {},
 	comments?: CommentNode[],
 ): ThreadNode {
-	const base = threadsFixture[0];
+	const base: ThreadNode | undefined = threadsFixture[0];
 	if (!base) throw new Error("review-threads.json is empty");
 	const opener = comments?.[0];
+	const last = comments?.at(-1);
 	return {
 		...base,
 		...partial,
-		...(comments && opener
+		...("line" in partial && !("originalLine" in partial)
+			? { originalLine: partial.line ?? null }
+			: {}),
+		...(comments && opener && last
 			? {
-					first: { nodes: [opener] },
+					first: { nodes: [{ ...opener, diffHunk: opener.diffHunk ?? "" }] },
+					latest: { nodes: [{ createdAt: last.createdAt }] },
 					comments: {
 						totalCount: comments.length,
 						nodes: comments.map((c) => ({
@@ -121,6 +145,7 @@ export function threadComment(c: {
 	text: string;
 	html?: string;
 	createdAt?: string;
+	diffHunk?: string;
 }): CommentNode {
 	const escaped = c.text
 		.replaceAll("&", "&amp;")
@@ -131,5 +156,6 @@ export function threadComment(c: {
 		bodyText: c.text,
 		bodyHTML: c.html ?? `<p dir="auto">${escaped}</p>`,
 		createdAt: c.createdAt ?? "2026-01-03T09:00:00Z",
+		...(c.diffHunk === undefined ? {} : { diffHunk: c.diffHunk }),
 	};
 }

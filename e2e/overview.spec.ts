@@ -216,7 +216,7 @@ test("a thread previews its first comment as GitHub renders it, clipped, with a 
 	expect(box?.height).toBeGreaterThanOrEqual(40);
 });
 
-test("human and bot reviews count resolved threads and list unresolved ones", async ({
+test("human and bot reviews sit inside Is it ready, count resolved threads and list unresolved ones", async ({
 	page,
 	pr,
 	startCrb,
@@ -247,17 +247,199 @@ test("human and bot reviews count resolved threads and list unresolved ones", as
 	await expect(humans.getByTestId("thread")).toHaveCount(1);
 	await expect(bots.getByTestId("thread")).toHaveCount(1);
 	await expect(page.getByText("src/a.ts")).toHaveCount(0);
-	// After "Is it ready", humans first.
-	const order = await page
+	// Inside "Is it ready", below the checks, humans first.
+	const ready = page.getByRole("region", { name: "Is it ready" });
+	const order = await ready
 		.getByRole("region")
-		.evaluateAll((els) => els.map((el) => el.getAttribute("aria-label")));
-	expect(order).toEqual([
-		"What it does",
-		"Who's on it",
-		"Is it ready",
-		"Human reviews",
-		"Bot reviews",
+		.evaluateAll((els) => els.map((el) => el.querySelector("h3")?.textContent));
+	expect(order).toEqual(["Human reviews", "Bot reviews"]);
+	const checks = await ready
+		.getByRole("list", { name: "Readiness" })
+		.boundingBox();
+	const h = await humans.boundingBox();
+	if (!checks || !h) throw new Error("no boxes");
+	expect(h.y).toBeGreaterThan(checks.y + checks.height);
+	const top = await page
+		.getByRole("region")
+		.evaluateAll((els) =>
+			els
+				.filter((el) => !el.parentElement?.closest("section"))
+				.map((el) => el.getAttribute("aria-label")),
+		);
+	expect(top).toEqual(["What it does", "Who's on it", "Is it ready"]);
+
+	// The resolved count swaps the list to resolved threads, and back.
+	const toggle = humans.getByRole("button", { name: "2 resolved" });
+	await expect(toggle).toHaveAttribute("aria-pressed", "false");
+	await toggle.click();
+	await expect(toggle).toHaveAttribute("aria-pressed", "true");
+	await expect(humans.getByTestId("thread")).toHaveCount(2);
+	await expect(humans.getByText("src/a.ts")).toBeVisible();
+	await expect(humans.getByText("src/cache.ts:42")).toHaveCount(0);
+	await toggle.click();
+	await expect(humans.getByTestId("thread")).toHaveCount(1);
+	await expect(humans.getByText("src/cache.ts:42")).toBeVisible();
+});
+
+test("section headings are centered bands", async ({ page, pr, startCrb }) => {
+	await pr();
+	const s = await startCrb();
+	await page.goto(s.url);
+	for (const name of ["What it does", "Who's on it", "Is it ready"]) {
+		const heading = page.getByRole("heading", { level: 2, name });
+		await expect(heading).toHaveCSS("text-align", "center");
+		const band = await heading.evaluate(
+			(el) => getComputedStyle(el).backgroundColor,
+		);
+		const card = await heading.evaluate(
+			(el) => getComputedStyle(el.parentElement as Element).backgroundColor,
+		);
+		expect(band).not.toBe(card);
+	}
+});
+
+test("threads come latest activity first, five at a time", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	const at = (day: number) =>
+		`2026-01-${String(day).padStart(2, "0")}T09:00:00Z`;
+	await pr({
+		threads: Array.from({ length: 12 }, (_, i) =>
+			reviewThread({ path: `src/f${i}.ts`, line: 1 }, [
+				threadComment({ login: "rev1", text: `t${i}`, createdAt: at(1 + i) }),
+				// Thread 0 had the latest reply.
+				...(i === 0
+					? [threadComment({ login: "rev2", text: "late", createdAt: at(28) })]
+					: []),
+			]),
+		),
+	});
+	const s = await startCrb();
+	await page.goto(s.url);
+	const humans = page.getByRole("region", { name: "Human reviews" });
+	const paths = humans.getByTestId("thread").locator("code").first();
+	await expect(humans.getByTestId("thread")).toHaveCount(5);
+	const shown = () =>
+		humans
+			.getByTestId("thread")
+			.evaluateAll((els) =>
+				els.map((el) => el.querySelector("code")?.textContent),
+			);
+	expect(await shown()).toEqual([
+		"src/f0.ts:1",
+		"src/f11.ts:1",
+		"src/f10.ts:1",
+		"src/f9.ts:1",
+		"src/f8.ts:1",
 	]);
+	await expect(paths).toBeVisible();
+	const more = humans.getByRole("button", { name: "Load more" });
+	expect((await more.boundingBox())?.height).toBeGreaterThanOrEqual(40);
+	await more.click();
+	await expect(humans.getByTestId("thread")).toHaveCount(10);
+	await more.click();
+	await expect(humans.getByTestId("thread")).toHaveCount(12);
+	await expect(more).toHaveCount(0);
+});
+
+const CODE_HUNK = [
+	"@@ -1,6 +1,9 @@ export class Cache {",
+	" import { load } from './load';",
+	" ",
+	" export class Cache {",
+	"-  private map = new Map();",
+	"+  private map = new Map<string, Widget>();",
+	"+  private ttl = 60_000;",
+	"   get(key: string) {",
+	"+    const hit = this.map.get(key);",
+	"+    if (hit && Date.now() - hit.at < this.ttl) return hit.value;",
+].join("\n");
+
+test("a thread shows the code it was written on beside the comment, stacked on a phone", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	const long = Array.from(
+		{ length: 14 },
+		(_, i) => `<p dir="auto">Point ${i + 1}</p>`,
+	).join("\n");
+	await pr({
+		threads: [
+			reviewThread(
+				{
+					path: "src/cache.ts",
+					line: null,
+					originalLine: 8,
+					originalStartLine: 7,
+					isOutdated: true,
+				},
+				[
+					threadComment({
+						login: "rev1",
+						text: "Points",
+						html: long,
+						diffHunk: CODE_HUNK,
+					}),
+				],
+			),
+			// A file comment: the path, no code.
+			reviewThread({ path: "src/file.ts", line: null, originalLine: null }, [
+				threadComment({
+					login: "rev2",
+					text: "Whole file",
+					createdAt: "2026-01-01T00:00:00Z",
+				}),
+			]),
+		],
+	});
+	const s = await startCrb();
+	await page.goto(s.url);
+	const humans = page.getByRole("region", { name: "Human reviews" });
+	const [thread, fileThread] = [
+		humans.getByTestId("thread").first(),
+		humans.getByTestId("thread").nth(1),
+	];
+	// Outdated: the line where it was written.
+	await expect(thread.locator("code").first()).toHaveText("src/cache.ts:8");
+	const code = thread.getByRole("figure", { name: "Code at src/cache.ts" });
+	const lines = code.getByTestId("thread-code-line");
+	await expect(lines).toHaveCount(6);
+	await expect(lines.first()).toContainText("private map = new Map();");
+	await expect(lines.last()).toContainText("if (hit &&");
+	await expect(code.locator("[data-marked]")).toHaveCount(2);
+	await expect(lines.last()).toHaveAttribute("data-marked", "true");
+	// Highlighted by Shiki (tokens carry colors).
+	await expect(
+		lines.last().locator("span[style*=color]").first(),
+	).toBeVisible();
+	await expect(code).toHaveCSS("font-family", /mono/i);
+	await expect(fileThread.getByTestId("thread-code")).toHaveCount(0);
+	await expect(fileThread.locator("code").first()).toHaveText("src/file.ts");
+
+	const body = thread.getByTestId("thread-body");
+	const [c, b] = [await code.boundingBox(), await body.boundingBox()];
+	if (!c || !b) throw new Error("no boxes");
+	const phone = (page.viewportSize()?.width ?? 0) < 768;
+	if (phone) {
+		expect(b.y).toBeGreaterThanOrEqual(c.y + c.height);
+	} else {
+		expect(Math.abs(c.y - b.y)).toBeLessThan(2);
+		expect(b.x).toBeGreaterThan(c.x + c.width);
+	}
+	// Clipped, the code scrolls; Show more opens both, without scrollbars.
+	expect(c.height).toBeLessThanOrEqual(130);
+	await thread.getByRole("button", { name: "Show more" }).click();
+	const opened = await code.evaluate((el) => ({
+		over:
+			el.scrollHeight > el.clientHeight + 1 ||
+			el.scrollWidth > el.clientWidth + 1,
+		overflow: getComputedStyle(el).overflow,
+	}));
+	expect(opened).toEqual({ over: false, overflow: "visible" });
+	expect((await body.boundingBox())?.height).toBeGreaterThan(b.height + 100);
 });
 
 test("checks are one row of chips; a CI chip opens the list, failing first", async ({
@@ -356,13 +538,20 @@ test("the Overview stays inside a 360px screen", async ({
 					line: 12345,
 					isOutdated: true,
 				},
-				[threadComment({ login: "a-reviewer-with-a-long-login", text: "Hm" })],
+				[
+					threadComment({
+						login: "a-reviewer-with-a-long-login",
+						text: "Hm",
+						diffHunk: `@@ -1,1 +1,2 @@\n const a = 1;\n+${"const someVeryLongIdentifierName = callSomething(withArguments, andMore, andEvenMore);".repeat(2)}`,
+					}),
+				],
 			),
 		],
 	});
 	const s = await startCrb();
 	await page.goto(s.url);
 	await expect(page.getByRole("region", { name: "Bot reviews" })).toBeVisible();
+	await expect(page.getByTestId("thread-code")).toBeVisible();
 	const { scrollWidth, clientWidth } = await page.evaluate(() => ({
 		scrollWidth: document.documentElement.scrollWidth,
 		clientWidth: document.documentElement.clientWidth,

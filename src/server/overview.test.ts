@@ -133,7 +133,7 @@ describe("mapOverview", () => {
 		expect(o.checks[3]).toEqual({ name: "license/check", status: "passing" });
 	});
 
-	it("lists unresolved threads with bot and reply flags", () => {
+	it("lists every thread, latest activity first, with bot, reply and resolved flags", () => {
 		expect(o.threads).toEqual([
 			{
 				path: "src/cache.ts",
@@ -141,23 +141,20 @@ describe("mapOverview", () => {
 				excerpt: "Should this expire?",
 				html: '<p dir="auto">Should this <strong>expire</strong>?</p>',
 				createdAt: "2026-01-03T09:00:00Z",
+				lastActivityAt: "2026-01-03T11:00:00Z",
 				author: "rev1",
 				bot: false,
 				commentCount: 2,
 				hasReply: true,
 				outdated: false,
-			},
-			{
-				path: "src/old.ts",
-				line: null,
-				excerpt: "Coverage dropped",
-				html: '<p dir="auto">Coverage dropped</p>',
-				createdAt: "2026-01-02T12:00:00Z",
-				author: "ci-bot",
-				bot: true,
-				commentCount: 1,
-				hasReply: false,
-				outdated: true,
+				resolved: false,
+				code: {
+					diffHunk: expect.stringMatching(/^@@ -38,5 \+38,7 @@/),
+					side: "RIGHT",
+					startSide: "RIGHT",
+					startLine: 42,
+					endLine: 42,
+				},
 			},
 			{
 				path: "src/self.ts",
@@ -165,25 +162,98 @@ describe("mapOverview", () => {
 				excerpt: "First",
 				html: '<p dir="auto">First</p>',
 				createdAt: "2026-01-03T09:00:00Z",
+				lastActivityAt: "2026-01-03T11:00:00Z",
 				author: "rev1",
 				bot: false,
 				commentCount: 2,
 				hasReply: false,
 				outdated: false,
+				resolved: false,
+				code: null,
+			},
+			{
+				path: "src/done.ts",
+				line: 1,
+				excerpt: "Nit",
+				html: '<p dir="auto">Nit</p>',
+				createdAt: "2026-01-03T09:00:00Z",
+				lastActivityAt: "2026-01-03T09:00:00Z",
+				author: "rev1",
+				bot: false,
+				commentCount: 1,
+				hasReply: false,
+				outdated: false,
+				resolved: true,
+				code: null,
+			},
+			{
+				path: "src/old.ts",
+				// Outdated: where it was written.
+				line: 7,
+				excerpt: "Coverage dropped",
+				html: '<p dir="auto">Coverage dropped</p>',
+				createdAt: "2026-01-02T12:00:00Z",
+				lastActivityAt: "2026-01-02T12:00:00Z",
+				author: "ci-bot",
+				bot: true,
+				commentCount: 1,
+				hasReply: false,
+				outdated: true,
+				resolved: false,
+				code: {
+					diffHunk: expect.stringContaining("-  // legacy path"),
+					side: "LEFT",
+					startSide: "LEFT",
+					startLine: 7,
+					endLine: 7,
+				},
 			},
 		]);
 	});
 
-	it("counts resolved threads by whether a bot opened them", () => {
-		expect(o.resolved).toEqual({ human: 1, bot: 0 });
+	it("takes last activity past the first 100 comments from the latest one", () => {
 		const g = graph();
-		const resolvedBot = structuredClone(g.reviewThreads[2]);
-		if (!resolvedBot) throw new Error("fixture has no bot thread");
-		resolvedBot.isResolved = true;
-		g.reviewThreads.push(resolvedBot);
-		const mapped = mapOverview(view(), g, VIEWER);
-		expect(mapped.resolved).toEqual({ human: 1, bot: 1 });
-		expect(mapped.threads).toHaveLength(3);
+		const thread = g.reviewThreads[3] as unknown as {
+			latest: { nodes: { createdAt: string }[] };
+		};
+		thread.latest = { nodes: [{ createdAt: "2026-01-09T00:00:00Z" }] };
+		const r = mapOverview(view(), g, VIEWER);
+		expect(r.threads[0]).toMatchObject({
+			path: "src/self.ts",
+			lastActivityAt: "2026-01-09T00:00:00Z",
+		});
+	});
+
+	it("takes the commented range from the original lines, multi-line and across sides", () => {
+		const g = graph();
+		const t = g.reviewThreads[0] as unknown as Record<string, unknown>;
+		Object.assign(t, {
+			line: null,
+			originalLine: 42,
+			originalStartLine: 41,
+			startDiffSide: "RIGHT",
+		});
+		expect(mapOverview(view(), g, VIEWER).threads[0]).toMatchObject({
+			line: 42,
+			code: { side: "RIGHT", startSide: "RIGHT", startLine: 41, endLine: 42 },
+		});
+		Object.assign(t, { originalStartLine: 39, startDiffSide: "LEFT" });
+		expect(mapOverview(view(), g, VIEWER).threads[0]?.code).toMatchObject({
+			startSide: "LEFT",
+			startLine: 39,
+		});
+		// A start after the end on the same side is nonsense: just the line.
+		Object.assign(t, { originalStartLine: 50, startDiffSide: "RIGHT" });
+		expect(mapOverview(view(), g, VIEWER).threads[0]?.code).toMatchObject({
+			startLine: 42,
+			endLine: 42,
+		});
+		// A file comment: no line, no code.
+		Object.assign(t, { line: null, originalLine: null });
+		expect(mapOverview(view(), g, VIEWER).threads[0]).toMatchObject({
+			line: null,
+			code: null,
+		});
 	});
 
 	it("counts a thread's comments from the total, past the 100 authors listed", () => {
@@ -368,16 +438,22 @@ describe("mapOverview as of a cutoff", () => {
 	});
 
 	it("shows every thread opened by then as unresolved, counting only comments made by then", () => {
-		expect(o.resolved).toBeNull();
 		expect(
-			o.threads.map((t) => [t.path, t.commentCount, t.hasReply, t.outdated]),
+			o.threads.map((t) => [
+				t.path,
+				t.commentCount,
+				t.hasReply,
+				t.outdated,
+				t.resolved,
+				t.lastActivityAt,
+			]),
 		).toEqual([
 			// The author's reply came at 11:00, after the cutoff.
-			["src/cache.ts", 1, false, false],
+			["src/cache.ts", 1, false, false, false, "2026-01-03T09:00:00Z"],
 			// Resolved today; when isn't known, so it shows.
-			["src/done.ts", 1, false, false],
-			["src/old.ts", 1, false, false],
-			["src/self.ts", 1, false, false],
+			["src/done.ts", 1, false, false, false, "2026-01-03T09:00:00Z"],
+			["src/self.ts", 1, false, false, false, "2026-01-03T09:00:00Z"],
+			["src/old.ts", 1, false, false, false, "2026-01-02T12:00:00Z"],
 		]);
 		const g = { ...graph(), checks };
 		const later = structuredClone(g.reviewThreads[0]);

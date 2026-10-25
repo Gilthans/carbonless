@@ -95,6 +95,9 @@ const overview: PrOverview = {
 			commentCount: 1,
 			hasReply: false,
 			outdated: true,
+			lastActivityAt: "2026-01-02T12:00:00Z",
+			resolved: false,
+			code: null,
 		},
 		{
 			path: "src/cache.ts",
@@ -107,10 +110,44 @@ const overview: PrOverview = {
 			commentCount: 3,
 			hasReply: true,
 			outdated: false,
+			lastActivityAt: "2026-01-03T11:00:00Z",
+			resolved: false,
+			code: {
+				diffHunk:
+					"@@ -40,2 +40,3 @@ class Cache {\n   get() {}\n-  old() {}\n+  set() {}\n+  ttl = 5;",
+				side: "RIGHT",
+				startSide: "RIGHT",
+				startLine: 42,
+				endLine: 42,
+			},
 		},
+		...[1, 2, 3, 4].map((i) =>
+			humanThread(`src/done${i}.ts`, { resolved: true }),
+		),
 	],
-	resolved: { human: 4, bot: 0 },
 };
+
+function humanThread(
+	path: string,
+	extra: Partial<PrOverview["threads"][number]> = {},
+): PrOverview["threads"][number] {
+	return {
+		path,
+		line: 1,
+		excerpt: path,
+		html: `<p>${path}</p>`,
+		createdAt: "2026-01-01T09:00:00Z",
+		lastActivityAt: "2026-01-01T09:00:00Z",
+		author: "rev2",
+		bot: false,
+		commentCount: 1,
+		hasReply: false,
+		outdated: false,
+		resolved: false,
+		code: null,
+		...extra,
+	};
+}
 
 const counts = (total: number, reviewed: number, crossedOff: number) => ({
 	total,
@@ -518,9 +555,10 @@ describe("OverviewPage", () => {
 		expect(human).toHaveTextContent("src/cache.ts:42");
 		expect(human.querySelector("code")).toHaveTextContent("src/cache.ts:42");
 		expect(human).toHaveTextContent("rev1");
+		// Last active, which the threads are sorted by.
 		expect(human.querySelector("time")).toHaveAttribute(
 			"dateTime",
-			"2026-01-03T09:00:00Z",
+			"2026-01-03T11:00:00Z",
 		);
 		const count = within(human).getByRole("img", { name: "3 comments" });
 		expect(count).toHaveTextContent("3");
@@ -544,8 +582,9 @@ describe("OverviewPage", () => {
 		renderApp({
 			"/api/overview": ok({
 				...overview,
-				threads: [],
-				resolved: { human: 2, bot: 0 },
+				threads: [1, 2].map((i) =>
+					humanThread(`src/r${i}.ts`, { resolved: true }),
+				),
 			}),
 		});
 		const bots = await screen.findByRole("region", { name: "Bot reviews" });
@@ -555,6 +594,99 @@ describe("OverviewPage", () => {
 		expect(
 			within(humans).queryByRole("list", { name: "Unresolved threads" }),
 		).toBeNull();
+	});
+
+	it("the resolved count is a toggle that swaps the list to resolved threads and back", async () => {
+		const user = userEvent.setup();
+		renderApp();
+		const humans = await screen.findByRole("region", { name: "Human reviews" });
+		const toggle = within(humans).getByRole("button", { name: "4 resolved" });
+		expect(toggle).toHaveAttribute("aria-pressed", "false");
+		expect(
+			within(humans).getByRole("list", { name: "Unresolved threads" }),
+		).toBeInTheDocument();
+		await user.click(toggle);
+		expect(toggle).toHaveAttribute("aria-pressed", "true");
+		expect(
+			within(humans).queryByRole("list", { name: "Unresolved threads" }),
+		).toBeNull();
+		const list = within(humans).getByRole("list", { name: "Resolved threads" });
+		expect(
+			within(list)
+				.getAllByTestId("thread")
+				.map((t) => t.querySelector("code")?.textContent),
+		).toEqual([
+			"src/done1.ts:1",
+			"src/done2.ts:1",
+			"src/done3.ts:1",
+			"src/done4.ts:1",
+		]);
+		await user.click(toggle);
+		expect(toggle).toHaveAttribute("aria-pressed", "false");
+		expect(within(humans).getAllByTestId("thread")).toHaveLength(1);
+	});
+
+	it("lists five threads at a time; Load more adds five; the toggle starts over", async () => {
+		const user = userEvent.setup();
+		renderApp({
+			"/api/overview": ok({
+				...overview,
+				threads: [
+					...Array.from({ length: 12 }, (_, i) => humanThread(`src/u${i}.ts`)),
+					...Array.from({ length: 7 }, (_, i) =>
+						humanThread(`src/r${i}.ts`, { resolved: true }),
+					),
+				],
+			}),
+		});
+		const humans = await screen.findByRole("region", { name: "Human reviews" });
+		const shown = () =>
+			within(humans)
+				.getAllByTestId("thread")
+				.map((t) => t.querySelector("code")?.textContent);
+		expect(shown()).toEqual([0, 1, 2, 3, 4].map((i) => `src/u${i}.ts:1`));
+		const more = within(humans).getByRole("button", { name: "Load more" });
+		await user.click(more);
+		expect(shown()).toHaveLength(10);
+		await user.click(more);
+		expect(shown()).toHaveLength(12);
+		expect(
+			within(humans).queryByRole("button", { name: "Load more" }),
+		).toBeNull();
+		await user.click(
+			within(humans).getByRole("button", { name: "7 resolved" }),
+		);
+		expect(shown()).toEqual([0, 1, 2, 3, 4].map((i) => `src/r${i}.ts:1`));
+		await user.click(within(humans).getByRole("button", { name: "Load more" }));
+		expect(shown()).toHaveLength(7);
+		await user.click(
+			within(humans).getByRole("button", { name: "7 resolved" }),
+		);
+		expect(shown()).toHaveLength(5);
+	});
+
+	it("shows the code a comment was written on beside it, the commented line marked; a file comment has none", async () => {
+		renderApp();
+		const humans = await screen.findByRole("region", { name: "Human reviews" });
+		const code = within(humans).getByRole("figure", {
+			name: "Code at src/cache.ts",
+		});
+		const rows = within(code).getAllByTestId("thread-code-line");
+		expect(rows.map((r) => r.textContent?.replace(/\s+/g, " "))).toEqual([
+			"4040 get() {}",
+			"41− old() {}",
+			"41+ set() {}",
+			"42+ ttl = 5;",
+		]);
+		expect(rows.map((r) => r.hasAttribute("data-marked"))).toEqual([
+			false,
+			false,
+			false,
+			true,
+		]);
+		const bots = screen.getByRole("region", { name: "Bot reviews" });
+		expect(within(bots).queryByTestId("thread-code")).toBeNull();
+		expect(within(bots).getByTestId("thread")).toHaveTextContent("src/old.ts");
 	});
 
 	it("previews a thread as GitHub renders it, clipped, with a toggle when it is long", async () => {
@@ -673,7 +805,7 @@ describe("OverviewPage", () => {
 			"/api/session": ok({ ...info, asOf: "2026-09-15T11:35:52Z" }),
 			"/api/overview": ok({
 				...overview,
-				resolved: null,
+				threads: overview.threads.map((t) => ({ ...t, resolved: false })),
 				mergeable: "UNKNOWN",
 				asOf: "2026-09-15T11:35:52Z",
 			}),
@@ -687,7 +819,17 @@ describe("OverviewPage", () => {
 			}),
 		).toBeVisible();
 		const humans = screen.getByRole("region", { name: "Human reviews" });
-		expect(humans).toHaveTextContent("resolved unknown");
+		expect(
+			within(humans).getByRole("list", { name: "Thread counts" }),
+		).toHaveTextContent("5 unresolved0 resolved");
+		const resolved = within(humans).getByRole("button", { name: "0 resolved" });
+		resolved.focus();
+		expect(
+			await screen.findByRole("tooltip", { name: /Resolution history/ }),
+		).toBeVisible();
+		expect(resolved).toHaveAccessibleDescription(
+			/Resolution history isn't known/,
+		);
 		expect(screen.queryByRole("status")).toBeNull();
 	});
 

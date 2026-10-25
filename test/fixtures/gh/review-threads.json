@@ -4,6 +4,10 @@
 		"isOutdated": false,
 		"path": "src/cache.ts",
 		"line": 42,
+		"originalLine": 42,
+		"originalStartLine": null,
+		"diffSide": "RIGHT",
+		"startDiffSide": null,
 		"first": {
 			"nodes": [
 				{
@@ -13,7 +17,15 @@
 					},
 					"bodyText": "Should this expire?",
 					"bodyHTML": "<p dir=\"auto\">Should this <strong>expire</strong>?</p>",
-					"createdAt": "2026-01-03T09:00:00Z"
+					"createdAt": "2026-01-03T09:00:00Z",
+					"diffHunk": "@@ -38,5 +38,7 @@ export class Cache {\n   get(key: string) {\n     return this.map.get(key);\n   }\n+  set(key: string, value: Widget) {\n+    this.map.set(key, { value, at: Date.now() });"
+				}
+			]
+		},
+		"latest": {
+			"nodes": [
+				{
+					"createdAt": "2026-01-03T11:00:00Z"
 				}
 			]
 		},
@@ -42,6 +54,10 @@
 		"isOutdated": false,
 		"path": "src/done.ts",
 		"line": 1,
+		"originalLine": 1,
+		"originalStartLine": null,
+		"diffSide": "RIGHT",
+		"startDiffSide": null,
 		"first": {
 			"nodes": [
 				{
@@ -51,6 +67,14 @@
 					},
 					"bodyText": "Nit",
 					"bodyHTML": "<p dir=\"auto\">Nit</p>",
+					"createdAt": "2026-01-03T09:00:00Z",
+					"diffHunk": ""
+				}
+			]
+		},
+		"latest": {
+			"nodes": [
+				{
 					"createdAt": "2026-01-03T09:00:00Z"
 				}
 			]
@@ -73,6 +97,10 @@
 		"isOutdated": true,
 		"path": "src/old.ts",
 		"line": null,
+		"originalLine": 7,
+		"originalStartLine": null,
+		"diffSide": "LEFT",
+		"startDiffSide": null,
 		"first": {
 			"nodes": [
 				{
@@ -82,6 +110,14 @@
 					},
 					"bodyText": "Coverage dropped",
 					"bodyHTML": "<p dir=\"auto\">Coverage dropped</p>",
+					"createdAt": "2026-01-02T12:00:00Z",
+					"diffHunk": "@@ -5,4 +5,3 @@ import { load } from \"./load\";\n export function old() {\n-  return load(true);\n-  // legacy path"
+				}
+			]
+		},
+		"latest": {
+			"nodes": [
+				{
 					"createdAt": "2026-01-02T12:00:00Z"
 				}
 			]
@@ -104,6 +140,10 @@
 		"isOutdated": false,
 		"path": "src/self.ts",
 		"line": 3,
+		"originalLine": 3,
+		"originalStartLine": null,
+		"diffSide": "RIGHT",
+		"startDiffSide": null,
 		"first": {
 			"nodes": [
 				{
@@ -113,7 +153,15 @@
 					},
 					"bodyText": "First",
 					"bodyHTML": "<p dir=\"auto\">First</p>",
-					"createdAt": "2026-01-03T09:00:00Z"
+					"createdAt": "2026-01-03T09:00:00Z",
+					"diffHunk": ""
+				}
+			]
+		},
+		"latest": {
+			"nodes": [
+				{
+					"createdAt": "2026-01-03T11:00:00Z"
 				}
 			]
 		},

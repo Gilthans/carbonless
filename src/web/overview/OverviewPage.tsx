@@ -31,6 +31,8 @@ import {
 import { Link } from "@tanstack/react-router";
 import {
 	type ReactNode,
+	type Ref,
+	type RefObject,
 	useCallback,
 	useEffect,
 	useId,
@@ -40,10 +42,13 @@ import {
 } from "react";
 import type { PrOverview, Progress } from "../../shared/types";
 import { overviewQuery, reviewQuery } from "../api";
+import { Code } from "../files/Code";
+import { languageFor } from "../files/highlight";
 import { GithubHtml, ImageErrorContext } from "../GithubHtml";
 import { RelativeTime } from "../RelativeTime";
 import { Tooltip } from "../Tooltip";
 import { ErrorMessage, safeHref } from "../ui";
+import { codeExcerpt, type HunkLine } from "./diffHunk";
 import { createImageRefresher } from "./imageRefresh";
 
 type Review = PrOverview["reviews"][number];
@@ -89,16 +94,6 @@ function OverviewContent({
 					<WhatItDoes pr={overview.data} />
 					<WhosOnIt pr={overview.data} />
 					<IsItReady pr={overview.data} />
-					<ThreadGroup
-						label="Human reviews"
-						threads={overview.data.threads.filter((t) => !t.bot)}
-						resolved={overview.data.resolved?.human ?? null}
-					/>
-					<ThreadGroup
-						label="Bot reviews"
-						threads={overview.data.threads.filter((t) => t.bot)}
-						resolved={overview.data.resolved?.bot ?? null}
-					/>
 				</>
 			)}
 			<ReviewFilesButton />
@@ -112,7 +107,7 @@ function Section(props: { label: string; children: ReactNode }) {
 			aria-label={props.label}
 			className="rounded-xl border border-line bg-surface"
 		>
-			<h2 className="border-b border-line px-4 py-2.5 text-xs font-semibold tracking-[0.18em] text-label uppercase">
+			<h2 className="rounded-t-xl border-b border-line bg-raised px-4 py-3 text-center text-[0.8125rem] font-semibold tracking-[0.2em] text-label uppercase">
 				{props.label}
 			</h2>
 			<div className="space-y-4 px-4 py-3">{props.children}</div>
@@ -525,6 +520,18 @@ function IsItReady({ pr }: { pr: PrOverview }) {
 	return (
 		<Section label="Is it ready">
 			<Checks pr={pr} />
+			<ThreadGroup
+				label="Human reviews"
+				icon={CommentDiscussionIcon}
+				threads={pr.threads.filter((t) => !t.bot)}
+				asOf={Boolean(pr.asOf)}
+			/>
+			<ThreadGroup
+				label="Bot reviews"
+				icon={HubotIcon}
+				threads={pr.threads.filter((t) => t.bot)}
+				asOf={Boolean(pr.asOf)}
+			/>
 		</Section>
 	);
 }
@@ -540,7 +547,15 @@ function Chip(props: {
 	tip: string;
 	children: ReactNode;
 	testId?: string;
-	toggle?: { expanded: boolean; controls: string; onClick: () => void };
+	/** A disclosure (`expanded`, with a caret) or a two-state button (`pressed`). */
+	toggle?: {
+		expanded?: boolean;
+		pressed?: boolean;
+		controls?: string;
+		onClick: () => void;
+	};
+	/** Keep the tip a description even on a toggle (it explains, not instructs). */
+	describeTip?: boolean;
 }) {
 	const { toggle } = props;
 	const className =
@@ -548,7 +563,7 @@ function Chip(props: {
 	const badge = (
 		<Badge tone={props.tone} icon={props.icon}>
 			{props.children}
-			{toggle && (
+			{toggle?.expanded !== undefined && (
 				<TriangleDownIcon
 					size={12}
 					aria-hidden
@@ -559,7 +574,11 @@ function Chip(props: {
 	);
 	return (
 		// A toggle's tip only says what pressing does; its state is aria-expanded.
-		<Tooltip content={props.tip} hoverDelay={400} describe={!toggle}>
+		<Tooltip
+			content={props.tip}
+			hoverDelay={400}
+			describe={props.describeTip ?? !toggle}
+		>
 			{(trigger) =>
 				toggle ? (
 					<button
@@ -567,9 +586,10 @@ function Chip(props: {
 						{...trigger}
 						data-testid={props.testId}
 						aria-expanded={toggle.expanded}
+						aria-pressed={toggle.pressed}
 						aria-controls={toggle.controls}
 						onClick={toggle.onClick}
-						className={`${className} cursor-pointer hover:brightness-125`}
+						className={`${className} cursor-pointer hover:brightness-125 ${toggle.pressed ? "[&>span]:ring-2 [&>span]:ring-current" : ""}`}
 					>
 						{badge}
 					</button>
@@ -768,61 +788,185 @@ function CheckItem({ check }: { check: Check }) {
 
 // ---- Human and bot reviews ----
 
+/** Threads listed at first, and added by each "Load more". */
+const THREAD_PAGE = 5;
+
 /**
- * One group's review threads: resolved ones counted, unresolved ones listed.
- * `resolved` is null when unknown (as-of mode).
+ * One group's review threads, inside "Is it ready": unresolved ones listed,
+ * or resolved ones while their count is pressed; five at a time. As of a
+ * cutoff no thread is known to be resolved.
  */
 function ThreadGroup(props: {
 	label: string;
+	icon: Icon;
 	threads: Thread[];
-	resolved: number | null;
+	asOf: boolean;
 }) {
-	const { threads, resolved } = props;
+	const { threads, asOf } = props;
+	const [showResolved, setShowResolved] = useState(false);
+	const [limit, setLimit] = useState(THREAD_PAGE);
+	const listId = useId();
+	const headingId = useId();
+	const unresolved = threads.filter((t) => !t.resolved);
+	const resolved = threads.filter((t) => t.resolved);
+	const listed = showResolved ? resolved : unresolved;
+	const IconEl = props.icon;
 	return (
-		<Section label={props.label}>
-			{threads.length === 0 && resolved === 0 ? (
-				<p className="text-sm text-faint">No threads</p>
-			) : (
-				<ul aria-label="Thread counts" className="flex flex-wrap gap-2">
-					{threads.length > 0 && (
-						<li>
-							<Badge tone="yellow" icon={CommentDiscussionIcon}>
-								{threads.length} unresolved
-							</Badge>
-						</li>
-					)}
-					<li>
-						{resolved === null ? (
-							<Badge tone="gray" icon={QuestionIcon}>
-								resolved unknown
-							</Badge>
-						) : (
-							<Badge tone={resolved ? "green" : "gray"} icon={CheckIcon}>
-								{resolved} resolved
-							</Badge>
+		<section
+			aria-labelledby={headingId}
+			className="space-y-3 border-t border-line pt-4"
+		>
+			<div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+				<h3
+					id={headingId}
+					className="flex items-center gap-1.5 text-sm font-semibold text-ink-soft"
+				>
+					<IconEl size={16} aria-hidden className="text-muted" />
+					{props.label}
+				</h3>
+				{threads.length === 0 ? (
+					<p className="text-sm text-faint">No threads</p>
+				) : (
+					<ul
+						aria-label="Thread counts"
+						className="flex flex-wrap items-center gap-x-2"
+					>
+						{unresolved.length > 0 && (
+							<li className="inline-flex min-h-10 items-center">
+								<Badge tone="yellow" icon={CommentDiscussionIcon}>
+									{unresolved.length} unresolved
+								</Badge>
+							</li>
 						)}
-					</li>
-				</ul>
-			)}
-			{threads.length > 0 && (
-				<ul aria-label="Unresolved threads" className="space-y-3">
-					{threads.map((t, i) => (
-						// Threads have no id; their order is stable per response.
-						// biome-ignore lint/suspicious/noArrayIndexKey: see above.
-						<ThreadItem key={i} thread={t} />
-					))}
-				</ul>
-			)}
-		</Section>
+						<li>
+							<Chip
+								tone={resolved.length ? "green" : "gray"}
+								icon={CheckIcon}
+								tip={
+									asOf
+										? "Resolution history isn't known for a past moment: every thread counts as unresolved"
+										: showResolved
+											? "Show unresolved threads"
+											: "Show resolved threads"
+								}
+								describeTip={asOf}
+								toggle={{
+									pressed: showResolved,
+									controls: listId,
+									onClick: () => {
+										setShowResolved((on) => !on);
+										setLimit(THREAD_PAGE);
+									},
+								}}
+							>
+								{resolved.length} resolved
+							</Chip>
+						</li>
+					</ul>
+				)}
+			</div>
+			<div id={listId}>
+				{listed.length > 0 && (
+					<ul
+						aria-label={
+							showResolved ? "Resolved threads" : "Unresolved threads"
+						}
+						className="space-y-3"
+					>
+						{listed.slice(0, limit).map((t, i) => (
+							// Threads have no id; their order is stable per response.
+							// biome-ignore lint/suspicious/noArrayIndexKey: see above.
+							<ThreadItem key={`${showResolved}:${i}`} thread={t} />
+						))}
+					</ul>
+				)}
+				{listed.length > limit && (
+					<button
+						type="button"
+						onClick={() => setLimit((n) => n + THREAD_PAGE)}
+						className="mt-1 flex min-h-10 items-center gap-1 rounded-md px-1 text-sm font-medium text-link hover:underline focus-visible:outline-2 focus-visible:outline-accent"
+					>
+						<ChevronDownIcon size={16} aria-hidden />
+						Load more
+					</button>
+				)}
+			</div>
+		</section>
 	);
 }
 
+/** Overflowing `el` (when `axis` is "both", sideways too), re-measured as it resizes. */
+function useOverflow(
+	el: RefObject<HTMLElement | null>,
+	active: boolean,
+	axis: "y" | "both",
+): boolean {
+	const [over, setOver] = useState(false);
+	useLayoutEffect(() => {
+		const box = el.current;
+		if (!box || !active) return;
+		const measure = () =>
+			setOver(
+				box.scrollHeight > box.clientHeight + 1 ||
+					(axis === "both" && box.scrollWidth > box.clientWidth + 1),
+			);
+		measure();
+		if (typeof ResizeObserver === "undefined") return;
+		const observer = new ResizeObserver(measure);
+		observer.observe(box);
+		const inner = box.firstElementChild;
+		if (inner) observer.observe(inner);
+		return () => observer.disconnect();
+	}, [el, active, axis]);
+	return over;
+}
+
 /**
- * One unresolved thread: where, who, when, how many comments, whether anyone
- * answered, and the first comment as GitHub renders it, clipped.
+ * One thread: where, who, when it was last active, how many comments,
+ * whether anyone answered; then the code it was written on beside the first
+ * comment as GitHub renders it (stacked on a phone), both clipped until
+ * "Show more".
  */
 function ThreadItem({ thread }: { thread: Thread }) {
 	const n = thread.commentCount;
+	const [open, setOpen] = useState(false);
+	const codeBox = useRef<HTMLElement>(null);
+	const commentBox = useRef<HTMLDivElement>(null);
+	const codeMore = useOverflow(codeBox, !open, "both");
+	const commentMore = useOverflow(commentBox, !open, "y");
+	const more = codeMore || commentMore;
+	const commentId = useId();
+	const codeId = useId();
+	const excerpt = thread.code ? codeExcerpt(thread.code).lines : [];
+	const commentClipped = commentMore && !open;
+	useEffect(() => {
+		const el = commentBox.current;
+		if (!el || !commentClipped) return;
+		// A keyboard user never lands on a clipped link.
+		const reveal = () => setOpen(true);
+		el.addEventListener("focusin", reveal);
+		return () => el.removeEventListener("focusin", reveal);
+	}, [commentClipped]);
+	const comment = thread.html.trim() ? (
+		<div
+			ref={commentBox}
+			id={commentId}
+			data-testid="thread-body"
+			className={`relative min-w-0 ${open ? "" : "max-h-32 overflow-hidden"}`}
+		>
+			<GithubHtml html={thread.html} />
+			{commentClipped && (
+				<div
+					aria-hidden
+					className="pointer-events-none absolute inset-x-0 bottom-0 h-10 bg-gradient-to-b from-transparent to-raised"
+				/>
+			)}
+		</div>
+	) : (
+		<p ref={commentBox} id={commentId} className="min-w-0 text-sm break-words">
+			{thread.excerpt}
+		</p>
+	);
 	return (
 		<li
 			data-testid="thread"
@@ -837,7 +981,7 @@ function ThreadItem({ thread }: { thread: Thread }) {
 					{thread.author}
 					{thread.bot && <BotIcon />}
 				</span>
-				<RelativeTime iso={thread.createdAt} />
+				<RelativeTime iso={thread.lastActivityAt} />
 				<LabeledIcon
 					icon={CommentIcon}
 					label={plural(n, "comment")}
@@ -855,66 +999,25 @@ function ThreadItem({ thread }: { thread: Thread }) {
 					</Badge>
 				)}
 			</div>
-			{thread.html.trim() ? (
-				<ClippedHtml html={thread.html} />
-			) : (
-				<p className="text-sm break-words">{thread.excerpt}</p>
-			)}
-		</li>
-	);
-}
-
-/**
- * GitHub's HTML cut to about six lines with a fade, and a toggle to show it
- * all (only when there is more). Focus moving inside opens it, so a keyboard
- * user never lands on a clipped link.
- */
-function ClippedHtml({ html }: { html: string }) {
-	const [open, setOpen] = useState(false);
-	const [more, setMore] = useState(false);
-	const box = useRef<HTMLDivElement>(null);
-	const id = useId();
-	useLayoutEffect(() => {
-		const el = box.current;
-		if (!el || open) return;
-		const measure = () => setMore(el.scrollHeight > el.clientHeight + 1);
-		measure();
-		if (typeof ResizeObserver === "undefined") return;
-		const observer = new ResizeObserver(measure);
-		observer.observe(el);
-		const inner = el.firstElementChild;
-		if (inner) observer.observe(inner);
-		return () => observer.disconnect();
-	}, [open]);
-	const clipped = more && !open;
-	useEffect(() => {
-		const el = box.current;
-		if (!el || !clipped) return;
-		const reveal = () => setOpen(true);
-		el.addEventListener("focusin", reveal);
-		return () => el.removeEventListener("focusin", reveal);
-	}, [clipped]);
-	return (
-		<div>
-			<div
-				ref={box}
-				id={id}
-				data-testid="thread-body"
-				className={`relative ${open ? "" : "max-h-32 overflow-hidden"}`}
-			>
-				<GithubHtml html={html} />
-				{clipped && (
-					<div
-						aria-hidden
-						className="pointer-events-none absolute inset-x-0 bottom-0 h-10 bg-gradient-to-b from-transparent to-raised"
+			{excerpt.length > 0 ? (
+				<div className="grid gap-3 md:grid-cols-2 md:items-start">
+					<ThreadCodePane
+						ref={codeBox}
+						id={codeId}
+						path={thread.path}
+						lines={excerpt}
+						open={open}
 					/>
-				)}
-			</div>
+					{comment}
+				</div>
+			) : (
+				comment
+			)}
 			{more && (
 				<button
 					type="button"
 					aria-expanded={open}
-					aria-controls={id}
+					aria-controls={excerpt.length ? `${codeId} ${commentId}` : commentId}
 					onClick={() => setOpen((o) => !o)}
 					className="-mb-2 flex min-h-10 items-center gap-1 rounded-md text-xs font-medium text-link hover:underline focus-visible:outline-2 focus-visible:outline-accent"
 				>
@@ -926,6 +1029,94 @@ function ClippedHtml({ html }: { html: string }) {
 					{open ? "Show less" : "Show more"}
 				</button>
 			)}
-		</div>
+		</li>
+	);
+}
+
+const ROW_BG: Record<HunkLine["kind"], string> = {
+	context: "",
+	add: "bg-add",
+	del: "bg-del",
+};
+const NUMBER_BG: Record<HunkLine["kind"], string> = {
+	context: "text-faint",
+	add: "bg-add-gutter text-add-ink",
+	del: "bg-del-gutter text-del-ink",
+};
+const SIGN: Record<HunkLine["kind"], string> = {
+	context: " ",
+	add: "+",
+	del: "−",
+};
+const SIGN_COLOR: Record<HunkLine["kind"], string> = {
+	context: "text-faint",
+	add: "text-add-ink",
+	del: "text-del-ink",
+};
+
+/**
+ * The code a comment was written on: the end of GitHub's diff hunk, the
+ * commented lines marked by an accent rail. Scrolls while clipped; opened,
+ * it shows every line, wrapped.
+ */
+function ThreadCodePane(props: {
+	ref: Ref<HTMLElement>;
+	id: string;
+	path: string;
+	lines: (HunkLine & { marked: boolean })[];
+	open: boolean;
+}) {
+	const lang = languageFor(props.path);
+	return (
+		<figure
+			ref={props.ref}
+			id={props.id}
+			aria-label={`Code at ${props.path}`}
+			data-testid="thread-code"
+			// Focusable so the keyboard can scroll it while it's clipped.
+			tabIndex={props.open ? undefined : 0}
+			className={`min-w-0 rounded-md border border-line bg-code font-mono text-xs leading-5 text-code-ink focus-visible:outline-2 focus-visible:outline-accent ${props.open ? "" : "max-h-32 overflow-auto"}`}
+		>
+			<table className="w-full border-collapse">
+				<tbody>
+					{props.lines.map((line, i) => (
+						<tr
+							// The lines of one hunk never reorder.
+							// biome-ignore lint/suspicious/noArrayIndexKey: see above.
+							key={i}
+							data-testid="thread-code-line"
+							data-marked={line.marked || undefined}
+							className={ROW_BG[line.kind]}
+						>
+							<td
+								aria-hidden
+								className={`w-1 min-w-1 p-0 ${line.marked ? "bg-accent" : ""}`}
+							/>
+							<td
+								className={`w-px px-1.5 text-right align-top whitespace-nowrap select-none ${NUMBER_BG[line.kind]}`}
+							>
+								{line.oldNo}
+							</td>
+							<td
+								className={`w-px px-1.5 text-right align-top whitespace-nowrap select-none ${NUMBER_BG[line.kind]}`}
+							>
+								{line.newNo}
+							</td>
+							<td
+								aria-hidden
+								className={`w-px pl-2 align-top select-none ${SIGN_COLOR[line.kind]}`}
+							>
+								{SIGN[line.kind]}
+							</td>
+							<td
+								className={`pr-2 pl-1.5 ${props.open ? "whitespace-pre-wrap [overflow-wrap:anywhere]" : "whitespace-pre"}`}
+							>
+								<Code text={line.text} lang={lang} />
+							</td>
+						</tr>
+					))}
+				</tbody>
+			</table>
+		</figure>
 	);
 }

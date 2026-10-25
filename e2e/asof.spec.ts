@@ -140,7 +140,10 @@ test("shows the PR as of a cutoff, with another login as you, in a review of its
 	await expect(humans.getByTestId("thread")).toContainText("new.txt:1");
 	// The reply came after the cutoff.
 	await expect(humans.getByTestId("thread")).toContainText("no reply");
-	await expect(humans).toContainText("resolved unknown");
+	// Resolution history is unknown: every thread counts as unresolved.
+	await expect(humans.getByRole("list", { name: "Thread counts" })).toHaveText(
+		"1 unresolved0 resolved",
+	);
 	await expect(page.getByText("Too late")).toHaveCount(0);
 
 	// The diff is the PR's as of then: no later.txt.

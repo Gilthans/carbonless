@@ -327,9 +327,13 @@ describe("runGh with a fake gh", () => {
 		// One description query; the threads query paged twice.
 		expect(log().match(/\{ bodyHTML \}/g)).toHaveLength(1);
 		expect(log().match(/reviewThreads\(/g)).toHaveLength(2);
-		// Text only for each thread's opening comment; authors for the rest.
+		// Text and code only for each thread's opening comment; the latest
+		// one's time; authors for the rest.
 		expect(log()).toContain(
-			"first: comments(first: 1) { nodes { author { login __typename } bodyText bodyHTML createdAt } }",
+			"line originalLine originalStartLine diffSide startDiffSide first: comments(first: 1) { nodes { author { login __typename } bodyText bodyHTML createdAt diffHunk } }",
+		);
+		expect(log()).toContain(
+			"latest: comments(last: 1) { nodes { createdAt } }",
 		);
 		expect(log()).toContain(
 			"comments(first: 100) { totalCount nodes { author { login __typename } createdAt } }",
