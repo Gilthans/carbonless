@@ -7,6 +7,7 @@ import type {
 } from "../../shared/types.js";
 import { GitError, runGit, runGitBuffer } from "../git.js";
 import { buildAllClusters } from "./clusters.js";
+import { readTabWidths } from "./editorconfig.js";
 import { type ChangedFile, listChangedFiles } from "./files.js";
 import { buildDisplayHunks, contextLines } from "./hunks.js";
 import { clusterKeys } from "./identity.js";
@@ -132,6 +133,11 @@ export async function buildSnapshot(
 		changed,
 		texts.map((t) => t?.encoding),
 	);
+	const tabWidths = await readTabWidths(
+		repo,
+		head,
+		changed.map((f) => f.path),
+	);
 	const files = changed.map((file, index): FileSummary => {
 		const { oldOid, newOid, ...summary } = file;
 		const clusters = unkeyed[index] ?? [];
@@ -146,9 +152,11 @@ export async function buildSnapshot(
 					? [oldOid, newOid]
 					: undefined,
 		});
+		const tabWidth = tabWidths[index];
 		return {
 			index,
 			...summary,
+			...(tabWidth === undefined ? {} : { tabWidth }),
 			clusters: clusters.map((c, i) => ({ ...c, key: keys[i] as string })),
 		};
 	});

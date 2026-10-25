@@ -39,6 +39,11 @@ export interface FileSummary {
 	submodule: boolean;
 	additions: number;
 	deletions: number;
+	/**
+	 * Columns per tab stop, from the head's .editorconfig (`tab_width`, else
+	 * a numeric `indent_size`) when it sets one for this path.
+	 */
+	tabWidth?: number;
 	clusters: Cluster[];
 }
 

@@ -46,6 +46,20 @@ Reviewed clusters are not dimmed with opacity (that broke 4.5:1): their
 add/del tints fade to `add-done`/`del-done`, with the green rail and checked
 box marking them.
 
+## Invisible characters
+
+Code shows what it is made of, Notepad++ style (`src/web/code/`): spaces
+as `·`, tabs as `\t` padded to the next tab stop (the head's
+`.editorconfig` `tab_width`, else a numeric `indent_size`, else 4), line
+endings as `\n` / `\r\n`, all in `faint`. Characters that would print as
+nothing or as a lookalike blank (controls, zero widths, BOM, soft hyphen,
+tags, unusual spaces, separators, stray variation selectors) show as
+`\uXXXX`; bidi controls also get a `warn` tint and a tooltip. The ¶ toggle
+in the Files bar hides only spaces, tabs and line endings: escapes always
+show (principle 2). Emoji sequences and joiners in scripts that need them
+are left alone. Markers are generated content, so a copy gives the
+original text.
+
 ## Typography
 
 - Outfit (variable, bundled via `@fontsource-variable/outfit`, no CDN) for UI

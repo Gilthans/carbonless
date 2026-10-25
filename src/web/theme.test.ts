@@ -232,6 +232,21 @@ describe("diff colors", () => {
 		}
 	});
 
+	it("invisible-character markers read at 4.5:1 on every code line", () => {
+		// Muted markers and escapes (src/web/code); bidi controls on a warn tint.
+		for (const bg of CODE_BGS) {
+			expect(
+				contrast(token("faint"), token(bg)),
+				`faint on ${bg}`,
+			).toBeGreaterThanOrEqual(4.5);
+			const tint = over(token("warn"), 0.15, token(bg));
+			expect(
+				contrast(token("warn"), tint),
+				`warn on warn/15 over ${bg}`,
+			).toBeGreaterThanOrEqual(4.5);
+		}
+	});
+
 	it("keeps added green and deleted red apart from each other", () => {
 		// Green: between yellow-green and teal; red: between magenta and red.
 		for (const green of ["ok", "ok-fill", "add-ink"]) {

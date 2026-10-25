@@ -7,10 +7,11 @@ import type {
 	FileView,
 } from "../../shared/types";
 import { contextQuery, hunksQuery } from "../api";
+import { CodeLine } from "../code/Invisibles";
 import { Tooltip } from "../Tooltip";
 import { ErrorMessage } from "../ui";
 import { EXPAND_STEP, fileGaps, type Gap, gapState } from "./gaps";
-import { highlightLine, languageFor } from "./highlight";
+import { languageFor } from "./highlight";
 import { CONTROLS, SLOT, useStickyControls } from "./stickyControls";
 
 const COLUMNS = 5;
@@ -57,35 +58,6 @@ const SIGN: Record<DiffLine["kind"], string> = {
 	del: "−",
 };
 
-/** A line's code, plain until its highlighting arrives. */
-function Code({ text, lang }: { text: string; lang: string | null }) {
-	const tokens = useQuery({
-		queryKey: ["highlight", lang, text],
-		queryFn: () => highlightLine(text, lang),
-		enabled: lang !== null && text.length > 0,
-		staleTime: Number.POSITIVE_INFINITY,
-	});
-	if (!tokens.data?.length) return <>{text}</>;
-	return (
-		<>
-			{tokens.data.map((token) => (
-				<span
-					key={token.offset}
-					style={{
-						color: token.color,
-						fontStyle:
-							token.fontStyle && token.fontStyle & 1 ? "italic" : undefined,
-						fontWeight:
-							token.fontStyle && token.fontStyle & 2 ? "bold" : undefined,
-					}}
-				>
-					{token.content}
-				</span>
-			))}
-		</>
-	);
-}
-
 /** The left rail: cluster state, the accent while the cluster has focus or the pointer. */
 function Rail({ state }: { state?: ClusterView["state"] }) {
 	const color = state
@@ -97,6 +69,7 @@ function Rail({ state }: { state?: ClusterView["state"] }) {
 function LineRow(props: {
 	line: DiffLine;
 	lang: string | null;
+	tabWidth?: number;
 	state?: ClusterView["state"];
 	checkbox?: ReactNode;
 }) {
@@ -134,7 +107,12 @@ function LineRow(props: {
 					>
 						{SIGN[line.kind]}
 					</span>
-					<Code text={line.text} lang={props.lang} />
+					<CodeLine
+						text={line.text}
+						lang={props.lang}
+						tabWidth={props.tabWidth}
+						newline={!line.noNewline}
+					/>
 				</td>
 			</tr>
 			{line.noNewline && (
@@ -360,7 +338,16 @@ export function DiffBody(props: {
 		const rows: ReactNode[] = [];
 		for (let n = from; n <= to; n++) {
 			const line = loaded.get(n);
-			if (line) rows.push(<LineRow key={`c${n}`} line={line} lang={lang} />);
+			if (line) {
+				rows.push(
+					<LineRow
+						key={`c${n}`}
+						line={line}
+						lang={lang}
+						tabWidth={file.tabWidth}
+					/>,
+				);
+			}
 		}
 		return rows;
 	};
@@ -458,6 +445,7 @@ export function DiffBody(props: {
 								hunk={hunk}
 								clusters={clusters}
 								lang={lang}
+								tabWidth={file.tabWidth}
 								checkbox={checkbox}
 								noteId={noteId}
 							/>
@@ -487,6 +475,7 @@ function HunkRows(props: {
 	hunk: DisplayHunk;
 	clusters: Map<string, ClusterView>;
 	lang: string | null;
+	tabWidth?: number;
 	checkbox: (cluster: ClusterView) => ReactNode;
 	noteId: (cluster: ClusterView) => string | undefined;
 }) {
@@ -514,6 +503,7 @@ function HunkRows(props: {
 								key={`${line.kind}${line.oldNo ?? line.newNo}`}
 								line={line}
 								lang={props.lang}
+								tabWidth={props.tabWidth}
 								state={state}
 								checkbox={
 									i === 0 && cluster ? props.checkbox(cluster) : undefined

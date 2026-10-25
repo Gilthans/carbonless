@@ -2,7 +2,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
 	ClusterView,
 	DiffLine,
@@ -11,6 +11,7 @@ import type {
 	ReviewView,
 } from "../../shared/types";
 import { reviewQuery } from "../api";
+import { resetShowInvisibles, setShowInvisibles } from "../code/Invisibles";
 import { FileDiff } from "./FileDiff";
 import type { Unit } from "./unit";
 
@@ -153,7 +154,11 @@ function setup(
 }
 
 describe("FileDiff", () => {
+	// Code reads as plain text here; invisibles get their own test below.
+	beforeEach(() => setShowInvisibles(false));
 	afterEach(() => {
+		localStorage.clear();
+		resetShowInvisibles();
 		cleanup();
 		vi.unstubAllGlobals();
 	});
@@ -844,6 +849,17 @@ describe("FileDiff", () => {
 		expect(
 			screen.getByText("\\ No newline at end of file"),
 		).toBeInTheDocument();
+		// With ¶ on, every line ends in \n but the one without a newline.
+		act(() => setShowInvisibles(true));
+		const ends = Array.from(
+			document.querySelectorAll<HTMLElement>('[data-testid="diff-line"]'),
+		).map(
+			(row) =>
+				row.querySelector<HTMLElement>('[data-inv="eol"]')?.dataset.glyph ??
+				null,
+		);
+		const kinds = lines.map((l) => l.kind);
+		expect(ends).toEqual(kinds.map((k) => (k === "add" ? null : "\\n")));
 		expect(
 			screen.getAllByRole("checkbox", { name: "Mark cluster reviewed" }),
 		).toHaveLength(2);
