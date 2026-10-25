@@ -3,7 +3,7 @@ import markUrl from "./mark.svg";
 
 /**
  * The full logo: gradient-ringed magnifier over a split diff, with paint
- * splashes. Decorative (the wordmark beside it names the app); 40px and up.
+ * splashes. Decorative (the title beside it names the PR); 40px and up.
  */
 export function Logo({ className = "" }: { className?: string }) {
 	return <img src={logoUrl} alt="" aria-hidden className={className} />;

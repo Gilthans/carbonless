@@ -71,7 +71,6 @@ function OverviewContent({
 }) {
 	return (
 		<div className="space-y-6">
-			<ReviewFilesButton />
 			{overview.isPending && (
 				<p className="text-muted">Loading the PR from GitHub…</p>
 			)}
@@ -83,6 +82,7 @@ function OverviewContent({
 					<IsItReady pr={overview.data} />
 				</>
 			)}
+			<ReviewFilesButton />
 		</div>
 	);
 }

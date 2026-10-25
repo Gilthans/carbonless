@@ -55,16 +55,16 @@ box marking them.
 
 ## Logo
 
-- `src/web/brand/logo.svg`: the full mark (gradient ring, split diff, splashes). 40px and up.
-- `src/web/brand/mark.svg`: simplified (ring, diff, handle): favicon and the compact header.
+- `src/web/brand/logo.svg`: the full mark (gradient ring, split diff, splashes). 40px and up. The header shows it beside the PR title, on the same line, with no wordmark.
+- `src/web/brand/mark.svg`: simplified (ring, diff, handle): favicon, the compact header and the footer.
   PNG fallbacks in `src/web/public` come from `pnpm icons`.
-- `Wordmark` (`src/web/brand/Brand.tsx`): "carbonless" in Outfit ExtraBold with a star "o".
+- `Wordmark` (`src/web/brand/Brand.tsx`): "carbonless" in Outfit ExtraBold with a star "o". The name appears only in the footer ("Diff by" mark wordmark, muted, bottom of both pages, with room under it for the floating Files button).
 
 ## Changelog
 
 - **Fix round 1.**
   - Paths in tooltips (tree file and folder, file header) and the snapshot SHA are now monospace. This is asserted in FileTree.test and files.spec.
-  - The star "o" has fatter, longer arms (r 190, k 0.29), and the desktop wordmark is 28px.
+  - The star "o" has fatter, longer arms (r 190, k 0.29), and the desktop wordmark was 28px.
   - Syntax keywords moved from pink to orchid, functions to cyan and types to periwinkle; `invalid` is amber. The test checks that every syntax hue stays at least 25° from the add/del inks.
   - The header glow, selection, CTA glow and shadows are built from tokens with `color-mix`. Tests check the theme-color meta and Shiki's background against their tokens.
   - The contrast test now also covers:

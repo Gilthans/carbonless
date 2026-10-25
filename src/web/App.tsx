@@ -173,36 +173,38 @@ export function App() {
 					}`}
 				>
 					<div className="mx-auto max-w-5xl px-4 pt-3 pb-2 sm:px-6 sm:pt-4">
-						<div className="mb-3 flex items-center gap-2 sm:mb-4">
-							<Logo className="-my-1.5 h-11 w-11 shrink-0 sm:h-12 sm:w-12" />
-							<Wordmark className="text-[1.375rem] sm:text-[1.75rem]" />
-						</div>
 						{session.isPending && <p className="text-muted">Loading…</p>}
 						{session.isError && <ErrorMessage error={session.error} />}
 						{pr && (
-							<div className="flex flex-wrap items-baseline gap-x-2">
-								<h1
-									ref={h1}
-									// Focused by the compact title's "back to top".
-									tabIndex={-1}
-									className="font-display text-xl font-bold tracking-tight break-words outline-none sm:text-2xl"
+							<div className="flex items-center gap-2 sm:gap-3">
+								<Logo className="-my-1.5 h-11 w-11 shrink-0 sm:h-12 sm:w-12" />
+								<div
+									data-testid="header-title"
+									className="flex min-w-0 flex-wrap items-baseline gap-x-2"
 								>
-									{pr.title}
-								</h1>
-								<span className="font-display text-xl text-muted sm:text-2xl">
-									{prUrl ? (
-										<a
-											href={prUrl}
-											target="_blank"
-											rel="noreferrer"
-											className="hover:text-link hover:underline"
-										>
-											#{pr.number}
-										</a>
-									) : (
-										`#${pr.number}`
-									)}
-								</span>
+									<h1
+										ref={h1}
+										// Focused by the compact title's "back to top".
+										tabIndex={-1}
+										className="font-display text-xl font-bold tracking-tight break-words outline-none sm:text-2xl"
+									>
+										{pr.title}
+									</h1>
+									<span className="font-display text-xl text-muted sm:text-2xl">
+										{prUrl ? (
+											<a
+												href={prUrl}
+												target="_blank"
+												rel="noreferrer"
+												className="hover:text-link hover:underline"
+											>
+												#{pr.number}
+											</a>
+										) : (
+											`#${pr.number}`
+										)}
+									</span>
+								</div>
 							</div>
 						)}
 						{pr && (
@@ -331,6 +333,15 @@ export function App() {
 					{/* Only what isn't a kept page: not found. */}
 					<Outlet />
 				</main>
+				{/* Bottom padding keeps it clear of the floating Files button. */}
+				<footer
+					data-testid="app-footer"
+					className="mx-auto flex max-w-5xl items-center justify-center gap-1.5 px-4 pt-2 pb-24 text-xs text-muted sm:pb-10"
+				>
+					<span>Diff by</span>
+					<Mark className="h-4 w-4" />
+					<Wordmark className="text-sm" />
+				</footer>
 			</div>
 		</AppHeaderHeight.Provider>
 	);

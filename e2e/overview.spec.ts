@@ -239,3 +239,45 @@ test("no element on the Overview page uses a native title tooltip", async ({
 	// everything the app renders itself has none.
 	await expect(page.locator("[title]:not(.markdown-body *)")).toHaveCount(0);
 });
+
+test("the logo shares the title's line, both pages end with a footer, and Review files comes last", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	await pr();
+	const s = await startCrb();
+	await page.goto(s.url);
+	const title = page.getByRole("heading", { level: 1 });
+	await expect(title).toBeVisible();
+	const logo = page.locator("header img").first();
+	const [l, t] = await Promise.all([logo.boundingBox(), title.boundingBox()]);
+	if (!l || !t) throw new Error("no boxes");
+	expect(
+		Math.abs(l.y + l.height / 2 - (t.y + Math.min(t.height, 32) / 2)),
+	).toBeLessThan(8);
+	// No wordmark text in the header.
+	await expect(page.locator("header").getByText("carbonless")).toHaveCount(0);
+
+	const footer = page.getByTestId("app-footer");
+	await expect(footer).toContainText("Diff by");
+	await expect(footer).toContainText("carbonless");
+	await expect(footer.locator("img")).toHaveCount(1);
+
+	const review = page.getByRole("link", { name: /Review files/ });
+	const last = await page
+		.getByRole("region", { name: "Is it ready" })
+		.boundingBox();
+	const r = await review.boundingBox();
+	const f = await footer.boundingBox();
+	if (!last || !r || !f) throw new Error("no boxes");
+	expect(r.y).toBeGreaterThanOrEqual(last.y + last.height);
+	expect(f.y).toBeGreaterThanOrEqual(r.y + r.height);
+
+	await page.getByRole("link", { name: "Files changed" }).click();
+	await expect(page).toHaveURL(/\/files$/);
+	const footer2 = page.getByTestId("app-footer");
+	await expect(footer2).toContainText("Diff by");
+	await expect(footer2).toContainText("carbonless");
+	await expect(footer2.locator("img")).toHaveCount(1);
+});
