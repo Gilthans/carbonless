@@ -61,3 +61,18 @@ you were looking at.
   background (reads code, runs tests on the branch).
 - The answer comes back next to the line it was asked about.
 - Keep track of open and answered questions across the review.
+
+## Future plans
+
+Not scheduled yet; after everything above.
+
+- **Renderers for different file types:** show Markdown rendered, images as
+  images (with before/after for changed images), and so on, alongside the diff.
+- **Review context beyond the repo:** bring in artifacts that aren't part of the
+  git repo — design docs, ad-hoc conversations, design decisions — and show them
+  with the change they explain.
+- **Change Unit:** the name for a group of clusters (the review groups in item 1).
+  Use it in the UI and the code.
+- **Attention set:** like Gerrit's, but computed automatically as far as
+  possible (whose turn it is on each PR), plus a view of pending review work
+  across PRs.
