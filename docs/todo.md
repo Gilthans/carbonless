@@ -76,3 +76,6 @@ Not scheduled yet; after everything above.
 - **Attention set:** like Gerrit's, but computed automatically as far as
   possible (whose turn it is on each PR), plus a view of pending review work
   across PRs.
+- **Custom agent pre-review actions and instructions:** let the reviewer define
+  their own AI steps to run before a review starts (and standing instructions for
+  how their agent should help), so each reviewer's workflow is their own.
