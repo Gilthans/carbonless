@@ -105,49 +105,62 @@ test("shows the description as GitHub renders it, and who started reviewing", as
 	).toBeVisible();
 });
 
-test("links to GitHub with its mark and shows dates as relative times", async ({
-	page,
-	pr,
-	startCrb,
-}) => {
-	const updated = new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString();
-	await pr({ overview: { updatedAt: updated } });
-	const s = await startCrb();
-	await page.goto(s.url);
-	const what = page.getByRole("region", { name: "What it does" });
-	const github = what.getByRole("link", { name: "View on GitHub" });
-	await expect(github).toHaveAttribute(
-		"href",
-		"https://github.com/acme/widget/pull/7",
-	);
-	await expect(github).not.toHaveText(/\S/);
-	const box = await github.boundingBox();
-	expect(box?.width).toBeGreaterThanOrEqual(40);
-	expect(box?.height).toBeGreaterThanOrEqual(40);
+test.describe("in Israel's time zone", () => {
+	test.use({ timezoneId: "Asia/Jerusalem" });
 
-	const time = what.locator(`time[datetime="${updated}"]`);
-	await expect(time).toHaveText("3 hours ago");
-	const full = await page.evaluate(
-		(iso) =>
-			new Intl.DateTimeFormat(undefined, { timeZoneName: "long" })
-				.formatToParts(new Date(iso))
-				.find((p) => p.type === "timeZoneName")?.value ?? "",
-		updated,
-	);
-	await time.focus();
-	const tip = page.getByRole("tooltip");
-	await expect(tip).toBeVisible();
-	await expect(tip).toContainText(full);
-	await expect(tip).toContainText(String(new Date(updated).getFullYear()));
-	await expect(time).toHaveAccessibleDescription(await tip.innerText());
-	// The tooltip stays inside the viewport.
-	const tipBox = await tip.boundingBox();
-	const width = page.viewportSize()?.width ?? 0;
-	expect(tipBox && tipBox.x >= 0 && tipBox.x + tipBox.width <= width).toBe(
-		true,
-	);
-	await page.keyboard.press("Escape");
-	await expect(tip).toBeHidden();
+	test("links to GitHub with its mark and shows dates as relative times", async ({
+		page,
+		pr,
+		startCrb,
+	}) => {
+		const updated = new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString();
+		await pr({ overview: { updatedAt: updated } });
+		const s = await startCrb();
+		await page.goto(s.url);
+		const what = page.getByRole("region", { name: "What it does" });
+		const github = what.getByRole("link", { name: "View on GitHub" });
+		await expect(github).toHaveAttribute(
+			"href",
+			"https://github.com/acme/widget/pull/7",
+		);
+		await expect(github).not.toHaveText(/\S/);
+		const box = await github.boundingBox();
+		expect(box?.width).toBeGreaterThanOrEqual(40);
+		expect(box?.height).toBeGreaterThanOrEqual(40);
+
+		const time = what.locator(`time[datetime="${updated}"]`);
+		await expect(time).toHaveText("3 hours ago");
+		// "2026 Aug 31, 22:11:13 Israel Time", in the browser's zone.
+		const d = new Date(updated);
+		const parts = Object.fromEntries(
+			new Intl.DateTimeFormat("en", {
+				timeZone: "Asia/Jerusalem",
+				year: "numeric",
+				month: "short",
+				day: "numeric",
+				hour: "2-digit",
+				minute: "2-digit",
+				second: "2-digit",
+				hourCycle: "h23",
+			})
+				.formatToParts(d)
+				.map((p) => [p.type, p.value]),
+		);
+		const full = `${parts.year} ${parts.month} ${parts.day}, ${parts.hour}:${parts.minute}:${parts.second} Israel Time`;
+		await time.focus();
+		const tip = page.getByRole("tooltip");
+		await expect(tip).toBeVisible();
+		await expect(tip).toHaveText(full);
+		await expect(time).toHaveAccessibleDescription(await tip.innerText());
+		// The tooltip stays inside the viewport.
+		const tipBox = await tip.boundingBox();
+		const width = page.viewportSize()?.width ?? 0;
+		expect(tipBox && tipBox.x >= 0 && tipBox.x + tipBox.width <= width).toBe(
+			true,
+		);
+		await page.keyboard.press("Escape");
+		await expect(tip).toBeHidden();
+	});
 });
 
 test("a thread previews its first comment and expands to GitHub's rendering", async ({

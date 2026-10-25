@@ -40,14 +40,22 @@ describe("relativeTime", () => {
 });
 
 describe("fullDate", () => {
-	it("gives the exact date, time and long time zone name", () => {
-		const d = new Date("2026-01-04T09:30:15Z");
-		expect(fullDate(d, { locale: "en-US", timeZone: "Asia/Jerusalem" })).toBe(
-			"Sunday, January 4, 2026 at 11:30:15 AM Israel Standard Time",
+	it("gives year, short month, day, 24-hour time and the generic zone name", () => {
+		const d = new Date("2026-08-31T19:11:13Z");
+		expect(fullDate(d, { timeZone: "Asia/Jerusalem" })).toBe(
+			"2026 Aug 31, 22:11:13 Israel Time",
 		);
-		expect(fullDate(d, { locale: "en-US", timeZone: "UTC" })).toBe(
-			"Sunday, January 4, 2026 at 9:30:15 AM Coordinated Universal Time",
-		);
+		// The same generic name in winter (no "Standard"/"Daylight").
+		expect(
+			fullDate(new Date("2026-01-04T09:30:15Z"), {
+				timeZone: "Asia/Jerusalem",
+			}),
+		).toBe("2026 Jan 4, 11:30:15 Israel Time");
+		expect(
+			fullDate(new Date("2026-03-01T05:04:03Z"), {
+				timeZone: "America/New_York",
+			}),
+		).toBe("2026 Mar 1, 00:04:03 Eastern Time");
 	});
 });
 
@@ -98,7 +106,7 @@ describe("RelativeTime", () => {
 		const { container } = renderAt("2026-01-04T09:30:15Z");
 		const time = container.querySelector("time");
 		if (!time) throw new Error("no <time>");
-		const full = "Sunday, January 4, 2026 at 11:30:15 AM Israel Standard Time";
+		const full = "2026 Jan 4, 11:30:15 Israel Time";
 		// Always the accessible description, visible only when opened.
 		expect(time).toHaveAccessibleDescription(full);
 		expect(screen.queryByRole("tooltip")).toBeNull();

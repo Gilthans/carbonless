@@ -94,3 +94,11 @@ tool on a real PR. Everything not mentioned here stays as it is.
 - Playwright runs the whole e2e suite in a phone project (e.g. iPhone 13) in
   addition to desktop Chromium, plus mobile-specific tests for the floating
   tree button, the path scroll, the two-row header and the compact sticky bars.
+
+## Dates
+
+- Dates stay short relative text ("6 hours ago"); the tooltip (and accessible
+  description) gives the exact moment as "2026 Aug 31, 22:11:13 Israel Time":
+  year, short month, day, 24-hour time with seconds, then the time zone's
+  generic name (`Intl` `timeZoneName: "longGeneric"`), always in English and
+  in the viewer's own zone (`src/web/RelativeTime.tsx`).

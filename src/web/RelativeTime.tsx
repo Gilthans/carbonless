@@ -94,26 +94,30 @@ export function relativeTime(
 	).format(sign * amount, unit);
 }
 
-/** "Sunday, January 4, 2026 at 11:00:00 AM Israel Standard Time". */
-export function fullDate(
-	date: Date,
-	opts: { locale?: string; timeZone?: string } = {},
-): string {
-	return cached(
-		`full:${opts.locale}:${opts.timeZone}`,
+/**
+ * "2026 Aug 31, 22:11:13 Israel Time": year first, short month, day, 24-hour
+ * time with seconds and the zone's generic name. Always English (the order is
+ * fixed); the viewer's own zone unless `timeZone` is given.
+ */
+export function fullDate(date: Date, opts: { timeZone?: string } = {}): string {
+	const parts = cached(
+		`full:${opts.timeZone}`,
 		() =>
-			new Intl.DateTimeFormat(opts.locale, {
-				weekday: "long",
+			new Intl.DateTimeFormat("en", {
 				year: "numeric",
-				month: "long",
+				month: "short",
 				day: "numeric",
-				hour: "numeric",
+				hour: "2-digit",
 				minute: "2-digit",
 				second: "2-digit",
-				timeZoneName: "long",
+				hourCycle: "h23",
+				timeZoneName: "longGeneric",
 				timeZone: opts.timeZone,
 			}),
-	).format(date);
+	).formatToParts(date);
+	const part = (type: Intl.DateTimeFormatPartTypes) =>
+		parts.find((p) => p.type === type)?.value ?? "";
+	return `${part("year")} ${part("month")} ${part("day")}, ${part("hour")}:${part("minute")}:${part("second")} ${part("timeZoneName")}`;
 }
 
 /**
@@ -131,10 +135,7 @@ export function RelativeTime(props: {
 	const nowMs = useNow();
 	const date = new Date(props.iso);
 	if (!props.iso || Number.isNaN(date.getTime())) return null;
-	const full = fullDate(date, {
-		locale: props.locale,
-		timeZone: props.timeZone,
-	});
+	const full = fullDate(date, { timeZone: props.timeZone });
 	return (
 		<Tooltip content={full}>
 			{(trigger) => (
