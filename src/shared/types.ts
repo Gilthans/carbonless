@@ -125,7 +125,13 @@ export interface PrOverview {
 	number: number;
 	url: string;
 	author: string;
+	/** The description's markdown source. */
 	body: string;
+	/**
+	 * The description as GitHub renders it. Untrusted: sanitize before
+	 * rendering (src/web/githubHtml.ts). "" when GitHub returned none.
+	 */
+	bodyHtml: string;
 	isDraft: boolean;
 	state: "OPEN" | "CLOSED" | "MERGED";
 	createdAt: string;
@@ -161,7 +167,12 @@ export interface PrOverview {
 	threads: {
 		path: string;
 		line: number | null;
+		/** The first comment as plain text, whitespace collapsed, ≤200 chars. */
 		excerpt: string;
+		/** The first comment as GitHub renders it. Untrusted, like `bodyHtml`. */
+		html: string;
+		/** When the first comment was written. */
+		createdAt: string;
 		author: string;
 		bot: boolean;
 		hasReply: boolean;

@@ -5,6 +5,7 @@ import { dirname, join, resolve } from "node:path";
 import { test as base, expect } from "@playwright/test";
 import {
 	FAKE_GH_DIR,
+	FIXTURE_BODY_HTML,
 	prView,
 	type reviewThread,
 	type Scenario,
@@ -32,6 +33,8 @@ export interface PrOptions {
 	files?: FixtureCommit[];
 	/** `gh pr view` fields; `headRefOid` is always the fixture's PR head. */
 	overview?: Partial<ViewJson>;
+	/** The description as GitHub renders it; defaults to the fixture body's. */
+	bodyHTML?: string;
 	threads?: ThreadJson[];
 	/** Other scenario fields (loggedOut, comments, reviews, ...). */
 	scenario?: Partial<Scenario>;
@@ -175,6 +178,7 @@ export const test = base.extend<{
 								headRefOid: head,
 							}),
 							graphql: {
+								bodyHTML: opts.bodyHTML ?? FIXTURE_BODY_HTML,
 								reviewThreads: opts.threads ?? [],
 								reviews: opts.reviews ?? [],
 								comments: opts.comments ?? [],

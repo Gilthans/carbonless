@@ -17,7 +17,7 @@ interface Comment {
 	createdAt: string;
 }
 interface Thread {
-	comments: { nodes: { body: string }[] };
+	comments: { nodes: { body: string; bodyText?: string; bodyHTML?: string }[] };
 }
 
 const load = <T>(name: string): T =>
@@ -28,6 +28,7 @@ const graph = () => {
 		"pr-activity.json",
 	);
 	return {
+		bodyHTML: "<h2>Widget cache</h2><p>Caches widgets.</p>",
 		reviewThreads: load<Thread[]>("review-threads.json"),
 		comments: activity.comments,
 		reviews: activity.reviews,
@@ -136,6 +137,8 @@ describe("mapOverview", () => {
 				path: "src/cache.ts",
 				line: 42,
 				excerpt: "Should this expire?",
+				html: '<p dir="auto">Should this <strong>expire</strong>?</p>',
+				createdAt: "2026-01-03T09:00:00Z",
 				author: "rev1",
 				bot: false,
 				hasReply: true,
@@ -145,6 +148,8 @@ describe("mapOverview", () => {
 				path: "src/old.ts",
 				line: null,
 				excerpt: "Coverage dropped",
+				html: '<p dir="auto">Coverage dropped</p>',
+				createdAt: "2026-01-02T12:00:00Z",
 				author: "ci-bot",
 				bot: true,
 				hasReply: false,
@@ -154,6 +159,8 @@ describe("mapOverview", () => {
 				path: "src/self.ts",
 				line: 3,
 				excerpt: "First",
+				html: '<p dir="auto">First</p>',
+				createdAt: "2026-01-03T09:00:00Z",
 				author: "rev1",
 				bot: false,
 				hasReply: false,
@@ -165,10 +172,32 @@ describe("mapOverview", () => {
 	it("cuts thread excerpts at 200 characters", () => {
 		const g = graph();
 		const first = g.reviewThreads[0]?.comments.nodes[0];
-		if (first) first.body = "x".repeat(300);
+		if (first) first.bodyText = "x".repeat(300);
 		expect(mapOverview(view(), g, VIEWER).threads[0]?.excerpt).toHaveLength(
 			200,
 		);
+	});
+
+	it("builds the excerpt from bodyText with whitespace collapsed, else from the body", () => {
+		const g = graph();
+		const first = g.reviewThreads[0]?.comments.nodes[0];
+		if (!first) throw new Error("fixture has no thread");
+		first.bodyText = "  Line one\n\n  line\ttwo  ";
+		expect(mapOverview(view(), g, VIEWER).threads[0]?.excerpt).toBe(
+			"Line one line two",
+		);
+		delete first.bodyText;
+		delete first.bodyHTML;
+		const t = mapOverview(view(), g, VIEWER).threads[0];
+		expect(t?.excerpt).toBe("Should this **expire**?");
+		expect(t?.html).toBe("");
+	});
+
+	it("passes the description as GitHub's HTML next to the markdown", () => {
+		expect(o.body).toBe("Caches widgets.\n\nFixes a slow path.");
+		expect(o.bodyHtml).toBe("<h2>Widget cache</h2><p>Caches widgets.</p>");
+		const g = { ...graph(), bodyHTML: undefined };
+		expect(mapOverview(view(), g, VIEWER).bodyHtml).toBe("");
 	});
 
 	it("humanStarted ignores the author, the viewer and bots (by __typename)", () => {
@@ -207,12 +236,13 @@ describe("mapOverview", () => {
 	it("does not throw on missing optional fields", () => {
 		const r = mapOverview(
 			{ number: 1, title: "t" },
-			{ reviewThreads: [], comments: [], reviews: [] },
+			{ bodyHTML: "", reviewThreads: [], comments: [], reviews: [] },
 			"me",
 		);
 		expect(r).toMatchObject({
 			number: 1,
 			title: "t",
+			bodyHtml: "",
 			reviews: [],
 			checks: [],
 			threads: [],

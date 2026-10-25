@@ -113,10 +113,19 @@ switch (cmd) {
 	case "api graphql": {
 		const f = fields();
 		const conn = /(\w+)\(first: \d+, after: \$endCursor\)/.exec(f.query)?.[1];
+		const pr = s.prs[f.number];
+		// The description query: pullRequest { bodyHTML }, no connection.
+		if (!conn && /pullRequest\(number: \$number\) \{ bodyHTML \}/.test(f.query)) {
+			if (!pr) notFound(f.number);
+			print({
+				data: {
+					repository: { pullRequest: { bodyHTML: pr.graphql?.bodyHTML ?? "" } },
+				},
+			});
+		}
 		if (!["reviewThreads", "comments", "reviews"].includes(conn)) {
 			unsupported();
 		}
-		const pr = s.prs[f.number];
 		if (!pr) notFound(f.number);
 		const all = pr.graphql?.[conn] ?? [];
 		const size = s.pageSize ?? 100;

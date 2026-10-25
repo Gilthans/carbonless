@@ -97,7 +97,8 @@ describe("runGh", () => {
  * A tiny fake `gh` on PATH. Behaviour comes from env vars:
  * FAKE_AUTH=out (auth status fails logged out), FAKE_AUTH=net (fails offline),
  * FAKE_PRVIEW_ERR / FAKE_GQL_ERR (stderr of a failing call), FAKE_VIEW (stdout
- * of `pr view`), FAKE_GQL_DIR (dir with <connection>-<page>.json responses).
+ * of `pr view`), FAKE_GQL_DIR (dir with <connection>-<page>.json responses,
+ * and body-1.json for the description's bodyHTML).
  * Every call's arguments are appended to FAKE_LOG.
  */
 const FAKE_GH = `#!/bin/sh
@@ -112,7 +113,7 @@ case "$1 $2" in
   printf '%s' "$FAKE_VIEW"; exit 0 ;;
 "api graphql")
   [ -n "$FAKE_GQL_ERR" ] && { printf '%s\\n' "$FAKE_GQL_ERR" >&2; exit 1; }
-  case "$*" in *"reviewThreads("*) c=reviewThreads;; *"comments(first: 100, after"*) c=comments;; *) c=reviews;; esac
+  case "$*" in *"{ bodyHTML }"*) c=body;; *"reviewThreads("*) c=reviewThreads;; *"comments(first: 100, after"*) c=comments;; *) c=reviews;; esac
   case "$*" in *endCursor=*) p=2;; *) p=1;; esac
   cat "$FAKE_GQL_DIR/$c-$p.json"; exit 0 ;;
 esac
@@ -306,11 +307,51 @@ describe("runGh with a fake gh", () => {
 			join(gql, "reviewThreads-2.json"),
 			page([thread("two.ts")], false),
 		);
+		writeFileSync(
+			join(gql, "body-1.json"),
+			JSON.stringify({
+				data: { repository: { pullRequest: { bodyHTML: "<p>Hi</p>" } } },
+			}),
+		);
 		setEnv({
 			FAKE_GQL_DIR: gql,
 			FAKE_VIEW: readFileSync("test/fixtures/gh/pr-view.json", "utf8"),
 		});
 		const o = await fetchOverview(ref, "me");
 		expect(o.threads.map((t) => t.path)).toEqual(["one.ts", "two.ts"]);
+		expect(o.bodyHtml).toBe("<p>Hi</p>");
+		// One description query; the threads query paged twice.
+		expect(log().match(/\{ bodyHTML \}/g)).toHaveLength(1);
+		expect(log().match(/reviewThreads\(/g)).toHaveLength(2);
+	});
+
+	it("fails rather than show an empty description when bodyHTML is missing", async () => {
+		const gql = join(dir, "gql");
+		const { mkdirSync } = await import("node:fs");
+		mkdirSync(gql);
+		const empty = (c: string) =>
+			JSON.stringify({
+				data: {
+					repository: {
+						pullRequest: {
+							[c]: { pageInfo: { hasNextPage: false }, nodes: [] },
+						},
+					},
+				},
+			});
+		for (const c of ["reviewThreads", "comments", "reviews"]) {
+			writeFileSync(join(gql, `${c}-1.json`), empty(c));
+		}
+		writeFileSync(
+			join(gql, "body-1.json"),
+			JSON.stringify({ data: { repository: { pullRequest: {} } } }),
+		);
+		setEnv({
+			FAKE_GQL_DIR: gql,
+			FAKE_VIEW: readFileSync("test/fixtures/gh/pr-view.json", "utf8"),
+		});
+		await expect(fetchOverview(ref, "me")).rejects.toThrow(
+			"unexpected response for the PR body",
+		);
 	});
 });

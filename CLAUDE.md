@@ -47,6 +47,12 @@ These guide every feature. If a change conflicts with one of them, stop and rais
    scroll inside their own container), tap targets are at least 40px, and the
    Playwright suite runs in a phone project as well as desktop.
 
+6. **Concise, icon-first UI.** Keep text short. Icons (each with a tooltip and
+   an accessible name) and color carry meaning; no disclaimers, legends or
+   explanatory sentences that the visuals already convey. Dates are short
+   relative text with the exact date and time zone on hover/focus
+   (`src/web/RelativeTime.tsx`).
+
 ## Development
 
 - Node 24 (`nvm use`), pnpm. Stack: Fastify server + git CLI (`src/server`),

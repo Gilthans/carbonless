@@ -1,0 +1,33 @@
+/*
+ * Adjustments to github-markdown-css inside the app; all scoped to
+ * .markdown-body like its own rules.
+ *
+ * Tailwind's preflight (in its base layer) turns images and SVGs into blocks
+ * and removes list markers; GitHub's rendering expects the browser defaults.
+ */
+.markdown-body img,
+.markdown-body svg {
+	display: inline;
+	vertical-align: middle;
+}
+
+.markdown-body ul {
+	list-style-type: disc;
+}
+
+.markdown-body ol {
+	list-style-type: decimal;
+}
+
+/* The doubled class wins regardless of stylesheet order. */
+.markdown-body.markdown-body {
+	font-size: 14px;
+	background-color: transparent;
+	overflow-wrap: anywhere;
+}
+
+/* No horizontal page scroll on phones: wide content scrolls in place. */
+.markdown-body.markdown-body img {
+	max-width: 100%;
+	height: auto;
+}

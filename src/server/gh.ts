@@ -285,11 +285,18 @@ const AUTHOR = "author { login __typename }";
 const QUERIES = {
 	reviewThreads: connectionQuery(
 		"reviewThreads",
-		`isResolved isOutdated path line comments(first: 100) { totalCount nodes { ${AUTHOR} body createdAt } }`,
+		`isResolved isOutdated path line comments(first: 100) { totalCount nodes { ${AUTHOR} body bodyText bodyHTML createdAt } }`,
 	),
 	comments: connectionQuery("comments", `${AUTHOR} createdAt`),
 	reviews: connectionQuery("reviews", `${AUTHOR} state submittedAt`),
 };
+
+/** The description as GitHub renders it (HTML comments dropped, emoji and images resolved). */
+const BODY_HTML_QUERY = `query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) { bodyHTML }
+  }
+}`;
 
 const MAX_PAGES = 200;
 
@@ -335,21 +342,49 @@ async function fetchConnection(
 	throw new GhError(`Too many ${connection} to read for this PR`);
 }
 
+async function fetchBodyHtml(ref: PrRef): Promise<string> {
+	const out = safeJson(
+		await runGh([
+			"api",
+			"graphql",
+			"-f",
+			`query=${BODY_HTML_QUERY}`,
+			"-f",
+			`owner=${ref.owner}`,
+			"-f",
+			`name=${ref.repo}`,
+			"-F",
+			`number=${ref.number}`,
+		]),
+	);
+	const html = rec(rec(rec(rec(out).data).repository).pullRequest).bodyHTML;
+	if (typeof html !== "string") {
+		throw new GhError("gh returned an unexpected response for the PR body");
+	}
+	return html;
+}
+
 export async function fetchOverview(
 	ref: PrRef,
 	viewer: string,
 ): Promise<PrOverview> {
 	try {
-		const [view, reviewThreads, comments, reviews] = await Promise.all([
-			prView(
-				ref,
-				"number,title,url,author,body,state,isDraft,createdAt,updatedAt,baseRefName,headRefName,mergeable,reviewRequests,statusCheckRollup",
-			),
-			fetchConnection(ref, "reviewThreads"),
-			fetchConnection(ref, "comments"),
-			fetchConnection(ref, "reviews"),
-		]);
-		return mapOverview(view, { reviewThreads, comments, reviews }, viewer);
+		const [view, bodyHTML, reviewThreads, comments, reviews] =
+			await Promise.all([
+				prView(
+					ref,
+					"number,title,url,author,body,state,isDraft,createdAt,updatedAt,baseRefName,headRefName,mergeable,reviewRequests,statusCheckRollup",
+				),
+				fetchBodyHtml(ref),
+				fetchConnection(ref, "reviewThreads"),
+				fetchConnection(ref, "comments"),
+				fetchConnection(ref, "reviews"),
+			]);
+		return mapOverview(
+			view,
+			{ bodyHTML, reviewThreads, comments, reviews },
+			viewer,
+		);
 	} catch (error) {
 		if (isNotFound(error)) {
 			throw new GhError(`PR ${ref.owner}/${ref.repo}#${ref.number} not found`);

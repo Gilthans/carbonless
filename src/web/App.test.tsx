@@ -8,6 +8,7 @@ import {
 	waitFor,
 	within,
 } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PrOverview, ReviewView, SessionInfo } from "../shared/types";
 import { createAppRouter } from "./router";
@@ -32,7 +33,11 @@ const overview: PrOverview = {
 	number: 12,
 	url: "https://github.com/acme/widget/pull/12",
 	author: "octo-author",
-	body: "Caches **widgets**.\n\n<script>window.pwned = true</script>\n\n[bad](javascript:alert(1))",
+	body: "## Summary\n\n<!-- reviewers: see below -->\nCaches **widgets**. :tada:",
+	// What GitHub renders, plus what a hostile or broken response could carry.
+	bodyHtml:
+		'<h2 dir="auto">Summary</h2><p dir="auto">Caches <strong>widgets</strong>. <g-emoji class="g-emoji" alias="tada">🎉</g-emoji> <img class="emoji" alt=":shipit:" src="https://github.githubassets.com/images/icons/emoji/shipit.png"></p>' +
+		'<!-- leaked --><script>window.pwned = true</script><img src="x" onerror="window.pwned = true"><a href="javascript:alert(1)">bad</a>',
 	isDraft: false,
 	state: "OPEN",
 	createdAt: "2026-01-02T10:00:00Z",
@@ -81,6 +86,8 @@ const overview: PrOverview = {
 			path: "src/old.ts",
 			line: null,
 			excerpt: "Coverage dropped",
+			html: '<p dir="auto">Coverage <em>dropped</em> by 2%</p>',
+			createdAt: "2026-01-02T12:00:00Z",
 			author: "ci-bot",
 			bot: true,
 			hasReply: false,
@@ -90,6 +97,8 @@ const overview: PrOverview = {
 			path: "src/cache.ts",
 			line: 42,
 			excerpt: "Should this expire?",
+			html: '<p dir="auto">Should this <strong>expire</strong>?</p>',
+			createdAt: "2026-01-03T09:00:00Z",
 			author: "rev1",
 			bot: false,
 			hasReply: true,
@@ -224,25 +233,89 @@ describe("OverviewPage", () => {
 		vi.unstubAllGlobals();
 	});
 
-	it("renders the description as markdown without raw HTML", async () => {
+	it("renders the description as GitHub renders it, sanitized", async () => {
 		const { container } = renderApp();
 		const what = await screen.findByRole("region", { name: "What it does" });
-		expect(within(what).getByText("widgets").tagName).toBe("STRONG");
-		expect(container.querySelector("script")).toBeNull();
 		expect(
-			within(what).getByText("bad").getAttribute("href") ?? "",
-		).not.toMatch(/javascript/i);
+			within(what).getByRole("heading", { name: "Summary" }),
+		).toBeInTheDocument();
+		expect(within(what).getByText("widgets").tagName).toBe("STRONG");
+		expect(what).toHaveTextContent("🎉");
+		expect(within(what).getByAltText(":shipit:")).toHaveAttribute(
+			"src",
+			"https://github.githubassets.com/images/icons/emoji/shipit.png",
+		);
+		expect(what.textContent).not.toContain("<!--");
+		expect(what.textContent).not.toContain("reviewers: see below");
+		expect(container.querySelector("script")).toBeNull();
+		expect(container.querySelector("[onerror]")).toBeNull();
+		expect(within(what).getByText("bad")).not.toHaveAttribute("href");
+		expect(container.querySelector(".markdown-body")).toContainElement(
+			within(what).getByText("widgets"),
+		);
+	});
+
+	it("falls back to the plain description when GitHub sent no HTML", async () => {
+		renderApp({
+			"/api/overview": ok({ ...overview, bodyHtml: "", body: "<b>raw</b>" }),
+		});
+		const what = await screen.findByRole("region", { name: "What it does" });
+		expect(what).toHaveTextContent("<b>raw</b>");
+		expect(what.querySelector("b")).toBeNull();
+	});
+
+	it("links the PR on GitHub with the GitHub mark", async () => {
+		renderApp();
+		const what = await screen.findByRole("region", { name: "What it does" });
+		const link = within(what).getByRole("link", { name: "View on GitHub" });
+		expect(link).toHaveAttribute("href", overview.url);
+		expect(link).toHaveAttribute("title", "View on GitHub");
+		expect(link).toHaveAttribute("target", "_blank");
+		expect(link.querySelector("svg")).not.toBeNull();
+		expect(link).not.toHaveTextContent("View on GitHub");
+	});
+
+	it("shows PR dates as relative <time>s", async () => {
+		vi.useFakeTimers({
+			now: new Date("2026-01-05T18:00:00Z"),
+			toFake: ["Date"],
+		});
+		try {
+			renderApp();
+			const what = await screen.findByRole("region", {
+				name: "What it does",
+			});
+			const times = [...what.querySelectorAll("time")];
+			expect(times.map((t) => t.getAttribute("dateTime"))).toEqual([
+				"2026-01-02T10:00:00Z",
+				"2026-01-05T12:00:00Z",
+			]);
+			expect(times.map((t) => t.textContent)).toEqual([
+				"3 days ago",
+				"6 hours ago",
+			]);
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	it("says who already started reviewing, with their blocking opinion", async () => {
 		renderApp();
 		const who = await screen.findByRole("region", { name: "Who's on it" });
 		expect(who).toHaveTextContent("rev1 already started");
-		expect(within(who).getByText("rev1").closest("li")).toHaveTextContent(
-			"Changes requested",
-		);
+		const rev1 = within(who).getByText("rev1").closest("li");
+		if (!rev1) throw new Error("no rev1 row");
+		expect(
+			within(rev1).getByRole("img", { name: "Changes requested" }),
+		).toHaveAttribute("title", "Changes requested");
+		expect(
+			within(rev1).getByRole("img", { name: "then commented" }),
+		).toBeInTheDocument();
 		expect(who).toHaveTextContent("rev2");
 		expect(who).toHaveTextContent("Core Team");
+		expect(within(who).getByRole("img", { name: "team" })).toBeInTheDocument();
+		const bot = within(who).getByText("github-actions").closest("li");
+		expect(bot && within(bot).getByRole("img", { name: "bot" })).toBeTruthy();
 	});
 
 	it("shows when each review was submitted and each commenter last commented", async () => {
@@ -294,13 +367,44 @@ describe("OverviewPage", () => {
 	it("splits unresolved threads into bots and humans and lists those without reply", async () => {
 		renderApp();
 		const ready = await screen.findByRole("region", { name: "Is it ready" });
-		const bots = within(ready).getByRole("list", { name: "Bots/AI threads" });
-		const humans = within(ready).getByRole("list", { name: "Human threads" });
+		const bots = within(ready).getByRole("list", { name: "Bots" });
+		const humans = within(ready).getByRole("list", { name: "Humans" });
 		expect(bots).toHaveTextContent("Coverage dropped");
 		expect(humans).toHaveTextContent("Should this expire?");
 		const noReply = within(ready).getByRole("list", { name: "No reply" });
 		expect(noReply).toHaveTextContent("src/old.ts");
 		expect(noReply).not.toHaveTextContent("src/cache.ts");
+	});
+
+	it("previews a thread's first comment and expands it to GitHub's HTML", async () => {
+		const user = userEvent.setup();
+		renderApp();
+		const ready = await screen.findByRole("region", { name: "Is it ready" });
+		const bots = within(ready).getByRole("list", { name: "Bots" });
+		const details = bots.querySelector("details");
+		if (!details) throw new Error("no details");
+		expect(details.open).toBe(false);
+		expect(details.querySelector("summary")).toHaveTextContent(
+			"Coverage dropped",
+		);
+		expect(bots.querySelector("time")).toHaveAttribute(
+			"dateTime",
+			"2026-01-02T12:00:00Z",
+		);
+		await user.click(within(bots).getByText("Coverage dropped"));
+		expect(details.open).toBe(true);
+		const body = details.querySelector(".markdown-body");
+		expect(body?.querySelector("em")).toHaveTextContent("dropped");
+		expect(body).toHaveTextContent("Coverage dropped by 2%");
+	});
+
+	it("marks check status with a named icon instead of a word", async () => {
+		renderApp();
+		const ready = await screen.findByRole("region", { name: "Is it ready" });
+		const lint = within(ready).getAllByTestId("check")[0];
+		if (!lint) throw new Error("no check");
+		expect(within(lint).getByRole("img", { name: "failing" })).toBeVisible();
+		expect(lint).toHaveTextContent(/^lint$/);
 	});
 
 	it("shows the overview's error message", async () => {

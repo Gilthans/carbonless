@@ -96,7 +96,7 @@ describe("fake gh", () => {
 		});
 	});
 
-	it("pages GraphQL connections by the scenario page size", async () => {
+	it("pages GraphQL connections by the scenario page size and serves bodyHTML", async () => {
 		const threads = ["one.ts", "two.ts", "three.ts"].map((path) =>
 			reviewThread({ path }),
 		);
@@ -106,6 +106,7 @@ describe("fake gh", () => {
 				"12": {
 					view: prView(),
 					graphql: {
+						bodyHTML: "<h2>Cache</h2>",
 						reviewThreads: threads,
 						comments: [
 							{ author: { login: "x", __typename: "User" }, createdAt: "" },
@@ -120,6 +121,10 @@ describe("fake gh", () => {
 			"two.ts",
 			"three.ts",
 		]);
+		expect(o.bodyHtml).toBe("<h2>Cache</h2>");
+		expect(o.threads[0]?.html).toBe(
+			'<p dir="auto">Should this <strong>expire</strong>?</p>',
+		);
 	});
 
 	it("reports a missing PR the way gh does", async () => {

@@ -1,4 +1,5 @@
 import type { Page } from "@playwright/test";
+import { reviewThread, threadComment } from "../test/fake-gh/scenario";
 import { fileSection, openFiles } from "./files-ui";
 import { expect, type PrOptions, test } from "./fixtures";
 
@@ -88,6 +89,66 @@ test("no horizontal page scroll on the overview and files pages", async ({
 		await expect(section.getByTestId("diff-line").first()).toBeVisible();
 		await expectNoPageOverflow(page);
 	}
+});
+
+const WIDE = "w".repeat(300);
+/** GitHub HTML that is wider than a phone in every way it can be. */
+const WIDE_HTML = [
+	`<p dir="auto">${WIDE} <a href="https://example.com/${WIDE}">https://example.com/${WIDE}</a></p>`,
+	`<div class="highlight highlight-source-ts notranslate position-relative overflow-auto" dir="auto"><pre><span class="pl-k">const</span> x = "${WIDE}";</pre></div>`,
+	`<markdown-accessiblity-table><table><thead><tr>${"<th>column header</th>".repeat(12)}</tr></thead><tbody><tr>${"<td>value</td>".repeat(12)}</tr></tbody></table></markdown-accessiblity-table>`,
+	'<p dir="auto"><a target="_blank" rel="noopener noreferrer" href="https://camo.githubusercontent.com/big"><img src="https://camo.githubusercontent.com/big" alt="big screenshot" width="2000" height="400" style="max-width: 100%;"></a></p>',
+].join("\n");
+
+test("GitHub-rendered descriptions and threads never widen the page", async ({
+	page,
+	pr,
+	startCrb,
+}, testInfo) => {
+	await page.route("https://**/*", (route) =>
+		route.fulfill({
+			contentType: "image/png",
+			body: Buffer.from(
+				"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+				"base64",
+			),
+		}),
+	);
+	await pr({
+		bodyHTML: WIDE_HTML,
+		threads: [
+			reviewThread({
+				path: `${LONG_DIR}/compatibility.ts`,
+				comments: {
+					totalCount: 1,
+					nodes: [
+						threadComment({ login: "rev1", text: WIDE, html: WIDE_HTML }),
+					],
+				},
+			}),
+		],
+	});
+	const s = await startCrb();
+	await page.setViewportSize({
+		width: testInfo.project.name === "phone" ? 360 : 1280,
+		height: 800,
+	});
+	await page.goto(s.url);
+	const what = page.getByRole("region", { name: "What it does" });
+	await expect(what.getByAltText("big screenshot")).toBeVisible();
+	await expectNoPageOverflow(page);
+	if (testInfo.project.name === "phone") {
+		// Too wide for a phone: the table scrolls inside its own box.
+		const table = what.locator("table");
+		expect(await table.evaluate((el) => el.scrollWidth > el.clientWidth)).toBe(
+			true,
+		);
+	}
+	await page.getByRole("list", { name: "Humans" }).locator("summary").click();
+	await expect(
+		page.getByRole("list", { name: "Humans" }).locator(".markdown-body table"),
+	).toBeVisible();
+	await expectNoPageOverflow(page);
 });
 
 test.describe("phone", () => {

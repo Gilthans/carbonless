@@ -1,4 +1,5 @@
-import { reviewThread } from "../test/fake-gh/scenario";
+import type { Page } from "@playwright/test";
+import { reviewThread, threadComment } from "../test/fake-gh/scenario";
 import { expect, test } from "./fixtures";
 
 const botThreadNoReply = reviewThread({
@@ -7,14 +8,33 @@ const botThreadNoReply = reviewThread({
 	comments: {
 		totalCount: 1,
 		nodes: [
-			{
-				author: { login: "lint-bot", __typename: "Bot" },
-				body: "Unused import",
-				createdAt: "2026-01-03T09:00:00Z",
-			},
+			threadComment({
+				login: "lint-bot",
+				bot: true,
+				text: "Unused import of fs in this module",
+				html: '<p dir="auto">Unused import of <code class="notranslate">fs</code> in this module</p>',
+			}),
 		],
 	},
 });
+
+/** What GitHub renders for a description with a comment, emoji and a task list. */
+const RICH_BODY_HTML = [
+	'<div class="markdown-heading" dir="auto"><h2 class="heading-element" dir="auto">Why</h2><a id="user-content-why" class="anchor" aria-label="Permalink: Why" href="#why"><svg class="octicon octicon-link" viewBox="0 0 16 16" version="1.1" width="16" height="16" aria-hidden="true"><path d="M7.775 3.275a.75.75 0 0 0 1.06 1.06l1.25-1.25a2 2 0 1 1 2.83 2.83l-2.5 2.5a2 2 0 0 1-2.83 0 .75.75 0 0 0-1.06 1.06 3.5 3.5 0 0 0 4.95 0l2.5-2.5a3.5 3.5 0 0 0-4.95-4.95l-1.25 1.25Z"></path></svg></a></div>',
+	'<p dir="auto">Caches <strong>widgets</strong>. <g-emoji class="g-emoji" alias="rocket">🚀</g-emoji> <img class="emoji" title=":shipit:" alt=":shipit:" src="https://github.githubassets.com/images/icons/emoji/shipit.png" height="20" width="20" align="absmiddle"></p>',
+	'<ul class="contains-task-list">\n<li class="task-list-item"><input type="checkbox" id="" disabled="" class="task-list-item-checkbox" checked=""> tested</li>\n</ul>',
+].join("\n");
+
+/** Images come from GitHub's CDN; serve a 1×1 PNG so tests stay offline. */
+async function stubImages(page: Page) {
+	const png = Buffer.from(
+		"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+		"base64",
+	);
+	await page.route("https://**/*", (route) =>
+		route.fulfill({ contentType: "image/png", body: png }),
+	);
+}
 const humanThreadWithReply = reviewThread({ path: "src/cache.ts", line: 42 });
 
 test("shows what the PR does, who's on it and whether it's ready", async ({
@@ -45,13 +65,17 @@ test("shows what the PR does, who's on it and whether it's ready", async ({
 	await expect(noReply).not.toContainText("src/cache.ts");
 });
 
-test("shows who started reviewing and the description as markdown", async ({
+test("shows the description as GitHub renders it, and who started reviewing", async ({
 	page,
 	pr,
 	startCrb,
 }) => {
+	await stubImages(page);
 	await pr({
-		overview: { body: "Caches **widgets**.\n\n- [x] tested" },
+		overview: {
+			body: "## Why\n\n<!-- reviewer note -->\nCaches **widgets**. :rocket: :shipit:\n\n- [x] tested",
+		},
+		bodyHTML: RICH_BODY_HTML,
 		reviews: [
 			{
 				author: { login: "rev1", __typename: "User" },
@@ -68,11 +92,86 @@ test("shows who started reviewing and the description as markdown", async ({
 	const s = await startCrb();
 	await page.goto(s.url);
 	const what = page.getByRole("region", { name: "What it does" });
+	await expect(what.getByRole("heading", { name: "Why" })).toBeVisible();
 	await expect(what.locator("strong")).toHaveText("widgets");
+	await expect(what).toContainText("🚀");
+	await expect(what.getByAltText(":shipit:")).toBeVisible();
 	await expect(what.getByRole("checkbox")).toBeChecked();
+	await expect(what).not.toContainText("<!--");
+	await expect(what).not.toContainText("reviewer note");
 	const who = page.getByRole("region", { name: "Who's on it" });
 	await expect(who).toContainText("rev1 already started");
-	await expect(who).toContainText("Changes requested");
+	await expect(
+		who.getByRole("img", { name: "Changes requested" }),
+	).toBeVisible();
+});
+
+test("links to GitHub with its mark and shows dates as relative times", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	const updated = new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString();
+	await pr({ overview: { updatedAt: updated } });
+	const s = await startCrb();
+	await page.goto(s.url);
+	const what = page.getByRole("region", { name: "What it does" });
+	const github = what.getByRole("link", { name: "View on GitHub" });
+	await expect(github).toHaveAttribute(
+		"href",
+		"https://github.com/acme/widget/pull/7",
+	);
+	await expect(github).toHaveAttribute("title", "View on GitHub");
+	await expect(github).not.toHaveText(/\S/);
+	const box = await github.boundingBox();
+	expect(box?.width).toBeGreaterThanOrEqual(40);
+	expect(box?.height).toBeGreaterThanOrEqual(40);
+
+	const time = what.locator(`time[datetime="${updated}"]`);
+	await expect(time).toHaveText("3 hours ago");
+	const full = await page.evaluate(
+		(iso) =>
+			new Intl.DateTimeFormat(undefined, { timeZoneName: "long" })
+				.formatToParts(new Date(iso))
+				.find((p) => p.type === "timeZoneName")?.value ?? "",
+		updated,
+	);
+	await time.focus();
+	const tip = page.getByRole("tooltip");
+	await expect(tip).toBeVisible();
+	await expect(tip).toContainText(full);
+	await expect(tip).toContainText(String(new Date(updated).getFullYear()));
+	await expect(time).toHaveAccessibleDescription(await tip.innerText());
+	// The tooltip stays inside the viewport.
+	const tipBox = await tip.boundingBox();
+	const width = page.viewportSize()?.width ?? 0;
+	expect(tipBox && tipBox.x >= 0 && tipBox.x + tipBox.width <= width).toBe(
+		true,
+	);
+	await page.keyboard.press("Escape");
+	await expect(tip).toBeHidden();
+});
+
+test("a thread previews its first comment and expands to GitHub's rendering", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	await pr({ threads: [botThreadNoReply] });
+	const s = await startCrb();
+	await page.goto(s.url);
+	const bots = page
+		.getByRole("region", { name: "Is it ready" })
+		.getByRole("list", { name: "Bots" });
+	const preview = bots.locator("summary");
+	await expect(preview).toContainText("Unused import of fs in this module");
+	await expect(bots.locator("code.notranslate")).toBeHidden();
+	await preview.click();
+	await expect(bots.locator(".markdown-body code")).toHaveText("fs");
+	await expect(bots.locator("time")).toHaveAttribute(
+		"datetime",
+		"2026-01-03T09:00:00Z",
+	);
 });
 
 test("Review files opens the files tab, which survives a reload", async ({

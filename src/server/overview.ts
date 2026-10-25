@@ -88,10 +88,14 @@ function mapThreads(nodes: unknown[]): PrOverview["threads"] {
 		const first = comments[0] ?? {};
 		const author = obj(first.author);
 		const firstLogin = str(author.login);
+		// bodyText is GitHub's plain-text rendering; the raw body is a fallback.
+		const text = str(first.bodyText) || str(first.body);
 		result.push({
 			path: str(t.path),
 			line: typeof t.line === "number" ? t.line : null,
-			excerpt: str(first.body).slice(0, 200),
+			excerpt: text.replace(/\s+/g, " ").trim().slice(0, 200),
+			html: str(first.bodyHTML),
+			createdAt: str(first.createdAt),
 			author: firstLogin,
 			bot: isBotAuthor(author),
 			// Someone other than the thread's opener answered.
@@ -104,6 +108,8 @@ function mapThreads(nodes: unknown[]): PrOverview["threads"] {
 
 /** The GraphQL connections `fetchOverview` collects, already flattened to node lists. */
 export interface PrGraph {
+	/** The description as GitHub renders it; "" falls back to the plain body. */
+	bodyHTML: string;
 	reviewThreads: unknown[];
 	comments: unknown[];
 	reviews: unknown[];
@@ -236,6 +242,7 @@ export function mapOverview(
 		url: str(v.url),
 		author,
 		body: str(v.body),
+		bodyHtml: str(g.bodyHTML),
 		isDraft: v.isDraft === true,
 		state,
 		createdAt: str(v.createdAt),
