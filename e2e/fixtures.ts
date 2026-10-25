@@ -8,7 +8,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { test as base, expect } from "@playwright/test";
+import { test as base, expect, type Page } from "@playwright/test";
 import {
 	FAKE_GH_DIR,
 	FIXTURE_BODY_HTML,
@@ -279,23 +279,39 @@ export const test = base.extend<{
 
 	expectConsoleError: [
 		async ({ page }, use) => {
-			const errors: string[] = [];
-			const expected: RegExp[] = [];
-			page.on("console", (message) => {
-				if (message.type() === "error") errors.push(message.text());
-			});
-			page.on("pageerror", (error) => errors.push(error.message));
-			await use((pattern) => {
-				expected.push(pattern);
-			});
-			const unexpected = errors.filter(
-				(text) => !expected.some((pattern) => pattern.test(text)),
+			const watch = watchConsoleErrors(page);
+			await use(watch.expect);
+			expect(watch.unexpected(), "unexpected browser console errors").toEqual(
+				[],
 			);
-			expect(unexpected, "unexpected browser console errors").toEqual([]);
 		},
 		{ auto: true },
 	],
 });
+
+export interface ConsoleErrorWatch {
+	/** Declares errors matching `pattern` as expected. */
+	expect: (pattern: RegExp) => void;
+	/** Console and uncaught page errors seen so far, minus the expected ones. */
+	unexpected: () => string[];
+}
+
+/** Collects `page`'s console errors and uncaught errors (see expectConsoleError). */
+export function watchConsoleErrors(page: Page): ConsoleErrorWatch {
+	const errors: string[] = [];
+	const expected: RegExp[] = [];
+	page.on("console", (message) => {
+		if (message.type() === "error") errors.push(message.text());
+	});
+	page.on("pageerror", (error) => errors.push(error.message));
+	return {
+		expect: (pattern) => {
+			expected.push(pattern);
+		},
+		unexpected: () =>
+			errors.filter((text) => !expected.some((pattern) => pattern.test(text))),
+	};
+}
 
 /**
  * Writes `commit` (files and deletions) into the worktree at `dir`, commits
