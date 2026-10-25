@@ -428,6 +428,95 @@ const longFixture: PrOptions = {
 	],
 };
 
+/**
+ * A rename with no edits (a cluster without changed lines) above a long file
+ * with a three-line change every 20 lines (one hunk per change).
+ */
+const unitSwitchFixture: PrOptions = {
+	base: {
+		"a/old.md": "# Notes\n",
+		"b/long.ts": text(long),
+	},
+	files: [
+		{
+			message: "PR change",
+			rename: { "a/old.md": "a/new.md" },
+			files: {
+				"b/long.ts": text(
+					long.map((l, i) => (i % 20 < 3 ? `${l} changed` : l)),
+				),
+			},
+		},
+	],
+};
+
+/** Opens b/long.ts and scrolls a row from its middle to mid-screen. */
+async function readMiddleOfLongFile(page: Page) {
+	const section = await expand(page, "b/long.ts");
+	const row = section
+		.getByTestId("diff-line")
+		.filter({ hasText: /long 141 changed$/ });
+	await row.scrollIntoViewIfNeeded();
+	const height = page.viewportSize()?.height ?? 0;
+	const y0 = (await row.boundingBox())?.y ?? 0;
+	await page.evaluate((by) => window.scrollBy(0, by), y0 - height / 2);
+	const top = async () => (await row.boundingBox())?.y ?? Number.NaN;
+	expect(Math.abs((await top()) - height / 2)).toBeLessThan(5);
+	return top;
+}
+
+test("switching the unit keeps the line being read in place", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	await pr(unitSwitchFixture);
+	const s = await startCrb();
+	await openFiles(page, s.url, "Lines");
+	const top = await readMiddleOfLongFile(page);
+	const before = await top();
+	for (const unit of ["Clusters", "Lines", "Files", "Clusters"] as const) {
+		await chooseUnit(page, unit);
+		expect(Math.abs((await top()) - before)).toBeLessThanOrEqual(2);
+	}
+	// From the keyboard too: arrows move between the units.
+	await page.keyboard.press("ArrowLeft");
+	await expect(page.getByRole("radio", { name: "Lines" })).toBeChecked();
+	expect(Math.abs((await top()) - before)).toBeLessThanOrEqual(2);
+});
+
+test("switching the unit keeps the line in place when the bar's height changes", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	await pr(unitSwitchFixture);
+	const s = await startCrb();
+	await openFiles(page, s.url, "Clusters");
+	// Like Safari, which has no CSS scroll anchoring: the page must keep the
+	// line in place itself.
+	await page.addStyleTag({ content: "* { overflow-anchor: none; }" });
+	await fileAction(fileSection(page, "b/long.ts"), "Mark remaining reviewed");
+	await expect(progress(page)).toContainText("15 / 16 clusters");
+	const top = await readMiddleOfLongFile(page);
+	const before = await top();
+	const barHeight = async () =>
+		(await page.locator("[data-page-bar]").boundingBox())?.height ?? 0;
+	const clustersBar = await barHeight();
+	// In lines only the rename is left, and the bar says so on a line of its own.
+	await chooseUnit(page, "Lines");
+	await expect(
+		page.getByText("1 cluster without changed lines left"),
+	).toBeVisible();
+	expect(await barHeight()).toBeGreaterThan(clustersBar);
+	expect(Math.abs((await top()) - before)).toBeLessThanOrEqual(2);
+	await chooseUnit(page, "Clusters");
+	await expect(
+		page.getByText("1 cluster without changed lines left"),
+	).toHaveCount(0);
+	expect(Math.abs((await top()) - before)).toBeLessThanOrEqual(2);
+});
+
 test("an open file's header sticks below the progress bar", async ({
 	page,
 	pr,

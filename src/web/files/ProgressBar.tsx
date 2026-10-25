@@ -119,6 +119,8 @@ export function ProgressBar(props: {
 	return (
 		<div
 			ref={props.ref}
+			// Its controls never scroll the page when focused (index.css).
+			data-page-bar
 			className="sticky top-[var(--app-header,0px)] z-20 border-b border-line bg-canvas py-2"
 		>
 			<div className="flex flex-wrap items-center gap-x-3 gap-y-2">
