@@ -13,7 +13,7 @@ test("Settings sits in the app bar, compact header included, and switches hidden
 	const section = page.getByRole("region", { name: "a.txt" });
 	await section.getByRole("button", { name: "Expand file" }).click();
 	await expect(section.locator('[data-inv="eol"]').first()).toBeAttached();
-	// The ¶ toggle is gone from Files: Settings replaces it.
+	// The old toggle is gone from Files: Settings replaces it.
 	await expect(
 		page.getByRole("button", { name: "Show all characters" }),
 	).toHaveCount(0);

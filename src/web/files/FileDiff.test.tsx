@@ -849,7 +849,7 @@ describe("FileDiff", () => {
 		expect(
 			screen.getByText("\\ No newline at end of file"),
 		).toBeInTheDocument();
-		// With ¶ on, every line ends in \n but the one without a newline.
+		// With hidden characters shown, every line ends in \n but the one without a newline.
 		act(() => setShowInvisibles(true));
 		const ends = Array.from(
 			document.querySelectorAll<HTMLElement>('[data-testid="diff-line"]'),

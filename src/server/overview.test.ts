@@ -270,7 +270,7 @@ describe("mapOverview", () => {
 			code: { startLine: 42, endLine: 42 },
 		});
 		// GraphQL's thread-level startLine can name a line past the current
-		// one (PR #99: line 120, startLine 124, REST start_line null): just
+		// one (synthetic: line 120, startLine 124, no REST start_line): just
 		// the line, never a range made backwards.
 		Object.assign(t, { originalLine: null, line: 120, startLine: 124 });
 		expect(mapOverview(view(), g, VIEWER).threads[0]?.code).toMatchObject({

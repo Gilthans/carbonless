@@ -10,6 +10,8 @@ Foundation for everything below.
   with progress tracking. Design:
   `docs/superpowers/specs/2026-10-21-pr-review-parity-design.md`.
 - **Commenting** from carbonless.
+- **Suggestions in replies:** the Overview shows only a thread's opening
+  comment, so a suggested change made in a reply isn't drawn there yet.
 - **Re-review after new pushes:** one of GitHub's weakest spots.
 - **Store review state in git refs** (`refs/crb/...`). Design:
   `docs/review-data-storage.md`. Carry-over after pushes is deferred to the

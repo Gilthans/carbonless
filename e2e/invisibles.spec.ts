@@ -178,7 +178,7 @@ test("code shows invisible characters, and copying gives back the original", asy
 		await page.screenshot({ path: `${shots}/inv-${device}-on.png` });
 	}
 
-	// ¶ off: whitespace and endings go, what would print as nothing stays.
+	// Hidden characters off: whitespace and endings go, what would print as nothing stays.
 	await (await hiddenChars(page)).click();
 	await expect(toggle).toHaveAttribute("aria-checked", "false");
 	await page.keyboard.press("Escape");

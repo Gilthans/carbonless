@@ -50,7 +50,7 @@ export interface RenderOptions {
 	/** A newline follows the line (false for the last line without one). */
 	newline?: boolean;
 	/**
-	 * Spaces, tab markers and line endings (the ¶ toggle). Escapes show
+	 * Spaces, tab markers and line endings (Settings: "Show hidden characters"). Escapes show
 	 * either way: hiding them would hide content.
 	 */
 	show?: boolean;

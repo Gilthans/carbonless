@@ -84,7 +84,7 @@ export function Settings() {
 		const outside = (event: Event) => {
 			if (!wrapper.current?.contains(event.target as Node)) setOpen(false);
 		};
-		const escape = (event: KeyboardEvent) => {
+		const onEscape = (event: KeyboardEvent) => {
 			if (event.key !== "Escape") return;
 			event.preventDefault();
 			setOpen(false);
@@ -92,11 +92,11 @@ export function Settings() {
 		};
 		document.addEventListener("pointerdown", outside);
 		document.addEventListener("focusin", outside);
-		document.addEventListener("keydown", escape);
+		document.addEventListener("keydown", onEscape);
 		return () => {
 			document.removeEventListener("pointerdown", outside);
 			document.removeEventListener("focusin", outside);
-			document.removeEventListener("keydown", escape);
+			document.removeEventListener("keydown", onEscape);
 		};
 	}, [open, phone]);
 	const close = () => {

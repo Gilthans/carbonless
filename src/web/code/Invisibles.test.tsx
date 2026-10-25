@@ -139,7 +139,7 @@ describe("CodeLine", () => {
 		expect(seen(line())).toBe("let a\\rb = 2;");
 	});
 
-	it("hides whitespace with ¶ off but still escapes what would be invisible", async () => {
+	it("hides whitespace with hidden characters off but still escapes what would be invisible", async () => {
 		const text = "\ta b\u202E\u200B\u00A0\u2066\r";
 		renderLine({ text, lang: null });
 		await userEvent.click(await hiddenCharacters());
@@ -287,7 +287,7 @@ describe("copying", () => {
 	}
 });
 
-describe("the ¶ choice", () => {
+describe("the hidden-characters setting", () => {
 	it("is on by default and remembered", async () => {
 		expect(readShowInvisibles()).toBe(true);
 		renderLine({ text: "a  b", lang: null });
