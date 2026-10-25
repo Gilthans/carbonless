@@ -2,6 +2,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { RouterProvider } from "@tanstack/react-router";
 import {
+	act,
 	cleanup,
 	render,
 	screen,
@@ -12,6 +13,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PrOverview, ReviewView, SessionInfo } from "../shared/types";
 import { COMPACT_RAMP, compactProgress } from "./App";
+import { resetShowInvisibles, setShowInvisibles } from "./code/Invisibles";
 import { createAppRouter } from "./router";
 
 const info: SessionInfo = {
@@ -687,6 +689,23 @@ describe("OverviewPage", () => {
 		const bots = screen.getByRole("region", { name: "Bot reviews" });
 		expect(within(bots).queryByTestId("thread-code")).toBeNull();
 		expect(within(bots).getByTestId("thread")).toHaveTextContent("src/old.ts");
+	});
+
+	it("the ¶ choice shared with Files shows invisible characters in the code panes", async () => {
+		renderApp();
+		const humans = await screen.findByRole("region", { name: "Human reviews" });
+		const code = within(humans).getByRole("figure", {
+			name: "Code at src/cache.ts",
+		});
+		act(() => setShowInvisibles(true));
+		await waitFor(() =>
+			expect(code.querySelectorAll("[data-inv]").length).toBeGreaterThan(0),
+		);
+		act(() => setShowInvisibles(false));
+		await waitFor(() =>
+			expect(code.querySelectorAll("[data-inv]")).toHaveLength(0),
+		);
+		resetShowInvisibles();
 	});
 
 	it("previews a thread as GitHub renders it, clipped, with a toggle when it is long", async () => {

@@ -50,7 +50,7 @@ describe("parseDiffHunk", () => {
 			"@@ -0,0 +1 @@\r\n+x\r\n\\ No newline at end of file\r\n\n+y\n",
 		);
 		expect(lines).toEqual([
-			{ kind: "add", oldNo: null, newNo: 1, text: "x" },
+			{ kind: "add", oldNo: null, newNo: 1, text: "x", noNewline: true },
 			{ kind: "context", oldNo: 0, newNo: 2, text: "" },
 			{ kind: "add", oldNo: null, newNo: 3, text: "y" },
 		]);

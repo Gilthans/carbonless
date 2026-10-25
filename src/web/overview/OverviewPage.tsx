@@ -42,7 +42,7 @@ import {
 } from "react";
 import type { PrOverview, Progress } from "../../shared/types";
 import { overviewQuery, reviewQuery } from "../api";
-import { Code } from "../files/Code";
+import { CodeLine } from "../code/Invisibles";
 import { languageFor } from "../files/highlight";
 import { GithubHtml, ImageErrorContext } from "../GithubHtml";
 import { RelativeTime } from "../RelativeTime";
@@ -1067,6 +1067,11 @@ function ThreadCodePane(props: {
 	open: boolean;
 }) {
 	const lang = languageFor(props.path);
+	// The file's tab width (.editorconfig), once the review has loaded.
+	const review = useQuery(reviewQuery);
+	const tabWidth = review.data?.files.find(
+		(f) => f.path === props.path,
+	)?.tabWidth;
 	return (
 		<figure
 			ref={props.ref}
@@ -1111,7 +1116,12 @@ function ThreadCodePane(props: {
 							<td
 								className={`pr-2 pl-1.5 ${props.open ? "whitespace-pre-wrap [overflow-wrap:anywhere]" : "whitespace-pre"}`}
 							>
-								<Code text={line.text} lang={lang} />
+								<CodeLine
+									text={line.text}
+									lang={lang}
+									tabWidth={tabWidth}
+									newline={!line.noNewline}
+								/>
 							</td>
 						</tr>
 					))}

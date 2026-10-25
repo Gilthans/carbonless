@@ -7,14 +7,16 @@ export interface HunkLine {
 	oldNo: number | null;
 	newNo: number | null;
 	text: string;
+	/** Git's "\ No newline at end of file" follows this line. */
+	noNewline?: boolean;
 }
 
 const HEADER = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/;
 
 /**
  * GitHub's diff hunk as numbered lines. A hunk header (re)starts the
- * numbering; lines before any header, and "\ No newline" markers, are
- * dropped. An empty line is context (some tools strip its leading space).
+ * numbering; lines before any header are dropped, and a "\ No newline"
+ * marker flags the line before it. An empty line is context (some tools strip its leading space).
  */
 export function parseDiffHunk(hunk: string): HunkLine[] {
 	const out: HunkLine[] = [];
@@ -27,7 +29,12 @@ export function parseDiffHunk(hunk: string): HunkLine[] {
 			newNo = Number(header[2]);
 			continue;
 		}
-		if (oldNo === null || newNo === null || raw.startsWith("\\")) continue;
+		if (oldNo === null || newNo === null) continue;
+		if (raw.startsWith("\\")) {
+			const before = out.at(-1);
+			if (before) before.noNewline = true;
+			continue;
+		}
 		const sign = raw[0];
 		const text = raw.slice(1);
 		if (sign === "+") {
