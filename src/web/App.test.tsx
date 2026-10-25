@@ -601,7 +601,7 @@ describe("OverviewPage", () => {
 		// Header: status, opener, opened and last active (the sort key).
 		const head = within(human).getByTestId("thread-head");
 		expect(head).toHaveTextContent(
-			/^Unresolved thread by rev1·opened .+·updated /,
+			/^Unresolved thread by rev1\s*·\s*opened .+·\s*updated /,
 		);
 		expect(
 			Array.from(head.querySelectorAll("time")).map((t) =>

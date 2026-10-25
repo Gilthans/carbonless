@@ -375,6 +375,9 @@ describe("FilesPage", () => {
 			const landed = await row("b.txt", "data-landed");
 			expect(landed.dataset.newNo).toBe("2");
 			expect(landed).toHaveClass("mark-tint");
+			// On at once (the transition only fades it out), with an accent rail.
+			expect(landed.className).not.toMatch(/transition/);
+			expect(landed.className).toMatch(/first-child\]:bg-accent/);
 			expect(scrolled).toHaveBeenCalled();
 			expect(screen.queryByTestId("landing-hint")).toBeNull();
 		});

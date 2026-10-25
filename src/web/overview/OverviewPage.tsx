@@ -1019,9 +1019,10 @@ function ThreadItem({ thread }: { thread: Thread }) {
 		>
 			<div
 				data-testid="thread-head"
-				className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-line bg-band px-3 py-1.5 text-xs text-muted"
+				className="flex flex-wrap items-center gap-x-1.5 gap-y-1 border-b border-line bg-band px-3 py-1.5 text-xs text-muted"
 			>
-				<p className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5">
+				{/* One flow: a separator stays with the part it introduces. */}
+				<p className="contents">
 					{thread.resolved ? (
 						<CheckCircleIcon size={14} aria-hidden className="text-ok" />
 					) : (
@@ -1039,20 +1040,18 @@ function ThreadItem({ thread }: { thread: Thread }) {
 							{thread.bot && <BotIcon />}
 						</span>
 					</span>
-					<span aria-hidden>·</span>
-					<span>
-						opened <RelativeTime iso={thread.createdAt} />
+					<span className="whitespace-nowrap">
+						<span aria-hidden>· </span>opened{" "}
+						<RelativeTime iso={thread.createdAt} />
 					</span>
 					{thread.lastActivityAt !== thread.createdAt && (
-						<>
-							<span aria-hidden>·</span>
-							<span>
-								updated <RelativeTime iso={thread.lastActivityAt} />
-							</span>
-						</>
+						<span className="whitespace-nowrap">
+							<span aria-hidden>· </span>updated{" "}
+							<RelativeTime iso={thread.lastActivityAt} />
+						</span>
 					)}
 				</p>
-				<div className="ml-auto flex items-center gap-2">
+				<div className="ml-auto flex items-center gap-2 pl-1.5">
 					<LabeledIcon
 						icon={CommentIcon}
 						label={plural(n, "comment")}

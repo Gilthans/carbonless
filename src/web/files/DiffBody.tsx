@@ -487,7 +487,9 @@ export function DiffBody(props: {
 
 /** How long a landed-on line stays highlighted before it fades. */
 export const LANDED_MS = 2500;
+// The tint, and the accent rail over the cluster's own while it lasts.
 const LANDED = "mark-tint";
+const LANDED_RAIL = "[&>td:first-child]:bg-accent!";
 const LANDED_ROW =
 	"[&>td]:transition-shadow [&>td]:duration-1000 motion-reduce:[&>td]:transition-none";
 
@@ -554,15 +556,17 @@ function useLanding(
 		setHint(null);
 		// A few lines of context above it stay in view.
 		scrollTo(row, 60);
-		row.classList.add(...LANDED_ROW.split(" "), LANDED);
+		// On at once; the fade (LANDED_ROW's transition) only on the way out.
+		row.classList.add(LANDED, LANDED_RAIL);
 		row.setAttribute("data-landed", "");
 		const timer = window.setTimeout(() => {
-			row.classList.remove(LANDED);
+			row.classList.add(...LANDED_ROW.split(" "));
+			row.classList.remove(LANDED, LANDED_RAIL);
 			row.removeAttribute("data-landed");
 		}, LANDED_MS);
 		return () => {
 			window.clearTimeout(timer);
-			row.classList.remove(LANDED);
+			row.classList.remove(LANDED, LANDED_RAIL);
 			row.removeAttribute("data-landed");
 		};
 	}, [root, landing, ready]);
