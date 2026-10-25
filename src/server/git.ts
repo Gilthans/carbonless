@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { type ChildProcess, spawn } from "node:child_process";
 
 export class GitError extends Error {}
 
@@ -60,6 +60,16 @@ export function inheritedEnv(): NodeJS.ProcessEnv {
 	return env;
 }
 
+/** Kills a detached child's whole process group (the child alone if that fails). */
+function killGroup(child: ChildProcess): void {
+	try {
+		if (child.pid === undefined) throw new Error("not started");
+		process.kill(-child.pid, "SIGKILL");
+	} catch {
+		child.kill("SIGKILL");
+	}
+}
+
 export async function runGit(
 	repoPath: string,
 	args: string[],
@@ -78,18 +88,21 @@ export function runGitBuffer(
 		const child = spawn("git", ["-C", repoPath, ...args], {
 			env: { ...inheritedEnv(), ...opts.env },
 			stdio: ["pipe", "pipe", "pipe"],
+			// A timed git gets its own process group, so the timeout kills its
+			// children too (a credential helper, an alias, a remote helper).
+			// An untimed one stays in ours and goes with a Ctrl-C.
+			detached: opts.timeoutMs !== undefined,
 		});
 		const out: Buffer[] = [];
 		const err: Buffer[] = [];
-		// A timeout settles at once: a killed git's own children (a credential
-		// helper, an alias) can keep its pipes open long after.
+		// A timeout settles at once, without waiting for the pipes to close.
 		let timedOut = false;
 		const timer =
 			opts.timeoutMs === undefined
 				? undefined
 				: setTimeout(() => {
 						timedOut = true;
-						child.kill("SIGKILL");
+						killGroup(child);
 						child.stdout.destroy();
 						child.stderr.destroy();
 						if (opts.allowFailure) resolve(Buffer.alloc(0));
