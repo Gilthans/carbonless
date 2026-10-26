@@ -11,6 +11,7 @@ import { clonePath } from "./clone";
 import { GhError } from "./errors";
 import { StaleSnapshotError } from "./review/reviews";
 import { refusal, Session } from "./session";
+import { ThreadCodeSource } from "./threadCode";
 
 describe("Session", () => {
 	let pr: PrFixture;
@@ -338,6 +339,73 @@ describe("Session", () => {
 			expect(await s.overview()).toBe(after);
 			titled("Back");
 			expect((await s.overview(0)).title).toBe("Back");
+		});
+
+		it("builds thread code, checks and fallbacks included, at most eight at a time", async () => {
+			const head = pr.head();
+			pr.scenario({
+				threadContentDelayMs: 100,
+				prs: {
+					12: {
+						view: prView({ headRefOid: head, baseRefName: "main" }),
+						graphql: {
+							reviewThreads: Array.from({ length: 20 }, (_, i) =>
+								reviewThread(
+									{ path: i % 2 ? "a.txt" : `gone${i}.txt`, line: 2 },
+									[
+										threadComment({
+											login: "rev1",
+											text: `On ${i}`,
+											commit: head,
+											createdAt: `2099-01-01T00:00:${String(i).padStart(2, "0")}Z`,
+											// Odd: checked against it; even: the fallback.
+											diffHunk:
+												"@@ -1,2 +1,2 @@\n line 1\n-line 2\n+line 2 changed",
+										}),
+									],
+								),
+							),
+						},
+					},
+				},
+			});
+			let running = 0;
+			let most = 0;
+			const counted = <A extends unknown[], R>(
+				fn: (this: ThreadCodeSource, ...args: A) => Promise<R>,
+			) =>
+				async function (this: ThreadCodeSource, ...args: A): Promise<R> {
+					running++;
+					most = Math.max(most, running);
+					try {
+						return await fn.apply(this, args);
+					} finally {
+						running--;
+					}
+				};
+			const proto = ThreadCodeSource.prototype;
+			const { window: build, code } = proto;
+			const spies = [
+				vi.spyOn(proto, "window").mockImplementation(counted(build)),
+				vi.spyOn(proto, "code").mockImplementation(counted(code)),
+			];
+			try {
+				const s = await Session.open(pr.arg, process.cwd());
+				const { threads } = await s.threads(
+					(await s.overview()).readId,
+					"full",
+				);
+				expect(threads.filter((t) => t.code?.source === "clone")).toHaveLength(
+					10,
+				);
+				expect(threads.filter((t) => t.code?.source === "github")).toHaveLength(
+					10,
+				);
+				expect(most).toBeGreaterThan(1);
+				expect(most).toBeLessThanOrEqual(8);
+			} finally {
+				for (const spy of spies) spy.mockRestore();
+			}
 		});
 
 		it("reads the threads apart, in stages: every summary, then the listed-first text, then the rest", async () => {

@@ -27,6 +27,8 @@ const fx = createGitFixture([
 			"keep.txt": numbered(5),
 			"old-name.txt": numbered(12, " moved"),
 			"as-is.txt": numbered(6, " as is"),
+			"crlf.txt": "one\r\ntwo\r\nthree\r\n",
+			"eof.txt": "a\nb",
 			"i.tsx": numbered(3, " plain i"),
 			"ab.ts": numbered(3, " plain ab"),
 		},
@@ -49,6 +51,8 @@ const fx = createGitFixture([
 			"a*.ts": numbered(3, " star"),
 			"ab.ts": numbered(3, " plain ab, edited"),
 			"a?.ts": numbered(3, " question"),
+			"crlf.txt": "one\r\nTWO\r\nthree\r\n",
+			"eof.txt": "a\nB",
 		},
 	},
 ]);
@@ -426,6 +430,25 @@ describe("ThreadCodeSource.code", () => {
 		]);
 		expect(cr?.rows.every((r) => r.kind === "context")).toBe(true);
 		expect(cr?.snapshot).toEqual({ same: false, reason: "diff-differs" });
+	});
+
+	it("checks CRLF lines and a last line without a newline as GitHub keeps them", async () => {
+		const [crlf, eof] = await fill(source(), [
+			// GitHub keeps each line's CR, as git does.
+			comment(
+				at({ path: "crlf.txt", line: 2, startLine: 2 }),
+				"@@ -1,3 +1,3 @@\n one\r\n-two\r\n+TWO\r",
+			),
+			// Its hunk stops at the commented line, before the marker.
+			comment(
+				at({ path: "eof.txt", line: 2, startLine: 2 }),
+				"@@ -1,2 +1,2 @@\n a\n-b\n\\ No newline at end of file\n+B",
+			),
+		]);
+		expect(crlf?.rows.find((r) => r.marked)?.text).toBe("TWO\r");
+		expect(crlf?.snapshot).toEqual({ same: true });
+		expect(eof?.rows.at(-1)).toMatchObject({ text: "B", noNewline: true });
+		expect(eof?.snapshot).toEqual({ same: true });
 	});
 
 	it("counts a hunk that can't be read as none", async () => {

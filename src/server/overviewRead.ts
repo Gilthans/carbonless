@@ -118,13 +118,15 @@ export class OverviewRead {
 				(firstIds.has(id) ? firstText : restText).then(() =>
 					this.#contents.get(id),
 				);
-			// The clone's part a few at a time; waiting for the text (GitHub's
-			// hunk, to check the code against) holds no slot.
+			// Every clone read a few at a time: the build, then (once the text,
+			// with GitHub's hunk to check against, is in) the check and any
+			// fallback. Waiting for the text holds no slot. A text that fails
+			// counts as no hunk (ThreadCodeSource.code).
 			const tasks = p.coded.map((t) => ({
 				first: firstIds.has(t.id),
-				done: limit(() => this.#warm(sources, t)).then(() =>
-					this.#code(sources, t, textOf),
-				),
+				done: limit(() => this.#warm(sources, t))
+					.then(() => textOf(t.id).catch(() => {}))
+					.then(() => limit(() => this.#code(sources, t, textOf))),
 			}));
 			return {
 				first: Promise.all(tasks.filter((t) => t.first).map((t) => t.done)),

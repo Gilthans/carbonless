@@ -246,6 +246,50 @@ describe("snapshotOf", () => {
 		expect(snapshotOf(SAME, FILE, anchor(8, 13))).toEqual(differs);
 	});
 
+	it("takes a last line without a newline as the same when the host's hunk stops before the marker", () => {
+		// The file's diff: its last line, added, has no newline at the end.
+		const eof = parseDiffHunk(
+			"@@ -1,2 +1,2 @@\n a\n-b\n+B\n\\ No newline at end of file",
+		);
+		expect(eof.at(-1)?.noNewline).toBe(true);
+		// GitHub's hunk ends at the commented line, before the marker.
+		expect(
+			snapshotOf("@@ -1,2 +1,2 @@\n a\n-b\n+B", eof, anchor(2, 2)),
+		).toEqual({ same: true });
+		// With the marker, too.
+		expect(
+			snapshotOf(
+				"@@ -1,2 +1,2 @@\n a\n-b\n+B\n\\ No newline at end of file",
+				eof,
+				anchor(2, 2),
+			),
+		).toEqual({ same: true });
+		// Only on the host's last row: a marker left out above it differs.
+		const oldEof = parseDiffHunk(
+			"@@ -1,2 +1,2 @@\n a\n-b\n\\ No newline at end of file\n+B\n\\ No newline at end of file",
+		);
+		expect(
+			snapshotOf("@@ -1,2 +1,2 @@\n a\n-b\n+B", oldEof, anchor(2, 2)),
+		).toEqual({ same: false, reason: "diff-differs" });
+	});
+
+	it("compares CRLF lines as their text, a CR kept on either side or both", () => {
+		const crlf = parseDiffHunk("@@ -1,3 +1,3 @@\n a\r\n-b\r\n+B\r\n c\r");
+		const range = anchor(2, 2);
+		// GitHub keeps the CRs, as git does.
+		expect(
+			snapshotOf("@@ -1,2 +1,2 @@\n a\r\n-b\r\n+B\r", crlf, range),
+		).toEqual({ same: true });
+		// One side without them is the same text.
+		expect(snapshotOf("@@ -1,2 +1,2 @@\n a\n-b\n+B", crlf, range)).toEqual({
+			same: true,
+		});
+		// Other text still differs.
+		expect(
+			snapshotOf("@@ -1,2 +1,2 @@\n a\r\n-b\r\n+X\r", crlf, range),
+		).toEqual({ same: false, reason: "diff-differs" });
+	});
+
 	it("flags a hunk that runs past the diff's end, or another end of file", () => {
 		expect(
 			snapshotOf(

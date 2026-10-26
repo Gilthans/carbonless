@@ -70,14 +70,26 @@ export function touchesOldSide(anchor: CodeAnchor): boolean {
 	return anchor.side === "LEFT" || anchor.startSide === "LEFT";
 }
 
-/** The same diff row: kind, numbers on both sides, text, end-of-file mark. */
-function sameLine(a: HunkLine, b: HunkLine): boolean {
+/** A line's text without the CR of a CRLF ending (both sides keep it). */
+const bare = (text: string) => (text.endsWith("\r") ? text.slice(0, -1) : text);
+
+/**
+ * The same diff row: kind, numbers on both sides, text (a CRLF ending as
+ * an LF one) and end-of-file mark. `last`: the host's last row, where its
+ * hunk stops at the commented line and may leave out the "\ No newline"
+ * marker that follows it; only a marker the host has and ours lacks
+ * differs there.
+ */
+function sameLine(ours: HunkLine, host: HunkLine, last: boolean): boolean {
+	const marks = last
+		? !host.noNewline || !!ours.noNewline
+		: !!ours.noNewline === !!host.noNewline;
 	return (
-		a.kind === b.kind &&
-		a.oldNo === b.oldNo &&
-		a.newNo === b.newNo &&
-		a.text === b.text &&
-		!!a.noNewline === !!b.noNewline
+		ours.kind === host.kind &&
+		ours.oldNo === host.oldNo &&
+		ours.newNo === host.newNo &&
+		bare(ours.text) === bare(host.text) &&
+		marks
 	);
 }
 
@@ -86,7 +98,7 @@ function sameLine(a: HunkLine, b: HunkLine): boolean {
  * from) is what the commenter saw, judged by `hunk`, the host's diff of the
  * view the comment was made in (GitHub's diffHunk: one hunk, from its
  * header to the commented line). Same only when the hunk is a run of
- * `lines`, row for row (kind, both numbers, text), and holds both ends of
+ * `lines`, row for row (kind, both numbers, text: sameLine), and holds both ends of
  * the range. With no hunk to check against, or any row that disagrees, it
  * is not: a failure to show equality flags the code, never the other way.
  * Rows outside the hunk (after the range, above its first line) can't be
@@ -108,7 +120,8 @@ export function snapshotOf(
 	for (let i = 0; i < host.length; i++) {
 		const ours = lines[start + i];
 		const theirs = host[i];
-		if (!ours || !theirs || !sameLine(ours, theirs)) return differs;
+		const last = i === host.length - 1;
+		if (!ours || !theirs || !sameLine(ours, theirs, last)) return differs;
 	}
 	const end = lastIndex(host, host.length - 1, anchor.side, anchor.line);
 	if (end === -1) return differs;

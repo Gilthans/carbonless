@@ -60,6 +60,10 @@ closed: the code counts as the commenter's only when
 - GitHub's hunk is a run of the rows carbonless built, row for row: the same
   kind (added, deleted, context), the same old and new line numbers, the same
   text and end-of-file mark, and it holds both ends of the commented range.
+  A CRLF line's CR is kept on both sides (GitHub's hunk has it, as git's
+  diff does) and compared as the text without it. GitHub's hunk stops at the
+  commented line, so on its last row a missing "\ No newline at end of file"
+  marker isn't a difference; elsewhere it is.
 
 Anything else is flagged, with a reason:
 
