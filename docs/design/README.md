@@ -124,6 +124,23 @@ deleted rows and the suggestion as added rows, drawn like the code pane.
 
 Lists show five threads, then "Load X more comments out of Y".
 
+## Timeline (Overview)
+
+The Overview's last section. A vertical rail (`line-strong`, 1px) through
+40px round nodes on `raised`, oldest event at the top. A node's icon names
+the event kind in its tooltip and carries its colour: commits and review
+activity `muted`, force-push and base change `warn`, ready `ok`, reopened
+`ok`, closed `bad`, merged `done`. Beside it one wrapping line: a 20px
+round avatar and the login (bot icon), "N commits" / "N comments" in
+`ink-soft`, the run's verdict icons (`REVIEW_ICON`), the "R of N resolved"
+chip (green when all are resolved, else yellow, like the thread lists),
+"from X to Y" in `muted` small text, and the chevron toggle at the right.
+Opened, the items sit under a 2px `line` rule: short SHA in mono `link`,
+path:line in mono `link`, the thread state icon (yellow unresolved, green
+resolved) and a link icon to the thread card. Facts name branches and
+SHAs in mono on `overlay`. The latest 30 events show first; "Show N
+earlier events" (the Load more button's style) sits above the rail.
+
 ## Typography
 
 - Atkinson Hyperlegible Next (variable, bundled via
