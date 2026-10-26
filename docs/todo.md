@@ -20,6 +20,13 @@ Foundation for everything below.
   with progress tracking. Design:
   `docs/superpowers/specs/2026-10-21-pr-review-parity-design.md`.
 - **Commenting** from carbonless.
+- **LEFT-side thread placement (discuss with the owner right after the
+  threads stage):** GitHub records no commit for a comment's LEFT side
+  (`commit_id` and `original_commit_id` are both PR heads), so a LEFT line
+  can sit on a different old side than the view's merge base. Only
+  `diff_hunk` shows what the commenter saw, and it's sometimes empty (2 of
+  4 LEFT comments on #99). The threads stage places LEFT threads by line
+  number with no check.
 - **Suggestions in replies:** the Overview shows only a thread's opening
   comment, so a suggested change made in a reply isn't drawn there yet.
 - **Re-review after new pushes:** one of GitHub's weakest spots.
@@ -94,6 +101,10 @@ Not scheduled yet; after everything above.
   with the change they explain.
 - **Change Unit:** the name for a group of clusters (the review groups in item 1).
   Use it in the UI and the code.
+- **Bots in human threads:** decide how bot comments (review bots, CI
+  bots replying in a human thread) should count in a thread's attention set.
+  For now (2026-10-26) bots never join it and a bot's comment never counts as
+  the latest one (`docs/superpowers/specs/2026-10-26-pr-threads-design.md`).
 - **Attention set:** like Gerrit's, but computed automatically as far as
   possible (whose turn it is on each PR), plus a view of pending review work
   across PRs.
