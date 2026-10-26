@@ -4,7 +4,7 @@ import type {
 	TimelineReviewComment,
 	TimelineReviewItem,
 } from "../../shared/types";
-import { runResolution } from "./timelineRuns";
+import { eventKeys, runResolution } from "./timelineRuns";
 
 const comment = (threadId: string | null): TimelineReviewComment => ({
 	kind: "comment",
@@ -22,6 +22,36 @@ const threads = (resolved: Record<string, boolean>) =>
 			{ id, resolved: r } as ReviewThread,
 		]),
 	);
+
+describe("eventKeys", () => {
+	const actor = (login: string) => ({ login, avatarUrl: "", bot: false });
+	const run = (login: string, from: string) => ({
+		kind: "commits" as const,
+		actor: actor(login),
+		from,
+		to: from,
+		items: [],
+	});
+
+	it("keys an event by what it is, not where it stands", () => {
+		const a = run("ann", "2026-01-01T09:00:00Z");
+		const b = run("bob", "2026-01-02T09:00:00Z");
+		const inserted = run("cy", "2026-01-01T10:00:00Z");
+		const before = new Map(eventKeys([a, b]).map(([k, e]) => [e, k]));
+		const after = new Map(eventKeys([a, inserted, b]).map(([k, e]) => [e, k]));
+		expect(after.get(b)).toBe(before.get(b));
+		expect(after.get(a)).toBe(before.get(a));
+	});
+
+	it("keeps keys unique when an event repeats", () => {
+		const keys = eventKeys([
+			run("ann", "2026-01-01T09:00:00Z"),
+			{ kind: "closed", actor: actor("bob"), at: "2026-01-01T09:00:00Z" },
+			run("ann", "2026-01-01T09:00:00Z"),
+		]).map(([k]) => k);
+		expect(new Set(keys).size).toBe(3);
+	});
+});
 
 describe("runResolution", () => {
 	it("counts distinct threads: a thread's opener and its replies once", () => {

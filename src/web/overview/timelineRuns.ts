@@ -1,4 +1,25 @@
-import type { ReviewThread, TimelineReviewItem } from "../../shared/types";
+import type {
+	ReviewThread,
+	TimelineEvent,
+	TimelineReviewItem,
+} from "../../shared/types";
+
+/**
+ * A stable key per event: its kind, actor and start time, so an event keeps
+ * its key (and an opened run stays open) when a newer read inserts others
+ * around it. The rare repeat (the same kind, person and time twice) gets a
+ * count.
+ */
+export function eventKeys(events: TimelineEvent[]): [string, TimelineEvent][] {
+	const seen = new Map<string, number>();
+	return events.map((event) => {
+		const at = "from" in event ? event.from : event.at;
+		const base = `${event.kind}:${event.actor.login}:${at}`;
+		const n = seen.get(base) ?? 0;
+		seen.set(base, n + 1);
+		return [n === 0 ? base : `${base}#${n}`, event];
+	});
+}
 
 /**
  * How many of the threads a review run's comments are in are resolved:

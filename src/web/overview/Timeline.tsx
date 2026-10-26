@@ -47,7 +47,7 @@ import {
 	Section,
 	SkeletonBar,
 } from "./OverviewPage";
-import { runResolution } from "./timelineRuns";
+import { eventKeys, runResolution } from "./timelineRuns";
 
 /** Events shown before "Show N earlier events": the latest ones. */
 export const TIMELINE_LATEST = 30;
@@ -120,17 +120,19 @@ export function Timeline({
 					// The rail runs through the nodes' centres.
 					className="relative before:absolute before:top-5 before:bottom-5 before:left-5 before:w-px before:-translate-x-1/2 before:bg-line-strong"
 				>
-					{events.slice(hidden).map((event, i) => (
-						<TimelineRow
-							// Events only grow at the end; the index is stable.
-							// biome-ignore lint/suspicious/noArrayIndexKey: see above.
-							key={`${hidden + i}:${event.kind}`}
-							event={event}
-							pr={pr}
-							threads={threads ? byId : undefined}
-							onShowThread={onShowThread}
-						/>
-					))}
+					{eventKeys(events)
+						.slice(hidden)
+						.map(([key, event]) => (
+							<TimelineRow
+								// By what the event is, so an opened run stays open when
+								// a newer read inserts an event before it.
+								key={key}
+								event={event}
+								pr={pr}
+								threads={threads ? byId : undefined}
+								onShowThread={onShowThread}
+							/>
+						))}
 				</ol>
 			)}
 		</Section>
