@@ -225,6 +225,24 @@ describe("placeThreads", () => {
 		expect(p.end.size + p.gaps.size).toBe(0);
 	});
 
+	it("a binary or submodule file's line threads are unplaced without its hunks", () => {
+		const line = thread({ side: "RIGHT", line: 1 });
+		const file = thread(null);
+		const p = placeThreads({
+			threads: [line, file],
+			path: PATH,
+			snapshotHead: HEAD,
+			hunks: null,
+			loadedContext: [],
+			noLines: true,
+		});
+		expect(p.header).toEqual([
+			{ thread: line, reason: "unplaced" },
+			{ thread: file, reason: "file" },
+		]);
+		expect(p.end.size + p.gaps.size).toBe(0);
+	});
+
 	it("a thread on another commit, or on no known commit, is left out", () => {
 		const other = thread({ side: "RIGHT", line: 11, commit: "e".repeat(40) });
 		const unknown = thread({ side: "RIGHT", line: 11, commit: "" });

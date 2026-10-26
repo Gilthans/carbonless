@@ -451,19 +451,28 @@ export function DiffBody(props: {
 				snapshotHead: props.threads.snapshotHead,
 				hunks: hunks.data ?? null,
 				loadedContext: [...loaded.values()],
+				noLines: file.binary || file.submodule,
 			})
 		: null;
 	const [openThreads, setOpenThreads] = useState<ReadonlySet<LineKey>>(
 		() => new Set(),
 	);
 	const [focusThread, setFocusThread] = useState<LineKey | null>(null);
-	const toggleThreads = (keys: LineKey[]) =>
+	// A gap's window that failed drops its focus target, so a later Retry
+	// doesn't take focus from wherever the reader is by then.
+	const windowFailed = contexts.some((c) => c.isError);
+	useEffect(() => {
+		if (windowFailed) setFocusThread(null);
+	}, [windowFailed]);
+	const toggleThreads = (keys: LineKey[]) => {
+		setFocusThread(null);
 		setOpenThreads((open) => {
 			const next = new Set(open);
 			if (keys.some((k) => next.has(k))) for (const k of keys) next.delete(k);
 			else if (keys[0]) next.add(keys[0]);
 			return next;
 		});
+	};
 	const rowThreads: RowThreads | undefined =
 		placement && props.threads
 			? {

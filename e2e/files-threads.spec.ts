@@ -549,11 +549,17 @@ test("a closed file counts its threads; a binary file's line thread is flagged b
 }) => {
 	await setup(pr);
 	const s = await startCrb();
+	const hunkReads: string[] = [];
+	page.on("request", (r) => {
+		if (/\/api\/files\/\d+\/hunks/.test(r.url())) hunkReads.push(r.url());
+	});
 	await openFiles(page, s.url);
-	// core.ts, closed: its 7 threads (9 comments) on the head, the viewer's turn on one.
+	// core.ts, closed: its 7 threads (9 comments) on the head, the viewer's
+	// turn on one. Its hunks aren't read while closed, so the line past its
+	// end is flagged once it opens; a binary file's is flagged at once.
 	const core = fileSection(page, CORE);
 	const count = core.locator("header").getByRole("button", {
-		name: "9 comments in this file, your turn, line not in this diff",
+		name: "9 comments in this file, your turn",
 	});
 	await expect(count).toBeVisible();
 	await expect(count.getByTestId("your-turn-dot")).toBeVisible();
@@ -578,6 +584,18 @@ test("a closed file counts its threads; a binary file's line thread is flagged b
 				.getByTestId("tree-threads"),
 		).toHaveText("1 comment in this file");
 	});
+	// The dot's label shows on hover too (the row's tooltip).
+	await withTree(page, async (tree) => {
+		await tree
+			.getByRole("button", { name: /core\.ts/ })
+			.getByTestId("tree-threads")
+			.hover();
+		await expect(page.locator('[role="tooltip"]:not([hidden])')).toContainText(
+			"9 comments in this file, your turn",
+		);
+	});
+	// No file's hunks are read until it opens.
+	expect(hunkReads).toEqual([]);
 	// Tapping the count opens the file.
 	await count.click();
 	await expect(
@@ -813,4 +831,91 @@ test("an opened thread inside a cluster keeps its rail", async ({
 	const rail = thread.getByTestId("thread-rail");
 	await expect(rail).toBeVisible();
 	await expect(rail).toHaveClass(/bg-unreviewed/);
+});
+
+test("below an opened thread the cluster's controls float again", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	const lines = Array.from({ length: 80 }, (_, i) => `x ${i + 1}`);
+	const p = await pr({
+		base: { "src/long.ts": text(lines) },
+		files: [
+			{
+				message: "long",
+				files: {
+					"src/long.ts": text(
+						lines.map((l, i) => (i >= 5 && i < 65 ? `${l} changed` : l)),
+					),
+				},
+			},
+		],
+	});
+	const head = p.repo.shas.at(-1) ?? "";
+	p.editScenario((sc) => {
+		const graph = sc.prs[7]?.graphql;
+		if (!graph) throw new Error("no PR in the scenario");
+		graph.reviewThreads = [
+			reviewThread({ path: "src/long.ts", line: 15, subjectType: "LINE" }, [
+				threadComment({ login: "rev1", text: "Midway", commit: head }),
+			]),
+		];
+	});
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	const section = await expand(page, "src/long.ts");
+	await row(section, "new", 15)
+		.getByRole("button", { name: "1 comment on line 15" })
+		.click();
+	await expect(section.getByTestId("thread-comment")).toHaveCount(1);
+	// Scroll so new 50 (same cluster, below the thread) is just under the header.
+	await row(section, "new", 50).evaluate((el) => {
+		const header = el.closest("section")?.querySelector("header");
+		const top = header?.getBoundingClientRect().bottom ?? 0;
+		window.scrollBy(0, el.getBoundingClientRect().top - top - 5);
+	});
+	// Placement runs once a frame: let it catch up before reading it.
+	await page.evaluate(
+		() =>
+			new Promise<void>((done) =>
+				requestAnimationFrame(() => requestAnimationFrame(() => done())),
+			),
+	);
+	expect(
+		await section
+			.locator("[data-sticky-controls]")
+			.first()
+			.getAttribute("data-stuck"),
+	).toBe("fixed");
+});
+
+test("a gap window that failed doesn't take focus when it's retried later", async ({
+	page,
+	pr,
+	startCrb,
+	expectConsoleError,
+}) => {
+	expectConsoleError(/500|Failed to load resource/);
+	await setup(pr);
+	let fail = true;
+	await page.route("**/api/files/*/context**", (route) =>
+		fail ? route.fulfill({ status: 500, body: "{}" }) : route.continue(),
+	);
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	const section = await expand(page, CORE);
+	await section
+		.getByRole("button", { name: "2 comments on hidden lines 20–79" })
+		.click();
+	const retry = section.getByRole("button", { name: "Retry" });
+	await expect(retry).toBeVisible();
+	fail = false;
+	await retry.click();
+	await expect(row(section, "new", 40)).toBeVisible();
+	// The reader is on Retry's spot; the opened row's bubble doesn't grab focus.
+	const focused = await page.evaluate(
+		() => document.activeElement?.getAttribute("data-testid") ?? "",
+	);
+	expect(focused).not.toBe("thread-bubble");
 });

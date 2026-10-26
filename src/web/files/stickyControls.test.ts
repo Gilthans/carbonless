@@ -43,11 +43,19 @@ describe("placeControls", () => {
 });
 
 describe("runEnd", () => {
+	const row = (top: number, bottom = top + 200) => ({ top, bottom });
 	it("stops at the first opened thread below the slot, else the cluster's end", () => {
-		expect(runEnd(100, 900, [])).toBe(900);
-		expect(runEnd(100, 900, [400, 600])).toBe(400);
+		expect(runEnd(0, 100, 900, [])).toBe(900);
+		expect(runEnd(0, 100, 900, [row(400), row(600)])).toBe(400);
 		// A thread above the slot doesn't end the run below it.
-		expect(runEnd(100, 900, [50, 700])).toBe(700);
-		expect(runEnd(100, 300, [700])).toBe(300);
+		expect(runEnd(0, 100, 900, [row(50), row(700)])).toBe(700);
+		expect(runEnd(0, 100, 300, [row(700)])).toBe(300);
+	});
+
+	it("ignores a thread the stack has passed: below it the controls float again", () => {
+		// The stack's bottom at 180; the thread's row ended at 150, off above.
+		expect(runEnd(180, -600, 900, [row(-50, 150)])).toBe(900);
+		// Still passing under the stack: the run ends at it (they stay put).
+		expect(runEnd(180, -600, 900, [row(-50, 400)])).toBe(-50);
 	});
 });

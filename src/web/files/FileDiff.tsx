@@ -317,11 +317,12 @@ export function FileDiff(props: {
 		? fileThreads(props.threads.threads, file.path, props.threads.snapshotHead)
 		: [];
 	// The header's threads: file comments, and lines the diff can't show,
-	// never dropped. The hunks are read for a closed file too when it has
-	// line threads, so one that can't be placed is flagged before it opens.
+	// never dropped. A closed file's hunks aren't read (first open stays
+	// light): a binary or submodule file's line threads are flagged from the
+	// file alone; a line past the end shows once the file is opened.
 	const hunks = useQuery({
 		...hunksQuery(revision, file.index),
-		enabled: expanded || mine.some((t) => t.subject === "line"),
+		enabled: expanded,
 	});
 	const header = props.threads
 		? placeThreads({
@@ -330,6 +331,7 @@ export function FileDiff(props: {
 				snapshotHead: props.threads.snapshotHead,
 				hunks: hunks.data ?? null,
 				loadedContext: [],
+				noLines: file.binary || file.submodule,
 			}).header
 		: [];
 	const [headerOpen, setHeaderOpen] = useState(false);

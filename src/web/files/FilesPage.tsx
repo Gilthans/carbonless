@@ -11,6 +11,7 @@ import {
 	useRef,
 	useState,
 } from "react";
+import type { ReviewThread } from "../../shared/types";
 import { hunksQuery, overviewQuery, reviewQuery, sessionQuery } from "../api";
 import { LabeledIcon } from "../overview/parts";
 import { useForgetPageScroll, usePageActive } from "../pageActive";
@@ -30,7 +31,10 @@ import {
 	restoreAnchor,
 	type ScrollAnchor,
 } from "./scrollAnchor";
-import { fileThreads, threadsOnHead } from "./threadPlacement";
+import { threadsOnHead } from "./threadPlacement";
+
+const NO_THREADS: ReviewThread[] = [];
+
 import { type Unit, useUnit } from "./unit";
 import { STALE_MESSAGE } from "./useSetStates";
 
@@ -391,17 +395,22 @@ export function FilesPage() {
 	);
 	usePrefetchComments(threads?.readId, prefetch);
 
+	// Each file's threads on the head, built once per thread list.
+	const threadsByPath = useMemo(() => {
+		const byPath = new Map<string, ReviewThread[]>();
+		for (const t of threads?.threads ?? []) {
+			byPath.set(t.path, [...(byPath.get(t.path) ?? []), t]);
+		}
+		return byPath;
+	}, [threads]);
+
 	const tree = data && (
 		<FileTree
 			files={data.files}
 			unit={unit}
 			current={current}
 			onSelect={select}
-			threadsOf={(f) =>
-				threads
-					? fileThreads(threads.threads, f.path, threads.snapshotHead)
-					: []
-			}
+			threadsOf={(f) => threadsByPath.get(f.path) ?? NO_THREADS}
 		/>
 	);
 

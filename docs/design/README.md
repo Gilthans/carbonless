@@ -178,7 +178,7 @@ decides where; nothing else does):
   `Conversation` (spinner, Retry, "N missing", as in the Overview).
   Opening a thread changes no review state. Inside a cluster the thread
   keeps the cluster's rail at its left, and the cluster's floating controls
-  stop above it. After a Refresh the previous read's threads stay until the
+  stop above it while it passes, then float again below it. After a Refresh the previous read's threads stay until the
   new one's land; threads that couldn't be read show a `warn` "Threads not
   shown" notice under the progress bar, never an empty diff.
 - A line in a collapsed gap: the hidden run's row has the bubble ("on
@@ -187,10 +187,11 @@ decides where; nothing else does):
   them, leaving hidden runs with their own ↑/↓ above and below), opens the
   thread there and focuses its bubble.
 - A closed file's header has one bubble for all its threads ("9 comments
-  in this file, your turn", with the alert when one can't be placed: a
-  file with line threads reads its hunks to know); tapping it opens the
-  file. The file tree shows a dot before the counts (yellow your turn,
-  green all resolved, else grey), named like the bubble.
+  in this file, your turn"; its hunks aren't read while closed, so the
+  alert shows only for a binary or submodule file, and a line past the end
+  is flagged once the file opens); tapping it opens the file. The file tree
+  shows a dot before the counts (yellow your turn, green all resolved, else
+  grey), named like the bubble and in the row's tooltip.
 - In an open file, file comments and threads whose line isn't in the diff
   get the header bubble ("on this file"); the latter add a `warn` alert to
   it ("…, line not in this diff") and to the thread's header ("Line not in

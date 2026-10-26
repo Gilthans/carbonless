@@ -144,7 +144,8 @@ function newNumberOf(side: DiffSide, n: number, hunks: DisplayHunk[]): number {
  * Every thread it keeps lands somewhere: on its last line's row, on the gap
  * hiding that line, or in the file's header (a file comment, or a line it
  * couldn't place, flagged). Without the hunks yet (`null`), only file
- * comments are placed.
+ * comments are placed, and the line threads of a file that has no lines to
+ * show (`noLines`: binary, a submodule) go to the header unplaced.
  */
 export function placeThreads(args: {
 	threads: ReviewThread[];
@@ -152,6 +153,8 @@ export function placeThreads(args: {
 	snapshotHead: string;
 	hunks: FileHunks | null;
 	loadedContext: DiffLine[];
+	/** The file has no lines to show (binary, a submodule): known without hunks. */
+	noLines?: boolean;
 }): FilePlacement {
 	const placement: FilePlacement = {
 		end: new Map(),
@@ -180,9 +183,13 @@ export function placeThreads(args: {
 		if (!anchor) {
 			if (t.subject === "file") {
 				placement.header.push({ thread: t, reason: "file" });
-			} else if (hunks) {
+			} else if (hunks || args.noLines) {
 				placement.header.push({ thread: t, reason: "unplaced" });
 			}
+			continue;
+		}
+		if (args.noLines) {
+			placement.header.push({ thread: t, reason: "unplaced" });
 			continue;
 		}
 		if (!hunks) continue;

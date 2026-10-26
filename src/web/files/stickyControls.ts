@@ -44,14 +44,19 @@ export function placeControls(m: {
 
 /**
  * Where a cluster's floating controls stop (viewport px): its bottom, or the
- * first opened review thread below their slot, whichever comes first.
+ * first opened review thread below their slot that the stack (bottom at
+ * `top`) hasn't passed yet, whichever comes first. So they ride up to a
+ * thread, leave while it passes, and float again below it.
  */
 export function runEnd(
+	top: number,
 	slotTop: number,
 	clusterBottom: number,
-	threadTops: number[],
+	threads: { top: number; bottom: number }[],
 ): number {
-	const next = threadTops.filter((t) => t > slotTop);
+	const next = threads
+		.filter((t) => t.top > slotTop && t.bottom > top)
+		.map((t) => t.top);
 	return next.length ? Math.min(clusterBottom, ...next) : clusterBottom;
 }
 
@@ -105,11 +110,13 @@ export function useStickyControls(
 				// An opened review thread inside the cluster ends the run the
 				// controls follow: they don't float over the conversation.
 				const clusterBottom = runEnd(
+					top,
 					s.top,
 					cluster.getBoundingClientRect().bottom,
-					[...cluster.querySelectorAll(THREAD_ROW)].map(
-						(t) => t.getBoundingClientRect().top,
-					),
+					[...cluster.querySelectorAll(THREAD_ROW)].map((t) => {
+						const r = t.getBoundingClientRect();
+						return { top: r.top, bottom: r.bottom };
+					}),
 				);
 				let minTop = c.top;
 				let maxBottom = c.bottom;
