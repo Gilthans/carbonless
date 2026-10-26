@@ -652,6 +652,7 @@ export function mapOverview(
 		reviews,
 		commenters,
 		humanStarted,
+		youAuthor: isYou(author),
 		checks,
 		...(asOf ? { asOf } : {}),
 	};

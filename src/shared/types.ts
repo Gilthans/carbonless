@@ -232,6 +232,8 @@ export interface PrOverview {
 	commenters: { author: string; lastAt: string; bot: boolean; you: boolean }[];
 	/** Any review or comment by a non-bot who is neither the PR author nor the viewer. */
 	humanStarted: boolean;
+	/** The viewer opened the PR: their own reviews and comments don't make them a reviewer. */
+	youAuthor: boolean;
 	/** Failing first, then pending, then passing. */
 	checks: {
 		name: string;

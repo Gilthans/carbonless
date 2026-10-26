@@ -92,6 +92,7 @@ const overview: OverviewFixture = {
 		},
 	],
 	humanStarted: true,
+	youAuthor: false,
 	readId: "read1",
 	// Just read: the page doesn't read it again.
 	fetchedAt: "2026-01-05T12:00:00Z",
@@ -577,6 +578,8 @@ describe("OverviewPage", () => {
 			bot: false,
 			you: true,
 		};
+		// The Review files button shows progress once the review data is in.
+		const reviewLoaded = () => screen.findByText(/clusters ·/);
 		const line = async () => {
 			const who = await screen.findByRole("region", { name: "Who's on it" });
 			const p = who.querySelector("p");
@@ -589,8 +592,40 @@ describe("OverviewPage", () => {
 				"/api/overview": ok(alone),
 				"/api/review": ok(untouched),
 			});
-			expect(await line()).toHaveTextContent(
-				/^No one else has started reviewing$/,
+			const p = await line();
+			await reviewLoaded();
+			expect(p).toHaveTextContent(/^No one else has started reviewing$/);
+		});
+
+		it("doesn't count the author's own reviews and comments", async () => {
+			renderApp({
+				"/api/overview": ok({
+					...alone,
+					author: "octo",
+					youAuthor: true,
+					reviews: [yourReview],
+					commenters: [yourComment],
+				}),
+				"/api/review": ok(untouched),
+			});
+			const p = await line();
+			await reviewLoaded();
+			expect(p).toHaveTextContent(/^No one else has started reviewing$/);
+		});
+
+		it("counts the author's progress here", async () => {
+			renderApp({
+				"/api/overview": ok({
+					...alone,
+					author: "octo",
+					youAuthor: true,
+					commenters: [yourComment],
+				}),
+				"/api/review": ok(review),
+			});
+			const p = await line();
+			await waitFor(() =>
+				expect(p).toHaveTextContent(/^You're reviewing this change$/),
 			);
 		});
 
@@ -603,9 +638,8 @@ describe("OverviewPage", () => {
 				"/api/review": ok(untouched),
 			});
 			const p = await line();
-			await waitFor(() =>
-				expect(p).toHaveTextContent(/^rev1 already started$/),
-			);
+			await reviewLoaded();
+			expect(p).toHaveTextContent(/^rev1 already started$/);
 			expect(p.querySelector("svg")).toHaveClass("text-warn");
 		});
 

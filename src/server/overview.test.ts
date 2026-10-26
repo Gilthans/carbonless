@@ -511,6 +511,11 @@ describe("mapOverview", () => {
 		expect(withThreads(view(), g, VIEWER).humanStarted).toBe(true);
 	});
 
+	it("flags when the viewer opened the PR", () => {
+		expect(o.youAuthor).toBe(false);
+		expect(withThreads(view(), graph(), "Octo-Author").youAuthor).toBe(true);
+	});
+
 	it("does not count the viewer's own underscore login as another human", () => {
 		const g = graph();
 		g.reviews = g.reviews.filter((r) => r.author.login !== "rev1");

@@ -453,17 +453,19 @@ function None() {
 }
 
 /**
- * The viewer is reviewing: a GitHub review or comment of theirs, or
- * anything reviewed or crossed off here. Until the review data loads, the
- * GitHub facts alone decide.
+ * The viewer is reviewing: a GitHub review or comment of theirs (unless
+ * they opened the PR: an author answers, they don't review), or anything
+ * reviewed or crossed off here. Until the review data loads, the GitHub
+ * facts alone decide.
  */
 function viewerReviewing(pr: PrOverview, progress: Progress | undefined) {
 	const marked = progress
 		? progress.clusters.reviewed + progress.clusters.crossedOff > 0
 		: false;
-	return (
-		marked || pr.reviews.some((r) => r.you) || pr.commenters.some((c) => c.you)
-	);
+	const onGitHub =
+		!pr.youAuthor &&
+		(pr.reviews.some((r) => r.you) || pr.commenters.some((c) => c.you));
+	return marked || onGitHub;
 }
 
 function StartedLine({ pr }: { pr: PrOverview }) {
