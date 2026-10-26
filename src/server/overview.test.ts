@@ -169,6 +169,8 @@ describe("mapOverview", () => {
 				// The author replied last: back to the reviewer.
 				attention: ["rev1"],
 				yourTurn: false,
+				commit: "",
+				subject: "line",
 				line: 42,
 				currentLine: 42,
 				excerpt: "Should this expire?",
@@ -218,6 +220,8 @@ describe("mapOverview", () => {
 				},
 				attention: ["octo-author"],
 				yourTurn: false,
+				commit: "",
+				subject: "line",
 				line: 3,
 				currentLine: 3,
 				excerpt: "First",
@@ -249,6 +253,8 @@ describe("mapOverview", () => {
 				// Resolved: nobody.
 				attention: [],
 				yourTurn: false,
+				commit: "",
+				subject: "line",
 				line: 1,
 				currentLine: 1,
 				excerpt: "Nit",
@@ -280,6 +286,8 @@ describe("mapOverview", () => {
 				// A bot never counts as the latest: the PR author.
 				attention: ["octo-author"],
 				yourTurn: false,
+				commit: "",
+				subject: "line",
 				// Outdated: where it was written.
 				line: 7,
 				currentLine: null,
@@ -797,6 +805,33 @@ describe("mapThreads: the attention set and the anchor", () => {
 			]),
 		);
 		expect(t?.anchor).toBeNull();
+	});
+
+	it("every thread carries its opener's commit and whether it's on a line or the file", () => {
+		const file = one(
+			reviewThread({ path: "a.ts", subjectType: "FILE", line: null }, [
+				said("rev", 1, { commit: "a".repeat(40) }),
+			]),
+		);
+		expect(file?.commit).toBe("a".repeat(40));
+		expect(file?.subject).toBe("file");
+		const line = one(
+			reviewThread({ path: "a.ts", subjectType: "LINE", line: 3 }, [
+				said("rev", 1, { commit: "nope" }),
+			]),
+		);
+		// Not an oid: unknown, never a commit to match.
+		expect(line?.commit).toBe("");
+		expect(line?.subject).toBe("line");
+		// A line thread GitHub gave no line for is still a line thread.
+		const lost = one(
+			reviewThread(
+				{ path: "a.ts", subjectType: "LINE", line: null, originalLine: null },
+				[said("rev", 1)],
+			),
+		);
+		expect(lost?.anchor).toBeNull();
+		expect(lost?.subject).toBe("line");
 	});
 
 	it("a line comment's anchor is the code's: GitHub's original range on the opener's commit", () => {

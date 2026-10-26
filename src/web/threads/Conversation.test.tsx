@@ -58,6 +58,8 @@ const thread = (more: Partial<ReviewThread> = {}): ReviewThread => ({
 	anchor: null,
 	attention: [],
 	yourTurn: false,
+	commit: "",
+	subject: "line",
 	...more,
 });
 

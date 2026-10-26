@@ -320,6 +320,14 @@ export interface ReviewThread {
 	 */
 	anchor: CodeAnchor | null;
 	/**
+	 * The commit the opening comment was made on, for line and file
+	 * comments alike; "" when the host gave none (it is then on no known
+	 * commit, so never on the one viewed).
+	 */
+	commit: string;
+	/** On lines (`anchor`, null when the host gave no line) or on the whole file. */
+	subject: "line" | "file";
+	/**
 	 * Who the thread waits on, as the host spells their logins: everyone
 	 * who commented plus the PR author, minus the latest (human) commenter;
 	 * bots and pending comments left out; empty once resolved. As of a

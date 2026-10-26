@@ -122,6 +122,8 @@ const overview: OverviewFixture = {
 			anchor: null,
 			attention: [],
 			yourTurn: false,
+			commit: "",
+			subject: "line",
 			code: null,
 		},
 		{
@@ -144,6 +146,8 @@ const overview: OverviewFixture = {
 			anchor: null,
 			attention: [],
 			yourTurn: false,
+			commit: "",
+			subject: "line",
 			code: codeFromHunk(
 				"@@ -40,2 +40,3 @@ class Cache {\n   get() {}\n-  old() {}\n+  set() {}\n+  ttl = 5;",
 				{ path: "src/cache.ts", line: 42 },
@@ -179,6 +183,8 @@ function humanThread(
 		anchor: null,
 		attention: [],
 		yourTurn: false,
+		commit: "",
+		subject: "line",
 		code: null,
 		...extra,
 	};

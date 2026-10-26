@@ -158,6 +158,12 @@ function threadCode(
  * are never mixed. Sides are GitHub's own, LEFT included. Null for a file
  * comment (subject FILE, or no line).
  */
+/** The commit a comment was made on (GitHub's originalCommit); "" if none or not an oid. */
+function commitOf(comment: Json): string {
+	const oid = str(obj(comment.originalCommit).oid);
+	return OID.test(oid) ? oid : "";
+}
+
 function threadAnchor(
 	t: Json,
 	first: Json,
@@ -168,8 +174,7 @@ function threadAnchor(
 	const original = lineNumber(t.originalLine);
 	const line = original ?? lineNumber(t.line);
 	if (line === null) return null;
-	const oid = str(obj(first.originalCommit).oid);
-	const commit = OID.test(oid) ? oid : "";
+	const commit = commitOf(first);
 	const side: Side = SIDES.has(str(t.diffSide))
 		? (str(t.diffSide) as Side)
 		: "RIGHT";
@@ -445,6 +450,13 @@ export function mapThreads(
 			resolved,
 			code,
 			anchor,
+			commit: commitOf(first),
+			// Older answers have no subjectType: no line there meant the file.
+			subject:
+				t.subjectType === "FILE" ||
+				(t.subjectType === undefined && anchor === null)
+					? "file"
+					: "line",
 			attention,
 			yourTurn: attention.some((login) => slugify(login) === viewer),
 		});
