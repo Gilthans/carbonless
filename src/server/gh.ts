@@ -3,7 +3,7 @@ import type { PrOverview } from "../shared/types.js";
 import { headAsOf } from "./asOf.js";
 import { GhError } from "./errors.js";
 import { mapOverview } from "./overview.js";
-import { type HeadSpec, pickHead } from "./pinnedHead.js";
+import { type HeadSpec, needsCommentPages, pickHead } from "./pinnedHead.js";
 import { slugify } from "./slug.js";
 
 export { GhError, slugify };
@@ -413,6 +413,26 @@ const QUERIES = {
 		"commit { oid committedDate pushedDate }",
 	),
 };
+/**
+ * Reviews for `--head reviewed`: also whether a review only replied to
+ * threads (pinnedHead.ts replyOnly), from its body and its comments' first
+ * page; REVIEW_COMMENTS_QUERY reads the rest.
+ */
+const REVIEWED_QUERY = connectionQuery(
+	"reviews",
+	`id ${AUTHOR} state submittedAt body commit { oid } comments(first: 100) { pageInfo { hasNextPage endCursor } nodes { replyTo { id } } }`,
+);
+/** One review's comments after the first page: replies or not. */
+const REVIEW_COMMENTS_QUERY = `query($id: ID!, $endCursor: String) {
+  node(id: $id) {
+    ... on PullRequestReview {
+      comments(first: 100, after: $endCursor) {
+        pageInfo { hasNextPage endCursor }
+        nodes { replyTo { id } }
+      }
+    }
+  }
+}`;
 /** Each connection as the messages name it. */
 const CONNECTION_NAMES: Record<keyof typeof QUERIES, string> = {
 	reviewThreads: "the review threads",
@@ -546,8 +566,9 @@ async function fetchConnection(
 	ref: PrRef,
 	connection: keyof typeof QUERIES,
 	read: ReadSignal = {},
+	/** The connection's query with other node fields (same paging). */
+	query: string = QUERIES[connection],
 ): Promise<unknown[]> {
-	const query = QUERIES[connection];
 	const [first, last] = await Promise.all([
 		fetchPage(ref, connection, query, undefined, read),
 		connection === "reviewThreads"
@@ -652,13 +673,63 @@ export async function fetchPinnedHead(
 	try {
 		const [commits, reviews] = await Promise.all([
 			spec.kind === "sha" ? fetchConnection(ref, "commits") : [],
-			fetchConnection(ref, "reviews"),
+			spec.kind === "reviewed"
+				? fetchConnection(ref, "reviews", {}, REVIEWED_QUERY).then((rs) =>
+						Promise.all(rs.map((r) => withAllComments(r, viewer))),
+					)
+				: fetchConnection(ref, "reviews"),
 		]);
 		return pickHead(spec, commits, reviews, viewer, pr);
 	} catch (error) {
 		if (isNotFound(error)) throw new GhError(`PR ${pr} not found`);
 		throw error;
 	}
+}
+
+/**
+ * Review node `raw` with every one of its comments, when replyOnly needs
+ * them (needsCommentPages); unchanged when it doesn't, or when they can't
+ * be read (replyOnly then fails closed on the page still missing).
+ */
+async function withAllComments(raw: unknown, viewer: string): Promise<unknown> {
+	if (!needsCommentPages(raw, viewer)) return raw;
+	const review = rec(raw);
+	const id = review.id;
+	if (typeof id !== "string" || !NODE_ID.test(id)) return raw;
+	const first = rec(review.comments);
+	const nodes = [...(Array.isArray(first.nodes) ? first.nodes : [])];
+	let after = rec(first.pageInfo).endCursor;
+	for (let page = 1; page < MAX_PAGES; page++) {
+		if (typeof after !== "string" || !after) return raw;
+		const out = safeJson(
+			await runGh(
+				[
+					"api",
+					"graphql",
+					"-f",
+					`query=${REVIEW_COMMENTS_QUERY}`,
+					"-f",
+					`id=${id}`,
+					"-f",
+					`endCursor=${after}`,
+				],
+				{ what: "a review's comments" },
+			),
+		);
+		const conn = rec(rec(rec(out).data).node).comments;
+		const { nodes: more, pageInfo } = rec(conn);
+		if (!Array.isArray(more)) return raw;
+		nodes.push(...more);
+		const info = rec(pageInfo);
+		if (info.hasNextPage === false) {
+			return {
+				...review,
+				comments: { pageInfo: { hasNextPage: false }, nodes },
+			};
+		}
+		after = info.endCursor;
+	}
+	return raw;
 }
 
 async function fetchBodyHtml(

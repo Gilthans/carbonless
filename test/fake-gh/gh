@@ -235,6 +235,35 @@ switch (cmd) {
 		if (s.failGraphql && f.query?.includes(s.failGraphql)) {
 			fail("GraphQL: Something went wrong while executing your query.");
 		}
+		// The rest of one review's comments (--head reviewed): node(id) {
+		// ... on PullRequestReview { comments(first: 100, after: $endCursor) } },
+		// from reviewComments (the whole list; the review node holds page 1).
+		if (/node\(id: \$id\) \{\s*\.\.\. on PullRequestReview \{/.test(f.query)) {
+			const all = s.reviewComments?.[f.id];
+			if (!all) {
+				print({
+					data: { node: null },
+					errors: [{ type: "NOT_FOUND", path: ["node"] }],
+				});
+			}
+			const size = s.pageSize ?? 100;
+			const start = f.endCursor ? Number(f.endCursor.replace("cursor:", "")) : 0;
+			const end = start + size;
+			const hasNextPage = end < all.length;
+			print({
+				data: {
+					node: {
+						comments: {
+							pageInfo: {
+								hasNextPage,
+								endCursor: hasNextPage ? `cursor:${end}` : null,
+							},
+							nodes: all.slice(start, end),
+						},
+					},
+				},
+			});
+		}
 		// The rest of threads' comments, a page each by alias:
 		// t<i>: node(id: "…") { … comments(first: 100, after: "cursor:<n>") }.
 		const aliased = [

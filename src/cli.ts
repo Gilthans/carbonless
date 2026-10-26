@@ -20,7 +20,8 @@ Arguments:
 Options:
   --head <sha|reviewed>
                View the PR's changes up to this commit of it (reviewed: the
-               one your last GitHub review was on), in a review of its own
+               one your last GitHub review was on, replies aside), in a
+               review of its own
   --port <n>   Port to listen on (default: random free port)
   --host <h>   Host to bind (default: 127.0.0.1). Any other than 127.0.0.1,
                ::1 or localhost requires a random access key, printed in the URL

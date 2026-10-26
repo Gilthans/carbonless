@@ -252,7 +252,7 @@ const OID = /^[0-9a-f]{40}([0-9a-f]{24})?$/;
  * Fetches the PR's base branch and head into the bare clone and returns the
  * comparison endpoints: merge-base(origin/<base>, head) → head.
  *
- * As of a cutoff (`asOf`), `meta.headOid` is the head at the cutoff, which
+ * As of a cutoff (`options.asOf`), `meta.headOid` is the head at the cutoff, which
  * refs/pull/<n>/head may have moved past (or force-pushed away): it is then
  * fetched by OID. The base is the base branch's tip at the cutoff, the last
  * first-parent commit committed by then.
@@ -264,11 +264,16 @@ const OID = /^[0-9a-f]{40}([0-9a-f]{24})?$/;
 export async function fetchPr(
 	path: string,
 	meta: PrMeta,
-	asOf?: string,
-	/** Stops the fetch (a session closing). */
-	signal?: AbortSignal,
-	pinned?: string,
+	options: {
+		/** As of this cutoff (canonical ISO). */
+		asOf?: string;
+		/** Stops the fetch (a session closing). */
+		signal?: AbortSignal;
+		/** The head pinned by crb --head, in place of the PR's. */
+		pinned?: string;
+	} = {},
 ): Promise<{ baseTip: string; head: string; mergeBase: string }> {
+	const { asOf, signal, pinned } = options;
 	const base = meta.baseBranch;
 	const head = pinned ?? meta.headOid;
 	if (!OID.test(head)) {

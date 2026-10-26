@@ -33,7 +33,8 @@ history.
 - **A pinned head** (`crb --head <sha|reviewed>`): the comparison is
   `merge-base(origin/<base>, pinned) → pinned`, with the base branch as it
   is now; nothing else is as of then. `reviewed` is the commit of the
-  viewer's latest submitted GitHub review, and a sha must be one of the PR's
+  viewer's latest submitted GitHub review (replies to threads aside,
+  `docs/faq.md`), and a sha must be one of the PR's
   commits or a commit one of its reviews was on, so the commit may be one a
   force-push dropped: it's fetched by OID. Refresh re-reads GitHub but keeps
   the pinned head; the PR's real head shows only as "newer commits".

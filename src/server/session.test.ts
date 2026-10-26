@@ -1,4 +1,6 @@
 import { execFileSync } from "node:child_process";
+import { readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	prView,
@@ -700,8 +702,18 @@ describe("Session", () => {
 	describe("pinned on a head (--head)", () => {
 		const user = (login: string) => ({ login, __typename: "User" });
 		/** Octo_Cat reviewed `then` (and has a pending review on `now`). */
-		const scenarioReviewed = (then: string, now: string, state = "OPEN") =>
+		const scenarioReviewed = (
+			then: string,
+			now: string,
+			state = "OPEN",
+			/** Later reviews, and other scenario fields. */
+			later: {
+				reviews?: unknown[];
+				reviewComments?: Record<string, unknown[]>;
+			} = {},
+		) =>
 			pr.scenario({
+				reviewComments: later.reviewComments,
 				prs: {
 					12: {
 						view: prView({ headRefOid: now, baseRefName: "main", state }),
@@ -731,6 +743,7 @@ describe("Session", () => {
 									submittedAt: null,
 									commit: { oid: now },
 								},
+								...(later.reviews ?? []),
 							],
 							reviewThreads: [],
 							comments: [],
@@ -834,6 +847,80 @@ describe("Session", () => {
 				"a.txt",
 				"new.txt",
 			]);
+		});
+
+		it("follows the base branch on refresh: its own changes stay out, the merge base follows", async () => {
+			const then = pr.head();
+			const now = pr.moveHead({ "later.txt": "later\n" });
+			scenarioReviewed(then, now);
+			const s = await openPinned("reviewed");
+			// main moves on with a change of its own.
+			const git = (...args: string[]) =>
+				execFileSync("git", args, {
+					cwd: pr.repo.path,
+					encoding: "utf8",
+					env: testGitEnv(),
+				}).trim();
+			writeFileSync(join(pr.repo.path, "base-only.txt"), "base\n");
+			git("add", "base-only.txt");
+			git("commit", "--quiet", "-m", "base moves on");
+			const main = git("rev-parse", "HEAD");
+			expect(await s.refresh()).toMatchObject({
+				snapshotHead: then,
+				pinnedHead: then,
+			});
+			expect(s.snapshot().files.map((f) => f.path)).toEqual([
+				"a.txt",
+				"new.txt",
+			]);
+			expect(s.snapshot().base).toBe(git("merge-base", main, then));
+			expect(s.snapshot().base).toBe(pr.mergeBase);
+			// Base landing the PR's reviewed commit: nothing of it is left to show.
+			git("merge", "--quiet", "--no-ff", "-m", "land part", then);
+			await s.refresh();
+			expect(s.snapshot().base).toBe(then);
+			expect(s.snapshot().files).toEqual([]);
+		});
+
+		it("doesn't count a later review that only replied to threads, all its pages read; one starting a thread counts", async () => {
+			const then = pr.head();
+			const now = pr.moveHead({ "later.txt": "later\n" });
+			/** Octo_Cat's later COMMENTED review on `now`: no body, 2 pages of comments. */
+			const replies = (secondIsReply: boolean) =>
+				scenarioReviewed(then, now, "OPEN", {
+					reviews: [
+						{
+							id: "R1",
+							author: user("Octo_Cat"),
+							state: "COMMENTED",
+							submittedAt: "2026-01-06T00:00:00Z",
+							body: "",
+							commit: { oid: now },
+							comments: {
+								pageInfo: { hasNextPage: true, endCursor: "cursor:1" },
+								nodes: [{ replyTo: { id: "C1" } }],
+							},
+						},
+					],
+					reviewComments: {
+						R1: [
+							{ replyTo: { id: "C1" } },
+							{ replyTo: secondIsReply ? { id: "C2" } : null },
+						],
+					},
+				});
+			replies(true);
+			expect((await openPinned("reviewed")).info().snapshotHead).toBe(then);
+			replies(false);
+			expect((await openPinned("reviewed")).info().snapshotHead).toBe(now);
+			// The rest unreadable: no guess.
+			pr.scenario({
+				...JSON.parse(readFileSync(process.env.CRB_FAKE_GH ?? "", "utf8")),
+				reviewComments: {},
+			});
+			await expect(openPinned("reviewed")).rejects.toThrow(
+				/Could not tell whether octo-cat's review of .* only replies to threads/,
+			);
 		});
 
 		it("keeps its progress in a review of its own; the PR's own review is untouched", async () => {

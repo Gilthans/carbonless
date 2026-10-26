@@ -192,13 +192,10 @@ export class Session {
 				: null,
 		]);
 		progress(`fetching PR #${meta.number}…`);
-		const fetched = await fetchPr(
-			repo,
-			meta,
+		const fetched = await fetchPr(repo, meta, {
 			asOf,
-			undefined,
-			pinned ?? undefined,
-		);
+			pinned: pinned ?? undefined,
+		});
 		// Whether the PR is over comes from GitHub's PR state, never from
 		// history shape: squash and rebase merges leave the head outside the
 		// base (docs/git-methodology.md). As of a cutoff, meta says OPEN.
@@ -424,13 +421,10 @@ export class Session {
 			const seq = ++this.#metaSeq;
 			const signal = this.#stop.signal;
 			const meta = await fetchPrMeta(this.#ref(), { signal });
-			const fetched = await fetchPr(
-				this.repo,
-				meta,
-				undefined,
+			const fetched = await fetchPr(this.repo, meta, {
 				signal,
-				this.pinned ?? undefined,
-			);
+				pinned: this.pinned ?? undefined,
+			});
 			this.#setMeta(seq, meta);
 			const progress = await this.#progress();
 			// An unstarted review of a merged or closed PR has nothing to move

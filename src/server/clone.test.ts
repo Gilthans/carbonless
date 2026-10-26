@@ -285,7 +285,7 @@ describe("private clone", () => {
 		const r = await fetchPr(
 			path,
 			meta({ baseBranch: "main", headOid: shas.head }),
-			cutoff,
+			{ asOf: cutoff },
 		);
 		expect(git(path, "rev-parse", "refs/remotes/origin/main")).toBe(c4);
 		expect(r).toEqual({
@@ -298,18 +298,18 @@ describe("private clone", () => {
 	it("as of a cutoff before the base branch existed: fails clearly", async () => {
 		const path = await ensureClone("acme", "widget");
 		await expect(
-			fetchPr(path, meta({ baseBranch: "main" }), "2000-01-01T00:00:00Z"),
+			fetchPr(path, meta({ baseBranch: "main" }), {
+				asOf: "2000-01-01T00:00:00Z",
+			}),
 		).rejects.toThrow(/no commit at or before 2000-01-01T00:00:00Z/);
 	});
 
 	it("as of a cutoff: fails clearly when the head can't be fetched", async () => {
 		const path = await ensureClone("acme", "widget");
 		await expect(
-			fetchPr(
-				path,
-				meta({ baseBranch: "main", headOid: "1".repeat(40) }),
-				new Date().toISOString(),
-			),
+			fetchPr(path, meta({ baseBranch: "main", headOid: "1".repeat(40) }), {
+				asOf: new Date().toISOString(),
+			}),
 		).rejects.toThrow(/as of .* could not be fetched/);
 	});
 

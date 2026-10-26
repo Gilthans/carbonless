@@ -301,6 +301,7 @@ export function createMethodologyRepo(
 						author: { login: "rev1", __typename: "User" },
 						state: "COMMENTED",
 						submittedAt: TIMES.review,
+						body: "Looks fine",
 						commit: { oid: p1b },
 					},
 				],

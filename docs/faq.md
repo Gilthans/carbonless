@@ -92,3 +92,14 @@ as-of mode all use the publication time, so as of a moment only what was
 published by then shows. The viewer's own pending comments aren't shown: nobody
 else can see them yet. The code beside a thread is the one exception: it stays
 the base branch as the author saw it while writing.
+
+## Which commit does `--head reviewed` pick?
+
+The commit of your latest submitted GitHub review, whatever its verdict
+(commented, approved, changes requested, dismissed). Replying to a thread
+doesn't count: GitHub makes each reply a "commented" review on the PR's head
+of that moment, which says nothing about what you reviewed. So a commented
+review with no body whose every comment is a reply is skipped. A body or one
+new thread makes it count. If carbonless can't read all of a review's
+comments, or your latest review has no commit, it stops with an error rather
+than picking an older one. Pending reviews never count.

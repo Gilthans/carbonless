@@ -60,6 +60,11 @@ export interface Scenario {
 	 * `contexts` null means the commit has no rollup; a missing OID, no commit.
 	 */
 	commits?: Record<string, { contexts: unknown[] | null }>;
+	/**
+	 * Review node id → every comment of that review (`{ replyTo }` nodes),
+	 * for the pages after its first (`node(id) { ... on PullRequestReview }`).
+	 */
+	reviewComments?: Record<string, unknown[]>;
 	prs: Record<
 		string,
 		{
