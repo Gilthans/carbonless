@@ -1010,7 +1010,7 @@ test("a thread whose code can't be shown to be what the commenter saw has a red 
 		await expect(chip).toHaveText("different snapshot");
 		await expect(chip).toHaveAccessibleDescription(
 			new RegExp(
-				`^Commented on ${sha} .*${tip}.*may not match what the reviewer saw\\.$`,
+				`^Made on ${sha}, .*${tip}.*may differ from what the commenter saw\\.$`,
 			),
 		);
 		// Red, and a 40px target.
@@ -1026,7 +1026,7 @@ test("a thread whose code can't be shown to be what the commenter saw has a red 
 	if (isMobile) await chip.tap();
 	else await chip.focus();
 	await expect(page.getByRole("tooltip")).toContainText(
-		"may not match what the reviewer saw",
+		"may differ from what the commenter saw",
 	);
 	expect(
 		await page.evaluate(

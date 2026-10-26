@@ -1379,13 +1379,19 @@ export function snapshotTip(code: CodeWindow, nowMs: number): string {
 	const sha = code.anchor.commit.slice(0, 7);
 	const at = new Date(code.anchor.at);
 	const when = Number.isNaN(at.getTime()) ? "" : relativeTime(at, nowMs);
-	const commented = ["Commented", sha && `on ${sha}`, when]
-		.filter(Boolean)
-		.join(" ");
-	return code.snapshot?.same === false &&
-		code.snapshot.reason === "no-host-diff"
-		? `${commented}; GitHub kept no diff to check this code against, so it may not match what the reviewer saw.`
-		: `${commented} in another diff; the code shown here may not match what the reviewer saw.`;
+	// "Made on b19a0aa, 3 days ago"; "Made 3 days ago" without a commit.
+	const where = sha
+		? [`Made on ${sha}`, when].filter(Boolean).join(", ")
+		: when && `Made ${when}`;
+	const doubt = "the code shown may differ from what the commenter saw.";
+	const reason = code.snapshot?.same === false ? code.snapshot.reason : null;
+	if (!where) return `The code shown may differ from what the commenter saw.`;
+	if (reason === "diff-differs") return `${where}, in another diff; ${doubt}`;
+	if (reason === "no-host-diff") {
+		return `${where}; GitHub kept no diff to check it against, so ${doubt}`;
+	}
+	// No verdict: say only what is known.
+	return `${where}; ${doubt}`;
 }
 
 /**

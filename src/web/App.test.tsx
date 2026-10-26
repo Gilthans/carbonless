@@ -994,10 +994,14 @@ describe("OverviewPage", () => {
 			expect(c).toHaveAttribute("tabindex", "0");
 		}
 		expect(chip("src/differs.ts")).toHaveAccessibleDescription(
-			/^Commented on 0123456 .+ ago in another diff; the code shown here may not match what the reviewer saw\.$/,
+			/^Made on 0123456, .+ ago, in another diff; the code shown may differ from what the commenter saw\.$/,
 		);
 		expect(chip("src/unchecked.ts")).toHaveAccessibleDescription(
-			/^Commented on 0123456 .+ ago; GitHub kept no diff to check this code against, so it may not match what the reviewer saw\.$/,
+			/^Made on 0123456, .+ ago; GitHub kept no diff to check it against, so the code shown may differ from what the commenter saw\.$/,
+		);
+		// No verdict: nothing claimed about why.
+		expect(chip("src/unknown.ts")).toHaveAccessibleDescription(
+			/^Made on 0123456, .+ ago; the code shown may differ from what the commenter saw\.$/,
 		);
 		// Focus (a tap) shows it.
 		const differs = chip("src/differs.ts") as HTMLElement;
