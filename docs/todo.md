@@ -2,6 +2,16 @@
 
 In priority order.
 
+## Milestones
+
+- **Milestone 1, PR review view (done 2026-10-26, `master` at `be19451`):**
+  Files changed (clusters/lines, invisibles, file status icons), Overview
+  (staged loading, thread code from the clone with the snapshot chip,
+  suggestions, Timeline), as-of views, git-methodology matrix, mobile.
+- **Next:** to be chosen with the owner from the items below; candidates are
+  re-review after new pushes (retires the snapshot chip), commenting,
+  review groups / Change Units (1), moved code (2), AI investigation (3).
+
 ## 0. Parity with the GitHub review workflow
 
 Foundation for everything below.

@@ -63,12 +63,18 @@ These guide every feature. If a change conflicts with one of them, stop and rais
    "merged" is GitHub's PR state, not ancestry). The methodology matrix
    (`docs/git-methodology.md`) proves it; history-sensitive changes extend it.
 
+More product rules learned while building (GitHub as one comment source among
+several, flagging uncertainty, dating by visibility, first-open performance,
+checking against a real PR): `docs/product-rules.md`.
+
 ## Development
 
 - Node 24 (`nvm use`), pnpm. Stack: Fastify server + git CLI (`src/server`),
   React + Vite + TanStack Query + Tailwind (`src/web`), shared types (`src/shared`).
 - `pnpm verify` runs lint (Biome), typecheck, unit tests (Vitest) and Playwright
-  tests. Run it before saying work is done.
+  tests. Run it right before committing and before saying work is done; use
+  `pnpm verify:fast` (below) until then. Never run two `pnpm verify` at once in
+  the same tree: one run's build deletes `dist` under the other's e2e tests.
 - While iterating, run only what a change touches:
   - `pnpm verify:fast [base]`: lint, typecheck, the unit tests related to files
     changed since `base`, and the e2e specs mapped to them (`E2E_MAP` in
@@ -94,7 +100,9 @@ These guide every feature. If a change conflicts with one of them, stop and rais
 - Tests never call the real `gh`: `test/fake-gh/gh` serves a scenario
   (`test/fake-gh/scenario.ts`) via `$CRB_FAKE_GH`. The e2e harness
   (`e2e/fixtures.ts`) wires it onto `PATH` and drives the built CLI.
-- Planned work lives in `docs/todo.md`.
+- If `nvm use` fails (e.g. in a sandbox), put `~/.nvm/versions/node/v24*/bin`
+  first on `PATH`.
+- Planned work and milestones live in `docs/todo.md`.
 - Core design docs, kept current (update them in the same change that alters
   what they describe):
   - `docs/review-data-storage.md`: how review data is stored in git.
@@ -102,3 +110,28 @@ These guide every feature. If a change conflicts with one of them, stop and rais
   - `docs/faq.md`: answers to questions people ask (e.g. why line counts differ from GitHub).
   - `docs/git-methodology.md`: git-methodology independence, merged handling
     and the methodology test matrix.
+  - `docs/product-rules.md`: product rules beyond the design principles.
+
+## How we work
+
+- Work is split into briefs (`.superpowers/sdd/<plan>/*-brief.md`, git-ignored):
+  the owner's words quoted, the requirements, the constraints, the tests. The
+  session that coordinates writes briefs, reviews and integrates; it doesn't
+  implement features itself.
+- One implementing agent per brief, each in its own git worktree (Agent
+  `isolation: "worktree"`, or `scripts/agent-worktree.sh`), on a branch from the
+  feature branch. Agents don't spawn agents. Agents in worktrees can't write to
+  the main checkout's `.superpowers/`: they write reports to the session
+  scratchpad, and the coordinator copies them over.
+- Every change gets a fresh reviewer with the brief, the report and the diff
+  (`git log --stat` + `git diff -U10` of the range, saved to a file). Findings
+  go back to the same implementer as fix rounds, then a scoped re-review; small
+  fixes with tests that fail without them may skip the re-review.
+- The coordinator cherry-picks reviewed commits onto the feature branch (or has
+  the agent rebase when they conflict), runs `pnpm verify` on the combined
+  branch, restarts the owner's running instance and sends the link.
+- Commits only via `git commit --only -- <paths>` in a shared tree; never a bare
+  `git stash`. Merging to `master` only when the owner asks, as a fast-forward
+  after a green `pnpm verify`. Never push, and never write to GitHub.
+- Report to the owner concisely: what changed, measured results, what is
+  still open, and questions that are theirs to decide.
