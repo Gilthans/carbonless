@@ -29,6 +29,7 @@ import { fullDate } from "./RelativeTime";
 import { Settings } from "./Settings";
 import { AppHeaderHeight } from "./sticky";
 import { Tooltip } from "./Tooltip";
+import { useThreadWritesSetup } from "./threads/threadWrites";
 import { ErrorMessage, safeHref } from "./ui";
 
 const tabClass =
@@ -148,6 +149,7 @@ export function App() {
 	const queryClient = useQueryClient();
 	const session = useQuery(sessionQuery);
 	useUnsavedGuard();
+	useThreadWritesSetup();
 	// Writes into the session cache (so only once the session has loaded, or
 	// its answer could overwrite ours); a failed check leaves the last answer.
 	useQuery({ ...headQuery, enabled: session.isSuccess });

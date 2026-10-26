@@ -230,3 +230,25 @@ html {
 		(var(--app-header, 0px) + var(--page-sticky, 0px))
 	);
 }
+
+/*
+ * An Overview card just resolved or unresolved fades where it is
+ * (--fade-ms, FADE_MS) before it moves to the other list; with reduced
+ * motion it stays still and says "Moving…" instead.
+ */
+@keyframes thread-fade {
+	from {
+		opacity: 1;
+	}
+	to {
+		opacity: 0.25;
+	}
+}
+.thread-fading {
+	animation: thread-fade var(--fade-ms, 4s) linear forwards;
+}
+@media (prefers-reduced-motion: reduce) {
+	.thread-fading {
+		animation: none;
+	}
+}

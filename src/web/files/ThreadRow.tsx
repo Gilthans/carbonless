@@ -7,6 +7,7 @@ import {
 import type { ReviewThread } from "../../shared/types";
 import { Badge, LabeledIcon } from "../overview/parts";
 import { Conversation } from "../threads/Conversation";
+import { ResolveToggle } from "../threads/ResolveToggle";
 import { ThreadStatus } from "../threads/ThreadStatus";
 
 /**
@@ -56,6 +57,7 @@ export function ThreadBlock(props: {
 							outdated
 						</Badge>
 					)}
+					<ResolveToggle thread={thread} />
 				</span>
 			</div>
 			<div className="p-2.5">

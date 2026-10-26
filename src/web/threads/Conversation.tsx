@@ -1,10 +1,14 @@
 import { AlertIcon, ClockIcon, SyncIcon } from "@primer/octicons-react";
+import { useQuery } from "@tanstack/react-query";
+import type { ReactNode } from "react";
 import type { ReviewThread, ThreadComment } from "../../shared/types";
-import { ApiError } from "../api";
+import { ApiError, sessionQuery } from "../api";
 import { BotIcon, LabeledIcon, plural } from "../overview/parts";
 import { RelativeTime } from "../RelativeTime";
 import { Tooltip } from "../Tooltip";
 import { CommentBody } from "./CommentBody";
+import { ReplyBox } from "./ReplyBox";
+import { useThreadWrites, useWritesOn } from "./threadWrites";
 import { useThreadComments } from "./useThreadComments";
 
 /** GitHub's text: its own raised surface, apart from the card and the code. */
@@ -46,11 +50,60 @@ export function Conversation(props: {
 }) {
 	const { thread } = props;
 	const never = thread.unavailable !== undefined || thread.id === "";
-	const query = useThreadComments(props.readId, thread.id, {
-		enabled: !never,
-	});
+	const on = useWritesOn();
 	if (never)
 		return <UnavailableText reason={thread.unavailable ?? "unreadable"} />;
+	// The box under the comments, while they load or fail too: a draft is
+	// never kept from its thread.
+	const box =
+		on && thread.viewerCan.reply ? <ReplyBox thread={thread} /> : null;
+	return (
+		<div className="space-y-2">
+			<Comments {...props} />
+			{box}
+		</div>
+	);
+}
+
+/** Replies sent and not yet confirmed, unless GitHub's list already has them. */
+function useSending(
+	threadId: string,
+	comments: ThreadComment[] | undefined,
+): ThreadComment[] {
+	const sending = useThreadWrites().threads.get(threadId)?.replies ?? [];
+	const viewer = useQuery({ ...sessionQuery, enabled: false }).data?.viewer;
+	const clean = (t: string) => t.replace(/\s+$/, "");
+	return sending
+		.filter(
+			(r) =>
+				!comments?.some(
+					(c) =>
+						c.author.toLowerCase() === viewer?.toLowerCase() &&
+						clean(c.body) === clean(r.text) &&
+						c.publishedAt !== null &&
+						Date.parse(c.publishedAt) >= Date.parse(r.attemptedAt) - 60_000,
+				),
+		)
+		.map((r) => ({
+			id: "",
+			author: viewer ?? "you",
+			bot: false,
+			publishedAt: null,
+			pending: false,
+			html: "",
+			body: r.text,
+			text: r.text,
+		}));
+}
+
+function Comments(props: {
+	readId: string;
+	thread: ReviewThread;
+	skipFirst?: boolean;
+}): ReactNode {
+	const { thread } = props;
+	const query = useThreadComments(props.readId, thread.id);
+	const sending = useSending(thread.id, query.data?.comments);
 	// A read gone (410, a Refresh or a restart): the overview is read again
 	// and the comments follow the new read, so it is still loading; a Retry
 	// under the gone read could only fail.
@@ -103,7 +156,7 @@ export function Conversation(props: {
 	const shown = props.skipFirst ? data.comments.slice(1) : data.comments;
 	return (
 		<div className="space-y-2">
-			{shown.length > 0 && (
+			{shown.length + sending.length > 0 && (
 				<ol aria-label="Comments" className="space-y-2">
 					{shown.map((c, i) => (
 						<CommentItem
@@ -111,6 +164,15 @@ export function Conversation(props: {
 							key={c.id || `#${i}`}
 							comment={c}
 							thread={thread}
+						/>
+					))}
+					{sending.map((c, i) => (
+						<CommentItem
+							// biome-ignore lint/suspicious/noArrayIndexKey: sent replies only ever append.
+							key={`sending-${i}`}
+							comment={c}
+							thread={thread}
+							sending
 						/>
 					))}
 				</ol>
@@ -129,16 +191,26 @@ export function Conversation(props: {
 	);
 }
 
-function CommentItem(props: { comment: ThreadComment; thread: ReviewThread }) {
+function CommentItem(props: {
+	comment: ThreadComment;
+	thread: ReviewThread;
+	/** The viewer's reply on its way to GitHub. */
+	sending?: boolean;
+}) {
 	const { comment: c, thread } = props;
 	return (
-		<li data-testid="thread-comment" className="min-w-0 space-y-1">
+		<li
+			data-testid={props.sending ? "thread-comment-sending" : "thread-comment"}
+			className="min-w-0 space-y-1"
+		>
 			<p className="flex flex-wrap items-center gap-x-1.5 px-0.5 text-xs text-muted">
 				<span className="inline-flex items-center gap-1 font-semibold text-ink-soft">
 					{c.author || "ghost"}
 					{c.bot && <BotIcon />}
 				</span>
-				{c.pending ? (
+				{props.sending ? (
+					<LabeledIcon icon={ClockIcon} label="Sending" className="text-warn" />
+				) : c.pending ? (
 					<LabeledIcon
 						icon={ClockIcon}
 						label="Pending, only you see it"
@@ -161,7 +233,7 @@ function CommentItem(props: { comment: ThreadComment; thread: ReviewThread }) {
 						open
 					/>
 				) : (
-					<p className="text-sm">
+					<p className="text-sm whitespace-pre-wrap">
 						{c.text || <span className="text-muted italic">No text</span>}
 					</p>
 				)}

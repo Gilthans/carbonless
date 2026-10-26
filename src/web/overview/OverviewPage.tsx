@@ -15,6 +15,7 @@ import {
 	HistoryIcon,
 	HubotIcon,
 	type Icon,
+	PencilIcon,
 	PeopleIcon,
 	QuestionIcon,
 	ReplyIcon,
@@ -27,6 +28,7 @@ import {
 } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import {
+	type CSSProperties,
 	type ReactNode,
 	type Ref,
 	type RefObject,
@@ -66,7 +68,10 @@ import {
 	Conversation,
 	UnavailableText,
 } from "../threads/Conversation";
+import { useDrafts } from "../threads/drafts";
+import { ResolveToggle } from "../threads/ResolveToggle";
 import { ThreadStatus } from "../threads/ThreadStatus";
+import { FADE_MS, useThreadWrites, useWritesOn } from "../threads/threadWrites";
 import { usePrefetchComments } from "../threads/useThreadComments";
 import { useThreads } from "../threads/useThreads";
 import { ErrorMessage, safeHref } from "../ui";
@@ -86,6 +91,7 @@ import {
 import { prefetchOrder, type ShownThreads } from "./prefetchOrder";
 import { Timeline } from "./Timeline";
 import { threadKeys } from "./threadKeys";
+import { WriteWarnings } from "./WriteWarnings";
 
 type Review = PrOverview["reviews"][number];
 type Check = PrOverview["checks"][number];
@@ -195,7 +201,7 @@ function OverviewContent({
 			{overview.data && (
 				<>
 					<WhatItDoes pr={overview.data} threads={threads.view} />
-					<WhosOnIt pr={overview.data} />
+					<WhosOnIt pr={overview.data} threads={threads.view} />
 					<IsItReady
 						pr={overview.data}
 						threads={threads.view}
@@ -499,7 +505,13 @@ function StartedLine({ pr }: { pr: PrOverview }) {
 	);
 }
 
-function WhosOnIt({ pr }: { pr: PrOverview }) {
+function WhosOnIt({
+	pr,
+	threads,
+}: {
+	pr: PrOverview;
+	threads: ThreadsView | undefined;
+}) {
 	const yourReview = pr.reviews.find((r) => r.you);
 	const youCommented = pr.commenters.some((c) => c.you);
 	const reviewers = pr.reviews.filter((r) => !r.you);
@@ -516,6 +528,7 @@ function WhosOnIt({ pr }: { pr: PrOverview }) {
 			<p className="flex items-center gap-2 font-medium">
 				<StartedLine pr={pr} />
 			</p>
+			<WriteWarnings pr={pr} threads={threads?.threads} />
 			<div className="grid gap-4 sm:grid-cols-3">
 				<Column icon={CodeReviewIcon} title="Reviews">
 					{reviewers.length ? (
@@ -858,6 +871,54 @@ export function loadMoreText(hidden: number): string {
 	return `Load ${plural(next, "more comment")} out of ${hidden}`;
 }
 
+type ThreadFilter = "unresolved" | "resolved" | "drafts";
+
+/**
+ * Cards resolved or unresolved here, fading in place for FADE_MS before
+ * they move to the other list: the list each stays in meanwhile, by id.
+ * Toggling back during the fade (undo) keeps the card where it is.
+ */
+function useFade() {
+	const [fading, setFading] = useState<ReadonlyMap<string, boolean>>(
+		() => new Map(),
+	);
+	const timers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
+	useEffect(() => {
+		const all = timers.current;
+		return () => {
+			for (const t of all.values()) clearTimeout(t);
+			all.clear();
+		};
+	}, []);
+	const toggled = useCallback((id: string, next: boolean) => {
+		const timer = timers.current.get(id);
+		if (timer !== undefined) {
+			// Undone: it stays, no longer fading.
+			clearTimeout(timer);
+			timers.current.delete(id);
+			setFading((m) => {
+				const n = new Map(m);
+				n.delete(id);
+				return n;
+			});
+			return;
+		}
+		timers.current.set(
+			id,
+			setTimeout(() => {
+				timers.current.delete(id);
+				setFading((m) => {
+					const n = new Map(m);
+					n.delete(id);
+					return n;
+				});
+			}, FADE_MS),
+		);
+		setFading((m) => new Map(m).set(id, !next));
+	}, []);
+	return { fading, toggled };
+}
+
 /**
  * One group's review threads, inside "Is it ready": unresolved ones listed,
  * or resolved ones while their count is pressed; five at a time. As of a
@@ -883,13 +944,28 @@ function ThreadGroup(props: {
 	const { asOf, focus, readId, onShown, label } = props;
 	const loading = props.threads === undefined && !props.failed;
 	const threads = props.threads ?? [];
-	const [showResolved, setShowResolved] = useState(false);
+	const [filter, setFilter] = useState<ThreadFilter>("unresolved");
 	const [limit, setLimit] = useState(THREAD_PAGE);
 	const listId = useId();
 	const headingId = useId();
-	const unresolved = threads.filter((t) => !t.resolved);
-	const resolved = threads.filter((t) => t.resolved);
-	const listed = showResolved ? resolved : unresolved;
+	const fade = useFade();
+	// A card resolved or unresolved stays in its list while it fades.
+	const inResolved = (t: Thread) => fade.fading.get(t.id) ?? t.resolved;
+	const unresolved = threads.filter((t) => !inResolved(t));
+	const resolved = threads.filter(inResolved);
+	const drafts = useDrafts();
+	const drafted = useMemo(() => {
+		const ids = new Set(
+			drafts.filter((d) => d.sending || d.text.trim()).map((d) => d.threadId),
+		);
+		return threads.filter((t) => ids.has(t.id));
+	}, [drafts, threads]);
+	// The drafts sent or cleared: back to the open threads.
+	const shownFilter =
+		filter === "drafts" && drafted.length === 0 ? "unresolved" : filter;
+	const showResolved = shownFilter === "resolved";
+	const listed =
+		shownFilter === "drafts" ? drafted : showResolved ? resolved : unresolved;
 	// Pressing never leads to an empty list (as of a cutoff, none is resolved);
 	// pressed, it can always go back.
 	const toggleOff = !showResolved && resolved.length === 0;
@@ -918,7 +994,7 @@ function ThreadGroup(props: {
 		handled.current = focus;
 		const list = threads.filter((t) => t.resolved === thread.resolved);
 		const index = list.indexOf(thread);
-		setShowResolved(thread.resolved);
+		setFilter(thread.resolved ? "resolved" : "unresolved");
 		setLimit((n) =>
 			Math.max(n, Math.ceil((index + 1) / THREAD_PAGE) * THREAD_PAGE),
 		);
@@ -986,7 +1062,7 @@ function ThreadGroup(props: {
 									disabled: toggleOff,
 									controls: listId,
 									onClick: () => {
-										setShowResolved((on) => !on);
+										setFilter(showResolved ? "unresolved" : "resolved");
 										setLimit(THREAD_PAGE);
 									},
 								}}
@@ -994,6 +1070,32 @@ function ThreadGroup(props: {
 								{resolved.length} resolved
 							</Chip>
 						</li>
+						{drafted.length > 0 && (
+							<li>
+								<Chip
+									tone="yellow"
+									icon={PencilIcon}
+									testId="drafts-filter"
+									tip={
+										shownFilter === "drafts"
+											? "Show unresolved threads"
+											: "Show threads with a draft"
+									}
+									toggle={{
+										pressed: shownFilter === "drafts",
+										controls: listId,
+										onClick: () => {
+											setFilter(
+												shownFilter === "drafts" ? "unresolved" : "drafts",
+											);
+											setLimit(THREAD_PAGE);
+										},
+									}}
+								>
+									{plural(drafted.length, "draft")}
+								</Chip>
+							</li>
+						)}
 					</ul>
 				)}
 			</div>
@@ -1026,14 +1128,25 @@ function ThreadGroup(props: {
 				{listed.length > 0 && (
 					<ul
 						aria-label={
-							showResolved ? "Resolved threads" : "Unresolved threads"
+							shownFilter === "drafts"
+								? "Threads with a draft"
+								: showResolved
+									? "Resolved threads"
+									: "Unresolved threads"
 						}
 						// The previous read's, until this one's land (a Refresh).
 						aria-busy={props.previous || undefined}
 						className="space-y-3"
 					>
 						{threadKeys(listed.slice(0, limit)).map(([key, t]) => (
-							<ThreadItem key={key} thread={t} readId={readId} />
+							<ThreadItem
+								key={key}
+								thread={t}
+								readId={readId}
+								fading={shownFilter !== "drafts" && fade.fading.has(t.id)}
+								draftsShown={shownFilter === "drafts"}
+								onToggle={(next) => fade.toggled(t.id, next)}
+							/>
 						))}
 					</ul>
 				)}
@@ -1096,10 +1209,18 @@ const HEAD_PART =
 function ThreadItem({
 	thread,
 	readId,
+	fading,
+	onToggle,
+	draftsShown,
 }: {
 	thread: Thread;
 	/** The read the thread was listed in: its comments are read by it. */
 	readId: string;
+	/** Just resolved or unresolved: fading, about to move to the other list. */
+	fading?: boolean;
+	onToggle?: (resolved: boolean) => void;
+	/** Listed for its draft: its replies open, the draft in view. */
+	draftsShown?: boolean;
 }) {
 	const [open, setOpen] = useState(false);
 	const codeBox = useRef<HTMLElement>(null);
@@ -1177,7 +1298,11 @@ function ThreadItem({
 			id={thread.id ? threadAnchor(thread.id) : undefined}
 			// Focused when the timeline brings it into view.
 			tabIndex={-1}
-			className="min-w-0 scroll-mt-24 overflow-hidden rounded-lg border border-edge bg-surface focus-visible:outline-2 focus-visible:outline-accent"
+			data-fading={fading || undefined}
+			style={
+				fading ? ({ "--fade-ms": `${FADE_MS}ms` } as CSSProperties) : undefined
+			}
+			className={`min-w-0 scroll-mt-24 overflow-hidden rounded-lg border border-edge bg-surface focus-visible:outline-2 focus-visible:outline-accent ${fading ? "thread-fading" : ""}`}
 		>
 			<div
 				data-testid="thread-head"
@@ -1231,6 +1356,15 @@ function ThreadItem({
 					</p>
 				</div>
 				<div className="ml-auto flex items-center gap-2 pl-1.5">
+					{fading && (
+						// The still form of the fade (reduced motion).
+						<span
+							data-testid="thread-moving"
+							className="hidden text-warn motion-reduce:inline"
+						>
+							Moving…
+						</span>
+					)}
 					<ThreadStatus thread={thread} mark={false} />
 					{!thread.hasReply && !thread.resolved && (
 						<Badge tone="yellow" icon={ReplyIcon}>
@@ -1243,6 +1377,7 @@ function ThreadItem({
 						</Badge>
 					)}
 					{thread.code && <SnapshotChip code={thread.code} />}
+					<ResolveToggle thread={thread} onToggle={onToggle} />
 				</div>
 			</div>
 			<div className="space-y-2 px-3 pt-1 pb-3">
@@ -1294,7 +1429,7 @@ function ThreadItem({
 						{open ? "Show less" : "Show more"}
 					</button>
 				)}
-				<Replies thread={thread} readId={readId} />
+				<Replies thread={thread} readId={readId} openNow={draftsShown} />
 			</div>
 		</li>
 	);
@@ -1449,18 +1584,36 @@ const replies = (n: number) => `${n} ${n === 1 ? "reply" : "replies"}`;
  * The replies under a card's opening comment, behind a toggle that names
  * how many (closed at first): opened, the rest of the conversation.
  */
-function Replies({ thread, readId }: { thread: Thread; readId: string }) {
-	const [open, setOpen] = useState(false);
+function Replies({
+	thread,
+	readId,
+	openNow,
+}: {
+	thread: Thread;
+	readId: string;
+	/** Open them (the Drafts filter lists the thread). */
+	openNow?: boolean;
+}) {
+	const drafts = useDrafts();
+	// A thread with a draft opens on it.
+	const [open, setOpen] = useState(() =>
+		drafts.some((d) => d.threadId === thread.id),
+	);
+	useEffect(() => {
+		if (openNow) setOpen(true);
+	}, [openNow]);
 	const id = useId();
+	const sending = useThreadWrites().threads.get(thread.id)?.replies.length ?? 0;
+	const canReply = useWritesOn() && thread.id !== "" && thread.viewerCan.reply;
 	// The viewer's own pending replies count too, once their comments are in.
 	const known = useQuery({
 		...commentsQuery(readId, thread.id),
 		enabled: false,
 	}).data;
 	const pending = known?.comments.filter((c) => c.pending).length ?? 0;
-	const n = Math.max(0, thread.commentCount - 1) + pending;
+	const n = Math.max(0, thread.commentCount - 1) + pending + sending;
 	// A thread gone from GitHub: its opener says so, once.
-	if (n === 0 || thread.unavailable) return null;
+	if (thread.unavailable || (n === 0 && !canReply)) return null;
 	// Why the count passes the header's, and why it grew.
 	const pendingTip =
 		pending > 0
@@ -1475,8 +1628,17 @@ function Replies({ thread, readId }: { thread: Thread; readId: string }) {
 			onClick={() => setOpen((o) => !o)}
 			className="-mb-1 flex min-h-10 items-center gap-1.5 rounded-md text-xs font-medium text-link hover:underline focus-visible:outline-2 focus-visible:outline-accent"
 		>
-			<CommentDiscussionIcon size={16} aria-hidden />
-			{replies(n)}
+			{n === 0 ? (
+				<>
+					<ReplyIcon size={16} aria-hidden />
+					Reply
+				</>
+			) : (
+				<>
+					<CommentDiscussionIcon size={16} aria-hidden />
+					{replies(n)}
+				</>
+			)}
 			{pendingTip && (
 				<>
 					<ClockIcon

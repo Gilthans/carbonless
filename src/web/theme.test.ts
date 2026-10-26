@@ -209,6 +209,48 @@ describe("color tokens", () => {
 		}
 	});
 
+	it("thread write notices, warnings and the reply box read at 4.5:1", () => {
+		// SyncNotices' thread writes: the "Open on GitHub" link on bad/10
+		// over raised.
+		expect(
+			contrast(token("link"), over(token("bad"), 0.1, token("raised"))),
+			"link on bad/10 over raised",
+		).toBeGreaterThanOrEqual(4.5);
+		// WriteWarnings: warn/10 over the section's surface; ink text, the
+		// link, and the warn icon.
+		const warning = over(token("warn"), 0.1, token("surface"));
+		for (const text of ["ink", "link", "warn"]) {
+			expect(
+				contrast(token(text), warning),
+				`${text} on warn/10 over surface`,
+			).toBeGreaterThanOrEqual(4.5);
+		}
+		// ReplyBox: text and placeholder on raised; its Send icon (link) on
+		// the card surface and the Files row canvas, faint while disabled.
+		for (const text of ["ink", "faint"]) {
+			expect(
+				contrast(token(text), token("raised")),
+				`${text} on raised`,
+			).toBeGreaterThanOrEqual(4.5);
+		}
+		for (const bg of ["surface", "canvas", "overlay"]) {
+			expect(
+				contrast(token("link"), token(bg)),
+				`link on ${bg}`,
+			).toBeGreaterThanOrEqual(4.5);
+		}
+		// ResolveToggle in a card header: ok (resolve), muted (unresolve) on
+		// band and on its overlay hover.
+		for (const icon of ["ok", "muted"]) {
+			for (const bg of ["band", "overlay"]) {
+				expect(
+					contrast(token(icon), token(bg)),
+					`${icon} on ${bg}`,
+				).toBeGreaterThanOrEqual(4.5);
+			}
+		}
+	});
+
 	it("controls, fills and indicators stand out at 3:1", () => {
 		const parts = [
 			"line-strong",

@@ -12,12 +12,16 @@ import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { suggestionHtml } from "../../../test/fake-gh/scenario";
 import type {
+	PrOverview,
 	ReviewThread,
+	SessionInfo,
 	ThreadComment,
 	ThreadComments,
+	ThreadUpdate,
 } from "../../shared/types";
 import { showCommentsOf } from "../api";
 import { Conversation } from "./Conversation";
+import { ResolveToggle } from "./ResolveToggle";
 import { ThreadStatus } from "./ThreadStatus";
 
 const comment = (
@@ -66,6 +70,9 @@ const thread = (more: Partial<ReviewThread> = {}): ReviewThread => ({
 
 /** Answers a comments request; each test sets its own. */
 let answer: (ids: string[]) => Promise<Response>;
+/** Answers a thread write (POST /api/threads/…); 404 unless a test sets it. */
+let writeAnswer: (path: string, body: unknown) => Promise<Response>;
+let writeCalls: { path: string; body: unknown }[];
 let requests: number;
 
 const json = (body: unknown, status = 200) =>
@@ -86,10 +93,17 @@ let clients: QueryClient[] = [];
 beforeEach(() => {
 	requests = 0;
 	serve({});
+	writeCalls = [];
+	writeAnswer = async () => json({ error: "not here" }, 404);
 	vi.stubGlobal(
 		"fetch",
-		vi.fn(async (input: string) => {
+		vi.fn(async (input: string, init?: RequestInit) => {
 			const url = new URL(input, "http://crb");
+			if (url.pathname.startsWith("/api/threads/")) {
+				const body: unknown = JSON.parse(String(init?.body ?? "null"));
+				writeCalls.push({ path: url.pathname, body });
+				return writeAnswer(url.pathname, body);
+			}
 			if (url.pathname !== "/api/comments") {
 				return json({ error: "not here" }, 404);
 			}
@@ -106,11 +120,22 @@ afterEach(() => {
 	vi.unstubAllGlobals();
 });
 
-function renderWith(node: ReactNode) {
+function renderWith(
+	node: ReactNode,
+	opts: { writes?: PrOverview["writes"] } = {},
+) {
 	const client = new QueryClient({
 		defaultOptions: { queries: { retry: false } },
 	});
 	clients.push(client);
+	if (opts.writes) {
+		client.setQueryData(["overview"], {
+			readId: "r1",
+			writes: opts.writes,
+			pendingReview: null,
+		} as PrOverview);
+		client.setQueryData(["session"], { viewer: "octo" } as SessionInfo);
+	}
 	return render(
 		<QueryClientProvider client={client}>{node}</QueryClientProvider>,
 	);
@@ -354,5 +379,170 @@ describe("ThreadStatus", () => {
 				screen.getByText("3 comments", { selector: "[role=tooltip]" }),
 			).toBeVisible(),
 		);
+	});
+});
+
+const can = (reply: boolean, resolve: boolean, unresolve = resolve) => ({
+	viewerCan: { reply, resolve, unresolve },
+});
+
+describe("replying", () => {
+	it("shows a reply box under the comments when writing is on", async () => {
+		serve({ T1: three });
+		renderWith(<Conversation readId="r1" thread={thread()} />, {
+			writes: "on",
+		});
+		await screen.findAllByTestId("thread-comment");
+		const box = screen.getByRole("textbox", { name: "Reply" });
+		expect(box).toHaveAttribute("rows", "1");
+		const send = screen.getByRole("button", { name: "Reply" });
+		expect(send).toBeDisabled();
+		await userEvent.click(box);
+		expect(box).toHaveAttribute("rows", "3");
+		// Whitespace alone can't be sent.
+		await userEvent.type(box, "   ");
+		expect(send).toBeDisabled();
+	});
+
+	it.each([
+		["as of a cutoff", "as-of" as const, thread()],
+		["as another viewer", "viewer" as const, thread()],
+		["where GitHub says no", "on" as const, thread(can(false, true))],
+	])("has no box %s", async (_, writes, t) => {
+		serve({ T1: three });
+		renderWith(<Conversation readId="r1" thread={t} />, { writes });
+		await screen.findAllByTestId("thread-comment");
+		expect(screen.queryByRole("textbox", { name: "Reply" })).toBeNull();
+	});
+
+	it("sends on Ctrl+Enter: the reply shows at once, sending, and the box clears; GitHub's answer replaces it", async () => {
+		serve({ T1: three });
+		let land: (() => void) | undefined;
+		const posted = comment("c4", "octo", "Done, thanks");
+		writeAnswer = (_path, body) =>
+			new Promise((resolve) => {
+				land = () =>
+					resolve(
+						json({
+							threadId: "T1",
+							resolved: false,
+							commentCount: 4,
+							lastActivityAt: "2026-01-03T12:00:00Z",
+							attention: ["rev1"],
+							yourTurn: false,
+							viewerCan: can(true, true).viewerCan,
+							comments: {
+								threadId: "T1",
+								comments: [...three.comments, posted],
+							},
+							comment: posted,
+						} satisfies ThreadUpdate),
+					);
+				expect(body).toMatchObject({ body: "Done, thanks", retry: false });
+			});
+		renderWith(<Conversation readId="r1" thread={thread()} />, {
+			writes: "on",
+		});
+		await screen.findAllByTestId("thread-comment");
+		const box = screen.getByRole("textbox", { name: "Reply" });
+		await userEvent.type(box, "Done, thanks");
+		await userEvent.keyboard("{Control>}{Enter}{/Control}");
+		expect(box).toHaveValue("");
+		const sending = await screen.findByTestId("thread-comment-sending");
+		expect(sending).toHaveTextContent("octo");
+		expect(sending).toHaveTextContent("Done, thanks");
+		expect(
+			within(sending).getByRole("img", { name: "Sending" }),
+		).toBeInTheDocument();
+		expect(writeCalls[0]?.path).toBe("/api/threads/T1/replies");
+		land?.();
+		await waitFor(() =>
+			expect(screen.queryByTestId("thread-comment-sending")).toBeNull(),
+		);
+		const items = screen.getAllByTestId("thread-comment");
+		expect(items).toHaveLength(4);
+		expect(items[3]).toHaveTextContent("Done, thanks");
+	});
+
+	it("Escape leaves the box and keeps the draft, also across closing the thread", async () => {
+		serve({ T1: three });
+		const { unmount, client } = (() => {
+			const r = renderWith(<Conversation readId="r1" thread={thread()} />, {
+				writes: "on",
+			});
+			return { unmount: r.unmount, client: clients.at(-1) };
+		})();
+		await screen.findAllByTestId("thread-comment");
+		const box = screen.getByRole("textbox", { name: "Reply" });
+		await userEvent.type(box, "Half a thought");
+		await userEvent.keyboard("{Escape}");
+		expect(box).not.toHaveFocus();
+		expect(box).toHaveValue("Half a thought");
+		unmount();
+		if (!client) throw new Error("no client");
+		render(
+			<QueryClientProvider client={client}>
+				<Conversation readId="r1" thread={thread()} />
+			</QueryClientProvider>,
+		);
+		expect(await screen.findByRole("textbox", { name: "Reply" })).toHaveValue(
+			"Half a thought",
+		);
+	});
+
+	it("a refused reply puts its text back into the box", async () => {
+		serve({ T1: three });
+		writeAnswer = async () =>
+			json({ error: "The thread is gone", code: "gone" }, 404);
+		renderWith(<Conversation readId="r1" thread={thread()} />, {
+			writes: "on",
+		});
+		await screen.findAllByTestId("thread-comment");
+		const box = screen.getByRole("textbox", { name: "Reply" });
+		await userEvent.type(box, "Fixed");
+		await userEvent.click(screen.getByRole("button", { name: "Reply" }));
+		await waitFor(() => expect(box).toHaveValue("Fixed"));
+		expect(screen.queryByTestId("thread-comment-sending")).toBeNull();
+		expect(writeCalls).toHaveLength(1);
+	});
+
+	it("keeps the box while the comments load", () => {
+		answer = () => new Promise(() => {});
+		renderWith(<Conversation readId="r1" thread={thread()} />, {
+			writes: "on",
+		});
+		expect(screen.getByTestId("comments-loading")).toBeInTheDocument();
+		expect(screen.getByRole("textbox", { name: "Reply" })).toBeInTheDocument();
+	});
+});
+
+describe("ResolveToggle", () => {
+	it("resolves an open thread and flips at once; unresolves a resolved one", async () => {
+		writeAnswer = () => new Promise(() => {});
+		const onToggle = vi.fn();
+		const { rerender } = renderWith(
+			<ResolveToggle thread={thread()} onToggle={onToggle} />,
+			{ writes: "on" },
+		);
+		await userEvent.click(screen.getByRole("button", { name: "Resolve" }));
+		expect(onToggle).toHaveBeenCalledWith(true);
+		expect(writeCalls).toEqual([
+			{ path: "/api/threads/T1/resolved", body: { resolved: true } },
+		]);
+		rerender(
+			<QueryClientProvider client={clients.at(-1) as QueryClient}>
+				<ResolveToggle thread={thread({ resolved: true })} />
+			</QueryClientProvider>,
+		);
+		expect(screen.getByRole("button", { name: "Unresolve" })).toBeVisible();
+	});
+
+	it.each([
+		["as of a cutoff", "as-of" as const, thread()],
+		["as another viewer", "viewer" as const, thread()],
+		["where GitHub says no", "on" as const, thread(can(true, false))],
+	])("is hidden %s", (_, writes, t) => {
+		renderWith(<ResolveToggle thread={t} />, { writes });
+		expect(screen.queryByRole("button", { name: "Resolve" })).toBeNull();
 	});
 });

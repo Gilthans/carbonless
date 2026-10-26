@@ -5,29 +5,43 @@ import {
 	type DiffLine,
 	type FileHunks,
 	type PrOverview,
+	type ReplyRequest,
+	type ResolveRequest,
 	type ReviewView,
 	type SessionInfo,
 	type StateChange,
 	type ThreadComments,
 	type ThreadsStage,
 	type ThreadsView,
+	type ThreadUpdate,
 	type TimelineView,
+	type WriteError,
 } from "../shared/types";
 
 /**
  * A failed API call: the HTTP status, the server's `error` message and, for
- * refused state changes, their cluster `keys`.
+ * refused state changes, their cluster `keys`; for refused thread writes,
+ * the server's `code` and `url` (WriteError).
  */
 export class ApiError extends Error {
 	constructor(
 		readonly status: number,
 		message: string,
 		readonly keys?: string[],
+		readonly write?: { code?: WriteError["code"]; url?: string },
 	) {
 		super(message);
 		this.name = "ApiError";
 	}
 }
+
+const WRITE_CODES: readonly string[] = [
+	"pending-review",
+	"writes-off",
+	"forbidden",
+	"gone",
+	"invalid",
+] satisfies WriteError["code"][];
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
 	let response: Response;
@@ -40,12 +54,23 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 	}
 	const body: unknown = await response.json().catch(() => null);
 	if (!response.ok) {
-		const { error, keys } = (body ?? {}) as { error?: unknown; keys?: unknown };
+		const { error, keys, code, url } = (body ?? {}) as {
+			error?: unknown;
+			keys?: unknown;
+			code?: unknown;
+			url?: unknown;
+		};
 		throw new ApiError(
 			response.status,
 			typeof error === "string" ? error : `Request failed: ${response.status}`,
 			Array.isArray(keys) && keys.every((k) => typeof k === "string")
 				? keys
+				: undefined,
+			typeof code === "string" && WRITE_CODES.includes(code)
+				? {
+						code: code as WriteError["code"],
+						...(typeof url === "string" ? { url } : {}),
+					}
 				: undefined,
 		);
 	}
@@ -98,6 +123,20 @@ export const fetchContext = (
  */
 export const postStates = (revision: string, changes: StateChange[]) =>
 	post<ReviewView>("/api/review/states", { revision, changes });
+
+/** Posts a reply to GitHub now (REST, never into a pending review). */
+export const postReply = (threadId: string, req: ReplyRequest) =>
+	post<ThreadUpdate>(
+		`/api/threads/${encodeURIComponent(threadId)}/replies`,
+		req,
+	);
+
+/** Resolves or unresolves the thread on GitHub. */
+export const postResolved = (threadId: string, req: ResolveRequest) =>
+	post<ThreadUpdate>(
+		`/api/threads/${encodeURIComponent(threadId)}/resolved`,
+		req,
+	);
 
 export const postRefresh = () => post<SessionInfo>("/api/refresh");
 export const fetchHead = () => request<SessionInfo>("/api/head");

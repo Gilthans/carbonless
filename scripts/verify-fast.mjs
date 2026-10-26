@@ -62,6 +62,10 @@ const E2E_MAP = [
 	],
 	[/^src\/web\/threads\//, ["files-threads"]],
 	[
+		/^src\/web\/threads\/|^src\/web\/overview\/(OverviewPage|WriteWarnings)\.tsx$|^src\/web\/files\/(SyncNotices|ThreadRow)\.tsx$|^src\/server\/(threadWrites|app)\.ts$/,
+		["thread-writes"],
+	],
+	[
 		/^src\/web\/files\/|^src\/server\/diff\//,
 		["files", "files-threads", "sticky", "invisibles", "mobile", "saves"],
 	],

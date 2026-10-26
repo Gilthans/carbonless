@@ -6,6 +6,8 @@ import {
 import { useEffect, useMemo, useSyncExternalStore } from "react";
 import type { StateChange } from "../../shared/types";
 import { postStates, reviewQuery, sessionQuery } from "../api";
+import { unsent, useDrafts } from "../threads/drafts";
+import { useThreadWrites } from "../threads/threadWrites";
 import { overlayReview, StateSync, type SyncState } from "./stateSync";
 
 export { isStale } from "./stateSync";
@@ -87,9 +89,16 @@ export function useReviewView() {
 	return { review, data };
 }
 
-/** Asks before the page unloads (reload, close, leave) with unsaved changes. */
+/**
+ * Asks before the page unloads (reload, close, leave) with unsaved review
+ * states, a reply draft with text, a reply not yet confirmed or a resolve
+ * not yet on GitHub.
+ */
 export function useUnsavedGuard() {
-	const unsaved = useSyncState().pending.size > 0;
+	const states = useSyncState().pending.size > 0;
+	const drafts = unsent(useDrafts());
+	const writes = useThreadWrites().busy;
+	const unsaved = states || drafts || writes;
 	useEffect(() => {
 		if (!unsaved) return;
 		const ask = (event: BeforeUnloadEvent) => {

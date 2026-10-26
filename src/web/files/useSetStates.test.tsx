@@ -2,6 +2,8 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, render } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { draftsFor } from "../threads/drafts";
+import { threadWritesFor } from "../threads/threadWrites";
 import { stateSyncFor, useUnsavedGuard } from "./useSetStates";
 
 function Guard() {
@@ -60,6 +62,69 @@ describe("useUnsavedGuard", () => {
 			await new Promise((r) => setTimeout(r, 0));
 		});
 		expect(stateSyncFor(client).getState().pending.size).toBe(0);
+		expect(leave()).toBe(false);
+	});
+
+	it("asks before leaving with a reply draft, until it's cleared", () => {
+		const client = new QueryClient();
+		render(
+			<QueryClientProvider client={client}>
+				<Guard />
+			</QueryClientProvider>,
+		);
+		act(() => draftsFor(client).setText("T1", "   "));
+		expect(leave()).toBe(false);
+		act(() => draftsFor(client).setText("T1", "Half a thought"));
+		expect(leave()).toBe(true);
+		act(() => draftsFor(client).setText("T1", ""));
+		expect(leave()).toBe(false);
+	});
+
+	it("asks before leaving while a reply or resolve isn't on GitHub yet", async () => {
+		const answers: (() => void)[] = [];
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(
+				(path: string) =>
+					new Promise<Response>((resolve) => {
+						answers.push(() =>
+							resolve(
+								new Response(
+									JSON.stringify({
+										threadId: "T1",
+										resolved: path.endsWith("/resolved"),
+										commentCount: 2,
+										lastActivityAt: "2026-01-01T00:00:00Z",
+										attention: [],
+										yourTurn: false,
+										viewerCan: { reply: true, resolve: true, unresolve: true },
+										comments: { threadId: "T1", comments: [] },
+									}),
+								),
+							),
+						);
+					}),
+			),
+		);
+		const client = new QueryClient();
+		render(
+			<QueryClientProvider client={client}>
+				<Guard />
+			</QueryClientProvider>,
+		);
+		act(() => threadWritesFor(client).setResolved("T1", true));
+		expect(leave()).toBe(true);
+		await act(async () => {
+			answers.shift()?.();
+			await new Promise((r) => setTimeout(r, 0));
+		});
+		expect(leave()).toBe(false);
+		act(() => threadWritesFor(client).reply("T1", "Fixed"));
+		expect(leave()).toBe(true);
+		await act(async () => {
+			answers.shift()?.();
+			await new Promise((r) => setTimeout(r, 0));
+		});
 		expect(leave()).toBe(false);
 	});
 });
