@@ -506,7 +506,8 @@ describe("OverviewPage", () => {
 	it("says who already started reviewing, with their blocking opinion", async () => {
 		renderApp();
 		const who = await screen.findByRole("region", { name: "Who's on it" });
-		expect(who).toHaveTextContent("rev1 already started");
+		// The viewer commented and has progress: they're on it too.
+		expect(who).toHaveTextContent("You and rev1 are reviewing");
 		const rev1 = within(who).getByText("rev1").closest("li");
 		if (!rev1) throw new Error("no rev1 row");
 		const changes = within(rev1).getByRole("img", {
@@ -547,18 +548,127 @@ describe("OverviewPage", () => {
 		);
 	});
 
-	it("says when no one else has started", async () => {
-		renderApp({
-			"/api/overview": ok({
-				...overview,
-				reviews: [],
-				commenters: [],
-				requestedReviewers: [],
-				humanStarted: false,
-			}),
+	describe("who started reviewing, the viewer included", () => {
+		const untouched: ReviewView = {
+			...review,
+			progress: {
+				clusters: counts(6, 0, 0),
+				lines: counts(40, 0, 0),
+				files: { ...counts(3, 0, 0), done: 0 },
+			},
+		};
+		const alone = {
+			...overview,
+			reviews: [],
+			commenters: [],
+			requestedReviewers: [],
+			humanStarted: false,
+		};
+		const yourReview = {
+			author: "octo",
+			state: "COMMENTED" as const,
+			submittedAt: "2026-01-04T09:30:00Z",
+			you: true,
+			bot: false,
+		};
+		const yourComment = {
+			author: "octo",
+			lastAt: "2026-01-04T10:00:00Z",
+			bot: false,
+			you: true,
+		};
+		const line = async () => {
+			const who = await screen.findByRole("region", { name: "Who's on it" });
+			const p = who.querySelector("p");
+			if (!p) throw new Error("no line");
+			return p;
+		};
+
+		it("says when no one else has started", async () => {
+			renderApp({
+				"/api/overview": ok(alone),
+				"/api/review": ok(untouched),
+			});
+			expect(await line()).toHaveTextContent(
+				/^No one else has started reviewing$/,
+			);
 		});
-		const who = await screen.findByRole("region", { name: "Who's on it" });
-		expect(who).toHaveTextContent("No one else has started reviewing");
+
+		it("names the others when the viewer isn't reviewing", async () => {
+			renderApp({
+				"/api/overview": ok({
+					...overview,
+					commenters: overview.commenters.filter((c) => !c.you),
+				}),
+				"/api/review": ok(untouched),
+			});
+			const p = await line();
+			await waitFor(() =>
+				expect(p).toHaveTextContent(/^rev1 already started$/),
+			);
+			expect(p.querySelector("svg")).toHaveClass("text-warn");
+		});
+
+		it.each([
+			["a GitHub review", { reviews: [yourReview] }, untouched],
+			["a comment", { commenters: [yourComment] }, untouched],
+			["reviewed clusters", {}, review],
+			[
+				"crossed-off clusters only",
+				{},
+				{
+					...untouched,
+					progress: {
+						...untouched.progress,
+						clusters: counts(6, 0, 1),
+					},
+				},
+			],
+		])("says you're reviewing after %s", async (_, gh, data) => {
+			renderApp({
+				"/api/overview": ok({ ...alone, ...gh }),
+				"/api/review": ok(data),
+			});
+			const p = await line();
+			await waitFor(() =>
+				expect(p).toHaveTextContent(/^You're reviewing this change$/),
+			);
+			expect(p.querySelector("svg")).toHaveClass("text-ok");
+		});
+
+		it("falls back to GitHub while the review data loads", async () => {
+			renderApp({
+				"/api/overview": ok({ ...alone, commenters: [yourComment] }),
+				"/api/review": { status: 200, body: NEVER },
+			});
+			expect(await line()).toHaveTextContent(/^You're reviewing this change$/);
+			cleanup();
+			renderApp({
+				"/api/overview": ok(alone),
+				"/api/review": { status: 200, body: NEVER },
+			});
+			expect(await line()).toHaveTextContent(
+				/^No one else has started reviewing$/,
+			);
+		});
+
+		it("says you and the others are reviewing, in the warn tone", async () => {
+			renderApp({ "/api/review": ok(untouched) });
+			const p = await line();
+			expect(p).toHaveTextContent(/^You and rev1 are reviewing$/);
+			expect(p.querySelector("svg")).toHaveClass("text-warn");
+		});
+
+		it("says someone else when the others' names are unknown", async () => {
+			renderApp({
+				"/api/overview": ok({ ...alone, humanStarted: true }),
+				"/api/review": ok(review),
+			});
+			const p = await line();
+			await waitFor(() =>
+				expect(p).toHaveTextContent(/^You and someone else are reviewing$/),
+			);
+		});
 	});
 
 	it("sums up readiness in one row of chips: conflicts and CI", async () => {

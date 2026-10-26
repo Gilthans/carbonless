@@ -108,6 +108,27 @@ test("shows the description as GitHub renders it, and who started reviewing", as
 	).toBeVisible();
 });
 
+test("says you're reviewing when only you have", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	await pr({
+		reviews: [
+			{
+				author: { login: "Octo_Cat", __typename: "User" },
+				state: "COMMENTED",
+				submittedAt: "2026-01-04T09:00:00Z",
+			},
+		],
+	});
+	const s = await startCrb();
+	await page.goto(s.url);
+	const who = page.getByRole("region", { name: "Who's on it" });
+	await expect(who).toContainText("You're reviewing this change");
+	await expect(who).not.toContainText("No one else has started reviewing");
+});
+
 test.describe("in Israel's time zone", () => {
 	test.use({ timezoneId: "Asia/Jerusalem" });
 

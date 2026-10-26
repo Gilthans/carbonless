@@ -452,8 +452,52 @@ function None() {
 	return <p className="mt-1 text-sm text-faint">None</p>;
 }
 
-function WhosOnIt({ pr }: { pr: PrOverview }) {
+/**
+ * The viewer is reviewing: a GitHub review or comment of theirs, or
+ * anything reviewed or crossed off here. Until the review data loads, the
+ * GitHub facts alone decide.
+ */
+function viewerReviewing(pr: PrOverview, progress: Progress | undefined) {
+	const marked = progress
+		? progress.clusters.reviewed + progress.clusters.crossedOff > 0
+		: false;
+	return (
+		marked || pr.reviews.some((r) => r.you) || pr.commenters.some((c) => c.you)
+	);
+}
+
+function StartedLine({ pr }: { pr: PrOverview }) {
+	const review = useQuery(reviewQuery);
+	const you = viewerReviewing(pr, review.data?.progress);
 	const names = startedNames(pr);
+	if (pr.humanStarted) {
+		const others = names.length ? names.join(", ") : undefined;
+		return (
+			<>
+				<EyeIcon size={16} aria-hidden className="text-warn" />
+				{you
+					? `You and ${others ?? "someone else"} are reviewing`
+					: `${others ?? "Someone else"} already started`}
+			</>
+		);
+	}
+	if (you) {
+		return (
+			<>
+				<EyeIcon size={16} aria-hidden className="text-ok" />
+				You're reviewing this change
+			</>
+		);
+	}
+	return (
+		<>
+			<CheckCircleIcon size={16} aria-hidden className="text-ok" />
+			No one else has started reviewing
+		</>
+	);
+}
+
+function WhosOnIt({ pr }: { pr: PrOverview }) {
 	const yourReview = pr.reviews.find((r) => r.you);
 	const youCommented = pr.commenters.some((c) => c.you);
 	const reviewers = pr.reviews.filter((r) => !r.you);
@@ -468,17 +512,7 @@ function WhosOnIt({ pr }: { pr: PrOverview }) {
 	return (
 		<Section label="Who's on it">
 			<p className="flex items-center gap-2 font-medium">
-				{pr.humanStarted ? (
-					<>
-						<EyeIcon size={16} aria-hidden className="text-warn" />
-						{`${names.length ? names.join(", ") : "Someone else"} already started`}
-					</>
-				) : (
-					<>
-						<CheckCircleIcon size={16} aria-hidden className="text-ok" />
-						No one else has started reviewing
-					</>
-				)}
+				<StartedLine pr={pr} />
 			</p>
 			<div className="grid gap-4 sm:grid-cols-3">
 				<Column icon={CodeReviewIcon} title="Reviews">
