@@ -88,6 +88,16 @@ accessible name says it ("Added", "Renamed from <old>", "Mode changed:
 100644 → 100755"); the header icon shows it on hover, and the path's and
 the tree row's tooltips start with it, so touch and keyboard get it too.
 
+## File counts
+
+Every file header and tree row shows `+X −Y` (`ok`/`bad`) and its cluster
+count with a stack icon, whatever unit the Lines / Clusters / Files toggle
+picks (`ChangeCount`, `src/web/files/status.tsx`). The toggle switches only
+progress: the bars and the "3 / 8 lines" style fractions. In the header the
+counts sit beside the path, so a phone's second row keeps room for the
+actions and the progress; the header's progress summary names them ("3 lines
+added, 2 deleted · 2 clusters").
+
 ## Settings
 
 A gear (tooltip "Settings", 40px) at the right of the app bar's last row,
