@@ -134,6 +134,10 @@ checking against a real PR): `docs/product-rules.md`.
   branch, restarts the owner's running instance and sends the link.
 - Commits only via `git commit --only -- <paths>` in a shared tree; never a bare
   `git stash`. Merging to `master` only when the owner asks, as a fast-forward
-  after a green `pnpm verify`. Never push, and never write to GitHub.
+  after a green `pnpm verify`. Never push, and never write to GitHub, with one
+  exception: the owner's private scratch PR
+  https://github.com/Gilthans/carbonless-scratch/pull/1, made for testing
+  carbonless's GitHub writes. A brief may allow pushing to that repo and
+  replying, resolving or reviewing on its PRs; nowhere else.
 - Report to the owner concisely: what changed, measured results, what is
   still open, and questions that are theirs to decide.
