@@ -1,5 +1,6 @@
 import type { FileView } from "../../shared/types";
 import { Tooltip, TooltipPath } from "../Tooltip";
+import { ChangeKindIcon, changeKindLabel } from "./changeKind";
 import { Meter } from "./ProgressBar";
 import { ChangeCount, crossOffReasons, StatusIcon } from "./status";
 import { describeFileProgress, fileUnitProgress, type Unit } from "./unit";
@@ -85,6 +86,7 @@ function FileItem(props: {
 			<Tooltip
 				content={
 					<>
+						{file.status === "renamed" ? "Renamed" : changeKindLabel(file)} ·{" "}
 						<TooltipPath>{path}</TooltipPath> · {numbers}
 					</>
 				}
@@ -104,6 +106,7 @@ function FileItem(props: {
 						}`}
 					>
 						<StatusIcon file={file} />
+						<ChangeKindIcon file={file} />
 						<span className="min-w-0 flex-1 truncate font-mono text-[0.8125rem]">
 							{file.crossedOff ? (
 								<s className="text-muted decoration-done">{name}</s>

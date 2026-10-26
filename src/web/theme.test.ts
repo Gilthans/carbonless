@@ -164,6 +164,23 @@ describe("color tokens", () => {
 		}
 	});
 
+	it("file change-kind icons stand out at 3:1 wherever a file is listed", () => {
+		// File headers (raised), the tree on the sidebar and sheet, a hovered
+		// row (overlay) and the current row (accent/12).
+		const behind = [...SURFACES, "overlay"].map((n) => token(n));
+		for (const bg of ["canvas", "surface"]) {
+			behind.push(over(token("accent"), 0.12, token(bg)));
+		}
+		for (const kind of ["ok", "bad", "warn", "muted"]) {
+			for (const bg of behind) {
+				expect(
+					contrast(token(kind), bg),
+					`${kind} on ${bg}`,
+				).toBeGreaterThanOrEqual(3);
+			}
+		}
+	});
+
 	it("the focus ring shows at 3:1 on everything it can sit on", () => {
 		const behind = [
 			...SURFACES,

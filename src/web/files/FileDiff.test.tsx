@@ -1,6 +1,13 @@
 // @vitest-environment jsdom
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import {
+	act,
+	cleanup,
+	render,
+	screen,
+	waitFor,
+	within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
@@ -592,6 +599,24 @@ describe("FileDiff", () => {
 		expect(
 			screen.getByRole("button", { name: "Undo cross-off" }),
 		).toBeEnabled();
+	});
+
+	it("marks the header with the file's kind of change", async () => {
+		setup(file([cluster("k1")], { status: "added", deletions: 0 }));
+		const section = screen.getByRole("region", { name: "src/a.ts" });
+		expect(within(section).getByRole("img", { name: "Added" })).toBeVisible();
+		// Touch and keyboard: the path's tooltip (it takes focus) says it too.
+		act(() => screen.getByRole("group", { name: "Path: src/a.ts" }).focus());
+		const tip = [...document.querySelectorAll('[role="tooltip"]')].filter(
+			(t) => !t.hasAttribute("hidden"),
+		);
+		expect(tip).toHaveLength(1);
+		expect(tip[0]).toHaveTextContent("Added · src/a.ts");
+		cleanup();
+		setup(file([cluster("k1")], { status: "renamed", oldPath: "src/old.ts" }));
+		expect(
+			screen.getByRole("img", { name: "Renamed from src/old.ts" }),
+		).toBeVisible();
 	});
 
 	it("names the file actions and explains them in a short tooltip", async () => {

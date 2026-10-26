@@ -2,6 +2,7 @@ import { useLayoutEffect, useRef, useState } from "react";
 import type { ClusterView, FileView, StateChange } from "../../shared/types";
 import { Tooltip, TooltipPath, type TooltipTriggerProps } from "../Tooltip";
 import { ErrorMessage } from "../ui";
+import { ChangeKindIcon, changeKindLabel } from "./changeKind";
 import { DiffBody } from "./DiffBody";
 import type { Landing } from "./landing";
 import { Meter } from "./ProgressBar";
@@ -92,9 +93,12 @@ function HeaderIconButton(props: {
  */
 function PathScroller({
 	text,
+	kind,
 	className = "",
 }: {
 	text: string;
+	/** The kind of change, first in the tooltip (touch and keyboard get it here). */
+	kind: string;
 	className?: string;
 }) {
 	const box = useRef<HTMLDivElement>(null);
@@ -118,7 +122,14 @@ function PathScroller({
 	}, [text]);
 	return (
 		<div className={`relative min-w-0 flex-1 ${className}`}>
-			<Tooltip content={<TooltipPath>{text}</TooltipPath>} describe={false}>
+			<Tooltip
+				content={
+					<>
+						{kind} · <TooltipPath>{text}</TooltipPath>
+					</>
+				}
+				describe={false}
+			>
 				{(trigger) => (
 					// biome-ignore lint/a11y/useSemanticElements: a named group; a fieldset is for form controls, not a path.
 					<div
@@ -314,10 +325,17 @@ export function FileDiff(props: {
 				<Tooltip content={summary} describe={false}>
 					{(summaryTrigger) => (
 						<div className="flex min-h-11 flex-wrap items-center gap-x-1.5 pt-1 @lg:flex-nowrap @lg:pt-0 @2xl:gap-x-3">
-							<PathScroller
-								text={path}
-								className="basis-full @lg:order-3 @lg:basis-0"
-							/>
+							<div className="flex min-w-0 flex-1 basis-full items-center gap-1.5 @lg:order-3 @lg:basis-0">
+								<ChangeKindIcon file={file} tooltip />
+								<PathScroller
+									text={path}
+									kind={
+										file.status === "renamed"
+											? "Renamed"
+											: changeKindLabel(file)
+									}
+								/>
+							</div>
 							<button
 								type="button"
 								aria-expanded={expanded}

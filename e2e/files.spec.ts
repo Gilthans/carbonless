@@ -774,3 +774,71 @@ test("paths in tooltips are monospace, like paths everywhere", async ({
 		await expect.poll(pathFont).toMatch(/monospace/);
 	});
 });
+
+test("each file shows whether it was added, deleted, modified or renamed", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	await pr({
+		base: {
+			"src/edit.ts": text(util),
+			"src/gone.ts": text(util),
+			"docs/old.md": "# Notes\n\nNothing changes here.\n",
+		},
+		files: [
+			{
+				message: "kinds",
+				delete: ["src/gone.ts"],
+				rename: { "docs/old.md": "docs/new.md" },
+				files: {
+					"src/edit.ts": text(util.map((l, i) => (i === 2 ? "x" : l))),
+					"src/fresh.ts": text(core.slice(0, 3)),
+				},
+			},
+		],
+	});
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	const kinds: [string, string, RegExp][] = [
+		["src/fresh.ts", "Added", /fresh\.ts/],
+		["src/gone.ts", "Deleted", /gone\.ts/],
+		["src/edit.ts", "Modified", /edit\.ts/],
+		["docs/new.md", "Renamed from docs/old.md", /new\.md/],
+	];
+	for (const [path, name] of kinds) {
+		const section = fileSection(page, path);
+		const icon = section.getByRole("img", { name, exact: true });
+		await expect(icon).toBeVisible();
+		// Beside the path, on its row.
+		const iconBox = await icon.boundingBox();
+		const pathBox = await section.getByTestId("file-path").boundingBox();
+		expect(iconBox && pathBox).toBeTruthy();
+		if (iconBox && pathBox) {
+			expect(iconBox.x + iconBox.width).toBeLessThanOrEqual(pathBox.x);
+			const middle = (b: { y: number; height: number }) => b.y + b.height / 2;
+			expect(Math.abs(middle(iconBox) - middle(pathBox))).toBeLessThan(4);
+		}
+	}
+	// The path's tooltip says it too (the one way on touch).
+	await fileSection(page, "src/gone.ts").getByTestId("file-path").focus();
+	await expect(page.locator('[role="tooltip"]:not([hidden])')).toHaveText(
+		"Deleted · src/gone.ts",
+	);
+	await page.keyboard.press("Escape");
+	await withTree(page, async (tree) => {
+		for (const [, name, row] of kinds) {
+			await expect(
+				tree
+					.getByRole("button", { name: row })
+					.getByRole("img", { name, exact: true }),
+			).toBeVisible();
+		}
+	});
+	// Nothing pushes the page sideways.
+	expect(
+		await page.evaluate(
+			() => document.documentElement.scrollWidth <= window.innerWidth,
+		),
+	).toBe(true);
+});

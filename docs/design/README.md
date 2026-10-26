@@ -77,6 +77,17 @@ Out of scope: homoglyphs (a Cyrillic `а` for a Latin `a` shows as itself),
 and the ordinary bidi of natural right-to-left text, which can reorder
 neutral punctuation next to it without any override.
 
+## File change kinds
+
+Every file, in its header and in the tree, has a 12px icon before its
+path for what happened to it (`src/web/files/changeKind.tsx`), GitHub's
+diff octicons, so the shape alone tells them apart: plus in a square
+(added, `ok`), minus (deleted, `bad`), dot (modified, `warn`, never green
+or red), arrow (renamed, `muted`), slash (type changed, `muted`). Its
+accessible name says it ("Added", "Renamed from <old>", "Mode changed:
+100644 → 100755"); the header icon shows it on hover, and the path's and
+the tree row's tooltips start with it, so touch and keyboard get it too.
+
 ## Settings
 
 A gear (tooltip "Settings", 40px) at the right of the app bar's last row,
