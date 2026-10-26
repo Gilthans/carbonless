@@ -245,6 +245,10 @@ export function FileDiff(props: {
 		if (props.expanded === undefined) setOwnExpanded(next);
 		props.onExpandedChange?.(next);
 	};
+	// Read after an await: the reviewer may have reopened this file while a
+	// file-wide save ran.
+	const expandedNow = useRef(expanded);
+	expandedNow.current = expanded;
 	const setStates = useSetStates({ onStaleChange: props.onStaleChange });
 	// Also true between a split batch's requests.
 	const [batching, setBatching] = useState(false);
@@ -265,6 +269,19 @@ export function FileDiff(props: {
 		} finally {
 			setBatching(false);
 		}
+	};
+	/**
+	 * Marking the rest reviewed or crossing it off finishes the file: it closes
+	 * at once, like "Collapse file" does (its header stays where it is, the
+	 * next file below), without waiting for the save. A failed save reopens
+	 * it, the error in view.
+	 */
+	const finishAll = (changes: StateChange[]) => {
+		const closing = expanded;
+		if (closing) setExpanded(false);
+		saveAll(changes).catch(() => {
+			if (closing && !expandedNow.current) setExpanded(true);
+		});
 	};
 	// Only an unreviewed cluster's box marks it reviewed: unchecking a reviewed
 	// one or undoing a cross-off makes it unreviewed (R21).
@@ -445,12 +462,12 @@ export function FileDiff(props: {
 										disabled={pending || crossToggle.none}
 										onClick={() => {
 											// What the reviewer already read stays reviewed (R21).
-											saveAll(
+											finishAll(
 												unreviewed.map((c) => ({
 													key: c.key,
 													state: "crossed-off",
 												})),
-											).catch(() => {});
+											);
 										}}
 									/>
 								)}
@@ -465,12 +482,12 @@ export function FileDiff(props: {
 									tone="green"
 									disabled={pending || unreviewed.length === 0}
 									onClick={() => {
-										saveAll(
+										finishAll(
 											unreviewed.map((c) => ({
 												key: c.key,
 												state: "reviewed",
 											})),
-										).catch(() => {});
+										);
 									}}
 								/>
 							</div>

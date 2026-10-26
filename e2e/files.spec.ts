@@ -170,6 +170,9 @@ test("crossing off keeps reviewed clusters, and undoing leaves clusters unreview
 	await expect(fileProgress(section)).toContainText("done · 1 crossed off");
 	await chooseUnit(page, "Clusters");
 
+	// Crossing off finished the file, so it closed; open it to undo a cluster.
+	await expect(section.getByTestId("diff-line")).toHaveCount(0);
+	await section.getByRole("button", { name: "Expand file" }).click();
 	// Undo through the cluster's box: unreviewed, not reviewed.
 	const undoBox = section.getByRole("checkbox", { name: "Undo cross-off" });
 	await expect(undoBox).toHaveAccessibleDescription("Crossed off");
@@ -204,6 +207,9 @@ test("crossing off keeps reviewed clusters, and undoing leaves clusters unreview
 		"false",
 	);
 	await expect(fileActionButton(section, "Cross off file")).toBeEnabled();
+	// The file closed on crossing off; undoing doesn't open or close it.
+	await expect(section.getByTestId("diff-line")).toHaveCount(0);
+	await section.getByRole("button", { name: "Expand file" }).click();
 	await expect(
 		section.getByRole("checkbox", { name: "Mark cluster reviewed" }).first(),
 	).toBeChecked();
@@ -262,6 +268,87 @@ test("mark remaining reviewed", async ({ page, pr, startCrb }) => {
 	await chooseUnit(page, "Files");
 	await expect(fileProgress(section)).toContainText("done");
 	await expect(progress(page)).toContainText("1 / 3 files reviewed");
+});
+
+test("marking the rest reviewed or crossing it off closes the file", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	await pr(fixture);
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	const bar = progress(page);
+	for (const [path, action, done] of [
+		["src/core.ts", "Mark remaining reviewed", "2 / 2 clusters"],
+		["src/util.ts", "Cross off file", "crossed off"],
+	] as const) {
+		const section = await expand(page, path);
+		await expect(section.getByTestId("diff-line").first()).toBeVisible();
+		await fileAction(section, action);
+		await expect(fileProgress(section)).toContainText(done);
+		await expect(
+			section.getByRole("button", { name: "Expand file" }),
+		).toBeVisible();
+		await expect(section.getByTestId("diff-line")).toHaveCount(0);
+	}
+	await expect(bar).toContainText("2 / 3 clusters reviewed");
+
+	// Undoing the cross-off of an open file leaves it open.
+	const util = await expand(page, "src/util.ts");
+	await fileAction(util, "Undo cross-off");
+	await expect(fileActionButton(util, "Cross off file")).toBeEnabled();
+	await expect(util.getByTestId("diff-line").first()).toBeVisible();
+	// So does marking its clusters one by one, even the last one.
+	await util.getByRole("checkbox", { name: "Mark cluster reviewed" }).click();
+	await expect(fileProgress(util)).toContainText("1 / 1 cluster");
+	await expect(
+		util.getByRole("button", { name: "Collapse file" }),
+	).toBeVisible();
+	await expect(util.getByTestId("diff-line").first()).toBeVisible();
+});
+
+test("a file closes at once on marking it all, and reopens if the save fails", async ({
+	page,
+	pr,
+	startCrb,
+	expectConsoleError,
+}) => {
+	expectConsoleError(/500|Failed to load resource/);
+	await pr(fixture);
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	// Saves fail, but only once the test lets them answer.
+	const held: (() => void)[] = [];
+	await page.route("**/api/review/states", async (route) => {
+		await new Promise<void>((r) => {
+			held.push(r);
+		});
+		await route.fulfill({
+			status: 500,
+			contentType: "application/json",
+			body: JSON.stringify({ error: "disk full" }),
+		});
+	});
+	const section = await expand(page, "src/core.ts");
+	for (const action of ["Mark remaining reviewed", "Cross off file"]) {
+		await fileAction(section, action);
+		// Closed without waiting for the save.
+		await expect(section.getByTestId("diff-line")).toHaveCount(0);
+		await expect(
+			section.getByRole("button", { name: "Expand file" }),
+		).toBeVisible();
+		await expect.poll(() => held.length).toBe(1);
+		held.shift()?.();
+		// The failure reopens it, the error in view.
+		await expect(section.getByText(/disk full/)).toBeVisible();
+		await expect(
+			section.getByRole("button", { name: "Collapse file" }),
+		).toBeVisible();
+		await expect(section.getByTestId("diff-line").first()).toBeVisible();
+		await expect(fileActionButton(section, action)).toBeEnabled();
+	}
+	await expect(progress(page)).toContainText("0 / 4 clusters reviewed");
 });
 
 test("file actions are outlined icon buttons with tooltips", async ({
@@ -515,6 +602,89 @@ test("switching the unit keeps the line in place when the bar's height changes",
 		page.getByText("1 cluster without changed lines left"),
 	).toHaveCount(0);
 	expect(Math.abs((await top()) - before)).toBeLessThanOrEqual(2);
+});
+
+/** A file with a 300-line change, then enough short ones to fill a screen. */
+const longThenMoreFixture: PrOptions = {
+	base: {
+		"b/long.ts": text(long),
+		...Object.fromEntries(
+			Array.from({ length: 12 }, (_, i) => [`c/more${i}.ts`, text(util)]),
+		),
+	},
+	files: [
+		{
+			message: "PR change",
+			files: {
+				"b/long.ts": text(long.map((l) => `${l} changed`)),
+				...Object.fromEntries(
+					Array.from({ length: 12 }, (_, i) => [
+						`c/more${i}.ts`,
+						text(util.map((l) => `${l} ${i}`)),
+					]),
+				),
+			},
+		},
+	],
+};
+
+test("marking a long file reviewed from its stuck header closes it in place", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	await pr(longThenMoreFixture);
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	const section = await expand(page, "b/long.ts");
+	await section
+		.getByTestId("diff-line")
+		.filter({ hasText: /long 250 changed$/ })
+		.scrollIntoViewIfNeeded();
+	const header = section.locator("header");
+	expect((await section.boundingBox())?.y ?? 0).toBeLessThan(-1000);
+	const stuck = (await header.boundingBox())?.y ?? Number.NaN;
+	expect(Math.abs(stuck - (await barBottom(page)))).toBeLessThanOrEqual(1);
+
+	await fileAction(section, "Mark remaining reviewed");
+	await expect(section.getByTestId("diff-line")).toHaveCount(0);
+	// The header stays where it was, the next file right below it.
+	await expect(header).toBeInViewport();
+	await expect
+		.poll(async () =>
+			Math.abs(((await header.boundingBox())?.y ?? 1e9) - stuck),
+		)
+		.toBeLessThanOrEqual(2);
+	const next = fileSection(page, "c/more0.ts").locator("header");
+	await expect(next).toBeInViewport();
+	const headerBox = await header.boundingBox();
+	const nextBox = await next.boundingBox();
+	expect(
+		Math.abs(
+			(nextBox?.y ?? 1e9) - ((headerBox?.y ?? 0) + (headerBox?.height ?? 0)),
+		),
+	).toBeLessThan(40);
+});
+
+test("crossing off the last long file from its stuck header keeps it in view", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	await pr(longFixture);
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	const section = await expand(page, "b/long.ts");
+	await section
+		.getByTestId("diff-line")
+		.filter({ hasText: /long 250 changed$/ })
+		.scrollIntoViewIfNeeded();
+	expect((await section.boundingBox())?.y ?? 0).toBeLessThan(-1000);
+	await fileAction(section, "Cross off file");
+	await expect(section.getByTestId("diff-line")).toHaveCount(0);
+	// Too near the end to stay put: the page ends, the header still shows.
+	await expect(section.locator("header")).toBeInViewport();
+	await expect(fileSection(page, "c/last.ts")).toBeInViewport();
 });
 
 test("an open file's header sticks below the progress bar", async ({

@@ -752,6 +752,159 @@ describe("FileDiff", () => {
 		expect(onExpandedChange).toHaveBeenLastCalledWith(false);
 	});
 
+	/** A save that answers only when `answer` is called, with `status`. */
+	const heldSave = (f: FileView, status: number) => {
+		let answer: (() => void) | undefined;
+		const result = setup(f, async () => {
+			await new Promise<void>((r) => {
+				answer = r;
+			});
+			return status === 200
+				? { status, body: view(f) }
+				: { status, body: { error: "boom" } };
+		});
+		return {
+			...result,
+			answer: async () => {
+				await waitFor(() => expect(answer).toBeDefined());
+				await act(async () => answer?.());
+			},
+		};
+	};
+
+	it.each([["Mark remaining reviewed"], ["Cross off file"]])(
+		"collapses the file at once on %s",
+		async (name) => {
+			const f = file([cluster("k1"), cluster("k2")]);
+			const { posts, user, answer } = heldSave(f, 200);
+			await user.click(screen.getByRole("button", { name: "Expand file" }));
+			expect(await screen.findAllByText("new five")).not.toHaveLength(0);
+			await user.click(screen.getByRole("button", { name }));
+			// Closed before the save answers.
+			expect(
+				screen.getByRole("button", { name: "Expand file" }),
+			).toBeInTheDocument();
+			expect(screen.queryByText("new five")).toBeNull();
+			await answer();
+			await waitFor(() => expect(posts()).toHaveLength(1));
+			expect(
+				screen.getByRole("button", { name: "Expand file" }),
+			).toBeInTheDocument();
+		},
+	);
+
+	it.each([["Mark remaining reviewed"], ["Cross off file"]])(
+		"reopens the file when %s fails",
+		async (name) => {
+			const f = file([cluster("k1"), cluster("k2")]);
+			const { user, answer } = heldSave(f, 500);
+			await user.click(screen.getByRole("button", { name: "Expand file" }));
+			await user.click(screen.getByRole("button", { name }));
+			expect(
+				screen.getByRole("button", { name: "Expand file" }),
+			).toBeInTheDocument();
+			await answer();
+			expect(await screen.findByText(/boom/)).toBeInTheDocument();
+			expect(
+				screen.getByRole("button", { name: "Collapse file" }),
+			).toBeInTheDocument();
+			expect(await screen.findAllByText("new five")).not.toHaveLength(0);
+		},
+	);
+
+	it("leaves a closed file closed when its file-wide save fails", async () => {
+		const f = file([cluster("k1")]);
+		const { user, answer } = heldSave(f, 500);
+		await user.click(
+			screen.getByRole("button", { name: "Mark remaining reviewed" }),
+		);
+		await answer();
+		expect(await screen.findByText(/boom/)).toBeInTheDocument();
+		expect(
+			screen.getByRole("button", { name: "Expand file" }),
+		).toBeInTheDocument();
+	});
+
+	it("keeps the file open after marking its last cluster by hand", async () => {
+		const f = file([cluster("k1")]);
+		const { posts, user } = setup(f, () => ({ status: 200, body: view(f) }));
+		await user.click(screen.getByRole("button", { name: "Expand file" }));
+		await user.click(
+			await screen.findByRole("checkbox", { name: "Mark cluster reviewed" }),
+		);
+		await waitFor(() => expect(posts()).toHaveLength(1));
+		await waitFor(() =>
+			expect(
+				screen.getByRole("checkbox", { name: "Mark cluster reviewed" }),
+			).toBeEnabled(),
+		);
+		expect(
+			screen.getByRole("button", { name: "Collapse file" }),
+		).toBeInTheDocument();
+	});
+
+	it("keeps the file open after undoing a cross-off", async () => {
+		const f = file([
+			cluster("k1", { state: "crossed-off", reason: "generated" }),
+		]);
+		const { posts, user } = setup(f, () => ({ status: 200, body: view(f) }));
+		await user.click(screen.getByRole("button", { name: "Expand file" }));
+		await user.click(screen.getByRole("button", { name: "Undo cross-off" }));
+		await waitFor(() => expect(posts()).toHaveLength(1));
+		await waitFor(() =>
+			expect(
+				screen.getByRole("button", { name: "Undo cross-off" }),
+			).toBeEnabled(),
+		);
+		expect(
+			screen.getByRole("button", { name: "Collapse file" }),
+		).toBeInTheDocument();
+	});
+
+	it("doesn't reopen a failed file the reviewer already reopened", async () => {
+		let answer: (() => void) | undefined;
+		const f = file([cluster("k1")]);
+		const onExpandedChange = vi.fn();
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+				if (init?.method === "POST") {
+					await new Promise<void>((r) => {
+						answer = r;
+					});
+					return new Response(JSON.stringify({ error: "boom" }), {
+						status: 500,
+					});
+				}
+				return new Response(JSON.stringify(hunks), { status: 200 });
+			}),
+		);
+		const queryClient = new QueryClient();
+		const shown = (expanded: boolean) => (
+			<QueryClientProvider client={queryClient}>
+				<FileDiff
+					file={f}
+					revision="r1"
+					unit="clusters"
+					expanded={expanded}
+					onExpandedChange={onExpandedChange}
+				/>
+			</QueryClientProvider>
+		);
+		const { rerender } = render(shown(true));
+		await userEvent.click(
+			screen.getByRole("button", { name: "Mark remaining reviewed" }),
+		);
+		expect(onExpandedChange).toHaveBeenLastCalledWith(false);
+		rerender(shown(false));
+		// The reviewer opened it again before the save failed.
+		rerender(shown(true));
+		await waitFor(() => expect(answer).toBeDefined());
+		await act(async () => answer?.());
+		expect(await screen.findByText(/boom/)).toBeInTheDocument();
+		expect(onExpandedChange).toHaveBeenCalledTimes(1);
+	});
+
 	it("disables the file actions while a write is pending", async () => {
 		let answer: (() => void) | undefined;
 		const f = file([cluster("k1"), cluster("k2")]);
