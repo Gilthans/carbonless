@@ -37,13 +37,22 @@ const VERBS = {
 	"crossed-off": "crossed off",
 } as const;
 
+/** Which view of a PR a review is of (dev and pinned modes; see prKey). */
+export interface PrView {
+	/** As of this cutoff (canonical ISO). */
+	asOf?: string;
+	/** Pinned on this head commit (full OID, crb --head). */
+	head?: string;
+}
+
 /**
  * The source key: `<owner>/<repo>#<number>`, lowercased. As of a cutoff
- * (dev mode), `@<cutoff>` follows, so that view gets a review of its own and
- * never touches the PR's real one.
+ * (dev mode), `@<cutoff>` follows; pinned on a head (crb --head),
+ * `^<head>`. Each such view gets a review of its own and never touches the
+ * PR's real one. (`^` never occurs in an ISO time, `@` never in an OID.)
  */
-export const prKey = (pr: ReviewPr, asOf?: string) =>
-	`${pr.owner.toLowerCase()}/${pr.repo.toLowerCase()}#${pr.number}${asOf ? `@${asOf}` : ""}`;
+export const prKey = (pr: ReviewPr, view: PrView = {}) =>
+	`${pr.owner.toLowerCase()}/${pr.repo.toLowerCase()}#${pr.number}${view.asOf ? `@${view.asOf}` : ""}${view.head ? `^${view.head}` : ""}`;
 const lookupRef = (key: string) =>
 	`refs/crb/lookup/github-pr/${createHash("sha256").update(key).digest("hex")}`;
 const reviewRef = (id: string) => `refs/crb/reviews/${id}`;
@@ -57,22 +66,23 @@ const reviewerRef = (id: string, slug: string) =>
 export class ReviewService {
 	constructor(private readonly store: RefStore) {}
 
-	/** The review of this PR, or null if nobody started one. */
-	findReview(pr: ReviewPr, asOf?: string): Promise<string | null> {
-		return this.#readLookup(lookupRef(prKey(pr, asOf)));
+	/** The review of this PR (or of `view` of it), or null if nobody started one. */
+	findReview(pr: ReviewPr, view: PrView = {}): Promise<string | null> {
+		return this.#readLookup(lookupRef(prKey(pr, view)));
 	}
 
 	/**
 	 * The review of this PR, created (meta and lookup refs) on first use.
-	 * `asOf`: the separate review of the PR as of that cutoff.
+	 * `view`: the separate review of the PR as of a cutoff, or pinned on a
+	 * head; its `review-created` event records which in `details`.
 	 */
 	async findOrCreateReview(
 		pr: ReviewPr,
 		actor: string,
-		asOf?: string,
+		view: PrView = {},
 	): Promise<string> {
 		checkSlug(actor);
-		const key = prKey(pr, asOf);
+		const key = prKey(pr, view);
 		const lookup = lookupRef(key);
 		const found = await this.#readLookup(lookup);
 		if (found) return found;
@@ -83,7 +93,14 @@ export class ReviewService {
 			source: "github-pr",
 			key,
 			pr: { owner, repo, number, url, baseBranch, headBranch, headRepo },
-			...(asOf ? { details: { asOf } } : {}),
+			...(view.asOf || view.head
+				? {
+						details: {
+							...(view.asOf ? { asOf: view.asOf } : {}),
+							...(view.head ? { head: view.head } : {}),
+						},
+					}
+				: {}),
 		});
 		const commit = await this.store.commit(
 			null,

@@ -70,8 +70,9 @@ const E2E_MAP = [
 	[/^src\/web\/sticky\.ts$/, ["sticky", "files"]],
 	[
 		/^src\/server\/asOf\.ts$|^src\/web\/(HeadBanner|RelativeTime)\.tsx$/,
-		["asof", "overview"],
+		["asof", "overview", "pinned-head"],
 	],
+	[/^src\/server\/pinnedHead\.ts$/, ["pinned-head"]],
 	[
 		/^src\/web\/(brand\/|Tooltip\.tsx$|theme)|^src\/web\/index\.css$/,
 		["design", "mobile"],

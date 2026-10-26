@@ -256,6 +256,10 @@ const OID = /^[0-9a-f]{40}([0-9a-f]{24})?$/;
  * refs/pull/<n>/head may have moved past (or force-pushed away): it is then
  * fetched by OID. The base is the base branch's tip at the cutoff, the last
  * first-parent commit committed by then.
+ *
+ * A `pinned` head (crb --head) takes the PR head's place against the base
+ * branch's current tip; it is fetched by OID too when the clone lacks it (a
+ * force-push dropped it from the PR).
  */
 export async function fetchPr(
 	path: string,
@@ -263,9 +267,10 @@ export async function fetchPr(
 	asOf?: string,
 	/** Stops the fetch (a session closing). */
 	signal?: AbortSignal,
+	pinned?: string,
 ): Promise<{ baseTip: string; head: string; mergeBase: string }> {
 	const base = meta.baseBranch;
-	const head = meta.headOid;
+	const head = pinned ?? meta.headOid;
 	if (!OID.test(head)) {
 		throw new GhError(`gh returned an unexpected PR head: ${head}`);
 	}
@@ -294,18 +299,20 @@ export async function fetchPr(
 				() => true,
 				() => false,
 			);
-		if (asOf && !(await present())) {
+		if ((asOf || pinned) && !(await present())) {
 			await runGit(
 				path,
 				[...GH_CREDENTIALS, "fetch", "--quiet", "--no-tags", "origin", head],
-				{ env: { GIT_TERMINAL_PROMPT: "0" }, allowFailure: true },
+				{ env: { GIT_TERMINAL_PROMPT: "0" }, allowFailure: true, signal },
 			);
 		}
 		if (!(await present())) {
 			throw new GhError(
-				asOf
-					? `PR head ${head} as of ${asOf} could not be fetched from GitHub`
-					: `PR head ${head} is not on GitHub yet (the PR may have just been updated); try again`,
+				pinned
+					? `Commit ${head} could not be fetched from GitHub`
+					: asOf
+						? `PR head ${head} as of ${asOf} could not be fetched from GitHub`
+						: `PR head ${head} is not on GitHub yet (the PR may have just been updated); try again`,
 			);
 		}
 		const baseTip = asOf

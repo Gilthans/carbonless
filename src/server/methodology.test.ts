@@ -165,6 +165,52 @@ describe.each(METHODOLOGIES)("$name", (m) => {
 		expect((await again.review()).progress.clusters.reviewed).toBe(1);
 	});
 
+	it("pinned on the reviewed head (--head reviewed): that head's own changes against today's base, though a force-push dropped it, through the landing and gc", async () => {
+		// The clone first sees the PR updated: a rebase's first head is
+		// fetched by OID.
+		stage("updated");
+		const pinned = () =>
+			Session.open(ARG, process.cwd(), () => {}, {
+				head: { kind: "reviewed" },
+				viewer: "rev1",
+			});
+		const s = await pinned();
+		expect(s.info()).toMatchObject({
+			snapshotHead: repo.heads.opened,
+			currentHead: repo.heads.updated,
+			pinnedHead: repo.heads.opened,
+			headMoved: m.update !== "none",
+		});
+		expectPrOwnChanges(s);
+		const key = s.snapshot().files[0]?.clusters[0]?.key ?? "";
+		await s.setStates(s.snapshot().revision, [{ key, state: "reviewed" }]);
+		stage("landed");
+		await s.refresh();
+		expect(s.info()).toMatchObject({
+			snapshotHead: repo.heads.opened,
+			patchset: 1,
+		});
+		expectPrOwnChanges(s);
+		const clone = clonePath("acme", "widget");
+		const git = (...args: string[]) =>
+			execFileSync("git", ["-C", clone, ...args], { env: testGitEnv() });
+		git("reflog", "expire", "--expire=now", "--all");
+		git("gc", "--quiet", "--prune=now");
+		// Started, so it opens once landed too; the PR's own review never started.
+		const again = await pinned();
+		expect(again.info()).toMatchObject({
+			snapshotHead: repo.heads.opened,
+			patchset: 1,
+		});
+		expectPrOwnChanges(again);
+		expect((await again.review()).progress.clusters.reviewed).toBe(1);
+		if (m.landing === "open") {
+			expect((await open()).info().patchset).toBeNull();
+		} else {
+			await expect(open()).rejects.toThrow("already merged");
+		}
+	});
+
 	it("builds thread code from the clone: the PR's own diff at each comment's commit, through the update and the landing", async () => {
 		/** A RIGHT line comment on a.txt, on `commit`, made `at`. */
 		const thread = (

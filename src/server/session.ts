@@ -15,6 +15,7 @@ import { ensureClone, fetchPr } from "./clone.js";
 import { buildSnapshot, loadContext, loadFileHunks } from "./diff/snapshot.js";
 import {
 	fetchHeadAsOf,
+	fetchPinnedHead,
 	fetchPrMeta,
 	type PrMeta,
 	type PrRef,
@@ -23,10 +24,12 @@ import {
 	viewerSlug,
 } from "./gh.js";
 import { OverviewRead } from "./overviewRead.js";
+import type { HeadSpec } from "./pinnedHead.js";
 import { buildReviewView } from "./review/coverage.js";
 import type { ProgressState } from "./review/fold.js";
 import { RefStore } from "./review/refStore.js";
 import { ReviewService, StaleSnapshotError } from "./review/reviews.js";
+import { slugify } from "./slug.js";
 import { ThreadCodeSource } from "./threadCode.js";
 
 /** Reads kept for pages still showing them (see Session.threads). */
@@ -35,7 +38,7 @@ const KEPT_READS = 3;
 /** A read of the overview that is no longer kept (HTTP 410). */
 export class UnknownReadError extends Error {}
 
-/** Hidden dev options (crb --as-of, --viewer). */
+/** crb --head and the hidden dev options (--as-of, --viewer). */
 export interface SessionOptions {
 	/**
 	 * Show the PR as of this cutoff (canonical ISO, see parseAsOf): head and
@@ -44,6 +47,12 @@ export interface SessionOptions {
 	asOf?: string;
 	/** The GitHub login treated as "you" on the overview, in place of the gh login. */
 	viewer?: string;
+	/**
+	 * Pin the snapshot's head on this commit (resolved once, at open): the
+	 * three-dot diff of the current base branch and it, in a review of its
+	 * own. Everything else stays live. Not with `asOf`.
+	 */
+	head?: HeadSpec;
 }
 
 /** Comparison endpoints: merge-base(origin/<base>, head) → head. */
@@ -102,6 +111,8 @@ export class Session {
 		snapshot: Snapshot,
 		patchset: number | null,
 		private readonly options: SessionOptions,
+		/** The commit `options.head` named; null without one. */
+		private readonly pinned: string | null,
 	) {
 		this.#meta = meta;
 		this.#snapshot = snapshot;
@@ -150,6 +161,9 @@ export class Session {
 		progress: (message: string) => void = () => {},
 		options: SessionOptions = {},
 	): Promise<Session> {
+		if (options.asOf && options.head) {
+			throw new Error("--head can't be combined with --as-of");
+		}
 		await runGh(["auth", "status"]);
 		const ref = await resolvePrRef(arg, cwd);
 		// Independent reads: at once (each gh call is a few hundred ms).
@@ -164,21 +178,40 @@ export class Session {
 			const headOid = await fetchHeadAsOf(meta, asOf);
 			meta = { ...meta, headOid, state: "OPEN" };
 		}
-		const repo = await ensureClone(meta.owner, meta.repo, () =>
-			progress(`cloning ${meta.owner}/${meta.repo}…`),
-		);
+		const [repo, pinned] = await Promise.all([
+			ensureClone(meta.owner, meta.repo, () =>
+				progress(`cloning ${meta.owner}/${meta.repo}…`),
+			),
+			// The head is resolved once: the session keeps it for its life.
+			options.head
+				? fetchPinnedHead(
+						meta,
+						options.head,
+						options.viewer ? slugify(options.viewer) : viewer,
+					)
+				: null,
+		]);
 		progress(`fetching PR #${meta.number}…`);
-		const fetched = await fetchPr(repo, meta, asOf);
+		const fetched = await fetchPr(
+			repo,
+			meta,
+			asOf,
+			undefined,
+			pinned ?? undefined,
+		);
 		// Whether the PR is over comes from GitHub's PR state, never from
 		// history shape: squash and rebase merges leave the head outside the
 		// base (docs/git-methodology.md). As of a cutoff, meta says OPEN.
 		const over = meta.state !== "OPEN";
 		const reviews = new ReviewService(new RefStore(repo));
 		// A started review stays open once the PR is merged or closed; an
-		// unstarted one has nothing left to show, so don't create it.
+		// unstarted one has nothing left to show, so don't create it. A
+		// pinned head has a review of its own: progress on the PR's review is
+		// pinned on its own patch set's head.
+		const view = { asOf, head: pinned ?? undefined };
 		const reviewId = over
-			? await reviews.findReview(meta)
-			: await reviews.findOrCreateReview(meta, viewer, asOf);
+			? await reviews.findReview(meta, view)
+			: await reviews.findOrCreateReview(meta, viewer, view);
 		const state =
 			reviewId === null ? null : await reviews.getProgress(reviewId, viewer);
 		if (reviewId === null || state === null || (over && !state.patchset)) {
@@ -195,6 +228,7 @@ export class Session {
 			snapshot,
 			state.patchset?.number ?? null,
 			options,
+			pinned,
 		);
 	}
 
@@ -209,6 +243,7 @@ export class Session {
 			headMoved: !this.options.asOf && headOid !== this.#snapshot.head,
 			patchset: this.#patchset,
 			asOf: this.options.asOf ?? null,
+			pinnedHead: this.pinned,
 		};
 	}
 
@@ -372,7 +407,8 @@ export class Session {
 
 	/**
 	 * Fetches the PR again. A review without a patch set moves to the new
-	 * head (unless the PR is merged or closed); a started one stays on its
+	 * head (unless the PR is merged or closed), or, pinned on a head, stays
+	 * on it against the base branch's new tip; a started one stays on its
 	 * patch set.
 	 */
 	refresh(): Promise<SessionInfo> {
@@ -388,7 +424,13 @@ export class Session {
 			const seq = ++this.#metaSeq;
 			const signal = this.#stop.signal;
 			const meta = await fetchPrMeta(this.#ref(), { signal });
-			const fetched = await fetchPr(this.repo, meta, undefined, signal);
+			const fetched = await fetchPr(
+				this.repo,
+				meta,
+				undefined,
+				signal,
+				this.pinned ?? undefined,
+			);
 			this.#setMeta(seq, meta);
 			const progress = await this.#progress();
 			// An unstarted review of a merged or closed PR has nothing to move

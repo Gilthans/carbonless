@@ -11,6 +11,7 @@ import { testGitEnv } from "../../test/git-fixture";
 import { createPrFixture, type PrFixture } from "../../test/pr-fixture";
 import { clonePath } from "./clone";
 import { GhError } from "./errors";
+import { parseHead } from "./pinnedHead";
 import { StaleSnapshotError } from "./review/reviews";
 import { refusal, Session, UnknownReadError } from "./session";
 import { ThreadCodeSource } from "./threadCode";
@@ -45,6 +46,7 @@ describe("Session", () => {
 			headMoved: false,
 			patchset: null,
 			asOf: null,
+			pinnedHead: null,
 		});
 		expect(s.snapshot().base).toBe(pr.mergeBase);
 		expect(s.snapshot().files.map((f) => f.path)).toEqual(["a.txt", "new.txt"]);
@@ -693,6 +695,185 @@ describe("Session", () => {
 		expect(hunks.hunks).toHaveLength(2);
 		const lines = await s.context(rev, 0, 10, 12);
 		expect(lines.map((l) => l.text)).toEqual(["line 10", "line 11", "line 12"]);
+	});
+
+	describe("pinned on a head (--head)", () => {
+		const user = (login: string) => ({ login, __typename: "User" });
+		/** Octo_Cat reviewed `then` (and has a pending review on `now`). */
+		const scenarioReviewed = (then: string, now: string, state = "OPEN") =>
+			pr.scenario({
+				prs: {
+					12: {
+						view: prView({ headRefOid: now, baseRefName: "main", state }),
+						graphql: {
+							commits: [
+								{
+									commit: { oid: then, committedDate: "2026-01-02T00:00:00Z" },
+								},
+								{ commit: { oid: now, committedDate: "2026-01-04T00:00:00Z" } },
+							],
+							reviews: [
+								{
+									author: user("Octo_Cat"),
+									state: "CHANGES_REQUESTED",
+									submittedAt: "2026-01-03T00:00:00Z",
+									commit: { oid: then },
+								},
+								{
+									author: user("rev1"),
+									state: "APPROVED",
+									submittedAt: "2026-01-05T00:00:00Z",
+									commit: { oid: now },
+								},
+								{
+									author: user("Octo_Cat"),
+									state: "PENDING",
+									submittedAt: null,
+									commit: { oid: now },
+								},
+							],
+							reviewThreads: [],
+							comments: [],
+						},
+					},
+				},
+			});
+		const openPinned = (head: string, viewer?: string) =>
+			Session.open(pr.arg, process.cwd(), () => {}, {
+				head: parseHead(head),
+				...(viewer ? { viewer } : {}),
+			});
+
+		it("opens on the viewer's last submitted review's commit, against the current base, and says newer commits exist", async () => {
+			const then = pr.head();
+			const now = pr.moveHead({ "later.txt": "later\n" });
+			scenarioReviewed(then, now);
+			const s = await openPinned("reviewed");
+			expect(s.info()).toMatchObject({
+				snapshotHead: then,
+				currentHead: now,
+				headMoved: true,
+				patchset: null,
+				pinnedHead: then,
+				asOf: null,
+			});
+			expect(s.snapshot().base).toBe(pr.mergeBase);
+			expect(s.snapshot().files.map((f) => f.path)).toEqual([
+				"a.txt",
+				"new.txt",
+			]);
+			// Everything else is live: today's reviews, not those of then.
+			const o = await s.overview();
+			expect(o.asOf).toBeUndefined();
+			expect(o.reviews.map((r) => r.author)).toContain("rev1");
+		});
+
+		it("takes --viewer's reviews", async () => {
+			const then = pr.head();
+			const now = pr.moveHead({ "later.txt": "later\n" });
+			scenarioReviewed(then, now);
+			const s = await openPinned("reviewed", "rev1");
+			expect(s.info()).toMatchObject({
+				snapshotHead: now,
+				headMoved: false,
+				pinnedHead: now,
+			});
+		});
+
+		it("takes a full or abbreviated sha of the PR's commits", async () => {
+			const then = pr.head();
+			const now = pr.moveHead({ "later.txt": "later\n" });
+			scenarioReviewed(then, now);
+			expect((await openPinned(then.slice(0, 7))).info().snapshotHead).toBe(
+				then,
+			);
+			expect((await openPinned(now)).info()).toMatchObject({
+				snapshotHead: now,
+				pinnedHead: now,
+				headMoved: false,
+			});
+		});
+
+		it("fails clearly: no submitted review, a commit not of the PR, with --as-of", async () => {
+			const then = pr.head();
+			const now = pr.moveHead({ "later.txt": "later\n" });
+			scenarioReviewed(then, now);
+			await expect(openPinned("reviewed", "nobody")).rejects.toThrow(
+				"nobody has no submitted review on acme/widget#12",
+			);
+			await expect(openPinned("1234567")).rejects.toThrow(
+				"1234567 is not a commit of acme/widget#12",
+			);
+			await expect(
+				Session.open(pr.arg, process.cwd(), () => {}, {
+					head: parseHead("reviewed"),
+					asOf: "2026-01-03T00:00:00Z",
+				}),
+			).rejects.toThrow("--head can't be combined with --as-of");
+		});
+
+		it("never moves off the pinned commit on refresh or a head check", async () => {
+			const then = pr.head();
+			const now = pr.moveHead({ "later.txt": "later\n" });
+			scenarioReviewed(then, now);
+			const s = await openPinned("reviewed");
+			const newer = pr.moveHead({ "newer.txt": "newer\n" });
+			scenarioReviewed(then, newer);
+			expect(await s.checkHead()).toMatchObject({
+				snapshotHead: then,
+				currentHead: newer,
+				headMoved: true,
+			});
+			expect(await s.refresh()).toMatchObject({
+				snapshotHead: then,
+				currentHead: newer,
+				headMoved: true,
+				pinnedHead: then,
+			});
+			expect(s.snapshot().files.map((f) => f.path)).toEqual([
+				"a.txt",
+				"new.txt",
+			]);
+		});
+
+		it("keeps its progress in a review of its own; the PR's own review is untouched", async () => {
+			const normal = await Session.open(pr.arg, process.cwd());
+			await normal.setStates(normal.snapshot().revision, [
+				{ key: firstKey(normal), state: "reviewed" },
+			]);
+			const then = pr.head();
+			const now = pr.moveHead({ "later.txt": "later\n" });
+			scenarioReviewed(then, now);
+			// The same commit as the PR's patch set, still a review of its own.
+			const s = await openPinned("reviewed");
+			const view = await s.review();
+			expect(view.patchset).toBeNull();
+			expect(view.progress.clusters.reviewed).toBe(0);
+			await s.setStates(s.snapshot().revision, [
+				{ key: firstKey(s), state: "crossed-off" },
+			]);
+			const again = await Session.open(pr.arg, process.cwd());
+			expect(again.info()).toMatchObject({ pinnedHead: null, patchset: 1 });
+			expect((await again.review()).progress.clusters).toMatchObject({
+				reviewed: 1,
+				crossedOff: 0,
+			});
+			const pinnedAgain = await openPinned("reviewed");
+			expect((await pinnedAgain.review()).progress.clusters).toMatchObject({
+				reviewed: 0,
+				crossedOff: 1,
+			});
+		});
+
+		it("refuses an unstarted pinned review of a merged PR", async () => {
+			const then = pr.head();
+			const now = pr.moveHead({ "later.txt": "later\n" });
+			pr.moveMain(now);
+			scenarioReviewed(then, now, "MERGED");
+			await expect(openPinned("reviewed")).rejects.toThrow(
+				"PR acme/widget#12 is already merged; nothing to review",
+			);
+		});
 	});
 
 	describe("as of a cutoff", () => {

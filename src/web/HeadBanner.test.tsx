@@ -20,6 +20,7 @@ const info: SessionInfo = {
 	headMoved: true,
 	patchset: 1,
 	asOf: null,
+	pinnedHead: null,
 };
 
 describe("HeadBanner", () => {
@@ -48,6 +49,23 @@ describe("HeadBanner", () => {
 		);
 		expect(note).not.toHaveTextContent("snapshot");
 		expect(screen.queryByRole("link")).toBeNull();
+	});
+
+	it("names the pinned head and says newer commits exist, without asking for a Refresh", () => {
+		for (const patchset of [null, 1]) {
+			const { unmount } = render(
+				<HeadBanner
+					info={{ ...info, patchset, pinnedHead: info.snapshotHead }}
+				/>,
+			);
+			const banner = screen.getByRole("status");
+			expect(banner).toHaveTextContent(
+				"Viewing abcdef1; this PR has newer commits.",
+			);
+			expect(banner).not.toHaveTextContent("Refresh");
+			expect(banner.className).toContain("bg-warn/10");
+			unmount();
+		}
 	});
 
 	it("shows nothing while the head has not moved", () => {

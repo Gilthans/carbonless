@@ -557,4 +557,10 @@ export interface SessionInfo {
 	 * moves, so headMoved stays false.
 	 */
 	asOf: string | null;
+	/**
+	 * The commit `crb --head` pinned the snapshot's head on, for the whole
+	 * session (the patch set's once started, which is the same commit); null
+	 * without one.
+	 */
+	pinnedHead: string | null;
 }

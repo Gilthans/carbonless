@@ -23,6 +23,7 @@ import { newEvent } from "./events.js";
 import { RefStore } from "./refStore.js";
 import {
 	InvalidChangeError,
+	prKey,
 	type ReviewPr,
 	ReviewService,
 	StaleSnapshotError,
@@ -141,11 +142,13 @@ describe("findOrCreateReview", () => {
 
 	it("keeps a review as of a cutoff apart from the PR's own, under its own key", async () => {
 		const cutoff = "2026-09-15T11:35:52Z";
-		expect(await svc.findReview(pr, cutoff)).toBeNull();
-		const asOf = await svc.findOrCreateReview(pr, "dan", cutoff);
+		expect(await svc.findReview(pr, { asOf: cutoff })).toBeNull();
+		const asOf = await svc.findOrCreateReview(pr, "dan", { asOf: cutoff });
 		expect(asOf).not.toBe(id);
-		expect(await svc.findOrCreateReview(pr, "dan", cutoff)).toBe(asOf);
-		expect(await svc.findReview(pr, cutoff)).toBe(asOf);
+		expect(await svc.findOrCreateReview(pr, "dan", { asOf: cutoff })).toBe(
+			asOf,
+		);
+		expect(await svc.findReview(pr, { asOf: cutoff })).toBe(asOf);
 		expect(await svc.findReview(pr)).toBe(id);
 		const key = `acme/widgets#42@${cutoff}`;
 		const hash = createHash("sha256").update(key).digest("hex");
@@ -161,6 +164,37 @@ describe("findOrCreateReview", () => {
 		await svc.recordStates(asOf, "dan", snap, [{ key: k1, state: "reviewed" }]);
 		expect((await svc.getProgress(id, "dan")).patchset).toBeNull();
 		expect((await svc.getProgress(asOf, "dan")).patchset).not.toBeNull();
+	});
+
+	it("keeps a review pinned on a head apart from the PR's own and as-of ones, under its own key", async () => {
+		const head = "c".repeat(40);
+		const cutoff = "2026-09-15T11:35:52Z";
+		expect(await svc.findReview(pr, { head })).toBeNull();
+		const pinned = await svc.findOrCreateReview(pr, "dan", { head });
+		expect(pinned).not.toBe(id);
+		expect(await svc.findOrCreateReview(pr, "dan", { head })).toBe(pinned);
+		expect(await svc.findReview(pr, { head })).toBe(pinned);
+		// The PR's own review is found unchanged; another head is another review.
+		expect(await svc.findReview(pr)).toBe(id);
+		expect(await svc.findReview(pr, { head: "d".repeat(40) })).toBeNull();
+		expect(await svc.findReview(pr, { asOf: cutoff })).toBeNull();
+		const key = `acme/widgets#42^${head}`;
+		expect(prKey(pr, { head })).toBe(key);
+		const hash = createHash("sha256").update(key).digest("hex");
+		const blob = await runGit(repo, [
+			"cat-file",
+			"blob",
+			`refs/crb/lookup/github-pr/${hash}`,
+		]);
+		expect(blob.trim()).toBe(pinned);
+		const [created] = await store.readEvents(`refs/crb/reviews/${pinned}/meta`);
+		expect(created).toMatchObject({ key, details: { head } });
+		expect(created?.details).not.toHaveProperty("asOf");
+		await svc.recordStates(pinned, "dan", snap, [
+			{ key: k1, state: "reviewed" },
+		]);
+		expect((await svc.getProgress(id, "dan")).patchset).toBeNull();
+		expect((await svc.getProgress(pinned, "dan")).patchset).not.toBeNull();
 	});
 
 	it("two concurrent openings of a new PR agree on one review", async () => {

@@ -6,6 +6,7 @@ import open from "open";
 import { buildApp } from "./server/app.js";
 import { parseAsOf } from "./server/asOf.js";
 import { killDetachedGits } from "./server/git.js";
+import { parseHead } from "./server/pinnedHead.js";
 import { Session } from "./server/session.js";
 
 const USAGE = `Usage: crb <pr> [options]
@@ -17,6 +18,9 @@ Arguments:
           or <n> for a PR of the GitHub repository in the current directory
 
 Options:
+  --head <sha|reviewed>
+               View the PR's changes up to this commit of it (reviewed: the
+               one your last GitHub review was on), in a review of its own
   --port <n>   Port to listen on (default: random free port)
   --host <h>   Host to bind (default: 127.0.0.1). Any other than 127.0.0.1,
                ::1 or localhost requires a random access key, printed in the URL
@@ -36,6 +40,7 @@ async function main(): Promise<void> {
 			open: { type: "boolean", default: true },
 			"api-only": { type: "boolean", default: false },
 			help: { type: "boolean", short: "h", default: false },
+			head: { type: "string" },
 			// Hidden dev flags, not in the usage: view the PR as of a past
 			// moment, with another login as "you".
 			"as-of": { type: "string" },
@@ -57,6 +62,10 @@ async function main(): Promise<void> {
 	}
 	const asOf =
 		values["as-of"] === undefined ? undefined : parseAsOf(values["as-of"]);
+	const head = values.head === undefined ? undefined : parseHead(values.head);
+	if (head && asOf) {
+		throw new Error("--head can't be combined with --as-of");
+	}
 	const viewer = values.viewer;
 	if (
 		viewer !== undefined &&
@@ -74,7 +83,7 @@ async function main(): Promise<void> {
 		pr,
 		process.cwd(),
 		(message) => console.error(`crb: ${message}`),
-		{ asOf, viewer },
+		{ asOf, viewer, head },
 	);
 	// The overview's GitHub reads take seconds: start them while the
 	// browser opens. A failure isn't kept; the page's own read reports it.

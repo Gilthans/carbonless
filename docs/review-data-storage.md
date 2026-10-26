@@ -122,7 +122,14 @@ refs/crb/lookup/<source>/<key-hash>                               lookup: source
   `--as-of <cutoff>` uses the key `<owner>/<repo>#<number>@<cutoff>` (cutoff
   in canonical UTC ISO, e.g. `2026-09-15T11:35:52Z`), so a view of the PR as
   of a past moment gets a review of its own (its `review-created` event
-  carries `details.asOf`) and never touches the PR's real one. A `github-pr` lookup ref is kept after the PR
+  carries `details.asOf`) and never touches the PR's real one. Likewise
+  `crb --head <sha|reviewed>`, which pins the snapshot's head on one commit
+  of the PR, uses the key `<owner>/<repo>#<number>^<head>` (the full head
+  OID; `^` never occurs in a cutoff, `@` never in an OID), with
+  `details.head` in its `review-created` event. It needs its own review
+  because the PR's review, once started, is pinned on its own patch set's
+  head; a pinned view always gets its own, even on the PR's current head.
+  Its refs are those of any other small review. A `github-pr` lookup ref is kept after the PR
   closes, since PR numbers aren't reused (reviewer's decision, 2026-10-23:
   look up by PR number for now).
 - All refs live in carbonless's private bare clone (see the parity spec), never

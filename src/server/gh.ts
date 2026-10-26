@@ -3,6 +3,7 @@ import type { PrOverview } from "../shared/types.js";
 import { headAsOf } from "./asOf.js";
 import { GhError } from "./errors.js";
 import { mapOverview } from "./overview.js";
+import { type HeadSpec, pickHead } from "./pinnedHead.js";
 import { slugify } from "./slug.js";
 
 export { GhError, slugify };
@@ -634,6 +635,28 @@ export async function fetchHeadAsOf(
 		if (isNotFound(error)) {
 			throw new GhError(`PR ${ref.owner}/${ref.repo}#${ref.number} not found`);
 		}
+		throw error;
+	}
+}
+
+/**
+ * The commit `spec` pins the view to (`crb --head`), from the PR's commits
+ * and its reviews' commits, for `viewer` (a slug); see pickHead.
+ */
+export async function fetchPinnedHead(
+	ref: PrRef,
+	spec: HeadSpec,
+	viewer: string,
+): Promise<string> {
+	const pr = `${ref.owner}/${ref.repo}#${ref.number}`;
+	try {
+		const [commits, reviews] = await Promise.all([
+			spec.kind === "sha" ? fetchConnection(ref, "commits") : [],
+			fetchConnection(ref, "reviews"),
+		]);
+		return pickHead(spec, commits, reviews, viewer, pr);
+	} catch (error) {
+		if (isNotFound(error)) throw new GhError(`PR ${pr} not found`);
 		throw error;
 	}
 }

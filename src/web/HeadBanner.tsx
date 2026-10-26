@@ -5,9 +5,24 @@ import { safeHref } from "./ui";
  * Shown when the PR has new commits. A started review is pinned to its
  * snapshot, so it says so; an unstarted one follows the PR's head and only
  * needs a Refresh (never automatic: the diff must not change under the reader).
+ * A head pinned by `crb --head` never moves: it names the commit shown.
  */
 export function HeadBanner({ info }: { info: SessionInfo }) {
 	if (!info.headMoved) return null;
+	if (info.pinnedHead !== null) {
+		return (
+			<div
+				role="status"
+				className="border-y border-warn/30 bg-warn/10 text-sm text-ink"
+			>
+				<p className="mx-auto max-w-5xl px-4 py-2 break-words sm:px-6">
+					Viewing{" "}
+					<code className="font-mono">{info.snapshotHead.slice(0, 7)}</code>
+					{"; "}this PR has newer commits.
+				</p>
+			</div>
+		);
+	}
 	if (info.patchset === null) {
 		return (
 			<div
