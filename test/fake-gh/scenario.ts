@@ -101,12 +101,26 @@ export interface CommentNode {
 	body?: string;
 	bodyText: string;
 	bodyHTML: string;
+	/** When it was written (also while its review was pending). */
 	createdAt: string;
+	/** When its review was submitted; null while pending (or unknown). */
+	publishedAt?: string | null;
+	/** "PENDING" in the viewer's unsubmitted review, else "SUBMITTED". */
+	state?: "PENDING" | "SUBMITTED";
 	/** GitHub's diff hunk ending at the commented line; "" for a file comment. */
 	diffHunk?: string;
 	/** The commit the comment was written on. */
 	originalCommit?: { oid: string };
 }
+
+/** A review comment's times, as gh.ts queries them (COMMENT_TIMES). */
+type CommentTimes = Pick<CommentNode, "createdAt" | "publishedAt" | "state">;
+
+const timesOf = (c: CommentNode): CommentTimes => ({
+	createdAt: c.createdAt,
+	...("publishedAt" in c ? { publishedAt: c.publishedAt } : {}),
+	...(c.state ? { state: c.state } : {}),
+});
 
 /** A reviewThreads node, as gh.ts queries it. */
 export interface ThreadNode {
@@ -121,10 +135,10 @@ export interface ThreadNode {
 	diffSide: string;
 	startDiffSide: string | null;
 	first: { nodes: CommentNode[] };
-	latest: { nodes: { createdAt: string }[] };
+	latest: { nodes: CommentTimes[] };
 	comments: {
 		totalCount: number;
-		nodes: { author: CommentNode["author"]; createdAt: string }[];
+		nodes: ({ author: CommentNode["author"] } & CommentTimes)[];
 	};
 }
 
@@ -151,12 +165,12 @@ export function reviewThread(
 		...(comments && opener && last
 			? {
 					first: { nodes: [{ ...opener, diffHunk: opener.diffHunk ?? "" }] },
-					latest: { nodes: [{ createdAt: last.createdAt }] },
+					latest: { nodes: [timesOf(last)] },
 					comments: {
 						totalCount: comments.length,
 						nodes: comments.map((c) => ({
 							author: c.author,
-							createdAt: c.createdAt,
+							...timesOf(c),
 						})),
 					},
 				}
@@ -177,7 +191,15 @@ export function threadComment(c: {
 	bot?: boolean;
 	text: string;
 	html?: string;
+	/** When it was written. */
 	createdAt?: string;
+	/**
+	 * When its review was submitted (default: when written); null, not
+	 * reported. GitHub dates what others saw by it.
+	 */
+	publishedAt?: string | null;
+	/** In the viewer's unsubmitted review: no publishedAt. */
+	pending?: boolean;
 	diffHunk?: string;
 	/** The commit it was written on (GitHub's originalCommit). */
 	commit?: string;
@@ -194,6 +216,12 @@ export function threadComment(c: {
 		bodyText: c.text,
 		bodyHTML: c.html ?? `<p dir="auto">${escaped}</p>`,
 		createdAt: c.createdAt ?? "2026-01-03T09:00:00Z",
+		publishedAt: c.pending
+			? null
+			: c.publishedAt === undefined
+				? (c.createdAt ?? "2026-01-03T09:00:00Z")
+				: c.publishedAt,
+		state: c.pending ? "PENDING" : "SUBMITTED",
 		...(c.diffHunk === undefined ? {} : { diffHunk: c.diffHunk }),
 		...(c.commit === undefined ? {} : { originalCommit: { oid: c.commit } }),
 	};
@@ -255,7 +283,10 @@ export function timelineReview(r: {
 		id: string;
 		path: string;
 		line: number | null;
-		at: string;
+		/** When it was written (default: when the review was submitted). */
+		at?: string;
+		/** When it was published (default: the review's time); null, not reported. */
+		publishedAt?: string | null;
 		text: string;
 		replyTo?: string;
 	}[];
@@ -277,7 +308,9 @@ export function timelineReview(r: {
 				path: c.path,
 				line: c.line,
 				originalLine: c.line,
-				createdAt: c.at,
+				createdAt: c.at ?? r.at,
+				publishedAt: c.publishedAt === undefined ? r.at : c.publishedAt,
+				state: "SUBMITTED",
 				bodyText: c.text,
 				url: `https://github.com/acme/widget/pull/1#discussion_${c.id}`,
 				replyTo: c.replyTo ? { id: c.replyTo } : null,

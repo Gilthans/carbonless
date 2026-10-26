@@ -6,6 +6,7 @@ import type {
 } from "../shared/types.js";
 import { atOrBefore } from "./asOf.js";
 import { hunkWindowRows } from "./codeWindow.js";
+import { visibleAt } from "./commentTime.js";
 import { GhError } from "./errors.js";
 import { slugify } from "./slug.js";
 
@@ -210,10 +211,13 @@ function later(a: string, b: string): string {
 
 /**
  * Every thread with its first comment, grouped later by the opener (bot or
- * human), most recent activity first. As of a cutoff: threads opened by
- * then, counting only comments made by then, none resolved (GitHub keeps no
- * resolution history). A node without its opening comment's content (a
- * summary) gives a thread that isn't `loaded`.
+ * human), most recent activity first. Comments are dated by when they were
+ * published (commentTime.ts); a pending one (the viewer's unsubmitted
+ * review) doesn't count, and a thread it opened is left out. As of a
+ * cutoff: threads opened by then, counting only comments published by
+ * then, none resolved (GitHub keeps no resolution history). A node without
+ * its opening comment's content (a summary) gives a thread that isn't
+ * `loaded`.
  */
 export function mapThreads(
 	nodes: unknown[],
@@ -228,20 +232,43 @@ export function mapThreads(
 		const first = obj(arr(obj(t.first).nodes)[0] ?? all[0]);
 		const author = obj(first.author);
 		const bot = isBotAuthor(author);
-		if (asOf && !atOrBefore(first.createdAt, asOf)) continue;
-		const comments = asOf
-			? all.filter((c) => atOrBefore(c.createdAt, asOf))
-			: all;
+		const createdAt = visibleAt(first);
+		if (createdAt === null) continue;
+		if (asOf && !atOrBefore(createdAt, asOf)) continue;
+		const dated = all.flatMap((c) => {
+			const at = visibleAt(c);
+			return at === null ? [] : [{ c, at }];
+		});
 		// `latest` is the aliased comments(last: 1): past the first 100 listed.
-		const latest = asOf ? [] : arr(obj(t.latest).nodes).map(obj);
-		const createdAt = str(first.createdAt);
-		const lastActivityAt = [...comments, ...latest].reduce(
-			(at, c) => later(at, str(c.createdAt)),
-			createdAt,
-		);
+		const latestNode = arr(obj(t.latest).nodes)[0];
+		const latestAt = latestNode === undefined ? null : visibleAt(latestNode);
+		const comments = asOf
+			? dated.filter(({ at }) => atOrBefore(at, asOf))
+			: dated;
+		const lastActivityAt = [
+			...comments.map((c) => c.at),
+			...(latestAt === null || asOf ? [] : [latestAt]),
+		].reduce(later, createdAt);
+		// Pending comments among those listed, and the latest past them.
+		const pending =
+			all.length -
+			dated.length +
+			(latestNode !== undefined &&
+			latestAt === null &&
+			typeof listed.totalCount === "number" &&
+			listed.totalCount > all.length
+				? 1
+				: 0);
 		const firstLogin = str(author.login);
 		const loaded = hasContent(first);
-		const code = threadCode(t, first, str(t.path), createdAt, loaded);
+		// The code is the commenter's view when they wrote it.
+		const code = threadCode(
+			t,
+			first,
+			str(t.path),
+			str(first.createdAt) || createdAt,
+			loaded,
+		);
 		// bodyText is GitHub's plain-text rendering; the raw body is a fallback.
 		const text = str(first.bodyText) || str(first.body);
 		threads.push({
@@ -267,13 +294,16 @@ export function mapThreads(
 			author: firstLogin,
 			bot,
 			// The author list stops at 100; the total doesn't (as of a cutoff,
-			// only the first 100 can be dated).
+			// only the first 100 can be dated). Pending comments (the viewer's)
+			// don't count; past the first 100, only the latest can be told.
 			commentCount:
 				!asOf && typeof listed.totalCount === "number"
-					? listed.totalCount
+					? Math.max(1, listed.totalCount - pending)
 					: Math.max(1, comments.length),
 			// Someone other than the thread's opener answered.
-			hasReply: comments.some((c) => str(obj(c.author).login) !== firstLogin),
+			hasReply: comments.some(
+				({ c }) => str(obj(c.author).login) !== firstLogin,
+			),
 			// GitHub's flag is about today's head, not the cutoff's.
 			outdated: !asOf && t.isOutdated === true,
 			resolved: !asOf && t.isResolved === true,

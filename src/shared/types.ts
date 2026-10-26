@@ -144,7 +144,7 @@ export interface CodeAnchor {
 	/** The range's first line (the last one for a single line). */
 	startSide: DiffSide;
 	startLine: number;
-	/** When the comment was made. */
+	/** When the comment was written (the code as its author saw it). */
 	at: string;
 }
 
@@ -289,9 +289,12 @@ export interface ReviewThread {
 	html: string;
 	/** The first comment's markdown (suggested changes are read from it). */
 	body: string;
-	/** When the first comment was written. */
+	/**
+	 * When the first comment was published (its review submitted), not
+	 * written: what others could see, and when.
+	 */
 	createdAt: string;
-	/** The thread's latest comment (as-of mode: by the cutoff). */
+	/** When the thread's latest comment was published (as-of mode: by the cutoff). */
 	lastActivityAt: string;
 	author: string;
 	bot: boolean;
@@ -360,7 +363,10 @@ export interface TimelineCommit {
 /** One review comment (a comment on the code) of a review run. */
 export interface TimelineReviewComment {
 	kind: "comment";
-	/** When it was written (as the review threads date comments). */
+	/**
+	 * When it was published, i.e. its review submitted (as the review
+	 * threads date comments), not when it was written.
+	 */
 	at: string;
 	path: string;
 	/** Its line on the commit it was made on; null for a file comment. */

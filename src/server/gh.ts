@@ -376,7 +376,11 @@ const AUTHOR = "author { login __typename }";
 // a cutoff), and the latest comment's time (last activity past the first
 // 100). The opener's original commit is where the clone takes its code from.
 // Comment ids tie the timeline's review comments to their threads.
-const THREAD_FIELDS = `id isResolved isOutdated path subjectType line originalLine startLine originalStartLine diffSide startDiffSide first: comments(first: 1) { nodes { id ${AUTHOR} createdAt originalCommit { oid } } } latest: comments(last: 1) { nodes { createdAt } } comments(first: 100) { totalCount nodes { id ${AUTHOR} createdAt } }`;
+// Comments are dated by when they were published (commentTime.ts); `state`
+// tells a pending one. Not their review's submission as well: on PR #99 it
+// cost about 1 s more a page and never differed from `publishedAt`.
+const COMMENT_TIMES = "createdAt publishedAt state";
+const THREAD_FIELDS = `id isResolved isOutdated path subjectType line originalLine startLine originalStartLine diffSide startDiffSide first: comments(first: 1) { nodes { id ${AUTHOR} ${COMMENT_TIMES} originalCommit { oid } } } latest: comments(last: 1) { nodes { ${COMMENT_TIMES} } } comments(first: 100) { totalCount nodes { id ${AUTHOR} ${COMMENT_TIMES} } }`;
 /** The opening comment's text and GitHub's diff hunk, by thread id. */
 const CONTENT_FIELDS =
 	"id first: comments(first: 1) { nodes { body bodyText bodyHTML diffHunk } }";
@@ -720,7 +724,7 @@ const ACTOR = "login __typename avatarUrl(size: 40)";
 /** What the timeline shows of each kind of item (timeline.ts maps it). */
 const TIMELINE_NODE = `__typename
 ... on PullRequestCommit { url commit { oid messageHeadline committedDate pushedDate author { name user { ${ACTOR} } } } }
-... on PullRequestReview { author { ${ACTOR} } state submittedAt bodyText url comments(first: 100) { totalCount nodes { id path line originalLine createdAt bodyText url replyTo { id } } } }
+... on PullRequestReview { author { ${ACTOR} } state submittedAt bodyText url comments(first: 100) { totalCount nodes { id path line originalLine createdAt publishedAt state bodyText url replyTo { id } } } }
 ... on IssueComment { author { ${ACTOR} } createdAt bodyText url }
 ... on HeadRefForcePushedEvent { actor { ${ACTOR} } createdAt beforeCommit { oid } afterCommit { oid } }
 ... on BaseRefChangedEvent { actor { ${ACTOR} } createdAt previousRefName currentRefName }

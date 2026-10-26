@@ -4,8 +4,9 @@ import { expect, test } from "./fixtures";
 /**
  * As-of mode (hidden dev flags): the PR as it was at CUTOFF. Before it: the
  * PR's first commit, a review by the gh user and one by rev1, a comment and a
- * thread. After it: a reply, a second thread, late-rev's review, another commit
- * (the PR's head now) and the merge.
+ * thread. After it: a reply, a second thread (both written before it but
+ * submitted after), late-rev's review, another commit (the PR's head now)
+ * and the merge. A pending thread is never shown.
  */
 const CUTOFF = "2026-01-03T00:00:00Z";
 const user = (login: string) => ({ login, __typename: "User" });
@@ -32,17 +33,29 @@ test("shows the PR as of a cutoff, with another login as you, in a review of its
 					text: "Why new?",
 					createdAt: "2026-01-02T10:00:00Z",
 				}),
+				// Written before the cutoff, submitted after it.
 				threadComment({
 					login: "octo-author",
 					text: "Because",
-					createdAt: "2026-01-04T10:00:00Z",
+					createdAt: "2026-01-02T20:00:00Z",
+					publishedAt: "2026-01-04T10:00:00Z",
 				}),
 			]),
 			reviewThread({ path: "later.txt", line: 1 }, [
 				threadComment({
 					login: "late-rev",
 					text: "Too late",
-					createdAt: "2026-01-05T10:00:00Z",
+					createdAt: "2026-01-02T12:00:00Z",
+					publishedAt: "2026-01-05T10:00:00Z",
+				}),
+			]),
+			// A pending review's comment: nobody else has seen it, ever.
+			reviewThread({ path: "new.txt", line: 1 }, [
+				threadComment({
+					login: "drafter",
+					text: "Not sent",
+					createdAt: "2026-01-02T08:00:00Z",
+					pending: true,
 				}),
 			]),
 		],
@@ -145,6 +158,7 @@ test("shows the PR as of a cutoff, with another login as you, in a review of its
 		"1 unresolved0 resolved",
 	);
 	await expect(page.getByText("Too late")).toHaveCount(0);
+	await expect(page.getByText("Not sent")).toHaveCount(0);
 
 	// The diff is the PR's as of then: no later.txt.
 	const review = page.getByRole("link", { name: /Review files/ });
@@ -174,4 +188,7 @@ test("shows the PR as of a cutoff, with another login as you, in a review of its
 	await expect(page.getByRole("link", { name: /Review files/ })).toContainText(
 		"0 / 2",
 	);
+	const today = page.getByRole("region", { name: "Human reviews" });
+	await expect(today.getByTestId("thread")).toHaveCount(2);
+	await expect(today.getByText("Not sent")).toHaveCount(0);
 });
