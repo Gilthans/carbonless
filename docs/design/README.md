@@ -108,7 +108,10 @@ bordered (`edge`) card on `surface`:
 1. a `band` header row: status icon (yellow unresolved, green resolved),
    "Unresolved thread by <author> · opened <time> · updated <time>"
    (`RelativeTime`; "updated" only when it differs), then the comment count
-   and the "no reply" / "outdated" chips on the right; wraps on a phone;
+   and the "no reply" / "outdated" chips on the right, then a red (`bad`)
+   "different snapshot" chip when the code pane can't be shown to be what the
+   commenter saw (`docs/faq.md`; focusable, 40px, its tooltip says which
+   commit and when); wraps on a phone;
 2. path:line in mono `link`, a 40px link to that line in Files changed;
 3. the code pane (`code`, commented lines with the accent rail and
    `mark-tint`) beside the first comment, stacked on a phone. The comment

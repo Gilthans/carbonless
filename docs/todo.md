@@ -13,6 +13,11 @@ Foundation for everything below.
 - **Suggestions in replies:** the Overview shows only a thread's opening
   comment, so a suggested change made in a reply isn't drawn there yet.
 - **Re-review after new pushes:** one of GitHub's weakest spots.
+  - Show a thread's code as the commenter saw it: diff its commit against
+    the base of the view the comment was made in ("changes since your last
+    review", a single commit), not the PR's merge base, then drop the
+    Overview's "different snapshot" chip (`CodeWindow.snapshot`,
+    `docs/faq.md`).
 - **Store review state in git refs** (`refs/crb/...`). Design:
   `docs/review-data-storage.md`. Carry-over after pushes is deferred to the
   re-review item above (ideas so far: Gerrit-style change kinds and

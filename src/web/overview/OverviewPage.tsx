@@ -68,7 +68,7 @@ import { CodeLine } from "../code/Invisibles";
 import { languageFor } from "../files/highlight";
 import { type FilesSearch, threadTarget } from "../files/landing";
 import { GithubHtml, ImageErrorContext } from "../GithubHtml";
-import { RelativeTime } from "../RelativeTime";
+import { RelativeTime, relativeTime, useNow } from "../RelativeTime";
 import { Tooltip } from "../Tooltip";
 import { ErrorMessage, safeHref } from "../ui";
 import { createImageRefresher } from "./imageRefresh";
@@ -1314,6 +1314,7 @@ function ThreadItem({ thread }: { thread: Thread }) {
 							outdated
 						</Badge>
 					)}
+					{thread.code && <SnapshotChip code={thread.code} />}
 				</div>
 			</div>
 			<div className="space-y-2 px-3 pt-1 pb-3">
@@ -1367,6 +1368,44 @@ function ThreadItem({ thread }: { thread: Thread }) {
 				)}
 			</div>
 		</li>
+	);
+}
+
+/**
+ * Why the code pane may not be what the commenter saw, in one sentence:
+ * the comment's commit and when, then the doubt.
+ */
+export function snapshotTip(code: CodeWindow, nowMs: number): string {
+	const sha = code.anchor.commit.slice(0, 7);
+	const at = new Date(code.anchor.at);
+	const when = Number.isNaN(at.getTime()) ? "" : relativeTime(at, nowMs);
+	const commented = ["Commented", sha && `on ${sha}`, when]
+		.filter(Boolean)
+		.join(" ");
+	return code.snapshot?.same === false &&
+		code.snapshot.reason === "no-host-diff"
+		? `${commented}; GitHub kept no diff to check this code against, so it may not match what the reviewer saw.`
+		: `${commented} in another diff; the code shown here may not match what the reviewer saw.`;
+}
+
+/**
+ * A red chip when the code pane can't be shown to be what the commenter saw
+ * (CodeWindow.snapshot): anything but "same" is flagged, a missing verdict
+ * too. Only beside code that is shown.
+ */
+function SnapshotChip({ code }: { code: CodeWindow }) {
+	const now = useNow();
+	if (code.source === "pending" || code.rows.length === 0) return null;
+	if (code.snapshot?.same === true) return null;
+	return (
+		<Chip
+			tone="red"
+			icon={FileDiffIcon}
+			tip={snapshotTip(code, now)}
+			testId="thread-snapshot"
+		>
+			different snapshot
+		</Chip>
 	);
 }
 

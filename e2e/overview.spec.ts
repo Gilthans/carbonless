@@ -930,6 +930,113 @@ test("a thread's code comes from the clone, three rows before and after its line
 	).toBe(0);
 });
 
+test("a thread whose code can't be shown to be what the commenter saw has a red chip", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	if (isMobile) await page.setViewportSize({ width: 360, height: 780 });
+	const b = (i: number) => `b ${i + 1}`;
+	const p = await pr({
+		base: {
+			"b.txt": `${Array.from({ length: 80 }, (_, i) => b(i)).join("\n")}\n`,
+		},
+		files: [
+			{
+				message: "PR change",
+				files: {
+					"b.txt": `${Array.from({ length: 80 }, (_, i) => (i === 59 ? "b 60 changed" : b(i))).join("\n")}\n`,
+				},
+			},
+		],
+	});
+	const head = p.repo.shas.at(-1) ?? "";
+	const comment = (text: string, diffHunk: string, day: number) =>
+		threadComment({
+			login: "rev1",
+			text,
+			diffHunk,
+			commit: head,
+			// After the fixture's commits, so the base then is the base now.
+			createdAt: `2099-01-0${day}T00:00:00Z`,
+		});
+	p.editScenario((s) => {
+		const graph = s.prs[7]?.graphql;
+		if (!graph) throw new Error("no PR in the scenario");
+		graph.reviewThreads = [
+			// The PR's diff, as GitHub kept it.
+			reviewThread({ path: "b.txt", line: 60 }, [
+				comment(
+					"Same view",
+					"@@ -57,4 +57,4 @@\n b 57\n b 58\n b 59\n-b 60\n+b 60 changed",
+					3,
+				),
+			]),
+			// "Changes since your last review": another old side.
+			reviewThread({ path: "b.txt", line: 60 }, [
+				comment(
+					"Since review",
+					"@@ -57,4 +57,4 @@\n b 57\n b 58\n b 59\n-b 60 first try\n+b 60 changed",
+					2,
+				),
+			]),
+			// No hunk to check the clone's code against.
+			reviewThread({ path: "b.txt", line: 60 }, [comment("No hunk", "", 1)]),
+		];
+	});
+	const s = await startCrb();
+	await page.goto(s.url);
+	const card = (text: string) =>
+		page
+			.getByRole("region", { name: "Human reviews" })
+			.getByTestId("thread")
+			.filter({ hasText: text });
+	for (const text of ["Same view", "Since review", "No hunk"]) {
+		await expect(card(text).getByTestId("thread-code")).toHaveAttribute(
+			"data-source",
+			"clone",
+		);
+	}
+	await expect(card("Same view").getByTestId("thread-snapshot")).toHaveCount(0);
+	const sha = head.slice(0, 7);
+	for (const [text, tip] of [
+		["Since review", "in another diff"],
+		["No hunk", "GitHub kept no diff"],
+	] as const) {
+		const chip = card(text)
+			.getByTestId("thread-head")
+			.getByTestId("thread-snapshot");
+		await expect(chip).toHaveText("different snapshot");
+		await expect(chip).toHaveAccessibleDescription(
+			new RegExp(
+				`^Commented on ${sha} .*${tip}.*may not match what the reviewer saw\\.$`,
+			),
+		);
+		// Red, and a 40px target.
+		const color = await chip
+			.locator("span")
+			.first()
+			.evaluate((el) => getComputedStyle(el).color);
+		expect(color).toBe("rgb(255, 111, 140)");
+		expect((await chip.boundingBox())?.height).toBeGreaterThanOrEqual(40);
+	}
+	// A tap (or keyboard focus) shows the tooltip.
+	const chip = card("Since review").getByTestId("thread-snapshot");
+	if (isMobile) await chip.tap();
+	else await chip.focus();
+	await expect(page.getByRole("tooltip")).toContainText(
+		"may not match what the reviewer saw",
+	);
+	expect(
+		await page.evaluate(
+			() =>
+				document.documentElement.scrollWidth -
+				document.documentElement.clientWidth,
+		),
+	).toBe(0);
+});
+
 test("a thread's file:line opens Files changed at that line, highlighted; a moved line says so", async ({
 	page,
 	pr,

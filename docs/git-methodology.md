@@ -46,7 +46,10 @@ history.
   merge bases differ and the pane is GitHub's own diff hunk (`source:
   "github"`), never a guess. Without a GitHub hunk, a range wholly on the new
   side takes the snapshot's merge base alone (its own rows are right either
-  way; rows of the old side around it could be off in those cases).
+  way; rows of the old side around it could be off in those cases). That
+  pane, and any whose GitHub hunk isn't a run of the rebuilt diff, carries
+  the "different snapshot" chip (`docs/faq.md`): the check compares diffs,
+  never history.
 
 ## Test matrix
 

@@ -14,6 +14,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { codeFromHunk } from "../../test/code-window";
 import { suggestionHtml } from "../../test/fake-gh/scenario";
 import type {
+	CodeWindow,
 	PrOverview,
 	ReviewThread,
 	ReviewView,
@@ -934,6 +935,97 @@ describe("OverviewPage", () => {
 		expect(within(humans).getByTestId("thread-place")).toHaveTextContent(
 			"src/ctx.ts:4",
 		);
+	});
+
+	it("flags code that can't be shown to be what the commenter saw with a red chip", async () => {
+		const hunk = "@@ -1,2 +1,2 @@\n a\n-b\n+B";
+		const anchor = {
+			line: 2,
+			commit: "0123456789abcdef0123456789abcdef01234567",
+			at: "2026-01-01T09:00:00Z",
+		};
+		const thread = (
+			path: string,
+			snapshot: CodeWindow["snapshot"],
+			source: CodeWindow["source"] = "clone",
+		) =>
+			humanThread(path, {
+				line: 2,
+				code: {
+					...codeFromHunk(hunk, { ...anchor, path }, source),
+					snapshot,
+				},
+			});
+		renderApp({
+			"/api/overview": ok({
+				...overview,
+				threads: [
+					thread("src/same.ts", { same: true }),
+					thread("src/differs.ts", { same: false, reason: "diff-differs" }),
+					thread("src/unchecked.ts", { same: false, reason: "no-host-diff" }),
+					// No verdict at all: flagged, never trusted.
+					thread("src/unknown.ts", undefined),
+					thread("src/github.ts", { same: true }, "github"),
+				],
+			}),
+		});
+		const humans = await screen.findByRole("region", { name: "Human reviews" });
+		const card = (path: string) =>
+			within(humans)
+				.getAllByTestId("thread")
+				.find((t) => t.textContent?.includes(path)) as HTMLElement;
+		const chip = (path: string) =>
+			within(card(path)).queryByTestId("thread-snapshot");
+		expect(
+			await within(humans).findAllByTestId("thread-snapshot"),
+		).toHaveLength(3);
+		expect(chip("src/same.ts")).toBeNull();
+		expect(chip("src/github.ts")).toBeNull();
+		for (const path of [
+			"src/differs.ts",
+			"src/unchecked.ts",
+			"src/unknown.ts",
+		]) {
+			const c = chip(path);
+			expect(c).toHaveTextContent("different snapshot");
+			// In the card's header, red, focusable for touch and keyboard.
+			expect(within(card(path)).getByTestId("thread-head")).toContainElement(c);
+			expect(c?.querySelector(".text-bad")).not.toBeNull();
+			expect(c).toHaveAttribute("tabindex", "0");
+		}
+		expect(chip("src/differs.ts")).toHaveAccessibleDescription(
+			/^Commented on 0123456 .+ ago in another diff; the code shown here may not match what the reviewer saw\.$/,
+		);
+		expect(chip("src/unchecked.ts")).toHaveAccessibleDescription(
+			/^Commented on 0123456 .+ ago; GitHub kept no diff to check this code against, so it may not match what the reviewer saw\.$/,
+		);
+		// Focus (a tap) shows it.
+		const differs = chip("src/differs.ts") as HTMLElement;
+		act(() => differs.focus());
+		expect(screen.getByRole("tooltip")).toHaveTextContent("in another diff");
+	});
+
+	it("shows no snapshot chip while the code is on its way, or with no code", async () => {
+		renderApp({
+			"/api/overview": ok({
+				...overview,
+				threads: [
+					humanThread("src/pending.ts", {
+						line: 2,
+						code: {
+							...codeFromHunk("@@ -1,1 +1,1 @@\n-a\n+b", { line: 1 }),
+							rows: [],
+							source: "pending",
+							snapshot: undefined,
+						},
+					}),
+					humanThread("src/none.ts"),
+				],
+			}),
+		});
+		const humans = await screen.findByRole("region", { name: "Human reviews" });
+		await within(humans).findAllByTestId("thread");
+		expect(within(humans).queryByTestId("thread-snapshot")).toBeNull();
 	});
 
 	it("the hidden-characters setting shows invisible characters in the code panes", async () => {

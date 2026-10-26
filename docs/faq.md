@@ -48,3 +48,31 @@ build the code for certain (the commit can't be fetched, the path isn't in it,
 or the base branch's history doesn't say which old side the commenter saw), it
 falls back to GitHub's hunk (`source: "github"` in `/api/threads`). A renamed
 file is diffed against its old path, as the Files page pairs them.
+
+### The "different snapshot" chip
+
+A thread whose code can't be shown to be what the commenter saw gets a red
+"different snapshot" chip in its header. The rule (`snapshotOf` in
+`src/server/codeWindow.ts`, sent as `code.snapshot` in `/api/threads`) fails
+closed: the code counts as the commenter's only when
+
+- it is GitHub's own hunk (the fallback above: that is their view), or
+- GitHub's hunk is a run of the rows carbonless built, row for row: the same
+  kind (added, deleted, context), the same old and new line numbers, the same
+  text and end-of-file mark, and it holds both ends of the commented range.
+
+Anything else is flagged, with a reason:
+
+- `diff-differs`: the hunk disagrees: another old side (an earlier PR commit
+  in "changes since your last review"), lines added in one and context in the
+  other, other line numbers, or the range not in it.
+- `no-host-diff`: GitHub kept no hunk (or it couldn't be read), so nothing
+  vouches for the rebuilt code.
+
+A missing verdict shows the chip too. GitHub's hunk ends at the commented
+line, so rows after the range, and rows above the hunk's first line, can't be
+checked; their new side is the comment's own commit either way. Whether the
+comment's commit was the PR's head at the time isn't checked on its own: the
+pane always shows the comment's own commit, so only the diff's old side can
+differ, and the hunk shows that. Showing the commenter's own diff instead is
+planned with the re-review work (`docs/todo.md`).
