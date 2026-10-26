@@ -133,7 +133,8 @@ activity `muted`, force-push and base change `warn`, ready `ok`, reopened
 `ok`, closed `bad`, merged `done`. Beside it one wrapping line: a 20px
 round avatar and the login (bot icon), "N commits" / "N comments" in
 `ink-soft`, the run's verdict icons (`REVIEW_ICON`), the "R of N resolved"
-chip (green when all are resolved, else yellow, like the thread lists),
+chip (green when all are resolved, else yellow, like the thread lists;
+as of a cutoff a grey "N threads" chip, resolution being unknown),
 "from X to Y" in `muted` small text, and the chevron toggle at the right.
 Opened, the items sit under a 2px `line` rule: short SHA in mono `link`,
 path:line in mono `link`, the thread state icon (yellow unresolved, green

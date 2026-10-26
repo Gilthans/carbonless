@@ -405,16 +405,25 @@ function ResolvedChip({
 }) {
 	const { resolved, total } = runResolution(items, threads);
 	if (total === 0) return null;
+	// As of a cutoff, whether a thread was resolved then isn't known.
+	if (asOf) {
+		return (
+			<Chip
+				tone="gray"
+				icon={CommentDiscussionIcon}
+				testId="timeline-resolved"
+				tip="Resolution isn't known as of the cutoff"
+			>
+				{plural(total, "thread")}
+			</Chip>
+		);
+	}
 	return (
 		<Chip
 			tone={resolved === total ? "green" : "yellow"}
 			icon={resolved === total ? CheckIcon : CommentDiscussionIcon}
 			testId="timeline-resolved"
-			tip={
-				asOf
-					? "Resolution history isn't known for a past moment: every thread counts as unresolved"
-					: `${resolved} of the ${plural(total, "thread")} these comments are in ${resolved === 1 ? "is" : "are"} resolved now`
-			}
+			tip={`${resolved} of the ${plural(total, "thread")} these comments are in ${resolved === 1 ? "is" : "are"} resolved now`}
 		>
 			{`${resolved} of ${total} resolved`}
 		</Chip>
@@ -548,13 +557,20 @@ function CommentItem({
 	const line = thread ? headerLine(thread) : item.line;
 	const state = !thread
 		? null
-		: thread.resolved
-			? { icon: CheckCircleIcon, label: "Resolved", className: "text-ok" }
-			: {
+		: session.data?.asOf
+			? {
+					// Whether it was resolved then isn't known.
 					icon: CommentDiscussionIcon,
-					label: "Unresolved",
-					className: "text-warn",
-				};
+					label: "Thread; resolution isn't known as of the cutoff",
+					className: "text-muted",
+				}
+			: thread.resolved
+				? { icon: CheckCircleIcon, label: "Resolved", className: "text-ok" }
+				: {
+						icon: CommentDiscussionIcon,
+						label: "Unresolved",
+						className: "text-warn",
+					};
 	return (
 		<li
 			data-testid="timeline-item"

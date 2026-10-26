@@ -1779,6 +1779,33 @@ describe("Timeline", () => {
 		expect(items[1]).toHaveTextContent("Should this expire?");
 	});
 
+	it("as of a cutoff, counts a run's threads without claiming any resolved or not", async () => {
+		const user = userEvent.setup();
+		const asOf = "2026-01-05T00:00:00Z";
+		const { rows } = await events({
+			"/api/session": ok({ ...info, asOf }),
+			"/api/overview": ok({ ...overview, asOf }),
+		});
+		const row = rows[2] as HTMLElement;
+		const chip = await within(row).findByTestId("timeline-resolved");
+		expect(chip).toHaveTextContent("2 threads");
+		expect(chip).not.toHaveTextContent("resolved");
+		expect(chip).toHaveAccessibleDescription(
+			"Resolution isn't known as of the cutoff",
+		);
+		await user.click(
+			within(row).getByRole("button", { name: "Show 3 comments" }),
+		);
+		const items = within(row).getAllByTestId("timeline-item");
+		expect(
+			within(items[1] as HTMLElement).getByRole("img", {
+				name: "Thread; resolution isn't known as of the cutoff",
+			}),
+		).toBeInTheDocument();
+		expect(within(row).queryByRole("img", { name: "Unresolved" })).toBeNull();
+		expect(within(row).queryByRole("img", { name: "Resolved" })).toBeNull();
+	});
+
 	it("brings a comment's thread card into view, opening the resolved list if need be", async () => {
 		const user = userEvent.setup();
 		const scrolled = vi.fn();
