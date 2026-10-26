@@ -5,7 +5,12 @@ import {
 } from "@tanstack/react-query";
 import { useEffect } from "react";
 import type { ThreadComments } from "../../shared/types";
-import { commentsQuery, openComments } from "../api";
+import {
+	commentsQuery,
+	openComments,
+	orderComments,
+	showCommentsOf,
+} from "../api";
 
 /**
  * A thread's comments (commentsQuery), for a thread on screen or opened:
@@ -23,6 +28,9 @@ export function useThreadComments(
 	// A prefetch already on its way doesn't run the query again: say it's opened.
 	const waiting = enabled && query.data === undefined;
 	useEffect(() => {
+		if (readId !== undefined) showCommentsOf(client, readId);
+	}, [client, readId]);
+	useEffect(() => {
 		if (waiting && readId !== undefined) {
 			openComments(client, readId, threadId).catch(() => {});
 		}
@@ -33,7 +41,9 @@ export function useThreadComments(
 /**
  * Reads the comments of these threads in the background, in this order
  * (batched, a few requests at a time; commentsQuery), so they are usually
- * in before anyone opens one. Those in already aren't asked for again.
+ * in before anyone opens one. Those in already aren't asked for again;
+ * those still queued move to this order, ahead of earlier lists. Another
+ * read's queue and comments are dropped.
  */
 export function usePrefetchComments(
 	readId: string | undefined,
@@ -43,6 +53,9 @@ export function usePrefetchComments(
 	const ids = threadIds.join(",");
 	useEffect(() => {
 		if (readId === undefined) return;
+		showCommentsOf(client, readId);
+		// This order wins over earlier ones, also for those already queued.
+		orderComments(client, readId, ids.split(",").filter(Boolean));
 		for (const id of ids.split(",")) {
 			if (id) void client.prefetchQuery(commentsQuery(readId, id, true));
 		}

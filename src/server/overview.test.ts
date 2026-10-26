@@ -843,6 +843,32 @@ describe("mapThreads: the attention set and the anchor", () => {
 		expect(one(node)?.commentCount).toBe(150);
 	});
 
+	it("the latest is who published last: a reply drafted early, submitted after another", () => {
+		const node = reviewThread({ path: "a.ts" }, [
+			said("rev", 0),
+			// Drafted at 10:01 in a review submitted at 10:30.
+			threadComment({
+				login: "rev",
+				text: "drafted",
+				createdAt: at(1),
+				publishedAt: at(30),
+			}),
+			said("octo-author", 10),
+		]);
+		expect(one(node)?.attention).toEqual(["octo-author"]);
+	});
+
+	it("a bot PR author never joins the set", () => {
+		const node = reviewThread({ path: "a.ts" }, [said("rev", 1)]);
+		expect(one(node, { prAuthor: "app/dependabot" })?.attention).toEqual([]);
+		expect(one(node, { prAuthor: "renovate[bot]" })?.attention).toEqual([]);
+		expect(
+			one(reviewThread({ path: "a.ts" }, [said("rev", 1), said("third", 2)]), {
+				prAuthor: "app/dependabot",
+			})?.attention,
+		).toEqual(["rev"]);
+	});
+
 	it("past 100 not paged in, the latest comment still counts as the latest", () => {
 		const node = reviewThread({ path: "a.ts" }, [said("rev", 1)]);
 		node.comments.totalCount = 150;
@@ -900,7 +926,7 @@ describe("mapComments", () => {
 	]);
 
 	it("gives every comment oldest first, a bot flagged, the pending one marked", () => {
-		const comments = mapComments(thread.summary, thread.content);
+		const comments = mapComments(thread.summary, thread.content).comments;
 		expect(comments.map((c) => [c.id, c.author, c.bot, c.pending])).toEqual([
 			["c1", "rev", false, false],
 			["c2", "ci", true, false],
@@ -921,7 +947,7 @@ describe("mapComments", () => {
 	});
 
 	it("as of a cutoff: only those published by then, none pending", () => {
-		const comments = mapComments(
+		const { comments } = mapComments(
 			thread.summary,
 			thread.content,
 			"2026-01-03T11:00:00Z",
@@ -943,6 +969,27 @@ describe("mapComments", () => {
 				},
 			],
 		);
-		expect(mapComments(t.summary, t.content).map((c) => c.id)).toEqual(["c1"]);
+		const shown = mapComments(t.summary, t.content);
+		expect(shown.comments.map((c) => c.id)).toEqual(["c1"]);
+		expect(shown.missing).toBeUndefined();
+	});
+
+	it("counts the listed comments the content didn't bring (deleted since)", () => {
+		const { summary, content } = thread;
+		const gone = {
+			...content,
+			comments: {
+				...content.comments,
+				nodes: content.comments.nodes.filter((c) => c.id !== "c2"),
+			},
+		};
+		const shown = mapComments(summary, gone);
+		expect(shown.comments.map((c) => c.id)).toEqual(["c1", "c3", "c4"]);
+		expect(shown.missing).toBe(1);
+		// As of a cutoff, only those published by then are owed.
+		expect(mapComments(summary, gone, "2026-01-03T09:30:00Z").missing).toBe(
+			undefined,
+		);
+		expect(mapComments(summary, gone, "2026-01-03T10:30:00Z").missing).toBe(1);
 	});
 });

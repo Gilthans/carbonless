@@ -236,22 +236,28 @@ export function withContent(summary: unknown, content: unknown): unknown {
  * oldest first: those its summary lists (so they agree with the thread's
  * count; a comment added since waits for the next read), published ones
  * dated by publication, and the viewer's pending ones marked. As of a
- * cutoff: only those published by then, none pending.
+ * cutoff: only those published by then, none pending. `missing` counts
+ * the published comments the summary lists (as of a cutoff, by then) that
+ * the content didn't bring (deleted since): shown, never hidden.
  */
 export function mapComments(
 	summary: unknown,
 	content: unknown,
 	asOf?: string,
-): ThreadComment[] {
+): { comments: ThreadComment[]; missing?: number } {
 	const listed = obj(obj(summary).comments);
-	const known = arr(listed.nodes).map((c) => str(obj(c).id));
+	const known = arr(listed.nodes).map(obj);
 	// The summary lists all (pages in past 100): only then is it the list.
 	const complete =
 		typeof listed.totalCount === "number" &&
 		known.length >= listed.totalCount &&
-		known.every(Boolean);
-	const ids = new Set(known);
-	const out: ThreadComment[] = [];
+		known.every((c) => str(c.id));
+	const ids = new Set(known.map((c) => str(c.id)));
+	const owed = (c: Json) => {
+		const at = visibleAt(c);
+		return at !== null && (!asOf || atOrBefore(at, asOf));
+	};
+	const comments: ThreadComment[] = [];
 	for (const raw of arr(obj(obj(content).comments).nodes)) {
 		const c = obj(raw);
 		const id = str(c.id);
@@ -261,7 +267,7 @@ export function mapComments(
 			continue;
 		}
 		const author = obj(c.author);
-		out.push({
+		comments.push({
 			id,
 			author: str(author.login),
 			bot: isBotAuthor(author),
@@ -273,7 +279,25 @@ export function mapComments(
 			text: str(c.bodyText) || str(c.body),
 		});
 	}
-	return out;
+	const shown = new Set(comments.map((c) => c.id));
+	let missing: number;
+	if (complete) {
+		missing = known.filter((c) => owed(c) && !shown.has(str(c.id))).length;
+	} else {
+		// Not all listed (not paged in): the total less pending ones is due.
+		const due =
+			!asOf && typeof listed.totalCount === "number"
+				? listed.totalCount - known.filter((c) => visibleAt(c) === null).length
+				: known.filter(owed).length;
+		missing = due - comments.filter((c) => !c.pending).length;
+	}
+	return missing > 0 ? { comments, missing } : { comments };
+}
+
+/** An ISO time in ms; a missing or invalid one sorts first. */
+function timeOf(at: string): number {
+	const ms = Date.parse(at);
+	return Number.isNaN(ms) ? Number.NEGATIVE_INFINITY : ms;
 }
 
 /** The later of two ISO times; a missing or invalid one loses. */
@@ -302,11 +326,14 @@ export function mapThreads(
 		asOf?: string;
 		/** The PR author's login: in every open thread's attention set. */
 		prAuthor: string;
+		/** The PR author is a bot (default: told by its login, isBotAuthor). */
+		prAuthorBot?: boolean;
 		/** The viewer's login or slug: `yourTurn` when in the set. */
 		viewer: string;
 	},
 ): Thread[] {
 	const { asOf, prAuthor } = ctx;
+	const prAuthorBot = ctx.prAuthorBot ?? isBotAuthor({ login: prAuthor });
 	const viewer = slugify(ctx.viewer);
 	const threads: Thread[] = [];
 	for (const raw of nodes) {
@@ -355,10 +382,15 @@ export function mapThreads(
 		);
 		const code = threadCode(first, anchor, loaded);
 		const resolved = !asOf && t.isResolved === true;
-		// Who commented, oldest first; past the listed ones (when they
-		// weren't paged in), the latest still tells who spoke last.
+		// Who commented, in the order they were published (a reply drafted
+		// early in a review submitted late spoke after those before the
+		// submission); past the listed ones (when they weren't paged in),
+		// the latest by creation still tells who spoke last, though a late
+		// submission among the unlisted can't be told.
 		const commenters = [
-			...comments.map(({ c }) => obj(c.author)),
+			...[...comments]
+				.sort((a, b) => timeOf(a.at) - timeOf(b.at))
+				.map(({ c }) => obj(c.author)),
 			...(!asOf &&
 			latestAt !== null &&
 			typeof listed.totalCount === "number" &&
@@ -369,6 +401,7 @@ export function mapThreads(
 		const attention = attentionSet({
 			comments: commenters,
 			prAuthor,
+			prAuthorBot,
 			resolved,
 		});
 		// bodyText is GitHub's plain-text rendering; the raw body is a fallback.

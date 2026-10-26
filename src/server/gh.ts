@@ -723,13 +723,12 @@ export function fetchThreadSummaries(
 	ref: PrRef,
 	read: ReadSignal = {},
 ): Promise<unknown[]> {
-	return notFoundAsPr(ref, async () =>
-		withEveryComment(
-			await fetchConnection(ref, "reviewThreads", read),
-			SUMMARY_COMMENT,
-			read,
-		),
-	);
+	return notFoundAsPr(ref, async () => {
+		const nodes = await fetchConnection(ref, "reviewThreads", read);
+		const paged = await withEveryComment(nodes, SUMMARY_COMMENT, read);
+		// Deleted while paged: listed as read (its content read says gone).
+		return paged.map((node, i) => node ?? nodes[i]);
+	});
 }
 
 const ACTOR = "login __typename avatarUrl(size: 40)";
@@ -930,9 +929,16 @@ export async function fetchThreadContents(
 			});
 		}),
 	);
-	const long = [...found.values()].filter((n) => n !== null);
-	const paged = await withEveryComment(long, CONTENT_COMMENT, read);
-	for (const node of paged) found.set(rec(node).id as string, node);
+	const long = [...found.entries()].filter(([, n]) => n !== null);
+	const paged = await withEveryComment(
+		long.map(([, n]) => n),
+		CONTENT_COMMENT,
+		read,
+	);
+	paged.forEach((node, i) => {
+		const id = long[i]?.[0];
+		if (id !== undefined) found.set(id, node);
+	});
 	return found;
 }
 
@@ -943,7 +949,8 @@ const CURSOR = /^[A-Za-z0-9+/=_.:-]{1,200}$/;
  * Threads' nodes with the rest of their comments read in, for those with
  * more than they list (`comments.totalCount` past `comments.nodes`): their
  * `comments.nodes` are then every comment, `fields` of each past the
- * first page. The others come back as they are.
+ * first page; null for one GitHub no longer has (deleted while paged).
+ * The others come back as they are.
  */
 async function withEveryComment(
 	nodes: unknown[],
@@ -977,6 +984,8 @@ async function withEveryComment(
 	return nodes.map((node) => {
 		const t = rec(node);
 		const more = typeof t.id === "string" ? rest.get(t.id) : undefined;
+		// Deleted while it was paged: gone, not cut short.
+		if (more === null) return null;
 		if (!more) return node;
 		const c = rec(t.comments);
 		return {
@@ -1022,16 +1031,16 @@ function onlyMissingAliases(stdout: string): boolean {
  * oldest first: from the start, or from `from`'s cursor on for a thread
  * that has one (what its first page didn't list). One query a round for up
  * to CONTENT_BATCH threads at once (aliases), round after round while any
- * has more; never a query per thread. A thread GitHub no longer has stops
- * where it was.
+ * has more; never a query per thread. A thread GitHub no longer has maps
+ * to null.
  */
 export async function fetchThreadCommentPages(
 	threadIds: string[],
 	fields: string,
 	read: ReadSignal = {},
 	from: Map<string, string> = new Map(),
-): Promise<Map<string, unknown[]>> {
-	const found = new Map<string, unknown[]>();
+): Promise<Map<string, unknown[] | null>> {
+	const found = new Map<string, unknown[] | null>();
 	let todo = threadIds
 		.filter((id) => NODE_ID.test(id))
 		.map((id) => ({ id, after: from.get(id) }));
@@ -1069,8 +1078,11 @@ export async function fetchThreadCommentPages(
 				const data = rec(rec(out).data);
 				return batch.flatMap(({ id }, i) => {
 					const node = data[`t${i}`];
-					// Deleted since: what was read of it stands.
-					if (node === null || node === undefined) return [];
+					// Deleted since: null, never a thread cut short.
+					if (node === null || node === undefined) {
+						found.set(id, null);
+						return [];
+					}
 					const conn = rec(rec(node).comments);
 					if (!Array.isArray(conn.nodes)) {
 						throw new GhError(

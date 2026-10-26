@@ -284,10 +284,7 @@ export class OverviewRead {
 				if (content === GONE || content === undefined) {
 					return { threadId, comments: [], unavailable: "deleted" };
 				}
-				return {
-					threadId,
-					comments: mapComments(summary, content, this.#asOf),
-				};
+				return { threadId, ...mapComments(summary, content, this.#asOf) };
 			}),
 		};
 	}

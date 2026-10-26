@@ -357,6 +357,12 @@ export interface ThreadComments {
 	 */
 	comments: ThreadComment[];
 	/**
+	 * Published comments the thread's list counts (as of a cutoff, by then)
+	 * that didn't come (deleted since it was listed): the page flags them.
+	 * Absent when none are missing.
+	 */
+	missing?: number;
+	/**
 	 * They will never come (`comments` empty): "deleted", the host no longer
 	 * has the thread; "unreadable", there is no id to read it by.
 	 */

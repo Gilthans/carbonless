@@ -247,6 +247,22 @@ describe("API", () => {
 			expect(view.threads[0]?.comments).toHaveLength(3);
 		});
 
+		it("two requests after a failed background read make one read again, not two", async () => {
+			const readId = await withThreads({ failGraphql: "nodes(ids:" });
+			expect(
+				(await inject(`/api/threads?read=${readId}&stage=full`)).statusCode,
+			).toBe(502);
+			threads({ threadContentDelayMs: 300 });
+			const before = contentReads();
+			const [a, b] = await Promise.all([
+				get(comments(readId, ["T12-0", "T12-1"])),
+				get(comments(readId, ["T12-1", "T12-0"])),
+			]);
+			expect(a.threads[0].comments).toHaveLength(3);
+			expect(b.threads[1].comments).toHaveLength(3);
+			expect(contentReads() - before).toBe(1);
+		});
+
 		it("joins the background read for ids on their way: one gh call, not two", async () => {
 			const readId = await withThreads({ threadContentDelayMs: 800 });
 			await get(`/api/threads?read=${readId}&stage=summary`);

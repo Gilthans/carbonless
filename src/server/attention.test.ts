@@ -69,6 +69,24 @@ describe("attentionSet", () => {
 		).toEqual(["Octo_Cat"]);
 	});
 
+	it("a deleted account (no login) can be the latest, and never joins", () => {
+		expect(set([human("rev"), human("author"), human("")])).toEqual([
+			"author",
+			"rev",
+		]);
+	});
+
+	it("a bot PR author never joins", () => {
+		expect(
+			attentionSet({
+				comments: [human("rev"), human("third")],
+				prAuthor: "dependabot",
+				prAuthorBot: true,
+				resolved: false,
+			}),
+		).toEqual(["rev"]);
+	});
+
 	it("no PR author known: only the participants", () => {
 		expect(
 			attentionSet({

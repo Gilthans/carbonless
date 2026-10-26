@@ -188,6 +188,8 @@ export const fetchComments = (readId: string, ids: string[]) =>
 
 /** Comment requests out at once; an opened thread's may take one more. */
 const COMMENT_REQUESTS = 2;
+/** A read's comments no one shows are kept this long (a newer read drops them at once). */
+const COMMENTS_KEPT_MS = 60 * 60_000;
 
 interface Wanted {
 	readId: string;
@@ -199,16 +201,25 @@ interface Wanted {
 	reject: (error: unknown) => void;
 }
 
+const keyOf = (readId: string, threadId: string) => `${readId}\n${threadId}`;
+
 /**
  * Gathers the threads whose comments are asked for in one tick into one
  * request (COMMENTS_BATCH at most), COMMENT_REQUESTS at a time, the rest
- * queued in the order asked. Opened threads go ahead of the queue, on
- * their own, and may take one more request; one asked for again while
- * queued or on its way shares that.
+ * queued: opened threads ahead, on their own (they may take one more
+ * request), then prefetched ones in the latest order asked for (`order`).
+ * One asked for again while queued or on its way shares that. A read gone
+ * (410), or superseded by a newer one, sends nothing more.
  */
 class CommentsBatcher {
 	#queue: Wanted[] = [];
 	readonly #sent = new Map<string, Promise<ThreadComments>>();
+	/** Prefetch order: the latest `order` call first, by position in it. */
+	readonly #rank = new Map<string, { call: number; at: number }>();
+	#calls = 0;
+	/** Reads the server no longer keeps, with the error it said so with. */
+	readonly #gone = new Map<string, unknown>();
+	#current: string | undefined;
 	#out = 0;
 	#scheduled = false;
 
@@ -217,8 +228,8 @@ class CommentsBatcher {
 		threadId: string,
 		opened: boolean,
 	): Promise<ThreadComments> {
-		const key = `${readId}\n${threadId}`;
-		const sent = this.#sent.get(key);
+		if (this.#gone.has(readId)) return Promise.reject(this.#gone.get(readId));
+		const sent = this.#sent.get(keyOf(readId, threadId));
 		if (sent) return sent;
 		const queued = this.#queue.find(
 			(w) => w.readId === readId && w.threadId === threadId,
@@ -240,12 +251,48 @@ class CommentsBatcher {
 		return done;
 	}
 
+	/**
+	 * Prefetched threads of `readId` go in this order, ahead of those
+	 * ordered before (also those already queued).
+	 */
+	order(readId: string, threadIds: string[]): void {
+		const call = ++this.#calls;
+		threadIds.forEach((id, at) => {
+			this.#rank.set(keyOf(readId, id), { call, at });
+		});
+	}
+
+	/**
+	 * `readId` is the read shown now: the queue of any other is dropped
+	 * (each rejected), and so are its comments in `client`.
+	 */
+	show(client: QueryClient, readId: string): void {
+		if (this.#current === readId) return;
+		this.#current = readId;
+		const stale = this.#queue.filter((w) => w.readId !== readId);
+		this.#queue = this.#queue.filter((w) => w.readId === readId);
+		// Not a 410: the overview is already the newer read.
+		const error = new Error("A newer read is shown");
+		for (const w of stale) w.reject(error);
+		for (const key of [...this.#rank.keys()]) {
+			if (!key.startsWith(`${readId}\n`)) this.#rank.delete(key);
+		}
+		client.removeQueries({
+			queryKey: ["comments"],
+			predicate: (q) => q.queryKey[1] !== readId,
+		});
+	}
+
 	/** Opened ones after those opened before, ahead of the rest. */
 	#enqueue(wanted: Wanted): void {
 		const at = wanted.opened
 			? this.#queue.findIndex((w) => !w.opened)
 			: this.#queue.length;
 		this.#queue.splice(at === -1 ? this.#queue.length : at, 0, wanted);
+		this.#schedule();
+	}
+
+	#schedule(): void {
 		if (this.#scheduled) return;
 		this.#scheduled = true;
 		// Whatever else is asked for in this tick joins the request.
@@ -255,7 +302,26 @@ class CommentsBatcher {
 		}, 0);
 	}
 
+	/** Prefetched ones by the latest order asked for; unordered ones last. */
+	#sortPrefetched(): void {
+		const rank = (w: Wanted) =>
+			this.#rank.get(keyOf(w.readId, w.threadId)) ?? {
+				call: 0,
+				at: Number.POSITIVE_INFINITY,
+			};
+		const opened = this.#queue.filter((w) => w.opened);
+		const rest = this.#queue
+			.filter((w) => !w.opened)
+			.sort((a, b) => {
+				const ra = rank(a);
+				const rb = rank(b);
+				return rb.call - ra.call || ra.at - rb.at;
+			});
+		this.#queue = [...opened, ...rest];
+	}
+
 	#flush(): void {
+		this.#sortPrefetched();
 		for (;;) {
 			const head = this.#queue[0];
 			if (!head) return;
@@ -269,7 +335,7 @@ class CommentsBatcher {
 	}
 
 	#send(readId: string, batch: Wanted[]): void {
-		const keys = batch.map((w) => `${readId}\n${w.threadId}`);
+		const keys = batch.map((w) => keyOf(readId, w.threadId));
 		for (const [i, w] of batch.entries()) this.#sent.set(keys[i] ?? "", w.done);
 		this.#out++;
 		fetchComments(
@@ -283,11 +349,19 @@ class CommentsBatcher {
 						const found = byId.get(w.threadId);
 						// Left out of the answer: an error, never an empty thread.
 						if (found) w.resolve(found);
-						else w.reject(new ApiError(0, "The thread's comments are missing"));
+						else
+							w.reject(new ApiError(502, "The thread's comments are missing"));
 					}
 				},
 				(error: unknown) => {
 					for (const w of batch) w.reject(error);
+					// The whole read is gone: nothing queued for it is sent.
+					if (error instanceof ApiError && error.status === 410) {
+						this.#gone.set(readId, error);
+						const queued = this.#queue.filter((w) => w.readId === readId);
+						this.#queue = this.#queue.filter((w) => w.readId !== readId);
+						for (const w of queued) w.reject(error);
+					}
 				},
 			)
 			.finally(() => {
@@ -319,10 +393,28 @@ export const openComments = (
 ) => batcherOf(client).load(readId, threadId, true);
 
 /**
+ * Prefetches go in this order, ahead of those ordered before, also those
+ * already queued (the open file first, say).
+ */
+export const orderComments = (
+	client: QueryClient,
+	readId: string,
+	threadIds: string[],
+) => batcherOf(client).order(readId, threadIds);
+
+/**
+ * `readId` is the read on screen: another read's queued comment requests
+ * are dropped, and its comments with them.
+ */
+export const showCommentsOf = (client: QueryClient, readId: string) =>
+	batcherOf(client).show(client, readId);
+
+/**
  * Read `readId`'s comments of thread `threadId`, batched with the others
  * asked for (CommentsBatcher): opened by default, `prefetch` to queue in
  * order behind them. A read no longer kept (410) reads the overview again,
- * as threadsQuery does. Kept for good: a read's comments never change.
+ * as threadsQuery does. A read's comments never change; kept an hour with
+ * no one showing them, and dropped once a newer read is shown.
  */
 export const commentsQuery = (
 	readId: string,
@@ -345,7 +437,7 @@ export const commentsQuery = (
 			}
 		},
 		staleTime: Number.POSITIVE_INFINITY,
-		gcTime: Number.POSITIVE_INFINITY,
+		gcTime: COMMENTS_KEPT_MS,
 	});
 
 export const fetchTimeline = (readId: string, signal?: AbortSignal) =>

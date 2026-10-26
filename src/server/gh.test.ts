@@ -482,7 +482,8 @@ describe("runGh with a fake gh", () => {
 			"b0",
 			"b1",
 		]);
-		expect(found.get("T2")).toEqual([]);
+		// Deleted while paged: gone, never cut short.
+		expect(found.get("T2")).toBeNull();
 		const queries = log()
 			.split("\n")
 			.filter((l) => l.includes("node(id:"));
@@ -543,6 +544,37 @@ describe("runGh with a fake gh", () => {
 			"three",
 		]);
 		expect(log()).toContain("body bodyText bodyHTML diffHunk");
+	});
+
+	it("a thread deleted while its comments are paged is gone, not cut short", async () => {
+		const gql = join(dir, "gql");
+		const { mkdirSync } = await import("node:fs");
+		mkdirSync(gql);
+		writeFileSync(
+			join(gql, "content-1.json"),
+			JSON.stringify({
+				data: {
+					nodes: [
+						{
+							id: "T1",
+							comments: {
+								totalCount: 3,
+								pageInfo: { hasNextPage: true, endCursor: "c2" },
+								nodes: [{ id: "one" }, { id: "two" }],
+							},
+						},
+					],
+				},
+			}),
+		);
+		writeFileSync(
+			join(gql, "pages-c2-1.json"),
+			JSON.stringify({ data: { t0: null } }),
+		);
+		setEnv({ FAKE_GQL_DIR: gql });
+		const found = await fetchThreadContents(["T1"]);
+		expect(found.has("T1")).toBe(true);
+		expect(found.get("T1")).toBeNull();
 	});
 
 	it("names the read that took too long, and stops a read that is aborted", async () => {
