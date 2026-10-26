@@ -231,29 +231,32 @@ function TimelineRow({
 				<LabeledIcon icon={node.icon} label={node.label} />
 			</span>
 			<div className="min-w-0 flex-1">
-				<div className="flex min-h-10 flex-wrap items-center gap-x-2 gap-y-0.5 text-sm">
-					<Actor actor={event.actor} />
-					{run ? (
-						<>
-							{count && <span className="text-ink-soft">{count}</span>}
-							{event.kind === "review" && (
-								<Verdicts items={event.items} bare={comments === 0} />
-							)}
-							{event.kind === "review" && threads && (
-								<ResolvedChip
-									items={event.items}
-									threads={threads}
-									asOf={Boolean(pr.asOf)}
-								/>
-							)}
-							<When from={event.from} to={event.to} />
-						</>
-					) : (
-						<>
-							<Fact event={event} />
-							<When from={event.at} to={event.at} />
-						</>
-					)}
+				{/* The summary wraps; the toggle stays at the right of its first line. */}
+				<div className="flex items-start gap-2">
+					<div className="flex min-h-10 min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-0.5 text-sm">
+						<Actor actor={event.actor} />
+						{run ? (
+							<>
+								{count && <span className="text-ink-soft">{count}</span>}
+								{event.kind === "review" && (
+									<Verdicts items={event.items} bare={comments === 0} />
+								)}
+								{event.kind === "review" && threads && (
+									<ResolvedChip
+										items={event.items}
+										threads={threads}
+										asOf={Boolean(pr.asOf)}
+									/>
+								)}
+								<When from={event.from} to={event.to} />
+							</>
+						) : (
+							<>
+								<Fact event={event} />
+								<When from={event.at} to={event.at} />
+							</>
+						)}
+					</div>
 					{expandable && (
 						<button
 							type="button"
@@ -261,7 +264,7 @@ function TimelineRow({
 							aria-controls={listId}
 							aria-label={`Show ${event.kind === "commits" ? count : plural(comments, "comment")}`}
 							onClick={() => setOpen((o) => !o)}
-							className="ml-auto flex h-10 w-10 shrink-0 items-center justify-center rounded-md text-link hover:bg-overlay focus-visible:outline-2 focus-visible:outline-accent"
+							className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md text-link hover:bg-overlay focus-visible:outline-2 focus-visible:outline-accent"
 						>
 							<ChevronDownIcon
 								size={16}
