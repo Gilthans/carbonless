@@ -178,7 +178,7 @@ describe("FilesPage", () => {
 		);
 	});
 
-	it("remembers the unit and counts the file tree in it", async () => {
+	it("remembers the unit and shows the tree's progress in it", async () => {
 		renderPage({
 			"/api/review": () => ({
 				status: 200,
@@ -191,9 +191,24 @@ describe("FilesPage", () => {
 		expect(screen.getByRole("radio", { name: "Lines" })).toBeChecked();
 		expect(bar()).toHaveAccessibleName(/0 of 2 lines reviewed$/);
 		expect(tree).toHaveTextContent("+1 −1");
+		const region = screen.getByRole("region", { name: "a.txt" });
+		const header = () => region.querySelector("header") as HTMLElement;
+		const fileBar = () =>
+			within(region).getByRole("progressbar", { name: "File progress" });
+		const counts = header().querySelector(
+			"[data-testid=change-count]",
+		)?.textContent;
+		expect(counts).toMatch(/^\+1 −1\d+$/);
+		expect(fileBar()).toHaveTextContent("0 / 2 lines");
+		await user.click(screen.getByRole("radio", { name: "Clusters" }));
+		expect(
+			header().querySelector("[data-testid=change-count]")?.textContent,
+		).toBe(counts);
+		expect(fileBar()).not.toHaveTextContent("lines");
 		await user.click(screen.getByRole("radio", { name: "Files" }));
 		expect(bar()).toHaveAccessibleName(/0 of 1 file reviewed$/);
-		expect(tree).not.toHaveTextContent("+1");
+		// Only progress follows the unit: the change counts stay.
+		expect(tree).toHaveTextContent("+1 −1");
 		expect(localStorage.getItem("crb.files.unit")).toBe("files");
 		cleanup();
 		renderPage({

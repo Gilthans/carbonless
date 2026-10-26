@@ -1,7 +1,6 @@
 import { StackIcon } from "@primer/octicons-react";
 import type { ReactNode } from "react";
 import type { FileView } from "../../shared/types";
-import type { Unit } from "./unit";
 
 export type FileProgress =
 	| "not started"
@@ -94,39 +93,40 @@ export function clusterCount(file: FileView): string {
 	return `${n} ${n === 1 ? "cluster" : "clusters"}`;
 }
 
-export function AddDel({ file }: { file: FileView }) {
-	return (
-		<span className="shrink-0 font-mono text-xs tabular-nums">
-			<span className="text-ok">+{file.additions}</span>{" "}
-			<span className="text-bad">−{file.deletions}</span>
-		</span>
-	);
+/** "12 lines added, 3 deleted". */
+export function lineCount(file: FileView): string {
+	const lines = file.additions === 1 ? "line" : "lines";
+	return `${file.additions} ${lines} added, ${file.deletions} deleted`;
 }
 
 /**
- * How much the file changes, in the unit: "+X −Y" in lines, the cluster count
- * in clusters, nothing in files.
+ * How much the file changes, whatever the unit: "+X −Y" in lines and the
+ * cluster count. The unit only switches progress, never these.
  */
 export function ChangeCount({
 	file,
-	unit,
 	hover,
 }: {
 	file: FileView;
-	unit: Unit;
 	hover?: HoverProps;
 }) {
-	if (unit === "lines") return <AddDel file={file} />;
-	if (unit === "files") return null;
-	const label = clusterCount(file);
 	return (
-		<NamedGlyph
-			label={label}
-			hover={hover}
-			className="inline-flex shrink-0 items-center gap-0.5 font-mono text-xs text-muted tabular-nums"
+		<span
+			data-testid="change-count"
+			className="inline-flex shrink-0 items-center gap-1.5 font-mono text-xs tabular-nums"
 		>
-			{file.clusters.length}
-			<StackIcon size={12} className="text-faint" />
-		</NamedGlyph>
+			<NamedGlyph label={lineCount(file)} hover={hover} className="shrink-0">
+				<span className="text-ok">+{file.additions}</span>{" "}
+				<span className="text-bad">−{file.deletions}</span>
+			</NamedGlyph>
+			<NamedGlyph
+				label={clusterCount(file)}
+				hover={hover}
+				className="inline-flex shrink-0 items-center gap-0.5 text-muted"
+			>
+				{file.clusters.length}
+				<StackIcon size={12} className="text-faint" />
+			</NamedGlyph>
+		</span>
 	);
 }

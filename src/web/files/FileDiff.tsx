@@ -10,6 +10,7 @@ import {
 	ChangeCount,
 	clusterCount,
 	fileProgress as fileStatus,
+	lineCount,
 	StatusIcon,
 } from "./status";
 import {
@@ -286,12 +287,14 @@ export function FileDiff(props: {
 		none: unreviewed.length === 0 && crossed.length === 0,
 	};
 	const path = file.oldPath ? `${file.oldPath} → ${file.path}` : file.path;
-	// One sentence for the header's status, count and progress.
+	// One sentence for the header's status, counts and progress. The counts
+	// are the same in every unit; only the progress follows it.
 	const status = fileStatus(file);
 	const sentence = describeFileProgress(file, props.unit);
 	const summary = [
 		sentence.startsWith(status) ? null : status,
-		props.unit === "clusters" ? clusterCount(file) : null,
+		lineCount(file),
+		clusterCount(file),
 		sentence,
 	]
 		.filter(Boolean)
@@ -318,9 +321,9 @@ export function FileDiff(props: {
 				}`}
 			>
 				{/*
-				 * DOM (and tab) order is the narrow layout's: the path on its own
-				 * row, everything else below it. Wide headers are one row, reordered
-				 * to toggle, status, path, count, actions, progress.
+				 * DOM (and tab) order is the narrow layout's: the path and counts on
+				 * their own row, everything else below it. Wide headers are one row, reordered
+				 * to toggle, status, path and counts, actions, progress.
 				 */}
 				<Tooltip content={summary} describe={false}>
 					{(summaryTrigger) => (
@@ -335,6 +338,8 @@ export function FileDiff(props: {
 											: changeKindLabel(file)
 									}
 								/>
+								{/* Beside the path, so a phone's second row keeps its room. */}
+								<ChangeCount file={file} hover={summaryTrigger} />
 							</div>
 							<button
 								type="button"
@@ -348,15 +353,7 @@ export function FileDiff(props: {
 							<span className="flex shrink-0 @lg:order-2">
 								<StatusIcon file={file} hover={summaryTrigger} />
 							</span>
-							{/* Left out of a phone's second row, where it wouldn't fit. */}
-							<span className="ml-auto hidden shrink-0 @sm:flex @lg:order-4 @lg:ml-0">
-								<ChangeCount
-									file={file}
-									unit={props.unit}
-									hover={summaryTrigger}
-								/>
-							</span>
-							<div className="ml-auto flex shrink-0 items-center gap-1.5 @sm:ml-0 @lg:order-5">
+							<div className="ml-auto flex shrink-0 items-center gap-1.5 @lg:order-5">
 								{crossToggle.undo ? (
 									<HeaderIconButton
 										label="Undo cross-off"

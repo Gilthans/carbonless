@@ -123,7 +123,7 @@ function FileItem(props: {
 									</span>
 								))}
 						</span>
-						<ChangeCount file={file} unit={unit} />
+						<ChangeCount file={file} />
 						<span data-testid="tree-numbers" className="sr-only">
 							{numbers}
 						</span>

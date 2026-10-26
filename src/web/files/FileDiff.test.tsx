@@ -387,7 +387,7 @@ describe("FileDiff", () => {
 		expect(progress).toHaveTextContent("3 / 8 lines");
 		expect(progress).toHaveAttribute(
 			"aria-valuetext",
-			"partly done · 3 of 8 lines reviewed, 2 crossed off",
+			"partly done · 1 line added, 1 deleted · 3 clusters · 3 of 8 lines reviewed, 2 crossed off",
 		);
 		cleanup();
 		setup(f, undefined, hunks, "files");
@@ -434,7 +434,10 @@ describe("FileDiff", () => {
 		setup(f, undefined, hunks, "files");
 		const progress = screen.getByRole("progressbar", { name: "File progress" });
 		expect(progress).toHaveTextContent("done · 1 crossed off");
-		expect(progress).toHaveAttribute("aria-valuetext", "done · 1 crossed off");
+		expect(progress).toHaveAttribute(
+			"aria-valuetext",
+			"1 line added, 1 deleted · 2 clusters · done · 1 crossed off",
+		);
 	});
 
 	it("tabs through the header in the narrow layout's order: path first", async () => {
@@ -460,7 +463,7 @@ describe("FileDiff", () => {
 		);
 		expect(open).toHaveLength(1);
 		expect(open[0]).toHaveTextContent(
-			"not started · 1 cluster · 0 of 1 cluster reviewed",
+			"not started · 1 line added, 1 deleted · 1 cluster · 0 of 1 cluster reviewed",
 		);
 		await user.tab();
 		expect(document.body).toHaveFocus();
@@ -684,26 +687,38 @@ describe("FileDiff", () => {
 		expect(screen.queryByRole("button", { name: "Undo cross-off" })).toBeNull();
 	});
 
-	it("counts the file's changes in the selected unit", () => {
-		const f = file([cluster("k1"), cluster("k2")], {
-			additions: 4,
-			deletions: 2,
-		});
+	it("shows the same change counts in every unit; only progress follows it", () => {
+		const f = file(
+			[cluster("k1", { state: "reviewed", lines: 4 }), cluster("k2")],
+			{
+				additions: 4,
+				deletions: 2,
+			},
+		);
 		const header = () => document.querySelector("header") as HTMLElement;
-		setup(f, undefined, hunks, "lines");
-		expect(header()).toHaveTextContent("+4 −2");
-		cleanup();
-		setup(f, undefined, hunks, "clusters");
-		expect(header()).not.toHaveTextContent("+4");
-		// The count is decorative: the summary stop names it.
-		expect(screen.queryByRole("img", { name: "2 clusters" })).toBeNull();
-		expect(
-			screen.getByRole("progressbar", { name: "File progress" }),
-		).toHaveAttribute("aria-valuetext", expect.stringContaining("2 clusters"));
-		cleanup();
-		setup(f, undefined, hunks, "files");
-		expect(header()).not.toHaveTextContent("+4");
-		expect(screen.queryByRole("img", { name: /clusters$/ })).toBeNull();
+		const progress = () =>
+			screen.getByRole("progressbar", { name: "File progress" });
+		const shown: Record<string, string> = {
+			lines: "4 / 6 lines",
+			clusters: "1 / 2 clusters",
+			files: "0 / 1",
+		};
+		for (const unit of ["lines", "clusters", "files"] as const) {
+			setup(f, undefined, hunks, unit);
+			expect(header()).toHaveTextContent("+4 −2");
+			// The counts are decorative: the summary stop names them.
+			const clusters = [...header().querySelectorAll("[aria-hidden]")].find(
+				(el) => el.textContent === "2" && el.querySelector("svg"),
+			);
+			expect(clusters).toBeDefined();
+			expect(screen.queryByRole("img", { name: "2 clusters" })).toBeNull();
+			expect(progress()).toHaveAttribute(
+				"aria-valuetext",
+				expect.stringContaining("4 lines added, 2 deleted · 2 clusters · "),
+			);
+			expect(progress()).toHaveTextContent(shown[unit] as string);
+			cleanup();
+		}
 	});
 
 	it("can be opened and closed by its owner", async () => {

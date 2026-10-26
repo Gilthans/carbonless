@@ -207,7 +207,13 @@ describe("FileTree", () => {
 		expect(part(bar(row), "reviewed")).toBeLessThan(100);
 	});
 
-	it("counts changes in the selected unit", () => {
+	it("shows the same change counts in every unit; only progress follows it", () => {
+		const progress: Record<string, string> = {
+			lines: "2 of 4 lines reviewed",
+			clusters: "1 of 2 clusters reviewed",
+			files: "0 of 1 file reviewed",
+		};
+		const one = () => screen.getByRole("button", { name: /one\.ts/ });
 		const { rerender } = render(
 			<FileTree
 				files={files}
@@ -216,37 +222,30 @@ describe("FileTree", () => {
 				onSelect={() => {}}
 			/>,
 		);
-		const one = () => screen.getByRole("button", { name: /one\.ts/ });
-		expect(one()).toHaveTextContent("+3 −1");
-		expect(numbers(one())).toBe("2 of 4 lines reviewed");
-		rerender(
-			<FileTree
-				files={files}
-				unit="clusters"
-				current={null}
-				onSelect={() => {}}
-			/>,
-		);
-		expect(one()).not.toHaveTextContent("+3");
-		const count = within(one()).getByRole("img", { name: "2 clusters" });
-		expect(count).toHaveTextContent("2");
-		expect(count).not.toHaveAttribute("title");
-		expect(
-			within(screen.getByRole("button", { name: /two\.ts/ })).getByRole("img", {
-				name: "1 cluster",
-			}),
-		).toBeInTheDocument();
-		rerender(
-			<FileTree
-				files={files}
-				unit="files"
-				current={null}
-				onSelect={() => {}}
-			/>,
-		);
-		expect(one()).not.toHaveTextContent("+3");
-		expect(within(one()).queryByRole("img", { name: /clusters?$/ })).toBeNull();
-		expect(numbers(one())).toBe("0 of 1 file reviewed");
+		for (const unit of ["lines", "clusters", "files"] as const) {
+			rerender(
+				<FileTree
+					files={files}
+					unit={unit}
+					current={null}
+					onSelect={() => {}}
+				/>,
+			);
+			const lines = within(one()).getByRole("img", {
+				name: "3 lines added, 1 deleted",
+			});
+			expect(lines).toHaveTextContent("+3 −1");
+			const count = within(one()).getByRole("img", { name: "2 clusters" });
+			expect(count).toHaveTextContent("2");
+			expect(count).not.toHaveAttribute("title");
+			expect(
+				within(screen.getByRole("button", { name: /two\.ts/ })).getByRole(
+					"img",
+					{ name: "1 cluster" },
+				),
+			).toBeInTheDocument();
+			expect(numbers(one())).toBe(progress[unit]);
+		}
 		expect(numbers(screen.getByRole("button", { name: /two\.ts/ }))).toBe(
 			"done",
 		);
