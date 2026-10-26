@@ -258,6 +258,23 @@ describe("fake gh", () => {
 		);
 	});
 
+	it("keeps what GitHub lists when the pages agree on a count they fall short of", async () => {
+		const items = Array.from({ length: 150 }, (_, i) =>
+			timelineCommit({
+				login: "ann",
+				at: "2026-01-02T10:00:00Z",
+				oid: i.toString(16).padStart(40, "0"),
+			}),
+		);
+		scenario({
+			timelineUnlisted: 120,
+			prs: { "12": { view: prView(), graphql: { timelineItems: items } } },
+		});
+		const read = await fetchTimeline(ref);
+		expect(read.nodes).toEqual(items);
+		expect(read.itemCount).toBe(270);
+	});
+
 	it("names a missing PR when reading the timeline", async () => {
 		await expect(fetchTimeline(ref)).rejects.toThrow(
 			"PR acme/widget#12 not found",

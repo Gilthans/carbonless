@@ -316,9 +316,11 @@ describe("buildTimeline", () => {
 				}),
 			],
 			commitCount: 251,
+			itemCount: 300,
 		});
 		expect(gaps).toEqual([
 			"GitHub listed 1 of 251 commits",
+			"GitHub listed 2 of 300 timeline items",
 			"102 review comments past GitHub's first 100 of a review not listed",
 		]);
 	});

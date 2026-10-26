@@ -199,7 +199,9 @@ switch (cmd) {
 			const size = Number(/timelineItems\(first: (\d+)/.exec(f.query)[1]);
 			const skip = Number(f.skip ?? 0);
 			// A test can make the list change between the pages' reads.
-			const count = s.timelineCountDrift ? all.length + skip : all.length;
+			// Counted but not listed (GitHub's caps, items the token can't see).
+			const counted = all.length + (s.timelineUnlisted ?? 0);
+			const count = s.timelineCountDrift ? counted + skip : counted;
 			print({
 				data: {
 					repository: {

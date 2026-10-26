@@ -754,6 +754,11 @@ export interface TimelineRead {
 	nodes: unknown[];
 	/** The PR's commits as GitHub counts them; null if it didn't say. */
 	commitCount: number | null;
+	/**
+	 * The items GitHub counts (`filteredCount`); more than `nodes` when it
+	 * listed fewer than it counts (timeline.ts says so).
+	 */
+	itemCount: number;
 }
 
 async function fetchTimelinePage(
@@ -801,9 +806,12 @@ async function fetchTimelinePage(
 /**
  * Every item of the PR's timeline the Overview shows, in GitHub's order.
  * The first page says how many there are; the rest are read at once. The
- * pages must agree on the count and add up to it (an item added or deleted
- * between the reads would shift them): if not, they are read again, and a
- * second disagreement is an error, never a timeline with a hole in it.
+ * pages must agree on the count (an item added or deleted between the
+ * reads would shift them): if not, they are read again, and a second
+ * disagreement is an error, never a timeline with a hole in it. Pages that
+ * agree but hold fewer items than counted (items GitHub counts but doesn't
+ * list, or the token can't see) are what GitHub gives: they are kept, and
+ * `itemCount` lets the page say what's missing.
  */
 export async function fetchTimeline(
 	ref: PrRef,
@@ -821,12 +829,12 @@ export async function fetchTimeline(
 					fetchTimelinePage(ref, (i + 1) * TIMELINE_PAGE, read),
 				),
 			);
-			const nodes = [first, ...rest].flatMap((p) => p.nodes);
-			if (
-				rest.every((p) => p.count === first.count) &&
-				nodes.length === first.count
-			) {
-				return { nodes, commitCount: first.commitCount };
+			if (rest.every((p) => p.count === first.count)) {
+				return {
+					nodes: [first, ...rest].flatMap((p) => p.nodes),
+					commitCount: first.commitCount,
+					itemCount: first.count,
+				};
 			}
 		}
 		throw new GhError("The PR's timeline kept changing while it was read");

@@ -37,6 +37,8 @@ export interface Scenario {
 	 * (as if items were added between the reads).
 	 */
 	timelineCountDrift?: boolean;
+	/** Timeline items GitHub counts (`filteredCount`) but doesn't list. */
+	timelineUnlisted?: number;
 	/** Every GraphQL query containing this text fails (gh exits 1). */
 	failGraphql?: string;
 	/** Nodes per GraphQL page (default 100, like gh.ts asks for). */

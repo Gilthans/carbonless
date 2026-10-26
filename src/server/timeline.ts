@@ -87,6 +87,8 @@ export interface TimelineInput {
 	nodes: unknown[];
 	/** The PR's commit count (`commits { totalCount }`); null if unknown. */
 	commitCount: number | null;
+	/** The timeline items GitHub counts; more than `nodes` when it listed fewer. */
+	itemCount?: number;
 	/** As-of mode: only what happened by then. */
 	asOf?: string;
 	/** A review comment's thread (ReviewThread.id) by the comment's id. */
@@ -231,6 +233,11 @@ function entries(input: TimelineInput, gaps: string[]): Entry[] {
 	}
 	if (input.commitCount !== null && input.commitCount > commits) {
 		gaps.push(`GitHub listed ${commits} of ${input.commitCount} commits`);
+	}
+	if (input.itemCount !== undefined && input.itemCount > input.nodes.length) {
+		gaps.push(
+			`GitHub listed ${input.nodes.length} of ${input.itemCount} timeline items`,
+		);
 	}
 	if (unlisted > 0) {
 		gaps.push(
