@@ -46,6 +46,16 @@ const tones = {
  * explained by `tooltip` (a tooltip, also its accessible description).
  * 40×40 on touch and in a narrow header.
  */
+/** How long "Undo cross-off" ignores clicks after replacing "Cross off file". */
+export const UNDO_ARM_MS = 500;
+
+/** Whether any of `el` lies within the viewport. */
+function onScreen(el: Element | null): boolean {
+	if (!el) return false;
+	const r = el.getBoundingClientRect();
+	return r.bottom >= 0 && r.top <= window.innerHeight;
+}
+
 function HeaderIconButton(props: {
 	label: string;
 	tooltip: string;
@@ -54,8 +64,14 @@ function HeaderIconButton(props: {
 	pressed?: boolean;
 	disabled: boolean;
 	onClick: () => void;
+	/** Clicks before this `performance.now()` time are ignored. */
+	ignoreClicksUntil?: number;
 }) {
 	const tone = tones[props.tone];
+	const onClick = () => {
+		if (performance.now() < (props.ignoreClicksUntil ?? 0)) return;
+		props.onClick();
+	};
 	return (
 		<Tooltip content={props.tooltip}>
 			{({ ref, onMouseEnter, onMouseLeave, ...rest }) => (
@@ -74,7 +90,7 @@ function HeaderIconButton(props: {
 						aria-label={props.label}
 						aria-pressed={props.pressed}
 						disabled={props.disabled}
-						onClick={props.onClick}
+						onClick={onClick}
 						className="group flex h-10 w-10 shrink-0 items-center justify-center rounded-md focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-not-allowed @lg:h-8 @lg:w-8 pointer-coarse:@lg:h-10 pointer-coarse:@lg:w-10"
 					>
 						<span
@@ -232,7 +248,10 @@ export function FileDiff(props: {
 	unit: Unit;
 	expanded?: boolean;
 	onExpandedChange?: (expanded: boolean) => void;
-	/** Another file is open (FilesPage keeps one open at a time). */
+	/**
+	 * Another file is open (FilesPage keeps one open at a time). Read only to
+	 * decide whether a failed file-wide save may reopen this file.
+	 */
 	otherOpen?: boolean;
 	onStaleChange?: (stale: boolean) => void;
 	/** A thread link landing in this file (FilesPage). */
@@ -251,6 +270,8 @@ export function FileDiff(props: {
 	// another, while a file-wide save ran.
 	const expandedNow = useRef(expanded);
 	expandedNow.current = expanded;
+	const headerEl = useRef<HTMLElement>(null);
+	const toggleButton = useRef<HTMLButtonElement>(null);
 	const otherOpenNow = useRef(props.otherOpen ?? false);
 	otherOpenNow.current = props.otherOpen ?? false;
 	const setStates = useSetStates({ onStaleChange: props.onStaleChange });
@@ -278,14 +299,26 @@ export function FileDiff(props: {
 	 * Marking the rest reviewed or crossing it off finishes the file: it closes
 	 * at once, like "Collapse file" does (its header stays where it is, the
 	 * next file below), without waiting for the save. A failed save reopens
-	 * it, the error in view, unless the reviewer has opened another file
-	 * meanwhile: then the error shows in this closed file's section.
+	 * it, the error in view, unless the reviewer has moved on (opened another
+	 * file, or scrolled its header off screen): then the error shows in this
+	 * closed file's section. A stale refusal doesn't reopen it: the page is
+	 * reloading a new snapshot.
 	 */
 	const finishAll = (changes: StateChange[]) => {
 		const closing = expanded;
-		if (closing) setExpanded(false);
-		saveAll(changes).catch(() => {
-			if (closing && !expandedNow.current && !otherOpenNow.current) {
+		if (closing) {
+			setExpanded(false);
+			// The clicked button disables while saving; keep focus in the header.
+			toggleButton.current?.focus({ preventScroll: true });
+		}
+		saveAll(changes).catch((error: unknown) => {
+			if (
+				closing &&
+				!isStale(error) &&
+				!expandedNow.current &&
+				!otherOpenNow.current &&
+				onScreen(headerEl.current)
+			) {
 				setExpanded(true);
 			}
 		});
@@ -317,6 +350,14 @@ export function FileDiff(props: {
 		undo: unreviewed.length === 0 && crossed.length > 0,
 		none: unreviewed.length === 0 && crossed.length === 0,
 	};
+	// "Undo cross-off" swaps in under the pointer once a cross-off is stored:
+	// a double click's second click was meant for the cross-off, not undo.
+	const undoArmedAt = useRef(0);
+	const wasUndo = useRef(crossToggle.undo);
+	if (crossToggle.undo && !wasUndo.current) {
+		undoArmedAt.current = performance.now() + UNDO_ARM_MS;
+	}
+	wasUndo.current = crossToggle.undo;
 	const path = file.oldPath ? `${file.oldPath} → ${file.path}` : file.path;
 	// One sentence for the header's status, counts and progress. The counts
 	// are the same in every unit; only the progress follows it.
@@ -370,6 +411,7 @@ export function FileDiff(props: {
 			className="overflow-clip rounded-lg border border-line bg-surface"
 		>
 			<header
+				ref={headerEl}
 				// Square corners: the section clips them at the top, and a stuck
 				// header must not let lines show through.
 				className={`@container border-b border-line bg-raised px-1.5 ${
@@ -400,6 +442,7 @@ export function FileDiff(props: {
 								<ChangeCount file={file} hover={summaryTrigger} />
 							</div>
 							<button
+								ref={toggleButton}
 								type="button"
 								aria-expanded={expanded}
 								aria-label={expanded ? "Collapse file" : "Expand file"}
@@ -439,6 +482,7 @@ export function FileDiff(props: {
 										)}
 								{crossToggle.undo ? (
 									<HeaderIconButton
+										ignoreClicksUntil={undoArmedAt.current}
 										label="Undo cross-off"
 										tooltip="Set crossed-off clusters back to unreviewed"
 										icon="⊘"

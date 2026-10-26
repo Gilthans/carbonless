@@ -19,7 +19,7 @@ import type {
 } from "../../shared/types";
 import { reviewQuery } from "../api";
 import { resetShowInvisibles, setShowInvisibles } from "../code/Invisibles";
-import { FileDiff } from "./FileDiff";
+import { FileDiff, UNDO_ARM_MS } from "./FileDiff";
 import type { Unit } from "./unit";
 
 vi.mock("./highlight", () => ({
@@ -564,6 +564,11 @@ describe("FileDiff", () => {
 		expect(undo).toBe(cross);
 		expect(undo).toHaveAttribute("aria-pressed", "true");
 		await waitFor(() => expect(undo).toBeEnabled());
+		// Right after it swaps in, a click (a double click's second) does nothing.
+		await user.click(undo);
+		await new Promise((r) => setTimeout(r, 50));
+		expect(posts()).toHaveLength(1);
+		await new Promise((r) => setTimeout(r, UNDO_ARM_MS));
 		await user.click(undo);
 		await waitFor(() =>
 			expect(posts()[1]?.body.changes).toEqual([
@@ -780,10 +785,9 @@ describe("FileDiff", () => {
 			await user.click(screen.getByRole("button", { name: "Expand file" }));
 			expect(await screen.findAllByText("new five")).not.toHaveLength(0);
 			await user.click(screen.getByRole("button", { name }));
-			// Closed before the save answers.
-			expect(
-				screen.getByRole("button", { name: "Expand file" }),
-			).toBeInTheDocument();
+			// Closed before the save answers, focus on its toggle.
+			const toggle = screen.getByRole("button", { name: "Expand file" });
+			expect(toggle).toHaveFocus();
 			expect(screen.queryByText("new five")).toBeNull();
 			await answer();
 			await waitFor(() => expect(posts()).toHaveLength(1));
@@ -811,6 +815,20 @@ describe("FileDiff", () => {
 			expect(await screen.findAllByText("new five")).not.toHaveLength(0);
 		},
 	);
+
+	it("doesn't reopen the file when the snapshot moved", async () => {
+		const f = file([cluster("k1")]);
+		const { user, answer, onStaleChange } = heldSave(f, 409);
+		await user.click(screen.getByRole("button", { name: "Expand file" }));
+		await user.click(
+			screen.getByRole("button", { name: "Mark remaining reviewed" }),
+		);
+		await answer();
+		await waitFor(() => expect(onStaleChange).toHaveBeenCalledWith(true));
+		expect(
+			screen.getByRole("button", { name: "Expand file" }),
+		).toBeInTheDocument();
+	});
 
 	it("leaves a closed file closed when its file-wide save fails", async () => {
 		const f = file([cluster("k1")]);
