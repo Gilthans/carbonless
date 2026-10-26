@@ -159,7 +159,7 @@ test("crossing off keeps reviewed clusters, and undoing leaves clusters unreview
 	await fileAction(section, "Cross off file");
 	await expect(fileProgress(section)).toHaveAttribute(
 		"aria-valuetext",
-		/^done · 2 clusters · 1 of 1 cluster reviewed, 1 crossed off$/,
+		/^done · 3 lines added, 2 deleted · 2 clusters · 1 of 1 cluster reviewed, 1 crossed off$/,
 	);
 	await expect(bar).toContainText("1 / 3 clusters reviewed");
 	// In files, a file with a crossed-off cluster counts as crossed off, never
@@ -574,11 +574,10 @@ test("picking a file in the tree opens it alone, its header at the top", async (
 		.toBe(0);
 });
 
-test("tree rows show progress as aligned mini bars and counts in the unit", async ({
+test("tree rows and headers keep change counts in every unit; progress follows it", async ({
 	page,
 	pr,
 	startCrb,
-	isMobile,
 }) => {
 	await pr(fixture);
 	const s = await startCrb();
@@ -614,12 +613,23 @@ test("tree rows show progress as aligned mini bars and counts in the unit", asyn
 		for (const w of widths) expect(w).toBeGreaterThan(20);
 	});
 	const header = fileSection(page, "src/core.ts").locator("header");
-	await expect(header).toContainText("+3 −2");
+	const headerCount = header.getByTestId("change-count");
+	const headerBar = fileProgress(fileSection(page, "src/core.ts"));
+	await expect(headerCount).toHaveText("+3 −22");
+	await expect(headerCount).toBeInViewport();
+	await expect(headerBar).toContainText("0 / 5 lines");
+	// It fits a phone's header without overflowing it.
+	expect(
+		await header.evaluate((el) => el.scrollWidth - el.clientWidth),
+	).toBeLessThanOrEqual(0);
 
+	// Only progress follows the unit: the change counts stay.
 	await chooseUnit(page, "Clusters");
 	await withTree(page, async (tree) => {
 		const core = tree.getByRole("button", { name: /core\.ts/ });
-		await expect(core).not.toContainText("+3");
+		await expect(
+			core.getByRole("img", { name: "3 lines added, 2 deleted" }),
+		).toHaveText("+3 −2");
 		const count = core.getByRole("img", { name: "2 clusters" });
 		await expect(count).toHaveText("2");
 		await expect(count).not.toHaveAttribute("title");
@@ -627,20 +637,22 @@ test("tree rows show progress as aligned mini bars and counts in the unit", asyn
 			"0 of 2 clusters reviewed",
 		);
 	});
-	// A phone's two-row header leaves the count to the tree.
-	// (Decorative: the progress summary carries the name.)
-	await expect(
-		header.locator("[aria-hidden=true]").filter({ hasText: /^2$/ }),
-	).toBeVisible({ visible: !isMobile });
+	// Decorative in the header: the progress summary carries the names.
+	await expect(headerCount).toHaveText("+3 −22");
+	await expect(headerCount).toBeInViewport();
+	await expect(headerBar).toHaveAttribute(
+		"aria-valuetext",
+		"not started · 3 lines added, 2 deleted · 2 clusters · 0 of 2 clusters reviewed",
+	);
 
 	await chooseUnit(page, "Files");
 	await withTree(page, async (tree) => {
 		const core = tree.getByRole("button", { name: /core\.ts/ });
-		await expect(core).not.toContainText("+3");
-		await expect(core.getByRole("img", { name: /clusters?$/ })).toHaveCount(0);
+		await expect(core).toContainText("+3 −2");
+		await expect(core.getByRole("img", { name: "2 clusters" })).toBeVisible();
 		await expect(treeNumbers(tree, /util\.ts/)).toHaveText("done");
 	});
-	await expect(header).not.toContainText("+3");
+	await expect(headerCount).toHaveText("+3 −22");
 });
 
 const many = Array.from({ length: 200 }, (_, i) => `many ${i + 1}`);

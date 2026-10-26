@@ -320,14 +320,18 @@ test.describe("phone", () => {
 			const pathBox = await path.boundingBox();
 			const headerBox = await section.locator("header").boundingBox();
 			if (!pathBox || !headerBox) throw new Error("header not rendered");
-			// Row 1: the change-kind icon, then the path the rest of the
-			// header's width.
+			// Row 1: the change-kind icon, the path, then the change counts;
+			// the path takes the rest of the header's width.
 			const kind = await section.getByTestId("change-kind").boundingBox();
 			if (!kind) throw new Error("no change-kind icon");
+			const counts = await section.getByTestId("change-count").boundingBox();
+			if (!counts) throw new Error("no change counts");
 			expect(kind.width).toBeLessThanOrEqual(16);
 			expect(kind.x + kind.width).toBeLessThanOrEqual(pathBox.x);
+			expect(pathBox.x + pathBox.width).toBeLessThanOrEqual(counts.x);
+			expect(Math.abs(counts.y - pathBox.y)).toBeLessThan(pathBox.height);
 			expect(pathBox.width).toBeGreaterThanOrEqual(
-				headerBox.width - 16 - kind.width - 8,
+				headerBox.width - 16 - kind.width - counts.width - 16,
 			);
 			// Row 2: progress plus ⊘ ✓, 40px each, below the path.
 			for (const name of ["Cross off file", "Mark remaining reviewed"]) {
@@ -357,7 +361,7 @@ test.describe("phone", () => {
 			expect(inside).toBe(true);
 			// The file name and a good part of the path are readable.
 			const shown = await path.evaluate((el) => el.clientWidth);
-			expect(shown).toBeGreaterThanOrEqual(width - 64);
+			expect(shown).toBeGreaterThanOrEqual(width - 64 - counts.width - 8);
 			await expectNoPageOverflow(page);
 			await section
 				.getByRole("button", { name: "Mark remaining reviewed" })
@@ -463,7 +467,9 @@ test("an open tooltip causes no horizontal page overflow", async ({
 	// Its text is the progressbar's value text, so it is hidden from the a11y tree.
 	const tip = page
 		.locator("[role=tooltip]:not([hidden])")
-		.filter({ hasText: "not started · 1 cluster" });
+		.filter({
+			hasText: /^not started · \d+ lines? added, \d+ deleted · 1 cluster · /,
+		});
 	await expect(tip).toBeVisible();
 	await expectNoPageOverflow(page);
 	const box = await tip.boundingBox();
