@@ -302,8 +302,9 @@ test("finished files get a green header and tree row, gone on undo", async ({
 	expect(finished).not.toBe(unfinished);
 	// Opaque, so a stuck header hides the diff under it, open or closed.
 	expect(finished).not.toMatch(/\/|rgba|transparent/);
-	// The tree: a lighter green on the finished row only (the current row
-	// keeps its own highlight, so compare the others).
+	// The tree: a lighter green on the finished row only. The current row
+	// keeps its accent highlight instead (FileTree.tsx: current beats
+	// finished), so compare only the rows that aren't current.
 	await withTree(page, async (tree) => {
 		const rows = (finished: boolean) =>
 			tree.locator(

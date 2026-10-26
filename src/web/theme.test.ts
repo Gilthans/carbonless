@@ -211,6 +211,21 @@ describe("color tokens", () => {
 				).toBeGreaterThanOrEqual(3);
 			}
 		}
+		// On a finished file's header (ok-wash): the outlines and fills that
+		// show there. The pressed cross-off's crossed-strong fill is edged in
+		// crossed; unreviewed never shows on a finished file.
+		for (const part of [
+			"line-strong",
+			"accent",
+			"ok-fill",
+			"crossed",
+			"crossed-light",
+		]) {
+			expect(
+				contrast(token(part), token("ok-wash")),
+				`${part} on ok-wash`,
+			).toBeGreaterThanOrEqual(3);
+		}
 		// Meter fills against their track.
 		for (const fill of ["ok-fill", "crossed", "crossed-light"]) {
 			expect(

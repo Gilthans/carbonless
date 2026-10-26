@@ -103,10 +103,11 @@ added, 2 deleted · 2 clusters").
 
 A file the progress counts done (`FileView.done`: every cluster reviewed or
 crossed off) is green, so scrolling finds what's left: its header is
-`ok-wash` with a 3px `ok` left edge and an `ok-fill/50` section border, open,
+`ok-wash` with a 3px `ok-fill` left edge and an `ok-fill/50` section border, open,
 closed or stuck; its tree row gets `ok/8` with a 2px `ok-fill` edge (the
 current row keeps its accent). Crossed-off files keep their purple cues on
-top. Unfinished files are unchanged, and an undo drops the tint at once.
+top; the pressed Undo cross-off keeps a `crossed` edge so it shows at 3:1 on
+the wash. Unfinished files are unchanged, and an undo drops the tint at once.
 
 ## Settings
 

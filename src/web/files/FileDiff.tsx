@@ -33,7 +33,7 @@ const tones = {
 	purple: {
 		idle: "border-crossed text-done group-[:enabled:hover]:bg-crossed/20",
 		pressed:
-			"border-crossed-strong bg-crossed-strong text-ink group-[:enabled:hover]:border-crossed group-[:enabled:hover]:bg-crossed",
+			"border-crossed bg-crossed-strong text-ink group-[:enabled:hover]:border-crossed-light group-[:enabled:hover]:bg-crossed",
 	},
 	green: {
 		idle: "border-ok-fill text-ok group-[:enabled:hover]:bg-ok/15",
@@ -411,7 +411,6 @@ export function FileDiff(props: {
 			id={`file-${file.index}`}
 			data-file-index={file.index}
 			aria-label={file.path}
-			data-finished={file.done || undefined}
 			className={`overflow-clip rounded-lg border bg-surface ${
 				file.done ? "border-ok-fill/50" : "border-line"
 			}`}
@@ -425,7 +424,7 @@ export function FileDiff(props: {
 				// edge, so unreviewed files stand out while scrolling.
 				className={`@container border-b border-line px-1.5 ${
 					file.done
-						? "bg-ok-wash shadow-[inset_3px_0_0_var(--color-ok)]"
+						? "bg-ok-wash shadow-[inset_3px_0_0_var(--color-ok-fill)]"
 						: "bg-raised"
 				} ${
 					expanded

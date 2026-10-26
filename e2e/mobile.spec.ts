@@ -1,6 +1,6 @@
 import type { Page } from "@playwright/test";
 import { reviewThread, threadComment } from "../test/fake-gh/scenario";
-import { barBottom, fileSection, openFiles } from "./files-ui";
+import { barBottom, fileAction, fileSection, openFiles } from "./files-ui";
 import { expect, type PrOptions, test } from "./fixtures";
 
 const LONG_DIR = "src/server/review/storage/adapters/git/refs/internal/legacy";
@@ -300,6 +300,23 @@ test.describe("phone", () => {
 			el.scrollLeft = 0;
 		});
 		expect(await path.evaluate((el) => el.scrollLeft)).toBe(0);
+		// Finished, the fade starts from the header's green, not a grey block.
+		const section = fileSection(page, `${LONG_DIR}/compatibility.ts`);
+		await fileAction(section, "Mark remaining reviewed");
+		await expect(section.locator("header")).toHaveAttribute("data-finished");
+		await path.evaluate((el) => {
+			el.scrollLeft = el.scrollWidth;
+		});
+		const header = await section
+			.locator("header")
+			.evaluate((el) => getComputedStyle(el).backgroundColor);
+		await expect
+			.poll(() =>
+				section
+					.getByTestId("path-fade")
+					.evaluate((el) => getComputedStyle(el).backgroundImage),
+			)
+			.toContain(header);
 	});
 
 	test("file actions sit inline as 40px icons under a full-width path", async ({
