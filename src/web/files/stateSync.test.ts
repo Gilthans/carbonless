@@ -224,29 +224,197 @@ describe("StateSync", () => {
 		expect(sync.getState().delayed).toBe(false);
 	});
 
-	it("keeps a change after an unknown error until retry, which resends the intended state", async () => {
+	it("keeps a refused change until retry, while other changes keep syncing", async () => {
 		const { sync, calls, deps, flush } = harness();
 		const failed = vi.fn();
 		void sync.apply("r1", "a.ts", [set("k1", "reviewed")]).catch(failed);
 		calls[0]?.reject(new ApiError(400, "Unknown state: nope"));
 		await flush();
 		expect(sync.getState().failure?.message).toBe("Unknown state: nope");
+		expect([...sync.getState().rejected.keys()]).toEqual(["k1"]);
 		expect(sync.getState().pending.get("k1")?.change.state).toBe("reviewed");
 		expect(failed).toHaveBeenCalled();
 		expect(deps.failed).toHaveBeenCalled();
-		// Nothing more is sent by itself, even for a new change.
-		void sync.apply("r1", "a.ts", [set("k2", "reviewed")]);
+		// Another cluster's change doesn't jam behind it.
+		void sync.apply("r1", "b.ts", [set("k2", "reviewed")]);
+		expect(calls[1]?.changes).toEqual([set("k2", "reviewed")]);
+		calls[1]?.resolve(ok);
+		await flush();
+		expect([...sync.getState().pending.keys()]).toEqual(["k1"]);
+		// The refused one isn't sent again by itself.
 		await vi.advanceTimersByTimeAsync(60_000);
-		expect(calls).toHaveLength(1);
+		expect(calls).toHaveLength(2);
 		sync.retry();
 		expect(sync.getState().failure).toBeNull();
-		expect(calls[1]?.changes).toEqual([
+		expect(calls[2]?.changes).toEqual([set("k1", "reviewed")]);
+		calls[2]?.resolve(ok);
+		await flush();
+		expect(sync.getState().pending.size).toBe(0);
+	});
+
+	it("isolates the change the server refuses: per file, then in halves", async () => {
+		const { sync, calls, flush } = harness();
+		const answer = async (i: number) => {
+			const call = calls[i];
+			if (!call) throw new Error(`no call ${i}`);
+			if (call.changes.some((c) => c.key === "bad")) {
+				call.reject(new ApiError(400, "Unknown cluster key: bad"));
+			} else call.resolve(ok);
+			await flush();
+		};
+		// Held behind a first write, so all three go in one request.
+		void sync.apply("r1", "z.ts", [set("z", "reviewed")]);
+		void sync.apply("r1", "a.ts", [
+			set("a1", "reviewed"),
+			set("bad", "reviewed"),
+		]);
+		void sync.apply("r1", "b.ts", [set("b1", "crossed-off")]);
+		await answer(0);
+		expect(calls[1]?.changes.map((c) => c.key)).toEqual(["a1", "bad", "b1"]);
+		await answer(1);
+		// Per file, in order.
+		expect(calls[2]?.changes.map((c) => c.key)).toEqual(["a1", "bad"]);
+		await answer(2);
+		// Then halves of the file.
+		expect(calls[3]?.changes.map((c) => c.key)).toEqual(["a1"]);
+		await answer(3);
+		expect(calls[4]?.changes.map((c) => c.key)).toEqual(["bad"]);
+		await answer(4);
+		expect(calls[5]?.changes.map((c) => c.key)).toEqual(["b1"]);
+		await answer(5);
+		expect(calls).toHaveLength(6);
+		const state = sync.getState();
+		expect([...state.pending.keys()]).toEqual(["bad"]);
+		expect([...state.rejected.keys()]).toEqual(["bad"]);
+		expect(state.failure?.message).toBe("Unknown cluster key: bad");
+		expect(describePending(state.rejected)).toBe("Reviewed · a.ts");
+	});
+
+	it("sends a refused cluster again once the reviewer changes it", async () => {
+		const { sync, calls, flush } = harness();
+		void sync.apply("r1", "a.ts", [set("k1", "crossed-off")]);
+		calls[0]?.reject(new ApiError(400, "Reason too long"));
+		await flush();
+		expect(sync.getState().failure).not.toBeNull();
+		void sync.apply("r1", "a.ts", [set("k1", "unreviewed")]);
+		expect(sync.getState().failure).toBeNull();
+		expect(calls[1]?.changes).toEqual([set("k1", "unreviewed")]);
+	});
+
+	it("sends one revision per request, the older first", async () => {
+		const { sync, calls, flush } = harness();
+		void sync.apply("r0", "a.ts", [set("k0", "reviewed")]);
+		void sync.apply("r1", "a.ts", [set("k1", "reviewed")]);
+		void sync.apply("r2", "a.ts", [set("k2", "reviewed")]);
+		void sync.apply("r1", "a.ts", [set("k3", "reviewed")]);
+		for (let i = 0; i < 3; i++) {
+			calls[i]?.resolve(ok);
+			await flush();
+		}
+		expect(calls.map((c) => [c.revision, c.changes.map((x) => x.key)])).toEqual(
+			[
+				["r0", ["k0"]],
+				["r1", ["k1", "k3"]],
+				["r2", ["k2"]],
+			],
+		);
+	});
+
+	it("counts the delay from a cluster's first unsaved change, through coalescing", async () => {
+		const { sync, calls, flush } = harness();
+		void sync.apply("r1", "a.ts", [set("k0", "reviewed")]);
+		void sync.apply("r1", "a.ts", [set("k1", "reviewed")]);
+		await vi.advanceTimersByTimeAsync(3000);
+		// Re-set while still queued: k1 has waited since its first change.
+		void sync.apply("r1", "a.ts", [set("k1", "crossed-off")]);
+		calls[0]?.resolve(ok);
+		await flush();
+		expect([...sync.getState().pending.keys()]).toEqual(["k1"]);
+		await vi.advanceTimersByTimeAsync(2000);
+		expect(sync.getState().delayed).toBe(true);
+	});
+
+	it("starts a re-changed cluster's wait anew once the write before it is stored", async () => {
+		const { sync, calls, flush } = harness();
+		void sync.apply("r1", "a.ts", [set("k1", "reviewed")]);
+		await vi.advanceTimersByTimeAsync(4000);
+		void sync.apply("r1", "a.ts", [set("k1", "unreviewed")]);
+		calls[0]?.resolve(ok);
+		await flush();
+		await vi.advanceTimersByTimeAsync(2000);
+		// 6 s since the first click, but its newer change waited only 2 s.
+		expect(sync.getState().delayed).toBe(false);
+	});
+
+	it("doesn't flash the delayed notice right after Retry", async () => {
+		const { sync, calls, flush } = harness();
+		void sync.apply("r1", "a.ts", [set("k1", "reviewed")]);
+		calls[0]?.reject(new ApiError(400, "nope"));
+		await flush();
+		await vi.advanceTimersByTimeAsync(DELAYED_MS + 1000);
+		expect(sync.getState().delayed).toBe(false);
+		sync.retry();
+		expect(sync.getState().delayed).toBe(false);
+	});
+
+	it("says why it waits, until a write is stored", async () => {
+		const { sync, calls, flush } = harness();
+		void sync.apply("r1", "a.ts", [set("k1", "reviewed")]);
+		expect(sync.getState().waiting).toBeNull();
+		calls[0]?.reject(
+			new ApiError(0, "Could not reach carbonless. Is crb still running?"),
+		);
+		await flush();
+		expect(sync.getState().waiting).toBe("Can't reach crb");
+		await vi.advanceTimersByTimeAsync(RETRY_DELAYS_MS[0] ?? 0);
+		calls[1]?.reject(new ApiError(500, "fatal: unable to write ref"));
+		await flush();
+		expect(sync.getState().waiting).toBe("fatal: unable to write ref");
+		await vi.advanceTimersByTimeAsync(RETRY_DELAYS_MS[1] ?? 0);
+		calls[2]?.resolve(ok);
+		await flush();
+		expect(sync.getState().waiting).toBeNull();
+	});
+
+	it("sends a new change made during backoff at once, and never two at a time", async () => {
+		const { sync, calls, flush } = harness();
+		void sync.apply("r1", "a.ts", [set("k1", "reviewed")]);
+		for (let i = 0; i < 4; i++) {
+			calls[i]?.reject(new ApiError(503, "busy"));
+			await flush();
+			await vi.advanceTimersByTimeAsync(RETRY_DELAYS_MS[i] ?? 0);
+		}
+		calls[4]?.reject(new ApiError(503, "busy"));
+		await flush();
+		// Backing off 15 s now; a new click goes out at once, with the rest.
+		void sync.apply("r1", "a.ts", [set("k2", "reviewed")]);
+		expect(calls).toHaveLength(6);
+		expect(calls[5]?.changes).toEqual([
 			set("k1", "reviewed"),
 			set("k2", "reviewed"),
 		]);
-		calls[1]?.resolve(ok);
+		// While that write is out, another click waits for it.
+		void sync.apply("r1", "a.ts", [set("k3", "reviewed")]);
+		expect(calls).toHaveLength(6);
+	});
+
+	it("waits 1 s again for the first transient failure after Retry", async () => {
+		const { sync, calls, flush } = harness();
+		void sync.apply("r1", "a.ts", [set("k1", "reviewed")]);
+		for (let i = 0; i < 3; i++) {
+			calls[i]?.reject(new ApiError(503, "busy"));
+			await flush();
+			await vi.advanceTimersByTimeAsync(RETRY_DELAYS_MS[i] ?? 0);
+		}
+		calls[3]?.reject(new ApiError(400, "nope"));
 		await flush();
-		expect(sync.getState().pending.size).toBe(0);
+		sync.retry();
+		calls[4]?.reject(new ApiError(503, "busy"));
+		await flush();
+		await vi.advanceTimersByTimeAsync((RETRY_DELAYS_MS[0] ?? 0) - 1);
+		expect(calls).toHaveLength(5);
+		await vi.advanceTimersByTimeAsync(1);
+		expect(calls).toHaveLength(6);
 	});
 
 	it("treats a malformed answer as an unknown error", async () => {

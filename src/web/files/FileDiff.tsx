@@ -329,8 +329,9 @@ export function FileDiff(props: {
 		undo: unreviewed.length === 0 && crossed.length > 0,
 		none: unreviewed.length === 0 && crossed.length === 0,
 	};
-	// "Undo cross-off" swaps in under the pointer once a cross-off is stored:
-	// a double click's second click was meant for the cross-off, not undo.
+	// "Undo cross-off" swaps in under the pointer on the cross-off's click
+	// itself (the UI doesn't wait for the save): a double click's second click
+	// was meant for the cross-off, not undo.
 	const undoArmedAt = useRef(0);
 	const wasUndo = useRef(crossToggle.undo);
 	if (crossToggle.undo && !wasUndo.current) {

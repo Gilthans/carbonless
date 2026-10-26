@@ -23,12 +23,20 @@ export interface PendingChange {
 }
 
 export interface SyncState {
-	/** The reviewer's intended states not yet stored, by cluster key. */
+	/** The reviewer's intended states not yet stored, by cluster key (rejected ones too). */
 	pending: ReadonlyMap<string, PendingChange>;
-	/** Some change has waited over DELAYED_MS. */
-	delayed: boolean;
-	/** A write failed for a reason retrying won't fix: sync waits for retry(). */
+	/**
+	 * Pending changes the server refused for a reason retrying won't fix
+	 * (each isolated in a request of its own): kept, and not sent again until
+	 * retry() or a newer change to the cluster. The rest keep syncing.
+	 */
+	rejected: ReadonlyMap<string, PendingChange>;
+	/** The last refusal's error, while any change is rejected. */
 	failure: Error | null;
+	/** A change being synced (not rejected) has waited over DELAYED_MS. */
+	delayed: boolean;
+	/** Why it waits: the last transient failure, in a few words; null once a write is stored. */
+	waiting: string | null;
 	/** The last write was refused because the snapshot moved; `dropped` changes were lost. */
 	stale: { dropped: number } | null;
 }
@@ -88,27 +96,54 @@ interface Waiter {
 	reject: (error: unknown) => void;
 }
 
+/** Changes to send on their own, to find out which the server refuses. */
+interface Probe {
+	revision: string;
+	keys: string[];
+}
+
+interface Batch {
+	revision: string;
+	changes: PendingChange[];
+	probe: boolean;
+}
+
+/** A transient failure in a few words, for the delayed notice. */
+function waitReason(error: unknown): string {
+	if (error instanceof ApiError && error.status === 0) return "Can't reach crb";
+	return error instanceof Error ? error.message : String(error);
+}
+
 /**
  * Syncs the server to the reviewer's intended cluster states. The UI shows
  * the intended state at once (overlayReview); this keeps sending it until
  * the server stores it, and never rolls a change back:
- * - one write at a time, in order; changes to a cluster queued behind a
- *   write coalesce into its latest state, and a write's answer clears only
- *   the versions it sent, so a newer change stays on top of an older answer;
- * - transient failures retry with backoff (RETRY_DELAYS_MS);
- * - any other failure stops until retry(), the changes kept;
+ * - one write at a time, in order, each of one revision; changes to a
+ *   cluster queued behind a write coalesce into its latest state, and a
+ *   write's answer clears only the versions it sent, so a newer change stays
+ *   on top of an older answer;
+ * - transient failures retry with backoff (RETRY_DELAYS_MS); a new change
+ *   retries at once. No request is ever abandoned on a client timeout: an
+ *   abandoned older write could land after its retry and overwrite newer
+ *   intent;
+ * - a request refused for another reason is split (per file, then in
+ *   halves) until the refused changes are alone; those are rejected (kept
+ *   until retry()), and everything else goes on syncing;
  * - a 409 drops the pending changes made on that revision (the snapshot
  *   moved: they can't apply).
  */
 export class StateSync {
 	readonly #deps: SyncDeps;
 	readonly #pending = new Map<string, PendingChange>();
+	readonly #rejected = new Map<string, PendingChange>();
+	#probes: Probe[] = [];
 	#version = 0;
 	#sending = false;
 	#attempt = 0;
 	#retryTimer: ReturnType<typeof setTimeout> | undefined;
 	#delayTimer: ReturnType<typeof setTimeout> | undefined;
-	#failure: Error | null = null;
+	#lastRefusal: Error | null = null;
+	#waitingFor: string | null = null;
 	#stale: SyncState["stale"] = null;
 	readonly #waiters = new Set<Waiter>();
 	readonly #listeners = new Set<() => void>();
@@ -122,8 +157,8 @@ export class StateSync {
 	/**
 	 * Takes `changes` (made on `revision`, in file `path`) as intended now and
 	 * queues them. Resolves once each is stored or superseded by a later
-	 * change; rejects on a failure retrying won't fix, or a 409 that dropped
-	 * it. Transient failures keep it waiting.
+	 * change; rejects when one is refused for good, or dropped by a 409.
+	 * Transient failures keep it waiting.
 	 */
 	apply(revision: string, path: string, changes: StateChange[]): Promise<void> {
 		if (changes.length === 0) return Promise.resolve();
@@ -132,6 +167,8 @@ export class StateSync {
 		for (const change of changes) {
 			const prior = this.#pending.get(change.key);
 			const version = ++this.#version;
+			// A newer intent for a refused cluster is worth sending.
+			this.#rejected.delete(change.key);
 			this.#pending.set(change.key, {
 				change,
 				revision,
@@ -145,17 +182,27 @@ export class StateSync {
 			this.#waiters.add({ versions, resolve, reject });
 		});
 		done.catch(() => {});
+		// The reviewer is back at work: don't sit out a long backoff.
+		if (this.#retryTimer !== undefined) {
+			clearTimeout(this.#retryTimer);
+			this.#retryTimer = undefined;
+		}
 		this.#changed();
 		this.#pump();
 		return done;
 	}
 
-	/** After a failure: send the current intended state again. */
+	/** Sends every unsaved change again, the rejected ones too. */
 	retry() {
 		if (this.#retryTimer !== undefined) clearTimeout(this.#retryTimer);
 		this.#retryTimer = undefined;
-		this.#failure = null;
+		this.#rejected.clear();
 		this.#attempt = 0;
+		// A fresh start: the delayed notice counts from now.
+		const now = Date.now();
+		for (const [key, p] of this.#pending) {
+			this.#pending.set(key, { ...p, since: now });
+		}
 		this.#changed();
 		this.#pump();
 	}
@@ -169,34 +216,61 @@ export class StateSync {
 		};
 	};
 
-	#pump() {
-		if (this.#sending || this.#retryTimer !== undefined || this.#failure) {
-			return;
-		}
-		const first = this.#pending.values().next().value;
-		if (!first) return;
-		const batch: PendingChange[] = [];
-		for (const p of this.#pending.values()) {
-			if (p.revision !== first.revision) continue;
-			batch.push(p);
-			if (batch.length === MAX_CHANGES) break;
-		}
-		this.#sending = true;
-		void this.#send(first.revision, batch);
+	#sendable(p: PendingChange | undefined): p is PendingChange {
+		return p !== undefined && !this.#rejected.has(p.change.key);
 	}
 
-	async #send(revision: string, batch: PendingChange[]) {
+	#next(): Batch | undefined {
+		while (this.#probes.length > 0) {
+			const [probe] = this.#probes;
+			if (!probe) break;
+			const changes = probe.keys
+				.map((key) => this.#pending.get(key))
+				.filter(
+					(p): p is PendingChange =>
+						this.#sendable(p) && p.revision === probe.revision,
+				);
+			if (changes.length > 0) {
+				return { revision: probe.revision, changes, probe: true };
+			}
+			this.#probes.shift();
+		}
+		let revision: string | undefined;
+		const changes: PendingChange[] = [];
+		for (const p of this.#pending.values()) {
+			if (!this.#sendable(p)) continue;
+			revision ??= p.revision;
+			// One revision per request: a change made on an old snapshot must
+			// never be stored on a new one.
+			if (p.revision !== revision) continue;
+			changes.push(p);
+			if (changes.length === MAX_CHANGES) break;
+		}
+		return revision === undefined
+			? undefined
+			: { revision, changes, probe: false };
+	}
+
+	#pump() {
+		if (this.#sending || this.#retryTimer !== undefined) return;
+		const batch = this.#next();
+		if (!batch) return;
+		this.#sending = true;
+		void this.#send(batch);
+	}
+
+	async #send(batch: Batch) {
 		let view: ReviewView;
 		try {
 			const answer: unknown = await this.#deps.post(
-				revision,
-				batch.map((p) => p.change),
+				batch.revision,
+				batch.changes.map((p) => p.change),
 			);
 			if (!isReviewView(answer)) throw new MalformedAnswerError();
 			view = answer;
 		} catch (error) {
 			this.#sending = false;
-			this.#failed(error, revision);
+			this.#failed(error, batch);
 			return;
 		}
 		try {
@@ -207,9 +281,16 @@ export class StateSync {
 		this.#sending = false;
 		this.#attempt = 0;
 		this.#stale = null;
-		for (const p of batch) {
-			if (this.#pending.get(p.change.key)?.version === p.version) {
+		this.#waitingFor = null;
+		if (batch.probe) this.#probes.shift();
+		const now = Date.now();
+		for (const p of batch.changes) {
+			const current = this.#pending.get(p.change.key);
+			if (current?.version === p.version) {
 				this.#pending.delete(p.change.key);
+			} else if (current) {
+				// A newer change, not yet sent: its wait starts now.
+				this.#pending.set(p.change.key, { ...current, since: now });
 			}
 		}
 		this.#settle();
@@ -217,16 +298,20 @@ export class StateSync {
 		this.#pump();
 	}
 
-	#failed(error: unknown, revision: string) {
+	#failed(error: unknown, batch: Batch) {
+		const { revision } = batch;
 		if (isStale(error)) {
 			const dropped = new Set<number>();
 			for (const [key, p] of this.#pending) {
 				if (p.revision !== revision) continue;
 				this.#pending.delete(key);
+				this.#rejected.delete(key);
 				dropped.add(p.version);
 			}
+			this.#probes = this.#probes.filter((p) => p.revision !== revision);
 			this.#stale = { dropped: dropped.size };
 			this.#attempt = 0;
+			this.#waitingFor = null;
 			this.#settle(
 				(w) => [...w.versions.values()].some((v) => dropped.has(v)),
 				error,
@@ -240,6 +325,7 @@ export class StateSync {
 			const wait =
 				RETRY_DELAYS_MS[Math.min(this.#attempt, RETRY_DELAYS_MS.length - 1)];
 			this.#attempt++;
+			this.#waitingFor = waitReason(error);
 			this.#retryTimer = setTimeout(() => {
 				this.#retryTimer = undefined;
 				this.#pump();
@@ -247,13 +333,46 @@ export class StateSync {
 			this.#changed();
 			return;
 		}
-		this.#failure =
+		if (batch.probe) this.#probes.shift();
+		// Refused for something in it: send its parts alone, per file and then
+		// in halves down to single changes, so the rest stores and only the
+		// refused stay behind.
+		if (batch.changes.length > 1 && error instanceof ApiError) {
+			const byPath = new Map<string, string[]>();
+			for (const p of batch.changes) {
+				const keys = byPath.get(p.path) ?? [];
+				keys.push(p.change.key);
+				byPath.set(p.path, keys);
+			}
+			const keys = batch.changes.map((p) => p.change.key);
+			const half = Math.ceil(keys.length / 2);
+			const parts =
+				byPath.size > 1
+					? [...byPath.values()]
+					: [keys.slice(0, half), keys.slice(half)];
+			this.#probes.unshift(...parts.map((keys) => ({ revision, keys })));
+			this.#changed();
+			this.#pump();
+			return;
+		}
+		this.#lastRefusal =
 			error instanceof Error
 				? error
 				: new Error(String(error ?? "Unknown error"));
-		this.#settle((w) => this.#waiting(w), error);
+		const refused = new Set<number>();
+		for (const p of batch.changes) {
+			const current = this.#pending.get(p.change.key);
+			if (current?.version !== p.version) continue;
+			this.#rejected.set(p.change.key, current);
+			refused.add(p.version);
+		}
+		this.#settle(
+			(w) => [...w.versions.values()].some((v) => refused.has(v)),
+			error,
+		);
 		this.#deps.failed();
 		this.#changed();
+		this.#pump();
 	}
 
 	#waiting(w: Waiter) {
@@ -281,12 +400,13 @@ export class StateSync {
 		for (const listener of this.#listeners) listener();
 	}
 
-	/** The last state's pending map still holds (kept, so overlays stay cached). */
-	#samePending(): boolean {
-		// Unset while the constructor builds the first state.
-		const last = this.#state?.pending;
-		if (!last || last.size !== this.#pending.size) return false;
-		for (const [key, p] of this.#pending) if (last.get(key) !== p) return false;
+	/** `map` is still `last`'s content (kept, so overlays stay cached). */
+	static #same(
+		last: ReadonlyMap<string, PendingChange> | undefined,
+		map: Map<string, PendingChange>,
+	): boolean {
+		if (!last || last.size !== map.size) return false;
+		for (const [key, p] of map) if (last.get(key) !== p) return false;
 		return true;
 	}
 
@@ -294,9 +414,11 @@ export class StateSync {
 		if (this.#delayTimer !== undefined) clearTimeout(this.#delayTimer);
 		this.#delayTimer = undefined;
 		let oldest = Number.POSITIVE_INFINITY;
-		for (const p of this.#pending.values()) oldest = Math.min(oldest, p.since);
+		for (const p of this.#pending.values()) {
+			if (this.#sendable(p)) oldest = Math.min(oldest, p.since);
+		}
 		let delayed = false;
-		if (this.#pending.size > 0) {
+		if (oldest < Number.POSITIVE_INFINITY) {
 			const left = oldest + DELAYED_MS - Date.now();
 			if (left <= 0) delayed = true;
 			else {
@@ -306,12 +428,18 @@ export class StateSync {
 				}, left);
 			}
 		}
+		// Unset while the constructor builds the first state.
+		const last = this.#state as SyncState | undefined;
 		return {
-			pending: this.#samePending()
-				? this.#state.pending
+			pending: StateSync.#same(last?.pending, this.#pending)
+				? (last?.pending ?? new Map())
 				: new Map(this.#pending),
+			rejected: StateSync.#same(last?.rejected, this.#rejected)
+				? (last?.rejected ?? new Map())
+				: new Map(this.#rejected),
+			failure: this.#rejected.size > 0 ? this.#lastRefusal : null,
 			delayed,
-			failure: this.#failure,
+			waiting: this.#waitingFor,
 			stale: this.#stale,
 		};
 	}

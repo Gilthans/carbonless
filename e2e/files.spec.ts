@@ -403,10 +403,15 @@ test("a file closes at once on marking it all, and reopens if the save fails", a
 	await openFiles(page, s.url);
 	// Saves fail for good (not a transient error), once the test lets them.
 	const held: (() => void)[] = [];
+	// Only the first write waits; the parts it's split into answer at once.
+	let holding = true;
 	await page.route("**/api/review/states", async (route) => {
-		await new Promise<void>((r) => {
-			held.push(r);
-		});
+		if (holding) {
+			await new Promise<void>((r) => {
+				held.push(r);
+			});
+			holding = false;
+		}
 		await route.fulfill({
 			status: 400,
 			contentType: "application/json",
@@ -438,10 +443,14 @@ test("a file closes at once on marking it all, and reopens if the save fails", a
 
 	// Opening another file before the failure: that file stays open, and
 	// this one stays closed.
+	holding = true;
 	await page.route("**/api/review/states", async (route) => {
-		await new Promise<void>((r) => {
-			held.push(r);
-		});
+		if (holding) {
+			await new Promise<void>((r) => {
+				held.push(r);
+			});
+			holding = false;
+		}
 		await route.fulfill({
 			status: 400,
 			contentType: "application/json",

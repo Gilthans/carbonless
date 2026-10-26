@@ -344,23 +344,44 @@ describe("FileDiff", () => {
 		expect(maxInFlight).toBe(1);
 	});
 
-	it("stops a split batch at the first failed request", async () => {
+	it("stores the rest of a refused batch, keeping only the refused change", async () => {
 		const f = file(
 			Array.from({ length: 1500 }, (_, i) =>
 				cluster(`k${i}`, { state: "crossed-off", reason: "generated" }),
 			),
 		);
-		const { posts, user } = setup(f, () => ({
-			status: 400,
-			body: { error: "boom" },
-		}));
+		const { posts, user, sync } = setup(f, (url, init) => {
+			if (url.pathname === "/api/review") return { status: 200, body: view(f) };
+			const { changes } = JSON.parse(String(init?.body)) as {
+				changes: { key: string }[];
+			};
+			return changes.some((c) => c.key === "k1234")
+				? { status: 400, body: { error: "Unknown cluster key: k1234" } }
+				: { status: 200, body: view(f) };
+		});
 		await user.click(screen.getByRole("button", { name: "Undo cross-off" }));
-		expect(await screen.findByRole("alert")).toHaveTextContent(
-			"1500 changes · src/a.ts",
+		const alert = await screen.findByRole("alert");
+		await waitFor(() =>
+			expect(alert).toHaveTextContent("Unreviewed · src/a.ts"),
 		);
-		expect(screen.getByRole("alert")).toHaveTextContent("boom");
-		expect(posts()).toHaveLength(1);
-		expect(posts()[0]?.body.changes).toHaveLength(1000);
+		expect(alert).toHaveTextContent("Unknown cluster key: k1234");
+		// No request is ever over the limit, and the refused key is isolated in
+		// a few halvings, not one request per change.
+		const sizes = posts().map((p) => p.body.changes.length as number);
+		expect(Math.max(...sizes)).toBe(1000);
+		expect(posts().length).toBeLessThan(30);
+		await waitFor(() =>
+			expect(screen.queryByTestId("save-delayed")).toBeNull(),
+		);
+		await waitFor(() => expect([...sync().pending.keys()]).toEqual(["k1234"]));
+		const sent = posts().flatMap((p) => p.body.changes as { key: string }[]);
+		// Every other change was sent (and stored); the refused one alone.
+		expect(new Set(sent.map((c) => c.key)).size).toBe(1500);
+		expect(
+			posts().filter(
+				(p) => p.body.changes.length === 1 && p.body.changes[0].key === "k1234",
+			),
+		).toHaveLength(1);
 	});
 
 	it("crosses off a file at once, without a reason, keeping reviewed clusters", async () => {
@@ -854,15 +875,23 @@ describe("FileDiff", () => {
 	});
 
 	/**
-	 * A save that answers only when `answer` is called, with `status`
-	 * (400: a failure retrying won't fix).
+	 * Saves that answer `status` (400: a failure retrying won't fix), the
+	 * first only once `answer` is called.
 	 */
 	const heldSave = (f: FileView, status: number) => {
 		let answer: (() => void) | undefined;
-		const result = setup(f, async () => {
-			await new Promise<void>((r) => {
-				answer = r;
-			});
+		let released = false;
+		const result = setup(f, async (url) => {
+			if (url.pathname === "/api/review") return { status: 200, body: view(f) };
+			// Only the first write is held; the ones it splits into answer at once.
+			if (!released) {
+				await new Promise<void>((r) => {
+					answer = () => {
+						released = true;
+						r();
+					};
+				});
+			}
 			return status === 200
 				? { status, body: view(f) }
 				: { status, body: { error: "boom" } };

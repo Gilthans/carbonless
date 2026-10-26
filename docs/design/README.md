@@ -114,15 +114,19 @@ the wash. Unfinished files are unchanged, and an undo drops the tint at once.
 Cluster state actions show at once; the page syncs the server to them in
 the background (`src/web/files/stateSync.ts`) and never rolls one back. Unsaved
 state shows in one small stack fixed at the bottom of the window
-(`SyncNotices`; on a phone above the floating Files button, on wider screens
-bottom left, clear of the file headers' controls):
+(`SyncNotices`): above the floating Files button while there is one, bottom
+right once the file tree is a sidebar (md+), so neither is covered.
 
-- **Delayed** (`role="status"`, `warn`): a clock, "Saving N changes…" and the
-  files, once a change has waited 5 s (transient failures retry with backoff
-  meanwhile). It goes away by itself once everything is stored.
-- **Not saved** (`role="alert"`, `bad`): an alert icon, what failed (the change
-  and file, or a count), the error, and a 40px Retry that resends the current
-  intended state.
+- **Delayed** (`role="status"`, `warn`): a clock, "Saving N changes…", why it
+  waits (e.g. "Can't reach crb" or the server's message) and the files, once a
+  change has waited 5 s (transient failures retry with backoff meanwhile; a
+  new change retries at once). It goes away by itself once everything is
+  stored.
+- **Not saved** (`role="alert"`, `bad`): an alert icon, the changes the server
+  refused (the change and file, or a count and the files), the error, and a
+  40px Retry that resends every unsaved change. A refused request is split
+  (per file, then in halves) so only the refused changes stay here; the rest
+  keep syncing.
 
 Both are `tone/10` over an opaque `raised` card with a `tone/50` border.
 Leaving the page with anything unsaved asks first (`beforeunload`).
