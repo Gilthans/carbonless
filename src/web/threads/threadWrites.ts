@@ -104,8 +104,11 @@ export interface ThreadWritesDeps {
 	/** A write's answer: the thread as GitHub has it now. */
 	applied: (update: ThreadUpdate) => void;
 	drafts: DraftStore;
-	/** The thread's comment ids the page has now (none when not read yet). */
-	knownComments?: (threadId: string) => string[];
+	/**
+	 * The thread's comment ids as the page has them now, read first if
+	 * they aren't in (its opener at least).
+	 */
+	knownComments: (threadId: string) => string[] | Promise<string[]>;
 	/** A new client id for a reply (crypto.randomUUID by default). */
 	newId?: () => string;
 }
@@ -123,14 +126,21 @@ interface Lane {
 	failed: WriteFailure | null;
 	/** A refused resolve's intended state, kept until Retry or a newer one. */
 	refusedResolved?: boolean;
-	/** The refused reply's identity, for Retry. */
-	refusedId?: SendingId;
 }
 
 const actionOf = (op: Op): WriteAction =>
 	op.kind === "reply" ? "Reply" : op.resolved ? "Resolve" : "Unresolve";
 
+/** The thread's comments couldn't be read: a reply waits (retried like a lost server). */
+class NoKnownCommentsError extends ApiError {
+	constructor() {
+		super(0, "Couldn't read the thread's comments");
+		this.name = "NoKnownCommentsError";
+	}
+}
+
 function waitReason(error: unknown): string {
+	if (error instanceof NoKnownCommentsError) return error.message;
 	if (error instanceof ApiError && error.status === 0) return "Can't reach crb";
 	return error instanceof Error ? error.message : String(error);
 }
@@ -177,7 +187,7 @@ export class ThreadWrites {
 	/** Posts `text` as a reply (blank text is never sent); the box clears. */
 	reply(threadId: string, text: string): void {
 		if (!text.trim()) return;
-		const id = this.#newSending(threadId);
+		const id = this.#newSending();
 		const { drafts } = this.#deps;
 		drafts.addSending(threadId, text, id);
 		drafts.setText(threadId, "");
@@ -211,7 +221,9 @@ export class ThreadWrites {
 		const failed = lane.failed;
 		if (failed?.action === "Reply") {
 			const text = this.#deps.drafts.text(threadId);
-			const id = lane.refusedId ?? this.#newSending(threadId);
+			// Refused for good: a new reply to GitHub (a new client id, and
+			// the comments known when it goes), never the refused one again.
+			const id = this.#newSending();
 			this.#clearFailure(lane);
 			if (text.trim()) {
 				this.#deps.drafts.addSending(threadId, text, id);
@@ -265,12 +277,16 @@ export class ThreadWrites {
 		};
 	};
 
-	/** A new reply's identity: now, a client id, the comments known now. */
-	#newSending(threadId: string): SendingId {
+	/**
+	 * A new reply's identity: now and a client id. The comments it knows
+	 * are taken at its first send (#send), once the thread's earlier
+	 * writes are answered.
+	 */
+	#newSending(): SendingId {
 		return {
 			attemptedAt: this.#stamp(),
 			clientId: (this.#deps.newId ?? newClientId)(),
-			knownCommentIds: this.#deps.knownComments?.(threadId) ?? [],
+			knownCommentIds: [],
 		};
 	}
 
@@ -312,7 +328,6 @@ export class ThreadWrites {
 	#clearFailure(lane: Lane) {
 		lane.failed = null;
 		lane.refusedResolved = undefined;
-		lane.refusedId = undefined;
 	}
 
 	/** Drops a lane with nothing left to show. */
@@ -344,6 +359,15 @@ export class ThreadWrites {
 		let update: ThreadUpdate;
 		try {
 			if (op.kind === "reply") {
+				if (op.id.knownCommentIds.length === 0) {
+					// First send: the thread as it is now, its earlier writes in.
+					const found = this.#deps.knownComments(threadId);
+					// In the cache: sent at once, no tick lost.
+					const known = Array.isArray(found) ? found : await found;
+					if (known.length === 0) throw new NoKnownCommentsError();
+					op.id = { ...op.id, knownCommentIds: known };
+					this.#deps.drafts.setKnown(threadId, op.id.attemptedAt, known);
+				}
 				const req: ReplyRequest = {
 					body: op.text,
 					attemptedAt: op.id.attemptedAt,
@@ -416,13 +440,11 @@ export class ThreadWrites {
 		};
 		if (op.kind === "reply") {
 			lane.refusedResolved = undefined;
-			lane.refusedId = op.id;
 			this.#deps.drafts.returnToBox(threadId, op.id.attemptedAt);
 			if (write?.code === "pending-review" && write.url) {
 				this.#pendingReview = { url: write.url };
 			}
 		} else {
-			lane.refusedId = undefined;
 			// A newer resolve behind it already says what's intended.
 			const newer = lane.ops.some((o) => o.kind === "resolve");
 			lane.refusedResolved = newer ? undefined : op.resolved;
@@ -546,12 +568,16 @@ export function threadWritesFor(client: QueryClient): ThreadWrites {
 			drafts: draftsFor(client),
 			knownComments: (threadId) => {
 				const readId = client.getQueryData(overviewQuery.queryKey)?.readId;
-				const known = readId
-					? client.getQueryData<ThreadComments>(
-							commentsQuery(readId, threadId).queryKey,
-						)
-					: undefined;
-				return (known?.comments ?? []).map((c) => c.id).filter(Boolean);
+				if (!readId) return [];
+				const ids = (c: ThreadComments | undefined) =>
+					(c?.comments ?? []).map((x) => x.id).filter(Boolean);
+				const cached = client.getQueryData<ThreadComments>(
+					commentsQuery(readId, threadId).queryKey,
+				);
+				if (cached) return ids(cached);
+				return client
+					.fetchQuery(commentsQuery(readId, threadId))
+					.then(ids, () => []);
 			},
 		});
 		pages.set(client, writes);

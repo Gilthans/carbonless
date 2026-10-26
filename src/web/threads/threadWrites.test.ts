@@ -236,7 +236,7 @@ describe("ThreadWrites", () => {
 		});
 	});
 
-	it("Retry resends a refused reply from the box, as a retry of its first attempt", async () => {
+	it("Retry resends a refused reply from the box as a new reply", async () => {
 		const w = setup();
 		w.reply("T1", "Fixed");
 		calls[0]?.reject(new ApiError(403, "no"));
@@ -244,13 +244,13 @@ describe("ThreadWrites", () => {
 		drafts.setText("T1", "Fixed, really");
 		known.T1 = ["c1", "c2", "c3"];
 		w.retry("T1");
-		// The same reply: its client id and the comments known when first sent.
-		expect(calls[1]?.req).toEqual({
+		// Refused for good: a new reply, with a new client id and the
+		// comments known now (never the refused id again).
+		expect(calls[1]?.req).toMatchObject({
 			body: "Fixed, really",
-			attemptedAt: "2026-01-03T12:00:00.000Z",
 			retry: true,
-			clientId: "cid1",
-			knownCommentIds: ["c1", "c2"],
+			clientId: "cid2",
+			knownCommentIds: ["c1", "c2", "c3"],
 		});
 		expect(drafts.text("T1")).toBe("");
 		expect(w.state().threads.get("T1")?.failed).toBeNull();
@@ -338,6 +338,78 @@ describe("ThreadWrites", () => {
 			"cid1",
 			"cid2",
 		]);
+	});
+
+	it("takes the known comment ids at the first send, once earlier writes to the thread are answered", async () => {
+		const w = setup();
+		w.reply("T1", "first");
+		w.reply("T1", "second");
+		expect(calls).toHaveLength(1);
+		// The first reply is in: the page now has it among the comments.
+		known.T1 = ["c1", "c2", "c9"];
+		calls[0]?.resolve(update("T1"));
+		await flush();
+		expect(calls.map((c) => (c.req as ReplyRequest).knownCommentIds)).toEqual([
+			["c1", "c2"],
+			["c1", "c2", "c9"],
+		]);
+		// Kept with the draft, for a resend after a reload.
+		expect(drafts.get()[0]?.sending?.knownCommentIds).toEqual([
+			"c1",
+			"c2",
+			"c9",
+		]);
+	});
+
+	it("reads the comments first when the page hasn't them, and never sends an empty list", async () => {
+		const w = setup();
+		let give: ((ids: string[]) => void) | undefined;
+		known = {};
+		const wAsync = new ThreadWrites({
+			reply: (threadId, req) =>
+				new Promise((resolve, reject) => {
+					calls.push({ op: "reply", threadId, req, resolve, reject });
+				}),
+			resolve: () => new Promise(() => {}),
+			applied: () => {},
+			drafts,
+			knownComments: () =>
+				new Promise((resolve) => {
+					give = resolve;
+				}),
+			newId: () => "x",
+		});
+		void w;
+		wAsync.reply("T1", "Fixed");
+		await flush();
+		expect(calls).toHaveLength(0);
+		give?.([]);
+		await flush();
+		// None known: it waits and tries again, as for a lost server.
+		expect(calls).toHaveLength(0);
+		expect(wAsync.state().threads.get("T1")?.waiting).toBe(
+			"Couldn't read the thread's comments",
+		);
+		await vi.advanceTimersByTimeAsync(RETRY_DELAYS_MS[0] ?? 1000);
+		give?.(["c1"]);
+		await flush();
+		expect(
+			(calls[0]?.req as ReplyRequest | undefined)?.knownCommentIds,
+		).toEqual(["c1"]);
+	});
+
+	it("a stalled reply's Retry keeps its client id and known ids", async () => {
+		const w = setup();
+		w.reply("T1", "Fixed");
+		calls[0]?.reject(new ApiError(502, "bad gateway"));
+		await flush();
+		known.T1 = ["c1", "c2", "c3"];
+		w.retry("T1");
+		expect(calls[1]?.req).toMatchObject({
+			clientId: "cid1",
+			knownCommentIds: ["c1", "c2"],
+			retry: true,
+		});
 	});
 
 	it("never sends blank text", () => {

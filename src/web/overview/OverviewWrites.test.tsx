@@ -154,6 +154,32 @@ function renderOverview(
 					status: answer.status,
 				});
 			}
+			if (path === "/api/comments") {
+				// Each thread: its opener.
+				const ids =
+					new URL(String(input), "http://test").searchParams
+						.get("ids")
+						?.split(",") ?? [];
+				return new Response(
+					JSON.stringify({
+						threads: ids.map((threadId) => ({
+							threadId,
+							comments: [
+								{
+									id: `${threadId}-1`,
+									author: "rev",
+									bot: false,
+									publishedAt: "2026-01-01T09:00:00Z",
+									pending: false,
+									html: "",
+									body: threadId,
+									text: threadId,
+								},
+							],
+						})),
+					}),
+				);
+			}
 			if (!(path in routes)) return new Response("{}", { status: 404 });
 			return new Response(JSON.stringify(routes[path]));
 		}),

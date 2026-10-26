@@ -150,6 +150,17 @@ export class DraftStore {
 		if (changed) this.#set(next);
 	}
 
+	/** The comment ids the reply was first sent knowing: kept for its resends. */
+	setKnown(threadId: string, attemptedAt: string, ids: string[]): void {
+		this.#set(
+			this.#drafts.map((d) =>
+				this.#is(d, threadId, attemptedAt) && d.sending
+					? { ...d, sending: { ...d.sending, knownCommentIds: ids } }
+					: d,
+			),
+		);
+	}
+
 	/** GitHub has the reply: nothing to keep. */
 	confirm(threadId: string, attemptedAt: string): void {
 		this.#set(this.#drafts.filter((d) => !this.#is(d, threadId, attemptedAt)));

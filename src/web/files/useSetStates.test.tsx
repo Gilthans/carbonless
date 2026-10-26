@@ -98,7 +98,7 @@ describe("useUnsavedGuard", () => {
 										attention: [],
 										yourTurn: false,
 										viewerCan: { reply: true, resolve: true, unresolve: true },
-										comments: { threadId: "T1", comments: [] },
+										comments: { threadId: "T1", comments: [{ id: "c1" }] },
 									}),
 								),
 							),
@@ -112,6 +112,11 @@ describe("useUnsavedGuard", () => {
 				<Guard />
 			</QueryClientProvider>,
 		);
+		client.setQueryData(["overview"], { readId: "r1" });
+		client.setQueryData(["comments", "r1", "T1"], {
+			threadId: "T1",
+			comments: [{ id: "c1" }],
+		});
 		act(() => threadWritesFor(client).setResolved("T1", true));
 		expect(leave()).toBe(true);
 		await act(async () => {

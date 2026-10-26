@@ -41,6 +41,11 @@ function setup(threads: ReviewThread[]) {
 		}),
 	);
 	const client = new QueryClient();
+	client.setQueryData(["overview"], { readId: "r1" });
+	client.setQueryData(["comments", "r1", "T1"], {
+		threadId: "T1",
+		comments: [{ id: "c1" }],
+	});
 	client.setQueryData<ThreadsView>(["threads", "r1", "full"], {
 		threads,
 		complete: true,
