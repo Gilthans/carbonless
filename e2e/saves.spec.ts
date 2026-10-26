@@ -341,3 +341,51 @@ test("the last file header can scroll clear of a notice", async ({
 		})
 		.toBe(true);
 });
+
+test("a save that keeps failing transiently turns red after 5 tries, and still stores once it can", async ({
+	page,
+	pr,
+	startCrb,
+	expectConsoleError,
+}) => {
+	expectConsoleError(/503|Failed to load resource/);
+	await page.clock.install();
+	await pr(fixture);
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	let failing = true;
+	let tries = 0;
+	await page.route("**/api/review/states", async (route) => {
+		tries++;
+		if (failing) {
+			await route.fulfill({
+				status: 503,
+				contentType: "application/json",
+				body: JSON.stringify({ error: "fatal: unable to write ref" }),
+			});
+		} else await route.continue();
+	});
+	await fileAction(fileSection(page, "src/a.ts"), "Mark remaining reviewed");
+	const stalled = page.getByTestId("save-stalled");
+	// Backoff 1 + 2 + 4 + 8 s: the fifth failure turns it red.
+	for (let i = 0; i < 4; i++) {
+		await expect.poll(() => tries).toBe(i + 1);
+		await expect(stalled).toHaveCount(0);
+		await page.clock.runFor([1000, 2000, 4000, 8000][i] ?? 0);
+	}
+	await expect.poll(() => tries).toBe(5);
+	await expect(stalled).toBeVisible();
+	await expect(stalled).toHaveAttribute("role", "alert");
+	await expect(stalled).toContainText("Reviewed · src/a.ts");
+	await expect(stalled).toContainText("fatal: unable to write ref");
+	await expect(page.getByTestId("save-delayed")).toHaveCount(0);
+	// Retrying goes on behind it; once the server takes it, it's gone.
+	failing = false;
+	await page.clock.runFor(15_000);
+	await expect(page.getByTestId("sync-notices")).toHaveCount(0);
+	await page.unroute("**/api/review/states");
+	await page.reload();
+	await expect(fileProgress(fileSection(page, "src/a.ts"))).toContainText(
+		"1 / 1 cluster",
+	);
+});

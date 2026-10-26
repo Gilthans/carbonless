@@ -6,6 +6,11 @@ import { ApiError } from "../api";
 export const MAX_CHANGES = 1000;
 /** A change waiting longer than this shows the "saving" notice. */
 export const DELAYED_MS = 5000;
+/**
+ * Transient failures in a row after which the red notice replaces the yellow
+ * one (retrying goes on behind it).
+ */
+export const STALL_ATTEMPTS = 5;
 /** Waits before each retry of a transient failure; the last one repeats. */
 export const RETRY_DELAYS_MS = [1000, 2000, 4000, 8000, 15_000, 30_000];
 
@@ -37,6 +42,11 @@ export interface SyncState {
 	delayed: boolean;
 	/** Why it waits: the last transient failure, in a few words; null once a write is stored. */
 	waiting: string | null;
+	/**
+	 * The last transient failure once STALL_ATTEMPTS in a row have failed:
+	 * shown red with Retry, while retrying goes on. Null once a write is stored.
+	 */
+	stalled: Error | null;
 	/** The last write was refused because the snapshot moved; `dropped` changes were lost. */
 	stale: { dropped: number } | null;
 }
@@ -123,7 +133,8 @@ function waitReason(error: unknown): string {
  *   write's answer clears only the versions it sent, so a newer change stays
  *   on top of an older answer;
  * - transient failures retry with backoff (RETRY_DELAYS_MS); a new change
- *   retries at once. No request is ever abandoned on a client timeout: an
+ *   retries at once. After STALL_ATTEMPTS in a row they show as `stalled`
+ *   (red), retrying on. No request is ever abandoned on a client timeout: an
  *   abandoned older write could land after its retry and overwrite newer
  *   intent;
  * - a 400 names the refused changes (or, unnamed, is split per file and
@@ -147,6 +158,7 @@ export class StateSync {
 	/** A refusal since the last reread (#reread). */
 	#unread = false;
 	#waitingFor: string | null = null;
+	#lastTransient: Error | null = null;
 	#stale: SyncState["stale"] = null;
 	readonly #waiters = new Set<Waiter>();
 	readonly #listeners = new Set<() => void>();
@@ -330,6 +342,8 @@ export class StateSync {
 				RETRY_DELAYS_MS[Math.min(this.#attempt, RETRY_DELAYS_MS.length - 1)];
 			this.#attempt++;
 			this.#waitingFor = waitReason(error);
+			this.#lastTransient =
+				error instanceof Error ? error : new Error(String(error));
 			this.#retryTimer = setTimeout(() => {
 				this.#retryTimer = undefined;
 				this.#pump();
@@ -466,6 +480,10 @@ export class StateSync {
 			failure: this.#rejected.size > 0 ? this.#lastRefusal : null,
 			delayed,
 			waiting: this.#waitingFor,
+			stalled:
+				this.#attempt >= STALL_ATTEMPTS && oldest < Number.POSITIVE_INFINITY
+					? this.#lastTransient
+					: null,
 			stale: this.#stale,
 		};
 	}

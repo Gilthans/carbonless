@@ -15,11 +15,13 @@ const changes = (n: number) => `${n} ${n === 1 ? "change" : "changes"}`;
  *   5 s (retries included), why it waits, and the files; gone by itself once
  *   all are stored.
  * - Red: changes the server refused, the error and Retry. The other changes
- *   keep syncing.
+ *   keep syncing. Also red once 5 transient failures in a row kept changes
+ *   waiting (the last error and Retry), while retrying goes on.
  * The changes stay on screen either way.
  */
 export function SyncNotices() {
-	const { pending, rejected, delayed, failure, waiting } = useSyncState();
+	const { pending, rejected, delayed, failure, waiting, stalled } =
+		useSyncState();
 	const { retry } = useSetStates();
 	const stack = useRef<HTMLDivElement>(null);
 	const shown = pending.size > 0;
@@ -57,7 +59,23 @@ export function SyncNotices() {
 	// is in place (empty) before the delayed notice fills it, so it's announced.
 	if (pending.size === 0) return null;
 	const syncing = new Map([...pending].filter(([key]) => !rejected.has(key)));
-	const showDelayed = delayed && syncing.size > 0;
+	const showStalled = stalled !== null && syncing.size > 0;
+	const showDelayed = delayed && syncing.size > 0 && !showStalled;
+	const retryButton = (
+		<Tooltip content="Retry" describe={false}>
+			{(trigger) => (
+				<button
+					type="button"
+					{...trigger}
+					aria-label="Retry saving"
+					onClick={retry}
+					className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md text-ink-soft hover:bg-overlay hover:text-ink focus-visible:outline-2 focus-visible:outline-accent"
+				>
+					<SyncIcon aria-hidden />
+				</button>
+			)}
+		</Tooltip>
+	);
 	return (
 		<div
 			ref={stack}
@@ -87,19 +105,35 @@ export function SyncNotices() {
 							)}
 							<p className="break-words text-bad">{failure.message}</p>
 						</div>
-						<Tooltip content="Retry" describe={false}>
-							{(trigger) => (
-								<button
-									type="button"
-									{...trigger}
-									aria-label="Retry saving"
-									onClick={retry}
-									className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md text-ink-soft hover:bg-overlay hover:text-ink focus-visible:outline-2 focus-visible:outline-accent"
-								>
-									<SyncIcon aria-hidden />
-								</button>
+						{retryButton}
+					</div>
+				</div>
+			)}
+			{showStalled && (
+				// Transient failures that kept on: red, though retrying goes on.
+				<div
+					role="alert"
+					data-testid="save-stalled"
+					className="pointer-events-auto overflow-hidden rounded-lg border border-bad/50 bg-raised shadow-float"
+				>
+					<div className="flex items-start gap-2 bg-bad/10 py-1 pr-1 pl-3">
+						<LabeledIcon
+							icon={AlertIcon}
+							label="Not saved yet, still retrying"
+							className="mt-2.5 text-bad"
+						/>
+						<div className="min-w-0 flex-1 py-2 text-sm">
+							<p className="break-words font-medium text-ink">
+								{describePending(syncing)}
+							</p>
+							{syncing.size > 1 && (
+								<p className="font-mono text-xs break-words text-muted">
+									{pendingFiles(syncing)}
+								</p>
 							)}
-						</Tooltip>
+							<p className="break-words text-bad">{stalled.message}</p>
+						</div>
+						{retryButton}
 					</div>
 				</div>
 			)}

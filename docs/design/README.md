@@ -127,7 +127,10 @@ right once the file tree is a sidebar (md+), so neither is covered.
   40px Retry that resends every unsaved change. A 400 names the refused
   changes (`keys`), which stay here while the rest are sent again at once (a
   400 without keys is split per file, then in halves); any other refusal
-  keeps the whole request here. Everything else keeps syncing.
+  keeps the whole request here. Everything else keeps syncing. Five
+  transient failures in a row for waiting changes also turn the yellow
+  notice red (the last error and Retry) while retrying goes on; a stored
+  write clears it.
 
 Both are `tone/10` over an opaque `raised` card with a `tone/50` border.
 While one shows, the file list's end is padded by how far up the notices

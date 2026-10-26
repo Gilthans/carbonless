@@ -14,6 +14,7 @@ import {
 	overlayReview,
 	pendingFiles,
 	RETRY_DELAYS_MS,
+	STALL_ATTEMPTS,
 	StateSync,
 	type SyncDeps,
 } from "./stateSync";
@@ -197,6 +198,47 @@ describe("StateSync", () => {
 			expect(sync.getState().pending.size).toBe(0);
 		},
 	);
+
+	it("turns red after 5 transient failures in a row, retrying on until stored", async () => {
+		const { sync, calls, flush } = harness();
+		void sync.apply("r1", "a.ts", [set("k1", "reviewed")]);
+		for (let i = 0; i < STALL_ATTEMPTS; i++) {
+			expect(sync.getState().stalled).toBeNull();
+			calls[i]?.reject(new ApiError(i === 0 ? 0 : 503, `fail ${i}`));
+			await flush();
+			await vi.advanceTimersByTimeAsync(RETRY_DELAYS_MS[i] ?? 0);
+		}
+		// The fifth failure: red, with its message; still retrying.
+		expect(sync.getState().stalled?.message).toBe(`fail ${STALL_ATTEMPTS - 1}`);
+		expect(sync.getState().failure).toBeNull();
+		expect(calls).toHaveLength(STALL_ATTEMPTS + 1);
+		calls[STALL_ATTEMPTS]?.reject(new ApiError(429, "slow down"));
+		await flush();
+		expect(sync.getState().stalled?.message).toBe("slow down");
+		await vi.advanceTimersByTimeAsync(RETRY_DELAYS_MS.at(-1) ?? 0);
+		calls[STALL_ATTEMPTS + 1]?.resolve(ok);
+		await flush();
+		expect(sync.getState().stalled).toBeNull();
+		expect(sync.getState().pending.size).toBe(0);
+	});
+
+	it("starts the count again after Retry", async () => {
+		const { sync, calls, flush } = harness();
+		void sync.apply("r1", "a.ts", [set("k1", "reviewed")]);
+		for (let i = 0; i < STALL_ATTEMPTS; i++) {
+			calls[i]?.reject(new ApiError(503, "busy"));
+			await flush();
+			if (i < STALL_ATTEMPTS - 1) {
+				await vi.advanceTimersByTimeAsync(RETRY_DELAYS_MS[i] ?? 0);
+			}
+		}
+		expect(sync.getState().stalled).not.toBeNull();
+		sync.retry();
+		expect(sync.getState().stalled).toBeNull();
+		calls[STALL_ATTEMPTS]?.reject(new ApiError(503, "busy"));
+		await flush();
+		expect(sync.getState().stalled).toBeNull();
+	});
 
 	it("caps the backoff", async () => {
 		const { sync, calls, flush } = harness();
