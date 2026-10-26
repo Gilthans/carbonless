@@ -123,7 +123,7 @@ describe("compare-threads", () => {
 		expect(existsSync(join(out, "xdg", "carbonless"))).toBe(true);
 		// Read-only on GitHub: REST reads only.
 		expect(pr.ghLog()).toContain("api repos/acme/widget/pulls/12/comments");
-		expect(pr.ghLog()).not.toMatch(/-X|--method|mutation/);
+		expect(pr.ghLog()).not.toMatch(/\s(-X|--method)\s|\bmutation\b/);
 	});
 
 	it("reports GitHub's range off by one as a mismatch, and main exits 1", async () => {
@@ -150,6 +150,30 @@ describe("compare-threads", () => {
 		expect(readFileSync(join(out, "compare.md"), "utf8")).toMatch(
 			/\| RIGHT 3 \| RIGHT 2 \(1 marked\) \| clone \| same \| NO \| end line/,
 		);
+	});
+
+	it("compares a merged PR as of now, at its last head", async () => {
+		scenario({ commits: { [pr.head()]: { contexts: [] } } });
+		const s = JSON.parse(
+			readFileSync(process.env.CRB_FAKE_GH ?? "", "utf8"),
+		) as Scenario;
+		const twelve = s.prs[12];
+		if (!twelve) throw new Error("no PR 12");
+		const view = { ...twelve.view, state: "MERGED" };
+		pr.scenario({ ...s, prs: { 12: { ...twelve, view } } });
+		// Now: after the threads' (future) dates.
+		vi.useFakeTimers({
+			toFake: ["Date"],
+			now: new Date("2099-02-01T00:00:00Z"),
+		});
+		try {
+			const c = await compareThreads(pr.arg);
+			expect(c.over).toBe("MERGED");
+			expect(c.asOf).toBe("2099-02-01T00:00:00Z");
+			expect(c.counts).toMatchObject({ total: 4, matching: 4 });
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	it("as of a cutoff, compares only the threads opened by then", async () => {

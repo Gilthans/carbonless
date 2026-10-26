@@ -102,6 +102,8 @@ checking against a real PR): `docs/product-rules.md`.
   (`e2e/fixtures.ts`) wires it onto `PATH` and drives the built CLI.
 - If `nvm use` fails (e.g. in a sandbox), put `~/.nvm/versions/node/v24*/bin`
   first on `PATH`.
+- `pnpm compare-threads <pr> [--as-of <iso>] [--out <dir>]` checks every
+  thread's code pane against GitHub's REST comments (read-only); exits 1 on a mismatch.
 - Planned work and milestones live in `docs/todo.md`.
 - Core design docs, kept current (update them in the same change that alters
   what they describe):

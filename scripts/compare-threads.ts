@@ -26,7 +26,12 @@ import { parseArgs } from "node:util";
 import { atOrBefore, parseAsOf } from "../src/server/asOf.js";
 import { clonePath } from "../src/server/clone.js";
 import { visibleAt } from "../src/server/commentTime.js";
-import { fetchThreadSummaries, runGh } from "../src/server/gh.js";
+import {
+	fetchPrMeta,
+	fetchThreadSummaries,
+	resolvePrRef,
+	runGh,
+} from "../src/server/gh.js";
 import { killDetachedGits } from "../src/server/git.js";
 import { Session } from "../src/server/session.js";
 import { type HunkLine, parseDiffHunk } from "../src/shared/diffHunk.js";
@@ -68,6 +73,8 @@ export interface ThreadResult {
 export interface Comparison {
 	pr: string;
 	asOf: string | null;
+	/** GitHub's state when the PR is over: compared as of now, at its last head. */
+	over: "MERGED" | "CLOSED" | null;
 	threads: ThreadResult[];
 	counts: {
 		total: number;
@@ -258,13 +265,19 @@ export async function compareThreads(
 	pr: string,
 	options: { asOf?: string; cwd?: string; progress?: (m: string) => void } = {},
 ): Promise<Comparison> {
-	const asOf = options.asOf;
-	const session = await Session.open(
-		pr,
-		options.cwd ?? process.cwd(),
-		options.progress,
-		{ asOf },
-	);
+	const cwd = options.cwd ?? process.cwd();
+	let asOf = options.asOf;
+	let over: Comparison["over"] = null;
+	if (!asOf) {
+		// crb won't open a merged or closed PR with no review started; as of
+		// now it is the PR at its last head, every thread opened.
+		const meta = await fetchPrMeta(await resolvePrRef(pr, cwd));
+		if (meta.state !== "OPEN") {
+			over = meta.state;
+			asOf = parseAsOf(new Date().toISOString().replace(/\.\d+Z$/, "Z"));
+		}
+	}
+	const session = await Session.open(pr, cwd, options.progress, { asOf });
 	try {
 		const info = session.info().pr;
 		const ref = { owner: info.owner, repo: info.repo, number: info.number };
@@ -328,6 +341,7 @@ export async function compareThreads(
 		return {
 			pr: `${ref.owner}/${ref.repo}#${ref.number}`,
 			asOf: asOf ?? null,
+			over,
 			threads,
 			counts: {
 				total: threads.length,
@@ -350,12 +364,17 @@ const cell = (text: string) => text.replaceAll("|", "\\|");
 
 export function renderMarkdown(c: Comparison): string {
 	const n = c.counts;
-	const summary = `${n.matching}/${n.total} match, ${n.mismatches} mismatches (file comments: ${n.fileComments}; code from the clone: ${n.clone}, GitHub's hunk: ${n.github}; snapshot same: ${n.snapshotSame}, different: ${n.snapshotDifferent}).`;
+	const when = !c.asOf
+		? ""
+		: c.over
+			? ` (${c.over.toLowerCase()}: as of ${c.asOf}, its last head)`
+			: ` as of ${c.asOf}`;
+	const summary = `${n.matching}/${n.total} match, ${n.mismatches} mismatches (line comments: ${n.total - n.fileComments}, file comments: ${n.fileComments}; code from the clone: ${n.clone}, GitHub's hunk: ${n.github}; snapshot same: ${n.snapshotSame}, different: ${n.snapshotDifferent}).`;
 	const rows = c.threads.map(
 		(t, i) =>
 			`| ${i + 1} | ${cell(t.path)} | ${cell(t.github)} | ${cell(t.ours)} | ${t.source} | ${t.snapshot} | ${t.match ? "yes" : "NO"} | ${cell([...t.causes, ...t.notes].join("; "))} |`,
 	);
-	return `# ${c.pr}${c.asOf ? ` as of ${c.asOf}` : ""}
+	return `# ${c.pr}${when}
 
 ${summary}
 
