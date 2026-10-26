@@ -80,3 +80,15 @@ comment's commit was the PR's head at the time isn't checked on its own: the
 pane always shows the comment's own commit, so only the diff's old side can
 differ, and the hunk shows that. Showing the commenter's own diff instead is
 planned with the re-review work (`docs/todo.md`).
+
+## Why is a review comment dated later than GitHub shows it?
+
+carbonless dates a review comment by when it was published: when its review was
+submitted, the moment anyone but its author could see it. GitHub's thread shows
+when it was written, which for a comment drafted in a pending review can be days
+earlier (on one PR, 71 of 209 comments, by up to five days). Thread times, their
+order, "no reply", the Timeline (a review's comments land together with it) and
+as-of mode all use the publication time, so as of a moment only what was
+published by then shows. The viewer's own pending comments aren't shown: nobody
+else can see them yet. The code beside a thread is the one exception: it stays
+the base branch as the author saw it while writing.
