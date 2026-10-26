@@ -1303,6 +1303,44 @@ describe("OverviewPage", () => {
 		).toBe(true);
 	});
 
+	it("swaps to a re-read without waiting for its timeline, the old one shown until it comes", async () => {
+		const { release } = oldRead();
+		const routes = fetchMock.getMockImplementation();
+		fetchMock.mockImplementation(async (input, init) => {
+			const url = String(input);
+			if (url.startsWith("/api/timeline")) {
+				if (url.includes("read=read2")) return new Promise<Response>(() => {});
+				return new Response(
+					JSON.stringify({
+						gaps: [],
+						events: [
+							{
+								kind: "ready",
+								actor: { login: "octo-author", avatarUrl: "", bot: false },
+								at: "2026-01-02T09:00:00Z",
+							},
+						],
+					}),
+				);
+			}
+			if (!routes) throw new Error("no mock");
+			return routes(input, init);
+		});
+		const section = await screen.findByRole("region", { name: "Timeline" });
+		expect(await within(section).findByTestId("timeline-event")).toBeVisible();
+		release();
+		const what = screen.getByRole("region", { name: "What it does" });
+		await waitFor(() =>
+			expect(within(what).getByRole("heading", { level: 3 })).toHaveTextContent(
+				"Now",
+			),
+		);
+		// The new read's timeline is on its way: the old one stays, marked busy.
+		const list = within(section).getByRole("list", { name: "Timeline events" });
+		await waitFor(() => expect(list).toHaveAttribute("aria-busy", "true"));
+		expect(within(list).getByTestId("timeline-event")).toBeVisible();
+	});
+
 	it("lets Refresh supersede a re-read that hangs: it cancels it and reads anew", async () => {
 		const user = userEvent.setup();
 		const { signals } = oldRead();

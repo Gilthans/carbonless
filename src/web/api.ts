@@ -207,22 +207,19 @@ export const timelineQuery = (readId: string) =>
 /**
  * Brings the overview read at `fetchedAt` up to date: asks for one read at
  * most `maxAge` ago (the server reads GitHub again if its own is older),
- * waits for all its threads and its timeline, then puts them in the cache at once, so the
- * page swaps from the old read to the new one whole. Keyed by the read it
- * replaces, so it runs once per read; its own key is apart from the
- * overview's so a Refresh doesn't rerun it, and a Refresh cancels it.
+ * waits for all its threads, then puts both in the cache at once, so the
+ * page swaps from the old read to the new one whole. The timeline isn't
+ * waited for: its own query reads the new read's, keeping the old one on
+ * screen meanwhile. Keyed by the read it replaces, so it runs once per
+ * read; its own key is apart from the overview's so a Refresh doesn't
+ * rerun it, and a Refresh cancels it.
  */
 export const revalidateOverviewQuery = (fetchedAt: string, maxAge: number) =>
 	queryOptions({
 		queryKey: ["overview-revalidate", fetchedAt, maxAge],
 		queryFn: async ({ client, signal }) => {
 			const fresh = await fetchOverview(maxAge, signal);
-			const [threads, timeline] = await Promise.all([
-				fetchThreads(fresh.readId, "full", signal),
-				// A failed timeline doesn't hold the swap back: its own query
-				// reads it again and shows the error.
-				fetchTimeline(fresh.readId, signal).catch(() => undefined),
-			]);
+			const threads = await fetchThreads(fresh.readId, "full", signal);
 			// A Refresh may have brought a newer one meanwhile: keep that.
 			const shown = client.getQueryData(overviewQuery.queryKey);
 			if (
@@ -233,9 +230,6 @@ export const revalidateOverviewQuery = (fetchedAt: string, maxAge: number) =>
 					threadsQuery(fresh.readId, "full").queryKey,
 					threads,
 				);
-				if (timeline) {
-					client.setQueryData(timelineQuery(fresh.readId).queryKey, timeline);
-				}
 				client.setQueryData(overviewQuery.queryKey, fresh);
 			}
 			return fresh.fetchedAt;
