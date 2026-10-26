@@ -129,6 +129,12 @@ export async function buildApp(
 			return session.threads(read, stage as ThreadsStage);
 		},
 	);
+	// A read's timeline (OverviewRead).
+	app.get<{ Querystring: { read?: string } }>("/api/timeline", (request) => {
+		const { read } = request.query;
+		if (!read) throw new BadRequestError("read is required");
+		return session.timeline(read);
+	});
 	app.get("/api/review", () => session.review());
 	app.get<{ Params: { index: string }; Querystring: { revision?: unknown } }>(
 		"/api/files/:index/hunks",

@@ -4,13 +4,15 @@ import {
 	prView,
 	reviewThread,
 	threadComment,
+	timelineCommit,
+	timelineReview,
 } from "../../test/fake-gh/scenario";
 import { testGitEnv } from "../../test/git-fixture";
 import { createPrFixture, type PrFixture } from "../../test/pr-fixture";
 import { clonePath } from "./clone";
 import { GhError } from "./errors";
 import { StaleSnapshotError } from "./review/reviews";
-import { refusal, Session } from "./session";
+import { refusal, Session, UnknownReadError } from "./session";
 import { ThreadCodeSource } from "./threadCode";
 
 describe("Session", () => {
@@ -617,6 +619,70 @@ describe("Session", () => {
 			// Checked against GitHub's hunk, read with the comment's text.
 			expect(code?.snapshot).toEqual({ same: true });
 		});
+	});
+
+	it("reads the timeline with the overview, its review comments tied to their threads", async () => {
+		const head = pr.head();
+		pr.scenario({
+			prs: {
+				12: {
+					view: prView({ headRefOid: head, baseRefName: "main" }),
+					graphql: {
+						reviewThreads: [
+							reviewThread({ path: "a.txt", line: 1, isResolved: true }, [
+								threadComment({ login: "rev", text: "Why?" }),
+							]),
+						],
+						timelineItems: [
+							timelineCommit({
+								login: "ann",
+								at: "2026-01-02T00:00:00Z",
+								oid: head,
+							}),
+							timelineReview({
+								login: "rev",
+								at: "2026-01-03T09:00:00Z",
+								comments: [
+									{
+										// The fake gh's id for thread 0's opening comment.
+										id: "C12-0",
+										path: "a.txt",
+										line: 1,
+										at: "2026-01-03T09:00:00Z",
+										text: "Why?",
+									},
+								],
+							}),
+						],
+					},
+				},
+			},
+		});
+		const s = await Session.open(pr.arg, process.cwd());
+		const { readId } = await s.overview();
+		const timeline = await s.timeline(readId);
+		expect(timeline.gaps).toEqual([]);
+		expect(timeline.events.map((e) => e.kind)).toEqual(["commits", "review"]);
+		const review = timeline.events[1];
+		expect(review?.kind === "review" && review.items[0]).toMatchObject({
+			kind: "comment",
+			path: "a.txt",
+			threadId: "T12-0",
+		});
+		expect(() => s.timeline("gone")).toThrow(UnknownReadError);
+	});
+
+	it("shows a timeline that fails to read as its own error, the overview unaffected", async () => {
+		pr.scenario({
+			failGraphql: "timelineItems",
+			prs: {
+				12: { view: prView({ headRefOid: pr.head(), baseRefName: "main" }) },
+			},
+		});
+		const s = await Session.open(pr.arg, process.cwd());
+		const overview = await s.overview();
+		expect(overview.title).toBeTruthy();
+		await expect(s.timeline(overview.readId)).rejects.toThrow(GhError);
 	});
 
 	it("serves hunks and context of a file", async () => {

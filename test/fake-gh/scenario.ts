@@ -30,6 +30,13 @@ export interface Scenario {
 	 * content comes back null with a NOT_FOUND error, and gh exits 1.
 	 */
 	deletedThreads?: string[];
+	/** Each page of the timeline answers this late. */
+	timelineDelayMs?: number;
+	/**
+	 * The timeline's count grows by the page's position on every page read
+	 * (as if items were added between the reads).
+	 */
+	timelineCountDrift?: boolean;
 	/** Every GraphQL query containing this text fails (gh exits 1). */
 	failGraphql?: string;
 	/** Nodes per GraphQL page (default 100, like gh.ts asks for). */
@@ -53,6 +60,13 @@ export interface Scenario {
 				reviews?: unknown[];
 				/** `commits` nodes: `{ commit: { oid, committedDate, pushedDate } }`. */
 				commits?: unknown[];
+				/**
+				 * `timelineItems` nodes (gh.ts TIMELINE_NODE's shape), GitHub's
+				 * order; see timelineCommit etc. below.
+				 */
+				timelineItems?: unknown[];
+				/** `commits { totalCount }` for the timeline (default: its commits). */
+				commitCount?: number;
 			};
 		}
 	>;
@@ -200,4 +214,109 @@ export function suggestionHtml(removed: string[], added: string[]): string {
     <div itemprop="text" class="blob-wrapper data file rounded-0"><table class="d-table tab-size mb-0 width-full" data-paste-markdown-skip=""><tbody>${removed.map((t, i) => row("deletion", t, i + 1)).join("")}${added.map((t, i) => row("addition", t, i + 1)).join("")}</tbody></table></div>
     <div class="js-apply-changes"></div>
   </div>`;
+}
+
+const actorNode = (login: string, bot = false) => ({
+	login,
+	__typename: bot ? "Bot" : "User",
+	avatarUrl: "",
+});
+
+/** A timeline commit (PullRequestCommit) by `login`. */
+export function timelineCommit(c: {
+	login: string;
+	at: string;
+	oid: string;
+	headline?: string;
+}): unknown {
+	return {
+		__typename: "PullRequestCommit",
+		url: `https://github.com/acme/widget/pull/1/commits/${c.oid}`,
+		commit: {
+			oid: c.oid,
+			messageHeadline: c.headline ?? `Commit ${c.oid.slice(0, 7)}`,
+			committedDate: c.at,
+			pushedDate: null,
+			author: { name: c.login, user: actorNode(c.login) },
+		},
+	};
+}
+
+/** A timeline review (PullRequestReview) with its review comments. */
+export function timelineReview(r: {
+	login: string;
+	bot?: boolean;
+	at: string;
+	state?: string;
+	text?: string;
+	comments?: {
+		id: string;
+		path: string;
+		line: number | null;
+		at: string;
+		text: string;
+		replyTo?: string;
+	}[];
+	/** `comments.totalCount`, when more than listed. */
+	totalComments?: number;
+}): unknown {
+	const comments = r.comments ?? [];
+	return {
+		__typename: "PullRequestReview",
+		author: actorNode(r.login, r.bot),
+		state: r.state ?? "COMMENTED",
+		submittedAt: r.at,
+		bodyText: r.text ?? "",
+		url: "https://github.com/acme/widget/pull/1#pullrequestreview-1",
+		comments: {
+			totalCount: r.totalComments ?? comments.length,
+			nodes: comments.map((c) => ({
+				id: c.id,
+				path: c.path,
+				line: c.line,
+				originalLine: c.line,
+				createdAt: c.at,
+				bodyText: c.text,
+				url: `https://github.com/acme/widget/pull/1#discussion_${c.id}`,
+				replyTo: c.replyTo ? { id: c.replyTo } : null,
+			})),
+		},
+	};
+}
+
+/** A conversation comment (IssueComment). */
+export function timelineComment(c: {
+	login: string;
+	bot?: boolean;
+	at: string;
+	text: string;
+}): unknown {
+	return {
+		__typename: "IssueComment",
+		author: actorNode(c.login, c.bot),
+		createdAt: c.at,
+		bodyText: c.text,
+		url: "https://github.com/acme/widget/pull/1#issuecomment-1",
+	};
+}
+
+/** A history event: force-push, base change, ready, draft, merged, closed, reopened. */
+export function timelineFact(
+	kind:
+		| "HeadRefForcePushedEvent"
+		| "BaseRefChangedEvent"
+		| "ReadyForReviewEvent"
+		| "ConvertToDraftEvent"
+		| "MergedEvent"
+		| "ClosedEvent"
+		| "ReopenedEvent",
+	e: { login: string; at: string } & Record<string, unknown>,
+): unknown {
+	const { login, at, ...rest } = e;
+	return {
+		__typename: kind,
+		actor: actorNode(login),
+		createdAt: at,
+		...rest,
+	};
 }

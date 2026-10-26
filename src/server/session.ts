@@ -8,6 +8,7 @@ import type {
 	StateChange,
 	ThreadsStage,
 	ThreadsView,
+	TimelineView,
 } from "../shared/types.js";
 import { ensureClone, fetchPr } from "./clone.js";
 import { buildSnapshot, loadContext, loadFileHunks } from "./diff/snapshot.js";
@@ -251,6 +252,16 @@ export class Session {
 		const read = this.#reads.find((r) => r.id === readId);
 		if (!read) throw new UnknownReadError(`No read ${readId}`);
 		return read.threads(stage);
+	}
+
+	/**
+	 * The timeline of read `readId` (the overview's). An UnknownReadError
+	 * when the read is no longer kept.
+	 */
+	timeline(readId: string): Promise<TimelineView> {
+		const read = this.#reads.find((r) => r.id === readId);
+		if (!read) throw new UnknownReadError(`No read ${readId}`);
+		return read.timeline;
 	}
 
 	/**

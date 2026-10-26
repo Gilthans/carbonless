@@ -375,7 +375,8 @@ const AUTHOR = "author { login __typename }";
 // authors and times for the comments (reply detection, and counting as of
 // a cutoff), and the latest comment's time (last activity past the first
 // 100). The opener's original commit is where the clone takes its code from.
-const THREAD_FIELDS = `id isResolved isOutdated path subjectType line originalLine startLine originalStartLine diffSide startDiffSide first: comments(first: 1) { nodes { ${AUTHOR} createdAt originalCommit { oid } } } latest: comments(last: 1) { nodes { createdAt } } comments(first: 100) { totalCount nodes { ${AUTHOR} createdAt } }`;
+// Comment ids tie the timeline's review comments to their threads.
+const THREAD_FIELDS = `id isResolved isOutdated path subjectType line originalLine startLine originalStartLine diffSide startDiffSide first: comments(first: 1) { nodes { id ${AUTHOR} createdAt originalCommit { oid } } } latest: comments(last: 1) { nodes { createdAt } } comments(first: 100) { totalCount nodes { id ${AUTHOR} createdAt } }`;
 /** The opening comment's text and GitHub's diff hunk, by thread id. */
 const CONTENT_FIELDS =
 	"id first: comments(first: 1) { nodes { body bodyText bodyHTML diffHunk } }";
@@ -713,6 +714,123 @@ export function fetchThreadSummaries(
 	read: ReadSignal = {},
 ): Promise<unknown[]> {
 	return notFoundAsPr(ref, () => fetchConnection(ref, "reviewThreads", read));
+}
+
+const ACTOR = "login __typename avatarUrl(size: 40)";
+/** What the timeline shows of each kind of item (timeline.ts maps it). */
+const TIMELINE_NODE = `__typename
+... on PullRequestCommit { url commit { oid messageHeadline committedDate pushedDate author { name user { ${ACTOR} } } } }
+... on PullRequestReview { author { ${ACTOR} } state submittedAt bodyText url comments(first: 100) { totalCount nodes { id path line originalLine createdAt bodyText url replyTo { id } } } }
+... on IssueComment { author { ${ACTOR} } createdAt bodyText url }
+... on HeadRefForcePushedEvent { actor { ${ACTOR} } createdAt beforeCommit { oid } afterCommit { oid } }
+... on BaseRefChangedEvent { actor { ${ACTOR} } createdAt previousRefName currentRefName }
+... on ReadyForReviewEvent { actor { ${ACTOR} } createdAt }
+... on ConvertToDraftEvent { actor { ${ACTOR} } createdAt }
+... on MergedEvent { actor { ${ACTOR} } createdAt commit { oid } }
+... on ClosedEvent { actor { ${ACTOR} } createdAt }
+... on ReopenedEvent { actor { ${ACTOR} } createdAt }`;
+const TIMELINE_TYPES =
+	"PULL_REQUEST_COMMIT, PULL_REQUEST_REVIEW, ISSUE_COMMENT, HEAD_REF_FORCE_PUSHED_EVENT, BASE_REF_CHANGED_EVENT, READY_FOR_REVIEW_EVENT, CONVERT_TO_DRAFT_EVENT, MERGED_EVENT, CLOSED_EVENT, REOPENED_EVENT";
+/** Timeline items per page. */
+export const TIMELINE_PAGE = 100;
+/**
+ * A page of the timeline by position (`skip`), so pages after the first are
+ * read at once; `filteredCount` is the number of items of these types.
+ */
+const TIMELINE_QUERY = `query($owner: String!, $name: String!, $number: Int!, $skip: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      commits { totalCount }
+      timelineItems(first: ${TIMELINE_PAGE}, skip: $skip, itemTypes: [${TIMELINE_TYPES}]) {
+        filteredCount
+        nodes { ${TIMELINE_NODE} }
+      }
+    }
+  }
+}`;
+
+/** The timeline's items as read (timeline.ts maps them). */
+export interface TimelineRead {
+	nodes: unknown[];
+	/** The PR's commits as GitHub counts them; null if it didn't say. */
+	commitCount: number | null;
+}
+
+async function fetchTimelinePage(
+	ref: PrRef,
+	skip: number,
+	read: ReadSignal,
+): Promise<{ nodes: unknown[]; count: number; commitCount: number | null }> {
+	const out = safeJson(
+		await runGh(
+			[
+				"api",
+				"graphql",
+				"-f",
+				`query=${TIMELINE_QUERY}`,
+				"-f",
+				`owner=${ref.owner}`,
+				"-f",
+				`name=${ref.repo}`,
+				"-F",
+				`number=${ref.number}`,
+				"-F",
+				`skip=${skip}`,
+			],
+			{ ...read, what: "the PR's timeline" },
+		),
+	);
+	const pr = rec(rec(rec(out).data).repository).pullRequest;
+	const conn = rec(rec(pr).timelineItems);
+	const count = conn.filteredCount;
+	if (
+		!Array.isArray(conn.nodes) ||
+		typeof count !== "number" ||
+		!Number.isInteger(count)
+	) {
+		throw new GhError("gh returned an unexpected response for the timeline");
+	}
+	const commits = rec(rec(pr).commits).totalCount;
+	return {
+		nodes: conn.nodes,
+		count,
+		commitCount: typeof commits === "number" ? commits : null,
+	};
+}
+
+/**
+ * Every item of the PR's timeline the Overview shows, in GitHub's order.
+ * The first page says how many there are; the rest are read at once. The
+ * pages must agree on the count and add up to it (an item added or deleted
+ * between the reads would shift them): if not, they are read again, and a
+ * second disagreement is an error, never a timeline with a hole in it.
+ */
+export async function fetchTimeline(
+	ref: PrRef,
+	read: ReadSignal = {},
+): Promise<TimelineRead> {
+	return notFoundAsPr(ref, async () => {
+		for (let attempt = 0; attempt < 2; attempt++) {
+			const first = await fetchTimelinePage(ref, 0, read);
+			const pages = Math.ceil(first.count / TIMELINE_PAGE);
+			if (pages > MAX_PAGES) {
+				throw new GhError("Too many timeline items to read for this PR");
+			}
+			const rest = await Promise.all(
+				Array.from({ length: Math.max(0, pages - 1) }, (_, i) =>
+					fetchTimelinePage(ref, (i + 1) * TIMELINE_PAGE, read),
+				),
+			);
+			const nodes = [first, ...rest].flatMap((p) => p.nodes);
+			if (
+				rest.every((p) => p.count === first.count) &&
+				nodes.length === first.count
+			) {
+				return { nodes, commitCount: first.commitCount };
+			}
+		}
+		throw new GhError("The PR's timeline kept changing while it was read");
+	});
 }
 
 /**

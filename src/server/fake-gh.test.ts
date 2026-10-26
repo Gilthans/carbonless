@@ -8,6 +8,7 @@ import {
 	prView,
 	reviewThread,
 	type Scenario,
+	timelineCommit,
 	writeScenario,
 } from "../../test/fake-gh/scenario";
 import { testGitEnv } from "../../test/git-fixture";
@@ -16,6 +17,7 @@ import {
 	fetchPrMeta,
 	fetchThreadContents,
 	fetchThreadSummaries,
+	fetchTimeline,
 	resolvePrRef,
 	runGh,
 	viewerSlug,
@@ -209,5 +211,56 @@ describe("fake gh", () => {
 				{ encoding: "utf8", env },
 			).trim(),
 		).toBe("true");
+	});
+
+	it("reads the timeline: the first page, then the rest at once by position", async () => {
+		const items = Array.from({ length: 230 }, (_, i) =>
+			timelineCommit({
+				login: "ann",
+				at: "2026-01-02T10:00:00Z",
+				oid: i.toString(16).padStart(40, "0"),
+			}),
+		);
+		const log = join(tmp, "log");
+		scenario({
+			prs: {
+				"12": {
+					view: prView(),
+					graphql: { timelineItems: items, commitCount: 231 },
+				},
+			},
+		});
+		setEnv({ CRB_FAKE_GH_LOG: log });
+		const read = await fetchTimeline(ref);
+		expect(read.nodes).toEqual(items);
+		expect(read.commitCount).toBe(231);
+		const { readFileSync } = await import("node:fs");
+		const skips = [...readFileSync(log, "utf8").matchAll(/skip=(\d+)/g)].map(
+			(m) => m[1],
+		);
+		expect(skips.sort()).toEqual(["0", "100", "200"]);
+	});
+
+	it("never gives a timeline with a hole: pages that disagree are read again, then fail", async () => {
+		const items = Array.from({ length: 150 }, (_, i) =>
+			timelineCommit({
+				login: "ann",
+				at: "2026-01-02T10:00:00Z",
+				oid: i.toString(16).padStart(40, "0"),
+			}),
+		);
+		scenario({
+			timelineCountDrift: true,
+			prs: { "12": { view: prView(), graphql: { timelineItems: items } } },
+		});
+		await expect(fetchTimeline(ref)).rejects.toThrow(
+			"The PR's timeline kept changing while it was read",
+		);
+	});
+
+	it("names a missing PR when reading the timeline", async () => {
+		await expect(fetchTimeline(ref)).rejects.toThrow(
+			"PR acme/widget#12 not found",
+		);
 	});
 });

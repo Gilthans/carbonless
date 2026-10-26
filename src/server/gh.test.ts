@@ -344,14 +344,14 @@ describe("runGh with a fake gh", () => {
 		// A summary: no opening comment's text or hunk (threadContents), its
 		// author, time and commit; the latest one's time; authors for the rest.
 		expect(log()).toContain(
-			"id isResolved isOutdated path subjectType line originalLine startLine originalStartLine diffSide startDiffSide first: comments(first: 1) { nodes { author { login __typename } createdAt originalCommit { oid } } }",
+			"id isResolved isOutdated path subjectType line originalLine startLine originalStartLine diffSide startDiffSide first: comments(first: 1) { nodes { id author { login __typename } createdAt originalCommit { oid } } }",
 		);
 		expect(log()).not.toContain("bodyText");
 		expect(log()).toContain(
 			"latest: comments(last: 1) { nodes { createdAt } }",
 		);
 		expect(log()).toContain(
-			"comments(first: 100) { totalCount nodes { author { login __typename } createdAt } }",
+			"comments(first: 100) { totalCount nodes { id author { login __typename } createdAt } }",
 		);
 	});
 

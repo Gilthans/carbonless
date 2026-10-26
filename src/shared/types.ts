@@ -330,6 +330,134 @@ export interface ThreadsView {
 	complete: boolean;
 }
 
+/** Who did something on the PR's timeline. */
+export interface TimelineActor {
+	/** GitHub login; a commit by no GitHub user: its author's name. */
+	login: string;
+	/** "" when GitHub gave none. */
+	avatarUrl: string;
+	bot: boolean;
+}
+
+/** A submitted review's verdict. */
+export type ReviewVerdict =
+	| "APPROVED"
+	| "CHANGES_REQUESTED"
+	| "COMMENTED"
+	| "DISMISSED";
+
+/** One commit of a commit run. */
+export interface TimelineCommit {
+	kind: "commit";
+	/** When it was pushed if GitHub knows, else committed. */
+	at: string;
+	oid: string;
+	headline: string;
+	/** The commit in the PR on GitHub; "" if unknown. */
+	url: string;
+}
+
+/** One review comment (a comment on the code) of a review run. */
+export interface TimelineReviewComment {
+	kind: "comment";
+	/** When it was written (as the review threads date comments). */
+	at: string;
+	path: string;
+	/** Its line on the commit it was made on; null for a file comment. */
+	line: number | null;
+	/** The comment's first line of text. */
+	text: string;
+	url: string;
+	/** The review thread it belongs to (ReviewThread.id); null if unknown. */
+	threadId: string | null;
+}
+
+/** A submitted review with a verdict or text of its own. */
+export interface TimelineReview {
+	kind: "review";
+	at: string;
+	state: ReviewVerdict;
+	/** The review's first line of text; "" for none. */
+	text: string;
+	url: string;
+}
+
+/** A comment on the PR's conversation (not on the code). */
+export interface TimelineConversationComment {
+	kind: "conversation";
+	at: string;
+	text: string;
+	url: string;
+}
+
+export type TimelineReviewItem =
+	| TimelineReview
+	| TimelineReviewComment
+	| TimelineConversationComment;
+
+/** A history fact shown as a single event. */
+export type TimelineFact =
+	| {
+			kind: "force-push";
+			actor: TimelineActor;
+			at: string;
+			/** The head before and after; "" if unknown. */
+			before: string;
+			after: string;
+	  }
+	| {
+			kind: "base-change";
+			actor: TimelineActor;
+			at: string;
+			/** Branch names. */
+			before: string;
+			after: string;
+	  }
+	| {
+			kind: "ready" | "draft" | "closed" | "reopened";
+			actor: TimelineActor;
+			at: string;
+	  }
+	| {
+			kind: "merged";
+			actor: TimelineActor;
+			at: string;
+			/** The merge's commit; "" if unknown. */
+			commit: string;
+	  };
+
+/**
+ * One line of the PR's timeline, oldest first: a run of commits by one
+ * author, a run of review activity (reviews, review comments, conversation
+ * comments) by one person, or a single history fact.
+ */
+export type TimelineEvent =
+	| {
+			kind: "commits";
+			actor: TimelineActor;
+			from: string;
+			to: string;
+			items: TimelineCommit[];
+	  }
+	| {
+			kind: "review";
+			actor: TimelineActor;
+			from: string;
+			to: string;
+			items: TimelineReviewItem[];
+	  }
+	| TimelineFact;
+
+/** A read's timeline (OverviewRead): every event, oldest first. */
+export interface TimelineView {
+	events: TimelineEvent[];
+	/**
+	 * What GitHub didn't give in full ("GitHub listed 250 of 300 commits"):
+	 * shown, so no activity is dropped silently.
+	 */
+	gaps: string[];
+}
+
 export interface SessionInfo {
 	pr: {
 		owner: string;

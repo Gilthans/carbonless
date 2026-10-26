@@ -5,16 +5,19 @@ import {
 	THREADS_FIRST,
 	type ThreadsStage,
 	type ThreadsView,
+	type TimelineView,
 } from "../shared/types.js";
 import {
 	fetchOverview,
 	fetchThreadContents,
 	fetchThreadSummaries,
+	fetchTimeline,
 	NODE_ID,
 	type PrRef,
 } from "./gh.js";
 import { mapThreads, withContent } from "./overview.js";
 import type { DiffBase, ThreadCodeSource } from "./threadCode.js";
+import { buildTimeline } from "./timeline.js";
 
 /** What a read reads from, and where its thread code comes from. */
 export interface ReadSources {
@@ -57,6 +60,11 @@ export class OverviewRead {
 	/** When the overview part came in; null while it is read. */
 	ended: number | null = null;
 	readonly overview: Promise<Omit<PrOverview, "servedAt">>;
+	/**
+	 * The PR's timeline: its own read, at once with the rest, its review
+	 * comments tied to their threads once the summaries are in.
+	 */
+	readonly timeline: Promise<TimelineView>;
 	readonly #asOf: string | undefined;
 	/** Summary nodes, then with their content merged in as it arrives. */
 	#nodes: unknown[] = [];
@@ -87,6 +95,20 @@ export class OverviewRead {
 		const summary = fetchThreadSummaries(sources.ref, read).then((nodes) => {
 			this.#nodes = nodes;
 		});
+		this.timeline = Promise.all([
+			fetchTimeline(sources.ref, read),
+			// Without the threads, review comments just aren't tied to them.
+			summary.then(
+				() => true,
+				() => false,
+			),
+		]).then(([timeline, tied]) =>
+			buildTimeline({
+				...timeline,
+				asOf: this.#asOf,
+				threadOf: tied ? threadsByComment(this.#nodes) : undefined,
+			}),
+		);
 		// Threads with code, listed-first ones ahead, and which those are.
 		const plan = summary.then(() => {
 			const threads = this.#map();
@@ -147,8 +169,10 @@ export class OverviewRead {
 		// Each is awaited by whoever asks; none may go unhandled.
 		for (const stage of Object.values(this.#stages)) stage.catch(() => {});
 		this.overview.catch(() => {});
+		this.timeline.catch(() => {});
 		this.settled = Promise.allSettled([
 			this.overview,
+			this.timeline,
 			firstText,
 			restText,
 			codes.then((c) => c.all),
@@ -227,6 +251,28 @@ export class OverviewRead {
 		);
 		this.#codes.set(thread.id, code);
 	}
+}
+
+/** A thread summary's comments' ids, each to its thread's id. */
+export function threadsByComment(
+	nodes: unknown[],
+): (commentId: string) => string | null {
+	const map = new Map<string, string>();
+	const rec = (v: unknown) =>
+		(typeof v === "object" && v !== null ? v : {}) as Record<string, unknown>;
+	const list = (v: unknown) => (Array.isArray(v) ? v : []);
+	for (const node of nodes) {
+		const t = rec(node);
+		if (typeof t.id !== "string" || !t.id) continue;
+		for (const c of [
+			...list(rec(t.first).nodes),
+			...list(rec(t.comments).nodes),
+		]) {
+			const id = rec(c).id;
+			if (typeof id === "string" && id) map.set(id, t.id);
+		}
+	}
+	return (id) => map.get(id) ?? null;
 }
 
 /**

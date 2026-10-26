@@ -101,6 +101,17 @@ describe("API", () => {
 		expect((await inject("/api/threads?stage=full")).statusCode).toBe(400);
 	});
 
+	it("serves a read's timeline; 410 for a read no longer kept", async () => {
+		const { readId } = await get("/api/overview");
+		const view = await get(
+			`/api/timeline?${new URLSearchParams({ read: readId })}`,
+		);
+		expect(Array.isArray(view.events)).toBe(true);
+		expect(Array.isArray(view.gaps)).toBe(true);
+		expect((await inject("/api/timeline?read=nope")).statusCode).toBe(410);
+		expect((await inject("/api/timeline")).statusCode).toBe(400);
+	});
+
 	it("records a state and returns updated progress", async () => {
 		const [key = ""] = keys(await get("/api/review"));
 		const res = await post("/api/review/states", {
