@@ -23,7 +23,8 @@
 		"test:e2e": "pnpm build && playwright test",
 		"verify": "pnpm lint && pnpm typecheck && pnpm test && pnpm test:e2e",
 		"verify:fast": "node scripts/verify-fast.mjs",
-		"icons": "tsx scripts/render-icons.ts"
+		"icons": "tsx scripts/render-icons.ts",
+		"compare-threads": "tsx scripts/compare-threads.ts"
 	},
 	"dependencies": {
 		"@fastify/cookie": "^11.1.3",

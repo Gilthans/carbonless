@@ -15,5 +15,5 @@
 		"types": ["node", "vite/client", "@testing-library/jest-dom/vitest"],
 		"noEmit": true
 	},
-	"include": ["src", "e2e", "test", "*.config.ts"]
+	"include": ["src", "e2e", "test", "scripts", "*.config.ts"]
 }
