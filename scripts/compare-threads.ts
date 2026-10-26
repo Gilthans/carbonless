@@ -9,7 +9,7 @@
  * side, line range, the marked rows' text) against GitHub's REST review
  * comment (side/start_side, original_line/original_start_line, diff_hunk).
  * Writes <out>/compare.md and <out>/compare.json; exits 1 on any mismatch,
- * 2 when the comparison couldn't run. <out> defaults to $TMPDIR/crb-compare.
+ * 2 when the comparison couldn't run. <out> defaults to $TMPDIR/crb-compare/<owner>-<repo>-<n>[-asof].
  *
  * The commented range is compared on the comment's own side (docs/faq.md):
  * a comment made in a "changes since" view has another old side, so its
@@ -281,61 +281,76 @@ export async function compareThreads(
 	try {
 		const info = session.info().pr;
 		const ref = { owner: info.owner, repo: info.repo, number: info.number };
-		const [overview, rest, summaries] = await Promise.all([
-			session.overview(),
-			restComments(ref.owner, ref.repo, ref.number),
-			fetchThreadSummaries(ref),
-		]);
-		const served = await session.threads(overview.readId, "full");
 		const repo = clonePath(ref.owner, ref.repo);
-		const byNode = new Map(
-			rest.filter((c) => c.in_reply_to_id == null).map((c) => [c.node_id, c]),
-		);
-		// What GitHub says the read should hold: threads opened (published) by the cutoff.
-		const expected = new Map<string, string>();
-		for (const raw of summaries as {
-			id: string;
-			first?: { nodes?: { id?: string }[] };
-		}[]) {
-			const opener = raw.first?.nodes?.[0];
-			const at = visibleAt(opener);
-			if (at === null || (asOf && !atOrBefore(at, asOf))) continue;
-			expected.set(raw.id, opener?.id ?? "");
-		}
 		const files = new Map<string, string[] | null>();
 		const fileAtCommit = (commit: string, path: string) => {
 			const key = `${commit}:${path}`;
 			if (!files.has(key)) files.set(key, fileAt(repo, commit, path));
 			return files.get(key) ?? null;
 		};
-		const threads = served.threads.map((t) => {
-			const r = compareThread(
-				t,
-				byNode.get(expected.get(t.id) ?? "") ?? null,
-				fileAtCommit,
+		// carbonless's read and GitHub's lists, each compared with the other.
+		// `fresh`: a new read of carbonless's, not the one opening served.
+		const compareRead = async (fresh: boolean): Promise<ThreadResult[]> => {
+			const [overview, rest, summaries] = await Promise.all([
+				session.overview(fresh ? 0 : undefined),
+				restComments(ref.owner, ref.repo, ref.number),
+				fetchThreadSummaries(ref),
+			]);
+			const served = await session.threads(overview.readId, "full");
+			const byNode = new Map(
+				rest.filter((c) => c.in_reply_to_id == null).map((c) => [c.node_id, c]),
 			);
-			if (!expected.has(t.id))
-				r.causes.push("not on GitHub (as of the cutoff)");
-			r.match = r.causes.length === 0;
-			return r;
-		});
-		const servedIds = new Set(served.threads.map((t) => t.id));
-		for (const id of expected.keys()) {
-			if (servedIds.has(id)) continue;
-			threads.push({
-				id,
-				path: "",
-				github: "listed",
-				ours: "not served",
-				source: "none",
-				snapshot: "",
-				match: false,
-				causes: ["not served"],
-				notes: [],
+			// What GitHub says the read should hold: threads opened (published) by the cutoff.
+			const expected = new Map<string, string>();
+			for (const raw of summaries as {
+				id: string;
+				first?: { nodes?: { id?: string }[] };
+			}[]) {
+				const opener = raw.first?.nodes?.[0];
+				const at = visibleAt(opener);
+				if (at === null || (asOf && !atOrBefore(at, asOf))) continue;
+				expected.set(raw.id, opener?.id ?? "");
+			}
+			const results = served.threads.map((t) => {
+				const r = compareThread(
+					t,
+					byNode.get(expected.get(t.id) ?? "") ?? null,
+					fileAtCommit,
+				);
+				if (!expected.has(t.id))
+					r.causes.push("not on GitHub (as of the cutoff)");
+				r.match = r.causes.length === 0;
+				return r;
 			});
-		}
-		if (!served.complete) {
-			for (const t of threads) t.notes.push("read incomplete");
+			const servedIds = new Set(served.threads.map((t) => t.id));
+			for (const id of expected.keys()) {
+				if (servedIds.has(id)) continue;
+				results.push({
+					id,
+					path: "",
+					github: "listed",
+					ours: "not served",
+					source: "none",
+					snapshot: "",
+					match: false,
+					causes: ["not served"],
+					notes: [],
+				});
+			}
+			if (!served.complete) {
+				for (const t of results) t.notes.push("read incomplete");
+			}
+			return results;
+		};
+		let threads = await compareRead(false);
+		// A thread opened on a live PR between the reads isn't carbonless's
+		// miss: read everything again once before reporting it.
+		if (threads.some((t) => t.causes.includes("not served"))) {
+			threads = await compareRead(true);
+			for (const t of threads) {
+				if (t.causes.includes("not served"))
+					t.notes.push("also when read again");
+			}
 		}
 		const count = (f: (t: ThreadResult) => boolean) => threads.filter(f).length;
 		return {
@@ -386,6 +401,12 @@ ${rows.join("\n")}
 `;
 }
 
+const USAGE = `Usage: pnpm compare-threads <pr-url-or-owner/repo#n> [--as-of <iso>] [--out <dir>]
+
+--out defaults to $TMPDIR/crb-compare/<owner>-<repo>-<n>[-asof].
+On a live PR a thread opened mid-run can look "not served": such a
+mismatch is reported only if a second read still shows it.`;
+
 /** The CLI: 0 all match, 1 a mismatch, 2 couldn't compare. */
 export async function main(argv: string[]): Promise<number> {
 	const { values, positionals } = parseArgs({
@@ -395,21 +416,35 @@ export async function main(argv: string[]): Promise<number> {
 	});
 	const [pr, ...extra] = positionals;
 	if (!pr || extra.length) {
-		console.error(
-			"Usage: pnpm compare-threads <pr-url-or-owner/repo#n> [--as-of <iso>] [--out <dir>]",
-		);
+		console.error(USAGE);
 		return 2;
 	}
-	const out = resolve(values.out ?? join(tmpdir(), "crb-compare"));
-	mkdirSync(out, { recursive: true });
-	// Its own clone and review data, never the reviewer's cache.
-	process.env.XDG_CACHE_HOME = join(out, "xdg");
 	const asOf =
 		values["as-of"] === undefined ? undefined : parseAsOf(values["as-of"]);
-	const c = await compareThreads(pr, {
-		asOf,
-		progress: (m) => console.error(`crb: ${m}`),
-	});
+	const ref = await resolvePrRef(pr, process.cwd());
+	const out = resolve(
+		values.out ??
+			join(
+				tmpdir(),
+				"crb-compare",
+				`${ref.owner}-${ref.repo}-${ref.number}${asOf ? "-asof" : ""}`,
+			),
+	);
+	mkdirSync(out, { recursive: true });
+	// Its own clone and review data, never the reviewer's cache; restored
+	// after, for callers in the same process.
+	const savedXdg = process.env.XDG_CACHE_HOME;
+	process.env.XDG_CACHE_HOME = join(out, "xdg");
+	let c: Comparison;
+	try {
+		c = await compareThreads(pr, {
+			asOf,
+			progress: (m) => console.error(`crb: ${m}`),
+		});
+	} finally {
+		if (savedXdg === undefined) delete process.env.XDG_CACHE_HOME;
+		else process.env.XDG_CACHE_HOME = savedXdg;
+	}
 	writeFileSync(
 		join(out, "compare.json"),
 		`${JSON.stringify(c, null, "\t")}\n`,

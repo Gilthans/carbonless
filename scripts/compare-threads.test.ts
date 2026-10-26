@@ -2,6 +2,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { Session } from "../src/server/session";
 import {
 	prView,
 	reviewThread,
@@ -105,6 +106,7 @@ describe("compare-threads", () => {
 			snapshotSame: 3,
 		});
 
+		const xdg = process.env.XDG_CACHE_HOME;
 		const log = vi.spyOn(console, "log").mockImplementation(() => {});
 		const err = vi.spyOn(console, "error").mockImplementation(() => {});
 		try {
@@ -121,6 +123,8 @@ describe("compare-threads", () => {
 		);
 		// Its own cache under --out, never the reviewer's.
 		expect(existsSync(join(out, "xdg", "carbonless"))).toBe(true);
+		// ...set for the run only.
+		expect(process.env.XDG_CACHE_HOME).toBe(xdg);
 		// Read-only on GitHub: REST reads only.
 		expect(pr.ghLog()).toContain("api repos/acme/widget/pulls/12/comments");
 		expect(pr.ghLog()).not.toMatch(/\s(-X|--method)\s|\bmutation\b/);
@@ -150,6 +154,42 @@ describe("compare-threads", () => {
 		expect(readFileSync(join(out, "compare.md"), "utf8")).toMatch(
 			/\| RIGHT 3 \| RIGHT 2 \(1 marked\) \| clone \| same \| NO \| end line/,
 		);
+	});
+
+	it("reports a thread not served only if a second read misses it too", async () => {
+		scenario();
+		const real = Session.prototype.threads;
+		let reads = 0;
+		let always = false;
+		// carbonless's read missing thread 0: the first time, or every time.
+		const spy = vi
+			.spyOn(Session.prototype, "threads")
+			.mockImplementation(async function (this: Session, id, stage) {
+				const view = await real.call(this, id, stage);
+				reads++;
+				if (reads > 1 && !always) return view;
+				return {
+					...view,
+					threads: view.threads.filter((t) => t.id !== "T12-0"),
+				};
+			});
+		try {
+			const once = await compareThreads(pr.arg);
+			expect(reads).toBe(2);
+			expect(once.counts).toMatchObject({ total: 4, matching: 4 });
+
+			always = true;
+			const twice = await compareThreads(pr.arg);
+			expect(twice.threads.find((t) => t.id === "T12-0")).toMatchObject({
+				ours: "not served",
+				match: false,
+				causes: ["not served"],
+				notes: ["also when read again"],
+			});
+			expect(twice.counts.mismatches).toBe(1);
+		} finally {
+			spy.mockRestore();
+		}
 	});
 
 	it("compares a merged PR as of now, at its last head", async () => {
