@@ -1,6 +1,6 @@
+import { fileFlags, reviewProgress } from "../../shared/progress.js";
 import type {
 	ClusterView,
-	Counts,
 	FileView,
 	ReviewView,
 	Snapshot,
@@ -31,10 +31,6 @@ export function buildReviewView(
 		}
 	}
 
-	const clusters = counts();
-	const lines = counts();
-	const files = { ...counts(), done: 0 };
-
 	const fileViews = snapshot.files.map((file): FileView => {
 		const views = file.clusters.map((c): ClusterView => {
 			const stored =
@@ -50,46 +46,14 @@ export function buildReviewView(
 			}
 			return { ...c, state: "unreviewed" };
 		});
-		for (const c of views) {
-			clusters.total++;
-			lines.total += c.lines;
-			if (c.state === "reviewed") {
-				clusters.reviewed++;
-				lines.reviewed += c.lines;
-			} else if (c.state === "crossed-off") {
-				clusters.crossedOff++;
-				lines.crossedOff += c.lines;
-			}
-		}
-		const any = views.length > 0;
-		const done = any && views.every((c) => c.state !== "unreviewed");
-		const crossedOff = any && views.every((c) => c.state === "crossed-off");
-		// A file counts reviewed only when every cluster is reviewed; a done file
-		// with any crossed-off cluster counts as crossed off (out of the work
-		// left), so crossing off never raises reviewed.
-		const allReviewed = any && views.every((c) => c.state === "reviewed");
-		files.total++;
-		if (done) files.done++;
-		if (allReviewed) files.reviewed++;
-		else if (done) files.crossedOff++;
 		const { clusters: _, ...summary } = file;
-		return {
-			...summary,
-			clusters: views,
-			done,
-			reviewed: allReviewed,
-			crossedOff,
-		};
+		return { ...summary, clusters: views, ...fileFlags(views) };
 	});
 
 	return {
 		revision: snapshot.revision,
 		patchset: onRevision ? (progress.patchset?.number ?? null) : null,
 		files: fileViews,
-		progress: { clusters, lines, files },
+		progress: reviewProgress(fileViews),
 	};
-}
-
-function counts(): Counts {
-	return { total: 0, reviewed: 0, crossedOff: 0 };
 }

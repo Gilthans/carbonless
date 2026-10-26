@@ -20,7 +20,9 @@ import type {
 import { reviewQuery } from "../api";
 import { resetShowInvisibles, setShowInvisibles } from "../code/Invisibles";
 import { FileDiff, UNDO_ARM_MS } from "./FileDiff";
+import { SyncNotices } from "./SyncNotices";
 import type { Unit } from "./unit";
+import { stateSyncFor, useReviewView } from "./useSetStates";
 
 vi.mock("./highlight", () => ({
 	languageFor: () => null,
@@ -102,6 +104,18 @@ const view = (f: FileView): ReviewView => ({
 	},
 });
 
+/** FileDiff of the review's only file, as useReviewView shows it. */
+function Shown({ unit }: { unit: Unit }) {
+	const { data } = useReviewView();
+	const shown = data?.files[0];
+	return (
+		<>
+			{shown && <FileDiff file={shown} revision="r1" unit={unit} />}
+			<SyncNotices />
+		</>
+	);
+}
+
 type Result = { status: number; body: unknown };
 type Handler = (url: URL, init?: RequestInit) => Result | Promise<Result>;
 
@@ -127,20 +141,25 @@ function setup(
 	const queryClient = new QueryClient({
 		defaultOptions: { queries: { retry: false } },
 	});
-	const onStaleChange = vi.fn();
-	const tree = (shown: FileView) => (
+	// Like the page: the file as the reviewer intends it (useReviewView),
+	// read only when a test asks for it.
+	queryClient.setQueryDefaults(reviewQuery.queryKey, {
+		staleTime: Number.POSITIVE_INFINITY,
+	});
+	queryClient.setQueryData(reviewQuery.queryKey, view(f));
+	const rendered = render(
 		<QueryClientProvider client={queryClient}>
-			<FileDiff
-				file={shown}
-				revision="r1"
-				unit={unit}
-				onStaleChange={onStaleChange}
-			/>
-		</QueryClientProvider>
+			<Shown unit={unit} />
+		</QueryClientProvider>,
 	);
-	const rendered = render(tree(f));
-	/** Shows `next` as the file, like the page does after a write. */
-	const rerender = (next: FileView) => rendered.rerender(tree(next));
+	/** Shows `next` as the server's file, like a reread does. */
+	const rerender = (next: FileView) =>
+		act(async () => {
+			queryClient.setQueryData(reviewQuery.queryKey, view(next));
+			// The query cache notifies on a timeout.
+			await new Promise((r) => setTimeout(r, 0));
+		});
+	const sync = () => stateSyncFor(queryClient).getState();
 	const posts = () =>
 		fetchMock.mock.calls
 			.filter(([, init]) => init?.method === "POST")
@@ -152,7 +171,8 @@ function setup(
 	return {
 		fetchMock,
 		queryClient,
-		onStaleChange,
+		rendered,
+		sync,
 		posts,
 		paths,
 		rerender,
@@ -232,31 +252,54 @@ describe("FileDiff", () => {
 		);
 	});
 
-	it("shows other errors inline and keeps the checkbox unchecked", async () => {
-		const { user, onStaleChange } = setup(file([cluster("k1")]), () => ({
-			status: 500,
-			body: { error: "git exploded" },
-		}));
+	it("shows a change at once and keeps it when its save fails, with Retry", async () => {
+		let fail = true;
+		const reviewed = file([cluster("k1", { state: "reviewed" })]);
+		const { user, posts, sync } = setup(file([cluster("k1")]), (url) =>
+			url.pathname === "/api/review"
+				? { status: 200, body: view(file([cluster("k1")])) }
+				: fail
+					? { status: 400, body: { error: "git exploded" } }
+					: { status: 200, body: view(reviewed) },
+		);
 		await user.click(screen.getByRole("button", { name: "Expand file" }));
 		const box = await screen.findByRole("checkbox", {
 			name: "Mark cluster reviewed",
 		});
 		await user.click(box);
-		expect(await screen.findByRole("alert")).toHaveTextContent("git exploded");
-		expect(box).not.toBeChecked();
-		expect(onStaleChange).not.toHaveBeenCalledWith(true);
+		// Checked before the server answers.
+		expect(box).toBeChecked();
+		const alert = await screen.findByRole("alert");
+		expect(alert).toHaveTextContent("git exploded");
+		expect(alert).toHaveTextContent("Reviewed · src/a.ts");
+		// The reread server view doesn't roll it back.
+		await new Promise((r) => setTimeout(r, 20));
+		expect(box).toBeChecked();
+		expect(sync().stale).toBeNull();
+		fail = false;
+		await user.click(screen.getByRole("button", { name: "Retry saving" }));
+		await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+		expect(posts()).toHaveLength(2);
+		expect(posts()[1]?.body.changes).toEqual([
+			{ key: "k1", state: "reviewed" },
+		]);
+		expect(box).toBeChecked();
 	});
 
-	it("reports a stale snapshot", async () => {
-		const { user, onStaleChange } = setup(file([cluster("k1")]), () => ({
-			status: 409,
-			body: { error: "stale" },
-		}));
-		await user.click(screen.getByRole("button", { name: "Expand file" }));
-		await user.click(
-			await screen.findByRole("checkbox", { name: "Mark cluster reviewed" }),
+	it("reports a stale snapshot and drops the change", async () => {
+		const { user, sync } = setup(file([cluster("k1")]), (url) =>
+			url.pathname === "/api/review"
+				? { status: 200, body: view(file([cluster("k1")])) }
+				: { status: 409, body: { error: "stale" } },
 		);
-		await waitFor(() => expect(onStaleChange).toHaveBeenCalledWith(true));
+		await user.click(screen.getByRole("button", { name: "Expand file" }));
+		const box = await screen.findByRole("checkbox", {
+			name: "Mark cluster reviewed",
+		});
+		await user.click(box);
+		await waitFor(() => expect(sync().stale).toEqual({ dropped: 1 }));
+		expect(box).not.toBeChecked();
+		expect(screen.queryByRole("alert")).toBeNull();
 	});
 
 	it("marks the remaining clusters reviewed", async () => {
@@ -308,11 +351,14 @@ describe("FileDiff", () => {
 			),
 		);
 		const { posts, user } = setup(f, () => ({
-			status: 500,
+			status: 400,
 			body: { error: "boom" },
 		}));
 		await user.click(screen.getByRole("button", { name: "Undo cross-off" }));
-		expect(await screen.findByText(/boom/)).toBeInTheDocument();
+		expect(await screen.findByRole("alert")).toHaveTextContent(
+			"1500 changes · src/a.ts",
+		);
+		expect(screen.getByRole("alert")).toHaveTextContent("boom");
 		expect(posts()).toHaveLength(1);
 		expect(posts()[0]?.body.changes).toHaveLength(1000);
 	});
@@ -558,7 +604,7 @@ describe("FileDiff", () => {
 			]),
 		);
 
-		rerender(crossedOff);
+		await rerender(crossedOff);
 		// The same button, now undoing.
 		const undo = screen.getByRole("button", { name: "Undo cross-off" });
 		expect(undo).toBe(cross);
@@ -576,7 +622,7 @@ describe("FileDiff", () => {
 			]),
 		);
 
-		rerender(before);
+		await rerender(before);
 		expect(
 			screen.getByRole("button", { name: "Cross off file" }),
 		).toHaveAttribute("aria-pressed", "false");
@@ -618,7 +664,7 @@ describe("FileDiff", () => {
 			raised: true,
 		});
 		// Reviewed and crossed off counts as finished.
-		rerender(
+		await rerender(
 			file([
 				cluster("k1", { state: "reviewed" }),
 				cluster("k2", { state: "crossed-off" }),
@@ -634,13 +680,13 @@ describe("FileDiff", () => {
 		expect(header().className).toContain("sticky");
 		expect(finished(header()).wash).toBe(true);
 		// All crossed off: green, and still the purple undo.
-		rerender(file([cluster("k1", { state: "crossed-off" })]));
+		await rerender(file([cluster("k1", { state: "crossed-off" })]));
 		expect(finished(header()).wash).toBe(true);
 		expect(
 			screen.getByRole("button", { name: "Undo cross-off" }),
 		).toHaveAttribute("aria-pressed", "true");
 		// An undo: back to exactly today's header.
-		rerender(unfinished);
+		await rerender(unfinished);
 		expect(finished(header())).toEqual({
 			marked: false,
 			wash: false,
@@ -791,6 +837,7 @@ describe("FileDiff", () => {
 					expanded={expanded}
 					onExpandedChange={onExpandedChange}
 				/>
+				<SyncNotices />
 			</QueryClientProvider>
 		);
 		const { rerender } = render(shown(false));
@@ -798,7 +845,7 @@ describe("FileDiff", () => {
 		expect(onExpandedChange).toHaveBeenLastCalledWith(true);
 		// Still closed until the owner opens it.
 		expect(screen.queryByRole("checkbox")).toBeNull();
-		rerender(shown(true));
+		await rerender(shown(true));
 		expect(await screen.findByText("new five")).toBeInTheDocument();
 		await userEvent.click(
 			screen.getByRole("button", { name: "Collapse file" }),
@@ -806,7 +853,10 @@ describe("FileDiff", () => {
 		expect(onExpandedChange).toHaveBeenLastCalledWith(false);
 	});
 
-	/** A save that answers only when `answer` is called, with `status`. */
+	/**
+	 * A save that answers only when `answer` is called, with `status`
+	 * (400: a failure retrying won't fix).
+	 */
 	const heldSave = (f: FileView, status: number) => {
 		let answer: (() => void) | undefined;
 		const result = setup(f, async () => {
@@ -850,7 +900,7 @@ describe("FileDiff", () => {
 		"reopens the file when %s fails",
 		async (name) => {
 			const f = file([cluster("k1"), cluster("k2")]);
-			const { user, answer } = heldSave(f, 500);
+			const { user, answer } = heldSave(f, 400);
 			await user.click(screen.getByRole("button", { name: "Expand file" }));
 			await user.click(screen.getByRole("button", { name }));
 			expect(
@@ -867,13 +917,13 @@ describe("FileDiff", () => {
 
 	it("doesn't reopen the file when the snapshot moved", async () => {
 		const f = file([cluster("k1")]);
-		const { user, answer, onStaleChange } = heldSave(f, 409);
+		const { user, answer, sync } = heldSave(f, 409);
 		await user.click(screen.getByRole("button", { name: "Expand file" }));
 		await user.click(
 			screen.getByRole("button", { name: "Mark remaining reviewed" }),
 		);
 		await answer();
-		await waitFor(() => expect(onStaleChange).toHaveBeenCalledWith(true));
+		await waitFor(() => expect(sync().stale).not.toBeNull());
 		expect(
 			screen.getByRole("button", { name: "Expand file" }),
 		).toBeInTheDocument();
@@ -881,7 +931,7 @@ describe("FileDiff", () => {
 
 	it("leaves a closed file closed when its file-wide save fails", async () => {
 		const f = file([cluster("k1")]);
-		const { user, answer } = heldSave(f, 500);
+		const { user, answer } = heldSave(f, 400);
 		await user.click(
 			screen.getByRole("button", { name: "Mark remaining reviewed" }),
 		);
@@ -940,7 +990,7 @@ describe("FileDiff", () => {
 						answer = r;
 					});
 					return new Response(JSON.stringify({ error: "boom" }), {
-						status: 500,
+						status: 400,
 					});
 				}
 				return new Response(JSON.stringify(hunks), { status: 200 });
@@ -956,6 +1006,7 @@ describe("FileDiff", () => {
 					expanded={expanded}
 					onExpandedChange={onExpandedChange}
 				/>
+				<SyncNotices />
 			</QueryClientProvider>
 		);
 		const { rerender } = render(shown(true));
@@ -963,9 +1014,9 @@ describe("FileDiff", () => {
 			screen.getByRole("button", { name: "Mark remaining reviewed" }),
 		);
 		expect(onExpandedChange).toHaveBeenLastCalledWith(false);
-		rerender(shown(false));
+		await rerender(shown(false));
 		// The reviewer opened it again before the save failed.
-		rerender(shown(true));
+		await rerender(shown(true));
 		await waitFor(() => expect(answer).toBeDefined());
 		await act(async () => answer?.());
 		expect(await screen.findByText(/boom/)).toBeInTheDocument();
@@ -984,7 +1035,7 @@ describe("FileDiff", () => {
 						answer = r;
 					});
 					return new Response(JSON.stringify({ error: "boom" }), {
-						status: 500,
+						status: 400,
 					});
 				}
 				return new Response(JSON.stringify(hunks), { status: 200 });
@@ -1001,6 +1052,7 @@ describe("FileDiff", () => {
 					otherOpen={otherOpen}
 					onExpandedChange={onExpandedChange}
 				/>
+				<SyncNotices />
 			</QueryClientProvider>
 		);
 		const { rerender } = render(shown(true, false));
@@ -1008,9 +1060,9 @@ describe("FileDiff", () => {
 			screen.getByRole("button", { name: "Mark remaining reviewed" }),
 		);
 		expect(onExpandedChange).toHaveBeenLastCalledWith(false);
-		rerender(shown(false, false));
+		await rerender(shown(false, false));
 		// The reviewer opened the next file before the save failed.
-		rerender(shown(false, true));
+		await rerender(shown(false, true));
 		await waitFor(() => expect(answer).toBeDefined());
 		await act(async () => answer?.());
 		// The error shows in the closed section; nothing reopens it.
@@ -1018,33 +1070,86 @@ describe("FileDiff", () => {
 		expect(onExpandedChange).toHaveBeenCalledTimes(1);
 	});
 
-	it("disables the file actions while a write is pending", async () => {
+	it("doesn't wait for a write: the file's actions follow the intended state", async () => {
 		let answer: (() => void) | undefined;
 		const f = file([cluster("k1"), cluster("k2")]);
-		const { user } = setup(
+		const crossed = file([
+			cluster("k1", { state: "crossed-off" }),
+			cluster("k2", { state: "crossed-off" }),
+		]);
+		const { user, posts } = setup(
 			f,
 			() =>
 				new Promise<Result>((resolve) => {
-					answer = () => resolve({ status: 200, body: view(f) });
+					answer = () => resolve({ status: 200, body: view(crossed) });
 				}),
 		);
-		await user.click(
-			screen.getByRole("button", { name: "Mark remaining reviewed" }),
-		);
-		await waitFor(() =>
-			expect(
-				screen.getByRole("button", { name: "Cross off file" }),
-			).toBeDisabled(),
-		);
+		const cross = screen.getByRole("button", { name: "Cross off file" });
+		await user.click(cross);
+		// At once, while the write is out: crossed off, and the undo in its place.
+		expect(cross).toHaveAccessibleName("Undo cross-off");
+		expect(cross).toHaveAttribute("aria-pressed", "true");
 		expect(
 			screen.getByRole("button", { name: "Mark remaining reviewed" }),
 		).toBeDisabled();
-		answer?.();
-		await waitFor(() =>
-			expect(
-				screen.getByRole("button", { name: "Cross off file" }),
-			).toBeEnabled(),
+		expect(document.querySelector("section > header")).toHaveAttribute(
+			"data-finished",
 		);
+		// A double click's second click doesn't undo it.
+		await user.click(cross);
+		expect(cross).toHaveAccessibleName("Undo cross-off");
+		await new Promise((r) => setTimeout(r, UNDO_ARM_MS));
+		// Undone while the first write is still out: queued behind it.
+		await user.click(cross);
+		expect(cross).toHaveAccessibleName("Cross off file");
+		expect(posts()).toHaveLength(1);
+		await act(async () => answer?.());
+		await waitFor(() => expect(posts()).toHaveLength(2));
+		expect(posts()[1]?.body.changes).toEqual([
+			{ key: "k1", state: "unreviewed" },
+			{ key: "k2", state: "unreviewed" },
+		]);
+		// The first write's answer doesn't overwrite the undo.
+		expect(cross).toHaveAccessibleName("Cross off file");
+	});
+
+	it("keeps a file closed and retries while saving fails transiently", async () => {
+		vi.useFakeTimers({ shouldAdvanceTime: true });
+		try {
+			let failing = true;
+			const f = file([cluster("k1")]);
+			const done = file([cluster("k1", { state: "reviewed" })]);
+			const { posts } = setup(f, () =>
+				failing
+					? { status: 503, body: { error: "busy" } }
+					: { status: 200, body: view(done) },
+			);
+			const user = userEvent.setup({
+				advanceTimers: vi.advanceTimersByTime,
+			});
+			await user.click(screen.getByRole("button", { name: "Expand file" }));
+			await user.click(
+				screen.getByRole("button", { name: "Mark remaining reviewed" }),
+			);
+			await act(() => vi.advanceTimersByTimeAsync(3500));
+			expect(posts().length).toBeGreaterThanOrEqual(2);
+			expect(screen.queryByRole("alert")).toBeNull();
+			expect(
+				screen.getByRole("button", { name: "Expand file" }),
+			).toBeInTheDocument();
+			await act(() => vi.advanceTimersByTimeAsync(2000));
+			expect(screen.getByTestId("save-delayed")).toHaveTextContent(
+				"Saving 1 change…",
+			);
+			failing = false;
+			await act(() => vi.advanceTimersByTimeAsync(8000));
+			expect(screen.queryByTestId("save-delayed")).toBeNull();
+			expect(
+				screen.getByRole("button", { name: "Expand file" }),
+			).toBeInTheDocument();
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	it("keeps a write's answer over a review read that was answered before it", async () => {
@@ -1060,7 +1165,7 @@ describe("FileDiff", () => {
 			}
 			return { status: 200, body: after };
 		});
-		void queryClient.prefetchQuery(reviewQuery);
+		void queryClient.refetchQueries({ queryKey: reviewQuery.queryKey });
 		await waitFor(() => expect(answerRead).toBeDefined());
 		await user.click(screen.getByRole("button", { name: "Expand file" }));
 		await user.click(

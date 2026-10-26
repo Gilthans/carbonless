@@ -397,56 +397,68 @@ test("a file closes at once on marking it all, and reopens if the save fails", a
 	startCrb,
 	expectConsoleError,
 }) => {
-	expectConsoleError(/500|Failed to load resource/);
+	expectConsoleError(/400|Failed to load resource/);
 	await pr(fixture);
 	const s = await startCrb();
 	await openFiles(page, s.url);
-	// Saves fail, but only once the test lets them answer.
+	// Saves fail for good (not a transient error), once the test lets them.
 	const held: (() => void)[] = [];
 	await page.route("**/api/review/states", async (route) => {
 		await new Promise<void>((r) => {
 			held.push(r);
 		});
 		await route.fulfill({
-			status: 500,
+			status: 400,
 			contentType: "application/json",
 			body: JSON.stringify({ error: "disk full" }),
 		});
 	});
+	const failed = page.getByRole("alert").filter({ hasText: "disk full" });
 	const section = await expand(page, "src/core.ts");
-	for (const action of ["Mark remaining reviewed", "Cross off file"]) {
-		await fileAction(section, action);
-		// Closed without waiting for the save.
-		await expect(section.getByTestId("diff-line")).toHaveCount(0);
-		await expect(
-			section.getByRole("button", { name: "Expand file" }),
-		).toBeVisible();
-		await expect.poll(() => held.length).toBe(1);
-		held.shift()?.();
-		// The failure reopens it, the error in view.
-		await expect(section.getByText(/disk full/)).toBeVisible();
-		await expect(
-			section.getByRole("button", { name: "Collapse file" }),
-		).toBeVisible();
-		await expect(section.getByTestId("diff-line").first()).toBeVisible();
-		await expect(fileActionButton(section, action)).toBeEnabled();
-	}
-
-	// Opening another file before the failure: that file stays open, and the
-	// error shows in this one's closed section.
 	await fileAction(section, "Mark remaining reviewed");
+	// Closed and reviewed without waiting for the save.
 	await expect(section.getByTestId("diff-line")).toHaveCount(0);
-	const util = await expand(page, "src/util.ts");
-	await expect(util.getByTestId("diff-line").first()).toBeVisible();
-	await expect.poll(() => held.length).toBe(1);
-	held.shift()?.();
-	await expect(section.getByText(/disk full/)).toBeVisible();
 	await expect(
 		section.getByRole("button", { name: "Expand file" }),
 	).toBeVisible();
-	await expect(section.getByTestId("diff-line")).toHaveCount(0);
-	await expect(util.getByTestId("diff-line").first()).toBeVisible();
-	await expect(progress(page)).toContainText("0 / 4 clusters reviewed");
+	await expect(progress(page)).toContainText("2 / 4 clusters reviewed");
+	await expect.poll(() => held.length).toBe(1);
+	held.shift()?.();
+	// The failure reopens it, the error in view, the change kept.
+	await expect(failed).toBeVisible();
+	await expect(failed).toContainText("2 changes · src/core.ts");
+	await expect(
+		section.getByRole("button", { name: "Collapse file" }),
+	).toBeVisible();
+	await expect(section.getByTestId("diff-line").first()).toBeVisible();
+	await expect(progress(page)).toContainText("2 / 4 clusters reviewed");
+	await page.unroute("**/api/review/states");
+	await failed.getByRole("button", { name: "Retry saving" }).click();
+	await expect(failed).toBeHidden();
+
+	// Opening another file before the failure: that file stays open, and
+	// this one stays closed.
+	await page.route("**/api/review/states", async (route) => {
+		await new Promise<void>((r) => {
+			held.push(r);
+		});
+		await route.fulfill({
+			status: 400,
+			contentType: "application/json",
+			body: JSON.stringify({ error: "disk full" }),
+		});
+	});
+	const util = await expand(page, "src/util.ts");
+	await fileAction(util, "Cross off file");
+	await expect(util.getByTestId("diff-line")).toHaveCount(0);
+	await expand(page, "src/core.ts");
+	await expect(section.getByTestId("diff-line").first()).toBeVisible();
+	await expect.poll(() => held.length).toBe(1);
+	held.shift()?.();
+	await expect(failed).toBeVisible();
+	await expect(util.getByRole("button", { name: "Expand file" })).toBeVisible();
+	await expect(util.getByTestId("diff-line")).toHaveCount(0);
+	await expect(section.getByTestId("diff-line").first()).toBeVisible();
 });
 
 test("a click right as Undo cross-off swaps in doesn't undo", async ({
@@ -794,7 +806,7 @@ test("a failed save doesn't reopen a file the reviewer scrolled away from", asyn
 	startCrb,
 	expectConsoleError,
 }) => {
-	expectConsoleError(/500|Failed to load resource/);
+	expectConsoleError(/400|Failed to load resource/);
 	await pr(longThenMoreFixture);
 	const s = await startCrb();
 	await openFiles(page, s.url);
@@ -804,7 +816,7 @@ test("a failed save doesn't reopen a file the reviewer scrolled away from", asyn
 			held.push(r);
 		});
 		await route.fulfill({
-			status: 500,
+			status: 400,
 			contentType: "application/json",
 			body: JSON.stringify({ error: "disk full" }),
 		});
@@ -827,8 +839,10 @@ test("a failed save doesn't reopen a file the reviewer scrolled away from", asyn
 	const before = (await later.boundingBox())?.y ?? Number.NaN;
 	await expect.poll(() => held.length).toBe(1);
 	held.shift()?.();
-	// The error shows in the closed section; nothing moves.
-	await expect(section.getByText(/disk full/)).toBeAttached();
+	// The error shows; the file stays closed and nothing moves.
+	await expect(
+		page.getByRole("alert").filter({ hasText: "disk full" }),
+	).toBeVisible();
 	await expect(
 		section.getByRole("button", { name: "Expand file" }),
 	).toBeAttached();

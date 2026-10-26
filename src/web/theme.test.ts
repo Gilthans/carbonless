@@ -193,6 +193,22 @@ describe("color tokens", () => {
 		}
 	});
 
+	it("the save notices keep their text and icons at 4.5:1", () => {
+		// SyncNotices: tone/10 over an opaque raised card.
+		for (const [tone, texts] of [
+			["warn", ["ink", "muted", "warn"]],
+			["bad", ["ink", "bad", "ink-soft"]],
+		] as const) {
+			const tint = over(token(tone), 0.1, token("raised"));
+			for (const text of texts) {
+				expect(
+					contrast(token(text), tint),
+					`${text} on ${tone}/10 over raised`,
+				).toBeGreaterThanOrEqual(4.5);
+			}
+		}
+	});
+
 	it("controls, fills and indicators stand out at 3:1", () => {
 		const parts = [
 			"line-strong",

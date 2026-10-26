@@ -51,6 +51,8 @@ async function checkFirstCluster(page: Page) {
 	await box.click();
 	await expect(box).toBeChecked();
 	await expect(clusters(page)).toHaveAttribute("aria-valuenow", "25");
+	// Shown at once; stored once nothing is left unsaved.
+	await expect(page.getByTestId("sync-notices")).toHaveCount(0);
 }
 
 const banner = (page: Page) => page.getByText("New commits were pushed");

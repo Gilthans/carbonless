@@ -109,6 +109,24 @@ current row keeps its accent). Crossed-off files keep their purple cues on
 top; the pressed Undo cross-off keeps a `crossed` edge so it shows at 3:1 on
 the wash. Unfinished files are unchanged, and an undo drops the tint at once.
 
+## Saving review state
+
+Cluster state actions show at once; the page syncs the server to them in
+the background (`src/web/files/stateSync.ts`) and never rolls one back. Unsaved
+state shows in one small stack fixed at the bottom of the window
+(`SyncNotices`; on a phone above the floating Files button, on wider screens
+bottom left, clear of the file headers' controls):
+
+- **Delayed** (`role="status"`, `warn`): a clock, "Saving N changes…" and the
+  files, once a change has waited 5 s (transient failures retry with backoff
+  meanwhile). It goes away by itself once everything is stored.
+- **Not saved** (`role="alert"`, `bad`): an alert icon, what failed (the change
+  and file, or a count), the error, and a 40px Retry that resends the current
+  intended state.
+
+Both are `tone/10` over an opaque `raised` card with a `tone/50` border.
+Leaving the page with anything unsaved asks first (`beforeunload`).
+
 ## Settings
 
 A gear (tooltip "Settings", 40px) at the right of the app bar's last row,

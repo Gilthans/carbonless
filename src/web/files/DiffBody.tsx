@@ -226,7 +226,6 @@ function LineRow(props: {
 function ClusterControls(props: {
 	cluster: ClusterView;
 	noteId?: string;
-	disabled: boolean;
 	onToggle: (cluster: ClusterView) => void;
 	onCrossOff: (cluster: ClusterView) => void;
 }) {
@@ -255,9 +254,8 @@ function ClusterControls(props: {
 							if (box) box.indeterminate = crossedOff;
 						}}
 						checked={props.cluster.state === "reviewed"}
-						disabled={props.disabled}
 						onChange={() => props.onToggle(props.cluster)}
-						className={`h-3.5 w-3.5 cursor-pointer disabled:cursor-wait ${
+						className={`h-3.5 w-3.5 cursor-pointer ${
 							crossedOff ? "accent-crossed" : "accent-ok-fill"
 						}`}
 					/>
@@ -272,7 +270,7 @@ function ClusterControls(props: {
 							{...trigger}
 							aria-label="Cross off cluster"
 							aria-pressed={crossedOff}
-							disabled={props.disabled || props.cluster.state === "reviewed"}
+							disabled={props.cluster.state === "reviewed"}
 							onClick={() => props.onCrossOff(props.cluster)}
 							className={`${target} group/x rounded focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-30`}
 						>
@@ -386,7 +384,6 @@ const hunkHeader = (h: DisplayHunk) =>
 export function DiffBody(props: {
 	file: FileView;
 	revision: string;
-	disabled: boolean;
 	onToggle: (cluster: ClusterView) => void;
 	onCrossOff: (cluster: ClusterView) => void;
 	landing?: Landing;
@@ -490,7 +487,6 @@ export function DiffBody(props: {
 		<ClusterControls
 			cluster={cluster}
 			noteId={noteId(cluster)}
-			disabled={props.disabled}
 			onToggle={props.onToggle}
 			onCrossOff={props.onCrossOff}
 		/>

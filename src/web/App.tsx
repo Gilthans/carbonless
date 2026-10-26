@@ -21,6 +21,8 @@ import {
 	sessionQuery,
 } from "./api";
 import { Logo, Mark, Wordmark } from "./brand/Brand";
+import { SyncNotices } from "./files/SyncNotices";
+import { useUnsavedGuard } from "./files/useSetStates";
 import { HeadBanner } from "./HeadBanner";
 import { KeptPages, useActivePage } from "./pages";
 import { fullDate } from "./RelativeTime";
@@ -145,6 +147,7 @@ function useStickyHeader(
 export function App() {
 	const queryClient = useQueryClient();
 	const session = useQuery(sessionQuery);
+	useUnsavedGuard();
 	// Writes into the session cache (so only once the session has loaded, or
 	// its answer could overwrite ours); a failed check leaves the last answer.
 	useQuery({ ...headQuery, enabled: session.isSuccess });
@@ -388,6 +391,7 @@ export function App() {
 					<Mark className="h-4 w-4" />
 					<Wordmark className="text-sm" />
 				</footer>
+				<SyncNotices />
 			</div>
 		</AppHeaderHeight.Provider>
 	);

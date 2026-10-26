@@ -63,7 +63,7 @@ const E2E_MAP = [
 	[/^src\/web\/threads\//, ["files-threads"]],
 	[
 		/^src\/web\/files\/|^src\/server\/diff\//,
-		["files", "files-threads", "sticky", "invisibles", "mobile"],
+		["files", "files-threads", "sticky", "invisibles", "mobile", "saves"],
 	],
 	[/^src\/server\/review\//, ["files", "persistence"]],
 	[/^src\/web\/code\//, ["invisibles", "files"]],

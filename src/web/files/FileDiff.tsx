@@ -3,11 +3,11 @@ import { useId, useLayoutEffect, useRef, useState } from "react";
 import type { ClusterView, FileView, StateChange } from "../../shared/types";
 import { hunksQuery } from "../api";
 import { Tooltip, TooltipPath, type TooltipTriggerProps } from "../Tooltip";
-import { ErrorMessage } from "../ui";
 import { ChangeKindIcon, changeKindLabel } from "./changeKind";
 import { DiffBody, type DiffThreads } from "./DiffBody";
 import type { Landing } from "./landing";
 import { Meter } from "./ProgressBar";
+import { isStale } from "./stateSync";
 import {
 	ChangeCount,
 	clusterCount,
@@ -24,10 +24,7 @@ import {
 	formatFileProgress,
 	type Unit,
 } from "./unit";
-import { isStale, useSetStates } from "./useSetStates";
-
-/** The server's limit on changes per request (MAX_CHANGES in app.ts). */
-const MAX_CHANGES = 1000;
+import { useSetStates } from "./useSetStates";
 
 const tones = {
 	purple: {
@@ -242,8 +239,7 @@ function FileProgress(props: {
  * setting. The owner may control it (`expanded`, `onExpandedChange`). An open
  * file's header sticks below the app header and the page's progress bar
  * (`--app-header`, `--files-bar`) while
- * its diff scrolls. `onStaleChange(true)`: a write was refused because the snapshot
- * moved; `onStaleChange(false)`: a later write was stored.
+ * its diff scrolls. State actions show at once; useSetStates syncs them.
  */
 export function FileDiff(props: {
 	file: FileView;
@@ -256,7 +252,6 @@ export function FileDiff(props: {
 	 * decide whether a failed file-wide save may reopen this file.
 	 */
 	otherOpen?: boolean;
-	onStaleChange?: (stale: boolean) => void;
 	/** A thread link landing in this file (FilesPage). */
 	landing?: Landing;
 	/** The PR's review threads, placed on this file's diff. */
@@ -277,44 +272,25 @@ export function FileDiff(props: {
 	const toggleButton = useRef<HTMLButtonElement>(null);
 	const otherOpenNow = useRef(props.otherOpen ?? false);
 	otherOpenNow.current = props.otherOpen ?? false;
-	const setStates = useSetStates({ onStaleChange: props.onStaleChange });
-	// Also true between a split batch's requests.
-	const [batching, setBatching] = useState(false);
-	const pending = setStates.isPending || batching;
-
+	const { save: saveStates } = useSetStates();
 	const save = (changes: StateChange[]) =>
-		setStates.mutateAsync({ revision, changes });
-	/**
-	 * A file-wide action: requests of at most MAX_CHANGES, one after another
-	 * through the same mutation scope, stopping at the first failure.
-	 */
-	const saveAll = async (changes: StateChange[]) => {
-		setBatching(true);
-		try {
-			for (let i = 0; i < changes.length; i += MAX_CHANGES) {
-				await save(changes.slice(i, i + MAX_CHANGES));
-			}
-		} finally {
-			setBatching(false);
-		}
-	};
+		saveStates(revision, file.path, changes);
 	/**
 	 * Marking the rest reviewed or crossing it off finishes the file: it closes
 	 * at once, like "Collapse file" does (its header stays where it is, the
-	 * next file below), without waiting for the save. A failed save reopens
-	 * it, the error in view, unless the reviewer has moved on (opened another
-	 * file, or scrolled its header off screen): then the error shows in this
-	 * closed file's section. A stale refusal doesn't reopen it: the page is
-	 * reloading a new snapshot.
+	 * next file below). A save that fails for good (the error notice, not a
+	 * transient retry) reopens it, unless the reviewer has moved on (opened
+	 * another file, or scrolled its header off screen). A stale refusal
+	 * doesn't reopen it: the page is reloading a new snapshot.
 	 */
 	const finishAll = (changes: StateChange[]) => {
 		const closing = expanded;
 		if (closing) {
 			setExpanded(false);
-			// The clicked button disables while saving; keep focus in the header.
+			// The clicked button disables (nothing left to do); keep focus in the header.
 			toggleButton.current?.focus({ preventScroll: true });
 		}
-		saveAll(changes).catch((error: unknown) => {
+		save(changes).catch((error: unknown) => {
 			if (
 				closing &&
 				!isStale(error) &&
@@ -501,10 +477,10 @@ export function FileDiff(props: {
 										icon="⊘"
 										tone="purple"
 										pressed
-										disabled={pending}
+										disabled={false}
 										onClick={() => {
 											// Back to unreviewed, never reviewed (R21).
-											saveAll(
+											save(
 												crossed.map((c) => ({
 													key: c.key,
 													state: "unreviewed",
@@ -523,7 +499,7 @@ export function FileDiff(props: {
 										icon="⊘"
 										tone="purple"
 										pressed={false}
-										disabled={pending || crossToggle.none}
+										disabled={crossToggle.none}
 										onClick={() => {
 											// What the reviewer already read stays reviewed (R21).
 											finishAll(
@@ -544,7 +520,7 @@ export function FileDiff(props: {
 									}
 									icon="✓"
 									tone="green"
-									disabled={pending || unreviewed.length === 0}
+									disabled={unreviewed.length === 0}
 									onClick={() => {
 										finishAll(
 											unreviewed.map((c) => ({
@@ -581,16 +557,10 @@ export function FileDiff(props: {
 					))}
 				</div>
 			)}
-			{setStates.isError && !isStale(setStates.error) && (
-				<div className="px-2 py-1.5">
-					<ErrorMessage error={setStates.error} />
-				</div>
-			)}
 			{expanded && (
 				<DiffBody
 					file={file}
 					revision={revision}
-					disabled={pending}
 					onToggle={toggle}
 					onCrossOff={crossOff}
 					landing={props.landing}

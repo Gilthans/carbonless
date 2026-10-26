@@ -162,8 +162,11 @@ describe("FilesPage", () => {
 		await user.click(
 			await screen.findByRole("checkbox", { name: "Mark cluster reviewed" }),
 		);
+		// The change made on the old snapshot is dropped, and that's said.
 		expect(
-			await screen.findByText("The review moved to a new snapshot; reloaded."),
+			await screen.findByText(
+				"The review moved to a new snapshot; reloaded. Unsaved changes dropped.",
+			),
 		).toBeInTheDocument();
 		await vi.waitFor(() => expect(reads).toBe(2));
 		expect(fetchMock).toHaveBeenCalled();
@@ -173,7 +176,7 @@ describe("FilesPage", () => {
 		await user.click(box);
 		await vi.waitFor(() =>
 			expect(
-				screen.queryByText("The review moved to a new snapshot; reloaded."),
+				screen.queryByText(/The review moved to a new snapshot/),
 			).toBeNull(),
 		);
 	});

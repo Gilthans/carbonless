@@ -12,7 +12,7 @@ import {
 	useState,
 } from "react";
 import type { ReviewThread } from "../../shared/types";
-import { hunksQuery, overviewQuery, reviewQuery, sessionQuery } from "../api";
+import { hunksQuery, overviewQuery, sessionQuery } from "../api";
 import { LabeledIcon } from "../overview/parts";
 import { useForgetPageScroll, usePageActive } from "../pageActive";
 import { useAppHeaderHeight, useHeight } from "../sticky";
@@ -36,7 +36,7 @@ import { threadsOnHead } from "./threadPlacement";
 const NO_THREADS: ReviewThread[] = [];
 
 import { type Unit, useUnit } from "./unit";
-import { STALE_MESSAGE } from "./useSetStates";
+import { STALE_MESSAGE, useReviewView, useSyncState } from "./useSetStates";
 
 /**
  * The file tree on narrow screens: a modal sheet over the diffs, closed by
@@ -183,13 +183,13 @@ const headerOf = (index: number) =>
 export const MISSING_HINT_MS = 8000;
 
 export function FilesPage() {
-	const review = useQuery(reviewQuery);
+	// The reviewer's intended states over the server's (useSetStates).
+	const { review, data } = useReviewView();
+	const { stale } = useSyncState();
 	// False while another page shows (kept mounted, hidden): measuring and
 	// tracking pause, root styles are given back, the sheet closes.
 	const active = usePageActive();
-	const [stale, setStale] = useState(false);
 	const diffs = useRef<HTMLDivElement>(null);
-	const data = review.data;
 	const bar = useRef<HTMLDivElement>(null);
 	// The sticky stack, top down: the app header's compact row, the progress
 	// bar, then the open file's header.
@@ -436,6 +436,7 @@ export function FilesPage() {
 							className="mt-3 rounded-md border border-warn/30 bg-warn/10 px-3 py-2 text-sm text-ink"
 						>
 							{STALE_MESSAGE}
+							{stale.dropped > 0 && " Unsaved changes dropped."}
 						</p>
 					)}
 					{threadsFailed && (
@@ -490,7 +491,6 @@ export function FilesPage() {
 											toggleFile(file.index, expanded)
 										}
 										otherOpen={openIndex !== null && openIndex !== file.index}
-										onStaleChange={setStale}
 										landing={
 											landing?.index === file.index ? landing : undefined
 										}

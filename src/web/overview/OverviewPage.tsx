@@ -53,10 +53,10 @@ import {
 	overviewAge,
 	overviewQuery,
 	revalidateOverviewQuery,
-	reviewQuery,
 	sessionQuery,
 } from "../api";
 import { type FilesSearch, threadTarget } from "../files/landing";
+import { useReviewView } from "../files/useSetStates";
 import { GithubHtml, ImageErrorContext } from "../GithubHtml";
 import { RelativeTime, relativeTime, useNow } from "../RelativeTime";
 import { Tooltip, type TooltipTriggerProps } from "../Tooltip";
@@ -269,7 +269,7 @@ function ExternalLink(props: {
 }
 
 function ReviewFilesButton() {
-	const review = useQuery(reviewQuery);
+	const { review, data } = useReviewView();
 	return (
 		<div className="flex flex-col items-center gap-3">
 			<Link
@@ -277,9 +277,9 @@ function ReviewFilesButton() {
 				className="cta inline-flex min-h-10 items-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold text-ink transition-[filter] hover:brightness-110 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent motion-reduce:transition-none"
 			>
 				Review files
-				{review.data && (
+				{data && (
 					<span className="rounded-full bg-canvas/35 px-2 text-xs tabular-nums">
-						{progressText(review.data.progress)}
+						{progressText(data.progress)}
 					</span>
 				)}
 			</Link>
@@ -469,8 +469,8 @@ function viewerReviewing(pr: PrOverview, progress: Progress | undefined) {
 }
 
 function StartedLine({ pr }: { pr: PrOverview }) {
-	const review = useQuery(reviewQuery);
-	const you = viewerReviewing(pr, review.data?.progress);
+	const { data } = useReviewView();
+	const you = viewerReviewing(pr, data?.progress);
 	const names = startedNames(pr);
 	if (pr.humanStarted) {
 		const others = names.length ? names.join(", ") : undefined;
