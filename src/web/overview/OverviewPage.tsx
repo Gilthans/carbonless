@@ -73,11 +73,21 @@ import { Tooltip } from "../Tooltip";
 import { ErrorMessage, safeHref } from "../ui";
 import { createImageRefresher } from "./imageRefresh";
 import { splitSuggestions } from "./suggestions";
+import { Timeline } from "./Timeline";
 import { threadKeys } from "./threadKeys";
 
 type Review = PrOverview["reviews"][number];
 type Check = PrOverview["checks"][number];
 type Thread = ReviewThread;
+
+/** A thread to bring into view; `seq` is new for each request. */
+interface ThreadFocus {
+	id: string;
+	seq: number;
+}
+
+/** A thread card's element id. */
+const threadAnchor = (id: string) => `thread-${id}`;
 
 /** How old the overview's HTML may be before a broken image reads it again. */
 const IMAGE_MAX_AGE_MS = 60_000;
@@ -165,6 +175,12 @@ function OverviewContent({
 	/** The overview shown couldn't be brought up to date. */
 	updateError: Error | null;
 }) {
+	// A thread to bring into view (the timeline's "Go to the thread").
+	const [focus, setFocus] = useState<ThreadFocus | null>(null);
+	const showThread = useCallback(
+		(id: string) => setFocus((f) => ({ id, seq: (f?.seq ?? 0) + 1 })),
+		[],
+	);
 	return (
 		<div className="space-y-6">
 			{overview.isPending && <OverviewSkeleton />}
@@ -179,6 +195,12 @@ function OverviewContent({
 						threads={threads.view}
 						error={threads.error}
 						previous={threads.previous}
+						focus={focus}
+					/>
+					<Timeline
+						pr={overview.data}
+						threads={threads.view}
+						onShowThread={showThread}
 					/>
 				</>
 			)}
@@ -187,7 +209,7 @@ function OverviewContent({
 	);
 }
 
-function Section(props: { label: string; children: ReactNode }) {
+export function Section(props: { label: string; children: ReactNode }) {
 	return (
 		<section
 			aria-label={props.label}
@@ -212,29 +234,35 @@ function OverviewSkeleton() {
 		<div data-testid="overview-loading" aria-busy="true" className="space-y-6">
 			<p className="sr-only">Loading the PR from GitHub…</p>
 			{/* Section's frame, not its region: nothing to read in it yet. */}
-			{["What it does", "Who's on it", "Is it ready"].map((label) => (
-				<div
-					key={label}
-					aria-hidden
-					className="rounded-xl border border-line bg-surface"
-				>
-					<div className="rounded-t-xl border-b border-line bg-raised px-4 py-3 text-center text-[0.8125rem] font-semibold tracking-[0.2em] text-label uppercase">
-						{label}
+			{["What it does", "Who's on it", "Is it ready", "Timeline"].map(
+				(label) => (
+					<div
+						key={label}
+						aria-hidden
+						className="rounded-xl border border-line bg-surface"
+					>
+						<div className="rounded-t-xl border-b border-line bg-raised px-4 py-3 text-center text-[0.8125rem] font-semibold tracking-[0.2em] text-label uppercase">
+							{label}
+						</div>
+						<div className="space-y-2.5 px-4 py-4">
+							{bar("w-2/3")}
+							{bar("w-full")}
+							{bar("w-5/6")}
+						</div>
 					</div>
-					<div className="space-y-2.5 px-4 py-4">
-						{bar("w-2/3")}
-						{bar("w-full")}
-						{bar("w-5/6")}
-					</div>
-				</div>
-			))}
+				),
+			)}
 		</div>
 	);
 }
 
 type BadgeTone = "gray" | "red" | "yellow" | "green" | "purple";
 
-function Badge(props: { tone: BadgeTone; icon?: Icon; children: ReactNode }) {
+export function Badge(props: {
+	tone: BadgeTone;
+	icon?: Icon;
+	children: ReactNode;
+}) {
 	const tones = {
 		gray: "border-line-strong/60 bg-overlay text-ink-soft",
 		red: "border-bad/40 bg-bad/10 text-bad",
@@ -257,7 +285,7 @@ function Badge(props: { tone: BadgeTone; icon?: Icon; children: ReactNode }) {
  * An icon that carries meaning. Named for screen readers; its name shows in a
  * tooltip on hover, keyboard focus and tap (a 40px-tall hit area that stops at the usual 8px gap).
  */
-function LabeledIcon(props: {
+export function LabeledIcon(props: {
 	icon: Icon;
 	label: string;
 	size?: 12 | 16;
@@ -286,7 +314,7 @@ function LabeledIcon(props: {
 	);
 }
 
-function BotIcon() {
+export function BotIcon() {
 	return <LabeledIcon icon={HubotIcon} label="bot" className="text-muted" />;
 }
 
@@ -309,7 +337,7 @@ function ExternalLink(props: {
 }
 
 /** The PR on GitHub, as GitHub's mark (40×40 tap target). */
-function GithubLink({ url }: { url: string }) {
+export function GithubLink({ url }: { url: string }) {
 	const href = safeHref(url);
 	if (!href) return null;
 	return (
@@ -458,7 +486,7 @@ function Description({ pr }: { pr: PrOverview }) {
 
 // ---- Who's on it ----
 
-const REVIEW_ICON: Record<
+export const REVIEW_ICON: Record<
 	Review["state"],
 	{ icon: Icon; label: string; className: string }
 > = {
@@ -660,6 +688,7 @@ function IsItReady({
 	threads,
 	error,
 	previous,
+	focus,
 }: {
 	pr: PrOverview;
 	/** Undefined until every thread's summary is in. */
@@ -668,6 +697,7 @@ function IsItReady({
 	error: Error | null;
 	/** `threads` are the previous read's, until this one's land. */
 	previous: boolean;
+	focus: ThreadFocus | null;
 }) {
 	const list = threads?.threads;
 	const unreadable =
@@ -694,6 +724,7 @@ function IsItReady({
 				failed={failed}
 				previous={previous}
 				asOf={Boolean(pr.asOf)}
+				focus={focus}
 			/>
 			<ThreadGroup
 				label="Bot reviews"
@@ -702,13 +733,14 @@ function IsItReady({
 				failed={failed}
 				previous={previous}
 				asOf={Boolean(pr.asOf)}
+				focus={focus}
 			/>
 		</Section>
 	);
 }
 
 /** A grey bar where text is still on its way. */
-function SkeletonBar(props: { className: string }) {
+export function SkeletonBar(props: { className: string }) {
 	return (
 		<div
 			aria-hidden
@@ -722,7 +754,7 @@ function SkeletonBar(props: { className: string }) {
  * take focus only so keyboard and touch users can read the tooltip. Either
  * way the hit area is 40px tall.
  */
-function Chip(props: {
+export function Chip(props: {
 	tone: BadgeTone;
 	icon: Icon;
 	tip: string;
@@ -793,7 +825,8 @@ function Chip(props: {
 	);
 }
 
-const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
+export const plural = (n: number, word: string) =>
+	`${n} ${word}${n === 1 ? "" : "s"}`;
 
 /**
  * One row of chips: draft, conflicts and a CI summary. A CI chip opens the
@@ -996,8 +1029,10 @@ function ThreadGroup(props: {
 	/** They are the previous read's, until this one's land. */
 	previous: boolean;
 	asOf: boolean;
+	/** A thread to bring into view, if it is in this group. */
+	focus: ThreadFocus | null;
 }) {
-	const { asOf } = props;
+	const { asOf, focus } = props;
 	const loading = props.threads === undefined && !props.failed;
 	const threads = props.threads ?? [];
 	const [showResolved, setShowResolved] = useState(false);
@@ -1011,6 +1046,35 @@ function ThreadGroup(props: {
 	// pressed, it can always go back.
 	const toggleOff = !showResolved && resolved.length === 0;
 	const IconEl = props.icon;
+	// Bringing a thread into view: its list, enough of it, then the card.
+	const [reveal, setReveal] = useState<ThreadFocus | null>(null);
+	const handled = useRef<ThreadFocus | null>(null);
+	useEffect(() => {
+		if (!focus || handled.current === focus) return;
+		const thread = threads.find((t) => t.id === focus.id);
+		if (!thread) return;
+		handled.current = focus;
+		const list = threads.filter((t) => t.resolved === thread.resolved);
+		const index = list.indexOf(thread);
+		setShowResolved(thread.resolved);
+		setLimit((n) =>
+			Math.max(n, Math.ceil((index + 1) / THREAD_PAGE) * THREAD_PAGE),
+		);
+		setReveal(focus);
+	}, [focus, threads]);
+	useEffect(() => {
+		if (!reveal) return;
+		setReveal(null);
+		const card = document.getElementById(threadAnchor(reveal.id));
+		if (!card) return;
+		const smooth = !window.matchMedia?.("(prefers-reduced-motion: reduce)")
+			.matches;
+		card.scrollIntoView?.({
+			block: "center",
+			behavior: smooth ? "smooth" : "auto",
+		});
+		card.focus({ preventScroll: true });
+	}, [reveal]);
 	return (
 		<section aria-labelledby={headingId} className="space-y-3">
 			{/* A band across the section, quieter than the section's own title. */}
@@ -1248,7 +1312,10 @@ function ThreadItem({ thread }: { thread: Thread }) {
 	return (
 		<li
 			data-testid="thread"
-			className="min-w-0 overflow-hidden rounded-lg border border-edge bg-surface"
+			id={thread.id ? threadAnchor(thread.id) : undefined}
+			// Focused when the timeline brings it into view.
+			tabIndex={-1}
+			className="min-w-0 scroll-mt-24 overflow-hidden rounded-lg border border-edge bg-surface focus-visible:outline-2 focus-visible:outline-accent"
 		>
 			<div
 				data-testid="thread-head"

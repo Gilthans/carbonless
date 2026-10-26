@@ -8,6 +8,7 @@ import type {
 	StateChange,
 	ThreadsStage,
 	ThreadsView,
+	TimelineView,
 } from "../shared/types";
 
 /** A failed API call: the HTTP status and the server's `error` message. */
@@ -177,10 +178,36 @@ export const threadsQuery = (readId: string, stage: ThreadsStage) =>
 		staleTime: Number.POSITIVE_INFINITY,
 	});
 
+export const fetchTimeline = (readId: string, signal?: AbortSignal) =>
+	request<TimelineView>(
+		`/api/timeline?${new URLSearchParams({ read: readId })}`,
+		{ signal },
+	);
+
+/**
+ * Read `readId`'s timeline (its own read on the server, alongside the
+ * threads). A read no longer kept (410) reads the overview again.
+ */
+export const timelineQuery = (readId: string) =>
+	queryOptions({
+		queryKey: ["timeline", readId],
+		queryFn: async ({ client, signal }) => {
+			try {
+				return await fetchTimeline(readId, signal);
+			} catch (error) {
+				if (error instanceof ApiError && error.status === 410) {
+					void client.invalidateQueries({ queryKey: overviewQuery.queryKey });
+				}
+				throw error;
+			}
+		},
+		staleTime: Number.POSITIVE_INFINITY,
+	});
+
 /**
  * Brings the overview read at `fetchedAt` up to date: asks for one read at
  * most `maxAge` ago (the server reads GitHub again if its own is older),
- * waits for all its threads, then puts both in the cache at once, so the
+ * waits for all its threads and its timeline, then puts them in the cache at once, so the
  * page swaps from the old read to the new one whole. Keyed by the read it
  * replaces, so it runs once per read; its own key is apart from the
  * overview's so a Refresh doesn't rerun it, and a Refresh cancels it.
@@ -190,7 +217,12 @@ export const revalidateOverviewQuery = (fetchedAt: string, maxAge: number) =>
 		queryKey: ["overview-revalidate", fetchedAt, maxAge],
 		queryFn: async ({ client, signal }) => {
 			const fresh = await fetchOverview(maxAge, signal);
-			const threads = await fetchThreads(fresh.readId, "full", signal);
+			const [threads, timeline] = await Promise.all([
+				fetchThreads(fresh.readId, "full", signal),
+				// A failed timeline doesn't hold the swap back: its own query
+				// reads it again and shows the error.
+				fetchTimeline(fresh.readId, signal).catch(() => undefined),
+			]);
 			// A Refresh may have brought a newer one meanwhile: keep that.
 			const shown = client.getQueryData(overviewQuery.queryKey);
 			if (
@@ -201,6 +233,9 @@ export const revalidateOverviewQuery = (fetchedAt: string, maxAge: number) =>
 					threadsQuery(fresh.readId, "full").queryKey,
 					threads,
 				);
+				if (timeline) {
+					client.setQueryData(timelineQuery(fresh.readId).queryKey, timeline);
+				}
 				client.setQueryData(overviewQuery.queryKey, fresh);
 			}
 			return fresh.fetchedAt;

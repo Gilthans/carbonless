@@ -19,6 +19,7 @@ import type {
 	ReviewThread,
 	ReviewView,
 	SessionInfo,
+	TimelineView,
 } from "../shared/types";
 import { COMPACT_RAMP, compactProgress } from "./App";
 import { resetShowInvisibles, setShowInvisibles } from "./code/Invisibles";
@@ -224,6 +225,7 @@ function renderApp(routes: Partial<Routes> = {}, path = "/") {
 		"/api/session": ok(info),
 		"/api/overview": ok(overview),
 		"/api/review": ok(review),
+		"/api/timeline": ok({ events: [], gaps: [] }),
 		...routes,
 	} as Routes;
 	const shown = all["/api/overview"];
@@ -1581,5 +1583,235 @@ describe("App header", () => {
 		const compact = screen.getByTestId("compact-title");
 		expect(compact).toHaveAttribute("inert");
 		expect(compact).toHaveAccessibleName("Back to top: Add widget cache #12");
+	});
+});
+
+describe("Timeline", () => {
+	afterEach(() => {
+		cleanup();
+		vi.unstubAllGlobals();
+	});
+
+	const actor = (login: string, bot = false) => ({
+		login,
+		avatarUrl: "",
+		bot,
+	});
+	const commit = (n: number, at: string) => ({
+		kind: "commit" as const,
+		at,
+		oid: String(n).repeat(40),
+		headline: `Change ${n}`,
+		url: "",
+	});
+	const reviewComment = (threadId: string, path: string, text: string) => ({
+		kind: "comment" as const,
+		at: "2026-01-03T09:00:00Z",
+		path,
+		line: 3,
+		text,
+		url: "https://github.com/acme/widget/pull/12#discussion_r1",
+		threadId,
+	});
+	const timeline: TimelineView = {
+		gaps: [],
+		events: [
+			{
+				kind: "commits",
+				actor: actor("octo-author"),
+				from: "2026-01-01T09:00:00Z",
+				to: "2026-01-02T09:00:00Z",
+				items: [
+					commit(1, "2026-01-01T09:00:00Z"),
+					commit(2, "2026-01-02T09:00:00Z"),
+				],
+			},
+			{
+				kind: "force-push",
+				actor: actor("octo-author"),
+				at: "2026-01-02T10:00:00Z",
+				before: "a".repeat(40),
+				after: "c".repeat(40),
+			},
+			{
+				kind: "review",
+				actor: actor("rev1"),
+				from: "2026-01-03T09:00:00Z",
+				to: "2026-01-03T11:00:00Z",
+				items: [
+					{
+						kind: "review",
+						at: "2026-01-03T09:00:00Z",
+						state: "CHANGES_REQUESTED",
+						text: "",
+						url: "",
+					},
+					reviewComment("T-cache", "src/cache.ts", "Should this expire?"),
+					reviewComment("T-cache", "src/cache.ts", "Ping"),
+					reviewComment("src/done1.ts", "src/done1.ts", "Rename this"),
+				],
+			},
+			{
+				kind: "commits",
+				actor: actor("octo-author"),
+				from: "2026-01-04T09:00:00Z",
+				to: "2026-01-04T09:00:00Z",
+				items: [commit(3, "2026-01-04T09:00:00Z")],
+			},
+		],
+	};
+
+	async function events(routes: Partial<Routes> = {}) {
+		renderApp({ "/api/timeline": ok(timeline), ...routes });
+		const section = await screen.findByRole("region", { name: "Timeline" });
+		const list = await within(section).findByRole("list", {
+			name: "Timeline events",
+		});
+		return { section, rows: within(list).getAllByTestId("timeline-event") };
+	}
+
+	it("is the page's last section: one line per event, oldest first, runs closed", async () => {
+		const { section, rows } = await events();
+		const sections =
+			section.parentElement?.querySelectorAll(":scope > section");
+		expect(sections?.[sections.length - 1]).toBe(section);
+		expect(rows).toHaveLength(4);
+		expect(rows[0]).toHaveTextContent("octo-author");
+		expect(rows[0]).toHaveTextContent("2 commits");
+		// From X to Y: both ends as relative times with the exact one on hover.
+		expect(rows[0]).toHaveTextContent(/from .+ to .+/);
+		expect(rows[0]?.querySelectorAll("time")).toHaveLength(2);
+		// A single item: one date.
+		expect(rows[3]?.querySelectorAll("time")).toHaveLength(1);
+		expect(rows[3]).not.toHaveTextContent(/from .+ to/);
+		expect(rows[1]).toHaveTextContent(/force-pushed.*aaaaaaa.*ccccccc/);
+		expect(within(section).queryAllByTestId("timeline-item")).toHaveLength(0);
+	});
+
+	it("opens a commit run into its commits", async () => {
+		const user = userEvent.setup();
+		const { rows } = await events();
+		const row = rows[0] as HTMLElement;
+		const show = within(row).getByRole("button", { name: "Show 2 commits" });
+		expect(show).toHaveAttribute("aria-expanded", "false");
+		await user.click(show);
+		expect(show).toHaveAttribute("aria-expanded", "true");
+		const items = within(row).getAllByTestId("timeline-item");
+		expect(items).toHaveLength(2);
+		expect(items[0]).toHaveTextContent("1111111");
+		expect(items[0]).toHaveTextContent("Change 1");
+		expect(within(items[0] as HTMLElement).getByRole("link")).toHaveAttribute(
+			"href",
+			`https://github.com/acme/widget/pull/12/commits/${"1".repeat(40)}`,
+		);
+		await user.click(show);
+		expect(within(row).queryAllByTestId("timeline-item")).toHaveLength(0);
+	});
+
+	it("sums up a review run: comments, verdict and how many of its threads are resolved", async () => {
+		const user = userEvent.setup();
+		const { rows } = await events();
+		const row = rows[2] as HTMLElement;
+		expect(row).toHaveTextContent("rev1");
+		expect(row).toHaveTextContent("3 comments");
+		expect(
+			within(row).getByRole("img", { name: "Changes requested" }),
+		).toBeInTheDocument();
+		// Two threads: T-cache (unresolved) and src/done1.ts (resolved).
+		const chip = await within(row).findByTestId("timeline-resolved");
+		expect(chip).toHaveTextContent("1 of 2 resolved");
+		expect(chip).toHaveAccessibleDescription(
+			"1 of the 2 threads these comments are in is resolved now",
+		);
+		await user.click(
+			within(row).getByRole("button", { name: "Show 3 comments" }),
+		);
+		const items = within(row).getAllByTestId("timeline-item");
+		// The verdict, then each comment with its thread's state and place.
+		expect(items).toHaveLength(4);
+		expect(
+			within(items[1] as HTMLElement).getByRole("img", { name: "Unresolved" }),
+		).toBeInTheDocument();
+		expect(
+			within(items[3] as HTMLElement).getByRole("img", { name: "Resolved" }),
+		).toBeInTheDocument();
+		const place = within(items[1] as HTMLElement).getByTestId("timeline-place");
+		expect(place).toHaveTextContent("src/cache.ts:42");
+		expect(place).toHaveAttribute("href", expect.stringContaining("/files?"));
+		expect(items[1]).toHaveTextContent("Should this expire?");
+	});
+
+	it("brings a comment's thread card into view, opening the resolved list if need be", async () => {
+		const user = userEvent.setup();
+		const scrolled = vi.fn();
+		Element.prototype.scrollIntoView = scrolled;
+		const { rows } = await events();
+		const row = rows[2] as HTMLElement;
+		await user.click(
+			within(row).getByRole("button", { name: "Show 3 comments" }),
+		);
+		const items = within(row).getAllByTestId("timeline-item");
+		await user.click(
+			within(items[3] as HTMLElement).getByRole("link", {
+				name: "Go to the thread",
+			}),
+		);
+		const card = await waitFor(() => {
+			const el = document.getElementById("thread-src/done1.ts");
+			expect(el).not.toBeNull();
+			return el as HTMLElement;
+		});
+		await waitFor(() => expect(card).toHaveFocus());
+		expect(scrolled).toHaveBeenCalled();
+		const humans = screen.getByRole("region", { name: "Human reviews" });
+		expect(
+			within(humans).getByRole("list", { name: "Resolved threads" }),
+		).toContainElement(card);
+	});
+
+	it("shows the latest events, the earlier ones on request, and what GitHub didn't list", async () => {
+		const user = userEvent.setup();
+		const many: TimelineView = {
+			gaps: ["GitHub listed 250 of 260 commits"],
+			events: Array.from({ length: 35 }, (_, i) => ({
+				kind: "closed" as const,
+				actor: actor(`user${i}`),
+				at: new Date(Date.UTC(2026, 0, 1, 9, i)).toISOString(),
+			})),
+		};
+		const { section, rows } = await events({ "/api/timeline": ok(many) });
+		expect(rows).toHaveLength(30);
+		expect(rows[0]).toHaveTextContent("user5");
+		expect(within(section).getByTestId("timeline-gap")).toHaveTextContent(
+			"GitHub listed 250 of 260 commits",
+		);
+		await user.click(
+			within(section).getByRole("button", { name: "Show 5 earlier events" }),
+		);
+		expect(within(section).getAllByTestId("timeline-event")).toHaveLength(35);
+		expect(
+			within(section).queryByRole("button", { name: /earlier events/ }),
+		).toBeNull();
+	});
+
+	it("loads apart from the rest of the page", async () => {
+		renderApp({ "/api/timeline": ok(NEVER) });
+		const section = await screen.findByRole("region", { name: "Timeline" });
+		expect(within(section).getByTestId("timeline-loading")).toHaveAttribute(
+			"aria-busy",
+			"true",
+		);
+		expect(
+			await screen.findByRole("region", { name: "Human reviews" }),
+		).toBeVisible();
+	});
+
+	it("says when the timeline couldn't be read", async () => {
+		renderApp({
+			"/api/timeline": { status: 502, body: { error: "timeline broke" } },
+		});
+		const section = await screen.findByRole("region", { name: "Timeline" });
+		expect(await within(section).findByText("timeline broke")).toBeVisible();
+		expect(within(section).queryByTestId("timeline-loading")).toBeNull();
 	});
 });
