@@ -66,6 +66,61 @@ function fields() {
 	return out;
 }
 
+/**
+ * A PR's review comments as GitHub's REST API lists them, one per comment of
+ * its thread nodes (opener first, replies with `in_reply_to_id`), each
+ * merged with `restEdits[<comment node id>]`.
+ */
+function restComments(n, pr) {
+	const out = [];
+	threadNodes(n, pr.graphql?.reviewThreads ?? []).forEach((t, i) => {
+		const opener = t.first?.nodes?.[0] ?? t.comments?.nodes?.[0];
+		if (!opener) return;
+		const file = t.subjectType === "FILE";
+		const anchor = {
+			path: t.path,
+			subject_type: file ? "file" : "line",
+			line: t.line ?? null,
+			original_line: t.originalLine ?? null,
+			start_line: t.startLine ?? null,
+			original_start_line: t.originalStartLine ?? null,
+			side: file ? null : (t.diffSide ?? "RIGHT"),
+			start_side: t.startDiffSide ?? null,
+			original_commit_id: opener.originalCommit?.oid ?? null,
+		};
+		const replies = (t.comments?.nodes ?? []).slice(1);
+		const openerId = (i + 1) * 1000;
+		[opener, ...replies].forEach((c, j) => {
+			out.push({
+				id: openerId + j,
+				node_id: c.id,
+				...anchor,
+				diff_hunk: opener.diffHunk ?? "",
+				created_at: c.createdAt,
+				...(j ? { in_reply_to_id: openerId } : {}),
+				...(s.restEdits?.[c.id] ?? {}),
+			});
+		});
+	});
+	return out;
+}
+
+// REST: `api repos/<owner>/<repo>/pulls/<n>/comments --paginate --slurp`,
+// every page in one array.
+const restPull = /^repos\/[^/]+\/[^/]+\/pulls\/(\d+)\/comments$/.exec(
+	args[1] ?? "",
+);
+if (restPull && args[0] === "api" && !s.loggedOut) {
+	if (args.slice(2).join(" ") !== "--paginate --slurp") unsupported();
+	const pr = s.prs[restPull[1]];
+	if (!pr) fail("gh: Not Found (HTTP 404)");
+	const all = restComments(restPull[1], pr);
+	const size = s.pageSize ?? 30;
+	const pages = [];
+	for (let i = 0; i < all.length; i += size) pages.push(all.slice(i, i + size));
+	print(pages);
+}
+
 const cmd = `${args[0]} ${args[1]}`;
 const known = [
 	"auth status",
@@ -75,7 +130,7 @@ const known = [
 	"repo clone",
 	"pr view",
 ];
-if (!known.includes(cmd)) unsupported();
+if (!known.includes(cmd) && !restPull) unsupported();
 
 if (s.loggedOut) {
 	if (cmd === "auth status") {

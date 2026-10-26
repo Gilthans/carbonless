@@ -41,7 +41,12 @@ export interface Scenario {
 	timelineUnlisted?: number;
 	/** Every GraphQL query containing this text fails (gh exits 1). */
 	failGraphql?: string;
-	/** Nodes per GraphQL page (default 100, like gh.ts asks for). */
+	/**
+	 * Fields merged into the REST review comment (`api repos/…/pulls/<n>/comments`)
+	 * whose node id is the key; the fake derives the rest from the threads.
+	 */
+	restEdits?: Record<string, Record<string, unknown>>;
+	/** Nodes per GraphQL page (default 100, like gh.ts asks for; REST: 30). */
 	pageSize?: number;
 	/**
 	 * Commits by OID, for `object(oid) { statusCheckRollup }` (as-of mode):
