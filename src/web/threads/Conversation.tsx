@@ -1,7 +1,9 @@
 import { AlertIcon, ClockIcon, SyncIcon } from "@primer/octicons-react";
 import type { ReviewThread, ThreadComment } from "../../shared/types";
+import { ApiError } from "../api";
 import { BotIcon, LabeledIcon, plural } from "../overview/parts";
 import { RelativeTime } from "../RelativeTime";
+import { Tooltip } from "../Tooltip";
 import { CommentBody } from "./CommentBody";
 import { useThreadComments } from "./useThreadComments";
 
@@ -49,20 +51,30 @@ export function Conversation(props: {
 	});
 	if (never)
 		return <UnavailableText reason={thread.unavailable ?? "unreadable"} />;
-	if (query.isPending) {
+	// A read gone (410, a Refresh or a restart): the overview is read again
+	// and the comments follow the new read, so it is still loading; a Retry
+	// under the gone read could only fail.
+	const readGone =
+		query.error instanceof ApiError && query.error.status === 410;
+	if (query.isPending || readGone) {
 		return (
-			<p
-				role="status"
-				aria-label="Loading comments"
-				data-testid="comments-loading"
-				className="flex min-h-10 items-center px-1 text-muted"
-			>
-				<SyncIcon
-					size={16}
-					aria-hidden
-					className="animate-spin motion-reduce:animate-none"
-				/>
-			</p>
+			<Tooltip content="Loading comments" describe={false}>
+				{(trigger) => (
+					<p
+						{...trigger}
+						role="status"
+						aria-label="Loading comments"
+						data-testid="comments-loading"
+						className="flex min-h-10 w-fit items-center px-1 text-muted"
+					>
+						<SyncIcon
+							size={16}
+							aria-hidden
+							className="animate-spin motion-reduce:animate-none"
+						/>
+					</p>
+				)}
+			</Tooltip>
 		);
 	}
 	if (query.isError) {
@@ -149,7 +161,9 @@ function CommentItem(props: { comment: ThreadComment; thread: ReviewThread }) {
 						open
 					/>
 				) : (
-					<p className="text-sm">{c.text}</p>
+					<p className="text-sm">
+						{c.text || <span className="text-muted italic">No text</span>}
+					</p>
 				)}
 			</div>
 		</li>

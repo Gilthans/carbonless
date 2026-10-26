@@ -62,7 +62,7 @@ import {
 import { type FilesSearch, threadTarget } from "../files/landing";
 import { GithubHtml, ImageErrorContext } from "../GithubHtml";
 import { RelativeTime, relativeTime, useNow } from "../RelativeTime";
-import { Tooltip } from "../Tooltip";
+import { Tooltip, type TooltipTriggerProps } from "../Tooltip";
 import { CodeRows, CommentBody } from "../threads/CommentBody";
 import {
 	COMMENT_SURFACE,
@@ -909,8 +909,8 @@ function ThreadGroup(props: {
 		.join(",");
 	useEffect(() => {
 		onShown(label, {
-			visible: visible.split(","),
-			next: next.split(","),
+			visible: visible.split(",").filter(Boolean),
+			next: next.split(",").filter(Boolean),
 		});
 	}, [onShown, label, visible, next]);
 	// Bringing a thread into view: its list, enough of it, then the card.
@@ -1126,7 +1126,6 @@ function ThreadItem({
 		el.addEventListener("focusin", reveal);
 		return () => el.removeEventListener("focusin", reveal);
 	}, [commentClipped]);
-	const commentSurface = COMMENT_SURFACE;
 	const comment = thread.unavailable ? (
 		// Its text will never come: said so, plainly.
 		<UnavailableText id={commentId} reason={thread.unavailable} />
@@ -1136,7 +1135,7 @@ function ThreadItem({
 			id={commentId}
 			data-testid="thread-body-loading"
 			aria-busy="true"
-			className={`${commentSurface} space-y-2.5 py-3`}
+			className={`${COMMENT_SURFACE} space-y-2.5 py-3`}
 		>
 			<span className="sr-only">Loading…</span>
 			<SkeletonBar className="w-full" />
@@ -1148,7 +1147,7 @@ function ThreadItem({
 			ref={commentBox}
 			id={commentId}
 			data-testid="thread-body"
-			className={`relative ${commentSurface} ${open ? "" : "max-h-32 overflow-hidden"}`}
+			className={`relative ${COMMENT_SURFACE} ${open ? "" : "max-h-32 overflow-hidden"}`}
 		>
 			<CommentBody
 				html={thread.html}
@@ -1169,7 +1168,7 @@ function ThreadItem({
 			ref={commentBox}
 			id={commentId}
 			data-testid="thread-body"
-			className={`${commentSurface} text-sm break-words`}
+			className={`${COMMENT_SURFACE} text-sm break-words`}
 		>
 			{thread.excerpt}
 		</p>
@@ -1465,24 +1464,51 @@ function Replies({ thread, readId }: { thread: Thread; readId: string }) {
 	}).data;
 	const pending = known?.comments.filter((c) => c.pending).length ?? 0;
 	const n = Math.max(0, thread.commentCount - 1) + pending;
-	if (n === 0) return null;
+	// A thread gone from GitHub: its opener says so, once.
+	if (n === 0 || thread.unavailable) return null;
+	// Why the count passes the header's, and why it grew.
+	const pendingTip =
+		pending > 0
+			? `${pending} pending, only you see ${pending === 1 ? "it" : "them"}`
+			: null;
+	const toggle = (trigger?: TooltipTriggerProps) => (
+		<button
+			{...trigger}
+			type="button"
+			aria-expanded={open}
+			aria-controls={id}
+			onClick={() => setOpen((o) => !o)}
+			className="-mb-1 flex min-h-10 items-center gap-1.5 rounded-md text-xs font-medium text-link hover:underline focus-visible:outline-2 focus-visible:outline-accent"
+		>
+			<CommentDiscussionIcon size={16} aria-hidden />
+			{replies(n)}
+			{pendingTip && (
+				<>
+					<ClockIcon
+						size={16}
+						aria-hidden
+						data-testid="replies-pending"
+						className="text-warn"
+					/>
+					<span className="sr-only">, {pendingTip}</span>
+				</>
+			)}
+			<ChevronDownIcon
+				size={16}
+				aria-hidden
+				className={`transition-transform motion-reduce:transition-none ${open ? "rotate-180" : ""}`}
+			/>
+		</button>
+	);
 	return (
 		<div className="space-y-2">
-			<button
-				type="button"
-				aria-expanded={open}
-				aria-controls={id}
-				onClick={() => setOpen((o) => !o)}
-				className="-mb-1 flex min-h-10 items-center gap-1.5 rounded-md text-xs font-medium text-link hover:underline focus-visible:outline-2 focus-visible:outline-accent"
-			>
-				<CommentDiscussionIcon size={16} aria-hidden />
-				{replies(n)}
-				<ChevronDownIcon
-					size={16}
-					aria-hidden
-					className={`transition-transform motion-reduce:transition-none ${open ? "rotate-180" : ""}`}
-				/>
-			</button>
+			{pendingTip ? (
+				<Tooltip content={pendingTip} describe={false}>
+					{toggle}
+				</Tooltip>
+			) : (
+				toggle()
+			)}
 			<div
 				id={id}
 				data-testid="thread-replies"

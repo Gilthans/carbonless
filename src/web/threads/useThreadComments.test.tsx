@@ -9,6 +9,7 @@ import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CommentsView, ThreadComments } from "../../shared/types";
 import { commentsQuery, overviewQuery, showCommentsOf } from "../api";
+import { PageActive } from "../pageActive";
 import { usePrefetchComments, useThreadComments } from "./useThreadComments";
 
 /** What a request asked for: its read and ids. */
@@ -396,5 +397,65 @@ describe("comments: batched, prefetched, opened", () => {
 		await new Promise((r) => setTimeout(r, 30));
 		expect(asked).toEqual([]);
 		expect(screen.getByTestId("T1")).toHaveTextContent("loading");
+	});
+});
+
+describe("comments across reads and pages", () => {
+	it("asks for nothing while the read id is empty", async () => {
+		const client = newClient();
+		render(<Thread readId="" id="T1" />, { wrapper: wrapper(client) });
+		await new Promise((r) => setTimeout(r, 30));
+		expect(asked).toEqual([]);
+		expect(screen.getByTestId("T1")).toHaveTextContent("loading");
+	});
+
+	it("keeps the previous read's comments shown until the new read's land", async () => {
+		const client = newClient();
+		const { rerender } = render(<Thread readId="r1" id="T1" />, {
+			wrapper: wrapper(client),
+		});
+		await waitFor(() =>
+			expect(screen.getByTestId("T1")).toHaveTextContent("T1"),
+		);
+		let release: () => void = () => {};
+		const gate = new Promise<void>((r) => {
+			release = r;
+		});
+		answer = async (a) => {
+			await gate;
+			return json({
+				threads: a.ids.map((id) => ({
+					...comments(id),
+					comments: comments(id).comments.map((c) => ({
+						...c,
+						text: `${id} new`,
+					})),
+				})),
+			} satisfies CommentsView);
+		};
+		rerender(<Thread readId="r2" id="T1" />);
+		await waitFor(() => expect(asked.at(-1)?.read).toBe("r2"));
+		expect(screen.getByTestId("T1")).toHaveTextContent("T1");
+		expect(screen.getByTestId("T1")).not.toHaveTextContent("loading");
+		release();
+		await waitFor(() =>
+			expect(screen.getByTestId("T1")).toHaveTextContent("T1 new"),
+		);
+	});
+
+	it("a hidden kept page prefetches nothing; shown again, its order applies", async () => {
+		const client = newClient();
+		const page = (active: boolean) => (
+			<PageActive value={active}>
+				<Prefetch readId="r1" ids={["T1", "T2"]} />
+			</PageActive>
+		);
+		const { rerender } = render(page(false), { wrapper: wrapper(client) });
+		await new Promise((r) => setTimeout(r, 30));
+		expect(asked).toEqual([]);
+		rerender(page(true));
+		await waitFor(() =>
+			expect(asked).toEqual([{ read: "r1", ids: ["T1", "T2"] }]),
+		);
 	});
 });

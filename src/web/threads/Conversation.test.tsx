@@ -273,6 +273,44 @@ describe("Conversation", () => {
 	});
 });
 
+describe("Conversation across reads", () => {
+	it("a read gone (410) spins until the new read comes, with no dead Retry", async () => {
+		answer = async () => json({ error: "read gone" }, 410);
+		renderWith(<Conversation readId="r1" thread={thread()} />);
+		await waitFor(() => expect(requests).toBeGreaterThan(0));
+		await new Promise((r) => setTimeout(r, 30));
+		expect(
+			screen.getByRole("status", { name: "Loading comments" }),
+		).toBeInTheDocument();
+		expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+	});
+
+	it("the spinner names itself in a tooltip", async () => {
+		answer = () => new Promise(() => {});
+		renderWith(<Conversation readId="r1" thread={thread()} />);
+		const spinner = await screen.findByRole("status", {
+			name: "Loading comments",
+		});
+		await userEvent.setup().hover(spinner);
+		await waitFor(() =>
+			expect(
+				screen.getByText("Loading comments", { selector: "[role=tooltip]" }),
+			).toBeVisible(),
+		);
+	});
+
+	it("a comment with no text says so instead of an empty box", async () => {
+		serve({
+			T1: {
+				comments: [comment("c1", "rev1", "", { html: "", body: "", text: "" })],
+			},
+		});
+		renderWith(<Conversation readId="r1" thread={thread()} />);
+		const item = await screen.findByTestId("thread-comment");
+		expect(within(item).getByText("No text")).toHaveClass("text-muted");
+	});
+});
+
 describe("ThreadStatus", () => {
 	it("shows the comment count", () => {
 		renderWith(<ThreadStatus thread={thread()} />);

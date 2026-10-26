@@ -1491,24 +1491,117 @@ test("slow comments show a spinner, then the replies", async ({
 	).toHaveCount(0);
 });
 
-test("a deleted thread shows deleted, not a spinner", async ({
+test("a thread deleted after the list was read: the comments answer says deleted, never an endless spinner", async ({
 	page,
 	pr,
 	startCrb,
 }) => {
 	const p = await pr({ threads: [threeComments] });
+	const id = `T${p.number}-0`;
 	p.editScenario((s) => {
-		s.deletedThreads = [`T${p.number}-0`];
+		s.deletedThreads = [id];
+		// The cards' text comes late: the toggle opens before it does.
+		s.threadContentDelayMs = 3000;
 	});
+	const answered = page.waitForResponse((r) =>
+		r.url().includes("/api/comments"),
+	);
 	const s = await startCrb();
 	await page.goto(s.url);
 	const thread = card(page, "src/cache.ts");
 	await thread.getByRole("button", { name: "2 replies" }).click();
-	await expect(thread.getByTestId("thread-body-unavailable").last()).toHaveText(
-		"Deleted on GitHub",
-		{ timeout: 10_000 },
+	await expect(
+		thread.getByRole("status", { name: "Loading comments" }),
+	).toBeVisible();
+	// The comments endpoint is the path under test: it says deleted.
+	const body = (await (await answered).json()) as {
+		threads: { threadId: string; unavailable?: string }[];
+	};
+	expect(body.threads.find((t) => t.threadId === id)?.unavailable).toBe(
+		"deleted",
 	);
 	await expect(
 		thread.getByRole("status", { name: "Loading comments" }),
-	).toHaveCount(0);
+	).toHaveCount(0, { timeout: 10_000 });
+	await expect(thread.getByText("Deleted on GitHub").first()).toBeVisible();
+	// Once the card knows, it says so once, in the opener's place.
+	await expect(thread.getByTestId("thread-body-unavailable")).toHaveText(
+		"Deleted on GitHub",
+		{ timeout: 10_000 },
+	);
+	await expect(thread.getByRole("button", { name: /repl/ })).toHaveCount(0);
+});
+
+test("comments are read before a card is opened", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	const p = await pr({ threads: [resolvedThread, threeComments] });
+	p.editScenario((s) => {
+		s.commentsDelayMs = 1500;
+	});
+	// Any spinner the page ever shows is noted.
+	await page.addInitScript(() => {
+		new MutationObserver(() => {
+			if (document.querySelector('[data-testid="comments-loading"]')) {
+				(window as unknown as { sawSpinner: boolean }).sawSpinner = true;
+			}
+		}).observe(document, { childList: true, subtree: true });
+	});
+	const first = page.waitForRequest((r) => r.url().includes("/api/comments"));
+	const answered = page.waitForResponse((r) =>
+		r.url().includes("/api/comments"),
+	);
+	const s = await startCrb();
+	await page.goto(s.url);
+	// Asked for with nothing clicked, the listed (unresolved) thread first.
+	const ids = new URL((await first).url()).searchParams.get("ids")?.split(",");
+	expect(ids?.[0]).toBe(`T${p.number}-1`);
+	expect(ids).toContain(`T${p.number}-0`);
+	await answered;
+	const thread = card(page, "src/cache.ts");
+	await thread.getByRole("button", { name: "2 replies" }).click();
+	await expect(thread.getByTestId("thread-comment")).toHaveCount(2, {
+		timeout: 500,
+	});
+	expect(
+		await page.evaluate(
+			() => (window as unknown as { sawSpinner?: boolean }).sawSpinner ?? false,
+		),
+	).toBe(false);
+});
+
+test("the viewer's own pending reply gets a toggle, marked pending", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	await pr({
+		threads: [
+			reviewThread({ path: "src/draft.ts", line: 1 }, [
+				threadComment({ login: "rev1", text: "Why?" }),
+				threadComment({ login: "Octo_Cat", text: "My draft", pending: true }),
+			]),
+		],
+	});
+	const s = await startCrb();
+	await page.goto(s.url);
+	const thread = card(page, "src/draft.ts");
+	// Published, the thread has one comment; the draft is the viewer's own.
+	await expect(
+		thread.getByTestId("thread-head").getByRole("img", { name: "1 comment" }),
+	).toBeVisible();
+	const toggle = thread.getByRole("button", {
+		name: /^1 reply\s*,\s*1 pending, only you see it$/,
+	});
+	await expect(toggle).toBeVisible();
+	await expect(toggle.getByTestId("replies-pending")).toBeVisible();
+	await toggle.click();
+	const reply = thread.getByTestId("thread-comment");
+	await expect(reply).toHaveCount(1);
+	await expect(reply).toContainText("My draft");
+	await expect(
+		reply.getByRole("img", { name: "Pending, only you see it" }),
+	).toBeVisible();
 });
