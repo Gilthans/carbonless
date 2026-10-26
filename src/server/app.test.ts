@@ -599,6 +599,8 @@ describe("API", () => {
 			body: "Because.",
 			attemptedAt: new Date().toISOString(),
 			retry: false,
+			clientId: "r1",
+			knownCommentIds: ["C12-0"],
 		};
 
 		it("200: a reply and resolving answer with the thread's new state", async () => {
@@ -624,7 +626,8 @@ describe("API", () => {
 			const bad = [
 				await replyTo("T12-0", { ...ok, body: "  \n" }),
 				await replyTo("T12-0", { ...ok, body: "x".repeat(65537) }),
-				await replyTo("T12-0", { ...ok, attemptedAt: "soon" }),
+				await replyTo("T12-0", { ...ok, clientId: 7 }),
+				await replyTo("T12-0", { ...ok, knownCommentIds: "C12-0" }),
 				await replyTo("T12-0", { body: "Hi" }),
 				await inject("/api/threads/T12-0/replies", {
 					method: "POST",
@@ -696,6 +699,55 @@ describe("API", () => {
 			const failed = await replyTo("T12-0", ok);
 			expect(failed.statusCode).toBe(502);
 			expect(failed.json().error).toMatch(/HTTP 502/);
+		});
+
+		it("GitHub's other refusals are refusals, not retried: 400, 401, 410, a GraphQL error without a type", async () => {
+			const cases: [Partial<Scenario>, number, string][] = [
+				[{ failNext: { op: "reply", status: 400 } }, 400, "invalid"],
+				[{ failNext: { op: "reply", status: 401 } }, 403, "forbidden"],
+				[{ failNext: { op: "reply", status: 410 } }, 400, "invalid"],
+			];
+			for (const [over, status, code] of cases) {
+				await setup(over);
+				const res = await replyTo("T12-0", { ...ok, clientId: code + status });
+				expect(res.statusCode, res.body).toBe(status);
+				expect(res.json().code).toBe(code);
+			}
+			await setup({
+				failNext: {
+					op: "resolve",
+					graphql: { message: "Thread can't be resolved right now" },
+				},
+			});
+			const res = await post("/api/threads/T12-0/resolved", { resolved: true });
+			expect(res.statusCode).toBe(400);
+			expect(res.json()).toEqual({
+				code: "invalid",
+				error: "Thread can't be resolved right now",
+			});
+		});
+
+		it("rate limits stay transient (502), a rate-limit 403 too", async () => {
+			await setup({
+				failNext: {
+					op: "reply",
+					status: 403,
+					message: "You have exceeded a secondary rate limit.",
+				},
+			});
+			const res = await replyTo("T12-0", ok);
+			expect(res.statusCode).toBe(502);
+			await setup({ failNext: { op: "reply", status: 429 } });
+			expect(
+				(await replyTo("T12-0", { ...ok, clientId: "r2" })).statusCode,
+			).toBe(502);
+		});
+
+		it("a closed session answers 503", async () => {
+			await setup();
+			await session.close();
+			const res = await replyTo("T12-0", ok);
+			expect(res.statusCode).toBe(503);
 		});
 	});
 

@@ -56,7 +56,24 @@ export interface Scenario {
 	 * didn't come back). Replies and resolving are written back into the
 	 * scenario file, so later calls see them.
 	 */
-	failNext?: { op: "reply" | "resolve"; status: number; afterWrite?: boolean };
+	failNext?: {
+		op: "reply" | "resolve";
+		status?: number;
+		afterWrite?: boolean;
+		/** GitHub's message (default: the status's usual one). */
+		message?: string;
+		/** Fail as GraphQL errors do instead: this error, its type only if given. */
+		graphql?: { type?: string; message: string };
+	};
+	/** A posted reply's thread is deleted right after (deletedThreads). */
+	replyDeletesThread?: boolean;
+	/** A REST reply answers only after this many milliseconds (before it lands). */
+	replyDelayMs?: number;
+	/**
+	 * A reply GitHub's GraphQL doesn't list for this many milliseconds after
+	 * it was posted (REST has it at once): the lag a write's re-read meets.
+	 */
+	replyUnlistedMs?: number;
 	/**
 	 * Fields merged into the REST review comment (`api repos/…/pulls/<n>/comments`)
 	 * whose node id is the key; the fake derives the rest from the threads.

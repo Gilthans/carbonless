@@ -67,11 +67,28 @@ and resolving or unresolving one (`src/server/threadWrites.ts`).
   submitted or discarded, keeps the draft, and never retries it on its own.
   The Overview warns up front (`PrOverview.pendingReview`, from the reviews
   it reads).
-- **Never twice.** A reply resent after a failed or unknown attempt
-  (`retry: true`) is first looked for among the thread's comments: one by
-  the viewer with the same body (line ends and trailing whitespace aside),
-  dated no earlier than 60 s before the first attempt (`attemptedAt`),
-  counts as sent. Resolving is idempotent.
+- **Never twice.** The server runs one write per thread at a time, so a
+  resend waits for the attempt still running. Each reply carries a
+  client-made id (`clientId`, the same on every resend, a reload's too), and
+  the server remembers the replies it posted by it: a resend of one is
+  answered with it, never posted again. A resend after a failed or unknown
+  attempt (`retry: true`) also looks among the thread's comments on GitHub
+  (crb may have restarted): one by the viewer with the same body (line ends
+  and trailing whitespace aside) that the client didn't know when it first
+  sent the reply (not in `knownCommentIds`), and that isn't another reply
+  this session posted, counts as sent. No clocks are compared: the phone's
+  may be off. Resolving is idempotent.
+- **Refused means refused.** When GitHub answers a write with an error, it
+  is refused for good, with GitHub's message (401/403 forbidden, 404 gone,
+  anything else invalid), and nothing sends it again on its own. Only
+  GitHub's own trouble is transient (502 to the page, which retries): HTTP
+  408, 429 or 5xx, a rate limit (a rate-limit 403 too), a timeout or no
+  answer at all. A 404 for a thread GitHub still has is a refusal, not
+  "gone".
+- **Posted is posted.** A reply that landed is answered as posted, even
+  when GitHub doesn't list it yet (it is added to the thread from GitHub's
+  answer to the post) or the thread was deleted right after; a posted reply
+  also clears the pending-review warning, and a pending-review refusal sets it.
 - **Off where it can't be the reviewer's.** No writes as of a cutoff
   (`--as-of`) or as `--viewer` someone other than the `gh` login
   (`PrOverview.writes`); merged, closed and `--head` views write as GitHub

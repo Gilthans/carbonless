@@ -34,6 +34,7 @@ import { ReviewService, StaleSnapshotError } from "./review/reviews.js";
 import { slugify } from "./slug.js";
 import { ThreadCodeSource } from "./threadCode.js";
 import {
+	type PostedRecord,
 	replyToThread,
 	setResolved,
 	type ThreadWriteTarget,
@@ -44,6 +45,9 @@ const KEPT_READS = 3;
 
 /** A read of the overview that is no longer kept (HTTP 410). */
 export class UnknownReadError extends Error {}
+
+/** The session has closed (crb shutting down): HTTP 503. */
+export class SessionClosedError extends Error {}
 
 /** crb --head and the hidden dev options (--as-of, --viewer). */
 export interface SessionOptions {
@@ -110,6 +114,13 @@ export class Session {
 	#queue: Promise<unknown> = Promise.resolve();
 	/** Orders thread writes' re-reads (OverviewRead.applyWrite). */
 	#writeSeq = 0;
+	/** Each thread's writes, one at a time (#threadExclusive). */
+	readonly #threadWrites = new Map<string, Promise<void>>();
+	/**
+	 * Replies this session posted, by the client's id for each: a resend
+	 * (while the first attempt runs, or after a reload) finds it here.
+	 */
+	readonly #posted = new Map<string, PostedRecord>();
 
 	private constructor(
 		private readonly repo: string,
@@ -269,7 +280,7 @@ export class Session {
 		maxAgeMs = Number.POSITIVE_INFINITY,
 	): Promise<Omit<PrOverview, "servedAt">> {
 		if (this.#closed) {
-			return Promise.reject(new Error("The session is closed"));
+			return Promise.reject(new SessionClosedError("The session is closed"));
 		}
 		const now = Date.now();
 		// 0: a new read, even if the last came in this very millisecond.
@@ -330,21 +341,47 @@ export class Session {
 		return "on";
 	}
 
-	/** Replies to a thread on GitHub (threadWrites.ts). */
+	/**
+	 * Replies to a thread on GitHub (threadWrites.ts), after any write to
+	 * the same thread still running: a resend waits for the first attempt,
+	 * then finds it posted.
+	 */
 	replyToThread(threadId: string, req: ReplyRequest): Promise<ThreadUpdate> {
-		return replyToThread(this.#writeTarget(), threadId, req);
+		return this.#threadExclusive(threadId, () =>
+			replyToThread(this.#writeTarget(), threadId, req),
+		);
 	}
 
-	/** Resolves or unresolves a thread on GitHub (threadWrites.ts). */
+	/** Resolves or unresolves a thread on GitHub (threadWrites.ts), in turn. */
 	setThreadResolved(
 		threadId: string,
 		resolved: boolean,
 	): Promise<ThreadUpdate> {
-		return setResolved(this.#writeTarget(), threadId, resolved);
+		return this.#threadExclusive(threadId, () =>
+			setResolved(this.#writeTarget(), threadId, resolved),
+		);
+	}
+
+	/** Runs thread writes one at a time per thread, in the order asked. */
+	#threadExclusive<T>(threadId: string, fn: () => Promise<T>): Promise<T> {
+		const before = this.#threadWrites.get(threadId) ?? Promise.resolve();
+		const run = before.then(fn, fn);
+		const settled = run.then(
+			() => {},
+			() => {},
+		);
+		this.#threadWrites.set(threadId, settled);
+		void settled.then(() => {
+			if (this.#threadWrites.get(threadId) === settled) {
+				this.#threadWrites.delete(threadId);
+			}
+		});
+		return run;
 	}
 
 	#writeTarget(): ThreadWriteTarget {
-		if (this.#closed) throw new Error("The session is closed");
+		if (this.#closed) throw new SessionClosedError("The session is closed");
+		const kept = () => [...this.#reads].reverse();
 		return {
 			ref: this.#ref(),
 			prUrl: this.#meta.url,
@@ -352,16 +389,35 @@ export class Session {
 			writes: this.writes(),
 			prAuthor: async () => (await this.overview()).author,
 			summaryOf: (id) => {
-				for (const read of [...this.#reads].reverse()) {
+				for (const read of kept()) {
 					const node = read.summaryOf(id);
 					if (node !== undefined) return node;
 				}
 				return undefined;
 			},
+			cached: (id) => {
+				for (const read of kept()) {
+					const nodes = read.cached(id);
+					if (nodes) return nodes;
+				}
+				return undefined;
+			},
 			nextSeq: () => ++this.#writeSeq,
-			apply: (id, summary, content, seq) => {
-				for (const read of this.#reads)
-					read.applyWrite(id, summary, content, seq);
+			apply: (id, nodes, seq, startedAt) => {
+				for (const read of this.#reads) {
+					read.applyWrite(id, nodes, seq, startedAt);
+				}
+			},
+			posted: (clientId) => this.#posted.get(clientId),
+			remember: (clientId, record) => this.#posted.set(clientId, record),
+			claimedIds: (except) =>
+				new Set(
+					[...this.#posted]
+						.filter(([clientId]) => clientId !== except)
+						.map(([, r]) => r.nodeId),
+				),
+			setPendingReview: (pending) => {
+				for (const read of this.#reads) read.setPendingReview(pending);
 			},
 		};
 	}
@@ -371,7 +427,7 @@ export class Session {
 	 * moving the snapshot) to know the diff base.
 	 */
 	#read(ready?: Promise<unknown>): OverviewRead {
-		if (this.#closed) throw new Error("The session is closed");
+		if (this.#closed) throw new SessionClosedError("The session is closed");
 		const { asOf, viewer } = this.options;
 		const read = new OverviewRead({
 			ref: this.#ref(),

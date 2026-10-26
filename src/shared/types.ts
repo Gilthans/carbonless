@@ -418,10 +418,20 @@ export interface ThreadUpdate {
 /** `POST /api/threads/:threadId/replies`. */
 export interface ReplyRequest {
 	body: string;
-	/** ISO time of the first attempt. */
+	/** ISO time of the first attempt (informative; the dedupe doesn't use it). */
 	attemptedAt: string;
 	/** A resend after a failed or unknown attempt: dedupe first. */
 	retry: boolean;
+	/**
+	 * The client's own id for this reply, the same on every resend (a
+	 * reload's too): the server remembers the replies it posted by it.
+	 */
+	clientId: string;
+	/**
+	 * The thread's comment ids the client had when the reply was first
+	 * sent: on a retry, only a comment not among them can be this reply.
+	 */
+	knownCommentIds: string[];
 }
 
 /** `POST /api/threads/:threadId/resolved`. */

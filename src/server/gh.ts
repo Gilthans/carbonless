@@ -1229,7 +1229,7 @@ export async function fetchThread(
 			{
 				...read,
 				what: "the review thread",
-				partial: (stdout) => graphqlErrorType(stdout) === "NOT_FOUND",
+				partial: (stdout) => writeAnswer(stdout, "").type === "NOT_FOUND",
 			},
 		),
 	);
@@ -1248,60 +1248,108 @@ export async function fetchThread(
 	return paged ?? null;
 }
 
-/** The first GraphQL error's `field` in gh's output (it prints the answer). */
-function graphqlError(
-	stdout: string,
-	field: "type" | "message",
-): string | null {
-	try {
-		const errors = rec(JSON.parse(stdout)).errors;
-		const value = Array.isArray(errors) ? rec(errors[0])[field] : undefined;
-		return typeof value === "string" ? value : null;
-	} catch {
-		return null;
-	}
-}
-const graphqlErrorType = (stdout: string) => graphqlError(stdout, "type");
-
-/** The message of a REST error answer gh printed, with its details. */
-function restMessage(stdout: string): string {
-	try {
-		const answer = rec(JSON.parse(stdout));
-		const details = Array.isArray(answer.errors)
-			? answer.errors.map((e) => (typeof e === "string" ? e : rec(e).message))
-			: [];
-		return [answer.message, ...details]
-			.filter((m): m is string => typeof m === "string" && m !== "")
-			.join(": ");
-	} catch {
-		return "";
-	}
+/** What GitHub answered a failed write, as gh printed it on stdout. */
+interface WriteAnswer {
+	/** HTTP status: gh's "(HTTP 422)" on stderr, or the answer's own; null for none. */
+	status: number | null;
+	/** GitHub's message (REST: the top-level one with its details; GraphQL: the errors'). */
+	message: string;
+	/** GraphQL: the first error's type, when it has one. */
+	type: string | null;
+	/** Whether GitHub answered at all (a parseable answer on stdout). */
+	answered: boolean;
 }
 
-/** A failed REST call's HTTP status: gh's "(HTTP 422)", or the answer's own. */
-function httpStatus(stdout: string, stderr: string): string | undefined {
+/** Reads a failed write's gh output (WriteAnswer). */
+export function writeAnswer(stdout: string, stderr: string): WriteAnswer {
+	let answer: Record<string, unknown> | null = null;
+	try {
+		const parsed = JSON.parse(stdout);
+		if (
+			typeof parsed === "object" &&
+			parsed !== null &&
+			!Array.isArray(parsed)
+		) {
+			answer = parsed as Record<string, unknown>;
+		}
+	} catch {
+		answer = null;
+	}
 	const said = /\(HTTP (\d{3})\)/.exec(stderr)?.[1];
-	if (said) return said;
-	try {
-		const status = rec(JSON.parse(stdout)).status;
-		return typeof status === "string" && /^\d{3}$/.test(status)
-			? status
-			: undefined;
-	} catch {
-		return undefined;
-	}
+	const own = answer?.status;
+	const status = said
+		? Number(said)
+		: typeof own === "string" && /^\d{3}$/.test(own)
+			? Number(own)
+			: typeof own === "number"
+				? own
+				: null;
+	const errors = Array.isArray(answer?.errors) ? answer.errors : [];
+	const details = errors
+		.map((e) => (typeof e === "string" ? e : rec(e).message))
+		.filter((m): m is string => typeof m === "string" && m !== "");
+	const top = typeof answer?.message === "string" ? answer.message : "";
+	const type = rec(errors[0]).type;
+	return {
+		status,
+		message: [top, ...details].filter(Boolean).join(": "),
+		type: typeof type === "string" ? type : null,
+		answered: answer !== null && (top !== "" || errors.length > 0),
+	};
 }
 
-/** A write's gh call: its answer, or the refusal it is (WriteRefusedError). */
+const RATE_LIMITED = /rate limit/i;
+/** GraphQL errors GitHub gives for its own trouble, not the request's. */
+const GITHUB_TROUBLE = /something went wrong|timed? ?out|try again/i;
+
+/**
+ * Whether a failed write may succeed if sent again unchanged (HTTP 408,
+ * 429 or 5xx, a rate limit, GitHub's own trouble, or no answer at all: a
+ * timeout or a network failure); otherwise GitHub refused it for good.
+ */
+export function transientWrite(a: WriteAnswer): boolean {
+	if (!a.answered) return true;
+	if (a.status === 408 || a.status === 429) return true;
+	if (a.status !== null && a.status >= 500) return true;
+	if (RATE_LIMITED.test(a.message) || a.type === "RATE_LIMITED") return true;
+	return a.status === null && a.type === null && GITHUB_TROUBLE.test(a.message);
+}
+
+/**
+ * The refusal a failed write is, by GitHub's answer: 401/403 or FORBIDDEN
+ * → "forbidden", 404 or NOT_FOUND → "gone", anything else → "invalid",
+ * with GitHub's message; null when it is transient (transientWrite).
+ */
+export function writeRefusal(
+	a: WriteAnswer,
+	fallback: string,
+): WriteRefusedError | null {
+	if (transientWrite(a)) return null;
+	const message = a.message || fallback;
+	if (a.status === 401 || a.status === 403 || a.type === "FORBIDDEN") {
+		return new WriteRefusedError(message, "forbidden");
+	}
+	if (a.status === 404 || a.type === "NOT_FOUND") {
+		return new WriteRefusedError(message, "gone");
+	}
+	return new WriteRefusedError(message, "invalid");
+}
+
+/**
+ * A write's gh call: its answer, the refusal it is (WriteRefusedError,
+ * `special` first), or a GhError when it may land if sent again.
+ */
 async function runWrite(
 	args: string[],
 	what: string,
-	refusal: (result: GhResult) => WriteRefusedError | null,
+	special: (a: WriteAnswer) => WriteRefusedError | null,
 	input?: string,
 ): Promise<string> {
 	const result = await spawnGh(args, { timeoutMs: GH_TIMEOUT_MS, what, input });
 	if (result.code === 0) return result.stdout;
-	const refused = refusal(result);
+	const answer = writeAnswer(result.stdout, result.stderr);
+	const refused =
+		special(answer) ?? writeRefusal(answer, `GitHub refused ${what}`);
 	if (refused) throw refused;
 	if (LOGGED_OUT.test(result.stderr)) throw new GhError(NOT_LOGGED_IN);
 	throw new GhError(
@@ -1323,10 +1371,10 @@ export interface PostedReply {
 /**
  * Posts `body` as a reply to the thread whose first comment has REST id
  * `commentId`, at once (REST, never GraphQL's addPullRequestReviewThreadReply,
- * which would put it into a pending review). Refusals: a pending review of
- * the viewer's (GitHub's 422) → "pending-review" with the PR's files page;
- * 404 → "gone"; 403 → "forbidden" with GitHub's message; another 422 →
- * "invalid". Anything else (timeouts, 5xx) is a GhError: it may have landed.
+ * which would put it into a pending review). A pending review of the
+ * viewer's (GitHub's 422) → "pending-review" with the PR's files page;
+ * other refusals by writeRefusal. A GhError when it may land if sent again
+ * (it may also have landed already).
  */
 export async function postReply(
 	ref: PrRef,
@@ -1348,33 +1396,14 @@ export async function postReply(
 			"-",
 		],
 		"the reply",
-		({ stdout, stderr }) => {
-			const message = restMessage(stdout) || problemLine(stderr);
-			const status = httpStatus(stdout, stderr);
-			if (status === "422" && /pending review/i.test(`${stdout}\n${stderr}`)) {
-				return new WriteRefusedError(
-					"A pending review on GitHub blocks replies: submit or discard it",
-					"pending-review",
-					`${prUrl.replace(/\/+$/, "")}/files`,
-				);
-			}
-			if (status === "404") {
-				return new WriteRefusedError("The thread is gone from GitHub", "gone");
-			}
-			if (status === "403") {
-				return new WriteRefusedError(
-					message || "GitHub refused the reply",
-					"forbidden",
-				);
-			}
-			if (status === "422") {
-				return new WriteRefusedError(
-					message || "GitHub refused the reply",
-					"invalid",
-				);
-			}
-			return null;
-		},
+		(a) =>
+			a.status === 422 && /pending review/i.test(a.message)
+				? new WriteRefusedError(
+						"A pending review on GitHub blocks replies: submit or discard it",
+						"pending-review",
+						`${prUrl.replace(/\/+$/, "")}/files`,
+					)
+				: null,
 		JSON.stringify({ body }),
 	);
 	const c = rec(safeJson(out));
@@ -1393,8 +1422,8 @@ export async function postReply(
 }
 
 /**
- * Resolves or unresolves thread `id` (GraphQL; idempotent). Refusals: no
- * such thread → "gone"; not allowed → "forbidden" with GitHub's message.
+ * Resolves or unresolves thread `id` (GraphQL; idempotent). Refusals by
+ * writeRefusal (no such thread: "gone").
  */
 export async function postResolved(
 	id: string,
@@ -1405,24 +1434,6 @@ export async function postResolved(
 	await runWrite(
 		["api", "graphql", "-f", `query=${query}`, "-f", `id=${id}`],
 		resolved ? "resolving the thread" : "unresolving the thread",
-		({ stdout, stderr }) => {
-			const type = graphqlErrorType(stdout);
-			const message =
-				graphqlError(stdout, "message") ||
-				problemLine(stderr).replace(/^GraphQL: /, "");
-			if (type === "NOT_FOUND" || /could not resolve to a node/i.test(stderr)) {
-				return new WriteRefusedError("The thread is gone from GitHub", "gone");
-			}
-			if (
-				type === "FORBIDDEN" ||
-				/HTTP 403|not have permission|must have/i.test(stderr)
-			) {
-				return new WriteRefusedError(
-					message || "GitHub refused it",
-					"forbidden",
-				);
-			}
-			return null;
-		},
+		() => null,
 	);
 }

@@ -19,7 +19,11 @@ import {
 	refusedMessage,
 	StaleSnapshotError,
 } from "./review/reviews.js";
-import { type Session, UnknownReadError } from "./session.js";
+import {
+	type Session,
+	SessionClosedError,
+	UnknownReadError,
+} from "./session.js";
 import { replyProblem } from "./threadWrites.js";
 
 export interface AppOptions {
@@ -86,6 +90,7 @@ export async function buildApp(
 			reply.status(status).send({ error: message });
 		if (error instanceof StaleSnapshotError) return send(409, "stale");
 		if (error instanceof UnknownReadError) return send(410, "read gone");
+		if (error instanceof SessionClosedError) return send(503, error.message);
 		if (error instanceof RefusedChangeError) {
 			return reply.status(400).send({ error: error.message, keys: error.keys });
 		}
@@ -210,11 +215,14 @@ export async function buildApp(
 		(request) => {
 			const problem = replyProblem(request.body);
 			if (problem) throw new WriteRefusedError(problem, "invalid");
-			const { body, attemptedAt, retry } = request.body as ReplyRequest;
+			const { body, attemptedAt, retry, clientId, knownCommentIds } =
+				request.body as ReplyRequest;
 			return session.replyToThread(threadIdParam(request.params.threadId), {
 				body,
 				attemptedAt,
 				retry,
+				clientId,
+				knownCommentIds,
 			});
 		},
 	);

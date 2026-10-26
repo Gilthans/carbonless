@@ -13,7 +13,7 @@ import {
 	writeScenario,
 } from "../../test/fake-gh/scenario";
 import { testGitEnv } from "../../test/git-fixture";
-import { WriteRefusedError } from "./errors";
+import { GhError, WriteRefusedError } from "./errors";
 import {
 	fetchOverview,
 	fetchPrMeta,
@@ -472,6 +472,106 @@ describe("fake gh", () => {
 				code: "forbidden",
 				message: expect.stringMatching(/permission/),
 			});
+		});
+
+		it("fails like gh api: the answer on stdout, its top-level message on stderr", () => {
+			writable({}, [{ author: { login: "Octo_Cat" }, state: "PENDING" }]);
+			const out = spawnSync(
+				"gh",
+				[
+					"api",
+					"-X",
+					"POST",
+					"repos/acme/widget/pulls/12/comments/1000/replies",
+					"-H",
+					"Accept: application/vnd.github.full+json",
+					"--input",
+					"-",
+				],
+				{ input: JSON.stringify({ body: "Hi" }), encoding: "utf8" },
+			);
+			expect(out.status).toBe(1);
+			expect(out.stderr.trim()).toBe("gh: Unprocessable Entity (HTTP 422)");
+			expect(JSON.parse(out.stdout)).toMatchObject({
+				errors: ["user_id can only have one pending review per pull request"],
+				status: "422",
+			});
+			writable({
+				failNext: { op: "resolve", graphql: { message: "Nope", type: "X" } },
+			});
+			const gql = spawnSync(
+				"gh",
+				[
+					"api",
+					"graphql",
+					"-f",
+					"query=mutation($id: ID!) { resolveReviewThread(input: { threadId: $id }) { thread { id } } }",
+					"-f",
+					"id=T12-0",
+				],
+				{ encoding: "utf8" },
+			);
+			expect(gql.status).toBe(1);
+			expect(gql.stderr.trim()).toBe("gh: Nope");
+			expect(JSON.parse(gql.stdout).errors[0]).toMatchObject({
+				type: "X",
+				message: "Nope",
+			});
+		});
+
+		it("classifies by GitHub's answer: refusals for good, transient only for GitHub's trouble", async () => {
+			const opener = 1000;
+			const replyFails = async (failNext: Scenario["failNext"]) => {
+				writable({ failNext });
+				return postReply(ref, opener, "Hi", PR_URL).catch((e) => e);
+			};
+			const refusal = (code: string) =>
+				expect.objectContaining({ constructor: WriteRefusedError, code });
+			expect(await replyFails({ op: "reply", status: 400 })).toEqual(
+				refusal("invalid"),
+			);
+			expect(await replyFails({ op: "reply", status: 401 })).toEqual(
+				refusal("forbidden"),
+			);
+			expect(await replyFails({ op: "reply", status: 410 })).toEqual(
+				refusal("invalid"),
+			);
+			for (const failNext of [
+				{
+					op: "reply",
+					status: 403,
+					message: "API rate limit exceeded for user.",
+				},
+				{ op: "reply", status: 429 },
+				{ op: "reply", status: 503 },
+			] as const) {
+				const e = await replyFails(failNext);
+				expect(e, JSON.stringify(failNext)).toBeInstanceOf(GhError);
+				expect(e).not.toBeInstanceOf(WriteRefusedError);
+			}
+			const resolveFails = async (graphql: {
+				type?: string;
+				message: string;
+			}) => {
+				writable({ failNext: { op: "resolve", graphql } });
+				return postResolved("T12-0", true).catch((e) => e);
+			};
+			expect(await resolveFails({ message: "Not allowed here" })).toEqual(
+				expect.objectContaining({
+					code: "invalid",
+					message: "Not allowed here",
+				}),
+			);
+			expect(
+				await resolveFails({ type: "UNPROCESSABLE", message: "No" }),
+			).toEqual(refusal("invalid"));
+			const trouble = await resolveFails({
+				message: "Something went wrong while executing your query.",
+			});
+			expect(trouble).not.toBeInstanceOf(WriteRefusedError);
+			expect(
+				await resolveFails({ type: "RATE_LIMITED", message: "Slow down" }),
+			).not.toBeInstanceOf(WriteRefusedError);
 		});
 
 		it("a deleted thread is gone: 404 for a reply, NOT_FOUND for resolving", async () => {

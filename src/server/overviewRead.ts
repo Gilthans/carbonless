@@ -65,7 +65,10 @@ export class OverviewRead {
 	readonly started = Date.now();
 	/** When the overview part came in; null while it is read. */
 	ended: number | null = null;
-	readonly overview: Promise<Omit<PrOverview, "servedAt">>;
+	#overview: Promise<Omit<PrOverview, "servedAt">>;
+	get overview(): Promise<Omit<PrOverview, "servedAt">> {
+		return this.#overview;
+	}
 	/**
 	 * The PR's timeline: its own read, at once with the rest, its review
 	 * comments tied to their threads once the summaries are in.
@@ -105,7 +108,7 @@ export class OverviewRead {
 		this.#viewer = sources.viewer;
 		this.#writes = sources.writes === "on";
 		const read = { signal: this.#stop.signal };
-		this.overview = fetchOverview(
+		this.#overview = fetchOverview(
 			sources.ref,
 			sources.viewer,
 			sources.asOf,
@@ -238,19 +241,45 @@ export class OverviewRead {
 	}
 
 	/**
-	 * Thread `id` as a write left it (`seq` orders writes: an older one's
-	 * re-read never replaces a newer one's). Only a thread this read lists
-	 * is shown; one it doesn't is kept in case its summary is still to come.
+	 * Thread `id` as a write's re-read, started at `startedAt` (ms), found
+	 * it. Ignored by a read that started later (its own data is fresher),
+	 * and when a later re-read (`seq`) was applied already. Only a thread
+	 * this read lists is shown; one it doesn't is kept in case its summary
+	 * is still to come.
 	 */
 	applyWrite(
 		id: string,
-		summary: unknown,
-		content: unknown,
+		nodes: { summary: unknown; content: unknown },
 		seq: number,
+		startedAt: number,
 	): void {
+		if (this.started > startedAt) return;
 		const prev = this.#written.get(id);
 		if (prev && prev.seq > seq) return;
-		this.#written.set(id, { summary, content, seq });
+		this.#written.set(id, { ...nodes, seq });
+	}
+
+	/**
+	 * Thread `id`'s summary and content as this read has them (a write's,
+	 * if any); undefined while either isn't in, or GitHub no longer has it.
+	 */
+	cached(id: string): { summary: unknown; content: unknown } | undefined {
+		const summary = this.summaryOf(id);
+		const content = this.#content(id);
+		if (summary === undefined || content === undefined || content === GONE) {
+			return undefined;
+		}
+		return { summary, content };
+	}
+
+	/**
+	 * Sets the overview's pendingReview, as a write found it (a 409 turns
+	 * it on, a posted reply off), until the next read.
+	 */
+	setPendingReview(pending: { url: string } | null): void {
+		const next = this.#overview.then((o) => ({ ...o, pendingReview: pending }));
+		next.catch(() => {});
+		this.#overview = next;
 	}
 
 	/** Thread `id`'s summary node as this read has it (a write's, if any). */

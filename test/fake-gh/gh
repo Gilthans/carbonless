@@ -35,6 +35,36 @@ function failNextFor(op) {
 	save();
 	return f;
 }
+/**
+ * A thread as GitHub's GraphQL lists it now: without replies still within
+ * their `hiddenUntil` (replyUnlistedMs), which come last.
+ */
+function unlisted(t) {
+	const all = t.comments?.nodes ?? [];
+	const shown = all.filter((c) => !(c.hiddenUntil > Date.now()));
+	if (shown.length === all.length) return t;
+	const last = shown.at(-1);
+	return {
+		...t,
+		comments: {
+			...t.comments,
+			totalCount: t.comments.totalCount - (all.length - shown.length),
+			nodes: shown,
+		},
+		latest: last
+			? {
+					nodes: [
+						{
+							author: last.author,
+							createdAt: last.createdAt,
+							publishedAt: last.publishedAt,
+							state: last.state,
+						},
+					],
+				}
+			: t.latest,
+	};
+}
 /** The REST id of a thread's comment: (index + 1) * 1000 + its position. */
 const restId = (i, j) => (i + 1) * 1000 + j;
 /**
@@ -43,7 +73,7 @@ const restId = (i, j) => (i + 1) * 1000 + j;
  * open thread or unresolve a resolved one) and its comments' REST ids.
  */
 const threadNodes = (pr, nodes) =>
-	nodes.map((t, i) => {
+	nodes.map(unlisted).map((t, i) => {
 		// Comment ids: `C<pr>-<index>` for the opener, `-<n>` after for the rest.
 		const cid = (c, j) => c?.id ?? (j === 0 ? `C${pr}-${i}` : `C${pr}-${i}-${j}`);
 		const ided = (c, j) => ({ ...c, id: cid(c, j), databaseId: restId(i, j) });
@@ -117,14 +147,24 @@ function storeReply(n, i, body) {
 	t.comments = {
 		...(t.comments ?? {}),
 		totalCount: (t.comments?.totalCount ?? before.length) + 1,
-		nodes: [...before, { author, ...times, body, bodyText: body, bodyHTML: html }],
+		nodes: [
+			...before,
+			{
+				author,
+				...times,
+				body,
+				bodyText: body,
+				bodyHTML: html,
+				...(s.replyUnlistedMs ? { hiddenUntil: Date.now() + s.replyUnlistedMs } : {}),
+			},
+		],
 	};
 	t.latest = { nodes: [{ author, ...times }] };
 	save();
 	const j = t.comments.nodes.length - 1;
 	return {
 		id: restId(i, j),
-		node_id: threadNodes(n, s.prs[n].graphql.reviewThreads)[i].comments.nodes[j].id,
+		node_id: t.comments.nodes[j].id ?? `C${n}-${i}-${j}`,
 		in_reply_to_id: restId(i, 0),
 		body,
 		body_text: body,
@@ -133,15 +173,37 @@ function storeReply(n, i, body) {
 		created_at: now,
 	};
 }
-/** Fails like `gh api` on an HTTP error: the answer on stdout, the line on stderr. */
+/**
+ * Fails like `gh api` on an HTTP error: GitHub's answer on stdout, and on
+ * stderr only its top-level message with the status (the details stay in
+ * the answer).
+ */
 function httpFail(status, message, errors) {
 	process.stdout.write(
 		`${JSON.stringify({ message, ...(errors ? { errors } : {}), status: String(status) })}\n`,
 	);
-	fail(`gh: ${[message, ...(errors ?? [])].join("\n")} (HTTP ${status})`);
+	fail(`gh: ${message} (HTTP ${status})`);
+}
+/**
+ * Fails like `gh api graphql` on GraphQL errors: the answer (data null)
+ * on stdout, `gh: <messages>` on stderr; an error's `type` only if given.
+ */
+function graphqlFail(field, errors) {
+	process.stdout.write(
+		`${JSON.stringify({ data: { [field]: null }, errors: errors.map((e) => ({ ...e, path: [field] })) })}\n`,
+	);
+	fail(`gh: ${errors.map((e) => e.message).join("\n")}`);
+}
+/** The scenario's failNext, as gh would fail with it. */
+function failAs(f, field) {
+	if (f.graphql) graphqlFail(field, [f.graphql]);
+	httpFail(f.status, f.message ?? HTTP_MESSAGES[f.status] ?? "Error");
 }
 const HTTP_MESSAGES = {
+	400: "Problems parsing JSON",
+	401: "Bad credentials",
 	403: "Resource not accessible by integration",
+	410: "Gone",
 	404: "Not Found",
 	422: "Unprocessable Entity",
 	500: "Server Error",
@@ -253,7 +315,8 @@ if (restReply && !s.loggedOut) {
 		httpFail(404, "Not Found");
 	}
 	const f = failNextFor("reply");
-	if (f && !f.afterWrite) httpFail(f.status, HTTP_MESSAGES[f.status] ?? "Error");
+	if (f && !f.afterWrite) failAs(f);
+	if (s.replyDelayMs) sleep(s.replyDelayMs);
 	const pending = (pr.graphql?.reviews ?? []).some(
 		(r) =>
 			r.state === "PENDING" &&
@@ -267,7 +330,11 @@ if (restReply && !s.loggedOut) {
 	if (nodes[i].viewerCanReply === false) httpFail(403, HTTP_MESSAGES[403]);
 	if (!body?.trim()) httpFail(422, "Validation Failed", ["Body can't be blank"]);
 	const posted = storeReply(n, i, body);
-	if (f) httpFail(f.status, HTTP_MESSAGES[f.status] ?? "Error");
+	if (s.replyDeletesThread) {
+		s.deletedThreads = [...(s.deletedThreads ?? []), nodes[i].id];
+		save();
+	}
+	if (f) failAs(f);
 	print(posted);
 }
 
@@ -370,12 +437,7 @@ switch (cmd) {
 			f.query ?? "",
 		)?.[1];
 		if (mutation) {
-			const gqlFail = (type, message) => {
-				process.stdout.write(
-					`${JSON.stringify({ data: { [mutation]: null }, errors: [{ type, path: [mutation], message }] })}\n`,
-				);
-				fail(`GraphQL: ${message} (${mutation})`);
-			};
+			const gqlFail = (type, message) => graphqlFail(mutation, [{ type, message }]);
 			const place = threadPlace(f.id);
 			if (!place) {
 				gqlFail("NOT_FOUND", `Could not resolve to a node with the global id of '${f.id}'`);
@@ -384,9 +446,7 @@ switch (cmd) {
 			const failing = failNextFor("resolve");
 			const forbidden = `${s.user.login} does not have permission to ${resolve ? "resolve" : "unresolve"} this review thread.`;
 			if (failing?.status === 403) gqlFail("FORBIDDEN", forbidden);
-			if (failing && !failing.afterWrite) {
-				fail(`gh: ${HTTP_MESSAGES[failing.status] ?? "Error"} (HTTP ${failing.status})`);
-			}
+			if (failing && !failing.afterWrite) failAs(failing, mutation);
 			const allowed = resolve
 				? place.node.viewerCanResolve !== false || place.node.isResolved
 				: place.node.viewerCanUnresolve !== false || !place.node.isResolved;
@@ -400,7 +460,7 @@ switch (cmd) {
 				t.viewerCanUnresolve = resolve;
 			}
 			save();
-			if (failing) fail(`gh: ${HTTP_MESSAGES[failing.status] ?? "Error"} (HTTP ${failing.status})`);
+			if (failing) failAs(failing, mutation);
 			print({ data: { [mutation]: { thread: { id: f.id, isResolved: resolve } } } });
 		}
 		// One thread's summary by id, and its PR (a write's re-read).

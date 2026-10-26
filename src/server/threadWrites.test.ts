@@ -7,15 +7,20 @@ import {
 	threadComment,
 } from "../../test/fake-gh/scenario";
 import { createPrFixture, type PrFixture } from "../../test/pr-fixture";
+import type { ReplyRequest } from "../shared/types";
 import { GhError, WriteRefusedError } from "./errors";
+import { OverviewRead } from "./overviewRead";
 import { Session } from "./session";
+import type { ThreadCodeSource } from "./threadCode";
 import {
-	DEDUPE_SLACK_MS,
 	findReply,
 	replyToThread,
 	setResolved,
 	type ThreadWriteTarget,
 } from "./threadWrites";
+
+/** T12-0's comment ids before any reply. */
+const KNOWN = ["C12-0", "C12-0-1"];
 
 /**
  * The viewer is the fake's gh login, Octo_Cat; the PR author octo-author.
@@ -25,6 +30,7 @@ import {
 describe("thread writes", () => {
 	let pr: PrFixture;
 	let session: Session;
+	let ids = 0;
 
 	const said = (login: string, text: string, m: number) =>
 		threadComment({
@@ -73,17 +79,33 @@ describe("thread writes", () => {
 		stored().prs[12]?.graphql.reviewThreads[i]?.comments.nodes.map(
 			(c) => c.body,
 		);
+	const log = () => pr.ghLog().split("\n");
 	const writeCalls = () =>
-		pr
-			.ghLog()
-			.split("\n")
-			.filter((l) => /^api -X POST|resolveReviewThread/.test(l));
-	const reply = (body: string, more: { retry?: boolean; at?: string } = {}) =>
-		session.replyToThread("T12-0", {
-			body,
-			attemptedAt: more.at ?? new Date().toISOString(),
-			retry: more.retry ?? false,
-		});
+		log().filter((l) => /^api -X POST|resolveReviewThread/.test(l));
+	/** Reads of one thread by id (a write's re-read). */
+	const threadReads = () =>
+		(
+			pr
+				.ghLog()
+				.match(/node\(id: \$id\) \{\s*\.\.\. on PullRequestReviewThread/g) ?? []
+		).length;
+	const request = (body: string, more: Partial<ReplyRequest> = {}) => ({
+		body,
+		attemptedAt: new Date().toISOString(),
+		retry: false,
+		clientId: `c${++ids}`,
+		knownCommentIds: KNOWN,
+		...more,
+	});
+	const reply = (
+		body: string,
+		more: Partial<ReplyRequest> = {},
+		s: Session = session,
+	) => s.replyToThread("T12-0", request(body, more));
+	const thread0 = async (s: Session = session) =>
+		(await s.threads((await s.overview()).readId, "full")).threads.find(
+			(t) => t.id === "T12-0",
+		);
 
 	beforeEach(async () => {
 		pr = createPrFixture();
@@ -93,15 +115,14 @@ describe("thread writes", () => {
 		await session.threads((await session.overview()).readId, "summary");
 	});
 	afterEach(async () => {
+		// Never the GraphQL reply, which would join a pending review.
+		expect(pr.ghLog()).not.toContain("addPullRequestReviewThreadReply");
 		await pr.cleanup();
 	});
 
 	it("reply posts via REST to the thread's first comment and returns the new comment and attention", async () => {
 		const { readId } = await session.overview();
-		const before = (await session.threads(readId, "full")).threads.find(
-			(t) => t.id === "T12-0",
-		);
-		expect(before).toMatchObject({
+		expect(await thread0()).toMatchObject({
 			attention: ["Octo_Cat"],
 			yourTurn: true,
 			commentCount: 2,
@@ -128,10 +149,7 @@ describe("thread writes", () => {
 		]);
 		expect(answer.comments.comments.at(-1)?.id).toBe(answer.comment?.id);
 		// The kept read agrees until the next Refresh.
-		const after = (await session.threads(readId, "full")).threads.find(
-			(t) => t.id === "T12-0",
-		);
-		expect(after).toMatchObject({
+		expect(await thread0()).toMatchObject({
 			commentCount: 3,
 			attention: ["octo-author"],
 		});
@@ -139,14 +157,44 @@ describe("thread writes", () => {
 		expect(view[0]?.comments).toHaveLength(3);
 	});
 
+	it("a resend while the first attempt still runs waits for it and doesn't post again", async () => {
+		threads({ replyDelayMs: 1500 });
+		const clientId = "same";
+		const first = reply("Done", { clientId });
+		await new Promise((r) => setTimeout(r, 200));
+		// The connection dropped: the client resends.
+		const again = reply("Done", { clientId, retry: true });
+		const [a, b] = await Promise.all([first, again]);
+		expect(bodies(0)).toEqual(["Should this expire?", "Why would it?", "Done"]);
+		expect(writeCalls()).toHaveLength(1);
+		expect(b.comment?.id).toBe(a.comment?.id);
+		expect(b.commentCount).toBe(3);
+	});
+
+	it("a resend after a reload finds the reply posted: in this session, and on GitHub for a new one", async () => {
+		const clientId = "reloaded";
+		const first = await reply("Done", { clientId });
+		// The answer never reached the page; after a reload it resends.
+		const again = await reply("Done", { clientId, retry: true });
+		expect(again.comment?.id).toBe(first.comment?.id);
+		expect(writeCalls()).toHaveLength(1);
+		// crb restarted too: GitHub's comments say it's there.
+		const fresh = await Session.open(pr.arg, process.cwd());
+		await fresh.threads((await fresh.overview()).readId, "summary");
+		const found = await reply("Done", { clientId, retry: true }, fresh);
+		expect(found.comment?.id).toBe(first.comment?.id);
+		expect(writeCalls()).toHaveLength(1);
+		expect(bodies(0)).toHaveLength(3);
+	});
+
 	it("a retried reply that already landed is not posted again", async () => {
 		threads({ failNext: { op: "reply", status: 502, afterWrite: true } });
-		const at = new Date().toISOString();
-		const first = await reply("Done", { at }).catch((e) => e);
+		const clientId = "lost";
+		const first = await reply("Done", { clientId }).catch((e) => e);
 		expect(first).toBeInstanceOf(GhError);
 		expect(first).not.toBeInstanceOf(WriteRefusedError);
 		expect(bodies(0)).toEqual(["Should this expire?", "Why would it?", "Done"]);
-		const answer = await reply("Done  ", { at, retry: true });
+		const answer = await reply("Done  ", { clientId, retry: true });
 		expect(bodies(0)).toEqual(["Should this expire?", "Why would it?", "Done"]);
 		expect(writeCalls()).toHaveLength(1);
 		expect(answer.comment).toMatchObject({ id: "C12-0-2", body: "Done" });
@@ -155,22 +203,67 @@ describe("thread writes", () => {
 
 	it("a retry whose first attempt didn't land posts it", async () => {
 		threads({ failNext: { op: "reply", status: 502 } });
-		const at = new Date().toISOString();
-		await expect(reply("Done", { at })).rejects.toBeInstanceOf(GhError);
+		const clientId = "failed";
+		await expect(reply("Done", { clientId })).rejects.toBeInstanceOf(GhError);
 		expect(bodies(0)).toHaveLength(2);
-		const answer = await reply("Done", { at, retry: true });
+		const answer = await reply("Done", { clientId, retry: true });
 		expect(bodies(0)).toEqual(["Should this expire?", "Why would it?", "Done"]);
 		expect(answer.comment?.body).toBe("Done");
 	});
 
-	it("a retry doesn't take an older identical comment for this one", async () => {
-		await reply("Same");
-		const later = new Date(Date.now() + DEDUPE_SLACK_MS + 5000).toISOString();
-		await reply("Same", { at: later, retry: true });
+	it("a retry doesn't take an identical comment the client knew, or another reply's, for this one", async () => {
+		const first = await reply("Same");
+		const id = first.comment?.id ?? "";
+		// Known when this one was first sent.
+		await reply("Same", { retry: true, knownCommentIds: [...KNOWN, id] });
 		expect(bodies(0)?.filter((b) => b === "Same")).toHaveLength(2);
+		// Unknown to the client, but another reply this session posted.
+		const ids3 = (await thread0())?.commentCount;
+		expect(ids3).toBe(4);
+		await reply("Same", { retry: true });
+		expect(bodies(0)?.filter((b) => b === "Same")).toHaveLength(3);
 	});
 
-	it("pending review → 409 pending-review with url ending /files, nothing stored", async () => {
+	it("GitHub not listing the reply yet: re-read, then the posted comment is added", async () => {
+		threads({ replyUnlistedMs: 60_000 });
+		const before = threadReads();
+		const answer = await reply("Later <b>");
+		// The first re-read and one after each wait.
+		expect(threadReads() - before).toBe(3);
+		expect(answer).toMatchObject({
+			commentCount: 3,
+			attention: ["octo-author"],
+			comment: {
+				body: "Later <b>",
+				html: '<p dir="auto">Later &lt;b&gt;</p>',
+				author: "Octo_Cat",
+			},
+		});
+		const { readId } = await session.overview();
+		const { threads: view } = await session.comments(readId, ["T12-0"]);
+		expect(
+			view[0]?.comments.filter((c) => c.body === "Later <b>"),
+		).toHaveLength(1);
+		expect((await thread0())?.commentCount).toBe(3);
+	});
+
+	it("GitHub listing it after a moment: no more re-reads than needed", async () => {
+		threads({ replyUnlistedMs: 150 });
+		const before = threadReads();
+		const answer = await reply("Soon");
+		expect(threadReads() - before).toBe(2);
+		expect(answer.commentCount).toBe(3);
+	});
+
+	it("posted, then the thread is gone: 200 with the reply, from the kept copy", async () => {
+		await session.comments((await session.overview()).readId, ["T12-0"]);
+		threads({ replyDeletesThread: true });
+		const answer = await reply("Bye");
+		expect(answer).toMatchObject({ commentCount: 3, comment: { body: "Bye" } });
+	});
+
+	it("pending review → 409 pending-review with url ending /files, nothing stored; it shows until a reply posts", async () => {
+		expect((await session.overview()).pendingReview).toBeNull();
 		threads({}, [
 			{ author: { login: "Octo_Cat" }, state: "PENDING", submittedAt: null },
 		]);
@@ -181,6 +274,13 @@ describe("thread writes", () => {
 			url: "https://github.com/acme/widget/pull/12/files",
 		});
 		expect(bodies(0)).toHaveLength(2);
+		expect((await session.overview()).pendingReview).toEqual({
+			url: "https://github.com/acme/widget/pull/12/files",
+		});
+		// Discarded on GitHub: the next reply posts, and the warning goes.
+		threads();
+		await reply("Hi");
+		expect((await session.overview()).pendingReview).toBeNull();
 	});
 
 	it("resolve and unresolve flip resolved; resolved empties attention", async () => {
@@ -192,12 +292,7 @@ describe("thread writes", () => {
 			viewerCan: { reply: true, resolve: false, unresolve: true },
 		});
 		expect(stored().prs[12]?.graphql.reviewThreads[0]?.isResolved).toBe(true);
-		const { readId } = await session.overview();
-		expect(
-			(await session.threads(readId, "full")).threads.find(
-				(t) => t.id === "T12-0",
-			)?.resolved,
-		).toBe(true);
+		expect((await thread0())?.resolved).toBe(true);
 		const open = await session.setThreadResolved("T12-0", false);
 		expect(open).toMatchObject({
 			resolved: false,
@@ -208,6 +303,18 @@ describe("thread writes", () => {
 		await expect(
 			session.setThreadResolved("T12-0", false),
 		).resolves.toMatchObject({ resolved: false });
+	});
+
+	it("a reply then a resolve on one thread land in that order", async () => {
+		threads({ replyDelayMs: 800 });
+		const replied = reply("First");
+		const resolved = session.setThreadResolved("T12-0", true);
+		await Promise.all([replied, resolved]);
+		const order = writeCalls().map((l) =>
+			l.startsWith("api -X") ? "reply" : "resolve",
+		);
+		expect(order).toEqual(["reply", "resolve"]);
+		expect(await thread0()).toMatchObject({ resolved: true, commentCount: 3 });
 	});
 
 	it("deleted thread → 404 gone", async () => {
@@ -222,6 +329,14 @@ describe("thread writes", () => {
 		).rejects.toMatchObject({ code: "gone" });
 		// The cached thread was tried (GitHub said gone); the other PR's never.
 		expect(writeCalls()).toHaveLength(2);
+	});
+
+	it("GitHub's 404 for a thread that is still there: forbidden, not gone", async () => {
+		threads({ failNext: { op: "reply", status: 404 } });
+		await expect(reply("Hi")).rejects.toMatchObject({
+			code: "forbidden",
+			message: "GitHub refused the reply: Not Found",
+		});
 	});
 
 	it("GitHub 403 → 403 forbidden with GitHub's message", async () => {
@@ -266,17 +381,11 @@ describe("thread writes", () => {
 			resolve: false,
 			unresolve: false,
 		});
-		await expect(
-			theirs.replyToThread("T12-0", {
-				body: "Hi",
-				attemptedAt: new Date().toISOString(),
-				retry: false,
-			}),
-		).rejects.toMatchObject({ code: "writes-off" });
+		await expect(reply("Hi", {}, theirs)).rejects.toMatchObject({
+			code: "writes-off",
+		});
 		await expect(theirs.setThreadResolved("T12-0", true)).rejects.toMatchObject(
-			{
-				code: "writes-off",
-			},
+			{ code: "writes-off" },
 		);
 		expect(writeCalls()).toEqual([]);
 		// The gh login under another spelling is the viewer.
@@ -284,6 +393,74 @@ describe("thread writes", () => {
 			viewer: "octo-cat",
 		});
 		expect(self.writes()).toBe("on");
+	});
+
+	it("a closed session refuses writes as closed (503)", async () => {
+		await session.close();
+		await expect(reply("Hi")).rejects.toMatchObject({
+			name: "Error",
+			message: "The session is closed",
+		});
+		expect(writeCalls()).toEqual([]);
+	});
+
+	describe("a write's re-read in a kept read", () => {
+		const nodes = (text: string) => ({
+			summary: reviewThread({ path: "a.txt", line: 2 }, [said("rev", text, 1)]),
+			content: {
+				comments: {
+					nodes: [{ ...said("rev", text, 1), id: "C12-0" }],
+				},
+			},
+		});
+		const read = () =>
+			new OverviewRead({
+				ref: { owner: "acme", repo: "widget", number: 12 },
+				viewer: "octo-cat",
+				writes: "on",
+				code: {
+					window: async () => null,
+					code: async () => null,
+				} as unknown as ThreadCodeSource,
+				base: async () => ({ snapshot: "", ref: "" }),
+			});
+		const text = async (r: OverviewRead) =>
+			(await r.comments(["T12-0"])).threads[0]?.comments[0]?.text;
+		const withId = (n: ReturnType<typeof nodes>) => ({
+			...n,
+			summary: { ...n.summary, id: "T12-0" },
+		});
+
+		it("a later re-read wins over an earlier one, whichever is applied last", async () => {
+			const r = read();
+			await r.threads("full");
+			r.applyWrite("T12-0", withId(nodes("newer")), 2, Date.now());
+			r.applyWrite("T12-0", withId(nodes("older")), 1, Date.now());
+			expect(await text(r)).toBe("newer");
+			await r.settled;
+		});
+
+		it("is ignored by a read that started after it, and waits for a summary still to come", async () => {
+			const startedAt = Date.now() - 1000;
+			const late = read();
+			late.applyWrite("T12-0", withId(nodes("re-read")), 1, startedAt);
+			expect(await text(late)).toBe("Should this expire?");
+			await late.settled;
+			const early = new OverviewRead({
+				ref: { owner: "acme", repo: "widget", number: 12 },
+				viewer: "octo-cat",
+				writes: "on",
+				code: {
+					window: async () => null,
+					code: async () => null,
+				} as unknown as ThreadCodeSource,
+				base: async () => ({ snapshot: "", ref: "" }),
+			});
+			// Before its summary is in.
+			early.applyWrite("T12-0", withId(nodes("re-read")), 1, Date.now());
+			expect(await text(early)).toBe("re-read");
+			await early.settled;
+		});
 	});
 });
 
@@ -297,10 +474,21 @@ describe("thread writes off and refused before GitHub", () => {
 		summaryOf: () => {
 			throw new Error("no read");
 		},
+		cached: () => undefined,
 		nextSeq: () => 1,
 		apply: () => {},
+		posted: () => undefined,
+		remember: () => {},
+		claimedIds: () => new Set(),
+		setPendingReview: () => {},
 	});
-	const req = { body: "Hi", attemptedAt: "2026-01-03T10:00:00Z", retry: false };
+	const req: ReplyRequest = {
+		body: "Hi",
+		attemptedAt: "2026-01-03T10:00:00Z",
+		retry: false,
+		clientId: "c1",
+		knownCommentIds: [],
+	};
 
 	it("as-of session → 403 writes-off", async () => {
 		await expect(
@@ -308,54 +496,59 @@ describe("thread writes off and refused before GitHub", () => {
 		).rejects.toMatchObject({ code: "writes-off" });
 		await expect(
 			setResolved(target("as-of"), "T1", true),
-		).rejects.toMatchObject({
-			code: "writes-off",
-		});
+		).rejects.toMatchObject({ code: "writes-off" });
 	});
 
-	it("a blank or oversized reply → invalid", async () => {
-		for (const body of ["", " \n\t", "x".repeat(65537)]) {
+	it("a blank or oversized reply, or one without its ids → invalid", async () => {
+		const bad = [
+			{ ...req, body: "" },
+			{ ...req, body: " \n\t" },
+			{ ...req, body: "x".repeat(65537) },
+			{ ...req, clientId: "" },
+			{ ...req, knownCommentIds: [1] },
+		];
+		for (const r of bad) {
 			await expect(
-				replyToThread(target("on"), "T1", { ...req, body }),
+				replyToThread(target("on"), "T1", r as ReplyRequest),
 			).rejects.toMatchObject({ code: "invalid" });
 		}
 	});
 });
 
 describe("findReply", () => {
-	const node = (login: string, body: string, publishedAt: string | null) => ({
-		id: `${login}-${body}`,
+	const node = (id: string, login: string, body: string, pending = false) => ({
+		id,
 		author: { login },
 		body,
-		createdAt: publishedAt ?? "2026-01-03T10:00:00Z",
-		publishedAt,
-		state: publishedAt ? "SUBMITTED" : "PENDING",
+		createdAt: "2026-01-03T10:00:00Z",
+		publishedAt: pending ? null : "2026-01-03T10:00:00Z",
+		state: pending ? "PENDING" : "SUBMITTED",
 	});
 	const content = (...nodes: unknown[]) => ({ comments: { nodes } });
-	const AT = "2026-01-03T10:00:00Z";
 
 	it("matches the viewer's comment with the same body, line ends and trailing space aside", () => {
 		expect(
 			findReply(
-				content(node("Octo_Cat", "Fine\r\nthanks  \n", "2026-01-03T10:00:02Z")),
+				content(node("a", "Octo_Cat", "Fine\r\nthanks  \n")),
 				"octo-cat",
 				"Fine\nthanks",
-				AT,
+				[],
 			)?.id,
-		).toBe("Octo_Cat-Fine\r\nthanks  \n");
+		).toBe("a");
 	});
 
-	it("takes up to a minute's clock skew, not older; never another's or a pending one", () => {
+	it("only a comment new to the client and not another reply's; never another's or a pending one", () => {
 		const c = content(
-			node("Octo_Cat", "A", "2026-01-03T09:59:30Z"),
-			node("Octo_Cat", "B", "2026-01-03T09:58:00Z"),
-			node("rev", "C", "2026-01-03T10:00:05Z"),
-			node("Octo_Cat", "D", null),
-			node("Octo_Cat", " A", "2026-01-03T10:00:05Z"),
+			node("old", "Octo_Cat", "A"),
+			node("theirs", "rev", "A"),
+			node("pending", "Octo_Cat", "A", true),
+			node("other", "Octo_Cat", "A"),
+			node("new", "Octo_Cat", "A"),
 		);
-		expect(findReply(c, "octo-cat", "A", AT)?.id).toBe("Octo_Cat-A");
-		expect(findReply(c, "octo-cat", "B", AT)).toBeNull();
-		expect(findReply(c, "octo-cat", "C", AT)).toBeNull();
-		expect(findReply(c, "octo-cat", "D", AT)).toBeNull();
+		expect(findReply(c, "octo-cat", "A", ["old"], new Set(["other"]))?.id).toBe(
+			"new",
+		);
+		expect(findReply(c, "octo-cat", "A", ["old", "new", "other"])).toBeNull();
+		expect(findReply(c, "octo-cat", " A", [])).toBeNull();
 	});
 });
