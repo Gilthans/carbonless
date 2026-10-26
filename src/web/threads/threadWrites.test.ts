@@ -51,6 +51,8 @@ let drafts: DraftStore;
 function setup() {
 	calls = [];
 	applied = [];
+	known = { T1: ["c1", "c2"] };
+	ids = 0;
 	drafts = new DraftStore(() => undefined);
 	const call =
 		(op: Call["op"]) =>
@@ -63,8 +65,14 @@ function setup() {
 		resolve: call("resolve"),
 		applied: (u) => applied.push(u),
 		drafts,
+		knownComments: (threadId) => known[threadId] ?? [],
+		newId: () => `cid${++ids}`,
 	});
 }
+
+/** The comment ids the page has per thread, for knownCommentIds. */
+let known: Record<string, string[]> = {};
+let ids = 0;
 
 /** Lets settled promises run their `then`s. */
 const flush = () => vi.advanceTimersByTimeAsync(0);
@@ -142,6 +150,8 @@ describe("ThreadWrites", () => {
 			body: "Fixed",
 			attemptedAt: "2026-01-03T12:00:00.000Z",
 			retry: false,
+			clientId: "cid1",
+			knownCommentIds: ["c1", "c2"],
 		});
 		for (const status of [0, 408, 429, 500, 502]) {
 			calls.at(-1)?.reject(new ApiError(status, `failed ${status}`));
@@ -232,11 +242,15 @@ describe("ThreadWrites", () => {
 		calls[0]?.reject(new ApiError(403, "no"));
 		await flush();
 		drafts.setText("T1", "Fixed, really");
+		known.T1 = ["c1", "c2", "c3"];
 		w.retry("T1");
+		// The same reply: its client id and the comments known when first sent.
 		expect(calls[1]?.req).toEqual({
 			body: "Fixed, really",
 			attemptedAt: "2026-01-03T12:00:00.000Z",
 			retry: true,
+			clientId: "cid1",
+			knownCommentIds: ["c1", "c2"],
 		});
 		expect(drafts.text("T1")).toBe("");
 		expect(w.state().threads.get("T1")?.failed).toBeNull();
@@ -273,7 +287,12 @@ describe("ThreadWrites", () => {
 			{
 				threadId: "T1",
 				text: "Fixed",
-				sending: { attemptedAt: "2026-01-03T12:00:00.000Z", sentOnce: true },
+				sending: {
+					attemptedAt: "2026-01-03T12:00:00.000Z",
+					sentOnce: true,
+					clientId: "cid1",
+					knownCommentIds: ["c1", "c2"],
+				},
 			},
 		]);
 		calls[0]?.resolve(update("T1"));
@@ -283,14 +302,41 @@ describe("ThreadWrites", () => {
 
 	it("resume() resends unconfirmed replies with retry: true, once", async () => {
 		const w = setup();
-		drafts.addSending("T1", "Fixed", "2026-01-03T11:00:00.000Z");
+		drafts.addSending("T1", "Fixed", {
+			attemptedAt: "2026-01-03T11:00:00.000Z",
+			clientId: "before-reload",
+			knownCommentIds: ["c1"],
+		});
 		w.resume();
 		w.resume();
+		// As first sent, before the reload: never a new id.
 		expect(calls.map((c) => c.req)).toEqual([
-			{ body: "Fixed", attemptedAt: "2026-01-03T11:00:00.000Z", retry: true },
+			{
+				body: "Fixed",
+				attemptedAt: "2026-01-03T11:00:00.000Z",
+				retry: true,
+				clientId: "before-reload",
+				knownCommentIds: ["c1"],
+			},
 		]);
 		expect(w.state().threads.get("T1")?.replies).toEqual([
 			{ text: "Fixed", attemptedAt: "2026-01-03T11:00:00.000Z" },
+		]);
+	});
+
+	it("gives each reply its own client id, the same on every resend", async () => {
+		const w = setup();
+		w.reply("T1", "a");
+		calls[0]?.reject(new ApiError(502, "bad gateway"));
+		await flush();
+		await vi.advanceTimersByTimeAsync(1000);
+		calls[1]?.resolve(update("T1"));
+		await flush();
+		w.reply("T1", "b");
+		expect(calls.map((c) => (c.req as ReplyRequest).clientId)).toEqual([
+			"cid1",
+			"cid1",
+			"cid2",
 		]);
 	});
 
@@ -418,7 +464,13 @@ describe("postReply", () => {
 				),
 		);
 		vi.stubGlobal("fetch", fetch);
-		const req = { body: "Hi", attemptedAt: "x", retry: false };
+		const req = {
+			body: "Hi",
+			attemptedAt: "x",
+			retry: false,
+			clientId: "cid",
+			knownCommentIds: [],
+		};
 		const error = await postReply("PRRT_1", req).catch((e: unknown) => e);
 		expect(fetch).toHaveBeenCalledWith(
 			"/api/threads/PRRT_1/replies",

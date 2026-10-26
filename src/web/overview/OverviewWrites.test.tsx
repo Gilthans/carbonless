@@ -396,6 +396,54 @@ describe("WriteWarnings in who's on it", () => {
 		expect(warning).toHaveTextContent("You can't resolve threads in this repo");
 	});
 
+	it("checks resolve on open threads and unresolve on resolved ones, as GitHub gives them", async () => {
+		renderOverview({}, [
+			thread("a", {
+				viewerCan: { reply: true, resolve: true, unresolve: false },
+			}),
+			thread("b", {
+				resolved: true,
+				viewerCan: { reply: true, resolve: false, unresolve: true },
+			}),
+		]);
+		const who = await screen.findByRole("region", { name: "Who's on it" });
+		await screen.findAllByTestId("thread");
+		expect(within(who).queryByTestId("permission-warning")).toBeNull();
+	});
+
+	it("warns when a resolved thread can't be unresolved", async () => {
+		renderOverview({}, [
+			thread("b", {
+				resolved: true,
+				viewerCan: { reply: true, resolve: false, unresolve: false },
+			}),
+		]);
+		const who = await screen.findByRole("region", { name: "Who's on it" });
+		expect(
+			await within(who).findByTestId("permission-warning"),
+		).toHaveTextContent("You can't resolve threads in this repo");
+	});
+
+	it("no warning while a resolve is on its way", async () => {
+		const user = userEvent.setup();
+		renderOverview(
+			{},
+			[
+				thread("a", {
+					viewerCan: { reply: true, resolve: true, unresolve: false },
+				}),
+			],
+			() => null,
+		);
+		const who = await screen.findByRole("region", { name: "Who's on it" });
+		const card = screen.getByTestId("thread");
+		await user.click(within(card).getByRole("button", { name: "Resolve" }));
+		expect(within(card).getByTestId("thread-head")).toHaveTextContent(
+			/^Resolved thread/,
+		);
+		expect(within(who).queryByTestId("permission-warning")).toBeNull();
+	});
+
 	it("nothing when the session doesn't write", async () => {
 		renderOverview(
 			{

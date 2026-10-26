@@ -15,8 +15,21 @@ export interface Draft {
 	threadId: string;
 	text: string;
 	/** Sent, not yet confirmed. */
-	sending?: { attemptedAt: string; sentOnce: boolean };
+	sending?: Sending;
 }
+
+/** A sent reply's identity for the server's duplicate check, kept across reloads. */
+export interface Sending {
+	attemptedAt: string;
+	sentOnce: boolean;
+	/** Made by the client once per reply; the same on every resend. */
+	clientId: string;
+	/** The thread's comment ids known when it was first sent. */
+	knownCommentIds: string[];
+}
+
+/** What a reply is sent with besides its text. */
+export type SendingId = Omit<Sending, "sentOnce">;
 
 export const draftsKey = (pr: {
 	owner: string;
@@ -35,7 +48,10 @@ function isDraft(value: unknown): value is Draft {
 		typeof d.sending === "object" &&
 		d.sending !== null &&
 		typeof d.sending.attemptedAt === "string" &&
-		typeof d.sending.sentOnce === "boolean"
+		typeof d.sending.sentOnce === "boolean" &&
+		typeof d.sending.clientId === "string" &&
+		Array.isArray(d.sending.knownCommentIds) &&
+		d.sending.knownCommentIds.every((id) => typeof id === "string")
 	);
 }
 
@@ -114,10 +130,10 @@ export class DraftStore {
 	}
 
 	/** A reply is sent: kept until confirmed (or returned to the box). */
-	addSending(threadId: string, text: string, attemptedAt: string): void {
+	addSending(threadId: string, text: string, id: SendingId): void {
 		this.#set([
 			...this.#drafts,
-			{ threadId, text, sending: { attemptedAt, sentOnce: false } },
+			{ threadId, text, sending: { ...id, sentOnce: false } },
 		]);
 	}
 
@@ -127,7 +143,9 @@ export class DraftStore {
 		const next = this.#drafts.map((d) => {
 			if (!this.#is(d, threadId, attemptedAt) || d.sending?.sentOnce) return d;
 			changed = true;
-			return { ...d, sending: { attemptedAt, sentOnce: true } };
+			return d.sending
+				? { ...d, sending: { ...d.sending, sentOnce: true } }
+				: d;
 		});
 		if (changed) this.#set(next);
 	}

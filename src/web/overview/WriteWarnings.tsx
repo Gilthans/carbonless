@@ -32,10 +32,12 @@ function Warning(props: { icon: Icon; testId: string; children: ReactNode }) {
  */
 export function WriteWarnings(props: {
 	pr: PrOverview;
+	/** As shown: a resolve on its way may have flipped `resolved`. */
 	threads: ReviewThread[] | undefined;
 }) {
 	const { pr } = props;
-	const refused = useThreadWrites().pendingReview;
+	const writes = useThreadWrites();
+	const refused = writes.pendingReview;
 	if (pr.writes !== "on") return null;
 	const pending = pr.pendingReview ?? refused;
 	const href = safeHref(pending?.url);
@@ -43,8 +45,16 @@ export function WriteWarnings(props: {
 		(t) => t.id !== "" && t.unavailable === undefined,
 	);
 	const noReply = threads.some((t) => !t.viewerCan.reply);
-	const noResolve = threads.some(
-		(t) => !t.viewerCan.resolve && !t.viewerCan.unresolve,
+	// GitHub says resolve only on open threads, unresolve only on resolved
+	// ones (the other is always false), for the state it read. A thread
+	// flipped here and not yet confirmed may show the other state: either
+	// flag says the viewer may.
+	const noResolve = threads.some((t) =>
+		writes.threads.get(t.id)?.resolved !== undefined
+			? !t.viewerCan.resolve && !t.viewerCan.unresolve
+			: t.resolved
+				? !t.viewerCan.unresolve
+				: !t.viewerCan.resolve,
 	);
 	if (!pending && !noReply && !noResolve) return null;
 	return (

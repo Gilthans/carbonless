@@ -27,6 +27,12 @@ function memoryStorage(): Storage {
 
 afterEach(cleanup);
 
+const sent = (attemptedAt: string) => ({
+	attemptedAt,
+	clientId: `id-${attemptedAt}`,
+	knownCommentIds: [],
+});
+
 function Box({ id }: { id: string }) {
 	const [text, setText] = useDraft(id);
 	return (
@@ -64,14 +70,23 @@ describe("drafts", () => {
 		const before = new DraftStore(() => storage);
 		before.bind(KEY);
 		before.setText("T1", "kept");
-		before.addSending("T2", "sent", "2026-01-01T00:00:00.000Z");
+		before.addSending("T2", "sent", {
+			attemptedAt: "2026-01-01T00:00:00.000Z",
+			clientId: "cid1",
+			knownCommentIds: ["c1"],
+		});
 		const after = new DraftStore(() => storage);
 		after.bind(KEY);
 		expect(after.text("T1")).toBe("kept");
 		expect(after.get()).toContainEqual({
 			threadId: "T2",
 			text: "sent",
-			sending: { attemptedAt: "2026-01-01T00:00:00.000Z", sentOnce: false },
+			sending: {
+				attemptedAt: "2026-01-01T00:00:00.000Z",
+				sentOnce: false,
+				clientId: "cid1",
+				knownCommentIds: ["c1"],
+			},
 		});
 		// Another PR's drafts stay apart.
 		const other = new DraftStore(() => storage);
@@ -93,7 +108,7 @@ describe("drafts", () => {
 	it("keeps a sent reply until confirmed, then removes it", () => {
 		const store = new DraftStore(() => memoryStorage());
 		store.bind(KEY);
-		store.addSending("T1", "Fixed", "t0");
+		store.addSending("T1", "Fixed", sent("t0"));
 		expect(unsent(store.get())).toBe(true);
 		store.markSent("T1", "t0");
 		expect(store.get()[0]?.sending?.sentOnce).toBe(true);
@@ -104,7 +119,7 @@ describe("drafts", () => {
 
 	it("a refused reply goes back into the box, ahead of what was typed since", () => {
 		const store = new DraftStore(() => undefined);
-		store.addSending("T1", "Fixed", "t0");
+		store.addSending("T1", "Fixed", sent("t0"));
 		store.setText("T1", "PS");
 		store.returnToBox("T1", "t0");
 		expect(store.text("T1")).toBe("Fixed\n\nPS");

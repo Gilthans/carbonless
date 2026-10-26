@@ -26,7 +26,20 @@ import {
 	RETRY_DELAYS_MS,
 	STALL_ATTEMPTS,
 } from "../files/stateSync";
-import { type DraftStore, draftsFor, draftsKey } from "./drafts";
+import {
+	type DraftStore,
+	draftsFor,
+	draftsKey,
+	type SendingId,
+} from "./drafts";
+
+/** A random id for a reply; unique enough where randomUUID is missing (plain http). */
+function newClientId(): string {
+	try {
+		if (typeof crypto.randomUUID === "function") return crypto.randomUUID();
+	} catch {}
+	return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}${Math.random().toString(36).slice(2)}`;
+}
 
 /** How long an Overview card resolved or unresolved fades before it moves. */
 export const FADE_MS = 4000;
@@ -39,8 +52,8 @@ type Op =
 	| {
 			kind: "reply";
 			text: string;
-			/** The first attempt, for the server's duplicate check. */
-			attemptedAt: string;
+			/** The first attempt, its client id and the comments known then: the server's duplicate check. */
+			id: SendingId;
 			/** A resend after a failed or unknown attempt: dedupe first. */
 			retry: boolean;
 	  }
@@ -91,6 +104,10 @@ export interface ThreadWritesDeps {
 	/** A write's answer: the thread as GitHub has it now. */
 	applied: (update: ThreadUpdate) => void;
 	drafts: DraftStore;
+	/** The thread's comment ids the page has now (none when not read yet). */
+	knownComments?: (threadId: string) => string[];
+	/** A new client id for a reply (crypto.randomUUID by default). */
+	newId?: () => string;
 }
 
 interface Lane {
@@ -106,8 +123,8 @@ interface Lane {
 	failed: WriteFailure | null;
 	/** A refused resolve's intended state, kept until Retry or a newer one. */
 	refusedResolved?: boolean;
-	/** The refused reply's first attempt, for Retry. */
-	refusedAttemptedAt?: string;
+	/** The refused reply's identity, for Retry. */
+	refusedId?: SendingId;
 }
 
 const actionOf = (op: Op): WriteAction =>
@@ -160,13 +177,13 @@ export class ThreadWrites {
 	/** Posts `text` as a reply (blank text is never sent); the box clears. */
 	reply(threadId: string, text: string): void {
 		if (!text.trim()) return;
-		const attemptedAt = this.#stamp();
+		const id = this.#newSending(threadId);
 		const { drafts } = this.#deps;
-		drafts.addSending(threadId, text, attemptedAt);
+		drafts.addSending(threadId, text, id);
 		drafts.setText(threadId, "");
 		const lane = this.#lane(threadId);
 		if (lane.failed?.action === "Reply") this.#clearFailure(lane);
-		this.#push(lane, { kind: "reply", text, attemptedAt, retry: false });
+		this.#push(lane, { kind: "reply", text, id, retry: false });
 	}
 
 	/** Resolves or unresolves the thread. */
@@ -194,12 +211,12 @@ export class ThreadWrites {
 		const failed = lane.failed;
 		if (failed?.action === "Reply") {
 			const text = this.#deps.drafts.text(threadId);
-			const attemptedAt = lane.refusedAttemptedAt ?? this.#stamp();
+			const id = lane.refusedId ?? this.#newSending(threadId);
 			this.#clearFailure(lane);
 			if (text.trim()) {
-				this.#deps.drafts.addSending(threadId, text, attemptedAt);
+				this.#deps.drafts.addSending(threadId, text, id);
 				this.#deps.drafts.setText(threadId, "");
-				lane.ops.push({ kind: "reply", text, attemptedAt, retry: true });
+				lane.ops.push({ kind: "reply", text, id, retry: true });
 			}
 		} else if (lane.refusedResolved !== undefined) {
 			const resolved = lane.refusedResolved;
@@ -225,13 +242,13 @@ export class ThreadWrites {
 	resume(): void {
 		for (const d of this.#deps.drafts.get()) {
 			if (!d.sending) continue;
-			const { attemptedAt } = d.sending;
+			const { sentOnce: _, ...id } = d.sending;
 			const lane = this.#lane(d.threadId);
 			const known = lane.ops.some(
-				(op) => op.kind === "reply" && op.attemptedAt === attemptedAt,
+				(op) => op.kind === "reply" && op.id.clientId === id.clientId,
 			);
 			if (known) continue;
-			lane.ops.push({ kind: "reply", text: d.text, attemptedAt, retry: true });
+			lane.ops.push({ kind: "reply", text: d.text, id, retry: true });
 			if (lane.ops.length === 1) lane.since = Date.now();
 		}
 		this.#changed();
@@ -247,6 +264,15 @@ export class ThreadWrites {
 			this.#listeners.delete(listener);
 		};
 	};
+
+	/** A new reply's identity: now, a client id, the comments known now. */
+	#newSending(threadId: string): SendingId {
+		return {
+			attemptedAt: this.#stamp(),
+			clientId: (this.#deps.newId ?? newClientId)(),
+			knownCommentIds: this.#deps.knownComments?.(threadId) ?? [],
+		};
+	}
 
 	/** A unique ISO time for a reply's first attempt. */
 	#stamp(): string {
@@ -286,7 +312,7 @@ export class ThreadWrites {
 	#clearFailure(lane: Lane) {
 		lane.failed = null;
 		lane.refusedResolved = undefined;
-		lane.refusedAttemptedAt = undefined;
+		lane.refusedId = undefined;
 	}
 
 	/** Drops a lane with nothing left to show. */
@@ -320,11 +346,13 @@ export class ThreadWrites {
 			if (op.kind === "reply") {
 				const req: ReplyRequest = {
 					body: op.text,
-					attemptedAt: op.attemptedAt,
+					attemptedAt: op.id.attemptedAt,
 					retry: op.retry,
+					clientId: op.id.clientId,
+					knownCommentIds: op.id.knownCommentIds,
 				};
 				const answer = this.#deps.reply(threadId, req);
-				this.#deps.drafts.markSent(threadId, op.attemptedAt);
+				this.#deps.drafts.markSent(threadId, op.id.attemptedAt);
 				update = await answer;
 			} else {
 				update = await this.#deps.resolve(threadId, { resolved: op.resolved });
@@ -343,7 +371,7 @@ export class ThreadWrites {
 			// Showing the answer failed; GitHub has it all the same.
 		}
 		if (op.kind === "reply") {
-			this.#deps.drafts.confirm(threadId, op.attemptedAt);
+			this.#deps.drafts.confirm(threadId, op.id.attemptedAt);
 			// GitHub took a reply: a pending review no longer blocks.
 			this.#pendingReview = null;
 		}
@@ -388,13 +416,13 @@ export class ThreadWrites {
 		};
 		if (op.kind === "reply") {
 			lane.refusedResolved = undefined;
-			lane.refusedAttemptedAt = op.attemptedAt;
-			this.#deps.drafts.returnToBox(threadId, op.attemptedAt);
+			lane.refusedId = op.id;
+			this.#deps.drafts.returnToBox(threadId, op.id.attemptedAt);
 			if (write?.code === "pending-review" && write.url) {
 				this.#pendingReview = { url: write.url };
 			}
 		} else {
-			lane.refusedAttemptedAt = undefined;
+			lane.refusedId = undefined;
 			// A newer resolve behind it already says what's intended.
 			const newer = lane.ops.some((o) => o.kind === "resolve");
 			lane.refusedResolved = newer ? undefined : op.resolved;
@@ -434,7 +462,7 @@ export class ThreadWrites {
 				...(resolved === undefined ? {} : { resolved }),
 				replies: lane.ops.flatMap((op) =>
 					op.kind === "reply"
-						? [{ text: op.text, attemptedAt: op.attemptedAt }]
+						? [{ text: op.text, attemptedAt: op.id.attemptedAt }]
 						: [],
 				),
 				action: head ? actionOf(head) : null,
@@ -516,6 +544,15 @@ export function threadWritesFor(client: QueryClient): ThreadWrites {
 			resolve: postResolved,
 			applied: (update) => applyThreadUpdate(client, update),
 			drafts: draftsFor(client),
+			knownComments: (threadId) => {
+				const readId = client.getQueryData(overviewQuery.queryKey)?.readId;
+				const known = readId
+					? client.getQueryData<ThreadComments>(
+							commentsQuery(readId, threadId).queryKey,
+						)
+					: undefined;
+				return (known?.comments ?? []).map((c) => c.id).filter(Boolean);
+			},
 		});
 		pages.set(client, writes);
 	}
