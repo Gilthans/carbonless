@@ -8,9 +8,12 @@ In priority order.
   Files changed (clusters/lines, invisibles, file status icons), Overview
   (staged loading, thread code from the clone with the snapshot chip,
   suggestions, Timeline), as-of views, git-methodology matrix, mobile.
-- **Next:** to be chosen with the owner from the items below; candidates are
-  re-review after new pushes (retires the snapshot chip), commenting,
-  review groups / Change Units (1), moved code (2), AI investigation (3).
+- **Milestone 2, replace the owner's GitHub review workflow (re-reviews
+  later), in order:** review threads in Files changed and the Overview
+  (done); view at the commit you last reviewed (`--head reviewed`); instant
+  saves; actions from the UI that write to GitHub (comment, reply, resolve,
+  approve / request changes); then carrying threads and progress over from
+  earlier snapshots.
 
 ## 0. Parity with the GitHub review workflow
 
