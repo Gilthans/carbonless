@@ -46,7 +46,7 @@ import {
 	REVIEW_ICON,
 	Section,
 	SkeletonBar,
-} from "./OverviewPage";
+} from "./parts";
 import { eventKeys, runResolution } from "./timelineRuns";
 
 /** Events shown before "Show N earlier events": the latest ones. */
