@@ -1,5 +1,4 @@
 import {
-	AlertIcon,
 	CheckCircleIcon,
 	CheckIcon,
 	ChevronDownIcon,
@@ -16,7 +15,6 @@ import {
 	HistoryIcon,
 	HubotIcon,
 	type Icon,
-	LightBulbIcon,
 	PeopleIcon,
 	QuestionIcon,
 	ReplyIcon,
@@ -41,7 +39,6 @@ import {
 	useRef,
 	useState,
 } from "react";
-import { type HunkLine, numberOn } from "../../shared/diffHunk";
 import {
 	type CodeRow,
 	type CodeWindow,
@@ -52,6 +49,7 @@ import {
 	type ThreadsView,
 } from "../../shared/types";
 import {
+	commentsQuery,
 	OVERVIEW_FRESH_MS,
 	overviewAge,
 	overviewQuery,
@@ -61,12 +59,18 @@ import {
 	THREAD_STAGES,
 	threadsQuery,
 } from "../api";
-import { CodeLine } from "../code/Invisibles";
-import { languageFor } from "../files/highlight";
 import { type FilesSearch, threadTarget } from "../files/landing";
 import { GithubHtml, ImageErrorContext } from "../GithubHtml";
 import { RelativeTime, relativeTime, useNow } from "../RelativeTime";
 import { Tooltip } from "../Tooltip";
+import { CodeRows, CommentBody } from "../threads/CommentBody";
+import {
+	COMMENT_SURFACE,
+	Conversation,
+	UnavailableText,
+} from "../threads/Conversation";
+import { ThreadStatus } from "../threads/ThreadStatus";
+import { usePrefetchComments } from "../threads/useThreadComments";
 import { ErrorMessage, safeHref } from "../ui";
 import { createImageRefresher } from "./imageRefresh";
 import {
@@ -81,7 +85,7 @@ import {
 	Section,
 	SkeletonBar,
 } from "./parts";
-import { splitSuggestions } from "./suggestions";
+import { prefetchOrder, type ShownThreads } from "./prefetchOrder";
 import { Timeline } from "./Timeline";
 import { threadKeys } from "./threadKeys";
 
@@ -95,6 +99,12 @@ interface ThreadFocus {
 	seq: number;
 }
 
+/** The thread lists, in screen order. */
+const THREAD_GROUPS = ["Human reviews", "Bot reviews"] as const;
+
+/** A thread list says what it shows and would show next. */
+type OnShown = (group: string, ids: ShownThreads) => void;
+
 /** A thread card's element id. */
 const threadAnchor = (id: string) => `thread-${id}`;
 
@@ -107,6 +117,8 @@ const IMAGE_MAX_AGE_MS = 60_000;
  */
 function useThreads(readId: string | undefined): {
 	view: ThreadsView | undefined;
+	/** The read `view` comes from (the previous one while it is kept). */
+	readId: string | undefined;
 	/** A stage failed and the threads aren't all in. */
 	error: Error | null;
 	/**
@@ -130,7 +142,12 @@ function useThreads(readId: string | undefined): {
 		!view && !error && last.current && last.current.readId !== readId
 			? last.current.view
 			: undefined;
-	return { view: view ?? kept, error, previous: Boolean(kept) };
+	return {
+		view: view ?? kept,
+		readId: kept ? last.current?.readId : readId,
+		error,
+		previous: Boolean(kept),
+	};
 }
 
 export function OverviewPage() {
@@ -147,6 +164,24 @@ export function OverviewPage() {
 		enabled: stale,
 	});
 	const threads = useThreads(data?.readId);
+	// What each thread list shows, for the order comments are read in.
+	const [shown, setShown] = useState<Record<string, ShownThreads>>({});
+	const onShown = useCallback(
+		(group: string, ids: ShownThreads) =>
+			setShown((all) => ({ ...all, [group]: ids })),
+		[],
+	);
+	// The one prefetch for the page, from the summary on: what is on screen,
+	// then the next pages, then the rest.
+	const order = useMemo(
+		() =>
+			prefetchOrder(
+				threads.view?.threads ?? [],
+				THREAD_GROUPS.flatMap((g) => shown[g] ?? []),
+			),
+		[threads.view, shown],
+	);
+	usePrefetchComments(threads.readId, order);
 	const latest = useRef(fetchedAt);
 	latest.current = fetchedAt;
 	const [refreshImages] = useState(() =>
@@ -168,6 +203,7 @@ export function OverviewPage() {
 			<OverviewContent
 				overview={overview}
 				threads={threads}
+				onShown={onShown}
 				updateError={revalidate.isError ? revalidate.error : null}
 			/>
 		</ImageErrorContext>
@@ -177,10 +213,12 @@ export function OverviewPage() {
 function OverviewContent({
 	overview,
 	threads,
+	onShown,
 	updateError,
 }: {
 	overview: UseQueryResult<PrOverview>;
 	threads: ReturnType<typeof useThreads>;
+	onShown: OnShown;
 	/** The overview shown couldn't be brought up to date. */
 	updateError: Error | null;
 }) {
@@ -204,6 +242,8 @@ function OverviewContent({
 						threads={threads.view}
 						error={threads.error}
 						previous={threads.previous}
+						readId={threads.readId ?? ""}
+						onShown={onShown}
 						focus={focus}
 					/>
 					<Timeline
@@ -577,6 +617,8 @@ function IsItReady({
 	threads,
 	error,
 	previous,
+	readId,
+	onShown,
 	focus,
 }: {
 	pr: PrOverview;
@@ -586,6 +628,9 @@ function IsItReady({
 	error: Error | null;
 	/** `threads` are the previous read's, until this one's land. */
 	previous: boolean;
+	/** The read `threads` come from. */
+	readId: string;
+	onShown: OnShown;
 	focus: ThreadFocus | null;
 }) {
 	const list = threads?.threads;
@@ -607,7 +652,9 @@ function IsItReady({
 				/>
 			)}
 			<ThreadGroup
-				label="Human reviews"
+				label={THREAD_GROUPS[0]}
+				readId={readId}
+				onShown={onShown}
 				icon={CommentDiscussionIcon}
 				threads={list?.filter((t) => !t.bot)}
 				failed={failed}
@@ -616,7 +663,9 @@ function IsItReady({
 				focus={focus}
 			/>
 			<ThreadGroup
-				label="Bot reviews"
+				label={THREAD_GROUPS[1]}
+				readId={readId}
+				onShown={onShown}
 				icon={HubotIcon}
 				threads={list?.filter((t) => t.bot)}
 				failed={failed}
@@ -821,6 +870,10 @@ export function loadMoreText(hidden: number): string {
  */
 function ThreadGroup(props: {
 	label: string;
+	/** The read `threads` come from. */
+	readId: string;
+	/** Says what the list shows and would show next, as that changes. */
+	onShown: OnShown;
 	icon: Icon;
 	/** Undefined while the threads are read: the list's frame shows. */
 	threads: Thread[] | undefined;
@@ -832,7 +885,7 @@ function ThreadGroup(props: {
 	/** A thread to bring into view, if it is in this group. */
 	focus: ThreadFocus | null;
 }) {
-	const { asOf, focus } = props;
+	const { asOf, focus, readId, onShown, label } = props;
 	const loading = props.threads === undefined && !props.failed;
 	const threads = props.threads ?? [];
 	const [showResolved, setShowResolved] = useState(false);
@@ -846,6 +899,20 @@ function ThreadGroup(props: {
 	// pressed, it can always go back.
 	const toggleOff = !showResolved && resolved.length === 0;
 	const IconEl = props.icon;
+	const visible = listed
+		.slice(0, limit)
+		.map((t) => t.id)
+		.join(",");
+	const next = listed
+		.slice(limit, limit + THREAD_PAGE)
+		.map((t) => t.id)
+		.join(",");
+	useEffect(() => {
+		onShown(label, {
+			visible: visible.split(","),
+			next: next.split(","),
+		});
+	}, [onShown, label, visible, next]);
 	// Bringing a thread into view: its list, enough of it, then the card.
 	const [reveal, setReveal] = useState<ThreadFocus | null>(null);
 	const handled = useRef<ThreadFocus | null>(null);
@@ -971,7 +1038,7 @@ function ThreadGroup(props: {
 						className="space-y-3"
 					>
 						{threadKeys(listed.slice(0, limit)).map(([key, t]) => (
-							<ThreadItem key={key} thread={t} />
+							<ThreadItem key={key} thread={t} readId={readId} />
 						))}
 					</ul>
 				)}
@@ -1031,8 +1098,14 @@ const HEAD_PART =
  * comment as GitHub renders it (stacked on a phone), both clipped until
  * "Show more".
  */
-function ThreadItem({ thread }: { thread: Thread }) {
-	const n = thread.commentCount;
+function ThreadItem({
+	thread,
+	readId,
+}: {
+	thread: Thread;
+	/** The read the thread was listed in: its comments are read by it. */
+	readId: string;
+}) {
 	const [open, setOpen] = useState(false);
 	const codeBox = useRef<HTMLElement>(null);
 	const commentBox = useRef<HTMLDivElement>(null);
@@ -1053,21 +1126,10 @@ function ThreadItem({ thread }: { thread: Thread }) {
 		el.addEventListener("focusin", reveal);
 		return () => el.removeEventListener("focusin", reveal);
 	}, [commentClipped]);
-	// GitHub's text: its own raised surface, apart from the card and the code.
-	const commentSurface =
-		"min-w-0 rounded-md border border-edge bg-raised px-3 py-2";
+	const commentSurface = COMMENT_SURFACE;
 	const comment = thread.unavailable ? (
 		// Its text will never come: said so, plainly.
-		<p
-			id={commentId}
-			data-testid="thread-body-unavailable"
-			className={`${commentSurface} flex items-center gap-1.5 text-sm text-muted italic`}
-		>
-			<AlertIcon size={14} aria-hidden className="shrink-0 text-warn" />
-			{thread.unavailable === "deleted"
-				? "Deleted on GitHub"
-				: "Couldn't be read from GitHub"}
-		</p>
+		<UnavailableText id={commentId} reason={thread.unavailable} />
 	) : !thread.loaded ? (
 		// Its text is still on its way: the comment's frame.
 		<div
@@ -1088,7 +1150,13 @@ function ThreadItem({ thread }: { thread: Thread }) {
 			data-testid="thread-body"
 			className={`relative ${commentSurface} ${open ? "" : "max-h-32 overflow-hidden"}`}
 		>
-			<CommentBody thread={thread} open={open} />
+			<CommentBody
+				html={thread.html}
+				body={thread.body}
+				code={thread.code}
+				path={thread.path}
+				open={open}
+			/>
 			{commentClipped && (
 				<div
 					aria-hidden
@@ -1143,7 +1211,11 @@ function ThreadItem({ thread }: { thread: Thread }) {
 							)}
 							<span>
 								<span className="font-semibold text-ink-soft">
-									{status} thread
+									{/* Resolved is unmistakable: the word in green too. */}
+									<span className={thread.resolved ? "text-ok" : undefined}>
+										{status}
+									</span>{" "}
+									thread
 								</span>{" "}
 								by{" "}
 								<span className="inline-flex items-center gap-1 font-medium text-ink-soft">
@@ -1165,12 +1237,7 @@ function ThreadItem({ thread }: { thread: Thread }) {
 					</p>
 				</div>
 				<div className="ml-auto flex items-center gap-2 pl-1.5">
-					<LabeledIcon
-						icon={CommentIcon}
-						label={plural(n, "comment")}
-						text={String(n)}
-						className="gap-1 text-muted"
-					/>
+					<ThreadStatus thread={thread} mark={false} />
 					{!thread.hasReply && !thread.resolved && (
 						<Badge tone="yellow" icon={ReplyIcon}>
 							no reply
@@ -1233,6 +1300,7 @@ function ThreadItem({ thread }: { thread: Thread }) {
 						{open ? "Show less" : "Show more"}
 					</button>
 				)}
+				<Replies thread={thread} readId={readId} />
 			</div>
 		</li>
 	);
@@ -1322,27 +1390,6 @@ function ThreadPlace({
 	);
 }
 
-const ROW_BG: Record<HunkLine["kind"], string> = {
-	context: "",
-	add: "bg-add",
-	del: "bg-del",
-};
-const NUMBER_BG: Record<HunkLine["kind"], string> = {
-	context: "text-faint",
-	add: "bg-add-gutter text-add-ink",
-	del: "bg-del-gutter text-del-ink",
-};
-const SIGN: Record<HunkLine["kind"], string> = {
-	context: " ",
-	add: "+",
-	del: "−",
-};
-const SIGN_COLOR: Record<HunkLine["kind"], string> = {
-	context: "text-faint",
-	add: "text-add-ink",
-	del: "text-del-ink",
-};
-
 /**
  * The code a comment was written on: its range, marked by an accent rail,
  * and three rows before and after it. Clipped, it scrolls (sideways, and
@@ -1401,198 +1448,50 @@ function ThreadCodePane(props: {
 	);
 }
 
-/** The file's tab width (.editorconfig), once the review has loaded. */
-function useTabWidth(path: string): number | undefined {
-	const review = useQuery(reviewQuery);
-	return review.data?.files.find((f) => f.path === path)?.tabWidth;
-}
+/** "1 reply", "2 replies". */
+const replies = (n: number) => `${n} ${n === 1 ? "reply" : "replies"}`;
 
 /**
- * Code lines as diff rows, one way for the code pane and suggested changes:
- * a rail (accent and tinted when marked), old and new numbers, the sign,
- * and the text through CodeLine (Shiki, invisibles, the file's tabs).
+ * The replies under a card's opening comment, behind a toggle that names
+ * how many (closed at first): opened, the rest of the conversation.
  */
-function CodeRows(props: {
-	lines: (HunkLine & { marked?: boolean })[];
-	path: string;
-	wrap: boolean;
-	testId: string;
-}) {
-	const lang = languageFor(props.path);
-	const tabWidth = useTabWidth(props.path);
+function Replies({ thread, readId }: { thread: Thread; readId: string }) {
+	const [open, setOpen] = useState(false);
+	const id = useId();
+	// The viewer's own pending replies count too, once their comments are in.
+	const known = useQuery({
+		...commentsQuery(readId, thread.id),
+		enabled: false,
+	}).data;
+	const pending = known?.comments.filter((c) => c.pending).length ?? 0;
+	const n = Math.max(0, thread.commentCount - 1) + pending;
+	if (n === 0) return null;
 	return (
-		<tbody>
-			{props.lines.map((line, i) => (
-				<tr
-					// The lines of one block never reorder.
-					// biome-ignore lint/suspicious/noArrayIndexKey: see above.
-					key={i}
-					data-testid={props.testId}
-					data-marked={line.marked || undefined}
-					className={`${ROW_BG[line.kind]} ${line.marked ? "mark-tint" : ""}`}
-				>
-					<td
-						aria-hidden
-						className={`w-1 min-w-1 p-0 ${line.marked ? "bg-accent" : ""}`}
-					/>
-					<td
-						className={`w-px px-1.5 text-right align-top whitespace-nowrap select-none ${NUMBER_BG[line.kind]}`}
-					>
-						{line.oldNo}
-					</td>
-					<td
-						className={`w-px px-1.5 text-right align-top whitespace-nowrap select-none ${NUMBER_BG[line.kind]}`}
-					>
-						{line.newNo}
-					</td>
-					<td
-						aria-hidden
-						className={`w-px pl-2 align-top select-none ${SIGN_COLOR[line.kind]}`}
-					>
-						{SIGN[line.kind]}
-					</td>
-					<td
-						className={`pr-2 pl-1.5 ${props.wrap ? "whitespace-pre-wrap [overflow-wrap:anywhere]" : "whitespace-pre"}`}
-					>
-						<CodeLine
-							text={line.text}
-							lang={lang}
-							tabWidth={tabWidth}
-							newline={!line.noNewline}
-						/>
-					</td>
-				</tr>
-			))}
-		</tbody>
-	);
-}
-
-/**
- * A suggested change as a mini diff: the commented lines deleted, the
- * suggestion added (none: the lines go). Read-only, no "apply".
- */
-function SuggestedChange(props: {
-	path: string;
-	removed: HunkLine[];
-	added: HunkLine[];
-	/** Wrapped once the comment is opened, like the code pane. */
-	wrap: boolean;
-}) {
-	const lines = [...props.removed, ...props.added];
-	return (
-		<figure
-			aria-label="Suggested change"
-			data-testid="suggestion"
-			className="my-2 min-w-0 overflow-hidden rounded-md border border-line bg-code font-mono text-xs leading-5 text-code-ink"
-		>
-			<figcaption className="flex min-h-8 items-center gap-1.5 border-b border-line bg-band px-2 font-sans text-xs font-medium text-ink-soft">
-				<LightBulbIcon size={14} aria-hidden className="text-warn" />
-				Suggested change
-			</figcaption>
-			<div className="overflow-x-auto [scrollbar-width:thin]">
-				{lines.length > 0 ? (
-					<table className="w-full border-collapse">
-						<CodeRows
-							lines={lines}
-							path={props.path}
-							wrap={props.wrap}
-							testId="suggestion-line"
-						/>
-					</table>
-				) : null}
+		<div className="space-y-2">
+			<button
+				type="button"
+				aria-expanded={open}
+				aria-controls={id}
+				onClick={() => setOpen((o) => !o)}
+				className="-mb-1 flex min-h-10 items-center gap-1.5 rounded-md text-xs font-medium text-link hover:underline focus-visible:outline-2 focus-visible:outline-accent"
+			>
+				<CommentDiscussionIcon size={16} aria-hidden />
+				{replies(n)}
+				<ChevronDownIcon
+					size={16}
+					aria-hidden
+					className={`transition-transform motion-reduce:transition-none ${open ? "rotate-180" : ""}`}
+				/>
+			</button>
+			<div
+				id={id}
+				data-testid="thread-replies"
+				hidden={!open}
+				// The replies hang off the opener on a rail.
+				className="ml-2 border-l-2 border-line pl-3"
+			>
+				{open && <Conversation readId={readId} thread={thread} skipFirst />}
 			</div>
-		</figure>
-	);
-}
-
-/**
- * The deleted rows of a suggestion: the thread's commented lines on its own
- * side, numbered, when they are the lines GitHub's block replaces; GitHub's
- * own text without numbers when the thread has no code; null when the two
- * disagree (the caller then shows GitHub's HTML).
- */
-export function suggestionRemoved(
-	code: Thread["code"],
-	removed: string[],
-): HunkLine[] | null {
-	const strip = (t: string) => t.replace(/\r$/, "");
-	if (!code || code.rows.length === 0) {
-		return removed.map((text) => ({
-			kind: "del",
-			oldNo: null,
-			newNo: null,
-			text,
-		}));
-	}
-	const side = code.anchor.side;
-	const own = code.rows.filter((l) => l.marked && numberOn(l, side) !== null);
-	if (
-		own.length !== removed.length ||
-		own.some((l, i) => strip(l.text) !== strip(removed[i] ?? ""))
-	) {
-		return null;
-	}
-	return own.map((l) => ({
-		kind: "del",
-		oldNo: numberOn(l, side),
-		newNo: null,
-		text: l.text,
-	}));
-}
-
-/**
- * The first comment as GitHub renders it, its suggested changes drawn as
- * mini diffs (suggestions.ts). Whenever that can't be done exactly, the
- * whole comment is GitHub's HTML, as it was: nothing is dropped.
- */
-function CommentBody({ thread, open }: { thread: Thread; open: boolean }) {
-	const parts = useMemo(() => {
-		const split = splitSuggestions(thread.html, thread.body);
-		if (!split) return null;
-		const out: (
-			| { kind: "html"; html: string }
-			| { kind: "suggestion"; removed: HunkLine[]; added: HunkLine[] }
-		)[] = [];
-		for (const part of split) {
-			if (part.kind === "html") {
-				out.push(part);
-				continue;
-			}
-			const removed = suggestionRemoved(thread.code, part.removed);
-			if (!removed) return null;
-			const first = removed[0]?.oldNo ?? null;
-			out.push({
-				kind: "suggestion",
-				removed,
-				added: part.added.map((text, i) => ({
-					kind: "add",
-					oldNo: null,
-					newNo: first === null ? null : first + i,
-					text,
-				})),
-			});
-		}
-		return out;
-	}, [thread.html, thread.body, thread.code]);
-	if (!parts) return <GithubHtml html={thread.html} />;
-	return (
-		<>
-			{parts.map((part, i) =>
-				part.kind === "html" ? (
-					// Fixed order, never reordered.
-					// biome-ignore lint/suspicious/noArrayIndexKey: see above.
-					<GithubHtml key={i} html={part.html} />
-				) : (
-					<SuggestedChange
-						// biome-ignore lint/suspicious/noArrayIndexKey: see above.
-						key={i}
-						path={thread.path}
-						removed={part.removed}
-						added={part.added}
-						wrap={open}
-					/>
-				),
-			)}
-		</>
+		</div>
 	);
 }

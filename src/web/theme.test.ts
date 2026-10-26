@@ -102,6 +102,15 @@ describe("color tokens", () => {
 		}
 	});
 
+	it("a thread's comments error keeps its Retry link at 4.5:1", () => {
+		// Conversation: the bad/10 notice over the card's surface.
+		const tint = over(token("bad"), 0.1, token("surface"));
+		expect(
+			contrast(token("link"), tint),
+			"link on bad/10 over surface",
+		).toBeGreaterThanOrEqual(4.5);
+	});
+
 	it("status text and icons read at 4.5:1 on surfaces", () => {
 		for (const text of ["ok", "bad", "warn", "done", "accent"]) {
 			for (const bg of SURFACES) {

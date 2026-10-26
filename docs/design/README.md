@@ -117,8 +117,12 @@ bordered (`edge`) card on `surface`:
 
 1. a `band` header row: status icon (yellow unresolved, green resolved),
    "Unresolved thread by <author> · opened <time> · updated <time>"
-   (`RelativeTime`; "updated" only when it differs), then the comment count
-   and the "no reply" / "outdated" chips on the right, then a red (`bad`)
+   (`RelativeTime`; "updated" only when it differs; "Resolved" itself in
+   `ok`, so a resolved thread is unmistakable), then on the right
+   `ThreadStatus` (`src/web/threads/`): the comment count (comment icon +
+   number, named "N comments") and, when the viewer is in the thread's
+   attention set (`yourTurn`), a `warn` dot named "Your turn" (never on a
+   resolved thread); then the "no reply" / "outdated" chips, then a red (`bad`)
    "different snapshot" chip when the code pane can't be shown to be what the
    commenter saw (`docs/faq.md`; focusable, 40px, its tooltip says which
    commit and when); wraps on a phone;
@@ -126,11 +130,23 @@ bordered (`edge`) card on `surface`:
 3. the code pane (`code`, commented lines with the accent rail and
    `mark-tint`) beside the first comment, stacked on a phone. The comment
    sits on its own `raised` surface with an `edge` border: GitHub's text,
-   apart from the card and the code.
+   apart from the card and the code;
+4. a 40px "N replies" toggle (discussion icon, chevron, `link`,
+   `aria-expanded`), closed at first: opened, the rest of the conversation
+   (`Conversation`, shared with Files changed). Each reply is its author
+   (bot icon), its published time and its text on the comment's `raised`
+   surface; the viewer's own pending reply has a `warn` clock ("Pending,
+   only you see it") instead of a time. A spinner while the comments load
+   (they are read in the background from the thread list on, visible
+   threads first, so it rarely shows), an error with Retry, "Deleted on
+   GitHub" for a thread gone since it was listed, and a `warn` alert with
+   "N missing" ("N comments couldn't be loaded") when fewer came than the
+   thread counts.
 
-A suggested change in the comment is a small `code` figure: a `band`
-caption (yellow light bulb, "Suggested change"), then the commented lines as
-deleted rows and the suggestion as added rows, drawn like the code pane.
+A suggested change in a comment (the opener or a reply) is a small `code`
+figure: a `band` caption (yellow light bulb, "Suggested change"), then the
+commented lines as deleted rows and the suggestion as added rows, drawn like
+the code pane.
 
 Lists show five threads, then "Load X more comments out of Y".
 

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { codeFromHunk } from "../../../test/code-window";
-import { suggestionRemoved } from "./OverviewPage";
+import { suggestionRemoved } from "../threads/CommentBody";
 
 const code = codeFromHunk("@@ -10,3 +10,3 @@\n a\n-b\n+B\n c", {
 	startLine: 11,

@@ -1311,3 +1311,204 @@ test("suggested changes show as mini diffs of the commented lines, highlighted l
 		});
 	}
 });
+
+// ---- Conversations ----
+
+/** rev1 opens, a bot and the PR author reply: it waits on rev1, not the viewer. */
+const threeComments = reviewThread({ path: "src/cache.ts", line: 4 }, [
+	threadComment({
+		login: "rev1",
+		text: "Should this expire?",
+		createdAt: "2026-01-03T09:00:00Z",
+	}),
+	threadComment({
+		login: "lint-bot",
+		bot: true,
+		text: "Bot note on expiry",
+		createdAt: "2026-01-03T10:00:00Z",
+	}),
+	threadComment({
+		login: "octo-author",
+		text: "Yes, after an hour",
+		createdAt: "2026-01-03T11:00:00Z",
+	}),
+]);
+/** The viewer (Octo_Cat) asked, the PR author answered: the viewer's turn. */
+const viewersTurn = reviewThread({ path: "src/turn.ts", line: 2 }, [
+	threadComment({
+		login: "Octo_Cat",
+		text: "Why a map?",
+		createdAt: "2026-01-04T09:00:00Z",
+	}),
+	threadComment({
+		login: "octo-author",
+		text: "Lookups by key",
+		createdAt: "2026-01-04T10:00:00Z",
+	}),
+]);
+const resolvedThread = reviewThread(
+	{ path: "src/done.ts", line: 1, isResolved: true },
+	[
+		threadComment({ login: "rev2", text: "Rename this" }),
+		threadComment({ login: "octo-author", text: "Renamed" }),
+	],
+);
+
+/** A thread card by the file its opener is on. */
+const card = (page: Page, path: string) =>
+	page
+		.getByRole("region", { name: "Human reviews" })
+		.getByTestId("thread")
+		.filter({ has: page.getByTestId("thread-place").getByText(path) });
+
+test("card shows the comment count and opens to every reply", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	if (isMobile) await page.setViewportSize({ width: 360, height: 780 });
+	await pr({ threads: [threeComments, viewersTurn] });
+	const s = await startCrb();
+	await page.goto(s.url);
+	const thread = card(page, "src/cache.ts");
+	await expect(
+		thread.getByTestId("thread-head").getByRole("img", { name: "3 comments" }),
+	).toBeVisible();
+	// The opener shows; the replies wait behind a closed toggle.
+	await expect(thread.getByTestId("thread-body")).toHaveText(
+		"Should this expire?",
+	);
+	const toggle = thread.getByRole("button", { name: "2 replies" });
+	await expect(toggle).toHaveAttribute("aria-expanded", "false");
+	await expect(thread.getByTestId("thread-comment")).toHaveCount(0);
+	expect((await toggle.boundingBox())?.height ?? 0).toBeGreaterThanOrEqual(40);
+	await toggle.click();
+	await expect(toggle).toHaveAttribute("aria-expanded", "true");
+	const replies = thread.getByTestId("thread-comment");
+	await expect(replies).toHaveCount(2);
+	await expect(replies.nth(0)).toContainText("lint-bot");
+	await expect(replies.nth(0)).toContainText("Bot note on expiry");
+	await expect(replies.nth(0).getByRole("img", { name: "bot" })).toBeVisible();
+	await expect(replies.nth(1)).toContainText("octo-author");
+	await expect(replies.nth(1)).toContainText("Yes, after an hour");
+	await expect(replies.nth(1).locator("time")).toHaveCount(1);
+	const shots = process.env.DESIGN_SHOTS;
+	if (shots) {
+		await thread.scrollIntoViewIfNeeded();
+		await page.screenshot({
+			path: `${shots}/thread-replies-${isMobile ? "phone" : "desktop"}.png`,
+		});
+	}
+	// Closed again, the replies go.
+	await toggle.click();
+	await expect(replies).toHaveCount(0);
+});
+
+test("your turn dot shows only where the viewer is in the attention set", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	await pr({ threads: [threeComments, viewersTurn] });
+	const s = await startCrb();
+	await page.goto(s.url);
+	const turn = card(page, "src/turn.ts").getByTestId("thread-head");
+	await expect(turn.getByRole("img", { name: "Your turn" })).toBeVisible();
+	await expect(
+		card(page, "src/cache.ts").getByRole("img", { name: "Your turn" }),
+	).toHaveCount(0);
+	// Named by its tooltip too.
+	await turn.getByRole("img", { name: "Your turn" }).hover();
+	await expect(page.locator('[role="tooltip"]:not([hidden])')).toHaveText(
+		"Your turn",
+	);
+});
+
+test("resolved thread is marked resolved in its header", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	await pr({ threads: [threeComments, resolvedThread] });
+	const s = await startCrb();
+	await page.goto(s.url);
+	const humans = page.getByRole("region", { name: "Human reviews" });
+	await humans.getByRole("button", { name: "1 resolved" }).click();
+	const head = card(page, "src/done.ts").getByTestId("thread-head");
+	await expect(head).toContainText("Resolved thread by rev2");
+	// A green check and the word in green, not only a quieter card.
+	const word = head.getByText("Resolved", { exact: true });
+	await expect(word).toBeVisible();
+	const [wordColor, okColor] = await Promise.all([
+		word.evaluate((el) => getComputedStyle(el).color),
+		page.evaluate(() => {
+			const probe = document.createElement("span");
+			probe.className = "text-ok";
+			document.body.append(probe);
+			const c = getComputedStyle(probe).color;
+			probe.remove();
+			return c;
+		}),
+	]);
+	expect(wordColor).toBe(okColor);
+	await expect(head.locator("svg.octicon-check-circle")).toHaveCSS(
+		"color",
+		okColor,
+	);
+	await expect(head.getByRole("img", { name: "Your turn" })).toHaveCount(0);
+	const shots = process.env.DESIGN_SHOTS;
+	if (shots) {
+		await head.scrollIntoViewIfNeeded();
+		await page.screenshot({
+			path: `${shots}/thread-resolved-${isMobile ? "phone" : "desktop"}.png`,
+		});
+	}
+});
+
+test("slow comments show a spinner, then the replies", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	const p = await pr({ threads: [threeComments] });
+	p.editScenario((s) => {
+		s.commentsDelayMs = 3000;
+	});
+	const s = await startCrb();
+	await page.goto(s.url);
+	const thread = card(page, "src/cache.ts");
+	await thread.getByRole("button", { name: "2 replies" }).click();
+	await expect(
+		thread.getByRole("status", { name: "Loading comments" }),
+	).toBeVisible();
+	await expect(thread.getByTestId("thread-comment")).toHaveCount(2, {
+		timeout: 15_000,
+	});
+	await expect(
+		thread.getByRole("status", { name: "Loading comments" }),
+	).toHaveCount(0);
+});
+
+test("a deleted thread shows deleted, not a spinner", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	const p = await pr({ threads: [threeComments] });
+	p.editScenario((s) => {
+		s.deletedThreads = [`T${p.number}-0`];
+	});
+	const s = await startCrb();
+	await page.goto(s.url);
+	const thread = card(page, "src/cache.ts");
+	await thread.getByRole("button", { name: "2 replies" }).click();
+	await expect(thread.getByTestId("thread-body-unavailable").last()).toHaveText(
+		"Deleted on GitHub",
+		{ timeout: 10_000 },
+	);
+	await expect(
+		thread.getByRole("status", { name: "Loading comments" }),
+	).toHaveCount(0);
+});

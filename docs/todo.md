@@ -27,8 +27,6 @@ Foundation for everything below.
   `diff_hunk` shows what the commenter saw, and it's sometimes empty (2 of
   4 LEFT comments on #99). The threads stage places LEFT threads by line
   number with no check.
-- **Suggestions in replies:** the Overview shows only a thread's opening
-  comment, so a suggested change made in a reply isn't drawn there yet.
 - **Re-review after new pushes:** one of GitHub's weakest spots.
   - Show a thread's code as the commenter saw it: diff its commit against
     the base of the view the comment was made in ("changes since your last

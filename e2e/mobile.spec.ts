@@ -473,3 +473,32 @@ test("an open tooltip causes no horizontal page overflow", async ({
 	const box = await tip.boundingBox();
 	expect(box && box.x >= 0 && box.x + box.width <= 360).toBe(true);
 });
+
+test("an opened thread card fits a 360px screen; its replies toggle is 40px tall", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	const wide = `${"x".repeat(300)} end`;
+	await pr({
+		threads: [
+			reviewThread({ path: `${LONG_DIR}/compatibility.ts`, line: 2 }, [
+				threadComment({ login: "rev1", text: "Point" }),
+				threadComment({
+					login: "octo-author",
+					text: wide,
+					html: `<p dir="auto">${wide}</p><pre><code>${wide}</code></pre>`,
+				}),
+			]),
+		],
+	});
+	const s = await startCrb();
+	await page.setViewportSize({ width: 360, height: 780 });
+	await page.goto(s.url);
+	const humans = page.getByRole("region", { name: "Human reviews" });
+	const toggle = humans.getByRole("button", { name: "1 reply" });
+	expect((await toggle.boundingBox())?.height ?? 0).toBeGreaterThanOrEqual(40);
+	await toggle.click();
+	await expect(humans.getByTestId("thread-comment")).toHaveCount(1);
+	await expectNoPageOverflow(page);
+});
