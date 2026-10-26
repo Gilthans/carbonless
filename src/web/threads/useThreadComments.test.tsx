@@ -310,6 +310,42 @@ describe("comments: batched, prefetched, opened", () => {
 		expect(asked[3]?.ids).toEqual(ids(50, 100));
 	});
 
+	it("an opened thread stays ahead of a new prefetch order", async () => {
+		const slow = answer;
+		answer = async (a) => {
+			await new Promise((r) => setTimeout(r, 300));
+			return slow(a);
+		};
+		const client = newClient();
+		const { rerender } = render(<Prefetch readId="r1" ids={ids(200)} />, {
+			wrapper: wrapper(client),
+		});
+		await waitFor(() => expect(asked).toHaveLength(2));
+		// The first opened one takes the third request: every slot is busy.
+		rerender(
+			<>
+				<Prefetch readId="r1" ids={ids(200)} />
+				<Thread readId="r1" id="T180" />
+			</>,
+		);
+		await waitFor(() => expect(asked).toHaveLength(3));
+		rerender(
+			<>
+				<Prefetch readId="r1" ids={[...ids(50, 150), ...ids(150)]} />
+				<Thread readId="r1" id="T180" />
+				<Thread readId="r1" id="T190" />
+			</>,
+		);
+		await waitFor(() => expect(asked.length).toBeGreaterThanOrEqual(5));
+		expect(asked[3]?.ids).toEqual(["T190"]);
+		// Then the new order: the reordered ones not sent yet, then the rest.
+		expect(asked[4]?.ids).toEqual([
+			...ids(50, 150).filter((id) => id !== "T180" && id !== "T190"),
+			"T100",
+			"T101",
+		]);
+	});
+
 	it("a read gone (410) sends nothing more for it", async () => {
 		answer = async () => {
 			await new Promise((r) => setTimeout(r, 30));

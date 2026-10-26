@@ -44,6 +44,12 @@ export function useThreadComments(
  * in before anyone opens one. Those in already aren't asked for again;
  * those still queued move to this order, ahead of earlier lists. Another
  * read's queue and comments are dropped.
+ *
+ * The latest list wins over every earlier one, so there is exactly one
+ * caller per page (OverviewPage, FilesPage), never one per group or list:
+ * it passes the whole list in screen order, the next page appended, and
+ * calls again with the new whole list when that order changes (say, the
+ * open file first).
  */
 export function usePrefetchComments(
 	readId: string | undefined,

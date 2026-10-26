@@ -277,6 +277,9 @@ class CommentsBatcher {
 		for (const key of [...this.#rank.keys()]) {
 			if (!key.startsWith(`${readId}\n`)) this.#rank.delete(key);
 		}
+		for (const gone of [...this.#gone.keys()]) {
+			if (gone !== readId) this.#gone.delete(gone);
+		}
 		client.removeQueries({
 			queryKey: ["comments"],
 			predicate: (q) => q.queryKey[1] !== readId,
