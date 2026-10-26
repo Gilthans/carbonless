@@ -28,6 +28,10 @@ Foundation for everything below.
     review", a single commit), not the PR's merge base, then drop the
     Overview's "different snapshot" chip (`CodeWindow.snapshot`,
     `docs/faq.md`).
+  - Until then: the chip is over-cautious on some threads whose rows all
+    match GitHub's hunk (3 of 26 on the real-PR check as of its cutoff, 7 of
+    105 overall; `pnpm compare-threads` lists them). Find out why the verdict
+    says "different" there.
 - **Store review state in git refs** (`refs/crb/...`). Design:
   `docs/review-data-storage.md`. Carry-over after pushes is deferred to the
   re-review item above (ideas so far: Gerrit-style change kinds and
