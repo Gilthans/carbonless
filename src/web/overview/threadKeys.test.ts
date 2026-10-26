@@ -25,3 +25,14 @@ describe("threadKeys", () => {
 		expect(keys[0]).not.toContain(`${String.fromCharCode(0)}1`);
 	});
 });
+
+describe("threadKeys with ids", () => {
+	it("keys by id, so threads of one submission keep theirs when reordered", () => {
+		const a = { ...t("a.ts", "2026-01-01T00:00:00Z", "rev1"), id: "T1" };
+		const b = { ...t("a.ts", "2026-01-01T00:00:00Z", "rev1"), id: "T2" };
+		const keys = new Map(threadKeys([a, b]).map(([k, x]) => [x, k]));
+		const reordered = new Map(threadKeys([b, a]).map(([k, x]) => [x, k]));
+		expect(reordered).toEqual(keys);
+		expect(new Set(keys.values()).size).toBe(2);
+	});
+});
