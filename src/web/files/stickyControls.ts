@@ -5,6 +5,8 @@ import { usePageActive } from "../pageActive";
 export const SLOT = "data-sticky-slot";
 /** Marks the controls that move; `data-stuck="true"` while they float. */
 export const CONTROLS = "data-sticky-controls";
+/** An opened review thread's row (ThreadRow): the floating controls stop above it. */
+const THREAD_ROW = '[data-testid="thread-row"]';
 /**
  * Room kept between floating controls and the cluster's end, in px. The
  * placement runs on the main thread (once per frame), so on a fast fling the
@@ -38,6 +40,19 @@ export function placeControls(m: {
 	// The cluster's end is near: ride up with it.
 	const offset = clusterBottom - END_GAP - below - height - slotTop;
 	return offset > 0 ? { mode: "end", offset } : { mode: "static" };
+}
+
+/**
+ * Where a cluster's floating controls stop (viewport px): its bottom, or the
+ * first opened review thread below their slot, whichever comes first.
+ */
+export function runEnd(
+	slotTop: number,
+	clusterBottom: number,
+	threadTops: number[],
+): number {
+	const next = threadTops.filter((t) => t > slotTop);
+	return next.length ? Math.min(clusterBottom, ...next) : clusterBottom;
 }
 
 function reset(slot: HTMLElement, controls: HTMLElement) {
@@ -87,6 +102,15 @@ export function useStickyControls(
 				if (!controls || !cluster) return null;
 				const s = slot.getBoundingClientRect();
 				const c = controls.getBoundingClientRect();
+				// An opened review thread inside the cluster ends the run the
+				// controls follow: they don't float over the conversation.
+				const clusterBottom = runEnd(
+					s.top,
+					cluster.getBoundingClientRect().bottom,
+					[...cluster.querySelectorAll(THREAD_ROW)].map(
+						(t) => t.getBoundingClientRect().top,
+					),
+				);
 				let minTop = c.top;
 				let maxBottom = c.bottom;
 				for (const target of controls.children) {
@@ -97,7 +121,7 @@ export function useStickyControls(
 				const place = placeControls({
 					top,
 					slotTop: s.top,
-					clusterBottom: cluster.getBoundingClientRect().bottom,
+					clusterBottom,
 					above: c.top - minTop,
 					below: maxBottom - c.bottom,
 					height: c.height,

@@ -87,6 +87,8 @@ export function Tooltip(props: {
 	 * Only with `describe` false: a description must always exist.
 	 */
 	lazy?: boolean;
+	/** Closes the tip whenever this changes (a toggle that just switched). */
+	dismissKey?: unknown;
 	children: (trigger: TooltipTriggerProps) => ReactNode;
 }) {
 	const id = useId();
@@ -159,6 +161,12 @@ export function Tooltip(props: {
 	}, [open]);
 
 	useEffect(() => () => clearTimeout(timer.current), []);
+
+	// biome-ignore lint/correctness/useExhaustiveDependencies: runs on each change of the key.
+	useEffect(() => {
+		clearTimeout(timer.current);
+		setOpen(false);
+	}, [props.dismissKey]);
 
 	// Its page was hidden (another page shows): nothing to point at.
 	const active = usePageActive();

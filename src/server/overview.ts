@@ -150,6 +150,12 @@ function threadCode(
 	};
 }
 
+/** The commit a comment was made on (GitHub's originalCommit); "" if none or not an oid. */
+function commitOf(comment: Json): string {
+	const oid = str(obj(comment.originalCommit).oid);
+	return OID.test(oid) ? oid : "";
+}
+
 /**
  * Where a thread points, from its summary: GitHub's fields mapped to the
  * source-neutral CodeAnchor. The range is the `original*` pair (on the
@@ -158,12 +164,6 @@ function threadCode(
  * are never mixed. Sides are GitHub's own, LEFT included. Null for a file
  * comment (subject FILE, or no line).
  */
-/** The commit a comment was made on (GitHub's originalCommit); "" if none or not an oid. */
-function commitOf(comment: Json): string {
-	const oid = str(obj(comment.originalCommit).oid);
-	return OID.test(oid) ? oid : "";
-}
-
 function threadAnchor(
 	t: Json,
 	first: Json,

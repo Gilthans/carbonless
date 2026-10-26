@@ -125,6 +125,30 @@ describe("color tokens", () => {
 		}
 	});
 
+	it("a commented line's tinted numbers read at 4.5:1 and its stripe stands out", () => {
+		// thread-mark: accent at 20% over the number cells' own background.
+		const numbers: [string, string][] = [
+			["faint", "code"],
+			["add-ink", "add-gutter"],
+			["del-ink", "del-gutter"],
+			["add-ink", "add-done"],
+			["del-ink", "del-done"],
+		];
+		for (const [text, bg] of numbers) {
+			expect(
+				contrast(token(text), over(token("accent"), 0.2, token(bg))),
+				`${text} on accent/20 over ${bg}`,
+			).toBeGreaterThanOrEqual(4.5);
+		}
+		// The 3px stripe at the code's edge, over the 8% wash on each row kind.
+		for (const bg of ["code", "add", "del", "add-done", "del-done"]) {
+			expect(
+				contrast(token("accent"), over(token("accent"), 0.08, token(bg))),
+				`stripe on ${bg}`,
+			).toBeGreaterThanOrEqual(3);
+		}
+	});
+
 	it("a thread's comments error keeps its Retry link at 4.5:1", () => {
 		// Conversation: the bad/10 notice over the card's surface.
 		const tint = over(token("bad"), 0.1, token("surface"));

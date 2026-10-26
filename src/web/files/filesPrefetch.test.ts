@@ -55,3 +55,31 @@ describe("filesPrefetchOrder", () => {
 		).toEqual(["ok"]);
 	});
 });
+
+describe("filesPrefetchOrder with hunks", () => {
+	it("orders LEFT and RIGHT threads by their new-side line", () => {
+		const left = {
+			id: "left",
+			path: "a.ts",
+			anchor: { side: "LEFT", line: 10 },
+		} as unknown as ReviewThread;
+		const right = {
+			id: "right",
+			path: "a.ts",
+			anchor: { side: "RIGHT", line: 11 },
+		} as unknown as ReviewThread;
+		// Five lines added at the top: old 10 is new 15, below RIGHT 11.
+		const hunks = {
+			hunks: [
+				{ oldStart: 1, oldCount: 1, newStart: 1, newCount: 6, lines: [] },
+			],
+			newLineCount: 40,
+		};
+		expect(filesPrefetchOrder([{ path: "a.ts" }], [left, right], null)).toEqual(
+			["left", "right"],
+		);
+		expect(
+			filesPrefetchOrder([{ path: "a.ts" }], [left, right], null, () => hunks),
+		).toEqual(["right", "left"]);
+	});
+});

@@ -1,5 +1,5 @@
-import { InfoIcon } from "@primer/octicons-react";
-import { useQueries, useQuery } from "@tanstack/react-query";
+import { AlertIcon, InfoIcon } from "@primer/octicons-react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import {
 	type CSSProperties,
@@ -11,16 +11,12 @@ import {
 	useRef,
 	useState,
 } from "react";
-import {
-	overviewQuery,
-	reviewQuery,
-	sessionQuery,
-	THREAD_STAGES,
-	threadsQuery,
-} from "../api";
+import { hunksQuery, overviewQuery, reviewQuery, sessionQuery } from "../api";
+import { LabeledIcon } from "../overview/parts";
 import { useForgetPageScroll, usePageActive } from "../pageActive";
 import { useAppHeaderHeight, useHeight } from "../sticky";
 import { usePrefetchComments } from "../threads/useThreadComments";
+import { useThreads } from "../threads/useThreads";
 import { ErrorMessage } from "../ui";
 import { useMedia, WIDE } from "../useMedia";
 import type { DiffThreads } from "./DiffBody";
@@ -34,7 +30,7 @@ import {
 	restoreAnchor,
 	type ScrollAnchor,
 } from "./scrollAnchor";
-import { threadsOnHead } from "./threadPlacement";
+import { fileThreads, threadsOnHead } from "./threadPlacement";
 import { type Unit, useUnit } from "./unit";
 import { STALE_MESSAGE } from "./useSetStates";
 
@@ -150,22 +146,19 @@ export function useCurrentFile(
 /**
  * The PR's review threads for the diff: the furthest stage in (the summary
  * places them; later stages add the code suggestions are drawn against),
- * with the read they come from and the head being viewed. Undefined until
- * the summary is in. Also when Files changed is the first page.
+ * with the read they come from and the head being viewed. After a Refresh
+ * the previous read's stay until the new one's land (useThreads). Also when
+ * Files changed is the first page. `failed`: no threads could be read.
  */
-function useDiffThreads(): DiffThreads | undefined {
+function useDiffThreads(): {
+	threads: DiffThreads | undefined;
+	failed: Error | null;
+} {
 	const overview = useQuery(overviewQuery);
 	const session = useQuery(sessionQuery);
-	const readId = overview.data?.readId;
-	const stages = useQueries({
-		queries: THREAD_STAGES.map((stage) => ({
-			...threadsQuery(readId ?? "", stage),
-			enabled: Boolean(readId),
-		})),
-	});
-	const view = stages.findLast((q) => q.data)?.data;
+	const { view, readId, error } = useThreads(overview.data?.readId);
 	const snapshotHead = session.data?.snapshotHead;
-	return useMemo(
+	const threads = useMemo(
 		() =>
 			readId && view && snapshotHead
 				? {
@@ -176,6 +169,7 @@ function useDiffThreads(): DiffThreads | undefined {
 				: undefined,
 		[readId, view, snapshotHead],
 	);
+	return { threads, failed: view ? null : error };
 }
 
 const headerOf = (index: number) =>
@@ -376,7 +370,8 @@ export function FilesPage() {
 
 	// Comments are read in the background, the open file's threads first,
 	// then the other files' in file order (one prefetch for the page).
-	const threads = useDiffThreads();
+	const { threads, failed: threadsFailed } = useDiffThreads();
+	const queryClient = useQueryClient();
 	const prefetch = useMemo(
 		() =>
 			data && threads
@@ -386,9 +381,13 @@ export function FilesPage() {
 						openIndex === null
 							? null
 							: data.files.findIndex((f) => f.index === openIndex),
+						(f) =>
+							queryClient.getQueryData(
+								hunksQuery(data.revision, f.index).queryKey,
+							) ?? null,
 					)
 				: [],
-		[data, threads, openIndex],
+		[data, threads, openIndex, queryClient],
 	);
 	usePrefetchComments(threads?.readId, prefetch);
 
@@ -398,6 +397,11 @@ export function FilesPage() {
 			unit={unit}
 			current={current}
 			onSelect={select}
+			threadsOf={(f) =>
+				threads
+					? fileThreads(threads.threads, f.path, threads.snapshotHead)
+					: []
+			}
 		/>
 	);
 
@@ -423,6 +427,20 @@ export function FilesPage() {
 							className="mt-3 rounded-md border border-warn/30 bg-warn/10 px-3 py-2 text-sm text-ink"
 						>
 							{STALE_MESSAGE}
+						</p>
+					)}
+					{threadsFailed && (
+						// Not "no threads": they couldn't be read (flag uncertainty).
+						<p
+							data-testid="threads-failed"
+							className="mt-3 flex min-h-10 items-center gap-2 rounded-md border border-warn/30 bg-warn/10 px-3 text-sm text-ink"
+						>
+							<LabeledIcon
+								icon={AlertIcon}
+								label={`Review threads couldn't be read: ${threadsFailed.message}`}
+								className="text-warn"
+							/>
+							Threads not shown
 						</p>
 					)}
 					{landing && landing.index === null && (

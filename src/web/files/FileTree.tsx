@@ -1,8 +1,9 @@
-import type { FileView } from "../../shared/types";
+import type { FileView, ReviewThread } from "../../shared/types";
 import { Tooltip, TooltipPath } from "../Tooltip";
 import { ChangeKindIcon, changeKindLabel } from "./changeKind";
 import { Meter } from "./ProgressBar";
 import { ChangeCount, crossOffReasons, StatusIcon } from "./status";
+import { bubbleLabel } from "./ThreadBubble";
 import { describeFileProgress, fileUnitProgress, type Unit } from "./unit";
 
 type Node =
@@ -74,8 +75,18 @@ function FileItem(props: {
 	depth: number;
 	current: boolean;
 	onSelect: (index: number) => void;
+	threads: ReviewThread[];
 }) {
-	const { file, unit } = props;
+	const { file, unit, threads } = props;
+	// Its review threads, as the bubble says them: a yellow dot when one
+	// waits on the viewer, green when all are resolved, else grey.
+	const talk =
+		threads.length > 0 ? bubbleLabel(threads, false, "in this file") : "";
+	const dot = threads.some((t) => t.yourTurn && !t.resolved)
+		? "bg-warn"
+		: threads.every((t) => t.resolved)
+			? "bg-ok"
+			: "bg-muted";
 	const name = file.path.slice(file.path.lastIndexOf("/") + 1);
 	const p = fileUnitProgress(file, unit);
 	const numbers = describeFileProgress(file, unit);
@@ -88,6 +99,7 @@ function FileItem(props: {
 					<>
 						{file.status === "renamed" ? "Renamed" : changeKindLabel(file)} ·{" "}
 						<TooltipPath>{path}</TooltipPath> · {numbers}
+						{talk && ` · ${talk}`}
 					</>
 				}
 				describe={false}
@@ -123,6 +135,15 @@ function FileItem(props: {
 									</span>
 								))}
 						</span>
+						{talk && (
+							<span
+								data-testid="tree-threads"
+								className="flex h-4 w-2 shrink-0 items-center"
+							>
+								<span aria-hidden className={`h-2 w-2 rounded-full ${dot}`} />
+								<span className="sr-only">{talk}</span>
+							</span>
+						)}
 						<ChangeCount file={file} />
 						<span data-testid="tree-numbers" className="sr-only">
 							{numbers}
@@ -151,6 +172,7 @@ function Children(props: {
 	depth: number;
 	current: number | null;
 	onSelect: (index: number) => void;
+	threadsOf: (file: FileView) => ReviewThread[];
 }) {
 	return (
 		<ul>
@@ -163,6 +185,7 @@ function Children(props: {
 						depth={props.depth}
 						current={props.current === node.file.index}
 						onSelect={props.onSelect}
+						threads={props.threadsOf(node.file)}
 					/>
 				) : (
 					<li key={`d:${node.folder.name}`}>
@@ -189,6 +212,7 @@ function Children(props: {
 							depth={props.depth + 1}
 							current={props.current}
 							onSelect={props.onSelect}
+							threadsOf={props.threadsOf}
 						/>
 					</li>
 				),
@@ -203,6 +227,8 @@ export function FileTree(props: {
 	unit: Unit;
 	current: number | null;
 	onSelect: (index: number) => void;
+	/** Each file's review threads on the viewed head (fileThreads). */
+	threadsOf?: (file: FileView) => ReviewThread[];
 }) {
 	return (
 		<nav aria-label="Files" data-testid="file-tree">
@@ -212,6 +238,7 @@ export function FileTree(props: {
 				depth={0}
 				current={props.current}
 				onSelect={props.onSelect}
+				threadsOf={props.threadsOf ?? (() => [])}
 			/>
 		</nav>
 	);

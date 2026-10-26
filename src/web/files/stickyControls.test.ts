@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { placeControls } from "./stickyControls";
+import { placeControls, runEnd } from "./stickyControls";
 
 // Stack bottom at 180; controls 20px tall whose 40px targets reach 10px out.
 const base = { top: 180, above: 10, below: 10, height: 20 };
@@ -39,5 +39,15 @@ describe("placeControls", () => {
 		expect(
 			placeControls({ ...base, slotTop: 170, clusterBottom: 195 }),
 		).toEqual({ mode: "static" });
+	});
+});
+
+describe("runEnd", () => {
+	it("stops at the first opened thread below the slot, else the cluster's end", () => {
+		expect(runEnd(100, 900, [])).toBe(900);
+		expect(runEnd(100, 900, [400, 600])).toBe(400);
+		// A thread above the slot doesn't end the run below it.
+		expect(runEnd(100, 900, [50, 700])).toBe(700);
+		expect(runEnd(100, 300, [700])).toBe(300);
 	});
 });

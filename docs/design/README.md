@@ -156,13 +156,18 @@ Threads whose opening comment was made on the viewed head sit on the
 diff, GitHub style (`placeThreads`, `src/web/files/threadPlacement.ts`,
 decides where; nothing else does):
 
-- The commented range has `mark-tint` on every row (LEFT by old number,
-  RIGHT by new number); the bubble sits on its last row, at the right edge
-  of the visible code (sticky, so it stays there as long lines scroll).
+- The commented range (LEFT by old number, RIGHT by new number) is marked
+  with `thread-mark`: `mark-tint`'s wash, the old/new numbers tinted 20%
+  `accent` (like GitHub's selected line numbers) and a 3px `accent` stripe
+  at the code's left edge, so it shows on added and deleted rows and never
+  looks like a landed line (tint plus the accent rail). The bubble sits on
+  its last row, at the right edge of the visible code (sticky, so it stays
+  there as long lines scroll; the cell keeps 48px free at its end).
 - The bubble (`ThreadBubble`): a `raised` pill with the comment glyph and
   the total count of the threads ending there; a green check and muted
   text once all are resolved; a `warn` dot when one waits on the viewer.
-  Named and tooltipped "2 comments, your turn" / "3 comments, resolved".
+  Named and tooltipped with where it is: "2 comments on line 16, your
+  turn", "3 comments on old line 15, resolved". Toggling closes its tooltip.
   40px wide; a row tall with a mouse, 40px on touch (the row grows, so
   neighbours never overlap). All start closed.
 - Opened, the threads show in a row right under the line, on `canvas`,
@@ -171,14 +176,25 @@ decides where; nothing else does):
   header (green check and "Resolved" in `ok`, or the yellow discussion
   icon and "Unresolved"; `ThreadStatus`; "outdated"), then the
   `Conversation` (spinner, Retry, "N missing", as in the Overview).
-  Opening a thread changes no review state.
-- A line in a collapsed gap: the gap row has the bubble; tapping it loads
-  the hidden lines from the nearer edge to the thread's line and opens the
-  thread there.
-- File comments, and threads whose line isn't in the diff, get a bubble in
-  the file header (also while the file is closed); the latter add a
-  `warn` alert to it ("…, line not in this diff") and to the thread's
-  header ("Line not in this diff"). Their threads open under the header.
+  Opening a thread changes no review state. Inside a cluster the thread
+  keeps the cluster's rail at its left, and the cluster's floating controls
+  stop above it. After a Refresh the previous read's threads stay until the
+  new one's land; threads that couldn't be read show a `warn` "Threads not
+  shown" notice under the progress bar, never an empty diff.
+- A line in a collapsed gap: the hidden run's row has the bubble ("on
+  hidden lines 20–79"); tapping it loads the thread's lines (from the
+  nearer loaded edge when it is within 200 lines, else just a few around
+  them, leaving hidden runs with their own ↑/↓ above and below), opens the
+  thread there and focuses its bubble.
+- A closed file's header has one bubble for all its threads ("9 comments
+  in this file, your turn", with the alert when one can't be placed: a
+  file with line threads reads its hunks to know); tapping it opens the
+  file. The file tree shows a dot before the counts (yellow your turn,
+  green all resolved, else grey), named like the bubble.
+- In an open file, file comments and threads whose line isn't in the diff
+  get the header bubble ("on this file"); the latter add a `warn` alert to
+  it ("…, line not in this diff") and to the thread's header ("Line not in
+  this diff"). Their threads open under the header.
 
 ## Timeline (Overview)
 

@@ -107,6 +107,31 @@
 	}
 }
 
+/*
+ * A review thread's commented lines (Files changed): mark-tint's wash over
+ * every cell, the old/new numbers tinted 20% accent (like GitHub's selected
+ * line numbers) and a 3px accent stripe at the code's left edge, so the range
+ * shows on added and deleted rows too, and never looks like a landed line
+ * (tint plus the accent rail). theme.test.ts checks the numbers on it.
+ */
+@utility thread-mark {
+	& > td {
+		box-shadow: inset 0 0 0 100vmax
+			color-mix(in srgb, var(--color-accent) 8%, transparent);
+	}
+	& > td[data-testid="old"],
+	& > td[data-testid="new"] {
+		box-shadow: inset 0 0 0 100vmax
+			color-mix(in srgb, var(--color-accent) 20%, transparent);
+	}
+	& > td:last-child {
+		box-shadow:
+			inset 3px 0 0 var(--color-accent),
+			inset 0 0 0 100vmax
+			color-mix(in srgb, var(--color-accent) 8%, transparent);
+	}
+}
+
 /* The header's faint brand glow, over its solid surface color. */
 @utility header-glow {
 	background-image:

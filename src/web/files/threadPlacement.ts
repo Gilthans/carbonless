@@ -10,6 +10,14 @@ import { fileGaps } from "./gaps";
 /** A diff row by its number on one side: `RIGHT:12` is the row whose new number is 12. */
 export type LineKey = `${DiffSide}:${number}`;
 
+/** Where a thread hidden in a gap will show once its lines are loaded. */
+export interface GapTarget {
+	/** New-side lines `[from, to]` of its range, inside its gap. */
+	show: [number, number];
+	/** The row it ends on, as `FilePlacement.end` will key it. */
+	key: LineKey;
+}
+
 export interface FilePlacement {
 	/** Threads whose range ends on a shown line, by that line. */
 	end: Map<LineKey, ReviewThread[]>;
@@ -18,10 +26,11 @@ export interface FilePlacement {
 	/** Threads whose end line sits in gap `index` (collapsed context). */
 	gaps: Map<number, ReviewThread[]>;
 	/**
-	 * For each thread in `gaps`, the new-side number of its end line: what
-	 * to load to show it.
+	 * For each thread in `gaps`: the new-side lines its range spans (what
+	 * to load to show it) and the key of the row it will end on once they
+	 * are loaded (what to open).
 	 */
-	gapLines: Map<ReviewThread, number>;
+	gapTargets: Map<ReviewThread, GapTarget>;
 	/** File comments ("file") and lines that couldn't be placed ("unplaced"). */
 	header: { thread: ReviewThread; reason: "file" | "unplaced" }[];
 }
@@ -36,6 +45,28 @@ export function threadsOnHead(
 	snapshotHead: string,
 ): ReviewThread[] {
 	return threads.filter((t) => t.commit !== "" && t.commit === snapshotHead);
+}
+
+/**
+ * This file's threads on the viewed head, whether or not its diff is in:
+ * what a closed file's header and the file tree count.
+ */
+export function fileThreads(
+	threads: ReviewThread[],
+	path: string,
+	snapshotHead: string,
+): ReviewThread[] {
+	return threadsOnHead(threads, snapshotHead).filter((t) => t.path === path);
+}
+
+/**
+ * Where a thread sits top down in its file, for reading order: file
+ * comments first, then by the new-side number of its last line (a LEFT
+ * line shifted by the hunks above it, once they are in).
+ */
+export function threadOrder(t: ReviewThread, hunks: FileHunks | null): number {
+	if (!t.anchor) return -1;
+	return newNumberOf(t.anchor.side, t.anchor.line, hunks?.hunks ?? []);
 }
 
 /** The row a line key names: RIGHT matches `newNo`, LEFT matches `oldNo`. */
@@ -79,7 +110,12 @@ function shownRows(hunks: DisplayHunk[], loadedContext: DiffLine[]) {
 	return rows;
 }
 
-/** A hunk's first line after it on each side (a 0-count hunk's start is the line before it). */
+/**
+ * A hunk's first line on one side, and the first after it. A 0-count
+ * hunk's start is the line before it (`-3,0`: an insertion after old 3).
+ */
+const firstOf = (start: number, count: number) =>
+	count === 0 ? start + 1 : start;
 const endOf = (start: number, count: number) =>
 	count === 0 ? start + 1 : start + count;
 
@@ -91,7 +127,7 @@ function newNumberOf(side: DiffSide, n: number, hunks: DisplayHunk[]): number {
 	if (side === "RIGHT") return n;
 	let offset = 0;
 	for (const h of hunks) {
-		if (n < h.oldStart) break;
+		if (n < firstOf(h.oldStart, h.oldCount)) break;
 		offset = endOf(h.newStart, h.newCount) - endOf(h.oldStart, h.oldCount);
 	}
 	return n + offset;
@@ -121,12 +157,11 @@ export function placeThreads(args: {
 		end: new Map(),
 		covered: new Set(),
 		gaps: new Map(),
-		gapLines: new Map(),
+		gapTargets: new Map(),
 		header: [],
 	};
-	const mine = threadsOnHead(args.threads, args.snapshotHead).filter(
-		(t) => t.path === args.path,
-	);
+	const mine = fileThreads(args.threads, args.path, args.snapshotHead);
+	if (mine.length === 0) return placement;
 	const { hunks } = args;
 	const rows = hunks ? shownRows(hunks.hunks, args.loadedContext) : [];
 	const rowAt = new Map<LineKey, number>();
@@ -177,7 +212,15 @@ export function placeThreads(args: {
 		const gap = gaps.find((g) => g.from <= n && n <= g.to);
 		if (gap) {
 			push(placement.gaps, gap.index, t);
-			placement.gapLines.set(t, n);
+			const start = newNumberOf(
+				anchor.startSide,
+				anchor.startLine,
+				hunks.hunks,
+			);
+			placement.gapTargets.set(t, {
+				show: [Math.max(gap.from, Math.min(start, n)), n],
+				key: endKey,
+			});
 		} else placement.header.push({ thread: t, reason: "unplaced" });
 	}
 	return placement;

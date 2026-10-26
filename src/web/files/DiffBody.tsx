@@ -50,6 +50,9 @@ interface RowThreads {
 	/** Opens the row named by these keys, or closes it (by any of them). */
 	toggle: (keys: LineKey[]) => void;
 	idOf: (key: LineKey) => string;
+	/** A row whose bubble takes focus once it shows (a gap thread opened). */
+	focus: LineKey | null;
+	onFocused: () => void;
 }
 
 /** The key a row's bubble (or highlight) is under: its number on either side. */
@@ -131,6 +134,13 @@ function LineRow(props: {
 	const open = keys.some((k) => threads?.open.has(k));
 	const rowBg = (reviewed ? REVIEWED_ROW_BG : ROW_BG)[line.kind];
 	const numberBg = (reviewed ? REVIEWED_NUMBER_BG : NUMBER_BG)[line.kind];
+	const where =
+		line.newNo !== undefined
+			? `on line ${line.newNo}`
+			: `on old line ${line.oldNo}`;
+	// The commented range: the accent stripe and tinted numbers (thread-mark),
+	// unlike a landed line's tint and rail; not while it is landed on.
+	const mark = commented && props.landed !== "on" ? "thread-mark" : "";
 	return (
 		<>
 			<tr
@@ -140,7 +150,7 @@ function LineRow(props: {
 				data-new-no={line.newNo}
 				data-landed={props.landed === "on" || undefined}
 				data-commented={commented ? "" : undefined}
-				className={`${rowBg} ${props.landed ? LANDED_CLASS[props.landed] : ""} ${commented && props.landed !== "on" ? "mark-tint" : ""}`}
+				className={`${rowBg} ${props.landed ? LANDED_CLASS[props.landed] : ""} ${mark}`}
 			>
 				<Rail state={state} />
 				<td className="w-11 px-1 align-top whitespace-nowrap pointer-coarse:w-20">
@@ -158,14 +168,17 @@ function LineRow(props: {
 				>
 					{line.newNo}
 				</td>
-				<td className="px-2 whitespace-pre">
+				<td className={`whitespace-pre ${endKey ? "pr-12 pl-2" : "px-2"}`}>
 					{endKey && threads && (
 						<ThreadBubble
 							inline
 							threads={ending}
+							where={where}
 							open={open}
 							controls={open ? threads.idOf(endKey) : undefined}
 							onToggle={() => threads.toggle(keys)}
+							focus={threads.focus !== null && keys.includes(threads.focus)}
+							onFocused={threads.onFocused}
 						/>
 					)}
 					<span
@@ -196,6 +209,7 @@ function LineRow(props: {
 					readId={threads.readId}
 					threads={ending}
 					columns={COLUMNS}
+					rail={state ? RAIL[state] : undefined}
 				/>
 			)}
 		</>
@@ -303,6 +317,30 @@ function runs(lines: DiffLine[]): { key?: string; lines: DiffLine[] }[] {
 		else result.push({ key: line.clusterKey, lines: [line] });
 	}
 	return result;
+}
+
+/**
+ * A thread's lines further than this from a gap's loaded edge load on
+ * their own (a few around them), not the whole way from the edge.
+ */
+const FAR = 200;
+
+/**
+ * The runs of a gap's lines that aren't loaded, top down (lines on their way
+ * or failed are in them: their run's row says so).
+ */
+function hiddenRuns(
+	gap: Gap,
+	loaded: ReadonlyMap<number, DiffLine>,
+): { from: number; to: number }[] {
+	const runs: { from: number; to: number }[] = [];
+	for (let n = gap.from; n <= gap.to; n++) {
+		if (loaded.has(n)) continue;
+		const last = runs[runs.length - 1];
+		if (last && last.to === n - 1) last.to = n;
+		else runs.push({ from: n, to: n });
+	}
+	return runs;
 }
 
 /** One click's worth of lines for each way a gap can grow. */
@@ -418,6 +456,7 @@ export function DiffBody(props: {
 	const [openThreads, setOpenThreads] = useState<ReadonlySet<LineKey>>(
 		() => new Set(),
 	);
+	const [focusThread, setFocusThread] = useState<LineKey | null>(null);
 	const toggleThreads = (keys: LineKey[]) =>
 		setOpenThreads((open) => {
 			const next = new Set(open);
@@ -433,6 +472,8 @@ export function DiffBody(props: {
 					open: openThreads,
 					toggle: toggleThreads,
 					idOf: (key) => `${idBase}-thread-${key}`,
+					focus: focusThread,
+					onFocused: () => setFocusThread(null),
 				}
 			: undefined;
 
@@ -466,98 +507,158 @@ export function DiffBody(props: {
 		return rows;
 	};
 
+	/**
+	 * A gap: its loaded lines, and a row for each run still hidden between
+	 * them (its ↑/↓ buttons, "N hidden lines", loading or Retry, and a bubble
+	 * for the threads whose line is in it).
+	 */
 	const gapRows = (gap: Gap | undefined) => {
 		if (!gap) return null;
-		const { top, bottom, remaining } = gapState(gap, taken);
-		const inGap = loadedRanges.filter(
-			(r) => r.from <= gap.to && r.to >= gap.from,
-		);
-		const failed = inGap.flatMap((r) => (r.result?.isError ? [r.result] : []));
-		const pending = inGap.some((r) => r.result?.isPending);
-		const buttons = expansions(gap, top, bottom, remaining);
 		const gapThreads = placement?.gaps.get(gap.index) ?? [];
-		/**
-		 * Opens the gap's threads where they are: loads the hidden lines from
-		 * the nearer edge to a few past each thread's line, and opens it there.
-		 */
-		const openGapThreads = () => {
-			for (const t of gapThreads) {
-				const n = placement?.gapLines.get(t);
-				if (n === undefined || !t.anchor) continue;
-				const start = gap.from + top;
-				const end = gap.to - bottom;
-				if (n - start <= end - n) {
-					addRange(start, Math.min(end, n + 3));
-				} else {
-					addRange(
-						Math.max(start, n - 3 - (t.anchor.line - t.anchor.startLine)),
-						end,
-					);
-				}
-				const key: LineKey = `${t.anchor.side}:${t.anchor.line}`;
-				setOpenThreads((open) => new Set(open).add(key));
+		const runs = hiddenRuns(gap, loaded);
+		const targetOf = (t: ReviewThread) => placement?.gapTargets.get(t);
+		// Each thread goes on the run holding its line (the nearest one if
+		// none does; a run of its own if the gap has none left).
+		const threadsOf = new Map<number, ReviewThread[]>();
+		for (const t of gapThreads) {
+			const n = targetOf(t)?.show[1] ?? gap.from;
+			let at = runs.findIndex((r) => r.from <= n && n <= r.to);
+			if (at < 0 && runs.length === 0) {
+				// Every line is loaded: an empty run after them carries it.
+				runs.push({ from: gap.to + 1, to: gap.to });
+				at = 0;
 			}
-		};
-		return (
-			<tbody key={`gap${gap.index}`}>
-				{contextRows(gap.from, gap.from + top - 1)}
-				{(remaining > 0 ||
-					pending ||
-					failed.length > 0 ||
-					gapThreads.length > 0) && (
-					<tr data-testid="gap-row" className="bg-hunk text-hunk-ink">
-						<td colSpan={2} className="px-1">
-							<div className="flex">
-								{buttons.map((b) => (
-									<Tooltip key={b.glyph} content={b.label} describe={false}>
-										{(trigger) => (
-											<button
-												type="button"
-												{...trigger}
-												aria-label={b.label}
-												onClick={() => addRange(b.from, b.to)}
-												className="rounded px-1 hover:bg-pressed hover:text-ink focus-visible:outline-2 focus-visible:outline-accent"
-											>
-												{b.glyph}
-											</button>
-										)}
-									</Tooltip>
-								))}
-							</div>
-						</td>
-						<td colSpan={COLUMNS - 2} className="px-2 font-sans">
-							{gapThreads.length > 0 && (
-								<ThreadBubble
-									inline
-									threads={gapThreads}
-									open={false}
-									onToggle={openGapThreads}
-								/>
-							)}
-							{failed.length > 0 ? (
-								<span role="alert" className="text-bad">
-									{failed[0]?.error?.message}{" "}
-									<button
-										type="button"
-										onClick={() => {
-											for (const f of failed) void f.refetch();
-										}}
-										className="rounded border border-bad/60 px-1.5 text-xs hover:bg-bad/15 focus-visible:outline-2 focus-visible:outline-accent"
-									>
-										Retry
-									</button>
-								</span>
-							) : pending ? (
-								"Loading…"
-							) : (
-								`${remaining} hidden ${remaining === 1 ? "line" : "lines"}`
-							)}
-						</td>
-					</tr>
-				)}
-				{contextRows(gap.to - bottom + 1, gap.to)}
-			</tbody>
-		);
+			if (at < 0) {
+				at = runs.reduce(
+					(best, r, i) =>
+						Math.abs(r.from - n) < Math.abs((runs[best]?.from ?? 0) - n)
+							? i
+							: best,
+					0,
+				);
+			}
+			threadsOf.set(at, [...(threadsOf.get(at) ?? []), t]);
+		}
+		const rows: ReactNode[] = [];
+		let next = gap.from;
+		runs.forEach((run, i) => {
+			rows.push(...contextRows(next, run.from - 1));
+			next = run.to + 1;
+			const part: Gap = {
+				index: gap.index,
+				from: run.from,
+				to: run.to,
+				above: run.from > gap.from || gap.above,
+				below: run.to < gap.to || gap.below,
+			};
+			const { top, bottom, remaining } = gapState(part, taken);
+			const inRun = loadedRanges.filter(
+				(r) => r.from <= run.to && r.to >= run.from,
+			);
+			const failed = inRun.flatMap((r) =>
+				r.result?.isError ? [r.result] : [],
+			);
+			const pending = inRun.some((r) => r.result?.isPending);
+			const buttons =
+				remaining > 0 ? expansions(part, top, bottom, remaining) : [];
+			const runThreads = threadsOf.get(i) ?? [];
+			if (
+				remaining === 0 &&
+				!pending &&
+				failed.length === 0 &&
+				runThreads.length === 0
+			) {
+				return;
+			}
+			const start = run.from + top;
+			const end = run.to - bottom;
+			/**
+			 * Opens the run's threads where they are: loads their lines (from
+			 * the nearer edge when it's close, else just around them) and opens
+			 * each on its row, its bubble focused.
+			 */
+			const openRunThreads = () => {
+				for (const t of runThreads) {
+					const target = targetOf(t);
+					if (!target) continue;
+					const [from, to] = target.show;
+					const window: [number, number] =
+						from - start <= FAR && from - start <= end - to
+							? [start, Math.min(end, to + 3)]
+							: end - to <= FAR
+								? [Math.max(start, from - 3), end]
+								: [Math.max(start, from - 10), Math.min(end, to + 3)];
+					if (window[0] <= window[1]) addRange(window[0], window[1]);
+					setOpenThreads((open) => new Set(open).add(target.key));
+					setFocusThread(target.key);
+				}
+			};
+			const where =
+				run.from === run.to
+					? `on hidden line ${run.from}`
+					: `on hidden lines ${run.from}–${run.to}`;
+			rows.push(
+				<tr
+					key={`gap${gap.index}:${run.from}`}
+					data-testid="gap-row"
+					className="bg-hunk text-hunk-ink"
+				>
+					<td colSpan={2} className="px-1">
+						<div className="flex">
+							{buttons.map((b) => (
+								<Tooltip key={b.glyph} content={b.label} describe={false}>
+									{(trigger) => (
+										<button
+											type="button"
+											{...trigger}
+											aria-label={b.label}
+											onClick={() => addRange(b.from, b.to)}
+											className="rounded px-1 hover:bg-pressed hover:text-ink focus-visible:outline-2 focus-visible:outline-accent"
+										>
+											{b.glyph}
+										</button>
+									)}
+								</Tooltip>
+							))}
+						</div>
+					</td>
+					<td
+						colSpan={COLUMNS - 2}
+						className={`font-sans ${runThreads.length ? "pr-12 pl-2" : "px-2"}`}
+					>
+						{runThreads.length > 0 && (
+							<ThreadBubble
+								inline
+								threads={runThreads}
+								where={where}
+								open={false}
+								onToggle={openRunThreads}
+							/>
+						)}
+						{failed.length > 0 ? (
+							<span role="alert" className="text-bad">
+								{failed[0]?.error?.message}{" "}
+								<button
+									type="button"
+									onClick={() => {
+										for (const f of failed) void f.refetch();
+									}}
+									className="rounded border border-bad/60 px-1.5 text-xs hover:bg-bad/15 focus-visible:outline-2 focus-visible:outline-accent"
+								>
+									Retry
+								</button>
+							</span>
+						) : pending ? (
+							"Loading…"
+						) : remaining > 0 ? (
+							`${remaining} hidden ${remaining === 1 ? "line" : "lines"}`
+						) : null}
+					</td>
+				</tr>,
+			);
+		});
+		rows.push(...contextRows(next, gap.to));
+		return <tbody key={`gap${gap.index}`}>{rows}</tbody>;
 	};
 
 	const gaps = hunks.data

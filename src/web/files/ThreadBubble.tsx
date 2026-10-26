@@ -1,12 +1,22 @@
 import { AlertIcon, CheckIcon, CommentIcon } from "@primer/octicons-react";
+import { useEffect, useRef } from "react";
 import type { ReviewThread } from "../../shared/types";
 import { plural } from "../overview/parts";
 import { Tooltip } from "../Tooltip";
 
-/** The bubble's name: its comment count, then what stands out. */
-export function bubbleLabel(threads: ReviewThread[], flagged = false): string {
+/**
+ * The bubble's name: its comment count and where ("on line 16", "in this
+ * file"), then what stands out.
+ */
+export function bubbleLabel(
+	threads: ReviewThread[],
+	flagged = false,
+	where?: string,
+): string {
 	const count = threads.reduce((n, t) => n + t.commentCount, 0);
-	const parts = [plural(count, "comment")];
+	const parts = [
+		where ? `${plural(count, "comment")} ${where}` : plural(count, "comment"),
+	];
 	if (threads.length > 0 && threads.every((t) => t.resolved)) {
 		parts.push("resolved");
 	}
@@ -30,18 +40,35 @@ export function ThreadBubble(props: {
 	flagged?: boolean;
 	inline?: boolean;
 	controls?: string;
+	/** Where, for its name: "on line 16", "in this file". */
+	where?: string;
+	/** Take focus once shown (then `onFocused`). */
+	focus?: boolean;
+	onFocused?: () => void;
 }) {
 	const { threads } = props;
-	const label = bubbleLabel(threads, props.flagged);
+	const label = bubbleLabel(threads, props.flagged, props.where);
+	const button = useRef<HTMLButtonElement | null>(null);
+	const { focus, onFocused } = props;
+	useEffect(() => {
+		if (!focus || !button.current) return;
+		button.current.focus({ preventScroll: true });
+		onFocused?.();
+	}, [focus, onFocused]);
 	const count = threads.reduce((n, t) => n + t.commentCount, 0);
 	const resolved = threads.every((t) => t.resolved);
 	const yourTurn = threads.some((t) => t.yourTurn && !t.resolved);
 	return (
-		<Tooltip content={label} describe={false}>
+		// Toggling closes its tip, so a tap doesn't leave it over the thread.
+		<Tooltip content={label} describe={false} dismissKey={props.open}>
 			{(trigger) => (
 				<button
 					type="button"
 					{...trigger}
+					ref={(el) => {
+						button.current = el;
+						trigger.ref(el);
+					}}
 					data-testid="thread-bubble"
 					aria-label={label}
 					aria-expanded={props.open}

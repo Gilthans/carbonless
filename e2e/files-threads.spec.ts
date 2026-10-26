@@ -4,7 +4,7 @@ import {
 	type Scenario,
 	threadComment,
 } from "../test/fake-gh/scenario";
-import { fileSection, openFiles, progress } from "./files-ui";
+import { fileSection, openFiles, progress, withTree } from "./files-ui";
 import { expect, type Pr, type PrOptions, test } from "./fixtures";
 
 const core = Array.from({ length: 78 }, (_, i) => `core ${i + 1}`);
@@ -21,6 +21,7 @@ const fixture: PrOptions = {
 	files: [
 		{
 			message: "core",
+			binary: { "src/zz.bin": new Uint8Array([0, 1, 2, 0, 3]) },
 			files: {
 				"src/core.ts": text(
 					core.flatMap((line, i) =>
@@ -45,13 +46,15 @@ const fixture: PrOptions = {
 };
 
 const CORE = "src/core.ts";
+const BIN = "src/zz.bin";
 const UTIL = "src/util.ts";
 
 /**
  * The threads, on the head unless said: the viewer's turn on new 16; a
  * range over new 5–6; LEFT on the deleted old 15; a resolved one on new 8;
- * one in the collapsed tail (new 40); a file comment on util.ts; one whose
- * line isn't in the file; and one on the older commit (not shown).
+ * one in the collapsed tail (new 40) and a LEFT one there (old 50); a file
+ * comment on util.ts; one whose line isn't in the file; one on a line of the
+ * binary src/zz.bin; and one on the older commit (not shown).
  */
 function threads(head: string, older: string) {
 	const on = (commit: string) => ({ commit, diffHunk: "" });
@@ -102,6 +105,13 @@ function threads(head: string, older: string) {
 		reviewThread({ path: CORE, line: 16, subjectType: "LINE" }, [
 			threadComment({ login: "rev3", text: "From before", ...on(older) }),
 		]),
+		reviewThread(
+			{ path: CORE, line: 50, diffSide: "LEFT", subjectType: "LINE" },
+			[threadComment({ login: "rev2", text: "Old fifty", ...on(head) })],
+		),
+		reviewThread({ path: BIN, line: 1, subjectType: "LINE" }, [
+			threadComment({ login: "rev1", text: "On a binary", ...on(head) }),
+		]),
 	];
 }
 
@@ -137,7 +147,11 @@ async function openAll(scope: Locator) {
 		'[data-testid="thread-bubble"][aria-expanded="false"]',
 	);
 	for (let i = 0; i < 20 && (await closed.count()) > 0; i++) {
-		await closed.first().click();
+		// One may go as it opens (a gap's bubble moves to its row): try again.
+		await closed
+			.first()
+			.click({ timeout: 2000 })
+			.catch(() => {});
 	}
 	await expect(closed).toHaveCount(0);
 }
@@ -153,7 +167,7 @@ test("bubble on the commented line with count, dot and resolved state", async ({
 	await openFiles(page, s.url);
 	const section = await expand(page, CORE);
 	const mine = row(section, "new", 16).getByRole("button", {
-		name: "2 comments, your turn",
+		name: "2 comments on line 16, your turn",
 	});
 	await expect(mine).toBeVisible();
 	await expect(mine).toHaveAttribute("aria-expanded", "false");
@@ -163,14 +177,14 @@ test("bubble on the commented line with count, dot and resolved state", async ({
 	expect(box?.height ?? 0).toBeGreaterThanOrEqual(isMobile ? 40 : 20);
 	expect(box?.width ?? 0).toBeGreaterThanOrEqual(40);
 	const resolved = row(section, "new", 8).getByRole("button", {
-		name: "2 comments, resolved",
+		name: "2 comments on line 8, resolved",
 	});
 	await expect(resolved).toBeVisible();
 	await expect(resolved.locator("svg.octicon-check")).toHaveCount(1);
 	// Named by its tooltip too.
 	await mine.hover();
 	await expect(page.locator('[role="tooltip"]:not([hidden])')).toHaveText(
-		"2 comments, your turn",
+		"2 comments on line 16, your turn",
 	);
 	const shots = process.env.DESIGN_SHOTS;
 	if (shots) {
@@ -199,7 +213,7 @@ test("multi-line range is highlighted, the bubble sits on its last line", async 
 	);
 	await expect(bubbles(row(section, "new", 5))).toHaveCount(0);
 	await expect(
-		row(section, "new", 6).getByRole("button", { name: "1 comment" }),
+		row(section, "new", 6).getByRole("button", { name: "1 comment on line 6" }),
 	).toBeVisible();
 	// LEFT: the deleted old line 15 carries its own bubble.
 	const deleted = section.locator(
@@ -207,7 +221,7 @@ test("multi-line range is highlighted, the bubble sits on its last line", async 
 	);
 	await expect(deleted).toHaveAttribute("data-commented", "");
 	await expect(
-		deleted.getByRole("button", { name: "1 comment" }),
+		deleted.getByRole("button", { name: "1 comment on old line 15" }),
 	).toBeVisible();
 	// The highlight is the accent tint over the cells.
 	const shadow = await row(section, "new", 5)
@@ -228,7 +242,7 @@ test("opening the bubble shows every comment, closing keeps the scroll position"
 	await openFiles(page, s.url);
 	const section = await expand(page, CORE);
 	const bubble = row(section, "new", 16).getByRole("button", {
-		name: "2 comments, your turn",
+		name: "2 comments on line 16, your turn",
 	});
 	await bubble.click();
 	await expect(bubble).toHaveAttribute("aria-expanded", "true");
@@ -279,7 +293,7 @@ test("a thread on an older commit is not shown", async ({
 	await expect(bubbles(section)).toHaveCount(6);
 	await expect(
 		row(section, "new", 16).getByRole("button", {
-			name: "2 comments, your turn",
+			name: "2 comments on line 16, your turn",
 		}),
 	).toBeVisible();
 	await openAll(section);
@@ -296,20 +310,24 @@ test("file comment opens from the file header; a line not in the diff is flagged
 	await setup(pr);
 	const s = await startCrb();
 	await openFiles(page, s.url);
-	// A file comment shows on the header even while the file is closed.
+	// A closed file's header counts its threads; tapping opens the file
+	// with its file comment opened.
 	const util = fileSection(page, UTIL);
 	const header = util.locator("header");
-	const bubble = header.getByRole("button", { name: "1 comment" });
+	const bubble = header.getByRole("button", { name: "1 comment in this file" });
 	await expect(bubble).toBeVisible();
 	await bubble.click();
+	await expect(
+		util.getByRole("button", { name: "Collapse file" }),
+	).toBeVisible();
 	await expect(util.getByTestId("thread-comment")).toContainText(
 		"Whole file note",
 	);
 	// The line past the file's end: in core.ts's header, flagged.
 	const core = await expand(page, CORE);
-	const flagged = core
-		.locator("header")
-		.getByRole("button", { name: "1 comment, line not in this diff" });
+	const flagged = core.locator("header").getByRole("button", {
+		name: "1 comment on this file, line not in this diff",
+	});
 	await expect(flagged).toBeVisible();
 	await flagged.click();
 	await expect(core.getByTestId("thread-comment")).toContainText(
@@ -338,19 +356,44 @@ test("a thread in a collapsed gap is reachable", async ({
 	const section = await expand(page, CORE);
 	await expect(row(section, "new", 40)).toHaveCount(0);
 	const gap = section.getByTestId("gap-row").last();
-	const bubble = gap.getByRole("button", { name: "1 comment" });
+	// The tail gap hides two: RIGHT new 40 and LEFT old 50 (new 51).
+	const bubble = gap.getByRole("button", {
+		name: "2 comments on hidden lines 20–79",
+	});
 	await expect(bubble).toBeVisible();
-	await bubble.click();
-	// The gap opens around the line, and the thread opens under it.
+	// By keyboard: focus lands on the opened row's bubble.
+	await bubble.focus();
+	await page.keyboard.press("Enter");
+	// The gap opens around the lines, and the threads open under them.
 	await expect(row(section, "new", 40)).toBeVisible();
 	await expect(row(section, "new", 40)).toHaveAttribute("data-commented", "");
-	const thread = section.getByTestId("thread-row");
-	await expect(thread.getByTestId("thread-comment")).toContainText(
-		"Far down here",
-	);
+	const rows = section.getByTestId("thread-row");
 	await expect(
-		row(section, "new", 40).getByRole("button", { name: "1 comment" }),
+		rows.filter({ hasText: "Far down here" }).getByTestId("thread-comment"),
+	).toHaveCount(1);
+	await expect(
+		row(section, "new", 40).getByRole("button", {
+			name: "1 comment on line 40",
+		}),
 	).toHaveAttribute("aria-expanded", "true");
+	// The LEFT one, on old 50.
+	const old50 = row(section, "old", 50);
+	await expect(old50).toHaveAttribute("data-new-no", "51");
+	await expect(
+		old50.getByRole("button", { name: "1 comment on line 51" }),
+	).toHaveAttribute("aria-expanded", "true");
+	await expect(
+		rows.filter({ hasText: "Old fifty" }).getByTestId("thread-comment"),
+	).toHaveCount(1);
+	const focused = await page.evaluate(() => {
+		const el = document.activeElement;
+		return el?.getAttribute("data-testid") === "thread-bubble"
+			? (el.getAttribute("aria-label") ?? "")
+			: (el?.tagName ?? "none");
+	});
+	expect(focused).toMatch(/^1 comment on line (40|51)$/);
+	// The gap lines that stay hidden are still counted, with no "0 hidden".
+	await expect(section).not.toContainText("0 hidden lines");
 });
 
 test("opening a thread doesn't change review progress", async ({
@@ -392,7 +435,7 @@ test("threads show when /files is the first page", async ({
 	const section = fileSection(page, CORE);
 	await expect(
 		row(section, "new", 16).getByRole("button", {
-			name: "2 comments, your turn",
+			name: "2 comments on line 16, your turn",
 		}),
 	).toBeVisible();
 });
@@ -407,7 +450,7 @@ test("slow comments: spinner, then comments", async ({
 	await openFiles(page, s.url);
 	const section = await expand(page, CORE);
 	await row(section, "new", 6)
-		.getByRole("button", { name: "1 comment" })
+		.getByRole("button", { name: "1 comment on line 6" })
 		.click();
 	const thread = section.getByTestId("thread-row");
 	await expect(
@@ -446,4 +489,328 @@ test("the open file's comments are read first", async ({
 	// The older commit's thread isn't in Files changed.
 	await expect.poll(() => asked.flat()).toContain("T7-0");
 	expect(asked.flat()).not.toContain("T7-7");
+});
+
+test("a commented range is marked on added rows too, unlike a landed line", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	await setup(pr);
+	const s = await startCrb();
+	// Land on new 9 (uncommented context): the landed look, for comparison.
+	await page.goto(
+		new URL(`/files?path=${encodeURIComponent(CORE)}&line=9`, s.url).href,
+	);
+	const section = fileSection(page, CORE);
+	await expect(row(section, "new", 9)).toHaveAttribute("data-landed");
+	const look = (where: Locator, n: number) =>
+		row(where, "new", n).evaluate((tr) => {
+			const cells = [...tr.querySelectorAll("td")];
+			const style = (td: Element | undefined) =>
+				td ? getComputedStyle(td).boxShadow : "";
+			return {
+				number: style(cells.find((c) => c.dataset.testid === "new")),
+				code: style(cells.at(-1)),
+			};
+		});
+	// New 5 is added and commented; util.ts's new 3 is added, not commented.
+	const commented = await look(section, 5);
+	const landed = await look(section, 9);
+	const util = await expand(page, UTIL);
+	await expect(row(util, "new", 3)).toHaveClass(/bg-add/);
+	const plain = await look(util, 3);
+	expect(commented.number).not.toBe(plain.number);
+	expect(commented.number).toContain("inset");
+	// The accent stripe at the code's left edge.
+	expect(commented.code).toMatch(/3px 0px 0px 0px inset/);
+	expect(plain.code).not.toMatch(/ 3px 0px 0px 0px inset/);
+	expect(landed.code).not.toMatch(/ 3px 0px 0px 0px inset/);
+	expect(commented.number).not.toBe(landed.number);
+	const shots = process.env.DESIGN_SHOTS;
+	if (shots) {
+		// One file open at a time: back to core.ts.
+		await expand(page, CORE);
+		await row(section, "new", 16)
+			.getByRole("button", { name: "2 comments on line 16, your turn" })
+			.click();
+		await row(section, "new", 5).scrollIntoViewIfNeeded();
+		await page.screenshot({
+			path: `${shots}/files-thread-open-${test.info().project.name === "phone" ? "phone" : "desktop"}-fix1.png`,
+		});
+	}
+});
+
+test("a closed file counts its threads; a binary file's line thread is flagged before it opens", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	await setup(pr);
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	// core.ts, closed: its 7 threads (9 comments) on the head, the viewer's turn on one.
+	const core = fileSection(page, CORE);
+	const count = core.locator("header").getByRole("button", {
+		name: "9 comments in this file, your turn, line not in this diff",
+	});
+	await expect(count).toBeVisible();
+	await expect(count.getByTestId("your-turn-dot")).toBeVisible();
+	// The binary file: flagged though never opened.
+	const bin = fileSection(page, BIN);
+	await expect(
+		bin.locator("header").getByRole("button", {
+			name: "1 comment in this file, line not in this diff",
+		}),
+	).toBeVisible();
+	await expect(bin.getByRole("button", { name: "Expand file" })).toBeVisible();
+	// The tree says it too: a dot, named like the bubble.
+	await withTree(page, async (tree) => {
+		await expect(
+			tree
+				.getByRole("button", { name: /core\.ts/ })
+				.getByTestId("tree-threads"),
+		).toHaveText("9 comments in this file, your turn");
+		await expect(
+			tree
+				.getByRole("button", { name: /util\.ts/ })
+				.getByTestId("tree-threads"),
+		).toHaveText("1 comment in this file");
+	});
+	// Tapping the count opens the file.
+	await count.click();
+	await expect(
+		core.getByRole("button", { name: "Collapse file" }),
+	).toBeVisible();
+	await expect(row(core, "new", 16)).toBeVisible();
+	const shots = process.env.DESIGN_SHOTS;
+	if (shots) {
+		await page.screenshot({
+			path: `${shots}/files-bubbles-${isMobile ? "phone" : "desktop"}-fix1.png`,
+		});
+	}
+});
+
+test("an opened thread survives a Refresh", async ({ page, pr, startCrb }) => {
+	const p = await setup(pr);
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	const section = await expand(page, CORE);
+	await row(section, "new", 6)
+		.getByRole("button", { name: "1 comment on line 6" })
+		.click();
+	const thread = section.getByTestId("thread-row");
+	await expect(thread.getByTestId("thread-comment")).toHaveCount(1);
+	// Every bubble and the thread stay while the new read comes, slowly.
+	p.editScenario((sc) => {
+		sc.threadsDelayMs = 2500;
+	});
+	await page.evaluate(() => {
+		const w = window as unknown as { lost: boolean };
+		w.lost = false;
+		new MutationObserver(() => {
+			if (!document.querySelector('[data-testid="thread-row"]')) w.lost = true;
+		}).observe(document.body, { childList: true, subtree: true });
+	});
+	const asked = page.waitForResponse(
+		(r) => new URL(r.url()).pathname === "/api/threads",
+		{ timeout: 20_000 },
+	);
+	await page.getByRole("button", { name: "Refresh" }).first().click();
+	await asked;
+	await expect(
+		page.getByRole("button", { name: "Refresh" }).first(),
+	).toBeEnabled({
+		timeout: 20_000,
+	});
+	await page.waitForTimeout(500);
+	expect(
+		await page.evaluate(() => (window as unknown as { lost: boolean }).lost),
+	).toBe(false);
+	await expect(thread.getByTestId("thread-comment")).toHaveCount(1);
+});
+
+test("review threads that couldn't be read are flagged, not shown as none", async ({
+	page,
+	pr,
+	startCrb,
+	expectConsoleError,
+}) => {
+	expectConsoleError(/50\d|Failed to load resource/);
+	await setup(pr, { failGraphql: "reviewThreads" });
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	await expect(page.getByTestId("threads-failed")).toBeVisible({
+		timeout: 20_000,
+	});
+	await expect(
+		page.getByTestId("threads-failed").getByRole("img", {
+			name: /^Review threads couldn't be read/,
+		}),
+	).toBeVisible();
+});
+
+test("a thread on a file's last line opens below its no-newline marker", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	const p = await pr({
+		base: { "src/end.ts": "a\nb\nc" },
+		files: [{ message: "end", files: { "src/end.ts": "a\nb\nc changed" } }],
+	});
+	const head = p.repo.shas.at(-1) ?? "";
+	p.editScenario((sc) => {
+		const graph = sc.prs[7]?.graphql;
+		if (!graph) throw new Error("no PR in the scenario");
+		graph.reviewThreads = [
+			reviewThread({ path: "src/end.ts", line: 3, subjectType: "LINE" }, [
+				threadComment({ login: "rev1", text: "Add a newline", commit: head }),
+			]),
+		];
+	});
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	const section = await expand(page, "src/end.ts");
+	await row(section, "new", 3)
+		.getByRole("button", { name: "1 comment on line 3" })
+		.click();
+	const after = await row(section, "new", 3).evaluate((tr) => {
+		const next = tr.nextElementSibling;
+		return [
+			next?.textContent ?? "",
+			next?.nextElementSibling?.getAttribute("data-testid"),
+		];
+	});
+	expect(after[0]).toContain("No newline at end of file");
+	expect(after[1]).toBe("thread-row");
+});
+
+test("a thread deep in a large gap loads only the lines around it", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	const big = Array.from({ length: 900 }, (_, i) => `big ${i + 1}`);
+	const p = await pr({
+		base: { "src/big.ts": text(big) },
+		files: [
+			{
+				message: "big",
+				files: {
+					"src/big.ts": text(
+						big.map((l, i) => (i === 0 ? "big 1 changed" : l)),
+					),
+				},
+			},
+		],
+	});
+	const head = p.repo.shas.at(-1) ?? "";
+	p.editScenario((sc) => {
+		const graph = sc.prs[7]?.graphql;
+		if (!graph) throw new Error("no PR in the scenario");
+		graph.reviewThreads = [
+			reviewThread({ path: "src/big.ts", line: 450, subjectType: "LINE" }, [
+				threadComment({ login: "rev1", text: "Deep down", commit: head }),
+			]),
+		];
+	});
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	const section = await expand(page, "src/big.ts");
+	await section
+		.getByRole("button", { name: /^1 comment on hidden lines/ })
+		.click();
+	await expect(row(section, "new", 450)).toBeVisible();
+	await expect(
+		section.getByTestId("thread-row").getByTestId("thread-comment"),
+	).toHaveText(/Deep down/);
+	// A few lines around it, hidden runs above and below.
+	const shown = await section.locator('tr[data-testid="diff-line"]').count();
+	expect(shown).toBeLessThan(40);
+	const gaps = section.getByTestId("gap-row");
+	await expect(gaps).toHaveCount(2);
+	await expect(gaps.first()).toContainText(/\d+ hidden lines/);
+	await expect(gaps.last()).toContainText(/\d+ hidden lines/);
+	// The run above still grows from either end.
+	await expect(
+		gaps.first().getByRole("button", { name: /Load 20 lines (below|above)/ }),
+	).toHaveCount(2);
+});
+
+test("comments of the file opened next go first", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	// Four files of 40 threads: the first two requests take 100 of them.
+	const names = ["f1", "f2", "f3", "f4"].map((n) => `src/${n}.ts`);
+	const lines = Array.from({ length: 50 }, (_, i) => `l ${i + 1}`);
+	const p = await pr({
+		base: Object.fromEntries(names.map((n) => [n, text(lines)])),
+		files: [
+			{
+				message: "all",
+				files: Object.fromEntries(
+					names.map((n) => [
+						n,
+						text(lines.map((l, i) => (i === 0 ? `${l}!` : l))),
+					]),
+				),
+			},
+		],
+	});
+	const head = p.repo.shas.at(-1) ?? "";
+	p.editScenario((sc) => {
+		const graph = sc.prs[7]?.graphql;
+		if (!graph) throw new Error("no PR in the scenario");
+		graph.reviewThreads = names.flatMap((path) =>
+			Array.from({ length: 40 }, (_, i) =>
+				reviewThread({ path, line: 1 + (i % 4), subjectType: "LINE" }, [
+					threadComment({ login: "rev1", text: `${path} ${i}`, commit: head }),
+				]),
+			),
+		);
+		sc.commentsDelayMs = 2500;
+	});
+	const s = await startCrb();
+	const asked: string[][] = [];
+	page.on("request", (r) => {
+		const url = new URL(r.url());
+		if (url.pathname === "/api/comments") {
+			asked.push((url.searchParams.get("ids") ?? "").split(","));
+		}
+	});
+	await openFiles(page, s.url);
+	await expect.poll(() => asked.length).toBe(2);
+	// f4 (threads 120–159) opens while the first two are out.
+	await expand(page, names[3] as string);
+	await expect.poll(() => asked.length, { timeout: 20_000 }).toBeGreaterThan(2);
+	const third = asked[2] ?? [];
+	const index = (id: string) => Number(id.split("-")[1]);
+	expect(index(third[0] ?? "")).toBeGreaterThanOrEqual(120);
+});
+
+test("an opened thread inside a cluster keeps its rail", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	await setup(pr);
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	const section = await expand(page, CORE);
+	// Old 15 is deleted, new 16 added: one cluster, the thread between them.
+	const deleted = section.locator(
+		'tr[data-testid="diff-line"][data-old-no="15"]:not([data-new-no])',
+	);
+	await deleted
+		.getByRole("button", { name: "1 comment on old line 15" })
+		.click();
+	const thread = section.getByTestId("thread-row");
+	await expect(thread.getByTestId("thread-comment")).toHaveCount(1);
+	const rail = thread.getByTestId("thread-rail");
+	await expect(rail).toBeVisible();
+	await expect(rail).toHaveClass(/bg-unreviewed/);
 });

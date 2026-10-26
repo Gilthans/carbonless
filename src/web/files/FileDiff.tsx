@@ -17,7 +17,7 @@ import {
 } from "./status";
 import { ThreadBubble } from "./ThreadBubble";
 import { ThreadBlock } from "./ThreadRow";
-import { placeThreads } from "./threadPlacement";
+import { fileThreads, placeThreads } from "./threadPlacement";
 import {
 	describeFileProgress,
 	fileUnitProgress,
@@ -311,11 +311,17 @@ export function FileDiff(props: {
 			? "No clusters in this file"
 			: "Nothing unreviewed";
 
-	// The header's threads: file comments, and lines the diff can't show
-	// (once its hunks are in), never dropped. Also while the file is closed.
+	// Every thread of the file on the viewed head, hunks or not: a closed
+	// file's header counts them all.
+	const mine = props.threads
+		? fileThreads(props.threads.threads, file.path, props.threads.snapshotHead)
+		: [];
+	// The header's threads: file comments, and lines the diff can't show,
+	// never dropped. The hunks are read for a closed file too when it has
+	// line threads, so one that can't be placed is flagged before it opens.
 	const hunks = useQuery({
 		...hunksQuery(revision, file.index),
-		enabled: expanded,
+		enabled: expanded || mine.some((t) => t.subject === "line"),
 	});
 	const header = props.threads
 		? placeThreads({
@@ -380,15 +386,31 @@ export function FileDiff(props: {
 								<StatusIcon file={file} hover={summaryTrigger} />
 							</span>
 							<div className="ml-auto flex shrink-0 items-center gap-1.5 @lg:order-5">
-								{header.length > 0 && (
-									<ThreadBubble
-										threads={header.map((h) => h.thread)}
-										flagged={unplaced}
-										open={headerOpen}
-										controls={headerOpen ? headerThreadsId : undefined}
-										onToggle={() => setHeaderOpen(!headerOpen)}
-									/>
-								)}
+								{expanded
+									? header.length > 0 && (
+											<ThreadBubble
+												threads={header.map((h) => h.thread)}
+												where="on this file"
+												flagged={unplaced}
+												open={headerOpen}
+												controls={headerOpen ? headerThreadsId : undefined}
+												onToggle={() => setHeaderOpen(!headerOpen)}
+											/>
+										)
+									: mine.length > 0 && (
+											// Closed: every thread in the file; opening it shows
+											// them (and the header's, opened).
+											<ThreadBubble
+												threads={mine}
+												where="in this file"
+												flagged={unplaced}
+												open={false}
+												onToggle={() => {
+													if (header.length > 0) setHeaderOpen(true);
+													setExpanded(true);
+												}}
+											/>
+										)}
 								{crossToggle.undo ? (
 									<HeaderIconButton
 										label="Undo cross-off"
@@ -460,7 +482,7 @@ export function FileDiff(props: {
 					)}
 				</Tooltip>
 			</header>
-			{headerOpen && header.length > 0 && props.threads && (
+			{expanded && headerOpen && header.length > 0 && props.threads && (
 				<div
 					id={headerThreadsId}
 					data-testid="header-threads"

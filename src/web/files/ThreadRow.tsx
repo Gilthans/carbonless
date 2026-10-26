@@ -77,11 +77,20 @@ export function ThreadRow(props: {
 	threads: ReviewThread[];
 	id?: string;
 	columns: number;
+	/** The cluster rail's class, carried on beside the thread (the rows it sits between are one cluster). */
+	rail?: string;
 }) {
 	return (
 		<tr data-testid="thread-row" id={props.id}>
 			<td colSpan={props.columns} className="p-0">
-				<div className="sticky left-0 w-[var(--diff-w,100%)] max-w-full space-y-2 border-y border-line bg-canvas px-2 py-2 font-sans text-sm leading-normal whitespace-normal text-ink">
+				<div className="sticky left-0 w-[var(--diff-w,100%)] max-w-full space-y-2 border-y border-line bg-canvas py-2 pr-2 pl-3 font-sans text-sm leading-normal whitespace-normal text-ink">
+					{props.rail && (
+						<span
+							aria-hidden
+							data-testid="thread-rail"
+							className={`absolute inset-y-0 left-0 w-1 ${props.rail}`}
+						/>
+					)}
 					{props.threads.map((t, i) => (
 						<ThreadBlock
 							key={t.id || `#${i}`}

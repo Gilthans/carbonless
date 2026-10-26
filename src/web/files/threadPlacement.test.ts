@@ -7,7 +7,14 @@ import type {
 	FileHunks,
 	ReviewThread,
 } from "../../shared/types";
-import { lineKey, placeThreads, threadsOnHead } from "./threadPlacement";
+import {
+	fileThreads,
+	type LineKey,
+	lineKey,
+	placeThreads,
+	threadOrder,
+	threadsOnHead,
+} from "./threadPlacement";
 
 const HEAD = "h".repeat(40);
 const PATH = "src/a.ts";
@@ -250,7 +257,7 @@ describe("placeThreads", () => {
 		const t = thread({ side: "RIGHT", line: 20 });
 		const p = place([t]);
 		expect([...p.gaps]).toEqual([[1, [t]]]);
-		expect(p.gapLines.get(t)).toBe(20);
+		expect(p.gapTargets.get(t)).toEqual({ show: [20, 20], key: "RIGHT:20" });
 		expect(p.end.size).toBe(0);
 		expect(p.covered.size).toBe(0);
 	});
@@ -271,10 +278,104 @@ describe("placeThreads", () => {
 		expect(p.gaps.get(1)).toEqual([middle]);
 		expect(p.gaps.get(2)).toEqual([bottom]);
 		// Where to load each: old 5 is new 5, old 39 new 40, old 45 new 47.
-		expect([...p.gapLines.values()]).toEqual([5, 40, 47]);
+		expect([...p.gapTargets.values()].map((g) => g.show)).toEqual([
+			[5, 5],
+			[40, 40],
+			[47, 47],
+		]);
 		// Old 39 is new 40: loaded, it is that row.
 		const loaded = place([middle], { loadedContext: [ctx(39, 40)] });
 		expect([...loaded.end]).toEqual([["LEFT:39", [middle]]]);
+	});
+
+	it("a gap thread's target is the row end uses once its lines are loaded", () => {
+		const right = thread({ side: "RIGHT", startLine: 18, line: 20 });
+		const left = thread({ side: "LEFT", startLine: 29, line: 30 });
+		const before = place([right, left]);
+		const rt = before.gapTargets.get(right);
+		const lt = before.gapTargets.get(left);
+		expect(rt?.show).toEqual([18, 20]);
+		// Old 29–30 are new 30–31 below hunk A.
+		expect(lt?.show).toEqual([30, 31]);
+		// Load exactly what the targets say, as DiffBody does.
+		const loadedContext: DiffLine[] = [];
+		for (const g of [rt, lt]) {
+			for (let n = g?.show[0] ?? 0; n <= (g?.show[1] ?? -1); n++) {
+				loadedContext.push(ctx(n - 1, n));
+			}
+		}
+		const after = place([right, left], { loadedContext });
+		expect(after.end.get(rt?.key as LineKey)).toEqual([right]);
+		expect(after.end.get(lt?.key as LineKey)).toEqual([left]);
+		expect(after.gaps.size).toBe(0);
+	});
+
+	it("an insertion hunk (-3,0) doesn't shift the old line it follows", () => {
+		// Two lines inserted after old 3: old 3 is new 3, old 10 is new 12.
+		const insert: FileHunks = {
+			hunks: [
+				{
+					oldStart: 3,
+					oldCount: 0,
+					newStart: 4,
+					newCount: 2,
+					lines: [add(4), add(5)],
+				},
+			],
+			newLineCount: 20,
+		};
+		const at3 = thread({ side: "LEFT", line: 3 });
+		const at10 = thread({ side: "LEFT", line: 10 });
+		const p = place([at3, at10], { hunks: insert });
+		expect(p.gapTargets.get(at3)?.show).toEqual([3, 3]);
+		expect(p.gapTargets.get(at10)?.show).toEqual([12, 12]);
+	});
+
+	it("a deleted file's LEFT threads land on its rows; RIGHT ones are unplaced", () => {
+		const deleted: FileHunks = {
+			hunks: [hunk([del(1), del(2), del(3)])].map((h) => ({
+				...h,
+				newStart: 0,
+				newCount: 0,
+			})),
+			newLineCount: 0,
+		};
+		const left = thread({ side: "LEFT", line: 2 });
+		const right = thread({ side: "RIGHT", line: 2 });
+		const p = place([left, right], { hunks: deleted });
+		expect([...p.end]).toEqual([["LEFT:2", [left]]]);
+		expect(p.header).toEqual([{ thread: right, reason: "unplaced" }]);
+	});
+
+	it("a renamed file's threads are on its new path", () => {
+		const t = thread({ side: "RIGHT", line: 11 }, { path: "src/renamed.ts" });
+		const p = placeThreads({
+			threads: [t],
+			path: "src/renamed.ts",
+			snapshotHead: HEAD,
+			hunks: HUNKS,
+			loadedContext: [],
+		});
+		expect([...p.end.keys()]).toEqual(["RIGHT:11"]);
+	});
+
+	it("git's delete + add of a rename GitHub kept: a LEFT thread on the added file is unplaced", () => {
+		const added: FileHunks = {
+			hunks: [
+				{
+					oldStart: 0,
+					oldCount: 0,
+					newStart: 1,
+					newCount: 3,
+					lines: [add(1), add(2), add(3)],
+				},
+			],
+			newLineCount: 3,
+		};
+		const t = thread({ side: "LEFT", line: 2 });
+		expect(place([t], { hunks: added }).header).toEqual([
+			{ thread: t, reason: "unplaced" },
+		]);
 	});
 
 	it("a thread on another path is ignored", () => {
@@ -304,6 +405,27 @@ describe("threadsOnHead", () => {
 		const none = thread(null, { commit: "" });
 		expect(threadsOnHead([a, other, b, none], HEAD)).toEqual([a, b]);
 		expect(threadsOnHead([none], "")).toEqual([]);
+	});
+});
+
+describe("fileThreads and threadOrder", () => {
+	it("counts a file's threads on the head without its hunks", () => {
+		const a = thread({ side: "RIGHT", line: 3 });
+		const f = thread(null);
+		const other = thread({ side: "RIGHT", line: 3 }, { path: "x.ts" });
+		const old = thread({ commit: "e".repeat(40) });
+		expect(fileThreads([a, f, other, old], PATH, HEAD)).toEqual([a, f]);
+	});
+
+	it("orders file comments first, then by new-side line, LEFT shifted", () => {
+		const file = thread(null);
+		const left = thread({ side: "LEFT", line: 39 });
+		const right = thread({ side: "RIGHT", line: 39 });
+		expect(threadOrder(file, HUNKS)).toBe(-1);
+		// Old 39 is new 40: after RIGHT 39 once the hunks are in.
+		expect(threadOrder(left, HUNKS)).toBe(40);
+		expect(threadOrder(right, HUNKS)).toBe(39);
+		expect(threadOrder(left, null)).toBe(39);
 	});
 });
 

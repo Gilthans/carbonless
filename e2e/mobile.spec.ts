@@ -547,7 +547,16 @@ test("opened thread fits the viewport with a 300-char line", async ({
 	expect((box?.x ?? 1e9) + (box?.width ?? 0)).toBeLessThanOrEqual(360);
 	expect(box?.width ?? 0).toBeGreaterThanOrEqual(40);
 	if (isMobile) expect(box?.height ?? 0).toBeGreaterThanOrEqual(40);
+	// The code under the bubble keeps room at its end.
+	const pad = await bubble.evaluate((b) =>
+		Number.parseFloat(
+			getComputedStyle(b.closest("td") as Element).paddingRight,
+		),
+	);
+	expect(pad).toBeGreaterThanOrEqual(40);
 	await bubble.click();
+	// A tap doesn't leave the tooltip over the opened thread.
+	await expect(page.locator('[role="tooltip"]:not([hidden])')).toHaveCount(0);
 	const thread = section.getByTestId("files-thread");
 	await expect(thread.getByTestId("thread-comment")).toHaveCount(2);
 	await expectNoPageOverflow(page);
