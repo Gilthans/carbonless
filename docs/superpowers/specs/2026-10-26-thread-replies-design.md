@@ -89,4 +89,4 @@ So replies use the REST endpoint (coordinator's call), never the GraphQL mutatio
 
 ## Left to the builder
 
-The visual details of the box and toggle within the design tokens and principles 5–6; the endpoint shapes; whether thread writes share the states queue; the duplicate-match rule; draft persistence across reloads; REST vs GraphQL for each write.
+The visual details of the box and toggle within the design tokens and principles 5–6; the endpoint shapes; whether thread writes share the states queue; the duplicate-match rule; draft persistence across reloads; REST vs GraphQL for resolve and unresolve (replies are REST, above).
