@@ -270,7 +270,12 @@ test("human and bot reviews sit inside Is it ready, count resolved threads and l
 				.filter((el) => !el.parentElement?.closest("section"))
 				.map((el) => el.getAttribute("aria-label")),
 		);
-	expect(top).toEqual(["What it does", "Who's on it", "Is it ready"]);
+	expect(top).toEqual([
+		"What it does",
+		"Who's on it",
+		"Is it ready",
+		"Timeline",
+	]);
 
 	// The resolved count swaps the list to resolved threads, and back.
 	const toggle = humans.getByRole("button", { name: "2 resolved" });
