@@ -17,8 +17,25 @@ export interface FilePlacement {
 	covered: Set<LineKey>;
 	/** Threads whose end line sits in gap `index` (collapsed context). */
 	gaps: Map<number, ReviewThread[]>;
+	/**
+	 * For each thread in `gaps`, the new-side number of its end line: what
+	 * to load to show it.
+	 */
+	gapLines: Map<ReviewThread, number>;
 	/** File comments ("file") and lines that couldn't be placed ("unplaced"). */
 	header: { thread: ReviewThread; reason: "file" | "unplaced" }[];
+}
+
+/**
+ * The threads Files changed shows for the viewed head, in their order:
+ * those whose opening comment was made on it. One on no known commit ("")
+ * is on no head.
+ */
+export function threadsOnHead(
+	threads: ReviewThread[],
+	snapshotHead: string,
+): ReviewThread[] {
+	return threads.filter((t) => t.commit !== "" && t.commit === snapshotHead);
 }
 
 /** The row a line key names: RIGHT matches `newNo`, LEFT matches `oldNo`. */
@@ -104,11 +121,11 @@ export function placeThreads(args: {
 		end: new Map(),
 		covered: new Set(),
 		gaps: new Map(),
+		gapLines: new Map(),
 		header: [],
 	};
-	const mine = args.threads.filter(
-		(t) =>
-			t.path === args.path && t.commit !== "" && t.commit === args.snapshotHead,
+	const mine = threadsOnHead(args.threads, args.snapshotHead).filter(
+		(t) => t.path === args.path,
 	);
 	const { hunks } = args;
 	const rows = hunks ? shownRows(hunks.hunks, args.loadedContext) : [];
@@ -158,8 +175,10 @@ export function placeThreads(args: {
 		}
 		const n = newNumberOf(anchor.side, anchor.line, hunks.hunks);
 		const gap = gaps.find((g) => g.from <= n && n <= g.to);
-		if (gap) push(placement.gaps, gap.index, t);
-		else placement.header.push({ thread: t, reason: "unplaced" });
+		if (gap) {
+			push(placement.gaps, gap.index, t);
+			placement.gapLines.set(t, n);
+		} else placement.header.push({ thread: t, reason: "unplaced" });
 	}
 	return placement;
 }

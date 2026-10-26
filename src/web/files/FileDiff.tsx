@@ -1,9 +1,11 @@
-import { useLayoutEffect, useRef, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { useId, useLayoutEffect, useRef, useState } from "react";
 import type { ClusterView, FileView, StateChange } from "../../shared/types";
+import { hunksQuery } from "../api";
 import { Tooltip, TooltipPath, type TooltipTriggerProps } from "../Tooltip";
 import { ErrorMessage } from "../ui";
 import { ChangeKindIcon, changeKindLabel } from "./changeKind";
-import { DiffBody } from "./DiffBody";
+import { DiffBody, type DiffThreads } from "./DiffBody";
 import type { Landing } from "./landing";
 import { Meter } from "./ProgressBar";
 import {
@@ -13,6 +15,9 @@ import {
 	lineCount,
 	StatusIcon,
 } from "./status";
+import { ThreadBubble } from "./ThreadBubble";
+import { ThreadBlock } from "./ThreadRow";
+import { placeThreads } from "./threadPlacement";
 import {
 	describeFileProgress,
 	fileUnitProgress,
@@ -230,6 +235,8 @@ export function FileDiff(props: {
 	onStaleChange?: (stale: boolean) => void;
 	/** A thread link landing in this file (FilesPage). */
 	landing?: Landing;
+	/** The PR's review threads, placed on this file's diff. */
+	threads?: DiffThreads;
 }) {
 	const { file, revision } = props;
 	const [ownExpanded, setOwnExpanded] = useState(false);
@@ -304,6 +311,25 @@ export function FileDiff(props: {
 			? "No clusters in this file"
 			: "Nothing unreviewed";
 
+	// The header's threads: file comments, and lines the diff can't show
+	// (once its hunks are in), never dropped. Also while the file is closed.
+	const hunks = useQuery({
+		...hunksQuery(revision, file.index),
+		enabled: expanded,
+	});
+	const header = props.threads
+		? placeThreads({
+				threads: props.threads.threads,
+				path: file.path,
+				snapshotHead: props.threads.snapshotHead,
+				hunks: hunks.data ?? null,
+				loadedContext: [],
+			}).header
+		: [];
+	const [headerOpen, setHeaderOpen] = useState(false);
+	const headerThreadsId = useId();
+	const unplaced = header.some((h) => h.reason === "unplaced");
+
 	return (
 		<section
 			id={`file-${file.index}`}
@@ -354,6 +380,15 @@ export function FileDiff(props: {
 								<StatusIcon file={file} hover={summaryTrigger} />
 							</span>
 							<div className="ml-auto flex shrink-0 items-center gap-1.5 @lg:order-5">
+								{header.length > 0 && (
+									<ThreadBubble
+										threads={header.map((h) => h.thread)}
+										flagged={unplaced}
+										open={headerOpen}
+										controls={headerOpen ? headerThreadsId : undefined}
+										onToggle={() => setHeaderOpen(!headerOpen)}
+									/>
+								)}
 								{crossToggle.undo ? (
 									<HeaderIconButton
 										label="Undo cross-off"
@@ -425,6 +460,22 @@ export function FileDiff(props: {
 					)}
 				</Tooltip>
 			</header>
+			{headerOpen && header.length > 0 && props.threads && (
+				<div
+					id={headerThreadsId}
+					data-testid="header-threads"
+					className="space-y-2 border-b border-line bg-canvas p-2"
+				>
+					{header.map((h, i) => (
+						<ThreadBlock
+							key={h.thread.id || `#${i}`}
+							readId={props.threads?.readId ?? ""}
+							thread={h.thread}
+							unplaced={h.reason === "unplaced"}
+						/>
+					))}
+				</div>
+			)}
 			{setStates.isError && !isStale(setStates.error) && (
 				<div className="px-2 py-1.5">
 					<ErrorMessage error={setStates.error} />
@@ -438,6 +489,7 @@ export function FileDiff(props: {
 					onToggle={toggle}
 					onCrossOff={crossOff}
 					landing={props.landing}
+					threads={props.threads}
 				/>
 			)}
 		</section>

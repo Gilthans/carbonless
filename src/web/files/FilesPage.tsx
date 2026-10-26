@@ -1,5 +1,5 @@
 import { InfoIcon } from "@primer/octicons-react";
-import { useQuery } from "@tanstack/react-query";
+import { useQueries, useQuery } from "@tanstack/react-query";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import {
 	type CSSProperties,
@@ -7,16 +7,26 @@ import {
 	type RefObject,
 	useEffect,
 	useLayoutEffect,
+	useMemo,
 	useRef,
 	useState,
 } from "react";
-import { reviewQuery } from "../api";
+import {
+	overviewQuery,
+	reviewQuery,
+	sessionQuery,
+	THREAD_STAGES,
+	threadsQuery,
+} from "../api";
 import { useForgetPageScroll, usePageActive } from "../pageActive";
 import { useAppHeaderHeight, useHeight } from "../sticky";
+import { usePrefetchComments } from "../threads/useThreadComments";
 import { ErrorMessage } from "../ui";
 import { useMedia, WIDE } from "../useMedia";
+import type { DiffThreads } from "./DiffBody";
 import { FileDiff } from "./FileDiff";
 import { FileTree } from "./FileTree";
+import { filesPrefetchOrder } from "./filesPrefetch";
 import { type FilesSearch, type Landing, landingFile } from "./landing";
 import { ProgressBar } from "./ProgressBar";
 import {
@@ -24,6 +34,7 @@ import {
 	restoreAnchor,
 	type ScrollAnchor,
 } from "./scrollAnchor";
+import { threadsOnHead } from "./threadPlacement";
 import { type Unit, useUnit } from "./unit";
 import { STALE_MESSAGE } from "./useSetStates";
 
@@ -134,6 +145,37 @@ export function useCurrentFile(
 		return () => observer.disconnect();
 	}, [container, sections, top, active]);
 	return [current, setCurrent] as const;
+}
+
+/**
+ * The PR's review threads for the diff: the furthest stage in (the summary
+ * places them; later stages add the code suggestions are drawn against),
+ * with the read they come from and the head being viewed. Undefined until
+ * the summary is in. Also when Files changed is the first page.
+ */
+function useDiffThreads(): DiffThreads | undefined {
+	const overview = useQuery(overviewQuery);
+	const session = useQuery(sessionQuery);
+	const readId = overview.data?.readId;
+	const stages = useQueries({
+		queries: THREAD_STAGES.map((stage) => ({
+			...threadsQuery(readId ?? "", stage),
+			enabled: Boolean(readId),
+		})),
+	});
+	const view = stages.findLast((q) => q.data)?.data;
+	const snapshotHead = session.data?.snapshotHead;
+	return useMemo(
+		() =>
+			readId && view && snapshotHead
+				? {
+						readId,
+						snapshotHead,
+						threads: threadsOnHead(view.threads, snapshotHead),
+					}
+				: undefined,
+		[readId, view, snapshotHead],
+	);
 }
 
 const headerOf = (index: number) =>
@@ -332,6 +374,24 @@ export function FilesPage() {
 		return () => window.clearTimeout(timer);
 	}, [landing, active]);
 
+	// Comments are read in the background, the open file's threads first,
+	// then the other files' in file order (one prefetch for the page).
+	const threads = useDiffThreads();
+	const prefetch = useMemo(
+		() =>
+			data && threads
+				? filesPrefetchOrder(
+						data.files,
+						threads.threads,
+						openIndex === null
+							? null
+							: data.files.findIndex((f) => f.index === openIndex),
+					)
+				: [],
+		[data, threads, openIndex],
+	);
+	usePrefetchComments(threads?.readId, prefetch);
+
 	const tree = data && (
 		<FileTree
 			files={data.files}
@@ -406,6 +466,7 @@ export function FilesPage() {
 										landing={
 											landing?.index === file.index ? landing : undefined
 										}
+										threads={threads}
 									/>
 								))}
 							</div>

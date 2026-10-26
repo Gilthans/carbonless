@@ -7,7 +7,7 @@ import type {
 	FileHunks,
 	ReviewThread,
 } from "../../shared/types";
-import { lineKey, placeThreads } from "./threadPlacement";
+import { lineKey, placeThreads, threadsOnHead } from "./threadPlacement";
 
 const HEAD = "h".repeat(40);
 const PATH = "src/a.ts";
@@ -250,6 +250,7 @@ describe("placeThreads", () => {
 		const t = thread({ side: "RIGHT", line: 20 });
 		const p = place([t]);
 		expect([...p.gaps]).toEqual([[1, [t]]]);
+		expect(p.gapLines.get(t)).toBe(20);
 		expect(p.end.size).toBe(0);
 		expect(p.covered.size).toBe(0);
 	});
@@ -269,6 +270,8 @@ describe("placeThreads", () => {
 		expect(p.gaps.get(0)).toEqual([top]);
 		expect(p.gaps.get(1)).toEqual([middle]);
 		expect(p.gaps.get(2)).toEqual([bottom]);
+		// Where to load each: old 5 is new 5, old 39 new 40, old 45 new 47.
+		expect([...p.gapLines.values()]).toEqual([5, 40, 47]);
 		// Old 39 is new 40: loaded, it is that row.
 		const loaded = place([middle], { loadedContext: [ctx(39, 40)] });
 		expect([...loaded.end]).toEqual([["LEFT:39", [middle]]]);
@@ -290,6 +293,17 @@ describe("placeThreads", () => {
 		const t = thread({ side: "LEFT", line: 10 });
 		const [placed] = place([t]).end.get("LEFT:10") ?? [];
 		expect(placed?.anchor).toBe(t.anchor);
+	});
+});
+
+describe("threadsOnHead", () => {
+	it("keeps the head's threads, in order, file comments too", () => {
+		const a = thread({ side: "RIGHT", line: 3 });
+		const b = thread(null);
+		const other = thread({ commit: "e".repeat(40) });
+		const none = thread(null, { commit: "" });
+		expect(threadsOnHead([a, other, b, none], HEAD)).toEqual([a, b]);
+		expect(threadsOnHead([none], "")).toEqual([]);
 	});
 });
 

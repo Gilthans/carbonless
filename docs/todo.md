@@ -27,6 +27,11 @@ Foundation for everything below.
   `diff_hunk` shows what the commenter saw, and it's sometimes empty (2 of
   4 LEFT comments on #99). The threads stage places LEFT threads by line
   number with no check.
+- **Threads from earlier commits in Files changed (next):** today Files
+  changed shows only the threads whose opening comment was made on the
+  viewed head. Place the others too, mapping their lines onto the viewed
+  diff in `placeThreads` (`src/web/files/threadPlacement.ts`), the one
+  function that decides where a thread goes.
 - **Re-review after new pushes:** one of GitHub's weakest spots.
   - Show a thread's code as the commenter saw it: diff its commit against
     the base of the view the comment was made in ("changes since your last

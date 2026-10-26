@@ -102,6 +102,29 @@ describe("color tokens", () => {
 		}
 	});
 
+	it("a thread bubble's count and icons read closed and opened", () => {
+		// ThreadBubble: a raised pill, pressed while open; the check (ok),
+		// the alert and the your-turn dot (warn) on both.
+		for (const bg of ["raised", "pressed"]) {
+			for (const text of ["ink", "ink-soft", "muted"]) {
+				expect(
+					contrast(token(text), token(bg)),
+					`${text} on ${bg}`,
+				).toBeGreaterThanOrEqual(4.5);
+			}
+			for (const icon of ["ok", "warn"]) {
+				expect(
+					contrast(token(icon), token(bg)),
+					`${icon} on ${bg}`,
+				).toBeGreaterThanOrEqual(3);
+			}
+			expect(
+				contrast(token("accent"), token(bg)),
+				`the open border on ${bg}`,
+			).toBeGreaterThanOrEqual(3);
+		}
+	});
+
 	it("a thread's comments error keeps its Retry link at 4.5:1", () => {
 		// Conversation: the bad/10 notice over the card's surface.
 		const tint = over(token("bad"), 0.1, token("surface"));

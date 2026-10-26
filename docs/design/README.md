@@ -150,6 +150,36 @@ the code pane.
 
 Lists show five threads, then "Load X more comments out of Y".
 
+## Threads in Files changed
+
+Threads whose opening comment was made on the viewed head sit on the
+diff, GitHub style (`placeThreads`, `src/web/files/threadPlacement.ts`,
+decides where; nothing else does):
+
+- The commented range has `mark-tint` on every row (LEFT by old number,
+  RIGHT by new number); the bubble sits on its last row, at the right edge
+  of the visible code (sticky, so it stays there as long lines scroll).
+- The bubble (`ThreadBubble`): a `raised` pill with the comment glyph and
+  the total count of the threads ending there; a green check and muted
+  text once all are resolved; a `warn` dot when one waits on the viewer.
+  Named and tooltipped "2 comments, your turn" / "3 comments, resolved".
+  40px wide; a row tall with a mouse, 40px on touch (the row grows, so
+  neighbours never overlap). All start closed.
+- Opened, the threads show in a row right under the line, on `canvas`,
+  kept at the diff's visible width (`--diff-w`) and in view however far
+  the code is scrolled sideways. Each thread is an `edge` card: a `band`
+  header (green check and "Resolved" in `ok`, or the yellow discussion
+  icon and "Unresolved"; `ThreadStatus`; "outdated"), then the
+  `Conversation` (spinner, Retry, "N missing", as in the Overview).
+  Opening a thread changes no review state.
+- A line in a collapsed gap: the gap row has the bubble; tapping it loads
+  the hidden lines from the nearer edge to the thread's line and opens the
+  thread there.
+- File comments, and threads whose line isn't in the diff, get a bubble in
+  the file header (also while the file is closed); the latter add a
+  `warn` alert to it ("…, line not in this diff") and to the thread's
+  header ("Line not in this diff"). Their threads open under the header.
+
 ## Timeline (Overview)
 
 The Overview's last section. A vertical rail (`line-strong`, 1px) through

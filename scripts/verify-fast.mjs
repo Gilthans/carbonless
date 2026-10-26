@@ -60,9 +60,10 @@ const E2E_MAP = [
 		/^src\/web\/(overview|threads)\/|^src\/server\/(overview|overviewRead|threadCode|timeline)\.ts$|^src\/web\/(GithubHtml|githubHtml)/,
 		["overview", "timeline", "mobile"],
 	],
+	[/^src\/web\/threads\//, ["files-threads"]],
 	[
 		/^src\/web\/files\/|^src\/server\/diff\//,
-		["files", "sticky", "invisibles", "mobile"],
+		["files", "files-threads", "sticky", "invisibles", "mobile"],
 	],
 	[/^src\/server\/review\//, ["files", "persistence"]],
 	[/^src\/web\/code\//, ["invisibles", "files"]],

@@ -502,3 +502,75 @@ test("an opened thread card fits a 360px screen; its replies toggle is 40px tall
 	await expect(humans.getByTestId("thread-comment")).toHaveCount(1);
 	await expectNoPageOverflow(page);
 });
+
+test("opened thread fits the viewport with a 300-char line", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	const long = `long ${"y".repeat(300)} end`;
+	const wide = `${"x".repeat(300)} end`;
+	const p = await pr({
+		base: { "src/wide.ts": lines(10, "w") },
+		files: [
+			{
+				message: "PR change",
+				files: { "src/wide.ts": lines(10, "w").replace("w 4\n", `${long}\n`) },
+			},
+		],
+	});
+	const head = p.repo.shas.at(-1) ?? "";
+	p.editScenario((s) => {
+		const graph = s.prs[7]?.graphql;
+		if (!graph) throw new Error("no PR in the scenario");
+		graph.reviewThreads = [
+			reviewThread({ path: "src/wide.ts", line: 4, subjectType: "LINE" }, [
+				threadComment({ login: "rev1", text: "Too long", commit: head }),
+				threadComment({
+					login: "octo-author",
+					text: wide,
+					html: `<p dir="auto">${wide}</p><pre><code>${wide}</code></pre>`,
+				}),
+			]),
+		];
+	});
+	const s = await startCrb();
+	await page.setViewportSize({ width: 360, height: 780 });
+	await openFiles(page, s.url);
+	const section = fileSection(page, "src/wide.ts");
+	await section.getByRole("button", { name: "Expand file" }).click();
+	const bubble = section.getByRole("button", { name: "2 comments" });
+	await expect(bubble).toBeVisible();
+	// At the visible edge of the code, though the line runs far past it.
+	const box = await bubble.boundingBox();
+	expect((box?.x ?? 1e9) + (box?.width ?? 0)).toBeLessThanOrEqual(360);
+	expect(box?.width ?? 0).toBeGreaterThanOrEqual(40);
+	if (isMobile) expect(box?.height ?? 0).toBeGreaterThanOrEqual(40);
+	await bubble.click();
+	const thread = section.getByTestId("files-thread");
+	await expect(thread.getByTestId("thread-comment")).toHaveCount(2);
+	await expectNoPageOverflow(page);
+	const fits = async () => {
+		const b = await thread.boundingBox();
+		expect(b?.x ?? -1).toBeGreaterThanOrEqual(0);
+		expect((b?.x ?? 0) + (b?.width ?? 1e9)).toBeLessThanOrEqual(360);
+	};
+	await fits();
+	// Scrolled sideways, the thread stays in view.
+	await section
+		.locator("table")
+		.locator("xpath=..")
+		.evaluate((el) => {
+			el.scrollLeft = el.scrollWidth;
+		});
+	await fits();
+	await expect(bubble).toBeInViewport();
+	await expectNoPageOverflow(page);
+	const shots = process.env.DESIGN_SHOTS;
+	if (shots) {
+		await page.screenshot({
+			path: `${shots}/files-thread-${isMobile ? "phone" : "desktop"}-360.png`,
+		});
+	}
+});

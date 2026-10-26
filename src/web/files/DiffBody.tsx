@@ -6,6 +6,7 @@ import {
 	type RefObject,
 	useEffect,
 	useId,
+	useLayoutEffect,
 	useRef,
 	useState,
 } from "react";
@@ -14,6 +15,7 @@ import type {
 	DiffLine,
 	DisplayHunk,
 	FileView,
+	ReviewThread,
 } from "../../shared/types";
 import { contextQuery, hunksQuery } from "../api";
 import { CodeLine } from "../code/Invisibles";
@@ -23,6 +25,38 @@ import { EXPAND_STEP, fileGaps, type Gap, gapState } from "./gaps";
 import { languageFor } from "./highlight";
 import type { Landing } from "./landing";
 import { CONTROLS, SLOT, useStickyControls } from "./stickyControls";
+import { ThreadBubble } from "./ThreadBubble";
+import { ThreadRow } from "./ThreadRow";
+import {
+	type FilePlacement,
+	type LineKey,
+	lineKey,
+	placeThreads,
+} from "./threadPlacement";
+
+/** Review threads to show in a file's diff (FilesPage), and the read they come from. */
+export interface DiffThreads {
+	readId: string;
+	snapshotHead: string;
+	/** The PR's threads; placeThreads picks this file's. */
+	threads: ReviewThread[];
+}
+
+/** What a row needs of the file's threads: the placement and which bubbles are open. */
+interface RowThreads {
+	readId: string;
+	placement: FilePlacement;
+	open: ReadonlySet<LineKey>;
+	/** Opens the row named by these keys, or closes it (by any of them). */
+	toggle: (keys: LineKey[]) => void;
+	idOf: (key: LineKey) => string;
+}
+
+/** The key a row's bubble (or highlight) is under: its number on either side. */
+const rowKeys = (line: DiffLine) =>
+	[lineKey("RIGHT", line), lineKey("LEFT", line)].filter(
+		(k): k is LineKey => k !== null,
+	);
 
 const COLUMNS = 5;
 
@@ -84,9 +118,17 @@ function LineRow(props: {
 	checkbox?: ReactNode;
 	/** Landed on from a thread link (useLanding). */
 	landed?: Landed["phase"];
+	threads?: RowThreads;
 }) {
-	const { line, state } = props;
+	const { line, state, threads } = props;
 	const reviewed = state === "reviewed";
+	const keys = threads ? rowKeys(line) : [];
+	const commented = keys.some((k) => threads?.placement.covered.has(k));
+	// A context row is two lines, RIGHT by its new number and LEFT by its
+	// old one: threads ending on either share its bubble.
+	const ending = keys.flatMap((k) => threads?.placement.end.get(k) ?? []);
+	const endKey = ending.length > 0 ? keys[0] : undefined;
+	const open = keys.some((k) => threads?.open.has(k));
 	const rowBg = (reviewed ? REVIEWED_ROW_BG : ROW_BG)[line.kind];
 	const numberBg = (reviewed ? REVIEWED_NUMBER_BG : NUMBER_BG)[line.kind];
 	return (
@@ -97,7 +139,8 @@ function LineRow(props: {
 				data-old-no={line.oldNo}
 				data-new-no={line.newNo}
 				data-landed={props.landed === "on" || undefined}
-				className={`${rowBg} ${props.landed ? LANDED_CLASS[props.landed] : ""}`}
+				data-commented={commented ? "" : undefined}
+				className={`${rowBg} ${props.landed ? LANDED_CLASS[props.landed] : ""} ${commented && props.landed !== "on" ? "mark-tint" : ""}`}
 			>
 				<Rail state={state} />
 				<td className="w-11 px-1 align-top whitespace-nowrap pointer-coarse:w-20">
@@ -116,6 +159,15 @@ function LineRow(props: {
 					{line.newNo}
 				</td>
 				<td className="px-2 whitespace-pre">
+					{endKey && threads && (
+						<ThreadBubble
+							inline
+							threads={ending}
+							open={open}
+							controls={open ? threads.idOf(endKey) : undefined}
+							onToggle={() => threads.toggle(keys)}
+						/>
+					)}
 					<span
 						aria-hidden
 						className={`mr-2 select-none ${SIGN_COLOR[line.kind]}`}
@@ -137,6 +189,14 @@ function LineRow(props: {
 						{"\\ No newline at end of file"}
 					</td>
 				</tr>
+			)}
+			{open && endKey && threads && (
+				<ThreadRow
+					id={threads.idOf(endKey)}
+					readId={threads.readId}
+					threads={ending}
+					columns={COLUMNS}
+				/>
 			)}
 		</>
 	);
@@ -292,6 +352,8 @@ export function DiffBody(props: {
 	onToggle: (cluster: ClusterView) => void;
 	onCrossOff: (cluster: ClusterView) => void;
 	landing?: Landing;
+	/** Review threads to place on the lines (annotations only: they change no review state). */
+	threads?: DiffThreads;
 }) {
 	const { file, revision } = props;
 	const hunks = useQuery(hunksQuery(revision, file.index));
@@ -312,6 +374,7 @@ export function DiffBody(props: {
 	const root = useRef<HTMLDivElement>(null);
 	const scroller = useRef<HTMLDivElement>(null);
 	useStickyControls(root, scroller);
+	useVisibleWidth(scroller);
 	const { hint, landed } = useLanding(root, props.landing, hunks.isSuccess);
 
 	const loaded = new Map<number, DiffLine>();
@@ -341,6 +404,38 @@ export function DiffBody(props: {
 			r.some(([f, t]) => f === from && t === to) ? r : [...r, [from, to]],
 		);
 
+	// Where the file's threads sit (all start closed). Opening one only
+	// shows it: no review state changes.
+	const placement = props.threads
+		? placeThreads({
+				threads: props.threads.threads,
+				path: file.path,
+				snapshotHead: props.threads.snapshotHead,
+				hunks: hunks.data ?? null,
+				loadedContext: [...loaded.values()],
+			})
+		: null;
+	const [openThreads, setOpenThreads] = useState<ReadonlySet<LineKey>>(
+		() => new Set(),
+	);
+	const toggleThreads = (keys: LineKey[]) =>
+		setOpenThreads((open) => {
+			const next = new Set(open);
+			if (keys.some((k) => next.has(k))) for (const k of keys) next.delete(k);
+			else if (keys[0]) next.add(keys[0]);
+			return next;
+		});
+	const rowThreads: RowThreads | undefined =
+		placement && props.threads
+			? {
+					readId: props.threads.readId,
+					placement,
+					open: openThreads,
+					toggle: toggleThreads,
+					idOf: (key) => `${idBase}-thread-${key}`,
+				}
+			: undefined;
+
 	const checkbox = (cluster: ClusterView) => (
 		<ClusterControls
 			cluster={cluster}
@@ -363,6 +458,7 @@ export function DiffBody(props: {
 						lang={lang}
 						tabWidth={file.tabWidth}
 						landed={landedPhase(landed, line)}
+						threads={rowThreads}
 					/>,
 				);
 			}
@@ -379,11 +475,37 @@ export function DiffBody(props: {
 		const failed = inGap.flatMap((r) => (r.result?.isError ? [r.result] : []));
 		const pending = inGap.some((r) => r.result?.isPending);
 		const buttons = expansions(gap, top, bottom, remaining);
+		const gapThreads = placement?.gaps.get(gap.index) ?? [];
+		/**
+		 * Opens the gap's threads where they are: loads the hidden lines from
+		 * the nearer edge to a few past each thread's line, and opens it there.
+		 */
+		const openGapThreads = () => {
+			for (const t of gapThreads) {
+				const n = placement?.gapLines.get(t);
+				if (n === undefined || !t.anchor) continue;
+				const start = gap.from + top;
+				const end = gap.to - bottom;
+				if (n - start <= end - n) {
+					addRange(start, Math.min(end, n + 3));
+				} else {
+					addRange(
+						Math.max(start, n - 3 - (t.anchor.line - t.anchor.startLine)),
+						end,
+					);
+				}
+				const key: LineKey = `${t.anchor.side}:${t.anchor.line}`;
+				setOpenThreads((open) => new Set(open).add(key));
+			}
+		};
 		return (
 			<tbody key={`gap${gap.index}`}>
 				{contextRows(gap.from, gap.from + top - 1)}
-				{(remaining > 0 || pending || failed.length > 0) && (
-					<tr className="bg-hunk text-hunk-ink">
+				{(remaining > 0 ||
+					pending ||
+					failed.length > 0 ||
+					gapThreads.length > 0) && (
+					<tr data-testid="gap-row" className="bg-hunk text-hunk-ink">
 						<td colSpan={2} className="px-1">
 							<div className="flex">
 								{buttons.map((b) => (
@@ -404,6 +526,14 @@ export function DiffBody(props: {
 							</div>
 						</td>
 						<td colSpan={COLUMNS - 2} className="px-2 font-sans">
+							{gapThreads.length > 0 && (
+								<ThreadBubble
+									inline
+									threads={gapThreads}
+									open={false}
+									onToggle={openGapThreads}
+								/>
+							)}
 							{failed.length > 0 ? (
 								<span role="alert" className="text-bad">
 									{failed[0]?.error?.message}{" "}
@@ -468,6 +598,7 @@ export function DiffBody(props: {
 								checkbox={checkbox}
 								noteId={noteId}
 								landed={landed}
+								threads={rowThreads}
 							/>
 						</Fragment>
 					))}
@@ -488,6 +619,23 @@ export function DiffBody(props: {
 			)}
 		</div>
 	);
+}
+
+/**
+ * Keeps `--diff-w` on the scroller at its visible width, so an opened
+ * thread inside the (sideways scrolling) table fits the screen.
+ */
+function useVisibleWidth(scroller: RefObject<HTMLDivElement | null>) {
+	useLayoutEffect(() => {
+		const el = scroller.current;
+		if (!el) return;
+		const set = () => el.style.setProperty("--diff-w", `${el.clientWidth}px`);
+		set();
+		if (typeof ResizeObserver === "undefined") return;
+		const observer = new ResizeObserver(set);
+		observer.observe(el);
+		return () => observer.disconnect();
+	}, [scroller]);
 }
 
 /** How long a landed-on line stays highlighted before it fades. */
@@ -626,6 +774,7 @@ function HunkRows(props: {
 	checkbox: (cluster: ClusterView) => ReactNode;
 	noteId: (cluster: ClusterView) => string | undefined;
 	landed: Landed | null;
+	threads?: RowThreads;
 }) {
 	return (
 		<>
@@ -654,6 +803,7 @@ function HunkRows(props: {
 								tabWidth={props.tabWidth}
 								state={state}
 								landed={landedPhase(props.landed, line)}
+								threads={props.threads}
 								checkbox={
 									i === 0 && cluster ? props.checkbox(cluster) : undefined
 								}
