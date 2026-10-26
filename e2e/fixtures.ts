@@ -48,6 +48,8 @@ export interface PrOptions {
 	scenario?: Partial<Scenario>;
 	reviews?: unknown[];
 	comments?: unknown[];
+	/** The PR's timeline items (scenario.ts timelineCommit etc.). */
+	timeline?: unknown[];
 }
 
 export interface Pr {
@@ -193,6 +195,7 @@ export const test = base.extend<{
 								reviewThreads: opts.threads ?? [],
 								reviews: opts.reviews ?? [],
 								comments: opts.comments ?? [],
+								timelineItems: opts.timeline ?? [],
 							},
 						},
 					},

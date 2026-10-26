@@ -486,7 +486,6 @@ function CommitLink({
 			href={href}
 			target="_blank"
 			rel="noreferrer noopener"
-			title={oid}
 			className="inline-flex min-h-10 items-center text-link hover:underline focus-visible:outline-2 focus-visible:outline-accent"
 		>
 			{label}
