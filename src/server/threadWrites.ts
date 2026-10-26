@@ -61,6 +61,9 @@ export interface ThreadWriteTarget {
 	posted: (clientId: string) => PostedRecord | undefined;
 	/** Remembers a reply as posted under `clientId`. */
 	remember: (clientId: string, record: PostedRecord) => void;
+	/** Whether an attempt under `clientId` failed with its outcome unknown. */
+	inDoubt: (clientId: string) => boolean;
+	setInDoubt: (clientId: string, doubt: boolean) => void;
 	/** Comment ids of replies remembered under other client ids. */
 	claimedIds: (exceptClientId: string) => Set<string>;
 	/** Sets the kept reads' pendingReview (a 409 turns it on, a reply off). */
@@ -107,6 +110,15 @@ export function replyProblem(req: unknown): string | null {
 	}
 	if (typeof r.attemptedAt !== "string") return "attemptedAt must be a string";
 	if (typeof r.retry !== "boolean") return "retry must be true or false";
+	// A thread always has its opener: an empty list would let any older
+	// identical comment pass for this reply.
+	if (
+		r.retry === true &&
+		Array.isArray(r.knownCommentIds) &&
+		r.knownCommentIds.length === 0
+	) {
+		return "A retry needs the comment ids known when the reply was first sent";
+	}
 	if (
 		typeof r.clientId !== "string" ||
 		!r.clientId ||
@@ -336,19 +348,30 @@ export async function replyToThread(
 	}
 	let summary = req.retry ? undefined : target.summaryOf(threadId);
 	if (req.retry) {
-		const now = await reread(target, threadId);
-		if (!now.nodes) throw gone();
-		const found = findReply(
-			now.nodes.content,
-			target.viewer,
-			req.body,
-			req.knownCommentIds,
-			target.claimedIds(req.clientId),
-		);
+		// An attempt of this session's whose outcome is unknown may have
+		// landed without GitHub listing it yet: look again after each wait.
+		const waits = target.inDoubt(req.clientId) ? LIST_WAITS_MS : [];
+		let now = await reread(target, threadId);
+		let found: Json | null = null;
+		for (let i = 0; ; i++) {
+			if (!now.nodes) throw gone();
+			found = findReply(
+				now.nodes.content,
+				target.viewer,
+				req.body,
+				req.knownCommentIds,
+				target.claimedIds(req.clientId),
+			);
+			const wait = waits[i];
+			if (found || wait === undefined) break;
+			await new Promise((r) => setTimeout(r, wait));
+			now = await reread(target, threadId);
+		}
 		if (found) {
 			const nodeId = str(found.id);
 			target.remember(req.clientId, { threadId, nodeId });
-			target.setPendingReview(null);
+			target.setInDoubt(req.clientId, false);
+			// Not a sign about any pending review now: only a post is.
 			return update(target, threadId, now.nodes, now, nodeId);
 		}
 		summary = now.nodes.summary;
@@ -374,8 +397,13 @@ export async function replyToThread(
 				);
 			}
 		}
+		// It may have landed: its retry looks harder before posting again.
+		if (!(error instanceof WriteRefusedError)) {
+			target.setInDoubt(req.clientId, true);
+		}
 		throw error;
 	}
+	target.setInDoubt(req.clientId, false);
 	const record = { threadId, nodeId: reply.nodeId, reply };
 	target.remember(req.clientId, record);
 	// It posted: no pending review stands in the way (any more).

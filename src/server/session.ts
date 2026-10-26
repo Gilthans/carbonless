@@ -121,6 +121,8 @@ export class Session {
 	 * (while the first attempt runs, or after a reload) finds it here.
 	 */
 	readonly #posted = new Map<string, PostedRecord>();
+	/** Client ids whose last attempt failed with its outcome unknown. */
+	readonly #inDoubt = new Set<string>();
 
 	private constructor(
 		private readonly repo: string,
@@ -410,6 +412,11 @@ export class Session {
 			},
 			posted: (clientId) => this.#posted.get(clientId),
 			remember: (clientId, record) => this.#posted.set(clientId, record),
+			inDoubt: (clientId) => this.#inDoubt.has(clientId),
+			setInDoubt: (clientId, doubt) => {
+				if (doubt) this.#inDoubt.add(clientId);
+				else this.#inDoubt.delete(clientId);
+			},
 			claimedIds: (except) =>
 				new Set(
 					[...this.#posted]

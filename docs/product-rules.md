@@ -76,8 +76,11 @@ and resolving or unresolving one (`src/server/threadWrites.ts`).
   (crb may have restarted): one by the viewer with the same body (line ends
   and trailing whitespace aside) that the client didn't know when it first
   sent the reply (not in `knownCommentIds`), and that isn't another reply
-  this session posted, counts as sent. No clocks are compared: the phone's
-  may be off. Resolving is idempotent.
+  this session posted, counts as sent; a retry with no known ids is
+  refused (a thread always has its opener). After an attempt whose outcome
+  is unknown (it may have landed), its retry reads the thread again a few
+  times before posting, as GitHub may not list the reply yet. No clocks are
+  compared: the phone's may be off. Resolving is idempotent.
 - **Refused means refused.** When GitHub answers a write with an error, it
   is refused for good, with GitHub's message (401/403 forbidden, 404 gone,
   anything else invalid), and nothing sends it again on its own. Only
@@ -87,8 +90,9 @@ and resolving or unresolving one (`src/server/threadWrites.ts`).
   "gone".
 - **Posted is posted.** A reply that landed is answered as posted, even
   when GitHub doesn't list it yet (it is added to the thread from GitHub's
-  answer to the post) or the thread was deleted right after; a posted reply
-  also clears the pending-review warning, and a pending-review refusal sets it.
+  answer to the post) or the thread was deleted right after. Posting a
+  reply clears the pending-review warning (finding one by the dedupe
+  doesn't), and a pending-review refusal sets it.
 - **Off where it can't be the reviewer's.** No writes as of a cutoff
   (`--as-of`) or as `--viewer` someone other than the `gh` login
   (`PrOverview.writes`); merged, closed and `--head` views write as GitHub

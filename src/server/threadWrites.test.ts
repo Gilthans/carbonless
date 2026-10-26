@@ -187,6 +187,56 @@ describe("thread writes", () => {
 		expect(bodies(0)).toHaveLength(3);
 	});
 
+	it("a resend of a reply GitHub doesn't list yet is answered from what this session posted", async () => {
+		threads({ replyUnlistedMs: 60_000 });
+		const first = await reply("Done", { clientId: "unlisted" });
+		const again = await reply("Done", { clientId: "unlisted", retry: true });
+		expect(writeCalls()).toHaveLength(1);
+		expect(again.comment?.id).toBe(first.comment?.id);
+		expect(bodies(0)).toHaveLength(3);
+	});
+
+	it("a retry after an unknown outcome looks again while GitHub lags, then doesn't post twice", async () => {
+		threads({
+			replyUnlistedMs: 600,
+			failNext: { op: "reply", status: 502, afterWrite: true },
+		});
+		await expect(reply("Done", { clientId: "doubt" })).rejects.toBeInstanceOf(
+			GhError,
+		);
+		const answer = await reply("Done", { clientId: "doubt", retry: true });
+		expect(writeCalls()).toHaveLength(1);
+		expect(bodies(0)).toEqual(["Should this expire?", "Why would it?", "Done"]);
+		expect(answer.comment?.body).toBe("Done");
+	});
+
+	it("a reply found by the dedupe leaves the pending-review warning as it was", async () => {
+		pr.scenario({
+			prs: {
+				12: {
+					view: prView({ headRefOid: pr.head(), baseRefName: "main" }),
+					graphql: {
+						reviewThreads: [
+							reviewThread({ path: "a.txt", line: 2 }, [
+								said("Octo_Cat", "Should this expire?", 1),
+								said("octo-author", "Why would it?", 2),
+								said("Octo_Cat", "Done", 3),
+							]),
+						],
+						reviews: [{ author: { login: "Octo_Cat" }, state: "PENDING" }],
+					},
+				},
+			},
+		});
+		const { readId } = await session.overview(0);
+		await session.threads(readId, "summary");
+		expect((await session.overview()).pendingReview).not.toBeNull();
+		const answer = await reply("Done", { retry: true });
+		expect(answer.comment?.id).toBe("C12-0-2");
+		expect(writeCalls()).toEqual([]);
+		expect((await session.overview()).pendingReview).not.toBeNull();
+	});
+
 	it("a retried reply that already landed is not posted again", async () => {
 		threads({ failNext: { op: "reply", status: 502, afterWrite: true } });
 		const clientId = "lost";
@@ -479,6 +529,8 @@ describe("thread writes off and refused before GitHub", () => {
 		apply: () => {},
 		posted: () => undefined,
 		remember: () => {},
+		inDoubt: () => false,
+		setInDoubt: () => {},
 		claimedIds: () => new Set(),
 		setPendingReview: () => {},
 	});
@@ -506,6 +558,7 @@ describe("thread writes off and refused before GitHub", () => {
 			{ ...req, body: "x".repeat(65537) },
 			{ ...req, clientId: "" },
 			{ ...req, knownCommentIds: [1] },
+			{ ...req, retry: true, knownCommentIds: [] },
 		];
 		for (const r of bad) {
 			await expect(
