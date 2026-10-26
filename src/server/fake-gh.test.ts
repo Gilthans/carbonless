@@ -13,12 +13,16 @@ import {
 	writeScenario,
 } from "../../test/fake-gh/scenario";
 import { testGitEnv } from "../../test/git-fixture";
+import { WriteRefusedError } from "./errors";
 import {
 	fetchOverview,
 	fetchPrMeta,
+	fetchThread,
 	fetchThreadContents,
 	fetchThreadSummaries,
 	fetchTimeline,
+	postReply,
+	postResolved,
 	resolvePrRef,
 	runGh,
 	viewerSlug,
@@ -342,5 +346,143 @@ describe("fake gh", () => {
 		await expect(fetchTimeline(ref)).rejects.toThrow(
 			"PR acme/widget#12 not found",
 		);
+	});
+
+	describe("writes", () => {
+		const PR_URL = "https://github.com/acme/widget/pull/12";
+		const said = (login: string, text: string) =>
+			threadComment({ login, text, createdAt: "2026-01-03T10:00:00Z" });
+		const writable = (over: Partial<Scenario> = {}, reviews: unknown[] = []) =>
+			scenario({
+				nameWithOwner: "acme/widget",
+				prs: {
+					"12": {
+						view: prView(),
+						graphql: {
+							reviewThreads: [
+								reviewThread({ path: "a.ts", line: 1 }, [said("bob", "Why?")]),
+								reviewThread({ path: "b.ts", line: 2, isResolved: true }, [
+									said("bob", "Done?"),
+								]),
+							],
+							reviews,
+						},
+					},
+				},
+				...over,
+			});
+		const thread0 = async () => {
+			const [node] = await fetchThreadSummaries(ref);
+			return node as {
+				id: string;
+				isResolved: boolean;
+				viewerCanReply: boolean;
+				viewerCanResolve: boolean;
+				viewerCanUnresolve: boolean;
+				first: { nodes: { databaseId: number }[] };
+				comments: { totalCount: number; nodes: { id: string }[] };
+			};
+		};
+
+		it("a reply then a threads read shows it, with GitHub's REST answer", async () => {
+			writable();
+			const before = await thread0();
+			expect(before).toMatchObject({
+				viewerCanReply: true,
+				viewerCanResolve: true,
+				viewerCanUnresolve: false,
+			});
+			const opener = before.first.nodes[0]?.databaseId ?? 0;
+			const posted = await postReply(ref, opener, "Because.", PR_URL);
+			expect(posted).toMatchObject({ body: "Because.", author: "Octo_Cat" });
+			const after = await thread0();
+			expect(after.comments.totalCount).toBe(2);
+			expect(after.comments.nodes.map((c) => c.id)).toEqual([
+				"C12-0",
+				posted.nodeId,
+			]);
+			const content = (await fetchThreadContents([after.id])).get(after.id) as {
+				comments: { nodes: { body: string; author: { login: string } }[] };
+			};
+			expect(content.comments.nodes.at(-1)).toMatchObject({
+				body: "Because.",
+				author: { login: "Octo_Cat" },
+			});
+			// By id, with its PR.
+			await expect(fetchThread(ref, after.id)).resolves.toMatchObject({
+				comments: { totalCount: 2 },
+			});
+			await expect(
+				fetchThread({ ...ref, number: 13 }, after.id),
+			).resolves.toBeNull();
+		});
+
+		it("resolve and unresolve flip isResolved and what the viewer may do", async () => {
+			writable();
+			const { id } = await thread0();
+			await postResolved(id, true);
+			expect(await thread0()).toMatchObject({
+				isResolved: true,
+				viewerCanResolve: false,
+				viewerCanUnresolve: true,
+			});
+			await postResolved(id, false);
+			expect((await thread0()).isResolved).toBe(false);
+		});
+
+		it("refuses a reply while the viewer has a pending review (GitHub's 422)", async () => {
+			writable({}, [
+				{ author: { login: "Octo_Cat" }, state: "PENDING", submittedAt: null },
+			]);
+			const opener = (await thread0()).first.nodes[0]?.databaseId ?? 0;
+			const refused = await postReply(ref, opener, "Hi", PR_URL).catch(
+				(e) => e,
+			);
+			expect(refused).toBeInstanceOf(WriteRefusedError);
+			expect(refused).toMatchObject({
+				code: "pending-review",
+				url: `${PR_URL}/files`,
+			});
+			expect((await thread0()).comments.totalCount).toBe(1);
+			// Another reviewer's pending review isn't the viewer's.
+			writable({}, [{ author: { login: "bob" }, state: "PENDING" }]);
+			await expect(postReply(ref, opener, "Hi", PR_URL)).resolves.toBeDefined();
+		});
+
+		it("fails the next write as told: before it lands, or after (afterWrite)", async () => {
+			writable({ failNext: { op: "reply", status: 502 } });
+			const opener = (await thread0()).first.nodes[0]?.databaseId ?? 0;
+			const first = await postReply(ref, opener, "One", PR_URL).catch((e) => e);
+			expect(first).not.toBeInstanceOf(WriteRefusedError);
+			expect(String(first)).toMatch(/HTTP 502/);
+			expect((await thread0()).comments.totalCount).toBe(1);
+			// Used up: the next one lands.
+			await postReply(ref, opener, "One", PR_URL);
+			expect((await thread0()).comments.totalCount).toBe(2);
+
+			writable({ failNext: { op: "reply", status: 502, afterWrite: true } });
+			await expect(postReply(ref, opener, "Two", PR_URL)).rejects.toThrow(
+				/HTTP 502/,
+			);
+			expect((await thread0()).comments.totalCount).toBe(2);
+
+			writable({ failNext: { op: "resolve", status: 403 } });
+			const { id } = await thread0();
+			await expect(postResolved(id, true)).rejects.toMatchObject({
+				code: "forbidden",
+				message: expect.stringMatching(/permission/),
+			});
+		});
+
+		it("a deleted thread is gone: 404 for a reply, NOT_FOUND for resolving", async () => {
+			writable({ deletedThreads: ["T12-0"] });
+			await expect(postReply(ref, 1000, "Hi", PR_URL)).rejects.toMatchObject({
+				code: "gone",
+			});
+			await expect(postResolved("T12-0", true)).rejects.toMatchObject({
+				code: "gone",
+			});
+			await expect(fetchThread(ref, "T12-0")).resolves.toBeNull();
+		});
 	});
 });

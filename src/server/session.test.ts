@@ -1039,6 +1039,9 @@ describe("Session", () => {
 			expect(metas()).toBe(calls);
 			const o = await s.overview();
 			expect(o.asOf).toBe(CUTOFF);
+			// The past can't be answered: no writes to GitHub.
+			expect(o.writes).toBe("as-of");
+			expect(s.writes()).toBe("as-of");
 			expect(o.state).toBe("OPEN");
 			expect(o.reviews.map((r) => r.author)).toEqual(["Octo_Cat"]);
 			expect(o.checks).toEqual([{ name: "ci", status: "passing" }]);

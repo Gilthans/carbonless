@@ -335,6 +335,11 @@ export function mapThreads(
 		prAuthorBot?: boolean;
 		/** The viewer's login or slug: `yourTurn` when in the set. */
 		viewer: string;
+		/**
+		 * This session may write to the host (PrOverview.writes "on"):
+		 * without it, `viewerCan` is all false.
+		 */
+		writes?: boolean;
 	},
 ): Thread[] {
 	const { asOf, prAuthor } = ctx;
@@ -459,6 +464,12 @@ export function mapThreads(
 					: "line",
 			attention,
 			yourTurn: attention.some((login) => slugify(login) === viewer),
+			viewerCan: {
+				reply: !asOf && ctx.writes === true && t.viewerCanReply === true,
+				resolve: !asOf && ctx.writes === true && t.viewerCanResolve === true,
+				unresolve:
+					!asOf && ctx.writes === true && t.viewerCanUnresolve === true,
+			},
 		});
 	}
 	return sortThreads(threads);
@@ -505,7 +516,7 @@ export function mapOverview(
 	 * snapshot head's.
 	 */
 	asOf?: string,
-): Omit<PrOverview, "readId" | "fetchedAt" | "servedAt"> {
+): Omit<PrOverview, "readId" | "fetchedAt" | "servedAt" | "writes"> {
 	if (typeof view !== "object" || view === null || Array.isArray(view)) {
 		throw new GhError("gh returned an unexpected response for the PR");
 	}
@@ -581,6 +592,14 @@ export function mapOverview(
 			}
 		}
 	}
+	// GitHub lists a pending review to its author only: the viewer's own,
+	// unless --viewer names someone else. Today's state, never as of a cutoff.
+	const pending =
+		!asOf &&
+		g.reviews.some((raw) => {
+			const r = obj(raw);
+			return str(r.state) === "PENDING" && isYou(login(r.author));
+		});
 	const reviewers = [...byReviewer.entries()].sort((a, b) =>
 		b[1].submittedAt.localeCompare(a[1].submittedAt),
 	);
@@ -655,5 +674,9 @@ export function mapOverview(
 		youAuthor: isYou(author),
 		checks,
 		...(asOf ? { asOf } : {}),
+		pendingReview:
+			pending && str(v.url)
+				? { url: `${str(v.url).replace(/\/+$/, "")}/files` }
+				: null,
 	};
 }

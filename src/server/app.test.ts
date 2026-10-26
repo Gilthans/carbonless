@@ -565,6 +565,140 @@ describe("API", () => {
 		expect(res.json()).toEqual({ error: "PR acme/widget#12 not found" });
 	});
 
+	describe("thread writes", () => {
+		const setup = async (
+			over: Partial<Scenario> = {},
+			reviews: unknown[] = [],
+		) => {
+			pr.scenario({
+				prs: {
+					12: {
+						view: prView({ headRefOid: pr.head(), baseRefName: "main" }),
+						graphql: {
+							reviewThreads: [
+								reviewThread({ path: "a.txt", line: 2 }, [
+									threadComment({
+										login: "rev",
+										text: "Why?",
+										commit: pr.head(),
+									}),
+								]),
+							],
+							reviews,
+						},
+					},
+				},
+				...over,
+			});
+			const { readId } = await get("/api/overview?maxAge=0");
+			await get(`/api/threads?read=${readId}&stage=summary`);
+		};
+		const replyTo = (id: string, payload: unknown) =>
+			post(`/api/threads/${id}/replies`, payload);
+		const ok = {
+			body: "Because.",
+			attemptedAt: new Date().toISOString(),
+			retry: false,
+		};
+
+		it("200: a reply and resolving answer with the thread's new state", async () => {
+			await setup();
+			const replied = await replyTo("T12-0", ok);
+			expect(replied.statusCode, replied.body).toBe(200);
+			expect(replied.json()).toMatchObject({
+				threadId: "T12-0",
+				commentCount: 2,
+				attention: ["rev", "octo-author"],
+				comment: { body: "Because.", author: "Octo_Cat" },
+			});
+			const resolved = await post("/api/threads/T12-0/resolved", {
+				resolved: true,
+			});
+			expect(resolved.statusCode, resolved.body).toBe(200);
+			expect(resolved.json()).toMatchObject({ resolved: true, attention: [] });
+			expect((await get("/api/overview")).writes).toBe("on");
+		});
+
+		it("400 invalid: blank or too long a body, bad fields, bad JSON, a bad id", async () => {
+			await setup();
+			const bad = [
+				await replyTo("T12-0", { ...ok, body: "  \n" }),
+				await replyTo("T12-0", { ...ok, body: "x".repeat(65537) }),
+				await replyTo("T12-0", { ...ok, attemptedAt: "soon" }),
+				await replyTo("T12-0", { body: "Hi" }),
+				await inject("/api/threads/T12-0/replies", {
+					method: "POST",
+					payload: "{nope",
+					headers: { host, "content-type": "application/json" },
+				}),
+				await post("/api/threads/T12-0/resolved", { resolved: "yes" }),
+				await replyTo("bad%20id!", ok),
+			];
+			for (const res of bad) {
+				expect(res.statusCode, res.body).toBe(400);
+				expect(res.json().code, res.body).toBe("invalid");
+			}
+			expect(pr.ghLog()).not.toMatch(/-X POST|resolveReviewThread/);
+		});
+
+		it("403 writes-off as someone else (--viewer); 403 forbidden with GitHub's message", async () => {
+			await setup({ failNext: { op: "resolve", status: 403 } });
+			const forbidden = await post("/api/threads/T12-0/resolved", {
+				resolved: true,
+			});
+			expect(forbidden.statusCode).toBe(403);
+			expect(forbidden.json()).toEqual({
+				code: "forbidden",
+				error:
+					"Octo_Cat does not have permission to resolve this review thread.",
+			});
+			const theirs = await Session.open(pr.arg, process.cwd(), () => {}, {
+				viewer: "someone-else",
+			});
+			const other = await buildApp(theirs, { accessKey: null });
+			try {
+				await other.listen({ port: 0, host: "127.0.0.1" });
+				const address = other.server.address();
+				if (!address || typeof address === "string") throw new Error("no port");
+				const res = await other.inject({
+					method: "POST",
+					url: "/api/threads/T12-0/replies",
+					payload: ok,
+					headers: { host: `127.0.0.1:${address.port}` },
+				});
+				expect(res.statusCode, res.body).toBe(403);
+				expect(res.json().code).toBe("writes-off");
+			} finally {
+				await other.close();
+			}
+		});
+
+		it("404 gone: the thread no longer exists", async () => {
+			await setup();
+			await setup({ deletedThreads: ["T12-0"] });
+			const res = await replyTo("T12-0", ok);
+			expect(res.statusCode).toBe(404);
+			expect(res.json().code).toBe("gone");
+		});
+
+		it("409 pending-review with the link; 502 for other gh failures", async () => {
+			await setup({}, [{ author: { login: "Octo_Cat" }, state: "PENDING" }]);
+			expect((await get("/api/overview")).pendingReview).toEqual({
+				url: "https://github.com/acme/widget/pull/12/files",
+			});
+			const pending = await replyTo("T12-0", ok);
+			expect(pending.statusCode).toBe(409);
+			expect(pending.json()).toMatchObject({
+				code: "pending-review",
+				url: "https://github.com/acme/widget/pull/12/files",
+			});
+			await setup({ failNext: { op: "reply", status: 502 } });
+			const failed = await replyTo("T12-0", ok);
+			expect(failed.statusCode).toBe(502);
+			expect(failed.json().error).toMatch(/HTTP 502/);
+		});
+	});
+
 	describe("with a web root and an access key", () => {
 		let web: string;
 		let keyed: FastifyInstance;

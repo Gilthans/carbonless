@@ -28,6 +28,8 @@ export interface ReadSources {
 	viewer: string;
 	/** As-of mode: the cutoff, and the snapshot head whose checks to show. */
 	asOf?: { at: string; head: string };
+	/** Whether this session writes to GitHub (PrOverview.writes). */
+	writes: PrOverview["writes"];
 	code: ThreadCodeSource;
 	/** The thread code's diff base, once known (a Refresh moves the snapshot). */
 	base: () => Promise<DiffBase>;
@@ -71,6 +73,15 @@ export class OverviewRead {
 	readonly timeline: Promise<TimelineView>;
 	readonly #asOf: string | undefined;
 	readonly #viewer: string;
+	readonly #writes: boolean;
+	/**
+	 * Threads as a write left them (its re-read of the thread): they stand
+	 * in for this read's own summary and content, whenever those arrive.
+	 */
+	readonly #written = new Map<
+		string,
+		{ summary: unknown; content: unknown; seq: number }
+	>();
 	/** The PR author (the overview's), once the summary is in. */
 	#prAuthor = "";
 	/** Summary nodes, then with their content merged in as it arrives. */
@@ -92,6 +103,7 @@ export class OverviewRead {
 	constructor(sources: ReadSources) {
 		this.#asOf = sources.asOf?.at;
 		this.#viewer = sources.viewer;
+		this.#writes = sources.writes === "on";
 		const read = { signal: this.#stop.signal };
 		this.overview = fetchOverview(
 			sources.ref,
@@ -102,6 +114,7 @@ export class OverviewRead {
 			this.ended = Date.now();
 			return {
 				...fields,
+				writes: sources.writes,
 				readId: this.id,
 				fetchedAt: new Date(this.ended).toISOString(),
 			};
@@ -224,18 +237,53 @@ export class OverviewRead {
 		return this.#view();
 	}
 
+	/**
+	 * Thread `id` as a write left it (`seq` orders writes: an older one's
+	 * re-read never replaces a newer one's). Only a thread this read lists
+	 * is shown; one it doesn't is kept in case its summary is still to come.
+	 */
+	applyWrite(
+		id: string,
+		summary: unknown,
+		content: unknown,
+		seq: number,
+	): void {
+		const prev = this.#written.get(id);
+		if (prev && prev.seq > seq) return;
+		this.#written.set(id, { summary, content, seq });
+	}
+
+	/** Thread `id`'s summary node as this read has it (a write's, if any). */
+	summaryOf(id: string): unknown {
+		const written = this.#written.get(id);
+		if (written) return written.summary;
+		return this.#nodes.find((n) => (n as { id?: unknown })?.id === id);
+	}
+
+	/** A thread's summary node, a write's in place of this read's. */
+	#summary(node: unknown): unknown {
+		const id = (node as { id?: unknown })?.id;
+		return (typeof id === "string" && this.#written.get(id)?.summary) || node;
+	}
+
+	/** A thread's content as in (a write's first), GONE, or undefined. */
+	#content(id: string): unknown {
+		return this.#written.get(id)?.content ?? this.#contents.get(id);
+	}
+
 	/** Every thread, its content merged in where it has arrived. */
 	#map(): ReviewThread[] {
-		const nodes = this.#nodes.map((node) => {
+		const nodes = this.#nodes.map((raw) => {
+			const node = this.#summary(raw);
 			const id = (node as { id?: unknown })?.id;
-			const content =
-				typeof id === "string" ? this.#contents.get(id) : undefined;
+			const content = typeof id === "string" ? this.#content(id) : undefined;
 			return content && content !== GONE ? withContent(node, content) : node;
 		});
 		return mapThreads(nodes, {
 			asOf: this.#asOf,
 			prAuthor: this.#prAuthor,
 			viewer: this.#viewer,
+			writes: this.#writes,
 		});
 	}
 
@@ -251,12 +299,14 @@ export class OverviewRead {
 		await this.#stages.summary;
 		await this.#textsStarted.catch(() => {});
 		const summaries = new Map<string, unknown>();
-		for (const node of this.#nodes) {
+		for (const raw of this.#nodes) {
+			const node = this.#summary(raw);
 			const id = (node as { id?: unknown })?.id;
 			if (typeof id === "string" && NODE_ID.test(id)) summaries.set(id, node);
 		}
 		const wanted = [...new Set(ids)].filter((id) => summaries.has(id));
-		const pending = () => wanted.filter((id) => !this.#contents.has(id));
+		const pending = () =>
+			wanted.filter((id) => this.#content(id) === undefined);
 		// Waits for the reads of those not in yet that are on their way.
 		const join = () =>
 			Promise.all(
@@ -277,7 +327,7 @@ export class OverviewRead {
 		return {
 			threads: ids.map((threadId): ThreadComments => {
 				const summary = summaries.get(threadId);
-				const content = this.#contents.get(threadId);
+				const content = this.#content(threadId);
 				if (summary === undefined) {
 					return { threadId, comments: [], unavailable: "unreadable" };
 				}
@@ -296,7 +346,7 @@ export class OverviewRead {
 			if (!NODE_ID.test(t.id)) {
 				return { ...t, loaded: true, unavailable: "unreadable", code: null };
 			}
-			if (this.#contents.get(t.id) === GONE) {
+			if (this.#content(t.id) === GONE) {
 				t = { ...t, loaded: true, unavailable: "deleted" };
 			}
 			if (!t.loaded) complete = false;

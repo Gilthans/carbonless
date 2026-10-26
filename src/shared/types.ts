@@ -243,6 +243,16 @@ export interface PrOverview {
 	/** As-of mode: the cutoff everything here is filtered to. */
 	asOf?: string;
 	/**
+	 * "on", or why this session can't write to GitHub: an as-of view, or
+	 * `--viewer` someone other than the gh login.
+	 */
+	writes: "on" | "as-of" | "viewer";
+	/**
+	 * The viewer has an unsubmitted review on this PR: replies can't be
+	 * posted. `url` = `${url}/files`, where it can be submitted or discarded.
+	 */
+	pendingReview: { url: string } | null;
+	/**
 	 * This read of the PR from GitHub; its review threads come apart
 	 * (`GET /api/threads?read=<readId>`), as they take longer.
 	 */
@@ -338,6 +348,13 @@ export interface ReviewThread {
 	attention: string[];
 	/** The viewer is in `attention`. */
 	yourTurn: boolean;
+	/**
+	 * What the viewer may do to the thread on the host (GitHub's
+	 * viewerCanReply/Resolve/Unresolve): all false when writing is off
+	 * (`PrOverview.writes`) or the host didn't say. `resolve` is false on a
+	 * resolved thread and `unresolve` on an open one, as GitHub gives them.
+	 */
+	viewerCan: { reply: boolean; resolve: boolean; unresolve: boolean };
 }
 
 /** One comment of a review thread, whoever hosts it. */
@@ -383,6 +400,44 @@ export interface ThreadComments {
 export interface CommentsView {
 	threads: ThreadComments[];
 }
+
+/** What a thread write answers with: the thread's new state. */
+export interface ThreadUpdate {
+	threadId: string;
+	resolved: boolean;
+	commentCount: number;
+	lastActivityAt: string;
+	attention: string[];
+	yourTurn: boolean;
+	viewerCan: ReviewThread["viewerCan"];
+	comments: ThreadComments;
+	/** Reply only: the comment that holds the reply (posted now, or found by the dedupe). */
+	comment?: ThreadComment;
+}
+
+/** `POST /api/threads/:threadId/replies`. */
+export interface ReplyRequest {
+	body: string;
+	/** ISO time of the first attempt. */
+	attemptedAt: string;
+	/** A resend after a failed or unknown attempt: dedupe first. */
+	retry: boolean;
+}
+
+/** `POST /api/threads/:threadId/resolved`. */
+export interface ResolveRequest {
+	resolved: boolean;
+}
+
+/** A refused thread write. */
+export interface WriteError {
+	error: string;
+	code: "pending-review" | "writes-off" | "forbidden" | "gone" | "invalid";
+	url?: string;
+}
+
+/** The longest reply GitHub takes (a comment body's limit). */
+export const MAX_REPLY = 65536;
 
 /** Threads whose comments one `GET /api/comments` asks for, at most. */
 export const COMMENTS_BATCH = 50;

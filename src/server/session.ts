@@ -3,12 +3,14 @@ import type {
 	DiffLine,
 	FileHunks,
 	PrOverview,
+	ReplyRequest,
 	ReviewView,
 	SessionInfo,
 	Snapshot,
 	StateChange,
 	ThreadsStage,
 	ThreadsView,
+	ThreadUpdate,
 	TimelineView,
 } from "../shared/types.js";
 import { ensureClone, fetchPr } from "./clone.js";
@@ -31,6 +33,11 @@ import { RefStore } from "./review/refStore.js";
 import { ReviewService, StaleSnapshotError } from "./review/reviews.js";
 import { slugify } from "./slug.js";
 import { ThreadCodeSource } from "./threadCode.js";
+import {
+	replyToThread,
+	setResolved,
+	type ThreadWriteTarget,
+} from "./threadWrites.js";
 
 /** Reads kept for pages still showing them (see Session.threads). */
 const KEPT_READS = 3;
@@ -101,6 +108,8 @@ export class Session {
 	readonly #superseded = new WeakSet<OverviewRead>();
 	/** Serializes everything that writes or swaps the snapshot. */
 	#queue: Promise<unknown> = Promise.resolve();
+	/** Orders thread writes' re-reads (OverviewRead.applyWrite). */
+	#writeSeq = 0;
 
 	private constructor(
 		private readonly repo: string,
@@ -309,6 +318,55 @@ export class Session {
 	}
 
 	/**
+	 * Whether this session writes to GitHub: never as of a cutoff (the past
+	 * can't be answered), nor as `--viewer` someone else (the write would be
+	 * the gh login's, not theirs).
+	 */
+	writes(): PrOverview["writes"] {
+		if (this.options.asOf) return "as-of";
+		const { viewer } = this.options;
+		if (viewer !== undefined && slugify(viewer) !== this.viewer)
+			return "viewer";
+		return "on";
+	}
+
+	/** Replies to a thread on GitHub (threadWrites.ts). */
+	replyToThread(threadId: string, req: ReplyRequest): Promise<ThreadUpdate> {
+		return replyToThread(this.#writeTarget(), threadId, req);
+	}
+
+	/** Resolves or unresolves a thread on GitHub (threadWrites.ts). */
+	setThreadResolved(
+		threadId: string,
+		resolved: boolean,
+	): Promise<ThreadUpdate> {
+		return setResolved(this.#writeTarget(), threadId, resolved);
+	}
+
+	#writeTarget(): ThreadWriteTarget {
+		if (this.#closed) throw new Error("The session is closed");
+		return {
+			ref: this.#ref(),
+			prUrl: this.#meta.url,
+			viewer: this.viewer,
+			writes: this.writes(),
+			prAuthor: async () => (await this.overview()).author,
+			summaryOf: (id) => {
+				for (const read of [...this.#reads].reverse()) {
+					const node = read.summaryOf(id);
+					if (node !== undefined) return node;
+				}
+				return undefined;
+			},
+			nextSeq: () => ++this.#writeSeq,
+			apply: (id, summary, content, seq) => {
+				for (const read of this.#reads)
+					read.applyWrite(id, summary, content, seq);
+			},
+		};
+	}
+
+	/**
 	 * Starts a read of GitHub; its thread code waits for `ready` (a Refresh
 	 * moving the snapshot) to know the diff base.
 	 */
@@ -318,6 +376,7 @@ export class Session {
 		const read = new OverviewRead({
 			ref: this.#ref(),
 			viewer: viewer ?? this.viewer,
+			writes: this.writes(),
 			asOf: asOf ? { at: asOf, head: this.#meta.headOid } : undefined,
 			code: this.#threadCode,
 			base: async () => {

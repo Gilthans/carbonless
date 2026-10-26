@@ -347,7 +347,7 @@ describe("runGh with a fake gh", () => {
 		// author, time and commit; the latest one's author and time; authors
 		// and times for the rest, with where to page on from.
 		expect(log()).toContain(
-			"id isResolved isOutdated path subjectType line originalLine startLine originalStartLine diffSide startDiffSide first: comments(first: 1) { nodes { id author { login __typename } createdAt publishedAt state originalCommit { oid } } }",
+			"id isResolved isOutdated path subjectType line originalLine startLine originalStartLine diffSide startDiffSide viewerCanReply viewerCanResolve viewerCanUnresolve first: comments(first: 1) { nodes { id databaseId author { login __typename } createdAt publishedAt state originalCommit { oid } } }",
 		);
 		expect(log()).not.toContain("bodyText");
 		expect(log()).toContain(

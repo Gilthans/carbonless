@@ -49,6 +49,15 @@ export interface Scenario {
 	/** Every GraphQL query containing this text fails (gh exits 1). */
 	failGraphql?: string;
 	/**
+	 * The next write of this kind fails with this HTTP status (used up once
+	 * it has): a REST reply ("reply"), or resolving or unresolving
+	 * ("resolve"; 403 fails as GraphQL's FORBIDDEN). `afterWrite` stores the
+	 * write first, then fails: the ambiguous case (it landed, the answer
+	 * didn't come back). Replies and resolving are written back into the
+	 * scenario file, so later calls see them.
+	 */
+	failNext?: { op: "reply" | "resolve"; status: number; afterWrite?: boolean };
+	/**
 	 * Fields merged into the REST review comment (`api repos/…/pulls/<n>/comments`)
 	 * whose node id is the key; the fake derives the rest from the threads.
 	 */
@@ -76,6 +85,10 @@ export interface Scenario {
 				bodyHTML?: string;
 				reviewThreads?: unknown[];
 				comments?: unknown[];
+				/**
+				 * `reviews` nodes; one by the viewer (`user`) in state "PENDING"
+				 * makes the fake refuse replies as GitHub does (422).
+				 */
 				reviews?: unknown[];
 				/** `commits` nodes: `{ commit: { oid, committedDate, pushedDate } }`. */
 				commits?: unknown[];
@@ -142,6 +155,14 @@ const timesOf = (c: CommentNode): CommentTimes => ({
 /** A reviewThreads node, as gh.ts queries it. */
 export interface ThreadNode {
 	isResolved: boolean;
+	/**
+	 * What the viewer may do (gh.ts THREAD_FIELDS). The fake's defaults are
+	 * GitHub's for a writer: reply, and resolve an open thread or unresolve a
+	 * resolved one.
+	 */
+	viewerCanReply?: boolean;
+	viewerCanResolve?: boolean;
+	viewerCanUnresolve?: boolean;
 	/** "LINE" or "FILE"; missing in older fixtures (taken from the line). */
 	subjectType?: string;
 	isOutdated: boolean;

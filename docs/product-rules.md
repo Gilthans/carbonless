@@ -43,3 +43,45 @@ host. For changes to what carbonless derives from GitHub (thread positions,
 code panes, dates, timelines), also run the change read-only against a real PR
 and compare with GitHub's own answer (`pnpm compare-threads` for thread code).
 Real-PR data never enters the repo, tests or fixtures.
+
+## Writing to GitHub
+
+carbonless writes to GitHub only on the reviewer's explicit action, as the
+`gh` login, through `gh` (no server of its own): replying to a review thread
+and resolving or unresolving one (`src/server/threadWrites.ts`).
+
+- **One explicit action, one write.** Every write is one click (or the send
+  shortcut) on one thread. Nothing posts, resolves or retries a refused write
+  on its own, nothing is written as a side effect of review progress, and no
+  AI-written text is posted. Resolving never changes review progress.
+- **Immediate, never into a pending review.** Replies use REST
+  `POST /repos/{o}/{r}/pulls/{n}/comments/{commentId}/replies` (to the
+  thread's first comment), never GraphQL `addPullRequestReviewThreadReply`,
+  which puts the reply into the viewer's pending review where nobody else
+  sees it. Resolving uses GraphQL `resolveReviewThread` /
+  `unresolveReviewThread`, which a pending review doesn't affect.
+- **A pending review refuses replies.** While the viewer has an unsubmitted
+  review on the PR, GitHub refuses REST replies (422, "can only have one
+  pending review"). carbonless shows that as a refusal (409 `pending-review`)
+  with a link to the PR's files page on GitHub, where the review can be
+  submitted or discarded, keeps the draft, and never retries it on its own.
+  The Overview warns up front (`PrOverview.pendingReview`, from the reviews
+  it reads).
+- **Never twice.** A reply resent after a failed or unknown attempt
+  (`retry: true`) is first looked for among the thread's comments: one by
+  the viewer with the same body (line ends and trailing whitespace aside),
+  dated no earlier than 60 s before the first attempt (`attemptedAt`),
+  counts as sent. Resolving is idempotent.
+- **Off where it can't be the reviewer's.** No writes as of a cutoff
+  (`--as-of`) or as `--viewer` someone other than the `gh` login
+  (`PrOverview.writes`); merged, closed and `--head` views write as GitHub
+  allows. What the viewer may do comes from GitHub (`viewerCanReply`,
+  `viewerCanResolve`, `viewerCanUnresolve`), and a 403 passes GitHub's
+  message on.
+- **Only this PR.** A write goes to a thread of the PR being viewed; a
+  thread id of another PR is refused as gone.
+- **Later reads agree.** A write's answer is the thread re-read from GitHub,
+  and it replaces the thread in the session's kept reads, so the page doesn't
+  go back to the old state before a Refresh (which shows GitHub's truth).
+- **Tests write only to the fake gh.** Real writes happen only on the
+  owner's scratch PR (see `CLAUDE.md`).

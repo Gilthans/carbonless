@@ -94,6 +94,8 @@ const overview: OverviewFixture = {
 	],
 	humanStarted: true,
 	youAuthor: false,
+	writes: "on",
+	pendingReview: null,
 	readId: "read1",
 	// Just read: the page doesn't read it again.
 	fetchedAt: "2026-01-05T12:00:00Z",
@@ -124,6 +126,7 @@ const overview: OverviewFixture = {
 			anchor: null,
 			attention: [],
 			yourTurn: false,
+			viewerCan: { reply: false, resolve: false, unresolve: false },
 			commit: "",
 			subject: "line",
 			code: null,
@@ -148,6 +151,7 @@ const overview: OverviewFixture = {
 			anchor: null,
 			attention: [],
 			yourTurn: false,
+			viewerCan: { reply: false, resolve: false, unresolve: false },
 			commit: "",
 			subject: "line",
 			code: codeFromHunk(
@@ -185,6 +189,7 @@ function humanThread(
 		anchor: null,
 		attention: [],
 		yourTurn: false,
+		viewerCan: { reply: false, resolve: false, unresolve: false },
 		commit: "",
 		subject: "line",
 		code: null,

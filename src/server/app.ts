@@ -4,11 +4,14 @@ import Fastify, { type FastifyInstance } from "fastify";
 import {
 	type ClusterState,
 	COMMENTS_BATCH,
+	type ReplyRequest,
 	type StateChange,
 	type ThreadsStage,
+	type WriteError,
 } from "../shared/types.js";
 import { registerAccessKey, registerHostCheck } from "./access.js";
-import { GhError } from "./errors.js";
+import { GhError, WriteRefusedError } from "./errors.js";
+import { NODE_ID } from "./gh.js";
 import { GitError } from "./git.js";
 import {
 	InvalidChangeError,
@@ -17,6 +20,7 @@ import {
 	StaleSnapshotError,
 } from "./review/reviews.js";
 import { type Session, UnknownReadError } from "./session.js";
+import { replyProblem } from "./threadWrites.js";
 
 export interface AppOptions {
 	/** Directory with the built web UI. Omit to serve only the API. */
@@ -89,10 +93,30 @@ export async function buildApp(
 		if (error instanceof RangeError && NO_FILE.test(error.message)) {
 			return send(404, error.message);
 		}
+		if (error instanceof WriteRefusedError) {
+			const body: WriteError = {
+				error: error.message,
+				code: error.code,
+				...(error.url ? { url: error.url } : {}),
+			};
+			return reply.status(WRITE_STATUS[error.code]).send(body);
+		}
 		if (error instanceof GhError) return send(502, error.message);
 		if (error instanceof GitError) return send(500, error.message);
 		// Fastify's own client errors: bad JSON, body too large, ...
 		const status = (error as { statusCode?: number }).statusCode;
+		if (
+			status &&
+			status >= 400 &&
+			status < 500 &&
+			isThreadWrite(_request.url)
+		) {
+			const body: WriteError = {
+				error: (error as Error).message,
+				code: "invalid",
+			};
+			return reply.status(400).send(body);
+		}
 		if (status && status >= 400 && status < 500) {
 			return send(status, (error as Error).message);
 		}
@@ -180,6 +204,37 @@ export async function buildApp(
 		const { revision, changes } = parseStatesBody(request.body);
 		return session.setStates(revision, changes);
 	});
+	// Thread writes, posted to GitHub at once (threadWrites.ts).
+	app.post<{ Params: { threadId: string } }>(
+		"/api/threads/:threadId/replies",
+		(request) => {
+			const problem = replyProblem(request.body);
+			if (problem) throw new WriteRefusedError(problem, "invalid");
+			const { body, attemptedAt, retry } = request.body as ReplyRequest;
+			return session.replyToThread(threadIdParam(request.params.threadId), {
+				body,
+				attemptedAt,
+				retry,
+			});
+		},
+	);
+	app.post<{ Params: { threadId: string } }>(
+		"/api/threads/:threadId/resolved",
+		(request) => {
+			const resolved = (request.body as { resolved?: unknown } | null)
+				?.resolved;
+			if (typeof resolved !== "boolean") {
+				throw new WriteRefusedError(
+					"resolved must be true or false",
+					"invalid",
+				);
+			}
+			return session.setThreadResolved(
+				threadIdParam(request.params.threadId),
+				resolved,
+			);
+		},
+	);
 	app.post("/api/refresh", () => session.refresh());
 	app.get("/api/head", () => session.checkHead());
 
@@ -200,6 +255,25 @@ export async function buildApp(
 	}
 
 	return app;
+}
+
+/** WriteError's HTTP statuses. */
+const WRITE_STATUS: Record<WriteError["code"], number> = {
+	invalid: 400,
+	"writes-off": 403,
+	forbidden: 403,
+	gone: 404,
+	"pending-review": 409,
+};
+
+const isThreadWrite = (url: string) =>
+	/^\/api\/threads\/[^/?]+\/(replies|resolved)(\?|$)/.test(url);
+
+function threadIdParam(raw: string): string {
+	if (!NODE_ID.test(raw)) {
+		throw new WriteRefusedError(`Not a thread id: ${raw}`, "invalid");
+	}
+	return raw;
 }
 
 function fileIndex(raw: string): number {

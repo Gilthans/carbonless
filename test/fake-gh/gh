@@ -3,7 +3,7 @@
 // src/server/clone.ts make, from the scenario JSON at $CRB_FAKE_GH (see
 // scenario.ts). Every call is appended to $CRB_FAKE_GH_LOG when set.
 import { execFileSync } from "node:child_process";
-import { appendFileSync, readFileSync } from "node:fs";
+import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 
 const args = process.argv.slice(2);
 const s = JSON.parse(readFileSync(process.env.CRB_FAKE_GH, "utf8"));
@@ -24,19 +24,40 @@ function print(value) {
 const unsupported = () => fail(`fake gh: unsupported: ${args.join(" ")}`, 2);
 const sleep = (ms) =>
 	Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-/** A PR's thread nodes, each with an id (`T<pr>-<index>` unless it has one). */
+/** Writes the scenario back: writes (replies, resolving) last for the test. */
+const save = () =>
+	writeFileSync(process.env.CRB_FAKE_GH, JSON.stringify(s, null, "\t"));
+/** The scenario's failNext when it is for `op`, used up. */
+function failNextFor(op) {
+	const f = s.failNext;
+	if (!f || f.op !== op) return undefined;
+	delete s.failNext;
+	save();
+	return f;
+}
+/** The REST id of a thread's comment: (index + 1) * 1000 + its position. */
+const restId = (i, j) => (i + 1) * 1000 + j;
+/**
+ * A PR's thread nodes, each with an id (`T<pr>-<index>` unless it has
+ * one), what the viewer may do (GitHub's defaults: reply, and resolve an
+ * open thread or unresolve a resolved one) and its comments' REST ids.
+ */
 const threadNodes = (pr, nodes) =>
 	nodes.map((t, i) => {
 		// Comment ids: `C<pr>-<index>` for the opener, `-<n>` after for the rest.
 		const cid = (c, j) => c?.id ?? (j === 0 ? `C${pr}-${i}` : `C${pr}-${i}-${j}`);
+		const ided = (c, j) => ({ ...c, id: cid(c, j), databaseId: restId(i, j) });
 		return {
+			viewerCanReply: true,
+			viewerCanResolve: !t.isResolved,
+			viewerCanUnresolve: t.isResolved === true,
 			...t,
 			id: t.id ?? `T${pr}-${i}`,
 			...(t.first
 				? {
 						first: {
 							...t.first,
-							nodes: (t.first.nodes ?? []).map((c, j) => ({ ...c, id: cid(c, j) })),
+							nodes: (t.first.nodes ?? []).map(ided),
 						},
 					}
 				: {}),
@@ -44,19 +65,89 @@ const threadNodes = (pr, nodes) =>
 				? {
 						comments: {
 							...t.comments,
-							nodes: (t.comments.nodes ?? []).map((c, j) => ({ ...c, id: cid(c, j) })),
+							nodes: (t.comments.nodes ?? []).map(ided),
 						},
 					}
 				: {}),
 		};
 	});
-/** A thread node by its id, in any PR; none once deleted (deletedThreads). */
-function threadById(id) {
+/**
+ * Where thread `id` is: its PR's number, its index there and the node as
+ * served; none once deleted (deletedThreads).
+ */
+function threadPlace(id) {
 	if ((s.deletedThreads ?? []).includes(id)) return undefined;
-	return Object.entries(s.prs)
-		.flatMap(([n, p]) => threadNodes(n, p.graphql?.reviewThreads ?? []))
-		.find((t) => t.id === id);
+	for (const [n, p] of Object.entries(s.prs)) {
+		const nodes = threadNodes(n, p.graphql?.reviewThreads ?? []);
+		const i = nodes.findIndex((t) => t.id === id);
+		if (i >= 0) return { n, i, node: nodes[i] };
+	}
+	return undefined;
 }
+/** A thread node by its id, in any PR; none once deleted (deletedThreads). */
+const threadById = (id) => threadPlace(id)?.node;
+/** A thread node as a summary query gets it: no text, a page of comments. */
+const summarize = (t) => ({
+	...t,
+	first: { nodes: (t.first?.nodes ?? []).map(summaryOf) },
+	...(t.comments
+		? {
+				comments: {
+					totalCount: t.comments.totalCount,
+					...commentPage((t.comments.nodes ?? []).map(summaryOf), 0),
+				},
+			}
+		: {}),
+});
+const escapeHtml = (t) =>
+	t.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+/**
+ * Appends the viewer's reply to the thread at index `i` of PR `n` (in the
+ * scenario, saved) and returns it as GitHub's REST API answers.
+ */
+function storeReply(n, i, body) {
+	const t = s.prs[n].graphql.reviewThreads[i];
+	const now = new Date().toISOString().replace(/\.\d+Z$/, "Z");
+	const author = { login: s.user.login, __typename: "User" };
+	const times = { createdAt: now, publishedAt: now, state: "SUBMITTED" };
+	const listed = t.comments?.nodes ?? [];
+	// Older fixtures keep the opener only in `first`.
+	const before = listed.length ? listed : (t.first?.nodes ?? []).slice(0, 1);
+	const html = `<p dir="auto">${escapeHtml(body)}</p>`;
+	t.comments = {
+		...(t.comments ?? {}),
+		totalCount: (t.comments?.totalCount ?? before.length) + 1,
+		nodes: [...before, { author, ...times, body, bodyText: body, bodyHTML: html }],
+	};
+	t.latest = { nodes: [{ author, ...times }] };
+	save();
+	const j = t.comments.nodes.length - 1;
+	return {
+		id: restId(i, j),
+		node_id: threadNodes(n, s.prs[n].graphql.reviewThreads)[i].comments.nodes[j].id,
+		in_reply_to_id: restId(i, 0),
+		body,
+		body_text: body,
+		body_html: html,
+		user: { login: s.user.login },
+		created_at: now,
+	};
+}
+/** Fails like `gh api` on an HTTP error: the answer on stdout, the line on stderr. */
+function httpFail(status, message, errors) {
+	process.stdout.write(
+		`${JSON.stringify({ message, ...(errors ? { errors } : {}), status: String(status) })}\n`,
+	);
+	fail(`gh: ${[message, ...(errors ?? [])].join("\n")} (HTTP ${status})`);
+}
+const HTTP_MESSAGES = {
+	403: "Resource not accessible by integration",
+	404: "Not Found",
+	422: "Unprocessable Entity",
+	500: "Server Error",
+	502: "Bad Gateway",
+	503: "Service Unavailable",
+};
 /** A comment without its text, as a summary lists it. */
 const summaryOf = ({ body, bodyText, bodyHTML, diffHunk, ...rest }) => rest;
 /**
@@ -141,6 +232,45 @@ function restComments(n, pr) {
 	return out;
 }
 
+// REST reply: `api -X POST repos/<o>/<r>/pulls/<n>/comments/<id>/replies
+// -H "Accept: …" -f body=…`, to the opening comment's REST id.
+const restReply =
+	args[0] === "api" && args[1] === "-X" && args[2] === "POST"
+		? /^repos\/[^/]+\/[^/]+\/pulls\/(\d+)\/comments\/(\d+)\/replies$/.exec(args[3] ?? "")
+		: null;
+if (args[0] === "api" && args[1] === "-X" && !restReply) unsupported();
+if (restReply && !s.loggedOut) {
+	const [, n, id] = restReply;
+	if (args.slice(4).join(" ") !== "-H Accept: application/vnd.github.full+json --input -") {
+		unsupported();
+	}
+	const { body } = JSON.parse(readFileSync(0, "utf8"));
+	const pr = s.prs[n];
+	if (!pr) httpFail(404, "Not Found");
+	const nodes = threadNodes(n, pr.graphql?.reviewThreads ?? []);
+	const i = nodes.findIndex((_, k) => restId(k, 0) === Number(id));
+	if (i < 0 || (s.deletedThreads ?? []).includes(nodes[i].id)) {
+		httpFail(404, "Not Found");
+	}
+	const f = failNextFor("reply");
+	if (f && !f.afterWrite) httpFail(f.status, HTTP_MESSAGES[f.status] ?? "Error");
+	const pending = (pr.graphql?.reviews ?? []).some(
+		(r) =>
+			r.state === "PENDING" &&
+			r.author?.login?.toLowerCase() === s.user.login.toLowerCase(),
+	);
+	if (pending) {
+		httpFail(422, "Unprocessable Entity", [
+			"user_id can only have one pending review per pull request",
+		]);
+	}
+	if (nodes[i].viewerCanReply === false) httpFail(403, HTTP_MESSAGES[403]);
+	if (!body?.trim()) httpFail(422, "Validation Failed", ["Body can't be blank"]);
+	const posted = storeReply(n, i, body);
+	if (f) httpFail(f.status, HTTP_MESSAGES[f.status] ?? "Error");
+	print(posted);
+}
+
 // REST: `api repos/<owner>/<repo>/pulls/<n>/comments --paginate --slurp`,
 // every page in one array.
 const restPull = /^repos\/[^/]+\/[^/]+\/pulls\/(\d+)\/comments$/.exec(
@@ -166,7 +296,7 @@ const known = [
 	"repo clone",
 	"pr view",
 ];
-if (!known.includes(cmd) && !restPull) unsupported();
+if (!known.includes(cmd) && !restPull && !restReply) unsupported();
 
 if (s.loggedOut) {
 	if (cmd === "auth status") {
@@ -234,6 +364,65 @@ switch (cmd) {
 		const pr0 = () => s.prs[f.number];
 		if (s.failGraphql && f.query?.includes(s.failGraphql)) {
 			fail("GraphQL: Something went wrong while executing your query.");
+		}
+		// Resolving: mutation($id: ID!) { (un)resolveReviewThread(input: …) }.
+		const mutation = /^mutation\(\$id: ID!\) \{ (resolveReviewThread|unresolveReviewThread)\(/.exec(
+			f.query ?? "",
+		)?.[1];
+		if (mutation) {
+			const gqlFail = (type, message) => {
+				process.stdout.write(
+					`${JSON.stringify({ data: { [mutation]: null }, errors: [{ type, path: [mutation], message }] })}\n`,
+				);
+				fail(`GraphQL: ${message} (${mutation})`);
+			};
+			const place = threadPlace(f.id);
+			if (!place) {
+				gqlFail("NOT_FOUND", `Could not resolve to a node with the global id of '${f.id}'`);
+			}
+			const resolve = mutation === "resolveReviewThread";
+			const failing = failNextFor("resolve");
+			const forbidden = `${s.user.login} does not have permission to ${resolve ? "resolve" : "unresolve"} this review thread.`;
+			if (failing?.status === 403) gqlFail("FORBIDDEN", forbidden);
+			if (failing && !failing.afterWrite) {
+				fail(`gh: ${HTTP_MESSAGES[failing.status] ?? "Error"} (HTTP ${failing.status})`);
+			}
+			const allowed = resolve
+				? place.node.viewerCanResolve !== false || place.node.isResolved
+				: place.node.viewerCanUnresolve !== false || !place.node.isResolved;
+			if (!allowed) gqlFail("FORBIDDEN", forbidden);
+			const t = s.prs[place.n].graphql.reviewThreads[place.i];
+			t.isResolved = resolve;
+			// GitHub's own: who can resolve can unresolve, and the other way.
+			const can = t.viewerCanResolve !== false || t.viewerCanUnresolve !== false;
+			if (can) {
+				t.viewerCanResolve = !resolve;
+				t.viewerCanUnresolve = resolve;
+			}
+			save();
+			if (failing) fail(`gh: ${HTTP_MESSAGES[failing.status] ?? "Error"} (HTTP ${failing.status})`);
+			print({ data: { [mutation]: { thread: { id: f.id, isResolved: resolve } } } });
+		}
+		// One thread's summary by id, and its PR (a write's re-read).
+		if (/node\(id: \$id\) \{\s*\.\.\. on PullRequestReviewThread \{/.test(f.query)) {
+			const place = threadPlace(f.id);
+			if (!place) {
+				process.stdout.write(
+					`${JSON.stringify({ data: { node: null }, errors: [{ type: "NOT_FOUND", path: ["node"], message: `Could not resolve to a node with the global id of '${f.id}'` }] })}\n`,
+				);
+				fail(`gh: Could not resolve to a node with the global id of '${f.id}'`);
+			}
+			print({
+				data: {
+					node: {
+						...summarize(place.node),
+						pullRequest: {
+							number: Number(place.n),
+							repository: { nameWithOwner: s.nameWithOwner ?? "acme/widget" },
+						},
+					},
+				},
+			});
 		}
 		// The rest of one review's comments (--head reviewed): node(id) {
 		// ... on PullRequestReview { comments(first: 100, after: $endCursor) } },
@@ -422,20 +611,7 @@ switch (cmd) {
 			all = threadNodes(f.number, all);
 			// Only the fields asked for: a summary has no comment text, and
 			// lists a thread's first page of comments (commentPageSize).
-			if (!f.query.includes("bodyHTML")) {
-				all = all.map((t) => ({
-					...t,
-					first: { nodes: (t.first?.nodes ?? []).map(summaryOf) },
-					...(t.comments
-						? {
-								comments: {
-									totalCount: t.comments.totalCount,
-									...commentPage((t.comments.nodes ?? []).map(summaryOf), 0),
-								},
-							}
-						: {}),
-				}));
-			}
+			if (!f.query.includes("bodyHTML")) all = all.map(summarize);
 		}
 		const size = s.pageSize ?? 100;
 		const start = fromEnd

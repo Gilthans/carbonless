@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import type { PrOverview } from "../shared/types.js";
 import { headAsOf } from "./asOf.js";
-import { GhError } from "./errors.js";
+import { GhError, WriteRefusedError } from "./errors.js";
 import { mapOverview } from "./overview.js";
 import { type HeadSpec, needsCommentPages, pickHead } from "./pinnedHead.js";
 import { slugify } from "./slug.js";
@@ -72,6 +72,8 @@ interface GhRun {
 	signal?: AbortSignal;
 	/** What is being read, for the messages ("the review threads"). */
 	what?: string;
+	/** Written to gh's stdin (a write's JSON body, `--input -`). */
+	input?: string;
 }
 
 /** The error an aborted gh call fails with. */
@@ -89,8 +91,11 @@ function spawnGh(args: string[], run: GhRun = {}): Promise<GhResult> {
 		const child = spawn("gh", args, {
 			cwd: run.cwd,
 			env: ghEnv(run.env),
-			stdio: ["ignore", "pipe", "pipe"],
+			stdio: ["pipe", "pipe", "pipe"],
 		});
+		// Nothing to read but a write's body: gh sees its end at once.
+		child.stdin.on("error", () => {});
+		child.stdin.end(run.input ?? "");
 		const out: Buffer[] = [];
 		const err: Buffer[] = [];
 		const stop = (error: GhError) => {
@@ -386,7 +391,9 @@ const COMMENT_TIMES = "createdAt publishedAt state";
 /** A page of a thread's comments: where to read on from, past 100. */
 const COMMENT_PAGE = "pageInfo { hasNextPage endCursor }";
 const SUMMARY_COMMENT = `id ${AUTHOR} ${COMMENT_TIMES}`;
-const THREAD_FIELDS = `id isResolved isOutdated path subjectType line originalLine startLine originalStartLine diffSide startDiffSide first: comments(first: 1) { nodes { id ${AUTHOR} ${COMMENT_TIMES} originalCommit { oid } } } latest: comments(last: 1) { nodes { ${AUTHOR} ${COMMENT_TIMES} } } comments(first: 100) { totalCount ${COMMENT_PAGE} nodes { ${SUMMARY_COMMENT} } }`;
+// What the viewer may do to it (reply, resolve, unresolve), and the
+// opener's REST id, which a reply is posted to.
+const THREAD_FIELDS = `id isResolved isOutdated path subjectType line originalLine startLine originalStartLine diffSide startDiffSide viewerCanReply viewerCanResolve viewerCanUnresolve first: comments(first: 1) { nodes { id databaseId ${AUTHOR} ${COMMENT_TIMES} originalCommit { oid } } } latest: comments(last: 1) { nodes { ${AUTHOR} ${COMMENT_TIMES} } } comments(first: 100) { totalCount ${COMMENT_PAGE} nodes { ${SUMMARY_COMMENT} } }`;
 /** Each comment's text, and GitHub's diff hunk (the opening one's shows the code). */
 const CONTENT_COMMENT = `${SUMMARY_COMMENT} body bodyText bodyHTML diffHunk`;
 /** Every comment of a thread with its text, by thread id (paged on past 100). */
@@ -763,7 +770,7 @@ async function fetchBodyHtml(
 /** The overview's own fields, without the read's stamps. */
 export type OverviewFields = Omit<
 	PrOverview,
-	"readId" | "fetchedAt" | "servedAt"
+	"readId" | "fetchedAt" | "servedAt" | "writes"
 >;
 
 /**
@@ -1194,4 +1201,228 @@ export async function fetchThreadCommentPages(
 		todo = next.flat();
 	}
 	return found;
+}
+
+/** One thread's summary by id, and the PR it is on. */
+const THREAD_QUERY = `query($id: ID!) {
+  node(id: $id) {
+    ... on PullRequestReviewThread {
+      ${THREAD_FIELDS}
+      pullRequest { number repository { nameWithOwner } }
+    }
+  }
+}`;
+
+/**
+ * One thread's summary node (THREAD_FIELDS, every comment listed) by id,
+ * for a write: null when GitHub no longer has it or it isn't on PR `ref`.
+ */
+export async function fetchThread(
+	ref: PrRef,
+	id: string,
+	read: ReadSignal = {},
+): Promise<unknown | null> {
+	if (!NODE_ID.test(id)) return null;
+	const out = safeJson(
+		await runGh(
+			["api", "graphql", "-f", `query=${THREAD_QUERY}`, "-f", `id=${id}`],
+			{
+				...read,
+				what: "the review thread",
+				partial: (stdout) => graphqlErrorType(stdout) === "NOT_FOUND",
+			},
+		),
+	);
+	const node = rec(rec(out).data).node;
+	if (node === null || node === undefined) return null;
+	const pr = rec(rec(node).pullRequest);
+	const name = rec(pr.repository).nameWithOwner;
+	if (
+		pr.number !== ref.number ||
+		typeof name !== "string" ||
+		name.toLowerCase() !== `${ref.owner}/${ref.repo}`.toLowerCase()
+	) {
+		return null;
+	}
+	const [paged] = await withEveryComment([node], SUMMARY_COMMENT, read);
+	return paged ?? null;
+}
+
+/** The first GraphQL error's `field` in gh's output (it prints the answer). */
+function graphqlError(
+	stdout: string,
+	field: "type" | "message",
+): string | null {
+	try {
+		const errors = rec(JSON.parse(stdout)).errors;
+		const value = Array.isArray(errors) ? rec(errors[0])[field] : undefined;
+		return typeof value === "string" ? value : null;
+	} catch {
+		return null;
+	}
+}
+const graphqlErrorType = (stdout: string) => graphqlError(stdout, "type");
+
+/** The message of a REST error answer gh printed, with its details. */
+function restMessage(stdout: string): string {
+	try {
+		const answer = rec(JSON.parse(stdout));
+		const details = Array.isArray(answer.errors)
+			? answer.errors.map((e) => (typeof e === "string" ? e : rec(e).message))
+			: [];
+		return [answer.message, ...details]
+			.filter((m): m is string => typeof m === "string" && m !== "")
+			.join(": ");
+	} catch {
+		return "";
+	}
+}
+
+/** A failed REST call's HTTP status: gh's "(HTTP 422)", or the answer's own. */
+function httpStatus(stdout: string, stderr: string): string | undefined {
+	const said = /\(HTTP (\d{3})\)/.exec(stderr)?.[1];
+	if (said) return said;
+	try {
+		const status = rec(JSON.parse(stdout)).status;
+		return typeof status === "string" && /^\d{3}$/.test(status)
+			? status
+			: undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+/** A write's gh call: its answer, or the refusal it is (WriteRefusedError). */
+async function runWrite(
+	args: string[],
+	what: string,
+	refusal: (result: GhResult) => WriteRefusedError | null,
+	input?: string,
+): Promise<string> {
+	const result = await spawnGh(args, { timeoutMs: GH_TIMEOUT_MS, what, input });
+	if (result.code === 0) return result.stdout;
+	const refused = refusal(result);
+	if (refused) throw refused;
+	if (LOGGED_OUT.test(result.stderr)) throw new GhError(NOT_LOGGED_IN);
+	throw new GhError(
+		problemLine(result.stderr) || `gh exited with code ${result.code}`,
+	);
+}
+
+/** GitHub's REST answer to a reply: the new comment. */
+export interface PostedReply {
+	/** Its GraphQL node id. */
+	nodeId: string;
+	body: string;
+	bodyText: string;
+	bodyHtml: string;
+	author: string;
+	createdAt: string;
+}
+
+/**
+ * Posts `body` as a reply to the thread whose first comment has REST id
+ * `commentId`, at once (REST, never GraphQL's addPullRequestReviewThreadReply,
+ * which would put it into a pending review). Refusals: a pending review of
+ * the viewer's (GitHub's 422) → "pending-review" with the PR's files page;
+ * 404 → "gone"; 403 → "forbidden" with GitHub's message; another 422 →
+ * "invalid". Anything else (timeouts, 5xx) is a GhError: it may have landed.
+ */
+export async function postReply(
+	ref: PrRef,
+	commentId: number,
+	body: string,
+	prUrl: string,
+): Promise<PostedReply> {
+	const out = await runWrite(
+		[
+			"api",
+			"-X",
+			"POST",
+			`repos/${ref.owner}/${ref.repo}/pulls/${ref.number}/comments/${commentId}/replies`,
+			"-H",
+			"Accept: application/vnd.github.full+json",
+			// The body on stdin: as an argument a long one could pass the
+			// system's limit for one.
+			"--input",
+			"-",
+		],
+		"the reply",
+		({ stdout, stderr }) => {
+			const message = restMessage(stdout) || problemLine(stderr);
+			const status = httpStatus(stdout, stderr);
+			if (status === "422" && /pending review/i.test(`${stdout}\n${stderr}`)) {
+				return new WriteRefusedError(
+					"A pending review on GitHub blocks replies: submit or discard it",
+					"pending-review",
+					`${prUrl.replace(/\/+$/, "")}/files`,
+				);
+			}
+			if (status === "404") {
+				return new WriteRefusedError("The thread is gone from GitHub", "gone");
+			}
+			if (status === "403") {
+				return new WriteRefusedError(
+					message || "GitHub refused the reply",
+					"forbidden",
+				);
+			}
+			if (status === "422") {
+				return new WriteRefusedError(
+					message || "GitHub refused the reply",
+					"invalid",
+				);
+			}
+			return null;
+		},
+		JSON.stringify({ body }),
+	);
+	const c = rec(safeJson(out));
+	const str = (v: unknown) => (typeof v === "string" ? v : "");
+	if (!str(c.node_id)) {
+		throw new GhError("gh returned an unexpected response for the reply");
+	}
+	return {
+		nodeId: str(c.node_id),
+		body: str(c.body),
+		bodyText: str(c.body_text),
+		bodyHtml: str(c.body_html),
+		author: str(rec(c.user).login),
+		createdAt: str(c.created_at),
+	};
+}
+
+/**
+ * Resolves or unresolves thread `id` (GraphQL; idempotent). Refusals: no
+ * such thread → "gone"; not allowed → "forbidden" with GitHub's message.
+ */
+export async function postResolved(
+	id: string,
+	resolved: boolean,
+): Promise<void> {
+	const mutation = resolved ? "resolveReviewThread" : "unresolveReviewThread";
+	const query = `mutation($id: ID!) { ${mutation}(input: { threadId: $id }) { thread { id isResolved } } }`;
+	await runWrite(
+		["api", "graphql", "-f", `query=${query}`, "-f", `id=${id}`],
+		resolved ? "resolving the thread" : "unresolving the thread",
+		({ stdout, stderr }) => {
+			const type = graphqlErrorType(stdout);
+			const message =
+				graphqlError(stdout, "message") ||
+				problemLine(stderr).replace(/^GraphQL: /, "");
+			if (type === "NOT_FOUND" || /could not resolve to a node/i.test(stderr)) {
+				return new WriteRefusedError("The thread is gone from GitHub", "gone");
+			}
+			if (
+				type === "FORBIDDEN" ||
+				/HTTP 403|not have permission|must have/i.test(stderr)
+			) {
+				return new WriteRefusedError(
+					message || "GitHub refused it",
+					"forbidden",
+				);
+			}
+			return null;
+		},
+	);
 }

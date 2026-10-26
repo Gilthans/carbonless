@@ -109,6 +109,7 @@ const thread = (
 		subject: anchor ? "line" : "file",
 		attention: [],
 		yourTurn: false,
+		viewerCan: { reply: false, resolve: false, unresolve: false },
 		...extra,
 	};
 };

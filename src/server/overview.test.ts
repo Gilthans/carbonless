@@ -169,6 +169,7 @@ describe("mapOverview", () => {
 				// The author replied last: back to the reviewer.
 				attention: ["rev1"],
 				yourTurn: false,
+				viewerCan: { reply: false, resolve: false, unresolve: false },
 				commit: "",
 				subject: "line",
 				line: 42,
@@ -220,6 +221,7 @@ describe("mapOverview", () => {
 				},
 				attention: ["octo-author"],
 				yourTurn: false,
+				viewerCan: { reply: false, resolve: false, unresolve: false },
 				commit: "",
 				subject: "line",
 				line: 3,
@@ -253,6 +255,7 @@ describe("mapOverview", () => {
 				// Resolved: nobody.
 				attention: [],
 				yourTurn: false,
+				viewerCan: { reply: false, resolve: false, unresolve: false },
 				commit: "",
 				subject: "line",
 				line: 1,
@@ -286,6 +289,7 @@ describe("mapOverview", () => {
 				// A bot never counts as the latest: the PR author.
 				attention: ["octo-author"],
 				yourTurn: false,
+				viewerCan: { reply: false, resolve: false, unresolve: false },
 				commit: "",
 				subject: "line",
 				// Outdated: where it was written.
@@ -1031,5 +1035,75 @@ describe("mapComments", () => {
 			undefined,
 		);
 		expect(mapComments(summary, gone, "2026-01-03T10:30:00Z").missing).toBe(1);
+	});
+});
+
+describe("what the viewer may write", () => {
+	const node = (over: Record<string, unknown> = {}) =>
+		reviewThread({ path: "a.ts", line: 1, ...over }, [
+			threadComment({ login: "rev", text: "Hm" }),
+		]);
+	const can = (
+		n: unknown,
+		ctx: { writes?: boolean; asOf?: string } = { writes: true },
+	) =>
+		mapThreads([n], { prAuthor: "octo-author", viewer: "octo-cat", ...ctx })[0]
+			?.viewerCan;
+
+	it("passes on GitHub's viewerCan flags when writing is on", () => {
+		expect(
+			can(
+				node({
+					viewerCanReply: true,
+					viewerCanResolve: false,
+					viewerCanUnresolve: true,
+				}),
+			),
+		).toEqual({ reply: true, resolve: false, unresolve: true });
+	});
+
+	it("is all false when writing is off, as of a cutoff, or GitHub didn't say", () => {
+		const all = node({
+			viewerCanReply: true,
+			viewerCanResolve: true,
+			viewerCanUnresolve: true,
+		});
+		const none = { reply: false, resolve: false, unresolve: false };
+		expect(can(all, {})).toEqual(none);
+		expect(can(all, { writes: false })).toEqual(none);
+		expect(can(all, { writes: true, asOf: "2099-01-01T00:00:00Z" })).toEqual(
+			none,
+		);
+		expect(can(node())).toEqual(none);
+	});
+
+	it("finds the viewer's pending review, linking the PR's files page", () => {
+		const pendingBy = (login: string) => ({
+			...graph(),
+			reviews: [
+				...graph().reviews,
+				{ author: { login }, state: "PENDING", submittedAt: null },
+			],
+		});
+		expect(mapOverview(view(), graph(), VIEWER).pendingReview).toBeNull();
+		expect(mapOverview(view(), pendingBy("JDoe_Acme"), VIEWER)).toMatchObject({
+			pendingReview: { url: "https://github.com/acme/widget/pull/12/files" },
+		});
+		// Its slug, as the session passes it.
+		expect(
+			mapOverview(view(), pendingBy("jdoe_acme"), "jdoe-acme").pendingReview,
+		).not.toBeNull();
+		// Someone else's (GitHub shows it only to them anyway), and never as of a cutoff.
+		expect(
+			mapOverview(view(), pendingBy("rev2"), VIEWER).pendingReview,
+		).toBeNull();
+		expect(
+			mapOverview(
+				view(),
+				{ ...pendingBy("jdoe_acme"), checks: [] },
+				VIEWER,
+				"2099-01-01T00:00:00Z",
+			).pendingReview,
+		).toBeNull();
 	});
 });
