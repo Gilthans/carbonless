@@ -320,8 +320,15 @@ test.describe("phone", () => {
 			const pathBox = await path.boundingBox();
 			const headerBox = await section.locator("header").boundingBox();
 			if (!pathBox || !headerBox) throw new Error("header not rendered");
-			// Row 1: the path, the header's full width.
-			expect(pathBox.width).toBeGreaterThanOrEqual(headerBox.width - 16);
+			// Row 1: the change-kind icon, then the path the rest of the
+			// header's width.
+			const kind = await section.getByTestId("change-kind").boundingBox();
+			if (!kind) throw new Error("no change-kind icon");
+			expect(kind.width).toBeLessThanOrEqual(16);
+			expect(kind.x + kind.width).toBeLessThanOrEqual(pathBox.x);
+			expect(pathBox.width).toBeGreaterThanOrEqual(
+				headerBox.width - 16 - kind.width - 8,
+			);
 			// Row 2: progress plus ⊘ ✓, 40px each, below the path.
 			for (const name of ["Cross off file", "Mark remaining reviewed"]) {
 				const button = section.getByRole("button", { name, exact: true });
