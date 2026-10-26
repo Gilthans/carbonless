@@ -68,6 +68,29 @@ const files = [
 describe("FileTree", () => {
 	afterEach(cleanup);
 
+	it("tints finished rows green, crossed off ones too, and no others", () => {
+		render(
+			<FileTree
+				files={files}
+				unit="clusters"
+				current={null}
+				onSelect={() => {}}
+			/>,
+		);
+		const row = (name: string) =>
+			screen.getByRole("button", { name: new RegExp(name) });
+		for (const name of ["two\\.ts", "api\\.g\\.cs"]) {
+			expect(row(name), name).toHaveAttribute("data-finished");
+			expect(row(name).className, name).toContain("bg-ok/8");
+		}
+		for (const name of ["one\\.ts", "b\\.ts"]) {
+			expect(row(name), name).not.toHaveAttribute("data-finished");
+			expect(row(name).className, name).not.toContain("bg-ok");
+		}
+		// The crossed-off file keeps its purple strike-through.
+		expect(row("api\\.g\\.cs").querySelector("s")).not.toBeNull();
+	});
+
 	it("nests files under folders, in snapshot order, with their status", () => {
 		render(
 			<FileTree

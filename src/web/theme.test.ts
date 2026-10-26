@@ -237,6 +237,53 @@ describe("color tokens", () => {
 		}
 	});
 
+	it("a finished file's header and tree row keep their text and icons readable", () => {
+		// FileDiff: the opaque ok-wash header (it sticks over the diff), and
+		// the tree's finished row: ok/8 over the sidebar and the sheet.
+		const l = (hex: string) => luminance(hex);
+		expect(
+			l(token("ok-wash")),
+			"the wash reads as a tint, not a new surface",
+		).toBeGreaterThan(l(token("raised")));
+		const behind: [string, string][] = [["ok-wash", token("ok-wash")]];
+		for (const bg of ["canvas", "surface"]) {
+			behind.push([
+				`finished row over ${bg}`,
+				over(token("ok"), 0.08, token(bg)),
+			]);
+		}
+		for (const [name, bg] of behind) {
+			// Path, names, progress, fade marker, counts and status text.
+			for (const text of [
+				"ink",
+				"ink-soft",
+				"muted",
+				"faint",
+				"ok",
+				"bad",
+				"warn",
+				"done",
+			]) {
+				expect(
+					contrast(token(text), bg),
+					`${text} on ${name}`,
+				).toBeGreaterThanOrEqual(4.5);
+			}
+			// Button outlines, the focus ring, the left edge.
+			for (const part of ["ok-fill", "crossed", "accent"]) {
+				expect(
+					contrast(token(part), bg),
+					`${part} on ${name}`,
+				).toBeGreaterThanOrEqual(3);
+			}
+			// A crossed-off file's reason badge.
+			expect(
+				contrast(token("done"), over(token("crossed"), 0.2, bg)),
+				`done badge on ${name}`,
+			).toBeGreaterThanOrEqual(4.5);
+		}
+	});
+
 	it("the focus ring shows at 3:1 on everything it can sit on", () => {
 		const behind = [
 			...SURFACES,

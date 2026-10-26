@@ -20,6 +20,7 @@ uses is checked for WCAG AA in `src/web/theme.test.ts`; add new pairs there.
 | `label` | letter-spaced violet capitals for section labels |
 | `accent` `link` | focus rings, the pointed-at cluster rail, selected segment, current file; links |
 | `add-done` `del-done` | reviewed lines: quieter add/del tints, text at full contrast |
+| `ok-wash` | a finished file's header: an opaque green wash on `raised` (it sticks over the diff) |
 | `mark-tint` (utility) | `accent` at 8% as an inset shadow over every cell of a row: a thread's commented lines, and a line landed on from a thread link (it fades, instantly with reduced motion). Over add/del/context it keeps all code text at 4.5:1 and green/red apart |
 | `shade`, `shadow-*` | the one shadow color and the shadows built from it |
 | `magenta` `orange` `yellow` `teal` `violet` | brand: logo, gradients (`brand-rule`, `cta`), never meaning |
@@ -97,6 +98,15 @@ progress: the bars and the "3 / 8 lines" style fractions. In the header the
 counts sit beside the path, so a phone's second row keeps room for the
 actions and the progress; the header's progress summary names them ("3 lines
 added, 2 deleted · 2 clusters").
+
+## Finished files
+
+A file the progress counts done (`FileView.done`: every cluster reviewed or
+crossed off) is green, so scrolling finds what's left: its header is
+`ok-wash` with a 3px `ok` left edge and an `ok-fill/50` section border, open,
+closed or stuck; its tree row gets `ok/8` with a 2px `ok-fill` edge (the
+current row keeps its accent). Crossed-off files keep their purple cues on
+top. Unfinished files are unchanged, and an undo drops the tint at once.
 
 ## Settings
 

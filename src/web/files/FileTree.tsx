@@ -109,12 +109,15 @@ function FileItem(props: {
 						type="button"
 						{...trigger}
 						aria-current={props.current ? "true" : undefined}
+						data-finished={file.done || undefined}
 						onClick={() => props.onSelect(file.index)}
 						style={indent(props.depth)}
 						className={`flex w-full items-center gap-1.5 rounded-md py-0.5 pr-1 pointer-coarse:min-h-10 text-left text-sm transition-colors hover:bg-overlay focus-visible:outline-2 focus-visible:outline-accent motion-reduce:transition-none ${
 							props.current
 								? "bg-accent/12 text-ink shadow-[inset_2px_0_0_var(--color-accent)]"
-								: "text-ink-soft"
+								: file.done
+									? "bg-ok/8 text-ink-soft shadow-[inset_2px_0_0_var(--color-ok-fill)]"
+									: "text-ink-soft"
 						}`}
 					>
 						<StatusIcon file={file} />

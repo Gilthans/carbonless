@@ -280,6 +280,78 @@ test("mark remaining reviewed", async ({ page, pr, startCrb }) => {
 	await expect(progress(page)).toContainText("1 / 3 files reviewed");
 });
 
+test("finished files get a green header and tree row, gone on undo", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	if (isMobile) await page.setViewportSize({ width: 360, height: 780 });
+	await pr(fixture);
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	const bg = (el: Locator) =>
+		el.evaluate((node) => getComputedStyle(node).backgroundColor);
+	const header = (path: string) => fileSection(page, path).locator("header");
+	const unfinished = await bg(header("src/util.ts"));
+	await fileAction(fileSection(page, "src/core.ts"), "Mark remaining reviewed");
+	await expect(fileProgress(fileSection(page, "src/core.ts"))).toContainText(
+		"2 / 2 clusters",
+	);
+	const finished = await bg(header("src/core.ts"));
+	expect(finished).not.toBe(unfinished);
+	// Opaque, so a stuck header hides the diff under it, open or closed.
+	expect(finished).not.toMatch(/\/|rgba|transparent/);
+	// The tree: a lighter green on the finished row only (the current row
+	// keeps its own highlight, so compare the others).
+	await withTree(page, async (tree) => {
+		const rows = (finished: boolean) =>
+			tree.locator(
+				`button:has([data-testid=tree-meter]):not([aria-current])${
+					finished ? "[data-finished]" : ":not([data-finished])"
+				}`,
+			);
+		await expect(rows(true).or(rows(false)).first()).toBeVisible();
+		const done = await rows(true).evaluateAll((els) =>
+			els.map((el) => getComputedStyle(el).backgroundColor),
+		);
+		const open = await rows(false).evaluateAll((els) =>
+			els.map((el) => getComputedStyle(el).backgroundColor),
+		);
+		expect(done.length).toBeGreaterThan(0);
+		expect(open.length).toBeGreaterThan(0);
+		for (const d of done) for (const o of open) expect(d).not.toBe(o);
+		await expect(
+			tree.getByRole("button", { name: /core\.ts/ }),
+		).toHaveAttribute("data-finished");
+		await expect(
+			tree.getByRole("button", { name: /util\.ts/ }),
+		).not.toHaveAttribute("data-finished");
+	});
+	await expand(page, "src/core.ts");
+	expect(await bg(header("src/core.ts"))).toBe(finished);
+	expect(await bg(header("src/util.ts"))).toBe(unfinished);
+
+	// Crossed off counts as finished; undoing it drops the tint at once.
+	const util = fileSection(page, "src/util.ts");
+	await fileAction(util, "Cross off file");
+	await expect(fileProgress(util)).toContainText("crossed off");
+	await expect.poll(() => bg(header("src/util.ts"))).toBe(finished);
+	await withTree(page, async (tree) => {
+		const row = (name: RegExp) => tree.getByRole("button", { name });
+		await expect(row(/util\.ts/)).toHaveAttribute("data-finished");
+		await expect(row(/new\.md/)).not.toHaveAttribute("data-finished");
+	});
+	await undoFileCrossOff(page, util);
+	await expect(fileActionButton(util, "Cross off file")).toBeEnabled();
+	expect(await bg(header("src/util.ts"))).toBe(unfinished);
+	await withTree(page, async (tree) => {
+		await expect(
+			tree.getByRole("button", { name: /util\.ts/ }),
+		).not.toHaveAttribute("data-finished");
+	});
+});
+
 test("marking the rest reviewed or crossing it off closes the file", async ({
 	page,
 	pr,

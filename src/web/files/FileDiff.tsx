@@ -117,8 +117,11 @@ function PathScroller({
 	text,
 	kind,
 	className = "",
+	fade = "from-raised",
 }: {
 	text: string;
+	/** The fade's start color: the header's background. */
+	fade?: string;
 	/** The kind of change, first in the tooltip (touch and keyboard get it here). */
 	kind: string;
 	className?: string;
@@ -179,7 +182,7 @@ function PathScroller({
 				<span
 					aria-hidden
 					data-testid="path-fade"
-					className="pointer-events-none absolute inset-y-0 left-0 flex w-6 items-center bg-gradient-to-r from-raised from-40% to-transparent font-mono text-sm text-faint"
+					className={`pointer-events-none absolute inset-y-0 left-0 flex w-6 items-center bg-gradient-to-r ${fade} from-40% to-transparent font-mono text-sm text-faint`}
 				>
 					…
 				</span>
@@ -408,13 +411,23 @@ export function FileDiff(props: {
 			id={`file-${file.index}`}
 			data-file-index={file.index}
 			aria-label={file.path}
-			className="overflow-clip rounded-lg border border-line bg-surface"
+			data-finished={file.done || undefined}
+			className={`overflow-clip rounded-lg border bg-surface ${
+				file.done ? "border-ok-fill/50" : "border-line"
+			}`}
 		>
 			<header
 				ref={headerEl}
+				data-finished={file.done || undefined}
 				// Square corners: the section clips them at the top, and a stuck
-				// header must not let lines show through.
-				className={`@container border-b border-line bg-raised px-1.5 ${
+				// header must not let lines show through. Finished (every cluster
+				// reviewed or crossed off): an opaque green wash and a green left
+				// edge, so unreviewed files stand out while scrolling.
+				className={`@container border-b border-line px-1.5 ${
+					file.done
+						? "bg-ok-wash shadow-[inset_3px_0_0_var(--color-ok)]"
+						: "bg-raised"
+				} ${
 					expanded
 						? "sticky top-[calc(var(--app-header,0px)+var(--files-bar,0px))] z-10"
 						: ""
@@ -432,6 +445,7 @@ export function FileDiff(props: {
 								<ChangeKindIcon file={file} tooltip />
 								<PathScroller
 									text={path}
+									fade={file.done ? "from-ok-wash" : "from-raised"}
 									kind={
 										file.status === "renamed"
 											? "Renamed"

@@ -599,6 +599,55 @@ describe("FileDiff", () => {
 		expect(screen.queryByRole("button", { name: "Undo cross-off" })).toBeNull();
 	});
 
+	it("tints a finished file's header green, and drops it once it isn't", async () => {
+		const unfinished = file([
+			cluster("k1", { state: "reviewed" }),
+			cluster("k2"),
+		]);
+		const { rerender, user } = setup(unfinished);
+		const header = () =>
+			document.querySelector("section > header") as HTMLElement;
+		const finished = (el: HTMLElement) => ({
+			marked: el.hasAttribute("data-finished"),
+			wash: el.classList.contains("bg-ok-wash"),
+			raised: el.classList.contains("bg-raised"),
+		});
+		expect(finished(header())).toEqual({
+			marked: false,
+			wash: false,
+			raised: true,
+		});
+		// Reviewed and crossed off counts as finished.
+		rerender(
+			file([
+				cluster("k1", { state: "reviewed" }),
+				cluster("k2", { state: "crossed-off" }),
+			]),
+		);
+		expect(finished(header())).toEqual({
+			marked: true,
+			wash: true,
+			raised: false,
+		});
+		// Opaque while it sticks over the diff.
+		await user.click(screen.getByRole("button", { name: "Expand file" }));
+		expect(header().className).toContain("sticky");
+		expect(finished(header()).wash).toBe(true);
+		// All crossed off: green, and still the purple undo.
+		rerender(file([cluster("k1", { state: "crossed-off" })]));
+		expect(finished(header()).wash).toBe(true);
+		expect(
+			screen.getByRole("button", { name: "Undo cross-off" }),
+		).toHaveAttribute("aria-pressed", "true");
+		// An undo: back to exactly today's header.
+		rerender(unfinished);
+		expect(finished(header())).toEqual({
+			marked: false,
+			wash: false,
+			raised: true,
+		});
+	});
+
 	it("disables mark remaining reviewed once nothing is unreviewed", () => {
 		setup(file([cluster("k1", { state: "crossed-off" })]));
 		expect(

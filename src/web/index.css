@@ -62,6 +62,8 @@
 	--color-crossed-strong: #7742f6;
 	--color-crossed-light: #b49bff;
 	--color-unreviewed: #6f7497;
+	/* A finished file's header: an opaque green wash on raised (it sticks). */
+	--color-ok-wash: #16342c;
 
 	/* Diff. */
 	--color-code: #0e1019;
