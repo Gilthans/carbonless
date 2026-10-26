@@ -348,6 +348,21 @@ test("a file closes at once on marking it all, and reopens if the save fails", a
 		await expect(section.getByTestId("diff-line").first()).toBeVisible();
 		await expect(fileActionButton(section, action)).toBeEnabled();
 	}
+
+	// Opening another file before the failure: that file stays open, and the
+	// error shows in this one's closed section.
+	await fileAction(section, "Mark remaining reviewed");
+	await expect(section.getByTestId("diff-line")).toHaveCount(0);
+	const util = await expand(page, "src/util.ts");
+	await expect(util.getByTestId("diff-line").first()).toBeVisible();
+	await expect.poll(() => held.length).toBe(1);
+	held.shift()?.();
+	await expect(section.getByText(/disk full/)).toBeVisible();
+	await expect(
+		section.getByRole("button", { name: "Expand file" }),
+	).toBeVisible();
+	await expect(section.getByTestId("diff-line")).toHaveCount(0);
+	await expect(util.getByTestId("diff-line").first()).toBeVisible();
 	await expect(progress(page)).toContainText("0 / 4 clusters reviewed");
 });
 

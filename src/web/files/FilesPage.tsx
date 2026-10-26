@@ -489,6 +489,7 @@ export function FilesPage() {
 										onExpandedChange={(expanded) =>
 											toggleFile(file.index, expanded)
 										}
+										otherOpen={openIndex !== null && openIndex !== file.index}
 										onStaleChange={setStale}
 										landing={
 											landing?.index === file.index ? landing : undefined

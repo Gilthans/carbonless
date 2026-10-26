@@ -905,6 +905,52 @@ describe("FileDiff", () => {
 		expect(onExpandedChange).toHaveBeenCalledTimes(1);
 	});
 
+	it("leaves a failed file closed when the reviewer opened another", async () => {
+		let answer: (() => void) | undefined;
+		const f = file([cluster("k1")]);
+		const onExpandedChange = vi.fn();
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+				if (init?.method === "POST") {
+					await new Promise<void>((r) => {
+						answer = r;
+					});
+					return new Response(JSON.stringify({ error: "boom" }), {
+						status: 500,
+					});
+				}
+				return new Response(JSON.stringify(hunks), { status: 200 });
+			}),
+		);
+		const queryClient = new QueryClient();
+		const shown = (expanded: boolean, otherOpen: boolean) => (
+			<QueryClientProvider client={queryClient}>
+				<FileDiff
+					file={f}
+					revision="r1"
+					unit="clusters"
+					expanded={expanded}
+					otherOpen={otherOpen}
+					onExpandedChange={onExpandedChange}
+				/>
+			</QueryClientProvider>
+		);
+		const { rerender } = render(shown(true, false));
+		await userEvent.click(
+			screen.getByRole("button", { name: "Mark remaining reviewed" }),
+		);
+		expect(onExpandedChange).toHaveBeenLastCalledWith(false);
+		rerender(shown(false, false));
+		// The reviewer opened the next file before the save failed.
+		rerender(shown(false, true));
+		await waitFor(() => expect(answer).toBeDefined());
+		await act(async () => answer?.());
+		// The error shows in the closed section; nothing reopens it.
+		expect(await screen.findByText(/boom/)).toBeInTheDocument();
+		expect(onExpandedChange).toHaveBeenCalledTimes(1);
+	});
+
 	it("disables the file actions while a write is pending", async () => {
 		let answer: (() => void) | undefined;
 		const f = file([cluster("k1"), cluster("k2")]);

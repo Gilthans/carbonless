@@ -232,6 +232,8 @@ export function FileDiff(props: {
 	unit: Unit;
 	expanded?: boolean;
 	onExpandedChange?: (expanded: boolean) => void;
+	/** Another file is open (FilesPage keeps one open at a time). */
+	otherOpen?: boolean;
 	onStaleChange?: (stale: boolean) => void;
 	/** A thread link landing in this file (FilesPage). */
 	landing?: Landing;
@@ -245,10 +247,12 @@ export function FileDiff(props: {
 		if (props.expanded === undefined) setOwnExpanded(next);
 		props.onExpandedChange?.(next);
 	};
-	// Read after an await: the reviewer may have reopened this file while a
-	// file-wide save ran.
+	// Read after an await: the reviewer may have reopened this file, or opened
+	// another, while a file-wide save ran.
 	const expandedNow = useRef(expanded);
 	expandedNow.current = expanded;
+	const otherOpenNow = useRef(props.otherOpen ?? false);
+	otherOpenNow.current = props.otherOpen ?? false;
 	const setStates = useSetStates({ onStaleChange: props.onStaleChange });
 	// Also true between a split batch's requests.
 	const [batching, setBatching] = useState(false);
@@ -274,13 +278,16 @@ export function FileDiff(props: {
 	 * Marking the rest reviewed or crossing it off finishes the file: it closes
 	 * at once, like "Collapse file" does (its header stays where it is, the
 	 * next file below), without waiting for the save. A failed save reopens
-	 * it, the error in view.
+	 * it, the error in view, unless the reviewer has opened another file
+	 * meanwhile: then the error shows in this closed file's section.
 	 */
 	const finishAll = (changes: StateChange[]) => {
 		const closing = expanded;
 		if (closing) setExpanded(false);
 		saveAll(changes).catch(() => {
-			if (closing && !expandedNow.current) setExpanded(true);
+			if (closing && !expandedNow.current && !otherOpenNow.current) {
+				setExpanded(true);
+			}
 		});
 	};
 	// Only an unreviewed cluster's box marks it reviewed: unchecking a reviewed
