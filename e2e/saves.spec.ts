@@ -289,3 +289,55 @@ test("a write that fails transiently is retried and stored, with no error", asyn
 		"1 / 1 cluster",
 	);
 });
+
+/** Enough files that the page scrolls. */
+const manyFixture: PrOptions = {
+	base: Object.fromEntries(
+		Array.from({ length: 20 }, (_, i) => [`f${i}.ts`, text(lines("x", 5))]),
+	),
+	files: [
+		{
+			message: "PR change",
+			files: Object.fromEntries(
+				Array.from({ length: 20 }, (_, i) => [
+					`f${i}.ts`,
+					text(lines("x", 5).map((l, j) => (j === 2 ? `${l}!` : l))),
+				]),
+			),
+		},
+	],
+};
+
+test("the last file header can scroll clear of a notice", async ({
+	page,
+	pr,
+	startCrb,
+	expectConsoleError,
+}) => {
+	expectConsoleError(/400|Failed to load resource/);
+	await pr(manyFixture);
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	await page.route("**/api/review/states", (route) =>
+		route.fulfill({
+			status: 400,
+			contentType: "application/json",
+			body: JSON.stringify({ error: "Unknown cluster key" }),
+		}),
+	);
+	await fileAction(fileSection(page, "f0.ts"), "Mark remaining reviewed");
+	await fileAction(fileSection(page, "f1.ts"), "Cross off file");
+	const alert = page.getByRole("alert").filter({ hasText: "Unknown cluster" });
+	await expect(alert).toContainText("2 changes in 2 files");
+	await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+	const sections = page.locator("section[data-file-index]");
+	const lastHeader = sections.last().locator("header");
+	await expect(lastHeader).toBeInViewport();
+	await expect
+		.poll(async () => {
+			const header = await lastHeader.boundingBox();
+			const notice = await alert.boundingBox();
+			return (header?.y ?? 0) + (header?.height ?? 0) <= (notice?.y ?? 0);
+		})
+		.toBe(true);
+});

@@ -339,6 +339,34 @@ describe("API", () => {
 		expect(res.json().error).toBeTruthy();
 	});
 
+	it("names every refused change's key in a 400, storing none", async () => {
+		const [key = ""] = keys(await get("/api/review"));
+		const res = await post("/api/review/states", {
+			revision: await revision(),
+			changes: [
+				{ key, state: "reviewed" },
+				{ key: "ghost1", state: "reviewed" },
+				{ key: "ghost2", state: "reviewed" },
+			],
+		});
+		expect(res.statusCode).toBe(400);
+		expect(res.json()).toEqual({
+			error: "No cluster ghost1 in this snapshot (and 1 more)",
+			keys: ["ghost1", "ghost2"],
+		});
+		const bad = await post("/api/review/states", {
+			revision: await revision(),
+			changes: [
+				{ key, state: "done" },
+				{ key: "k2", state: "crossed-off", reason: "x".repeat(10_000) },
+			],
+		});
+		expect(bad.statusCode).toBe(400);
+		expect(bad.json().keys).toEqual([key, "k2"]);
+		const view: ReviewView = await get("/api/review");
+		expect(view.progress.clusters.reviewed).toBe(0);
+	});
+
 	it("crosses off without a reason", async () => {
 		const [key = ""] = keys(await get("/api/review"));
 		const res = await post("/api/review/states", {

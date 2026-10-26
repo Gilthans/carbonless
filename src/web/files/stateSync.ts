@@ -126,9 +126,10 @@ function waitReason(error: unknown): string {
  *   retries at once. No request is ever abandoned on a client timeout: an
  *   abandoned older write could land after its retry and overwrite newer
  *   intent;
- * - a request refused for another reason is split (per file, then in
- *   halves) until the refused changes are alone; those are rejected (kept
- *   until retry()), and everything else goes on syncing;
+ * - a 400 names the refused changes (or, unnamed, is split per file and
+ *   then in halves until they are alone): those are rejected (kept until
+ *   retry()), the rest sent again; any other refusal rejects the whole
+ *   request. Everything else goes on syncing;
  * - a 409 drops the pending changes made on that revision (the snapshot
  *   moved: they can't apply).
  */
@@ -143,6 +144,8 @@ export class StateSync {
 	#retryTimer: ReturnType<typeof setTimeout> | undefined;
 	#delayTimer: ReturnType<typeof setTimeout> | undefined;
 	#lastRefusal: Error | null = null;
+	/** A refusal since the last reread (#reread). */
+	#unread = false;
 	#waitingFor: string | null = null;
 	#stale: SyncState["stale"] = null;
 	readonly #waiters = new Set<Waiter>();
@@ -283,6 +286,7 @@ export class StateSync {
 		this.#stale = null;
 		this.#waitingFor = null;
 		if (batch.probe) this.#probes.shift();
+		this.#reread();
 		const now = Date.now();
 		for (const p of batch.changes) {
 			const current = this.#pending.get(p.change.key);
@@ -334,23 +338,33 @@ export class StateSync {
 			return;
 		}
 		if (batch.probe) this.#probes.shift();
-		// Refused for something in it: send its parts alone, per file and then
-		// in halves down to single changes, so the rest stores and only the
-		// refused stay behind.
-		if (batch.changes.length > 1 && error instanceof ApiError) {
+		// Only a 400 is about what the request says; any other refusal (401,
+		// 404, 413…, or a malformed answer) refuses the whole request at once.
+		const validation = error instanceof ApiError && error.status === 400;
+		const named = new Set(validation ? (error.keys ?? []) : []);
+		const keys = batch.changes.map((p) => p.change.key);
+		let refusedKeys = keys;
+		if (named.size > 0 && keys.some((k) => named.has(k))) {
+			// The server named the refused changes: the rest go again, at once.
+			refusedKeys = keys.filter((k) => named.has(k));
+			const rest = keys.filter((k) => !named.has(k));
+			if (rest.length > 0) this.#probes.unshift({ revision, keys: rest });
+		} else if (validation && keys.length > 1) {
+			// Unnamed: send its parts alone, per file and then in halves down to
+			// single changes, so the rest stores and only the refused stay behind.
 			const byPath = new Map<string, string[]>();
 			for (const p of batch.changes) {
-				const keys = byPath.get(p.path) ?? [];
-				keys.push(p.change.key);
-				byPath.set(p.path, keys);
+				const group = byPath.get(p.path) ?? [];
+				group.push(p.change.key);
+				byPath.set(p.path, group);
 			}
-			const keys = batch.changes.map((p) => p.change.key);
 			const half = Math.ceil(keys.length / 2);
 			const parts =
 				byPath.size > 1
 					? [...byPath.values()]
 					: [keys.slice(0, half), keys.slice(half)];
-			this.#probes.unshift(...parts.map((keys) => ({ revision, keys })));
+			this.#probes.unshift(...parts.map((part) => ({ revision, keys: part })));
+			this.#unread = true;
 			this.#changed();
 			this.#pump();
 			return;
@@ -360,19 +374,31 @@ export class StateSync {
 				? error
 				: new Error(String(error ?? "Unknown error"));
 		const refused = new Set<number>();
-		for (const p of batch.changes) {
-			const current = this.#pending.get(p.change.key);
-			if (current?.version !== p.version) continue;
-			this.#rejected.set(p.change.key, current);
-			refused.add(p.version);
+		for (const key of refusedKeys) {
+			const current = this.#pending.get(key);
+			const sent = batch.changes.find((p) => p.change.key === key);
+			if (!current || current.version !== sent?.version) continue;
+			this.#rejected.set(key, current);
+			refused.add(current.version);
 		}
 		this.#settle(
 			(w) => [...w.versions.values()].some((v) => refused.has(v)),
 			error,
 		);
-		this.#deps.failed();
+		this.#unread = true;
+		this.#reread();
 		this.#changed();
 		this.#pump();
+	}
+
+	/**
+	 * Once a refusal's splitting is over: reread what the server has (a
+	 * batch over several requests may be partly stored), once.
+	 */
+	#reread() {
+		if (!this.#unread || this.#probes.length > 0) return;
+		this.#unread = false;
+		this.#deps.failed();
 	}
 
 	#waiting(w: Waiter) {

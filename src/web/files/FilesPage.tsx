@@ -477,7 +477,13 @@ export function FilesPage() {
 							)}
 							<div
 								ref={diffs}
-								className={`min-w-0 flex-1 space-y-3 ${wide ? "" : "pb-20"}`}
+								// Room for the floating Files button, and for the save notices
+								// (--sync-notices, SyncNotices): the last header can always
+								// scroll clear of them.
+								style={{
+									paddingBottom: `max(${wide ? "0px" : "5rem"}, var(--sync-notices, 0px))`,
+								}}
+								className="min-w-0 flex-1 space-y-3"
 							>
 								{data.files.map((file) => (
 									<FileDiff

@@ -304,8 +304,12 @@ describe("recordStates", () => {
 			svc.recordStates(id, "dan", snap, [
 				{ key: k1, state: "reviewed" },
 				{ key: "ghost", state: "reviewed" },
+				{ key: "ghost2", state: "reviewed" },
 			]),
-		).rejects.toBeInstanceOf(UnknownClusterError);
+		).rejects.toMatchObject({
+			constructor: UnknownClusterError,
+			keys: ["ghost", "ghost2"],
+		});
 		expect(await store.tip(progressRef())).toBeNull();
 	});
 

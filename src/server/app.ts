@@ -12,8 +12,9 @@ import { GhError } from "./errors.js";
 import { GitError } from "./git.js";
 import {
 	InvalidChangeError,
+	RefusedChangeError,
+	refusedMessage,
 	StaleSnapshotError,
-	UnknownClusterError,
 } from "./review/reviews.js";
 import { type Session, UnknownReadError } from "./session.js";
 
@@ -81,13 +82,10 @@ export async function buildApp(
 			reply.status(status).send({ error: message });
 		if (error instanceof StaleSnapshotError) return send(409, "stale");
 		if (error instanceof UnknownReadError) return send(410, "read gone");
-		if (
-			error instanceof BadRequestError ||
-			error instanceof UnknownClusterError ||
-			error instanceof InvalidChangeError
-		) {
-			return send(400, error.message);
+		if (error instanceof RefusedChangeError) {
+			return reply.status(400).send({ error: error.message, keys: error.keys });
 		}
+		if (error instanceof BadRequestError) return send(400, error.message);
 		if (error instanceof RangeError && NO_FILE.test(error.message)) {
 			return send(404, error.message);
 		}
@@ -230,27 +228,38 @@ function parseStatesBody(body: unknown): {
 	if (changes.length > MAX_CHANGES) {
 		throw fail(`At most ${MAX_CHANGES} changes per request`);
 	}
+	// A change with a key but a bad state or reason is refused by its key, with
+	// every other one like it; one without a key fails the whole body.
+	const refused: { key: string; message: string }[] = [];
+	const parsed = changes.map((change: unknown): StateChange | undefined => {
+		if (typeof change !== "object" || change === null) {
+			throw fail("Each change must be an object");
+		}
+		const { key, state, reason } = change as Record<string, unknown>;
+		if (typeof key !== "string") throw fail("A change's key must be a string");
+		if (typeof state !== "string" || !STATES.includes(state)) {
+			refused.push({ key, message: `Unknown cluster state: ${String(state)}` });
+			return undefined;
+		}
+		if (reason === undefined) return { key, state: state as ClusterState };
+		if (typeof reason !== "string" || reason.length > MAX_REASON) {
+			refused.push({
+				key,
+				message: `A reason must be a string of at most ${MAX_REASON} characters`,
+			});
+			return undefined;
+		}
+		return { key, state: state as ClusterState, reason };
+	});
+	const [first] = refused;
+	if (first) {
+		throw new InvalidChangeError(
+			refusedMessage(first.message, refused.length),
+			refused.map((r) => r.key),
+		);
+	}
 	return {
 		revision,
-		changes: changes.map((change: unknown): StateChange => {
-			if (typeof change !== "object" || change === null) {
-				throw fail("Each change must be an object");
-			}
-			const { key, state, reason } = change as Record<string, unknown>;
-			if (typeof key !== "string")
-				throw fail("A change's key must be a string");
-			if (typeof state !== "string" || !STATES.includes(state)) {
-				throw fail(`Unknown cluster state: ${String(state)}`);
-			}
-			if (reason === undefined) {
-				return { key, state: state as ClusterState };
-			}
-			if (typeof reason !== "string" || reason.length > MAX_REASON) {
-				throw fail(
-					`A reason must be a string of at most ${MAX_REASON} characters`,
-				);
-			}
-			return { key, state: state as ClusterState, reason };
-		}),
+		changes: parsed.filter((c): c is StateChange => c !== undefined),
 	};
 }

@@ -124,11 +124,14 @@ right once the file tree is a sidebar (md+), so neither is covered.
   stored.
 - **Not saved** (`role="alert"`, `bad`): an alert icon, the changes the server
   refused (the change and file, or a count and the files), the error, and a
-  40px Retry that resends every unsaved change. A refused request is split
-  (per file, then in halves) so only the refused changes stay here; the rest
-  keep syncing.
+  40px Retry that resends every unsaved change. A 400 names the refused
+  changes (`keys`), which stay here while the rest are sent again at once (a
+  400 without keys is split per file, then in halves); any other refusal
+  keeps the whole request here. Everything else keeps syncing.
 
 Both are `tone/10` over an opaque `raised` card with a `tone/50` border.
+While one shows, the file list's end is padded by how far up the notices
+reach (`--sync-notices`), so the last header can scroll clear of them.
 Leaving the page with anything unsaved asks first (`beforeunload`).
 
 ## Settings

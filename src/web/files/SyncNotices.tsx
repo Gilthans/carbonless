@@ -1,4 +1,5 @@
 import { AlertIcon, ClockIcon, SyncIcon } from "@primer/octicons-react";
+import { useLayoutEffect, useRef } from "react";
 import { LabeledIcon } from "../overview/parts";
 import { Tooltip } from "../Tooltip";
 import { describePending, pendingFiles } from "./stateSync";
@@ -20,6 +21,38 @@ const changes = (n: number) => `${n} ${n === 1 ? "change" : "changes"}`;
 export function SyncNotices() {
 	const { pending, rejected, delayed, failure, waiting } = useSyncState();
 	const { retry } = useSetStates();
+	const stack = useRef<HTMLDivElement>(null);
+	const shown = pending.size > 0;
+	// How far up from the window's bottom the notices reach, as
+	// --sync-notices, so the file list can pad its end by it.
+	useLayoutEffect(() => {
+		const root = document.documentElement;
+		const el = stack.current;
+		if (!shown || !el) {
+			root.style.removeProperty("--sync-notices");
+			return;
+		}
+		const measure = () => {
+			const r = el.getBoundingClientRect();
+			if (r.height === 0) root.style.removeProperty("--sync-notices");
+			else {
+				const reach = window.innerHeight - r.top + 8;
+				root.style.setProperty("--sync-notices", `${Math.ceil(reach)}px`);
+			}
+		};
+		measure();
+		const observer =
+			typeof ResizeObserver === "undefined"
+				? null
+				: new ResizeObserver(measure);
+		observer?.observe(el);
+		window.addEventListener("resize", measure);
+		return () => {
+			observer?.disconnect();
+			window.removeEventListener("resize", measure);
+			root.style.removeProperty("--sync-notices");
+		};
+	}, [shown]);
 	// Nothing unsaved: nothing here. With something unsaved the status region
 	// is in place (empty) before the delayed notice fills it, so it's announced.
 	if (pending.size === 0) return null;
@@ -27,6 +60,7 @@ export function SyncNotices() {
 	const showDelayed = delayed && syncing.size > 0;
 	return (
 		<div
+			ref={stack}
 			data-testid="sync-notices"
 			className="pointer-events-none fixed inset-x-3 bottom-20 z-40 flex flex-col gap-2 sm:inset-x-auto sm:left-4 sm:w-96 md:right-4 md:bottom-4 md:left-auto md:w-80"
 		>

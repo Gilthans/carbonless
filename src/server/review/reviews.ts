@@ -17,11 +17,31 @@ export interface ReviewPr {
 	headRepo: string;
 }
 
+/**
+ * State changes refused for what they say (HTTP 400, naming `keys`, the
+ * refused changes' cluster keys, so a client can resend the rest).
+ */
+export class RefusedChangeError extends Error {
+	constructor(
+		message: string,
+		readonly keys: string[],
+	) {
+		super(message);
+	}
+}
+
 /** A state change names a cluster the snapshot doesn't have (HTTP 400). */
-export class UnknownClusterError extends Error {}
+export class UnknownClusterError extends RefusedChangeError {}
 
 /** A state change is malformed, e.g. an unknown state (HTTP 400). */
-export class InvalidChangeError extends Error {}
+export class InvalidChangeError extends RefusedChangeError {}
+
+/**
+ * The message for `refused` changes: the first one's, and how many more.
+ */
+export function refusedMessage(first: string, refused: number): string {
+	return refused > 1 ? `${first} (and ${refused - 1} more)` : first;
+}
 
 /**
  * The write targets a snapshot other than the reviewer's patch set (HTTP 409):
@@ -150,14 +170,31 @@ export class ReviewService {
 		for (const file of snapshot.files) {
 			for (const c of file.clusters) pathOf.set(c.key, file.path);
 		}
+		// Every refused change is named, not just the first.
+		const unknown = changes.filter((c) => !pathOf.has(c.key));
+		const [firstUnknown] = unknown;
+		if (firstUnknown) {
+			throw new UnknownClusterError(
+				refusedMessage(
+					`No cluster ${firstUnknown.key} in this snapshot`,
+					unknown.length,
+				),
+				unknown.map((c) => c.key),
+			);
+		}
+		const invalid = changes.filter((c) => !STATES.has(c.state));
+		const [firstInvalid] = invalid;
+		if (firstInvalid) {
+			throw new InvalidChangeError(
+				refusedMessage(
+					`Unknown cluster state: ${firstInvalid.state}`,
+					invalid.length,
+				),
+				invalid.map((c) => c.key),
+			);
+		}
 		const payloads = changes.map(({ key, state, reason }) => {
-			const path = pathOf.get(key);
-			if (path === undefined) {
-				throw new UnknownClusterError(`No cluster ${key} in this snapshot`);
-			}
-			if (!STATES.has(state)) {
-				throw new InvalidChangeError(`Unknown cluster state: ${state}`);
-			}
+			const path = pathOf.get(key) ?? "";
 			// The reason is optional; a blank one isn't stored.
 			const trimmed = state === "crossed-off" ? reason?.trim() : undefined;
 			return {

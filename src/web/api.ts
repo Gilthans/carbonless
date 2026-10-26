@@ -14,11 +14,15 @@ import {
 	type TimelineView,
 } from "../shared/types";
 
-/** A failed API call: the HTTP status and the server's `error` message. */
+/**
+ * A failed API call: the HTTP status, the server's `error` message and, for
+ * refused state changes, their cluster `keys`.
+ */
 export class ApiError extends Error {
 	constructor(
 		readonly status: number,
 		message: string,
+		readonly keys?: string[],
 	) {
 		super(message);
 		this.name = "ApiError";
@@ -36,10 +40,13 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 	}
 	const body: unknown = await response.json().catch(() => null);
 	if (!response.ok) {
-		const error = (body as { error?: unknown } | null)?.error;
+		const { error, keys } = (body ?? {}) as { error?: unknown; keys?: unknown };
 		throw new ApiError(
 			response.status,
 			typeof error === "string" ? error : `Request failed: ${response.status}`,
+			Array.isArray(keys) && keys.every((k) => typeof k === "string")
+				? keys
+				: undefined,
 		);
 	}
 	return body as T;

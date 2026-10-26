@@ -290,6 +290,124 @@ describe("StateSync", () => {
 		expect(describePending(state.rejected)).toBe("Reviewed · a.ts");
 	});
 
+	it("refuses exactly the changes a 400 names, and sends the rest again in one request", async () => {
+		const { sync, calls, deps, flush } = harness();
+		void sync.apply("r1", "z.ts", [set("z", "reviewed")]);
+		void sync.apply("r1", "a.ts", [
+			set("a1", "reviewed"),
+			set("a2", "reviewed"),
+			set("a3", "reviewed"),
+		]);
+		calls[0]?.resolve(ok);
+		await flush();
+		calls[1]?.reject(
+			new ApiError(400, "No cluster a2 in this snapshot", ["a2"]),
+		);
+		await flush();
+		expect(calls[2]?.changes.map((c) => c.key)).toEqual(["a1", "a3"]);
+		calls[2]?.resolve(ok);
+		await flush();
+		expect(calls).toHaveLength(3);
+		expect([...sync.getState().rejected.keys()]).toEqual(["a2"]);
+		expect(deps.failed).toHaveBeenCalledTimes(1);
+	});
+
+	it.each([401, 403, 404, 413])(
+		"refuses a whole request on a %s, without splitting it",
+		async (status) => {
+			const { sync, calls, deps, flush } = harness();
+			void sync.apply("r1", "a.ts", [set("a1", "reviewed")]);
+			void sync.apply("r1", "a.ts", [
+				set("a2", "reviewed"),
+				set("a3", "reviewed"),
+			]);
+			void sync.apply("r1", "b.ts", [set("b1", "reviewed")]);
+			calls[0]?.resolve(ok);
+			await flush();
+			calls[1]?.reject(new ApiError(status, "no", ["a2"]));
+			await flush();
+			expect(calls).toHaveLength(2);
+			expect([...sync.getState().rejected.keys()]).toEqual(["a2", "a3", "b1"]);
+			expect(deps.failed).toHaveBeenCalledTimes(1);
+		},
+	);
+
+	it("splits an unnamed 400 that refuses everything, and rereads once at the end", async () => {
+		const { sync, calls, deps, flush } = harness();
+		void sync.apply("r1", "z.ts", [set("z", "reviewed")]);
+		const keys = Array.from({ length: 8 }, (_, i) => `k${i}`);
+		void sync.apply(
+			"r1",
+			"a.ts",
+			keys.map((k) => set(k, "reviewed")),
+		);
+		calls[0]?.resolve(ok);
+		await flush();
+		for (let i = 1; calls[i]; i++) {
+			calls[i]?.reject(new ApiError(400, "nope"));
+			await flush();
+		}
+		// 8 → 4+4 → 2+2+2+2 → eight singles: 15 requests.
+		expect(calls).toHaveLength(16);
+		expect(sync.getState().rejected.size).toBe(8);
+		expect(deps.failed).toHaveBeenCalledTimes(1);
+	});
+
+	it("splits an unnamed 400 per file before halving", async () => {
+		const { sync, calls, flush } = harness();
+		void sync.apply("r1", "z.ts", [set("z", "reviewed")]);
+		void sync.apply("r1", "a.ts", [
+			set("a1", "reviewed"),
+			set("a2", "reviewed"),
+			set("a3", "reviewed"),
+		]);
+		void sync.apply("r1", "b.ts", [set("b1", "reviewed")]);
+		calls[0]?.resolve(ok);
+		await flush();
+		calls[1]?.reject(new ApiError(400, "nope"));
+		await flush();
+		// Halves would be a1, a2 | a3, b1.
+		expect(calls[2]?.changes.map((c) => c.key)).toEqual(["a1", "a2", "a3"]);
+	});
+
+	it("sends a cluster's newer change when the request with its older one is refused", async () => {
+		const { sync, calls, flush } = harness();
+		void sync.apply("r1", "z.ts", [set("z", "reviewed")]);
+		void sync.apply("r1", "a.ts", [
+			set("k1", "reviewed"),
+			set("k2", "reviewed"),
+		]);
+		calls[0]?.resolve(ok);
+		await flush();
+		calls[1]?.reject(new ApiError(400, "nope"));
+		await flush();
+		expect(calls[2]?.changes).toEqual([set("k1", "reviewed")]);
+		// Changed again while its probe is out.
+		void sync.apply("r1", "a.ts", [set("k1", "unreviewed")]);
+		calls[2]?.reject(new ApiError(400, "nope"));
+		await flush();
+		expect(sync.getState().rejected.has("k1")).toBe(false);
+		calls[3]?.resolve(ok);
+		await flush();
+		expect(calls.slice(3).flatMap((c) => c.changes)).toContainEqual(
+			set("k1", "unreviewed"),
+		);
+	});
+
+	it("drops a refused change with its revision on a 409", async () => {
+		const { sync, calls, flush } = harness();
+		void sync.apply("r1", "a.ts", [set("k1", "reviewed")]);
+		calls[0]?.reject(new ApiError(400, "nope"));
+		await flush();
+		expect(sync.getState().rejected.size).toBe(1);
+		void sync.apply("r1", "a.ts", [set("k2", "reviewed")]);
+		calls[1]?.reject(new ApiError(409, "stale"));
+		await flush();
+		expect(sync.getState().rejected.size).toBe(0);
+		expect(sync.getState().failure).toBeNull();
+		expect(sync.getState().pending.size).toBe(0);
+	});
+
 	it("sends a refused cluster again once the reviewer changes it", async () => {
 		const { sync, calls, flush } = harness();
 		void sync.apply("r1", "a.ts", [set("k1", "crossed-off")]);

@@ -384,6 +384,36 @@ describe("FileDiff", () => {
 		).toHaveLength(1);
 	});
 
+	it("resends the rest at once when the server names the refused change", async () => {
+		const f = file(
+			Array.from({ length: 1500 }, (_, i) =>
+				cluster(`k${i}`, { state: "crossed-off", reason: "generated" }),
+			),
+		);
+		const { posts, user, sync } = setup(f, (url, init) => {
+			if (url.pathname === "/api/review") return { status: 200, body: view(f) };
+			const { changes } = JSON.parse(String(init?.body)) as {
+				changes: { key: string }[];
+			};
+			return changes.some((c) => c.key === "k1234")
+				? {
+						status: 400,
+						body: {
+							error: "No cluster k1234 in this snapshot",
+							keys: ["k1234"],
+						},
+					}
+				: { status: 200, body: view(f) };
+		});
+		await user.click(screen.getByRole("button", { name: "Undo cross-off" }));
+		await waitFor(() => expect([...sync().pending.keys()]).toEqual(["k1234"]));
+		// 1000 (ok), 500 with k1234 (refused), then its other 499 in one.
+		expect(posts().map((p) => p.body.changes.length)).toEqual([1000, 500, 499]);
+		expect(screen.getByRole("alert")).toHaveTextContent(
+			"Unreviewed · src/a.ts",
+		);
+	});
+
 	it("crosses off a file at once, without a reason, keeping reviewed clusters", async () => {
 		const f = file([
 			cluster("k0", { state: "reviewed" }),
