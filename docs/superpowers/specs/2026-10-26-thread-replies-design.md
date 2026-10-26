@@ -1,6 +1,6 @@
 # Thread replies and resolving, written to GitHub
 
-Status: draft, for the owner's approval.
+Status: approved by the owner 2026-10-26, with their doc comments folded in.
 
 Calls the coordinator made (the owner may overrule): instant UI and notices as for saves; REST for replies, refusing on a pending review; Overview cards stay in place on resolve; writing off in as-of and `--viewer` views; implementing agents may write to GitHub only on the scratch PR.
 
@@ -17,6 +17,7 @@ The order after this, by the owner: editing and deleting your own comments, then
 - **Immediate only** (owner): a reply is posted to GitHub right away, as the `gh` login, the way the owner works today. No pending review, no batching ("maybe we'll support it later, undecided").
 - **Instant UI**, the same rule as review-state saves (owner, for saves; applied here as the coordinator's call): the action shows at once; after 5 s a yellow notice says it's waiting and why; transient errors retry automatically with backoff; after 5 transient failures in a row, or on any other error, a red notice says what failed, with the message and Retry. The UI keeps its own state; a reload shows what GitHub has.
 - **Nothing typed is ever lost.** A draft survives closing the thread, switching files and switching pages within the session, until it's sent. A failed reply keeps its text.
+- **Drafts are findable** (owner): "There should be a way to see all your drafts, in case you're unsure what's blocking you from leaving the page": a Drafts filter in the Overview's thread list next to unresolved/resolved, listing every thread with an unsent draft or an unconfirmed reply.
 
 ## Non-goals (this stage)
 
@@ -40,13 +41,15 @@ The order after this, by the owner: editing and deleting your own comments, then
 - The box is a plain textarea, one line until focused, growing with its content, with a Send icon button (tooltip and accessible name, ≥40px). Ctrl/Cmd+Enter sends; Escape blurs without discarding. Empty or whitespace-only text can't be sent.
 - On send, the reply appears at once at the end of the thread as the viewer's comment, marked as sending (clock, like pending comments today) until GitHub confirms; then it becomes the real comment from GitHub's answer. The box clears on send; on a final failure the text goes back into the box (or stays with the failed comment, the builder's choice) with the red notice's Retry.
 - After a confirmed reply, the thread's comment count, the latest comment and the attention set update: the viewer wrote the latest comment, so they leave the set and the your-turn dot goes away. The server is the source for the set (spec `2026-10-26-pr-threads-design.md`), so it recomputes from the new comment list; the client may show the expected result while waiting.
-- Drafts are per thread, kept in memory for the session (surviving the kept-alive page switch). Persisting drafts across reloads is the builder's call (`localStorage` is fine); the leave-page confirmation covers unsent and unconfirmed replies either way.
+- Drafts are per thread, kept for the session (surviving the kept-alive page switch).
+- Leaving or reloading the page with an unsent draft asks first (owner: "it should warn you before refreshing since it will go away").
+- A reply that was sent but not yet confirmed by GitHub should survive a reload and keep syncing (owner: "ideally it should survive a refresh, but if that's complex let's defer"). Coordinator's call: keep sent-unconfirmed replies, and drafts too, in `localStorage` per PR, and resend after a reload through the duplicate check below. If that turns out complex, the builder defers it and says so; the leave-page warning covers it meanwhile.
 
 ## Resolving
 
 - One icon toggle per thread, next to its status: resolve (check) on an open thread, unresolve on a resolved one, with tooltips and accessible names, ≥40px.
 - It flips at once in place (the resolved look from the threads stage: green check plus "Resolved") and syncs through the same queue and notices. Files changed's bubble and highlight follow the state; resolving clears the attention set (existing rule).
-- In the Overview a card keeps its place when resolved or unresolved, so it doesn't jump from under the finger or an undo; it moves to the other group on the next refresh or reload (coordinator's call).
+- In the Overview a card resolved or unresolved fades away where it is over a few seconds (owner: "so there's a little time to undo the action but it's clear that it's going away"), with the toggle still there to undo; then it moves to the other group. Undo during the fade keeps it in place. The fade respects `prefers-reduced-motion` (a plain countdown state instead).
 - Resolving never changes review progress or cluster state (principle 2): it's a GitHub action on a thread, not a review mark.
 
 ## Sync and notices
@@ -64,7 +67,9 @@ Checked on the scratch PR (2026-10-26) with a pending review open:
 - REST `POST /repos/{o}/{r}/pulls/{n}/comments/{id}/replies` refuses with 422, "user_id can only have one pending review per pull request".
 - GraphQL `addPullRequestReviewThreadReply` succeeds but puts the reply *into* the pending review (`state: PENDING`), where nobody else sees it.
 
-So replies use the REST endpoint (coordinator's call), never the GraphQL mutation. That 422 is shown as a red notice ("You have a pending review on GitHub; submit or discard it there first"), with the draft kept and Retry; it is not retried automatically. Resolve/unresolve (GraphQL `resolveReviewThread` / `unresolveReviewThread`) isn't affected by a pending review.
+So replies use the REST endpoint (coordinator's call), never the GraphQL mutation. Replies are refused (owner), never posted into the pending review:
+- That 422 is shown as a red notice saying a pending review on GitHub blocks replies, with a link to the PR's Files changed page on GitHub where the review can be submitted or discarded, the draft kept, and Retry. It is not retried automatically.
+- The Overview's "who's reviewing" section shows a prominent warning while the viewer has a pending review on the PR (owner): replies can't be posted while it's pending, with the same link. The server finds it from the reviews it already reads (the viewer's review in state `PENDING`); a Refresh rechecks it, and a 422 also turns it on. Resolve/unresolve (GraphQL `resolveReviewThread` / `unresolveReviewThread`) isn't affected by a pending review.
 
 ## Where writing is off
 
@@ -72,7 +77,7 @@ So replies use the REST endpoint (coordinator's call), never the GraphQL mutatio
 - `--viewer` other than the `gh` login: same.
 - PRs that are merged or closed: allowed, as on GitHub.
 - `--head` (a pinned commit): allowed; threads are live there.
-- If `gh` lacks permission (e.g. no write access to the repo), the first write fails with GitHub's message in the red notice; nothing else is gated up front.
+- **Permissions are shown up front** (owner): "a clear warning banner that you don't have permissions for review in this repo, in the 'who's reviewing' section". GitHub's threads carry `viewerCanReply` and `viewerCanResolve` / `viewerCanUnresolve`; the server passes them on, the UI hides the box or the toggle a thread doesn't allow, and the banner says what the viewer can't do in this repo when any thread disallows it. A write refused anyway (403) shows GitHub's message in the red notice.
 
 ## Server and data
 
