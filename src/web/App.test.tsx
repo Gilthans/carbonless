@@ -119,6 +119,9 @@ const overview: OverviewFixture = {
 			outdated: true,
 			lastActivityAt: "2026-01-02T12:00:00Z",
 			resolved: false,
+			anchor: null,
+			attention: [],
+			yourTurn: false,
 			code: null,
 		},
 		{
@@ -138,6 +141,9 @@ const overview: OverviewFixture = {
 			outdated: false,
 			lastActivityAt: "2026-01-03T11:00:00Z",
 			resolved: false,
+			anchor: null,
+			attention: [],
+			yourTurn: false,
 			code: codeFromHunk(
 				"@@ -40,2 +40,3 @@ class Cache {\n   get() {}\n-  old() {}\n+  set() {}\n+  ttl = 5;",
 				{ path: "src/cache.ts", line: 42 },
@@ -170,6 +176,9 @@ function humanThread(
 		hasReply: false,
 		outdated: false,
 		resolved: false,
+		anchor: null,
+		attention: [],
+		yourTurn: false,
 		code: null,
 		...extra,
 	};

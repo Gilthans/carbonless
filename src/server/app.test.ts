@@ -4,8 +4,19 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { FastifyInstance } from "fastify";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import {
+	prView,
+	reviewThread,
+	type Scenario,
+	threadComment,
+} from "../../test/fake-gh/scenario";
 import { createPrFixture, type PrFixture } from "../../test/pr-fixture";
-import type { ReviewView, SessionInfo } from "../shared/types";
+import type {
+	CommentsView,
+	ReviewThread,
+	ReviewView,
+	SessionInfo,
+} from "../shared/types";
 import { buildApp } from "./app";
 import { Session } from "./session";
 
@@ -110,6 +121,144 @@ describe("API", () => {
 		expect(Array.isArray(view.gaps)).toBe(true);
 		expect((await inject("/api/timeline?read=nope")).statusCode).toBe(410);
 		expect((await inject("/api/timeline")).statusCode).toBe(400);
+	});
+
+	describe("/api/comments", () => {
+		/** Threads on the PR (`T12-<i>`). */
+		const threads = (over: Partial<Scenario> = {}) => {
+			const head = pr.head();
+			const said = (login: string, m: number, bot = false) =>
+				threadComment({
+					login,
+					bot,
+					text: `${login} at ${m}`,
+					createdAt: `2026-01-03T10:0${m}:00Z`,
+					commit: head,
+				});
+			pr.scenario({
+				...over,
+				prs: {
+					12: {
+						view: prView({ headRefOid: head, baseRefName: "main" }),
+						graphql: {
+							reviewThreads: [
+								reviewThread({ path: "a.txt", line: 2 }, [
+									said("rev", 1),
+									said("ci", 2, true),
+									said("octo-author", 3),
+								]),
+								reviewThread({ path: "a.txt", line: 26 }, [said("rev", 4)]),
+								reviewThread({ path: "new.txt", line: 1 }, [
+									said("Octo_Cat", 5),
+									said("octo-author", 6),
+								]),
+							],
+						},
+					},
+				},
+			});
+		};
+		/** The threads on the PR, and the overview read again to see them. */
+		const withThreads = async (over: Partial<Scenario> = {}) => {
+			threads(over);
+			const { readId } = await get("/api/overview?maxAge=0");
+			return readId as string;
+		};
+		const comments = (read: string, ids: string[]) =>
+			`/api/comments?${new URLSearchParams({ read, ids: ids.join(",") })}`;
+		const contentReads = () =>
+			pr
+				.ghLog()
+				.split("\n")
+				.filter((l) => l.includes("nodes(ids:")).length;
+
+		it("serves every comment of the threads asked for, in the order asked", async () => {
+			const readId = await withThreads();
+			const view: CommentsView = await get(
+				comments(readId, ["T12-1", "T12-0"]),
+			);
+			expect(view.threads.map((t) => t.threadId)).toEqual(["T12-1", "T12-0"]);
+			expect(
+				view.threads[1]?.comments.map((c) => [c.author, c.bot, c.text]),
+			).toEqual([
+				["rev", false, "rev at 1"],
+				["ci", true, "ci at 2"],
+				["octo-author", false, "octo-author at 3"],
+			]);
+			expect(view.threads[0]?.comments).toHaveLength(1);
+		});
+
+		it("gives each thread its attention set and anchor from the summary on", async () => {
+			const readId = await withThreads({ threadContentDelayMs: 2000 });
+			const { threads } = await get(
+				`/api/threads?read=${readId}&stage=summary`,
+			);
+			const byPath = (path: string, line: number) =>
+				(threads as ReviewThread[]).find(
+					(t) => t.path === path && t.anchor?.line === line,
+				);
+			expect(byPath("a.txt", 2)).toMatchObject({
+				loaded: false,
+				attention: ["rev"],
+				yourTurn: false,
+				anchor: { commit: pr.head(), side: "RIGHT", line: 2, startLine: 2 },
+			});
+			// The author answered the viewer (gh's Octo_Cat): their turn.
+			expect(byPath("new.txt", 1)).toMatchObject({
+				attention: ["Octo_Cat"],
+				yourTurn: true,
+			});
+			// The PR author's turn.
+			expect(byPath("a.txt", 26)?.attention).toEqual(["octo-author"]);
+		});
+
+		it("rejects a missing read or more than 50 ids; 410 for a read no longer kept", async () => {
+			expect((await inject("/api/comments?ids=T12-0")).statusCode).toBe(400);
+			const { readId } = await get("/api/overview");
+			const many = Array.from({ length: 51 }, (_, i) => `T12-${i}`);
+			expect((await inject(comments(readId, many))).statusCode).toBe(400);
+			expect((await inject(comments("nope", ["T12-0"]))).statusCode).toBe(410);
+		});
+
+		it("says which threads' comments will never come: deleted, or not readable", async () => {
+			const readId = await withThreads({ deletedThreads: ["T12-1"] });
+			const view: CommentsView = await get(
+				comments(readId, ["T12-1", "bad id!", "T12-2"]),
+			);
+			expect(
+				view.threads.map((t) => [t.threadId, t.unavailable, t.comments.length]),
+			).toEqual([
+				["T12-1", "deleted", 0],
+				["bad id!", "unreadable", 0],
+				["T12-2", undefined, 2],
+			]);
+		});
+
+		it("fails rather than give fewer comments, and reads again when asked again", async () => {
+			const readId = await withThreads({ failGraphql: "nodes(ids:" });
+			// The background read fails too.
+			expect(
+				(await inject(`/api/threads?read=${readId}&stage=full`)).statusCode,
+			).toBe(502);
+			const failed = await inject(comments(readId, ["T12-0"]));
+			expect(failed.statusCode).toBe(502);
+			threads();
+			const view: CommentsView = await get(comments(readId, ["T12-0"]));
+			expect(view.threads[0]?.comments).toHaveLength(3);
+		});
+
+		it("joins the background read for ids on their way: one gh call, not two", async () => {
+			const readId = await withThreads({ threadContentDelayMs: 800 });
+			await get(`/api/threads?read=${readId}&stage=summary`);
+			const view: CommentsView = await get(
+				comments(readId, ["T12-0", "T12-1", "T12-2"]),
+			);
+			expect(view.threads.every((t) => t.comments.length > 0)).toBe(true);
+			expect(contentReads()).toBe(1);
+			// In by now: served without another read.
+			await get(comments(readId, ["T12-2"]));
+			expect(contentReads()).toBe(1);
+		});
 	});
 
 	it("records a state and returns updated progress", async () => {

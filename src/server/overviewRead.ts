@@ -1,12 +1,15 @@
 import {
 	type CodeWindow,
+	type CommentsView,
 	type PrOverview,
 	type ReviewThread,
 	THREADS_FIRST,
+	type ThreadComments,
 	type ThreadsStage,
 	type ThreadsView,
 	type TimelineView,
 } from "../shared/types.js";
+import { GhError } from "./errors.js";
 import {
 	fetchOverview,
 	fetchThreadContents,
@@ -15,7 +18,7 @@ import {
 	NODE_ID,
 	type PrRef,
 } from "./gh.js";
-import { mapThreads, withContent } from "./overview.js";
+import { mapComments, mapThreads, openerOf, withContent } from "./overview.js";
 import type { DiffBase, ThreadCodeSource } from "./threadCode.js";
 import { buildTimeline } from "./timeline.js";
 
@@ -38,9 +41,8 @@ const GONE = Symbol("gone");
 
 /** The opening comment's GitHub diff hunk in a content node, or "". */
 function hunkOf(content: unknown): string {
-	const first = (content as { first?: { nodes?: { diffHunk?: unknown }[] } })
-		?.first?.nodes?.[0];
-	return typeof first?.diffHunk === "string" ? first.diffHunk : "";
+	const hunk = openerOf(content).diffHunk;
+	return typeof hunk === "string" ? hunk : "";
 }
 
 let sequence = 0;
@@ -49,10 +51,12 @@ let sequence = 0;
  * One read of the PR from GitHub, in parts that arrive at their own pace so
  * the page never waits for the slowest: the overview (a few calls at once,
  * well under a second), then the review threads: every thread's summary
- * first (lists, counts and card headers), then the opening comments' text,
- * those listed first (THREADS_FIRST per list) ahead of the rest, and each
- * thread's code from the clone. Everything starts at once; `threads(stage)`
- * waits for a stage and gives all that is in by then.
+ * first (lists, counts, card headers and attention sets), then every
+ * comment's text, those listed first (THREADS_FIRST per list) ahead of the
+ * rest, and each thread's code from the clone. Everything starts at once;
+ * `threads(stage)` waits for a stage and gives all that is in by then, and
+ * `comments(ids)` gives threads' comments as soon as they are in, reading
+ * any not on their way yet at once.
  */
 export class OverviewRead {
 	readonly id = `${Date.now().toString(36)}.${++sequence}`;
@@ -66,9 +70,18 @@ export class OverviewRead {
 	 */
 	readonly timeline: Promise<TimelineView>;
 	readonly #asOf: string | undefined;
+	readonly #viewer: string;
+	/** The PR author (the overview's), once the summary is in. */
+	#prAuthor = "";
 	/** Summary nodes, then with their content merged in as it arrives. */
 	#nodes: unknown[] = [];
 	readonly #contents = new Map<string, unknown>();
+	/** Content reads under way, by thread id: a request for one joins it. */
+	readonly #reading = new Map<string, Promise<void>>();
+	/** Reads a thread's content now (`comments`); set once the read starts. */
+	readonly #readText: (ids: string[]) => Promise<void>;
+	/** Once the background content reads have started (all in `#reading`). */
+	readonly #textsStarted: Promise<unknown>;
 	readonly #codes = new Map<string, CodeWindow | null>();
 	readonly #stages: Record<ThreadsStage, Promise<void>>;
 	/** Stops its gh calls (abort). */
@@ -78,6 +91,7 @@ export class OverviewRead {
 
 	constructor(sources: ReadSources) {
 		this.#asOf = sources.asOf?.at;
+		this.#viewer = sources.viewer;
 		const read = { signal: this.#stop.signal };
 		this.overview = fetchOverview(
 			sources.ref,
@@ -92,8 +106,13 @@ export class OverviewRead {
 				fetchedAt: new Date(this.ended).toISOString(),
 			};
 		});
-		const summary = fetchThreadSummaries(sources.ref, read).then((nodes) => {
+		// The attention sets need the PR author: the overview is the faster read.
+		const summary = Promise.all([
+			fetchThreadSummaries(sources.ref, read),
+			this.overview,
+		]).then(([nodes, overview]) => {
 			this.#nodes = nodes;
+			this.#prAuthor = overview.author;
 		});
 		this.timeline = Promise.all([
 			fetchTimeline(sources.ref, read),
@@ -125,13 +144,28 @@ export class OverviewRead {
 				],
 			};
 		});
-		const readText = (ids: string[]) =>
-			fetchThreadContents(ids, read).then((found) => {
+		const readText = (ids: string[]): Promise<void> => {
+			const reading = fetchThreadContents(ids, read).then((found) => {
 				// Not returned, or null: GitHub no longer has the thread.
 				for (const id of ids) this.#contents.set(id, found.get(id) ?? GONE);
 			});
-		const firstText = plan.then((p) => readText(p.first));
-		const restText = plan.then((p) => readText(p.rest));
+			for (const id of ids) this.#reading.set(id, reading);
+			const over = () => {
+				for (const id of ids) {
+					if (this.#reading.get(id) === reading) this.#reading.delete(id);
+				}
+			};
+			reading.then(over, over);
+			return reading;
+		};
+		this.#readText = readText;
+		const texts = plan.then((p) => ({
+			first: readText(p.first),
+			rest: readText(p.rest),
+		}));
+		this.#textsStarted = texts;
+		const firstText = texts.then((t) => t.first);
+		const restText = texts.then((t) => t.rest);
 		// Each thread's code, a few at a time, listed-first ones ahead.
 		const codes = plan.then((p) => {
 			const limit = limiter(CODE_CONCURRENCY);
@@ -198,7 +232,64 @@ export class OverviewRead {
 				typeof id === "string" ? this.#contents.get(id) : undefined;
 			return content && content !== GONE ? withContent(node, content) : node;
 		});
-		return mapThreads(nodes, this.#asOf);
+		return mapThreads(nodes, {
+			asOf: this.#asOf,
+			prAuthor: this.#prAuthor,
+			viewer: this.#viewer,
+		});
+	}
+
+	/**
+	 * The comments of the threads with these ids, in the order asked: from
+	 * the background read when it has them, joining it when it's on its way,
+	 * and reading the others at once (CONTENT_BATCH a query, all at once;
+	 * never a query per thread). A read that failed is tried again. Fails
+	 * (GhError) rather than give a thread fewer comments than it has. An id
+	 * this read's summary doesn't list is "unreadable".
+	 */
+	async comments(ids: string[]): Promise<CommentsView> {
+		await this.#stages.summary;
+		await this.#textsStarted.catch(() => {});
+		const summaries = new Map<string, unknown>();
+		for (const node of this.#nodes) {
+			const id = (node as { id?: unknown })?.id;
+			if (typeof id === "string" && NODE_ID.test(id)) summaries.set(id, node);
+		}
+		const wanted = [...new Set(ids)].filter((id) => summaries.has(id));
+		const pending = () => wanted.filter((id) => !this.#contents.has(id));
+		// Waits for the reads of those not in yet that are on their way.
+		const join = () =>
+			Promise.all(
+				[...new Set(pending().map((id) => this.#reading.get(id)))].map((r) =>
+					r?.catch(() => {}),
+				),
+			);
+		await join();
+		// Neither in nor on its way (or its read failed): read now, unless
+		// another request already does.
+		const missing = pending().filter((id) => !this.#reading.has(id));
+		const now = missing.length > 0 ? this.#readText(missing) : undefined;
+		await join();
+		await now;
+		if (pending().length > 0) {
+			throw new GhError("Couldn't read the review threads' comments");
+		}
+		return {
+			threads: ids.map((threadId): ThreadComments => {
+				const summary = summaries.get(threadId);
+				const content = this.#contents.get(threadId);
+				if (summary === undefined) {
+					return { threadId, comments: [], unavailable: "unreadable" };
+				}
+				if (content === GONE || content === undefined) {
+					return { threadId, comments: [], unavailable: "deleted" };
+				}
+				return {
+					threadId,
+					comments: mapComments(summary, content, this.#asOf),
+				};
+			}),
+		};
 	}
 
 	#view(): ThreadsView {

@@ -22,6 +22,9 @@ const thread = (extra: Partial<Thread> = {}): Thread => ({
 	hasReply: false,
 	outdated: false,
 	resolved: false,
+	anchor: null,
+	attention: [],
+	yourTurn: false,
 	code: codeFromHunk("@@ -10 +10 @@\n x", { commit: "c1", line: 10 }),
 	...extra,
 });

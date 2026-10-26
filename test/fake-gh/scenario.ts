@@ -23,8 +23,15 @@ export interface Scenario {
 	prViewDelayMs?: number;
 	/** Each page of review threads (their summaries) answers this late. */
 	threadsDelayMs?: number;
-	/** Each read of threads' opening comments by id answers this late. */
+	/** Each read of threads' comments by id answers this late. */
 	threadContentDelayMs?: number;
+	/**
+	 * Each read of threads' comments by id (the first page, or the rest)
+	 * answers this late, on top of threadContentDelayMs.
+	 */
+	commentsDelayMs?: number;
+	/** Comments per page of a thread's comments (default 100, like GitHub). */
+	commentPageSize?: number;
 	/**
 	 * Thread ids (`T<pr>-<index>`) deleted since their list was read: their
 	 * content comes back null with a NOT_FOUND error, and gh exits 1.
@@ -136,22 +143,29 @@ export interface ThreadNode {
 	path: string;
 	line: number | null;
 	originalLine: number | null;
+	startLine?: number | null;
 	originalStartLine: number | null;
 	diffSide: string;
 	startDiffSide: string | null;
 	first: { nodes: CommentNode[] };
-	latest: { nodes: CommentTimes[] };
+	latest: { nodes: ({ author?: CommentNode["author"] } & CommentTimes)[] };
 	comments: {
 		totalCount: number;
-		nodes: ({ author: CommentNode["author"] } & CommentTimes)[];
+		/**
+		 * Every comment, opener first: authors and times (the summary), and
+		 * their text (the fake serves it only to a query by id).
+		 */
+		nodes: ({ author: CommentNode["author"] } & CommentTimes &
+			Partial<Pick<CommentNode, "body" | "bodyText" | "bodyHTML">>)[];
 	};
 }
 
 /**
  * A reviewThreads node shaped like the synthetic fixture's first thread.
  * `comments` (opener first) fills the aliased `first` comment (with the
- * opener's diff hunk, if any), the aliased `latest` one and the authors-only
- * list. A `line` without an `originalLine` is taken as both.
+ * opener's diff hunk, if any), the aliased `latest` one and the list of
+ * every comment (its text kept for the fake's read by id). A `line`
+ * without an `originalLine` is taken as both.
  */
 export function reviewThread(
 	partial: Partial<Omit<ThreadNode, "first" | "comments">> = {},
@@ -170,12 +184,15 @@ export function reviewThread(
 		...(comments && opener && last
 			? {
 					first: { nodes: [{ ...opener, diffHunk: opener.diffHunk ?? "" }] },
-					latest: { nodes: [timesOf(last)] },
+					latest: { nodes: [{ author: last.author, ...timesOf(last) }] },
 					comments: {
 						totalCount: comments.length,
 						nodes: comments.map((c) => ({
 							author: c.author,
 							...timesOf(c),
+							...(c.body === undefined ? {} : { body: c.body }),
+							bodyText: c.bodyText,
+							bodyHTML: c.bodyHTML,
 						})),
 					},
 				}

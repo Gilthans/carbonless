@@ -313,7 +313,63 @@ export interface ReviewThread {
 	 * `source: "pending"` (no rows) while it is still being built.
 	 */
 	code: CodeWindow | null;
+	/**
+	 * Where the thread points (the comment host's original range, on the
+	 * commit the opening comment was made on), from the summary on: what
+	 * places it in Files changed. Null for a file comment.
+	 */
+	anchor: CodeAnchor | null;
+	/**
+	 * Who the thread waits on, as the host spells their logins: everyone
+	 * who commented plus the PR author, minus the latest (human) commenter;
+	 * bots and pending comments left out; empty once resolved. As of a
+	 * cutoff, from the comments published by then.
+	 */
+	attention: string[];
+	/** The viewer is in `attention`. */
+	yourTurn: boolean;
 }
+
+/** One comment of a review thread, whoever hosts it. */
+export interface ThreadComment {
+	/** The host's id for the comment ("" if it gave none). */
+	id: string;
+	author: string;
+	bot: boolean;
+	/** When it was published (its review submitted); null for the viewer's own pending comment. */
+	publishedAt: string | null;
+	/** In the viewer's unsubmitted review: only they see it. */
+	pending: boolean;
+	/** As the host renders it. Untrusted, like `ReviewThread.html`. */
+	html: string;
+	/** The markdown (suggested changes are read from it). */
+	body: string;
+	/** Plain text. */
+	text: string;
+}
+
+/** A review thread's comments (`GET /api/comments`). */
+export interface ThreadComments {
+	threadId: string;
+	/**
+	 * Oldest first: those published (as of a cutoff, by then), plus the
+	 * viewer's pending ones (never as of a cutoff).
+	 */
+	comments: ThreadComment[];
+	/**
+	 * They will never come (`comments` empty): "deleted", the host no longer
+	 * has the thread; "unreadable", there is no id to read it by.
+	 */
+	unavailable?: "deleted" | "unreadable";
+}
+
+/** The comments of the threads asked for, in the order asked. */
+export interface CommentsView {
+	threads: ThreadComments[];
+}
+
+/** Threads whose comments one `GET /api/comments` asks for, at most. */
+export const COMMENTS_BATCH = 50;
 
 /** How far a read's review threads have come. */
 export type ThreadsStage = "summary" | "first" | "firstCode" | "full";

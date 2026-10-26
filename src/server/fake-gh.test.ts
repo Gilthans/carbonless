@@ -8,6 +8,7 @@ import {
 	prView,
 	reviewThread,
 	type Scenario,
+	threadComment,
 	timelineCommit,
 	writeScenario,
 } from "../../test/fake-gh/scenario";
@@ -150,13 +151,75 @@ describe("fake gh", () => {
 			data: { nodes: [null] },
 			errors: [{ type: "NOT_FOUND", path: ["nodes", 0] }],
 		});
-		expect(
-			(
-				contents.get(ids[0] ?? "") as {
-					first: { nodes: { bodyHTML: string }[] };
-				}
-			).first.nodes[0]?.bodyHTML,
-		).toBe('<p dir="auto">Should this <strong>expire</strong>?</p>');
+		// Every comment with its text; the fixture keeps the opener's in `first`.
+		const content = contents.get(ids[0] ?? "") as {
+			comments: { totalCount: number; nodes: Record<string, unknown>[] };
+		};
+		expect(content.comments.totalCount).toBe(2);
+		expect(content.comments.nodes.map((c) => [c.id, c.bodyHTML])).toEqual([
+			["C12-0", '<p dir="auto">Should this <strong>expire</strong>?</p>'],
+			["C12-0-1", ""],
+		]);
+		// A summary lists the comments' authors, not their text.
+		const listed = (
+			summaries[0] as unknown as { comments: { nodes: object[] } }
+		).comments.nodes;
+		expect(listed).toHaveLength(2);
+		for (const c of listed) expect(c).not.toHaveProperty("bodyHTML");
+	});
+
+	it("pages a thread's comments by commentPageSize, by alias, text only when asked", async () => {
+		const comments = Array.from({ length: 5 }, (_, i) =>
+			threadComment({ login: i % 2 ? "octo-author" : "rev", text: `c${i}` }),
+		);
+		const log = join(tmp, "log");
+		scenario({
+			commentPageSize: 2,
+			prs: {
+				"12": {
+					view: prView(),
+					graphql: {
+						reviewThreads: [
+							reviewThread({ path: "long.ts" }, comments),
+							reviewThread({ path: "short.ts" }, comments.slice(0, 1)),
+						],
+					},
+				},
+			},
+		});
+		setEnv({ CRB_FAKE_GH_LOG: log });
+		type Node = {
+			id: string;
+			comments: { totalCount: number; nodes: Record<string, unknown>[] };
+		};
+		const [long, short] = (await fetchThreadSummaries(ref)) as Node[];
+		expect(long?.comments.totalCount).toBe(5);
+		expect(long?.comments.nodes.map((c) => c.id)).toEqual([
+			"C12-0",
+			"C12-0-1",
+			"C12-0-2",
+			"C12-0-3",
+			"C12-0-4",
+		]);
+		for (const c of long?.comments.nodes ?? []) {
+			expect(c).not.toHaveProperty("bodyHTML");
+		}
+		expect(short?.comments.nodes).toHaveLength(1);
+		const contents = await fetchThreadContents([
+			long?.id ?? "",
+			short?.id ?? "",
+		]);
+		const text = (contents.get(long?.id ?? "") as Node).comments.nodes.map(
+			(c) => c.bodyText,
+		);
+		expect(text).toEqual(["c0", "c1", "c2", "c3", "c4"]);
+		const { readFileSync } = await import("node:fs");
+		// Two more pages each time, for the long thread only.
+		const pages = readFileSync(log, "utf8")
+			.split("\n")
+			.filter((l) => l.includes("node(id:"));
+		expect(pages).toHaveLength(4);
+		for (const l of pages) expect(l).not.toContain(short?.id ?? "-");
 	});
 
 	it("reports a missing PR the way gh does", async () => {

@@ -50,6 +50,42 @@ const threadNodes = (pr, nodes) =>
 				: {}),
 		};
 	});
+/** A thread node by its id, in any PR; none once deleted (deletedThreads). */
+function threadById(id) {
+	if ((s.deletedThreads ?? []).includes(id)) return undefined;
+	return Object.entries(s.prs)
+		.flatMap(([n, p]) => threadNodes(n, p.graphql?.reviewThreads ?? []))
+		.find((t) => t.id === id);
+}
+/** A comment without its text, as a summary lists it. */
+const summaryOf = ({ body, bodyText, bodyHTML, diffHunk, ...rest }) => rest;
+/**
+ * Every comment of a thread node with its text: the listed ones, the
+ * opener's text and hunk from `first` (older fixtures keep it only there).
+ */
+function commentTexts(node) {
+	const listed = node.comments?.nodes ?? [];
+	const opener = node.first?.nodes?.[0] ?? {};
+	return (listed.length ? listed : [opener]).map((c, j) => {
+		const own = j === 0 ? { ...c, ...opener, id: c.id ?? opener.id } : c;
+		return {
+			...own,
+			body: own.body ?? own.bodyText ?? "",
+			bodyText: own.bodyText ?? "",
+			bodyHTML: own.bodyHTML ?? "",
+			diffHunk: j === 0 ? (opener.diffHunk ?? "") : (own.diffHunk ?? ""),
+		};
+	});
+}
+/** A page of a thread's comments from `start` (cursor `cursor:<n>`). */
+function commentPage(all, start) {
+	const end = start + (s.commentPageSize ?? 100);
+	const hasNextPage = end < all.length;
+	return {
+		pageInfo: { hasNextPage, endCursor: hasNextPage ? `cursor:${end}` : null },
+		nodes: all.slice(start, end),
+	};
+}
 const notFound = (n) =>
 	fail(
 		`GraphQL: Could not resolve to a PullRequest with the number of ${n}. (repository.pullRequest)`,
@@ -199,32 +235,57 @@ switch (cmd) {
 		if (s.failGraphql && f.query?.includes(s.failGraphql)) {
 			fail("GraphQL: Something went wrong while executing your query.");
 		}
-		// Threads' opening-comment content by node id (any PR's threads).
+		// The rest of threads' comments, a page each by alias:
+		// t<i>: node(id: "…") { … comments(first: 100, after: "cursor:<n>") }.
+		const aliased = [
+			...f.query.matchAll(
+				/(t\d+): node\(id: "([^"]*)"\) \{ \.\.\. on PullRequestReviewThread \{ comments\(first: 100(?:, after: "([^"]*)")?\)/g,
+			),
+		];
+		if (aliased.length) {
+			if (s.commentsDelayMs) sleep(s.commentsDelayMs);
+			const text = f.query.includes("bodyHTML");
+			const data = {};
+			const errors = [];
+			for (const [, alias, id, after] of aliased) {
+				const node = threadById(id);
+				if (!node) {
+					data[alias] = null;
+					errors.push({
+						type: "NOT_FOUND",
+						path: [alias],
+						message: `Could not resolve to a node with the global id of '${id}'`,
+					});
+					continue;
+				}
+				const all = commentTexts(node).map((c) => (text ? c : summaryOf(c)));
+				const start = after ? Number(after.replace("cursor:", "")) : 0;
+				data[alias] = { comments: commentPage(all, start) };
+			}
+			if (errors.length) {
+				process.stdout.write(`${JSON.stringify({ data, errors })}\n`);
+				fail(`gh: ${errors[0].message}`);
+			}
+			print({ data });
+		}
+		// Threads' comments by node id (any PR's threads), their text
+		// included: the first page of each (commentPageSize).
 		const byIds = /nodes\(ids: \[([^\]]*)\]\)/.exec(f.query);
 		if (byIds) {
 			if (s.threadContentDelayMs) sleep(s.threadContentDelayMs);
+			if (s.commentsDelayMs) sleep(s.commentsDelayMs);
 			const ids = [...byIds[1].matchAll(/"([^"]*)"/g)].map((m) => m[1]);
-			const all = Object.entries(s.prs).flatMap(([n, p]) =>
-				threadNodes(n, p.graphql?.reviewThreads ?? []),
-			);
-			const gone = new Set(s.deletedThreads ?? []);
 			const nodes = ids.map((id) => {
-				const node = gone.has(id) ? undefined : all.find((t) => t.id === id);
+				const node = threadById(id);
 				if (!node) return null;
-						const first = node.first?.nodes?.[0] ?? {};
-						return {
-							id,
-							first: {
-								nodes: [
-									{
-										body: first.body ?? "",
-										bodyText: first.bodyText ?? "",
-										bodyHTML: first.bodyHTML ?? "",
-										diffHunk: first.diffHunk ?? "",
-									},
-								],
-							},
-						};
+				const all = commentTexts(node);
+				return {
+					id,
+					comments: {
+						totalCount: node.comments?.totalCount ?? all.length,
+						...commentPage(all, 0),
+					},
+				};
 			});
 			const missing = ids.flatMap((id, i) => (nodes[i] ? [] : [[id, i]]));
 			if (missing.length) {
@@ -330,15 +391,20 @@ switch (cmd) {
 		if (conn === "reviewThreads") {
 			if (s.threadsDelayMs) sleep(s.threadsDelayMs);
 			all = threadNodes(f.number, all);
-			// Only the fields asked for: a summary has no opening-comment text.
+			// Only the fields asked for: a summary has no comment text, and
+			// lists a thread's first page of comments (commentPageSize).
 			if (!f.query.includes("bodyHTML")) {
 				all = all.map((t) => ({
 					...t,
-					first: {
-						nodes: (t.first?.nodes ?? []).map(
-							({ body, bodyText, bodyHTML, diffHunk, ...rest }) => rest,
-						),
-					},
+					first: { nodes: (t.first?.nodes ?? []).map(summaryOf) },
+					...(t.comments
+						? {
+								comments: {
+									totalCount: t.comments.totalCount,
+									...commentPage((t.comments.nodes ?? []).map(summaryOf), 0),
+								},
+							}
+						: {}),
 				}));
 			}
 		}

@@ -3,6 +3,9 @@ import { reviewThread, threadComment } from "../../test/fake-gh/scenario";
 import { visibleAt } from "./commentTime";
 import { mapThreads } from "./overview";
 
+/** No PR author or viewer: these tests are about dates. */
+const ctx = (asOf?: string) => ({ asOf, prAuthor: "", viewer: "" });
+
 describe("visibleAt", () => {
 	it("is when the comment was published, else its review submitted, else written", () => {
 		expect(
@@ -74,7 +77,7 @@ describe("mapThreads dates comments by when they were published", () => {
 	]);
 
 	it("as of a cutoff, hides what was drafted by then but submitted after", () => {
-		const threads = mapThreads([drafted, replied], CUTOFF);
+		const threads = mapThreads([drafted, replied], ctx(CUTOFF));
 		expect(
 			threads.map((t) => [
 				t.path,
@@ -84,12 +87,12 @@ describe("mapThreads dates comments by when they were published", () => {
 			]),
 		).toEqual([["replied.ts", 1, false, "2026-01-03T09:00:00Z"]]);
 		// Submitted by the cutoff: shown, at its submission.
-		const shown = mapThreads([drafted], "2026-01-03T13:00:00Z");
+		const shown = mapThreads([drafted], ctx("2026-01-03T13:00:00Z"));
 		expect(shown.map((t) => t.createdAt)).toEqual(["2026-01-03T13:00:00Z"]);
 	});
 
 	it("opens, updates and orders threads by publication", () => {
-		const threads = mapThreads([drafted, replied], undefined);
+		const threads = mapThreads([drafted, replied], ctx());
 		expect(
 			threads.map((t) => [t.path, t.createdAt, t.lastActivityAt, t.hasReply]),
 		).toEqual([
@@ -111,7 +114,7 @@ describe("mapThreads dates comments by when they were published", () => {
 					}),
 				]),
 			],
-			undefined,
+			ctx(),
 		);
 		expect(t?.code?.anchor.at).toBe("2026-01-03T10:00:00Z");
 		expect(t?.createdAt).toBe("2026-01-03T13:00:00Z");
@@ -130,7 +133,7 @@ describe("mapThreads dates comments by when they were published", () => {
 			ann({ text: "draft", createdAt: "2026-01-03T15:00:00Z", pending: true }),
 		]);
 		for (const asOf of [undefined, "2026-01-04T00:00:00Z"]) {
-			const threads = mapThreads([pendingThread, pendingReply], asOf);
+			const threads = mapThreads([pendingThread, pendingReply], ctx(asOf));
 			expect(
 				threads.map((t) => [
 					t.path,
@@ -156,7 +159,7 @@ describe("mapThreads dates comments by when they were published", () => {
 				},
 			],
 		};
-		const [t] = mapThreads([node], undefined);
+		const [t] = mapThreads([node], ctx());
 		expect(t?.commentCount).toBe(149);
 		expect(t?.lastActivityAt).toBe("2026-01-03T09:00:00Z");
 	});
@@ -172,7 +175,7 @@ describe("mapThreads dates comments by when they were published", () => {
 					}),
 				]),
 			],
-			CUTOFF,
+			ctx(CUTOFF),
 		);
 		expect(t?.createdAt).toBe("2026-01-03T10:00:00Z");
 	});

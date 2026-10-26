@@ -11,6 +11,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	fetchOverview,
 	fetchPrMeta,
+	fetchThreadCommentPages,
 	fetchThreadContents,
 	fetchThreadSummaries,
 	GhAbortedError,
@@ -119,7 +120,8 @@ case "$1 $2" in
   printf '%s' "$FAKE_VIEW"; exit 0 ;;
 "api graphql")
   [ -n "$FAKE_GQL_ERR" ] && { printf '%s\\n' "$FAKE_GQL_ERR" >&2; exit 1; }
-  case "$*" in *"nodes(ids:"*) c=content;; *"{ bodyHTML }"*) c=body;; *"reviewThreads(last"*) c=reviewThreadsLast;; *"reviewThreads("*) c=reviewThreads;; *"comments(first: 100, after"*) c=comments;; *) c=reviews;; esac
+  case "$*" in *"node(id:"*) c=pages-$(printf '%s' "$*" | sed -n 's/.*after: "\\([^"]*\\)".*/\\1/p');;
+  *"nodes(ids:"*) c=content;; *"{ bodyHTML }"*) c=body;; *"reviewThreads(last"*) c=reviewThreadsLast;; *"reviewThreads("*) c=reviewThreads;; *"comments(first: 100, after"*) c=comments;; *) c=reviews;; esac
   case "$*" in *endCursor=*) p=2;; *) p=1;; esac
   cat "$FAKE_GQL_DIR/$c-$p.json" || exit 1; exit 0 ;;
 esac
@@ -341,17 +343,18 @@ describe("runGh with a fake gh", () => {
 		expect(log().match(/\{ bodyHTML \}/g)).toHaveLength(1);
 		expect(log().match(/reviewThreads\(first/g)).toHaveLength(2);
 		expect(log().match(/reviewThreads\(last: 100\)/g)).toHaveLength(1);
-		// A summary: no opening comment's text or hunk (threadContents), its
-		// author, time and commit; the latest one's time; authors for the rest.
+		// A summary: no comment's text or hunk (threadContents), the opener's
+		// author, time and commit; the latest one's author and time; authors
+		// and times for the rest, with where to page on from.
 		expect(log()).toContain(
 			"id isResolved isOutdated path subjectType line originalLine startLine originalStartLine diffSide startDiffSide first: comments(first: 1) { nodes { id author { login __typename } createdAt publishedAt state originalCommit { oid } } }",
 		);
 		expect(log()).not.toContain("bodyText");
 		expect(log()).toContain(
-			"latest: comments(last: 1) { nodes { createdAt publishedAt state } }",
+			"latest: comments(last: 1) { nodes { author { login __typename } createdAt publishedAt state } }",
 		);
 		expect(log()).toContain(
-			"comments(first: 100) { totalCount nodes { id author { login __typename } createdAt publishedAt state } }",
+			"comments(first: 100) { totalCount pageInfo { hasNextPage endCursor } nodes { id author { login __typename } createdAt publishedAt state } }",
 		);
 	});
 
@@ -436,6 +439,110 @@ describe("runGh with a fake gh", () => {
 		expect(queries).toHaveLength(3);
 		expect(queries[0]?.match(/"T\d+"/g)).toHaveLength(50);
 		expect(log()).not.toContain("evil");
+	});
+
+	it("pages threads' comments past 100: every long thread in one query a round, from its cursor", async () => {
+		const gql = join(dir, "gql");
+		const { mkdirSync } = await import("node:fs");
+		mkdirSync(gql);
+		const comment = (id: string) => ({
+			id,
+			author: { login: id, __typename: "User" },
+		});
+		const page = (nodes: unknown[], next: string | null) =>
+			JSON.stringify({
+				data: {
+					t0: {
+						comments: {
+							pageInfo: { hasNextPage: next !== null, endCursor: next },
+							nodes: nodes.map((n, i) => comment(`${n}${i}`)),
+						},
+					},
+					// Deleted since its first page was read.
+					t1: null,
+				},
+			});
+		writeFileSync(
+			join(gql, "pages-c100-1.json"),
+			page(Array(100).fill("a"), "c200"),
+		);
+		writeFileSync(join(gql, "pages-c200-1.json"), page(["b", "b"], null));
+		setEnv({ FAKE_GQL_DIR: gql });
+		const found = await fetchThreadCommentPages(
+			["T1", "T2", 'x"]) { evil }'],
+			"id author { login __typename }",
+			{},
+			new Map([
+				["T1", "c100"],
+				["T2", "c100"],
+			]),
+		);
+		expect(found.get("T1")?.map((c) => (c as { id: string }).id)).toEqual([
+			...Array.from({ length: 100 }, (_, i) => `a${i}`),
+			"b0",
+			"b1",
+		]);
+		expect(found.get("T2")).toEqual([]);
+		const queries = log()
+			.split("\n")
+			.filter((l) => l.includes("node(id:"));
+		// Both threads in the first round's query, one in the second.
+		expect(queries).toHaveLength(2);
+		expect(queries[0]).toContain(
+			't0: node(id: "T1") { ... on PullRequestReviewThread { comments(first: 100, after: "c100") { pageInfo { hasNextPage endCursor } nodes { id author { login __typename } } } } } t1: node(id: "T2")',
+		);
+		expect(queries[1]).toContain('after: "c200"');
+		expect(queries[1]).not.toContain("T2");
+		expect(log()).not.toContain("evil");
+	});
+
+	it("reads a long thread's comments to the end with its content", async () => {
+		const gql = join(dir, "gql");
+		const { mkdirSync } = await import("node:fs");
+		mkdirSync(gql);
+		const c = (id: string) => ({ id, bodyHTML: `<p>${id}</p>` });
+		writeFileSync(
+			join(gql, "content-1.json"),
+			JSON.stringify({
+				data: {
+					nodes: [
+						{
+							id: "T1",
+							comments: {
+								totalCount: 3,
+								pageInfo: { hasNextPage: true, endCursor: "c2" },
+								nodes: [c("one"), c("two")],
+							},
+						},
+					],
+				},
+			}),
+		);
+		writeFileSync(
+			join(gql, "pages-c2-1.json"),
+			JSON.stringify({
+				data: {
+					t0: {
+						comments: {
+							pageInfo: { hasNextPage: false, endCursor: null },
+							nodes: [c("three")],
+						},
+					},
+				},
+			}),
+		);
+		setEnv({ FAKE_GQL_DIR: gql });
+		const found = await fetchThreadContents(["T1"]);
+		const node = found.get("T1") as {
+			comments: { totalCount: number; nodes: { id: string }[] };
+		};
+		expect(node.comments.totalCount).toBe(3);
+		expect(node.comments.nodes.map((n) => n.id)).toEqual([
+			"one",
+			"two",
+			"three",
+		]);
+		expect(log()).toContain("body bodyText bodyHTML diffHunk");
 	});
 
 	it("names the read that took too long, and stops a read that is aborted", async () => {

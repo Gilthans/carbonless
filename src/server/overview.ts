@@ -3,8 +3,10 @@ import type {
 	DiffSide,
 	PrOverview,
 	ReviewThread,
+	ThreadComment,
 } from "../shared/types.js";
 import { atOrBefore } from "./asOf.js";
+import { attentionSet } from "./attention.js";
 import { hunkWindowRows } from "./codeWindow.js";
 import { visibleAt } from "./commentTime.js";
 import { GhError } from "./errors.js";
@@ -121,31 +123,53 @@ function lineNumber(value: unknown): number | null {
 const OID = /^[0-9a-f]{40}([0-9a-f]{24})?$/;
 
 /**
- * GitHub's side of a thread's code: the anchor (GitHub's fields mapped to
- * the source-neutral CodeAnchor) and the window of GitHub's own diff hunk,
- * the fallback (`source: "github"`) to the clone's (threadCode.ts); until
- * the comment's content is read (`loaded` false), `source: "pending"`. The
- * hunk is of the commit the comment was made on and ends at
- * `originalLine`, so the range is the `original*` pair; the current
- * `line`/`startLine` pair only stands in when there is no original line.
- * The two pairs are never mixed. Null for a file comment (subject FILE, or
- * no line), or with neither a hunk nor a commit. GitHub sometimes keeps no
- * hunk for a line comment: no rows then.
+ * GitHub's side of a thread's code at `anchor` (threadAnchor): the window
+ * of GitHub's own diff hunk, the fallback (`source: "github"`) to the
+ * clone's (threadCode.ts); until the comment's content is read (`loaded`
+ * false), `source: "pending"`. The hunk is of the commit the comment was
+ * made on and ends at `originalLine`, which is why the anchor is the
+ * `original*` range. Null for a file comment (no anchor), or with neither
+ * a hunk nor a commit. GitHub sometimes keeps no hunk for a line comment:
+ * no rows then.
  */
 function threadCode(
+	first: Json,
+	anchor: CodeAnchor | null,
+	loaded: boolean,
+): Thread["code"] {
+	if (anchor === null) return null;
+	const diffHunk = str(first.diffHunk);
+	if (loaded && !diffHunk.trim() && !anchor.commit) return null;
+	if (!loaded) return { anchor, rows: [], source: "pending" };
+	return {
+		anchor,
+		rows: diffHunk.trim() ? hunkWindowRows(diffHunk, anchor) : [],
+		source: "github",
+		// GitHub's hunk is the commenter's own view.
+		snapshot: { same: true },
+	};
+}
+
+/**
+ * Where a thread points, from its summary: GitHub's fields mapped to the
+ * source-neutral CodeAnchor. The range is the `original*` pair (on the
+ * commit the opening comment was made on); the current `line`/`startLine`
+ * pair only stands in when there is no original line, and the two pairs
+ * are never mixed. Sides are GitHub's own, LEFT included. Null for a file
+ * comment (subject FILE, or no line).
+ */
+function threadAnchor(
 	t: Json,
 	first: Json,
 	path: string,
 	at: string,
-	loaded: boolean,
-): Thread["code"] {
+): CodeAnchor | null {
 	if (t.subjectType === "FILE") return null;
-	const diffHunk = str(first.diffHunk);
 	const original = lineNumber(t.originalLine);
 	const line = original ?? lineNumber(t.line);
+	if (line === null) return null;
 	const oid = str(obj(first.originalCommit).oid);
 	const commit = OID.test(oid) ? oid : "";
-	if (line === null || (loaded && !diffHunk.trim() && !commit)) return null;
 	const side: Side = SIDES.has(str(t.diffSide))
 		? (str(t.diffSide) as Side)
 		: "RIGHT";
@@ -155,7 +179,7 @@ function threadCode(
 	const startSide: Side = SIDES.has(str(t.startDiffSide))
 		? (str(t.startDiffSide) as Side)
 		: side;
-	const anchor: CodeAnchor = {
+	return {
 		path,
 		commit,
 		side,
@@ -164,14 +188,6 @@ function threadCode(
 		startLine:
 			start === null || (startSide === side && start > line) ? line : start,
 		at,
-	};
-	if (!loaded) return { anchor, rows: [], source: "pending" };
-	return {
-		anchor,
-		rows: diffHunk.trim() ? hunkWindowRows(diffHunk, anchor) : [],
-		source: "github",
-		// GitHub's hunk is the commenter's own view.
-		snapshot: { same: true },
 	};
 }
 
@@ -190,14 +206,74 @@ function hasContent(first: Json): boolean {
 }
 
 /**
- * A summary node with its content node (by the same id) merged in, as the
- * single query used to return them.
+ * The opening comment of a content node (every comment, CONTENT_FIELDS in
+ * gh.ts; an older `first`-only one too).
+ */
+export function openerOf(content: unknown): Json {
+	const c = obj(content);
+	return obj(arr(obj(c.comments).nodes)[0] ?? arr(obj(c.first).nodes)[0]);
+}
+
+/**
+ * A summary node with its content node (by the same id) merged in: the
+ * opening comment's text and hunk, as the single query used to return them.
  */
 export function withContent(summary: unknown, content: unknown): unknown {
 	const t = obj(summary);
 	const first = obj(arr(obj(t.first).nodes)[0]);
-	const more = obj(arr(obj(obj(content).first).nodes)[0]);
-	return { ...t, first: { nodes: [{ ...first, ...more }] } };
+	const more = openerOf(content);
+	const { body, bodyText, bodyHTML, diffHunk } = more;
+	const text = Object.fromEntries(
+		Object.entries({ body, bodyText, bodyHTML, diffHunk }).filter(
+			([, v]) => v !== undefined,
+		),
+	);
+	return { ...t, first: { nodes: [{ ...first, ...text }] } };
+}
+
+/**
+ * A thread's comments from its content node (every comment with its text),
+ * oldest first: those its summary lists (so they agree with the thread's
+ * count; a comment added since waits for the next read), published ones
+ * dated by publication, and the viewer's pending ones marked. As of a
+ * cutoff: only those published by then, none pending.
+ */
+export function mapComments(
+	summary: unknown,
+	content: unknown,
+	asOf?: string,
+): ThreadComment[] {
+	const listed = obj(obj(summary).comments);
+	const known = arr(listed.nodes).map((c) => str(obj(c).id));
+	// The summary lists all (pages in past 100): only then is it the list.
+	const complete =
+		typeof listed.totalCount === "number" &&
+		known.length >= listed.totalCount &&
+		known.every(Boolean);
+	const ids = new Set(known);
+	const out: ThreadComment[] = [];
+	for (const raw of arr(obj(obj(content).comments).nodes)) {
+		const c = obj(raw);
+		const id = str(c.id);
+		if (complete && !ids.has(id)) continue;
+		const publishedAt = visibleAt(c);
+		if (asOf && (publishedAt === null || !atOrBefore(publishedAt, asOf))) {
+			continue;
+		}
+		const author = obj(c.author);
+		out.push({
+			id,
+			author: str(author.login),
+			bot: isBotAuthor(author),
+			publishedAt,
+			pending: publishedAt === null,
+			html: str(c.bodyHTML),
+			body: str(c.body),
+			// GitHub's plain-text rendering; the raw body is a fallback.
+			text: str(c.bodyText) || str(c.body),
+		});
+	}
+	return out;
 }
 
 /** The later of two ISO times; a missing or invalid one loses. */
@@ -221,8 +297,17 @@ function later(a: string, b: string): string {
  */
 export function mapThreads(
 	nodes: unknown[],
-	asOf: string | undefined,
+	ctx: {
+		/** As-of mode's cutoff. */
+		asOf?: string;
+		/** The PR author's login: in every open thread's attention set. */
+		prAuthor: string;
+		/** The viewer's login or slug: `yourTurn` when in the set. */
+		viewer: string;
+	},
 ): Thread[] {
+	const { asOf, prAuthor } = ctx;
+	const viewer = slugify(ctx.viewer);
 	const threads: Thread[] = [];
 	for (const raw of nodes) {
 		const t = obj(raw);
@@ -262,13 +347,30 @@ export function mapThreads(
 		const firstLogin = str(author.login);
 		const loaded = hasContent(first);
 		// The code is the commenter's view when they wrote it.
-		const code = threadCode(
+		const anchor = threadAnchor(
 			t,
 			first,
 			str(t.path),
 			str(first.createdAt) || createdAt,
-			loaded,
 		);
+		const code = threadCode(first, anchor, loaded);
+		const resolved = !asOf && t.isResolved === true;
+		// Who commented, oldest first; past the listed ones (when they
+		// weren't paged in), the latest still tells who spoke last.
+		const commenters = [
+			...comments.map(({ c }) => obj(c.author)),
+			...(!asOf &&
+			latestAt !== null &&
+			typeof listed.totalCount === "number" &&
+			listed.totalCount > all.length
+				? [obj(obj(latestNode).author)]
+				: []),
+		].map((a) => ({ login: str(a.login), bot: isBotAuthor(a) }));
+		const attention = attentionSet({
+			comments: commenters,
+			prAuthor,
+			resolved,
+		});
 		// bodyText is GitHub's plain-text rendering; the raw body is a fallback.
 		const text = str(first.bodyText) || str(first.body);
 		threads.push({
@@ -293,9 +395,10 @@ export function mapThreads(
 			lastActivityAt,
 			author: firstLogin,
 			bot,
-			// The author list stops at 100; the total doesn't (as of a cutoff,
-			// only the first 100 can be dated). Pending comments (the viewer's)
-			// don't count; past the first 100, only the latest can be told.
+			// The total, less pending comments (the viewer's), which don't
+			// count; past the listed ones (gh.ts pages them in when there are
+			// more than 100), only the latest can be told. As of a cutoff,
+			// those listed and published by then.
 			commentCount:
 				!asOf && typeof listed.totalCount === "number"
 					? Math.max(1, listed.totalCount - pending)
@@ -306,8 +409,11 @@ export function mapThreads(
 			),
 			// GitHub's flag is about today's head, not the cutoff's.
 			outdated: !asOf && t.isOutdated === true,
-			resolved: !asOf && t.isResolved === true,
+			resolved,
 			code,
+			anchor,
+			attention,
+			yourTurn: attention.some((login) => slugify(login) === viewer),
 		});
 	}
 	return sortThreads(threads);

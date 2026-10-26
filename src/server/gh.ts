@@ -370,20 +370,26 @@ function connectionQuery(
 
 const AUTHOR = "author { login __typename }";
 // A thread's summary: everything the lists need (grouping, sorting,
-// counts, the card's header) and the anchor of its code, without the
-// opening comment's text and diff hunk (threadContents reads those). Only
-// authors and times for the comments (reply detection, and counting as of
-// a cutoff), and the latest comment's time (last activity past the first
-// 100). The opener's original commit is where the clone takes its code from.
+// counts, the card's header, the attention set) and the anchor of its
+// code, without the comments' text and the opening one's diff hunk
+// (threadContents reads those). Only authors and times for the comments
+// (reply detection, the attention set and counting as of a cutoff), paged
+// on past 100 (fetchThreadCommentPages), and the latest comment's author
+// and time (last activity, and who spoke last, without the paging). The
+// opener's original commit is where the clone takes its code from.
 // Comment ids tie the timeline's review comments to their threads.
 // Comments are dated by when they were published (commentTime.ts); `state`
 // tells a pending one. Not their review's submission as well: on PR #99 it
 // cost about 1 s more a page and never differed from `publishedAt`.
 const COMMENT_TIMES = "createdAt publishedAt state";
-const THREAD_FIELDS = `id isResolved isOutdated path subjectType line originalLine startLine originalStartLine diffSide startDiffSide first: comments(first: 1) { nodes { id ${AUTHOR} ${COMMENT_TIMES} originalCommit { oid } } } latest: comments(last: 1) { nodes { ${COMMENT_TIMES} } } comments(first: 100) { totalCount nodes { id ${AUTHOR} ${COMMENT_TIMES} } }`;
-/** The opening comment's text and GitHub's diff hunk, by thread id. */
-const CONTENT_FIELDS =
-	"id first: comments(first: 1) { nodes { body bodyText bodyHTML diffHunk } }";
+/** A page of a thread's comments: where to read on from, past 100. */
+const COMMENT_PAGE = "pageInfo { hasNextPage endCursor }";
+const SUMMARY_COMMENT = `id ${AUTHOR} ${COMMENT_TIMES}`;
+const THREAD_FIELDS = `id isResolved isOutdated path subjectType line originalLine startLine originalStartLine diffSide startDiffSide first: comments(first: 1) { nodes { id ${AUTHOR} ${COMMENT_TIMES} originalCommit { oid } } } latest: comments(last: 1) { nodes { ${AUTHOR} ${COMMENT_TIMES} } } comments(first: 100) { totalCount ${COMMENT_PAGE} nodes { ${SUMMARY_COMMENT} } }`;
+/** Each comment's text, and GitHub's diff hunk (the opening one's shows the code). */
+const CONTENT_COMMENT = `${SUMMARY_COMMENT} body bodyText bodyHTML diffHunk`;
+/** Every comment of a thread with its text, by thread id (paged on past 100). */
+const CONTENT_FIELDS = `id comments(first: 100) { totalCount ${COMMENT_PAGE} nodes { ${CONTENT_COMMENT} } }`;
 /** Threads whose content one query reads (about 1 s for 50). */
 const CONTENT_BATCH = 50;
 export const NODE_ID = /^[A-Za-z0-9_=-]{1,100}$/;
@@ -717,7 +723,13 @@ export function fetchThreadSummaries(
 	ref: PrRef,
 	read: ReadSignal = {},
 ): Promise<unknown[]> {
-	return notFoundAsPr(ref, () => fetchConnection(ref, "reviewThreads", read));
+	return notFoundAsPr(ref, async () =>
+		withEveryComment(
+			await fetchConnection(ref, "reviewThreads", read),
+			SUMMARY_COMMENT,
+			read,
+		),
+	);
 }
 
 const ACTOR = "login __typename avatarUrl(size: 40)";
@@ -877,9 +889,10 @@ export function onlyMissingNodes(stdout: string): boolean {
 }
 
 /**
- * The opening comments' content (CONTENT_FIELDS) of the threads with these
- * ids, by id, read CONTENT_BATCH at a time, all at once. A thread GitHub
- * no longer has (deleted since its id was read) maps to null.
+ * Every comment's content (CONTENT_FIELDS) of the threads with these ids,
+ * by id, read CONTENT_BATCH at a time, all at once, and paged on past 100
+ * comments. A thread GitHub no longer has (deleted since its id was read)
+ * maps to null.
  */
 export async function fetchThreadContents(
 	ids: string[],
@@ -917,5 +930,162 @@ export async function fetchThreadContents(
 			});
 		}),
 	);
+	const long = [...found.values()].filter((n) => n !== null);
+	const paged = await withEveryComment(long, CONTENT_COMMENT, read);
+	for (const node of paged) found.set(rec(node).id as string, node);
+	return found;
+}
+
+/** A GraphQL cursor, safe as a string literal in a query. */
+const CURSOR = /^[A-Za-z0-9+/=_.:-]{1,200}$/;
+
+/**
+ * Threads' nodes with the rest of their comments read in, for those with
+ * more than they list (`comments.totalCount` past `comments.nodes`): their
+ * `comments.nodes` are then every comment, `fields` of each past the
+ * first page. The others come back as they are.
+ */
+async function withEveryComment(
+	nodes: unknown[],
+	fields: string,
+	read: ReadSignal,
+): Promise<unknown[]> {
+	const from = new Map<string, string>();
+	for (const node of nodes) {
+		const t = rec(node);
+		const c = rec(t.comments);
+		const info = rec(c.pageInfo);
+		if (
+			typeof t.id === "string" &&
+			NODE_ID.test(t.id) &&
+			typeof c.totalCount === "number" &&
+			Array.isArray(c.nodes) &&
+			c.totalCount > c.nodes.length &&
+			info.hasNextPage === true &&
+			typeof info.endCursor === "string"
+		) {
+			from.set(t.id, info.endCursor);
+		}
+	}
+	if (from.size === 0) return nodes;
+	const rest = await fetchThreadCommentPages(
+		[...from.keys()],
+		fields,
+		read,
+		from,
+	);
+	return nodes.map((node) => {
+		const t = rec(node);
+		const more = typeof t.id === "string" ? rest.get(t.id) : undefined;
+		if (!more) return node;
+		const c = rec(t.comments);
+		return {
+			...t,
+			comments: { ...c, nodes: [...(c.nodes as unknown[]), ...more] },
+		};
+	});
+}
+
+/**
+ * Whether a GraphQL answer gh failed on (exit 1) still holds the answer to
+ * an aliased `node(id:)` query: every error a NOT_FOUND of one alias (a
+ * thread deleted since its id was read).
+ */
+function onlyMissingAliases(stdout: string): boolean {
+	let answer: unknown;
+	try {
+		answer = JSON.parse(stdout);
+	} catch {
+		return false;
+	}
+	const { data, errors } = rec(answer);
+	if (typeof data !== "object" || data === null || !Array.isArray(errors)) {
+		return false;
+	}
+	return (
+		errors.length > 0 &&
+		errors.every((e) => {
+			const path = rec(e).path;
+			return (
+				rec(e).type === "NOT_FOUND" &&
+				Array.isArray(path) &&
+				path.length === 1 &&
+				typeof path[0] === "string" &&
+				/^t\d+$/.test(path[0])
+			);
+		})
+	);
+}
+
+/**
+ * The comments (`fields` of each) of the threads with these ids, by id,
+ * oldest first: from the start, or from `from`'s cursor on for a thread
+ * that has one (what its first page didn't list). One query a round for up
+ * to CONTENT_BATCH threads at once (aliases), round after round while any
+ * has more; never a query per thread. A thread GitHub no longer has stops
+ * where it was.
+ */
+export async function fetchThreadCommentPages(
+	threadIds: string[],
+	fields: string,
+	read: ReadSignal = {},
+	from: Map<string, string> = new Map(),
+): Promise<Map<string, unknown[]>> {
+	const found = new Map<string, unknown[]>();
+	let todo = threadIds
+		.filter((id) => NODE_ID.test(id))
+		.map((id) => ({ id, after: from.get(id) }));
+	for (const id of new Set(todo.map((t) => t.id))) found.set(id, []);
+	for (let page = 0; todo.length > 0; page++) {
+		if (page >= MAX_PAGES) {
+			throw new GhError("Too many comments to read for a review thread");
+		}
+		const batches: (typeof todo)[] = [];
+		for (let i = 0; i < todo.length; i += CONTENT_BATCH) {
+			batches.push(todo.slice(i, i + CONTENT_BATCH));
+		}
+		const next = await Promise.all(
+			batches.map(async (batch) => {
+				const aliases = batch.map(({ id, after }, i) => {
+					if (after !== undefined && !CURSOR.test(after)) {
+						throw new GhError(
+							"gh returned an unexpected cursor for a thread's comments",
+						);
+					}
+					// Ids and cursors are checked: plain text in the query is safe.
+					const cursor = after === undefined ? "" : `, after: "${after}"`;
+					return `t${i}: node(id: "${id}") { ... on PullRequestReviewThread { comments(first: 100${cursor}) { ${COMMENT_PAGE} nodes { ${fields} } } } }`;
+				});
+				const out = safeJson(
+					await runGh(
+						["api", "graphql", "-f", `query=query { ${aliases.join(" ")} }`],
+						{
+							...read,
+							what: "the review threads' comments",
+							partial: onlyMissingAliases,
+						},
+					),
+				);
+				const data = rec(rec(out).data);
+				return batch.flatMap(({ id }, i) => {
+					const node = data[`t${i}`];
+					// Deleted since: what was read of it stands.
+					if (node === null || node === undefined) return [];
+					const conn = rec(rec(node).comments);
+					if (!Array.isArray(conn.nodes)) {
+						throw new GhError(
+							"gh returned an unexpected response for a thread's comments",
+						);
+					}
+					found.get(id)?.push(...conn.nodes);
+					const info = rec(conn.pageInfo);
+					return info.hasNextPage === true && typeof info.endCursor === "string"
+						? [{ id, after: info.endCursor }]
+						: [];
+				});
+			}),
+		);
+		todo = next.flat();
+	}
 	return found;
 }

@@ -1,7 +1,8 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import { reviewThread, threadComment } from "../../test/fake-gh/scenario";
 import { GhError } from "./errors";
-import { mapOverview, mapThreads, withContent } from "./overview";
+import { mapComments, mapOverview, mapThreads, withContent } from "./overview";
 
 /** The overview and its threads, as one read used to give them. */
 const withThreads = (
@@ -11,10 +12,11 @@ const withThreads = (
 	asOf?: string,
 ) => ({
 	...mapOverview(view, graph, viewer, asOf),
-	threads: mapThreads(
-		(graph as { reviewThreads: unknown[] }).reviewThreads,
+	threads: mapThreads((graph as { reviewThreads: unknown[] }).reviewThreads, {
 		asOf,
-	),
+		prAuthor: "octo-author",
+		viewer,
+	}),
 });
 
 interface Actor {
@@ -52,6 +54,8 @@ const graph = () => {
 };
 // The viewer's login has an underscore; callers may pass the login or its slug.
 const VIEWER = "jdoe_acme";
+/** The threads' context with no PR author or viewer. */
+const CTX = { prAuthor: "", viewer: "" };
 
 describe("mapOverview", () => {
 	const o = withThreads(view(), graph(), VIEWER);
@@ -153,6 +157,18 @@ describe("mapOverview", () => {
 				id: "",
 				loaded: true,
 				path: "src/cache.ts",
+				anchor: {
+					path: "src/cache.ts",
+					commit: "",
+					side: "RIGHT",
+					line: 42,
+					startSide: "RIGHT",
+					startLine: 42,
+					at: "2026-01-03T09:00:00Z",
+				},
+				// The author replied last: back to the reviewer.
+				attention: ["rev1"],
+				yourTurn: false,
 				line: 42,
 				currentLine: 42,
 				excerpt: "Should this expire?",
@@ -191,6 +207,17 @@ describe("mapOverview", () => {
 				id: "",
 				loaded: true,
 				path: "src/self.ts",
+				anchor: {
+					path: "src/self.ts",
+					commit: "",
+					side: "RIGHT",
+					line: 3,
+					startSide: "RIGHT",
+					startLine: 3,
+					at: "2026-01-03T09:00:00Z",
+				},
+				attention: ["octo-author"],
+				yourTurn: false,
 				line: 3,
 				currentLine: 3,
 				excerpt: "First",
@@ -210,6 +237,18 @@ describe("mapOverview", () => {
 				id: "",
 				loaded: true,
 				path: "src/done.ts",
+				anchor: {
+					path: "src/done.ts",
+					commit: "",
+					side: "RIGHT",
+					line: 1,
+					startSide: "RIGHT",
+					startLine: 1,
+					at: "2026-01-03T09:00:00Z",
+				},
+				// Resolved: nobody.
+				attention: [],
+				yourTurn: false,
 				line: 1,
 				currentLine: 1,
 				excerpt: "Nit",
@@ -229,6 +268,18 @@ describe("mapOverview", () => {
 				id: "",
 				loaded: true,
 				path: "src/old.ts",
+				anchor: {
+					path: "src/old.ts",
+					commit: "",
+					side: "LEFT",
+					line: 7,
+					startSide: "LEFT",
+					startLine: 7,
+					at: "2026-01-02T12:00:00Z",
+				},
+				// A bot never counts as the latest: the PR author.
+				attention: ["octo-author"],
+				yourTurn: false,
 				// Outdated: where it was written.
 				line: 7,
 				currentLine: null,
@@ -652,7 +703,7 @@ describe("mapThreads on a summary, then with its content", () => {
 	};
 
 	it("lists a summarised thread whole but its text and code, which are pending", () => {
-		const [t] = mapThreads([node().summary], undefined);
+		const [t] = mapThreads([node().summary], CTX);
 		expect(t).toMatchObject({
 			id: "T1",
 			path: "src/cache.ts",
@@ -672,10 +723,226 @@ describe("mapThreads on a summary, then with its content", () => {
 
 	it("fills its text and GitHub's rows once the content is merged in", () => {
 		const { summary, content } = node();
-		const [t] = mapThreads([withContent(summary, content)], undefined);
+		const [t] = mapThreads([withContent(summary, content)], CTX);
 		expect(t?.loaded).toBe(true);
 		expect(t?.html).toContain("expire");
 		expect(t?.code?.source).toBe("github");
 		expect(t?.code?.rows.some((r) => r.marked)).toBe(true);
+	});
+});
+
+describe("mapThreads: the attention set and the anchor", () => {
+	const at = (m: number) => `2026-01-03T10:${String(m).padStart(2, "0")}:00Z`;
+	const said = (login: string, m: number, extra = {}) =>
+		threadComment({ login, text: `${login} ${m}`, createdAt: at(m), ...extra });
+	const ctx = { prAuthor: "octo-author", viewer: "octo-cat" };
+	const one = (
+		node: unknown,
+		over: Partial<typeof ctx> & { asOf?: string } = {},
+	) => mapThreads([node], { ...ctx, ...over })[0];
+
+	it("leaves a pending reply out of the set", () => {
+		const t = one(
+			reviewThread({ path: "a.ts" }, [
+				said("rev", 1),
+				said("octo-author", 2, { pending: true }),
+			]),
+		);
+		expect(t?.attention).toEqual(["octo-author"]);
+	});
+
+	it("as of a cutoff, uses only the comments published by then", () => {
+		const node = reviewThread({ path: "a.ts" }, [
+			said("rev", 1),
+			said("octo-author", 2),
+			said("third", 30),
+		]);
+		expect(one(node, { asOf: at(10) })?.attention).toEqual(["rev"]);
+		expect(one(node)?.attention.sort()).toEqual(["octo-author", "rev"]);
+	});
+
+	it("is the viewer's turn by slug: octo-cat is Octo_Cat", () => {
+		const t = one(
+			reviewThread({ path: "a.ts" }, [
+				said("Octo_Cat", 1),
+				said("octo-author", 2),
+			]),
+		);
+		expect(t?.attention).toEqual(["Octo_Cat"]);
+		expect(t?.yourTurn).toBe(true);
+		const mine = one(reviewThread({ path: "a.ts" }, [said("Octo_Cat", 1)]));
+		expect(mine?.attention).toEqual(["octo-author"]);
+		expect(mine?.yourTurn).toBe(false);
+	});
+
+	it("a viewer who is the PR author: their turn once someone else comments", () => {
+		const t = one(reviewThread({ path: "a.ts" }, [said("rev", 1)]), {
+			viewer: "octo-author",
+		});
+		expect(t?.yourTurn).toBe(true);
+	});
+
+	it("a resolved thread waits on nobody", () => {
+		const t = one(
+			reviewThread({ path: "a.ts", isResolved: true }, [said("rev", 1)]),
+		);
+		expect(t?.attention).toEqual([]);
+		expect(t?.yourTurn).toBe(false);
+	});
+
+	it("a file comment has no anchor", () => {
+		const t = one(
+			reviewThread({ path: "a.ts", subjectType: "FILE", line: null }, [
+				said("rev", 1, { commit: "a".repeat(40) }),
+			]),
+		);
+		expect(t?.anchor).toBeNull();
+	});
+
+	it("a line comment's anchor is the code's: GitHub's original range on the opener's commit", () => {
+		const node = reviewThread(
+			{
+				path: "a.ts",
+				line: 12,
+				originalLine: 9,
+				startLine: 10,
+				originalStartLine: 7,
+				diffSide: "LEFT",
+				startDiffSide: "LEFT",
+			},
+			[said("rev", 1, { commit: "b".repeat(40), diffHunk: "@@ -1 +1 @@\n-x" })],
+		);
+		const summary = one(node);
+		expect(summary?.anchor).toEqual({
+			path: "a.ts",
+			commit: "b".repeat(40),
+			side: "LEFT",
+			line: 9,
+			startSide: "LEFT",
+			startLine: 7,
+			at: at(1),
+		});
+		expect(summary?.anchor).toEqual(summary?.code?.anchor);
+	});
+
+	it("uses every comment's author past the first 100 (paged in)", () => {
+		const comments = [
+			said("rev", 0),
+			...Array.from({ length: 148 }, (_, i) =>
+				said(i % 2 ? "octo-author" : "third", 1 + (i % 50)),
+			),
+			said("late", 59),
+		];
+		const node = reviewThread({ path: "a.ts" }, comments);
+		expect(node.comments.totalCount).toBe(150);
+		expect(one(node)?.attention.sort()).toEqual([
+			"octo-author",
+			"rev",
+			"third",
+		]);
+		expect(one(node)?.commentCount).toBe(150);
+	});
+
+	it("past 100 not paged in, the latest comment still counts as the latest", () => {
+		const node = reviewThread({ path: "a.ts" }, [said("rev", 1)]);
+		node.comments.totalCount = 150;
+		node.latest = {
+			nodes: [
+				{
+					...said("octo-author", 50),
+					author: { login: "octo-author", __typename: "User" },
+				},
+			],
+		};
+		expect(one(node)?.attention).toEqual(["rev"]);
+	});
+});
+
+describe("mapComments", () => {
+	const node = (
+		comments: { id: string; login: string; bot?: boolean; at: string | null }[],
+		extra: Record<string, unknown>[] = [],
+	) => {
+		const c = (x: (typeof comments)[number]) => ({
+			id: x.id,
+			author: { login: x.login, __typename: x.bot ? "Bot" : "User" },
+			createdAt: x.at ?? "2026-01-03T23:00:00Z",
+			publishedAt: x.at,
+			state: x.at === null ? "PENDING" : "SUBMITTED",
+		});
+		return {
+			summary: {
+				id: "T1",
+				comments: { totalCount: comments.length, nodes: comments.map(c) },
+			},
+			content: {
+				id: "T1",
+				comments: {
+					totalCount: comments.length + extra.length,
+					nodes: [
+						...comments.map((x) => ({
+							...c(x),
+							body: `**${x.id}**`,
+							bodyText: x.id,
+							bodyHTML: `<p><strong>${x.id}</strong></p>`,
+						})),
+						...extra,
+					],
+				},
+			},
+		};
+	};
+	const thread = node([
+		{ id: "c1", login: "rev", at: "2026-01-03T09:00:00Z" },
+		{ id: "c2", login: "ci", bot: true, at: "2026-01-03T10:00:00Z" },
+		{ id: "c3", login: "octo-author", at: "2026-01-03T12:00:00Z" },
+		{ id: "c4", login: "Octo_Cat", at: null },
+	]);
+
+	it("gives every comment oldest first, a bot flagged, the pending one marked", () => {
+		const comments = mapComments(thread.summary, thread.content);
+		expect(comments.map((c) => [c.id, c.author, c.bot, c.pending])).toEqual([
+			["c1", "rev", false, false],
+			["c2", "ci", true, false],
+			["c3", "octo-author", false, false],
+			["c4", "Octo_Cat", false, true],
+		]);
+		expect(comments[0]).toEqual({
+			id: "c1",
+			author: "rev",
+			bot: false,
+			publishedAt: "2026-01-03T09:00:00Z",
+			pending: false,
+			html: "<p><strong>c1</strong></p>",
+			body: "**c1**",
+			text: "c1",
+		});
+		expect(comments[3]?.publishedAt).toBeNull();
+	});
+
+	it("as of a cutoff: only those published by then, none pending", () => {
+		const comments = mapComments(
+			thread.summary,
+			thread.content,
+			"2026-01-03T11:00:00Z",
+		);
+		expect(comments.map((c) => c.id)).toEqual(["c1", "c2"]);
+	});
+
+	it("leaves out a comment added after the summary: the count agrees", () => {
+		const t = node(
+			[{ id: "c1", login: "rev", at: "2026-01-03T09:00:00Z" }],
+			[
+				{
+					id: "late",
+					author: { login: "x", __typename: "User" },
+					createdAt: "2026-01-04T00:00:00Z",
+					publishedAt: "2026-01-04T00:00:00Z",
+					state: "SUBMITTED",
+					bodyText: "late",
+				},
+			],
+		);
+		expect(mapComments(t.summary, t.content).map((c) => c.id)).toEqual(["c1"]);
 	});
 });

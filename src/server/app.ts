@@ -1,10 +1,11 @@
 import { existsSync } from "node:fs";
 import fastifyStatic from "@fastify/static";
 import Fastify, { type FastifyInstance } from "fastify";
-import type {
-	ClusterState,
-	StateChange,
-	ThreadsStage,
+import {
+	type ClusterState,
+	COMMENTS_BATCH,
+	type StateChange,
+	type ThreadsStage,
 } from "../shared/types.js";
 import { registerAccessKey, registerHostCheck } from "./access.js";
 import { GhError } from "./errors.js";
@@ -127,6 +128,21 @@ export async function buildApp(
 				throw new BadRequestError(`Unknown stage: ${String(stage)}`);
 			}
 			return session.threads(read, stage as ThreadsStage);
+		},
+	);
+	// The comments of a read's threads, by id (OverviewRead.comments).
+	app.get<{ Querystring: { read?: string; ids?: string } }>(
+		"/api/comments",
+		(request) => {
+			const { read, ids } = request.query;
+			if (!read) throw new BadRequestError("read is required");
+			const list = (ids ?? "").split(",").filter(Boolean);
+			if (list.length > COMMENTS_BATCH) {
+				throw new BadRequestError(
+					`At most ${COMMENTS_BATCH} threads a request`,
+				);
+			}
+			return session.comments(read, list);
 		},
 	);
 	// A read's timeline (OverviewRead).

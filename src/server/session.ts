@@ -1,4 +1,5 @@
 import type {
+	CommentsView,
 	DiffLine,
 	FileHunks,
 	PrOverview,
@@ -252,6 +253,17 @@ export class Session {
 		const read = this.#reads.find((r) => r.id === readId);
 		if (!read) throw new UnknownReadError(`No read ${readId}`);
 		return read.threads(stage);
+	}
+
+	/**
+	 * The comments of read `readId`'s threads with these ids
+	 * (OverviewRead.comments). An UnknownReadError when the read is no
+	 * longer kept.
+	 */
+	comments(readId: string, ids: string[]): Promise<CommentsView> {
+		const read = this.#reads.find((r) => r.id === readId);
+		if (!read) throw new UnknownReadError(`No read ${readId}`);
+		return read.comments(ids);
 	}
 
 	/**
