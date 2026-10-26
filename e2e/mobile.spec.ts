@@ -465,11 +465,9 @@ test("an open tooltip causes no horizontal page overflow", async ({
 	await settled(page);
 	await section.getByRole("progressbar", { name: "File progress" }).focus();
 	// Its text is the progressbar's value text, so it is hidden from the a11y tree.
-	const tip = page
-		.locator("[role=tooltip]:not([hidden])")
-		.filter({
-			hasText: /^not started · \d+ lines? added, \d+ deleted · 1 cluster · /,
-		});
+	const tip = page.locator("[role=tooltip]:not([hidden])").filter({
+		hasText: /^not started · \d+ lines? added, \d+ deleted · 1 cluster · /,
+	});
 	await expect(tip).toBeVisible();
 	await expectNoPageOverflow(page);
 	const box = await tip.boundingBox();
