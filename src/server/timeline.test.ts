@@ -191,25 +191,99 @@ describe("buildTimeline", () => {
 	});
 
 	it("as of a cutoff: only what happened by then", () => {
-		const { events } = build(
-			[
-				timelineCommit({ login: "ann", at: at(1), oid: sha(1) }),
-				timelineReview({
-					login: "bob",
-					at: at(4),
-					state: "APPROVED",
-					comments: [
-						// Written before the cutoff (as the threads count it).
-						{ id: "c1", path: "a", line: 1, at: at(2), text: "early" },
-					],
-				}),
-				timelineFact("MergedEvent", { login: "bob", at: at(5) }),
-			],
-			{ asOf: at(3) },
-		);
-		expect(shape(events)).toEqual(["commits:ann:1", "review:bob:1"]);
+		const nodes = [
+			timelineCommit({ login: "ann", at: at(1), oid: sha(1) }),
+			timelineReview({
+				login: "bob",
+				at: at(4),
+				state: "APPROVED",
+				comments: [
+					// Written before the cutoff, submitted after: nobody saw it then.
+					{ id: "c1", path: "a", line: 1, at: at(2), text: "early" },
+				],
+			}),
+			timelineFact("MergedEvent", { login: "bob", at: at(5) }),
+		];
+		expect(shape(build(nodes, { asOf: at(3) }).events)).toEqual([
+			"commits:ann:1",
+		]);
+		const { events } = build(nodes, { asOf: at(4) });
+		expect(shape(events)).toEqual(["commits:ann:1", "review:bob:2"]);
 		const review = events[1];
-		expect(review?.kind === "review" && review.items[0]?.kind).toBe("comment");
+		expect(
+			review?.kind === "review" && review.items.map((i) => [i.kind, i.at]),
+		).toEqual([
+			["review", at(4)],
+			["comment", at(4)],
+		]);
+	});
+
+	it("dates review comments by the review's submission, so they land together", () => {
+		const { events } = build([
+			// bob drafts at 1 and 3, ann pushes at 2, bob submits at 4.
+			timelineCommit({ login: "ann", at: at(2), oid: sha(1) }),
+			timelineReview({
+				login: "bob",
+				at: at(4),
+				comments: [
+					{ id: "c1", path: "a", line: 1, at: at(1), text: "one" },
+					{ id: "c2", path: "a", line: 2, at: at(3), text: "two" },
+				],
+			}),
+		]);
+		expect(shape(events)).toEqual(["commits:ann:1", "review:bob:2"]);
+		const run = events[1];
+		expect(run?.kind === "review" && [run.from, run.to]).toEqual([
+			at(4),
+			at(4),
+		]);
+		expect(
+			run?.kind === "review" &&
+				run.items.map((i) => i.kind === "comment" && i.text),
+		).toEqual(["one", "two"]);
+	});
+
+	it("falls back to the review's submission, then the writing, for a comment GitHub gives no publication", () => {
+		const review = timelineReview({
+			login: "bob",
+			at: at(4),
+			comments: [
+				{
+					id: "c1",
+					path: "a",
+					line: 1,
+					at: at(1),
+					publishedAt: null,
+					text: "x",
+				},
+			],
+		});
+		const item = (events: TimelineEvent[]) => {
+			const run = events[0];
+			return run?.kind === "review" ? run.items[0]?.at : undefined;
+		};
+		expect(item(build([review]).events)).toBe(at(4));
+		const unsubmitted = { ...(review as object), submittedAt: null };
+		// A review without a submission isn't shown at all (pending).
+		expect(build([unsubmitted]).events).toEqual([]);
+	});
+
+	it("leaves out a pending comment", () => {
+		const review = timelineReview({
+			login: "bob",
+			at: at(4),
+			state: "APPROVED",
+			comments: [{ id: "c1", path: "a", line: 1, text: "x" }],
+		}) as { comments: { nodes: Record<string, unknown>[] } };
+		Object.assign(review.comments.nodes[0] ?? {}, {
+			state: "PENDING",
+			publishedAt: null,
+		});
+		const { events } = build([review]);
+		const run = events[0];
+		expect(run?.kind === "review" && run.items.map((i) => i.kind)).toEqual([
+			"review",
+		]);
 	});
 
 	it("maps a review: verdict or text as an item, a plain reply as its comment alone", () => {

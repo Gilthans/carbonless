@@ -8,6 +8,7 @@ import type {
 	TimelineView,
 } from "../shared/types.js";
 import { atOrBefore } from "./asOf.js";
+import { visibleAt } from "./commentTime.js";
 
 /**
  * The PR's timeline from GitHub's timeline items (gh.ts fetchTimeline):
@@ -150,6 +151,9 @@ function entries(input: TimelineInput, gaps: string[]): Entry[] {
 				}
 				for (const rawComment of nodes) {
 					const c = obj(rawComment);
+					// Seen when the review was submitted, not when written.
+					const at = visibleAt(c, n.submittedAt);
+					if (at === null) continue;
 					const id = str(c.id);
 					const root = str(obj(c.replyTo).id);
 					out.push({
@@ -157,7 +161,7 @@ function entries(input: TimelineInput, gaps: string[]): Entry[] {
 						actor,
 						item: {
 							kind: "comment",
-							at: str(c.createdAt),
+							at,
 							path: str(c.path),
 							line: lineOf(c),
 							text: firstLine(c.bodyText),

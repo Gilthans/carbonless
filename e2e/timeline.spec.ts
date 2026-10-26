@@ -119,12 +119,13 @@ test("the Timeline: runs oldest first, each opening into its items", async ({
 	const comments = rows.nth(2).getByRole("button", { name: "Show 3 comments" });
 	await comments.click();
 	const items = rows.nth(2).getByTestId("timeline-item");
-	// By when each was written: a comment, the verdict with the second
-	// comment (submitted together), then a conversation comment.
+	// By when each was published: the verdict and both comments (submitted
+	// together, though the first was written earlier), then a conversation
+	// comment.
 	await expect(items).toHaveCount(4);
-	await expect(items.nth(0)).toContainText("src/cache.ts:1");
+	await expect(items.nth(1)).toContainText("src/cache.ts:1");
 	await expect(
-		items.nth(0).getByRole("img", { name: "Unresolved" }),
+		items.nth(1).getByRole("img", { name: "Unresolved" }),
 	).toBeVisible();
 	await expect(
 		items.nth(2).getByRole("img", { name: "Resolved" }),
