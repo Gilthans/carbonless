@@ -151,6 +151,16 @@ describe("buildTimeline", () => {
 		expect(events[8]).toMatchObject({ commit: sha(9) });
 	});
 
+	it("shows a merge, not the close that comes with it", () => {
+		const { events } = build([
+			timelineFact("MergedEvent", { login: "bob", at: at(5) }),
+			timelineFact("ClosedEvent", { login: "bob", at: at(5) }),
+			timelineFact("ReopenedEvent", { login: "bob", at: at(6) }),
+			timelineFact("ClosedEvent", { login: "bob", at: at(7) }),
+		]);
+		expect(shape(events)).toEqual(["merged:bob", "reopened:bob", "closed:bob"]);
+	});
+
 	it("orders by time, equal times in GitHub's order, every time the same", () => {
 		const nodes = [
 			timelineCommit({ login: "ann", at: at(5), oid: sha(1) }),

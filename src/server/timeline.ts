@@ -257,8 +257,17 @@ const FACT_KINDS = {
  */
 export function buildTimeline(input: TimelineInput): TimelineView {
 	const gaps: string[] = [];
-	const all = entries(input, gaps).filter(
-		(e) => !input.asOf || atOrBefore(atOf(e), input.asOf),
+	const listed = entries(input, gaps);
+	// A merge also closes the PR, at the same moment: GitHub shows the merge.
+	const merges = new Set(
+		listed.flatMap((e) =>
+			e.run === null && e.fact.kind === "merged" ? [e.fact.at] : [],
+		),
+	);
+	const all = listed.filter(
+		(e) =>
+			(!input.asOf || atOrBefore(atOf(e), input.asOf)) &&
+			!(e.run === null && e.fact.kind === "closed" && merges.has(e.fact.at)),
 	);
 	// An undated entry stays after what GitHub listed before it.
 	let carried = Number.NEGATIVE_INFINITY;
