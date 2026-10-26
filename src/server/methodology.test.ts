@@ -261,6 +261,48 @@ describe.each(METHODOLOGIES)("$name", (m) => {
 		expect((await rows(s)).reverse()).toEqual(want);
 	});
 
+	it("orders the timeline by GitHub's facts: a rebase's commits by their new times, then its force-push; the merge, not the close", async () => {
+		const shape = async (s: Session) =>
+			(await s.timeline((await s.overview(0)).readId)).events.map((e) =>
+				e.kind === "commits"
+					? `commits:${e.actor.login}:${e.items.map((c) => c.oid.slice(0, 7)).join(",")}`
+					: e.kind === "force-push"
+						? `force-push:${e.before.slice(0, 7)}>${e.after.slice(0, 7)}`
+						: `${e.kind}:${e.actor.login}`,
+			);
+		const short = (oid: string) => oid.slice(0, 7);
+		const own = repo.prEntry("updated").graphql?.commits as {
+			commit: { oid: string };
+		}[];
+		const ownOids = own.map((c) => short(c.commit.oid)).join(",");
+		const updated =
+			m.update === "rebase"
+				? [
+						// The rebased commits replace the first ones, after the review.
+						"review:rev1",
+						`commits:dev:${ownOids}`,
+						`force-push:${short(repo.heads.opened)}>${short(repo.heads.updated)}`,
+					]
+				: m.update === "merge-base-in"
+					? [
+							`commits:dev:${own
+								.slice(0, 2)
+								.map((c) => short(c.commit.oid))
+								.join(",")}`,
+							"review:rev1",
+							`commits:dev:${short(repo.heads.updated)}`,
+						]
+					: [`commits:dev:${ownOids}`, "review:rev1"];
+		stage("updated");
+		const s = await open();
+		expect(await shape(s)).toEqual(updated);
+		stage("landed");
+		await s.refresh();
+		expect(await shape(s)).toEqual(
+			m.landing === "open" ? updated : [...updated, "merged:maintainer"],
+		);
+	});
+
 	it("as of before any review, the head is the last of the commits sharing a second", async () => {
 		stage("opened");
 		const beforeReview = await open(BEFORE_REVIEW);

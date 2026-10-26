@@ -2,7 +2,13 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { prView, type Scenario } from "./fake-gh/scenario";
+import {
+	prView,
+	type Scenario,
+	timelineCommit,
+	timelineFact,
+	timelineReview,
+} from "./fake-gh/scenario";
 import { testGitEnv } from "./git-fixture";
 
 /**
@@ -49,6 +55,8 @@ export const TIMES = {
 	pr: "2026-01-02T00:00:00Z",
 	/** rev1 reviews the PR's first head (so as-of finds it after a force-push). */
 	review: "2026-01-02T12:00:00Z",
+	/** The push of the update, just after its commits were made. */
+	pushed: "2026-01-04T00:00:30Z",
 	baseMoved: "2026-01-03T00:00:00Z",
 	updated: "2026-01-04T00:00:00Z",
 	baseMovedAgain: "2026-01-05T00:00:00Z",
@@ -244,6 +252,37 @@ export function createMethodologyRepo(
 					]
 				: updatedCommits;
 		const merged = stage === "landed" && m.landing !== "open";
+		// GitHub's timeline: the PR's commits as they are now (a rebase
+		// replaces them), rev1's review, the force-push of a rebase, the merge.
+		const timelineItems = [
+			...commits.map(({ oid, at }) =>
+				timelineCommit({ login: "dev", at, oid }),
+			),
+			timelineReview({ login: "rev1", at: TIMES.review, text: "Looks fine" }),
+			...(stage !== "opened" && m.update === "rebase"
+				? [
+						timelineFact("HeadRefForcePushedEvent", {
+							login: "dev",
+							at: TIMES.pushed,
+							beforeCommit: { oid: p1b },
+							afterCommit: { oid: updated },
+						}),
+					]
+				: []),
+			...(merged
+				? [
+						timelineFact("MergedEvent", {
+							login: "maintainer",
+							at: TIMES.landed,
+							commit: { oid: landed },
+						}),
+						timelineFact("ClosedEvent", {
+							login: "maintainer",
+							at: TIMES.landed,
+						}),
+					]
+				: []),
+		];
 		return {
 			view: prView({
 				number,
@@ -268,6 +307,7 @@ export function createMethodologyRepo(
 				commits: commits.map(({ oid, at }) => ({
 					commit: { oid, committedDate: at },
 				})),
+				timelineItems,
 			},
 		};
 	};

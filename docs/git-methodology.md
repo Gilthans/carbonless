@@ -73,7 +73,7 @@ state, head, commits (with dates) and a review on the first head.
 
 Every permutation proves:
 
-- `src/server/methodology.test.ts` (unit, 6 tests × 12):
+- `src/server/methodology.test.ts` (unit, 7 tests × 12):
   - the snapshot equals the reference (B0 → the PR's first head: same files,
     same clusters and keys) at the opened and the updated stage, through a
     refresh and a fresh open;
@@ -87,7 +87,13 @@ Every permutation proves:
   - thread code comes from the clone at the updated stage and after the
     landing: a comment on the first head (force-pushed away by a rebase)
     shows that head's diff, and one on the updated head next to the base's
-    own change shows that change as context on both sides.
+    own change shows that change as context on both sides;
+  - the Overview's timeline follows GitHub's facts: after a rebase, the
+    rebased commits (GitHub lists only those) sort by their new commit
+    times, after the review of the first head, and the force-push follows
+    them; a merge-base-in adds its merge commit as a later commit run; a
+    landing shows the merge alone (GitHub's close at the same moment is
+    left out), whatever the landing method.
 - `e2e/methodology.spec.ts` (Playwright, desktop and phone, 12 each): the
   updated PR's Files page lists only the PR's files; once landed `crb`
   refuses exactly when merged.
