@@ -184,6 +184,7 @@ describe("mapOverview", () => {
 						expect.objectContaining({ newNo: 42, marked: true }),
 					],
 					source: "github",
+					snapshot: { same: true },
 				},
 			},
 			{
@@ -259,6 +260,7 @@ describe("mapOverview", () => {
 						},
 					]),
 					source: "github",
+					snapshot: { same: true },
 				},
 			},
 		]);

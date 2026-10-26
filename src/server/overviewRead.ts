@@ -118,9 +118,13 @@ export class OverviewRead {
 				(firstIds.has(id) ? firstText : restText).then(() =>
 					this.#contents.get(id),
 				);
+			// The clone's part a few at a time; waiting for the text (GitHub's
+			// hunk, to check the code against) holds no slot.
 			const tasks = p.coded.map((t) => ({
 				first: firstIds.has(t.id),
-				done: limit(() => this.#code(sources, t, textOf)),
+				done: limit(() => this.#warm(sources, t)).then(() =>
+					this.#code(sources, t, textOf),
+				),
 			}));
 			return {
 				first: Promise.all(tasks.filter((t) => t.first).map((t) => t.done)),
@@ -189,15 +193,24 @@ export class OverviewRead {
 			// GitHub's hunk shows only once the clone has said no: no swap.
 			return {
 				...t,
-				code: { ...t.code, rows: [], source: "pending" as const },
+				code: { anchor: t.code.anchor, rows: [], source: "pending" as const },
 			};
 		});
 		return { threads, complete };
 	}
 
 	/**
-	 * A thread's code (ThreadCodeSource.code): GitHub's hunk, from the
-	 * thread's content, is waited for only when the clone can't give it.
+	 * Builds a thread's code from the clone into the source's caches, so
+	 * #code then reads the clone only for a fallback.
+	 */
+	async #warm(sources: ReadSources, thread: ReviewThread): Promise<void> {
+		if (!thread.code) return;
+		await sources.code.window(thread.code.anchor, await sources.base());
+	}
+
+	/**
+	 * A thread's code (ThreadCodeSource.code), checked against GitHub's
+	 * hunk from the thread's content (or that hunk, when the clone can't).
 	 */
 	async #code(
 		sources: ReadSources,

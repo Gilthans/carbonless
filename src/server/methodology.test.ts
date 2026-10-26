@@ -167,18 +167,29 @@ describe.each(METHODOLOGIES)("$name", (m) => {
 
 	it("builds thread code from the clone: the PR's own diff at each comment's commit, through the update and the landing", async () => {
 		/** A RIGHT line comment on a.txt, on `commit`, made `at`. */
-		const thread = (line: number, commit: string, at: string) =>
+		const thread = (
+			line: number,
+			commit: string,
+			at: string,
+			diffHunk?: string,
+		) =>
 			reviewThread({ path: "a.txt", line, diffSide: "RIGHT" }, [
 				threadComment({
 					login: "rev1",
 					text: `On ${line}`,
 					commit,
 					createdAt: at,
+					diffHunk,
 				}),
 			]);
 		const threads = [
-			// On the first head, before the base moved.
-			thread(30, repo.heads.opened, TIMES.review),
+			// On the first head, before the base moved, with the PR's own hunk.
+			thread(
+				30,
+				repo.heads.opened,
+				TIMES.review,
+				"@@ -27,4 +27,4 @@\n line 27\n line 28\n line 29\n-line 30\n+line 30 changed",
+			),
 			// On the updated head, after the update: next to the base's line 15.
 			thread(14, repo.heads.updated, "2026-01-04T12:00:00Z"),
 		];
@@ -201,6 +212,7 @@ describe.each(METHODOLOGIES)("$name", (m) => {
 			(await s.threads((await s.overview(0)).readId, "full")).threads.map(
 				(t) => ({
 					source: t.code?.source,
+					snapshot: t.code?.snapshot,
 					rows: t.code?.rows.map(
 						(r) =>
 							`${r.marked ? ">" : " "}${r.kind[0]} ${r.oldNo ?? "."}/${r.newNo ?? "."} ${r.text}`,
@@ -211,6 +223,8 @@ describe.each(METHODOLOGIES)("$name", (m) => {
 		const want = [
 			{
 				source: "clone",
+				// The commenter's view, whatever happened to the branch since.
+				snapshot: { same: true },
 				rows: [
 					" c 27/27 line 27",
 					" c 28/28 line 28",
@@ -225,6 +239,8 @@ describe.each(METHODOLOGIES)("$name", (m) => {
 			{
 				// The base's own change is context on both sides: never the PR's.
 				source: "clone",
+				// No hunk to check it against.
+				snapshot: { same: false, reason: "no-host-diff" },
 				rows: [
 					" c 11/11 line 11",
 					" c 12/12 line 12",

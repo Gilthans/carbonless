@@ -174,7 +174,26 @@ export interface CodeWindow {
 	 * "pending": not built yet (no rows); the pane shows its frame.
 	 */
 	source: "clone" | "github" | "pending";
+	/**
+	 * Whether these rows are what the commenter saw (codeWindow.ts,
+	 * `snapshotOf`): `same` only when shown to be; absent while pending.
+	 * The page flags anything but `same`.
+	 */
+	snapshot?: CodeSnapshot;
 }
+
+/**
+ * Why a comment's code may not be what the commenter saw:
+ * "no-host-diff": the host kept no diff of the comment's own view to check
+ * against; "diff-differs": the host's diff of that view disagrees with the
+ * rows shown (another old side, other lines changed, other numbers, or the
+ * range not in it).
+ */
+export type SnapshotReason = "no-host-diff" | "diff-differs";
+
+export type CodeSnapshot =
+	| { same: true }
+	| { same: false; reason: SnapshotReason };
 
 export interface PrOverview {
 	title: string;

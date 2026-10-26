@@ -1,7 +1,12 @@
 import { type HunkLine, parseDiffHunk } from "../shared/diffHunk.js";
 import type { CodeAnchor, CodeRow, CodeWindow } from "../shared/types.js";
 import { ensureCommit } from "./clone.js";
-import { hunkWindowRows, touchesOldSide, windowRows } from "./codeWindow.js";
+import {
+	hunkWindowRows,
+	snapshotOf,
+	touchesOldSide,
+	windowRows,
+} from "./codeWindow.js";
 import { runGit } from "./git.js";
 
 /** What the PR's diff is taken against. */
@@ -352,35 +357,69 @@ export class ThreadCodeSource {
 		base: DiffBase,
 		lenient = false,
 	): Promise<CodeRow[] | null> {
+		return (await this.#built(anchor, base, lenient))?.rows ?? null;
+	}
+
+	/** window's rows, and the whole file's diff they are cut from. */
+	async #built(
+		anchor: CodeAnchor,
+		base: DiffBase,
+		lenient: boolean,
+	): Promise<{ rows: CodeRow[]; lines: HunkLine[] } | null> {
 		try {
 			if (!OID.test(anchor.commit)) return null;
 			if (!(await this.#commit(anchor.commit))) return null;
 			const left = await this.#left(anchor, base, lenient);
 			if (!left) return null;
 			const lines = await this.#fileLines(left, anchor.commit, anchor.path);
-			return lines && windowRows(lines, anchor);
+			const rows = lines && windowRows(lines, anchor);
+			return lines && rows ? { rows, lines } : null;
 		} catch {
 			return null;
 		}
 	}
 
 	/**
-	 * A comment's code: the clone's. Where the clone can't give it for
-	 * certain, the comment host's own hunk (`hostHunk`, asked for only then;
-	 * `source: "github"`); with no hunk, a range on the new side from the
-	 * clone anyway (#left's `lenient`); else none.
+	 * A comment's code: the clone's, checked against the comment host's own
+	 * hunk (`hostHunk`, the diff of the view the comment was made in) for
+	 * whether it is what the commenter saw (`snapshot`, snapshotOf). Where
+	 * the clone can't give it for certain, that hunk itself (`source:
+	 * "github"`, the commenter's own view); with no hunk, a range on the new
+	 * side from the clone anyway (#left's `lenient`), which nothing vouches
+	 * for; else none. A hunk that can't be read counts as none.
 	 */
 	async code(
 		anchor: CodeAnchor,
 		base: DiffBase,
 		hostHunk: () => Promise<string>,
 	): Promise<CodeWindow | null> {
-		const rows = await this.window(anchor, base);
-		if (rows) return { anchor, rows, source: "clone" };
-		const hunk = await hostHunk();
-		const hosted = hunk.trim() ? hunkWindowRows(hunk, anchor) : [];
-		if (hosted.length) return { anchor, rows: hosted, source: "github" };
-		const lenient = await this.window(anchor, base, true);
-		return lenient ? { anchor, rows: lenient, source: "clone" } : null;
+		const hunk = () => hostHunk().catch(() => "");
+		const built = await this.#built(anchor, base, false);
+		if (built) {
+			return {
+				anchor,
+				rows: built.rows,
+				source: "clone",
+				snapshot: snapshotOf(await hunk(), built.lines, anchor),
+			};
+		}
+		const text = await hunk();
+		const hosted = text.trim() ? hunkWindowRows(text, anchor) : [];
+		if (hosted.length) {
+			return {
+				anchor,
+				rows: hosted,
+				source: "github",
+				snapshot: { same: true },
+			};
+		}
+		const lenient = await this.#built(anchor, base, true);
+		if (!lenient) return null;
+		return {
+			anchor,
+			rows: lenient.rows,
+			source: "clone",
+			snapshot: snapshotOf(text, lenient.lines, anchor),
+		};
 	}
 }

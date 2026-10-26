@@ -1,5 +1,10 @@
 import { type HunkLine, numberOn, parseDiffHunk } from "../shared/diffHunk.js";
-import type { CodeAnchor, CodeRow, DiffSide } from "../shared/types.js";
+import type {
+	CodeAnchor,
+	CodeRow,
+	CodeSnapshot,
+	DiffSide,
+} from "../shared/types.js";
 
 /** Rows a window keeps before and after the commented range. */
 export const CONTEXT = 3;
@@ -63,4 +68,52 @@ export function hunkWindowRows(hunk: string, anchor: CodeAnchor): CodeRow[] {
 /** Whether any end of the range is on the old side. */
 export function touchesOldSide(anchor: CodeAnchor): boolean {
 	return anchor.side === "LEFT" || anchor.startSide === "LEFT";
+}
+
+/** The same diff row: kind, numbers on both sides, text, end-of-file mark. */
+function sameLine(a: HunkLine, b: HunkLine): boolean {
+	return (
+		a.kind === b.kind &&
+		a.oldNo === b.oldNo &&
+		a.newNo === b.newNo &&
+		a.text === b.text &&
+		!!a.noNewline === !!b.noNewline
+	);
+}
+
+/**
+ * Whether code rebuilt as `lines` (the whole file's diff the window is cut
+ * from) is what the commenter saw, judged by `hunk`, the host's diff of the
+ * view the comment was made in (GitHub's diffHunk: one hunk, from its
+ * header to the commented line). Same only when the hunk is a run of
+ * `lines`, row for row (kind, both numbers, text), and holds both ends of
+ * the range. With no hunk to check against, or any row that disagrees, it
+ * is not: a failure to show equality flags the code, never the other way.
+ * Rows outside the hunk (after the range, above its first line) can't be
+ * checked: the host keeps none.
+ */
+export function snapshotOf(
+	hunk: string,
+	lines: HunkLine[],
+	anchor: CodeAnchor,
+): CodeSnapshot {
+	const host = parseDiffHunk(hunk);
+	const first = host[0];
+	if (!first) return { same: false, reason: "no-host-diff" };
+	const differs: CodeSnapshot = { same: false, reason: "diff-differs" };
+	const side: DiffSide = first.kind === "del" ? "LEFT" : "RIGHT";
+	const no = numberOn(first, side);
+	const start = lines.findIndex((l) => numberOn(l, side) === no);
+	if (start === -1 || start + host.length > lines.length) return differs;
+	for (let i = 0; i < host.length; i++) {
+		const ours = lines[start + i];
+		const theirs = host[i];
+		if (!ours || !theirs || !sameLine(ours, theirs)) return differs;
+	}
+	const end = lastIndex(host, host.length - 1, anchor.side, anchor.line);
+	if (end === -1) return differs;
+	if (lastIndex(host, end, anchor.startSide, anchor.startLine) === -1) {
+		return differs;
+	}
+	return { same: true };
 }

@@ -546,6 +546,8 @@ describe("Session", () => {
 					" line 5",
 				],
 			);
+			// Checked against GitHub's hunk, read with the comment's text.
+			expect(code?.snapshot).toEqual({ same: true });
 		});
 	});
 

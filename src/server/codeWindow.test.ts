@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { parseDiffHunk } from "../shared/diffHunk";
 import type { CodeAnchor, CodeRow } from "../shared/types";
-import { hunkWindowRows, windowRows } from "./codeWindow";
+import { hunkWindowRows, snapshotOf, windowRows } from "./codeWindow";
 
 // Old 10..16, new 10..17: c replaced by C D, g deleted, i added.
 const HUNK = [
@@ -155,5 +155,111 @@ describe("hunkWindowRows (a host's own hunk)", () => {
 	it("is empty for a hunk it can't read", () => {
 		expect(hunkWindowRows("garbage", anchor(1, 1))).toEqual([]);
 		expect(hunkWindowRows("", anchor(1, 1))).toEqual([]);
+	});
+});
+
+describe("snapshotOf", () => {
+	/** The PR's diff of the whole file: HUNK with three context rows above. */
+	const FILE = parseDiffHunk(
+		["@@ -7,10 +7,11 @@", " x", " y", " z", ...HUNK.split("\n").slice(1)].join(
+			"\n",
+		),
+	);
+	const host = (lines: string[]) => lines.join("\n");
+	const SAME = host(["@@ -9,6 +9,7 @@", " z", " a", " b", "-c", "+C", "+D"]);
+	const differs = { same: false, reason: "diff-differs" };
+
+	it("is the same when the host's hunk is a run of the diff holding the range", () => {
+		expect(snapshotOf(SAME, FILE, anchor(12, 13))).toEqual({ same: true });
+		// From the file's first row, with a trailing newline.
+		expect(snapshotOf("@@ -7,2 +7,2 @@\n x\n y\n", FILE, anchor(8, 8))).toEqual(
+			{ same: true },
+		);
+		// A deleted line, by its old number.
+		expect(
+			snapshotOf(
+				host(["@@ -11,2 +11,1 @@", " b", "-c"]),
+				FILE,
+				anchor(12, 12, { side: "LEFT", startSide: "LEFT" }),
+			),
+		).toEqual({ same: true });
+	});
+
+	it("can't vouch for code with no host hunk", () => {
+		const none = { same: false, reason: "no-host-diff" };
+		expect(snapshotOf("", FILE, anchor(13, 13))).toEqual(none);
+		expect(snapshotOf("@@ -9,6 +9,7 @@\n", FILE, anchor(13, 13))).toEqual(none);
+		expect(snapshotOf("garbage", FILE, anchor(13, 13))).toEqual(none);
+	});
+
+	it("flags another old side", () => {
+		expect(
+			snapshotOf(
+				host(["@@ -9,6 +9,7 @@", " z", " a", " b", "-c earlier", "+C", "+D"]),
+				FILE,
+				anchor(13, 13),
+			),
+		).toEqual(differs);
+	});
+
+	it("flags lines changed in one diff but context in the other", () => {
+		// The host had b as added: a diff against an older commit of the PR.
+		expect(
+			snapshotOf(
+				host(["@@ -9,5 +9,7 @@", " z", " a", "+b", "-c", "+C", "+D"]),
+				FILE,
+				anchor(13, 13),
+			),
+		).toEqual(differs);
+		// And the other way: the host shows as context what the diff changes.
+		expect(
+			snapshotOf(
+				host(["@@ -9,4 +9,4 @@", " z", " a", " b", " C"]),
+				FILE,
+				anchor(12, 12),
+			),
+		).toEqual(differs);
+	});
+
+	it("flags other line numbers", () => {
+		expect(
+			snapshotOf(
+				host(["@@ -19,6 +19,7 @@", " z", " a", " b", "-c", "+C", "+D"]),
+				FILE,
+				anchor(23, 23),
+			),
+		).toEqual(differs);
+		// Off by one on the old side only.
+		expect(
+			snapshotOf(
+				host(["@@ -10,6 +9,7 @@", " z", " a", " b", "-c", "+C", "+D"]),
+				FILE,
+				anchor(13, 13),
+			),
+		).toEqual(differs);
+	});
+
+	it("flags a host hunk that doesn't hold both ends of the range", () => {
+		// The range's end is past the hunk.
+		expect(snapshotOf(SAME, FILE, anchor(13, 15))).toEqual(differs);
+		// Its start is above the hunk.
+		expect(snapshotOf(SAME, FILE, anchor(8, 13))).toEqual(differs);
+	});
+
+	it("flags a hunk that runs past the diff's end, or another end of file", () => {
+		expect(
+			snapshotOf(
+				host(["@@ -16,1 +16,3 @@", " h", "+i", "+j"]),
+				FILE,
+				anchor(17, 18),
+			),
+		).toEqual(differs);
+		expect(
+			snapshotOf(
+				host(["@@ -16,1 +16,2 @@", " h", "+i", "\\ No newline at end of file"]),
+				FILE,
+				anchor(17, 17),
+			),
+		).toEqual(differs);
 	});
 });

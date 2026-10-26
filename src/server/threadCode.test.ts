@@ -353,7 +353,7 @@ describe("ThreadCodeSource.code", () => {
 			comments.map((c) => s.code(c.anchor, BASE, async () => c.hunk)),
 		);
 
-	it("builds every comment's code from the clone, GitHub's hunk or not, asking for the hunk only if needed", async () => {
+	it("builds every comment's code from the clone, GitHub's hunk or not, checking it against the hunk", async () => {
 		const hostHunk = vi.fn(
 			async () => "@@ -0,0 +1,2 @@\n+line 1 new\n+line 2 new",
 		);
@@ -371,11 +371,73 @@ describe("ThreadCodeSource.code", () => {
 			" ./4 line 4 new",
 			" ./5 line 5 new",
 		]);
-		expect(hostHunk).not.toHaveBeenCalled();
+		// The hunk is a run of the PR's diff, ending on the line.
+		expect(hostHunk).toHaveBeenCalledOnce();
+		expect(a?.snapshot).toEqual({ same: true });
 		const [b] = await fill(s, [
 			comment(at({ path: "new.txt", line: 5, startLine: 5 })),
 		]);
 		expect(b?.source).toBe("clone");
+		// Nothing to check it against.
+		expect(b?.snapshot).toEqual({ same: false, reason: "no-host-diff" });
+	});
+
+	it("flags code that isn't the diff the comment was made on", async () => {
+		const line10 = at({ line: 10, startLine: 10 });
+		const [same, sinceReview, otherNumbers, unchanged, broken] = await fill(
+			source(),
+			[
+				// The PR's own diff: three rows of context, the edit.
+				comment(
+					line10,
+					"@@ -7,7 +7,7 @@\n line 7\n line 8\n line 9\n-line 10\n+line 10 changed",
+				),
+				// "Changes since your last review": another old side, where
+				// line 10 had been edited once already.
+				comment(
+					line10,
+					"@@ -7,7 +7,7 @@\n line 7\n line 8\n line 9\n-line 10 first try\n+line 10 changed",
+				),
+				// The same lines, numbered as in another diff.
+				comment(
+					line10,
+					"@@ -8,7 +8,7 @@\n line 7\n line 8\n line 9\n-line 10\n+line 10 changed",
+				),
+				// A view where the line's neighbour is new too.
+				comment(
+					line10,
+					"@@ -7,6 +7,7 @@\n line 7\n line 8\n+line 9\n-line 10\n+line 10 changed",
+				),
+				// A hunk that doesn't hold the commented line.
+				comment(line10, "@@ -7,3 +7,3 @@\n line 7\n line 8\n line 9"),
+			],
+		);
+		expect(same?.snapshot).toEqual({ same: true });
+		for (const c of [sinceReview, otherNumbers, unchanged, broken]) {
+			expect(c?.source).toBe("clone");
+			expect(c?.snapshot).toEqual({ same: false, reason: "diff-differs" });
+		}
+		// An unchanged file shown whole as context, commented as added.
+		const [cr] = await fill(source(), [
+			comment(
+				at({ path: "keep.txt", line: 2, startLine: 2 }),
+				"@@ -0,0 +1,2 @@\n+line 1\n+line 2",
+			),
+		]);
+		expect(cr?.rows.every((r) => r.kind === "context")).toBe(true);
+		expect(cr?.snapshot).toEqual({ same: false, reason: "diff-differs" });
+	});
+
+	it("counts a hunk that can't be read as none", async () => {
+		const c = await source().code(
+			at({ line: 10, startLine: 10 }),
+			BASE,
+			async () => {
+				throw new Error("gone");
+			},
+		);
+		expect(c?.source).toBe("clone");
+		expect(c?.snapshot).toEqual({ same: false, reason: "no-host-diff" });
 	});
 
 	it("takes GitHub's hunk, marked as GitHub's, when the clone can't give the code", async () => {
@@ -387,6 +449,8 @@ describe("ThreadCodeSource.code", () => {
 			comment(anchor),
 		]);
 		expect(hosted?.source).toBe("github");
+		// The host's hunk is the commenter's own view.
+		expect(hosted?.snapshot).toEqual({ same: true });
 		expect(shown(hosted?.rows ?? null)).toEqual([
 			" ./1 line 1",
 			" ./2 line 2",
@@ -409,6 +473,8 @@ describe("ThreadCodeSource.code", () => {
 			),
 		]);
 		expect(right?.source).toBe("clone");
+		// Nothing vouches for it.
+		expect(right?.snapshot).toEqual({ same: false, reason: "no-host-diff" });
 		expect(left).toBeNull();
 	});
 

@@ -169,6 +169,8 @@ function threadCode(
 		anchor,
 		rows: diffHunk.trim() ? hunkWindowRows(diffHunk, anchor) : [],
 		source: "github",
+		// GitHub's hunk is the commenter's own view.
+		snapshot: { same: true },
 	};
 }
 
