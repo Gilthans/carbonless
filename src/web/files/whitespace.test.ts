@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { DiffLine } from "../../shared/types";
 import {
 	type DiffRow,
+	linesWhitespaceEqual,
 	PAIR_CAP,
 	pairWhitespace,
 	stripWhitespace,
@@ -49,6 +50,8 @@ function expectCoverage(lines: DiffLine[], rows: DiffRow[]) {
 			expect(row.del.kind).toBe("del");
 			expect(row.add.kind).toBe("add");
 			expect(whitespaceEqual(row.del.text, row.add.text)).toBe(true);
+			expect(!!row.del.noNewline).toBe(!!row.add.noNewline);
+			expect(linesWhitespaceEqual(row.del, row.add)).toBe(true);
 			seenDels.push(row.del);
 			seenAdds.push(row.add);
 		} else if (row.line.kind === "del") {
@@ -180,6 +183,29 @@ describe("pairWhitespace", () => {
 		expect(trace(pairWhitespace(lines))).toEqual(["-1", "+1"]);
 	});
 
+	it("treats a final newline lost or gained as a real change, like git -w", () => {
+		// Old file ends without a newline, new one with it: a change.
+		expect(
+			trace(pairWhitespace([del(1, "a", { noNewline: true }), add(1, "a")])),
+		).toEqual(["-1", "+1"]);
+		// And the other way round.
+		expect(
+			trace(pairWhitespace([del(1, "a"), add(1, " a", { noNewline: true })])),
+		).toEqual(["-1", "+1"]);
+		// Both without one: whitespace only.
+		expect(
+			trace(
+				pairWhitespace([
+					del(1, "a", { noNewline: true }),
+					add(1, "  a", { noNewline: true }),
+				]),
+			),
+		).toEqual(["~1/1"]);
+		expect(
+			linesWhitespaceEqual(del(1, "a", { noNewline: true }), add(1, "a")),
+		).toBe(false);
+	});
+
 	it("doesn't pair a cluster over the size cap, and does at the cap", () => {
 		const big = (n: number) => [
 			...Array.from({ length: n }, (_, i) => del(i + 1, `line ${i}`)),
@@ -226,6 +252,11 @@ describe("pairWhitespace", () => {
 			const adds = Array.from({ length: rand(8) }, (_, i) =>
 				add(i + 1, line()),
 			);
+			// Sometimes a side's last line has no final newline.
+			const lastDel = dels[dels.length - 1];
+			if (lastDel && rand(3) === 0) lastDel.noNewline = true;
+			const lastAdd = adds[adds.length - 1];
+			if (lastAdd && rand(3) === 0) lastAdd.noNewline = true;
 			const lines = [...dels, ...adds];
 			const rows = pairWhitespace(lines);
 			expectCoverage(lines, rows);

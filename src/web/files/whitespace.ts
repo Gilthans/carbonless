@@ -19,6 +19,18 @@ export const whitespaceEqual = (a: string, b: string): boolean =>
 	stripWhitespace(a) === stripWhitespace(b);
 
 /**
+ * What a line compares by: its text without whitespace, and whether git's
+ * "No newline at end of file" follows it (`-w` doesn't ignore that: a
+ * final newline lost or gained is a real change).
+ */
+const keyOf = (line: DiffLine): string =>
+	`${stripWhitespace(line.text)}${line.noNewline ? "\0" : ""}`;
+
+/** Two lines a pair may join: whitespace-equal, with the same final newline. */
+export const linesWhitespaceEqual = (del: DiffLine, add: DiffLine): boolean =>
+	keyOf(del) === keyOf(add);
+
+/**
  * A cluster with more removed or more added lines than this isn't paired
  * (the pairing is O(n·m)).
  */
@@ -89,10 +101,12 @@ export function pairWhitespace(lines: DiffLine[]): DiffRow[] {
 		else return plain();
 	}
 	if (dels.length > PAIR_CAP || adds.length > PAIR_CAP) return plain();
-	const matched = pairs(
-		dels.map((l) => stripWhitespace(l.text)),
-		adds.map((l) => stripWhitespace(l.text)),
-	);
+	const delKeys = dels.map(keyOf);
+	const addKeys = adds.map(keyOf);
+	// The common case for a big real change: nothing to pair, no O(n·m) work.
+	const addSet = new Set(addKeys);
+	if (!delKeys.some((k) => addSet.has(k))) return plain();
+	const matched = pairs(delKeys, addKeys);
 	const rows: DiffRow[] = [];
 	let d = 0;
 	let a = 0;
