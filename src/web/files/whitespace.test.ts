@@ -10,6 +10,7 @@ import {
 	WRAP_ADDED,
 	WRAP_NEW,
 	WRAP_OLD,
+	WRAP_REMOVED,
 } from "../../../test/whitespace-fixture";
 import { parseU0Patch } from "../../server/diff/clusters";
 import { buildDisplayHunks } from "../../server/diff/hunks";
@@ -60,12 +61,36 @@ const trace = (rows: DiffRow[]) =>
 					: ` ${r.line.oldNo}/${r.line.newNo}`,
 	);
 
+const keyOf = (l: DiffLine) =>
+	`${stripWhitespace(l.text)}${l.noNewline ? "\0" : ""}`;
+
+/**
+ * What "~ rows are whitespace-only, add/del rows are the change" means:
+ * dropping the lines shown as plain add/del from the hunk's two sides must
+ * leave whitespace-equal sequences (the rows are a valid `-w` edit script).
+ * A moved block or a crossed line can never hide in `~` rows.
+ */
+function expectSound(lines: DiffLine[], rows: DiffRow[]) {
+	const plain = new Set(
+		rows.flatMap((r) => (r.kind === "line" ? [r.line] : [])),
+	);
+	const oldKeys = lines
+		.filter((l) => l.kind === "context" || (l.kind === "del" && !plain.has(l)))
+		.map(keyOf);
+	const newKeys = lines
+		.filter((l) => l.kind === "context" || (l.kind === "add" && !plain.has(l)))
+		.map(keyOf);
+	expect(oldKeys, `unsound: ${trace(rows).join(" ")}`).toEqual(newKeys);
+}
+
 /**
  * Principle 2: whatever the matching does, every line of the hunk is in the
  * rows exactly once, each side in diff order, a two-sided row only joins
- * whitespace-equal lines of one run, and a one-sided row has a twin.
+ * whitespace-equal lines of one run, a one-sided row has a twin, and the
+ * labelling is sound (expectSound).
  */
 function expectCoverage(lines: DiffLine[], rows: DiffRow[]) {
+	expectSound(lines, rows);
 	const oldSide = lines.filter((l) => l.kind !== "add");
 	const newSide = lines.filter((l) => l.kind !== "del");
 	const seenOld: DiffLine[] = [];
@@ -285,10 +310,14 @@ describe("pairHunk", () => {
 		).toBe(false);
 	});
 
-	it("doesn't match a hunk over the size cap, and does at the cap", () => {
-		const big = (n: number) => [
-			...Array.from({ length: n }, (_, i) => del(i + 1, `line ${i}`)),
-			...Array.from({ length: n }, (_, i) => add(i + 1, `  line ${i}`)),
+	it("doesn't match a run over the size cap, and does at the cap", () => {
+		const big = (n: number, key = "k") => [
+			...Array.from({ length: n }, (_, i) =>
+				del(i + 1, `line ${i}`, { clusterKey: key }),
+			),
+			...Array.from({ length: n }, (_, i) =>
+				add(i + 1, `  line ${i}`, { clusterKey: key }),
+			),
 		];
 		const over = big(PAIR_CAP + 1);
 		const plain = pairHunk(over);
@@ -298,6 +327,38 @@ describe("pairHunk", () => {
 		const paired = pairHunk(at);
 		expect(paired.every((r) => r.kind === "ws")).toBe(true);
 		expect(paired).toHaveLength(PAIR_CAP);
+	});
+
+	it("over the cap for the hunk, matches each run on its own (a big re-indented file keeps its rows)", () => {
+		// Two re-indented runs around a context line: together over the cap.
+		const half = PAIR_CAP / 2 + 10;
+		const run = (key: string, from: number) => [
+			...Array.from({ length: half }, (_, i) =>
+				del(from + i, `${key} ${i}`, { clusterKey: key }),
+			),
+			...Array.from({ length: half }, (_, i) =>
+				add(from + i, `  ${key} ${i}`, { clusterKey: key }),
+			),
+		];
+		const lines: DiffLine[] = [
+			...run("A", 1),
+			ctx(half + 1, half + 1, "between"),
+			...run("B", half + 2),
+		];
+		const rows = pairHunk(lines);
+		expectCoverage(lines, rows);
+		expect(rows.filter((r) => r.kind === "ws")).toHaveLength(2 * half);
+		// A single run over the cap on its own still can't be matched.
+		const huge = [
+			...Array.from({ length: PAIR_CAP + 1 }, (_, i) =>
+				del(i + 1, `c ${i}`, { clusterKey: "C" }),
+			),
+			...Array.from({ length: PAIR_CAP + 1 }, (_, i) =>
+				add(i + 1, `  c ${i}`, { clusterKey: "C" }),
+			),
+		];
+		const wide: DiffLine[] = [...huge, ctx(PAIR_CAP + 2, PAIR_CAP + 2, "x")];
+		expect(pairHunk(wide).every((r) => r.kind === "line")).toBe(true);
 	});
 
 	it("leaves a run of an unexpected shape alone", () => {
@@ -352,6 +413,40 @@ describe("pairHunk", () => {
 		expectCoverage(lines, pairHunk(lines));
 	});
 
+	it("keeps a re-indented block moved across an unchanged line a change", () => {
+		// Git's hunk for old `init(); a(); b();` → new `a(); b(); init();`
+		// re-indented: `+a +b`, ` init();`, `-a -b`. The reorder is real.
+		const t1: DiffLine[] = [
+			add(1, "    a();", { clusterKey: "A" }),
+			add(2, "    b();", { clusterKey: "A" }),
+			ctx(1, 3, "  init();"),
+			del(2, "  a();", { clusterKey: "B" }),
+			del(3, "  b();", { clusterKey: "B" }),
+		];
+		expect(trace(pairHunk(t1))).toEqual(["+1", "+2", " 1/3", "-2", "-3"]);
+		expectCoverage(t1, pairHunk(t1));
+		// Three lines: more change matches than one context self-match.
+		const t2: DiffLine[] = [
+			add(1, "    a();", { clusterKey: "A" }),
+			add(2, "    b();", { clusterKey: "A" }),
+			add(3, "    c();", { clusterKey: "A" }),
+			ctx(1, 4, "  init();"),
+			del(2, "  a();", { clusterKey: "B" }),
+			del(3, "  b();", { clusterKey: "B" }),
+			del(4, "  c();", { clusterKey: "B" }),
+		];
+		expect(trace(pairHunk(t2))).toEqual([
+			"+1",
+			"+2",
+			"+3",
+			" 1/4",
+			"-2",
+			"-3",
+			"-4",
+		]);
+		expectCoverage(t2, pairHunk(t2));
+	});
+
 	it("keeps a change that would take one side of a context line a change", () => {
 		// A second `}` added before a context `}`: one of them is new, and
 		// no context row can show that, so the added one stays added.
@@ -377,23 +472,23 @@ describe("pairHunk", () => {
 		}
 	});
 
-	it("a wrapped loop keeps only the `if` and its `}` as added, nothing removed", () => {
+	it("a wrapped loop shows the `if`, its `}` and the `log` line that crossed a context row; the body is whitespace-only", () => {
 		const hunk = gitHunk(WRAP_OLD, WRAP_NEW);
 		const rows = pairHunk(hunk.lines);
 		expectCoverage(hunk.lines, rows);
 		const changes = rows.flatMap((r) =>
 			r.kind === "line" && r.line.kind !== "context" ? [r.line] : [],
 		);
-		expect(changes.map((l) => l.kind)).toEqual(["add", "add"]);
-		expect(changes.map((l) => l.text)).toEqual(WRAP_ADDED);
-		// The moved `log` line: a one-sided row on each side.
-		const moved = rows.filter(
-			(r) =>
-				r.kind === "ws" &&
-				!(r.del && r.add) &&
-				/log\(`done/.test(((r.del ?? r.add) as DiffLine).text),
+		expect(changes.filter((l) => l.kind === "add").map((l) => l.text)).toEqual(
+			WRAP_ADDED,
 		);
-		expect(moved).toHaveLength(2);
+		expect(changes.filter((l) => l.kind === "del").map((l) => l.text)).toEqual(
+			WRAP_REMOVED,
+		);
+		// The loop body: six two-sided pairs, nothing one-sided.
+		const pairs = rows.filter((r) => r.kind === "ws");
+		expect(pairs).toHaveLength(6);
+		expect(pairs.every((r) => r.kind === "ws" && r.del && r.add)).toBe(true);
 	});
 
 	it("covers every line exactly once for any generated hunk", () => {
@@ -442,6 +537,46 @@ describe("pairHunk", () => {
 					mine.length > 0 && mine.every((r) => r.kind === "ws"),
 				);
 			}
+		}
+	});
+
+	it("never hides a block moved across unchanged lines, for any generated move", () => {
+		// Git's shape for old [X.., block] → new [block', X..], the block
+		// re-indented (and sometimes edited): adds, context, dels.
+		let seed = 4242;
+		const rand = (n: number) => {
+			seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+			return seed % n;
+		};
+		const words = ["a();", "b();", "}", "init();", "x", "if (y) {"];
+		const indent = ["", "  ", "\t", "    "];
+		for (let n = 0; n < 400; n++) {
+			const block = Array.from(
+				{ length: 1 + rand(4) },
+				() => words[rand(words.length)] as string,
+			);
+			const across = Array.from(
+				{ length: 1 + rand(3) },
+				() => `${indent[rand(indent.length)]}${words[rand(words.length)]}`,
+			);
+			const edited = rand(3) === 0 ? rand(block.length) : -1;
+			const lines: DiffLine[] = [];
+			let newNo = 1;
+			block.forEach((w, i) => {
+				const text = `${indent[rand(indent.length)]}${i === edited ? `${w} // changed` : w}`;
+				lines.push(add(newNo++, text, { clusterKey: "A" }));
+			});
+			let oldNo = 1;
+			for (const text of across) lines.push(ctx(oldNo++, newNo++, text));
+			for (const w of block) {
+				lines.push(
+					del(oldNo++, `${indent[rand(indent.length)]}${w}`, {
+						clusterKey: "B",
+					}),
+				);
+			}
+			const rows = pairHunk(lines);
+			expectCoverage(lines, rows);
 		}
 	});
 });

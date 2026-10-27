@@ -31,8 +31,8 @@ export const linesWhitespaceEqual = (del: DiffLine, add: DiffLine): boolean =>
 	keyOf(del) === keyOf(add);
 
 /**
- * A hunk with more old-side or more new-side lines than this isn't matched
- * (the matching is O(n·m)).
+ * A hunk (else each of its cluster runs) with more old-side or more
+ * new-side lines than this isn't matched (the matching is O(n·m)).
  */
 export const PAIR_CAP = 2000;
 
@@ -63,26 +63,33 @@ export function runs(lines: DiffLine[]): { key?: string; lines: DiffLine[] }[] {
 	return result;
 }
 
+/** One side of a line as the matching sees it. */
+interface Side {
+	key: string;
+	context: boolean;
+}
+
 /**
  * The heaviest common subsequence of `a` and `b` under key equality, as
- * index pairs in order. A match of two context lines weighs 2, any other
- * 1: context lines stay matched to each other, so the line that really
- * moved or was added is the one left out, as `git diff -w` shows it.
+ * index pairs in order. A context side weighs P = n + m + 1 (more than
+ * every change-to-change match together could), a change side nothing but
+ * a floor of 1: context↔context = 2P, context side↔change = P,
+ * change↔change = 1. Matching every context line to itself is always
+ * possible, so any optimum matches every context side, to itself or to
+ * changes: no unmatched line is ever a context side, which is what makes
+ * the rows a sound `-w` edit script (a block moved across an unchanged
+ * line is never "whitespace only").
  */
-function match(
-	a: { key: string; context: boolean }[],
-	b: { key: string; context: boolean }[],
-): [number, number][] {
+function match(a: Side[], b: Side[]): [number, number][] {
 	const n = a.length;
 	const m = b.length;
 	const w = m + 1;
+	const P = n + m + 1;
 	const weight = (i: number, j: number) =>
-		(a[i] as { context: boolean }).context &&
-		(b[j] as { context: boolean }).context
-			? 2
-			: 1;
-	// best[i * w + j]: the best weight over a[i..] and b[j..] (≤ 2 × PAIR_CAP).
-	const best = new Uint16Array((n + 1) * w);
+		((a[i] as Side).context ? P : 0) + ((b[j] as Side).context ? P : 0) || 1;
+	// best[i * w + j]: the best weight over a[i..] and b[j..]; up to
+	// 2P × PAIR_CAP ≈ 1.6e7, so 32 bits (16 MB at the cap, once per hunk).
+	const best = new Uint32Array((n + 1) * w);
 	for (let i = n - 1; i >= 0; i--) {
 		for (let j = m - 1; j >= 0; j--) {
 			const skip = Math.max(
@@ -90,7 +97,7 @@ function match(
 				best[i * w + j + 1] as number,
 			);
 			const take =
-				(a[i] as { key: string }).key === (b[j] as { key: string }).key
+				(a[i] as Side).key === (b[j] as Side).key
 					? weight(i, j) + (best[(i + 1) * w + j + 1] as number)
 					: 0;
 			best[i * w + j] = Math.max(skip, take);
@@ -101,7 +108,7 @@ function match(
 	let j = 0;
 	while (i < n && j < m) {
 		if (
-			(a[i] as { key: string }).key === (b[j] as { key: string }).key &&
+			(a[i] as Side).key === (b[j] as Side).key &&
 			best[i * w + j] === weight(i, j) + (best[(i + 1) * w + j + 1] as number)
 		) {
 			out.push([i, j]);
@@ -124,20 +131,32 @@ function match(
  * and removed lines) and new side (context and added lines): the twin is a
  * line added or removed anywhere in the hunk, or a context line.
  *
- * A context line is a row that stays unchanged, so the matching may only
- * use it whole: its old side taken by an added line and its new side by a
- * removed one (a re-indent whose `}` git aligned with another `}`). A
- * change matched to one side of a context line alone would leave the other
- * side an insertion or deletion no row shows (a wrapped block's new `}`),
- * so it stays an ordinary change. Empty when a side is over PAIR_CAP, or
- * when no change can match at all (then there is no O(n·m) work).
+ * The rows are sound: dropping the lines left unmatched (shown as add/del)
+ * from both sides leaves whitespace-equal sequences. The weights (`match`)
+ * see to it that every context side is matched, to its own other side or
+ * to a change (two context lines of one key may also match each other
+ * across, with their other sides taken by changes: the same thing along a
+ * chain), so the matched lines on each side are one sequence of equal
+ * keys. Should a context side ever be left unmatched, nothing pairs: all
+ * plain rows are always sound. Empty too when no change can match at all
+ * (then there is no O(n·m) work). A hunk with a side over PAIR_CAP is
+ * matched run by run instead (a big re-indented file keeps its rows); a
+ * run over the cap on its own isn't matched.
  */
 export function matchHunk(lines: DiffLine[]): ReadonlyMap<DiffLine, DiffLine> {
 	const twins = new Map<DiffLine, DiffLine>();
 	const old = lines.filter((l) => l.kind !== "add");
 	const young = lines.filter((l) => l.kind !== "del");
-	if (old.length > PAIR_CAP || young.length > PAIR_CAP) return twins;
-	const side = (l: DiffLine) => ({
+	if (old.length > PAIR_CAP || young.length > PAIR_CAP) {
+		if (lines.some((l) => l.kind === "context")) {
+			for (const run of runs(lines)) {
+				if (run.key === undefined) continue;
+				for (const [line, twin] of matchHunk(run.lines)) twins.set(line, twin);
+			}
+		}
+		return twins;
+	}
+	const side = (l: DiffLine): Side => ({
 		key: keyOf(l),
 		context: l.kind === "context",
 	});
@@ -146,35 +165,20 @@ export function matchHunk(lines: DiffLine[]): ReadonlyMap<DiffLine, DiffLine> {
 	const oldKeys = new Set(a.map((s) => s.key));
 	const newKeys = new Set(b.map((s) => s.key));
 	const can =
-		old.some(
-			(l, i) => l.kind === "del" && newKeys.has((a[i] as { key: string }).key),
-		) ||
-		young.some(
-			(l, j) => l.kind === "add" && oldKeys.has((b[j] as { key: string }).key),
-		);
+		old.some((l, i) => l.kind === "del" && newKeys.has((a[i] as Side).key)) ||
+		young.some((l, j) => l.kind === "add" && oldKeys.has((b[j] as Side).key));
 	if (!can) return twins;
-	// A context line's sides, when a change took them.
-	const oldSideTakenBy = new Map<DiffLine, DiffLine>();
-	const newSideTakenBy = new Map<DiffLine, DiffLine>();
+	let contextSides = 0;
 	for (const [i, j] of match(a, b)) {
 		const o = old[i] as DiffLine;
 		const n = young[j] as DiffLine;
-		if (o.kind === "del" && n.kind === "add") {
-			twins.set(o, n);
-			twins.set(n, o);
-		} else if (o.kind === "context" && n.kind === "add") {
-			oldSideTakenBy.set(o, n);
-		} else if (o.kind === "del" && n.kind === "context") {
-			newSideTakenBy.set(n, o);
-		}
-		// Two context lines matched: a shift that means nothing to any row.
+		if (o.kind === "context") contextSides++;
+		if (n.kind === "context") contextSides++;
+		if (o.kind === "del") twins.set(o, n);
+		if (n.kind === "add") twins.set(n, o);
 	}
-	for (const [context, add] of oldSideTakenBy) {
-		const del = newSideTakenBy.get(context);
-		if (!del) continue;
-		twins.set(add, context);
-		twins.set(del, context);
-	}
+	const contexts = lines.filter((l) => l.kind === "context").length;
+	if (contextSides !== 2 * contexts) twins.clear();
 	return twins;
 }
 

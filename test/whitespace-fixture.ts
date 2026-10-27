@@ -72,5 +72,16 @@ export const WRAP_NEW = text([
 	...WRAP_BODY.slice(10),
 ]);
 
-/** What the wrap really adds (every other line is whitespace-only). */
-export const WRAP_ADDED = ["  if (queue.length > 0) {", "      }"];
+/**
+ * What the view shows the wrap as adding and removing: git put the true new
+ * `  }` on a context row's new side, which no change row can carry, so the
+ * smallest whitespace-only labelling blames the inner `}` and the moved
+ * `log` line (it crossed an unchanged `}`): every other line is
+ * whitespace-only.
+ */
+export const WRAP_ADDED = [
+	"  if (queue.length > 0) {",
+	"      }",
+	`      log(\`done \${job.id}\`);`,
+];
+export const WRAP_REMOVED = [`    log(\`done \${job.id}\`);`];
