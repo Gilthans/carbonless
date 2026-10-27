@@ -8,11 +8,13 @@ import {
 } from "./scenario";
 
 /*
- * A PR with long, many-party review threads, for the threads demo
+ * A PR with review threads as they usually go, for the threads demo
  * (scripts/demo-threads.ts) and the e2e tests that check how people are
- * told apart (avatars, tints). Synthetic people and text; the avatars of
- * some are real public GitHub ones, the rest have none (the fallback).
- * The viewer is Octo_Cat, the PR author octo-author.
+ * told apart (avatars, tints): mostly two people ping-ponging over two or
+ * three replies, a few with a third, one longer back-and-forth. A small
+ * cast: the viewer (Octo_Cat), the PR author (octo-author), two reviewers
+ * and a bot. Synthetic people and text; some avatars are real public
+ * GitHub ones, dima and the bot have none (the fallback).
  */
 
 /** A public GitHub avatar at 40px. */
@@ -25,8 +27,6 @@ export const DEMO_PEOPLE = {
 	dima: { login: "dima" },
 	author: { login: "octo-author", avatarUrl: avatar(2) },
 	viewer: { login: "Octo_Cat", avatarUrl: avatar(583231) },
-	lena: { login: "lena" },
-	sam: { login: "sam-k", avatarUrl: avatar(9919) },
 	bot: { login: "renovate", bot: true },
 } as const;
 
@@ -130,136 +130,120 @@ function thread(
 	return reviewThread({ path, line, subjectType: "LINE", ...more }, comments);
 }
 
-const { badyan, dima, author, viewer, lena, sam, bot } = DEMO_PEOPLE;
+const { badyan, dima, author, viewer, bot } = DEMO_PEOPLE;
 
 const LONG = [
 	"I went through every caller of the client to see what a retry would do to them, and I think we need to be careful here.",
 	"The upload path is not idempotent: a 502 after the server accepted the body means a retry uploads it twice. The sync path is fine, it sends a revision and the server refuses a stale one. The search path doesn't care.",
 	"So either the retry learns which calls are safe (a flag per call, defaulting to no), or the upload path gets an idempotency key first. I'd rather do the key: it fixes the double upload we already see when people double-click, too.",
-	"Either way, not in this PR. I'll open an issue and we keep retries off for uploads until then.",
 ].join("\n\n");
 
 /**
- * The demo's threads on the PR whose head is `head`, most recent first as
- * GitHub would list any order: four long ones with three to five people
- * (one resolved; a bot; the viewer's reply; Markdown and code; a long
- * comment; one waiting on the viewer) and three short ones.
+ * The demo's threads on the PR whose head is `head`:
+ * - the longer one (7 comments): the viewer and the author back and
+ *   forth, badyan joining; Markdown and code; it waits on the viewer;
+ * - resolved, dima and the author, with a long comment;
+ * - the viewer and the author, the viewer answering last;
+ * - badyan's suggested change, taken;
+ * - dima and the author, badyan joining;
+ * - a bot's, and a short resolved one.
  */
 export function demoThreads(head: string): ThreadNode[] {
 	return [
-		// Waits on the viewer: dima answered them last. Markdown and code.
+		// Waits on the viewer: badyan asked them last.
 		thread(head, "src/cache.ts", 12, "2026-01-03T08:00:00Z", [
-			{ who: badyan, text: "Is a minute the right default TTL?" },
-			{
-				who: dima,
-				text: "For widgets, yes. Prices change faster though.",
-			},
+			{ who: viewer, text: "Is a minute the right default TTL?" },
 			{
 				who: author,
-				text: "Prices don't go through this cache. Only widget metadata.",
-			},
-			{
-				who: lena,
-				text: "Then can we name it for that? WidgetCache, or a ttl per use.",
-				html: '<p dir="auto">Then can we name it for that? <code class="notranslate">WidgetCache</code>, or a ttl per use.</p>',
-				body: "Then can we name it for that? `WidgetCache`, or a ttl per use.",
+				text: "For widget metadata, yes. Prices don't go through it.",
 			},
 			{
 				who: viewer,
-				text: "A ttl per use: new Cache<Widget>(5 * 60_000) reads fine.",
-				html: '<p dir="auto">A ttl per use:</p>\n<div class="highlight highlight-source-ts notranslate position-relative overflow-auto" dir="auto"><pre><span class="pl-k">const</span> <span class="pl-s1">widgets</span> <span class="pl-c1">=</span> <span class="pl-k">new</span> <span class="pl-smi">Cache</span><span class="pl-kos">&lt;</span><span class="pl-smi">Widget</span><span class="pl-kos">&gt;</span><span class="pl-kos">(</span><span class="pl-c1">5</span> <span class="pl-c1">*</span> <span class="pl-c1">60_000</span><span class="pl-kos">)</span><span class="pl-kos">;</span></pre></div>\n<p dir="auto">reads fine.</p>',
-				body: "A ttl per use:\n\n```ts\nconst widgets = new Cache<Widget>(5 * 60_000);\n```\n\nreads fine.",
-			},
-			{ who: badyan, text: "Agreed, and keep 60s as the default." },
-			{ who: author, text: "Done in the next push." },
-			{ who: lena, text: "Thanks!" },
-			{
-				who: dima,
-				text: "One more: should clear() also reset the hit counters?",
+				text: "Then a ttl per use: new Cache<Widget>(5 * 60_000) reads fine.",
+				html: '<p dir="auto">Then a ttl per use:</p>\n<div class="highlight highlight-source-ts notranslate position-relative overflow-auto" dir="auto"><pre><span class="pl-k">const</span> <span class="pl-s1">widgets</span> <span class="pl-c1">=</span> <span class="pl-k">new</span> <span class="pl-smi">Cache</span><span class="pl-kos">&lt;</span><span class="pl-smi">Widget</span><span class="pl-kos">&gt;</span><span class="pl-kos">(</span><span class="pl-c1">5</span> <span class="pl-c1">*</span> <span class="pl-c1">60_000</span><span class="pl-kos">)</span><span class="pl-kos">;</span></pre></div>',
+				body: "Then a ttl per use:\n\n```ts\nconst widgets = new Cache<Widget>(5 * 60_000);\n```",
 			},
 			{
-				who: dima,
+				who: author,
+				text: "Works for me, keeping 60s as the default.",
+				html: '<p dir="auto">Works for me, keeping <code class="notranslate">60_000</code> as the default.</p>',
+				body: "Works for me, keeping `60_000` as the default.",
+			},
+			{ who: viewer, text: "Thanks." },
+			{
+				who: badyan,
+				text: "Should clear() also reset the hit counters?",
+			},
+			{
+				who: badyan,
 				text: "@Octo_Cat you added the counters, what do you think?",
 				html: `<p dir="auto"><a class="user-mention notranslate" href="https://github.com/Octo_Cat">@Octo_Cat</a> ${esc("you added the counters, what do you think?")}</p>`,
 			},
 		]),
-		// Resolved, with a long comment and a bot.
+		// Resolved, with a long comment.
 		thread(
 			head,
 			"src/api/client.ts",
 			20,
 			"2026-01-02T10:00:00Z",
 			[
-				{ who: sam, text: "Should a 5xx here be retried?" },
+				{ who: dima, text: "Should a 5xx here be retried?" },
 				{ who: author, text: "Yes, through retry() below." },
 				{
-					who: badyan,
+					who: dima,
 					text: LONG,
 					html: LONG.split("\n\n")
 						.map((p) => `<p dir="auto">${esc(p)}</p>`)
 						.join("\n"),
 				},
-				{ who: bot, text: "This branch is 3 commits behind main." },
-				{ who: author, text: "Fair. Uploads opt out for now." },
-				{ who: sam, text: "Works for me." },
-				{ who: badyan, text: "Issue filed: #812." },
-				{ who: author, text: "Linked it in the code." },
+				{ who: author, text: "Fair. Uploads opt out until the key lands." },
 			],
 			{ isResolved: true },
 		),
 		// The viewer answered last: not their turn.
 		thread(head, "src/util/retry.ts", 8, "2026-01-02T14:00:00Z", [
-			{ who: dima, text: "Backoff without jitter will stampede." },
-			{ who: author, text: "Good point. Full jitter?" },
-			{ who: viewer, text: "Full jitter, capped at 30s." },
-			{ who: dima, text: "Capped at 30s is plenty." },
-			{ who: author, text: "Pushed." },
-			{ who: viewer, text: "Looks right now, thanks." },
+			{ who: viewer, text: "Backoff without jitter will stampede." },
+			{ who: author, text: "Full jitter, capped at 30s?" },
+			{ who: viewer, text: "Yes, that's plenty." },
 		]),
-		// Five people, a suggested change.
+		// A suggested change, taken.
 		thread(head, "src/api/client.ts", 34, "2026-01-04T09:00:00Z", [
-			{ who: lena, text: "429 should be retryable too." },
-			{ who: badyan, text: "With Retry-After respected, yes." },
-			{ who: dima, text: "Only if the header is there; else the backoff." },
 			{
-				who: sam,
-				text: "Suggested change",
-				html: `<p dir="auto">Something like:</p>\n${suggestionHtml(
+				who: badyan,
+				text: "429 should be retryable too.",
+				html: `<p dir="auto">429 should be retryable too:</p>\n${suggestionHtml(
 					["\tif (res.status >= 500) throw new RetryableError(res.status);"],
 					[
 						"\tif (res.status >= 500 || res.status === 429) {",
-						'\t\tthrow new RetryableError(res.status, res.headers.get("retry-after"));',
+						"\t\tthrow new RetryableError(res.status);",
 						"\t}",
 					],
 				)}`,
-				body: '```suggestion\n\tif (res.status >= 500 || res.status === 429) {\n\t\tthrow new RetryableError(res.status, res.headers.get("retry-after"));\n\t}\n```',
+				body: "429 should be retryable too:\n\n```suggestion\n\tif (res.status >= 500 || res.status === 429) {\n\t\tthrow new RetryableError(res.status);\n\t}\n```",
 			},
 			{ who: author, text: "Taking it." },
-			{ who: lena, text: "And a test for the header?" },
-			{ who: author, text: "Added one with and one without." },
-			{ who: badyan, text: "What about a Retry-After in the past?" },
-			{ who: dima, text: "Treat it as zero." },
-			{ who: sam, text: "+1, zero." },
-			{ who: author, text: "Zero it is." },
-			{ who: lena, text: "Great, thanks all." },
 		]),
-		// Short ones.
+		// Two ping-ponging, a third joining.
+		thread(head, "src/cache.ts", 2, "2026-01-04T12:00:00Z", [
+			{ who: dima, text: "A Map keeps insertion order: LRU for free?" },
+			{ who: author, text: "Only if get() re-inserts. Worth it?" },
+			{ who: badyan, text: "Not yet: nothing evicts by size." },
+		]),
+		// A bot's.
 		thread(head, "src/cache.ts", 30, "2026-01-02T09:00:00Z", [
 			{ who: bot, text: "clear() is not covered by tests." },
 		]),
+		// Short and resolved.
 		thread(
 			head,
 			"src/util/retry.ts",
 			3,
 			"2026-01-02T11:00:00Z",
 			[
-				{ who: badyan, text: "Why 5?" },
+				{ who: dima, text: "Why 5?" },
 				{ who: author, text: "GitHub's own client uses 5." },
 			],
 			{ isResolved: true },
 		),
-		thread(head, "src/cache.ts", 2, "2026-01-04T12:00:00Z", [
-			{ who: sam, text: "A Map keeps insertion order: LRU for free?" },
-		]),
 	];
 }

@@ -8,7 +8,8 @@ import { fileSection, openFiles } from "./files-ui";
 import { expect, type Pr, type PrOptions, test } from "./fixtures";
 
 /**
- * Who is who in long, many-party threads (the threads demo's data): an
+ * Who is who in the threads demo's threads (two people ping-ponging, a
+ * third joining some): an
  * avatar beside every author, GitHub's or their initial, and a tint per
  * person, the same in every thread of the PR.
  */
@@ -87,7 +88,7 @@ async function expectNoPageOverflow(page: Page) {
 	expect(overflow).toBeLessThanOrEqual(0);
 }
 
-test("a many-party thread: avatars, and a tint per person the same in every thread", async ({
+test("avatars, and a tint per person the same in every thread", async ({
 	page,
 	pr,
 	startCrb,
@@ -103,7 +104,7 @@ test("a many-party thread: avatars, and a tint per person the same in every thre
 		ttl.getByTestId("thread-head").getByTestId("avatar"),
 	).toBeVisible();
 	const more = ttl.getByTestId("thread-more");
-	await expect(more).toHaveAccessibleName("Show more, 9 replies");
+	await expect(more).toHaveAccessibleName("Show more, 6 replies");
 	await expect(ttl.getByTestId("thread-comment")).toHaveCount(0);
 	// Waits on the viewer.
 	await expect(ttl.getByRole("img", { name: "Your turn" })).toBeVisible();
@@ -116,7 +117,7 @@ test("a many-party thread: avatars, and a tint per person the same in every thre
 		});
 	}
 	await more.click();
-	await expect(ttl.getByTestId("thread-comment")).toHaveCount(9);
+	await expect(ttl.getByTestId("thread-comment")).toHaveCount(6);
 	// GitHub's avatar where there is one, the initial where there isn't.
 	const img = ttl
 		.locator('[data-author="badyan"]')
@@ -126,32 +127,36 @@ test("a many-party thread: avatars, and a tint per person the same in every thre
 	await expect
 		.poll(() => img.evaluate((el) => (el as HTMLImageElement).naturalWidth))
 		.toBeGreaterThan(0);
-	const dima = ttl.locator('[data-author="dima"]').first();
-	await expect(dima.getByTestId("avatar-fallback")).toHaveAttribute(
-		"data-initial",
-		"D",
-	);
-	// A tint per person: five people, five tints; the opener's body too.
+	// A tint per person: the viewer, the author and badyan, three tints;
+	// the viewer's opener on theirs too.
 	const first = byPerson(await tints(ttl));
-	expect(new Set(first.values()).size).toBe(first.size);
-	expect(first.size).toBe(5);
-	expect(await bg(ttl.getByTestId("thread-body"))).toBe(first.get("badyan"));
+	expect([...first.keys()].sort()).toEqual([
+		"Octo_Cat",
+		"badyan",
+		"octo-author",
+	]);
+	expect(new Set(first.values()).size).toBe(3);
+	expect(await bg(ttl.getByTestId("thread-body"))).toBe(first.get("Octo_Cat"));
 	// Different from the card it sits on.
 	expect(await bg(ttl)).not.toBe(first.get("badyan"));
 	await expectNoPageOverflow(page);
 	if (shots) {
 		await ttl.screenshot({ path: `${shots}/overview-card-open-${device}.png` });
 	}
-	// The same people in another thread keep their tints.
-	const retry = card(page, "src/api/client.ts:34");
+	// The same people in another thread keep their tints; dima (no
+	// avatar: their initial) gets one of their own.
+	const retry = card(page, "src/cache.ts:2");
+	await expect(
+		retry.getByTestId("thread-head").getByTestId("avatar-fallback"),
+	).toHaveAttribute("data-initial", "D");
 	await retry.getByTestId("thread-more").click();
-	await expect(retry.getByTestId("thread-comment")).toHaveCount(11);
+	await expect(retry.getByTestId("thread-comment")).toHaveCount(2);
 	const second = byPerson(await tints(retry));
-	for (const who of ["badyan", "dima", "lena", "octo-author"]) {
+	for (const who of ["badyan", "octo-author"]) {
 		expect(second.get(who), who).toBe(first.get(who));
 	}
-	expect(second.get("sam-k")).not.toBe(undefined);
-	expect([...first.values()]).not.toContain(second.get("sam-k"));
+	const dima = await bg(retry.getByTestId("thread-body"));
+	expect([...first.values()]).not.toContain(dima);
 	// The buttons on a phone: 40px, no page scroll.
 	for (const b of [
 		retry.getByRole("button", { name: "Resolve", exact: true }),
@@ -167,11 +172,11 @@ test("a many-party thread: avatars, and a tint per person the same in every thre
 	const section = fileSection(page, "src/cache.ts");
 	await section.getByRole("button", { name: "Expand file" }).click();
 	const bubble = section.getByRole("button", {
-		name: /^10 comments on line 12/,
+		name: /^7 comments on line 12/,
 	});
 	await bubble.click();
 	const opened = section.getByTestId("files-thread");
-	await expect(opened.getByTestId("thread-comment")).toHaveCount(10);
+	await expect(opened.getByTestId("thread-comment")).toHaveCount(7);
 	const files = byPerson(await tints(opened));
 	for (const [who, color] of first) expect(files.get(who), who).toBe(color);
 	await expect(
