@@ -6,14 +6,22 @@
  *
  *   pnpm build && pnpm tsx scripts/demo-threads.ts --port 4790 --host <ip>
  *
- * Ctrl-C stops crb and removes the repo and the scenario.
+ * Ctrl-C (or SIGTERM, or closing the terminal) stops crb; the repo and
+ * the scenario are removed on every way out but SIGKILL.
  */
-import { spawn } from "node:child_process";
+import { type ChildProcess, spawn } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
-import { CLI, crbEnv, createPr, OWNER_REPO, PR_NUMBER } from "../e2e/pr-setup";
+import {
+	CLI,
+	crbEnv,
+	createPr,
+	OWNER_REPO,
+	PR_NUMBER,
+	type Pr,
+} from "../e2e/pr-setup";
 import {
 	DEMO_FILES,
 	DEMO_PEOPLE,
@@ -33,29 +41,54 @@ if (!existsSync(CLI)) {
 }
 
 const workdir = mkdtempSync(join(tmpdir(), "crb-demo-threads-"));
-const pr = createPr(workdir, {
-	baseDate: "2026-01-01T00:00:00Z",
-	files: DEMO_FILES,
-	overview: { title: "Cache widgets, retry the client" },
-	scenario: {
-		user: {
-			login: DEMO_PEOPLE.viewer.login,
-			avatarUrl: DEMO_PEOPLE.viewer.avatarUrl,
-		},
-	},
-});
-const head = pr.repo.shas.at(-1) ?? "";
-pr.editScenario((s) => {
-	const graph = s.prs[PR_NUMBER]?.graphql;
-	if (graph) graph.reviewThreads = demoThreads(head);
-});
-
+let pr: Pr | undefined;
+let cleaned = false;
+/** Removes the repo and the scenario, once, on every way out. */
 const cleanup = () => {
-	pr.repo.cleanup();
+	if (cleaned) return;
+	cleaned = true;
+	pr?.repo.cleanup();
 	rmSync(workdir, { recursive: true, force: true });
 };
+// The last resort (an uncaught error, process.exit): synchronous, so it runs.
+process.on("exit", cleanup);
+/** crb, once started. */
+let child: ChildProcess | undefined;
+// Ctrl-C, kill, or the terminal closing: stop crb, which then cleans up;
+// before it runs (or after it's gone), just leave.
+for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
+	process.on(signal, () => {
+		if (child && child.exitCode === null && child.signalCode === null) {
+			child.kill("SIGTERM");
+		} else {
+			process.exit(1);
+		}
+	});
+}
 
-const child = spawn(
+try {
+	pr = createPr(workdir, {
+		baseDate: "2026-01-01T00:00:00Z",
+		files: DEMO_FILES,
+		overview: { title: "Cache widgets, retry the client" },
+		scenario: {
+			user: {
+				login: DEMO_PEOPLE.viewer.login,
+				avatarUrl: DEMO_PEOPLE.viewer.avatarUrl,
+			},
+		},
+	});
+	const head = pr.repo.shas.at(-1) ?? "";
+	pr.editScenario((s) => {
+		const graph = s.prs[PR_NUMBER]?.graphql;
+		if (graph) graph.reviewThreads = demoThreads(head);
+	});
+} catch (error) {
+	cleanup();
+	throw error;
+}
+
+child = spawn(
 	process.execPath,
 	[
 		CLI,
@@ -66,10 +99,10 @@ const child = spawn(
 	],
 	{ cwd: workdir, stdio: "inherit", env: crbEnv(workdir) },
 );
-for (const signal of ["SIGINT", "SIGTERM"] as const) {
-	process.on(signal, () => child.kill("SIGTERM"));
-}
+child.on("error", (error) => {
+	console.error(`could not start crb: ${error.message}`);
+	process.exit(1);
+});
 child.on("exit", (code) => {
-	cleanup();
 	process.exit(code ?? 0);
 });

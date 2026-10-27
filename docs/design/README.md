@@ -22,7 +22,7 @@ uses is checked for WCAG AA in `src/web/theme.test.ts`; add new pairs there.
 | `add-done` `del-done` | reviewed lines: quieter add/del tints, text at full contrast |
 | `ok-wash` | a finished file's header: an opaque green wash on `raised` (it sticks over the diff) |
 | `mark-tint` (utility) | `accent` at 8% as an inset shadow over every cell of a row: a thread's commented lines, and a line landed on from a thread link (it fades, instantly with reduced motion). Over add/del/context it keeps all code text at 4.5:1 and green/red apart |
-| `person-1`…`person-8`, `person-N-edge` | a person's comments in threads: an opaque wash in place of `raised` inside a border of the same hue (the edge is also their avatar fallback). Blues to violets, a rust and a stone grey, none near the add/del or warn hues; all text at 4.5:1 |
+| `person-1`…`person-7`, `person-N-edge` | a person's comments in threads: an opaque wash in place of `raised` inside a border of the same hue (the edge is also their avatar fallback). Blues to violets and a stone grey: at least 40° of hue from the deleted/failing reds and 25° from the add/ok green and warn yellow (no warm hue clears both red and yellow, hence seven); all text at 4.5:1 |
 | `shade`, `shadow-*` | the one shadow color and the shadows built from it |
 | `magenta` `orange` `yellow` `teal` `violet` | brand: logo, gradients (`brand-rule`, `cta`), never meaning |
 
@@ -197,9 +197,16 @@ size), or, with none or a broken image, their initial on their
 (`person-N` wash, `person-N-edge` border), the same in every thread of
 the PR, Overview and Files changed alike (`src/web/threads/people.tsx`):
 tints go out in the order people first spoke anywhere in the PR, so no two
-share one until the eight run out (then they start over); the viewer, not
+share one until the seven run out (then they start over); the viewer, not
 having spoken yet, comes after everyone. Someone new only ever speaks
-last, so a new comment never changes anyone else's tint.
+last, so a new comment never changes anyone else's tint. They are worked
+out from what the PR lists now, never stored, so they are stable only
+against additions: a deleted comment or thread can shift everyone who
+first spoke after it, an as-of view can give the viewer (and anyone who
+spoke only after the cutoff) a different tint than the live view, and
+someone no thread lists (in a long thread's unlisted middle, past its
+first 100 comments) gets a tint from their login, which may be someone
+else's.
 
 **Resolve.** A big button (40px, text and icon) beside the reply box,
 the bigger action next to Send: "Resolve" (check, `ok` on `ok/10` in an

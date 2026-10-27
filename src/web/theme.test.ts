@@ -284,15 +284,17 @@ describe("color tokens", () => {
 
 	it("each person's tint keeps comment text at 4.5:1 and stays clear of add, delete and warn", () => {
 		const people = Object.keys(TOKENS).filter((n) => /^person-\d+$/.test(n));
-		expect(people.length).toBeGreaterThanOrEqual(8);
-		const conventions = [
-			"add",
-			"add-ink",
-			"del",
-			"del-ink",
-			"ok",
-			"bad",
-			"warn",
+		expect(people.length).toBeGreaterThanOrEqual(7);
+		// The deleted/failing reds well clear; the add/ok green and the
+		// warn yellow clear.
+		const conventions: [string, number][] = [
+			["del", 40],
+			["del-ink", 40],
+			["bad", 40],
+			["add", 25],
+			["add-ink", 25],
+			["ok", 25],
+			["warn", 25],
 		];
 		for (const wash of people) {
 			const edge = `${wash}-edge`;
@@ -315,11 +317,11 @@ describe("color tokens", () => {
 			// Hued ones away from the conventions' hues; a near-grey (stone)
 			// has no hue to be taken for one.
 			for (const c of [wash, edge].filter((c) => chroma(token(c)) >= 0.1)) {
-				for (const conv of conventions) {
+				for (const [conv, floor] of conventions) {
 					expect(
 						hueGap(token(c), token(conv)),
 						`${c} hue vs ${conv}`,
-					).toBeGreaterThanOrEqual(25);
+					).toBeGreaterThanOrEqual(floor);
 				}
 			}
 		}

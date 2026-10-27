@@ -45,11 +45,6 @@ export const TINTS = [
 		fade: "to-person-7",
 		fill: "bg-person-7-edge",
 	},
-	{
-		surface: "border-person-8-edge bg-person-8",
-		fade: "to-person-8",
-		fill: "bg-person-8-edge",
-	},
 ] as const;
 
 /** Who is who across a PR's threads: a tint each, and their avatars. */
@@ -74,6 +69,13 @@ const timeOf = (at: string) => {
  * then it starts over. Someone new only ever speaks last, so a new
  * comment never moves anyone else's tint. The viewer, if they haven't
  * spoken yet, comes after everyone (their reply gets its tint at once).
+ *
+ * Stable only against additions: tints are worked out per PR from what
+ * is listed now, never stored. A deleted comment or thread can shift
+ * everyone who first spoke after it; an as-of view can give the viewer
+ * (and anyone who spoke only after the cutoff) another tint than the live
+ * view; and someone no thread lists (in a thread's unlisted middle, past
+ * its first 100 comments) gets hashTint's, which may be someone else's.
  */
 export function assignPeople(
 	threads: readonly Pick<ReviewThread, "participants">[],
@@ -98,7 +100,10 @@ export function assignPeople(
 	return { tints, avatars };
 }
 
-/** A login's place in the palette when no thread lists them: by its letters. */
+/**
+ * A login's place in the palette when no thread lists them: by its
+ * letters. It may match a listed person's tint.
+ */
 export function hashTint(login: string): number {
 	let h = 0;
 	for (const ch of key(login)) h = (h * 31 + (ch.codePointAt(0) ?? 0)) >>> 0;
