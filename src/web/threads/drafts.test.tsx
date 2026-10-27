@@ -241,3 +241,87 @@ describe("drafts", () => {
 		expect(unsent([{ threadId: "T1", text: "x" }])).toBe(true);
 	});
 });
+
+describe("edit drafts", () => {
+	it("are kept per comment beside the box, and dropped when back to where they started", () => {
+		const store = new DraftStore(() => undefined);
+		store.setText("T1", "a reply");
+		store.setEdit("T1", "c1", "Old", "New");
+		expect(store.text("T1")).toBe("a reply");
+		expect(store.edit("c1")).toEqual({
+			threadId: "T1",
+			text: "New",
+			edit: { commentId: "c1", from: "Old" },
+		});
+		// The box doesn't touch the edit, nor the edit the box.
+		store.setText("T1", "");
+		expect(store.edit("c1")?.text).toBe("New");
+		store.setEdit("T1", "c1", "Old", "Old");
+		expect(store.edit("c1")).toBeUndefined();
+		expect(store.get()).toEqual([]);
+	});
+
+	it("survive a reload, saving or not, and count as something to lose", () => {
+		const storage = memoryStorage();
+		const before = new DraftStore(() => storage);
+		before.bind(KEY);
+		before.setEdit("T1", "c1", "Old", "Typing");
+		before.setEdit("T2", "c2", "Was", "Saved");
+		before.markSaving("c2", true, true);
+		const after = new DraftStore(() => storage);
+		after.bind(KEY);
+		expect(after.edit("c1")).toMatchObject({
+			text: "Typing",
+			edit: { commentId: "c1", from: "Old" },
+		});
+		expect(after.edit("c2")?.edit).toEqual({
+			commentId: "c2",
+			from: "Was",
+			saving: true,
+			force: true,
+		});
+		expect(unsent(after.get())).toBe(true);
+		after.markSaving("c2", false);
+		expect(after.edit("c2")?.edit).toEqual({ commentId: "c2", from: "Was" });
+	});
+
+	it("two tabs keep each other's edits; one typed here wins over the stored one", () => {
+		const storage = memoryStorage();
+		const a = new DraftStore(() => storage);
+		a.bind(KEY);
+		a.setEdit("T1", "c1", "Old", "From A");
+		a.setEdit("T1", "c2", "Old", "Also A");
+		const b = new DraftStore(() => storage);
+		b.setEdit("T1", "c1", "Old", "Typed in B first");
+		b.bind(KEY);
+		expect(b.edit("c1")?.text).toBe("Typed in B first");
+		expect(b.edit("c2")?.text).toBe("Also A");
+		a.dropEdit("c2");
+		window.dispatchEvent(new StorageEvent("storage", { key: KEY }));
+		expect(b.edit("c2")).toBeUndefined();
+	});
+
+	it("setFrom moves the start, discard drops the thread's edits too", () => {
+		const store = new DraftStore(() => undefined);
+		store.setEdit("T1", "c1", "Old", "Mine");
+		store.setFrom("c1", "Theirs");
+		expect(store.edit("c1")?.edit?.from).toBe("Theirs");
+		store.discard("T1");
+		expect(store.get()).toEqual([]);
+	});
+
+	it("ignores a stored edit without its comment", () => {
+		const storage = memoryStorage();
+		storage.setItem(
+			KEY,
+			JSON.stringify([
+				{ threadId: "T1", text: "x", edit: { from: "y" } },
+				{ threadId: "T1", text: "x", edit: { commentId: "", from: "y" } },
+				{ threadId: "T1", text: "ok", edit: { commentId: "c1", from: "y" } },
+			]),
+		);
+		const store = new DraftStore(() => storage);
+		store.bind(KEY);
+		expect(store.get().map((d) => d.text)).toEqual(["ok"]);
+	});
+});

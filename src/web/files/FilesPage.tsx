@@ -17,6 +17,7 @@ import { LabeledIcon } from "../overview/parts";
 import { useForgetPageScroll, usePageActive } from "../pageActive";
 import { useAppHeaderHeight, useHeight } from "../sticky";
 import { PeopleProvider } from "../threads/people";
+import { useThreadWrites } from "../threads/threadWrites";
 import { usePrefetchComments } from "../threads/useThreadComments";
 import { useThreads } from "../threads/useThreads";
 import { ErrorMessage } from "../ui";
@@ -165,16 +166,23 @@ function useDiffThreads(): {
 	const session = useQuery(sessionQuery);
 	const { view, readId, error } = useThreads(overview.data?.readId);
 	const snapshotHead = session.data?.snapshotHead;
+	// A thread whose last comment was deleted here: its bubble goes at once.
+	const { gone } = useThreadWrites();
 	const threads = useMemo(
 		() =>
 			readId && view && snapshotHead
 				? {
 						readId,
 						snapshotHead,
-						threads: threadsOnHead(view.threads, snapshotHead),
+						threads: threadsOnHead(
+							gone.size > 0
+								? view.threads.filter((t) => !gone.has(t.id))
+								: view.threads,
+							snapshotHead,
+						),
 					}
 				: undefined,
-		[readId, view, snapshotHead],
+		[readId, view, snapshotHead, gone],
 	);
 	return { threads, all: view?.threads, failed: view ? null : error };
 }

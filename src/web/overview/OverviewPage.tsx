@@ -6,7 +6,6 @@ import {
 	CodeReviewIcon,
 	CommentDiscussionIcon,
 	CommentIcon,
-	CopyIcon,
 	DotFillIcon,
 	EyeIcon,
 	FileDiffIcon,
@@ -20,7 +19,6 @@ import {
 	PeopleIcon,
 	QuestionIcon,
 	ReplyIcon,
-	TrashIcon,
 	XIcon,
 } from "@primer/octicons-react";
 import {
@@ -49,6 +47,7 @@ import {
 	type Progress,
 	type ReviewThread,
 	THREAD_PAGE,
+	type ThreadComment,
 	type ThreadsView,
 } from "../../shared/types";
 import {
@@ -66,6 +65,16 @@ import { RelativeTime, relativeTime, useNow } from "../RelativeTime";
 import { Tooltip, type TooltipTriggerProps } from "../Tooltip";
 import { CodeRows, CommentBody } from "../threads/CommentBody";
 import {
+	CommentActions,
+	DeletedPlaceholder,
+	DeletedRow,
+	EditedMark,
+	EditForm,
+	SavingText,
+	useCommentCan,
+	useCommentWrite,
+} from "../threads/CommentEdit";
+import {
 	COMMENT_SURFACE,
 	commentSurface,
 	ThreadActions,
@@ -73,7 +82,8 @@ import {
 	UnavailableText,
 	useCanAct,
 } from "../threads/Conversation";
-import { useDrafts } from "../threads/drafts";
+import { kept, useDrafts } from "../threads/drafts";
+import { OrphanDraft } from "../threads/OrphanDraft";
 import { Avatar, PeopleProvider, TINTS, usePerson } from "../threads/people";
 import { canToggle } from "../threads/ResolveButton";
 import { ThreadStatus } from "../threads/ThreadStatus";
@@ -83,7 +93,10 @@ import {
 	useThreadWrites,
 	useWritesOn,
 } from "../threads/threadWrites";
-import { usePrefetchComments } from "../threads/useThreadComments";
+import {
+	usePrefetchComments,
+	useThreadComments,
+} from "../threads/useThreadComments";
 import { useThreads } from "../threads/useThreads";
 import { ErrorMessage, safeHref } from "../ui";
 import { createImageRefresher } from "./imageRefresh";
@@ -668,7 +681,7 @@ function IsItReady({
 		const writesOn = pr.writes === "on";
 		const byThread = new Map<string, string[]>();
 		for (const d of drafts) {
-			if (!d.sending && !d.text.trim()) continue;
+			if (!kept(d)) continue;
 			if (writesOn && listed.has(d.threadId)) continue;
 			byThread.set(d.threadId, [...(byThread.get(d.threadId) ?? []), d.text]);
 		}
@@ -985,15 +998,16 @@ function ThreadGroup(props: {
 	const listId = useId();
 	const headingId = useId();
 	const fade = useFade();
+	const writer = useThreadWriter();
+	// Threads whose last comment was deleted here fade, then leave.
+	const { gone } = useThreadWrites();
 	// A card resolved or unresolved stays in its list while it fades.
 	const inResolved = (t: Thread) => fade.fading.get(t.id) ?? t.resolved;
 	const unresolved = threads.filter((t) => !inResolved(t));
 	const resolved = threads.filter(inResolved);
 	const drafts = useDrafts();
 	const drafted = useMemo(() => {
-		const ids = new Set(
-			drafts.filter((d) => d.sending || d.text.trim()).map((d) => d.threadId),
-		);
+		const ids = new Set(drafts.filter(kept).map((d) => d.threadId));
 		return props.writesOn ? threads.filter((t) => ids.has(t.id)) : [];
 	}, [drafts, threads, props.writesOn]);
 	const draftCount = drafted.length + orphans.length;
@@ -1182,7 +1196,11 @@ function ThreadGroup(props: {
 								key={key}
 								thread={t}
 								readId={readId}
-								fading={shownFilter !== "drafts" && fade.fading.has(t.id)}
+								fading={
+									gone.has(t.id) ||
+									(shownFilter !== "drafts" && fade.fading.has(t.id))
+								}
+								gone={gone.has(t.id)}
 								draftsShown={shownFilter === "drafts"}
 								onToggle={(next) => fade.toggled(t.id, next)}
 							/>
@@ -1195,7 +1213,12 @@ function ThreadGroup(props: {
 						className={`space-y-3 ${listed.length > 0 ? "mt-3" : ""}`}
 					>
 						{orphans.map((o) => (
-							<OrphanDraft key={o.threadId} draft={o} />
+							<OrphanDraft
+								key={o.threadId}
+								label="Thread not listed"
+								text={o.texts.join("\n\n")}
+								onDiscard={() => writer.discard(o.threadId)}
+							/>
 						))}
 					</ul>
 				)}
@@ -1220,62 +1243,6 @@ interface OrphanDraftItem {
 	threadId: string;
 	/** Its box text and its replies not yet confirmed. */
 	texts: string[];
-}
-
-/**
- * A draft no card can show (its thread is gone or not listed, or this
- * session doesn't write): its text, Copy, and Discard.
- */
-function OrphanDraft({ draft }: { draft: OrphanDraftItem }) {
-	const writer = useThreadWriter();
-	const text = draft.texts.join("\n\n");
-	const button = (
-		label: string,
-		IconEl: Icon,
-		onClick: () => void,
-		tone = "text-ink-soft",
-	) => (
-		<Tooltip content={label} describe={false}>
-			{(trigger) => (
-				<button
-					{...trigger}
-					type="button"
-					aria-label={label}
-					onClick={onClick}
-					className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-md hover:bg-overlay focus-visible:outline-2 focus-visible:outline-accent ${tone}`}
-				>
-					<IconEl size={16} aria-hidden />
-				</button>
-			)}
-		</Tooltip>
-	);
-	return (
-		<li
-			data-testid="orphan-draft"
-			className="min-w-0 overflow-hidden rounded-lg border border-edge bg-surface"
-		>
-			<div className="flex items-center gap-1.5 border-b border-line bg-band py-0.5 pr-1 pl-2.5 text-xs text-muted">
-				<LabeledIcon icon={PencilIcon} label="Draft" className="text-warn" />
-				<span className="min-w-0 flex-1 truncate">Thread not listed</span>
-				{button("Copy", CopyIcon, () => {
-					try {
-						void navigator.clipboard?.writeText(text).catch(() => {});
-					} catch {}
-				})}
-				{button(
-					"Discard",
-					TrashIcon,
-					() => writer.discard(draft.threadId),
-					"text-bad",
-				)}
-			</div>
-			<p
-				className={`${COMMENT_SURFACE} m-2 text-sm whitespace-pre-wrap break-words`}
-			>
-				{text}
-			</p>
-		</li>
-	);
 }
 
 /** Overflowing `el` (when `axis` is "both", sideways too), re-measured as it resizes. */
@@ -1324,6 +1291,7 @@ function ThreadItem({
 	fading,
 	onToggle,
 	draftsShown,
+	gone,
 }: {
 	thread: Thread;
 	/** The read the thread was listed in: its comments are read by it. */
@@ -1333,6 +1301,8 @@ function ThreadItem({
 	onToggle?: (resolved: boolean) => void;
 	/** Listed for its draft: its replies open, the draft in view. */
 	draftsShown?: boolean;
+	/** Its last comment deleted here: gone on GitHub, fading out. */
+	gone?: boolean;
 }) {
 	const drafts = useDrafts();
 	// A thread with a draft opens on it.
@@ -1368,6 +1338,22 @@ function ThreadItem({
 		canResolve: canToggle(thread, writesOn),
 	});
 	const commentClipped = commentMore && !open;
+	// The opener as a comment (its id, what the viewer may do, edited):
+	// read once the card opens, usually prefetched before.
+	const known = useThreadComments(readId, thread.id, {
+		enabled: open && !thread.unavailable && thread.id !== "",
+	}).data;
+	const first =
+		known?.threadId === thread.id &&
+		known.comments[0] &&
+		!known.comments[0].pending
+			? known.comments[0]
+			: undefined;
+	const write = useCommentWrite(thread.id, first ?? NO_COMMENT);
+	const can = useCommentCan(first ?? NO_COMMENT);
+	const openerDeleted = first
+		? first.deleted
+		: thread.body.trim() === "[deleted]";
 	useEffect(() => {
 		const el = commentBox.current;
 		if (!el || !commentClipped) return;
@@ -1379,6 +1365,35 @@ function ThreadItem({
 	const comment = thread.unavailable ? (
 		// Its text will never come: said so, plainly.
 		<UnavailableText id={commentId} reason={thread.unavailable} />
+	) : write.deleting ? (
+		<div id={commentId}>
+			<DeletedRow
+				threadId={thread.id}
+				commentId={write.deleting.commentId}
+				undo={write.deleting.undo}
+			/>
+		</div>
+	) : open && write.editing && first ? (
+		<div id={commentId}>
+			<EditForm
+				threadId={thread.id}
+				comment={first}
+				onClose={() => write.setEditing(false)}
+			/>
+		</div>
+	) : write.saving !== undefined ? (
+		<div
+			id={commentId}
+			data-testid="thread-body"
+			data-tint={opener.tint}
+			className={`${commentSurface(opener.tint)} break-words`}
+		>
+			<SavingText text={write.saving} />
+		</div>
+	) : openerDeleted ? (
+		<div id={commentId}>
+			<DeletedPlaceholder />
+		</div>
 	) : !thread.loaded ? (
 		// Its text is still on its way: the comment's frame.
 		<div
@@ -1424,6 +1439,33 @@ function ThreadItem({
 		>
 			{thread.excerpt}
 		</p>
+	);
+	// The opener's own Edit and Delete, inside Show more.
+	const openerBar =
+		open &&
+		first &&
+		!write.deleting &&
+		!write.editing &&
+		(write.saving !== undefined || can.update || can.delete) ? (
+			<div className="flex min-h-10 items-center justify-end gap-1.5 text-xs text-muted">
+				{write.saving !== undefined ? (
+					<LabeledIcon icon={ClockIcon} label="Saving" className="text-warn" />
+				) : (
+					<CommentActions
+						threadId={thread.id}
+						comment={first}
+						onEdit={() => write.setEditing(true)}
+					/>
+				)}
+			</div>
+		) : null;
+	const commentCell = openerBar ? (
+		<div className="min-w-0 space-y-1">
+			{comment}
+			{openerBar}
+		</div>
+	) : (
+		comment
 	);
 	const session = useQuery(sessionQuery);
 	const target = threadTarget(thread, session.data, line);
@@ -1488,6 +1530,11 @@ function ThreadItem({
 							opened&nbsp;
 							<RelativeTime iso={thread.createdAt} />
 						</span>
+						{first?.editedAt && !openerDeleted && (
+							<span className={`${HEAD_PART} whitespace-nowrap`}>
+								<EditedMark iso={first.editedAt} />
+							</span>
+						)}
 						{thread.lastActivityAt !== thread.createdAt && (
 							<span className={`${HEAD_PART} whitespace-nowrap`}>
 								updated&nbsp;
@@ -1504,7 +1551,7 @@ function ThreadItem({
 							data-testid="thread-moving"
 							className="hidden text-warn motion-reduce:inline"
 						>
-							Moving…
+							{gone ? "Deleted" : "Moving…"}
 						</span>
 					)}
 					<ThreadStatus thread={thread} mark={false} />
@@ -1536,7 +1583,7 @@ function ThreadItem({
 								<SkeletonBar key={w} className={w} />
 							))}
 						</div>
-						{comment}
+						{commentCell}
 					</div>
 				) : thread.code && rows.length > 0 ? (
 					<div className="grid gap-3 md:grid-cols-2 md:items-start">
@@ -1549,10 +1596,10 @@ function ThreadItem({
 							open={open}
 							scrollable={open ? codeOverflowsOpen : codeMore}
 						/>
-						{comment}
+						{commentCell}
 					</div>
 				) : (
-					comment
+					commentCell
 				)}
 				{open && !thread.unavailable && (
 					<div id={repliesId} className="space-y-2">
@@ -1587,6 +1634,22 @@ function ThreadItem({
 		</li>
 	);
 }
+
+/** No comment (the opener's not read yet): no writes to it. */
+const NO_COMMENT: ThreadComment = {
+	id: "",
+	author: "",
+	bot: false,
+	avatarUrl: "",
+	publishedAt: null,
+	pending: false,
+	html: "",
+	body: "",
+	text: "",
+	editedAt: null,
+	viewerCan: { update: false, delete: false },
+	deleted: false,
+};
 
 /** "1 reply", "2 replies". */
 const repliesText = (n: number) => `${n} ${n === 1 ? "reply" : "replies"}`;

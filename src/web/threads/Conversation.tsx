@@ -7,10 +7,21 @@ import { BotIcon, LabeledIcon, plural } from "../overview/parts";
 import { RelativeTime } from "../RelativeTime";
 import { Tooltip } from "../Tooltip";
 import { CommentBody } from "./CommentBody";
+import {
+	CommentActions,
+	DeletedPlaceholder,
+	DeletedRow,
+	EditedMark,
+	EditForm,
+	SavingText,
+	useCommentWrite,
+} from "./CommentEdit";
+import { useDrafts } from "./drafts";
+import { OrphanDraft } from "./OrphanDraft";
 import { Avatar, tintSurface, usePerson } from "./people";
 import { ReplyBox } from "./ReplyBox";
 import { canToggle, ResolveButton } from "./ResolveButton";
-import { useThreadWrites, useWritesOn } from "./threadWrites";
+import { useThreadWriter, useThreadWrites, useWritesOn } from "./threadWrites";
 import { useThreadComments } from "./useThreadComments";
 
 /** GitHub's text: its own raised surface, apart from the card and the code. */
@@ -153,7 +164,9 @@ export function ThreadComments(props: {
 }): ReactNode {
 	const { thread } = props;
 	const query = useThreadComments(props.readId, thread.id);
+	const writer = useThreadWriter();
 	const sending = useSending(thread.id, query.data?.comments);
+	const lost = useLostEdits(thread.id, query.data?.comments);
 	// A read gone (410, a Refresh or a restart): the overview is read again
 	// and the comments follow the new read, so it is still loading; a Retry
 	// under the gone read could only fail.
@@ -204,7 +217,9 @@ export function ThreadComments(props: {
 	const { data } = query;
 	if (data.unavailable) return <UnavailableText reason={data.unavailable} />;
 	const shown = props.skipFirst ? data.comments.slice(1) : data.comments;
-	if (shown.length + sending.length === 0 && !data.missing) return null;
+	if (shown.length + sending.length + lost.length === 0 && !data.missing) {
+		return null;
+	}
 	return (
 		<div className="space-y-2">
 			{shown.length + sending.length > 0 && (
@@ -228,6 +243,18 @@ export function ThreadComments(props: {
 					))}
 				</ol>
 			)}
+			{lost.length > 0 && (
+				<ul aria-label="Edits of comments gone" className="space-y-2">
+					{lost.map((d) => (
+						<OrphanDraft
+							key={d.commentId}
+							label="Comment gone"
+							text={d.text}
+							onDiscard={() => writer.cancelEdit(thread.id, d.commentId)}
+						/>
+					))}
+				</ul>
+			)}
 			{data.missing ? (
 				<p className="flex min-h-10 items-center px-1 text-sm text-warn">
 					<LabeledIcon
@@ -242,6 +269,24 @@ export function ThreadComments(props: {
 	);
 }
 
+/**
+ * Edit drafts of this thread's comments that its comments no longer have
+ * (deleted on GitHub meanwhile): shown to copy or discard, never lost.
+ */
+function useLostEdits(
+	threadId: string,
+	comments: ThreadComment[] | undefined,
+): { commentId: string; text: string }[] {
+	const drafts = useDrafts();
+	if (!comments) return [];
+	const ids = new Set(comments.map((c) => c.id));
+	return drafts.flatMap((d) =>
+		d.threadId === threadId && d.edit && !ids.has(d.edit.commentId)
+			? [{ commentId: d.edit.commentId, text: d.text }]
+			: [],
+	);
+}
+
 function CommentItem(props: {
 	comment: ThreadComment;
 	thread: ReviewThread;
@@ -251,13 +296,26 @@ function CommentItem(props: {
 	const { comment: c, thread } = props;
 	const author = c.author || "ghost";
 	const { tint } = usePerson(author, c.avatarUrl);
+	const write = useCommentWrite(thread.id, c);
+	if (write.deleting) {
+		return (
+			<li data-testid="thread-comment" data-author={author} className="min-w-0">
+				<DeletedRow
+					threadId={thread.id}
+					commentId={c.id}
+					undo={write.deleting.undo}
+				/>
+			</li>
+		);
+	}
+	const saving = write.saving !== undefined;
 	return (
 		<li
 			data-testid={props.sending ? "thread-comment-sending" : "thread-comment"}
 			data-author={author}
 			className="min-w-0 space-y-1"
 		>
-			<p className="flex min-h-5 flex-wrap items-center gap-x-1.5 px-0.5 text-xs text-muted">
+			<div className="flex min-h-5 flex-wrap items-center gap-x-1.5 px-0.5 text-xs text-muted">
 				<Avatar login={author} url={c.avatarUrl} />
 				<span className="inline-flex items-center gap-1 font-semibold text-ink-soft">
 					{author}
@@ -274,26 +332,51 @@ function CommentItem(props: {
 				) : (
 					c.publishedAt && <RelativeTime iso={c.publishedAt} />
 				)}
-			</p>
-			<div
-				data-testid="thread-comment-body"
-				data-tint={tint}
-				className={`${commentSurface(tint)} break-words`}
-			>
-				{c.html.trim() ? (
-					<CommentBody
-						html={c.html}
-						body={c.body}
-						code={thread.code}
-						path={thread.path}
-						open
-					/>
+				{saving ? (
+					<LabeledIcon icon={ClockIcon} label="Saving" className="text-warn" />
 				) : (
-					<p className="text-sm whitespace-pre-wrap">
-						{c.text || <span className="text-muted italic">No text</span>}
-					</p>
+					!c.deleted && <EditedMark iso={c.editedAt} />
+				)}
+				{!props.sending && !saving && !write.editing && (
+					<CommentActions
+						threadId={thread.id}
+						comment={c}
+						onEdit={() => write.setEditing(true)}
+						compact
+					/>
 				)}
 			</div>
+			{write.editing ? (
+				<EditForm
+					threadId={thread.id}
+					comment={c}
+					onClose={() => write.setEditing(false)}
+				/>
+			) : c.deleted && !saving ? (
+				<DeletedPlaceholder />
+			) : (
+				<div
+					data-testid="thread-comment-body"
+					data-tint={tint}
+					className={`${commentSurface(tint)} break-words`}
+				>
+					{saving ? (
+						<SavingText text={write.saving ?? ""} />
+					) : c.html.trim() ? (
+						<CommentBody
+							html={c.html}
+							body={c.body}
+							code={thread.code}
+							path={thread.path}
+							open
+						/>
+					) : (
+						<p className="text-sm whitespace-pre-wrap">
+							{c.text || <span className="text-muted italic">No text</span>}
+						</p>
+					)}
+				</div>
+			)}
 		</li>
 	);
 }

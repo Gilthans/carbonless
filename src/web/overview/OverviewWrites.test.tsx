@@ -16,11 +16,16 @@ import type {
 	ReviewThread,
 	ReviewView,
 	SessionInfo,
+	ThreadComment,
 	ThreadUpdate,
 } from "../../shared/types";
 import { createAppRouter } from "../router";
 import { draftsFor } from "../threads/drafts";
-import { FADE_MS, threadWritesFor } from "../threads/threadWrites";
+import {
+	DELETE_UNDO_MS,
+	FADE_MS,
+	threadWritesFor,
+} from "../threads/threadWrites";
 
 const info: SessionInfo = {
 	pr: {
@@ -120,7 +125,11 @@ const update = (threadId: string, resolved: boolean): ThreadUpdate => ({
 	comments: { threadId, comments: [] },
 });
 
-let posts: { path: string; body: unknown }[];
+let posts: { path: string; body: unknown; method?: string }[];
+/** Over every thread's opener in the comments answer. */
+let openerMore: Partial<ThreadComment> = {};
+/** Comments after the opener, per thread. */
+let moreComments: Record<string, ThreadComment[]> = {};
 let fetched: string[];
 /** Review-state writes made (none may come from a thread write). */
 const statePosts = () =>
@@ -155,7 +164,11 @@ function renderOverview(
 			const path = new URL(String(input), "http://test").pathname;
 			fetched.push(path);
 			if (path.startsWith("/api/threads/")) {
-				posts.push({ path, body: JSON.parse(String(init?.body ?? "null")) });
+				posts.push({
+					path,
+					body: JSON.parse(String(init?.body ?? "null")),
+					...(init?.method === "POST" ? {} : { method: init?.method }),
+				});
 				const answer = writeStatus(path);
 				if (!answer) return new Promise<Response>(() => {});
 				return new Response(JSON.stringify(answer.body), {
@@ -182,7 +195,12 @@ function renderOverview(
 									html: "",
 									body: threadId,
 									text: threadId,
+									editedAt: null,
+									viewerCan: { update: false, delete: false },
+									deleted: false,
+									...openerMore,
 								},
+								...(moreComments[threadId] ?? []),
 							],
 						})),
 					}),
@@ -214,6 +232,8 @@ async function openCard(
 }
 
 beforeEach(() => {
+	openerMore = {};
+	moreComments = {};
 	try {
 		localStorage.clear();
 	} catch {}
@@ -654,5 +674,188 @@ describe("WriteWarnings in who's on it", () => {
 		const who = await screen.findByRole("region", { name: "Who's on it" });
 		await screen.findByTestId("thread");
 		expect(within(who).queryByRole("alert")).toBeNull();
+	});
+});
+
+describe("editing and deleting from an Overview card", () => {
+	const own = (
+		threadId: string,
+		body: string,
+		more: Partial<ThreadComment> = {},
+	) =>
+		({
+			id: `${threadId}-1`,
+			author: "octo",
+			bot: false,
+			avatarUrl: "",
+			publishedAt: "2026-01-01T09:00:00Z",
+			pending: false,
+			html: `<p>${body}</p>`,
+			body,
+			text: body,
+			editedAt: null,
+			viewerCan: { update: true, delete: true },
+			deleted: false,
+			...more,
+		}) satisfies ThreadComment;
+
+	const answer = (
+		threadId: string,
+		comments: ThreadComment[],
+		comment?: ThreadComment,
+	) => ({
+		status: 200,
+		body: {
+			...update(threadId, false),
+			commentCount: comments.length,
+			comments: { threadId, comments },
+			...(comment ? { comment } : {}),
+		} satisfies ThreadUpdate,
+	});
+
+	it("edits the opener inside Show more: the new text at once, then GitHub's, marked edited", async () => {
+		const user = userEvent.setup();
+		openerMore = { author: "octo", viewerCan: { update: true, delete: true } };
+		// GitHub doesn't answer yet: the edit stays on its way.
+		renderOverview({}, [thread("a", { author: "octo" })], () => null);
+		const card = await screen.findByTestId("thread");
+		// Closed: no Edit (it's inside Show more).
+		expect(within(card).queryByRole("button", { name: "Edit" })).toBeNull();
+		await openCard(user, card);
+		await user.click(await within(card).findByRole("button", { name: "Edit" }));
+		const box = within(card).getByRole("textbox", { name: "Edit comment" });
+		expect(box).toHaveValue("a");
+		await user.clear(box);
+		await user.type(box, "Better words");
+		await user.click(within(card).getByRole("button", { name: "Save" }));
+		expect(within(card).getByTestId("thread-body")).toHaveTextContent(
+			"Better words",
+		);
+		expect(within(card).getByRole("img", { name: "Saving" })).toBeVisible();
+		expect(posts).toEqual([
+			{
+				path: "/api/threads/a/comments/a-1",
+				body: { body: "Better words", from: "a", force: false },
+				method: "PATCH",
+			},
+		]);
+		expect(statePosts()).toBe(0);
+	});
+
+	it("GitHub's answer to an opener edit becomes the card's text", async () => {
+		const user = userEvent.setup();
+		openerMore = { author: "octo", viewerCan: { update: true, delete: true } };
+		const edited = own("a", "Better words", {
+			editedAt: "2026-01-05T12:00:00Z",
+		});
+		renderOverview({}, [thread("a", { author: "octo" })], () =>
+			answer("a", [edited], edited),
+		);
+		const card = await screen.findByTestId("thread");
+		await openCard(user, card);
+		await user.click(await within(card).findByRole("button", { name: "Edit" }));
+		const box = within(card).getByRole("textbox", { name: "Edit comment" });
+		await user.clear(box);
+		await user.type(box, "Better words{Control>}{Enter}{/Control}");
+		await waitFor(() =>
+			expect(within(card).queryByRole("img", { name: "Saving" })).toBeNull(),
+		);
+		expect(within(card).getByTestId("thread-body")).toHaveTextContent(
+			"Better words",
+		);
+		expect(within(card).getByTestId("comment-edited")).toBeVisible();
+	});
+
+	it("an opener edit draft opens its card, is listed in Drafts and asked about on leaving", async () => {
+		const user = userEvent.setup();
+		openerMore = { author: "octo", viewerCan: { update: true, delete: true } };
+		const client = renderOverview({}, [
+			thread("a", { author: "octo" }),
+			thread("b"),
+		]);
+		const humans = await screen.findByRole("region", { name: "Human reviews" });
+		act(() => draftsFor(client).setEdit("a", "a-1", "a", "a, reworded"));
+		const chip = await within(humans).findByTestId("drafts-filter");
+		expect(chip).toHaveTextContent("1 draft");
+		await user.click(chip);
+		const list = within(humans).getByRole("list", {
+			name: "Threads with a draft",
+		});
+		expect(
+			await within(list).findByRole("textbox", { name: "Edit comment" }),
+		).toHaveValue("a, reworded");
+		const ask = new Event("beforeunload", { cancelable: true });
+		window.dispatchEvent(ask);
+		expect(ask.defaultPrevented).toBe(true);
+	});
+
+	it("deleting the only comment: Deleted · Undo, then sent; the card fades and leaves", async () => {
+		vi.useFakeTimers({ shouldAdvanceTime: true });
+		const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+		openerMore = { author: "octo", viewerCan: { update: true, delete: true } };
+		renderOverview({}, [thread("a", { author: "octo" }), thread("b")], () => ({
+			status: 200,
+			body: { threadId: "a", gone: true },
+		}));
+		const humans = await screen.findByRole("region", { name: "Human reviews" });
+		const [card] = within(humans).getAllByTestId("thread");
+		if (!card) throw new Error("no card");
+		await openCard(user, card);
+		await user.click(
+			await within(card).findByRole("button", { name: "Delete" }),
+		);
+		const row = within(card).getByTestId("comment-deleted-row");
+		// Undo first: nothing is sent.
+		await user.click(within(row).getByRole("button", { name: "Undo" }));
+		await act(() => vi.advanceTimersByTimeAsync(DELETE_UNDO_MS * 2));
+		expect(posts).toEqual([]);
+		await user.click(within(card).getByRole("button", { name: "Delete" }));
+		await act(() => vi.advanceTimersByTimeAsync(DELETE_UNDO_MS));
+		await waitFor(() =>
+			expect(posts).toEqual([
+				{ path: "/api/threads/a/comments/a-1", body: null, method: "DELETE" },
+			]),
+		);
+		await waitFor(() => expect(card).toHaveAttribute("data-fading", "true"));
+		await act(() => vi.advanceTimersByTimeAsync(FADE_MS));
+		await waitFor(() =>
+			expect(within(humans).getAllByTestId("thread")).toHaveLength(1),
+		);
+		expect(statePosts()).toBe(0);
+	});
+
+	it("an opener blanked by a delete shows as a muted placeholder", async () => {
+		const user = userEvent.setup();
+		openerMore = {
+			author: "octo",
+			body: "[deleted]",
+			deleted: true,
+		};
+		moreComments = {
+			a: [
+				{
+					...own("a", "A reply"),
+					id: "a-2",
+					author: "rev",
+					viewerCan: { update: false, delete: false },
+				},
+			],
+		};
+		renderOverview({}, [
+			thread("a", {
+				author: "octo",
+				body: "[deleted]",
+				html: "<p>[deleted]</p>",
+				commentCount: 2,
+			}),
+		]);
+		const card = await screen.findByTestId("thread");
+		expect(within(card).getByTestId("comment-deleted")).toHaveTextContent(
+			"deleted",
+		);
+		await openCard(user, card);
+		expect(within(card).getByTestId("comment-deleted")).toBeVisible();
+		await within(card).findByText("A reply");
+		expect(within(card).queryByRole("button", { name: "Edit" })).toBeNull();
 	});
 });

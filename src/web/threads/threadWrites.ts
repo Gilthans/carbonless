@@ -5,17 +5,22 @@ import {
 } from "@tanstack/react-query";
 import { useEffect, useRef, useSyncExternalStore } from "react";
 import type {
+	EditRequest,
 	ReplyRequest,
 	ResolveRequest,
 	ReviewThread,
+	ThreadComment,
 	ThreadComments,
+	ThreadGone,
 	ThreadsView,
 	ThreadUpdate,
 } from "../../shared/types";
 import {
 	ApiError,
 	commentsQuery,
+	deleteComment,
 	overviewQuery,
+	patchComment,
 	postReply,
 	postResolved,
 	sessionQuery,
@@ -45,8 +50,10 @@ function newClientId(): string {
 export const FADE_MS = 4000;
 /** Threads with a write out at once; the others wait their turn. */
 export const MAX_IN_FLIGHT = 4;
+/** How long a deleted comment can be undone before the delete is sent. */
+export const DELETE_UNDO_MS = 5000;
 
-export type WriteAction = "Reply" | "Resolve" | "Unresolve";
+export type WriteAction = "Reply" | "Resolve" | "Unresolve" | "Edit" | "Delete";
 
 type Op =
 	| {
@@ -61,7 +68,17 @@ type Op =
 			/** The reviewer discarded it: not sent again (one already out may land). */
 			discarded?: boolean;
 	  }
-	| { kind: "resolve"; resolved: boolean };
+	| { kind: "resolve"; resolved: boolean }
+	| {
+			kind: "edit";
+			commentId: string;
+			text: string;
+			/** The body the edit started from: refused (409) if GitHub's differs. */
+			from: string;
+			/** "Save anyway": no check. */
+			force: boolean;
+	  }
+	| { kind: "delete"; commentId: string };
 
 /** A write refused for a reason retrying won't fix: shown red until Retry. */
 export interface WriteFailure {
@@ -70,6 +87,10 @@ export interface WriteFailure {
 	code?: string;
 	/** Where to fix it (a pending review: the PR's Files changed on GitHub). */
 	url?: string;
+	/** An edit or delete: the comment it was for. */
+	commentId?: string;
+	/** An edit refused as `changed`: the comment as GitHub has it now. */
+	current?: ThreadComment;
 }
 
 /** One thread's writes as the UI shows them. */
@@ -82,6 +103,13 @@ export interface ThreadWriteView {
 	resolved?: boolean;
 	/** Replies sent and not yet confirmed, oldest first. */
 	replies: { text: string; attemptedAt: string }[];
+	/** Edits saved and not yet confirmed: the comment's new text, shown at once. */
+	edits: { commentId: string; text: string }[];
+	/**
+	 * Comments deleted and not yet confirmed: `undo` while the delete waits
+	 * out DELETE_UNDO_MS (nothing sent yet), then on its way.
+	 */
+	deletes: { commentId: string; undo: boolean }[];
 	/** The write waiting now (the first in line). */
 	action: WriteAction | null;
 	/** A reply an earlier page left unconfirmed is being resent (it can be discarded). */
@@ -100,13 +128,31 @@ export interface ThreadWritesState {
 	threads: ReadonlyMap<string, ThreadWriteView>;
 	/** A reply was refused for a pending review on GitHub (409). */
 	pendingReview: { url: string } | null;
-	/** Anything not yet on GitHub (a refused resolve included). */
+	/** Anything not yet on GitHub (a refused resolve and a delete still undoable included). */
 	busy: boolean;
+	/**
+	 * Threads whose last comment the viewer deleted: gone on GitHub, still
+	 * listed for FADE_MS (an Overview card fades) before the page drops them.
+	 */
+	gone: ReadonlySet<string>;
 }
 
 export interface ThreadWritesDeps {
 	reply: (threadId: string, req: ReplyRequest) => Promise<ThreadUpdate>;
 	resolve: (threadId: string, req: ResolveRequest) => Promise<ThreadUpdate>;
+	edit: (
+		threadId: string,
+		commentId: string,
+		req: EditRequest,
+	) => Promise<ThreadUpdate>;
+	remove: (
+		threadId: string,
+		commentId: string,
+	) => Promise<ThreadUpdate | ThreadGone>;
+	/** The thread is gone on GitHub (its last comment deleted): drop it from the page. */
+	gone: (threadId: string) => void;
+	/** "Show theirs": the comment as GitHub has it now, into the page. */
+	theirs: (threadId: string, comment: ThreadComment) => void;
 	/** A write's answer: the thread as GitHub has it now. */
 	applied: (update: ThreadUpdate) => void;
 	drafts: DraftStore;
@@ -136,10 +182,23 @@ interface Lane {
 	failed: WriteFailure | null;
 	/** A refused resolve's intended state, kept until Retry or a newer one. */
 	refusedResolved?: boolean;
+	/** Deletes waiting out DELETE_UNDO_MS, by comment id: nothing sent yet. */
+	undo: Map<string, ReturnType<typeof setTimeout>>;
 }
 
 const actionOf = (op: Op): WriteAction =>
-	op.kind === "reply" ? "Reply" : op.resolved ? "Resolve" : "Unresolve";
+	op.kind === "reply"
+		? "Reply"
+		: op.kind === "edit"
+			? "Edit"
+			: op.kind === "delete"
+				? "Delete"
+				: op.resolved
+					? "Resolve"
+					: "Unresolve";
+
+const isGone = (answer: ThreadUpdate | ThreadGone): answer is ThreadGone =>
+	(answer as Partial<ThreadGone>).gone === true;
 
 /** The thread's comments couldn't be read: a reply waits (retried like a lost server). */
 class NoKnownCommentsError extends ApiError {
@@ -159,8 +218,9 @@ const asError = (error: unknown) =>
 	error instanceof Error ? error : new Error(String(error ?? "Unknown error"));
 
 /**
- * The reviewer's writes to GitHub threads (replies, resolve, unresolve),
- * with the review states' timing (stateSync.ts). Each is one explicit
+ * The reviewer's writes to GitHub threads (replies, resolve, unresolve,
+ * editing and deleting their comments), with the review states' timing
+ * (stateSync.ts). Each is one explicit
  * action and shows at once; this sends it until GitHub has it:
  * - one thread's writes go one at a time, in order (a reply then a resolve
  *   lands in that order); threads go in parallel, MAX_IN_FLIGHT at most;
@@ -171,9 +231,13 @@ const asError = (error: unknown) =>
  *   for it before posting again;
  * - any other refusal (400, 403, 404, 409) is red at once and never sent
  *   again by itself: a refused reply's text goes back into the box, a
- *   refused resolve keeps its intended state, until retry().
+ *   refused resolve keeps its intended state, a refused edit goes back to
+ *   its editor (the draft kept), until retry();
+ * - a delete waits DELETE_UNDO_MS first (undoDelete() cancels it, nothing
+ *   sent), then goes in line like the rest.
  * Nothing is ever written without the reviewer's action: a reply left
- * unconfirmed by a reload is resent only through resume().
+ * unconfirmed by a reload is resent only through resume() (an edit too:
+ * the server finds it landed).
  */
 export class ThreadWrites {
 	readonly #deps: ThreadWritesDeps;
@@ -182,6 +246,10 @@ export class ThreadWrites {
 	#pendingReview: { url: string } | null = null;
 	#lastAttempt = 0;
 	#delayTimer: ReturnType<typeof setTimeout> | undefined;
+	/** Threads gone on GitHub, fading before the page drops them. */
+	readonly #gone = new Map<string, ReturnType<typeof setTimeout>>();
+	/** `#gone`'s ids as the state shows them: a new set only when they change. */
+	#goneIds: ReadonlySet<string> = new Set();
 	readonly #listeners = new Set<() => void>();
 	#state: ThreadWritesState;
 
@@ -254,6 +322,14 @@ export class ThreadWrites {
 				// Certainly new: nothing to look for first.
 				lane.ops.push({ kind: "reply", text, id, retry: false });
 			}
+		} else if (failed?.action === "Edit" && failed.commentId) {
+			this.#clearFailure(lane);
+			const op = this.#editOp(failed.commentId, false);
+			if (op) lane.ops.push(op);
+		} else if (failed?.action === "Delete" && failed.commentId) {
+			this.#clearFailure(lane);
+			// Asked for again, explicitly: sent now, no second undo window.
+			lane.ops.push({ kind: "delete", commentId: failed.commentId });
 		} else if (lane.refusedResolved !== undefined) {
 			const resolved = lane.refusedResolved;
 			this.#clearFailure(lane);
@@ -277,6 +353,24 @@ export class ThreadWrites {
 	 */
 	resume(): void {
 		for (const d of this.#deps.drafts.get()) {
+			if (d.edit?.saving) {
+				const { commentId } = d.edit;
+				const lane = this.#lane(d.threadId);
+				const known = lane.ops.some(
+					(op) => op.kind === "edit" && op.commentId === commentId,
+				);
+				if (known) continue;
+				// The server finds it landed (GitHub's body is the new text).
+				lane.ops.push({
+					kind: "edit",
+					commentId,
+					text: d.text,
+					from: d.edit.from,
+					force: d.edit.force === true,
+				});
+				if (lane.ops.length === 1) lane.since = Date.now();
+				continue;
+			}
 			if (!d.sending) continue;
 			const { sentOnce: _, ...id } = d.sending;
 			const lane = this.#lane(d.threadId);
@@ -311,14 +405,16 @@ export class ThreadWrites {
 	}
 
 	/**
-	 * Drops the thread's draft and its replies not yet sent or resent (one
-	 * already out may still land: GitHub then shows it). The reviewer's
+	 * Drops the thread's draft, its edit drafts and its replies and edits not
+	 * yet sent or resent (one already out may still land: GitHub then shows
+	 * it). The reviewer's
 	 * explicit choice; nothing else ever drops typed text.
 	 */
 	discard(threadId: string): void {
 		const lane = this.#lanes.get(threadId);
 		if (lane) {
 			lane.ops = lane.ops.filter((op, i) => {
+				if (op.kind === "edit") return i === 0 && lane.sending;
 				if (op.kind !== "reply") return true;
 				if (i === 0 && lane.sending) {
 					op.discarded = true;
@@ -326,7 +422,9 @@ export class ThreadWrites {
 				}
 				return false;
 			});
-			if (lane.failed?.action === "Reply") this.#clearFailure(lane);
+			if (lane.failed?.action === "Reply" || lane.failed?.action === "Edit") {
+				this.#clearFailure(lane);
+			}
 			if (lane.ops.length === 0 && lane.timer !== undefined) {
 				clearTimeout(lane.timer);
 				lane.timer = undefined;
@@ -370,6 +468,90 @@ export class ThreadWrites {
 		this.#pump();
 	}
 
+	/**
+	 * Saves the comment's edit draft to GitHub (`force`: "Save anyway", no
+	 * changed-on-GitHub check). Its new text shows at once; the editor
+	 * closes. Nothing when the draft is blank or unchanged.
+	 */
+	saveEdit(threadId: string, commentId: string, force = false): void {
+		const lane = this.#lane(threadId);
+		const op = this.#editOp(commentId, force);
+		if (!op) {
+			this.#prune(threadId);
+			return;
+		}
+		if (lane.failed?.commentId === commentId) this.#clearFailure(lane);
+		this.#push(lane, op);
+	}
+
+	/** Lets the comment's edit go: its draft dropped, a refusal of it cleared. */
+	cancelEdit(threadId: string, commentId: string): void {
+		this.#deps.drafts.dropEdit(commentId);
+		const lane = this.#lanes.get(threadId);
+		if (
+			lane?.failed?.action === "Edit" &&
+			lane.failed.commentId === commentId
+		) {
+			this.#clearFailure(lane);
+			this.#prune(threadId);
+		}
+		this.#changed();
+	}
+
+	/**
+	 * An edit refused as changed on GitHub: GitHub's text into the page, and
+	 * the draft starts from it now (the reviewer has seen theirs: a Save
+	 * then saves over it). The draft stays in the editor.
+	 */
+	showTheirs(threadId: string): void {
+		const lane = this.#lanes.get(threadId);
+		const failed = lane?.failed;
+		if (!lane || failed?.action !== "Edit" || !failed.commentId) return;
+		if (failed.current) {
+			try {
+				this.#deps.theirs(threadId, failed.current);
+			} catch {}
+			this.#deps.drafts.setFrom(failed.commentId, failed.current.body);
+		}
+		this.#clearFailure(lane);
+		this.#prune(threadId);
+		this.#changed();
+	}
+
+	/**
+	 * Deletes the comment: shown deleted at once, sent after DELETE_UNDO_MS
+	 * unless undone (GitHub blanks a thread's opener with replies after it
+	 * to "[deleted]" instead; the server decides).
+	 */
+	deleteComment(threadId: string, commentId: string): void {
+		if (!commentId) return;
+		const lane = this.#lane(threadId);
+		const out = lane.ops.some(
+			(op) => op.kind === "delete" && op.commentId === commentId,
+		);
+		if (out || lane.undo.has(commentId)) return;
+		if (lane.failed?.commentId === commentId) this.#clearFailure(lane);
+		lane.undo.set(
+			commentId,
+			setTimeout(() => {
+				lane.undo.delete(commentId);
+				this.#push(lane, { kind: "delete", commentId });
+			}, DELETE_UNDO_MS),
+		);
+		this.#changed();
+	}
+
+	/** Undoes a delete still waiting out its window: nothing is sent. */
+	undoDelete(threadId: string, commentId: string): void {
+		const lane = this.#lanes.get(threadId);
+		const timer = lane?.undo.get(commentId);
+		if (!lane || timer === undefined) return;
+		clearTimeout(timer);
+		lane.undo.delete(commentId);
+		this.#prune(threadId);
+		this.#changed();
+	}
+
 	state = (): ThreadWritesState => this.#state;
 	getState = this.state;
 
@@ -400,6 +582,42 @@ export class ThreadWrites {
 		return new Date(now).toISOString();
 	}
 
+	/** The edit draft's save, or null when blank or unchanged (the draft is dropped then). */
+	#editOp(commentId: string, force: boolean): Op | null {
+		const { drafts } = this.#deps;
+		const draft = drafts.edit(commentId);
+		if (!draft?.edit) return null;
+		if (!draft.text.trim() || draft.text === draft.edit.from) {
+			if (draft.text === draft.edit.from) drafts.dropEdit(commentId);
+			return null;
+		}
+		drafts.markSaving(commentId, true, force);
+		return {
+			kind: "edit",
+			commentId,
+			text: draft.text,
+			from: draft.edit.from,
+			force,
+		};
+	}
+
+	/** The thread is gone on GitHub: listed as gone for FADE_MS, then dropped. */
+	#markGone(threadId: string) {
+		if (this.#gone.has(threadId)) return;
+		this.#gone.set(
+			threadId,
+			setTimeout(() => {
+				this.#gone.delete(threadId);
+				this.#goneIds = new Set(this.#gone.keys());
+				try {
+					this.#deps.gone(threadId);
+				} catch {}
+				this.#changed();
+			}, FADE_MS),
+		);
+		this.#goneIds = new Set(this.#gone.keys());
+	}
+
 	#lane(threadId: string): Lane {
 		let lane = this.#lanes.get(threadId);
 		if (!lane) {
@@ -412,6 +630,7 @@ export class ThreadWrites {
 				waiting: null,
 				lastTransient: null,
 				failed: null,
+				undo: new Map(),
 			};
 			this.#lanes.set(threadId, lane);
 		}
@@ -440,7 +659,8 @@ export class ThreadWrites {
 			lane &&
 			lane.ops.length === 0 &&
 			!lane.failed &&
-			lane.timer === undefined
+			lane.timer === undefined &&
+			lane.undo.size === 0
 		) {
 			this.#lanes.delete(threadId);
 		}
@@ -459,7 +679,7 @@ export class ThreadWrites {
 	}
 
 	async #send(threadId: string, lane: Lane, op: Op) {
-		let update: ThreadUpdate;
+		let update: ThreadUpdate | ThreadGone;
 		try {
 			if (op.kind === "reply") {
 				if (op.id.knownCommentIds.length === 0) {
@@ -483,6 +703,14 @@ export class ThreadWrites {
 				const answer = this.#deps.reply(threadId, req);
 				this.#deps.drafts.markSent(threadId, op.id.attemptedAt);
 				update = await answer;
+			} else if (op.kind === "edit") {
+				update = await this.#deps.edit(threadId, op.commentId, {
+					body: op.text,
+					from: op.from,
+					force: op.force,
+				});
+			} else if (op.kind === "delete") {
+				update = await this.#deps.remove(threadId, op.commentId);
 			} else {
 				update = await this.#deps.resolve(threadId, { resolved: op.resolved });
 			}
@@ -494,11 +722,7 @@ export class ThreadWrites {
 		}
 		lane.sending = false;
 		this.#inFlight--;
-		try {
-			this.#deps.applied(update);
-		} catch {
-			// Showing the answer failed; GitHub has it all the same.
-		}
+		this.#landed(threadId, op, update);
 		if (op.kind === "reply") {
 			this.#deps.drafts.confirm(threadId, op.id.attemptedAt);
 			// GitHub took a new reply: a pending review no longer blocks. (A
@@ -516,6 +740,25 @@ export class ThreadWrites {
 		this.#prune(threadId);
 		this.#changed();
 		this.#pump();
+	}
+
+	/** GitHub's answer into the page, and what it settles. */
+	#landed(threadId: string, op: Op, answer: ThreadUpdate | ThreadGone) {
+		try {
+			if (isGone(answer)) this.#markGone(threadId);
+			else this.#deps.applied(answer);
+		} catch {
+			// Showing the answer failed; GitHub has it all the same.
+		}
+		if (op.kind === "edit") {
+			// Saved: the draft has served (unless typed in again since).
+			const draft = this.#deps.drafts.edit(op.commentId);
+			if (draft?.edit?.saving && draft.text === op.text) {
+				this.#deps.drafts.dropEdit(op.commentId);
+			}
+		} else if (op.kind === "delete") {
+			this.#deps.drafts.dropEdit(op.commentId);
+		}
 	}
 
 	#failed(threadId: string, lane: Lane, op: Op, error: unknown) {
@@ -547,19 +790,45 @@ export class ThreadWrites {
 			this.#pump();
 			return;
 		}
+		const write = error instanceof ApiError ? error.write : undefined;
+		if (op.kind === "delete" && write?.code === "gone") {
+			// The thread is gone on GitHub: what the delete wanted.
+			this.#landed(threadId, op, { threadId, gone: true });
+			lane.ops.shift();
+			lane.attempt = 0;
+			lane.waiting = null;
+			lane.lastTransient = null;
+			lane.since = Date.now();
+			this.#prune(threadId);
+			this.#changed();
+			this.#pump();
+			return;
+		}
 		lane.ops.shift();
 		lane.attempt = 0;
 		lane.waiting = null;
 		lane.lastTransient = null;
 		lane.since = Date.now();
-		const write = error instanceof ApiError ? error.write : undefined;
 		lane.failed = {
 			action: actionOf(op),
 			error: asError(error),
 			...(write?.code ? { code: write.code } : {}),
 			...(write?.url ? { url: write.url } : {}),
+			...(op.kind === "edit" || op.kind === "delete"
+				? { commentId: op.commentId }
+				: {}),
+			...(op.kind === "edit" && write?.current
+				? { current: write.current }
+				: {}),
 		};
-		if (op.kind === "reply") {
+		if (op.kind === "edit") {
+			// Back in its editor, as typed: nothing typed is lost.
+			lane.refusedResolved = undefined;
+			this.#deps.drafts.markSaving(op.commentId, false);
+		} else if (op.kind === "delete") {
+			// The comment shows again; Retry deletes it.
+			lane.refusedResolved = undefined;
+		} else if (op.kind === "reply") {
 			lane.refusedResolved = undefined;
 			this.#deps.drafts.returnToBox(threadId, op.id.attemptedAt);
 			if (write?.code === "pending-review" && write.url) {
@@ -599,7 +868,7 @@ export class ThreadWrites {
 				lastResolve?.kind === "resolve"
 					? lastResolve.resolved
 					: lane.refusedResolved;
-			if (head || resolved !== undefined) busy = true;
+			if (head || resolved !== undefined || lane.undo.size > 0) busy = true;
 			threads.set(threadId, {
 				threadId,
 				...(resolved === undefined ? {} : { resolved }),
@@ -608,6 +877,22 @@ export class ThreadWrites {
 						? [{ text: op.text, attemptedAt: op.id.attemptedAt }]
 						: [],
 				),
+				edits: lane.ops.flatMap((op) =>
+					op.kind === "edit"
+						? [{ commentId: op.commentId, text: op.text }]
+						: [],
+				),
+				deletes: [
+					...[...lane.undo.keys()].map((commentId) => ({
+						commentId,
+						undo: true,
+					})),
+					...lane.ops.flatMap((op) =>
+						op.kind === "delete"
+							? [{ commentId: op.commentId, undo: false }]
+							: [],
+					),
+				],
 				action: head ? actionOf(head) : null,
 				resumed:
 					head?.kind === "reply" && head.resumed === true && !head.discarded,
@@ -624,7 +909,12 @@ export class ThreadWrites {
 				this.#changed();
 			}, nextDelay);
 		}
-		return { threads, pendingReview: this.#pendingReview, busy };
+		return {
+			threads,
+			pendingReview: this.#pendingReview,
+			busy,
+			gone: this.#goneIds,
+		};
 	}
 }
 
@@ -642,6 +932,12 @@ export function applyThreadUpdate(
 	update: ThreadUpdate,
 ): void {
 	const { threadId } = update;
+	// An edit or blanking of the opener: the card shows its new text.
+	const first = update.comments.comments[0];
+	const opener =
+		update.comment && first && update.comment.id === first.id
+			? openerText(first)
+			: {};
 	client.setQueriesData<ThreadsView>({ queryKey: ["threads"] }, (view) => {
 		if (!view?.threads.some((t) => t.id === threadId)) return view;
 		return {
@@ -650,6 +946,7 @@ export function applyThreadUpdate(
 				t.id === threadId
 					? {
 							...t,
+							...opener,
 							resolved: update.resolved,
 							commentCount: update.commentCount,
 							lastActivityAt: update.lastActivityAt,
@@ -680,6 +977,64 @@ export function applyThreadUpdate(
 	}
 }
 
+/** A thread's opener text fields, from its first comment. */
+const openerText = (c: ThreadComment) => ({
+	html: c.html,
+	body: c.body,
+	excerpt: c.text.replace(/\s+/g, " ").trim().slice(0, 200),
+});
+
+/** The comment as GitHub has it now ("Show theirs"), into the page. */
+export function applyComment(
+	client: QueryClient,
+	threadId: string,
+	comment: ThreadComment,
+): void {
+	let first = false;
+	client.setQueriesData<ThreadComments>(
+		{
+			queryKey: ["comments"],
+			predicate: (q) => q.queryKey[2] === threadId,
+		},
+		(old) => {
+			if (!old) return old;
+			const i = old.comments.findIndex((c) => c.id === comment.id);
+			if (i < 0) return old;
+			if (i === 0) first = true;
+			const comments = [...old.comments];
+			comments[i] = comment;
+			return { ...old, comments };
+		},
+	);
+	if (!first) return;
+	client.setQueriesData<ThreadsView>({ queryKey: ["threads"] }, (view) =>
+		view?.threads.some((t) => t.id === threadId)
+			? {
+					...view,
+					threads: view.threads.map((t) =>
+						t.id === threadId ? { ...t, ...openerText(comment) } : t,
+					),
+				}
+			: view,
+	);
+}
+
+/** A thread gone on GitHub (its last comment deleted): out of every list, its comments gone. */
+export function dropThread(client: QueryClient, threadId: string): void {
+	client.setQueriesData<ThreadsView>({ queryKey: ["threads"] }, (view) =>
+		view?.threads.some((t) => t.id === threadId)
+			? { ...view, threads: view.threads.filter((t) => t.id !== threadId) }
+			: view,
+	);
+	client.setQueriesData<ThreadComments>(
+		{
+			queryKey: ["comments"],
+			predicate: (q) => q.queryKey[2] === threadId,
+		},
+		(old) => (old ? { threadId, comments: [], unavailable: "deleted" } : old),
+	);
+}
+
 /** The page's one ThreadWrites (and its drafts), per query client. */
 export function threadWritesFor(client: QueryClient): ThreadWrites {
 	let writes = pages.get(client);
@@ -687,7 +1042,11 @@ export function threadWritesFor(client: QueryClient): ThreadWrites {
 		writes = new ThreadWrites({
 			reply: postReply,
 			resolve: postResolved,
+			edit: patchComment,
+			remove: deleteComment,
 			applied: (update) => applyThreadUpdate(client, update),
+			gone: (threadId) => dropThread(client, threadId),
+			theirs: (threadId, comment) => applyComment(client, threadId, comment),
 			drafts: draftsFor(client),
 			confirmedResolved: (threadId) => {
 				const lists = client.getQueriesData<ThreadsView>({

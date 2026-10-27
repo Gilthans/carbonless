@@ -3,7 +3,9 @@ import { useCallback, useSyncExternalStore } from "react";
 
 /**
  * The reviewer's reply drafts, per PR: what is typed in each thread's box,
- * and each reply sent but not yet confirmed by GitHub. Kept in
+ * each reply sent but not yet confirmed by GitHub, and each edit of one of
+ * their comments (by comment id) changed from where it started, until
+ * GitHub has it. Kept in
  * `localStorage` (`crb:drafts:<owner>/<repo>#<number>`) so a reload loses
  * nothing: an unconfirmed reply is resent then (ThreadWrites.resume), with
  * the server's duplicate check. Storage that throws or is missing (a
@@ -18,6 +20,19 @@ export interface Draft {
 	sending?: Sending;
 	/** A box draft: how much of its start was put back by refused replies. */
 	returned?: number;
+	/** An edit of a comment, not a reply: `text` is the comment's new Markdown. */
+	edit?: EditDraft;
+}
+
+/** An edit in progress (or saving) of one comment. */
+export interface EditDraft {
+	commentId: string;
+	/** The body the edit started from: GitHub refuses it if that changed since. */
+	from: string;
+	/** Saved and not yet confirmed: resent on load (the editor is closed). */
+	saving?: boolean;
+	/** Saved with "Save anyway": no changed-on-GitHub check. */
+	force?: boolean;
 }
 
 /** A sent reply's identity for the server's duplicate check, kept across reloads. */
@@ -45,6 +60,19 @@ function isDraft(value: unknown): value is Draft {
 	if (typeof d.threadId !== "string" || typeof d.text !== "string") {
 		return false;
 	}
+	if (d.edit !== undefined) {
+		const e = d.edit as Partial<EditDraft> | null;
+		return (
+			d.sending === undefined &&
+			typeof e === "object" &&
+			e !== null &&
+			typeof e.commentId === "string" &&
+			e.commentId !== "" &&
+			typeof e.from === "string" &&
+			(e.saving === undefined || typeof e.saving === "boolean") &&
+			(e.force === undefined || typeof e.force === "boolean")
+		);
+	}
 	if (d.sending === undefined) return true;
 	return (
 		typeof d.sending === "object" &&
@@ -56,6 +84,18 @@ function isDraft(value: unknown): value is Draft {
 		d.sending.knownCommentIds.every((id) => typeof id === "string")
 	);
 }
+
+/** The thread's reply box draft (not a sent reply, not an edit). */
+const isBox = (d: Draft, threadId: string) =>
+	d.threadId === threadId && !d.sending && !d.edit;
+
+/** What a draft is one of: a box, a sent reply, an edit. Each slot holds one. */
+const slot = (d: Draft) =>
+	d.sending
+		? `s\n${d.threadId}\n${d.sending.attemptedAt}`
+		: d.edit
+			? `e\n${d.edit.commentId}`
+			: `b\n${d.threadId}`;
 
 /** The page's storage, or undefined where touching it throws. */
 function defaultStorage(): Storage | undefined {
@@ -96,21 +136,10 @@ export class DraftStore {
 		this.#key = key;
 		this.#listen();
 		const stored = this.#stored() ?? [];
-		const now = this.#drafts;
-		const typed = new Set(
-			now.filter((d) => !d.sending && d.text).map((d) => d.threadId),
-		);
-		const sent = new Set(
-			now.flatMap((d) =>
-				d.sending ? [`${d.threadId}\n${d.sending.attemptedAt}`] : [],
-			),
-		);
-		const kept = stored.filter((d) =>
-			d.sending
-				? !sent.has(`${d.threadId}\n${d.sending.attemptedAt}`)
-				: !typed.has(d.threadId),
-		);
-		this.#set([...kept, ...now.filter((d) => d.sending || d.text)]);
+		const now = this.#drafts.filter((d) => d.sending || d.edit || d.text);
+		const mine = new Set(now.map(slot));
+		const kept = stored.filter((d) => !mine.has(slot(d)));
+		this.#set([...kept, ...now]);
 	}
 
 	get = (): readonly Draft[] => this.#drafts;
@@ -124,18 +153,68 @@ export class DraftStore {
 
 	/** The thread's box text ("" for none). */
 	text(threadId: string): string {
-		return (
-			this.#drafts.find((d) => d.threadId === threadId && !d.sending)?.text ??
-			""
-		);
+		return this.#drafts.find((d) => isBox(d, threadId))?.text ?? "";
 	}
 
 	/** The thread's box text is now `text` (none when empty). */
 	setText(threadId: string, text: string): void {
 		this.#update((all) => {
-			const rest = all.filter((d) => !(d.threadId === threadId && !d.sending));
+			const rest = all.filter((d) => !isBox(d, threadId));
 			return text ? [...rest, { threadId, text }] : rest;
 		});
+	}
+
+	/** The edit of a comment in progress or saving, if any. */
+	edit(commentId: string): Draft | undefined {
+		return this.#drafts.find((d) => d.edit?.commentId === commentId);
+	}
+
+	/**
+	 * The comment's edit now reads `text`, started from `from`: kept while
+	 * it differs from `from`, dropped when back to it (nothing to lose).
+	 */
+	setEdit(threadId: string, commentId: string, from: string, text: string) {
+		this.#update((all) => {
+			const rest = all.filter((d) => d.edit?.commentId !== commentId);
+			return text === from
+				? rest
+				: [...rest, { threadId, text, edit: { commentId, from } }];
+		});
+	}
+
+	/** Saved (sent to GitHub until it has it), or back in the editor (refused). */
+	markSaving(commentId: string, saving: boolean, force = false): void {
+		this.#update((all) =>
+			all.map((d) =>
+				d.edit?.commentId === commentId
+					? {
+							...d,
+							edit: {
+								commentId,
+								from: d.edit.from,
+								...(saving ? { saving: true } : {}),
+								...(saving && force ? { force: true } : {}),
+							},
+						}
+					: d,
+			),
+		);
+	}
+
+	/** The edit starts from GitHub's newer body now (the reviewer saw theirs). */
+	setFrom(commentId: string, from: string): void {
+		this.#update((all) =>
+			all.map((d) =>
+				d.edit?.commentId === commentId
+					? { ...d, edit: { ...d.edit, from } }
+					: d,
+			),
+		);
+	}
+
+	/** GitHub has the edit, or the reviewer let it go. */
+	dropEdit(commentId: string): void {
+		this.#update((all) => all.filter((d) => d.edit?.commentId !== commentId));
 	}
 
 	/** A reply is sent: kept until confirmed (or returned to the box). */
@@ -274,9 +353,12 @@ export class DraftStore {
 	}
 }
 
+/** A draft worth keeping and showing: typed text, a reply sent, an edit changed. */
+export const kept = (d: Draft) =>
+	d.sending !== undefined || d.edit !== undefined || d.text.trim() !== "";
+
 /** Something here would be lost by leaving the page. */
-export const unsent = (drafts: readonly Draft[]) =>
-	drafts.some((d) => d.sending !== undefined || d.text.trim() !== "");
+export const unsent = (drafts: readonly Draft[]) => drafts.some(kept);
 
 const stores = new WeakMap<QueryClient, DraftStore>();
 
@@ -303,6 +385,13 @@ export function useDraft(threadId: string): [string, (text: string) => void] {
 		[store, threadId],
 	);
 	return [text, setText];
+}
+
+/** The comment's edit draft (in progress or saving), kept like a reply draft. */
+export function useEditDraft(commentId: string): Draft | undefined {
+	const store = draftsFor(useQueryClient());
+	const get = () => (commentId ? store.edit(commentId) : undefined);
+	return useSyncExternalStore(store.subscribe, get, get);
 }
 
 /** Every draft and unconfirmed reply (the Drafts filter, the leave guard). */

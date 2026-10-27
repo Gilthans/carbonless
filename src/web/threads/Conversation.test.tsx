@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
+	act,
 	cleanup,
 	render,
 	screen,
@@ -20,10 +21,12 @@ import type {
 	ThreadUpdate,
 } from "../../shared/types";
 import { showCommentsOf } from "../api";
+import { SyncNotices } from "../files/SyncNotices";
 import { Conversation } from "./Conversation";
 import { PeopleProvider } from "./people";
 import { ResolveButton } from "./ResolveButton";
 import { ThreadStatus } from "./ThreadStatus";
+import { DELETE_UNDO_MS, FADE_MS } from "./threadWrites";
 
 const comment = (
 	id: string,
@@ -80,6 +83,8 @@ let answer: (ids: string[]) => Promise<Response>;
 /** Answers a thread write (POST /api/threads/…); 404 unless a test sets it. */
 let writeAnswer: (path: string, body: unknown) => Promise<Response>;
 let writeCalls: { path: string; body: unknown }[];
+/** Each thread write's HTTP method, in order. */
+let writeMethods: string[];
 let requests: number;
 
 const json = (body: unknown, status = 200) =>
@@ -101,6 +106,7 @@ beforeEach(() => {
 	requests = 0;
 	serve({});
 	writeCalls = [];
+	writeMethods = [];
 	writeAnswer = async () => json({ error: "not here" }, 404);
 	vi.stubGlobal(
 		"fetch",
@@ -109,6 +115,7 @@ beforeEach(() => {
 			if (url.pathname.startsWith("/api/threads/")) {
 				const body: unknown = JSON.parse(String(init?.body ?? "null"));
 				writeCalls.push({ path: url.pathname, body });
+				writeMethods.push(init?.method ?? "GET");
 				return writeAnswer(url.pathname, body);
 			}
 			if (url.pathname !== "/api/comments") {
@@ -644,5 +651,369 @@ describe("avatars and tints", () => {
 		expect(
 			screen.getAllByTestId("thread-comment-body")[2]?.className,
 		).toContain("bg-person-1");
+	});
+});
+
+const mine = (id: string, text: string, more: Partial<ThreadComment> = {}) =>
+	comment(id, "octo", text, {
+		viewerCan: { update: true, delete: true },
+		...more,
+	});
+
+/** GitHub's answer to a write: the thread with these comments. */
+const answerWith = (
+	comments: ThreadComment[],
+	edited?: ThreadComment,
+): ThreadUpdate => ({
+	threadId: "T1",
+	resolved: false,
+	commentCount: comments.length,
+	lastActivityAt: "2026-01-03T12:00:00Z",
+	attention: [],
+	yourTurn: false,
+	viewerCan: can(true, true).viewerCan,
+	comments: { threadId: "T1", comments },
+	...(edited ? { comment: edited } : {}),
+});
+
+describe("editing a comment", () => {
+	it("offers Edit and Delete only on comments the viewer may change, with writing on", async () => {
+		serve({
+			T1: {
+				comments: [
+					comment("c1", "rev1", "Theirs"),
+					mine("c2", "Mine"),
+					mine("c3", "Edit only", {
+						viewerCan: { update: true, delete: false },
+					}),
+				],
+			},
+		});
+		renderWith(<Conversation readId="r1" thread={thread()} />, {
+			writes: "on",
+		});
+		const items = await screen.findAllByTestId("thread-comment");
+		const [theirs, own, editOnly] = items as [
+			HTMLElement,
+			HTMLElement,
+			HTMLElement,
+		];
+		expect(within(theirs).queryByTestId("comment-actions")).toBeNull();
+		const edit = within(own).getByRole("button", { name: "Edit" });
+		const del = within(own).getByRole("button", { name: "Delete" });
+		// 40px targets.
+		expect(edit).toHaveClass("h-10", "w-10");
+		expect(del).toHaveClass("h-10", "w-10");
+		expect(
+			within(editOnly).getByRole("button", { name: "Edit" }),
+		).toBeVisible();
+		expect(
+			within(editOnly).queryByRole("button", { name: "Delete" }),
+		).toBeNull();
+	});
+
+	it("offers neither where the session doesn't write (as of a cutoff, as another viewer)", async () => {
+		serve({ T1: { comments: [mine("c1", "Mine")] } });
+		renderWith(<Conversation readId="r1" thread={thread()} />, {
+			writes: "as-of",
+		});
+		await screen.findAllByTestId("thread-comment");
+		expect(screen.queryByRole("button", { name: "Edit" })).toBeNull();
+		expect(screen.queryByRole("button", { name: "Delete" })).toBeNull();
+	});
+
+	it("marks an edited comment, anyone's, with when on hover or focus", async () => {
+		serve({
+			T1: {
+				comments: [
+					comment("c1", "rev1", "First", {
+						editedAt: "2026-01-03T10:00:00Z",
+					}),
+					comment("c2", "rev2", "Second"),
+				],
+			},
+		});
+		renderWith(<Conversation readId="r1" thread={thread()} />);
+		const items = await screen.findAllByTestId("thread-comment");
+		const mark = within(items[0] as HTMLElement).getByTestId("comment-edited");
+		expect(mark).toHaveTextContent("edited");
+		expect(
+			within(items[1] as HTMLElement).queryByTestId("comment-edited"),
+		).toBeNull();
+		mark.focus();
+		expect(await screen.findByRole("tooltip")).toHaveTextContent(
+			/^Edited 2026/,
+		);
+	});
+
+	it("edits in place: the Markdown in a textarea, then the new text at once, saving, until GitHub's answer", async () => {
+		const own = mine("c2", "Old **text**");
+		serve({ T1: { comments: [comment("c1", "rev1", "First"), own] } });
+		let land: (() => void) | undefined;
+		writeAnswer = (_path, body) =>
+			new Promise((resolve) => {
+				const edited = mine("c2", "New text", {
+					editedAt: "2026-01-03T12:00:00Z",
+				});
+				land = () =>
+					resolve(
+						json(answerWith([comment("c1", "rev1", "First"), edited], edited)),
+					);
+				expect(body).toEqual({
+					body: "New text",
+					from: "Old **text**",
+					force: false,
+				});
+			});
+		renderWith(<Conversation readId="r1" thread={thread()} />, {
+			writes: "on",
+		});
+		await screen.findAllByTestId("thread-comment");
+		await userEvent.click(screen.getByRole("button", { name: "Edit" }));
+		const box = screen.getByRole("textbox", { name: "Edit comment" });
+		expect(box).toHaveValue("Old **text**");
+		expect(box).toHaveFocus();
+		await userEvent.clear(box);
+		// Empty text can't be saved: Delete removes a comment.
+		expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
+		await userEvent.type(box, "New text");
+		await userEvent.keyboard("{Control>}{Enter}{/Control}");
+		expect(screen.queryByRole("textbox", { name: "Edit comment" })).toBeNull();
+		const item = screen.getAllByTestId("thread-comment")[1] as HTMLElement;
+		expect(item).toHaveTextContent("New text");
+		expect(within(item).getByRole("img", { name: "Saving" })).toBeVisible();
+		expect(writeCalls[0]?.path).toBe("/api/threads/T1/comments/c2");
+		expect(writeMethods).toEqual(["PATCH"]);
+		land?.();
+		await waitFor(() =>
+			expect(within(item).queryByRole("img", { name: "Saving" })).toBeNull(),
+		);
+		expect(within(item).getByTestId("comment-edited")).toBeVisible();
+		expect(item).toHaveTextContent("New text");
+	});
+
+	it("keeps the edit as a draft across closing the thread; Escape asks first when it changed", async () => {
+		serve({ T1: { comments: [mine("c1", "Old")] } });
+		const r = renderWith(<Conversation readId="r1" thread={thread()} />, {
+			writes: "on",
+		});
+		const client = clients.at(-1) as QueryClient;
+		await screen.findAllByTestId("thread-comment");
+		await userEvent.click(screen.getByRole("button", { name: "Edit" }));
+		await userEvent.type(
+			screen.getByRole("textbox", { name: "Edit comment" }),
+			" and more",
+		);
+		r.unmount();
+		render(
+			<QueryClientProvider client={client}>
+				<Conversation readId="r1" thread={thread()} />
+			</QueryClientProvider>,
+		);
+		const box = await screen.findByRole("textbox", { name: "Edit comment" });
+		expect(box).toHaveValue("Old and more");
+		const confirm = vi.fn(() => false);
+		vi.stubGlobal("confirm", confirm);
+		box.focus();
+		await userEvent.keyboard("{Escape}");
+		expect(confirm).toHaveBeenCalledOnce();
+		expect(box).toHaveValue("Old and more");
+		confirm.mockReturnValue(true);
+		await userEvent.keyboard("{Escape}");
+		expect(screen.queryByRole("textbox", { name: "Edit comment" })).toBeNull();
+		expect(screen.getByTestId("thread-comment")).toHaveTextContent("Old");
+		expect(writeCalls).toHaveLength(0);
+	});
+
+	it("Escape with nothing changed just closes", async () => {
+		serve({ T1: { comments: [mine("c1", "Old")] } });
+		renderWith(<Conversation readId="r1" thread={thread()} />, {
+			writes: "on",
+		});
+		await screen.findAllByTestId("thread-comment");
+		await userEvent.click(screen.getByRole("button", { name: "Edit" }));
+		const confirm = vi.fn(() => false);
+		vi.stubGlobal("confirm", confirm);
+		await userEvent.keyboard("{Escape}");
+		expect(confirm).not.toHaveBeenCalled();
+		expect(screen.queryByRole("textbox", { name: "Edit comment" })).toBeNull();
+	});
+
+	it("changed on GitHub: the draft back in its editor, a red notice with Show theirs and Save anyway", async () => {
+		serve({ T1: { comments: [mine("c1", "Old")] } });
+		const theirs = mine("c1", "Theirs");
+		writeAnswer = async (_path, body) =>
+			(body as { force?: boolean }).force
+				? json(answerWith([mine("c1", "Mine")], mine("c1", "Mine")))
+				: json({ error: "Changed", code: "changed", current: theirs }, 409);
+		renderWith(
+			<>
+				<Conversation readId="r1" thread={thread()} />
+				<SyncNotices />
+			</>,
+			{ writes: "on" },
+		);
+		await screen.findAllByTestId("thread-comment");
+		await userEvent.click(screen.getByRole("button", { name: "Edit" }));
+		const box = screen.getByRole("textbox", { name: "Edit comment" });
+		await userEvent.clear(box);
+		await userEvent.type(box, "Mine");
+		await userEvent.click(screen.getByRole("button", { name: "Save" }));
+		const notice = await screen.findByTestId("write-failed");
+		expect(notice).toHaveTextContent("Edit");
+		expect(notice).toHaveTextContent("Changed on GitHub since you opened it");
+		expect(
+			await screen.findByRole("textbox", { name: "Edit comment" }),
+		).toHaveValue("Mine");
+		await userEvent.click(
+			within(notice).getByRole("button", { name: "Save anyway" }),
+		);
+		await waitFor(() =>
+			expect(screen.queryByTestId("write-failed")).toBeNull(),
+		);
+		expect(writeCalls.map((c) => c.body)).toEqual([
+			{ body: "Mine", from: "Old", force: false },
+			{ body: "Mine", from: "Old", force: true },
+		]);
+		await waitFor(() =>
+			expect(screen.getByTestId("thread-comment")).toHaveTextContent("Mine"),
+		);
+	});
+
+	it("Show theirs shows GitHub's text and keeps the draft in the editor", async () => {
+		serve({ T1: { comments: [mine("c1", "Old")] } });
+		writeAnswer = async () =>
+			json(
+				{ error: "Changed", code: "changed", current: mine("c1", "Theirs") },
+				409,
+			);
+		renderWith(
+			<>
+				<Conversation readId="r1" thread={thread()} />
+				<SyncNotices />
+			</>,
+			{ writes: "on" },
+		);
+		await screen.findAllByTestId("thread-comment");
+		await userEvent.click(screen.getByRole("button", { name: "Edit" }));
+		await userEvent.type(
+			screen.getByRole("textbox", { name: "Edit comment" }),
+			" mine",
+		);
+		await userEvent.click(screen.getByRole("button", { name: "Save" }));
+		const notice = await screen.findByTestId("write-failed");
+		await userEvent.click(
+			within(notice).getByRole("button", { name: "Show theirs" }),
+		);
+		expect(screen.queryByTestId("write-failed")).toBeNull();
+		const client = clients.at(-1) as QueryClient;
+		expect(
+			client.getQueryData<ThreadComments>(["comments", "r1", "T1"])?.comments[0]
+				?.body,
+		).toBe("Theirs");
+		expect(screen.getByRole("textbox", { name: "Edit comment" })).toHaveValue(
+			"Old mine",
+		);
+	});
+});
+
+describe("deleting a comment", () => {
+	it("collapses at once to Deleted · Undo; Undo within the window sends nothing", async () => {
+		vi.useFakeTimers({ shouldAdvanceTime: true });
+		try {
+			const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+			serve({
+				T1: { comments: [comment("c1", "rev1", "First"), mine("c2", "Oops")] },
+			});
+			renderWith(<Conversation readId="r1" thread={thread()} />, {
+				writes: "on",
+			});
+			await screen.findAllByTestId("thread-comment");
+			await user.click(screen.getByRole("button", { name: "Delete" }));
+			const row = screen.getByTestId("comment-deleted-row");
+			expect(row).toHaveTextContent("Deleted");
+			expect(screen.queryByText("Oops")).toBeNull();
+			await act(() => vi.advanceTimersByTimeAsync(DELETE_UNDO_MS - 100));
+			await user.click(within(row).getByRole("button", { name: "Undo" }));
+			expect(screen.getAllByTestId("thread-comment")[1]).toHaveTextContent(
+				"Oops",
+			);
+			await act(() => vi.advanceTimersByTimeAsync(DELETE_UNDO_MS * 2));
+			expect(writeCalls).toHaveLength(0);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("after the window the delete goes, and GitHub's answer shows the thread without it", async () => {
+		vi.useFakeTimers({ shouldAdvanceTime: true });
+		try {
+			const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+			const first = comment("c1", "rev1", "First");
+			serve({ T1: { comments: [first, mine("c2", "Oops")] } });
+			writeAnswer = async () => json(answerWith([first]));
+			renderWith(<Conversation readId="r1" thread={thread()} />, {
+				writes: "on",
+			});
+			await screen.findAllByTestId("thread-comment");
+			await user.click(screen.getByRole("button", { name: "Delete" }));
+			await act(() => vi.advanceTimersByTimeAsync(DELETE_UNDO_MS));
+			await waitFor(() => expect(writeMethods).toEqual(["DELETE"]));
+			expect(writeCalls[0]?.path).toBe("/api/threads/T1/comments/c2");
+			await waitFor(() =>
+				expect(screen.getAllByTestId("thread-comment")).toHaveLength(1),
+			);
+			expect(screen.queryByTestId("comment-deleted-row")).toBeNull();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("an opener blanked by a delete shows as a muted placeholder, no Edit or Delete", async () => {
+		serve({
+			T1: {
+				comments: [
+					mine("c1", "[deleted]", {
+						deleted: true,
+						viewerCan: { update: false, delete: false },
+						editedAt: "2026-01-03T10:00:00Z",
+					}),
+					comment("c2", "rev1", "Reply"),
+				],
+			},
+		});
+		renderWith(<Conversation readId="r1" thread={thread()} />, {
+			writes: "on",
+		});
+		const [opener] = await screen.findAllByTestId("thread-comment");
+		expect(
+			within(opener as HTMLElement).getByTestId("comment-deleted"),
+		).toHaveTextContent("deleted");
+		expect(
+			within(opener as HTMLElement).queryByTestId("comment-actions"),
+		).toBeNull();
+		expect(
+			within(opener as HTMLElement).queryByTestId("comment-edited"),
+		).toBeNull();
+	});
+
+	it("the thread's last comment deleted: the thread is gone", async () => {
+		vi.useFakeTimers({ shouldAdvanceTime: true });
+		try {
+			const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+			serve({ T1: { comments: [mine("c1", "Only")] } });
+			writeAnswer = async () => json({ threadId: "T1", gone: true });
+			renderWith(<Conversation readId="r1" thread={thread()} />, {
+				writes: "on",
+			});
+			await screen.findAllByTestId("thread-comment");
+			await user.click(screen.getByRole("button", { name: "Delete" }));
+			await act(() => vi.advanceTimersByTimeAsync(DELETE_UNDO_MS + FADE_MS));
+			expect(
+				await screen.findByTestId("thread-body-unavailable"),
+			).toHaveTextContent("Deleted on GitHub");
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 });

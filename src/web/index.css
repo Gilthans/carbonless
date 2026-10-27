@@ -276,3 +276,27 @@ html {
 		animation: none;
 	}
 }
+
+/*
+ * A comment deleted here collapses into its one-line "Deleted · Undo" row;
+ * with reduced motion it just appears.
+ */
+@keyframes comment-collapse {
+	from {
+		opacity: 0;
+		transform: scaleY(1.6);
+	}
+	to {
+		opacity: 1;
+		transform: scaleY(1);
+	}
+}
+.comment-collapse {
+	transform-origin: top;
+	animation: comment-collapse 160ms ease-out;
+}
+@media (prefers-reduced-motion: reduce) {
+	.comment-collapse {
+		animation: none;
+	}
+}

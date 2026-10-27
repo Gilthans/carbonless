@@ -33,7 +33,7 @@ const changes = (n: number) => `${n} ${n === 1 ? "change" : "changes"}`;
  *   keep syncing. Also red once 5 transient failures in a row kept changes
  *   waiting (the last error and Retry), while retrying goes on.
  * The changes stay on screen either way. Thread writes (replies, resolve,
- * unresolve) show the same way, one notice per thread, naming the thread
+ * unresolve, edits, deletes) show the same way, one notice per thread, naming the thread
  * and the action (ThreadWriteNotices).
  */
 export function SyncNotices() {
@@ -274,6 +274,23 @@ function ThreadWriteNotices({ threads }: { threads: ThreadWriteView[] }) {
 				const where = threadLabel(findThread(client, t.threadId));
 				if (t.failed) {
 					const blocked = t.failed.code === "pending-review";
+					const changed =
+						t.failed.action === "Edit" && t.failed.code === "changed";
+					const commentId = t.failed.commentId ?? "";
+					const textButton = (
+						label: string,
+						testId: string,
+						onClick: () => void,
+					) => (
+						<button
+							type="button"
+							data-testid={testId}
+							onClick={onClick}
+							className="flex min-h-10 items-center rounded-md px-1 font-semibold text-link hover:underline focus-visible:outline-2 focus-visible:outline-accent"
+						>
+							{label}
+						</button>
+					);
 					const href = safeHref(t.failed.url);
 					return (
 						<div
@@ -296,8 +313,20 @@ function ThreadWriteNotices({ threads }: { threads: ThreadWriteView[] }) {
 									<p className="break-words text-bad">
 										{blocked
 											? "A pending review on GitHub blocks replies"
-											: t.failed.error.message}
+											: changed
+												? "Changed on GitHub since you opened it"
+												: t.failed.error.message}
 									</p>
+									{changed && (
+										<div className="flex flex-wrap gap-x-3">
+											{textButton("Show theirs", "edit-show-theirs", () =>
+												writer.showTheirs(t.threadId),
+											)}
+											{textButton("Save anyway", "edit-save-anyway", () =>
+												writer.saveEdit(t.threadId, commentId, true),
+											)}
+										</div>
+									)}
 									{blocked && href && (
 										<a
 											href={href}
@@ -311,12 +340,14 @@ function ThreadWriteNotices({ threads }: { threads: ThreadWriteView[] }) {
 									)}
 								</div>
 								<div className="flex flex-col">
-									{retryButton(t, t.failed.action)}
+									{!changed && retryButton(t, t.failed.action)}
 									{iconButton(
 										`Dismiss ${t.failed.action.toLowerCase()}`,
 										t.failed.action === "Reply"
 											? "Dismiss (the text stays in the box)"
-											: "Dismiss",
+											: t.failed.action === "Edit"
+												? "Dismiss (the text stays in the editor)"
+												: "Dismiss",
 										XIcon,
 										() => writer.dismiss(t.threadId),
 									)}

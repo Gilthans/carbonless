@@ -3,6 +3,7 @@ import {
 	COMMENTS_BATCH,
 	type CommentsView,
 	type DiffLine,
+	type EditRequest,
 	type FileHunks,
 	type PrOverview,
 	type ReplyRequest,
@@ -10,7 +11,9 @@ import {
 	type ReviewView,
 	type SessionInfo,
 	type StateChange,
+	type ThreadComment,
 	type ThreadComments,
+	type ThreadGone,
 	type ThreadsStage,
 	type ThreadsView,
 	type ThreadUpdate,
@@ -28,7 +31,12 @@ export class ApiError extends Error {
 		readonly status: number,
 		message: string,
 		readonly keys?: string[],
-		readonly write?: { code?: WriteError["code"]; url?: string },
+		readonly write?: {
+			code?: WriteError["code"];
+			url?: string;
+			/** An edit refused as `changed`: the comment as GitHub has it now. */
+			current?: ThreadComment;
+		},
 	) {
 		super(message);
 		this.name = "ApiError";
@@ -41,7 +49,19 @@ const WRITE_CODES: readonly string[] = [
 	"forbidden",
 	"gone",
 	"invalid",
+	"changed",
 ] satisfies WriteError["code"][];
+
+/** Enough of a ThreadComment to show it (an edit's 409 `current`). */
+function isComment(value: unknown): value is ThreadComment {
+	if (typeof value !== "object" || value === null) return false;
+	const c = value as Partial<ThreadComment>;
+	return (
+		typeof c.id === "string" &&
+		typeof c.body === "string" &&
+		typeof c.html === "string"
+	);
+}
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
 	let response: Response;
@@ -54,11 +74,12 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 	}
 	const body: unknown = await response.json().catch(() => null);
 	if (!response.ok) {
-		const { error, keys, code, url } = (body ?? {}) as {
+		const { error, keys, code, url, current } = (body ?? {}) as {
 			error?: unknown;
 			keys?: unknown;
 			code?: unknown;
 			url?: unknown;
+			current?: unknown;
 		};
 		throw new ApiError(
 			response.status,
@@ -70,6 +91,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 				? {
 						code: code as WriteError["code"],
 						...(typeof url === "string" ? { url } : {}),
+						...(isComment(current) ? { current } : {}),
 					}
 				: undefined,
 		);
@@ -137,6 +159,30 @@ export const postResolved = (threadId: string, req: ResolveRequest) =>
 		`/api/threads/${encodeURIComponent(threadId)}/resolved`,
 		req,
 	);
+
+const commentPath = (threadId: string, commentId: string) =>
+	`/api/threads/${encodeURIComponent(threadId)}/comments/${encodeURIComponent(commentId)}`;
+
+/** Edits the viewer's comment on GitHub (409 `changed` if it changed there since `from`). */
+export const patchComment = (
+	threadId: string,
+	commentId: string,
+	req: EditRequest,
+) =>
+	request<ThreadUpdate>(commentPath(threadId, commentId), {
+		method: "PATCH",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify(req),
+	});
+
+/**
+ * Deletes the viewer's comment on GitHub; a thread's opener with replies
+ * after it is blanked to "[deleted]" instead (the server decides).
+ */
+export const deleteComment = (threadId: string, commentId: string) =>
+	request<ThreadUpdate | ThreadGone>(commentPath(threadId, commentId), {
+		method: "DELETE",
+	});
 
 export const postRefresh = () => post<SessionInfo>("/api/refresh");
 export const fetchHead = () => request<SessionInfo>("/api/head");

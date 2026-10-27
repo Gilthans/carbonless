@@ -1,11 +1,14 @@
 import { QueryClient } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
+	EditRequest,
 	PrOverview,
 	ReplyRequest,
 	ResolveRequest,
 	ReviewThread,
+	ThreadComment,
 	ThreadComments,
+	ThreadGone,
 	ThreadsView,
 	ThreadUpdate,
 } from "../../shared/types";
@@ -17,19 +20,32 @@ import {
 } from "../files/stateSync";
 import { DraftStore } from "./drafts";
 import {
+	applyComment,
 	applyThreadUpdate,
+	DELETE_UNDO_MS,
+	dropThread,
+	FADE_MS,
 	MAX_IN_FLIGHT,
 	overlayThreads,
 	ThreadWrites,
 } from "./threadWrites";
 
 interface Call {
-	op: "reply" | "resolve";
+	op: "reply" | "resolve" | "edit" | "delete";
 	threadId: string;
-	req: ReplyRequest | ResolveRequest;
-	resolve: (u: ThreadUpdate) => void;
+	req: ReplyRequest | ResolveRequest | EditRequest | null;
+	commentId?: string;
+	resolve: (u: ThreadUpdate | ThreadGone) => void;
 	reject: (e: unknown) => void;
 }
+
+/** Edit and delete deps for tests that don't use them. */
+const noEdits = {
+	edit: () => new Promise<ThreadUpdate>(() => {}),
+	remove: () => new Promise<ThreadUpdate>(() => {}),
+	gone: () => {},
+	theirs: () => {},
+};
 
 const update = (threadId: string, more: Partial<ThreadUpdate> = {}) =>
 	({
@@ -45,12 +61,16 @@ const update = (threadId: string, more: Partial<ThreadUpdate> = {}) =>
 	}) satisfies ThreadUpdate;
 
 let calls: Call[];
+let goneCalls: string[];
+let theirsCalls: [string, ThreadComment][];
 let applied: ThreadUpdate[];
 let drafts: DraftStore;
 
 function setup() {
 	calls = [];
 	applied = [];
+	goneCalls = [];
+	theirsCalls = [];
 	known = { T1: ["c1", "c2"] };
 	ids = 0;
 	confirmed = {};
@@ -60,11 +80,41 @@ function setup() {
 		(op: Call["op"]) =>
 		(threadId: string, req: ReplyRequest | ResolveRequest) =>
 			new Promise<ThreadUpdate>((resolve, reject) => {
-				calls.push({ op, threadId, req, resolve, reject });
+				calls.push({
+					op,
+					threadId,
+					req,
+					resolve: resolve as Call["resolve"],
+					reject,
+				});
 			});
 	return new ThreadWrites({
 		reply: call("reply"),
 		resolve: call("resolve"),
+		edit: (threadId, commentId, req) =>
+			new Promise<ThreadUpdate>((resolve, reject) => {
+				calls.push({
+					op: "edit",
+					threadId,
+					commentId,
+					req,
+					resolve: resolve as Call["resolve"],
+					reject,
+				});
+			}),
+		remove: (threadId, commentId) =>
+			new Promise<ThreadUpdate | ThreadGone>((resolve, reject) => {
+				calls.push({
+					op: "delete",
+					threadId,
+					commentId,
+					req: null,
+					resolve,
+					reject,
+				});
+			}),
+		gone: (threadId) => goneCalls.push(threadId),
+		theirs: (threadId, c) => theirsCalls.push([threadId, c]),
 		applied: (u) => applied.push(u),
 		drafts,
 		knownComments: (threadId) => known[threadId] ?? [],
@@ -379,9 +429,16 @@ describe("ThreadWrites", () => {
 		const wAsync = new ThreadWrites({
 			reply: (threadId, req) =>
 				new Promise((resolve, reject) => {
-					calls.push({ op: "reply", threadId, req, resolve, reject });
+					calls.push({
+						op: "reply",
+						threadId,
+						req,
+						resolve: resolve as Call["resolve"],
+						reject,
+					});
 				}),
 			resolve: () => new Promise(() => {}),
+			...noEdits,
 			applied: () => {},
 			drafts,
 			knownComments: () =>
@@ -564,9 +621,16 @@ describe("ThreadWrites", () => {
 		const w = new ThreadWrites({
 			reply: (threadId, req) =>
 				new Promise((resolve, reject) => {
-					calls.push({ op: "reply", threadId, req, resolve, reject });
+					calls.push({
+						op: "reply",
+						threadId,
+						req,
+						resolve: resolve as Call["resolve"],
+						reject,
+					});
 				}),
 			resolve: () => new Promise(() => {}),
+			...noEdits,
 			applied: () => {},
 			drafts,
 			knownComments: () =>
@@ -618,6 +682,8 @@ describe("overlayThreads", () => {
 						threadId: "A",
 						resolved: true,
 						replies: [],
+						edits: [],
+						deletes: [],
 						action: "Resolve" as const,
 						resumed: false,
 						delayed: false,
@@ -629,6 +695,7 @@ describe("overlayThreads", () => {
 			]),
 			pendingReview: null,
 			busy: true,
+			gone: new Set<string>(),
 		};
 		const out = overlayThreads(
 			[{ ...a, yourTurn: true, attention: ["octo"] }, b],
@@ -644,6 +711,265 @@ describe("overlayThreads", () => {
 		expect(
 			overlayThreads(none, { ...state, threads: new Map(), busy: false }),
 		).toBe(none);
+	});
+});
+
+describe("editing and deleting comments", () => {
+	const comment = (id: string, body: string): ThreadComment => ({
+		id,
+		author: "octo",
+		bot: false,
+		avatarUrl: "",
+		publishedAt: "2026-01-03T09:00:00Z",
+		pending: false,
+		html: `<p>${body}</p>`,
+		body,
+		text: body,
+		editedAt: null,
+		viewerCan: { update: true, delete: true },
+		deleted: false,
+	});
+
+	it("an edit shows at once, goes with what it started from, and its draft goes once GitHub has it", async () => {
+		const w = setup();
+		drafts.setEdit("T1", "c1", "Old", "New");
+		w.saveEdit("T1", "c1");
+		expect(calls).toHaveLength(1);
+		expect(calls[0]).toMatchObject({
+			op: "edit",
+			threadId: "T1",
+			commentId: "c1",
+			req: { body: "New", from: "Old", force: false },
+		});
+		expect(w.state().threads.get("T1")).toMatchObject({
+			edits: [{ commentId: "c1", text: "New" }],
+			action: "Edit",
+		});
+		// Saving: kept (a reload resends it), out of the editor.
+		expect(drafts.edit("c1")?.edit?.saving).toBe(true);
+		expect(w.state().busy).toBe(true);
+		calls[0]?.resolve(update("T1"));
+		await flush();
+		expect(applied).toHaveLength(1);
+		expect(drafts.edit("c1")).toBeUndefined();
+		expect(w.state().threads.size).toBe(0);
+	});
+
+	it("an unchanged or blank edit sends nothing", () => {
+		const w = setup();
+		w.saveEdit("T1", "c1");
+		drafts.setEdit("T1", "c1", "Old", "   ");
+		w.saveEdit("T1", "c1");
+		expect(calls).toHaveLength(0);
+		expect(w.state().threads.size).toBe(0);
+	});
+
+	it("goes in line behind the thread's reply", async () => {
+		const w = setup();
+		w.reply("T1", "Fixed");
+		drafts.setEdit("T1", "c1", "Old", "New");
+		w.saveEdit("T1", "c1");
+		expect(calls.map((c) => c.op)).toEqual(["reply"]);
+		calls[0]?.resolve(update("T1"));
+		await flush();
+		expect(calls.map((c) => c.op)).toEqual(["reply", "edit"]);
+	});
+
+	it("changed on GitHub: refused, the draft back in its editor; Show theirs takes GitHub's text in, Save anyway forces", async () => {
+		const w = setup();
+		drafts.setEdit("T1", "c1", "Old", "Mine");
+		w.saveEdit("T1", "c1");
+		const theirs = comment("c1", "Theirs");
+		calls[0]?.reject(
+			new ApiError(409, "Changed", undefined, {
+				code: "changed",
+				current: theirs,
+			}),
+		);
+		await flush();
+		const view = w.state().threads.get("T1");
+		expect(view?.failed).toMatchObject({
+			action: "Edit",
+			code: "changed",
+			commentId: "c1",
+			current: theirs,
+		});
+		expect(view?.edits).toEqual([]);
+		// Nothing typed is lost: the draft is in the editor again.
+		expect(drafts.edit("c1")).toEqual({
+			threadId: "T1",
+			text: "Mine",
+			edit: { commentId: "c1", from: "Old" },
+		});
+		// Never resent by itself.
+		await vi.advanceTimersByTimeAsync(60_000);
+		expect(calls).toHaveLength(1);
+		w.showTheirs("T1");
+		expect(theirsCalls).toEqual([["T1", theirs]]);
+		expect(drafts.edit("c1")?.edit?.from).toBe("Theirs");
+		expect(drafts.edit("c1")?.text).toBe("Mine");
+		expect(w.state().threads.get("T1")).toBeUndefined();
+		w.saveEdit("T1", "c1", true);
+		expect(calls[1]).toMatchObject({
+			op: "edit",
+			req: { body: "Mine", from: "Theirs", force: true },
+		});
+	});
+
+	it("Save anyway straight from the refusal sends force", async () => {
+		const w = setup();
+		drafts.setEdit("T1", "c1", "Old", "Mine");
+		w.saveEdit("T1", "c1");
+		calls[0]?.reject(
+			new ApiError(409, "Changed", undefined, { code: "changed" }),
+		);
+		await flush();
+		w.saveEdit("T1", "c1", true);
+		expect(w.state().threads.get("T1")?.failed).toBeNull();
+		expect(calls[1]?.req).toEqual({ body: "Mine", from: "Old", force: true });
+	});
+
+	it("an edit of a comment gone (404) says so and keeps the draft", async () => {
+		const w = setup();
+		drafts.setEdit("T1", "c1", "Old", "Mine");
+		w.saveEdit("T1", "c1");
+		calls[0]?.reject(
+			new ApiError(404, "The comment is gone", undefined, { code: "gone" }),
+		);
+		await flush();
+		expect(w.state().threads.get("T1")?.failed).toMatchObject({
+			action: "Edit",
+			code: "gone",
+		});
+		expect(drafts.edit("c1")?.text).toBe("Mine");
+		expect(drafts.edit("c1")?.edit?.saving).toBeUndefined();
+	});
+
+	it("a transient failure resends the same edit (the server finds one that landed)", async () => {
+		const w = setup();
+		drafts.setEdit("T1", "c1", "Old", "Mine");
+		w.saveEdit("T1", "c1");
+		calls[0]?.reject(new ApiError(502, "bad gateway"));
+		await flush();
+		await vi.advanceTimersByTimeAsync(RETRY_DELAYS_MS[0] ?? 0);
+		expect(calls).toHaveLength(2);
+		expect(calls[1]?.req).toEqual(calls[0]?.req);
+	});
+
+	it("an edit a reload left saving is resent on resume, once", () => {
+		const w = setup();
+		drafts.setEdit("T1", "c1", "Old", "Mine");
+		drafts.markSaving("c1", true);
+		w.resume();
+		w.resume();
+		expect(calls).toHaveLength(1);
+		expect(calls[0]).toMatchObject({
+			op: "edit",
+			req: { body: "Mine", from: "Old", force: false },
+		});
+	});
+
+	it("cancelling an edit drops its draft and its refusal", async () => {
+		const w = setup();
+		drafts.setEdit("T1", "c1", "Old", "Mine");
+		w.saveEdit("T1", "c1");
+		calls[0]?.reject(new ApiError(400, "Bad", undefined, { code: "invalid" }));
+		await flush();
+		w.cancelEdit("T1", "c1");
+		expect(drafts.edit("c1")).toBeUndefined();
+		expect(w.state().threads.size).toBe(0);
+	});
+
+	it("a delete waits out its undo window: Undo within it sends nothing", async () => {
+		const w = setup();
+		w.deleteComment("T1", "c2");
+		expect(w.state().threads.get("T1")?.deletes).toEqual([
+			{ commentId: "c2", undo: true },
+		]);
+		// Leaving the page now would lose it: the guard asks.
+		expect(w.state().busy).toBe(true);
+		await vi.advanceTimersByTimeAsync(DELETE_UNDO_MS - 1);
+		w.undoDelete("T1", "c2");
+		await vi.advanceTimersByTimeAsync(DELETE_UNDO_MS * 2);
+		expect(calls).toHaveLength(0);
+		expect(w.state().threads.size).toBe(0);
+		expect(w.state().busy).toBe(false);
+	});
+
+	it("after the window the delete is sent, and GitHub's answer shows", async () => {
+		const w = setup();
+		drafts.setEdit("T1", "c2", "Old", "Half an edit");
+		w.deleteComment("T1", "c2");
+		await vi.advanceTimersByTimeAsync(DELETE_UNDO_MS);
+		expect(calls).toEqual([
+			expect.objectContaining({
+				op: "delete",
+				threadId: "T1",
+				commentId: "c2",
+			}),
+		]);
+		expect(w.state().threads.get("T1")?.deletes).toEqual([
+			{ commentId: "c2", undo: false },
+		]);
+		// Too late to undo: it's out.
+		w.undoDelete("T1", "c2");
+		expect(w.state().threads.get("T1")?.deletes).toHaveLength(1);
+		calls[0]?.resolve(update("T1"));
+		await flush();
+		expect(applied).toHaveLength(1);
+		expect(drafts.edit("c2")).toBeUndefined();
+		expect(w.state().threads.size).toBe(0);
+	});
+
+	it("deleting twice in the window is one delete", async () => {
+		const w = setup();
+		w.deleteComment("T1", "c2");
+		w.deleteComment("T1", "c2");
+		await vi.advanceTimersByTimeAsync(DELETE_UNDO_MS);
+		expect(calls).toHaveLength(1);
+	});
+
+	it("a thread gone (its last comment deleted) stays listed as gone while it fades, then the page drops it", async () => {
+		const w = setup();
+		w.deleteComment("T1", "c1");
+		await vi.advanceTimersByTimeAsync(DELETE_UNDO_MS);
+		calls[0]?.resolve({ threadId: "T1", gone: true });
+		await flush();
+		expect(applied).toHaveLength(0);
+		expect(w.state().gone.has("T1")).toBe(true);
+		expect(goneCalls).toEqual([]);
+		await vi.advanceTimersByTimeAsync(FADE_MS);
+		expect(goneCalls).toEqual(["T1"]);
+		expect(w.state().gone.size).toBe(0);
+	});
+
+	it("a delete answered 404 (the thread gone already) counts as done", async () => {
+		const w = setup();
+		w.deleteComment("T1", "c1");
+		await vi.advanceTimersByTimeAsync(DELETE_UNDO_MS);
+		calls[0]?.reject(
+			new ApiError(404, "The thread is gone", undefined, { code: "gone" }),
+		);
+		await flush();
+		expect(w.state().threads.get("T1")?.failed ?? null).toBeNull();
+		expect(w.state().gone.has("T1")).toBe(true);
+	});
+
+	it("a refused delete shows the comment again; Retry sends it at once", async () => {
+		const w = setup();
+		w.deleteComment("T1", "c2");
+		await vi.advanceTimersByTimeAsync(DELETE_UNDO_MS);
+		calls[0]?.reject(
+			new ApiError(403, "Not yours", undefined, { code: "forbidden" }),
+		);
+		await flush();
+		expect(w.state().threads.get("T1")).toMatchObject({
+			deletes: [],
+			failed: { action: "Delete", commentId: "c2" },
+		});
+		w.retry("T1");
+		expect(calls).toHaveLength(2);
+		expect(calls[1]).toMatchObject({ op: "delete", commentId: "c2" });
 	});
 });
 
@@ -722,6 +1048,97 @@ describe("applyThreadUpdate", () => {
 			expect(view?.threads[1]).toBe(other);
 		}
 		expect(client.getQueryData(["comments", "r1", "T1"])).toEqual(comments);
+	});
+
+	const c = (id: string, body: string, more: Partial<ThreadComment> = {}) =>
+		({
+			id,
+			author: "octo",
+			bot: false,
+			avatarUrl: "",
+			publishedAt: "2026-01-03T12:00:00Z",
+			pending: false,
+			html: `<p>${body}</p>`,
+			body,
+			text: body,
+			editedAt: null,
+			viewerCan: { update: true, delete: true },
+			deleted: false,
+			...more,
+		}) satisfies ThreadComment;
+
+	const seeded = () => {
+		const client = new QueryClient();
+		client.setQueryData(["overview"], { readId: "r1" } as PrOverview);
+		client.setQueryData<ThreadsView>(["threads", "r1", "full"], {
+			threads: [
+				{ id: "T1", author: "octo", html: "<p>Old</p>", body: "Old" },
+				{ id: "T2", author: "x" },
+			] as ReviewThread[],
+			complete: true,
+		});
+		client.setQueryData<ThreadComments>(["comments", "r1", "T1"], {
+			threadId: "T1",
+			comments: [c("c1", "Old"), c("c2", "Reply")],
+		});
+		return client;
+	};
+
+	it("an edit of the opener changes the card's text too; one of a reply doesn't", () => {
+		const client = seeded();
+		const edited = c("c1", "New", { editedAt: "2026-01-03T13:00:00Z" });
+		applyThreadUpdate(
+			client,
+			update("T1", {
+				comment: edited,
+				comments: { threadId: "T1", comments: [edited, c("c2", "Reply")] },
+			}),
+		);
+		const t = () =>
+			client.getQueryData<ThreadsView>(["threads", "r1", "full"])?.threads[0];
+		expect(t()).toMatchObject({
+			html: "<p>New</p>",
+			body: "New",
+			excerpt: "New",
+		});
+		const reply = c("c2", "Changed");
+		applyThreadUpdate(
+			client,
+			update("T1", {
+				comment: reply,
+				comments: { threadId: "T1", comments: [edited, reply] },
+			}),
+		);
+		expect(t()?.body).toBe("New");
+	});
+
+	it("Show theirs puts GitHub's comment in place", () => {
+		const client = seeded();
+		applyComment(client, "T1", c("c1", "Theirs"));
+		expect(
+			client
+				.getQueryData<ThreadComments>(["comments", "r1", "T1"])
+				?.comments.map((x) => x.body),
+		).toEqual(["Theirs", "Reply"]);
+		expect(
+			client.getQueryData<ThreadsView>(["threads", "r1", "full"])?.threads[0]
+				?.body,
+		).toBe("Theirs");
+	});
+
+	it("a thread gone leaves every list, its comments gone", () => {
+		const client = seeded();
+		dropThread(client, "T1");
+		expect(
+			client
+				.getQueryData<ThreadsView>(["threads", "r1", "full"])
+				?.threads.map((t) => t.id),
+		).toEqual(["T2"]);
+		expect(client.getQueryData(["comments", "r1", "T1"])).toEqual({
+			threadId: "T1",
+			comments: [],
+			unavailable: "deleted",
+		});
 	});
 });
 
