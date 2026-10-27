@@ -1,8 +1,8 @@
 import { GearIcon } from "@primer/octicons-react";
 import { useEffect, useId, useRef, useState } from "react";
-import { setShowInvisibles, useShowInvisibles } from "./code/Invisibles";
 import { Tooltip } from "./Tooltip";
 import { NOT_PHONE, useMedia } from "./useMedia";
+import { ignoreWhitespace, showInvisibles } from "./viewSettings";
 
 /** One on/off setting: a switch row, the whole row its 40px+ target. */
 function SwitchRow(props: {
@@ -39,13 +39,19 @@ function SwitchRow(props: {
 
 /** The settings themselves; more rows go here. */
 function SettingsList() {
-	const invisibles = useShowInvisibles();
+	const invisibles = showInvisibles.use();
+	const whitespace = ignoreWhitespace.use();
 	return (
 		<div className="space-y-1">
 			<SwitchRow
 				label="Show hidden characters"
 				checked={invisibles}
-				onChange={setShowInvisibles}
+				onChange={showInvisibles.set}
+			/>
+			<SwitchRow
+				label="Ignore whitespace"
+				checked={whitespace}
+				onChange={ignoreWhitespace.set}
 			/>
 		</div>
 	);

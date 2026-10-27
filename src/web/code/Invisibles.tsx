@@ -1,57 +1,23 @@
 import { useQuery } from "@tanstack/react-query";
-import {
-	type CSSProperties,
-	type ReactNode,
-	useEffect,
-	useMemo,
-	useSyncExternalStore,
-} from "react";
+import { type CSSProperties, type ReactNode, useEffect, useMemo } from "react";
 import { highlightLine } from "../files/highlight";
 import { Tooltip } from "../Tooltip";
+import { showInvisibles } from "../viewSettings";
 import { DEFAULT_TAB_WIDTH, type Piece, renderInvisibles } from "./invisibles";
 
-export const INVISIBLES_STORAGE_KEY = "crb.code.invisibles";
+export const INVISIBLES_STORAGE_KEY = showInvisibles.key;
 
 /** The remembered "Show hidden characters" setting: shown unless turned off (or storage is unavailable). */
-export function readShowInvisibles(): boolean {
-	try {
-		return localStorage.getItem(INVISIBLES_STORAGE_KEY) !== "off";
-	} catch {
-		return true;
-	}
-}
-
-let show: boolean | undefined;
-const listeners = new Set<() => void>();
+export const readShowInvisibles = (): boolean => showInvisibles.read();
 
 /** Every code view shares one choice (Settings), remembered for this viewer. */
-export function setShowInvisibles(next: boolean): void {
-	show = next;
-	try {
-		localStorage.setItem(INVISIBLES_STORAGE_KEY, next ? "on" : "off");
-	} catch {
-		// Storage is a convenience only.
-	}
-	for (const listener of listeners) listener();
-}
+export const setShowInvisibles = (next: boolean): void =>
+	showInvisibles.set(next);
 
 /** Forgets the in-memory choice (tests), so the next read is from storage. */
-export function resetShowInvisibles(): void {
-	show = undefined;
-}
+export const resetShowInvisibles = (): void => showInvisibles.reset();
 
-export function useShowInvisibles(): boolean {
-	return useSyncExternalStore(
-		(onChange) => {
-			listeners.add(onChange);
-			return () => listeners.delete(onChange);
-		},
-		() => {
-			show ??= readShowInvisibles();
-			return show;
-		},
-	);
-}
+export const useShowInvisibles = (): boolean => showInvisibles.use();
 
 /**
  * A marker drawn as CSS generated content (never selected, copied or read
