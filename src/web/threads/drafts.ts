@@ -16,6 +16,8 @@ export interface Draft {
 	text: string;
 	/** Sent, not yet confirmed. */
 	sending?: Sending;
+	/** A box draft: how much of its start was put back by refused replies. */
+	returned?: number;
 }
 
 /** A sent reply's identity for the server's duplicate check, kept across reloads. */
@@ -67,12 +69,18 @@ function defaultStorage(): Storage | undefined {
 /**
  * Drafts and unconfirmed replies. A thread has at most one box draft (no
  * `sending`) and any number of sent replies (`sending`, told apart by
- * `attemptedAt`). Every change is written through to storage at once.
+ * `attemptedAt`). Every change is written through to storage at once, on
+ * top of what storage holds then (another tab's changes to other drafts
+ * stay), and another tab's writes are taken in as they happen (`storage`
+ * events): a confirmed reply is never written back.
  */
 export class DraftStore {
 	readonly #storage: () => Storage | undefined;
 	#key: string | null = null;
 	#drafts: readonly Draft[] = [];
+	/** The last write didn't reach storage: memory is ahead of it. */
+	#behind = false;
+	#listening = false;
 	readonly #listeners = new Set<() => void>();
 
 	constructor(storage: () => Storage | undefined = defaultStorage) {
@@ -86,7 +94,8 @@ export class DraftStore {
 	bind(key: string): void {
 		if (this.#key === key) return;
 		this.#key = key;
-		const stored = this.#read(key);
+		this.#listen();
+		const stored = this.#stored() ?? [];
 		const now = this.#drafts;
 		const typed = new Set(
 			now.filter((d) => !d.sending && d.text).map((d) => d.threadId),
@@ -123,37 +132,35 @@ export class DraftStore {
 
 	/** The thread's box text is now `text` (none when empty). */
 	setText(threadId: string, text: string): void {
-		const rest = this.#drafts.filter(
-			(d) => !(d.threadId === threadId && !d.sending),
-		);
-		this.#set(text ? [...rest, { threadId, text }] : rest);
+		this.#update((all) => {
+			const rest = all.filter((d) => !(d.threadId === threadId && !d.sending));
+			return text ? [...rest, { threadId, text }] : rest;
+		});
 	}
 
 	/** A reply is sent: kept until confirmed (or returned to the box). */
 	addSending(threadId: string, text: string, id: SendingId): void {
-		this.#set([
-			...this.#drafts,
+		this.#update((all) => [
+			...all.filter((d) => !this.#is(d, threadId, id.attemptedAt)),
 			{ threadId, text, sending: { ...id, sentOnce: false } },
 		]);
 	}
 
 	/** The reply's request has gone out at least once. */
 	markSent(threadId: string, attemptedAt: string): void {
-		let changed = false;
-		const next = this.#drafts.map((d) => {
-			if (!this.#is(d, threadId, attemptedAt) || d.sending?.sentOnce) return d;
-			changed = true;
-			return d.sending
-				? { ...d, sending: { ...d.sending, sentOnce: true } }
-				: d;
-		});
-		if (changed) this.#set(next);
+		this.#update((all) =>
+			all.map((d) =>
+				this.#is(d, threadId, attemptedAt) && d.sending && !d.sending.sentOnce
+					? { ...d, sending: { ...d.sending, sentOnce: true } }
+					: d,
+			),
+		);
 	}
 
 	/** The comment ids the reply was first sent knowing: kept for its resends. */
 	setKnown(threadId: string, attemptedAt: string, ids: string[]): void {
-		this.#set(
-			this.#drafts.map((d) =>
+		this.#update((all) =>
+			all.map((d) =>
 				this.#is(d, threadId, attemptedAt) && d.sending
 					? { ...d, sending: { ...d.sending, knownCommentIds: ids } }
 					: d,
@@ -161,53 +168,100 @@ export class DraftStore {
 		);
 	}
 
-	/** GitHub has the reply: nothing to keep. */
+	/** GitHub has the reply (or the reviewer dropped it): nothing to keep. */
 	confirm(threadId: string, attemptedAt: string): void {
-		this.#set(this.#drafts.filter((d) => !this.#is(d, threadId, attemptedAt)));
+		this.#update((all) =>
+			all.filter((d) => !this.#is(d, threadId, attemptedAt)),
+		);
+	}
+
+	/** Drops the thread's box text and its sent replies (the reviewer discarded them). */
+	discard(threadId: string): void {
+		this.#update((all) => all.filter((d) => d.threadId !== threadId));
 	}
 
 	/**
-	 * The reply was refused: its text goes back into the box, ahead of
-	 * anything typed since. Answers the text put back ("" if none).
+	 * The reply was refused: its text goes back into the box, after any
+	 * text returned there before and ahead of anything typed since.
+	 * Answers the text put back ("" if none).
 	 */
 	returnToBox(threadId: string, attemptedAt: string): string {
-		const sent = this.#drafts.find((d) => this.#is(d, threadId, attemptedAt));
-		if (!sent) return "";
-		const typed = this.text(threadId);
-		const text = typed ? `${sent.text}\n\n${typed}` : sent.text;
-		const rest = this.#drafts.filter(
-			(d) =>
-				!this.#is(d, threadId, attemptedAt) &&
-				!(d.threadId === threadId && !d.sending),
-		);
-		this.#set([...rest, { threadId, text }]);
-		return sent.text;
+		let back = "";
+		this.#update((all) => {
+			const sent = all.find((d) => this.#is(d, threadId, attemptedAt));
+			if (!sent) return all;
+			back = sent.text;
+			const box = all.find((d) => d.threadId === threadId && !d.sending);
+			const typed = box?.text ?? "";
+			const returned = box?.returned ?? 0;
+			const before = typed.slice(0, returned);
+			const after = typed.slice(returned).replace(/^\n\n/, "");
+			const head = before ? `${before}\n\n${sent.text}` : sent.text;
+			const text = after ? `${head}\n\n${after}` : head;
+			const rest = all.filter(
+				(d) =>
+					!this.#is(d, threadId, attemptedAt) &&
+					!(d.threadId === threadId && !d.sending),
+			);
+			return [...rest, { threadId, text, returned: head.length }];
+		});
+		return back;
 	}
 
 	#is(d: Draft, threadId: string, attemptedAt: string) {
 		return d.threadId === threadId && d.sending?.attemptedAt === attemptedAt;
 	}
 
-	#read(key: string): Draft[] {
+	/** What storage holds now; null when it can't be read (memory is all). */
+	#stored(): Draft[] | null {
+		if (this.#key === null) return null;
 		try {
-			const raw = this.#storage()?.getItem(key);
+			const storage = this.#storage();
+			if (!storage) return null;
+			const raw = storage.getItem(this.#key);
 			if (!raw) return [];
-			const parsed: unknown = JSON.parse(raw);
-			return Array.isArray(parsed) ? parsed.filter(isDraft) : [];
+			try {
+				const parsed: unknown = JSON.parse(raw);
+				return Array.isArray(parsed) ? parsed.filter(isDraft) : [];
+			} catch {
+				return [];
+			}
 		} catch {
-			return [];
+			return null;
 		}
 	}
 
-	#set(drafts: Draft[]): void {
+	/** One change, on top of what storage holds now (another tab's too). */
+	#update(change: (all: readonly Draft[]) => readonly Draft[]): void {
+		const base = this.#behind ? null : this.#stored();
+		this.#set(change(base ?? this.#drafts));
+	}
+
+	/** Another tab's writes, taken in as they happen. */
+	#listen(): void {
+		if (this.#listening || typeof window === "undefined") return;
+		this.#listening = true;
+		window.addEventListener("storage", (e) => {
+			if (e.key !== null && e.key !== this.#key) return;
+			if (this.#behind) return;
+			const stored = this.#stored();
+			if (!stored) return;
+			this.#drafts = stored;
+			for (const listener of this.#listeners) listener();
+		});
+	}
+
+	#set(drafts: readonly Draft[]): void {
 		this.#drafts = drafts;
 		if (this.#key !== null) {
 			try {
 				const storage = this.#storage();
 				if (drafts.length === 0) storage?.removeItem(this.#key);
 				else storage?.setItem(this.#key, JSON.stringify(drafts));
+				this.#behind = !storage;
 			} catch {
 				// Memory only: the page keeps them for its life.
+				this.#behind = true;
 			}
 		}
 		for (const listener of this.#listeners) listener();

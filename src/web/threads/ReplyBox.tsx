@@ -27,8 +27,10 @@ export function ReplyBox(props: { thread: ReviewThread }) {
 		if (open) el.style.height = `${el.scrollHeight + 2}px`;
 	}, [text, open]);
 	const send = () => {
-		if (blank) return;
-		writer.reply(thread.id, text);
+		// What the store holds now, not this render's copy: one send per text.
+		const now = writer.drafts.text(thread.id);
+		if (!now.trim()) return;
+		writer.reply(thread.id, now);
 	};
 	const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
 		if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {

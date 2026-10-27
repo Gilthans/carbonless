@@ -90,6 +90,45 @@ describe("SyncNotices for thread writes", () => {
 		expect(calls).toHaveLength(2);
 	});
 
+	it("a refused write can be dismissed", async () => {
+		statuses = [403];
+		const { writes } = setup([thread({})]);
+		await act(async () => {
+			writes.setResolved("T1", true);
+		});
+		const notice = await screen.findByTestId("write-failed");
+		await userEvent.click(
+			within(notice).getByRole("button", { name: "Dismiss resolve" }),
+		);
+		expect(screen.queryByTestId("write-failed")).toBeNull();
+		expect(writes.state().busy).toBe(false);
+	});
+
+	it("a reply resent from an earlier page says so, with Discard", async () => {
+		statuses = [];
+		const { writes, calls } = setup([thread({})]);
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(() => new Promise(() => {})),
+		);
+		await act(async () => {
+			writes.drafts.addSending("T1", "From yesterday", {
+				attemptedAt: "2026-01-02T00:00:00.000Z",
+				clientId: "old",
+				knownCommentIds: ["c1"],
+			});
+			writes.resume();
+		});
+		const notice = await screen.findByTestId("write-resumed");
+		expect(notice).toHaveTextContent("Reply · src/cache.ts:42");
+		await userEvent.click(
+			within(notice).getByRole("button", { name: "Discard reply" }),
+		);
+		expect(screen.queryByTestId("write-resumed")).toBeNull();
+		expect(writes.drafts.get()).toEqual([]);
+		expect(calls).toHaveLength(0);
+	});
+
 	it("a pending review blocks a reply: said so, with the link", async () => {
 		statuses = [409];
 		const { writes } = setup([thread({})]);

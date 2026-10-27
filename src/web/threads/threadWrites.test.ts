@@ -53,6 +53,8 @@ function setup() {
 	applied = [];
 	known = { T1: ["c1", "c2"] };
 	ids = 0;
+	confirmed = {};
+	postedCount = 0;
 	drafts = new DraftStore(() => undefined);
 	const call =
 		(op: Call["op"]) =>
@@ -67,8 +69,16 @@ function setup() {
 		drafts,
 		knownComments: (threadId) => known[threadId] ?? [],
 		newId: () => `cid${++ids}`,
+		confirmedResolved: (threadId) => confirmed[threadId],
+		posted: () => {
+			postedCount++;
+		},
 	});
 }
+
+/** GitHub's resolved state per thread, as the page last had it. */
+let confirmed: Record<string, boolean> = {};
+let postedCount = 0;
 
 /** The comment ids the page has per thread, for knownCommentIds. */
 let known: Record<string, string[]> = {};
@@ -248,7 +258,8 @@ describe("ThreadWrites", () => {
 		// comments known now (never the refused id again).
 		expect(calls[1]?.req).toMatchObject({
 			body: "Fixed, really",
-			retry: true,
+			// Certainly new: no dedupe asked for.
+			retry: false,
 			clientId: "cid2",
 			knownCommentIds: ["c1", "c2", "c3"],
 		});
@@ -412,6 +423,106 @@ describe("ThreadWrites", () => {
 		});
 	});
 
+	it("Dismiss lets a refused resolve go: GitHub's state shows again, nothing waits", async () => {
+		const w = setup();
+		confirmed.T1 = false;
+		w.setResolved("T1", true);
+		calls[0]?.reject(new ApiError(403, "no"));
+		await flush();
+		expect(w.state().busy).toBe(true);
+		w.dismiss("T1");
+		expect(w.state().threads.get("T1")).toBeUndefined();
+		expect(w.state().busy).toBe(false);
+		expect(calls).toHaveLength(1);
+	});
+
+	it("Dismiss of a refused reply clears the notice and keeps the text in the box", async () => {
+		const w = setup();
+		w.reply("T1", "Keep me");
+		calls[0]?.reject(new ApiError(403, "no"));
+		await flush();
+		w.dismiss("T1");
+		expect(w.state().threads.get("T1")).toBeUndefined();
+		expect(drafts.text("T1")).toBe("Keep me");
+	});
+
+	it("toggling back to GitHub's state sends nothing: a refused one is let go, a queued one dropped", async () => {
+		const w = setup();
+		confirmed.T1 = false;
+		w.setResolved("T1", true);
+		calls[0]?.reject(new ApiError(403, "no"));
+		await flush();
+		w.setResolved("T1", false);
+		expect(calls).toHaveLength(1);
+		expect(w.state().threads.get("T1")).toBeUndefined();
+		// Resolve then undo while it waits behind a reply: neither is sent.
+		w.reply("T1", "first");
+		w.setResolved("T1", true);
+		w.setResolved("T1", false);
+		calls[1]?.resolve(update("T1"));
+		await flush();
+		expect(calls.map((c) => c.op)).toEqual(["resolve", "reply"]);
+	});
+
+	it("undo while the resolve is out is sent, in order", async () => {
+		const w = setup();
+		confirmed.T1 = false;
+		w.setResolved("T1", true);
+		w.setResolved("T1", false);
+		calls[0]?.resolve(update("T1", { resolved: true }));
+		await flush();
+		expect(calls.map((c) => c.req)).toEqual([
+			{ resolved: true },
+			{ resolved: false },
+		]);
+	});
+
+	it("a newly posted reply says so (the pending-review flag goes); a deduped retry doesn't", async () => {
+		const w = setup();
+		w.reply("T1", "a");
+		calls[0]?.resolve(update("T1"));
+		await flush();
+		expect(postedCount).toBe(1);
+		drafts.addSending("T2", "b", {
+			attemptedAt: "2026-01-03T11:00:00.000Z",
+			clientId: "old",
+			knownCommentIds: ["c1"],
+		});
+		w.resume();
+		calls[1]?.resolve(update("T2"));
+		await flush();
+		expect(postedCount).toBe(1);
+	});
+
+	it("a resumed reply is flagged, and discarding it while out stops its retries and drops it", async () => {
+		const w = setup();
+		drafts.addSending("T1", "From yesterday", {
+			attemptedAt: "2026-01-02T11:00:00.000Z",
+			clientId: "old",
+			knownCommentIds: ["c1"],
+		});
+		w.resume();
+		expect(w.state().threads.get("T1")?.resumed).toBe(true);
+		w.discard("T1");
+		expect(drafts.get()).toEqual([]);
+		expect(w.state().threads.get("T1")?.resumed).toBe(false);
+		calls[0]?.reject(new ApiError(502, "bad gateway"));
+		await flush();
+		await vi.advanceTimersByTimeAsync(60_000);
+		expect(calls).toHaveLength(1);
+		expect(w.state().threads.get("T1")).toBeUndefined();
+		expect(w.state().busy).toBe(false);
+	});
+
+	it("discard drops a queued reply before it goes", () => {
+		const w = setup();
+		w.setResolved("T1", true);
+		w.reply("T1", "never mind");
+		w.discard("T1");
+		expect(w.state().threads.get("T1")?.replies).toEqual([]);
+		expect(drafts.get()).toEqual([]);
+	});
+
 	it("never sends blank text", () => {
 		const w = setup();
 		w.reply("T1", "  \n ");
@@ -432,6 +543,7 @@ describe("overlayThreads", () => {
 						resolved: true,
 						replies: [],
 						action: "Resolve" as const,
+						resumed: false,
 						delayed: false,
 						waiting: null,
 						stalled: null,
@@ -442,8 +554,15 @@ describe("overlayThreads", () => {
 			pendingReview: null,
 			busy: true,
 		};
-		const out = overlayThreads([a, b], state);
-		expect(out[0]?.resolved).toBe(true);
+		const out = overlayThreads(
+			[{ ...a, yourTurn: true, attention: ["octo"] }, b],
+			state,
+		);
+		expect(out[0]).toMatchObject({
+			resolved: true,
+			yourTurn: false,
+			attention: [],
+		});
 		expect(out[1]).toBe(b);
 		const none = [a, b];
 		expect(

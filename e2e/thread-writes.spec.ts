@@ -78,6 +78,16 @@ function storedReplies(p: Pr, text: string): number {
 		.filter((c) => (c.body ?? c.bodyText) === text).length;
 }
 
+/** Whether the fake gh has the thread on `path` resolved. */
+function storedResolved(p: Pr, path: string): boolean | undefined {
+	const s = JSON.parse(readFileSync(p.scenarioPath, "utf8")) as Scenario;
+	const threads = (s.prs[7]?.graphql?.reviewThreads ?? []) as {
+		path: string;
+		isResolved: boolean;
+	}[];
+	return threads.find((t) => t.path === path)?.isResolved;
+}
+
 const humans = (page: Page) =>
 	page.getByRole("region", { name: "Human reviews" });
 const card = (page: Page, path: string) =>
@@ -174,6 +184,8 @@ test("reply and resolve from Files changed", async ({ page, pr, startCrb }) => {
 	).toBeVisible();
 	await expect(thread.getByRole("button", { name: "Unresolve" })).toBeVisible();
 	await expect.poll(() => storedReplies(p, "From the diff")).toBe(1);
+	// On GitHub before the reload reads it back.
+	await expect.poll(() => storedResolved(p, "a.txt")).toBe(true);
 	await page.reload();
 	await fileSection(page, "a.txt")
 		.getByRole("button", { name: "Expand file" })
@@ -196,6 +208,7 @@ test("reply and resolve from Files changed", async ({ page, pr, startCrb }) => {
 			name: /^2 comments on line 2, resolved/,
 		}),
 	).toHaveCount(0);
+	await expect.poll(() => storedResolved(p, "a.txt")).toBe(false);
 	await page.reload();
 	await fileSection(page, "a.txt")
 		.getByRole("button", { name: "Expand file" })
@@ -270,6 +283,10 @@ test("a failing reply keeps its text, with Retry", async ({
 	const notice = page.getByTestId("write-failed");
 	await expect(notice).toContainText("Reply · new.txt:1");
 	await expect(box).toHaveValue("Try again");
+	const dismiss = notice.getByRole("button", { name: "Dismiss reply" });
+	const size = await dismiss.boundingBox();
+	expect(size?.height ?? 0).toBeGreaterThanOrEqual(40);
+	expect(size?.width ?? 0).toBeGreaterThanOrEqual(40);
 	await notice.getByRole("button", { name: "Retry reply" }).click();
 	await expect(notice).toHaveCount(0);
 	await expect(box).toHaveValue("");

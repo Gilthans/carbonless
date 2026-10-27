@@ -241,7 +241,8 @@ describe("color tokens", () => {
 		}
 		// ResolveToggle in a card header: ok (resolve), muted (unresolve) on
 		// band and on its overlay hover.
-		for (const icon of ["ok", "muted"]) {
+		// ResolveToggle and OrphanDraft's Discard (bad) too.
+		for (const icon of ["ok", "muted", "bad", "ink-soft"]) {
 			for (const bg of ["band", "overlay"]) {
 				expect(
 					contrast(token(icon), token(bg)),

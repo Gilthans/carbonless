@@ -3,6 +3,8 @@ import {
 	ClockIcon,
 	LinkExternalIcon,
 	SyncIcon,
+	TrashIcon,
+	XIcon,
 } from "@primer/octicons-react";
 import { type QueryClient, useQueryClient } from "@tanstack/react-query";
 import { useLayoutEffect, useRef } from "react";
@@ -41,7 +43,7 @@ export function SyncNotices() {
 	const writes = useThreadWrites();
 	const stack = useRef<HTMLDivElement>(null);
 	const writeNotices = [...writes.threads.values()].filter(
-		(t) => t.failed || t.stalled || t.delayed,
+		(t) => t.failed || t.stalled || t.delayed || t.resumed,
 	);
 	const shown = pending.size > 0 || writeNotices.length > 0;
 	// How far up from the window's bottom the notices reach, as
@@ -226,6 +228,26 @@ function ThreadWriteNotices({ threads }: { threads: ThreadWriteView[] }) {
 	const client = useQueryClient();
 	const writer = useThreadWriter();
 	if (threads.length === 0) return null;
+	const iconButton = (
+		label: string,
+		tip: string,
+		Icon: typeof XIcon,
+		onClick: () => void,
+	) => (
+		<Tooltip content={tip} describe={false}>
+			{(trigger) => (
+				<button
+					type="button"
+					{...trigger}
+					aria-label={label}
+					onClick={onClick}
+					className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md text-ink-soft hover:bg-overlay hover:text-ink focus-visible:outline-2 focus-visible:outline-accent"
+				>
+					<Icon aria-hidden />
+				</button>
+			)}
+		</Tooltip>
+	);
 	const retryButton = (t: ThreadWriteView, action: string) => (
 		<Tooltip content="Retry" describe={false}>
 			{(trigger) => (
@@ -283,7 +305,17 @@ function ThreadWriteNotices({ threads }: { threads: ThreadWriteView[] }) {
 										</a>
 									)}
 								</div>
-								{retryButton(t, t.failed.action)}
+								<div className="flex flex-col">
+									{retryButton(t, t.failed.action)}
+									{iconButton(
+										`Dismiss ${t.failed.action.toLowerCase()}`,
+										t.failed.action === "Reply"
+											? "Dismiss (the text stays in the box)"
+											: "Dismiss",
+										XIcon,
+										() => writer.dismiss(t.threadId),
+									)}
+								</div>
 							</div>
 						</div>
 					);
@@ -310,6 +342,32 @@ function ThreadWriteNotices({ threads }: { threads: ThreadWriteView[] }) {
 									<p className="break-words text-bad">{t.stalled.message}</p>
 								</div>
 								{retryButton(t, t.action ?? "write")}
+							</div>
+						</div>
+					);
+				}
+				if (t.resumed && !t.delayed) {
+					// Left unconfirmed by an earlier page: resent (the server finds
+					// one that landed); the reviewer may let it go.
+					return (
+						<div
+							key={t.threadId}
+							role="status"
+							data-testid="write-resumed"
+							className="pointer-events-auto overflow-hidden rounded-lg border border-warn/50 bg-raised shadow-float"
+						>
+							<div className="flex items-center gap-2 bg-warn/10 py-1 pr-1 pl-3 text-sm">
+								<LabeledIcon
+									icon={SyncIcon}
+									label="Resending a reply from before"
+									className="text-warn"
+								/>
+								<p className="min-w-0 flex-1 break-words text-ink">
+									Reply · <span className="font-mono text-xs">{where}</span>
+								</p>
+								{iconButton("Discard reply", "Discard", TrashIcon, () =>
+									writer.discard(t.threadId),
+								)}
 							</div>
 						</div>
 					);

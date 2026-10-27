@@ -119,6 +119,10 @@ const update = (threadId: string, resolved: boolean): ThreadUpdate => ({
 });
 
 let posts: { path: string; body: unknown }[];
+let fetched: string[];
+/** Review-state writes made (none may come from a thread write). */
+const statePosts = () =>
+	fetched.filter((p) => p === "/api/review/states").length;
 
 function renderOverview(
 	o: Partial<PrOverview>,
@@ -134,6 +138,7 @@ function renderOverview(
 	},
 ) {
 	posts = [];
+	fetched = [];
 	const routes: Record<string, unknown> = {
 		"/api/session": info,
 		"/api/overview": { ...overview, ...o },
@@ -146,6 +151,7 @@ function renderOverview(
 		"fetch",
 		vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
 			const path = new URL(String(input), "http://test").pathname;
+			fetched.push(path);
 			if (path.startsWith("/api/threads/")) {
 				posts.push({ path, body: JSON.parse(String(init?.body ?? "null")) });
 				const answer = writeStatus(path);
@@ -233,6 +239,8 @@ describe("resolving from an Overview card", () => {
 		expect(posts).toEqual([
 			{ path: "/api/threads/a/resolved", body: { resolved: true } },
 		]);
+		// Principle 2: a GitHub action on a thread, never a review mark.
+		expect(statePosts()).toBe(0);
 		await act(() => vi.advanceTimersByTimeAsync(FADE_MS));
 		await waitFor(() =>
 			expect(within(humans).getAllByTestId("thread")).toHaveLength(1),
@@ -276,6 +284,7 @@ describe("resolving from an Overview card", () => {
 		await user.click(within(card).getByRole("button", { name: "Resolve" }));
 		const moving = within(card).getByTestId("thread-moving");
 		expect(moving).toHaveTextContent("Moving…");
+		expect(moving).toHaveAttribute("role", "status");
 		expect(moving).toHaveClass("motion-reduce:inline");
 	});
 
@@ -332,6 +341,44 @@ describe("the Drafts filter", () => {
 		expect(
 			within(humans).getByRole("list", { name: "Unresolved threads" }),
 		).toBeInTheDocument();
+	});
+
+	it("lists a draft whose thread isn't listed, with its text, Copy and Discard", async () => {
+		const user = userEvent.setup();
+		const client = renderOverview({}, [thread("a")]);
+		const humans = await screen.findByRole("region", { name: "Human reviews" });
+		act(() => draftsFor(client).setText("gone", "Written to a deleted thread"));
+		const chip = await within(humans).findByTestId("drafts-filter");
+		expect(chip).toHaveTextContent("1 draft");
+		await user.click(chip);
+		const orphan = within(humans).getByTestId("orphan-draft");
+		expect(orphan).toHaveTextContent("Written to a deleted thread");
+		const writeText = vi.fn(async () => {});
+		Object.defineProperty(navigator, "clipboard", {
+			value: { writeText },
+			configurable: true,
+		});
+		await user.click(within(orphan).getByRole("button", { name: "Copy" }));
+		expect(writeText).toHaveBeenCalledWith("Written to a deleted thread");
+		await user.click(within(orphan).getByRole("button", { name: "Discard" }));
+		expect(draftsFor(client).get()).toEqual([]);
+		await waitFor(() =>
+			expect(within(humans).queryByTestId("drafts-filter")).toBeNull(),
+		);
+	});
+
+	it("lists drafts as such where the session doesn't write (no box to show them)", async () => {
+		const user = userEvent.setup();
+		const client = renderOverview(
+			{ writes: "as-of", asOf: "2026-01-02T00:00:00Z" },
+			[thread("a")],
+		);
+		const humans = await screen.findByRole("region", { name: "Human reviews" });
+		act(() => draftsFor(client).setText("a", "From a live session"));
+		await user.click(await within(humans).findByTestId("drafts-filter"));
+		expect(within(humans).getByTestId("orphan-draft")).toHaveTextContent(
+			"From a live session",
+		);
 	});
 
 	it("counts a reply sent but not yet confirmed", async () => {
@@ -396,6 +443,29 @@ describe("WriteWarnings in who's on it", () => {
 		).toHaveAttribute("href", "https://github.com/acme/widget/pull/12/files");
 		expect(box).toHaveValue("Fixed");
 		expect(posts).toHaveLength(1);
+	});
+
+	it("a newly posted reply clears the pending-review warning", async () => {
+		const user = userEvent.setup();
+		renderOverview(
+			{
+				pendingReview: { url: "https://github.com/acme/widget/pull/12/files" },
+			},
+			[thread("a")],
+			() => ({ status: 200, body: update("a", false) }),
+		);
+		const who = await screen.findByRole("region", { name: "Who's on it" });
+		expect(within(who).getByTestId("pending-review-warning")).toBeVisible();
+		const card = screen.getByTestId("thread");
+		await user.click(within(card).getByRole("button", { name: "Reply" }));
+		await user.type(
+			within(card).getByRole("textbox", { name: "Reply" }),
+			"Done",
+		);
+		await user.keyboard("{Control>}{Enter}{/Control}");
+		await waitFor(() =>
+			expect(within(who).queryByTestId("pending-review-warning")).toBeNull(),
+		);
 	});
 
 	it("says what the viewer can't do in this repo", async () => {

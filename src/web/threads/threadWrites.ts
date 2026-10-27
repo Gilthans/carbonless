@@ -56,6 +56,10 @@ type Op =
 			id: SendingId;
 			/** A resend after a failed or unknown attempt: dedupe first. */
 			retry: boolean;
+			/** Resent on load, left unconfirmed by an earlier page. */
+			resumed?: boolean;
+			/** The reviewer discarded it: not sent again (one already out may land). */
+			discarded?: boolean;
 	  }
 	| { kind: "resolve"; resolved: boolean };
 
@@ -80,6 +84,8 @@ export interface ThreadWriteView {
 	replies: { text: string; attemptedAt: string }[];
 	/** The write waiting now (the first in line). */
 	action: WriteAction | null;
+	/** A reply an earlier page left unconfirmed is being resent (it can be discarded). */
+	resumed: boolean;
 	/** It has waited over DELAYED_MS. */
 	delayed: boolean;
 	/** Why it waits: the last transient failure, in a few words. */
@@ -111,6 +117,10 @@ export interface ThreadWritesDeps {
 	knownComments: (threadId: string) => string[] | Promise<string[]>;
 	/** A new client id for a reply (crypto.randomUUID by default). */
 	newId?: () => string;
+	/** Whether GitHub has the thread resolved, as last read or answered; undefined if unknown. */
+	confirmedResolved?: (threadId: string) => boolean | undefined;
+	/** A reply was newly posted: no pending review stands in the way any more. */
+	posted?: () => void;
 }
 
 interface Lane {
@@ -196,10 +206,23 @@ export class ThreadWrites {
 		this.#push(lane, { kind: "reply", text, id, retry: false });
 	}
 
-	/** Resolves or unresolves the thread. */
+	/**
+	 * Resolves or unresolves the thread. Back to the state GitHub has with
+	 * none of it on its way (an undo, a refused one let go): nothing is sent,
+	 * and what waited in line for it is dropped.
+	 */
 	setResolved(threadId: string, resolved: boolean): void {
 		const lane = this.#lane(threadId);
 		if (lane.refusedResolved !== undefined) this.#clearFailure(lane);
+		const outResolve = lane.sending && lane.ops[0]?.kind === "resolve";
+		if (!outResolve && this.#deps.confirmedResolved?.(threadId) === resolved) {
+			lane.ops = lane.ops.filter(
+				(op, i) => op.kind !== "resolve" || (i === 0 && lane.sending),
+			);
+			this.#prune(threadId);
+			this.#changed();
+			return;
+		}
 		// A resolve still in line takes the newer intent.
 		const last = lane.ops.at(-1);
 		const queued = lane.ops.length > (lane.sending ? 1 : 0);
@@ -228,7 +251,8 @@ export class ThreadWrites {
 			if (text.trim()) {
 				this.#deps.drafts.addSending(threadId, text, id);
 				this.#deps.drafts.setText(threadId, "");
-				lane.ops.push({ kind: "reply", text, id, retry: true });
+				// Certainly new: nothing to look for first.
+				lane.ops.push({ kind: "reply", text, id, retry: false });
 			}
 		} else if (lane.refusedResolved !== undefined) {
 			const resolved = lane.refusedResolved;
@@ -260,11 +284,57 @@ export class ThreadWrites {
 				(op) => op.kind === "reply" && op.id.clientId === id.clientId,
 			);
 			if (known) continue;
-			lane.ops.push({ kind: "reply", text: d.text, id, retry: true });
+			lane.ops.push({
+				kind: "reply",
+				text: d.text,
+				id,
+				retry: true,
+				resumed: true,
+			});
 			if (lane.ops.length === 1) lane.since = Date.now();
 		}
 		this.#changed();
 		this.#pump();
+	}
+
+	/**
+	 * Lets a refused write go: a refused resolve or unresolve is dropped
+	 * (GitHub's state shows again); a refused reply's notice clears, its
+	 * text staying in the box as a draft.
+	 */
+	dismiss(threadId: string): void {
+		const lane = this.#lanes.get(threadId);
+		if (!lane?.failed) return;
+		this.#clearFailure(lane);
+		this.#prune(threadId);
+		this.#changed();
+	}
+
+	/**
+	 * Drops the thread's draft and its replies not yet sent or resent (one
+	 * already out may still land: GitHub then shows it). The reviewer's
+	 * explicit choice; nothing else ever drops typed text.
+	 */
+	discard(threadId: string): void {
+		const lane = this.#lanes.get(threadId);
+		if (lane) {
+			lane.ops = lane.ops.filter((op, i) => {
+				if (op.kind !== "reply") return true;
+				if (i === 0 && lane.sending) {
+					op.discarded = true;
+					return true;
+				}
+				return false;
+			});
+			if (lane.failed?.action === "Reply") this.#clearFailure(lane);
+			if (lane.ops.length === 0 && lane.timer !== undefined) {
+				clearTimeout(lane.timer);
+				lane.timer = undefined;
+			}
+			this.#prune(threadId);
+		}
+		this.#deps.drafts.discard(threadId);
+		this.#changed();
 	}
 
 	state = (): ThreadWritesState => this.#state;
@@ -396,8 +466,12 @@ export class ThreadWrites {
 		}
 		if (op.kind === "reply") {
 			this.#deps.drafts.confirm(threadId, op.id.attemptedAt);
-			// GitHub took a reply: a pending review no longer blocks.
-			this.#pendingReview = null;
+			// GitHub took a new reply: a pending review no longer blocks. (A
+			// retry may have found an earlier one while a review is pending.)
+			if (!op.retry) {
+				this.#pendingReview = null;
+				this.#deps.posted?.();
+			}
 		}
 		lane.ops.shift();
 		lane.attempt = 0;
@@ -410,6 +484,18 @@ export class ThreadWrites {
 	}
 
 	#failed(threadId: string, lane: Lane, op: Op, error: unknown) {
+		if (op.kind === "reply" && op.discarded) {
+			// Discarded while out: it didn't land, or a reload shows it did.
+			lane.ops.shift();
+			lane.attempt = 0;
+			lane.waiting = null;
+			lane.lastTransient = null;
+			lane.since = Date.now();
+			this.#prune(threadId);
+			this.#changed();
+			this.#pump();
+			return;
+		}
 		if (isTransient(error)) {
 			// It may have landed: the resend asks GitHub first.
 			if (op.kind === "reply") op.retry = true;
@@ -488,6 +574,8 @@ export class ThreadWrites {
 						: [],
 				),
 				action: head ? actionOf(head) : null,
+				resumed:
+					head?.kind === "reply" && head.resumed === true && !head.discarded,
 				delayed,
 				waiting: head ? lane.waiting : null,
 				stalled:
@@ -566,6 +654,21 @@ export function threadWritesFor(client: QueryClient): ThreadWrites {
 			resolve: postResolved,
 			applied: (update) => applyThreadUpdate(client, update),
 			drafts: draftsFor(client),
+			confirmedResolved: (threadId) => {
+				const lists = client.getQueriesData<ThreadsView>({
+					queryKey: ["threads"],
+				});
+				for (let i = lists.length - 1; i >= 0; i--) {
+					const t = lists[i]?.[1]?.threads.find((x) => x.id === threadId);
+					if (t) return t.resolved;
+				}
+				return undefined;
+			},
+			posted: () => {
+				client.setQueryData(overviewQuery.queryKey, (o) =>
+					o?.pendingReview ? { ...o, pendingReview: null } : o,
+				);
+			},
 			knownComments: (threadId) => {
 				const readId = client.getQueryData(overviewQuery.queryKey)?.readId;
 				if (!readId) return [];
@@ -640,7 +743,10 @@ export function overlayThreads<T extends ReviewThread>(
 		const resolved = state.threads.get(t.id)?.resolved;
 		if (resolved === undefined || resolved === t.resolved) return t;
 		changed = true;
-		return { ...t, resolved };
+		// Resolved waits on no one (the server's rule): the dot goes at once.
+		return resolved
+			? { ...t, resolved, attention: [], yourTurn: false }
+			: { ...t, resolved };
 	});
 	return changed ? next : (threads as T[]);
 }

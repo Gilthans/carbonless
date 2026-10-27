@@ -6,6 +6,7 @@ import {
 	CodeReviewIcon,
 	CommentDiscussionIcon,
 	CommentIcon,
+	CopyIcon,
 	DotFillIcon,
 	EyeIcon,
 	FileDiffIcon,
@@ -19,6 +20,7 @@ import {
 	PeopleIcon,
 	QuestionIcon,
 	ReplyIcon,
+	TrashIcon,
 	XIcon,
 } from "@primer/octicons-react";
 import {
@@ -71,7 +73,12 @@ import {
 import { useDrafts } from "../threads/drafts";
 import { ResolveToggle } from "../threads/ResolveToggle";
 import { ThreadStatus } from "../threads/ThreadStatus";
-import { FADE_MS, useThreadWrites, useWritesOn } from "../threads/threadWrites";
+import {
+	FADE_MS,
+	useThreadWriter,
+	useThreadWrites,
+	useWritesOn,
+} from "../threads/threadWrites";
 import { usePrefetchComments } from "../threads/useThreadComments";
 import { useThreads } from "../threads/useThreads";
 import { ErrorMessage, safeHref } from "../ui";
@@ -646,6 +653,21 @@ function IsItReady({
 		list?.filter((t) => t.unavailable === "unreadable").length ?? 0;
 	// Failed with nothing to show: the error alone, no frames left busy.
 	const failed = Boolean(error) && !list;
+	const drafts = useDrafts();
+	// Drafts no card can show (their thread isn't listed, or this session
+	// doesn't write): listed with the human threads' drafts, never lost.
+	const orphans = useMemo(() => {
+		if (!list || previous) return [];
+		const listed = new Set(list.map((t) => t.id));
+		const writesOn = pr.writes === "on";
+		const byThread = new Map<string, string[]>();
+		for (const d of drafts) {
+			if (!d.sending && !d.text.trim()) continue;
+			if (writesOn && listed.has(d.threadId)) continue;
+			byThread.set(d.threadId, [...(byThread.get(d.threadId) ?? []), d.text]);
+		}
+		return [...byThread].map(([threadId, texts]) => ({ threadId, texts }));
+	}, [drafts, list, previous, pr.writes]);
 	return (
 		<Section label="Is it ready">
 			<Checks pr={pr} />
@@ -665,6 +687,8 @@ function IsItReady({
 				onShown={onShown}
 				icon={CommentDiscussionIcon}
 				threads={list?.filter((t) => !t.bot)}
+				orphans={orphans}
+				writesOn={pr.writes === "on"}
 				failed={failed}
 				previous={previous}
 				asOf={Boolean(pr.asOf)}
@@ -676,6 +700,7 @@ function IsItReady({
 				onShown={onShown}
 				icon={HubotIcon}
 				threads={list?.filter((t) => t.bot)}
+				writesOn={pr.writes === "on"}
 				failed={failed}
 				previous={previous}
 				asOf={Boolean(pr.asOf)}
@@ -940,8 +965,13 @@ function ThreadGroup(props: {
 	asOf: boolean;
 	/** A thread to bring into view, if it is in this group. */
 	focus: ThreadFocus | null;
+	/** Drafts whose thread no card here shows (one group lists them). */
+	orphans?: OrphanDraftItem[];
+	/** This session writes: a card can show its draft. */
+	writesOn: boolean;
 }) {
 	const { asOf, focus, readId, onShown, label } = props;
+	const orphans = props.orphans ?? [];
 	const loading = props.threads === undefined && !props.failed;
 	const threads = props.threads ?? [];
 	const [filter, setFilter] = useState<ThreadFilter>("unresolved");
@@ -958,11 +988,12 @@ function ThreadGroup(props: {
 		const ids = new Set(
 			drafts.filter((d) => d.sending || d.text.trim()).map((d) => d.threadId),
 		);
-		return threads.filter((t) => ids.has(t.id));
-	}, [drafts, threads]);
+		return props.writesOn ? threads.filter((t) => ids.has(t.id)) : [];
+	}, [drafts, threads, props.writesOn]);
+	const draftCount = drafted.length + orphans.length;
 	// The drafts sent or cleared: back to the open threads.
 	const shownFilter =
-		filter === "drafts" && drafted.length === 0 ? "unresolved" : filter;
+		filter === "drafts" && draftCount === 0 ? "unresolved" : filter;
 	const showResolved = shownFilter === "resolved";
 	const listed =
 		shownFilter === "drafts" ? drafted : showResolved ? resolved : unresolved;
@@ -1070,7 +1101,7 @@ function ThreadGroup(props: {
 								{resolved.length} resolved
 							</Chip>
 						</li>
-						{drafted.length > 0 && (
+						{draftCount > 0 && (
 							<li>
 								<Chip
 									tone="yellow"
@@ -1092,7 +1123,7 @@ function ThreadGroup(props: {
 										},
 									}}
 								>
-									{plural(drafted.length, "draft")}
+									{plural(draftCount, "draft")}
 								</Chip>
 							</li>
 						)}
@@ -1120,11 +1151,13 @@ function ThreadGroup(props: {
 						))}
 					</ul>
 				)}
-				{threads.length > 0 && listed.length === 0 && (
-					<p className="text-sm text-faint">
-						{showResolved ? "No resolved threads" : "No unresolved threads"}
-					</p>
-				)}
+				{threads.length > 0 &&
+					listed.length === 0 &&
+					shownFilter !== "drafts" && (
+						<p className="text-sm text-faint">
+							{showResolved ? "No resolved threads" : "No unresolved threads"}
+						</p>
+					)}
 				{listed.length > 0 && (
 					<ul
 						aria-label={
@@ -1150,6 +1183,16 @@ function ThreadGroup(props: {
 						))}
 					</ul>
 				)}
+				{shownFilter === "drafts" && orphans.length > 0 && (
+					<ul
+						aria-label="Drafts on threads not listed"
+						className={`space-y-3 ${listed.length > 0 ? "mt-3" : ""}`}
+					>
+						{orphans.map((o) => (
+							<OrphanDraft key={o.threadId} draft={o} />
+						))}
+					</ul>
+				)}
 				{listed.length > limit && (
 					<div className="mt-3 flex justify-center">
 						<button
@@ -1164,6 +1207,68 @@ function ThreadGroup(props: {
 				)}
 			</div>
 		</section>
+	);
+}
+
+interface OrphanDraftItem {
+	threadId: string;
+	/** Its box text and its replies not yet confirmed. */
+	texts: string[];
+}
+
+/**
+ * A draft no card can show (its thread is gone or not listed, or this
+ * session doesn't write): its text, Copy, and Discard.
+ */
+function OrphanDraft({ draft }: { draft: OrphanDraftItem }) {
+	const writer = useThreadWriter();
+	const text = draft.texts.join("\n\n");
+	const button = (
+		label: string,
+		IconEl: Icon,
+		onClick: () => void,
+		tone = "text-ink-soft",
+	) => (
+		<Tooltip content={label} describe={false}>
+			{(trigger) => (
+				<button
+					{...trigger}
+					type="button"
+					aria-label={label}
+					onClick={onClick}
+					className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-md hover:bg-overlay focus-visible:outline-2 focus-visible:outline-accent ${tone}`}
+				>
+					<IconEl size={16} aria-hidden />
+				</button>
+			)}
+		</Tooltip>
+	);
+	return (
+		<li
+			data-testid="orphan-draft"
+			className="min-w-0 overflow-hidden rounded-lg border border-edge bg-surface"
+		>
+			<div className="flex items-center gap-1.5 border-b border-line bg-band py-0.5 pr-1 pl-2.5 text-xs text-muted">
+				<LabeledIcon icon={PencilIcon} label="Draft" className="text-warn" />
+				<span className="min-w-0 flex-1 truncate">Thread not listed</span>
+				{button("Copy", CopyIcon, () => {
+					try {
+						void navigator.clipboard?.writeText(text).catch(() => {});
+					} catch {}
+				})}
+				{button(
+					"Discard",
+					TrashIcon,
+					() => writer.discard(draft.threadId),
+					"text-bad",
+				)}
+			</div>
+			<p
+				className={`${COMMENT_SURFACE} m-2 text-sm whitespace-pre-wrap break-words`}
+			>
+				{text}
+			</p>
+		</li>
 	);
 }
 
@@ -1359,6 +1464,7 @@ function ThreadItem({
 					{fading && (
 						// The still form of the fade (reduced motion).
 						<span
+							role="status"
 							data-testid="thread-moving"
 							className="hidden text-warn motion-reduce:inline"
 						>

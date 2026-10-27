@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { DraftStore, draftsFor, draftsKey, unsent, useDraft } from "./drafts";
 
 const KEY = draftsKey({ owner: "o", repo: "r", number: 7 });
@@ -106,7 +106,8 @@ describe("drafts", () => {
 	});
 
 	it("keeps a sent reply until confirmed, then removes it", () => {
-		const store = new DraftStore(() => memoryStorage());
+		const storage = memoryStorage();
+		const store = new DraftStore(() => storage);
 		store.bind(KEY);
 		store.addSending("T1", "Fixed", sent("t0"));
 		expect(unsent(store.get())).toBe(true);
@@ -157,6 +158,69 @@ describe("drafts", () => {
 		const mixed = new DraftStore(() => storage);
 		mixed.bind(KEY);
 		expect(mixed.get()).toEqual([{ threadId: "T1", text: "ok" }]);
+	});
+
+	it("two tabs keep each other's drafts and never bring back a confirmed reply", () => {
+		const storage = memoryStorage();
+		const a = new DraftStore(() => storage);
+		const b = new DraftStore(() => storage);
+		a.bind(KEY);
+		b.bind(KEY);
+		a.addSending("T1", "From A", sent("t0"));
+		b.setText("T2", "Typed in B");
+		const after = new DraftStore(() => storage);
+		after.bind(KEY);
+		expect(
+			after
+				.get()
+				.map((d) => d.text)
+				.sort(),
+		).toEqual(["From A", "Typed in B"]);
+		a.confirm("T1", "t0");
+		b.setText("T2", "Typed in B, more");
+		const last = new DraftStore(() => storage);
+		last.bind(KEY);
+		expect(last.get()).toEqual([{ threadId: "T2", text: "Typed in B, more" }]);
+	});
+
+	it("takes in another tab's writes as they happen", () => {
+		const storage = memoryStorage();
+		const a = new DraftStore(() => storage);
+		const b = new DraftStore(() => storage);
+		a.bind(KEY);
+		b.bind(KEY);
+		const seen = vi.fn();
+		b.subscribe(seen);
+		a.setText("T1", "From A");
+		window.dispatchEvent(new StorageEvent("storage", { key: KEY }));
+		expect(b.text("T1")).toBe("From A");
+		expect(seen).toHaveBeenCalled();
+	});
+
+	it("two refused replies come back into the box in the order they were sent", () => {
+		const store = new DraftStore(() => undefined);
+		store.addSending("T1", "first", sent("t0"));
+		store.addSending("T1", "second", sent("t1"));
+		store.returnToBox("T1", "t0");
+		store.returnToBox("T1", "t1");
+		expect(store.text("T1")).toBe("first\n\nsecond");
+		// Typed since stays last.
+		const typed = new DraftStore(() => undefined);
+		typed.addSending("T1", "first", sent("t0"));
+		typed.addSending("T1", "second", sent("t1"));
+		typed.returnToBox("T1", "t0");
+		typed.setText("T1", "first\n\nPS");
+		typed.returnToBox("T1", "t1");
+		expect(typed.text("T1")).toBe("second\n\nfirst\n\nPS");
+	});
+
+	it("discard drops the thread's box text and sent replies", () => {
+		const store = new DraftStore(() => undefined);
+		store.setText("T1", "box");
+		store.addSending("T1", "sent", sent("t0"));
+		store.setText("T2", "other");
+		store.discard("T1");
+		expect(store.get()).toEqual([{ threadId: "T2", text: "other" }]);
 	});
 
 	it("whitespace alone is nothing to lose", () => {
