@@ -71,10 +71,22 @@ const E2E_MAP = [
 	],
 	[
 		/^src\/web\/files\/|^src\/server\/diff\//,
-		["files", "files-threads", "sticky", "invisibles", "mobile", "saves"],
+		[
+			"files",
+			"files-threads",
+			"sticky",
+			"invisibles",
+			"whitespace",
+			"mobile",
+			"saves",
+		],
 	],
 	[/^src\/server\/review\//, ["files", "persistence"]],
-	[/^src\/web\/code\//, ["invisibles", "files"]],
+	[/^src\/web\/code\//, ["invisibles", "whitespace", "files"]],
+	[
+		/^src\/web\/(Settings\.tsx|viewSettings\.ts)$/,
+		["settings", "invisibles", "whitespace"],
+	],
 	[/^src\/web\/sticky\.ts$/, ["sticky", "files"]],
 	[
 		/^src\/server\/asOf\.ts$|^src\/web\/(HeadBanner|RelativeTime)\.tsx$/,

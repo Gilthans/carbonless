@@ -103,3 +103,12 @@ review with no body whose every comment is a reply is skipped. A body or one
 new thread makes it count. If carbonless can't read all of a review's
 comments, or your latest review has no commit, it stops with an error rather
 than picking an older one. Pending reviews never count.
+
+## Why does "Ignore whitespace" still show whitespace-only changes?
+
+Because they are still changes, and no setting may hide a change from the
+review (principle 2). The switch only changes how they read: a line whose
+only difference is whitespace becomes one quiet `~` row instead of a red
+and a green one, and a cluster that is all whitespace collapses to one row
+you can review from, or expand. Clusters, counts and progress stay what
+they are with the switch off.

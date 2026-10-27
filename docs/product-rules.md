@@ -148,3 +148,16 @@ comments in one (`src/server/threadWrites.ts`).
   deletes on one thread run in the order asked, never at once.
 - **Tests write only to the fake gh.** Real writes happen only on the
   owner's scratch PR (see `CLAUDE.md`).
+
+## "Ignore whitespace" is a view
+
+Settings' "Ignore whitespace" (`src/web/files/whitespace.ts`, git's `-w`:
+lines equal once every ASCII whitespace character is removed) only changes
+how the diff reads. It never changes clusters, their keys, the +/− counts,
+progress, or what is unreviewed: the hunks the server sends are the ones
+shown, and a whitespace-only pair is still a change, drawn as one quiet
+row. A cluster that is all whitespace-only collapses to one row, but keeps
+its checkbox and cross-off and still has to be reviewed, and it stays open
+while a thread or a thread link's landing sits on one of its lines. The
+pairing is pure and checked for any input: every removed and added line of
+the cluster is in the rows exactly once (principle 2).

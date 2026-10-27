@@ -79,6 +79,22 @@ Out of scope: homoglyphs (a Cyrillic `а` for a Latin `a` shows as itself),
 and the ordinary bidi of natural right-to-left text, which can reorder
 neutral punctuation next to it without any override.
 
+## Whitespace-only rows
+
+Settings' "Ignore whitespace" draws a removed and an added line that differ
+only in whitespace (`src/web/files/whitespace.ts`) as one row: both line
+numbers in `faint` (no add/del gutter), the new side's text, a `~` sign in
+`faint` (accessible name and tooltip "Whitespace only") and a `band`
+background, so it reads as a change, only a quiet one, never as an unchanged
+line. A cluster that is all such pairs collapses to one `band` row carrying
+the cluster's rail and controls as any cluster, "Whitespace only · N lines"
+in `muted`, and a chevron (40px on touch; tooltip "Show lines" / "Hide
+lines") that shows its rows below it, collapsed again whenever the file
+opens or the setting turns on. The chevron goes while a thread bubble or a
+landed-on line keeps the rows showing. A reviewed collapsed row keeps the
+green rail and checked box and its text turns `muted`, like a reviewed
+file-level cluster.
+
 ## File change kinds
 
 Every file, in its header and in the tree, has a 12px icon before its
@@ -144,9 +160,11 @@ A gear (tooltip "Settings", 40px) at the right of the app bar's last row,
 so it stays in the compact sticky header too. It opens a small popover
 under it, a bottom sheet on a phone (`<dialog>`; Escape, a click outside or
 the backdrop, and Close on the sheet close it, focus back on the gear).
-Each setting is a full-width switch row (`role="switch"`, 44px); today
-there is one, "Show hidden characters", stored in `localStorage`
-(`crb.code.invisibles`). More rows go into `SettingsList` (`src/web/Settings.tsx`).
+Each setting is a full-width switch row (`role="switch"`, 44px): "Show
+hidden characters" (`crb.code.invisibles`, on by default) and "Ignore
+whitespace" (`crb.diff.ignoreWhitespace`, off by default), each a
+`viewSetting` (`src/web/viewSettings.ts`) remembered in `localStorage`.
+More rows go into `SettingsList` (`src/web/Settings.tsx`).
 
 ## Thread cards (Overview)
 
