@@ -43,7 +43,7 @@ export function ResolveButton(props: {
 			// A focused reply box keeps its focus (and so its size) on a mouse
 			// click: shrinking under the pointer, it would move the button away.
 			onMouseDown={(e) => e.preventDefault()}
-			className={`flex h-10 shrink-0 items-center justify-center gap-2 self-end rounded-md border px-4 text-sm font-semibold focus-visible:outline-2 focus-visible:outline-accent ${
+			className={`flex h-10 shrink-0 items-center justify-center gap-2 self-end ml-auto rounded-md border px-4 text-sm font-semibold focus-visible:outline-2 focus-visible:outline-accent ${
 				thread.resolved
 					? "border-line-strong text-ink-soft hover:bg-overlay hover:text-ink"
 					: "border-ok/60 bg-ok/10 text-ok hover:bg-ok/20"

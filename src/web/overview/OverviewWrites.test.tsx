@@ -318,13 +318,14 @@ describe("resolving from an Overview card", () => {
 });
 
 describe("replying from an Overview card", () => {
-	it("a thread with no replies: Show more opens the reply box and Resolve", async () => {
+	it("a thread with nothing more to read: the toggle says Reply, opens the box and Resolve, then Hide", async () => {
 		const user = userEvent.setup();
 		renderOverview({}, [thread("a")]);
 		const humans = await screen.findByRole("region", { name: "Human reviews" });
 		const card = within(humans).getByTestId("thread");
 		const more = within(card).getByTestId("thread-more");
-		expect(more).toHaveAccessibleName("Show more");
+		expect(more).toHaveAccessibleName("Reply");
+		expect(more).toHaveTextContent(/^Reply$/);
 		expect(within(card).queryByRole("textbox", { name: "Reply" })).toBeNull();
 		await user.click(more);
 		expect(
@@ -332,7 +333,7 @@ describe("replying from an Overview card", () => {
 		).toBeVisible();
 		expect(within(card).getByRole("button", { name: "Resolve" })).toBeVisible();
 		expect(within(card).queryByTestId("thread-replies")).toBeNull();
-		expect(more).toHaveAccessibleName("Show less");
+		expect(more).toHaveAccessibleName("Hide");
 		await user.click(more);
 		expect(within(card).queryByRole("textbox", { name: "Reply" })).toBeNull();
 	});
@@ -370,9 +371,27 @@ describe("replying from an Overview card", () => {
 		]);
 		const humans = await screen.findByRole("region", { name: "Human reviews" });
 		const card = within(humans).getByTestId("thread");
+		// Nothing to read or reply: the toggle says what it opens to.
+		expect(within(card).getByTestId("thread-more")).toHaveAccessibleName(
+			"Resolve",
+		);
 		await openCard(user, card);
-		expect(within(card).getByRole("button", { name: "Resolve" })).toBeVisible();
+		expect(within(card).getByTestId("thread-more")).toHaveAccessibleName(
+			"Hide",
+		);
+		expect(within(card).getByTestId("resolve-button")).toBeVisible();
 		expect(within(card).queryByRole("textbox", { name: "Reply" })).toBeNull();
+	});
+
+	it("counts a reply on its way: Show more, not Reply", async () => {
+		const client = renderOverview({}, [thread("a")], () => null);
+		const humans = await screen.findByRole("region", { name: "Human reviews" });
+		const more = within(humans).getByTestId("thread-more");
+		expect(more).toHaveAccessibleName("Reply");
+		act(() => threadWritesFor(client).reply("a", "Fixed"));
+		await waitFor(() =>
+			expect(more).toHaveAccessibleName("Show more, 1 reply"),
+		);
 	});
 
 	it("a thread with a draft opens on it", async () => {

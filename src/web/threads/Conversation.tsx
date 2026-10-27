@@ -1,6 +1,6 @@
 import { AlertIcon, ClockIcon, SyncIcon } from "@primer/octicons-react";
 import { useQuery } from "@tanstack/react-query";
-import type { ReactNode } from "react";
+import { type ReactNode, useState } from "react";
 import type { ReviewThread, ThreadComment } from "../../shared/types";
 import { ApiError, sessionQuery } from "../api";
 import { BotIcon, LabeledIcon, plural } from "../overview/parts";
@@ -90,15 +90,19 @@ export function ThreadActions(props: {
 }) {
 	const { thread } = props;
 	const on = useWritesOn();
+	// The box closed (one line, empty): Resolve beside it on a phone too;
+	// opened, it takes the phone's width and Resolve goes below.
+	const [boxOpen, setBoxOpen] = useState(false);
 	if (!useCanAct(thread)) return null;
 	return (
 		<div
 			data-testid="thread-actions"
-			className="flex flex-col gap-2 sm:flex-row sm:items-end"
+			data-box-open={boxOpen || undefined}
+			className={`flex gap-2 ${boxOpen ? "flex-col sm:flex-row sm:items-end" : "flex-row items-end"}`}
 		>
 			{on && thread.viewerCan.reply && (
 				<div className="min-w-0 flex-1">
-					<ReplyBox thread={thread} />
+					<ReplyBox thread={thread} onOpenChange={setBoxOpen} />
 				</div>
 			)}
 			<ResolveButton thread={thread} onToggle={props.onToggle} />

@@ -1,5 +1,11 @@
 import { PaperAirplaneIcon } from "@primer/octicons-react";
-import { type KeyboardEvent, useLayoutEffect, useRef, useState } from "react";
+import {
+	type KeyboardEvent,
+	useEffect,
+	useLayoutEffect,
+	useRef,
+	useState,
+} from "react";
 import type { ReviewThread } from "../../shared/types";
 import { Tooltip } from "../Tooltip";
 import { useDraft } from "./drafts";
@@ -11,7 +17,11 @@ import { useThreadWriter } from "./threadWrites";
  * text can't be sent; Escape leaves the box, keeping the draft. What's
  * typed is the thread's draft (drafts.ts): it outlives closing the thread.
  */
-export function ReplyBox(props: { thread: ReviewThread }) {
+export function ReplyBox(props: {
+	thread: ReviewThread;
+	/** Told when the box opens (focused, or holding a draft) and closes. */
+	onOpenChange?: (open: boolean) => void;
+}) {
 	const { thread } = props;
 	const writer = useThreadWriter();
 	const [text, setText] = useDraft(thread.id);
@@ -19,6 +29,8 @@ export function ReplyBox(props: { thread: ReviewThread }) {
 	const box = useRef<HTMLTextAreaElement>(null);
 	const blank = !text.trim();
 	const open = focused || !blank;
+	const { onOpenChange } = props;
+	useEffect(() => onOpenChange?.(open), [open, onOpenChange]);
 	// biome-ignore lint/correctness/useExhaustiveDependencies: re-measured as the text changes.
 	useLayoutEffect(() => {
 		const el = box.current;

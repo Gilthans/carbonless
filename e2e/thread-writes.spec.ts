@@ -160,6 +160,59 @@ test("reply from an Overview card: shown at once, still there after a reload", a
 	expect(storedReplies(p, "Kept on purpose")).toBe(1);
 });
 
+test("a short card's toggle says Reply; on a phone the closed box and Resolve share a line", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	if (isMobile) await page.setViewportSize({ width: 360, height: 780 });
+	await setup(pr);
+	const s = await startCrb();
+	await page.goto(s.url);
+	const c = card(page, "new.txt");
+	const more = c.getByTestId("thread-more");
+	// Nothing more to read: it opens only to the box and Resolve.
+	await expect(more).toHaveAccessibleName("Reply");
+	await more.click();
+	await expect(more).toHaveAccessibleName("Hide");
+	const box = c.getByRole("textbox", { name: "Reply" });
+	const resolve = c.getByRole("button", { name: "Resolve", exact: true });
+	const rect = async (l: Locator) => {
+		const b = await l.boundingBox();
+		if (!b) throw new Error("not laid out");
+		return b;
+	};
+	// Closed and empty: one line, Resolve beside it (desktop and phone).
+	let b = await rect(box);
+	let r = await rect(resolve);
+	expect(r.x).toBeGreaterThanOrEqual(b.x + b.width);
+	expect(Math.abs(r.y + r.height - (b.y + b.height))).toBeLessThanOrEqual(2);
+	expect(r.height).toBeGreaterThanOrEqual(40);
+	expect((await rect(send(c))).height).toBeGreaterThanOrEqual(40);
+	const overflow = () =>
+		page.evaluate(
+			() => document.documentElement.scrollWidth - window.innerWidth,
+		);
+	expect(await overflow()).toBeLessThanOrEqual(0);
+	// Focused: on a phone the box takes the width and Resolve goes below;
+	// on a desktop it stays beside.
+	await box.click();
+	await box.fill("Thinking");
+	b = await rect(box);
+	r = await rect(resolve);
+	if (isMobile) {
+		expect(r.y).toBeGreaterThanOrEqual(b.y + b.height);
+	} else {
+		expect(r.x).toBeGreaterThanOrEqual(b.x + b.width);
+	}
+	expect(r.height).toBeGreaterThanOrEqual(40);
+	expect(await overflow()).toBeLessThanOrEqual(0);
+	// A draft keeps it open, focused or not.
+	await box.press("Escape");
+	expect((await rect(resolve)).y).toBe(r.y);
+});
+
 test("reply and resolve from Files changed", async ({ page, pr, startCrb }) => {
 	const p = await setup(pr);
 	const s = await startCrb();

@@ -210,12 +210,10 @@ test("a thread previews its first comment as GitHub renders it, clipped, with a 
 	const s = await startCrb();
 	await page.goto(s.url);
 	const bots = page.getByRole("region", { name: "Bot reviews" });
-	// Short: shown in full as GitHub's HTML; Show more holds only the reply
-	// box and Resolve.
+	// Short: shown in full as GitHub's HTML; the toggle holds only the reply
+	// box and Resolve, and says so.
 	await expect(bots.locator(".markdown-body code")).toHaveText("fs");
-	await expect(bots.getByTestId("thread-more")).toHaveAccessibleName(
-		"Show more",
-	);
+	await expect(bots.getByTestId("thread-more")).toHaveAccessibleName("Reply");
 	await expect(bots.locator("time")).toHaveAttribute(
 		"datetime",
 		"2026-01-03T09:00:00Z",

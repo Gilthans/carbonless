@@ -75,11 +75,13 @@ import {
 } from "../threads/Conversation";
 import { useDrafts } from "../threads/drafts";
 import { Avatar, PeopleProvider, TINTS, usePerson } from "../threads/people";
+import { canToggle } from "../threads/ResolveButton";
 import { ThreadStatus } from "../threads/ThreadStatus";
 import {
 	FADE_MS,
 	useThreadWriter,
 	useThreadWrites,
+	useWritesOn,
 } from "../threads/threadWrites";
 import { usePrefetchComments } from "../threads/useThreadComments";
 import { useThreads } from "../threads/useThreads";
@@ -1358,6 +1360,13 @@ function ThreadItem({
 		codeMore ||
 		commentMore ||
 		(!thread.unavailable && (replies.n > 0 || canAct));
+	const writesOn = useWritesOn();
+	const kind = toggleKind({
+		clipped: codeMore || commentMore,
+		replies: replies.n,
+		canReply: writesOn && thread.viewerCan.reply,
+		canResolve: canToggle(thread, writesOn),
+	});
 	const commentClipped = commentMore && !open;
 	useEffect(() => {
 		const el = commentBox.current;
@@ -1571,6 +1580,7 @@ function ThreadItem({
 							.filter(Boolean)
 							.join(" ")}
 						replies={replies}
+						kind={kind}
 					/>
 				)}
 			</div>
@@ -1603,16 +1613,47 @@ function useReplyCount(
 }
 
 /**
+ * What a card's toggle opens to: "more" when there's something to read
+ * (clipped code or text, a reply, the viewer's pending or sending ones);
+ * otherwise only the reply box and Resolve, so it says "reply", or
+ * "resolve" where the viewer may resolve but not reply.
+ */
+export function toggleKind(p: {
+	clipped: boolean;
+	/** Replies, the viewer's pending and sending ones included. */
+	replies: number;
+	canReply: boolean;
+	canResolve: boolean;
+}): "more" | "reply" | "resolve" {
+	if (p.clipped || p.replies > 0) return "more";
+	if (p.canReply) return "reply";
+	if (p.canResolve) return "resolve";
+	return "more";
+}
+
+/** The toggle's words, closed and open, by what it opens to. */
+const TOGGLE_TEXT = {
+	more: { closed: "Show more", open: "Show less" },
+	reply: { closed: "Reply", open: "Hide" },
+	resolve: { closed: "Resolve", open: "Hide" },
+} as const;
+
+/**
  * The card's one toggle: "Show more", with how many replies wait behind
- * it (and a clock for the viewer's pending ones), or "Show less".
+ * it (and a clock for the viewer's pending ones), or "Show less". On a
+ * card with nothing more to read, "Reply" (or "Resolve") and "Hide".
  */
 function MoreToggle(props: {
 	open: boolean;
 	onClick: () => void;
 	controls: string;
 	replies: { n: number; pending: number };
+	kind: "more" | "reply" | "resolve";
 }) {
-	const { open, replies } = props;
+	const { open, replies, kind } = props;
+	const text = TOGGLE_TEXT[kind];
+	const KindIcon =
+		kind === "reply" ? ReplyIcon : kind === "resolve" ? CheckCircleIcon : null;
 	const { pending } = replies;
 	// Why the count passes the header's, and why it grew.
 	const pendingTip =
@@ -1627,9 +1668,9 @@ function MoreToggle(props: {
 			aria-controls={props.controls}
 			aria-label={
 				open
-					? "Show less"
+					? text.open
 					: [
-							"Show more",
+							text.closed,
 							replies.n > 0 ? repliesText(replies.n) : "",
 							pendingTip ?? "",
 						]
@@ -1640,12 +1681,16 @@ function MoreToggle(props: {
 			onClick={props.onClick}
 			className="-mb-2 flex min-h-10 items-center gap-1 rounded-md text-xs font-medium text-link hover:underline focus-visible:outline-2 focus-visible:outline-accent"
 		>
-			<ChevronDownIcon
-				size={16}
-				aria-hidden
-				className={`transition-transform motion-reduce:transition-none ${open ? "rotate-180" : ""}`}
-			/>
-			{open ? "Show less" : "Show more"}
+			{KindIcon && !open ? (
+				<KindIcon size={16} aria-hidden />
+			) : (
+				<ChevronDownIcon
+					size={16}
+					aria-hidden
+					className={`transition-transform motion-reduce:transition-none ${open ? "rotate-180" : ""}`}
+				/>
+			)}
+			{open ? text.open : text.closed}
 			{!open && replies.n > 0 && (
 				<>
 					<span aria-hidden className="px-0.5">
