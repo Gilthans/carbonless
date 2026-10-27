@@ -94,13 +94,15 @@ with its one number and its own text. Both carry a `~` sign in `faint`
 (accessible name and tooltip "Whitespace only") and a `band` background, so
 they read as a change, only a quiet one, never as an unchanged line. A cluster that is all such pairs collapses to one `band` row carrying
 the cluster's rail and controls as any cluster, "Whitespace only · N lines"
-in `muted`, and a chevron (40px on touch; tooltip "Show lines" / "Hide
-lines", `aria-expanded` and `aria-controls` on the rows' `tbody`) that shows
-its rows below it, collapsed again whenever the file opens or the setting
-turns on. The chevron goes while a thread bubble keeps the rows showing, or
-while a thread link's landing highlight is on one of them; a landing also
-opens the cluster, so once the highlight fades the rows stay under the
-reviewer and the chevron is back to collapse them. A reviewed collapsed row
+in `muted` and a chevron in `faint` together as one disclosure button (named
+by its visible text, no `aria-label`; 40px tall on touch; tooltip "Show
+lines" / "Hide lines"; `aria-expanded`, and `aria-controls` on the rows'
+`tbody`) that shows its rows below it, collapsed again whenever the file
+opens or the setting turns on. The button gives way to the plain text while
+a thread bubble keeps the rows showing, or while a thread link's landing
+highlight is on one of them; a landing also opens the cluster, so once the
+highlight fades the rows stay under the reviewer and the button is back to
+collapse them. A reviewed collapsed row
 keeps the green rail and checked box, as any cluster.
 
 ## File change kinds
