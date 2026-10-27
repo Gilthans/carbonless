@@ -107,6 +107,8 @@ Not scheduled yet; after everything above.
   with the change they explain.
 - **Change Unit:** the name for a group of clusters (the review groups in item 1).
   Use it in the UI and the code.
+- **Edit history:** clicking a comment's "edited" shows its edit history
+  (owner, 2026-10-27; GitHub's `userContentEdits`).
 - **Bots in human threads:** decide how bot comments (review bots, CI
   bots replying in a human thread) should count in a thread's attention set.
   For now (2026-10-26) bots never join it and a bot's comment never counts as
