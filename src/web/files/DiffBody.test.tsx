@@ -389,15 +389,24 @@ describe("DiffBody with Ignore whitespace", () => {
 			expect(
 				screen.queryByRole("button", { name: "Hide whitespace-only lines" }),
 			).toBeNull();
-			// Once the highlight has faded the cluster is the reviewer's again.
+			// Once the highlight has faded the rows stay where the reviewer
+			// landed, and the chevron is back to collapse them.
 			act(() => {
 				vi.advanceTimersByTime(LANDED_MS + 1100);
 			});
+			expect(collapsed()[0]).toHaveAttribute("data-expanded");
+			expect(rows().filter((r) => r.kind === "ws")).toHaveLength(4);
+			expect(
+				document.querySelector('[data-kind="ws"][data-new-no="4"]'),
+			).not.toHaveAttribute("data-landed");
+			const hide = screen.getByRole("button", {
+				name: "Hide whitespace-only lines",
+			});
+			await userEvent
+				.setup({ advanceTimers: vi.advanceTimersByTime })
+				.click(hide);
 			expect(collapsed()[0]).not.toHaveAttribute("data-expanded");
 			expect(rows().filter((r) => r.kind === "ws")).toHaveLength(1);
-			expect(
-				screen.getByRole("button", { name: "Show whitespace-only lines" }),
-			).toBeInTheDocument();
 		} finally {
 			vi.useRealTimers();
 		}

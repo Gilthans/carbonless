@@ -92,9 +92,10 @@ in `muted`, and a chevron (40px on touch; tooltip "Show lines" / "Hide
 lines", `aria-expanded` and `aria-controls` on the rows' `tbody`) that shows
 its rows below it, collapsed again whenever the file opens or the setting
 turns on. The chevron goes while a thread bubble keeps the rows showing, or
-while a thread link's landing highlight is on one of them (it's back once
-the highlight fades). A reviewed collapsed row keeps the green rail and
-checked box, as any cluster.
+while a thread link's landing highlight is on one of them; a landing also
+opens the cluster, so once the highlight fades the rows stay under the
+reviewer and the chevron is back to collapse them. A reviewed collapsed row
+keeps the green rail and checked box, as any cluster.
 
 ## File change kinds
 

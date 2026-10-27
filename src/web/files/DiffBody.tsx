@@ -1084,7 +1084,8 @@ function HunkRows(props: {
  * chevron that shows its rows (`children`) below it. Collapsed each time it
  * mounts (the file opens, or the setting turns on); `pinned` keeps it open
  * with no chevron (the rows can't go), for a thread or a landing on one of
- * its lines.
+ * its lines, and opens it: once a landing's highlight fades, the rows stay
+ * under the reviewer and the chevron is back to collapse them.
  */
 function WhitespaceCluster(props: {
 	state: ClusterView["state"];
@@ -1095,6 +1096,9 @@ function WhitespaceCluster(props: {
 	children: ReactNode;
 }) {
 	const [open, setOpen] = useState(false);
+	useEffect(() => {
+		if (props.pinned) setOpen(true);
+	}, [props.pinned]);
 	const shown = open || props.pinned;
 	const label = shown
 		? "Hide whitespace-only lines"
