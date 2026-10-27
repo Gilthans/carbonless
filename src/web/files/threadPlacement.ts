@@ -70,7 +70,10 @@ export function threadOrder(t: ReviewThread, hunks: FileHunks | null): number {
 }
 
 /** The row a line key names: RIGHT matches `newNo`, LEFT matches `oldNo`. */
-export function lineKey(side: DiffSide, line: DiffLine): LineKey | null {
+export function lineKey(
+	side: DiffSide,
+	line: Pick<DiffLine, "oldNo" | "newNo">,
+): LineKey | null {
 	const n = side === "RIGHT" ? line.newNo : line.oldNo;
 	return n === undefined ? null : `${side}:${n}`;
 }

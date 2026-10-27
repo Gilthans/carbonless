@@ -415,7 +415,9 @@ describe("App", () => {
 		).findByRole("button", { name: "Settings" });
 		await user.click(gear);
 		expect(gear).toHaveAttribute("aria-expanded", "true");
-		// Focus moves on, out of the popover.
+		// Focus moves on through the switches, then out of the popover.
+		await user.tab();
+		expect(gear).toHaveAttribute("aria-expanded", "true");
 		await user.tab();
 		expect(gear).toHaveAttribute("aria-expanded", "false");
 		await user.click(gear);

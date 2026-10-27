@@ -75,7 +75,9 @@ describe("stripWhitespace", () => {
 	it("removes ASCII whitespace only", () => {
 		expect(stripWhitespace(" a\tb\rc\vd\fe ")).toBe("abcde");
 		// Unicode blanks are content, as for git -w.
-		expect(stripWhitespace("a b c​")).toBe("a b c​");
+		expect(stripWhitespace("a\u00A0b\u2003c\u200B")).toBe(
+			"a\u00A0b\u2003c\u200B",
+		);
 	});
 
 	it("compares lines whitespace-equal", () => {
@@ -84,7 +86,7 @@ describe("stripWhitespace", () => {
 		expect(whitespaceEqual("x  ", "x")).toBe(true);
 		expect(whitespaceEqual("a b", "ab")).toBe(true);
 		expect(whitespaceEqual("a", "b")).toBe(false);
-		expect(whitespaceEqual("a b", "a b")).toBe(false);
+		expect(whitespaceEqual("a\u00A0b", "a b")).toBe(false);
 		expect(whitespaceEqual("", " \t")).toBe(true);
 	});
 });
@@ -174,7 +176,7 @@ describe("pairWhitespace", () => {
 	});
 
 	it("never pairs lines that differ in more than whitespace", () => {
-		const lines = [del(1, "a b"), add(1, "a b")];
+		const lines = [del(1, "a\u00A0b"), add(1, "a b")];
 		expect(trace(pairWhitespace(lines))).toEqual(["-1", "+1"]);
 	});
 
@@ -211,7 +213,7 @@ describe("pairWhitespace", () => {
 			seed = (seed * 1103515245 + 12345) & 0x7fffffff;
 			return seed % n;
 		};
-		const words = ["a", "b", "}", "if (x)", "return", "", "a b"];
+		const words = ["a", "b", "}", "if (x)", "return", "", "a\u00A0b"];
 		const blank = ["", " ", "\t", "  ", "\r", " \t "];
 		const line = () => {
 			const w = words[rand(words.length)] as string;

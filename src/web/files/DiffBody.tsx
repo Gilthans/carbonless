@@ -1,4 +1,8 @@
-import { InfoIcon } from "@primer/octicons-react";
+import {
+	ChevronDownIcon,
+	ChevronRightIcon,
+	InfoIcon,
+} from "@primer/octicons-react";
 import { useQueries, useQuery } from "@tanstack/react-query";
 import {
 	Fragment,
@@ -21,6 +25,7 @@ import { contextQuery, hunksQuery } from "../api";
 import { CodeLine } from "../code/Invisibles";
 import { Tooltip } from "../Tooltip";
 import { ErrorMessage } from "../ui";
+import { ignoreWhitespace } from "../viewSettings";
 import { EXPAND_STEP, fileGaps, type Gap, gapState } from "./gaps";
 import { languageFor } from "./highlight";
 import type { Landing } from "./landing";
@@ -33,6 +38,7 @@ import {
 	lineKey,
 	placeThreads,
 } from "./threadPlacement";
+import { type DiffRow, pairWhitespace, whitespaceOnly } from "./whitespace";
 
 /** Review threads to show in a file's diff (FilesPage), and the read they come from. */
 export interface DiffThreads {
@@ -55,8 +61,34 @@ interface RowThreads {
 	onFocused: () => void;
 }
 
+/**
+ * A whitespace-only pair shown as one row ("Ignore whitespace", see
+ * whitespace.ts): both numbers, the new side's text.
+ */
+interface WsLine {
+	kind: "ws";
+	oldNo: number;
+	newNo: number;
+	text: string;
+	noNewline?: boolean;
+}
+
+/** What a diff row shows: a line as it is, or a whitespace-only pair. */
+type RowLine = DiffLine | WsLine;
+
+const rowLine = (row: DiffRow): RowLine =>
+	row.kind === "line"
+		? row.line
+		: {
+				kind: "ws",
+				oldNo: row.del.oldNo as number,
+				newNo: row.add.newNo as number,
+				text: row.add.text,
+				noNewline: row.add.noNewline,
+			};
+
 /** The key a row's bubble (or highlight) is under: its number on either side. */
-const rowKeys = (line: DiffLine) =>
+const rowKeys = (line: RowLine) =>
 	[lineKey("RIGHT", line), lineKey("LEFT", line)].filter(
 		(k): k is LineKey => k !== null,
 	);
@@ -74,35 +106,43 @@ const RAIL: Record<ClusterView["state"], string> = {
  * a quieter one, the text keeping full contrast (the green rail and checked
  * box say it's reviewed).
  */
-const REVIEWED_ROW_BG: Record<DiffLine["kind"], string> = {
+const REVIEWED_ROW_BG: Record<RowLine["kind"], string> = {
 	context: "",
 	add: "bg-add-done",
 	del: "bg-del-done",
+	ws: "bg-band",
 };
-const REVIEWED_NUMBER_BG: Record<DiffLine["kind"], string> = {
+const REVIEWED_NUMBER_BG: Record<RowLine["kind"], string> = {
 	context: "text-faint",
 	add: "bg-add-done text-add-ink",
 	del: "bg-del-done text-del-ink",
+	ws: "text-faint",
 };
-const ROW_BG: Record<DiffLine["kind"], string> = {
+// A whitespace-only row is still a change, only a quiet one: no add/del
+// tint, a band behind it and a `~` sign.
+const ROW_BG: Record<RowLine["kind"], string> = {
 	context: "",
 	add: "bg-add",
 	del: "bg-del",
+	ws: "bg-band",
 };
-const NUMBER_BG: Record<DiffLine["kind"], string> = {
+const NUMBER_BG: Record<RowLine["kind"], string> = {
 	context: "text-faint",
 	add: "bg-add-gutter text-add-ink",
 	del: "bg-del-gutter text-del-ink",
+	ws: "text-faint",
 };
-const SIGN_COLOR: Record<DiffLine["kind"], string> = {
+const SIGN_COLOR: Record<RowLine["kind"], string> = {
 	context: "text-faint",
 	add: "text-add-ink",
 	del: "text-del-ink",
+	ws: "text-faint",
 };
-const SIGN: Record<DiffLine["kind"], string> = {
+const SIGN: Record<RowLine["kind"], string> = {
 	context: " ",
 	add: "+",
 	del: "−",
+	ws: "~",
 };
 
 /** The left rail: cluster state, the accent while the cluster has focus or the pointer. */
@@ -114,7 +154,7 @@ function Rail({ state }: { state?: ClusterView["state"] }) {
 }
 
 function LineRow(props: {
-	line: DiffLine;
+	line: RowLine;
 	lang: string | null;
 	tabWidth?: number;
 	state?: ClusterView["state"];
@@ -145,6 +185,7 @@ function LineRow(props: {
 		<>
 			<tr
 				data-testid="diff-line"
+				data-kind={line.kind}
 				data-reviewed={reviewed || undefined}
 				data-old-no={line.oldNo}
 				data-new-no={line.newNo}
@@ -181,12 +222,29 @@ function LineRow(props: {
 							onFocused={threads.onFocused}
 						/>
 					)}
-					<span
-						aria-hidden
-						className={`mr-2 select-none ${SIGN_COLOR[line.kind]}`}
-					>
-						{SIGN[line.kind]}
-					</span>
+					{line.kind === "ws" ? (
+						<Tooltip content="Whitespace only" describe={false} lazy>
+							{(trigger) => (
+								// Focusable without a tab stop, so a tap shows the name.
+								<span
+									{...trigger}
+									role="img"
+									aria-label="Whitespace only"
+									tabIndex={-1}
+									className={`mr-2 select-none ${SIGN_COLOR.ws} focus-visible:outline-2 focus-visible:outline-accent`}
+								>
+									{SIGN.ws}
+								</span>
+							)}
+						</Tooltip>
+					) : (
+						<span
+							aria-hidden
+							className={`mr-2 select-none ${SIGN_COLOR[line.kind]}`}
+						>
+							{SIGN[line.kind]}
+						</span>
+					)}
 					<CodeLine
 						text={line.text}
 						lang={props.lang}
@@ -392,6 +450,7 @@ export function DiffBody(props: {
 }) {
 	const { file, revision } = props;
 	const hunks = useQuery(hunksQuery(revision, file.index));
+	const ignoreWs = ignoreWhitespace.use();
 	const [ranges, setRanges] = useState<[number, number][]>([]);
 	const contexts = useQueries({
 		queries: ranges.map(([from, to]) =>
@@ -411,6 +470,12 @@ export function DiffBody(props: {
 	useStickyControls(root, scroller);
 	useVisibleWidth(scroller);
 	const { hint, landed } = useLanding(root, props.landing, hunks.isSuccess);
+	// The line a thread link lands on, known before the landing runs (so a
+	// collapsed cluster holding it is open by the time the landing looks).
+	const landingLine: LandingLine | null =
+		props.landing?.line !== undefined && !props.landing.moved
+			? { old: props.landing.side === "LEFT", line: props.landing.line }
+			: null;
 
 	const loaded = new Map<number, DiffLine>();
 	for (const result of contexts) {
@@ -704,7 +769,9 @@ export function DiffBody(props: {
 								checkbox={checkbox}
 								noteId={noteId}
 								landed={landed}
+								landingLine={landingLine}
 								threads={rowThreads}
+								ignoreWhitespace={ignoreWs}
 							/>
 						</Fragment>
 					))}
@@ -766,10 +833,19 @@ export interface Landed {
 	phase: keyof typeof LANDED_CLASS;
 }
 
-const landedPhase = (landed: Landed | null, line: DiffLine) =>
+const landedPhase = (landed: Landed | null, line: RowLine) =>
 	landed && (landed.old ? line.oldNo : line.newNo) === landed.line
 		? landed.phase
 		: undefined;
+
+/** A line a thread link is landing on, by its number on one side. */
+interface LandingLine {
+	old: boolean;
+	line: number;
+}
+
+const landingOn = (target: LandingLine | null, line: RowLine) =>
+	target !== null && (target.old ? line.oldNo : line.newNo) === target.line;
 
 /** Why a landing found no line: the text and its tooltip. */
 interface Hint {
@@ -880,8 +956,12 @@ function HunkRows(props: {
 	checkbox: (cluster: ClusterView) => ReactNode;
 	noteId: (cluster: ClusterView) => string | undefined;
 	landed: Landed | null;
+	landingLine: LandingLine | null;
 	threads?: RowThreads;
+	/** Settings' "Ignore whitespace": pair whitespace-only lines (whitespace.ts). */
+	ignoreWhitespace: boolean;
 }) {
+	const { threads } = props;
 	return (
 		<>
 			<tbody>
@@ -899,22 +979,66 @@ function HunkRows(props: {
 				// A cluster the review doesn't list still shows as unreviewed.
 				const state =
 					run.key === undefined ? undefined : (cluster?.state ?? "unreviewed");
+				const rows: DiffRow[] =
+					props.ignoreWhitespace && state
+						? pairWhitespace(run.lines)
+						: run.lines.map((line) => ({ kind: "line", line }));
+				const row = (r: DiffRow, checkbox?: ReactNode) => {
+					const line = rowLine(r);
+					return (
+						<LineRow
+							key={`${line.kind}${line.oldNo ?? ""}:${line.newNo ?? ""}`}
+							line={line}
+							lang={props.lang}
+							tabWidth={props.tabWidth}
+							state={state}
+							landed={landedPhase(props.landed, line)}
+							threads={threads}
+							checkbox={checkbox}
+						/>
+					);
+				};
+				if (state && props.ignoreWhitespace && whitespaceOnly(rows)) {
+					// A bubble or a landed-on line must never be hidden by the
+					// setting: the cluster stays open while it has one.
+					const pinned = rows.some((r) => {
+						const line = rowLine(r);
+						const keys = rowKeys(line);
+						return (
+							keys.some(
+								(k) =>
+									threads?.placement.covered.has(k) ||
+									threads?.placement.end.has(k),
+							) ||
+							landedPhase(props.landed, line) !== undefined ||
+							landingOn(props.landingLine, line)
+						);
+					});
+					return (
+						<WhitespaceCluster
+							key={runKey}
+							state={state}
+							lines={cluster?.lines ?? run.lines.length}
+							pinned={pinned}
+							controls={cluster ? props.checkbox(cluster) : undefined}
+							note={
+								cluster && (
+									<CrossedOffNote
+										cluster={cluster}
+										id={props.noteId(cluster)}
+									/>
+								)
+							}
+						>
+							{rows.map((r) => row(r))}
+						</WhitespaceCluster>
+					);
+				}
 				return (
 					<tbody key={runKey} className={state ? "group" : undefined}>
-						{run.lines.map((line, i) => (
-							<LineRow
-								key={`${line.kind}${line.oldNo ?? line.newNo}`}
-								line={line}
-								lang={props.lang}
-								tabWidth={props.tabWidth}
-								state={state}
-								landed={landedPhase(props.landed, line)}
-								threads={props.threads}
-								checkbox={
-									i === 0 && cluster ? props.checkbox(cluster) : undefined
-								}
-							/>
-						))}
+						{rows.map((r, i) =>
+							row(r, i === 0 && cluster ? props.checkbox(cluster) : undefined),
+						)}
 						{cluster?.state === "crossed-off" && (
 							<tr>
 								<Rail state={cluster.state} />
@@ -930,5 +1054,77 @@ function HunkRows(props: {
 				);
 			})}
 		</>
+	);
+}
+
+/**
+ * A cluster that changes nothing but whitespace, collapsed to one row: its
+ * rail and controls as on any cluster, "Whitespace only · N lines", and a
+ * chevron that shows its rows (`children`) below it. Collapsed each time it
+ * mounts (the file opens, or the setting turns on); `pinned` keeps it open
+ * with no chevron, for a thread or a landing on one of its lines.
+ */
+function WhitespaceCluster(props: {
+	state: ClusterView["state"];
+	lines: number;
+	pinned: boolean;
+	controls?: ReactNode;
+	note?: ReactNode;
+	children: ReactNode;
+}) {
+	const [open, setOpen] = useState(false);
+	const shown = open || props.pinned;
+	const label = shown
+		? "Hide whitespace-only lines"
+		: "Show whitespace-only lines";
+	return (
+		<tbody className="group">
+			<tr
+				data-testid="ws-cluster"
+				data-expanded={shown || undefined}
+				data-reviewed={props.state === "reviewed" || undefined}
+				className={`bg-band ${props.state === "reviewed" ? "text-muted" : ""}`}
+			>
+				<Rail state={props.state} />
+				<td className="w-11 px-1 align-top whitespace-nowrap pointer-coarse:w-20">
+					{props.controls}
+				</td>
+				<td colSpan={COLUMNS - 2} className="px-2 font-sans text-xs">
+					<span className="flex items-center gap-1">
+						{props.pinned ? (
+							<ChevronDownIcon size={12} aria-hidden className="text-faint" />
+						) : (
+							<Tooltip
+								content={shown ? "Hide lines" : "Show lines"}
+								describe={false}
+							>
+								{(trigger) => (
+									<button
+										type="button"
+										{...trigger}
+										aria-label={label}
+										aria-expanded={shown}
+										onClick={() => setOpen(!shown)}
+										className="-ml-1 flex h-5 w-5 items-center justify-center rounded text-faint hover:bg-pressed hover:text-ink focus-visible:outline-2 focus-visible:outline-accent pointer-coarse:-my-2.5 pointer-coarse:h-10 pointer-coarse:w-10"
+									>
+										{shown ? (
+											<ChevronDownIcon size={12} aria-hidden />
+										) : (
+											<ChevronRightIcon size={12} aria-hidden />
+										)}
+									</button>
+								)}
+							</Tooltip>
+						)}
+						<span className="text-muted">
+							Whitespace only · {props.lines}{" "}
+							{props.lines === 1 ? "line" : "lines"}
+						</span>
+						{props.note}
+					</span>
+				</td>
+			</tr>
+			{shown && props.children}
+		</tbody>
 	);
 }

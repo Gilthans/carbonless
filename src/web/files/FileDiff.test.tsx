@@ -19,6 +19,7 @@ import type {
 } from "../../shared/types";
 import { reviewQuery } from "../api";
 import { resetShowInvisibles, setShowInvisibles } from "../code/Invisibles";
+import { ignoreWhitespace } from "../viewSettings";
 import { FileDiff, UNDO_ARM_MS } from "./FileDiff";
 import { SyncNotices } from "./SyncNotices";
 import type { Unit } from "./unit";
@@ -186,6 +187,7 @@ describe("FileDiff", () => {
 	afterEach(() => {
 		localStorage.clear();
 		resetShowInvisibles();
+		ignoreWhitespace.reset();
 		cleanup();
 		vi.unstubAllGlobals();
 	});
@@ -1333,5 +1335,44 @@ describe("FileDiff", () => {
 		expect(
 			screen.getAllByRole("checkbox", { name: "Mark cluster reviewed" }),
 		).toHaveLength(2);
+	});
+
+	it("marks a whitespace-only cluster reviewed from its collapsed row, and only on a click", async () => {
+		ignoreWhitespace.set(true);
+		const reviewed = file([cluster("k1", { state: "reviewed" })]);
+		const [first] = hunks.hunks;
+		if (!first) throw new Error("fixture has a hunk");
+		const lines = first.lines.map((l) =>
+			l.kind === "add" ? { ...l, text: "  old five" } : l,
+		);
+		const { posts, paths, user } = setup(
+			file([cluster("k1")]),
+			() => ({ status: 200, body: view(reviewed) }),
+			{ ...hunks, hunks: [{ ...first, lines }] },
+		);
+		await user.click(screen.getByRole("button", { name: "Expand file" }));
+		const row = await screen.findByTestId("ws-cluster");
+		expect(row).toHaveTextContent("Whitespace only · 2 lines");
+		expect(screen.queryByText("old five")).toBeNull();
+		expect(paths()).toEqual(["/api/files/0/hunks?revision=r1"]);
+		expect(posts()).toEqual([]);
+		const box = within(row).getByRole("checkbox", {
+			name: "Mark cluster reviewed",
+		});
+		expect(box).not.toBeChecked();
+		await user.click(box);
+		await waitFor(() =>
+			expect(posts()).toEqual([
+				{
+					path: "/api/review/states",
+					body: { revision: "r1", changes: [{ key: "k1", state: "reviewed" }] },
+				},
+			]),
+		);
+		await waitFor(() => expect(box).toBeChecked());
+		expect(screen.getByTestId("ws-cluster")).toHaveAttribute("data-reviewed");
+		expect(
+			screen.getByRole("progressbar", { name: "File progress" }),
+		).toHaveTextContent("1 / 1 cluster");
 	});
 });
