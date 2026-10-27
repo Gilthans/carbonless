@@ -11,7 +11,7 @@ import type {
 	ReviewThread,
 } from "../../shared/types";
 import { ignoreWhitespace, showInvisibles } from "../viewSettings";
-import { DiffBody, type DiffThreads } from "./DiffBody";
+import { DiffBody, type DiffThreads, LANDED_MS } from "./DiffBody";
 import type { Landing } from "./landing";
 
 vi.mock("./highlight", () => ({
@@ -277,8 +277,14 @@ describe("DiffBody with Ignore whitespace", () => {
 			name: "Show whitespace-only lines",
 		});
 		expect(expand).toHaveAttribute("aria-expanded", "false");
+		// It controls the rows' container (the cluster's tbody).
+		const controls = expand.getAttribute("aria-controls") ?? "";
+		expect(document.getElementById(controls)).toBe(row.closest("tbody"));
 		await user.click(expand);
 		expect(expand).toHaveAttribute("aria-expanded", "true");
+		expect(
+			document.getElementById(controls)?.querySelectorAll('[data-kind="ws"]'),
+		).toHaveLength(3);
 		expect(rows().slice(1, 4)).toEqual([
 			{ kind: "ws", old: "2", new: "2", text: "if (a) {" },
 			{ kind: "ws", old: "3", new: "3", text: "return b;" },
@@ -345,26 +351,56 @@ describe("DiffBody with Ignore whitespace", () => {
 		});
 		const row = document.querySelector('[data-kind="ws"][data-old-no="3"]');
 		expect(row).toHaveAttribute("data-commented");
+		// The thread is on the pair's old side, and says so.
 		expect(
 			within(row as HTMLElement).getByTestId("thread-bubble"),
-		).toBeInTheDocument();
-		// Nothing can hide the bubble: no collapse while it's there.
+		).toHaveAccessibleName("1 comment on old line 3");
+		// Nothing can hide the bubble: no collapse, and no chevron, while
+		// it's there.
 		expect(
 			screen.queryByRole("button", { name: "Show whitespace-only lines" }),
 		).toBeNull();
+		expect((collapsed()[0] as HTMLElement).querySelector("svg")).toBeNull();
 	});
 
-	it("keeps a whitespace-only cluster open when one of its lines is landed on", async () => {
-		const { rows, collapsed } = setup({
-			landing: { path: PATH, line: 4, side: "RIGHT", index: 0, seq: 1 },
-		});
+	it("names a thread on a pair's new side by its new number", async () => {
+		const { rows } = setup({ threads: [thread("RIGHT", 2)] });
 		await screen.findByText("Whitespace only · 6 lines");
-		expect(collapsed()[0]).toHaveAttribute("data-expanded");
-		expect(rows().filter((r) => r.kind === "ws")).toHaveLength(4);
+		expect(rows()[1]?.kind).toBe("ws");
+		const row = document.querySelector('[data-kind="ws"][data-new-no="2"]');
 		expect(
-			document.querySelector('[data-kind="ws"][data-new-no="4"]'),
-		).toHaveAttribute("data-landed");
-		expect(screen.queryByTestId("landing-hint")).toBeNull();
+			within(row as HTMLElement).getByTestId("thread-bubble"),
+		).toHaveAccessibleName("1 comment on line 2");
+	});
+
+	it("keeps a whitespace-only cluster open while one of its lines is landed on", async () => {
+		vi.useFakeTimers({ shouldAdvanceTime: true });
+		try {
+			const { rows, collapsed } = setup({
+				landing: { path: PATH, line: 4, side: "RIGHT", index: 0, seq: 1 },
+			});
+			await screen.findByText("Whitespace only · 6 lines");
+			expect(collapsed()[0]).toHaveAttribute("data-expanded");
+			expect(rows().filter((r) => r.kind === "ws")).toHaveLength(4);
+			expect(
+				document.querySelector('[data-kind="ws"][data-new-no="4"]'),
+			).toHaveAttribute("data-landed");
+			expect(screen.queryByTestId("landing-hint")).toBeNull();
+			expect(
+				screen.queryByRole("button", { name: "Hide whitespace-only lines" }),
+			).toBeNull();
+			// Once the highlight has faded the cluster is the reviewer's again.
+			act(() => {
+				vi.advanceTimersByTime(LANDED_MS + 1100);
+			});
+			expect(collapsed()[0]).not.toHaveAttribute("data-expanded");
+			expect(rows().filter((r) => r.kind === "ws")).toHaveLength(1);
+			expect(
+				screen.getByRole("button", { name: "Show whitespace-only lines" }),
+			).toBeInTheDocument();
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	it("renders a crossed-off whitespace-only cluster's note on its row", async () => {

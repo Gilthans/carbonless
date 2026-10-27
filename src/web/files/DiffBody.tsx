@@ -11,6 +11,7 @@ import {
 	useEffect,
 	useId,
 	useLayoutEffect,
+	useMemo,
 	useRef,
 	useState,
 } from "react";
@@ -174,10 +175,13 @@ function LineRow(props: {
 	const open = keys.some((k) => threads?.open.has(k));
 	const rowBg = (reviewed ? REVIEWED_ROW_BG : ROW_BG)[line.kind];
 	const numberBg = (reviewed ? REVIEWED_NUMBER_BG : NUMBER_BG)[line.kind];
-	const where =
-		line.newNo !== undefined
-			? `on line ${line.newNo}`
-			: `on old line ${line.oldNo}`;
+	// A pair row has both numbers: a thread on its old side is named by it.
+	const onOld =
+		line.newNo === undefined ||
+		(line.kind === "ws" &&
+			ending.length > 0 &&
+			ending.every((t) => t.anchor?.side === "LEFT"));
+	const where = onOld ? `on old line ${line.oldNo}` : `on line ${line.newNo}`;
 	// The commented range: the accent stripe and tinted numbers (thread-mark),
 	// unlike a landed line's tint and rail; not while it is landed on.
 	const mark = commented && props.landed !== "on" ? "thread-mark" : "";
@@ -469,11 +473,16 @@ export function DiffBody(props: {
 	const scroller = useRef<HTMLDivElement>(null);
 	useStickyControls(root, scroller);
 	useVisibleWidth(scroller);
-	const { hint, landed } = useLanding(root, props.landing, hunks.isSuccess);
-	// The line a thread link lands on, known before the landing runs (so a
-	// collapsed cluster holding it is open by the time the landing looks).
+	const { hint, landed, pending } = useLanding(
+		root,
+		props.landing,
+		hunks.isSuccess,
+	);
+	// The line a thread link is about to land on (so a collapsed cluster
+	// holding it is open by the time the landing looks); once it has
+	// landed, `landed` keeps the cluster open while the highlight lasts.
 	const landingLine: LandingLine | null =
-		props.landing?.line !== undefined && !props.landing.moved
+		pending && props.landing?.line !== undefined && !props.landing.moved
 			? { old: props.landing.side === "LEFT", line: props.landing.line }
 			: null;
 
@@ -863,10 +872,13 @@ function useLanding(
 	root: RefObject<HTMLDivElement | null>,
 	landing: Landing | undefined,
 	ready: boolean,
-): { hint: Hint | null; landed: Landed | null } {
+): { hint: Hint | null; landed: Landed | null; pending: boolean } {
 	const [hint, setHint] = useState<Hint | null>(null);
 	const [landed, setLanded] = useState<Landed | null>(null);
 	const done = useRef(0);
+	// Until the landing below has run (it sets state when it does).
+	const pending =
+		landing !== undefined && ready && done.current !== landing.seq;
 	useEffect(() => {
 		const el = root.current;
 		if (!landing || !ready || !el || done.current === landing.seq) return;
@@ -924,7 +936,7 @@ function useLanding(
 			setLanded(null);
 		};
 	}, [root, landing, ready]);
-	return { hint, landed };
+	return { hint, landed, pending };
 }
 
 function LandingHint({ hint }: { hint: Hint }) {
@@ -961,17 +973,29 @@ function HunkRows(props: {
 	/** Settings' "Ignore whitespace": pair whitespace-only lines (whitespace.ts). */
 	ignoreWhitespace: boolean;
 }) {
-	const { threads } = props;
+	const { threads, hunk, ignoreWhitespace } = props;
+	// The hunk's runs and their rows, once per hunk (the pairing is O(n·m)):
+	// not again on a toggle, a landing, a thread opening or a context load.
+	const hunkRuns = useMemo(
+		() =>
+			runs(hunk.lines).map((run) => ({
+				...run,
+				rows: (ignoreWhitespace && run.key !== undefined
+					? pairWhitespace(run.lines)
+					: run.lines.map((line) => ({ kind: "line", line }))) as DiffRow[],
+			})),
+		[hunk, ignoreWhitespace],
+	);
 	return (
 		<>
 			<tbody>
 				<tr className="bg-hunk text-hunk-ink">
 					<td colSpan={COLUMNS} className="px-2 py-0.5">
-						{hunkHeader(props.hunk)}
+						{hunkHeader(hunk)}
 					</td>
 				</tr>
 			</tbody>
-			{runs(props.hunk.lines).map((run) => {
+			{hunkRuns.map((run) => {
 				const first = run.lines[0];
 				const runKey = `${run.key ?? ""}:${first?.oldNo}:${first?.newNo}`;
 				const cluster =
@@ -979,10 +1003,7 @@ function HunkRows(props: {
 				// A cluster the review doesn't list still shows as unreviewed.
 				const state =
 					run.key === undefined ? undefined : (cluster?.state ?? "unreviewed");
-				const rows: DiffRow[] =
-					props.ignoreWhitespace && state
-						? pairWhitespace(run.lines)
-						: run.lines.map((line) => ({ kind: "line", line }));
+				const { rows } = run;
 				const row = (r: DiffRow, checkbox?: ReactNode) => {
 					const line = rowLine(r);
 					return (
@@ -998,7 +1019,7 @@ function HunkRows(props: {
 						/>
 					);
 				};
-				if (state && props.ignoreWhitespace && whitespaceOnly(rows)) {
+				if (state && ignoreWhitespace && whitespaceOnly(rows)) {
 					// A bubble or a landed-on line must never be hidden by the
 					// setting: the cluster stays open while it has one.
 					const pinned = rows.some((r) => {
@@ -1062,7 +1083,8 @@ function HunkRows(props: {
  * rail and controls as on any cluster, "Whitespace only · N lines", and a
  * chevron that shows its rows (`children`) below it. Collapsed each time it
  * mounts (the file opens, or the setting turns on); `pinned` keeps it open
- * with no chevron, for a thread or a landing on one of its lines.
+ * with no chevron (the rows can't go), for a thread or a landing on one of
+ * its lines.
  */
 function WhitespaceCluster(props: {
 	state: ClusterView["state"];
@@ -1077,13 +1099,15 @@ function WhitespaceCluster(props: {
 	const label = shown
 		? "Hide whitespace-only lines"
 		: "Show whitespace-only lines";
+	// The rows are the tbody's other rows: what the chevron controls.
+	const id = useId();
 	return (
-		<tbody className="group">
+		<tbody id={id} className="group">
 			<tr
 				data-testid="ws-cluster"
 				data-expanded={shown || undefined}
 				data-reviewed={props.state === "reviewed" || undefined}
-				className={`bg-band ${props.state === "reviewed" ? "text-muted" : ""}`}
+				className="bg-band"
 			>
 				<Rail state={props.state} />
 				<td className="w-11 px-1 align-top whitespace-nowrap pointer-coarse:w-20">
@@ -1091,9 +1115,7 @@ function WhitespaceCluster(props: {
 				</td>
 				<td colSpan={COLUMNS - 2} className="px-2 font-sans text-xs">
 					<span className="flex items-center gap-1">
-						{props.pinned ? (
-							<ChevronDownIcon size={12} aria-hidden className="text-faint" />
-						) : (
+						{!props.pinned && (
 							<Tooltip
 								content={shown ? "Hide lines" : "Show lines"}
 								describe={false}
@@ -1104,6 +1126,7 @@ function WhitespaceCluster(props: {
 										{...trigger}
 										aria-label={label}
 										aria-expanded={shown}
+										aria-controls={id}
 										onClick={() => setOpen(!shown)}
 										className="-ml-1 flex h-5 w-5 items-center justify-center rounded text-faint hover:bg-pressed hover:text-ink focus-visible:outline-2 focus-visible:outline-accent pointer-coarse:-my-2.5 pointer-coarse:h-10 pointer-coarse:w-10"
 									>

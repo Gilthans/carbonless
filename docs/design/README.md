@@ -89,11 +89,12 @@ background, so it reads as a change, only a quiet one, never as an unchanged
 line. A cluster that is all such pairs collapses to one `band` row carrying
 the cluster's rail and controls as any cluster, "Whitespace only · N lines"
 in `muted`, and a chevron (40px on touch; tooltip "Show lines" / "Hide
-lines") that shows its rows below it, collapsed again whenever the file
-opens or the setting turns on. The chevron goes while a thread bubble or a
-landed-on line keeps the rows showing. A reviewed collapsed row keeps the
-green rail and checked box and its text turns `muted`, like a reviewed
-file-level cluster.
+lines", `aria-expanded` and `aria-controls` on the rows' `tbody`) that shows
+its rows below it, collapsed again whenever the file opens or the setting
+turns on. The chevron goes while a thread bubble keeps the rows showing, or
+while a thread link's landing highlight is on one of them (it's back once
+the highlight fades). A reviewed collapsed row keeps the green rail and
+checked box, as any cluster.
 
 ## File change kinds
 
