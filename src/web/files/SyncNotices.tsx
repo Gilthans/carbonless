@@ -248,6 +248,11 @@ function ThreadWriteNotices({ threads }: { threads: ThreadWriteView[] }) {
 			)}
 		</Tooltip>
 	);
+	// A reply resent from an earlier page: only it goes, never the box or a newer reply.
+	const discardButton = (t: ThreadWriteView) =>
+		iconButton("Discard reply", "Discard", TrashIcon, () =>
+			writer.discardResumed(t.threadId),
+		);
 	const retryButton = (t: ThreadWriteView, action: string) => (
 		<Tooltip content="Retry" describe={false}>
 			{(trigger) => (
@@ -341,7 +346,10 @@ function ThreadWriteNotices({ threads }: { threads: ThreadWriteView[] }) {
 									</p>
 									<p className="break-words text-bad">{t.stalled.message}</p>
 								</div>
-								{retryButton(t, t.action ?? "write")}
+								<div className="flex flex-col">
+									{retryButton(t, t.action ?? "write")}
+									{t.resumed && discardButton(t)}
+								</div>
 							</div>
 						</div>
 					);
@@ -365,9 +373,7 @@ function ThreadWriteNotices({ threads }: { threads: ThreadWriteView[] }) {
 								<p className="min-w-0 flex-1 break-words text-ink">
 									Reply · <span className="font-mono text-xs">{where}</span>
 								</p>
-								{iconButton("Discard reply", "Discard", TrashIcon, () =>
-									writer.discard(t.threadId),
-								)}
+								{discardButton(t)}
 							</div>
 						</div>
 					);
@@ -379,7 +385,9 @@ function ThreadWriteNotices({ threads }: { threads: ThreadWriteView[] }) {
 						data-testid="write-delayed"
 						className="pointer-events-auto overflow-hidden rounded-lg border border-warn/50 bg-raised shadow-float"
 					>
-						<div className="flex min-h-10 items-center gap-2 bg-warn/10 px-3 py-2 text-sm">
+						<div
+							className={`flex min-h-10 items-center gap-2 bg-warn/10 py-2 pl-3 text-sm ${t.resumed ? "pr-1" : "pr-3"}`}
+						>
 							<LabeledIcon
 								icon={ClockIcon}
 								label="Posting is delayed"
@@ -396,6 +404,7 @@ function ThreadWriteNotices({ threads }: { threads: ThreadWriteView[] }) {
 									{where}
 								</span>
 							</p>
+							{t.resumed && discardButton(t)}
 						</div>
 					</div>
 				);

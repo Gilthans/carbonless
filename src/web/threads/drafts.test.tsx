@@ -197,6 +197,19 @@ describe("drafts", () => {
 		expect(seen).toHaveBeenCalled();
 	});
 
+	it("cleared storage leaves this tab's drafts and writes them back", () => {
+		const storage = memoryStorage();
+		const store = new DraftStore(() => storage);
+		store.bind(KEY);
+		store.setText("T1", "In the box");
+		storage.clear();
+		window.dispatchEvent(new StorageEvent("storage", { key: null }));
+		expect(store.text("T1")).toBe("In the box");
+		expect(JSON.parse(storage.getItem(KEY) ?? "[]")).toEqual([
+			{ threadId: "T1", text: "In the box" },
+		]);
+	});
+
 	it("two refused replies come back into the box in the order they were sent", () => {
 		const store = new DraftStore(() => undefined);
 		store.addSending("T1", "first", sent("t0"));

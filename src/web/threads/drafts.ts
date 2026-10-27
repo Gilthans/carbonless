@@ -244,6 +244,12 @@ export class DraftStore {
 		window.addEventListener("storage", (e) => {
 			if (e.key !== null && e.key !== this.#key) return;
 			if (this.#behind) return;
+			if (e.key === null) {
+				// Storage cleared (another tab, or site data): what this tab
+				// holds stays, and goes back in.
+				this.#set(this.#drafts);
+				return;
+			}
 			const stored = this.#stored();
 			if (!stored) return;
 			this.#drafts = stored;

@@ -337,6 +337,39 @@ export class ThreadWrites {
 		this.#changed();
 	}
 
+	/**
+	 * Drops only the replies resent from an earlier page (their drafts too):
+	 * the box and replies sent since stay. One already out is marked so it's
+	 * never sent again (if it lands, GitHub shows it).
+	 */
+	discardResumed(threadId: string): void {
+		const lane = this.#lanes.get(threadId);
+		if (!lane) return;
+		const dropped: string[] = [];
+		lane.ops = lane.ops.filter((op, i) => {
+			if (op.kind !== "reply" || !op.resumed) return true;
+			dropped.push(op.id.attemptedAt);
+			if (i === 0 && lane.sending) {
+				op.discarded = true;
+				return true;
+			}
+			return false;
+		});
+		// The one waiting out a backoff is gone: the next goes now.
+		if (dropped.length > 0 && !lane.sending && lane.timer !== undefined) {
+			clearTimeout(lane.timer);
+			lane.timer = undefined;
+			lane.attempt = 0;
+			lane.waiting = null;
+			lane.lastTransient = null;
+			lane.since = Date.now();
+		}
+		for (const at of dropped) this.#deps.drafts.confirm(threadId, at);
+		this.#prune(threadId);
+		this.#changed();
+		this.#pump();
+	}
+
 	state = (): ThreadWritesState => this.#state;
 	getState = this.state;
 
@@ -434,6 +467,8 @@ export class ThreadWrites {
 					const found = this.#deps.knownComments(threadId);
 					// In the cache: sent at once, no tick lost.
 					const known = Array.isArray(found) ? found : await found;
+					// Discarded while the comments were read: never posted.
+					if (op.discarded) throw new Error("Discarded");
 					if (known.length === 0) throw new NoKnownCommentsError();
 					op.id = { ...op.id, knownCommentIds: known };
 					this.#deps.drafts.setKnown(threadId, op.id.attemptedAt, known);

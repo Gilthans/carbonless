@@ -514,6 +514,82 @@ describe("ThreadWrites", () => {
 		expect(w.state().busy).toBe(false);
 	});
 
+	it("discarding a resumed reply keeps the box draft and replies sent since", async () => {
+		const w = setup();
+		drafts.addSending("T1", "From yesterday", {
+			attemptedAt: "2026-01-02T11:00:00.000Z",
+			clientId: "old",
+			knownCommentIds: ["c1"],
+		});
+		w.resume();
+		w.reply("T1", "Sent today");
+		drafts.setText("T1", "Typing now");
+		w.discardResumed("T1");
+		expect(drafts.text("T1")).toBe("Typing now");
+		expect(
+			drafts
+				.get()
+				.filter((d) => d.sending)
+				.map((d) => d.text),
+		).toEqual(["Sent today"]);
+		// The resumed one was out: it fails, isn't retried; today's goes next.
+		calls[0]?.reject(new ApiError(502, "bad gateway"));
+		await flush();
+		expect(calls.map((c) => (c.req as ReplyRequest).body)).toEqual([
+			"From yesterday",
+			"Sent today",
+		]);
+	});
+
+	it("discarding a resumed reply waiting out a backoff drops it and sends the next at once", async () => {
+		const w = setup();
+		drafts.addSending("T1", "From yesterday", {
+			attemptedAt: "2026-01-02T11:00:00.000Z",
+			clientId: "old",
+			knownCommentIds: ["c1"],
+		});
+		w.resume();
+		w.setResolved("T1", true);
+		calls[0]?.reject(new ApiError(502, "bad gateway"));
+		await flush();
+		w.discardResumed("T1");
+		expect(calls.map((c) => c.op)).toEqual(["reply", "resolve"]);
+		expect(drafts.get()).toEqual([]);
+	});
+
+	it("a reply discarded while its comments are read is never posted", async () => {
+		drafts = new DraftStore(() => undefined);
+		calls = [];
+		let give: ((ids: string[]) => void) | undefined;
+		const w = new ThreadWrites({
+			reply: (threadId, req) =>
+				new Promise((resolve, reject) => {
+					calls.push({ op: "reply", threadId, req, resolve, reject });
+				}),
+			resolve: () => new Promise(() => {}),
+			applied: () => {},
+			drafts,
+			knownComments: () =>
+				new Promise((resolve) => {
+					give = resolve;
+				}),
+			newId: () => "x",
+		});
+		drafts.addSending("T1", "From yesterday", {
+			attemptedAt: "2026-01-02T11:00:00.000Z",
+			clientId: "old",
+			knownCommentIds: [],
+		});
+		w.resume();
+		await flush();
+		w.discardResumed("T1");
+		give?.(["c1"]);
+		await flush();
+		await vi.advanceTimersByTimeAsync(60_000);
+		expect(calls).toEqual([]);
+		expect(w.state().threads.get("T1")).toBeUndefined();
+	});
+
 	it("discard drops a queued reply before it goes", () => {
 		const w = setup();
 		w.setResolved("T1", true);

@@ -129,6 +129,31 @@ describe("SyncNotices for thread writes", () => {
 		expect(calls).toHaveLength(0);
 	});
 
+	it("a resumed reply that keeps failing keeps its Discard, yellow and then red", async () => {
+		vi.useFakeTimers();
+		statuses = Array(20).fill(502);
+		const { writes } = setup([thread({})]);
+		await act(async () => {
+			writes.drafts.addSending("T1", "From yesterday", {
+				attemptedAt: "2026-01-02T00:00:00.000Z",
+				clientId: "old",
+				knownCommentIds: ["c1"],
+			});
+			writes.resume();
+			await vi.advanceTimersByTimeAsync(5000);
+		});
+		const delayed = screen.getByTestId("write-delayed");
+		expect(
+			within(delayed).getByRole("button", { name: "Discard reply" }),
+		).toBeInTheDocument();
+		await act(() => vi.advanceTimersByTimeAsync(60_000));
+		const stalled = screen.getByTestId("write-stalled");
+		await act(async () => {
+			within(stalled).getByRole("button", { name: "Discard reply" }).click();
+		});
+		expect(writes.drafts.get()).toEqual([]);
+	});
+
 	it("a pending review blocks a reply: said so, with the link", async () => {
 		statuses = [409];
 		const { writes } = setup([thread({})]);
