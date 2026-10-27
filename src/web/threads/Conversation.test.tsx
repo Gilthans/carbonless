@@ -26,7 +26,7 @@ import { Conversation } from "./Conversation";
 import { PeopleProvider } from "./people";
 import { ResolveButton } from "./ResolveButton";
 import { ThreadStatus } from "./ThreadStatus";
-import { DELETE_UNDO_MS, FADE_MS } from "./threadWrites";
+import { DELETE_UNDO_MS, FADE_MS, threadWritesFor } from "./threadWrites";
 
 const comment = (
 	id: string,
@@ -902,18 +902,84 @@ describe("editing a comment", () => {
 		);
 		await userEvent.click(screen.getByRole("button", { name: "Save" }));
 		const notice = await screen.findByTestId("write-failed");
+		// GitHub's newer text is on screen above the editor, never saved over unseen.
+		const theirs = await screen.findByTestId("edit-theirs");
+		expect(within(theirs).getByText("Theirs")).toBeVisible();
 		await userEvent.click(
 			within(notice).getByRole("button", { name: "Show theirs" }),
 		);
 		expect(screen.queryByTestId("write-failed")).toBeNull();
-		const client = clients.at(-1) as QueryClient;
 		expect(
-			client.getQueryData<ThreadComments>(["comments", "r1", "T1"])?.comments[0]
-				?.body,
-		).toBe("Theirs");
+			within(screen.getByTestId("edit-theirs")).getByText("Theirs"),
+		).toBeVisible();
 		expect(screen.getByRole("textbox", { name: "Edit comment" })).toHaveValue(
 			"Old mine",
 		);
+		// Seen: a Save now goes over it, and theirs leaves with the editor.
+		writeAnswer = async () =>
+			json(answerWith([mine("c1", "Old mine")], mine("c1", "Old mine")));
+		await userEvent.click(screen.getByRole("button", { name: "Save" }));
+		expect(writeCalls.at(-1)?.body).toEqual({
+			body: "Old mine",
+			from: "Theirs",
+			force: false,
+		});
+		await waitFor(() => expect(screen.queryByTestId("edit-theirs")).toBeNull());
+	});
+
+	it("Cancel on a changed edit asks first, like Escape", async () => {
+		serve({ T1: { comments: [mine("c1", "Old")] } });
+		renderWith(<Conversation readId="r1" thread={thread()} />, {
+			writes: "on",
+		});
+		await screen.findAllByTestId("thread-comment");
+		await userEvent.click(screen.getByRole("button", { name: "Edit" }));
+		const confirm = vi.fn(() => false);
+		vi.stubGlobal("confirm", confirm);
+		// Unchanged: Cancel just closes.
+		await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
+		expect(confirm).not.toHaveBeenCalled();
+		await userEvent.click(screen.getByRole("button", { name: "Edit" }));
+		await userEvent.type(
+			screen.getByRole("textbox", { name: "Edit comment" }),
+			" more",
+		);
+		await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
+		expect(confirm).toHaveBeenCalledOnce();
+		expect(screen.getByRole("textbox", { name: "Edit comment" })).toHaveValue(
+			"Old more",
+		);
+	});
+
+	it("an edit a reload left saving shows as resent from before, with Discard", async () => {
+		serve({ T1: { comments: [mine("c1", "Old")] } });
+		writeAnswer = () => new Promise(() => {});
+		renderWith(
+			<>
+				<Conversation readId="r1" thread={thread()} />
+				<SyncNotices />
+			</>,
+			{ writes: "on" },
+		);
+		const client = clients.at(-1) as QueryClient;
+		await screen.findAllByTestId("thread-comment");
+		act(() => {
+			const w = threadWritesFor(client);
+			w.drafts.setEdit("T1", "c1", "Old", "Mine");
+			w.drafts.markSaving("c1", true);
+			w.resume();
+		});
+		const notice = await screen.findByTestId("write-resumed");
+		expect(notice).toHaveTextContent("Edit");
+		expect(writeCalls[0]?.body).toEqual({
+			body: "Mine",
+			from: "Old",
+			force: false,
+		});
+		await userEvent.click(
+			within(notice).getByRole("button", { name: "Discard edit" }),
+		);
+		expect(threadWritesFor(client).drafts.edit("c1")).toBeUndefined();
 	});
 });
 
@@ -932,12 +998,16 @@ describe("deleting a comment", () => {
 			await user.click(screen.getByRole("button", { name: "Delete" }));
 			const row = screen.getByTestId("comment-deleted-row");
 			expect(row).toHaveTextContent("Deleted");
+			// The trash button is gone: Undo has the focus.
+			expect(within(row).getByRole("button", { name: "Undo" })).toHaveFocus();
 			expect(screen.queryByText("Oops")).toBeNull();
 			await act(() => vi.advanceTimersByTimeAsync(DELETE_UNDO_MS - 100));
 			await user.click(within(row).getByRole("button", { name: "Undo" }));
 			expect(screen.getAllByTestId("thread-comment")[1]).toHaveTextContent(
 				"Oops",
 			);
+			// And back on Delete.
+			expect(screen.getByRole("button", { name: "Delete" })).toHaveFocus();
 			await act(() => vi.advanceTimersByTimeAsync(DELETE_UNDO_MS * 2));
 			expect(writeCalls).toHaveLength(0);
 		} finally {

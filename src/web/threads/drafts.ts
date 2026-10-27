@@ -29,10 +29,13 @@ export interface EditDraft {
 	commentId: string;
 	/** The body the edit started from: GitHub refuses it if that changed since. */
 	from: string;
-	/** Saved and not yet confirmed: resent on load (the editor is closed). */
+	/**
+	 * Saved and not yet confirmed: resent on load (the editor is closed),
+	 * always with the changed-on-GitHub check (never "Save anyway").
+	 */
 	saving?: boolean;
-	/** Saved with "Save anyway": no changed-on-GitHub check. */
-	force?: boolean;
+	/** "Show theirs" moved `from` to GitHub's newer text: shown above the editor. */
+	theirs?: boolean;
 }
 
 /** A sent reply's identity for the server's duplicate check, kept across reloads. */
@@ -70,7 +73,7 @@ function isDraft(value: unknown): value is Draft {
 			e.commentId !== "" &&
 			typeof e.from === "string" &&
 			(e.saving === undefined || typeof e.saving === "boolean") &&
-			(e.force === undefined || typeof e.force === "boolean")
+			(e.theirs === undefined || typeof e.theirs === "boolean")
 		);
 	}
 	if (d.sending === undefined) return true;
@@ -183,7 +186,7 @@ export class DraftStore {
 	}
 
 	/** Saved (sent to GitHub until it has it), or back in the editor (refused). */
-	markSaving(commentId: string, saving: boolean, force = false): void {
+	markSaving(commentId: string, saving: boolean): void {
 		this.#update((all) =>
 			all.map((d) =>
 				d.edit?.commentId === commentId
@@ -193,7 +196,7 @@ export class DraftStore {
 								commentId,
 								from: d.edit.from,
 								...(saving ? { saving: true } : {}),
-								...(saving && force ? { force: true } : {}),
+								...(d.edit.theirs ? { theirs: true } : {}),
 							},
 						}
 					: d,
@@ -201,12 +204,12 @@ export class DraftStore {
 		);
 	}
 
-	/** The edit starts from GitHub's newer body now (the reviewer saw theirs). */
+	/** The edit starts from GitHub's newer body now, shown above the editor (Show theirs). */
 	setFrom(commentId: string, from: string): void {
 		this.#update((all) =>
 			all.map((d) =>
 				d.edit?.commentId === commentId
-					? { ...d, edit: { ...d.edit, from } }
+					? { ...d, edit: { ...d.edit, from, theirs: true } }
 					: d,
 			),
 		);
@@ -270,7 +273,7 @@ export class DraftStore {
 			const sent = all.find((d) => this.#is(d, threadId, attemptedAt));
 			if (!sent) return all;
 			back = sent.text;
-			const box = all.find((d) => d.threadId === threadId && !d.sending);
+			const box = all.find((d) => isBox(d, threadId));
 			const typed = box?.text ?? "";
 			const returned = box?.returned ?? 0;
 			const before = typed.slice(0, returned);
@@ -278,9 +281,7 @@ export class DraftStore {
 			const head = before ? `${before}\n\n${sent.text}` : sent.text;
 			const text = after ? `${head}\n\n${after}` : head;
 			const rest = all.filter(
-				(d) =>
-					!this.#is(d, threadId, attemptedAt) &&
-					!(d.threadId === threadId && !d.sending),
+				(d) => !this.#is(d, threadId, attemptedAt) && !isBox(d, threadId),
 			);
 			return [...rest, { threadId, text, returned: head.length }];
 		});

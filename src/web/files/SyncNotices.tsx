@@ -248,9 +248,11 @@ function ThreadWriteNotices({ threads }: { threads: ThreadWriteView[] }) {
 			)}
 		</Tooltip>
 	);
-	// A reply resent from an earlier page: only it goes, never the box or a newer reply.
+	// A reply or edit resent from an earlier page: only it goes, never the
+	// box or a newer write.
+	const what = (t: ThreadWriteView) => (t.action === "Edit" ? "edit" : "reply");
 	const discardButton = (t: ThreadWriteView) =>
-		iconButton("Discard reply", "Discard", TrashIcon, () =>
+		iconButton(`Discard ${what(t)}`, "Discard", TrashIcon, () =>
 			writer.discardResumed(t.threadId),
 		);
 	const retryButton = (t: ThreadWriteView, action: string) => (
@@ -398,11 +400,12 @@ function ThreadWriteNotices({ threads }: { threads: ThreadWriteView[] }) {
 							<div className="flex items-center gap-2 bg-warn/10 py-1 pr-1 pl-3 text-sm">
 								<LabeledIcon
 									icon={SyncIcon}
-									label="Resending a reply from before"
+									label={`Resending ${t.action === "Edit" ? "an edit" : "a reply"} from before`}
 									className="text-warn"
 								/>
 								<p className="min-w-0 flex-1 break-words text-ink">
-									Reply · <span className="font-mono text-xs">{where}</span>
+									{t.action ?? "Reply"} ·{" "}
+									<span className="font-mono text-xs">{where}</span>
 								</p>
 								{discardButton(t)}
 							</div>

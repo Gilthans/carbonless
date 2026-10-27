@@ -1372,6 +1372,7 @@ function ThreadItem({
 				threadId={thread.id}
 				commentId={write.deleting.commentId}
 				undo={write.deleting.undo}
+				done={write.deleting.done}
 			/>
 		</div>
 	) : open && write.editing && first ? (
@@ -1379,6 +1380,7 @@ function ThreadItem({
 			<EditForm
 				threadId={thread.id}
 				comment={first}
+				thread={thread}
 				onClose={() => write.setEditing(false)}
 			/>
 		</div>

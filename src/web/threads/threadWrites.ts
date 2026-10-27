@@ -77,6 +77,10 @@ type Op =
 			from: string;
 			/** "Save anyway": no check. */
 			force: boolean;
+			/** Resent on load, left unconfirmed by an earlier page (always with the check). */
+			resumed?: boolean;
+			/** The reviewer discarded it: not sent again (one already out may land). */
+			discarded?: boolean;
 	  }
 	| { kind: "delete"; commentId: string };
 
@@ -91,6 +95,8 @@ export interface WriteFailure {
 	commentId?: string;
 	/** An edit refused as `changed`: the comment as GitHub has it now. */
 	current?: ThreadComment;
+	/** A refused "Save anyway": its Retry saves anyway too. */
+	force?: boolean;
 }
 
 /** One thread's writes as the UI shows them. */
@@ -151,11 +157,6 @@ export interface ThreadWritesDeps {
 	) => Promise<ThreadUpdate | ThreadGone>;
 	/** The thread is gone on GitHub (its last comment deleted): drop it from the page. */
 	gone: (threadId: string) => void;
-	/**
-	 * A deleted comment GitHub no longer has (404): out of the page's
-	 * comments; answers how many the thread has left (0 when unknown).
-	 */
-	forget: (threadId: string, commentId: string) => number;
 	/** "Show theirs": the comment as GitHub has it now, into the page. */
 	theirs: (threadId: string, comment: ThreadComment) => void;
 	/** A write's answer: the thread as GitHub has it now. */
@@ -329,7 +330,7 @@ export class ThreadWrites {
 			}
 		} else if (failed?.action === "Edit" && failed.commentId) {
 			this.#clearFailure(lane);
-			const op = this.#editOp(failed.commentId, false);
+			const op = this.#editOp(failed.commentId, failed.force === true);
 			if (op) lane.ops.push(op);
 		} else if (failed?.action === "Delete" && failed.commentId) {
 			this.#clearFailure(lane);
@@ -365,13 +366,15 @@ export class ThreadWrites {
 					(op) => op.kind === "edit" && op.commentId === commentId,
 				);
 				if (known) continue;
-				// The server finds it landed (GitHub's body is the new text).
+				// The server finds it landed (GitHub's body is the new text);
+				// never forced: GitHub may have a newer edit since.
 				lane.ops.push({
 					kind: "edit",
 					commentId,
 					text: d.text,
 					from: d.edit.from,
-					force: d.edit.force === true,
+					force: false,
+					resumed: true,
 				});
 				if (lane.ops.length === 1) lane.since = Date.now();
 				continue;
@@ -441,15 +444,24 @@ export class ThreadWrites {
 	}
 
 	/**
-	 * Drops only the replies resent from an earlier page (their drafts too):
-	 * the box and replies sent since stay. One already out is marked so it's
-	 * never sent again (if it lands, GitHub shows it).
+	 * Drops only the replies and edits resent from an earlier page (their
+	 * drafts too): the box and writes made since stay. One already out is
+	 * marked so it's never sent again (if it lands, GitHub shows it).
 	 */
 	discardResumed(threadId: string): void {
 		const lane = this.#lanes.get(threadId);
 		if (!lane) return;
 		const dropped: string[] = [];
+		const edits: string[] = [];
 		lane.ops = lane.ops.filter((op, i) => {
+			if (op.kind === "edit" && op.resumed) {
+				edits.push(op.commentId);
+				if (i === 0 && lane.sending) {
+					op.discarded = true;
+					return true;
+				}
+				return false;
+			}
 			if (op.kind !== "reply" || !op.resumed) return true;
 			dropped.push(op.id.attemptedAt);
 			if (i === 0 && lane.sending) {
@@ -459,7 +471,11 @@ export class ThreadWrites {
 			return false;
 		});
 		// The one waiting out a backoff is gone: the next goes now.
-		if (dropped.length > 0 && !lane.sending && lane.timer !== undefined) {
+		if (
+			dropped.length + edits.length > 0 &&
+			!lane.sending &&
+			lane.timer !== undefined
+		) {
 			clearTimeout(lane.timer);
 			lane.timer = undefined;
 			lane.attempt = 0;
@@ -468,6 +484,7 @@ export class ThreadWrites {
 			lane.since = Date.now();
 		}
 		for (const at of dropped) this.#deps.drafts.confirm(threadId, at);
+		for (const id of edits) this.#deps.drafts.dropEdit(id);
 		this.#prune(threadId);
 		this.#changed();
 		this.#pump();
@@ -596,7 +613,7 @@ export class ThreadWrites {
 			if (draft.text === draft.edit.from) drafts.dropEdit(commentId);
 			return null;
 		}
-		drafts.markSaving(commentId, true, force);
+		drafts.markSaving(commentId, true);
 		return {
 			kind: "edit",
 			commentId,
@@ -767,7 +784,7 @@ export class ThreadWrites {
 	}
 
 	#failed(threadId: string, lane: Lane, op: Op, error: unknown) {
-		if (op.kind === "reply" && op.discarded) {
+		if ((op.kind === "reply" || op.kind === "edit") && op.discarded) {
 			// Discarded while out: it didn't land, or a reload shows it did.
 			lane.ops.shift();
 			lane.attempt = 0;
@@ -797,15 +814,9 @@ export class ThreadWrites {
 		}
 		const write = error instanceof ApiError ? error.write : undefined;
 		if (op.kind === "delete" && write?.code === "gone") {
-			// Gone on GitHub (a retry after a restart, say): what the delete
-			// wanted. The comment leaves the page; the thread too if it was
-			// its only one (or the page doesn't know).
-			let left = 0;
-			try {
-				left = this.#deps.forget(threadId, op.commentId);
-			} catch {}
-			if (left === 0) this.#landed(threadId, op, { threadId, gone: true });
-			else this.#deps.drafts.dropEdit(op.commentId);
+			// The thread is gone on GitHub (a comment already gone answers
+			// 200): what the delete wanted, at the least.
+			this.#landed(threadId, op, { threadId, gone: true });
 			lane.ops.shift();
 			lane.attempt = 0;
 			lane.waiting = null;
@@ -832,6 +843,7 @@ export class ThreadWrites {
 			...(op.kind === "edit" && write?.current
 				? { current: write.current }
 				: {}),
+			...(op.kind === "edit" && op.force ? { force: true } : {}),
 		};
 		if (op.kind === "edit") {
 			// Back in its editor, as typed: nothing typed is lost.
@@ -907,7 +919,9 @@ export class ThreadWrites {
 				],
 				action: head ? actionOf(head) : null,
 				resumed:
-					head?.kind === "reply" && head.resumed === true && !head.discarded,
+					(head?.kind === "reply" || head?.kind === "edit") &&
+					head.resumed === true &&
+					!head.discarded,
 				delayed,
 				waiting: head ? lane.waiting : null,
 				stalled:
@@ -1031,49 +1045,6 @@ export function applyComment(
 	);
 }
 
-/**
- * A comment gone on GitHub, out of the thread's comments and its count;
- * answers how many comments the thread has left as the page knows it (0
- * when it hasn't read them).
- */
-export function dropComment(
-	client: QueryClient,
-	threadId: string,
-	commentId: string,
-): number {
-	let left = 0;
-	let dropped = false;
-	client.setQueriesData<ThreadComments>(
-		{
-			queryKey: ["comments"],
-			predicate: (q) => q.queryKey[2] === threadId,
-		},
-		(old) => {
-			if (!old) return old;
-			const comments = old.comments.filter((c) => c.id !== commentId);
-			left = Math.max(left, comments.length);
-			if (comments.length === old.comments.length) return old;
-			dropped = true;
-			return { ...old, comments };
-		},
-	);
-	if (dropped && left > 0) {
-		client.setQueriesData<ThreadsView>({ queryKey: ["threads"] }, (view) =>
-			view?.threads.some((t) => t.id === threadId)
-				? {
-						...view,
-						threads: view.threads.map((t) =>
-							t.id === threadId
-								? { ...t, commentCount: Math.max(1, t.commentCount - 1) }
-								: t,
-						),
-					}
-				: view,
-		);
-	}
-	return left;
-}
-
 /** A thread gone on GitHub (its last comment deleted): out of every list, its comments gone. */
 export function dropThread(client: QueryClient, threadId: string): void {
 	client.setQueriesData<ThreadsView>({ queryKey: ["threads"] }, (view) =>
@@ -1101,7 +1072,6 @@ export function threadWritesFor(client: QueryClient): ThreadWrites {
 			remove: deleteComment,
 			applied: (update) => applyThreadUpdate(client, update),
 			gone: (threadId) => dropThread(client, threadId),
-			forget: (threadId, commentId) => dropComment(client, threadId, commentId),
 			theirs: (threadId, comment) => applyComment(client, threadId, comment),
 			drafts: draftsFor(client),
 			confirmedResolved: (threadId) => {

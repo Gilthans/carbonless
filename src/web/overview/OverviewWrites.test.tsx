@@ -817,11 +817,48 @@ describe("editing and deleting from an Overview card", () => {
 			]),
 		);
 		await waitFor(() => expect(card).toHaveAttribute("data-fading", "true"));
+		// Fading out, it stays deleted: the comment never shows again.
+		expect(within(card).getByTestId("comment-deleted-row")).toBeVisible();
+		expect(within(card).queryByTestId("thread-body")).toBeNull();
+		expect(within(card).queryByRole("button", { name: "Undo" })).toBeNull();
 		await act(() => vi.advanceTimersByTimeAsync(FADE_MS));
 		await waitFor(() =>
 			expect(within(humans).getAllByTestId("thread")).toHaveLength(1),
 		);
 		expect(statePosts()).toBe(0);
+	});
+
+	it("changed on GitHub: the opener's newer text shows above the editor", async () => {
+		const user = userEvent.setup();
+		openerMore = { author: "octo", viewerCan: { update: true, delete: true } };
+		renderOverview({}, [thread("a", { author: "octo" })], () => ({
+			status: 409,
+			body: {
+				error: "Changed",
+				code: "changed",
+				current: own("a", "Their newer words"),
+			},
+		}));
+		const card = await screen.findByTestId("thread");
+		await openCard(user, card);
+		await user.click(await within(card).findByRole("button", { name: "Edit" }));
+		await user.type(
+			within(card).getByRole("textbox", { name: "Edit comment" }),
+			" mine",
+		);
+		await user.click(within(card).getByRole("button", { name: "Save" }));
+		const notice = await screen.findByTestId("write-failed");
+		await user.click(
+			within(notice).getByRole("button", { name: "Show theirs" }),
+		);
+		expect(
+			within(within(card).getByTestId("edit-theirs")).getByText(
+				"Their newer words",
+			),
+		).toBeVisible();
+		expect(
+			within(card).getByRole("textbox", { name: "Edit comment" }),
+		).toHaveValue("a mine");
 	});
 
 	it("an opener blanked by a delete shows as a muted placeholder", async () => {

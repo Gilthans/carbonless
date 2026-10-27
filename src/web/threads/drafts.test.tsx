@@ -267,7 +267,7 @@ describe("edit drafts", () => {
 		before.bind(KEY);
 		before.setEdit("T1", "c1", "Old", "Typing");
 		before.setEdit("T2", "c2", "Was", "Saved");
-		before.markSaving("c2", true, true);
+		before.markSaving("c2", true);
 		const after = new DraftStore(() => storage);
 		after.bind(KEY);
 		expect(after.edit("c1")).toMatchObject({
@@ -278,7 +278,6 @@ describe("edit drafts", () => {
 			commentId: "c2",
 			from: "Was",
 			saving: true,
-			force: true,
 		});
 		expect(unsent(after.get())).toBe(true);
 		after.markSaving("c2", false);
@@ -305,9 +304,26 @@ describe("edit drafts", () => {
 		const store = new DraftStore(() => undefined);
 		store.setEdit("T1", "c1", "Old", "Mine");
 		store.setFrom("c1", "Theirs");
-		expect(store.edit("c1")?.edit?.from).toBe("Theirs");
+		expect(store.edit("c1")?.edit).toEqual({
+			commentId: "c1",
+			from: "Theirs",
+			theirs: true,
+		});
 		store.discard("T1");
 		expect(store.get()).toEqual([]);
+	});
+
+	it("a refused reply goes back into the box, never into the thread's edit draft", () => {
+		const store = new DraftStore(() => undefined);
+		store.setEdit("T1", "c2", "Old", "My careful edit");
+		store.addSending("T1", "LGTM", sent("t0"));
+		expect(store.returnToBox("T1", "t0")).toBe("LGTM");
+		expect(store.text("T1")).toBe("LGTM");
+		expect(store.edit("c2")).toEqual({
+			threadId: "T1",
+			text: "My careful edit",
+			edit: { commentId: "c2", from: "Old" },
+		});
 	});
 
 	it("ignores a stored edit without its comment", () => {

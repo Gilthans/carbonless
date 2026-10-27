@@ -304,6 +304,7 @@ function CommentItem(props: {
 					threadId={thread.id}
 					commentId={c.id}
 					undo={write.deleting.undo}
+					done={write.deleting.done}
 				/>
 			</li>
 		);
@@ -350,6 +351,7 @@ function CommentItem(props: {
 				<EditForm
 					threadId={thread.id}
 					comment={c}
+					thread={thread}
 					onClose={() => write.setEditing(false)}
 				/>
 			) : c.deleted && !saving ? (

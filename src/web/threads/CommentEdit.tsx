@@ -1,27 +1,50 @@
-import { ClockIcon, PencilIcon, TrashIcon } from "@primer/octicons-react";
-import { type KeyboardEvent, useLayoutEffect, useRef, useState } from "react";
-import { MAX_REPLY, type ThreadComment } from "../../shared/types";
+import {
+	ClockIcon,
+	MarkGithubIcon,
+	PencilIcon,
+	TrashIcon,
+} from "@primer/octicons-react";
+import {
+	type KeyboardEvent,
+	useEffect,
+	useLayoutEffect,
+	useRef,
+	useState,
+} from "react";
+import {
+	MAX_REPLY,
+	type ReviewThread,
+	type ThreadComment,
+} from "../../shared/types";
 import { LabeledIcon } from "../overview/parts";
 import { fullDate } from "../RelativeTime";
 import { Tooltip } from "../Tooltip";
+import { CommentBody } from "./CommentBody";
 import { useEditDraft } from "./drafts";
 import { useThreadWriter, useThreadWrites, useWritesOn } from "./threadWrites";
 
 /**
  * What the viewer's writes do to one comment right now: an edit saving
  * (its new text, shown at once), a delete waiting out its undo window or
- * on its way, and whether its editor is open (a draft not saving, or the
+ * on its way (or done, its thread gone and fading out: it never shows
+ * again), and whether its editor is open (a draft not saving, or the
  * reviewer just opened it).
  */
 export function useCommentWrite(threadId: string, comment: ThreadComment) {
-	const view = useThreadWrites().threads.get(threadId);
+	const writes = useThreadWrites();
+	const view = writes.threads.get(threadId);
 	const id = comment.id;
 	const saving = id
 		? view?.edits.findLast((e) => e.commentId === id)
 		: undefined;
-	const deleting = id
-		? view?.deletes.find((d) => d.commentId === id)
-		: undefined;
+	const gone = writes.gone.has(threadId);
+	const deleting:
+		| { commentId: string; undo: boolean; done?: boolean }
+		| undefined = !id
+		? undefined
+		: gone
+			? { commentId: id, undo: false, done: true }
+			: view?.deletes.find((d) => d.commentId === id);
 	const draft = useEditDraft(id);
 	const [opened, setOpened] = useState(false);
 	const editing =
@@ -50,6 +73,9 @@ export function useCommentCan(comment: ThreadComment) {
 	};
 }
 
+/** The comment whose delete was just undone: its Delete takes the focus back. */
+let refocus: string | null = null;
+
 const ICON_BUTTON =
 	"flex h-10 w-10 shrink-0 items-center justify-center rounded-md hover:bg-overlay focus-visible:outline-2 focus-visible:outline-accent";
 
@@ -66,6 +92,15 @@ export function CommentActions(props: {
 }) {
 	const writer = useThreadWriter();
 	const can = useCommentCan(props.comment);
+	const del = useRef<HTMLButtonElement | null>(null);
+	const { id } = props.comment;
+	// Back from Undo: focus where it was, on Delete.
+	useEffect(() => {
+		if (refocus === id && del.current) {
+			refocus = null;
+			del.current.focus();
+		}
+	}, [id]);
 	if (!can.update && !can.delete) return null;
 	const button = (
 		label: string,
@@ -73,11 +108,16 @@ export function CommentActions(props: {
 		onClick: () => void,
 		tone: string,
 		testId: string,
+		ref?: (el: HTMLButtonElement | null) => void,
 	) => (
 		<Tooltip content={label} describe={false}>
 			{(trigger) => (
 				<button
 					{...trigger}
+					ref={(el) => {
+						trigger.ref(el);
+						ref?.(el);
+					}}
 					type="button"
 					aria-label={label}
 					data-testid={testId}
@@ -109,6 +149,9 @@ export function CommentActions(props: {
 					() => writer.deleteComment(props.threadId, props.comment.id),
 					"text-ink-soft hover:text-bad",
 					"comment-delete",
+					(el) => {
+						del.current = el;
+					},
 				)}
 		</span>
 	);
@@ -124,12 +167,24 @@ export function CommentActions(props: {
 export function EditForm(props: {
 	threadId: string;
 	comment: ThreadComment;
+	/** Its thread: the code a suggested change in GitHub's text is drawn on. */
+	thread: ReviewThread;
 	/** The editor closes (saved or cancelled). */
 	onClose: () => void;
 }) {
-	const { threadId, comment } = props;
+	const { threadId, comment, thread } = props;
 	const writer = useThreadWriter();
 	const draft = useEditDraft(comment.id);
+	// GitHub's newer text, never saved over unseen: shown while the
+	// changed-on-GitHub refusal is open, and once Show theirs took it in.
+	const failed = useThreadWrites().threads.get(threadId)?.failed;
+	const refused =
+		failed?.action === "Edit" &&
+		failed.code === "changed" &&
+		failed.commentId === comment.id
+			? failed.current
+			: undefined;
+	const theirs = refused ?? (draft?.edit?.theirs ? comment : undefined);
 	const from = draft?.edit?.from ?? comment.body;
 	const text = draft?.text ?? from;
 	const box = useRef<HTMLTextAreaElement>(null);
@@ -158,6 +213,11 @@ export function EditForm(props: {
 		writer.cancelEdit(threadId, comment.id);
 		props.onClose();
 	};
+	/** Cancel, asking first when the text changed (nothing typed lost by a slip). */
+	const ask = () => {
+		const changed = writer.drafts.edit(comment.id) !== undefined;
+		if (!changed || window.confirm("Discard your edit?")) cancel();
+	};
 	const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
 		if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
 			e.preventDefault();
@@ -165,12 +225,34 @@ export function EditForm(props: {
 		} else if (e.key === "Escape") {
 			e.preventDefault();
 			e.stopPropagation();
-			const changed = writer.drafts.edit(comment.id) !== undefined;
-			if (!changed || window.confirm("Discard your edit?")) cancel();
+			ask();
 		}
 	};
 	return (
 		<div data-testid="edit-form" className="space-y-1.5">
+			{theirs && (
+				<div
+					data-testid="edit-theirs"
+					className="min-w-0 space-y-1 rounded-md border border-warn/50 bg-warn/10 px-3 py-2 break-words"
+				>
+					<LabeledIcon
+						icon={MarkGithubIcon}
+						label="On GitHub now"
+						className="text-warn"
+					/>
+					{theirs.html.trim() ? (
+						<CommentBody
+							html={theirs.html}
+							body={theirs.body}
+							code={thread.code}
+							path={thread.path}
+							open
+						/>
+					) : (
+						<p className="text-sm whitespace-pre-wrap">{theirs.body}</p>
+					)}
+				</div>
+			)}
 			<textarea
 				ref={box}
 				aria-label="Edit comment"
@@ -186,7 +268,7 @@ export function EditForm(props: {
 			<div className="flex justify-end gap-2">
 				<button
 					type="button"
-					onClick={cancel}
+					onClick={ask}
 					className="flex h-10 items-center rounded-md px-3 text-sm font-medium text-ink-soft hover:bg-overlay hover:text-ink focus-visible:outline-2 focus-visible:outline-accent"
 				>
 					Cancel
@@ -213,22 +295,43 @@ export function DeletedRow(props: {
 	threadId: string;
 	commentId: string;
 	undo: boolean;
+	/** On GitHub now (its thread gone, fading out): no clock. */
+	done?: boolean;
 }) {
 	const writer = useThreadWriter();
+	const row = useRef<HTMLDivElement>(null);
+	const undo = useRef<HTMLButtonElement>(null);
+	const { undo: undoable } = props;
+	// Delete was just pressed (its button is gone): Undo takes the focus.
+	useLayoutEffect(() => {
+		if (undoable) undo.current?.focus();
+	}, [undoable]);
+	// Undo went with the window: the row keeps the focus it had.
+	useLayoutEffect(() => {
+		if (!undoable && document.activeElement === document.body) {
+			row.current?.focus();
+		}
+	}, [undoable]);
 	return (
 		<div
+			ref={row}
 			role="status"
+			tabIndex={-1}
 			data-testid="comment-deleted-row"
-			className="comment-collapse flex min-h-10 items-center gap-1.5 rounded-md border border-dashed border-line px-3 text-sm text-muted"
+			className="comment-collapse flex min-h-10 items-center gap-1.5 rounded-md border border-dashed border-line px-3 text-sm text-muted focus-visible:outline-2 focus-visible:outline-accent"
 		>
 			<TrashIcon size={14} aria-hidden className="shrink-0" />
 			<span>Deleted</span>
-			<span aria-hidden>·</span>
-			{props.undo ? (
+			{!props.done && <span aria-hidden>·</span>}
+			{props.done ? null : props.undo ? (
 				<button
+					ref={undo}
 					type="button"
 					data-testid="comment-undo"
-					onClick={() => writer.undoDelete(props.threadId, props.commentId)}
+					onClick={() => {
+						refocus = props.commentId;
+						writer.undoDelete(props.threadId, props.commentId);
+					}}
 					className="-my-px flex min-h-10 items-center rounded-md px-1.5 font-semibold text-link hover:underline focus-visible:outline-2 focus-visible:outline-accent"
 				>
 					Undo

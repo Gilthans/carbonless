@@ -23,7 +23,6 @@ import {
 	applyComment,
 	applyThreadUpdate,
 	DELETE_UNDO_MS,
-	dropComment,
 	dropThread,
 	FADE_MS,
 	MAX_IN_FLIGHT,
@@ -45,7 +44,6 @@ const noEdits = {
 	edit: () => new Promise<ThreadUpdate>(() => {}),
 	remove: () => new Promise<ThreadUpdate>(() => {}),
 	gone: () => {},
-	forget: () => 0,
 	theirs: () => {},
 };
 
@@ -64,9 +62,6 @@ const update = (threadId: string, more: Partial<ThreadUpdate> = {}) =>
 
 let calls: Call[];
 let goneCalls: string[];
-let forgotten: [string, string][];
-/** Comments a thread has left once one is forgotten. */
-let leftAfter: Record<string, number>;
 let theirsCalls: [string, ThreadComment][];
 let applied: ThreadUpdate[];
 let drafts: DraftStore;
@@ -75,8 +70,6 @@ function setup() {
 	calls = [];
 	applied = [];
 	goneCalls = [];
-	forgotten = [];
-	leftAfter = {};
 	theirsCalls = [];
 	known = { T1: ["c1", "c2"] };
 	ids = 0;
@@ -121,10 +114,6 @@ function setup() {
 				});
 			}),
 		gone: (threadId) => goneCalls.push(threadId),
-		forget: (threadId, commentId) => {
-			forgotten.push([threadId, commentId]);
-			return leftAfter[threadId] ?? 0;
-		},
 		theirs: (threadId, c) => theirsCalls.push([threadId, c]),
 		applied: (u) => applied.push(u),
 		drafts,
@@ -880,6 +869,57 @@ describe("editing and deleting comments", () => {
 		});
 	});
 
+	it("a reply refused behind which an edit waits: the edit still goes, its draft untouched", async () => {
+		const w = setup();
+		w.reply("T1", "LGTM");
+		drafts.setEdit("T1", "c2", "Old", "My careful edit");
+		w.saveEdit("T1", "c2");
+		calls[0]?.reject(
+			new ApiError(409, "Pending review", undefined, {
+				code: "pending-review",
+				url: "https://github.com/o/r/pull/1/files",
+			}),
+		);
+		await flush();
+		expect(drafts.text("T1")).toBe("LGTM");
+		expect(drafts.edit("c2")).toMatchObject({
+			text: "My careful edit",
+			edit: { commentId: "c2", from: "Old", saving: true },
+		});
+		expect(calls[1]).toMatchObject({
+			op: "edit",
+			req: { body: "My careful edit", from: "Old", force: false },
+		});
+	});
+
+	it("Retry of a refused Save anyway saves anyway again", async () => {
+		const w = setup();
+		drafts.setEdit("T1", "c1", "Old", "Mine");
+		w.saveEdit("T1", "c1", true);
+		calls[0]?.reject(new ApiError(403, "No", undefined, { code: "forbidden" }));
+		await flush();
+		w.retry("T1");
+		expect(calls[1]?.req).toEqual({ body: "Mine", from: "Old", force: true });
+	});
+
+	it("a resumed edit shows as resumed and can be let go, its draft too", async () => {
+		const w = setup();
+		drafts.setEdit("T1", "c1", "Old", "Mine");
+		drafts.markSaving("c1", true);
+		w.resume();
+		expect(w.state().threads.get("T1")).toMatchObject({
+			action: "Edit",
+			resumed: true,
+		});
+		w.discardResumed("T1");
+		expect(drafts.edit("c1")).toBeUndefined();
+		// The one already out is never sent again.
+		calls[0]?.reject(new ApiError(502, "bad gateway"));
+		await vi.advanceTimersByTimeAsync(60_000);
+		expect(calls).toHaveLength(1);
+		expect(w.state().threads.size).toBe(0);
+	});
+
 	it("cancelling an edit drops its draft and its refusal", async () => {
 		const w = setup();
 		drafts.setEdit("T1", "c1", "Old", "Mine");
@@ -964,20 +1004,6 @@ describe("editing and deleting comments", () => {
 		await flush();
 		expect(w.state().threads.get("T1")?.failed ?? null).toBeNull();
 		expect(w.state().gone.has("T1")).toBe(true);
-	});
-
-	it("a delete answered 404 with other comments left drops only the comment", async () => {
-		const w = setup();
-		leftAfter = { T1: 1 };
-		drafts.setEdit("T1", "c2", "Old", "Half");
-		w.deleteComment("T1", "c2");
-		await vi.advanceTimersByTimeAsync(DELETE_UNDO_MS);
-		calls[0]?.reject(new ApiError(404, "Gone", undefined, { code: "gone" }));
-		await flush();
-		expect(forgotten).toEqual([["T1", "c2"]]);
-		expect(w.state().gone.size).toBe(0);
-		expect(w.state().threads.size).toBe(0);
-		expect(drafts.edit("c2")).toBeUndefined();
 	});
 
 	it("a refused delete shows the comment again; Retry sends it at once", async () => {
@@ -1149,25 +1175,6 @@ describe("applyThreadUpdate", () => {
 			client.getQueryData<ThreadsView>(["threads", "r1", "full"])?.threads[0]
 				?.body,
 		).toBe("Theirs");
-	});
-
-	it("a comment gone leaves its thread's comments and count", () => {
-		const client = seeded();
-		client.setQueryData<ThreadsView>(["threads", "r1", "full"], {
-			threads: [{ id: "T1", commentCount: 2 }] as ReviewThread[],
-			complete: true,
-		});
-		expect(dropComment(client, "T1", "c2")).toBe(1);
-		expect(
-			client
-				.getQueryData<ThreadComments>(["comments", "r1", "T1"])
-				?.comments.map((x) => x.id),
-		).toEqual(["c1"]);
-		expect(
-			client.getQueryData<ThreadsView>(["threads", "r1", "full"])?.threads[0]
-				?.commentCount,
-		).toBe(1);
-		expect(dropComment(client, "T9", "x")).toBe(0);
 	});
 
 	it("a thread gone leaves every list, its comments gone", () => {
