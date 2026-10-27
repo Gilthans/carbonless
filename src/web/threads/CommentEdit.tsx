@@ -41,9 +41,11 @@ export function useCommentWrite(threadId: string, comment: ThreadComment) {
 /** The viewer may edit or delete it here (GitHub's viewerCan, the session writing). */
 export function useCommentCan(comment: ThreadComment) {
 	const on = useWritesOn();
-	const ok = on && comment.id !== "" && !comment.pending && !comment.deleted;
+	const ok = on && comment.id !== "" && !comment.pending;
 	return {
-		update: ok && comment.viewerCan.update,
+		// A blanked opener is never edited back; GitHub may still let it be
+		// deleted (a sole one: the thread goes).
+		update: ok && !comment.deleted && comment.viewerCan.update,
 		delete: ok && comment.viewerCan.delete,
 	};
 }

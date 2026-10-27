@@ -997,6 +997,51 @@ describe("deleting a comment", () => {
 		).toBeNull();
 	});
 
+	it("a sole blanked opener GitHub lets the viewer delete keeps Delete, never Edit", async () => {
+		serve({
+			T1: {
+				comments: [
+					mine("c1", "[deleted]", {
+						deleted: true,
+						viewerCan: { update: false, delete: true },
+					}),
+				],
+			},
+		});
+		renderWith(<Conversation readId="r1" thread={thread()} />, {
+			writes: "on",
+		});
+		const [opener] = await screen.findAllByTestId("thread-comment");
+		const o = within(opener as HTMLElement);
+		expect(o.getByTestId("comment-deleted")).toBeVisible();
+		expect(o.getByRole("button", { name: "Delete" })).toBeVisible();
+		expect(o.queryByRole("button", { name: "Edit" })).toBeNull();
+	});
+
+	it("deleting sends no body and no JSON content type", async () => {
+		vi.useFakeTimers({ shouldAdvanceTime: true });
+		try {
+			const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+			serve({ T1: { comments: [mine("c1", "Only")] } });
+			writeAnswer = async () => json({ threadId: "T1", gone: true });
+			renderWith(<Conversation readId="r1" thread={thread()} />, {
+				writes: "on",
+			});
+			await screen.findAllByTestId("thread-comment");
+			await user.click(screen.getByRole("button", { name: "Delete" }));
+			await act(() => vi.advanceTimersByTimeAsync(DELETE_UNDO_MS));
+			const fetchMock = vi.mocked(fetch);
+			const call = fetchMock.mock.calls.find(
+				([, init]) => (init as RequestInit | undefined)?.method === "DELETE",
+			);
+			const init = call?.[1] as RequestInit | undefined;
+			expect(init?.body).toBeUndefined();
+			expect(new Headers(init?.headers).get("content-type")).toBeNull();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	it("the thread's last comment deleted: the thread is gone", async () => {
 		vi.useFakeTimers({ shouldAdvanceTime: true });
 		try {

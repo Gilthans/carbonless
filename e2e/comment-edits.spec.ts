@@ -1,0 +1,373 @@
+import { readFileSync } from "node:fs";
+import type { Locator, Page } from "@playwright/test";
+import {
+	editElsewhere,
+	reviewThread,
+	type Scenario,
+	threadComment,
+} from "../test/fake-gh/scenario";
+import { fileSection, openFiles } from "./files-ui";
+import { expect, type Pr, type PrOptions, test } from "./fixtures";
+
+/**
+ * Editing and deleting the viewer's own comments, written to the fake gh
+ * (its writes persist in the scenario file, so a reload reads them back).
+ * The viewer is Octo_Cat. Threads:
+ * 0. new.txt:1, Octo_Cat's opener alone ("My take");
+ * 1. a.txt:2, rev1's opener, then Octo_Cat's reply ("Because reasons");
+ * 2. b.txt:1, Octo_Cat's opener ("Opening words"), then rev1's reply.
+ */
+const fixture: PrOptions = {
+	baseDate: "2026-01-01T00:00:00Z",
+	files: [
+		{
+			message: "PR change",
+			files: {
+				"a.txt": `${Array.from({ length: 30 }, (_, i) =>
+					i === 1 ? "line 2 changed" : `line ${i + 1}`,
+				).join("\n")}\n`,
+				"b.txt": "b\n",
+				"new.txt": "new\n",
+			},
+			date: "2026-01-02T00:00:00Z",
+		},
+	],
+};
+
+async function setup(
+	pr: (opts?: PrOptions) => Promise<Pr>,
+	scenario: Partial<Scenario> = {},
+) {
+	const p = await pr(fixture);
+	const head = p.repo.shas.at(-1) ?? "";
+	p.editScenario((s) => {
+		const graph = s.prs[7]?.graphql;
+		if (!graph) throw new Error("no PR in the scenario");
+		graph.reviewThreads = [
+			reviewThread({ path: "new.txt", line: 1, subjectType: "LINE" }, [
+				threadComment({
+					login: "Octo_Cat",
+					text: "My take",
+					createdAt: "2026-01-02T09:00:00Z",
+					commit: head,
+					diffHunk: "@@ -0,0 +1 @@\n+new",
+				}),
+			]),
+			reviewThread({ path: "a.txt", line: 2, subjectType: "LINE" }, [
+				threadComment({
+					login: "rev1",
+					text: "Changed how?",
+					createdAt: "2026-01-02T08:00:00Z",
+					commit: head,
+					diffHunk: "@@ -1,2 +1,2 @@\n line 1\n-line 2\n+line 2 changed",
+				}),
+				threadComment({
+					login: "Octo_Cat",
+					text: "Because reasons",
+					createdAt: "2026-01-02T08:30:00Z",
+					commit: head,
+				}),
+			]),
+			reviewThread({ path: "b.txt", line: 1, subjectType: "LINE" }, [
+				threadComment({
+					login: "Octo_Cat",
+					text: "Opening words",
+					createdAt: "2026-01-02T07:00:00Z",
+					commit: head,
+					diffHunk: "@@ -0,0 +1 @@\n+b",
+				}),
+				threadComment({
+					login: "rev1",
+					text: "Fair",
+					createdAt: "2026-01-02T07:30:00Z",
+					commit: head,
+				}),
+			]),
+		];
+		Object.assign(s, scenario);
+	});
+	return p;
+}
+
+interface StoredComment {
+	body?: string;
+	bodyText?: string;
+	removed?: boolean;
+	lastEditedAt?: string | null;
+}
+
+/** The fake gh's comments of thread `i`, as stored (deleted ones flagged). */
+function stored(
+	p: Pr,
+	i: number,
+): { removed: boolean; comments: StoredComment[] } {
+	const s = JSON.parse(readFileSync(p.scenarioPath, "utf8")) as Scenario;
+	const t = (s.prs[7]?.graphql?.reviewThreads ?? [])[i] as {
+		removed?: boolean;
+		comments: { nodes: StoredComment[] };
+	};
+	return { removed: t.removed === true, comments: t.comments.nodes };
+}
+
+const bodies = (p: Pr, i: number) =>
+	stored(p, i)
+		.comments.filter((c) => !c.removed)
+		.map((c) => c.body ?? c.bodyText);
+
+const humans = (page: Page) =>
+	page.getByRole("region", { name: "Human reviews" });
+const card = (page: Page, path: string) =>
+	humans(page).getByTestId("thread").filter({ hasText: path });
+
+async function openCard(c: Locator) {
+	const more = c.getByTestId("thread-more");
+	if ((await more.getAttribute("aria-expanded")) !== "true") await more.click();
+	await expect(more).toHaveAttribute("aria-expanded", "true");
+}
+
+const overflow = (page: Page) =>
+	page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+
+/** Screenshots for the brief, when DESIGN_SHOTS names a folder. */
+async function shot(page: Page, name: string, isMobile: boolean, at?: Locator) {
+	const dir = process.env.DESIGN_SHOTS;
+	if (!dir) return;
+	await at?.scrollIntoViewIfNeeded();
+	await page.screenshot({
+		path: `${dir}/${name}-${isMobile ? "phone" : "desktop"}.png`,
+	});
+}
+
+test("edit from an Overview card: shown at once, marked edited, still there after a reload", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	if (isMobile) await page.setViewportSize({ width: 360, height: 780 });
+	const p = await setup(pr, { editDelayMs: 800 });
+	const s = await startCrb();
+	await page.goto(s.url);
+	const c = card(page, "new.txt");
+	// Closed: no Edit (it's inside Show more).
+	await expect(c.getByRole("button", { name: "Edit" })).toHaveCount(0);
+	await openCard(c);
+	const edit = c.getByRole("button", { name: "Edit" });
+	const del = c.getByRole("button", { name: "Delete" });
+	await expect(edit).toBeVisible();
+	await expect(del).toBeVisible();
+	for (const b of [edit, del]) {
+		const box = await b.boundingBox();
+		expect(box?.height ?? 0).toBeGreaterThanOrEqual(40);
+		expect(box?.width ?? 0).toBeGreaterThanOrEqual(40);
+	}
+	expect(await overflow(page)).toBeLessThanOrEqual(0);
+	await shot(page, "comment-actions", isMobile, c);
+	await edit.click();
+	const box = c.getByRole("textbox", { name: "Edit comment" });
+	await expect(box).toHaveValue("My take");
+	await expect(box).toBeFocused();
+	await box.fill("My better take");
+	expect(await overflow(page)).toBeLessThanOrEqual(0);
+	await shot(page, "edit-form", isMobile, c);
+	await box.press("Control+Enter");
+	await expect(box).toHaveCount(0);
+	await expect(c.getByTestId("thread-body")).toContainText("My better take");
+	await expect(c.getByRole("img", { name: "Saving" })).toBeVisible();
+	await expect(c.getByRole("img", { name: "Saving" })).toHaveCount(0);
+	await expect(c.getByTestId("comment-edited")).toBeVisible();
+	await expect.poll(() => bodies(p, 0)).toEqual(["My better take"]);
+	await page.reload();
+	const again = card(page, "new.txt");
+	await expect(again.getByTestId("thread-body")).toContainText(
+		"My better take",
+	);
+	await expect(again.getByTestId("comment-edited")).toBeVisible();
+	await again.getByTestId("comment-edited").focus();
+	await expect(page.getByRole("tooltip")).toContainText(/^Edited 20\d\d/);
+});
+
+test("an edit in progress survives a reload, opens its card and is listed in Drafts", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	const p = await setup(pr);
+	const s = await startCrb();
+	await page.goto(s.url);
+	const c = card(page, "new.txt");
+	await openCard(c);
+	await c.getByRole("button", { name: "Edit" }).click();
+	await c.getByRole("textbox", { name: "Edit comment" }).fill("Half rewritten");
+	// The guard asks before the page goes.
+	page.once("dialog", (d) => void d.accept());
+	await page.reload();
+	const again = card(page, "new.txt");
+	await expect(
+		again.getByRole("textbox", { name: "Edit comment" }),
+	).toHaveValue("Half rewritten");
+	await expect(humans(page).getByTestId("drafts-filter")).toHaveText("1 draft");
+	// Nothing reached GitHub.
+	expect(bodies(p, 0)).toEqual(["My take"]);
+	await again.getByRole("button", { name: "Save" }).click();
+	await expect.poll(() => bodies(p, 0)).toEqual(["Half rewritten"]);
+	await expect(humans(page).getByTestId("drafts-filter")).toHaveCount(0);
+});
+
+test("delete from an Overview card: Undo sends nothing; then the card fades and leaves", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	if (isMobile) await page.setViewportSize({ width: 360, height: 780 });
+	const p = await setup(pr);
+	const s = await startCrb();
+	await page.goto(s.url);
+	const c = card(page, "new.txt");
+	await openCard(c);
+	await c.getByRole("button", { name: "Delete" }).click();
+	const row = c.getByTestId("comment-deleted-row");
+	await expect(row).toContainText("Deleted");
+	await expect(c.getByText("My take")).toHaveCount(0);
+	expect(await overflow(page)).toBeLessThanOrEqual(0);
+	await shot(page, "deleted-undo", isMobile, c);
+	await row.getByRole("button", { name: "Undo" }).click();
+	await expect(c.getByTestId("thread-body")).toContainText("My take");
+	await page.waitForTimeout(5500);
+	expect(stored(p, 0).removed).toBe(false);
+	await c.getByRole("button", { name: "Delete" }).click();
+	await expect(c).toHaveAttribute("data-fading", "true", { timeout: 10_000 });
+	await expect(c).toHaveCount(0, { timeout: 10_000 });
+	expect(stored(p, 0).removed).toBe(true);
+	await page.reload();
+	await expect(humans(page).getByTestId("thread")).toHaveCount(2);
+});
+
+test("deleting an opener with replies leaves a deleted placeholder", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	if (isMobile) await page.setViewportSize({ width: 360, height: 780 });
+	const p = await setup(pr);
+	const s = await startCrb();
+	await page.goto(s.url);
+	const c = card(page, "b.txt");
+	await openCard(c);
+	// The opener's Delete (rev1's reply has none).
+	await expect(c.getByRole("button", { name: "Delete" })).toHaveCount(1);
+	await c.getByRole("button", { name: "Delete" }).click();
+	await expect(c.getByTestId("comment-deleted")).toBeVisible({
+		timeout: 10_000,
+	});
+	await expect.poll(() => bodies(p, 2)).toEqual(["[deleted]", "Fair"]);
+	await page.reload();
+	const again = card(page, "b.txt");
+	await expect(again.getByTestId("comment-deleted")).toBeVisible();
+	await openCard(again);
+	await expect(again.getByText("Fair")).toBeVisible();
+	await expect(again.getByRole("button", { name: "Edit" })).toHaveCount(0);
+	expect(await overflow(page)).toBeLessThanOrEqual(0);
+	await shot(page, "deleted-opener", isMobile, again);
+});
+
+test("edit and delete a reply from Files changed", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	const p = await setup(pr);
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	const section = fileSection(page, "a.txt");
+	await section.getByRole("button", { name: "Expand file" }).click();
+	await section
+		.locator('tr[data-testid="diff-line"][data-new-no="2"]')
+		.getByRole("button", { name: /^2 comments on line 2/ })
+		.click();
+	const thread = section.getByTestId("files-thread");
+	const mine = thread
+		.getByTestId("thread-comment")
+		.filter({ hasText: "Because reasons" });
+	// rev1's opener has neither.
+	await expect(thread.getByRole("button", { name: "Edit" })).toHaveCount(1);
+	await mine.getByRole("button", { name: "Edit" }).click();
+	const box = thread.getByRole("textbox", { name: "Edit comment" });
+	await box.fill("Because of the cache");
+	await thread.getByRole("button", { name: "Save" }).click();
+	const edited = thread
+		.getByTestId("thread-comment")
+		.filter({ hasText: "Because of the cache" });
+	await expect(edited.getByTestId("comment-edited")).toBeVisible();
+	await expect
+		.poll(() => bodies(p, 1))
+		.toEqual(["Changed how?", "Because of the cache"]);
+	await edited.getByRole("button", { name: "Delete" }).click();
+	await expect(thread.getByTestId("comment-deleted-row")).toBeVisible();
+	await expect(thread.getByTestId("thread-comment")).toHaveCount(1, {
+		timeout: 10_000,
+	});
+	await expect.poll(() => bodies(p, 1)).toEqual(["Changed how?"]);
+	await expect(
+		section.getByRole("button", { name: /^1 comment on line 2/ }),
+	).toBeVisible();
+});
+
+test("changed on GitHub meanwhile: refused with the draft kept, then Save anyway", async ({
+	page,
+	pr,
+	startCrb,
+	expectConsoleError,
+}) => {
+	expectConsoleError(/409/);
+	const p = await setup(pr);
+	const s = await startCrb();
+	await page.goto(s.url);
+	const c = card(page, "new.txt");
+	await openCard(c);
+	await c.getByRole("button", { name: "Edit" }).click();
+	await c.getByRole("textbox", { name: "Edit comment" }).fill("Mine");
+	editElsewhere(p.scenarioPath, { pr: 7, thread: 0, comment: 0 }, "Theirs");
+	await c.getByRole("button", { name: "Save" }).click();
+	const notice = page.getByTestId("write-failed");
+	await expect(notice).toContainText("Changed on GitHub since you opened it");
+	await expect(c.getByRole("textbox", { name: "Edit comment" })).toHaveValue(
+		"Mine",
+	);
+	expect(bodies(p, 0)).toEqual(["Theirs"]);
+	await notice.getByRole("button", { name: "Save anyway" }).click();
+	await expect(notice).toHaveCount(0);
+	await expect.poll(() => bodies(p, 0)).toEqual(["Mine"]);
+	await expect(c.getByTestId("thread-body")).toContainText("Mine");
+});
+
+test("no Edit or Delete as of a cutoff", async ({ page, pr, startCrb }) => {
+	const p = await setup(pr);
+	p.editScenario((sc) => {
+		const graph = sc.prs[7]?.graphql;
+		if (graph) {
+			graph.commits = [
+				{
+					commit: {
+						oid: p.repo.shas.at(-1),
+						committedDate: "2026-01-02T00:00:00Z",
+					},
+				},
+			];
+		}
+		sc.commits = { [p.repo.shas.at(-1) ?? ""]: { contexts: null } };
+	});
+	const s = await startCrb(undefined, ["--as-of", "2026-01-05T00:00:00Z"]);
+	await page.goto(s.url);
+	// The viewer's own opener alone: nothing to open to.
+	await expect(card(page, "new.txt")).toBeVisible();
+	await expect(card(page, "new.txt").getByTestId("thread-more")).toHaveCount(0);
+	// With a reply: opened, still nothing to edit or delete.
+	const c = card(page, "b.txt");
+	await openCard(c);
+	await expect(c.getByText("Fair")).toBeVisible();
+	await expect(c.getByRole("button", { name: "Edit" })).toHaveCount(0);
+	await expect(c.getByRole("button", { name: "Delete" })).toHaveCount(0);
+});

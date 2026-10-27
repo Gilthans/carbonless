@@ -151,6 +151,11 @@ export interface ThreadWritesDeps {
 	) => Promise<ThreadUpdate | ThreadGone>;
 	/** The thread is gone on GitHub (its last comment deleted): drop it from the page. */
 	gone: (threadId: string) => void;
+	/**
+	 * A deleted comment GitHub no longer has (404): out of the page's
+	 * comments; answers how many the thread has left (0 when unknown).
+	 */
+	forget: (threadId: string, commentId: string) => number;
 	/** "Show theirs": the comment as GitHub has it now, into the page. */
 	theirs: (threadId: string, comment: ThreadComment) => void;
 	/** A write's answer: the thread as GitHub has it now. */
@@ -792,8 +797,15 @@ export class ThreadWrites {
 		}
 		const write = error instanceof ApiError ? error.write : undefined;
 		if (op.kind === "delete" && write?.code === "gone") {
-			// The thread is gone on GitHub: what the delete wanted.
-			this.#landed(threadId, op, { threadId, gone: true });
+			// Gone on GitHub (a retry after a restart, say): what the delete
+			// wanted. The comment leaves the page; the thread too if it was
+			// its only one (or the page doesn't know).
+			let left = 0;
+			try {
+				left = this.#deps.forget(threadId, op.commentId);
+			} catch {}
+			if (left === 0) this.#landed(threadId, op, { threadId, gone: true });
+			else this.#deps.drafts.dropEdit(op.commentId);
 			lane.ops.shift();
 			lane.attempt = 0;
 			lane.waiting = null;
@@ -1019,6 +1031,49 @@ export function applyComment(
 	);
 }
 
+/**
+ * A comment gone on GitHub, out of the thread's comments and its count;
+ * answers how many comments the thread has left as the page knows it (0
+ * when it hasn't read them).
+ */
+export function dropComment(
+	client: QueryClient,
+	threadId: string,
+	commentId: string,
+): number {
+	let left = 0;
+	let dropped = false;
+	client.setQueriesData<ThreadComments>(
+		{
+			queryKey: ["comments"],
+			predicate: (q) => q.queryKey[2] === threadId,
+		},
+		(old) => {
+			if (!old) return old;
+			const comments = old.comments.filter((c) => c.id !== commentId);
+			left = Math.max(left, comments.length);
+			if (comments.length === old.comments.length) return old;
+			dropped = true;
+			return { ...old, comments };
+		},
+	);
+	if (dropped && left > 0) {
+		client.setQueriesData<ThreadsView>({ queryKey: ["threads"] }, (view) =>
+			view?.threads.some((t) => t.id === threadId)
+				? {
+						...view,
+						threads: view.threads.map((t) =>
+							t.id === threadId
+								? { ...t, commentCount: Math.max(1, t.commentCount - 1) }
+								: t,
+						),
+					}
+				: view,
+		);
+	}
+	return left;
+}
+
 /** A thread gone on GitHub (its last comment deleted): out of every list, its comments gone. */
 export function dropThread(client: QueryClient, threadId: string): void {
 	client.setQueriesData<ThreadsView>({ queryKey: ["threads"] }, (view) =>
@@ -1046,6 +1101,7 @@ export function threadWritesFor(client: QueryClient): ThreadWrites {
 			remove: deleteComment,
 			applied: (update) => applyThreadUpdate(client, update),
 			gone: (threadId) => dropThread(client, threadId),
+			forget: (threadId, commentId) => dropComment(client, threadId, commentId),
 			theirs: (threadId, comment) => applyComment(client, threadId, comment),
 			drafts: draftsFor(client),
 			confirmedResolved: (threadId) => {

@@ -23,6 +23,7 @@ import {
 	applyComment,
 	applyThreadUpdate,
 	DELETE_UNDO_MS,
+	dropComment,
 	dropThread,
 	FADE_MS,
 	MAX_IN_FLIGHT,
@@ -44,6 +45,7 @@ const noEdits = {
 	edit: () => new Promise<ThreadUpdate>(() => {}),
 	remove: () => new Promise<ThreadUpdate>(() => {}),
 	gone: () => {},
+	forget: () => 0,
 	theirs: () => {},
 };
 
@@ -62,6 +64,9 @@ const update = (threadId: string, more: Partial<ThreadUpdate> = {}) =>
 
 let calls: Call[];
 let goneCalls: string[];
+let forgotten: [string, string][];
+/** Comments a thread has left once one is forgotten. */
+let leftAfter: Record<string, number>;
 let theirsCalls: [string, ThreadComment][];
 let applied: ThreadUpdate[];
 let drafts: DraftStore;
@@ -70,6 +75,8 @@ function setup() {
 	calls = [];
 	applied = [];
 	goneCalls = [];
+	forgotten = [];
+	leftAfter = {};
 	theirsCalls = [];
 	known = { T1: ["c1", "c2"] };
 	ids = 0;
@@ -114,6 +121,10 @@ function setup() {
 				});
 			}),
 		gone: (threadId) => goneCalls.push(threadId),
+		forget: (threadId, commentId) => {
+			forgotten.push([threadId, commentId]);
+			return leftAfter[threadId] ?? 0;
+		},
 		theirs: (threadId, c) => theirsCalls.push([threadId, c]),
 		applied: (u) => applied.push(u),
 		drafts,
@@ -955,6 +966,20 @@ describe("editing and deleting comments", () => {
 		expect(w.state().gone.has("T1")).toBe(true);
 	});
 
+	it("a delete answered 404 with other comments left drops only the comment", async () => {
+		const w = setup();
+		leftAfter = { T1: 1 };
+		drafts.setEdit("T1", "c2", "Old", "Half");
+		w.deleteComment("T1", "c2");
+		await vi.advanceTimersByTimeAsync(DELETE_UNDO_MS);
+		calls[0]?.reject(new ApiError(404, "Gone", undefined, { code: "gone" }));
+		await flush();
+		expect(forgotten).toEqual([["T1", "c2"]]);
+		expect(w.state().gone.size).toBe(0);
+		expect(w.state().threads.size).toBe(0);
+		expect(drafts.edit("c2")).toBeUndefined();
+	});
+
 	it("a refused delete shows the comment again; Retry sends it at once", async () => {
 		const w = setup();
 		w.deleteComment("T1", "c2");
@@ -1124,6 +1149,25 @@ describe("applyThreadUpdate", () => {
 			client.getQueryData<ThreadsView>(["threads", "r1", "full"])?.threads[0]
 				?.body,
 		).toBe("Theirs");
+	});
+
+	it("a comment gone leaves its thread's comments and count", () => {
+		const client = seeded();
+		client.setQueryData<ThreadsView>(["threads", "r1", "full"], {
+			threads: [{ id: "T1", commentCount: 2 }] as ReviewThread[],
+			complete: true,
+		});
+		expect(dropComment(client, "T1", "c2")).toBe(1);
+		expect(
+			client
+				.getQueryData<ThreadComments>(["comments", "r1", "T1"])
+				?.comments.map((x) => x.id),
+		).toEqual(["c1"]);
+		expect(
+			client.getQueryData<ThreadsView>(["threads", "r1", "full"])?.threads[0]
+				?.commentCount,
+		).toBe(1);
+		expect(dropComment(client, "T9", "x")).toBe(0);
 	});
 
 	it("a thread gone leaves every list, its comments gone", () => {
