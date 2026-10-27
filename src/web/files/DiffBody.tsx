@@ -1086,12 +1086,13 @@ function HunkRows(props: {
 
 /**
  * A cluster that changes nothing but whitespace, collapsed to one row: its
- * rail and controls as on any cluster, "Whitespace only · N lines", and a
- * chevron that shows its rows (`children`) below it. Collapsed each time it
- * mounts (the file opens, or the setting turns on); `pinned` keeps it open
- * with no chevron (the rows can't go), for a thread or a landing on one of
- * its lines, and opens it: once a landing's highlight fades, the rows stay
- * under the reviewer and the chevron is back to collapse them.
+ * rail and controls as on any cluster, and one disclosure button (a chevron
+ * and "Whitespace only · N lines") that shows its rows (`children`) below
+ * it. Collapsed each time it mounts (the file opens, or the setting turns
+ * on); `pinned` keeps it open with the text alone, no button (the rows can't
+ * go), for a thread or a landing on one of its lines, and opens it: once a
+ * landing's highlight fades, the rows stay under the reviewer and the button
+ * is back to collapse them.
  */
 function WhitespaceCluster(props: {
 	state: ClusterView["state"];
@@ -1106,11 +1107,9 @@ function WhitespaceCluster(props: {
 		if (props.pinned) setOpen(true);
 	}, [props.pinned]);
 	const shown = open || props.pinned;
-	const label = shown
-		? "Hide whitespace-only lines"
-		: "Show whitespace-only lines";
-	// The rows are the tbody's other rows: what the chevron controls.
+	// The rows are the tbody's other rows: what the button controls.
 	const id = useId();
+	const words = `Whitespace only · ${props.lines} ${props.lines === 1 ? "line" : "lines"}`;
 	return (
 		<tbody id={id} className="group">
 			<tr
@@ -1125,7 +1124,11 @@ function WhitespaceCluster(props: {
 				</td>
 				<td colSpan={COLUMNS - 2} className="px-2 font-sans text-xs">
 					<span className="flex items-center gap-1">
-						{!props.pinned && (
+						{props.pinned ? (
+							<span className="text-muted">{words}</span>
+						) : (
+							// One disclosure button, chevron and words: its accessible
+							// name is the visible text, `aria-expanded` the state.
 							<Tooltip
 								content={shown ? "Hide lines" : "Show lines"}
 								describe={false}
@@ -1134,25 +1137,25 @@ function WhitespaceCluster(props: {
 									<button
 										type="button"
 										{...trigger}
-										aria-label={label}
 										aria-expanded={shown}
 										aria-controls={id}
 										onClick={() => setOpen(!shown)}
-										className="-ml-1 flex h-5 w-5 items-center justify-center rounded text-faint hover:bg-pressed hover:text-ink focus-visible:outline-2 focus-visible:outline-accent pointer-coarse:-my-2.5 pointer-coarse:h-10 pointer-coarse:w-10"
+										className="group/ws -ml-1 flex h-5 items-center gap-1 rounded pr-1 text-faint hover:bg-pressed hover:text-ink focus-visible:outline-2 focus-visible:outline-accent pointer-coarse:-my-2.5 pointer-coarse:h-10"
 									>
-										{shown ? (
-											<ChevronDownIcon size={12} aria-hidden />
-										) : (
-											<ChevronRightIcon size={12} aria-hidden />
-										)}
+										<span className="flex h-5 w-5 items-center justify-center">
+											{shown ? (
+												<ChevronDownIcon size={12} aria-hidden />
+											) : (
+												<ChevronRightIcon size={12} aria-hidden />
+											)}
+										</span>
+										<span className="text-muted group-hover/ws:text-ink">
+											{words}
+										</span>
 									</button>
 								)}
 							</Tooltip>
 						)}
-						<span className="text-muted">
-							Whitespace only · {props.lines}{" "}
-							{props.lines === 1 ? "line" : "lines"}
-						</span>
 						{props.note}
 					</span>
 				</td>

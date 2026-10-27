@@ -275,10 +275,19 @@ describe("DiffBody with Ignore whitespace", () => {
 		expect(onToggle).toHaveBeenCalledWith(clusters[0]);
 
 		// Expanding shows the pairs below the row: both numbers, the new text.
+		// The chevron and the text are one disclosure button, named by its
+		// visible text; `aria-expanded` carries the state.
 		const expand = within(row).getByRole("button", {
-			name: "Show whitespace-only lines",
+			name: "Whitespace only · 6 lines",
 		});
+		expect(expand).not.toHaveAttribute("aria-label");
 		expect(expand).toHaveAttribute("aria-expanded", "false");
+		// Besides the cluster's cross-off control, it's the row's only button.
+		expect(
+			within(row)
+				.getAllByRole("button")
+				.map((b) => b.getAttribute("aria-label") ?? b.textContent),
+		).toEqual(["Cross off cluster", "Whitespace only · 6 lines"]);
 		// It controls the rows' container (the cluster's tbody).
 		const controls = expand.getAttribute("aria-controls") ?? "";
 		expect(document.getElementById(controls)).toBe(row.closest("tbody"));
@@ -292,12 +301,24 @@ describe("DiffBody with Ignore whitespace", () => {
 			{ kind: "ws", old: "3", new: "3", text: "return b;" },
 			{ kind: "ws", old: "4", new: "4", text: "}" },
 		]);
-		expect(
-			within(row).getByRole("button", { name: "Hide whitespace-only lines" }),
-		).toBeInTheDocument();
+		expect(row).toHaveAttribute("data-expanded");
+		// The same button, still named by its text, collapses them.
 		await user.click(
-			within(row).getByRole("button", { name: "Hide whitespace-only lines" }),
+			within(row).getByRole("button", { name: "Whitespace only · 6 lines" }),
 		);
+		expect(expand).toHaveAttribute("aria-expanded", "false");
+		expect(row).not.toHaveAttribute("data-expanded");
+		expect(rows()).toHaveLength(10);
+
+		// Clicking the words themselves (not the chevron) toggles too.
+		const text = within(row).getByText("Whitespace only · 6 lines");
+		expect(text.tagName).not.toBe("BUTTON");
+		expect(text.closest("button")).toBe(expand);
+		await user.click(text);
+		expect(expand).toHaveAttribute("aria-expanded", "true");
+		expect(rows().filter((r) => r.kind === "ws")).toHaveLength(4);
+		await user.click(text);
+		expect(expand).toHaveAttribute("aria-expanded", "false");
 		expect(rows()).toHaveLength(10);
 
 		// Off: every line as it is, re-rendered in place without a fetch.
@@ -358,11 +379,19 @@ describe("DiffBody with Ignore whitespace", () => {
 			within(row as HTMLElement).getByTestId("thread-bubble"),
 		).toHaveAccessibleName("1 comment on old line 3");
 		// Nothing can hide the bubble: no collapse, and no chevron, while
-		// it's there.
+		// it's there: the pinned row's text is a plain span, not a button.
+		const pinnedRow = collapsed()[0] as HTMLElement;
 		expect(
-			screen.queryByRole("button", { name: "Show whitespace-only lines" }),
+			within(pinnedRow)
+				.getAllByRole("button")
+				.map((b) => b.getAttribute("aria-label")),
+		).toEqual(["Cross off cluster"]);
+		expect(
+			screen.queryByRole("button", { name: "Whitespace only · 6 lines" }),
 		).toBeNull();
-		expect((collapsed()[0] as HTMLElement).querySelector("svg")).toBeNull();
+		const text = within(pinnedRow).getByText("Whitespace only · 6 lines");
+		expect(text.closest("button")).toBeNull();
+		expect(pinnedRow.querySelector("svg")).toBeNull();
 	});
 
 	it("names a thread on a pair's new side by its new number", async () => {
@@ -389,7 +418,7 @@ describe("DiffBody with Ignore whitespace", () => {
 			).toHaveAttribute("data-landed");
 			expect(screen.queryByTestId("landing-hint")).toBeNull();
 			expect(
-				screen.queryByRole("button", { name: "Hide whitespace-only lines" }),
+				screen.queryByRole("button", { name: "Whitespace only · 6 lines" }),
 			).toBeNull();
 			// Once the highlight has faded the rows stay where the reviewer
 			// landed, and the chevron is back to collapse them.
@@ -402,8 +431,9 @@ describe("DiffBody with Ignore whitespace", () => {
 				document.querySelector('[data-kind="ws"][data-new-no="4"]'),
 			).not.toHaveAttribute("data-landed");
 			const hide = screen.getByRole("button", {
-				name: "Hide whitespace-only lines",
+				name: "Whitespace only · 6 lines",
 			});
+			expect(hide).toHaveAttribute("aria-expanded", "true");
 			await userEvent
 				.setup({ advanceTimers: vi.advanceTimersByTime })
 				.click(hide);
@@ -466,9 +496,11 @@ describe("DiffBody with Ignore whitespace", () => {
 			"context",
 		]);
 		for (const button of screen.getAllByRole("button", {
-			name: "Show whitespace-only lines",
+			name: /^Whitespace only · \d+ lines$/,
 		})) {
+			expect(button).toHaveAttribute("aria-expanded", "false");
 			await user.click(button);
+			expect(button).toHaveAttribute("aria-expanded", "true");
 		}
 		const sides = Array.from(
 			document.querySelectorAll<HTMLElement>('[data-kind="ws"]'),
