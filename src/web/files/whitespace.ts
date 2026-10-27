@@ -148,7 +148,8 @@ export function matchHunk(lines: DiffLine[]): ReadonlyMap<DiffLine, DiffLine> {
 	const old = lines.filter((l) => l.kind !== "add");
 	const young = lines.filter((l) => l.kind !== "del");
 	if (old.length > PAIR_CAP || young.length > PAIR_CAP) {
-		if (lines.some((l) => l.kind === "context")) {
+		// A whole hunk, not one run already: match its cluster runs apart.
+		if (runs(lines).length > 1) {
 			for (const run of runs(lines)) {
 				if (run.key === undefined) continue;
 				for (const [line, twin] of matchHunk(run.lines)) twins.set(line, twin);
@@ -188,7 +189,10 @@ export function matchHunk(lines: DiffLine[]): ReadonlyMap<DiffLine, DiffLine> {
  * same run become one two-sided row; a line whose twin is elsewhere (a
  * context line, another run) a one-sided row; the rest stay as they are.
  * In diff order: the unpaired removed lines, the unpaired added lines, then
- * the pair, and so on. A run of any other shape stays as it is.
+ * the pair, and so on. The server lays a cluster out as its removed lines
+ * then its added ones (src/server/diff/hunks.ts); a run of any other shape
+ * stays as it is, plain (its lines' twins elsewhere would still show as
+ * `~`, which no hunk from the server can bring about).
  */
 export function pairRun(
 	run: DiffLine[],
