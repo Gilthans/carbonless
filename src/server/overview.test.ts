@@ -1106,6 +1106,16 @@ describe("mapComments", () => {
 				deleted: false,
 				viewerCan: { update: true, delete: true },
 			});
+			// Left alone (only pending comments after it): it may be deleted.
+			const alone = withFields({
+				0: { ...can, body: "[deleted]" },
+				1: { publishedAt: null, state: "PENDING" },
+				2: { publishedAt: null, state: "PENDING" },
+			});
+			expect(
+				mapComments(alone.summary, alone.content, undefined, true).comments[0]
+					?.viewerCan,
+			).toEqual({ update: false, delete: true });
 			const other = withFields({ 0: { body: "[deleted] or not" } });
 			expect(
 				mapComments(other.summary, other.content).comments[0]?.deleted,

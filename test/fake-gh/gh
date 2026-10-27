@@ -37,11 +37,14 @@ function failNextFor(op) {
 }
 /**
  * A thread as GitHub's GraphQL lists it now: without replies still within
- * their `hiddenUntil` (replyUnlistedMs), which come last.
+ * their `hiddenUntil` (replyUnlistedMs) or posted while `replyUnlisted`
+ * holds (until a test clears it), which come last.
  */
 function unlisted(t) {
 	const all = t.comments?.nodes ?? [];
-	const shown = all.filter((c) => !(c.hiddenUntil > Date.now()));
+	const shown = all.filter(
+		(c) => !(c.hiddenUntil > Date.now()) && !(c.unlisted && s.replyUnlisted),
+	);
 	if (shown.length === all.length) return t;
 	const last = shown.at(-1);
 	return {
@@ -129,7 +132,12 @@ const threadNodes = (pr, nodes) =>
 	nodes.map(unlisted).map((t, i) => {
 		// Comment ids: `C<pr>-<index>` for the opener, `-<n>` after for the rest.
 		const cid = (c, j) => c?.id ?? (j === 0 ? `C${pr}-${i}` : `C${pr}-${i}-${j}`);
-		const ided = (c, j) => ({ ...c, id: cid(c, j), databaseId: restId(i, j) });
+		// A fixture may give its own databaseId (null: GitHub gave none).
+		const ided = (c, j) => ({
+			...c,
+			id: cid(c, j),
+			databaseId: c && "databaseId" in c ? c.databaseId : restId(i, j),
+		});
 		return withoutRemoved({
 			viewerCanReply: true,
 			viewerCanResolve: !t.isResolved,
@@ -216,6 +224,7 @@ function storeReply(n, i, body) {
 				bodyText: body,
 				bodyHTML: html,
 				...(s.replyUnlistedMs ? { hiddenUntil: Date.now() + s.replyUnlistedMs } : {}),
+				...(s.replyUnlisted ? { unlisted: true } : {}),
 			},
 		],
 	};
@@ -373,6 +382,11 @@ const restComment =
 		? /^repos\/[^/]+\/[^/]+\/pulls\/comments\/(\d+)$/.exec(args[3] ?? "")
 		: null;
 if (restComment) restComment.splice(1, 0, args[2]);
+// REST read of one review comment: `api repos/<o>/<r>/pulls/comments/<id> -H "Accept: …"`.
+const restGetComment =
+	args[0] === "api" && args[1] !== "-X"
+		? /^repos\/[^/]+\/[^/]+\/pulls\/comments\/(\d+)$/.exec(args[1] ?? "")
+		: null;
 if (args[0] === "api" && args[1] === "-X" && !restReply && !restComment) unsupported();
 if (restReply && !s.loggedOut) {
 	const [, n, id] = restReply;
@@ -418,6 +432,43 @@ if (restReply && !s.loggedOut) {
 	print(posted);
 }
 
+/**
+ * A review comment by its REST id, as it is now in the scenario (REST
+ * shows writes at once: no writeUnlistedMs): its PR, raw thread, raw
+ * comment and served thread node; none once deleted. REST ids are
+ * restId's (thread index, position), matched in each PR in turn: with
+ * several PRs having threads, the first PR's thread at that index wins.
+ */
+function commentPlace(id) {
+	const i = Math.floor(Number(id) / 1000) - 1;
+	const j = Number(id) % 1000;
+	return Object.entries(s.prs).flatMap(([n, p]) => {
+		const raw = p.graphql?.reviewThreads ?? [];
+		const node = threadNodes(n, raw)[i];
+		if (!node || raw[i]?.removed || (s.deletedThreads ?? []).includes(node.id)) return [];
+		const t = raw[i];
+		const listed = t.comments?.nodes ?? [];
+		const c = listed.length ? listed[j] : j === 0 ? t.first?.nodes?.[0] : undefined;
+		return c && !c.removed ? [{ n, t, c, j, node }] : [];
+	})[0];
+}
+if (restGetComment && !s.loggedOut) {
+	if (args.slice(2).join(" ") !== "-H Accept: application/vnd.github.full+json") unsupported();
+	const place = commentPlace(restGetComment[1]);
+	if (!place) httpFail(404, "Not Found");
+	const { c, t, j } = place;
+	const own = j === 0 ? { ...c, ...(t.first?.nodes?.[0] ?? {}) } : c;
+	print({
+		id: Number(restGetComment[1]),
+		body: own.body ?? own.bodyText ?? "",
+		body_text: own.bodyText ?? "",
+		body_html: own.bodyHTML ?? "",
+		user: { login: own.author?.login ?? "" },
+		created_at: own.createdAt,
+		updated_at: own.lastEditedAt ?? own.createdAt,
+	});
+}
+
 // REST edit and delete of one review comment by its REST id:
 // `api -X PATCH repos/<o>/<r>/pulls/comments/<id> -H "Accept: …" --input -`
 // and `api -X DELETE repos/<o>/<r>/pulls/comments/<id>`.
@@ -429,18 +480,8 @@ if (restComment && !s.loggedOut) {
 		unsupported();
 	}
 	const { body } = edit ? JSON.parse(readFileSync(0, "utf8")) : {};
-	// Where the comment is: restId's thread index and position.
-	const i = Math.floor(Number(id) / 1000) - 1;
 	const j = Number(id) % 1000;
-	const place = Object.entries(s.prs).flatMap(([n, p]) => {
-		const raw = p.graphql?.reviewThreads ?? [];
-		const node = threadNodes(n, raw)[i];
-		if (!node || allRemoved(raw[i]) || (s.deletedThreads ?? []).includes(node.id)) return [];
-		const t = raw[i];
-		const listed = t.comments?.nodes ?? [];
-		const c = listed.length ? listed[j] : j === 0 ? t.first?.nodes?.[0] : undefined;
-		return c && !c.removed ? [{ n, t, c, node }] : [];
-	})[0];
+	const place = commentPlace(id);
 	if (!place) httpFail(404, "Not Found");
 	const op = edit ? "edit" : "delete";
 	const f = failNextFor(op);
@@ -517,7 +558,7 @@ const known = [
 	"repo clone",
 	"pr view",
 ];
-if (!known.includes(cmd) && !restPull && !restReply && !restComment) unsupported();
+if (!known.includes(cmd) && !restPull && !restReply && !restComment && !restGetComment) unsupported();
 
 if (s.loggedOut) {
 	if (cmd === "auth status") {

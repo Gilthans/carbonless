@@ -265,7 +265,10 @@ export function mapComments(
 		return at !== null && (!asOf || atOrBefore(at, asOf));
 	};
 	const comments: ThreadComment[] = [];
-	for (const [index, raw] of arr(obj(obj(content).comments).nodes).entries()) {
+	const nodes = arr(obj(obj(content).comments).nodes);
+	// Published comments after the opener (a delete of it blanks it then).
+	const followed = nodes.slice(1).some((n) => visibleAt(obj(n)) !== null);
+	for (const [index, raw] of nodes.entries()) {
 		const c = obj(raw);
 		const id = str(c.id);
 		if (complete && !ids.has(id)) continue;
@@ -278,14 +281,11 @@ export function mapComments(
 		// Only the thread's first comment: a reply saying so is just text.
 		const deleted = index === 0 && isDeletedBody(str(c.body));
 		// What GitHub lets the viewer do, where carbonless writes at all,
-		// to their own comments only (not others', even where GitHub would).
+		// to their own published comments only (not others', even where
+		// GitHub would). A blanked opener is never edited, and deleted only
+		// once no published comment follows it (it really goes then).
 		const can = (v: unknown) =>
-			!asOf &&
-			writes &&
-			!pending &&
-			!deleted &&
-			c.viewerDidAuthor === true &&
-			v === true;
+			!asOf && writes && !pending && c.viewerDidAuthor === true && v === true;
 		comments.push({
 			id,
 			author: str(author.login),
@@ -299,8 +299,8 @@ export function mapComments(
 			text: str(c.bodyText) || str(c.body),
 			editedAt: str(c.lastEditedAt) || null,
 			viewerCan: {
-				update: can(c.viewerCanUpdate),
-				delete: can(c.viewerCanDelete),
+				update: !deleted && can(c.viewerCanUpdate),
+				delete: (!deleted || !followed) && can(c.viewerCanDelete),
 			},
 			deleted,
 		});

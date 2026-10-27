@@ -1,3 +1,4 @@
+import { readFileSync, writeFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	editElsewhere,
@@ -15,6 +16,7 @@ import {
 	editComment,
 	type ThreadWriteTarget,
 	withoutComment,
+	writeWaits,
 } from "./threadWrites";
 
 /**
@@ -59,6 +61,14 @@ describe("editing and deleting comments", () => {
 			...over,
 		});
 	const scenarioPath = () => process.env.CRB_FAKE_GH ?? "";
+	/** Changes the stored scenario's PR 12 threads in place (as GitHub would elsewhere). */
+	const threadsWith = (
+		change: (t: { comments: { nodes: Record<string, unknown>[] } }[]) => void,
+	) => {
+		const s = JSON.parse(readFileSync(scenarioPath(), "utf8"));
+		change(s.prs[12].graphql.reviewThreads);
+		writeFileSync(scenarioPath(), JSON.stringify(s));
+	};
 	const writeCalls = () =>
 		pr
 			.ghLog()
@@ -84,13 +94,17 @@ describe("editing and deleting comments", () => {
 			(t) => t.id,
 		);
 
+	// Re-reads wait for nothing: what GitHub shows is set by the scenario.
+	const realSleep = writeWaits.sleep;
 	beforeEach(async () => {
+		writeWaits.sleep = async () => {};
 		pr = createPrFixture();
 		threads();
 		session = await Session.open(pr.arg, process.cwd());
 		await session.threads((await session.overview()).readId, "summary");
 	});
 	afterEach(async () => {
+		writeWaits.sleep = realSleep;
 		await pr.cleanup();
 	});
 
@@ -204,6 +218,24 @@ describe("editing and deleting comments", () => {
 		expect(writeCalls()).toEqual([]);
 	});
 
+	it("a comment GitHub gives no REST id for: 403 forbidden for an edit and a delete (a delete's 404 is only a thread gone)", async () => {
+		threadsWith((t) => {
+			const c = t[0]?.comments.nodes[2];
+			if (c) c.databaseId = null;
+		});
+		await expect(edit("C12-0-2", "x")).rejects.toMatchObject({
+			code: "forbidden",
+			message: "GitHub gave no id to edit the comment by",
+		});
+		await expect(
+			session.deleteThreadComment("T12-0", "C12-0-2"),
+		).rejects.toMatchObject({
+			code: "forbidden",
+			message: "GitHub gave no id to delete the comment by",
+		});
+		expect(writeCalls()).toEqual([]);
+	});
+
 	it("a blank, oversized or malformed edit → invalid, nothing sent", async () => {
 		const bad: unknown[] = [
 			{ body: " \n", from: "Fair.", force: false },
@@ -236,7 +268,7 @@ describe("editing and deleting comments", () => {
 		expect((await comments("T12-0"))?.comments).toHaveLength(2);
 	});
 
-	it("deleting the opener of a thread with replies edits it to [deleted]; deleting it again → 400", async () => {
+	it("deleting the opener of a thread with replies edits it to [deleted]; deleting it again is done, editing it 400", async () => {
 		const answer = (await session.deleteThreadComment(
 			"T12-0",
 			"C12-0",
@@ -251,13 +283,124 @@ describe("editing and deleting comments", () => {
 			deleted: true,
 			viewerCan: { update: false, delete: false },
 		});
-		await expect(
-			session.deleteThreadComment("T12-0", "C12-0"),
-		).rejects.toMatchObject({ code: "invalid" });
+		// A retry of the delete that landed: answered with the blanked opener.
+		const again = (await session.deleteThreadComment(
+			"T12-0",
+			"C12-0",
+		)) as ThreadUpdate;
+		expect(again.comment).toMatchObject({ id: "C12-0", deleted: true });
+		expect(again.commentCount).toBe(3);
 		await expect(
 			edit("C12-0", "Back", { from: "[deleted]" }),
 		).rejects.toMatchObject({ code: "invalid" });
 		expect(writeCalls()).toHaveLength(1);
+	});
+
+	it("a blanked opener left alone may be deleted, and then really is: ThreadGone", async () => {
+		await session.deleteThreadComment("T12-0", "C12-0");
+		await session.deleteThreadComment("T12-0", "C12-0-2");
+		// rev's reply goes elsewhere (a maintainer, or rev).
+		threadsWith((t) => {
+			const reply = t[0]?.comments.nodes[1];
+			if (reply) reply.removed = true;
+		});
+		// GitHub's truth, not the kept read's.
+		await session.refresh();
+		const t = await comments("T12-0");
+		expect(t?.comments.map((c) => [c.id, c.deleted, c.viewerCan])).toEqual([
+			["C12-0", true, { update: false, delete: true }],
+		]);
+		const answer = await session.deleteThreadComment("T12-0", "C12-0");
+		expect(answer).toEqual({ threadId: "T12-0", gone: true });
+		expect(writeCalls().at(-1)).toBe(
+			"api -X DELETE repos/acme/widget/pulls/comments/1000",
+		);
+	});
+
+	it("an opener followed only by the viewer's pending comments is deleted, not blanked; pending ones are refused", async () => {
+		threads({
+			prs: {
+				12: {
+					view: prView({ headRefOid: pr.head(), baseRefName: "main" }),
+					graphql: {
+						reviewThreads: [
+							reviewThread({ path: "a.txt", line: 2 }, [
+								said("Octo_Cat", "Hm", 1),
+								threadComment({
+									login: "Octo_Cat",
+									text: "Draft",
+									pending: true,
+									createdAt: "2026-01-03T10:05:00Z",
+								}),
+							]),
+						],
+					},
+				},
+			},
+		});
+		await expect(edit("C12-0-1", "x", { from: "Draft" })).rejects.toMatchObject(
+			{ code: "forbidden" },
+		);
+		await expect(
+			session.deleteThreadComment("T12-0", "C12-0-1"),
+		).rejects.toMatchObject({ code: "forbidden" });
+		expect(writeCalls()).toEqual([]);
+		// None published left: gone from the page.
+		await expect(
+			session.deleteThreadComment("T12-0", "C12-0"),
+		).resolves.toEqual({ threadId: "T12-0", gone: true });
+		expect(writeCalls()).toEqual([
+			"api -X DELETE repos/acme/widget/pulls/comments/1000",
+		]);
+	});
+
+	it("a reply GraphQL doesn't list yet can be edited and deleted at once", async () => {
+		threads({ replyUnlisted: true });
+		const posted = await session.replyToThread("T12-0", {
+			body: "Just now",
+			attemptedAt: new Date().toISOString(),
+			retry: false,
+			clientId: "r1",
+			knownCommentIds: ["C12-0", "C12-0-1", "C12-0-2"],
+		});
+		const id = posted.comment?.id ?? "";
+		expect(posted.comment?.viewerCan).toEqual({ update: true, delete: true });
+		const edited = await edit(id, "Just now, edited", { from: "Just now" });
+		expect(edited.comment?.body).toBe("Just now, edited");
+		expect(writeCalls().at(-1)).toMatch(
+			/^api -X PATCH repos\/acme\/widget\/pulls\/comments\/1003 /,
+		);
+		const deleted = (await session.deleteThreadComment(
+			"T12-0",
+			id,
+		)) as ThreadUpdate;
+		expect(writeCalls().at(-1)).toBe(
+			"api -X DELETE repos/acme/widget/pulls/comments/1003",
+		);
+		expect(deleted.comments.comments.map((c) => c.id)).not.toContain(id);
+	});
+
+	it("a delete retry GraphQL still lists but REST has no more: done, not refused", async () => {
+		threads({
+			writeUnlistedMs: 60_000,
+			failNext: { op: "delete", status: 502, afterWrite: true },
+		});
+		await expect(
+			session.deleteThreadComment("T12-0", "C12-0-2"),
+		).rejects.toBeInstanceOf(GhError);
+		const retried = (await session.deleteThreadComment(
+			"T12-0",
+			"C12-0-2",
+		)) as ThreadUpdate;
+		expect(retried.commentCount).toBe(2);
+	});
+
+	it("the changed check reads GitHub's body by REST: no false 409 while GraphQL lags an edit", async () => {
+		threads({ writeUnlistedMs: 60_000 });
+		await edit("C12-0-2", "B");
+		const next = await edit("C12-0-2", "C", { from: "B" });
+		expect(next.comment?.body).toBe("C");
+		expect(writeCalls()).toHaveLength(2);
 	});
 
 	it("deleting a thread's only comment → ThreadGone, and the thread leaves the kept reads", async () => {
@@ -278,7 +421,7 @@ describe("editing and deleting comments", () => {
 		).resolves.toEqual({ threadId: "T12-2", gone: true });
 	});
 
-	it("the only comment left after the opener's delete: the thread is gone too, even while GraphQL lags", async () => {
+	it("deleting a thread's only comment while GraphQL lags: ThreadGone all the same", async () => {
 		threads({ writeUnlistedMs: 60_000 });
 		const answer = await session.deleteThreadComment("T12-2", "C12-2");
 		expect((answer as ThreadGone).gone).toBe(true);

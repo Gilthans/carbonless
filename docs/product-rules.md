@@ -65,24 +65,31 @@ comments in one (`src/server/threadWrites.ts`).
   `PATCH /repos/{o}/{r}/pulls/comments/{id}`, a delete
   `DELETE /repos/{o}/{r}/pulls/comments/{id}` (the comment's REST id,
   GraphQL's `databaseId`, which only the server sees). A pending review
-  blocks neither. Comments in the viewer's pending review, PR conversation
-  comments and review bodies aren't edited or deleted here.
+  blocks neither. Comments in the viewer's pending review are refused
+  (403); PR conversation comments and review bodies aren't edited or
+  deleted here. A reply this session just posted that GitHub's GraphQL
+  doesn't list yet is edited or deleted all the same (by the REST id its
+  post answered).
 - **Deleting an opener with replies blanks it.** Deleting the first comment
-  of a thread that has others after it edits its body to `[deleted]`
-  instead (owner: "it should instead be edited to say [deleted]"), so the
-  thread keeps its opener, place and code. Such an opener (body exactly
-  `[deleted]`, trimmed) is `ThreadComment.deleted`, shown as a placeholder,
-  and can't be edited or deleted again (400). Deleting any other comment
-  deletes it; deleting a thread's last comment removes the thread
-  (`ThreadGone`), and it leaves the session's kept reads.
+  of a thread that has published comments after it (the viewer's pending
+  ones don't count) edits its body to `[deleted]` instead (owner: "it
+  should instead be edited to say [deleted]"), so the thread keeps its
+  opener, place and code. Such an opener (body exactly `[deleted]`,
+  trimmed) is `ThreadComment.deleted`, shown as a placeholder, and can't
+  be edited (400); deleting it again is answered as done (a retry that
+  landed). Once no published comment follows it, the viewer may delete it,
+  and then it really goes. Deleting any other comment deletes it; deleting
+  a thread's last published comment removes the thread (`ThreadGone`),
+  and it leaves the session's kept reads.
 - **An edit never overwrites a newer version unseen.** The server reads the
-  comment fresh first: if its body already is the new text (line ends and
+  comment's body fresh by REST first (GraphQL may lag a write): if it already is the new text (line ends and
   trailing whitespace aside) the edit is done, nothing sent (a retry that
   landed); if it isn't the body the edit started from (`from`) any more,
   it is refused (409 `changed`, with the comment as GitHub has it now)
   unless the reviewer chose "Save anyway" (`force`). A delete of a comment
-  already gone (GitHub's 404 once it is no longer listed, or not in the
-  fresh read) is done; a 404 for one GitHub still lists is a refusal.
+  already gone (GitHub's 404 when a REST read of it is 404 too, or listed
+  by neither the fresh nor a kept read) is done; a 404 for one REST still
+  has is a refusal.
 - **A pending review refuses replies.** While the viewer has an unsubmitted
   review on the PR, GitHub refuses REST replies (422, "can only have one
   pending review"). carbonless shows that as a refusal (409 `pending-review`)

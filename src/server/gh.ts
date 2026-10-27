@@ -1368,6 +1368,8 @@ async function runWrite(
 export interface PostedReply {
 	/** Its GraphQL node id. */
 	nodeId: string;
+	/** Its REST id (an edit or a delete goes to it before GraphQL lists it). */
+	restId: number;
 	body: string;
 	bodyText: string;
 	bodyHtml: string;
@@ -1434,6 +1436,7 @@ export async function postReply(
 	}
 	return {
 		nodeId: str(c.node_id),
+		restId: typeof c.id === "number" ? c.id : 0,
 		body: str(c.body),
 		bodyText: str(c.body_text),
 		bodyHtml: str(c.body_html),
@@ -1470,6 +1473,51 @@ export interface EditedComment {
 }
 
 /**
+ * Review comment `commentId` (its REST id) of PR `ref` as GitHub's REST
+ * API has it now (no GraphQL lag after a write); null when it has none
+ * (404). Other failures as a write's (runWrite): it is read for one.
+ */
+export async function fetchComment(
+	ref: PrRef,
+	commentId: number,
+): Promise<EditedComment | null> {
+	let out: string;
+	try {
+		out = await runWrite(
+			[
+				"api",
+				`repos/${ref.owner}/${ref.repo}/pulls/comments/${commentId}`,
+				"-H",
+				"Accept: application/vnd.github.full+json",
+			],
+			"reading the comment",
+			() => null,
+		);
+	} catch (error) {
+		if (error instanceof WriteRefusedError && error.code === "gone") {
+			return null;
+		}
+		throw error;
+	}
+	return editedFrom(out, "the comment");
+}
+
+/** A REST review comment's text (an edit's answer, or a read). */
+function editedFrom(out: string, what: string): EditedComment {
+	const c = rec(safeJson(out));
+	const str = (v: unknown) => (typeof v === "string" ? v : "");
+	if (typeof c.body !== "string") {
+		throw new GhError(`gh returned an unexpected response for ${what}`);
+	}
+	return {
+		body: c.body,
+		bodyText: str(c.body_text),
+		bodyHtml: str(c.body_html),
+		updatedAt: str(c.updated_at),
+	};
+}
+
+/**
  * Edits review comment `commentId` (its REST id) of PR `ref` to `body`
  * (REST PATCH; a pending review doesn't block it). Refusals by
  * writeRefusal (404: "gone"); a GhError when it may land if sent again.
@@ -1494,17 +1542,7 @@ export async function patchComment(
 		() => null,
 		JSON.stringify({ body }),
 	);
-	const c = rec(safeJson(out));
-	const str = (v: unknown) => (typeof v === "string" ? v : "");
-	if (typeof c.body !== "string") {
-		throw new GhError("gh returned an unexpected response for the edit");
-	}
-	return {
-		body: c.body,
-		bodyText: str(c.body_text),
-		bodyHtml: str(c.body_html),
-		updatedAt: str(c.updated_at),
-	};
+	return editedFrom(out, "the edit");
 }
 
 /**

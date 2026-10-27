@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+	listReplies,
 	prView,
 	reviewThread,
 	type Scenario,
@@ -14,9 +15,11 @@ import { Session } from "./session";
 import type { ThreadCodeSource } from "./threadCode";
 import {
 	findReply,
+	LIST_WAITS_MS,
 	replyToThread,
 	setResolved,
 	type ThreadWriteTarget,
+	writeWaits,
 } from "./threadWrites";
 
 /** T12-0's comment ids before any reply. */
@@ -107,7 +110,22 @@ describe("thread writes", () => {
 			(t) => t.id === "T12-0",
 		);
 
+	/** The waits a write took (writeWaits), none of them real. */
+	let waited: number[] = [];
+	/** GitHub's GraphQL lists the replies held back after this many waits. */
+	let catchUp = Number.POSITIVE_INFINITY;
+	const catchUpAfter = (n: number) => {
+		catchUp = n;
+	};
+	const realSleep = writeWaits.sleep;
+
 	beforeEach(async () => {
+		waited = [];
+		catchUp = Number.POSITIVE_INFINITY;
+		writeWaits.sleep = async (ms) => {
+			waited.push(ms);
+			if (waited.length >= catchUp) listReplies(process.env.CRB_FAKE_GH ?? "");
+		};
 		pr = createPrFixture();
 		threads();
 		session = await Session.open(pr.arg, process.cwd());
@@ -115,6 +133,7 @@ describe("thread writes", () => {
 		await session.threads((await session.overview()).readId, "summary");
 	});
 	afterEach(async () => {
+		writeWaits.sleep = realSleep;
 		// Never the GraphQL reply, which would join a pending review.
 		expect(pr.ghLog()).not.toContain("addPullRequestReviewThreadReply");
 		await pr.cleanup();
@@ -188,7 +207,7 @@ describe("thread writes", () => {
 	});
 
 	it("a resend of a reply GitHub doesn't list yet is answered from what this session posted", async () => {
-		threads({ replyUnlistedMs: 60_000 });
+		threads({ replyUnlisted: true });
 		const first = await reply("Done", { clientId: "unlisted" });
 		const again = await reply("Done", { clientId: "unlisted", retry: true });
 		expect(writeCalls()).toHaveLength(1);
@@ -198,13 +217,16 @@ describe("thread writes", () => {
 
 	it("a retry after an unknown outcome looks again while GitHub lags, then doesn't post twice", async () => {
 		threads({
-			replyUnlistedMs: 600,
+			replyUnlisted: true,
 			failNext: { op: "reply", status: 502, afterWrite: true },
 		});
 		await expect(reply("Done", { clientId: "doubt" })).rejects.toBeInstanceOf(
 			GhError,
 		);
+		// GitHub lists it only after the retry's first wait.
+		catchUpAfter(1);
 		const answer = await reply("Done", { clientId: "doubt", retry: true });
+		expect(waited).toEqual([LIST_WAITS_MS[0]]);
 		expect(writeCalls()).toHaveLength(1);
 		expect(bodies(0)).toEqual(["Should this expire?", "Why would it?", "Done"]);
 		expect(answer.comment?.body).toBe("Done");
@@ -275,11 +297,12 @@ describe("thread writes", () => {
 	});
 
 	it("GitHub not listing the reply yet: re-read, then the posted comment is added", async () => {
-		threads({ replyUnlistedMs: 60_000 });
+		threads({ replyUnlisted: true });
 		const before = threadReads();
 		const answer = await reply("Later <b>");
 		// The first re-read and one after each wait.
 		expect(threadReads() - before).toBe(3);
+		expect(waited).toEqual(LIST_WAITS_MS);
 		expect(answer).toMatchObject({
 			commentCount: 3,
 			attention: ["octo-author"],
@@ -298,7 +321,8 @@ describe("thread writes", () => {
 	});
 
 	it("GitHub listing it after a moment: no more re-reads than needed", async () => {
-		threads({ replyUnlistedMs: 150 });
+		threads({ replyUnlisted: true });
+		catchUpAfter(1);
 		const before = threadReads();
 		const answer = await reply("Soon");
 		expect(threadReads() - before).toBe(2);

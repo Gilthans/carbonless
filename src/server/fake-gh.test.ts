@@ -16,6 +16,7 @@ import { testGitEnv } from "../../test/git-fixture";
 import { GhError, WriteRefusedError } from "./errors";
 import {
 	deleteComment,
+	fetchComment,
 	fetchOverview,
 	fetchPrMeta,
 	fetchThread,
@@ -700,6 +701,11 @@ describe("fake gh", () => {
 					"Because.",
 					"Ok.",
 				]);
+				// REST has them at once.
+				await expect(fetchComment(ref, 1000)).resolves.toMatchObject({
+					body: "New",
+				});
+				await expect(fetchComment(ref, 1002)).resolves.toBeNull();
 			});
 
 			it("failNext edit/delete fails before, or after the write lands", async () => {

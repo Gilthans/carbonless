@@ -12,6 +12,7 @@ import { GhError, WriteRefusedError } from "./errors.js";
 import {
 	deleteComment,
 	type EditedComment,
+	fetchComment,
 	fetchThread,
 	fetchThreadContents,
 	type PostedReply,
@@ -91,6 +92,14 @@ export interface ThreadWriteTarget {
 
 /** Re-reads of a thread after a reply until GitHub lists it, and the waits between. */
 export const LIST_WAITS_MS = [300, 1000];
+
+/**
+ * How a write waits between its re-reads (LIST_WAITS_MS). Tests replace
+ * `sleep` to decide what GitHub shows by then, independent of the clock.
+ */
+export const writeWaits = {
+	sleep: (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms)),
+};
 
 /** Longest client id, and most known comment ids, a request may carry. */
 const MAX_CLIENT_ID = 200;
@@ -266,6 +275,12 @@ export function withPosted(
 			...c,
 			comments: add(c.comments, {
 				id: posted.nodeId,
+				// The viewer's own, just posted: theirs to edit or delete.
+				...(posted.restId > 0 ? { databaseId: posted.restId } : {}),
+				viewerDidAuthor: true,
+				viewerCanUpdate: true,
+				viewerCanDelete: true,
+				lastEditedAt: null,
 				author,
 				...times,
 				body: posted.body,
@@ -332,7 +347,7 @@ async function answerWith(
 	let read = await reread(target, threadId);
 	for (const wait of LIST_WAITS_MS) {
 		if (!read.nodes || lists(read.nodes, record.nodeId)) break;
-		await new Promise((r) => setTimeout(r, wait));
+		await writeWaits.sleep(wait);
 		read = await reread(target, threadId);
 	}
 	const base = read.nodes ?? target.cached(threadId);
@@ -390,7 +405,7 @@ export async function replyToThread(
 			);
 			const wait = waits[i];
 			if (found || wait === undefined) break;
-			await new Promise((r) => setTimeout(r, wait));
+			await writeWaits.sleep(wait);
 			now = await reread(target, threadId);
 		}
 		if (found) {
@@ -594,7 +609,7 @@ async function rereadUntil(
 	let read = await reread(target, threadId);
 	for (const wait of LIST_WAITS_MS) {
 		if (!read.nodes || shows(read.nodes)) break;
-		await new Promise((r) => setTimeout(r, wait));
+		await writeWaits.sleep(wait);
 		read = await reread(target, threadId);
 	}
 	return read;
@@ -629,14 +644,62 @@ function changed(nodes: ThreadNodes, commentId: string): WriteRefusedError {
 	);
 }
 
+/** Where a comment was found for a write: the nodes listing it, and its place. */
+interface Found {
+	nodes: ThreadNodes;
+	comment: Json;
+	index: number;
+	/** Whether GitHub's fresh read lists it (else only a kept read does). */
+	fresh: boolean;
+}
+
+/**
+ * Comment `commentId` in thread `threadId`'s fresh read, else in a kept
+ * read (a reply this session just posted that GitHub's GraphQL doesn't
+ * list yet); null when neither has it.
+ */
+function locate(
+	target: ThreadWriteTarget,
+	threadId: string,
+	commentId: string,
+	fresh: ThreadNodes,
+): Found | null {
+	const find = (nodes: ThreadNodes, isFresh: boolean): Found | null => {
+		const all = contentComments(nodes);
+		const index = all.findIndex((c) => str(c.id) === commentId);
+		const comment = all[index];
+		return comment ? { nodes, comment, index, fresh: isFresh } : null;
+	};
+	const kept = target.cached(threadId);
+	return find(fresh, true) ?? (kept ? find(kept, false) : null);
+}
+
+/** Pending comments (the viewer's unsubmitted review) are left to GitHub's own UI. */
+function notPending(comment: Json): void {
+	if (visibleAt(comment) === null) {
+		throw new WriteRefusedError(
+			"Comments in a pending review are edited on GitHub",
+			"forbidden",
+		);
+	}
+}
+
+/** Whether published comments follow the opener (a delete then blanks it). */
+const othersAfter = (nodes: ThreadNodes) =>
+	contentComments(nodes)
+		.slice(1)
+		.some((c) => visibleAt(c) !== null);
+
 /**
  * Edits comment `commentId` (its GraphQL node id) of thread `threadId` to
- * `req.body` on GitHub, as the gh login. Read fresh first: a comment
- * whose body already is `req.body` is answered as it is, with no edit
- * sent (a retry that landed); one whose body isn't `req.from` any more
- * is refused ("changed", with it as it is now) unless `req.force`. The
- * answer shows the new text even while GitHub's GraphQL still has the
- * old one. One write per thread at a time (Session).
+ * `req.body` on GitHub, as the gh login. Its current body is read by REST
+ * first (no GraphQL lag): one that already is `req.body` is answered as
+ * it is, with no edit sent (a retry that landed); one that isn't
+ * `req.from` any more is refused ("changed", with it as it is now)
+ * unless `req.force`. A reply GraphQL doesn't list yet is edited all the
+ * same (from the kept read). The answer shows the new text even while
+ * GitHub's GraphQL still has the old one. One write per thread at a time
+ * (Session).
  */
 export async function editComment(
 	target: ThreadWriteTarget,
@@ -648,24 +711,35 @@ export async function editComment(
 	const problem = editProblem(req);
 	if (problem) throw new WriteRefusedError(problem, "invalid");
 	const now = await current(target, threadId);
-	const comment = contentComments(now.nodes).find(
-		(c) => str(c.id) === commentId,
-	);
-	if (!comment) throw gone("The comment is gone from GitHub");
-	ownOnly(comment);
-	const body = str(comment.body);
-	if (normal(body) === normal(req.body)) {
-		return update(target, threadId, now.nodes, now, commentId);
+	const found = locate(target, threadId, commentId, now.nodes);
+	if (!found) throw gone("The comment is gone from GitHub");
+	ownOnly(found.comment);
+	notPending(found.comment);
+	const restId = restIdOf(found.comment);
+	if (restId === null) {
+		throw new WriteRefusedError(
+			"GitHub gave no id to edit the comment by",
+			"forbidden",
+		);
 	}
-	if (contentComments(now.nodes)[0] === comment && isDeletedBody(body)) {
+	const rest = await fetchComment(target.ref, restId);
+	if (!rest) throw gone("The comment is gone from GitHub");
+	/** The nodes to answer from, with GitHub's REST text in. */
+	const answerNodes = (read: Reread, text: EditedComment) => {
+		const base =
+			read.nodes && lists(read.nodes, commentId) ? read.nodes : found.nodes;
+		return withEdited(base, commentId, text);
+	};
+	if (normal(rest.body) === normal(req.body)) {
+		return update(target, threadId, answerNodes(now, rest), now, commentId);
+	}
+	if (found.index === 0 && isDeletedBody(rest.body)) {
 		throw new WriteRefusedError("This comment was deleted", "invalid");
 	}
-	if (!req.force && normal(body) !== normal(req.from)) {
-		throw changed(now.nodes, commentId);
+	if (!req.force && normal(rest.body) !== normal(req.from)) {
+		throw changed(answerNodes(now, rest), commentId);
 	}
-	const restId = restIdOf(comment);
-	if (restId === null) throw gone("GitHub gave no id to edit the comment by");
-	const edited = await patchOrGone(target, threadId, commentId, () =>
+	const edited = await patchOrGone(target, restId, () =>
 		patchComment(target.ref, restId, req.body),
 	);
 	const shows = (nodes: ThreadNodes) =>
@@ -675,32 +749,25 @@ export async function editComment(
 		);
 	const read = await rereadUntil(target, threadId, shows);
 	if (!read.nodes) throw gone("Edited, but the thread is gone from GitHub");
-	const nodes = shows(read.nodes)
-		? read.nodes
-		: withEdited(read.nodes, commentId, edited);
+	const nodes = shows(read.nodes) ? read.nodes : answerNodes(read, edited);
 	return update(target, threadId, nodes, read, commentId);
 }
 
 /**
- * Runs an edit of comment `commentId`; GitHub's 404 means gone only when
- * the comment really is (it is also what a repo GitHub won't show
- * answers): otherwise a refusal.
+ * Runs an edit of the comment with REST id `restId`; GitHub's 404 means
+ * gone only when REST has no such comment either (a 404 is also what a
+ * repo GitHub won't show answers): otherwise a refusal.
  */
 async function patchOrGone<T>(
 	target: ThreadWriteTarget,
-	threadId: string,
-	commentId: string,
+	restId: number,
 	write: () => Promise<T>,
 ): Promise<T> {
 	try {
 		return await write();
 	} catch (error) {
 		if (error instanceof WriteRefusedError && error.code === "gone") {
-			const read = await reread(target, threadId);
-			if (
-				read.nodes &&
-				contentComments(read.nodes).some((c) => str(c.id) === commentId)
-			) {
+			if (await fetchComment(target.ref, restId)) {
 				throw new WriteRefusedError(
 					`GitHub refused the write: ${error.message}`,
 					"forbidden",
@@ -724,12 +791,15 @@ function threadGone(
 
 /**
  * Deletes comment `commentId` (its GraphQL node id) of thread `threadId`
- * on GitHub, as the gh login. The thread's first comment, with others
- * after it, is edited to "[deleted]" instead, so the thread keeps its
- * opener and place; any other is deleted, and a thread left with none is
- * gone (ThreadGone, dropped from the kept reads). Already gone (GitHub's
- * 404, or not in a fresh read) counts as done; an opener already blanked
- * is refused. One write per thread at a time (Session).
+ * on GitHub, as the gh login. The thread's first comment, with published
+ * comments after it, is edited to "[deleted]" instead, so the thread
+ * keeps its opener and place (one already blanked is answered as it is:
+ * a retry that landed); any other is deleted, a blanked opener left
+ * alone too, and a thread left with none is gone (ThreadGone, dropped
+ * from the kept reads). A reply GraphQL doesn't list yet is deleted all
+ * the same (from the kept read). Already gone (REST has no such comment,
+ * or neither the fresh nor a kept read lists it) counts as done. One
+ * write per thread at a time (Session).
  */
 export async function deleteThreadComment(
 	target: ThreadWriteTarget,
@@ -745,18 +815,24 @@ export async function deleteThreadComment(
 		}
 		throw gone();
 	}
-	const all = contentComments(now.nodes);
-	const index = all.findIndex((c) => str(c.id) === commentId);
-	const comment = all[index];
-	if (!comment) return update(target, threadId, now.nodes, now);
+	const found = locate(target, threadId, commentId, now.nodes);
+	if (!found) return update(target, threadId, now.nodes, now);
+	const { comment } = found;
 	ownOnly(comment);
+	notPending(comment);
 	const restId = restIdOf(comment);
-	if (restId === null) throw gone("GitHub gave no id to delete the comment by");
-	if (index === 0 && all.length > 1) {
+	// A delete's 404 means only that the thread is gone.
+	if (restId === null) {
+		throw new WriteRefusedError(
+			"GitHub gave no id to delete the comment by",
+			"forbidden",
+		);
+	}
+	if (found.fresh && found.index === 0 && othersAfter(now.nodes)) {
 		if (isDeletedBody(str(comment.body))) {
-			throw new WriteRefusedError("This comment is already deleted", "invalid");
+			return update(target, threadId, now.nodes, now, commentId);
 		}
-		const edited = await patchOrGone(target, threadId, commentId, () =>
+		const edited = await patchOrGone(target, restId, () =>
 			patchComment(target.ref, restId, DELETED_BODY),
 		);
 		const shows = (nodes: ThreadNodes) =>
@@ -770,31 +846,30 @@ export async function deleteThreadComment(
 			: withEdited(read.nodes, commentId, edited);
 		return update(target, threadId, nodes, read, commentId);
 	}
-	let notFound: WriteRefusedError | null = null;
 	try {
 		await deleteComment(target.ref, restId);
 	} catch (error) {
-		// Already deleted (by an attempt that landed, or elsewhere): done.
 		if (!(error instanceof WriteRefusedError && error.code === "gone")) {
 			throw error;
 		}
-		notFound = error;
+		// Already deleted (an attempt that landed, or elsewhere) unless REST
+		// still has it: a 404 is also what a repo GitHub won't show answers.
+		if (await fetchComment(target.ref, restId)) {
+			throw new WriteRefusedError(
+				`GitHub refused the delete: ${error.message}`,
+				"forbidden",
+			);
+		}
 	}
 	const listed = (nodes: ThreadNodes) =>
 		contentComments(nodes).some((c) => str(c.id) === commentId);
 	const read = await rereadUntil(target, threadId, (n) => !listed(n));
 	if (!read.nodes) return threadGone(target, threadId, read);
-	// GitHub's 404 is also what a repo it won't show answers: done only
-	// once the comment is gone from the thread too.
-	if (notFound && listed(read.nodes)) {
-		throw new WriteRefusedError(
-			`GitHub refused the delete: ${notFound.message}`,
-			"forbidden",
-		);
-	}
 	// Deleted: gone from the answer even while GraphQL still lists it.
 	const nodes = withoutComment(read.nodes, commentId);
-	if (contentComments(nodes).length === 0) {
+	// None published left (at most the viewer's pending ones, which the
+	// lists leave out): gone from the page.
+	if (!contentComments(nodes).some((c) => visibleAt(c) !== null)) {
 		return threadGone(target, threadId, read);
 	}
 	return update(target, threadId, nodes, read);

@@ -87,6 +87,12 @@ export interface Scenario {
 	 */
 	replyUnlistedMs?: number;
 	/**
+	 * Replies posted while this holds aren't listed by GitHub's GraphQL
+	 * until it is cleared (listReplies): the same lag, on a test's cue
+	 * rather than the clock.
+	 */
+	replyUnlisted?: boolean;
+	/**
 	 * Fields merged into the REST review comment (`api repos/…/pulls/<n>/comments`)
 	 * whose node id is the key; the fake derives the rest from the threads.
 	 */
@@ -338,6 +344,16 @@ export function threadComment(c: {
 		...(c.commit === undefined ? {} : { originalCommit: { oid: c.commit } }),
 		...(c.editedAt === undefined ? {} : { lastEditedAt: c.editedAt }),
 	};
+}
+
+/**
+ * GitHub's GraphQL catches up: replies posted under `replyUnlisted` are
+ * listed from now on (the scenario file at `path`, its writes kept).
+ */
+export function listReplies(path: string): void {
+	const s = JSON.parse(readFileSync(path, "utf8")) as Scenario;
+	s.replyUnlisted = false;
+	writeFileSync(path, JSON.stringify(s, null, "\t"));
 }
 
 /**
