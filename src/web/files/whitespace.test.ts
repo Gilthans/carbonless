@@ -1,10 +1,27 @@
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import type { DiffLine } from "../../shared/types";
+import { testGitEnv } from "../../../test/git-fixture";
+import {
+	REINDENT_NEW,
+	REINDENT_OLD,
+	WRAP_ADDED,
+	WRAP_NEW,
+	WRAP_OLD,
+} from "../../../test/whitespace-fixture";
+import { parseU0Patch } from "../../server/diff/clusters";
+import { buildDisplayHunks } from "../../server/diff/hunks";
+import type { DiffLine, DisplayHunk } from "../../shared/types";
 import {
 	type DiffRow,
 	linesWhitespaceEqual,
+	matchHunk,
 	PAIR_CAP,
-	pairWhitespace,
+	pairHunk,
+	pairRun,
+	runs,
 	stripWhitespace,
 	whitespaceEqual,
 	whitespaceOnly,
@@ -24,53 +41,115 @@ const add = (newNo: number, text: string, over: Partial<DiffLine> = {}) => ({
 	clusterKey: "k",
 	...over,
 });
+const ctx = (oldNo: number, newNo: number, text: string): DiffLine => ({
+	kind: "context",
+	oldNo,
+	newNo,
+	text,
+});
 
-/** The rows as a readable trace: `-old`, `+new`, `~old/new`. */
+/** The rows as a readable trace: ` old/new` context, `-old`, `+new`, `~old/new`, `~old/`, `~/new`. */
 const trace = (rows: DiffRow[]) =>
 	rows.map((r) =>
 		r.kind === "ws"
-			? `~${r.del.oldNo}/${r.add.newNo}`
+			? `~${r.del?.oldNo ?? ""}/${r.add?.newNo ?? ""}`
 			: r.line.kind === "del"
 				? `-${r.line.oldNo}`
-				: `+${r.line.newNo}`,
+				: r.line.kind === "add"
+					? `+${r.line.newNo}`
+					: ` ${r.line.oldNo}/${r.line.newNo}`,
 	);
 
 /**
- * Principle 2: whatever the pairing does, every removed and added line of
- * the cluster is in the rows exactly once, in diff order, and a pair only
- * joins whitespace-equal lines.
+ * Principle 2: whatever the matching does, every line of the hunk is in the
+ * rows exactly once, each side in diff order, a two-sided row only joins
+ * whitespace-equal lines of one run, and a one-sided row has a twin.
  */
 function expectCoverage(lines: DiffLine[], rows: DiffRow[]) {
-	const dels = lines.filter((l) => l.kind === "del");
-	const adds = lines.filter((l) => l.kind === "add");
-	const seenDels: DiffLine[] = [];
-	const seenAdds: DiffLine[] = [];
+	const oldSide = lines.filter((l) => l.kind !== "add");
+	const newSide = lines.filter((l) => l.kind !== "del");
+	const seenOld: DiffLine[] = [];
+	const seenNew: DiffLine[] = [];
+	const twins = matchHunk(lines);
 	for (const row of rows) {
 		if (row.kind === "ws") {
-			expect(row.del.kind).toBe("del");
-			expect(row.add.kind).toBe("add");
-			expect(whitespaceEqual(row.del.text, row.add.text)).toBe(true);
-			expect(!!row.del.noNewline).toBe(!!row.add.noNewline);
-			expect(linesWhitespaceEqual(row.del, row.add)).toBe(true);
-			seenDels.push(row.del);
-			seenAdds.push(row.add);
-		} else if (row.line.kind === "del") {
-			seenDels.push(row.line);
+			if (row.del && row.add) {
+				expect(row.del.kind).toBe("del");
+				expect(row.add.kind).toBe("add");
+				expect(row.del.clusterKey).toBe(row.add.clusterKey);
+				expect(whitespaceEqual(row.del.text, row.add.text)).toBe(true);
+				expect(!!row.del.noNewline).toBe(!!row.add.noNewline);
+				expect(linesWhitespaceEqual(row.del, row.add)).toBe(true);
+			} else {
+				const line = (row.del ?? row.add) as DiffLine;
+				const twin = twins.get(line);
+				expect(twin).toBeDefined();
+				expect(keyEqual(line, twin as DiffLine)).toBe(true);
+			}
+			if (row.del) seenOld.push(row.del);
+			if (row.add) seenNew.push(row.add);
 		} else {
-			seenAdds.push(row.line);
+			if (row.line.kind !== "add") seenOld.push(row.line);
+			if (row.line.kind !== "del") seenNew.push(row.line);
 		}
 	}
-	// The same objects, each once, in order.
-	expect(seenDels).toEqual(dels);
-	expect(seenAdds).toEqual(adds);
-	expect(new Set(seenDels).size).toBe(dels.length);
-	expect(new Set(seenAdds).size).toBe(adds.length);
-	// Between pairs, unpaired removed lines come before unpaired added ones.
-	let sawAdd = false;
-	for (const row of rows) {
-		if (row.kind === "ws") sawAdd = false;
-		else if (row.line.kind === "add") sawAdd = true;
-		else expect(sawAdd, `del after add in ${trace(rows)}`).toBe(false);
+	// The same objects, each once, in order, on each side.
+	expect(seenOld).toEqual(oldSide);
+	expect(seenNew).toEqual(newSide);
+	expect(new Set(seenOld).size).toBe(oldSide.length);
+	expect(new Set(seenNew).size).toBe(newSide.length);
+	// Within a run, unpaired removed lines come before unpaired added ones.
+	for (const run of runs(lines)) {
+		if (run.key === undefined) continue;
+		const inRun = new Set(run.lines);
+		const mine = rows.filter((r) =>
+			r.kind === "ws"
+				? inRun.has((r.del ?? r.add) as DiffLine)
+				: inRun.has(r.line),
+		);
+		let sawAdd = false;
+		for (const row of mine) {
+			const two = row.kind === "ws" && row.del && row.add;
+			const isAdd =
+				row.kind === "ws" ? row.add !== undefined : row.line.kind === "add";
+			if (two) sawAdd = false;
+			else if (isAdd) sawAdd = true;
+			else expect(sawAdd, `del after add in ${trace(rows)}`).toBe(false);
+		}
+	}
+}
+
+const keyEqual = (a: DiffLine, b: DiffLine) =>
+	whitespaceEqual(a.text, b.text) && !!a.noNewline === !!b.noNewline;
+
+/** The display hunk git and the server would make of two texts. */
+function gitHunk(oldText: string, newText: string): DisplayHunk {
+	const dir = mkdtempSync(join(tmpdir(), "crb-ws-"));
+	try {
+		writeFileSync(join(dir, "old"), oldText);
+		writeFileSync(join(dir, "new"), newText);
+		let patch = "";
+		try {
+			patch = execFileSync(
+				"git",
+				["diff", "--no-index", "--no-color", "-U0", "--", "old", "new"],
+				{ cwd: dir, encoding: "utf8", env: testGitEnv() },
+			);
+		} catch (error) {
+			// git exits 1 when the files differ.
+			patch = String((error as { stdout?: string }).stdout ?? "");
+		}
+		const clusters = parseU0Patch(patch).map((c, i) => ({
+			...c,
+			key: `c${i}`,
+			kind: "lines" as const,
+		}));
+		const lines = (t: string) => t.split("\n").slice(0, -1);
+		const hunks = buildDisplayHunks(lines(oldText), lines(newText), clusters);
+		expect(hunks).toHaveLength(1);
+		return hunks[0] as DisplayHunk;
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
 	}
 }
 
@@ -78,9 +157,7 @@ describe("stripWhitespace", () => {
 	it("removes ASCII whitespace only", () => {
 		expect(stripWhitespace(" a\tb\rc\vd\fe ")).toBe("abcde");
 		// Unicode blanks are content, as for git -w.
-		expect(stripWhitespace("a\u00A0b\u2003c\u200B")).toBe(
-			"a\u00A0b\u2003c\u200B",
-		);
+		expect(stripWhitespace("a b c​")).toBe("a b c​");
 	});
 
 	it("compares lines whitespace-equal", () => {
@@ -89,12 +166,12 @@ describe("stripWhitespace", () => {
 		expect(whitespaceEqual("x  ", "x")).toBe(true);
 		expect(whitespaceEqual("a b", "ab")).toBe(true);
 		expect(whitespaceEqual("a", "b")).toBe(false);
-		expect(whitespaceEqual("a\u00A0b", "a b")).toBe(false);
+		expect(whitespaceEqual("a b", "a b")).toBe(false);
 		expect(whitespaceEqual("", " \t")).toBe(true);
 	});
 });
 
-describe("pairWhitespace", () => {
+describe("pairHunk", () => {
 	it("pairs a re-indented block line by line", () => {
 		const lines = [
 			del(1, "a"),
@@ -104,7 +181,7 @@ describe("pairWhitespace", () => {
 			add(2, "  b"),
 			add(3, "  c"),
 		];
-		const rows = pairWhitespace(lines);
+		const rows = pairHunk(lines);
 		expect(trace(rows)).toEqual(["~1/1", "~2/2", "~3/3"]);
 		expect(whitespaceOnly(rows)).toBe(true);
 		expectCoverage(lines, rows);
@@ -112,13 +189,13 @@ describe("pairWhitespace", () => {
 
 	it("pairs a CRLF to LF change", () => {
 		const lines = [del(5, "x\r"), del(6, "y\r"), add(5, "x"), add(6, "y")];
-		const rows = pairWhitespace(lines);
+		const rows = pairHunk(lines);
 		expect(trace(rows)).toEqual(["~5/5", "~6/6"]);
 		expect(whitespaceOnly(rows)).toBe(true);
 	});
 
 	it("pairs trailing-space removal", () => {
-		const rows = pairWhitespace([del(1, "x   "), add(1, "x")]);
+		const rows = pairHunk([del(1, "x   "), add(1, "x")]);
 		expect(trace(rows)).toEqual(["~1/1"]);
 	});
 
@@ -133,7 +210,7 @@ describe("pairWhitespace", () => {
 			add(5, "  c"),
 			add(6, "  d"),
 		];
-		const rows = pairWhitespace(lines);
+		const rows = pairHunk(lines);
 		expect(trace(rows)).toEqual(["~3/3", "-4", "+4", "~5/5", "~6/6"]);
 		expect(whitespaceOnly(rows)).toBe(false);
 		expectCoverage(lines, rows);
@@ -150,7 +227,7 @@ describe("pairWhitespace", () => {
 			add(4, " b"),
 			add(5, "tail"),
 		];
-		const rows = pairWhitespace(lines);
+		const rows = pairHunk(lines);
 		expect(trace(rows)).toEqual(["~1/1", "-2", "+2", "+3", "~3/4", "+5"]);
 		expectCoverage(lines, rows);
 	});
@@ -163,39 +240,39 @@ describe("pairWhitespace", () => {
 			add(1, "  }"),
 			add(2, "  }"),
 		];
-		const rows = pairWhitespace(lines);
+		const rows = pairHunk(lines);
 		expect(trace(rows)).toEqual(["~1/1", "~2/2", "-3"]);
 		expectCoverage(lines, rows);
 	});
 
 	it("leaves one-sided and empty clusters as plain rows", () => {
-		expect(pairWhitespace([])).toEqual([]);
+		expect(pairHunk([])).toEqual([]);
 		const adds = [add(1, "a"), add(2, "b")];
-		expect(trace(pairWhitespace(adds))).toEqual(["+1", "+2"]);
-		expect(whitespaceOnly(pairWhitespace(adds))).toBe(false);
+		expect(trace(pairHunk(adds))).toEqual(["+1", "+2"]);
+		expect(whitespaceOnly(pairHunk(adds))).toBe(false);
 		const dels = [del(1, "a")];
-		expect(trace(pairWhitespace(dels))).toEqual(["-1"]);
-		expectCoverage(dels, pairWhitespace(dels));
+		expect(trace(pairHunk(dels))).toEqual(["-1"]);
+		expectCoverage(dels, pairHunk(dels));
 	});
 
 	it("never pairs lines that differ in more than whitespace", () => {
-		const lines = [del(1, "a\u00A0b"), add(1, "a b")];
-		expect(trace(pairWhitespace(lines))).toEqual(["-1", "+1"]);
+		const lines = [del(1, "a b"), add(1, "a b")];
+		expect(trace(pairHunk(lines))).toEqual(["-1", "+1"]);
 	});
 
 	it("treats a final newline lost or gained as a real change, like git -w", () => {
 		// Old file ends without a newline, new one with it: a change.
 		expect(
-			trace(pairWhitespace([del(1, "a", { noNewline: true }), add(1, "a")])),
+			trace(pairHunk([del(1, "a", { noNewline: true }), add(1, "a")])),
 		).toEqual(["-1", "+1"]);
 		// And the other way round.
 		expect(
-			trace(pairWhitespace([del(1, "a"), add(1, " a", { noNewline: true })])),
+			trace(pairHunk([del(1, "a"), add(1, " a", { noNewline: true })])),
 		).toEqual(["-1", "+1"]);
 		// Both without one: whitespace only.
 		expect(
 			trace(
-				pairWhitespace([
+				pairHunk([
 					del(1, "a", { noNewline: true }),
 					add(1, "  a", { noNewline: true }),
 				]),
@@ -206,63 +283,163 @@ describe("pairWhitespace", () => {
 		).toBe(false);
 	});
 
-	it("doesn't pair a cluster over the size cap, and does at the cap", () => {
+	it("doesn't match a hunk over the size cap, and does at the cap", () => {
 		const big = (n: number) => [
 			...Array.from({ length: n }, (_, i) => del(i + 1, `line ${i}`)),
 			...Array.from({ length: n }, (_, i) => add(i + 1, `  line ${i}`)),
 		];
 		const over = big(PAIR_CAP + 1);
-		const plain = pairWhitespace(over);
+		const plain = pairHunk(over);
 		expect(plain.every((r) => r.kind === "line")).toBe(true);
 		expectCoverage(over, plain);
 		const at = big(PAIR_CAP);
-		const paired = pairWhitespace(at);
+		const paired = pairHunk(at);
 		expect(paired.every((r) => r.kind === "ws")).toBe(true);
 		expect(paired).toHaveLength(PAIR_CAP);
 	});
 
-	it("leaves lines that aren't add or del alone", () => {
-		const lines: DiffLine[] = [
-			{ kind: "context", oldNo: 1, newNo: 1, text: "a" },
-			del(2, "b"),
-			add(2, " b"),
-		];
-		const rows = pairWhitespace(lines);
+	it("leaves a run of an unexpected shape alone", () => {
+		const lines: DiffLine[] = [add(2, " b", {}), del(2, "b")];
+		const rows = pairRun(lines, matchHunk(lines));
 		expect(rows.every((r) => r.kind === "line")).toBe(true);
 		expect(rows.map((r) => (r.kind === "line" ? r.line : null))).toEqual(lines);
 	});
 
-	it("covers every line exactly once for any generated cluster", () => {
+	it("matches across a context line: a twin in another run, or a context twin, gives one-sided rows", () => {
+		// Git's shape for a re-indented block whose `}` byte-matched another:
+		// cluster A adds `}` and `sum`, a context `}`, cluster B removes them.
+		const lines: DiffLine[] = [
+			del(8, "  if (x) {", { clusterKey: "A" }),
+			add(8, "    if (x) {", { clusterKey: "A" }),
+			add(9, "    }", { clusterKey: "A" }),
+			add(10, "    sum += 1;", { clusterKey: "A" }),
+			ctx(9, 11, "  }"),
+			del(10, "  sum += 1;", { clusterKey: "B" }),
+			del(11, "}", { clusterKey: "B" }),
+			ctx(12, 12, "return;"),
+		];
+		const rows = pairHunk(lines);
+		expect(trace(rows)).toEqual([
+			"~8/8",
+			"~/9",
+			"~/10",
+			" 9/11",
+			"~10/",
+			"~11/",
+			" 12/12",
+		]);
+		expectCoverage(lines, rows);
+		const twins = matchHunk(lines);
+		expect(twins.get(lines[1] as DiffLine)).toBe(lines[0]);
+		expect(twins.get(lines[2] as DiffLine)).toBe(lines[4]);
+		expect(twins.get(lines[3] as DiffLine)).toBe(lines[5]);
+		expect(twins.get(lines[6] as DiffLine)).toBe(lines[4]);
+		for (const run of runs(lines)) {
+			if (run.key) expect(whitespaceOnly(pairRun(run.lines, twins))).toBe(true);
+		}
+	});
+
+	it("keeps a line moved across a context line a change (a real reorder)", () => {
+		// old [A, B] → new [B, A], with A unchanged bytes: B moved.
+		const lines: DiffLine[] = [
+			add(1, "B", { clusterKey: "A" }),
+			ctx(1, 2, "A"),
+			del(2, " B", { clusterKey: "B" }),
+		];
+		expect(trace(pairHunk(lines))).toEqual(["+1", " 1/2", "-2"]);
+		expectCoverage(lines, pairHunk(lines));
+	});
+
+	it("keeps a change that would take one side of a context line a change", () => {
+		// A second `}` added before a context `}`: one of them is new, and
+		// no context row can show that, so the added one stays added.
+		const lines: DiffLine[] = [add(1, "}"), ctx(1, 2, "  }")];
+		expect(trace(pairHunk(lines))).toEqual(["+1", " 1/2"]);
+		const both: DiffLine[] = [ctx(1, 1, "  }"), del(2, "}")];
+		expect(trace(pairHunk(both))).toEqual([" 1/1", "-2"]);
+	});
+
+	it("a pure re-indent that git splits over context lines comes out all whitespace-only", () => {
+		const hunk = gitHunk(REINDENT_OLD, REINDENT_NEW);
+		const rows = pairHunk(hunk.lines);
+		expectCoverage(hunk.lines, rows);
+		const changes = rows.filter(
+			(r) => r.kind === "line" && r.line.kind !== "context",
+		);
+		expect(changes).toEqual([]);
+		const clusterRuns = runs(hunk.lines).filter((r) => r.key !== undefined);
+		expect(clusterRuns).toHaveLength(5);
+		const twins = matchHunk(hunk.lines);
+		for (const run of clusterRuns) {
+			expect(whitespaceOnly(pairRun(run.lines, twins))).toBe(true);
+		}
+	});
+
+	it("a wrapped loop keeps only the `if` and its `}` as added, nothing removed", () => {
+		const hunk = gitHunk(WRAP_OLD, WRAP_NEW);
+		const rows = pairHunk(hunk.lines);
+		expectCoverage(hunk.lines, rows);
+		const changes = rows.flatMap((r) =>
+			r.kind === "line" && r.line.kind !== "context" ? [r.line] : [],
+		);
+		expect(changes.map((l) => l.kind)).toEqual(["add", "add"]);
+		expect(changes.map((l) => l.text)).toEqual(WRAP_ADDED);
+		// The moved `log` line: a one-sided row on each side.
+		const moved = rows.filter(
+			(r) =>
+				r.kind === "ws" &&
+				!(r.del && r.add) &&
+				/log\(`done/.test(((r.del ?? r.add) as DiffLine).text),
+		);
+		expect(moved).toHaveLength(2);
+	});
+
+	it("covers every line exactly once for any generated hunk", () => {
 		// A small deterministic generator, so a failure reproduces.
 		let seed = 12345;
 		const rand = (n: number) => {
 			seed = (seed * 1103515245 + 12345) & 0x7fffffff;
 			return seed % n;
 		};
-		const words = ["a", "b", "}", "if (x)", "return", "", "a\u00A0b"];
+		const words = ["a", "b", "}", "if (x)", "return", "", "a b"];
 		const blank = ["", " ", "\t", "  ", "\r", " \t "];
 		const line = () => {
 			const w = words[rand(words.length)] as string;
 			return `${blank[rand(blank.length)]}${w}${blank[rand(blank.length)]}`;
 		};
 		for (let n = 0; n < 400; n++) {
-			const dels = Array.from({ length: rand(8) }, (_, i) =>
-				del(i + 1, line()),
-			);
-			const adds = Array.from({ length: rand(8) }, (_, i) =>
-				add(i + 1, line()),
-			);
-			// Sometimes a side's last line has no final newline.
-			const lastDel = dels[dels.length - 1];
-			if (lastDel && rand(3) === 0) lastDel.noNewline = true;
-			const lastAdd = adds[adds.length - 1];
-			if (lastAdd && rand(3) === 0) lastAdd.noNewline = true;
-			const lines = [...dels, ...adds];
-			const rows = pairWhitespace(lines);
+			// Runs of context lines and cluster runs, in turn.
+			const lines: DiffLine[] = [];
+			let oldNo = 1;
+			let newNo = 1;
+			const parts = 1 + rand(4);
+			for (let p = 0; p < parts; p++) {
+				for (let c = rand(3); c > 0; c--) {
+					lines.push(ctx(oldNo++, newNo++, line()));
+				}
+				const key = `k${p}`;
+				const dels = Array.from({ length: rand(6) }, () =>
+					del(oldNo++, line(), { clusterKey: key }),
+				);
+				const adds = Array.from({ length: rand(6) }, () =>
+					add(newNo++, line(), { clusterKey: key }),
+				);
+				// Sometimes a side's last line has no final newline.
+				const lastDel = dels[dels.length - 1];
+				if (lastDel && rand(3) === 0) lastDel.noNewline = true;
+				const lastAdd = adds[adds.length - 1];
+				if (lastAdd && rand(3) === 0) lastAdd.noNewline = true;
+				lines.push(...dels, ...adds);
+			}
+			const rows = pairHunk(lines);
 			expectCoverage(lines, rows);
-			expect(whitespaceOnly(rows)).toBe(
-				rows.length > 0 && rows.every((r) => r.kind === "ws"),
-			);
+			for (const run of runs(lines)) {
+				if (run.key === undefined) continue;
+				const mine = pairRun(run.lines, matchHunk(lines));
+				expect(whitespaceOnly(mine)).toBe(
+					mine.length > 0 && mine.every((r) => r.kind === "ws"),
+				);
+			}
 		}
 	});
 });
