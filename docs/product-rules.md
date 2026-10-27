@@ -159,5 +159,8 @@ shown, and a whitespace-only pair is still a change, drawn as one quiet
 row. A cluster that is all whitespace-only collapses to one row, but keeps
 its checkbox and cross-off and still has to be reviewed, and it stays open
 while a thread or a thread link's landing sits on one of its lines. The
-pairing is pure and checked for any input: every removed and added line of
-the cluster is in the rows exactly once (principle 2).
+matching runs over the whole hunk (a line's twin may be a context line or
+sit in another cluster: a one-sided `~` row), and a context line is used
+only whole, both sides, so no insertion or deletion ever hides behind an
+unchanged row. The matching is pure and checked for any input: every line
+of the hunk is in the rows exactly once (principle 2).

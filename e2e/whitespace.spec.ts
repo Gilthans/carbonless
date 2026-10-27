@@ -1,4 +1,11 @@
 import type { Locator, Page } from "@playwright/test";
+import {
+	REINDENT_NEW,
+	REINDENT_OLD,
+	WRAP_ADDED,
+	WRAP_NEW,
+	WRAP_OLD,
+} from "../test/whitespace-fixture";
 import { fileSection, openFiles, progress } from "./files-ui";
 import { expect, type PrOptions, test } from "./fixtures";
 
@@ -7,15 +14,18 @@ const mixed = Array.from({ length: 10 }, (_, i) => `mixed ${i + 1}`);
 const text = (lines: string[]) => `${lines.join("\n")}\n`;
 
 /**
- * Three clusters: src/indent.ts re-indented wholesale, src/mixed.ts with
- * lines 3–6 re-indented and line 4 really changed, src/crlf.txt from CRLF
- * to LF.
+ * Ten clusters: src/indent.ts re-indented wholesale (1), src/mixed.ts with
+ * lines 3–6 re-indented and line 4 really changed (1), src/crlf.txt from
+ * CRLF to LF (1), src/reindent.ts a re-indent git splits over context lines
+ * (5), src/wrap.ts a loop wrapped in an `if` (2).
  */
 const fixture: PrOptions = {
 	base: {
 		"src/indent.ts": text(indent),
 		"src/mixed.ts": text(mixed),
 		"src/crlf.txt": "one\r\ntwo\r\nthree\r\n",
+		"src/reindent.ts": REINDENT_OLD,
+		"src/wrap.ts": WRAP_OLD,
 	},
 	files: [
 		{
@@ -28,6 +38,8 @@ const fixture: PrOptions = {
 					),
 				),
 				"src/crlf.txt": "one\ntwo\nthree\n",
+				"src/reindent.ts": REINDENT_NEW,
+				"src/wrap.ts": WRAP_NEW,
 			},
 		},
 	],
@@ -83,7 +95,7 @@ test("Ignore whitespace pairs whitespace-only lines and collapses whitespace-onl
 	const s = await startCrb();
 	await openFiles(page, s.url);
 	const bar = progress(page);
-	await expect(bar).toContainText("0 / 3 clusters");
+	await expect(bar).toContainText("0 / 10 clusters");
 
 	// Off: plain add/del rows, as always.
 	let section = await expand(page, "src/indent.ts");
@@ -139,7 +151,7 @@ test("Ignore whitespace pairs whitespace-only lines and collapses whitespace-onl
 	await box.click();
 	await expect(box).toBeChecked();
 	await expect(collapsed).toHaveAttribute("data-reviewed", "true");
-	await expect(bar).toContainText("1 / 3 clusters reviewed");
+	await expect(bar).toContainText("1 / 10 clusters reviewed");
 
 	// A mixed cluster keeps its real change as add/del rows among the
 	// whitespace-only ones.
@@ -164,13 +176,42 @@ test("Ignore whitespace pairs whitespace-only lines and collapses whitespace-onl
 		"Whitespace only · 6 lines",
 	);
 
+	// A re-indent git split over context lines (five clusters): nothing
+	// but whitespace, as `git diff -w` shows.
+	section = await expand(page, "src/reindent.ts");
+	await expect(section.getByTestId("ws-cluster")).toHaveCount(5);
+	await expect(rows(section, "add")).toHaveCount(0);
+	await expect(rows(section, "del")).toHaveCount(0);
+	await expect(section.getByTestId("change-count")).toContainText("+15");
+	await expect(section.getByTestId("change-count")).toContainText("−15");
+	expect(await overflow(page)).toBeLessThanOrEqual(0);
+
+	// A loop wrapped in an `if`: only the `if` and its `}` are added; the
+	// line that crossed a context row is a one-sided row on each side.
+	section = await expand(page, "src/wrap.ts");
+	await expect(rows(section, "add")).toHaveCount(2);
+	await expect(rows(section, "add").nth(0)).toContainText(
+		WRAP_ADDED[0] as string,
+	);
+	await expect(rows(section, "del")).toHaveCount(0);
+	await expect(rows(section, "ws")).toHaveCount(7);
+	await expect(section.locator('[data-ws="new"]')).toHaveCount(1);
+	await expect(section.getByTestId("ws-cluster")).toContainText(
+		"Whitespace only · 1 line",
+	);
+	await section
+		.getByRole("button", { name: "Show whitespace-only lines" })
+		.click();
+	await expect(section.locator('[data-ws="old"]')).toHaveCount(1);
+	await expect(rows(section, "ws")).toHaveCount(8);
+
 	// Off again: the mixed file shows every line as it is.
 	await ignoreWhitespace(page, false);
 	section = await expand(page, "src/mixed.ts");
 	await expect(rows(section, "del")).toHaveCount(4);
 	await expect(rows(section, "add")).toHaveCount(4);
 	await expect(rows(section, "ws")).toHaveCount(0);
-	await expect(bar).toContainText("1 / 3 clusters reviewed");
+	await expect(bar).toContainText("1 / 10 clusters reviewed");
 });
 
 /** A 120-line file re-indented wholesale: one whitespace-only cluster. */

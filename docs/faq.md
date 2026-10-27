@@ -112,3 +112,13 @@ only difference is whitespace becomes one quiet `~` row instead of a red
 and a green one, and a cluster that is all whitespace collapses to one row
 you can review from, or expand. Clusters, counts and progress stay what
 they are with the switch off.
+
+The matching runs over the whole hunk, context lines included, because git
+often splits a re-indented block in two with an unchanged-looking `}`
+between them; a line whose whitespace-equal twin sits in another cluster,
+or is a context line, shows as a one-sided `~` row with its one number. A
+context line is only ever used whole (its old side by an added line and its
+new side by a removed one): a change that would take one side alone stays
+an ordinary added or removed line, which is why a loop wrapped in an `if`
+keeps the `if` and its `}` green while everything else goes quiet, just as
+`git diff -w` shows it.

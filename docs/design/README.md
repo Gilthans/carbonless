@@ -81,12 +81,16 @@ neutral punctuation next to it without any override.
 
 ## Whitespace-only rows
 
-Settings' "Ignore whitespace" draws a removed and an added line that differ
-only in whitespace (`src/web/files/whitespace.ts`) as one row: both line
-numbers in `faint` (no add/del gutter), the new side's text, a `~` sign in
-`faint` (accessible name and tooltip "Whitespace only") and a `band`
-background, so it reads as a change, only a quiet one, never as an unchanged
-line. A cluster that is all such pairs collapses to one `band` row carrying
+Settings' "Ignore whitespace" matches a hunk's removed and added lines with
+whitespace-equal lines on the other side (`src/web/files/whitespace.ts`,
+over the whole hunk, context lines included, since git often splits a
+re-indented block over a context line) and draws them as quiet rows: a
+removed line and its added twin in the same cluster as one row with both
+line numbers in `faint` (no add/del gutter) and the new side's text; a line
+whose twin is a context line or sits in another cluster as a one-sided row
+with its one number and its own text. Both carry a `~` sign in `faint`
+(accessible name and tooltip "Whitespace only") and a `band` background, so
+they read as a change, only a quiet one, never as an unchanged line. A cluster that is all such pairs collapses to one `band` row carrying
 the cluster's rail and controls as any cluster, "Whitespace only · N lines"
 in `muted`, and a chevron (40px on touch; tooltip "Show lines" / "Hide
 lines", `aria-expanded` and `aria-controls` on the rows' `tbody`) that shows
