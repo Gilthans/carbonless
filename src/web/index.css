@@ -256,16 +256,23 @@ html {
 }
 
 /*
- * An Overview card just resolved or unresolved fades where it is
- * (--fade-ms, FADE_MS) before it moves to the other list; with reduced
- * motion it stays still and says "Moving…" instead.
+ * An Overview card just resolved or unresolved (or whose last comment was
+ * deleted) fades where it is before it moves to the other list (or
+ * leaves): over --fade-ms (FADE_MS, the removal timer's own delay) it
+ * holds at full opacity a moment, eases out to nothing by 85%, and stays
+ * there, so it is fully gone before it is removed. Toggling back during
+ * the fade (undo) keeps it. With reduced motion it stays still and says
+ * "Moving…" ("Deleted") instead.
  */
 @keyframes thread-fade {
-	from {
+	0%,
+	25% {
 		opacity: 1;
+		animation-timing-function: ease-in;
 	}
-	to {
-		opacity: 0.25;
+	85%,
+	100% {
+		opacity: 0;
 	}
 }
 .thread-fading {

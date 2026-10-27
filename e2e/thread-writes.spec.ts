@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import type { Locator, Page } from "@playwright/test";
+import { FADE_MS } from "../src/web/threads/threadWrites";
 import {
 	reviewThread,
 	type Scenario,
@@ -299,12 +300,48 @@ test("resolve from an Overview card fades, then moves; unresolve brings it back"
 	// The bigger action next to Send.
 	const sendSize = await send(c).boundingBox();
 	expect(size?.width ?? 0).toBeGreaterThan(sendSize?.width ?? 0);
+	const el = await c.elementHandle();
 	await resolve.click();
 	await expect(c).toHaveAttribute("data-fading", "true");
+	// The fade runs over FADE_MS: a hold at full opacity, then down to 0 by
+	// 85%, so the card is fully faded before it's removed.
+	const fade = await c.evaluate((node) => {
+		const a = node
+			.getAnimations()
+			.find((x) => (x as CSSAnimation).animationName === "thread-fade");
+		const effect = a?.effect as KeyframeEffect | null | undefined;
+		const frames = effect?.getKeyframes() ?? [];
+		return {
+			duration: effect?.getTiming().duration,
+			frames: frames.map((f) => ({
+				offset: f.computedOffset,
+				opacity: Number(f.opacity),
+			})),
+		};
+	});
+	expect(fade.duration).toBe(FADE_MS);
+	expect(fade.frames[0]).toEqual({ offset: 0, opacity: 1 });
+	const zero = fade.frames.find((f: { opacity: number }) => f.opacity === 0);
+	expect(zero?.offset ?? 1).toBeLessThanOrEqual(0.9);
+	expect(fade.frames.at(-1)?.opacity).toBe(0);
+	// And on screen: the last frame it was drawn in was (all but) invisible.
+	const last = el?.evaluate(
+		(node) =>
+			new Promise<number>((done) => {
+				let seen = 1;
+				const tick = () => {
+					if (!node.isConnected) return done(seen);
+					seen = Number(getComputedStyle(node).opacity);
+					requestAnimationFrame(tick);
+				};
+				tick();
+			}),
+	);
 	await expect(c.getByTestId("thread-head")).toContainText("Resolved thread");
 	// Still in place, the toggle there to undo; then gone to the other list.
 	await expect(c.getByRole("button", { name: "Unresolve" })).toBeVisible();
 	await expect(c).toHaveCount(0, { timeout: 8000 });
+	expect(await last).toBeLessThanOrEqual(0.05);
 	const resolved = humans(page).getByRole("button", { name: "1 resolved" });
 	await resolved.click();
 	const back = card(page, "new.txt");
