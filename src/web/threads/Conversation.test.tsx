@@ -915,6 +915,18 @@ describe("editing a comment", () => {
 		expect(screen.getByRole("textbox", { name: "Edit comment" })).toHaveValue(
 			"Old mine",
 		);
+		// Typing on from theirs keeps it in view, until Save or Cancel.
+		await userEvent.type(
+			screen.getByRole("textbox", { name: "Edit comment" }),
+			"!",
+		);
+		expect(
+			within(screen.getByTestId("edit-theirs")).getByText("Theirs"),
+		).toBeVisible();
+		await userEvent.type(
+			screen.getByRole("textbox", { name: "Edit comment" }),
+			"{Backspace}",
+		);
 		// Seen: a Save now goes over it, and theirs leaves with the editor.
 		writeAnswer = async () =>
 			json(answerWith([mine("c1", "Old mine")], mine("c1", "Old mine")));
@@ -984,6 +996,50 @@ describe("editing a comment", () => {
 });
 
 describe("deleting a comment", () => {
+	it("focus: the row takes it when the window ends only if Undo had it, and nothing scrolls", async () => {
+		vi.useFakeTimers({ shouldAdvanceTime: true });
+		const focus = vi.spyOn(HTMLElement.prototype, "focus");
+		try {
+			const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+			serve({
+				T1: {
+					comments: [mine("c1", "One"), mine("c2", "Two")],
+				},
+			});
+			writeAnswer = () => new Promise(() => {});
+			renderWith(<Conversation readId="r1" thread={thread()} />, {
+				writes: "on",
+			});
+			await screen.findAllByTestId("thread-comment");
+			const [d1, d2] = screen.getAllByRole("button", { name: "Delete" });
+			await user.click(d1 as HTMLElement);
+			const [row1] = screen.getAllByTestId("comment-deleted-row");
+			// Undo kept the focus: the row takes it when the window ends.
+			await act(() => vi.advanceTimersByTimeAsync(DELETE_UNDO_MS));
+			expect(row1).toHaveFocus();
+			await user.click(d2 as HTMLElement);
+			// The reviewer moves on: the row leaves the focus where it is.
+			const box = screen.getByRole("textbox", { name: "Reply" });
+			box.focus();
+			await act(() => vi.advanceTimersByTimeAsync(DELETE_UNDO_MS));
+			expect(box).toHaveFocus();
+			const ours = focus.mock.contexts.filter(
+				(el) =>
+					el instanceof HTMLElement &&
+					(el.dataset.testid === "comment-undo" ||
+						el.dataset.testid === "comment-deleted-row"),
+			);
+			expect(ours.length).toBeGreaterThanOrEqual(3);
+			for (const [i, el] of focus.mock.contexts.entries()) {
+				if (!ours.includes(el)) continue;
+				expect(focus.mock.calls[i]?.[0]).toEqual({ preventScroll: true });
+			}
+		} finally {
+			focus.mockRestore();
+			vi.useRealTimers();
+		}
+	});
+
 	it("collapses at once to Deleted · Undo; Undo within the window sends nothing", async () => {
 		vi.useFakeTimers({ shouldAdvanceTime: true });
 		try {

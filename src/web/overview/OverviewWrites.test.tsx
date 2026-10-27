@@ -861,6 +861,28 @@ describe("editing and deleting from an Overview card", () => {
 		).toHaveValue("a mine");
 	});
 
+	it("Undo on a collapsed card never leaves a focus grab for later", async () => {
+		vi.useFakeTimers({ shouldAdvanceTime: true });
+		const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+		openerMore = { author: "octo", viewerCan: { update: true, delete: true } };
+		renderOverview({}, [thread("a", { author: "octo" })], () => null);
+		const card = await screen.findByTestId("thread");
+		await openCard(user, card);
+		await user.click(
+			await within(card).findByRole("button", { name: "Delete" }),
+		);
+		// Collapsed, the Deleted row stays; Undo there.
+		await user.click(within(card).getByTestId("thread-more"));
+		await user.click(within(card).getByRole("button", { name: "Undo" }));
+		await act(() => vi.advanceTimersByTimeAsync(100));
+		const more = within(card).getByTestId("thread-more");
+		await user.click(more);
+		expect(
+			await within(card).findByRole("button", { name: "Delete" }),
+		).not.toHaveFocus();
+		expect(more).toHaveFocus();
+	});
+
 	it("an opener blanked by a delete shows as a muted placeholder", async () => {
 		const user = userEvent.setup();
 		openerMore = {

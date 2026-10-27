@@ -309,6 +309,11 @@ describe("edit drafts", () => {
 			from: "Theirs",
 			theirs: true,
 		});
+		// Typing on from theirs keeps it shown; a new start doesn't.
+		store.setEdit("T1", "c1", "Theirs", "Mine, merged");
+		expect(store.edit("c1")?.edit?.theirs).toBe(true);
+		store.setEdit("T1", "c1", "Other", "Mine, merged");
+		expect(store.edit("c1")?.edit?.theirs).toBeUndefined();
 		store.discard("T1");
 		expect(store.get()).toEqual([]);
 	});

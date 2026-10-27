@@ -73,8 +73,13 @@ export function useCommentCan(comment: ThreadComment) {
 	};
 }
 
-/** The comment whose delete was just undone: its Delete takes the focus back. */
-let refocus: string | null = null;
+/**
+ * The comment whose delete was just undone by a click that had the focus:
+ * its Delete takes the focus back as it mounts in that same render. Only
+ * for that render: cleared right after, so a later mount (a card opened
+ * minutes on) never grabs the focus.
+ */
+let refocus: { id: string } | null = null;
 
 const ICON_BUTTON =
 	"flex h-10 w-10 shrink-0 items-center justify-center rounded-md hover:bg-overlay focus-visible:outline-2 focus-visible:outline-accent";
@@ -94,12 +99,13 @@ export function CommentActions(props: {
 	const can = useCommentCan(props.comment);
 	const del = useRef<HTMLButtonElement | null>(null);
 	const { id } = props.comment;
-	// Back from Undo: focus where it was, on Delete.
-	useEffect(() => {
-		if (refocus === id && del.current) {
-			refocus = null;
-			del.current.focus();
-		}
+	// Back from Undo (this very click, on a page on screen): focus where it
+	// was, on Delete.
+	useLayoutEffect(() => {
+		const el = del.current;
+		if (!el || refocus?.id !== id || el.closest("[inert]")) return;
+		refocus = null;
+		el.focus({ preventScroll: true });
 	}, [id]);
 	if (!can.update && !can.delete) return null;
 	const button = (
@@ -300,16 +306,25 @@ export function DeletedRow(props: {
 }) {
 	const writer = useThreadWriter();
 	const row = useRef<HTMLDivElement>(null);
-	const undo = useRef<HTMLButtonElement>(null);
+	const undo = useRef<HTMLButtonElement | null>(null);
+	/** Undo had the focus when it went (its ref is let go before it leaves the page). */
+	const undoHadFocus = useRef(false);
+	const undoRef = (el: HTMLButtonElement | null) => {
+		if (!el && undo.current) {
+			undoHadFocus.current = document.activeElement === undo.current;
+		}
+		undo.current = el;
+	};
 	const { undo: undoable } = props;
 	// Delete was just pressed (its button is gone): Undo takes the focus.
 	useLayoutEffect(() => {
-		if (undoable) undo.current?.focus();
+		if (undoable) undo.current?.focus({ preventScroll: true });
 	}, [undoable]);
-	// Undo went with the window: the row keeps the focus it had.
+	// Undo went with the window while it had the focus: the row keeps it.
 	useLayoutEffect(() => {
-		if (!undoable && document.activeElement === document.body) {
-			row.current?.focus();
+		if (!undoable && undoHadFocus.current) {
+			undoHadFocus.current = false;
+			row.current?.focus({ preventScroll: true });
 		}
 	}, [undoable]);
 	return (
@@ -325,12 +340,16 @@ export function DeletedRow(props: {
 			{!props.done && <span aria-hidden>·</span>}
 			{props.done ? null : props.undo ? (
 				<button
-					ref={undo}
+					ref={undoRef}
 					type="button"
 					data-testid="comment-undo"
-					onClick={() => {
-						refocus = props.commentId;
+					onClick={(e) => {
+						const mine = { id: props.commentId };
+						if (document.activeElement === e.currentTarget) refocus = mine;
 						writer.undoDelete(props.threadId, props.commentId);
+						setTimeout(() => {
+							if (refocus === mine) refocus = null;
+						}, 0);
 					}}
 					className="-my-px flex min-h-10 items-center rounded-md px-1.5 font-semibold text-link hover:underline focus-visible:outline-2 focus-visible:outline-accent"
 				>

@@ -178,10 +178,20 @@ export class DraftStore {
 	 */
 	setEdit(threadId: string, commentId: string, from: string, text: string) {
 		this.#update((all) => {
+			const prev = all.find((d) => d.edit?.commentId === commentId)?.edit;
 			const rest = all.filter((d) => d.edit?.commentId !== commentId);
+			// GitHub's newer text stays shown while typing on from it.
+			const theirs = prev?.theirs === true && prev.from === from;
 			return text === from
 				? rest
-				: [...rest, { threadId, text, edit: { commentId, from } }];
+				: [
+						...rest,
+						{
+							threadId,
+							text,
+							edit: { commentId, from, ...(theirs ? { theirs: true } : {}) },
+						},
+					];
 		});
 	}
 
