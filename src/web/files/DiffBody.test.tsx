@@ -412,6 +412,84 @@ describe("DiffBody with Ignore whitespace", () => {
 		}
 	});
 
+	it("shows a line whose twin is a context line or in another cluster as a one-sided row", async () => {
+		// Git's shape for a re-indented block whose `}` byte-matched another.
+		const split: FileHunks = {
+			newLineCount: 12,
+			hunks: [
+				{
+					oldStart: 7,
+					oldCount: 6,
+					newStart: 7,
+					newCount: 6,
+					lines: [
+						ctx(7, 7),
+						del(8, "  if (x) {", "A"),
+						add(8, "    if (x) {", "A"),
+						add(9, "    }", "A"),
+						add(10, "    sum += 1;", "A"),
+						{ kind: "context", oldNo: 9, newNo: 11, text: "  }" },
+						del(10, "  sum += 1;", "B"),
+						del(11, "}", "B"),
+						ctx(12, 12),
+					],
+				},
+			],
+		};
+		const { rows, collapsed, user } = setup({
+			hunks: split,
+			clusters: [
+				cluster("A", {
+					oldStart: 8,
+					oldCount: 1,
+					newStart: 8,
+					newCount: 3,
+					lines: 4,
+				}),
+				cluster("B", {
+					oldStart: 10,
+					oldCount: 2,
+					newStart: 12,
+					newCount: 0,
+					lines: 2,
+				}),
+			],
+		});
+		await screen.findByText("Whitespace only · 4 lines");
+		expect(screen.getByText("Whitespace only · 2 lines")).toBeInTheDocument();
+		expect(collapsed()).toHaveLength(2);
+		expect(rows().map((r) => r.kind)).toEqual([
+			"context",
+			"context",
+			"context",
+		]);
+		for (const button of screen.getAllByRole("button", {
+			name: "Show whitespace-only lines",
+		})) {
+			await user.click(button);
+		}
+		const sides = Array.from(
+			document.querySelectorAll<HTMLElement>('[data-kind="ws"]'),
+		).map((row) => [
+			row.dataset.ws,
+			row.dataset.oldNo ?? "",
+			row.dataset.newNo ?? "",
+		]);
+		expect(sides).toEqual([
+			["pair", "8", "8"],
+			["new", "", "9"],
+			["new", "", "10"],
+			["old", "10", ""],
+			["old", "11", ""],
+		]);
+		expect(rows().filter((r) => r.kind === "add" || r.kind === "del")).toEqual(
+			[],
+		);
+		expect(
+			screen.getAllByRole("img", { name: "Whitespace only" }),
+		).toHaveLength(5);
+	});
+
 	it("renders a crossed-off whitespace-only cluster's note on its row", async () => {
 		const { collapsed } = setup({
 			clusters: [

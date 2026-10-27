@@ -39,7 +39,13 @@ import {
 	lineKey,
 	placeThreads,
 } from "./threadPlacement";
-import { type DiffRow, pairWhitespace, whitespaceOnly } from "./whitespace";
+import {
+	type DiffRow,
+	matchHunk,
+	pairRun,
+	runs,
+	whitespaceOnly,
+} from "./whitespace";
 
 /** Review threads to show in a file's diff (FilesPage), and the read they come from. */
 export interface DiffThreads {
@@ -63,13 +69,14 @@ interface RowThreads {
 }
 
 /**
- * A whitespace-only pair shown as one row ("Ignore whitespace", see
- * whitespace.ts): both numbers, the new side's text.
+ * A whitespace-only row ("Ignore whitespace", see whitespace.ts): a removed
+ * and an added line as one row with both numbers and the new side's text,
+ * or one line whose twin is elsewhere, with its own number and text.
  */
 interface WsLine {
 	kind: "ws";
-	oldNo: number;
-	newNo: number;
+	oldNo?: number;
+	newNo?: number;
 	text: string;
 	noNewline?: boolean;
 }
@@ -77,16 +84,25 @@ interface WsLine {
 /** What a diff row shows: a line as it is, or a whitespace-only pair. */
 type RowLine = DiffLine | WsLine;
 
-const rowLine = (row: DiffRow): RowLine =>
-	row.kind === "line"
-		? row.line
-		: {
-				kind: "ws",
-				oldNo: row.del.oldNo as number,
-				newNo: row.add.newNo as number,
-				text: row.add.text,
-				noNewline: row.add.noNewline,
-			};
+const rowLine = (row: DiffRow): RowLine => {
+	if (row.kind === "line") return row.line;
+	const shown = (row.add ?? row.del) as DiffLine;
+	return {
+		kind: "ws",
+		oldNo: row.del?.oldNo,
+		newNo: row.add?.newNo,
+		text: shown.text,
+		noNewline: shown.noNewline,
+	};
+};
+
+/** Which side(s) a whitespace-only row shows (tests). */
+const wsSide = (line: WsLine) =>
+	line.oldNo !== undefined && line.newNo !== undefined
+		? "pair"
+		: line.oldNo !== undefined
+			? "old"
+			: "new";
 
 /** The key a row's bubble (or highlight) is under: its number on either side. */
 const rowKeys = (line: RowLine) =>
@@ -190,6 +206,7 @@ function LineRow(props: {
 			<tr
 				data-testid="diff-line"
 				data-kind={line.kind}
+				data-ws={line.kind === "ws" ? wsSide(line) : undefined}
 				data-reviewed={reviewed || undefined}
 				data-old-no={line.oldNo}
 				data-new-no={line.newNo}
@@ -366,17 +383,6 @@ function CrossedOffNote(props: { cluster: ClusterView; id?: string }) {
 				: "Crossed off"}
 		</span>
 	);
-}
-
-/** Splits a hunk into runs of context lines and runs of one cluster's lines. */
-function runs(lines: DiffLine[]): { key?: string; lines: DiffLine[] }[] {
-	const result: { key?: string; lines: DiffLine[] }[] = [];
-	for (const line of lines) {
-		const last = result[result.length - 1];
-		if (last && last.key === line.clusterKey) last.lines.push(line);
-		else result.push({ key: line.clusterKey, lines: [line] });
-	}
-	return result;
 }
 
 /**
@@ -974,18 +980,18 @@ function HunkRows(props: {
 	ignoreWhitespace: boolean;
 }) {
 	const { threads, hunk, ignoreWhitespace } = props;
-	// The hunk's runs and their rows, once per hunk (the pairing is O(n·m)):
-	// not again on a toggle, a landing, a thread opening or a context load.
-	const hunkRuns = useMemo(
-		() =>
-			runs(hunk.lines).map((run) => ({
-				...run,
-				rows: (ignoreWhitespace && run.key !== undefined
-					? pairWhitespace(run.lines)
-					: run.lines.map((line) => ({ kind: "line", line }))) as DiffRow[],
-			})),
-		[hunk, ignoreWhitespace],
-	);
+	// The hunk's runs and their rows, once per hunk (the matching is O(n·m)
+	// over the whole hunk): not again on a toggle, a landing, a thread
+	// opening or a context load.
+	const hunkRuns = useMemo(() => {
+		const twins = ignoreWhitespace ? matchHunk(hunk.lines) : null;
+		return runs(hunk.lines).map((run) => ({
+			...run,
+			rows: (twins && run.key !== undefined
+				? pairRun(run.lines, twins)
+				: run.lines.map((line) => ({ kind: "line", line }))) as DiffRow[],
+		}));
+	}, [hunk, ignoreWhitespace]);
 	return (
 		<>
 			<tbody>
