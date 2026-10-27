@@ -83,3 +83,36 @@ test("Settings sits in the app bar, compact header included, and switches hidden
 		await expect(dialog).toBeHidden();
 	}
 });
+
+test("Ignore whitespace sits under hidden characters, off by default, and is remembered", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	if (isMobile) await page.setViewportSize({ width: 360, height: 780 });
+	await pr();
+	const s = await startCrb();
+	await page.goto(`${s.url}files`);
+	const gear = page
+		.getByTestId("app-header-row")
+		.getByRole("button", { name: "Settings" });
+	await gear.click();
+	const dialog = page.getByRole("dialog", { name: "Settings" });
+	const hidden = dialog.getByRole("switch", { name: "Show hidden characters" });
+	const whitespace = dialog.getByRole("switch", { name: "Ignore whitespace" });
+	await expect(whitespace).toHaveAttribute("aria-checked", "false");
+	const h = await hidden.boundingBox();
+	const w = await whitespace.boundingBox();
+	expect(w?.y).toBeGreaterThanOrEqual((h?.y ?? 0) + (h?.height ?? 0) - 1);
+	expect(w?.height).toBeGreaterThanOrEqual(40);
+	await whitespace.click();
+	await expect(whitespace).toHaveAttribute("aria-checked", "true");
+	await expect(hidden).toHaveAttribute("aria-checked", "true");
+	await page.reload();
+	await gear.click();
+	await expect(whitespace).toHaveAttribute("aria-checked", "true");
+	await expect(hidden).toHaveAttribute("aria-checked", "true");
+	await whitespace.click();
+	await expect(whitespace).toHaveAttribute("aria-checked", "false");
+});
