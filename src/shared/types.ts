@@ -392,6 +392,12 @@ export interface ThreadComment {
 	body: string;
 	/** Plain text. */
 	text: string;
+	/** When its text was last edited on the host; null if never (anyone's comment). */
+	editedAt: string | null;
+	/** What the viewer may do to it on GitHub; both false when writes are off or for a pending comment. */
+	viewerCan: { update: boolean; delete: boolean };
+	/** An opener blanked by carbonless's delete: its body is exactly "[deleted]" (trimmed). Shown as a placeholder; viewerCan both false. */
+	deleted: boolean;
 }
 
 /** A review thread's comments (`GET /api/comments`). */
@@ -430,9 +436,32 @@ export interface ThreadUpdate {
 	yourTurn: boolean;
 	viewerCan: ReviewThread["viewerCan"];
 	comments: ThreadComments;
-	/** Reply only: the comment that holds the reply (posted now, or found by the dedupe). */
+	/**
+	 * The comment the write was about: a reply's (posted now, or found by
+	 * the dedupe), an edit's (the edited comment), or the opener a delete
+	 * blanked to "[deleted]".
+	 */
 	comment?: ThreadComment;
 }
+
+/** `PATCH /api/threads/:threadId/comments/:commentId` (commentId = ThreadComment.id, the GraphQL node id). */
+export interface EditRequest {
+	/** The new Markdown, non-empty after trim, at most MAX_REPLY. */
+	body: string;
+	/** The body the edit started from (the changed-on-GitHub check). */
+	from: string;
+	/** "Save anyway": skip the check. */
+	force: boolean;
+}
+
+/** A delete that removed the thread's last comment. */
+export interface ThreadGone {
+	threadId: string;
+	gone: true;
+}
+
+/** `DELETE /api/threads/:threadId/comments/:commentId` answers ThreadUpdate | ThreadGone. */
+export type DeleteAnswer = ThreadUpdate | ThreadGone;
 
 /** `POST /api/threads/:threadId/replies`. */
 export interface ReplyRequest {
@@ -461,8 +490,16 @@ export interface ResolveRequest {
 /** A refused thread write. */
 export interface WriteError {
 	error: string;
-	code: "pending-review" | "writes-off" | "forbidden" | "gone" | "invalid";
+	code:
+		| "pending-review"
+		| "writes-off"
+		| "forbidden"
+		| "gone"
+		| "invalid"
+		| "changed";
 	url?: string;
+	/** "changed" (an edit, 409): the comment as GitHub has it now. */
+	current?: ThreadComment;
 }
 
 /** The longest reply GitHub takes (a comment body's limit). */

@@ -1,3 +1,5 @@
+import type { ThreadComment, WriteError } from "../shared/types.js";
+
 /** A failure talking to GitHub through `gh`; the message is shown to the user as is. */
 export class GhError extends Error {}
 
@@ -8,13 +10,10 @@ export class GhError extends Error {}
 export class WriteRefusedError extends GhError {
 	constructor(
 		message: string,
-		readonly code:
-			| "pending-review"
-			| "writes-off"
-			| "forbidden"
-			| "gone"
-			| "invalid",
+		readonly code: WriteError["code"],
 		readonly url?: string,
+		/** "changed": the comment as GitHub has it now. */
+		readonly current?: ThreadComment,
 	) {
 		super(message);
 	}

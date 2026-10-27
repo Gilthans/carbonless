@@ -40,6 +40,9 @@ const comment = (
 	html: `<p>${text}</p>`,
 	body: text,
 	text,
+	editedAt: null,
+	viewerCan: { update: false, delete: false },
+	deleted: false,
 	...more,
 });
 

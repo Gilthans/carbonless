@@ -4,6 +4,7 @@ import Fastify, { type FastifyInstance } from "fastify";
 import {
 	type ClusterState,
 	COMMENTS_BATCH,
+	type EditRequest,
 	type ReplyRequest,
 	type StateChange,
 	type ThreadsStage,
@@ -24,7 +25,7 @@ import {
 	SessionClosedError,
 	UnknownReadError,
 } from "./session.js";
-import { replyProblem } from "./threadWrites.js";
+import { editProblem, replyProblem } from "./threadWrites.js";
 
 export interface AppOptions {
 	/** Directory with the built web UI. Omit to serve only the API. */
@@ -103,6 +104,7 @@ export async function buildApp(
 				error: error.message,
 				code: error.code,
 				...(error.url ? { url: error.url } : {}),
+				...(error.current ? { current: error.current } : {}),
 			};
 			return reply.status(WRITE_STATUS[error.code]).send(body);
 		}
@@ -243,6 +245,27 @@ export async function buildApp(
 			);
 		},
 	);
+	app.patch<{ Params: { threadId: string; commentId: string } }>(
+		"/api/threads/:threadId/comments/:commentId",
+		(request) => {
+			const problem = editProblem(request.body);
+			if (problem) throw new WriteRefusedError(problem, "invalid");
+			const { body, from, force } = request.body as EditRequest;
+			return session.editThreadComment(
+				threadIdParam(request.params.threadId),
+				commentIdParam(request.params.commentId),
+				{ body, from, force },
+			);
+		},
+	);
+	app.delete<{ Params: { threadId: string; commentId: string } }>(
+		"/api/threads/:threadId/comments/:commentId",
+		(request) =>
+			session.deleteThreadComment(
+				threadIdParam(request.params.threadId),
+				commentIdParam(request.params.commentId),
+			),
+	);
 	app.post("/api/refresh", () => session.refresh());
 	app.get("/api/head", () => session.checkHead());
 
@@ -272,14 +295,24 @@ const WRITE_STATUS: Record<WriteError["code"], number> = {
 	forbidden: 403,
 	gone: 404,
 	"pending-review": 409,
+	changed: 409,
 };
 
 const isThreadWrite = (url: string) =>
-	/^\/api\/threads\/[^/?]+\/(replies|resolved)(\?|$)/.test(url);
+	/^\/api\/threads\/[^/?]+\/(replies|resolved|comments\/[^/?]+)(\?|$)/.test(
+		url,
+	);
 
 function threadIdParam(raw: string): string {
 	if (!NODE_ID.test(raw)) {
 		throw new WriteRefusedError(`Not a thread id: ${raw}`, "invalid");
+	}
+	return raw;
+}
+
+function commentIdParam(raw: string): string {
+	if (!NODE_ID.test(raw)) {
+		throw new WriteRefusedError(`Not a comment id: ${raw}`, "invalid");
 	}
 	return raw;
 }

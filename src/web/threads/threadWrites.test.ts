@@ -680,6 +680,9 @@ describe("applyThreadUpdate", () => {
 					html: "",
 					body: "Q",
 					text: "Q",
+					editedAt: null,
+					viewerCan: { update: false, delete: false },
+					deleted: false,
 				},
 				{
 					id: "c2",
@@ -691,6 +694,9 @@ describe("applyThreadUpdate", () => {
 					html: "<p>A</p>",
 					body: "A",
 					text: "A",
+					editedAt: null,
+					viewerCan: { update: false, delete: false },
+					deleted: false,
 				},
 			],
 		};

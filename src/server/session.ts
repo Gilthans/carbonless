@@ -1,6 +1,8 @@
 import type {
 	CommentsView,
+	DeleteAnswer,
 	DiffLine,
+	EditRequest,
 	FileHunks,
 	PrOverview,
 	ReplyRequest,
@@ -34,6 +36,8 @@ import { ReviewService, StaleSnapshotError } from "./review/reviews.js";
 import { slugify } from "./slug.js";
 import { ThreadCodeSource } from "./threadCode.js";
 import {
+	deleteThreadComment,
+	editComment,
 	type PostedRecord,
 	replyToThread,
 	setResolved,
@@ -364,6 +368,27 @@ export class Session {
 		);
 	}
 
+	/** Edits a comment of a thread on GitHub (threadWrites.ts), in turn. */
+	editThreadComment(
+		threadId: string,
+		commentId: string,
+		req: EditRequest,
+	): Promise<ThreadUpdate> {
+		return this.#threadExclusive(threadId, () =>
+			editComment(this.#writeTarget(), threadId, commentId, req),
+		);
+	}
+
+	/** Deletes a comment of a thread on GitHub (threadWrites.ts), in turn. */
+	deleteThreadComment(
+		threadId: string,
+		commentId: string,
+	): Promise<DeleteAnswer> {
+		return this.#threadExclusive(threadId, () =>
+			deleteThreadComment(this.#writeTarget(), threadId, commentId),
+		);
+	}
+
 	/** Runs thread writes one at a time per thread, in the order asked. */
 	#threadExclusive<T>(threadId: string, fn: () => Promise<T>): Promise<T> {
 		const before = this.#threadWrites.get(threadId) ?? Promise.resolve();
@@ -410,6 +435,10 @@ export class Session {
 					read.applyWrite(id, nodes, seq, startedAt);
 				}
 			},
+			drop: (id, seq, startedAt) => {
+				for (const read of this.#reads) read.dropThread(id, seq, startedAt);
+			},
+			dropped: (id) => this.#reads.some((read) => read.dropped(id)),
 			posted: (clientId) => this.#posted.get(clientId),
 			remember: (clientId, record) => this.#posted.set(clientId, record),
 			inDoubt: (clientId) => this.#inDoubt.has(clientId),

@@ -67,6 +67,59 @@ function unlisted(t) {
 }
 /** The REST id of a thread's comment: (index + 1) * 1000 + its position. */
 const restId = (i, j) => (i + 1) * 1000 + j;
+/** Whether a write's change (an edit, a delete) still waits to show in GraphQL. */
+const lagging = (c) => c.changedAt !== undefined && c.changedAt + (s.writeUnlistedMs ?? 0) > Date.now();
+/**
+ * A comment as GraphQL shows it now: within writeUnlistedMs of an edit,
+ * its text before it.
+ */
+function asShown(c) {
+	const { changedAt, before, removed, ...rest } = c;
+	return before && lagging(c) ? { ...rest, ...before } : rest;
+}
+/**
+ * A thread node without its deleted comments (`removed`, once
+ * writeUnlistedMs has passed): the next one becomes its first, keeping
+ * the opener's commit and hunk, and the last one left its latest.
+ */
+function withoutRemoved(t) {
+	const all = t.comments?.nodes;
+	const gone = (c) => c.removed && !lagging(c);
+	if (!all) return { ...t, ...(t.first ? { first: { ...t.first, nodes: t.first.nodes.map(asShown) } } : {}) };
+	const shown = all.filter((c) => !gone(c)).map(asShown);
+	const opener = t.first?.nodes?.[0];
+	const first =
+		opener && gone(opener) && shown[0]
+			? { nodes: [{ ...shown[0], originalCommit: opener.originalCommit, diffHunk: opener.diffHunk ?? "" }] }
+			: t.first
+				? { ...t.first, nodes: t.first.nodes.map(asShown) }
+				: undefined;
+	const last = shown.at(-1);
+	const lastGone = all.length > 0 && gone(all.at(-1));
+	return {
+		...t,
+		...(first ? { first } : {}),
+		comments: {
+			...t.comments,
+			totalCount: t.comments.totalCount - (all.length - shown.length),
+			nodes: shown,
+		},
+		...(lastGone && last
+			? {
+					latest: {
+						nodes: [
+							{
+								author: last.author,
+								createdAt: last.createdAt,
+								publishedAt: last.publishedAt,
+								state: last.state,
+							},
+						],
+					},
+				}
+			: {}),
+	};
+}
 /**
  * A PR's thread nodes, each with an id (`T<pr>-<index>` unless it has
  * one), what the viewer may do (GitHub's defaults: reply, and resolve an
@@ -77,7 +130,7 @@ const threadNodes = (pr, nodes) =>
 		// Comment ids: `C<pr>-<index>` for the opener, `-<n>` after for the rest.
 		const cid = (c, j) => c?.id ?? (j === 0 ? `C${pr}-${i}` : `C${pr}-${i}-${j}`);
 		const ided = (c, j) => ({ ...c, id: cid(c, j), databaseId: restId(i, j) });
-		return {
+		return withoutRemoved({
 			viewerCanReply: true,
 			viewerCanResolve: !t.isResolved,
 			viewerCanUnresolve: t.isResolved === true,
@@ -99,8 +152,10 @@ const threadNodes = (pr, nodes) =>
 						},
 					}
 				: {}),
-		};
+		});
 	});
+/** Whether a thread's every comment is deleted (`removed`, shown so no more). */
+const allRemoved = (t) => t.removed === true && !lagging(t);
 /**
  * Where thread `id` is: its PR's number, its index there and the node as
  * served; none once deleted (deletedThreads).
@@ -108,9 +163,10 @@ const threadNodes = (pr, nodes) =>
 function threadPlace(id) {
 	if ((s.deletedThreads ?? []).includes(id)) return undefined;
 	for (const [n, p] of Object.entries(s.prs)) {
-		const nodes = threadNodes(n, p.graphql?.reviewThreads ?? []);
+		const raw = p.graphql?.reviewThreads ?? [];
+		const nodes = threadNodes(n, raw);
 		const i = nodes.findIndex((t) => t.id === id);
-		if (i >= 0) return { n, i, node: nodes[i] };
+		if (i >= 0) return allRemoved(raw[i]) ? undefined : { n, i, node: nodes[i] };
 	}
 	return undefined;
 }
@@ -225,12 +281,18 @@ function commentTexts(node) {
 	const opener = node.first?.nodes?.[0] ?? {};
 	return (listed.length ? listed : [opener]).map((c, j) => {
 		const own = j === 0 ? { ...c, ...opener, id: c.id ?? opener.id } : c;
+		const mine = own.author?.login?.toLowerCase() === s.user.login.toLowerCase();
 		return {
 			...own,
 			body: own.body ?? own.bodyText ?? "",
 			bodyText: own.bodyText ?? "",
 			bodyHTML: own.bodyHTML ?? "",
 			diffHunk: j === 0 ? (opener.diffHunk ?? "") : (own.diffHunk ?? ""),
+			lastEditedAt: own.lastEditedAt ?? null,
+			// GitHub's for a writer: their own comments (maintainers' others' too).
+			viewerCanUpdate: own.viewerCanUpdate ?? mine,
+			viewerCanDelete: own.viewerCanDelete ?? mine,
+			viewerDidAuthor: mine,
 		};
 	});
 }
@@ -266,7 +328,9 @@ function fields() {
  */
 function restComments(n, pr) {
 	const out = [];
-	threadNodes(n, pr.graphql?.reviewThreads ?? []).forEach((t, i) => {
+	const raw = pr.graphql?.reviewThreads ?? [];
+	threadNodes(n, raw).forEach((t, i) => {
+		if (allRemoved(raw[i])) return;
 		const opener = t.first?.nodes?.[0] ?? t.comments?.nodes?.[0];
 		if (!opener) return;
 		const file = t.subjectType === "FILE";
@@ -282,10 +346,10 @@ function restComments(n, pr) {
 			original_commit_id: opener.originalCommit?.oid ?? null,
 		};
 		const replies = (t.comments?.nodes ?? []).slice(1);
-		const openerId = (i + 1) * 1000;
+		const openerId = opener.databaseId ?? (i + 1) * 1000;
 		[opener, ...replies].forEach((c, j) => {
 			out.push({
-				id: openerId + j,
+				id: c.databaseId ?? openerId + j,
 				node_id: c.id,
 				...anchor,
 				diff_hunk: opener.diffHunk ?? "",
@@ -304,7 +368,12 @@ const restReply =
 	args[0] === "api" && args[1] === "-X" && args[2] === "POST"
 		? /^repos\/[^/]+\/[^/]+\/pulls\/(\d+)\/comments\/(\d+)\/replies$/.exec(args[3] ?? "")
 		: null;
-if (args[0] === "api" && args[1] === "-X" && !restReply) unsupported();
+const restComment =
+	args[0] === "api" && args[1] === "-X" && (args[2] === "PATCH" || args[2] === "DELETE")
+		? /^repos\/[^/]+\/[^/]+\/pulls\/comments\/(\d+)$/.exec(args[3] ?? "")
+		: null;
+if (restComment) restComment.splice(1, 0, args[2]);
+if (args[0] === "api" && args[1] === "-X" && !restReply && !restComment) unsupported();
 if (restReply && !s.loggedOut) {
 	const [, n, id] = restReply;
 	if (args.slice(4).join(" ") !== "-H Accept: application/vnd.github.full+json --input -") {
@@ -313,9 +382,16 @@ if (restReply && !s.loggedOut) {
 	const { body } = JSON.parse(readFileSync(0, "utf8"));
 	const pr = s.prs[n];
 	if (!pr) httpFail(404, "Not Found");
-	const nodes = threadNodes(n, pr.graphql?.reviewThreads ?? []);
-	const i = nodes.findIndex((_, k) => restId(k, 0) === Number(id));
-	if (i < 0 || (s.deletedThreads ?? []).includes(nodes[i].id)) {
+	const raw = pr.graphql?.reviewThreads ?? [];
+	const nodes = threadNodes(n, raw);
+	// To any comment of the thread (GitHub's: the opener's, or the next
+	// one's once the opener is deleted).
+	const i = nodes.findIndex((t) =>
+		[...(t.first?.nodes ?? []), ...(t.comments?.nodes ?? [])].some(
+			(c) => c.databaseId === Number(id),
+		),
+	);
+	if (i < 0 || (s.deletedThreads ?? []).includes(nodes[i].id) || allRemoved(raw[i])) {
 		httpFail(404, "Not Found");
 	}
 	const f = failNextFor("reply");
@@ -340,6 +416,80 @@ if (restReply && !s.loggedOut) {
 	}
 	if (f) failAs(f);
 	print(posted);
+}
+
+// REST edit and delete of one review comment by its REST id:
+// `api -X PATCH repos/<o>/<r>/pulls/comments/<id> -H "Accept: …" --input -`
+// and `api -X DELETE repos/<o>/<r>/pulls/comments/<id>`.
+if (restComment && !s.loggedOut) {
+	const [, method, id] = restComment;
+	const edit = method === "PATCH";
+	const rest = args.slice(4).join(" ");
+	if (edit ? rest !== "-H Accept: application/vnd.github.full+json --input -" : rest !== "") {
+		unsupported();
+	}
+	const { body } = edit ? JSON.parse(readFileSync(0, "utf8")) : {};
+	// Where the comment is: restId's thread index and position.
+	const i = Math.floor(Number(id) / 1000) - 1;
+	const j = Number(id) % 1000;
+	const place = Object.entries(s.prs).flatMap(([n, p]) => {
+		const raw = p.graphql?.reviewThreads ?? [];
+		const node = threadNodes(n, raw)[i];
+		if (!node || allRemoved(raw[i]) || (s.deletedThreads ?? []).includes(node.id)) return [];
+		const t = raw[i];
+		const listed = t.comments?.nodes ?? [];
+		const c = listed.length ? listed[j] : j === 0 ? t.first?.nodes?.[0] : undefined;
+		return c && !c.removed ? [{ n, t, c, node }] : [];
+	})[0];
+	if (!place) httpFail(404, "Not Found");
+	const op = edit ? "edit" : "delete";
+	const f = failNextFor(op);
+	if (f && !f.afterWrite) failAs(f);
+	const delay = edit ? s.editDelayMs : s.deleteDelayMs;
+	if (delay) sleep(delay);
+	const shown = commentTexts(place.node).find((c) => c.databaseId === Number(id));
+	const allowed = edit ? shown?.viewerCanUpdate : shown?.viewerCanDelete;
+	if (allowed === false) httpFail(403, HTTP_MESSAGES[403]);
+	const { t, c } = place;
+	const opener = t.first?.nodes?.[0];
+	const now = new Date().toISOString().replace(/\.\d+Z$/, "Z");
+	if (edit) {
+		if (!body?.trim()) httpFail(422, "Validation Failed", ["Body can't be blank"]);
+		const html = `<p dir="auto">${escapeHtml(body)}</p>`;
+		// The opener's text may live only in `first` (older fixtures).
+		const targets = j === 0 && opener && opener !== c ? [c, opener] : [c];
+		for (const x of targets) {
+			const was = {
+				body: x.body ?? x.bodyText ?? "",
+				bodyText: x.bodyText ?? "",
+				bodyHTML: x.bodyHTML ?? "",
+				lastEditedAt: x.lastEditedAt ?? null,
+			};
+			Object.assign(x, { body, bodyText: body, bodyHTML: html, lastEditedAt: now });
+			if (s.writeUnlistedMs) Object.assign(x, { changedAt: Date.now(), before: was });
+		}
+		save();
+		if (f) failAs(f);
+		print({
+			id: Number(id),
+			node_id: place.node.comments?.nodes?.find((x) => x.databaseId === Number(id))?.id ?? place.node.first?.nodes?.[0]?.id,
+			body,
+			body_text: body,
+			body_html: html,
+			user: { login: c.author?.login ?? "", avatar_url: c.author?.avatarUrl ?? "" },
+			created_at: c.createdAt,
+			updated_at: now,
+		});
+	}
+	const mark = (x) => Object.assign(x, { removed: true, changedAt: Date.now() });
+	mark(c);
+	if (j === 0 && opener && opener !== c) mark(opener);
+	const left = (t.comments?.nodes ?? []).filter((x) => !x.removed);
+	if (left.length === 0) mark(t);
+	save();
+	if (f) failAs(f);
+	// GitHub's 204: no body.
+	process.exit(0);
 }
 
 // REST: `api repos/<owner>/<repo>/pulls/<n>/comments --paginate --slurp`,
@@ -367,7 +517,7 @@ const known = [
 	"repo clone",
 	"pr view",
 ];
-if (!known.includes(cmd) && !restPull && !restReply) unsupported();
+if (!known.includes(cmd) && !restPull && !restReply && !restComment) unsupported();
 
 if (s.loggedOut) {
 	if (cmd === "auth status") {
@@ -672,7 +822,8 @@ switch (cmd) {
 		let all = pr.graphql?.[conn] ?? [];
 		if (conn === "reviewThreads") {
 			if (s.threadsDelayMs) sleep(s.threadsDelayMs);
-			all = threadNodes(f.number, all);
+			const raw = all;
+			all = threadNodes(f.number, raw).filter((_, k) => !allRemoved(raw[k]));
 			// Only the fields asked for: a summary has no comment text, and
 			// lists a thread's first page of comments (commentPageSize).
 			if (!f.query.includes("bodyHTML")) all = all.map(summarize);

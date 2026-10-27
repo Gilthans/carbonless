@@ -396,8 +396,13 @@ const SUMMARY_COMMENT = `id ${COMMENT_AUTHOR} ${COMMENT_TIMES}`;
 // What the viewer may do to it (reply, resolve, unresolve), and the
 // opener's REST id, which a reply is posted to.
 const THREAD_FIELDS = `id isResolved isOutdated path subjectType line originalLine startLine originalStartLine diffSide startDiffSide viewerCanReply viewerCanResolve viewerCanUnresolve first: comments(first: 1) { nodes { id databaseId ${COMMENT_AUTHOR} ${COMMENT_TIMES} originalCommit { oid } } } latest: comments(last: 1) { nodes { ${COMMENT_AUTHOR} ${COMMENT_TIMES} } } comments(first: 100) { totalCount ${COMMENT_PAGE} nodes { ${SUMMARY_COMMENT} } }`;
-/** Each comment's text, and GitHub's diff hunk (the opening one's shows the code). */
-const CONTENT_COMMENT = `${SUMMARY_COMMENT} body bodyText bodyHTML diffHunk`;
+/**
+ * Each comment's text, and GitHub's diff hunk (the opening one's shows the
+ * code); when it was last edited, what the viewer may do to it (only to
+ * their own: viewerDidAuthor), and its
+ * REST id (which an edit or a delete goes to; server-only).
+ */
+const CONTENT_COMMENT = `${SUMMARY_COMMENT} body bodyText bodyHTML diffHunk databaseId lastEditedAt viewerCanUpdate viewerCanDelete viewerDidAuthor`;
 /** Every comment of a thread with its text, by thread id (paged on past 100). */
 const CONTENT_FIELDS = `id comments(first: 100) { totalCount ${COMMENT_PAGE} nodes { ${CONTENT_COMMENT} } }`;
 /** Threads whose content one query reads (about 1 s for 50). */
@@ -1451,6 +1456,74 @@ export async function postResolved(
 	await runWrite(
 		["api", "graphql", "-f", `query=${query}`, "-f", `id=${id}`],
 		resolved ? "resolving the thread" : "unresolving the thread",
+		() => null,
+	);
+}
+
+/** GitHub's REST answer to an edit: the comment's new text. */
+export interface EditedComment {
+	body: string;
+	bodyText: string;
+	bodyHtml: string;
+	/** When GitHub says it changed (REST `updated_at`). */
+	updatedAt: string;
+}
+
+/**
+ * Edits review comment `commentId` (its REST id) of PR `ref` to `body`
+ * (REST PATCH; a pending review doesn't block it). Refusals by
+ * writeRefusal (404: "gone"); a GhError when it may land if sent again.
+ */
+export async function patchComment(
+	ref: PrRef,
+	commentId: number,
+	body: string,
+): Promise<EditedComment> {
+	const out = await runWrite(
+		[
+			"api",
+			"-X",
+			"PATCH",
+			`repos/${ref.owner}/${ref.repo}/pulls/comments/${commentId}`,
+			"-H",
+			"Accept: application/vnd.github.full+json",
+			"--input",
+			"-",
+		],
+		"the edit",
+		() => null,
+		JSON.stringify({ body }),
+	);
+	const c = rec(safeJson(out));
+	const str = (v: unknown) => (typeof v === "string" ? v : "");
+	if (typeof c.body !== "string") {
+		throw new GhError("gh returned an unexpected response for the edit");
+	}
+	return {
+		body: c.body,
+		bodyText: str(c.body_text),
+		bodyHtml: str(c.body_html),
+		updatedAt: str(c.updated_at),
+	};
+}
+
+/**
+ * Deletes review comment `commentId` (its REST id) of PR `ref` (REST
+ * DELETE). Refusals by writeRefusal (404: "gone", which a caller may count
+ * as done); a GhError when it may land if sent again.
+ */
+export async function deleteComment(
+	ref: PrRef,
+	commentId: number,
+): Promise<void> {
+	await runWrite(
+		[
+			"api",
+			"-X",
+			"DELETE",
+			`repos/${ref.owner}/${ref.repo}/pulls/comments/${commentId}`,
+		],
+		"the delete",
 		() => null,
 	);
 }

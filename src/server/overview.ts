@@ -250,6 +250,7 @@ export function mapComments(
 	summary: unknown,
 	content: unknown,
 	asOf?: string,
+	writes = false,
 ): { comments: ThreadComment[]; missing?: number } {
 	const listed = obj(obj(summary).comments);
 	const known = arr(listed.nodes).map(obj);
@@ -264,7 +265,7 @@ export function mapComments(
 		return at !== null && (!asOf || atOrBefore(at, asOf));
 	};
 	const comments: ThreadComment[] = [];
-	for (const raw of arr(obj(obj(content).comments).nodes)) {
+	for (const [index, raw] of arr(obj(obj(content).comments).nodes).entries()) {
 		const c = obj(raw);
 		const id = str(c.id);
 		if (complete && !ids.has(id)) continue;
@@ -273,17 +274,35 @@ export function mapComments(
 			continue;
 		}
 		const author = obj(c.author);
+		const pending = publishedAt === null;
+		// Only the thread's first comment: a reply saying so is just text.
+		const deleted = index === 0 && isDeletedBody(str(c.body));
+		// What GitHub lets the viewer do, where carbonless writes at all,
+		// to their own comments only (not others', even where GitHub would).
+		const can = (v: unknown) =>
+			!asOf &&
+			writes &&
+			!pending &&
+			!deleted &&
+			c.viewerDidAuthor === true &&
+			v === true;
 		comments.push({
 			id,
 			author: str(author.login),
 			bot: isBotAuthor(author),
 			avatarUrl: str(author.avatarUrl),
 			publishedAt,
-			pending: publishedAt === null,
+			pending,
 			html: str(c.bodyHTML),
 			body: str(c.body),
 			// GitHub's plain-text rendering; the raw body is a fallback.
 			text: str(c.bodyText) || str(c.body),
+			editedAt: str(c.lastEditedAt) || null,
+			viewerCan: {
+				update: can(c.viewerCanUpdate),
+				delete: can(c.viewerCanDelete),
+			},
+			deleted,
 		});
 	}
 	const shown = new Set(comments.map((c) => c.id));
@@ -300,6 +319,12 @@ export function mapComments(
 	}
 	return missing > 0 ? { comments, missing } : { comments };
 }
+
+/** What carbonless's delete leaves of an opener that has replies. */
+export const DELETED_BODY = "[deleted]";
+
+/** Whether a body is an opener blanked by carbonless's delete. */
+export const isDeletedBody = (body: string) => body.trim() === DELETED_BODY;
 
 /** An ISO time in ms; a missing or invalid one sorts first. */
 function timeOf(at: string): number {

@@ -139,6 +139,9 @@ function useSending(
 			html: "",
 			body: r.text,
 			text: r.text,
+			editedAt: null,
+			viewerCan: { update: false, delete: false },
+			deleted: false,
 		}));
 }
 

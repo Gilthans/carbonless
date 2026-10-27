@@ -100,6 +100,8 @@ interface Said {
 	text: string;
 	html?: string;
 	body?: string;
+	/** Edited this long after it was written (ms). */
+	editedAfter?: number;
 }
 
 /**
@@ -124,6 +126,13 @@ function thread(
 			...(s.html ? { html: s.html } : {}),
 			...(s.body ? { body: s.body } : {}),
 			createdAt: new Date(t0 + i * 3_600_000).toISOString(),
+			...(s.editedAfter === undefined
+				? {}
+				: {
+						editedAt: new Date(
+							t0 + i * 3_600_000 + s.editedAfter,
+						).toISOString(),
+					}),
 			...(i === 0 ? { commit: head, diffHunk: hunk(path, line) } : {}),
 		}),
 	);
@@ -141,7 +150,8 @@ const LONG = [
 /**
  * The demo's threads on the PR whose head is `head`:
  * - the longer one (7 comments): the viewer and the author back and
- *   forth, badyan joining; Markdown and code; it waits on the viewer;
+ *   forth, badyan joining; Markdown and code, a comment of each of them
+ *   edited; it waits on the viewer;
  * - resolved, dima and the author, with a long comment;
  * - the viewer and the author, the viewer answering last;
  * - badyan's suggested change, taken;
@@ -162,12 +172,14 @@ export function demoThreads(head: string): ThreadNode[] {
 				text: "Then a ttl per use: new Cache<Widget>(5 * 60_000) reads fine.",
 				html: '<p dir="auto">Then a ttl per use:</p>\n<div class="highlight highlight-source-ts notranslate position-relative overflow-auto" dir="auto"><pre><span class="pl-k">const</span> <span class="pl-s1">widgets</span> <span class="pl-c1">=</span> <span class="pl-k">new</span> <span class="pl-smi">Cache</span><span class="pl-kos">&lt;</span><span class="pl-smi">Widget</span><span class="pl-kos">&gt;</span><span class="pl-kos">(</span><span class="pl-c1">5</span> <span class="pl-c1">*</span> <span class="pl-c1">60_000</span><span class="pl-kos">)</span><span class="pl-kos">;</span></pre></div>',
 				body: "Then a ttl per use:\n\n```ts\nconst widgets = new Cache<Widget>(5 * 60_000);\n```",
+				editedAfter: 10 * 60_000,
 			},
 			{
 				who: author,
 				text: "Works for me, keeping 60s as the default.",
 				html: '<p dir="auto">Works for me, keeping <code class="notranslate">60_000</code> as the default.</p>',
 				body: "Works for me, keeping `60_000` as the default.",
+				editedAfter: 2 * 60_000,
 			},
 			{ who: viewer, text: "Thanks." },
 			{

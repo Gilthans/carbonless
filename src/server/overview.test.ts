@@ -1020,8 +1020,97 @@ describe("mapComments", () => {
 			html: "<p><strong>c1</strong></p>",
 			body: "**c1**",
 			text: "c1",
+			editedAt: null,
+			viewerCan: { update: false, delete: false },
+			deleted: false,
 		});
 		expect(comments[3]?.publishedAt).toBeNull();
+	});
+
+	describe("edits and what the viewer may do", () => {
+		/** `thread` with these fields on its comments' content, by index. */
+		const withFields = (
+			fields: Record<number, Record<string, unknown>>,
+			t = thread,
+		) => ({
+			summary: t.summary,
+			content: {
+				...t.content,
+				comments: {
+					...t.content.comments,
+					nodes: t.content.comments.nodes.map((n, i) => ({
+						...n,
+						...(fields[i] ?? {}),
+					})),
+				},
+			},
+		});
+		const can = {
+			viewerCanUpdate: true,
+			viewerCanDelete: true,
+			viewerDidAuthor: true,
+		};
+
+		it("maps lastEditedAt to editedAt, anyone's", () => {
+			const t = withFields({ 0: { lastEditedAt: "2026-01-04T00:00:00Z" } });
+			const [first, second] = mapComments(t.summary, t.content).comments;
+			expect(first?.editedAt).toBe("2026-01-04T00:00:00Z");
+			expect(second?.editedAt).toBeNull();
+		});
+
+		it("viewerCan from GitHub's viewerCanUpdate/Delete only where writes are on", () => {
+			const t = withFields({
+				0: can,
+				1: { ...can, viewerCanDelete: false },
+				// GitHub lets a maintainer, but it isn't the viewer's.
+				2: { ...can, viewerDidAuthor: false },
+				3: can,
+			});
+			const on = mapComments(t.summary, t.content, undefined, true).comments;
+			expect(on.map((c) => c.viewerCan)).toEqual([
+				{ update: true, delete: true },
+				{ update: true, delete: false },
+				{ update: false, delete: false },
+				// Pending: both off, whatever GitHub says.
+				{ update: false, delete: false },
+			]);
+			const off = mapComments(t.summary, t.content).comments;
+			expect(off.every((c) => !c.viewerCan.update && !c.viewerCan.delete)).toBe(
+				true,
+			);
+			const asOf = mapComments(
+				t.summary,
+				t.content,
+				"2026-01-03T11:00:00Z",
+				true,
+			).comments;
+			expect(asOf[0]?.viewerCan).toEqual({ update: false, delete: false });
+		});
+
+		it("an opener whose body is [deleted] is deleted, with nothing to do to it; a reply saying so is not", () => {
+			const t = withFields({
+				0: { ...can, body: "  [deleted]\n" },
+				1: { ...can, body: "[deleted]" },
+			});
+			const [first, second] = mapComments(
+				t.summary,
+				t.content,
+				undefined,
+				true,
+			).comments;
+			expect(first).toMatchObject({
+				deleted: true,
+				viewerCan: { update: false, delete: false },
+			});
+			expect(second).toMatchObject({
+				deleted: false,
+				viewerCan: { update: true, delete: true },
+			});
+			const other = withFields({ 0: { body: "[deleted] or not" } });
+			expect(
+				mapComments(other.summary, other.content).comments[0]?.deleted,
+			).toBe(false);
+		});
 	});
 
 	it("as of a cutoff: only those published by then, none pending", () => {

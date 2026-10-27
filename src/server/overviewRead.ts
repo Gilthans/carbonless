@@ -85,6 +85,11 @@ export class OverviewRead {
 		string,
 		{ summary: unknown; content: unknown; seq: number }
 	>();
+	/**
+	 * Threads a write deleted the last comment of (by the re-read's seq):
+	 * left out of the lists, their comments "deleted".
+	 */
+	readonly #dropped = new Map<string, number>();
 	/** The PR author (the overview's), once the summary is in. */
 	#prAuthor = "";
 	/** Summary nodes, then with their content merged in as it arrives. */
@@ -256,7 +261,27 @@ export class OverviewRead {
 		if (this.started > startedAt) return;
 		const prev = this.#written.get(id);
 		if (prev && prev.seq > seq) return;
+		if ((this.#dropped.get(id) ?? -1) > seq) return;
+		this.#dropped.delete(id);
 		this.#written.set(id, { ...nodes, seq });
+	}
+
+	/** Whether a write dropped thread `id` (dropThread). */
+	dropped(id: string): boolean {
+		return this.#dropped.has(id);
+	}
+
+	/**
+	 * Thread `id` gone, as a write's re-read (`seq`, started at `startedAt`
+	 * ms) found it after deleting its last comment: ignored like
+	 * applyWrite's re-reads.
+	 */
+	dropThread(id: string, seq: number, startedAt: number): void {
+		if (this.started > startedAt) return;
+		const prev = this.#written.get(id);
+		if (prev && prev.seq > seq) return;
+		this.#written.delete(id);
+		this.#dropped.set(id, seq);
 	}
 
 	/**
@@ -284,6 +309,7 @@ export class OverviewRead {
 
 	/** Thread `id`'s summary node as this read has it (a write's, if any). */
 	summaryOf(id: string): unknown {
+		if (this.#dropped.has(id)) return undefined;
 		const written = this.#written.get(id);
 		if (written) return written.summary;
 		return this.#nodes.find((n) => (n as { id?: unknown })?.id === id);
@@ -297,12 +323,17 @@ export class OverviewRead {
 
 	/** A thread's content as in (a write's first), GONE, or undefined. */
 	#content(id: string): unknown {
+		if (this.#dropped.has(id)) return GONE;
 		return this.#written.get(id)?.content ?? this.#contents.get(id);
 	}
 
 	/** Every thread, its content merged in where it has arrived. */
 	#map(): ReviewThread[] {
-		const nodes = this.#nodes.map((raw) => {
+		const shown = this.#nodes.filter((raw) => {
+			const id = (raw as { id?: unknown })?.id;
+			return typeof id !== "string" || !this.#dropped.has(id);
+		});
+		const nodes = shown.map((raw) => {
 			const node = this.#summary(raw);
 			const id = (node as { id?: unknown })?.id;
 			const content = typeof id === "string" ? this.#content(id) : undefined;
@@ -363,7 +394,10 @@ export class OverviewRead {
 				if (content === GONE || content === undefined) {
 					return { threadId, comments: [], unavailable: "deleted" };
 				}
-				return { threadId, ...mapComments(summary, content, this.#asOf) };
+				return {
+					threadId,
+					...mapComments(summary, content, this.#asOf, this.#writes),
+				};
 			}),
 		};
 	}

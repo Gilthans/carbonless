@@ -31,6 +31,9 @@ const comments = (threadId: string): ThreadComments => ({
 			html: `<p>${threadId}</p>`,
 			body: threadId,
 			text: threadId,
+			editedAt: null,
+			viewerCan: { update: false, delete: false },
+			deleted: false,
 		},
 	],
 });

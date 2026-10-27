@@ -47,8 +47,9 @@ Real-PR data never enters the repo, tests or fixtures.
 ## Writing to GitHub
 
 carbonless writes to GitHub only on the reviewer's explicit action, as the
-`gh` login, through `gh` (no server of its own): replying to a review thread
-and resolving or unresolving one (`src/server/threadWrites.ts`).
+`gh` login, through `gh` (no server of its own): replying to a review thread,
+resolving or unresolving one, and editing or deleting one of the viewer's
+comments in one (`src/server/threadWrites.ts`).
 
 - **One explicit action, one write.** Every write is one click (or the send
   shortcut) on one thread. Nothing posts, resolves or retries a refused write
@@ -60,6 +61,28 @@ and resolving or unresolving one (`src/server/threadWrites.ts`).
   which puts the reply into the viewer's pending review where nobody else
   sees it. Resolving uses GraphQL `resolveReviewThread` /
   `unresolveReviewThread`, which a pending review doesn't affect.
+- **Edits and deletes are REST, one comment each.** An edit is
+  `PATCH /repos/{o}/{r}/pulls/comments/{id}`, a delete
+  `DELETE /repos/{o}/{r}/pulls/comments/{id}` (the comment's REST id,
+  GraphQL's `databaseId`, which only the server sees). A pending review
+  blocks neither. Comments in the viewer's pending review, PR conversation
+  comments and review bodies aren't edited or deleted here.
+- **Deleting an opener with replies blanks it.** Deleting the first comment
+  of a thread that has others after it edits its body to `[deleted]`
+  instead (owner: "it should instead be edited to say [deleted]"), so the
+  thread keeps its opener, place and code. Such an opener (body exactly
+  `[deleted]`, trimmed) is `ThreadComment.deleted`, shown as a placeholder,
+  and can't be edited or deleted again (400). Deleting any other comment
+  deletes it; deleting a thread's last comment removes the thread
+  (`ThreadGone`), and it leaves the session's kept reads.
+- **An edit never overwrites a newer version unseen.** The server reads the
+  comment fresh first: if its body already is the new text (line ends and
+  trailing whitespace aside) the edit is done, nothing sent (a retry that
+  landed); if it isn't the body the edit started from (`from`) any more,
+  it is refused (409 `changed`, with the comment as GitHub has it now)
+  unless the reviewer chose "Save anyway" (`force`). A delete of a comment
+  already gone (GitHub's 404 once it is no longer listed, or not in the
+  fresh read) is done; a 404 for one GitHub still lists is a refusal.
 - **A pending review refuses replies.** While the viewer has an unsubmitted
   review on the PR, GitHub refuses REST replies (422, "can only have one
   pending review"). carbonless shows that as a refusal (409 `pending-review`)
@@ -97,12 +120,19 @@ and resolving or unresolving one (`src/server/threadWrites.ts`).
   (`--as-of`) or as `--viewer` someone other than the `gh` login
   (`PrOverview.writes`); merged, closed and `--head` views write as GitHub
   allows. What the viewer may do comes from GitHub (`viewerCanReply`,
-  `viewerCanResolve`, `viewerCanUnresolve`), and a 403 passes GitHub's
-  message on.
+  `viewerCanResolve`, `viewerCanUnresolve`; per comment `viewerCanUpdate`,
+  `viewerCanDelete`, off for a pending comment), and a 403 passes GitHub's
+  message on. carbonless offers edit and delete only on the viewer's own
+  comments, even where GitHub allows more (maintainers).
 - **Only this PR.** A write goes to a thread of the PR being viewed; a
   thread id of another PR is refused as gone.
 - **Later reads agree.** A write's answer is the thread re-read from GitHub,
   and it replaces the thread in the session's kept reads, so the page doesn't
   go back to the old state before a Refresh (which shows GitHub's truth).
+  GitHub's GraphQL may lag a REST write: the re-read is tried again a few
+  times, then the answer shows the write anyway (the reply added, the new
+  text, the deleted comment left out).
+- **One thread, one write at a time.** Replies, resolving, edits and
+  deletes on one thread run in the order asked, never at once.
 - **Tests write only to the fake gh.** Real writes happen only on the
   owner's scratch PR (see `CLAUDE.md`).

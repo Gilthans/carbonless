@@ -1,4 +1,4 @@
-import { writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import prViewFixture from "../fixtures/gh/pr-view.json" with { type: "json" };
 import threadsFixture from "../fixtures/gh/review-threads.json" with {
@@ -58,7 +58,8 @@ export interface Scenario {
 	 * scenario file, so later calls see them.
 	 */
 	failNext?: {
-		op: "reply" | "resolve";
+		/** Also a comment's REST edit ("edit") or delete ("delete"). */
+		op: "reply" | "resolve" | "edit" | "delete";
 		status?: number;
 		afterWrite?: boolean;
 		/** GitHub's message (default: the status's usual one). */
@@ -70,6 +71,16 @@ export interface Scenario {
 	replyDeletesThread?: boolean;
 	/** A REST reply answers only after this many milliseconds (before it lands). */
 	replyDelayMs?: number;
+	/** A REST edit of a comment answers only after this many milliseconds (before it lands). */
+	editDelayMs?: number;
+	/** A REST delete of a comment answers only after this many milliseconds (before it lands). */
+	deleteDelayMs?: number;
+	/**
+	 * An edit or a delete GitHub's GraphQL doesn't show for this many
+	 * milliseconds after it was made (REST has it at once): the comment's
+	 * text before, or the deleted comment, until then.
+	 */
+	writeUnlistedMs?: number;
 	/**
 	 * A reply GitHub's GraphQL doesn't list for this many milliseconds after
 	 * it was posted (REST has it at once): the lag a write's re-read meets.
@@ -159,6 +170,14 @@ export interface CommentNode {
 	diffHunk?: string;
 	/** The commit the comment was written on. */
 	originalCommit?: { oid: string };
+	/** When its text was last edited; none or null, never. */
+	lastEditedAt?: string | null;
+	/**
+	 * Whether the viewer may edit or delete it (the fake's default: their
+	 * own comments, as GitHub's for a writer).
+	 */
+	viewerCanUpdate?: boolean;
+	viewerCanDelete?: boolean;
 }
 
 /** A review comment's times, as gh.ts queries them (COMMENT_TIMES). */
@@ -200,7 +219,17 @@ export interface ThreadNode {
 		 * their text (the fake serves it only to a query by id).
 		 */
 		nodes: ({ author: CommentNode["author"] } & CommentTimes &
-			Partial<Pick<CommentNode, "body" | "bodyText" | "bodyHTML">>)[];
+			Partial<
+				Pick<
+					CommentNode,
+					| "body"
+					| "bodyText"
+					| "bodyHTML"
+					| "lastEditedAt"
+					| "viewerCanUpdate"
+					| "viewerCanDelete"
+				>
+			>)[];
 	};
 }
 
@@ -237,6 +266,15 @@ export function reviewThread(
 							...(c.body === undefined ? {} : { body: c.body }),
 							bodyText: c.bodyText,
 							bodyHTML: c.bodyHTML,
+							...(c.lastEditedAt === undefined
+								? {}
+								: { lastEditedAt: c.lastEditedAt }),
+							...(c.viewerCanUpdate === undefined
+								? {}
+								: { viewerCanUpdate: c.viewerCanUpdate }),
+							...(c.viewerCanDelete === undefined
+								? {}
+								: { viewerCanDelete: c.viewerCanDelete }),
 						})),
 					},
 				}
@@ -273,6 +311,8 @@ export function threadComment(c: {
 	commit?: string;
 	/** The markdown, when it differs from `text`. */
 	body?: string;
+	/** When its text was last edited (GitHub's lastEditedAt). */
+	editedAt?: string;
 }): CommentNode {
 	const escaped = c.text
 		.replaceAll("&", "&amp;")
@@ -296,7 +336,39 @@ export function threadComment(c: {
 		state: c.pending ? "PENDING" : "SUBMITTED",
 		...(c.diffHunk === undefined ? {} : { diffHunk: c.diffHunk }),
 		...(c.commit === undefined ? {} : { originalCommit: { oid: c.commit } }),
+		...(c.editedAt === undefined ? {} : { lastEditedAt: c.editedAt }),
 	};
+}
+
+/**
+ * Edits a comment in the scenario file at `path` as if someone did on
+ * GitHub (its UI, another tab): the next read sees `body`, edited now.
+ * `thread` is its index in PR `pr`'s reviewThreads, `comment` its
+ * position there (0: the opener).
+ */
+export function editElsewhere(
+	path: string,
+	at: { pr: number | string; thread: number; comment: number },
+	body: string,
+): void {
+	const s = JSON.parse(readFileSync(path, "utf8")) as Scenario;
+	const t = s.prs[String(at.pr)]?.graphql?.reviewThreads?.[at.thread] as
+		| Partial<ThreadNode>
+		| undefined;
+	const listed = t?.comments?.nodes?.[at.comment];
+	if (!t || (!listed && at.comment !== 0)) {
+		throw new Error(`No comment ${at.comment} in thread ${at.thread}`);
+	}
+	const text = {
+		body,
+		bodyText: body,
+		bodyHTML: `<p dir="auto">${body.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;")}</p>`,
+		lastEditedAt: new Date().toISOString().replace(/\.\d+Z$/, "Z"),
+	};
+	if (listed) Object.assign(listed, text);
+	const opener = t.first?.nodes?.[0];
+	if (at.comment === 0 && opener) Object.assign(opener, text);
+	writeFileSync(path, JSON.stringify(s, null, "\t"));
 }
 
 /**

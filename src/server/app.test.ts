@@ -751,6 +751,181 @@ describe("API", () => {
 		});
 	});
 
+	describe("comment edits and deletes", () => {
+		/** T12-0: the viewer's opener and rev's reply; T12-1: the viewer's only comment. */
+		const setup = async (over: Partial<Scenario> = {}) => {
+			const said = (login: string, text: string) =>
+				threadComment({ login, text, commit: pr.head() });
+			pr.scenario({
+				prs: {
+					12: {
+						view: prView({ headRefOid: pr.head(), baseRefName: "main" }),
+						graphql: {
+							reviewThreads: [
+								reviewThread({ path: "a.txt", line: 2 }, [
+									said("Octo_Cat", "Why?"),
+									said("rev", "Because."),
+								]),
+								reviewThread({ path: "a.txt", line: 26 }, [
+									said("Octo_Cat", "Nit"),
+								]),
+							],
+						},
+					},
+				},
+				...over,
+			});
+			const { readId } = await get("/api/overview?maxAge=0");
+			await get(`/api/threads?read=${readId}&stage=summary`);
+		};
+		const url = (thread: string, comment: string) =>
+			`/api/threads/${thread}/comments/${comment}`;
+		const patch = (thread: string, comment: string, payload: unknown) =>
+			inject(url(thread, comment), {
+				method: "PATCH",
+				payload: payload as object,
+			});
+		const del = (thread: string, comment: string) =>
+			inject(url(thread, comment), { method: "DELETE" });
+		const edit = { body: "Why, though?", from: "Why?", force: false };
+
+		it("200: an edit answers with the edited comment; a delete with the thread or ThreadGone", async () => {
+			await setup();
+			const edited = await patch("T12-0", "C12-0", edit);
+			expect(edited.statusCode, edited.body).toBe(200);
+			expect(edited.json()).toMatchObject({
+				threadId: "T12-0",
+				commentCount: 2,
+				comment: {
+					id: "C12-0",
+					body: "Why, though?",
+					viewerCan: { update: true, delete: true },
+					deleted: false,
+				},
+			});
+			expect(edited.json().comment.editedAt).toEqual(expect.any(String));
+			const blanked = await del("T12-0", "C12-0");
+			expect(blanked.statusCode, blanked.body).toBe(200);
+			expect(blanked.json()).toMatchObject({
+				commentCount: 2,
+				comment: { id: "C12-0", body: "[deleted]", deleted: true },
+			});
+			const gone = await del("T12-1", "C12-1");
+			expect(gone.statusCode, gone.body).toBe(200);
+			expect(gone.json()).toEqual({ threadId: "T12-1", gone: true });
+			const { readId } = await get("/api/overview");
+			const view = await get(`/api/threads?read=${readId}&stage=summary`);
+			expect(view.threads.map((t: ReviewThread) => t.id)).toEqual(["T12-0"]);
+		});
+
+		it("400 invalid: a blank, long or malformed edit, bad JSON, bad ids, an opener already deleted", async () => {
+			await setup();
+			const bad = [
+				await patch("T12-0", "C12-0", { ...edit, body: " \n" }),
+				await patch("T12-0", "C12-0", { ...edit, body: "x".repeat(65537) }),
+				await patch("T12-0", "C12-0", { ...edit, from: 1 }),
+				await patch("T12-0", "C12-0", { body: "x", from: "Why?" }),
+				await inject(url("T12-0", "C12-0"), {
+					method: "PATCH",
+					payload: "{nope",
+					headers: { host, "content-type": "application/json" },
+				}),
+				await patch("bad%20id!", "C12-0", edit),
+				await patch("T12-0", "bad%20id!", edit),
+				await del("T12-0", "bad%20id!"),
+			];
+			for (const res of bad) {
+				expect(res.statusCode, res.body).toBe(400);
+				expect(res.json().code, res.body).toBe("invalid");
+			}
+			expect(pr.ghLog()).not.toMatch(/-X (PATCH|DELETE)/);
+			expect((await del("T12-0", "C12-0")).statusCode).toBe(200);
+			const again = await del("T12-0", "C12-0");
+			expect(again.statusCode).toBe(400);
+			expect(again.json().code).toBe("invalid");
+		});
+
+		it("403 writes-off as someone else; 403 forbidden for another's comment", async () => {
+			await setup();
+			const theirs = await patch("T12-0", "C12-0-1", {
+				...edit,
+				from: "Because.",
+			});
+			expect(theirs.statusCode, theirs.body).toBe(403);
+			expect(theirs.json().code).toBe("forbidden");
+			const as = await Session.open(pr.arg, process.cwd(), () => {}, {
+				viewer: "someone-else",
+			});
+			const other = await buildApp(as, { accessKey: null });
+			try {
+				await other.listen({ port: 0, host: "127.0.0.1" });
+				const address = other.server.address();
+				if (!address || typeof address === "string") throw new Error("no port");
+				const headers = { host: `127.0.0.1:${address.port}` };
+				for (const res of [
+					await other.inject({
+						method: "PATCH",
+						url: url("T12-0", "C12-0"),
+						payload: edit,
+						headers,
+					}),
+					await other.inject({
+						method: "DELETE",
+						url: url("T12-0", "C12-0"),
+						headers,
+					}),
+				]) {
+					expect(res.statusCode, res.body).toBe(403);
+					expect(res.json().code).toBe("writes-off");
+				}
+			} finally {
+				await other.close();
+			}
+		});
+
+		it("404 gone: a thread gone, a comment gone (an edit)", async () => {
+			await setup();
+			const missing = await patch("T12-0", "C12-0-7", edit);
+			expect(missing.statusCode).toBe(404);
+			expect(missing.json().code).toBe("gone");
+			await setup({ deletedThreads: ["T12-0"] });
+			for (const res of [
+				await patch("T12-0", "C12-0", edit),
+				await del("T13-0", "C13-0"),
+			]) {
+				expect(res.statusCode, res.body).toBe(404);
+				expect(res.json().code).toBe("gone");
+			}
+		});
+
+		it("409 changed with the comment as GitHub has it now", async () => {
+			await setup();
+			const res = await patch("T12-0", "C12-0", { ...edit, from: "Huh?" });
+			expect(res.statusCode).toBe(409);
+			expect(res.json()).toMatchObject({
+				code: "changed",
+				error: "Changed on GitHub since you opened it",
+				current: { id: "C12-0", body: "Why?" },
+			});
+			const forced = await patch("T12-0", "C12-0", {
+				...edit,
+				from: "Huh?",
+				force: true,
+			});
+			expect(forced.statusCode).toBe(200);
+		});
+
+		it("502 for GitHub's trouble; 503 once the session is closed", async () => {
+			await setup({ failNext: { op: "edit", status: 502 } });
+			expect((await patch("T12-0", "C12-0", edit)).statusCode).toBe(502);
+			await setup({ failNext: { op: "delete", status: 500 } });
+			expect((await del("T12-1", "C12-1")).statusCode).toBe(502);
+			await session.close();
+			expect((await patch("T12-0", "C12-0", edit)).statusCode).toBe(503);
+			expect((await del("T12-1", "C12-1")).statusCode).toBe(503);
+		});
+	});
+
 	describe("with a web root and an access key", () => {
 		let web: string;
 		let keyed: FastifyInstance;

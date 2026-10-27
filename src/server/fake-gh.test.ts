@@ -15,12 +15,14 @@ import {
 import { testGitEnv } from "../../test/git-fixture";
 import { GhError, WriteRefusedError } from "./errors";
 import {
+	deleteComment,
 	fetchOverview,
 	fetchPrMeta,
 	fetchThread,
 	fetchThreadContents,
 	fetchThreadSummaries,
 	fetchTimeline,
+	patchComment,
 	postReply,
 	postResolved,
 	resolvePrRef,
@@ -583,6 +585,133 @@ describe("fake gh", () => {
 				code: "gone",
 			});
 			await expect(fetchThread(ref, "T12-0")).resolves.toBeNull();
+		});
+
+		describe("edits and deletes", () => {
+			/** T12-0: the viewer's opener (REST 1000), bob's reply (1001), the viewer's (1002). */
+			const three = (over: Partial<Scenario> = {}, bobs: object = {}) =>
+				writable({
+					prs: {
+						"12": {
+							view: prView(),
+							graphql: {
+								reviewThreads: [
+									reviewThread({ path: "a.ts", line: 1 }, [
+										{ ...said("Octo_Cat", "Why?"), diffHunk: "@@ hunk" },
+										{ ...said("bob", "Because."), ...bobs },
+										said("Octo_Cat", "Ok."),
+									]),
+								],
+							},
+						},
+					},
+					...over,
+				});
+			type Content = {
+				comments: {
+					totalCount: number;
+					nodes: {
+						id: string;
+						body: string;
+						databaseId: number;
+						lastEditedAt: string | null;
+						viewerCanUpdate: boolean;
+						viewerCanDelete: boolean;
+						diffHunk: string;
+					}[];
+				};
+			};
+			const content = async () =>
+				(await fetchThreadContents(["T12-0"])).get("T12-0") as Content | null;
+
+			it("lists each comment's REST id, lastEditedAt and what the viewer may do (their own)", async () => {
+				three();
+				const c = await content();
+				expect(
+					c?.comments.nodes.map((n) => [
+						n.databaseId,
+						n.lastEditedAt,
+						n.viewerCanUpdate,
+						n.viewerCanDelete,
+					]),
+				).toEqual([
+					[1000, null, true, true],
+					[1001, null, false, false],
+					[1002, null, true, true],
+				]);
+			});
+
+			it("an edit is stored and answered as GitHub's REST does; others' are refused (403)", async () => {
+				three();
+				const edited = await patchComment(ref, 1002, "Ok then.");
+				expect(edited).toMatchObject({
+					body: "Ok then.",
+					bodyHtml: '<p dir="auto">Ok then.</p>',
+				});
+				const c = await content();
+				expect(c?.comments.nodes[2]).toMatchObject({
+					body: "Ok then.",
+					lastEditedAt: edited.updatedAt,
+				});
+				await expect(patchComment(ref, 1001, "Mine")).rejects.toMatchObject({
+					code: "forbidden",
+				});
+				await expect(patchComment(ref, 1009, "x")).rejects.toMatchObject({
+					code: "gone",
+				});
+			});
+
+			it("deleting the opener makes the next comment first, with the hunk; a reply then goes to it", async () => {
+				three();
+				await deleteComment(ref, 1000);
+				const after = await thread0();
+				expect(after.comments.totalCount).toBe(2);
+				expect(after.first.nodes[0]?.databaseId).toBe(1001);
+				const c = await content();
+				expect(c?.comments.nodes.map((n) => n.id)).toEqual([
+					"C12-0-1",
+					"C12-0-2",
+				]);
+				expect(c?.comments.nodes[0]?.diffHunk).toBe("@@ hunk");
+				await postReply(ref, 1001, "Still?", PR_URL);
+				expect((await content())?.comments.totalCount).toBe(3);
+				// Deleted: 404 from then on.
+				await expect(deleteComment(ref, 1000)).rejects.toMatchObject({
+					code: "gone",
+				});
+			});
+
+			it("deleting every comment deletes the thread", async () => {
+				// A maintainer may delete others' comments.
+				three({}, { viewerCanDelete: true });
+				for (const id of [1002, 1001, 1000]) await deleteComment(ref, id);
+				await expect(fetchThread(ref, "T12-0")).resolves.toBeNull();
+				await expect(fetchThreadSummaries(ref)).resolves.toEqual([]);
+				await expect(content()).resolves.toBeNull();
+			});
+
+			it("writeUnlistedMs: GraphQL shows the text before an edit, and a deleted comment, for a while", async () => {
+				three({ writeUnlistedMs: 60_000 });
+				await patchComment(ref, 1000, "New");
+				await deleteComment(ref, 1002);
+				const c = await content();
+				expect(c?.comments.nodes.map((n) => n.body)).toEqual([
+					"Why?",
+					"Because.",
+					"Ok.",
+				]);
+			});
+
+			it("failNext edit/delete fails before, or after the write lands", async () => {
+				three({ failNext: { op: "edit", status: 502, afterWrite: true } });
+				await expect(patchComment(ref, 1002, "Landed")).rejects.toBeInstanceOf(
+					GhError,
+				);
+				expect((await content())?.comments.nodes[2]?.body).toBe("Landed");
+				three({ failNext: { op: "delete", status: 500 } });
+				await expect(deleteComment(ref, 1002)).rejects.toBeInstanceOf(GhError);
+				expect((await content())?.comments.totalCount).toBe(3);
+			});
 		});
 	});
 });
