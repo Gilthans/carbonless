@@ -172,3 +172,55 @@ test("Ignore whitespace pairs whitespace-only lines and collapses whitespace-onl
 	await expect(rows(section, "ws")).toHaveCount(0);
 	await expect(bar).toContainText("1 / 3 clusters reviewed");
 });
+
+/** A 120-line file re-indented wholesale: one whitespace-only cluster. */
+const long = Array.from({ length: 120 }, (_, i) => `long ${i + 1}`);
+const longFixture: PrOptions = {
+	base: { "src/long.ts": text(long) },
+	files: [
+		{
+			message: "Re-indent",
+			files: { "src/long.ts": text(long.map((l) => `    ${l}`)) },
+		},
+	],
+};
+
+test("an expanded whitespace-only cluster's controls float below the file header", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	if (isMobile) await page.setViewportSize({ width: 360, height: 780 });
+	await pr(longFixture);
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	await ignoreWhitespace(page, true);
+	const section = await expand(page, "src/long.ts");
+	const collapsed = section.getByTestId("ws-cluster");
+	await collapsed
+		.getByRole("button", { name: "Show whitespace-only lines" })
+		.click();
+	await expect(rows(section, "ws")).toHaveCount(120);
+	await rows(section, "ws")
+		.filter({ hasText: /long 90$/ })
+		.scrollIntoViewIfNeeded();
+	await expect(collapsed).not.toBeInViewport();
+	const checkbox = section.getByRole("checkbox", {
+		name: "Mark cluster reviewed",
+	});
+	await expect(checkbox).toBeInViewport();
+	await expect(section.locator("[data-stuck]")).toHaveCount(1);
+	// Directly below the file header, as any long cluster's.
+	const header = await section.locator("header").boundingBox();
+	const target = await section.getByTestId("cluster-box-target").boundingBox();
+	expect(target?.y).toBeGreaterThanOrEqual(
+		(header?.y ?? 0) + (header?.height ?? 0) - 1,
+	);
+	if (isMobile) expect(target?.height).toBeGreaterThanOrEqual(40);
+	// Still operable there.
+	await checkbox.click();
+	await expect(checkbox).toBeChecked();
+	await expect(progress(page)).toContainText("1 / 1 cluster reviewed");
+	expect(await overflow(page)).toBeLessThanOrEqual(0);
+});
