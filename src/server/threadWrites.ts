@@ -77,6 +77,10 @@ export interface ThreadWriteTarget {
 	drop: (id: string, seq: number, startedAt: number) => void;
 	/** Whether a kept read has thread `id` dropped (drop). */
 	dropped: (id: string) => boolean;
+	/** Whether this session deleted comment `nodeId` (GraphQL may still list it). */
+	deletedHere: (nodeId: string) => boolean;
+	/** Remembers comment `nodeId` as deleted by this session. */
+	markDeleted: (nodeId: string) => void;
 	/** The reply this session posted under `clientId`, if any. */
 	posted: (clientId: string) => PostedRecord | undefined;
 	/** Remembers a reply as posted under `clientId`. */
@@ -303,6 +307,8 @@ async function update(
 	read: Pick<Reread, "seq" | "startedAt">,
 	commentId?: string,
 ): Promise<ThreadUpdate> {
+	// What this session deleted stays out, even while GraphQL lists it.
+	nodes = withoutDeleted(target, nodes);
 	target.apply(threadId, nodes, read.seq, read.startedAt);
 	const [thread] = mapThreads([withContent(nodes.summary, nodes.content)], {
 		prAuthor: await target.prAuthor(),
@@ -528,8 +534,12 @@ export function withEdited(
 								body: edited.body,
 								bodyText: edited.bodyText,
 								bodyHTML: edited.bodyHtml,
+								// GitHub's own when it already shows this text (REST's
+								// updated_at is set on a never-edited comment too).
 								lastEditedAt:
-									edited.updatedAt || str(obj(n).lastEditedAt) || null,
+									normal(str(obj(n).body)) === normal(edited.body)
+										? (obj(n).lastEditedAt ?? null)
+										: edited.updatedAt || str(obj(n).lastEditedAt) || null,
 							}
 						: n,
 				),
@@ -685,10 +695,35 @@ function notPending(comment: Json): void {
 }
 
 /** Whether published comments follow the opener (a delete then blanks it). */
-const othersAfter = (nodes: ThreadNodes) =>
-	contentComments(nodes)
-		.slice(1)
-		.some((c) => visibleAt(c) !== null);
+function othersAfter(
+	target: ThreadWriteTarget,
+	threadId: string,
+	fresh: ThreadNodes,
+): boolean {
+	// GitHub's fresh list, and the kept read's published comments it lacks
+	// (a reply this session just posted, GraphQL not listing it yet); not
+	// those this session deleted (GraphQL may still list them). When in
+	// doubt they count: blanking is the safe side.
+	const kept = target.cached(threadId);
+	const all = [
+		...contentComments(fresh).slice(1),
+		...(kept ? contentComments(kept).slice(1) : []),
+	];
+	return all.some(
+		(c) => visibleAt(c) !== null && !target.deletedHere(str(c.id)),
+	);
+}
+
+/** `nodes` without the comments this session deleted. */
+function withoutDeleted(
+	target: ThreadWriteTarget,
+	nodes: ThreadNodes,
+): ThreadNodes {
+	return contentComments(nodes)
+		.map((c) => str(c.id))
+		.filter((id) => target.deletedHere(id))
+		.reduce((n, id) => withoutComment(n, id), nodes);
+}
 
 /**
  * Edits comment `commentId` (its GraphQL node id) of thread `threadId` to
@@ -828,7 +863,7 @@ export async function deleteThreadComment(
 			"forbidden",
 		);
 	}
-	if (found.fresh && found.index === 0 && othersAfter(now.nodes)) {
+	if (found.index === 0 && othersAfter(target, threadId, now.nodes)) {
 		if (isDeletedBody(str(comment.body))) {
 			return update(target, threadId, now.nodes, now, commentId);
 		}
@@ -861,12 +896,14 @@ export async function deleteThreadComment(
 			);
 		}
 	}
+	target.markDeleted(commentId);
 	const listed = (nodes: ThreadNodes) =>
 		contentComments(nodes).some((c) => str(c.id) === commentId);
 	const read = await rereadUntil(target, threadId, (n) => !listed(n));
 	if (!read.nodes) return threadGone(target, threadId, read);
-	// Deleted: gone from the answer even while GraphQL still lists it.
-	const nodes = withoutComment(read.nodes, commentId);
+	// Deleted (and what this session deleted before): gone from the
+	// answer even while GraphQL still lists it.
+	const nodes = withoutDeleted(target, read.nodes);
 	// None published left (at most the viewer's pending ones, which the
 	// lists leave out): gone from the page.
 	if (!contentComments(nodes).some((c) => visibleAt(c) !== null)) {

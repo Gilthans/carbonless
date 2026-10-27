@@ -64,10 +64,11 @@ describe("editing and deleting comments", () => {
 	/** Changes the stored scenario's PR 12 threads in place (as GitHub would elsewhere). */
 	const threadsWith = (
 		change: (t: { comments: { nodes: Record<string, unknown>[] } }[]) => void,
+		over: Partial<Scenario> = {},
 	) => {
 		const s = JSON.parse(readFileSync(scenarioPath(), "utf8"));
 		change(s.prs[12].graphql.reviewThreads);
-		writeFileSync(scenarioPath(), JSON.stringify(s));
+		writeFileSync(scenarioPath(), JSON.stringify({ ...s, ...over }));
 	};
 	const writeCalls = () =>
 		pr
@@ -317,6 +318,53 @@ describe("editing and deleting comments", () => {
 		);
 	});
 
+	it("deleting an opener right after replying to it, GraphQL not listing the reply yet: blanked, not deleted", async () => {
+		threads({ replyUnlisted: true });
+		await session.replyToThread("T12-2", {
+			body: "Done",
+			attemptedAt: new Date().toISOString(),
+			retry: false,
+			clientId: "r1",
+			knownCommentIds: ["C12-2"],
+		});
+		const answer = (await session.deleteThreadComment(
+			"T12-2",
+			"C12-2",
+		)) as ThreadUpdate;
+		expect(writeCalls().at(-1)).toBe(
+			"api -X PATCH repos/acme/widget/pulls/comments/3000 -H Accept: application/vnd.github.full+json --input -",
+		);
+		expect(answer.comment).toMatchObject({ id: "C12-2", deleted: true });
+	});
+
+	it("the last reply under a blanked opener deleted, GraphQL still listing it: the opener's delete really deletes, the reply stays gone", async () => {
+		await session.deleteThreadComment("T12-0", "C12-0");
+		threadsWith(
+			(t) => {
+				const reply = t[0]?.comments.nodes[1];
+				if (reply) reply.removed = true;
+			},
+			{ writeUnlistedMs: 60_000 },
+		);
+		const left = (await session.deleteThreadComment(
+			"T12-0",
+			"C12-0-2",
+		)) as ThreadUpdate;
+		expect(left.comments.comments.map((c) => c.id)).toEqual(["C12-0"]);
+		expect(left.comments.comments[0]?.viewerCan.delete).toBe(true);
+		const answer = await session.deleteThreadComment("T12-0", "C12-0");
+		expect(writeCalls().at(-1)).toBe(
+			"api -X DELETE repos/acme/widget/pulls/comments/1000",
+		);
+		expect(answer).toEqual({ threadId: "T12-0", gone: true });
+	});
+
+	it("an edit answered as already there doesn't mark a never-edited comment edited", async () => {
+		const answer = await edit("C12-0-2", "Fair.", { from: "Fair." });
+		expect(writeCalls()).toEqual([]);
+		expect(answer.comment?.editedAt).toBeNull();
+	});
+
 	it("an opener followed only by the viewer's pending comments is deleted, not blanked; pending ones are refused", async () => {
 		threads({
 			prs: {
@@ -523,6 +571,8 @@ describe("comment writes off before GitHub", () => {
 		apply: () => {},
 		drop: () => {},
 		dropped: () => false,
+		deletedHere: () => false,
+		markDeleted: () => {},
 		posted: () => undefined,
 		remember: () => {},
 		inDoubt: () => false,

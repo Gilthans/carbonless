@@ -81,6 +81,11 @@ comments in one (`src/server/threadWrites.ts`).
   and then it really goes. Deleting any other comment deletes it; deleting
   a thread's last published comment removes the thread (`ThreadGone`),
   and it leaves the session's kept reads.
+  Whether published comments follow is GitHub's fresh list reconciled
+  with this session's own writes: a reply it just posted counts even
+  before GraphQL lists it, a comment it deleted doesn't count (and stays
+  out of every answer) even while GraphQL still lists it; in doubt, the
+  opener is blanked rather than deleted.
 - **An edit never overwrites a newer version unseen.** The server reads the
   comment's body fresh by REST first (GraphQL may lag a write): if it already is the new text (line ends and
   trailing whitespace aside) the edit is done, nothing sent (a retry that

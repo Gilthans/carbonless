@@ -127,6 +127,8 @@ export class Session {
 	readonly #posted = new Map<string, PostedRecord>();
 	/** Client ids whose last attempt failed with its outcome unknown. */
 	readonly #inDoubt = new Set<string>();
+	/** Comments this session deleted (GraphQL may list them a while yet). */
+	readonly #deletedComments = new Set<string>();
 
 	private constructor(
 		private readonly repo: string,
@@ -439,6 +441,8 @@ export class Session {
 				for (const read of this.#reads) read.dropThread(id, seq, startedAt);
 			},
 			dropped: (id) => this.#reads.some((read) => read.dropped(id)),
+			deletedHere: (nodeId) => this.#deletedComments.has(nodeId),
+			markDeleted: (nodeId) => this.#deletedComments.add(nodeId),
 			posted: (clientId) => this.#posted.get(clientId),
 			remember: (clientId, record) => this.#posted.set(clientId, record),
 			inDoubt: (clientId) => this.#inDoubt.has(clientId),
