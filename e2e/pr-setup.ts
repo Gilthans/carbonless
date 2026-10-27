@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import { writeFileAtomic } from "../test/fake-gh/atomic.mjs";
 import {
 	FAKE_GH_DIR,
 	FIXTURE_BODY_HTML,
@@ -155,7 +156,7 @@ export function createPr(workdir: string, opts: PrOptions = {}): Pr {
 		editScenario: (edit) => {
 			const s = JSON.parse(readFileSync(scenarioPath, "utf8")) as Scenario;
 			edit(s);
-			writeFileSync(scenarioPath, JSON.stringify(s, null, "\t"));
+			writeFileAtomic(scenarioPath, JSON.stringify(s, null, "\t"));
 		},
 	};
 }

@@ -1,9 +1,10 @@
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import prViewFixture from "../fixtures/gh/pr-view.json" with { type: "json" };
 import threadsFixture from "../fixtures/gh/review-threads.json" with {
 	type: "json",
 };
+import { writeFileAtomic } from "./atomic.mjs";
 
 /** Directory holding the fake `gh`; put it first on PATH. */
 export const FAKE_GH_DIR = resolve(import.meta.dirname);
@@ -139,10 +140,14 @@ export interface Scenario {
 	>;
 }
 
-/** Writes the scenario as JSON into `dir` and returns its path for `$CRB_FAKE_GH`. */
+/**
+ * Writes the scenario as JSON into `dir` and returns its path for
+ * `$CRB_FAKE_GH`. Every write of the file is atomic (writeFileAtomic): gh
+ * processes read it whole at any moment, and must never see it half-written.
+ */
 export function writeScenario(dir: string, s: Scenario): string {
 	const path = join(dir, "fake-gh-scenario.json");
-	writeFileSync(path, JSON.stringify(s, null, "\t"));
+	writeFileAtomic(path, JSON.stringify(s, null, "\t"));
 	return path;
 }
 
@@ -353,7 +358,7 @@ export function threadComment(c: {
 export function listReplies(path: string): void {
 	const s = JSON.parse(readFileSync(path, "utf8")) as Scenario;
 	s.replyUnlisted = false;
-	writeFileSync(path, JSON.stringify(s, null, "\t"));
+	writeFileAtomic(path, JSON.stringify(s, null, "\t"));
 }
 
 /**
@@ -384,7 +389,7 @@ export function editElsewhere(
 	if (listed) Object.assign(listed, text);
 	const opener = t.first?.nodes?.[0];
 	if (at.comment === 0 && opener) Object.assign(opener, text);
-	writeFileSync(path, JSON.stringify(s, null, "\t"));
+	writeFileAtomic(path, JSON.stringify(s, null, "\t"));
 }
 
 /**

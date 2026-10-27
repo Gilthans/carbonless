@@ -3,7 +3,8 @@
 // src/server/clone.ts make, from the scenario JSON at $CRB_FAKE_GH (see
 // scenario.ts). Every call is appended to $CRB_FAKE_GH_LOG when set.
 import { execFileSync } from "node:child_process";
-import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, readFileSync } from "node:fs";
+import { writeFileAtomic } from "./atomic.mjs";
 
 const args = process.argv.slice(2);
 const s = JSON.parse(readFileSync(process.env.CRB_FAKE_GH, "utf8"));
@@ -24,9 +25,12 @@ function print(value) {
 const unsupported = () => fail(`fake gh: unsupported: ${args.join(" ")}`, 2);
 const sleep = (ms) =>
 	Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-/** Writes the scenario back: writes (replies, resolving) last for the test. */
+/**
+ * Writes the scenario back: writes (replies, resolving) last for the test.
+ * Atomically, as other gh processes and the test read the file meanwhile.
+ */
 const save = () =>
-	writeFileSync(process.env.CRB_FAKE_GH, JSON.stringify(s, null, "\t"));
+	writeFileAtomic(process.env.CRB_FAKE_GH, JSON.stringify(s, null, "\t"));
 /** The scenario's failNext when it is for `op`, used up. */
 function failNextFor(op) {
 	const f = s.failNext;
