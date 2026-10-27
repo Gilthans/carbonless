@@ -117,16 +117,21 @@ test("Ignore whitespace pairs whitespace-only lines and collapses whitespace-onl
 	await expect(section.getByTestId("diff-line")).toHaveCount(0);
 	await expect(counts).toContainText("+8");
 	await expect(counts).toContainText("−8");
+	// The chevron and the words are one disclosure button, named by its
+	// text; clicking the words opens the rows.
 	const show = collapsed.getByRole("button", {
-		name: "Show whitespace-only lines",
+		name: "Whitespace only · 16 lines",
 	});
 	await expect(show).toHaveAttribute("aria-expanded", "false");
+	await expect(show).toHaveAttribute("aria-controls", /./);
 	if (isMobile) {
 		expect((await show.boundingBox())?.height).toBeGreaterThanOrEqual(40);
 		expect((await show.boundingBox())?.width).toBeGreaterThanOrEqual(40);
 	}
 	await shot(page, "collapsed", isMobile);
-	await show.click();
+	await show.getByText("Whitespace only · 16 lines").click();
+	await expect(show).toHaveAttribute("aria-expanded", "true");
+	await expect(collapsed).toHaveAttribute("data-expanded", "true");
 	await expect(rows(section, "ws")).toHaveCount(8);
 	await shot(page, "open", isMobile);
 	await expect(rows(section, "add")).toHaveCount(0);
@@ -138,9 +143,10 @@ test("Ignore whitespace pairs whitespace-only lines and collapses whitespace-onl
 	await expect(
 		third.getByRole("img", { name: "Whitespace only" }),
 	).toBeAttached();
-	await collapsed
-		.getByRole("button", { name: "Hide whitespace-only lines" })
-		.click();
+	// The chevron collapses them again.
+	await show.locator("svg").click();
+	await expect(show).toHaveAttribute("aria-expanded", "false");
+	await expect(collapsed).not.toHaveAttribute("data-expanded");
 	await expect(section.getByTestId("diff-line")).toHaveCount(0);
 	expect(await overflow(page)).toBeLessThanOrEqual(0);
 
@@ -237,7 +243,7 @@ test("an expanded whitespace-only cluster's controls float below the file header
 	const section = await expand(page, "src/long.ts");
 	const collapsed = section.getByTestId("ws-cluster");
 	await collapsed
-		.getByRole("button", { name: "Show whitespace-only lines" })
+		.getByRole("button", { name: "Whitespace only · 240 lines" })
 		.click();
 	await expect(rows(section, "ws")).toHaveCount(120);
 	await rows(section, "ws")
