@@ -1,5 +1,6 @@
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { writeFileAtomic } from "../../test/fake-gh/atomic.mjs";
 import {
 	editElsewhere,
 	prView,
@@ -68,7 +69,7 @@ describe("editing and deleting comments", () => {
 	) => {
 		const s = JSON.parse(readFileSync(scenarioPath(), "utf8"));
 		change(s.prs[12].graphql.reviewThreads);
-		writeFileSync(scenarioPath(), JSON.stringify({ ...s, ...over }));
+		writeFileAtomic(scenarioPath(), JSON.stringify({ ...s, ...over }));
 	};
 	const writeCalls = () =>
 		pr

@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { writeFileAtomic } from "../../test/fake-gh/atomic.mjs";
 import {
 	prView,
 	reviewThread,
@@ -1074,7 +1075,7 @@ describe("Session", () => {
 			const now = pr.moveHead({ "later.txt": "later\n" });
 			scenarioAsOf(then, now);
 			const scenarioPath = process.env.CRB_FAKE_GH ?? "";
-			const { readFileSync, writeFileSync } = await import("node:fs");
+			const { readFileSync } = await import("node:fs");
 			const sc = JSON.parse(readFileSync(scenarioPath, "utf8"));
 			const ctx = (name: string) => ({
 				__typename: "StatusContext",
@@ -1084,7 +1085,7 @@ describe("Session", () => {
 			});
 			sc.pageSize = 1;
 			sc.commits[then].contexts = [ctx("a"), ctx("b"), ctx("c")];
-			writeFileSync(scenarioPath, JSON.stringify(sc));
+			writeFileAtomic(scenarioPath, JSON.stringify(sc));
 			const s = await Session.open(pr.arg, process.cwd(), () => {}, {
 				asOf: CUTOFF,
 			});
@@ -1094,7 +1095,7 @@ describe("Session", () => {
 				"c",
 			]);
 			sc.commits = {};
-			writeFileSync(scenarioPath, JSON.stringify(sc));
+			writeFileAtomic(scenarioPath, JSON.stringify(sc));
 			// Read again (the last read is kept otherwise).
 			await expect(s.overview(0)).rejects.toThrow(/is missing on GitHub/);
 		});
