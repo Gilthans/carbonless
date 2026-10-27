@@ -1325,19 +1325,6 @@ function ThreadItem({
 	const opener = usePerson(thread.author, thread.avatarUrl);
 	const replies = useReplyCount(thread, readId);
 	const canAct = useCanAct(thread);
-	// Anything more to see: clipped text or code, a reply, or something to do.
-	const more =
-		codeMore ||
-		commentMore ||
-		(!thread.unavailable && (replies.n > 0 || canAct));
-	const writesOn = useWritesOn();
-	const kind = toggleKind({
-		clipped: codeMore || commentMore,
-		replies: replies.n,
-		canReply: writesOn && thread.viewerCan.reply,
-		canResolve: canToggle(thread, writesOn),
-	});
-	const commentClipped = commentMore && !open;
 	// The opener as a comment (its id, what the viewer may do, edited):
 	// read once the card opens, usually prefetched before.
 	const known = useThreadComments(readId, thread.id, {
@@ -1354,6 +1341,20 @@ function ThreadItem({
 	const openerDeleted = first
 		? first.deleted
 		: thread.body.trim() === "[deleted]";
+	// Anything more to see: clipped text or code, a reply, or something to do.
+	const more =
+		codeMore ||
+		commentMore ||
+		(!thread.unavailable &&
+			(replies.n > 0 || canAct || can.update || can.delete));
+	const writesOn = useWritesOn();
+	const kind = toggleKind({
+		clipped: codeMore || commentMore,
+		replies: replies.n,
+		canReply: writesOn && thread.viewerCan.reply,
+		canResolve: canToggle(thread, writesOn),
+	});
+	const commentClipped = commentMore && !open;
 	useEffect(() => {
 		const el = commentBox.current;
 		if (!el || !commentClipped) return;
