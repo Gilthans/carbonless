@@ -37,7 +37,7 @@ The order after this, by the owner: editing and deleting your own comments, then
 
 ## Replying
 
-- Every thread gets a reply box under its comments, shown when the thread is open (Overview: when the card's replies are open; Files changed: the opened thread row). Resolved threads can be replied to as on GitHub.
+- Every thread gets a reply box under its comments, shown when the thread is open (Overview: when the card's one "Show more" is open, after every reply; Files changed: the opened thread row). Resolved threads can be replied to as on GitHub.
 - The box is a plain textarea, one line until focused, growing with its content, with a Send icon button (tooltip and accessible name, ≥40px). Ctrl/Cmd+Enter sends; Escape blurs without discarding. Empty or whitespace-only text can't be sent.
 - On send, the reply appears at once at the end of the thread as the viewer's comment, marked as sending (clock, like pending comments today) until GitHub confirms; then it becomes the real comment from GitHub's answer. The box clears on send; on a final failure the text goes back into the box (or stays with the failed comment, the builder's choice) with the red notice's Retry.
 - After a confirmed reply, the thread's comment count, the latest comment and the attention set update: the viewer wrote the latest comment, so they leave the set and the your-turn dot goes away. The server is the source for the set (spec `2026-10-26-pr-threads-design.md`), so it recomputes from the new comment list; the client may show the expected result while waiting.
@@ -47,7 +47,7 @@ The order after this, by the owner: editing and deleting your own comments, then
 
 ## Resolving
 
-- One icon toggle per thread, next to its status: resolve (check) on an open thread, unresolve on a resolved one, with tooltips and accessible names, ≥40px.
+- A big "Resolve" / "Unresolve" button (text and icon, ≥40px) beside each thread's reply box (below it on a phone); in the Overview inside the card's one "Show more" (owner, 2026-10-27: it was first an icon toggle in the header).
 - It flips at once in place (the resolved look from the threads stage: green check plus "Resolved") and syncs through the same queue and notices. Files changed's bubble and highlight follow the state; resolving clears the attention set (existing rule).
 - In the Overview a card resolved or unresolved fades away where it is over a few seconds (owner: "so there's a little time to undo the action but it's clear that it's going away"), with the toggle still there to undo; then it moves to the other group. Undo during the fade keeps it in place. The fade respects `prefers-reduced-motion` (a plain countdown state instead).
 - Resolving never changes review progress or cluster state (principle 2): it's a GitHub action on a thread, not a review mark.

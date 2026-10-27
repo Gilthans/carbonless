@@ -67,17 +67,19 @@ import { Tooltip, type TooltipTriggerProps } from "../Tooltip";
 import { CodeRows, CommentBody } from "../threads/CommentBody";
 import {
 	COMMENT_SURFACE,
-	Conversation,
+	commentSurface,
+	ThreadActions,
+	ThreadComments,
 	UnavailableText,
+	useCanAct,
 } from "../threads/Conversation";
 import { useDrafts } from "../threads/drafts";
-import { ResolveToggle } from "../threads/ResolveToggle";
+import { Avatar, PeopleProvider, TINTS, usePerson } from "../threads/people";
 import { ThreadStatus } from "../threads/ThreadStatus";
 import {
 	FADE_MS,
 	useThreadWriter,
 	useThreadWrites,
-	useWritesOn,
 } from "../threads/threadWrites";
 import { usePrefetchComments } from "../threads/useThreadComments";
 import { useThreads } from "../threads/useThreads";
@@ -172,12 +174,14 @@ export function OverviewPage() {
 	);
 	return (
 		<ImageErrorContext value={onImageError}>
-			<OverviewContent
-				overview={overview}
-				threads={threads}
-				onShown={onShown}
-				updateError={revalidate.isError ? revalidate.error : null}
-			/>
+			<PeopleProvider threads={threads.view?.threads}>
+				<OverviewContent
+					overview={overview}
+					threads={threads}
+					onShown={onShown}
+					updateError={revalidate.isError ? revalidate.error : null}
+				/>
+			</PeopleProvider>
 		</ImageErrorContext>
 	);
 }
@@ -1308,8 +1312,9 @@ const HEAD_PART =
 /**
  * One thread: where, who, when it was last active, how many comments,
  * whether anyone answered; then the code it was written on beside the first
- * comment as GitHub renders it (stacked on a phone), both clipped until
- * "Show more".
+ * comment as GitHub renders it (stacked on a phone), both clipped. One
+ * "Show more" for the whole thread: opened, the code and the first comment
+ * in full, every reply, then the reply box and the Resolve button.
  */
 function ThreadItem({
 	thread,
@@ -1327,7 +1332,14 @@ function ThreadItem({
 	/** Listed for its draft: its replies open, the draft in view. */
 	draftsShown?: boolean;
 }) {
-	const [open, setOpen] = useState(false);
+	const drafts = useDrafts();
+	// A thread with a draft opens on it.
+	const [open, setOpen] = useState(() =>
+		drafts.some((d) => d.threadId === thread.id),
+	);
+	useEffect(() => {
+		if (draftsShown) setOpen(true);
+	}, [draftsShown]);
 	const codeBox = useRef<HTMLElement>(null);
 	const commentBox = useRef<HTMLDivElement>(null);
 	const codeMore = useOverflow(codeBox, !open, "both");
@@ -1335,9 +1347,17 @@ function ThreadItem({
 	const commentMore = useOverflow(commentBox, !open, "y");
 	const commentId = useId();
 	const codeId = useId();
+	const repliesId = useId();
 	const rows = thread.code?.rows ?? [];
 	const line = headerLine(thread);
-	const more = codeMore || commentMore;
+	const opener = usePerson(thread.author, thread.avatarUrl);
+	const replies = useReplyCount(thread, readId);
+	const canAct = useCanAct(thread);
+	// Anything more to see: clipped text or code, a reply, or something to do.
+	const more =
+		codeMore ||
+		commentMore ||
+		(!thread.unavailable && (replies.n > 0 || canAct));
 	const commentClipped = commentMore && !open;
 	useEffect(() => {
 		const el = commentBox.current;
@@ -1368,7 +1388,8 @@ function ThreadItem({
 			ref={commentBox}
 			id={commentId}
 			data-testid="thread-body"
-			className={`relative ${COMMENT_SURFACE} ${open ? "" : "max-h-32 overflow-hidden"}`}
+			data-tint={opener.tint}
+			className={`relative ${commentSurface(opener.tint)} ${open ? "" : "max-h-32 overflow-hidden"}`}
 		>
 			<CommentBody
 				html={thread.html}
@@ -1380,7 +1401,7 @@ function ThreadItem({
 			{commentClipped && (
 				<div
 					aria-hidden
-					className="pointer-events-none absolute inset-x-0 bottom-0 h-10 bg-gradient-to-b from-transparent to-raised"
+					className={`pointer-events-none absolute inset-x-0 bottom-0 h-10 bg-gradient-to-b from-transparent ${TINTS[opener.tint]?.fade ?? ""}`}
 				/>
 			)}
 		</div>
@@ -1389,7 +1410,8 @@ function ThreadItem({
 			ref={commentBox}
 			id={commentId}
 			data-testid="thread-body"
-			className={`${COMMENT_SURFACE} text-sm break-words`}
+			data-tint={opener.tint}
+			className={`${commentSurface(opener.tint)} text-sm break-words`}
 		>
 			{thread.excerpt}
 		</p>
@@ -1442,7 +1464,12 @@ function ThreadItem({
 									thread
 								</span>{" "}
 								by{" "}
-								<span className="inline-flex items-center gap-1 font-medium text-ink-soft">
+								<span className="inline-flex items-center gap-1 align-middle font-medium text-ink-soft">
+									<Avatar
+										login={thread.author}
+										url={thread.avatarUrl}
+										size={16}
+									/>
 									{thread.author}
 									{thread.bot && <BotIcon />}
 								</span>
@@ -1483,7 +1510,6 @@ function ThreadItem({
 						</Badge>
 					)}
 					{thread.code && <SnapshotChip code={thread.code} />}
-					<ResolveToggle thread={thread} onToggle={onToggle} />
 				</div>
 			</div>
 			<div className="space-y-2 px-3 pt-1 pb-3">
@@ -1519,25 +1545,132 @@ function ThreadItem({
 				) : (
 					comment
 				)}
-				{more && (
-					<button
-						type="button"
-						aria-expanded={open}
-						aria-controls={rows.length ? `${codeId} ${commentId}` : commentId}
-						onClick={() => setOpen((o) => !o)}
-						className="-mb-2 flex min-h-10 items-center gap-1 rounded-md text-xs font-medium text-link hover:underline focus-visible:outline-2 focus-visible:outline-accent"
-					>
-						<ChevronDownIcon
-							size={16}
-							aria-hidden
-							className={`transition-transform motion-reduce:transition-none ${open ? "rotate-180" : ""}`}
-						/>
-						{open ? "Show less" : "Show more"}
-					</button>
+				{open && !thread.unavailable && (
+					<div id={repliesId} className="space-y-2">
+						{replies.n > 0 && (
+							<div
+								data-testid="thread-replies"
+								// The replies hang off the opener on a rail.
+								className="ml-2 border-l-2 border-line pl-3"
+							>
+								<ThreadComments readId={readId} thread={thread} skipFirst />
+							</div>
+						)}
+						<ThreadActions thread={thread} onToggle={onToggle} />
+					</div>
 				)}
-				<Replies thread={thread} readId={readId} openNow={draftsShown} />
+				{more && (
+					<MoreToggle
+						open={open}
+						onClick={() => setOpen((o) => !o)}
+						controls={[
+							rows.length ? codeId : "",
+							commentId,
+							open ? repliesId : "",
+						]
+							.filter(Boolean)
+							.join(" ")}
+						replies={replies}
+					/>
+				)}
 			</div>
 		</li>
+	);
+}
+
+/** "1 reply", "2 replies". */
+const repliesText = (n: number) => `${n} ${n === 1 ? "reply" : "replies"}`;
+
+/**
+ * How many replies a card has: GitHub's count past the opener, plus the
+ * viewer's own pending ones once their comments are in, plus replies sent
+ * and not yet confirmed.
+ */
+function useReplyCount(
+	thread: Thread,
+	readId: string,
+): { n: number; pending: number } {
+	const sending = useThreadWrites().threads.get(thread.id)?.replies.length ?? 0;
+	const known = useQuery({
+		...commentsQuery(readId, thread.id),
+		enabled: false,
+	}).data;
+	const pending = known?.comments.filter((c) => c.pending).length ?? 0;
+	return {
+		n: Math.max(0, thread.commentCount - 1) + pending + sending,
+		pending,
+	};
+}
+
+/**
+ * The card's one toggle: "Show more", with how many replies wait behind
+ * it (and a clock for the viewer's pending ones), or "Show less".
+ */
+function MoreToggle(props: {
+	open: boolean;
+	onClick: () => void;
+	controls: string;
+	replies: { n: number; pending: number };
+}) {
+	const { open, replies } = props;
+	const { pending } = replies;
+	// Why the count passes the header's, and why it grew.
+	const pendingTip =
+		!open && pending > 0
+			? `${pending} pending, only you see ${pending === 1 ? "it" : "them"}`
+			: null;
+	const toggle = (trigger?: TooltipTriggerProps) => (
+		<button
+			{...trigger}
+			type="button"
+			aria-expanded={open}
+			aria-controls={props.controls}
+			aria-label={
+				open
+					? "Show less"
+					: [
+							"Show more",
+							replies.n > 0 ? repliesText(replies.n) : "",
+							pendingTip ?? "",
+						]
+							.filter(Boolean)
+							.join(", ")
+			}
+			data-testid="thread-more"
+			onClick={props.onClick}
+			className="-mb-2 flex min-h-10 items-center gap-1 rounded-md text-xs font-medium text-link hover:underline focus-visible:outline-2 focus-visible:outline-accent"
+		>
+			<ChevronDownIcon
+				size={16}
+				aria-hidden
+				className={`transition-transform motion-reduce:transition-none ${open ? "rotate-180" : ""}`}
+			/>
+			{open ? "Show less" : "Show more"}
+			{!open && replies.n > 0 && (
+				<>
+					<span aria-hidden className="px-0.5">
+						·
+					</span>
+					<CommentDiscussionIcon size={16} aria-hidden />
+					{repliesText(replies.n)}
+				</>
+			)}
+			{pendingTip && (
+				<ClockIcon
+					size={16}
+					aria-hidden
+					data-testid="replies-pending"
+					className="text-warn"
+				/>
+			)}
+		</button>
+	);
+	return pendingTip ? (
+		<Tooltip content={pendingTip} describe={false}>
+			{toggle}
+		</Tooltip>
+	) : (
+		toggle()
 	);
 }
 
@@ -1680,107 +1813,5 @@ function ThreadCodePane(props: {
 				/>
 			</table>
 		</figure>
-	);
-}
-
-/** "1 reply", "2 replies". */
-const replies = (n: number) => `${n} ${n === 1 ? "reply" : "replies"}`;
-
-/**
- * The replies under a card's opening comment, behind a toggle that names
- * how many (closed at first): opened, the rest of the conversation.
- */
-function Replies({
-	thread,
-	readId,
-	openNow,
-}: {
-	thread: Thread;
-	readId: string;
-	/** Open them (the Drafts filter lists the thread). */
-	openNow?: boolean;
-}) {
-	const drafts = useDrafts();
-	// A thread with a draft opens on it.
-	const [open, setOpen] = useState(() =>
-		drafts.some((d) => d.threadId === thread.id),
-	);
-	useEffect(() => {
-		if (openNow) setOpen(true);
-	}, [openNow]);
-	const id = useId();
-	const sending = useThreadWrites().threads.get(thread.id)?.replies.length ?? 0;
-	const canReply = useWritesOn() && thread.id !== "" && thread.viewerCan.reply;
-	// The viewer's own pending replies count too, once their comments are in.
-	const known = useQuery({
-		...commentsQuery(readId, thread.id),
-		enabled: false,
-	}).data;
-	const pending = known?.comments.filter((c) => c.pending).length ?? 0;
-	const n = Math.max(0, thread.commentCount - 1) + pending + sending;
-	// A thread gone from GitHub: its opener says so, once.
-	if (thread.unavailable || (n === 0 && !canReply)) return null;
-	// Why the count passes the header's, and why it grew.
-	const pendingTip =
-		pending > 0
-			? `${pending} pending, only you see ${pending === 1 ? "it" : "them"}`
-			: null;
-	const toggle = (trigger?: TooltipTriggerProps) => (
-		<button
-			{...trigger}
-			type="button"
-			aria-expanded={open}
-			aria-controls={id}
-			onClick={() => setOpen((o) => !o)}
-			className="-mb-1 flex min-h-10 items-center gap-1.5 rounded-md text-xs font-medium text-link hover:underline focus-visible:outline-2 focus-visible:outline-accent"
-		>
-			{n === 0 ? (
-				<>
-					<ReplyIcon size={16} aria-hidden />
-					Reply
-				</>
-			) : (
-				<>
-					<CommentDiscussionIcon size={16} aria-hidden />
-					{replies(n)}
-				</>
-			)}
-			{pendingTip && (
-				<>
-					<ClockIcon
-						size={16}
-						aria-hidden
-						data-testid="replies-pending"
-						className="text-warn"
-					/>
-					<span className="sr-only">, {pendingTip}</span>
-				</>
-			)}
-			<ChevronDownIcon
-				size={16}
-				aria-hidden
-				className={`transition-transform motion-reduce:transition-none ${open ? "rotate-180" : ""}`}
-			/>
-		</button>
-	);
-	return (
-		<div className="space-y-2">
-			{pendingTip ? (
-				<Tooltip content={pendingTip} describe={false}>
-					{toggle}
-				</Tooltip>
-			) : (
-				toggle()
-			)}
-			<div
-				id={id}
-				data-testid="thread-replies"
-				hidden={!open}
-				// The replies hang off the opener on a rail.
-				className="ml-2 border-l-2 border-line pl-3"
-			>
-				{open && <Conversation readId={readId} thread={thread} skipFirst />}
-			</div>
-		</div>
 	);
 }

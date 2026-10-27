@@ -310,6 +310,14 @@ export interface ReviewThread {
 	lastActivityAt: string;
 	author: string;
 	bot: boolean;
+	/** The opener's avatar image ("" when the host gave none). */
+	avatarUrl: string;
+	/**
+	 * Who commented, each once, in the order they first spoke (published;
+	 * as of a cutoff, by then), pending comments left out: what gives each
+	 * person their tint across the PR (src/web/threads/people.ts).
+	 */
+	participants: ThreadParticipant[];
 	/** Comments in the thread, the opening one included. */
 	commentCount: number;
 	/** Someone other than the opener commented. */
@@ -357,12 +365,23 @@ export interface ReviewThread {
 	viewerCan: { reply: boolean; resolve: boolean; unresolve: boolean };
 }
 
+/** Someone who commented on a thread. */
+export interface ThreadParticipant {
+	login: string;
+	/** Their avatar image ("" when the host gave none). */
+	avatarUrl: string;
+	/** When they first spoke in the thread (published). */
+	at: string;
+}
+
 /** One comment of a review thread, whoever hosts it. */
 export interface ThreadComment {
 	/** The host's id for the comment ("" if it gave none). */
 	id: string;
 	author: string;
 	bot: boolean;
+	/** The author's avatar image ("" when the host gave none). */
+	avatarUrl: string;
 	/** When it was published (its review submitted); null for the viewer's own pending comment. */
 	publishedAt: string | null;
 	/** In the viewer's unsubmitted review: only they see it. */

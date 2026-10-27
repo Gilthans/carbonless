@@ -7,7 +7,9 @@ import { BotIcon, LabeledIcon, plural } from "../overview/parts";
 import { RelativeTime } from "../RelativeTime";
 import { Tooltip } from "../Tooltip";
 import { CommentBody } from "./CommentBody";
+import { Avatar, tintSurface, usePerson } from "./people";
 import { ReplyBox } from "./ReplyBox";
+import { canToggle, ResolveButton } from "./ResolveButton";
 import { useThreadWrites, useWritesOn } from "./threadWrites";
 import { useThreadComments } from "./useThreadComments";
 
@@ -34,33 +36,72 @@ export function UnavailableText(props: {
 	);
 }
 
+/** GitHub's text on its author's tint (people.tsx): their own surface. */
+export const commentSurface = (tint: number) =>
+	`min-w-0 rounded-md border px-3 py-2 ${tintSurface(tint)}`;
+
 /**
- * A thread's comments, oldest first: each with its author (bot icon), when
- * it was published (or a pending mark for the viewer's own draft) and its
- * text as GitHub renders it, suggested changes drawn. Nothing waits on it:
- * a spinner while they load, Retry when they couldn't be read, and a flag
- * when fewer came than the thread counts, never a short thread passed off
- * as whole.
+ * A thread's comments, oldest first: each with its author (avatar, bot
+ * icon), when it was published (or a pending mark for the viewer's own
+ * draft) and its text as GitHub renders it on the author's tint,
+ * suggested changes drawn. Nothing waits on it: a spinner while they
+ * load, Retry when they couldn't be read, and a flag when fewer came than
+ * the thread counts, never a short thread passed off as whole. Then the
+ * reply box and the Resolve button (ThreadActions).
  */
 export function Conversation(props: {
 	readId: string;
 	thread: ReviewThread;
 	/** Leave out the opening comment (shown above it already). */
 	skipFirst?: boolean;
+	/** Told after a resolve or unresolve (the Overview's fade). */
+	onToggle?: (resolved: boolean) => void;
 }) {
 	const { thread } = props;
-	const never = thread.unavailable !== undefined || thread.id === "";
-	const on = useWritesOn();
-	if (never)
+	if (thread.unavailable !== undefined || thread.id === "")
 		return <UnavailableText reason={thread.unavailable ?? "unreadable"} />;
-	// The box under the comments, while they load or fail too: a draft is
-	// never kept from its thread.
-	const box =
-		on && thread.viewerCan.reply ? <ReplyBox thread={thread} /> : null;
 	return (
 		<div className="space-y-2">
-			<Comments {...props} />
-			{box}
+			<ThreadComments {...props} />
+			{/* While they load or fail too: a draft is never kept from its thread. */}
+			<ThreadActions thread={thread} onToggle={props.onToggle} />
+		</div>
+	);
+}
+
+/** What the viewer may do to the thread here: reply, resolve or unresolve. */
+export function useCanAct(thread: ReviewThread): boolean {
+	const on = useWritesOn();
+	return (
+		on &&
+		thread.id !== "" &&
+		thread.unavailable === undefined &&
+		(thread.viewerCan.reply || canToggle(thread, on))
+	);
+}
+
+/**
+ * The reply box with the Resolve button beside it (below it on a phone):
+ * each only where the viewer may, nothing when they may do neither.
+ */
+export function ThreadActions(props: {
+	thread: ReviewThread;
+	onToggle?: (resolved: boolean) => void;
+}) {
+	const { thread } = props;
+	const on = useWritesOn();
+	if (!useCanAct(thread)) return null;
+	return (
+		<div
+			data-testid="thread-actions"
+			className="flex flex-col gap-2 sm:flex-row sm:items-end"
+		>
+			{on && thread.viewerCan.reply && (
+				<div className="min-w-0 flex-1">
+					<ReplyBox thread={thread} />
+				</div>
+			)}
+			<ResolveButton thread={thread} onToggle={props.onToggle} />
 		</div>
 	);
 }
@@ -88,6 +129,7 @@ function useSending(
 			id: "",
 			author: viewer ?? "you",
 			bot: false,
+			avatarUrl: "",
 			publishedAt: null,
 			pending: false,
 			html: "",
@@ -96,7 +138,8 @@ function useSending(
 		}));
 }
 
-function Comments(props: {
+/** The comments alone, with their loading, error and missing states. */
+export function ThreadComments(props: {
 	readId: string;
 	thread: ReviewThread;
 	skipFirst?: boolean;
@@ -154,6 +197,7 @@ function Comments(props: {
 	const { data } = query;
 	if (data.unavailable) return <UnavailableText reason={data.unavailable} />;
 	const shown = props.skipFirst ? data.comments.slice(1) : data.comments;
+	if (shown.length + sending.length === 0 && !data.missing) return null;
 	return (
 		<div className="space-y-2">
 			{shown.length + sending.length > 0 && (
@@ -198,14 +242,18 @@ function CommentItem(props: {
 	sending?: boolean;
 }) {
 	const { comment: c, thread } = props;
+	const author = c.author || "ghost";
+	const { tint } = usePerson(author, c.avatarUrl);
 	return (
 		<li
 			data-testid={props.sending ? "thread-comment-sending" : "thread-comment"}
+			data-author={author}
 			className="min-w-0 space-y-1"
 		>
-			<p className="flex flex-wrap items-center gap-x-1.5 px-0.5 text-xs text-muted">
+			<p className="flex min-h-5 flex-wrap items-center gap-x-1.5 px-0.5 text-xs text-muted">
+				<Avatar login={author} url={c.avatarUrl} />
 				<span className="inline-flex items-center gap-1 font-semibold text-ink-soft">
-					{c.author || "ghost"}
+					{author}
 					{c.bot && <BotIcon />}
 				</span>
 				{props.sending ? (
@@ -222,7 +270,8 @@ function CommentItem(props: {
 			</p>
 			<div
 				data-testid="thread-comment-body"
-				className={`${COMMENT_SURFACE} break-words`}
+				data-tint={tint}
+				className={`${commentSurface(tint)} break-words`}
 			>
 				{c.html.trim() ? (
 					<CommentBody

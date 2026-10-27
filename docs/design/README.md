@@ -22,6 +22,7 @@ uses is checked for WCAG AA in `src/web/theme.test.ts`; add new pairs there.
 | `add-done` `del-done` | reviewed lines: quieter add/del tints, text at full contrast |
 | `ok-wash` | a finished file's header: an opaque green wash on `raised` (it sticks over the diff) |
 | `mark-tint` (utility) | `accent` at 8% as an inset shadow over every cell of a row: a thread's commented lines, and a line landed on from a thread link (it fades, instantly with reduced motion). Over add/del/context it keeps all code text at 4.5:1 and green/red apart |
+| `person-1`…`person-8`, `person-N-edge` | a person's comments in threads: an opaque wash in place of `raised` inside a border of the same hue (the edge is also their avatar fallback). Blues to violets, a rust and a stone grey, none near the add/del or warn hues; all text at 4.5:1 |
 | `shade`, `shadow-*` | the one shadow color and the shadows built from it |
 | `magenta` `orange` `yellow` `teal` `violet` | brand: logo, gradients (`brand-rule`, `cta`), never meaning |
 
@@ -155,7 +156,7 @@ chips), quieter than the section's `raised` title band. Each thread is a
 bordered (`edge`) card on `surface`:
 
 1. a `band` header row: status icon (yellow unresolved, green resolved),
-   "Unresolved thread by <author> · opened <time> · updated <time>"
+   "Unresolved thread by <avatar> <author> · opened <time> · updated <time>"
    (`RelativeTime`; "updated" only when it differs; "Resolved" itself in
    `ok`, so a resolved thread is unmistakable), then on the right
    `ThreadStatus` (`src/web/threads/`): the comment count (comment icon +
@@ -164,23 +165,48 @@ bordered (`edge`) card on `surface`:
    resolved thread); then the "no reply" / "outdated" chips, then a red (`bad`)
    "different snapshot" chip when the code pane can't be shown to be what the
    commenter saw (`docs/faq.md`; focusable, 40px, its tooltip says which
-   commit and when); wraps on a phone;
+   commit and when); wraps on a phone. No resolve control here: it's the
+   Resolve button inside Show more;
 2. path:line in mono `link`, a 40px link to that line in Files changed;
 3. the code pane (`code`, commented lines with the accent rail and
    `mark-tint`) beside the first comment, stacked on a phone. The comment
-   sits on its own `raised` surface with an `edge` border: GitHub's text,
-   apart from the card and the code;
-4. a 40px "N replies" toggle (discussion icon, chevron, `link`,
-   `aria-expanded`), closed at first: opened, the rest of the conversation
-   (`Conversation`, shared with Files changed). Each reply is its author
-   (bot icon), its published time and its text on the comment's `raised`
-   surface; the viewer's own pending reply has a `warn` clock ("Pending,
-   only you see it") instead of a time. A spinner while the comments load
+   sits on its author's tint (below): GitHub's text, apart from the card
+   and the code. Both are clipped while the card is closed;
+4. one 40px "Show more" toggle for the whole thread (chevron, `link`,
+   `aria-expanded`), with "· N replies" (discussion icon) when there are
+   any and a `warn` clock for the viewer's pending ones; it shows whenever
+   there's more: clipped text or code, a reply, or something the viewer may
+   do. Closed at first (open at once on a thread with a draft, and in the
+   Drafts filter; focusing into a clipped comment opens it too). Opened:
+   the code and the first comment in full, every reply on a `line` rail
+   (`ThreadComments`, shared with Files changed), then the reply box with
+   the Resolve button beside it (below it on a phone), then "Show less".
+   Each reply is its author (20px avatar, bot icon), its published time
+   and its text on the author's tint; the viewer's own pending reply has a
+   `warn` clock ("Pending, only you see it") instead of a time. A spinner while the comments load
    (they are read in the background from the thread list on, visible
    threads first, so it rarely shows), an error with Retry, "Deleted on
    GitHub" for a thread gone since it was listed, and a `warn` alert with
    "N missing" ("N comments couldn't be loaded") when fewer came than the
    thread counts.
+
+**People.** Every comment's author has a round avatar beside their name
+(GitHub's `avatarUrl`, 20px, 16px in a card header; `alt=""`, lazy, fixed
+size), or, with none or a broken image, their initial on their
+`person-N-edge`. Each person's comments sit on their tint
+(`person-N` wash, `person-N-edge` border), the same in every thread of
+the PR, Overview and Files changed alike (`src/web/threads/people.tsx`):
+tints go out in the order people first spoke anywhere in the PR, so no two
+share one until the eight run out (then they start over); the viewer, not
+having spoken yet, comes after everyone. Someone new only ever speaks
+last, so a new comment never changes anyone else's tint.
+
+**Resolve.** A big button (40px, text and icon) beside the reply box,
+the bigger action next to Send: "Resolve" (check, `ok` on `ok/10` in an
+`ok/60` outline) on an open thread, "Unresolve" (reopen icon,
+`ink-soft` in a `line-strong` outline) on a resolved one. It shows where
+the viewer may resolve or unresolve, with or without a reply box, and
+keeps a focused reply box focused on a mouse click.
 
 A suggested change in a comment (the opener or a reply) is a small `code`
 figure: a `band` caption (yellow light bulb, "Suggested change"), then the
@@ -214,7 +240,9 @@ decides where; nothing else does):
   the code is scrolled sideways. Each thread is an `edge` card: a `band`
   header (green check and "Resolved" in `ok`, or the yellow discussion
   icon and "Unresolved"; `ThreadStatus`; "outdated"), then the
-  `Conversation` (spinner, Retry, "N missing", as in the Overview).
+  `Conversation` (spinner, Retry, "N missing", as in the Overview),
+  avatars and tints as in the Overview, and the reply box with the
+  Resolve button.
   Opening a thread changes no review state. Inside a cluster the thread
   keeps the cluster's rail at its left, and the cluster's floating controls
   stop above it while it passes, then float again below it. After a Refresh the previous read's threads stay until the

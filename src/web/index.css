@@ -80,6 +80,30 @@
 	--color-hunk: #151936;
 	--color-hunk-ink: #a7b0e8;
 
+	/*
+	 * People in a PR's threads (src/web/threads/people.tsx): each one's
+	 * comments sit on their own wash (person-N, in place of raised) inside a
+	 * border of the same hue (person-N-edge, also their avatar fallback).
+	 * Blues to violets, a rust and a stone grey: none near the add/del green and
+	 * red or the warn yellow, all text at 4.5:1 (theme.test.ts).
+	 */
+	--color-person-1: #1f2947;
+	--color-person-1-edge: #2e458a;
+	--color-person-2: #3c2720;
+	--color-person-2-edge: #794534;
+	--color-person-3: #18353f;
+	--color-person-3-edge: #266b82;
+	--color-person-4: #3d2442;
+	--color-person-4-edge: #743781;
+	--color-person-5: #302f2c;
+	--color-person-5-edge: #5a5853;
+	--color-person-6: #292348;
+	--color-person-6-edge: #423489;
+	--color-person-7: #27303a;
+	--color-person-7-edge: #3e5974;
+	--color-person-8: #332145;
+	--color-person-8-edge: #5c3285;
+
 	/* The primary action's gradient ends (white text on both). */
 	--color-cta-from: #6a3fe0;
 	--color-cta-to: #c0177a;

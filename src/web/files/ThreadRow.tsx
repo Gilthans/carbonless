@@ -7,13 +7,13 @@ import {
 import type { ReviewThread } from "../../shared/types";
 import { Badge, LabeledIcon } from "../overview/parts";
 import { Conversation } from "../threads/Conversation";
-import { ResolveToggle } from "../threads/ResolveToggle";
 import { ThreadStatus } from "../threads/ThreadStatus";
 
 /**
  * One thread opened in Files changed: a header with its state (resolved in
  * green, unmistakably), its count and your-turn dot, outdated, and a flag
- * when its line couldn't be placed; then every comment.
+ * when its line couldn't be placed; then every comment, the reply box and
+ * the Resolve button.
  */
 export function ThreadBlock(props: {
 	readId: string;
@@ -57,7 +57,6 @@ export function ThreadBlock(props: {
 							outdated
 						</Badge>
 					)}
-					<ResolveToggle thread={thread} />
 				</span>
 			</div>
 			<div className="p-2.5">

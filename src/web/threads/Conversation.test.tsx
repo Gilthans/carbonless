@@ -21,7 +21,8 @@ import type {
 } from "../../shared/types";
 import { showCommentsOf } from "../api";
 import { Conversation } from "./Conversation";
-import { ResolveToggle } from "./ResolveToggle";
+import { PeopleProvider } from "./people";
+import { ResolveButton } from "./ResolveButton";
 import { ThreadStatus } from "./ThreadStatus";
 
 const comment = (
@@ -33,6 +34,7 @@ const comment = (
 	id,
 	author,
 	bot: false,
+	avatarUrl: "",
 	publishedAt: "2026-01-03T09:00:00Z",
 	pending: false,
 	html: `<p>${text}</p>`,
@@ -54,6 +56,8 @@ const thread = (more: Partial<ReviewThread> = {}): ReviewThread => ({
 	lastActivityAt: "2026-01-03T11:00:00Z",
 	author: "rev1",
 	bot: false,
+	avatarUrl: "",
+	participants: [],
 	commentCount: 3,
 	hasReply: true,
 	outdated: false,
@@ -516,12 +520,12 @@ describe("replying", () => {
 	});
 });
 
-describe("ResolveToggle", () => {
+describe("ResolveButton", () => {
 	it("resolves an open thread and flips at once; unresolves a resolved one", async () => {
 		writeAnswer = () => new Promise(() => {});
 		const onToggle = vi.fn();
 		const { rerender } = renderWith(
-			<ResolveToggle thread={thread()} onToggle={onToggle} />,
+			<ResolveButton thread={thread()} onToggle={onToggle} />,
 			{ writes: "on" },
 		);
 		await userEvent.click(screen.getByRole("button", { name: "Resolve" }));
@@ -531,7 +535,7 @@ describe("ResolveToggle", () => {
 		]);
 		rerender(
 			<QueryClientProvider client={clients.at(-1) as QueryClient}>
-				<ResolveToggle thread={thread({ resolved: true })} />
+				<ResolveButton thread={thread({ resolved: true })} />
 			</QueryClientProvider>,
 		);
 		expect(screen.getByRole("button", { name: "Unresolve" })).toBeVisible();
@@ -542,7 +546,100 @@ describe("ResolveToggle", () => {
 		["as another viewer", "viewer" as const, thread()],
 		["where GitHub says no", "on" as const, thread(can(true, false))],
 	])("is hidden %s", (_, writes, t) => {
-		renderWith(<ResolveToggle thread={t} />, { writes });
+		renderWith(<ResolveButton thread={t} />, { writes });
 		expect(screen.queryByRole("button", { name: "Resolve" })).toBeNull();
+	});
+
+	it("sits beside the reply box, a 40px button with its name in text", async () => {
+		serve({ T1: three });
+		renderWith(<Conversation readId="r1" thread={thread()} />, {
+			writes: "on",
+		});
+		const actions = await screen.findByTestId("thread-actions");
+		const button = within(actions).getByRole("button", { name: "Resolve" });
+		expect(button).toHaveTextContent("Resolve");
+		expect(button.className).toContain("h-10");
+		expect(
+			within(actions).getByRole("textbox", { name: "Reply" }),
+		).toBeInTheDocument();
+	});
+
+	it("shows where the viewer may resolve but not reply", async () => {
+		serve({ T1: three });
+		renderWith(<Conversation readId="r1" thread={thread(can(false, true))} />, {
+			writes: "on",
+		});
+		await screen.findAllByTestId("thread-comment");
+		expect(screen.queryByRole("textbox", { name: "Reply" })).toBeNull();
+		expect(screen.getByRole("button", { name: "Resolve" })).toBeVisible();
+	});
+});
+
+describe("avatars and tints", () => {
+	const url = "https://avatars.githubusercontent.com/u/1?s=40";
+
+	it("shows GitHub's avatar beside the author, decorative and lazy; an initial without one", async () => {
+		serve({
+			T1: {
+				comments: [
+					comment("c1", "rev1", "First", { avatarUrl: url }),
+					comment("c2", "octo-author", "Second"),
+				],
+			},
+		});
+		renderWith(<Conversation readId="r1" thread={thread()} />);
+		const [first, second] = await screen.findAllByTestId("thread-comment");
+		if (!first || !second) throw new Error("no comments");
+		const img = within(first).getByTestId("avatar");
+		expect(img).toHaveAttribute("src", url);
+		expect(img).toHaveAttribute("alt", "");
+		expect(img).toHaveAttribute("loading", "lazy");
+		expect(img).toHaveAttribute("width", "20");
+		const fallback = within(second).getByTestId("avatar-fallback");
+		expect(fallback).toHaveAttribute("data-initial", "O");
+		expect(fallback).toHaveAttribute("aria-hidden", "true");
+	});
+
+	it("falls back to the initial on the person's tint when the image fails", async () => {
+		serve({
+			T1: { comments: [comment("c1", "rev1", "First", { avatarUrl: url })] },
+		});
+		renderWith(<Conversation readId="r1" thread={thread()} />);
+		const img = await screen.findByTestId("avatar");
+		img.dispatchEvent(new Event("error"));
+		const fallback = await screen.findByTestId("avatar-fallback");
+		expect(fallback).toHaveAttribute("data-initial", "R");
+		const body = screen.getByTestId("thread-comment-body");
+		expect(fallback.dataset.tint).toBe(body.dataset.tint);
+	});
+
+	it("tints each comment by its author, the same across the PR's threads", async () => {
+		serve({ T1: three });
+		const participants = (logins: string[]) =>
+			logins.map((login, i) => ({
+				login,
+				avatarUrl: "",
+				at: `2026-01-0${i + 1}T00:00:00Z`,
+			}));
+		const all = [
+			thread({ id: "T0", participants: participants(["octo-author"]) }),
+			thread({
+				participants: participants(["rev1", "lint-bot", "octo-author"]),
+			}),
+		];
+		renderWith(
+			<PeopleProvider threads={all}>
+				<Conversation readId="r1" thread={thread()} />
+			</PeopleProvider>,
+		);
+		await screen.findAllByTestId("thread-comment");
+		const tints = screen
+			.getAllByTestId("thread-comment-body")
+			.map((b) => b.dataset.tint);
+		// octo-author spoke first in the PR (in T0), then rev1, then lint-bot.
+		expect(tints).toEqual(["1", "2", "0"]);
+		expect(
+			screen.getAllByTestId("thread-comment-body")[2]?.className,
+		).toContain("bg-person-1");
 	});
 });

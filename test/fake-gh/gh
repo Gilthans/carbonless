@@ -138,7 +138,11 @@ const escapeHtml = (t) =>
 function storeReply(n, i, body) {
 	const t = s.prs[n].graphql.reviewThreads[i];
 	const now = new Date().toISOString().replace(/\.\d+Z$/, "Z");
-	const author = { login: s.user.login, __typename: "User" };
+	const author = {
+		login: s.user.login,
+		__typename: "User",
+		...(s.user.avatarUrl ? { avatarUrl: s.user.avatarUrl } : {}),
+	};
 	const times = { createdAt: now, publishedAt: now, state: "SUBMITTED" };
 	const listed = t.comments?.nodes ?? [];
 	// Older fixtures keep the opener only in `first`.
@@ -169,7 +173,7 @@ function storeReply(n, i, body) {
 		body,
 		body_text: body,
 		body_html: html,
-		user: { login: s.user.login },
+		user: { login: s.user.login, avatar_url: s.user.avatarUrl ?? "" },
 		created_at: now,
 	};
 }

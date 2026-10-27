@@ -216,7 +216,11 @@ export function withPosted(
 	if (lists(nodes, posted.nodeId)) return nodes;
 	const s = obj(nodes.summary);
 	const c = obj(nodes.content);
-	const author = { login: posted.author, __typename: "User" };
+	const author = {
+		login: posted.author,
+		__typename: "User",
+		avatarUrl: posted.avatarUrl,
+	};
 	const times = {
 		createdAt: posted.createdAt,
 		publishedAt: posted.createdAt,

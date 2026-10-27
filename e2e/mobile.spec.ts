@@ -491,7 +491,7 @@ test("an open tooltip causes no horizontal page overflow", async ({
 	expect(box && box.x >= 0 && box.x + box.width <= 360).toBe(true);
 });
 
-test("an opened thread card fits a 360px screen; its replies toggle is 40px tall", async ({
+test("an opened thread card fits a 360px screen; its toggle and buttons are 40px tall", async ({
 	page,
 	pr,
 	startCrb,
@@ -513,10 +513,17 @@ test("an opened thread card fits a 360px screen; its replies toggle is 40px tall
 	await page.setViewportSize({ width: 360, height: 780 });
 	await page.goto(s.url);
 	const humans = page.getByRole("region", { name: "Human reviews" });
-	const toggle = humans.getByRole("button", { name: "1 reply" });
+	const toggle = humans.getByRole("button", { name: "Show more, 1 reply" });
 	expect((await toggle.boundingBox())?.height ?? 0).toBeGreaterThanOrEqual(40);
 	await toggle.click();
 	await expect(humans.getByTestId("thread-comment")).toHaveCount(1);
+	for (const name of ["Resolve", "Reply", "Show less"]) {
+		const b = await humans
+			.getByRole("button", { name, exact: true })
+			.boundingBox();
+		expect(b?.height ?? 0, name).toBeGreaterThanOrEqual(40);
+		expect(b?.width ?? 0, name).toBeGreaterThanOrEqual(40);
+	}
 	await expectNoPageOverflow(page);
 });
 

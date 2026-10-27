@@ -210,9 +210,12 @@ test("a thread previews its first comment as GitHub renders it, clipped, with a 
 	const s = await startCrb();
 	await page.goto(s.url);
 	const bots = page.getByRole("region", { name: "Bot reviews" });
-	// Short: shown in full as GitHub's HTML, nothing to expand.
+	// Short: shown in full as GitHub's HTML; Show more holds only the reply
+	// box and Resolve.
 	await expect(bots.locator(".markdown-body code")).toHaveText("fs");
-	await expect(bots.getByRole("button", { name: "Show more" })).toHaveCount(0);
+	await expect(bots.getByTestId("thread-more")).toHaveAccessibleName(
+		"Show more",
+	);
 	await expect(bots.locator("time")).toHaveAttribute(
 		"datetime",
 		"2026-01-03T09:00:00Z",
@@ -1400,7 +1403,8 @@ test("card shows the comment count and opens to every reply", async ({
 	await expect(thread.getByTestId("thread-body")).toHaveText(
 		"Should this expire?",
 	);
-	const toggle = thread.getByRole("button", { name: "2 replies" });
+	const toggle = thread.getByTestId("thread-more");
+	await expect(toggle).toHaveAccessibleName("Show more, 2 replies");
 	await expect(toggle).toHaveAttribute("aria-expanded", "false");
 	await expect(thread.getByTestId("thread-comment")).toHaveCount(0);
 	expect((await toggle.boundingBox())?.height ?? 0).toBeGreaterThanOrEqual(40);
@@ -1421,6 +1425,8 @@ test("card shows the comment count and opens to every reply", async ({
 			path: `${shots}/thread-replies-${isMobile ? "phone" : "desktop"}.png`,
 		});
 	}
+	// After the replies, the reply box and Resolve.
+	await expect(thread.getByTestId("thread-actions")).toBeVisible();
 	// Closed again, the replies go.
 	await toggle.click();
 	await expect(replies).toHaveCount(0);
@@ -1614,7 +1620,8 @@ test("the viewer's own pending reply gets a toggle, marked pending", async ({
 		thread.getByTestId("thread-head").getByRole("img", { name: "1 comment" }),
 	).toBeVisible();
 	const toggle = thread.getByRole("button", {
-		name: /^1 reply\s*,\s*1 pending, only you see it$/,
+		name: "Show more, 1 reply, 1 pending, only you see it",
+		exact: true,
 	});
 	await expect(toggle).toBeVisible();
 	await expect(toggle.getByTestId("replies-pending")).toBeVisible();

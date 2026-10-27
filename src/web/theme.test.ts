@@ -63,6 +63,11 @@ function hue(hex: string): number {
 				: (r - g) / d + 4;
 	return (h * 60 + 360) % 360;
 }
+/** How far from grey, 0 to 1. */
+const chroma = (hex: string) => {
+	const c = rgb(hex);
+	return (Math.max(...c) - Math.min(...c)) / 255;
+};
 const hueGap = (a: string, b: string) => {
 	const d = Math.abs(hue(a) - hue(b));
 	return Math.min(d, 360 - d);
@@ -239,15 +244,92 @@ describe("color tokens", () => {
 				`link on ${bg}`,
 			).toBeGreaterThanOrEqual(4.5);
 		}
-		// ResolveToggle in a card header: ok (resolve), muted (unresolve) on
-		// band and on its overlay hover.
-		// ResolveToggle and OrphanDraft's Discard (bad) too.
+		// OrphanDraft's Discard (bad) and the header's muted text, on band
+		// and on an overlay hover.
 		for (const icon of ["ok", "muted", "bad", "ink-soft"]) {
 			for (const bg of ["band", "overlay"]) {
 				expect(
 					contrast(token(icon), token(bg)),
 					`${icon} on ${bg}`,
 				).toBeGreaterThanOrEqual(4.5);
+			}
+		}
+	});
+
+	it("the Resolve button reads at 4.5:1 wherever a thread opens", () => {
+		// ResolveButton: Resolve is ok text on ok/10 (ok/20 hovered), Unresolve
+		// ink-soft (ink hovered, on overlay), on an Overview card (surface)
+		// and in Files changed (a surface card on the canvas row).
+		for (const bg of ["surface", "canvas"]) {
+			for (const alpha of [0.1, 0.2]) {
+				expect(
+					contrast(token("ok"), over(token("ok"), alpha, token(bg))),
+					`ok on ok/${alpha * 100} over ${bg}`,
+				).toBeGreaterThanOrEqual(4.5);
+			}
+			expect(
+				contrast(token("ink-soft"), token(bg)),
+				`ink-soft on ${bg}`,
+			).toBeGreaterThanOrEqual(4.5);
+			// Its outline: ok/60 for Resolve, line-strong for Unresolve.
+			expect(
+				contrast(over(token("ok"), 0.6, token(bg)), token(bg)),
+				`ok/60 outline on ${bg}`,
+			).toBeGreaterThanOrEqual(3);
+		}
+		expect(contrast(token("ink"), token("overlay"))).toBeGreaterThanOrEqual(
+			4.5,
+		);
+	});
+
+	it("each person's tint keeps comment text at 4.5:1 and stays clear of add, delete and warn", () => {
+		const people = Object.keys(TOKENS).filter((n) => /^person-\d+$/.test(n));
+		expect(people.length).toBeGreaterThanOrEqual(8);
+		const conventions = [
+			"add",
+			"add-ink",
+			"del",
+			"del-ink",
+			"ok",
+			"bad",
+			"warn",
+		];
+		for (const wash of people) {
+			const edge = `${wash}-edge`;
+			// GitHub's text on the wash: body, names, quotes, links.
+			for (const text of ["ink", "ink-soft", "muted", "faint", "link"]) {
+				expect(
+					contrast(token(text), token(wash)),
+					`${text} on ${wash}`,
+				).toBeGreaterThanOrEqual(4.5);
+			}
+			// The avatar fallback's initial on the edge color.
+			expect(
+				contrast(token("ink"), token(edge)),
+				`ink on ${edge}`,
+			).toBeGreaterThanOrEqual(4.5);
+			// A tint, not a new surface: apart from raised, but quietly.
+			const step = contrast(token(wash), token("raised"));
+			expect(step, `${wash} vs raised`).toBeGreaterThan(1.1);
+			expect(step, `${wash} vs raised`).toBeLessThan(1.5);
+			// Hued ones away from the conventions' hues; a near-grey (stone)
+			// has no hue to be taken for one.
+			for (const c of [wash, edge].filter((c) => chroma(token(c)) >= 0.1)) {
+				for (const conv of conventions) {
+					expect(
+						hueGap(token(c), token(conv)),
+						`${c} hue vs ${conv}`,
+					).toBeGreaterThanOrEqual(25);
+				}
+			}
+		}
+		// Every two people apart, wash or edge.
+		for (const [i, a] of people.entries()) {
+			for (const b of people.slice(i + 1)) {
+				expect(
+					token(a) !== token(b) && token(`${a}-edge`) !== token(`${b}-edge`),
+					`${a} vs ${b}`,
+				).toBe(true);
 			}
 		}
 	});

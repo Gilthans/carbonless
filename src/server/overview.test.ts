@@ -181,6 +181,8 @@ describe("mapOverview", () => {
 				lastActivityAt: "2026-01-03T11:00:00Z",
 				author: "rev1",
 				bot: false,
+				avatarUrl: "",
+				participants: expect.any(Array),
 				commentCount: 2,
 				hasReply: true,
 				outdated: false,
@@ -233,6 +235,8 @@ describe("mapOverview", () => {
 				lastActivityAt: "2026-01-03T11:00:00Z",
 				author: "rev1",
 				bot: false,
+				avatarUrl: "",
+				participants: expect.any(Array),
 				commentCount: 2,
 				hasReply: false,
 				outdated: false,
@@ -267,6 +271,8 @@ describe("mapOverview", () => {
 				lastActivityAt: "2026-01-03T09:00:00Z",
 				author: "rev1",
 				bot: false,
+				avatarUrl: "",
+				participants: expect.any(Array),
 				commentCount: 1,
 				hasReply: false,
 				outdated: false,
@@ -302,6 +308,8 @@ describe("mapOverview", () => {
 				lastActivityAt: "2026-01-02T12:00:00Z",
 				author: "ci-bot",
 				bot: true,
+				avatarUrl: "",
+				participants: expect.any(Array),
 				commentCount: 1,
 				hasReply: false,
 				outdated: true,
@@ -799,6 +807,31 @@ describe("mapThreads: the attention set and the anchor", () => {
 		expect(t?.yourTurn).toBe(true);
 	});
 
+	it("lists who spoke, each once, in the order they first did, with avatars", () => {
+		const url = "https://avatars.githubusercontent.com/u/1?s=40";
+		const t = one(
+			reviewThread({ path: "a.ts" }, [
+				said("rev", 1, { avatarUrl: url }),
+				said("octo-author", 3),
+				said("rev", 4, { avatarUrl: url }),
+				said("Octo_Cat", 5, { pending: true }),
+				said("ci", 2, { bot: true }),
+			]),
+		);
+		expect(t?.avatarUrl).toBe(url);
+		expect(t?.participants).toEqual([
+			{ login: "rev", avatarUrl: url, at: at(1) },
+			{ login: "ci", avatarUrl: "", at: at(2) },
+			{ login: "octo-author", avatarUrl: "", at: at(3) },
+		]);
+		// As of a cutoff, only those who had spoken by then.
+		expect(
+			one(reviewThread({ path: "a.ts" }, [said("rev", 1), said("late", 30)]), {
+				asOf: at(10),
+			})?.participants.map((p) => p.login),
+		).toEqual(["rev"]);
+	});
+
 	it("a resolved thread waits on nobody", () => {
 		const t = one(
 			reviewThread({ path: "a.ts", isResolved: true }, [said("rev", 1)]),
@@ -981,6 +1014,7 @@ describe("mapComments", () => {
 			id: "c1",
 			author: "rev",
 			bot: false,
+			avatarUrl: "",
 			publishedAt: "2026-01-03T09:00:00Z",
 			pending: false,
 			html: "<p><strong>c1</strong></p>",

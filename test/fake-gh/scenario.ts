@@ -12,7 +12,8 @@ export const FAKE_GH_DIR = resolve(import.meta.dirname);
 export interface Scenario {
 	/** Local repository that `gh repo clone` clones from. */
 	repoPath: string;
-	user: { login: string };
+	/** The `gh` login; `avatarUrl` is GitHub's for it (REST `avatar_url`). */
+	user: { login: string; avatarUrl?: string };
 	/** Answer to `gh repo view --json nameWithOwner`; absent = not a GitHub repo. */
 	nameWithOwner?: string;
 	/** Every `gh` call fails as if no account were logged in. */
@@ -143,7 +144,7 @@ export function prView(
 
 /** A review comment with its text, as the aliased `first` query returns it. */
 export interface CommentNode {
-	author: { login: string; __typename: string };
+	author: { login: string; __typename: string; avatarUrl?: string };
 	/** The markdown (suggested changes are read from it). */
 	body?: string;
 	bodyText: string;
@@ -254,6 +255,8 @@ export const FIXTURE_BODY_HTML =
 export function threadComment(c: {
 	login: string;
 	bot?: boolean;
+	/** Their avatar (GitHub's avatarUrl); none given, none listed. */
+	avatarUrl?: string;
 	text: string;
 	html?: string;
 	/** When it was written. */
@@ -276,7 +279,11 @@ export function threadComment(c: {
 		.replaceAll("<", "&lt;")
 		.replaceAll(">", "&gt;");
 	return {
-		author: { login: c.login, __typename: c.bot ? "Bot" : "User" },
+		author: {
+			login: c.login,
+			__typename: c.bot ? "Bot" : "User",
+			...(c.avatarUrl === undefined ? {} : { avatarUrl: c.avatarUrl }),
+		},
 		body: c.body ?? c.text,
 		bodyText: c.text,
 		bodyHTML: c.html ?? `<p dir="auto">${escaped}</p>`,

@@ -375,6 +375,8 @@ function connectionQuery(
 }
 
 const AUTHOR = "author { login __typename }";
+/** A thread comment's author with their avatar (a 40px image: 20px at 2x). */
+const COMMENT_AUTHOR = "author { login __typename avatarUrl(size: 40) }";
 // A thread's summary: everything the lists need (grouping, sorting,
 // counts, the card's header, the attention set) and the anchor of its
 // code, without the comments' text and the opening one's diff hunk
@@ -390,10 +392,10 @@ const AUTHOR = "author { login __typename }";
 const COMMENT_TIMES = "createdAt publishedAt state";
 /** A page of a thread's comments: where to read on from, past 100. */
 const COMMENT_PAGE = "pageInfo { hasNextPage endCursor }";
-const SUMMARY_COMMENT = `id ${AUTHOR} ${COMMENT_TIMES}`;
+const SUMMARY_COMMENT = `id ${COMMENT_AUTHOR} ${COMMENT_TIMES}`;
 // What the viewer may do to it (reply, resolve, unresolve), and the
 // opener's REST id, which a reply is posted to.
-const THREAD_FIELDS = `id isResolved isOutdated path subjectType line originalLine startLine originalStartLine diffSide startDiffSide viewerCanReply viewerCanResolve viewerCanUnresolve first: comments(first: 1) { nodes { id databaseId ${AUTHOR} ${COMMENT_TIMES} originalCommit { oid } } } latest: comments(last: 1) { nodes { ${AUTHOR} ${COMMENT_TIMES} } } comments(first: 100) { totalCount ${COMMENT_PAGE} nodes { ${SUMMARY_COMMENT} } }`;
+const THREAD_FIELDS = `id isResolved isOutdated path subjectType line originalLine startLine originalStartLine diffSide startDiffSide viewerCanReply viewerCanResolve viewerCanUnresolve first: comments(first: 1) { nodes { id databaseId ${COMMENT_AUTHOR} ${COMMENT_TIMES} originalCommit { oid } } } latest: comments(last: 1) { nodes { ${COMMENT_AUTHOR} ${COMMENT_TIMES} } } comments(first: 100) { totalCount ${COMMENT_PAGE} nodes { ${SUMMARY_COMMENT} } }`;
 /** Each comment's text, and GitHub's diff hunk (the opening one's shows the code). */
 const CONTENT_COMMENT = `${SUMMARY_COMMENT} body bodyText bodyHTML diffHunk`;
 /** Every comment of a thread with its text, by thread id (paged on past 100). */
@@ -1365,7 +1367,21 @@ export interface PostedReply {
 	bodyText: string;
 	bodyHtml: string;
 	author: string;
+	/** The author's avatar, at 40px ("" when GitHub gave none). */
+	avatarUrl: string;
 	createdAt: string;
+}
+
+/** A REST avatar URL asked for at 40px, like GraphQL's avatarUrl(size: 40). */
+export function avatar40(url: string): string {
+	if (!url) return "";
+	try {
+		const u = new URL(url);
+		u.searchParams.set("s", "40");
+		return u.toString();
+	} catch {
+		return "";
+	}
 }
 
 /**
@@ -1417,6 +1433,7 @@ export async function postReply(
 		bodyText: str(c.body_text),
 		bodyHtml: str(c.body_html),
 		author: str(rec(c.user).login),
+		avatarUrl: avatar40(str(rec(c.user).avatar_url)),
 		createdAt: str(c.created_at),
 	};
 }

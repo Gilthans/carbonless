@@ -18,6 +18,8 @@ const thread = (extra: Partial<Thread> = {}): Thread => ({
 	lastActivityAt: "",
 	author: "rev1",
 	bot: false,
+	avatarUrl: "",
+	participants: [],
 	commentCount: 1,
 	hasReply: false,
 	outdated: false,

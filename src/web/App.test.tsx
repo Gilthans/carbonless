@@ -118,6 +118,8 @@ const overview: OverviewFixture = {
 			createdAt: "2026-01-02T12:00:00Z",
 			author: "ci-bot",
 			bot: true,
+			avatarUrl: "",
+			participants: [],
 			commentCount: 1,
 			hasReply: false,
 			outdated: true,
@@ -143,6 +145,8 @@ const overview: OverviewFixture = {
 			createdAt: "2026-01-03T09:00:00Z",
 			author: "rev1",
 			bot: false,
+			avatarUrl: "",
+			participants: [],
 			commentCount: 3,
 			hasReply: true,
 			outdated: false,
@@ -182,6 +186,8 @@ function humanThread(
 		lastActivityAt: "2026-01-01T09:00:00Z",
 		author: "rev2",
 		bot: false,
+		avatarUrl: "",
+		participants: [],
 		commentCount: 1,
 		hasReply: false,
 		outdated: false,
@@ -1337,8 +1343,8 @@ describe("OverviewPage", () => {
 		}
 	});
 
-	it("offers no toggle for a short thread", async () => {
-		renderApp();
+	it("offers no toggle for a short thread with nothing to do on it", async () => {
+		renderApp({ "/api/overview": ok({ ...overview, writes: "viewer" }) });
 		const bots = await screen.findByRole("region", { name: "Bot reviews" });
 		expect(within(bots).getByTestId("thread-body")).toHaveTextContent(
 			"Coverage dropped by 2%",

@@ -16,6 +16,7 @@ import { hunksQuery, overviewQuery, sessionQuery } from "../api";
 import { LabeledIcon } from "../overview/parts";
 import { useForgetPageScroll, usePageActive } from "../pageActive";
 import { useAppHeaderHeight, useHeight } from "../sticky";
+import { PeopleProvider } from "../threads/people";
 import { usePrefetchComments } from "../threads/useThreadComments";
 import { useThreads } from "../threads/useThreads";
 import { ErrorMessage } from "../ui";
@@ -156,6 +157,8 @@ export function useCurrentFile(
  */
 function useDiffThreads(): {
 	threads: DiffThreads | undefined;
+	/** Every thread of the read, on this head or not (people's tints). */
+	all: ReviewThread[] | undefined;
 	failed: Error | null;
 } {
 	const overview = useQuery(overviewQuery);
@@ -173,7 +176,7 @@ function useDiffThreads(): {
 				: undefined,
 		[readId, view, snapshotHead],
 	);
-	return { threads, failed: view ? null : error };
+	return { threads, all: view?.threads, failed: view ? null : error };
 }
 
 const headerOf = (index: number) =>
@@ -374,7 +377,7 @@ export function FilesPage() {
 
 	// Comments are read in the background, the open file's threads first,
 	// then the other files' in file order (one prefetch for the page).
-	const { threads, failed: threadsFailed } = useDiffThreads();
+	const { threads, all: allThreads, failed: threadsFailed } = useDiffThreads();
 	const queryClient = useQueryClient();
 	const prefetch = useMemo(
 		() =>
@@ -415,116 +418,123 @@ export function FilesPage() {
 	);
 
 	return (
-		<section
-			aria-label="Files changed"
-			style={{ "--files-bar": `${barHeight}px` } as CSSProperties}
-		>
-			<h2 className="sr-only">Files changed</h2>
-			{review.isPending && <p className="text-muted">Loading the diff…</p>}
-			{review.isError && <ErrorMessage error={review.error} />}
-			{data && (
-				<>
-					<ProgressBar
-						ref={bar}
-						progress={data.progress}
-						unit={unit}
-						onUnitChange={setUnit}
-					/>
-					{stale && (
-						<p
-							role="status"
-							className="mt-3 rounded-md border border-warn/30 bg-warn/10 px-3 py-2 text-sm text-ink"
-						>
-							{STALE_MESSAGE}
-							{stale.dropped > 0 && " Unsaved changes dropped."}
-						</p>
-					)}
-					{threadsFailed && (
-						// Not "no threads": they couldn't be read (flag uncertainty).
-						<p
-							data-testid="threads-failed"
-							className="mt-3 flex min-h-10 items-center gap-2 rounded-md border border-warn/30 bg-warn/10 px-3 text-sm text-ink"
-						>
-							<LabeledIcon
-								icon={AlertIcon}
-								label={`Review threads couldn't be read: ${threadsFailed.message}`}
-								className="text-warn"
-							/>
-							Threads not shown
-						</p>
-					)}
-					{landing && landing.index === null && (
-						<p
-							role="status"
-							data-testid="landing-hint"
-							className="mt-3 flex items-center gap-2 rounded-md border border-line bg-band px-3 py-2 text-sm text-muted"
-						>
-							<InfoIcon aria-hidden className="shrink-0 text-accent" />
-							<span className="min-w-0 break-all">
-								<code className="font-mono text-ink-soft">{landing.path}</code>{" "}
-								isn't in this diff
-							</span>
-						</p>
-					)}
-					{data.files.length === 0 ? (
-						<p className="mt-4 text-muted">This PR changes no files.</p>
-					) : (
-						<div className="mt-4 flex gap-4">
-							{wide && (
-								<aside className="sticky top-[calc(var(--app-header,0px)+var(--files-bar,0px)+1rem)] max-h-[calc(100dvh-var(--app-header,0px)-var(--files-bar,0px)-2rem)] w-72 shrink-0 self-start overflow-y-auto">
-									{tree}
-								</aside>
-							)}
-							<div
-								ref={diffs}
-								// Room for the floating Files button, and for the save notices
-								// (--sync-notices, SyncNotices): the last header can always
-								// scroll clear of them.
-								style={{
-									paddingBottom: `max(${wide ? "0px" : "5rem"}, var(--sync-notices, 0px))`,
-								}}
-								className="min-w-0 flex-1 space-y-3"
+		<PeopleProvider threads={allThreads}>
+			<section
+				aria-label="Files changed"
+				style={{ "--files-bar": `${barHeight}px` } as CSSProperties}
+			>
+				<h2 className="sr-only">Files changed</h2>
+				{review.isPending && <p className="text-muted">Loading the diff…</p>}
+				{review.isError && <ErrorMessage error={review.error} />}
+				{data && (
+					<>
+						<ProgressBar
+							ref={bar}
+							progress={data.progress}
+							unit={unit}
+							onUnitChange={setUnit}
+						/>
+						{stale && (
+							<p
+								role="status"
+								className="mt-3 rounded-md border border-warn/30 bg-warn/10 px-3 py-2 text-sm text-ink"
 							>
-								{data.files.map((file) => (
-									<FileDiff
-										// A new snapshot can reuse an index for another file.
-										key={`${data.revision}:${file.index}`}
-										file={file}
-										revision={data.revision}
-										unit={unit}
-										expanded={open === keyOf(file.index)}
-										onExpandedChange={(expanded) =>
-											toggleFile(file.index, expanded)
-										}
-										otherOpen={openIndex !== null && openIndex !== file.index}
-										landing={
-											landing?.index === file.index ? landing : undefined
-										}
-										threads={threads}
-									/>
-								))}
+								{STALE_MESSAGE}
+								{stale.dropped > 0 && " Unsaved changes dropped."}
+							</p>
+						)}
+						{threadsFailed && (
+							// Not "no threads": they couldn't be read (flag uncertainty).
+							<p
+								data-testid="threads-failed"
+								className="mt-3 flex min-h-10 items-center gap-2 rounded-md border border-warn/30 bg-warn/10 px-3 text-sm text-ink"
+							>
+								<LabeledIcon
+									icon={AlertIcon}
+									label={`Review threads couldn't be read: ${threadsFailed.message}`}
+									className="text-warn"
+								/>
+								Threads not shown
+							</p>
+						)}
+						{landing && landing.index === null && (
+							<p
+								role="status"
+								data-testid="landing-hint"
+								className="mt-3 flex items-center gap-2 rounded-md border border-line bg-band px-3 py-2 text-sm text-muted"
+							>
+								<InfoIcon aria-hidden className="shrink-0 text-accent" />
+								<span className="min-w-0 break-all">
+									<code className="font-mono text-ink-soft">
+										{landing.path}
+									</code>{" "}
+									isn't in this diff
+								</span>
+							</p>
+						)}
+						{data.files.length === 0 ? (
+							<p className="mt-4 text-muted">This PR changes no files.</p>
+						) : (
+							<div className="mt-4 flex gap-4">
+								{wide && (
+									<aside className="sticky top-[calc(var(--app-header,0px)+var(--files-bar,0px)+1rem)] max-h-[calc(100dvh-var(--app-header,0px)-var(--files-bar,0px)-2rem)] w-72 shrink-0 self-start overflow-y-auto">
+										{tree}
+									</aside>
+								)}
+								<div
+									ref={diffs}
+									// Room for the floating Files button, and for the save notices
+									// (--sync-notices, SyncNotices): the last header can always
+									// scroll clear of them.
+									style={{
+										paddingBottom: `max(${wide ? "0px" : "5rem"}, var(--sync-notices, 0px))`,
+									}}
+									className="min-w-0 flex-1 space-y-3"
+								>
+									{data.files.map((file) => (
+										<FileDiff
+											// A new snapshot can reuse an index for another file.
+											key={`${data.revision}:${file.index}`}
+											file={file}
+											revision={data.revision}
+											unit={unit}
+											expanded={open === keyOf(file.index)}
+											onExpandedChange={(expanded) =>
+												toggleFile(file.index, expanded)
+											}
+											otherOpen={openIndex !== null && openIndex !== file.index}
+											landing={
+												landing?.index === file.index ? landing : undefined
+											}
+											threads={threads}
+										/>
+									))}
+								</div>
 							</div>
-						</div>
-					)}
-					{!wide && data.files.length > 0 && (
-						<>
-							<button
-								type="button"
-								aria-label="Files"
-								aria-haspopup="dialog"
-								onClick={() => setSheetOpen(true)}
-								className="fixed right-4 bottom-4 z-30 flex h-12 items-center gap-2 cta rounded-full px-5 text-sm font-semibold text-ink hover:brightness-110 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
-							>
-								<span aria-hidden>☰</span>
-								Files
-							</button>
-							<FilesSheet open={sheetOpen} onClose={() => setSheetOpen(false)}>
-								{tree}
-							</FilesSheet>
-						</>
-					)}
-				</>
-			)}
-		</section>
+						)}
+						{!wide && data.files.length > 0 && (
+							<>
+								<button
+									type="button"
+									aria-label="Files"
+									aria-haspopup="dialog"
+									onClick={() => setSheetOpen(true)}
+									className="fixed right-4 bottom-4 z-30 flex h-12 items-center gap-2 cta rounded-full px-5 text-sm font-semibold text-ink hover:brightness-110 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+								>
+									<span aria-hidden>☰</span>
+									Files
+								</button>
+								<FilesSheet
+									open={sheetOpen}
+									onClose={() => setSheetOpen(false)}
+								>
+									{tree}
+								</FilesSheet>
+							</>
+						)}
+					</>
+				)}
+			</section>
+		</PeopleProvider>
 	);
 }

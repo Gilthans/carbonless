@@ -9,6 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+	avatar40,
 	fetchOverview,
 	fetchPrMeta,
 	fetchThreadCommentPages,
@@ -347,14 +348,14 @@ describe("runGh with a fake gh", () => {
 		// author, time and commit; the latest one's author and time; authors
 		// and times for the rest, with where to page on from.
 		expect(log()).toContain(
-			"id isResolved isOutdated path subjectType line originalLine startLine originalStartLine diffSide startDiffSide viewerCanReply viewerCanResolve viewerCanUnresolve first: comments(first: 1) { nodes { id databaseId author { login __typename } createdAt publishedAt state originalCommit { oid } } }",
+			"id isResolved isOutdated path subjectType line originalLine startLine originalStartLine diffSide startDiffSide viewerCanReply viewerCanResolve viewerCanUnresolve first: comments(first: 1) { nodes { id databaseId author { login __typename avatarUrl(size: 40) } createdAt publishedAt state originalCommit { oid } } }",
 		);
 		expect(log()).not.toContain("bodyText");
 		expect(log()).toContain(
-			"latest: comments(last: 1) { nodes { author { login __typename } createdAt publishedAt state } }",
+			"latest: comments(last: 1) { nodes { author { login __typename avatarUrl(size: 40) } createdAt publishedAt state } }",
 		);
 		expect(log()).toContain(
-			"comments(first: 100) { totalCount pageInfo { hasNextPage endCursor } nodes { id author { login __typename } createdAt publishedAt state } }",
+			"comments(first: 100) { totalCount pageInfo { hasNextPage endCursor } nodes { id author { login __typename avatarUrl(size: 40) } createdAt publishedAt state } }",
 		);
 	});
 
@@ -710,5 +711,15 @@ describe("onlyMissingNodes", () => {
 		expect(onlyMissingNodes(answer([missing(["nodes"])]))).toBe(false);
 		expect(onlyMissingNodes(answer([missing(["nodes", 0])], null))).toBe(false);
 		expect(onlyMissingNodes("gh: not json")).toBe(false);
+	});
+});
+
+describe("avatar40", () => {
+	it("asks REST's avatar for 40px, like GraphQL's avatarUrl(size: 40)", () => {
+		expect(avatar40("https://avatars.githubusercontent.com/u/9?v=4")).toBe(
+			"https://avatars.githubusercontent.com/u/9?v=4&s=40",
+		);
+		expect(avatar40("")).toBe("");
+		expect(avatar40("not a url")).toBe("");
 	});
 });

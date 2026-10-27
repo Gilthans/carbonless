@@ -60,7 +60,11 @@ const E2E_MAP = [
 		/^src\/web\/(overview|threads)\/|^src\/server\/(overview|overviewRead|threadCode|timeline)\.ts$|^src\/web\/(GithubHtml|githubHtml)/,
 		["overview", "timeline", "mobile"],
 	],
-	[/^src\/web\/threads\//, ["files-threads"]],
+	[/^src\/web\/threads\//, ["files-threads", "thread-people"]],
+	[
+		/^src\/web\/files\/(ThreadRow|FilesPage)\.tsx$|^src\/web\/overview\/OverviewPage\.tsx$|^test\/fake-gh\/demo-threads\.ts$|^src\/web\/index\.css$/,
+		["thread-people"],
+	],
 	[
 		/^src\/web\/threads\/|^src\/web\/overview\/(OverviewPage|WriteWarnings)\.tsx$|^src\/web\/files\/(SyncNotices|ThreadRow)\.tsx$|^src\/server\/(threadWrites|app)\.ts$/,
 		["thread-writes"],
@@ -88,7 +92,7 @@ const E2E_MAP = [
 ];
 // Shared plumbing: anything here can break any spec.
 const ALL =
-	/^(e2e\/fixtures\.ts|test\/(fake-gh|git-fixture)|playwright\.config|vite\.config|package\.json|pnpm-lock|tsconfig)/;
+	/^(e2e\/(fixtures|pr-setup)\.ts|test\/(fake-gh|git-fixture)|playwright\.config|vite\.config|package\.json|pnpm-lock|tsconfig)/;
 
 const e2e = new Set();
 let allE2e = false;

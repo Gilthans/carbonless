@@ -25,6 +25,7 @@ const comments = (threadId: string): ThreadComments => ({
 			id: `${threadId}-c`,
 			author: "rev",
 			bot: false,
+			avatarUrl: "",
 			publishedAt: "2026-01-03T09:00:00Z",
 			pending: false,
 			html: `<p>${threadId}</p>`,

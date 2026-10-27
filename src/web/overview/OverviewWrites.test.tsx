@@ -82,6 +82,8 @@ const thread = (
 	lastActivityAt: "2026-01-01T09:00:00Z",
 	author: "rev",
 	bot: false,
+	avatarUrl: "",
+	participants: [],
 	commentCount: 1,
 	hasReply: false,
 	outdated: false,
@@ -202,6 +204,15 @@ function renderOverview(
 	return client;
 }
 
+/** Opens a card's one "Show more": the whole thread, box and Resolve. */
+async function openCard(
+	user: ReturnType<typeof userEvent.setup>,
+	card: HTMLElement,
+) {
+	const more = within(card).getByTestId("thread-more");
+	if (more.getAttribute("aria-expanded") !== "true") await user.click(more);
+}
+
 beforeEach(() => {
 	try {
 		localStorage.clear();
@@ -225,6 +236,9 @@ describe("resolving from an Overview card", () => {
 		});
 		const [card] = within(open).getAllByTestId("thread");
 		if (!card) throw new Error("no card");
+		// Closed, the card has no Resolve: it is inside Show more.
+		expect(within(card).queryByRole("button", { name: "Resolve" })).toBeNull();
+		await openCard(user, card);
 		await user.click(within(card).getByRole("button", { name: "Resolve" }));
 		// Flipped at once, in place, fading.
 		expect(card).toHaveAttribute("data-fading", "true");
@@ -256,6 +270,7 @@ describe("resolving from an Overview card", () => {
 		renderOverview({}, [thread("a")]);
 		const humans = await screen.findByRole("region", { name: "Human reviews" });
 		const card = within(humans).getByTestId("thread");
+		await openCard(user, card);
 		await user.click(within(card).getByRole("button", { name: "Resolve" }));
 		await act(() => vi.advanceTimersByTimeAsync(FADE_MS / 2));
 		await user.click(within(card).getByRole("button", { name: "Unresolve" }));
@@ -281,6 +296,7 @@ describe("resolving from an Overview card", () => {
 		renderOverview({}, [thread("a")]);
 		const humans = await screen.findByRole("region", { name: "Human reviews" });
 		const card = within(humans).getByTestId("thread");
+		await openCard(user, card);
 		await user.click(within(card).getByRole("button", { name: "Resolve" }));
 		const moving = within(card).getByTestId("thread-moving");
 		expect(moving).toHaveTextContent("Moving…");
@@ -294,21 +310,88 @@ describe("resolving from an Overview card", () => {
 		]);
 		const humans = await screen.findByRole("region", { name: "Human reviews" });
 		const card = within(humans).getByTestId("thread");
+		// Nothing more to show: no toggle, no box, no Resolve.
+		expect(within(card).queryByTestId("thread-more")).toBeNull();
 		expect(within(card).queryByRole("button", { name: "Resolve" })).toBeNull();
 		expect(within(card).queryByRole("button", { name: "Reply" })).toBeNull();
 	});
 });
 
 describe("replying from an Overview card", () => {
-	it("a thread with no replies opens a reply box", async () => {
+	it("a thread with no replies: Show more opens the reply box and Resolve", async () => {
 		const user = userEvent.setup();
 		renderOverview({}, [thread("a")]);
 		const humans = await screen.findByRole("region", { name: "Human reviews" });
 		const card = within(humans).getByTestId("thread");
-		await user.click(within(card).getByRole("button", { name: "Reply" }));
+		const more = within(card).getByTestId("thread-more");
+		expect(more).toHaveAccessibleName("Show more");
+		expect(within(card).queryByRole("textbox", { name: "Reply" })).toBeNull();
+		await user.click(more);
 		expect(
 			await within(card).findByRole("textbox", { name: "Reply" }),
 		).toBeVisible();
+		expect(within(card).getByRole("button", { name: "Resolve" })).toBeVisible();
+		expect(within(card).queryByTestId("thread-replies")).toBeNull();
+		expect(more).toHaveAccessibleName("Show less");
+		await user.click(more);
+		expect(within(card).queryByRole("textbox", { name: "Reply" })).toBeNull();
+	});
+
+	it("one Show more for the whole thread: it counts the replies and opens to all of them, then the box", async () => {
+		const user = userEvent.setup();
+		renderOverview({}, [thread("a", { commentCount: 4, hasReply: true })]);
+		const humans = await screen.findByRole("region", { name: "Human reviews" });
+		const card = within(humans).getByTestId("thread");
+		const more = within(card).getByTestId("thread-more");
+		expect(more).toHaveAccessibleName("Show more, 3 replies");
+		expect(more).toHaveTextContent("Show more·3 replies");
+		// No separate replies toggle.
+		expect(within(card).getAllByRole("button", { expanded: false })).toEqual([
+			more,
+		]);
+		await user.click(more);
+		const replies = within(card).getByTestId("thread-replies");
+		const box = within(card).getByTestId("thread-actions");
+		// Replies first, then the box and Resolve, then the toggle.
+		expect(
+			replies.compareDocumentPosition(box) & Node.DOCUMENT_POSITION_FOLLOWING,
+		).toBeTruthy();
+		expect(
+			box.compareDocumentPosition(more) & Node.DOCUMENT_POSITION_FOLLOWING,
+		).toBeTruthy();
+	});
+
+	it("a thread the viewer may resolve but not reply to still opens to Resolve", async () => {
+		const user = userEvent.setup();
+		renderOverview({}, [
+			thread("a", {
+				viewerCan: { reply: false, resolve: true, unresolve: false },
+			}),
+		]);
+		const humans = await screen.findByRole("region", { name: "Human reviews" });
+		const card = within(humans).getByTestId("thread");
+		await openCard(user, card);
+		expect(within(card).getByRole("button", { name: "Resolve" })).toBeVisible();
+		expect(within(card).queryByRole("textbox", { name: "Reply" })).toBeNull();
+	});
+
+	it("a thread with a draft opens on it", async () => {
+		localStorage.setItem(
+			"crb:drafts:acme/widget#12",
+			JSON.stringify([{ threadId: "a", text: "Kept" }]),
+		);
+		renderOverview({}, [thread("a"), thread("b")]);
+		const humans = await screen.findByRole("region", { name: "Human reviews" });
+		const [a, b] = within(humans).getAllByTestId("thread");
+		if (!a || !b) throw new Error("no cards");
+		expect(within(a).getByTestId("thread-more")).toHaveAttribute(
+			"aria-expanded",
+			"true",
+		);
+		expect(within(b).getByTestId("thread-more")).toHaveAttribute(
+			"aria-expanded",
+			"false",
+		);
 	});
 });
 
@@ -422,14 +505,10 @@ describe("WriteWarnings in who's on it", () => {
 		const who = await screen.findByRole("region", { name: "Who's on it" });
 		expect(within(who).queryByTestId("pending-review-warning")).toBeNull();
 		const card = screen.getByTestId("thread");
-		await user.click(within(card).getByRole("button", { name: "Reply" }));
+		await openCard(user, card);
 		const box = within(card).getByRole("textbox", { name: "Reply" });
 		await user.type(box, "Fixed");
-		await user.click(
-			within(card)
-				.getAllByRole("button", { name: "Reply" })
-				.at(-1) as HTMLElement,
-		);
+		await user.click(within(card).getByRole("button", { name: "Reply" }));
 		expect(
 			await within(who).findByTestId("pending-review-warning"),
 		).toBeInTheDocument();
@@ -457,7 +536,7 @@ describe("WriteWarnings in who's on it", () => {
 		const who = await screen.findByRole("region", { name: "Who's on it" });
 		expect(within(who).getByTestId("pending-review-warning")).toBeVisible();
 		const card = screen.getByTestId("thread");
-		await user.click(within(card).getByRole("button", { name: "Reply" }));
+		await openCard(user, card);
 		await user.type(
 			within(card).getByRole("textbox", { name: "Reply" }),
 			"Done",
@@ -533,6 +612,7 @@ describe("WriteWarnings in who's on it", () => {
 		);
 		const who = await screen.findByRole("region", { name: "Who's on it" });
 		const card = screen.getByTestId("thread");
+		await openCard(user, card);
 		await user.click(within(card).getByRole("button", { name: "Resolve" }));
 		expect(within(card).getByTestId("thread-head")).toHaveTextContent(
 			/^Resolved thread/,

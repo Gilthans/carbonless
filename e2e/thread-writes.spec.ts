@@ -93,15 +93,17 @@ const humans = (page: Page) =>
 const card = (page: Page, path: string) =>
 	humans(page).getByTestId("thread").filter({ hasText: path });
 
-/** Opens a card's reply box (its "Reply" toggle when it has no replies). */
+/** Opens a card's one "Show more": its replies, reply box and Resolve. */
+async function openCard(c: Locator) {
+	const more = c.getByTestId("thread-more");
+	if ((await more.getAttribute("aria-expanded")) !== "true") await more.click();
+	await expect(more).toHaveAttribute("aria-expanded", "true");
+}
+
+/** Opens a card and gives its reply box. */
 async function openReply(c: Locator) {
+	await openCard(c);
 	const box = c.getByRole("textbox", { name: "Reply" });
-	if (!(await box.isVisible())) {
-		await c
-			.getByRole("button", { name: /^Reply$|repl(y|ies)/ })
-			.first()
-			.click();
-	}
 	await expect(box).toBeVisible();
 	return box;
 }
@@ -151,7 +153,7 @@ test("reply from an Overview card: shown at once, still there after a reload", a
 	await page.reload();
 	const again = card(page, "new.txt");
 	await expect(again.getByRole("img", { name: "2 comments" })).toBeVisible();
-	await again.getByRole("button", { name: "1 reply" }).click();
+	await again.getByRole("button", { name: "Show more, 1 reply" }).click();
 	await expect(
 		again.getByTestId("thread-comment").filter({ hasText: "Kept on purpose" }),
 	).toHaveCount(1);
@@ -234,7 +236,17 @@ test("resolve from an Overview card fades, then moves; unresolve brings it back"
 	const s = await startCrb();
 	await page.goto(s.url);
 	const c = card(page, "new.txt");
-	await c.getByRole("button", { name: "Resolve" }).click();
+	// Closed, the card has no Resolve: it's inside Show more.
+	await expect(c.getByRole("button", { name: "Resolve" })).toHaveCount(0);
+	await openCard(c);
+	const resolve = c.getByRole("button", { name: "Resolve", exact: true });
+	await expect(resolve).toHaveText("Resolve");
+	const size = await resolve.boundingBox();
+	expect(size?.height ?? 0).toBeGreaterThanOrEqual(40);
+	// The bigger action next to Send.
+	const sendSize = await send(c).boundingBox();
+	expect(size?.width ?? 0).toBeGreaterThan(sendSize?.width ?? 0);
+	await resolve.click();
 	await expect(c).toHaveAttribute("data-fading", "true");
 	await expect(c.getByTestId("thread-head")).toContainText("Resolved thread");
 	// Still in place, the toggle there to undo; then gone to the other list.
@@ -243,6 +255,7 @@ test("resolve from an Overview card fades, then moves; unresolve brings it back"
 	const resolved = humans(page).getByRole("button", { name: "1 resolved" });
 	await resolved.click();
 	const back = card(page, "new.txt");
+	await openCard(back);
 	await back.getByRole("button", { name: "Unresolve" }).click();
 	await expect(back).toHaveAttribute("data-fading", "true");
 	await expect(back).toHaveCount(0, { timeout: 8000 });
@@ -258,6 +271,7 @@ test("undo during the fade keeps the card", async ({ page, pr, startCrb }) => {
 	const s = await startCrb();
 	await page.goto(s.url);
 	const c = card(page, "new.txt");
+	await openCard(c);
 	await c.getByRole("button", { name: "Resolve" }).click();
 	await c.getByRole("button", { name: "Unresolve" }).click();
 	await expect(c).not.toHaveAttribute("data-fading");

@@ -4,6 +4,7 @@ import type {
 	PrOverview,
 	ReviewThread,
 	ThreadComment,
+	ThreadParticipant,
 } from "../shared/types.js";
 import { atOrBefore } from "./asOf.js";
 import { attentionSet } from "./attention.js";
@@ -276,6 +277,7 @@ export function mapComments(
 			id,
 			author: str(author.login),
 			bot: isBotAuthor(author),
+			avatarUrl: str(author.avatarUrl),
 			publishedAt,
 			pending: publishedAt === null,
 			html: str(c.bodyHTML),
@@ -408,6 +410,19 @@ export function mapThreads(
 				? [obj(obj(latestNode).author)]
 				: []),
 		].map((a) => ({ login: str(a.login), bot: isBotAuthor(a) }));
+		// Each commenter once, in the order they first spoke.
+		const participants: ThreadParticipant[] = [];
+		for (const { c, at } of [
+			...[...comments].sort((a, b) => timeOf(a.at) - timeOf(b.at)),
+			...(!asOf && latestAt !== null
+				? [{ c: obj(latestNode), at: latestAt }]
+				: []),
+		]) {
+			const a = obj(c.author);
+			const name = str(a.login);
+			if (!name || participants.some((p) => p.login === name)) continue;
+			participants.push({ login: name, avatarUrl: str(a.avatarUrl), at });
+		}
 		const attention = attentionSet({
 			comments: commenters,
 			prAuthor,
@@ -438,6 +453,8 @@ export function mapThreads(
 			lastActivityAt,
 			author: firstLogin,
 			bot,
+			avatarUrl: str(author.avatarUrl),
+			participants,
 			// The total, less pending comments (the viewer's), which don't
 			// count; past the listed ones (gh.ts pages them in when there are
 			// more than 100), only the latest can be told. As of a cutoff,
