@@ -84,7 +84,9 @@ neutral punctuation next to it without any override.
 Settings' "Ignore whitespace" matches a hunk's removed and added lines with
 whitespace-equal lines on the other side (`src/web/files/whitespace.ts`,
 over the whole hunk, context lines included, since git often splits a
-re-indented block over a context line) and draws them as quiet rows: a
+re-indented block over a context line; what is left shown as add/del is
+always a real change, see `docs/product-rules.md`) and draws them as quiet
+rows: a
 removed line and its added twin in the same cluster as one row with both
 line numbers in `faint` (no add/del gutter) and the new side's text; a line
 whose twin is a context line or sits in another cluster as a one-sided row

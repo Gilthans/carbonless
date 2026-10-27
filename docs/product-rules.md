@@ -160,7 +160,9 @@ row. A cluster that is all whitespace-only collapses to one row, but keeps
 its checkbox and cross-off and still has to be reviewed, and it stays open
 while a thread or a thread link's landing sits on one of its lines. The
 matching runs over the whole hunk (a line's twin may be a context line or
-sit in another cluster: a one-sided `~` row), and a context line is used
-only whole, both sides, so no insertion or deletion ever hides behind an
-unchanged row. The matching is pure and checked for any input: every line
-of the hunk is in the rows exactly once (principle 2).
+sit in another cluster: a one-sided `~` row). What it guarantees, pure and
+checked for any input (principle 2): every line of the hunk is in the rows
+exactly once, and dropping the lines shown as added or removed from the two
+sides leaves them whitespace-equal, so a block moved across an unchanged
+line, or a line that crossed one, is never shown as whitespace-only. It may
+show more as changed than `git diff -w` does, never less.

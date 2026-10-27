@@ -5,6 +5,7 @@ import {
 	WRAP_ADDED,
 	WRAP_NEW,
 	WRAP_OLD,
+	WRAP_REMOVED,
 } from "../test/whitespace-fixture";
 import { fileSection, openFiles, progress } from "./files-ui";
 import { expect, type PrOptions, test } from "./fixtures";
@@ -186,24 +187,20 @@ test("Ignore whitespace pairs whitespace-only lines and collapses whitespace-onl
 	await expect(section.getByTestId("change-count")).toContainText("−15");
 	expect(await overflow(page)).toBeLessThanOrEqual(0);
 
-	// A loop wrapped in an `if`: only the `if` and its `}` are added; the
-	// line that crossed a context row is a one-sided row on each side.
+	// A loop wrapped in an `if`: the `if`, its `}` and the `log` line that
+	// crossed an unchanged `}` stay changes; the body is whitespace-only.
 	section = await expand(page, "src/wrap.ts");
-	await expect(rows(section, "add")).toHaveCount(2);
-	await expect(rows(section, "add").nth(0)).toContainText(
-		WRAP_ADDED[0] as string,
+	await expect(rows(section, "add")).toHaveCount(WRAP_ADDED.length);
+	for (const [i, text] of WRAP_ADDED.entries()) {
+		await expect(rows(section, "add").nth(i)).toContainText(text.trim());
+	}
+	await expect(rows(section, "del")).toHaveCount(1);
+	await expect(rows(section, "del")).toContainText(
+		(WRAP_REMOVED[0] as string).trim(),
 	);
-	await expect(rows(section, "del")).toHaveCount(0);
-	await expect(rows(section, "ws")).toHaveCount(7);
-	await expect(section.locator('[data-ws="new"]')).toHaveCount(1);
-	await expect(section.getByTestId("ws-cluster")).toContainText(
-		"Whitespace only · 1 line",
-	);
-	await section
-		.getByRole("button", { name: "Show whitespace-only lines" })
-		.click();
-	await expect(section.locator('[data-ws="old"]')).toHaveCount(1);
-	await expect(rows(section, "ws")).toHaveCount(8);
+	await expect(rows(section, "ws")).toHaveCount(6);
+	await expect(section.locator('[data-ws="pair"]')).toHaveCount(6);
+	await expect(section.getByTestId("ws-cluster")).toHaveCount(0);
 
 	// Off again: the mixed file shows every line as it is.
 	await ignoreWhitespace(page, false);
