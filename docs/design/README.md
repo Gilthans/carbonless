@@ -331,13 +331,22 @@ decides where; nothing else does):
   room), never over it; on a phone a bar pinned to the bottom (above the
   safe area) quoting the selection. An action that can't run stays,
   `aria-disabled`, with the reason as its tooltip. Pressing it doesn't take
-  the selection; Escape dismisses it and clears picked lines (`line-picked`).
+  the selection; Escape dismisses it until the span changes and clears
+  picked lines (`line-picked`). A selection taller than the screen gets the
+  bar beside it; on a phone the page pads its end by the bar's height. The
+  first Tab after a selection goes to the bar. A new text selection lets
+  picked lines go.
 - **The composer** opens as a row under the span's last line, like an
   opened thread: an `edge` card whose `band` header quotes the span (its
   exact text on `span-mark`, then "line 4, new" in `faint` mono), a box and
   Cancel / Comment. The span stays painted (`thread-mark` and `span-mark`)
   while it's written. Sending: the text with a `warn` clock; refused: a
   `bad` line saying why above the box, the text kept.
+  Refused, the box scrolls clear of the bottom notice; on a phone the
+  floating Files button makes way while a box has focus or a write is
+  refused. After a Refresh a draft moves to the new head when its lines
+  read the same (a file comment always does); else it stays as an orphan,
+  "Written on an earlier version".
 - **A thread with a span** paints its exact characters with `span-mark` on
   its lines, in Files changed and in the Overview's code pane; when the
   columns don't fit the line any more, only the lines show.
