@@ -20,6 +20,7 @@ import type {
 import { ignoreWhitespace, showInvisibles, sideBySide } from "../viewSettings";
 import { DiffBody, type DiffThreads, LANDED_MS } from "./DiffBody";
 import type { Landing } from "./landing";
+import { setPicks } from "./linePicks";
 
 vi.mock("./highlight", () => ({
 	languageFor: () => null,
@@ -404,6 +405,53 @@ describe("DiffBody with Ignore whitespace", () => {
 		expect(text.closest("button")).toBeNull();
 		expect(pinnedRow.querySelector("svg")).toBeNull();
 	});
+
+	for (const view of ["unified", "side-by-side"] as const) {
+		it(`keeps a whitespace-only cluster open while one of its lines is picked (${view})`, async () => {
+			sideBySide.set(view === "side-by-side");
+			try {
+				const { collapsed } = setup();
+				await screen.findByText("Whitespace only · 6 lines");
+				expect(collapsed()[0]).not.toHaveAttribute("data-expanded");
+				// The pair's old line, picked (by its number, linePicks.ts).
+				const line = {
+					side: "LEFT" as const,
+					line: 3,
+					len: 1,
+					hunk: "h0",
+					order: 2,
+					path: PATH,
+				};
+				act(() =>
+					setPicks({ path: PATH, anchor: line, focus: line, lines: [line] }),
+				);
+				expect(collapsed()[0]).toHaveAttribute("data-expanded");
+				// Shown: a `~` row, or a pair row with a `~` cell on each side.
+				const row = document.querySelector(
+					'[data-testid="diff-line"][data-old-no="3"]',
+				);
+				expect(row).not.toBeNull();
+				expect(row?.querySelector('[data-kind="ws"]') ?? row).toHaveAttribute(
+					"data-kind",
+					"ws",
+				);
+				expect(row?.closest("table")).toHaveAttribute("data-view", view);
+				// Pinned: no button to collapse it.
+				expect(
+					screen.queryByRole("button", { name: "Whitespace only · 6 lines" }),
+				).toBeNull();
+				act(() => setPicks(null));
+				// Let go: the rows stay under the reviewer, the button is back.
+				expect(collapsed()[0]).toHaveAttribute("data-expanded");
+				expect(
+					screen.getByRole("button", { name: "Whitespace only · 6 lines" }),
+				).toHaveAttribute("aria-expanded", "true");
+			} finally {
+				setPicks(null);
+				sideBySide.reset();
+			}
+		});
+	}
 
 	it("names a thread on a pair's new side by its new number", async () => {
 		const { rows } = setup({ threads: [thread("RIGHT", 2)] });
