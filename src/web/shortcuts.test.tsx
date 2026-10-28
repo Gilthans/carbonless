@@ -172,6 +172,22 @@ describe("ShortcutsProvider", () => {
 		expect(run).toHaveBeenCalledTimes(2);
 	});
 
+	it("a hidden page's shortcuts don't run, whatever their group", () => {
+		const hidden = vi.fn();
+		const shown = vi.fn();
+		render(
+			<ShortcutsProvider>
+				<PageActive value={false}>
+					<Uses keys="r" group="Threads" run={hidden} />
+				</PageActive>
+				<Uses keys="r" group="Threads" run={shown} />
+			</ShortcutsProvider>,
+		);
+		press("r");
+		expect(hidden).not.toHaveBeenCalled();
+		expect(shown).toHaveBeenCalledTimes(1);
+	});
+
 	it("leaves a key a handler already took alone", () => {
 		const run = vi.fn();
 		render(

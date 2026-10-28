@@ -37,11 +37,6 @@ const GROUPS: ShortcutGroup[] = [
 	"Overview",
 	"Threads",
 ];
-/** Groups that belong to one page: their shortcuts run only on it. */
-const PAGE_GROUPS: Partial<Record<ShortcutGroup, true>> = {
-	"Files changed": true,
-	Overview: true,
-};
 
 /** Listed always: `?` itself, and Escape, which menus and dialogs handle. */
 const BUILT_IN: HelpEntry[] = [
@@ -159,8 +154,9 @@ function otherModalOpen(except: HTMLDialogElement | null): boolean {
 
 /**
  * Registers `s` while mounted. It runs on its key, unless typing in a
- * field, a modal dialog is open, `when` says no, or (a page group's) its
- * page is hidden. The help lists it whatever `when` says.
+ * field, a modal dialog is open, `when` says no, or the kept page it was
+ * registered in is hidden (whatever its group: both pages show threads).
+ * The help lists it whatever `when` says.
  */
 export function useShortcut(s: Shortcut): void {
 	const ctx = useContext(ShortcutsContext);
@@ -235,7 +231,7 @@ export function ShortcutsProvider(props: { children: ReactNode }) {
 			for (const item of registry.snapshot()) {
 				const s = item.shortcut?.current;
 				if (!s || !matchesKeys(s.keys, e)) continue;
-				if (PAGE_GROUPS[s.group] && item.active?.current === false) continue;
+				if (item.active?.current === false) continue;
 				if (s.when && !s.when()) continue;
 				e.preventDefault();
 				s.run(e);
