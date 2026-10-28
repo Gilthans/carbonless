@@ -19,8 +19,8 @@ export interface MarkerSpan {
 }
 
 export interface Marker {
-	/** The client id; null when the marker has none (hand-edited). */
-	id: string | null;
+	/** The client id: a marker without one isn't carbonless's. */
+	id: string;
 	/** The span; null without one, or one that doesn't parse. */
 	span: MarkerSpan | null;
 }
@@ -29,10 +29,10 @@ export interface Marker {
 export const MARKER_ID = /^[A-Za-z0-9_.:-]{1,100}$/;
 
 /**
- * Where `text`'s trailing crb marker starts (the whitespace before it
- * included) and its inside; null without one. A marker is any HTML
+ * Where `text`'s trailing crb comment starts (the whitespace before it
+ * included) and its inside after `crb:`; null without one: an HTML
  * comment at the very end (trailing whitespace aside) whose inside starts
- * `crb:`, a hand-edited one too; any other is left as text. Linear: no
+ * `crb:` (ours decides whether it is carbonless's). Linear: no
  * backtracking over a long body.
  */
 function trailing(
@@ -64,17 +64,22 @@ export function markerFor(clientId: string, span?: MarkerSpan | null): string {
 	return `\n\n<!-- crb:v1 id=${clientId}${s} -->`;
 }
 
-/** `body`'s trailing crb marker, parsed; null when it has none. */
-export function parseMarker(body: string): Marker | null {
-	const m = trailing(body, "<!--", "-->");
-	if (!m) return null;
-	const words = m.inner.trim().split(/\s+/);
-	// Only v1 is read; any other crb marker is stripped, but means nothing.
-	if (words[0] !== "v1") return { id: null, span: null };
+/**
+ * A trailing marker's inside, parsed: carbonless's only when it is v1 and
+ * carries a well-formed id (a span that doesn't parse is null). Anything
+ * else that merely looks like one (someone's own text) is null: not ours.
+ */
+function parsed(inner: string): Marker | null {
+	const words = inner.trim().split(/\s+/);
+	if (words[0] !== "v1") return null;
 	let id: string | null = null;
 	let span: MarkerSpan | null = null;
 	for (const word of words.slice(1)) {
-		const [key, value = ""] = word.split("=", 2);
+		// The first "=" only: a value may hold more.
+		const at = word.indexOf("=");
+		if (at < 0) continue;
+		const key = word.slice(0, at);
+		const value = word.slice(at + 1);
 		if (key === "id" && MARKER_ID.test(value)) id = value;
 		if (key === "span") {
 			const s = SPAN.exec(value);
@@ -93,25 +98,40 @@ export function parseMarker(body: string): Marker | null {
 			}
 		}
 	}
-	return { id, span };
+	return id === null ? null : { id, span };
 }
 
-/** `body` without its trailing crb marker (and the blank before it). */
+/** Where carbonless's own trailing marker starts in `text`, and it parsed; null without one. */
+function ours(
+	text: string,
+	open = "<!--",
+	close = "-->",
+): { start: number; marker: Marker } | null {
+	const m = trailing(text, open, close);
+	const marker = m && parsed(m.inner);
+	return m && marker ? { start: m.start, marker } : null;
+}
+
+/** `body`'s trailing marker, parsed; null when it has none of carbonless's. */
+export function parseMarker(body: string): Marker | null {
+	return ours(body)?.marker ?? null;
+}
+
+/** `body` without carbonless's trailing marker (and the blank before it). */
 export function stripMarker(body: string): string {
-	const m = trailing(body, "<!--", "-->");
+	const m = ours(body);
 	return m ? body.slice(0, m.start) : body;
 }
 
-/** `html` without a trailing crb marker, should GitHub's rendering keep one. */
+/** `html` without carbonless's trailing marker, should GitHub's rendering keep one. */
 export function stripMarkerHtml(html: string): string {
-	const m =
-		trailing(html, "<!--", "-->") ?? trailing(html, "&lt;!--", "--&gt;");
+	const m = ours(html) ?? ours(html, "&lt;!--", "--&gt;");
 	return m ? html.slice(0, m.start) : html;
 }
 
-/** `body`'s trailing marker as written (with the blank before it), or "". */
+/** `body`'s trailing marker of carbonless's as written (with the blank before it), or "". */
 export function markerText(body: string): string {
-	const m = trailing(body, "<!--", "-->");
+	const m = ours(body);
 	return m ? body.slice(m.start) : "";
 }
 

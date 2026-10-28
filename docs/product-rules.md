@@ -100,8 +100,13 @@ unresolving one, and editing or deleting one of the viewer's comments in one
   its lines are the thread's own, else the thread is on whole lines (moved
   on, or the marker edited on GitHub). An edit (and blanking to
   `[deleted]`) puts the comment's marker back on the new text, and edits
-  compare bodies without it. One edited into garbage is still stripped
-  while it reads as `<!-- crb:… -->`, else left as text.
+  compare bodies without it. Only a `crb:v1` marker carrying a well-formed
+  id is carbonless's: stripped (a garbled span then reads as none) and
+  carried through edits; anything else that merely looks like one is the
+  author's own text, shown and kept as it is. A marker edited away on
+  GitHub can't be found by a retry: a thread whose answer got lost, then
+  had its marker removed before the retry, is posted again (accepted: the
+  marker is the only id GitHub keeps for it).
 - **Edits and deletes are REST, one comment each.** An edit is
   `PATCH /repos/{o}/{r}/pulls/comments/{id}`, a delete
   `DELETE /repos/{o}/{r}/pulls/comments/{id}` (the comment's REST id,

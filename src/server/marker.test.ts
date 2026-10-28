@@ -38,19 +38,34 @@ describe("the marker", () => {
 		expect(parseMarker("a\n<!-- crb:v1 id=x --> b -->")).toBeNull();
 	});
 
-	it("a hand-edited one is stripped while it reads as crb's, left as text otherwise; never throws", () => {
+	it("a hand-edited one is stripped while it is still v1 with an id (its span then null); look-alikes stay as text; never throws", () => {
 		for (const garbage of [
 			"Hi <!-- crb:v1 id=a span=oops -->",
-			"Hi <!-- crb:v1 span=1:2-3 -->",
-			"Hi <!--crb:v7 whatever-->",
-			"Hi <!-- crb: -->",
-			"Hi <!-- crb:v1 id=has%space span=0:1-2:3 -->",
+			"Hi <!-- crb:v1 span=1:2-3 id=a -->",
+			"Hi <!--crb:v1 id=a span=0:1-2:3-->",
 		]) {
 			expect(stripMarker(garbage)).toBe("Hi");
-			const parsed = parseMarker(garbage);
-			expect(parsed?.span).toBeNull();
+			expect(parseMarker(garbage)).toEqual({ id: "a", span: null });
 		}
-		expect(parseMarker("Hi <!-- crb:v1 id=a span=oops -->")?.id).toBe("a");
+		// Not carbonless's: someone's own text, shown and kept by an edit.
+		for (const text of [
+			"Hi <!-- crb:v1 span=1:2-3:4 -->",
+			"Hi <!--crb:v7 id=a-->",
+			"Hi <!-- crb: -->",
+			"Hi <!-- crb:v1 id=has%space -->",
+			"Hi <!-- crb:v1 id= -->",
+		]) {
+			expect(stripMarker(text)).toBe(text);
+			expect(parseMarker(text)).toBeNull();
+			expect(markerText(text)).toBe("");
+			expect(stripMarkerHtml(text)).toBe(text);
+		}
+		// The first "=" splits: a value holding one is that value, whole.
+		expect(parseMarker("x <!-- crb:v1 id=a=b -->")).toBeNull();
+		expect(parseMarker("x <!-- crb:v1 id=a span=1:0-1:2=3 -->")).toEqual({
+			id: "a",
+			span: null,
+		});
 		for (const text of [
 			"Hi <!-- a note -->",
 			"Hi <!-- crb v1 -->",
