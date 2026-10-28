@@ -19,7 +19,9 @@ export type ShortcutGroup = "Global" | "Files changed" | "Overview" | "Threads";
 /**
  * A keyboard shortcut. `keys` is the key (`e.key`: "c", "?", "Enter"),
  * after any modifiers joined by "+": "Mod" (Ctrl, or Cmd on a Mac), "Ctrl",
- * "Meta", "Alt", "Shift" (only for named keys: "?" is already shifted).
+ * "Meta", "Alt", "Shift" (for letters and named keys: "?" is already
+ * shifted). A letter is lower case ("c") and matches whatever Caps Lock
+ * says, and on a non-Latin layout by its physical key (`e.code`).
  */
 export interface Shortcut {
 	keys: string;
@@ -105,7 +107,14 @@ export function matchesKeys(keys: string, e: KeyboardEvent): boolean {
 	const meta = mods.has("Meta") || (mod && isMac());
 	if (e.ctrlKey !== ctrl || e.metaKey !== meta) return false;
 	if (e.altKey !== mods.has("Alt")) return false;
-	// A printed character carries its own Shift ("?", "C").
+	if (/^[a-z]$/.test(key)) {
+		if (e.shiftKey !== mods.has("Shift")) return false;
+		// Caps Lock prints "C"; a non-Latin layout (Hebrew's "ב") falls back
+		// to the physical key, KeyC.
+		if (e.key.toLowerCase() === key) return true;
+		return !/^[\x20-\x7e]$/.test(e.key) && e.code === `Key${key.toUpperCase()}`;
+	}
+	// Any other printed character carries its own Shift ("?").
 	if (key.length === 1) return e.key === key;
 	return e.shiftKey === mods.has("Shift") && e.key === key;
 }

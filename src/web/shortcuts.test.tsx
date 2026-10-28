@@ -61,6 +61,16 @@ describe("matchesKeys", () => {
 		expect(matchesKeys("c", ev("c", { metaKey: true }))).toBe(false);
 		expect(matchesKeys("c", ev("c", { altKey: true }))).toBe(false);
 	});
+	it("matches a letter with Caps Lock on, and on a non-Latin layout by its physical key", () => {
+		expect(matchesKeys("c", ev("C", { code: "KeyC" }))).toBe(true);
+		expect(matchesKeys("c", ev("ב", { code: "KeyC" }))).toBe(true);
+		expect(matchesKeys("c", ev("ב", { code: "KeyC", shiftKey: true }))).toBe(
+			false,
+		);
+		// A Latin layout's own letter wins over the physical key (Dvorak).
+		expect(matchesKeys("c", ev("j", { code: "KeyC" }))).toBe(false);
+		expect(matchesKeys("Shift+c", ev("C", { shiftKey: true }))).toBe(true);
+	});
 	it("matches named keys with exactly their modifiers", () => {
 		expect(matchesKeys("Ctrl+Enter", ev("Enter", { ctrlKey: true }))).toBe(
 			true,
