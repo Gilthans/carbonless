@@ -188,6 +188,29 @@ function useDiffThreads(): {
 	return { threads, all: view?.threads, failed: view ? null : error };
 }
 
+/** A text box on the page has focus (a comment or a reply being written). */
+function useWritingHere(): boolean {
+	const [writing, setWriting] = useState(false);
+	useEffect(() => {
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		const update = () =>
+			setWriting(document.activeElement instanceof HTMLTextAreaElement);
+		// Focus moving between two boxes: read where it lands.
+		const left = () => {
+			clearTimeout(timer);
+			timer = setTimeout(update, 0);
+		};
+		document.addEventListener("focusin", update);
+		document.addEventListener("focusout", left);
+		return () => {
+			clearTimeout(timer);
+			document.removeEventListener("focusin", update);
+			document.removeEventListener("focusout", left);
+		};
+	}, []);
+	return writing;
+}
+
 const headerOf = (index: number) =>
 	document.querySelector<HTMLElement>(`#file-${index} > header`);
 
@@ -416,6 +439,12 @@ export function FilesPage() {
 		return byPath;
 	}, [threads]);
 
+	// The floating Files button makes way while a comment is being written
+	// (a box has focus) or one was refused: it would cover its buttons.
+	const writing = useWritingHere();
+	const refused = [...useThreadWrites().threads.values()].some((t) => t.failed);
+	const filesButton = !writing && !refused;
+
 	const tree = data && (
 		<FileTree
 			files={data.files}
@@ -496,7 +525,7 @@ export function FilesPage() {
 									// (--sync-notices, SyncNotices): the last header can always
 									// scroll clear of them.
 									style={{
-										paddingBottom: `max(${wide ? "0px" : "5rem"}, var(--sync-notices, 0px))`,
+										paddingBottom: `max(${wide ? "0px" : "5rem"}, var(--sync-notices, 0px), var(--selection-bar, 0px))`,
 									}}
 									className="min-w-0 flex-1 space-y-3"
 								>
@@ -525,6 +554,7 @@ export function FilesPage() {
 						{!wide && data.files.length > 0 && (
 							<>
 								<button
+									hidden={!filesButton}
 									type="button"
 									aria-label="Files"
 									aria-haspopup="dialog"

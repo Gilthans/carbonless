@@ -284,6 +284,24 @@ test("a pending review refuses it with the link, the draft kept", async ({
 	).toHaveAttribute("href", "https://github.com/acme/widget/pull/7/files");
 	await expect(composer.getByTestId("new-thread-error")).toBeVisible();
 	await expect(box).toHaveValue("Blocked");
+	// The notice and the Files button leave the box and its button clear.
+	const post = composer.getByRole("button", { name: "Comment" });
+	const apart = async (a: Locator, b: Locator) => {
+		const x = await a.boundingBox();
+		const y = await b.boundingBox();
+		if (!x || !y) return true;
+		return (
+			x.y + x.height <= y.y ||
+			y.y + y.height <= x.y ||
+			x.x + x.width <= y.x ||
+			y.x + y.width <= x.x
+		);
+	};
+	await expect.poll(() => apart(notice, box)).toBe(true);
+	await expect.poll(() => apart(notice, post)).toBe(true);
+	await expect(
+		page.getByRole("button", { name: "Files", exact: true }),
+	).toBeHidden();
 	await shot(page, "new-thread-pending-review", isMobile);
 	expect(stored(p)).toEqual([]);
 });
@@ -354,4 +372,89 @@ test("no sideways page scroll at 360px with the bar and the composer open", asyn
 	await selectText(page, GREET, 12, 0, 3);
 	await expect(bar(page)).toBeVisible();
 	expect(await wide()).toBeLessThanOrEqual(0);
+});
+
+/** The viewport point at column `col` of new line `n`'s text. */
+async function charPoint(page: Page, path: string, n: number, col: number) {
+	return page.evaluate(
+		({ path, n, col }) => {
+			const code = document.querySelector(
+				`[data-path="${path}"] tr[data-new-no="${n}"] > [data-code-cell][data-side="RIGHT"] [data-code]`,
+			);
+			if (!code) throw new Error("no line");
+			const walker = document.createTreeWalker(code, NodeFilter.SHOW_TEXT);
+			let left = col;
+			for (let t = walker.nextNode(); t; t = walker.nextNode()) {
+				const len = (t as Text).data.length;
+				if (left < len) {
+					const r = document.createRange();
+					r.setStart(t, left);
+					r.setEnd(t, left + 1);
+					const box = r.getBoundingClientRect();
+					return { x: box.left + 1, y: box.top + box.height / 2 };
+				}
+				left -= len;
+			}
+			throw new Error("past the line");
+		},
+		{ path, n, col },
+	);
+}
+
+test("a real mouse drag over the code comments on exactly what was dragged over", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	test.skip(isMobile, "a mouse drag");
+	await pr(fixture);
+	const s = await startCrb();
+	const section = await openFile(page, s.url, GREET);
+	const from = await charPoint(page, GREET, 3, 16);
+	// The left half of the character after the span's end.
+	const to = await charPoint(page, GREET, 3, 27);
+	await page.mouse.move(from.x, from.y);
+	await page.mouse.down();
+	await page.mouse.move(to.x - 1, to.y, { steps: 8 });
+	await page.mouse.up();
+	await expect(bar(page)).toBeVisible();
+	const selected = await page.evaluate(() =>
+		document.getSelection()?.toString(),
+	);
+	expect(selected).toBe("name.trim()");
+	// Tab goes to the bar first, the selection kept.
+	await page.keyboard.press("Tab");
+	await expect(
+		bar(page).getByRole("button", { name: "Comment" }),
+	).toBeFocused();
+	expect(await page.evaluate(() => document.getSelection()?.toString())).toBe(
+		selected,
+	);
+	await page.keyboard.press("Enter");
+	await expect(section.getByTestId("new-thread-quote")).toHaveText(
+		"name.trim()",
+	);
+	await expect(section.getByTestId("new-thread")).toContainText("line 3, new");
+});
+
+test("a triple click picks the whole line: no columns", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	test.skip(isMobile, "a mouse triple click");
+	await pr(fixture);
+	const s = await startCrb();
+	const section = await openFile(page, s.url, GREET);
+	const p = await charPoint(page, GREET, 11, 2);
+	await page.mouse.click(p.x, p.y, { clickCount: 3 });
+	await expect(bar(page)).toBeVisible();
+	await bar(page).getByRole("button", { name: "Comment" }).click();
+	const composer = section.getByTestId("new-thread");
+	await expect(composer).toContainText("line 11, new");
+	// Whole lines: the quote is the line, not painted as a span.
+	await expect(composer.getByTestId("new-thread-quote")).toHaveText("new b");
+	await expect(section.locator("[data-span-mark]")).toHaveCount(0);
 });

@@ -41,8 +41,19 @@ export interface NewDraft extends NewTarget {
 	clientId: string;
 	/** When it was first typed in (ISO). */
 	createdAt: string;
+	/**
+	 * A line comment: the text of its first and last line when written, so
+	 * it can move to a new head where those lines read the same.
+	 */
+	texts?: LineTexts;
 	/** Posted, not yet confirmed: resent on load, looked for first. */
 	sending?: { attemptedAt: string; sentOnce: boolean };
+}
+
+/** A line comment's first and last line, as written on. */
+export interface LineTexts {
+	start: string;
+	end: string;
 }
 
 /** A new thread's draft id: its client id behind `new:`. */
@@ -136,7 +147,12 @@ function isNew(d: Partial<Draft>): boolean {
 		!optNumber(c.startLine) ||
 		!optNumber(c.line) ||
 		!optCol(c.startCol) ||
-		!optCol(c.endCol)
+		!optCol(c.endCol) ||
+		(c.texts !== undefined &&
+			(typeof c.texts !== "object" ||
+				c.texts === null ||
+				typeof c.texts.start !== "string" ||
+				typeof c.texts.end !== "string"))
 	) {
 		return false;
 	}
@@ -252,20 +268,42 @@ export class DraftStore {
 	 * The new thread now reads `text`, going to `target`: kept from the
 	 * first keystroke; blank and not posted, it is dropped (nothing to lose).
 	 */
-	setNew(clientId: string, target: NewTarget, text: string): void {
+	setNew(
+		clientId: string,
+		target: NewTarget,
+		text: string,
+		texts?: LineTexts,
+	): void {
 		const key = newThreadKey(clientId);
 		this.#update((all) => {
 			const prev = all.find((d) => d.threadId === key)?.create;
 			const rest = all.filter((d) => d.threadId !== key);
 			if (!text.trim() && !prev?.sending) return rest;
+			const lines = texts ?? prev?.texts;
 			const create: NewDraft = {
 				...target,
 				clientId,
 				createdAt: prev?.createdAt ?? new Date().toISOString(),
+				...(lines ? { texts: lines } : {}),
 				...(prev?.sending ? { sending: prev.sending } : {}),
 			};
 			return [...rest, { threadId: key, text, create }];
 		});
+	}
+
+	/**
+	 * The draft now goes to `commit` (the head moved and its lines read the
+	 * same there, or it's on the whole file). Not one on its way.
+	 */
+	retarget(clientId: string, commit: string): void {
+		const key = newThreadKey(clientId);
+		this.#update((all) =>
+			all.map((d) =>
+				d.threadId === key && d.create && !d.create.sending
+					? { ...d, create: { ...d.create, commit } }
+					: d,
+			),
+		);
 	}
 
 	/** Posted at `attemptedAt` (kept until confirmed), or back to a draft (null). */

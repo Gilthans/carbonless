@@ -12,7 +12,8 @@ import { type CodeSpan, describeSpan } from "../files/selectionActions";
 import { LabeledIcon } from "../overview/parts";
 import { safeHref } from "../ui";
 import { COMMENT_SURFACE } from "./Conversation";
-import { newThreadKey } from "./drafts";
+import { useClearOfNotices } from "./clearOfNotices";
+import { type LineTexts, newThreadKey } from "./drafts";
 import {
 	closeComposer,
 	composerFocused,
@@ -81,6 +82,8 @@ export function NewThread(props: {
 	quote: string;
 	/** Posted (the thread will open where it lands). */
 	onPosted?: () => void;
+	/** A line comment's first and last line as shown (kept with the draft). */
+	lineTexts?: LineTexts;
 }) {
 	const { item } = props;
 	const { clientId, span } = item;
@@ -89,6 +92,9 @@ export function NewThread(props: {
 	const failed = lane?.failed?.action === "New comment" ? lane.failed : null;
 	const viewer = useQuery({ ...sessionQuery, enabled: false }).data?.viewer;
 	const box = useRef<HTMLTextAreaElement>(null);
+	const card = useRef<HTMLElement>(null);
+	// Refused: the text and its Comment button stay above the notice.
+	useClearOfNotices(card, failed !== null && !item.sending);
 	const blank = !item.text.trim();
 	useLayoutEffect(() => {
 		if (!item.focus) return;
@@ -133,6 +139,7 @@ export function NewThread(props: {
 		failed?.code === "pending-review" ? safeHref(failed.url) : undefined;
 	return (
 		<article
+			ref={card}
 			data-testid="new-thread"
 			data-sending={item.sending || undefined}
 			aria-label="New comment"
@@ -206,7 +213,12 @@ export function NewThread(props: {
 							maxLength={MAX_NEW_THREAD}
 							value={item.text}
 							onChange={(e) =>
-								writer.drafts.setNew(clientId, targetOf(span), e.target.value)
+								writer.drafts.setNew(
+									clientId,
+									targetOf(span),
+									e.target.value,
+									props.lineTexts,
+								)
 							}
 							onKeyDown={onKeyDown}
 							className="block max-h-96 min-h-16 w-full min-w-0 resize-none rounded-md border border-line-strong bg-raised px-3 py-2 text-sm leading-normal text-ink placeholder:text-faint focus-visible:border-accent focus-visible:outline-2 focus-visible:outline-accent"

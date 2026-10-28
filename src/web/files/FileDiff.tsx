@@ -1,12 +1,20 @@
 import { CommentIcon } from "@primer/octicons-react";
 import { useQuery } from "@tanstack/react-query";
-import { useId, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+	useEffect,
+	useId,
+	useLayoutEffect,
+	useMemo,
+	useRef,
+	useState,
+} from "react";
 import type { ClusterView, FileView, StateChange } from "../../shared/types";
 import { hunksQuery, overviewQuery, sessionQuery } from "../api";
 import { Tooltip, TooltipPath, type TooltipTriggerProps } from "../Tooltip";
 import { newThreadKey, useDrafts } from "../threads/drafts";
 import { NewThread } from "../threads/NewThread";
 import {
+	closeComposer,
 	newThreadItems,
 	openComposer,
 	useComposers,
@@ -448,6 +456,17 @@ export function FileDiff(props: {
 		[drafts, composers, file.path],
 	);
 	const writer = useThreadWriter();
+	// The head moved under a file comment being written: it moves along (a
+	// file comment doesn't depend on lines); one only opened just closes.
+	useEffect(() => {
+		if (!snapshotHead) return;
+		for (const item of fileItems) {
+			if (item.span.commit === snapshotHead || item.sending) continue;
+			if (writer.drafts.newThread(item.clientId)) {
+				writer.drafts.retarget(item.clientId, snapshotHead);
+			} else closeComposer(item.clientId);
+		}
+	}, [fileItems, snapshotHead, writer]);
 
 	return (
 		<section
@@ -621,7 +640,7 @@ export function FileDiff(props: {
 						) : (
 							<OrphanDraft
 								key={item.clientId}
-								label="File comment on an earlier head"
+								label="Written on an earlier version"
 								text={item.text}
 								onDiscard={() => writer.discard(newThreadKey(item.clientId))}
 							/>

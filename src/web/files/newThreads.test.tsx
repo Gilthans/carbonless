@@ -32,8 +32,12 @@ import { CODE_CELL, spanOfRange } from "./codeSpan";
 import { codeCellOf, DiffBody, type DiffThreads } from "./DiffBody";
 import { FileDiff } from "./FileDiff";
 import { getPicks, setPicks } from "./linePicks";
-import { SelectionBar } from "./SelectionBar";
-import { type CodeSpan, registerSelectionAction } from "./selectionActions";
+import { placeBar, SelectionBar } from "./SelectionBar";
+import {
+	type CodeSpan,
+	commentAvailable,
+	registerSelectionAction,
+} from "./selectionActions";
 
 vi.mock("./highlight", () => ({
 	languageFor: () => "ts",
@@ -288,6 +292,16 @@ const at = (side: "LEFT" | "RIGHT", line: number, col: number) =>
 
 const span = (r: Range) => spanOfRange(r, HEAD)?.span ?? null;
 
+/** Selects `r` in the document and lets the pointer go (the bar reads it). */
+function selectAndRelease(r: Range) {
+	act(() => {
+		const selection = document.getSelection();
+		selection?.removeAllRanges();
+		selection?.addRange(r);
+		document.dispatchEvent(new Event("pointerup"));
+	});
+}
+
 beforeEach(() => {
 	showInvisibles.set(true);
 	ignoreWhitespace.set(false);
@@ -488,6 +502,67 @@ describe("a selection's span", () => {
 	});
 });
 
+describe("a selection's edges", () => {
+	it("a start at the very end of the row above starts on the next row", async () => {
+		setup();
+		await loaded();
+		const len = "line 6".length;
+		expect(span(rangeOf(at("RIGHT", 6, len), at("RIGHT", 7, 3)))).toMatchObject(
+			{
+				startLine: 7,
+				line: 7,
+				startCol: 0,
+				endCol: 3,
+			},
+		);
+	});
+
+	it("a start inside an opened thread's row starts on the row after it", async () => {
+		const { user } = setup({ threads: [thread({ line: 6 })] });
+		await loaded();
+		await user.click(screen.getByRole("button", { name: /comment on line 6/ }));
+		const threadRow = await screen.findByTestId("thread-row");
+		const inThread = within(threadRow).getByText("Unresolved")
+			.firstChild as Node;
+		expect(span(rangeOf([inThread, 0], at("RIGHT", 7, 4)))).toMatchObject({
+			startLine: 7,
+			line: 7,
+			startCol: 0,
+			endCol: 4,
+		});
+	});
+});
+
+describe("Ignore whitespace and GitHub's order", () => {
+	it("a range whose start comes after its end in GitHub's order is flagged, and Comment says why", async () => {
+		ignoreWhitespace.set(true);
+		setup();
+		await loaded();
+		// Del "\tconst y = 2;" (3) and add "  const y = 2;" (3) are a pair,
+		// shown where the add goes: ahead of del 4 in display, after it on GitHub.
+		const pair = cell("RIGHT", 3);
+		expect(pair.closest("tr")?.getAttribute("data-kind")).toBe("ws");
+		const found = spanOfRange(rangeOf(point(pair, 2), at("LEFT", 4, 3)), HEAD);
+		expect(found).toMatchObject({
+			span: { startSide: "RIGHT", startLine: 3, side: "LEFT", line: 4 },
+			backwards: true,
+		});
+		expect(
+			commentAvailable(found?.span as CodeSpan, {
+				writes: "on",
+				commentLeft: true,
+				file: { binary: false, submodule: false },
+				backwards: true,
+			}),
+		).toBe("Turn off Ignore whitespace to comment on these lines together");
+		// The other way round is in GitHub's order.
+		expect(
+			spanOfRange(rangeOf(at("LEFT", 4, 0), at("RIGHT", 4, 3)), HEAD)
+				?.backwards,
+		).toBe(false);
+	});
+});
+
 describe("painting a thread's span", () => {
 	const markedText = () =>
 		[...document.querySelectorAll("[data-span-mark]")]
@@ -538,6 +613,26 @@ describe("painting a thread's span", () => {
 		setup({ threads: [thread(a)] });
 		await loaded();
 		expect(commented()).toEqual(keys);
+	});
+
+	it("the painted rows are the anchor's: context into a deletion (RIGHT→LEFT)", async () => {
+		setup({
+			threads: [
+				thread({ startSide: "RIGHT", startLine: 2, side: "LEFT", line: 3 }),
+			],
+		});
+		await loaded();
+		expect(commented()).toEqual(["RIGHT:2", "LEFT:3"]);
+	});
+
+	it("the painted rows are the anchor's: a LEFT start on context, as the server maps GitHub's", async () => {
+		setup({
+			threads: [
+				thread({ startSide: "LEFT", startLine: 2, side: "LEFT", line: 4 }),
+			],
+		});
+		await loaded();
+		expect(commented()).toEqual(["RIGHT:2", "LEFT:3", "LEFT:4"]);
 	});
 
 	it("the painted rows are the anchor's: a whitespace pair (by its new number)", async () => {
@@ -606,6 +701,31 @@ describe("picking lines by their numbers", () => {
 		// Moving after letting go changes nothing.
 		fireEvent.pointerEnter(td(1), { buttons: 0 });
 		expect(pickedKeys()).toHaveLength(4);
+	});
+
+	it("lines picked from an old number to a new one paint those rows while the comment is written", async () => {
+		const { user } = setup();
+		await loaded();
+		press(number("LEFT", 4).closest("td") as Element);
+		press(number("RIGHT", 4).closest("td") as Element, { shiftKey: true });
+		const bar = await screen.findByTestId("selection-bar");
+		await user.click(within(bar).getByRole("button", { name: "Comment" }));
+		await screen.findByTestId("new-thread-row");
+		expect(
+			[...document.querySelectorAll<HTMLElement>("tr[data-commented]")].map(
+				rowKey,
+			),
+		).toEqual(["LEFT:4", "RIGHT:3", "RIGHT:4"]);
+	});
+
+	it("starting a text selection lets picked lines go", async () => {
+		setup();
+		await loaded();
+		press(number("RIGHT", 6).closest("td") as Element);
+		expect(pickedKeys()).toEqual(["RIGHT:6"]);
+		selectAndRelease(rangeOf(at("RIGHT", 8, 0), at("RIGHT", 8, 3)));
+		await vi.waitFor(() => expect(pickedKeys()).toEqual([]));
+		expect(getPicks()).toBeNull();
 	});
 
 	it("on touch a second tap extends", async () => {
@@ -844,6 +964,30 @@ describe("the selection bar", () => {
 		expect(getComposers()).toEqual([]);
 	});
 
+	it("Escape puts the bar away for a text selection until the selection changes", async () => {
+		const { user } = setup();
+		await loaded();
+		selectAndRelease(rangeOf(at("RIGHT", 7, 0), at("RIGHT", 7, 4)));
+		expect(await screen.findByTestId("selection-bar")).toBeInTheDocument();
+		await user.keyboard("{Escape}");
+		await new Promise((r) => setTimeout(r, 50));
+		expect(screen.queryByTestId("selection-bar")).toBeNull();
+		// The selection itself stays; another one brings the bar back.
+		expect(document.getSelection()?.toString()).toBe("line");
+		selectAndRelease(rangeOf(at("RIGHT", 8, 0), at("RIGHT", 8, 4)));
+		expect(await screen.findByTestId("selection-bar")).toBeInTheDocument();
+	});
+
+	it("the first Tab after a selection goes to the bar", async () => {
+		const { user } = setup();
+		await loaded();
+		selectAndRelease(rangeOf(at("RIGHT", 7, 0), at("RIGHT", 7, 4)));
+		const bar = await screen.findByTestId("selection-bar");
+		await user.tab();
+		expect(within(bar).getByRole("button", { name: "Comment" })).toHaveFocus();
+		// (That the selection stays is checked in a real browser: e2e.)
+	});
+
 	it("a mouse press on the bar keeps the selection", async () => {
 		setup();
 		await loaded();
@@ -932,19 +1076,72 @@ describe("the composer", () => {
 		expect(screen.queryByTestId("new-thread")).toBeNull();
 	});
 
-	it("a draft on another head is kept as an orphan with its text", async () => {
+	const OLD = "e".repeat(40);
+
+	it("a draft from an earlier head moves to this one when its lines read the same", async () => {
 		setup();
 		await loaded();
 		act(() =>
 			draftsFor(client).setNew(
-				"old",
-				{ ...lineSpan, commit: "e".repeat(40) } as never,
+				"moved",
+				{ ...lineSpan, commit: OLD } as never,
+				"still true",
+				{ start: "const x = 2;", end: "const x = 2;" },
+			),
+		);
+		const box = await screen.findByRole("textbox", { name: "Comment" });
+		expect(box).toHaveValue("still true");
+		expect(draftsFor(client).newThread("moved")?.create?.commit).toBe(HEAD);
+		expect(screen.queryByTestId("orphan-draft")).toBeNull();
+	});
+
+	it("one whose lines read differently now stays an orphan, written on an earlier version", async () => {
+		setup();
+		await loaded();
+		act(() =>
+			draftsFor(client).setNew(
+				"changed",
+				{ ...lineSpan, commit: OLD } as never,
 				"from before",
+				{ start: "const x = 3;", end: "const x = 3;" },
 			),
 		);
 		const orphan = await screen.findByTestId("orphan-draft");
 		expect(orphan).toHaveTextContent("from before");
+		expect(orphan).toHaveTextContent("Written on an earlier version");
+		expect(draftsFor(client).newThread("changed")?.create?.commit).toBe(OLD);
+	});
+
+	it("one whose line is past the file's end says its lines are gone", async () => {
+		setup();
+		await loaded();
+		act(() =>
+			draftsFor(client).setNew(
+				"gone",
+				{ ...lineSpan, commit: OLD, startLine: 40, line: 40 } as never,
+				"lost line",
+				{ start: "x", end: "x" },
+			),
+		);
+		const orphan = await screen.findByTestId("orphan-draft");
 		expect(orphan).toHaveTextContent("Lines gone");
+		expect(orphan).toHaveTextContent("lost line");
+	});
+
+	it("keeps its lines' text with the draft as it is typed", async () => {
+		const { user } = setup();
+		await loaded();
+		act(() => {
+			openComposer(lineSpan, "t1");
+		});
+		await user.type(
+			await screen.findByRole("textbox", { name: "Comment" }),
+			"x",
+		);
+		expect(draftsFor(client).newThread("t1")?.create?.texts).toEqual({
+			start: "const x = 2;",
+			end: "const x = 2;",
+		});
 	});
 
 	it("posting shows it as sending; a refusal is back in the box with why", async () => {
@@ -1043,6 +1240,34 @@ describe("Comment on file", () => {
 		},
 	);
 
+	it("a file comment written on an earlier head moves to this one", async () => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(
+				async () =>
+					new Response(JSON.stringify({ hunks: [], newLineCount: 0 })),
+			),
+		);
+		client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+		draftsFor(client).bind("k");
+		client.setQueryData(["overview"], overview());
+		client.setQueryData(["session"], { snapshotHead: HEAD } as SessionInfo);
+		draftsFor(client).setNew(
+			"f1",
+			{ path: PATH, commit: "e".repeat(40), subject: "file" },
+			"about the file",
+		);
+		render(
+			<QueryClientProvider client={client}>
+				<FileDiff file={file()} revision="r1" unit="clusters" />
+			</QueryClientProvider>,
+		);
+		expect(await screen.findByRole("textbox", { name: "Comment" })).toHaveValue(
+			"about the file",
+		);
+		expect(draftsFor(client).newThread("f1")?.create?.commit).toBe(HEAD);
+	});
+
 	it("is off, with the reason, when writing is off", () => {
 		client = new QueryClient();
 		client.setQueryData(["overview"], overview({ writes: "viewer" }));
@@ -1057,5 +1282,48 @@ describe("Comment on file", () => {
 		expect(button).toHaveAccessibleDescription(
 			"Comments are off when viewing as someone else",
 		);
+	});
+});
+
+describe("placeBar (desktop): never over the selection when it can help it", () => {
+	const rect = (left: number, top: number, w: number, h: number) =>
+		new DOMRect(left, top, w, h);
+	const size = { w: 50, h: 46 };
+	const view = { w: 1200, h: 800 };
+
+	it("below the selection's end", () => {
+		const first = rect(100, 100, 300, 20);
+		const last = rect(100, 140, 200, 20);
+		expect(
+			placeBar(
+				{ first, last, box: rect(100, 100, 300, 60), text: true },
+				size,
+				view,
+			),
+		).toEqual({ top: 166, left: 275 });
+	});
+
+	it("above its start when there's no room below", () => {
+		const first = rect(100, 600, 300, 20);
+		const last = rect(100, 770, 200, 20);
+		expect(
+			placeBar(
+				{ first, last, box: rect(100, 600, 300, 190), text: true },
+				size,
+				view,
+			).top,
+		).toBe(600 - 6 - 46);
+	});
+
+	it("beside a selection taller than the screen, at its visible end", () => {
+		const first = rect(100, -300, 600, 20);
+		const last = rect(100, 1200, 600, 20);
+		const at = placeBar(
+			{ first, last, box: rect(100, -300, 600, 1520), text: true },
+			size,
+			view,
+		);
+		expect(at.left).toBe(706);
+		expect(at.top + size.h).toBeLessThanOrEqual(view.h);
 	});
 });

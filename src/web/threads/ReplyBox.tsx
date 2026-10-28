@@ -9,8 +9,9 @@ import {
 import type { ReviewThread } from "../../shared/types";
 import type { Shortcut } from "../shortcuts";
 import { Tooltip } from "../Tooltip";
+import { useClearOfNotices } from "./clearOfNotices";
 import { useDraft } from "./drafts";
-import { useThreadWriter } from "./threadWrites";
+import { useThreadWriter, useThreadWrites } from "./threadWrites";
 
 /** The reply and edit boxes' own keys (their textareas handle them), for the help. */
 export const EDITOR_KEYS: Omit<Shortcut, "run" | "when">[] = [
@@ -42,6 +43,11 @@ export function ReplyBox(props: {
 	const [text, setText] = useDraft(thread.id);
 	const [focused, setFocused] = useState(false);
 	const box = useRef<HTMLTextAreaElement>(null);
+	const row = useRef<HTMLDivElement>(null);
+	// A refused reply is back in the box: keep it above the notice.
+	const refused =
+		useThreadWrites().threads.get(thread.id)?.failed?.action === "Reply";
+	useClearOfNotices(row, refused);
 	const blank = !text.trim();
 	const open = focused || !blank;
 	const { onOpenChange } = props;
@@ -69,7 +75,7 @@ export function ReplyBox(props: {
 		}
 	};
 	return (
-		<div data-testid="reply-box" className="flex items-end gap-1.5">
+		<div ref={row} data-testid="reply-box" className="flex items-end gap-1.5">
 			<textarea
 				ref={box}
 				aria-label="Reply"

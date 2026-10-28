@@ -29,9 +29,10 @@ import type {
 import { contextQuery, hunksQuery } from "../api";
 import { CodeLine, type Mark } from "../code/Invisibles";
 import { Tooltip } from "../Tooltip";
-import { useDrafts } from "../threads/drafts";
+import { type LineTexts, useDrafts } from "../threads/drafts";
 import { NewThread, quoteOf } from "../threads/NewThread";
 import {
+	closeComposer,
 	type NewThreadItem,
 	newThreadItems,
 	useComposers,
@@ -227,6 +228,8 @@ interface Picker {
 interface RowComposers {
 	at: (keys: LineKey[]) => NewThreadItem[];
 	quote: (item: NewThreadItem) => string;
+	/** Its first and last line's text as shown (kept with its draft). */
+	texts: (item: NewThreadItem) => LineTexts | undefined;
 	onPosted: (item: NewThreadItem) => void;
 }
 
@@ -241,6 +244,8 @@ function LineRow(props: {
 	threads?: RowThreads;
 	/** The hunk (`h<i>`) or gap (`g<i>`) the row is in (codeSpan.ts). */
 	hunk: string;
+	/** In a hunk: its line's index in GitHub's order of it. */
+	order?: number;
 	picker?: Picker;
 	composers?: RowComposers;
 }) {
@@ -333,6 +338,7 @@ function LineRow(props: {
 					data-side={cell.side}
 					data-len={line.text.length}
 					data-hunk={props.hunk}
+					data-order={props.order}
 					className={`whitespace-pre ${endKey ? "pr-12 pl-2" : "px-2"}`}
 				>
 					{endKey && threads && (
@@ -428,6 +434,7 @@ function NewThreadRow(props: {
 							key={item.clientId}
 							item={item}
 							quote={props.composers.quote(item)}
+							lineTexts={props.composers.texts(item)}
 							onPosted={() => props.composers.onPosted(item)}
 						/>
 					))}
@@ -743,6 +750,16 @@ export function DiffBody(props: {
 			const same = span.startSide === span.side && span.startLine === span.line;
 			return quoteOf(span, same ? [end ?? ""] : [start ?? "", end ?? ""]);
 		},
+		texts: (item) => {
+			const { span } = item;
+			const start = textAt.get(
+				`${span.startSide}:${span.startLine}` as LineKey,
+			);
+			const end = textAt.get(`${span.side}:${span.line}` as LineKey);
+			return start === undefined || end === undefined
+				? undefined
+				: { start, end };
+		},
 		// The thread opens where it lands.
 		onPosted: (item) => {
 			const key = `${item.span.side}:${item.span.line}` as LineKey;
@@ -751,6 +768,38 @@ export function DiffBody(props: {
 	};
 
 	const picker = usePicker(scroller, file.path, hunks.data?.hunks[0]);
+
+	// The head moved under a draft: it moves along when its first and last
+	// lines read the same at the same numbers (a file comment always does,
+	// FileDiff); else it stays an orphan, its text kept. Never a guess at a
+	// nearby line.
+	useEffect(() => {
+		if (!snapshotHead || !hunks.data) return;
+		for (const item of orphanItems) {
+			if (item.sending) continue;
+			const draft = writer.drafts.newThread(item.clientId);
+			// Opened on the earlier head and never typed in: nothing to keep.
+			if (!draft) {
+				closeComposer(item.clientId);
+				continue;
+			}
+			const texts = draft.create?.texts;
+			const { span } = item;
+			if (
+				texts &&
+				textAt.get(`${span.startSide}:${span.startLine}` as LineKey) ===
+					texts.start &&
+				textAt.get(`${span.side}:${span.line}` as LineKey) === texts.end
+			) {
+				writer.drafts.retarget(item.clientId, snapshotHead);
+			}
+		}
+	});
+	/** An orphan's line isn't in the file any more (past its end). */
+	const gone = (item: NewThreadItem) =>
+		hunks.data !== undefined &&
+		item.span.side === "RIGHT" &&
+		(item.span.line ?? 0) > hunks.data.newLineCount;
 
 	const rowThreads: RowThreads | undefined =
 		placement && props.threads
@@ -968,14 +1017,20 @@ export function DiffBody(props: {
 							key={item.clientId}
 							item={item}
 							quote={composers.quote(item)}
+							lineTexts={composers.texts(item)}
 						/>
 					))}
 					{orphanItems.length > 0 && (
-						<ul aria-label="Drafts on lines gone" className="space-y-2">
+						<ul
+							aria-label="Drafts written on an earlier version"
+							className="space-y-2"
+						>
 							{orphanItems.map((item) => (
 								<OrphanDraft
 									key={item.clientId}
-									label={`Lines gone · ${describeSpan(item.span)}`}
+									label={`${
+										gone(item) ? "Lines gone" : "Written on an earlier version"
+									} · ${describeSpan(item.span)}`}
 									text={item.text}
 									onDiscard={() => writer.discard(`new:${item.clientId}`)}
 								/>
@@ -1219,6 +1274,11 @@ function HunkRows(props: {
 	// The hunk's runs and their rows, once per hunk (the matching is O(n·m)
 	// over the whole hunk): not again on a toggle, a landing, a thread
 	// opening or a context load.
+	// Each line's index in the hunk: GitHub's order (codeSpan.ts `backwards`).
+	const orderOf = useMemo(
+		() => new Map(hunk.lines.map((l, i) => [l, i] as const)),
+		[hunk],
+	);
 	const hunkRuns = useMemo(() => {
 		const twins = ignoreWhitespace ? matchHunk(hunk.lines) : null;
 		return runs(hunk.lines).map((run) => ({
@@ -1248,6 +1308,8 @@ function HunkRows(props: {
 				const { rows } = run;
 				const row = (r: DiffRow, checkbox?: ReactNode) => {
 					const line = rowLine(r);
+					// GitHub's place of the line the code cell stands for.
+					const shown = r.kind === "line" ? r.line : (r.add ?? r.del);
 					return (
 						<LineRow
 							key={`${line.kind}${line.oldNo ?? ""}:${line.newNo ?? ""}`}
@@ -1259,6 +1321,7 @@ function HunkRows(props: {
 							threads={threads}
 							checkbox={checkbox}
 							hunk={props.hunkId}
+							order={shown ? orderOf.get(shown) : undefined}
 							picker={props.picker}
 							composers={props.composers}
 						/>
