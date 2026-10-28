@@ -5,6 +5,7 @@ import {
 	type ClusterState,
 	COMMENTS_BATCH,
 	type EditRequest,
+	type NewThreadRequest,
 	type ReplyRequest,
 	type StateChange,
 	type ThreadsStage,
@@ -14,6 +15,7 @@ import { registerAccessKey, registerHostCheck } from "./access.js";
 import { GhError, WriteRefusedError } from "./errors.js";
 import { NODE_ID } from "./gh.js";
 import { GitError } from "./git.js";
+import { newThreadProblem } from "./newThreads.js";
 import {
 	InvalidChangeError,
 	RefusedChangeError,
@@ -116,7 +118,7 @@ export async function buildApp(
 			status &&
 			status >= 400 &&
 			status < 500 &&
-			isThreadWrite(_request.url)
+			isThreadWrite(_request.method, _request.url)
 		) {
 			const body: WriteError = {
 				error: (error as Error).message,
@@ -211,7 +213,33 @@ export async function buildApp(
 		const { revision, changes } = parseStatesBody(request.body);
 		return session.setStates(revision, changes);
 	});
-	// Thread writes, posted to GitHub at once (threadWrites.ts).
+	// Thread writes, posted to GitHub at once (threadWrites.ts, newThreads.ts).
+	app.post("/api/threads", (request) => {
+		const problem = newThreadProblem(request.body);
+		if (problem) throw new WriteRefusedError(problem, "invalid");
+		const r = request.body as NewThreadRequest;
+		const line =
+			r.subject === "line"
+				? {
+						...(r.startSide ? { startSide: r.startSide } : {}),
+						...(r.startLine ? { startLine: r.startLine } : {}),
+						side: r.side,
+						line: r.line,
+						startCol: r.startCol ?? null,
+						endCol: r.endCol ?? null,
+					}
+				: {};
+		return session.startThread({
+			clientId: r.clientId,
+			body: r.body,
+			attemptedAt: r.attemptedAt,
+			retry: r.retry,
+			path: r.path,
+			commit: r.commit,
+			subject: r.subject,
+			...line,
+		});
+	});
 	app.post<{ Params: { threadId: string } }>(
 		"/api/threads/:threadId/replies",
 		(request) => {
@@ -296,12 +324,14 @@ const WRITE_STATUS: Record<WriteError["code"], number> = {
 	gone: 404,
 	"pending-review": 409,
 	changed: 409,
+	stale: 409,
 };
 
-const isThreadWrite = (url: string) =>
+const isThreadWrite = (method: string, url: string) =>
 	/^\/api\/threads\/[^/?]+\/(replies|resolved|comments\/[^/?]+)(\?|$)/.test(
 		url,
-	);
+	) ||
+	(method === "POST" && /^\/api\/threads(\?|$)/.test(url));
 
 function threadIdParam(raw: string): string {
 	if (!NODE_ID.test(raw)) {

@@ -58,8 +58,9 @@ On a phone there's no keyboard: the help isn't offered there.
 
 carbonless writes to GitHub only on the reviewer's explicit action, as the
 `gh` login, through `gh` (no server of its own): replying to a review thread,
-resolving or unresolving one, and editing or deleting one of the viewer's
-comments in one (`src/server/threadWrites.ts`).
+starting a new one (on lines, a span inside them, or a file), resolving or
+unresolving one, and editing or deleting one of the viewer's comments in one
+(`src/server/threadWrites.ts`, `src/server/newThreads.ts`).
 
 - **One explicit action, one write.** Every write is one click (or the send
   shortcut) on one thread. Nothing posts, resolves or retries a refused write
@@ -71,6 +72,46 @@ comments in one (`src/server/threadWrites.ts`).
   which puts the reply into the viewer's pending review where nobody else
   sees it. Resolving uses GraphQL `resolveReviewThread` /
   `unresolveReviewThread`, which a pending review doesn't affect.
+- **New threads are REST too, on GitHub's exact lines.** A new thread is
+  `POST /repos/{o}/{r}/pulls/{n}/comments` with `commit_id` the snapshot's
+  head: one line as `line` + `side` only, a range adding `start_line` +
+  `start_side` (from either side to either, across hunks too: GitHub
+  takes any whose start comes before its end in the diff and refuses the
+  rest with its 422), a file as `subject_type: "file"` (GitHub then
+  reports line 1; carbonless shows none). A range's start is read from
+  GitHub's `originalStartLine`: its current `startLine` gives a `LEFT`
+  context line's new number. Never GraphQL's `addPullRequestReviewThread`,
+  which puts the comment into the viewer's pending review. What is sent is
+  what the thread then reads back: the answer is the thread as GitHub's
+  GraphQL lists it, mapped like any other. Only on the head the page shows
+  (else 409 `stale`: refresh). A line or file GitHub's diff doesn't have
+  (its 422 "could not be resolved") is 404 `gone`; a pending review refuses
+  it as it refuses replies (409 `pending-review`). `LEFT` lines take
+  comments only when GitHub's merge base for the snapshot's head (REST
+  compare of the PR's base commit, `baseRefOid`, and the head: what GitHub
+  resolves a `LEFT` line against; a merged PR's stays where it was) is
+  the snapshot's left side (`PrOverview.commentLeft`); otherwise they are
+  refused (400), as GitHub would put them on other lines. They differ when
+  the base moved on past what the snapshot shows (a pinned head, a started
+  patch set). One compare per snapshot, asked lazily and never
+  waited for by the overview (true until GitHub says); a write waits for
+  it.
+- **A hidden marker carries what GitHub can't.** A new thread's opening
+  comment ends in an HTML comment GitHub doesn't render,
+  `<!-- crb:v1 id=<clientId> -->`, with `span=<startLine>:<startCol>-<line>:<endCol>`
+  for a span inside the lines (`src/server/marker.ts`). The server strips
+  a trailing crb marker from every comment body it sends; the page never
+  sees it. The opener's `anchor.startCol`/`endCol` come from it only when
+  its lines are the thread's own, else the thread is on whole lines (moved
+  on, or the marker edited on GitHub). An edit (and blanking to
+  `[deleted]`) puts the comment's marker back on the new text, and edits
+  compare bodies without it. Only a `crb:v1` marker carrying a well-formed
+  id is carbonless's: stripped (a garbled span then reads as none) and
+  carried through edits; anything else that merely looks like one is the
+  author's own text, shown and kept as it is. A marker edited away on
+  GitHub can't be found by a retry: a thread whose answer got lost, then
+  had its marker removed before the retry, is posted again (accepted: the
+  marker is the only id GitHub keeps for it).
 - **Edits and deletes are REST, one comment each.** An edit is
   `PATCH /repos/{o}/{r}/pulls/comments/{id}`, a delete
   `DELETE /repos/{o}/{r}/pulls/comments/{id}` (the comment's REST id,
@@ -133,7 +174,13 @@ comments in one (`src/server/threadWrites.ts`).
   refused (a thread always has its opener). After an attempt whose outcome
   is unknown (it may have landed), its retry reads the thread again a few
   times before posting, as GitHub may not list the reply yet. No clocks are
-  compared: the phone's may be off. Resolving is idempotent.
+  compared: the phone's may be off. Resolving is idempotent. New threads
+  run one at a time per PR and are remembered by their client id the same
+  way; a retry of one first lists the PR's review comments (REST, no lag)
+  for the viewer's opener whose marker carries that id, and posts only if
+  there is none. A thread posted but not yet listed by GitHub's GraphQL is
+  looked for a few times, then answered 502: its resend finds it, never
+  posting again.
 - **Refused means refused.** When GitHub answers a write with an error, it
   is refused for good, with GitHub's message (401/403 forbidden, 404 gone,
   anything else invalid), and nothing sends it again on its own. Only

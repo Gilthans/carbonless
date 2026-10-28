@@ -4,6 +4,8 @@ import type {
 	DiffLine,
 	EditRequest,
 	FileHunks,
+	NewThreadAnswer,
+	NewThreadRequest,
 	PrOverview,
 	ReplyRequest,
 	ReviewView,
@@ -19,6 +21,7 @@ import { ensureClone, fetchPr } from "./clone.js";
 import { buildSnapshot, loadContext, loadFileHunks } from "./diff/snapshot.js";
 import {
 	fetchHeadAsOf,
+	fetchMergeBase,
 	fetchPinnedHead,
 	fetchPrMeta,
 	type PrMeta,
@@ -27,6 +30,11 @@ import {
 	runGh,
 	viewerSlug,
 } from "./gh.js";
+import {
+	type NewThreadTarget,
+	type StartedRecord,
+	startThread,
+} from "./newThreads.js";
 import { OverviewRead } from "./overviewRead.js";
 import type { HeadSpec } from "./pinnedHead.js";
 import { buildReviewView } from "./review/coverage.js";
@@ -46,6 +54,22 @@ import {
 
 /** Reads kept for pages still showing them (see Session.threads). */
 const KEPT_READS = 3;
+
+/** commentLeft for one snapshot: asked of GitHub, then known. */
+interface CommentLeft {
+	/** The snapshot's base and head. */
+	key: string;
+	left: Promise<boolean>;
+	known?: boolean;
+	/** When the compare failed (ms): asked again after COMMENT_LEFT_RETRY_MS. */
+	failedAt?: number;
+}
+
+/** How long a failed compare stands before commentLeft asks again. */
+const COMMENT_LEFT_RETRY_MS = 30_000;
+
+/** The write queue new threads share (one PR's: one at a time). */
+const NEW_THREADS = "new-threads";
 
 /** A read of the overview that is no longer kept (HTTP 410). */
 export class UnknownReadError extends Error {}
@@ -129,6 +153,10 @@ export class Session {
 	readonly #inDoubt = new Set<string>();
 	/** Comments this session deleted (GraphQL may list them a while yet). */
 	readonly #deletedComments = new Set<string>();
+	/** Threads this session started, by the client's id for each. */
+	readonly #started = new Map<string, StartedRecord>();
+	/** commentLeft for one snapshot (its base and head): asked, then known. */
+	#commentLeft: CommentLeft | null = null;
 
 	private constructor(
 		private readonly repo: string,
@@ -290,18 +318,29 @@ export class Session {
 		if (this.#closed) {
 			return Promise.reject(new SessionClosedError("The session is closed"));
 		}
+		// Asked at once, never waited for: it is in by the time GitHub's
+		// overview is, or the next one says (true until it is known).
+		this.#commentLeftNow();
+		return this.#pickRead(maxAgeMs).overview.then((o) => ({
+			...o,
+			commentLeft: this.#commentLeftNow(),
+		}));
+	}
+
+	/** The read overview() serves (see there). */
+	#pickRead(maxAgeMs: number): OverviewRead {
 		const now = Date.now();
 		// 0: a new read, even if the last came in this very millisecond.
-		if (maxAgeMs <= 0) return this.#read().overview;
+		if (maxAgeMs <= 0) return this.#read();
 		const current = this.#reads.filter((r) => !this.#superseded.has(r));
 		const done = current.findLast(
 			(r) => r.ended !== null && now - r.ended <= maxAgeMs,
 		);
-		if (done) return done.overview;
+		if (done) return done;
 		const reading = current.findLast(
 			(r) => r.ended === null && now - r.started <= maxAgeMs,
 		);
-		return (reading ?? this.#read()).overview;
+		return reading ?? this.#read();
 	}
 
 	/**
@@ -391,6 +430,74 @@ export class Session {
 		);
 	}
 
+	/**
+	 * Starts a thread on GitHub (newThreads.ts), after any new thread
+	 * still being started: a resend waits for the first attempt, then
+	 * finds it posted.
+	 */
+	startThread(req: NewThreadRequest): Promise<NewThreadAnswer> {
+		return this.#threadExclusive(NEW_THREADS, () =>
+			startThread(this.#newThreadTarget(), req),
+		);
+	}
+
+	/**
+	 * Whether new comments may go on LEFT lines (PrOverview.commentLeft):
+	 * whether GitHub's merge base for the snapshot's head (its compare of
+	 * the base branch and it, which a LEFT line resolves against) is the
+	 * snapshot's left side. They differ when the base moved on past what
+	 * the snapshot shows: a pinned head, a started patch set.
+	 * One compare per snapshot, asked lazily; a failed one is asked again
+	 * after COMMENT_LEFT_RETRY_MS (a POST meanwhile gets its failure, a
+	 * 502). Where nothing is written (as of a cutoff, --viewer someone
+	 * else) it isn't asked: true.
+	 */
+	commentLeft(snapshot: Snapshot = this.#snapshot): Promise<boolean> {
+		if (this.writes() !== "on") return Promise.resolve(true);
+		// A write asks again at once rather than take a failure as the answer.
+		if (this.#commentLeft?.failedAt !== undefined) this.#commentLeft = null;
+		return this.#askCommentLeft(snapshot).left;
+	}
+
+	/** commentLeft's entry for `snapshot`'s base and head (cached, or asked now). */
+	#askCommentLeft(snapshot: Snapshot): CommentLeft {
+		const { base, head } = snapshot;
+		const from = this.#meta.baseOid ?? this.#meta.baseBranch;
+		// GitHub's base for the PR too: a Refresh may move it under a
+		// snapshot that stays (a started patch set).
+		const key = `${from} ${base}...${head}`;
+		const last = this.#commentLeft;
+		if (
+			last?.key === key &&
+			(last.failedAt === undefined ||
+				Date.now() - last.failedAt <= COMMENT_LEFT_RETRY_MS)
+		) {
+			return last;
+		}
+		const entry: CommentLeft = {
+			key,
+			// The PR's own base commit: a merged PR's stays where it was
+			// (gallery #11: GitHub still resolves its LEFT lines there).
+			left: fetchMergeBase(this.#ref(), from, head, {
+				signal: this.#stop.signal,
+			}).then((mergeBase) => {
+				entry.known = mergeBase === base;
+				return entry.known;
+			}),
+		};
+		entry.left.catch(() => {
+			entry.failedAt = Date.now();
+		});
+		this.#commentLeft = entry;
+		return entry;
+	}
+
+	/** commentLeft as known now, asking GitHub if no one has: true until it says. */
+	#commentLeftNow(): boolean {
+		if (this.writes() !== "on" || this.#closed) return true;
+		return this.#askCommentLeft(this.#snapshot).known ?? true;
+	}
+
 	/** Runs thread writes one at a time per thread, in the order asked. */
 	#threadExclusive<T>(threadId: string, fn: () => Promise<T>): Promise<T> {
 		const before = this.#threadWrites.get(threadId) ?? Promise.resolve();
@@ -459,6 +566,34 @@ export class Session {
 			setPendingReview: (pending) => {
 				for (const read of this.#reads) read.setPendingReview(pending);
 			},
+		};
+	}
+
+	#newThreadTarget(): NewThreadTarget {
+		// The snapshot the post is checked against, even if a Refresh moves
+		// the session's while it runs.
+		const snapshot = this.#snapshot;
+		return {
+			...this.#writeTarget(),
+			head: snapshot.head,
+			commentLeft: () => this.commentLeft(snapshot),
+			started: (clientId) => this.#started.get(clientId),
+			rememberStarted: (clientId, record) =>
+				this.#started.set(clientId, record),
+			add: (id, nodes, seq, startedAt) => {
+				for (const read of this.#reads) {
+					read.addThread(id, nodes, seq, startedAt);
+				}
+			},
+			code: (anchor, hunk) =>
+				this.#threadCode.code(
+					anchor,
+					{
+						snapshot: this.#snapshot.base,
+						ref: `refs/remotes/origin/${this.#meta.baseBranch}`,
+					},
+					async () => hunk,
+				),
 		};
 	}
 

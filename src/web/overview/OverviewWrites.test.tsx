@@ -68,6 +68,7 @@ const overview: PrOverview = {
 	fetchedAt: "2026-01-05T12:00:00Z",
 	servedAt: "2026-01-05T12:00:01Z",
 	writes: "on",
+	commentLeft: true,
 	pendingReview: null,
 };
 

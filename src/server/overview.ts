@@ -11,6 +11,12 @@ import { attentionSet } from "./attention.js";
 import { hunkWindowRows } from "./codeWindow.js";
 import { visibleAt } from "./commentTime.js";
 import { GhError } from "./errors.js";
+import {
+	parseMarker,
+	spanCols,
+	stripMarker,
+	stripMarkerHtml,
+} from "./marker.js";
 import { slugify } from "./slug.js";
 
 type Json = Record<string, unknown>;
@@ -179,12 +185,19 @@ function threadAnchor(
 	const side: Side = SIDES.has(str(t.diffSide))
 		? (str(t.diffSide) as Side)
 		: "RIGHT";
-	const start = lineNumber(
-		original === null ? t.startLine : t.originalStartLine,
-	);
 	const startSide: Side = SIDES.has(str(t.startDiffSide))
 		? (str(t.startDiffSide) as Side)
 		: side;
+	// GitHub's current startLine on LEFT is the NEW number when the range
+	// starts on a context line (checked on gallery #2): never taken; with
+	// no original line, such a range is its last line only.
+	const start = lineNumber(
+		original !== null
+			? t.originalStartLine
+			: startSide === "LEFT"
+				? null
+				: t.startLine,
+	);
 	return {
 		path,
 		commit,
@@ -293,10 +306,11 @@ export function mapComments(
 			avatarUrl: str(author.avatarUrl),
 			publishedAt,
 			pending,
-			html: str(c.bodyHTML),
-			body: str(c.body),
+			// carbonless's marker (marker.ts) stays on the server.
+			html: stripMarkerHtml(str(c.bodyHTML)),
+			body: stripMarker(str(c.body)),
 			// GitHub's plain-text rendering; the raw body is a fallback.
-			text: str(c.bodyText) || str(c.body),
+			text: stripMarker(str(c.bodyText) || str(c.body)),
 			editedAt: str(c.lastEditedAt) || null,
 			viewerCan: {
 				update: !deleted && can(c.viewerCanUpdate),
@@ -324,7 +338,8 @@ export function mapComments(
 export const DELETED_BODY = "[deleted]";
 
 /** Whether a body is an opener blanked by carbonless's delete. */
-export const isDeletedBody = (body: string) => body.trim() === DELETED_BODY;
+export const isDeletedBody = (body: string) =>
+	stripMarker(body).trim() === DELETED_BODY;
 
 /** An ISO time in ms; a missing or invalid one sorts first. */
 function timeOf(at: string): number {
@@ -411,13 +426,22 @@ export function mapThreads(
 		const firstLogin = str(author.login);
 		const loaded = hasContent(first);
 		// The code is the commenter's view when they wrote it.
-		const anchor = threadAnchor(
+		const lines = threadAnchor(
 			t,
 			first,
 			str(t.path),
 			str(first.createdAt) || createdAt,
 		);
+		// A span inside the lines: from carbonless's marker on the opener,
+		// when it was made on these very lines.
+		const cols =
+			lines && loaded ? spanCols(parseMarker(str(first.body)), lines) : null;
+		const anchor = lines && cols ? { ...lines, ...cols } : lines;
 		const code = threadCode(first, anchor, loaded);
+		// Older answers have no subjectType: no line there meant the file.
+		const onFile =
+			t.subjectType === "FILE" ||
+			(t.subjectType === undefined && anchor === null);
 		const resolved = !asOf && t.isResolved === true;
 		// Who commented, in the order they were published (a reply drafted
 		// early in a review submitted late spoke after those before the
@@ -455,7 +479,7 @@ export function mapThreads(
 			resolved,
 		});
 		// bodyText is GitHub's plain-text rendering; the raw body is a fallback.
-		const text = str(first.bodyText) || str(first.body);
+		const text = stripMarker(str(first.bodyText) || str(first.body));
 		threads.push({
 			id: str(t.id),
 			path: str(t.path),
@@ -463,17 +487,19 @@ export function mapThreads(
 			// code (a carried-forward comment's current line may differ),
 			// else where it is now or was; as of a cutoff, where it was
 			// (today's line is past the cutoff).
-			line:
-				code?.anchor.line ??
-				(asOf
-					? (lineNumber(t.originalLine) ?? lineNumber(t.line))
-					: (lineNumber(t.line) ?? lineNumber(t.originalLine))),
-			currentLine: asOf ? null : lineNumber(t.line),
+			// A file comment has none (GitHub reports it on line 1).
+			line: onFile
+				? null
+				: (code?.anchor.line ??
+					(asOf
+						? (lineNumber(t.originalLine) ?? lineNumber(t.line))
+						: (lineNumber(t.line) ?? lineNumber(t.originalLine)))),
+			currentLine: asOf || onFile ? null : lineNumber(t.line),
 			loaded,
 			excerpt: text.replace(/\s+/g, " ").trim().slice(0, 200),
-			html: str(first.bodyHTML),
+			html: stripMarkerHtml(str(first.bodyHTML)),
 			// The raw markdown: suggested changes come from it exactly.
-			body: str(first.body),
+			body: stripMarker(str(first.body)),
 			createdAt,
 			lastActivityAt,
 			author: firstLogin,
@@ -498,12 +524,7 @@ export function mapThreads(
 			code,
 			anchor,
 			commit: commitOf(first),
-			// Older answers have no subjectType: no line there meant the file.
-			subject:
-				t.subjectType === "FILE" ||
-				(t.subjectType === undefined && anchor === null)
-					? "file"
-					: "line",
+			subject: onFile ? "file" : "line",
 			attention,
 			yourTurn: attention.some((login) => slugify(login) === viewer),
 			viewerCan: {
@@ -558,7 +579,10 @@ export function mapOverview(
 	 * snapshot head's.
 	 */
 	asOf?: string,
-): Omit<PrOverview, "readId" | "fetchedAt" | "servedAt" | "writes"> {
+): Omit<
+	PrOverview,
+	"readId" | "fetchedAt" | "servedAt" | "writes" | "commentLeft"
+> {
 	if (typeof view !== "object" || view === null || Array.isArray(view)) {
 		throw new GhError("gh returned an unexpected response for the PR");
 	}

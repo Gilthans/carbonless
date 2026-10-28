@@ -35,6 +35,9 @@ export interface ReadSources {
 	base: () => Promise<DiffBase>;
 }
 
+/** A read's overview: the session adds what isn't GitHub's read (commentLeft). */
+export type ReadOverview = Omit<PrOverview, "servedAt" | "commentLeft">;
+
 /** Thread code built at once. */
 const CODE_CONCURRENCY = 8;
 
@@ -65,8 +68,8 @@ export class OverviewRead {
 	readonly started = Date.now();
 	/** When the overview part came in; null while it is read. */
 	ended: number | null = null;
-	#overview: Promise<Omit<PrOverview, "servedAt">>;
-	get overview(): Promise<Omit<PrOverview, "servedAt">> {
+	#overview: Promise<ReadOverview>;
+	get overview(): Promise<ReadOverview> {
 		return this.#overview;
 	}
 	/**
@@ -85,6 +88,12 @@ export class OverviewRead {
 		string,
 		{ summary: unknown; content: unknown; seq: number }
 	>();
+	/**
+	 * Threads a write started (addThread), listed from then on even when
+	 * this read's own list doesn't have them.
+	 */
+	readonly #added: string[] = [];
+	readonly #sources: ReadSources;
 	/**
 	 * Threads a write deleted the last comment of (by the re-read's seq):
 	 * left out of the lists, their comments "deleted".
@@ -109,6 +118,7 @@ export class OverviewRead {
 	readonly settled: Promise<void>;
 
 	constructor(sources: ReadSources) {
+		this.#sources = sources;
 		this.#asOf = sources.asOf?.at;
 		this.#viewer = sources.viewer;
 		this.#writes = sources.writes === "on";
@@ -266,6 +276,28 @@ export class OverviewRead {
 		this.#written.set(id, { ...nodes, seq });
 	}
 
+	/**
+	 * Thread `id`, which a write started, as its re-read found it
+	 * (applyWrite's rules): listed from then on, its code built.
+	 */
+	addThread(
+		id: string,
+		nodes: { summary: unknown; content: unknown },
+		seq: number,
+		startedAt: number,
+	): void {
+		if (this.started > startedAt) return;
+		this.applyWrite(id, nodes, seq, startedAt);
+		// A later write's re-read of it may stand in already: listed all the same.
+		if (!this.#added.includes(id)) this.#added.push(id);
+		const code = this.#stages.summary.then(() => {
+			const thread = this.#map().find((t) => t.id === id);
+			if (!thread?.code) return;
+			return this.#code(this.#sources, thread, async () => this.#content(id));
+		});
+		code.catch(() => {});
+	}
+
 	/** Whether a write dropped thread `id` (dropThread). */
 	dropped(id: string): boolean {
 		return this.#dropped.has(id);
@@ -327,9 +359,20 @@ export class OverviewRead {
 		return this.#written.get(id)?.content ?? this.#contents.get(id);
 	}
 
+	/** This read's thread nodes, and those writes started that it lacks. */
+	#all(): unknown[] {
+		const idOf = (raw: unknown) => (raw as { id?: unknown })?.id;
+		const listed = new Set(this.#nodes.map(idOf));
+		const added = this.#added
+			.filter((id) => !listed.has(id) && !this.#dropped.has(id))
+			.map((id) => this.#written.get(id)?.summary)
+			.filter((node) => node !== undefined);
+		return [...this.#nodes, ...added];
+	}
+
 	/** Every thread, its content merged in where it has arrived. */
 	#map(): ReviewThread[] {
-		const shown = this.#nodes.filter((raw) => {
+		const shown = this.#all().filter((raw) => {
 			const id = (raw as { id?: unknown })?.id;
 			return typeof id !== "string" || !this.#dropped.has(id);
 		});
@@ -359,7 +402,7 @@ export class OverviewRead {
 		await this.#stages.summary;
 		await this.#textsStarted.catch(() => {});
 		const summaries = new Map<string, unknown>();
-		for (const raw of this.#nodes) {
+		for (const raw of this.#all()) {
 			const node = this.#summary(raw);
 			const id = (node as { id?: unknown })?.id;
 			if (typeof id === "string" && NODE_ID.test(id)) summaries.set(id, node);
@@ -414,8 +457,15 @@ export class OverviewRead {
 			}
 			if (!t.loaded) complete = false;
 			if (!t.code) return t;
-			if (this.#codes.has(t.id))
-				return { ...t, code: this.#codes.get(t.id) ?? null };
+			if (this.#codes.has(t.id)) {
+				const built = this.#codes.get(t.id) ?? null;
+				// Built off the summary: the anchor as now (a span's columns
+				// come with the opener's text).
+				return {
+					...t,
+					code: built && { ...built, anchor: t.code.anchor },
+				};
+			}
 			complete = false;
 			// GitHub's hunk shows only once the clone has said no: no swap.
 			return {

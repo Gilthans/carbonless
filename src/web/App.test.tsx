@@ -96,6 +96,7 @@ const overview: OverviewFixture = {
 	humanStarted: true,
 	youAuthor: false,
 	writes: "on",
+	commentLeft: true,
 	pendingReview: null,
 	readId: "read1",
 	// Just read: the page doesn't read it again.

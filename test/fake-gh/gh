@@ -168,6 +168,8 @@ const threadNodes = (pr, nodes) =>
 	});
 /** Whether a thread's every comment is deleted (`removed`, shown so no more). */
 const allRemoved = (t) => t.removed === true && !lagging(t);
+/** A thread started while `threadUnlisted` held: GraphQL doesn't list it yet. */
+const hiddenThread = (t) => t.unlisted === true && s.threadUnlisted === true;
 /**
  * Where thread `id` is: its PR's number, its index there and the node as
  * served; none once deleted (deletedThreads).
@@ -178,7 +180,9 @@ function threadPlace(id) {
 		const raw = p.graphql?.reviewThreads ?? [];
 		const nodes = threadNodes(n, raw);
 		const i = nodes.findIndex((t) => t.id === id);
-		if (i >= 0) return allRemoved(raw[i]) ? undefined : { n, i, node: nodes[i] };
+		if (i >= 0) {
+			return allRemoved(raw[i]) || hiddenThread(raw[i]) ? undefined : { n, i, node: nodes[i] };
+		}
 	}
 	return undefined;
 }
@@ -366,6 +370,8 @@ function restComments(n, pr) {
 				node_id: c.id,
 				...anchor,
 				diff_hunk: opener.diffHunk ?? "",
+				body: (j === 0 ? (t.first?.nodes?.[0]?.body ?? c.body) : c.body) ?? c.bodyText ?? "",
+				user: { login: c.author?.login ?? "", avatar_url: c.author?.avatarUrl ?? "" },
 				created_at: c.createdAt,
 				...(j ? { in_reply_to_id: openerId } : {}),
 				...(s.restEdits?.[c.id] ?? {}),
@@ -391,7 +397,209 @@ const restGetComment =
 	args[0] === "api" && args[1] !== "-X"
 		? /^repos\/[^/]+\/[^/]+\/pulls\/comments\/(\d+)$/.exec(args[1] ?? "")
 		: null;
-if (args[0] === "api" && args[1] === "-X" && !restReply && !restComment) unsupported();
+// REST new thread: `api -X POST repos/<o>/<r>/pulls/<n>/comments -H "Accept: …" --input -`.
+const restCreate =
+	args[0] === "api" && args[1] === "-X" && args[2] === "POST"
+		? /^repos\/[^/]+\/[^/]+\/pulls\/(\d+)\/comments$/.exec(args[3] ?? "")
+		: null;
+// REST compare, for its merge base, its smallest page (no files):
+// `api repos/<o>/<r>/compare/<base>...<head>?per_page=1&page=2 --jq .merge_base_commit.sha`.
+const restCompare =
+	args[0] === "api" && args[1] !== "-X"
+		? /^repos\/[^/]+\/[^/]+\/compare\/(.+)\.\.\.([0-9a-f]{7,64})\?per_page=1&page=2$/.exec(args[1] ?? "")
+		: null;
+/** Runs git in the GitHub-side repository; its stdout. */
+const repoGit = (...a) =>
+	execFileSync("git", a, { cwd: s.repoPath, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+/**
+ * GitHub's merge base of a base branch (PR `n`'s, or `base`) and
+ * `commit`: the scenario's (mergeBases, by commit), else git's in the
+ * repository.
+ */
+function mergeBaseOf(n, commit, base) {
+	const given = s.mergeBases?.[commit];
+	if (given) return given;
+	const branch = base ?? s.prs[n]?.view?.baseRefName ?? "main";
+	// A commit (the PR's baseRefOid) or a branch.
+	const ref = /^[0-9a-f]{40}$/.test(branch) ? branch : `refs/heads/${branch}`;
+	return repoGit("merge-base", ref, commit).trim();
+}
+/**
+ * PR `n`'s diff at `commit` as GitHub resolves a comment's lines against
+ * it (merge base...commit): the file at `path` (old and new names; null
+ * when the diff hasn't it) and its hunks' rows, with their old and new
+ * line numbers.
+ */
+function diffAt(n, commit, path) {
+	const mb = mergeBaseOf(n, commit);
+	const status = repoGit("-c", "core.quotePath=false", "diff", "-M", "--name-status", "-z", mb, commit).split("\0");
+	const files = [];
+	for (let k = 0; k < status.length - 1; ) {
+		const code = status[k] ?? "";
+		if (code.startsWith("R") || code.startsWith("C")) {
+			files.push({ old: status[k + 1], new: status[k + 2] });
+			k += 3;
+		} else {
+			files.push({ old: status[k + 1], new: status[k + 1] });
+			k += 2;
+		}
+	}
+	const file = files.find((f) => f.new === path || f.old === path);
+	if (!file) return { file: null, hunks: [] };
+	const text = repoGit("-c", "core.quotePath=false", "diff", "-M", "-U3", mb, commit, "--", ...new Set([file.old, file.new]));
+	const hunks = [];
+	let hunk = null;
+	let oldNo = 0;
+	let newNo = 0;
+	for (const l of text.split("\n")) {
+		const h = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(l);
+		if (h) {
+			hunk = { header: l, rows: [] };
+			hunks.push(hunk);
+			oldNo = Number(h[1]);
+			newNo = Number(h[2]);
+			continue;
+		}
+		if (!hunk || l.startsWith("\\")) continue;
+		if (l.startsWith("+")) hunk.rows.push({ text: l, old: null, new: newNo++ });
+		else if (l.startsWith("-")) hunk.rows.push({ text: l, old: oldNo++, new: null });
+		else if (l.startsWith(" ")) hunk.rows.push({ text: l, old: oldNo++, new: newNo++ });
+	}
+	return { file, hunks };
+}
+/**
+ * GitHub's diff hunk for a comment ending at `line` on `side`: the hunk's
+ * header and its rows down to that line; null when the diff hasn't it.
+ */
+function hunkTo(hunks, side, line) {
+	for (const h of hunks) {
+		const k = h.rows.findIndex((r) => (side === "LEFT" ? r.old : r.new) === line);
+		if (k >= 0) return [h.header, ...h.rows.slice(0, k + 1).map((r) => r.text)].join("\n");
+	}
+	return null;
+}
+/** A body as GitHub's plain text and HTML have it: an HTML comment at its end dropped. */
+const rendered = (body) => body.replace(/\s*<!--(?:(?!-->)[^])*-->\s*$/, "");
+if (restCreate && !s.loggedOut) {
+	const [, n] = restCreate;
+	if (args.slice(4).join(" ") !== "-H Accept: application/vnd.github.full+json --input -") {
+		unsupported();
+	}
+	const req = JSON.parse(readFileSync(0, "utf8"));
+	const pr = s.prs[n];
+	if (!pr) httpFail(404, "Not Found");
+	const f = failNextFor("comment");
+	if (f && !f.afterWrite) failAs(f);
+	if (s.commentDelayMs) sleep(s.commentDelayMs);
+	if (!req.body?.trim()) httpFail(422, "Validation Failed", ["Body can't be blank"]);
+	const pending = (pr.graphql?.reviews ?? []).some(
+		(r) =>
+			r.state === "PENDING" &&
+			r.author?.login?.toLowerCase() === s.user.login.toLowerCase(),
+	);
+	if (pending) {
+		httpFail(422, "Unprocessable Entity", [
+			"user_id can only have one pending review per pull request",
+		]);
+	}
+	const file = req.subject_type === "file";
+	const unresolved = (field) =>
+		httpFail(422, "Unprocessable Entity", [`pull_request_review_thread.${field} could not be resolved`]);
+	let diff;
+	try {
+		diff = diffAt(n, req.commit_id, req.path);
+	} catch {
+		httpFail(422, "Unprocessable Entity", ["commit_id is not part of the pull request"]);
+	}
+	if (!diff.file) unresolved("path");
+	const side = file ? null : (req.side ?? "RIGHT");
+	const startSide = req.start_line ? (req.start_side ?? side) : null;
+	let diffHunk = "";
+	if (!file) {
+		const inDiff = (sd, l) =>
+			diff.hunks.some((h) => h.rows.some((r) => (sd === "LEFT" ? r.old : r.new) === l));
+		if (!inDiff(side, req.line)) unresolved("line");
+		if (req.start_line && !inDiff(startSide, req.start_line)) unresolved("start_line");
+		diffHunk = hunkTo(diff.hunks, side, req.line) ?? "";
+	}
+	// GitHub's quirk (gallery #2): a range starting on LEFT on a context
+	// line reads back from GraphQL with startLine its NEW number
+	// (originalStartLine keeps the old one).
+	const startRow =
+		startSide === "LEFT"
+			? diff.hunks.flatMap((h) => h.rows).find((r) => r.old === req.start_line)
+			: undefined;
+	const shownStart = startRow?.new ?? req.start_line ?? null;
+	const now = new Date().toISOString().replace(/\.\d+Z$/, "Z");
+	const author = {
+		login: s.user.login,
+		__typename: "User",
+		...(s.user.avatarUrl ? { avatarUrl: s.user.avatarUrl } : {}),
+	};
+	const times = { createdAt: now, publishedAt: now, state: "SUBMITTED" };
+	const html = `<p dir="auto">${escapeHtml(rendered(req.body))}</p>`;
+	const text = { body: req.body, bodyText: rendered(req.body), bodyHTML: html };
+	const opener = { author, ...times, ...text, diffHunk, originalCommit: { oid: req.commit_id } };
+	const thread = {
+		isResolved: false,
+		isOutdated: false,
+		path: req.path,
+		subjectType: file ? "FILE" : "LINE",
+		// GitHub's: a file thread on line 1 (RIGHT); a single line's
+		// startLine is the line, with no start side or original start.
+		line: file ? 1 : req.line,
+		originalLine: file ? 1 : req.line,
+		startLine: file ? null : (shownStart ?? req.line),
+		originalStartLine: req.start_line ?? null,
+		diffSide: side ?? "RIGHT",
+		startDiffSide: startSide,
+		first: { nodes: [opener] },
+		latest: { nodes: [{ author, ...times }] },
+		comments: { totalCount: 1, nodes: [{ author, ...times, ...text }] },
+		...(s.threadUnlisted ? { unlisted: true } : {}),
+	};
+	pr.graphql ??= {};
+	pr.graphql.reviewThreads ??= [];
+	pr.graphql.reviewThreads.push(thread);
+	save();
+	const i = pr.graphql.reviewThreads.length - 1;
+	if (f) failAs(f);
+	print({
+		id: restId(i, 0),
+		node_id: `C${n}-${i}`,
+		path: req.path,
+		commit_id: req.commit_id,
+		original_commit_id: req.commit_id,
+		subject_type: file ? "file" : "line",
+		line: thread.line,
+		original_line: thread.originalLine,
+		side: side ?? "RIGHT",
+		start_line: req.start_line ?? null,
+		original_start_line: thread.originalStartLine,
+		start_side: startSide,
+		diff_hunk: diffHunk,
+		body: req.body,
+		body_text: text.bodyText,
+		body_html: html,
+		user: { login: s.user.login, avatar_url: s.user.avatarUrl ?? "" },
+		created_at: now,
+		updated_at: now,
+	});
+}
+if (restCompare && !s.loggedOut) {
+	if (args.slice(2).join(" ") !== "--jq .merge_base_commit.sha") unsupported();
+	if (s.compareDelayMs) sleep(s.compareDelayMs);
+	const [, base, head] = restCompare;
+	let mb;
+	try {
+		mb = mergeBaseOf(null, head, decodeURIComponent(base));
+	} catch {
+		httpFail(404, "Not Found");
+	}
+	process.stdout.write(`${mb}\n`);
+	process.exit(0);
+}
+if (args[0] === "api" && args[1] === "-X" && !restReply && !restComment && !restCreate) unsupported();
 if (restReply && !s.loggedOut) {
 	const [, n, id] = restReply;
 	if (args.slice(4).join(" ") !== "-H Accept: application/vnd.github.full+json --input -") {
@@ -500,7 +708,7 @@ if (restComment && !s.loggedOut) {
 	const now = new Date().toISOString().replace(/\.\d+Z$/, "Z");
 	if (edit) {
 		if (!body?.trim()) httpFail(422, "Validation Failed", ["Body can't be blank"]);
-		const html = `<p dir="auto">${escapeHtml(body)}</p>`;
+		const html = `<p dir="auto">${escapeHtml(rendered(body))}</p>`;
 		// The opener's text may live only in `first` (older fixtures).
 		const targets = j === 0 && opener && opener !== c ? [c, opener] : [c];
 		for (const x of targets) {
@@ -510,7 +718,7 @@ if (restComment && !s.loggedOut) {
 				bodyHTML: x.bodyHTML ?? "",
 				lastEditedAt: x.lastEditedAt ?? null,
 			};
-			Object.assign(x, { body, bodyText: body, bodyHTML: html, lastEditedAt: now });
+			Object.assign(x, { body, bodyText: rendered(body), bodyHTML: html, lastEditedAt: now });
 			if (s.writeUnlistedMs) Object.assign(x, { changedAt: Date.now(), before: was });
 		}
 		save();
@@ -519,7 +727,7 @@ if (restComment && !s.loggedOut) {
 			id: Number(id),
 			node_id: place.node.comments?.nodes?.find((x) => x.databaseId === Number(id))?.id ?? place.node.first?.nodes?.[0]?.id,
 			body,
-			body_text: body,
+			body_text: rendered(body),
 			body_html: html,
 			user: { login: c.author?.login ?? "", avatar_url: c.author?.avatarUrl ?? "" },
 			created_at: c.createdAt,
@@ -544,6 +752,7 @@ const restPull = /^repos\/[^/]+\/[^/]+\/pulls\/(\d+)\/comments$/.exec(
 );
 if (restPull && args[0] === "api" && !s.loggedOut) {
 	if (args.slice(2).join(" ") !== "--paginate --slurp") unsupported();
+	if (s.restListDelayMs) sleep(s.restListDelayMs);
 	const pr = s.prs[restPull[1]];
 	if (!pr) fail("gh: Not Found (HTTP 404)");
 	const all = restComments(restPull[1], pr);
@@ -562,7 +771,9 @@ const known = [
 	"repo clone",
 	"pr view",
 ];
-if (!known.includes(cmd) && !restPull && !restReply && !restComment && !restGetComment) unsupported();
+if (!known.includes(cmd) && !restPull && !restReply && !restComment && !restGetComment && !restCreate && !restCompare) {
+	unsupported();
+}
 
 if (s.loggedOut) {
 	if (cmd === "auth status") {
@@ -868,7 +1079,7 @@ switch (cmd) {
 		if (conn === "reviewThreads") {
 			if (s.threadsDelayMs) sleep(s.threadsDelayMs);
 			const raw = all;
-			all = threadNodes(f.number, raw).filter((_, k) => !allRemoved(raw[k]));
+			all = threadNodes(f.number, raw).filter((_, k) => !allRemoved(raw[k]) && !hiddenThread(raw[k]));
 			// Only the fields asked for: a summary has no comment text, and
 			// lists a thread's first page of comments (commentPageSize).
 			if (!f.query.includes("bodyHTML")) all = all.map(summarize);
