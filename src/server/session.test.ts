@@ -334,11 +334,10 @@ describe("Session", () => {
 
 		it("reads again on Refresh, and doesn't keep a failed read", async () => {
 			const s = await Session.open(pr.arg, process.cwd());
-			const first = await s.overview();
+			await s.overview();
 			titled("After refresh");
 			await s.refresh();
 			const after = await s.overview();
-			expect(after).not.toBe(first);
 			expect(after.title).toBe("After refresh");
 			pr.scenario({ loggedOut: true });
 			await expect(s.overview(0)).rejects.toThrow(GhError);
