@@ -1573,6 +1573,41 @@ describe("side by side (the cells contract)", () => {
 		).toHaveFocus();
 	});
 
+	it("picks extend in GitHub's order, not the order shown: new 3 then old 4 is old 4 → new 3 and Comment is on; old 3 → old 4 washes no right-side cell", async () => {
+		const { user } = setup();
+		await loaded();
+		// Anchored on the right, extended to the left of the pair below: the
+		// shown order would be RIGHT:3 then LEFT:4, which GitHub refuses as
+		// backwards; GitHub's order of the hunk is del 4 then add 3.
+		press(number("RIGHT", 3));
+		press(number("LEFT", 4), { shiftKey: true });
+		expect(getPicks()?.lines.map((l) => pickKey(l))).toEqual([
+			"LEFT:4",
+			"RIGHT:3",
+		]);
+		expect(cellsWith("data-picked")).toEqual(["RIGHT:3", "LEFT:4"]);
+		const bar = await screen.findByTestId("selection-bar");
+		const comment = within(bar).getByRole("button", { name: "Comment" });
+		expect(comment).not.toHaveAttribute("aria-disabled");
+		await user.click(comment);
+		expect(getComposers()).toMatchObject([
+			{ span: { startSide: "LEFT", startLine: 4, side: "RIGHT", line: 3 } },
+		]);
+		await screen.findByTestId("new-thread-row");
+		expect(
+			within(screen.getByTestId("new-thread-row")).getByText("old 4 – new 3"),
+		).toBeInTheDocument();
+		act(() => resetComposers());
+		// Two old lines: only they are picked, not the new line shown between them.
+		press(number("LEFT", 3));
+		press(number("LEFT", 4), { shiftKey: true });
+		expect(cellsWith("data-picked")).toEqual(["LEFT:3", "LEFT:4"]);
+		expect(getPicks()?.lines.map((l) => pickKey(l))).toEqual([
+			"LEFT:3",
+			"LEFT:4",
+		]);
+	});
+
 	it("Comment on lines picked from an old number to a new one: the span crosses sides, the composer sits under the pair row and the range paints each side's cells", async () => {
 		const { user } = setup();
 		await loaded();

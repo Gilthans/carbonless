@@ -652,3 +652,60 @@ test("side by side, lines picked from an old number to a new one comment across 
 	]);
 	await expectNoPageOverflow(page);
 });
+
+test("side by side, a pick anchored on a new number and extended to an old one goes to GitHub in its order", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	if (isMobile) await page.setViewportSize({ width: 360, height: 780 });
+	const p = await pr(fixture);
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	await sideBySide(page, true);
+	const section = await expand(page, GREET);
+	await expect(table(section, "side-by-side")).toBeVisible();
+	const cluster = pairs(section);
+	await expect(cluster).toHaveCount(3);
+	// New 5 first, then old 6 (the pair below's left side): shown that way
+	// round it would be new 5 → old 6, which GitHub refuses as backwards;
+	// in GitHub's order it is old 6 → new 5.
+	const newFive = cluster.nth(0).getByTestId("new");
+	const oldSix = cluster.nth(1).getByTestId("old");
+	if (isMobile) {
+		await newFive.tap();
+		await oldSix.tap();
+	} else {
+		await newFive.click();
+		await oldSix.click({ modifiers: ["Shift"] });
+	}
+	// Just the two lines, each on its own side.
+	await expect(section.locator("tr[data-picked]")).toHaveCount(2);
+	const pickedCells = section.locator('td[data-testid="code"][data-picked]');
+	await expect(pickedCells).toHaveCount(2);
+	await expect(pickedCells.nth(0)).toHaveAttribute("data-side", "RIGHT");
+	await expect(pickedCells.nth(1)).toHaveAttribute("data-side", "LEFT");
+	const comment = selectionBar(page).getByRole("button", { name: "Comment" });
+	await expect(comment).not.toHaveAttribute("aria-disabled", "true");
+	await comment.click();
+	const composer = section.getByTestId("new-thread");
+	await expect(composer).toContainText("old 6 – new 5");
+	await composer.getByRole("textbox", { name: "Comment" }).fill("Either way");
+	await composer.getByRole("button", { name: "Comment" }).click();
+	await expect(
+		section.getByTestId("files-thread").filter({ hasText: "Either way" }),
+	).toBeVisible();
+	await expect(
+		section.locator('td[data-testid="code"][data-commented]'),
+	).toHaveCount(2);
+	expect(stored(p)).toMatchObject([
+		{
+			path: GREET,
+			line: 5,
+			originalStartLine: 6,
+			diffSide: "RIGHT",
+			startDiffSide: "LEFT",
+		},
+	]);
+});

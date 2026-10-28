@@ -49,8 +49,14 @@ export function picked(c: CellLine): PickedLine {
 }
 
 /**
- * Picks extended: every row between `anchor` and `focus`, in the order of
- * `cells` (the file's code cells, top down). Null if either isn't there.
+ * Picks extended: every line between `anchor` and `focus`. Both in one
+ * hunk, that is GitHub's order of it (`order`): the lines between the two
+ * in that order, first to last, so the span's ends are what GitHub takes
+ * whichever way the pick went and whichever way the view lays the lines
+ * out (side by side shows a pair's old and new line in one row; unified
+ * with Ignore whitespace shows a pair where its added line goes). Else
+ * (expanded context, or across hunks) the order of `cells` (the file's
+ * code cells, top down). Null if either isn't there.
  */
 export function pickRange(
 	cells: readonly CellLine[],
@@ -62,11 +68,30 @@ export function pickRange(
 	const a = at(anchor);
 	const f = at(focus);
 	if (a < 0 || f < 0) return null;
-	const [from, to] = a <= f ? [a, f] : [f, a];
-	return {
-		path: anchor.path,
-		anchor,
-		focus,
-		lines: cells.slice(from, to + 1).map(picked),
-	};
+	const from = cells[a] as CellLine;
+	const to = cells[f] as CellLine;
+	const lines =
+		from.hunk === to.hunk && from.order !== undefined && to.order !== undefined
+			? between(cells, from.hunk, from.order, to.order)
+			: cells.slice(Math.min(a, f), Math.max(a, f) + 1);
+	return { path: anchor.path, anchor, focus, lines: lines.map(picked) };
+}
+
+/** The hunk's cells whose place in GitHub's order lies between `a` and `b`, in that order. */
+function between(
+	cells: readonly CellLine[],
+	hunk: string,
+	a: number,
+	b: number,
+): CellLine[] {
+	const [lo, hi] = a <= b ? [a, b] : [b, a];
+	return cells
+		.filter(
+			(c) =>
+				c.hunk === hunk &&
+				c.order !== undefined &&
+				c.order >= lo &&
+				c.order <= hi,
+		)
+		.sort((x, y) => (x.order as number) - (y.order as number));
 }
