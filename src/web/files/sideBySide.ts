@@ -47,7 +47,11 @@ export function layoutRows(rows: DiffRow[]): SideRow[] {
 	return out;
 }
 
-/** A pair row with only the sides it has. */
+/**
+ * A pair row with only the sides it has: no `del: undefined` key, so a row
+ * compares equal to its literal in tests and reads cleanly in a debugger.
+ * Nothing depends on `"del" in row`; readers check `row.del` itself.
+ */
 function pair(
 	del: DiffLine | undefined,
 	add: DiffLine | undefined,

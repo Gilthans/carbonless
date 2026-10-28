@@ -52,11 +52,26 @@ const adds = (n: number, from = 1) =>
  * empty; and a blank cell appears only once the other side has run out.
  */
 function expectLayout(input: DiffRow[], out: SideRow[]) {
-	const lines = input.flatMap((r) =>
-		r.kind === "ws"
-			? [...(r.del ? [r.del] : []), ...(r.add ? [r.add] : [])]
-			: [r.line],
-	);
+	// Each line's segment: a whitespace row (two-sided or not) and a
+	// context row are pairing boundaries, so plain lines only pair within
+	// their segment.
+	const seg = new Map<DiffLine, number>();
+	const lines: DiffLine[] = [];
+	let segment = 0;
+	for (const r of input) {
+		if (r.kind === "ws") {
+			segment++;
+			for (const l of [r.del, r.add]) if (l) lines.push(l);
+			segment++;
+		} else if (r.line.kind === "context") {
+			segment++;
+			lines.push(r.line);
+			segment++;
+		} else {
+			lines.push(r.line);
+			seg.set(r.line, segment);
+		}
+	}
 	const oldSide = lines.filter((l) => l.kind !== "add");
 	const newSide = lines.filter((l) => l.kind !== "del");
 	const s = sides(input);
@@ -105,6 +120,12 @@ function expectLayout(input: DiffRow[], out: SideRow[]) {
 			endSegment();
 		} else {
 			plain.push(row.del && row.add ? "two" : row.del ? "left" : "right");
+			if (row.del && row.add) {
+				expect(
+					seg.get(row.del),
+					`paired across a boundary: ${trace(out)}`,
+				).toBe(seg.get(row.add));
+			}
 		}
 	}
 	endSegment();
@@ -238,6 +259,15 @@ describe("layoutRows", () => {
 			ws: true,
 		});
 		expectLayout(oneSided, layoutRows(oneSided));
+
+		// A one-sided whitespace row is a pairing boundary like a two-sided one.
+		const boundary: DiffRow[] = [
+			line(del(1, "x")),
+			{ kind: "ws", del: del(2, "  }") },
+			line(add(3, "y")),
+		];
+		expect(trace(layoutRows(boundary))).toEqual(["[-1|]", "[~2|]", "[|+3]"]);
+		expectLayout(boundary, layoutRows(boundary));
 	});
 
 	it("lays a hunk of several clusters out run by run", () => {
@@ -322,6 +352,41 @@ describe("layoutRows", () => {
 			expectLayout(pairHunk(lines), layoutRows(pairHunk(lines)));
 			laidOut++;
 		}
-		expect(laidOut).toBeGreaterThan(300);
+		// Rows of any shape, as the type allows them (one-sided whitespace
+		// rows between plain lines included), whether or not a whitespace
+		// matching would produce them: the layout's contract is the rows.
+		for (let n = 0; n < 300; n++) {
+			const rows: DiffRow[] = [];
+			let oldNo = 1;
+			let newNo = 1;
+			for (let k = rand(12); k > 0; k--) {
+				switch (rand(6)) {
+					case 0:
+						rows.push(line(ctx(oldNo++, newNo++, text())));
+						break;
+					case 1:
+						rows.push(line(del(oldNo++, text())));
+						break;
+					case 2:
+						rows.push(line(add(newNo++, text())));
+						break;
+					case 3:
+						rows.push({
+							kind: "ws",
+							del: del(oldNo++, text()),
+							add: add(newNo++, text()),
+						});
+						break;
+					case 4:
+						rows.push({ kind: "ws", del: del(oldNo++, text()) });
+						break;
+					default:
+						rows.push({ kind: "ws", add: add(newNo++, text()) });
+				}
+			}
+			expectLayout(rows, layoutRows(rows));
+			laidOut++;
+		}
+		expect(laidOut).toBeGreaterThan(600);
 	});
 });
