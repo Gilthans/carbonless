@@ -294,6 +294,21 @@ interface NumberPick {
 	picked: boolean;
 }
 
+/** The pick a number makes for code cell `code`: its key, its name, whether it is picked. */
+const pickOf = (
+	code: ReturnType<typeof codeCellOf>,
+	button: boolean,
+	picker: Picker | undefined,
+): NumberPick => {
+	const key = pickKey(code);
+	return {
+		key,
+		label: `${code.side === "LEFT" ? "Old line" : "Line"} ${code.line}`,
+		button,
+		picked: picker?.keys.has(key) ?? false,
+	};
+};
+
 /** The cluster's controls column (empty but on a cluster's first row); `className` adds to it (a taller row's padding). */
 function ControlsCell(props: { children?: ReactNode; className?: string }) {
 	return (
@@ -487,6 +502,46 @@ interface RowProps {
 const marksOf = (keys: LineKey[], threads: RowThreads | undefined): Mark[] =>
 	threads ? keys.flatMap((k) => threads.placement.marks.get(k) ?? []) : [];
 
+/**
+ * What follows a row of lines: the opened rows of the threads ending on it
+ * (a pair row may open one per side, the left side's first), then the new
+ * threads being written under it.
+ */
+function RowTail(props: {
+	opened: { endKey: LineKey; ending: ReviewThread[] }[];
+	composing: NewThreadItem[];
+	threads?: RowThreads;
+	composers?: RowComposers;
+	columns: number;
+	state?: ClusterView["state"];
+}) {
+	const { threads } = props;
+	const rail = props.state ? RAIL[props.state] : undefined;
+	return (
+		<>
+			{threads &&
+				props.opened.map((cell) => (
+					<ThreadRow
+						key={cell.endKey}
+						id={threads.idOf(cell.endKey)}
+						readId={threads.readId}
+						threads={cell.ending}
+						columns={props.columns}
+						rail={rail}
+					/>
+				))}
+			{props.composing.length > 0 && props.composers && (
+				<NewThreadRow
+					items={props.composing}
+					composers={props.composers}
+					columns={props.columns}
+					rail={rail}
+				/>
+			)}
+		</>
+	);
+}
+
 /** New threads being written under their span's last row, like a ThreadRow. */
 function NewThreadRow(props: {
 	items: NewThreadItem[];
@@ -557,8 +612,7 @@ function NoNewlineRow(props: {
 function LineRow(props: RowProps & { line: RowLine; order?: number }) {
 	const { line, state, threads, shape, picker } = props;
 	const cell = codeCellOf(line);
-	const key = pickKey(cell);
-	const isPicked = picker?.keys.has(key) ?? false;
+	const isPicked = picker?.keys.has(pickKey(cell)) ?? false;
 	const reviewed = state === "reviewed";
 	const keys = threads ? rowKeys(line) : [];
 	// A context row is two lines, RIGHT by its new number and LEFT by its
@@ -580,12 +634,7 @@ function LineRow(props: RowProps & { line: RowLine; order?: number }) {
 	const composing = props.composers?.at(keys) ?? [];
 	// The number GitHub knows the row by takes the pick's button (and its
 	// tab stop); the other number picks the row too, by pointer.
-	const pick = (side: DiffSide): NumberPick => ({
-		key,
-		label: `${cell.side === "LEFT" ? "Old line" : "Line"} ${cell.line}`,
-		button: side === cell.side,
-		picked: isPicked,
-	});
+	const pick = (side: DiffSide) => pickOf(cell, side === cell.side, picker);
 	return (
 		<>
 			<tr
@@ -644,23 +693,14 @@ function LineRow(props: RowProps & { line: RowLine; order?: number }) {
 				/>
 			</tr>
 			{line.noNewline && <NoNewlineRow shape={shape} state={state} />}
-			{open && endKey && threads && (
-				<ThreadRow
-					id={threads.idOf(endKey)}
-					readId={threads.readId}
-					threads={ending}
-					columns={columnsOf(shape.view)}
-					rail={state ? RAIL[state] : undefined}
-				/>
-			)}
-			{composing.length > 0 && props.composers && (
-				<NewThreadRow
-					items={composing}
-					composers={props.composers}
-					columns={columnsOf(shape.view)}
-					rail={state ? RAIL[state] : undefined}
-				/>
-			)}
+			<RowTail
+				opened={open && endKey ? [{ endKey, ending }] : []}
+				composing={composing}
+				threads={threads}
+				composers={props.composers}
+				columns={columnsOf(shape.view)}
+				state={state}
+			/>
 		</>
 	);
 }
@@ -702,8 +742,6 @@ function PairRow(props: RowProps & { row: SideRow }) {
 		keys: LineKey[],
 		where: string,
 	): Cell => {
-		const code = codeCellOf(line);
-		const key = pickKey(code);
 		return {
 			line,
 			keys,
@@ -712,12 +750,7 @@ function PairRow(props: RowProps & { row: SideRow }) {
 			where,
 			marks: marksOf(keys, threads),
 			order: props.orderOf?.(source),
-			pick: {
-				key,
-				label: `${code.side === "LEFT" ? "Old line" : "Line"} ${code.line}`,
-				button: true,
-				picked: picker?.keys.has(key) ?? false,
-			},
+			pick: pickOf(codeCellOf(line), true, picker),
 		};
 	};
 	let left: Cell | undefined;
@@ -846,29 +879,18 @@ function PairRow(props: RowProps & { row: SideRow }) {
 			{(noNewline.left || noNewline.right) && (
 				<NoNewlineRow shape={shape} state={state} {...noNewline} />
 			)}
-			{[left, right].map(
-				(cell) =>
-					cell?.open &&
-					cell.endKey &&
-					threads && (
-						<ThreadRow
-							key={cell.endKey}
-							id={threads.idOf(cell.endKey)}
-							readId={threads.readId}
-							threads={cell.ending}
-							columns={columnsOf(shape.view)}
-							rail={state ? RAIL[state] : undefined}
-						/>
-					),
-			)}
-			{composing.length > 0 && props.composers && (
-				<NewThreadRow
-					items={composing}
-					composers={props.composers}
-					columns={columnsOf(shape.view)}
-					rail={state ? RAIL[state] : undefined}
-				/>
-			)}
+			<RowTail
+				opened={[left, right].flatMap((cell) =>
+					cell?.open && cell.endKey
+						? [{ endKey: cell.endKey, ending: cell.ending }]
+						: [],
+				)}
+				composing={composing}
+				threads={threads}
+				composers={props.composers}
+				columns={columnsOf(shape.view)}
+				state={state}
+			/>
 		</>
 	);
 }
