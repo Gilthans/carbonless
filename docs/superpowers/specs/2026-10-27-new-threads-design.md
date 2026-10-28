@@ -87,7 +87,7 @@ Owner: "It's a good first step. In the future we'll have to store things in our 
 
 - **A rule from now on:** every frequent action gets a keyboard shortcut where it makes sense, registered in one place so it shows in the help (`docs/product-rules.md`).
 - **One registry** in the web app: each shortcut has its key, a short label, a group (Global, Files changed, Overview, Threads) and when it applies. Shortcuts never fire while typing in a text field (except the field's own: Ctrl/Cmd+Enter, Escape) and never shadow the browser's own (Ctrl/Cmd+C copies).
-- **`?` opens the help**: a modal listing every shortcut by group, keys shown as key caps, the ones that apply to the current page first. Escape or `?` closes it. On a phone it is reachable from the header's menu (no keyboard), as a full-height sheet.
+- **`?` opens the help**: a modal listing every shortcut by group, keys shown as key caps, the ones that apply to the current page first. Escape or `?` closes it. Desktop only: on a phone there are no shortcuts and no help (owner, 2026-10-28).
 - This stage registers `?`, `c` and the shortcuts the app already has (the builder lists them from the code). New shortcuts for existing actions (next file, mark reviewed…) are a later stage.
 - Pressing the bar's button doesn't clear the selection before the action has the span.
 
