@@ -188,6 +188,22 @@ describe("ShortcutsProvider", () => {
 		expect(shown).toHaveBeenCalledTimes(1);
 	});
 
+	it("ignores a held key's repeats", () => {
+		const run = vi.fn();
+		render(
+			<ShortcutsProvider>
+				<Uses keys="j" run={run} />
+			</ShortcutsProvider>,
+		);
+		press("j");
+		press("j", { repeat: true });
+		press("j", { repeat: true });
+		expect(run).toHaveBeenCalledTimes(1);
+		press("?", { shiftKey: true });
+		press("?", { shiftKey: true, repeat: true });
+		expect(helpOpen()).toBe(true);
+	});
+
 	it("leaves a key a handler already took alone", () => {
 		const run = vi.fn();
 		render(

@@ -217,7 +217,8 @@ export function ShortcutsProvider(props: { children: ReactNode }) {
 	const [ctx] = useState<Ctx>(() => ({ registry, openHelp }));
 	useEffect(() => {
 		const onKey = (e: KeyboardEvent) => {
-			if (e.defaultPrevented || e.isComposing) return;
+			// A held key repeats: once per press.
+			if (e.defaultPrevented || e.isComposing || e.repeat) return;
 			if (isTypingTarget(e.target)) return;
 			const help = dialog.current;
 			const helpOpen = help?.hasAttribute("open") ?? false;
