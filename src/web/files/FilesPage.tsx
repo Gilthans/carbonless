@@ -22,6 +22,7 @@ import { usePrefetchComments } from "../threads/useThreadComments";
 import { useThreads } from "../threads/useThreads";
 import { ErrorMessage } from "../ui";
 import { useMedia, WIDE } from "../useMedia";
+import { ignoreWhitespace, sideBySide } from "../viewSettings";
 import type { DiffThreads } from "./DiffBody";
 import { FileDiff } from "./FileDiff";
 import { FileTree } from "./FileTree";
@@ -278,6 +279,34 @@ export function FilesPage() {
 		unitAnchor.current = null;
 		if (a && diffs.current) restoreAnchor(a, diffs.current);
 	}, [unit]);
+	// So does switching a view setting that lays the rows out again (side
+	// by side, ignore whitespace): the anchor is taken as the setting
+	// changes, before React re-renders, and the row found again by its
+	// numbers once the new rows are in.
+	const settingAnchor = useRef<ScrollAnchor | null>(null);
+	useEffect(() => {
+		const capture = () => {
+			const root = diffs.current;
+			settingAnchor.current = root
+				? captureAnchor(root, appHeader + pageSticky)
+				: null;
+		};
+		const unsubscribe = [
+			sideBySide.subscribe(capture),
+			ignoreWhitespace.subscribe(capture),
+		];
+		return () => {
+			for (const off of unsubscribe) off();
+		};
+	}, [appHeader, pageSticky]);
+	const split = sideBySide.use();
+	const ignoreWs = ignoreWhitespace.use();
+	// biome-ignore lint/correctness/useExhaustiveDependencies: runs after each setting switch.
+	useLayoutEffect(() => {
+		const a = settingAnchor.current;
+		settingAnchor.current = null;
+		if (a && diffs.current) restoreAnchor(a, diffs.current);
+	}, [split, ignoreWs]);
 	/** The header to keep where it was on screen as files open and close. */
 	const anchor = useRef<{ index: number; top: number } | null>(null);
 	const sectionOf = (index: number) => document.getElementById(`file-${index}`);

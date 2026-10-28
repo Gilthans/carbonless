@@ -77,6 +77,7 @@ const E2E_MAP = [
 			"sticky",
 			"invisibles",
 			"whitespace",
+			"sideBySide-anchor",
 			"mobile",
 			"saves",
 		],
@@ -86,7 +87,7 @@ const E2E_MAP = [
 	[/^src\/web\/shortcuts\.tsx$/, ["shortcuts", "settings"]],
 	[
 		/^src\/web\/(Settings\.tsx|viewSettings\.ts)$/,
-		["settings", "invisibles", "whitespace", "shortcuts"],
+		["settings", "invisibles", "whitespace", "sideBySide-anchor", "shortcuts"],
 	],
 	[/^src\/web\/sticky\.ts$/, ["sticky", "files"]],
 	[

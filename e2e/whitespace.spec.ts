@@ -7,7 +7,14 @@ import {
 	WRAP_OLD,
 	WRAP_REMOVED,
 } from "../test/whitespace-fixture";
-import { fileSection, openFiles, progress } from "./files-ui";
+import {
+	fileSection,
+	openFiles,
+	progress,
+	rowTop,
+	setSwitch,
+	underStack,
+} from "./files-ui";
 import { expect, type PrOptions, test } from "./fixtures";
 
 const indent = Array.from({ length: 8 }, (_, i) => `indent ${i + 1}`);
@@ -47,17 +54,8 @@ const fixture: PrOptions = {
 };
 
 /** Sets the "Ignore whitespace" switch in Settings and closes it again. */
-async function ignoreWhitespace(page: Page, on: boolean) {
-	const gear = page.getByRole("button", { name: "Settings" });
-	if ((await gear.getAttribute("aria-expanded")) !== "true") await gear.click();
-	const toggle = page.getByRole("switch", { name: "Ignore whitespace" });
-	if ((await toggle.getAttribute("aria-checked")) !== String(on)) {
-		await toggle.click();
-	}
-	await expect(toggle).toHaveAttribute("aria-checked", String(on));
-	await page.keyboard.press("Escape");
-	await expect(toggle).toBeHidden();
-}
+const ignoreWhitespace = (page: Page, on: boolean) =>
+	setSwitch(page, "Ignore whitespace", on);
 
 const rows = (section: Locator, kind: string) =>
 	section.locator(`[data-testid="diff-line"][data-kind="${kind}"]`);
@@ -215,6 +213,57 @@ test("Ignore whitespace pairs whitespace-only lines and collapses whitespace-onl
 	await expect(rows(section, "add")).toHaveCount(4);
 	await expect(rows(section, "ws")).toHaveCount(0);
 	await expect(bar).toContainText("1 / 10 clusters reviewed");
+});
+
+test("the Ignore whitespace switch keeps the row being read where it was", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	if (isMobile) await page.setViewportSize({ width: 360, height: 780 });
+	await pr(fixture);
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	// Room below the last file to scroll a row up to the sticky stack and
+	// keep it there once the rows above it change.
+	await page.addStyleTag({ content: "main { padding-bottom: 200vh; }" });
+
+	// The mixed cluster: reading the added `mixed 6`, three rows up once
+	// the whitespace-only lines pair up (it becomes the ~ row of line 6,
+	// a new row the browser's own scroll anchoring loses track of).
+	let section = await expand(page, "src/mixed.ts");
+	const added = section.locator('[data-testid="diff-line"][data-new-no="6"]');
+	await expect(added).toHaveAttribute("data-kind", "add");
+	await underStack(added);
+	const header = await section.locator("header").boundingBox();
+	const stack = (header?.y ?? 0) + (header?.height ?? 0);
+	const before = await rowTop(added);
+	expect(Math.abs(before - stack)).toBeLessThanOrEqual(2);
+	await ignoreWhitespace(page, true);
+	await expect(added).toHaveAttribute("data-kind", "ws");
+	expect(Math.abs((await rowTop(added)) - before)).toBeLessThan(2);
+	// And back: the ~ row of line 6 is found again as the removed line
+	// (the old number first), where the ~ row was.
+	await ignoreWhitespace(page, false);
+	const removed = section.locator(
+		'[data-testid="diff-line"][data-old-no="6"]:not([data-new-no])',
+	);
+	await expect(removed).toHaveAttribute("data-kind", "del");
+	expect(Math.abs((await rowTop(removed)) - before)).toBeLessThan(2);
+
+	// A context row between clusters that collapse: put too.
+	section = await expand(page, "src/reindent.ts");
+	const context = section
+		.getByTestId("diff-line")
+		.filter({ hasText: /export function average/ });
+	await expect(context).toHaveAttribute("data-old-no", "18");
+	await underStack(context);
+	const contextBefore = await rowTop(context);
+	await ignoreWhitespace(page, true);
+	await expect(section.getByTestId("ws-cluster")).toHaveCount(5);
+	expect(Math.abs((await rowTop(context)) - contextBefore)).toBeLessThan(2);
+	expect(await overflow(page)).toBeLessThanOrEqual(0);
 });
 
 /** A 120-line file re-indented wholesale: one whitespace-only cluster. */
