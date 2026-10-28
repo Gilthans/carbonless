@@ -6,9 +6,12 @@ import {
 import { useQueries, useQuery } from "@tanstack/react-query";
 import {
 	Fragment,
+	type KeyboardEvent,
+	type MouseEvent,
 	type PointerEvent,
 	type ReactNode,
 	type RefObject,
+	useCallback,
 	useEffect,
 	useId,
 	useLayoutEffect,
@@ -24,14 +27,36 @@ import type {
 	FileView,
 	ReviewThread,
 } from "../../shared/types";
-import { contextQuery, hunksQuery } from "../api";
-import { CodeLine } from "../code/Invisibles";
+import { contextQuery, hunksQuery, overviewQuery } from "../api";
+import { CodeLine, type Mark } from "../code/Invisibles";
 import { Tooltip } from "../Tooltip";
+import { canMove, spanTexts } from "../threads/draftMove";
+import { type LineTexts, useDrafts } from "../threads/drafts";
+import { NewThread, quoteOf } from "../threads/NewThread";
+import {
+	closeComposer,
+	type NewThreadItem,
+	newThreadItems,
+	useComposers,
+} from "../threads/newThreads";
+import { OrphanDraft } from "../threads/OrphanDraft";
+import type { SpanRange } from "../threads/spanMarks";
+import { useThreadWriter } from "../threads/threadWrites";
 import { ErrorMessage } from "../ui";
 import { ignoreWhitespace, sideBySide } from "../viewSettings";
+import { type CellLine, CODE_CELL, cellLine } from "./codeSpan";
 import { EXPAND_STEP, fileGaps, type Gap, gapState } from "./gaps";
 import { languageFor } from "./highlight";
 import type { Landing } from "./landing";
+import {
+	getPicks,
+	picked,
+	pickKey,
+	pickRange,
+	setPicks,
+	usePicks,
+} from "./linePicks";
+import { describeSpan } from "./selectionActions";
 import { layoutRows, type SideRow } from "./sideBySide";
 import { CONTROLS, SLOT, useStickyControls } from "./stickyControls";
 import { ThreadBubble } from "./ThreadBubble";
@@ -216,6 +241,59 @@ function Rail({ state }: { state?: ClusterView["state"] }) {
 	return <td aria-hidden className={`w-1 min-w-1 p-0 ${color}`} />;
 }
 
+/**
+ * The line GitHub numbers a row's code cell by (codeSpan.ts): added and
+ * context rows by their new number, deleted rows by their old one, a
+ * whitespace-only row by the side it shows (the new one for a pair). Side
+ * by side, each cell's own line: a left cell's deleted line is LEFT, a
+ * context line (shown twice) RIGHT in either cell.
+ */
+export function codeCellOf(line: RowLine): {
+	side: "LEFT" | "RIGHT";
+	line: number;
+} {
+	// A context line is one line, always RIGHT (the spec's cells contract).
+	if (line.kind === "del" || line.newNo === undefined) {
+		return { side: "LEFT", line: line.oldNo as number };
+	}
+	return { side: "RIGHT", line: line.newNo };
+}
+
+/** Picking lines by their numbers (DiffBody): the picked rows and the handlers. */
+interface Picker {
+	/** Picked rows, by pickKey. */
+	keys: ReadonlySet<string>;
+	/** The row whose number button is in the tab order. */
+	roving: string | null;
+	onPointerDown: (e: PointerEvent<HTMLElement>) => void;
+	onPointerEnter: (e: PointerEvent<HTMLElement>) => void;
+	onClick: (e: MouseEvent<HTMLElement>) => void;
+	onKeyDown: (e: KeyboardEvent<HTMLButtonElement>) => void;
+	onFocus: (key: string) => void;
+}
+
+/** New threads being written, by the row they end on, and how to show one. */
+interface RowComposers {
+	at: (keys: LineKey[]) => NewThreadItem[];
+	quote: (item: NewThreadItem) => string;
+	/** Its first and last line's text as shown (kept with its draft). */
+	texts: (item: NewThreadItem) => LineTexts | undefined;
+	onPosted: (item: NewThreadItem) => void;
+}
+
+/**
+ * What a number cell picks (linePicks.ts): the key of the code cell it
+ * stands for, and whether it is that cell's own number (the one GitHub
+ * knows the line by: it carries the pick's button and tab stop; the other
+ * number of a unified row picks by pointer only).
+ */
+interface NumberPick {
+	key: string;
+	label: string;
+	button: boolean;
+	picked: boolean;
+}
+
 /** The cluster's controls column (empty but on a cluster's first row); `className` adds to it (a taller row's padding). */
 function ControlsCell(props: { children?: ReactNode; className?: string }) {
 	return (
@@ -268,30 +346,62 @@ function Sign({ kind }: { kind: RowLine["kind"] }) {
 	);
 }
 
-/** A line's number on one side (`old`/`new`), as wide as the file's numbers need. */
+/**
+ * A line's number on one side (`old`/`new`), as wide as the file's numbers
+ * need. With a picker, the pointer picks its row's line from it (the
+ * number's own cell side by side, the code cell's line in unified), and the
+ * cell's own number is a button for the keyboard (Enter or Space clicks it,
+ * the click bubbles to the cell).
+ */
 function NumberCell(props: {
 	side: DiffSide;
 	n?: number;
 	digits: number;
 	className: string;
+	picker?: Picker;
+	pick?: NumberPick;
 }) {
+	const { picker, pick, n } = props;
 	return (
+		// biome-ignore lint/a11y/useKeyWithClickEvents: the keyboard uses the number button (see above).
 		<td
 			data-testid={props.side === "LEFT" ? "old" : "new"}
 			data-side={props.side}
+			data-picked={pick?.picked || undefined}
 			style={numberWidth(props.digits)}
-			className={`px-2 text-right align-top select-none ${props.className}`}
+			onPointerDown={picker?.onPointerDown}
+			onPointerEnter={picker?.onPointerEnter}
+			onClick={picker?.onClick}
+			className={`px-2 text-right align-top select-none ${props.className} ${picker ? "cursor-pointer" : ""}`}
 		>
-			{props.n}
+			{picker && pick?.button && n !== undefined ? (
+				<button
+					type="button"
+					data-pick={pick.key}
+					tabIndex={picker.roving === pick.key ? 0 : -1}
+					aria-label={pick.label}
+					aria-pressed={pick.picked}
+					onKeyDown={picker.onKeyDown}
+					onFocus={() => picker.onFocus(pick.key)}
+					className="block w-full cursor-pointer text-right hover:text-ink focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent"
+				>
+					{n}
+				</button>
+			) : (
+				n
+			)}
 		</td>
 	);
 }
 
 /**
- * A line's code: its bubble (threads ending on it), sign and text. Unified,
- * the row carries the paint and the line keeps its width (the table scrolls
- * sideways); side by side the cell is painted and wraps (tabs keep their
- * width), so a long line grows its row and the other side stays aligned.
+ * A line's code: its bubble (threads ending on it), sign and text, with the
+ * spans painted over its characters (`marks`). Unified, the row carries the
+ * paint and the line keeps its width (the table scrolls sideways); side by
+ * side the cell is painted and wraps (tabs keep their width), so a long line
+ * grows its row and the other side stays aligned. The cell is what a
+ * selection maps to a span from (codeSpan.ts): its side, its length, the
+ * hunk or gap it is in and its line's place in GitHub's order.
  */
 function CodeCell(props: {
 	side: DiffSide;
@@ -299,17 +409,32 @@ function CodeCell(props: {
 	lang: string | null;
 	tabWidth?: number;
 	bubble?: ReactNode;
-	/** Side by side only: the cell's own paint, kind, landing and mark. */
-	cell?: { paint: string; landed: boolean; commented: boolean };
+	/** The hunk (`h<i>`) or gap (`g<i>`) the cell is in (codeSpan.ts). */
+	hunk: string;
+	/** In a hunk: its line's index in GitHub's order of it. */
+	order?: number;
+	marks: readonly Mark[];
+	/** Side by side only: the cell's own paint, kind, landing, mark and pick. */
+	cell?: {
+		paint: string;
+		landed: boolean;
+		commented: boolean;
+		picked: boolean;
+	};
 }) {
 	const { line, cell } = props;
 	return (
 		<td
 			data-testid="code"
+			{...{ [CODE_CELL]: "" }}
 			data-side={props.side}
+			data-len={line.text.length}
+			data-hunk={props.hunk}
+			data-order={props.order}
 			data-kind={cell ? line.kind : undefined}
 			data-landed={cell?.landed || undefined}
 			data-commented={cell?.commented ? "" : undefined}
+			data-picked={cell?.picked || undefined}
 			// Top-aligned next to its number, however tall the other side makes the row.
 			className={`${cell ? "align-top whitespace-pre-wrap [overflow-wrap:anywhere]" : "whitespace-pre"} ${props.bubble ? "pr-12 pl-2" : "px-2"} ${cell?.paint ?? ""}`}
 		>
@@ -320,6 +445,7 @@ function CodeCell(props: {
 				lang={props.lang}
 				tabWidth={props.tabWidth}
 				newline={!line.noNewline}
+				marks={props.marks}
 			/>
 		</td>
 	);
@@ -349,6 +475,48 @@ interface RowProps {
 	checkbox?: ReactNode;
 	landed: Landed | null;
 	threads?: RowThreads;
+	/** The hunk (`h<i>`) or gap (`g<i>`) the row is in (codeSpan.ts). */
+	hunk: string;
+	/** In a hunk: a line's index in GitHub's order of it. */
+	orderOf?: (line: DiffLine) => number | undefined;
+	picker?: Picker;
+	composers?: RowComposers;
+}
+
+/** The spans painted over a cell's characters: those of the threads on its keys. */
+const marksOf = (keys: LineKey[], threads: RowThreads | undefined): Mark[] =>
+	threads ? keys.flatMap((k) => threads.placement.marks.get(k) ?? []) : [];
+
+/** New threads being written under their span's last row, like a ThreadRow. */
+function NewThreadRow(props: {
+	items: NewThreadItem[];
+	composers: RowComposers;
+	columns: number;
+	rail?: string;
+}) {
+	return (
+		<tr data-testid="new-thread-row">
+			<td colSpan={props.columns} className="p-0">
+				<div className="sticky left-0 w-[var(--diff-w,100%)] max-w-full space-y-2 border-y border-line bg-canvas py-2 pr-2 pl-3 font-sans text-sm leading-normal whitespace-normal text-ink">
+					{props.rail && (
+						<span
+							aria-hidden
+							className={`absolute inset-y-0 left-0 w-1 ${props.rail}`}
+						/>
+					)}
+					{props.items.map((item) => (
+						<NewThread
+							key={item.clientId}
+							item={item}
+							quote={props.composers.quote(item)}
+							lineTexts={props.composers.texts(item)}
+							onPosted={() => props.composers.onPosted(item)}
+						/>
+					))}
+				</div>
+			</td>
+		</tr>
+	);
 }
 
 /**
@@ -386,8 +554,11 @@ function NoNewlineRow(props: {
 }
 
 /** One line as a unified row: its numbers on both sides and its code. */
-function LineRow(props: RowProps & { line: RowLine }) {
-	const { line, state, threads, shape } = props;
+function LineRow(props: RowProps & { line: RowLine; order?: number }) {
+	const { line, state, threads, shape, picker } = props;
+	const cell = codeCellOf(line);
+	const key = pickKey(cell);
+	const isPicked = picker?.keys.has(key) ?? false;
 	const reviewed = state === "reviewed";
 	const keys = threads ? rowKeys(line) : [];
 	// A context row is two lines, RIGHT by its new number and LEFT by its
@@ -406,6 +577,15 @@ function LineRow(props: RowProps & { line: RowLine }) {
 	// The commented range: the accent stripe and tinted numbers (thread-mark),
 	// unlike a landed line's tint and rail; not while it is landed on.
 	const mark = commented && landed !== "on" ? "thread-mark" : "";
+	const composing = props.composers?.at(keys) ?? [];
+	// The number GitHub knows the row by takes the pick's button (and its
+	// tab stop); the other number picks the row too, by pointer.
+	const pick = (side: DiffSide): NumberPick => ({
+		key,
+		label: `${cell.side === "LEFT" ? "Old line" : "Line"} ${cell.line}`,
+		button: side === cell.side,
+		picked: isPicked,
+	});
 	return (
 		<>
 			<tr
@@ -417,7 +597,8 @@ function LineRow(props: RowProps & { line: RowLine }) {
 				data-new-no={line.newNo}
 				data-landed={landed === "on" || undefined}
 				data-commented={commented ? "" : undefined}
-				className={`${rowBg} ${landed ? LANDED_CLASS[landed] : ""} ${mark}`}
+				data-picked={isPicked || undefined}
+				className={`${rowBg} ${landed ? LANDED_CLASS[landed] : ""} ${mark} ${isPicked ? "line-picked" : ""}`}
 			>
 				<Rail state={state} />
 				<ControlsCell>{props.checkbox}</ControlsCell>
@@ -426,18 +607,25 @@ function LineRow(props: RowProps & { line: RowLine }) {
 					n={line.oldNo}
 					digits={shape.digits}
 					className={numberBg}
+					picker={picker}
+					pick={pick("LEFT")}
 				/>
 				<NumberCell
 					side="RIGHT"
 					n={line.newNo}
 					digits={shape.digits}
 					className={numberBg}
+					picker={picker}
+					pick={pick("RIGHT")}
 				/>
 				<CodeCell
-					side={line.newNo === undefined ? "LEFT" : "RIGHT"}
+					side={cell.side}
 					line={line}
 					lang={props.lang}
 					tabWidth={props.tabWidth}
+					hunk={props.hunk}
+					order={props.order}
+					marks={marksOf(keys, threads)}
 					bubble={
 						endKey &&
 						threads && (
@@ -465,11 +653,23 @@ function LineRow(props: RowProps & { line: RowLine }) {
 					rail={state ? RAIL[state] : undefined}
 				/>
 			)}
+			{composing.length > 0 && props.composers && (
+				<NewThreadRow
+					items={composing}
+					composers={props.composers}
+					columns={columnsOf(shape.view)}
+					rail={state ? RAIL[state] : undefined}
+				/>
+			)}
 		</>
 	);
 }
 
-/** One side's cell of a pair row: its line, what its threads make of it, and its landing. */
+/**
+ * One side's cell of a pair row: its line, what its threads make of it, its
+ * landing, the spans painted over its characters, its line's place in
+ * GitHub's order and the pick its number makes.
+ */
 interface Cell {
 	line: RowLine;
 	keys: LineKey[];
@@ -479,37 +679,72 @@ interface Cell {
 	open: boolean;
 	landed?: Landed["phase"];
 	where: string;
+	marks: Mark[];
+	order?: number;
+	pick: NumberPick;
 }
 
 /**
  * One row of the side-by-side table: a context line on both sides, or a
  * pair with a line on each side that has one (sideBySide.ts). Each cell is
- * under its own side's key, with its own paint, mark, bubble, landing and
- * opened thread row (the left side's first); a context line is one line
+ * under its own side's key, with its own paint, mark, bubble, landing, pick
+ * and opened thread row (the left side's first); a context line is one line
  * shown twice: its bubble is in the right cell, under both its keys, and
- * its mark and landing paint both cells.
+ * its mark, spans, pick and landing paint both cells (either cell picks or
+ * selects it as RIGHT, the cells contract).
  */
 function PairRow(props: RowProps & { row: SideRow }) {
-	const { row, state, threads, shape } = props;
+	const { row, state, threads, shape, picker } = props;
 	const reviewed = state === "reviewed";
-	const cellOf = (line: RowLine, keys: LineKey[], where: string): Cell => ({
-		line,
-		keys,
-		...cellThreads(keys, threads),
-		landed: landedPhase(props.landed, line),
-		where,
-	});
+	const cellOf = (
+		line: RowLine,
+		source: DiffLine,
+		keys: LineKey[],
+		where: string,
+	): Cell => {
+		const code = codeCellOf(line);
+		const key = pickKey(code);
+		return {
+			line,
+			keys,
+			...cellThreads(keys, threads),
+			landed: landedPhase(props.landed, line),
+			where,
+			marks: marksOf(keys, threads),
+			order: props.orderOf?.(source),
+			pick: {
+				key,
+				label: `${code.side === "LEFT" ? "Old line" : "Line"} ${code.line}`,
+				button: true,
+				picked: picker?.keys.has(key) ?? false,
+			},
+		};
+	};
 	let left: Cell | undefined;
 	let right: Cell | undefined;
 	if (row.kind === "context") {
 		const line = row.line;
-		right = cellOf(line, threads ? rowKeys(line) : [], `on line ${line.newNo}`);
-		left = { ...right, keys: [], ending: [], endKey: undefined, open: false };
+		right = cellOf(
+			line,
+			line,
+			threads ? rowKeys(line) : [],
+			`on line ${line.newNo}`,
+		);
+		// The same line, with its bubble and number button on the right.
+		left = {
+			...right,
+			keys: [],
+			ending: [],
+			endKey: undefined,
+			open: false,
+			pick: { ...right.pick, button: false },
+		};
 	} else {
 		if (row.del) {
 			const line = sideLine(row.del, row.ws);
 			left = cellOf(
 				line,
+				row.del,
 				threads ? rowKeys(line) : [],
 				`on old line ${line.oldNo}`,
 			);
@@ -518,6 +753,7 @@ function PairRow(props: RowProps & { row: SideRow }) {
 			const line = sideLine(row.add, row.ws);
 			right = cellOf(
 				line,
+				row.add,
 				threads ? rowKeys(line) : [],
 				`on line ${line.newNo}`,
 			);
@@ -525,16 +761,21 @@ function PairRow(props: RowProps & { row: SideRow }) {
 	}
 	const phase = left?.landed ?? right?.landed;
 	const commented = Boolean(left?.commented || right?.commented);
+	const isPicked = Boolean(left?.pick.picked || right?.pick.picked);
+	const composing =
+		props.composers?.at([...(left?.keys ?? []), ...(right?.keys ?? [])]) ?? [];
 	const cells = (side: DiffSide, cell: Cell | undefined) => {
 		if (!cell) return <BlankCells side={side} digits={shape.digits} />;
 		const { line, keys, endKey } = cell;
-		// The landing's tint, else the commented range's stripe and numbers.
-		const mark =
+		// The landing's tint, else the commented range's stripe and numbers;
+		// a pick's wash over either.
+		const mark = `${
 			cell.landed === "on"
 				? "mark-tint-cell"
 				: cell.commented
 					? "thread-mark-cell"
-					: "";
+					: ""
+		} ${cell.pick.picked ? "line-picked-cell" : ""}`;
 		const numberBg = (reviewed ? REVIEWED_NUMBER_BG : NUMBER_BG)[line.kind];
 		const bg = (reviewed ? REVIEWED_ROW_BG : ROW_BG)[line.kind];
 		return (
@@ -544,16 +785,22 @@ function PairRow(props: RowProps & { row: SideRow }) {
 					n={side === "LEFT" ? line.oldNo : line.newNo}
 					digits={shape.digits}
 					className={`${numberBg} ${mark}`}
+					picker={picker}
+					pick={cell.pick}
 				/>
 				<CodeCell
 					side={side}
 					line={line}
 					lang={props.lang}
 					tabWidth={props.tabWidth}
+					hunk={props.hunk}
+					order={cell.order}
+					marks={cell.marks}
 					cell={{
 						paint: `${bg} ${mark}`,
 						landed: cell.landed === "on",
 						commented: cell.commented,
+						picked: cell.pick.picked,
 					}}
 					bubble={
 						endKey &&
@@ -588,6 +835,7 @@ function PairRow(props: RowProps & { row: SideRow }) {
 				data-new-no={right?.line.newNo}
 				data-landed={phase === "on" || undefined}
 				data-commented={commented ? "" : undefined}
+				data-picked={isPicked || undefined}
 				className={phase ? LANDED_ROW[phase] : ""}
 			>
 				<Rail state={state} />
@@ -612,6 +860,14 @@ function PairRow(props: RowProps & { row: SideRow }) {
 							rail={state ? RAIL[state] : undefined}
 						/>
 					),
+			)}
+			{composing.length > 0 && props.composers && (
+				<NewThreadRow
+					items={composing}
+					composers={props.composers}
+					columns={columnsOf(shape.view)}
+					rail={state ? RAIL[state] : undefined}
+				/>
 			)}
 		</>
 	);
@@ -779,6 +1035,8 @@ export function DiffBody(props: {
 	landing?: Landing;
 	/** Review threads to place on the lines (annotations only: they change no review state). */
 	threads?: DiffThreads;
+	/** These hunks are the viewed head's (not a Refresh's moment of the old ones). */
+	headSure?: boolean;
 }) {
 	const { file, revision } = props;
 	const hunks = useQuery(hunksQuery(revision, file.index));
@@ -844,10 +1102,31 @@ export function DiffBody(props: {
 			for (let n = from; n <= to; n++) taken.add(n);
 		}
 	}
+	const gaps = hunks.data
+		? fileGaps(hunks.data.hunks, hunks.data.newLineCount)
+		: [];
 	const addRange = (from: number, to: number) =>
 		setRanges((r) =>
 			r.some(([f, t]) => f === from && t === to) ? r : [...r, [from, to]],
 		);
+
+	// New threads being written on this file's lines, on the viewed head;
+	// those on another head are orphans (their lines are gone).
+	const snapshotHead = props.threads?.snapshotHead;
+	const drafts = useDrafts();
+	const composerList = useComposers();
+	const allItems = useMemo(
+		() => newThreadItems(drafts, composerList),
+		[drafts, composerList],
+	);
+	const mineNew = allItems.filter(
+		(i) => i.span.path === file.path && i.span.subject === "line",
+	);
+	const lineItems = mineNew.filter((i) => i.span.commit === snapshotHead);
+	const orphanItems = snapshotHead
+		? mineNew.filter((i) => i.span.commit !== snapshotHead)
+		: [];
+	const writer = useThreadWriter();
 
 	// Where the file's threads sit (all start closed). Opening one only
 	// shows it: no review state changes.
@@ -859,8 +1138,13 @@ export function DiffBody(props: {
 				hunks: hunks.data ?? null,
 				loadedContext: [...loaded.values()],
 				noLines: file.binary || file.submodule,
+				spans: lineItems.map((i) => i.span as SpanRange),
 			})
 		: null;
+	// Written on a row that isn't shown (a gap): above the diff, never lost.
+	const unshown = hunks.data
+		? lineItems.filter((_, i) => !placement?.spansShown.has(i))
+		: [];
 	const [openThreads, setOpenThreads] = useState<ReadonlySet<LineKey>>(
 		() => new Set(),
 	);
@@ -880,6 +1164,76 @@ export function DiffBody(props: {
 			return next;
 		});
 	};
+	// Each line's text by both keys, to quote a span above its composer.
+	const textAt = new Map<LineKey, string>();
+	for (const l of [
+		...(hunks.data?.hunks.flatMap((h) => h.lines) ?? []),
+		...loaded.values(),
+	]) {
+		for (const side of ["LEFT", "RIGHT"] as const) {
+			const k = lineKey(side, l);
+			if (k) textAt.set(k, l.text);
+		}
+	}
+	const composers: RowComposers = {
+		at: (keys) =>
+			lineItems.filter((i) =>
+				keys.includes(`${i.span.side}:${i.span.line}` as LineKey),
+			),
+		quote: (item) => {
+			const { span } = item;
+			const start = textAt.get(
+				`${span.startSide}:${span.startLine}` as LineKey,
+			);
+			const end = textAt.get(`${span.side}:${span.line}` as LineKey);
+			const same = span.startSide === span.side && span.startLine === span.line;
+			return quoteOf(span, same ? [end ?? ""] : [start ?? "", end ?? ""]);
+		},
+		texts: (item) =>
+			hunks.data
+				? (spanTexts(hunks.data.hunks, item.span as SpanRange) ?? undefined)
+				: undefined,
+		// The thread opens where it lands.
+		onPosted: (item) => {
+			const key = `${item.span.side}:${item.span.line}` as LineKey;
+			setOpenThreads((open) => new Set(open).add(key));
+		},
+	};
+
+	const picker = usePicker(scroller, file.path, hunks.data?.hunks[0]);
+
+	// The head moved under a draft: it moves along when its lines and the
+	// lines around them read the same at the same numbers, in GitHub's diff
+	// (draftMove.ts; a file comment always moves, FileDiff), and Comment can
+	// go there; else it stays an orphan, its text kept. Never a guess at a
+	// nearby line. Only against hunks known to be this head's (`headSure`:
+	// a Refresh shows the new head before its diff).
+	const commentLeft = useQuery({ ...overviewQuery, enabled: false }).data
+		?.commentLeft;
+	useEffect(() => {
+		if (!snapshotHead || !hunks.data || !props.headSure) return;
+		for (const item of orphanItems) {
+			if (item.sending) continue;
+			const draft = writer.drafts.newThread(item.clientId);
+			// Opened on the earlier head and never typed in: nothing to keep.
+			if (!draft) {
+				closeComposer(item.clientId);
+				continue;
+			}
+			const span = item.span as SpanRange;
+			const left = span.startSide === "LEFT" || span.side === "LEFT";
+			if (left && commentLeft === false) continue;
+			if (canMove(draft.create?.texts, spanTexts(hunks.data.hunks, span))) {
+				writer.drafts.retarget(item.clientId, snapshotHead);
+			}
+		}
+	});
+	/** An orphan's line isn't in the file any more (past its end). */
+	const gone = (item: NewThreadItem) =>
+		hunks.data !== undefined &&
+		item.span.side === "RIGHT" &&
+		(item.span.line ?? 0) > hunks.data.newLineCount;
+
 	const rowThreads: RowThreads | undefined =
 		placement && props.threads
 			? {
@@ -902,6 +1256,8 @@ export function DiffBody(props: {
 		/>
 	);
 
+	const hunkOf = (n: number) =>
+		`g${gaps.find((g) => g.from <= n && n <= g.to)?.index ?? ""}`;
 	const contextRows = (from: number, to: number) => {
 		const rows: ReactNode[] = [];
 		for (let n = from; n <= to; n++) {
@@ -913,6 +1269,9 @@ export function DiffBody(props: {
 					tabWidth: file.tabWidth,
 					landed,
 					threads: rowThreads,
+					hunk: hunkOf(n),
+					picker,
+					composers,
 				};
 				rows.push(
 					view === "side-by-side" ? (
@@ -1080,14 +1439,43 @@ export function DiffBody(props: {
 		return <tbody key={`gap${gap.index}`}>{rows}</tbody>;
 	};
 
-	const gaps = hunks.data
-		? fileGaps(hunks.data.hunks, hunks.data.newLineCount)
-		: [];
 	const gapAt = (index: number) => gaps.find((g) => g.index === index);
 
 	return (
 		<div ref={root}>
 			{hint && <LandingHint hint={hint} />}
+			{(unshown.length > 0 || orphanItems.length > 0) && (
+				<div
+					data-testid="new-threads-unshown"
+					className="space-y-2 border-b border-line bg-canvas p-2"
+				>
+					{unshown.map((item) => (
+						<NewThread
+							key={item.clientId}
+							item={item}
+							quote={composers.quote(item)}
+							lineTexts={composers.texts(item)}
+						/>
+					))}
+					{orphanItems.length > 0 && (
+						<ul
+							aria-label="Drafts written on an earlier version"
+							className="space-y-2"
+						>
+							{orphanItems.map((item) => (
+								<OrphanDraft
+									key={item.clientId}
+									label={`${
+										gone(item) ? "Lines gone" : "Written on an earlier version"
+									} · ${describeSpan(item.span)}`}
+									text={item.text}
+									onDiscard={() => writer.discard(`new:${item.clientId}`)}
+								/>
+							))}
+						</ul>
+					)}
+				</div>
+			)}
 			<div ref={scroller} className="overflow-x-auto">
 				{/*
 				 * Unified, the table is as wide as its longest line and scrolls in
@@ -1145,6 +1533,9 @@ export function DiffBody(props: {
 								threads={rowThreads}
 								ignoreWhitespace={ignoreWs}
 								shape={shape}
+								hunkId={`h${index}`}
+								picker={picker}
+								composers={composers}
 							/>
 						</Fragment>
 					))}
@@ -1421,9 +1812,17 @@ function HunkRows(props: {
 	/** Settings' "Ignore whitespace": pair whitespace-only lines (whitespace.ts). */
 	ignoreWhitespace: boolean;
 	shape: Shape;
+	hunkId: string;
+	picker?: Picker;
+	composers?: RowComposers;
 }) {
 	const { threads, hunk, ignoreWhitespace, shape } = props;
 	const { view } = shape;
+	// Each line's index in the hunk: GitHub's order (codeSpan.ts `backwards`).
+	const orderOf = useMemo(() => {
+		const order = new Map(hunk.lines.map((l, i) => [l, i] as const));
+		return (line: DiffLine) => order.get(line);
+	}, [hunk]);
 	// The hunk's runs and their rows, once per hunk (the matching is O(n·m)
 	// over the whole hunk): not again on a toggle, a landing, a thread
 	// opening or a context load. Side by side, the rows laid out as pairs
@@ -1470,6 +1869,10 @@ function HunkRows(props: {
 					state,
 					landed: props.landed,
 					threads,
+					hunk: props.hunkId,
+					orderOf,
+					picker: props.picker,
+					composers: props.composers,
 				};
 				/** The run's rows, the cluster's controls on the first when given. */
 				const runRows = (controls?: ReactNode) =>
@@ -1488,18 +1891,22 @@ function HunkRows(props: {
 							})
 						: rows.map((r, i) => {
 								const line = rowLine(r);
+								// GitHub's place of the line the code cell stands for.
+								const shown = r.kind === "line" ? r.line : (r.add ?? r.del);
 								return (
 									<LineRow
 										key={`${line.kind}${line.oldNo ?? ""}:${line.newNo ?? ""}`}
 										line={line}
+										order={shown ? orderOf(shown) : undefined}
 										checkbox={i === 0 ? controls : undefined}
 										{...rowProps}
 									/>
 								);
 							});
 				if (state && ignoreWhitespace && whitespaceOnly(rows)) {
-					// A bubble or a landed-on line must never be hidden by the
-					// setting: the cluster stays open while it has one.
+					// A bubble, a pick or a landed-on line must never be hidden by
+					// the setting: the cluster stays open while it has one. (Keys
+					// are pick keys too: side by side, either side's cell picks.)
 					const pinned = rows.some((r) => {
 						const line = rowLine(r);
 						const keys = rowKeys(line);
@@ -1507,7 +1914,8 @@ function HunkRows(props: {
 							keys.some(
 								(k) =>
 									threads?.placement.covered.has(k) ||
-									threads?.placement.end.has(k),
+									threads?.placement.end.has(k) ||
+									props.picker?.keys.has(k),
 							) ||
 							landedPhase(props.landed, line) !== undefined ||
 							landingOn(props.landingLine, line)
@@ -1634,4 +2042,140 @@ function WhitespaceCluster(props: {
 			{shown && props.children}
 		</tbody>
 	);
+}
+
+/**
+ * Picking lines by their numbers: a click (or tap) picks the row, again
+ * clears it; shift-click, or dragging down the numbers with a mouse,
+ * extends from where the pick started; on touch a second tap extends. One
+ * number button per code cell (a pair row has one per side), one of them
+ * in the tab order (the last focused, else the first row's): Up/Down move
+ * between them in the order shown (Shift extends), Enter or Space picks,
+ * Escape (the selection bar) clears. A number picks the code cell on its
+ * side of the row (side by side), else the row's one code cell (unified,
+ * where a context row's old number picks its RIGHT line).
+ */
+function usePicker(
+	scroller: RefObject<HTMLDivElement | null>,
+	path: string,
+	firstHunk: DisplayHunk | undefined,
+): Picker {
+	const picks = usePicks();
+	const keys = useMemo(
+		() =>
+			new Set(picks?.path === path ? picks.lines.map((l) => pickKey(l)) : []),
+		[picks, path],
+	);
+	const [roving, setRoving] = useState<string | null>(null);
+	const first = firstHunk?.lines[0];
+	const dragging = useRef(false);
+	const pointer = useRef("");
+	useEffect(() => {
+		const up = () => {
+			dragging.current = false;
+		};
+		window.addEventListener("pointerup", up);
+		window.addEventListener("pointercancel", up);
+		return () => {
+			window.removeEventListener("pointerup", up);
+			window.removeEventListener("pointercancel", up);
+		};
+	}, []);
+	// The file's code cells top down, one per line and side: a context line
+	// shown twice (side by side) is one pick.
+	const cells = useCallback(() => {
+		const out: CellLine[] = [];
+		for (const el of scroller.current?.querySelectorAll(`[${CODE_CELL}]`) ??
+			[]) {
+			const c = cellLine(el);
+			if (!c) continue;
+			const last = out[out.length - 1];
+			if (last && last.side === c.side && last.line === c.line) continue;
+			out.push(c);
+		}
+		return out;
+	}, [scroller]);
+	const targetOf = (el: Element) => {
+		const row = el.closest("tr");
+		const side = el.closest("td")?.getAttribute("data-side");
+		const cell =
+			row?.querySelector(`[${CODE_CELL}][data-side="${side}"]`) ??
+			row?.querySelector(`[${CODE_CELL}]`);
+		return cell ? cellLine(cell) : null;
+	};
+	const pickTo = (t: CellLine, extend: boolean) => {
+		const cur = getPicks();
+		const mine = cur?.path === t.path ? cur : null;
+		if (extend && mine) {
+			setPicks(pickRange(cells(), mine.anchor, picked(t)) ?? mine);
+		} else if (
+			mine?.lines.length === 1 &&
+			pickKey(mine.anchor) === pickKey(t)
+		) {
+			setPicks(null);
+		} else {
+			setPicks(pickRange(cells(), picked(t), picked(t)));
+		}
+		// Picked lines, not text: one or the other makes the span.
+		window.getSelection()?.removeAllRanges();
+	};
+	return {
+		keys,
+		roving: roving ?? (first ? pickKey(codeCellOf(first)) : null),
+		onPointerDown: (e) => {
+			pointer.current = e.pointerType;
+			if (e.pointerType !== "mouse" || e.button !== 0) return;
+			const t = targetOf(e.currentTarget);
+			if (!t) return;
+			// No text selection starts from the numbers.
+			e.preventDefault();
+			e.currentTarget
+				.closest("tr")
+				?.querySelector<HTMLButtonElement>(
+					`button[data-pick="${CSS.escape(pickKey(t))}"]`,
+				)
+				?.focus({ preventScroll: true });
+			dragging.current = true;
+			pickTo(t, e.shiftKey);
+		},
+		onPointerEnter: (e) => {
+			if (!dragging.current || (e.buttons & 1) === 0) return;
+			const t = targetOf(e.currentTarget);
+			const cur = getPicks();
+			if (!t || cur?.path !== t.path) return;
+			setPicks(pickRange(cells(), cur.anchor, picked(t)) ?? cur);
+		},
+		onClick: (e) => {
+			const t = targetOf(e.currentTarget);
+			if (!t) return;
+			// The keyboard's Enter or Space on the number button.
+			if (e.detail === 0) pickTo(t, e.shiftKey);
+			// A tap: a second one extends (a mouse picked on pointer down).
+			else if (pointer.current !== "mouse") {
+				const cur = getPicks();
+				pickTo(t, cur?.path === t.path && pickKey(cur.anchor) !== pickKey(t));
+			}
+		},
+		onKeyDown: (e) => {
+			if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+			const buttons = [
+				...(scroller.current?.querySelectorAll<HTMLButtonElement>(
+					"button[data-pick]",
+				) ?? []),
+			];
+			const at = buttons.indexOf(e.currentTarget);
+			const next = buttons[at + (e.key === "ArrowDown" ? 1 : -1)];
+			if (!next) return;
+			e.preventDefault();
+			next.focus();
+			if (!e.shiftKey) return;
+			const from = targetOf(e.currentTarget);
+			const to = targetOf(next);
+			if (!from || !to) return;
+			const cur = getPicks();
+			const anchor = cur?.path === from.path ? cur.anchor : picked(from);
+			setPicks(pickRange(cells(), anchor, picked(to)));
+		},
+		onFocus: setRoving,
+	};
 }

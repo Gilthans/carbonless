@@ -12,6 +12,7 @@ import {
 	readShowInvisibles,
 	resetShowInvisibles,
 	setShowInvisibles,
+	splitMarks,
 	type Token,
 } from "./Invisibles";
 import { renderInvisibles } from "./invisibles";
@@ -147,6 +148,29 @@ describe("CodeLine", () => {
 		expect(seen(line())).toBe("a b\\u202E\\u200B\\u00A0\\u2066");
 		expect(kinds()).toEqual(["tab", "bidi", "escape", "escape", "bidi", "eol"]);
 		expect(line().textContent).toBe(text);
+	});
+});
+
+describe("a thread's span on a line (marks)", () => {
+	it("paints exactly the marked characters, markers included, and copies the same text", () => {
+		renderLine({ text: "a\tbc😀d", lang: null, marks: [[1, 6]] });
+		const marked = [...line().querySelectorAll("[data-span-mark]")];
+		expect(marked.map((m) => m.textContent).join("")).toBe("\tbc😀");
+		expect(marked[0]?.querySelector('[data-inv="tab"]')).not.toBeNull();
+		// One code element, holding exactly the line's characters.
+		expect(line().querySelector("[data-code]")?.textContent).toBe("a\tbc😀d");
+	});
+
+	it("splits text at the marks' edges", () => {
+		expect(splitMarks("abcdef", 10, [[12, 14]])).toEqual([
+			{ text: "ab", marked: false },
+			{ text: "cd", marked: true },
+			{ text: "ef", marked: false },
+		]);
+		expect(splitMarks("abc", 0, [[0, 9]])).toEqual([
+			{ text: "abc", marked: true },
+		]);
+		expect(splitMarks("abc", 0, [])).toEqual([{ text: "abc", marked: false }]);
 	});
 });
 

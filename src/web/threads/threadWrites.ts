@@ -6,6 +6,8 @@ import {
 import { useEffect, useRef, useSyncExternalStore } from "react";
 import type {
 	EditRequest,
+	NewThreadAnswer,
+	NewThreadRequest,
 	ReplyRequest,
 	ResolveRequest,
 	ReviewThread,
@@ -23,6 +25,7 @@ import {
 	patchComment,
 	postReply,
 	postResolved,
+	postThread,
 	sessionQuery,
 } from "../api";
 import {
@@ -35,6 +38,8 @@ import {
 	type DraftStore,
 	draftsFor,
 	draftsKey,
+	NEW_THREAD,
+	newThreadKey,
 	type SendingId,
 } from "./drafts";
 
@@ -53,7 +58,13 @@ export const MAX_IN_FLIGHT = 4;
 /** How long a deleted comment can be undone before the delete is sent. */
 export const DELETE_UNDO_MS = 5000;
 
-export type WriteAction = "Reply" | "Resolve" | "Unresolve" | "Edit" | "Delete";
+export type WriteAction =
+	| "Reply"
+	| "Resolve"
+	| "Unresolve"
+	| "Edit"
+	| "Delete"
+	| "New comment";
 
 type Op =
 	| {
@@ -82,7 +93,17 @@ type Op =
 			/** The reviewer discarded it: not sent again (one already out may land). */
 			discarded?: boolean;
 	  }
-	| { kind: "delete"; commentId: string };
+	| { kind: "delete"; commentId: string }
+	| {
+			kind: "create";
+			clientId: string;
+			/** A resend after a failed or unknown attempt: the server looks for it first. */
+			retry: boolean;
+			/** Resent on load, left unconfirmed by an earlier page. */
+			resumed?: boolean;
+			/** The reviewer discarded it: not sent again (one already out may land). */
+			discarded?: boolean;
+	  };
 
 /** A write refused for a reason retrying won't fix: shown red until Retry. */
 export interface WriteFailure {
@@ -173,6 +194,10 @@ export interface ThreadWritesDeps {
 	confirmedResolved?: (threadId: string) => boolean | undefined;
 	/** A reply was newly posted: no pending review stands in the way any more. */
 	posted?: () => void;
+	/** Starts a thread (`POST /api/threads`). */
+	create?: (req: NewThreadRequest) => Promise<NewThreadAnswer>;
+	/** A new thread's answer: into every thread list and its comments. */
+	created?: (answer: NewThreadAnswer) => void;
 }
 
 interface Lane {
@@ -193,15 +218,17 @@ interface Lane {
 }
 
 const actionOf = (op: Op): WriteAction =>
-	op.kind === "reply"
-		? "Reply"
-		: op.kind === "edit"
-			? "Edit"
-			: op.kind === "delete"
-				? "Delete"
-				: op.resolved
-					? "Resolve"
-					: "Unresolve";
+	op.kind === "create"
+		? "New comment"
+		: op.kind === "reply"
+			? "Reply"
+			: op.kind === "edit"
+				? "Edit"
+				: op.kind === "delete"
+					? "Delete"
+					: op.resolved
+						? "Resolve"
+						: "Unresolve";
 
 const isGone = (answer: ThreadUpdate | ThreadGone): answer is ThreadGone =>
 	(answer as Partial<ThreadGone>).gone === true;
@@ -281,6 +308,21 @@ export class ThreadWrites {
 	}
 
 	/**
+	 * Posts the new thread's draft (drafts.ts `create`, blank never sent): it
+	 * shows at once as sending, the draft kept until GitHub has it. Its lane
+	 * is `new:<clientId>`.
+	 */
+	createThread(clientId: string): void {
+		const { drafts } = this.#deps;
+		const draft = drafts.newThread(clientId);
+		if (!draft?.create || !draft.text.trim() || draft.create.sending) return;
+		const lane = this.#lane(newThreadKey(clientId));
+		if (lane.failed) this.#clearFailure(lane);
+		drafts.markNewSending(clientId, this.#stamp());
+		this.#push(lane, { kind: "create", clientId, retry: false });
+	}
+
+	/**
 	 * Resolves or unresolves the thread. Back to the state GitHub has with
 	 * none of it on its way (an undo, a refused one let go): nothing is sent,
 	 * and what waited in line for it is dropped.
@@ -328,6 +370,15 @@ export class ThreadWrites {
 				// Certainly new: nothing to look for first.
 				lane.ops.push({ kind: "reply", text, id, retry: false });
 			}
+		} else if (failed?.action === "New comment") {
+			this.#clearFailure(lane);
+			const clientId = threadId.slice(NEW_THREAD.length);
+			const draft = this.#deps.drafts.newThread(clientId);
+			if (draft?.create && draft.text.trim()) {
+				this.#deps.drafts.markNewSending(clientId, this.#stamp());
+				// Refused (4xx): it didn't land, but a look first costs little.
+				lane.ops.push({ kind: "create", clientId, retry: true });
+			}
 		} else if (failed?.action === "Edit" && failed.commentId) {
 			this.#clearFailure(lane);
 			const op = this.#editOp(failed.commentId, failed.force === true);
@@ -359,6 +410,22 @@ export class ThreadWrites {
 	 */
 	resume(): void {
 		for (const d of this.#deps.drafts.get()) {
+			if (d.create?.sending) {
+				const { clientId } = d.create;
+				const lane = this.#lane(d.threadId);
+				const known = lane.ops.some(
+					(op) => op.kind === "create" && op.clientId === clientId,
+				);
+				if (known) continue;
+				lane.ops.push({
+					kind: "create",
+					clientId,
+					retry: true,
+					resumed: true,
+				});
+				if (lane.ops.length === 1) lane.since = Date.now();
+				continue;
+			}
 			if (d.edit?.saving) {
 				const { commentId } = d.edit;
 				const lane = this.#lane(d.threadId);
@@ -423,6 +490,13 @@ export class ThreadWrites {
 		if (lane) {
 			lane.ops = lane.ops.filter((op, i) => {
 				if (op.kind === "edit") return i === 0 && lane.sending;
+				if (op.kind === "create") {
+					if (i === 0 && lane.sending) {
+						op.discarded = true;
+						return true;
+					}
+					return false;
+				}
 				if (op.kind !== "reply") return true;
 				if (i === 0 && lane.sending) {
 					op.discarded = true;
@@ -430,7 +504,11 @@ export class ThreadWrites {
 				}
 				return false;
 			});
-			if (lane.failed?.action === "Reply" || lane.failed?.action === "Edit") {
+			if (
+				lane.failed?.action === "Reply" ||
+				lane.failed?.action === "Edit" ||
+				lane.failed?.action === "New comment"
+			) {
 				this.#clearFailure(lane);
 			}
 			if (lane.ops.length === 0 && lane.timer !== undefined) {
@@ -453,9 +531,18 @@ export class ThreadWrites {
 		if (!lane) return;
 		const dropped: string[] = [];
 		const edits: string[] = [];
+		const created: string[] = [];
 		lane.ops = lane.ops.filter((op, i) => {
 			if (op.kind === "edit" && op.resumed) {
 				edits.push(op.commentId);
+				if (i === 0 && lane.sending) {
+					op.discarded = true;
+					return true;
+				}
+				return false;
+			}
+			if (op.kind === "create" && op.resumed) {
+				created.push(op.clientId);
 				if (i === 0 && lane.sending) {
 					op.discarded = true;
 					return true;
@@ -472,7 +559,7 @@ export class ThreadWrites {
 		});
 		// The one waiting out a backoff is gone: the next goes now.
 		if (
-			dropped.length + edits.length > 0 &&
+			dropped.length + edits.length + created.length > 0 &&
 			!lane.sending &&
 			lane.timer !== undefined
 		) {
@@ -485,6 +572,7 @@ export class ThreadWrites {
 		}
 		for (const at of dropped) this.#deps.drafts.confirm(threadId, at);
 		for (const id of edits) this.#deps.drafts.dropEdit(id);
+		for (const id of created) this.#deps.drafts.discard(newThreadKey(id));
 		this.#prune(threadId);
 		this.#changed();
 		this.#pump();
@@ -709,6 +797,7 @@ export class ThreadWrites {
 	}
 
 	async #send(threadId: string, lane: Lane, op: Op) {
+		if (op.kind === "create") return this.#sendCreate(threadId, lane, op);
 		let update: ThreadUpdate | ThreadGone;
 		try {
 			if (op.kind === "reply") {
@@ -772,6 +861,58 @@ export class ThreadWrites {
 		this.#pump();
 	}
 
+	/** A new thread's post: its draft is the request (the text as it is now). */
+	async #sendCreate(
+		laneId: string,
+		lane: Lane,
+		op: Extract<Op, { kind: "create" }>,
+	) {
+		const { drafts } = this.#deps;
+		let answer: NewThreadAnswer;
+		try {
+			const draft = drafts.newThread(op.clientId);
+			const c = draft?.create;
+			if (!draft || !c || op.discarded) throw new Error("Discarded");
+			if (!this.#deps.create) throw new Error("Can't start threads here");
+			const { clientId: _, createdAt: __, sending, ...target } = c;
+			const req: NewThreadRequest = {
+				...target,
+				clientId: op.clientId,
+				body: draft.text,
+				attemptedAt: sending?.attemptedAt ?? this.#stamp(),
+				retry: op.retry || sending?.sentOnce === true,
+			};
+			const out = this.#deps.create(req);
+			drafts.markNewSent(op.clientId);
+			answer = await out;
+		} catch (error) {
+			lane.sending = false;
+			this.#inFlight--;
+			this.#failed(laneId, lane, op, error);
+			return;
+		}
+		lane.sending = false;
+		this.#inFlight--;
+		try {
+			this.#deps.created?.(answer);
+		} catch {
+			// Showing it failed; GitHub has it all the same.
+		}
+		drafts.discard(laneId);
+		if (!op.retry) {
+			this.#pendingReview = null;
+			this.#deps.posted?.();
+		}
+		lane.ops.shift();
+		lane.attempt = 0;
+		lane.waiting = null;
+		lane.lastTransient = null;
+		lane.since = Date.now();
+		this.#prune(laneId);
+		this.#changed();
+		this.#pump();
+	}
+
 	/** GitHub's answer into the page, and what it settles. */
 	#landed(threadId: string, op: Op, answer: ThreadUpdate | ThreadGone) {
 		try {
@@ -792,7 +933,10 @@ export class ThreadWrites {
 	}
 
 	#failed(threadId: string, lane: Lane, op: Op, error: unknown) {
-		if ((op.kind === "reply" || op.kind === "edit") && op.discarded) {
+		if (
+			(op.kind === "reply" || op.kind === "edit" || op.kind === "create") &&
+			op.discarded
+		) {
 			// Discarded while out: it didn't land, or a reload shows it did.
 			lane.ops.shift();
 			lane.attempt = 0;
@@ -806,7 +950,7 @@ export class ThreadWrites {
 		}
 		if (isTransient(error)) {
 			// It may have landed: the resend asks GitHub first.
-			if (op.kind === "reply") op.retry = true;
+			if (op.kind === "reply" || op.kind === "create") op.retry = true;
 			const wait =
 				RETRY_DELAYS_MS[Math.min(lane.attempt, RETRY_DELAYS_MS.length - 1)];
 			lane.attempt++;
@@ -860,9 +1004,12 @@ export class ThreadWrites {
 		} else if (op.kind === "delete") {
 			// The comment shows again; Retry deletes it.
 			lane.refusedResolved = undefined;
-		} else if (op.kind === "reply") {
+		} else if (op.kind === "reply" || op.kind === "create") {
 			lane.refusedResolved = undefined;
-			this.#deps.drafts.returnToBox(threadId, op.id.attemptedAt);
+			// Back to its box, as typed: nothing typed is lost.
+			if (op.kind === "reply") {
+				this.#deps.drafts.returnToBox(threadId, op.id.attemptedAt);
+			} else this.#deps.drafts.markNewSending(op.clientId, null);
 			if (write?.code === "pending-review" && write.url) {
 				this.#pendingReview = { url: write.url };
 			}
@@ -927,7 +1074,9 @@ export class ThreadWrites {
 				],
 				action: head ? actionOf(head) : null,
 				resumed:
-					(head?.kind === "reply" || head?.kind === "edit") &&
+					(head?.kind === "reply" ||
+						head?.kind === "edit" ||
+						head?.kind === "create") &&
 					head.resumed === true &&
 					!head.discarded,
 				delayed,
@@ -1011,6 +1160,24 @@ export function applyThreadUpdate(
 	}
 }
 
+/**
+ * A new thread GitHub took, into the page: listed first in every read's
+ * thread lists (no one else has it twice), its comments in.
+ */
+export function addThread(client: QueryClient, answer: NewThreadAnswer): void {
+	const { thread } = answer;
+	client.setQueriesData<ThreadsView>({ queryKey: ["threads"] }, (view) =>
+		!view || view.threads.some((t) => t.id === thread.id)
+			? view
+			: { ...view, threads: [thread, ...view.threads] },
+	);
+	const comments = { ...answer.comments, threadId: thread.id };
+	const readId = client.getQueryData(overviewQuery.queryKey)?.readId;
+	if (readId) {
+		client.setQueryData(commentsQuery(readId, thread.id).queryKey, comments);
+	}
+}
+
 /** A thread's opener text fields, from its first comment. */
 const openerText = (c: ThreadComment) => ({
 	html: c.html,
@@ -1078,6 +1245,8 @@ export function threadWritesFor(client: QueryClient): ThreadWrites {
 			resolve: postResolved,
 			edit: patchComment,
 			remove: deleteComment,
+			create: postThread,
+			created: (answer) => addThread(client, answer),
 			applied: (update) => applyThreadUpdate(client, update),
 			gone: (threadId) => dropThread(client, threadId),
 			theirs: (threadId, comment) => applyComment(client, threadId, comment),

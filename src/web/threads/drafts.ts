@@ -1,5 +1,9 @@
 import { type QueryClient, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useSyncExternalStore } from "react";
+import type { NewThreadRequest } from "../../shared/types";
+import type { LineTexts } from "./draftMove";
+
+export type { LineTexts };
 
 /**
  * The reviewer's reply drafts, per PR: what is typed in each thread's box,
@@ -22,7 +26,37 @@ export interface Draft {
 	returned?: number;
 	/** An edit of a comment, not a reply: `text` is the comment's new Markdown. */
 	edit?: EditDraft;
+	/**
+	 * A new thread, not a reply: `threadId` is `new:<clientId>`, `text` its
+	 * opening comment.
+	 */
+	create?: NewDraft;
 }
+
+/** Where a new thread goes: the request's fields but its body and attempt. */
+export type NewTarget = Omit<
+	NewThreadRequest,
+	"body" | "attemptedAt" | "retry" | "clientId"
+>;
+
+/** A new thread being written, or posted and not yet confirmed. */
+export interface NewDraft extends NewTarget {
+	clientId: string;
+	/** When it was first typed in (ISO). */
+	createdAt: string;
+	/**
+	 * A line comment: its lines and their context when written, so it can
+	 * move to a new head where they read the same (draftMove.ts). Checked
+	 * where used; an unreadable one only keeps the draft from moving.
+	 */
+	texts?: LineTexts;
+	/** Posted, not yet confirmed: resent on load, looked for first. */
+	sending?: { attemptedAt: string; sentOnce: boolean };
+}
+
+/** A new thread's draft id: its client id behind `new:`. */
+export const NEW_THREAD = "new:";
+export const newThreadKey = (clientId: string) => `${NEW_THREAD}${clientId}`;
 
 /** An edit in progress (or saving) of one comment. */
 export interface EditDraft {
@@ -63,6 +97,9 @@ function isDraft(value: unknown): value is Draft {
 	if (typeof d.threadId !== "string" || typeof d.text !== "string") {
 		return false;
 	}
+	if (d.create !== undefined) {
+		return d.sending === undefined && d.edit === undefined && isNew(d);
+	}
 	if (d.edit !== undefined) {
 		const e = d.edit as Partial<EditDraft> | null;
 		return (
@@ -88,17 +125,62 @@ function isDraft(value: unknown): value is Draft {
 	);
 }
 
+const SIDES: readonly unknown[] = ["LEFT", "RIGHT"];
+const optNumber = (v: unknown) => v === undefined || typeof v === "number";
+const optCol = (v: unknown) =>
+	v === undefined || v === null || typeof v === "number";
+
+/** A stored new-thread draft that can be shown and sent as it is. */
+function isNew(d: Partial<Draft>): boolean {
+	const c = d.create as Partial<NewDraft> | null;
+	if (typeof c !== "object" || c === null) return false;
+	if (
+		typeof c.clientId !== "string" ||
+		c.clientId === "" ||
+		d.threadId !== newThreadKey(c.clientId) ||
+		typeof c.path !== "string" ||
+		typeof c.commit !== "string" ||
+		typeof c.createdAt !== "string" ||
+		(c.subject !== "line" && c.subject !== "file") ||
+		!optNumber(c.startLine) ||
+		!optNumber(c.line) ||
+		!optCol(c.startCol) ||
+		!optCol(c.endCol)
+	) {
+		return false;
+	}
+	if (
+		c.subject === "line" &&
+		(!SIDES.includes(c.side) ||
+			!SIDES.includes(c.startSide) ||
+			c.line === undefined ||
+			c.startLine === undefined)
+	) {
+		return false;
+	}
+	const s = c.sending as NewDraft["sending"] | null | undefined;
+	return (
+		s === undefined ||
+		(typeof s === "object" &&
+			s !== null &&
+			typeof s.attemptedAt === "string" &&
+			typeof s.sentOnce === "boolean")
+	);
+}
+
 /** The thread's reply box draft (not a sent reply, not an edit). */
 const isBox = (d: Draft, threadId: string) =>
-	d.threadId === threadId && !d.sending && !d.edit;
+	d.threadId === threadId && !d.sending && !d.edit && !d.create;
 
 /** What a draft is one of: a box, a sent reply, an edit. Each slot holds one. */
 const slot = (d: Draft) =>
-	d.sending
-		? `s\n${d.threadId}\n${d.sending.attemptedAt}`
-		: d.edit
-			? `e\n${d.edit.commentId}`
-			: `b\n${d.threadId}`;
+	d.create
+		? `n\n${d.threadId}`
+		: d.sending
+			? `s\n${d.threadId}\n${d.sending.attemptedAt}`
+			: d.edit
+				? `e\n${d.edit.commentId}`
+				: `b\n${d.threadId}`;
 
 /** The page's storage, or undefined where touching it throws. */
 function defaultStorage(): Storage | undefined {
@@ -139,7 +221,9 @@ export class DraftStore {
 		this.#key = key;
 		this.#listen();
 		const stored = this.#stored() ?? [];
-		const now = this.#drafts.filter((d) => d.sending || d.edit || d.text);
+		const now = this.#drafts.filter(
+			(d) => d.sending || d.edit || d.create || d.text,
+		);
 		const mine = new Set(now.map(slot));
 		const kept = stored.filter((d) => !mine.has(slot(d)));
 		this.#set([...kept, ...now]);
@@ -165,6 +249,89 @@ export class DraftStore {
 			const rest = all.filter((d) => !isBox(d, threadId));
 			return text ? [...rest, { threadId, text }] : rest;
 		});
+	}
+
+	/** The new thread's draft, if any. */
+	newThread(clientId: string): Draft | undefined {
+		const key = newThreadKey(clientId);
+		return this.#drafts.find((d) => d.threadId === key && d.create);
+	}
+
+	/**
+	 * The new thread now reads `text`, going to `target`: kept from the
+	 * first keystroke; blank and not posted, it is dropped (nothing to lose).
+	 */
+	setNew(
+		clientId: string,
+		target: NewTarget,
+		text: string,
+		texts?: LineTexts,
+	): void {
+		const key = newThreadKey(clientId);
+		this.#update((all) => {
+			const prev = all.find((d) => d.threadId === key)?.create;
+			const rest = all.filter((d) => d.threadId !== key);
+			if (!text.trim() && !prev?.sending) return rest;
+			const lines = texts ?? prev?.texts;
+			const create: NewDraft = {
+				...target,
+				clientId,
+				createdAt: prev?.createdAt ?? new Date().toISOString(),
+				...(lines ? { texts: lines } : {}),
+				...(prev?.sending ? { sending: prev.sending } : {}),
+			};
+			return [...rest, { threadId: key, text, create }];
+		});
+	}
+
+	/**
+	 * The draft now goes to `commit` (the head moved and its lines read the
+	 * same there, or it's on the whole file). Not one on its way.
+	 */
+	retarget(clientId: string, commit: string): void {
+		const key = newThreadKey(clientId);
+		this.#update((all) =>
+			all.map((d) =>
+				d.threadId === key && d.create && !d.create.sending
+					? { ...d, create: { ...d.create, commit } }
+					: d,
+			),
+		);
+	}
+
+	/** Posted at `attemptedAt` (kept until confirmed), or back to a draft (null). */
+	markNewSending(clientId: string, attemptedAt: string | null): void {
+		const key = newThreadKey(clientId);
+		this.#update((all) =>
+			all.map((d) => {
+				if (d.threadId !== key || !d.create) return d;
+				const { sending: _, ...create } = d.create;
+				return {
+					...d,
+					create: attemptedAt
+						? { ...create, sending: { attemptedAt, sentOnce: false } }
+						: create,
+				};
+			}),
+		);
+	}
+
+	/** The new thread's request has gone out at least once. */
+	markNewSent(clientId: string): void {
+		const key = newThreadKey(clientId);
+		this.#update((all) =>
+			all.map((d) =>
+				d.threadId === key && d.create?.sending && !d.create.sending.sentOnce
+					? {
+							...d,
+							create: {
+								...d.create,
+								sending: { ...d.create.sending, sentOnce: true },
+							},
+						}
+					: d,
+			),
+		);
 	}
 
 	/** The edit of a comment in progress or saving, if any. */
@@ -364,9 +531,12 @@ export class DraftStore {
 	}
 }
 
-/** A draft worth keeping and showing: typed text, a reply sent, an edit changed. */
+/** A draft worth keeping and showing: typed text, a reply sent, an edit changed, a new thread. */
 export const kept = (d: Draft) =>
-	d.sending !== undefined || d.edit !== undefined || d.text.trim() !== "";
+	d.sending !== undefined ||
+	d.edit !== undefined ||
+	d.create !== undefined ||
+	d.text.trim() !== "";
 
 /** Something here would be lost by leaving the page. */
 export const unsent = (drafts: readonly Draft[]) => drafts.some(kept);
@@ -403,6 +573,12 @@ export function useEditDraft(commentId: string): Draft | undefined {
 	const store = draftsFor(useQueryClient());
 	const get = () => (commentId ? store.edit(commentId) : undefined);
 	return useSyncExternalStore(store.subscribe, get, get);
+}
+
+/** Every new thread being written or posted (drafts.ts `create`), oldest first. */
+export function useNewDrafts(): Draft[] {
+	const all = useDrafts();
+	return all.filter((d) => d.create !== undefined);
 }
 
 /** Every draft and unconfirmed reply (the Drafts filter, the leave guard). */

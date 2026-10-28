@@ -23,6 +23,8 @@ uses is checked for WCAG AA in `src/web/theme.test.ts`; add new pairs there.
 | `ok-wash` | a finished file's header: an opaque green wash on `raised` (it sticks over the diff) |
 | `mark-tint` (utility) | `accent` at 8% as an inset shadow over every cell of a row: a thread's commented lines, and a line landed on from a thread link (it fades, instantly with reduced motion). Over add/del/context it keeps all code text at 4.5:1 and green/red apart |
 | `person-1`…`person-7`, `person-N-edge` | a person's comments in threads: an opaque wash in place of `raised` inside a border of the same hue (the edge is also their avatar fallback). Blues to violets and a stone grey: at least 40° of hue from the deleted/failing reds and 25° from the add/ok green and warn yellow (no warm hue clears both red and yellow, hence seven); all text at 4.5:1 |
+| `span` (`span-mark` utility) | a thread's exact characters (a span comment): an opaque navy of the accent's hue behind them and a 2px `accent` underline, on top of `thread-mark`'s lines. Opaque so every code and syntax color keeps 4.5:1 on any row kind (theme.test.ts) |
+| `line-picked` (utility) | lines picked by their numbers in Files changed: the numbers in `ink` on `accent` at 35%, the row under a 10% accent wash; Escape clears |
 | `shade`, `shadow-*` | the one shadow color and the shadows built from it |
 | `magenta` `orange` `yellow` `teal` `violet` | brand: logo, gradients (`brand-rule`, `cta`), never meaning |
 
@@ -316,6 +318,45 @@ decides where; nothing else does):
   get the header bubble ("on this file"); the latter add a `warn` alert to
   it ("…, line not in this diff") and to the thread's header ("Line not in
   this diff"). Their threads open under the header.
+
+## Starting threads in Files changed
+
+- **Selecting** text in the code (any row kind, across rows and sides,
+  within one file) or **picking lines** by their numbers (click; shift-click
+  or drag down the numbers; a second tap on touch; Up/Down move between the
+  number buttons, one tab stop per file, Shift extends, Enter picks; the
+  number cells are 48×20 targets on a phone too, the owner's accepted
+  exception to the 40px rule, for line numbers only, so rows keep their
+  height) brings
+  up the **selection bar**: one 40px icon button per registered action
+  (`selectionActions.ts`; Comment now), on `overlay` with `edge` and
+  `shadow-float`, just below the selection's end (above it when there's no
+  room), never over it; on a phone a bar pinned to the bottom (above the
+  safe area) quoting the selection. An action that can't run stays,
+  `aria-disabled`, with the reason as its tooltip. Pressing it doesn't take
+  the selection; Escape dismisses it until the span changes and clears
+  picked lines (`line-picked`). A selection taller than the screen gets the
+  bar beside it; on a phone the page pads its end by the bar's height. The
+  first Tab after a selection goes to the bar. A new text selection lets
+  picked lines go.
+- **The composer** opens as a row under the span's last line, like an
+  opened thread: an `edge` card whose `band` header quotes the span (its
+  exact text on `span-mark`, then "line 4, new" in `faint` mono), a box and
+  Cancel / Comment. The span stays painted (`thread-mark` and `span-mark`)
+  while it's written. Sending: the text with a `warn` clock; refused: a
+  `bad` line saying why above the box, the text kept.
+  Refused, the box scrolls clear of the bottom notice; on a phone the
+  floating Files button makes way while a box has focus or a write is
+  refused. After a Refresh a draft moves to the new head (once its diff
+  is in) when every line of its span and up to three lines of its hunk
+  around it read the same at the same numbers, and Comment can go there (a
+  file comment always moves); else it stays as an orphan, "Written on an
+  earlier version".
+- **A thread with a span** paints its exact characters with `span-mark` on
+  its lines, in Files changed and in the Overview's code pane; when the
+  columns don't fit the line any more, only the lines show.
+- **Comment on file**: a 40px comment icon in every file header (open or
+  closed, any kind of file); its composer shows under the header.
 
 ## Timeline (Overview)
 

@@ -5,6 +5,8 @@ import {
 	type DiffLine,
 	type EditRequest,
 	type FileHunks,
+	type NewThreadAnswer,
+	type NewThreadRequest,
 	type PrOverview,
 	type ReplyRequest,
 	type ResolveRequest,
@@ -50,6 +52,7 @@ const WRITE_CODES: readonly string[] = [
 	"gone",
 	"invalid",
 	"changed",
+	"stale",
 ] satisfies WriteError["code"][];
 
 /** Enough of a ThreadComment to show it (an edit's 409 `current`). */
@@ -152,6 +155,10 @@ export const postReply = (threadId: string, req: ReplyRequest) =>
 		`/api/threads/${encodeURIComponent(threadId)}/replies`,
 		req,
 	);
+
+/** Starts a thread on GitHub (REST, never into a pending review). */
+export const postThread = (req: NewThreadRequest) =>
+	post<NewThreadAnswer>("/api/threads", req);
 
 /** Resolves or unresolves the thread on GitHub. */
 export const postResolved = (threadId: string, req: ResolveRequest) =>

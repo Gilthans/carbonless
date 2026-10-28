@@ -229,37 +229,92 @@ export function colorPieces(pieces: Piece[], tokens: Token[]): Segment[][] {
 	return out;
 }
 
+/** A span's characters in a line: UTF-16 offsets, `to` exclusive. */
+export type Mark = readonly [from: number, to: number];
+
+/** The parts of `text` (starting at offset `start`) inside and outside the marks. */
+export function splitMarks(
+	text: string,
+	start: number,
+	marks: readonly Mark[],
+): { text: string; marked: boolean }[] {
+	const end = start + text.length;
+	const cuts = new Set([start, end]);
+	for (const [from, to] of marks) {
+		if (from > start && from < end) cuts.add(from);
+		if (to > start && to < end) cuts.add(to);
+	}
+	const points = [...cuts].sort((a, b) => a - b);
+	const parts: { text: string; marked: boolean }[] = [];
+	for (let i = 0; i + 1 < points.length; i++) {
+		const from = points[i] as number;
+		const to = points[i + 1] as number;
+		parts.push({
+			text: text.slice(from - start, to - start),
+			marked: marks.some(([f, t]) => f <= from && to <= t),
+		});
+	}
+	return parts;
+}
+
+/** A thread's exact span over its characters (`span-mark`, index.css). */
+const MARKED = "span-mark";
+
 /** A run of ordinary text, colored by the highlighting tokens it overlaps. */
-function TextRun(props: { start: number; segments: Segment[] }) {
+function TextRun(props: {
+	start: number;
+	segments: Segment[];
+	marks: readonly Mark[];
+}) {
 	let at = props.start;
 	return (
 		<>
-			{props.segments.map((segment) => {
-				const key = at;
+			{props.segments.flatMap((segment) => {
+				const from = at;
 				at += segment.text.length;
-				return segment.token ? (
-					<span key={key} style={tokenStyle(segment.token)}>
-						{segment.text}
-					</span>
-				) : (
-					segment.text
-				);
+				const parts = props.marks.length
+					? splitMarks(segment.text, from, props.marks)
+					: [{ text: segment.text, marked: false }];
+				let offset = from;
+				return parts.map((part) => {
+					const key = offset;
+					offset += part.text.length;
+					const style = segment.token ? tokenStyle(segment.token) : undefined;
+					return part.marked || style ? (
+						<span
+							key={key}
+							style={style}
+							data-span-mark={part.marked || undefined}
+							className={part.marked ? MARKED : undefined}
+						>
+							{part.text}
+						</span>
+					) : (
+						part.text
+					);
+				});
 			})}
 		</>
 	);
 }
 
+const NO_MARKS: readonly Mark[] = [];
+
 /**
  * One line of code, highlighted (plain until the highlighting arrives), with
  * its invisible characters shown (Notepad++ style, see invisibles.ts).
  * `newline`: a newline follows the line (false before git's "No newline at
- * end of file"). Copying the line copies the original text.
+ * end of file"). Copying the line copies the original text. `marks`: a
+ * thread's exact characters, painted. The line's text is in one
+ * `[data-code]` element holding only its characters (codeSpan.ts reads
+ * columns from it).
  */
 export function CodeLine(props: {
 	text: string;
 	lang: string | null;
 	tabWidth?: number;
 	newline?: boolean;
+	marks?: readonly Mark[];
 }) {
 	const { text, lang, newline = true } = props;
 	const show = useShowInvisibles();
@@ -285,23 +340,40 @@ export function CodeLine(props: {
 		() => colorPieces(pieces, tokens.data ?? []),
 		[pieces, tokens.data],
 	);
+	const marks = props.marks ?? NO_MARKS;
 	return (
-		<>
+		<span data-code="">
 			{pieces.map((piece, i) =>
 				piece.kind === "text" ? (
-					tokens.data?.length ? (
+					tokens.data?.length || marks.length ? (
 						<TextRun
 							key={piece.start}
 							start={piece.start}
-							segments={segments[i] ?? []}
+							segments={
+								tokens.data?.length
+									? (segments[i] ?? [])
+									: [{ text: piece.raw }]
+							}
+							marks={marks}
 						/>
 					) : (
 						piece.raw
 					)
+				) : marks.some(
+						([from, to]) =>
+							from < piece.start + piece.raw.length && to > piece.start,
+					) ? (
+					<span
+						key={`${piece.kind}${piece.start}`}
+						data-span-mark
+						className={MARKED}
+					>
+						<Marker piece={piece} />
+					</span>
 				) : (
 					<Marker key={`${piece.kind}${piece.start}`} piece={piece} />
 				),
 			)}
-		</>
+		</span>
 	);
 }

@@ -154,6 +154,45 @@ describe("color tokens", () => {
 		}
 	});
 
+	it("a thread's exact span (span-mark) keeps every code color at 4.5:1 and its underline shows", () => {
+		// Opaque: the same over context, added and deleted rows.
+		const back = token("span");
+		for (const fg of ["code-ink", "faint", "add-ink", "del-ink"]) {
+			expect(contrast(token(fg), back), `${fg} on span`).toBeGreaterThanOrEqual(
+				4.5,
+			);
+		}
+		for (const [name, color] of Object.entries(SYNTAX)) {
+			expect(contrast(color, back), `${name} on span`).toBeGreaterThanOrEqual(
+				4.5,
+			);
+		}
+		expect(contrast(token("accent"), back)).toBeGreaterThanOrEqual(3);
+		// It stands apart from the lines' own wash on every row kind.
+		for (const bg of ["code", "add", "del", "add-done", "del-done"]) {
+			const row = over(token("accent"), 0.08, token(bg));
+			const dist = Math.hypot(
+				...rgb(back).map((v, i) => v - (rgb(row)[i] ?? 0)),
+			);
+			expect(dist, `span apart from ${bg}`).toBeGreaterThan(40);
+		}
+	});
+
+	it("picked line numbers (line-picked, accent/35) read at 4.5:1", () => {
+		for (const bg of [
+			"code",
+			"add-gutter",
+			"del-gutter",
+			"add-done",
+			"del-done",
+		]) {
+			expect(
+				contrast(token("ink"), over(token("accent"), 0.35, token(bg))),
+				`ink on accent/35 over ${bg}`,
+			).toBeGreaterThanOrEqual(4.5);
+		}
+	});
+
 	it("a thread's comments error keeps its Retry link at 4.5:1", () => {
 		// Conversation: the bad/10 notice over the card's surface.
 		const tint = over(token("bad"), 0.1, token("surface"));

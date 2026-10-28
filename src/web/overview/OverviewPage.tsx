@@ -86,6 +86,7 @@ import { kept, useDrafts } from "../threads/drafts";
 import { OrphanDraft } from "../threads/OrphanDraft";
 import { Avatar, PeopleProvider, TINTS, usePerson } from "../threads/people";
 import { canToggle } from "../threads/ResolveButton";
+import { withSpanMarks } from "../threads/spanMarks";
 import { ThreadStatus } from "../threads/ThreadStatus";
 import {
 	FADE_MS,
@@ -685,7 +686,14 @@ function IsItReady({
 			if (writesOn && listed.has(d.threadId)) continue;
 			byThread.set(d.threadId, [...(byThread.get(d.threadId) ?? []), d.text]);
 		}
-		return [...byThread].map(([threadId, texts]) => ({ threadId, texts }));
+		return [...byThread].map(([threadId, texts]) => {
+			// A new thread being written: where it goes (it starts in Files changed).
+			const c = drafts.find((d) => d.threadId === threadId)?.create;
+			const label = c
+				? `New comment · ${c.subject === "file" || c.line === undefined ? c.path : `${c.path}:${c.line}`}`
+				: "Thread not listed";
+			return { threadId, texts, label };
+		});
 	}, [drafts, list, previous, pr.writes]);
 	return (
 		<Section label="Is it ready">
@@ -1171,23 +1179,26 @@ function ThreadGroup(props: {
 				</h3>
 				{loading ? (
 					<SkeletonBar className="w-32" />
-				) : props.threads === undefined ? null : threads.length === 0 ? (
+				) : props.threads === undefined ? null : threads.length === 0 &&
+					draftCount === 0 ? (
 					<p className="text-sm text-faint">No threads</p>
 				) : (
 					<ul
 						aria-label="Thread counts"
 						className="flex flex-wrap items-center gap-x-2"
 					>
-						<li>
-							<ResolvedChoice
-								shown={shownFilter}
-								unresolved={unresolved.length}
-								resolved={resolved.length}
-								asOf={asOf}
-								controls={listId}
-								onChoose={switchTo}
-							/>
-						</li>
+						{threads.length > 0 && (
+							<li>
+								<ResolvedChoice
+									shown={shownFilter}
+									unresolved={unresolved.length}
+									resolved={resolved.length}
+									asOf={asOf}
+									controls={listId}
+									onChoose={switchTo}
+								/>
+							</li>
+						)}
 						{draftCount > 0 && (
 							<li>
 								<Chip
@@ -1280,7 +1291,7 @@ function ThreadGroup(props: {
 						{orphans.map((o) => (
 							<OrphanDraft
 								key={o.threadId}
-								label="Thread not listed"
+								label={o.label}
 								text={o.texts.join("\n\n")}
 								onDiscard={() => writer.discard(o.threadId)}
 							/>
@@ -1308,6 +1319,8 @@ interface OrphanDraftItem {
 	threadId: string;
 	/** Its box text and its replies not yet confirmed. */
 	texts: string[];
+	/** Why it shows here: "Thread not listed", or a new comment and where. */
+	label: string;
 }
 
 /** Overflowing `el` (when `axis` is "both", sideways too), re-measured as it resizes. */
@@ -1385,7 +1398,11 @@ function ThreadItem({
 	const commentId = useId();
 	const codeId = useId();
 	const repliesId = useId();
-	const rows = thread.code?.rows ?? [];
+	// The span's exact characters painted on its lines, when they fit.
+	const rows = useMemo(
+		() => withSpanMarks(thread.code?.rows ?? [], thread.anchor),
+		[thread.code, thread.anchor],
+	);
 	const line = headerLine(thread);
 	const opener = usePerson(thread.author, thread.avatarUrl);
 	const replies = useReplyCount(thread, readId);

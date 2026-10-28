@@ -11,6 +11,8 @@ import { useLayoutEffect, useRef } from "react";
 import type { ReviewThread, ThreadsView } from "../../shared/types";
 import { headerLine, LabeledIcon } from "../overview/parts";
 import { Tooltip } from "../Tooltip";
+import { NEW_THREAD } from "../threads/drafts";
+import { newThreadError } from "../threads/NewThread";
 import {
 	type ThreadWriteView,
 	useThreadWriter,
@@ -250,7 +252,12 @@ function ThreadWriteNotices({ threads }: { threads: ThreadWriteView[] }) {
 	);
 	// A reply or edit resent from an earlier page: only it goes, never the
 	// box or a newer write.
-	const what = (t: ThreadWriteView) => (t.action === "Edit" ? "edit" : "reply");
+	const what = (t: ThreadWriteView) =>
+		t.action === "Edit"
+			? "edit"
+			: t.action === "New comment"
+				? "comment"
+				: "reply";
 	const discardButton = (t: ThreadWriteView) =>
 		iconButton(`Discard ${what(t)}`, "Discard", TrashIcon, () =>
 			writer.discardResumed(t.threadId),
@@ -273,7 +280,14 @@ function ThreadWriteNotices({ threads }: { threads: ThreadWriteView[] }) {
 	return (
 		<>
 			{threads.map((t) => {
-				const where = threadLabel(findThread(client, t.threadId));
+				const created = t.threadId.startsWith(NEW_THREAD)
+					? writer.drafts.newThread(t.threadId.slice(NEW_THREAD.length))?.create
+					: undefined;
+				const where = created
+					? created.subject === "file" || created.line === undefined
+						? created.path
+						: `${created.path}:${created.line}`
+					: threadLabel(findThread(client, t.threadId));
 				if (t.failed) {
 					const blocked = t.failed.code === "pending-review";
 					const changed =
@@ -313,11 +327,13 @@ function ThreadWriteNotices({ threads }: { threads: ThreadWriteView[] }) {
 										<span className="font-mono text-xs">{where}</span>
 									</p>
 									<p className="break-words text-bad">
-										{blocked
-											? "A pending review on GitHub blocks replies"
-											: changed
-												? "Changed on GitHub since you opened it"
-												: t.failed.error.message}
+										{t.failed.action === "New comment"
+											? newThreadError(t.failed, created)
+											: blocked
+												? "A pending review on GitHub blocks replies"
+												: changed
+													? "Changed on GitHub since you opened it"
+													: t.failed.error.message}
 									</p>
 									{changed && (
 										<div className="flex flex-wrap gap-x-3">
@@ -400,7 +416,7 @@ function ThreadWriteNotices({ threads }: { threads: ThreadWriteView[] }) {
 							<div className="flex items-center gap-2 bg-warn/10 py-1 pr-1 pl-3 text-sm">
 								<LabeledIcon
 									icon={SyncIcon}
-									label={`Resending ${t.action === "Edit" ? "an edit" : "a reply"} from before`}
+									label={`Resending ${t.action === "Edit" ? "an edit" : t.action === "New comment" ? "a comment" : "a reply"} from before`}
 									className="text-warn"
 								/>
 								<p className="min-w-0 flex-1 break-words text-ink">

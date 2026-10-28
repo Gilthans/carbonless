@@ -482,9 +482,9 @@ test("an open tooltip causes no horizontal page overflow", async ({
 		await button.scrollIntoViewIfNeeded();
 		await settled(page);
 		await button.focus();
-		await expect(
-			page.getByRole("tooltip").filter({ visible: true }),
-		).toBeVisible();
+		// Its own tooltip (another header button may sit under the pointer).
+		const tipId = await button.getAttribute("aria-describedby");
+		await expect(page.locator(`[id="${tipId}"]`)).toBeVisible();
 		await expectNoPageOverflow(page);
 	}
 	await settled(page);
