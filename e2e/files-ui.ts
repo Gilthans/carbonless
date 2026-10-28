@@ -91,10 +91,12 @@ export const barBottom = (page: Page) =>
 	);
 
 /**
- * Scrolls `row` a pixel under the stuck file header: the first row below
- * the sticky stack, which is what a switch keeps where it is. Polled: the
- * header sticks once the row is near the top, and the app header compacts
- * a moment after a scroll, so the stack's bottom settles over a few frames.
+ * Scrolls `row` two pixels under the stuck file header: the first row below
+ * the sticky stack, which is what a switch keeps where it is (captureAnchor
+ * takes the first row whose bottom is strictly below the stack, and one
+ * pixel is within rounding). Polled: the header sticks once the row is near
+ * the top, and the app header compacts a moment after a scroll, so the
+ * stack's bottom settles over a few frames.
  */
 export async function underStack(row: Locator) {
 	await expect
@@ -102,7 +104,7 @@ export async function underStack(row: Locator) {
 			row.evaluate((el) => {
 				const header = el.closest("section")?.querySelector("header");
 				const bottom = header?.getBoundingClientRect().bottom ?? 0;
-				const delta = el.getBoundingClientRect().top - bottom + 1;
+				const delta = el.getBoundingClientRect().top - bottom + 2;
 				if (Math.abs(delta) >= 1) window.scrollBy(0, delta);
 				return Math.abs(delta);
 			}),

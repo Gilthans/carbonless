@@ -235,7 +235,7 @@ test("the Ignore whitespace switch keeps the row being read where it was", async
 	const header = await section.locator("header").boundingBox();
 	const stack = (header?.y ?? 0) + (header?.height ?? 0);
 	const before = await rowTop(added);
-	expect(Math.abs(before - stack)).toBeLessThanOrEqual(2);
+	expect(Math.abs(before - stack)).toBeLessThanOrEqual(3);
 	await ignoreWhitespace(page, true);
 	await expect(added).toHaveAttribute("data-kind", "ws");
 	expect(Math.abs((await rowTop(added)) - before)).toBeLessThan(2);

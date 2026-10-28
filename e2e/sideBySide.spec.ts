@@ -6,7 +6,10 @@ import {
 	ignoreWhitespace,
 	openFiles,
 	progress,
+	rowTop,
+	setSwitch,
 	sideBySide,
+	underStack,
 } from "./files-ui";
 import { expect, type Pr, type PrOptions, test } from "./fixtures";
 
@@ -363,4 +366,35 @@ test("a four-digit file side by side fits a phone: no page overflow, readable co
 		expect(target?.width).toBeGreaterThanOrEqual(40);
 		expect(target?.height).toBeGreaterThanOrEqual(40);
 	}
+});
+
+test("the Side by side switch keeps the row being read where it was", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	if (isMobile) await page.setViewportSize({ width: 360, height: 780 });
+	await setup(pr);
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	const section = await expand(page, LONG);
+	// Room below the file to scroll a row up to the sticky stack.
+	await page.addStyleTag({ content: "main { padding-bottom: 200vh; }" });
+	// Reading the new line 1,150: the added row, which side by side lays
+	// out as one row with the removed line (found again by its new number).
+	const row = section.locator('[data-testid="diff-line"][data-new-no="1150"]');
+	await expect(row).toContainText("long 1150 changed");
+	await underStack(row);
+	const header = await section.locator("header").boundingBox();
+	const stack = (header?.y ?? 0) + (header?.height ?? 0);
+	const before = await rowTop(row);
+	expect(Math.abs(before - stack)).toBeLessThanOrEqual(3);
+	await setSwitch(page, "Side by side", true);
+	await expect(section.locator("table")).toHaveAttribute(
+		"data-view",
+		"side-by-side",
+	);
+	expect(Math.abs((await rowTop(row)) - before)).toBeLessThan(2);
+	await expectNoPageOverflow(page);
 });
