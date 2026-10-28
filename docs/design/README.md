@@ -344,9 +344,11 @@ decides where; nothing else does):
   `bad` line saying why above the box, the text kept.
   Refused, the box scrolls clear of the bottom notice; on a phone the
   floating Files button makes way while a box has focus or a write is
-  refused. After a Refresh a draft moves to the new head when its lines
-  read the same (a file comment always does); else it stays as an orphan,
-  "Written on an earlier version".
+  refused. After a Refresh a draft moves to the new head (once its diff
+  is in) when every line of its span and up to three lines of its hunk
+  around it read the same at the same numbers, and Comment can go there (a
+  file comment always moves); else it stays as an orphan, "Written on an
+  earlier version".
 - **A thread with a span** paints its exact characters with `span-mark` on
   its lines, in Files changed and in the Overview's code pane; when the
   columns don't fit the line any more, only the lines show.
