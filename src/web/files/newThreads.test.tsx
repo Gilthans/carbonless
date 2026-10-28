@@ -29,11 +29,11 @@ import {
 	resetComposers,
 } from "../threads/newThreads";
 import type { SpanRange } from "../threads/spanMarks";
-import { ignoreWhitespace, showInvisibles } from "../viewSettings";
-import { CODE_CELL, spanOfRange } from "./codeSpan";
+import { ignoreWhitespace, showInvisibles, sideBySide } from "../viewSettings";
+import { CODE_CELL, cellLine, spanOfRange } from "./codeSpan";
 import { codeCellOf, DiffBody, type DiffThreads } from "./DiffBody";
 import { FileDiff } from "./FileDiff";
-import { getPicks, setPicks } from "./linePicks";
+import { getPicks, pickKey, setPicks } from "./linePicks";
 import { placeBar, SelectionBar } from "./SelectionBar";
 import {
 	type CodeSpan,
@@ -1409,5 +1409,227 @@ describe("placeBar (desktop): never over the selection when it can help it", () 
 		);
 		expect(at.left).toBe(706);
 		expect(at.top + size.h).toBeLessThanOrEqual(view.h);
+	});
+});
+
+describe("side by side (the cells contract)", () => {
+	beforeEach(() => sideBySide.set(true));
+	afterEach(() => sideBySide.reset());
+
+	/** The code cells carrying `attr`, as `side:line` of the line each stands for. */
+	const cellsWith = (attr: string, root: ParentNode = document) =>
+		[...root.querySelectorAll(`[${CODE_CELL}][${attr}]`)].map((c) => {
+			const l = cellLine(c);
+			return l ? pickKey(l) : "?";
+		});
+	const row = (side: "LEFT" | "RIGHT", n: number) =>
+		document.querySelector(
+			`tr[data-${side === "LEFT" ? "old" : "new"}-no="${n}"]`,
+		) as HTMLElement;
+	const number = (side: "LEFT" | "RIGHT", n: number) =>
+		row(side, n).querySelector(
+			`td[data-testid="${side === "LEFT" ? "old" : "new"}"]`,
+		) as HTMLElement;
+	const press = (el: Element, init: Partial<PointerEventInit> = {}) => {
+		fireEvent.pointerDown(el, {
+			pointerType: "mouse",
+			button: 0,
+			buttons: 1,
+			...init,
+		});
+		fireEvent.pointerUp(window);
+		fireEvent.click(el, { detail: 1, ...init });
+	};
+
+	it("every code cell carries its side, a blank cell neither a side nor the cell mark", async () => {
+		setup();
+		await loaded();
+		expect(document.querySelector("table")?.dataset.view).toBe("side-by-side");
+		const cells = [...document.querySelectorAll(`[${CODE_CELL}]`)];
+		expect(cells.length).toBeGreaterThan(0);
+		for (const c of cells) {
+			expect(["LEFT", "RIGHT"]).toContain(c.getAttribute("data-side"));
+		}
+		const blank = row("RIGHT", 5).querySelector("td[data-blank]") as Element;
+		expect(blank.hasAttribute(CODE_CELL)).toBe(false);
+		expect(blank.hasAttribute("data-side")).toBe(false);
+		expect(row("RIGHT", 5).dataset.oldNo).toBeUndefined();
+	});
+
+	it("a span reads the side from the cell: a pair's right cell RIGHT by the new number, its left LEFT by the old one, a context line RIGHT from either cell", async () => {
+		setup();
+		await loaded();
+		expect(span(rangeOf(at("RIGHT", 4, 0), at("RIGHT", 4, 5)))).toMatchObject({
+			startSide: "RIGHT",
+			startLine: 4,
+			side: "RIGHT",
+			line: 4,
+			startCol: 0,
+			endCol: 5,
+		});
+		expect(span(rangeOf(at("LEFT", 4, 0), at("LEFT", 4, 5)))).toMatchObject({
+			startSide: "LEFT",
+			startLine: 4,
+			side: "LEFT",
+			line: 4,
+		});
+		// The context line old 5 / new 6, in its left cell.
+		const leftContext = row("RIGHT", 6).querySelector(
+			`[${CODE_CELL}][data-side="LEFT"]`,
+		) as HTMLElement;
+		expect(leftContext.dataset.kind).toBe("context");
+		expect(
+			span(rangeOf(point(leftContext, 0), point(leftContext, 3))),
+		).toMatchObject({
+			startSide: "RIGHT",
+			startLine: 6,
+			side: "RIGHT",
+			line: 6,
+		});
+		// Across the table with no side being selected: the cells in the
+		// order shown, a range across sides.
+		expect(span(rangeOf(at("LEFT", 3, 1), at("RIGHT", 4, 2)))).toMatchObject({
+			startSide: "LEFT",
+			startLine: 3,
+			side: "RIGHT",
+			line: 4,
+			startCol: 1,
+			endCol: 2,
+		});
+	});
+
+	it("while one side is being selected, the other side's cells are left out of the span", async () => {
+		setup();
+		await loaded();
+		const table = document.querySelector("table") as HTMLElement;
+		fireEvent.pointerDown(cell("RIGHT", 3), {
+			pointerType: "mouse",
+			button: 0,
+		});
+		expect(table.dataset.selecting).toBe("new");
+		// Ending at the start of the next right cell: the span ends on new
+		// line 3, not on the old line between them in the DOM.
+		expect(span(rangeOf(at("RIGHT", 3, 0), at("RIGHT", 4, 0)))).toMatchObject({
+			startSide: "RIGHT",
+			startLine: 3,
+			side: "RIGHT",
+			line: 3,
+			startCol: null,
+			endCol: null,
+		});
+		fireEvent.pointerUp(document);
+		fireEvent.pointerDown(cell("LEFT", 3), { pointerType: "mouse", button: 0 });
+		expect(table.dataset.selecting).toBe("old");
+		expect(span(rangeOf(at("LEFT", 3, 0), at("LEFT", 4, 0)))).toMatchObject({
+			startSide: "LEFT",
+			startLine: 3,
+			side: "LEFT",
+			line: 3,
+		});
+		fireEvent.pointerUp(document);
+	});
+
+	it("a number picks the line on its side, and paints that side's cells only; a context row's numbers pick its one RIGHT line", async () => {
+		setup();
+		await loaded();
+		press(number("LEFT", 3));
+		expect(cellsWith("data-picked")).toEqual(["LEFT:3"]);
+		expect(document.querySelectorAll("tr[data-picked]")).toHaveLength(1);
+		expect(number("LEFT", 3)).toHaveAttribute("data-picked", "true");
+		expect(number("RIGHT", 3)).not.toHaveAttribute("data-picked");
+		expect(cell("LEFT", 3)).toHaveClass("line-picked-cell");
+		expect(cell("RIGHT", 3)).not.toHaveClass("line-picked-cell");
+		// Each side's number is its own button; the pick's button took focus.
+		expect(
+			within(row("RIGHT", 3)).getByRole("button", { name: "Old line 3" }),
+		).toHaveFocus();
+		expect(
+			within(row("RIGHT", 3)).getByRole("button", { name: "Line 3" }),
+		).toBeInTheDocument();
+		// Extended to a new number: the cells between, in the order shown.
+		press(number("RIGHT", 4), { shiftKey: true });
+		expect(cellsWith("data-picked")).toEqual([
+			"LEFT:3",
+			"RIGHT:3",
+			"LEFT:4",
+			"RIGHT:4",
+		]);
+		expect(getPicks()).toMatchObject({
+			anchor: { side: "LEFT", line: 3 },
+			focus: { side: "RIGHT", line: 4 },
+		});
+		// A context line (old 5 / new 6) is one line: either number picks
+		// RIGHT:6, both its cells show it, and its one button is the new number's.
+		press(number("LEFT", 5));
+		expect(cellsWith("data-picked")).toEqual(["RIGHT:6", "RIGHT:6"]);
+		expect(getPicks()?.lines).toEqual([
+			expect.objectContaining({ side: "RIGHT", line: 6 }),
+		]);
+		expect(
+			within(row("RIGHT", 6)).queryByRole("button", { name: "Old line 5" }),
+		).toBeNull();
+		expect(
+			within(row("RIGHT", 6)).getByRole("button", { name: "Line 6" }),
+		).toHaveFocus();
+	});
+
+	it("Comment on lines picked from an old number to a new one: the span crosses sides, the composer sits under the pair row and the range paints each side's cells", async () => {
+		const { user } = setup();
+		await loaded();
+		press(number("LEFT", 3));
+		press(number("RIGHT", 4), { shiftKey: true });
+		const bar = await screen.findByTestId("selection-bar");
+		await user.click(within(bar).getByRole("button", { name: "Comment" }));
+		expect(getComposers()).toMatchObject([
+			{
+				span: {
+					startSide: "LEFT",
+					startLine: 3,
+					side: "RIGHT",
+					line: 4,
+					startCol: null,
+					endCol: null,
+				},
+			},
+		]);
+		expect(cellsWith("data-picked")).toEqual([]);
+		const composer = await screen.findByTestId("new-thread-row");
+		expect(composer.previousElementSibling).toBe(row("RIGHT", 4));
+		expect(within(composer).getByText("old 3 – new 4")).toBeInTheDocument();
+		expect(
+			within(composer).getByRole("textbox", { name: "Comment" }),
+		).toHaveFocus();
+		expect(cellsWith("data-commented")).toEqual([
+			"LEFT:3",
+			"RIGHT:3",
+			"LEFT:4",
+			"RIGHT:4",
+		]);
+		expect(document.querySelectorAll("tr[data-commented]")).toHaveLength(2);
+	});
+
+	it("a thread's span is painted in the cell of its side only; a context line's in both its cells", async () => {
+		setup({
+			threads: [
+				thread({ line: 4, startCol: 0, endCol: 5 }),
+				thread({ line: 6, startCol: 0, endCol: 4 }),
+			],
+		});
+		await loaded();
+		const marked = (c: Element) =>
+			[...c.querySelectorAll("[data-span-mark]")]
+				.map((m) => m.textContent)
+				.join("");
+		expect(marked(cell("RIGHT", 4))).toBe("const");
+		expect(marked(cell("LEFT", 4))).toBe("");
+		expect(cellsWith("data-commented", row("RIGHT", 4))).toEqual(["RIGHT:4"]);
+		const context = row("RIGHT", 6);
+		expect(cellsWith("data-commented", context)).toEqual([
+			"RIGHT:6",
+			"RIGHT:6",
+		]);
+		for (const c of context.querySelectorAll(`[${CODE_CELL}]`)) {
+			expect(marked(c)).toBe("line");
+		}
 	});
 });
