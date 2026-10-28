@@ -137,13 +137,13 @@ checking against a real PR): `docs/product-rules.md`.
 - Commits only via `git commit --only -- <paths>` in a shared tree; never a bare
   `git stash`. Merging to `master` only when the owner asks, as a fast-forward
   after a green `pnpm verify`. Never push, and never write to GitHub, with one
-  exception: the owner's private scratch PR
-  https://github.com/Gilthans/carbonless-scratch/pull/1, made for testing
-  carbonless's GitHub writes; and the owner's private gallery repo
-  https://github.com/Gilthans/carbonless-gallery, one PR per case study
-  (regular and edge cases) to look at in carbonless. A brief may allow
-  pushing to those two repos and opening PRs, replying, resolving or
-  reviewing on their PRs; nowhere else.
+  exception: the owner's two playground repos, where any git or GitHub
+  write is approved (commit, push, force-push, PRs, comments, reviews,
+  deletes): https://github.com/Gilthans/carbonless-scratch (PR #1 is for
+  testing carbonless's GitHub writes) and
+  https://github.com/Gilthans/carbonless-gallery (one PR per case study,
+  regular and edge cases, to look at in carbonless). Clean up probes so
+  the cases stay readable. Nowhere else.
 - Every edge case we find or fix gets a gallery PR (its own `base/<case>`
   and `case/<case>` branches, a description of what to look at, a row in
   the gallery README).
