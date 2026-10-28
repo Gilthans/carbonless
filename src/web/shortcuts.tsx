@@ -111,7 +111,6 @@ export function matchesKeys(keys: string, e: KeyboardEvent): boolean {
 }
 
 const TEXT_INPUTS = new Set([
-	"",
 	"text",
 	"search",
 	"email",
@@ -132,7 +131,8 @@ export function isTypingTarget(target: EventTarget | null): boolean {
 	if (target instanceof HTMLTextAreaElement) return true;
 	if (target instanceof HTMLSelectElement) return true;
 	if (target instanceof HTMLInputElement) {
-		return TEXT_INPUTS.has((target.getAttribute("type") ?? "").toLowerCase());
+		// The property: an unknown type reads "text", as the browser treats it.
+		return TEXT_INPUTS.has(target.type);
 	}
 	return (
 		target.closest('[contenteditable]:not([contenteditable="false"])') !== null
@@ -219,7 +219,8 @@ export function ShortcutsProvider(props: { children: ReactNode }) {
 		const onKey = (e: KeyboardEvent) => {
 			// A held key repeats: once per press.
 			if (e.defaultPrevented || e.isComposing || e.repeat) return;
-			if (isTypingTarget(e.target)) return;
+			// The element itself, also inside a shadow root (e.target is its host).
+			if (isTypingTarget(e.composedPath()[0] ?? e.target)) return;
 			const help = dialog.current;
 			const helpOpen = help?.hasAttribute("open") ?? false;
 			if (otherModalOpen(help)) return;

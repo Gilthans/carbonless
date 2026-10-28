@@ -82,6 +82,8 @@ describe("isTypingTarget", () => {
 		};
 		expect(isTypingTarget(el("<input>"))).toBe(true);
 		expect(isTypingTarget(el('<input type="search">'))).toBe(true);
+		// An unknown type is a text field.
+		expect(isTypingTarget(el('<input type="foo">'))).toBe(true);
 		expect(isTypingTarget(el("<textarea></textarea>"))).toBe(true);
 		expect(isTypingTarget(el("<select></select>"))).toBe(true);
 		const editable = el('<div contenteditable="true"><span>x</span></div>');
@@ -202,6 +204,23 @@ describe("ShortcutsProvider", () => {
 		press("?", { shiftKey: true });
 		press("?", { shiftKey: true, repeat: true });
 		expect(helpOpen()).toBe(true);
+	});
+
+	it("doesn't run while typing in a field inside a shadow root", () => {
+		const run = vi.fn();
+		render(
+			<ShortcutsProvider>
+				<Uses keys="j" run={run} />
+				<div data-testid="host" />
+			</ShortcutsProvider>,
+		);
+		const root = screen.getByTestId("host").attachShadow({ mode: "open" });
+		const input = document.createElement("input");
+		root.append(input);
+		input.dispatchEvent(
+			new KeyboardEvent("keydown", { key: "j", bubbles: true, composed: true }),
+		);
+		expect(run).not.toHaveBeenCalled();
 	});
 
 	it("leaves a key a handler already took alone", () => {
