@@ -73,7 +73,8 @@ The unit of layout is one row of the table per **pair**: a left cell (old side) 
 - **Equal halves that wrap.** The table is the container's width (no sideways scroll in this view), the two code columns are equal (`table-layout: fixed` or equivalent), and code wraps inside its cell (`white-space: pre-wrap`, breaking anywhere) so a long line grows the row's height on its side while the other side's cell stays aligned with it. Tabs keep their configured width (`CodeLine`'s `tabWidth`). Number cells stay top-aligned, as they are. Unified keeps its sideways scroll as today.
 - **Per-side paint.** Every class that is a row class today becomes a cell class on its side: the add/del tint and gutter, the sign color, the reviewed fade (`add-done`/`del-done`), the `thread-mark` stripe and tinted numbers of a commented range, and the landing highlight. The rail and the controls cell are the row's (one cluster spans both sides).
 - **A blank cell** (no line on that side) is painted in the `band` tone with no number and no sign **(call)**, so it reads as "nothing here" and not as an empty line.
-- **Phone.** The same table at 360px: the controls column keeps its 40px touch targets, number cells narrow to what three digits need (wider when the file has more lines), and the two code halves share what is left, wrapping as needed. Cramped, as the owner accepted. No page overflow at 360px in either view (`e2e/mobile.spec.ts` covers both).
+- **Gutters (call).** Today's columns are fixed: 4px rail, 44px controls (80px on touch: the checkbox and ⊘ each a 40px target, side by side so a mis-tap can't reach the other), 48px per number column (room for four digits). The controls column is the cluster's: its controls sit on the cluster's first row and float over it as the reviewer scrolls, so the column is empty on every other row, which is what reads as dead space in a mockup. That stays. The number columns become as wide as the file's largest line number needs (three digits at least), in both views, which is where side by side can give the code back some width without touching targets.
+- **Phone.** The same table at 360px: the controls column keeps its 80px of touch targets, number cells at their digit width, and the two code halves share what is left (about 100px each on a four-digit file), wrapping as needed. Cramped, as the owner accepted. No page overflow at 360px in either view (`e2e/mobile.spec.ts` covers both).
 
 ## Threads
 
@@ -130,6 +131,6 @@ The unit of layout is one row of the table per **pair**: a left cell (old side) 
 - How the selection mark is set and cleared (pointer events on the table, `selectionchange`, or both), as long as the phone's native selection gets the same treatment.
 - Where the "No newline at end of file" note row goes when the two sides' last lines sit in different pair rows (under each side's own row is fine).
 - `scrollAnchor`'s row selector, which today matches a row by "has this number and not the other"; a pair row has both.
-- Exact widths of the number and controls columns on a phone, within the 40px target rule.
+- Whether the two touch controls can stack in a 40px column on a phone in side by side without their targets reaching neighbouring rows (a one-line cluster is 20px tall); if not, the 80px column stays.
 - Whether the blank cell carries a hatch or stays plain `band`, within the tokens.
 - Lazy layout of off-screen files, only if the measurements call for it.
