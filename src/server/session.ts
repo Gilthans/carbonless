@@ -461,7 +461,10 @@ export class Session {
 
 	#askCommentLeft(): CommentLeft {
 		const { base, head } = this.#snapshot;
-		const key = `${base}...${head}`;
+		const from = this.#meta.baseOid ?? this.#meta.baseBranch;
+		// GitHub's base for the PR too: a Refresh may move it under a
+		// snapshot that stays (a started patch set).
+		const key = `${from} ${base}...${head}`;
 		const last = this.#commentLeft;
 		if (
 			last?.key === key &&
@@ -474,12 +477,9 @@ export class Session {
 			key,
 			// The PR's own base commit: a merged PR's stays where it was
 			// (gallery #11: GitHub still resolves its LEFT lines there).
-			left: fetchMergeBase(
-				this.#ref(),
-				this.#meta.baseOid ?? this.#meta.baseBranch,
-				head,
-				{ signal: this.#stop.signal },
-			).then((mergeBase) => {
+			left: fetchMergeBase(this.#ref(), from, head, {
+				signal: this.#stop.signal,
+			}).then((mergeBase) => {
 				entry.known = mergeBase === base;
 				return entry.known;
 			}),

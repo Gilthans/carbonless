@@ -767,6 +767,34 @@ describe("commentLeft", () => {
 		expect(await t.commentLeft()).toBe(false);
 	});
 
+	it("asked again when a Refresh brings another base commit under a snapshot that stays", async () => {
+		pr = createPrFixture();
+		const withBase = (baseRefOid: string) =>
+			pr.scenario({
+				prs: {
+					12: {
+						view: prView({
+							headRefOid: pr.head(),
+							baseRefName: "main",
+							baseRefOid,
+						}),
+						graphql: { reviews: [], reviewThreads: [], comments: [] },
+					},
+				},
+			});
+		withBase(pr.mergeBase);
+		const s = await Session.open(pr.arg, process.cwd());
+		const review = await s.review();
+		const key = review.files[0]?.clusters[0]?.key ?? "";
+		await s.setStates(review.revision, [{ key, state: "reviewed" }]);
+		expect(await s.commentLeft()).toBe(true);
+		// GitHub's base for the PR now holds the head.
+		withBase(pr.head());
+		await s.refresh();
+		expect(s.snapshot().base).toBe(pr.mergeBase);
+		expect(await s.commentLeft()).toBe(false);
+	});
+
 	it("where nothing is written (--viewer someone else) it isn't asked", async () => {
 		pr = createPrFixture();
 		scenario12();
