@@ -62,8 +62,8 @@ interface RowThreads {
 	readId: string;
 	placement: FilePlacement;
 	open: ReadonlySet<LineKey>;
-	/** Opens the row named by these keys, or closes it (by any of them). */
-	toggle: (keys: LineKey[]) => void;
+	/** Opens the row's threads under `key` (the one they end on), or closes them (open under any of `keys`). */
+	toggle: (key: LineKey, keys: LineKey[]) => void;
 	idOf: (key: LineKey) => string;
 	/** A row whose bubble takes focus once it shows (a gap thread opened). */
 	focus: LineKey | null;
@@ -215,20 +215,27 @@ function Rail({ state }: { state?: ClusterView["state"] }) {
 	return <td aria-hidden className={`w-1 min-w-1 p-0 ${color}`} />;
 }
 
-/** The cluster's controls column (empty but on a cluster's first row). */
-function ControlsCell({ children }: { children?: ReactNode }) {
+/** The cluster's controls column (empty but on a cluster's first row); `className` adds to it (a taller row's padding). */
+function ControlsCell(props: { children?: ReactNode; className?: string }) {
 	return (
-		<td className="w-11 px-1 align-top whitespace-nowrap pointer-coarse:w-20">
-			{children}
+		<td
+			className={`w-11 px-1 align-top whitespace-nowrap pointer-coarse:w-20 ${props.className ?? ""}`}
+		>
+			{props.children}
 		</td>
 	);
 }
 
-/** What a row or cell's threads make of it: the commented mark, its bubble's threads and whether its row is open. */
+/**
+ * What a row or cell's threads make of it: the commented mark, its bubble's
+ * threads, the key they end on (what the opened row is kept under, the same
+ * in both views: a unified `~` pair's old-side thread is under LEFT, where
+ * the side-by-side left cell finds it) and whether its row is open.
+ */
 function cellThreads(keys: LineKey[], threads: RowThreads | undefined) {
 	const commented = keys.some((k) => threads?.placement.covered.has(k));
+	const endKey = keys.find((k) => threads?.placement.end.has(k));
 	const ending = keys.flatMap((k) => threads?.placement.end.get(k) ?? []);
-	const endKey = ending.length > 0 ? keys[0] : undefined;
 	const open = keys.some((k) => threads?.open.has(k));
 	return { commented, ending, endKey, open };
 }
@@ -302,7 +309,8 @@ function CodeCell(props: {
 			data-kind={cell ? line.kind : undefined}
 			data-landed={cell?.landed || undefined}
 			data-commented={cell?.commented ? "" : undefined}
-			className={`${cell ? "whitespace-pre-wrap [overflow-wrap:anywhere]" : "whitespace-pre"} ${props.bubble ? "pr-12 pl-2" : "px-2"} ${cell?.paint ?? ""}`}
+			// Top-aligned next to its number, however tall the other side makes the row.
+			className={`${cell ? "align-top whitespace-pre-wrap [overflow-wrap:anywhere]" : "whitespace-pre"} ${props.bubble ? "pr-12 pl-2" : "px-2"} ${cell?.paint ?? ""}`}
 		>
 			{props.bubble}
 			<Sign kind={line.kind} />
@@ -369,13 +377,9 @@ function NoNewlineRow(props: {
 			<Rail state={props.state} />
 			<ControlsCell />
 			<td />
-			<td data-side="LEFT" className="px-2">
-				{props.left && NO_NEWLINE}
-			</td>
+			<td className="px-2">{props.left && NO_NEWLINE}</td>
 			<td />
-			<td data-side="RIGHT" className="px-2">
-				{props.right && NO_NEWLINE}
-			</td>
+			<td className="px-2">{props.right && NO_NEWLINE}</td>
 		</tr>
 	);
 }
@@ -442,7 +446,7 @@ function LineRow(props: RowProps & { line: RowLine }) {
 								where={where}
 								open={open}
 								controls={open ? threads.idOf(endKey) : undefined}
-								onToggle={() => threads.toggle(keys)}
+								onToggle={() => threads.toggle(endKey, keys)}
 								focus={threads.focus !== null && keys.includes(threads.focus)}
 								onFocused={threads.onFocused}
 							/>
@@ -522,7 +526,7 @@ function PairRow(props: RowProps & { row: SideRow }) {
 	const commented = Boolean(left?.commented || right?.commented);
 	const cells = (side: DiffSide, cell: Cell | undefined) => {
 		if (!cell) return <BlankCells side={side} digits={shape.digits} />;
-		const { line } = cell;
+		const { line, keys, endKey } = cell;
 		// The landing's tint, else the commented range's stripe and numbers.
 		const mark =
 			cell.landed === "on"
@@ -551,18 +555,16 @@ function PairRow(props: RowProps & { row: SideRow }) {
 						commented: cell.commented,
 					}}
 					bubble={
-						cell.endKey &&
+						endKey &&
 						threads && (
 							<ThreadBubble
 								inline
 								threads={cell.ending}
 								where={cell.where}
 								open={cell.open}
-								controls={cell.open ? threads.idOf(cell.endKey) : undefined}
-								onToggle={() => threads.toggle(cell.keys)}
-								focus={
-									threads.focus !== null && cell.keys.includes(threads.focus)
-								}
+								controls={cell.open ? threads.idOf(endKey) : undefined}
+								onToggle={() => threads.toggle(endKey, keys)}
+								focus={threads.focus !== null && keys.includes(threads.focus)}
 								onFocused={threads.onFocused}
 							/>
 						)
@@ -866,12 +868,12 @@ export function DiffBody(props: {
 	useEffect(() => {
 		if (windowFailed) setFocusThread(null);
 	}, [windowFailed]);
-	const toggleThreads = (keys: LineKey[]) => {
+	const toggleThreads = (key: LineKey, keys: LineKey[]) => {
 		setFocusThread(null);
 		setOpenThreads((open) => {
 			const next = new Set(open);
 			if (keys.some((k) => next.has(k))) for (const k of keys) next.delete(k);
-			else if (keys[0]) next.add(keys[0]);
+			else next.add(key);
 			return next;
 		});
 	};
@@ -1110,9 +1112,9 @@ export function DiffBody(props: {
 						<tbody key={cluster.key} className="group">
 							<tr className={cluster.state === "reviewed" ? "text-muted" : ""}>
 								<Rail state={cluster.state} />
-								<td className="w-11 px-1 py-1 align-top whitespace-nowrap pointer-coarse:w-20">
+								<ControlsCell className="py-1">
 									{checkbox(cluster)}
-								</td>
+								</ControlsCell>
 								<td
 									colSpan={columns - 2}
 									className="px-2 py-1 font-sans text-sm"
@@ -1507,9 +1509,7 @@ function WhitespaceCluster(props: {
 				className="bg-band"
 			>
 				<Rail state={props.state} />
-				<td className="w-11 px-1 align-top whitespace-nowrap pointer-coarse:w-20">
-					{props.controls}
-				</td>
+				<ControlsCell>{props.controls}</ControlsCell>
 				<td colSpan={props.columns - 2} className="px-2 font-sans text-xs">
 					<span className="flex items-center gap-1">
 						{props.pinned ? (

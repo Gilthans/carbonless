@@ -201,9 +201,15 @@ test("Side by side lays clusters out as pairs in place, wraps long lines, and ke
 	await expect(row6).toHaveAttribute("data-old-no", "6");
 	const bubble = codeCells(row6).nth(1).getByTestId("thread-bubble");
 	await expect(bubble).toHaveAccessibleName("1 comment on line 6");
+	await expect(codeCells(row6).nth(1)).toHaveAttribute("data-commented", "");
+	await expect(codeCells(row6).nth(1)).toHaveClass(/thread-mark-cell/);
+	// The old side of the pair has no thread: no bubble and no mark there.
 	await expect(codeCells(row6).nth(0).getByTestId("thread-bubble")).toHaveCount(
 		0,
 	);
+	await expect(codeCells(row6).nth(0)).not.toHaveAttribute("data-commented");
+	await expect(codeCells(row6).nth(0)).not.toHaveClass(/thread-mark-cell/);
+	await expect(row6.getByTestId("old")).not.toHaveClass(/thread-mark-cell/);
 	const row5 = section.locator('tr[data-testid="diff-line"][data-old-no="5"]');
 	await expect(
 		codeCells(row5).nth(0).getByTestId("thread-bubble"),

@@ -695,8 +695,10 @@ describe("DiffBody side by side", () => {
 		expect(
 			Array.from(row.querySelectorAll("td")).map((td) => td.dataset.testid),
 		).toEqual([undefined, undefined, "old", "code", "new", "code"]);
-		// Code wraps in its cell; the table never scrolls sideways.
-		expect(left).toHaveClass("whitespace-pre-wrap");
+		// Code wraps in its cell, top-aligned next to its number however tall
+		// the other side makes the row; the table never scrolls sideways.
+		expect(left).toHaveClass("whitespace-pre-wrap", "align-top");
+		expect(right).toHaveClass("align-top");
 		expect(document.querySelector("table")).toHaveClass(
 			"w-full",
 			"table-fixed",
@@ -856,10 +858,16 @@ describe("DiffBody side by side", () => {
 		const note = notes[0]?.closest("tr") as HTMLElement;
 		expect(note).toHaveAttribute("data-testid", "no-newline");
 		expect(lineRows()[2]?.nextElementSibling).toBe(note);
-		expect(note.querySelector('td[data-side="LEFT"]')).toHaveTextContent(
-			"No newline at end of file",
-		);
-		expect(note.querySelector('td[data-side="RIGHT"]')?.textContent).toBe("");
+		// Rail, controls, old number, old code, new number, new code: the note
+		// sits in the code cell of its side, and those cells name no side (only
+		// code cells do).
+		const sideCells = (tr: HTMLElement) => {
+			const tds = tr.querySelectorAll("td");
+			expect(tds).toHaveLength(6);
+			expect(tr.querySelectorAll("[data-side]")).toHaveLength(0);
+			return [tds[3]?.textContent, tds[5]?.textContent];
+		};
+		expect(sideCells(note)).toEqual(["\\ No newline at end of file", ""]);
 		cleanup();
 		setup({
 			hunks: pairHunks([{}, { noNewline: true }, {}, {}, { noNewline: true }]),
@@ -873,12 +881,14 @@ describe("DiffBody side by side", () => {
 		expect(rows).toHaveLength(2);
 		expect(lineRows()[2]?.nextElementSibling).toBe(rows[0]);
 		expect(lineRows()[3]?.nextElementSibling).toBe(rows[1]);
-		expect(rows[1]?.querySelector('td[data-side="LEFT"]')?.textContent).toBe(
+		expect(sideCells(rows[0] as HTMLElement)).toEqual([
+			"\\ No newline at end of file",
 			"",
-		);
-		expect(rows[1]?.querySelector('td[data-side="RIGHT"]')).toHaveTextContent(
-			"No newline",
-		);
+		]);
+		expect(sideCells(rows[1] as HTMLElement)).toEqual([
+			"",
+			"\\ No newline at end of file",
+		]);
 		cleanup();
 		// A context line lacking it: on both sides.
 		const lastLine: FileHunks = {
@@ -903,12 +913,73 @@ describe("DiffBody side by side", () => {
 		expect(ctxNotes).toHaveLength(2);
 		const ctxNote = ctxNotes[0]?.closest("tr") as HTMLElement;
 		expect(ctxNotes[1]?.closest("tr")).toBe(ctxNote);
-		expect(ctxNote.querySelector('td[data-side="LEFT"]')).toHaveTextContent(
-			"No newline",
+		expect(sideCells(ctxNote)).toEqual([
+			"\\ No newline at end of file",
+			"\\ No newline at end of file",
+		]);
+	});
+
+	it("marks only the cell of the thread's side", async () => {
+		setup({
+			hunks: pairHunks(),
+			clusters: [pairCluster()],
+			threads: [thread("RIGHT", 6)],
+		});
+		await screen.findByText("new seven");
+		const row = document.querySelector<HTMLElement>(
+			'[data-testid="diff-line"][data-new-no="6"]',
+		) as HTMLElement;
+		expect(row).toHaveAttribute("data-commented");
+		expect(code(row, "RIGHT")).toHaveAttribute("data-commented");
+		expect(code(row, "RIGHT")).toHaveClass("thread-mark-cell");
+		expect(number(row, "RIGHT")).toHaveClass("thread-mark-cell");
+		expect(code(row, "LEFT")).not.toHaveAttribute("data-commented");
+		expect(code(row, "LEFT")).not.toHaveClass("thread-mark-cell");
+		expect(number(row, "LEFT")).not.toHaveClass("thread-mark-cell");
+		expect(screen.getAllByTestId("thread-bubble")).toHaveLength(1);
+		expect(
+			code(row, "LEFT")?.querySelector('[data-testid="thread-bubble"]'),
+		).toBeNull();
+	});
+
+	it("keeps a thread opened on the old side of a unified ~ pair open after the switch", async () => {
+		// Opened in unified under the key its threads end on (LEFT:9, not the
+		// row's first key), so the left cell of the side-by-side pair reads it.
+		sideBySide.set(false);
+		ignoreWhitespace.set(true);
+		const { user } = setup({ threads: [thread("LEFT", 9)] });
+		await screen.findByText("Whitespace only · 6 lines");
+		const bubble = screen.getByRole("button", {
+			name: "1 comment on old line 9",
+		});
+		await user.click(bubble);
+		expect(screen.getAllByTestId("thread-row")).toHaveLength(1);
+		const unifiedRow = document.querySelector(
+			'[data-testid="diff-line"][data-old-no="9"]',
 		);
-		expect(ctxNote.querySelector('td[data-side="RIGHT"]')).toHaveTextContent(
-			"No newline",
+		expect(unifiedRow?.nextElementSibling).toBe(
+			screen.getByTestId("thread-row"),
 		);
+		act(() => sideBySide.set(true));
+		expect(screen.getAllByTestId("thread-row")).toHaveLength(1);
+		const row = document.querySelector<HTMLElement>(
+			'[data-testid="diff-line"][data-old-no="9"]',
+		) as HTMLElement;
+		expect(row.dataset.kind).toBe("pair");
+		expect(row.nextElementSibling).toBe(screen.getByTestId("thread-row"));
+		const left = within(code(row, "LEFT") as HTMLElement).getByTestId(
+			"thread-bubble",
+		);
+		expect(left).toHaveAttribute("aria-expanded", "true");
+		expect(left).toHaveAttribute(
+			"aria-controls",
+			screen.getByTestId("thread-row").id,
+		);
+		// And it closes from there.
+		await user.click(left);
+		expect(screen.queryByTestId("thread-row")).toBeNull();
+		act(() => sideBySide.set(false));
+		expect(screen.queryByTestId("thread-row")).toBeNull();
 	});
 
 	it("with Ignore whitespace on, keeps a whitespace pair as one row with each side's own text, between positional pairs", async () => {
