@@ -1167,22 +1167,14 @@ export function DiffBody(props: {
 	);
 }
 
-/**
- * Side by side, a text selection stays on one side: the table carries
- * `data-selecting="old" | "new"` while a selection is on that side, and the
- * CSS (index.css) makes the other side's code cells `user-select: none`, so
- * dragging across the table selects one side and Copy gives its lines. The
- * mark is set as soon as the pointer goes down on a cell with a side (before
- * the selection exists), then follows the document's selection: its anchor
- * cell's side, or none once the selection is collapsed, elsewhere, or the
- * view is unified. Line numbers and signs are `select-none` on their own.
- */
+/** The side a node's cell is on, as the selection mark names it. */
 const selectingSide = (node: Node | null): "old" | "new" | undefined => {
 	const el = node instanceof Element ? node : node?.parentElement;
 	const side = el?.closest<HTMLElement>("td[data-side]")?.dataset.side;
 	return side === "LEFT" ? "old" : side === "RIGHT" ? "new" : undefined;
 };
 
+/** Writes or removes the table's `data-selecting`. */
 const markSelecting = (
 	table: HTMLTableElement,
 	side: "old" | "new" | undefined,
@@ -1191,32 +1183,65 @@ const markSelecting = (
 	else delete table.dataset.selecting;
 };
 
+/**
+ * Side by side, a text selection stays on one side: the table carries
+ * `data-selecting="old" | "new"` while a selection is on that side, and the
+ * CSS (index.css) makes the other side's code cells `user-select: none`, so
+ * dragging across the table selects one side and Copy gives its lines. The
+ * mark is set as soon as the pointer goes down on a code cell with a side
+ * (before the selection exists; number cells can't start a selection, so a
+ * mark from one would never be cleared), then follows the document's
+ * selection: its anchor cell's side, or none once the selection is
+ * collapsed, elsewhere, or the view is unified. The caret a mouse down
+ * places is a collapsed selection too: while the pointer is down it keeps
+ * the mark, or a fast drag could reach the other side before the first
+ * move's selection set the mark again. Line numbers and signs are
+ * `select-none` on their own.
+ */
 function useOneSideSelection(
 	table: RefObject<HTMLTableElement | null>,
 	view: View,
 ) {
+	const pressed = useRef(false);
 	useEffect(() => {
 		const el = table.current;
 		if (view !== "side-by-side" || !el) return;
 		const onSelectionChange = () => {
 			const selection = document.getSelection();
-			const anchor =
-				selection && !selection.isCollapsed ? selection.anchorNode : null;
+			if (!selection) return;
+			if (selection.isCollapsed) {
+				if (!pressed.current) markSelecting(el, undefined);
+				return;
+			}
+			const anchor = selection.anchorNode;
 			markSelecting(
 				el,
 				anchor && el.contains(anchor) ? selectingSide(anchor) : undefined,
 			);
 		};
+		const onPointerUp = () => {
+			pressed.current = false;
+		};
 		document.addEventListener("selectionchange", onSelectionChange);
+		document.addEventListener("pointerup", onPointerUp);
+		document.addEventListener("pointercancel", onPointerUp);
 		return () => {
 			document.removeEventListener("selectionchange", onSelectionChange);
+			document.removeEventListener("pointerup", onPointerUp);
+			document.removeEventListener("pointercancel", onPointerUp);
+			pressed.current = false;
 			markSelecting(el, undefined);
 		};
 	}, [table, view]);
 	if (view !== "side-by-side") return undefined;
 	return (event: PointerEvent<HTMLTableElement>) => {
-		const side = selectingSide(event.target as Node);
-		if (side) markSelecting(event.currentTarget, side);
+		const target = event.target instanceof Element ? event.target : null;
+		const cell = target?.closest<HTMLElement>(
+			'td[data-testid="code"][data-side]',
+		);
+		if (!cell) return;
+		pressed.current = true;
+		markSelecting(event.currentTarget, selectingSide(cell));
 	};
 }
 

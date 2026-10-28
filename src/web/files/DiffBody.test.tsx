@@ -1228,10 +1228,18 @@ describe("DiffBody side by side", () => {
 		// at once, before any selection exists.
 		fireEvent.pointerDown(code(row, "RIGHT") as HTMLElement);
 		expect(selecting()).toBe("new");
-		// A selection on that side keeps the mark (the pointer may be up by now).
+		// The caret the browser places on mouse down is a collapsed selection:
+		// while the pointer is down it doesn't clear the mark, or a fast drag
+		// could reach the other side before the first move's selection sets
+		// the mark again.
+		select(null);
+		expect(selecting()).toBe("new");
+		// A selection on that side keeps the mark once the pointer is up.
+		fireEvent.pointerUp(document.body);
 		select(code(row, "RIGHT"));
 		expect(selecting()).toBe("new");
-		// Collapsed: the mark goes, so the next drag can start on either side.
+		// Collapsed with the pointer up: the mark goes, so the next drag can
+		// start on either side.
 		select(null);
 		expect(selecting()).toBeNull();
 		// A selection whose anchor is in an old-side cell marks the old side.
@@ -1244,6 +1252,17 @@ describe("DiffBody side by side", () => {
 		select(elsewhere);
 		expect(selecting()).toBeNull();
 		elsewhere.remove();
+	});
+
+	it("ignores a pointer down on a number cell: it can't start a selection, so nothing would clear the mark", async () => {
+		setup({ hunks: pairHunks(), clusters: [pairCluster()] });
+		await screen.findByText("new seven");
+		const row = lineRows()[1] as HTMLElement;
+		fireEvent.pointerDown(number(row, "RIGHT") as HTMLElement);
+		fireEvent.pointerUp(document.body);
+		expect(selecting()).toBeNull();
+		fireEvent.pointerDown(number(row, "LEFT") as HTMLElement);
+		expect(selecting()).toBeNull();
 	});
 
 	it("never marks a unified table", async () => {
@@ -1266,11 +1285,12 @@ describe("DiffBody side by side", () => {
 		const removed = vi.spyOn(document, "removeEventListener");
 		setup({ hunks: pairHunks(), clusters: [pairCluster()] });
 		await screen.findByText("new seven");
+		const ours = ["selectionchange", "pointerup", "pointercancel"];
 		const listeners = (spy: typeof added) =>
 			spy.mock.calls
-				.filter(([type]) => type === "selectionchange")
-				.map(([, listener]) => listener);
-		expect(listeners(added)).toHaveLength(1);
+				.filter(([type]) => ours.includes(type))
+				.map(([type, listener]) => [type, listener]);
+		expect(listeners(added).map(([type]) => type)).toEqual(ours);
 		const row = lineRows()[1] as HTMLElement;
 		select(code(row, "LEFT"));
 		expect(selecting()).toBe("old");
@@ -1278,7 +1298,7 @@ describe("DiffBody side by side", () => {
 		expect(selecting()).toBeNull();
 		expect(listeners(removed)).toEqual(listeners(added));
 		act(() => sideBySide.set(true));
-		expect(listeners(added)).toHaveLength(2);
+		expect(listeners(added)).toHaveLength(ours.length * 2);
 		cleanup();
 		expect(listeners(removed)).toEqual(listeners(added));
 	});

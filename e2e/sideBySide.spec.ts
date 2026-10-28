@@ -426,16 +426,24 @@ test("a text selection stays on one side, and Copy gives that side only", async 
 	const newLines = ["greet 5 changed", "greet 6 changed", WIDE];
 	const oldLines = ["greet 5", "greet 6"];
 	/** Drags from the start of the first new line to a point in `to`. */
-	const dragTo = async (to: Locator, at: "middle" | "end") => {
+	const dragTo = async (to: Locator, at: "middle" | "end", steps = 12) => {
 		const from = await cell(0, "RIGHT").boundingBox();
 		const box = await to.boundingBox();
 		if (!from || !box) throw new Error("a cell has no box");
 		await page.mouse.move(from.x + 4, from.y + from.height / 2);
 		await page.mouse.down();
+		// A person's drag spans frames: the caret the mouse down placed sends
+		// its (collapsed) selectionchange before the first move arrives.
+		await page.evaluate(
+			() =>
+				new Promise((done) =>
+					requestAnimationFrame(() => requestAnimationFrame(done)),
+				),
+		);
 		await page.mouse.move(
 			at === "middle" ? box.x + box.width / 2 : box.x + box.width - 4,
 			at === "middle" ? box.y + box.height / 2 : box.y + box.height - 4,
-			{ steps: 12 },
+			{ steps },
 		);
 		await page.mouse.up();
 	};
@@ -474,4 +482,25 @@ test("a text selection stays on one side, and Copy gives that side only", async 
 		"data-selecting",
 		"new",
 	);
+
+	// A fast drag (one move) across to the second row's old text: the caret's
+	// selectionchange must not have let the old side back in before the move,
+	// so the selection's focus (what the Range says, not only its text) is on
+	// the new side. (The third row's old cell is blank, with no side: it takes
+	// the focus either way.)
+	await cell(1, "RIGHT").click();
+	await expect(section.locator("table")).not.toHaveAttribute("data-selecting");
+	await dragTo(cell(1, "LEFT"), "middle", 1);
+	await expect(section.locator("table")).toHaveAttribute(
+		"data-selecting",
+		"new",
+	);
+	expect(
+		await page.evaluate(() => {
+			const focus = getSelection()?.focusNode;
+			const el = focus instanceof Element ? focus : focus?.parentElement;
+			return el?.closest("td[data-side]")?.getAttribute("data-side");
+		}),
+	).toBe("RIGHT");
+	expect(lines(await selected())).toEqual(newLines.slice(0, 1));
 });
