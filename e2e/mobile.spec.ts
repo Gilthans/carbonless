@@ -1,6 +1,13 @@
 import type { Page } from "@playwright/test";
 import { reviewThread, threadComment } from "../test/fake-gh/scenario";
-import { barBottom, fileAction, fileSection, openFiles } from "./files-ui";
+import {
+	barBottom,
+	expectNoPageOverflow,
+	fileAction,
+	fileSection,
+	openFiles,
+	sideBySide,
+} from "./files-ui";
 import { expect, type PrOptions, test } from "./fixtures";
 
 const LONG_DIR = "src/server/review/storage/adapters/git/refs/internal/legacy";
@@ -51,14 +58,6 @@ async function settled(page: Page) {
 	);
 }
 
-async function expectNoPageOverflow(page: Page) {
-	const { scrollWidth, clientWidth } = await page.evaluate(() => ({
-		scrollWidth: document.documentElement.scrollWidth,
-		clientWidth: document.documentElement.clientWidth,
-	}));
-	expect(scrollWidth).toBeLessThanOrEqual(clientWidth);
-}
-
 test("no horizontal page scroll on the overview and files pages", async ({
 	page,
 	pr,
@@ -106,6 +105,15 @@ test("no horizontal page scroll on the overview and files pages", async ({
 		await section.getByRole("button", { name: "Expand file" }).click();
 		await expect(section.getByTestId("diff-line").first()).toBeVisible();
 		await expectNoPageOverflow(page);
+		// Side by side wraps instead of widening anything.
+		await sideBySide(page, true);
+		await expect(
+			section.locator('table[data-view="side-by-side"]'),
+		).toBeVisible();
+		await expect(section.getByTestId("diff-line").first()).toBeVisible();
+		await expectNoPageOverflow(page);
+		await sideBySide(page, false);
+		await expect(section.locator('table[data-view="unified"]')).toBeVisible();
 	}
 });
 

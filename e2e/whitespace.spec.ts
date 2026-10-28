@@ -9,10 +9,10 @@ import {
 } from "../test/whitespace-fixture";
 import {
 	fileSection,
+	ignoreWhitespace,
 	openFiles,
 	progress,
 	rowTop,
-	setSwitch,
 	underStack,
 } from "./files-ui";
 import { expect, type PrOptions, test } from "./fixtures";
@@ -52,10 +52,6 @@ const fixture: PrOptions = {
 		},
 	],
 };
-
-/** Sets the "Ignore whitespace" switch in Settings and closes it again. */
-const ignoreWhitespace = (page: Page, on: boolean) =>
-	setSwitch(page, "Ignore whitespace", on);
 
 const rows = (section: Locator, kind: string) =>
 	section.locator(`[data-testid="diff-line"][data-kind="${kind}"]`);

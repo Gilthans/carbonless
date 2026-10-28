@@ -126,3 +126,20 @@ export async function setSwitch(page: Page, label: string, on: boolean) {
 	await page.keyboard.press("Escape");
 	await expect(toggle).toBeHidden();
 }
+
+/** Settings' "Ignore whitespace". */
+export const ignoreWhitespace = (page: Page, on: boolean) =>
+	setSwitch(page, "Ignore whitespace", on);
+
+/** Settings' "Side by side". */
+export const sideBySide = (page: Page, on: boolean) =>
+	setSwitch(page, "Side by side", on);
+
+/** The page never scrolls sideways (principle 5). */
+export async function expectNoPageOverflow(page: Page) {
+	const { scrollWidth, clientWidth } = await page.evaluate(() => ({
+		scrollWidth: document.documentElement.scrollWidth,
+		clientWidth: document.documentElement.clientWidth,
+	}));
+	expect(scrollWidth).toBeLessThanOrEqual(clientWidth);
+}
