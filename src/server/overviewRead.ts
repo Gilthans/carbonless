@@ -287,7 +287,7 @@ export class OverviewRead {
 	): void {
 		if (this.started > startedAt) return;
 		this.applyWrite(id, nodes, seq, startedAt);
-		if (this.#written.get(id)?.seq !== seq) return;
+		// A later write's re-read of it may stand in already: listed all the same.
 		if (!this.#added.includes(id)) this.#added.push(id);
 		const code = this.#stages.summary.then(() => {
 			const thread = this.#map().find((t) => t.id === id);
