@@ -1,6 +1,13 @@
 // @vitest-environment jsdom
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, cleanup, render, screen, within } from "@testing-library/react";
+import {
+	act,
+	cleanup,
+	fireEvent,
+	render,
+	screen,
+	within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
@@ -1196,5 +1203,83 @@ describe("DiffBody side by side", () => {
 			["context", "RIGHT", 5],
 		]);
 		expect(document.querySelectorAll("td[data-blank]")).toHaveLength(0);
+	});
+
+	/** Selects `el`'s contents (or nothing) and tells the document, as a browser would. */
+	const select = (el: Element | null) => {
+		const selection = window.getSelection();
+		selection?.removeAllRanges();
+		if (el) {
+			const range = document.createRange();
+			range.selectNodeContents(el);
+			selection?.addRange(range);
+		}
+		document.dispatchEvent(new Event("selectionchange"));
+	};
+	const selecting = () =>
+		document.querySelector("table")?.getAttribute("data-selecting") ?? null;
+
+	it("marks the table with the side a text selection starts on, and clears it when the selection goes", async () => {
+		setup({ hunks: pairHunks(), clusters: [pairCluster()] });
+		await screen.findByText("new seven");
+		const row = lineRows()[1] as HTMLElement;
+		expect(selecting()).toBeNull();
+		// The pointer goes down on the new side: the old side is off limits
+		// at once, before any selection exists.
+		fireEvent.pointerDown(code(row, "RIGHT") as HTMLElement);
+		expect(selecting()).toBe("new");
+		// A selection on that side keeps the mark (the pointer may be up by now).
+		select(code(row, "RIGHT"));
+		expect(selecting()).toBe("new");
+		// Collapsed: the mark goes, so the next drag can start on either side.
+		select(null);
+		expect(selecting()).toBeNull();
+		// A selection whose anchor is in an old-side cell marks the old side.
+		select(code(row, "LEFT"));
+		expect(selecting()).toBe("old");
+		// Anchored outside this table: not ours.
+		const elsewhere = document.createElement("p");
+		elsewhere.textContent = "outside";
+		document.body.append(elsewhere);
+		select(elsewhere);
+		expect(selecting()).toBeNull();
+		elsewhere.remove();
+	});
+
+	it("never marks a unified table", async () => {
+		act(() => sideBySide.set(false));
+		setup({ hunks: pairHunks(), clusters: [pairCluster()] });
+		await screen.findByText("new seven");
+		const [, delRow, , addRow] = lineRows() as HTMLElement[];
+		fireEvent.pointerDown(
+			(addRow as HTMLElement).querySelector(
+				'td[data-testid="code"]',
+			) as HTMLElement,
+		);
+		expect(selecting()).toBeNull();
+		select((delRow as HTMLElement).querySelector('td[data-testid="code"]'));
+		expect(selecting()).toBeNull();
+	});
+
+	it("drops the mark and its document listener on the switch to unified and on unmount", async () => {
+		const added = vi.spyOn(document, "addEventListener");
+		const removed = vi.spyOn(document, "removeEventListener");
+		setup({ hunks: pairHunks(), clusters: [pairCluster()] });
+		await screen.findByText("new seven");
+		const listeners = (spy: typeof added) =>
+			spy.mock.calls
+				.filter(([type]) => type === "selectionchange")
+				.map(([, listener]) => listener);
+		expect(listeners(added)).toHaveLength(1);
+		const row = lineRows()[1] as HTMLElement;
+		select(code(row, "LEFT"));
+		expect(selecting()).toBe("old");
+		act(() => sideBySide.set(false));
+		expect(selecting()).toBeNull();
+		expect(listeners(removed)).toEqual(listeners(added));
+		act(() => sideBySide.set(true));
+		expect(listeners(added)).toHaveLength(2);
+		cleanup();
+		expect(listeners(removed)).toEqual(listeners(added));
 	});
 });

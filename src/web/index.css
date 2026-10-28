@@ -185,6 +185,17 @@
 	}
 }
 
+/*
+ * Side by side, a text selection stays on one side (DiffBody's
+ * `data-selecting`): while one side is being selected, the other side's code
+ * cells can't be, so a drag across the table selects one side and Copy gives
+ * its lines. Line numbers and signs are select-none on their own.
+ */
+table[data-selecting="old"] td[data-side="RIGHT"],
+table[data-selecting="new"] td[data-side="LEFT"] {
+	user-select: none;
+}
+
 /* The header's faint brand glow, over its solid surface color. */
 @utility header-glow {
 	background-image:

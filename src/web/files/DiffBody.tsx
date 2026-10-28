@@ -6,6 +6,7 @@ import {
 import { useQueries, useQuery } from "@tanstack/react-query";
 import {
 	Fragment,
+	type PointerEvent,
 	type ReactNode,
 	type RefObject,
 	useEffect,
@@ -804,8 +805,10 @@ export function DiffBody(props: {
 	const fileClusters = file.clusters.filter((c) => c.kind === "file");
 	const root = useRef<HTMLDivElement>(null);
 	const scroller = useRef<HTMLDivElement>(null);
+	const table = useRef<HTMLTableElement>(null);
 	useStickyControls(root, scroller);
 	useVisibleWidth(scroller);
+	const onPointerDown = useOneSideSelection(table, view);
 	const { hint, landed, pending } = useLanding(
 		root,
 		props.landing,
@@ -1093,7 +1096,9 @@ export function DiffBody(props: {
 				 * lines wrap in their cells.
 				 */}
 				<table
+					ref={table}
 					data-view={view}
+					onPointerDown={onPointerDown}
 					className={`border-collapse bg-code font-mono text-xs leading-5 text-code-ink ${
 						view === "side-by-side" ? "w-full table-fixed" : "min-w-full"
 					}`}
@@ -1160,6 +1165,59 @@ export function DiffBody(props: {
 			)}
 		</div>
 	);
+}
+
+/**
+ * Side by side, a text selection stays on one side: the table carries
+ * `data-selecting="old" | "new"` while a selection is on that side, and the
+ * CSS (index.css) makes the other side's code cells `user-select: none`, so
+ * dragging across the table selects one side and Copy gives its lines. The
+ * mark is set as soon as the pointer goes down on a cell with a side (before
+ * the selection exists), then follows the document's selection: its anchor
+ * cell's side, or none once the selection is collapsed, elsewhere, or the
+ * view is unified. Line numbers and signs are `select-none` on their own.
+ */
+const selectingSide = (node: Node | null): "old" | "new" | undefined => {
+	const el = node instanceof Element ? node : node?.parentElement;
+	const side = el?.closest<HTMLElement>("td[data-side]")?.dataset.side;
+	return side === "LEFT" ? "old" : side === "RIGHT" ? "new" : undefined;
+};
+
+const markSelecting = (
+	table: HTMLTableElement,
+	side: "old" | "new" | undefined,
+) => {
+	if (side) table.dataset.selecting = side;
+	else delete table.dataset.selecting;
+};
+
+function useOneSideSelection(
+	table: RefObject<HTMLTableElement | null>,
+	view: View,
+) {
+	useEffect(() => {
+		const el = table.current;
+		if (view !== "side-by-side" || !el) return;
+		const onSelectionChange = () => {
+			const selection = document.getSelection();
+			const anchor =
+				selection && !selection.isCollapsed ? selection.anchorNode : null;
+			markSelecting(
+				el,
+				anchor && el.contains(anchor) ? selectingSide(anchor) : undefined,
+			);
+		};
+		document.addEventListener("selectionchange", onSelectionChange);
+		return () => {
+			document.removeEventListener("selectionchange", onSelectionChange);
+			markSelecting(el, undefined);
+		};
+	}, [table, view]);
+	if (view !== "side-by-side") return undefined;
+	return (event: PointerEvent<HTMLTableElement>) => {
+		const side = selectingSide(event.target as Node);
+		if (side) markSelecting(event.currentTarget, side);
+	};
 }
 
 /**
