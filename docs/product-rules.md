@@ -70,6 +70,13 @@ comments in one (`src/server/threadWrites.ts`).
   deleted here. A reply this session just posted that GitHub's GraphQL
   doesn't list yet is edited or deleted all the same (by the REST id its
   post answered).
+- **A delete asks first, then waits out an undo window.** Delete opens a
+  confirmation by the button ("Delete this comment?", with "It stays as
+  [deleted] in the thread." for an opener with replies), Cancel focused;
+  Escape or a click outside cancels (owner: "add a confirmation when
+  deleting a comment, in addition to the undo"). Confirmed, the comment
+  collapses to "Deleted · Undo" and goes after `DELETE_UNDO_MS`; Undo
+  within the window sends nothing.
 - **Deleting an opener with replies blanks it.** Deleting the first comment
   of a thread that has published comments after it (the viewer's pending
   ones don't count) edits its body to `[deleted]` instead (owner: "it

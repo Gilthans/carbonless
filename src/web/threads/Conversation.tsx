@@ -230,6 +230,10 @@ export function ThreadComments(props: {
 							key={c.id || `#${i}`}
 							comment={c}
 							thread={thread}
+							keepsPlace={
+								c === data.comments[0] &&
+								data.comments.length + sending.length > 1
+							}
 						/>
 					))}
 					{sending.map((c, i) => (
@@ -292,6 +296,8 @@ function CommentItem(props: {
 	thread: ReviewThread;
 	/** The viewer's reply on its way to GitHub. */
 	sending?: boolean;
+	/** The opener, with replies: deleted, it stays as "[deleted]". */
+	keepsPlace?: boolean;
 }) {
 	const { comment: c, thread } = props;
 	const author = c.author || "ghost";
@@ -344,6 +350,7 @@ function CommentItem(props: {
 						comment={c}
 						onEdit={() => write.setEditing(true)}
 						compact
+						keepsPlace={props.keepsPlace}
 					/>
 				)}
 			</div>

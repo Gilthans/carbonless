@@ -2,7 +2,7 @@
 
 Status: approved by the owner 2026-10-27, with their doc comments folded in.
 
-Calls the coordinator made (the owner may overrule): delete with an undo window instead of a confirm dialog; a changed-on-GitHub check before an edit is saved; thread comments only (not PR conversation comments or review bodies); pending-review comments left as they are.
+Calls the coordinator made (the owner may overrule): delete with an undo window (the owner then added a confirm dialog before it); a changed-on-GitHub check before an edit is saved; thread comments only (not PR conversation comments or review bodies); pending-review comments left as they are.
 
 ## Why
 
@@ -49,7 +49,7 @@ Milestone 2 replaces the owner's GitHub review workflow. Replies and resolving a
 ## Deleting
 
 - A trash icon button (tooltip "Delete", ≥40px) next to Edit, shown when `viewerCanDelete` and writes are on.
-- **Undo instead of a dialog (coordinator's call):** the comment collapses at once into a one-line "Deleted · Undo" row; the delete is sent after 5 s (`DELETE_UNDO_MS`). Undo within the window cancels it, and nothing reaches GitHub. Leaving the page during the window asks first. `prefers-reduced-motion`: no animation, same window. (The alternative is a confirm dialog and an immediate delete; the owner picks.)
+- **A dialog, then Undo (owner's call: "add a confirmation when deleting a comment, in addition to the undo"):** Delete first opens a small confirmation anchored to the button (`role="alertdialog"`, modal where the browser can): "Delete this comment?", and for an opener with replies "It stays as [deleted] in the thread."; Delete (red) and Cancel, Cancel focused. Escape, Cancel or a click outside closes it with nothing done, focus back on Delete. Confirmed, the comment collapses at once into a one-line "Deleted · Undo" row; the delete is sent after 5 s (`DELETE_UNDO_MS`). Undo within the window cancels it, and nothing reaches GitHub. Leaving the page during the window asks first. `prefers-reduced-motion`: no animation, same window.
 - After the window it syncs through the same queue and notices ("Delete"). A retry that gets 404 counts as deleted.
 - **Deleting the opener of a thread with replies edits it instead** (owner: "if deleting the first comment in a thread and there are more comments in the thread, it should instead be edited to say [deleted]"): its body becomes `[deleted]` (PATCH, same undo window and notices), so the thread keeps its opener, place and code. carbonless shows such an opener of the viewer's as a muted "deleted" placeholder; Edit and Delete stay off on it. Deleting the only comment really deletes it, and the thread goes away. In the Overview it fades and leaves, as a resolved card moves; in Files changed its bubble goes.
 - Counts, latest comment and the attention set are recomputed by the server from the new comment list, as after a reply.

@@ -3,6 +3,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
 	act,
 	cleanup,
+	fireEvent,
 	render,
 	screen,
 	waitFor,
@@ -995,7 +996,120 @@ describe("editing a comment", () => {
 	});
 });
 
+/** Delete, then Delete again in the confirmation it opens. */
+async function confirmDelete(
+	user: ReturnType<typeof userEvent.setup>,
+	button: HTMLElement,
+) {
+	await user.click(button);
+	const dialog = screen.getByRole("alertdialog", {
+		name: "Delete this comment?",
+	});
+	await user.click(within(dialog).getByRole("button", { name: "Delete" }));
+}
+
 describe("deleting a comment", () => {
+	it("Delete asks first: nothing happens until it is confirmed, Cancel focused", async () => {
+		vi.useFakeTimers({ shouldAdvanceTime: true });
+		try {
+			const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+			serve({
+				T1: { comments: [comment("c1", "rev1", "First"), mine("c2", "Oops")] },
+			});
+			renderWith(<Conversation readId="r1" thread={thread()} />, {
+				writes: "on",
+			});
+			await screen.findAllByTestId("thread-comment");
+			await user.click(screen.getByRole("button", { name: "Delete" }));
+			const dialog = screen.getByRole("alertdialog", {
+				name: "Delete this comment?",
+			});
+			// A reply: no note about [deleted].
+			expect(dialog).not.toHaveAccessibleDescription();
+			expect(
+				within(dialog).getByRole("button", { name: "Cancel" }),
+			).toHaveFocus();
+			await act(() => vi.advanceTimersByTimeAsync(DELETE_UNDO_MS * 2));
+			expect(screen.queryByTestId("comment-deleted-row")).toBeNull();
+			expect(screen.getByText("Oops")).toBeInTheDocument();
+			expect(writeCalls).toHaveLength(0);
+			// Confirmed: the undo window starts.
+			await user.click(within(dialog).getByRole("button", { name: "Delete" }));
+			expect(screen.queryByRole("alertdialog")).toBeNull();
+			const row = screen.getByTestId("comment-deleted-row");
+			expect(within(row).getByRole("button", { name: "Undo" })).toHaveFocus();
+			expect(writeCalls).toHaveLength(0);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	for (const how of [
+		"Cancel",
+		"Escape",
+		"a click on the backdrop",
+		"a press elsewhere",
+	] as const) {
+		it(`${how} closes the confirmation, sends nothing, and Delete has the focus`, async () => {
+			vi.useFakeTimers({ shouldAdvanceTime: true });
+			try {
+				const user = userEvent.setup({
+					advanceTimers: vi.advanceTimersByTime,
+				});
+				serve({
+					T1: {
+						comments: [comment("c1", "rev1", "First"), mine("c2", "Oops")],
+					},
+				});
+				renderWith(<Conversation readId="r1" thread={thread()} />, {
+					writes: "on",
+				});
+				await screen.findAllByTestId("thread-comment");
+				const del = screen.getByRole("button", { name: "Delete" });
+				await user.click(del);
+				const dialog = screen.getByRole("alertdialog");
+				if (how === "Cancel") {
+					await user.click(
+						within(dialog).getByRole("button", { name: "Cancel" }),
+					);
+				} else if (how === "Escape") {
+					await user.keyboard("{Escape}");
+				} else if (how === "a click on the backdrop") {
+					// A modal's backdrop click lands on the dialog itself.
+					await user.click(dialog);
+				} else {
+					fireEvent.pointerDown(screen.getByText("First"));
+				}
+				expect(screen.queryByRole("alertdialog")).toBeNull();
+				expect(del).toHaveFocus();
+				await act(() => vi.advanceTimersByTimeAsync(DELETE_UNDO_MS * 2));
+				expect(screen.queryByTestId("comment-deleted-row")).toBeNull();
+				expect(screen.getByText("Oops")).toBeInTheDocument();
+				expect(writeCalls).toHaveLength(0);
+			} finally {
+				vi.useRealTimers();
+			}
+		});
+	}
+
+	it("an opener with replies: the confirmation says it stays as [deleted]", async () => {
+		const user = userEvent.setup();
+		serve({
+			T1: { comments: [mine("c1", "Mine"), comment("c2", "rev1", "Reply")] },
+		});
+		renderWith(<Conversation readId="r1" thread={thread()} />, {
+			writes: "on",
+		});
+		await screen.findAllByTestId("thread-comment");
+		await user.click(screen.getByRole("button", { name: "Delete" }));
+		const dialog = screen.getByRole("alertdialog", {
+			name: "Delete this comment?",
+		});
+		expect(dialog).toHaveAccessibleDescription(
+			"It stays as [deleted] in the thread.",
+		);
+	});
+
 	it("focus: the row takes it when the window ends only if Undo had it, and nothing scrolls", async () => {
 		vi.useFakeTimers({ shouldAdvanceTime: true });
 		const focus = vi.spyOn(HTMLElement.prototype, "focus");
@@ -1012,12 +1126,12 @@ describe("deleting a comment", () => {
 			});
 			await screen.findAllByTestId("thread-comment");
 			const [d1, d2] = screen.getAllByRole("button", { name: "Delete" });
-			await user.click(d1 as HTMLElement);
+			await confirmDelete(user, d1 as HTMLElement);
 			const [row1] = screen.getAllByTestId("comment-deleted-row");
 			// Undo kept the focus: the row takes it when the window ends.
 			await act(() => vi.advanceTimersByTimeAsync(DELETE_UNDO_MS));
 			expect(row1).toHaveFocus();
-			await user.click(d2 as HTMLElement);
+			await confirmDelete(user, d2 as HTMLElement);
 			// The reviewer moves on: the row leaves the focus where it is.
 			const box = screen.getByRole("textbox", { name: "Reply" });
 			box.focus();
@@ -1051,7 +1165,7 @@ describe("deleting a comment", () => {
 				writes: "on",
 			});
 			await screen.findAllByTestId("thread-comment");
-			await user.click(screen.getByRole("button", { name: "Delete" }));
+			await confirmDelete(user, screen.getByRole("button", { name: "Delete" }));
 			const row = screen.getByTestId("comment-deleted-row");
 			expect(row).toHaveTextContent("Deleted");
 			// The trash button is gone: Undo has the focus.
@@ -1082,7 +1196,7 @@ describe("deleting a comment", () => {
 				writes: "on",
 			});
 			await screen.findAllByTestId("thread-comment");
-			await user.click(screen.getByRole("button", { name: "Delete" }));
+			await confirmDelete(user, screen.getByRole("button", { name: "Delete" }));
 			await act(() => vi.advanceTimersByTimeAsync(DELETE_UNDO_MS));
 			await waitFor(() => expect(writeMethods).toEqual(["DELETE"]));
 			expect(writeCalls[0]?.path).toBe("/api/threads/T1/comments/c2");
@@ -1154,7 +1268,7 @@ describe("deleting a comment", () => {
 				writes: "on",
 			});
 			await screen.findAllByTestId("thread-comment");
-			await user.click(screen.getByRole("button", { name: "Delete" }));
+			await confirmDelete(user, screen.getByRole("button", { name: "Delete" }));
 			await act(() => vi.advanceTimersByTimeAsync(DELETE_UNDO_MS));
 			const fetchMock = vi.mocked(fetch);
 			const call = fetchMock.mock.calls.find(
@@ -1178,7 +1292,7 @@ describe("deleting a comment", () => {
 				writes: "on",
 			});
 			await screen.findAllByTestId("thread-comment");
-			await user.click(screen.getByRole("button", { name: "Delete" }));
+			await confirmDelete(user, screen.getByRole("button", { name: "Delete" }));
 			await act(() => vi.advanceTimersByTimeAsync(DELETE_UNDO_MS + FADE_MS));
 			expect(
 				await screen.findByTestId("thread-body-unavailable"),

@@ -125,6 +125,17 @@ async function openCard(c: Locator) {
 	await expect(more).toHaveAttribute("aria-expanded", "true");
 }
 
+/** The confirmation Delete opens. */
+const confirmation = (page: Page) =>
+	page.getByRole("alertdialog", { name: "Delete this comment?" });
+
+/** Delete, then Delete again in its confirmation. */
+async function confirmDelete(page: Page, del: Locator) {
+	await del.click();
+	await confirmation(page).getByRole("button", { name: "Delete" }).click();
+	await expect(confirmation(page)).toHaveCount(0);
+}
+
 const overflow = (page: Page) =>
 	page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
 
@@ -226,7 +237,35 @@ test("delete from an Overview card: Undo sends nothing; then the card fades and 
 	await page.goto(s.url);
 	const c = card(page, "new.txt");
 	await openCard(c);
-	await c.getByRole("button", { name: "Delete" }).click();
+	const del = c.getByRole("button", { name: "Delete" });
+	// It asks first: Cancel (focused) keeps the comment, nothing sent.
+	await del.click();
+	const ask = confirmation(page);
+	await expect(ask).toBeVisible();
+	const cancel = ask.getByRole("button", { name: "Cancel" });
+	await expect(cancel).toBeFocused();
+	const askBox = await ask.boundingBox();
+	const width = page.viewportSize()?.width ?? 0;
+	expect(askBox?.x ?? -1).toBeGreaterThanOrEqual(0);
+	expect((askBox?.x ?? 0) + (askBox?.width ?? 0)).toBeLessThanOrEqual(width);
+	for (const b of [cancel, ask.getByRole("button", { name: "Delete" })]) {
+		expect((await b.boundingBox())?.height ?? 0).toBeGreaterThanOrEqual(40);
+	}
+	expect(await overflow(page)).toBeLessThanOrEqual(0);
+	await shot(page, "delete-confirm", isMobile, c);
+	await cancel.click();
+	await expect(ask).toHaveCount(0);
+	await expect(del).toBeFocused();
+	await expect(c.getByTestId("thread-body")).toContainText("My take");
+	// Escape cancels too.
+	await del.click();
+	await expect(ask).toBeVisible();
+	await page.keyboard.press("Escape");
+	await expect(ask).toHaveCount(0);
+	await expect(del).toBeFocused();
+	await expect(c.getByTestId("comment-deleted-row")).toHaveCount(0);
+	// Confirmed: Deleted · Undo.
+	await confirmDelete(page, del);
 	const row = c.getByTestId("comment-deleted-row");
 	await expect(row).toContainText("Deleted");
 	await expect(c.getByText("My take")).toHaveCount(0);
@@ -236,7 +275,7 @@ test("delete from an Overview card: Undo sends nothing; then the card fades and 
 	await expect(c.getByTestId("thread-body")).toContainText("My take");
 	await page.waitForTimeout(5500);
 	expect(stored(p, 0).removed).toBe(false);
-	await c.getByRole("button", { name: "Delete" }).click();
+	await confirmDelete(page, c.getByRole("button", { name: "Delete" }));
 	await expect(c).toHaveAttribute("data-fading", "true", { timeout: 10_000 });
 	await expect(c).toHaveCount(0, { timeout: 10_000 });
 	expect(stored(p, 0).removed).toBe(true);
@@ -259,6 +298,10 @@ test("deleting an opener with replies leaves a deleted placeholder", async ({
 	// The opener's Delete (rev1's reply has none).
 	await expect(c.getByRole("button", { name: "Delete" })).toHaveCount(1);
 	await c.getByRole("button", { name: "Delete" }).click();
+	await expect(confirmation(page)).toHaveAccessibleDescription(
+		"It stays as [deleted] in the thread.",
+	);
+	await confirmation(page).getByRole("button", { name: "Delete" }).click();
 	await expect(c.getByTestId("comment-deleted")).toBeVisible({
 		timeout: 10_000,
 	});
@@ -304,7 +347,7 @@ test("edit and delete a reply from Files changed", async ({
 	await expect
 		.poll(() => bodies(p, 1))
 		.toEqual(["Changed how?", "Because of the cache"]);
-	await edited.getByRole("button", { name: "Delete" }).click();
+	await confirmDelete(page, edited.getByRole("button", { name: "Delete" }));
 	await expect(thread.getByTestId("comment-deleted-row")).toBeVisible();
 	await expect(thread.getByTestId("thread-comment")).toHaveCount(1, {
 		timeout: 10_000,

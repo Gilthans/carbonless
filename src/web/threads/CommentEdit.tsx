@@ -6,7 +6,9 @@ import {
 } from "@primer/octicons-react";
 import {
 	type KeyboardEvent,
+	type RefObject,
 	useEffect,
+	useId,
 	useLayoutEffect,
 	useRef,
 	useState,
@@ -87,17 +89,21 @@ const ICON_BUTTON =
 /**
  * Pencil and trash for the viewer's own comment, each where GitHub allows
  * it and the session writes. 40px targets kept from growing the line they
- * sit on (`compact`: negative margins).
+ * sit on (`compact`: negative margins). Delete asks first; confirmed, the
+ * undo window starts.
  */
 export function CommentActions(props: {
 	threadId: string;
 	comment: ThreadComment;
 	onEdit: () => void;
 	compact?: boolean;
+	/** An opener with replies: deleted, it stays as "[deleted]". */
+	keepsPlace?: boolean;
 }) {
 	const writer = useThreadWriter();
 	const can = useCommentCan(props.comment);
 	const del = useRef<HTMLButtonElement | null>(null);
+	const [asking, setAsking] = useState(false);
 	const { id } = props.comment;
 	// Back from Undo (this very click, on a page on screen): focus where it
 	// was, on Delete.
@@ -152,14 +158,154 @@ export function CommentActions(props: {
 				button(
 					"Delete",
 					TrashIcon,
-					() => writer.deleteComment(props.threadId, props.comment.id),
+					() => setAsking(true),
 					"text-ink-soft hover:text-bad",
 					"comment-delete",
 					(el) => {
 						del.current = el;
 					},
 				)}
+			{asking && (
+				<ConfirmDelete
+					anchor={del}
+					keepsPlace={props.keepsPlace}
+					onCancel={() => {
+						setAsking(false);
+						del.current?.focus({ preventScroll: true });
+					}}
+					onConfirm={() => {
+						setAsking(false);
+						writer.deleteComment(props.threadId, props.comment.id);
+					}}
+				/>
+			)}
 		</span>
+	);
+}
+
+const DIALOG_GAP = 4;
+const DIALOG_MARGIN = 8;
+
+/**
+ * "Delete this comment?" by the trash button: Cancel focused, Escape or a
+ * click outside cancels too. Modal where the browser can (above any card
+ * that clips), placed under the button, or over it near the bottom.
+ */
+function ConfirmDelete(props: {
+	anchor: RefObject<HTMLButtonElement | null>;
+	keepsPlace?: boolean;
+	onCancel: () => void;
+	onConfirm: () => void;
+}) {
+	const dialog = useRef<HTMLDialogElement>(null);
+	const cancelButton = useRef<HTMLButtonElement>(null);
+	const titleId = useId();
+	const noteId = useId();
+	const { anchor, onCancel } = props;
+	useLayoutEffect(() => {
+		const d = dialog.current;
+		if (!d) return;
+		if (typeof d.showModal === "function") d.showModal();
+		else d.setAttribute("open", "");
+		const place = () => {
+			const at = anchor.current?.getBoundingClientRect();
+			if (!at) return;
+			const w = d.offsetWidth;
+			const h = d.offsetHeight;
+			const vw = document.documentElement.clientWidth || window.innerWidth;
+			const vh = window.innerHeight;
+			const left = Math.max(
+				DIALOG_MARGIN,
+				Math.min(at.right - w, vw - w - DIALOG_MARGIN),
+			);
+			const below = at.bottom + DIALOG_GAP;
+			const top =
+				below + h > vh - DIALOG_MARGIN
+					? Math.max(DIALOG_MARGIN, at.top - DIALOG_GAP - h)
+					: below;
+			d.style.left = `${left}px`;
+			d.style.top = `${top}px`;
+		};
+		place();
+		cancelButton.current?.focus({ preventScroll: true });
+		window.addEventListener("scroll", place, true);
+		window.addEventListener("resize", place);
+		return () => {
+			window.removeEventListener("scroll", place, true);
+			window.removeEventListener("resize", place);
+			if (typeof d.close === "function" && d.open) d.close();
+		};
+	}, [anchor]);
+	// A press anywhere else cancels. On the modal's backdrop (the dialog
+	// itself) it waits for the click, so nothing under it gets that click.
+	useEffect(() => {
+		const outside = (event: Event) => {
+			const d = dialog.current;
+			if (d && !d.contains(event.target as Node)) onCancel();
+		};
+		document.addEventListener("pointerdown", outside);
+		return () => document.removeEventListener("pointerdown", outside);
+	}, [onCancel]);
+	const close = (then: () => void) => {
+		// Closed before the comment's row changes, so the browser hands the
+		// focus back first and the row's own focus wins.
+		const d = dialog.current;
+		if (d?.open && typeof d.close === "function") d.close();
+		then();
+	};
+	return (
+		<dialog
+			ref={dialog}
+			role="alertdialog"
+			aria-labelledby={titleId}
+			aria-describedby={props.keepsPlace ? noteId : undefined}
+			data-testid="delete-confirm"
+			onCancel={(event) => {
+				event.preventDefault();
+				close(onCancel);
+			}}
+			onClick={(event) => {
+				if (event.target === dialog.current) close(onCancel);
+			}}
+			onKeyDown={(event) => {
+				if (event.key === "Escape") {
+					event.preventDefault();
+					event.stopPropagation();
+					close(onCancel);
+				}
+			}}
+			className="fixed inset-auto z-50 m-0 w-64 max-w-[calc(100vw-2rem)] rounded-lg border border-edge bg-surface p-0 text-ink shadow-float backdrop:bg-transparent"
+		>
+			<div className="space-y-2 p-3">
+				<p id={titleId} className="text-sm font-semibold">
+					Delete this comment?
+				</p>
+				{props.keepsPlace && (
+					<p id={noteId} className="text-sm text-muted">
+						It stays as [deleted] in the thread.
+					</p>
+				)}
+				<div className="flex justify-end gap-2">
+					<button
+						ref={cancelButton}
+						type="button"
+						onClick={() => close(onCancel)}
+						className="flex h-10 items-center rounded-md px-3 text-sm font-medium text-ink-soft hover:bg-overlay hover:text-ink focus-visible:outline-2 focus-visible:outline-accent"
+					>
+						Cancel
+					</button>
+					<button
+						type="button"
+						data-testid="delete-confirm-yes"
+						onClick={() => close(props.onConfirm)}
+						className="flex h-10 items-center gap-1.5 rounded-md border border-bad/60 bg-bad/15 px-4 text-sm font-semibold text-bad hover:bg-bad/25 focus-visible:outline-2 focus-visible:outline-accent"
+					>
+						<TrashIcon size={16} aria-hidden />
+						Delete
+					</button>
+				</div>
+			</div>
+		</dialog>
 	);
 }
 
