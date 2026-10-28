@@ -139,7 +139,13 @@ checking against a real PR): `docs/product-rules.md`.
   after a green `pnpm verify`. Never push, and never write to GitHub, with one
   exception: the owner's private scratch PR
   https://github.com/Gilthans/carbonless-scratch/pull/1, made for testing
-  carbonless's GitHub writes. A brief may allow pushing to that repo and
-  replying, resolving or reviewing on its PRs; nowhere else.
+  carbonless's GitHub writes; and the owner's private gallery repo
+  https://github.com/Gilthans/carbonless-gallery, one PR per case study
+  (regular and edge cases) to look at in carbonless. A brief may allow
+  pushing to those two repos and opening PRs, replying, resolving or
+  reviewing on their PRs; nowhere else.
+- Every edge case we find or fix gets a gallery PR (its own `base/<case>`
+  and `case/<case>` branches, a description of what to look at, a row in
+  the gallery README).
 - Report to the owner concisely: what changed, measured results, what is
   still open, and questions that are theirs to decide.
