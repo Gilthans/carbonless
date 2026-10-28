@@ -310,6 +310,35 @@ export function helpGroups(
 		.filter((g) => g.entries.length > 0);
 }
 
+/** Can take focus: still there, shown, not in a closed dialog. */
+function focusable(el: Element | null): el is HTMLElement {
+	return (
+		el instanceof HTMLElement &&
+		el.isConnected &&
+		!el.closest("dialog:not([open])") &&
+		(typeof el.checkVisibility !== "function" || el.checkVisibility())
+	);
+}
+
+/**
+ * Focus back where it was. Gone or hidden (a popover that closed when the
+ * help took focus): to the button that controls its dialog instead.
+ */
+function returnFocus(back: Element | null) {
+	if (focusable(back)) {
+		back.focus();
+		return;
+	}
+	const id = back?.closest("dialog")?.id;
+	if (!id) return;
+	for (const el of document.querySelectorAll("[aria-controls]")) {
+		if (el.getAttribute("aria-controls") === id && focusable(el)) {
+			el.focus();
+			return;
+		}
+	}
+}
+
 /**
  * The help: a modal listing every shortcut by group, keys as caps. Escape,
  * `?`, Close or the backdrop close it; focus stays inside and goes back
@@ -343,7 +372,7 @@ function ShortcutsHelp(props: {
 			else d.removeAttribute("open");
 			const back = returnTo.current;
 			returnTo.current = null;
-			if (back instanceof HTMLElement && back.isConnected) back.focus();
+			returnFocus(back);
 			return;
 		}
 		if (d.hasAttribute("open")) return;

@@ -389,6 +389,28 @@ describe("ShortcutsProvider", () => {
 		expect(button).toHaveFocus();
 	});
 
+	it("gives focus to the menu's button when the menu it was in has closed", () => {
+		render(
+			<ShortcutsProvider>
+				<button type="button" aria-controls="menu">
+					Menu
+				</button>
+				<dialog id="menu" open>
+					<button type="button">Inside</button>
+				</dialog>
+			</ShortcutsProvider>,
+		);
+		const inside = screen.getByText("Inside");
+		inside.focus();
+		press("?", { shiftKey: true }, inside);
+		expect(helpOpen()).toBe(true);
+		// The menu closes as focus leaves it.
+		document.getElementById("menu")?.removeAttribute("open");
+		fireEvent.keyDown(help() as HTMLElement, { key: "Escape" });
+		expect(helpOpen()).toBe(false);
+		expect(screen.getByText("Menu")).toHaveFocus();
+	});
+
 	it("is a no-op outside the provider", () => {
 		render(
 			<>

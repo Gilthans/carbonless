@@ -86,6 +86,7 @@ export function Settings() {
 	const wrapper = useRef<HTMLDivElement>(null);
 	const button = useRef<HTMLButtonElement>(null);
 	const titleId = useId();
+	const dialogId = useId();
 	const openHelp = useOpenShortcutsHelp();
 	useEffect(() => {
 		const d = dialog.current;
@@ -140,6 +141,7 @@ export function Settings() {
 						}}
 						aria-label="Settings"
 						aria-haspopup="dialog"
+						aria-controls={dialogId}
 						aria-expanded={open}
 						onClick={() => setOpen((o) => !o)}
 						className="flex h-10 w-10 items-center justify-center rounded-md text-ink-soft transition-colors hover:bg-overlay hover:text-ink focus-visible:outline-2 focus-visible:outline-accent aria-expanded:bg-overlay aria-expanded:text-ink motion-reduce:transition-none"
@@ -150,6 +152,7 @@ export function Settings() {
 			</Tooltip>
 			<dialog
 				ref={dialog}
+				id={dialogId}
 				aria-labelledby={titleId}
 				data-testid="settings"
 				onClose={() => setOpen(false)}

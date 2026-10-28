@@ -112,6 +112,18 @@ test("Settings' Keyboard shortcuts entry opens the help, focus back on the gear"
 	await dialog.getByRole("button", { name: "Close" }).click();
 	await expect(dialog).toBeHidden();
 	await expect(gear).toBeFocused();
+
+	// ? from inside the popover: it closes as the help takes focus, and focus
+	// comes back to the gear.
+	await gear.click();
+	await expect(
+		page.getByRole("dialog", { name: "Settings" }).getByRole("switch").first(),
+	).toBeFocused();
+	await page.keyboard.press("Shift+Slash");
+	await expect(dialog).toBeVisible();
+	await page.keyboard.press("Escape");
+	await expect(dialog).toBeHidden();
+	await expect(gear).toBeFocused();
 });
 
 test("typing ? in a reply box types it, and doesn't open the help", async ({
