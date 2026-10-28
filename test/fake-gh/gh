@@ -402,11 +402,11 @@ const restCreate =
 	args[0] === "api" && args[1] === "-X" && args[2] === "POST"
 		? /^repos\/[^/]+\/[^/]+\/pulls\/(\d+)\/comments$/.exec(args[3] ?? "")
 		: null;
-// REST compare, for its merge base:
-// `api repos/<o>/<r>/compare/<base>...<head> --jq .merge_base_commit.sha`.
+// REST compare, for its merge base, its smallest page (no files):
+// `api repos/<o>/<r>/compare/<base>...<head>?per_page=1&page=2 --jq .merge_base_commit.sha`.
 const restCompare =
 	args[0] === "api" && args[1] !== "-X"
-		? /^repos\/[^/]+\/[^/]+\/compare\/(.+)\.\.\.([0-9a-f]{7,64})$/.exec(args[1] ?? "")
+		? /^repos\/[^/]+\/[^/]+\/compare\/(.+)\.\.\.([0-9a-f]{7,64})\?per_page=1&page=2$/.exec(args[1] ?? "")
 		: null;
 /** Runs git in the GitHub-side repository; its stdout. */
 const repoGit = (...a) =>

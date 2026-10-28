@@ -1804,7 +1804,10 @@ export async function fetchMergeBase(
 		[
 			"api",
 			// A branch name's own slashes stay; anything else is escaped.
-			`repos/${ref.owner}/${ref.repo}/compare/${base.split("/").map(encodeURIComponent).join("/")}...${head}`,
+			// The second page of one commit: GitHub leaves the files out of
+			// any page past the first, and keeps merge_base_commit on every
+			// one (gallery #7, 60 files: 261 kB → 10 kB; a 1-commit PR too).
+			`repos/${ref.owner}/${ref.repo}/compare/${base.split("/").map(encodeURIComponent).join("/")}...${head}?per_page=1&page=2`,
 			"--jq",
 			".merge_base_commit.sha",
 		],

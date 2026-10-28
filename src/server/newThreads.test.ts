@@ -689,6 +689,10 @@ describe("commentLeft", () => {
 		expect(await s.commentLeft()).toBe(true);
 		expect((await s.overview(0)).commentLeft).toBe(true);
 		expect(compares()).toBe(1);
+		// Its smallest answer: no files.
+		expect(pr.ghLog()).toContain(
+			`compare/main...${pr.head()}?per_page=1&page=2 --jq .merge_base_commit.sha`,
+		);
 		const { thread } = await s.startThread(line(pr.head(), "l0"));
 		expect(thread.anchor).toMatchObject({ side: "LEFT", line: 2 });
 	});
