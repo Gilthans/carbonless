@@ -13,6 +13,11 @@ export interface ViewSetting {
 	/** Forgets the in-memory choice (tests), so the next read is from storage. */
 	reset(): void;
 	use(): boolean;
+	/**
+	 * Calls `onChange` synchronously inside `set()` when the value changes,
+	 * before React re-renders: a chance to measure the page as it was.
+	 */
+	subscribe(onChange: () => void): () => void;
 }
 
 export function viewSetting(key: string, fallback: boolean): ViewSetting {
@@ -38,18 +43,20 @@ export function viewSetting(key: string, fallback: boolean): ViewSetting {
 		key,
 		read,
 		set(next) {
+			const changed = value !== next;
 			value = next;
 			try {
 				localStorage.setItem(key, next ? "on" : "off");
 			} catch {
 				// Storage is a convenience only.
 			}
-			for (const listener of listeners) listener();
+			if (changed) for (const listener of listeners) listener();
 		},
 		reset() {
 			value = undefined;
 		},
 		use: () => useSyncExternalStore(subscribe, current),
+		subscribe,
 	};
 }
 

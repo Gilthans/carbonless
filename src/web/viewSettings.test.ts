@@ -53,6 +53,26 @@ describe("viewSetting", () => {
 		}
 	});
 
+	it("tells subscribers inside set, before React re-renders, until unsubscribed", () => {
+		const s = viewSetting("crb.test.sub", false);
+		const { result } = renderHook(() => s.use());
+		const seen: Array<{ stored: boolean; rendered: boolean }> = [];
+		const off = s.subscribe(() => {
+			seen.push({ stored: s.read(), rendered: result.current });
+		});
+		act(() => s.set(true));
+		// Told synchronously: the choice is stored, the hook still shows the old value.
+		expect(seen).toEqual([{ stored: true, rendered: false }]);
+		expect(result.current).toBe(true);
+		// The same value again is no change.
+		act(() => s.set(true));
+		expect(seen).toHaveLength(1);
+		off();
+		act(() => s.set(false));
+		expect(seen).toHaveLength(1);
+		expect(result.current).toBe(false);
+	});
+
 	it("has hidden characters on and ignore whitespace off by default", () => {
 		expect(showInvisibles.key).toBe("crb.code.invisibles");
 		expect(showInvisibles.read()).toBe(true);
