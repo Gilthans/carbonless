@@ -185,12 +185,19 @@ function threadAnchor(
 	const side: Side = SIDES.has(str(t.diffSide))
 		? (str(t.diffSide) as Side)
 		: "RIGHT";
-	const start = lineNumber(
-		original === null ? t.startLine : t.originalStartLine,
-	);
 	const startSide: Side = SIDES.has(str(t.startDiffSide))
 		? (str(t.startDiffSide) as Side)
 		: side;
+	// GitHub's current startLine on LEFT is the NEW number when the range
+	// starts on a context line (checked on gallery #2): never taken; with
+	// no original line, such a range is its last line only.
+	const start = lineNumber(
+		original !== null
+			? t.originalStartLine
+			: startSide === "LEFT"
+				? null
+				: t.startLine,
+	);
 	return {
 		path,
 		commit,

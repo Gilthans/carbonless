@@ -118,9 +118,6 @@ export function newThreadProblem(req: unknown): string | null {
 	const startSide = r.startSide ?? r.side;
 	const startLine = (r.startLine ?? r.line) as number;
 	const line = r.line as number;
-	if (startSide === "RIGHT" && r.side === "LEFT") {
-		return "A range runs from the old side to the new, not back";
-	}
 	if (startSide === r.side && startLine > line) {
 		return "A range's start comes before its end";
 	}

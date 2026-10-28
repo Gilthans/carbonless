@@ -13,6 +13,7 @@ import { createPrFixture, type PrFixture } from "../../test/pr-fixture";
 import type { NewThreadRequest } from "../shared/types";
 import { GhError, WriteRefusedError } from "./errors";
 import { newThreadProblem, placeOf, postedBody } from "./newThreads";
+import { mapThreads } from "./overview";
 import { parseHead } from "./pinnedHead";
 import { Session } from "./session";
 import { writeWaits } from "./threadWrites";
@@ -249,6 +250,81 @@ describe("new threads", () => {
 		).toMatchObject({ start: { side: "LEFT", line: 2 } });
 	});
 
+	it("a range from RIGHT to LEFT goes to GitHub as asked (it takes one whose start comes first in the diff)", async () => {
+		const { thread } = await session.startThread(
+			request({ startSide: "RIGHT", startLine: 1, side: "LEFT", line: 2 }),
+		);
+		expect(stored().at(-1)).toMatchObject({
+			startDiffSide: "RIGHT",
+			originalStartLine: 1,
+			diffSide: "LEFT",
+			originalLine: 2,
+		});
+		expect(thread.anchor).toMatchObject({
+			startSide: "RIGHT",
+			startLine: 1,
+			side: "LEFT",
+			line: 2,
+		});
+	});
+
+	it("a range starting LEFT on a context line: the anchor is the old number, though GitHub's startLine reads back the new one", async () => {
+		const lines = Array.from({ length: 30 }, (_, i) => `line ${i + 1}`);
+		lines[1] = "line 2 changed";
+		lines[25] = "line 26 changed";
+		// Two lines on top: old line 1 is new line 3.
+		const now = pr.moveHead({
+			"a.txt": `${["top 1", "top 2", ...lines].join("\n")}\n`,
+		});
+		const s = await Session.open(pr.arg, process.cwd());
+		const { thread } = await s.startThread(
+			request({
+				commit: now,
+				startSide: "LEFT",
+				startLine: 1,
+				side: "LEFT",
+				line: 2,
+			}),
+		);
+		// GitHub's quirk, reproduced by the fake.
+		expect(stored().at(-1)).toMatchObject({
+			startLine: 3,
+			originalStartLine: 1,
+			startDiffSide: "LEFT",
+		});
+		expect(thread.anchor).toMatchObject({
+			startSide: "LEFT",
+			startLine: 1,
+			side: "LEFT",
+			line: 2,
+		});
+		expect(
+			thread.code?.rows.filter((r) => r.marked).map((r) => r.oldNo),
+		).toEqual([1, 2]);
+	});
+
+	it("with no original line, a LEFT start is never GitHub's current startLine (the new number there)", () => {
+		const node = {
+			...reviewThread({
+				path: "a.txt",
+				line: 5,
+				originalLine: null,
+				startLine: 3,
+				originalStartLine: null,
+				diffSide: "LEFT",
+				startDiffSide: "LEFT",
+			}),
+			id: "T1",
+		};
+		const [t] = mapThreads([node], { prAuthor: "rev", viewer: "Octo_Cat" });
+		expect(t?.anchor).toMatchObject({
+			startSide: "LEFT",
+			startLine: 5,
+			side: "LEFT",
+			line: 5,
+		});
+	});
+
 	it("a file comment: subject_type file, no lines, on any file of the diff", async () => {
 		const { thread } = await session.startThread(
 			request({
@@ -326,7 +402,6 @@ describe("new threads", () => {
 			{ side: "UP" as "LEFT" },
 			{ line: 0 },
 			{ startSide: "RIGHT", startLine: 5, line: 2 },
-			{ startSide: "RIGHT", startLine: 1, side: "LEFT", line: 2 },
 			{ startSide: "RIGHT" },
 			{ startCol: 3 },
 			{ startCol: 4, endCol: 4 },

@@ -520,6 +520,14 @@ if (restCreate && !s.loggedOut) {
 		if (req.start_line && !inDiff(startSide, req.start_line)) unresolved("start_line");
 		diffHunk = hunkTo(diff.hunks, side, req.line) ?? "";
 	}
+	// GitHub's quirk (gallery #2): a range starting on LEFT on a context
+	// line reads back from GraphQL with startLine its NEW number
+	// (originalStartLine keeps the old one).
+	const startRow =
+		startSide === "LEFT"
+			? diff.hunks.flatMap((h) => h.rows).find((r) => r.old === req.start_line)
+			: undefined;
+	const shownStart = startRow?.new ?? req.start_line ?? null;
 	const now = new Date().toISOString().replace(/\.\d+Z$/, "Z");
 	const author = {
 		login: s.user.login,
@@ -537,7 +545,7 @@ if (restCreate && !s.loggedOut) {
 		subjectType: file ? "FILE" : "LINE",
 		line: file ? null : req.line,
 		originalLine: file ? null : req.line,
-		startLine: req.start_line ?? null,
+		startLine: shownStart,
 		originalStartLine: req.start_line ?? null,
 		diffSide: side ?? "RIGHT",
 		startDiffSide: startSide,
@@ -562,7 +570,7 @@ if (restCreate && !s.loggedOut) {
 		line: thread.line,
 		original_line: thread.originalLine,
 		side: file ? null : side,
-		start_line: thread.startLine,
+		start_line: req.start_line ?? null,
 		original_start_line: thread.originalStartLine,
 		start_side: startSide,
 		diff_hunk: diffHunk,
