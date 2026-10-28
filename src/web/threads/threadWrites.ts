@@ -628,16 +628,24 @@ export class ThreadWrites {
 		if (this.#gone.has(threadId)) return;
 		this.#gone.set(
 			threadId,
-			setTimeout(() => {
-				this.#gone.delete(threadId);
-				this.#goneIds = new Set(this.#gone.keys());
-				try {
-					this.#deps.gone(threadId);
-				} catch {}
-				this.#changed();
-			}, FADE_MS),
+			setTimeout(() => this.#dropGone(threadId), FADE_MS),
 		);
 		this.#goneIds = new Set(this.#gone.keys());
+	}
+
+	#dropGone(threadId: string) {
+		clearTimeout(this.#gone.get(threadId));
+		this.#gone.delete(threadId);
+		this.#goneIds = new Set(this.#gone.keys());
+		try {
+			this.#deps.gone(threadId);
+		} catch {}
+		this.#changed();
+	}
+
+	/** Those of these threads fading out as gone leave now (the list was switched). */
+	settleGone(threadIds: Iterable<string>): void {
+		for (const id of threadIds) if (this.#gone.has(id)) this.#dropGone(id);
 	}
 
 	#lane(threadId: string): Lane {

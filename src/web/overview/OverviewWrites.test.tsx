@@ -324,6 +324,69 @@ describe("resolving from an Overview card", () => {
 		expect(moving).toHaveClass("motion-reduce:inline");
 	});
 
+	it("switching lists ends the fade: the card is in its new list at once, both ways", async () => {
+		vi.useFakeTimers({ shouldAdvanceTime: true });
+		const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+		renderOverview({}, [thread("a"), thread("b")]);
+		const humans = await screen.findByRole("region", { name: "Human reviews" });
+		const [card] = within(humans).getAllByTestId("thread");
+		if (!card) throw new Error("no card");
+		await openCard(user, card);
+		await user.click(within(card).getByRole("button", { name: "Resolve" }));
+		expect(card).toHaveAttribute("data-fading", "true");
+		await user.click(
+			within(humans).getByRole("radio", { name: /^\d+ resolved$/ }),
+		);
+		const done = within(humans).getByRole("list", { name: "Resolved threads" });
+		const [moved] = within(done).getAllByTestId("thread");
+		expect(moved).toHaveTextContent("src/a.ts");
+		expect(moved).not.toHaveAttribute("data-fading");
+		expect(moved).not.toHaveClass("thread-fading");
+		// And back: unresolved there, it is in Unresolved at once.
+		await openCard(user, moved as HTMLElement);
+		await user.click(
+			within(moved as HTMLElement).getByRole("button", { name: "Unresolve" }),
+		);
+		expect(moved).toHaveAttribute("data-fading", "true");
+		await user.click(
+			within(humans).getByRole("radio", { name: /^\d+ unresolved$/ }),
+		);
+		const open = within(humans).getByRole("list", {
+			name: "Unresolved threads",
+		});
+		const cards = within(open).getAllByTestId("thread");
+		expect(cards).toHaveLength(2);
+		for (const c of cards) expect(c).not.toHaveAttribute("data-fading");
+		// The writes themselves are untouched.
+		await waitFor(() =>
+			expect(posts.map((p) => p.body)).toEqual([
+				{ resolved: true },
+				{ resolved: false },
+			]),
+		);
+	});
+
+	it("leaving Drafts ends the fade too", async () => {
+		vi.useFakeTimers({ shouldAdvanceTime: true });
+		const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+		const client = renderOverview({}, [thread("a"), thread("b")]);
+		const humans = await screen.findByRole("region", { name: "Human reviews" });
+		act(() => draftsFor(client).setText("b", "Half a thought"));
+		await user.click(await within(humans).findByTestId("drafts-filter"));
+		const list = within(humans).getByRole("list", {
+			name: "Threads with a draft",
+		});
+		const card = within(list).getByTestId("thread");
+		await user.click(within(card).getByRole("button", { name: "Resolve" }));
+		await user.click(
+			within(humans).getByRole("radio", { name: /^\d+ resolved$/ }),
+		);
+		const done = within(humans).getByRole("list", { name: "Resolved threads" });
+		const moved = within(done).getByTestId("thread");
+		expect(moved).toHaveTextContent("src/b.ts");
+		expect(moved).not.toHaveAttribute("data-fading");
+	});
+
 	it("has no toggle or reply as of a cutoff", async () => {
 		renderOverview({ writes: "as-of", asOf: "2026-01-02T00:00:00Z" }, [
 			thread("a"),
@@ -345,6 +408,11 @@ describe("replying from an Overview card", () => {
 		const card = within(humans).getByTestId("thread");
 		const more = within(card).getByTestId("thread-more");
 		expect(more).toHaveAccessibleName("Reply");
+		// Its own row, centred in the card.
+		const row = within(card).getByTestId("thread-more-row");
+		expect(row).toHaveClass("flex", "justify-center");
+		expect(row).toContainElement(more);
+		expect(row.children).toHaveLength(1);
 		expect(more).toHaveTextContent(/^Reply$/);
 		expect(within(card).queryByRole("textbox", { name: "Reply" })).toBeNull();
 		await user.click(more);
@@ -748,6 +816,18 @@ describe("WriteWarnings in who's on it", () => {
 	});
 });
 
+/** Delete, then Delete again in the confirmation it opens. */
+async function confirmDelete(
+	user: ReturnType<typeof userEvent.setup>,
+	button: HTMLElement,
+) {
+	await user.click(button);
+	const dialog = screen.getByRole("alertdialog", {
+		name: "Delete this comment?",
+	});
+	await user.click(within(dialog).getByRole("button", { name: "Delete" }));
+}
+
 describe("editing and deleting from an Overview card", () => {
 	const own = (
 		threadId: string,
@@ -872,7 +952,8 @@ describe("editing and deleting from an Overview card", () => {
 		const [card] = within(humans).getAllByTestId("thread");
 		if (!card) throw new Error("no card");
 		await openCard(user, card);
-		await user.click(
+		await confirmDelete(
+			user,
 			await within(card).findByRole("button", { name: "Delete" }),
 		);
 		const row = within(card).getByTestId("comment-deleted-row");
@@ -880,7 +961,10 @@ describe("editing and deleting from an Overview card", () => {
 		await user.click(within(row).getByRole("button", { name: "Undo" }));
 		await act(() => vi.advanceTimersByTimeAsync(DELETE_UNDO_MS * 2));
 		expect(posts).toEqual([]);
-		await user.click(within(card).getByRole("button", { name: "Delete" }));
+		await confirmDelete(
+			user,
+			within(card).getByRole("button", { name: "Delete" }),
+		);
 		await act(() => vi.advanceTimersByTimeAsync(DELETE_UNDO_MS));
 		await waitFor(() =>
 			expect(posts).toEqual([
@@ -897,6 +981,38 @@ describe("editing and deleting from an Overview card", () => {
 			expect(within(humans).getAllByTestId("thread")).toHaveLength(1),
 		);
 		expect(statePosts()).toBe(0);
+	});
+
+	it("a card fading out as deleted leaves at once when the list is switched", async () => {
+		vi.useFakeTimers({ shouldAdvanceTime: true });
+		const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+		openerMore = { author: "octo", viewerCan: { update: true, delete: true } };
+		renderOverview({}, [thread("a", { author: "octo" }), thread("b")], () => ({
+			status: 200,
+			body: { threadId: "a", gone: true },
+		}));
+		const humans = await screen.findByRole("region", { name: "Human reviews" });
+		const [card] = within(humans).getAllByTestId("thread");
+		if (!card) throw new Error("no card");
+		await openCard(user, card);
+		await confirmDelete(
+			user,
+			await within(card).findByRole("button", { name: "Delete" }),
+		);
+		await act(() => vi.advanceTimersByTimeAsync(DELETE_UNDO_MS));
+		await waitFor(() => expect(card).toHaveAttribute("data-fading", "true"));
+		await user.click(
+			within(humans).getByRole("radio", { name: /^\d+ resolved$/ }),
+		);
+		await user.click(
+			within(humans).getByRole("radio", { name: /^\d+ unresolved$/ }),
+		);
+		const cards = within(humans).getAllByTestId("thread");
+		expect(cards).toHaveLength(1);
+		expect(cards[0]).toHaveTextContent("src/b.ts");
+		expect(
+			within(humans).getByRole("radio", { name: "1 unresolved" }),
+		).toBeChecked();
 	});
 
 	it("changed on GitHub: the opener's newer text shows above the editor", async () => {
@@ -939,7 +1055,8 @@ describe("editing and deleting from an Overview card", () => {
 		renderOverview({}, [thread("a", { author: "octo" })], () => null);
 		const card = await screen.findByTestId("thread");
 		await openCard(user, card);
-		await user.click(
+		await confirmDelete(
+			user,
 			await within(card).findByRole("button", { name: "Delete" }),
 		);
 		// Collapsed, the Deleted row stays; Undo there.

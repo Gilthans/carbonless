@@ -202,7 +202,7 @@ bordered (`edge`) card on `surface`:
    `mark-tint`) beside the first comment, stacked on a phone. The comment
    sits on its author's tint (below): GitHub's text, apart from the card
    and the code. Both are clipped while the card is closed;
-4. one 40px "Show more" toggle for the whole thread (chevron, `link`,
+4. one 40px "Show more" toggle for the whole thread, centred on its own row (chevron, `link`,
    `aria-expanded`), with "· N replies" (discussion icon) when there are
    any and a `warn` clock for the viewer's pending ones; it shows whenever
    there's more: clipped text or code, a reply, or something the viewer may

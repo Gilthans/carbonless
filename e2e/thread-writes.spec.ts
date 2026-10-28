@@ -175,6 +175,14 @@ test("a short card's toggle says Reply; on a phone the closed box and Resolve sh
 	const more = c.getByTestId("thread-more");
 	// Nothing more to read: it opens only to the box and Resolve.
 	await expect(more).toHaveAccessibleName("Reply");
+	// Centred in the card, 40px tall.
+	const cardBox = await c.boundingBox();
+	const moreBox = await more.boundingBox();
+	if (!cardBox || !moreBox) throw new Error("not laid out");
+	expect(
+		Math.abs(moreBox.x + moreBox.width / 2 - (cardBox.x + cardBox.width / 2)),
+	).toBeLessThanOrEqual(2);
+	expect(moreBox.height).toBeGreaterThanOrEqual(40);
 	await more.click();
 	await expect(more).toHaveAccessibleName("Hide");
 	const box = c.getByRole("textbox", { name: "Reply" });
@@ -370,6 +378,44 @@ test("undo during the fade keeps the card", async ({ page, pr, startCrb }) => {
 	await page.waitForTimeout(4500);
 	await expect(card(page, "new.txt")).toBeVisible();
 	await expect(c.getByTestId("thread-head")).toContainText("Unresolved thread");
+});
+
+test("switching to Resolved during the fade: the card is there at once, not fading", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	if (isMobile) await page.setViewportSize({ width: 360, height: 780 });
+	await setup(pr);
+	const s = await startCrb();
+	await page.goto(s.url);
+	const c = card(page, "new.txt");
+	await openCard(c);
+	await c.getByRole("button", { name: "Resolve", exact: true }).click();
+	await expect(c).toHaveAttribute("data-fading", "true");
+	const choice = humans(page).getByRole("radiogroup", {
+		name: "Threads shown",
+	});
+	await choice.getByText(/^\d+ resolved$/).click();
+	const done = humans(page).getByRole("list", { name: "Resolved threads" });
+	const moved = done.getByTestId("thread").filter({ hasText: "new.txt" });
+	await expect(moved).toBeVisible({ timeout: 1000 });
+	await expect(moved).not.toHaveAttribute("data-fading");
+	await expect(moved.getByTestId("thread-head")).toContainText(
+		"Resolved thread",
+	);
+	// And back the same way.
+	await openCard(moved);
+	await moved.getByRole("button", { name: "Unresolve" }).click();
+	await expect(moved).toHaveAttribute("data-fading", "true");
+	await choice.getByText(/^\d+ unresolved$/).click();
+	const back = humans(page)
+		.getByRole("list", { name: "Unresolved threads" })
+		.getByTestId("thread")
+		.filter({ hasText: "new.txt" });
+	await expect(back).toBeVisible({ timeout: 1000 });
+	await expect(back).not.toHaveAttribute("data-fading");
 });
 
 test("a failing reply keeps its text, with Retry", async ({

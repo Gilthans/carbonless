@@ -960,7 +960,13 @@ function useFade() {
 		);
 		setFading((m) => new Map(m).set(id, !next));
 	}, []);
-	return { fading, toggled };
+	/** Every fade ends now: each card moves to its new list at once. */
+	const settle = useCallback(() => {
+		for (const t of timers.current.values()) clearTimeout(t);
+		timers.current.clear();
+		setFading((m) => (m.size ? new Map() : m));
+	}, []);
+	return { fading, toggled, settle };
 }
 
 const CHOICE_TONES = {
@@ -1080,6 +1086,13 @@ function ThreadGroup(props: {
 	const writer = useThreadWriter();
 	// Threads whose last comment was deleted here fade, then leave.
 	const { gone } = useThreadWrites();
+	// Another list chosen: no card keeps fading in the old one.
+	const switchTo = (f: ThreadFilter) => {
+		fade.settle();
+		writer.settleGone(threads.map((t) => t.id));
+		setFilter(f);
+		setLimit(THREAD_PAGE);
+	};
 	// A card resolved or unresolved stays in its list while it fades.
 	const inResolved = (t: Thread) => fade.fading.get(t.id) ?? t.resolved;
 	const unresolved = threads.filter((t) => !inResolved(t));
@@ -1172,10 +1185,7 @@ function ThreadGroup(props: {
 								resolved={resolved.length}
 								asOf={asOf}
 								controls={listId}
-								onChoose={(f) => {
-									setFilter(f);
-									setLimit(THREAD_PAGE);
-								}}
+								onChoose={switchTo}
 							/>
 						</li>
 						{draftCount > 0 && (
@@ -1192,12 +1202,10 @@ function ThreadGroup(props: {
 									toggle={{
 										pressed: shownFilter === "drafts",
 										controls: listId,
-										onClick: () => {
-											setFilter(
+										onClick: () =>
+											switchTo(
 												shownFilter === "drafts" ? "unresolved" : "drafts",
-											);
-											setLimit(THREAD_PAGE);
-										},
+											),
 									}}
 								>
 									{plural(draftCount, "draft")}
@@ -1515,6 +1523,7 @@ function ThreadItem({
 						threadId={thread.id}
 						comment={first}
 						onEdit={() => write.setEditing(true)}
+						keepsPlace={replies.n > 0}
 					/>
 				)}
 			</div>
@@ -1676,19 +1685,22 @@ function ThreadItem({
 					</div>
 				)}
 				{more && (
-					<MoreToggle
-						open={open}
-						onClick={() => setOpen((o) => !o)}
-						controls={[
-							rows.length ? codeId : "",
-							commentId,
-							open ? repliesId : "",
-						]
-							.filter(Boolean)
-							.join(" ")}
-						replies={replies}
-						kind={kind}
-					/>
+					// Its own row, centred under the card.
+					<div data-testid="thread-more-row" className="flex justify-center">
+						<MoreToggle
+							open={open}
+							onClick={() => setOpen((o) => !o)}
+							controls={[
+								rows.length ? codeId : "",
+								commentId,
+								open ? repliesId : "",
+							]
+								.filter(Boolean)
+								.join(" ")}
+							replies={replies}
+							kind={kind}
+						/>
+					</div>
 				)}
 			</div>
 		</li>

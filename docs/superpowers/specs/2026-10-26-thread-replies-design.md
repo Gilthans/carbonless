@@ -49,7 +49,7 @@ The order after this, by the owner: editing and deleting your own comments, then
 
 - A big "Resolve" / "Unresolve" button (text and icon, ≥40px) beside each thread's reply box (below it on a phone); in the Overview inside the card's one "Show more" (owner, 2026-10-27: it was first an icon toggle in the header).
 - It flips at once in place (the resolved look from the threads stage: green check plus "Resolved") and syncs through the same queue and notices. Files changed's bubble and highlight follow the state; resolving clears the attention set (existing rule).
-- In the Overview a card resolved or unresolved fades away where it is over a few seconds (owner: "so there's a little time to undo the action but it's clear that it's going away"), with the toggle still there to undo; then it moves to the other group. Undo during the fade keeps it in place. The fade respects `prefers-reduced-motion` (a plain countdown state instead).
+- In the Overview a card resolved or unresolved fades away where it is over a few seconds (owner: "so there's a little time to undo the action but it's clear that it's going away"), with the toggle still there to undo; then it moves to the other group. Undo during the fade keeps it in place. Switching lists (Unresolved, Resolved, Drafts) ends every fade at once (owner: "it should skip the fade out animation and move it immediately"): the card is already in its new list, and a card fading out because its last comment was deleted is gone. The fade respects `prefers-reduced-motion` (a plain countdown state instead).
 - Resolving never changes review progress or cluster state (principle 2): it's a GitHub action on a thread, not a review mark.
 
 ## Sync and notices
