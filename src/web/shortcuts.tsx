@@ -318,6 +318,8 @@ function ShortcutsHelp(props: {
 	const titleId = useId();
 	const closeButton = useRef<HTMLButtonElement>(null);
 	const returnTo = useRef<Element | null>(null);
+	/** The press began on the backdrop (not a drag out of the dialog's text). */
+	const fromBackdrop = useRef(false);
 	// A passive effect after the page's own (the help renders after them):
 	// a menu that opened the help has closed, focus back on its button,
 	// before focus is noted.
@@ -376,9 +378,15 @@ function ShortcutsHelp(props: {
 				props.onClose();
 			}}
 			onKeyDown={trap}
+			onPointerDown={(e) => {
+				fromBackdrop.current = e.target === dialog.current;
+			}}
 			onClick={(e) => {
-				// A click on the backdrop lands on the dialog itself.
-				if (e.target === dialog.current) props.onClose();
+				// A press that began and ended on the backdrop (the dialog itself).
+				if (e.target === dialog.current && fromBackdrop.current) {
+					props.onClose();
+				}
+				fromBackdrop.current = false;
 			}}
 			className="m-auto max-h-[85dvh] w-[min(30rem,calc(100vw-2rem))] max-w-none overflow-hidden rounded-lg border border-edge bg-surface p-0 text-ink shadow-float backdrop:bg-canvas/70 backdrop:backdrop-blur-[2px] open:flex open:flex-col"
 		>

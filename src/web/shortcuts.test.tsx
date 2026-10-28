@@ -249,6 +249,19 @@ describe("ShortcutsProvider", () => {
 		expect(helpOpen()).toBe(false);
 	});
 
+	it("closes on a press on the backdrop, not on a drag out of the help", () => {
+		render(<ShortcutsProvider>{null}</ShortcutsProvider>);
+		press("?", { shiftKey: true });
+		const d = help() as HTMLElement;
+		const row = screen.getByText("Keyboard shortcuts", { selector: "li span" });
+		fireEvent.pointerDown(row);
+		fireEvent.click(d);
+		expect(helpOpen()).toBe(true);
+		fireEvent.pointerDown(d);
+		fireEvent.click(d);
+		expect(helpOpen()).toBe(false);
+	});
+
 	it("doesn't run other shortcuts while the help is open", () => {
 		const run = vi.fn();
 		render(
