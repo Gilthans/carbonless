@@ -1019,7 +1019,7 @@ function ResolvedChoice(props: {
 						{({ "aria-describedby": describedBy, ...trigger }) => (
 							<label
 								{...trigger}
-								className={`inline-flex min-h-10 cursor-pointer items-center gap-1 rounded-full border border-transparent px-2.5 text-xs font-medium transition-colors hover:bg-overlay has-focus-visible:outline-2 has-focus-visible:outline-offset-1 has-focus-visible:outline-accent motion-reduce:transition-none ${CHOICE_TONES[o.count ? o.tone : "gray"]}`}
+								className={`relative inline-flex min-h-10 cursor-pointer items-center gap-1 rounded-full border border-transparent px-2.5 text-xs font-medium transition-colors hover:bg-overlay has-focus-visible:outline-2 has-focus-visible:outline-offset-1 has-focus-visible:outline-accent motion-reduce:transition-none ${CHOICE_TONES[o.count ? o.tone : "gray"]}`}
 							>
 								<input
 									type="radio"
@@ -1090,7 +1090,9 @@ function ThreadGroup(props: {
 		return props.writesOn ? threads.filter((t) => ids.has(t.id)) : [];
 	}, [drafts, threads, props.writesOn]);
 	const draftCount = drafted.length + orphans.length;
-	// The drafts sent or cleared: back to the open threads.
+	// The drafts sent or cleared: back to the open threads, for good (a new
+	// draft later doesn't bring the Drafts list back by itself).
+	if (filter === "drafts" && draftCount === 0) setFilter("unresolved");
 	const shownFilter =
 		filter === "drafts" && draftCount === 0 ? "unresolved" : filter;
 	const showResolved = shownFilter === "resolved";

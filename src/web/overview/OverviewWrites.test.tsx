@@ -493,6 +493,49 @@ describe("the Drafts filter", () => {
 		}
 	});
 
+	it("once the drafts run out it stays on Unresolved, and either side works", async () => {
+		const user = userEvent.setup();
+		const client = renderOverview({}, [
+			thread("a"),
+			thread("b"),
+			thread("c", { resolved: true }),
+		]);
+		const humans = await screen.findByRole("region", { name: "Human reviews" });
+		act(() => draftsFor(client).setText("b", "Half a thought"));
+		await user.click(await within(humans).findByTestId("drafts-filter"));
+		act(() => draftsFor(client).setText("b", ""));
+		await waitFor(() =>
+			expect(within(humans).queryByTestId("drafts-filter")).toBeNull(),
+		);
+		const open = within(humans).getByRole("radio", { name: "2 unresolved" });
+		const done = within(humans).getByRole("radio", { name: "1 resolved" });
+		expect(open).toBeChecked();
+		// A new draft later doesn't bring the Drafts list back.
+		act(() => draftsFor(client).setText("a", "Another thought"));
+		const chip = await within(humans).findByTestId("drafts-filter");
+		expect(chip).toHaveAttribute("aria-pressed", "false");
+		expect(open).toBeChecked();
+		expect(
+			within(humans).getByRole("list", { name: "Unresolved threads" }),
+		).toBeInTheDocument();
+		// Run out again: both sides answer at once.
+		await user.click(chip);
+		act(() => draftsFor(client).setText("a", ""));
+		await waitFor(() =>
+			expect(within(humans).queryByTestId("drafts-filter")).toBeNull(),
+		);
+		await user.click(done);
+		expect(done).toBeChecked();
+		expect(
+			within(humans).getByRole("list", { name: "Resolved threads" }),
+		).toBeInTheDocument();
+		await user.click(open);
+		expect(open).toBeChecked();
+		expect(
+			within(humans).getByRole("list", { name: "Unresolved threads" }),
+		).toBeInTheDocument();
+	});
+
 	it("lists a draft whose thread isn't listed, with its text, Copy and Discard", async () => {
 		const user = userEvent.setup();
 		const client = renderOverview({}, [thread("a")]);

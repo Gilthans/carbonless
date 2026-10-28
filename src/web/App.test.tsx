@@ -24,6 +24,7 @@ import type {
 import { COMPACT_RAMP, compactProgress } from "./App";
 import { resetShowInvisibles, setShowInvisibles } from "./code/Invisibles";
 import { createAppRouter } from "./router";
+import { draftsFor } from "./threads/drafts";
 
 const info: SessionInfo = {
 	pr: {
@@ -273,7 +274,7 @@ function renderApp(routes: Partial<Routes> = {}, path = "/") {
 			<RouterProvider router={router} />
 		</QueryClientProvider>,
 	);
-	return { ...view, router };
+	return { ...view, router, client: queryClient };
 }
 
 const calls = (path: string) =>
@@ -2043,6 +2044,43 @@ describe("Timeline", () => {
 		expect(
 			within(humans).getByRole("list", { name: "Resolved threads" }),
 		).toContainElement(card);
+		expect(
+			within(humans).getByRole("radio", { name: "4 resolved" }),
+		).toBeChecked();
+	});
+
+	it("brings a thread into view while Drafts is on: its list shows, Drafts goes", async () => {
+		const user = userEvent.setup();
+		Element.prototype.scrollIntoView = vi.fn();
+		const { client } = renderApp({ "/api/timeline": ok(timeline) });
+		const humans = await screen.findByRole("region", { name: "Human reviews" });
+		await within(humans).findAllByTestId("thread");
+		act(() => draftsFor(client).setText("T-cache", "Half a thought"));
+		const chip = await within(humans).findByTestId("drafts-filter");
+		await user.click(chip);
+		expect(chip).toHaveAttribute("aria-pressed", "true");
+		const section = screen.getByRole("region", { name: "Timeline" });
+		const row = within(section).getAllByTestId(
+			"timeline-event",
+		)[2] as HTMLElement;
+		await user.click(
+			within(row).getByRole("button", { name: "Show 3 comments" }),
+		);
+		const items = within(row).getAllByTestId("timeline-item");
+		await user.click(
+			within(items[3] as HTMLElement).getByRole("link", {
+				name: "Go to the thread",
+			}),
+		);
+		await waitFor(() =>
+			expect(
+				within(humans).getByRole("radio", { name: "4 resolved" }),
+			).toBeChecked(),
+		);
+		expect(chip).toHaveAttribute("aria-pressed", "false");
+		expect(
+			within(humans).getByRole("list", { name: "Resolved threads" }),
+		).toContainElement(document.getElementById("thread-src/done1.ts"));
 	});
 
 	it("shows the latest events, the earlier ones on request, and what GitHub didn't list", async () => {
