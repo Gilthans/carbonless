@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { writeFileAtomic } from "../../test/fake-gh/atomic.mjs";
@@ -355,6 +356,70 @@ describe("new threads", () => {
 		const third = await restarted.startThread({ ...req, retry: true });
 		expect(third.thread.id).toBe("T12-1");
 		expect(posts()).toHaveLength(1);
+		expect(stored()).toHaveLength(2);
+	});
+
+	it("a lost answer, then the head moves: the retry still returns the thread, not stale, and posts nothing", async () => {
+		tweak({ failNext: { op: "comment", status: 502, afterWrite: true } });
+		const req = request();
+		await expect(session.startThread(req)).rejects.toBeInstanceOf(GhError);
+		const path = process.env.CRB_FAKE_GH ?? "";
+		const before = JSON.parse(readFileSync(path, "utf8")) as Scenario;
+		const now = pr.moveHead({ "later.txt": "later\n" });
+		const prs = before.prs;
+		const pr12 = prs[12];
+		if (!pr12) throw new Error("no PR 12");
+		pr12.view = prView({ headRefOid: now, baseRefName: "main" });
+		tweak({ prs });
+		const restarted = await Session.open(pr.arg, process.cwd());
+		expect(restarted.info().snapshotHead).toBe(now);
+		const again = await restarted.startThread({ ...req, retry: true });
+		expect(again.thread.id).toBe("T12-1");
+		// A fresh one on the old head is stale, as before.
+		const stale = await refused(
+			restarted.startThread(request({ commit: req.commit })),
+		);
+		expect(stale.code).toBe("stale");
+		expect(posts()).toHaveLength(1);
+	});
+
+	it("an unknown outcome: the retry lists again after each wait before posting, as GitHub may make it late", async () => {
+		tweak({ failNext: { op: "comment", status: 502 } });
+		const req = request();
+		await expect(session.startThread(req)).rejects.toBeInstanceOf(GhError);
+		// GitHub makes it while the retry waits (its first wait).
+		writeWaits.sleep = async (ms) => {
+			waited.push(ms);
+			if (waited.length === 1) {
+				execFileSync(
+					"gh",
+					[
+						"api",
+						"-X",
+						"POST",
+						"repos/acme/widget/pulls/12/comments",
+						"-H",
+						"Accept: application/vnd.github.full+json",
+						"--input",
+						"-",
+					],
+					{
+						input: JSON.stringify({
+							body: postedBody(req),
+							commit_id: req.commit,
+							path: req.path,
+							line: req.line,
+							side: req.side,
+						}),
+					},
+				);
+			}
+		};
+		const { thread } = await session.startThread({ ...req, retry: true });
+		expect(thread.id).toBe("T12-1");
+		expect(waited[0]).toBe(300);
+		// The failed attempt and GitHub's late one; no third.
+		expect(posts()).toHaveLength(2);
 		expect(stored()).toHaveLength(2);
 	});
 

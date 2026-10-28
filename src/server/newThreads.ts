@@ -179,11 +179,12 @@ export function postedBody(req: NewThreadRequest): string {
  * Starts a thread on GitHub, at once, as the gh login: REST
  * `pulls/{n}/comments` (never GraphQL's addPullRequestReviewThread, which
  * joins a pending review), with carbonless's marker (marker.ts) on the
- * body. Only on the snapshot's head ("stale" otherwise), and LEFT lines
- * only where GitHub's merge base is the snapshot's (commentLeft). Never
- * twice: a thread this session started under `req.clientId` isn't posted
- * again, and a retry (`req.retry`) first looks for the viewer's comment
- * carrying the client id among the PR's (REST: no lag). The answer is the
+ * body. Never twice: a thread this session started under `req.clientId`
+ * isn't posted again, and a retry (`req.retry`) first looks for the
+ * viewer's comment carrying the client id among the PR's (findStarted);
+ * either is answered as it is. Only a post is checked: on the snapshot's
+ * head ("stale" otherwise), LEFT lines only where GitHub's merge base is
+ * the snapshot's (commentLeft), and the length with the marker. The answer is the
  * thread as GitHub's GraphQL lists it, mapped as the overview read maps
  * it, and it joins the session's kept reads. Posted but not listed yet:
  * a GhError (502), whose resend finds it. The session runs these one at
@@ -196,50 +197,41 @@ export async function startThread(
 	writesOff(target);
 	const problem = newThreadProblem(req);
 	if (problem) throw new WriteRefusedError(problem, "invalid");
-	if (req.commit !== target.head) {
-		throw new WriteRefusedError(
-			"The PR moved on since: refresh to comment on its new head",
-			"stale",
-		);
-	}
 	const place = placeOf(req);
-	const left =
-		place.subject === "line" &&
-		(place.side === "LEFT" || place.start?.side === "LEFT");
-	if (left && !(await target.commentLeft())) {
-		throw new WriteRefusedError(
-			"GitHub takes no comments on this commit's old lines",
-			"invalid",
-		);
-	}
 	const body = postedBody(req);
-	if (body.length > MAX_REPLY) {
-		const room = MAX_REPLY - (body.length - req.body.length);
-		throw new WriteRefusedError(
-			`A comment is at most ${room} characters`,
-			"invalid",
-		);
-	}
+	// Landed already (an answer lost, crb restarted): answered as it is,
+	// whatever moved since. Only a post is checked against the head.
 	let record = target.started(req.clientId);
-	if (!record && req.retry) {
-		// It may have landed (crb restarted, or the answer got lost).
-		const mine = (await fetchReviewComments(target.ref)).find(
-			(c) =>
-				c.inReplyTo === null &&
-				slugify(c.login) === slugify(target.viewer) &&
-				parseMarker(c.body)?.id === req.clientId,
-		);
-		if (mine) {
-			record = { nodeId: mine.nodeId, path: mine.path, posted: mine.posted };
-			target.rememberStarted(req.clientId, record);
-			target.setInDoubt(req.clientId, false);
-		}
-	}
+	if (!record && req.retry) record = await findStarted(target, req.clientId);
 	if (record && record.path !== req.path) {
 		throw new WriteRefusedError(
 			"This comment was posted on another file",
 			"invalid",
 		);
+	}
+	if (!record) {
+		if (req.commit !== target.head) {
+			throw new WriteRefusedError(
+				"The PR moved on since: refresh to comment on its new head",
+				"stale",
+			);
+		}
+		const left =
+			place.subject === "line" &&
+			(place.side === "LEFT" || place.start?.side === "LEFT");
+		if (left && !(await target.commentLeft())) {
+			throw new WriteRefusedError(
+				"GitHub's base for this commit differs from the one shown: no comments on old lines",
+				"invalid",
+			);
+		}
+		if (body.length > MAX_REPLY) {
+			const room = MAX_REPLY - (body.length - req.body.length);
+			throw new WriteRefusedError(
+				`A comment is at most ${room} characters`,
+				"invalid",
+			);
+		}
 	}
 	if (!record) {
 		let posted: PostedComment;
@@ -271,6 +263,40 @@ export async function startThread(
 		target.setPendingReview(null);
 	}
 	return answer(target, req.clientId, record);
+}
+
+/**
+ * The viewer's thread opener on GitHub carrying `clientId` in its marker
+ * (REST: no GraphQL lag), remembered once found; undefined if none. After
+ * an attempt whose outcome is unknown (gh killed mid-call, GitHub may
+ * still make it), listed again after each of LIST_WAITS_MS, as replies are.
+ */
+async function findStarted(
+	target: NewThreadTarget,
+	clientId: string,
+): Promise<StartedRecord | undefined> {
+	const waits = target.inDoubt(clientId) ? LIST_WAITS_MS : [];
+	for (let i = 0; ; i++) {
+		const mine = (await fetchReviewComments(target.ref)).find(
+			(c) =>
+				c.inReplyTo === null &&
+				slugify(c.login) === slugify(target.viewer) &&
+				parseMarker(c.body)?.id === clientId,
+		);
+		if (mine) {
+			const record = {
+				nodeId: mine.nodeId,
+				path: mine.path,
+				posted: mine.posted,
+			};
+			target.rememberStarted(clientId, record);
+			target.setInDoubt(clientId, false);
+			return record;
+		}
+		const wait = waits[i];
+		if (wait === undefined) return undefined;
+		await writeWaits.sleep(wait);
+	}
 }
 
 /**
