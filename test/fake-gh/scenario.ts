@@ -95,6 +95,8 @@ export interface Scenario {
 	 * else git's merge base in the repository.
 	 */
 	mergeBases?: Record<string, string>;
+	/** A REST compare (commentLeft's merge base) answers this late. */
+	compareDelayMs?: number;
 	/** A REST edit of a comment answers only after this many milliseconds (before it lands). */
 	editDelayMs?: number;
 	/** A REST delete of a comment answers only after this many milliseconds (before it lands). */

@@ -313,15 +313,15 @@ describe("Session", () => {
 		it("keeps the last read: served again without gh, or read anew past maxAge", async () => {
 			const s = await Session.open(pr.arg, process.cwd());
 			const [a, b] = await Promise.all([s.overview(), s.overview()]);
-			expect(a).toBe(b);
+			expect(a).toEqual(b);
 			expect(reads()).toBe(1);
 			expect(Date.parse(a.fetchedAt)).not.toBeNaN();
 			titled("Renamed on GitHub");
 			const kept = await s.overview();
-			expect(kept).toBe(a);
+			expect(kept).toEqual(a);
 			expect(reads()).toBe(1);
 			// Young enough: still the kept one.
-			expect(await s.overview(60_000)).toBe(a);
+			expect(await s.overview(60_000)).toEqual(a);
 			const fresh = await s.overview(0);
 			expect(reads()).toBe(2);
 			expect(fresh.title).toBe("Renamed on GitHub");
@@ -329,7 +329,7 @@ describe("Session", () => {
 				Date.parse(a.fetchedAt),
 			);
 			// The fresh read is the one kept now.
-			expect(await s.overview()).toBe(fresh);
+			expect(await s.overview()).toEqual(fresh);
 		});
 
 		it("reads again on Refresh, and doesn't keep a failed read", async () => {
@@ -343,7 +343,7 @@ describe("Session", () => {
 			pr.scenario({ loggedOut: true });
 			await expect(s.overview(0)).rejects.toThrow(GhError);
 			// The failure isn't kept: the last good read is served.
-			expect(await s.overview()).toBe(after);
+			expect(await s.overview()).toEqual(after);
 			titled("Back");
 			expect((await s.overview(0)).title).toBe("Back");
 		});
@@ -1048,7 +1048,7 @@ describe("Session", () => {
 			expect(o.checks).toEqual([{ name: "ci", status: "passing" }]);
 			// Nothing moves as of a cutoff: the read is kept, gh isn't asked again.
 			const ghCalls = pr.ghLog().length;
-			expect(await s.overview()).toBe(o);
+			expect(await s.overview()).toEqual(o);
 			expect(pr.ghLog().length).toBe(ghCalls);
 		});
 

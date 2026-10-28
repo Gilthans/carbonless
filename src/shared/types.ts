@@ -255,9 +255,11 @@ export interface PrOverview {
 	 */
 	writes: "on" | "as-of" | "viewer";
 	/**
-	 * Whether a new comment may go on LEFT lines: false only with a pinned head
-	 * (--head) whose GitHub merge base (compare base...pinned) differs from the
-	 * snapshot's left side. RIGHT lines and file comments don't depend on it.
+	 * Whether a new comment may go on LEFT lines: false when GitHub's merge
+	 * base for the snapshot's head (compare base...head) differs from the
+	 * snapshot's left side (a pinned head, a started patch set, a merged
+	 * PR). True until GitHub has said (POST /api/threads waits for it).
+	 * RIGHT lines and file comments don't depend on it.
 	 */
 	commentLeft: boolean;
 	/**

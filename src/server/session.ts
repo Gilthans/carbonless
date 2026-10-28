@@ -55,6 +55,19 @@ import {
 /** Reads kept for pages still showing them (see Session.threads). */
 const KEPT_READS = 3;
 
+/** commentLeft for one snapshot: asked of GitHub, then known. */
+interface CommentLeft {
+	/** The snapshot's base and head. */
+	key: string;
+	left: Promise<boolean>;
+	known?: boolean;
+	/** When the compare failed (ms): asked again after COMMENT_LEFT_RETRY_MS. */
+	failedAt?: number;
+}
+
+/** How long a failed compare stands before commentLeft asks again. */
+const COMMENT_LEFT_RETRY_MS = 30_000;
+
 /** The write queue new threads share (one PR's: one at a time). */
 const NEW_THREADS = "new-threads";
 
@@ -142,8 +155,8 @@ export class Session {
 	readonly #deletedComments = new Set<string>();
 	/** Threads this session started, by the client's id for each. */
 	readonly #started = new Map<string, StartedRecord>();
-	/** commentLeft for one snapshot (its base and head), once GitHub said. */
-	#commentLeft: { key: string; left: Promise<boolean> } | null = null;
+	/** commentLeft for one snapshot (its base and head): asked, then known. */
+	#commentLeft: CommentLeft | null = null;
 
 	private constructor(
 		private readonly repo: string,
@@ -305,18 +318,29 @@ export class Session {
 		if (this.#closed) {
 			return Promise.reject(new SessionClosedError("The session is closed"));
 		}
+		// Asked at once, never waited for: it is in by the time GitHub's
+		// overview is, or the next one says (true until it is known).
+		this.#commentLeftNow();
+		return this.#pickRead(maxAgeMs).overview.then((o) => ({
+			...o,
+			commentLeft: this.#commentLeftNow(),
+		}));
+	}
+
+	/** The read overview() serves (see there). */
+	#pickRead(maxAgeMs: number): OverviewRead {
 		const now = Date.now();
 		// 0: a new read, even if the last came in this very millisecond.
-		if (maxAgeMs <= 0) return this.#read().overview;
+		if (maxAgeMs <= 0) return this.#read();
 		const current = this.#reads.filter((r) => !this.#superseded.has(r));
 		const done = current.findLast(
 			(r) => r.ended !== null && now - r.ended <= maxAgeMs,
 		);
-		if (done) return done.overview;
+		if (done) return done;
 		const reading = current.findLast(
 			(r) => r.ended === null && now - r.started <= maxAgeMs,
 		);
-		return (reading ?? this.#read()).overview;
+		return reading ?? this.#read();
 	}
 
 	/**
@@ -419,25 +443,52 @@ export class Session {
 
 	/**
 	 * Whether new comments may go on LEFT lines (PrOverview.commentLeft):
-	 * only a pinned head can differ, when GitHub's merge base for it (one
-	 * compare call per snapshot) isn't the snapshot's left side. A failed
-	 * call isn't kept: the next ask tries again.
+	 * whether GitHub's merge base for the snapshot's head (its compare of
+	 * the base branch and it, which a LEFT line resolves against) is the
+	 * snapshot's left side. They differ when the base moved on past what
+	 * the snapshot shows: a pinned head, a started patch set, a merged PR.
+	 * One compare per snapshot, asked lazily; a failed one is asked again
+	 * after COMMENT_LEFT_RETRY_MS (a POST meanwhile gets its failure, a
+	 * 502). As of a cutoff nothing is written: true.
 	 */
 	commentLeft(): Promise<boolean> {
-		if (!this.pinned || this.options.asOf) return Promise.resolve(true);
+		if (this.options.asOf) return Promise.resolve(true);
+		// A write asks again at once rather than take a failure as the answer.
+		if (this.#commentLeft?.failedAt !== undefined) this.#commentLeft = null;
+		return this.#askCommentLeft().left;
+	}
+
+	#askCommentLeft(): CommentLeft {
 		const { base, head } = this.#snapshot;
 		const key = `${base}...${head}`;
-		if (this.#commentLeft?.key !== key) {
-			const left = fetchMergeBase(this.#ref(), this.#meta.baseBranch, head, {
-				signal: this.#stop.signal,
-			}).then((mergeBase) => mergeBase === base);
-			const entry = { key, left };
-			left.catch(() => {
-				if (this.#commentLeft === entry) this.#commentLeft = null;
-			});
-			this.#commentLeft = entry;
+		const last = this.#commentLeft;
+		if (
+			last?.key === key &&
+			(last.failedAt === undefined ||
+				Date.now() - last.failedAt <= COMMENT_LEFT_RETRY_MS)
+		) {
+			return last;
 		}
-		return this.#commentLeft.left;
+		const entry: CommentLeft = {
+			key,
+			left: fetchMergeBase(this.#ref(), this.#meta.baseBranch, head, {
+				signal: this.#stop.signal,
+			}).then((mergeBase) => {
+				entry.known = mergeBase === base;
+				return entry.known;
+			}),
+		};
+		entry.left.catch(() => {
+			entry.failedAt = Date.now();
+		});
+		this.#commentLeft = entry;
+		return entry;
+	}
+
+	/** commentLeft as known now, asking GitHub if no one has: true until it says. */
+	#commentLeftNow(): boolean {
+		if (this.options.asOf || this.#closed) return true;
+		return this.#askCommentLeft().known ?? true;
 	}
 
 	/** Runs thread writes one at a time per thread, in the order asked. */
@@ -555,10 +606,6 @@ export class Session {
 					snapshot: this.#snapshot.base,
 					ref: `refs/remotes/origin/${this.#meta.baseBranch}`,
 				};
-			},
-			commentLeft: async () => {
-				await ready?.catch(() => {});
-				return this.commentLeft();
 			},
 		});
 		// Until it has settled, whether kept or not (close() stops it).

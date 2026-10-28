@@ -33,9 +33,10 @@ export interface ReadSources {
 	code: ThreadCodeSource;
 	/** The thread code's diff base, once known (a Refresh moves the snapshot). */
 	base: () => Promise<DiffBase>;
-	/** PrOverview.commentLeft, for the snapshot once known. */
-	commentLeft: () => Promise<boolean>;
 }
+
+/** A read's overview: the session adds what isn't GitHub's read (commentLeft). */
+export type ReadOverview = Omit<PrOverview, "servedAt" | "commentLeft">;
 
 /** Thread code built at once. */
 const CODE_CONCURRENCY = 8;
@@ -67,8 +68,8 @@ export class OverviewRead {
 	readonly started = Date.now();
 	/** When the overview part came in; null while it is read. */
 	ended: number | null = null;
-	#overview: Promise<Omit<PrOverview, "servedAt">>;
-	get overview(): Promise<Omit<PrOverview, "servedAt">> {
+	#overview: Promise<ReadOverview>;
+	get overview(): Promise<ReadOverview> {
 		return this.#overview;
 	}
 	/**
@@ -122,16 +123,16 @@ export class OverviewRead {
 		this.#viewer = sources.viewer;
 		this.#writes = sources.writes === "on";
 		const read = { signal: this.#stop.signal };
-		this.#overview = Promise.all([
-			fetchOverview(sources.ref, sources.viewer, sources.asOf, read),
-			// Unknown (GitHub didn't say): off, never a guess.
-			sources.commentLeft().catch(() => false),
-		]).then(([fields, commentLeft]) => {
+		this.#overview = fetchOverview(
+			sources.ref,
+			sources.viewer,
+			sources.asOf,
+			read,
+		).then((fields) => {
 			this.ended = Date.now();
 			return {
 				...fields,
 				writes: sources.writes,
-				commentLeft,
 				readId: this.id,
 				fetchedAt: new Date(this.ended).toISOString(),
 			};

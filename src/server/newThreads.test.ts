@@ -535,13 +535,99 @@ describe("commentLeft", () => {
 		await pr.cleanup();
 	});
 
-	/** The PR moved on from `then`; the session pins it with --head. */
-	const pinned = async (mergeBases?: Record<string, string>) => {
+	const compares = () => pr.ghLog().match(/compare\//g)?.length ?? 0;
+	const scenario12 = (over: Partial<Scenario> = {}, head = pr.head()) =>
+		pr.scenario({
+			...over,
+			prs: {
+				12: {
+					view: prView({ headRefOid: head, baseRefName: "main" }),
+					graphql: {
+						commits: [
+							{
+								commit: {
+									oid: pr.mergeBase,
+									committedDate: "2026-01-01T00:00:00Z",
+								},
+							},
+						],
+						reviews: [],
+						reviewThreads: [],
+						comments: [],
+					},
+				},
+			},
+		});
+	const line = (
+		commit: string,
+		clientId: string,
+		more: Partial<NewThreadRequest> = {},
+	): NewThreadRequest => ({
+		clientId,
+		body: "Here",
+		attemptedAt: new Date().toISOString(),
+		retry: false,
+		path: "a.txt",
+		commit,
+		subject: "line",
+		side: "LEFT",
+		line: 2,
+		...more,
+	});
+
+	it("GitHub's merge base is the snapshot's left side: true, one compare per snapshot, a LEFT comment posted", async () => {
+		pr = createPrFixture();
+		scenario12();
+		const s = await Session.open(pr.arg, process.cwd());
+		await s.overview();
+		expect(await s.commentLeft()).toBe(true);
+		expect((await s.overview(0)).commentLeft).toBe(true);
+		expect(compares()).toBe(1);
+		const { thread } = await s.startThread(line(pr.head(), "l0"));
+		expect(thread.anchor).toMatchObject({ side: "LEFT", line: 2 });
+	});
+
+	it("never held up: the overview answers at once, true until GitHub says; then false, LEFT lines refused (400), RIGHT posted", async () => {
+		pr = createPrFixture();
+		// GitHub's base moved on past the snapshot's (as after a merge).
+		scenario12({
+			mergeBases: { [pr.head()]: "e".repeat(40) },
+			compareDelayMs: 3000,
+		});
+		const s = await Session.open(pr.arg, process.cwd());
+		const started = Date.now();
+		const first = await s.overview();
+		expect(Date.now() - started).toBeLessThan(2500);
+		expect(first.commentLeft).toBe(true);
+		expect(await s.commentLeft()).toBe(false);
+		expect((await s.overview()).commentLeft).toBe(false);
+		scenario12();
+		for (const req of [
+			line(pr.head(), "l1"),
+			line(pr.head(), "l2", {
+				startSide: "LEFT",
+				startLine: 2,
+				side: "RIGHT",
+				line: 2,
+			}),
+		]) {
+			const error = await s.startThread(req).catch((e: unknown) => e);
+			expect(error).toBeInstanceOf(WriteRefusedError);
+			expect((error as WriteRefusedError).code).toBe("invalid");
+			expect((error as WriteRefusedError).message).toMatch(/base/);
+		}
+		expect(pr.ghLog()).not.toMatch(/-X POST/);
+		const right = await s.startThread(line(pr.head(), "l3", { side: "RIGHT" }));
+		expect(right.thread.anchor).toMatchObject({ side: "RIGHT", line: 2 });
+		expect(compares()).toBe(1);
+	});
+
+	it("a pinned head: asked for the pinned commit", async () => {
 		pr = createPrFixture();
 		const then = pr.head();
 		const now = pr.moveHead({ "later.txt": "later\n" });
 		pr.scenario({
-			...(mergeBases ? { mergeBases } : {}),
+			mergeBases: { [then]: "e".repeat(40) },
 			prs: {
 				12: {
 					view: prView({ headRefOid: now, baseRefName: "main" }),
@@ -560,93 +646,20 @@ describe("commentLeft", () => {
 		const s = await Session.open(pr.arg, process.cwd(), () => {}, {
 			head: parseHead(then),
 		});
-		return { s, then };
-	};
-	const compares = () => pr.ghLog().match(/compare\//g)?.length ?? 0;
+		expect(await s.commentLeft()).toBe(false);
+		expect(pr.ghLog()).toContain(`...${then}`);
+	});
 
-	it("true without a pinned head, with no compare call", async () => {
+	it("a failed compare: true meanwhile; a write asks again", async () => {
 		pr = createPrFixture();
+		scenario12({ mergeBases: { [pr.head()]: "nope" } });
 		const s = await Session.open(pr.arg, process.cwd());
 		expect((await s.overview()).commentLeft).toBe(true);
-		expect(compares()).toBe(0);
-	});
-
-	it("a pinned head whose GitHub merge base is the snapshot's left side: true, asked once", async () => {
-		const { s, then } = await pinned();
-		expect((await s.overview()).commentLeft).toBe(true);
-		expect((await s.overview(0)).commentLeft).toBe(true);
-		expect(compares()).toBe(1);
-		const { thread } = await s.startThread({
-			clientId: "l1",
-			body: "Old line",
-			attemptedAt: new Date().toISOString(),
-			retry: false,
-			path: "a.txt",
-			commit: then,
-			subject: "line",
-			side: "LEFT",
-			line: 2,
-		});
-		expect(thread.anchor).toMatchObject({
-			side: "LEFT",
-			line: 2,
-			commit: then,
-		});
-	});
-
-	it("a pinned head whose GitHub merge base differs: false, LEFT lines refused (400), RIGHT ones posted", async () => {
-		const { s, then } = await pinned({});
-		// GitHub's merge base for the pinned commit is another commit.
-		pr.scenario({
-			mergeBases: { [then]: "e".repeat(40) },
-			prs: {
-				12: {
-					view: prView({ headRefOid: pr.head(), baseRefName: "main" }),
-					graphql: { reviews: [], reviewThreads: [], comments: [] },
-				},
-			},
-		});
-		expect((await s.overview(0)).commentLeft).toBe(false);
-		const base = {
-			body: "Here",
-			attemptedAt: new Date().toISOString(),
-			retry: false,
-			path: "a.txt",
-			commit: then,
-			subject: "line" as const,
-		};
-		const left = await s
-			.startThread({ ...base, clientId: "l2", side: "LEFT", line: 2 })
-			.catch((e: unknown) => e);
-		expect(left).toBeInstanceOf(WriteRefusedError);
-		expect((left as WriteRefusedError).code).toBe("invalid");
-		const range = await s
-			.startThread({
-				...base,
-				clientId: "l3",
-				startSide: "LEFT",
-				startLine: 2,
-				side: "RIGHT",
-				line: 2,
-			})
-			.catch((e: unknown) => e);
-		expect((range as WriteRefusedError).code).toBe("invalid");
-		expect(pr.ghLog()).not.toMatch(/-X POST/);
-		// The scenario's merge base isn't in the repository: RIGHT lines resolve by git's.
-		pr.scenario({
-			prs: {
-				12: {
-					view: prView({ headRefOid: pr.head(), baseRefName: "main" }),
-					graphql: { reviews: [], reviewThreads: [], comments: [] },
-				},
-			},
-		});
-		const right = await s.startThread({
-			...base,
-			clientId: "l4",
-			side: "RIGHT",
-			line: 2,
-		});
-		expect(right.thread.anchor).toMatchObject({ side: "RIGHT", line: 2 });
+		await expect(s.commentLeft()).rejects.toBeInstanceOf(GhError);
+		scenario12();
+		const { thread } = await s.startThread(line(pr.head(), "l4"));
+		expect(thread.anchor).toMatchObject({ side: "LEFT" });
+		// The overview's ask, then one per write-side ask: never a failure reused.
+		expect(compares()).toBe(3);
 	});
 });

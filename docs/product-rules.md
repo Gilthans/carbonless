@@ -82,11 +82,15 @@ unresolving one, and editing or deleting one of the viewer's comments in one
   GraphQL lists it, mapped like any other. Only on the head the page shows
   (else 409 `stale`: refresh). A line or file GitHub's diff doesn't have
   (its 422 "could not be resolved") is 404 `gone`; a pending review refuses
-  it as it refuses replies (409 `pending-review`). With a pinned head
-  (`--head`), `LEFT` lines take comments only when GitHub's merge base for
-  that commit (REST compare `base...pinned`) is the snapshot's left side
-  (`PrOverview.commentLeft`, one compare per snapshot); otherwise they are
-  refused (400), as GitHub would put them elsewhere.
+  it as it refuses replies (409 `pending-review`). `LEFT` lines take
+  comments only when GitHub's merge base for the snapshot's head (REST
+  compare `base...head`, what GitHub resolves a `LEFT` line against) is
+  the snapshot's left side (`PrOverview.commentLeft`); otherwise they are
+  refused (400), as GitHub would put them on other lines. They differ when
+  the base moved on past what the snapshot shows: a pinned head, a started
+  patch set, a merged PR. One compare per snapshot, asked lazily and never
+  waited for by the overview (true until GitHub says); a write waits for
+  it.
 - **A hidden marker carries what GitHub can't.** A new thread's opening
   comment ends in an HTML comment GitHub doesn't render,
   `<!-- crb:v1 id=<clientId> -->`, with `span=<startLine>:<startCol>-<line>:<endCol>`

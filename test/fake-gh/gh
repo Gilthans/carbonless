@@ -576,6 +576,7 @@ if (restCreate && !s.loggedOut) {
 }
 if (restCompare && !s.loggedOut) {
 	if (args.slice(2).join(" ") !== "--jq .merge_base_commit.sha") unsupported();
+	if (s.compareDelayMs) sleep(s.compareDelayMs);
 	const [, base, head] = restCompare;
 	let mb;
 	try {
