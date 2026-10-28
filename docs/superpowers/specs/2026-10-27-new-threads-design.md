@@ -1,6 +1,6 @@
 # Starting new threads: on a span, on lines, on a file
 
-Status: draft for the owner's review, 2026-10-27.
+Status: approved by the owner 2026-10-28, with their doc comments folded in.
 
 Calls the coordinator made (the owner may overrule) are marked **(call)**.
 
@@ -22,6 +22,7 @@ The owner's words:
 - **Comment on lines** without selecting text: tap or drag on line numbers.
 - **Comment on a file:** every file, whatever its kind: text, empty, binary, renamed-only, mode-only, deleted or a submodule.
 - **Selection opens actions, not just a comment box.** "Comment" is the first action. The shape takes "Ask Claude" and other conversation kinds later without reworking the selection or the anchor.
+- **The lines carbonless marks are exactly GitHub's lines** (owner: "the review line that was marked is exactly the same one as appears in github"). A thread's highlighted lines in carbonless are the lines GitHub shows for it, for new threads and existing ones; the span always sits inside them. What carbonless sends is what it then reads back and shows, and the real-GitHub check compares them (`pnpm compare-threads`).
 - **Same feel as replies:** the new thread shows at once (the clock while sending); a yellow notice after 5 s; transient errors retry with backoff; anything else is red with the message and Retry. The draft is never lost: it survives a reload, shows in the Drafts filter, and leaving with one asks first.
 
 ## Non-goals (this stage)
@@ -48,7 +49,9 @@ The owner's words:
 - **With a pending review open, REST refuses** (422, "user_id can only have one pending review per pull request"), like replies. **GraphQL `addPullRequestReviewThread` instead adds the comment to the pending review** (state PENDING, invisible to others). REST only.
 - An HTML comment in the body (`<!-- … -->`) doesn't render on GitHub but stays in the body's source.
 
-Still to check, by the builder on the scratch PRs (#2 has 11 files of assorted kinds): file comments on a binary, an empty, a renamed-only and a deleted file; a line in expanded context outside any hunk (accepted or 422); a range that starts on `LEFT` and ends on `RIGHT`.
+- **Lines resolve against `merge-base...commit_id`** (checked on gallery #8, 2026-10-28; probes deleted). `commit_id` may be an older commit of the PR (accepted, and moved forward to the head when the line is unchanged). A `LEFT` line is always the merge base's line: a line that exists only in one commit's own diff is refused (422). So GitHub has no line comment on a custom left side (a commit range or an interdiff).
+
+Still to check, by the builder (gallery #4 has every file kind; comments there are allowed and get deleted after): file comments on a binary, an empty, a renamed-only and a deleted file; a line in expanded context outside any hunk (accepted or 422); a range that starts on `LEFT` and ends on `RIGHT`.
 
 ## The anchor: one shape for every kind of conversation
 
@@ -64,18 +67,28 @@ It extends the existing `CodeAnchor` (`src/shared/types.ts`) with the two option
 
 Why not store spans in `refs/crb`: that would put per-thread data in git, which other reviewers only see after a push and fetch (principle 3). The marker travels with the comment. The catch: someone editing the comment in GitHub's UI sees the marker's source text and may delete it. Then the thread falls back to its lines.
 
+Owner: "It's a good first step. In the future we'll have to store things in our git refs and we'll probably use something along the lines of git-appraise, but this allows us to defer this work for later." (`docs/todo.md`, Future plans.)
+
 ## Selecting
 
 - **Text in the code cells**, in any diff row (added, deleted, context, expanded context, whitespace `~` rows), within one file. The selection runs from where it starts to where it ends, across rows and sides. Line numbers and signs are already `select-none`, so they are never part of the text.
 - **Line numbers:** clicking (or tapping) a line number selects that whole line; shift-click, or dragging down the numbers, extends the selection. A second tap on a phone extends (call: phones make native drag-selection fiddly).
 - **Mapping to GitHub:** the selection's first and last rows give `start_side`/`start_line` and `side`/`line`: the new number for added and context rows, the old number for deleted rows. Context rows count as `RIGHT`.
-- **Views that aren't the PR's diff:** with `--head` (for example `--head reviewed`) the left side is not GitHub's base. `RIGHT` lines are still the head file's lines, so those work. `LEFT` lines don't map, so Comment is off for selections that touch them, with a tooltip.
+- **Pinned heads (`--head <sha|reviewed>`):** the comment goes to the pinned commit (`commit_id`). Its `RIGHT` lines are that commit's lines. Its `LEFT` lines are GitHub's merge base for that commit, and carbonless's left side is `merge-base(origin/<base>, pinned)`; these are normally the same commit. The server checks (GitHub's compare `base...pinned` gives its merge base): when they match, `LEFT` works as anywhere; when they differ (the base was merged into the PR after the pinned commit), Comment is off for selections touching `LEFT` lines, with the reason as the tooltip.
+- **Custom left sides** (owner asked: "Can't we have a custom LEFT? Github technically allows you to compare any subset of commits in the PR"): checked, GitHub's API can't anchor a comment to a range's left side (above). carbonless has no range view yet; when it gets one, its `RIGHT` lines that are also in GitHub's diff at that commit can carry GitHub comments, and the rest becomes a case for carbonless's own threads stored in git (the git-appraise direction). `docs/todo.md`, Future plans.
 
 ## The action bar (the extension point)
 
 - When a selection ends (mouse up, keyboard selection, or the phone's selection settling), a small floating bar appears next to its end with one icon button per available action, each ≥40px with a tooltip. On a phone it is a bar pinned to the bottom of the screen, above the system's own selection menu.
 - Actions come from a registry: `{ id, icon, label, available(span) → true | reason, start(span) }`. This stage registers one action, **Comment**. "Ask Claude" later registers another and gets its own spec: where its answers live, what it may see. When an action isn't available its button stays visible, disabled, with the reason as its tooltip (for example "GitHub only takes comments on lines in the diff").
-- Keyboard: with a selection, `c` starts a comment (call). The bar's buttons are reachable with Tab, and Escape dismisses the bar.
+- Keyboard: with a selection, `c` starts a comment. The bar's buttons are reachable with Tab, and Escape dismisses the bar.
+
+## Keyboard shortcuts (owner: "In general I'd like to support keyboard shortcuts as a rule in the system. When clicking ? in the main screen, it should open a modal with the shortcuts help, similar to gmail.")
+
+- **A rule from now on:** every frequent action gets a keyboard shortcut where it makes sense, registered in one place so it shows in the help (`docs/product-rules.md`).
+- **One registry** in the web app: each shortcut has its key, a short label, a group (Global, Files changed, Overview, Threads) and when it applies. Shortcuts never fire while typing in a text field (except the field's own: Ctrl/Cmd+Enter, Escape) and never shadow the browser's own (Ctrl/Cmd+C copies).
+- **`?` opens the help**: a modal listing every shortcut by group, keys shown as key caps, the ones that apply to the current page first. Escape or `?` closes it. On a phone it is reachable from the header's menu (no keyboard), as a full-height sheet.
+- This stage registers `?`, `c` and the shortcuts the app already has (the builder lists them from the code). New shortcuts for existing actions (next file, mark reviewed…) are a later stage.
 - Pressing the bar's button doesn't clear the selection before the action has the span.
 
 ## Commenting
@@ -93,7 +106,7 @@ Why not store spans in `refs/crb`: that would put per-thread data in git, which 
 
 ## Where it's off
 
-As for replies: off in as-of views and with `--viewer` other than the `gh` login; on for merged and closed PRs (GitHub allows it) and with `--head` (`RIGHT` lines only, above). The selection bar still appears where Comment is off, so later actions like Ask Claude aren't tied to GitHub writes. Its Comment button is then disabled with the reason.
+As for replies: off in as-of views and with `--viewer` other than the `gh` login; on for merged and closed PRs (GitHub allows it) and with `--head` (`LEFT` lines only where GitHub's merge base matches, above). The selection bar still appears where Comment is off, so later actions like Ask Claude aren't tied to GitHub writes. Its Comment button is then disabled with the reason.
 
 ## Server and data
 
@@ -105,7 +118,8 @@ As for replies: off in as-of views and with `--viewer` other than the `gh` login
 
 - Unit:
   - selection → span mapping for added, deleted, context and expanded rows, across sides, inside one line, and across a highlighted token boundary and an invisibles marker;
-  - `LEFT` lines off with `--head`;
+  - with `--head`, `LEFT` lines on when GitHub's merge base matches carbonless's left side and off (with the reason) when it doesn't;
+  - the `?` help lists every registered shortcut; shortcuts don't fire while typing; `c` with a selection starts a comment;
   - the marker written, parsed and stripped, and kept through an edit;
   - the draft kept, restored and orphaned;
   - a retry finds the comment by client id;

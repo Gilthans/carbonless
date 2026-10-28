@@ -109,6 +109,14 @@ Not scheduled yet; after everything above.
   Use it in the UI and the code.
 - **Edit history:** clicking a comment's "edited" shows its edit history
   (owner, 2026-10-27; GitHub's `userContentEdits`).
+- **carbonless's own threads in git:** spans and other review data that GitHub
+  can't hold (comments on a custom left side such as a commit range or an
+  interdiff, notes, Ask Claude conversations) stored in `refs/crb`, probably
+  along the lines of git-appraise (owner, 2026-10-28). Until then a span rides
+  in a hidden marker in the GitHub comment
+  (`docs/superpowers/specs/2026-10-27-new-threads-design.md`).
+- **More keyboard shortcuts** for existing actions (next/previous file, mark
+  reviewed, next unreviewed…), each in the `?` help (owner, 2026-10-28).
 - **Bots in human threads:** decide how bot comments (review bots, CI
   bots replying in a human thread) should count in a thread's attention set.
   For now (2026-10-26) bots never join it and a bot's comment never counts as
