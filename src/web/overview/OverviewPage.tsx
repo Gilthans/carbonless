@@ -1523,7 +1523,7 @@ function ThreadItem({
 						threadId={thread.id}
 						comment={first}
 						onEdit={() => write.setEditing(true)}
-						keepsPlace={replies.n > 0}
+						keepsPlace={known?.comments.slice(1).some((r) => !r.pending)}
 					/>
 				)}
 			</div>

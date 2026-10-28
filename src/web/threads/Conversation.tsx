@@ -230,9 +230,10 @@ export function ThreadComments(props: {
 							key={c.id || `#${i}`}
 							comment={c}
 							thread={thread}
+							// As the server decides: published comments follow it.
 							keepsPlace={
 								c === data.comments[0] &&
-								data.comments.length + sending.length > 1
+								data.comments.slice(1).some((r) => !r.pending)
 							}
 						/>
 					))}

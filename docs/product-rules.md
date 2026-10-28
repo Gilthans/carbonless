@@ -72,8 +72,9 @@ comments in one (`src/server/threadWrites.ts`).
   post answered).
 - **A delete asks first, then waits out an undo window.** Delete opens a
   confirmation by the button ("Delete this comment?", with "It stays as
-  [deleted] in the thread." for an opener with replies), Cancel focused;
-  Escape or a click outside cancels (owner: "add a confirmation when
+  [deleted] in the thread." for an opener that published comments follow,
+  the server's rule below), Cancel focused; Escape, a click outside or
+  leaving the page cancels (owner: "add a confirmation when
   deleting a comment, in addition to the undo"). Confirmed, the comment
   collapses to "Deleted · Undo" and goes after `DELETE_UNDO_MS`; Undo
   within the window sends nothing.

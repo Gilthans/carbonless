@@ -283,6 +283,30 @@ test("delete from an Overview card: Undo sends nothing; then the card fades and 
 	await expect(humans(page).getByTestId("thread")).toHaveCount(2);
 });
 
+test("leaving the page with the delete confirmation open leaves the other page usable", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	const p = await setup(pr);
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	await page.getByRole("link", { name: "Overview" }).click();
+	const c = card(page, "new.txt");
+	await openCard(c);
+	await c.getByRole("button", { name: "Delete" }).click();
+	await expect(confirmation(page)).toBeVisible();
+	// Back to Files changed (the Overview stays mounted, hidden).
+	await page.goBack();
+	await expect(page).toHaveURL(/\/files/);
+	// Nothing modal is left: Files changed takes clicks and Tab.
+	await expect(page.locator("dialog[open]")).toHaveCount(0);
+	await page.getByRole("link", { name: "Overview" }).click({ timeout: 3000 });
+	await expect(page).not.toHaveURL(/\/files/);
+	await expect(c.getByTestId("thread-body")).toContainText("My take");
+	expect(stored(p, 0).removed).toBe(false);
+});
+
 test("deleting an opener with replies leaves a deleted placeholder", async ({
 	page,
 	pr,

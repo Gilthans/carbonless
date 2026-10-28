@@ -19,6 +19,7 @@ import {
 	type ThreadComment,
 } from "../../shared/types";
 import { LabeledIcon } from "../overview/parts";
+import { usePageActive } from "../pageActive";
 import { fullDate } from "../RelativeTime";
 import { Tooltip } from "../Tooltip";
 import { CommentBody } from "./CommentBody";
@@ -104,6 +105,12 @@ export function CommentActions(props: {
 	const can = useCommentCan(props.comment);
 	const del = useRef<HTMLButtonElement | null>(null);
 	const [asking, setAsking] = useState(false);
+	// Leaving the page (it stays mounted, hidden and inert) cancels: a
+	// hidden modal would leave the shown page inert.
+	const active = usePageActive();
+	useLayoutEffect(() => {
+		if (!active) setAsking(false);
+	}, [active]);
 	const { id } = props.comment;
 	// Back from Undo (this very click, on a page on screen): focus where it
 	// was, on Delete.
@@ -165,7 +172,7 @@ export function CommentActions(props: {
 						del.current = el;
 					},
 				)}
-			{asking && (
+			{asking && active && (
 				<ConfirmDelete
 					anchor={del}
 					keepsPlace={props.keepsPlace}
@@ -199,6 +206,8 @@ function ConfirmDelete(props: {
 }) {
 	const dialog = useRef<HTMLDialogElement>(null);
 	const cancelButton = useRef<HTMLButtonElement>(null);
+	/** The press began on the backdrop (not a drag out of the dialog's text). */
+	const fromBackdrop = useRef(false);
 	const titleId = useId();
 	const noteId = useId();
 	const { anchor, onCancel } = props;
@@ -264,8 +273,15 @@ function ConfirmDelete(props: {
 				event.preventDefault();
 				close(onCancel);
 			}}
+			onPointerDown={(event) => {
+				fromBackdrop.current = event.target === dialog.current;
+			}}
 			onClick={(event) => {
-				if (event.target === dialog.current) close(onCancel);
+				// A press that began and ended on the backdrop (the dialog itself).
+				if (event.target === dialog.current && fromBackdrop.current) {
+					close(onCancel);
+				}
+				fromBackdrop.current = false;
 			}}
 			onKeyDown={(event) => {
 				if (event.key === "Escape") {

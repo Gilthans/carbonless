@@ -10,7 +10,7 @@ import {
 	within,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { ReactNode } from "react";
+import { type ReactNode, useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { suggestionHtml } from "../../../test/fake-gh/scenario";
 import type {
@@ -23,6 +23,7 @@ import type {
 } from "../../shared/types";
 import { showCommentsOf } from "../api";
 import { SyncNotices } from "../files/SyncNotices";
+import { PageActive } from "../pageActive";
 import { Conversation } from "./Conversation";
 import { PeopleProvider } from "./people";
 import { ResolveButton } from "./ResolveButton";
@@ -1091,6 +1092,85 @@ describe("deleting a comment", () => {
 			}
 		});
 	}
+
+	it("an opener followed only by the viewer's pending or sending replies: plain wording (it really goes)", async () => {
+		const user = userEvent.setup();
+		serve({
+			T1: {
+				comments: [
+					mine("c1", "Mine"),
+					mine("c2", "In my review", { pending: true }),
+				],
+			},
+		});
+		writeAnswer = () => new Promise(() => {});
+		renderWith(<Conversation readId="r1" thread={thread()} />, {
+			writes: "on",
+		});
+		await screen.findAllByTestId("thread-comment");
+		const client = clients.at(-1);
+		if (!client) throw new Error("no client");
+		act(() => threadWritesFor(client).reply("T1", "On its way"));
+		await screen.findByTestId("thread-comment-sending");
+		const [del] = screen.getAllByRole("button", { name: "Delete" });
+		await user.click(del as HTMLElement);
+		const dialog = screen.getByRole("alertdialog", {
+			name: "Delete this comment?",
+		});
+		expect(dialog).not.toHaveAccessibleDescription();
+		expect(dialog).not.toHaveTextContent("[deleted]");
+	});
+
+	it("a drag from the dialog's text out to the backdrop doesn't cancel", async () => {
+		const user = userEvent.setup();
+		serve({
+			T1: { comments: [comment("c1", "rev1", "First"), mine("c2", "Oops")] },
+		});
+		renderWith(<Conversation readId="r1" thread={thread()} />, {
+			writes: "on",
+		});
+		await screen.findAllByTestId("thread-comment");
+		await user.click(screen.getByRole("button", { name: "Delete" }));
+		const dialog = screen.getByRole("alertdialog");
+		// Pressed on the title, released on the backdrop: the click lands on
+		// the dialog itself.
+		fireEvent.pointerDown(within(dialog).getByText("Delete this comment?"));
+		fireEvent.click(dialog);
+		expect(screen.getByRole("alertdialog")).toBeInTheDocument();
+		// Pressed and released on the backdrop: cancelled.
+		fireEvent.pointerDown(dialog);
+		fireEvent.click(dialog);
+		expect(screen.queryByRole("alertdialog")).toBeNull();
+	});
+
+	it("leaving the page cancels the confirmation (no hidden modal left behind)", async () => {
+		const user = userEvent.setup();
+		serve({
+			T1: { comments: [comment("c1", "rev1", "First"), mine("c2", "Oops")] },
+		});
+		let setActive: (on: boolean) => void = () => {};
+		function Kept() {
+			const [on, set] = useState(true);
+			setActive = set;
+			return (
+				<PageActive value={on}>
+					<Conversation readId="r1" thread={thread()} />
+				</PageActive>
+			);
+		}
+		renderWith(<Kept />, { writes: "on" });
+		await screen.findAllByTestId("thread-comment");
+		await user.click(screen.getByRole("button", { name: "Delete" }));
+		expect(screen.getByRole("alertdialog")).toBeInTheDocument();
+		act(() => setActive(false));
+		expect(screen.queryByRole("alertdialog")).toBeNull();
+		expect(document.querySelector("dialog[open]")).toBeNull();
+		// Back on the page: it doesn't reopen by itself.
+		act(() => setActive(true));
+		expect(screen.queryByRole("alertdialog")).toBeNull();
+		expect(screen.getByText("Oops")).toBeInTheDocument();
+		expect(writeCalls).toHaveLength(0);
+	});
 
 	it("an opener with replies: the confirmation says it stays as [deleted]", async () => {
 		const user = userEvent.setup();
