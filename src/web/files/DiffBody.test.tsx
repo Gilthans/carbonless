@@ -10,7 +10,7 @@ import type {
 	FileView,
 	ReviewThread,
 } from "../../shared/types";
-import { ignoreWhitespace, showInvisibles } from "../viewSettings";
+import { ignoreWhitespace, showInvisibles, sideBySide } from "../viewSettings";
 import { DiffBody, type DiffThreads, LANDED_MS } from "./DiffBody";
 import type { Landing } from "./landing";
 
@@ -175,7 +175,11 @@ function setup(
 	const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
 		const url = new URL(String(input), "http://test");
 		const body =
-			url.pathname === "/api/files/0/hunks" ? (opts.hunks ?? hunks) : {};
+			url.pathname === "/api/files/0/hunks"
+				? (opts.hunks ?? hunks)
+				: url.pathname === "/api/comments"
+					? { threads: [] }
+					: {};
 		return new Response(JSON.stringify(body), { status: 200 });
 	});
 	vi.stubGlobal("fetch", fetchMock);
@@ -542,5 +546,584 @@ describe("DiffBody with Ignore whitespace", () => {
 				name: "Undo cross-off",
 			}),
 		).toBeInTheDocument();
+	});
+});
+
+/** A 2 removed / 3 added cluster between context lines 4 and 8 (side by side). */
+const pairHunks = (over: Partial<DiffLine>[] = []): FileHunks => ({
+	newLineCount: 12,
+	hunks: [
+		{
+			oldStart: 4,
+			oldCount: 4,
+			newStart: 4,
+			newCount: 5,
+			lines: [
+				ctx(4, 4),
+				{ ...del(5, "old five", "c"), ...over[0] },
+				{ ...del(6, "old six", "c"), ...over[1] },
+				{ ...add(5, "new five", "c"), ...over[2] },
+				{ ...add(6, "new six", "c"), ...over[3] },
+				{ ...add(7, "new seven", "c"), ...over[4] },
+				ctx(8, 8),
+			],
+		},
+	],
+});
+const pairCluster = (over: Partial<ClusterView> = {}) =>
+	cluster("c", {
+		oldStart: 5,
+		oldCount: 2,
+		newStart: 5,
+		newCount: 3,
+		lines: 5,
+		...over,
+	});
+
+describe("DiffBody side by side", () => {
+	beforeEach(() => {
+		showInvisibles.set(false);
+		sideBySide.set(true);
+		window.scrollTo = vi.fn();
+	});
+	afterEach(() => {
+		cleanup();
+		vi.unstubAllGlobals();
+		localStorage.clear();
+		showInvisibles.reset();
+		ignoreWhitespace.reset();
+		sideBySide.reset();
+	});
+
+	const lineRows = () =>
+		Array.from(
+			document.querySelectorAll<HTMLElement>('[data-testid="diff-line"]'),
+		);
+	const numbers = (row: HTMLElement) => [
+		row.dataset.oldNo ?? "",
+		row.dataset.newNo ?? "",
+	];
+	const code = (row: HTMLElement, side: "LEFT" | "RIGHT") =>
+		row.querySelector<HTMLElement>(
+			`td[data-testid="code"][data-side="${side}"]`,
+		);
+	const number = (row: HTMLElement, side: "LEFT" | "RIGHT") =>
+		row.querySelector<HTMLElement>(
+			`td[data-testid="${side === "LEFT" ? "old" : "new"}"]`,
+		);
+	const colSpans = (testId: string) =>
+		Array.from(
+			document.querySelectorAll<HTMLElement>(`[data-testid="${testId}"]`),
+		).map((row) =>
+			Array.from(row.querySelectorAll("td")).map((td) => td.colSpan),
+		);
+
+	it("lays a 2/3 cluster out as three pair rows, the third with a blank left side", async () => {
+		const { calls } = setup({ hunks: pairHunks(), clusters: [pairCluster()] });
+		await screen.findByText("new seven");
+		expect(document.querySelector("table")).toHaveAttribute(
+			"data-view",
+			"side-by-side",
+		);
+		const rows = lineRows();
+		expect(rows.map((r) => r.dataset.kind)).toEqual([
+			"context",
+			"pair",
+			"pair",
+			"pair",
+			"context",
+		]);
+		expect(rows.map(numbers)).toEqual([
+			["4", "4"],
+			["5", "5"],
+			["6", "6"],
+			["", "7"],
+			["8", "8"],
+		]);
+		const [, first, second, third] = rows as HTMLElement[];
+		for (const row of [first, second] as HTMLElement[]) {
+			expect(row.querySelectorAll("td[data-blank]")).toHaveLength(0);
+			expect(code(row, "LEFT")).toHaveAttribute("data-kind", "del");
+			expect(code(row, "RIGHT")).toHaveAttribute("data-kind", "add");
+		}
+		expect(code(first as HTMLElement, "LEFT")).toHaveTextContent("old five");
+		expect(code(first as HTMLElement, "RIGHT")).toHaveTextContent("new five");
+		// The blank side: both its cells say so, with no number, sign, text or side.
+		const blanks = (third as HTMLElement).querySelectorAll<HTMLElement>(
+			"td[data-blank]",
+		);
+		expect(Array.from(blanks).map((td) => td.dataset.testid)).toEqual([
+			"old",
+			"code",
+		]);
+		for (const td of Array.from(blanks)) {
+			expect(td.textContent).toBe("");
+			expect(td).not.toHaveAttribute("data-side");
+			expect(td).toHaveClass("bg-band");
+		}
+		expect(code(third as HTMLElement, "LEFT")).toBeNull();
+		expect(code(third as HTMLElement, "RIGHT")).toHaveTextContent("new seven");
+		expect(number(third as HTMLElement, "RIGHT")).toHaveTextContent("7");
+		// The cluster's controls sit on its first pair row.
+		expect(
+			within(first as HTMLElement).getByRole("checkbox", {
+				name: "Mark cluster reviewed",
+			}),
+		).toBeInTheDocument();
+		expect(
+			screen.getAllByRole("checkbox", { name: "Mark cluster reviewed" }),
+		).toHaveLength(1);
+		expect(calls()).toEqual(["/api/files/0/hunks?revision=r1"]);
+	});
+
+	it("shows a context line on both sides, each cell with its side", async () => {
+		setup({ hunks: pairHunks(), clusters: [pairCluster()] });
+		await screen.findByText("new seven");
+		const row = lineRows()[0] as HTMLElement;
+		expect(row.dataset.kind).toBe("context");
+		const left = code(row, "LEFT");
+		const right = code(row, "RIGHT");
+		expect(left).toHaveAttribute("data-kind", "context");
+		expect(right).toHaveAttribute("data-kind", "context");
+		expect(left?.textContent).toBe(right?.textContent);
+		expect(left).toHaveTextContent("line 4");
+		expect(number(row, "LEFT")).toHaveAttribute("data-side", "LEFT");
+		expect(number(row, "LEFT")).toHaveTextContent("4");
+		expect(number(row, "RIGHT")).toHaveAttribute("data-side", "RIGHT");
+		expect(number(row, "RIGHT")).toHaveTextContent("4");
+		// Six columns: rail, controls, old number, old code, new number, new code.
+		expect(
+			Array.from(row.querySelectorAll("td")).map((td) => td.dataset.testid),
+		).toEqual([undefined, undefined, "old", "code", "new", "code"]);
+		// Code wraps in its cell; the table never scrolls sideways.
+		expect(left).toHaveClass("whitespace-pre-wrap");
+		expect(document.querySelector("table")).toHaveClass(
+			"w-full",
+			"table-fixed",
+		);
+		expect(document.querySelector("table")).not.toHaveClass("min-w-full");
+	});
+
+	it("paints each side's cells: the add/del tint, and the reviewed fade", async () => {
+		setup({ hunks: pairHunks(), clusters: [pairCluster()] });
+		await screen.findByText("new seven");
+		const row = lineRows()[1] as HTMLElement;
+		expect(code(row, "LEFT")).toHaveClass("bg-del");
+		expect(code(row, "RIGHT")).toHaveClass("bg-add");
+		expect(number(row, "LEFT")).toHaveClass("bg-del-gutter", "text-del-ink");
+		expect(number(row, "RIGHT")).toHaveClass("bg-add-gutter", "text-add-ink");
+		expect(row).not.toHaveAttribute("data-reviewed");
+		cleanup();
+		setup({
+			hunks: pairHunks(),
+			clusters: [pairCluster({ state: "reviewed" })],
+		});
+		await screen.findByText("new seven");
+		const done = lineRows()[1] as HTMLElement;
+		expect(done).toHaveAttribute("data-reviewed");
+		expect(code(done, "LEFT")).toHaveClass("bg-del-done");
+		expect(code(done, "LEFT")).not.toHaveClass("bg-del");
+		expect(code(done, "RIGHT")).toHaveClass("bg-add-done");
+		expect(number(done, "LEFT")).toHaveClass("bg-del-done", "text-del-ink");
+		expect(number(done, "RIGHT")).toHaveClass("bg-add-done", "text-add-ink");
+	});
+
+	it("puts a thread's bubble in the cell of its side and opens its row under the pair, left side first", async () => {
+		const { user } = setup({
+			hunks: pairHunks(),
+			clusters: [pairCluster()],
+			threads: [thread("RIGHT", 6), thread("LEFT", 6)],
+		});
+		await screen.findByText("new seven");
+		const row = document.querySelector<HTMLElement>(
+			'[data-testid="diff-line"][data-new-no="6"]',
+		) as HTMLElement;
+		expect(row).toHaveAttribute("data-old-no", "6");
+		expect(row).toHaveAttribute("data-commented");
+		const left = code(row, "LEFT") as HTMLElement;
+		const right = code(row, "RIGHT") as HTMLElement;
+		expect(left).toHaveAttribute("data-commented");
+		expect(right).toHaveAttribute("data-commented");
+		expect(left).toHaveClass("thread-mark-cell");
+		expect(number(row, "LEFT")).toHaveClass("thread-mark-cell");
+		const leftBubble = within(left).getByRole("button", { name: /comment/ });
+		const rightBubble = within(right).getByRole("button", { name: /comment/ });
+		expect(leftBubble).toHaveAccessibleName("1 comment on old line 6");
+		expect(rightBubble).toHaveAccessibleName("1 comment on line 6");
+		expect(screen.getAllByTestId("thread-bubble")).toHaveLength(2);
+		expect(screen.queryByTestId("thread-row")).toBeNull();
+		// The other pair rows have no bubble and no mark.
+		expect(lineRows()[1]).not.toHaveAttribute("data-commented");
+
+		await user.click(leftBubble);
+		expect(screen.getAllByTestId("thread-row")).toHaveLength(1);
+		const opened = screen.getByTestId("thread-row");
+		expect(row.nextElementSibling).toBe(opened);
+		expect(opened.querySelector("td")?.colSpan).toBe(6);
+		expect(leftBubble).toHaveAttribute("aria-expanded", "true");
+		expect(rightBubble).toHaveAttribute("aria-expanded", "false");
+
+		await user.click(rightBubble);
+		const both = screen.getAllByTestId("thread-row");
+		expect(both).toHaveLength(2);
+		expect(row.nextElementSibling).toBe(both[0]);
+		expect(both[0]?.nextElementSibling).toBe(both[1]);
+		expect(leftBubble).toHaveAttribute(
+			"aria-controls",
+			both[0]?.getAttribute("id"),
+		);
+		expect(rightBubble).toHaveAttribute(
+			"aria-controls",
+			both[1]?.getAttribute("id"),
+		);
+
+		// Keyed by line, the open rows survive a switch to unified and back.
+		act(() => sideBySide.set(false));
+		expect(document.querySelector("table")).toHaveAttribute(
+			"data-view",
+			"unified",
+		);
+		expect(screen.getAllByTestId("thread-row")).toHaveLength(2);
+		act(() => sideBySide.set(true));
+		expect(screen.getAllByTestId("thread-row")).toHaveLength(2);
+	});
+
+	it("gives a context line one bubble, in the right cell, for a thread on its old side, and marks both cells", async () => {
+		setup({
+			hunks: pairHunks(),
+			clusters: [pairCluster()],
+			threads: [thread("LEFT", 4)],
+		});
+		await screen.findByText("new seven");
+		const row = lineRows()[0] as HTMLElement;
+		expect(row.dataset.kind).toBe("context");
+		expect(row).toHaveAttribute("data-commented");
+		expect(screen.getAllByTestId("thread-bubble")).toHaveLength(1);
+		const right = code(row, "RIGHT") as HTMLElement;
+		expect(within(right).getByTestId("thread-bubble")).toBeInTheDocument();
+		expect(
+			code(row, "LEFT")?.querySelector('[data-testid="thread-bubble"]'),
+		).toBeNull();
+		expect(code(row, "LEFT")).toHaveAttribute("data-commented");
+		expect(right).toHaveAttribute("data-commented");
+		expect(code(row, "LEFT")).toHaveClass("thread-mark-cell");
+		expect(right).toHaveClass("thread-mark-cell");
+	});
+
+	it("lands on one cell of a pair row, and on both cells of a context row", async () => {
+		setup({
+			hunks: pairHunks(),
+			clusters: [pairCluster()],
+			landing: { path: PATH, line: 6, side: "LEFT", index: 0, seq: 1 },
+		});
+		await screen.findByText("new seven");
+		const row = document.querySelector<HTMLElement>(
+			'[data-testid="diff-line"][data-landed]',
+		) as HTMLElement;
+		expect(row).toHaveAttribute("data-old-no", "6");
+		expect(code(row, "LEFT")).toHaveAttribute("data-landed");
+		expect(code(row, "LEFT")).toHaveClass("mark-tint-cell");
+		expect(number(row, "LEFT")).toHaveClass("mark-tint-cell");
+		expect(code(row, "RIGHT")).not.toHaveAttribute("data-landed");
+		expect(code(row, "RIGHT")).not.toHaveClass("mark-tint-cell");
+		expect(number(row, "RIGHT")).not.toHaveClass("mark-tint-cell");
+		// The accent rail is the row's.
+		expect(row.className).toMatch(/first-child\]:bg-accent/);
+		expect(window.scrollTo).toHaveBeenCalled();
+		cleanup();
+		setup({
+			hunks: pairHunks(),
+			clusters: [pairCluster()],
+			landing: { path: PATH, line: 4, side: "RIGHT", index: 0, seq: 2 },
+		});
+		await screen.findByText("new seven");
+		const ctxRow = document.querySelector<HTMLElement>(
+			'[data-testid="diff-line"][data-landed]',
+		) as HTMLElement;
+		expect(ctxRow.dataset.kind).toBe("context");
+		expect(code(ctxRow, "LEFT")).toHaveAttribute("data-landed");
+		expect(code(ctxRow, "RIGHT")).toHaveAttribute("data-landed");
+	});
+
+	it("notes a missing final newline under the side that lacks it", async () => {
+		setup({
+			hunks: pairHunks([{}, { noNewline: true }]),
+			clusters: [pairCluster()],
+		});
+		await screen.findByText("new seven");
+		const notes = screen.getAllByText("\\ No newline at end of file");
+		expect(notes).toHaveLength(1);
+		const note = notes[0]?.closest("tr") as HTMLElement;
+		expect(note).toHaveAttribute("data-testid", "no-newline");
+		expect(lineRows()[2]?.nextElementSibling).toBe(note);
+		expect(note.querySelector('td[data-side="LEFT"]')).toHaveTextContent(
+			"No newline at end of file",
+		);
+		expect(note.querySelector('td[data-side="RIGHT"]')?.textContent).toBe("");
+		cleanup();
+		setup({
+			hunks: pairHunks([{}, { noNewline: true }, {}, {}, { noNewline: true }]),
+			clusters: [pairCluster()],
+		});
+		await screen.findByText("new seven");
+		// Old 6 is in the second pair row, new 7 in the third: a note under each.
+		const rows = screen
+			.getAllByText("\\ No newline at end of file")
+			.map((el) => el.closest("tr") as HTMLElement);
+		expect(rows).toHaveLength(2);
+		expect(lineRows()[2]?.nextElementSibling).toBe(rows[0]);
+		expect(lineRows()[3]?.nextElementSibling).toBe(rows[1]);
+		expect(rows[1]?.querySelector('td[data-side="LEFT"]')?.textContent).toBe(
+			"",
+		);
+		expect(rows[1]?.querySelector('td[data-side="RIGHT"]')).toHaveTextContent(
+			"No newline",
+		);
+		cleanup();
+		// A context line lacking it: on both sides.
+		const lastLine: FileHunks = {
+			newLineCount: 2,
+			hunks: [
+				{
+					oldStart: 1,
+					oldCount: 2,
+					newStart: 1,
+					newCount: 2,
+					lines: [
+						del(1, "a", "c"),
+						add(1, "b", "c"),
+						{ ...ctx(2, 2), noNewline: true },
+					],
+				},
+			],
+		};
+		setup({ hunks: lastLine, clusters: [pairCluster()] });
+		await screen.findAllByText("line 2");
+		const ctxNotes = screen.getAllByText("\\ No newline at end of file");
+		expect(ctxNotes).toHaveLength(2);
+		const ctxNote = ctxNotes[0]?.closest("tr") as HTMLElement;
+		expect(ctxNotes[1]?.closest("tr")).toBe(ctxNote);
+		expect(ctxNote.querySelector('td[data-side="LEFT"]')).toHaveTextContent(
+			"No newline",
+		);
+		expect(ctxNote.querySelector('td[data-side="RIGHT"]')).toHaveTextContent(
+			"No newline",
+		);
+	});
+
+	it("with Ignore whitespace on, keeps a whitespace pair as one row with each side's own text, between positional pairs", async () => {
+		ignoreWhitespace.set(true);
+		const composed: FileHunks = {
+			newLineCount: 5,
+			hunks: [
+				{
+					oldStart: 1,
+					oldCount: 5,
+					newStart: 1,
+					newCount: 5,
+					lines: [
+						ctx(1, 1),
+						del(2, "d1", "m"),
+						del(3, "\td2", "m"),
+						del(4, "d3", "m"),
+						add(2, "a1", "m"),
+						add(3, "  d2", "m"),
+						add(4, "a3", "m"),
+						ctx(5, 5),
+					],
+				},
+			],
+		};
+		setup({
+			hunks: composed,
+			clusters: [
+				cluster("m", {
+					oldStart: 2,
+					oldCount: 3,
+					newStart: 2,
+					newCount: 3,
+					lines: 6,
+				}),
+			],
+		});
+		await screen.findByText("a3");
+		const rows = lineRows();
+		expect(rows.map((r) => r.dataset.kind)).toEqual([
+			"context",
+			"pair",
+			"pair",
+			"pair",
+			"context",
+		]);
+		expect(rows.map(numbers)).toEqual([
+			["1", "1"],
+			["2", "2"],
+			["3", "3"],
+			["4", "4"],
+			["5", "5"],
+		]);
+		const ws = rows[2] as HTMLElement;
+		expect(code(ws, "LEFT")).toHaveAttribute("data-kind", "ws");
+		expect(code(ws, "RIGHT")).toHaveAttribute("data-kind", "ws");
+		// Each side's own text, whitespace and all.
+		expect(code(ws, "LEFT")?.textContent).toBe("~\td2");
+		expect(code(ws, "RIGHT")?.textContent).toBe("~  d2");
+		expect(code(ws, "LEFT")).toHaveClass("bg-band");
+		expect(
+			screen.getAllByRole("img", { name: "Whitespace only" }),
+		).toHaveLength(2);
+		expect(code(rows[1] as HTMLElement, "LEFT")).toHaveTextContent("d1");
+		expect(code(rows[1] as HTMLElement, "RIGHT")).toHaveTextContent("a1");
+		expect(code(rows[3] as HTMLElement, "LEFT")).toHaveTextContent("d3");
+		expect(code(rows[3] as HTMLElement, "RIGHT")).toHaveTextContent("a3");
+	});
+
+	it("with Ignore whitespace on, a whitespace-only cluster is still one collapsed row over the whole table", async () => {
+		ignoreWhitespace.set(true);
+		const { collapsed, user } = setup();
+		await screen.findByText("Whitespace only · 6 lines");
+		expect(collapsed()).toHaveLength(1);
+		expect(colSpans("ws-cluster")).toEqual([[1, 1, 4]]);
+		expect(lineRows().map((r) => r.dataset.kind)).toEqual([
+			"context",
+			"context",
+			"context",
+			"context",
+			"pair",
+			"pair",
+			"context",
+			"context",
+			"context",
+		]);
+		const expand = screen.getByRole("button", {
+			name: "Whitespace only · 6 lines",
+		});
+		await user.click(expand);
+		const shown = lineRows().slice(1, 4);
+		expect(shown.map((r) => r.dataset.kind)).toEqual(["pair", "pair", "pair"]);
+		expect(shown.map(numbers)).toEqual([
+			["2", "2"],
+			["3", "3"],
+			["4", "4"],
+		]);
+		for (const row of shown) {
+			expect(code(row, "LEFT")).toHaveAttribute("data-kind", "ws");
+			expect(code(row, "RIGHT")).toHaveAttribute("data-kind", "ws");
+		}
+		// The expanded state survives a switch to unified and back.
+		act(() => sideBySide.set(false));
+		expect(collapsed()[0]).toHaveAttribute("data-expanded");
+		expect(lineRows()).toHaveLength(13);
+		act(() => sideBySide.set(true));
+		expect(collapsed()[0]).toHaveAttribute("data-expanded");
+		expect(lineRows()).toHaveLength(12);
+	});
+
+	it("spans every table-wide row over six columns, five in unified", async () => {
+		ignoreWhitespace.set(true);
+		// A longer file: a gap row below the hunk.
+		const { user } = setup({
+			hunks: { ...hunks, newLineCount: 20 },
+			threads: [thread("RIGHT", 8)],
+		});
+		await screen.findByText("Whitespace only · 6 lines");
+		await user.click(screen.getByRole("button", { name: /comment on line 8/ }));
+		const spans = () => ({
+			header: Array.from(
+				document.querySelectorAll<HTMLTableCellElement>(
+					"tbody > tr > td[colspan]",
+				),
+			)
+				.filter((td) => td.parentElement?.textContent?.startsWith("@@"))
+				.map((td) => td.colSpan),
+			gap: colSpans("gap-row"),
+			ws: colSpans("ws-cluster"),
+			thread: colSpans("thread-row"),
+		});
+		expect(spans()).toEqual({
+			header: [6],
+			gap: [[2, 4]],
+			ws: [[1, 1, 4]],
+			thread: [[6]],
+		});
+		act(() => sideBySide.set(false));
+		expect(spans()).toEqual({
+			header: [5],
+			gap: [[2, 3]],
+			ws: [[1, 1, 3]],
+			thread: [[5]],
+		});
+	});
+
+	it("sizes the number columns by the file's largest line number, three digits at least", async () => {
+		setup({
+			hunks: { ...pairHunks(), newLineCount: 1200 },
+			clusters: [pairCluster()],
+		});
+		await screen.findByText("new seven");
+		const widths = () =>
+			new Set(
+				Array.from(
+					document.querySelectorAll<HTMLElement>(
+						'td[data-testid="old"], td[data-testid="new"]',
+					),
+				).map((td) => td.style.width),
+			);
+		expect(widths()).toEqual(new Set(["calc(4ch + 1rem)"]));
+		cleanup();
+		setup({
+			hunks: { ...pairHunks(), newLineCount: 80 },
+			clusters: [pairCluster()],
+		});
+		await screen.findByText("new seven");
+		expect(widths()).toEqual(new Set(["calc(3ch + 1rem)"]));
+		// Unified too.
+		act(() => sideBySide.set(false));
+		expect(widths()).toEqual(new Set(["calc(3ch + 1rem)"]));
+		// A deleted tail numbers higher on the old side than the new file is long.
+		cleanup();
+		setup({
+			hunks: {
+				newLineCount: 3,
+				hunks: [
+					{
+						oldStart: 1,
+						oldCount: 1001,
+						newStart: 1,
+						newCount: 3,
+						lines: [ctx(1, 1), ctx(2, 2), ctx(3, 3), del(1001, "gone", "c")],
+					},
+				],
+			},
+			clusters: [pairCluster()],
+		});
+		await screen.findByText("gone");
+		expect(widths()).toEqual(new Set(["calc(4ch + 1rem)"]));
+	});
+
+	it("keeps unified's markup, its code cell naming its side", async () => {
+		act(() => sideBySide.set(false));
+		setup({ hunks: pairHunks(), clusters: [pairCluster()] });
+		await screen.findByText("new seven");
+		expect(document.querySelector("table")).toHaveAttribute(
+			"data-view",
+			"unified",
+		);
+		expect(document.querySelector("table")).toHaveClass("min-w-full");
+		const sides = lineRows().map((row) => [
+			row.dataset.kind,
+			row.querySelector('td[data-testid="code"]')?.getAttribute("data-side"),
+			row.querySelectorAll("td").length,
+		]);
+		expect(sides).toEqual([
+			["context", "RIGHT", 5],
+			["del", "LEFT", 5],
+			["del", "LEFT", 5],
+			["add", "RIGHT", 5],
+			["add", "RIGHT", 5],
+			["add", "RIGHT", 5],
+			["context", "RIGHT", 5],
+		]);
+		expect(document.querySelectorAll("td[data-blank]")).toHaveLength(0);
 	});
 });

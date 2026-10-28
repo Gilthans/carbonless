@@ -158,6 +158,33 @@
 	}
 }
 
+/*
+ * The same two marks on one cell (side by side: the landed-on line's cells,
+ * and the commented range's cells, on their side only): mark-tint-cell is the
+ * wash, thread-mark-cell the wash with the tinted number and the stripe at
+ * the code cell's left edge. The same colors as above (theme.test.ts).
+ */
+@utility mark-tint-cell {
+	box-shadow: inset 0 0 0 100vmax
+		color-mix(in srgb, var(--color-accent) 8%, transparent);
+}
+
+@utility thread-mark-cell {
+	box-shadow: inset 0 0 0 100vmax
+		color-mix(in srgb, var(--color-accent) 8%, transparent);
+	&[data-testid="old"],
+	&[data-testid="new"] {
+		box-shadow: inset 0 0 0 100vmax
+			color-mix(in srgb, var(--color-accent) 20%, transparent);
+	}
+	&[data-testid="code"] {
+		box-shadow:
+			inset 3px 0 0 var(--color-accent),
+			inset 0 0 0 100vmax
+			color-mix(in srgb, var(--color-accent) 8%, transparent);
+	}
+}
+
 /* The header's faint brand glow, over its solid surface color. */
 @utility header-glow {
 	background-image:
