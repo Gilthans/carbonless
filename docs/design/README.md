@@ -321,7 +321,10 @@ decides where; nothing else does):
 - **Selecting** text in the code (any row kind, across rows and sides,
   within one file) or **picking lines** by their numbers (click; shift-click
   or drag down the numbers; a second tap on touch; Up/Down move between the
-  number buttons, one tab stop per file, Shift extends, Enter picks) brings
+  number buttons, one tab stop per file, Shift extends, Enter picks; the
+  number cells are 48×20 targets on a phone too, the owner's accepted
+  exception to the 40px rule, for line numbers only, so rows keep their
+  height) brings
   up the **selection bar**: one 40px icon button per registered action
   (`selectionActions.ts`; Comment now), on `overlay` with `edge` and
   `shadow-float`, just below the selection's end (above it when there's no
