@@ -1,6 +1,11 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { captureAnchor, firstBelow, restoreAnchor } from "./scrollAnchor";
+import {
+	captureAnchor,
+	firstBelow,
+	restoreAnchor,
+	selectorsOf,
+} from "./scrollAnchor";
 
 describe("firstBelow", () => {
 	const bottoms = [10, 20, 30, 40];
@@ -114,6 +119,134 @@ describe("captureAnchor / restoreAnchor", () => {
 		});
 		restoreAnchor(anchor, root);
 		expect(scrollBy).toHaveBeenCalledWith(0, -15);
+	});
+
+	it("names the row by its exact numbers, then by either number alone", () => {
+		const root = page({ files: [-900, -400], rows: [90, 110, 130] });
+		const row = (sel: string) => {
+			const el = root.querySelector(sel);
+			if (!el) throw new Error(`no ${sel}`);
+			return el;
+		};
+		const rows = root.querySelector("tbody");
+		if (!rows) throw new Error("no rows");
+		rows.insertAdjacentHTML(
+			"beforeend",
+			`<tr data-testid="diff-line" data-old-no="5"></tr>
+			<tr data-testid="diff-line" data-old-no="5" data-new-no="7"></tr>`,
+		);
+		const file = '[data-file-index="1"] [data-testid=diff-line]';
+		// A del row: exact, then by its old number.
+		const del = row('[data-old-no="5"]:not([data-new-no])');
+		place(del, 90);
+		expect(captureAnchor(root, 100)?.el).toBe(row('[data-new-no="1"]'));
+		place(del, 150);
+		expect(selectorsOf(del)).toEqual([
+			`${file}[data-old-no="5"]:not([data-new-no])`,
+			`${file}[data-old-no="5"]`,
+		]);
+		// An add row: exact, then by its new number.
+		expect(selectorsOf(row('[data-new-no="2"]'))).toEqual([
+			`${file}:not([data-old-no])[data-new-no="2"]`,
+			`${file}[data-new-no="2"]`,
+		]);
+		// A context row and a side-by-side pair row: exact, old, new.
+		expect(selectorsOf(row('[data-old-no="2"]'))).toEqual([
+			`${file}[data-old-no="2"][data-new-no="3"]`,
+			`${file}[data-old-no="2"]`,
+			`${file}[data-new-no="3"]`,
+		]);
+		expect(selectorsOf(row('[data-new-no="7"]'))).toEqual([
+			`${file}[data-old-no="5"][data-new-no="7"]`,
+			`${file}[data-old-no="5"]`,
+			`${file}[data-new-no="7"]`,
+		]);
+		// A file: itself.
+		expect(selectorsOf(row('[data-file-index="0"]'))).toEqual([
+			'[data-file-index="0"]',
+		]);
+	});
+
+	/** Replaces file 1's rows with `html`, placing them at `tops`. */
+	function relayout(root: Element, html: string, tops: number[]) {
+		const tbody = root.querySelector("tbody");
+		if (!tbody) throw new Error("no rows");
+		tbody.innerHTML = html;
+		tbody.querySelectorAll("tr").forEach((r, i) => {
+			place(r, tops[i] ?? 0);
+		});
+	}
+
+	it("finds a unified del row again as the side-by-side pair row", () => {
+		const scrollBy = vi.spyOn(window, "scrollBy").mockImplementation(() => {});
+		const root = page({ files: [-900, -400], rows: [50, 70, 130] });
+		relayout(
+			root,
+			`<tr data-testid="diff-line" data-old-no="4" data-new-no="4"></tr>
+			<tr data-testid="diff-line" data-old-no="5"></tr>
+			<tr data-testid="diff-line" data-new-no="5"></tr>`,
+			[70, 90, 110],
+		);
+		const anchor = captureAnchor(root, 100);
+		expect(anchor?.el.getAttribute("data-old-no")).toBe("5");
+		expect(anchor?.top).toBe(90);
+		if (!anchor) throw new Error("no anchor");
+		// Side by side: old 5 and new 5 share a row, which sits 30px higher.
+		relayout(
+			root,
+			`<tr data-testid="diff-line" data-old-no="4" data-new-no="4"></tr>
+			<tr data-testid="diff-line" data-old-no="5" data-new-no="5"></tr>`,
+			[40, 60],
+		);
+		restoreAnchor(anchor, root);
+		expect(scrollBy).toHaveBeenCalledWith(0, -30);
+	});
+
+	it("finds a side-by-side pair row again as the unified row of its old line", () => {
+		const scrollBy = vi.spyOn(window, "scrollBy").mockImplementation(() => {});
+		const root = page({ files: [-900, -400], rows: [50, 70, 130] });
+		relayout(
+			root,
+			`<tr data-testid="diff-line" data-old-no="4" data-new-no="4"></tr>
+			<tr data-testid="diff-line" data-old-no="5" data-new-no="5"></tr>`,
+			[70, 90],
+		);
+		const anchor = captureAnchor(root, 100);
+		expect(anchor?.el.getAttribute("data-new-no")).toBe("5");
+		if (!anchor) throw new Error("no anchor");
+		// Unified: the del row of old 5 comes first, 25px lower.
+		relayout(
+			root,
+			`<tr data-testid="diff-line" data-old-no="4" data-new-no="4"></tr>
+			<tr data-testid="diff-line" data-old-no="5"></tr>
+			<tr data-testid="diff-line" data-new-no="5"></tr>`,
+			[95, 115, 135],
+		);
+		restoreAnchor(anchor, root);
+		expect(scrollBy).toHaveBeenCalledWith(0, 25);
+	});
+
+	it("finds a unified add row again as the side-by-side pair row of its new line", () => {
+		const scrollBy = vi.spyOn(window, "scrollBy").mockImplementation(() => {});
+		const root = page({ files: [-900, -400], rows: [50, 70, 130] });
+		relayout(
+			root,
+			`<tr data-testid="diff-line" data-old-no="5"></tr>
+			<tr data-testid="diff-line" data-old-no="6"></tr>
+			<tr data-testid="diff-line" data-new-no="5"></tr>`,
+			[50, 70, 90],
+		);
+		const anchor = captureAnchor(root, 100);
+		expect(anchor?.el.getAttribute("data-new-no")).toBe("5");
+		if (!anchor) throw new Error("no anchor");
+		relayout(
+			root,
+			`<tr data-testid="diff-line" data-old-no="5" data-new-no="5"></tr>
+			<tr data-testid="diff-line" data-old-no="6"></tr>`,
+			[50, 70],
+		);
+		restoreAnchor(anchor, root);
+		expect(scrollBy).toHaveBeenCalledWith(0, -40);
 	});
 
 	it("does nothing when the anchor is gone", () => {
