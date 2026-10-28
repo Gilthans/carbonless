@@ -671,7 +671,7 @@ describe("commentLeft", () => {
 
 	it("never held up: the overview answers at once, true until GitHub says; then false, LEFT lines refused (400), RIGHT posted", async () => {
 		pr = createPrFixture();
-		// GitHub's base moved on past the snapshot's (as after a merge).
+		// GitHub's merge base isn't the snapshot's left side.
 		scenario12({
 			mergeBases: { [pr.head()]: "e".repeat(40) },
 			compareDelayMs: 3000,
@@ -702,6 +702,41 @@ describe("commentLeft", () => {
 		const right = await s.startThread(line(pr.head(), "l3", { side: "RIGHT" }));
 		expect(right.thread.anchor).toMatchObject({ side: "RIGHT", line: 2 });
 		expect(compares()).toBe(1);
+	});
+
+	it("a started review of a PR then merged: asked against the PR's own base commit, where GitHub still puts its LEFT lines (gallery #11)", async () => {
+		pr = createPrFixture();
+		scenario12();
+		const first = await Session.open(pr.arg, process.cwd());
+		const review = await first.review();
+		const key = review.files[0]?.clusters[0]?.key ?? "";
+		await first.setStates(review.revision, [{ key, state: "reviewed" }]);
+		await first.close();
+		// Merged by a merge commit: main now holds the head.
+		pr.moveMain();
+		const merged = (baseRefOid?: string) =>
+			pr.scenario({
+				prs: {
+					12: {
+						view: prView({
+							headRefOid: pr.head(),
+							baseRefName: "main",
+							state: "MERGED",
+							...(baseRefOid ? { baseRefOid } : {}),
+						}),
+						graphql: { reviews: [], reviewThreads: [], comments: [] },
+					},
+				},
+			});
+		merged(pr.mergeBase);
+		const s = await Session.open(pr.arg, process.cwd());
+		expect(s.snapshot().base).toBe(pr.mergeBase);
+		expect(await s.commentLeft()).toBe(true);
+		expect(pr.ghLog()).toContain(`compare/${pr.mergeBase}...${pr.head()}`);
+		// Without GitHub's base commit, the branch: fails closed.
+		merged();
+		const t = await Session.open(pr.arg, process.cwd());
+		expect(await t.commentLeft()).toBe(false);
 	});
 
 	it("a pinned head: asked for the pinned commit", async () => {
@@ -739,9 +774,10 @@ describe("commentLeft", () => {
 		expect((await s.overview()).commentLeft).toBe(true);
 		await expect(s.commentLeft()).rejects.toBeInstanceOf(GhError);
 		scenario12();
+		const before = compares();
 		const { thread } = await s.startThread(line(pr.head(), "l4"));
 		expect(thread.anchor).toMatchObject({ side: "LEFT" });
-		// The overview's ask, then one per write-side ask: never a failure reused.
-		expect(compares()).toBe(3);
+		// The write asked again rather than take the failure as the answer.
+		expect(compares()).toBe(before + 1);
 	});
 });

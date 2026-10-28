@@ -420,7 +420,9 @@ function mergeBaseOf(n, commit, base) {
 	const given = s.mergeBases?.[commit];
 	if (given) return given;
 	const branch = base ?? s.prs[n]?.view?.baseRefName ?? "main";
-	return repoGit("merge-base", `refs/heads/${branch}`, commit).trim();
+	// A commit (the PR's baseRefOid) or a branch.
+	const ref = /^[0-9a-f]{40}$/.test(branch) ? branch : `refs/heads/${branch}`;
+	return repoGit("merge-base", ref, commit).trim();
 }
 /**
  * PR `n`'s diff at `commit` as GitHub resolves a comment's lines against

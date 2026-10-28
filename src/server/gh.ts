@@ -21,6 +21,12 @@ export interface PrMeta {
 	url: string;
 	title: string;
 	baseBranch: string;
+	/**
+	 * The commit GitHub takes the PR's base at (`baseRefOid`: the branch's
+	 * tip while open, frozen once merged or closed); absent if GitHub gave
+	 * none.
+	 */
+	baseOid?: string;
 	headBranch: string;
 	/** owner/repo of the head branch's repository. */
 	headRepo: string;
@@ -299,6 +305,8 @@ function validOwnerRepo(owner: string, repo: string): boolean {
 	return OWNER.test(owner) && REPO.test(repo) && repo !== "." && repo !== "..";
 }
 
+const OID_FORM = /^[0-9a-f]{40}([0-9a-f]{24})?$/;
+
 export async function fetchPrMeta(
 	ref: PrRef,
 	read: ReadSignal = {},
@@ -306,7 +314,7 @@ export async function fetchPrMeta(
 	const v = rec(
 		await prView(
 			ref,
-			"number,title,url,state,baseRefName,headRefName,headRefOid,headRepository,headRepositoryOwner",
+			"number,title,url,state,baseRefName,baseRefOid,headRefName,headRefOid,headRepository,headRepositoryOwner",
 			read,
 		),
 	);
@@ -341,6 +349,9 @@ export async function fetchPrMeta(
 		url,
 		title: typeof v.title === "string" ? v.title : "",
 		baseBranch: baseRefName,
+		...(typeof v.baseRefOid === "string" && OID_FORM.test(v.baseRefOid)
+			? { baseOid: v.baseRefOid }
+			: {}),
 		headBranch: headRefName,
 		headRepo,
 		headOid: headRefOid,
@@ -1779,8 +1790,9 @@ export async function findThreadOf(
 }
 
 /**
- * GitHub's merge base of base branch `base` and commit `head` (its REST
- * compare), which a LEFT line of a comment on `head` resolves against.
+ * GitHub's merge base of `base` (the PR's base commit, or its branch) and
+ * commit `head` (its REST compare), which a LEFT line of a comment on
+ * `head` resolves against.
  */
 export async function fetchMergeBase(
 	ref: PrRef,

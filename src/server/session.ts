@@ -446,7 +446,7 @@ export class Session {
 	 * whether GitHub's merge base for the snapshot's head (its compare of
 	 * the base branch and it, which a LEFT line resolves against) is the
 	 * snapshot's left side. They differ when the base moved on past what
-	 * the snapshot shows: a pinned head, a started patch set, a merged PR.
+	 * the snapshot shows: a pinned head, a started patch set.
 	 * One compare per snapshot, asked lazily; a failed one is asked again
 	 * after COMMENT_LEFT_RETRY_MS (a POST meanwhile gets its failure, a
 	 * 502). As of a cutoff nothing is written: true.
@@ -471,9 +471,14 @@ export class Session {
 		}
 		const entry: CommentLeft = {
 			key,
-			left: fetchMergeBase(this.#ref(), this.#meta.baseBranch, head, {
-				signal: this.#stop.signal,
-			}).then((mergeBase) => {
+			// The PR's own base commit: a merged PR's stays where it was
+			// (gallery #11: GitHub still resolves its LEFT lines there).
+			left: fetchMergeBase(
+				this.#ref(),
+				this.#meta.baseOid ?? this.#meta.baseBranch,
+				head,
+				{ signal: this.#stop.signal },
+			).then((mergeBase) => {
 				entry.known = mergeBase === base;
 				return entry.known;
 			}),
