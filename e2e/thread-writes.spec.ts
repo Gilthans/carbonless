@@ -342,8 +342,10 @@ test("resolve from an Overview card fades, then moves; unresolve brings it back"
 	await expect(c.getByRole("button", { name: "Unresolve" })).toBeVisible();
 	await expect(c).toHaveCount(0, { timeout: 8000 });
 	expect(await last).toBeLessThanOrEqual(0.05);
-	const resolved = humans(page).getByRole("button", { name: "1 resolved" });
-	await resolved.click();
+	await humans(page)
+		.getByRole("radiogroup", { name: "Threads shown" })
+		.getByText("1 resolved")
+		.click();
 	const back = card(page, "new.txt");
 	await openCard(back);
 	await back.getByRole("button", { name: "Unresolve" }).click();
@@ -351,7 +353,7 @@ test("resolve from an Overview card fades, then moves; unresolve brings it back"
 	await expect(back).toHaveCount(0, { timeout: 8000 });
 	await page.reload();
 	await expect(
-		humans(page).getByRole("button", { name: "0 resolved" }),
+		humans(page).getByRole("radio", { name: "0 resolved" }),
 	).toBeVisible();
 	await expect(card(page, "new.txt")).toBeVisible();
 });

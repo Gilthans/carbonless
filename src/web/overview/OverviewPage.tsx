@@ -963,9 +963,88 @@ function useFade() {
 	return { fading, toggled };
 }
 
+const CHOICE_TONES = {
+	yellow: "text-warn has-checked:border-warn/50 has-checked:bg-warn/15",
+	green: "text-ok has-checked:border-ok/50 has-checked:bg-ok/15",
+	gray: "text-ink-soft has-checked:border-line-strong has-checked:bg-overlay",
+};
+
+/**
+ * Unresolved or resolved: one two-way choice, each side with its count,
+ * either chosen whatever its count. With Drafts shown neither is chosen.
+ */
+function ResolvedChoice(props: {
+	shown: ThreadFilter;
+	unresolved: number;
+	resolved: number;
+	asOf: boolean;
+	controls: string;
+	onChoose: (filter: "unresolved" | "resolved") => void;
+}) {
+	const name = useId();
+	const options = [
+		{
+			id: "unresolved" as const,
+			count: props.unresolved,
+			tone: "yellow" as const,
+			icon: CommentDiscussionIcon,
+			tip: "Show unresolved threads",
+		},
+		{
+			id: "resolved" as const,
+			count: props.resolved,
+			tone: "green" as const,
+			icon: CheckIcon,
+			// As of a cutoff, none is known resolved: the tip says why.
+			tip: props.asOf
+				? "Resolution history isn't known for a past moment: every thread counts as unresolved"
+				: "Show resolved threads",
+		},
+	];
+	return (
+		<div
+			role="radiogroup"
+			aria-label="Threads shown"
+			className="inline-flex rounded-full border border-line p-px"
+		>
+			{options.map((o) => {
+				const IconEl = o.icon;
+				return (
+					<Tooltip
+						key={o.id}
+						content={o.tip}
+						hoverDelay={400}
+						describe={o.id === "resolved" && props.asOf}
+					>
+						{({ "aria-describedby": describedBy, ...trigger }) => (
+							<label
+								{...trigger}
+								className={`inline-flex min-h-10 cursor-pointer items-center gap-1 rounded-full border border-transparent px-2.5 text-xs font-medium transition-colors hover:bg-overlay has-focus-visible:outline-2 has-focus-visible:outline-offset-1 has-focus-visible:outline-accent motion-reduce:transition-none ${CHOICE_TONES[o.count ? o.tone : "gray"]}`}
+							>
+								<input
+									type="radio"
+									name={name}
+									value={o.id}
+									checked={props.shown === o.id}
+									onChange={() => props.onChoose(o.id)}
+									aria-controls={props.controls}
+									aria-describedby={describedBy}
+									className="sr-only"
+								/>
+								<IconEl size={12} aria-hidden />
+								{o.count} {o.id}
+							</label>
+						)}
+					</Tooltip>
+				);
+			})}
+		</div>
+	);
+}
+
 /**
  * One group's review threads, inside "Is it ready": unresolved ones listed,
- * or resolved ones while their count is pressed; five at a time. As of a
+ * or resolved ones when chosen; five at a time. As of a
  * cutoff no thread is known to be resolved.
  */
 function ThreadGroup(props: {
@@ -1017,9 +1096,6 @@ function ThreadGroup(props: {
 	const showResolved = shownFilter === "resolved";
 	const listed =
 		shownFilter === "drafts" ? drafted : showResolved ? resolved : unresolved;
-	// Pressing never leads to an empty list (as of a cutoff, none is resolved);
-	// pressed, it can always go back.
-	const toggleOff = !showResolved && resolved.length === 0;
 	const IconEl = props.icon;
 	const visible = listed
 		.slice(0, limit)
@@ -1087,39 +1163,18 @@ function ThreadGroup(props: {
 						aria-label="Thread counts"
 						className="flex flex-wrap items-center gap-x-2"
 					>
-						{unresolved.length > 0 && (
-							<li className="inline-flex min-h-10 items-center">
-								<Badge tone="yellow" icon={CommentDiscussionIcon}>
-									{unresolved.length} unresolved
-								</Badge>
-							</li>
-						)}
 						<li>
-							<Chip
-								tone={resolved.length ? "green" : "gray"}
-								icon={CheckIcon}
-								tip={
-									asOf
-										? "Resolution history isn't known for a past moment: every thread counts as unresolved"
-										: toggleOff
-											? "No resolved threads"
-											: showResolved
-												? "Show unresolved threads"
-												: "Show resolved threads"
-								}
-								describeTip={asOf || toggleOff}
-								toggle={{
-									pressed: showResolved,
-									disabled: toggleOff,
-									controls: listId,
-									onClick: () => {
-										setFilter(showResolved ? "unresolved" : "resolved");
-										setLimit(THREAD_PAGE);
-									},
+							<ResolvedChoice
+								shown={shownFilter}
+								unresolved={unresolved.length}
+								resolved={resolved.length}
+								asOf={asOf}
+								controls={listId}
+								onChoose={(f) => {
+									setFilter(f);
+									setLimit(THREAD_PAGE);
 								}}
-							>
-								{resolved.length} resolved
-							</Chip>
+							/>
 						</li>
 						{draftCount > 0 && (
 							<li>

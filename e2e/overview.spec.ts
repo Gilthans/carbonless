@@ -299,17 +299,51 @@ test("human and bot reviews sit inside Is it ready, count resolved threads and l
 		"Timeline",
 	]);
 
-	// The resolved count swaps the list to resolved threads, and back.
-	const toggle = humans.getByRole("button", { name: "2 resolved" });
-	await expect(toggle).toHaveAttribute("aria-pressed", "false");
-	await toggle.click();
-	await expect(toggle).toHaveAttribute("aria-pressed", "true");
+	// Unresolved / resolved: one two-way choice, clicked either way.
+	const choice = humans.getByRole("radiogroup", { name: "Threads shown" });
+	const open = choice.getByRole("radio", { name: "1 unresolved" });
+	const done = choice.getByRole("radio", { name: "2 resolved" });
+	await expect(open).toBeChecked();
+	// The radios are visually hidden: tap their labels like a person would.
+	await choice.getByText("2 resolved").click();
+	await expect(done).toBeChecked();
+	await expect(open).not.toBeChecked();
 	await expect(humans.getByTestId("thread")).toHaveCount(2);
 	await expect(humans.getByText("src/a.ts")).toBeVisible();
 	await expect(humans.getByText("src/cache.ts:42")).toHaveCount(0);
-	await toggle.click();
+	await choice.getByText("1 unresolved").click();
+	await expect(open).toBeChecked();
 	await expect(humans.getByTestId("thread")).toHaveCount(1);
 	await expect(humans.getByText("src/cache.ts:42")).toBeVisible();
+	// Each side is a 40px tap target.
+	for (const side of ["1 unresolved", "2 resolved"]) {
+		const box = await choice.getByText(side).boundingBox();
+		expect(box?.height).toBeGreaterThanOrEqual(40);
+	}
+});
+
+test("with no resolved threads, Resolved still opens and says so", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	await pr({ threads: [humanThreadWithReply] });
+	const s = await startCrb();
+	await page.goto(s.url);
+	const humans = page.getByRole("region", { name: "Human reviews" });
+	const choice = humans.getByRole("radiogroup", { name: "Threads shown" });
+	await choice.getByText("0 resolved").click();
+	await expect(choice.getByRole("radio", { name: "0 resolved" })).toBeChecked();
+	await expect(humans.getByText("No resolved threads")).toBeVisible();
+	await expect(humans.getByTestId("thread")).toHaveCount(0);
+	await choice.getByText("1 unresolved").click();
+	await expect(humans.getByTestId("thread")).toHaveCount(1);
+	// No horizontal page scroll at phone width.
+	expect(
+		await page.evaluate(
+			() => document.documentElement.scrollWidth <= window.innerWidth,
+		),
+	).toBe(true);
 });
 
 test("section headings are centered bands", async ({ page, pr, startCrb }) => {
@@ -1460,7 +1494,10 @@ test("resolved thread is marked resolved in its header", async ({
 	const s = await startCrb();
 	await page.goto(s.url);
 	const humans = page.getByRole("region", { name: "Human reviews" });
-	await humans.getByRole("button", { name: "1 resolved" }).click();
+	await humans
+		.getByRole("radiogroup", { name: "Threads shown" })
+		.getByText("1 resolved")
+		.click();
 	const head = card(page, "src/done.ts").getByTestId("thread-head");
 	await expect(head).toContainText("Resolved thread by rev2");
 	// A green check and the word in green, not only a quieter card.

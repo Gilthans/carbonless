@@ -180,7 +180,9 @@ More rows go into `SettingsList` (`src/web/Settings.tsx`).
 
 "Human reviews" / "Bot reviews" each open with a `band` strip across the
 section (icon in `label`, title in `ink`, then the unresolved/resolved
-chips), quieter than the section's `raised` title band. Each thread is a
+two-way choice, a pill of two radios in a `line` outline, the chosen side
+filled in its tone: `warn` unresolved, `ok` resolved, `overlay` at 0; then
+the Drafts chip), quieter than the section's `raised` title band. Each thread is a
 bordered (`edge`) card on `surface`:
 
 1. a `band` header row: status icon (yellow unresolved, green resolved),

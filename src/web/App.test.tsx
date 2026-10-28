@@ -879,17 +879,27 @@ describe("OverviewPage", () => {
 		).toBeNull();
 	});
 
-	it("the resolved count is a toggle that swaps the list to resolved threads and back", async () => {
+	it("unresolved and resolved are one two-way choice, either way", async () => {
 		const user = userEvent.setup();
 		renderApp();
 		const humans = await screen.findByRole("region", { name: "Human reviews" });
-		const toggle = within(humans).getByRole("button", { name: "4 resolved" });
-		expect(toggle).toHaveAttribute("aria-pressed", "false");
-		expect(
-			within(humans).getByRole("list", { name: "Unresolved threads" }),
-		).toBeInTheDocument();
-		await user.click(toggle);
-		expect(toggle).toHaveAttribute("aria-pressed", "true");
+		const choice = within(humans).getByRole("radiogroup", {
+			name: "Threads shown",
+		});
+		const open = within(choice).getByRole("radio", { name: "1 unresolved" });
+		const done = within(choice).getByRole("radio", { name: "4 resolved" });
+		const listId = within(humans).getByRole("list", {
+			name: "Unresolved threads",
+		}).parentElement?.id;
+		expect(listId).toBeTruthy();
+		for (const r of [open, done]) {
+			expect(r).toHaveAttribute("aria-controls", listId);
+		}
+		expect(open).toBeChecked();
+		expect(done).not.toBeChecked();
+		await user.click(done);
+		expect(done).toBeChecked();
+		expect(open).not.toBeChecked();
 		expect(
 			within(humans).queryByRole("list", { name: "Unresolved threads" }),
 		).toBeNull();
@@ -906,19 +916,43 @@ describe("OverviewPage", () => {
 		]);
 		// Resolved threads need no reply.
 		expect(list).not.toHaveTextContent("no reply");
-		await user.click(toggle);
-		expect(toggle).toHaveAttribute("aria-pressed", "false");
+		// Clicking the chosen side again keeps it.
+		await user.click(done);
+		expect(done).toBeChecked();
+		// The other side brings its list back.
+		await user.click(open);
+		expect(open).toBeChecked();
 		expect(within(humans).getAllByTestId("thread")).toHaveLength(1);
-		// Nothing resolved: the toggle can't lead to an empty list.
+		// Nothing resolved: still chosen, and says so.
 		const bots = screen.getByRole("region", { name: "Bot reviews" });
-		const none = within(bots).getByRole("button", { name: "0 resolved" });
-		expect(none).toHaveAttribute("aria-disabled", "true");
+		const none = within(bots).getByRole("radio", { name: "0 resolved" });
+		expect(none).not.toHaveAttribute("aria-disabled");
 		await user.click(none);
-		expect(none).toHaveAttribute("aria-pressed", "false");
+		expect(none).toBeChecked();
+		expect(within(bots).queryAllByTestId("thread")).toHaveLength(0);
+		expect(bots).toHaveTextContent("No resolved threads");
+		await user.click(within(bots).getByRole("radio", { name: "1 unresolved" }));
 		expect(within(bots).getAllByTestId("thread")).toHaveLength(1);
 	});
 
-	it("with only resolved threads, says none is unresolved and can still show them", async () => {
+	it("keyboard: arrows move between the two sides", async () => {
+		const user = userEvent.setup();
+		renderApp();
+		const humans = await screen.findByRole("region", { name: "Human reviews" });
+		const open = within(humans).getByRole("radio", { name: "1 unresolved" });
+		open.focus();
+		await user.keyboard("{ArrowRight}");
+		expect(
+			within(humans).getByRole("radio", { name: "4 resolved" }),
+		).toBeChecked();
+		expect(
+			within(humans).getByRole("list", { name: "Resolved threads" }),
+		).toBeInTheDocument();
+		await user.keyboard("{ArrowLeft}");
+		expect(open).toBeChecked();
+	});
+
+	it("with only resolved threads, shows 0 unresolved, chosen, and either side works", async () => {
 		const user = userEvent.setup();
 		renderApp({
 			"/api/overview": ok({
@@ -928,16 +962,17 @@ describe("OverviewPage", () => {
 		});
 		const humans = await screen.findByRole("region", { name: "Human reviews" });
 		expect(humans).toHaveTextContent("No unresolved threads");
-		const toggle = within(humans).getByRole("button", { name: "1 resolved" });
-		expect(toggle).not.toHaveAttribute("aria-disabled");
-		await user.click(toggle);
+		const open = within(humans).getByRole("radio", { name: "0 unresolved" });
+		expect(open).toBeChecked();
+		const done = within(humans).getByRole("radio", { name: "1 resolved" });
+		await user.click(done);
 		expect(within(humans).getAllByTestId("thread")).toHaveLength(1);
-		await user.click(toggle);
-		expect(toggle).toHaveAttribute("aria-pressed", "false");
+		await user.click(open);
+		expect(open).toBeChecked();
 		expect(humans).toHaveTextContent("No unresolved threads");
 	});
 
-	it("lists five threads at a time; Load more adds five; the toggle starts over", async () => {
+	it("lists five threads at a time; Load more adds five; switching starts over", async () => {
 		const user = userEvent.setup();
 		renderApp({
 			"/api/overview": ok({
@@ -967,9 +1002,7 @@ describe("OverviewPage", () => {
 		await user.click(more);
 		expect(shown()).toHaveLength(12);
 		expect(within(humans).queryByRole("button", { name: /^Load / })).toBeNull();
-		await user.click(
-			within(humans).getByRole("button", { name: "7 resolved" }),
-		);
+		await user.click(within(humans).getByRole("radio", { name: "7 resolved" }));
 		expect(shown()).toEqual([0, 1, 2, 3, 4].map((i) => `src/r${i}.ts:1`));
 		await user.click(
 			within(humans).getByRole("button", {
@@ -978,8 +1011,10 @@ describe("OverviewPage", () => {
 		);
 		expect(shown()).toHaveLength(7);
 		await user.click(
-			within(humans).getByRole("button", { name: "7 resolved" }),
+			within(humans).getByRole("radio", { name: "12 unresolved" }),
 		);
+		expect(shown()).toHaveLength(5);
+		await user.click(within(humans).getByRole("radio", { name: "7 resolved" }));
 		expect(shown()).toHaveLength(5);
 	});
 
@@ -1740,7 +1775,7 @@ describe("OverviewPage", () => {
 		expect(
 			within(humans).getByRole("list", { name: "Thread counts" }),
 		).toHaveTextContent("5 unresolved0 resolved");
-		const resolved = within(humans).getByRole("button", { name: "0 resolved" });
+		const resolved = within(humans).getByRole("radio", { name: "0 resolved" });
 		resolved.focus();
 		expect(
 			await screen.findByRole("tooltip", { name: /Resolution history/ }),
@@ -1748,7 +1783,10 @@ describe("OverviewPage", () => {
 		expect(resolved).toHaveAccessibleDescription(
 			/Resolution history isn't known/,
 		);
-		expect(resolved).toHaveAttribute("aria-disabled", "true");
+		// Still a side to choose: it says none is resolved.
+		await userEvent.setup().click(resolved);
+		expect(resolved).toBeChecked();
+		expect(humans).toHaveTextContent("No resolved threads");
 		expect(screen.queryByRole("status")).toBeNull();
 	});
 

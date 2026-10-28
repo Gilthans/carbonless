@@ -280,7 +280,7 @@ describe("resolving from an Overview card", () => {
 			expect(within(humans).getAllByTestId("thread")).toHaveLength(1),
 		);
 		expect(
-			within(humans).getByRole("button", { name: "1 resolved" }),
+			within(humans).getByRole("radio", { name: "1 resolved" }),
 		).toBeInTheDocument();
 	});
 
@@ -463,6 +463,34 @@ describe("the Drafts filter", () => {
 		expect(
 			within(humans).getByRole("list", { name: "Unresolved threads" }),
 		).toBeInTheDocument();
+	});
+
+	it("on, neither side of the two-way choice is chosen; choosing one leaves it", async () => {
+		const user = userEvent.setup();
+		const client = renderOverview({}, [
+			thread("a"),
+			thread("b"),
+			thread("c", { resolved: true }),
+		]);
+		const humans = await screen.findByRole("region", { name: "Human reviews" });
+		act(() => draftsFor(client).setText("b", "Half a thought"));
+		const chip = await within(humans).findByTestId("drafts-filter");
+		const open = within(humans).getByRole("radio", { name: "2 unresolved" });
+		const done = within(humans).getByRole("radio", { name: "1 resolved" });
+		for (const side of [done, open]) {
+			await user.click(chip);
+			expect(chip).toHaveAttribute("aria-pressed", "true");
+			expect(open).not.toBeChecked();
+			expect(done).not.toBeChecked();
+			await user.click(side);
+			expect(chip).toHaveAttribute("aria-pressed", "false");
+			expect(side).toBeChecked();
+			expect(
+				within(humans).getByRole("list", {
+					name: side === open ? "Unresolved threads" : "Resolved threads",
+				}),
+			).toBeInTheDocument();
+		}
 	});
 
 	it("lists a draft whose thread isn't listed, with its text, Copy and Discard", async () => {
