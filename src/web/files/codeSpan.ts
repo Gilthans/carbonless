@@ -8,7 +8,8 @@ import type { CodeSpan } from "./selectionActions";
  * - `data-code-cell`: a code cell, with `data-side` (RIGHT for added and
  *   context lines, LEFT for deleted ones, the shown side's for whitespace
  *   rows), `data-len` (its text's UTF-16 length) and `data-hunk` (the hunk
- *   it is in, `h<i>`, or the gap of expanded context, `g<i>`); its line is
+ *   it is in, `h<i>`, or the gap of expanded context, `g<i>`), `data-order`
+ *   (in a hunk: its line's index in GitHub's order of it); its line is
  *   its row's number on that side (`data-old-no` / `data-new-no`), never
  *   read from the row otherwise;
  * - inside it, `[data-code]` holds exactly the line's characters (CodeLine):
@@ -28,6 +29,8 @@ export interface CellLine {
 	len: number;
 	/** The hunk (`h<i>`) or gap of expanded context (`g<i>`) it is in. */
 	hunk: string;
+	/** Its line's place in its hunk as GitHub lists it (`data-order`); none in a gap. */
+	order?: number;
 	path: string;
 }
 
@@ -43,12 +46,14 @@ export function cellLine(cell: Element): CellLine | null {
 		return null;
 	}
 	const hunk = cell.getAttribute("data-hunk");
+	const order = cell.getAttribute("data-order");
 	return {
 		cell,
 		side,
 		line,
 		len: Number(cell.getAttribute("data-len")) || 0,
 		hunk: hunk ?? "",
+		...(order !== null && order !== "" ? { order: Number(order) } : {}),
 		path,
 	};
 }
@@ -112,9 +117,29 @@ function selectedCells(range: Range): CellLine[] {
 	const within = root.closest(`[${CODE_CELL}]`)
 		? [root.closest(`[${CODE_CELL}]`) as Element]
 		: [...root.querySelectorAll(`[${CODE_CELL}]`)];
+	// Cells are in document order: skip those ending before the range by a
+	// binary search, and stop at the first one past it.
+	const endsBefore = (el: Element) => {
+		try {
+			return range.comparePoint(el, el.childNodes.length) < 0;
+		} catch {
+			return false;
+		}
+	};
+	let lo = 0;
+	let hi = within.length;
+	while (lo < hi) {
+		const mid = (lo + hi) >> 1;
+		if (endsBefore(within[mid] as Element)) lo = mid + 1;
+		else hi = mid;
+	}
 	const cells: CellLine[] = [];
-	for (const el of within) {
-		if (!range.intersectsNode(el)) continue;
+	for (let i = lo; i < within.length; i++) {
+		const el = within[i] as Element;
+		if (!range.intersectsNode(el)) {
+			if (cells.length > 0) break;
+			continue;
+		}
 		const c = cellLine(el);
 		if (!c) continue;
 		if (cells.length > 0 && c.path !== cells[0]?.path) break;
@@ -133,7 +158,7 @@ function selectedCells(range: Range): CellLine[] {
 export function spanOfRange(
 	range: Range,
 	commit: string,
-): { span: CodeSpan; inDiff: boolean } | null {
+): { span: CodeSpan; inDiff: boolean; backwards: boolean } | null {
 	if (range.collapsed) return null;
 	let cells = selectedCells(range);
 	if (cells.length === 0) return null;
@@ -168,5 +193,20 @@ export function spanOfRange(
 			endCol: end.col,
 		}),
 		inDiff: inHunk(head) && inHunk(last),
+		backwards: backwards(head, last),
 	};
 }
+
+/**
+ * The start comes after the end in GitHub's order of the hunk (Ignore
+ * whitespace shows a pair where its added line goes, ahead of deleted
+ * lines GitHub lists first): GitHub won't take that range.
+ */
+export const backwards = (
+	head: Pick<CellLine, "hunk" | "order">,
+	last: Pick<CellLine, "hunk" | "order">,
+) =>
+	head.hunk === last.hunk &&
+	head.order !== undefined &&
+	last.order !== undefined &&
+	head.order > last.order;

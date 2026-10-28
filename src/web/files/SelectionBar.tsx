@@ -13,8 +13,14 @@ import { overviewQuery, sessionQuery } from "../api";
 import { useShortcut } from "../shortcuts";
 import { Tooltip } from "../Tooltip";
 import { NOT_PHONE, useMedia } from "../useMedia";
-import { CODE_CELL, inHunk, spanOfCells, spanOfRange } from "./codeSpan";
-import { type Picks, setPicks, usePicks } from "./linePicks";
+import {
+	backwards,
+	CODE_CELL,
+	inHunk,
+	spanOfCells,
+	spanOfRange,
+} from "./codeSpan";
+import { getPicks, type Picks, setPicks, usePicks } from "./linePicks";
 import {
 	type CodeSpan,
 	describeSpan,
@@ -29,9 +35,12 @@ export interface BarTarget {
 	span: CodeSpan;
 	/** Both ends are lines of GitHub's diff. */
 	inDiff: boolean;
-	/** Viewport rects: the selection's first and last line. */
+	/** Its start comes after its end in GitHub's order. */
+	backwards: boolean;
+	/** Viewport rects: the selection's first and last line, and all of it. */
 	first: DOMRect;
 	last: DOMRect;
+	box: DOMRect;
 	/** A short quote of what is selected (the phone's bar). */
 	quote: string;
 	/** Text selected (vs lines picked). */
@@ -41,6 +50,46 @@ export interface BarTarget {
 const GAP = 6;
 const MARGIN = 8;
 
+/** A span as one string, to tell spans apart. */
+const keyOf = (span: CodeSpan) => JSON.stringify(span);
+
+/**
+ * Where the floating bar goes (desktop), never over the selection when it
+ * can help it: below its visible end, else above its start, else beside it
+ * (right, then left), else the viewport's bottom right corner.
+ */
+export function placeBar(
+	target: Pick<BarTarget, "first" | "last" | "box" | "text">,
+	size: { w: number; h: number },
+	view: { w: number; h: number },
+): { top: number; left: number } {
+	const { w, h } = size;
+	const clampX = (x: number) =>
+		Math.round(Math.min(Math.max(MARGIN, x), view.w - w - MARGIN));
+	// The visible end: the last line, or the viewport's bottom when it's below.
+	const end = Math.min(target.last.bottom, view.h);
+	const anchor = target.text ? target.last.right : target.last.left + 8;
+	if (target.last.bottom <= view.h && end + GAP + h <= view.h - MARGIN) {
+		return { top: Math.round(end + GAP), left: clampX(anchor - w / 2) };
+	}
+	if (target.first.top >= 0 && target.first.top - GAP - h >= MARGIN) {
+		return {
+			top: Math.round(target.first.top - GAP - h),
+			left: clampX(anchor - w / 2),
+		};
+	}
+	const top = Math.round(
+		Math.min(Math.max(MARGIN, end - h), view.h - h - MARGIN),
+	);
+	if (target.box.right + GAP + w <= view.w - MARGIN) {
+		return { top, left: Math.round(target.box.right + GAP) };
+	}
+	if (target.box.left - GAP - w >= MARGIN) {
+		return { top, left: Math.round(target.box.left - GAP - w) };
+	}
+	return { top: view.h - h - MARGIN, left: view.w - w - MARGIN };
+}
+
 const ofSelection = (commit: string): BarTarget | null => {
 	const selection = document.getSelection();
 	if (!selection || selection.rangeCount === 0 || selection.isCollapsed) {
@@ -49,10 +98,15 @@ const ofSelection = (commit: string): BarTarget | null => {
 	const range = selection.getRangeAt(0);
 	const found = spanOfRange(range, commit);
 	if (!found) return null;
-	const rects = [...range.getClientRects()].filter(
-		(r) => r.width > 0 || r.height > 0,
-	);
-	const box = range.getBoundingClientRect();
+	// (Engines without range geometry, such as test DOMs: no rects.)
+	const rects =
+		typeof range.getClientRects === "function"
+			? [...range.getClientRects()].filter((r) => r.width > 0 || r.height > 0)
+			: [];
+	const box =
+		typeof range.getBoundingClientRect === "function"
+			? range.getBoundingClientRect()
+			: new DOMRect();
 	const first = rects[0] ?? box;
 	const last = rects[rects.length - 1] ?? box;
 	const text = selection.toString().trim().split("\n")[0] ?? "";
@@ -60,6 +114,7 @@ const ofSelection = (commit: string): BarTarget | null => {
 		...found,
 		first,
 		last,
+		box,
 		quote: text.length > 40 ? `${text.slice(0, 40)}…` : text,
 		text: true,
 	};
@@ -83,11 +138,20 @@ const ofPicks = (picks: Picks, commit: string): BarTarget | null => {
 		{ ...tail, cell: lastRow },
 		commit,
 	);
+	const first = firstRow.getBoundingClientRect();
+	const last = lastRow.getBoundingClientRect();
 	return {
 		span,
 		inDiff: inHunk(head) && inHunk(tail),
-		first: firstRow.getBoundingClientRect(),
-		last: lastRow.getBoundingClientRect(),
+		backwards: backwards(head, tail),
+		first,
+		last,
+		box: new DOMRect(
+			Math.min(first.left, last.left),
+			first.top,
+			Math.max(first.right, last.right) - Math.min(first.left, last.left),
+			last.bottom - first.top,
+		),
 		quote: "",
 		text: false,
 	};
@@ -117,7 +181,8 @@ export function SelectionBar(props: { files: readonly FileView[] }) {
 		selectionActions,
 	);
 	const [text, setText] = useState<BarTarget | null>(null);
-	const [dismissed, setDismissed] = useState(false);
+	/** Escape put the bar away for this span (until the span changes). */
+	const [dismissed, setDismissed] = useState<string | null>(null);
 	/** A press on the bar: the selection it may clear is still the bar's. */
 	const pressing = useRef(false);
 	const bar = useRef<HTMLDivElement>(null);
@@ -127,8 +192,9 @@ export function SelectionBar(props: { files: readonly FileView[] }) {
 		// A tap on the bar may clear the selection before its click: the
 		// bar keeps the span it shows until then.
 		if (!next && pressing.current) return;
+		// Text selected: it, not picked lines, is what the bar acts on.
+		if (next && getPicks()) setPicks(null);
 		setText(next);
-		setDismissed(false);
 	}, [commit]);
 	useEffect(() => {
 		let timer: ReturnType<typeof setTimeout> | undefined;
@@ -153,63 +219,119 @@ export function SelectionBar(props: { files: readonly FileView[] }) {
 		};
 	}, [read]);
 	const target = text ?? (picks && commit ? ofPicks(picks, commit) : null);
-	// Rects move with the page: re-read on scroll and resize.
+	const hidden = !target || dismissed === keyOf(target.span);
+	// Rects move with the page: read again on scroll and resize, once a frame.
 	const [, setTick] = useState(0);
+	const reading = text !== null;
 	useEffect(() => {
-		if (!target || !wide) return;
+		if (hidden || !wide) return;
+		let frame = 0;
 		const move = () => {
-			if (text) setText(ofSelection(commit));
-			else setTick((n) => n + 1);
+			if (frame) return;
+			frame = requestAnimationFrame(() => {
+				frame = 0;
+				if (reading) setText(ofSelection(commit));
+				else setTick((n) => n + 1);
+			});
 		};
 		window.addEventListener("scroll", move, { passive: true, capture: true });
 		window.addEventListener("resize", move);
 		return () => {
+			cancelAnimationFrame(frame);
 			window.removeEventListener("scroll", move, { capture: true });
 			window.removeEventListener("resize", move);
 		};
-	}, [target, wide, text, commit]);
+	}, [hidden, wide, reading, commit]);
 	const clear = useCallback(() => {
 		setPicks(null);
 		setText(null);
 		document.getSelection()?.removeAllRanges();
 	}, []);
+	const shownKey = hidden || !target ? null : keyOf(target.span);
+	const isText = target?.text ?? false;
 	useEffect(() => {
-		if (!target) return;
+		if (!shownKey) return;
 		const onKey = (e: KeyboardEvent) => {
 			if (e.key !== "Escape" || e.defaultPrevented) return;
-			setDismissed(true);
-			setPicks(null);
+			// Away until the span changes (the selection itself stays).
+			setDismissed(shownKey);
+			if (!isText) setPicks(null);
 		};
 		document.addEventListener("keydown", onKey);
 		return () => document.removeEventListener("keydown", onKey);
-	}, [target]);
+	}, [shownKey, isText]);
+	// The first Tab after a selection goes to the bar (it is last in the
+	// page's order), without touching the selection.
+	const tabbed = useRef<string | null>(null);
+	useEffect(() => {
+		if (!shownKey) return;
+		const onKey = (e: KeyboardEvent) => {
+			if (e.key !== "Tab" || e.shiftKey || e.defaultPrevented) return;
+			const el = bar.current;
+			if (!el || el.contains(document.activeElement)) return;
+			if (tabbed.current === shownKey) return;
+			// Not from a field being typed in.
+			const active = document.activeElement;
+			if (
+				active instanceof HTMLTextAreaElement ||
+				active instanceof HTMLInputElement
+			) {
+				return;
+			}
+			tabbed.current = shownKey;
+			e.preventDefault();
+			el.querySelector<HTMLButtonElement>("button")?.focus({
+				preventScroll: true,
+			});
+		};
+		document.addEventListener("keydown", onKey, true);
+		return () => document.removeEventListener("keydown", onKey, true);
+	}, [shownKey]);
 	const [place, setPlace] = useState<{ top: number; left: number } | null>(
 		null,
 	);
 	useLayoutEffect(() => {
 		const el = bar.current;
-		if (!target || !el || !wide) {
+		if (hidden || !target || !el || !wide) {
 			setPlace(null);
 			return;
 		}
-		const w = el.offsetWidth;
-		const h = el.offsetHeight;
-		const vw = document.documentElement.clientWidth;
-		const below = target.last.bottom + GAP;
-		const top =
-			below + h <= window.innerHeight - MARGIN
-				? below
-				: Math.max(MARGIN, target.first.top - GAP - h);
-		const anchor = target.text ? target.last.right : target.last.left + 8;
-		const left = Math.round(
-			Math.min(Math.max(MARGIN, anchor - w / 2), vw - w - MARGIN),
+		const next = placeBar(
+			target,
+			{ w: el.offsetWidth, h: el.offsetHeight },
+			{ w: document.documentElement.clientWidth, h: window.innerHeight },
 		);
-		setPlace((p) =>
-			p?.top === Math.round(top) && p.left === left
-				? p
-				: { top: Math.round(top), left },
-		);
+		setPlace((p) => (p?.top === next.top && p.left === next.left ? p : next));
 	});
+	// A phone's bar sits at the bottom: the page can scroll past it
+	// (--selection-bar pads the file list), and a selection under it moves
+	// up once, when the bar comes.
+	const scrolledFor = useRef<string | null>(null);
+	useLayoutEffect(() => {
+		const el = bar.current;
+		const root = document.documentElement;
+		if (hidden || !target || !el || wide) {
+			root.style.removeProperty("--selection-bar");
+			return;
+		}
+		const top = el.getBoundingClientRect().top;
+		root.style.setProperty(
+			"--selection-bar",
+			`${Math.ceil(el.offsetHeight + MARGIN)}px`,
+		);
+		const key = keyOf(target.span);
+		if (scrolledFor.current !== key) {
+			scrolledFor.current = key;
+			const under = target.last.bottom - (top - MARGIN);
+			if (under > 0) window.scrollBy(0, under);
+		}
+	});
+	useEffect(
+		() => () => {
+			document.documentElement.style.removeProperty("--selection-bar");
+		},
+		[],
+	);
 	const file = target
 		? props.files.find((f) => f.path === target.span.path)
 		: undefined;
@@ -223,6 +345,7 @@ export function SelectionBar(props: { files: readonly FileView[] }) {
 						submodule: file?.submodule ?? false,
 					},
 					inDiff: target.inDiff,
+					backwards: target.backwards,
 				}
 			: null;
 	const run = (action: SelectionAction) => {
@@ -232,7 +355,7 @@ export function SelectionBar(props: { files: readonly FileView[] }) {
 	};
 	// `c` starts a comment on what is selected (desktop only: a phone has
 	// no keyboard shortcuts). Ctrl/Cmd+C stays the browser's copy.
-	const shown = target && ctx && !dismissed ? { target, ctx } : null;
+	const shown = target && ctx && !hidden ? { target, ctx } : null;
 	const now = useRef(shown);
 	now.current = shown;
 	useShortcut({
@@ -256,7 +379,7 @@ export function SelectionBar(props: { files: readonly FileView[] }) {
 			run(comment);
 		},
 	});
-	if (!target || dismissed || !ctx) return null;
+	if (!target || hidden || !ctx) return null;
 	return (
 		<div
 			ref={bar}
