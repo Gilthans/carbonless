@@ -10,6 +10,7 @@ import {
 } from "react";
 import type { FileView } from "../../shared/types";
 import { overviewQuery, sessionQuery } from "../api";
+import { useShortcut } from "../shortcuts";
 import { Tooltip } from "../Tooltip";
 import { NOT_PHONE, useMedia } from "../useMedia";
 import { CODE_CELL, inHunk, spanOfCells, spanOfRange } from "./codeSpan";
@@ -205,22 +206,53 @@ export function SelectionBar(props: { files: readonly FileView[] }) {
 				: { top: Math.round(top), left },
 		);
 	});
-	if (!target || dismissed || !overview) return null;
-	const file = props.files.find((f) => f.path === target.span.path);
-	const ctx: SelectionContext = {
-		writes: overview.writes,
-		commentLeft: overview.commentLeft !== false,
-		file: {
-			binary: file?.binary ?? false,
-			submodule: file?.submodule ?? false,
-		},
-		inDiff: target.inDiff,
-	};
+	const file = target
+		? props.files.find((f) => f.path === target.span.path)
+		: undefined;
+	const ctx: SelectionContext | null =
+		target && overview
+			? {
+					writes: overview.writes,
+					commentLeft: overview.commentLeft !== false,
+					file: {
+						binary: file?.binary ?? false,
+						submodule: file?.submodule ?? false,
+					},
+					inDiff: target.inDiff,
+				}
+			: null;
 	const run = (action: SelectionAction) => {
-		const { span } = target;
-		action.start(span);
+		if (!target) return;
+		action.start(target.span);
 		clear();
 	};
+	// `c` starts a comment on what is selected (desktop only: a phone has
+	// no keyboard shortcuts). Ctrl/Cmd+C stays the browser's copy.
+	const shown = target && ctx && !dismissed ? { target, ctx } : null;
+	const now = useRef(shown);
+	now.current = shown;
+	useShortcut({
+		keys: "c",
+		label: "Comment on selection",
+		group: "Files changed",
+		when: () => {
+			const cur = now.current;
+			const comment = selectionActions().find((a) => a.shortcut === "c");
+			return (
+				wide &&
+				cur !== null &&
+				comment !== undefined &&
+				comment.available(cur.target.span, cur.ctx) === true
+			);
+		},
+		run: (e) => {
+			const comment = selectionActions().find((a) => a.shortcut === "c");
+			if (!comment || !now.current) return;
+			e.preventDefault();
+			run(comment);
+		},
+	});
+	if (!target || dismissed || !ctx) return null;
 	return (
 		<div
 			ref={bar}

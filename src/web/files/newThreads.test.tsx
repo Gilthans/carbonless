@@ -20,6 +20,7 @@ import type {
 	ReviewThread,
 	SessionInfo,
 } from "../../shared/types";
+import { ShortcutsProvider } from "../shortcuts";
 import { draftsFor, newThreadKey } from "../threads/drafts";
 import {
 	getComposers,
@@ -221,17 +222,19 @@ function setup(
 	};
 	const ui = (
 		<QueryClientProvider client={client}>
-			<section data-path={PATH}>
-				<DiffBody
-					file={file()}
-					revision="r1"
-					onToggle={() => {}}
-					onCrossOff={() => {}}
-					threads={threads}
-				/>
-			</section>
-			{opts.children}
-			<SelectionBar files={[file()]} />
+			<ShortcutsProvider>
+				<section data-path={PATH}>
+					<DiffBody
+						file={file()}
+						revision="r1"
+						onToggle={() => {}}
+						onCrossOff={() => {}}
+						threads={threads}
+					/>
+				</section>
+				{opts.children}
+				<SelectionBar files={[file()]} />
+			</ShortcutsProvider>
 		</QueryClientProvider>
 	);
 	const r = render(ui);
@@ -812,6 +815,33 @@ describe("the selection bar", () => {
 		} finally {
 			remove();
 		}
+	});
+
+	it("c starts a comment on what is selected; not while typing, nor where Comment is off", async () => {
+		const { user } = setup();
+		await loaded();
+		await user.keyboard("c");
+		expect(getComposers()).toEqual([]);
+		pick([6, 7]);
+		await screen.findByTestId("selection-bar");
+		await user.keyboard("c");
+		expect(getComposers()).toMatchObject([
+			{ span: { startLine: 6, line: 7, startCol: null } },
+		]);
+		// Typing "c" in the composer is just text.
+		const box = await screen.findByRole("textbox", { name: "Comment" });
+		await user.type(box, "c");
+		expect(box).toHaveValue("c");
+		expect(getComposers()).toHaveLength(1);
+	});
+
+	it("c does nothing where Comment is off", async () => {
+		const { user } = setup({ overview: { writes: "as-of" } });
+		await loaded();
+		pick([6]);
+		await screen.findByTestId("selection-bar");
+		await user.keyboard("c");
+		expect(getComposers()).toEqual([]);
 	});
 
 	it("a mouse press on the bar keeps the selection", async () => {
