@@ -219,7 +219,13 @@ export function SelectionBar(props: { files: readonly FileView[] }) {
 		};
 	}, [read]);
 	const target = text ?? (picks && commit ? ofPicks(picks, commit) : null);
-	const hidden = !target || dismissed === keyOf(target.span);
+	const targetKey = target ? keyOf(target.span) : null;
+	const hidden = !target || dismissed === targetKey;
+	// Escape's dismissal lasts while its span does: gone or changed, a span
+	// picked or selected again (even the same one) brings the bar back.
+	useEffect(() => {
+		if (dismissed !== null && dismissed !== targetKey) setDismissed(null);
+	}, [dismissed, targetKey]);
 	// Rects move with the page: read again on scroll and resize, once a frame.
 	const [, setTick] = useState(0);
 	const reading = text !== null;
@@ -236,7 +242,17 @@ export function SelectionBar(props: { files: readonly FileView[] }) {
 		};
 		window.addEventListener("scroll", move, { passive: true, capture: true });
 		window.addEventListener("resize", move);
+		// Lines moving under it without a scroll (a thread or composer
+		// opening, context loading, highlighting arriving): the page's
+		// files section changes size.
+		const section = bar.current?.closest("section");
+		const observer =
+			section && typeof ResizeObserver !== "undefined"
+				? new ResizeObserver(move)
+				: null;
+		if (section) observer?.observe(section);
 		return () => {
+			observer?.disconnect();
 			cancelAnimationFrame(frame);
 			window.removeEventListener("scroll", move, { capture: true });
 			window.removeEventListener("resize", move);
@@ -263,21 +279,25 @@ export function SelectionBar(props: { files: readonly FileView[] }) {
 	// The first Tab after a selection goes to the bar (it is last in the
 	// page's order), without touching the selection.
 	const tabbed = useRef<string | null>(null);
+	const shownPath = target?.span.path;
 	useEffect(() => {
-		if (!shownKey) return;
+		if (!shownKey || !shownPath) return;
 		const onKey = (e: KeyboardEvent) => {
 			if (e.key !== "Tab" || e.shiftKey || e.defaultPrevented) return;
 			const el = bar.current;
 			if (!el || el.contains(document.activeElement)) return;
 			if (tabbed.current === shownKey) return;
-			// Not from a field being typed in.
+			// Only from the page itself or the diff: never from a form
+			// control, a dialog or popover, or anything else with its own
+			// next stop.
 			const active = document.activeElement;
-			if (
-				active instanceof HTMLTextAreaElement ||
-				active instanceof HTMLInputElement
-			) {
-				return;
-			}
+			const fromPage = !active || active === document.body;
+			const fromDiff =
+				active instanceof HTMLElement &&
+				active.closest(`[data-path="${CSS.escape(shownPath)}"]`) !== null &&
+				!active.matches("input, select, textarea, [contenteditable]") &&
+				active.closest("dialog, [role=dialog], [popover]") === null;
+			if (!fromPage && !fromDiff) return;
 			tabbed.current = shownKey;
 			e.preventDefault();
 			el.querySelector<HTMLButtonElement>("button")?.focus({
@@ -286,7 +306,7 @@ export function SelectionBar(props: { files: readonly FileView[] }) {
 		};
 		document.addEventListener("keydown", onKey, true);
 		return () => document.removeEventListener("keydown", onKey, true);
-	}, [shownKey]);
+	}, [shownKey, shownPath]);
 	const [place, setPlace] = useState<{ top: number; left: number } | null>(
 		null,
 	);
@@ -305,13 +325,15 @@ export function SelectionBar(props: { files: readonly FileView[] }) {
 	});
 	// A phone's bar sits at the bottom: the page can scroll past it
 	// (--selection-bar pads the file list), and a selection under it moves
-	// up once, when the bar comes.
-	const scrolledFor = useRef<string | null>(null);
+	// up once, when the bar first comes for a selection (not again as its
+	// handles are dragged: that would move the page under the finger).
+	const scrolled = useRef(false);
 	useLayoutEffect(() => {
 		const el = bar.current;
 		const root = document.documentElement;
 		if (hidden || !target || !el || wide) {
 			root.style.removeProperty("--selection-bar");
+			if (!target) scrolled.current = false;
 			return;
 		}
 		const top = el.getBoundingClientRect().top;
@@ -319,9 +341,8 @@ export function SelectionBar(props: { files: readonly FileView[] }) {
 			"--selection-bar",
 			`${Math.ceil(el.offsetHeight + MARGIN)}px`,
 		);
-		const key = keyOf(target.span);
-		if (scrolledFor.current !== key) {
-			scrolledFor.current = key;
+		if (!scrolled.current) {
+			scrolled.current = true;
 			const under = target.last.bottom - (top - MARGIN);
 			if (under > 0) window.scrollBy(0, under);
 		}
