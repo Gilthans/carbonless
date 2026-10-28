@@ -44,6 +44,16 @@ code panes, dates, timelines), also run the change read-only against a real PR
 and compare with GitHub's own answer (`pnpm compare-threads` for thread code).
 Real-PR data never enters the repo, tests or fixtures.
 
+## Frequent actions get keyboard shortcuts
+
+Every frequent action gets a keyboard shortcut where it makes sense,
+registered in one place (`useShortcut` in `src/web/shortcuts.tsx`) so it
+shows in the `?` help; keys a field handles itself (Ctrl/Cmd+Enter, Escape)
+are listed with `useShortcutHelp`. A shortcut never fires while typing in a
+field, with Ctrl/Cmd/Alt held unless its keys say so (the browser's own,
+like Ctrl/Cmd+C, stay the browser's), or while another modal dialog is open.
+On a phone there's no keyboard: the help isn't offered there.
+
 ## Writing to GitHub
 
 carbonless writes to GitHub only on the reviewer's explicit action, as the

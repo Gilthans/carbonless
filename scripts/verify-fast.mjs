@@ -83,9 +83,10 @@ const E2E_MAP = [
 	],
 	[/^src\/server\/review\//, ["files", "persistence"]],
 	[/^src\/web\/code\//, ["invisibles", "whitespace", "files"]],
+	[/^src\/web\/shortcuts\.tsx$/, ["shortcuts", "settings"]],
 	[
 		/^src\/web\/(Settings\.tsx|viewSettings\.ts)$/,
-		["settings", "invisibles", "whitespace"],
+		["settings", "invisibles", "whitespace", "shortcuts"],
 	],
 	[/^src\/web\/sticky\.ts$/, ["sticky", "files"]],
 	[

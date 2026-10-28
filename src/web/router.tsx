@@ -9,6 +9,7 @@ import {
 import { App } from "./App";
 import { parseFilesSearch } from "./files/landing";
 import { FilesPage, OverviewPage } from "./pages";
+import { ShortcutsProvider } from "./shortcuts";
 
 function NotFound() {
 	return (
@@ -21,8 +22,17 @@ function NotFound() {
 	);
 }
 
+/** The app with its keyboard shortcuts (one listener, the `?` help). */
+function Root() {
+	return (
+		<ShortcutsProvider>
+			<App />
+		</ShortcutsProvider>
+	);
+}
+
 const rootRoute = createRootRoute({
-	component: App,
+	component: Root,
 	notFoundComponent: NotFound,
 });
 

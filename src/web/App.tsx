@@ -27,8 +27,10 @@ import { HeadBanner } from "./HeadBanner";
 import { KeptPages, useActivePage } from "./pages";
 import { fullDate } from "./RelativeTime";
 import { Settings } from "./Settings";
+import { useShortcutHelp } from "./shortcuts";
 import { AppHeaderHeight } from "./sticky";
 import { Tooltip } from "./Tooltip";
+import { EDITOR_KEYS } from "./threads/ReplyBox";
 import { useThreadWritesSetup } from "./threads/threadWrites";
 import { ErrorMessage, safeHref } from "./ui";
 
@@ -150,6 +152,7 @@ export function App() {
 	const session = useQuery(sessionQuery);
 	useUnsavedGuard();
 	useThreadWritesSetup();
+	useShortcutHelp(EDITOR_KEYS);
 	// Writes into the session cache (so only once the session has loaded, or
 	// its answer could overwrite ours); a failed check leaves the last answer.
 	useQuery({ ...headQuery, enabled: session.isSuccess });

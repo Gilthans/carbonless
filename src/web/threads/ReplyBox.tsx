@@ -7,9 +7,24 @@ import {
 	useState,
 } from "react";
 import type { ReviewThread } from "../../shared/types";
+import type { Shortcut } from "../shortcuts";
 import { Tooltip } from "../Tooltip";
 import { useDraft } from "./drafts";
 import { useThreadWriter } from "./threadWrites";
+
+/** The reply and edit boxes' own keys (their textareas handle them), for the help. */
+export const EDITOR_KEYS: Omit<Shortcut, "run" | "when">[] = [
+	{
+		keys: "Mod+Enter",
+		label: "Send the reply, save the edit",
+		group: "Threads",
+	},
+	{
+		keys: "Escape",
+		label: "Leave the reply, cancel the edit",
+		group: "Threads",
+	},
+];
 
 /**
  * A thread's reply box: plain text, one line until focused, growing with

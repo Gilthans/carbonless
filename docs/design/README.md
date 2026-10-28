@@ -174,7 +174,20 @@ Each setting is a full-width switch row (`role="switch"`, 44px): "Show
 hidden characters" (`crb.code.invisibles`, on by default) and "Ignore
 whitespace" (`crb.diff.ignoreWhitespace`, off by default), each a
 `viewSetting` (`src/web/viewSettings.ts`) remembered in `localStorage`.
-More rows go into `SettingsList` (`src/web/Settings.tsx`).
+More rows go into `SettingsList` (`src/web/Settings.tsx`). Below them, on
+desktop only, "Keyboard shortcuts" (keyboard icon) opens the shortcuts help.
+
+## Keyboard shortcuts help
+
+`?` (outside a text field) toggles a centred modal `<dialog>` titled
+"Keyboard shortcuts", Gmail-like: one section per group (Global, Files
+changed, Overview, Threads; empty ones left out), the current page's group
+first, each row a short label and its keys as caps (`kbd`, monospace, a
+`line-strong` border; Mod shows as Ctrl, or ⌘ on a Mac). Escape, `?`, the
+✕ (40px) or the backdrop close it; Tab stays inside and focus goes back
+where it was. Phones don't get it: no Settings entry below `sm`, and no
+sheet (`?` from a hardware keyboard still opens the same dialog, within
+the viewport).
 
 ## Thread cards (Overview)
 
