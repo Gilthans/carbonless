@@ -3,7 +3,7 @@ import { useEffect, useId, useRef, useState } from "react";
 import { useOpenShortcutsHelp } from "./shortcuts";
 import { Tooltip } from "./Tooltip";
 import { NOT_PHONE, useMedia } from "./useMedia";
-import { ignoreWhitespace, showInvisibles } from "./viewSettings";
+import { ignoreWhitespace, showInvisibles, sideBySide } from "./viewSettings";
 
 /** One on/off setting: a switch row, the whole row its 40px+ target. */
 function SwitchRow(props: {
@@ -58,6 +58,7 @@ function KeyboardIcon() {
 function SettingsList() {
 	const invisibles = showInvisibles.use();
 	const whitespace = ignoreWhitespace.use();
+	const split = sideBySide.use();
 	return (
 		<div className="space-y-1">
 			<SwitchRow
@@ -69,6 +70,11 @@ function SettingsList() {
 				label="Ignore whitespace"
 				checked={whitespace}
 				onChange={ignoreWhitespace.set}
+			/>
+			<SwitchRow
+				label="Side by side"
+				checked={split}
+				onChange={sideBySide.set}
 			/>
 		</div>
 	);

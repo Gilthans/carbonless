@@ -170,10 +170,13 @@ A gear (tooltip "Settings", 40px) at the right of the app bar's last row,
 so it stays in the compact sticky header too. It opens a small popover
 under it, a bottom sheet on a phone (`<dialog>`; Escape, a click outside or
 the backdrop, and Close on the sheet close it, focus back on the gear).
-Each setting is a full-width switch row (`role="switch"`, 44px): "Show
-hidden characters" (`crb.code.invisibles`, on by default) and "Ignore
-whitespace" (`crb.diff.ignoreWhitespace`, off by default), each a
-`viewSetting` (`src/web/viewSettings.ts`) remembered in `localStorage`.
+Each setting is a full-width switch row (`role="switch"`, 44px), in this
+order: "Show hidden characters" (`crb.code.invisibles`, on by default),
+"Ignore whitespace" (`crb.diff.ignoreWhitespace`, off by default) and "Side
+by side" (`crb.diff.sideBySide`, off by default; old file left, new right,
+`src/web/files/sideBySide.ts`), each a `viewSetting`
+(`src/web/viewSettings.ts`) remembered in `localStorage` and taking effect
+at once, without a reload.
 More rows go into `SettingsList` (`src/web/Settings.tsx`). Below them, on
 desktop only, "Keyboard shortcuts" (keyboard icon) opens the shortcuts help.
 

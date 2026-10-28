@@ -1,13 +1,19 @@
 // @vitest-environment jsdom
 import { act, renderHook } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
-import { ignoreWhitespace, showInvisibles, viewSetting } from "./viewSettings";
+import {
+	ignoreWhitespace,
+	showInvisibles,
+	sideBySide,
+	viewSetting,
+} from "./viewSettings";
 
 describe("viewSetting", () => {
 	afterEach(() => {
 		localStorage.clear();
 		showInvisibles.reset();
 		ignoreWhitespace.reset();
+		sideBySide.reset();
 	});
 
 	it("reads the default until set, then remembers the choice", () => {
@@ -52,5 +58,19 @@ describe("viewSetting", () => {
 		expect(showInvisibles.read()).toBe(true);
 		expect(ignoreWhitespace.key).toBe("crb.diff.ignoreWhitespace");
 		expect(ignoreWhitespace.read()).toBe(false);
+	});
+
+	it("has side by side off by default, remembered once turned on", () => {
+		expect(sideBySide.key).toBe("crb.diff.sideBySide");
+		expect(sideBySide.read()).toBe(false);
+		const { result } = renderHook(() => sideBySide.use());
+		expect(result.current).toBe(false);
+		act(() => sideBySide.set(true));
+		expect(result.current).toBe(true);
+		expect(localStorage.getItem("crb.diff.sideBySide")).toBe("on");
+		expect(viewSetting("crb.diff.sideBySide", false).read()).toBe(true);
+		act(() => sideBySide.set(false));
+		expect(result.current).toBe(false);
+		expect(localStorage.getItem("crb.diff.sideBySide")).toBe("off");
 	});
 });

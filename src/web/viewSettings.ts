@@ -61,3 +61,6 @@ export const showInvisibles = viewSetting("crb.code.invisibles", true);
  * (src/web/files/whitespace.ts). Off unless turned on.
  */
 export const ignoreWhitespace = viewSetting("crb.diff.ignoreWhitespace", false);
+
+/** "Side by side": old left, new right (src/web/files/sideBySide.ts). Off unless turned on. */
+export const sideBySide = viewSetting("crb.diff.sideBySide", false);
