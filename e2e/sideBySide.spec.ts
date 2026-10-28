@@ -1,5 +1,10 @@
+import { readFileSync } from "node:fs";
 import type { Locator, Page } from "@playwright/test";
-import { reviewThread, threadComment } from "../test/fake-gh/scenario";
+import {
+	reviewThread,
+	type Scenario,
+	threadComment,
+} from "../test/fake-gh/scenario";
 import {
 	expectNoPageOverflow,
 	fileSection,
@@ -503,4 +508,147 @@ test("a text selection stays on one side, and Copy gives that side only", async 
 		}),
 	).toBe("RIGHT");
 	expect(lines(await selected())).toEqual(newLines.slice(0, 1));
+});
+
+/** Threads the fake gh stores: where each one is anchored. */
+function stored(p: Pr) {
+	const s = JSON.parse(readFileSync(p.scenarioPath, "utf8")) as Scenario;
+	return (s.prs[7]?.graphql?.reviewThreads ?? []) as {
+		path: string;
+		line: number;
+		originalStartLine: number | null;
+		diffSide: string;
+		startDiffSide: string | null;
+	}[];
+}
+
+const selectionBar = (page: Page) => page.getByTestId("selection-bar");
+
+test("side by side, a text selection dragged across the table comments on the new side's line", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	test.skip(isMobile, "a mouse drag");
+	const p = await pr(fixture);
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	await sideBySide(page, true);
+	const section = await expand(page, GREET);
+	await expect(table(section, "side-by-side")).toBeVisible();
+	const cluster = pairs(section);
+	await expect(cluster).toHaveCount(3);
+	const cell = (i: number, side: "LEFT" | "RIGHT") =>
+		codeCells(cluster.nth(i)).nth(side === "LEFT" ? 0 : 1);
+	// From the start of the first pair's new text to the middle of the
+	// second pair's old cell: the selection is the new side's first line.
+	const from = await cell(0, "RIGHT").boundingBox();
+	const to = await cell(1, "LEFT").boundingBox();
+	if (!from || !to) throw new Error("a cell has no box");
+	await page.mouse.move(from.x + 4, from.y + from.height / 2);
+	await page.mouse.down();
+	await page.evaluate(
+		() =>
+			new Promise((done) =>
+				requestAnimationFrame(() => requestAnimationFrame(done)),
+			),
+	);
+	await page.mouse.move(to.x + to.width / 2, to.y + to.height / 2, {
+		steps: 12,
+	});
+	await page.mouse.up();
+	await expect(section.locator("table")).toHaveAttribute(
+		"data-selecting",
+		"new",
+	);
+	expect(
+		(await page.evaluate(() => getSelection()?.toString() ?? "")).trim(),
+	).toBe("greet 5 changed");
+	await expect(selectionBar(page)).toBeVisible();
+	await selectionBar(page).getByRole("button", { name: "Comment" }).click();
+	const composer = section.getByTestId("new-thread");
+	await expect(composer).toContainText("line 5, new");
+	await expect(composer.getByTestId("new-thread-quote")).toHaveText(
+		"greet 5 changed",
+	);
+	const box = composer.getByRole("textbox", { name: "Comment" });
+	await box.fill("Right side?");
+	await box.press("Control+Enter");
+	await expect(
+		section.getByTestId("files-thread").filter({ hasText: "Right side?" }),
+	).toBeVisible();
+	// Painted on the new side's cell only.
+	await expect(
+		section.locator('td[data-testid="code"][data-commented]'),
+	).toHaveCount(1);
+	await expect(cell(0, "RIGHT")).toHaveAttribute("data-commented", "");
+	await expect(cell(0, "LEFT")).not.toHaveAttribute("data-commented");
+	expect(stored(p)).toMatchObject([
+		{ path: GREET, line: 5, diffSide: "RIGHT" },
+	]);
+});
+
+test("side by side, lines picked from an old number to a new one comment across sides", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	if (isMobile) await page.setViewportSize({ width: 360, height: 780 });
+	const p = await pr(fixture);
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	await sideBySide(page, true);
+	const section = await expand(page, GREET);
+	await expect(table(section, "side-by-side")).toBeVisible();
+	const cluster = pairs(section);
+	await expect(cluster).toHaveCount(3);
+	const oldFive = cluster.nth(0).getByTestId("old");
+	const newSix = cluster.nth(1).getByTestId("new");
+	if (isMobile) {
+		// A second tap extends.
+		await oldFive.tap();
+		await newSix.tap();
+	} else {
+		await oldFive.click();
+		await newSix.click({ modifiers: ["Shift"] });
+	}
+	// Both rows, every cell between the two numbers in the order shown.
+	await expect(section.locator("tr[data-picked]")).toHaveCount(2);
+	await expect(
+		section.locator('td[data-testid="code"][data-picked]'),
+	).toHaveCount(4);
+	await expect(oldFive).toHaveAttribute("data-picked", "true");
+	await expect(newSix).toHaveAttribute("data-picked", "true");
+	await selectionBar(page).getByRole("button", { name: "Comment" }).click();
+	await expect(section.locator("tr[data-picked]")).toHaveCount(0);
+	const composer = section.getByTestId("new-thread");
+	await expect(composer).toContainText("old 5 – new 6");
+	// Under the pair row the range ends on.
+	expect(
+		await composer.evaluate((el) =>
+			el.closest("tr")?.previousElementSibling?.getAttribute("data-new-no"),
+		),
+	).toBe("6");
+	await composer.getByRole("textbox", { name: "Comment" }).fill("Both?");
+	await composer.getByRole("button", { name: "Comment" }).click();
+	await expect(
+		section.getByTestId("files-thread").filter({ hasText: "Both?" }),
+	).toBeVisible();
+	// GitHub's range old 5 … new 6 covers both sides of both pairs.
+	await expect(section.locator("tr[data-commented]")).toHaveCount(2);
+	await expect(
+		section.locator('td[data-testid="code"][data-commented]'),
+	).toHaveCount(4);
+	expect(stored(p)).toMatchObject([
+		{
+			path: GREET,
+			line: 6,
+			originalStartLine: 5,
+			diffSide: "RIGHT",
+			startDiffSide: "LEFT",
+		},
+	]);
+	await expectNoPageOverflow(page);
 });
