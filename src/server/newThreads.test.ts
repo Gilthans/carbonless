@@ -767,6 +767,17 @@ describe("commentLeft", () => {
 		expect(await t.commentLeft()).toBe(false);
 	});
 
+	it("where nothing is written (--viewer someone else) it isn't asked", async () => {
+		pr = createPrFixture();
+		scenario12();
+		const s = await Session.open(pr.arg, process.cwd(), () => {}, {
+			viewer: "someone-else",
+		});
+		expect((await s.overview()).commentLeft).toBe(true);
+		expect(await s.commentLeft()).toBe(true);
+		expect(compares()).toBe(0);
+	});
+
 	it("a pinned head: asked for the pinned commit", async () => {
 		pr = createPrFixture();
 		const then = pr.head();

@@ -449,10 +449,11 @@ export class Session {
 	 * the snapshot shows: a pinned head, a started patch set.
 	 * One compare per snapshot, asked lazily; a failed one is asked again
 	 * after COMMENT_LEFT_RETRY_MS (a POST meanwhile gets its failure, a
-	 * 502). As of a cutoff nothing is written: true.
+	 * 502). Where nothing is written (as of a cutoff, --viewer someone
+	 * else) it isn't asked: true.
 	 */
 	commentLeft(): Promise<boolean> {
-		if (this.options.asOf) return Promise.resolve(true);
+		if (this.writes() !== "on") return Promise.resolve(true);
 		// A write asks again at once rather than take a failure as the answer.
 		if (this.#commentLeft?.failedAt !== undefined) this.#commentLeft = null;
 		return this.#askCommentLeft().left;
@@ -492,7 +493,7 @@ export class Session {
 
 	/** commentLeft as known now, asking GitHub if no one has: true until it says. */
 	#commentLeftNow(): boolean {
-		if (this.options.asOf || this.#closed) return true;
+		if (this.writes() !== "on" || this.#closed) return true;
 		return this.#askCommentLeft().known ?? true;
 	}
 
