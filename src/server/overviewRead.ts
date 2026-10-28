@@ -457,8 +457,15 @@ export class OverviewRead {
 			}
 			if (!t.loaded) complete = false;
 			if (!t.code) return t;
-			if (this.#codes.has(t.id))
-				return { ...t, code: this.#codes.get(t.id) ?? null };
+			if (this.#codes.has(t.id)) {
+				const built = this.#codes.get(t.id) ?? null;
+				// Built off the summary: the anchor as now (a span's columns
+				// come with the opener's text).
+				return {
+					...t,
+					code: built && { ...built, anchor: t.code.anchor },
+				};
+			}
 			complete = false;
 			// GitHub's hunk shows only once the clone has said no: no swap.
 			return {

@@ -182,10 +182,14 @@ describe("new threads", () => {
 
 	it("joins the kept reads: the overview's threads and comments show it before any Refresh", async () => {
 		const { readId } = await session.overview();
-		const { thread } = await session.startThread(request());
+		const { thread } = await session.startThread(
+			request({ startCol: 2, endCol: 7 }),
+		);
+		expect(thread.code?.anchor).toMatchObject({ startCol: 2, endCol: 7 });
 		const view = await session.threads(readId, "full");
 		const listed = view.threads.find((t) => t.id === thread.id);
 		expect(listed?.anchor).toEqual(thread.anchor);
+		expect(listed?.code?.anchor).toEqual(thread.anchor);
 		expect(listed?.code?.source).toBe("clone");
 		const { threads } = await session.comments(readId, [thread.id]);
 		expect(threads[0]?.comments.map((c) => c.body)).toEqual(["Why not a map?"]);
@@ -196,6 +200,9 @@ describe("new threads", () => {
 		);
 		expect(again?.anchor).toEqual(thread.anchor);
 		expect(again?.body).toBe("Why not a map?");
+		// The code window's anchor too: the span is painted after a reload.
+		expect(again?.code?.source).toBe("clone");
+		expect(again?.code?.anchor).toEqual(thread.anchor);
 	});
 
 	it("a range across lines, a range from LEFT to RIGHT, and a LEFT line: GitHub's exact lines", async () => {
