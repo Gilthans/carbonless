@@ -497,6 +497,7 @@ describe("thread writes", () => {
 					code: async () => null,
 				} as unknown as ThreadCodeSource,
 				base: async () => ({ snapshot: "", ref: "" }),
+				commentLeft: async () => true,
 			});
 		const text = async (r: OverviewRead) =>
 			(await r.comments(["T12-0"])).threads[0]?.comments[0]?.text;
@@ -529,6 +530,7 @@ describe("thread writes", () => {
 					code: async () => null,
 				} as unknown as ThreadCodeSource,
 				base: async () => ({ snapshot: "", ref: "" }),
+				commentLeft: async () => true,
 			});
 			// Before its summary is in.
 			early.applyWrite("T12-0", withId(nodes("re-read")), 1, Date.now());

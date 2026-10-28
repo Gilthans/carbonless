@@ -4,6 +4,8 @@ import type {
 	DiffLine,
 	EditRequest,
 	FileHunks,
+	NewThreadAnswer,
+	NewThreadRequest,
 	PrOverview,
 	ReplyRequest,
 	ReviewView,
@@ -19,6 +21,7 @@ import { ensureClone, fetchPr } from "./clone.js";
 import { buildSnapshot, loadContext, loadFileHunks } from "./diff/snapshot.js";
 import {
 	fetchHeadAsOf,
+	fetchMergeBase,
 	fetchPinnedHead,
 	fetchPrMeta,
 	type PrMeta,
@@ -27,6 +30,11 @@ import {
 	runGh,
 	viewerSlug,
 } from "./gh.js";
+import {
+	type NewThreadTarget,
+	type StartedRecord,
+	startThread,
+} from "./newThreads.js";
 import { OverviewRead } from "./overviewRead.js";
 import type { HeadSpec } from "./pinnedHead.js";
 import { buildReviewView } from "./review/coverage.js";
@@ -46,6 +54,9 @@ import {
 
 /** Reads kept for pages still showing them (see Session.threads). */
 const KEPT_READS = 3;
+
+/** The write queue new threads share (one PR's: one at a time). */
+const NEW_THREADS = "new-threads";
 
 /** A read of the overview that is no longer kept (HTTP 410). */
 export class UnknownReadError extends Error {}
@@ -129,6 +140,10 @@ export class Session {
 	readonly #inDoubt = new Set<string>();
 	/** Comments this session deleted (GraphQL may list them a while yet). */
 	readonly #deletedComments = new Set<string>();
+	/** Threads this session started, by the client's id for each. */
+	readonly #started = new Map<string, StartedRecord>();
+	/** commentLeft for one snapshot (its base and head), once GitHub said. */
+	#commentLeft: { key: string; left: Promise<boolean> } | null = null;
 
 	private constructor(
 		private readonly repo: string,
@@ -391,6 +406,40 @@ export class Session {
 		);
 	}
 
+	/**
+	 * Starts a thread on GitHub (newThreads.ts), after any new thread
+	 * still being started: a resend waits for the first attempt, then
+	 * finds it posted.
+	 */
+	startThread(req: NewThreadRequest): Promise<NewThreadAnswer> {
+		return this.#threadExclusive(NEW_THREADS, () =>
+			startThread(this.#newThreadTarget(), req),
+		);
+	}
+
+	/**
+	 * Whether new comments may go on LEFT lines (PrOverview.commentLeft):
+	 * only a pinned head can differ, when GitHub's merge base for it (one
+	 * compare call per snapshot) isn't the snapshot's left side. A failed
+	 * call isn't kept: the next ask tries again.
+	 */
+	commentLeft(): Promise<boolean> {
+		if (!this.pinned || this.options.asOf) return Promise.resolve(true);
+		const { base, head } = this.#snapshot;
+		const key = `${base}...${head}`;
+		if (this.#commentLeft?.key !== key) {
+			const left = fetchMergeBase(this.#ref(), this.#meta.baseBranch, head, {
+				signal: this.#stop.signal,
+			}).then((mergeBase) => mergeBase === base);
+			const entry = { key, left };
+			left.catch(() => {
+				if (this.#commentLeft === entry) this.#commentLeft = null;
+			});
+			this.#commentLeft = entry;
+		}
+		return this.#commentLeft.left;
+	}
+
 	/** Runs thread writes one at a time per thread, in the order asked. */
 	#threadExclusive<T>(threadId: string, fn: () => Promise<T>): Promise<T> {
 		const before = this.#threadWrites.get(threadId) ?? Promise.resolve();
@@ -462,6 +511,31 @@ export class Session {
 		};
 	}
 
+	#newThreadTarget(): NewThreadTarget {
+		return {
+			...this.#writeTarget(),
+			head: this.#snapshot.head,
+			commentLeft: () => this.commentLeft(),
+			started: (clientId) => this.#started.get(clientId),
+			rememberStarted: (clientId, record) =>
+				this.#started.set(clientId, record),
+			add: (id, nodes, seq, startedAt) => {
+				for (const read of this.#reads) {
+					read.addThread(id, nodes, seq, startedAt);
+				}
+			},
+			code: (anchor, hunk) =>
+				this.#threadCode.code(
+					anchor,
+					{
+						snapshot: this.#snapshot.base,
+						ref: `refs/remotes/origin/${this.#meta.baseBranch}`,
+					},
+					async () => hunk,
+				),
+		};
+	}
+
 	/**
 	 * Starts a read of GitHub; its thread code waits for `ready` (a Refresh
 	 * moving the snapshot) to know the diff base.
@@ -481,6 +555,10 @@ export class Session {
 					snapshot: this.#snapshot.base,
 					ref: `refs/remotes/origin/${this.#meta.baseBranch}`,
 				};
+			},
+			commentLeft: async () => {
+				await ready?.catch(() => {});
+				return this.commentLeft();
 			},
 		});
 		// Until it has settled, whether kept or not (close() stops it).

@@ -146,6 +146,13 @@ export interface CodeAnchor {
 	startLine: number;
 	/** When the comment was written (the code as its author saw it). */
 	at: string;
+	/**
+	 * A span inside the lines (both absent or null: whole lines). UTF-16
+	 * offset into `startLine`'s text where the span starts.
+	 */
+	startCol?: number | null;
+	/** UTF-16 offset into `line`'s text where the span ends (exclusive). */
+	endCol?: number | null;
 }
 
 /** One row of a diff: its numbers on each side, and whether it's commented on. */
@@ -247,6 +254,12 @@ export interface PrOverview {
 	 * `--viewer` someone other than the gh login.
 	 */
 	writes: "on" | "as-of" | "viewer";
+	/**
+	 * Whether a new comment may go on LEFT lines: false only with a pinned head
+	 * (--head) whose GitHub merge base (compare base...pinned) differs from the
+	 * snapshot's left side. RIGHT lines and file comments don't depend on it.
+	 */
+	commentLeft: boolean;
 	/**
 	 * The viewer has an unsubmitted review on this PR: replies can't be
 	 * posted. `url` = `${url}/files`, where it can be submitted or discarded.
@@ -496,10 +509,40 @@ export interface WriteError {
 		| "forbidden"
 		| "gone"
 		| "invalid"
-		| "changed";
+		| "changed"
+		| "stale";
 	url?: string;
 	/** "changed" (an edit, 409): the comment as GitHub has it now. */
 	current?: ThreadComment;
+}
+
+/** `POST /api/threads`: start a thread. */
+export interface NewThreadRequest {
+	/** The client's own id, the same on every resend (a reload's too). */
+	clientId: string;
+	/** Markdown as typed (no marker), non-empty after trim, ≤ MAX_REPLY minus the marker. */
+	body: string;
+	attemptedAt: string;
+	/** A resend after a failed or unknown attempt: look for it first. */
+	retry: boolean;
+	path: string;
+	/** The snapshot's head the selection was made on; must be the session's head (pinned or not), else 409 code "stale". */
+	commit: string;
+	subject: "line" | "file";
+	/** subject "line" only: GitHub's range (start = first row of the selection, end = last). */
+	startSide?: DiffSide;
+	startLine?: number;
+	side?: DiffSide;
+	line?: number;
+	/** subject "line" only: the span's columns, both or neither. */
+	startCol?: number | null;
+	endCol?: number | null;
+}
+
+/** 200: the thread as the overview read would show it (anchor with cols, code window may be null until read), and its comments. */
+export interface NewThreadAnswer {
+	thread: ReviewThread;
+	comments: ThreadComments;
 }
 
 /** The longest reply GitHub takes (a comment body's limit). */

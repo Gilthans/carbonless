@@ -1,0 +1,587 @@
+import { readFileSync } from "node:fs";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { writeFileAtomic } from "../../test/fake-gh/atomic.mjs";
+import {
+	listReplies,
+	prView,
+	reviewThread,
+	type Scenario,
+	threadComment,
+} from "../../test/fake-gh/scenario";
+import { createPrFixture, type PrFixture } from "../../test/pr-fixture";
+import type { NewThreadRequest } from "../shared/types";
+import { GhError, WriteRefusedError } from "./errors";
+import { newThreadProblem, placeOf, postedBody } from "./newThreads";
+import { parseHead } from "./pinnedHead";
+import { Session } from "./session";
+import { writeWaits } from "./threadWrites";
+
+/** A thread as the fake gh stores it (scenario.ts ThreadNode, plus a new one's own fields). */
+interface Stored {
+	path: string;
+	subjectType: string;
+	line: number | null;
+	originalLine: number | null;
+	startLine: number | null;
+	originalStartLine: number | null;
+	diffSide: string;
+	startDiffSide: string | null;
+	first: { nodes: { body: string; diffHunk: string }[] };
+	comments: { nodes: { body: string }[] };
+}
+
+/**
+ * PR acme/widget#12 (test/pr-fixture.ts): a.txt's lines 2 and 26 changed,
+ * new.txt added. The viewer is Octo_Cat; T12-0 is an older thread by rev.
+ */
+describe("new threads", () => {
+	let pr: PrFixture;
+	let session: Session;
+	let ids = 0;
+
+	const scenario = (over: Partial<Scenario> = {}, reviews: unknown[] = []) =>
+		pr.scenario({
+			prs: {
+				12: {
+					view: prView({ headRefOid: pr.head(), baseRefName: "main" }),
+					graphql: {
+						reviewThreads: [
+							reviewThread({ path: "a.txt", line: 26 }, [
+								threadComment({
+									login: "rev",
+									text: "Typo",
+									commit: pr.head(),
+								}),
+							]),
+						],
+						reviews,
+					},
+				},
+			},
+			...over,
+		});
+	/** Sets scenario fields, keeping what the fake gh stored (its writes). */
+	const tweak = (over: Partial<Scenario>) => {
+		const path = process.env.CRB_FAKE_GH ?? "";
+		const s = JSON.parse(readFileSync(path, "utf8")) as Scenario;
+		writeFileAtomic(path, JSON.stringify({ ...s, ...over }, null, "\t"));
+	};
+	const stored = (): Stored[] =>
+		(
+			JSON.parse(readFileSync(process.env.CRB_FAKE_GH ?? "", "utf8")) as {
+				prs: Record<string, { graphql: { reviewThreads: Stored[] } }>;
+			}
+		).prs[12]?.graphql.reviewThreads ?? [];
+	const posts = () =>
+		pr
+			.ghLog()
+			.split("\n")
+			.filter((l) =>
+				/^api -X POST repos\/acme\/widget\/pulls\/12\/comments /.test(l),
+			);
+	const request = (more: Partial<NewThreadRequest> = {}): NewThreadRequest => ({
+		clientId: `n${++ids}`,
+		body: "Why not a map?",
+		attemptedAt: new Date().toISOString(),
+		retry: false,
+		path: "a.txt",
+		commit: pr.head(),
+		subject: "line",
+		side: "RIGHT",
+		line: 2,
+		...more,
+	});
+	const refused = async (p: Promise<unknown>) => {
+		const error = await p.then(
+			() => null,
+			(e: unknown) => e,
+		);
+		expect(error).toBeInstanceOf(WriteRefusedError);
+		return error as WriteRefusedError;
+	};
+
+	/** The waits a write took (writeWaits), none of them real. */
+	let waited: number[] = [];
+	/** GitHub's GraphQL lists held-back threads after this many waits. */
+	let catchUp = Number.POSITIVE_INFINITY;
+	const realSleep = writeWaits.sleep;
+
+	beforeEach(async () => {
+		waited = [];
+		catchUp = Number.POSITIVE_INFINITY;
+		writeWaits.sleep = async (ms) => {
+			waited.push(ms);
+			if (waited.length >= catchUp) listReplies(process.env.CRB_FAKE_GH ?? "");
+		};
+		pr = createPrFixture();
+		scenario();
+		session = await Session.open(pr.arg, process.cwd());
+		await session.threads((await session.overview()).readId, "summary");
+	});
+	afterEach(async () => {
+		writeWaits.sleep = realSleep;
+		// Never GraphQL's, which would put the comment into a pending review.
+		expect(pr.ghLog()).not.toContain("addPullRequestReviewThread");
+		await pr.cleanup();
+	});
+
+	it("a span on one line: REST line + side only, the marker on the body, and the thread GitHub reads back carries the span", async () => {
+		const req = request({ startCol: 5, endCol: 12 });
+		const { thread, comments } = await session.startThread(req);
+		expect(posts()).toHaveLength(1);
+		const [t] = stored().slice(-1);
+		// What was sent: one line, no start.
+		expect(t).toMatchObject({
+			path: "a.txt",
+			subjectType: "LINE",
+			line: 2,
+			originalLine: 2,
+			startLine: null,
+			diffSide: "RIGHT",
+			startDiffSide: null,
+		});
+		expect(t?.comments.nodes[0]?.body).toBe(
+			`Why not a map?\n\n<!-- crb:v1 id=${req.clientId} span=2:5-2:12 -->`,
+		);
+		// What is read back: those lines, with the span; no marker shown.
+		expect(thread.anchor).toEqual({
+			path: "a.txt",
+			commit: pr.head(),
+			side: "RIGHT",
+			line: 2,
+			startSide: "RIGHT",
+			startLine: 2,
+			startCol: 5,
+			endCol: 12,
+			at: expect.any(String),
+		});
+		expect(thread).toMatchObject({
+			id: "T12-1",
+			subject: "line",
+			author: "Octo_Cat",
+			body: "Why not a map?",
+			excerpt: "Why not a map?",
+			commit: pr.head(),
+			loaded: true,
+		});
+		// The fake's hunk (GitHub's view) agrees with the clone's rows.
+		expect(thread.code).toMatchObject({
+			source: "clone",
+			snapshot: { same: true },
+		});
+		expect(
+			thread.code?.rows.filter((r) => r.marked).map((r) => r.newNo),
+		).toEqual([2]);
+		expect(comments.comments.map((c) => c.body)).toEqual(["Why not a map?"]);
+		expect(comments.comments[0]?.viewerCan).toEqual({
+			update: true,
+			delete: true,
+		});
+	});
+
+	it("joins the kept reads: the overview's threads and comments show it before any Refresh", async () => {
+		const { readId } = await session.overview();
+		const { thread } = await session.startThread(request());
+		const view = await session.threads(readId, "full");
+		const listed = view.threads.find((t) => t.id === thread.id);
+		expect(listed?.anchor).toEqual(thread.anchor);
+		expect(listed?.code?.source).toBe("clone");
+		const { threads } = await session.comments(readId, [thread.id]);
+		expect(threads[0]?.comments.map((c) => c.body)).toEqual(["Why not a map?"]);
+		// A new read (a reload's Refresh) has it from GitHub, the same.
+		const fresh = await session.overview(0);
+		const again = (await session.threads(fresh.readId, "full")).threads.find(
+			(t) => t.id === thread.id,
+		);
+		expect(again?.anchor).toEqual(thread.anchor);
+		expect(again?.body).toBe("Why not a map?");
+	});
+
+	it("a range across lines, a range from LEFT to RIGHT, and a LEFT line: GitHub's exact lines", async () => {
+		const cases: [Partial<NewThreadRequest>, Partial<Stored>][] = [
+			[
+				{
+					startSide: "RIGHT",
+					startLine: 1,
+					side: "RIGHT",
+					line: 3,
+					startCol: 2,
+					endCol: 4,
+				},
+				{ startLine: 1, line: 3, diffSide: "RIGHT", startDiffSide: "RIGHT" },
+			],
+			[
+				{ startSide: "LEFT", startLine: 2, side: "RIGHT", line: 2 },
+				{ startLine: 2, line: 2, diffSide: "RIGHT", startDiffSide: "LEFT" },
+			],
+			[
+				{ side: "LEFT", line: 2 },
+				{ startLine: null, line: 2, diffSide: "LEFT", startDiffSide: null },
+			],
+		];
+		for (const [where, sent] of cases) {
+			const { thread } = await session.startThread(request(where));
+			expect(stored().at(-1)).toMatchObject(sent);
+			const side = where.side ?? "RIGHT";
+			expect(thread.anchor).toMatchObject({
+				side,
+				line: where.line,
+				startSide: where.startSide ?? side,
+				startLine: where.startLine ?? where.line,
+			});
+			expect(thread.anchor?.startCol ?? null).toBe(where.startCol ?? null);
+			expect(thread.anchor?.endCol ?? null).toBe(where.endCol ?? null);
+		}
+		// A range starting on LEFT and ending on RIGHT on the same number is
+		// a range, not one line.
+		expect(
+			placeOf(
+				request({ startSide: "LEFT", startLine: 2, side: "RIGHT", line: 2 }),
+			),
+		).toMatchObject({ start: { side: "LEFT", line: 2 } });
+	});
+
+	it("a file comment: subject_type file, no lines, on any file of the diff", async () => {
+		const { thread } = await session.startThread(
+			request({
+				subject: "file",
+				path: "new.txt",
+				side: undefined,
+				line: undefined,
+			}),
+		);
+		expect(stored().at(-1)).toMatchObject({
+			path: "new.txt",
+			subjectType: "FILE",
+			line: null,
+		});
+		expect(thread).toMatchObject({
+			subject: "file",
+			path: "new.txt",
+			anchor: null,
+			code: null,
+			body: "Why not a map?",
+		});
+		expect(stored().at(-1)?.comments.nodes[0]?.body).toMatch(
+			/\n\n<!-- crb:v1 id=n\d+ -->$/,
+		);
+	});
+
+	it("GitHub's 422 for a line or a file not in its diff → gone (404), nothing posted", async () => {
+		const before = stored().length;
+		expect(
+			(await refused(session.startThread(request({ line: 15 })))).code,
+		).toBe("gone");
+		expect(
+			(
+				await refused(
+					session.startThread(
+						request({
+							subject: "file",
+							path: "nope.txt",
+							side: undefined,
+							line: undefined,
+						}),
+					),
+				)
+			).code,
+		).toBe("gone");
+		expect(stored()).toHaveLength(before);
+	});
+
+	it("a pending review → 409 pending-review with the files link; nothing pending made; the warning shows", async () => {
+		scenario({}, [{ author: { login: "Octo_Cat" }, state: "PENDING" }]);
+		const before = stored().length;
+		const error = await refused(session.startThread(request()));
+		expect(error.code).toBe("pending-review");
+		expect(error.url).toBe("https://github.com/acme/widget/pull/12/files");
+		expect(stored()).toHaveLength(before);
+		expect((await session.overview()).pendingReview).toEqual({
+			url: "https://github.com/acme/widget/pull/12/files",
+		});
+	});
+
+	it("a selection made on another head → 409 stale, nothing sent", async () => {
+		const error = await refused(
+			session.startThread(request({ commit: "f".repeat(40) })),
+		);
+		expect(error.code).toBe("stale");
+		expect(posts()).toHaveLength(0);
+	});
+
+	it("invalid requests are refused before GitHub", async () => {
+		const bad: Partial<NewThreadRequest>[] = [
+			{ body: "  \n" },
+			{ body: "x".repeat(65536) },
+			{ clientId: "has space" },
+			{ clientId: "x-->" },
+			{ side: "UP" as "LEFT" },
+			{ line: 0 },
+			{ startSide: "RIGHT", startLine: 5, line: 2 },
+			{ startSide: "RIGHT", startLine: 1, side: "LEFT", line: 2 },
+			{ startSide: "RIGHT" },
+			{ startCol: 3 },
+			{ startCol: 4, endCol: 4 },
+			{ startCol: -1, endCol: 4 },
+			{ subject: "file", startCol: 1, endCol: 2 },
+			{ subject: "file" },
+			{ commit: "HEAD" },
+			{ path: "" },
+		];
+		for (const more of bad) {
+			const error = await refused(session.startThread(request(more)));
+			expect(error.code, JSON.stringify(more)).toBe("invalid");
+		}
+		expect(posts()).toHaveLength(0);
+		expect(newThreadProblem(request())).toBeNull();
+		expect(newThreadProblem(null)).not.toBeNull();
+	});
+
+	it("the post lands but the answer is lost: the retry returns the same thread, nothing posted twice, after a restart too", async () => {
+		tweak({ failNext: { op: "comment", status: 502, afterWrite: true } });
+		const req = request({ startCol: 0, endCol: 3 });
+		const lost = await session.startThread(req).then(
+			() => null,
+			(e: unknown) => e,
+		);
+		expect(lost).toBeInstanceOf(GhError);
+		expect(lost).not.toBeInstanceOf(WriteRefusedError);
+		expect(stored()).toHaveLength(2);
+		const again = await session.startThread({ ...req, retry: true });
+		expect(again.thread.id).toBe("T12-1");
+		expect(again.thread.anchor).toMatchObject({ startCol: 0, endCol: 3 });
+		// crb restarted: the new session finds it on GitHub by its client id.
+		const restarted = await Session.open(pr.arg, process.cwd());
+		const third = await restarted.startThread({ ...req, retry: true });
+		expect(third.thread.id).toBe("T12-1");
+		expect(posts()).toHaveLength(1);
+		expect(stored()).toHaveLength(2);
+	});
+
+	it("a resend while the first attempt runs waits for it; a resend after it is answered without posting", async () => {
+		tweak({ commentDelayMs: 300 });
+		const req = request();
+		const [first, second] = await Promise.all([
+			session.startThread(req),
+			session.startThread({ ...req, retry: true }),
+		]);
+		expect(second.thread.id).toBe(first.thread.id);
+		const third = await session.startThread(req);
+		expect(third.thread.id).toBe(first.thread.id);
+		expect(posts()).toHaveLength(1);
+	});
+
+	it("a retry whose first attempt didn't land posts it; one carrying another client id doesn't count", async () => {
+		const other = await session.startThread(request());
+		tweak({ failNext: { op: "comment", status: 502 } });
+		const req = request();
+		await expect(session.startThread(req)).rejects.toBeInstanceOf(GhError);
+		const { thread } = await session.startThread({ ...req, retry: true });
+		expect(posts()).toHaveLength(3);
+		expect(other.thread.id).toBe("T12-1");
+		expect(thread.id).toBe("T12-2");
+		expect(stored()).toHaveLength(3);
+	});
+
+	it("GitHub's GraphQL lagging: re-read until it lists the thread; never listed, a 502 whose resend doesn't post again", async () => {
+		tweak({ threadUnlisted: true });
+		catchUp = 2;
+		const { thread } = await session.startThread(request());
+		expect(thread.id).toBe("T12-1");
+		expect(waited).toEqual([300, 1000]);
+
+		tweak({ threadUnlisted: true });
+		catchUp = Number.POSITIVE_INFINITY;
+		const req = request();
+		const error = await session.startThread(req).then(
+			() => null,
+			(e: unknown) => e,
+		);
+		expect(error).toBeInstanceOf(GhError);
+		expect(error).not.toBeInstanceOf(WriteRefusedError);
+		listReplies(process.env.CRB_FAKE_GH ?? "");
+		const later = await session.startThread({ ...req, retry: true });
+		expect(later.thread.id).toBe("T12-2");
+		expect(posts()).toHaveLength(2);
+	});
+
+	it("an edit keeps the marker and its span; from and the dedupe compare without it", async () => {
+		const { thread, comments } = await session.startThread(
+			request({ startCol: 1, endCol: 6 }),
+		);
+		const id = comments.comments[0]?.id ?? "";
+		const edited = await session.editThreadComment(thread.id, id, {
+			body: "Why not a Map?",
+			from: "Why not a map?",
+			force: false,
+		});
+		expect(edited.comment?.body).toBe("Why not a Map?");
+		expect(stored().at(-1)?.comments.nodes[0]?.body).toMatch(
+			/^Why not a Map\?\n\n<!-- crb:v1 id=n\d+ span=2:1-2:6 -->$/,
+		);
+		// The same text again: done, nothing sent.
+		const log = pr.ghLog();
+		await session.editThreadComment(thread.id, id, {
+			body: "Why not a Map?",
+			from: "Why not a map?",
+			force: false,
+		});
+		expect(pr.ghLog().slice(log.length)).not.toContain("-X PATCH");
+		const fresh = await session.overview(0);
+		const again = (await session.threads(fresh.readId, "full")).threads.find(
+			(t) => t.id === thread.id,
+		);
+		expect(again?.anchor).toMatchObject({ startCol: 1, endCol: 6 });
+		expect(again?.body).toBe("Why not a Map?");
+	});
+
+	it("as of a cutoff or as someone else: writes-off, nothing sent", async () => {
+		const other = await Session.open(pr.arg, process.cwd(), () => {}, {
+			viewer: "someone-else",
+		});
+		expect((await refused(other.startThread(request()))).code).toBe(
+			"writes-off",
+		);
+		expect(posts()).toHaveLength(0);
+	});
+
+	it("postedBody: the marker with the posted lines, only with a span", () => {
+		expect(postedBody(request({ clientId: "a1" }))).toBe(
+			"Why not a map?\n\n<!-- crb:v1 id=a1 -->",
+		);
+		expect(
+			postedBody(
+				request({
+					clientId: "a1",
+					startLine: 1,
+					startSide: "LEFT",
+					line: 3,
+					startCol: 0,
+					endCol: 9,
+				}),
+			),
+		).toBe("Why not a map?\n\n<!-- crb:v1 id=a1 span=1:0-3:9 -->");
+	});
+});
+
+describe("commentLeft", () => {
+	let pr: PrFixture;
+	afterEach(async () => {
+		await pr.cleanup();
+	});
+
+	/** The PR moved on from `then`; the session pins it with --head. */
+	const pinned = async (mergeBases?: Record<string, string>) => {
+		pr = createPrFixture();
+		const then = pr.head();
+		const now = pr.moveHead({ "later.txt": "later\n" });
+		pr.scenario({
+			...(mergeBases ? { mergeBases } : {}),
+			prs: {
+				12: {
+					view: prView({ headRefOid: now, baseRefName: "main" }),
+					graphql: {
+						commits: [
+							{ commit: { oid: then, committedDate: "2026-01-02T00:00:00Z" } },
+							{ commit: { oid: now, committedDate: "2026-01-04T00:00:00Z" } },
+						],
+						reviews: [],
+						reviewThreads: [],
+						comments: [],
+					},
+				},
+			},
+		});
+		const s = await Session.open(pr.arg, process.cwd(), () => {}, {
+			head: parseHead(then),
+		});
+		return { s, then };
+	};
+	const compares = () => pr.ghLog().match(/compare\//g)?.length ?? 0;
+
+	it("true without a pinned head, with no compare call", async () => {
+		pr = createPrFixture();
+		const s = await Session.open(pr.arg, process.cwd());
+		expect((await s.overview()).commentLeft).toBe(true);
+		expect(compares()).toBe(0);
+	});
+
+	it("a pinned head whose GitHub merge base is the snapshot's left side: true, asked once", async () => {
+		const { s, then } = await pinned();
+		expect((await s.overview()).commentLeft).toBe(true);
+		expect((await s.overview(0)).commentLeft).toBe(true);
+		expect(compares()).toBe(1);
+		const { thread } = await s.startThread({
+			clientId: "l1",
+			body: "Old line",
+			attemptedAt: new Date().toISOString(),
+			retry: false,
+			path: "a.txt",
+			commit: then,
+			subject: "line",
+			side: "LEFT",
+			line: 2,
+		});
+		expect(thread.anchor).toMatchObject({
+			side: "LEFT",
+			line: 2,
+			commit: then,
+		});
+	});
+
+	it("a pinned head whose GitHub merge base differs: false, LEFT lines refused (400), RIGHT ones posted", async () => {
+		const { s, then } = await pinned({});
+		// GitHub's merge base for the pinned commit is another commit.
+		pr.scenario({
+			mergeBases: { [then]: "e".repeat(40) },
+			prs: {
+				12: {
+					view: prView({ headRefOid: pr.head(), baseRefName: "main" }),
+					graphql: { reviews: [], reviewThreads: [], comments: [] },
+				},
+			},
+		});
+		expect((await s.overview(0)).commentLeft).toBe(false);
+		const base = {
+			body: "Here",
+			attemptedAt: new Date().toISOString(),
+			retry: false,
+			path: "a.txt",
+			commit: then,
+			subject: "line" as const,
+		};
+		const left = await s
+			.startThread({ ...base, clientId: "l2", side: "LEFT", line: 2 })
+			.catch((e: unknown) => e);
+		expect(left).toBeInstanceOf(WriteRefusedError);
+		expect((left as WriteRefusedError).code).toBe("invalid");
+		const range = await s
+			.startThread({
+				...base,
+				clientId: "l3",
+				startSide: "LEFT",
+				startLine: 2,
+				side: "RIGHT",
+				line: 2,
+			})
+			.catch((e: unknown) => e);
+		expect((range as WriteRefusedError).code).toBe("invalid");
+		expect(pr.ghLog()).not.toMatch(/-X POST/);
+		// The scenario's merge base isn't in the repository: RIGHT lines resolve by git's.
+		pr.scenario({
+			prs: {
+				12: {
+					view: prView({ headRefOid: pr.head(), baseRefName: "main" }),
+					graphql: { reviews: [], reviewThreads: [], comments: [] },
+				},
+			},
+		});
+		const right = await s.startThread({
+			...base,
+			clientId: "l4",
+			side: "RIGHT",
+			line: 2,
+		});
+		expect(right.thread.anchor).toMatchObject({ side: "RIGHT", line: 2 });
+	});
+});

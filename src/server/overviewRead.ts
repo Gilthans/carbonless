@@ -33,6 +33,8 @@ export interface ReadSources {
 	code: ThreadCodeSource;
 	/** The thread code's diff base, once known (a Refresh moves the snapshot). */
 	base: () => Promise<DiffBase>;
+	/** PrOverview.commentLeft, for the snapshot once known. */
+	commentLeft: () => Promise<boolean>;
 }
 
 /** Thread code built at once. */
@@ -86,6 +88,12 @@ export class OverviewRead {
 		{ summary: unknown; content: unknown; seq: number }
 	>();
 	/**
+	 * Threads a write started (addThread), listed from then on even when
+	 * this read's own list doesn't have them.
+	 */
+	readonly #added: string[] = [];
+	readonly #sources: ReadSources;
+	/**
 	 * Threads a write deleted the last comment of (by the re-read's seq):
 	 * left out of the lists, their comments "deleted".
 	 */
@@ -109,20 +117,21 @@ export class OverviewRead {
 	readonly settled: Promise<void>;
 
 	constructor(sources: ReadSources) {
+		this.#sources = sources;
 		this.#asOf = sources.asOf?.at;
 		this.#viewer = sources.viewer;
 		this.#writes = sources.writes === "on";
 		const read = { signal: this.#stop.signal };
-		this.#overview = fetchOverview(
-			sources.ref,
-			sources.viewer,
-			sources.asOf,
-			read,
-		).then((fields) => {
+		this.#overview = Promise.all([
+			fetchOverview(sources.ref, sources.viewer, sources.asOf, read),
+			// Unknown (GitHub didn't say): off, never a guess.
+			sources.commentLeft().catch(() => false),
+		]).then(([fields, commentLeft]) => {
 			this.ended = Date.now();
 			return {
 				...fields,
 				writes: sources.writes,
+				commentLeft,
 				readId: this.id,
 				fetchedAt: new Date(this.ended).toISOString(),
 			};
@@ -266,6 +275,28 @@ export class OverviewRead {
 		this.#written.set(id, { ...nodes, seq });
 	}
 
+	/**
+	 * Thread `id`, which a write started, as its re-read found it
+	 * (applyWrite's rules): listed from then on, its code built.
+	 */
+	addThread(
+		id: string,
+		nodes: { summary: unknown; content: unknown },
+		seq: number,
+		startedAt: number,
+	): void {
+		if (this.started > startedAt) return;
+		this.applyWrite(id, nodes, seq, startedAt);
+		if (this.#written.get(id)?.seq !== seq) return;
+		if (!this.#added.includes(id)) this.#added.push(id);
+		const code = this.#stages.summary.then(() => {
+			const thread = this.#map().find((t) => t.id === id);
+			if (!thread?.code) return;
+			return this.#code(this.#sources, thread, async () => this.#content(id));
+		});
+		code.catch(() => {});
+	}
+
 	/** Whether a write dropped thread `id` (dropThread). */
 	dropped(id: string): boolean {
 		return this.#dropped.has(id);
@@ -327,9 +358,20 @@ export class OverviewRead {
 		return this.#written.get(id)?.content ?? this.#contents.get(id);
 	}
 
+	/** This read's thread nodes, and those writes started that it lacks. */
+	#all(): unknown[] {
+		const idOf = (raw: unknown) => (raw as { id?: unknown })?.id;
+		const listed = new Set(this.#nodes.map(idOf));
+		const added = this.#added
+			.filter((id) => !listed.has(id) && !this.#dropped.has(id))
+			.map((id) => this.#written.get(id)?.summary)
+			.filter((node) => node !== undefined);
+		return [...this.#nodes, ...added];
+	}
+
 	/** Every thread, its content merged in where it has arrived. */
 	#map(): ReviewThread[] {
-		const shown = this.#nodes.filter((raw) => {
+		const shown = this.#all().filter((raw) => {
 			const id = (raw as { id?: unknown })?.id;
 			return typeof id !== "string" || !this.#dropped.has(id);
 		});
@@ -359,7 +401,7 @@ export class OverviewRead {
 		await this.#stages.summary;
 		await this.#textsStarted.catch(() => {});
 		const summaries = new Map<string, unknown>();
-		for (const raw of this.#nodes) {
+		for (const raw of this.#all()) {
 			const node = this.#summary(raw);
 			const id = (node as { id?: unknown })?.id;
 			if (typeof id === "string" && NODE_ID.test(id)) summaries.set(id, node);

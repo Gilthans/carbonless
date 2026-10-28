@@ -751,6 +751,94 @@ describe("API", () => {
 		});
 	});
 
+	describe("new threads", () => {
+		const setup = async (
+			over: Partial<Scenario> = {},
+			reviews: unknown[] = [],
+		) => {
+			pr.scenario({
+				prs: {
+					12: {
+						view: prView({ headRefOid: pr.head(), baseRefName: "main" }),
+						graphql: { reviewThreads: [], reviews },
+					},
+				},
+				...over,
+			});
+			await get("/api/overview?maxAge=0");
+		};
+		const start = (payload: unknown) => post("/api/threads", payload);
+		const ok = () => ({
+			clientId: "n1",
+			body: "Why?",
+			attemptedAt: new Date().toISOString(),
+			retry: false,
+			path: "a.txt",
+			commit: pr.head(),
+			subject: "line",
+			side: "RIGHT",
+			line: 2,
+			startCol: 1,
+			endCol: 4,
+		});
+
+		it("200: the new thread with its span, and its comments; the overview says LEFT lines take comments", async () => {
+			await setup();
+			expect((await get("/api/overview")).commentLeft).toBe(true);
+			const res = await start(ok());
+			expect(res.statusCode, res.body).toBe(200);
+			expect(res.json()).toMatchObject({
+				thread: {
+					id: "T12-0",
+					path: "a.txt",
+					anchor: { side: "RIGHT", line: 2, startCol: 1, endCol: 4 },
+					body: "Why?",
+				},
+				comments: { threadId: "T12-0", comments: [{ body: "Why?" }] },
+			});
+		});
+
+		it("400 invalid, 409 stale, 404 gone, 409 pending-review, 502", async () => {
+			await setup();
+			for (const bad of [
+				{ ...ok(), body: " " },
+				{ ...ok(), subject: "file" },
+				{ ...ok(), startSide: "RIGHT", startLine: 9 },
+				{ body: "Hi" },
+			]) {
+				const res = await start(bad);
+				expect(res.statusCode, res.body).toBe(400);
+				expect(res.json().code).toBe("invalid");
+			}
+			const json = await inject("/api/threads", {
+				method: "POST",
+				payload: "{nope",
+				headers: { host, "content-type": "application/json" },
+			});
+			expect(json.statusCode).toBe(400);
+			expect(json.json().code).toBe("invalid");
+			const stale = await start({ ...ok(), commit: "f".repeat(40) });
+			expect(stale.statusCode).toBe(409);
+			expect(stale.json().code).toBe("stale");
+			const gone = await start({ ...ok(), clientId: "n2", line: 15 });
+			expect(gone.statusCode, gone.body).toBe(404);
+			expect(gone.json().code).toBe("gone");
+			expect(pr.ghLog()).toMatch(
+				/-X POST repos\/acme\/widget\/pulls\/12\/comments /,
+			);
+			await setup({}, [{ author: { login: "Octo_Cat" }, state: "PENDING" }]);
+			const pending = await start({ ...ok(), clientId: "n3" });
+			expect(pending.statusCode).toBe(409);
+			expect(pending.json()).toMatchObject({
+				code: "pending-review",
+				url: "https://github.com/acme/widget/pull/12/files",
+			});
+			await setup({ failNext: { op: "comment", status: 502 } });
+			const failed = await start({ ...ok(), clientId: "n4" });
+			expect(failed.statusCode).toBe(502);
+		});
+	});
+
 	describe("comment edits and deletes", () => {
 		/** T12-0: the viewer's opener and rev's reply; T12-1: the viewer's only comment. */
 		const setup = async (over: Partial<Scenario> = {}) => {

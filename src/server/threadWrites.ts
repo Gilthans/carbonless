@@ -21,6 +21,7 @@ import {
 	postReply,
 	postResolved,
 } from "./gh.js";
+import { markerText, stripMarker } from "./marker.js";
 import {
 	DELETED_BODY,
 	isDeletedBody,
@@ -118,7 +119,7 @@ const str = (v: unknown): string => (typeof v === "string" ? v : "");
 /** A body as compared by the dedupe: line ends and trailing space aside. */
 const normal = (body: string) => body.replace(/\r\n/g, "\n").trimEnd();
 
-function writesOff(target: ThreadWriteTarget): void {
+export function writesOff(target: ThreadWriteTarget): void {
 	if (target.writes === "on") return;
 	throw new WriteRefusedError(
 		target.writes === "as-of"
@@ -128,7 +129,7 @@ function writesOff(target: ThreadWriteTarget): void {
 	);
 }
 
-const gone = (message = "The thread is gone from GitHub") =>
+export const gone = (message = "The thread is gone from GitHub") =>
 	new WriteRefusedError(message, "gone");
 
 /** Why a reply can't be sent as it is; null when it can. */
@@ -211,14 +212,17 @@ function openerRestId(summary: unknown): number | null {
 }
 
 /** A re-read of a thread, ordered (seq) and dated by when it started. */
-interface Reread {
+export interface Reread {
 	nodes: ThreadNodes | null;
 	seq: number;
 	startedAt: number;
 }
 
 /** Thread `id`'s summary and content as GitHub has them now (null if gone). */
-async function reread(target: ThreadWriteTarget, id: string): Promise<Reread> {
+export async function reread(
+	target: ThreadWriteTarget,
+	id: string,
+): Promise<Reread> {
 	const seq = target.nextSeq();
 	const startedAt = Date.now();
 	const [summary, contents] = await Promise.all([
@@ -236,7 +240,7 @@ async function reread(target: ThreadWriteTarget, id: string): Promise<Reread> {
 const ids = (nodes: unknown) =>
 	new Set(arr(obj(nodes).nodes).map((c) => str(obj(c).id)));
 
-const lists = (nodes: ThreadNodes, nodeId: string) =>
+export const lists = (nodes: ThreadNodes, nodeId: string) =>
 	ids(obj(nodes.summary).comments).has(nodeId) &&
 	ids(obj(nodes.content).comments).has(nodeId);
 
@@ -611,7 +615,7 @@ export function withoutComment(
  * may lag a REST write), after each of LIST_WAITS_MS; the last read either
  * way (its nodes null once the thread is gone).
  */
-async function rereadUntil(
+export async function rereadUntil(
 	target: ThreadWriteTarget,
 	threadId: string,
 	shows: (nodes: ThreadNodes) => boolean,
@@ -715,7 +719,7 @@ function othersAfter(
 }
 
 /** `nodes` without the comments this session deleted. */
-function withoutDeleted(
+export function withoutDeleted(
 	target: ThreadWriteTarget,
 	nodes: ThreadNodes,
 ): ThreadNodes {
@@ -765,17 +769,27 @@ export async function editComment(
 			read.nodes && lists(read.nodes, commentId) ? read.nodes : found.nodes;
 		return withEdited(base, commentId, text);
 	};
-	if (normal(rest.body) === normal(req.body)) {
+	// Compared without carbonless's marker, which the page never sees,
+	// and put back on the new text (marker.ts).
+	const shown = normal(stripMarker(rest.body));
+	if (shown === normal(req.body)) {
 		return update(target, threadId, answerNodes(now, rest), now, commentId);
 	}
 	if (found.index === 0 && isDeletedBody(rest.body)) {
 		throw new WriteRefusedError("This comment was deleted", "invalid");
 	}
-	if (!req.force && normal(rest.body) !== normal(req.from)) {
+	if (!req.force && shown !== normal(req.from)) {
 		throw changed(answerNodes(now, rest), commentId);
 	}
+	const body = req.body + markerText(rest.body);
+	if (body.length > MAX_REPLY) {
+		throw new WriteRefusedError(
+			`A comment is at most ${MAX_REPLY - (body.length - req.body.length)} characters`,
+			"invalid",
+		);
+	}
 	const edited = await patchOrGone(target, restId, () =>
-		patchComment(target.ref, restId, req.body),
+		patchComment(target.ref, restId, body),
 	);
 	const shows = (nodes: ThreadNodes) =>
 		contentComments(nodes).some(
@@ -867,8 +881,13 @@ export async function deleteThreadComment(
 		if (isDeletedBody(str(comment.body))) {
 			return update(target, threadId, now.nodes, now, commentId);
 		}
+		// The marker stays: a retry of the thread's start still finds it.
 		const edited = await patchOrGone(target, restId, () =>
-			patchComment(target.ref, restId, DELETED_BODY),
+			patchComment(
+				target.ref,
+				restId,
+				DELETED_BODY + markerText(str(comment.body)),
+			),
 		);
 		const shows = (nodes: ThreadNodes) =>
 			contentComments(nodes).some(

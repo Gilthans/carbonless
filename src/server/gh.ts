@@ -777,7 +777,7 @@ async function fetchBodyHtml(
 /** The overview's own fields, without the read's stamps. */
 export type OverviewFields = Omit<
 	PrOverview,
-	"readId" | "fetchedAt" | "servedAt" | "writes"
+	"readId" | "fetchedAt" | "servedAt" | "writes" | "commentLeft"
 >;
 
 /**
@@ -1564,4 +1564,243 @@ export async function deleteComment(
 		"the delete",
 		() => null,
 	);
+}
+
+/** Where a new thread goes: GitHub's REST fields for it (postThread). */
+export type ThreadPlace =
+	| { subject: "file"; path: string }
+	| {
+			subject: "line";
+			path: string;
+			side: "LEFT" | "RIGHT";
+			line: number;
+			/** The range's first line; absent for a single line. */
+			start?: { side: "LEFT" | "RIGHT"; line: number };
+	  };
+
+/** GitHub's REST answer to a new thread's comment. */
+export type PostedComment = PostedReply;
+
+/** A REST review comment's fields a new thread's answer needs. */
+function postedFrom(out: string, what: string): PostedComment {
+	const c = rec(safeJson(out));
+	const str = (v: unknown) => (typeof v === "string" ? v : "");
+	if (!str(c.node_id)) {
+		throw new GhError(`gh returned an unexpected response for ${what}`);
+	}
+	return {
+		nodeId: str(c.node_id),
+		restId: typeof c.id === "number" ? c.id : 0,
+		body: str(c.body),
+		bodyText: str(c.body_text),
+		bodyHtml: str(c.body_html),
+		author: str(rec(c.user).login),
+		avatarUrl: avatar40(str(rec(c.user).avatar_url)),
+		createdAt: str(c.created_at),
+	};
+}
+
+/**
+ * Starts a review thread on PR `ref` at `place` on commit `commit`, with
+ * `body`, at once (REST `pulls/{n}/comments`, never GraphQL's
+ * addPullRequestReviewThread, which would put it into a pending review).
+ * A single line is `line` + `side` only; a range adds `start_line` +
+ * `start_side`; a file is `subject_type: "file"`. A pending review of the
+ * viewer's (GitHub's 422) → "pending-review" with the PR's files page;
+ * a line or file not in GitHub's diff (422 "could not be resolved") →
+ * "gone"; other refusals by writeRefusal. A GhError when it may land if
+ * sent again (it may also have landed already).
+ */
+export async function postThread(
+	ref: PrRef,
+	commit: string,
+	place: ThreadPlace,
+	body: string,
+	prUrl: string,
+): Promise<PostedComment> {
+	const where =
+		place.subject === "file"
+			? { path: place.path, subject_type: "file" }
+			: {
+					path: place.path,
+					...(place.start
+						? { start_line: place.start.line, start_side: place.start.side }
+						: {}),
+					line: place.line,
+					side: place.side,
+				};
+	const out = await runWrite(
+		[
+			"api",
+			"-X",
+			"POST",
+			`repos/${ref.owner}/${ref.repo}/pulls/${ref.number}/comments`,
+			"-H",
+			"Accept: application/vnd.github.full+json",
+			"--input",
+			"-",
+		],
+		"the comment",
+		(a) => {
+			if (a.status !== 422) return null;
+			if (/pending review/i.test(a.message)) {
+				return new WriteRefusedError(
+					"A pending review on GitHub blocks new comments: submit or discard it",
+					"pending-review",
+					`${prUrl.replace(/\/+$/, "")}/files`,
+				);
+			}
+			if (/could not be resolved/i.test(a.message)) {
+				return new WriteRefusedError(
+					place.subject === "file"
+						? "GitHub's diff doesn't have this file"
+						: "GitHub's diff doesn't have these lines",
+					"gone",
+				);
+			}
+			return null;
+		},
+		JSON.stringify({ body, commit_id: commit, ...where }),
+	);
+	return postedFrom(out, "the comment");
+}
+
+/** A PR review comment as REST lists it: what a retry looks for. */
+export interface ListedComment {
+	restId: number;
+	nodeId: string;
+	body: string;
+	login: string;
+	path: string;
+	/** A reply's opener (REST id); null for a thread's first comment. */
+	inReplyTo: number | null;
+	posted: PostedComment;
+}
+
+/**
+ * Every review comment of PR `ref` by REST (no GraphQL lag after a
+ * write), oldest first, pages and all.
+ */
+export async function fetchReviewComments(
+	ref: PrRef,
+): Promise<ListedComment[]> {
+	const out = safeJson(
+		await runGh(
+			[
+				"api",
+				`repos/${ref.owner}/${ref.repo}/pulls/${ref.number}/comments`,
+				"--paginate",
+				"--slurp",
+			],
+			{ what: "the PR's review comments" },
+		),
+	);
+	if (!Array.isArray(out)) {
+		throw new GhError("gh returned an unexpected response for the comments");
+	}
+	const str = (v: unknown) => (typeof v === "string" ? v : "");
+	return out.flat().flatMap((raw): ListedComment[] => {
+		const c = rec(raw);
+		if (typeof c.id !== "number" || !str(c.node_id)) return [];
+		return [
+			{
+				restId: c.id,
+				nodeId: str(c.node_id),
+				body: str(c.body),
+				login: str(rec(c.user).login),
+				path: str(c.path),
+				inReplyTo:
+					typeof c.in_reply_to_id === "number" ? c.in_reply_to_id : null,
+				posted: postedFrom(JSON.stringify(c), "the comment"),
+			},
+		];
+	});
+}
+
+/** The PR's newest threads, by the id of each one's first comment. */
+const NEWEST_THREADS = 20;
+const NEWEST_THREADS_QUERY = `query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      reviewThreads(last: ${NEWEST_THREADS}) { nodes { id first: comments(first: 1) { nodes { id } } } }
+    }
+  }
+}`;
+
+/**
+ * The id of the thread whose first comment is `commentId` (a GraphQL node
+ * id; GitHub's comments don't name their thread): among the PR's newest
+ * threads, where a thread just started is, or, with `everywhere`, among
+ * all of them. Null when GitHub's GraphQL doesn't list it (yet).
+ */
+export async function findThreadOf(
+	ref: PrRef,
+	commentId: string,
+	everywhere = false,
+): Promise<string | null> {
+	let nodes: unknown[];
+	if (everywhere) {
+		nodes = await fetchThreadSummaries(ref);
+	} else {
+		const out = safeJson(
+			await runGh(
+				[
+					"api",
+					"graphql",
+					"-f",
+					`query=${NEWEST_THREADS_QUERY}`,
+					"-f",
+					`owner=${ref.owner}`,
+					"-f",
+					`name=${ref.repo}`,
+					"-F",
+					`number=${ref.number}`,
+				],
+				{ what: "the review threads" },
+			),
+		);
+		const conn = rec(
+			rec(rec(rec(out).data).repository).pullRequest,
+		).reviewThreads;
+		const list = rec(conn).nodes;
+		if (!Array.isArray(list)) {
+			throw new GhError("gh returned an unexpected response for the threads");
+		}
+		nodes = list;
+	}
+	for (const node of nodes) {
+		const t = rec(node);
+		const first = rec((rec(t.first).nodes as unknown[] | undefined)?.[0]);
+		if (first.id === commentId && typeof t.id === "string" && t.id) {
+			return t.id;
+		}
+	}
+	return null;
+}
+
+/**
+ * GitHub's merge base of base branch `base` and commit `head` (its REST
+ * compare), which a LEFT line of a comment on `head` resolves against.
+ */
+export async function fetchMergeBase(
+	ref: PrRef,
+	base: string,
+	head: string,
+	read: ReadSignal = {},
+): Promise<string> {
+	const out = await runGh(
+		[
+			"api",
+			// A branch name's own slashes stay; anything else is escaped.
+			`repos/${ref.owner}/${ref.repo}/compare/${base.split("/").map(encodeURIComponent).join("/")}...${head}`,
+			"--jq",
+			".merge_base_commit.sha",
+		],
+		{ ...read, what: "the merge base" },
+	);
+	const sha = out.trim();
+	if (!/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(sha)) {
+		throw new GhError("gh returned an unexpected response for the merge base");
+	}
+	return sha;
 }

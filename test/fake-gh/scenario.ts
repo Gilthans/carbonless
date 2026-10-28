@@ -59,8 +59,11 @@ export interface Scenario {
 	 * scenario file, so later calls see them.
 	 */
 	failNext?: {
-		/** Also a comment's REST edit ("edit") or delete ("delete"). */
-		op: "reply" | "resolve" | "edit" | "delete";
+		/**
+		 * Also a comment's REST edit ("edit") or delete ("delete"), or a new
+		 * thread's REST comment ("comment").
+		 */
+		op: "reply" | "resolve" | "edit" | "delete" | "comment";
 		status?: number;
 		afterWrite?: boolean;
 		/** GitHub's message (default: the status's usual one). */
@@ -72,6 +75,26 @@ export interface Scenario {
 	replyDeletesThread?: boolean;
 	/** A REST reply answers only after this many milliseconds (before it lands). */
 	replyDelayMs?: number;
+	/**
+	 * A new thread's REST comment answers only after this many milliseconds
+	 * (before it lands). New threads (REST `pulls/<n>/comments`) are checked
+	 * against the PR's diff at their `commit_id` (merge base...commit, from
+	 * the repository: a line or file outside it is GitHub's 422 "could not
+	 * be resolved"), refused under the viewer's pending review (422), and
+	 * written back into the scenario as GraphQL threads.
+	 */
+	commentDelayMs?: number;
+	/**
+	 * New threads started while this holds aren't listed by GitHub's
+	 * GraphQL until it is cleared (listReplies); REST lists them at once.
+	 */
+	threadUnlisted?: boolean;
+	/**
+	 * GitHub's merge base of the PR's base branch and a commit (REST
+	 * compare, and what a new comment's lines resolve against), by commit;
+	 * else git's merge base in the repository.
+	 */
+	mergeBases?: Record<string, string>;
 	/** A REST edit of a comment answers only after this many milliseconds (before it lands). */
 	editDelayMs?: number;
 	/** A REST delete of a comment answers only after this many milliseconds (before it lands). */
@@ -123,7 +146,7 @@ export interface Scenario {
 				comments?: unknown[];
 				/**
 				 * `reviews` nodes; one by the viewer (`user`) in state "PENDING"
-				 * makes the fake refuse replies as GitHub does (422).
+				 * makes the fake refuse replies and new threads as GitHub does (422).
 				 */
 				reviews?: unknown[];
 				/** `commits` nodes: `{ commit: { oid, committedDate, pushedDate } }`. */
@@ -352,12 +375,14 @@ export function threadComment(c: {
 }
 
 /**
- * GitHub's GraphQL catches up: replies posted under `replyUnlisted` are
- * listed from now on (the scenario file at `path`, its writes kept).
+ * GitHub's GraphQL catches up: replies posted under `replyUnlisted`, and
+ * threads started under `threadUnlisted`, are listed from now on (the
+ * scenario file at `path`, its writes kept).
  */
 export function listReplies(path: string): void {
 	const s = JSON.parse(readFileSync(path, "utf8")) as Scenario;
 	s.replyUnlisted = false;
+	s.threadUnlisted = false;
 	writeFileAtomic(path, JSON.stringify(s, null, "\t"));
 }
 
