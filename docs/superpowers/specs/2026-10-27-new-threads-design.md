@@ -4,6 +4,8 @@ Status: draft for the owner's review, 2026-10-27.
 
 Calls the coordinator made (the owner may overrule) are marked **(call)**.
 
+Mockups: https://claude.ai/artifact/Fjmc4WwwFKKBLEGCiRHdfn
+
 ## Why
 
 Milestone 2 replaces the owner's GitHub review workflow. Replies, resolving, editing and deleting are in. Next, by the owner's order, is starting new threads from Files changed. Approve / request changes comes after.
