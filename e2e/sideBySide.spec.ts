@@ -398,3 +398,80 @@ test("the Side by side switch keeps the row being read where it was", async ({
 	expect(Math.abs((await rowTop(row)) - before)).toBeLessThan(2);
 	await expectNoPageOverflow(page);
 });
+
+test("a text selection stays on one side, and Copy gives that side only", async ({
+	page,
+	context,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	// Desktop project only: the phone project is Chromium too, but a native
+	// touch selection (long-press, handles) isn't scriptable.
+	test.skip(isMobile, "native touch selection isn't scriptable");
+	await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+	await pr(fixture);
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	await sideBySide(page, true);
+	const section = await expand(page, GREET);
+	await expect(table(section, "side-by-side")).toBeVisible();
+	const cluster = pairs(section);
+	await expect(cluster).toHaveCount(3);
+	const cell = (i: number, side: "LEFT" | "RIGHT") =>
+		cluster
+			.nth(i)
+			.locator(`td[data-testid="code"]`)
+			.nth(side === "LEFT" ? 0 : 1);
+	const newLines = ["greet 5 changed", "greet 6 changed", WIDE];
+	const oldLines = ["greet 5", "greet 6"];
+	/** Drags from the start of the first new line to a point in `to`. */
+	const dragTo = async (to: Locator, at: "middle" | "end") => {
+		const from = await cell(0, "RIGHT").boundingBox();
+		const box = await to.boundingBox();
+		if (!from || !box) throw new Error("a cell has no box");
+		await page.mouse.move(from.x + 4, from.y + from.height / 2);
+		await page.mouse.down();
+		await page.mouse.move(
+			at === "middle" ? box.x + box.width / 2 : box.x + box.width - 4,
+			at === "middle" ? box.y + box.height / 2 : box.y + box.height - 4,
+			{ steps: 12 },
+		);
+		await page.mouse.up();
+	};
+	const selected = () => page.evaluate(() => getSelection()?.toString() ?? "");
+	const copy = async () => {
+		await page.keyboard.press("Control+C");
+		return page.evaluate(() => navigator.clipboard.readText());
+	};
+	const lines = (text: string) => text.replace(/\n$/, "").split("\n");
+
+	// Across the table, from the first row's new text to the third row's old
+	// side: the old cells in between (one with text, one blank) are skipped.
+	await dragTo(cell(2, "LEFT"), "middle");
+	await expect(section.locator("table")).toHaveAttribute(
+		"data-selecting",
+		"new",
+	);
+	for (const line of oldLines)
+		expect(lines(await selected())).not.toContain(line);
+	expect(lines(await selected())).toEqual(newLines.slice(0, 2));
+	// The pointer is up: Copy still gives one side.
+	const across = await copy();
+	for (const line of oldLines) expect(lines(across)).not.toContain(line);
+	expect(lines(across)).toEqual(newLines.slice(0, 2));
+
+	// To the end of the third row's new text: the new side's three lines, nothing else.
+	await dragTo(cell(2, "RIGHT"), "end");
+	expect(lines(await selected())).toEqual(newLines);
+	expect(lines(await copy())).toEqual(newLines);
+
+	// A click collapses the selection: the mark goes, both sides selectable again.
+	await cell(1, "RIGHT").click();
+	await expect(section.locator("table")).not.toHaveAttribute("data-selecting");
+	await dragTo(cell(1, "LEFT"), "end");
+	await expect(section.locator("table")).toHaveAttribute(
+		"data-selecting",
+		"new",
+	);
+});
