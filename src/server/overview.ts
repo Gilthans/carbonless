@@ -438,6 +438,10 @@ export function mapThreads(
 			lines && loaded ? spanCols(parseMarker(str(first.body)), lines) : null;
 		const anchor = lines && cols ? { ...lines, ...cols } : lines;
 		const code = threadCode(first, anchor, loaded);
+		// Older answers have no subjectType: no line there meant the file.
+		const onFile =
+			t.subjectType === "FILE" ||
+			(t.subjectType === undefined && anchor === null);
 		const resolved = !asOf && t.isResolved === true;
 		// Who commented, in the order they were published (a reply drafted
 		// early in a review submitted late spoke after those before the
@@ -483,12 +487,14 @@ export function mapThreads(
 			// code (a carried-forward comment's current line may differ),
 			// else where it is now or was; as of a cutoff, where it was
 			// (today's line is past the cutoff).
-			line:
-				code?.anchor.line ??
-				(asOf
-					? (lineNumber(t.originalLine) ?? lineNumber(t.line))
-					: (lineNumber(t.line) ?? lineNumber(t.originalLine))),
-			currentLine: asOf ? null : lineNumber(t.line),
+			// A file comment has none (GitHub reports it on line 1).
+			line: onFile
+				? null
+				: (code?.anchor.line ??
+					(asOf
+						? (lineNumber(t.originalLine) ?? lineNumber(t.line))
+						: (lineNumber(t.line) ?? lineNumber(t.originalLine)))),
+			currentLine: asOf || onFile ? null : lineNumber(t.line),
 			loaded,
 			excerpt: text.replace(/\s+/g, " ").trim().slice(0, 200),
 			html: stripMarkerHtml(str(first.bodyHTML)),
@@ -518,12 +524,7 @@ export function mapThreads(
 			code,
 			anchor,
 			commit: commitOf(first),
-			// Older answers have no subjectType: no line there meant the file.
-			subject:
-				t.subjectType === "FILE" ||
-				(t.subjectType === undefined && anchor === null)
-					? "file"
-					: "line",
+			subject: onFile ? "file" : "line",
 			attention,
 			yourTurn: attention.some((login) => slugify(login) === viewer),
 			viewerCan: {

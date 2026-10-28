@@ -75,8 +75,12 @@ unresolving one, and editing or deleting one of the viewer's comments in one
 - **New threads are REST too, on GitHub's exact lines.** A new thread is
   `POST /repos/{o}/{r}/pulls/{n}/comments` with `commit_id` the snapshot's
   head: one line as `line` + `side` only, a range adding `start_line` +
-  `start_side` (it may start on `LEFT` and end on `RIGHT`), a file as
-  `subject_type: "file"`. Never GraphQL's `addPullRequestReviewThread`,
+  `start_side` (from either side to either, across hunks too: GitHub
+  takes any whose start comes before its end in the diff and refuses the
+  rest with its 422), a file as `subject_type: "file"` (GitHub then
+  reports line 1; carbonless shows none). A range's start is read from
+  GitHub's `originalStartLine`: its current `startLine` gives a `LEFT`
+  context line's new number. Never GraphQL's `addPullRequestReviewThread`,
   which puts the comment into the viewer's pending review. What is sent is
   what the thread then reads back: the answer is the thread as GitHub's
   GraphQL lists it, mapped like any other. Only on the head the page shows

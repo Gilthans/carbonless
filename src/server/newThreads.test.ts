@@ -138,7 +138,9 @@ describe("new threads", () => {
 			subjectType: "LINE",
 			line: 2,
 			originalLine: 2,
-			startLine: null,
+			// GitHub's own: a single line's startLine is the line.
+			startLine: 2,
+			originalStartLine: null,
 			diffSide: "RIGHT",
 			startDiffSide: null,
 		});
@@ -225,7 +227,13 @@ describe("new threads", () => {
 			],
 			[
 				{ side: "LEFT", line: 2 },
-				{ startLine: null, line: 2, diffSide: "LEFT", startDiffSide: null },
+				{
+					startLine: 2,
+					originalStartLine: null,
+					line: 2,
+					diffSide: "LEFT",
+					startDiffSide: null,
+				},
 			],
 		];
 		for (const [where, sent] of cases) {
@@ -325,6 +333,17 @@ describe("new threads", () => {
 		});
 	});
 
+	it("a range across two hunks goes as asked (GitHub takes it); a line between hunks is GitHub's 422 → gone", async () => {
+		const { thread } = await session.startThread(
+			request({ startSide: "RIGHT", startLine: 2, side: "RIGHT", line: 26 }),
+		);
+		expect(thread.anchor).toMatchObject({ startLine: 2, line: 26 });
+		const between = await refused(
+			session.startThread(request({ side: "RIGHT", line: 15 })),
+		);
+		expect(between.code).toBe("gone");
+	});
+
 	it("a file comment: subject_type file, no lines, on any file of the diff", async () => {
 		const { thread } = await session.startThread(
 			request({
@@ -334,12 +353,17 @@ describe("new threads", () => {
 				line: undefined,
 			}),
 		);
+		// GitHub reports a file thread on line 1; carbonless on none.
 		expect(stored().at(-1)).toMatchObject({
 			path: "new.txt",
 			subjectType: "FILE",
-			line: null,
+			line: 1,
+			originalLine: 1,
+			diffSide: "RIGHT",
 		});
 		expect(thread).toMatchObject({
+			line: null,
+			currentLine: null,
 			subject: "file",
 			path: "new.txt",
 			anchor: null,

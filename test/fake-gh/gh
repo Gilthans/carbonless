@@ -545,9 +545,11 @@ if (restCreate && !s.loggedOut) {
 		isOutdated: false,
 		path: req.path,
 		subjectType: file ? "FILE" : "LINE",
-		line: file ? null : req.line,
-		originalLine: file ? null : req.line,
-		startLine: shownStart,
+		// GitHub's: a file thread on line 1 (RIGHT); a single line's
+		// startLine is the line, with no start side or original start.
+		line: file ? 1 : req.line,
+		originalLine: file ? 1 : req.line,
+		startLine: file ? null : (shownStart ?? req.line),
 		originalStartLine: req.start_line ?? null,
 		diffSide: side ?? "RIGHT",
 		startDiffSide: startSide,
@@ -571,7 +573,7 @@ if (restCreate && !s.loggedOut) {
 		subject_type: file ? "file" : "line",
 		line: thread.line,
 		original_line: thread.originalLine,
-		side: file ? null : side,
+		side: side ?? "RIGHT",
 		start_line: req.start_line ?? null,
 		original_start_line: thread.originalStartLine,
 		start_side: startSide,
