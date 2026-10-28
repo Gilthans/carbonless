@@ -199,7 +199,7 @@ function Rail({ state }: { state?: ClusterView["state"] }) {
  * context rows by their new number, deleted rows by their old one, a
  * whitespace-only row by the side it shows (the new one for a pair).
  */
-function cellOf(line: RowLine): {
+export function codeCellOf(line: RowLine): {
 	side: "LEFT" | "RIGHT";
 	line: number;
 	old?: number;
@@ -251,7 +251,7 @@ function LineRow(props: {
 	composers?: RowComposers;
 }) {
 	const { line, state, threads, picker } = props;
-	const cell = cellOf(line);
+	const cell = codeCellOf(line);
 	const key = pickKey(cell);
 	const isPicked = picker?.keys.has(key) ?? false;
 	const reviewed = state === "reviewed";
@@ -1283,7 +1283,7 @@ function HunkRows(props: {
 								(k) =>
 									threads?.placement.covered.has(k) ||
 									threads?.placement.end.has(k) ||
-									props.picker?.keys.has(pickKey(cellOf(line))),
+									props.picker?.keys.has(pickKey(codeCellOf(line))),
 							) ||
 							landedPhase(props.landed, line) !== undefined ||
 							landingOn(props.landingLine, line)
@@ -1476,7 +1476,7 @@ function usePicker(
 	};
 	return {
 		keys,
-		roving: roving ?? (first ? pickKey(cellOf(first)) : null),
+		roving: roving ?? (first ? pickKey(codeCellOf(first)) : null),
 		onPointerDown: (e) => {
 			pointer.current = e.pointerType;
 			if (e.pointerType !== "mouse" || e.button !== 0) return;

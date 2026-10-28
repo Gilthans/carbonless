@@ -8,7 +8,7 @@ import { useMemo } from "react";
 import { type HunkLine, numberOn } from "../../shared/diffHunk";
 import type { ReviewThread } from "../../shared/types";
 import { reviewQuery } from "../api";
-import { CodeLine } from "../code/Invisibles";
+import { CodeLine, type Mark } from "../code/Invisibles";
 import { languageFor } from "../files/highlight";
 import { GithubHtml } from "../GithubHtml";
 import { splitSuggestions } from "../overview/suggestions";
@@ -48,7 +48,8 @@ function useTabWidth(path: string): number | undefined {
  * and the text through CodeLine (Shiki, invisibles, the file's tabs).
  */
 export function CodeRows(props: {
-	lines: (HunkLine & { marked?: boolean })[];
+	/** `marks`: a thread's exact span on the line (spanMarks.ts). */
+	lines: (HunkLine & { marked?: boolean; marks?: Mark[] })[];
 	path: string;
 	wrap: boolean;
 	testId: string;
@@ -94,6 +95,7 @@ export function CodeRows(props: {
 							lang={lang}
 							tabWidth={tabWidth}
 							newline={!line.noNewline}
+							marks={line.marks}
 						/>
 					</td>
 				</tr>

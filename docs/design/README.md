@@ -316,6 +316,31 @@ decides where; nothing else does):
   it ("…, line not in this diff") and to the thread's header ("Line not in
   this diff"). Their threads open under the header.
 
+## Starting threads in Files changed
+
+- **Selecting** text in the code (any row kind, across rows and sides,
+  within one file) or **picking lines** by their numbers (click; shift-click
+  or drag down the numbers; a second tap on touch; Up/Down move between the
+  number buttons, one tab stop per file, Shift extends, Enter picks) brings
+  up the **selection bar**: one 40px icon button per registered action
+  (`selectionActions.ts`; Comment now), on `overlay` with `edge` and
+  `shadow-float`, just below the selection's end (above it when there's no
+  room), never over it; on a phone a bar pinned to the bottom (above the
+  safe area) quoting the selection. An action that can't run stays,
+  `aria-disabled`, with the reason as its tooltip. Pressing it doesn't take
+  the selection; Escape dismisses it and clears picked lines (`line-picked`).
+- **The composer** opens as a row under the span's last line, like an
+  opened thread: an `edge` card whose `band` header quotes the span (its
+  exact text on `span-mark`, then "line 4, new" in `faint` mono), a box and
+  Cancel / Comment. The span stays painted (`thread-mark` and `span-mark`)
+  while it's written. Sending: the text with a `warn` clock; refused: a
+  `bad` line saying why above the box, the text kept.
+- **A thread with a span** paints its exact characters with `span-mark` on
+  its lines, in Files changed and in the Overview's code pane; when the
+  columns don't fit the line any more, only the lines show.
+- **Comment on file**: a 40px comment icon in every file header (open or
+  closed, any kind of file); its composer shows under the header.
+
 ## Timeline (Overview)
 
 The Overview's last section. A vertical rail (`line-strong`, 1px) through

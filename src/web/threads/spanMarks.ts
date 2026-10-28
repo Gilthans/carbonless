@@ -52,3 +52,25 @@ export function spanMarks(
 		[i === 0 ? startCol : 0, i === rows.length - 1 ? endCol : row.text.length],
 	]);
 }
+
+/**
+ * A thread's code window rows with its span's characters (`marks`) on its
+ * marked rows, when its anchor has columns that fit them (else as they are:
+ * the lines alone show).
+ */
+export function withSpanMarks<R extends SpanRow & { marked: boolean }>(
+	rows: readonly R[],
+	anchor: SpanRange | null,
+): (R & { marks?: Mark[] })[] {
+	if (!anchor || anchor.startCol == null || anchor.endCol == null) {
+		return rows as R[];
+	}
+	const first = rows.findIndex((r) => r.marked);
+	const last = rows.findLastIndex((r) => r.marked);
+	if (first < 0) return rows as R[];
+	const marks = spanMarks(rows.slice(first, last + 1), anchor);
+	if (!marks) return rows as R[];
+	return rows.map((r, i) =>
+		i >= first && i <= last ? { ...r, marks: marks[i - first] } : r,
+	);
+}

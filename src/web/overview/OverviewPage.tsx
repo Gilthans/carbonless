@@ -86,6 +86,7 @@ import { kept, useDrafts } from "../threads/drafts";
 import { OrphanDraft } from "../threads/OrphanDraft";
 import { Avatar, PeopleProvider, TINTS, usePerson } from "../threads/people";
 import { canToggle } from "../threads/ResolveButton";
+import { withSpanMarks } from "../threads/spanMarks";
 import { ThreadStatus } from "../threads/ThreadStatus";
 import {
 	FADE_MS,
@@ -1394,7 +1395,11 @@ function ThreadItem({
 	const commentId = useId();
 	const codeId = useId();
 	const repliesId = useId();
-	const rows = thread.code?.rows ?? [];
+	// The span's exact characters painted on its lines, when they fit.
+	const rows = useMemo(
+		() => withSpanMarks(thread.code?.rows ?? [], thread.anchor),
+		[thread.code, thread.anchor],
+	);
 	const line = headerLine(thread);
 	const opener = usePerson(thread.author, thread.avatarUrl);
 	const replies = useReplyCount(thread, readId);
