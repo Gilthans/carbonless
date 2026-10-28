@@ -26,9 +26,10 @@ import type {
 	FileView,
 	ReviewThread,
 } from "../../shared/types";
-import { contextQuery, hunksQuery } from "../api";
+import { contextQuery, hunksQuery, overviewQuery } from "../api";
 import { CodeLine, type Mark } from "../code/Invisibles";
 import { Tooltip } from "../Tooltip";
+import { canMove, spanTexts } from "../threads/draftMove";
 import { type LineTexts, useDrafts } from "../threads/drafts";
 import { NewThread, quoteOf } from "../threads/NewThread";
 import {
@@ -606,6 +607,8 @@ export function DiffBody(props: {
 	landing?: Landing;
 	/** Review threads to place on the lines (annotations only: they change no review state). */
 	threads?: DiffThreads;
+	/** These hunks are the viewed head's (not a Refresh's moment of the old ones). */
+	headSure?: boolean;
 }) {
 	const { file, revision } = props;
 	const hunks = useQuery(hunksQuery(revision, file.index));
@@ -750,16 +753,10 @@ export function DiffBody(props: {
 			const same = span.startSide === span.side && span.startLine === span.line;
 			return quoteOf(span, same ? [end ?? ""] : [start ?? "", end ?? ""]);
 		},
-		texts: (item) => {
-			const { span } = item;
-			const start = textAt.get(
-				`${span.startSide}:${span.startLine}` as LineKey,
-			);
-			const end = textAt.get(`${span.side}:${span.line}` as LineKey);
-			return start === undefined || end === undefined
-				? undefined
-				: { start, end };
-		},
+		texts: (item) =>
+			hunks.data
+				? (spanTexts(hunks.data.hunks, item.span as SpanRange) ?? undefined)
+				: undefined,
 		// The thread opens where it lands.
 		onPosted: (item) => {
 			const key = `${item.span.side}:${item.span.line}` as LineKey;
@@ -769,12 +766,16 @@ export function DiffBody(props: {
 
 	const picker = usePicker(scroller, file.path, hunks.data?.hunks[0]);
 
-	// The head moved under a draft: it moves along when its first and last
-	// lines read the same at the same numbers (a file comment always does,
-	// FileDiff); else it stays an orphan, its text kept. Never a guess at a
-	// nearby line.
+	// The head moved under a draft: it moves along when its lines and the
+	// lines around them read the same at the same numbers, in GitHub's diff
+	// (draftMove.ts; a file comment always moves, FileDiff), and Comment can
+	// go there; else it stays an orphan, its text kept. Never a guess at a
+	// nearby line. Only against hunks known to be this head's (`headSure`:
+	// a Refresh shows the new head before its diff).
+	const commentLeft = useQuery({ ...overviewQuery, enabled: false }).data
+		?.commentLeft;
 	useEffect(() => {
-		if (!snapshotHead || !hunks.data) return;
+		if (!snapshotHead || !hunks.data || !props.headSure) return;
 		for (const item of orphanItems) {
 			if (item.sending) continue;
 			const draft = writer.drafts.newThread(item.clientId);
@@ -783,14 +784,10 @@ export function DiffBody(props: {
 				closeComposer(item.clientId);
 				continue;
 			}
-			const texts = draft.create?.texts;
-			const { span } = item;
-			if (
-				texts &&
-				textAt.get(`${span.startSide}:${span.startLine}` as LineKey) ===
-					texts.start &&
-				textAt.get(`${span.side}:${span.line}` as LineKey) === texts.end
-			) {
+			const span = item.span as SpanRange;
+			const left = span.startSide === "LEFT" || span.side === "LEFT";
+			if (left && commentLeft === false) continue;
+			if (canMove(draft.create?.texts, spanTexts(hunks.data.hunks, span))) {
 				writer.drafts.retarget(item.clientId, snapshotHead);
 			}
 		}

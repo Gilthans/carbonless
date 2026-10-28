@@ -21,12 +21,14 @@ import type {
 	SessionInfo,
 } from "../../shared/types";
 import { ShortcutsProvider } from "../shortcuts";
+import { type LineTexts, spanTexts } from "../threads/draftMove";
 import { draftsFor, newThreadKey } from "../threads/drafts";
 import {
 	getComposers,
 	openComposer,
 	resetComposers,
 } from "../threads/newThreads";
+import type { SpanRange } from "../threads/spanMarks";
 import { ignoreWhitespace, showInvisibles } from "../viewSettings";
 import { CODE_CELL, spanOfRange } from "./codeSpan";
 import { codeCellOf, DiffBody, type DiffThreads } from "./DiffBody";
@@ -191,6 +193,8 @@ function setup(
 		threads?: ReviewThread[];
 		overview?: Partial<PrOverview>;
 		children?: ReactNode;
+		/** The diff shown is the viewed head's (default yes). */
+		headSure?: boolean;
 	} = {},
 ) {
 	vi.stubGlobal(
@@ -234,6 +238,7 @@ function setup(
 						onToggle={() => {}}
 						onCrossOff={() => {}}
 						threads={threads}
+						headSure={opts.headSure ?? true}
 					/>
 				</section>
 				{opts.children}
@@ -978,6 +983,39 @@ describe("the selection bar", () => {
 		expect(await screen.findByTestId("selection-bar")).toBeInTheDocument();
 	});
 
+	it("after Escape, the same lines picked again bring the bar (and c) back", async () => {
+		const { user } = setup();
+		await loaded();
+		pick([6]);
+		await screen.findByTestId("selection-bar");
+		await user.keyboard("{Escape}");
+		expect(screen.queryByTestId("selection-bar")).toBeNull();
+		pick([6]);
+		expect(await screen.findByTestId("selection-bar")).toBeInTheDocument();
+		await user.keyboard("c");
+		expect(getComposers()).toMatchObject([{ span: { line: 6 } }]);
+	});
+
+	it("the first Tab isn't taken from inside a dialog", async () => {
+		const { user } = setup({
+			children: (
+				<div role="dialog" aria-label="Settings">
+					<button type="button">Theme</button>
+					<button type="button">Next</button>
+				</div>
+			),
+		});
+		await loaded();
+		pick([6]);
+		const bar = await screen.findByTestId("selection-bar");
+		screen.getByRole("button", { name: "Theme" }).focus();
+		await user.tab();
+		expect(screen.getByRole("button", { name: "Next" })).toHaveFocus();
+		expect(
+			within(bar).getByRole("button", { name: "Comment" }),
+		).not.toHaveFocus();
+	});
+
 	it("the first Tab after a selection goes to the bar", async () => {
 		const { user } = setup();
 		await loaded();
@@ -1086,7 +1124,7 @@ describe("the composer", () => {
 				"moved",
 				{ ...lineSpan, commit: OLD } as never,
 				"still true",
-				{ start: "const x = 2;", end: "const x = 2;" },
+				spanTexts(HUNKS.hunks, lineSpan as SpanRange) as LineTexts,
 			),
 		);
 		const box = await screen.findByRole("textbox", { name: "Comment" });
@@ -1103,7 +1141,10 @@ describe("the composer", () => {
 				"changed",
 				{ ...lineSpan, commit: OLD } as never,
 				"from before",
-				{ start: "const x = 3;", end: "const x = 3;" },
+				{
+					...(spanTexts(HUNKS.hunks, lineSpan as SpanRange) as LineTexts),
+					lines: ["const x = 3;"],
+				},
 			),
 		);
 		const orphan = await screen.findByTestId("orphan-draft");
@@ -1120,12 +1161,54 @@ describe("the composer", () => {
 				"gone",
 				{ ...lineSpan, commit: OLD, startLine: 40, line: 40 } as never,
 				"lost line",
-				{ start: "x", end: "x" },
+				{ lines: ["x"], before: [], after: [] },
 			),
 		);
 		const orphan = await screen.findByTestId("orphan-draft");
 		expect(orphan).toHaveTextContent("Lines gone");
 		expect(orphan).toHaveTextContent("lost line");
+	});
+
+	it("doesn't move while the diff shown is still the earlier head's (a Refresh's moment)", async () => {
+		setup({ headSure: false });
+		await loaded();
+		act(() =>
+			draftsFor(client).setNew(
+				"early",
+				{ ...lineSpan, commit: OLD } as never,
+				"wait",
+				spanTexts(HUNKS.hunks, lineSpan as SpanRange) as LineTexts,
+			),
+		);
+		expect(await screen.findByTestId("orphan-draft")).toHaveTextContent("wait");
+		await new Promise((r) => setTimeout(r, 30));
+		expect(draftsFor(client).newThread("early")?.create?.commit).toBe(OLD);
+	});
+
+	it("doesn't move onto old lines this head can't comment on", async () => {
+		setup({ overview: { commentLeft: false } });
+		await loaded();
+		const left: CodeSpan = {
+			...lineSpan,
+			startSide: "LEFT",
+			side: "LEFT",
+			startLine: 4,
+			line: 4,
+			startCol: null,
+			endCol: null,
+		};
+		act(() =>
+			draftsFor(client).setNew(
+				"left",
+				{ ...left, commit: OLD } as never,
+				"old side",
+				spanTexts(HUNKS.hunks, left as SpanRange) as LineTexts,
+			),
+		);
+		expect(await screen.findByTestId("orphan-draft")).toHaveTextContent(
+			"old side",
+		);
+		expect(draftsFor(client).newThread("left")?.create?.commit).toBe(OLD);
 	});
 
 	it("keeps its lines' text with the draft as it is typed", async () => {
@@ -1139,8 +1222,9 @@ describe("the composer", () => {
 			"x",
 		);
 		expect(draftsFor(client).newThread("t1")?.create?.texts).toEqual({
-			start: "const x = 2;",
-			end: "const x = 2;",
+			lines: ["const x = 2;"],
+			before: ["\tconst y = 2;", "const x = 1;", "  const y = 2;"],
+			after: ["tail", "line 6", "line 7"],
 		});
 	});
 

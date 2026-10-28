@@ -26,6 +26,7 @@ import type { DiffThreads } from "./DiffBody";
 import { FileDiff } from "./FileDiff";
 import { FileTree } from "./FileTree";
 import { filesPrefetchOrder } from "./filesPrefetch";
+import { useHeadSure } from "./headSure";
 import { type FilesSearch, type Landing, landingFile } from "./landing";
 import { ProgressBar } from "./ProgressBar";
 import { SelectionBar } from "./SelectionBar";
@@ -410,6 +411,9 @@ export function FilesPage() {
 	// Comments are read in the background, the open file's threads first,
 	// then the other files' in file order (one prefetch for the page).
 	const { threads, all: allThreads, failed: threadsFailed } = useDiffThreads();
+	// A Refresh shows the new head before its diff: drafts move only once
+	// the diff shown is that head's.
+	const headSure = useHeadSure(threads?.snapshotHead, data?.revision);
 	const queryClient = useQueryClient();
 	const prefetch = useMemo(
 		() =>
@@ -442,7 +446,12 @@ export function FilesPage() {
 	// The floating Files button makes way while a comment is being written
 	// (a box has focus) or one was refused: it would cover its buttons.
 	const writing = useWritingHere();
-	const refused = [...useThreadWrites().threads.values()].some((t) => t.failed);
+	const refused = [...useThreadWrites().threads.values()].some(
+		(t) =>
+			t.failed?.action === "New comment" ||
+			t.failed?.action === "Reply" ||
+			t.failed?.action === "Edit",
+	);
 	const filesButton = !writing && !refused;
 
 	const tree = data && (
@@ -545,6 +554,7 @@ export function FilesPage() {
 												landing?.index === file.index ? landing : undefined
 											}
 											threads={threads}
+											headSure={headSure}
 										/>
 									))}
 								</div>

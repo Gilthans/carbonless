@@ -1,6 +1,9 @@
 import { type QueryClient, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useSyncExternalStore } from "react";
 import type { NewThreadRequest } from "../../shared/types";
+import type { LineTexts } from "./draftMove";
+
+export type { LineTexts };
 
 /**
  * The reviewer's reply drafts, per PR: what is typed in each thread's box,
@@ -42,18 +45,13 @@ export interface NewDraft extends NewTarget {
 	/** When it was first typed in (ISO). */
 	createdAt: string;
 	/**
-	 * A line comment: the text of its first and last line when written, so
-	 * it can move to a new head where those lines read the same.
+	 * A line comment: its lines and their context when written, so it can
+	 * move to a new head where they read the same (draftMove.ts). Checked
+	 * where used; an unreadable one only keeps the draft from moving.
 	 */
 	texts?: LineTexts;
 	/** Posted, not yet confirmed: resent on load, looked for first. */
 	sending?: { attemptedAt: string; sentOnce: boolean };
-}
-
-/** A line comment's first and last line, as written on. */
-export interface LineTexts {
-	start: string;
-	end: string;
 }
 
 /** A new thread's draft id: its client id behind `new:`. */
@@ -147,12 +145,7 @@ function isNew(d: Partial<Draft>): boolean {
 		!optNumber(c.startLine) ||
 		!optNumber(c.line) ||
 		!optCol(c.startCol) ||
-		!optCol(c.endCol) ||
-		(c.texts !== undefined &&
-			(typeof c.texts !== "object" ||
-				c.texts === null ||
-				typeof c.texts.start !== "string" ||
-				typeof c.texts.end !== "string"))
+		!optCol(c.endCol)
 	) {
 		return false;
 	}

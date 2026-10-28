@@ -315,6 +315,8 @@ export function FileDiff(props: {
 	landing?: Landing;
 	/** The PR's review threads, placed on this file's diff. */
 	threads?: DiffThreads;
+	/** The diff shown is the viewed head's (useHeadSure). */
+	headSure?: boolean;
 }) {
 	const { file, revision } = props;
 	const [ownExpanded, setOwnExpanded] = useState(false);
@@ -672,6 +674,7 @@ export function FileDiff(props: {
 					onCrossOff={crossOff}
 					landing={props.landing}
 					threads={props.threads}
+					headSure={props.headSure}
 				/>
 			)}
 		</section>
