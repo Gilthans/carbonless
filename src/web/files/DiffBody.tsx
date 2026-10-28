@@ -6,8 +6,12 @@ import {
 import { useQueries, useQuery } from "@tanstack/react-query";
 import {
 	Fragment,
+	type KeyboardEvent,
+	type MouseEvent,
+	type PointerEvent,
 	type ReactNode,
 	type RefObject,
+	useCallback,
 	useEffect,
 	useId,
 	useLayoutEffect,
@@ -23,13 +27,33 @@ import type {
 	ReviewThread,
 } from "../../shared/types";
 import { contextQuery, hunksQuery } from "../api";
-import { CodeLine } from "../code/Invisibles";
+import { CodeLine, type Mark } from "../code/Invisibles";
 import { Tooltip } from "../Tooltip";
+import { useDrafts } from "../threads/drafts";
+import { NewThread, quoteOf } from "../threads/NewThread";
+import {
+	type NewThreadItem,
+	newThreadItems,
+	useComposers,
+} from "../threads/newThreads";
+import { OrphanDraft } from "../threads/OrphanDraft";
+import type { SpanRange } from "../threads/spanMarks";
+import { useThreadWriter } from "../threads/threadWrites";
 import { ErrorMessage } from "../ui";
 import { ignoreWhitespace } from "../viewSettings";
+import { type CellLine, CODE_CELL, cellLine } from "./codeSpan";
 import { EXPAND_STEP, fileGaps, type Gap, gapState } from "./gaps";
 import { languageFor } from "./highlight";
 import type { Landing } from "./landing";
+import {
+	getPicks,
+	picked,
+	pickKey,
+	pickRange,
+	setPicks,
+	usePicks,
+} from "./linePicks";
+import { describeSpan } from "./selectionActions";
 import { CONTROLS, SLOT, useStickyControls } from "./stickyControls";
 import { ThreadBubble } from "./ThreadBubble";
 import { ThreadRow } from "./ThreadRow";
@@ -170,6 +194,48 @@ function Rail({ state }: { state?: ClusterView["state"] }) {
 	return <td aria-hidden className={`w-1 min-w-1 p-0 ${color}`} />;
 }
 
+/**
+ * The line GitHub numbers a row's code cell by (codeSpan.ts): added and
+ * context rows by their new number, deleted rows by their old one, a
+ * whitespace-only row by the side it shows (the new one for a pair).
+ */
+function cellOf(line: RowLine): {
+	side: "LEFT" | "RIGHT";
+	line: number;
+	old?: number;
+} {
+	if (line.kind === "del" || line.newNo === undefined) {
+		return { side: "LEFT", line: line.oldNo as number };
+	}
+	return {
+		side: "RIGHT",
+		line: line.newNo,
+		...(line.kind === "context" && line.oldNo !== undefined
+			? { old: line.oldNo }
+			: {}),
+	};
+}
+
+/** Picking lines by their numbers (DiffBody): the picked rows and the handlers. */
+interface Picker {
+	/** Picked rows, by pickKey. */
+	keys: ReadonlySet<string>;
+	/** The row whose number button is in the tab order. */
+	roving: string | null;
+	onPointerDown: (e: PointerEvent<HTMLElement>) => void;
+	onPointerEnter: (e: PointerEvent<HTMLElement>) => void;
+	onClick: (e: MouseEvent<HTMLElement>) => void;
+	onKeyDown: (e: KeyboardEvent<HTMLButtonElement>) => void;
+	onFocus: (key: string) => void;
+}
+
+/** New threads being written, by the row they end on, and how to show one. */
+interface RowComposers {
+	at: (keys: LineKey[]) => NewThreadItem[];
+	quote: (item: NewThreadItem) => string;
+	onPosted: (item: NewThreadItem) => void;
+}
+
 function LineRow(props: {
 	line: RowLine;
 	lang: string | null;
@@ -179,8 +245,15 @@ function LineRow(props: {
 	/** Landed on from a thread link (useLanding). */
 	landed?: Landed["phase"];
 	threads?: RowThreads;
+	/** The hunk (`h<i>`) or gap (`g<i>`) the row is in (codeSpan.ts). */
+	hunk: string;
+	picker?: Picker;
+	composers?: RowComposers;
 }) {
-	const { line, state, threads } = props;
+	const { line, state, threads, picker } = props;
+	const cell = cellOf(line);
+	const key = pickKey(cell);
+	const isPicked = picker?.keys.has(key) ?? false;
 	const reviewed = state === "reviewed";
 	const keys = threads ? rowKeys(line) : [];
 	const commented = keys.some((k) => threads?.placement.covered.has(k));
@@ -201,6 +274,46 @@ function LineRow(props: {
 	// The commented range: the accent stripe and tinted numbers (thread-mark),
 	// unlike a landed line's tint and rail; not while it is landed on.
 	const mark = commented && props.landed !== "on" ? "thread-mark" : "";
+	const marks: Mark[] = threads
+		? keys.flatMap((k) => threads.placement.marks.get(k) ?? [])
+		: [];
+	const composing = props.composers?.at(keys) ?? [];
+	// The number GitHub knows the row by takes the pick's button (and its
+	// tab stop); the other number picks the row too, by pointer.
+	const main = cell.side === "LEFT" ? "old" : "new";
+	const number = (which: "old" | "new") => {
+		const n = which === "old" ? line.oldNo : line.newNo;
+		if (!picker || n === undefined) return n;
+		if (which !== main) return n;
+		return (
+			<button
+				type="button"
+				data-pick={key}
+				tabIndex={picker.roving === key ? 0 : -1}
+				aria-label={`${cell.side === "LEFT" ? "Old line" : "Line"} ${cell.line}`}
+				aria-pressed={isPicked}
+				onKeyDown={picker.onKeyDown}
+				onFocus={() => picker.onFocus(key)}
+				className="block w-full cursor-pointer text-right hover:text-ink focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent"
+			>
+				{n}
+			</button>
+		);
+	};
+	const numberCell = (which: "old" | "new") => (
+		// The pointer picks from either number; the keyboard uses the row's
+		// number button (Enter or Space clicks it, the click bubbles here).
+		// biome-ignore lint/a11y/useKeyWithClickEvents: see above.
+		<td
+			data-testid={which}
+			onPointerDown={picker?.onPointerDown}
+			onPointerEnter={picker?.onPointerEnter}
+			onClick={picker?.onClick}
+			className={`w-12 px-2 text-right align-top select-none ${numberBg} ${picker ? "cursor-pointer" : ""}`}
+		>
+			{number(which)}
+		</td>
+	);
 	return (
 		<>
 			<tr
@@ -212,25 +325,24 @@ function LineRow(props: {
 				data-new-no={line.newNo}
 				data-landed={props.landed === "on" || undefined}
 				data-commented={commented ? "" : undefined}
-				className={`${rowBg} ${props.landed ? LANDED_CLASS[props.landed] : ""} ${mark}`}
+				data-picked={isPicked || undefined}
+				className={`${rowBg} ${props.landed ? LANDED_CLASS[props.landed] : ""} ${mark} ${isPicked ? "line-picked" : ""}`}
 			>
 				<Rail state={state} />
 				<td className="w-11 px-1 align-top whitespace-nowrap pointer-coarse:w-20">
 					{props.checkbox}
 				</td>
+				{numberCell("old")}
+				{numberCell("new")}
 				<td
-					data-testid="old"
-					className={`w-12 px-2 text-right align-top select-none ${numberBg}`}
+					{...{ [CODE_CELL]: "" }}
+					data-side={cell.side}
+					data-line={cell.line}
+					data-old-line={cell.old}
+					data-len={line.text.length}
+					data-hunk={props.hunk}
+					className={`whitespace-pre ${endKey ? "pr-12 pl-2" : "px-2"}`}
 				>
-					{line.oldNo}
-				</td>
-				<td
-					data-testid="new"
-					className={`w-12 px-2 text-right align-top select-none ${numberBg}`}
-				>
-					{line.newNo}
-				</td>
-				<td className={`whitespace-pre ${endKey ? "pr-12 pl-2" : "px-2"}`}>
 					{endKey && threads && (
 						<ThreadBubble
 							inline
@@ -271,6 +383,7 @@ function LineRow(props: {
 						lang={props.lang}
 						tabWidth={props.tabWidth}
 						newline={!line.noNewline}
+						marks={marks}
 					/>
 				</td>
 			</tr>
@@ -291,7 +404,44 @@ function LineRow(props: {
 					rail={state ? RAIL[state] : undefined}
 				/>
 			)}
+			{composing.length > 0 && props.composers && (
+				<NewThreadRow
+					items={composing}
+					composers={props.composers}
+					rail={state ? RAIL[state] : undefined}
+				/>
+			)}
 		</>
+	);
+}
+
+/** New threads being written under their span's last row, like a ThreadRow. */
+function NewThreadRow(props: {
+	items: NewThreadItem[];
+	composers: RowComposers;
+	rail?: string;
+}) {
+	return (
+		<tr data-testid="new-thread-row">
+			<td colSpan={COLUMNS} className="p-0">
+				<div className="sticky left-0 w-[var(--diff-w,100%)] max-w-full space-y-2 border-y border-line bg-canvas py-2 pr-2 pl-3 font-sans text-sm leading-normal whitespace-normal text-ink">
+					{props.rail && (
+						<span
+							aria-hidden
+							className={`absolute inset-y-0 left-0 w-1 ${props.rail}`}
+						/>
+					)}
+					{props.items.map((item) => (
+						<NewThread
+							key={item.clientId}
+							item={item}
+							quote={props.composers.quote(item)}
+							onPosted={() => props.composers.onPosted(item)}
+						/>
+					))}
+				</div>
+			</td>
+		</tr>
 	);
 }
 
@@ -514,10 +664,31 @@ export function DiffBody(props: {
 			for (let n = from; n <= to; n++) taken.add(n);
 		}
 	}
+	const gaps = hunks.data
+		? fileGaps(hunks.data.hunks, hunks.data.newLineCount)
+		: [];
 	const addRange = (from: number, to: number) =>
 		setRanges((r) =>
 			r.some(([f, t]) => f === from && t === to) ? r : [...r, [from, to]],
 		);
+
+	// New threads being written on this file's lines, on the viewed head;
+	// those on another head are orphans (their lines are gone).
+	const snapshotHead = props.threads?.snapshotHead;
+	const drafts = useDrafts();
+	const composerList = useComposers();
+	const allItems = useMemo(
+		() => newThreadItems(drafts, composerList),
+		[drafts, composerList],
+	);
+	const mineNew = allItems.filter(
+		(i) => i.span.path === file.path && i.span.subject === "line",
+	);
+	const lineItems = mineNew.filter((i) => i.span.commit === snapshotHead);
+	const orphanItems = snapshotHead
+		? mineNew.filter((i) => i.span.commit !== snapshotHead)
+		: [];
+	const writer = useThreadWriter();
 
 	// Where the file's threads sit (all start closed). Opening one only
 	// shows it: no review state changes.
@@ -529,8 +700,13 @@ export function DiffBody(props: {
 				hunks: hunks.data ?? null,
 				loadedContext: [...loaded.values()],
 				noLines: file.binary || file.submodule,
+				spans: lineItems.map((i) => i.span as SpanRange),
 			})
 		: null;
+	// Written on a row that isn't shown (a gap): above the diff, never lost.
+	const unshown = hunks.data
+		? lineItems.filter((_, i) => !placement?.spansShown.has(i))
+		: [];
 	const [openThreads, setOpenThreads] = useState<ReadonlySet<LineKey>>(
 		() => new Set(),
 	);
@@ -550,6 +726,40 @@ export function DiffBody(props: {
 			return next;
 		});
 	};
+	// Each line's text by both keys, to quote a span above its composer.
+	const textAt = new Map<LineKey, string>();
+	for (const l of [
+		...(hunks.data?.hunks.flatMap((h) => h.lines) ?? []),
+		...loaded.values(),
+	]) {
+		for (const side of ["LEFT", "RIGHT"] as const) {
+			const k = lineKey(side, l);
+			if (k) textAt.set(k, l.text);
+		}
+	}
+	const composers: RowComposers = {
+		at: (keys) =>
+			lineItems.filter((i) =>
+				keys.includes(`${i.span.side}:${i.span.line}` as LineKey),
+			),
+		quote: (item) => {
+			const { span } = item;
+			const start = textAt.get(
+				`${span.startSide}:${span.startLine}` as LineKey,
+			);
+			const end = textAt.get(`${span.side}:${span.line}` as LineKey);
+			const same = span.startSide === span.side && span.startLine === span.line;
+			return quoteOf(span, same ? [end ?? ""] : [start ?? "", end ?? ""]);
+		},
+		// The thread opens where it lands.
+		onPosted: (item) => {
+			const key = `${item.span.side}:${item.span.line}` as LineKey;
+			setOpenThreads((open) => new Set(open).add(key));
+		},
+	};
+
+	const picker = usePicker(scroller, file.path, hunks.data?.hunks[0]);
+
 	const rowThreads: RowThreads | undefined =
 		placement && props.threads
 			? {
@@ -572,6 +782,8 @@ export function DiffBody(props: {
 		/>
 	);
 
+	const hunkOf = (n: number) =>
+		`g${gaps.find((g) => g.from <= n && n <= g.to)?.index ?? ""}`;
 	const contextRows = (from: number, to: number) => {
 		const rows: ReactNode[] = [];
 		for (let n = from; n <= to; n++) {
@@ -585,6 +797,9 @@ export function DiffBody(props: {
 						tabWidth={file.tabWidth}
 						landed={landedPhase(landed, line)}
 						threads={rowThreads}
+						hunk={hunkOf(n)}
+						picker={picker}
+						composers={composers}
 					/>,
 				);
 			}
@@ -746,14 +961,37 @@ export function DiffBody(props: {
 		return <tbody key={`gap${gap.index}`}>{rows}</tbody>;
 	};
 
-	const gaps = hunks.data
-		? fileGaps(hunks.data.hunks, hunks.data.newLineCount)
-		: [];
 	const gapAt = (index: number) => gaps.find((g) => g.index === index);
 
 	return (
 		<div ref={root}>
 			{hint && <LandingHint hint={hint} />}
+			{(unshown.length > 0 || orphanItems.length > 0) && (
+				<div
+					data-testid="new-threads-unshown"
+					className="space-y-2 border-b border-line bg-canvas p-2"
+				>
+					{unshown.map((item) => (
+						<NewThread
+							key={item.clientId}
+							item={item}
+							quote={composers.quote(item)}
+						/>
+					))}
+					{orphanItems.length > 0 && (
+						<ul aria-label="Drafts on lines gone" className="space-y-2">
+							{orphanItems.map((item) => (
+								<OrphanDraft
+									key={item.clientId}
+									label={`Lines gone · ${describeSpan(item.span)}`}
+									text={item.text}
+									onDiscard={() => writer.discard(`new:${item.clientId}`)}
+								/>
+							))}
+						</ul>
+					)}
+				</div>
+			)}
 			<div ref={scroller} className="overflow-x-auto">
 				<table className="min-w-full border-collapse bg-code font-mono text-xs leading-5 text-code-ink">
 					{fileClusters.map((cluster) => (
@@ -787,6 +1025,9 @@ export function DiffBody(props: {
 								landingLine={landingLine}
 								threads={rowThreads}
 								ignoreWhitespace={ignoreWs}
+								hunkId={`h${index}`}
+								picker={picker}
+								composers={composers}
 							/>
 						</Fragment>
 					))}
@@ -978,6 +1219,9 @@ function HunkRows(props: {
 	threads?: RowThreads;
 	/** Settings' "Ignore whitespace": pair whitespace-only lines (whitespace.ts). */
 	ignoreWhitespace: boolean;
+	hunkId: string;
+	picker?: Picker;
+	composers?: RowComposers;
 }) {
 	const { threads, hunk, ignoreWhitespace } = props;
 	// The hunk's runs and their rows, once per hunk (the matching is O(n·m)
@@ -1022,6 +1266,9 @@ function HunkRows(props: {
 							landed={landedPhase(props.landed, line)}
 							threads={threads}
 							checkbox={checkbox}
+							hunk={props.hunkId}
+							picker={props.picker}
+							composers={props.composers}
 						/>
 					);
 				};
@@ -1035,7 +1282,8 @@ function HunkRows(props: {
 							keys.some(
 								(k) =>
 									threads?.placement.covered.has(k) ||
-									threads?.placement.end.has(k),
+									threads?.placement.end.has(k) ||
+									props.picker?.keys.has(pickKey(cellOf(line))),
 							) ||
 							landedPhase(props.landed, line) !== undefined ||
 							landingOn(props.landingLine, line)
@@ -1163,4 +1411,124 @@ function WhitespaceCluster(props: {
 			{shown && props.children}
 		</tbody>
 	);
+}
+
+/**
+ * Picking lines by their numbers: a click (or tap) picks the row, again
+ * clears it; shift-click, or dragging down the numbers with a mouse,
+ * extends from where the pick started; on touch a second tap extends. One
+ * number button per row, one of them in the tab order (the last focused,
+ * else the first row's): Up/Down move between rows (Shift extends),
+ * Enter or Space picks, Escape (the selection bar) clears.
+ */
+function usePicker(
+	scroller: RefObject<HTMLDivElement | null>,
+	path: string,
+	firstHunk: DisplayHunk | undefined,
+): Picker {
+	const picks = usePicks();
+	const keys = useMemo(
+		() =>
+			new Set(picks?.path === path ? picks.lines.map((l) => pickKey(l)) : []),
+		[picks, path],
+	);
+	const [roving, setRoving] = useState<string | null>(null);
+	const first = firstHunk?.lines[0];
+	const dragging = useRef(false);
+	const pointer = useRef("");
+	useEffect(() => {
+		const up = () => {
+			dragging.current = false;
+		};
+		window.addEventListener("pointerup", up);
+		window.addEventListener("pointercancel", up);
+		return () => {
+			window.removeEventListener("pointerup", up);
+			window.removeEventListener("pointercancel", up);
+		};
+	}, []);
+	const cells = useCallback(
+		() =>
+			[...(scroller.current?.querySelectorAll(`[${CODE_CELL}]`) ?? [])]
+				.map(cellLine)
+				.filter((c): c is CellLine => c !== null),
+		[scroller],
+	);
+	const targetOf = (el: Element) => {
+		const cell = el.closest("tr")?.querySelector(`[${CODE_CELL}]`);
+		return cell ? cellLine(cell) : null;
+	};
+	const pickTo = (t: CellLine, extend: boolean) => {
+		const cur = getPicks();
+		const mine = cur?.path === t.path ? cur : null;
+		if (extend && mine) {
+			setPicks(pickRange(cells(), mine.anchor, picked(t)) ?? mine);
+		} else if (
+			mine?.lines.length === 1 &&
+			pickKey(mine.anchor) === pickKey(t)
+		) {
+			setPicks(null);
+		} else {
+			setPicks(pickRange(cells(), picked(t), picked(t)));
+		}
+		// Picked lines, not text: one or the other makes the span.
+		window.getSelection()?.removeAllRanges();
+	};
+	return {
+		keys,
+		roving: roving ?? (first ? pickKey(cellOf(first)) : null),
+		onPointerDown: (e) => {
+			pointer.current = e.pointerType;
+			if (e.pointerType !== "mouse" || e.button !== 0) return;
+			const t = targetOf(e.currentTarget);
+			if (!t) return;
+			// No text selection starts from the numbers.
+			e.preventDefault();
+			e.currentTarget
+				.closest("tr")
+				?.querySelector<HTMLButtonElement>("button[data-pick]")
+				?.focus({ preventScroll: true });
+			dragging.current = true;
+			pickTo(t, e.shiftKey);
+		},
+		onPointerEnter: (e) => {
+			if (!dragging.current || (e.buttons & 1) === 0) return;
+			const t = targetOf(e.currentTarget);
+			const cur = getPicks();
+			if (!t || cur?.path !== t.path) return;
+			setPicks(pickRange(cells(), cur.anchor, picked(t)) ?? cur);
+		},
+		onClick: (e) => {
+			const t = targetOf(e.currentTarget);
+			if (!t) return;
+			// The keyboard's Enter or Space on the number button.
+			if (e.detail === 0) pickTo(t, e.shiftKey);
+			// A tap: a second one extends (a mouse picked on pointer down).
+			else if (pointer.current !== "mouse") {
+				const cur = getPicks();
+				pickTo(t, cur?.path === t.path && pickKey(cur.anchor) !== pickKey(t));
+			}
+		},
+		onKeyDown: (e) => {
+			if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+			const buttons = [
+				...(scroller.current?.querySelectorAll<HTMLButtonElement>(
+					"button[data-pick]",
+				) ?? []),
+			];
+			const at = buttons.indexOf(e.currentTarget);
+			const next = buttons[at + (e.key === "ArrowDown" ? 1 : -1)];
+			if (!next) return;
+			e.preventDefault();
+			next.focus();
+			if (!e.shiftKey) return;
+			const from = targetOf(e.currentTarget);
+			const to = targetOf(next);
+			if (!from || !to) return;
+			const cur = getPicks();
+			const anchor = cur?.path === from.path ? cur.anchor : picked(from);
+			setPicks(pickRange(cells(), anchor, picked(to)));
+		},
+		onFocus: setRoving,
+	};
 }

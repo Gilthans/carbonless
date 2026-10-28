@@ -30,6 +30,8 @@ export interface SelectionContext {
 	 * line shown counts.
 	 */
 	inDiff?: (side: DiffSide, line: number) => boolean;
+	/** The span's first and last rows are in one hunk (false: GitHub won't take the range). */
+	oneHunk?: boolean;
 }
 
 /** One thing a selection can start: Comment now, more kinds later. */
@@ -71,6 +73,7 @@ export function commentAvailable(
 	if (!ctx.commentLeft && sides(span).includes("LEFT")) {
 		return "Old lines can't take comments with this pinned head";
 	}
+	if (ctx.oneHunk === false) return "GitHub takes a range within one hunk";
 	if (!COMMENT_OUTSIDE_HUNKS && ctx.inDiff) {
 		const ends: [DiffSide | undefined, number | undefined][] = [
 			[span.startSide, span.startLine],
@@ -94,23 +97,23 @@ export const COMMENT_ACTION: SelectionAction = {
 	start: (span) => openComposer(span),
 };
 
-const registry: SelectionAction[] = [COMMENT_ACTION];
+/** The registered actions: a new array on each change (a store's snapshot). */
+let registry: readonly SelectionAction[] = [COMMENT_ACTION];
 const listeners = new Set<() => void>();
 
 /** Adds an action to every selection's bar (in order); returns its removal. */
 export function registerSelectionAction(action: SelectionAction): () => void {
-	registry.push(action);
+	registry = [...registry, action];
 	for (const l of listeners) l();
 	return () => {
-		const i = registry.indexOf(action);
-		if (i >= 0) registry.splice(i, 1);
+		registry = registry.filter((a) => a !== action);
 		for (const l of listeners) l();
 	};
 }
 
 /** The actions a selection's bar offers, in order. */
 export function selectionActions(): readonly SelectionAction[] {
-	return [...registry];
+	return registry;
 }
 
 export function subscribeSelectionActions(listener: () => void): () => void {

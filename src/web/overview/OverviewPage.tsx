@@ -685,7 +685,14 @@ function IsItReady({
 			if (writesOn && listed.has(d.threadId)) continue;
 			byThread.set(d.threadId, [...(byThread.get(d.threadId) ?? []), d.text]);
 		}
-		return [...byThread].map(([threadId, texts]) => ({ threadId, texts }));
+		return [...byThread].map(([threadId, texts]) => {
+			// A new thread being written: where it goes (it starts in Files changed).
+			const c = drafts.find((d) => d.threadId === threadId)?.create;
+			const label = c
+				? `New comment · ${c.subject === "file" || c.line === undefined ? c.path : `${c.path}:${c.line}`}`
+				: "Thread not listed";
+			return { threadId, texts, label };
+		});
 	}, [drafts, list, previous, pr.writes]);
 	return (
 		<Section label="Is it ready">
@@ -1280,7 +1287,7 @@ function ThreadGroup(props: {
 						{orphans.map((o) => (
 							<OrphanDraft
 								key={o.threadId}
-								label="Thread not listed"
+								label={o.label}
 								text={o.texts.join("\n\n")}
 								onDiscard={() => writer.discard(o.threadId)}
 							/>
@@ -1308,6 +1315,8 @@ interface OrphanDraftItem {
 	threadId: string;
 	/** Its box text and its replies not yet confirmed. */
 	texts: string[];
+	/** Why it shows here: "Thread not listed", or a new comment and where. */
+	label: string;
 }
 
 /** Overflowing `el` (when `axis` is "both", sideways too), re-measured as it resizes. */

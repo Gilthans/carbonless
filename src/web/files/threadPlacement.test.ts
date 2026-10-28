@@ -458,3 +458,89 @@ describe("lineKey", () => {
 		expect(lineKey("LEFT", add(3))).toBeNull();
 	});
 });
+
+describe("painting a thread's range and span", () => {
+	/** The rows painted, as keys, in the order rows show. */
+	const painted = (t: ReviewThread, loadedContext: DiffLine[] = []) => [
+		...place([t], { loadedContext }).covered,
+	];
+
+	// The owner's rule: the marked lines are exactly the anchor's lines.
+	it.each([
+		["a context row (RIGHT)", { side: "RIGHT", line: 9 }, ["RIGHT:9"]],
+		["an added row", { side: "RIGHT", line: 11 }, ["RIGHT:11"]],
+		["a deleted row (LEFT)", { side: "LEFT", line: 10 }, ["LEFT:10"]],
+		[
+			"added rows",
+			{ startSide: "RIGHT", startLine: 10, side: "RIGHT", line: 11 },
+			["RIGHT:10", "RIGHT:11"],
+		],
+		[
+			"a deleted row into added ones",
+			{ startSide: "LEFT", startLine: 10, side: "RIGHT", line: 11 },
+			["LEFT:10", "RIGHT:10", "RIGHT:11"],
+		],
+		[
+			"context into a deletion, by old numbers",
+			{ startSide: "LEFT", startLine: 9, side: "LEFT", line: 10 },
+			["LEFT:9", "LEFT:10"],
+		],
+	] as const)("paints exactly %s", (_, anchor, keys) => {
+		expect(painted(thread(anchor))).toEqual(keys);
+	});
+
+	it("paints expanded context rows exactly", () => {
+		const loaded = [20, 21, 22].map((n) => ctx(n - 1, n));
+		expect(painted(thread({ startLine: 21, line: 22 }), loaded)).toEqual([
+			"RIGHT:21",
+			"RIGHT:22",
+		]);
+	});
+
+	it("paints a span's characters on its rows when its columns fit", () => {
+		const one = place([thread({ line: 9, startCol: 2, endCol: 4 })]);
+		expect(one.marks.get("RIGHT:9")).toEqual([[2, 4]]);
+		// "new 10" / "new 11": from col 4 of the first to col 2 of the last.
+		const two = place([
+			thread({ startLine: 10, line: 11, startCol: 4, endCol: 2 }),
+		]);
+		expect(two.marks.get("RIGHT:10")).toEqual([[4, 6]]);
+		expect(two.marks.get("RIGHT:11")).toEqual([[0, 2]]);
+		expect([...two.marks.keys()]).toEqual([...two.covered]);
+	});
+
+	it("falls back to the lines when the columns don't fit the text", () => {
+		// "line 9" is 6 long; the code moved on under the comment.
+		const p = place([thread({ line: 9, startCol: 2, endCol: 40 })]);
+		expect(p.covered).toEqual(new Set(["RIGHT:9"]));
+		expect(p.marks.size).toBe(0);
+		const empty = place([thread({ line: 9, startCol: 3, endCol: 3 })]);
+		expect(empty.marks.size).toBe(0);
+		// No columns: the lines alone, as today.
+		expect(place([thread({ line: 9 })]).marks.size).toBe(0);
+	});
+
+	it("paints a new thread being written like a thread", () => {
+		const p = placeThreads({
+			threads: [],
+			path: PATH,
+			snapshotHead: HEAD,
+			hunks: HUNKS,
+			loadedContext: [],
+			spans: [
+				{
+					startSide: "RIGHT",
+					startLine: 12,
+					side: "RIGHT",
+					line: 13,
+					startCol: 0,
+					endCol: 4,
+				},
+			],
+		});
+		expect(p.covered).toEqual(new Set(["RIGHT:12", "RIGHT:13"]));
+		expect(p.marks.get("RIGHT:12")).toEqual([[0, 7]]);
+		expect(p.marks.get("RIGHT:13")).toEqual([[0, 4]]);
+		expect(p.end.size).toBe(0);
+	});
+});

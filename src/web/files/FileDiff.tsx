@@ -1,12 +1,23 @@
+import { CommentIcon } from "@primer/octicons-react";
 import { useQuery } from "@tanstack/react-query";
-import { useId, useLayoutEffect, useRef, useState } from "react";
+import { useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ClusterView, FileView, StateChange } from "../../shared/types";
-import { hunksQuery } from "../api";
+import { hunksQuery, overviewQuery, sessionQuery } from "../api";
 import { Tooltip, TooltipPath, type TooltipTriggerProps } from "../Tooltip";
+import { newThreadKey, useDrafts } from "../threads/drafts";
+import { NewThread } from "../threads/NewThread";
+import {
+	newThreadItems,
+	openComposer,
+	useComposers,
+} from "../threads/newThreads";
+import { OrphanDraft } from "../threads/OrphanDraft";
+import { useThreadWriter } from "../threads/threadWrites";
 import { ChangeKindIcon, changeKindLabel } from "./changeKind";
 import { DiffBody, type DiffThreads } from "./DiffBody";
 import type { Landing } from "./landing";
 import { Meter } from "./ProgressBar";
+import { type CodeSpan, commentAvailable } from "./selectionActions";
 import { isStale } from "./stateSync";
 import {
 	ChangeCount,
@@ -100,6 +111,46 @@ function HeaderIconButton(props: {
 						</span>
 					</button>
 				</span>
+			)}
+		</Tooltip>
+	);
+}
+
+/**
+ * "Comment on file": opens a new thread on the whole file (any kind of
+ * file, open or closed), in the composer under its header; disabled with
+ * the reason when this session can't comment.
+ */
+function FileCommentButton(props: { file: FileView; commit: string }) {
+	const overview = useQuery({ ...overviewQuery, enabled: false }).data;
+	const span: CodeSpan = {
+		path: props.file.path,
+		commit: props.commit,
+		subject: "file",
+	};
+	const ok = overview
+		? commentAvailable(span, {
+				writes: overview.writes,
+				commentLeft: overview.commentLeft !== false,
+				file: props.file,
+			})
+		: "Comment on file";
+	return (
+		<Tooltip content={ok === true ? "Comment on file" : ok}>
+			{(trigger) => (
+				<button
+					type="button"
+					{...trigger}
+					data-testid="file-comment"
+					aria-label="Comment on file"
+					aria-disabled={ok !== true || undefined}
+					onClick={() => {
+						if (ok === true && props.commit) openComposer(span);
+					}}
+					className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md text-muted hover:bg-overlay hover:text-ink focus-visible:outline-2 focus-visible:outline-accent aria-disabled:cursor-not-allowed aria-disabled:text-faint aria-disabled:hover:bg-transparent @lg:h-8 @lg:w-8 pointer-coarse:@lg:h-10 pointer-coarse:@lg:w-10"
+				>
+					<CommentIcon size={16} aria-hidden />
+				</button>
 			)}
 		</Tooltip>
 	);
@@ -382,11 +433,27 @@ export function FileDiff(props: {
 	const [headerOpen, setHeaderOpen] = useState(false);
 	const headerThreadsId = useId();
 	const unplaced = header.some((h) => h.reason === "unplaced");
+	// New comments on the whole file, open or closed: under the header,
+	// where file threads show; on another head (gone): kept as orphans.
+	const session = useQuery({ ...sessionQuery, enabled: false }).data;
+	const snapshotHead =
+		props.threads?.snapshotHead ?? session?.snapshotHead ?? "";
+	const drafts = useDrafts();
+	const composers = useComposers();
+	const fileItems = useMemo(
+		() =>
+			newThreadItems(drafts, composers).filter(
+				(i) => i.span.subject === "file" && i.span.path === file.path,
+			),
+		[drafts, composers, file.path],
+	);
+	const writer = useThreadWriter();
 
 	return (
 		<section
 			id={`file-${file.index}`}
 			data-file-index={file.index}
+			data-path={file.path}
 			aria-label={file.path}
 			className={`overflow-clip rounded-lg border bg-surface ${
 				file.done ? "border-ok-fill/50" : "border-line"
@@ -445,6 +512,7 @@ export function FileDiff(props: {
 								<StatusIcon file={file} hover={summaryTrigger} />
 							</span>
 							<div className="ml-auto flex shrink-0 items-center gap-1.5 @lg:order-5">
+								<FileCommentButton file={file} commit={snapshotHead} />
 								{expanded
 									? header.length > 0 && (
 											<ThreadBubble
@@ -542,6 +610,25 @@ export function FileDiff(props: {
 					)}
 				</Tooltip>
 			</header>
+			{fileItems.length > 0 && (
+				<div
+					data-testid="file-new-threads"
+					className="space-y-2 border-b border-line bg-canvas p-2"
+				>
+					{fileItems.map((item) =>
+						item.span.commit === snapshotHead ? (
+							<NewThread key={item.clientId} item={item} quote={file.path} />
+						) : (
+							<OrphanDraft
+								key={item.clientId}
+								label="File comment on an earlier head"
+								text={item.text}
+								onDiscard={() => writer.discard(newThreadKey(item.clientId))}
+							/>
+						),
+					)}
+				</div>
+			)}
 			{expanded && headerOpen && header.length > 0 && props.threads && (
 				<div
 					id={headerThreadsId}

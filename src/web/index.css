@@ -108,6 +108,9 @@
 	--color-cta-from: #6a3fe0;
 	--color-cta-to: #c0177a;
 
+	/* A thread's exact characters (span-mark): an opaque navy of the accent's hue. */
+	--color-span: #182a62;
+
 	/* Shadows: black at the strength each layer needs. */
 	--color-shade: #000000;
 	--shadow-float: 0 8px 24px -6px
@@ -155,6 +158,35 @@
 			inset 3px 0 0 var(--color-accent),
 			inset 0 0 0 100vmax
 			color-mix(in srgb, var(--color-accent) 8%, transparent);
+	}
+}
+
+/*
+ * A thread's exact span over its characters: the `span` navy behind them
+ * (every code color keeps 4.5:1 on it, theme.test.ts) and a 2px accent
+ * underline, over thread-mark's lines.
+ */
+@utility span-mark {
+	background-color: var(--color-span);
+	box-shadow: inset 0 -2px 0 var(--color-accent);
+	border-radius: 2px;
+}
+
+/*
+ * Lines picked by their numbers (Files changed): the numbers at 35% accent
+ * in `ink` (stronger than thread-mark's 20%: a pick is the thing in hand),
+ * every cell under a 10% accent wash. theme.test.ts checks the numbers.
+ */
+@utility line-picked {
+	& > td {
+		box-shadow: inset 0 0 0 100vmax
+			color-mix(in srgb, var(--color-accent) 10%, transparent);
+	}
+	& > td[data-testid="old"],
+	& > td[data-testid="new"] {
+		box-shadow: inset 0 0 0 100vmax
+			color-mix(in srgb, var(--color-accent) 35%, transparent);
+		color: var(--color-ink);
 	}
 }
 

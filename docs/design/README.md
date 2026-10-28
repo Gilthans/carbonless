@@ -23,6 +23,8 @@ uses is checked for WCAG AA in `src/web/theme.test.ts`; add new pairs there.
 | `ok-wash` | a finished file's header: an opaque green wash on `raised` (it sticks over the diff) |
 | `mark-tint` (utility) | `accent` at 8% as an inset shadow over every cell of a row: a thread's commented lines, and a line landed on from a thread link (it fades, instantly with reduced motion). Over add/del/context it keeps all code text at 4.5:1 and green/red apart |
 | `person-1`…`person-7`, `person-N-edge` | a person's comments in threads: an opaque wash in place of `raised` inside a border of the same hue (the edge is also their avatar fallback). Blues to violets and a stone grey: at least 40° of hue from the deleted/failing reds and 25° from the add/ok green and warn yellow (no warm hue clears both red and yellow, hence seven); all text at 4.5:1 |
+| `span` (`span-mark` utility) | a thread's exact characters (a span comment): an opaque navy of the accent's hue behind them and a 2px `accent` underline, on top of `thread-mark`'s lines. Opaque so every code and syntax color keeps 4.5:1 on any row kind (theme.test.ts) |
+| `line-picked` (utility) | lines picked by their numbers in Files changed: the numbers in `ink` on `accent` at 35%, the row under a 10% accent wash; Escape clears |
 | `shade`, `shadow-*` | the one shadow color and the shadows built from it |
 | `magenta` `orange` `yellow` `teal` `violet` | brand: logo, gradients (`brand-rule`, `cta`), never meaning |
 

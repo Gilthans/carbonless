@@ -5,6 +5,8 @@ import type {
 	FileHunks,
 	ReviewThread,
 } from "../../shared/types";
+import type { Mark } from "../code/Invisibles";
+import { type SpanRange, spanMarks } from "../threads/spanMarks";
 import { fileGaps } from "./gaps";
 
 /** A diff row by its number on one side: `RIGHT:12` is the row whose new number is 12. */
@@ -23,6 +25,13 @@ export interface FilePlacement {
 	end: Map<LineKey, ReviewThread[]>;
 	/** Every line a placed thread's range covers (the highlight). */
 	covered: Set<LineKey>;
+	/**
+	 * The exact characters of the ranges with columns that fit (spanMarks),
+	 * by row: painted over `covered`.
+	 */
+	marks: Map<LineKey, Mark[]>;
+	/** `spans` that end on a shown row (painted), by their index. */
+	spansShown: Set<number>;
 	/** Threads whose end line sits in gap `index` (collapsed context). */
 	gaps: Map<number, ReviewThread[]>;
 	/**
@@ -158,16 +167,21 @@ export function placeThreads(args: {
 	loadedContext: DiffLine[];
 	/** The file has no lines to show (binary, a submodule): known without hunks. */
 	noLines?: boolean;
+	/** More ranges to paint like a thread's (new threads being written). */
+	spans?: readonly SpanRange[];
 }): FilePlacement {
 	const placement: FilePlacement = {
 		end: new Map(),
 		covered: new Set(),
+		marks: new Map(),
+		spansShown: new Set(),
 		gaps: new Map(),
 		gapTargets: new Map(),
 		header: [],
 	};
 	const mine = fileThreads(args.threads, args.path, args.snapshotHead);
-	if (mine.length === 0) return placement;
+	const spans = args.spans ?? [];
+	if (mine.length === 0 && spans.length === 0) return placement;
 	const { hunks } = args;
 	const rows = hunks ? shownRows(hunks.hunks, args.loadedContext) : [];
 	const rowAt = new Map<LineKey, number>();
@@ -180,6 +194,46 @@ export function placeThreads(args: {
 		if (list) list.push(t);
 		else map.set(key, [t]);
 	};
+
+	/**
+	 * Marks a range ending on row `endRow`: from the first shown row at or
+	 * past its start, in the order rows show, to the end row; and its exact
+	 * characters when its columns fit those rows.
+	 */
+	const paint = (range: SpanRange, endRow: number) => {
+		let startRow = endRow;
+		for (let i = 0; i < endRow; i++) {
+			const row = rows[i] as DiffLine;
+			const n = range.startSide === "RIGHT" ? row.newNo : row.oldNo;
+			if (n !== undefined && n >= range.startLine) {
+				startRow = i;
+				break;
+			}
+		}
+		const covered = rows.slice(startRow, endRow + 1);
+		const keys = covered.map(
+			(row) => lineKey(range.side, row) ?? keysOf(row)[0],
+		);
+		for (const key of keys) if (key) placement.covered.add(key);
+		const marks = spanMarks(covered, range);
+		if (!marks) return;
+		keys.forEach((key, i) => {
+			if (!key) return;
+			placement.marks.set(key, [
+				...(placement.marks.get(key) ?? []),
+				...(marks[i] ?? []),
+			]);
+		});
+	};
+
+	if (hunks && !args.noLines) {
+		spans.forEach((span, i) => {
+			const endRow = rowAt.get(`${span.side}:${span.line}`);
+			if (endRow === undefined) return;
+			paint(span, endRow);
+			placement.spansShown.add(i);
+		});
+	}
 
 	for (const t of mine) {
 		const anchor = t.anchor;
@@ -200,22 +254,7 @@ export function placeThreads(args: {
 		const endRow = rowAt.get(endKey);
 		if (endRow !== undefined) {
 			push(placement.end, endKey, t);
-			// From the first shown row at or past the range's start, in the
-			// order rows show, to the end row.
-			let startRow = endRow;
-			for (let i = 0; i < endRow; i++) {
-				const row = rows[i] as DiffLine;
-				const n = anchor.startSide === "RIGHT" ? row.newNo : row.oldNo;
-				if (n !== undefined && n >= anchor.startLine) {
-					startRow = i;
-					break;
-				}
-			}
-			for (let i = startRow; i <= endRow; i++) {
-				const row = rows[i] as DiffLine;
-				const key = lineKey(anchor.side, row) ?? keysOf(row)[0];
-				if (key) placement.covered.add(key);
-			}
+			paint(anchor, endRow);
 			continue;
 		}
 		const n = newNumberOf(anchor.side, anchor.line, hunks.hunks);

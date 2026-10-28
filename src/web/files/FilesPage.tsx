@@ -28,6 +28,7 @@ import { FileTree } from "./FileTree";
 import { filesPrefetchOrder } from "./filesPrefetch";
 import { type FilesSearch, type Landing, landingFile } from "./landing";
 import { ProgressBar } from "./ProgressBar";
+import { SelectionBar } from "./SelectionBar";
 import {
 	captureAnchor,
 	restoreAnchor,
@@ -520,6 +521,7 @@ export function FilesPage() {
 								</div>
 							</div>
 						)}
+						<SelectionBar files={data.files} />
 						{!wide && data.files.length > 0 && (
 							<>
 								<button
