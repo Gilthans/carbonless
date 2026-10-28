@@ -1179,23 +1179,26 @@ function ThreadGroup(props: {
 				</h3>
 				{loading ? (
 					<SkeletonBar className="w-32" />
-				) : props.threads === undefined ? null : threads.length === 0 ? (
+				) : props.threads === undefined ? null : threads.length === 0 &&
+					draftCount === 0 ? (
 					<p className="text-sm text-faint">No threads</p>
 				) : (
 					<ul
 						aria-label="Thread counts"
 						className="flex flex-wrap items-center gap-x-2"
 					>
-						<li>
-							<ResolvedChoice
-								shown={shownFilter}
-								unresolved={unresolved.length}
-								resolved={resolved.length}
-								asOf={asOf}
-								controls={listId}
-								onChoose={switchTo}
-							/>
-						</li>
+						{threads.length > 0 && (
+							<li>
+								<ResolvedChoice
+									shown={shownFilter}
+									unresolved={unresolved.length}
+									resolved={resolved.length}
+									asOf={asOf}
+									controls={listId}
+									onChoose={switchTo}
+								/>
+							</li>
+						)}
 						{draftCount > 0 && (
 							<li>
 								<Chip

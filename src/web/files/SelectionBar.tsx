@@ -122,8 +122,12 @@ export function SelectionBar(props: { files: readonly FileView[] }) {
 	const pressing = useRef(false);
 	const bar = useRef<HTMLDivElement>(null);
 	const read = useCallback(() => {
-		if (pressing.current || !commit) return;
-		setText(ofSelection(commit));
+		if (!commit) return;
+		const next = ofSelection(commit);
+		// A tap on the bar may clear the selection before its click: the
+		// bar keeps the span it shows until then.
+		if (!next && pressing.current) return;
+		setText(next);
 		setDismissed(false);
 	}, [commit]);
 	useEffect(() => {

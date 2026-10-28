@@ -81,6 +81,10 @@ const E2E_MAP = [
 			"saves",
 		],
 	],
+	[
+		/^src\/web\/files\/(codeSpan|linePicks|selectionActions|SelectionBar|DiffBody|FileDiff|SyncNotices)\.tsx?$|^src\/web\/threads\/(NewThread|newThreads|drafts|threadWrites|spanMarks)\.tsx?$|^src\/web\/code\/Invisibles\.tsx$|^src\/server\/(newThreads|marker)\.ts$/,
+		["new-threads"],
+	],
 	[/^src\/server\/review\//, ["files", "persistence"]],
 	[/^src\/web\/code\//, ["invisibles", "whitespace", "files"]],
 	[/^src\/web\/shortcuts\.tsx$/, ["shortcuts", "settings"]],
