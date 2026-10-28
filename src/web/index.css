@@ -230,7 +230,10 @@ table[data-selecting="new"] td[data-side="LEFT"] {
 
 /*
  * The same pick on one cell (side by side: the picked line's number and
- * code cells, on their side only), over a thread mark or landing there.
+ * code cells, on their side only). On a cell that is also marked (a thread
+ * mark, a landing) the mark's wash wins, as thread-mark and mark-tint win
+ * over line-picked in unified (Tailwind orders the utilities, and these
+ * come first); the pick still shows in the number's ink.
  */
 @utility line-picked-cell {
 	box-shadow: inset 0 0 0 100vmax
