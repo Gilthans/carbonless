@@ -752,6 +752,7 @@ const restPull = /^repos\/[^/]+\/[^/]+\/pulls\/(\d+)\/comments$/.exec(
 );
 if (restPull && args[0] === "api" && !s.loggedOut) {
 	if (args.slice(2).join(" ") !== "--paginate --slurp") unsupported();
+	if (s.restListDelayMs) sleep(s.restListDelayMs);
 	const pr = s.prs[restPull[1]];
 	if (!pr) fail("gh: Not Found (HTTP 404)");
 	const all = restComments(restPull[1], pr);

@@ -767,6 +767,27 @@ describe("commentLeft", () => {
 		expect(await t.commentLeft()).toBe(false);
 	});
 
+	it("a post checks LEFT lines against the snapshot it started on, though a Refresh moves the session meanwhile", async () => {
+		pr = createPrFixture();
+		scenario12({ restListDelayMs: 2000 });
+		const s = await Session.open(pr.arg, process.cwd());
+		const then = pr.head();
+		// A retry: it lists the PR's comments first (slow), then posts.
+		const posting = s.startThread(line(then, "l9", { retry: true }));
+		await new Promise((r) => setTimeout(r, 300));
+		// Meanwhile the PR moves on, to a head GitHub has another base for.
+		const now = pr.moveHead({ "later.txt": "later\n" });
+		scenario12({ mergeBases: { [now]: "e".repeat(40) } }, now);
+		await s.refresh();
+		expect(s.snapshot().head).toBe(now);
+		const { thread } = await posting;
+		expect(thread.anchor).toMatchObject({
+			side: "LEFT",
+			line: 2,
+			commit: then,
+		});
+	});
+
 	it("asked again when a Refresh brings another base commit under a snapshot that stays", async () => {
 		pr = createPrFixture();
 		const withBase = (baseRefOid: string) =>

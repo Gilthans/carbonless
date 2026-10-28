@@ -452,15 +452,16 @@ export class Session {
 	 * 502). Where nothing is written (as of a cutoff, --viewer someone
 	 * else) it isn't asked: true.
 	 */
-	commentLeft(): Promise<boolean> {
+	commentLeft(snapshot: Snapshot = this.#snapshot): Promise<boolean> {
 		if (this.writes() !== "on") return Promise.resolve(true);
 		// A write asks again at once rather than take a failure as the answer.
 		if (this.#commentLeft?.failedAt !== undefined) this.#commentLeft = null;
-		return this.#askCommentLeft().left;
+		return this.#askCommentLeft(snapshot).left;
 	}
 
-	#askCommentLeft(): CommentLeft {
-		const { base, head } = this.#snapshot;
+	/** commentLeft's entry for `snapshot`'s base and head (cached, or asked now). */
+	#askCommentLeft(snapshot: Snapshot): CommentLeft {
+		const { base, head } = snapshot;
 		const from = this.#meta.baseOid ?? this.#meta.baseBranch;
 		// GitHub's base for the PR too: a Refresh may move it under a
 		// snapshot that stays (a started patch set).
@@ -494,7 +495,7 @@ export class Session {
 	/** commentLeft as known now, asking GitHub if no one has: true until it says. */
 	#commentLeftNow(): boolean {
 		if (this.writes() !== "on" || this.#closed) return true;
-		return this.#askCommentLeft().known ?? true;
+		return this.#askCommentLeft(this.#snapshot).known ?? true;
 	}
 
 	/** Runs thread writes one at a time per thread, in the order asked. */
@@ -569,10 +570,13 @@ export class Session {
 	}
 
 	#newThreadTarget(): NewThreadTarget {
+		// The snapshot the post is checked against, even if a Refresh moves
+		// the session's while it runs.
+		const snapshot = this.#snapshot;
 		return {
 			...this.#writeTarget(),
-			head: this.#snapshot.head,
-			commentLeft: () => this.commentLeft(),
+			head: snapshot.head,
+			commentLeft: () => this.commentLeft(snapshot),
 			started: (clientId) => this.#started.get(clientId),
 			rememberStarted: (clientId, record) =>
 				this.#started.set(clientId, record),
