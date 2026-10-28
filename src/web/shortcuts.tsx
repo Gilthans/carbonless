@@ -13,6 +13,7 @@ import {
 	useSyncExternalStore,
 } from "react";
 import { usePageActive } from "./pageActive";
+import { Tooltip, TooltipLayer } from "./Tooltip";
 
 export type ShortcutGroup = "Global" | "Files changed" | "Overview" | "Threads";
 
@@ -351,6 +352,15 @@ function ShortcutsHelp(props: {
 	registry: Registry;
 }) {
 	const { open, dialog } = props;
+	// The dialog as state too: its tooltips render inside it (the top layer).
+	const [layer, setLayer] = useState<HTMLDialogElement | null>(null);
+	const setDialog = useCallback(
+		(el: HTMLDialogElement | null) => {
+			dialog.current = el;
+			setLayer(el);
+		},
+		[dialog],
+	);
 	const items = useSyncExternalStore(
 		props.registry.subscribe,
 		props.registry.snapshot,
@@ -410,7 +420,7 @@ function ShortcutsHelp(props: {
 	};
 	return (
 		<dialog
-			ref={dialog}
+			ref={setDialog}
 			aria-labelledby={titleId}
 			data-testid="shortcuts-help"
 			onCancel={(e) => {
@@ -437,15 +447,25 @@ function ShortcutsHelp(props: {
 				>
 					Keyboard shortcuts
 				</h2>
-				<button
-					ref={closeButton}
-					type="button"
-					aria-label="Close"
-					onClick={props.onClose}
-					className="flex h-10 w-10 items-center justify-center rounded-md text-ink-soft hover:bg-overlay hover:text-ink focus-visible:outline-2 focus-visible:outline-accent"
-				>
-					<XIcon aria-hidden />
-				</button>
+				<TooltipLayer.Provider value={layer}>
+					<Tooltip content="Close" describe={false}>
+						{(trigger) => (
+							<button
+								{...trigger}
+								ref={(el) => {
+									closeButton.current = el;
+									trigger.ref(el);
+								}}
+								type="button"
+								aria-label="Close"
+								onClick={props.onClose}
+								className="flex h-10 w-10 items-center justify-center rounded-md text-ink-soft hover:bg-overlay hover:text-ink focus-visible:outline-2 focus-visible:outline-accent"
+							>
+								<XIcon aria-hidden />
+							</button>
+						)}
+					</Tooltip>
+				</TooltipLayer.Provider>
 			</div>
 			<div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-4 pt-3 pb-4">
 				{groups.map(({ group, entries }) => (

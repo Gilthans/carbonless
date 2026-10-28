@@ -411,6 +411,16 @@ describe("ShortcutsProvider", () => {
 		expect(screen.getByText("Menu")).toHaveFocus();
 	});
 
+	it("shows the close button's tooltip inside the help (above the page)", () => {
+		render(<ShortcutsProvider>{null}</ShortcutsProvider>);
+		press("?", { shiftKey: true });
+		const close = screen.getByRole("button", { name: "Close" });
+		expect(close).toHaveFocus();
+		const tip = screen.getByText("Close", { selector: "[role=tooltip]" });
+		expect(tip).toBeVisible();
+		expect(help()).toContainElement(tip);
+	});
+
 	it("is a no-op outside the provider", () => {
 		render(
 			<>

@@ -1,7 +1,9 @@
 import {
+	createContext,
 	type FocusEvent,
 	type KeyboardEvent,
 	type ReactNode,
+	useContext,
 	useEffect,
 	useId,
 	useLayoutEffect,
@@ -21,6 +23,12 @@ export interface TooltipTriggerProps {
 	onBlur: () => void;
 	onKeyDown: (e: KeyboardEvent) => void;
 }
+
+/**
+ * Where tooltips render: the body, or an open modal dialog (the top layer
+ * would cover one on the body).
+ */
+export const TooltipLayer = createContext<Element | null>(null);
 
 /** How long the pointer rests on a trigger before its tooltip shows. */
 export const HOVER_DELAY_MS = 150;
@@ -92,6 +100,7 @@ export function Tooltip(props: {
 	children: (trigger: TooltipTriggerProps) => ReactNode;
 }) {
 	const id = useId();
+	const layer = useContext(TooltipLayer);
 	const [open, setOpen] = useState(false);
 	const trigger = useRef<HTMLElement | null>(null);
 	const tip = useRef<HTMLSpanElement>(null);
@@ -229,7 +238,7 @@ export function Tooltip(props: {
 					>
 						{props.content}
 					</span>,
-					document.body,
+					layer ?? document.body,
 				)}
 		</>
 	);

@@ -184,7 +184,7 @@ desktop only, "Keyboard shortcuts" (keyboard icon) opens the shortcuts help.
 changed, Overview, Threads; empty ones left out), the current page's group
 first, each row a short label and its keys as caps (`kbd`, monospace, a
 `line-strong` border; Mod shows as Ctrl, or ⌘ on a Mac). Escape, `?`, the
-✕ (40px) or the backdrop close it; Tab stays inside and focus goes back
+✕ (40px, tooltip "Close", rendered inside the dialog with `TooltipLayer` so the top layer doesn't cover it) or a press on the backdrop close it; Tab stays inside and focus goes back
 where it was. Phones don't get it: no Settings entry below `sm`, and no
 sheet (`?` from a hardware keyboard still opens the same dialog, within
 the viewport).

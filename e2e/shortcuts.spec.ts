@@ -70,6 +70,10 @@ test("? opens the shortcuts help on Overview and Files changed; Escape closes it
 	await expect(threads).toContainText("Send the reply");
 	await expect(threads.locator("kbd").nth(1)).toHaveText("Enter");
 	await expect(dialog.getByRole("button", { name: "Close" })).toBeFocused();
+	// The ✕'s tooltip renders in the dialog's top layer, not under it.
+	await expect(
+		dialog.locator("[role=tooltip]:not([hidden])", { hasText: "Close" }),
+	).toBeVisible();
 	await page.keyboard.press("Escape");
 	await expect(dialog).toBeHidden();
 	// ? toggles it too.
