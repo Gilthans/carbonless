@@ -202,18 +202,12 @@ function Rail({ state }: { state?: ClusterView["state"] }) {
 export function codeCellOf(line: RowLine): {
 	side: "LEFT" | "RIGHT";
 	line: number;
-	old?: number;
 } {
+	// A context line is one line, always RIGHT (the spec's cells contract).
 	if (line.kind === "del" || line.newNo === undefined) {
 		return { side: "LEFT", line: line.oldNo as number };
 	}
-	return {
-		side: "RIGHT",
-		line: line.newNo,
-		...(line.kind === "context" && line.oldNo !== undefined
-			? { old: line.oldNo }
-			: {}),
-	};
+	return { side: "RIGHT", line: line.newNo };
 }
 
 /** Picking lines by their numbers (DiffBody): the picked rows and the handlers. */
@@ -337,8 +331,6 @@ function LineRow(props: {
 				<td
 					{...{ [CODE_CELL]: "" }}
 					data-side={cell.side}
-					data-line={cell.line}
-					data-old-line={cell.old}
 					data-len={line.text.length}
 					data-hunk={props.hunk}
 					className={`whitespace-pre ${endKey ? "pr-12 pl-2" : "px-2"}`}

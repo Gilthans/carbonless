@@ -111,6 +111,20 @@ describe("commentAvailable", () => {
 	});
 });
 
+describe("commentAvailable: GitHub's diff", () => {
+	it("is off on lines outside every hunk, on across hunks", () => {
+		expect(commentAvailable(span(), ctx({ inDiff: false }))).toBe(
+			"GitHub only takes comments on lines in the diff",
+		);
+		expect(commentAvailable(span({ startLine: 2, line: 40 }), ctx())).toBe(
+			true,
+		);
+		expect(
+			commentAvailable(span({ subject: "file" }), ctx({ inDiff: false })),
+		).toBe(true);
+	});
+});
+
 describe("describeSpan", () => {
 	it("says where GitHub puts it", () => {
 		expect(describeSpan(span())).toBe("line 2, new");

@@ -245,7 +245,7 @@ const cell = (
 	root: ParentNode = document,
 ) =>
 	root.querySelector(
-		`[${CODE_CELL}][data-side="${side}"][data-line="${line}"]`,
+		`tr[data-${side === "LEFT" ? "old" : "new"}-no="${line}"] > [${CODE_CELL}][data-side="${side}"]`,
 	) as HTMLElement;
 
 /** The point `col` characters into a cell's code (its text nodes in order). */
@@ -272,6 +272,13 @@ function rangeOf(
 	r.setEnd(to[0], to[1]);
 	return r;
 }
+
+/** A row's key: its code cell's side and the row's number on that side. */
+const rowKey = (row: HTMLElement) => {
+	const side = (row.querySelector(`[${CODE_CELL}]`) as HTMLElement).dataset
+		.side;
+	return `${side}:${side === "LEFT" ? row.dataset.oldNo : row.dataset.newNo}`;
+};
 
 const at = (side: "LEFT" | "RIGHT", line: number, col: number) =>
 	point(cell(side, line), col);
@@ -330,8 +337,9 @@ describe("a selection's span", () => {
 			startCol: 2,
 			endCol: 4,
 		});
-		// The context row knows its old number too.
-		expect(cell("RIGHT", 7).dataset.oldLine).toBe("6");
+		// The side is the cell's; the line its row's number on that side.
+		expect(cell("RIGHT", 7).dataset.side).toBe("RIGHT");
+		expect(cell("RIGHT", 7).closest("tr")?.dataset.oldNo).toBe("6");
 	});
 
 	it("across rows and sides: from a deleted line into an added one", async () => {
@@ -347,11 +355,11 @@ describe("a selection's span", () => {
 		});
 	});
 
-	it("context then a deleted line: both ends on the old side", async () => {
+	it("context then a deleted line: the context line stays RIGHT (RIGHT→LEFT)", async () => {
 		setup();
 		await loaded();
 		expect(span(rangeOf(at("RIGHT", 2, 0), at("LEFT", 3, 3)))).toMatchObject({
-			startSide: "LEFT",
+			startSide: "RIGHT",
 			startLine: 2,
 			side: "LEFT",
 			line: 3,
@@ -424,11 +432,10 @@ describe("a selection's span", () => {
 				<section data-path="other.ts">
 					<table>
 						<tbody>
-							<tr>
+							<tr data-new-no="1">
 								<td
 									{...{ [CODE_CELL]: "" }}
 									data-side="RIGHT"
-									data-line="1"
 									data-len="5"
 									data-hunk="h0"
 								>
@@ -448,7 +455,7 @@ describe("a selection's span", () => {
 		expect(s).toMatchObject({ path: PATH, startLine: 9, line: 9, startCol: 2 });
 	});
 
-	it("a range across hunks is flagged; expanded context is RIGHT by its new number", async () => {
+	it("a range ending in expanded context is flagged as outside GitHub's diff; that context is RIGHT by its new number", async () => {
 		const { user } = setup();
 		await loaded();
 		await user.click(screen.getByRole("button", { name: /Load .* below/ }));
@@ -458,7 +465,7 @@ describe("a selection's span", () => {
 		const found = spanOfRange(rangeOf(at("RIGHT", 9, 0), point(c, 2)), HEAD);
 		expect(found).toMatchObject({
 			span: { startLine: 9, line: 12 },
-			oneHunk: false,
+			inDiff: false,
 		});
 	});
 
@@ -487,10 +494,7 @@ describe("painting a thread's span", () => {
 		[...document.querySelectorAll<HTMLElement>("tr[data-commented]")].map((r) =>
 			cellKey(r),
 		);
-	const cellKey = (row: HTMLElement) => {
-		const c = row.querySelector(`[${CODE_CELL}]`) as HTMLElement;
-		return `${c.dataset.side}:${c.dataset.line}`;
-	};
+	const cellKey = rowKey;
 
 	it("paints exactly the span's characters on top of its lines", async () => {
 		setup({
@@ -558,12 +562,7 @@ describe("picking lines by their numbers", () => {
 			name: `${side === "LEFT" ? "Old line" : "Line"} ${n}`,
 		});
 	const pickedKeys = () =>
-		[...document.querySelectorAll<HTMLElement>("tr[data-picked]")].map(
-			(r) =>
-				`${(r.querySelector(`[${CODE_CELL}]`) as HTMLElement).dataset.side}:${
-					(r.querySelector(`[${CODE_CELL}]`) as HTMLElement).dataset.line
-				}`,
-		);
+		[...document.querySelectorAll<HTMLElement>("tr[data-picked]")].map(rowKey);
 	const press = (el: Element, init: Partial<PointerEventInit> = {}) => {
 		fireEvent.pointerDown(el, {
 			pointerType: "mouse",
@@ -722,6 +721,56 @@ describe("the selection bar", () => {
 		expect(button).toHaveAccessibleDescription(
 			"Comments are off as of a cutoff",
 		);
+	});
+
+	it("says why a line of expanded context is off", async () => {
+		const { user } = setup();
+		await loaded();
+		await user.click(screen.getByRole("button", { name: /Load .* below/ }));
+		await screen.findByText("line 12");
+		const td = (cell("RIGHT", 12).closest("tr") as HTMLElement).querySelector(
+			'[data-testid="new"]',
+		) as Element;
+		fireEvent.pointerDown(td, { pointerType: "mouse", button: 0, buttons: 1 });
+		fireEvent.pointerUp(window);
+		const button = within(await screen.findByTestId("selection-bar")).getByRole(
+			"button",
+			{ name: "Comment" },
+		);
+		expect(button).toHaveAccessibleDescription(
+			"GitHub only takes comments on lines in the diff",
+		);
+	});
+
+	it("picks may cross sides: an old number to a new one is LEFT→RIGHT", async () => {
+		const { user } = setup();
+		await loaded();
+		const td = (side: "LEFT" | "RIGHT", n: number) =>
+			(cell(side, n).closest("tr") as HTMLElement).querySelector(
+				`[data-testid="${side === "LEFT" ? "old" : "new"}"]`,
+			) as Element;
+		fireEvent.pointerDown(td("LEFT", 4), {
+			pointerType: "mouse",
+			button: 0,
+			buttons: 1,
+		});
+		fireEvent.pointerUp(window);
+		fireEvent.pointerDown(td("RIGHT", 4), {
+			pointerType: "mouse",
+			button: 0,
+			buttons: 1,
+			shiftKey: true,
+		});
+		fireEvent.pointerUp(window);
+		const bar = await screen.findByTestId("selection-bar");
+		await user.click(within(bar).getByRole("button", { name: "Comment" }));
+		expect(getComposers()[0]?.span).toMatchObject({
+			startSide: "LEFT",
+			startLine: 4,
+			side: "RIGHT",
+			line: 4,
+			startCol: null,
+		});
 	});
 
 	it("says why old lines are off with a pinned head that moved", async () => {

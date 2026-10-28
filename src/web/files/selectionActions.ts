@@ -26,12 +26,10 @@ export interface SelectionContext {
 	commentLeft: boolean;
 	file: Pick<FileSummary, "binary" | "submodule">;
 	/**
-	 * Whether GitHub's diff has the line (a hunk's row). Undefined: every
-	 * line shown counts.
+	 * Whether both ends of the span are lines of GitHub's diff (a hunk's,
+	 * not expanded context). Undefined: unknown, taken as yes.
 	 */
-	inDiff?: (side: DiffSide, line: number) => boolean;
-	/** The span's first and last rows are in one hunk (false: GitHub won't take the range). */
-	oneHunk?: boolean;
+	inDiff?: boolean;
 }
 
 /** One thing a selection can start: Comment now, more kinds later. */
@@ -48,9 +46,9 @@ export interface SelectionAction {
 
 /**
  * Whether GitHub takes a comment on a line that only expanded context shows
- * (outside every hunk). When false, Comment is off there with a reason.
+ * (outside every hunk): it doesn't (422), so Comment is off there.
  */
-export const COMMENT_OUTSIDE_HUNKS = true;
+export const COMMENT_OUTSIDE_HUNKS = false;
 
 const sides = (span: CodeSpan): DiffSide[] =>
 	span.subject === "file"
@@ -73,17 +71,10 @@ export function commentAvailable(
 	if (!ctx.commentLeft && sides(span).includes("LEFT")) {
 		return "Old lines can't take comments with this pinned head";
 	}
-	if (ctx.oneHunk === false) return "GitHub takes a range within one hunk";
-	if (!COMMENT_OUTSIDE_HUNKS && ctx.inDiff) {
-		const ends: [DiffSide | undefined, number | undefined][] = [
-			[span.startSide, span.startLine],
-			[span.side, span.line],
-		];
-		for (const [side, line] of ends) {
-			if (side && line !== undefined && !ctx.inDiff(side, line)) {
-				return "GitHub only takes comments on lines in the diff";
-			}
-		}
+	// Checked on GitHub: a line only expanded context shows is refused (a
+	// range across hunks is taken).
+	if (!COMMENT_OUTSIDE_HUNKS && ctx.inDiff === false) {
+		return "GitHub only takes comments on lines in the diff";
 	}
 	return true;
 }

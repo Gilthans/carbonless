@@ -3,13 +3,14 @@ import type { CodeSpan } from "./selectionActions";
 
 /**
  * Mapping a selection in Files changed to a CodeSpan, from what the diff's
- * DOM says about each code cell (DiffBody):
- * - `data-code-cell`: a row's code cell, with `data-side` and `data-line`
- *   (the line GitHub numbers it by: the new number for added and context
- *   rows, the old one for deleted rows, the shown side's for whitespace
- *   rows), `data-old-line` on a context row (its old number), `data-len`
- *   (its text's UTF-16 length) and `data-hunk` (the hunk it is in, or the
- *   gap for expanded context);
+ * DOM says about each code cell (DiffBody; the spec's "Cells" contract,
+ * which side by side builds on):
+ * - `data-code-cell`: a code cell, with `data-side` (RIGHT for added and
+ *   context lines, LEFT for deleted ones, the shown side's for whitespace
+ *   rows), `data-len` (its text's UTF-16 length) and `data-hunk` (the hunk
+ *   it is in, `h<i>`, or the gap of expanded context, `g<i>`); its line is
+ *   its row's number on that side (`data-old-no` / `data-new-no`), never
+ *   read from the row otherwise;
  * - inside it, `[data-code]` holds exactly the line's characters (CodeLine):
  *   a column is the text before a point in it;
  * - the file's section carries `data-path`.
@@ -24,28 +25,28 @@ export interface CellLine {
 	cell: Element;
 	side: DiffSide;
 	line: number;
-	/** A context row's old number: it is on both sides. */
-	oldLine?: number;
 	len: number;
-	/** The hunk (or gap of expanded context) it is in. */
+	/** The hunk (`h<i>`) or gap of expanded context (`g<i>`) it is in. */
 	hunk: string;
 	path: string;
 }
 
 export function cellLine(cell: Element): CellLine | null {
 	const side = cell.getAttribute("data-side");
-	const line = Number(cell.getAttribute("data-line"));
+	const line = Number(
+		cell
+			.closest("tr")
+			?.getAttribute(side === "LEFT" ? "data-old-no" : "data-new-no"),
+	);
 	const path = cell.closest("[data-path]")?.getAttribute("data-path");
 	if ((side !== "LEFT" && side !== "RIGHT") || !line || path == null) {
 		return null;
 	}
-	const old = cell.getAttribute("data-old-line");
 	const hunk = cell.getAttribute("data-hunk");
 	return {
 		cell,
 		side,
 		line,
-		...(old ? { oldLine: Number(old) } : {}),
 		len: Number(cell.getAttribute("data-len")) || 0,
 		hunk: hunk ?? "",
 		path,
@@ -77,6 +78,9 @@ function pointIn(
 	return { col: Math.min(head.toString().length, len), where: "in" };
 }
 
+/** Whether the cell's line is in GitHub's diff (a hunk's, not expanded context). */
+export const inHunk = (c: Pick<CellLine, "hunk">) => c.hunk.startsWith("h");
+
 /** A span over cells `start`..`end` (in the order shown), whole lines unless cols are given. */
 export function spanOfCells(
 	start: CellLine,
@@ -84,17 +88,13 @@ export function spanOfCells(
 	commit: string,
 	cols?: { startCol: number; endCol: number },
 ): CodeSpan {
-	// A context row is on both sides: a range ending on an old line starts
-	// on its old number, so both ends are on the old side as GitHub wants.
-	const startOld =
-		end.side === "LEFT" && start.side === "RIGHT" && start.oldLine;
 	const whole = !cols || (cols.startCol === 0 && cols.endCol === end.len);
 	return {
 		path: start.path,
 		commit,
 		subject: "line",
-		startSide: startOld ? "LEFT" : start.side,
-		startLine: startOld ? (start.oldLine as number) : start.line,
+		startSide: start.side,
+		startLine: start.line,
 		side: end.side,
 		line: end.line,
 		startCol: whole ? null : (cols?.startCol ?? null),
@@ -133,7 +133,7 @@ function selectedCells(range: Range): CellLine[] {
 export function spanOfRange(
 	range: Range,
 	commit: string,
-): { span: CodeSpan; oneHunk: boolean } | null {
+): { span: CodeSpan; inDiff: boolean } | null {
 	if (range.collapsed) return null;
 	let cells = selectedCells(range);
 	if (cells.length === 0) return null;
@@ -167,6 +167,6 @@ export function spanOfRange(
 			startCol: start.col,
 			endCol: end.col,
 		}),
-		oneHunk: head.hunk === last.hunk,
+		inDiff: inHunk(head) && inHunk(last),
 	};
 }

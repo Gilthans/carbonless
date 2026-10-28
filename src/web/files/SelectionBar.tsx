@@ -12,7 +12,7 @@ import type { FileView } from "../../shared/types";
 import { overviewQuery, sessionQuery } from "../api";
 import { Tooltip } from "../Tooltip";
 import { NOT_PHONE, useMedia } from "../useMedia";
-import { CODE_CELL, spanOfCells, spanOfRange } from "./codeSpan";
+import { CODE_CELL, inHunk, spanOfCells, spanOfRange } from "./codeSpan";
 import { type Picks, setPicks, usePicks } from "./linePicks";
 import {
 	type CodeSpan,
@@ -26,7 +26,8 @@ import {
 /** What the bar acts on: a span, where it ends on screen, and its text. */
 export interface BarTarget {
 	span: CodeSpan;
-	oneHunk: boolean;
+	/** Both ends are lines of GitHub's diff. */
+	inDiff: boolean;
 	/** Viewport rects: the selection's first and last line. */
 	first: DOMRect;
 	last: DOMRect;
@@ -70,7 +71,7 @@ const ofPicks = (picks: Picks, commit: string): BarTarget | null => {
 	const rowOf = (line: number, side: string) =>
 		document
 			.querySelector(
-				`[data-path="${CSS.escape(picks.path)}"] [${CODE_CELL}][data-side="${side}"][data-line="${line}"]`,
+				`[data-path="${CSS.escape(picks.path)}"] tr[data-${side === "LEFT" ? "old" : "new"}-no="${line}"] > [${CODE_CELL}][data-side="${side}"]`,
 			)
 			?.closest("tr") ?? null;
 	const firstRow = rowOf(head.line, head.side);
@@ -83,7 +84,7 @@ const ofPicks = (picks: Picks, commit: string): BarTarget | null => {
 	);
 	return {
 		span,
-		oneHunk: head.hunk === tail.hunk,
+		inDiff: inHunk(head) && inHunk(tail),
 		first: firstRow.getBoundingClientRect(),
 		last: lastRow.getBoundingClientRect(),
 		quote: "",
@@ -213,7 +214,7 @@ export function SelectionBar(props: { files: readonly FileView[] }) {
 			binary: file?.binary ?? false,
 			submodule: file?.submodule ?? false,
 		},
-		oneHunk: target.oneHunk,
+		inDiff: target.inDiff,
 	};
 	const run = (action: SelectionAction) => {
 		const { span } = target;
