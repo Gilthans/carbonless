@@ -75,6 +75,21 @@ describe("/api/home", () => {
 		expect(again.refreshedAt).toBe(view.refreshedAt);
 	});
 
+	it("GET and POST refresh answer 200 with the reason while gh is logged out", async () => {
+		const { app } = await setup();
+		fx?.scenario({ loggedOut: true });
+		for (const [method, url] of [
+			["GET", "/api/home"],
+			["POST", "/api/home/refresh"],
+		] as const) {
+			const res = await app.inject({ method, url });
+			expect(res.statusCode).toBe(200);
+			expect(res.json<HomeView>().refreshError).toMatch(
+				/gh auth login|not logged in/i,
+			);
+		}
+	});
+
 	it("annotations: each op, the row back", async () => {
 		const { app } = await setup();
 		await app.inject({ method: "POST", url: "/api/home/refresh" });

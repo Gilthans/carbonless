@@ -284,6 +284,7 @@ describe("HomeService", () => {
 			number: 5,
 			id: "01jbaaaaaaaaaaaaaaaaaaaaaa",
 			pinnedHead: null,
+			head: "5".padStart(40, "0"),
 			asOf: null,
 			coverage: { done: 37, total: 120, unit: "lines" },
 			lastActedAt: iso(T0 - 2 * H),
@@ -299,6 +300,7 @@ describe("HomeService", () => {
 				pinnedHead: null,
 				coverage: started.coverage,
 				lastActedAt: started.lastActedAt,
+				headMoved: false,
 			},
 		]);
 		const merged = homePr({
@@ -356,19 +358,24 @@ describe("HomeService", () => {
 				...base,
 				id: "01jbaaaaaaaaaaaaaaaaaaaaaa",
 				pinnedHead: null,
+				// The PR moved on since this patch set.
+				head: "e".repeat(40),
 				lastActedAt: iso(T0 - 3 * H),
 			},
 			{
 				...base,
 				id: "01jbbbbbbbbbbbbbbbbbbbbbbb",
 				pinnedHead: "abcdef1234567890abcdef1234567890abcdef12",
+				head: "3".padStart(40, "0"),
 				lastActedAt: iso(T0 - H),
 			},
 		];
 		const view = await service({ started }).home.refresh();
-		expect(row(view, 3)?.reviews.map((r) => [r.label, r.pinnedHead])).toEqual([
-			["abcdef1", "abcdef1234567890abcdef1234567890abcdef12"],
-			["head", null],
+		expect(
+			row(view, 3)?.reviews.map((r) => [r.label, r.pinnedHead, r.headMoved]),
+		).toEqual([
+			["abcdef1", "abcdef1234567890abcdef1234567890abcdef12", false],
+			["head", null, true],
 		]);
 	});
 
@@ -431,7 +438,10 @@ describe("HomeService", () => {
 			hidden: "waiting",
 			turn: { kind: "people", logins: ["tomer"] },
 		});
-		const me = await home.annotate("acme", "api", 9, { op: "wait", who: "me" });
+		const me = await home.annotate("acme", "api", 9, {
+			op: "wait",
+			who: "octo",
+		});
 		expect(me).toMatchObject({
 			hidden: null,
 			turn: { kind: "people", logins: ["Octo"] },
@@ -517,6 +527,124 @@ describe("HomeService", () => {
 		});
 		const view = await service().home.refresh();
 		expect(ids(view, "other")).toEqual([4, 8]);
+	});
+});
+
+describe("HomeService, fix round 1", () => {
+	it("a PR whose details GitHub didn't give keeps its row, and the error says so, without backoff", async () => {
+		fx = createHomeFixture({ repos: { "acme/api": { prs: scenarioPrs() } } });
+		const clock = { now: T0 };
+		const { home } = service({ clock });
+		await home.refresh();
+		bumpHomePr(fx.path, "acme/api", 3, iso(T0 + 1000), "bob");
+		fx.scenario({ homeDetailsNull: { "acme/api": [3] } });
+		clock.now = T0 + 2000;
+		const view = await home.refresh();
+		expect(row(view, 3)).toBeDefined();
+		expect(view.refreshError).toMatch(/acme\/api#3/);
+		expect(home.nextDelayMs()).toBe(2 * 60_000);
+	});
+
+	it("a PR the list skipped (pages shifted) keeps its row", async () => {
+		fx = createHomeFixture({ repos: { "acme/api": { prs: scenarioPrs() } } });
+		const { home } = service();
+		await home.refresh();
+		fx.scenario({ homeListSkip: { "acme/api": [3, 4] } });
+		const view = await home.refresh();
+		expect(row(view, 3)).toBeDefined();
+		expect(row(view, 4)).toBeDefined();
+		expect(view.refreshError).toBe(null);
+	});
+
+	it("a missing repo shows its own error and slows nothing; all failing backs off", async () => {
+		fx = createHomeFixture({ repos: { "acme/api": { prs: scenarioPrs() } } });
+		const { home } = service({ repos: ["acme/api", "acme/apii"] });
+		for (let i = 0; i < 3; i++) {
+			const view = await home.refresh();
+			expect(view.refreshError).toMatch(/acme\/apii/);
+			expect(ids(view, "mine")).toEqual([1]);
+			expect(home.nextDelayMs()).toBe(2 * 60_000);
+		}
+		const only = service({ repos: ["acme/apii"] });
+		await only.home.refresh();
+		expect(only.home.nextDelayMs()).toBe(4 * 60_000);
+	});
+
+	it("setRepos refuses a repo GitHub doesn't know", async () => {
+		fx = createHomeFixture({ repos: { "acme/api": { prs: scenarioPrs() } } });
+		const { home, config } = service({ repos: [] });
+		await expect(home.setRepos(["acme/apii"])).rejects.toThrow(/acme\/apii/);
+		expect(config.writes).toEqual([]);
+	});
+
+	it("setRepos during a refresh waits for one more that reads the new view", async () => {
+		fx = createHomeFixture({
+			repos: {
+				"acme/api": { prs: scenarioPrs() },
+				"acme/web": {
+					prs: [
+						homePr({
+							repo: "acme/web",
+							number: 50,
+							author: "Octo",
+							updatedAt: iso(T0),
+						}),
+					],
+				},
+			},
+			homeDelayMs: 400,
+		});
+		const { home } = service();
+		const running = home.refresh();
+		const view = await home.setRepos(["acme/api", "acme/web"]);
+		expect(ids(view, "mine")).toEqual([50, 1]);
+		expect(ids(await running, "mine")).toEqual([1]);
+	});
+
+	it("GET works when the login can't be read: the reason, no rows, no throw", async () => {
+		fx = createHomeFixture({
+			repos: { "acme/api": { prs: scenarioPrs() } },
+			loggedOut: true,
+		});
+		const { home } = service();
+		const before = await home.view();
+		expect(before.sections.every((s) => s.rows.length === 0)).toBe(true);
+		const view = await home.refresh();
+		expect(view.refreshError).toMatch(/gh auth login|not logged in/i);
+		expect(view.viewer.login).toBe("");
+		expect(home.nextDelayMs()).toBe(4 * 60_000);
+		// Logged in again: the viewer and rows come back.
+		fx.scenario({ loggedOut: false });
+		const ok = await home.refresh();
+		expect(ok.viewer.login).toBe("Octo");
+		expect(ids(ok, "mine")).toEqual([1]);
+	});
+
+	it("a wait shows in the turn under a snooze too", async () => {
+		fx = createHomeFixture({ repos: { "acme/api": { prs: scenarioPrs() } } });
+		const { home } = service({ clock: { now: Date.now() } });
+		await home.refresh();
+		await home.annotate("acme", "api", 4, { op: "wait", who: "tomer" });
+		const r = await home.annotate("acme", "api", 4, {
+			op: "snooze",
+			until: iso(Date.now() + DAY),
+			wakeOnActivity: false,
+		});
+		expect(r.hidden).toBe("snoozed");
+		expect(r.turn).toEqual({ kind: "people", logins: ["tomer"] });
+	});
+
+	it("a repo leaving the view takes its rows and search entries with it; case doesn't matter", async () => {
+		fx = createHomeFixture({ repos: { "acme/api": { prs: scenarioPrs() } } });
+		const { home, config } = service({ repos: ["Acme/API"] });
+		const view = await home.refresh();
+		expect(ids(view, "mine")).toEqual([1]);
+		await config.access.update((c) => ({
+			...c,
+			views: [{ name: "My PRs", repos: [] }],
+		}));
+		await home.refresh();
+		expect(home.knownPrs()).toEqual([]);
 	});
 });
 
