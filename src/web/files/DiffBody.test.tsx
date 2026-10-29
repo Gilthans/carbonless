@@ -1019,6 +1019,32 @@ describe("DiffBody side by side", () => {
 		expect(tail(composer)).toEqual({ spans: [6], card: 0, blank: -1 });
 	});
 
+	it("on a phone, composers on both sides of a pair row share one row across the table", async () => {
+		vi.stubGlobal(
+			"matchMedia",
+			(query: string) =>
+				({
+					matches: false,
+					media: query,
+					addEventListener: () => {},
+					removeEventListener: () => {},
+				}) as unknown as MediaQueryList,
+		);
+		setup({ hunks: pairHunks(), clusters: [pairCluster()], threads: [] });
+		await screen.findByText("new seven");
+		act(() => {
+			openComposer(span("LEFT", 5));
+			openComposer(span("RIGHT", 5));
+		});
+		const rows = await screen.findAllByTestId("new-thread-row");
+		expect(rows).toHaveLength(1);
+		const row = rows[0] as HTMLElement;
+		expect(row.previousElementSibling).toHaveAttribute("data-old-no", "5");
+		expect(row.previousElementSibling).toHaveAttribute("data-new-no", "5");
+		expect(tail(row)).toEqual({ spans: [6], card: 0, blank: -1 });
+		expect(within(row).getAllByTestId("new-thread")).toHaveLength(2);
+	});
+
 	it("lands on one cell of a pair row, and on both cells of a context row", async () => {
 		setup({
 			hunks: pairHunks(),

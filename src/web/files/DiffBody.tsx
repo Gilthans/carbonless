@@ -512,9 +512,10 @@ const marksOf = (keys: LineKey[], threads: RowThreads | undefined): Mark[] =>
 /**
  * What follows a row of lines: the opened rows of the threads ending on it
  * (a pair row may open one per side, the left side's first), then the new
- * threads being written under it, a row per side with any. Each row sits
- * under its side when the shape splits them (a context line's are RIGHT:
- * its bubble's cell), else across the table.
+ * threads being written under it. When the shape splits them, each row
+ * sits under its side, the composers a row per side with any (a context
+ * line's are RIGHT: its bubble's cell); else every row spans the table and
+ * both sides' composers share one.
  */
 function RowTail(props: {
 	opened: { endKey: LineKey; ending: ReviewThread[]; side: DiffSide }[];
@@ -528,6 +529,15 @@ function RowTail(props: {
 	const rail = props.state ? RAIL[props.state] : undefined;
 	const place = (side: DiffSide): CardPlace =>
 		shape.split ? { side } : { columns: columnsOf(shape.view) };
+	// Across the table, both sides' composers share the one row.
+	const composing = shape.split
+		? props.composing
+		: [
+				{
+					side: "RIGHT" as const,
+					items: props.composing.flatMap(({ items }) => items),
+				},
+			];
 	return (
 		<>
 			{threads &&
@@ -542,7 +552,7 @@ function RowTail(props: {
 					/>
 				))}
 			{composers &&
-				props.composing
+				composing
 					.filter(({ items }) => items.length > 0)
 					.map(({ side, items }) => (
 						<NewThreadRow
