@@ -8,3 +8,5 @@ playwright-report/
 .superpowers/
 .worktrees/
 .claude/worktrees/
+.crb-dev/
+.envrc

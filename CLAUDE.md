@@ -88,13 +88,22 @@ checking against a real PR): `docs/product-rules.md`.
 - Agent worktrees: `scripts/agent-worktree.sh <name> [base]` makes
   `.worktrees/<name>` on branch `<name>` and installs from the shared pnpm
   store. Playwright browsers are global. Tests take random ports and their own
-  temp dirs and `XDG_CACHE_HOME`, so `pnpm verify` runs in parallel worktrees;
-  for `pnpm dev` in two at once, set `CRB_API_PORT`.
+  temp dirs and `XDG_CACHE_HOME`/`XDG_STATE_HOME`/`XDG_CONFIG_HOME`, so
+  `pnpm verify` runs in parallel worktrees; for `pnpm dev` in two at once, set
+  `CRB_API_PORT`. Before running `crb` by hand in a worktree, `source` its
+  `.envrc` (the script writes it): a private state and config dir, so its
+  `crb <pr>` never finds or starts a server in the owner's.
 - New features get unit tests and, when they change what the user sees or does,
   Playwright tests. Playwright tests run the built CLI against throwaway git repos
   (`test/git-fixture.ts`, `e2e/fixtures.ts`).
 - Run it on a PR: `pnpm build && node dist/cli.js <pr>` (`crb <pr>` when
-  installed), or `CRB_PR=<pr> pnpm dev` for watch mode. It clones into its own
+  installed) prints the review's link (`/r/<id>`), from this machine's
+  `crb serve` (one server for every review; started in the background when
+  none runs; host and port from `~/.config/carbonless/config.json`, else
+  127.0.0.1:4747, which is the owner's: agents use their `.envrc` and another
+  port). `--open` also opens the browser. `CRB_PR=<pr> pnpm dev` for watch
+  mode (crb serve on `CRB_API_PORT`, default 4858, state in `.crb-dev/`).
+  `crb --version` must match the server's, or `crb <pr>` refuses. It clones into its own
   cache (`~/.cache/carbonless`), never into the reviewer's working copies. It
   reads from GitHub, and writes to it only on the reviewer's explicit action
   (replies, new comments, resolving, editing and deleting your own comments):

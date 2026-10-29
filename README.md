@@ -14,16 +14,29 @@ node dist/cli.js <owner>/<repo>#<n>
 node dist/cli.js <n>        # a PR of the GitHub repo in the current directory
 ```
 
-Installed as a package, the command is `crb <pr>`. It clones the repository
-into its own cache (`$XDG_CACHE_HOME/carbonless`, default `~/.cache/carbonless`;
-your working copies are never touched), prints `carbonless listening on <url>`
-and opens the browser.
+Installed as a package, the command is `crb <pr>`. It asks this machine's
+`crb serve` for the PR's review and prints its link, `http://<host>:<port>/r/<id>`
+(nothing else on stdout); with no server running it starts one in the
+background (logging to `$XDG_STATE_HOME/carbonless/serve.log`). The server
+clones the repository into its own cache (`$XDG_CACHE_HOME/carbonless`,
+default `~/.cache/carbonless`; your working copies are never touched). Its
+root is Home; `/pr/<owner>/<repo>/<n>` opens any PR's review.
 
-| Option | |
+| `crb <pr>` option | |
 |---|---|
-| `--port <n>` | Port to listen on (default: a free one) |
-| `--host <h>` | Host to bind (default `127.0.0.1`). Any host other than `127.0.0.1`, `::1` or `localhost` gets a random access key, included in the printed URL as `?key=` |
-| `--no-open` | Don't open the browser |
+| `--head <sha\|reviewed>` | The PR's changes up to that commit, in a review of its own |
+| `--open` | Also open the browser |
+| `--version` | Print the version (`crb serve` must run the same) |
+
+`crb serve` runs the server in the foreground. Host and port come from
+`$XDG_CONFIG_HOME/carbonless/config.json` (`{ "serve": { "host": "…", "port": 4747 } }`),
+default `127.0.0.1:4747`.
+
+| `crb serve` option | |
+|---|---|
+| `--port <n>` | Port to listen on (0: a free one) |
+| `--host <h>` | Host to bind. Any host other than `127.0.0.1`, `::1` or `localhost` needs the access key, kept in `$XDG_STATE_HOME/carbonless/key` across restarts and included in the printed URL as `?key=` |
+| `--new-key` | Replace the access key |
 | `--api-only` | Serve only the API (used by `pnpm dev`) |
 
 The page opens on the PR overview (checks, reviews, unresolved threads). The

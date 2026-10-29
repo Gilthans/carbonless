@@ -11,7 +11,7 @@
 		"node": ">=24"
 	},
 	"scripts": {
-		"dev": "concurrently -k -n api,web -c blue,magenta \"tsx watch src/cli.ts $CRB_PR --port ${CRB_API_PORT:-4747} --no-open --api-only\" \"vite\"",
+		"dev": "node scripts/dev.mjs",
 		"build": "rm -rf dist && tsc -p tsconfig.build.json && node scripts/build-info.mjs && vite build",
 		"start": "node dist/cli.js",
 		"typecheck": "tsc -p tsconfig.json",
