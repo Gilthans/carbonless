@@ -412,7 +412,11 @@ export interface ThreadComment {
 	editedAt: string | null;
 	/** What the viewer may do to it on GitHub; both false when writes are off or for a pending comment. */
 	viewerCan: { update: boolean; delete: boolean };
-	/** An opener blanked by carbonless's delete: its body is exactly "[deleted]" (trimmed). Shown as a placeholder; viewerCan both false. */
+	/**
+	 * An opener blanked by carbonless's delete: its body is exactly
+	 * "[deleted]" (trimmed). Shown like any other comment and editable;
+	 * `viewerCan.delete` is off while published comments follow it.
+	 */
 	deleted: boolean;
 }
 

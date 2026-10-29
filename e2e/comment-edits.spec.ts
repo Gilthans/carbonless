@@ -307,7 +307,7 @@ test("leaving the page with the delete confirmation open leaves the other page u
 	expect(stored(p, 0).removed).toBe(false);
 });
 
-test("deleting an opener with replies leaves a deleted placeholder", async ({
+test("deleting an opener with replies leaves [deleted] as a normal comment, which Edit writes back", async ({
 	page,
 	pr,
 	startCrb,
@@ -326,18 +326,31 @@ test("deleting an opener with replies leaves a deleted placeholder", async ({
 		"It stays as [deleted] in the thread.",
 	);
 	await confirmation(page).getByRole("button", { name: "Delete" }).click();
-	await expect(c.getByTestId("comment-deleted")).toBeVisible({
+	await expect(c.getByTestId("thread-body")).toHaveText("[deleted]", {
 		timeout: 10_000,
 	});
 	await expect.poll(() => bodies(p, 2)).toEqual(["[deleted]", "Fair"]);
 	await page.reload();
 	const again = card(page, "b.txt");
-	await expect(again.getByTestId("comment-deleted")).toBeVisible();
+	await expect(again.getByTestId("thread-body")).toHaveText("[deleted]");
 	await openCard(again);
 	await expect(again.getByText("Fair")).toBeVisible();
-	await expect(again.getByRole("button", { name: "Edit" })).toHaveCount(0);
+	// Replies follow it: nothing more for Delete to do; Edit writes it back.
+	await expect(again.getByRole("button", { name: "Delete" })).toHaveCount(0);
 	expect(await overflow(page)).toBeLessThanOrEqual(0);
 	await shot(page, "deleted-opener", isMobile, again);
+	await again.getByRole("button", { name: "Edit" }).click();
+	const box = again.getByRole("textbox", { name: "Edit comment" });
+	await expect(box).toHaveValue("[deleted]");
+	await box.fill("Opening words, back");
+	await again.getByRole("button", { name: "Save" }).click();
+	await expect(again.getByTestId("thread-body")).toContainText(
+		"Opening words, back",
+	);
+	await expect(again.getByRole("img", { name: "Saving" })).toHaveCount(0);
+	await expect
+		.poll(() => bodies(p, 2))
+		.toEqual(["Opening words, back", "Fair"]);
 });
 
 test("edit and delete a reply from Files changed", async ({

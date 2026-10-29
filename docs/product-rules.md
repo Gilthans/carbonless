@@ -134,10 +134,13 @@ unresolving one, and editing or deleting one of the viewer's comments in one
   ones don't count) edits its body to `[deleted]` instead (owner: "it
   should instead be edited to say [deleted]"), so the thread keeps its
   opener, place and code. Such an opener (body exactly `[deleted]`,
-  trimmed) is `ThreadComment.deleted`, shown as a placeholder, and can't
-  be edited (400); deleting it again is answered as done (a retry that
-  landed). Once no published comment follows it, the viewer may delete it,
-  and then it really goes. Deleting any other comment deletes it; deleting
+  trimmed) is `ThreadComment.deleted`, and shows like any other comment of
+  the viewer's: "[deleted]" as its text, with Edit, which writes it back
+  (owner: "it should look like a regular comment, and not like a deleted
+  one, allowing for me to edit it back if I want"). Delete is off on it
+  while published comments follow it (nothing more to do); deleting it
+  again is answered as done (a retry that landed). Once no published
+  comment follows it, the viewer may delete it, and then it really goes. Deleting any other comment deletes it; deleting
   a thread's last published comment removes the thread (`ThreadGone`),
   and it leaves the session's kept reads.
   Whether published comments follow is GitHub's fresh list reconciled

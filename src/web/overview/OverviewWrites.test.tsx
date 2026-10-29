@@ -1072,12 +1072,13 @@ describe("editing and deleting from an Overview card", () => {
 		expect(more).toHaveFocus();
 	});
 
-	it("an opener blanked by a delete shows as a muted placeholder", async () => {
+	it("an opener blanked by a delete shows as a normal comment, with Edit", async () => {
 		const user = userEvent.setup();
 		openerMore = {
 			author: "octo",
 			body: "[deleted]",
 			deleted: true,
+			viewerCan: { update: true, delete: false },
 		};
 		moreComments = {
 			a: [
@@ -1098,12 +1099,15 @@ describe("editing and deleting from an Overview card", () => {
 			}),
 		]);
 		const card = await screen.findByTestId("thread");
-		expect(within(card).getByTestId("comment-deleted")).toHaveTextContent(
-			"deleted",
+		expect(within(card).getByTestId("thread-body")).toHaveTextContent(
+			"[deleted]",
 		);
+		expect(within(card).queryByTestId("comment-deleted")).toBeNull();
 		await openCard(user, card);
-		expect(within(card).getByTestId("comment-deleted")).toBeVisible();
 		await within(card).findByText("A reply");
-		expect(within(card).queryByRole("button", { name: "Edit" })).toBeNull();
+		expect(
+			await within(card).findByRole("button", { name: "Edit" }),
+		).toBeVisible();
+		expect(within(card).queryByRole("button", { name: "Delete" })).toBeNull();
 	});
 });

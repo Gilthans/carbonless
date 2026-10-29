@@ -906,7 +906,7 @@ describe("API", () => {
 			expect(view.threads.map((t: ReviewThread) => t.id)).toEqual(["T12-0"]);
 		});
 
-		it("400 invalid: a blank, long or malformed edit, bad JSON, bad ids, an edit of a deleted opener", async () => {
+		it("400 invalid: a blank, long or malformed edit, bad JSON, bad ids", async () => {
 			await setup();
 			const bad = [
 				await patch("T12-0", "C12-0", { ...edit, body: " \n" }),
@@ -927,17 +927,26 @@ describe("API", () => {
 				expect(res.json().code, res.body).toBe("invalid");
 			}
 			expect(pr.ghLog()).not.toMatch(/-X (PATCH|DELETE)/);
+		});
+
+		it("200: a blanked opener deleted again is done, and an edit writes it back", async () => {
+			await setup();
 			expect((await del("T12-0", "C12-0")).statusCode).toBe(200);
-			// Editing the blanked opener is refused; deleting it again is done.
+			const again = await del("T12-0", "C12-0");
+			expect(again.statusCode).toBe(200);
+			expect(again.json().comment).toMatchObject({
+				deleted: true,
+				viewerCan: { update: true, delete: false },
+			});
 			const edited = await patch("T12-0", "C12-0", {
 				...edit,
 				from: "[deleted]",
 			});
-			expect(edited.statusCode).toBe(400);
-			expect(edited.json().code).toBe("invalid");
-			const again = await del("T12-0", "C12-0");
-			expect(again.statusCode).toBe(200);
-			expect(again.json().comment).toMatchObject({ deleted: true });
+			expect(edited.statusCode, edited.body).toBe(200);
+			expect(edited.json().comment).toMatchObject({
+				body: edit.body,
+				deleted: false,
+			});
 		});
 
 		it("403 writes-off as someone else; 403 forbidden for another's comment", async () => {

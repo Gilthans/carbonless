@@ -270,7 +270,7 @@ describe("editing and deleting comments", () => {
 		expect((await comments("T12-0"))?.comments).toHaveLength(2);
 	});
 
-	it("deleting the opener of a thread with replies edits it to [deleted]; deleting it again is done, editing it 400", async () => {
+	it("deleting the opener of a thread with replies edits it to [deleted]; deleting it again is done, editing it writes it back", async () => {
 		const answer = (await session.deleteThreadComment(
 			"T12-0",
 			"C12-0",
@@ -283,7 +283,7 @@ describe("editing and deleting comments", () => {
 			id: "C12-0",
 			body: "[deleted]",
 			deleted: true,
-			viewerCan: { update: false, delete: false },
+			viewerCan: { update: true, delete: false },
 		});
 		// A retry of the delete that landed: answered with the blanked opener.
 		const again = (await session.deleteThreadComment(
@@ -292,10 +292,16 @@ describe("editing and deleting comments", () => {
 		)) as ThreadUpdate;
 		expect(again.comment).toMatchObject({ id: "C12-0", deleted: true });
 		expect(again.commentCount).toBe(3);
-		await expect(
-			edit("C12-0", "Back", { from: "[deleted]" }),
-		).rejects.toMatchObject({ code: "invalid" });
 		expect(writeCalls()).toHaveLength(1);
+		// Owner: "allowing for me to edit it back if I want".
+		const back = await edit("C12-0", "Back", { from: "[deleted]" });
+		expect(back.comment).toMatchObject({
+			id: "C12-0",
+			body: "Back",
+			deleted: false,
+			viewerCan: { update: true, delete: true },
+		});
+		expect(writeCalls()).toHaveLength(2);
 	});
 
 	it("a blanked opener left alone may be deleted, and then really is: ThreadGone", async () => {
@@ -310,7 +316,7 @@ describe("editing and deleting comments", () => {
 		await session.refresh();
 		const t = await comments("T12-0");
 		expect(t?.comments.map((c) => [c.id, c.deleted, c.viewerCan])).toEqual([
-			["C12-0", true, { update: false, delete: true }],
+			["C12-0", true, { update: true, delete: true }],
 		]);
 		const answer = await session.deleteThreadComment("T12-0", "C12-0");
 		expect(answer).toEqual({ threadId: "T12-0", gone: true });
