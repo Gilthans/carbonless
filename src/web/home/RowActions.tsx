@@ -164,9 +164,10 @@ function WaitPanel(props: {
 		<div className="space-y-0.5">
 			<button
 				type="button"
-				aria-pressed={pressed("me")}
+				aria-pressed={pressed(viewer)}
 				className={`${itemClass} aria-pressed:bg-pressed`}
-				onClick={() => props.onPick({ op: "wait", who: "me" })}
+				// "Me" is the viewer's own login: never hides, the turn says you.
+				onClick={() => props.onPick({ op: "wait", who: viewer })}
 			>
 				Me
 			</button>

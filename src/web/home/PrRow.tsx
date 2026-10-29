@@ -7,6 +7,7 @@ import {
 	CommentIcon,
 	DotFillIcon,
 	FileDiffIcon,
+	GitCommitIcon,
 	GitMergeIcon,
 	GitPullRequestClosedIcon,
 	LinkExternalIcon,
@@ -188,6 +189,15 @@ const UNIT_WORDS: Record<Coverage["unit"], [string, string]> = {
 	clusters: ["cluster", "clusters"],
 	files: ["file", "files"],
 };
+
+/** A review whose PR got commits past its patch set's head. */
+function HeadMoved() {
+	return (
+		<Sign focusable label="New commits since your review" className="text-warn">
+			<GitCommitIcon size={14} aria-hidden />
+		</Sign>
+	);
+}
 
 /** A started review's coverage: a short bar and "37 / 120". */
 export function CoverageCell({ coverage }: { coverage: Coverage }) {
@@ -404,6 +414,7 @@ export function PrRow(props: {
 					) : (
 						<TurnCell row={row} viewer={viewer} />
 					)}
+					{single?.headMoved && <HeadMoved />}
 					{single && <CoverageCell coverage={single.coverage} />}
 					<span className="relative z-10 shrink-0 whitespace-nowrap">
 						<RelativeTime iso={row.updatedAt} />
@@ -440,6 +451,7 @@ function SubRow({ review }: { review: RowReview }) {
 				)}
 			</a>
 			<span className="ml-auto flex items-center gap-3">
+				{review.headMoved && <HeadMoved />}
 				<CoverageCell coverage={review.coverage} />
 				<span className="relative z-10 whitespace-nowrap">
 					<RelativeTime iso={review.lastActedAt} />

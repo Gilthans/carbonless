@@ -55,9 +55,9 @@ const BUILT_IN: HelpEntry[] = [
 
 /** The page showing, by its URL (the help puts its group first). */
 function currentPageGroup(): ShortcutGroup {
-	return /\/files\/?$/.test(window.location.pathname)
-		? "Files changed"
-		: "Overview";
+	const path = window.location.pathname;
+	if (path === "/") return "Home";
+	return /\/files\/?$/.test(path) ? "Files changed" : "Overview";
 }
 
 interface Registered {

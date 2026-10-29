@@ -5,26 +5,11 @@ import type {
 	HomeView,
 	SearchResult,
 } from "../../shared/home";
-import { ApiError } from "../api";
+import { fetchJson } from "../api";
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
-	let response: Response;
-	try {
-		response = await fetch(path, init);
-	} catch (error) {
-		if (init?.signal?.aborted) throw error;
-		throw new ApiError(0, "Could not reach carbonless. Is crb still running?");
-	}
-	const body: unknown = await response.json().catch(() => null);
-	if (!response.ok) {
-		const error = (body as { error?: unknown } | null)?.error;
-		throw new ApiError(
-			response.status,
-			typeof error === "string" ? error : `Request failed: ${response.status}`,
-		);
-	}
-	return body as T;
-}
+// Home's calls are never a review's: fetchJson, not api.ts's request()
+// (which puts a bound review's id into the path).
+const request = fetchJson;
 
 const send = <T>(method: string, path: string, body: unknown) =>
 	request<T>(path, {

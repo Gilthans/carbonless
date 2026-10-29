@@ -297,4 +297,20 @@ describe("OpenBox", () => {
 		await userEvent.hover(icon);
 		expect(await shownTooltip()).toHaveTextContent("Merged");
 	});
+
+	it("shows a failed GitHub search in the list and stops the spinner", async () => {
+		setup(() => ({
+			repos: [],
+			prs: [pr("far/away", 5, "Cached one")],
+			scope: "far/away",
+			pending: false,
+			error: "gh: rate limited",
+		}));
+		await userEvent.type(box(), "far/away x");
+		const list = await screen.findByRole("listbox");
+		await within(list).findByText("Cached one");
+		expect(list.contains(screen.getByRole("alert"))).toBe(false);
+		expect(screen.getByRole("alert")).toHaveTextContent("gh: rate limited");
+		expect(screen.getByRole("status")).toHaveTextContent("");
+	});
 });

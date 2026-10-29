@@ -255,7 +255,7 @@ describe("RowActions", () => {
 	it("marks the current wait and clears it, also a 'me' wait that never hides the row", async () => {
 		const mine: HomeRow = {
 			...base,
-			annotations: { waiting: { who: "me", at: ago(5) } },
+			annotations: { waiting: { who: "dan", at: ago(5) } },
 		};
 		const api = setup(() => base, mine);
 		await screen.findByText("Seven");
@@ -353,5 +353,20 @@ describe("RowActions", () => {
 			await new Promise((r) => setTimeout(r, 20));
 		});
 		expect(screen.getByRole("img", { name: "Note: kept" })).toBeInTheDocument();
+	});
+
+	it("'Me' waits on the viewer's own login", async () => {
+		const api = setup();
+		await screen.findByText("Seven");
+		await userEvent.click(screen.getByRole("button", { name: "Waiting on" }));
+		await userEvent.click(
+			within(screen.getByRole("dialog", { name: "Waiting on" })).getByRole(
+				"button",
+				{ name: "Me" },
+			),
+		);
+		await waitFor(() =>
+			expect(posted(api)).toEqual([{ op: "wait", who: "dan" }]),
+		);
 	});
 });

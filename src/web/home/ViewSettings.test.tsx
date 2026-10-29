@@ -23,6 +23,7 @@ const started = (owner: string, repo: string, number: number) =>
 				pinnedHead: null,
 				coverage: { done: 1, total: 2, unit: "lines" },
 				lastActedAt: ago(5),
+				headMoved: false,
 			},
 		],
 	});

@@ -12,9 +12,9 @@ import {
 import { useEffect } from "react";
 import { App } from "./App";
 import { ApiError, bindReview, sessionQuery } from "./api";
-import { Logo } from "./brand/Brand";
 import { parseFilesSearch } from "./files/landing";
 import { useUnsavedGuard } from "./files/useSetStates";
+import { HomePage } from "./home/HomePage";
 import { FilesPage, OverviewPage } from "./pages";
 import { ShortcutsProvider } from "./shortcuts";
 
@@ -59,17 +59,6 @@ function Root() {
 	);
 }
 
-/** Home, until it has its own page (Task 3). */
-function HomePlaceholder() {
-	return (
-		<main className="mx-auto flex min-h-screen max-w-5xl flex-col items-start gap-4 bg-canvas px-4 py-6 font-sans text-ink sm:px-6">
-			<Logo className="h-12 w-12" />
-			<h1 className="font-display text-2xl font-bold">carbonless</h1>
-			<p className="text-muted">Open a review with crb &lt;pr&gt;.</p>
-		</main>
-	);
-}
-
 /**
  * A review's pages. The page is bound to one review for its life (api.ts
  * bindReview): another review's address loads the page anew. An unknown
@@ -109,7 +98,7 @@ const rootRoute = createRootRoute({
 const homeRoute = createRoute({
 	getParentRoute: () => rootRoute,
 	path: "/",
-	component: HomePlaceholder,
+	component: HomePage,
 });
 
 const reviewRoute = createRoute({

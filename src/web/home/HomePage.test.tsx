@@ -213,6 +213,7 @@ describe("HomePage", () => {
 								pinnedHead: null,
 								coverage: { done: 37, total: 120, unit: "lines" },
 								lastActedAt: ago(5),
+								headMoved: false,
 							},
 						],
 					}),
@@ -245,6 +246,7 @@ describe("HomePage", () => {
 								pinnedHead: "abc1234".padEnd(40, "0"),
 								coverage: { done: 3, total: 10, unit: "files" },
 								lastActedAt: ago(300),
+								headMoved: false,
 							},
 							{
 								id: "NEW",
@@ -252,6 +254,7 @@ describe("HomePage", () => {
 								pinnedHead: null,
 								coverage: { done: 10, total: 10, unit: "files" },
 								lastActedAt: ago(2),
+								headMoved: false,
 							},
 						],
 					}),
@@ -403,6 +406,7 @@ describe("HomePage", () => {
 					pinnedHead: null,
 					coverage: { done: 1037, total: 12120, unit: "lines" },
 					lastActedAt: ago(5),
+					headMoved: false,
 				},
 			],
 		});
@@ -517,5 +521,46 @@ describe("HomePage", () => {
 		const logo = screen.getByRole("link", { name: "Home" });
 		await userEvent.hover(logo);
 		expect(await shownTooltip()).toHaveTextContent("Home");
+	});
+
+	it("flags a review whose PR got new commits, on the row or its sub-row", async () => {
+		const review = (id: string, headMoved: boolean, minutes: number) => ({
+			id,
+			label: id === "P" ? "abc1234" : "head",
+			pinnedHead: id === "P" ? "abc1234".padEnd(40, "0") : null,
+			coverage: { done: 1, total: 4, unit: "lines" as const },
+			lastActedAt: ago(minutes),
+			headMoved,
+		});
+		fakeApi(
+			view({
+				reviewing: [
+					row({ number: 1, title: "One", reviews: [review("A", true, 5)] }),
+					row({
+						number: 2,
+						title: "Two",
+						reviews: [review("B", false, 5), review("P", true, 50)],
+					}),
+				],
+			}),
+		);
+		renderWithQuery(<HomePage />);
+		await screen.findByText("One");
+		const [one, two] = screen.getAllByTestId("home-row") as [
+			HTMLElement,
+			HTMLElement,
+		];
+		within(one).getByRole("img", { name: "New commits since your review" });
+		expect(
+			within(two).queryByRole("img", { name: "New commits since your review" }),
+		).toBeNull();
+		const [b, p] = screen.getAllByTestId("home-subrow") as [
+			HTMLElement,
+			HTMLElement,
+		];
+		expect(
+			within(b).queryByRole("img", { name: "New commits since your review" }),
+		).toBeNull();
+		within(p).getByRole("img", { name: "New commits since your review" });
 	});
 });

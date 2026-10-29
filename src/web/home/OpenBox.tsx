@@ -160,8 +160,11 @@ export function OpenBox(props: { className?: string }) {
 
 	const { groups, words } = groupsOf(q, search.data);
 	const options = groups.flatMap((g) => g.options);
-	const pending = parsed.kind !== "pr" && !!search.data?.pending;
-	const listOpen = open && q.trim() !== "" && (options.length > 0 || pending);
+	// A failed GitHub search: said in the list, and nothing is pending.
+	const error = parsed.kind !== "pr" ? search.data?.error : undefined;
+	const pending = parsed.kind !== "pr" && !!search.data?.pending && !error;
+	const listOpen =
+		open && q.trim() !== "" && (options.length > 0 || pending || !!error);
 	const current = Math.min(active, Math.max(0, options.length - 1));
 
 	const choose = (option: Option | undefined) => {
@@ -267,54 +270,58 @@ export function OpenBox(props: { className?: string }) {
 				</form>
 			</search>
 			{listOpen && (
+				// biome-ignore lint/a11y/noStaticElementInteractions: not an action; it keeps focus in the box while a click picks an option.
 				<div
-					id={listId}
-					role="listbox"
-					aria-label="Suggestions"
-					// Keeps focus in the box while a click picks an option.
 					onMouseDown={(e) => e.preventDefault()}
 					className="absolute inset-x-0 top-full z-40 mt-1 max-h-[70dvh] overflow-y-auto rounded-xl border border-edge bg-overlay p-1.5 shadow-float"
 				>
-					{groups.map((g, gi) => {
-						const labelId = `${listId}-g${gi}`;
-						return (
-							// biome-ignore lint/a11y/useSemanticElements: a listbox's group of options; a fieldset holds form controls.
-							<div key={g.label} role="group" aria-labelledby={labelId}>
-								<div
-									id={labelId}
-									className="px-2.5 pt-1.5 pb-1 text-xs font-bold tracking-[0.12em] text-faint uppercase"
-								>
-									{g.label}
+					{error && (
+						<p role="alert" className="px-2.5 py-1.5 text-sm text-warn">
+							{error}
+						</p>
+					)}
+					<div id={listId} role="listbox" aria-label="Suggestions">
+						{groups.map((g, gi) => {
+							const labelId = `${listId}-g${gi}`;
+							return (
+								// biome-ignore lint/a11y/useSemanticElements: a listbox's group of options; a fieldset holds form controls.
+								<div key={g.label} role="group" aria-labelledby={labelId}>
+									<div
+										id={labelId}
+										className="px-2.5 pt-1.5 pb-1 text-xs font-bold tracking-[0.12em] text-faint uppercase"
+									>
+										{g.label}
+									</div>
+									{g.options.map((option) => {
+										index++;
+										const i = index;
+										const selected = i === current;
+										return (
+											<div
+												key={i}
+												id={`${optionId}-${i}`}
+												role="option"
+												aria-selected={selected}
+												tabIndex={-1}
+												onClick={() => choose(option)}
+												onKeyDown={() => {}}
+												onMouseEnter={() => setActive(i)}
+												className={`flex min-h-10 cursor-pointer items-center gap-2.5 rounded-lg px-2.5 text-sm text-ink ${
+													selected ? "bg-pressed" : ""
+												}`}
+											>
+												<OptionBody
+													option={option}
+													words={words}
+													selected={selected}
+												/>
+											</div>
+										);
+									})}
 								</div>
-								{g.options.map((option) => {
-									index++;
-									const i = index;
-									const selected = i === current;
-									return (
-										<div
-											key={i}
-											id={`${optionId}-${i}`}
-											role="option"
-											aria-selected={selected}
-											tabIndex={-1}
-											onClick={() => choose(option)}
-											onKeyDown={() => {}}
-											onMouseEnter={() => setActive(i)}
-											className={`flex min-h-10 cursor-pointer items-center gap-2.5 rounded-lg px-2.5 text-sm text-ink ${
-												selected ? "bg-pressed" : ""
-											}`}
-										>
-											<OptionBody
-												option={option}
-												words={words}
-												selected={selected}
-											/>
-										</div>
-									);
-								})}
-							</div>
-						);
-					})}
+							);
+						})}
+					</div>
 				</div>
 			)}
 		</div>
