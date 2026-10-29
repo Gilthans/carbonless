@@ -1,9 +1,6 @@
 import type { Locator, Page } from "@playwright/test";
-import {
-	DEMO_PR,
-	DEMO_THREADS,
-	demoThreads,
-} from "../test/fake-gh/demo-threads";
+import { DEMO_PR, demoThreads } from "../test/fake-gh/demo-threads";
+import { lineOf } from "../test/fake-gh/showcase";
 import { fileSection, openFiles } from "./files-ui";
 import { expect, type Pr, type PrOptions, test } from "./fixtures";
 
@@ -14,9 +11,9 @@ import { expect, type Pr, type PrOptions, test } from "./fixtures";
  * person, the same in every thread of the PR.
  */
 const options: PrOptions = DEMO_PR;
-/** The 7-comment thread's line, and the range thread's last. */
-const TTL = DEMO_THREADS[0]?.place.line;
-const MAP = DEMO_THREADS[4]?.place.line;
+/** The 7-comment thread's line, and the range thread's last, at the head. */
+const TTL = lineOf("src/cache.ts", 3, "private ttlMs = 60_000");
+const MAP = lineOf("src/cache.ts", 3, "private misses = 0;");
 
 async function setup(pr: (opts?: PrOptions) => Promise<Pr>, page: Page) {
 	const p = await pr(options);
