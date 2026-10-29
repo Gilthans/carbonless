@@ -1,8 +1,10 @@
 /**
- * Runs the built CLI on a throwaway PR with long, many-party review threads
+ * Runs the built CLI on the showcase PR (test/fake-gh/showcase.ts: one of
+ * every kind of file change, three commits) with its review threads
  * (test/fake-gh/demo-threads.ts), against the fake gh, so they can be seen
- * and tried: replies and resolving write to the fake gh's scenario, never
- * to GitHub.
+ * and tried: replies, new comments, edits, deletes and resolving write to
+ * the fake gh's scenario, never to GitHub. The gallery's `showcase` PR has
+ * the same code and threads on GitHub.
  *
  *   pnpm build && pnpm tsx scripts/demo-threads.ts --port 4790 --host <ip>
  *
@@ -23,9 +25,9 @@ import {
 	type Pr,
 } from "../e2e/pr-setup";
 import {
-	DEMO_FILES,
-	DEMO_PEOPLE,
+	DEMO_PR,
 	demoThreads,
+	demoTimeline,
 } from "../test/fake-gh/demo-threads";
 
 const { values } = parseArgs({
@@ -67,21 +69,13 @@ for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
 }
 
 try {
-	pr = createPr(workdir, {
-		baseDate: "2026-01-01T00:00:00Z",
-		files: DEMO_FILES,
-		overview: { title: "Cache widgets, retry the client" },
-		scenario: {
-			user: {
-				login: DEMO_PEOPLE.viewer.login,
-				avatarUrl: DEMO_PEOPLE.viewer.avatarUrl,
-			},
-		},
-	});
-	const head = pr.repo.shas.at(-1) ?? "";
-	pr.editScenario((s) => {
+	const made = createPr(workdir, DEMO_PR);
+	pr = made;
+	made.editScenario((s) => {
 		const graph = s.prs[PR_NUMBER]?.graphql;
-		if (graph) graph.reviewThreads = demoThreads(head);
+		if (!graph) return;
+		graph.reviewThreads = demoThreads(made.repo);
+		graph.timelineItems = demoTimeline(made.repo.shas);
 	});
 } catch (error) {
 	cleanup();

@@ -1,7 +1,7 @@
 import type { Locator, Page } from "@playwright/test";
 import {
-	DEMO_FILES,
-	DEMO_PEOPLE,
+	DEMO_PR,
+	DEMO_THREADS,
 	demoThreads,
 } from "../test/fake-gh/demo-threads";
 import { fileSection, openFiles } from "./files-ui";
@@ -13,23 +13,16 @@ import { expect, type Pr, type PrOptions, test } from "./fixtures";
  * avatar beside every author, GitHub's or their initial, and a tint per
  * person, the same in every thread of the PR.
  */
-const options: PrOptions = {
-	baseDate: "2026-01-01T00:00:00Z",
-	files: DEMO_FILES,
-	scenario: {
-		user: {
-			login: DEMO_PEOPLE.viewer.login,
-			avatarUrl: DEMO_PEOPLE.viewer.avatarUrl,
-		},
-	},
-};
+const options: PrOptions = DEMO_PR;
+/** The 7-comment thread's line, and the range thread's last. */
+const TTL = DEMO_THREADS[0]?.place.line;
+const MAP = DEMO_THREADS[4]?.place.line;
 
 async function setup(pr: (opts?: PrOptions) => Promise<Pr>, page: Page) {
 	const p = await pr(options);
-	const head = p.repo.shas.at(-1) ?? "";
 	p.editScenario((s) => {
 		const graph = s.prs[p.number]?.graphql;
-		if (graph) graph.reviewThreads = demoThreads(head);
+		if (graph) graph.reviewThreads = demoThreads(p.repo);
 	});
 	// GitHub's avatars, served here: a tiny grey PNG, never the network.
 	await page.route("https://avatars.githubusercontent.com/**", (route) =>
@@ -94,11 +87,13 @@ test("avatars, and a tint per person the same in every thread", async ({
 	startCrb,
 	isMobile,
 }) => {
+	// The showcase's twenty files and eight threads: a long walk.
+	test.slow();
 	if (isMobile) await page.setViewportSize({ width: 360, height: 780 });
 	await setup(pr, page);
 	const s = await startCrb();
 	await page.goto(s.url);
-	const ttl = card(page, "src/cache.ts:12");
+	const ttl = card(page, `src/cache.ts:${TTL}`);
 	// Closed: the opener's avatar in the header, the rest behind Show more.
 	await expect(
 		ttl.getByTestId("thread-head").getByTestId("avatar"),
@@ -145,7 +140,7 @@ test("avatars, and a tint per person the same in every thread", async ({
 	}
 	// The same people in another thread keep their tints; dima (no
 	// avatar: their initial) gets one of their own.
-	const retry = card(page, "src/cache.ts:2");
+	const retry = card(page, `src/cache.ts:${MAP}`);
 	await expect(
 		retry.getByTestId("thread-head").getByTestId("avatar-fallback"),
 	).toHaveAttribute("data-initial", "D");
@@ -172,7 +167,7 @@ test("avatars, and a tint per person the same in every thread", async ({
 	const section = fileSection(page, "src/cache.ts");
 	await section.getByRole("button", { name: "Expand file" }).click();
 	const bubble = section.getByRole("button", {
-		name: /^7 comments on line 12/,
+		name: new RegExp(`^7 comments on line ${TTL}`),
 	});
 	await bubble.click();
 	const opened = section.getByTestId("files-thread");

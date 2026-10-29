@@ -1,20 +1,32 @@
-import type { FixtureCommit } from "../git-fixture";
+import { execFileSync } from "node:child_process";
+import type { PrOptions } from "../../e2e/pr-setup";
+import { testGitEnv } from "../git-fixture";
 import {
 	type CommentNode,
 	reviewThread,
 	suggestionHtml,
 	type ThreadNode,
 	threadComment,
+	timelineCommit,
 } from "./scenario";
+import {
+	lineOf,
+	SHOWCASE_BASE,
+	SHOWCASE_BASE_BINARY,
+	SHOWCASE_COMMITS,
+} from "./showcase";
 
 /*
- * A PR with review threads as they usually go, for the threads demo
- * (scripts/demo-threads.ts) and the e2e tests that check how people are
- * told apart (avatars, tints): mostly two people ping-ponging over two or
- * three replies, a few with a third, one longer back-and-forth. A small
- * cast: the viewer (Octo_Cat), the PR author (octo-author), two reviewers
- * and a bot. Synthetic people and text; some avatars are real public
- * GitHub ones, dima and the bot have none (the fallback).
+ * The showcase PR (test/fake-gh/showcase.ts) with review threads as they
+ * usually go, for the threads demo (scripts/demo-threads.ts) and the e2e
+ * tests that check how people are told apart (avatars, tints): mostly two
+ * people ping-ponging over two or three replies, a few with a third, one
+ * longer back-and-forth; one of every shape (a line, a range, a deleted
+ * line, a file, resolved, outdated). The gallery's `showcase` case posts
+ * the same threads on GitHub. A small cast: the viewer (Octo_Cat), the PR
+ * author (octo-author), two reviewers and a bot. Synthetic people and
+ * text; some avatars are real public GitHub ones, dima and the bot have
+ * none (the fallback).
  */
 
 /** A public GitHub avatar at 40px. */
@@ -32,70 +44,42 @@ export const DEMO_PEOPLE = {
 
 type Person = (typeof DEMO_PEOPLE)[keyof typeof DEMO_PEOPLE];
 
-const lines = (n: number, f: (i: number) => string) =>
-	`${Array.from({ length: n }, (_, i) => f(i + 1)).join("\n")}\n`;
-
-const CACHE = lines(
-	40,
-	(i) =>
-		({
-			1: "export class Cache<T> {",
-			2: "\tprivate entries = new Map<string, { value: T; at: number }>();",
-			12: "\tconstructor(private ttlMs = 60_000) {}",
-			20: "\tget(key: string): T | undefined {",
-			30: "\tclear(): void { this.entries.clear(); }",
-			40: "}",
-		})[i] ?? `\t// cache line ${i}`,
-);
-const CLIENT = lines(
-	50,
-	(i) =>
-		({
-			1: 'import { Cache } from "../cache";',
-			20: "\tconst res = await fetch(url, { signal });",
-			34: "\tif (res.status >= 500) throw new RetryableError(res.status);",
-		})[i] ?? `// client line ${i}`,
-);
-const RETRY = lines(
-	20,
-	(i) =>
-		({
-			3: "export const MAX_ATTEMPTS = 5;",
-			8: "export async function retry<T>(f: () => Promise<T>): Promise<T> {",
-		})[i] ?? `// retry line ${i}`,
-);
-
-/** The PR's one commit: three new files the threads are on. */
-export const DEMO_FILES: FixtureCommit[] = [
-	{
-		message: "Cache widgets, retry the client",
-		files: {
-			"src/cache.ts": CACHE,
-			"src/api/client.ts": CLIENT,
-			"src/util/retry.ts": RETRY,
-		},
-		date: "2026-01-02T00:00:00Z",
+/** The demo PR: the showcase's base, its three commits and their timeline. */
+export const DEMO_PR = {
+	base: SHOWCASE_BASE,
+	baseBinary: SHOWCASE_BASE_BINARY,
+	baseDate: "2026-01-01T00:00:00Z",
+	files: SHOWCASE_COMMITS,
+	overview: {
+		title: "Retry the client, cache for a minute, drop the XML servers",
 	},
-];
+	bodyHTML:
+		'<p dir="auto">Retries 5xx with backoff, caches widgets for a minute, drops the XML servers; renames the utils and moves <code class="notranslate">formatPrice</code>.</p>',
+	scenario: {
+		user: {
+			login: DEMO_PEOPLE.viewer.login,
+			avatarUrl: DEMO_PEOPLE.viewer.avatarUrl,
+		},
+	},
+} satisfies PrOptions;
 
-const FILES: Record<string, string> = {
-	"src/cache.ts": CACHE,
-	"src/api/client.ts": CLIENT,
-	"src/util/retry.ts": RETRY,
-};
-
-/** GitHub's hunk of a new file, down to the commented line. */
-function hunk(path: string, line: number): string {
-	const text = (FILES[path] ?? "").split("\n").slice(0, line);
-	const total = (FILES[path] ?? "").split("\n").length - 1;
-	return [`@@ -0,0 +1,${total} @@`, ...text.map((l) => `+${l}`)].join("\n");
+/** The timeline's commits, once the repo (base first) has its SHAs. */
+export function demoTimeline(shas: string[]): unknown[] {
+	return SHOWCASE_COMMITS.map((c, i) =>
+		timelineCommit({
+			login: DEMO_PEOPLE.author.login,
+			at: c.date ?? "2026-01-02T00:00:00Z",
+			oid: shas[i + 1] ?? "",
+			headline: c.message,
+		}),
+	);
 }
 
 const esc = (t: string) =>
 	t.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
 
-/** One comment: plain text, or Markdown with its HTML. */
-interface Said {
+/** One comment: plain text, or Markdown (`body`) with its HTML. */
+export interface Said {
 	who: Person;
 	text: string;
 	html?: string;
@@ -104,39 +88,26 @@ interface Said {
 	editedAfter?: number;
 }
 
-/**
- * A thread on `path:line` made on `head`, its comments an hour apart from
- * `start` (ISO), opener first.
- */
-function thread(
-	head: string,
-	path: string,
-	line: number,
-	start: string,
-	said: Said[],
-	more: Partial<Omit<ThreadNode, "first" | "comments">> = {},
-): ThreadNode {
-	const t0 = Date.parse(start);
-	const comments: CommentNode[] = said.map((s, i) =>
-		threadComment({
-			login: s.who.login,
-			bot: "bot" in s.who ? s.who.bot : false,
-			...("avatarUrl" in s.who ? { avatarUrl: s.who.avatarUrl } : {}),
-			text: s.text,
-			...(s.html ? { html: s.html } : {}),
-			...(s.body ? { body: s.body } : {}),
-			createdAt: new Date(t0 + i * 3_600_000).toISOString(),
-			...(s.editedAfter === undefined
-				? {}
-				: {
-						editedAt: new Date(
-							t0 + i * 3_600_000 + s.editedAfter,
-						).toISOString(),
-					}),
-			...(i === 0 ? { commit: head, diffHunk: hunk(path, line) } : {}),
-		}),
-	);
-	return reviewThread({ path, line, subjectType: "LINE", ...more }, comments);
+/** Where a thread is, as GitHub's REST takes it. */
+export interface Place {
+	path: string;
+	/** The commit it's written on: 1–3 (the head is 3). */
+	commit: number;
+	/** None: a file comment. */
+	line?: number;
+	startLine?: number;
+	side?: "LEFT" | "RIGHT";
+}
+
+/** A thread of the showcase: where, when, who said what. */
+export interface DemoThread {
+	place: Place;
+	/** The opener's time (ISO); the replies follow an hour apart. */
+	start: string;
+	said: Said[];
+	resolved?: boolean;
+	/** A later commit changed its line. */
+	outdated?: boolean;
 }
 
 const { badyan, dima, author, viewer, bot } = DEMO_PEOPLE;
@@ -147,21 +118,33 @@ const LONG = [
 	"So either the retry learns which calls are safe (a flag per call, defaulting to no), or the upload path gets an idempotency key first. I'd rather do the key: it fixes the double upload we already see when people double-click, too.",
 ].join("\n\n");
 
+const HEAD = SHOWCASE_COMMITS.length;
+const CACHE = "src/cache.ts";
+const CLIENT = "src/api/client.ts";
+const RETRY = "src/util/retry.ts";
+
 /**
- * The demo's threads on the PR whose head is `head`:
+ * The showcase's threads:
  * - the longer one (7 comments): the viewer and the author back and
  *   forth, badyan joining; Markdown and code, a comment of each of them
  *   edited; it waits on the viewer;
  * - resolved, dima and the author, with a long comment;
- * - the viewer and the author, the viewer answering last;
+ * - outdated: the viewer and the author, fixed by the last commit;
  * - badyan's suggested change, taken;
- * - dima and the author, badyan joining;
- * - a bot's, and a short resolved one.
+ * - on three lines: dima and the author, badyan joining;
+ * - on a deleted line: badyan and the author;
+ * - a bot's, on the file; and a short resolved one.
  */
-export function demoThreads(head: string): ThreadNode[] {
-	return [
-		// Waits on the viewer: badyan asked them last.
-		thread(head, "src/cache.ts", 12, "2026-01-03T08:00:00Z", [
+export const DEMO_THREADS: DemoThread[] = [
+	// Waits on the viewer: badyan asked them last.
+	{
+		place: {
+			path: CACHE,
+			commit: HEAD,
+			line: lineOf(CACHE, HEAD, "private ttlMs = 60_000"),
+		},
+		start: "2026-01-03T08:00:00Z",
+		said: [
 			{ who: viewer, text: "Is a minute the right default TTL?" },
 			{
 				who: author,
@@ -182,80 +165,241 @@ export function demoThreads(head: string): ThreadNode[] {
 				editedAfter: 2 * 60_000,
 			},
 			{ who: viewer, text: "Thanks." },
-			{
-				who: badyan,
-				text: "Should clear() also reset the hit counters?",
-			},
+			{ who: badyan, text: "Should clear() also reset the hit counters?" },
 			{
 				who: badyan,
 				text: "@Octo_Cat you added the counters, what do you think?",
 				html: `<p dir="auto"><a class="user-mention notranslate" href="https://github.com/Octo_Cat">@Octo_Cat</a> ${esc("you added the counters, what do you think?")}</p>`,
 			},
-		]),
-		// Resolved, with a long comment.
-		thread(
-			head,
-			"src/api/client.ts",
-			20,
-			"2026-01-02T10:00:00Z",
-			[
-				{ who: dima, text: "Should a 5xx here be retried?" },
-				{ who: author, text: "Yes, through retry() below." },
-				{
-					who: dima,
-					text: LONG,
-					html: LONG.split("\n\n")
-						.map((p) => `<p dir="auto">${esc(p)}</p>`)
-						.join("\n"),
-				},
-				{ who: author, text: "Fair. Uploads opt out until the key lands." },
-			],
-			{ isResolved: true },
-		),
-		// The viewer answered last: not their turn.
-		thread(head, "src/util/retry.ts", 8, "2026-01-02T14:00:00Z", [
+		],
+	},
+	// Resolved, with a long comment.
+	{
+		place: {
+			path: CLIENT,
+			commit: HEAD,
+			line: lineOf(CLIENT, HEAD, "await retry(() => this.fetchWidget(id))"),
+		},
+		start: "2026-01-02T10:00:00Z",
+		said: [
+			{ who: dima, text: "Is every call safe to retry?" },
+			{ who: author, text: "Yes, they're all reads here." },
+			{
+				who: dima,
+				text: LONG,
+				html: LONG.split("\n\n")
+					.map((p) => `<p dir="auto">${esc(p)}</p>`)
+					.join("\n"),
+				body: LONG,
+			},
+			{ who: author, text: "Fair. Uploads opt out until the key lands." },
+		],
+		resolved: true,
+	},
+	// Outdated: the last commit adds the jitter. The viewer answered last.
+	{
+		place: {
+			path: RETRY,
+			commit: 2,
+			line: lineOf(RETRY, 2, "const delay = 2 ** attempt * 100;"),
+		},
+		start: "2026-01-02T05:00:00Z",
+		said: [
 			{ who: viewer, text: "Backoff without jitter will stampede." },
 			{ who: author, text: "Full jitter, capped at 30s?" },
 			{ who: viewer, text: "Yes, that's plenty." },
-		]),
-		// A suggested change, taken.
-		thread(head, "src/api/client.ts", 34, "2026-01-04T09:00:00Z", [
+		],
+		outdated: true,
+	},
+	// A suggested change, taken.
+	{
+		place: {
+			path: CLIENT,
+			commit: HEAD,
+			line: lineOf(CLIENT, HEAD, "if (res.status >= 500)"),
+		},
+		start: "2026-01-04T09:00:00Z",
+		said: [
 			{
 				who: badyan,
 				text: "429 should be retryable too.",
 				html: `<p dir="auto">429 should be retryable too:</p>\n${suggestionHtml(
-					["\tif (res.status >= 500) throw new RetryableError(res.status);"],
+					["\t\tif (res.status >= 500) throw new RetryableError(res.status);"],
 					[
-						"\tif (res.status >= 500 || res.status === 429) {",
-						"\t\tthrow new RetryableError(res.status);",
-						"\t}",
+						"\t\tif (res.status >= 500 || res.status === 429) {",
+						"\t\t\tthrow new RetryableError(res.status);",
+						"\t\t}",
 					],
 				)}`,
-				body: "429 should be retryable too:\n\n```suggestion\n\tif (res.status >= 500 || res.status === 429) {\n\t\tthrow new RetryableError(res.status);\n\t}\n```",
+				body: "429 should be retryable too:\n\n```suggestion\n\t\tif (res.status >= 500 || res.status === 429) {\n\t\t\tthrow new RetryableError(res.status);\n\t\t}\n```",
 			},
 			{ who: author, text: "Taking it." },
-		]),
-		// Two ping-ponging, a third joining.
-		thread(head, "src/cache.ts", 2, "2026-01-04T12:00:00Z", [
+		],
+	},
+	// On three lines: two ping-ponging, a third joining.
+	{
+		place: {
+			path: CACHE,
+			commit: HEAD,
+			startLine: lineOf(CACHE, HEAD, "private entries = new Map"),
+			line: lineOf(CACHE, HEAD, "private misses = 0;"),
+		},
+		start: "2026-01-04T12:00:00Z",
+		said: [
 			{ who: dima, text: "A Map keeps insertion order: LRU for free?" },
 			{ who: author, text: "Only if get() re-inserts. Worth it?" },
 			{ who: badyan, text: "Not yet: nothing evicts by size." },
-		]),
-		// A bot's.
-		thread(head, "src/cache.ts", 30, "2026-01-02T09:00:00Z", [
-			{ who: bot, text: "clear() is not covered by tests." },
-		]),
-		// Short and resolved.
-		thread(
-			head,
-			"src/util/retry.ts",
-			3,
-			"2026-01-02T11:00:00Z",
-			[
-				{ who: dima, text: "Why 5?" },
-				{ who: author, text: "GitHub's own client uses 5." },
-			],
-			{ isResolved: true },
-		),
-	];
+		],
+	},
+	// On a deleted line.
+	{
+		place: {
+			path: CLIENT,
+			commit: HEAD,
+			line: lineOf(CLIENT, 0, "legacyXml?: boolean;"),
+			side: "LEFT",
+		},
+		start: "2026-01-02T15:00:00Z",
+		said: [
+			{
+				who: badyan,
+				text: "Does anyone still run a pre-2.0 server? This breaks them.",
+			},
+			{ who: author, text: "Support says the last one upgraded in March." },
+		],
+	},
+	// A bot's, on the whole file.
+	{
+		place: { path: CACHE, commit: HEAD },
+		start: "2026-01-02T09:00:00Z",
+		said: [
+			{
+				who: bot,
+				text: "Coverage of this file: 64% (−18%). clear() and has() are not covered.",
+				html: '<p dir="auto">Coverage of this file: 64% (−18%). <code class="notranslate">clear()</code> and <code class="notranslate">has()</code> are not covered.</p>',
+				body: "Coverage of this file: 64% (−18%). `clear()` and `has()` are not covered.",
+			},
+		],
+	},
+	// Short and resolved.
+	{
+		place: {
+			path: RETRY,
+			commit: HEAD,
+			line: lineOf(RETRY, HEAD, "export const MAX_ATTEMPTS = 5;"),
+		},
+		start: "2026-01-02T11:00:00Z",
+		said: [
+			{ who: dima, text: "Why 5?" },
+			{ who: author, text: "GitHub's own client uses 5." },
+		],
+		resolved: true,
+	},
+];
+
+/**
+ * GitHub's diff hunk for a comment on `side` `line` of `path` at `commit`
+ * (merge base `base`): the hunk's header and its rows down to that line.
+ */
+function diffHunk(
+	repo: string,
+	base: string,
+	commit: string,
+	path: string,
+	line: number,
+	side: "LEFT" | "RIGHT",
+): string {
+	const diff = execFileSync(
+		"git",
+		["diff", "-M", "-U3", base, commit, "--", path],
+		{ cwd: repo, encoding: "utf8", env: testGitEnv() },
+	);
+	let rows: string[] = [];
+	let oldNo = 0;
+	let newNo = 0;
+	for (const l of diff.split("\n")) {
+		const h = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(l);
+		if (h) {
+			rows = [l];
+			oldNo = Number(h[1]);
+			newNo = Number(h[2]);
+			continue;
+		}
+		if (rows.length === 0 || l === "" || l.startsWith("\\")) continue;
+		const oldLine = l.startsWith("+") ? null : oldNo++;
+		const newLine = l.startsWith("-") ? null : newNo++;
+		rows.push(l);
+		if ((side === "LEFT" ? oldLine : newLine) === line) return rows.join("\n");
+	}
+	throw new Error(`${path}:${line} (${side}) is not in the diff at ${commit}`);
+}
+
+/**
+ * The demo's threads as GitHub's GraphQL lists them, on the repo at `path`
+ * whose commits are `shas` (the base, then the showcase's three).
+ */
+export function demoThreads(repo: {
+	path: string;
+	shas: string[];
+}): ThreadNode[] {
+	const base = repo.shas[0] ?? "";
+	return DEMO_THREADS.map(({ place, start, said, resolved, outdated }) => {
+		const commit = repo.shas[place.commit] ?? "";
+		const side = place.side ?? "RIGHT";
+		const t0 = Date.parse(start);
+		const comments: CommentNode[] = said.map((s, i) =>
+			threadComment({
+				login: s.who.login,
+				bot: "bot" in s.who ? s.who.bot : false,
+				...("avatarUrl" in s.who ? { avatarUrl: s.who.avatarUrl } : {}),
+				text: s.text,
+				...(s.html ? { html: s.html } : {}),
+				...(s.body ? { body: s.body } : {}),
+				createdAt: new Date(t0 + i * 3_600_000).toISOString(),
+				...(s.editedAfter === undefined
+					? {}
+					: {
+							editedAt: new Date(
+								t0 + i * 3_600_000 + s.editedAfter,
+							).toISOString(),
+						}),
+				...(i === 0
+					? {
+							commit,
+							diffHunk:
+								place.line === undefined
+									? ""
+									: diffHunk(
+											repo.path,
+											base,
+											commit,
+											place.path,
+											place.line,
+											side,
+										),
+						}
+					: {}),
+			}),
+		);
+		const line = place.line ?? 1;
+		return reviewThread(
+			{
+				path: place.path,
+				subjectType: place.line === undefined ? "FILE" : "LINE",
+				isResolved: resolved ?? false,
+				isOutdated: outdated ?? false,
+				line: outdated ? null : line,
+				originalLine: line,
+				diffSide: side,
+				...(place.startLine === undefined
+					? {}
+					: {
+							startLine: place.startLine,
+							originalStartLine: place.startLine,
+							startDiffSide: side,
+						}),
+			},
+			comments,
+		);
+	});
 }
