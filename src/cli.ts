@@ -1,17 +1,16 @@
 #!/usr/bin/env node
-import { randomBytes } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
-import open from "open";
-import { buildApp } from "./server/app.js";
-import { parseAsOf } from "./server/asOf.js";
+import { runClient } from "./client.js";
 import { killDetachedGits } from "./server/git.js";
-import { parseHead } from "./server/pinnedHead.js";
-import { Session } from "./server/session.js";
+import { startServer } from "./server/serve.js";
+import { BUILD, formatVersion } from "./server/version.js";
 
 const USAGE = `Usage: crb <pr> [options]
+       crb serve [options]
 
-Review a GitHub pull request in the browser.
+crb <pr> prints the link to the pull request's review, served by this
+machine's crb serve (started in the background when none is running).
 
 Arguments:
   pr      https://github.com/<owner>/<repo>/pull/<n>, <owner>/<repo>#<n>,
@@ -22,25 +21,35 @@ Options:
                View the PR's changes up to this commit of it (reviewed: the
                one your last GitHub review was on, replies aside), in a
                review of its own
-  --port <n>   Port to listen on (default: random free port)
-  --host <h>   Host to bind (default: 127.0.0.1). Any other than 127.0.0.1,
-               ::1 or localhost requires a random access key, printed in the URL
-  --no-open    Do not open the browser
-  --api-only   Serve only the API (used by the dev server)
-  -h, --help   Show this help`;
+  --open       Also open it in the browser
+  --version    Print crb's version
+  -h, --help   Show this help
 
-const LOOPBACK = new Set(["127.0.0.1", "::1", "localhost"]);
+crb serve runs the server in the foreground, for every review. Host and
+port default to config.json's serve (~/.config/carbonless; else
+127.0.0.1:4747).
+
+Serve options:
+  --host <h>   Host to bind. Any other than 127.0.0.1, ::1 or localhost
+               requires the access key, printed in the URL
+  --port <n>   Port to listen on (0: any free port)
+  --new-key    Replace the access key (old links stop working)
+  --api-only   Serve only the API (used by the dev server)`;
+
+const SERVE_ONLY = ["port", "host", "api-only", "new-key"] as const;
 
 async function main(): Promise<void> {
 	const { values, positionals } = parseArgs({
 		allowPositionals: true,
 		allowNegative: true,
 		options: {
-			port: { type: "string", default: "0" },
-			host: { type: "string", default: "127.0.0.1" },
-			open: { type: "boolean", default: true },
+			port: { type: "string" },
+			host: { type: "string" },
+			open: { type: "boolean", default: false },
 			"api-only": { type: "boolean", default: false },
+			"new-key": { type: "boolean", default: false },
 			help: { type: "boolean", short: "h", default: false },
+			version: { type: "boolean", default: false },
 			head: { type: "string" },
 			// Hidden dev flags, not in the usage: view the PR as of a past
 			// moment, with another login as "you".
@@ -53,19 +62,22 @@ async function main(): Promise<void> {
 		console.log(USAGE);
 		return;
 	}
-	const [pr, ...extra] = positionals;
-	if (!pr || extra.length > 0) {
+	if (values.version) {
+		console.log(formatVersion(BUILD));
+		return;
+	}
+	const [first, ...extra] = positionals;
+	if (first === "serve") {
+		if (extra.length > 0) throw new Error("crb serve takes no arguments");
+		return serve(values);
+	}
+	if (!first || extra.length > 0) {
 		throw new Error("Expected one PR argument. Run crb --help for usage");
 	}
-	const port = Number(values.port);
-	if (!/^\d+$/.test(values.port) || port > 65535) {
-		throw new Error(`Invalid port: ${values.port}`);
-	}
-	const asOf =
-		values["as-of"] === undefined ? undefined : parseAsOf(values["as-of"]);
-	const head = values.head === undefined ? undefined : parseHead(values.head);
-	if (head && asOf) {
-		throw new Error("--head can't be combined with --as-of");
+	for (const option of SERVE_ONLY) {
+		if (values[option] !== undefined && values[option] !== false) {
+			throw new Error(`--${option} belongs to crb serve`);
+		}
 	}
 	const viewer = values.viewer;
 	if (
@@ -74,37 +86,39 @@ async function main(): Promise<void> {
 	) {
 		throw new Error(`Invalid --viewer: ${viewer}`);
 	}
-	const host = values.host;
-	const accessKey = LOOPBACK.has(host)
-		? null
-		: randomBytes(24).toString("base64url");
+	await runClient({
+		pr: first,
+		cwd: process.cwd(),
+		head: values.head,
+		asOf: values["as-of"],
+		viewer,
+		open: values.open,
+	});
+}
 
-	// Progress goes to stderr: stdout's only line is the listening URL.
-	const session = await Session.open(
-		pr,
-		process.cwd(),
-		(message) => console.error(`crb: ${message}`),
-		{ asOf, viewer, head },
-	);
-	// The overview's GitHub reads take seconds: start them while the
-	// browser opens. A failure isn't kept; the page's own read reports it.
-	session.overview().catch(() => {});
-	const app = await buildApp(session, {
-		accessKey,
+async function serve(values: {
+	port?: string;
+	host?: string;
+	"api-only": boolean;
+	"new-key": boolean;
+}): Promise<void> {
+	let port: number | undefined;
+	if (values.port !== undefined) {
+		port = Number(values.port);
+		if (!/^\d+$/.test(values.port) || port > 65535) {
+			throw new Error(`Invalid port: ${values.port}`);
+		}
+	}
+	const server = await startServer({
+		host: values.host,
+		port,
+		newKey: values["new-key"],
 		webRoot: values["api-only"]
 			? undefined
 			: fileURLToPath(new URL("./web/", import.meta.url)),
+		log: (message) => console.error(`crb: ${message}`),
 	});
-	try {
-		await app.listen({ port, host });
-	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code === "EADDRINUSE") {
-			throw new Error(`Port ${port} on ${host} is already in use`);
-		}
-		throw error;
-	}
 
-	// Before printing the URL: whoever reads it may signal us right away.
 	let closing = false;
 	const shutdown = async () => {
 		// A second Ctrl-C means "now": don't wait for anything.
@@ -113,9 +127,7 @@ async function main(): Promise<void> {
 		// Timed gits run in their own process groups: Ctrl-C missed them.
 		killDetachedGits();
 		try {
-			await app.close();
-			// Its background reads of GitHub and the clone stop with it.
-			await session.close();
+			await server.close();
 			process.exit(0);
 		} catch (error) {
 			console.error(`crb: shutdown failed: ${(error as Error).message}`);
@@ -124,20 +136,10 @@ async function main(): Promise<void> {
 	};
 	process.on("SIGINT", shutdown);
 	process.on("SIGTERM", shutdown);
-
-	const address = app.server.address();
-	const actualPort =
-		typeof address === "object" && address ? address.port : port;
-	const urlHost = host.includes(":") ? `[${host}]` : host;
-	const url = `http://${urlHost}:${actualPort}/${accessKey ? `?key=${accessKey}` : ""}`;
 	// Tests and agents parse this line to find the server.
-	console.log(`carbonless listening on ${url}`);
-
-	if (values.open) {
-		await open(url).catch((error: unknown) => {
-			console.error(`crb: could not open the browser: ${String(error)}`);
-		});
-	}
+	console.error(
+		`carbonless listening on ${server.url}/${server.key ? `?key=${server.key}` : ""}`,
+	);
 }
 
 main().catch((error: unknown) => {

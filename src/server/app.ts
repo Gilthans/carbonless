@@ -1,6 +1,8 @@
 import { existsSync } from "node:fs";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import fastifyStatic from "@fastify/static";
-import Fastify, { type FastifyInstance } from "fastify";
+import Fastify, { type FastifyInstance, type FastifyRequest } from "fastify";
 import {
 	type ClusterState,
 	COMMENTS_BATCH,
@@ -12,10 +14,17 @@ import {
 	type WriteError,
 } from "../shared/types.js";
 import { registerAccessKey, registerHostCheck } from "./access.js";
+import { parseAsOf } from "./asOf.js";
 import { GhError, WriteRefusedError } from "./errors.js";
-import { NODE_ID } from "./gh.js";
+import { NODE_ID, parsePrArg } from "./gh.js";
 import { GitError } from "./git.js";
 import { newThreadProblem } from "./newThreads.js";
+import { type HeadSpec, parseHead } from "./pinnedHead.js";
+import {
+	type OpenRequest,
+	type SessionRegistry,
+	UnknownReviewError,
+} from "./registry.js";
 import {
 	InvalidChangeError,
 	RefusedChangeError,
@@ -28,6 +37,13 @@ import {
 	UnknownReadError,
 } from "./session.js";
 import { editProblem, replyProblem } from "./threadWrites.js";
+import {
+	BUILD,
+	mismatchMessage,
+	parseBuildInfo,
+	sameBuild,
+	VERSION_HEADER,
+} from "./version.js";
 
 export interface AppOptions {
 	/** Directory with the built web UI. Omit to serve only the API. */
@@ -38,10 +54,30 @@ export interface AppOptions {
 	 * listening port are accepted.
 	 */
 	accessKey: string | null;
+	/**
+	 * The server's own address (`http://<host>:<port>`, no key), for the
+	 * review URLs it hands out. Default: the request's Host.
+	 */
+	baseUrl?: () => string;
+	/** Startup steps of reviews being opened (crb serve logs them). */
+	progress?: (message: string) => void;
 }
 
 /** A malformed request (HTTP 400). */
 class BadRequestError extends Error {}
+
+/** A review that can't be opened: merged, closed, no such PR (HTTP 409). */
+class RefusedReviewError extends Error {}
+
+/** The review a `/api/r/:id/...` request is for (set by its preHandler). */
+const sessions = new WeakMap<FastifyRequest, Session>();
+const sessionOf = (request: FastifyRequest): Session => {
+	const session = sessions.get(request);
+	if (!session) throw new Error("No review for this request");
+	return session;
+};
+
+const VIEWER = /^[A-Za-z0-9][A-Za-z0-9_-]{0,38}$/;
 
 /** No framing (clickjacking) and no Referer leaking the access key. */
 const SECURITY_HEADERS = {
@@ -69,7 +105,7 @@ const INDEX = /^(0|[1-9]\d{0,8})$/;
 const NO_FILE = /^No file \d+ in this snapshot$/;
 
 export async function buildApp(
-	session: Session,
+	registry: SessionRegistry,
 	options: AppOptions,
 ): Promise<FastifyInstance> {
 	const app = Fastify({
@@ -87,6 +123,21 @@ export async function buildApp(
 	});
 	registerHostCheck(app, options.accessKey === null);
 	await registerAccessKey(app, options.accessKey);
+	// A crb of another build must not drive this server (the browser sends
+	// no header and isn't checked: its page comes from this server).
+	app.addHook("onRequest", async (request, reply) => {
+		const raw = request.headers[VERSION_HEADER];
+		if (raw === undefined) return;
+		const client = parseBuildInfo(Array.isArray(raw) ? raw[0] : raw);
+		if (client && sameBuild(BUILD, client)) return;
+		return reply.status(409).send({
+			error: client
+				? mismatchMessage(BUILD, client)
+				: `Unreadable ${VERSION_HEADER} header`,
+			code: "version-mismatch",
+			server: BUILD,
+		});
+	});
 
 	app.setErrorHandler((error, _request, reply) => {
 		const send = (status: number, message: string) =>
@@ -94,6 +145,14 @@ export async function buildApp(
 		if (error instanceof StaleSnapshotError) return send(409, "stale");
 		if (error instanceof UnknownReadError) return send(410, "read gone");
 		if (error instanceof SessionClosedError) return send(503, error.message);
+		if (error instanceof UnknownReviewError) {
+			return reply
+				.status(404)
+				.send({ error: error.message, code: "unknown-review" });
+		}
+		if (error instanceof RefusedReviewError) {
+			return reply.status(409).send({ error: error.message, code: "refused" });
+		}
 		if (error instanceof RefusedChangeError) {
 			return reply.status(400).send({ error: error.message, keys: error.keys });
 		}
@@ -118,7 +177,10 @@ export async function buildApp(
 			status &&
 			status >= 400 &&
 			status < 500 &&
-			isThreadWrite(_request.method, _request.url)
+			isThreadWrite(
+				_request.method,
+				_request.url.replace(REVIEW_PREFIX, "/api"),
+			)
 		) {
 			const body: WriteError = {
 				error: (error as Error).message,
@@ -133,173 +195,241 @@ export async function buildApp(
 		return send(500, "Internal server error");
 	});
 
-	app.get("/api/session", async () => session.info());
-	// The last overview read; `maxAge` (ms) asks for one read at most that long ago.
-	app.get<{ Querystring: { maxAge?: string } }>(
-		"/api/overview",
-		async (request) => {
-			const { maxAge } = request.query;
-			if (maxAge !== undefined && !INDEX.test(maxAge)) {
-				throw new BadRequestError("maxAge must be a number of milliseconds");
-			}
-			const overview = await session.overview(
-				maxAge === undefined ? undefined : Number(maxAge),
+	app.get("/api/version", async () => BUILD);
+	// Opens (or finds) the review of a PR: crb <pr>.
+	app.post("/api/reviews", async (request) => {
+		const req = parseOpenBody(request.body);
+		const { id } = await openReview(registry, req, options.progress);
+		const key = options.accessKey ? `?key=${options.accessKey}` : "";
+		return { id, url: `${baseUrl(request)}/r/${id}${key}` };
+	});
+	const baseUrl = (request: FastifyRequest) =>
+		options.baseUrl?.() ?? `http://${request.headers.host ?? "localhost"}`;
+
+	// A review's routes, by its id: /api/r/<id>/session, ...
+	await app.register(
+		async (review) => {
+			review.addHook<{ Params: { id: string } }>(
+				"preHandler",
+				async (request) => {
+					sessions.set(request, await registry.get(request.params.id));
+				},
 			);
-			// The server's clock: the page judges the age by it, not its own.
-			return { ...overview, servedAt: new Date().toISOString() };
-		},
-	);
-	// A read's review threads, once `stage` is in (OverviewRead).
-	app.get<{ Querystring: { read?: string; stage?: string } }>(
-		"/api/threads",
-		(request) => {
-			const { read, stage } = request.query;
-			if (!read) throw new BadRequestError("read is required");
-			if (!STAGES.includes(stage ?? "")) {
-				throw new BadRequestError(`Unknown stage: ${String(stage)}`);
-			}
-			return session.threads(read, stage as ThreadsStage);
-		},
-	);
-	// The comments of a read's threads, by id (OverviewRead.comments).
-	app.get<{ Querystring: { read?: string; ids?: string } }>(
-		"/api/comments",
-		(request) => {
-			const { read, ids } = request.query;
-			if (!read) throw new BadRequestError("read is required");
-			const list = (ids ?? "").split(",").filter(Boolean);
-			if (list.length > COMMENTS_BATCH) {
-				throw new BadRequestError(
-					`At most ${COMMENTS_BATCH} threads a request`,
-				);
-			}
-			return session.comments(read, list);
-		},
-	);
-	// A read's timeline (OverviewRead).
-	app.get<{ Querystring: { read?: string } }>("/api/timeline", (request) => {
-		const { read } = request.query;
-		if (!read) throw new BadRequestError("read is required");
-		return session.timeline(read);
-	});
-	app.get("/api/review", () => session.review());
-	app.get<{ Params: { index: string }; Querystring: { revision?: unknown } }>(
-		"/api/files/:index/hunks",
-		(request) =>
-			session.fileHunks(
-				revisionParam(request.query.revision),
-				fileIndex(request.params.index),
-			),
-	);
-	app.get<{
-		Params: { index: string };
-		Querystring: { revision?: unknown; newFrom?: string; newTo?: string };
-	}>("/api/files/:index/context", (request) => {
-		const index = fileIndex(request.params.index);
-		const revision = revisionParam(request.query.revision);
-		const { newFrom, newTo } = request.query;
-		if (
-			!POSITIVE.test(newFrom ?? "") ||
-			!POSITIVE.test(newTo ?? "") ||
-			Number(newFrom) > Number(newTo)
-		) {
-			throw new BadRequestError(
-				"newFrom and newTo must be line numbers with newFrom <= newTo",
-			);
-		}
-		return session.context(revision, index, Number(newFrom), Number(newTo));
-	});
-	app.post("/api/review/states", (request) => {
-		const { revision, changes } = parseStatesBody(request.body);
-		return session.setStates(revision, changes);
-	});
-	// Thread writes, posted to GitHub at once (threadWrites.ts, newThreads.ts).
-	app.post("/api/threads", (request) => {
-		const problem = newThreadProblem(request.body);
-		if (problem) throw new WriteRefusedError(problem, "invalid");
-		const r = request.body as NewThreadRequest;
-		const line =
-			r.subject === "line"
-				? {
-						...(r.startSide ? { startSide: r.startSide } : {}),
-						...(r.startLine ? { startLine: r.startLine } : {}),
-						side: r.side,
-						line: r.line,
-						startCol: r.startCol ?? null,
-						endCol: r.endCol ?? null,
+			review.get("/session", async (request) => sessionOf(request).info());
+			// The last overview read; `maxAge` (ms) asks for one read at most that long ago.
+			review.get<{ Querystring: { maxAge?: string } }>(
+				"/overview",
+				async (request) => {
+					const { maxAge } = request.query;
+					if (maxAge !== undefined && !INDEX.test(maxAge)) {
+						throw new BadRequestError(
+							"maxAge must be a number of milliseconds",
+						);
 					}
-				: {};
-		return session.startThread({
-			clientId: r.clientId,
-			body: r.body,
-			attemptedAt: r.attemptedAt,
-			retry: r.retry,
-			path: r.path,
-			commit: r.commit,
-			subject: r.subject,
-			...line,
-		});
-	});
-	app.post<{ Params: { threadId: string } }>(
-		"/api/threads/:threadId/replies",
-		(request) => {
-			const problem = replyProblem(request.body);
-			if (problem) throw new WriteRefusedError(problem, "invalid");
-			const { body, attemptedAt, retry, clientId, knownCommentIds } =
-				request.body as ReplyRequest;
-			return session.replyToThread(threadIdParam(request.params.threadId), {
-				body,
-				attemptedAt,
-				retry,
-				clientId,
-				knownCommentIds,
+					const overview = await sessionOf(request).overview(
+						maxAge === undefined ? undefined : Number(maxAge),
+					);
+					// The server's clock: the page judges the age by it, not its own.
+					return { ...overview, servedAt: new Date().toISOString() };
+				},
+			);
+			// A read's review threads, once `stage` is in (OverviewRead).
+			review.get<{ Querystring: { read?: string; stage?: string } }>(
+				"/threads",
+				(request) => {
+					const { read, stage } = request.query;
+					if (!read) throw new BadRequestError("read is required");
+					if (!STAGES.includes(stage ?? "")) {
+						throw new BadRequestError(`Unknown stage: ${String(stage)}`);
+					}
+					return sessionOf(request).threads(read, stage as ThreadsStage);
+				},
+			);
+			// The comments of a read's threads, by id (OverviewRead.comments).
+			review.get<{ Querystring: { read?: string; ids?: string } }>(
+				"/comments",
+				(request) => {
+					const { read, ids } = request.query;
+					if (!read) throw new BadRequestError("read is required");
+					const list = (ids ?? "").split(",").filter(Boolean);
+					if (list.length > COMMENTS_BATCH) {
+						throw new BadRequestError(
+							`At most ${COMMENTS_BATCH} threads a request`,
+						);
+					}
+					return sessionOf(request).comments(read, list);
+				},
+			);
+			// A read's timeline (OverviewRead).
+			review.get<{ Querystring: { read?: string } }>("/timeline", (request) => {
+				const { read } = request.query;
+				if (!read) throw new BadRequestError("read is required");
+				return sessionOf(request).timeline(read);
 			});
-		},
-	);
-	app.post<{ Params: { threadId: string } }>(
-		"/api/threads/:threadId/resolved",
-		(request) => {
-			const resolved = (request.body as { resolved?: unknown } | null)
-				?.resolved;
-			if (typeof resolved !== "boolean") {
-				throw new WriteRefusedError(
-					"resolved must be true or false",
-					"invalid",
+			review.get("/review", (request) => sessionOf(request).review());
+			review.get<{
+				Params: { index: string };
+				Querystring: { revision?: unknown };
+			}>("/files/:index/hunks", (request) =>
+				sessionOf(request).fileHunks(
+					revisionParam(request.query.revision),
+					fileIndex(request.params.index),
+				),
+			);
+			review.get<{
+				Params: { index: string };
+				Querystring: { revision?: unknown; newFrom?: string; newTo?: string };
+			}>("/files/:index/context", (request) => {
+				const index = fileIndex(request.params.index);
+				const revision = revisionParam(request.query.revision);
+				const { newFrom, newTo } = request.query;
+				if (
+					!POSITIVE.test(newFrom ?? "") ||
+					!POSITIVE.test(newTo ?? "") ||
+					Number(newFrom) > Number(newTo)
+				) {
+					throw new BadRequestError(
+						"newFrom and newTo must be line numbers with newFrom <= newTo",
+					);
+				}
+				return sessionOf(request).context(
+					revision,
+					index,
+					Number(newFrom),
+					Number(newTo),
 				);
-			}
-			return session.setThreadResolved(
-				threadIdParam(request.params.threadId),
-				resolved,
+			});
+			review.post("/review/states", (request) => {
+				const { revision, changes } = parseStatesBody(request.body);
+				return sessionOf(request).setStates(revision, changes);
+			});
+			// Thread writes, posted to GitHub at once (threadWrites.ts, newThreads.ts).
+			review.post("/threads", (request) => {
+				const problem = newThreadProblem(request.body);
+				if (problem) throw new WriteRefusedError(problem, "invalid");
+				const r = request.body as NewThreadRequest;
+				const line =
+					r.subject === "line"
+						? {
+								...(r.startSide ? { startSide: r.startSide } : {}),
+								...(r.startLine ? { startLine: r.startLine } : {}),
+								side: r.side,
+								line: r.line,
+								startCol: r.startCol ?? null,
+								endCol: r.endCol ?? null,
+							}
+						: {};
+				return sessionOf(request).startThread({
+					clientId: r.clientId,
+					body: r.body,
+					attemptedAt: r.attemptedAt,
+					retry: r.retry,
+					path: r.path,
+					commit: r.commit,
+					subject: r.subject,
+					...line,
+				});
+			});
+			review.post<{ Params: { threadId: string } }>(
+				"/threads/:threadId/replies",
+				(request) => {
+					const problem = replyProblem(request.body);
+					if (problem) throw new WriteRefusedError(problem, "invalid");
+					const { body, attemptedAt, retry, clientId, knownCommentIds } =
+						request.body as ReplyRequest;
+					return sessionOf(request).replyToThread(
+						threadIdParam(request.params.threadId),
+						{
+							body,
+							attemptedAt,
+							retry,
+							clientId,
+							knownCommentIds,
+						},
+					);
+				},
 			);
-		},
-	);
-	app.patch<{ Params: { threadId: string; commentId: string } }>(
-		"/api/threads/:threadId/comments/:commentId",
-		(request) => {
-			const problem = editProblem(request.body);
-			if (problem) throw new WriteRefusedError(problem, "invalid");
-			const { body, from, force } = request.body as EditRequest;
-			return session.editThreadComment(
-				threadIdParam(request.params.threadId),
-				commentIdParam(request.params.commentId),
-				{ body, from, force },
+			review.post<{ Params: { threadId: string } }>(
+				"/threads/:threadId/resolved",
+				(request) => {
+					const resolved = (request.body as { resolved?: unknown } | null)
+						?.resolved;
+					if (typeof resolved !== "boolean") {
+						throw new WriteRefusedError(
+							"resolved must be true or false",
+							"invalid",
+						);
+					}
+					return sessionOf(request).setThreadResolved(
+						threadIdParam(request.params.threadId),
+						resolved,
+					);
+				},
 			);
+			review.patch<{ Params: { threadId: string; commentId: string } }>(
+				"/threads/:threadId/comments/:commentId",
+				(request) => {
+					const problem = editProblem(request.body);
+					if (problem) throw new WriteRefusedError(problem, "invalid");
+					const { body, from, force } = request.body as EditRequest;
+					return sessionOf(request).editThreadComment(
+						threadIdParam(request.params.threadId),
+						commentIdParam(request.params.commentId),
+						{ body, from, force },
+					);
+				},
+			);
+			review.delete<{ Params: { threadId: string; commentId: string } }>(
+				"/threads/:threadId/comments/:commentId",
+				(request) =>
+					sessionOf(request).deleteThreadComment(
+						threadIdParam(request.params.threadId),
+						commentIdParam(request.params.commentId),
+					),
+			);
+			review.post("/refresh", (request) => sessionOf(request).refresh());
+			review.get("/head", (request) => sessionOf(request).checkHead());
 		},
+		{ prefix: "/api/r/:id" },
 	);
-	app.delete<{ Params: { threadId: string; commentId: string } }>(
-		"/api/threads/:threadId/comments/:commentId",
-		(request) =>
-			session.deleteThreadComment(
-				threadIdParam(request.params.threadId),
-				commentIdParam(request.params.commentId),
-			),
-	);
-	app.post("/api/refresh", () => session.refresh());
-	app.get("/api/head", () => session.checkHead());
+
+	// A typed or pasted address: the PR's review, opened if need be.
+	app.get<{
+		Params: { owner: string; repo: string; number: string };
+		Querystring: { head?: string };
+	}>("/pr/:owner/:repo/:number", async (request, reply) => {
+		const { owner, repo, number } = request.params;
+		try {
+			const req: OpenRequest = { pr: `${owner}/${repo}#${number}` };
+			parsePrArg(req.pr);
+			const { head } = request.query;
+			if (head !== undefined) req.head = parseHead(head);
+			const { id } = await openReview(registry, req, options.progress);
+			return reply.redirect(`/r/${id}`, 302);
+		} catch (error) {
+			if (error instanceof GitError) throw error;
+			return notFoundPage(reply, (error as Error).message);
+		}
+	});
 
 	const isApi = (url: string) => /^\/api(\/|\?|$)/.test(url);
-	if (options.webRoot && existsSync(options.webRoot)) {
-		await app.register(fastifyStatic, { root: options.webRoot });
+	const webRoot =
+		options.webRoot && existsSync(options.webRoot) ? options.webRoot : null;
+	/** The web 404 page, saying why (`reason`); JSON without the web UI. */
+	const notFoundPage = async (
+		reply: import("fastify").FastifyReply,
+		reason: string,
+	) => {
+		if (!webRoot) return reply.status(404).send({ error: reason });
+		const html = await readFile(join(webRoot, "index.html"), "utf8");
+		const meta = `<meta name="crb-not-found" content="${escapeAttribute(reason)}">`;
+		return reply
+			.status(404)
+			.type("text/html; charset=utf-8")
+			.send(html.replace("</head>", `${meta}</head>`));
+	};
+	if (webRoot) {
+		await app.register(fastifyStatic, { root: webRoot });
 		// Client routes (TanStack Router) all load the single page.
 		app.setNotFoundHandler((request, reply) => {
 			if (isApi(request.url) || !["GET", "HEAD"].includes(request.method)) {
@@ -314,6 +444,84 @@ export async function buildApp(
 	}
 
 	return app;
+}
+
+/** `/api/r/<id>`, before a review route's own path. */
+const REVIEW_PREFIX = /^\/api\/r\/[^/?]+/;
+
+const escapeAttribute = (text: string) =>
+	text.replace(
+		/[&<>"']/g,
+		(c) =>
+			({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[
+				c
+			] ?? c,
+	);
+
+/**
+ * Opens the review; why it can't be (merged, closed, no such PR, gh not
+ * logged in) is a RefusedReviewError. A git failure stays what it is.
+ */
+async function openReview(
+	registry: SessionRegistry,
+	req: OpenRequest,
+	progress?: (message: string) => void,
+) {
+	try {
+		return await registry.open(req, progress);
+	} catch (error) {
+		if (
+			error instanceof GitError ||
+			error instanceof SessionClosedError ||
+			!(error instanceof Error)
+		) {
+			throw error;
+		}
+		if (error instanceof TypeError || error instanceof RangeError) throw error;
+		throw new RefusedReviewError(error.message);
+	}
+}
+
+/** POST /api/reviews' body: `{ pr, head?, asOf?, viewer? }`, all strings. */
+function parseOpenBody(body: unknown): OpenRequest {
+	const fail = (message: string) => new BadRequestError(message);
+	if (typeof body !== "object" || body === null) {
+		throw fail("Expected a JSON body");
+	}
+	const { pr, head, asOf, viewer } = body as Record<string, unknown>;
+	if (typeof pr !== "string") throw fail("pr is required");
+	const parsePr = () => {
+		try {
+			return parsePrArg(pr);
+		} catch (error) {
+			throw fail((error as Error).message);
+		}
+	};
+	if (!("owner" in parsePr())) {
+		throw fail("pr must be a PR URL or owner/repo#n");
+	}
+	const req: OpenRequest = { pr };
+	const optional = (name: string, value: unknown) => {
+		if (value !== undefined && typeof value !== "string") {
+			throw fail(`${name} must be a string`);
+		}
+		return value as string | undefined;
+	};
+	const h = optional("head", head);
+	const a = optional("asOf", asOf);
+	const v = optional("viewer", viewer);
+	try {
+		if (h !== undefined) req.head = parseHead(h) satisfies HeadSpec;
+		if (a !== undefined) req.asOf = parseAsOf(a);
+	} catch (error) {
+		throw fail((error as Error).message);
+	}
+	if (req.head && req.asOf) throw fail("--head can't be combined with --as-of");
+	if (v !== undefined) {
+		if (!VIEWER.test(v)) throw fail(`Invalid --viewer: ${v}`);
+		req.viewer = v;
+	}
+	return req;
 }
 
 /** WriteError's HTTP statuses. */

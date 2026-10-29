@@ -18,18 +18,26 @@ import type {
 	SessionInfo,
 } from "../shared/types";
 import { buildApp } from "./app";
-import { Session } from "./session";
+import { SessionRegistry } from "./registry";
+import { BUILD, VERSION_HEADER } from "./version";
 
 describe("API", () => {
 	let pr: PrFixture;
-	let session: Session;
+	let registry: SessionRegistry;
+	let id: string;
 	let app: FastifyInstance;
 	let host: string;
+	/** A review route's path for review `of` (this test's by default). */
+	const r = (url: string, of = id) =>
+		/^\/api\/(?!r\/|version|reviews)/.test(url)
+			? url.replace(/^\/api\//, `/api/r/${of}/`)
+			: url;
 
 	beforeEach(async () => {
 		pr = createPrFixture();
-		session = await Session.open(pr.arg, process.cwd());
-		app = await buildApp(session, { accessKey: null });
+		registry = new SessionRegistry();
+		({ id } = await registry.open({ pr: pr.arg }));
+		app = await buildApp(registry, { accessKey: null });
 		// The loopback Host check needs the real listening port.
 		await app.listen({ port: 0, host: "127.0.0.1" });
 		const address = app.server.address();
@@ -38,11 +46,12 @@ describe("API", () => {
 	});
 	afterEach(async () => {
 		await app.close();
+		await registry.closeAll();
 		await pr.cleanup();
 	});
 
 	const inject = (url: string, extra: Record<string, unknown> = {}) =>
-		app.inject({ method: "GET", url, headers: { host }, ...extra });
+		app.inject({ method: "GET", url: r(url), headers: { host }, ...extra });
 	const get = async (url: string) => {
 		const res = await inject(url);
 		expect(res.statusCode, res.body).toBe(200);
@@ -492,7 +501,7 @@ describe("API", () => {
 		["loopback on another port", { host: "127.0.0.1:1" }],
 		["no host", { host: "" }],
 	])("refuses %s with 403 (DNS rebinding)", async (_, headers) => {
-		const res = await app.inject({ url: "/api/session", headers });
+		const res = await app.inject({ url: r("/api/session"), headers });
 		expect(res.statusCode).toBe(403);
 		expect(res.json().error).toBeTruthy();
 	});
@@ -501,7 +510,7 @@ describe("API", () => {
 		const port = host.split(":")[1];
 		for (const h of ["127.0.0.1", "localhost", "LOCALHOST", "[::1]"]) {
 			const res = await app.inject({
-				url: "/api/session",
+				url: r("/api/session"),
 				headers: { host: `${h}:${port}` },
 			});
 			expect(res.statusCode, h).toBe(200);
@@ -655,7 +664,9 @@ describe("API", () => {
 				error:
 					"Octo_Cat does not have permission to resolve this review thread.",
 			});
-			const theirs = await Session.open(pr.arg, process.cwd(), () => {}, {
+			const theirs = new SessionRegistry();
+			const { id: theirId } = await theirs.open({
+				pr: pr.arg,
 				viewer: "someone-else",
 			});
 			const other = await buildApp(theirs, { accessKey: null });
@@ -665,7 +676,7 @@ describe("API", () => {
 				if (!address || typeof address === "string") throw new Error("no port");
 				const res = await other.inject({
 					method: "POST",
-					url: "/api/threads/T12-0/replies",
+					url: r("/api/threads/T12-0/replies", theirId),
 					payload: ok,
 					headers: { host: `127.0.0.1:${address.port}` },
 				});
@@ -673,6 +684,7 @@ describe("API", () => {
 				expect(res.json().code).toBe("writes-off");
 			} finally {
 				await other.close();
+				await theirs.closeAll();
 			}
 		});
 
@@ -745,7 +757,8 @@ describe("API", () => {
 
 		it("a closed session answers 503", async () => {
 			await setup();
-			await session.close();
+			// crb shutting down.
+			await registry.closeAll();
 			const res = await replyTo("T12-0", ok);
 			expect(res.statusCode).toBe(503);
 		});
@@ -948,7 +961,9 @@ describe("API", () => {
 			});
 			expect(theirs.statusCode, theirs.body).toBe(403);
 			expect(theirs.json().code).toBe("forbidden");
-			const as = await Session.open(pr.arg, process.cwd(), () => {}, {
+			const as = new SessionRegistry();
+			const { id: theirId } = await as.open({
+				pr: pr.arg,
 				viewer: "someone-else",
 			});
 			const other = await buildApp(as, { accessKey: null });
@@ -960,13 +975,13 @@ describe("API", () => {
 				for (const res of [
 					await other.inject({
 						method: "PATCH",
-						url: url("T12-0", "C12-0"),
+						url: r(url("T12-0", "C12-0"), theirId),
 						payload: edit,
 						headers,
 					}),
 					await other.inject({
 						method: "DELETE",
-						url: url("T12-0", "C12-0"),
+						url: r(url("T12-0", "C12-0"), theirId),
 						headers,
 					}),
 				]) {
@@ -975,6 +990,7 @@ describe("API", () => {
 				}
 			} finally {
 				await other.close();
+				await as.closeAll();
 			}
 		});
 
@@ -1015,9 +1031,208 @@ describe("API", () => {
 			expect((await patch("T12-0", "C12-0", edit)).statusCode).toBe(502);
 			await setup({ failNext: { op: "delete", status: 500 } });
 			expect((await del("T12-1", "C12-1")).statusCode).toBe(502);
-			await session.close();
+			// crb shutting down.
+			await registry.closeAll();
 			expect((await patch("T12-0", "C12-0", edit)).statusCode).toBe(503);
 			expect((await del("T12-1", "C12-1")).statusCode).toBe(503);
+		});
+	});
+
+	describe("the server's routes", () => {
+		const commits = () => ({
+			commits: [
+				{
+					commit: {
+						oid: pr.head(),
+						committedDate: "2026-01-02T10:00:00Z",
+						pushedDate: null,
+					},
+				},
+			],
+		});
+
+		it("GET /api/version is this build", async () => {
+			expect(await get("/api/version")).toEqual(BUILD);
+		});
+
+		it("refuses a crb of another build, naming both; takes its own", async () => {
+			const other = { version: BUILD.version, commit: "f".repeat(40) };
+			for (const url of ["/api/version", "/api/reviews", r("/api/session")]) {
+				const res = await inject(url, {
+					headers: { host, [VERSION_HEADER]: JSON.stringify(other) },
+				});
+				expect(res.statusCode, url).toBe(409);
+				expect(res.json()).toEqual({
+					error: `server runs ${BUILD.version} (${BUILD.commit.slice(0, 7)}), this crb is ${BUILD.version} (fffffff). Restart the server (crb serve) or run the matching crb`,
+					code: "version-mismatch",
+					server: BUILD,
+				});
+			}
+			const garbled = await inject("/api/version", {
+				headers: { host, [VERSION_HEADER]: "nope" },
+			});
+			expect(garbled.statusCode).toBe(409);
+			const own = await inject(r("/api/session"), {
+				headers: { host, [VERSION_HEADER]: JSON.stringify(BUILD) },
+			});
+			expect(own.statusCode).toBe(200);
+			// The browser sends none.
+			expect((await inject(r("/api/session"))).statusCode).toBe(200);
+		});
+
+		it("POST /api/reviews opens a review and answers its URL", async () => {
+			const res = await post("/api/reviews", { pr: pr.arg });
+			expect(res.statusCode, res.body).toBe(200);
+			expect(res.json()).toEqual({ id, url: `http://${host}/r/${id}` });
+			const url = await post("/api/reviews", {
+				pr: "https://github.com/acme/widget/pull/12",
+			});
+			expect(url.json().id).toBe(id);
+		});
+
+		it("POST /api/reviews: the server's own URL and key when it has them", async () => {
+			const keyed = await buildApp(registry, {
+				accessKey: "k3y",
+				baseUrl: () => "http://100.1.2.3:4800",
+			});
+			try {
+				const res = await keyed.inject({
+					method: "POST",
+					url: "/api/reviews?key=k3y",
+					payload: { pr: pr.arg },
+				});
+				expect(res.json()).toEqual({
+					id,
+					url: `http://100.1.2.3:4800/r/${id}?key=k3y`,
+				});
+			} finally {
+				await keyed.close();
+			}
+		});
+
+		it("POST /api/reviews refuses a bad body (400) and an unreviewable PR (409)", async () => {
+			for (const body of [
+				undefined,
+				{},
+				{ pr: 12 },
+				{ pr: "12" },
+				{ pr: "not a pr" },
+				{ pr: pr.arg, head: "xyz" },
+				{ pr: pr.arg, asOf: "2026-01-03" },
+				{ pr: pr.arg, head: "reviewed", asOf: "2026-01-03T10:00:00Z" },
+				{ pr: pr.arg, viewer: "../x" },
+				{ pr: pr.arg, head: 7 },
+			]) {
+				const res = await post("/api/reviews", body);
+				expect(res.statusCode, JSON.stringify(body)).toBe(400);
+			}
+			const missing = await post("/api/reviews", { pr: "acme/widget#99" });
+			expect(missing.statusCode).toBe(409);
+			expect(missing.json()).toMatchObject({ code: "refused" });
+			expect(missing.json().error).toMatch(/not found/);
+			pr.scenario({
+				prs: {
+					12: {
+						view: {
+							...prView({ headRefOid: pr.head(), baseRefName: "main" }),
+							state: "MERGED",
+						},
+					},
+				},
+			});
+			// Asked another way than the open review was: read anew.
+			const merged = await post("/api/reviews", {
+				pr: "https://github.com/acme/widget/pull/12",
+			});
+			expect(merged.statusCode, merged.body).toBe(409);
+			expect(merged.json()).toEqual({
+				code: "refused",
+				error: "PR acme/widget#12 is already merged; nothing to review",
+			});
+		});
+
+		it("serves two reviews on one app, each by its id", async () => {
+			pr.scenario({
+				prs: {
+					12: {
+						view: prView({ headRefOid: pr.head(), baseRefName: "main" }),
+						graphql: commits(),
+					},
+				},
+			});
+			const pinned = await post("/api/reviews", {
+				pr: pr.arg,
+				head: pr.head().slice(0, 8),
+			});
+			expect(pinned.statusCode, pinned.body).toBe(200);
+			const other: string = pinned.json().id;
+			expect(other).not.toBe(id);
+			const plain: SessionInfo = await get(r("/api/session"));
+			const theirs: SessionInfo = await get(r("/api/session", other));
+			expect(plain.pinnedHead).toBeNull();
+			expect(theirs.pinnedHead).toBe(pr.head());
+		});
+
+		it("an unknown review id is a 404 with its code", async () => {
+			for (const bad of ["01zzzzzzzzzzzzzzzzzzzzzzzz", "nope"]) {
+				const res = await inject(`/api/r/${bad}/session`);
+				expect(res.statusCode).toBe(404);
+				expect(res.json()).toMatchObject({ code: "unknown-review" });
+			}
+		});
+
+		it("GET /pr/<owner>/<repo>/<n> redirects to the review", async () => {
+			const res = await inject("/pr/acme/widget/12");
+			expect(res.statusCode).toBe(302);
+			expect(res.headers.location).toBe(`/r/${id}`);
+			pr.scenario({
+				prs: {
+					12: {
+						view: prView({ headRefOid: pr.head(), baseRefName: "main" }),
+						graphql: commits(),
+					},
+				},
+			});
+			const pinned = await inject(`/pr/acme/widget/12?head=${pr.head()}`);
+			expect(pinned.statusCode).toBe(302);
+			expect(pinned.headers.location).not.toBe(`/r/${id}`);
+		});
+
+		it("GET /pr/... that can't be opened is the web 404 page saying why", async () => {
+			const web = mkdtempSync(join(tmpdir(), "crb-web-"));
+			writeFileSync(join(web, "index.html"), "<html><head></head><p>spa</p>");
+			const withWeb = await buildApp(registry, {
+				webRoot: web,
+				accessKey: "k3y",
+			});
+			try {
+				const missing = await withWeb.inject({
+					url: "/pr/acme/widget/99?key=k3y",
+				});
+				expect(missing.statusCode).toBe(404);
+				expect(missing.headers["content-type"]).toMatch(/text\/html/);
+				expect(missing.body).toMatch(
+					/<meta name="crb-not-found" content="[^"]*not found[^"]*"><\/head>/,
+				);
+				const bad = await withWeb.inject({
+					url: "/pr/acme/widget/0?key=k3y",
+				});
+				expect(bad.statusCode).toBe(404);
+				expect(bad.body).toContain("Not a PR");
+				const quote = await withWeb.inject({
+					url: `/pr/acme/widget/12?key=k3y&head=${encodeURIComponent('"><script>')}`,
+				});
+				expect(quote.statusCode).toBe(404);
+				expect(quote.body).not.toContain("<script>");
+				expect(quote.body).toContain("&quot;&gt;&lt;script&gt;");
+			} finally {
+				await withWeb.close();
+				rmSync(web, { recursive: true, force: true });
+			}
+			// Without the web UI: JSON.
+			const json = await inject("/pr/acme/widget/99");
+			expect(json.statusCode).toBe(404);
+			expect(json.json().error).toMatch(/not found/);
 		});
 	});
 
@@ -1030,7 +1245,7 @@ describe("API", () => {
 			mkdirSync(join(web, "assets"));
 			writeFileSync(join(web, "index.html"), "<p>spa</p>");
 			writeFileSync(join(web, "assets", "app.js"), "js();");
-			keyed = await buildApp(session, { webRoot: web, accessKey: "k3y" });
+			keyed = await buildApp(registry, { webRoot: web, accessKey: "k3y" });
 		});
 		afterEach(async () => {
 			await keyed.close();
@@ -1038,13 +1253,20 @@ describe("API", () => {
 		});
 
 		it("checks the key on API and static requests", async () => {
-			for (const url of ["/", "/files", "/assets/app.js", "/api/session"]) {
+			for (const url of [
+				"/",
+				`/r/${id}/files`,
+				"/assets/app.js",
+				r("/api/session"),
+				"/api/version",
+				"/pr/acme/widget/12",
+			]) {
 				expect((await keyed.inject(url)).statusCode).toBe(401);
 			}
 			const cookies = { crb_key: "k3y" };
 			const page = await keyed.inject({ url: "/assets/app.js", cookies });
 			expect(page.body).toBe("js();");
-			const api = await keyed.inject({ url: "/api/session", cookies });
+			const api = await keyed.inject({ url: r("/api/session"), cookies });
 			expect(api.statusCode).toBe(200);
 		});
 
@@ -1063,7 +1285,12 @@ describe("API", () => {
 
 		it("serves index.html for client routes and 404 JSON for unknown API paths", async () => {
 			const cookies = { crb_key: "k3y" };
-			for (const url of ["/", "/files", "/files?path=a.txt"]) {
+			for (const url of [
+				"/",
+				`/r/${id}`,
+				`/r/${id}/files`,
+				`/r/${id}/files?path=a.txt`,
+			]) {
 				const res = await keyed.inject({ url, cookies });
 				expect(res.statusCode).toBe(200);
 				expect(res.body).toBe("<p>spa</p>");
@@ -1077,21 +1304,21 @@ describe("API", () => {
 			const cookies = { crb_key: "k3y" };
 			const headers = { host: "192.168.1.5:4747" };
 			const read = await keyed.inject({
-				url: "/api/session",
+				url: r("/api/session"),
 				cookies,
 				headers,
 			});
 			expect(read.statusCode).toBe(200);
 			const evil = await keyed.inject({
 				method: "POST",
-				url: "/api/refresh",
+				url: r("/api/refresh"),
 				cookies,
 				headers: { ...headers, origin: "http://evil.example" },
 			});
 			expect(evil.statusCode).toBe(403);
 			const own = await keyed.inject({
 				method: "POST",
-				url: "/api/refresh",
+				url: r("/api/refresh"),
 				cookies,
 				headers: { ...headers, origin: "http://192.168.1.5:4747" },
 			});

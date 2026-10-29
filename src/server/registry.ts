@@ -1,7 +1,7 @@
 import { cacheDir } from "./paths.js";
 import type { HeadSpec } from "./pinnedHead.js";
 import { findReviewById } from "./review/reviews.js";
-import { Session } from "./session.js";
+import { Session, SessionClosedError } from "./session.js";
 
 /** What opens a review: today's `crb <pr>` arguments. */
 export interface OpenRequest {
@@ -66,7 +66,9 @@ export class SessionRegistry {
 		req: OpenRequest,
 		progress?: (m: string) => void,
 	): Promise<{ id: string; session: Session }> {
-		if (this.#closed) return Promise.reject(new Error("The server is closing"));
+		if (this.#closed) {
+			return Promise.reject(new SessionClosedError("The server is closing"));
+		}
 		const key = JSON.stringify([
 			req.pr,
 			req.cwd ?? null,
@@ -108,7 +110,7 @@ export class SessionRegistry {
 		const existing = this.#open.get(session.id);
 		if (this.#closed) {
 			void session.close();
-			throw new Error("The server is closing");
+			throw new SessionClosedError("The server is closing");
 		}
 		if (existing && !existing.session.closed && existing.viewer === viewer) {
 			void session.close();
@@ -125,6 +127,7 @@ export class SessionRegistry {
 	 * clone that holds it. UnknownReviewError when none does.
 	 */
 	async get(id: string): Promise<Session> {
+		if (this.#closed) throw new SessionClosedError("The server is closing");
 		await this.sweep();
 		const entry = this.#open.get(id);
 		if (entry) {
