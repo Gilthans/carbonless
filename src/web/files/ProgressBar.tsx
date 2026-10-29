@@ -19,7 +19,10 @@ const OPEN_GAP = 6;
 /**
  * Reviewed fills from the left; crossed off is hatched at the right end.
  * `incomplete`: something is still unreviewed even if the counts look full
- * (a rename weighs nothing in lines), so the meter is never shown full.
+ * (a rename weighs nothing in lines), so the meter is never shown full: both
+ * segments shrink by the same factor to leave the gap, so neither vanishes
+ * while its count is above zero (7 reviewed next to 395 crossed off is a
+ * sliver of green, not none).
  */
 export function Meter({
 	counts,
@@ -34,13 +37,10 @@ export function Meter({
 		counts.total === 0 ? 0 : (n / counts.total) * 100;
 	let reviewed = raw(counts.reviewed);
 	let crossed = raw(counts.crossedOff);
-	if (incomplete) {
-		const over = reviewed + crossed - (100 - OPEN_GAP);
-		if (over > 0) {
-			const fromReviewed = Math.min(reviewed, over);
-			reviewed -= fromReviewed;
-			crossed = Math.max(0, crossed - (over - fromReviewed));
-		}
+	if (incomplete && reviewed + crossed > 100 - OPEN_GAP) {
+		const scale = (100 - OPEN_GAP) / (reviewed + crossed);
+		reviewed *= scale;
+		crossed *= scale;
 	}
 	const widths = { reviewed, crossed };
 	// Spans, so a meter can sit inside a button (a tree row).

@@ -3,7 +3,7 @@ import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Progress } from "../../shared/types";
-import { ProgressBar } from "./ProgressBar";
+import { Meter, ProgressBar } from "./ProgressBar";
 
 const sample: Progress = {
 	clusters: { total: 39, reviewed: 18, crossedOff: 4 },
@@ -110,6 +110,46 @@ describe("ProgressBar", () => {
 			"aria-valuetext",
 			"Nothing left to review: 2 clusters crossed off, 0 reviewed",
 		);
+	});
+
+	it("keeps the gap for unreviewed work without emptying a segment", () => {
+		const width = (name: string) =>
+			Number.parseFloat(
+				document.querySelector<HTMLElement>(`[data-part="${name}"]`)?.style
+					.width ?? "NaN",
+			);
+		// 7 reviewed, 395 crossed off, 11 left: the gap's 3.3 points used to
+		// come out of the 1.7-point reviewed segment first, leaving no green
+		// at all under a "38%".
+		const { rerender } = render(
+			<Meter
+				counts={{ total: 413, reviewed: 7, crossedOff: 395 }}
+				incomplete
+			/>,
+		);
+		expect(width("reviewed")).toBeGreaterThan(1);
+		expect(width("crossed-off")).toBeGreaterThan(90);
+		expect(width("reviewed") + width("crossed-off")).toBeCloseTo(94, 5);
+		// The mirror: two crossed off beside 95 reviewed keep their hatch.
+		rerender(
+			<Meter counts={{ total: 100, reviewed: 95, crossedOff: 2 }} incomplete />,
+		);
+		expect(width("crossed-off")).toBeGreaterThan(1);
+		expect(width("reviewed")).toBeGreaterThan(90);
+		expect(width("reviewed") + width("crossed-off")).toBeCloseTo(94, 5);
+		// Room for the gap already: nothing moves.
+		rerender(
+			<Meter
+				counts={{ total: 100, reviewed: 50, crossedOff: 20 }}
+				incomplete
+			/>,
+		);
+		expect(width("reviewed")).toBe(50);
+		expect(width("crossed-off")).toBe(20);
+		// Nothing left: the counts are drawn as they are.
+		rerender(<Meter counts={{ total: 100, reviewed: 98, crossedOff: 2 }} />);
+		expect(width("reviewed")).toBe(98);
+		expect(width("crossed-off")).toBe(2);
 	});
 
 	it("says when clusters without changed lines are left", () => {
