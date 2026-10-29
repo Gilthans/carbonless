@@ -10,12 +10,13 @@ import {
 	stat,
 	utimes,
 } from "node:fs/promises";
-import { homedir, hostname } from "node:os";
-import { dirname, isAbsolute, join } from "node:path";
+import { hostname } from "node:os";
+import { dirname, join } from "node:path";
 import { GhError } from "./errors.js";
 import type { PrMeta } from "./gh.js";
 import { runGh } from "./gh.js";
 import { GitError, inheritedEnv, runGit } from "./git.js";
+import { cacheDir } from "./paths.js";
 
 /**
  * carbonless's own bare clone of a GitHub repository. The reviewer's working
@@ -32,12 +33,8 @@ export function clonePath(owner: string, repo: string): string {
 			throw new GhError(`Not a GitHub owner/repo: ${owner}/${repo}`);
 		}
 	}
-	const xdg = process.env.XDG_CACHE_HOME;
-	// The XDG spec says relative values are invalid and must be ignored.
-	const cache = xdg && isAbsolute(xdg) ? xdg : join(homedir(), ".cache");
 	return join(
-		cache,
-		"carbonless",
+		cacheDir(),
 		"repos",
 		owner.toLowerCase(),
 		`${repo.toLowerCase()}.git`,
