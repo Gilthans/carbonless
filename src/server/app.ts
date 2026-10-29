@@ -18,6 +18,9 @@ import { parseAsOf } from "./asOf.js";
 import { GhError, WriteRefusedError } from "./errors.js";
 import { NODE_ID, parsePrArg } from "./gh.js";
 import { GitError } from "./git.js";
+import type { HomeService } from "./home/homeService.js";
+import { registerHomeRoutes } from "./home/routes.js";
+import { HomeSearch } from "./home/search.js";
 import { newThreadProblem } from "./newThreads.js";
 import { type HeadSpec, parseHead } from "./pinnedHead.js";
 import {
@@ -62,6 +65,8 @@ export interface AppOptions {
 	baseUrl?: () => string;
 	/** Startup steps of reviews being opened (crb serve logs them). */
 	progress?: (message: string) => void;
+	/** Home (`/api/home/*`); omit for a server without it (tests). */
+	home?: HomeService;
 }
 
 /** A malformed request (HTTP 400). */
@@ -409,6 +414,10 @@ export async function buildApp(
 			return notFoundPage(reply, (error as Error).message);
 		}
 	});
+
+	if (options.home) {
+		await registerHomeRoutes(app, options.home, new HomeSearch(options.home));
+	}
 
 	const isApi = (url: string) => /^\/api(\/|\?|$)/.test(url);
 	const webRoot =

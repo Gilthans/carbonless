@@ -12,7 +12,8 @@ import type { HomeSearch } from "./search.js";
 /**
  * Home's API, `/api/home/*` (contract: src/shared/home.ts). Registered as
  * its own Fastify scope so its errors map here: a bad request 400, a PR
- * Home doesn't list 404, GitHub failing 502.
+ * Home doesn't list 404, GitHub failing 502. The app's own hooks (host,
+ * access key, cross-site writes, version) run first, as for every route.
  */
 
 export const MAX_NOTE = 500;
@@ -70,8 +71,18 @@ export async function registerHomeRoutes(
 	app: FastifyInstance,
 	home: HomeService,
 	search: HomeSearch,
+	options: {
+		/**
+		 * Start Home's timed refresh on its first request (default): a
+		 * server whose Home is never opened never asks GitHub for it.
+		 */
+		startOnRequest?: boolean;
+	} = {},
 ): Promise<void> {
 	await app.register(async (scope) => {
+		if (options.startOnRequest !== false) {
+			scope.addHook("onRequest", async () => home.start());
+		}
 		scope.setErrorHandler((error, _request, reply) => {
 			const send = (status: number, message: string) =>
 				reply.status(status).send({ error: message });

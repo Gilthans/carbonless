@@ -54,7 +54,9 @@ async function setup() {
 		started: { list: async () => [] },
 	});
 	app = Fastify();
-	await registerHomeRoutes(app, home, new HomeSearch(home));
+	await registerHomeRoutes(app, home, new HomeSearch(home), {
+		startOnRequest: false,
+	});
 	return { app, config: () => config };
 }
 

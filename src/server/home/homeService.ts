@@ -162,6 +162,8 @@ export class HomeService {
 	#delay: number | null = null;
 	#timer: NodeJS.Timeout | null = null;
 	#stopped = true;
+	/** start() or stop() was called. */
+	#began = false;
 	/** The last refresh cost, for the report and the log. */
 	lastCost: RefreshCost = newCost();
 
@@ -172,13 +174,20 @@ export class HomeService {
 		this.#now = options.now ?? Date.now;
 	}
 
-	/** Refreshes now and then on the timer, until stop(). */
+	/**
+	 * Refreshes now and then on the timer, until stop(). Once only: later
+	 * calls (every Home request) do nothing, and nothing restarts it after
+	 * stop().
+	 */
 	start(): void {
+		if (this.#began) return;
+		this.#began = true;
 		this.#stopped = false;
 		void this.refresh().catch(() => {});
 	}
 
 	stop(): void {
+		this.#began = true;
 		this.#stopped = true;
 		if (this.#timer) clearTimeout(this.#timer);
 		this.#timer = null;

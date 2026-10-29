@@ -1,5 +1,6 @@
 import { buildApp } from "./app.js";
-import { readConfig } from "./config.js";
+import { readConfig, updateConfig } from "./config.js";
+import { configAccess, HomeService } from "./home/homeService.js";
 import { SessionRegistry } from "./registry.js";
 import {
 	accessKey,
@@ -47,8 +48,13 @@ export async function startServer(opts: {
 	const key = loopback ? null : (fresh ?? (await accessKey()));
 
 	const registry = new SessionRegistry();
+	// Home's refresh starts on its first request (routes.ts) and stops here.
+	const home = new HomeService({
+		config: configAccess(readConfig, updateConfig),
+	});
 	let url = "";
 	const app = await buildApp(registry, {
+		home,
 		accessKey: key,
 		webRoot: opts.webRoot,
 		baseUrl: () => url,
@@ -57,6 +63,7 @@ export async function startServer(opts: {
 	try {
 		await app.listen({ port, host });
 	} catch (error) {
+		home.stop();
 		await registry.closeAll();
 		if ((error as NodeJS.ErrnoException).code === "EADDRINUSE") {
 			throw new Error(`Port ${port} on ${host} is already in use`);
@@ -84,6 +91,7 @@ export async function startServer(opts: {
 		key,
 		close: () => {
 			closed ??= (async () => {
+				home.stop();
 				await removeServerState();
 				await app.close();
 				// Their background reads of GitHub and the clones stop with them.

@@ -1,10 +1,10 @@
 import { readdir } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import type { Coverage } from "../../shared/home.js";
 import type { Snapshot } from "../../shared/types.js";
-import { clonePath } from "../clone.js";
 import { buildSnapshot } from "../diff/snapshot.js";
 import { runGit } from "../git.js";
+import { cacheDir } from "../paths.js";
 import { buildReviewView } from "../review/coverage.js";
 import { foldProgress } from "../review/fold.js";
 import { RefStore } from "../review/refStore.js";
@@ -21,7 +21,7 @@ import type { StartedReview } from "./facts.js";
 const MAX_SNAPSHOTS = 64;
 
 /** `<cache>/carbonless/repos`, where every clone lives. */
-const reposDir = () => dirname(dirname(clonePath("x", "x")));
+const reposDir = () => join(cacheDir(), "repos");
 
 /**
  * The share a row shows: reviewed out of what isn't crossed off, in lines.
