@@ -1,7 +1,7 @@
 import type { HomeRow, Person, SearchResult } from "../../shared/home.js";
 import { GhError } from "../errors.js";
 import { parsePrArg, runGh } from "../gh.js";
-import type { PrFacts } from "./facts.js";
+import { type PrFacts, prSlug } from "./facts.js";
 import type { HomeService } from "./homeService.js";
 import { fetchPrDetails } from "./prFacts.js";
 
@@ -57,6 +57,7 @@ interface Pending<T> {
 	at: number;
 	promise: Promise<void>;
 	result?: T;
+	error?: string;
 }
 
 const matches = (title: string, words: readonly string[]) => {
@@ -85,19 +86,27 @@ export class HomeSearch {
 		this.#now = options.now ?? Date.now;
 	}
 
-	/** The result of `run` for `key` once in; starts it if not running (undefined until then). */
+	/**
+	 * The result of `run` for `key` once in; starts it if not running. A
+	 * failure is kept as long as a result is (SEARCH_TTL_MS): not pending,
+	 * with its error, and asked again only after that.
+	 */
 	#background<T>(
 		key: string,
 		run: () => Promise<T>,
-	): { result?: T; pending: boolean } {
+	): { result?: T; pending: boolean; error?: string } {
 		const now = this.#now();
 		const found = this.#searches.get(key) as Pending<T> | undefined;
-		if (
-			found &&
-			(found.result === undefined || now - found.at < SEARCH_TTL_MS)
-		) {
-			return { result: found.result, pending: found.result === undefined };
+		const done =
+			found && (found.result !== undefined || found.error !== undefined);
+		if (found && (!done || now - found.at < SEARCH_TTL_MS)) {
+			return {
+				...(found.result !== undefined ? { result: found.result } : {}),
+				...(found.error !== undefined ? { error: found.error } : {}),
+				pending: !done,
+			};
 		}
+		this.#searches.delete(key);
 		if (this.#searches.size >= MAX_CACHED) {
 			const oldest = this.#searches.keys().next().value;
 			if (oldest !== undefined) this.#searches.delete(oldest);
@@ -108,80 +117,86 @@ export class HomeSearch {
 				entry.result = result;
 				entry.at = this.#now();
 			},
-			() => {
-				// A failed search shows nothing more; asked again later.
-				this.#searches.delete(key);
+			(error: unknown) => {
+				entry.error =
+					error instanceof Error
+						? error.message.replace(/^gh: /, "")
+						: String(error);
+				entry.at = this.#now();
 			},
 		);
 		this.#searches.set(key, entry as Pending<unknown>);
 		return { pending: true };
 	}
 
-	async #asPr(f: PrFacts): Promise<Pr> {
-		return {
-			owner: f.owner,
-			repo: f.repo,
-			number: f.number,
-			title: f.title,
-			author: f.author,
-			state: f.state,
-			updatedAt: f.updatedAt,
-			hidden: await this.#home.hiddenOf(f),
-		};
+	/**
+	 * The shown PRs, ranked and cut to MAX_PRS first, then flagged hidden
+	 * from one inbox read per repo (never one per match).
+	 */
+	async #finish(prs: Pr[], known: ReadonlyMap<string, PrFacts>): Promise<Pr[]> {
+		const shown = prs.sort(byRank).slice(0, MAX_PRS);
+		const facts = shown
+			.map((p) => known.get(prSlug(p)))
+			.filter((f): f is PrFacts => f !== undefined);
+		const hidden = await this.#home.hiddenOfMany(facts);
+		return shown.map((p) => ({ ...p, hidden: hidden.get(prSlug(p)) ?? null }));
 	}
 
 	async search(q: string): Promise<SearchResult> {
 		const parsed = parseQuery(q);
-		const known = this.#home.knownPrs();
+		const all = this.#home.knownPrs();
+		const known = new Map(all.map((f) => [prSlug(f), f]));
 		const viewRepos = await this.#home.viewRepos();
 		if (parsed.kind === "pr") {
 			const { owner, repo, number } = parsed;
 			const scope = `${owner}/${repo}`.toLowerCase();
-			const hit = known.find(
-				(f) =>
-					`${f.owner}/${f.repo}`.toLowerCase() === scope && f.number === number,
-			);
-			if (hit)
+			const hit = known.get(prSlug(parsed));
+			if (hit) {
 				return {
 					repos: [],
-					prs: [await this.#asPr(hit)],
+					prs: await this.#finish([asPr(hit)], known),
 					scope,
 					pending: false,
 				};
+			}
 			const read = this.#background(`pr:${scope}#${number}`, async () => {
 				const [f] = await fetchPrDetails([{ owner, repo, number }]);
 				return f ?? null;
 			});
-			const prs = read.result ? [await this.#asPr(read.result)] : [];
-			return { repos: [], prs, scope, pending: read.pending };
+			const prs = read.result ? [asPr(read.result)] : [];
+			return withError(
+				{ repos: [], prs, scope, pending: read.pending },
+				read.error,
+			);
 		}
 		if (parsed.kind === "scoped") {
 			const { owner, repo, words } = parsed;
 			const scope = `${owner}/${repo}`.toLowerCase();
 			const inView = viewRepos.includes(scope);
-			const local = await Promise.all(
-				known
-					.filter((f) => `${f.owner}/${f.repo}`.toLowerCase() === scope)
-					.filter((f) => matches(f.title, words))
-					.map((f) => this.#asPr(f)),
-			);
+			const local = all
+				.filter((f) => `${f.owner}/${f.repo}`.toLowerCase() === scope)
+				.filter((f) => matches(f.title, words))
+				.map(asPr);
 			// A view repo's list is complete without words; beyond the cache
 			// (older closed PRs) or outside the view, GitHub's search.
 			const askGitHub = !inView || words.join(" ").length >= MIN_GITHUB_CHARS;
 			let pending = false;
+			let error: string | undefined;
 			let remote: Pr[] = [];
 			if (askGitHub) {
 				const found = this.#background(`prs:${scope}:${words.join(" ")}`, () =>
 					searchPrs(owner, repo, words),
 				);
 				pending = found.pending;
+				error = found.error;
 				remote = found.result ?? [];
 			}
 			const seen = new Set(local.map((p) => p.number));
-			const prs = [...local, ...remote.filter((p) => !seen.has(p.number))]
-				.sort(byRank)
-				.slice(0, MAX_PRS);
-			return { repos: [], prs, scope, pending };
+			const prs = await this.#finish(
+				[...local, ...remote.filter((p) => !seen.has(p.number))],
+				known,
+			);
+			return withError({ repos: [], prs, scope, pending }, error);
 		}
 		const { text, words } = parsed;
 		const repos: Repo[] = [];
@@ -189,7 +204,7 @@ export class HomeSearch {
 			if (!repos.some((x) => x.name === r.name)) repos.push(r);
 		};
 		const openCount = (name: string) =>
-			known.filter(
+			all.filter(
 				(f) =>
 					`${f.owner}/${f.repo}`.toLowerCase() === name && f.state === "OPEN",
 			).length;
@@ -200,14 +215,16 @@ export class HomeSearch {
 		const recent = [...this.#home.startedReviews()].sort(
 			(a, b) => Date.parse(b.lastActedAt) - Date.parse(a.lastActedAt),
 		);
-		for (const s of recent) {
-			const name = `${s.owner}/${s.repo}`.toLowerCase();
+		for (const st of recent) {
+			const name = `${st.owner}/${st.repo}`.toLowerCase();
 			if (name.includes(text)) add({ name, inView: false, openCount: null });
 		}
 		let pending = false;
+		let error: string | undefined;
 		if (text.length >= MIN_GITHUB_CHARS) {
 			const found = this.#background(`repos:${text}`, () => searchRepos(text));
 			pending = found.pending;
+			error = found.error;
 			for (const name of found.result ?? []) {
 				add({ name, inView: viewRepos.includes(name), openCount: null });
 			}
@@ -215,18 +232,31 @@ export class HomeSearch {
 		const prs =
 			words.length === 0
 				? []
-				: (
-						await Promise.all(
-							known
-								.filter((f) => matches(f.title, words))
-								.map((f) => this.#asPr(f)),
-						)
-					)
-						.sort(byRank)
-						.slice(0, MAX_PRS);
-		return { repos: repos.slice(0, MAX_REPOS), prs, scope: null, pending };
+				: await this.#finish(
+						all.filter((f) => matches(f.title, words)).map(asPr),
+						known,
+					);
+		return withError(
+			{ repos: repos.slice(0, MAX_REPOS), prs, scope: null, pending },
+			error,
+		);
 	}
 }
+
+const withError = (r: SearchResult, error: string | undefined): SearchResult =>
+	error === undefined ? r : { ...r, error };
+
+/** A known PR as a search result (hidden filled in by #finish). */
+const asPr = (f: PrFacts): Pr => ({
+	owner: f.owner,
+	repo: f.repo,
+	number: f.number,
+	title: f.title,
+	author: f.author,
+	state: f.state,
+	updatedAt: f.updatedAt,
+	hidden: null,
+});
 
 type Obj = Record<string, unknown>;
 const rec = (v: unknown): Obj =>
@@ -280,15 +310,31 @@ export async function searchPrs(
 			"--sort",
 			"updated",
 			"--json",
-			"number,title,author,state,updatedAt",
+			"number,title,author,state,updatedAt,repository",
 			"--",
 			...words,
 		],
 		{ what: "the PR search" },
 	);
+	return mapSearchPrs(owner, repo, json(out));
+}
+
+/**
+ * `gh search prs` results of `owner/repo` only: a word like `repo:x/y`
+ * can widen GitHub's search, and another repo's PR must never open as
+ * this one's. A state gh doesn't name ranks as closed.
+ */
+export function mapSearchPrs(
+	owner: string,
+	repo: string,
+	raw: readonly unknown[],
+): Pr[] {
+	const scope = `${owner}/${repo}`.toLowerCase();
 	const prs: Pr[] = [];
-	for (const raw of json(out)) {
-		const p = rec(raw);
+	for (const item of raw) {
+		const p = rec(item);
+		const from = rec(p.repository).nameWithOwner;
+		if (typeof from !== "string" || from.toLowerCase() !== scope) continue;
 		const login = rec(p.author).login;
 		if (!Number.isSafeInteger(p.number) || typeof p.updatedAt !== "string")
 			continue;
@@ -302,7 +348,7 @@ export async function searchPrs(
 			number: p.number as number,
 			title: typeof p.title === "string" ? p.title : "",
 			author,
-			state: GH_STATES[String(p.state)] ?? "OPEN",
+			state: GH_STATES[String(p.state)] ?? "CLOSED",
 			updatedAt: p.updatedAt,
 			hidden: null,
 		});

@@ -7,7 +7,20 @@ import {
 import type { SearchResult } from "../../shared/home.js";
 import type { StartedReview } from "./facts.js";
 import { type HomeConfig, HomeService } from "./homeService.js";
-import { HomeSearch, parseQuery } from "./search.js";
+import { HomeSearch, mapSearchPrs, parseQuery } from "./search.js";
+
+/** Every git process the code under test starts, counted. */
+const gitCalls = vi.hoisted(() => ({ n: 0 }));
+vi.mock("../git.js", async (importOriginal) => {
+	const real = await importOriginal<typeof import("../git.js")>();
+	return {
+		...real,
+		runGit: (...args: Parameters<typeof real.runGit>) => {
+			gitCalls.n++;
+			return real.runGit(...args);
+		},
+	};
+});
 
 // Each fake gh call is a node process: give a loaded machine time.
 vi.setConfig({ testTimeout: 30_000 });
@@ -162,6 +175,7 @@ describe("HomeSearch", () => {
 			number: 9,
 			id: "01jbaaaaaaaaaaaaaaaaaaaaaa",
 			pinnedHead: null,
+			head: "9".padStart(40, "0"),
 			asOf: null,
 			coverage: { done: 0, total: 1, unit: "lines" },
 			lastActedAt: iso(T0),
@@ -251,5 +265,109 @@ describe("HomeSearch", () => {
 		);
 		expect(prIds(outside)).toEqual(["other/tool#9"]);
 		expect(outside.scope).toBe("other/tool");
+	});
+});
+
+describe("HomeSearch, fix round 1", () => {
+	it("reads each repo's inbox once, after cutting to the shown PRs", async () => {
+		fx = createHomeFixture({
+			repos: {
+				"acme/api": {
+					prs: Array.from({ length: 60 }, (_, i) =>
+						homePr({
+							repo: "acme/api",
+							number: i + 1,
+							title: `Fix thing ${i}`,
+							author: "bob",
+							updatedAt: iso(T0 - i * 1000),
+						}),
+					),
+				},
+			},
+		});
+		const config: HomeConfig = {
+			views: [{ name: "My PRs", repos: ["acme/api"] }],
+			refresh: { minutes: 2 },
+		};
+		const home = new HomeService({
+			config: {
+				read: async () => ({ config, problems: [] }),
+				update: async () => config,
+			},
+			started: { list: async () => [] },
+		});
+		await home.refresh();
+		// An inbox to read: one note.
+		await home.annotate("acme", "api", 1, { op: "note", text: "x" });
+		const search = new HomeSearch(home);
+		gitCalls.n = 0;
+		const r = await search.search("fix");
+		expect(r.prs).toHaveLength(30);
+		// One inbox: its tip (rev-parse) and at most one log, never one per PR.
+		expect(gitCalls.n).toBeLessThanOrEqual(3);
+	});
+
+	it("a failed GitHub search ends pending, with the error", async () => {
+		const { search } = await setup();
+		fx?.scenario({ search: { fail: "HTTP 403: API rate limit exceeded" } });
+		const r = await settle(search, "other/tool login");
+		expect(r.pending).toBe(false);
+		expect(r.error).toMatch(/rate limit/i);
+		// Asked again within its lifetime: no new search, the same error.
+		const again = await search.search("other/tool login");
+		expect(again).toMatchObject({ pending: false, error: r.error });
+	});
+});
+
+describe("mapSearchPrs", () => {
+	it("keeps only the scope's PRs and maps states, unknown ones as closed", () => {
+		const raw = [
+			{
+				number: 1,
+				title: "a",
+				author: { login: "x" },
+				state: "open",
+				updatedAt: iso(T0),
+				repository: { nameWithOwner: "Acme/API" },
+			},
+			{
+				number: 2,
+				title: "b",
+				author: { login: "x" },
+				state: "merged",
+				updatedAt: iso(T0),
+				repository: { nameWithOwner: "acme/api" },
+			},
+			{
+				number: 3,
+				title: "c",
+				author: { login: "x" },
+				state: "weird",
+				updatedAt: iso(T0),
+				repository: { nameWithOwner: "acme/api" },
+			},
+			{
+				number: 4,
+				title: "d",
+				author: { login: "x" },
+				state: "open",
+				updatedAt: iso(T0),
+				repository: { nameWithOwner: "other/x" },
+			},
+			{
+				number: 5,
+				title: "e",
+				author: { login: "x" },
+				state: "open",
+				updatedAt: iso(T0),
+			},
+		];
+		expect(
+			mapSearchPrs("acme", "api", raw).map((p) => [p.number, p.state]),
+		).toEqual([
+			[1, "OPEN"],
+			[2, "MERGED"],
+			[3, "CLOSED"],
+		]);
 	});
 });
