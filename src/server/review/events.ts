@@ -80,7 +80,7 @@ export interface PrSnoozedEvent extends EventBase {
 export interface PrWaitingOnEvent extends EventBase {
 	type: "pr-waiting-on";
 	pr: number;
-	/** A GitHub login, or "me". */
+	/** A GitHub login; the reviewer's own means "me". */
 	who: string;
 }
 
@@ -118,8 +118,10 @@ export type EventPayload<T extends CrbEventType> = Omit<
 > & { details?: Record<string, unknown> };
 
 const SLUG = /^[a-z0-9-]{1,64}$/;
-/** A GitHub login (or "me", which also matches). */
+/** A GitHub login. */
 const LOGIN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
+/** The latest moment a JS Date holds (ms): later `until`s are skipped on read. */
+const MAX_DATE_MS = 8.64e15;
 /** Longest note a reader keeps (the API's write limit is lower). */
 export const MAX_NOTE_READ = 2000;
 const INBOX_TYPES: readonly string[] = [
@@ -329,7 +331,13 @@ function parseInboxEvent(
 	switch (raw.type) {
 		case "pr-snoozed": {
 			const { until, wakeOnActivity } = raw;
-			if (!Number.isSafeInteger(until) || (until as number) < 0) return null;
+			if (
+				!Number.isSafeInteger(until) ||
+				(until as number) < 0 ||
+				(until as number) > MAX_DATE_MS
+			) {
+				return null;
+			}
 			if (typeof wakeOnActivity !== "boolean") return null;
 			return {
 				...base,

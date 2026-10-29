@@ -71,15 +71,27 @@ const lastOf = (pr: PrFacts, login: string) => {
 	return Number.isFinite(ms) ? ms : Number.NEGATIVE_INFINITY;
 };
 
-/** Whose turn the facts say it is; rules in order, first match wins. */
-export function turnOf(pr: PrFacts, viewer: string): Turn {
+/**
+ * Whose turn the facts say it is; rules in order, first match wins. Teams
+ * the viewer is in (`viewerTeams`) come right after the viewer.
+ */
+export function turnOf(
+	pr: PrFacts,
+	viewer: string,
+	viewerTeams: readonly string[] | null = null,
+): Turn {
 	const author: Turn = { kind: "people", logins: [pr.author.login] };
 	// 1
 	if (pr.state !== "OPEN") return { kind: "none" };
 	// 2, 3
 	if (pr.draft || pr.decision === "changes-requested") return author;
 	// 4
-	const requested = [...pr.requested.users, ...pr.requested.teams];
+	const mine = (t: string) => (viewerTeams ?? []).some((v) => sameLogin(v, t));
+	const requested = [
+		...pr.requested.teams.filter(mine),
+		...pr.requested.users,
+		...pr.requested.teams.filter((t) => !mine(t)),
+	];
 	if (requested.length > 0) {
 		return { kind: "people", logins: viewerFirst(requested, viewer) };
 	}
@@ -97,7 +109,7 @@ export function turnOf(pr: PrFacts, viewer: string): Turn {
 	return { kind: "no-reviewer" };
 }
 
-/** The viewer's waiting-on overrides the turn of an open PR ("me": the viewer). */
+/** The viewer's waiting-on overrides the turn of an open PR (their own login: "you"). */
 export function turnWithWaiting(
 	turn: Turn,
 	waiting: Annotations["waiting"],
@@ -106,6 +118,6 @@ export function turnWithWaiting(
 	if (!waiting || turn.kind === "none") return turn;
 	return {
 		kind: "people",
-		logins: [waiting.who === "me" ? viewer : waiting.who],
+		logins: [sameLogin(waiting.who, viewer) ? viewer : waiting.who],
 	};
 }

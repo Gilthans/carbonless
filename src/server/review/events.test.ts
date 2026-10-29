@@ -259,6 +259,8 @@ describe("inbox events", () => {
 			{ ...snoozed, pr: 0 },
 			{ ...snoozed, until: "tomorrow" },
 			{ ...snoozed, wakeOnActivity: "yes" },
+			// Past what a Date holds: it would break every fold of the ref.
+			{ ...snoozed, until: 8.64e15 + 1 },
 			{ ...waiting, who: "" },
 			{ ...waiting, who: "not a login" },
 			{ ...note, text: 5 },

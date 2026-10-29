@@ -8,7 +8,7 @@ import {
 	newEvent,
 } from "../review/events.js";
 import { RefStore } from "../review/refStore.js";
-import type { PrFacts } from "./facts.js";
+import { type PrFacts, sameLogin } from "./facts.js";
 
 /**
  * The reviewer's own annotations of PRs on Home (snooze, waiting on, note),
@@ -86,6 +86,8 @@ export function foldInbox(
 		const a = out.get(e.pr) ?? {};
 		switch (e.type) {
 			case "pr-snoozed":
+				// One bad date (readers skip it too) never takes the fold down.
+				if (!Number.isFinite(new Date(e.until).getTime())) continue;
 				a.snooze = {
 					until: iso(e.until),
 					wakeOnActivity: e.wakeOnActivity,
@@ -131,14 +133,35 @@ function snoozeEnded(
 	return now >= until ? { at: until, by: "time" } : null;
 }
 
+/** A wait on the viewer's own login: "me". */
+export const waitsOnViewer = (
+	w: NonNullable<Annotations["waiting"]>,
+	viewer: string,
+) => viewer !== "" && sameLogin(w.who, viewer);
+
 /** When the person waited on acted after the annotation, if they have. */
 function waitEnded(
 	w: NonNullable<Annotations["waiting"]>,
 	pr: Activity,
 ): number | null {
-	if (w.who === "me") return null;
 	const acted = ms(pr.lastActivity[w.who.toLowerCase()]);
 	return acted > ms(w.at) ? acted : null;
+}
+
+/**
+ * Whether a wait on someone else still holds (they haven't acted since),
+ * whatever else hides the row. A wait on the viewer ("me") never does.
+ */
+export function waitHolds(
+	a: Annotations,
+	pr: Activity,
+	viewer: string,
+): boolean {
+	return (
+		a.waiting !== undefined &&
+		!waitsOnViewer(a.waiting, viewer) &&
+		waitEnded(a.waiting, pr) === null
+	);
 }
 
 /** Why the viewer's annotations hide the row now, if they do. */
@@ -146,15 +169,10 @@ export function hiddenReason(
 	a: Annotations,
 	pr: Activity,
 	now: number,
+	viewer = "",
 ): HomeRow["hidden"] {
 	if (a.snooze && !snoozeEnded(a.snooze, pr, now)) return "snoozed";
-	if (
-		a.waiting &&
-		a.waiting.who !== "me" &&
-		waitEnded(a.waiting, pr) === null
-	) {
-		return "waiting";
-	}
+	if (waitHolds(a, pr, viewer)) return "waiting";
 	return null;
 }
 
@@ -163,14 +181,15 @@ export function wokeOf(
 	a: Annotations,
 	pr: Activity,
 	now: number,
+	viewer = "",
 ): HomeRow["woke"] {
-	if (hiddenReason(a, pr, now)) return null;
+	if (hiddenReason(a, pr, now, viewer)) return null;
 	const ends: { at: number; by: "activity" | "time" }[] = [];
 	if (a.snooze) {
 		const end = snoozeEnded(a.snooze, pr, now);
 		if (end) ends.push(end);
 	}
-	if (a.waiting) {
+	if (a.waiting && !waitsOnViewer(a.waiting, viewer)) {
 		const at = waitEnded(a.waiting, pr);
 		if (at !== null) ends.push({ at, by: "activity" });
 	}

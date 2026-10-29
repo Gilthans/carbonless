@@ -15,6 +15,7 @@ import {
 	inboxRef,
 	opEvents,
 	WOKE_MS,
+	waitHolds,
 	wokeOf,
 } from "./inbox.js";
 
@@ -89,6 +90,20 @@ describe("foldInbox", () => {
 
 	it("an empty PR entry is dropped", () => {
 		expect(foldInbox([note(1, "x", T0), note(1, "", T0 + 1)]).size).toBe(0);
+	});
+
+	it("an until out of range is skipped on read, not the whole fold", () => {
+		const bad = {
+			...snooze(1, 9e15, true, T0),
+			id: "01jbzzzzzzzzzzzzzzzzzzzzzz",
+		};
+		const folded = foldInbox([
+			note(1, "kept", T0),
+			bad as CrbEvent,
+			note(2, "too", T0 + 1),
+		]);
+		expect(folded.get(1)).toEqual({ note: "kept" });
+		expect(folded.get(2)).toEqual({ note: "too" });
 	});
 
 	it("skips events that aren't the inbox's", () => {
@@ -191,10 +206,36 @@ describe("hiddenReason", () => {
 		);
 	});
 
-	it("waiting on me never hides", () => {
+	it("waiting on the viewer's own login (me) never hides; a user named me is anyone", () => {
 		expect(
-			hiddenReason({ waiting: { who: "me", at: iso(T0) } }, facts(T0), T0),
+			hiddenReason(
+				{ waiting: { who: "Dan", at: iso(T0) } },
+				facts(T0),
+				T0,
+				"dan",
+			),
 		).toBe(null);
+		expect(
+			hiddenReason(
+				{ waiting: { who: "me", at: iso(T0) } },
+				facts(T0),
+				T0,
+				"dan",
+			),
+		).toBe("waiting");
+	});
+
+	it("waitHolds: a wait holds under a snooze too", () => {
+		const a: Annotations = {
+			...snoozed(T0 + 24 * H, false),
+			waiting: { who: "bob", at: iso(T0) },
+		};
+		expect(hiddenReason(a, facts(T0), T0 + 1, "dan")).toBe("snoozed");
+		expect(waitHolds(a, facts(T0), "dan")).toBe(true);
+		expect(waitHolds(a, facts(T0, { bob: T0 + 5 }), "dan")).toBe(false);
+		expect(
+			waitHolds({ waiting: { who: "dan", at: iso(T0) } }, facts(T0), "dan"),
+		).toBe(false);
 	});
 
 	it("snoozed comes before waiting; nothing annotated hides nothing", () => {

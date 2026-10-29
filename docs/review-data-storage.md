@@ -284,7 +284,12 @@ compare-and-swap). Written by `src/server/home/inbox.ts`.
   (`ensureClone`) then clones beside it and fetches the branches, tags, HEAD
   and remote URL in locally, keeping the inbox ref in place, and drops the
   mark. The remote URL is the clone's (as `gh repo clone` chose it), not
-  guessed at init.
+  guessed at init. The cost: an annotated, never-opened repo's first open
+  clones aside and then fetches locally, about twice the disk and time of a
+  plain clone, once. `ensureRepoInit` never waits on the repo lock when the
+  repo exists, so an annotation doesn't queue behind a running clone.
+- **"Me":** a wait on the reviewer's own login. It never hides and shows
+  as "you"; no sentinel value is stored (`me` is a real GitHub login).
 - **Privacy:** notes are private to the reviewer. Nothing pushes crb refs
   yet; when sync arrives, the inbox ref stays local unless the reviewer
   turns it on (GitDB 20).
