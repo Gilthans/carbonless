@@ -209,13 +209,25 @@ Owner's decisions on this part (2026-10-28):
   `scripts/agent-worktree.sh` set a private `XDG_STATE_HOME` and
   `XDG_CONFIG_HOME` inside the worktree (git-ignored), so a branch's
   `crb <pr>` finds or starts its own server, never main's.
-- **Version handshake** (same agreement). `crb --version` prints the
-  package version plus the git commit it was built from. The server
-  answers `GET /api/version` with the same. The client sends its version
-  with every request to the server; a server of another version refuses
-  with an error that names both, and the CLI says to restart the server or
-  run the matching `crb`. The CLI never hands a request to a mismatched
-  server silently.
+- **Version handshake** (same agreement; format set by the
+  versioning/distribution work). The CLI never hands a request to a
+  mismatched server silently.
+  - `crb --version` prints `<package.json version> (<short commit>)`, e.g.
+    `0.4.0-rc.1 (93fe843)`. The version is package.json's `version` as is
+    (the release script sets it, `-rc.N` included), never derived from git
+    tags.
+  - `GET /api/version` returns
+    `{ "version": "0.4.0-rc.1", "commit": "<full sha>" }`.
+  - The build bakes the commit in (`git rev-parse HEAD` in the build
+    script), so an installed tarball reports it with no `.git`. A tree dirty
+    at build time appends `-dirty` to the commit.
+  - The client sends both on every request to the server. A server whose
+    version or commit differs refuses. The commit matters because a
+    worktree build and the installed release can share a version.
+  - The error names each side: "server runs 0.4.0 (abc1234), this crb is
+    0.4.0 (def5678)". It says to restart the server or run the matching
+    `crb`. The release's update script restarts the service after an
+    install, so a mismatch right after an upgrade clears itself.
 
 ## The CLI
 
