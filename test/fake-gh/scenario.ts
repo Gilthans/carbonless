@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import prViewFixture from "../fixtures/gh/pr-view.json" with { type: "json" };
 import threadsFixture from "../fixtures/gh/review-threads.json" with {
@@ -104,6 +104,13 @@ export interface Scenario {
 	/** A REST delete of a comment answers only after this many milliseconds (before it lands). */
 	deleteDelayMs?: number;
 	/**
+	 * Calls of these kinds wait (after their delay) until a test takes the
+	 * kind out again (`release`): a gate on the test's cue, not the clock.
+	 */
+	hold?: HoldOp[];
+	/** Held kinds whose new calls go at once; those already held still wait. */
+	letThrough?: HoldOp[];
+	/**
 	 * An edit or a delete GitHub's GraphQL doesn't show for this many
 	 * milliseconds after it was made (REST has it at once): the comment's
 	 * text before, or the deleted comment, until then.
@@ -171,10 +178,16 @@ export interface Scenario {
  * Writes the scenario as JSON into `dir` and returns its path for
  * `$CRB_FAKE_GH`. Every write of the file is atomic (writeFileAtomic): gh
  * processes read it whole at any moment, and must never see it half-written.
+ * A `hold` already in the file stays unless `s` has its own: a gate opens
+ * only on release(), never because the scenario was rewritten (moveHead).
  */
 export function writeScenario(dir: string, s: Scenario): string {
 	const path = join(dir, "fake-gh-scenario.json");
-	writeFileAtomic(path, JSON.stringify(s, null, "\t"));
+	const held = existsSync(path)
+		? (JSON.parse(readFileSync(path, "utf8")) as Scenario).hold
+		: undefined;
+	const next = held?.length && !("hold" in s) ? { ...s, hold: held } : s;
+	writeFileAtomic(path, JSON.stringify(next, null, "\t"));
 	return path;
 }
 
@@ -376,6 +389,43 @@ export function threadComment(c: {
 		...(c.commit === undefined ? {} : { originalCommit: { oid: c.commit } }),
 		...(c.editedAt === undefined ? {} : { lastEditedAt: c.editedAt }),
 	};
+}
+
+/**
+ * The calls `hold` can stop, each where its `…DelayMs` waits: `comments`
+ * and `threadContent` are reads of threads' comments, `threads` their
+ * summaries, `restList` the REST review comments, `comment` a new thread's
+ * REST comment.
+ */
+export type HoldOp =
+	| "prView"
+	| "threads"
+	| "threadContent"
+	| "comments"
+	| "timeline"
+	| "restList"
+	| "compare"
+	| "reply"
+	| "comment"
+	| "edit"
+	| "delete";
+
+/** Lets the held calls of kind `op` go (the scenario file at `path`, its writes kept). */
+export function release(path: string, op: HoldOp): void {
+	const s = JSON.parse(readFileSync(path, "utf8")) as Scenario;
+	s.hold = s.hold?.filter((o) => o !== op);
+	s.letThrough = s.letThrough?.filter((o) => o !== op);
+	writeFileAtomic(path, JSON.stringify(s, null, "\t"));
+}
+
+/**
+ * New calls of kind `op` go at once, while those already held keep waiting
+ * for release(): a later call overtakes an earlier one, on the test's cue.
+ */
+export function letThrough(path: string, op: HoldOp): void {
+	const s = JSON.parse(readFileSync(path, "utf8")) as Scenario;
+	s.letThrough = [...(s.letThrough ?? []), op];
+	writeFileAtomic(path, JSON.stringify(s, null, "\t"));
 }
 
 /**

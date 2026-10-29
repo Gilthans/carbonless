@@ -10,6 +10,7 @@ import {
 	describe,
 	expect,
 	it,
+	vi,
 } from "vitest";
 import {
 	FAKE_GH_DIR,
@@ -17,7 +18,7 @@ import {
 	threadComment,
 	writeScenario,
 } from "../../test/fake-gh/scenario";
-import { testGitEnv } from "../../test/git-fixture";
+import { GIT_TEST_TIMEOUTS, testGitEnv } from "../../test/git-fixture";
 import {
 	BEFORE_LANDING,
 	BEFORE_REVIEW,
@@ -32,6 +33,9 @@ import type { Snapshot } from "../shared/types";
 import { clonePath } from "./clone";
 import { buildSnapshot } from "./diff/snapshot";
 import { Session } from "./session";
+
+// Real git and fake-gh processes: see GIT_TEST_TIMEOUTS.
+vi.setConfig(GIT_TEST_TIMEOUTS);
 
 /**
  * The git-methodology matrix (docs/git-methodology.md): however the PR branch

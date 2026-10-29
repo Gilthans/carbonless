@@ -143,6 +143,9 @@ test("switching pages and back puts each one exactly where it was left", async (
 	startCrb,
 	isMobile,
 }, info) => {
+	// Long by nature (both pages, 40 Tab presses on each): a loaded machine
+	// needs more than the default 30 s for it.
+	test.slow();
 	const project = isMobile ? "phone" : "desktop";
 	if (isMobile) await page.setViewportSize({ width: 360, height: 780 });
 	await pr(fixture);

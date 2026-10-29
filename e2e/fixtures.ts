@@ -2,7 +2,12 @@ import { type ChildProcess, spawn } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test as base, expect, type Page } from "@playwright/test";
+import {
+	test as base,
+	expect,
+	type Page,
+	type TestInfo,
+} from "@playwright/test";
 import type { GitFixture } from "../test/git-fixture";
 import {
 	CLI,
@@ -43,6 +48,21 @@ const START_TIMEOUT_MS = 20_000;
 
 /** How long crb may take to exit after SIGTERM before the harness kills it. */
 const STOP_GRACE_MS = 3_000;
+
+/**
+ * Runs a test's setup step (a fixture repo, starting crb) and gives the test
+ * back the time it took: on a loaded machine these take seconds, and the
+ * test's own timeout is for its own steps. START_TIMEOUT_MS still bounds a
+ * start that hangs.
+ */
+async function untimed<T>(info: TestInfo, step: () => T | Promise<T>) {
+	const started = Date.now();
+	try {
+		return await step();
+	} finally {
+		if (info.timeout > 0) info.setTimeout(info.timeout + Date.now() - started);
+	}
+}
 
 export interface CrbExit {
 	code: number | null;
@@ -100,56 +120,60 @@ export const test = base.extend<{
 		rmSync(dir, { recursive: true, force: true });
 	},
 
-	pr: async ({ workdir }, use) => {
+	pr: async ({ workdir }, use, info) => {
 		const repos: GitFixture[] = [];
 		await use(async (opts = {}) => {
-			const pr = createPr(workdir, opts);
+			const pr = await untimed(info, () => createPr(workdir, opts));
 			repos.push(pr.repo);
 			return pr;
 		});
 		for (const repo of repos) repo.cleanup();
 	},
 
-	startCrb: async ({ workdir, context }, use) => {
+	startCrb: async ({ workdir, context }, use, info) => {
 		const children: ChildProcess[] = [];
-		await use(async (arg = `${OWNER_REPO}#${PR_NUMBER}`, extraArgs = []) => {
-			const child = spawn(
-				process.execPath,
-				[CLI, arg, "--no-open", ...extraArgs],
-				{
-					cwd: workdir,
-					stdio: ["ignore", "pipe", "pipe"],
-					env: crbEnv(workdir),
-				},
-			);
-			children.push(child);
-			let output = "";
-			const url = await new Promise<string>((done, fail) => {
-				const timer = setTimeout(
-					() => fail(new Error(`crb printed no URL in time:\n${output}`)),
-					START_TIMEOUT_MS,
+		await use((arg = `${OWNER_REPO}#${PR_NUMBER}`, extraArgs = []) =>
+			untimed(info, async () => {
+				const child = spawn(
+					process.execPath,
+					[CLI, arg, "--no-open", ...extraArgs],
+					{
+						cwd: workdir,
+						stdio: ["ignore", "pipe", "pipe"],
+						env: crbEnv(workdir),
+					},
 				);
-				const onData = (chunk: Buffer) => {
-					output += chunk.toString();
-					const match = output.match(/carbonless listening on (http:\/\/\S+)/);
-					if (match?.[1]) {
+				children.push(child);
+				let output = "";
+				const url = await new Promise<string>((done, fail) => {
+					const timer = setTimeout(
+						() => fail(new Error(`crb printed no URL in time:\n${output}`)),
+						START_TIMEOUT_MS,
+					);
+					const onData = (chunk: Buffer) => {
+						output += chunk.toString();
+						const match = output.match(
+							/carbonless listening on (http:\/\/\S+)/,
+						);
+						if (match?.[1]) {
+							clearTimeout(timer);
+							done(match[1]);
+						}
+					};
+					child.stdout?.on("data", onData);
+					child.stderr?.on("data", onData);
+					child.once("exit", (code) => {
 						clearTimeout(timer);
-						done(match[1]);
-					}
-				};
-				child.stdout?.on("data", onData);
-				child.stderr?.on("data", onData);
-				child.once("exit", (code) => {
-					clearTimeout(timer);
-					fail(new CrbExitError(code, output));
+						fail(new CrbExitError(code, output));
+					});
+					child.once("error", (error) => {
+						clearTimeout(timer);
+						fail(new Error(`could not start crb: ${error.message}`));
+					});
 				});
-				child.once("error", (error) => {
-					clearTimeout(timer);
-					fail(new Error(`could not start crb: ${error.message}`));
-				});
-			});
-			return { url, output: () => output, stop: () => stopChild(child) };
-		});
+				return { url, output: () => output, stop: () => stopChild(child) };
+			}),
+		);
 		// Pages would keep polling the stopped server and log connection errors.
 		await Promise.all(
 			context.pages().map((p) => p.goto("about:blank").catch(() => {})),

@@ -1,15 +1,19 @@
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { createDiffFixture } from "../../../test/diff-fixture.js";
 import {
 	createGitFixture,
+	GIT_TEST_TIMEOUTS,
 	type GitFixture,
 	testGitEnv,
 } from "../../../test/git-fixture.js";
 import type { Snapshot } from "../../shared/types.js";
 import { listChangedFiles } from "./files.js";
 import { buildSnapshot, loadContext, loadFileHunks } from "./snapshot.js";
+
+// Real git and fake-gh processes: see GIT_TEST_TIMEOUTS.
+vi.setConfig(GIT_TEST_TIMEOUTS);
 
 let fixture: GitFixture;
 let snapshot: Snapshot;

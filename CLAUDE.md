@@ -102,6 +102,11 @@ checking against a real PR): `docs/product-rules.md`.
 - Tests never call the real `gh`: `test/fake-gh/gh` serves a scenario
   (`test/fake-gh/scenario.ts`) via `$CRB_FAKE_GH`. The e2e harness
   (`e2e/fixtures.ts`) wires it onto `PATH` and drives the built CLI.
+- Tests must pass on a loaded machine (several suites often run at once). A
+  test of a loading state holds the fake gh's answer (scenario `hold`, then
+  `release()` once it has seen the spinner) rather than racing a `…DelayMs`;
+  "X doesn't wait for Y" is X resolving while Y is held, not a time bound.
+  Unit tests that run git and the fake gh use `GIT_TEST_TIMEOUTS`.
 - If `nvm use` fails (e.g. in a sandbox), put `~/.nvm/versions/node/v24*/bin`
   first on `PATH`.
 - `pnpm compare-threads <pr> [--as-of <iso>] [--out <dir>]` checks every

@@ -3,8 +3,15 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createBareRepo, testGitEnv } from "../../../test/git-fixture.js";
+import {
+	createBareRepo,
+	GIT_TEST_TIMEOUTS,
+	testGitEnv,
+} from "../../../test/git-fixture.js";
 import { GitError, inheritedEnv, runGit } from "../git.js";
+
+// Real git and fake-gh processes: see GIT_TEST_TIMEOUTS.
+vi.setConfig(GIT_TEST_TIMEOUTS);
 
 // Pass-through spy, so a test can count the git calls RefStore makes.
 vi.mock("../git.js", async (importOriginal) => {

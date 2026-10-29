@@ -2,17 +2,18 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	FAKE_GH_DIR,
 	prView,
+	release,
 	reviewThread,
 	type Scenario,
 	threadComment,
 	timelineCommit,
 	writeScenario,
 } from "../../test/fake-gh/scenario";
-import { testGitEnv } from "../../test/git-fixture";
+import { GIT_TEST_TIMEOUTS, testGitEnv } from "../../test/git-fixture";
 import { GhError, WriteRefusedError } from "./errors";
 import {
 	deleteComment,
@@ -30,6 +31,9 @@ import {
 	runGh,
 	viewerSlug,
 } from "./gh";
+
+// Real git and fake-gh processes: see GIT_TEST_TIMEOUTS.
+vi.setConfig(GIT_TEST_TIMEOUTS);
 
 /** The fake gh must answer exactly the calls gh.ts makes, the way gh does. */
 describe("fake gh", () => {
@@ -76,6 +80,22 @@ describe("fake gh", () => {
 		await expect(runGh(["auth", "status"])).resolves.toBeDefined();
 		await expect(viewerSlug()).resolves.toBe("octo-cat");
 		await expect(resolvePrRef("12", tmp)).resolves.toEqual(ref);
+	});
+
+	it("holds a call until the test releases it, then answers", async () => {
+		scenario({
+			hold: ["prView"],
+			prs: { "12": { view: prView({ headRefOid: "a".repeat(40) }) } },
+		});
+		let answered = false;
+		const view = fetchPrMeta(ref).then((meta) => {
+			answered = true;
+			return meta;
+		});
+		await new Promise((r) => setTimeout(r, 300));
+		expect(answered).toBe(false);
+		release(process.env.CRB_FAKE_GH ?? "", "prView");
+		await expect(view).resolves.toMatchObject({ headOid: "a".repeat(40) });
 	});
 
 	it("fails repo view outside a GitHub repository", async () => {

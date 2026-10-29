@@ -3,13 +3,15 @@ import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { FastifyInstance } from "fastify";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	prView,
+	release,
 	reviewThread,
 	type Scenario,
 	threadComment,
 } from "../../test/fake-gh/scenario";
+import { GIT_TEST_TIMEOUTS } from "../../test/git-fixture";
 import { createPrFixture, type PrFixture } from "../../test/pr-fixture";
 import type {
 	CommentsView,
@@ -19,6 +21,9 @@ import type {
 } from "../shared/types";
 import { buildApp } from "./app";
 import { Session } from "./session";
+
+// Real git and fake-gh processes: see GIT_TEST_TIMEOUTS.
+vi.setConfig(GIT_TEST_TIMEOUTS);
 
 describe("API", () => {
 	let pr: PrFixture;
@@ -189,10 +194,12 @@ describe("API", () => {
 		});
 
 		it("gives each thread its attention set and anchor from the summary on", async () => {
-			const readId = await withThreads({ threadContentDelayMs: 2000 });
+			// The comments' text is held: the summary comes without it.
+			const readId = await withThreads({ hold: ["threadContent"] });
 			const { threads } = await get(
 				`/api/threads?read=${readId}&stage=summary`,
 			);
+			release(process.env.CRB_FAKE_GH ?? "", "threadContent");
 			const byPath = (path: string, line: number) =>
 				(threads as ReviewThread[]).find(
 					(t) => t.path === path && t.anchor?.line === line,

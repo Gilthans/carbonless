@@ -1,5 +1,6 @@
 import type { Locator, Page } from "@playwright/test";
 import {
+	release,
 	reviewThread,
 	type Scenario,
 	threadComment,
@@ -146,14 +147,12 @@ async function openAll(scope: Locator) {
 	const closed = scope.locator(
 		'[data-testid="thread-bubble"][aria-expanded="false"]',
 	);
-	for (let i = 0; i < 20 && (await closed.count()) > 0; i++) {
-		// One may go as it opens (a gap's bubble moves to its row): try again.
-		await closed
-			.first()
-			.click({ timeout: 2000 })
-			.catch(() => {});
-	}
-	await expect(closed).toHaveCount(0);
+	// One may go as it opens (a gap's bubble moves to its row): try again,
+	// for as long as a loaded machine needs rather than a number of clicks.
+	await expect(async () => {
+		if ((await closed.count()) > 0) await closed.first().click();
+		await expect(closed).toHaveCount(0, { timeout: 1000 });
+	}).toPass({ timeout: 30_000 });
 }
 
 test("bubble on the commented line with count, dot and resolved state", async ({
@@ -448,7 +447,8 @@ test("slow comments: spinner, then comments", async ({
 	pr,
 	startCrb,
 }) => {
-	await setup(pr, { commentsDelayMs: 3000 });
+	// The comments wait until the test lets them go, however slow the page.
+	const p = await setup(pr, { hold: ["comments"] });
 	const s = await startCrb();
 	await openFiles(page, s.url);
 	const section = await expand(page, CORE);
@@ -459,6 +459,7 @@ test("slow comments: spinner, then comments", async ({
 	await expect(
 		thread.getByRole("status", { name: "Loading comments" }),
 	).toBeVisible();
+	release(p.scenarioPath, "comments");
 	await expect(thread.getByTestId("thread-comment")).toHaveCount(1, {
 		timeout: 15_000,
 	});
@@ -793,7 +794,8 @@ test("comments of the file opened next go first", async ({
 				]),
 			),
 		);
-		sc.commentsDelayMs = 2500;
+		// The first two stay out until f4 has opened.
+		sc.hold = ["comments"];
 	});
 	const s = await startCrb();
 	const asked: string[][] = [];
@@ -806,7 +808,9 @@ test("comments of the file opened next go first", async ({
 	await openFiles(page, s.url);
 	await expect.poll(() => asked.length).toBe(2);
 	// f4 (threads 120–159) opens while the first two are out.
-	await expand(page, names[3] as string);
+	const f4 = await expand(page, names[3] as string);
+	await expect(f4.getByRole("button", { name: "Collapse file" })).toBeVisible();
+	release(p.scenarioPath, "comments");
 	await expect.poll(() => asked.length, { timeout: 20_000 }).toBeGreaterThan(2);
 	const third = asked[2] ?? [];
 	const index = (id: string) => Number(id.split("-")[1]);

@@ -1,6 +1,7 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
 	createGitFixture,
+	GIT_TEST_TIMEOUTS,
 	type GitFixture,
 } from "../../../test/git-fixture.js";
 import type { Cluster, DisplayHunk } from "../../shared/types.js";
@@ -8,6 +9,9 @@ import { runGit } from "../git.js";
 import { buildClusters } from "./clusters.js";
 import { DIFF_ARGS, listChangedFiles } from "./files.js";
 import { buildDisplayHunks, contextLines } from "./hunks.js";
+
+// Real git and fake-gh processes: see GIT_TEST_TIMEOUTS.
+vi.setConfig(GIT_TEST_TIMEOUTS);
 
 interface Edit {
 	/** Number of old lines kept before this edit. */

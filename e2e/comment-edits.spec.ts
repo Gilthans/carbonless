@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import type { Locator, Page } from "@playwright/test";
 import {
 	editElsewhere,
+	release,
 	reviewThread,
 	type Scenario,
 	threadComment,
@@ -156,7 +157,8 @@ test("edit from an Overview card: shown at once, marked edited, still there afte
 	isMobile,
 }) => {
 	if (isMobile) await page.setViewportSize({ width: 360, height: 780 });
-	const p = await setup(pr, { editDelayMs: 800 });
+	// GitHub answers the edit only once the test has seen it saving.
+	const p = await setup(pr, { hold: ["edit"] });
 	const s = await startCrb();
 	await page.goto(s.url);
 	const c = card(page, "new.txt");
@@ -185,6 +187,7 @@ test("edit from an Overview card: shown at once, marked edited, still there afte
 	await expect(box).toHaveCount(0);
 	await expect(c.getByTestId("thread-body")).toContainText("My better take");
 	await expect(c.getByRole("img", { name: "Saving" })).toBeVisible();
+	release(p.scenarioPath, "edit");
 	await expect(c.getByRole("img", { name: "Saving" })).toHaveCount(0);
 	await expect(c.getByTestId("comment-edited")).toBeVisible();
 	await expect.poll(() => bodies(p, 0)).toEqual(["My better take"]);
@@ -260,6 +263,9 @@ test("delete from an Overview card: Undo sends nothing; then the card fades and 
 	startCrb,
 	isMobile,
 }) => {
+	// It waits out the 5 s undo window twice, then the fade: past the
+	// default 30 s on a loaded machine.
+	test.slow();
 	if (isMobile) await page.setViewportSize({ width: 360, height: 780 });
 	const p = await setup(pr);
 	const s = await startCrb();
@@ -330,7 +336,8 @@ test("leaving the page with the delete confirmation open leaves the other page u
 	await expect(page).toHaveURL(/\/files/);
 	// Nothing modal is left: Files changed takes clicks and Tab.
 	await expect(page.locator("dialog[open]")).toHaveCount(0);
-	await page.getByRole("link", { name: "Overview" }).click({ timeout: 3000 });
+	// (A dialog left modal would block the click until the test times out.)
+	await page.getByRole("link", { name: "Overview" }).click();
 	await expect(page).not.toHaveURL(/\/files/);
 	await expect(c.getByTestId("thread-body")).toContainText("My take");
 	expect(stored(p, 0).removed).toBe(false);

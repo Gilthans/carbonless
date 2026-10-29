@@ -2,8 +2,8 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
-import { testGitEnv } from "../../../test/git-fixture";
+import { describe, expect, it, vi } from "vitest";
+import { GIT_TEST_TIMEOUTS, testGitEnv } from "../../../test/git-fixture";
 import {
 	REINDENT_NEW,
 	REINDENT_OLD,
@@ -27,6 +27,9 @@ import {
 	whitespaceEqual,
 	whitespaceOnly,
 } from "./whitespace";
+
+// Real git and fake-gh processes: see GIT_TEST_TIMEOUTS.
+vi.setConfig(GIT_TEST_TIMEOUTS);
 
 const del = (oldNo: number, text: string, over: Partial<DiffLine> = {}) => ({
 	kind: "del" as const,
