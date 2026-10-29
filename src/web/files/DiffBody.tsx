@@ -316,11 +316,16 @@ const pickOf = (
 	};
 };
 
-/** The cluster's controls column (empty but on a cluster's first row); `className` adds to it (a taller row's padding). */
+/**
+ * The cluster's controls column (empty but on a cluster's first row);
+ * `className` adds to it (a taller row's padding). Out of a text
+ * selection, like the numbers and signs: a copy of the code never carries
+ * the ⊘.
+ */
 function ControlsCell(props: { children?: ReactNode; className?: string }) {
 	return (
 		<td
-			className={`w-11 px-1 align-top whitespace-nowrap pointer-coarse:w-20 ${props.className ?? ""}`}
+			className={`w-11 px-1 align-top whitespace-nowrap select-none pointer-coarse:w-20 ${props.className ?? ""}`}
 		>
 			{props.children}
 		</td>
@@ -999,7 +1004,7 @@ function CrossedOffNote(props: { cluster: ClusterView; id?: string }) {
 	return (
 		<span
 			id={props.id}
-			className="ml-2 rounded bg-crossed/20 px-1 font-sans text-done"
+			className="ml-2 rounded bg-crossed/20 px-1 font-sans text-done select-none"
 		>
 			{props.cluster.reason
 				? `Crossed off: ${props.cluster.reason}`
@@ -2050,7 +2055,11 @@ function WhitespaceCluster(props: {
 			>
 				<Rail state={props.state} />
 				<ControlsCell>{props.controls}</ControlsCell>
-				<td colSpan={props.columns - 2} className="px-2 font-sans text-xs">
+				{/* Its words stay out of a selection dragged across the row. */}
+				<td
+					colSpan={props.columns - 2}
+					className="px-2 font-sans text-xs select-none"
+				>
 					<span className="flex items-center gap-1">
 						{props.pinned ? (
 							<span className="text-muted">{words}</span>

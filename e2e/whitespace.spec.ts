@@ -13,6 +13,7 @@ import {
 	openFiles,
 	progress,
 	rowTop,
+	sideBySide,
 	underStack,
 } from "./files-ui";
 import { expect, type PrOptions, test } from "./fixtures";
@@ -312,4 +313,58 @@ test("an expanded whitespace-only cluster's controls float below the file header
 	await expect(checkbox).toBeChecked();
 	await expect(progress(page)).toContainText("1 / 1 cluster reviewed");
 	expect(await overflow(page)).toBeLessThanOrEqual(0);
+});
+
+test("copying across a collapsed whitespace-only cluster takes the code alone: no cross-off, no words, in both views", async ({
+	page,
+	context,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	test.skip(isMobile, "a mouse drag and a keyboard copy");
+	await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+	await pr(fixture);
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	await ignoreWhitespace(page, true);
+	const section = await expand(page, "src/reindent.ts");
+	await expect(section.getByTestId("ws-cluster")).toHaveCount(5);
+	/** The RIGHT code cell of the context row numbered `n`. */
+	const cell = (n: number) =>
+		section.locator(
+			`tr[data-testid="diff-line"][data-new-no="${n}"] > td[data-testid="code"][data-side="RIGHT"]`,
+		);
+	/** Drags from the start of line 1's text to the end of line 5's. */
+	const copyAcross = async () => {
+		// A press on selected text would drag it: start from none.
+		await page.evaluate(() => getSelection()?.removeAllRanges());
+		const from = await cell(1).boundingBox();
+		const to = await cell(5).boundingBox();
+		if (!from || !to) throw new Error("a cell has no box");
+		await page.mouse.move(from.x + 4, from.y + from.height / 2);
+		await page.mouse.down();
+		await page.evaluate(
+			() =>
+				new Promise((done) =>
+					requestAnimationFrame(() => requestAnimationFrame(done)),
+				),
+		);
+		await page.mouse.move(to.x + to.width - 4, to.y + to.height / 2, {
+			steps: 12,
+		});
+		await page.mouse.up();
+		await page.keyboard.press("Control+C");
+		return page.evaluate(() => navigator.clipboard.readText());
+	};
+	for (const view of ["unified", "side-by-side"] as const) {
+		if (view === "side-by-side") await sideBySide(page, true);
+		await expect(section.locator("table")).toHaveAttribute("data-view", view);
+		// The first cluster's row (its controls and words) lies between them.
+		const copied = await copyAcross();
+		expect(copied, view).toContain("export interface Item {");
+		expect(copied, view).toContain("}");
+		expect(copied, view).not.toContain("⊘");
+		expect(copied, view).not.toContain("Whitespace only");
+	}
 });

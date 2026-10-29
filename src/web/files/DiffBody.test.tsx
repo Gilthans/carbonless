@@ -604,6 +604,34 @@ describe("DiffBody with Ignore whitespace", () => {
 			}),
 		).toBeInTheDocument();
 	});
+
+	it("keeps the controls, the collapsed row's words and a cross-off note out of a text selection", async () => {
+		setup({
+			clusters: [
+				{
+					...(clusters[0] as ClusterView),
+					state: "crossed-off",
+					reason: "gen",
+				},
+				clusters[1] as ClusterView,
+			],
+		});
+		await screen.findByText("Whitespace only · 6 lines");
+		// Every cluster's controls cell (the checkbox and the ⊘), on the
+		// collapsed row and on a line row.
+		const cells = screen
+			.getAllByRole("checkbox")
+			.map((box) => box.closest("td") as HTMLElement);
+		expect(cells).toHaveLength(2);
+		for (const cell of cells) expect(cell).toHaveClass("select-none");
+		for (const cell of cells) {
+			expect(within(cell).getByText("⊘").closest("td")).toBe(cell);
+		}
+		expect(
+			screen.getByText("Whitespace only · 6 lines").closest("td"),
+		).toHaveClass("select-none");
+		expect(screen.getByText("Crossed off: gen")).toHaveClass("select-none");
+	});
 });
 
 /** A 2 removed / 3 added cluster between context lines 4 and 8 (side by side). */
