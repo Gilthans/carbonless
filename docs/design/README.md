@@ -178,7 +178,10 @@ order: "Show hidden characters" (`crb.code.invisibles`, on by default),
 by side" (`crb.diff.sideBySide`, off by default; old file left, new right,
 `src/web/files/sideBySide.ts`), each a `viewSetting`
 (`src/web/viewSettings.ts`) remembered in `localStorage` and taking effect
-at once, without a reload.
+at once, without a reload. On Files changed, `w` flips "Ignore whitespace"
+and `s` "Side by side" (`src/web/files/viewShortcuts.tsx`, listed in the
+help under Files changed); on desktop their rows show the key as a cap
+after the label (the help's `Keys`), out of the switch's name.
 More rows go into `SettingsList` (`src/web/Settings.tsx`). Below them, on
 desktop only, "Keyboard shortcuts" (keyboard icon) opens the shortcuts help.
 

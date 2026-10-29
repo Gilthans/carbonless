@@ -42,6 +42,7 @@ const NO_THREADS: ReviewThread[] = [];
 
 import { type Unit, useUnit } from "./unit";
 import { STALE_MESSAGE, useReviewView, useSyncState } from "./useSetStates";
+import { useViewShortcuts } from "./viewShortcuts";
 
 /**
  * The file tree on narrow screens: a modal sheet over the diffs, closed by
@@ -226,6 +227,8 @@ export function FilesPage() {
 	// False while another page shows (kept mounted, hidden): measuring and
 	// tracking pause, root styles are given back, the sheet closes.
 	const active = usePageActive();
+	// `w` and `s` flip the diff's view settings while this page shows.
+	useViewShortcuts();
 	const diffs = useRef<HTMLDivElement>(null);
 	const bar = useRef<HTMLDivElement>(null);
 	// The sticky stack, top down: the app header's compact row, the progress

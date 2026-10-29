@@ -10,6 +10,8 @@ export interface ViewSetting {
 	/** The stored choice, else the default. */
 	read(): boolean;
 	set(next: boolean): void;
+	/** Sets the opposite of the value in hand (a shortcut's flip). */
+	toggle(): void;
 	/** Forgets the in-memory choice (tests), so the next read is from storage. */
 	reset(): void;
 	use(): boolean;
@@ -39,19 +41,21 @@ export function viewSetting(key: string, fallback: boolean): ViewSetting {
 		value ??= read();
 		return value;
 	};
+	const set = (next: boolean) => {
+		const changed = value !== next;
+		value = next;
+		try {
+			localStorage.setItem(key, next ? "on" : "off");
+		} catch {
+			// Storage is a convenience only.
+		}
+		if (changed) for (const listener of listeners) listener();
+	};
 	return {
 		key,
 		read,
-		set(next) {
-			const changed = value !== next;
-			value = next;
-			try {
-				localStorage.setItem(key, next ? "on" : "off");
-			} catch {
-				// Storage is a convenience only.
-			}
-			if (changed) for (const listener of listeners) listener();
-		},
+		set,
+		toggle: () => set(!current()),
 		reset() {
 			value = undefined;
 		},

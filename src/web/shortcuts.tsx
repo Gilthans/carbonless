@@ -266,8 +266,11 @@ export function ShortcutsProvider(props: { children: ReactNode }) {
 	);
 }
 
-/** One key as caps: "Mod+Enter" → [Ctrl] + [Enter] (⌘ on a Mac). */
-function Keys({ keys }: { keys: string }) {
+/**
+ * One key as caps: "Mod+Enter" → [Ctrl] + [Enter] (⌘ on a Mac). The help's
+ * rows, and a control that has a key (a Settings row) on a desktop.
+ */
+export function Keys({ keys }: { keys: string }) {
 	const names: Record<string, string> = {
 		Mod: isMac() ? "⌘" : "Ctrl",
 		Meta: "⌘",

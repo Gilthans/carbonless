@@ -404,6 +404,74 @@ test("the Side by side switch keeps the row being read where it was", async ({
 	await expectNoPageOverflow(page);
 });
 
+test("s and w flip Side by side and Ignore whitespace from the keyboard, the row being read where it was; ? lists them", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	test.skip(isMobile, "no keyboard shortcuts on a phone");
+	await setup(pr);
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	const section = await expand(page, LONG);
+	await page.addStyleTag({ content: "main { padding-bottom: 200vh; }" });
+	const row = section.locator('[data-testid="diff-line"][data-new-no="1150"]');
+	await expect(row).toContainText("long 1150 changed");
+	await underStack(row);
+	const before = await rowTop(row);
+	await page.keyboard.press("s");
+	await expect(section.locator("table")).toHaveAttribute(
+		"data-view",
+		"side-by-side",
+	);
+	expect(Math.abs((await rowTop(row)) - before)).toBeLessThan(2);
+	// The switch reads on, with its key beside the label; w's too.
+	await page.getByRole("button", { name: "Settings" }).click();
+	const split = page.getByRole("switch", { name: "Side by side" });
+	await expect(split).toHaveAttribute("aria-checked", "true");
+	await expect(split.locator("kbd")).toHaveText("s");
+	const ws = page.getByRole("switch", { name: "Ignore whitespace" });
+	await expect(ws).toHaveAttribute("aria-checked", "false");
+	await expect(ws.locator("kbd")).toHaveText("w");
+	await page.keyboard.press("Escape");
+	await expect(split).toBeHidden();
+	// w on the whitespace-only file (open alone now): its cluster collapses.
+	const reindented = await expand(page, INDENT);
+	await page.keyboard.press("w");
+	await expect(reindented.getByTestId("ws-cluster")).toHaveCount(1);
+	await page.getByRole("button", { name: "Settings" }).click();
+	await expect(ws).toHaveAttribute("aria-checked", "true");
+	await page.keyboard.press("Escape");
+	await expect(ws).toBeHidden();
+	// Back again from the keyboard.
+	await page.keyboard.press("s");
+	await expect(reindented.locator("table")).toHaveAttribute(
+		"data-view",
+		"unified",
+	);
+	await page.keyboard.press("w");
+	await expect(reindented.getByTestId("ws-cluster")).toHaveCount(0);
+	await expect(rows(reindented)).toHaveCount(16);
+	// The help lists both under Files changed.
+	await page.keyboard.press("Shift+Slash");
+	const help = page.getByRole("dialog", { name: "Keyboard shortcuts" });
+	await expect(help).toBeVisible();
+	const files = help.getByRole("region", { name: "Files changed" });
+	await expect(files).toContainText("Ignore whitespace");
+	await expect(files).toContainText("Side by side");
+	const entries = files.locator("li");
+	await expect(
+		entries.filter({ hasText: "Ignore whitespace" }).locator("kbd"),
+	).toHaveText("w");
+	await expect(
+		entries.filter({ hasText: "Side by side" }).locator("kbd"),
+	).toHaveText("s");
+	await page.keyboard.press("Escape");
+	await expect(help).toBeHidden();
+	await expectNoPageOverflow(page);
+});
+
 test("a text selection stays on one side, and Copy gives that side only", async ({
 	page,
 	context,

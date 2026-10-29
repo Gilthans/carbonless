@@ -73,6 +73,33 @@ describe("viewSetting", () => {
 		expect(result.current).toBe(false);
 	});
 
+	it("toggles from the value in hand, even when storage is unavailable", () => {
+		const s = viewSetting("crb.test.toggle", false);
+		const { result } = renderHook(() => s.use());
+		act(() => s.toggle());
+		expect(result.current).toBe(true);
+		expect(localStorage.getItem("crb.test.toggle")).toBe("on");
+		act(() => s.toggle());
+		expect(result.current).toBe(false);
+		const getItem = Storage.prototype.getItem;
+		const setItem = Storage.prototype.setItem;
+		Storage.prototype.getItem = () => {
+			throw new Error("blocked");
+		};
+		Storage.prototype.setItem = () => {
+			throw new Error("blocked");
+		};
+		try {
+			act(() => s.toggle());
+			expect(result.current).toBe(true);
+			act(() => s.toggle());
+			expect(result.current).toBe(false);
+		} finally {
+			Storage.prototype.getItem = getItem;
+			Storage.prototype.setItem = setItem;
+		}
+	});
+
 	it("has hidden characters on and ignore whitespace off by default", () => {
 		expect(showInvisibles.key).toBe("crb.code.invisibles");
 		expect(showInvisibles.read()).toBe(true);

@@ -1,13 +1,18 @@
 import { GearIcon } from "@primer/octicons-react";
 import { useEffect, useId, useRef, useState } from "react";
-import { useOpenShortcutsHelp } from "./shortcuts";
+import { VIEW_KEYS } from "./files/viewShortcuts";
+import { Keys, useOpenShortcutsHelp } from "./shortcuts";
 import { Tooltip } from "./Tooltip";
 import { NOT_PHONE, useMedia } from "./useMedia";
 import { ignoreWhitespace, showInvisibles, sideBySide } from "./viewSettings";
 
-/** One on/off setting: a switch row, the whole row its 40px+ target. */
+/**
+ * One on/off setting: a switch row, the whole row its 40px+ target. `keys`
+ * (its shortcut, desktop only) shows as caps after the label, out of its name.
+ */
 function SwitchRow(props: {
 	label: string;
+	keys?: string;
 	checked: boolean;
 	onChange: (next: boolean) => void;
 }) {
@@ -19,7 +24,14 @@ function SwitchRow(props: {
 			onClick={() => props.onChange(!props.checked)}
 			className="flex min-h-11 w-full items-center justify-between gap-4 rounded-md px-2 text-left text-sm text-ink hover:bg-overlay focus-visible:outline-2 focus-visible:outline-accent"
 		>
-			{props.label}
+			<span className="flex min-w-0 items-center gap-2">
+				{props.label}
+				{props.keys && (
+					<span aria-hidden>
+						<Keys keys={props.keys} />
+					</span>
+				)}
+			</span>
 			<span
 				aria-hidden
 				className={`relative h-5 w-9 shrink-0 rounded-full border transition-colors motion-reduce:transition-none ${
@@ -54,8 +66,8 @@ function KeyboardIcon() {
 	);
 }
 
-/** The settings themselves; more rows go here. */
-function SettingsList() {
+/** The settings themselves; more rows go here. The diff rows' keys show on a desktop (a phone has no shortcuts). */
+function SettingsList({ phone }: { phone: boolean }) {
 	const invisibles = showInvisibles.use();
 	const whitespace = ignoreWhitespace.use();
 	const split = sideBySide.use();
@@ -68,11 +80,13 @@ function SettingsList() {
 			/>
 			<SwitchRow
 				label="Ignore whitespace"
+				keys={phone ? undefined : VIEW_KEYS.ignoreWhitespace}
 				checked={whitespace}
 				onChange={ignoreWhitespace.set}
 			/>
 			<SwitchRow
 				label="Side by side"
+				keys={phone ? undefined : VIEW_KEYS.sideBySide}
 				checked={split}
 				onChange={sideBySide.set}
 			/>
@@ -201,7 +215,7 @@ export function Settings() {
 					)}
 				</div>
 				<div className={phone ? "px-2 pt-2 pb-6" : "p-2"}>
-					<SettingsList />
+					<SettingsList phone={phone} />
 					{!phone && (
 						<button
 							type="button"
