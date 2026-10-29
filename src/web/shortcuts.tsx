@@ -15,7 +15,12 @@ import {
 import { usePageActive } from "./pageActive";
 import { Tooltip, TooltipLayer } from "./Tooltip";
 
-export type ShortcutGroup = "Global" | "Files changed" | "Overview" | "Threads";
+export type ShortcutGroup =
+	| "Global"
+	| "Home"
+	| "Files changed"
+	| "Overview"
+	| "Threads";
 
 /**
  * A keyboard shortcut. `keys` is the key (`e.key`: "c", "?", "Enter"),
@@ -36,6 +41,7 @@ type HelpEntry = Omit<Shortcut, "run" | "when">;
 
 const GROUPS: ShortcutGroup[] = [
 	"Global",
+	"Home",
 	"Files changed",
 	"Overview",
 	"Threads",
