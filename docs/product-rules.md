@@ -140,9 +140,10 @@ unresolving one, and editing or deleting one of the viewer's comments in one
   one, allowing for me to edit it back if I want"). Delete is off on it
   while published comments follow it (nothing more to do); deleting it
   again is answered as done (a retry that landed). Once no published
-  comment follows it, the viewer may delete it, and then it really goes. Deleting any other comment deletes it; deleting
-  a thread's last published comment removes the thread (`ThreadGone`),
-  and it leaves the session's kept reads.
+  comment follows it, the viewer may delete it, and then it really goes.
+  Deleting any other comment deletes it; deleting a thread's last
+  published comment removes the thread (`ThreadGone`), and it leaves the
+  session's kept reads.
   Whether published comments follow is GitHub's fresh list reconciled
   with this session's own writes: a reply it just posted counts even
   before GraphQL lists it, a comment it deleted doesn't count (and stays
@@ -217,8 +218,8 @@ unresolving one, and editing or deleting one of the viewer's comments in one
 - **Leaving asks only when something would be lost** (owner: "refresh
   should only be dirty if information is lost"; `useUnsavedGuard`). It
   asks for review states not yet stored, and for a resolve, unresolve or
-  delete not yet on GitHub (a delete in its undo window too: nothing is
-  sent yet and no later page sends it). It never asks for drafts (reply,
+  delete not yet on GitHub (refused ones too, until let go; a delete in
+  its undo window too: nothing is sent yet and no later page sends it). It never asks for drafts (reply,
   edit, new thread) or for replies, edits and new threads on their way:
   `localStorage` keeps them and the next page resends what was sent. Only
   while storage can't keep them (a private window, blocked site data) do

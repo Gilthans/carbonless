@@ -1050,6 +1050,8 @@ describe("editing and deleting comments", () => {
 			deletes: [],
 			failed: { action: "Delete", commentId: "c2" },
 		});
+		// Its Retry is the only way it's sent: a reload would lose it.
+		expect(w.state().lost).toBe(true);
 		w.retry("T1");
 		expect(calls).toHaveLength(2);
 		expect(calls[1]).toMatchObject({ op: "delete", commentId: "c2" });

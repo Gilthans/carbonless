@@ -160,7 +160,7 @@ export interface ThreadWritesState {
 	/**
 	 * Something not yet on GitHub that a reload would lose: a resolve or
 	 * unresolve (queued, on its way or refused), a delete (in its undo
-	 * window or on its way). Replies, edits and new threads aren't: their
+	 * window, on its way or refused, its Retry waiting). Replies, edits and new threads aren't: their
 	 * drafts keep them, and the next page resends them (resume()).
 	 */
 	lost: boolean;
@@ -1059,7 +1059,8 @@ export class ThreadWrites {
 			if (
 				resolved !== undefined ||
 				lane.undo.size > 0 ||
-				lane.ops.some((op) => op.kind === "delete")
+				lane.ops.some((op) => op.kind === "delete") ||
+				lane.failed?.action === "Delete"
 			) {
 				lost = true;
 			}
