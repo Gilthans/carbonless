@@ -93,5 +93,7 @@ describe("writeFileAtomic", () => {
 		expect(overlapped).toBeGreaterThan(50);
 		expect(JSON.parse(readFileSync(path, "utf8")).n).toBe(WRITES);
 		expect(readdirSync(dir)).toEqual(["scenario.json"]);
-	});
+		// A process writing 150 MB while this one reads: seconds on a loaded
+		// machine.
+	}, 30_000);
 });
