@@ -1565,9 +1565,7 @@ test("a thread deleted after the list was read: the comments answer says deleted
 		// The cards' text comes late: the toggle opens before it does.
 		s.threadContentDelayMs = 3000;
 	});
-	const answered = page.waitForResponse((r) =>
-		r.url().includes("/comments?"),
-	);
+	const answered = page.waitForResponse((r) => r.url().includes("/comments?"));
 	const s = await startCrb();
 	await page.goto(s.url);
 	const thread = card(page, "src/cache.ts");
@@ -1612,9 +1610,7 @@ test("comments are read before a card is opened", async ({
 		}).observe(document, { childList: true, subtree: true });
 	});
 	const first = page.waitForRequest((r) => r.url().includes("/comments?"));
-	const answered = page.waitForResponse((r) =>
-		r.url().includes("/comments?"),
-	);
+	const answered = page.waitForResponse((r) => r.url().includes("/comments?"));
 	const s = await startCrb();
 	await page.goto(s.url);
 	// Asked for with nothing clicked, the listed (unresolved) thread first.

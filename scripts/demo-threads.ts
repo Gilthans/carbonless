@@ -12,9 +12,9 @@
  */
 import { type ChildProcess, spawn } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
-import { setTimeout as sleep } from "node:timers/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 import { parseArgs } from "node:util";
 import {
 	CLI,
