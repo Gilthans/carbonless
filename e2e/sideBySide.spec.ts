@@ -709,3 +709,190 @@ test("side by side, a pick anchored on a new number and extended to an old one g
 		},
 	]);
 });
+
+/** A locator's left and right edges (viewport px). */
+const edges = async (locator: Locator) => {
+	const b = await locator.boundingBox();
+	if (!b) throw new Error("not rendered");
+	return { left: b.x, right: b.x + b.width, width: b.width };
+};
+
+const sideShot = (page: Page, isMobile: boolean, name: string) =>
+	shots
+		? page.screenshot({
+				path: `${shots}/thread-side-${name}-${isMobile ? "phone" : "desktop"}.png`,
+			})
+		: Promise.resolve();
+
+test("side by side, an opened thread and the composer sit under their side", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	if (isMobile) await page.setViewportSize({ width: 360, height: 780 });
+	await setup(pr);
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	await sideBySide(page, true);
+	const section = await expand(page, GREET);
+	await expect(table(section, "side-by-side")).toBeVisible();
+	const row6 = section.locator('tr[data-testid="diff-line"][data-new-no="6"]');
+	const row5 = section.locator('tr[data-testid="diff-line"][data-old-no="5"]');
+	const oldNo = await edges(row6.getByTestId("old"));
+	const oldCode = await edges(codeCells(row6).nth(0));
+	const newNo = await edges(row6.getByTestId("new"));
+	const newCode = await edges(codeCells(row6).nth(1));
+	// A card under its side: within the new number and code cells' edges
+	// for a RIGHT one, within the old ones' for a LEFT one. On a phone it
+	// spans the table, from before the old number to past the new one (half
+	// of 360px is unreadable).
+	const acrossTable = async (card: Locator) => {
+		const c = await edges(card);
+		expect(c.left).toBeLessThan(oldNo.left);
+		expect(c.right).toBeGreaterThan(newNo.right);
+	};
+	const underRight = async (card: Locator) => {
+		if (isMobile) return acrossTable(card);
+		const c = await edges(card);
+		expect(c.left).toBeGreaterThanOrEqual(newNo.left - 1);
+		expect(c.right).toBeLessThanOrEqual(newCode.right + 1);
+	};
+	const underLeft = async (card: Locator) => {
+		if (isMobile) return acrossTable(card);
+		const c = await edges(card);
+		expect(c.left).toBeGreaterThanOrEqual(oldNo.left - 1);
+		expect(c.right).toBeLessThanOrEqual(oldCode.right + 1);
+	};
+	/** The numbers of the line row a card's row sits under (past any thread rows). */
+	const lineAbove = (card: Locator) =>
+		card.evaluate((el) => {
+			let row = el.closest("tr")?.previousElementSibling ?? null;
+			while (row && row.getAttribute("data-testid") !== "diff-line") {
+				row = row.previousElementSibling;
+			}
+			return [
+				row?.getAttribute("data-old-no"),
+				row?.getAttribute("data-new-no"),
+			];
+		});
+
+	// The thread on new 6, under the right side.
+	await codeCells(row6).nth(1).getByTestId("thread-bubble").click();
+	const rightRow = section.getByTestId("thread-row");
+	await expect(rightRow).toHaveCount(1);
+	const rightCard = rightRow.getByTestId("files-thread");
+	await expect(rightCard).toContainText("New six");
+	await underRight(rightCard);
+	await expect(rightRow.getByTestId("thread-rail")).toHaveClass(
+		/bg-unreviewed/,
+	);
+	await sideShot(page, isMobile, "right");
+
+	// The thread on old 5, under the left side, above the first.
+	await codeCells(row5).nth(0).getByTestId("thread-bubble").click();
+	const rows = section.getByTestId("thread-row");
+	await expect(rows).toHaveCount(2);
+	const leftCard = rows.nth(0).getByTestId("files-thread");
+	await expect(leftCard).toContainText("Old five");
+	await underLeft(leftCard);
+	await underRight(rows.nth(1).getByTestId("files-thread"));
+	await sideShot(page, isMobile, "left");
+
+	// A comment started on a right-side line: its composer under the right;
+	// one on an old line under the left.
+	const comment = () =>
+		selectionBar(page).getByRole("button", { name: "Comment" }).click();
+	if (isMobile) await row6.getByTestId("new").tap();
+	else await row6.getByTestId("new").click();
+	await comment();
+	const composers = section.getByTestId("new-thread");
+	await expect(composers).toHaveCount(1);
+	await underRight(composers.nth(0));
+	expect(await lineAbove(composers.nth(0))).toEqual(["6", "6"]);
+	if (isMobile) await row5.getByTestId("old").tap();
+	else await row5.getByTestId("old").click();
+	await comment();
+	await expect(composers).toHaveCount(2);
+	// Under row 5 (first in the table), after its opened thread.
+	await underLeft(composers.nth(0));
+	expect(await lineAbove(composers.nth(0))).toEqual(["5", "5"]);
+	await underRight(composers.nth(1));
+	expect(await lineAbove(composers.nth(1))).toEqual(["6", "6"]);
+	await sideShot(page, isMobile, "composer");
+	await expectNoPageOverflow(page);
+});
+
+test("side by side, a cluster's floating controls stop above a thread opened under the right side", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	if (isMobile) await page.setViewportSize({ width: 360, height: 780 });
+	const lines = Array.from({ length: 80 }, (_, i) => `x ${i + 1}`);
+	const p = await pr({
+		base: { [LONG]: text(lines) },
+		files: [
+			{
+				message: "long",
+				files: {
+					[LONG]: text(
+						lines.map((l, i) => (i >= 5 && i < 65 ? `${l} changed` : l)),
+					),
+				},
+			},
+		],
+	});
+	const head = p.repo.shas.at(-1) ?? "";
+	p.editScenario((sc) => {
+		const graph = sc.prs[7]?.graphql;
+		if (!graph) throw new Error("no PR in the scenario");
+		graph.reviewThreads = [
+			reviewThread({ path: LONG, line: 15, subjectType: "LINE" }, [
+				threadComment({ login: "rev1", text: "Midway", commit: head }),
+			]),
+		];
+	});
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	await sideBySide(page, true);
+	const section = await expand(page, LONG);
+	await expect(table(section, "side-by-side")).toBeVisible();
+	const row15 = section.locator(
+		'tr[data-testid="diff-line"][data-new-no="15"]',
+	);
+	await codeCells(row15).nth(1).getByTestId("thread-bubble").click();
+	const threadRow = section.getByTestId("thread-row");
+	await expect(threadRow.getByTestId("thread-comment")).toHaveCount(1);
+	const newNo = await edges(row15.getByTestId("new"));
+	const card = await edges(threadRow.getByTestId("files-thread"));
+	if (!isMobile) expect(card.left).toBeGreaterThanOrEqual(newNo.left - 1);
+	// Scroll so the thread's row is just under the file header (the stack
+	// above compacts on the way, so correct until it is): too close for
+	// the controls to float there, they ride up and stop above it.
+	await expect
+		.poll(() =>
+			threadRow.evaluate((el) => {
+				const header = el.closest("section")?.querySelector("header");
+				const top = header?.getBoundingClientRect().bottom ?? 0;
+				const off = el.getBoundingClientRect().top - top - 4;
+				if (Math.abs(off) > 1) window.scrollBy(0, off);
+				return Math.abs(off);
+			}),
+		)
+		.toBeLessThanOrEqual(1);
+	await page.evaluate(
+		() =>
+			new Promise<void>((done) =>
+				requestAnimationFrame(() => requestAnimationFrame(() => done())),
+			),
+	);
+	const controls = section.locator("[data-sticky-controls]").first();
+	await expect(controls).toHaveAttribute("data-stuck", "end");
+	const c = await controls.boundingBox();
+	const t = await threadRow.boundingBox();
+	if (!c || !t) throw new Error("not rendered");
+	expect(c.y + c.height).toBeLessThanOrEqual(t.y);
+	await expectNoPageOverflow(page);
+});

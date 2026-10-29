@@ -43,6 +43,7 @@ import { OrphanDraft } from "../threads/OrphanDraft";
 import type { SpanRange } from "../threads/spanMarks";
 import { useThreadWriter } from "../threads/threadWrites";
 import { ErrorMessage } from "../ui";
+import { NOT_PHONE, useMedia } from "../useMedia";
 import { ignoreWhitespace, sideBySide } from "../viewSettings";
 import { type CellLine, CODE_CELL, cellLine } from "./codeSpan";
 import { EXPAND_STEP, fileGaps, type Gap, gapState } from "./gaps";
@@ -60,7 +61,7 @@ import { describeSpan } from "./selectionActions";
 import { layoutRows, type SideRow } from "./sideBySide";
 import { CONTROLS, SLOT, useStickyControls } from "./stickyControls";
 import { ThreadBubble } from "./ThreadBubble";
-import { ThreadRow } from "./ThreadRow";
+import { type CardPlace, TailRow, ThreadRow } from "./ThreadRow";
 import {
 	type FilePlacement,
 	type LineKey,
@@ -170,6 +171,12 @@ interface Shape {
 	view: View;
 	/** Digits the file's widest line number needs (three at least): the number cells' width. */
 	digits: number;
+	/**
+	 * Side by side on a screen wide enough: an opened thread or a composer
+	 * sits under its side, in that side's half (TailRow). On a phone it
+	 * spans the table as in unified: half of 360px is unreadable.
+	 */
+	split: boolean;
 }
 
 const numberWidth = (digits: number) => ({ width: `calc(${digits}ch + 1rem)` });
@@ -505,18 +512,22 @@ const marksOf = (keys: LineKey[], threads: RowThreads | undefined): Mark[] =>
 /**
  * What follows a row of lines: the opened rows of the threads ending on it
  * (a pair row may open one per side, the left side's first), then the new
- * threads being written under it.
+ * threads being written under it, a row per side with any. Each row sits
+ * under its side when the shape splits them (a context line's are RIGHT:
+ * its bubble's cell), else across the table.
  */
 function RowTail(props: {
-	opened: { endKey: LineKey; ending: ReviewThread[] }[];
-	composing: NewThreadItem[];
+	opened: { endKey: LineKey; ending: ReviewThread[]; side: DiffSide }[];
+	composing: { side: DiffSide; items: NewThreadItem[] }[];
 	threads?: RowThreads;
 	composers?: RowComposers;
-	columns: number;
+	shape: Shape;
 	state?: ClusterView["state"];
 }) {
-	const { threads } = props;
+	const { threads, shape, composers } = props;
 	const rail = props.state ? RAIL[props.state] : undefined;
+	const place = (side: DiffSide): CardPlace =>
+		shape.split ? { side } : { columns: columnsOf(shape.view) };
 	return (
 		<>
 			{threads &&
@@ -526,18 +537,22 @@ function RowTail(props: {
 						id={threads.idOf(cell.endKey)}
 						readId={threads.readId}
 						threads={cell.ending}
-						columns={props.columns}
+						place={place(cell.side)}
 						rail={rail}
 					/>
 				))}
-			{props.composing.length > 0 && props.composers && (
-				<NewThreadRow
-					items={props.composing}
-					composers={props.composers}
-					columns={props.columns}
-					rail={rail}
-				/>
-			)}
+			{composers &&
+				props.composing
+					.filter(({ items }) => items.length > 0)
+					.map(({ side, items }) => (
+						<NewThreadRow
+							key={side}
+							items={items}
+							composers={composers}
+							place={place(side)}
+							rail={rail}
+						/>
+					))}
 		</>
 	);
 }
@@ -546,31 +561,21 @@ function RowTail(props: {
 function NewThreadRow(props: {
 	items: NewThreadItem[];
 	composers: RowComposers;
-	columns: number;
+	place: CardPlace;
 	rail?: string;
 }) {
 	return (
-		<tr data-testid="new-thread-row">
-			<td colSpan={props.columns} className="p-0">
-				<div className="sticky left-0 w-[var(--diff-w,100%)] max-w-full space-y-2 border-y border-line bg-canvas py-2 pr-2 pl-3 font-sans text-sm leading-normal whitespace-normal text-ink">
-					{props.rail && (
-						<span
-							aria-hidden
-							className={`absolute inset-y-0 left-0 w-1 ${props.rail}`}
-						/>
-					)}
-					{props.items.map((item) => (
-						<NewThread
-							key={item.clientId}
-							item={item}
-							quote={props.composers.quote(item)}
-							lineTexts={props.composers.texts(item)}
-							onPosted={() => props.composers.onPosted(item)}
-						/>
-					))}
-				</div>
-			</td>
-		</tr>
+		<TailRow testId="new-thread-row" place={props.place} rail={props.rail}>
+			{props.items.map((item) => (
+				<NewThread
+					key={item.clientId}
+					item={item}
+					quote={props.composers.quote(item)}
+					lineTexts={props.composers.texts(item)}
+					onPosted={() => props.composers.onPosted(item)}
+				/>
+			))}
+		</TailRow>
 	);
 }
 
@@ -694,11 +699,11 @@ function LineRow(props: RowProps & { line: RowLine; order?: number }) {
 			</tr>
 			{line.noNewline && <NoNewlineRow shape={shape} state={state} />}
 			<RowTail
-				opened={open && endKey ? [{ endKey, ending }] : []}
-				composing={composing}
+				opened={open && endKey ? [{ endKey, ending, side: cell.side }] : []}
+				composing={[{ side: cell.side, items: composing }]}
 				threads={threads}
 				composers={props.composers}
-				columns={columnsOf(shape.view)}
+				shape={shape}
 				state={state}
 			/>
 		</>
@@ -795,8 +800,13 @@ function PairRow(props: RowProps & { row: SideRow }) {
 	const phase = left?.landed ?? right?.landed;
 	const commented = Boolean(left?.commented || right?.commented);
 	const isPicked = Boolean(left?.pick.picked || right?.pick.picked);
-	const composing =
-		props.composers?.at([...(left?.keys ?? []), ...(right?.keys ?? [])]) ?? [];
+	// Each side's cell, left first: what its threads open and what is being
+	// written on its keys follows it (a context line's keys are all in its
+	// right cell, so its rows are on the right).
+	const sides: [DiffSide, Cell | undefined][] = [
+		["LEFT", left],
+		["RIGHT", right],
+	];
 	const cells = (side: DiffSide, cell: Cell | undefined) => {
 		if (!cell) return <BlankCells side={side} digits={shape.digits} />;
 		const { line, keys, endKey } = cell;
@@ -880,15 +890,18 @@ function PairRow(props: RowProps & { row: SideRow }) {
 				<NoNewlineRow shape={shape} state={state} {...noNewline} />
 			)}
 			<RowTail
-				opened={[left, right].flatMap((cell) =>
+				opened={sides.flatMap(([side, cell]) =>
 					cell?.open && cell.endKey
-						? [{ endKey: cell.endKey, ending: cell.ending }]
+						? [{ endKey: cell.endKey, ending: cell.ending, side }]
 						: [],
 				)}
-				composing={composing}
+				composing={sides.map(([side, cell]) => ({
+					side,
+					items: props.composers?.at(cell?.keys ?? []) ?? [],
+				}))}
 				threads={threads}
 				composers={props.composers}
-				columns={columnsOf(shape.view)}
+				shape={shape}
 				state={state}
 			/>
 		</>
@@ -1067,7 +1080,11 @@ export function DiffBody(props: {
 	const digits = hunks.data
 		? digitsOf(hunks.data.newLineCount, hunks.data.hunks)
 		: 3;
-	const shape = useMemo<Shape>(() => ({ view, digits }), [view, digits]);
+	const wide = useMedia(NOT_PHONE);
+	const shape = useMemo<Shape>(
+		() => ({ view, digits, split: view === "side-by-side" && wide }),
+		[view, digits, wide],
+	);
 	const columns = columnsOf(view);
 	const [ranges, setRanges] = useState<[number, number][]>([]);
 	const contexts = useQueries({

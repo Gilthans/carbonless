@@ -17,10 +17,12 @@ import type {
 	FileView,
 	ReviewThread,
 } from "../../shared/types";
+import { openComposer, resetComposers } from "../threads/newThreads";
 import { ignoreWhitespace, showInvisibles, sideBySide } from "../viewSettings";
 import { DiffBody, type DiffThreads, LANDED_MS } from "./DiffBody";
 import type { Landing } from "./landing";
 import { setPicks } from "./linePicks";
+import type { CodeSpan } from "./selectionActions";
 
 vi.mock("./highlight", () => ({
 	languageFor: () => null,
@@ -648,6 +650,7 @@ describe("DiffBody side by side", () => {
 		showInvisibles.reset();
 		ignoreWhitespace.reset();
 		sideBySide.reset();
+		resetComposers();
 	});
 
 	const lineRows = () =>
@@ -672,6 +675,41 @@ describe("DiffBody side by side", () => {
 		).map((row) =>
 			Array.from(row.querySelectorAll("td")).map((td) => td.colSpan),
 		);
+	/**
+	 * A thread or composer row's cells: each one's span, which holds the
+	 * card and which is the blank over the other side (-1: none).
+	 */
+	const tail = (row: HTMLElement) => {
+		const cells = Array.from(
+			row.querySelectorAll<HTMLTableCellElement>(":scope > td"),
+		);
+		return {
+			spans: cells.map((td) => td.colSpan),
+			card: cells.findIndex((td) =>
+				td.querySelector(
+					'[data-testid="files-thread"], [data-testid="new-thread"]',
+				),
+			),
+			blank: cells.findIndex(
+				(td) => td.classList.contains("bg-band") && td.childElementCount === 0,
+			),
+		};
+	};
+	const span = (side: "LEFT" | "RIGHT", line: number): CodeSpan => ({
+		path: PATH,
+		commit: HEAD,
+		subject: "line",
+		startSide: side,
+		startLine: line,
+		side,
+		line,
+		startCol: null,
+		endCol: null,
+	});
+	const bubble = (row: HTMLElement, side: "LEFT" | "RIGHT") =>
+		within(code(row, side) as HTMLElement).getByRole("button", {
+			name: /comment/,
+		});
 
 	it("lays a 2/3 cluster out as three pair rows, the third with a blank left side", async () => {
 		const { calls } = setup({ hunks: pairHunks(), clusters: [pairCluster()] });
@@ -816,7 +854,7 @@ describe("DiffBody side by side", () => {
 		expect(screen.getAllByTestId("thread-row")).toHaveLength(1);
 		const opened = screen.getByTestId("thread-row");
 		expect(row.nextElementSibling).toBe(opened);
-		expect(opened.querySelector("td")?.colSpan).toBe(6);
+		expect(tail(opened)).toEqual({ spans: [1, 1, 2, 2], card: 2, blank: 3 });
 		expect(leftBubble).toHaveAttribute("aria-expanded", "true");
 		expect(rightBubble).toHaveAttribute("aria-expanded", "false");
 
@@ -865,6 +903,120 @@ describe("DiffBody side by side", () => {
 		expect(right).toHaveAttribute("data-commented");
 		expect(code(row, "LEFT")).toHaveClass("thread-mark-cell");
 		expect(right).toHaveClass("thread-mark-cell");
+	});
+
+	it("opens a thread's row under its side: the card over that side's two columns, a blank over the other's", async () => {
+		const { user } = setup({
+			hunks: pairHunks(),
+			clusters: [pairCluster()],
+			threads: [thread("RIGHT", 6), thread("LEFT", 6)],
+		});
+		await screen.findByText("new seven");
+		const row = document.querySelector<HTMLElement>(
+			'[data-testid="diff-line"][data-new-no="6"]',
+		) as HTMLElement;
+		await user.click(bubble(row, "RIGHT"));
+		const right = screen.getByTestId("thread-row");
+		expect(row.nextElementSibling).toBe(right);
+		expect(tail(right)).toEqual({ spans: [1, 1, 2, 2], card: 3, blank: 2 });
+		// The card is its side's half: no sticky visible-width trick here.
+		expect(right.querySelector(".sticky")).toBeNull();
+		// The rail cell carries the cluster's state on beside it.
+		expect(within(right).getByTestId("thread-rail")).toHaveClass(
+			"bg-unreviewed",
+		);
+
+		await user.click(bubble(row, "LEFT"));
+		const both = screen.getAllByTestId("thread-row");
+		expect(both.map(tail)).toEqual([
+			{ spans: [1, 1, 2, 2], card: 2, blank: 3 },
+			{ spans: [1, 1, 2, 2], card: 3, blank: 2 },
+		]);
+
+		// Unified: across the table, as before.
+		act(() => sideBySide.set(false));
+		expect(screen.getAllByTestId("thread-row").map(tail)).toEqual([
+			{ spans: [5], card: 0, blank: -1 },
+			{ spans: [5], card: 0, blank: -1 },
+		]);
+		expect(
+			screen.getAllByTestId("thread-row")[0]?.querySelector(".sticky"),
+		).not.toBeNull();
+	});
+
+	it("opens a context line's thread on the right, whichever side it names", async () => {
+		const { user } = setup({
+			hunks: pairHunks(),
+			clusters: [pairCluster()],
+			threads: [thread("LEFT", 4)],
+		});
+		await screen.findByText("new seven");
+		const row = lineRows()[0] as HTMLElement;
+		expect(row.dataset.kind).toBe("context");
+		await user.click(bubble(row, "RIGHT"));
+		const opened = screen.getByTestId("thread-row");
+		expect(row.nextElementSibling).toBe(opened);
+		expect(tail(opened)).toEqual({ spans: [1, 1, 2, 2], card: 3, blank: 2 });
+	});
+
+	it("puts a composer under the side its span ends on", async () => {
+		setup({ hunks: pairHunks(), clusters: [pairCluster()], threads: [] });
+		await screen.findByText("new seven");
+		act(() => {
+			openComposer(span("RIGHT", 6));
+		});
+		const right = await screen.findByTestId("new-thread-row");
+		expect(right.previousElementSibling).toHaveAttribute("data-new-no", "6");
+		expect(tail(right)).toEqual({ spans: [1, 1, 2, 2], card: 3, blank: 2 });
+		expect(right.querySelector(".sticky")).toBeNull();
+		act(() => {
+			openComposer(span("LEFT", 5));
+		});
+		const rows = screen.getAllByTestId("new-thread-row");
+		expect(rows).toHaveLength(2);
+		expect(rows[0]?.previousElementSibling).toHaveAttribute("data-old-no", "5");
+		expect(rows.map(tail)).toEqual([
+			{ spans: [1, 1, 2, 2], card: 2, blank: 3 },
+			{ spans: [1, 1, 2, 2], card: 3, blank: 2 },
+		]);
+		act(() => sideBySide.set(false));
+		expect(screen.getAllByTestId("new-thread-row").map(tail)).toEqual([
+			{ spans: [5], card: 0, blank: -1 },
+			{ spans: [5], card: 0, blank: -1 },
+		]);
+	});
+
+	it("on a phone keeps a thread's row and a composer across the table", async () => {
+		vi.stubGlobal(
+			"matchMedia",
+			(query: string) =>
+				({
+					matches: false,
+					media: query,
+					addEventListener: () => {},
+					removeEventListener: () => {},
+				}) as unknown as MediaQueryList,
+		);
+		const { user } = setup({
+			hunks: pairHunks(),
+			clusters: [pairCluster()],
+			threads: [thread("RIGHT", 6)],
+		});
+		await screen.findByText("new seven");
+		const row = document.querySelector<HTMLElement>(
+			'[data-testid="diff-line"][data-new-no="6"]',
+		) as HTMLElement;
+		await user.click(bubble(row, "RIGHT"));
+		const opened = screen.getByTestId("thread-row");
+		expect(tail(opened)).toEqual({ spans: [6], card: 0, blank: -1 });
+		expect(within(opened).getByTestId("thread-rail")).toHaveClass(
+			"bg-unreviewed",
+		);
+		act(() => {
+			openComposer(span("LEFT", 5));
+		});
+		const composer = await screen.findByTestId("new-thread-row");
+		expect(tail(composer)).toEqual({ spans: [6], card: 0, blank: -1 });
 	});
 
 	it("lands on one cell of a pair row, and on both cells of a context row", async () => {
@@ -1166,11 +1318,12 @@ describe("DiffBody side by side", () => {
 			ws: colSpans("ws-cluster"),
 			thread: colSpans("thread-row"),
 		});
+		// A thread's row takes its side's two columns, under the rail and controls.
 		expect(spans()).toEqual({
 			header: [6],
 			gap: [[2, 4]],
 			ws: [[1, 1, 4]],
-			thread: [[6]],
+			thread: [[1, 1, 2, 2]],
 		});
 		act(() => sideBySide.set(false));
 		expect(spans()).toEqual({
