@@ -1,10 +1,17 @@
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createPrFixture, type PrFixture } from "../test/pr-fixture";
-import { ClientError, ensureServer, runClient } from "./client";
+import { ClientError, ensureServer, runClient, trimLog } from "./client";
 import { type StartedServer, startServer } from "./server/serve";
 import { readLiveServerState, writeServerState } from "./server/serverState";
 import { BUILD } from "./server/version";
@@ -136,6 +143,18 @@ describe("the client", () => {
 		await expect(run).rejects.toThrow(
 			`server runs ${BUILD.version} (${BUILD.commit.slice(0, 7)}), this crb is 9.9.9 (ddddddd)`,
 		);
+	});
+
+	it("serve.log past its limit moves aside before the next start", async () => {
+		const logs = join(dir, "state", "carbonless");
+		mkdirSync(logs, { recursive: true });
+		writeFileSync(join(logs, "serve.log"), "x".repeat(20));
+		await trimLog(100);
+		expect(existsSync(join(logs, "serve.log.1"))).toBe(false);
+		await trimLog(10);
+		expect(existsSync(join(logs, "serve.log"))).toBe(false);
+		expect(readFileSync(join(logs, "serve.log.1"), "utf8")).toHaveLength(20);
+		await trimLog(10);
 	});
 
 	it("checks its arguments before any server starts", async () => {

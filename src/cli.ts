@@ -37,6 +37,7 @@ Serve options:
   --api-only   Serve only the API (used by the dev server)`;
 
 const SERVE_ONLY = ["port", "host", "api-only", "new-key"] as const;
+const CLIENT_ONLY = ["open", "head", "as-of", "viewer"] as const;
 
 async function main(): Promise<void> {
 	const { values, positionals } = parseArgs({
@@ -69,6 +70,11 @@ async function main(): Promise<void> {
 	const [first, ...extra] = positionals;
 	if (first === "serve") {
 		if (extra.length > 0) throw new Error("crb serve takes no arguments");
+		for (const option of CLIENT_ONLY) {
+			if (values[option] !== undefined && values[option] !== false) {
+				throw new Error(`--${option} belongs to crb <pr>`);
+			}
+		}
 		return serve(values);
 	}
 	if (!first || extra.length > 0) {

@@ -1,5 +1,11 @@
 import { spawn } from "node:child_process";
-import { open as openFile, readFile } from "node:fs/promises";
+import {
+	mkdir,
+	open as openFile,
+	readFile,
+	rename,
+	stat,
+} from "node:fs/promises";
 import { join } from "node:path";
 import { parseAsOf } from "./server/asOf.js";
 import { withRepoLock } from "./server/clone.js";
@@ -11,7 +17,13 @@ import {
 	readLiveServerState,
 	type ServerState,
 } from "./server/serverState.js";
-import { BUILD, type BuildInfo, VERSION_HEADER } from "./server/version.js";
+import {
+	BUILD,
+	type BuildInfo,
+	mismatchMessage,
+	sameBuild,
+	VERSION_HEADER,
+} from "./server/version.js";
 
 /**
  * `crb <pr>`, the thin client: finds this machine's `crb serve` through
@@ -81,6 +93,8 @@ export async function findServer(): Promise<ServerState | null> {
 
 /** `crb serve`, detached, its output to serve.log. */
 async function spawnDetached(): Promise<SpawnedServer> {
+	await mkdir(stateDir(), { recursive: true });
+	await trimLog();
 	const log = await openFile(serveLog(), "a", 0o600);
 	try {
 		const script = process.argv[1];
@@ -88,7 +102,8 @@ async function spawnDetached(): Promise<SpawnedServer> {
 		const child = spawn(
 			process.execPath,
 			[...process.execArgv, script, "serve"],
-			{ detached: true, stdio: ["ignore", log.fd, log.fd] },
+			// Not the caller's cwd: the server outlives it (a removed worktree).
+			{ detached: true, stdio: ["ignore", log.fd, log.fd], cwd: stateDir() },
 		);
 		const exited = new Promise<number | null>((done) => {
 			child.once("exit", (code) => done(code));
@@ -99,6 +114,16 @@ async function spawnDetached(): Promise<SpawnedServer> {
 	} finally {
 		await log.close();
 	}
+}
+
+/** serve.log grows with every start: past 1 MB it moves to serve.log.1. */
+const LOG_LIMIT = 1024 * 1024;
+export async function trimLog(limit = LOG_LIMIT): Promise<void> {
+	const size = await stat(serveLog()).then(
+		(s) => s.size,
+		() => 0,
+	);
+	if (size > limit) await rename(serveLog(), `${serveLog()}.1`);
 }
 
 async function logTail(): Promise<string> {
@@ -173,6 +198,11 @@ export async function runClient(
 
 	const server = await ensureServer(deps);
 	const build = deps.build ?? BUILD;
+	// Its build, from server.json: a mismatch fails before any request (the
+	// request's header is checked by the server too).
+	if (!sameBuild(server.version, build)) {
+		throw new ClientError(mismatchMessage(server.version, build));
+	}
 	let res: Response;
 	try {
 		res = await fetch(`${server.url}/api/reviews`, {
