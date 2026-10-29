@@ -21,10 +21,13 @@ export interface RowReview {
 	pinnedHead: string | null;
 	coverage: Coverage;
 	lastActedAt: string;
+	/** The PR's head moved past the head this review's patch set is on. */
+	headMoved: boolean;
 }
 export interface Annotations {
 	snooze?: { until: string; wakeOnActivity: boolean; at: string };
-	waiting?: { who: string; at: string }; // a login or "me"
+	// A login; the viewer's own means "me" (never hides, the turn shows you).
+	waiting?: { who: string; at: string };
 	note?: string;
 }
 export interface HomeRow {
@@ -86,4 +89,5 @@ export interface SearchResult {
 	}[];
 	scope: string | null; // "owner/repo" when the query named one
 	pending: boolean; // a GitHub search is still running; ask again
+	error?: string; // the GitHub search failed (not pending); the rest still shows
 }
