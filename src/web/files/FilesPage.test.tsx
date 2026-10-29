@@ -77,17 +77,19 @@ function renderPage(
 		defaultOptions: { queries: { retry: false } },
 	});
 	// FilesPage reads its search params (thread-link landings): a router
-	// with just this page at /files.
+	// with just this page, at a review's /files.
 	const root = createRootRoute({ component: Outlet });
 	const files = createRoute({
 		getParentRoute: () => root,
-		path: "/files",
+		path: "/r/$id/files",
 		validateSearch: parseFilesSearch,
 		component: FilesPage,
 	});
 	const router = createRouter({
 		routeTree: root.addChildren([files]),
-		history: createMemoryHistory({ initialEntries: [initialPath] }),
+		history: createMemoryHistory({
+			initialEntries: [`/r/01testreview0000000000000a${initialPath}`],
+		}),
 		// As in the app (router.tsx): the router never scrolls the window.
 		scrollRestoration: () => false,
 	});

@@ -34,6 +34,7 @@ import type {
 import { sessionQuery, timelineQuery } from "../api";
 import { type FilesSearch, threadTarget } from "../files/landing";
 import { RelativeTime } from "../RelativeTime";
+import { useReviewId } from "../reviewId";
 import { Tooltip } from "../Tooltip";
 import { ErrorMessage, safeHref } from "../ui";
 import {
@@ -552,6 +553,7 @@ function CommentItem({
 	onShowThread: (threadId: string) => void;
 }) {
 	const session = useQuery(sessionQuery);
+	const id = useReviewId();
 	const thread = item.threadId ? threads?.get(item.threadId) : undefined;
 	const target: FilesSearch = thread
 		? threadTarget(thread, session.data, headerLine(thread))
@@ -593,7 +595,8 @@ function CommentItem({
 			)}
 			{item.path && (
 				<Link
-					to="/files"
+					to="/r/$id/files"
+					params={{ id }}
 					search={target}
 					data-testid="timeline-place"
 					className="inline-flex min-h-10 max-w-full items-center rounded-sm font-mono text-xs break-all text-link hover:underline focus-visible:outline-2 focus-visible:outline-accent"

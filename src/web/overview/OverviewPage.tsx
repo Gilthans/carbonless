@@ -62,6 +62,7 @@ import { type FilesSearch, threadTarget } from "../files/landing";
 import { useReviewView } from "../files/useSetStates";
 import { GithubHtml, ImageErrorContext } from "../GithubHtml";
 import { RelativeTime, relativeTime, useNow } from "../RelativeTime";
+import { useReviewId } from "../reviewId";
 import { Tooltip, type TooltipTriggerProps } from "../Tooltip";
 import { CodeRows, CommentBody } from "../threads/CommentBody";
 import {
@@ -303,10 +304,12 @@ function ExternalLink(props: {
 
 function ReviewFilesButton() {
 	const { review, data } = useReviewView();
+	const id = useReviewId();
 	return (
 		<div className="flex flex-col items-center gap-3">
 			<Link
-				to="/files"
+				to="/r/$id/files"
+				params={{ id }}
 				className="cta inline-flex min-h-10 items-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold text-ink transition-[filter] hover:brightness-110 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent motion-reduce:transition-none"
 			>
 				Review files
@@ -1928,6 +1931,7 @@ function ThreadPlace({
 	line: number | null;
 	target: FilesSearch;
 }) {
+	const id = useReviewId();
 	const moved =
 		!thread.outdated &&
 		thread.currentLine !== null &&
@@ -1940,7 +1944,8 @@ function ThreadPlace({
 			{(trigger) => (
 				<Link
 					{...trigger}
-					to="/files"
+					to="/r/$id/files"
+					params={{ id }}
 					search={target}
 					data-testid="thread-place"
 					className="inline-flex min-h-10 max-w-full items-center rounded-sm font-mono text-xs break-all text-link hover:underline focus-visible:outline-2 focus-visible:outline-accent"

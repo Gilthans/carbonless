@@ -15,6 +15,7 @@ import type { ReviewThread } from "../../shared/types";
 import { hunksQuery, overviewQuery, sessionQuery } from "../api";
 import { LabeledIcon } from "../overview/parts";
 import { useForgetPageScroll, usePageActive } from "../pageActive";
+import { useReviewId } from "../reviewId";
 import { useAppHeaderHeight, useHeight } from "../sticky";
 import { PeopleProvider } from "../threads/people";
 import { useThreadWrites } from "../threads/threadWrites";
@@ -372,6 +373,7 @@ export function FilesPage() {
 	// The params are dropped once read, so the same link works again.
 	const search = useSearch({ strict: false }) as FilesSearch;
 	const navigate = useNavigate();
+	const id = useReviewId();
 	const [landing, setLanding] = useState<Landing | null>(null);
 	const landingSeq = useRef(0);
 	// biome-ignore lint/correctness/useExhaustiveDependencies: runs per landing.
@@ -385,7 +387,8 @@ export function FilesPage() {
 			seq: landingSeq.current,
 		});
 		void navigate({
-			to: "/files",
+			to: "/r/$id/files",
+			params: { id },
 			search: {},
 			replace: true,
 			resetScroll: false,

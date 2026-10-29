@@ -17,7 +17,7 @@ export const FilesPage = lazyRouteComponent(
 );
 
 /** The pages kept alive, by route id, in DOM order. */
-const PAGES = { "/": OverviewPage, "/files": FilesPage } as const;
+const PAGES = { "/r/$id/": OverviewPage, "/r/$id/files": FilesPage } as const;
 export type PageId = keyof typeof PAGES;
 const isPage = (id: string): id is PageId => id in PAGES;
 
@@ -89,8 +89,8 @@ export function KeptPages() {
 	if (active && !visited.includes(active)) setVisited([...visited, active]);
 	const forget = useWindowScrollPerPage(active);
 	const [forgetters] = useState<Record<PageId, () => void>>(() => ({
-		"/": () => forget("/"),
-		"/files": () => forget("/files"),
+		"/r/$id/": () => forget("/r/$id/"),
+		"/r/$id/files": () => forget("/r/$id/files"),
 	}));
 	return (Object.keys(PAGES) as PageId[])
 		.filter((id) => visited.includes(id))
@@ -100,7 +100,8 @@ export function KeptPages() {
 			return (
 				<div
 					key={id}
-					data-page={id}
+					// The page's own path in the review: "/" or "/files".
+					data-page={id.slice("/r/$id".length).replace(/^$/, "/")}
 					hidden={!on}
 					inert={!on}
 					aria-hidden={on ? undefined : true}

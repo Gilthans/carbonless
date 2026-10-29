@@ -26,6 +26,7 @@ import { useUnsavedGuard } from "./files/useSetStates";
 import { HeadBanner } from "./HeadBanner";
 import { KeptPages, useActivePage } from "./pages";
 import { fullDate } from "./RelativeTime";
+import { useReviewId } from "./reviewId";
 import { Settings } from "./Settings";
 import { useShortcutHelp } from "./shortcuts";
 import { AppHeaderHeight } from "./sticky";
@@ -174,7 +175,8 @@ export function App() {
 	const revalidating = useIsFetching({ queryKey: ["overview-revalidate"] }) > 0;
 	const refreshing = refresh.isPending || revalidating;
 	// Follows the page showing, which switches only once it can render.
-	const wide = useActivePage() === "/files";
+	const wide = useActivePage() === "/r/$id/files";
+	const id = useReviewId();
 	const pr = session.data?.pr;
 	const prUrl = safeHref(pr?.url);
 	// The tab names the PR, so several reviews open side by side tell apart.
@@ -223,7 +225,19 @@ export function App() {
 						{session.isError && <ErrorMessage error={session.error} />}
 						{pr && (
 							<div className="flex items-center gap-2 sm:gap-3">
-								<Logo className="-my-1.5 h-11 w-11 shrink-0 sm:h-12 sm:w-12" />
+								<Tooltip content="Home" describe={false}>
+									{(trigger) => (
+										<Link
+											{...trigger}
+											to="/"
+											aria-label="Home"
+											data-testid="home-link"
+											className="-my-1.5 shrink-0 rounded-full focus-visible:outline-2 focus-visible:outline-accent"
+										>
+											<Logo className="h-11 w-11 sm:h-12 sm:w-12" />
+										</Link>
+									)}
+								</Tooltip>
 								<div
 									data-testid="header-title"
 									className="flex min-w-0 flex-wrap items-baseline gap-x-2"
@@ -291,7 +305,8 @@ export function App() {
 							</span>
 							<nav aria-label="PR pages" className="flex shrink-0 self-stretch">
 								<Link
-									to="/"
+									to="/r/$id"
+									params={{ id }}
 									// Matched on the path only: a query (the first
 									// load's ?key=) must not unmark the tab.
 									activeOptions={{ exact: true, includeSearch: false }}
@@ -301,7 +316,8 @@ export function App() {
 									Overview
 								</Link>
 								<Link
-									to="/files"
+									to="/r/$id/files"
+									params={{ id }}
 									activeOptions={{ includeSearch: false }}
 									className={tabClass}
 									activeProps={{ className: activeTabClass }}
