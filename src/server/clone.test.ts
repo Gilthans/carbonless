@@ -221,6 +221,21 @@ describe("private clone", () => {
 		expect(git(path, "rev-parse", "refs/crb/inbox/dan")).toBe(commit);
 	});
 
+	it("ensureRepoInit doesn't wait for the lock when the repo exists (a clone running)", async () => {
+		const path = await ensureRepoInit("acme", "widget");
+		let release = () => {};
+		const held = withRepoLock(
+			path,
+			() => new Promise<void>((r) => (release = r)),
+		);
+		await new Promise((r) => setTimeout(r, 50));
+		const started = Date.now();
+		expect(await ensureRepoInit("acme", "widget")).toBe(path);
+		expect(Date.now() - started).toBeLessThan(1000);
+		release();
+		await held;
+	});
+
 	it("ensureRepoInit leaves an existing clone alone", async () => {
 		const path = await ensureClone("acme", "widget");
 		const refs = () =>

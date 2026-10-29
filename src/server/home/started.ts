@@ -95,7 +95,17 @@ export class StartedReviews {
 				),
 			)
 		).flat();
-		const found = await Promise.all(repos.map((r) => this.#inRepo(r, slug)));
+		const found = await Promise.all(
+			repos.map((r) =>
+				this.#inRepo(r, slug).catch((error) => {
+					// A broken clone costs its own reviews, never the scan.
+					console.error(
+						`crb: skipped started reviews in ${r}: ${String(error)}`,
+					);
+					return [];
+				}),
+			),
+		);
 		return found.flat();
 	}
 
@@ -119,7 +129,14 @@ export class StartedReviews {
 			)
 			.filter((id): id is string => id !== undefined);
 		const reviews = await Promise.all(
-			ids.map((id) => this.#review(repo, id, slug)),
+			ids.map((id) =>
+				this.#review(repo, id, slug).catch((error) => {
+					console.error(
+						`crb: skipped review ${id} in ${repo}: ${String(error)}`,
+					);
+					return null;
+				}),
+			),
 		);
 		return reviews.filter((r): r is StartedReview => r !== null);
 	}
@@ -162,6 +179,7 @@ export class StartedReviews {
 			number,
 			id,
 			pinnedHead: typeof details.head === "string" ? details.head : null,
+			head: progress.patchset.head,
 			asOf,
 			coverage,
 			lastActedAt: new Date(last).toISOString(),

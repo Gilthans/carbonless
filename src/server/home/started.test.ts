@@ -1,7 +1,11 @@
+import { execFileSync } from "node:child_process";
+import { mkdirSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { testGitEnv } from "../../../test/git-fixture";
 import { createPrFixture, type PrFixture } from "../../../test/pr-fixture";
 import type { Snapshot } from "../../shared/types.js";
-import { ensureClone, fetchPr } from "../clone.js";
+import { ensureClone, ensureRepoInit, fetchPr } from "../clone.js";
 import { buildSnapshot } from "../diff/snapshot.js";
 import { RefStore } from "../review/refStore.js";
 import { ReviewService } from "../review/reviews.js";
@@ -74,6 +78,7 @@ describe("StartedReviews", () => {
 			number: 12,
 			id,
 			pinnedHead: null,
+			head: snap.head,
 			asOf: null,
 			coverage: { done: firstLines, total: lines, unit: "lines" },
 		});
@@ -141,6 +146,36 @@ describe("StartedReviews", () => {
 		const [after] = await s.list("octo");
 		expect(builds).toBe(1);
 		expect(after?.coverage.done).toBeGreaterThan(0);
+	});
+
+	it("a broken clone or review is skipped, not the whole scan", async () => {
+		const id = await reviews.findOrCreateReview(PR, "octo");
+		await reviews.recordStates(id, "octo", snap, [
+			{ key: keys()[0] as string, state: "reviewed" },
+		]);
+		// Another clone whose progress ref's history is broken (a parent missing).
+		const other = await ensureRepoInit("other", "tool");
+		const git = (args: string[], input?: string) =>
+			execFileSync("git", args, {
+				cwd: other,
+				input,
+				encoding: "utf8",
+				env: testGitEnv(),
+			}).trim();
+		const tree = git(["hash-object", "-w", "-t", "tree", "/dev/null"]);
+		const broken = git(
+			["hash-object", "-w", "-t", "commit", "--stdin"],
+			`tree ${tree}\nparent ${"1".repeat(40)}\nauthor octo <octo@crb> 0 +0000\ncommitter crb <crb@crb> 0 +0000\n\ncrb: x\n`,
+		);
+		git([
+			"update-ref",
+			`refs/crb/reviews/${"0".repeat(26)}/reviewers/octo/progress`,
+			broken,
+		]);
+		// And a directory that isn't a repo at all.
+		mkdirSync(join(dirname(other), "junk.git"));
+		const list = await scanner().list("octo");
+		expect(list.map((s) => s.id)).toEqual([id]);
 	});
 
 	it("a reviewer who acted nowhere started nothing", async () => {

@@ -220,6 +220,9 @@ export async function ensureRepoInit(
 	repo: string,
 ): Promise<string> {
 	const path = clonePath(owner, repo);
+	// An existing repo needs nothing: never wait behind a clone or fetch
+	// holding the lock (crb refs are compare-and-swap anyway).
+	if (await exists(path)) return path;
 	await withRepoLock(path, async () => {
 		if (await exists(path)) return;
 		const partial = `${path}.init`;
