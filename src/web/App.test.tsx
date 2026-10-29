@@ -396,6 +396,39 @@ describe("App", () => {
 		);
 	});
 
+	it("a review its PR now refuses says why, with the way Home", async () => {
+		renderApp({
+			"/api/session": {
+				status: 409,
+				body: {
+					error: "PR acme/widget#12 is already merged; nothing to review",
+					code: "refused",
+				},
+			},
+		});
+		expect(await screen.findByTestId("not-found")).toHaveTextContent(
+			"PR acme/widget#12 is already merged; nothing to review",
+		);
+		expect(screen.getByRole("link", { name: "Home" })).toHaveAttribute(
+			"href",
+			"/",
+		);
+	});
+
+	it("still asks before leaving with an unsent draft once Home shows", async () => {
+		const user = userEvent.setup();
+		const { client, router } = renderApp();
+		await screen.findByRole("region", { name: "What it does" });
+		act(() => draftsFor(client).setText("T-cache", "Half a thought"));
+		await user.click(screen.getByRole("link", { name: "Home" }));
+		await waitFor(() => expect(router.state.location.pathname).toBe("/"));
+		const ask = new Event("beforeunload", { cancelable: true });
+		window.dispatchEvent(ask);
+		expect(ask.defaultPrevented).toBe(true);
+		// Stored for the PR: gone again before the next test.
+		act(() => draftsFor(client).setText("T-cache", ""));
+	});
+
 	it("shows no kept page on an unknown path", async () => {
 		const { router } = renderApp();
 		await screen.findByRole("region", { name: "What it does" });

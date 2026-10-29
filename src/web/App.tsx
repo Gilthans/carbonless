@@ -22,7 +22,6 @@ import {
 } from "./api";
 import { Logo, Mark, Wordmark } from "./brand/Brand";
 import { SyncNotices } from "./files/SyncNotices";
-import { useUnsavedGuard } from "./files/useSetStates";
 import { HeadBanner } from "./HeadBanner";
 import { KeptPages, useActivePage } from "./pages";
 import { fullDate } from "./RelativeTime";
@@ -151,7 +150,6 @@ function useStickyHeader(
 export function App() {
 	const queryClient = useQueryClient();
 	const session = useQuery(sessionQuery);
-	useUnsavedGuard();
 	useThreadWritesSetup();
 	useShortcutHelp(EDITOR_KEYS);
 	// Writes into the session cache (so only once the session has loaded, or

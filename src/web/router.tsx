@@ -14,6 +14,7 @@ import { App } from "./App";
 import { ApiError, bindReview, sessionQuery } from "./api";
 import { Logo } from "./brand/Brand";
 import { parseFilesSearch } from "./files/landing";
+import { useUnsavedGuard } from "./files/useSetStates";
 import { FilesPage, OverviewPage } from "./pages";
 import { ShortcutsProvider } from "./shortcuts";
 
@@ -44,8 +45,13 @@ export function NotFound({ reason }: { reason?: string | null }) {
 	);
 }
 
-/** Every page with its keyboard shortcuts (one listener, the `?` help). */
+/**
+ * Every page with its keyboard shortcuts (one listener, the `?` help) and
+ * the unsaved-work guard: a review's saves, drafts and thread writes
+ * outlive its pages (Home, or the reload to another review, must ask too).
+ */
 function Root() {
+	useUnsavedGuard();
 	return (
 		<ShortcutsProvider>
 			<Outlet />
@@ -77,10 +83,14 @@ function ReviewRoot() {
 	}, [bound]);
 	const session = useQuery({ ...sessionQuery, enabled: bound });
 	if (!bound) return null;
-	if (session.error instanceof ApiError && session.error.status === 404) {
+	const error = session.error instanceof ApiError ? session.error : null;
+	// No such review, or one its PR now refuses (merged, closed): say why.
+	if (error && [404, 409, 410].includes(error.status)) {
 		return (
 			<main className="mx-auto min-h-screen max-w-5xl bg-canvas px-4 py-6 font-sans sm:px-6">
-				<NotFound reason="No such review." />
+				<NotFound
+					reason={error.status === 404 ? "No such review." : error.message}
+				/>
 			</main>
 		);
 	}
