@@ -1,5 +1,5 @@
 import type { Locator, Page } from "@playwright/test";
-import { expect } from "./fixtures";
+import { expect, reviewPage } from "./fixtures";
 
 /** Files page helpers that work on desktop and phone layouts alike. */
 
@@ -14,7 +14,7 @@ export async function openFiles(
 	url: string,
 	unit: UnitName = "Clusters",
 ) {
-	await page.goto(new URL("/files", url).href);
+	await page.goto(reviewPage(url, "files"));
 	await expect(progress(page)).toBeVisible();
 	await chooseUnit(page, unit);
 }

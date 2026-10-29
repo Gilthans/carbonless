@@ -1,4 +1,4 @@
-import { expect, test } from "./fixtures";
+import { expect, reviewPage, test } from "./fixtures";
 
 test("Settings sits in the app bar, compact header included, and switches hidden characters", async ({
 	page,
@@ -9,7 +9,7 @@ test("Settings sits in the app bar, compact header included, and switches hidden
 	if (isMobile) await page.setViewportSize({ width: 360, height: 780 });
 	await pr();
 	const s = await startCrb();
-	await page.goto(`${s.url}files`);
+	await page.goto(reviewPage(s.url, "files"));
 	const section = page.getByRole("region", { name: "a.txt" });
 	await section.getByRole("button", { name: "Expand file" }).click();
 	await expect(section.locator('[data-inv="eol"]').first()).toBeAttached();
@@ -93,7 +93,7 @@ test("Ignore whitespace sits under hidden characters, off by default, and is rem
 	if (isMobile) await page.setViewportSize({ width: 360, height: 780 });
 	await pr();
 	const s = await startCrb();
-	await page.goto(`${s.url}files`);
+	await page.goto(reviewPage(s.url, "files"));
 	const gear = page
 		.getByTestId("app-header-row")
 		.getByRole("button", { name: "Settings" });

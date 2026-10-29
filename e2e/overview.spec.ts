@@ -1566,7 +1566,7 @@ test("a thread deleted after the list was read: the comments answer says deleted
 		s.threadContentDelayMs = 3000;
 	});
 	const answered = page.waitForResponse((r) =>
-		r.url().includes("/api/comments"),
+		r.url().includes("/comments?"),
 	);
 	const s = await startCrb();
 	await page.goto(s.url);
@@ -1611,9 +1611,9 @@ test("comments are read before a card is opened", async ({
 			}
 		}).observe(document, { childList: true, subtree: true });
 	});
-	const first = page.waitForRequest((r) => r.url().includes("/api/comments"));
+	const first = page.waitForRequest((r) => r.url().includes("/comments?"));
 	const answered = page.waitForResponse((r) =>
-		r.url().includes("/api/comments"),
+		r.url().includes("/comments?"),
 	);
 	const s = await startCrb();
 	await page.goto(s.url);

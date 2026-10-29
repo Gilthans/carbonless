@@ -106,6 +106,10 @@ const E2E_MAP = [
 	[/^src\/server\/access\.ts$|^src\/web\/accessKey\.ts$/, ["cli", "keepalive"]],
 	[/^test\/methodology-fixture\.ts$/, ["methodology"]],
 	[/^e2e\/files-ui\.ts$/, ["files", "sticky", "mobile"]],
+	[
+		/^src\/(cli|client)\.ts$|^src\/server\/(serve|registry|serverState|config|paths|version|app)\.ts$|^src\/web\/(router\.tsx|reviewId\.ts|api\.ts|App\.tsx|pages\.tsx)$|^scripts\/build-info\.mjs$/,
+		["serve", "cli"],
+	],
 ];
 // Shared plumbing: anything here can break any spec.
 const ALL =

@@ -78,7 +78,7 @@ test("no horizontal page scroll on the overview and files pages", async ({
 		).toBeVisible();
 		await expectNoPageOverflow(page);
 		// Five-digit counts must fit too.
-		await page.route("**/api/review", async (route) => {
+		await page.route("**/api/r/*/review", async (route) => {
 			const response = await route.fetch();
 			const view = await response.json();
 			for (const file of view.files) {
@@ -100,7 +100,7 @@ test("no horizontal page scroll on the overview and files pages", async ({
 			.first()
 			.evaluate((el) => el.scrollWidth <= el.clientWidth);
 		expect(fits).toBe(true);
-		await page.unroute("**/api/review");
+		await page.unroute("**/api/r/*/review");
 		await openFiles(page, s.url);
 		const section = fileSection(page, "src/f0.ts");
 		await section.getByRole("button", { name: "Expand file" }).click();

@@ -87,10 +87,10 @@ test("a started review stays on its snapshot after a push", async ({
 		files: { "src/util.ts": text(util.map((l) => `${l} pushed`)) },
 	});
 	const refreshed = page.waitForResponse(
-		(r) => r.url().endsWith("/api/refresh") && r.ok(),
+		(r) => r.url().endsWith("/refresh") && r.ok(),
 	);
 	const reloaded = page.waitForResponse(
-		(r) => r.url().endsWith("/api/review") && r.ok(),
+		(r) => r.url().endsWith("/review") && r.ok(),
 	);
 	await page.getByRole("button", { name: "Refresh" }).click();
 	await refreshed;

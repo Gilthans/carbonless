@@ -5,7 +5,7 @@ import {
 	threadComment,
 } from "../test/fake-gh/scenario";
 import { fileSection, openFiles, progress, withTree } from "./files-ui";
-import { expect, type Pr, type PrOptions, test } from "./fixtures";
+import { expect, type Pr, type PrOptions, reviewPage, test } from "./fixtures";
 
 const core = Array.from({ length: 78 }, (_, i) => `core ${i + 1}`);
 const util = Array.from({ length: 10 }, (_, i) => `util ${i + 1}`);
@@ -430,7 +430,7 @@ test("threads show when /files is the first page", async ({
 	const s = await startCrb();
 	// A deep link to the line: the Overview never loads first.
 	await page.goto(
-		new URL(`/files?path=${encodeURIComponent(CORE)}&line=16`, s.url).href,
+		reviewPage(s.url, "files", `?path=${encodeURIComponent(CORE)}&line=16`),
 	);
 	const section = fileSection(page, CORE);
 	await expect(
@@ -474,13 +474,13 @@ test("the open file's comments are read first", async ({
 	const asked: string[][] = [];
 	page.on("request", (r) => {
 		const url = new URL(r.url());
-		if (url.pathname === "/api/comments") {
+		if (url.pathname.endsWith("/comments")) {
 			asked.push((url.searchParams.get("ids") ?? "").split(","));
 		}
 	});
 	// util.ts (file 1) is opened by the link; core.ts (file 0) comes after it.
 	await page.goto(
-		new URL(`/files?path=${encodeURIComponent(UTIL)}&line=3`, s.url).href,
+		reviewPage(s.url, "files", `?path=${encodeURIComponent(UTIL)}&line=3`),
 	);
 	await expect.poll(() => asked.length).toBeGreaterThan(0);
 	const ids = asked.flat();
@@ -500,7 +500,7 @@ test("a commented range is marked on added rows too, unlike a landed line", asyn
 	const s = await startCrb();
 	// Land on new 9 (uncommented context): the landed look, for comparison.
 	await page.goto(
-		new URL(`/files?path=${encodeURIComponent(CORE)}&line=9`, s.url).href,
+		reviewPage(s.url, "files", `?path=${encodeURIComponent(CORE)}&line=9`),
 	);
 	const section = fileSection(page, CORE);
 	await expect(row(section, "new", 9)).toHaveAttribute("data-landed");
@@ -632,7 +632,7 @@ test("an opened thread survives a Refresh", async ({ page, pr, startCrb }) => {
 		}).observe(document.body, { childList: true, subtree: true });
 	});
 	const asked = page.waitForResponse(
-		(r) => new URL(r.url()).pathname === "/api/threads",
+		(r) => /^\/api\/r\/[^/]+\/threads$/.test(new URL(r.url()).pathname),
 		{ timeout: 20_000 },
 	);
 	await page.getByRole("button", { name: "Refresh" }).first().click();
@@ -796,7 +796,7 @@ test("comments of the file opened next go first", async ({
 	const asked: string[][] = [];
 	page.on("request", (r) => {
 		const url = new URL(r.url());
-		if (url.pathname === "/api/comments") {
+		if (url.pathname.endsWith("/comments")) {
 			asked.push((url.searchParams.get("ids") ?? "").split(","));
 		}
 	});
@@ -899,7 +899,7 @@ test("a gap window that failed doesn't take focus when it's retried later", asyn
 	expectConsoleError(/500|Failed to load resource/);
 	await setup(pr);
 	let fail = true;
-	await page.route("**/api/files/*/context**", (route) =>
+	await page.route("**/api/r/*/files/*/context**", (route) =>
 		fail ? route.fulfill({ status: 500, body: "{}" }) : route.continue(),
 	);
 	const s = await startCrb();

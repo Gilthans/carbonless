@@ -221,7 +221,7 @@ test("switching pages and back puts each one exactly where it was left", async (
 	await expectScroll(page, filesY);
 	expect(await filesState(page)).toEqual(files);
 	await page.goBack();
-	await expect(page).toHaveURL(/\/$/);
+	await expect(page).toHaveURL(/\/r\/[0-9a-z]{26}$/);
 	await expect(whatItDoes(page)).toBeVisible();
 	await expectScroll(page, overviewY);
 	await expect(botPreview(page)).toHaveAttribute("aria-expanded", "true");
@@ -407,7 +407,7 @@ test("a new snapshot loaded from the overview shows the files from the top", asy
 		files: { "c/last.ts": text(short.map((l) => `${l} pushed`)) },
 	});
 	const reviewed = page.waitForResponse(
-		(r) => r.url().endsWith("/api/review") && r.ok(),
+		(r) => r.url().endsWith("/review") && r.ok(),
 	);
 	await page.getByRole("button", { name: "Refresh" }).click();
 	await reviewed;

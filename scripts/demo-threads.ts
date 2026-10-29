@@ -6,11 +6,13 @@
  *
  *   pnpm build && pnpm tsx scripts/demo-threads.ts --port 4790 --host <ip>
  *
- * Ctrl-C (or SIGTERM, or closing the terminal) stops crb; the repo and
- * the scenario are removed on every way out but SIGKILL.
+ * It runs crb serve, then crb <pr> to print the review's link. Ctrl-C (or
+ * SIGTERM, or closing the terminal) stops crb; the repo and the scenario
+ * are removed on every way out but SIGKILL.
  */
 import { type ChildProcess, spawn } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { setTimeout as sleep } from "node:timers/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
@@ -92,13 +94,21 @@ child = spawn(
 	process.execPath,
 	[
 		CLI,
-		`${OWNER_REPO}#${PR_NUMBER}`,
-		"--no-open",
-		...(values.port ? ["--port", values.port] : []),
+		"serve",
+		"--port",
+		values.port ?? "0",
 		...(values.host ? ["--host", values.host] : []),
 	],
 	{ cwd: workdir, stdio: "inherit", env: crbEnv(workdir) },
 );
+// Once it's up (server.json written), crb <pr> prints the review's link.
+const state = join(workdir, "state", "carbonless", "server.json");
+while (!existsSync(state) && child.exitCode === null) await sleep(100);
+spawn(process.execPath, [CLI, `${OWNER_REPO}#${PR_NUMBER}`], {
+	cwd: workdir,
+	stdio: "inherit",
+	env: crbEnv(workdir),
+});
 child.on("error", (error) => {
 	console.error(`could not start crb: ${error.message}`);
 	process.exit(1);
