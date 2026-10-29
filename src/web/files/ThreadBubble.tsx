@@ -85,6 +85,7 @@ export function ThreadBubble(props: {
 						trigger.ref(el);
 					}}
 					data-testid="thread-bubble"
+					data-file={props.file || undefined}
 					aria-label={label}
 					aria-expanded={props.open}
 					aria-controls={props.controls}
