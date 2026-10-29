@@ -1,5 +1,8 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
 	afterAll,
 	afterEach,
@@ -22,7 +25,9 @@ import { buildReviewView } from "./coverage.js";
 import { newEvent } from "./events.js";
 import { RefStore } from "./refStore.js";
 import {
+	findReviewById,
 	InvalidChangeError,
+	listReviews,
 	prKey,
 	type ReviewPr,
 	ReviewService,
@@ -467,5 +472,81 @@ describe("recordStates", () => {
 		await expect(runGit(repo, ["cat-file", "-e", snap.head])).resolves.toBe("");
 		const after = await buildSnapshot(repo, snap.base, snap.head);
 		expect(after).toEqual(snap);
+	});
+});
+
+describe("listReviews and findReviewById", () => {
+	const ASOF = "2026-01-03T10:00:00.000Z";
+	const HEAD = "a".repeat(40);
+
+	it("lists every review of a repo with its PR and view", async () => {
+		const asOf = await svc.findOrCreateReview(pr, "dan", { asOf: ASOF });
+		const pinned = await svc.findOrCreateReview(pr, "dan", { head: HEAD });
+		const other = await svc.findOrCreateReview({ ...pr, number: 43 }, "eve");
+		const listed = await listReviews(repo);
+		const byId = new Map(listed.map((r) => [r.id, r]));
+		expect(listed).toHaveLength(4);
+		expect(byId.get(id)).toEqual({ id, key: "acme/widgets#42", pr });
+		expect(byId.get(asOf)).toEqual({
+			id: asOf,
+			key: `acme/widgets#42@${ASOF}`,
+			pr,
+			asOf: ASOF,
+		});
+		expect(byId.get(pinned)).toEqual({
+			id: pinned,
+			key: `acme/widgets#42^${HEAD}`,
+			pr,
+			head: HEAD,
+		});
+		expect(byId.get(other)?.pr.number).toBe(43);
+	});
+
+	it("skips a review whose meta ref holds no review-created event", async () => {
+		const junk = await store.commit(null, "junk", [], "dan");
+		await store.transaction([
+			{
+				ref: "refs/crb/reviews/01jjjjjjjjjjjjjjjjjjjjjjjj/meta",
+				newOid: junk,
+				oldOid: null,
+			},
+		]);
+		expect((await listReviews(repo)).map((r) => r.id)).toEqual([id]);
+	});
+
+	it("an empty repo has none", async () => {
+		const empty = createBareRepo();
+		try {
+			expect(await listReviews(empty.path)).toEqual([]);
+		} finally {
+			empty.cleanup();
+		}
+	});
+
+	it("finds a review by id among the cache's clones", async () => {
+		const cache = mkdtempSync(join(tmpdir(), "crb-cache-"));
+		try {
+			const clone = join(cache, "repos", "acme", "widgets.git");
+			const noise = join(cache, "repos", "acme", "other.git");
+			mkdirSync(join(cache, "repos", "acme"), { recursive: true });
+			execFileSync("git", ["clone", "--quiet", "--bare", repo, clone], {
+				env: testGitEnv(),
+			});
+			execFileSync("git", ["init", "--quiet", "--bare", noise], {
+				env: testGitEnv(),
+			});
+			await runGit(clone, ["fetch", "--quiet", repo, "refs/crb/*:refs/crb/*"]);
+			expect(await findReviewById(cache, id)).toEqual({
+				repoDir: clone,
+				review: { id, key: "acme/widgets#42", pr },
+			});
+			expect(
+				await findReviewById(cache, "01zzzzzzzzzzzzzzzzzzzzzzzz"),
+			).toBeNull();
+			expect(await findReviewById(cache, "../../etc")).toBeNull();
+			expect(await findReviewById(join(cache, "nope"), id)).toBeNull();
+		} finally {
+			rmSync(cache, { recursive: true, force: true });
+		}
 	});
 });
