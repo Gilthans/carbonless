@@ -63,6 +63,7 @@ export function HomePage() {
 	const openHelp = useOpenShortcutsHelp();
 	const refresh = useMutation({
 		mutationFn: postHomeRefresh,
+		onMutate: () => client.cancelQueries({ queryKey: homeQuery.queryKey }),
 		onSuccess: (answer) => client.setQueryData(homeQuery.queryKey, answer),
 	});
 	// The latest, for the focus listener and the first answer.
@@ -97,13 +98,18 @@ export function HomePage() {
 		<div className="min-h-screen bg-canvas font-sans text-ink">
 			<header className="border-b border-line bg-surface header-glow">
 				<div className="mx-auto flex max-w-6xl flex-wrap items-center gap-x-3 gap-y-2 px-3 py-2 sm:flex-nowrap sm:px-6">
-					<a
-						href="/"
-						aria-label="Home"
-						className="shrink-0 rounded-md focus-visible:outline-2 focus-visible:outline-accent"
-					>
-						<Logo className="h-10 w-10" />
-					</a>
+					<Tooltip content="Home" describe={false}>
+						{(trigger) => (
+							<a
+								{...trigger}
+								href="/"
+								aria-label="Home"
+								className="shrink-0 rounded-md focus-visible:outline-2 focus-visible:outline-accent"
+							>
+								<Logo className="h-10 w-10" />
+							</a>
+						)}
+					</Tooltip>
 					<OpenBox className="order-last w-full sm:order-none sm:max-w-xl sm:flex-1" />
 					<div className="ml-auto flex items-center gap-1">
 						{data && <RefreshStatus home={data} />}

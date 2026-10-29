@@ -1,6 +1,6 @@
 // Test helpers for the Home components: rows, views and a fake /api/home.
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render } from "@testing-library/react";
+import { configure, render, screen, waitFor } from "@testing-library/react";
 import type { ReactElement } from "react";
 import { vi } from "vitest";
 import type {
@@ -10,6 +10,10 @@ import type {
 	SearchResult,
 	SectionId,
 } from "../../shared/home";
+
+// A loaded machine (several worktrees' suites at once) can take over the
+// default second to render Home's first answer.
+configure({ asyncUtilTimeout: 3000 });
 
 export const NOW = Date.now();
 export const ago = (minutes: number) =>
@@ -36,6 +40,7 @@ export function row(over: Partial<HomeRow> = {}): HomeRow {
 		decision: null,
 		unresolvedThreads: 0,
 		turn: { kind: "none" },
+		reviewers: [],
 		people: {},
 		annotations: {},
 		hidden: null,
@@ -98,7 +103,7 @@ export function fakeApi(
 		const path = input.split("?")[0];
 		const handler = handlers[`${method} ${path}`];
 		let answer: unknown;
-		if (handler) answer = handler(call);
+		if (handler) answer = await handler(call);
 		else if (path?.startsWith("/api/home/search")) answer = emptySearch;
 		else answer = state.home;
 		if (answer instanceof Response) return answer;
@@ -126,4 +131,15 @@ export function renderWithQuery(ui: ReactElement) {
 		client,
 		...render(<QueryClientProvider client={client}>{ui}</QueryClientProvider>),
 	};
+}
+
+/** The tooltip showing now (a describe={false} one is aria-hidden). */
+export async function shownTooltip(): Promise<HTMLElement> {
+	return waitFor(() => {
+		const tip = screen
+			.queryAllByRole("tooltip", { hidden: true })
+			.find((t) => !t.hidden);
+		if (!tip) throw new Error("no tooltip showing");
+		return tip;
+	});
 }

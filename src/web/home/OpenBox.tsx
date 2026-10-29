@@ -15,11 +15,11 @@ import {
 	useState,
 } from "react";
 import type { SearchResult } from "../../shared/home";
-import { relativeTime } from "../RelativeTime";
+import { RelativeTime } from "../RelativeTime";
 import { useShortcut, useShortcutHelp } from "../shortcuts";
 import { goTo, prPath, searchQuery } from "./homeApi";
 import { parseOpenInput } from "./openInput";
-import { Avatar } from "./PrRow";
+import { Avatar, Sign } from "./PrRow";
 
 type Pr = SearchResult["prs"][number];
 type Option =
@@ -115,13 +115,15 @@ function groupsOf(
 
 const STATE_ICON: Record<Pr["state"], ReactNode> = {
 	OPEN: null,
-	MERGED: <GitMergeIcon size={12} aria-label="Merged" className="text-done" />,
+	MERGED: (
+		<Sign label="Merged" className="text-done">
+			<GitMergeIcon size={12} aria-hidden />
+		</Sign>
+	),
 	CLOSED: (
-		<GitPullRequestClosedIcon
-			size={12}
-			aria-label="Closed"
-			className="text-bad"
-		/>
+		<Sign label="Closed" className="text-bad">
+			<GitPullRequestClosedIcon size={12} aria-hidden />
+		</Sign>
 	),
 };
 
@@ -240,6 +242,22 @@ export function OpenBox(props: { className?: string }) {
 						spellCheck={false}
 						className="min-w-0 flex-1 bg-transparent px-2.5 text-sm text-ink outline-none placeholder:text-faint"
 					/>
+					{/* Always mounted, so a screen reader hears it start. */}
+					<span
+						role="status"
+						className="my-auto mr-2 flex shrink-0 items-center text-faint"
+					>
+						{pending && (
+							<>
+								<SyncIcon
+									size={12}
+									aria-hidden
+									className="animate-spin motion-reduce:animate-none"
+								/>
+								<span className="sr-only">Searching GitHub</span>
+							</>
+						)}
+					</span>
 					<button
 						type="submit"
 						className="cta shrink-0 px-3.5 text-sm font-semibold text-ink hover:brightness-110 focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent"
@@ -257,19 +275,6 @@ export function OpenBox(props: { className?: string }) {
 					onMouseDown={(e) => e.preventDefault()}
 					className="absolute inset-x-0 top-full z-40 mt-1 max-h-[70dvh] overflow-y-auto rounded-xl border border-edge bg-overlay p-1.5 shadow-float"
 				>
-					{pending && (
-						<span
-							role="status"
-							aria-label="Searching GitHub"
-							className="float-right m-1.5 text-faint"
-						>
-							<SyncIcon
-								size={12}
-								aria-hidden
-								className="animate-spin motion-reduce:animate-none"
-							/>
-						</span>
-					)}
 					{groups.map((g, gi) => {
 						const labelId = `${listId}-g${gi}`;
 						return (
@@ -369,7 +374,7 @@ function OptionBody(props: {
 				</span>
 				{STATE_ICON[pr.state]}
 				<Avatar person={pr.author} size={16} />
-				{relativeTime(new Date(pr.updatedAt), Date.now())}
+				<RelativeTime iso={pr.updatedAt} />
 			</span>
 		</>
 	);

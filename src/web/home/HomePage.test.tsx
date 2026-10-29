@@ -1,9 +1,24 @@
 // @vitest-environment jsdom
-import { cleanup, screen, waitFor, within } from "@testing-library/react";
+import {
+	act,
+	cleanup,
+	fireEvent,
+	screen,
+	waitFor,
+	within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { HomePage } from "./HomePage";
-import { ago, fakeApi, person, renderWithQuery, row, view } from "./testing";
+import {
+	ago,
+	fakeApi,
+	person,
+	renderWithQuery,
+	row,
+	shownTooltip,
+	view,
+} from "./testing";
 
 afterEach(() => {
 	cleanup();
@@ -369,5 +384,138 @@ describe("HomePage", () => {
 		await waitFor(() =>
 			expect(api.calls.some((c) => c.url === "/api/home/refresh")).toBe(true),
 		);
+	});
+
+	it("lets a phone row's second line wrap, even the worst case", async () => {
+		const until = new Date(Date.now() + 3 * 86_400_000).toISOString();
+		const busy = row({
+			number: 4835,
+			title: "Rate-limit gh polling per repo",
+			checks: "running",
+			decision: "changes-requested",
+			unresolvedThreads: 12,
+			turn: { kind: "people", logins: ["dan", "noa", "ido"] },
+			people: { dan: person("dan"), noa: person("noa"), ido: person("ido") },
+			reviews: [
+				{
+					id: "R1",
+					label: "head",
+					pinnedHead: null,
+					coverage: { done: 1037, total: 12120, unit: "lines" },
+					lastActedAt: ago(5),
+				},
+			],
+		});
+		const hidden = row({
+			number: 9,
+			hidden: "snoozed",
+			annotations: { snooze: { until, wakeOnActivity: true, at: ago(9) } },
+		});
+		fakeApi(view({ reviewing: [busy, hidden] }));
+		renderWithQuery(<HomePage />);
+		await screen.findByText("Rate-limit gh polling per repo");
+		await userEvent.click(screen.getByRole("button", { name: "1 snoozed" }));
+		// jsdom has no layout: the 360px check is the e2e's. Here, every row's
+		// meta line may wrap on a phone (nowrap only from sm up).
+		for (const r of [
+			screen.getByTestId("home-row"),
+			screen.getByTestId("home-row-hidden"),
+		]) {
+			const meta = within(r).getByTestId("row-meta");
+			expect(meta).toHaveClass("flex-wrap", "sm:flex-nowrap");
+			expect(meta).not.toHaveClass("flex-nowrap");
+		}
+	});
+
+	it("counts a hidden row of an unknown kind in the footer, with Wake up", async () => {
+		fakeApi(
+			view({
+				other: [
+					row({ number: 1, title: "Muted", hidden: "muted" as "snoozed" }),
+					row({ number: 2, title: "Snoozed, no date", hidden: "snoozed" }),
+				],
+			}),
+		);
+		renderWithQuery(<HomePage />);
+		const foot = await screen.findByRole("button", {
+			name: "1 snoozed · 1 hidden",
+		});
+		await userEvent.click(foot);
+		const hidden = screen.getAllByTestId("home-row-hidden");
+		expect(hidden.map((h) => h.textContent)).toEqual([
+			expect.stringContaining("Muted"),
+			expect.stringContaining("Snoozed, no date"),
+		]);
+		for (const h of hidden) within(h).getByRole("button", { name: "Wake up" });
+	});
+
+	it("shows the fold and the hidden footer together", async () => {
+		const rows = [
+			...Array.from({ length: 22 }, (_, i) =>
+				row({ number: i + 1, title: `PR ${i + 1}` }),
+			),
+			row({ number: 99, title: "Away", hidden: "waiting" }),
+		];
+		fakeApi(view({ other: rows }));
+		renderWithQuery(<HomePage />);
+		await screen.findByText("PR 1");
+		const other = section("Other open");
+		expect(within(other).getByRole("heading")).toHaveTextContent("22");
+		within(other).getByRole("button", { name: "show 2 more" });
+		await userEvent.click(
+			within(other).getByRole("button", { name: "1 waiting" }),
+		);
+		expect(within(other).getAllByTestId("home-row")).toHaveLength(20);
+		within(other).getByText("Away");
+	});
+
+	it("asks for a refresh on focus and on showing the tab again while stale", async () => {
+		const stale = view({ mine: [row()] }, { refreshedAt: ago(5) });
+		const api = fakeApi(stale, { "POST /api/home/refresh": () => stale });
+		renderWithQuery(<HomePage />);
+		const refreshes = () =>
+			api.calls.filter((c) => c.url === "/api/home/refresh").length;
+		await waitFor(() => expect(refreshes()).toBe(1));
+		fireEvent.focus(window);
+		await waitFor(() => expect(refreshes()).toBe(2));
+		fireEvent(document, new Event("visibilitychange"));
+		await waitFor(() => expect(refreshes()).toBe(3));
+	});
+
+	it("opens the reason badge's tooltip on keyboard focus", async () => {
+		const until = new Date(Date.now() + 9 * 86_400_000).toISOString();
+		fakeApi(
+			view({
+				mine: [
+					row({
+						woke: { at: ago(30), by: "time" },
+					}),
+					row({
+						number: 2,
+						hidden: "snoozed",
+						annotations: {
+							snooze: { until, wakeOnActivity: false, at: ago(9) },
+						},
+					}),
+				],
+			}),
+		);
+		renderWithQuery(<HomePage />);
+		const woke = await screen.findByRole("img", { name: "Woke: time" });
+		expect(woke).toHaveAttribute("tabindex", "0");
+		await userEvent.click(screen.getByRole("button", { name: "1 snoozed" }));
+		const badge = screen.getByRole("img", { name: /^Snoozed until/ });
+		expect(badge).toHaveAttribute("tabindex", "0");
+		act(() => badge.focus());
+		expect(await shownTooltip()).toHaveTextContent(/^Snoozed until \d{4}/);
+	});
+
+	it("says 'no reviewer' in muted, and the logo link has a Home tooltip", async () => {
+		fakeApi(view({ grabs: [row({ turn: { kind: "no-reviewer" } })] }));
+		renderWithQuery(<HomePage />);
+		expect(await screen.findByText("no reviewer")).toHaveClass("text-muted");
+		const logo = screen.getByRole("link", { name: "Home" });
+		await userEvent.hover(logo);
+		expect(await shownTooltip()).toHaveTextContent("Home");
 	});
 });

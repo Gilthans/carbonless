@@ -29,7 +29,7 @@ import { fullDate, RelativeTime } from "../RelativeTime";
 import { Tooltip } from "../Tooltip";
 import { hashTint, TINTS } from "../threads/people";
 import { ErrorMessage, safeHref } from "../ui";
-import { postAnnotation, prPath, setRow } from "./homeApi";
+import { homeQuery, postAnnotation, prPath, setRow } from "./homeApi";
 
 /** An icon (or a few) that means something: a tooltip and an accessible name. */
 export function Sign(props: {
@@ -37,6 +37,11 @@ export function Sign(props: {
 	className?: string;
 	children: ReactNode;
 	testId?: string;
+	/**
+	 * Takes focus, so a tap or the keyboard opens the tooltip: for signs
+	 * whose tooltip says more than the icon (a snooze's full date).
+	 */
+	focusable?: boolean;
 }) {
 	return (
 		<Tooltip content={props.label} describe={false}>
@@ -46,8 +51,9 @@ export function Sign(props: {
 					role="img"
 					aria-label={props.label}
 					data-testid={props.testId}
+					tabIndex={props.focusable ? 0 : undefined}
 					// Above the row's stretched link, so its tooltip shows on hover.
-					className={`relative z-10 inline-flex shrink-0 items-center gap-1 ${props.className ?? ""}`}
+					className={`relative z-10 inline-flex shrink-0 items-center gap-1 rounded-sm focus-visible:outline-2 focus-visible:outline-accent ${props.className ?? ""}`}
 				>
 					{props.children}
 				</span>
@@ -154,7 +160,7 @@ function TurnCell({ row, viewer }: { row: HomeRow; viewer: string }) {
 	const { turn } = row;
 	if (turn.kind === "none") return null;
 	if (turn.kind === "no-reviewer") {
-		return <span className="shrink-0 text-faint">no reviewer</span>;
+		return <span className="shrink-0 text-muted">no reviewer</span>;
 	}
 	const names = turn.logins.map((l) => (same(l, viewer) ? "you" : l));
 	const label = `Turn: ${names.join(", ")}${turn.label === "merge" ? ", merge" : ""}`;
@@ -221,6 +227,7 @@ function Reason({ row }: { row: HomeRow }) {
 		const full = fullDate(new Date(snooze.until));
 		return (
 			<Sign
+				focusable
 				label={`Snoozed until ${full}${snooze.wakeOnActivity ? ", or sooner on activity" : ""}`}
 				className="rounded-full border border-edge bg-raised px-2 text-xs text-muted"
 			>
@@ -233,6 +240,7 @@ function Reason({ row }: { row: HomeRow }) {
 	if (row.hidden === "waiting" && waiting) {
 		return (
 			<Sign
+				focusable
 				label={`Waiting on ${waiting.who}`}
 				className="rounded-full border border-edge bg-raised px-2 text-xs text-muted"
 			>
@@ -250,6 +258,7 @@ function WakeUp({ row }: { row: HomeRow }) {
 	const client = useQueryClient();
 	const wake = useMutation({
 		mutationFn: () => postAnnotation(row, { op: "wake" }),
+		onMutate: () => client.cancelQueries({ queryKey: homeQuery.queryKey }),
 		onSuccess: (answer) => setRow(client, answer),
 	});
 	return (
@@ -365,6 +374,7 @@ export function PrRow(props: {
 					)}
 					{row.annotations.note && (
 						<Sign
+							focusable
 							label={`Note: ${row.annotations.note}`}
 							className="max-w-48 min-w-0 shrink rounded-full border border-dashed border-line-strong px-1.5 text-xs text-muted"
 						>
@@ -373,12 +383,21 @@ export function PrRow(props: {
 						</Sign>
 					)}
 					{row.woke && (
-						<Sign label={`Woke: ${row.woke.by}`} className="text-warn">
+						<Sign
+							focusable
+							label={`Woke: ${row.woke.by}`}
+							className="text-warn"
+						>
 							<BellIcon size={12} aria-hidden />
 						</Sign>
 					)}
 				</span>
-				<span className="order-3 ml-auto flex min-w-0 items-center gap-3 text-xs text-muted sm:order-none sm:ml-0 sm:text-sm">
+				<span
+					data-testid="row-meta"
+					// Wraps on a phone: a started row's icons, turn, coverage, age
+					// and "⋯" are wider than 360px.
+					className="order-3 flex min-w-0 flex-1 flex-wrap items-center justify-end gap-x-3 gap-y-1 text-xs text-muted sm:order-none sm:flex-none sm:flex-nowrap sm:justify-start sm:text-sm"
+				>
 					<StatusIcons row={row} section={section} />
 					{hidden ? (
 						<Reason row={row} />

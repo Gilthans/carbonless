@@ -1,5 +1,5 @@
 import { ChevronRightIcon } from "@primer/octicons-react";
-import { useId, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import type { HomeRow, HomeSection, SectionId } from "../../shared/home";
 import { PrRow } from "./PrRow";
 import { RowActions } from "./RowActions";
@@ -21,13 +21,22 @@ const HINTS: Partial<Record<SectionId, string>> = {
 /** A section shows this many visible rows, then "show N more". */
 export const FOLD = 20;
 
-/** "2 snoozed · 1 waiting", only the parts that aren't zero. */
+/**
+ * "2 snoozed · 1 waiting", only the parts that aren't zero; any other
+ * reason the server sends counts as "N hidden", so no hidden row goes
+ * uncounted.
+ */
 export function hiddenSummary(rows: HomeRow[]): string {
 	const snoozed = rows.filter((r) => r.hidden === "snoozed").length;
 	const waiting = rows.filter((r) => r.hidden === "waiting").length;
+	const other = rows.filter(
+		(r) =>
+			r.hidden !== null && r.hidden !== "snoozed" && r.hidden !== "waiting",
+	).length;
 	return [
 		snoozed ? `${snoozed} snoozed` : "",
 		waiting ? `${waiting} waiting` : "",
+		other ? `${other} hidden` : "",
 	]
 		.filter(Boolean)
 		.join(" · ");
@@ -52,6 +61,17 @@ export function Section(props: { section: HomeSection; viewer: string }) {
 	const shown = all ? visible : visible.slice(0, FOLD);
 	const more = visible.length - shown.length;
 	const summary = hiddenSummary(hidden);
+	const anyHidden = hidden.length > 0;
+	// A row the reviewer just hid: focus follows it to the footer.
+	const foot = useRef<HTMLButtonElement>(null);
+	const [focusFoot, setFocusFoot] = useState(false);
+	useEffect(() => {
+		if (!focusFoot || !anyHidden || !foot.current) return;
+		foot.current.focus();
+		setFocusFoot(false);
+		// The footer may first appear with the row's answer, a render later.
+	}, [focusFoot, anyHidden]);
+	const onHidden = () => setFocusFoot(true);
 	const key = (r: HomeRow) => `${r.owner}/${r.repo}#${r.number}`;
 	return (
 		<section aria-labelledby={headingId} data-section={id}>
@@ -67,7 +87,7 @@ export function Section(props: { section: HomeSection; viewer: string }) {
 				</h2>
 				{HINTS[id] && <p className="text-xs text-faint">{HINTS[id]}</p>}
 			</div>
-			{(rows.length > 0 || summary) && (
+			{rows.length > 0 && (
 				<div className="rounded-xl border border-line bg-surface">
 					<ul>
 						{shown.map((row) => (
@@ -76,11 +96,17 @@ export function Section(props: { section: HomeSection; viewer: string }) {
 								row={row}
 								section={id}
 								viewer={props.viewer}
-								actions={<RowActions row={row} viewer={props.viewer} />}
+								actions={
+									<RowActions
+										row={row}
+										viewer={props.viewer}
+										onHidden={onHidden}
+									/>
+								}
 							/>
 						))}
 					</ul>
-					{(more > 0 || summary) && (
+					{(more > 0 || anyHidden) && (
 						<div className="flex flex-wrap items-center gap-x-2 border-t border-line px-1 py-0.5">
 							{more > 0 && (
 								<button
@@ -91,8 +117,9 @@ export function Section(props: { section: HomeSection; viewer: string }) {
 									show {more} more
 								</button>
 							)}
-							{summary && (
+							{anyHidden && (
 								<button
+									ref={foot}
 									type="button"
 									aria-expanded={reveal}
 									aria-controls={hiddenId}
@@ -109,7 +136,7 @@ export function Section(props: { section: HomeSection; viewer: string }) {
 							)}
 						</div>
 					)}
-					{summary && (
+					{anyHidden && (
 						<ul id={hiddenId} hidden={!reveal} className="border-t border-line">
 							{reveal &&
 								hidden.map((row) => (

@@ -62,6 +62,8 @@ export const homeQuery = queryOptions({
 	// The server refreshes on its own: pick up what it found (and snoozes
 	// whose date has passed) while the page stays open.
 	refetchInterval: 60_000,
+	// The page asks for a refresh on focus itself (HomePage).
+	refetchOnWindowFocus: false,
 });
 
 export const searchQuery = (q: string) =>

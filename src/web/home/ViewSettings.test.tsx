@@ -112,4 +112,22 @@ describe("ViewSettings", () => {
 		expect(api.calls.some((c) => c.method === "PUT")).toBe(false);
 		expect(screen.getByText("acme/api")).toBeInTheDocument();
 	});
+
+	it("compares repos without case, so a hand-edited Acme/API isn't added twice", async () => {
+		fakeApi(view({}, { view: { name: "My PRs", repos: ["Acme/API"] } }));
+		renderWithQuery(<HomePage />);
+		await userEvent.click(
+			await screen.findByRole("button", { name: "Edit repos" }),
+		);
+		const dialog = screen.getByRole("dialog", { name: "My PRs" });
+		await userEvent.type(
+			within(dialog).getByRole("textbox", { name: "Add a repo" }),
+			"acme/api{Enter}",
+		);
+		expect(
+			within(
+				within(dialog).getByRole("list", { name: "Repos in this view" }),
+			).getAllByRole("listitem"),
+		).toHaveLength(1);
+	});
 });

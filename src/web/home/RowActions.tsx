@@ -19,8 +19,9 @@ import type { AnnotationOp, HomeRow, Person } from "../../shared/home";
 import { Tooltip } from "../Tooltip";
 import { ErrorMessage } from "../ui";
 import { useMedia } from "../useMedia";
-import { postAnnotation, setRow } from "./homeApi";
+import { homeQuery, postAnnotation, setRow } from "./homeApi";
 import { Avatar } from "./PrRow";
+import { minPick, pickedDate, snoozePresets } from "./snooze";
 
 type Panel = "snooze" | "wait" | "note";
 
@@ -29,34 +30,6 @@ const PANELS: { id: Panel; label: string; icon: ReactNode }[] = [
 	{ id: "wait", label: "Waiting on", icon: <HourglassIcon aria-hidden /> },
 	{ id: "note", label: "Note", icon: <NoteIcon aria-hidden /> },
 ];
-
-const at9 = (d: Date, addDays: number) =>
-	new Date(d.getFullYear(), d.getMonth(), d.getDate() + addDays, 9, 0, 0, 0);
-
-/** A date input's value: "2026-10-29". */
-const ymd = (d: Date) =>
-	`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-
-const hintOf = (d: Date) =>
-	`${new Intl.DateTimeFormat("en", { weekday: "short" }).format(d)} 09:00`;
-
-/** Tomorrow, in 3 days and next Monday, each at 09:00 local time. */
-export function snoozePresets(now: Date): {
-	label: string;
-	hint: string;
-	until: Date;
-}[] {
-	// Days to the next Monday, strictly after today (a Monday: a week on).
-	const toMonday = (8 - now.getDay()) % 7 || 7;
-	return [
-		{ label: "Tomorrow", days: 1 },
-		{ label: "In 3 days", days: 3 },
-		{ label: "Next Monday", days: toMonday },
-	].map(({ label, days }) => {
-		const until = at9(now, days);
-		return { label, hint: hintOf(until), until };
-	});
-}
 
 const itemClass =
 	"flex min-h-10 w-full items-center gap-2.5 rounded-md px-2.5 text-left text-sm text-ink hover:bg-pressed focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent";
@@ -76,13 +49,8 @@ function SnoozePanel(props: { onPick: (op: AnnotationOp) => void }) {
 			until: until.toISOString(),
 			wakeOnActivity: wake,
 		});
-	const picked = (() => {
-		const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(date);
-		if (!m) return null;
-		const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), 9);
-		return d.getTime() > Date.now() ? d : null;
-	})();
-	const min = ymd(at9(new Date(), 1));
+	const picked = pickedDate(date, new Date());
+	const min = minPick(new Date());
 	return (
 		<div className="space-y-0.5">
 			{presets.map((p) => (
@@ -170,14 +138,23 @@ function WaitPanel(props: {
 }) {
 	const { row, viewer } = props;
 	const [who, setWho] = useState("");
+	// The author, the reviewers, then whoever else the turn names: once each.
 	const people: { person: Person; role: string }[] = [];
-	if (!same(row.author.login, viewer)) {
-		people.push({ person: row.author, role: "author" });
+	const add = (login: string, role: string) => {
+		if (same(login, viewer)) return;
+		if (people.some((p) => same(p.person.login, login))) return;
+		const person = same(login, row.author.login)
+			? row.author
+			: (row.people[login] ?? { login, avatarUrl: "" });
+		people.push({ person, role });
+	};
+	add(row.author.login, "author");
+	for (const login of row.reviewers ?? []) add(login, "reviewer");
+	if (row.turn.kind === "people") {
+		for (const login of row.turn.logins) add(login, "");
 	}
-	for (const p of Object.values(row.people)) {
-		if (same(p.login, viewer) || same(p.login, row.author.login)) continue;
-		people.push({ person: p, role: "reviewer" });
-	}
+	const current = row.annotations.waiting?.who;
+	const pressed = (login: string) => !!current && same(current, login);
 	const submit = (e: FormEvent) => {
 		e.preventDefault();
 		const login = who.trim().replace(/^@/, "");
@@ -187,7 +164,8 @@ function WaitPanel(props: {
 		<div className="space-y-0.5">
 			<button
 				type="button"
-				className={itemClass}
+				aria-pressed={pressed("me")}
+				className={`${itemClass} aria-pressed:bg-pressed`}
 				onClick={() => props.onPick({ op: "wait", who: "me" })}
 			>
 				Me
@@ -196,12 +174,13 @@ function WaitPanel(props: {
 				<button
 					key={person.login}
 					type="button"
-					className={itemClass}
+					aria-pressed={pressed(person.login)}
+					className={`${itemClass} aria-pressed:bg-pressed`}
 					onClick={() => props.onPick({ op: "wait", who: person.login })}
 				>
 					<Avatar person={person} size={20} />
 					{person.login}
-					<span className="ml-auto text-xs text-muted">{role}</span>
+					{role && <span className="ml-auto text-xs text-muted">{role}</span>}
 				</button>
 			))}
 			<form onSubmit={submit} className="px-1 py-0.5">
@@ -214,6 +193,18 @@ function WaitPanel(props: {
 					className={fieldClass}
 				/>
 			</form>
+			{current && (
+				<div className="flex justify-end px-1 pt-1">
+					<button
+						type="button"
+						// Ends the wait (and a snooze, which a shown row doesn't have).
+						onClick={() => props.onPick({ op: "wake" })}
+						className={`${smallButton} border border-edge text-ink-soft hover:bg-pressed`}
+					>
+						Clear
+					</button>
+				</div>
+			)}
 		</div>
 	);
 }
@@ -266,19 +257,29 @@ function NotePanel(props: {
  * that opens the same three in a bottom sheet (no hover, no long-press).
  * Each posts its op and puts the server's row in the cache.
  */
-export function RowActions(props: { row: HomeRow; viewer: string }) {
+export function RowActions(props: {
+	row: HomeRow;
+	viewer: string;
+	/** The answer hid the row: it moved behind its section's footer. */
+	onHidden?: () => void;
+}) {
 	const { row } = props;
 	const hover = useMedia("(hover: hover)");
 	const client = useQueryClient();
 	const [panel, setPanel] = useState<Panel | null>(null);
 	const [sheet, setSheet] = useState(false);
 	const wrapper = useRef<HTMLSpanElement>(null);
+	const buttons = useRef(new Map<Panel, HTMLButtonElement>());
 	const save = useMutation({
 		mutationFn: (op: AnnotationOp) => postAnnotation(row, op),
+		// A read of Home already under way would land after the answer and
+		// put the old row back: it's dropped.
+		onMutate: () => client.cancelQueries({ queryKey: homeQuery.queryKey }),
 		onSuccess: (answer) => {
 			setRow(client, answer);
 			setPanel(null);
 			setSheet(false);
+			if (answer.hidden !== null && row.hidden === null) props.onHidden?.();
 		},
 	});
 	const pick = (op: AnnotationOp) => save.mutate(op);
@@ -291,6 +292,7 @@ export function RowActions(props: { row: HomeRow; viewer: string }) {
 		const onKey = (e: KeyboardEvent) => {
 			if (e.key === "Escape") {
 				e.preventDefault();
+				buttons.current.get(panel)?.focus();
 				setPanel(null);
 			}
 		};
@@ -359,10 +361,12 @@ export function RowActions(props: { row: HomeRow; viewer: string }) {
 	return (
 		<span
 			ref={wrapper}
-			className={`relative z-10 flex shrink-0 items-center ${
+			data-row-actions
+			// Open, above the later rows' z-10 icons (one stacking context).
+			className={`relative flex shrink-0 items-center ${
 				panel
-					? ""
-					: "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100"
+					? "z-30"
+					: "z-10 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100"
 			}`}
 		>
 			{PANELS.map((p) => (
@@ -371,6 +375,11 @@ export function RowActions(props: { row: HomeRow; viewer: string }) {
 						<button
 							type="button"
 							{...trigger}
+							ref={(el) => {
+								trigger.ref(el);
+								if (el) buttons.current.set(p.id, el);
+								else buttons.current.delete(p.id);
+							}}
 							aria-label={p.label}
 							aria-haspopup="dialog"
 							aria-expanded={panel === p.id}

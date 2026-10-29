@@ -13,6 +13,7 @@ import {
 	fakeApi,
 	person,
 	renderWithQuery,
+	shownTooltip,
 	view,
 } from "./testing";
 
@@ -244,14 +245,15 @@ describe("OpenBox", () => {
 						pending: false,
 					};
 		});
+		// One live region, mounted from the start, outside the listbox.
+		const status = screen.getByRole("status");
+		expect(status).toHaveTextContent("");
 		await userEvent.type(box(), "far/away x");
-		expect(
-			await screen.findByRole("status", { name: "Searching GitHub" }),
-		).toBeInTheDocument();
+		await waitFor(() => expect(status).toHaveTextContent("Searching GitHub"));
+		expect(status.closest("[role=listbox]")).toBeNull();
 		await screen.findByText("Found later", undefined, { timeout: 3000 });
-		expect(
-			screen.queryByRole("status", { name: "Searching GitHub" }),
-		).toBeNull();
+		expect(status).toHaveTextContent("");
+		expect(screen.getByRole("status")).toBe(status);
 		expect(
 			searches(api).filter((q) => q === "far/away x").length,
 		).toBeGreaterThanOrEqual(2);
@@ -283,5 +285,16 @@ describe("OpenBox", () => {
 		]) {
 			within(home).getByText(label);
 		}
+	});
+
+	it("dates a PR with RelativeTime and names its state with a tooltip", async () => {
+		setup(mixed);
+		await userEvent.type(box(), "acme/console ");
+		const merged = (await screen.findAllByRole("option"))[1] as HTMLElement;
+		const time = merged.querySelector("time");
+		expect(time).toHaveAttribute("datetime", ago(12));
+		const icon = within(merged).getByRole("img", { name: "Merged" });
+		await userEvent.hover(icon);
+		expect(await shownTooltip()).toHaveTextContent("Merged");
 	});
 });

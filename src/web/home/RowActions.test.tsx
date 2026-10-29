@@ -1,10 +1,18 @@
 // @vitest-environment jsdom
-import { cleanup, screen, waitFor, within } from "@testing-library/react";
+import {
+	act,
+	cleanup,
+	fireEvent,
+	screen,
+	waitFor,
+	within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { HomeRow } from "../../shared/home";
 import { HomePage } from "./HomePage";
-import { snoozePresets } from "./RowActions";
+import { homeQuery } from "./homeApi";
+import { snoozePresets } from "./snooze";
 import {
 	ago,
 	type Call,
@@ -35,8 +43,8 @@ function setup(answer: (call: Call) => HomeRow = () => base, r = base) {
 	const api = fakeApi(view({ reviewing: [r] }), {
 		[ANNOTATE]: (call) => answer(call),
 	});
-	renderWithQuery(<HomePage />);
-	return api;
+	const { client } = renderWithQuery(<HomePage />);
+	return { ...api, client };
 }
 
 const posted = (api: ReturnType<typeof setup>) =>
@@ -46,22 +54,6 @@ const posted = (api: ReturnType<typeof setup>) =>
 
 const gets = (api: ReturnType<typeof setup>) =>
 	api.calls.filter((c) => c.method === "GET" && c.url === "/api/home").length;
-
-describe("snoozePresets", () => {
-	it("gives tomorrow, in 3 days and next Monday, each at 09:00 local", () => {
-		const wed = new Date(2026, 9, 28, 15, 30);
-		const [tomorrow, three, monday] = snoozePresets(wed);
-		expect(tomorrow?.until).toEqual(new Date(2026, 9, 29, 9, 0));
-		expect(three?.until).toEqual(new Date(2026, 9, 31, 9, 0));
-		expect(monday?.until).toEqual(new Date(2026, 10, 2, 9, 0));
-		expect(tomorrow?.hint).toBe("Thu 09:00");
-	});
-
-	it("on a Monday, next Monday is a week on", () => {
-		const mon = new Date(2026, 10, 2, 8, 0);
-		expect(snoozePresets(mon)[2]?.until).toEqual(new Date(2026, 10, 9, 9, 0));
-	});
-});
 
 describe("RowActions", () => {
 	it("snoozes to a preset, waking on activity by default, and updates the row in place", async () => {
@@ -139,15 +131,26 @@ describe("RowActions", () => {
 		});
 	});
 
-	it("waits on the author, a reviewer, me or a typed login", async () => {
-		const api = setup();
+	it("waits on the author, the reviewers and the turn's people (once each), me or a typed login", async () => {
+		const api = setup(() => base, {
+			...base,
+			reviewers: ["noa", "ido"],
+			turn: { kind: "people", logins: ["noa", "liat"] },
+			people: { noa: person("noa"), ido: person("ido"), liat: person("liat") },
+		});
 		await screen.findByText("Seven");
 		await userEvent.click(screen.getByRole("button", { name: "Waiting on" }));
 		let pop = screen.getByRole("dialog", { name: "Waiting on" });
 		const names = within(pop)
 			.getAllByRole("button")
 			.map((b) => b.textContent);
-		expect(names).toEqual(["Me", "tomerauthor", "noareviewer"]);
+		expect(names).toEqual([
+			"Me",
+			"tomerauthor",
+			"noareviewer",
+			"idoreviewer",
+			"liat",
+		]);
 		await userEvent.click(within(pop).getByRole("button", { name: /tomer/ }));
 		await waitFor(() => expect(posted(api)).toHaveLength(1));
 		expect(posted(api)[0]).toEqual({ op: "wait", who: "tomer" });
@@ -156,10 +159,10 @@ describe("RowActions", () => {
 		pop = screen.getByRole("dialog", { name: "Waiting on" });
 		await userEvent.type(
 			within(pop).getByLabelText("Someone else"),
-			"@ido{Enter}",
+			"@gil{Enter}",
 		);
 		await waitFor(() => expect(posted(api)).toHaveLength(2));
-		expect(posted(api)[1]).toEqual({ op: "wait", who: "ido" });
+		expect(posted(api)[1]).toEqual({ op: "wait", who: "gil" });
 	});
 
 	it("saves a note and clears it", async () => {
@@ -232,5 +235,123 @@ describe("RowActions", () => {
 		await waitFor(() =>
 			expect(posted(api)).toEqual([{ op: "note", text: "x" }]),
 		);
+	});
+
+	it("offers the reviewers when the turn is the author's alone", async () => {
+		setup(() => base, {
+			...base,
+			reviewers: ["noa"],
+			turn: { kind: "people", logins: ["tomer"] },
+			people: { noa: person("noa") },
+		});
+		await screen.findByText("Seven");
+		await userEvent.click(screen.getByRole("button", { name: "Waiting on" }));
+		within(screen.getByRole("dialog", { name: "Waiting on" })).getByRole(
+			"button",
+			{ name: /noa/ },
+		);
+	});
+
+	it("marks the current wait and clears it, also a 'me' wait that never hides the row", async () => {
+		const mine: HomeRow = {
+			...base,
+			annotations: { waiting: { who: "me", at: ago(5) } },
+		};
+		const api = setup(() => base, mine);
+		await screen.findByText("Seven");
+		await userEvent.click(screen.getByRole("button", { name: "Waiting on" }));
+		const pop = screen.getByRole("dialog", { name: "Waiting on" });
+		expect(within(pop).getByRole("button", { name: "Me" })).toHaveAttribute(
+			"aria-pressed",
+			"true",
+		);
+		await userEvent.click(within(pop).getByRole("button", { name: "Clear" }));
+		await waitFor(() => expect(posted(api)).toEqual([{ op: "wake" }]));
+	});
+
+	it("has no Clear while nothing is waited on", async () => {
+		setup();
+		await screen.findByText("Seven");
+		await userEvent.click(screen.getByRole("button", { name: "Waiting on" }));
+		const pop = screen.getByRole("dialog", { name: "Waiting on" });
+		expect(within(pop).queryByRole("button", { name: "Clear" })).toBeNull();
+	});
+
+	it("raises an open popover above the rows after it", async () => {
+		setup();
+		await screen.findByText("Seven");
+		const snooze = screen.getByRole("button", { name: "Snooze" });
+		const wrapper = snooze.closest("[data-row-actions]");
+		expect(wrapper).toHaveClass("z-10");
+		await userEvent.click(snooze);
+		// Above every row's z-10 icons, which share its stacking context.
+		expect(wrapper).toHaveClass("z-30");
+		expect(wrapper).not.toHaveClass("z-10");
+	});
+
+	it("Escape closes a popover and focus goes back to its button", async () => {
+		setup();
+		await screen.findByText("Seven");
+		const snooze = screen.getByRole("button", { name: "Snooze" });
+		await userEvent.click(snooze);
+		await userEvent.keyboard("{Escape}");
+		expect(screen.queryByRole("dialog", { name: "Snooze" })).toBeNull();
+		expect(snooze).toHaveFocus();
+	});
+
+	it("focuses the section's footer when a row moves behind it", async () => {
+		setup(() => ({
+			...base,
+			hidden: "waiting",
+			annotations: { waiting: { who: "noa", at: ago(0) } },
+		}));
+		await screen.findByText("Seven");
+		await userEvent.click(screen.getByRole("button", { name: "Waiting on" }));
+		await userEvent.click(
+			within(screen.getByRole("dialog", { name: "Waiting on" })).getByRole(
+				"button",
+				{ name: /noa/ },
+			),
+		);
+		await waitFor(() =>
+			expect(screen.getByRole("button", { name: "1 waiting" })).toHaveFocus(),
+		);
+	});
+
+	it("an older GET /api/home in flight can't undo a write on screen", async () => {
+		let release: (v: unknown) => void = () => {};
+		const api = setup(() => ({
+			...base,
+			annotations: { note: "kept" },
+		}));
+		await screen.findByText("Seven");
+		const old = view({ reviewing: [base] });
+		api.fetch.mockImplementationOnce(
+			() =>
+				new Promise((resolve) => {
+					release = () =>
+						resolve(
+							new Response(JSON.stringify(old), {
+								headers: { "content-type": "application/json" },
+							}),
+						);
+				}),
+		);
+		// A refetch starts (the poll, a focus) and hangs.
+		act(() => {
+			void api.client.refetchQueries({ queryKey: homeQuery.queryKey });
+		});
+		await userEvent.click(screen.getByRole("button", { name: "Note" }));
+		const pop = screen.getByRole("dialog", { name: "Note" });
+		fireEvent.change(within(pop).getByRole("textbox"), {
+			target: { value: "kept" },
+		});
+		await userEvent.click(within(pop).getByRole("button", { name: "Save" }));
+		await screen.findByRole("img", { name: "Note: kept" });
+		await act(async () => {
+			release(undefined);
+			await new Promise((r) => setTimeout(r, 20));
+		});
+		expect(screen.getByRole("img", { name: "Note: kept" })).toBeInTheDocument();
 	});
 });

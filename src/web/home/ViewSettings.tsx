@@ -85,10 +85,13 @@ export function ViewSettings(props: {
 			props.onClose();
 		},
 	});
+	// A hand-edited config may say Acme/API: repos compare without case.
+	const listed = (name: string) =>
+		repos.some((r) => r.toLowerCase() === name.toLowerCase());
 	const add = (name: string) => {
-		if (!repos.includes(name)) setRepos([...repos, name]);
+		if (!listed(name)) setRepos([...repos, name]);
 	};
-	const suggestions = suggestedRepos(home).filter((r) => !repos.includes(r));
+	const suggestions = suggestedRepos(home).filter((r) => !listed(r));
 	return (
 		<dialog
 			ref={dialog}
