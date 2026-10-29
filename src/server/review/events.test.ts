@@ -229,3 +229,48 @@ describe("validateForWrite", () => {
 		).toThrow();
 	});
 });
+
+describe("inbox events", () => {
+	const snoozed = newEvent("pr-snoozed", "dan", {
+		pr: 7,
+		until: Date.parse("2026-11-01T09:00:00Z"),
+		wakeOnActivity: true,
+	});
+	const waiting = newEvent("pr-waiting-on", "dan", { pr: 7, who: "Tomer-B" });
+	const note = newEvent("pr-note", "dan", { pr: 7, text: "awaiting Tomer" });
+	const cleared = newEvent("pr-cleared", "dan", { pr: 7, kind: "snooze" });
+
+	it("round-trip through a commit message", () => {
+		const all = [snoozed, waiting, note, cleared];
+		expect(parseEventLines(serializeCommitMessage("crb: x", all))).toEqual(all);
+		for (const e of all) expect(() => validateForWrite(e)).not.toThrow();
+	});
+
+	it("must be written by a human, and are skipped otherwise", () => {
+		for (const e of [snoozed, waiting, note, cleared]) {
+			const ai = { ...e, by: "ai" } as CrbEvent;
+			expect(() => validateForWrite(ai)).toThrow(/human/);
+			expect(parseEventLines(msg([ai]))).toEqual([]);
+		}
+	});
+
+	it("skips malformed ones", () => {
+		const bad = [
+			{ ...snoozed, pr: 0 },
+			{ ...snoozed, until: "tomorrow" },
+			{ ...snoozed, wakeOnActivity: "yes" },
+			{ ...waiting, who: "" },
+			{ ...waiting, who: "not a login" },
+			{ ...note, text: 5 },
+			{ ...note, text: "x".repeat(2001) },
+			{ ...cleared, kind: "note" },
+		];
+		expect(parseEventLines(msg(bad))).toEqual([]);
+		// An empty note is valid: it clears the note.
+		const empty = { ...note, text: "" };
+		expect(parseEventLines(msg([empty]))).toEqual([empty]);
+		// "me" is a valid waiting-on.
+		const me = { ...waiting, who: "me" };
+		expect(parseEventLines(msg([me]))).toEqual([me]);
+	});
+});

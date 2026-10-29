@@ -174,10 +174,20 @@ export class RefStore {
 	 * Appends one event as a new commit on the ref's tip. If another writer
 	 * moved the ref in between, the event is committed again on the new tip.
 	 */
-	async appendEvent(
+	appendEvent(
 		ref: string,
 		summary: string,
 		event: CrbEvent,
+		author: string,
+	): Promise<string> {
+		return this.appendEvents(ref, summary, [event], author);
+	}
+
+	/** appendEvent for several events in one commit (all or none land). */
+	async appendEvents(
+		ref: string,
+		summary: string,
+		events: CrbEvent[],
 		author: string,
 	): Promise<string> {
 		checkRef(ref);
@@ -189,7 +199,7 @@ export class RefStore {
 			attempt++;
 			const started = now();
 			const tip = await this.tip(ref);
-			const oid = await this.commit(tip, summary, [event], author);
+			const oid = await this.commit(tip, summary, events, author);
 			try {
 				await this.transaction([{ ref, newOid: oid, oldOid: tip }]);
 				return oid;
