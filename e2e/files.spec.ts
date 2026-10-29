@@ -172,11 +172,11 @@ test("crossing off keeps reviewed clusters, and undoing leaves clusters unreview
 		/^done · 3 lines added, 2 deleted · 2 clusters · 1 of 1 cluster reviewed, 1 crossed off$/,
 	);
 	await expect(bar).toContainText("1 / 3 clusters reviewed");
-	// In files, a file with a crossed-off cluster counts as crossed off, never
-	// reviewed: crossing off shrinks the work left only.
+	// In files, a done file with a reviewed cluster counts as reviewed; only
+	// one crossed off all through counts as crossed off.
 	await chooseUnit(page, "Files");
-	await expect(bar).toContainText("0 / 2 files reviewed");
-	await expect(bar).toHaveAttribute("aria-valuenow", "0");
+	await expect(bar).toContainText("1 / 3 files reviewed");
+	await expect(bar).toHaveAttribute("aria-valuenow", "33");
 	await expect(fileProgress(section)).toContainText("done · 1 crossed off");
 	await chooseUnit(page, "Clusters");
 

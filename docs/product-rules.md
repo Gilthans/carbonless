@@ -214,6 +214,16 @@ unresolving one, and editing or deleting one of the viewer's comments in one
 - **Tests write only to the fake gh.** Real writes happen only on the
   owner's scratch PR (see `CLAUDE.md`).
 
+## A file is crossed off only when all of it is
+
+In the files unit (the progress bar, the file list) a file whose clusters
+are all crossed off counts as crossed off; a done file with any reviewed
+cluster counts as reviewed, however many of the rest were crossed off
+(owner: "A file should only be considered crossed off in the progress bar
+if all clusters are crossed off. Otherwise it should count as reviewed").
+A file with any unreviewed cluster is neither. The rule is one function
+(`fileFlags`, `src/shared/progress.ts`), used by the server and the page.
+
 ## "Ignore whitespace" is a view
 
 Settings' "Ignore whitespace" (`src/web/files/whitespace.ts`, git's `-w`:

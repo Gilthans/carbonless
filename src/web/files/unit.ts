@@ -106,7 +106,7 @@ export interface FileUnitProgress {
 	status: string | null;
 	/** Unreviewed clusters. */
 	clustersLeft: number;
-	/** Crossed-off clusters of a done file that isn't wholly crossed off. */
+	/** Crossed-off clusters of a done file that isn't wholly crossed off (it counts reviewed). */
 	partlyCrossedOff: number;
 	/** The fraction looks finished but clusters without changed lines are left. */
 	hiddenLeft: boolean;
@@ -128,17 +128,17 @@ function clusterCounts(file: FileView, weight: (lines: number) => number) {
 
 /**
  * One file's progress in the unit, by the same rules as the page's bar. A
- * file counts reviewed only when every cluster is; a done file with any
- * crossed-off cluster counts as crossed off.
+ * file counts crossed off only when every cluster is; a done file with any
+ * reviewed cluster counts as reviewed.
  */
 export function fileUnitProgress(file: FileView, unit: Unit): FileUnitProgress {
 	const clustersLeft = file.clusters.filter(
 		(c) => c.state === "unreviewed",
 	).length;
 	// The server's rule (FileView.reviewed), not re-derived here.
-	const allReviewed = file.reviewed;
+	const reviewed = file.reviewed;
 	const partlyCrossedOff =
-		file.done && !allReviewed && !file.crossedOff
+		file.done && !file.crossedOff
 			? file.clusters.filter((c) => c.state === "crossed-off").length
 			: 0;
 	const base = { clustersLeft, partlyCrossedOff, hiddenLeft: false };
@@ -148,8 +148,8 @@ export function fileUnitProgress(file: FileView, unit: Unit): FileUnitProgress {
 	if (unit === "files") {
 		const counts = {
 			total: 1,
-			reviewed: allReviewed ? 1 : 0,
-			crossedOff: file.done && !allReviewed ? 1 : 0,
+			reviewed: reviewed ? 1 : 0,
+			crossedOff: file.crossedOff ? 1 : 0,
 		};
 		return {
 			...base,

@@ -685,7 +685,7 @@ describe("overlayReview", () => {
 		]);
 		expect(shown.files[0]).toMatchObject({
 			done: true,
-			reviewed: false,
+			reviewed: true,
 			crossedOff: false,
 		});
 		// Untouched files keep their identity.
@@ -693,7 +693,7 @@ describe("overlayReview", () => {
 		expect(shown.progress).toEqual({
 			clusters: { total: 3, reviewed: 1, crossedOff: 1 },
 			lines: { total: 7, reviewed: 2, crossedOff: 3 },
-			files: { total: 2, reviewed: 0, crossedOff: 1, done: 1 },
+			files: { total: 2, reviewed: 1, crossedOff: 0, done: 1 },
 		});
 	});
 

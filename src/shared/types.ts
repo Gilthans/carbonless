@@ -88,11 +88,11 @@ export interface FileView extends Omit<FileSummary, "clusters"> {
 	/** Every cluster is reviewed or crossed off. */
 	done: boolean;
 	/**
-	 * Every cluster is reviewed: the file counts as reviewed in the files
-	 * unit. A done file that isn't reviewed counts as crossed off.
+	 * Done with at least one cluster reviewed (the rest may be crossed
+	 * off): the file counts as reviewed in the files unit.
 	 */
 	reviewed: boolean;
-	/** Every cluster is crossed off. */
+	/** Every cluster is crossed off: the file counts as crossed off. */
 	crossedOff: boolean;
 }
 
@@ -106,8 +106,9 @@ export interface Progress {
 	clusters: Counts;
 	lines: Counts;
 	/**
-	 * `reviewed`: files whose clusters are all reviewed. `crossedOff`: done
-	 * files with at least one crossed-off cluster. `done`: both together.
+	 * `reviewed`: done files with at least one reviewed cluster.
+	 * `crossedOff`: files whose clusters are all crossed off. `done`: both
+	 * together.
 	 */
 	files: Counts & { done: number };
 }

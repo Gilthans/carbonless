@@ -126,7 +126,7 @@ describe("buildReviewView", () => {
 		});
 	});
 
-	it("a file with reviewed and crossed-off clusters is done, and counts as crossed off, not reviewed", () => {
+	it("a file with reviewed and crossed-off clusters is done, and counts as reviewed", () => {
 		const snap = snapshot([
 			file(0, "a.ts", [cluster("k1", 1), cluster("k2", 1)]),
 		]);
@@ -136,32 +136,48 @@ describe("buildReviewView", () => {
 		);
 		expect(view.files[0]).toMatchObject({
 			done: true,
-			reviewed: false,
+			reviewed: true,
 			crossedOff: false,
 		});
-		// Crossing off shrinks the work left but never raises reviewed.
+		// Owner: crossed off "only if all clusters are crossed off".
 		expect(view.progress.files).toEqual({
 			total: 1,
-			reviewed: 0,
-			crossedOff: 1,
+			reviewed: 1,
+			crossedOff: 0,
 			done: 1,
 		});
 	});
 
-	it("crossing off the rest of a mostly unreviewed file never counts it reviewed", () => {
+	it("a file counts crossed off only when all of it is, and neither while any cluster is unreviewed", () => {
 		const snap = snapshot([
 			file(0, "a.ts", [cluster("k1", 1), cluster("k2", 1), cluster("k3", 1)]),
-			file(1, "b.ts", [cluster("k4", 1)]),
+			file(1, "b.ts", [cluster("k4", 1), cluster("k5", 1)]),
+			file(2, "c.ts", [cluster("k6", 1), cluster("k7", 1)]),
 		]);
 		const view = buildReviewView(
 			snap,
-			progress({ k1: "reviewed", k2: "crossed-off", k3: "crossed-off" }),
+			progress({
+				k1: "reviewed",
+				k2: "crossed-off",
+				k3: "crossed-off",
+				k4: "crossed-off",
+				k5: "crossed-off",
+				k6: "reviewed",
+				k7: "unreviewed",
+			}),
 		);
+		expect(
+			view.files.map((f) => [f.path, f.done, f.reviewed, f.crossedOff]),
+		).toEqual([
+			["a.ts", true, true, false],
+			["b.ts", true, false, true],
+			["c.ts", false, false, false],
+		]);
 		expect(view.progress.files).toEqual({
-			total: 2,
-			reviewed: 0,
+			total: 3,
+			reviewed: 1,
 			crossedOff: 1,
-			done: 1,
+			done: 2,
 		});
 	});
 
