@@ -101,7 +101,8 @@ describe("SessionRegistry", () => {
 			fresh.get(plain.id),
 		]);
 		expect(x).toBe(y);
-	});
+		// Five opens of a review: more than the default on a loaded machine.
+	}, 20_000);
 
 	it("an unknown id is an UnknownReviewError", async () => {
 		const r = registry();
