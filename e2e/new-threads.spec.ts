@@ -298,6 +298,44 @@ test("the bar sits by what is selected: just below it, beside it", async ({
 	expect(box.x).toBeLessThanOrEqual(number.x + number.width + 8);
 });
 
+test("a pick from a removed line extends to its added replacement: the bar never covers the numbers below", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	const p = await pr(fixture);
+	const s = await startCrb();
+	const section = await openFile(page, s.url, GREET);
+	const removed = row(section, "LEFT", 10).and(
+		section.locator('tr[data-kind="del"]'),
+	);
+	await removed.evaluate((el) => el.scrollIntoView({ block: "center" }));
+	if (isMobile) {
+		await removed.getByTestId("old").tap();
+		await row(section, "RIGHT", 10).getByTestId("new").tap();
+	} else {
+		await removed.getByTestId("old").click();
+		await expect(bar(page)).toBeVisible();
+		// The bar is up; the added line's number is still free to click.
+		await row(section, "RIGHT", 10)
+			.getByTestId("new")
+			.click({ modifiers: ["Shift"], trial: true });
+		await row(section, "RIGHT", 10)
+			.getByTestId("new")
+			.click({ modifiers: ["Shift"] });
+	}
+	await expect(section.locator("tr[data-picked]")).toHaveCount(2);
+	await bar(page).getByRole("button", { name: "Comment" }).click();
+	const composer = section.getByTestId("new-thread");
+	await composer.getByRole("textbox", { name: "Comment" }).fill("Why?");
+	await composer.getByRole("button", { name: "Comment" }).click();
+	await expect(
+		section.getByTestId("files-thread").filter({ hasText: "Why?" }),
+	).toBeVisible();
+	expect(stored(p)).toMatchObject([{ path: GREET, line: 10 }]);
+});
+
 test("a comment's draft survives a reload and counts in Drafts", async ({
 	page,
 	pr,

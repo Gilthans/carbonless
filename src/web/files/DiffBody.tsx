@@ -173,9 +173,10 @@ export function numberDigits(data: FileHunks | undefined): number {
 
 /**
  * A number column's width: its digits (`--num-w`, set on the table from
- * numberDigits) and padding; a phone keeps 48px, its tap target.
+ * numberDigits) and padding; on touch it keeps 48px, its tap target.
  */
-const NUMBER_W = "w-[var(--num-w,3rem)] max-sm:w-[max(3rem,var(--num-w,3rem))]";
+const NUMBER_W =
+	"w-[var(--num-w,3rem)] pointer-coarse:w-[max(3rem,var(--num-w,3rem))]";
 
 const RAIL: Record<ClusterView["state"], string> = {
 	unreviewed: "bg-unreviewed",
@@ -1061,7 +1062,7 @@ export function DiffBody(props: {
 				);
 			}
 		});
-		rows.push(...contextRows(next, gap.to));
+		rows.push(...contextRows(next, gap.to, lead));
 		return <tbody key={`gap${gap.index}`}>{rows}</tbody>;
 	};
 

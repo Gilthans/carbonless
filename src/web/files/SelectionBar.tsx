@@ -179,6 +179,18 @@ const ofSelection = (commit: string): BarTarget | null => {
 	};
 };
 
+/**
+ * Where the bar starts for picked lines: just right of the row's last
+ * number cell (the new numbers), whichever side's number was picked, so it
+ * never covers the numbers a pick extends to.
+ */
+export function pickAnchor(row: Element): number {
+	const numbers = row.querySelectorAll(
+		'td[data-testid="old"], td[data-testid="new"]',
+	);
+	return rectOf(numbers[numbers.length - 1] ?? row).right + GAP;
+}
+
 const ofPicks = (picks: Picks, commit: string): BarTarget | null => {
 	const head = picks.lines[0];
 	const tail = picks.lines[picks.lines.length - 1];
@@ -199,10 +211,7 @@ const ofPicks = (picks: Picks, commit: string): BarTarget | null => {
 	);
 	const first = firstRow.getBoundingClientRect();
 	const last = lastRow.getBoundingClientRect();
-	// Beside the picked numbers: just right of the last row's number cell.
-	const number = rectOf(
-		lastRow.querySelector("button[data-pick]")?.closest("td") ?? lastRow,
-	);
+
 	return {
 		span,
 		inDiff: inHunk(head) && inHunk(tail),
@@ -215,7 +224,7 @@ const ofPicks = (picks: Picks, commit: string): BarTarget | null => {
 			Math.max(first.right, last.right) - Math.min(first.left, last.left),
 			last.bottom - first.top,
 		),
-		anchor: number.right + GAP,
+		anchor: pickAnchor(lastRow),
 		after: true,
 		quote: "",
 		text: false,

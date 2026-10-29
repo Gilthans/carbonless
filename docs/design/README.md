@@ -319,10 +319,12 @@ decides where; nothing else does):
   diff add a `warn` alert to it ("…, line not in this diff") and to the
   thread's header ("Line not in this diff"). It opens a row right under
   that one, like a line's threads: the threads, then the Comment on file
-  button. With no such threads it still shows, as a dashed outline with
-  no count ("Comment on file") that opens the composer at once. The
-  header has no file comment button: closed, its bubble counts every
-  thread in the file and opens the file with the file bubble opened.
+  button (only beside threads, or to say why commenting is off). With no
+  such threads it still shows, as a dashed outline with no count
+  ("Comment on file", or "Comment on file — <why not>") that opens the
+  composer at once. The header has no file comment button: closed, its
+  bubble counts every thread in the file and opens the file, focusing the
+  file bubble, opened once the diff is in if it has threads.
 
 ## Starting threads in Files changed
 
@@ -330,7 +332,7 @@ decides where; nothing else does):
   within one file) or **picking lines** by their numbers (click; shift-click
   or drag down the numbers; a second tap on touch; Up/Down move between the
   number buttons, one tab stop per file, Shift extends, Enter picks; the
-  number cells are 48×20 targets on a phone too (on a desktop they are as
+  number cells are 48×20 targets on touch too (with a mouse they are as
   wide as the file's largest number needs, three digits at least), the owner's accepted
   exception to the 40px rule, for line numbers only, so rows keep their
   height) brings

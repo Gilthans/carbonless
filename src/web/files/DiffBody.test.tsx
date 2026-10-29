@@ -578,7 +578,7 @@ describe("number columns: as wide as the file's largest line number needs", () =
 		).toBe(5);
 	});
 
-	it("sizes the cells from it; a phone keeps 48px", async () => {
+	it("sizes the cells from it; touch keeps 48px", async () => {
 		const client = new QueryClient();
 		client.setQueryData(["hunks", "r1", 0], {
 			hunks: [
@@ -625,7 +625,7 @@ describe("number columns: as wide as the file's largest line number needs", () =
 		const number = within(row).getByTestId("new");
 		expect(number.className).toContain("w-[var(--num-w,3rem)]");
 		expect(number.className).toContain(
-			"max-sm:w-[max(3rem,var(--num-w,3rem))]",
+			"pointer-coarse:w-[max(3rem,var(--num-w,3rem))]",
 		);
 	});
 });

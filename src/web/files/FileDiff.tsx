@@ -479,6 +479,17 @@ export function FileDiff(props: {
 		: [];
 	// The file bubble's row is open (its threads and Comment on file).
 	const [fileOpen, setFileOpen] = useState(false);
+	// The closed header's count was used: once the file's hunks are in (and
+	// with them which lines the diff can't show), open the file bubble if it
+	// has threads, and focus it (the header's count is gone).
+	const [fromHeader, setFromHeader] = useState(false);
+	const [focusFile, setFocusFile] = useState(false);
+	const hunksSettled = !expanded || !hunks.isPending;
+	useEffect(() => {
+		if (!fromHeader || !expanded || !hunksSettled) return;
+		setFromHeader(false);
+		if (header.length > 0) setFileOpen(true);
+	}, [fromHeader, expanded, hunksSettled, header.length]);
 	const fileThreadsId = useId();
 	const unplaced = header.some((h) => h.reason === "unplaced");
 	// New comments on the whole file, open or closed: under the header,
@@ -543,8 +554,14 @@ export function FileDiff(props: {
 				file
 				threads={header.map((h) => h.thread)}
 				where="on this file"
-				label="Comment on file"
+				label={
+					fileComment.ok === true
+						? "Comment on file"
+						: `Comment on file — ${fileComment.ok}`
+				}
 				flagged={unplaced}
+				focus={focusFile}
+				onFocused={() => setFocusFile(false)}
 				open={fileOpen}
 				controls={fileOpen ? fileThreadsId : undefined}
 				onToggle={() => {
@@ -555,8 +572,11 @@ export function FileDiff(props: {
 				}}
 			/>
 		),
+		// With no threads the bubble itself is the composer entry: the row's
+		// button shows only beside threads, or to say why commenting is off.
 		row: (rail) =>
-			fileOpen || fileItems.length > 0 ? (
+			(fileOpen && (header.length > 0 || fileComment.ok !== true)) ||
+			fileItems.length > 0 ? (
 				<FileThreadsRow
 					id={fileThreadsId}
 					rail={rail}
@@ -654,7 +674,8 @@ export function FileDiff(props: {
 										flagged={unplaced}
 										open={false}
 										onToggle={() => {
-											if (header.length > 0) setFileOpen(true);
+											setFromHeader(true);
+											setFocusFile(true);
 											setExpanded(true);
 										}}
 									/>

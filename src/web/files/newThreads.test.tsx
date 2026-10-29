@@ -34,7 +34,12 @@ import { CODE_CELL, spanOfRange } from "./codeSpan";
 import { codeCellOf, DiffBody, type DiffThreads } from "./DiffBody";
 import { FileDiff } from "./FileDiff";
 import { getPicks, setPicks } from "./linePicks";
-import { placeBar, SelectionBar, textGeometry } from "./SelectionBar";
+import {
+	pickAnchor,
+	placeBar,
+	SelectionBar,
+	textGeometry,
+} from "./SelectionBar";
 import {
 	type CodeSpan,
 	commentAvailable,
@@ -1304,13 +1309,22 @@ describe("Comment on file", () => {
 	) => {
 		vi.stubGlobal(
 			"fetch",
-			vi.fn(async (input: RequestInfo | URL) =>
-				String(input).includes("/hunks")
-					? new Response(
-							JSON.stringify(opts.hunks ?? { hunks: [], newLineCount: 0 }),
-						)
-					: new Response("{}", { status: 404 }),
-			),
+			vi.fn(async (input: RequestInfo | URL) => {
+				const url = new URL(String(input), "http://test");
+				if (url.pathname.endsWith("/hunks")) {
+					return new Response(
+						JSON.stringify(opts.hunks ?? { hunks: [], newLineCount: 0 }),
+					);
+				}
+				if (url.pathname.endsWith("/context")) {
+					const from = Number(url.searchParams.get("newFrom"));
+					const to = Number(url.searchParams.get("newTo"));
+					const lines = [];
+					for (let n = from; n <= to; n++) lines.push(ctx(n, n));
+					return new Response(JSON.stringify(lines));
+				}
+				return new Response("{}", { status: 404 });
+			}),
 		);
 		client = new QueryClient({
 			defaultOptions: { queries: { retry: false } },
@@ -1396,6 +1410,82 @@ describe("Comment on file", () => {
 		).toBeInTheDocument();
 	});
 
+	/** A hunk at new lines 5–6, the gap of lines 1–4 above it. */
+	const LATER: FileHunks = {
+		newLineCount: 6,
+		hunks: [
+			{
+				oldStart: 5,
+				oldCount: 1,
+				newStart: 5,
+				newCount: 2,
+				lines: [ctx(5, 5), add(6, "new")],
+			},
+		],
+	};
+	const firstRow = () => document.querySelector("table tr") as HTMLElement;
+
+	it("stays on the first row when the gap above the first hunk is all loaded", async () => {
+		const { user } = renderFile({}, { expanded: true, hunks: LATER });
+		await screen.findByTestId("gap-row");
+		expect(
+			within(firstRow()).getByRole("button", { name: "Comment on file" }),
+		).toBeInTheDocument();
+		await user.click(screen.getByRole("button", { name: /Load .* above/ }));
+		await screen.findByText("line 1");
+		expect(screen.queryByTestId("gap-row")).not.toBeInTheDocument();
+		expect(firstRow().dataset.newNo).toBe("1");
+		expect(
+			within(firstRow()).getByRole("button", { name: "Comment on file" }),
+		).toBeInTheDocument();
+	});
+
+	it("shares a row with a line's bubble: side by side, each opening its own threads", async () => {
+		const { user } = renderFile(
+			{},
+			{
+				expanded: true,
+				hunks: LATER,
+				threads: [fileThread(), thread({ line: 1 })],
+			},
+		);
+		await user.click(
+			await screen.findByRole("button", { name: /Load .* above/ }),
+		);
+		await screen.findByText("line 1");
+		const row = firstRow();
+		expect(row.dataset.newNo).toBe("1");
+		const bubbles = within(row).getAllByTestId("thread-bubble");
+		expect(bubbles.map((b) => b.getAttribute("aria-label"))).toEqual([
+			"1 comment on this file",
+			"1 comment on line 1",
+		]);
+		// One slot holds both, so they never sit on each other.
+		expect(bubbles[0]?.parentElement).toBe(bubbles[1]?.parentElement);
+		await user.click(bubbles[1] as HTMLElement);
+		expect(screen.getByTestId("thread-row")).toBeInTheDocument();
+		expect(screen.queryByTestId("file-threads")).not.toBeInTheDocument();
+		await user.click(bubbles[0] as HTMLElement);
+		expect(row.nextElementSibling).toBe(screen.getByTestId("file-threads"));
+	});
+
+	it("closed, a line past the end: the header's count opens the file, then the flagged file bubble once the diff says so, focused", async () => {
+		const { user } = renderFile(
+			{},
+			{ expanded: false, hunks: HUNKS, threads: [thread({ line: 50 })] },
+		);
+		await user.click(
+			screen.getByRole("button", { name: "1 comment in this file" }),
+		);
+		const bubble = await screen.findByRole("button", {
+			name: "1 comment on this file, line not in this diff",
+		});
+		await vi.waitFor(() =>
+			expect(bubble).toHaveAttribute("aria-expanded", "true"),
+		);
+		expect(bubble).toHaveFocus();
+	});
+
 	it("closed, the header counts the file's threads; it opens the file and the file bubble", async () => {
 		const { user } = renderFile(
 			{},
@@ -1448,9 +1538,11 @@ describe("Comment on file", () => {
 			{},
 			{ expanded: true, overview: { writes: "viewer" } },
 		);
-		// The outline bubble opens its row; the composer can't start there.
+		// The outline bubble says why; it opens its row, not a composer.
 		await user.click(
-			await screen.findByRole("button", { name: "Comment on file" }),
+			await screen.findByRole("button", {
+				name: "Comment on file — Comments are off when viewing as someone else",
+			}),
 		);
 		expect(getComposers()).toEqual([]);
 		const button = within(screen.getByTestId("file-threads")).getByRole(
@@ -1574,5 +1666,25 @@ describe("the bar sits by the selection (desktop)", () => {
 			view,
 		);
 		expect(at).toEqual({ top: 386 + 6, left: 451 });
+	});
+});
+
+describe("pickAnchor: the bar starts right of the row's numbers", () => {
+	const cellAt = (id: string, left: number, w: number) => {
+		const td = document.createElement("td");
+		td.dataset.testid = id;
+		td.getBoundingClientRect = () => new DOMRect(left, 0, w, 20);
+		return td;
+	};
+
+	it("a removed line's pick: right of the new-number column, not over it", () => {
+		const row = document.createElement("tr");
+		const old = cellAt("old", 377, 38);
+		old.append(
+			Object.assign(document.createElement("button"), { type: "button" }),
+		);
+		old.querySelector("button")?.setAttribute("data-pick", "LEFT:10");
+		row.append(old, cellAt("new", 415, 38));
+		expect(pickAnchor(row)).toBe(415 + 38 + 6);
 	});
 });
