@@ -111,6 +111,34 @@ test("crb <pr> with no server starts one; the next crb <pr> uses it", async ({
 	}
 });
 
+test("a worktree's private config (port 0): crb <pr> starts a server on a free port, never 4747, and links to it", async ({
+	pr,
+	workdir,
+}) => {
+	await pr();
+	// What scripts/agent-worktree.sh writes, in the e2e environment's dirs.
+	mkdirSync(join(workdir, "config", "carbonless"), { recursive: true });
+	writeFileSync(
+		join(workdir, "config", "carbonless", "config.json"),
+		JSON.stringify({ serve: { port: 0 } }),
+	);
+	const stateFile = join(workdir, "state", "carbonless", "server.json");
+	let pid = 0;
+	try {
+		const run = await runCli(workdir, [`${OWNER_REPO}#${PR_NUMBER}`]);
+		expect(run.code, run.output).toBe(0);
+		const state = JSON.parse(readFileSync(stateFile, "utf8"));
+		pid = state.pid;
+		expect(state.port).not.toBe(4747);
+		expect(state.port).toBeGreaterThan(0);
+		expect(run.stdout).toMatch(
+			new RegExp(`^http://127\\.0\\.0\\.1:${state.port}/r/[0-9a-z]{26}\\n$`),
+		);
+	} finally {
+		if (pid) process.kill(pid, "SIGTERM");
+	}
+});
+
 test("a review's address still works after the server restarts", async ({
 	expectConsoleError,
 	page,
@@ -214,4 +242,13 @@ test("refuses a crb of another build, and says which runs", async ({
 	expect(version.stdout.trim()).toBe(
 		`${build.version} (${build.commit.slice(0, 7)}${build.commit.endsWith("-dirty") ? "-dirty" : ""})`,
 	);
+});
+
+test("each option goes with its command", async ({ workdir }) => {
+	const serve = await runCli(workdir, ["serve", "--open"]);
+	expect(serve.code).toBe(1);
+	expect(serve.output).toContain("crb: --open belongs to crb <pr>");
+	const client = await runCli(workdir, ["acme/widget#7", "--port", "1"]);
+	expect(client.code).toBe(1);
+	expect(client.output).toContain("crb: --port belongs to crb serve");
 });

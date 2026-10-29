@@ -236,6 +236,7 @@ export const test = base.extend<{
 		// after a stop), as the CLI's auto-start would.
 		const servers: Served[] = [];
 		let current: Served | null = null;
+		let currentFlags = "";
 		await use(async (arg = `${OWNER_REPO}#${PR_NUMBER}`, extraArgs = []) => {
 			const { serve, client } = splitArgs(extraArgs);
 			const live =
@@ -244,7 +245,12 @@ export const test = base.extend<{
 				current.child.signalCode === null;
 			if (!current || !live) {
 				current = await startServe(workdir, serve);
+				currentFlags = serve.join(" ");
 				servers.push(current);
+			} else if (serve.length > 0 && serve.join(" ") !== currentFlags) {
+				throw new Error(
+					`crb serve already runs with "${currentFlags}", not "${serve.join(" ")}": stop() it first`,
+				);
 			}
 			const server = current;
 			const from = server.output().length;
