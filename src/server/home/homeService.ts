@@ -52,6 +52,20 @@ export interface ConfigAccess {
 	update(change: (c: HomeConfig) => HomeConfig): Promise<HomeConfig>;
 }
 
+/**
+ * ConfigAccess over crb's whole config (src/server/config.ts readConfig and
+ * updateConfig): Home changes only its parts, the rest is kept.
+ */
+export function configAccess<C extends HomeConfig>(
+	read: () => Promise<{ config: C; problems: string[] }>,
+	update: (change: (c: C) => C) => Promise<C>,
+): ConfigAccess {
+	return {
+		read,
+		update: (change) => update((c) => ({ ...c, ...change(c) })),
+	};
+}
+
 export const SECTIONS: readonly SectionId[] = [
 	"mine",
 	"reviewing",

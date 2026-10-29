@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createPrFixture, type PrFixture } from "../../../test/pr-fixture";
 import type { Snapshot } from "../../shared/types.js";
 import { ensureClone, fetchPr } from "../clone.js";
@@ -6,6 +6,9 @@ import { buildSnapshot } from "../diff/snapshot.js";
 import { RefStore } from "../review/refStore.js";
 import { ReviewService } from "../review/reviews.js";
 import { StartedReviews } from "./started.js";
+
+// Each fake gh call is a node process: give a loaded machine time.
+vi.setConfig({ testTimeout: 30_000 });
 
 const PR = {
 	owner: "acme",

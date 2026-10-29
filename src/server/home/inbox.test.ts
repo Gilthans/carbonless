@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { testGitEnv } from "../../../test/git-fixture";
 import { createPrFixture, type PrFixture } from "../../../test/pr-fixture";
 import type { Annotations } from "../../shared/home.js";
@@ -17,6 +17,9 @@ import {
 	WOKE_MS,
 	wokeOf,
 } from "./inbox.js";
+
+// Each fake gh call is a node process: give a loaded machine time.
+vi.setConfig({ testTimeout: 30_000 });
 
 const T0 = Date.parse("2026-10-29T12:00:00Z");
 const H = 3_600_000;

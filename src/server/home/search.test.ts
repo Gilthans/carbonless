@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { homePr } from "../../../test/fake-gh/scenario";
 import {
 	createHomeFixture,
@@ -8,6 +8,9 @@ import type { SearchResult } from "../../shared/home.js";
 import type { StartedReview } from "./facts.js";
 import { type HomeConfig, HomeService } from "./homeService.js";
 import { HomeSearch, parseQuery } from "./search.js";
+
+// Each fake gh call is a node process: give a loaded machine time.
+vi.setConfig({ testTimeout: 30_000 });
 
 describe("parseQuery", () => {
 	it("a PR URL or owner/repo#n is a PR", () => {

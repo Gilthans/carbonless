@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { bumpHomePr, homePr } from "../../../test/fake-gh/scenario";
 import {
 	createHomeFixture,
@@ -6,7 +6,15 @@ import {
 } from "../../../test/home-fixture";
 import type { HomeView, SectionId } from "../../shared/home.js";
 import type { StartedReview } from "./facts.js";
-import { type HomeConfig, HomeService, MAX_BACKOFF_MS } from "./homeService.js";
+import {
+	configAccess,
+	type HomeConfig,
+	HomeService,
+	MAX_BACKOFF_MS,
+} from "./homeService.js";
+
+// Each fake gh call is a node process: give a loaded machine time.
+vi.setConfig({ testTimeout: 30_000 });
 
 const T0 = Date.parse("2026-10-29T12:00:00Z");
 const H = 3_600_000;
@@ -231,7 +239,7 @@ describe("HomeService", () => {
 		expect(ok.refreshError).toBe(null);
 		expect(ok.refreshedAt).toBe(iso(clock.now));
 		expect(home.nextDelayMs()).toBe(2 * 60_000);
-	});
+	}, 30_000);
 
 	it("one repo failing keeps its last rows; the others refresh", async () => {
 		fx = createHomeFixture({
@@ -509,5 +517,33 @@ describe("HomeService", () => {
 		});
 		const view = await service().home.refresh();
 		expect(ids(view, "other")).toEqual([4, 8]);
+	});
+});
+
+describe("configAccess", () => {
+	it("changes Home's parts and keeps the rest of crb's config", async () => {
+		type Crb = HomeConfig & { serve: { host: string; port: number } };
+		let c: Crb = {
+			serve: { host: "h", port: 1 },
+			views: [],
+			refresh: { minutes: 2 },
+		};
+		const access = configAccess<Crb>(
+			async () => ({ config: c, problems: ["p"] }),
+			async (change) => {
+				c = change(c);
+				return c;
+			},
+		);
+		await access.update((h) => ({
+			...h,
+			views: [{ name: "My PRs", repos: ["a/b"] }],
+		}));
+		expect(c).toEqual({
+			serve: { host: "h", port: 1 },
+			views: [{ name: "My PRs", repos: ["a/b"] }],
+			refresh: { minutes: 2 },
+		});
+		expect((await access.read()).problems).toEqual(["p"]);
 	});
 });

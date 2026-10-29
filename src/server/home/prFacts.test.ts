@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { bumpHomePr, homePr } from "../../../test/fake-gh/scenario";
 import {
 	createHomeFixture,
@@ -14,6 +14,9 @@ import {
 	mapPrNode,
 	newCost,
 } from "./prFacts.js";
+
+// Each fake gh call is a node process: give a loaded machine time.
+vi.setConfig({ testTimeout: 30_000 });
 
 const NOW = Date.parse("2026-10-29T12:00:00Z");
 const DAY = 86_400_000;

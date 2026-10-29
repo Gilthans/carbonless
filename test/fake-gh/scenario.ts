@@ -158,12 +158,12 @@ export interface Scenario {
 	 */
 	viewerTeams?: string[] | null;
 	/**
-	 * `gh search repos` and `gh search prs` answers: repos by full name
-	 * (with their open PR count); PRs are matched from `repos` (title words,
-	 * any order, case-insensitive) unless `prs` is given.
+	 * `gh search repos` answers: repos whose full name holds the text. `gh
+	 * search prs --repo` matches the PRs of `repos` (title words, any order,
+	 * case-insensitive), newest activity first.
 	 */
 	search?: {
-		repos?: { fullName: string; openCount?: number }[];
+		repos?: { fullName: string }[];
 		/** Answers this late. */
 		delayMs?: number;
 	};
