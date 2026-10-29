@@ -41,6 +41,13 @@ export interface BarTarget {
 	first: DOMRect;
 	last: DOMRect;
 	box: DOMRect;
+	/**
+	 * The viewport x the bar goes by: centered on it (where a selection was
+	 * let go), or starting at it (`after`: just right of picked numbers, so
+	 * it never covers the numbers a pick extends to).
+	 */
+	anchor: number;
+	after?: boolean;
 	/** A short quote of what is selected (the phone's bar). */
 	quote: string;
 	/** Text selected (vs lines picked). */
@@ -56,10 +63,11 @@ const keyOf = (span: CodeSpan) => JSON.stringify(span);
 /**
  * Where the floating bar goes (desktop), never over the selection when it
  * can help it: below its visible end, else above its start, else beside it
- * (right, then left), else the viewport's bottom right corner.
+ * (right, then left), else the viewport's bottom right corner. Below or
+ * above, it goes by the target's `anchor`.
  */
 export function placeBar(
-	target: Pick<BarTarget, "first" | "last" | "box" | "text">,
+	target: Pick<BarTarget, "first" | "last" | "box" | "anchor" | "after">,
 	size: { w: number; h: number },
 	view: { w: number; h: number },
 ): { top: number; left: number } {
@@ -68,15 +76,12 @@ export function placeBar(
 		Math.round(Math.min(Math.max(MARGIN, x), view.w - w - MARGIN));
 	// The visible end: the last line, or the viewport's bottom when it's below.
 	const end = Math.min(target.last.bottom, view.h);
-	const anchor = target.text ? target.last.right : target.last.left + 8;
+	const left = clampX(target.after ? target.anchor : target.anchor - w / 2);
 	if (target.last.bottom <= view.h && end + GAP + h <= view.h - MARGIN) {
-		return { top: Math.round(end + GAP), left: clampX(anchor - w / 2) };
+		return { top: Math.round(end + GAP), left };
 	}
 	if (target.first.top >= 0 && target.first.top - GAP - h >= MARGIN) {
-		return {
-			top: Math.round(target.first.top - GAP - h),
-			left: clampX(anchor - w / 2),
-		};
+		return { top: Math.round(target.first.top - GAP - h), left };
 	}
 	const top = Math.round(
 		Math.min(Math.max(MARGIN, end - h), view.h - h - MARGIN),
@@ -90,6 +95,45 @@ export function placeBar(
 	return { top: view.h - h - MARGIN, left: view.w - w - MARGIN };
 }
 
+/**
+ * Where a text selection shows: the selected text on its first and last
+ * line, from the range's rects within each line's code (`code`: its
+ * `[data-code]` box). A range across whole rows also reports the rows' and
+ * cells' own boxes, the full table wide, and a row's bubble sits at the
+ * cell's far end: neither is the text. A line with no text selected in it
+ * stands at its code's start. The bar centers where the drag ended: the
+ * selection's end, or its start when it was made backwards.
+ */
+export function textGeometry(
+	rects: readonly DOMRect[],
+	code: { head: DOMRect; last: DOMRect },
+	reversed: boolean,
+): { first: DOMRect; last: DOMRect; anchor: number } {
+	const lineOf = (c: DOMRect) => {
+		const on = rects.filter(
+			(r) =>
+				r.left >= c.left - 1 &&
+				r.right <= c.right + 1 &&
+				r.top >= c.top - 1 &&
+				r.bottom <= c.bottom + 1 &&
+				(r.width > 0 || r.height > 0),
+		);
+		if (on.length === 0) return new DOMRect(c.left, c.top, 0, c.height);
+		const left = Math.min(...on.map((r) => r.left));
+		const right = Math.max(...on.map((r) => r.right));
+		return new DOMRect(left, c.top, right - left, c.height);
+	};
+	const first = lineOf(code.head);
+	const last = lineOf(code.last);
+	return { first, last, anchor: reversed ? first.left : last.right };
+}
+
+/** A rect's box, or none where the engine has no geometry (test DOMs). */
+const rectOf = (el: Element | null | undefined) =>
+	el && typeof el.getBoundingClientRect === "function"
+		? el.getBoundingClientRect()
+		: new DOMRect();
+
 const ofSelection = (commit: string): BarTarget | null => {
 	const selection = document.getSelection();
 	if (!selection || selection.rangeCount === 0 || selection.isCollapsed) {
@@ -101,19 +145,34 @@ const ofSelection = (commit: string): BarTarget | null => {
 	// (Engines without range geometry, such as test DOMs: no rects.)
 	const rects =
 		typeof range.getClientRects === "function"
-			? [...range.getClientRects()].filter((r) => r.width > 0 || r.height > 0)
+			? [...range.getClientRects()]
 			: [];
 	const box =
 		typeof range.getBoundingClientRect === "function"
 			? range.getBoundingClientRect()
 			: new DOMRect();
-	const first = rects[0] ?? box;
-	const last = rects[rects.length - 1] ?? box;
+	// Made backwards: the drag ended at the start (the focus before the anchor).
+	let reversed = false;
+	if (selection.anchorNode && selection.focusNode) {
+		const at = document.createRange();
+		at.setStart(selection.anchorNode, selection.anchorOffset);
+		try {
+			reversed =
+				at.comparePoint(selection.focusNode, selection.focusOffset) < 0;
+		} catch {
+			reversed = false;
+		}
+	}
+	const codeOf = (cell: Element) =>
+		rectOf(cell.querySelector("[data-code]") ?? cell);
 	const text = selection.toString().trim().split("\n")[0] ?? "";
 	return {
 		...found,
-		first,
-		last,
+		...textGeometry(
+			rects,
+			{ head: codeOf(found.cells.head), last: codeOf(found.cells.last) },
+			reversed,
+		),
 		box,
 		quote: text.length > 40 ? `${text.slice(0, 40)}…` : text,
 		text: true,
@@ -140,6 +199,10 @@ const ofPicks = (picks: Picks, commit: string): BarTarget | null => {
 	);
 	const first = firstRow.getBoundingClientRect();
 	const last = lastRow.getBoundingClientRect();
+	// Beside the picked numbers: just right of the last row's number cell.
+	const number = rectOf(
+		lastRow.querySelector("button[data-pick]")?.closest("td") ?? lastRow,
+	);
 	return {
 		span,
 		inDiff: inHunk(head) && inHunk(tail),
@@ -152,6 +215,8 @@ const ofPicks = (picks: Picks, commit: string): BarTarget | null => {
 			Math.max(first.right, last.right) - Math.min(first.left, last.left),
 			last.bottom - first.top,
 		),
+		anchor: number.right + GAP,
+		after: true,
 		quote: "",
 		text: false,
 	};

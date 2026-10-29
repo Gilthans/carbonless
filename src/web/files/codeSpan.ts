@@ -158,7 +158,13 @@ function selectedCells(range: Range): CellLine[] {
 export function spanOfRange(
 	range: Range,
 	commit: string,
-): { span: CodeSpan; inDiff: boolean; backwards: boolean } | null {
+): {
+	span: CodeSpan;
+	inDiff: boolean;
+	backwards: boolean;
+	/** The code cells of its first and last line. */
+	cells: { head: Element; last: Element };
+} | null {
 	if (range.collapsed) return null;
 	let cells = selectedCells(range);
 	if (cells.length === 0) return null;
@@ -194,6 +200,7 @@ export function spanOfRange(
 		}),
 		inDiff: inHunk(head) && inHunk(last),
 		backwards: backwards(head, last),
+		cells: { head: head.cell, last: last.cell },
 	};
 }
 

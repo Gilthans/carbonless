@@ -1,6 +1,7 @@
 import { CommentIcon } from "@primer/octicons-react";
 import { useQuery } from "@tanstack/react-query";
 import {
+	type ReactNode,
 	useEffect,
 	useId,
 	useLayoutEffect,
@@ -22,7 +23,7 @@ import {
 import { OrphanDraft } from "../threads/OrphanDraft";
 import { useThreadWriter } from "../threads/threadWrites";
 import { ChangeKindIcon, changeKindLabel } from "./changeKind";
-import { DiffBody, type DiffThreads } from "./DiffBody";
+import { COLUMNS, DiffBody, type DiffThreads, type FileLead } from "./DiffBody";
 import type { Landing } from "./landing";
 import { Meter } from "./ProgressBar";
 import { type CodeSpan, commentAvailable } from "./selectionActions";
@@ -125,24 +126,29 @@ function HeaderIconButton(props: {
 }
 
 /**
- * "Comment on file": opens a new thread on the whole file (any kind of
- * file, open or closed), in the composer under its header; disabled with
- * the reason when this session can't comment.
+ * Whether this session can start a comment on the whole file: true, or why
+ * not.
  */
-function FileCommentButton(props: { file: FileView; commit: string }) {
+function useFileComment(file: FileView, commit: string) {
 	const overview = useQuery({ ...overviewQuery, enabled: false }).data;
-	const span: CodeSpan = {
-		path: props.file.path,
-		commit: props.commit,
-		subject: "file",
-	};
+	const span: CodeSpan = { path: file.path, commit, subject: "file" };
 	const ok = overview
 		? commentAvailable(span, {
 				writes: overview.writes,
 				commentLeft: overview.commentLeft !== false,
-				file: props.file,
+				file,
 			})
 		: "Comment on file";
+	return { span, ok };
+}
+
+/**
+ * "Comment on file": opens a new thread on the whole file (any kind of
+ * file), in the composer of the file bubble's row; disabled with the
+ * reason when this session can't comment.
+ */
+function FileCommentButton(props: { file: FileView; commit: string }) {
+	const { span, ok } = useFileComment(props.file, props.commit);
 	return (
 		<Tooltip content={ok === true ? "Comment on file" : ok}>
 			{(trigger) => (
@@ -155,12 +161,43 @@ function FileCommentButton(props: { file: FileView; commit: string }) {
 					onClick={() => {
 						if (ok === true && props.commit) openComposer(span);
 					}}
-					className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md text-muted hover:bg-overlay hover:text-ink focus-visible:outline-2 focus-visible:outline-accent aria-disabled:cursor-not-allowed aria-disabled:text-faint aria-disabled:hover:bg-transparent @lg:h-8 @lg:w-8 pointer-coarse:@lg:h-10 pointer-coarse:@lg:w-10"
+					className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-line text-muted hover:bg-overlay hover:text-ink focus-visible:outline-2 focus-visible:outline-accent aria-disabled:cursor-not-allowed aria-disabled:text-faint aria-disabled:hover:bg-transparent"
 				>
 					<CommentIcon size={16} aria-hidden />
 				</button>
 			)}
 		</Tooltip>
+	);
+}
+
+/**
+ * The file bubble's row (on the diff's first row): the file's threads, the
+ * file comments being written and Comment on file, at the diff's visible
+ * width like a line's ThreadRow.
+ */
+function FileThreadsRow(props: {
+	id: string;
+	rail?: string;
+	threads: ReactNode;
+	composers: ReactNode;
+	comment: ReactNode;
+}) {
+	return (
+		<tr data-testid="file-threads" id={props.id}>
+			<td colSpan={COLUMNS} className="p-0">
+				<div className="sticky left-0 w-[var(--diff-w,100%)] max-w-full space-y-2 border-y border-line bg-canvas py-2 pr-2 pl-3 font-sans text-sm leading-normal whitespace-normal text-ink">
+					{props.rail && (
+						<span
+							aria-hidden
+							className={`absolute inset-y-0 left-0 w-1 ${props.rail}`}
+						/>
+					)}
+					{props.threads}
+					{props.composers}
+					{props.comment}
+				</div>
+			</td>
+		</tr>
 	);
 }
 
@@ -440,8 +477,9 @@ export function FileDiff(props: {
 				noLines: file.binary || file.submodule,
 			}).header
 		: [];
-	const [headerOpen, setHeaderOpen] = useState(false);
-	const headerThreadsId = useId();
+	// The file bubble's row is open (its threads and Comment on file).
+	const [fileOpen, setFileOpen] = useState(false);
+	const fileThreadsId = useId();
 	const unplaced = header.some((h) => h.reason === "unplaced");
 	// New comments on the whole file, open or closed: under the header,
 	// where file threads show; on another head (gone): kept as orphans.
@@ -469,6 +507,80 @@ export function FileDiff(props: {
 			} else closeComposer(item.clientId);
 		}
 	}, [fileItems, snapshotHead, writer]);
+
+	const fileComment = useFileComment(file, snapshotHead);
+	// File comments being written, and drafts from an earlier head.
+	const newItems = (
+		<div data-testid="file-new-threads" className="space-y-2">
+			{fileItems.map((item) =>
+				item.span.commit === snapshotHead ? (
+					<NewThread
+						key={item.clientId}
+						item={item}
+						quote={file.path}
+						onPosted={() => setFileOpen(true)}
+					/>
+				) : (
+					<OrphanDraft
+						key={item.clientId}
+						label="Written on an earlier version"
+						text={item.text}
+						onDiscard={() => writer.discard(newThreadKey(item.clientId))}
+					/>
+				),
+			)}
+		</div>
+	);
+	/**
+	 * The file bubble, on the diff's first row: file comments and lines the
+	 * diff can't show. Opened, its row has their threads and Comment on
+	 * file; with none it is an outline that starts a comment at once.
+	 */
+	const lead: FileLead = {
+		bubble: (
+			<ThreadBubble
+				inline
+				file
+				threads={header.map((h) => h.thread)}
+				where="on this file"
+				label="Comment on file"
+				flagged={unplaced}
+				open={fileOpen}
+				controls={fileOpen ? fileThreadsId : undefined}
+				onToggle={() => {
+					if (!fileOpen && header.length === 0 && fileComment.ok === true) {
+						openComposer(fileComment.span);
+					}
+					setFileOpen(!fileOpen);
+				}}
+			/>
+		),
+		row: (rail) =>
+			fileOpen || fileItems.length > 0 ? (
+				<FileThreadsRow
+					id={fileThreadsId}
+					rail={rail}
+					threads={
+						fileOpen && props.threads
+							? header.map((h, i) => (
+									<ThreadBlock
+										key={h.thread.id || `#${i}`}
+										readId={props.threads?.readId ?? ""}
+										thread={h.thread}
+										unplaced={h.reason === "unplaced"}
+									/>
+								))
+							: null
+					}
+					composers={fileItems.length > 0 ? newItems : null}
+					comment={
+						fileOpen && fileItems.length === 0 ? (
+							<FileCommentButton file={file} commit={snapshotHead} />
+						) : null
+					}
+				/>
+			) : null,
+	};
 
 	return (
 		<section
@@ -533,32 +645,20 @@ export function FileDiff(props: {
 								<StatusIcon file={file} hover={summaryTrigger} />
 							</span>
 							<div className="ml-auto flex shrink-0 items-center gap-1.5 @lg:order-5">
-								<FileCommentButton file={file} commit={snapshotHead} />
-								{expanded
-									? header.length > 0 && (
-											<ThreadBubble
-												threads={header.map((h) => h.thread)}
-												where="on this file"
-												flagged={unplaced}
-												open={headerOpen}
-												controls={headerOpen ? headerThreadsId : undefined}
-												onToggle={() => setHeaderOpen(!headerOpen)}
-											/>
-										)
-									: mine.length > 0 && (
-											// Closed: every thread in the file; opening it shows
-											// them (and the header's, opened).
-											<ThreadBubble
-												threads={mine}
-												where="in this file"
-												flagged={unplaced}
-												open={false}
-												onToggle={() => {
-													if (header.length > 0) setHeaderOpen(true);
-													setExpanded(true);
-												}}
-											/>
-										)}
+								{!expanded && mine.length > 0 && (
+									// Closed: every thread in the file; opening it shows
+									// them (the file bubble's opened when it has some).
+									<ThreadBubble
+										threads={mine}
+										where="in this file"
+										flagged={unplaced}
+										open={false}
+										onToggle={() => {
+											if (header.length > 0) setFileOpen(true);
+											setExpanded(true);
+										}}
+									/>
+								)}
 								{crossToggle.undo ? (
 									<HeaderIconButton
 										ignoreClicksUntil={undoArmedAt.current}
@@ -631,43 +731,13 @@ export function FileDiff(props: {
 					)}
 				</Tooltip>
 			</header>
-			{fileItems.length > 0 && (
-				<div
-					data-testid="file-new-threads"
-					className="space-y-2 border-b border-line bg-canvas p-2"
-				>
-					{fileItems.map((item) =>
-						item.span.commit === snapshotHead ? (
-							<NewThread key={item.clientId} item={item} quote={file.path} />
-						) : (
-							<OrphanDraft
-								key={item.clientId}
-								label="Written on an earlier version"
-								text={item.text}
-								onDiscard={() => writer.discard(newThreadKey(item.clientId))}
-							/>
-						),
-					)}
-				</div>
-			)}
-			{expanded && headerOpen && header.length > 0 && props.threads && (
-				<div
-					id={headerThreadsId}
-					data-testid="header-threads"
-					className="space-y-2 border-b border-line bg-canvas p-2"
-				>
-					{header.map((h, i) => (
-						<ThreadBlock
-							key={h.thread.id || `#${i}`}
-							readId={props.threads?.readId ?? ""}
-							thread={h.thread}
-							unplaced={h.reason === "unplaced"}
-						/>
-					))}
-				</div>
+			{!expanded && fileItems.length > 0 && (
+				// Closed: a file comment being written stays in sight.
+				<div className="border-b border-line bg-canvas p-2">{newItems}</div>
 			)}
 			{expanded && (
 				<DiffBody
+					lead={lead}
 					file={file}
 					revision={revision}
 					onToggle={toggle}

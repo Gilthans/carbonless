@@ -547,10 +547,6 @@ describe("FileDiff", () => {
 		expect(screen.getByRole("button", { name: "Expand file" })).toHaveFocus();
 		await user.tab();
 		expect(
-			screen.getByRole("button", { name: "Comment on file" }),
-		).toHaveFocus();
-		await user.tab();
-		expect(
 			screen.getByRole("button", { name: "Cross off file" }),
 		).toHaveFocus();
 		await user.tab();
