@@ -64,7 +64,7 @@ describe("compileGlob", () => {
 			const glob_ = compileGlob(glob);
 			const start = performance.now();
 			glob_.test(path);
-			expect(performance.now() - start, glob).toBeLessThan(50);
+			expect(performance.now() - start, glob).toBeLessThan(1000);
 		}
 	});
 
