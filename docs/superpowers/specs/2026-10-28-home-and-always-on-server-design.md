@@ -204,6 +204,18 @@ Owner's decisions on this part (2026-10-28):
   owner's) share nothing but the cache clones and refs, which today's
   compare-and-swap writes already allow. The state file is per
   `XDG_STATE_HOME`, so tests isolate it as they isolate `XDG_CACHE_HOME`.
+- **Dev and agent instances never find the owner's server** (agreed
+  2026-10-29 with the versioning/distribution work). `pnpm dev` and
+  `scripts/agent-worktree.sh` set a private `XDG_STATE_HOME` and
+  `XDG_CONFIG_HOME` inside the worktree (git-ignored), so a branch's
+  `crb <pr>` finds or starts its own server, never main's.
+- **Version handshake** (same agreement). `crb --version` prints the
+  package version plus the git commit it was built from. The server
+  answers `GET /api/version` with the same. The client sends its version
+  with every request to the server; a server of another version refuses
+  with an error that names both, and the CLI says to restart the server or
+  run the matching `crb`. The CLI never hands a request to a mismatched
+  server silently.
 
 ## The CLI
 
