@@ -42,7 +42,13 @@ export interface HomeRow {
 	decision: "approved" | "changes-requested" | null;
 	unresolvedThreads: number;
 	turn: Turn; // after the viewer's waiting-on override
-	people: Record<string, Person>; // avatars for turn logins
+	/**
+	 * Everyone requested as a reviewer or who submitted a review (teams as
+	 * `org/slug`), the viewer first if present, the author never: who the
+	 * Waiting-on picker offers.
+	 */
+	reviewers: string[];
+	people: Record<string, Person>; // avatars for turn logins and reviewers
 	annotations: Annotations;
 	hidden: "snoozed" | "waiting" | null;
 	woke: { at: string; by: "activity" | "time" } | null;
