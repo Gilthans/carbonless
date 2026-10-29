@@ -842,6 +842,114 @@ switch (cmd) {
 		if (s.failGraphql && f.query?.includes(s.failGraphql)) {
 			fail("GraphQL: Something went wrong while executing your query.");
 		}
+		// Home (src/server/home): the viewer, their teams, repos' PR lists
+		// and PR details by alias, from `repos`.
+		if (/^query \{ viewer \{ login avatarUrl/.test(f.query ?? "")) {
+			print({ data: { viewer: { login: s.user.login, avatarUrl: s.user.avatarUrl ?? "" } } });
+		}
+		if (/^query \{ viewer \{ organizations/.test(f.query ?? "")) {
+			if (s.viewerTeams === null) {
+				graphqlFail("viewer", [
+					{
+						type: "INSUFFICIENT_SCOPES",
+						message: "Your token has not been granted the required scopes to execute this query. The 'organizations' field requires one of the following scopes: ['read:org'].",
+					},
+				]);
+			}
+			const orgs = new Map();
+			for (const t of s.viewerTeams ?? []) {
+				const [org, slug] = t.split("/");
+				orgs.set(org, [...(orgs.get(org) ?? []), { slug }]);
+			}
+			print({
+				data: {
+					viewer: {
+						organizations: {
+							nodes: [...orgs].map(([login, teams]) => ({ login, teams: { nodes: teams } })),
+						},
+					},
+				},
+			});
+		}
+		const homeList = (f.query ?? "").includes("open: pullRequests(states: OPEN");
+		const homeDetails = /\br\d+: repository\(owner: "/.test(f.query ?? "");
+		if (homeList || homeDetails) {
+			if (s.homeDelayMs) sleep(s.homeDelayMs);
+			if (s.rateLimited) {
+				process.stdout.write(
+					`${JSON.stringify({ data: null, errors: [{ type: "RATE_LIMITED", message: "API rate limit exceeded for user ID 1." }] })}\n`,
+				);
+				fail("gh: API rate limit exceeded for user ID 1.");
+			}
+			const homeRepo = (owner, name) => {
+				const key = Object.keys(s.repos ?? {}).find(
+					(k) => k.toLowerCase() === `${owner}/${name}`.toLowerCase(),
+				);
+				return key ? s.repos[key] : undefined;
+			};
+			const rateLimit = { cost: 1, remaining: 4999, resetAt: "2030-01-01T00:00:00Z" };
+			if (homeList) {
+				const r = homeRepo(f.owner, f.name);
+				if (!r) {
+					graphqlFail("repository", [
+						{ type: "NOT_FOUND", message: `Could not resolve to a Repository with the name '${f.owner}/${f.name}'.` },
+					]);
+				}
+				const size = s.homePageSize ?? 100;
+				const byUpdated = (states) =>
+					r.prs
+						.filter((p) => states.includes(p.state))
+						.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || b.number - a.number);
+				const page = (all, cursor, fields) => {
+					const start = cursor ? Number(cursor.replace("cursor:", "")) : 0;
+					const end = start + size;
+					const hasNextPage = end < all.length;
+					return {
+						pageInfo: { hasNextPage, endCursor: hasNextPage ? `cursor:${end}` : null },
+						nodes: all.slice(start, end).map((p) => Object.fromEntries(fields.map((k) => [k, p[k]]))),
+					};
+				};
+				const repository = {};
+				if (f.withOpen === "true") {
+					repository.open = page(byUpdated(["OPEN"]), f.openCursor, ["number", "updatedAt"]);
+				}
+				if (f.withClosed === "true") {
+					repository.closed = page(byUpdated(["MERGED", "CLOSED"]), f.closedCursor, [
+						"number",
+						"updatedAt",
+						"closedAt",
+						"mergedAt",
+					]);
+				}
+				print({ data: { rateLimit, repository } });
+			}
+			// r<i>: repository(owner: "o", name: "n") { p<n>: pullRequest(number: <n>) { ...F } … }
+			const data = { rateLimit };
+			const errors = [];
+			const heads = [...f.query.matchAll(/\b(r\d+): repository\(owner: ("[^"]*"), name: ("[^"]*")\)/g)];
+			for (const [k, m] of heads.entries()) {
+				const [, alias, owner, name] = m;
+				// This repo's PR aliases: up to the next repo (or the fragment).
+				const body = f.query.slice(m.index, heads[k + 1]?.index ?? f.query.indexOf("fragment F"));
+				const r = homeRepo(JSON.parse(owner), JSON.parse(name));
+				if (!r) {
+					data[alias] = null;
+					errors.push({ type: "NOT_FOUND", path: [alias], message: `Could not resolve to a Repository with the name '${JSON.parse(owner)}/${JSON.parse(name)}'.` });
+					continue;
+				}
+				data[alias] = {};
+				for (const [, n] of body.matchAll(/p(\d+): pullRequest\(number: \d+\)/g)) {
+					const pr = r.prs.find((p) => p.number === Number(n));
+					data[alias][`p${n}`] = pr ?? null;
+					if (!pr) errors.push({ type: "NOT_FOUND", path: [alias, `p${n}`], message: `Could not resolve to a PullRequest with the number of ${n}.` });
+				}
+			}
+			if (errors.length) {
+				process.stdout.write(`${JSON.stringify({ data, errors })}\n`);
+				fail(`gh: ${errors[0].message}`);
+			}
+			print({ data });
+		}
 		// Resolving: mutation($id: ID!) { (un)resolveReviewThread(input: …) }.
 		const mutation = /^mutation\(\$id: ID!\) \{ (resolveReviewThread|unresolveReviewThread)\(/.exec(
 			f.query ?? "",

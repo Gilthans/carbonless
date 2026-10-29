@@ -137,6 +137,36 @@ export interface Scenario {
 	 * for the pages after its first (`node(id) { ... on PullRequestReview }`).
 	 */
 	reviewComments?: Record<string, unknown[]>;
+	/**
+	 * Home's repos, by `owner/repo` (any case): every PR as a GitHub
+	 * pullRequest node (homePr builds one). The fake lists them (number and
+	 * updatedAt, newest first, `homePageSize` a page) for prFacts.ts's list
+	 * query and serves them whole to its details query. Independent of `prs`
+	 * (the PR a review opens) and `repoPath`. To make a PR change between
+	 * refreshes, rewrite the scenario (bumpHomePr).
+	 */
+	repos?: Record<string, { prs: HomePrNode[] }>;
+	/** PRs per page of Home's list query (default 100, like GitHub's). */
+	homePageSize?: number;
+	/** Home's list and details queries answer this late. */
+	homeDelayMs?: number;
+	/** Home's list and details queries fail as GitHub's rate limit does. */
+	rateLimited?: boolean;
+	/**
+	 * The viewer's teams (`org/slug`); null: reading them fails as with a
+	 * token missing `read:org`. Absent: no teams.
+	 */
+	viewerTeams?: string[] | null;
+	/**
+	 * `gh search repos` and `gh search prs` answers: repos by full name
+	 * (with their open PR count); PRs are matched from `repos` (title words,
+	 * any order, case-insensitive) unless `prs` is given.
+	 */
+	search?: {
+		repos?: { fullName: string; openCount?: number }[];
+		/** Answers this late. */
+		delayMs?: number;
+	};
 	prs: Record<
 		string,
 		{
@@ -548,4 +578,207 @@ export function timelineFact(
 		createdAt: at,
 		...rest,
 	};
+}
+
+/** A PR as Home's GraphQL queries read it (prFacts.ts PR_FIELDS). */
+export interface HomePrNode {
+	number: number;
+	title: string;
+	url: string;
+	isDraft: boolean;
+	state: "OPEN" | "MERGED" | "CLOSED";
+	updatedAt: string;
+	closedAt: string | null;
+	mergedAt: string | null;
+	author: { login: string; avatarUrl: string } | null;
+	reviewDecision: "APPROVED" | "CHANGES_REQUESTED" | "REVIEW_REQUIRED" | null;
+	reviewRequests: { nodes: { requestedReviewer: Record<string, unknown> }[] };
+	latestReviews: {
+		nodes: {
+			author: { login: string; avatarUrl: string };
+			state: string;
+			submittedAt: string;
+		}[];
+	};
+	reviewThreads: { totalCount: number; nodes: { isResolved: boolean }[] };
+	commits: {
+		nodes: {
+			commit: {
+				committedDate: string;
+				statusCheckRollup: { state: string } | null;
+			};
+		}[];
+	};
+	timelineItems: { nodes: Record<string, unknown>[] };
+}
+
+const avatar = (login: string) => `https://avatars.example/${login}`;
+
+/**
+ * A Home PR node from the facts a test cares about. Activity (`reviews`,
+ * `comments`, `commits`) goes into the timeline, reviews also into
+ * latestReviews (the latest per login); `updatedAt` defaults to the
+ * latest of them, else `created`.
+ */
+export function homePr(p: {
+	repo: string;
+	number: number;
+	title?: string;
+	author: string;
+	draft?: boolean;
+	state?: "OPEN" | "MERGED" | "CLOSED";
+	/** When it was merged or closed. */
+	closedAt?: string;
+	updatedAt?: string;
+	created?: string;
+	/** Logins, or `org/slug` for a team. */
+	requested?: string[];
+	reviews?: { login: string; state?: string; at: string }[];
+	comments?: { login: string; at: string }[];
+	commits?: { login?: string; at: string }[];
+	checks?: "SUCCESS" | "FAILURE" | "PENDING" | null;
+	decision?: "APPROVED" | "CHANGES_REQUESTED" | null;
+	threads?: { resolved?: number; unresolved?: number };
+}): HomePrNode {
+	const state = p.state ?? "OPEN";
+	const times = [
+		...(p.reviews ?? []).map((r) => r.at),
+		...(p.comments ?? []).map((c) => c.at),
+		...(p.commits ?? []).map((c) => c.at),
+		...(p.closedAt ? [p.closedAt] : []),
+	].sort();
+	const updatedAt =
+		p.updatedAt ?? times.at(-1) ?? p.created ?? "2026-10-01T00:00:00Z";
+	const person = (login: string) => ({ login, avatarUrl: avatar(login) });
+	const latest = new Map<
+		string,
+		{ login: string; state: string; at: string }
+	>();
+	for (const r of [...(p.reviews ?? [])].sort((a, b) =>
+		a.at.localeCompare(b.at),
+	)) {
+		latest.set(r.login.toLowerCase(), { ...r, state: r.state ?? "COMMENTED" });
+	}
+	const timeline = [
+		...(p.commits ?? []).map((c) => ({
+			at: c.at,
+			node: {
+				__typename: "PullRequestCommit",
+				commit: {
+					committedDate: c.at,
+					author: { user: c.login ? person(c.login) : null },
+				},
+			},
+		})),
+		...(p.comments ?? []).map((c) => ({
+			at: c.at,
+			node: {
+				__typename: "IssueComment",
+				createdAt: c.at,
+				author: person(c.login),
+			},
+		})),
+		...(p.reviews ?? []).map((r) => ({
+			at: r.at,
+			node: {
+				__typename: "PullRequestReview",
+				submittedAt: r.at,
+				state: r.state ?? "COMMENTED",
+				author: person(r.login),
+			},
+		})),
+	].sort((a, b) => a.at.localeCompare(b.at));
+	const lastCommit = [...(p.commits ?? [])]
+		.sort((a, b) => a.at.localeCompare(b.at))
+		.at(-1);
+	const [owner = "", name = ""] = p.repo.split("/");
+	return {
+		number: p.number,
+		title: p.title ?? `PR ${p.number}`,
+		url: `https://github.com/${owner}/${name}/pull/${p.number}`,
+		isDraft: p.draft ?? false,
+		state,
+		updatedAt,
+		closedAt: state === "OPEN" ? null : (p.closedAt ?? updatedAt),
+		mergedAt: state === "MERGED" ? (p.closedAt ?? updatedAt) : null,
+		author: person(p.author),
+		reviewDecision: p.decision ?? null,
+		reviewRequests: {
+			nodes: (p.requested ?? []).map((r) => {
+				const [org, slug] = r.split("/");
+				return {
+					requestedReviewer: slug
+						? {
+								__typename: "Team",
+								slug,
+								organization: { login: org },
+								avatarUrl: avatar(r),
+							}
+						: { __typename: "User", ...person(r) },
+				};
+			}),
+		},
+		latestReviews: {
+			nodes: [...latest.values()].map((r) => ({
+				author: person(r.login),
+				state: r.state,
+				submittedAt: r.at,
+			})),
+		},
+		reviewThreads: {
+			totalCount: (p.threads?.resolved ?? 0) + (p.threads?.unresolved ?? 0),
+			nodes: [
+				...Array.from({ length: p.threads?.resolved ?? 0 }, () => ({
+					isResolved: true,
+				})),
+				...Array.from({ length: p.threads?.unresolved ?? 0 }, () => ({
+					isResolved: false,
+				})),
+			],
+		},
+		commits: {
+			nodes: lastCommit
+				? [
+						{
+							commit: {
+								committedDate: lastCommit.at,
+								statusCheckRollup: p.checks ? { state: p.checks } : null,
+							},
+						},
+					]
+				: [],
+		},
+		timelineItems: { nodes: timeline.slice(-30).map((t) => t.node) },
+	};
+}
+
+/**
+ * Activity on a Home PR between refreshes: its updatedAt moves to `at`,
+ * and with `by`, that login's comment at `at` joins its timeline. Writes
+ * the scenario at `path` (as $CRB_FAKE_GH) back.
+ */
+export function bumpHomePr(
+	path: string,
+	repo: string,
+	number: number,
+	at: string,
+	by?: string,
+): void {
+	const s = JSON.parse(readFileSync(path, "utf8")) as Scenario;
+	const key = Object.keys(s.repos ?? {}).find(
+		(k) => k.toLowerCase() === repo.toLowerCase(),
+	);
+	const pr = key
+		? s.repos?.[key]?.prs.find((p) => p.number === number)
+		: undefined;
+	if (!pr) throw new Error(`No Home PR ${repo}#${number} in the scenario`);
+	pr.updatedAt = at;
+	if (by) {
+		pr.timelineItems.nodes.push({
+			__typename: "IssueComment",
+			createdAt: at,
+			author: { login: by, avatarUrl: avatar(by) },
+		});
+	}
+	writeFileAtomic(path, JSON.stringify(s, null, "\t"));
 }
