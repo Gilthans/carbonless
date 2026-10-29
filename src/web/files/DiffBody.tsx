@@ -1254,7 +1254,7 @@ export function DiffBody(props: {
 		},
 	};
 
-	const picker = usePicker(scroller, file.path, hunks.data?.hunks[0]);
+	const picker = usePicker(scroller, file.path, hunks.data?.hunks[0], view);
 
 	// The head moved under a draft: it moves along when its lines and the
 	// lines around them read the same at the same numbers, in GitHub's diff
@@ -2102,6 +2102,22 @@ function WhitespaceCluster(props: {
 	);
 }
 
+/** The arrow keys: a step through the number buttons, or a side to go to. */
+const ARROWS: Record<string, { step: 1 | -1; side?: DiffSide }> = {
+	ArrowDown: { step: 1 },
+	ArrowUp: { step: -1 },
+	ArrowLeft: { step: -1, side: "LEFT" },
+	ArrowRight: { step: 1, side: "RIGHT" },
+};
+
+/** The column a number button is in. */
+const sideOf = (b: Element): DiffSide =>
+	b.closest("td")?.getAttribute("data-side") === "LEFT" ? "LEFT" : "RIGHT";
+
+/** The button's row shows one context line on both sides. */
+const inContextRow = (b: Element) =>
+	b.closest("tr")?.getAttribute("data-kind") === "context";
+
 /**
  * Picking lines by their numbers: a click (or tap) picks the row, again
  * clears it; shift-click, or dragging down the numbers with a mouse,
@@ -2112,11 +2128,18 @@ function WhitespaceCluster(props: {
  * Escape (the selection bar) clears. A number picks the code cell on its
  * side of the row (side by side), else the row's one code cell (unified,
  * where a context row's old number picks its RIGHT line).
+ *
+ * Side by side, Up/Down stay in their column (the old numbers or the new
+ * ones), past rows blank on that side, and Left/Right go to the other
+ * number of the same row when it has one; Shift with any of them extends.
+ * A context row is one line with one button, on the right: it stands in
+ * both columns, and the column it was reached in is kept from there.
  */
 function usePicker(
 	scroller: RefObject<HTMLDivElement | null>,
 	path: string,
 	firstHunk: DisplayHunk | undefined,
+	view: View,
 ): Picker {
 	const picks = usePicks();
 	const keys = useMemo(
@@ -2125,6 +2148,8 @@ function usePicker(
 		[picks, path],
 	);
 	const [roving, setRoving] = useState<string | null>(null);
+	/** The column the keyboard last moved in (side by side). */
+	const column = useRef<DiffSide | null>(null);
 	const first = firstHunk?.lines[0];
 	const dragging = useRef(false);
 	const pointer = useRef("");
@@ -2215,14 +2240,44 @@ function usePicker(
 			}
 		},
 		onKeyDown: (e) => {
-			if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+			const arrow = ARROWS[e.key];
+			if (!arrow) return;
 			const buttons = [
 				...(scroller.current?.querySelectorAll<HTMLButtonElement>(
 					"button[data-pick]",
 				) ?? []),
 			];
 			const at = buttons.indexOf(e.currentTarget);
-			const next = buttons[at + (e.key === "ArrowDown" ? 1 : -1)];
+			let next: HTMLButtonElement | undefined;
+			if (view !== "side-by-side") {
+				if (arrow.side) return;
+				next = buttons[at + arrow.step];
+			} else if (arrow.side) {
+				const row = e.currentTarget.closest("tr");
+				next = buttons.find(
+					(b) => b.closest("tr") === row && sideOf(b) === arrow.side,
+				);
+				if (next === e.currentTarget) return;
+				if (next) column.current = arrow.side;
+			} else {
+				// A context row's button is in both columns: the column
+				// it was reached in goes on from it.
+				const col =
+					(inContextRow(e.currentTarget) && column.current) ||
+					sideOf(e.currentTarget);
+				for (
+					let i = at + arrow.step;
+					i >= 0 && i < buttons.length;
+					i += arrow.step
+				) {
+					const b = buttons[i] as HTMLButtonElement;
+					if (sideOf(b) === col || inContextRow(b)) {
+						next = b;
+						break;
+					}
+				}
+				column.current = col;
+			}
 			if (!next) return;
 			e.preventDefault();
 			next.focus();

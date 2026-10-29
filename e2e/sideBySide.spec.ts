@@ -964,3 +964,52 @@ test("side by side, a cluster's floating controls stop above a thread opened und
 	expect(c.y + c.height).toBeLessThanOrEqual(t.y);
 	await expectNoPageOverflow(page);
 });
+
+test("side by side, Up/Down on the number buttons stay in their column and Left/Right switch sides, Shift extending", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	test.skip(isMobile, "no keyboard on a phone");
+	await pr(fixture);
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	await sideBySide(page, true);
+	const section = await expand(page, GREET);
+	await expect(table(section, "side-by-side")).toBeVisible();
+	const cluster = pairs(section);
+	await expect(cluster).toHaveCount(3);
+	const button = (name: string) =>
+		section.getByRole("button", { name, exact: true });
+	// A click on old 5 picks it and puts its button in focus.
+	await cluster.nth(0).getByTestId("old").click();
+	await expect(button("Old line 5")).toBeFocused();
+	// Down: the next old line, not this row's new one.
+	await page.keyboard.press("ArrowDown");
+	await expect(button("Old line 6")).toBeFocused();
+	// Right: the same row's new number; Left: back.
+	await page.keyboard.press("ArrowRight");
+	await expect(button("Line 6")).toBeFocused();
+	await page.keyboard.press("ArrowLeft");
+	await expect(button("Old line 6")).toBeFocused();
+	// Down from old 6: the third pair has no old line (new 7 alone), so on
+	// to the context row's button (old 7 / new 8); Up comes back to old 6.
+	await page.keyboard.press("ArrowDown");
+	await expect(button("Line 8")).toBeFocused();
+	await page.keyboard.press("ArrowUp");
+	await expect(button("Old line 6")).toBeFocused();
+	// Shift+Right extends the pick across, old 5 → new 6 in GitHub's
+	// order: both old lines and both new ones.
+	await page.keyboard.press("Shift+ArrowRight");
+	await expect(button("Line 6")).toBeFocused();
+	const picked = section.locator('td[data-testid="code"][data-picked]');
+	await expect(picked).toHaveCount(4);
+	await expect(picked.nth(0)).toHaveAttribute("data-side", "LEFT");
+	await expect(picked.nth(3)).toHaveAttribute("data-side", "RIGHT");
+	await expect(selectionBar(page)).toBeVisible();
+	await expect(
+		selectionBar(page).getByRole("button", { name: "Comment" }),
+	).not.toHaveAttribute("aria-disabled", "true");
+	await expectNoPageOverflow(page);
+});

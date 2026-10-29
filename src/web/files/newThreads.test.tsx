@@ -1483,6 +1483,53 @@ describe("side by side (the cells contract)", () => {
 		fireEvent.click(el, { detail: 1, ...init });
 	};
 
+	it("the keyboard: Up/Down stay in their column (a context row's one button is both), Left/Right switch sides, Shift extends", async () => {
+		const { user } = setup();
+		await loaded();
+		const button = (side: "LEFT" | "RIGHT", n: number) =>
+			within(number(side, n)).getByRole("button");
+		button("LEFT", 3).focus();
+		// Down: the next old line, not this row's new one.
+		await user.keyboard("{ArrowDown}");
+		expect(button("LEFT", 4)).toHaveFocus();
+		await user.keyboard("{ArrowRight}");
+		expect(button("RIGHT", 4)).toHaveFocus();
+		await user.keyboard("{ArrowLeft}");
+		expect(button("LEFT", 4)).toHaveFocus();
+		// The row below (new 5) has no old line: on to the context row (old
+		// 5 / new 6), one line with its one button on the right.
+		await user.keyboard("{ArrowDown}");
+		expect(button("RIGHT", 6)).toHaveFocus();
+		// Still the old column: Up is back to old 4, not new 5.
+		await user.keyboard("{ArrowUp}");
+		expect(button("LEFT", 4)).toHaveFocus();
+		// Right from old 4, then Up in the new column: new 3.
+		await user.keyboard("{ArrowRight}{ArrowUp}");
+		expect(button("RIGHT", 3)).toHaveFocus();
+		// A context row's button is the row's only one: Left stays put.
+		button("RIGHT", 6).focus();
+		await user.keyboard("{ArrowLeft}");
+		expect(button("RIGHT", 6)).toHaveFocus();
+		// Down from there goes on in the new column (its own side).
+		await user.keyboard("{ArrowDown}");
+		expect(button("RIGHT", 7)).toHaveFocus();
+		// Shift+Down extends the pick down the column; Shift+Left across.
+		button("RIGHT", 3).focus();
+		await user.keyboard("{Enter}");
+		await user.keyboard("{Shift>}{ArrowDown}{/Shift}");
+		expect(button("RIGHT", 4)).toHaveFocus();
+		expect(getPicks()?.lines.map((l) => pickKey(l))).toEqual([
+			"RIGHT:3",
+			"RIGHT:4",
+		]);
+		await user.keyboard("{Shift>}{ArrowLeft}{/Shift}");
+		expect(button("LEFT", 4)).toHaveFocus();
+		expect(getPicks()?.lines.map((l) => pickKey(l))).toEqual([
+			"LEFT:4",
+			"RIGHT:3",
+		]);
+	});
+
 	it("every code cell carries its side, a blank cell neither a side nor the cell mark", async () => {
 		setup();
 		await loaded();
