@@ -454,6 +454,11 @@ export class HomeService {
 		return this.refresh();
 	}
 
+	/** The first view's repos, `owner/repo` lowercased. */
+	async viewRepos(): Promise<string[]> {
+		return (await this.#config.read()).config.views[0]?.repos ?? [];
+	}
+
 	/** Every PR Home knows (view repos and started ones), for search. */
 	knownPrs(): PrFacts[] {
 		return [...this.#facts.values()].map((k) => k.facts);

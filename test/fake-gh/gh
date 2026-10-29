@@ -763,6 +763,36 @@ if (restPull && args[0] === "api" && !s.loggedOut) {
 }
 
 const cmd = `${args[0]} ${args[1]}`;
+// Home's open box: `search repos --limit N --json fullName -- <text>` and
+// `search prs --repo o/r --limit N --sort updated --json … -- <words…>`.
+if (args[0] === "search" && (args[1] === "repos" || args[1] === "prs") && !s.loggedOut) {
+	const dash = args.indexOf("--");
+	if (dash < 0) unsupported();
+	const words = args.slice(dash + 1).join(" ").toLowerCase().split(/\s+/).filter(Boolean);
+	if (s.search?.delayMs) sleep(s.search.delayMs);
+	if (args[1] === "repos") {
+		const text = words.join(" ");
+		print(
+			(s.search?.repos ?? [])
+				.filter((r) => r.fullName.toLowerCase().includes(text))
+				.map((r) => ({ fullName: r.fullName })),
+		);
+	}
+	const repoName = args[args.indexOf("--repo") + 1] ?? "";
+	const key = Object.keys(s.repos ?? {}).find((k) => k.toLowerCase() === repoName.toLowerCase());
+	const prs = (key ? s.repos[key].prs : [])
+		.filter((p) => words.every((w) => p.title.toLowerCase().includes(w)))
+		.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+	print(
+		prs.map((p) => ({
+			number: p.number,
+			title: p.title,
+			author: { login: p.author?.login ?? "", is_bot: false },
+			state: p.state.toLowerCase(),
+			updatedAt: p.updatedAt,
+		})),
+	);
+}
 const known = [
 	"auth status",
 	"api user",
