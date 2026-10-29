@@ -125,12 +125,7 @@ function snoozeEnded(
 ): { at: number; by: "activity" | "time" } | null {
 	const until = ms(s.until);
 	const updated = ms(pr.updatedAt);
-	if (
-		s.wakeOnActivity &&
-		updated > ms(s.at) &&
-		updated < until &&
-		updated <= now
-	) {
+	if (s.wakeOnActivity && updated > ms(s.at) && updated < until) {
 		return { at: updated, by: "activity" };
 	}
 	return now >= until ? { at: until, by: "time" } : null;
@@ -180,7 +175,8 @@ export function wokeOf(
 		if (at !== null) ends.push({ at, by: "activity" });
 	}
 	const latest = ends
-		.filter((e) => e.at <= now && now - e.at < WOKE_MS)
+		// GitHub's clock may run ahead of ours: activity "later than now" counts.
+		.filter((e) => now - e.at < WOKE_MS)
 		.sort((x, y) => y.at - x.at)[0];
 	return latest ? { at: iso(latest.at), by: latest.by } : null;
 }
