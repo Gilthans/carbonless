@@ -1,4 +1,6 @@
+import { readFileSync } from "node:fs";
 import type { Locator, Page } from "@playwright/test";
+import type { Scenario } from "../test/fake-gh/scenario";
 import {
 	REINDENT_NEW,
 	REINDENT_OLD,
@@ -16,7 +18,7 @@ import {
 	sideBySide,
 	underStack,
 } from "./files-ui";
-import { expect, type PrOptions, test } from "./fixtures";
+import { expect, type Pr, type PrOptions, test } from "./fixtures";
 
 const indent = Array.from({ length: 8 }, (_, i) => `indent ${i + 1}`);
 const mixed = Array.from({ length: 10 }, (_, i) => `mixed ${i + 1}`);
@@ -367,4 +369,82 @@ test("copying across a collapsed whitespace-only cluster takes the code alone: n
 		expect(copied, view).not.toContain("⊘");
 		expect(copied, view).not.toContain("Whitespace only");
 	}
+});
+
+/** Threads the fake gh stores: where each one is anchored. */
+function stored(p: Pr) {
+	const s = JSON.parse(readFileSync(p.scenarioPath, "utf8")) as Scenario;
+	return (s.prs[7]?.graphql?.reviewThreads ?? []) as {
+		path: string;
+		line: number;
+		originalStartLine: number | null;
+		diffSide: string;
+		startDiffSide: string | null;
+	}[];
+}
+
+test("with Ignore whitespace on, a selection from a ~ row through the deleted row below it comments in GitHub's order", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	if (isMobile) await page.setViewportSize({ width: 360, height: 780 });
+	const p = await pr(fixture);
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	await ignoreWhitespace(page, true);
+	const section = await expand(page, "src/mixed.ts");
+	// The pair of line 3 shows ahead of the deleted `mixed 4`, which GitHub
+	// lists first: selected top down, the range is old 4 → new 3 to GitHub.
+	const pair = section.locator('[data-testid="diff-line"][data-new-no="3"]');
+	await expect(pair).toHaveAttribute("data-kind", "ws");
+	const deleted = section.locator(
+		'[data-testid="diff-line"][data-kind="del"][data-old-no="4"]',
+	);
+	await expect(deleted).toBeVisible();
+	expect(
+		await pair.evaluate((row) =>
+			row.nextElementSibling?.getAttribute("data-kind"),
+		),
+	).toBe("del");
+	await page.evaluate(() => {
+		const code = (sel: string) =>
+			document.querySelector(`${sel} [data-code]`) as Element;
+		const from = code(
+			'[data-path="src/mixed.ts"] tr[data-new-no="3"] > [data-code-cell][data-side="RIGHT"]',
+		);
+		const to = code(
+			'[data-path="src/mixed.ts"] tr[data-kind="del"][data-old-no="4"] > [data-code-cell][data-side="LEFT"]',
+		);
+		const range = document.createRange();
+		range.setStart(from, 0);
+		range.setEnd(to, to.childNodes.length);
+		const selection = document.getSelection();
+		selection?.removeAllRanges();
+		selection?.addRange(range);
+		document.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
+	});
+	const bar = page.getByTestId("selection-bar");
+	await expect(bar).toBeVisible();
+	if (isMobile) await expect(bar).toContainText("old 4 – new 3");
+	const comment = bar.getByRole("button", { name: "Comment" });
+	await expect(comment).not.toHaveAttribute("aria-disabled", "true");
+	await comment.click();
+	const composer = section.getByTestId("new-thread");
+	await expect(composer).toContainText("old 4 – new 3");
+	await composer.getByRole("textbox", { name: "Comment" }).fill("Both?");
+	await composer.getByRole("button", { name: "Comment" }).click();
+	await expect(
+		section.getByTestId("files-thread").filter({ hasText: "Both?" }),
+	).toBeVisible();
+	expect(stored(p)).toMatchObject([
+		{
+			path: "src/mixed.ts",
+			line: 3,
+			originalStartLine: 4,
+			diffSide: "RIGHT",
+			startDiffSide: "LEFT",
+		},
+	]);
 });

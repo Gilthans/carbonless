@@ -1872,7 +1872,7 @@ function HunkRows(props: {
 }) {
 	const { threads, hunk, ignoreWhitespace, shape } = props;
 	const { view } = shape;
-	// Each line's index in the hunk: GitHub's order (codeSpan.ts `backwards`).
+	// Each line's index in the hunk: GitHub's order (codeSpan.ts spanOfRange, linePicks.ts pickRange).
 	const orderOf = useMemo(() => {
 		const order = new Map(hunk.lines.map((l, i) => [l, i] as const));
 		return (line: DiffLine) => order.get(line);

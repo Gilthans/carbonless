@@ -539,7 +539,7 @@ describe("a selection's edges", () => {
 });
 
 describe("Ignore whitespace and GitHub's order", () => {
-	it("a range whose start comes after its end in GitHub's order is flagged, and Comment says why", async () => {
+	it("a range whose start comes after its end in GitHub's order goes the way GitHub takes it, as whole lines", async () => {
 		ignoreWhitespace.set(true);
 		setup();
 		await loaded();
@@ -548,23 +548,65 @@ describe("Ignore whitespace and GitHub's order", () => {
 		const pair = cell("RIGHT", 3);
 		expect(pair.closest("tr")?.getAttribute("data-kind")).toBe("ws");
 		const found = spanOfRange(rangeOf(point(pair, 2), at("LEFT", 4, 3)), HEAD);
-		expect(found).toMatchObject({
-			span: { startSide: "RIGHT", startLine: 3, side: "LEFT", line: 4 },
-			backwards: true,
+		// Old 4 first, then new 3; the selected characters (a tail of one
+		// line, a head of the other) fit no marker on the swapped ends.
+		expect(found).toEqual({
+			span: {
+				path: PATH,
+				commit: HEAD,
+				subject: "line",
+				startSide: "LEFT",
+				startLine: 4,
+				side: "RIGHT",
+				line: 3,
+				startCol: null,
+				endCol: null,
+			},
+			inDiff: true,
 		});
 		expect(
 			commentAvailable(found?.span as CodeSpan, {
 				writes: "on",
 				commentLeft: true,
 				file: { binary: false, submodule: false },
-				backwards: true,
 			}),
-		).toBe("Turn off Ignore whitespace to comment on these lines together");
-		// The other way round is in GitHub's order.
+		).toBe(true);
+		// The other way round is in GitHub's order: as selected, with its columns.
 		expect(
-			spanOfRange(rangeOf(at("LEFT", 4, 0), at("RIGHT", 4, 3)), HEAD)
-				?.backwards,
-		).toBe(false);
+			spanOfRange(rangeOf(at("LEFT", 4, 0), at("RIGHT", 4, 3)), HEAD)?.span,
+		).toMatchObject({
+			startSide: "LEFT",
+			startLine: 4,
+			side: "RIGHT",
+			line: 4,
+			startCol: 0,
+			endCol: 3,
+		});
+	});
+
+	it("a selection from the ~ row through the deleted row below it: Comment is on and opens on old 4 – new 3", async () => {
+		ignoreWhitespace.set(true);
+		const { user } = setup();
+		await loaded();
+		selectAndRelease(rangeOf(at("RIGHT", 3, 2), at("LEFT", 4, 3)));
+		const bar = await screen.findByTestId("selection-bar");
+		const comment = within(bar).getByRole("button", { name: "Comment" });
+		expect(comment).not.toHaveAttribute("aria-disabled");
+		await user.click(comment);
+		expect(getComposers()).toMatchObject([
+			{
+				span: {
+					startSide: "LEFT",
+					startLine: 4,
+					side: "RIGHT",
+					line: 3,
+					startCol: null,
+					endCol: null,
+				},
+			},
+		]);
+		const composer = await screen.findByTestId("new-thread-row");
+		expect(within(composer).getByText("old 4 – new 3")).toBeInTheDocument();
 	});
 });
 

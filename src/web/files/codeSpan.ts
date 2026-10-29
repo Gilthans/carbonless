@@ -172,11 +172,19 @@ function selectedCells(range: Range): CellLine[] {
  * touches at its edge (its end before the next row's first character, its
  * start after the last row's last one) isn't in it. Whole lines when it
  * runs from a line's start to the last line's end.
+ *
+ * The ends go in GitHub's order of the hunk, whichever way the view shows
+ * them: Ignore whitespace shows a pair where its added line goes, ahead of
+ * deleted lines GitHub lists first, so a selection from the pair's row
+ * into such a deleted row starts after its end to GitHub. It is sent the
+ * other way round (the earlier line first) as whole lines: the selected
+ * characters are a tail of one line and a head of the other, which no
+ * marker on the swapped ends describes.
  */
 export function spanOfRange(
 	range: Range,
 	commit: string,
-): { span: CodeSpan; inDiff: boolean; backwards: boolean } | null {
+): { span: CodeSpan; inDiff: boolean } | null {
 	if (range.collapsed) return null;
 	let cells = selectedCells(range);
 	if (cells.length === 0) return null;
@@ -205,26 +213,18 @@ export function spanOfRange(
 	}
 	const head = cells[0] as CellLine;
 	if (cells.length === 1 && start.col >= end.col) return null;
+	const swapped =
+		head.hunk === last.hunk &&
+		head.order !== undefined &&
+		last.order !== undefined &&
+		head.order > last.order;
 	return {
-		span: spanOfCells(head, last, commit, {
-			startCol: start.col,
-			endCol: end.col,
-		}),
+		span: swapped
+			? spanOfCells(last, head, commit)
+			: spanOfCells(head, last, commit, {
+					startCol: start.col,
+					endCol: end.col,
+				}),
 		inDiff: inHunk(head) && inHunk(last),
-		backwards: backwards(head, last),
 	};
 }
-
-/**
- * The start comes after the end in GitHub's order of the hunk (Ignore
- * whitespace shows a pair where its added line goes, ahead of deleted
- * lines GitHub lists first): GitHub won't take that range.
- */
-export const backwards = (
-	head: Pick<CellLine, "hunk" | "order">,
-	last: Pick<CellLine, "hunk" | "order">,
-) =>
-	head.hunk === last.hunk &&
-	head.order !== undefined &&
-	last.order !== undefined &&
-	head.order > last.order;

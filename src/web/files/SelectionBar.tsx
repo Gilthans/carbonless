@@ -13,13 +13,7 @@ import { overviewQuery, sessionQuery } from "../api";
 import { useShortcut } from "../shortcuts";
 import { Tooltip } from "../Tooltip";
 import { NOT_PHONE, useMedia } from "../useMedia";
-import {
-	backwards,
-	CODE_CELL,
-	inHunk,
-	spanOfCells,
-	spanOfRange,
-} from "./codeSpan";
+import { CODE_CELL, inHunk, spanOfCells, spanOfRange } from "./codeSpan";
 import { getPicks, type Picks, setPicks, usePicks } from "./linePicks";
 import {
 	type CodeSpan,
@@ -35,8 +29,6 @@ export interface BarTarget {
 	span: CodeSpan;
 	/** Both ends are lines of GitHub's diff. */
 	inDiff: boolean;
-	/** Its start comes after its end in GitHub's order. */
-	backwards: boolean;
 	/** Viewport rects: the selection's first and last line, and all of it. */
 	first: DOMRect;
 	last: DOMRect;
@@ -143,7 +135,6 @@ const ofPicks = (picks: Picks, commit: string): BarTarget | null => {
 	return {
 		span,
 		inDiff: inHunk(head) && inHunk(tail),
-		backwards: backwards(head, tail),
 		first,
 		last,
 		box: new DOMRect(
@@ -366,7 +357,6 @@ export function SelectionBar(props: { files: readonly FileView[] }) {
 						submodule: file?.submodule ?? false,
 					},
 					inDiff: target.inDiff,
-					backwards: target.backwards,
 				}
 			: null;
 	const run = (action: SelectionAction) => {
