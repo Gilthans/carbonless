@@ -770,6 +770,7 @@ if (args[0] === "search" && (args[1] === "repos" || args[1] === "prs") && !s.log
 	if (dash < 0) unsupported();
 	const words = args.slice(dash + 1).join(" ").toLowerCase().split(/\s+/).filter(Boolean);
 	if (s.search?.delayMs) sleep(s.search.delayMs);
+	if (s.search?.fail) fail(`gh: ${s.search.fail}`);
 	if (args[1] === "repos") {
 		const text = words.join(" ");
 		print(
@@ -790,6 +791,7 @@ if (args[0] === "search" && (args[1] === "repos" || args[1] === "prs") && !s.log
 			author: { login: p.author?.login ?? "", is_bot: false },
 			state: p.state.toLowerCase(),
 			updatedAt: p.updatedAt,
+			repository: { name: repoName.split("/")[1], nameWithOwner: key },
 		})),
 	);
 }
@@ -901,6 +903,18 @@ switch (cmd) {
 				},
 			});
 		}
+		// Home's existence check of a repo added to the view.
+		if (/repository\(owner: \$owner, name: \$name\) \{ nameWithOwner \}/.test(f.query ?? "")) {
+			const key = Object.keys(s.repos ?? {}).find(
+				(k) => k.toLowerCase() === `${f.owner}/${f.name}`.toLowerCase(),
+			);
+			if (!key) {
+				graphqlFail("repository", [
+					{ type: "NOT_FOUND", message: `Could not resolve to a Repository with the name '${f.owner}/${f.name}'.` },
+				]);
+			}
+			print({ data: { repository: { nameWithOwner: key } } });
+		}
 		const homeList = (f.query ?? "").includes("open: pullRequests(states: OPEN");
 		const homeDetails = /\br\d+: repository\(owner: "/.test(f.query ?? "");
 		if (homeList || homeDetails) {
@@ -926,9 +940,12 @@ switch (cmd) {
 					]);
 				}
 				const size = s.homePageSize ?? 100;
+				const skip = Object.entries(s.homeListSkip ?? {}).find(
+					([k]) => k.toLowerCase() === `${f.owner}/${f.name}`.toLowerCase(),
+				)?.[1] ?? [];
 				const byUpdated = (states) =>
 					r.prs
-						.filter((p) => states.includes(p.state))
+						.filter((p) => states.includes(p.state) && !skip.includes(p.number))
 						.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || b.number - a.number);
 				const page = (all, cursor, fields) => {
 					const start = cursor ? Number(cursor.replace("cursor:", "")) : 0;
@@ -968,8 +985,11 @@ switch (cmd) {
 					continue;
 				}
 				data[alias] = {};
+				const nulls = Object.entries(s.homeDetailsNull ?? {}).find(
+					([k]) => k.toLowerCase() === `${JSON.parse(owner)}/${JSON.parse(name)}`.toLowerCase(),
+				)?.[1] ?? [];
 				for (const [, n] of body.matchAll(/p(\d+): pullRequest\(number: \d+\)/g)) {
-					const pr = r.prs.find((p) => p.number === Number(n));
+					const pr = nulls.includes(Number(n)) ? undefined : r.prs.find((p) => p.number === Number(n));
 					data[alias][`p${n}`] = pr ?? null;
 					if (!pr) errors.push({ type: "NOT_FOUND", path: [alias, `p${n}`], message: `Could not resolve to a PullRequest with the number of ${n}.` });
 				}

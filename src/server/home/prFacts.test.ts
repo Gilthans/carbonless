@@ -275,6 +275,106 @@ describe("fetchRepoPrs (fake gh)", () => {
 	});
 });
 
+describe("fetchRepoPrs never drops a PR it knew", () => {
+	const open = (n: number, at = NOW - n * 1000) =>
+		homePr({
+			repo: "acme/api",
+			number: n,
+			author: "alice",
+			updatedAt: iso(at),
+		});
+	const knownOf = (prs: { number: number }[], readAt = NOW) =>
+		new Map<number, Known>(
+			prs.map((f) => [f.number, { facts: f as never, readAt }]),
+		);
+
+	it("a known open PR the list skipped (pages shifted) stays", async () => {
+		fx = createHomeFixture({
+			repos: { "acme/api": { prs: [open(1), open(2), open(3)] } },
+		});
+		const first = await fetchRepoPrs("acme", "api", SINCE, { now: NOW });
+		fx.scenario({ homeListSkip: { "acme/api": [2] } });
+		const again = await fetchRepoPrs("acme", "api", SINCE, {
+			known: knownOf(first),
+			now: NOW + 1000,
+		});
+		expect(again.map((p) => p.number).sort()).toEqual([1, 2, 3]);
+		// Old facts of a skipped PR are read again, not dropped.
+		const missing: number[] = [];
+		const stale = await fetchRepoPrs("acme", "api", SINCE, {
+			known: knownOf(first, NOW - DETAILS_MAX_AGE_MS),
+			now: NOW + 1000,
+			missing,
+		});
+		expect(stale.map((p) => p.number).sort()).toEqual([1, 2, 3]);
+		expect(missing).toEqual([]);
+	});
+
+	it("a PR whose details came back null keeps its facts, and is reported", async () => {
+		fx = createHomeFixture({
+			repos: { "acme/api": { prs: [open(1), open(2)] } },
+		});
+		const first = await fetchRepoPrs("acme", "api", SINCE, { now: NOW });
+		bumpHomePr(fx.path, "acme/api", 2, iso(NOW + 500), "bob");
+		fx.scenario({ homeDetailsNull: { "acme/api": [2] } });
+		const missing: number[] = [];
+		const again = await fetchRepoPrs("acme", "api", SINCE, {
+			known: knownOf(first),
+			now: NOW + 1000,
+			missing,
+		});
+		expect(again.find((p) => p.number === 2)).toEqual(
+			first.find((p) => p.number === 2),
+		);
+		expect(missing).toEqual([2]);
+		// A new PR whose details are null can't show, but is reported.
+		const fresh: number[] = [];
+		const none = await fetchRepoPrs("acme", "api", SINCE, {
+			now: NOW,
+			missing: fresh,
+		});
+		expect(none.map((p) => p.number)).toEqual([1]);
+		expect(fresh).toEqual([2]);
+	});
+});
+
+describe("review decision", () => {
+	const base = { repo: "acme/api", number: 1, author: "alice" };
+	it("without GitHub's (no required reviews), from the latest reviews", () => {
+		const decision = (
+			reviews: { login: string; state: string; at: string }[],
+		) => mapPrNode("acme", "api", homePr({ ...base, reviews }))?.decision;
+		expect(decision([{ login: "bob", state: "APPROVED", at: iso(NOW) }])).toBe(
+			"approved",
+		);
+		expect(
+			decision([
+				{ login: "bob", state: "APPROVED", at: iso(NOW) },
+				{ login: "carol", state: "CHANGES_REQUESTED", at: iso(NOW) },
+			]),
+		).toBe("changes-requested");
+		expect(decision([{ login: "bob", state: "COMMENTED", at: iso(NOW) }])).toBe(
+			null,
+		);
+		// The author's own review never decides.
+		expect(
+			decision([{ login: "alice", state: "APPROVED", at: iso(NOW) }]),
+		).toBe(null);
+	});
+	it("GitHub's own decision wins when given", () => {
+		const pr = homePr({
+			...base,
+			decision: "APPROVED",
+			reviews: [{ login: "bob", state: "CHANGES_REQUESTED", at: iso(NOW) }],
+		});
+		expect(mapPrNode("acme", "api", pr)?.decision).toBe("approved");
+	});
+	it("reads the head commit", () => {
+		const pr = homePr({ ...base, head: "a".repeat(40) });
+		expect(mapPrNode("acme", "api", pr)?.headOid).toBe("a".repeat(40));
+	});
+});
+
 describe("fetchPrDetails", () => {
 	it("reads PRs across repos and leaves out ones GitHub doesn't know", async () => {
 		fx = createHomeFixture({

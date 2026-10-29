@@ -23,6 +23,7 @@ function pr(over: Partial<PrFacts> = {}): PrFacts {
 		draft: false,
 		state: "OPEN",
 		closedAt: null,
+		headOid: "",
 		updatedAt: iso(NOW - 1000),
 		checks: null,
 		decision: null,
@@ -41,6 +42,7 @@ const started = (over: Partial<StartedReview> = {}): StartedReview => ({
 	number: 1,
 	id: "01jbxxxxxxxxxxxxxxxxxxxxxx",
 	pinnedHead: null,
+	head: "a".repeat(40),
 	asOf: null,
 	coverage: { done: 1, total: 10, unit: "lines" },
 	lastActedAt: iso(NOW - 5000),
@@ -178,6 +180,16 @@ describe("turnOf (first match wins)", () => {
 		).toEqual({ kind: "people", logins: ["alice"] });
 	});
 
+	it("4: a team the viewer is in comes right after the viewer", () => {
+		expect(
+			turnOf(
+				pr({ requested: { users: ["bob"], teams: ["acme/x", "acme/mine"] } }),
+				VIEWER,
+				["acme/mine"],
+			),
+		).toEqual({ kind: "people", logins: ["acme/mine", "bob", "acme/x"] });
+	});
+
 	it("4: requested and not submitted → those reviewers, the viewer first", () => {
 		expect(
 			turn(
@@ -243,7 +255,10 @@ describe("turnWithWaiting", () => {
 				logins: ["bob"],
 			},
 		);
-		expect(turnWithWaiting(base, { who: "me", at: iso(NOW) }, VIEWER)).toEqual({
+		// The viewer's own login (any case) is "you".
+		expect(
+			turnWithWaiting(base, { who: "octo", at: iso(NOW) }, VIEWER),
+		).toEqual({
 			kind: "people",
 			logins: [VIEWER],
 		});

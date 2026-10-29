@@ -16,6 +16,8 @@ export interface PrFacts {
 	state: HomeRow["state"];
 	/** When it was merged or closed; null while open. */
 	closedAt: string | null;
+	/** The PR's head commit (`headRefOid`); "" when GitHub gave none. */
+	headOid: string;
 	/** GitHub's `updatedAt`: any push, comment, review or state change. */
 	updatedAt: string;
 	checks: HomeRow["checks"];
@@ -56,6 +58,8 @@ export interface StartedReview {
 	id: string;
 	/** The head a `crb --head` review is pinned on; null for the PR's plain review. */
 	pinnedHead: string | null;
+	/** The head of the viewer's patch set: what the coverage is of. */
+	head: string;
 	asOf: string | null;
 	coverage: Coverage;
 	/** The viewer's last event in the review's progress ref. */

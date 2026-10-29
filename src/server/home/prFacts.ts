@@ -15,7 +15,7 @@ import type { PrFacts } from "./facts.js";
 const PERSON = "login avatarUrl(size: 40)";
 
 /** The fields of one PR node (PR_NODE in test/fake-gh/scenario.ts serves them). */
-export const PR_FIELDS = `number title url isDraft state updatedAt closedAt mergedAt
+export const PR_FIELDS = `number title url isDraft state updatedAt closedAt mergedAt headRefOid
 author { ${PERSON} }
 reviewDecision
 reviewRequests(first: 30) { nodes { requestedReviewer { __typename ... on User { ${PERSON} } ... on Mannequin { ${PERSON} } ... on Team { slug organization { login } avatarUrl(size: 40) } } } }
@@ -141,6 +141,8 @@ export function mapPrNode(
 		lastActivity[key] = later(lastActivity[key], when);
 	};
 	const reviewers: string[] = [];
+	/** Each reviewer's latest opinion, for a decision GitHub doesn't give. */
+	const opinions = new Set<string>();
 	const addReviewer = (p: Person | null, state: unknown) => {
 		// A pending review is visible to its author only, never activity.
 		if (!p || state === "PENDING" || isAuthor(p.login)) return;
@@ -150,6 +152,7 @@ export function mapPrNode(
 	};
 	for (const r of list(n.latestReviews)) {
 		const p = meet(person(rec(r).author));
+		if (p && !isAuthor(p.login)) opinions.add(String(rec(r).state));
 		addReviewer(p, rec(r).state);
 		if (rec(r).state !== "PENDING") acted(p, rec(r).submittedAt);
 	}
@@ -168,12 +171,15 @@ export function mapPrNode(
 		}
 	}
 	const lastCommit = rec(rec(list(n.commits)[0]).commit);
+	// Credited to the author whoever pushed, at its commit date (which can
+	// predate the push): a wait on a co-author who pushes doesn't clear.
 	acted(author, lastCommit.committedDate);
 
 	const threads = list(n.reviewThreads);
 	const totalThreads = rec(n.reviewThreads).totalCount;
 	// Past the first 100 threads GitHub isn't asked; those count as unresolved,
-	// so the count can only be too high.
+	// so the count can only be too high. Resolving a thread likely doesn't
+	// move updatedAt: the count can be up to DETAILS_MAX_AGE_MS old.
 	const unread =
 		Number.isSafeInteger(totalThreads) &&
 		(totalThreads as number) > threads.length
@@ -193,20 +199,33 @@ export function mapPrNode(
 		draft: n.isDraft === true,
 		state,
 		closedAt: state === "OPEN" ? null : (str(n.mergedAt) ?? str(n.closedAt)),
+		headOid: str(n.headRefOid) ?? "",
 		updatedAt,
 		checks: CHECKS[String(rec(lastCommit.statusCheckRollup).state)] ?? null,
-		decision:
-			n.reviewDecision === "APPROVED"
-				? "approved"
-				: n.reviewDecision === "CHANGES_REQUESTED"
-					? "changes-requested"
-					: null,
+		decision: decisionOf(n.reviewDecision, opinions),
 		unresolvedThreads,
 		requested: { users, teams },
 		reviewers,
 		lastActivity,
 		people,
 	};
+}
+
+/**
+ * GitHub's review decision; when it gives none (the base branch doesn't
+ * require reviews), the reviewers' latest opinions: any changes requested,
+ * else any approval.
+ */
+function decisionOf(
+	given: unknown,
+	opinions: ReadonlySet<string>,
+): PrFacts["decision"] {
+	if (given === "APPROVED") return "approved";
+	if (given === "CHANGES_REQUESTED") return "changes-requested";
+	if (given === "REVIEW_REQUIRED") return null;
+	if (opinions.has("CHANGES_REQUESTED")) return "changes-requested";
+	if (opinions.has("APPROVED")) return "approved";
+	return null;
 }
 
 const OWNER = /^[A-Za-z0-9][A-Za-z0-9-]{0,38}$/;
@@ -482,6 +501,8 @@ export async function fetchRepoPrs(
 		now?: number;
 		cost?: RefreshCost;
 		signal?: AbortSignal;
+		/** Filled with the numbers of listed PRs whose details GitHub didn't give. */
+		missing?: number[];
 	} = {},
 ): Promise<PrFacts[]> {
 	const {
@@ -494,7 +515,7 @@ export async function fetchRepoPrs(
 		options.listedSince === undefined
 			? undefined
 			: options.listedSince - LIST_MARGIN_MS;
-	const { listed, complete } = await listRepoPrs(
+	const { listed } = await listRepoPrs(
 		owner,
 		repo,
 		closedSince,
@@ -516,14 +537,25 @@ export async function fetchRepoPrs(
 		if (fresh(k) && k.facts.updatedAt === updatedAt) kept.push(k.facts);
 		else stale.push({ owner, repo, number });
 	}
-	if (!complete) {
-		for (const [number, k] of known) {
-			if (seen.has(number) || k.facts.state !== "OPEN") continue;
-			if (fresh(k)) kept.push(k.facts);
-			else stale.push({ owner, repo, number });
-		}
+	// Known open PRs the list didn't reach (it stopped at known history) or
+	// skipped (a PR updated between two pages' reads moves to a page already
+	// read) stay: a PR never drops off for a refresh. One that closed shows
+	// in the closed list, which is always complete.
+	for (const [number, k] of known) {
+		if (seen.has(number) || k.facts.state !== "OPEN") continue;
+		if (fresh(k)) kept.push(k.facts);
+		else stale.push({ owner, repo, number });
 	}
 	const read = await fetchPrDetails(stale, cost, signal);
+	const got = new Set(read.map((pr) => pr.number));
+	// Details GitHub didn't give (a null node in partial data): the known
+	// facts stay, and the caller hears of it.
+	for (const { number } of stale) {
+		if (got.has(number)) continue;
+		options.missing?.push(number);
+		const k = known.get(number);
+		if (k) kept.push(k.facts);
+	}
 	// A PR listed open but read closed (it closed in between) stays only if
 	// it closed recently.
 	const current = read.filter(
@@ -582,5 +614,43 @@ export async function fetchViewerTeams(
 			return null;
 		}
 		throw error;
+	}
+}
+
+const REPO_QUERY = `query($owner: String!, $name: String!) {
+  repository(owner: $owner, name: $name) { nameWithOwner }
+}`;
+
+/**
+ * Whether GitHub has `owner/repo` (visible to the viewer); null when it
+ * couldn't be asked (offline, rate limited): the caller can't tell.
+ */
+export async function repoExists(
+	owner: string,
+	repo: string,
+): Promise<boolean | null> {
+	if (!OWNER.test(owner) || !REPO.test(repo)) return false;
+	try {
+		const data = await graphql(
+			[
+				"-f",
+				`query=${REPO_QUERY}`,
+				"-f",
+				`owner=${owner}`,
+				"-f",
+				`name=${repo}`,
+			],
+			`the repository ${owner}/${repo}`,
+			newCost(),
+		);
+		return typeof rec(data.repository).nameWithOwner === "string";
+	} catch (error) {
+		if (
+			error instanceof GhError &&
+			/could not resolve to a repository|not found/i.test(error.message)
+		) {
+			return false;
+		}
+		return null;
 	}
 }

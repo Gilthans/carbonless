@@ -153,6 +153,13 @@ export interface Scenario {
 	/** Home's list and details queries fail as GitHub's rate limit does. */
 	rateLimited?: boolean;
 	/**
+	 * PRs (by repo, then number) Home's list query leaves out, as if they
+	 * slid to an already read page between two pages' reads.
+	 */
+	homeListSkip?: Record<string, number[]>;
+	/** PRs whose details GitHub answers null, with an error (partial data). */
+	homeDetailsNull?: Record<string, number[]>;
+	/**
 	 * The viewer's teams (`org/slug`); null: reading them fails as with a
 	 * token missing `read:org`. Absent: no teams.
 	 */
@@ -164,6 +171,8 @@ export interface Scenario {
 	 */
 	search?: {
 		repos?: { fullName: string }[];
+		/** Both searches fail with this as gh's message. */
+		fail?: string;
 		/** Answers this late. */
 		delayMs?: number;
 	};
@@ -590,6 +599,7 @@ export interface HomePrNode {
 	updatedAt: string;
 	closedAt: string | null;
 	mergedAt: string | null;
+	headRefOid: string;
 	author: { login: string; avatarUrl: string } | null;
 	reviewDecision: "APPROVED" | "CHANGES_REQUESTED" | "REVIEW_REQUIRED" | null;
 	reviewRequests: { nodes: { requestedReviewer: Record<string, unknown> }[] };
@@ -639,6 +649,8 @@ export function homePr(p: {
 	checks?: "SUCCESS" | "FAILURE" | "PENDING" | null;
 	decision?: "APPROVED" | "CHANGES_REQUESTED" | null;
 	threads?: { resolved?: number; unresolved?: number };
+	/** The head commit (default: one per number). */
+	head?: string;
 }): HomePrNode {
 	const state = p.state ?? "OPEN";
 	const times = [
@@ -701,6 +713,7 @@ export function homePr(p: {
 		updatedAt,
 		closedAt: state === "OPEN" ? null : (p.closedAt ?? updatedAt),
 		mergedAt: state === "MERGED" ? (p.closedAt ?? updatedAt) : null,
+		headRefOid: p.head ?? p.number.toString(16).padStart(40, "0"),
 		author: person(p.author),
 		reviewDecision: p.decision ?? null,
 		reviewRequests: {
