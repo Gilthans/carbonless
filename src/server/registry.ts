@@ -1,3 +1,4 @@
+import { GitError } from "./git.js";
 import { cacheDir } from "./paths.js";
 import type { HeadSpec } from "./pinnedHead.js";
 import { findReviewById } from "./review/reviews.js";
@@ -15,6 +16,28 @@ export interface OpenRequest {
 
 /** No clone in the cache has a review by this id (HTTP 404). */
 export class UnknownReviewError extends Error {}
+
+/**
+ * A review that can't be opened: its PR merged or closed with nothing
+ * started, no such PR, gh not logged in (HTTP 409, with why).
+ */
+export class RefusedReviewError extends Error {}
+
+/** Session.open's failure as a refusal; git trouble and bugs stay as they are. */
+function asRefusal(error: unknown): unknown {
+	if (
+		error instanceof GitError ||
+		error instanceof SessionClosedError ||
+		error instanceof UnknownReviewError ||
+		error instanceof RefusedReviewError ||
+		error instanceof TypeError ||
+		error instanceof RangeError ||
+		!(error instanceof Error)
+	) {
+		return error;
+	}
+	return new RefusedReviewError(error.message);
+}
 
 interface Entry {
 	session: Session;
@@ -90,7 +113,9 @@ export class SessionRegistry {
 				req.cwd ?? process.cwd(),
 				progress,
 				{ head: req.head, asOf: req.asOf, viewer: req.viewer },
-			);
+			).catch((error: unknown) => {
+				throw asRefusal(error);
+			});
 			const kept = this.#keep(session, req.viewer);
 			this.#idOf.set(key, kept.id);
 			return { id: kept.id, session: kept };
@@ -128,7 +153,8 @@ export class SessionRegistry {
 	 */
 	async get(id: string): Promise<Session> {
 		if (this.#closed) throw new SessionClosedError("The server is closing");
-		await this.sweep();
+		// Idle sessions leave the map now; their closes finish on their own.
+		void this.sweep();
 		const entry = this.#open.get(id);
 		if (entry) {
 			entry.lastUsed = this.#now();

@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto";
-import { link, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, link, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { hostname } from "node:os";
 import { join } from "node:path";
 import { writeFileAtomic } from "./atomicFile.js";
 import { stateDir } from "./paths.js";
@@ -14,13 +15,19 @@ export interface ServerState {
 	pid: number;
 	startedAt: string;
 	version: BuildInfo;
+	/**
+	 * The machine it runs on (os.hostname()): a state dir shared between
+	 * machines must not make one trust another's pid.
+	 */
+	hostname?: string;
 }
 
 const PRIVATE = 0o600;
 const stateFile = () => join(stateDir(), "server.json");
 const keyFile = () => join(stateDir(), "key");
 
-export function writeServerState(s: ServerState): Promise<void> {
+export function writeServerState(state: ServerState): Promise<void> {
+	const s = { ...state, hostname: state.hostname ?? hostname() };
 	return writeFileAtomic(
 		stateFile(),
 		`${JSON.stringify(s, null, "\t")}\n`,
@@ -69,6 +76,7 @@ async function readState(): Promise<ServerState | null> {
  */
 export async function readLiveServerState(): Promise<ServerState | null> {
 	const s = await readState();
+	if (s?.hostname !== undefined && s.hostname !== hostname()) return null;
 	return s && pidAlive(s.pid) ? s : null;
 }
 
@@ -78,18 +86,25 @@ export async function removeServerState(): Promise<void> {
 	if (s?.pid === process.pid) await rm(stateFile(), { force: true });
 }
 
-const newKey = () => randomBytes(24).toString("base64url");
+export const newKey = () => randomBytes(24).toString("base64url");
 
 /**
  * The access key for binds beyond loopback, kept in `key` (0600) across
  * restarts so a phone's bookmark keeps working; made on first use.
  */
 export async function accessKey(): Promise<string> {
+	let text: string | null = null;
 	try {
-		const key = (await readFile(keyFile(), "utf8")).trim();
-		if (key) return key;
+		text = await readFile(keyFile(), "utf8");
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+	}
+	if (text !== null) {
+		const key = text.trim();
+		// An empty file is no key (an empty key would let anyone in).
+		if (!key) return rotateAccessKey();
+		await chmod(keyFile(), PRIVATE);
+		return key;
 	}
 	// Written aside, then linked into place: of two first uses, one wins and
 	// both read its key.
@@ -106,9 +121,11 @@ export async function accessKey(): Promise<string> {
 	return (await readFile(keyFile(), "utf8")).trim();
 }
 
-/** Replaces the key (crb serve --new-key): old links stop working. */
-export async function rotateAccessKey(): Promise<string> {
-	const key = newKey();
+/**
+ * Replaces the key (crb serve --new-key): old links stop working. `key`:
+ * the new one, made beforehand (crb serve keeps it only once it listens).
+ */
+export async function rotateAccessKey(key = newKey()): Promise<string> {
 	await writeFileAtomic(keyFile(), `${key}\n`, PRIVATE);
 	return key;
 }

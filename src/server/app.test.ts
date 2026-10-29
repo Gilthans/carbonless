@@ -1173,6 +1173,98 @@ describe("API", () => {
 			expect(theirs.pinnedHead).toBe(pr.head());
 		});
 
+		it("a review its PR now refuses, reopened by id, is a 409 saying why", async () => {
+			await app.close();
+			await registry.closeAll();
+			pr.scenario({
+				prs: {
+					12: {
+						view: {
+							...prView({ headRefOid: pr.head(), baseRefName: "main" }),
+							state: "MERGED",
+						},
+					},
+				},
+			});
+			// A restart: a server that never opened it.
+			registry = new SessionRegistry();
+			app = await buildApp(registry, { accessKey: null });
+			await app.listen({ port: 0, host: "127.0.0.1" });
+			const address = app.server.address();
+			if (!address || typeof address === "string") throw new Error("no port");
+			host = `127.0.0.1:${address.port}`;
+			const res = await inject(r("/api/session"));
+			expect(res.statusCode).toBe(409);
+			expect(res.json()).toEqual({
+				code: "refused",
+				error: "PR acme/widget#12 is already merged; nothing to review",
+			});
+		});
+
+		it("refuses what another site's page sets off: /pr/..., /api/reviews and a review's writes", async () => {
+			const site = (value: string, more: Record<string, string> = {}) => ({
+				headers: { host, "sec-fetch-site": value, ...more },
+			});
+			for (const value of ["cross-site", "same-site"]) {
+				const open = await inject("/pr/acme/widget/12", site(value));
+				expect(open.statusCode, value).toBe(403);
+				const reviews = await inject("/api/reviews", {
+					method: "POST",
+					payload: { pr: pr.arg },
+					...site(value),
+				});
+				expect(reviews.statusCode, value).toBe(403);
+				const refresh = await inject(r("/api/refresh"), {
+					method: "POST",
+					...site(value),
+				});
+				expect(refresh.statusCode, value).toBe(403);
+			}
+			// Without Sec-Fetch-Site (older browsers), the Origin says.
+			const evil = await inject("/api/reviews", {
+				method: "POST",
+				payload: { pr: pr.arg },
+				headers: { host, origin: "http://evil.example" },
+			});
+			expect(evil.statusCode).toBe(403);
+			// Typed or bookmarked (none), from its own pages (same-origin), or
+			// a link the reviewer clicked on another site: opens.
+			for (const headers of [
+				{ "sec-fetch-site": "none" },
+				{ "sec-fetch-site": "same-origin" },
+				{
+					"sec-fetch-site": "cross-site",
+					"sec-fetch-mode": "navigate",
+					"sec-fetch-dest": "document",
+					"sec-fetch-user": "?1",
+				},
+				{},
+			]) {
+				const res = await inject("/pr/acme/widget/12", {
+					headers: { host, ...headers },
+				});
+				expect(res.statusCode, JSON.stringify(headers)).toBe(302);
+			}
+			// A script's navigation, no click: refused.
+			const scripted = await inject("/pr/acme/widget/12", {
+				headers: {
+					host,
+					"sec-fetch-site": "cross-site",
+					"sec-fetch-mode": "navigate",
+					"sec-fetch-dest": "document",
+				},
+			});
+			expect(scripted.statusCode).toBe(403);
+			// Reads of a review stay open to its own pages and to crb.
+			const read = await inject(r("/api/session"), site("same-origin"));
+			expect(read.statusCode).toBe(200);
+			const own = await inject("/api/reviews", {
+				method: "POST",
+				payload: { pr: pr.arg },
+			});
+			expect(own.statusCode).toBe(200);
+		});
+
 		it("an unknown review id is a 404 with its code", async () => {
 			for (const bad of ["01zzzzzzzzzzzzzzzzzzzzzzzz", "nope"]) {
 				const res = await inject(`/api/r/${bad}/session`);

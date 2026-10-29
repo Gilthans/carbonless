@@ -3,6 +3,7 @@ import { readConfig } from "./config.js";
 import { SessionRegistry } from "./registry.js";
 import {
 	accessKey,
+	newKey,
 	removeServerState,
 	rotateAccessKey,
 	writeServerState,
@@ -40,8 +41,10 @@ export async function startServer(opts: {
 	const host = opts.host ?? config.serve.host;
 	const port = opts.port ?? config.serve.port;
 	const loopback = LOOPBACK.has(host);
-	const rotated = opts.newKey ? await rotateAccessKey() : null;
-	const key = loopback ? null : (rotated ?? (await accessKey()));
+	// A new key is kept only once this server listens: a failed start must
+	// not change the key a running server checks.
+	const fresh = opts.newKey ? newKey() : null;
+	const key = loopback ? null : (fresh ?? (await accessKey()));
 
 	const registry = new SessionRegistry();
 	let url = "";
@@ -60,6 +63,7 @@ export async function startServer(opts: {
 		}
 		throw error;
 	}
+	if (fresh) await rotateAccessKey(fresh);
 	const address = app.server.address();
 	const actualPort =
 		typeof address === "object" && address ? address.port : port;

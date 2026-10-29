@@ -1,7 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { prView } from "../../test/fake-gh/scenario";
 import { createPrFixture, type PrFixture } from "../../test/pr-fixture";
-import { SessionRegistry, UnknownReviewError } from "./registry";
+import { parseAsOf } from "./asOf";
+import {
+	RefusedReviewError,
+	SessionRegistry,
+	UnknownReviewError,
+} from "./registry";
 
 describe("SessionRegistry", () => {
 	let pr: PrFixture;
@@ -103,6 +108,67 @@ describe("SessionRegistry", () => {
 		expect(x).toBe(y);
 		// Five opens of a review: more than the default on a loaded machine.
 	}, 20_000);
+
+	it("opens an as-of review by id after restart, as of its cutoff", async () => {
+		// After the fixture's commits (made now), so the PR exists then.
+		const asOf = parseAsOf(new Date(Date.now() + 60_000).toISOString());
+		const before = registry();
+		const { id } = await before.open({ pr: pr.arg, asOf });
+		await before.closeAll();
+		const reopened = await registry().get(id);
+		expect(reopened.id).toBe(id);
+		expect(reopened.info().asOf).toBe(asOf);
+	});
+
+	it("by id, a review its PR now refuses (merged, nothing started) is a RefusedReviewError saying why", async () => {
+		const before = registry();
+		const { id } = await before.open({ pr: pr.arg });
+		await before.closeAll();
+		pr.scenario({
+			prs: {
+				12: {
+					view: {
+						...prView({ headRefOid: pr.head(), baseRefName: "main" }),
+						state: "MERGED",
+					},
+				},
+			},
+		});
+		const get = registry().get(id);
+		await expect(get).rejects.toBeInstanceOf(RefusedReviewError);
+		await expect(get).rejects.toThrow(
+			"PR acme/widget#12 is already merged; nothing to review",
+		);
+	});
+
+	it("get answers at once while an idle session is still closing", async () => {
+		let now = 1_000_000;
+		const r = registry({ idleMs: 60_000, now: () => now });
+		const a = await r.open({ pr: pr.arg });
+		const b = await r.open({
+			pr: pr.arg,
+			head: { kind: "sha", prefix: pr.head() },
+		});
+		now += 30_000;
+		await r.get(b.id);
+		now += 40_000;
+		// a is idle: its close must not hold up the get of b.
+		let release = () => {};
+		const closing = new Promise<void>((done) => {
+			release = done;
+		});
+		const close = a.session.close.bind(a.session);
+		a.session.close = () => closing.then(close);
+		try {
+			const got = await Promise.race([
+				r.get(b.id),
+				new Promise((done) => setTimeout(() => done("held up"), 1000)),
+			]);
+			expect(got).toBe(b.session);
+		} finally {
+			release();
+		}
+	});
 
 	it("an unknown id is an UnknownReviewError", async () => {
 		const r = registry();

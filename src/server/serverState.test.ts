@@ -1,6 +1,14 @@
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import {
+	chmodSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	statSync,
+	writeFileSync,
+} from "node:fs";
+import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
@@ -46,7 +54,10 @@ describe("serverState", () => {
 
 	it("reads back what was written, file mode 0600", async () => {
 		await writeServerState(state());
-		expect(await readLiveServerState()).toEqual(state());
+		expect(await readLiveServerState()).toEqual({
+			...state(),
+			hostname: hostname(),
+		});
 		expect(mode("server.json")).toBe(0o600);
 	});
 
@@ -88,6 +99,41 @@ describe("serverState", () => {
 	it("concurrent first uses agree on one key", async () => {
 		const keys = await Promise.all([accessKey(), accessKey(), accessKey()]);
 		expect(new Set(keys).size).toBe(1);
+	});
+
+	it("an empty key file is no key: a new one is made", async () => {
+		mkdirSync(join(dir, "carbonless"), { recursive: true });
+		for (const empty of ["", "  \n"]) {
+			writeFileSync(file("key"), empty, { mode: 0o644 });
+			const key = await accessKey();
+			expect(key).toMatch(/^[A-Za-z0-9_-]{32}$/);
+			expect(readFileSync(file("key"), "utf8").trim()).toBe(key);
+			expect(mode("key")).toBe(0o600);
+		}
+	});
+
+	it("tightens a key file others can read to 0600", async () => {
+		const key = await accessKey();
+		chmodSync(file("key"), 0o644);
+		expect(await accessKey()).toBe(key);
+		expect(mode("key")).toBe(0o600);
+	});
+
+	it("a rotation can be given its key (made before a bind, kept after it)", async () => {
+		const key = "k".repeat(32);
+		expect(await rotateAccessKey(key)).toBe(key);
+		expect(await accessKey()).toBe(key);
+	});
+
+	it("records this host; another host's server isn't live here", async () => {
+		await writeServerState(state());
+		expect((await readLiveServerState())?.hostname).toBe(hostname());
+		const raw = JSON.parse(readFileSync(file("server.json"), "utf8"));
+		writeFileSync(
+			file("server.json"),
+			JSON.stringify({ ...raw, hostname: "elsewhere" }),
+		);
+		expect(await readLiveServerState()).toBeNull();
 	});
 
 	it("rotating makes a new key that sticks", async () => {

@@ -138,6 +138,39 @@ describe("config", () => {
 		});
 	});
 
+	it("updateConfig keeps a view's unknown keys with that view, by name, not by place", async () => {
+		write(
+			JSON.stringify({
+				views: [
+					"junk",
+					{ name: "A", repos: [], x: 1 },
+					{ name: "Work", repos: [], color: "red" },
+				],
+			}),
+		);
+		// The junk was dropped on read: Work is views[1] now, not raw [1].
+		await updateConfig((c) => c);
+		expect(onDisk().views).toEqual([
+			{ name: "A", repos: [], x: 1 },
+			{ name: "Work", repos: [], color: "red" },
+		]);
+		// A deleted: Work keeps its own keys, never A's.
+		await updateConfig((c) => ({
+			...c,
+			views: c.views.filter((v) => v.name !== "A"),
+		}));
+		expect(onDisk().views).toEqual([{ name: "Work", repos: [], color: "red" }]);
+		// A new view gets none.
+		await updateConfig((c) => ({
+			...c,
+			views: [{ name: "New", repos: ["acme/x"] }, ...c.views],
+		}));
+		expect(onDisk().views).toEqual([
+			{ name: "New", repos: ["acme/x"] },
+			{ name: "Work", repos: [], color: "red" },
+		]);
+	});
+
 	it("updateConfig over garbage rewrites a valid file, unknown keys of the good parts kept", async () => {
 		write(
 			JSON.stringify({ extra: 1, serve: "nope", views: [{ repos: ["x"] }] }),

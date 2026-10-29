@@ -53,7 +53,8 @@ export async function registerAccessKey(
  * (`loopback`), the Host header must name loopback and the listening port, so
  * a page on another origin that resolves its name to 127.0.0.1 can't read the
  * API. In every mode, a write that carries an Origin must come from this
- * server's own origin.
+ * server's own origin, and neither a write nor an open of a review
+ * (`/pr/...`) may come from another site's page (Sec-Fetch-Site).
  */
 export function registerHostCheck(
 	app: FastifyInstance,
@@ -80,6 +81,26 @@ export function registerHostCheck(
 			![...allowed].some((h) => origin === `http://${h}`)
 		) {
 			return reply.code(403).send(forbidden);
+		}
+		// What another site's page sets off: a write, or a GET that opens a
+		// review (/pr/..., which clones and writes refs). Allowed: typed or
+		// bookmarked (none), the server's own pages, and a link the reviewer
+		// clicked elsewhere (a top-level navigation with a user's activation).
+		const site = request.headers["sec-fetch-site"];
+		const opens = request.method === "GET" && /^\/pr\//.test(request.url);
+		if (
+			(write || opens) &&
+			site !== undefined &&
+			site !== "none" &&
+			site !== "same-origin"
+		) {
+			const h = request.headers;
+			const clicked =
+				opens &&
+				h["sec-fetch-mode"] === "navigate" &&
+				h["sec-fetch-dest"] === "document" &&
+				h["sec-fetch-user"] === "?1";
+			if (!clicked) return reply.code(403).send(forbidden);
 		}
 	});
 }

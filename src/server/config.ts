@@ -38,6 +38,12 @@ type Json = Record<string, unknown>;
 const isObject = (v: unknown): v is Json =>
 	typeof v === "object" && v !== null && !Array.isArray(v);
 
+/** A view's name as read: trimmed, "My PRs" when it has none. */
+const viewName = (view: Json): string =>
+	typeof view.name === "string" && view.name.trim()
+		? view.name.trim()
+		: DEFAULT_VIEW;
+
 /** The file's JSON object; null when missing; a problem when it isn't one. */
 async function readRaw(): Promise<{ raw: Json | null; problem?: string }> {
 	let text: string;
@@ -106,10 +112,7 @@ function validate(raw: Json | null): ConfigRead {
 					problems.push(`views[${i}] is not an object; dropped`);
 					return;
 				}
-				const name =
-					typeof view.name === "string" && view.name.trim()
-						? view.name.trim()
-						: DEFAULT_VIEW;
+				const name = viewName(view);
 				const repos: string[] = [];
 				const list = view.repos ?? [];
 				if (!Array.isArray(list)) {
@@ -179,11 +182,20 @@ export function updateConfig(
 		}
 		const c = checked.config;
 		const keep = (v: unknown): Json => (isObject(v) ? v : {});
-		const rawViews = Array.isArray(raw?.views) ? raw.views : [];
+		// A view's unknown keys stay with that view: matched by its name as
+		// read, never by its place (bad views are dropped, views move).
+		const rawViews = (Array.isArray(raw?.views) ? raw.views : []).filter(
+			isObject,
+		);
+		const unused = rawViews.map((v) => ({ v, name: viewName(v) }));
+		const rawOf = (name: string): Json => {
+			const i = unused.findIndex((u) => u.name === name);
+			return i < 0 ? {} : (unused.splice(i, 1)[0]?.v ?? {});
+		};
 		const out = {
 			...(raw ?? {}),
 			serve: { ...keep(raw?.serve), ...c.serve },
-			views: c.views.map((v, i) => ({ ...keep(rawViews[i]), ...v })),
+			views: c.views.map((v) => ({ ...rawOf(v.name), ...v })),
 			refresh: { ...keep(raw?.refresh), ...c.refresh },
 		};
 		await writeFileAtomic(configFile(), `${JSON.stringify(out, null, "\t")}\n`);

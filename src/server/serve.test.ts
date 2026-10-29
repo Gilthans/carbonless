@@ -77,6 +77,19 @@ describe("startServer", () => {
 		expect(await accessKey()).toBe(again.key);
 	});
 
+	it("--new-key on a taken port keeps the key the running server checks", async () => {
+		const first = await start({ host: "0.0.0.0" });
+		const port = Number(new URL(first.url).port);
+		await expect(
+			start({ host: "0.0.0.0", port, newKey: true }),
+		).rejects.toThrow(/already in use/);
+		expect(await accessKey()).toBe(first.key);
+		const keyed = await fetch(
+			`http://127.0.0.1:${port}/api/version?key=${first.key}`,
+		);
+		expect(keyed.status).toBe(200);
+	});
+
 	it("takes host and port from config.json", async () => {
 		// A free port, then let go of it.
 		const port = await new Promise<number>((done) => {

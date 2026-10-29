@@ -22,6 +22,7 @@ import { newThreadProblem } from "./newThreads.js";
 import { type HeadSpec, parseHead } from "./pinnedHead.js";
 import {
 	type OpenRequest,
+	RefusedReviewError,
 	type SessionRegistry,
 	UnknownReviewError,
 } from "./registry.js";
@@ -65,9 +66,6 @@ export interface AppOptions {
 
 /** A malformed request (HTTP 400). */
 class BadRequestError extends Error {}
-
-/** A review that can't be opened: merged, closed, no such PR (HTTP 409). */
-class RefusedReviewError extends Error {}
 
 /** The review a `/api/r/:id/...` request is for (set by its preHandler). */
 const sessions = new WeakMap<FastifyRequest, Session>();
@@ -458,29 +456,12 @@ const escapeAttribute = (text: string) =>
 			] ?? c,
 	);
 
-/**
- * Opens the review; why it can't be (merged, closed, no such PR, gh not
- * logged in) is a RefusedReviewError. A git failure stays what it is.
- */
-async function openReview(
+/** Opens the review; a refusal is a RefusedReviewError (registry.ts). */
+const openReview = (
 	registry: SessionRegistry,
 	req: OpenRequest,
 	progress?: (message: string) => void,
-) {
-	try {
-		return await registry.open(req, progress);
-	} catch (error) {
-		if (
-			error instanceof GitError ||
-			error instanceof SessionClosedError ||
-			!(error instanceof Error)
-		) {
-			throw error;
-		}
-		if (error instanceof TypeError || error instanceof RangeError) throw error;
-		throw new RefusedReviewError(error.message);
-	}
-}
+) => registry.open(req, progress);
 
 /** POST /api/reviews' body: `{ pr, head?, asOf?, viewer? }`, all strings. */
 function parseOpenBody(body: unknown): OpenRequest {
