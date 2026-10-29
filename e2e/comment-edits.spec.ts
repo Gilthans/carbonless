@@ -210,9 +210,14 @@ test("an edit in progress survives a reload, opens its card and is listed in Dra
 	await openCard(c);
 	await c.getByRole("button", { name: "Edit" }).click();
 	await c.getByRole("textbox", { name: "Edit comment" }).fill("Half rewritten");
-	// The guard asks before the page goes.
-	page.once("dialog", (d) => void d.accept());
+	// Kept, it loses nothing: the reload doesn't ask.
+	const asked: string[] = [];
+	page.on("dialog", (d) => {
+		asked.push(d.type());
+		void d.accept();
+	});
 	await page.reload();
+	expect(asked).toEqual([]);
 	const again = card(page, "new.txt");
 	await expect(
 		again.getByRole("textbox", { name: "Edit comment" }),
@@ -223,6 +228,30 @@ test("an edit in progress survives a reload, opens its card and is listed in Dra
 	await again.getByRole("button", { name: "Save" }).click();
 	await expect.poll(() => bodies(p, 0)).toEqual(["Half rewritten"]);
 	await expect(humans(page).getByTestId("drafts-filter")).toHaveCount(0);
+});
+
+test("a reload in a delete's undo window asks first, and a dismissed ask stays", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	const p = await setup(pr);
+	const s = await startCrb();
+	await page.goto(s.url);
+	const c = card(page, "new.txt");
+	await openCard(c);
+	await confirmDelete(page, c.getByRole("button", { name: "Delete" }));
+	await expect(c.getByTestId("comment-deleted-row")).toBeVisible();
+	// Nothing is sent yet and nothing resends it: leaving would lose it.
+	const asked: string[] = [];
+	page.once("dialog", (d) => {
+		asked.push(d.type());
+		void d.dismiss();
+	});
+	await page.reload({ timeout: 2000 }).catch(() => {});
+	expect(asked).toEqual(["beforeunload"]);
+	await expect(c.getByTestId("comment-deleted-row")).toBeVisible();
+	await expect.poll(() => stored(p, 0).removed, { timeout: 10_000 }).toBe(true);
 });
 
 test("delete from an Overview card: Undo sends nothing; then the card fades and leaves", async ({

@@ -541,8 +541,8 @@ test("a reload with an unconfirmed reply posts it once", async ({
 	await send(c).click();
 	await expect(c.getByTestId("thread-comment-sending")).toBeVisible();
 	await page.reload();
-	// It asked first: the reply wasn't confirmed yet.
-	expect(asked).toContain("beforeunload");
+	// It didn't ask: its draft keeps it, and this page resends it.
+	expect(asked).toEqual([]);
 	const again = card(page, "new.txt");
 	await expect(again.getByRole("img", { name: "2 comments" })).toBeVisible({
 		timeout: 10_000,
@@ -567,8 +567,14 @@ test("the Drafts filter lists a thread with a draft, kept across a reload", asyn
 	await box.press("Escape");
 	const chip = humans(page).getByTestId("drafts-filter");
 	await expect(chip).toHaveText("1 draft");
-	page.once("dialog", (d) => void d.accept());
+	// A kept draft loses nothing: the reload doesn't ask.
+	const asked: string[] = [];
+	page.on("dialog", (d) => {
+		asked.push(d.type());
+		void d.accept();
+	});
 	await page.reload();
+	expect(asked).toEqual([]);
 	await humans(page).getByTestId("drafts-filter").click();
 	const list = humans(page).getByRole("list", { name: "Threads with a draft" });
 	await expect(list.getByTestId("thread")).toHaveCount(1);

@@ -214,6 +214,15 @@ unresolving one, and editing or deleting one of the viewer's comments in one
   text, the deleted comment left out).
 - **One thread, one write at a time.** Replies, resolving, edits and
   deletes on one thread run in the order asked, never at once.
+- **Leaving asks only when something would be lost** (owner: "refresh
+  should only be dirty if information is lost"; `useUnsavedGuard`). It
+  asks for review states not yet stored, and for a resolve, unresolve or
+  delete not yet on GitHub (a delete in its undo window too: nothing is
+  sent yet and no later page sends it). It never asks for drafts (reply,
+  edit, new thread) or for replies, edits and new threads on their way:
+  `localStorage` keeps them and the next page resends what was sent. Only
+  while storage can't keep them (a private window, blocked site data) do
+  they ask.
 - **Tests write only to the fake gh.** Real writes happen only on the
   owner's scratch PR (see `CLAUDE.md`).
 

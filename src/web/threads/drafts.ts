@@ -231,6 +231,12 @@ export class DraftStore {
 
 	get = (): readonly Draft[] => this.#drafts;
 
+	/**
+	 * Every draft is in storage, so a reload keeps it: bound to a PR and
+	 * the last write reached storage. Not while memory is all there is.
+	 */
+	durable = (): boolean => this.#key !== null && !this.#behind;
+
 	subscribe = (listener: () => void) => {
 		this.#listeners.add(listener);
 		return () => {
@@ -538,7 +544,7 @@ export const kept = (d: Draft) =>
 	d.create !== undefined ||
 	d.text.trim() !== "";
 
-/** Something here would be lost by leaving the page. */
+/** Something here not yet on GitHub (what the Drafts filter lists). */
 export const unsent = (drafts: readonly Draft[]) => drafts.some(kept);
 
 const stores = new WeakMap<QueryClient, DraftStore>();
@@ -585,4 +591,10 @@ export function useNewDrafts(): Draft[] {
 export function useDrafts(): readonly Draft[] {
 	const store = draftsFor(useQueryClient());
 	return useSyncExternalStore(store.subscribe, store.get, store.get);
+}
+
+/** Whether the drafts are in storage, so a reload keeps them (DraftStore.durable). */
+export function useDraftsDurable(): boolean {
+	const store = draftsFor(useQueryClient());
+	return useSyncExternalStore(store.subscribe, store.durable, store.durable);
 }

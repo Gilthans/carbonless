@@ -23,7 +23,7 @@ The owner's words:
 - **Comment on a file:** every file, whatever its kind: text, empty, binary, renamed-only, mode-only, deleted or a submodule.
 - **Selection opens actions, not just a comment box.** "Comment" is the first action. The shape takes "Ask Claude" and other conversation kinds later without reworking the selection or the anchor.
 - **The lines carbonless marks are exactly GitHub's lines** (owner: "the review line that was marked is exactly the same one as appears in github"). A thread's highlighted lines in carbonless are the lines GitHub shows for it, for new threads and existing ones; the span always sits inside them. What carbonless sends is what it then reads back and shows, and the real-GitHub check compares them (`pnpm compare-threads`).
-- **Same feel as replies:** the new thread shows at once (the clock while sending); a yellow notice after 5 s; transient errors retry with backoff; anything else is red with the message and Retry. The draft is never lost: it survives a reload, shows in the Drafts filter, and leaving with one asks first.
+- **Same feel as replies:** the new thread shows at once (the clock while sending); a yellow notice after 5 s; transient errors retry with backoff; anything else is red with the message and Retry. The draft is never lost: it survives a reload and shows in the Drafts filter, so leaving with one doesn't ask (owner, later: "refresh should only be dirty if information is lost").
 
 ## Non-goals (this stage)
 

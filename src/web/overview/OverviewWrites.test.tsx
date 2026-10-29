@@ -918,7 +918,7 @@ describe("editing and deleting from an Overview card", () => {
 		expect(within(card).getByTestId("comment-edited")).toBeVisible();
 	});
 
-	it("an opener edit draft opens its card, is listed in Drafts and asked about on leaving", async () => {
+	it("an opener edit draft opens its card, is listed in Drafts, and leaving doesn't ask (it's kept)", async () => {
 		const user = userEvent.setup();
 		openerMore = { author: "octo", viewerCan: { update: true, delete: true } };
 		const client = renderOverview({}, [
@@ -936,9 +936,11 @@ describe("editing and deleting from an Overview card", () => {
 		expect(
 			await within(list).findByRole("textbox", { name: "Edit comment" }),
 		).toHaveValue("a, reworded");
+		// The session's PR binds the drafts to storage: a reload keeps it.
+		await waitFor(() => expect(draftsFor(client).durable()).toBe(true));
 		const ask = new Event("beforeunload", { cancelable: true });
 		window.dispatchEvent(ask);
-		expect(ask.defaultPrevented).toBe(true);
+		expect(ask.defaultPrevented).toBe(false);
 	});
 
 	it("deleting the only comment: Deleted · Undo, then sent; the card fades and leaves", async () => {

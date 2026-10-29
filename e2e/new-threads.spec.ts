@@ -246,7 +246,14 @@ test("a comment's draft survives a reload and counts in Drafts", async ({
 		.getByTestId("new-thread")
 		.getByRole("textbox", { name: "Comment" })
 		.fill("Half a thought");
+	// Kept, it loses nothing: the reload doesn't ask.
+	const asked: string[] = [];
+	page.on("dialog", (d) => {
+		asked.push(d.type());
+		void d.accept();
+	});
 	await page.reload();
+	expect(asked).toEqual([]);
 	await page.goto(s.url);
 	await expect(page.getByTestId("drafts-filter")).toContainText("1 draft");
 	const again = await openFile(page, s.url, GREET);
