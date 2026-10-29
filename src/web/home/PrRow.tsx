@@ -336,7 +336,7 @@ function TitleLink({ row }: { row: HomeRow }) {
 						<LinkExternalIcon
 							size={12}
 							aria-hidden
-							className="ml-1.5 text-faint"
+							className="ml-1.5 inline text-faint"
 						/>
 					</a>
 				)}

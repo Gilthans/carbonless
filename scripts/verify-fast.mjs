@@ -86,9 +86,10 @@ const E2E_MAP = [
 		["new-threads"],
 	],
 	[/^src\/server\/review\//, ["files", "persistence"]],
-	[/^src\/server\/home\/|^src\/shared\/home\.ts$/, ["home-api"]],
+	[/^src\/server\/home\/|^src\/shared\/home\.ts$/, ["home-api", "home"]],
+	[/^src\/web\/home\/|^src\/web\/router\.tsx$/, ["home"]],
 	[/^src\/web\/code\//, ["invisibles", "whitespace", "files"]],
-	[/^src\/web\/shortcuts\.tsx$/, ["shortcuts", "settings"]],
+	[/^src\/web\/shortcuts\.tsx$/, ["shortcuts", "settings", "home"]],
 	[
 		/^src\/web\/(Settings\.tsx|viewSettings\.ts)$/,
 		["settings", "invisibles", "whitespace", "shortcuts"],
