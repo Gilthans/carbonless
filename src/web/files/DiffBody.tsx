@@ -2103,11 +2103,14 @@ function WhitespaceCluster(props: {
 }
 
 /** The arrow keys: a step through the number buttons, or a side to go to. */
-const ARROWS: Record<string, { step: 1 | -1; side?: DiffSide }> = {
+const ARROWS: Record<
+	string,
+	{ step: 1 | -1; side?: undefined } | { side: DiffSide; step?: undefined }
+> = {
 	ArrowDown: { step: 1 },
 	ArrowUp: { step: -1 },
-	ArrowLeft: { step: -1, side: "LEFT" },
-	ArrowRight: { step: 1, side: "RIGHT" },
+	ArrowLeft: { side: "LEFT" },
+	ArrowRight: { side: "RIGHT" },
 };
 
 /** The column a number button is in. */
@@ -2207,6 +2210,9 @@ function usePicker(
 		roving: roving ?? (first ? pickKey(codeCellOf(first)) : null),
 		onPointerDown: (e) => {
 			pointer.current = e.pointerType;
+			// A press chooses a button, not a column: the keyboard goes on
+			// from that button's own.
+			column.current = null;
 			if (e.pointerType !== "mouse" || e.button !== 0) return;
 			const t = targetOf(e.currentTarget);
 			if (!t) return;

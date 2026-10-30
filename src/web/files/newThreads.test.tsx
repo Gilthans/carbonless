@@ -1530,6 +1530,25 @@ describe("side by side (the cells contract)", () => {
 		]);
 	});
 
+	it("a mouse press on a context row's button forgets the keyboard's column: Down goes on in that button's own", async () => {
+		const { user } = setup();
+		await loaded();
+		const button = (side: "LEFT" | "RIGHT", n: number) =>
+			within(number(side, n)).getByRole("button");
+		// Up the old column onto the context rows above the pairs.
+		button("LEFT", 3).focus();
+		await user.keyboard("{ArrowUp}");
+		expect(button("RIGHT", 2)).toHaveFocus();
+		await user.keyboard("{ArrowUp}");
+		expect(button("RIGHT", 1)).toHaveFocus();
+		// A click on the other context row's button, then Down: its own
+		// column (new), not the one the keyboard was in.
+		press(number("RIGHT", 2));
+		expect(button("RIGHT", 2)).toHaveFocus();
+		await user.keyboard("{ArrowDown}");
+		expect(button("RIGHT", 3)).toHaveFocus();
+	});
+
 	it("every code cell carries its side, a blank cell neither a side nor the cell mark", async () => {
 		setup();
 		await loaded();
