@@ -105,7 +105,10 @@ export function turnOf(
 		}
 		return author;
 	}
-	// 8
+	// 8: on the viewer's own PR, it's theirs to request a review.
+	if (sameLogin(pr.author.login, viewer)) {
+		return { kind: "people", logins: [pr.author.login], label: "request" };
+	}
 	return { kind: "no-reviewer" };
 }
 

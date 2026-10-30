@@ -51,7 +51,7 @@ export function parseAnnotationOp(
 		}
 		case "wait":
 			if (typeof b.who !== "string" || !LOGIN.test(b.who)) {
-				throw fail("who must be a GitHub login or me");
+				throw fail("who must be a GitHub login (your own means me)");
 			}
 			return { op: "wait", who: b.who };
 		case "note":

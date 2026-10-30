@@ -331,7 +331,7 @@ code-review meaning.
   | 5 | approved | author, labelled "merge" |
   | 6 | reviewers exist, last activity (commit, comment, review) was the author's | the reviewers who have reviewed |
   | 7 | reviewers exist, last activity was a reviewer's | author |
-  | 8 | no reviewers | "no reviewer" |
+  | 8 | no reviewers | the viewer's own PR: you ("No reviewer: request one"); anyone else's: "no reviewer" |
 
   A manual waiting-on (below) overrides the column for the viewer. This
   table is the seed of the attention set; it's data on the row, never a
@@ -386,10 +386,12 @@ Semantics:
   default. Activity = the PR's GitHub `updatedAt` is later than the moment
   of snoozing **(call)**: a push, comment, review or state change all
   count; nothing else does.
-- **Waiting on** = a login, or "me". The PR hides until the named person's
-  activity (a commit, comment or review by them later than the annotation)
-  or until cleared. "Me" never hides and shows the row under "you" in the
-  turn column.
+- **Waiting on** = a login; "Me" is the viewer's own login. The PR hides
+  until the named person's activity (a commit, comment or review by them
+  later than the annotation) or until cleared (Wake up, or Clear in the
+  Waiting-on panel). "Me" never hides and shows the row under "you" in the
+  turn column. Teams (`org/slug`) are not offered: a team never acts
+  itself, so a wait on one could never end.
 - **Note** = free text shown as a dashed pill on the row; private to the
   reviewer, never posted to GitHub.
 - Each is cleared by its own action (Wake up clears snooze and waiting-on;
@@ -408,7 +410,7 @@ by the builder, and departed from only with a stated reason)**:
   | Type | Payload |
   |---|---|
   | `pr-snoozed` | PR number, `until` (ms since epoch), `wakeOnActivity` |
-  | `pr-waiting-on` | PR number, `who` (login or `me`) |
+  | `pr-waiting-on` | PR number, `who` (a login; the reviewer's own means me) |
   | `pr-note` | PR number, `text` (empty clears) |
   | `pr-cleared` | PR number, `kind` (`snooze` / `waiting`) |
 
@@ -548,6 +550,23 @@ Listed in the `?` help like the review page's.
 - Component structure on the web side (TanStack Query for Home's data and
   refresh, TanStack Router routes for `/`, `/r/<id>/...`, `/pr/...`).
 - Wording of hints, empty states and tooltips, within principle 6.
+
+## Changes in implementation
+
+Calls made while building, each open to the owner's overrule:
+
+- **Home's refresh starts on the first Home request**, not when the
+  server starts (F3, call): a server that only hands out review links
+  spends no GitHub budget. After a restart, the first Home open asks for
+  a refresh and shows the sections once it returns.
+- **Home's coverage is in lines**, falling back to clusters when only
+  clusters without changed lines are left (F4, call). The Files page's
+  unit is a browser setting the server can't see, so "37 / 120" on Home
+  can differ from the unit the Files page shows (`docs/faq.md`).
+- **A row whose only started review is pinned opens that review** (F5,
+  call), not a new plain one: with one review there are no sub-rows, so
+  the pinned review would otherwise be unreachable from Home, and the
+  row's coverage is that review's.
 
 ## Open questions for the owner
 

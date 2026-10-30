@@ -4,7 +4,8 @@
 export type SectionId = "mine" | "reviewing" | "grabs" | "other" | "closed";
 export type Turn =
 	| { kind: "none" }
-	| { kind: "people"; logins: string[]; label?: "merge" } // viewer first when present
+	// viewer first when present; "request": the viewer's own PR, no reviewer yet
+	| { kind: "people"; logins: string[]; label?: "merge" | "request" }
 	| { kind: "no-reviewer" };
 export interface Person {
 	login: string;

@@ -648,6 +648,38 @@ describe("HomeService, fix round 1", () => {
 	});
 });
 
+describe("HomeService, final round", () => {
+	it("every read lists the started reviews again: coverage and newly started PRs are current without a refresh", async () => {
+		fx = createHomeFixture({ repos: { "acme/api": { prs: scenarioPrs() } } });
+		const review = (number: number, done: number): StartedReview => ({
+			owner: "acme",
+			repo: "api",
+			number,
+			asOf: null,
+			id: `01jb${String(number).padStart(22, "0")}`,
+			pinnedHead: null,
+			head: String(number).padStart(40, "0"),
+			lastActedAt: iso(T0 - H),
+			coverage: { done, total: 120, unit: "lines" },
+		});
+		let list = [review(3, 120)];
+		const config = memoryConfig(["acme/api"]);
+		const home = new HomeService({
+			config: config.access,
+			started: { list: async () => list },
+			now: () => T0,
+		});
+		const first = await home.refresh();
+		expect(row(first, 3)?.reviews[0]?.coverage.done).toBe(120);
+		// Two clusters marked unreviewed again, and PR 4 started: no refresh.
+		list = [review(3, 100), review(4, 1)];
+		const next = await home.view();
+		expect(row(next, 3)?.reviews[0]?.coverage.done).toBe(100);
+		expect(row(next, 4)?.reviews).toHaveLength(1);
+		expect(ids(next, "reviewing")).toContain(4);
+	});
+});
+
 describe("configAccess", () => {
 	it("changes Home's parts and keeps the rest of crb's config", async () => {
 		type Crb = HomeConfig & { serve: { host: string; port: number } };

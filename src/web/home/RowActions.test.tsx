@@ -369,4 +369,30 @@ describe("RowActions", () => {
 			expect(posted(api)).toEqual([{ op: "wait", who: "dan" }]),
 		);
 	});
+
+	it("leaves teams out of Waiting on: a team never acts, so the wait could never end", async () => {
+		setup(() => base, {
+			...base,
+			reviewers: ["noa", "acme/backend"],
+			people: { noa: person("noa"), "acme/backend": person("acme/backend") },
+		});
+		await screen.findByText("Seven");
+		await userEvent.click(screen.getByRole("button", { name: "Waiting on" }));
+		const pop = screen.getByRole("dialog", { name: "Waiting on" });
+		expect(
+			within(pop).queryByRole("button", { name: /acme\/backend/ }),
+		).toBeNull();
+		within(pop).getByRole("button", { name: /noa/ });
+	});
+
+	it("hides 'Me' while the viewer's login is unknown", async () => {
+		fakeApi(
+			view({ reviewing: [base] }, { viewer: { login: "", avatarUrl: "" } }),
+		);
+		renderWithQuery(<HomePage />);
+		await screen.findByText("Seven");
+		await userEvent.click(screen.getByRole("button", { name: "Waiting on" }));
+		const pop = screen.getByRole("dialog", { name: "Waiting on" });
+		expect(within(pop).queryByRole("button", { name: "Me" })).toBeNull();
+	});
 });

@@ -261,7 +261,7 @@ compare-and-swap). Written by `src/server/home/inbox.ts`.
 | Type | Payload |
 |---|---|
 | `pr-snoozed` | `pr` (number), `until` (ms since epoch), `wakeOnActivity` |
-| `pr-waiting-on` | `pr`, `who` (a GitHub login, or `me`) |
+| `pr-waiting-on` | `pr`, `who` (a GitHub login; the reviewer's own means me) |
 | `pr-note` | `pr`, `text` (empty clears the note) |
 | `pr-cleared` | `pr`, `kind` (`snooze` or `waiting`) |
 

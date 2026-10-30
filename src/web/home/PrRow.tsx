@@ -164,7 +164,10 @@ function TurnCell({ row, viewer }: { row: HomeRow; viewer: string }) {
 		return <span className="shrink-0 text-muted">no reviewer</span>;
 	}
 	const names = turn.logins.map((l) => (same(l, viewer) ? "you" : l));
-	const label = `Turn: ${names.join(", ")}${turn.label === "merge" ? ", merge" : ""}`;
+	const label =
+		turn.label === "request"
+			? "No reviewer: request one"
+			: `Turn: ${names.join(", ")}${turn.label === "merge" ? ", merge" : ""}`;
 	const first = names[0] ?? "";
 	return (
 		<Sign

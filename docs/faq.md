@@ -123,3 +123,13 @@ across an unchanged line stays a change (a loop wrapped in an `if` shows
 the `if`, its `}` and the `log` line that crossed the loop's closing brace;
 the rest of the body goes quiet). It can show a little more as changed
 than `git diff -w` would, never less.
+
+## Why does Home show coverage in lines, when the Files page shows files?
+
+Home counts a started review's coverage in changed lines, the finest unit,
+so "37 / 120" never looks further along than the review is. When every
+changed line is reviewed but clusters without changed lines (a rename, a
+mode change) are left, it counts clusters instead, so it never reads as
+done early. The Files page's Lines / Clusters / Files choice is a setting
+of your browser, which the server that builds Home can't see, so the two
+can show different units for the same review.

@@ -142,6 +142,8 @@ function WaitPanel(props: {
 	const people: { person: Person; role: string }[] = [];
 	const add = (login: string, role: string) => {
 		if (same(login, viewer)) return;
+		// A team (org/slug) never acts itself: a wait on it could never end.
+		if (login.includes("/")) return;
 		if (people.some((p) => same(p.person.login, login))) return;
 		const person = same(login, row.author.login)
 			? row.author
@@ -162,15 +164,17 @@ function WaitPanel(props: {
 	};
 	return (
 		<div className="space-y-0.5">
-			<button
-				type="button"
-				aria-pressed={pressed(viewer)}
-				className={`${itemClass} aria-pressed:bg-pressed`}
-				// "Me" is the viewer's own login: never hides, the turn says you.
-				onClick={() => props.onPick({ op: "wait", who: viewer })}
-			>
-				Me
-			</button>
+			{viewer && (
+				<button
+					type="button"
+					aria-pressed={pressed(viewer)}
+					className={`${itemClass} aria-pressed:bg-pressed`}
+					// "Me" is the viewer's own login: never hides, the turn says you.
+					onClick={() => props.onPick({ op: "wait", who: viewer })}
+				>
+					Me
+				</button>
+			)}
 			{people.map(({ person, role }) => (
 				<button
 					key={person.login}

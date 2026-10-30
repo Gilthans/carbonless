@@ -563,4 +563,28 @@ describe("HomePage", () => {
 		).toBeNull();
 		within(p).getByRole("img", { name: "New commits since your review" });
 	});
+
+	it("the viewer's own PR with no reviewer is their turn, to request one", async () => {
+		fakeApi(
+			view({
+				mine: [
+					row({
+						author: person("dan"),
+						turn: { kind: "people", logins: ["dan"], label: "request" },
+					}),
+				],
+			}),
+		);
+		renderWithQuery(<HomePage />);
+		const turn = await screen.findByRole("img", {
+			name: "No reviewer: request one",
+		});
+		expect(within(turn).getByTestId("avatar-dan")).toHaveAttribute(
+			"data-me",
+			"true",
+		);
+		expect(turn).toHaveTextContent("you");
+		await userEvent.hover(turn);
+		expect(await shownTooltip()).toHaveTextContent("No reviewer: request one");
+	});
 });

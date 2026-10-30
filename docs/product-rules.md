@@ -231,3 +231,14 @@ exactly once, and dropping the lines shown as added or removed from the two
 sides leaves them whitespace-equal, so a block moved across an unchanged
 line, or a line that crossed one, is never shown as whitespace-only. It may
 show more as changed than `git diff -w` does, never less.
+
+## Home never hides a PR on its own
+
+Home lists PRs; the reviewer decides what to set aside. Only the reviewer's
+own snooze or waiting-on hides a row (annotations are `by: "human"` events,
+never written by anything automatic). A hidden row stays in its section,
+counted in the section's footer ("2 snoozed · 1 waiting", any other reason
+as "N hidden"), and one click reveals it with its reason and Wake up. A
+long section folds behind "show N more", which only folds: the count is
+every row. Nothing automatic, AI or not, hides or drops a PR, and Home
+reads review progress but never writes it.

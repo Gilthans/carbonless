@@ -241,8 +241,18 @@ describe("turnOf (first match wins)", () => {
 		});
 	});
 
-	it("8: no reviewers → no reviewer", () => {
+	it("8: no reviewers → no reviewer; on the viewer's own PR, the viewer, to request one", () => {
 		expect(turn(pr())).toEqual({ kind: "no-reviewer" });
+		expect(turn(pr({ author: person("Octo") }))).toEqual({
+			kind: "people",
+			logins: ["Octo"],
+			label: "request",
+		});
+		// A draft is the author's anyway (rule 2), without the label.
+		expect(turn(pr({ author: person("Octo"), draft: true }))).toEqual({
+			kind: "people",
+			logins: ["Octo"],
+		});
 	});
 });
 

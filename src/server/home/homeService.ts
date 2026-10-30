@@ -366,7 +366,8 @@ export class HomeService {
 			this.#refreshedAt = begun;
 			this.#delay = base;
 		}
-		return this.view();
+		// Its started list was just read.
+		return this.#view();
 	}
 
 	#remember(pr: PrFacts, known: ReadonlyMap<number, Known>, at: number) {
@@ -376,8 +377,25 @@ export class HomeService {
 		this.#facts.set(prSlug(pr), { facts: pr, readAt });
 	}
 
-	/** Home as of now, from the cache, the inbox refs and the clock. */
+	/**
+	 * Home as of now, from the cache, the inbox refs and the clock. The
+	 * started reviews are listed again on every read (one for-each-ref per
+	 * clone, snapshots cached): coverage is never staler than the progress
+	 * refs, and a review started since the last refresh shows at once.
+	 */
 	async view(): Promise<HomeView> {
+		const { viewer } = await this.#viewerOrBlank();
+		if (viewer.login) {
+			try {
+				this.#startedList = await this.#started.list(slugify(viewer.login));
+			} catch {
+				// Keep the last list; the next refresh says why.
+			}
+		}
+		return this.#view();
+	}
+
+	async #view(): Promise<HomeView> {
 		const now = this.#now();
 		const { config, problems } = await this.#config.read();
 		const first = config.views[0];
