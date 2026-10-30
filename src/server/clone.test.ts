@@ -19,11 +19,15 @@ import {
 } from "../../test/fake-gh/scenario";
 import {
 	createGitFixture,
+	GIT_TEST_TIMEOUTS,
 	type GitFixture,
 	testGitEnv,
 } from "../../test/git-fixture";
 import { clonePath, ensureClone, fetchPr, withRepoLock } from "./clone";
 import { GhError, type PrMeta } from "./gh";
+
+// Real git and fake-gh processes: see GIT_TEST_TIMEOUTS.
+vi.setConfig(GIT_TEST_TIMEOUTS);
 
 const git = (cwd: string, ...args: string[]) =>
 	execFileSync("git", args, {

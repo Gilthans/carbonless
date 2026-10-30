@@ -4,13 +4,15 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { writeFileAtomic } from "../../test/fake-gh/atomic.mjs";
 import {
+	letThrough,
 	prView,
+	release,
 	reviewThread,
 	threadComment,
 	timelineCommit,
 	timelineReview,
 } from "../../test/fake-gh/scenario";
-import { testGitEnv } from "../../test/git-fixture";
+import { GIT_TEST_TIMEOUTS, testGitEnv } from "../../test/git-fixture";
 import { createPrFixture, type PrFixture } from "../../test/pr-fixture";
 import { clonePath } from "./clone";
 import { GhError } from "./errors";
@@ -18,6 +20,9 @@ import { parseHead } from "./pinnedHead";
 import { StaleSnapshotError } from "./review/reviews";
 import { refusal, Session, UnknownReadError } from "./session";
 import { ThreadCodeSource } from "./threadCode";
+
+// Real git and fake-gh processes: see GIT_TEST_TIMEOUTS.
+vi.setConfig(GIT_TEST_TIMEOUTS);
 
 describe("Session", () => {
 	let pr: PrFixture;
@@ -276,17 +281,20 @@ describe("Session", () => {
 			prs: {
 				12: { view: prView({ headRefOid: pr.head(), baseRefName: "main" }) },
 			},
-			prViewDelayMs: 1500,
+			hold: ["prView"],
 		});
 		const views = () => (pr.ghLog().match(/^pr view /gm) ?? []).length;
 		const before = views();
 		const check = s.checkHead();
-		// The check's gh has read the old head and is now sleeping.
+		// The check's gh has read the old head and is now held.
 		await vi.waitFor(() => expect(views()).toBe(before + 1), {
-			timeout: 5000,
+			timeout: 10_000,
 		});
 		const newHead = pr.moveHead({ "later.txt": "later\n" });
+		// The refresh's own pr view goes; the check's answers after it.
+		letThrough(process.env.CRB_FAKE_GH ?? "", "prView");
 		expect((await s.refresh()).currentHead).toBe(newHead);
+		release(process.env.CRB_FAKE_GH ?? "", "prView");
 		expect((await check).currentHead).toBe(newHead);
 		expect(s.info()).toMatchObject({
 			currentHead: newHead,
@@ -519,8 +527,10 @@ describe("Session", () => {
 		});
 
 		it("stops its background reads on close: no gh or git starts after", async () => {
+			// The summary is held until the test lets it go: a close that
+			// waited for it would never finish.
 			pr.scenario({
-				threadsDelayMs: 1500,
+				hold: ["threads"],
 				prs: {
 					12: {
 						view: prView({ headRefOid: pr.head(), baseRefName: "main" }),
@@ -530,10 +540,8 @@ describe("Session", () => {
 			});
 			const s = await Session.open(pr.arg, process.cwd());
 			const { readId } = await s.overview();
-			const started = Date.now();
 			await s.close();
-			// The slow summary was killed, not waited for.
-			expect(Date.now() - started).toBeLessThan(1200);
+			release(process.env.CRB_FAKE_GH ?? "", "threads");
 			await expect(s.threads(readId, "full")).rejects.toThrow();
 			const calls = pr.ghLog();
 			await new Promise((r) => setTimeout(r, 200));
@@ -544,7 +552,7 @@ describe("Session", () => {
 		it("stops on close the reads it no longer keeps: a failed overview's, and those pushed out", async () => {
 			const slowThreads = (over: Record<string, unknown> = {}) =>
 				pr.scenario({
-					threadsDelayMs: 1500,
+					hold: ["threads"],
 					...over,
 					prs: {
 						12: {
@@ -560,26 +568,30 @@ describe("Session", () => {
 			// More reads than are kept: the oldest is pushed out, still running.
 			slowThreads();
 			for (let i = 0; i < 4; i++) await s.overview(0);
-			const started = Date.now();
+			// Closes while every summary is still held (not waiting for them).
 			await s.close();
-			expect(Date.now() - started).toBeLessThan(1200);
-			// Past when every summary would have come in: no content or other
-			// gh call follows, from any of them.
+			// Then they may answer: no content or other gh call follows, from
+			// any of them.
 			const calls = pr.ghLog();
+			release(process.env.CRB_FAKE_GH ?? "", "threads");
 			await new Promise((r) => setTimeout(r, 1800));
 			expect(pr.ghLog()).toBe(calls);
 		});
 
 		it("stops a Refresh under way on close, not waiting for its gh", async () => {
 			const s = await Session.open(pr.arg, process.cwd());
-			pr.scenario({ prViewDelayMs: 3000 });
+			const views = () => pr.ghLog().match(/^pr view/gm)?.length ?? 0;
+			const before = views();
+			// GitHub answers the Refresh's pr view only once the test lets it.
+			pr.scenario({ hold: ["prView"] });
 			const refreshing = s.refresh();
 			refreshing.catch(() => {});
-			await new Promise((r) => setTimeout(r, 200));
-			const started = Date.now();
+			await vi.waitFor(() => expect(views()).toBeGreaterThan(before), {
+				timeout: 10_000,
+			});
 			await s.close();
-			expect(Date.now() - started).toBeLessThan(2000);
 			await expect(refreshing).rejects.toThrow();
+			release(process.env.CRB_FAKE_GH ?? "", "prView");
 		});
 
 		it("builds thread code from the clone, with rows after the range", async () => {

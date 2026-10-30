@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
 import { cacheUntilRejected, highlightLine, languageFor } from "./highlight";
 
 describe("languageFor", () => {
@@ -26,6 +26,13 @@ describe("languageFor", () => {
 });
 
 describe("highlightLine", () => {
+	// The first use imports shiki, its regex engine and the grammar, and
+	// compiles it: real work a loaded machine can take seconds over. Done
+	// here, with its own time, rather than inside the test's 5 s.
+	beforeAll(async () => {
+		await highlightLine("", "csharp");
+	}, 60_000);
+
 	it("colors code in a known language", async () => {
 		const tokens = await highlightLine("public class Foo { }", "csharp");
 		expect(tokens.map((t) => t.content).join("")).toBe("public class Foo { }");

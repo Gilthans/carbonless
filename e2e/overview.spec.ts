@@ -1,5 +1,6 @@
 import type { Page } from "@playwright/test";
 import {
+	release,
 	reviewThread,
 	suggestionHtml,
 	threadComment,
@@ -815,10 +816,9 @@ test("the page never waits for the threads: lists, then cards, fill in as they c
 			]),
 		),
 	});
-	// The summaries are slow, the comments' text slower.
+	// The summaries wait, then the comments' text, each until let go.
 	p.editScenario((s) => {
-		s.threadsDelayMs = 1500;
-		s.threadContentDelayMs = 2500;
+		s.hold = ["threads", "threadContent"];
 	});
 	const s = await startCrb();
 	await page.goto(s.url);
@@ -830,6 +830,7 @@ test("the page never waits for the threads: lists, then cards, fill in as they c
 	).toBeVisible();
 	await expect(ready.getByTestId("threads-loading")).toHaveCount(2);
 	await expect(humans.getByTestId("thread")).toHaveCount(0);
+	release(p.scenarioPath, "threads");
 	// Then every card's header (the counts exact), the text still a frame.
 	await expect(humans.getByTestId("thread")).toHaveCount(5);
 	await expect(humans.getByText("12 unresolved")).toBeVisible();
@@ -844,6 +845,7 @@ test("the page never waits for the threads: lists, then cards, fill in as they c
 				document.documentElement.clientWidth,
 		),
 	).toBe(0);
+	release(p.scenarioPath, "threadContent");
 	// Then the text and code.
 	await expect(humans.getByTestId("thread-body").first()).toHaveText(
 		"Point 11",
@@ -1536,7 +1538,7 @@ test("slow comments show a spinner, then the replies", async ({
 }) => {
 	const p = await pr({ threads: [threeComments] });
 	p.editScenario((s) => {
-		s.commentsDelayMs = 3000;
+		s.hold = ["comments"];
 	});
 	const s = await startCrb();
 	await page.goto(s.url);
@@ -1545,6 +1547,7 @@ test("slow comments show a spinner, then the replies", async ({
 	await expect(
 		thread.getByRole("status", { name: "Loading comments" }),
 	).toBeVisible();
+	release(p.scenarioPath, "comments");
 	await expect(thread.getByTestId("thread-comment")).toHaveCount(2, {
 		timeout: 15_000,
 	});
@@ -1562,8 +1565,8 @@ test("a thread deleted after the list was read: the comments answer says deleted
 	const id = `T${p.number}-0`;
 	p.editScenario((s) => {
 		s.deletedThreads = [id];
-		// The cards' text comes late: the toggle opens before it does.
-		s.threadContentDelayMs = 3000;
+		// The cards' text waits: the toggle opens before it comes.
+		s.hold = ["threadContent"];
 	});
 	const answered = page.waitForResponse((r) =>
 		r.url().includes("/api/comments"),
@@ -1575,6 +1578,7 @@ test("a thread deleted after the list was read: the comments answer says deleted
 	await expect(
 		thread.getByRole("status", { name: "Loading comments" }),
 	).toBeVisible();
+	release(p.scenarioPath, "threadContent");
 	// The comments endpoint is the path under test: it says deleted.
 	const body = (await (await answered).json()) as {
 		threads: { threadId: string; unavailable?: string }[];
@@ -1624,9 +1628,8 @@ test("comments are read before a card is opened", async ({
 	await answered;
 	const thread = card(page, "src/cache.ts");
 	await thread.getByRole("button", { name: "2 replies" }).click();
-	await expect(thread.getByTestId("thread-comment")).toHaveCount(2, {
-		timeout: 500,
-	});
+	// Already there: no spinner, ever (sawSpinner), however slow the page.
+	await expect(thread.getByTestId("thread-comment")).toHaveCount(2);
 	expect(
 		await page.evaluate(
 			() => (window as unknown as { sawSpinner?: boolean }).sawSpinner ?? false,

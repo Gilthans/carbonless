@@ -10,6 +10,14 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
+/**
+ * Test and hook timeouts for test files that run git and the fake gh. Each
+ * test spawns real processes: seconds of work on a machine running several
+ * suites at once, past vitest's 5 s default though nothing is wrong. A hang
+ * still fails, later.
+ */
+export const GIT_TEST_TIMEOUTS = { testTimeout: 30_000, hookTimeout: 30_000 };
+
 export interface FixtureCommit {
 	message: string;
 	files: Record<string, string>;

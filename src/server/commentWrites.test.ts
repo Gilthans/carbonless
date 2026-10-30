@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { writeFileAtomic } from "../../test/fake-gh/atomic.mjs";
 import {
 	editElsewhere,
@@ -8,6 +8,7 @@ import {
 	type Scenario,
 	threadComment,
 } from "../../test/fake-gh/scenario";
+import { GIT_TEST_TIMEOUTS } from "../../test/git-fixture";
 import { createPrFixture, type PrFixture } from "../../test/pr-fixture";
 import type { EditRequest, ThreadGone, ThreadUpdate } from "../shared/types";
 import { GhError } from "./errors";
@@ -19,6 +20,9 @@ import {
 	withoutComment,
 	writeWaits,
 } from "./threadWrites";
+
+// Real git and fake-gh processes: see GIT_TEST_TIMEOUTS.
+vi.setConfig(GIT_TEST_TIMEOUTS);
 
 /**
  * The viewer is the fake's gh login, Octo_Cat. T12-0: the viewer's

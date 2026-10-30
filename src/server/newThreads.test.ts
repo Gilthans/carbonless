@@ -1,14 +1,16 @@
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { writeFileAtomic } from "../../test/fake-gh/atomic.mjs";
 import {
 	listReplies,
 	prView,
+	release,
 	reviewThread,
 	type Scenario,
 	threadComment,
 } from "../../test/fake-gh/scenario";
+import { GIT_TEST_TIMEOUTS } from "../../test/git-fixture";
 import { createPrFixture, type PrFixture } from "../../test/pr-fixture";
 import type { NewThreadRequest } from "../shared/types";
 import { GhError, WriteRefusedError } from "./errors";
@@ -17,6 +19,9 @@ import { mapThreads } from "./overview";
 import { parseHead } from "./pinnedHead";
 import { Session } from "./session";
 import { writeWaits } from "./threadWrites";
+
+// Real git and fake-gh processes: see GIT_TEST_TIMEOUTS.
+vi.setConfig(GIT_TEST_TIMEOUTS);
 
 /** A thread as the fake gh stores it (scenario.ts ThreadNode, plus a new one's own fields). */
 interface Stored {
@@ -700,16 +705,18 @@ describe("commentLeft", () => {
 	it("never held up: the overview answers at once, true until GitHub says; then false, LEFT lines refused (400), RIGHT posted", async () => {
 		pr = createPrFixture();
 		// GitHub's merge base isn't the snapshot's left side.
+		// GitHub's answer waits until the overview is in: an overview that
+		// waited for it would never come.
 		scenario12({
 			mergeBases: { [pr.head()]: "e".repeat(40) },
-			compareDelayMs: 3000,
+			hold: ["compare"],
 		});
 		const s = await Session.open(pr.arg, process.cwd());
-		const started = Date.now();
 		const first = await s.overview();
-		expect(Date.now() - started).toBeLessThan(2500);
 		expect(first.commentLeft).toBe(true);
+		release(process.env.CRB_FAKE_GH ?? "", "compare");
 		expect(await s.commentLeft()).toBe(false);
+		expect(compares()).toBe(1);
 		expect((await s.overview()).commentLeft).toBe(false);
 		scenario12();
 		for (const req of [
@@ -769,17 +776,26 @@ describe("commentLeft", () => {
 
 	it("a post checks LEFT lines against the snapshot it started on, though a Refresh moves the session meanwhile", async () => {
 		pr = createPrFixture();
-		scenario12({ restListDelayMs: 2000 });
+		scenario12({ hold: ["restList"] });
 		const s = await Session.open(pr.arg, process.cwd());
 		const then = pr.head();
-		// A retry: it lists the PR's comments first (slow), then posts.
+		// A retry: it lists the PR's comments first (held), then posts.
 		const posting = s.startThread(line(then, "l9", { retry: true }));
-		await new Promise((r) => setTimeout(r, 300));
+		await vi.waitFor(
+			() => expect(pr.ghLog()).toMatch(/pulls\/12\/comments --paginate/),
+			{
+				timeout: 10_000,
+			},
+		);
 		// Meanwhile the PR moves on, to a head GitHub has another base for.
 		const now = pr.moveHead({ "later.txt": "later\n" });
-		scenario12({ mergeBases: { [now]: "e".repeat(40) } }, now);
+		scenario12(
+			{ mergeBases: { [now]: "e".repeat(40) }, hold: ["restList"] },
+			now,
+		);
 		await s.refresh();
 		expect(s.snapshot().head).toBe(now);
+		release(process.env.CRB_FAKE_GH ?? "", "restList");
 		const { thread } = await posting;
 		expect(thread.anchor).toMatchObject({
 			side: "LEFT",

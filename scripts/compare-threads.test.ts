@@ -9,8 +9,12 @@ import {
 	type Scenario,
 	threadComment,
 } from "../test/fake-gh/scenario";
+import { GIT_TEST_TIMEOUTS } from "../test/git-fixture";
 import { createPrFixture, type PrFixture } from "../test/pr-fixture";
 import { compareThreads, main } from "./compare-threads";
+
+// Real git and fake-gh processes: see GIT_TEST_TIMEOUTS.
+vi.setConfig(GIT_TEST_TIMEOUTS);
 
 /** a.txt's two changes (pr-fixture.ts): line 2 and line 26. */
 const HUNK_2 = "@@ -1,2 +1,2 @@\n line 1\n-line 2\n+line 2 changed";

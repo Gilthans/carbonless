@@ -1,6 +1,7 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
 	createGitFixture,
+	GIT_TEST_TIMEOUTS,
 	type GitFixture,
 } from "../../../test/git-fixture.js";
 import {
@@ -10,6 +11,9 @@ import {
 	tabWidthFor,
 } from "./editorconfig.js";
 import { buildSnapshot } from "./snapshot.js";
+
+// Real git and fake-gh processes: see GIT_TEST_TIMEOUTS.
+vi.setConfig(GIT_TEST_TIMEOUTS);
 
 describe("compileGlob", () => {
 	const matches = (glob: string, path: string) => compileGlob(glob).test(path);

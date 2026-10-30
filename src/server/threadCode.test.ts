@@ -1,8 +1,15 @@
 import { execFileSync } from "node:child_process";
 import { afterAll, describe, expect, it, vi } from "vitest";
-import { createGitFixture, testGitEnv } from "../../test/git-fixture";
+import {
+	createGitFixture,
+	GIT_TEST_TIMEOUTS,
+	testGitEnv,
+} from "../../test/git-fixture";
 import type { CodeAnchor, CodeRow, CodeWindow } from "../shared/types";
 import { runGit } from "./git.js";
+
+// Real git and fake-gh processes: see GIT_TEST_TIMEOUTS.
+vi.setConfig(GIT_TEST_TIMEOUTS);
 
 // Pass-through spy, so a test can count the git calls.
 vi.mock("./git.js", async (importOriginal) => {

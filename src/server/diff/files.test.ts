@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { symlinkSync } from "node:fs";
 import { join } from "node:path";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
 	createDiffFixture,
 	SUB_SHA,
@@ -9,11 +9,15 @@ import {
 } from "../../../test/diff-fixture.js";
 import {
 	createGitFixture,
+	GIT_TEST_TIMEOUTS,
 	type GitFixture,
 	testGitEnv,
 } from "../../../test/git-fixture.js";
 import { buildAllClusters, buildClusters } from "./clusters.js";
 import { type ChangedFile, listChangedFiles } from "./files.js";
+
+// Real git and fake-gh processes: see GIT_TEST_TIMEOUTS.
+vi.setConfig(GIT_TEST_TIMEOUTS);
 
 let fixture: GitFixture;
 let files: ChangedFile[];
