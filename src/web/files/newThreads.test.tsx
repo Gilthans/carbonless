@@ -1770,6 +1770,19 @@ describe("side by side (the cells contract)", () => {
 		expect(getPicks()?.lines.map((l) => pickKey(l))).toEqual(["RIGHT:6"]);
 	});
 
+	it("switching to unified after focusing a context row's left number keeps one number button in the tab order", async () => {
+		setup();
+		await loaded();
+		within(number("LEFT", 5)).getByRole("button").focus();
+		act(() => sideBySide.set(false));
+		await screen.findByRole("table");
+		expect(document.querySelector("table")?.dataset.view).toBe("unified");
+		const stops = [
+			...document.querySelectorAll<HTMLButtonElement>("button[data-pick]"),
+		].filter((b) => b.tabIndex === 0);
+		expect(stops).toHaveLength(1);
+	});
+
 	it("a pick from a context row's left number to a deleted line extends in GitHub's order", async () => {
 		const { user } = setup();
 		await loaded();

@@ -329,7 +329,8 @@ interface RowComposers {
  * What a number cell picks (linePicks.ts): the key of the code cell it
  * stands for, and whether it is that cell's own number (the one GitHub
  * knows the line by: it carries the pick's button and tab stop; the other
- * number of a unified row picks by pointer only).
+ * number of a unified row picks by pointer only). Side by side, both
+ * numbers of a context row carry one, each picking its one RIGHT line.
  */
 interface NumberPick {
 	key: string;
@@ -2246,7 +2247,13 @@ function usePicker(
 			new Set(picks?.path === path ? picks.lines.map((l) => pickKey(l)) : []),
 		[picks, path],
 	);
-	const [roving, setRoving] = useState<string | null>(null);
+	// The last focused button's stop, in the view it was focused in: a
+	// stop from the other view may name no button there (a context row's
+	// left number side by side), so that view starts from the first row's.
+	const [focused, setFocused] = useState<{ view: View; stop: string } | null>(
+		null,
+	);
+	const roving = focused?.view === view ? focused.stop : null;
 	const first = firstHunk?.lines[0];
 	const dragging = useRef(false);
 	const pointer = useRef("");
@@ -2384,6 +2391,6 @@ function usePicker(
 			const anchor = cur?.path === from.path ? cur.anchor : picked(from);
 			setPicks(pickRange(cells(), anchor, picked(to)));
 		},
-		onFocus: setRoving,
+		onFocus: (stop) => setFocused({ view, stop }),
 	};
 }
