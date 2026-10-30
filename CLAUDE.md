@@ -80,7 +80,8 @@ checking against a real PR): `docs/product-rules.md`.
   `verify:fast` and `pnpm flake-check` wait for a machine-wide lock
   (`scripts/queue.mjs`, `flock` on `~/.cache/carbonless-verify.lock`) and
   print whose run they wait for. Running several at once only overloads the
-  machine into timeouts. `CRB_NO_QUEUE=1` skips the queue.
+  machine into timeouts. A run in the queue has the machine to itself, so
+  Playwright takes a worker per core. `CRB_NO_QUEUE=1` skips the queue.
 - While iterating, run only what a change touches:
   - `pnpm verify:fast [base]`: lint, typecheck, the unit tests related to files
     changed since `base`, and the e2e specs mapped to them (`E2E_MAP` in
@@ -119,7 +120,8 @@ checking against a real PR): `docs/product-rules.md`.
   property is measured in CPU time (`process.threadCpuUsage`), or as "doesn't
   wait" (a timeout of 0, a hold), never as wall-clock time. No automatic
   retries (Playwright `retries`, Vitest `retry`): a flaky test fails visibly
-  and gets fixed.
+  and gets fixed. Playwright's expects wait 10 s (a reload's chained reads);
+  a test that needs longer says why.
 - `pnpm flake-check <files…> [--runs=N] [--load=L] [-g title]` runs unit
   files or e2e specs N times (default 5) next to L busy loops (default 3 per
   core). Run it on every test you add or change that involves timing,
