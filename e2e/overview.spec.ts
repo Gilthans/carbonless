@@ -97,6 +97,8 @@ test("shows the description as GitHub renders it, and who started reviewing", as
 	await expect(what.getByRole("checkbox")).toBeChecked();
 	await expect(what).not.toContainText("<!--");
 	await expect(what).not.toContainText("reviewer note");
+	// Short: whole, no toggle.
+	await expect(what.getByTestId("description-more")).toHaveCount(0);
 	const who = page.getByRole("region", { name: "Who's on it" });
 	await expect(who).toContainText("rev1 already started");
 	const changes = who.getByRole("img", { name: "Changes requested" });
@@ -107,6 +109,58 @@ test("shows the description as GitHub renders it, and who started reviewing", as
 	await expect(
 		page.getByText("Changes requested", { exact: true }),
 	).toBeVisible();
+});
+
+test("a long description folds: Show more, Show less", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	const points = Array.from(
+		{ length: 30 },
+		(_, i) => `Point ${i + 1}: caches the widget lookups.`,
+	);
+	await pr({
+		overview: { body: points.join("\n\n") },
+		bodyHTML: points.map((p) => `<p dir="auto">${p}</p>`).join("\n"),
+	});
+	const s = await startCrb();
+	await page.goto(s.url);
+	const what = page.getByRole("region", { name: "What it does" });
+	const body = what.getByTestId("description");
+	await expect(body.getByText("Point 1:")).toBeVisible();
+	const more = what.getByRole("button", { name: "Show more" });
+	await expect(more).toHaveAttribute("aria-expanded", "false");
+	const clipped = await body.boundingBox();
+	expect(clipped?.height).toBeLessThanOrEqual(281);
+	expect(clipped?.height).toBeGreaterThan(200);
+	const toggle = await more.boundingBox();
+	expect(toggle?.height ?? 0).toBeGreaterThanOrEqual(40);
+	// Clipped, not gone.
+	await expect(body.getByText("Point 30:")).toBeAttached();
+	if (process.env.DESIGN_SHOTS) {
+		await what.screenshot({
+			path: `${process.env.DESIGN_SHOTS}/description-folded-${isMobile ? "phone" : "desktop"}.png`,
+		});
+	}
+	await more.click();
+	const less = what.getByRole("button", { name: "Show less" });
+	await expect(less).toHaveAttribute("aria-expanded", "true");
+	expect((await body.boundingBox())?.height ?? 0).toBeGreaterThan(
+		(clipped?.height ?? 0) + 200,
+	);
+	await less.click();
+	await expect(more).toHaveAttribute("aria-expanded", "false");
+	expect((await body.boundingBox())?.height).toBeLessThanOrEqual(281);
+	// No sideways page scroll at the phone's width.
+	expect(
+		await page.evaluate(
+			() =>
+				document.documentElement.scrollWidth -
+				document.documentElement.clientWidth,
+		),
+	).toBeLessThanOrEqual(0);
 });
 
 test("says you're reviewing when only you have", async ({
