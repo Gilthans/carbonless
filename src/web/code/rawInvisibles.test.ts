@@ -32,6 +32,8 @@ const TEXT = new Set([
 ]);
 /** Whitespace a source file legitimately holds. */
 const ORDINARY = new Set([" ", "\t", "\n", "\r"]);
+/** A line of printable ASCII and ORDINARY whitespace: nothing to look at. */
+const PLAIN = /^[\t\r\x20-\x7e]*$/;
 /** Code files, where a raw combining mark must sit on a letter. */
 const CODE = new Set([".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"]);
 const NONSPACING = /^[\p{Mn}\p{Me}]$/u;
@@ -84,8 +86,10 @@ describe("sources", () => {
 		for (const path of all) {
 			checked++;
 			const lines = readFileSync(path, "utf8").split("\n");
+			const file = relative(ROOT, path);
 			lines.forEach((line, i) => {
-				const where = `${relative(ROOT, path)}:${i + 1}`;
+				if (PLAIN.test(line)) return;
+				const where = `${file}:${i + 1}`;
 				if (ALLOWED.has(where)) return;
 				for (const ch of line) {
 					if (ORDINARY.has(ch) || !INVISIBLE.test(ch)) continue;
