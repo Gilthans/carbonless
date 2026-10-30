@@ -30,7 +30,8 @@ const sleep = (ms) =>
  * it releases the call by taking `op` out of `hold`, whatever the clock),
  * unless `op` was let through when this call began. The scenario is re-read
  * for that only; its new `hold` is kept, so a write saved after doesn't put
- * the gate back.
+ * the gate back. Other test edits made while it waited are overwritten if
+ * this call saves (a write): see the hazards in scenario.ts (HoldOp).
  */
 function delay(op, ms) {
 	if (ms) sleep(ms);

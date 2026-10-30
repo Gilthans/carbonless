@@ -809,7 +809,8 @@ test("comments of the file opened next go first", async ({
 	await expect.poll(() => asked.length).toBe(2);
 	// f4 (threads 120–159) opens while the first two are out.
 	const f4 = await expand(page, names[3] as string);
-	await expect(f4.getByRole("button", { name: "Collapse file" })).toBeVisible();
+	// Its threads are on screen (so first in line) before the others answer.
+	await expect(bubbles(f4).first()).toBeVisible();
 	release(p.scenarioPath, "comments");
 	await expect.poll(() => asked.length, { timeout: 20_000 }).toBeGreaterThan(2);
 	const third = asked[2] ?? [];

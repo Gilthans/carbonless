@@ -178,15 +178,20 @@ export interface Scenario {
  * Writes the scenario as JSON into `dir` and returns its path for
  * `$CRB_FAKE_GH`. Every write of the file is atomic (writeFileAtomic): gh
  * processes read it whole at any moment, and must never see it half-written.
- * A `hold` already in the file stays unless `s` has its own: a gate opens
- * only on release(), never because the scenario was rewritten (moveHead).
+ * A `hold` (and `letThrough`) already in the file stays unless `s` has its
+ * own: a gate opens only on release(), never because the scenario was
+ * rewritten (moveHead).
  */
 export function writeScenario(dir: string, s: Scenario): string {
 	const path = join(dir, "fake-gh-scenario.json");
-	const held = existsSync(path)
-		? (JSON.parse(readFileSync(path, "utf8")) as Scenario).hold
+	const before = existsSync(path)
+		? (JSON.parse(readFileSync(path, "utf8")) as Scenario)
 		: undefined;
-	const next = held?.length && !("hold" in s) ? { ...s, hold: held } : s;
+	const next = { ...s };
+	if (before?.hold?.length && !("hold" in s)) next.hold = before.hold;
+	if (before?.letThrough?.length && !("letThrough" in s)) {
+		next.letThrough = before.letThrough;
+	}
 	writeFileAtomic(path, JSON.stringify(next, null, "\t"));
 	return path;
 }
@@ -392,6 +397,16 @@ export function threadComment(c: {
 }
 
 /**
+ * Hazards of the gate, for test authors:
+ * - release() and letThrough() rewrite the scenario file. A gh write that
+ *   isn't held (a reply, a resolve) saves the whole scenario it read at its
+ *   start; landing after the test's edit, it puts the old `hold` back. Don't
+ *   release while an unheld write is still out; wait for it first.
+ * - A held write saves, once released, the scenario it read at its start
+ *   (only `hold` is refreshed): test edits made while it was held, other
+ *   than release(), are lost. Edit the scenario before the write starts or
+ *   after it answers.
+ *
  * The calls `hold` can stop, each where its `…DelayMs` waits: `comments`
  * and `threadContent` are reads of threads' comments, `threads` their
  * summaries, `restList` the REST review comments, `comment` a new thread's
