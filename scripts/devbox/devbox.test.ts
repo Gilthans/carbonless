@@ -373,6 +373,18 @@ describe("scripts/devbox", { timeout: 60_000 }, () => {
 		expect(r.stderr).toContain("journal: crb failed to bind");
 	});
 
+	it("a server whose server.json lives elsewhere is an unknown process", async () => {
+		await serve("127.0.0.1");
+		const r = await run("install", [], {
+			CRB_DEVBOX_DRY_MAINPID: "99",
+			CRB_DEVBOX_TIMEOUT: "1",
+		});
+		expect(r.code).not.toBe(0);
+		expect(r.stderr).toContain(
+			"is served by an unknown process, not by crb.service (MainPID 99)",
+		);
+	});
+
 	it("install fails when it can't read the installed build", async () => {
 		await serve("127.0.0.1");
 		mkdirSync(join(dir, "empty"));

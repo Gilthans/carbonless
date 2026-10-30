@@ -77,6 +77,8 @@ Tailscale):
    (installs, restarts, prints the version it moved from and to, and the link).
 4. Logs: `journalctl --user -u crb`.
 
+The scripts and the service assume the default XDG dirs (`~/.config`, `~/.local/state`).
+
 ## Development
 
 Requires Node 24 (`nvm use`) and pnpm. From a checkout, `pnpm build` and run

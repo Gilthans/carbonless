@@ -217,7 +217,10 @@ wait_for_build() {
 	until serves_build "$want" && service_serves; do
 		if ((SECONDS - start >= timeout)); then
 			if serves_build "$want"; then
-				echo "error: after ${timeout}s, $(service_url) is served by pid $(server_pid), not by $UNIT.service (MainPID $(service_main_pid)): stop that crb serve. Last log lines:" >&2
+				local stray
+				stray="$(server_pid)"
+				stray="${stray:+pid $stray}"
+				echo "error: after ${timeout}s, $(service_url) is served by ${stray:-an unknown process}, not by $UNIT.service (MainPID $(service_main_pid)): stop that crb serve. Last log lines:" >&2
 			else
 				echo "error: after ${timeout}s, $(service_url) does not serve $(pretty_build "$want"). Last log lines:" >&2
 			fi
