@@ -222,9 +222,12 @@ test("an edit in progress survives a reload, opens its card and is listed in Dra
 	await page.reload();
 	expect(asked).toEqual([]);
 	const again = card(page, "new.txt");
+	// The reloaded page reads the overview, the threads and the card's
+	// comments before the box can open: several requests, which a loaded
+	// machine stretches past the 5 s default.
 	await expect(
 		again.getByRole("textbox", { name: "Edit comment" }),
-	).toHaveValue("Half rewritten");
+	).toHaveValue("Half rewritten", { timeout: 20_000 });
 	await expect(humans(page).getByTestId("drafts-filter")).toHaveText("1 draft");
 	// Nothing reached GitHub.
 	expect(bodies(p, 0)).toEqual(["My take"]);

@@ -9,6 +9,11 @@ export default defineConfig({
 	// No retries, in CI either: a flaky test must fail visibly to get fixed.
 	retries: 0,
 	reporter: process.env.CI ? "github" : "list",
+	// An expect waits for what the page brings: often a chain of requests
+	// (a reload reads the overview, then the threads, then the comments),
+	// which a machine running several suites stretches past the 5 s default.
+	// Speed isn't what these tests check; a missing thing still fails.
+	expect: { timeout: 10_000 },
 	use: {
 		trace: "retain-on-failure",
 	},
