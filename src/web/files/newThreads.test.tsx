@@ -39,6 +39,7 @@ import {
 	HANDLE_GAP,
 	pickAnchor,
 	placeBar,
+	resetPointer,
 	SelectionBar,
 	textGeometry,
 } from "./SelectionBar";
@@ -1755,6 +1756,7 @@ describe("placeBar on a phone: clear of the handles, inside what the screen show
 });
 
 describe("the selection bar on a phone", () => {
+	beforeEach(() => resetPointer());
 	/** Rows 20px from y=100, numbers at x 40–78, code from x 90. */
 	const geometry = () => {
 		const rowTop = (el: Element) => {
@@ -1787,12 +1789,18 @@ describe("the selection bar on a phone", () => {
 			},
 		);
 	};
-	const phone = (view: { top: number; height: number }) => {
+	/** A screen `view` tall; narrow (portrait) unless `wide`; coarse unless not. */
+	const phone = (
+		view: { top: number; height: number },
+		opts: { wide?: boolean; coarse?: boolean } = {},
+	) => {
 		vi.stubGlobal(
 			"matchMedia",
 			(query: string) =>
 				({
-					matches: false,
+					matches: query.includes("pointer: coarse")
+						? (opts.coarse ?? true)
+						: (opts.wide ?? false),
 					media: query,
 					addEventListener: () => {},
 					removeEventListener: () => {},
@@ -1877,5 +1885,128 @@ describe("the selection bar on a phone", () => {
 		selectAndRelease(rangeOf(at("RIGHT", 8, 0), at("RIGHT", 8, 4)));
 		await vi.waitFor(() => expect(placed(bar).top).toBeGreaterThan(0));
 		expect(window.scrollBy).toHaveBeenCalledTimes(1);
+	});
+
+	const pickRows = (lines: number[]) =>
+		act(() =>
+			setPicks({
+				path: PATH,
+				anchor: {
+					side: "RIGHT",
+					line: lines[0] as number,
+					len: 6,
+					hunk: "h0",
+					path: PATH,
+				},
+				focus: {
+					side: "RIGHT",
+					line: lines[lines.length - 1] as number,
+					len: 6,
+					hunk: "h0",
+					path: PATH,
+				},
+				lines: lines.map((line) => ({
+					side: "RIGHT" as const,
+					line,
+					len: 6,
+					hunk: "h0",
+					path: PATH,
+				})),
+			}),
+		);
+
+	it("by touch, not by width: a phone in landscape keeps the handle's room", async () => {
+		phone({ top: 0, height: 740 }, { wide: true, coarse: true });
+		setup();
+		await loaded();
+		geometry();
+		selectAndRelease(rangeOf(at("RIGHT", 8, 0), at("RIGHT", 8, 3)));
+		const bar = await screen.findByTestId("selection-bar");
+		await vi.waitFor(() => expect(placed(bar).top).toBe(277 + HANDLE_GAP));
+	});
+
+	it("a mouse in a narrow window: the desktop's gap, no page scroll", async () => {
+		phone({ top: 0, height: 300 }, { coarse: false });
+		setup();
+		await loaded();
+		geometry();
+		fireEvent.pointerDown(cell("RIGHT", 8), { pointerType: "mouse" });
+		selectAndRelease(rangeOf(at("RIGHT", 8, 0), at("RIGHT", 8, 3)));
+		const bar = await screen.findByTestId("selection-bar");
+		// No room below (300): above the start, as on a desktop.
+		await vi.waitFor(() => expect(placed(bar).top).toBe(263 - 6 - 46));
+		expect(window.scrollBy).not.toHaveBeenCalled();
+		expect(
+			document.documentElement.style.getPropertyValue("--selection-room"),
+		).toBe("");
+	});
+
+	it("the last press decides: a touch on a fine-pointer screen gets the handle's room", async () => {
+		phone({ top: 0, height: 740 }, { wide: true, coarse: false });
+		setup();
+		await loaded();
+		geometry();
+		fireEvent.pointerDown(cell("RIGHT", 8), { pointerType: "touch" });
+		selectAndRelease(rangeOf(at("RIGHT", 8, 0), at("RIGHT", 8, 3)));
+		const bar = await screen.findByTestId("selection-bar");
+		await vi.waitFor(() => expect(placed(bar).top).toBe(277 + HANDLE_GAP));
+	});
+
+	it("pads the list's end by the bar's room while a selection is up, by touch", async () => {
+		phone({ top: 0, height: 740 });
+		const { user } = setup();
+		await loaded();
+		geometry();
+		selectAndRelease(rangeOf(at("RIGHT", 8, 0), at("RIGHT", 8, 3)));
+		await screen.findByTestId("selection-bar");
+		const room = () =>
+			document.documentElement.style.getPropertyValue("--selection-room");
+		await vi.waitFor(() => expect(room()).toBe(`${HANDLE_GAP + 46 + 8}px`));
+		await user.keyboard("{Escape}");
+		await vi.waitFor(() => expect(room()).toBe(""));
+	});
+
+	it("never scrolls under a finger: it waits for the finger to lift", async () => {
+		phone({ top: 0, height: 300 });
+		setup();
+		await loaded();
+		geometry();
+		fireEvent.touchStart(document.body, { touches: [{}] });
+		act(() => {
+			const selection = document.getSelection();
+			selection?.removeAllRanges();
+			selection?.addRange(rangeOf(at("RIGHT", 8, 0), at("RIGHT", 8, 3)));
+			// A long press: the selection settles, the finger still down.
+			document.dispatchEvent(new Event("selectionchange"));
+		});
+		await screen.findByTestId("selection-bar", {}, { timeout: 2000 });
+		await new Promise((r) => setTimeout(r, 50));
+		expect(window.scrollBy).not.toHaveBeenCalled();
+		fireEvent.touchEnd(document.body, { touches: [] });
+		await vi.waitFor(() => expect(window.scrollBy).toHaveBeenCalledTimes(1));
+	});
+
+	it("picks giving way to a text selection: the text gets its own scroll-once", async () => {
+		phone({ top: 0, height: 300 });
+		setup();
+		await loaded();
+		geometry();
+		// Row 7 ends at 260: 6 + 46 + 8 under it passes 300 by 20.
+		pickRows([6, 7]);
+		await screen.findByTestId("selection-bar");
+		await vi.waitFor(() =>
+			expect(window.scrollBy).toHaveBeenCalledWith({
+				top: 20,
+				behavior: "instant",
+			}),
+		);
+		selectAndRelease(rangeOf(at("RIGHT", 8, 0), at("RIGHT", 8, 3)));
+		await vi.waitFor(() =>
+			expect(window.scrollBy).toHaveBeenLastCalledWith({
+				top: 277 + HANDLE_GAP + 46 + 8 - 300,
+				behavior: "instant",
+			}),
+		);
+		expect(window.scrollBy).toHaveBeenCalledTimes(2);
 	});
 });

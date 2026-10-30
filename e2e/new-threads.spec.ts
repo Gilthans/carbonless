@@ -103,15 +103,22 @@ async function selectText(
 				}
 				throw new Error("past the line");
 			};
-			// Pressing in the code moves focus out of any box.
+			// Pressing in the code moves focus out of any box; a long press
+			// on a touch screen, a mouse press elsewhere.
 			(document.activeElement as HTMLElement | null)?.blur();
+			const pointerType = navigator.maxTouchPoints > 0 ? "touch" : "mouse";
+			document.dispatchEvent(
+				new PointerEvent("pointerdown", { bubbles: true, pointerType }),
+			);
 			const range = document.createRange();
 			range.setStart(...at(from));
 			range.setEnd(...at(to));
 			const selection = document.getSelection();
 			selection?.removeAllRanges();
 			selection?.addRange(range);
-			document.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
+			document.dispatchEvent(
+				new PointerEvent("pointerup", { bubbles: true, pointerType }),
+			);
 		},
 		{ path, n, from, to },
 	);
@@ -327,6 +334,116 @@ test("the bar sits by what is selected: just below it, beside it", async ({
 	if (isMobile) await below.tap();
 	else await below.click({ modifiers: ["Shift"] });
 	await expect(section.locator("tr[data-picked]")).toHaveCount(5);
+});
+
+/** The bar's box, once it has settled below `y` (it is placed a frame later). */
+async function barBelow(page: Page, y: number) {
+	await expect
+		.poll(async () => (await bar(page).boundingBox())?.y ?? 0)
+		.toBeGreaterThanOrEqual(y);
+	const box = await bar(page).boundingBox();
+	if (!box) throw new Error("no bar");
+	return box;
+}
+
+/** Inside what the screen shows. */
+async function expectInView(page: Page) {
+	const b = await bar(page).boundingBox();
+	const v = await page.evaluate(() => ({
+		w: window.visualViewport?.width ?? window.innerWidth,
+		h: window.visualViewport?.height ?? window.innerHeight,
+	}));
+	if (!b) throw new Error("no bar");
+	expect(b.x).toBeGreaterThanOrEqual(0);
+	expect(b.y).toBeGreaterThanOrEqual(0);
+	expect(b.x + b.width).toBeLessThanOrEqual(v.w);
+	expect(b.y + b.height).toBeLessThanOrEqual(v.h);
+}
+
+/**
+ * Text selected by touch in the last line of the last file, the page
+ * scrolled to its end: the bar still goes below it, the handle's room
+ * under the line (the page moves up once to make it).
+ */
+async function lastLine(page: Page, url: string, name: string) {
+	const section = await openFile(page, url, GREET);
+	// src/greet.ts comes last; new line 15 is its last row shown.
+	await page.evaluate(() =>
+		window.scrollTo(0, document.documentElement.scrollHeight),
+	);
+	await selectText(page, GREET, 15, 0, 4);
+	await expect(bar(page)).toBeVisible();
+	const sel = async () =>
+		(await page.evaluate(
+			() =>
+				document.getSelection()?.getRangeAt(0).getBoundingClientRect().bottom,
+		)) ?? 0;
+	await expect
+		.poll(async () => {
+			const b = await bar(page).boundingBox();
+			return b ? b.y - (await sel()) : -1;
+		})
+		.toBeGreaterThanOrEqual(24);
+	const line = await row(section, "RIGHT", 15).boundingBox();
+	const box = await bar(page).boundingBox();
+	expect((box?.y ?? 0) - (await sel())).toBeLessThanOrEqual(
+		2 * (line?.height ?? 20) + 8,
+	);
+	await expectInView(page);
+	await shot(page, name, true);
+}
+
+test("a selection by touch in the last line of the last file: the bar goes below it", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	test.skip(!isMobile, "touch");
+	await pr(fixture);
+	const s = await startCrb();
+	await lastLine(page, s.url, "selection-bar-last-line");
+});
+
+test.describe("a phone in landscape: wide, but touch", () => {
+	test.use({ viewport: { width: 915, height: 412 }, hasTouch: true });
+
+	test("the bar under text keeps the handle's room, inside the screen", async ({
+		page,
+		pr,
+		startCrb,
+	}, testInfo) => {
+		test.skip(testInfo.project.name !== "phone", "the phone project's run");
+		await pr(fixture);
+		const s = await startCrb();
+		const section = await openFile(page, s.url, GREET);
+		await row(section, "RIGHT", 3).evaluate((el) =>
+			el.scrollIntoView({ block: "center" }),
+		);
+		await selectText(page, GREET, 3, 6, 16);
+		await expect(bar(page)).toBeVisible();
+		const sel = await page.evaluate(
+			() =>
+				document.getSelection()?.getRangeAt(0).getBoundingClientRect().bottom ??
+				0,
+		);
+		const line = await row(section, "RIGHT", 3).boundingBox();
+		const box = await barBelow(page, sel + 24);
+		expect(box.y).toBeLessThanOrEqual(sel + 2 * (line?.height ?? 20));
+		await expectInView(page);
+		await shot(page, "selection-bar-landscape", true);
+	});
+
+	test("the last line of the last file: below it too", async ({
+		page,
+		pr,
+		startCrb,
+	}, testInfo) => {
+		test.skip(testInfo.project.name !== "phone", "the phone project's run");
+		await pr(fixture);
+		const s = await startCrb();
+		await lastLine(page, s.url, "selection-bar-last-line-landscape");
+	});
 });
 
 test("a pick from a removed line extends to its added replacement: the bar never covers the numbers below", async ({

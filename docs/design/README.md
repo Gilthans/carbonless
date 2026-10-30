@@ -345,15 +345,17 @@ decides where; nothing else does):
   `shadow-float`, just below the selection's last line, centered where the
   drag let go (its end, or its start for a backwards drag), or for picked
   lines just right of the last one's number, never over the numbers a pick
-  extends to (above it when there's no room), never over it. On a phone
-  the same, 28px under selected text (room for the end handle; the
-  system's Copy menu sits above), inside what the screen shows (pinch
-  zoom, the safe area). An action that can't run stays,
+  extends to (above it when there's no room), never over it. By touch
+  (the press's pointer type, else a coarse pointer; not the width, so a
+  phone in landscape too) 28px under selected text (room for the end
+  handle; the system's Copy menu sits above), inside what the screen shows
+  (pinch zoom). An action that can't run stays,
   `aria-disabled`, with the reason as its tooltip. Pressing it doesn't take
   the selection; Escape dismisses it until the span changes and clears
   picked lines (`line-picked`). A selection taller than the screen gets the
-  bar beside it; on a phone with no room under a new selection, the page
-  first moves up once to make it. The
+  bar beside it; by touch with no room under a new selection, the page
+  moves up once to make it, after the finger lifts (the list's end padded
+  by the bar's room, so the last line can). The
   first Tab after a selection goes to the bar. A new text selection lets
   picked lines go.
 - **The composer** opens as a row under the span's last line, like an

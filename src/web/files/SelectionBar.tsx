@@ -118,41 +118,67 @@ export function placeBar(
 	};
 }
 
-/** The safe-area insets (a notch, a home indicator), read off a probe. */
-function safeInsets(): {
-	top: number;
-	right: number;
-	bottom: number;
-	left: number;
-} {
-	const probe = document.createElement("div");
-	probe.style.cssText =
-		"position:fixed;visibility:hidden;pointer-events:none;padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left)";
-	document.body.append(probe);
-	const style = getComputedStyle(probe);
-	const px = (v: string) => Number.parseFloat(v) || 0;
-	const insets = {
-		top: px(style.paddingTop),
-		right: px(style.paddingRight),
-		bottom: px(style.paddingBottom),
-		left: px(style.paddingLeft),
-	};
-	probe.remove();
-	return insets;
-}
-
-/** What the screen shows of the page now (BarView). */
+/**
+ * What the screen shows of the page now (BarView): the visual viewport.
+ * (The safe-area insets are 0 without `viewport-fit=cover`, which
+ * index.html doesn't set: the browser keeps the page out of them.)
+ */
 export function currentView(): BarView {
 	const vv = window.visualViewport;
-	const inset = safeInsets();
-	const left = (vv?.offsetLeft ?? 0) + inset.left;
-	const top = (vv?.offsetTop ?? 0) + inset.top;
-	const w =
-		(vv?.width ?? document.documentElement.clientWidth) -
-		inset.left -
-		inset.right;
-	const h = (vv?.height ?? window.innerHeight) - inset.top - inset.bottom;
-	return { left, top, w, h };
+	return {
+		left: vv?.offsetLeft ?? 0,
+		top: vv?.offsetTop ?? 0,
+		w: vv?.width ?? document.documentElement.clientWidth,
+		h: vv?.height ?? window.innerHeight,
+	};
+}
+
+/**
+ * Touch decides the handle's room and the scroll-once, not the screen's
+ * width (a phone in landscape, a tablet): the last press's pointer type,
+ * else whether the main pointer is coarse.
+ */
+let lastPointer: string | null = null;
+/** A finger is on the screen (a selection may still be in the making). */
+let fingerDown = false;
+const lifted = new Set<() => void>();
+if (typeof document !== "undefined") {
+	document.addEventListener(
+		"pointerdown",
+		(e) => {
+			lastPointer = e.pointerType || lastPointer;
+		},
+		true,
+	);
+	document.addEventListener(
+		"touchstart",
+		() => {
+			fingerDown = true;
+		},
+		{ capture: true, passive: true },
+	);
+	const lift = (e: TouchEvent) => {
+		if (e.touches.length > 0) return;
+		fingerDown = false;
+		for (const f of lifted) f();
+	};
+	document.addEventListener("touchend", lift, true);
+	document.addEventListener("touchcancel", lift, true);
+}
+
+/** Whether the selection was made by touch (or a pen). */
+export function byTouch(): boolean {
+	if (lastPointer) return lastPointer !== "mouse";
+	return (
+		typeof window.matchMedia === "function" &&
+		window.matchMedia("(pointer: coarse)").matches
+	);
+}
+
+/** For tests: forget the last press and any finger. */
+export function resetPointer() {
+	lastPointer = null;
+	fingerDown = false;
 }
 
 /**
@@ -343,11 +369,13 @@ export function SelectionBar(props: { files: readonly FileView[] }) {
 		document.addEventListener("selectionchange", later);
 		document.addEventListener("pointerup", now);
 		document.addEventListener("keyup", now);
+		lifted.add(now);
 		return () => {
 			clearTimeout(timer);
 			document.removeEventListener("selectionchange", later);
 			document.removeEventListener("pointerup", now);
 			document.removeEventListener("keyup", now);
+			lifted.delete(now);
 		};
 	}, [read]);
 	const target = text ?? (picks && commit ? ofPicks(picks, commit) : null);
@@ -448,28 +476,36 @@ export function SelectionBar(props: { files: readonly FileView[] }) {
 	const [place, setPlace] = useState<{ top: number; left: number } | null>(
 		null,
 	);
-	// On a phone, room under text for its end handle.
-	const below = !wide && target?.text ? HANDLE_GAP : GAP;
+	// By touch, room under text for its end handle.
+	const touch = byTouch();
+	const below = touch && target?.text ? HANDLE_GAP : GAP;
 	// A phone's own Copy menu sits above a selection: when the bar first
-	// comes for a selection with no room under it, the page moves up once
-	// to make room (not again as its handles are dragged: that would move
-	// the page under the finger).
-	const scrolled = useRef(false);
+	// comes for a selection by touch with no room under it, the page moves
+	// up once to make it (the list's end padded by --selection-room so it
+	// can), once the finger is off the screen: never under a finger, and
+	// not again as the handles are dragged. Per kind: picks giving way to
+	// a text selection get theirs.
+	const scrolled = useRef<"text" | "picks" | null>(null);
 	useLayoutEffect(() => {
 		const el = bar.current;
-		if (!target) scrolled.current = false;
+		const root = document.documentElement;
+		if (!target) scrolled.current = null;
 		if (hidden || !target || !el) {
+			root.style.removeProperty("--selection-room");
 			setPlace(null);
 			return;
 		}
 		const size = { w: el.offsetWidth, h: el.offsetHeight };
+		const room = below + size.h + MARGIN;
+		if (touch) root.style.setProperty("--selection-room", `${room}px`);
+		else root.style.removeProperty("--selection-room");
 		const view = currentView();
 		let at = target;
-		if (!wide && !scrolled.current) {
-			scrolled.current = true;
+		const kind = target.text ? "text" : "picks";
+		if (touch && !fingerDown && scrolled.current !== kind) {
+			scrolled.current = kind;
 			const top = view.top ?? 0;
-			const short =
-				target.last.bottom + below + size.h + MARGIN - (top + view.h);
+			const short = target.last.bottom + room - (top + view.h);
 			// Only while the selection's start stays on screen.
 			if (short > 0 && target.first.top - short >= top) {
 				const y = window.scrollY;
@@ -489,6 +525,12 @@ export function SelectionBar(props: { files: readonly FileView[] }) {
 		const next = placeBar(at, size, view, below);
 		setPlace((p) => (p?.top === next.top && p.left === next.left ? p : next));
 	});
+	useEffect(
+		() => () => {
+			document.documentElement.style.removeProperty("--selection-room");
+		},
+		[],
+	);
 	const file = target
 		? props.files.find((f) => f.path === target.span.path)
 		: undefined;
