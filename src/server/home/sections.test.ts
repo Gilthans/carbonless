@@ -50,11 +50,8 @@ const started = (over: Partial<StartedReview> = {}): StartedReview => ({
 });
 
 const VIEWER = "Octo";
-const section = (
-	p: PrFacts,
-	s: StartedReview[] = [],
-	teams: string[] | null = [],
-) => sectionOf(p, VIEWER, teams, s, NOW);
+const section = (p: PrFacts, s: StartedReview[] = []) =>
+	sectionOf(p, VIEWER, s, NOW);
 
 describe("sectionOf", () => {
 	it("Mine: the viewer is the author, drafts included, case-insensitive", () => {
@@ -77,15 +74,24 @@ describe("sectionOf", () => {
 		);
 	});
 
-	it("Reviewing: requested from a team the viewer is in", () => {
-		const p = pr({ requested: { users: [], teams: ["acme/backend"] } });
-		expect(section(p, [], ["ACME/backend"])).toBe("reviewing");
-		expect(section(p, [], ["acme/frontend"])).toBe("other");
-	});
-
-	it("teams unknown: a team request is not the viewer's (Other open)", () => {
-		const p = pr({ requested: { users: [], teams: ["acme/backend"] } });
-		expect(section(p, [], null)).toBe("other");
+	it("a team's request alone: up for grabs until someone reviews (owner, 2026-10-30)", () => {
+		const team = { users: [], teams: ["acme/backend"] };
+		// Nobody reviewed: grabs, whether or not the viewer is in the team.
+		expect(section(pr({ requested: team }))).toBe("grabs");
+		// Someone reviewed: Other open.
+		expect(section(pr({ requested: team, reviewers: ["bob"] }))).toBe("other");
+		// The team and the viewer directly: Reviewing.
+		expect(
+			section(pr({ requested: { users: ["octo"], teams: ["acme/backend"] } })),
+		).toBe("reviewing");
+		// The viewer started it: Reviewing.
+		expect(section(pr({ requested: team }), [started()])).toBe("reviewing");
+		// The viewer reviewed it: Reviewing.
+		expect(section(pr({ requested: team, reviewers: ["OCTO"] }))).toBe(
+			"reviewing",
+		);
+		// A draft stays Other open.
+		expect(section(pr({ requested: team, draft: true }))).toBe("other");
 	});
 
 	it("Reviewing: the viewer submitted a review or a review comment", () => {
@@ -121,14 +127,14 @@ describe("sectionOf", () => {
 		).toBe("closed");
 	});
 
-	it("Up for grabs: not mine, not a draft, nothing requested, no review", () => {
+	it("Up for grabs: not mine, not a draft, no person requested, no review", () => {
 		expect(section(pr())).toBe("grabs");
 		expect(section(pr({ draft: true }))).toBe("other");
 		expect(section(pr({ requested: { users: ["bob"], teams: [] } }))).toBe(
 			"other",
 		);
 		expect(section(pr({ requested: { users: [], teams: ["acme/x"] } }))).toBe(
-			"other",
+			"grabs",
 		);
 		expect(section(pr({ reviewers: ["bob"] }))).toBe("other");
 	});

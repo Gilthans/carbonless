@@ -23,34 +23,27 @@ export function recentlyClosed(pr: PrFacts, now: number): boolean {
 
 /**
  * The one section the PR belongs to, or null when Home doesn't list it (closed
- * longer ago than RECENTLY_CLOSED_MS). `viewerTeams` (`org/slug`) is null when
- * unknown: a team's request then isn't the viewer's. `started`: the viewer's
- * started reviews of this PR.
+ * longer ago than RECENTLY_CLOSED_MS). `started`: the viewer's started
+ * reviews of this PR. A team's request isn't the viewer's: a PR asked only of
+ * teams is up for grabs until someone reviews it (owner, 2026-10-30).
  */
 export function sectionOf(
 	pr: PrFacts,
 	viewer: string,
-	viewerTeams: readonly string[] | null,
 	started: readonly StartedReview[],
 	now: number,
 ): SectionId | null {
 	if (pr.state !== "OPEN") return recentlyClosed(pr, now) ? "closed" : null;
 	if (sameLogin(pr.author.login, viewer)) return "mine";
-	const requestedFromViewer =
-		pr.requested.users.some((u) => sameLogin(u, viewer)) ||
-		pr.requested.teams.some((t) =>
-			(viewerTeams ?? []).some((v) => sameLogin(v, t)),
-		);
 	if (
-		requestedFromViewer ||
+		pr.requested.users.some((u) => sameLogin(u, viewer)) ||
 		pr.reviewers.some((r) => sameLogin(r, viewer)) ||
 		countsAsStarted(started)
 	) {
 		return "reviewing";
 	}
-	const anyRequest =
-		pr.requested.users.length > 0 || pr.requested.teams.length > 0;
-	if (!pr.draft && !anyRequest && pr.reviewers.length === 0) return "grabs";
+	if (!pr.draft && pr.requested.users.length === 0 && pr.reviewers.length === 0)
+		return "grabs";
 	return "other";
 }
 

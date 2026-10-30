@@ -153,8 +153,9 @@ describe("HomeService", () => {
 			"closed",
 		]);
 		expect(ids(view, "mine")).toEqual([1]);
-		expect(ids(view, "reviewing")).toEqual([2, 8]);
-		expect(ids(view, "grabs")).toEqual([9, 3]);
+		expect(ids(view, "reviewing")).toEqual([2]);
+		// Asked only of the viewer's team, nobody reviewed: up for grabs.
+		expect(ids(view, "grabs")).toEqual([9, 3, 8]);
 		expect(ids(view, "other")).toEqual([4]);
 		expect(ids(view, "closed")).toEqual([5, 6]);
 		expect(view.refreshedAt).toBe(iso(T0));
@@ -520,13 +521,14 @@ describe("HomeService", () => {
 		await expect(home.setRepos(["no-slash"])).rejects.toThrow(/owner\/repo/);
 	});
 
-	it("teams unknown: a team's request lands in Other open", async () => {
+	it("teams unknown: a team's request still lands in Up for grabs", async () => {
 		fx = createHomeFixture({
 			repos: { "acme/api": { prs: scenarioPrs() } },
 			viewerTeams: null,
 		});
 		const view = await service().home.refresh();
-		expect(ids(view, "other")).toEqual([4, 8]);
+		expect(ids(view, "grabs")).toEqual([9, 3, 8]);
+		expect(ids(view, "other")).toEqual([4]);
 	});
 });
 

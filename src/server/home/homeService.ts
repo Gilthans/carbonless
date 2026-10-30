@@ -427,7 +427,7 @@ export class HomeService {
 			const started = startedBy.get(key) ?? [];
 			const listed = inView.has(`${facts.owner}/${facts.repo}`.toLowerCase());
 			if (!listed && started.length === 0) continue;
-			const section = sectionOf(facts, viewer.login, this.#teams, started, now);
+			const section = sectionOf(facts, viewer.login, started, now);
 			if (!section) continue;
 			const annotations = slug
 				? ((await inboxOf(facts.owner, facts.repo)).get(facts.number) ?? {})
