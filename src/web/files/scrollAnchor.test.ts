@@ -76,6 +76,18 @@ describe("captureAnchor / restoreAnchor", () => {
 		expect(anchor?.top).toBe(80);
 	});
 
+	it("passes a phone's bubble row by: it is no line", () => {
+		const root = page({ files: [-900, -400], rows: [90, 110, 130] });
+		const first = root.querySelector('[data-testid="diff-line"]') as Element;
+		const bubbles = document.createElement("tr");
+		bubbles.setAttribute("data-testid", "bubble-row");
+		first.after(bubbles);
+		place(first, 60);
+		place(bubbles, 80, 40);
+		const anchor = captureAnchor(root, 100);
+		expect(anchor?.el.getAttribute("data-new-no")).toBe("2");
+	});
+
 	it("is null when nothing reaches below the line", () => {
 		const root = page({ files: [-900, -400], rows: [-300, -280, -260] });
 		expect(captureAnchor(root, 100)).toBeNull();

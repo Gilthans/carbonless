@@ -770,6 +770,12 @@ function LineRow(props: RowProps & { line: RowLine; order?: number }) {
 	);
 }
 
+/** A cell's bubbles: the file's (`lead`) and its line's threads'. */
+interface Bubbles {
+	lead?: ReactNode;
+	bubble?: ReactNode;
+}
+
 /**
  * One side's cell of a pair row: its line, what its threads make of it, its
  * landing, the spans painted over its characters, its line's place in
@@ -798,7 +804,10 @@ interface Cell {
  * its mark, spans, pick and landing paint both cells (either cell, and
  * either number's button, picks or selects it as RIGHT, the cells contract). The file's bubble (`lead`, on
  * the diff's first row: a context row, with a cell on each side) sits in
- * the right cell beside the line's, its row right under the pair row.
+ * the right cell beside the line's, its row right under the pair row. On a
+ * phone (the shape that isn't `split`) a half is too narrow to keep room
+ * for bubbles: they sit in a BubbleRow of their own right under the pair
+ * row instead.
  */
 function PairRow(props: RowProps & { row: SideRow }) {
 	const { row, state, threads, shape, picker, lead } = props;
@@ -868,9 +877,29 @@ function PairRow(props: RowProps & { row: SideRow }) {
 		["LEFT", left],
 		["RIGHT", right],
 	];
+	// A cell's bubbles: the file's (right, first row) then its threads'.
+	const bubblesOf = (side: DiffSide, cell: Cell | undefined): Bubbles => {
+		const fileBubble = side === "RIGHT" ? lead?.bubble : undefined;
+		const endKey = cell?.endKey;
+		const lineBubble = cell && endKey && threads && (
+			<ThreadBubble
+				inline
+				threads={cell.ending}
+				where={cell.where}
+				open={cell.open}
+				controls={cell.open ? threads.idOf(endKey) : undefined}
+				onToggle={() => threads.toggle(endKey, cell.keys)}
+				focus={threads.focus !== null && cell.keys.includes(threads.focus)}
+				onFocused={threads.onFocused}
+			/>
+		);
+		return { lead: fileBubble, bubble: lineBubble || undefined };
+	};
+	const own = !shape.split;
 	const cells = (side: DiffSide, cell: Cell | undefined) => {
 		if (!cell) return <BlankCells side={side} />;
-		const { line, keys, endKey } = cell;
+		const { line } = cell;
+		const bubbles: Bubbles = own ? {} : bubblesOf(side, cell);
 		// The landing's tint, else the commented range's stripe and numbers;
 		// a pick's wash over either.
 		const mark = `${
@@ -899,28 +928,14 @@ function PairRow(props: RowProps & { row: SideRow }) {
 					hunk={props.hunk}
 					order={cell.order}
 					marks={cell.marks}
-					lead={side === "RIGHT" ? lead?.bubble : undefined}
+					lead={bubbles.lead}
 					cell={{
 						paint: `${bg} ${mark}`,
 						landed: cell.landed === "on",
 						commented: cell.commented,
 						picked: cell.pick.picked,
 					}}
-					bubble={
-						endKey &&
-						threads && (
-							<ThreadBubble
-								inline
-								threads={cell.ending}
-								where={cell.where}
-								open={cell.open}
-								controls={cell.open ? threads.idOf(endKey) : undefined}
-								onToggle={() => threads.toggle(endKey, keys)}
-								focus={threads.focus !== null && keys.includes(threads.focus)}
-								onFocused={threads.onFocused}
-							/>
-						)
-					}
+					bubble={bubbles.bubble}
 				/>
 			</>
 		);
@@ -947,6 +962,13 @@ function PairRow(props: RowProps & { row: SideRow }) {
 				{cells("LEFT", left)}
 				{cells("RIGHT", right)}
 			</tr>
+			{own && (
+				<BubbleRow
+					left={bubblesOf("LEFT", left)}
+					right={bubblesOf("RIGHT", right)}
+					state={state}
+				/>
+			)}
 			{lead?.row(columnsOf(shape.view), state ? RAIL[state] : undefined)}
 			{(noNewline.left || noNewline.right) && (
 				<NoNewlineRow shape={shape} state={state} {...noNewline} />
@@ -967,6 +989,44 @@ function PairRow(props: RowProps & { row: SideRow }) {
 				state={state}
 			/>
 		</>
+	);
+}
+
+/**
+ * Side by side on a phone: a pair row's bubbles in a slim row of their own
+ * right under it, so its narrow code cells keep their width. A left cell's
+ * bubbles sit at the left, a right cell's at the right; the cluster's rail
+ * carries on beside them. Not a line (no `diff-line`, numbers or code
+ * cells) and not a thread row: the scroll anchor, the line picks and the
+ * floating cluster controls pass it by. None when neither cell has any.
+ */
+function BubbleRow(props: {
+	left: Bubbles;
+	right: Bubbles;
+	state?: ClusterView["state"];
+}) {
+	const { left, right } = props;
+	const has = (b: Bubbles) => Boolean(b.lead || b.bubble);
+	if (!has(left) && !has(right)) return null;
+	const group = (side: DiffSide, b: Bubbles) => (
+		<div
+			data-bubbles={side}
+			className={`flex ${side === "RIGHT" ? "justify-end" : ""}`}
+		>
+			{b.lead}
+			{b.bubble}
+		</div>
+	);
+	return (
+		<tr data-testid="bubble-row">
+			<Rail state={props.state} />
+			<td colSpan={columnsOf("side-by-side") - 1} className="px-2 py-0">
+				<div className="grid grid-cols-2">
+					{group("LEFT", left)}
+					{group("RIGHT", right)}
+				</div>
+			</td>
+		</tr>
 	);
 }
 

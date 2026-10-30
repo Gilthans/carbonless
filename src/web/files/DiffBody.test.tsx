@@ -22,12 +22,14 @@ import { ignoreWhitespace, showInvisibles, sideBySide } from "../viewSettings";
 import {
 	DiffBody,
 	type DiffThreads,
+	type FileLead,
 	LANDED_MS,
 	numberDigits,
 } from "./DiffBody";
 import type { Landing } from "./landing";
 import { setPicks } from "./linePicks";
 import type { CodeSpan } from "./selectionActions";
+import { ThreadBubble } from "./ThreadBubble";
 
 vi.mock("./highlight", () => ({
 	languageFor: () => null,
@@ -185,6 +187,7 @@ function setup(
 		landing?: Landing;
 		clusters?: ClusterView[];
 		hunks?: FileHunks;
+		lead?: FileLead;
 	} = {},
 ) {
 	const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
@@ -194,7 +197,20 @@ function setup(
 				? (opts.hunks ?? hunks)
 				: url.pathname === "/api/comments"
 					? { threads: [] }
-					: {};
+					: url.pathname === "/api/files/0/context"
+						? Array.from(
+								{
+									length:
+										Number(url.searchParams.get("newTo")) -
+										Number(url.searchParams.get("newFrom")) +
+										1,
+								},
+								(_, i) => {
+									const n = Number(url.searchParams.get("newFrom")) + i;
+									return ctx(n, n);
+								},
+							)
+						: {};
 		return new Response(JSON.stringify(body), { status: 200 });
 	});
 	vi.stubGlobal("fetch", fetchMock);
@@ -215,6 +231,7 @@ function setup(
 				onCrossOff={onCrossOff}
 				threads={threads}
 				landing={opts.landing}
+				lead={opts.lead}
 			/>
 		</QueryClientProvider>,
 	);
@@ -1054,7 +1071,12 @@ describe("DiffBody side by side", () => {
 		const row = document.querySelector<HTMLElement>(
 			'[data-testid="diff-line"][data-new-no="6"]',
 		) as HTMLElement;
-		await user.click(bubble(row, "RIGHT"));
+		// On a phone the bubble sits in its own row under the line's.
+		await user.click(
+			within(row.nextElementSibling as HTMLElement).getByRole("button", {
+				name: /comment/,
+			}),
+		);
 		const opened = screen.getByTestId("thread-row");
 		expect(tail(opened)).toEqual({ spans: [6], card: 0, blank: -1 });
 		expect(within(opened).getByTestId("thread-rail")).toHaveClass(
@@ -1091,6 +1113,184 @@ describe("DiffBody side by side", () => {
 		expect(row.previousElementSibling).toHaveAttribute("data-new-no", "5");
 		expect(tail(row)).toEqual({ spans: [6], card: 0, blank: -1 });
 		expect(within(row).getAllByTestId("new-thread")).toHaveLength(2);
+	});
+
+	describe("bubbles on a phone", () => {
+		const phone = () =>
+			vi.stubGlobal(
+				"matchMedia",
+				(query: string) =>
+					({
+						matches: false,
+						media: query,
+						addEventListener: () => {},
+						removeEventListener: () => {},
+					}) as unknown as MediaQueryList,
+			);
+		const byNew = (n: number) =>
+			document.querySelector<HTMLElement>(
+				`[data-testid="diff-line"][data-new-no="${n}"]`,
+			) as HTMLElement;
+		/** The bubbles of a bubble row's side, by name. */
+		const sideBubbles = (row: Element, side: "LEFT" | "RIGHT") =>
+			Array.from(
+				row.querySelectorAll(
+					`[data-bubbles="${side}"] [data-testid="thread-bubble"]`,
+				),
+			).map((b) => b.getAttribute("aria-label"));
+		/** No room kept for bubbles in either code cell. */
+		const unpadded = (row: HTMLElement) => {
+			for (const side of ["LEFT", "RIGHT"] as const) {
+				const cell = code(row, side);
+				if (!cell) continue;
+				expect(cell).not.toHaveClass("pr-12");
+				expect(cell).not.toHaveClass("pr-24");
+				expect(cell.querySelector('[data-testid="thread-bubble"]')).toBeNull();
+			}
+		};
+
+		it("moves a right cell's bubble to a row of its own under the pair row, on the right", async () => {
+			phone();
+			const { user } = setup({
+				hunks: pairHunks(),
+				clusters: [pairCluster()],
+				threads: [thread("RIGHT", 6)],
+			});
+			await screen.findByText("new seven");
+			const row = byNew(6);
+			unpadded(row);
+			const bubbles = row.nextElementSibling as HTMLElement;
+			expect(bubbles).toHaveAttribute("data-testid", "bubble-row");
+			expect(sideBubbles(bubbles, "RIGHT")).toEqual(["1 comment on line 6"]);
+			expect(sideBubbles(bubbles, "LEFT")).toEqual([]);
+			expect(bubbles.querySelector('[data-bubbles="RIGHT"]')).toHaveClass(
+				"justify-end",
+			);
+			// No line and no thread row: the scroll anchor, the line picks and
+			// the floating cluster controls (they stop at thread rows) pass it by.
+			expect(
+				bubbles.matches(
+					'[data-testid="diff-line"], [data-testid="thread-row"], [data-old-no], [data-new-no]',
+				),
+			).toBe(false);
+			expect(
+				bubbles.querySelector('[data-testid="code"], button[data-pick]'),
+			).toBeNull();
+			// The cluster's rail carries on beside it.
+			expect(bubbles.querySelector("td")).toHaveClass("bg-unreviewed");
+			// It opens its thread right under the bubble row, as before.
+			const button = within(bubbles).getByRole("button", {
+				name: "1 comment on line 6",
+			});
+			expect(button).toHaveAttribute("aria-expanded", "false");
+			await user.click(button);
+			const opened = screen.getByTestId("thread-row");
+			expect(bubbles.nextElementSibling).toBe(opened);
+			expect(button).toHaveAttribute("aria-expanded", "true");
+			expect(button).toHaveAttribute("aria-controls", opened.id);
+			await user.click(button);
+			expect(screen.queryByTestId("thread-row")).toBeNull();
+		});
+
+		it("puts a left cell's bubble on the left, and both sides' in one row", async () => {
+			phone();
+			setup({
+				hunks: pairHunks(),
+				clusters: [pairCluster()],
+				threads: [thread("LEFT", 5), thread("LEFT", 6), thread("RIGHT", 6)],
+			});
+			await screen.findByText("new seven");
+			const five = byNew(5);
+			unpadded(five);
+			const fiveBubbles = five.nextElementSibling as HTMLElement;
+			expect(fiveBubbles).toHaveAttribute("data-testid", "bubble-row");
+			expect(sideBubbles(fiveBubbles, "LEFT")).toEqual([
+				"1 comment on old line 5",
+			]);
+			expect(sideBubbles(fiveBubbles, "RIGHT")).toEqual([]);
+			expect(
+				fiveBubbles.querySelector('[data-bubbles="LEFT"]'),
+			).not.toHaveClass("justify-end");
+
+			const six = byNew(6);
+			unpadded(six);
+			const sixBubbles = six.nextElementSibling as HTMLElement;
+			expect(sixBubbles).toHaveAttribute("data-testid", "bubble-row");
+			expect(sideBubbles(sixBubbles, "LEFT")).toEqual([
+				"1 comment on old line 6",
+			]);
+			expect(sideBubbles(sixBubbles, "RIGHT")).toEqual(["1 comment on line 6"]);
+			expect(screen.getAllByTestId("bubble-row")).toHaveLength(2);
+		});
+
+		it("moves the file bubble on the first row to its bubble row, the file's threads under it", async () => {
+			phone();
+			const { user } = setup({
+				hunks: pairHunks(),
+				clusters: [pairCluster()],
+				threads: [thread("RIGHT", 1)],
+				lead: {
+					bubble: (
+						<ThreadBubble
+							inline
+							file
+							threads={[]}
+							label="Comment on file"
+							open
+							onToggle={() => {}}
+						/>
+					),
+					row: (columns) => (
+						<tr data-testid="file-threads-row">
+							<td colSpan={columns} />
+						</tr>
+					),
+				},
+			});
+			await screen.findByText("new seven");
+			// The first row is the gap's until its lines load: then line 1's.
+			const gap = screen.getAllByTestId("gap-row")[0] as HTMLElement;
+			await user.click(
+				within(gap).getAllByRole("button", { name: /above/ })[0] as HTMLElement,
+			);
+			await screen.findAllByText("line 1");
+			const first = lineRows()[0] as HTMLElement;
+			expect(first).toHaveAttribute("data-new-no", "1");
+			unpadded(first);
+			const bubbles = first.nextElementSibling as HTMLElement;
+			expect(bubbles).toHaveAttribute("data-testid", "bubble-row");
+			expect(sideBubbles(bubbles, "RIGHT")).toEqual([
+				"Comment on file",
+				"1 comment on line 1",
+			]);
+			expect(bubbles.nextElementSibling).toHaveAttribute(
+				"data-testid",
+				"file-threads-row",
+			);
+		});
+
+		it("keeps bubbles in their cells on a wide screen and in unified", async () => {
+			setup({
+				hunks: pairHunks(),
+				clusters: [pairCluster()],
+				threads: [thread("RIGHT", 6), thread("LEFT", 5)],
+			});
+			await screen.findByText("new seven");
+			expect(screen.queryByTestId("bubble-row")).toBeNull();
+			expect(code(byNew(6), "RIGHT")).toHaveClass("pr-12");
+			expect(code(byNew(5), "LEFT")).toHaveClass("pr-12");
+			cleanup();
+			phone();
+			sideBySide.set(false);
+			setup({
+				hunks: pairHunks(),
+				clusters: [pairCluster()],
+				threads: [thread("RIGHT", 6)],
+			});
+			await screen.findByText("new seven");
+			expect(screen.queryByTestId("bubble-row")).toBeNull();
+			expect(screen.getAllByTestId("thread-bubble")).toHaveLength(1);
+		});
 	});
 
 	it("lands on one cell of a pair row, and on both cells of a context row", async () => {
