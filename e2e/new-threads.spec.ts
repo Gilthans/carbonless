@@ -131,7 +131,6 @@ test("select a span and comment: it posts, and the span is painted after a reloa
 	// "name.trim()" in "const trimmed = name.trim();".
 	await selectText(page, GREET, 3, 16, 27);
 	await expect(bar(page)).toBeVisible();
-	if (isMobile) await expect(bar(page)).toContainText("line 3, new");
 	await shot(page, "new-thread-bar", isMobile);
 	await bar(page).getByRole("button", { name: "Comment" }).click();
 	const composer = section.getByTestId("new-thread");
@@ -253,7 +252,6 @@ test("the bar sits by what is selected: just below it, beside it", async ({
 	startCrb,
 	isMobile,
 }) => {
-	test.skip(isMobile, "a phone's bar is pinned to the bottom");
 	await pr(fixture);
 	const s = await startCrb();
 	const section = await openFile(page, s.url, GREET);
@@ -264,22 +262,48 @@ test("the bar sits by what is selected: just below it, beside it", async ({
 		return r ? { left: r.left, right: r.right, bottom: r.bottom } : null;
 	});
 	const line = await row(section, "RIGHT", 3).boundingBox();
+	// Settled where it goes (it is placed a frame after it shows).
+	await expect
+		.poll(async () => (await bar(page).boundingBox())?.y ?? 0)
+		.toBeGreaterThanOrEqual(sel?.bottom ?? 0);
 	let box = await bar(page).boundingBox();
 	if (!sel || !line || !box) throw new Error("no geometry");
-	expect(box.y).toBeGreaterThanOrEqual(sel.bottom);
-	expect(box.y).toBeLessThanOrEqual(line.y + line.height + line.height);
+	// Below the line, within two lines of it: on a phone a handle's room
+	// lower, so the end handle stays grabbable.
+	expect(box.y).toBeGreaterThanOrEqual(sel.bottom + (isMobile ? 24 : 0));
+	expect(box.y).toBeLessThanOrEqual(sel.bottom + 2 * line.height);
 	expect(box.x).toBeLessThanOrEqual(sel.right + 8);
 	expect(box.x + box.width).toBeGreaterThanOrEqual(sel.left - 8);
+	const inView = async () => {
+		const b = await bar(page).boundingBox();
+		const v = await page.evaluate(() => ({
+			w: window.visualViewport?.width ?? window.innerWidth,
+			h: window.visualViewport?.height ?? window.innerHeight,
+		}));
+		if (!b) throw new Error("no bar");
+		expect(b.x).toBeGreaterThanOrEqual(0);
+		expect(b.y).toBeGreaterThanOrEqual(0);
+		expect(b.x + b.width).toBeLessThanOrEqual(v.w);
+		expect(b.y + b.height).toBeLessThanOrEqual(v.h);
+	};
+	await inView();
+	await shot(page, "selection-bar-text", isMobile);
 	await page.keyboard.press("Escape");
 	await page.evaluate(() => document.getSelection()?.removeAllRanges());
 	// Picked lines: by their numbers (room for the bar below them).
 	await row(section, "RIGHT", 10).evaluate((el) =>
 		el.scrollIntoView({ block: "center" }),
 	);
-	await row(section, "RIGHT", 10).getByTestId("new").click();
-	await row(section, "RIGHT", 12)
-		.getByTestId("new")
-		.click({ modifiers: ["Shift"] });
+	if (isMobile) {
+		// A second tap extends.
+		await row(section, "RIGHT", 10).getByTestId("new").tap();
+		await row(section, "RIGHT", 12).getByTestId("new").tap();
+	} else {
+		await row(section, "RIGHT", 10).getByTestId("new").click();
+		await row(section, "RIGHT", 12)
+			.getByTestId("new")
+			.click({ modifiers: ["Shift"] });
+	}
 	const last = await row(section, "RIGHT", 12).boundingBox();
 	const number = await row(section, "RIGHT", 12)
 		.getByTestId("new")
@@ -296,6 +320,13 @@ test("the bar sits by what is selected: just below it, beside it", async ({
 	// Right beside the number, never over the numbers below it.
 	expect(box.x).toBeGreaterThanOrEqual(number.x + number.width);
 	expect(box.x).toBeLessThanOrEqual(number.x + number.width + 8);
+	await inView();
+	await shot(page, "selection-bar-picked", isMobile);
+	// The numbers below stay free: a tap (click) on 14 extends the pick.
+	const below = row(section, "RIGHT", 14).getByTestId("new");
+	if (isMobile) await below.tap();
+	else await below.click({ modifiers: ["Shift"] });
+	await expect(section.locator("tr[data-picked]")).toHaveCount(5);
 });
 
 test("a pick from a removed line extends to its added replacement: the bar never covers the numbers below", async ({

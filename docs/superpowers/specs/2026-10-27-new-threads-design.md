@@ -87,7 +87,7 @@ Owner: "It's a good first step. In the future we'll have to store things in our 
 
 ## The action bar (the extension point)
 
-- When a selection ends (mouse up, keyboard selection, or the phone's selection settling), a small floating bar appears next to its end with one icon button per available action, each ≥40px with a tooltip. On a phone it is a bar pinned to the bottom of the screen, above the system's own selection menu.
+- When a selection ends (mouse up, keyboard selection, or the phone's selection settling), a small floating bar appears next to its end with one icon button per available action, each ≥40px with a tooltip. On a phone it floats the same way, a little lower under text so the selection's end handle stays grabbable (the system's Copy menu sits above the selection), and inside the visual viewport.
 - Actions come from a registry: `{ id, icon, label, available(span) → true | reason, start(span) }`. This stage registers one action, **Comment**. "Ask Claude" later registers another and gets its own spec: where its answers live, what it may see. When an action isn't available its button stays visible, disabled, with the reason as its tooltip (for example "GitHub only takes comments on lines in the diff").
 - Keyboard: with a selection, `c` starts a comment. The bar's buttons are reachable with Tab, and Escape dismisses the bar.
 

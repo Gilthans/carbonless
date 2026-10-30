@@ -35,6 +35,8 @@ import { codeCellOf, DiffBody, type DiffThreads } from "./DiffBody";
 import { FileDiff } from "./FileDiff";
 import { getPicks, setPicks } from "./linePicks";
 import {
+	currentView,
+	HANDLE_GAP,
 	pickAnchor,
 	placeBar,
 	SelectionBar,
@@ -1686,5 +1688,194 @@ describe("pickAnchor: the bar starts right of the row's numbers", () => {
 		old.querySelector("button")?.setAttribute("data-pick", "LEFT:10");
 		row.append(old, cellAt("new", 415, 38));
 		expect(pickAnchor(row)).toBe(415 + 38 + 6);
+	});
+});
+
+describe("placeBar on a phone: clear of the handles, inside what the screen shows", () => {
+	const rect = (left: number, top: number, w: number, h: number) =>
+		new DOMRect(left, top, w, h);
+	const size = { w: 46, h: 46 };
+
+	it("text: below the last line by the handle's room, centred where it ends", () => {
+		const last = rect(20, 300, 120, 20);
+		expect(
+			placeBar(
+				{ first: last, last, box: last, anchor: 140 },
+				size,
+				{ w: 360, h: 740 },
+				HANDLE_GAP,
+			),
+		).toEqual({ top: 320 + HANDLE_GAP, left: 140 - 23 });
+	});
+
+	it("pinch-zoomed: inside the visual viewport, not the layout one", () => {
+		// The screen shows x 200–380, y 300–500 of the page.
+		const view = { left: 200, top: 300, w: 180, h: 200 };
+		const last = rect(150, 340, 100, 20);
+		const at = placeBar(
+			{ first: last, last, box: last, anchor: 160 },
+			size,
+			view,
+			HANDLE_GAP,
+		);
+		expect(at).toEqual({ top: 360 + HANDLE_GAP, left: 208 });
+		// Past the right edge: kept in.
+		const far = placeBar(
+			{ first: last, last, box: last, anchor: 900 },
+			size,
+			view,
+			HANDLE_GAP,
+		);
+		expect(far.left + size.w).toBeLessThanOrEqual(380 - 8);
+	});
+
+	it("no room below in the view: above the start, inside the view", () => {
+		const view = { left: 0, top: 100, w: 360, h: 300 };
+		const first = rect(20, 260, 120, 20);
+		const last = rect(20, 360, 120, 20);
+		const at = placeBar(
+			{ first, last, box: rect(20, 260, 300, 120), anchor: 140 },
+			size,
+			view,
+			HANDLE_GAP,
+		);
+		expect(at.top).toBe(260 - 6 - 46);
+		expect(at.top).toBeGreaterThanOrEqual(100 + 8);
+	});
+
+	it("reads the visual viewport", () => {
+		vi.stubGlobal("visualViewport", {
+			offsetLeft: 12,
+			offsetTop: 340,
+			width: 180,
+			height: 370,
+		});
+		expect(currentView()).toEqual({ left: 12, top: 340, w: 180, h: 370 });
+	});
+});
+
+describe("the selection bar on a phone", () => {
+	/** Rows 20px from y=100, numbers at x 40–78, code from x 90. */
+	const geometry = () => {
+		const rowTop = (el: Element) => {
+			const tr = el.closest("tr");
+			const n = Number(tr?.dataset.newNo ?? tr?.dataset.oldNo);
+			return Number.isNaN(n) ? null : 100 + 20 * n;
+		};
+		vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(
+			function (this: Element) {
+				const top = rowTop(this);
+				if (top === null) return new DOMRect();
+				if (this.matches("tr")) return new DOMRect(0, top, 360, 20);
+				if (this.matches('td[data-testid="new"]')) {
+					return new DOMRect(40, top, 38, 20);
+				}
+				if (this.matches("[data-code]")) {
+					return new DOMRect(90, top + 3, 260, 14);
+				}
+				return new DOMRect();
+			},
+		);
+		vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockImplementation(
+			function (this: HTMLElement) {
+				return this.dataset.testid === "selection-bar" ? 46 : 0;
+			},
+		);
+		vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockImplementation(
+			function (this: HTMLElement) {
+				return this.dataset.testid === "selection-bar" ? 46 : 0;
+			},
+		);
+	};
+	const phone = (view: { top: number; height: number }) => {
+		vi.stubGlobal(
+			"matchMedia",
+			(query: string) =>
+				({
+					matches: false,
+					media: query,
+					addEventListener: () => {},
+					removeEventListener: () => {},
+				}) as unknown as MediaQueryList,
+		);
+		vi.stubGlobal("visualViewport", {
+			offsetLeft: 0,
+			offsetTop: view.top,
+			width: 360,
+			height: view.height,
+			addEventListener: () => {},
+			removeEventListener: () => {},
+		});
+		window.scrollBy = vi.fn();
+	};
+	const placed = (bar: HTMLElement) => ({
+		top: Number.parseFloat(bar.style.top),
+		left: Number.parseFloat(bar.style.left),
+	});
+
+	it("text: floats below the last line, the end handle's room under it, no quote", async () => {
+		phone({ top: 0, height: 740 });
+		setup();
+		await loaded();
+		geometry();
+		selectAndRelease(rangeOf(at("RIGHT", 8, 0), at("RIGHT", 8, 3)));
+		const bar = await screen.findByTestId("selection-bar");
+		// Line 8's code: y 263–277, from x 90 (no range rects in jsdom).
+		await vi.waitFor(() =>
+			expect(placed(bar)).toEqual({ top: 277 + HANDLE_GAP, left: 90 - 23 }),
+		);
+		expect(bar).toHaveClass("fixed");
+		expect(bar).not.toHaveClass("inset-x-0");
+		expect(bar.textContent).toBe("");
+		expect(window.scrollBy).not.toHaveBeenCalled();
+		expect(
+			document.documentElement.style.getPropertyValue("--selection-bar"),
+		).toBe("");
+	});
+
+	it("picked lines: just below the last one, right of its number (no handles)", async () => {
+		phone({ top: 0, height: 740 });
+		setup();
+		await loaded();
+		geometry();
+		act(() =>
+			setPicks({
+				path: PATH,
+				anchor: { side: "RIGHT", line: 6, len: 6, hunk: "h0", path: PATH },
+				focus: { side: "RIGHT", line: 7, len: 6, hunk: "h0", path: PATH },
+				lines: [6, 7].map((line) => ({
+					side: "RIGHT" as const,
+					line,
+					len: 6,
+					hunk: "h0",
+					path: PATH,
+				})),
+			}),
+		);
+		const bar = await screen.findByTestId("selection-bar");
+		// Row 7: y 240–260; its number ends at x 78.
+		await vi.waitFor(() =>
+			expect(placed(bar)).toEqual({ top: 260 + 6, left: 78 + 6 }),
+		);
+	});
+
+	it("no room under the selection: the page moves up once to make it", async () => {
+		// The screen shows y 0–300: line 8 ends at 277.
+		phone({ top: 0, height: 300 });
+		setup();
+		await loaded();
+		geometry();
+		selectAndRelease(rangeOf(at("RIGHT", 8, 0), at("RIGHT", 8, 3)));
+		const bar = await screen.findByTestId("selection-bar");
+		await vi.waitFor(() =>
+			expect(window.scrollBy).toHaveBeenCalledWith({
+				top: 277 + HANDLE_GAP + 46 + 8 - 300,
+				behavior: "instant",
+			}),
+		);
+		// Handles dragged (the same selection read again): not again.
+		selectAndRelease(rangeOf(at("RIGHT", 8, 0), at("RIGHT", 8, 4)));
+		await vi.waitFor(() => expect(placed(bar).top).toBeGreaterThan(0));
+		expect(window.scrollBy).toHaveBeenCalledTimes(1);
 	});
 });

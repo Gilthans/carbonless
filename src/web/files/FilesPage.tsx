@@ -534,7 +534,7 @@ export function FilesPage() {
 									// (--sync-notices, SyncNotices): the last header can always
 									// scroll clear of them.
 									style={{
-										paddingBottom: `max(${wide ? "0px" : "5rem"}, var(--sync-notices, 0px), var(--selection-bar, 0px))`,
+										paddingBottom: `max(${wide ? "0px" : "5rem"}, var(--sync-notices, 0px))`,
 									}}
 									className="min-w-0 flex-1 space-y-3"
 								>
