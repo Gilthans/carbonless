@@ -87,6 +87,10 @@ async function selectText(
 	from: number,
 	to: number,
 ) {
+	const cell = `[data-path="${path}"] tr[data-new-no="${n}"] > [data-code-cell][data-side="RIGHT"] [data-code]`;
+	// The highlighting replaces the line's text nodes when it arrives (late
+	// on a loaded machine), which would drop a selection made before it.
+	await page.locator(`${cell} span[style]`).first().waitFor();
 	await page.evaluate(
 		({ path, n, from, to }) => {
 			const code = document.querySelector(
