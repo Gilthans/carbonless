@@ -20,6 +20,8 @@ const port = process.env.CRB_API_PORT ?? "4858";
 writePrivateConfig(root, Number(port));
 // A killed dev server leaves its server.json: the client must not trust it.
 removeStaleState(root);
+// privateDirs reads gh's real config dir from this environment, before
+// XDG_CONFIG_HOME moves (gh follows it and would lose its login).
 const env = { ...process.env, ...privateDirs(root), CRB_API_PORT: port };
 const bin = (name) => join(root, "node_modules", ".bin", name);
 

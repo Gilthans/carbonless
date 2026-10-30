@@ -133,3 +133,13 @@ mode change) are left, it counts clusters instead, so it never reads as
 done early. The Files page's Lines / Clusters / Files choice is a setting
 of your browser, which the server that builds Home can't see, so the two
 can show different units for the same review.
+
+## Why does gh say "not logged in" when crb runs with its own XDG_CONFIG_HOME?
+
+gh keeps its login in `$XDG_CONFIG_HOME/gh`. Point `XDG_CONFIG_HOME` somewhere
+else for crb (a worktree's `.envrc`, `pnpm dev`'s `.crb-dev`, your own
+setup) and gh looks there too, finds no login, and every review fails. Set
+`GH_CONFIG_DIR` to gh's real config dir as well: `pnpm dev` and
+`scripts/agent-worktree.sh` do (`$GH_CONFIG_DIR` if set, else
+`${XDG_CONFIG_HOME:-~/.config}/gh` from before the override); by hand,
+`export GH_CONFIG_DIR=~/.config/gh` before changing `XDG_CONFIG_HOME`.

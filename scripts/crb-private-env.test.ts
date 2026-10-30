@@ -6,7 +6,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { createServer, type Server } from "node:http";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
@@ -29,14 +29,31 @@ describe("a worktree's private crb state and config", () => {
 			readFileSync(join(dir, ".crb-dev/config/carbonless/config.json"), "utf8"),
 		);
 
-	it("lives in .crb-dev, whatever XDG the shell has", () => {
-		expect(privateDirs(dir)).toEqual({
+	it("lives in .crb-dev, whatever XDG the shell has; gh keeps the real login", () => {
+		const env = { XDG_CONFIG_HOME: "/home/me/.cfg" };
+		expect(privateDirs(dir, env)).toEqual({
 			XDG_STATE_HOME: join(dir, ".crb-dev", "state"),
 			XDG_CONFIG_HOME: join(dir, ".crb-dev", "config"),
+			// gh follows XDG_CONFIG_HOME: pinned to where its login is.
+			GH_CONFIG_DIR: "/home/me/.cfg/gh",
 		});
-		expect(envrc(dir)).toBe(
-			`export XDG_STATE_HOME="${join(dir, ".crb-dev", "state")}"\nexport XDG_CONFIG_HOME="${join(dir, ".crb-dev", "config")}"\n`,
+		expect(envrc(dir, env)).toBe(
+			`export XDG_STATE_HOME="${join(dir, ".crb-dev", "state")}"\nexport XDG_CONFIG_HOME="${join(dir, ".crb-dev", "config")}"\nexport GH_CONFIG_DIR="\${GH_CONFIG_DIR:-/home/me/.cfg/gh}"\n`,
 		);
+	});
+
+	it("finds gh's real config dir before the override", () => {
+		const gh = (env: Record<string, string | undefined>) =>
+			privateDirs(dir, env).GH_CONFIG_DIR;
+		// Already set: never overridden.
+		expect(gh({ GH_CONFIG_DIR: "/gh", XDG_CONFIG_HOME: "/x" })).toBe("/gh");
+		expect(gh({ XDG_CONFIG_HOME: "/x" })).toBe("/x/gh");
+		// Unset, empty or relative XDG_CONFIG_HOME: ~/.config.
+		for (const xdg of [undefined, "", "rel/dir"]) {
+			expect(gh({ XDG_CONFIG_HOME: xdg })).toBe(
+				join(homedir(), ".config", "gh"),
+			);
+		}
 	});
 
 	it("serves on its own port, never the default 4747", () => {

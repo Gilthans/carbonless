@@ -209,6 +209,10 @@ Owner's decisions on this part (2026-10-28):
   `scripts/agent-worktree.sh` set a private `XDG_STATE_HOME` and
   `XDG_CONFIG_HOME` inside the worktree (git-ignored), so a branch's
   `crb <pr>` finds or starts its own server, never main's.
+  gh keeps its login under `$XDG_CONFIG_HOME/gh`, so they also pin
+  `GH_CONFIG_DIR` to the real one (`$GH_CONFIG_DIR`, else
+  `${XDG_CONFIG_HOME:-~/.config}/gh`, read before the override); anyone
+  running crb with their own `XDG_CONFIG_HOME` must do the same (FAQ).
 - **Version handshake** (same agreement; format set by the
   versioning/distribution work). The CLI never hands a request to a
   mismatched server silently.

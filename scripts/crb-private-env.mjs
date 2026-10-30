@@ -11,22 +11,41 @@ import {
 	rmSync,
 	writeFileSync,
 } from "node:fs";
-import { join } from "node:path";
+import { homedir } from "node:os";
+import { isAbsolute, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 
-/** The private XDG dirs of the worktree at `dir`. */
-export function privateDirs(dir) {
+/**
+ * gh's config dir (its login) as `env` has it, before XDG_CONFIG_HOME is
+ * overridden: gh follows XDG_CONFIG_HOME, so a private one would log it
+ * out. `$GH_CONFIG_DIR` when set, else `${XDG_CONFIG_HOME:-~/.config}/gh`.
+ */
+export function ghConfigDir(env = process.env) {
+	if (env.GH_CONFIG_DIR) return env.GH_CONFIG_DIR;
+	const xdg = env.XDG_CONFIG_HOME;
+	return join(xdg && isAbsolute(xdg) ? xdg : join(homedir(), ".config"), "gh");
+}
+
+/**
+ * The environment of the worktree at `dir`: its private XDG dirs, and gh's
+ * real config dir (computed from `env`, the environment before them).
+ */
+export function privateDirs(dir, env = process.env) {
 	return {
 		XDG_STATE_HOME: join(dir, ".crb-dev", "state"),
 		XDG_CONFIG_HOME: join(dir, ".crb-dev", "config"),
+		GH_CONFIG_DIR: ghConfigDir(env),
 	};
 }
 
-/** The worktree's .envrc: the private dirs, to export before running crb. */
-export function envrc(dir) {
-	const d = privateDirs(dir);
-	return `export XDG_STATE_HOME="${d.XDG_STATE_HOME}"\nexport XDG_CONFIG_HOME="${d.XDG_CONFIG_HOME}"\n`;
+/**
+ * The worktree's .envrc, to source before running crb: the private dirs,
+ * and GH_CONFIG_DIR unless the shell already sets one.
+ */
+export function envrc(dir, env = process.env) {
+	const d = privateDirs(dir, env);
+	return `export XDG_STATE_HOME="${d.XDG_STATE_HOME}"\nexport XDG_CONFIG_HOME="${d.XDG_CONFIG_HOME}"\nexport GH_CONFIG_DIR="\${GH_CONFIG_DIR:-${d.GH_CONFIG_DIR}}"\n`;
 }
 
 /**
