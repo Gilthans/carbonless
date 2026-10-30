@@ -1747,6 +1747,65 @@ describe("OverviewPage", () => {
 		expect(within(card).queryByTestId("thread-body-loading")).toBeNull();
 	});
 
+	it("measures a code pane that arrives after its card: clipped, it takes focus to scroll", async () => {
+		// The card renders first with the code's frame, then the pane mounts
+		// in its place: its overflow must be measured then, not only at the
+		// card's mount (an e2e race, overview.spec.ts "an opened long range").
+		const pane = (el: HTMLElement) => el.tagName === "FIGURE";
+		const scroll = vi
+			.spyOn(HTMLElement.prototype, "scrollHeight", "get")
+			.mockImplementation(function (this: HTMLElement) {
+				return pane(this) ? 1200 : 0;
+			});
+		const client = vi
+			.spyOn(HTMLElement.prototype, "clientHeight", "get")
+			.mockImplementation(function (this: HTMLElement) {
+				return pane(this) ? 158 : 0;
+			});
+		try {
+			const full = overview.threads;
+			const summary = full.map((t) => ({
+				...t,
+				code: t.code && { ...t.code, rows: [], source: "pending" },
+			}));
+			renderApp({ "/api/threads": ok(NEVER) });
+			let release = () => {};
+			const gate = new Promise<void>((r) => {
+				release = r;
+			});
+			const routes = fetchMock.getMockImplementation();
+			fetchMock.mockImplementation(async (input, init) => {
+				const url = local(input);
+				if (url.startsWith("/api/threads")) {
+					if (url.includes("stage=summary")) {
+						return new Response(
+							JSON.stringify({ threads: summary, complete: false }),
+						);
+					}
+					await gate;
+					return new Response(
+						JSON.stringify({ threads: full, complete: true }),
+					);
+				}
+				if (!routes) throw new Error("no mock");
+				return routes(input, init);
+			});
+			const humans = await screen.findByRole("region", {
+				name: "Human reviews",
+			});
+			const card = await within(humans).findByTestId("thread");
+			expect(within(card).getByTestId("thread-code-loading")).toBeVisible();
+			release();
+			const code = await within(humans).findByRole("figure", {
+				name: "Code at src/cache.ts",
+			});
+			await waitFor(() => expect(code).toHaveAttribute("tabindex", "0"));
+		} finally {
+			scroll.mockRestore();
+			client.mockRestore();
+		}
+	});
+
 	it("says when the threads couldn't be read, leaving no list busy forever", async () => {
 		renderApp({ "/api/threads": { status: 502, body: { error: "gh broke" } } });
 		const ready = await screen.findByRole("region", { name: "Is it ready" });

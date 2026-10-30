@@ -1326,15 +1326,20 @@ interface OrphanDraftItem {
 	label: string;
 }
 
-/** Overflowing `el` (when `axis` is "both", sideways too), re-measured as it resizes. */
+/**
+ * Overflowing `el` (when `axis` is "both", sideways too), re-measured as it
+ * resizes. `el` is the element itself (a callback ref's state), not a ref
+ * object: the box can mount after the card (the code pane replaces its
+ * frame once the code arrives), and is measured again whenever it does.
+ */
 function useOverflow(
-	el: RefObject<HTMLElement | null>,
+	el: HTMLElement | null,
 	active: boolean,
 	axis: "y" | "both",
 ): boolean {
 	const [over, setOver] = useState(false);
 	useLayoutEffect(() => {
-		const box = el.current;
+		const box = el;
 		if (!box || !active) return;
 		const measure = () =>
 			setOver(
@@ -1393,8 +1398,9 @@ function ThreadItem({
 	useEffect(() => {
 		if (draftsShown) setOpen(true);
 	}, [draftsShown]);
-	const codeBox = useRef<HTMLElement>(null);
-	const commentBox = useRef<HTMLDivElement>(null);
+	// State, not refs: either box can mount later than the card.
+	const [codeBox, setCodeBox] = useState<HTMLElement | null>(null);
+	const [commentBox, setCommentBox] = useState<HTMLDivElement | null>(null);
 	const codeMore = useOverflow(codeBox, !open, "both");
 	const codeOverflowsOpen = useOverflow(codeBox, open, "both");
 	const commentMore = useOverflow(commentBox, !open, "y");
@@ -1441,13 +1447,13 @@ function ThreadItem({
 	});
 	const commentClipped = commentMore && !open;
 	useEffect(() => {
-		const el = commentBox.current;
+		const el = commentBox;
 		if (!el || !commentClipped) return;
 		// A keyboard user never lands on a clipped link.
 		const reveal = () => setOpen(true);
 		el.addEventListener("focusin", reveal);
 		return () => el.removeEventListener("focusin", reveal);
-	}, [commentClipped]);
+	}, [commentBox, commentClipped]);
 	const comment = thread.unavailable ? (
 		// Its text will never come: said so, plainly.
 		<UnavailableText id={commentId} reason={thread.unavailable} />
@@ -1497,7 +1503,7 @@ function ThreadItem({
 		</div>
 	) : thread.html.trim() ? (
 		<div
-			ref={commentBox}
+			ref={setCommentBox}
 			id={commentId}
 			data-testid="thread-body"
 			data-tint={opener.tint}
@@ -1519,7 +1525,7 @@ function ThreadItem({
 		</div>
 	) : (
 		<p
-			ref={commentBox}
+			ref={setCommentBox}
 			id={commentId}
 			data-testid="thread-body"
 			data-tint={opener.tint}
@@ -1677,7 +1683,7 @@ function ThreadItem({
 				) : thread.code && rows.length > 0 ? (
 					<div className="grid gap-3 md:grid-cols-2 md:items-start">
 						<ThreadCodePane
-							ref={codeBox}
+							ref={setCodeBox}
 							id={codeId}
 							path={thread.path}
 							lines={rows}
