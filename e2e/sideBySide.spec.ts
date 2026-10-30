@@ -358,13 +358,14 @@ test("a four-digit file side by side fits a phone: no page overflow, readable co
 	await expect(row.getByTestId("new")).toHaveText("1150");
 	await expectNoPageOverflow(page);
 	// What is left after the page's gutters, the rail, the 80px touch controls
-	// and two four-digit number cells, in two equal halves: 80px each at 360px.
+	// and two number cells (four digits, 48px kept on touch), in two equal
+	// halves: 77px each at 360px.
 	const widths = await codeCells(row).evaluateAll((cells) =>
 		cells.map((td) => td.getBoundingClientRect().width),
 	);
 	expect(widths).toHaveLength(2);
 	expect(Math.abs((widths[0] ?? 0) - (widths[1] ?? 0))).toBeLessThanOrEqual(1);
-	for (const width of widths) expect(width).toBeGreaterThanOrEqual(80);
+	for (const width of widths) expect(width).toBeGreaterThanOrEqual(76);
 	// The controls keep their touch targets.
 	const target = await section.getByTestId("cluster-box-target").boundingBox();
 	if (isMobile) {
