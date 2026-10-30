@@ -115,7 +115,7 @@ Owner's decisions on this part (2026-10-28):
   review and prints its link; no running server means it starts one. Claude
   Code, or anyone, gets a link by running it.
 - **Home** at the server root: the view's PRs in four static sections,
-  recently merged ones, the PRs you've started reviewing anywhere, each row
+  recently closed ones, the PRs you've started reviewing anywhere, each row
   with GitHub's facts, whose turn it looks like, and your coverage once
   you've started.
 - **Open any PR** from one box: paste a URL, type `owner/repo#n`, or search
@@ -204,6 +204,30 @@ Owner's decisions on this part (2026-10-28):
   owner's) share nothing but the cache clones and refs, which today's
   compare-and-swap writes already allow. The state file is per
   `XDG_STATE_HOME`, so tests isolate it as they isolate `XDG_CACHE_HOME`.
+- **Dev and agent instances never find the owner's server** (agreed
+  2026-10-29 with the versioning/distribution work). `pnpm dev` and
+  `scripts/agent-worktree.sh` set a private `XDG_STATE_HOME` and
+  `XDG_CONFIG_HOME` inside the worktree (git-ignored), so a branch's
+  `crb <pr>` finds or starts its own server, never main's.
+- **Version handshake** (same agreement; format set by the
+  versioning/distribution work). The CLI never hands a request to a
+  mismatched server silently.
+  - `crb --version` prints `<package.json version> (<short commit>)`, e.g.
+    `0.4.0-rc.1 (93fe843)`. The version is package.json's `version` as is
+    (the release script sets it, `-rc.N` included), never derived from git
+    tags.
+  - `GET /api/version` returns
+    `{ "version": "0.4.0-rc.1", "commit": "<full sha>" }`.
+  - The build bakes the commit in (`git rev-parse HEAD` in the build
+    script), so an installed tarball reports it with no `.git`. A tree dirty
+    at build time appends `-dirty` to the commit.
+  - The client sends both on every request to the server. A server whose
+    version or commit differs refuses. The commit matters because a
+    worktree build and the installed release can share a version.
+  - The error names each side: "server runs 0.4.0 (abc1234), this crb is
+    0.4.0 (def5678)". It says to restart the server or run the matching
+    `crb`. The release's update script restarts the service after an
+    install, so a mismatch right after an upgrade clears itself.
 
 ## The CLI
 
@@ -257,13 +281,13 @@ from `gh`. A PR is in exactly one section:
 | **Reviewing** | not mine, and one of: a review is requested from the viewer (directly or via a team), the viewer has submitted a review or review comment, or the viewer has started it in carbonless |
 | **Up for grabs** | not mine, not a draft, no review requested from anyone and no review submitted by anyone |
 | **Other open** | every other open PR of the view's repos |
-| **Recently merged** | merged in the last 3 days; a quiet tail, violet merged icon |
+| **Recently closed** | merged or closed in the last 3 days (owner, 2026-10-29); a quiet tail, violet merged icon or red closed icon |
 
-**Which PRs are considered:** every open or recently merged PR of the
+**Which PRs are considered:** every open or recently closed PR of the
 view's repos, plus every PR the viewer has **started** in carbonless,
 whatever its repo. A started PR goes through the same table: the owner's
 own PR of Claude's changes in a repo outside the view lands in Mine, a
-colleague's in Reviewing, a merged one in Recently merged. (Builder check:
+colleague's in Reviewing, a merged one in Recently closed. (Builder check:
 the owner's main case, "any change Claude made that I want to review", is
 mostly their own PRs, so Mine must carry coverage and the any-repo rule
 like Reviewing.)
@@ -277,7 +301,8 @@ GitHub's facts put it.
 
 Hint under a title when it helps ("requested or started", "ready, no
 reviewer yet"). Rows in a section are ordered by last GitHub activity,
-newest first **(call)**. Closed-unmerged PRs don't show. A section longer
+newest first **(call)**. A PR closed without merging stays in Recently
+closed for 3 days like a merged one, then drops off. A section longer
 than 20 rows shows 20 and a "show N more" footer line next to the hidden
 count (owner's wording; 20 is a **call**): a fold, never a drop, and the
 refresh lists every PR (paginated), so the count is always the true one.
@@ -312,9 +337,11 @@ code-review meaning.
   table is the seed of the attention set; it's data on the row, never a
   reason to hide one.
 - **Age** is the last GitHub activity as relative text with the exact time
-  on hover (`RelativeTime`). On a started PR, in any section, the age gives
-  way to the coverage bar and "37 / 120" in the viewer's progress unit,
-  from the progress ref, read as the Files page reads it.
+  on hover (`RelativeTime`). On a started PR, in any section, the coverage
+  bar and "37 / 120" in the viewer's progress unit (from the progress ref,
+  read as the Files page reads it) show **next to** the age, not instead of
+  it (owner, 2026-10-29: "Why not both?"). On a phone both sit on the
+  second line.
 - **A PR with several started reviews** (its plain one and a `--head`
   pinned one today; part 3 adds more) shows them as **sub-rows under the
   PR's row** (owner's decision, 2026-10-28), ordered by the review's last
@@ -343,7 +370,9 @@ code-review meaning.
   waiting", a disclosure button (`aria-expanded`, 40px tall on touch) that
   reveals the rows in place, dimmed, each with its reason badge (the date,
   with a bolt when activity can wake it; the arrow and avatar of the
-  person it waits on) and an Unhide button. Collapsed again on reload.
+  person it waits on) and a **Wake up** button (owner, 2026-10-29), which
+  ends the snooze or the wait at once and puts the row back among the
+  visible ones. Collapsed again on reload.
 - A row that woke in the last 24 hours carries a small alarm badge
   ("woke: activity" / "woke: time") **(call)**, so what changed since
   yesterday is visible.
@@ -363,7 +392,7 @@ Semantics:
   turn column.
 - **Note** = free text shown as a dashed pill on the row; private to the
   reviewer, never posted to GitHub.
-- Each is cleared by its own action (Unhide clears snooze and waiting-on;
+- Each is cleared by its own action (Wake up clears snooze and waiting-on;
   an empty note clears the note).
 
 Storage **(call, to be checked against `docs/gitdb-design-principles.md`
@@ -406,7 +435,7 @@ parsed on every keystroke:
 |---|---|
 | A PR URL, `owner/repo#n`, or `#n` / `n` after a chosen repo | Enter opens it at once, view or not |
 | `owner/repo ` (a repo followed by a space) + text | title search inside that repo: words in any order, case-insensitive; open PRs first, then merged and closed, each by last activity |
-| anything else | two groups: **Repos** (the view's, then repos of recent reviews, then a GitHub search once 3+ characters are typed, debounced) and **Pull requests** (title matches across the view's cached PR lists, open and recently merged, with repo, author and age) |
+| anything else | two groups: **Repos** (the view's, then repos of recent reviews, then a GitHub search once 3+ characters are typed, debounced) and **Pull requests** (title matches across the view's cached PR lists, open and recently closed, with repo, author and age) |
 
 - Tab or Enter on a repo fills `owner/repo ` and lists that repo's PRs by
   latest activity, ready for title words. Enter on a PR opens it. A snoozed
@@ -421,8 +450,8 @@ parsed on every keystroke:
 ### Refresh
 
 - The server refreshes every view repo every `refresh.minutes` (default
-  2) and every started PR regardless of repo (a merged one for 3 days
-  after its merge, then no more): the PR list with the fields the
+  2) and every started PR regardless of repo (a merged or closed one for
+  3 days after it closed, then no more): the PR list with the fields the
   sections, rows and turn rules need (number, title, author, draft, state,
   merged-at, updated-at, review requests, latest reviews and review
   decision, checks rollup, unresolved thread count, the dates and authors
@@ -495,7 +524,8 @@ Listed in the `?` help like the review page's.
   both review and inbox refs; two writers with compare-and-swap.
 - **Playwright** (fake `gh` scenario with several repos and a PR list per
   repo), desktop and phone projects: Home shows the four sections and
-  recently merged from the scenario; a started review in a repo outside
+  recently closed (merged and closed-unmerged) from the scenario; Wake up on
+  a snoozed row; a started review in a repo outside
   the view appears in Reviewing with its coverage; open by URL, by
   `owner/repo#n`, by repo-then-title; a snoozed row leaves its section and
   shows in the footer, reveals on click, wakes on activity after the

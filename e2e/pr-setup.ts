@@ -34,6 +34,8 @@ export const PR_NUMBER = 7;
 export interface PrOptions {
 	/** Extra files in `main`'s base commit, next to `a.txt`. */
 	base?: Record<string, string>;
+	/** Binary files in that base commit. */
+	baseBinary?: Record<string, Uint8Array>;
 	/** The base commit's date (ISO); now by default. */
 	baseDate?: string;
 	/** Commits on the PR branch, on top of `main`'s single base commit. */
@@ -94,6 +96,7 @@ export function createPr(workdir: string, opts: PrOptions = {}): Pr {
 		{
 			message: "base",
 			files: { "a.txt": `${BASE_FILE.join("\n")}\n`, ...opts.base },
+			...(opts.baseBinary ? { binary: opts.baseBinary } : {}),
 			date: opts.baseDate,
 		},
 		...(opts.files ?? DEFAULT_COMMITS),

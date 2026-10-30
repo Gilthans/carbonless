@@ -65,22 +65,59 @@ describe("useUnsavedGuard", () => {
 		expect(leave()).toBe(false);
 	});
 
-	it("asks before leaving with a reply draft, until it's cleared", () => {
+	it("never asks for drafts storage keeps; asks while it can't keep them", () => {
+		localStorage.clear();
 		const client = new QueryClient();
 		render(
 			<QueryClientProvider client={client}>
 				<Guard />
 			</QueryClientProvider>,
 		);
-		act(() => draftsFor(client).setText("T1", "   "));
+		const drafts = draftsFor(client);
+		// Not yet bound to a PR: memory is all there is.
+		act(() => drafts.setText("T1", "   "));
 		expect(leave()).toBe(false);
-		act(() => draftsFor(client).setText("T1", "Half a thought"));
+		act(() => drafts.setText("T1", "Half a thought"));
 		expect(leave()).toBe(true);
-		act(() => draftsFor(client).setText("T1", ""));
+		// In storage now: a reload brings it back.
+		act(() => drafts.bind("crb:drafts:o/r#1"));
+		expect(leave()).toBe(false);
+		act(() => drafts.setEdit("T1", "c1", "Old", "Old and new"));
+		act(() =>
+			drafts.setNew(
+				"n1",
+				{ path: "a.ts", commit: "c", subject: "file" },
+				"A new thread",
+			),
+		);
+		expect(leave()).toBe(false);
+		act(() => drafts.setText("T1", ""));
 		expect(leave()).toBe(false);
 	});
 
-	it("asks before leaving while a reply or resolve isn't on GitHub yet", async () => {
+	it("asks while drafts can't reach storage (it throws)", () => {
+		const client = new QueryClient();
+		render(
+			<QueryClientProvider client={client}>
+				<Guard />
+			</QueryClientProvider>,
+		);
+		const setItem = vi
+			.spyOn(Storage.prototype, "setItem")
+			.mockImplementation(() => {
+				throw new Error("quota");
+			});
+		try {
+			act(() => draftsFor(client).bind("crb:drafts:o/r#2"));
+			act(() => draftsFor(client).setText("T1", "Half a thought"));
+			expect(leave()).toBe(true);
+		} finally {
+			setItem.mockRestore();
+		}
+	});
+
+	it("asks for a resolve or a delete not yet on GitHub, never for a reply its draft resends", async () => {
+		localStorage.clear();
 		const answers: (() => void)[] = [];
 		vi.stubGlobal(
 			"fetch",
@@ -117,19 +154,27 @@ describe("useUnsavedGuard", () => {
 			threadId: "T1",
 			comments: [{ id: "c1" }],
 		});
-		act(() => threadWritesFor(client).setResolved("T1", true));
+		const writes = threadWritesFor(client);
+		act(() => writes.drafts.bind("crb:drafts:o/r#3"));
+		act(() => writes.setResolved("T1", true));
 		expect(leave()).toBe(true);
 		await act(async () => {
 			answers.shift()?.();
 			await new Promise((r) => setTimeout(r, 0));
 		});
 		expect(leave()).toBe(false);
-		act(() => threadWritesFor(client).reply("T1", "Fixed"));
-		expect(leave()).toBe(true);
+		// Sent and unconfirmed, it's kept as a draft: the next page resends it.
+		act(() => writes.reply("T1", "Fixed"));
+		expect(writes.state().busy).toBe(true);
+		expect(leave()).toBe(false);
 		await act(async () => {
 			answers.shift()?.();
 			await new Promise((r) => setTimeout(r, 0));
 		});
+		// A delete in its undo window: nothing sent yet, a reload would lose it.
+		act(() => writes.deleteComment("T1", "c1"));
+		expect(leave()).toBe(true);
+		act(() => writes.undoDelete("T1", "c1"));
 		expect(leave()).toBe(false);
 	});
 });

@@ -918,7 +918,7 @@ describe("editing and deleting from an Overview card", () => {
 		expect(within(card).getByTestId("comment-edited")).toBeVisible();
 	});
 
-	it("an opener edit draft opens its card, is listed in Drafts and asked about on leaving", async () => {
+	it("an opener edit draft opens its card, is listed in Drafts, and leaving doesn't ask (it's kept)", async () => {
 		const user = userEvent.setup();
 		openerMore = { author: "octo", viewerCan: { update: true, delete: true } };
 		const client = renderOverview({}, [
@@ -936,9 +936,11 @@ describe("editing and deleting from an Overview card", () => {
 		expect(
 			await within(list).findByRole("textbox", { name: "Edit comment" }),
 		).toHaveValue("a, reworded");
+		// The session's PR binds the drafts to storage: a reload keeps it.
+		await waitFor(() => expect(draftsFor(client).durable()).toBe(true));
 		const ask = new Event("beforeunload", { cancelable: true });
 		window.dispatchEvent(ask);
-		expect(ask.defaultPrevented).toBe(true);
+		expect(ask.defaultPrevented).toBe(false);
 	});
 
 	it("deleting the only comment: Deleted · Undo, then sent; the card fades and leaves", async () => {
@@ -1072,12 +1074,13 @@ describe("editing and deleting from an Overview card", () => {
 		expect(more).toHaveFocus();
 	});
 
-	it("an opener blanked by a delete shows as a muted placeholder", async () => {
+	it("an opener blanked by a delete shows as a normal comment, with Edit", async () => {
 		const user = userEvent.setup();
 		openerMore = {
 			author: "octo",
 			body: "[deleted]",
 			deleted: true,
+			viewerCan: { update: true, delete: false },
 		};
 		moreComments = {
 			a: [
@@ -1098,12 +1101,15 @@ describe("editing and deleting from an Overview card", () => {
 			}),
 		]);
 		const card = await screen.findByTestId("thread");
-		expect(within(card).getByTestId("comment-deleted")).toHaveTextContent(
-			"deleted",
+		expect(within(card).getByTestId("thread-body")).toHaveTextContent(
+			"[deleted]",
 		);
+		expect(within(card).queryByTestId("comment-deleted")).toBeNull();
 		await openCard(user, card);
-		expect(within(card).getByTestId("comment-deleted")).toBeVisible();
 		await within(card).findByText("A reply");
-		expect(within(card).queryByRole("button", { name: "Edit" })).toBeNull();
+		expect(
+			await within(card).findByRole("button", { name: "Edit" }),
+		).toBeVisible();
+		expect(within(card).queryByRole("button", { name: "Delete" })).toBeNull();
 	});
 });

@@ -66,7 +66,6 @@ import { Tooltip, type TooltipTriggerProps } from "../Tooltip";
 import { CodeRows, CommentBody } from "../threads/CommentBody";
 import {
 	CommentActions,
-	DeletedPlaceholder,
 	DeletedRow,
 	EditedMark,
 	EditForm,
@@ -1420,9 +1419,6 @@ function ThreadItem({
 			: undefined;
 	const write = useCommentWrite(thread.id, first ?? NO_COMMENT);
 	const can = useCommentCan(first ?? NO_COMMENT);
-	const openerDeleted = first
-		? first.deleted
-		: thread.body.trim() === "[deleted]";
 	// Anything more to see: clipped text or code, a reply, or something to do.
 	const more =
 		codeMore ||
@@ -1474,10 +1470,6 @@ function ThreadItem({
 			className={`${commentSurface(opener.tint)} break-words`}
 		>
 			<SavingText text={write.saving} />
-		</div>
-	) : openerDeleted ? (
-		<div id={commentId}>
-			<DeletedPlaceholder />
 		</div>
 	) : !thread.loaded ? (
 		// Its text is still on its way: the comment's frame.
@@ -1616,7 +1608,7 @@ function ThreadItem({
 							opened&nbsp;
 							<RelativeTime iso={thread.createdAt} />
 						</span>
-						{first?.editedAt && !openerDeleted && (
+						{first?.editedAt && (
 							<span className={`${HEAD_PART} whitespace-nowrap`}>
 								<EditedMark iso={first.editedAt} />
 							</span>

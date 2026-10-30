@@ -207,8 +207,8 @@ test("pick lines by their numbers and comment on them", async ({
 	]);
 });
 
-for (const path of ["logo.png", "empty.txt"]) {
-	test(`comment on a whole file: ${path}`, async ({
+for (const path of [GREET, "logo.png", "empty.txt"]) {
+	test(`comment on a whole file from its bubble: ${path}`, async ({
 		page,
 		pr,
 		startCrb,
@@ -218,19 +218,123 @@ for (const path of ["logo.png", "empty.txt"]) {
 		const s = await startCrb();
 		await openFiles(page, s.url);
 		const section = fileSection(page, path);
-		await section.getByRole("button", { name: "Comment on file" }).click();
+		// No file comment from a closed file's header.
+		await expect(
+			section.getByRole("button", { name: "Comment on file" }),
+		).toHaveCount(0);
+		await section.getByRole("button", { name: "Expand file" }).click();
+		// The outline bubble, on the diff's first row.
+		const bubble = section.getByRole("button", { name: "Comment on file" });
+		await expect(bubble).toBeVisible();
+		await expect(
+			section.locator("table tr").first().getByTestId("thread-bubble"),
+		).toHaveAccessibleName("Comment on file");
+		await bubble.click();
 		const composer = section.getByTestId("new-thread");
 		await expect(composer).toContainText("whole file");
 		await composer.getByRole("textbox", { name: "Comment" }).fill("A 2x one?");
 		if (path === "logo.png") await shot(page, "new-thread-file", isMobile);
 		await composer.getByRole("button", { name: "Comment" }).click();
 		await expect(section.getByTestId("new-thread")).toHaveCount(0);
+		// Posted: the bubble counts it, its thread open under the first row.
 		await expect(
-			section.getByRole("button", { name: /1 comment in this file/ }),
-		).toBeVisible();
+			section.getByRole("button", { name: /1 comment on this file/ }),
+		).toHaveAttribute("aria-expanded", "true");
+		await expect(
+			section.getByTestId("file-threads").getByTestId("files-thread"),
+		).toContainText("A 2x one?");
 		expect(stored(p)).toMatchObject([{ path, subjectType: "FILE" }]);
 	});
 }
+
+test("the bar sits by what is selected: just below it, beside it", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	test.skip(isMobile, "a phone's bar is pinned to the bottom");
+	await pr(fixture);
+	const s = await startCrb();
+	const section = await openFile(page, s.url, GREET);
+	await selectText(page, GREET, 3, 6, 16);
+	await expect(bar(page)).toBeVisible();
+	const sel = await page.evaluate(() => {
+		const r = document.getSelection()?.getRangeAt(0).getBoundingClientRect();
+		return r ? { left: r.left, right: r.right, bottom: r.bottom } : null;
+	});
+	const line = await row(section, "RIGHT", 3).boundingBox();
+	let box = await bar(page).boundingBox();
+	if (!sel || !line || !box) throw new Error("no geometry");
+	expect(box.y).toBeGreaterThanOrEqual(sel.bottom);
+	expect(box.y).toBeLessThanOrEqual(line.y + line.height + line.height);
+	expect(box.x).toBeLessThanOrEqual(sel.right + 8);
+	expect(box.x + box.width).toBeGreaterThanOrEqual(sel.left - 8);
+	await page.keyboard.press("Escape");
+	await page.evaluate(() => document.getSelection()?.removeAllRanges());
+	// Picked lines: by their numbers (room for the bar below them).
+	await row(section, "RIGHT", 10).evaluate((el) =>
+		el.scrollIntoView({ block: "center" }),
+	);
+	await row(section, "RIGHT", 10).getByTestId("new").click();
+	await row(section, "RIGHT", 12)
+		.getByTestId("new")
+		.click({ modifiers: ["Shift"] });
+	const last = await row(section, "RIGHT", 12).boundingBox();
+	const number = await row(section, "RIGHT", 12)
+		.getByTestId("new")
+		.boundingBox();
+	if (!last || !number) throw new Error("no geometry");
+	await expect(section.locator("tr[data-picked]")).toHaveCount(3);
+	// It moves down with the pick (a frame later).
+	await expect
+		.poll(async () => (await bar(page).boundingBox())?.y ?? 0)
+		.toBeGreaterThanOrEqual(last.y + last.height);
+	box = await bar(page).boundingBox();
+	if (!box) throw new Error("no bar");
+	expect(box.y).toBeLessThanOrEqual(last.y + 2 * last.height);
+	// Right beside the number, never over the numbers below it.
+	expect(box.x).toBeGreaterThanOrEqual(number.x + number.width);
+	expect(box.x).toBeLessThanOrEqual(number.x + number.width + 8);
+});
+
+test("a pick from a removed line extends to its added replacement: the bar never covers the numbers below", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	const p = await pr(fixture);
+	const s = await startCrb();
+	const section = await openFile(page, s.url, GREET);
+	const removed = row(section, "LEFT", 10).and(
+		section.locator('tr[data-kind="del"]'),
+	);
+	await removed.evaluate((el) => el.scrollIntoView({ block: "center" }));
+	if (isMobile) {
+		await removed.getByTestId("old").tap();
+		await row(section, "RIGHT", 10).getByTestId("new").tap();
+	} else {
+		await removed.getByTestId("old").click();
+		await expect(bar(page)).toBeVisible();
+		// The bar is up; the added line's number is still free to click.
+		await row(section, "RIGHT", 10)
+			.getByTestId("new")
+			.click({ modifiers: ["Shift"], trial: true });
+		await row(section, "RIGHT", 10)
+			.getByTestId("new")
+			.click({ modifiers: ["Shift"] });
+	}
+	await expect(section.locator("tr[data-picked]")).toHaveCount(2);
+	await bar(page).getByRole("button", { name: "Comment" }).click();
+	const composer = section.getByTestId("new-thread");
+	await composer.getByRole("textbox", { name: "Comment" }).fill("Why?");
+	await composer.getByRole("button", { name: "Comment" }).click();
+	await expect(
+		section.getByTestId("files-thread").filter({ hasText: "Why?" }),
+	).toBeVisible();
+	expect(stored(p)).toMatchObject([{ path: GREET, line: 10 }]);
+});
 
 test("a comment's draft survives a reload and counts in Drafts", async ({
 	page,
@@ -246,7 +350,14 @@ test("a comment's draft survives a reload and counts in Drafts", async ({
 		.getByTestId("new-thread")
 		.getByRole("textbox", { name: "Comment" })
 		.fill("Half a thought");
+	// Kept, it loses nothing: the reload doesn't ask.
+	const asked: string[] = [];
+	page.on("dialog", (d) => {
+		asked.push(d.type());
+		void d.accept();
+	});
 	await page.reload();
+	expect(asked).toEqual([]);
 	await page.goto(s.url);
 	await expect(page.getByTestId("drafts-filter")).toContainText("1 draft");
 	const again = await openFile(page, s.url, GREET);

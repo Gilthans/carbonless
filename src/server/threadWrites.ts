@@ -775,9 +775,6 @@ export async function editComment(
 	if (shown === normal(req.body)) {
 		return update(target, threadId, answerNodes(now, rest), now, commentId);
 	}
-	if (found.index === 0 && isDeletedBody(rest.body)) {
-		throw new WriteRefusedError("This comment was deleted", "invalid");
-	}
 	if (!req.force && shown !== normal(req.from)) {
 		throw changed(answerNodes(now, rest), commentId);
 	}

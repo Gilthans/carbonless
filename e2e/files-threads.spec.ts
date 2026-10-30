@@ -301,7 +301,7 @@ test("a thread on an older commit is not shown", async ({
 	await expect(section).not.toContainText("From before");
 });
 
-test("file comment opens from the file header; a line not in the diff is flagged there", async ({
+test("file comment opens from the file header into the file bubble; a line not in the diff is flagged there", async ({
 	page,
 	pr,
 	startCrb,
@@ -320,12 +320,15 @@ test("file comment opens from the file header; a line not in the diff is flagged
 	await expect(
 		util.getByRole("button", { name: "Collapse file" }),
 	).toBeVisible();
-	await expect(util.getByTestId("thread-comment")).toContainText(
-		"Whole file note",
-	);
-	// The line past the file's end: in core.ts's header, flagged.
+	await expect(
+		util.getByTestId("file-threads").getByTestId("thread-comment"),
+	).toContainText("Whole file note");
+	await expect(
+		util.getByRole("button", { name: "1 comment on this file" }),
+	).toHaveAttribute("aria-expanded", "true");
+	// The line past the file's end: in core.ts's file bubble, flagged.
 	const core = await expand(page, CORE);
-	const flagged = core.locator("header").getByRole("button", {
+	const flagged = core.locator("table").getByRole("button", {
 		name: "1 comment on this file, line not in this diff",
 	});
 	await expect(flagged).toBeVisible();
@@ -340,7 +343,7 @@ test("file comment opens from the file header; a line not in the diff is flagged
 	if (shots) {
 		await core.locator("header").scrollIntoViewIfNeeded();
 		await page.screenshot({
-			path: `${shots}/files-header-thread-${isMobile ? "phone" : "desktop"}.png`,
+			path: `${shots}/files-file-bubble-${isMobile ? "phone" : "desktop"}.png`,
 		});
 	}
 });

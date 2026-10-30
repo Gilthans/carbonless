@@ -1087,7 +1087,7 @@ describe("mapComments", () => {
 			expect(asOf[0]?.viewerCan).toEqual({ update: false, delete: false });
 		});
 
-		it("an opener whose body is [deleted] is deleted, with nothing to do to it; a reply saying so is not", () => {
+		it("an opener whose body is [deleted] is deleted, editable but not deleted again while replies follow; a reply saying so is not", () => {
 			const t = withFields({
 				0: { ...can, body: "  [deleted]\n" },
 				1: { ...can, body: "[deleted]" },
@@ -1100,7 +1100,7 @@ describe("mapComments", () => {
 			).comments;
 			expect(first).toMatchObject({
 				deleted: true,
-				viewerCan: { update: false, delete: false },
+				viewerCan: { update: true, delete: false },
 			});
 			expect(second).toMatchObject({
 				deleted: false,
@@ -1115,7 +1115,7 @@ describe("mapComments", () => {
 			expect(
 				mapComments(alone.summary, alone.content, undefined, true).comments[0]
 					?.viewerCan,
-			).toEqual({ update: false, delete: true });
+			).toEqual({ update: true, delete: true });
 			const other = withFields({ 0: { body: "[deleted] or not" } });
 			expect(
 				mapComments(other.summary, other.content).comments[0]?.deleted,

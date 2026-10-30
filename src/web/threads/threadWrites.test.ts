@@ -487,9 +487,11 @@ describe("ThreadWrites", () => {
 		calls[0]?.reject(new ApiError(403, "no"));
 		await flush();
 		expect(w.state().busy).toBe(true);
+		expect(w.state().lost).toBe(true);
 		w.dismiss("T1");
 		expect(w.state().threads.get("T1")).toBeUndefined();
 		expect(w.state().busy).toBe(false);
+		expect(w.state().lost).toBe(false);
 		expect(calls).toHaveLength(1);
 	});
 
@@ -695,6 +697,7 @@ describe("overlayThreads", () => {
 			]),
 			pendingReview: null,
 			busy: true,
+			lost: true,
 			gone: new Set<string>(),
 		};
 		const out = overlayThreads(
@@ -709,7 +712,12 @@ describe("overlayThreads", () => {
 		expect(out[1]).toBe(b);
 		const none = [a, b];
 		expect(
-			overlayThreads(none, { ...state, threads: new Map(), busy: false }),
+			overlayThreads(none, {
+				...state,
+				threads: new Map(),
+				busy: false,
+				lost: false,
+			}),
 		).toBe(none);
 	});
 });
@@ -931,6 +939,29 @@ describe("editing and deleting comments", () => {
 		expect(w.state().threads.size).toBe(0);
 	});
 
+	it("lost: only writes nothing resends after a reload (resolves, deletes), never replies, edits or new threads", async () => {
+		const w = setup();
+		w.reply("T1", "Fixed");
+		drafts.setEdit("T2", "c9", "Old", "New");
+		w.saveEdit("T2", "c9");
+		expect(w.state().busy).toBe(true);
+		expect(w.state().lost).toBe(false);
+		w.setResolved("T3", true);
+		expect(w.state().lost).toBe(true);
+		calls
+			.find((c) => c.threadId === "T3")
+			?.resolve(update("T3", { resolved: true }));
+		await flush();
+		expect(w.state().lost).toBe(false);
+		w.deleteComment("T4", "c4");
+		await vi.advanceTimersByTimeAsync(DELETE_UNDO_MS);
+		// On its way now: still not on GitHub, nothing resends it.
+		expect(w.state().threads.get("T4")?.deletes).toEqual([
+			{ commentId: "c4", undo: false },
+		]);
+		expect(w.state().lost).toBe(true);
+	});
+
 	it("a delete waits out its undo window: Undo within it sends nothing", async () => {
 		const w = setup();
 		w.deleteComment("T1", "c2");
@@ -939,6 +970,7 @@ describe("editing and deleting comments", () => {
 		]);
 		// Leaving the page now would lose it: the guard asks.
 		expect(w.state().busy).toBe(true);
+		expect(w.state().lost).toBe(true);
 		await vi.advanceTimersByTimeAsync(DELETE_UNDO_MS - 1);
 		w.undoDelete("T1", "c2");
 		await vi.advanceTimersByTimeAsync(DELETE_UNDO_MS * 2);
@@ -1018,6 +1050,8 @@ describe("editing and deleting comments", () => {
 			deletes: [],
 			failed: { action: "Delete", commentId: "c2" },
 		});
+		// Its Retry is the only way it's sent: a reload would lose it.
+		expect(w.state().lost).toBe(true);
 		w.retry("T1");
 		expect(calls).toHaveLength(2);
 		expect(calls[1]).toMatchObject({ op: "delete", commentId: "c2" });

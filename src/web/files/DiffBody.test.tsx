@@ -19,7 +19,12 @@ import type {
 } from "../../shared/types";
 import { openComposer, resetComposers } from "../threads/newThreads";
 import { ignoreWhitespace, showInvisibles, sideBySide } from "../viewSettings";
-import { DiffBody, type DiffThreads, LANDED_MS } from "./DiffBody";
+import {
+	DiffBody,
+	type DiffThreads,
+	LANDED_MS,
+	numberDigits,
+} from "./DiffBody";
 import type { Landing } from "./landing";
 import { setPicks } from "./linePicks";
 import type { CodeSpan } from "./selectionActions";
@@ -1394,25 +1399,49 @@ describe("DiffBody side by side", () => {
 			clusters: [pairCluster()],
 		});
 		await screen.findByText("new seven");
-		const widths = () =>
-			new Set(
-				Array.from(
-					document.querySelectorAll<HTMLElement>(
-						'td[data-testid="old"], td[data-testid="new"]',
-					),
-				).map((td) => td.style.width),
+		// The table says how wide (`--num-w`); every number cell, blank ones
+		// too, and side by side the number columns themselves, take it.
+		const width = () =>
+			document.querySelector("table")?.style.getPropertyValue("--num-w");
+		const sized = () => {
+			const cells = document.querySelectorAll<HTMLElement>(
+				'td[data-testid="old"], td[data-testid="new"]',
 			);
-		expect(widths()).toEqual(new Set(["calc(4ch + 1rem)"]));
+			return (
+				cells.length > 0 &&
+				[...cells].every(
+					(el) =>
+						el.className.includes("w-[var(--num-w,3rem)]") &&
+						el.className.includes(
+							"pointer-coarse:w-[max(3rem,var(--num-w,3rem))]",
+						),
+				)
+			);
+		};
+		expect(width()).toBe("calc(4ch + 1rem)");
+		expect(document.querySelectorAll("col")).toHaveLength(6);
+		expect(
+			[...document.querySelectorAll("col")].filter((c) =>
+				c.className.includes("--num-w"),
+			),
+		).toHaveLength(2);
+		// Blank number cells (a side with no line) are sized like the rest.
+		expect(
+			document.querySelectorAll('td[data-blank][data-testid="old"]').length,
+		).toBeGreaterThan(0);
+		expect(sized()).toBe(true);
 		cleanup();
 		setup({
 			hunks: { ...pairHunks(), newLineCount: 80 },
 			clusters: [pairCluster()],
 		});
 		await screen.findByText("new seven");
-		expect(widths()).toEqual(new Set(["calc(3ch + 1rem)"]));
+		expect(width()).toBe("calc(3ch + 1rem)");
+		expect(sized()).toBe(true);
 		// Unified too.
 		act(() => sideBySide.set(false));
-		expect(widths()).toEqual(new Set(["calc(3ch + 1rem)"]));
+		expect(width()).toBe("calc(3ch + 1rem)");
+		expect(sized()).toBe(true);
 		// A deleted tail numbers higher on the old side than the new file is long.
 		cleanup();
 		setup({
@@ -1431,7 +1460,7 @@ describe("DiffBody side by side", () => {
 			clusters: [pairCluster()],
 		});
 		await screen.findByText("gone");
-		expect(widths()).toEqual(new Set(["calc(4ch + 1rem)"]));
+		expect(width()).toBe("calc(4ch + 1rem)");
 	});
 
 	it("keeps unified's markup, its code cell naming its side", async () => {
@@ -1556,5 +1585,85 @@ describe("DiffBody side by side", () => {
 		expect(listeners(added)).toHaveLength(ours.length * 2);
 		cleanup();
 		expect(listeners(removed)).toEqual(listeners(added));
+	});
+});
+
+describe("number columns: as wide as the file's largest line number needs", () => {
+	const hunk = (
+		oldStart: number,
+		oldCount: number,
+		newStart: number,
+		newCount: number,
+	) => ({ oldStart, oldCount, newStart, newCount, lines: [] });
+
+	it("three digits at least", () => {
+		expect(numberDigits(undefined)).toBe(3);
+		expect(numberDigits({ hunks: [hunk(1, 1, 1, 2)], newLineCount: 9 })).toBe(
+			3,
+		);
+	});
+
+	it("four or five digits by the longer side, old or new", () => {
+		expect(
+			numberDigits({ hunks: [hunk(1, 1, 1, 1)], newLineCount: 1200 }),
+		).toBe(4);
+		// The old file was longer: 900 lines plus the 9,200 a hunk removed.
+		expect(
+			numberDigits({ hunks: [hunk(10, 9300, 10, 100)], newLineCount: 900 }),
+		).toBe(5);
+		expect(
+			numberDigits({ hunks: [hunk(1, 1, 1, 1)], newLineCount: 12345 }),
+		).toBe(5);
+	});
+
+	it("sizes the cells from it; touch keeps 48px", async () => {
+		const client = new QueryClient();
+		client.setQueryData(["hunks", "r1", 0], {
+			hunks: [
+				{
+					oldStart: 1,
+					oldCount: 0,
+					newStart: 1,
+					newCount: 1,
+					lines: [{ kind: "add", newNo: 1, text: "x" }],
+				},
+			],
+			newLineCount: 1500,
+		});
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => new Response("{}", { status: 404 })),
+		);
+		render(
+			<QueryClientProvider client={client}>
+				<DiffBody
+					file={{
+						index: 0,
+						path: PATH,
+						status: "added",
+						binary: false,
+						submodule: false,
+						additions: 1,
+						deletions: 0,
+						clusters: [],
+						done: false,
+						reviewed: false,
+						crossedOff: false,
+					}}
+					revision="r1"
+					onToggle={() => {}}
+					onCrossOff={() => {}}
+				/>
+			</QueryClientProvider>,
+		);
+		const row = await screen.findByTestId("diff-line");
+		expect(row.closest("table")?.style.getPropertyValue("--num-w")).toBe(
+			"calc(4ch + 1rem)",
+		);
+		const number = within(row).getByTestId("new");
+		expect(number.className).toContain("w-[var(--num-w,3rem)]");
+		expect(number.className).toContain(
+			"pointer-coarse:w-[max(3rem,var(--num-w,3rem))]",
+		);
 	});
 });

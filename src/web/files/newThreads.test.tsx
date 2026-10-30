@@ -34,7 +34,12 @@ import { CODE_CELL, cellLine, spanOfRange } from "./codeSpan";
 import { codeCellOf, DiffBody, type DiffThreads } from "./DiffBody";
 import { FileDiff } from "./FileDiff";
 import { getPicks, pickKey, setPicks } from "./linePicks";
-import { placeBar, SelectionBar } from "./SelectionBar";
+import {
+	pickAnchor,
+	placeBar,
+	SelectionBar,
+	textGeometry,
+} from "./SelectionBar";
 import {
 	type CodeSpan,
 	commentAvailable,
@@ -549,7 +554,8 @@ describe("Ignore whitespace and GitHub's order", () => {
 		expect(pair.closest("tr")?.getAttribute("data-kind")).toBe("ws");
 		const found = spanOfRange(rangeOf(point(pair, 2), at("LEFT", 4, 3)), HEAD);
 		// Old 4 first, then new 3; the selected characters (a tail of one
-		// line, a head of the other) fit no marker on the swapped ends.
+		// line, a head of the other) fit no marker on the swapped ends. The
+		// cells stay as shown (the bar sits by them).
 		expect(found).toEqual({
 			span: {
 				path: PATH,
@@ -563,6 +569,7 @@ describe("Ignore whitespace and GitHub's order", () => {
 				endCol: null,
 			},
 			inDiff: true,
+			cells: { head: pair, last: cell("LEFT", 4) },
 		});
 		expect(
 			commentAvailable(found?.span as CodeSpan, {
@@ -1334,37 +1341,213 @@ describe("Comment on file", () => {
 		],
 	];
 
+	/** FileDiff with these hunks, open or not, and these threads. */
+	const renderFile = (
+		over: Partial<FileView>,
+		opts: {
+			expanded?: boolean;
+			hunks?: FileHunks;
+			threads?: ReviewThread[];
+			overview?: Partial<PrOverview>;
+		} = {},
+	) => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (input: RequestInfo | URL) => {
+				const url = new URL(String(input), "http://test");
+				if (url.pathname.endsWith("/hunks")) {
+					return new Response(
+						JSON.stringify(opts.hunks ?? { hunks: [], newLineCount: 0 }),
+					);
+				}
+				if (url.pathname.endsWith("/context")) {
+					const from = Number(url.searchParams.get("newFrom"));
+					const to = Number(url.searchParams.get("newTo"));
+					const lines = [];
+					for (let n = from; n <= to; n++) lines.push(ctx(n, n));
+					return new Response(JSON.stringify(lines));
+				}
+				return new Response("{}", { status: 404 });
+			}),
+		);
+		client = new QueryClient({
+			defaultOptions: { queries: { retry: false } },
+		});
+		client.setQueryData(["overview"], overview(opts.overview));
+		client.setQueryData(["session"], { snapshotHead: HEAD } as SessionInfo);
+		const user = userEvent.setup();
+		const threads: DiffThreads = {
+			readId: "r",
+			snapshotHead: HEAD,
+			threads: opts.threads ?? [],
+		};
+		const ui = (expanded: boolean) => (
+			<QueryClientProvider client={client}>
+				<FileDiff
+					file={file(over)}
+					revision="r1"
+					unit="clusters"
+					threads={threads}
+					expanded={opts.expanded === undefined ? undefined : expanded}
+					onExpandedChange={(next) => {
+						result.rerender(ui(next));
+					}}
+				/>
+			</QueryClientProvider>
+		);
+		const result = render(ui(opts.expanded ?? false));
+		return { user, ...result };
+	};
+	const fileThread = (): ReviewThread => ({
+		...thread({}),
+		anchor: null,
+		subject: "file",
+		line: null,
+		currentLine: null,
+	});
+
 	it.each(kinds)(
-		"is in the header of a %s file, open or not, and opens the composer there",
+		"a %s file: its open diff's first row has the file bubble, which opens the composer",
 		async (_, over) => {
-			vi.stubGlobal(
-				"fetch",
-				vi.fn(
-					async () =>
-						new Response(JSON.stringify({ hunks: [], newLineCount: 0 })),
-				),
-			);
-			client = new QueryClient({
-				defaultOptions: { queries: { retry: false } },
+			const { user } = renderFile(over, { expanded: true });
+			const bubble = await screen.findByRole("button", {
+				name: "Comment on file",
 			});
-			client.setQueryData(["overview"], overview());
-			client.setQueryData(["session"], { snapshotHead: HEAD } as SessionInfo);
-			const user = userEvent.setup();
-			render(
-				<QueryClientProvider client={client}>
-					<FileDiff file={file(over)} revision="r1" unit="clusters" />
-				</QueryClientProvider>,
-			);
-			const button = screen.getByRole("button", { name: "Comment on file" });
-			expect(button).not.toHaveAttribute("aria-disabled");
-			await user.click(button);
-			const area = await screen.findByTestId("file-new-threads");
+			expect(bubble.closest("tr")).not.toBeNull();
+			// Nowhere in the header.
+			expect(
+				screen.getByRole("banner").querySelector("[data-testid=thread-bubble]"),
+			).toBeNull();
+			await user.click(bubble);
+			const area = await screen.findByTestId("file-threads");
 			expect(within(area).getByText("whole file")).toBeInTheDocument();
 			expect(getComposers()).toMatchObject([
 				{ span: { path: PATH, commit: HEAD, subject: "file" } },
 			]);
 		},
 	);
+
+	it("the file bubble sits on the diff's first row, its threads right under it", async () => {
+		const { user } = renderFile(
+			{},
+			{ expanded: true, hunks: HUNKS, threads: [fileThread()] },
+		);
+		const bubble = await screen.findByRole("button", {
+			name: "1 comment on this file",
+		});
+		const rows = [...document.querySelectorAll("tbody > tr")];
+		expect(rows[0]?.contains(bubble)).toBe(true);
+		expect(bubble).toHaveAttribute("aria-expanded", "false");
+		await user.click(bubble);
+		expect(bubble).toHaveAttribute("aria-expanded", "true");
+		const row = screen.getByTestId("file-threads");
+		expect(rows[0]?.nextElementSibling).toBe(row);
+		expect(within(row).getAllByTestId("files-thread")).toHaveLength(1);
+		// With threads, Comment on file is a button in the row.
+		expect(getComposers()).toEqual([]);
+		await user.click(
+			within(row).getByRole("button", { name: "Comment on file" }),
+		);
+		expect(getComposers()).toMatchObject([{ span: { subject: "file" } }]);
+		expect(
+			await within(row).findByRole("textbox", { name: "Comment" }),
+		).toBeInTheDocument();
+	});
+
+	/** A hunk at new lines 5–6, the gap of lines 1–4 above it. */
+	const LATER: FileHunks = {
+		newLineCount: 6,
+		hunks: [
+			{
+				oldStart: 5,
+				oldCount: 1,
+				newStart: 5,
+				newCount: 2,
+				lines: [ctx(5, 5), add(6, "new")],
+			},
+		],
+	};
+	const firstRow = () => document.querySelector("table tr") as HTMLElement;
+
+	it("stays on the first row when the gap above the first hunk is all loaded", async () => {
+		const { user } = renderFile({}, { expanded: true, hunks: LATER });
+		await screen.findByTestId("gap-row");
+		expect(
+			within(firstRow()).getByRole("button", { name: "Comment on file" }),
+		).toBeInTheDocument();
+		await user.click(screen.getByRole("button", { name: /Load .* above/ }));
+		await screen.findByText("line 1");
+		expect(screen.queryByTestId("gap-row")).not.toBeInTheDocument();
+		expect(firstRow().dataset.newNo).toBe("1");
+		expect(
+			within(firstRow()).getByRole("button", { name: "Comment on file" }),
+		).toBeInTheDocument();
+	});
+
+	it("shares a row with a line's bubble: side by side, each opening its own threads", async () => {
+		const { user } = renderFile(
+			{},
+			{
+				expanded: true,
+				hunks: LATER,
+				threads: [fileThread(), thread({ line: 1 })],
+			},
+		);
+		await user.click(
+			await screen.findByRole("button", { name: /Load .* above/ }),
+		);
+		await screen.findByText("line 1");
+		const row = firstRow();
+		expect(row.dataset.newNo).toBe("1");
+		const bubbles = within(row).getAllByTestId("thread-bubble");
+		expect(bubbles.map((b) => b.getAttribute("aria-label"))).toEqual([
+			"1 comment on this file",
+			"1 comment on line 1",
+		]);
+		// One slot holds both, so they never sit on each other.
+		expect(bubbles[0]?.parentElement).toBe(bubbles[1]?.parentElement);
+		await user.click(bubbles[1] as HTMLElement);
+		expect(screen.getByTestId("thread-row")).toBeInTheDocument();
+		expect(screen.queryByTestId("file-threads")).not.toBeInTheDocument();
+		await user.click(bubbles[0] as HTMLElement);
+		expect(row.nextElementSibling).toBe(screen.getByTestId("file-threads"));
+	});
+
+	it("closed, a line past the end: the header's count opens the file, then the flagged file bubble once the diff says so, focused", async () => {
+		const { user } = renderFile(
+			{},
+			{ expanded: false, hunks: HUNKS, threads: [thread({ line: 50 })] },
+		);
+		await user.click(
+			screen.getByRole("button", { name: "1 comment in this file" }),
+		);
+		const bubble = await screen.findByRole("button", {
+			name: "1 comment on this file, line not in this diff",
+		});
+		await vi.waitFor(() =>
+			expect(bubble).toHaveAttribute("aria-expanded", "true"),
+		);
+		expect(bubble).toHaveFocus();
+	});
+
+	it("closed, the header counts the file's threads; it opens the file and the file bubble", async () => {
+		const { user } = renderFile(
+			{},
+			{ expanded: false, hunks: HUNKS, threads: [fileThread()] },
+		);
+		expect(
+			screen.queryByRole("button", { name: "Comment on file" }),
+		).not.toBeInTheDocument();
+		await user.click(
+			screen.getByRole("button", { name: "1 comment in this file" }),
+		);
+		expect(
+			await screen.findByRole("button", { name: "1 comment on this file" }),
+		).toHaveAttribute("aria-expanded", "true");
+		expect(
+			within(screen.getByTestId("file-threads")).getAllByTestId("files-thread"),
+		).toHaveLength(1);
+	});
 
 	it("a file comment written on an earlier head moves to this one", async () => {
 		vi.stubGlobal(
@@ -1394,16 +1577,22 @@ describe("Comment on file", () => {
 		expect(draftsFor(client).newThread("f1")?.create?.commit).toBe(HEAD);
 	});
 
-	it("is off, with the reason, when writing is off", () => {
-		client = new QueryClient();
-		client.setQueryData(["overview"], overview({ writes: "viewer" }));
-		client.setQueryData(["session"], { snapshotHead: HEAD } as SessionInfo);
-		render(
-			<QueryClientProvider client={client}>
-				<FileDiff file={file()} revision="r1" unit="clusters" />
-			</QueryClientProvider>,
+	it("is off, with the reason, when writing is off", async () => {
+		const { user } = renderFile(
+			{},
+			{ expanded: true, overview: { writes: "viewer" } },
 		);
-		const button = screen.getByRole("button", { name: "Comment on file" });
+		// The outline bubble says why; it opens its row, not a composer.
+		await user.click(
+			await screen.findByRole("button", {
+				name: "Comment on file — Comments are off when viewing as someone else",
+			}),
+		);
+		expect(getComposers()).toEqual([]);
+		const button = within(screen.getByTestId("file-threads")).getByRole(
+			"button",
+			{ name: "Comment on file" },
+		);
 		expect(button).toHaveAttribute("aria-disabled", "true");
 		expect(button).toHaveAccessibleDescription(
 			"Comments are off when viewing as someone else",
@@ -1422,7 +1611,7 @@ describe("placeBar (desktop): never over the selection when it can help it", () 
 		const last = rect(100, 140, 200, 20);
 		expect(
 			placeBar(
-				{ first, last, box: rect(100, 100, 300, 60), text: true },
+				{ first, last, box: rect(100, 100, 300, 60), anchor: 300 },
 				size,
 				view,
 			),
@@ -1434,7 +1623,7 @@ describe("placeBar (desktop): never over the selection when it can help it", () 
 		const last = rect(100, 770, 200, 20);
 		expect(
 			placeBar(
-				{ first, last, box: rect(100, 600, 300, 190), text: true },
+				{ first, last, box: rect(100, 600, 300, 190), anchor: 300 },
 				size,
 				view,
 			).top,
@@ -1445,7 +1634,7 @@ describe("placeBar (desktop): never over the selection when it can help it", () 
 		const first = rect(100, -300, 600, 20);
 		const last = rect(100, 1200, 600, 20);
 		const at = placeBar(
-			{ first, last, box: rect(100, -300, 600, 1520), text: true },
+			{ first, last, box: rect(100, -300, 600, 1520), anchor: 700 },
 			size,
 			view,
 		);
@@ -1774,5 +1963,95 @@ describe("side by side (the cells contract)", () => {
 		for (const c of context.querySelectorAll(`[${CODE_CELL}]`)) {
 			expect(marked(c)).toBe("line");
 		}
+	});
+});
+
+describe("the bar sits by the selection (desktop)", () => {
+	const rect = (left: number, top: number, w: number, h: number) =>
+		new DOMRect(left, top, w, h);
+	const size = { w: 46, h: 46 };
+	const view = { w: 1400, h: 900 };
+	// Lines 3 to 5 of a diff: each row 20px, its code from x=496.
+	const code = (top: number) => rect(496, top + 3, 400, 14);
+	const cells = { head: code(326), last: code(366) };
+	// What Chrome reports for a drag from line 3 col 2 to line 5 col 13:
+	// the text, and the boxes of row 4 (the table wide) and its cells.
+	const rects = [
+		rect(511, 329, 100, 14),
+		rect(329, 346, 1046, 20),
+		rect(425, 346, 48, 20),
+		rect(496, 349, 400, 14),
+		rect(329, 366, 4, 20),
+		rect(481, 369, 7, 14),
+		rect(496, 369, 94, 14),
+	];
+	const bar = (reversed: boolean) => {
+		const g = textGeometry(rects, cells, reversed);
+		return {
+			g,
+			at: placeBar({ ...g, box: rect(329, 329, 1046, 54) }, size, view),
+		};
+	};
+
+	it("forward: just below the last line, centered where the selection ends", () => {
+		const { g, at } = bar(false);
+		expect(g.last).toMatchObject({ left: 496, right: 590 });
+		expect(at.top).toBe(366 + 3 + 14 + 6);
+		expect(at.left).toBe(590 - 23);
+	});
+
+	it("backwards: below the last line, centered where the drag ended (its start)", () => {
+		const { g, at } = bar(true);
+		expect(g.first).toMatchObject({ left: 511, right: 611 });
+		expect(at.top).toBe(366 + 3 + 14 + 6);
+		expect(at.left).toBe(511 - 23);
+	});
+
+	it("never anchors on a row's own box or a bubble at the cell's end", () => {
+		const bubble = rect(1300, 369, 40, 14);
+		const g = textGeometry([...rects, bubble], cells, false);
+		expect(g.last.right).toBe(590);
+	});
+
+	it("a last line with nothing of its text in the range stands at its code's start", () => {
+		const g = textGeometry([rect(511, 329, 100, 14)], cells, false);
+		expect(g.last).toMatchObject({ left: 496, right: 496 });
+	});
+
+	it("picked lines: just below the last row, right of its number (the numbers below stay free to extend the pick)", () => {
+		const last = rect(329, 366, 1046, 20);
+		const at = placeBar(
+			{
+				first: rect(329, 326, 1046, 20),
+				last,
+				box: rect(329, 326, 1046, 60),
+				// Right of the number cell (x 405 to 445).
+				anchor: 445 + 6,
+				after: true,
+			},
+			size,
+			view,
+		);
+		expect(at).toEqual({ top: 386 + 6, left: 451 });
+	});
+});
+
+describe("pickAnchor: the bar starts right of the row's numbers", () => {
+	const cellAt = (id: string, left: number, w: number) => {
+		const td = document.createElement("td");
+		td.dataset.testid = id;
+		td.getBoundingClientRect = () => new DOMRect(left, 0, w, 20);
+		return td;
+	};
+
+	it("a removed line's pick: right of the new-number column, not over it", () => {
+		const row = document.createElement("tr");
+		const old = cellAt("old", 377, 38);
+		old.append(
+			Object.assign(document.createElement("button"), { type: "button" }),
+		);
+		old.querySelector("button")?.setAttribute("data-pick", "LEFT:10");
+		row.append(old, cellAt("new", 415, 38));
+		expect(pickAnchor(row)).toBe(415 + 38 + 6);
 	});
 });

@@ -71,7 +71,10 @@ test("--head reviewed shows the PR up to the commit you last reviewed", async ({
 	await expect(fileSection(page, "a.txt")).toBeVisible();
 	await expect(files.getByText("later.txt")).toHaveCount(0);
 	const section = fileSection(page, "new.txt");
-	const bubbles = section.getByTestId("thread-bubble");
+	// Line bubbles (the file's own bubble is always there).
+	const bubbles = section.locator(
+		'[data-testid="thread-bubble"]:not([data-file])',
+	);
 	const bubble = section.getByRole("button", { name: "1 comment on line 1" });
 	await section.getByRole("button", { name: "Expand file" }).click();
 	await expect(bubble).toBeVisible();

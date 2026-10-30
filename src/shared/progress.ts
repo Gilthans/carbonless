@@ -7,10 +7,14 @@ export function fileFlags(
 	const any = clusters.length > 0;
 	return {
 		done: any && clusters.every((c) => c.state !== "unreviewed"),
-		// A file counts reviewed only when every cluster is reviewed; a done file
-		// with any crossed-off cluster counts as crossed off (out of the work
-		// left), so crossing off never raises reviewed.
-		reviewed: any && clusters.every((c) => c.state === "reviewed"),
+		// A done file counts as crossed off only when every cluster is; one
+		// with any reviewed cluster counts as reviewed (owner: "Otherwise it
+		// should count as reviewed"). A file with any unreviewed cluster is
+		// neither.
+		reviewed:
+			any &&
+			clusters.every((c) => c.state !== "unreviewed") &&
+			clusters.some((c) => c.state === "reviewed"),
 		crossedOff: any && clusters.every((c) => c.state === "crossed-off"),
 	};
 }
@@ -35,7 +39,7 @@ export function reviewProgress(files: FileView[]): Progress {
 		fileCounts.total++;
 		if (file.done) fileCounts.done++;
 		if (file.reviewed) fileCounts.reviewed++;
-		else if (file.done) fileCounts.crossedOff++;
+		else if (file.crossedOff) fileCounts.crossedOff++;
 	}
 	return { clusters, lines, files: fileCounts };
 }

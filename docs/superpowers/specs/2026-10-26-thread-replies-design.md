@@ -42,7 +42,7 @@ The order after this, by the owner: editing and deleting your own comments, then
 - On send, the reply appears at once at the end of the thread as the viewer's comment, marked as sending (clock, like pending comments today) until GitHub confirms; then it becomes the real comment from GitHub's answer. The box clears on send; on a final failure the text goes back into the box (or stays with the failed comment, the builder's choice) with the red notice's Retry.
 - After a confirmed reply, the thread's comment count, the latest comment and the attention set update: the viewer wrote the latest comment, so they leave the set and the your-turn dot goes away. The server is the source for the set (spec `2026-10-26-pr-threads-design.md`), so it recomputes from the new comment list; the client may show the expected result while waiting.
 - Drafts are per thread, kept for the session (surviving the kept-alive page switch).
-- Leaving or reloading the page with an unsent draft asks first (owner: "it should warn you before refreshing since it will go away").
+- Leaving or reloading the page with an unsent draft asks first (owner: "it should warn you before refreshing since it will go away"). Superseded once drafts survived a reload (owner, later: "refresh should only be dirty if information is lost"): only a draft storage can't keep asks (`docs/product-rules.md`, "Leaving asks only when something would be lost").
 - A reply that was sent but not yet confirmed by GitHub should survive a reload and keep syncing (owner: "ideally it should survive a refresh, but if that's complex let's defer"). Coordinator's call: keep sent-unconfirmed replies, and drafts too, in `localStorage` per PR, and resend after a reload through the duplicate check below. If that turns out complex, the builder defers it and says so; the leave-page warning covers it meanwhile.
 
 ## Resolving
@@ -59,7 +59,7 @@ The order after this, by the owner: editing and deleting your own comments, then
 - Notices name the thread (file and line, or "PR comment" for none) and the action ("Reply", "Resolve").
 - **No duplicate replies.** A reply whose request failed ambiguously (timeout, connection dropped after sending, 5xx) is checked against the thread's comments on GitHub before it's posted again; a matching comment by the viewer made after the attempt counts as sent. The builder picks the matching rule and documents it.
 - Resolve/unresolve is idempotent; retrying is safe.
-- The leave-page confirmation covers any unsent or unconfirmed thread write.
+- The leave-page confirmation covers any thread write a reload would lose (now: resolves, unresolves and deletes not yet on GitHub; replies are kept and resent).
 
 ## Pending reviews on GitHub
 

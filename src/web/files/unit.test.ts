@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { fileFlags } from "../../shared/progress";
 import type { ClusterState, ClusterView, FileView } from "../../shared/types";
 import {
 	describeFileProgress,
@@ -42,9 +43,7 @@ const file = (clusters: ClusterView[]): FileView => ({
 	additions: 0,
 	deletions: 0,
 	clusters,
-	done: clusters.every((c) => c.state !== "unreviewed"),
-	reviewed: clusters.every((c) => c.state === "reviewed"),
-	crossedOff: clusters.every((c) => c.state === "crossed-off"),
+	...fileFlags(clusters),
 });
 
 describe("percent", () => {
@@ -142,7 +141,7 @@ describe("fileUnitProgress", () => {
 		expect(text(reviewed, "files")).toBe("done");
 	});
 
-	it("counts a done file with a crossed-off cluster as crossed off, not reviewed", () => {
+	it("counts a done file with reviewed and crossed-off clusters as reviewed", () => {
 		const partly = file([
 			cluster("reviewed", 3),
 			cluster("crossed-off", 2),
@@ -150,8 +149,8 @@ describe("fileUnitProgress", () => {
 		]);
 		expect(fileUnitProgress(partly, "files").counts).toEqual({
 			total: 1,
-			reviewed: 0,
-			crossedOff: 1,
+			reviewed: 1,
+			crossedOff: 0,
 		});
 		expect(text(partly, "files")).toBe("done · 2 crossed off");
 		expect(text(partly, "files", { short: true })).toBe("done · ⊘2");
@@ -170,12 +169,29 @@ describe("fileUnitProgress", () => {
 	});
 
 	it("never calls a crossed-off file done or reviewed", () => {
-		const crossed = file([cluster("crossed-off", 2)]);
+		const crossed = file([
+			cluster("crossed-off", 2),
+			cluster("crossed-off", 1),
+		]);
 		for (const unit of ["lines", "clusters", "files"] as const) {
 			const p = fileUnitProgress(crossed, unit);
 			expect(formatFileProgress(p, unit)).toBe("crossed off");
 			expect(p.counts.reviewed).toBe(0);
 		}
+		expect(fileUnitProgress(crossed, "files").counts.crossedOff).toBe(1);
+	});
+
+	it("counts a file with any unreviewed cluster as neither reviewed nor crossed off", () => {
+		const open = file([
+			cluster("reviewed", 3),
+			cluster("crossed-off", 2),
+			cluster("unreviewed", 1),
+		]);
+		expect(fileUnitProgress(open, "files").counts).toEqual({
+			total: 1,
+			reviewed: 0,
+			crossedOff: 0,
+		});
 	});
 
 	it("a renamed and edited file isn't finished in lines while the rename is unreviewed", () => {

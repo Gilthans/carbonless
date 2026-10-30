@@ -5,6 +5,7 @@ import {
 } from "@primer/octicons-react";
 import { useQueries, useQuery } from "@tanstack/react-query";
 import {
+	type CSSProperties,
 	Fragment,
 	type KeyboardEvent,
 	type MouseEvent,
@@ -24,6 +25,7 @@ import type {
 	DiffLine,
 	DiffSide,
 	DisplayHunk,
+	FileHunks,
 	FileView,
 	ReviewThread,
 } from "../../shared/types";
@@ -60,7 +62,7 @@ import {
 import { describeSpan } from "./selectionActions";
 import { layoutRows, type SideRow } from "./sideBySide";
 import { CONTROLS, SLOT, useStickyControls } from "./stickyControls";
-import { ThreadBubble } from "./ThreadBubble";
+import { BubbleSlot, ThreadBubble } from "./ThreadBubble";
 import { type CardPlace, TailRow, ThreadRow } from "./ThreadRow";
 import {
 	type FilePlacement,
@@ -83,6 +85,21 @@ export interface DiffThreads {
 	/** The PR's threads; placeThreads picks this file's. */
 	threads: ReviewThread[];
 }
+
+/**
+ * The file's own bubble and its threads' row (FileDiff): on the diff's
+ * first row, whatever kind it is (side by side, in a pair row's right cell),
+ * and right under it, across the table's `columns`.
+ */
+export interface FileLead {
+	bubble: ReactNode;
+	/** The row of its threads, with the rail of the cluster it sits in. */
+	row: (columns: number, rail?: string) => ReactNode;
+}
+
+/** The cell padding that keeps `n` bubbles clear of the code. */
+const bubblePad = (n: number) =>
+	n === 0 ? "px-2" : n === 1 ? "pr-12 pl-2" : "pr-24 pl-2";
 
 /** What a row needs of the file's threads: the placement and which bubbles are open. */
 interface RowThreads {
@@ -169,8 +186,6 @@ const columnsOf = (view: View) => (view === "side-by-side" ? 6 : 5);
 /** The table's shape, the same for every row. */
 interface Shape {
 	view: View;
-	/** Digits the file's widest line number needs (three at least): the number cells' width. */
-	digits: number;
 	/**
 	 * Side by side on a screen wide enough: an opened thread or a composer
 	 * sits under its side, in that side's half (TailRow). On a phone it
@@ -179,14 +194,30 @@ interface Shape {
 	split: boolean;
 }
 
-const numberWidth = (digits: number) => ({ width: `calc(${digits}ch + 1rem)` });
-
-/** The number columns' digits: the new file's length or the hunks' last old line, whichever is longer. */
-function digitsOf(newLineCount: number, hunks: DisplayHunk[]): number {
-	let max = newLineCount;
-	for (const h of hunks) max = Math.max(max, h.oldStart + h.oldCount - 1);
+/**
+ * How many digits the file's number columns hold: its largest line number
+ * on either side, three at least (the side-by-side spec's "Gutters").
+ */
+export function numberDigits(data: FileHunks | undefined): number {
+	if (!data) return 3;
+	// The old file's length: the new one's, less what the hunks added.
+	let max = Math.max(
+		data.newLineCount,
+		data.hunks.reduce((n, h) => n + h.oldCount - h.newCount, data.newLineCount),
+	);
+	for (const h of data.hunks) {
+		for (const l of h.lines) max = Math.max(max, l.oldNo ?? 0, l.newNo ?? 0);
+	}
 	return Math.max(3, String(max).length);
 }
+
+/**
+ * A number column's width: its digits (`--num-w`, set on the table from
+ * numberDigits) and padding; on touch it keeps 48px, its tap target. On the
+ * number cells in both views, and on the side-by-side table's `col`s.
+ */
+const NUMBER_W =
+	"w-[var(--num-w,3rem)] pointer-coarse:w-[max(3rem,var(--num-w,3rem))]";
 
 const RAIL: Record<ClusterView["state"], string> = {
 	unreviewed: "bg-unreviewed",
@@ -383,7 +414,6 @@ function Sign({ kind }: { kind: RowLine["kind"] }) {
 function NumberCell(props: {
 	side: DiffSide;
 	n?: number;
-	digits: number;
 	className: string;
 	picker?: Picker;
 	pick?: NumberPick;
@@ -395,11 +425,10 @@ function NumberCell(props: {
 			data-testid={props.side === "LEFT" ? "old" : "new"}
 			data-side={props.side}
 			data-picked={pick?.picked || undefined}
-			style={numberWidth(props.digits)}
 			onPointerDown={picker?.onPointerDown}
 			onPointerEnter={picker?.onPointerEnter}
 			onClick={picker?.onClick}
-			className={`px-2 text-right align-top select-none ${props.className} ${picker ? "cursor-pointer" : ""}`}
+			className={`${NUMBER_W} px-2 text-right align-top select-none ${props.className} ${picker ? "cursor-pointer" : ""}`}
 		>
 			{picker && pick?.button && n !== undefined ? (
 				<button
@@ -422,8 +451,9 @@ function NumberCell(props: {
 }
 
 /**
- * A line's code: its bubble (threads ending on it), sign and text, with the
- * spans painted over its characters (`marks`). Unified, the row carries the
+ * A line's code: its bubbles (the file's, `lead`, on the diff's first row;
+ * threads ending on it, `bubble`), sign and text, with the spans painted
+ * over its characters (`marks`). Unified, the row carries the
  * paint and the line keeps its width (the table scrolls sideways); side by
  * side the cell is painted and wraps (tabs keep their width), so a long line
  * grows its row and the other side stays aligned. The cell is what a
@@ -436,6 +466,7 @@ function CodeCell(props: {
 	lang: string | null;
 	tabWidth?: number;
 	bubble?: ReactNode;
+	lead?: ReactNode;
 	/** The hunk (`h<i>`) or gap (`g<i>`) the cell is in (codeSpan.ts). */
 	hunk: string;
 	/** In a hunk: its line's index in GitHub's order of it. */
@@ -449,7 +480,8 @@ function CodeCell(props: {
 		picked: boolean;
 	};
 }) {
-	const { line, cell } = props;
+	const { line, cell, bubble, lead } = props;
+	const bubbles = (bubble ? 1 : 0) + (lead ? 1 : 0);
 	return (
 		<td
 			data-testid="code"
@@ -463,9 +495,14 @@ function CodeCell(props: {
 			data-commented={cell?.commented ? "" : undefined}
 			data-picked={cell?.picked || undefined}
 			// Top-aligned next to its number, however tall the other side makes the row.
-			className={`${cell ? "align-top whitespace-pre-wrap [overflow-wrap:anywhere]" : "whitespace-pre"} ${props.bubble ? "pr-12 pl-2" : "px-2"} ${cell?.paint ?? ""}`}
+			className={`${cell ? "align-top whitespace-pre-wrap [overflow-wrap:anywhere]" : "whitespace-pre"} ${bubblePad(bubbles)} ${cell?.paint ?? ""}`}
 		>
-			{props.bubble}
+			{bubbles > 0 && (
+				<BubbleSlot>
+					{lead}
+					{bubble}
+				</BubbleSlot>
+			)}
 			<Sign kind={line.kind} />
 			<CodeLine
 				text={line.text}
@@ -479,14 +516,13 @@ function CodeCell(props: {
 }
 
 /** A side with no line: both its cells say so, in the band tone, with nothing in them. */
-function BlankCells({ side, digits }: { side: DiffSide; digits: number }) {
+function BlankCells({ side }: { side: DiffSide }) {
 	return (
 		<>
 			<td
 				data-testid={side === "LEFT" ? "old" : "new"}
 				data-blank=""
-				style={numberWidth(digits)}
-				className="bg-band"
+				className={`${NUMBER_W} bg-band`}
 			/>
 			<td data-testid="code" data-blank="" className="bg-band" />
 		</>
@@ -508,6 +544,8 @@ interface RowProps {
 	orderOf?: (line: DiffLine) => number | undefined;
 	picker?: Picker;
 	composers?: RowComposers;
+	/** The file's bubble and its threads' row (the diff's first row). */
+	lead?: FileLead;
 }
 
 /** The spans painted over a cell's characters: those of the threads on its keys. */
@@ -630,7 +668,7 @@ function NoNewlineRow(props: {
 
 /** One line as a unified row: its numbers on both sides and its code. */
 function LineRow(props: RowProps & { line: RowLine; order?: number }) {
-	const { line, state, threads, shape, picker } = props;
+	const { line, state, threads, shape, picker, lead } = props;
 	const cell = codeCellOf(line);
 	const isPicked = picker?.keys.has(pickKey(cell)) ?? false;
 	const reviewed = state === "reviewed";
@@ -674,7 +712,6 @@ function LineRow(props: RowProps & { line: RowLine; order?: number }) {
 				<NumberCell
 					side="LEFT"
 					n={line.oldNo}
-					digits={shape.digits}
 					className={numberBg}
 					picker={picker}
 					pick={pick("LEFT")}
@@ -682,7 +719,6 @@ function LineRow(props: RowProps & { line: RowLine; order?: number }) {
 				<NumberCell
 					side="RIGHT"
 					n={line.newNo}
-					digits={shape.digits}
 					className={numberBg}
 					picker={picker}
 					pick={pick("RIGHT")}
@@ -695,6 +731,7 @@ function LineRow(props: RowProps & { line: RowLine; order?: number }) {
 					hunk={props.hunk}
 					order={props.order}
 					marks={marksOf(keys, threads)}
+					lead={lead?.bubble}
 					bubble={
 						endKey &&
 						threads && (
@@ -712,6 +749,7 @@ function LineRow(props: RowProps & { line: RowLine; order?: number }) {
 					}
 				/>
 			</tr>
+			{lead?.row(columnsOf(shape.view), state ? RAIL[state] : undefined)}
 			{line.noNewline && <NoNewlineRow shape={shape} state={state} />}
 			<RowTail
 				opened={open && endKey ? [{ endKey, ending, side: cell.side }] : []}
@@ -751,10 +789,12 @@ interface Cell {
  * and opened thread row (the left side's first); a context line is one line
  * shown twice: its bubble is in the right cell, under both its keys, and
  * its mark, spans, pick and landing paint both cells (either cell picks or
- * selects it as RIGHT, the cells contract).
+ * selects it as RIGHT, the cells contract). The file's bubble (`lead`, on
+ * the diff's first row: a context row, with a cell on each side) sits in
+ * the right cell beside the line's, its row right under the pair row.
  */
 function PairRow(props: RowProps & { row: SideRow }) {
-	const { row, state, threads, shape, picker } = props;
+	const { row, state, threads, shape, picker, lead } = props;
 	const reviewed = state === "reviewed";
 	const cellOf = (
 		line: RowLine,
@@ -823,7 +863,7 @@ function PairRow(props: RowProps & { row: SideRow }) {
 		["RIGHT", right],
 	];
 	const cells = (side: DiffSide, cell: Cell | undefined) => {
-		if (!cell) return <BlankCells side={side} digits={shape.digits} />;
+		if (!cell) return <BlankCells side={side} />;
 		const { line, keys, endKey } = cell;
 		// The landing's tint, else the commented range's stripe and numbers;
 		// a pick's wash over either.
@@ -841,7 +881,6 @@ function PairRow(props: RowProps & { row: SideRow }) {
 				<NumberCell
 					side={side}
 					n={side === "LEFT" ? line.oldNo : line.newNo}
-					digits={shape.digits}
 					className={`${numberBg} ${mark}`}
 					picker={picker}
 					pick={cell.pick}
@@ -854,6 +893,7 @@ function PairRow(props: RowProps & { row: SideRow }) {
 					hunk={props.hunk}
 					order={cell.order}
 					marks={cell.marks}
+					lead={side === "RIGHT" ? lead?.bubble : undefined}
 					cell={{
 						paint: `${bg} ${mark}`,
 						landed: cell.landed === "on",
@@ -901,6 +941,7 @@ function PairRow(props: RowProps & { row: SideRow }) {
 				{cells("LEFT", left)}
 				{cells("RIGHT", right)}
 			</tr>
+			{lead?.row(columnsOf(shape.view), state ? RAIL[state] : undefined)}
 			{(noNewline.left || noNewline.right) && (
 				<NoNewlineRow shape={shape} state={state} {...noNewline} />
 			)}
@@ -1087,18 +1128,17 @@ export function DiffBody(props: {
 	threads?: DiffThreads;
 	/** These hunks are the viewed head's (not a Refresh's moment of the old ones). */
 	headSure?: boolean;
+	/** The file's bubble and its threads' row (FileDiff). */
+	lead?: FileLead;
 }) {
 	const { file, revision } = props;
 	const hunks = useQuery(hunksQuery(revision, file.index));
 	const ignoreWs = ignoreWhitespace.use();
 	const view: View = sideBySide.use() ? "side-by-side" : "unified";
-	const digits = hunks.data
-		? digitsOf(hunks.data.newLineCount, hunks.data.hunks)
-		: 3;
 	const wide = useMedia(NOT_PHONE);
 	const shape = useMemo<Shape>(
-		() => ({ view, digits, split: view === "side-by-side" && wide }),
-		[view, digits, wide],
+		() => ({ view, split: view === "side-by-side" && wide }),
+		[view, wide],
 	);
 	const columns = columnsOf(view);
 	const [ranges, setRanges] = useState<[number, number][]>([]);
@@ -1312,7 +1352,11 @@ export function DiffBody(props: {
 
 	const hunkOf = (n: number) =>
 		`g${gaps.find((g) => g.from <= n && n <= g.to)?.index ?? ""}`;
-	const contextRows = (from: number, to: number) => {
+	const contextRows = (
+		from: number,
+		to: number,
+		lead?: () => FileLead | undefined,
+	) => {
 		const rows: ReactNode[] = [];
 		for (let n = from; n <= to; n++) {
 			const line = loaded.get(n);
@@ -1326,6 +1370,7 @@ export function DiffBody(props: {
 					hunk: hunkOf(n),
 					picker,
 					composers,
+					lead: lead?.(),
 				};
 				rows.push(
 					view === "side-by-side" ? (
@@ -1344,7 +1389,7 @@ export function DiffBody(props: {
 	 * them (its ↑/↓ buttons, "N hidden lines", loading or Retry, and a bubble
 	 * for the threads whose line is in it).
 	 */
-	const gapRows = (gap: Gap | undefined) => {
+	const gapRows = (gap: Gap | undefined, lead?: () => FileLead | undefined) => {
 		if (!gap) return null;
 		const gapThreads = placement?.gaps.get(gap.index) ?? [];
 		const runs = hiddenRuns(gap, loaded);
@@ -1374,7 +1419,7 @@ export function DiffBody(props: {
 		const rows: ReactNode[] = [];
 		let next = gap.from;
 		runs.forEach((run, i) => {
-			rows.push(...contextRows(next, run.from - 1));
+			rows.push(...contextRows(next, run.from - 1, lead));
 			next = run.to + 1;
 			const part: Gap = {
 				index: gap.index,
@@ -1425,6 +1470,7 @@ export function DiffBody(props: {
 					setFocusThread(target.key);
 				}
 			};
+			const runLead = lead?.();
 			const where =
 				run.from === run.to
 					? `on hidden line ${run.from}`
@@ -1456,16 +1502,21 @@ export function DiffBody(props: {
 					</td>
 					<td
 						colSpan={columns - 2}
-						className={`font-sans ${runThreads.length ? "pr-12 pl-2" : "px-2"}`}
+						className={`font-sans ${bubblePad((runThreads.length > 0 ? 1 : 0) + (runLead ? 1 : 0))}`}
 					>
-						{runThreads.length > 0 && (
-							<ThreadBubble
-								inline
-								threads={runThreads}
-								where={where}
-								open={false}
-								onToggle={openRunThreads}
-							/>
+						{(runThreads.length > 0 || runLead) && (
+							<BubbleSlot>
+								{runLead?.bubble}
+								{runThreads.length > 0 && (
+									<ThreadBubble
+										inline
+										threads={runThreads}
+										where={where}
+										open={false}
+										onToggle={openRunThreads}
+									/>
+								)}
+							</BubbleSlot>
 						)}
 						{failed.length > 0 ? (
 							<span role="alert" className="text-bad">
@@ -1488,12 +1539,74 @@ export function DiffBody(props: {
 					</td>
 				</tr>,
 			);
+			if (runLead) {
+				rows.push(
+					<Fragment key={`gap${gap.index}:${run.from}:file`}>
+						{runLead.row(columns)}
+					</Fragment>,
+				);
+			}
 		});
-		rows.push(...contextRows(next, gap.to));
+		rows.push(...contextRows(next, gap.to, lead));
 		return <tbody key={`gap${gap.index}`}>{rows}</tbody>;
 	};
 
 	const gapAt = (index: number) => gaps.find((g) => g.index === index);
+
+	// The file's bubble goes on the first row shown, whichever it is: the
+	// rows below are built in the table's order, and the first to ask takes it.
+	let leadLeft = props.lead;
+	const takeLead = () => {
+		const lead = leadLeft;
+		leadLeft = undefined;
+		return lead;
+	};
+	const clusterRows = fileClusters.map((cluster) => {
+		const lead = takeLead();
+		return (
+			<tbody key={cluster.key} className="group">
+				<tr className={cluster.state === "reviewed" ? "text-muted" : ""}>
+					<Rail state={cluster.state} />
+					<ControlsCell className="py-1">{checkbox(cluster)}</ControlsCell>
+					<td
+						colSpan={columns - 2}
+						className={`${bubblePad(lead ? 1 : 0)} py-1 font-sans text-sm`}
+					>
+						{lead && <BubbleSlot>{lead.bubble}</BubbleSlot>}
+						{cluster.label}
+						<CrossedOffNote cluster={cluster} id={noteId(cluster)} />
+					</td>
+				</tr>
+				{lead?.row(columns, RAIL[cluster.state])}
+			</tbody>
+		);
+	});
+	const hunkRows = hunks.data?.hunks.map((hunk, index) => (
+		<Fragment key={hunkHeader(hunk)}>
+			{gapRows(gapAt(index), takeLead)}
+			<HunkRows
+				hunk={hunk}
+				clusters={clusters}
+				lang={lang}
+				tabWidth={file.tabWidth}
+				checkbox={checkbox}
+				noteId={noteId}
+				landed={landed}
+				landingLine={landingLine}
+				threads={rowThreads}
+				ignoreWhitespace={ignoreWs}
+				shape={shape}
+				hunkId={`h${index}`}
+				picker={picker}
+				composers={composers}
+				lead={takeLead()}
+			/>
+		</Fragment>
+	));
+	const tailRows =
+		hunks.data && gapRows(gapAt(hunks.data.hunks.length), takeLead);
+	// Nothing to show it on (no rows, or they failed to load): a row of its own.
+	const lead = hunks.isPending ? undefined : takeLead();
 
 	return (
 		<div ref={root}>
@@ -1541,6 +1654,11 @@ export function DiffBody(props: {
 					ref={table}
 					data-view={view}
 					onPointerDown={onPointerDown}
+					style={
+						{
+							"--num-w": `calc(${numberDigits(hunks.data)}ch + 1rem)`,
+						} as CSSProperties
+					}
 					className={`border-collapse bg-code font-mono text-xs leading-5 text-code-ink ${
 						view === "side-by-side" ? "w-full table-fixed" : "min-w-full"
 					}`}
@@ -1549,51 +1667,25 @@ export function DiffBody(props: {
 						<colgroup>
 							<col className="w-1" />
 							<col className="w-11 pointer-coarse:w-20" />
-							<col style={numberWidth(digits)} />
+							<col className={NUMBER_W} />
 							<col />
-							<col style={numberWidth(digits)} />
+							<col className={NUMBER_W} />
 							<col />
 						</colgroup>
 					)}
-					{fileClusters.map((cluster) => (
-						<tbody key={cluster.key} className="group">
-							<tr className={cluster.state === "reviewed" ? "text-muted" : ""}>
-								<Rail state={cluster.state} />
-								<ControlsCell className="py-1">
-									{checkbox(cluster)}
-								</ControlsCell>
-								<td
-									colSpan={columns - 2}
-									className="px-2 py-1 font-sans text-sm"
-								>
-									{cluster.label}
-									<CrossedOffNote cluster={cluster} id={noteId(cluster)} />
+					{lead && (
+						<tbody>
+							<tr>
+								<td colSpan={columns} className={`${bubblePad(1)} h-5`}>
+									<BubbleSlot>{lead.bubble}</BubbleSlot>
 								</td>
 							</tr>
+							{lead.row(columns)}
 						</tbody>
-					))}
-					{hunks.data?.hunks.map((hunk, index) => (
-						<Fragment key={hunkHeader(hunk)}>
-							{gapRows(gapAt(index))}
-							<HunkRows
-								hunk={hunk}
-								clusters={clusters}
-								lang={lang}
-								tabWidth={file.tabWidth}
-								checkbox={checkbox}
-								noteId={noteId}
-								landed={landed}
-								landingLine={landingLine}
-								threads={rowThreads}
-								ignoreWhitespace={ignoreWs}
-								shape={shape}
-								hunkId={`h${index}`}
-								picker={picker}
-								composers={composers}
-							/>
-						</Fragment>
-					))}
-					{hunks.data && gapRows(gapAt(hunks.data.hunks.length))}
+					)}
+					{clusterRows}
+					{hunkRows}
+					{tailRows}
 				</table>
 			</div>
 			{hunks.isPending && (
@@ -1869,8 +1961,10 @@ function HunkRows(props: {
 	hunkId: string;
 	picker?: Picker;
 	composers?: RowComposers;
+	/** The file's bubble, on the hunk's header row (the diff's first row). */
+	lead?: FileLead;
 }) {
-	const { threads, hunk, ignoreWhitespace, shape } = props;
+	const { threads, hunk, ignoreWhitespace, shape, lead } = props;
 	const { view } = shape;
 	// Each line's index in the hunk: GitHub's order (codeSpan.ts spanOfRange, linePicks.ts pickRange).
 	const orderOf = useMemo(() => {
@@ -1902,10 +1996,12 @@ function HunkRows(props: {
 		<>
 			<tbody>
 				<tr className="bg-hunk text-hunk-ink">
-					<td colSpan={columns} className="px-2 py-0.5">
+					<td colSpan={columns} className={`${bubblePad(lead ? 1 : 0)} py-0.5`}>
+						{lead && <BubbleSlot>{lead.bubble}</BubbleSlot>}
 						{hunkHeader(hunk)}
 					</td>
 				</tr>
+				{lead?.row(columns)}
 			</tbody>
 			{hunkRuns.map((run) => {
 				const first = run.lines[0];

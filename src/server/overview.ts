@@ -295,8 +295,9 @@ export function mapComments(
 		const deleted = index === 0 && isDeletedBody(str(c.body));
 		// What GitHub lets the viewer do, where carbonless writes at all,
 		// to their own published comments only (not others', even where
-		// GitHub would). A blanked opener is never edited, and deleted only
-		// once no published comment follows it (it really goes then).
+		// GitHub would). A blanked opener is a comment like any other (its
+		// text may be written back), deleted again only once no published
+		// comment follows it (it really goes then).
 		const can = (v: unknown) =>
 			!asOf && writes && !pending && c.viewerDidAuthor === true && v === true;
 		comments.push({
@@ -313,7 +314,7 @@ export function mapComments(
 			text: stripMarker(str(c.bodyText) || str(c.body)),
 			editedAt: str(c.lastEditedAt) || null,
 			viewerCan: {
-				update: !deleted && can(c.viewerCanUpdate),
+				update: can(c.viewerCanUpdate),
 				delete: (!deleted || !followed) && can(c.viewerCanDelete),
 			},
 			deleted,
