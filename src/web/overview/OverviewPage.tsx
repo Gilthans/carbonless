@@ -31,7 +31,6 @@ import {
 	type CSSProperties,
 	type ReactNode,
 	type Ref,
-	type RefObject,
 	useCallback,
 	useEffect,
 	useId,
