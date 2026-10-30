@@ -413,6 +413,21 @@ describe("DiffBody with Ignore whitespace", () => {
 		expect(pinnedRow.querySelector("svg")).toBeNull();
 	});
 
+	it("turning Ignore whitespace on after focusing a number in a whitespace-only cluster keeps one number button in the tab order", async () => {
+		ignoreWhitespace.set(false);
+		setup();
+		const old3 = await screen.findByRole("button", { name: "Old line 3" });
+		old3.focus();
+		// On: the cluster collapses, and the focused number with it.
+		act(() => ignoreWhitespace.set(true));
+		await screen.findByText("Whitespace only · 6 lines");
+		expect(screen.queryByRole("button", { name: "Old line 3" })).toBeNull();
+		const stops = [
+			...document.querySelectorAll<HTMLButtonElement>("button[data-pick]"),
+		].filter((b) => b.tabIndex === 0);
+		expect(stops).toHaveLength(1);
+	});
+
 	for (const view of ["unified", "side-by-side"] as const) {
 		it(`keeps a whitespace-only cluster open while one of its lines is picked (${view})`, async () => {
 			sideBySide.set(view === "side-by-side");

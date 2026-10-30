@@ -1300,7 +1300,13 @@ export function DiffBody(props: {
 		},
 	};
 
-	const picker = usePicker(scroller, file.path, hunks.data?.hunks[0], view);
+	const picker = usePicker(
+		scroller,
+		file.path,
+		hunks.data?.hunks[0],
+		view,
+		ignoreWs,
+	);
 
 	// The head moved under a draft: it moves along when its lines and the
 	// lines around them read the same at the same numbers, in GitHub's diff
@@ -2240,6 +2246,7 @@ function usePicker(
 	path: string,
 	firstHunk: DisplayHunk | undefined,
 	view: View,
+	ignoreWs: boolean,
 ): Picker {
 	const picks = usePicks();
 	const keys = useMemo(
@@ -2247,13 +2254,16 @@ function usePicker(
 			new Set(picks?.path === path ? picks.lines.map((l) => pickKey(l)) : []),
 		[picks, path],
 	);
-	// The last focused button's stop, in the view it was focused in: a
-	// stop from the other view may name no button there (a context row's
-	// left number side by side), so that view starts from the first row's.
-	const [focused, setFocused] = useState<{ view: View; stop: string } | null>(
-		null,
-	);
-	const roving = focused?.view === view ? focused.stop : null;
+	// The last focused button's stop, with the view and Ignore whitespace
+	// it was focused under: under others it may name no button (a context
+	// row's left number side by side, a line of a whitespace-only cluster
+	// that collapsed), so they start from the first row's.
+	const shown = `${view} ${ignoreWs}`;
+	const [focused, setFocused] = useState<{
+		shown: string;
+		stop: string;
+	} | null>(null);
+	const roving = focused?.shown === shown ? focused.stop : null;
 	const first = firstHunk?.lines[0];
 	const dragging = useRef(false);
 	const pointer = useRef("");
@@ -2391,6 +2401,6 @@ function usePicker(
 			const anchor = cur?.path === from.path ? cur.anchor : picked(from);
 			setPicks(pickRange(cells(), anchor, picked(to)));
 		},
-		onFocus: (stop) => setFocused({ view, stop }),
+		onFocus: (stop) => setFocused({ shown, stop }),
 	};
 }
