@@ -1672,7 +1672,7 @@ describe("side by side (the cells contract)", () => {
 		fireEvent.click(el, { detail: 1, ...init });
 	};
 
-	it("the keyboard: Up/Down stay in their column (a context row's one button is both), Left/Right switch sides, Shift extends", async () => {
+	it("the keyboard: Up/Down stay in their column through context rows, Left/Right switch sides on every row, Shift extends", async () => {
 		const { user } = setup();
 		await loaded();
 		const button = (side: "LEFT" | "RIGHT", n: number) =>
@@ -1685,25 +1685,10 @@ describe("side by side (the cells contract)", () => {
 		expect(button("RIGHT", 4)).toHaveFocus();
 		await user.keyboard("{ArrowLeft}");
 		expect(button("LEFT", 4)).toHaveFocus();
-		// The row below (new 5) has no old line: on to the context row (old
-		// 5 / new 6), one line with its one button on the right.
-		await user.keyboard("{ArrowDown}");
-		expect(button("RIGHT", 6)).toHaveFocus();
-		// Still the old column: Up is back to old 4, not new 5.
-		await user.keyboard("{ArrowUp}");
-		expect(button("LEFT", 4)).toHaveFocus();
-		// Right from old 4, then Up in the new column: new 3.
+		// Up the new column from new 4: new 3.
 		await user.keyboard("{ArrowRight}{ArrowUp}");
 		expect(button("RIGHT", 3)).toHaveFocus();
-		// A context row's button is the row's only one: Left stays put.
-		button("RIGHT", 6).focus();
-		await user.keyboard("{ArrowLeft}");
-		expect(button("RIGHT", 6)).toHaveFocus();
-		// Down from there goes on in the new column (its own side).
-		await user.keyboard("{ArrowDown}");
-		expect(button("RIGHT", 7)).toHaveFocus();
 		// Shift+Down extends the pick down the column; Shift+Left across.
-		button("RIGHT", 3).focus();
 		await user.keyboard("{Enter}");
 		await user.keyboard("{Shift>}{ArrowDown}{/Shift}");
 		expect(button("RIGHT", 4)).toHaveFocus();
@@ -1719,23 +1704,83 @@ describe("side by side (the cells contract)", () => {
 		]);
 	});
 
-	it("a mouse press on a context row's button forgets the keyboard's column: Down goes on in that button's own", async () => {
+	it("Down from an old number goes on down the old numbers through context rows (past the row with no old line)", async () => {
 		const { user } = setup();
 		await loaded();
 		const button = (side: "LEFT" | "RIGHT", n: number) =>
 			within(number(side, n)).getByRole("button");
-		// Up the old column onto the context rows above the pairs.
-		button("LEFT", 3).focus();
-		await user.keyboard("{ArrowUp}");
-		expect(button("RIGHT", 2)).toHaveFocus();
-		await user.keyboard("{ArrowUp}");
-		expect(button("RIGHT", 1)).toHaveFocus();
-		// A click on the other context row's button, then Down: its own
-		// column (new), not the one the keyboard was in.
-		press(number("RIGHT", 2));
-		expect(button("RIGHT", 2)).toHaveFocus();
+		button("LEFT", 4).focus();
+		// New 5 has no old line: on to the context rows' old numbers.
 		await user.keyboard("{ArrowDown}");
-		expect(button("RIGHT", 3)).toHaveFocus();
+		expect(button("LEFT", 5)).toHaveFocus();
+		await user.keyboard("{ArrowDown}");
+		expect(button("LEFT", 6)).toHaveFocus();
+		// Up goes back the same way, still in the old column.
+		await user.keyboard("{ArrowUp}{ArrowUp}");
+		expect(button("LEFT", 4)).toHaveFocus();
+		// Up the old column onto the context rows above the pairs.
+		await user.keyboard("{ArrowUp}{ArrowUp}");
+		expect(button("LEFT", 2)).toHaveFocus();
+	});
+
+	it("Left/Right on a context row switch between its two numbers", async () => {
+		const { user } = setup();
+		await loaded();
+		const button = (side: "LEFT" | "RIGHT", n: number) =>
+			within(number(side, n)).getByRole("button");
+		button("RIGHT", 6).focus();
+		await user.keyboard("{ArrowLeft}");
+		expect(button("LEFT", 5)).toHaveFocus();
+		await user.keyboard("{ArrowLeft}");
+		expect(button("LEFT", 5)).toHaveFocus();
+		await user.keyboard("{ArrowRight}");
+		expect(button("RIGHT", 6)).toHaveFocus();
+	});
+
+	it("a context row has a pick button on both numbers: each named and picking its one RIGHT line, one tab stop between them", async () => {
+		const { user } = setup();
+		await loaded();
+		const buttons = [
+			...row("RIGHT", 6).querySelectorAll<HTMLButtonElement>(
+				"button[data-pick]",
+			),
+		];
+		expect(buttons).toHaveLength(2);
+		expect(buttons.map((b) => b.dataset.pick)).toEqual(["RIGHT:6", "RIGHT:6"]);
+		expect(buttons.map((b) => b.getAttribute("aria-label"))).toEqual([
+			"Line 6",
+			"Line 6",
+		]);
+		const left = within(number("LEFT", 5)).getByRole("button");
+		left.focus();
+		await user.keyboard("{Enter}");
+		expect(getPicks()?.lines.map((l) => pickKey(l))).toEqual(["RIGHT:6"]);
+		expect(cellsWith("data-picked")).toEqual(["RIGHT:6", "RIGHT:6"]);
+		expect(left).toHaveAttribute("aria-pressed", "true");
+		// The focused one is the file's one tab stop.
+		const stops = [
+			...document.querySelectorAll<HTMLButtonElement>("button[data-pick]"),
+		].filter((b) => b.tabIndex === 0);
+		expect(stops).toEqual([left]);
+		// A mouse press on it picks the same line and keeps focus on it.
+		press(number("LEFT", 5));
+		expect(getPicks()).toBeNull();
+		press(number("LEFT", 5));
+		expect(left).toHaveFocus();
+		expect(getPicks()?.lines.map((l) => pickKey(l))).toEqual(["RIGHT:6"]);
+	});
+
+	it("a pick from a context row's left number to a deleted line extends in GitHub's order", async () => {
+		const { user } = setup();
+		await loaded();
+		within(number("LEFT", 2)).getByRole("button").focus();
+		await user.keyboard("{Enter}");
+		press(number("LEFT", 4), { shiftKey: true });
+		expect(getPicks()?.lines.map((l) => pickKey(l))).toEqual([
+			"RIGHT:2",
+			"LEFT:3",
+			"LEFT:4",
+		]);
 	});
 
 	it("every code cell carries its side, a blank cell neither a side nor the cell mark", async () => {
@@ -1856,7 +1901,8 @@ describe("side by side (the cells contract)", () => {
 			focus: { side: "RIGHT", line: 4 },
 		});
 		// A context line (old 5 / new 6) is one line: either number picks
-		// RIGHT:6, both its cells show it, and its one button is the new number's.
+		// RIGHT:6, both its cells show it, and the pressed number's button
+		// takes focus.
 		press(number("LEFT", 5));
 		expect(cellsWith("data-picked")).toEqual(["RIGHT:6", "RIGHT:6"]);
 		expect(getPicks()?.lines).toEqual([
@@ -1865,9 +1911,7 @@ describe("side by side (the cells contract)", () => {
 		expect(
 			within(row("RIGHT", 6)).queryByRole("button", { name: "Old line 5" }),
 		).toBeNull();
-		expect(
-			within(row("RIGHT", 6)).getByRole("button", { name: "Line 6" }),
-		).toHaveFocus();
+		expect(within(number("LEFT", 5)).getByRole("button")).toHaveFocus();
 	});
 
 	it("picks extend in GitHub's order, not the order shown: new 3 then old 4 is old 4 → new 3 and Comment is on; old 3 → old 4 washes no right-side cell", async () => {

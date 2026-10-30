@@ -301,14 +301,20 @@ export function codeCellOf(line: RowLine): {
 interface Picker {
 	/** Picked rows, by pickKey. */
 	keys: ReadonlySet<string>;
-	/** The row whose number button is in the tab order. */
+	/** The number button in the tab order, by `stopOf`. */
 	roving: string | null;
 	onPointerDown: (e: PointerEvent<HTMLElement>) => void;
 	onPointerEnter: (e: PointerEvent<HTMLElement>) => void;
 	onClick: (e: MouseEvent<HTMLElement>) => void;
 	onKeyDown: (e: KeyboardEvent<HTMLButtonElement>) => void;
-	onFocus: (key: string) => void;
+	onFocus: (stop: string) => void;
 }
+
+/**
+ * A number button's tab stop: its column and its pick's key (a context
+ * row's two buttons pick one line, so the key alone names both).
+ */
+const stopOf = (column: DiffSide, key: string) => `${column} ${key}`;
 
 /** New threads being written, by the row they end on, and how to show one. */
 interface RowComposers {
@@ -434,11 +440,11 @@ function NumberCell(props: {
 				<button
 					type="button"
 					data-pick={pick.key}
-					tabIndex={picker.roving === pick.key ? 0 : -1}
+					tabIndex={picker.roving === stopOf(props.side, pick.key) ? 0 : -1}
 					aria-label={pick.label}
 					aria-pressed={pick.picked}
 					onKeyDown={picker.onKeyDown}
-					onFocus={() => picker.onFocus(pick.key)}
+					onFocus={() => picker.onFocus(stopOf(props.side, pick.key))}
 					className="block w-full cursor-pointer text-right hover:text-ink focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent"
 				>
 					{n}
@@ -788,8 +794,8 @@ interface Cell {
  * under its own side's key, with its own paint, mark, bubble, landing, pick
  * and opened thread row (the left side's first); a context line is one line
  * shown twice: its bubble is in the right cell, under both its keys, and
- * its mark, spans, pick and landing paint both cells (either cell picks or
- * selects it as RIGHT, the cells contract). The file's bubble (`lead`, on
+ * its mark, spans, pick and landing paint both cells (either cell, and
+ * either number's button, picks or selects it as RIGHT, the cells contract). The file's bubble (`lead`, on
  * the diff's first row: a context row, with a cell on each side) sits in
  * the right cell beside the line's, its row right under the pair row.
  */
@@ -823,14 +829,13 @@ function PairRow(props: RowProps & { row: SideRow }) {
 			threads ? rowKeys(line) : [],
 			`on line ${line.newNo}`,
 		);
-		// The same line, with its bubble and number button on the right.
+		// The same line, its bubble on the right; each number a button for it.
 		left = {
 			...right,
 			keys: [],
 			ending: [],
 			endKey: undefined,
 			open: false,
-			pick: { ...right.pick, button: false },
 		};
 	} else {
 		if (row.del) {
@@ -2213,10 +2218,6 @@ const ARROWS: Record<
 const sideOf = (b: Element): DiffSide =>
 	b.closest("td")?.getAttribute("data-side") === "LEFT" ? "LEFT" : "RIGHT";
 
-/** The button's row shows one context line on both sides. */
-const inContextRow = (b: Element) =>
-	b.closest("tr")?.getAttribute("data-kind") === "context";
-
 /**
  * Picking lines by their numbers: a click (or tap) picks the row, again
  * clears it; shift-click, or dragging down the numbers with a mouse,
@@ -2231,8 +2232,7 @@ const inContextRow = (b: Element) =>
  * Side by side, Up/Down stay in their column (the old numbers or the new
  * ones), past rows blank on that side, and Left/Right go to the other
  * number of the same row when it has one; Shift with any of them extends.
- * A context row is one line with one button, on the right: it stands in
- * both columns, and the column it was reached in is kept from there.
+ * A context row's two numbers are both buttons for its one line.
  */
 function usePicker(
 	scroller: RefObject<HTMLDivElement | null>,
@@ -2247,8 +2247,6 @@ function usePicker(
 		[picks, path],
 	);
 	const [roving, setRoving] = useState<string | null>(null);
-	/** The column the keyboard last moved in (side by side). */
-	const column = useRef<DiffSide | null>(null);
 	const first = firstHunk?.lines[0];
 	const dragging = useRef(false);
 	const pointer = useRef("");
@@ -2303,23 +2301,24 @@ function usePicker(
 	};
 	return {
 		keys,
-		roving: roving ?? (first ? pickKey(codeCellOf(first)) : null),
+		roving:
+			roving ??
+			(first
+				? stopOf(codeCellOf(first).side, pickKey(codeCellOf(first)))
+				: null),
 		onPointerDown: (e) => {
 			pointer.current = e.pointerType;
-			// A press chooses a button, not a column: the keyboard goes on
-			// from that button's own.
-			column.current = null;
 			if (e.pointerType !== "mouse" || e.button !== 0) return;
 			const t = targetOf(e.currentTarget);
 			if (!t) return;
 			// No text selection starts from the numbers.
 			e.preventDefault();
-			e.currentTarget
-				.closest("tr")
-				?.querySelector<HTMLButtonElement>(
-					`button[data-pick="${CSS.escape(pickKey(t))}"]`,
-				)
-				?.focus({ preventScroll: true });
+			// The pressed number's own button, else (unified) its row's.
+			const button = `button[data-pick="${CSS.escape(pickKey(t))}"]`;
+			(
+				e.currentTarget.querySelector<HTMLButtonElement>(button) ??
+				e.currentTarget.closest("tr")?.querySelector<HTMLButtonElement>(button)
+			)?.focus({ preventScroll: true });
 			dragging.current = true;
 			pickTo(t, e.shiftKey);
 		},
@@ -2360,25 +2359,19 @@ function usePicker(
 					(b) => b.closest("tr") === row && sideOf(b) === arrow.side,
 				);
 				if (next === e.currentTarget) return;
-				if (next) column.current = arrow.side;
 			} else {
-				// A context row's button is in both columns: the column
-				// it was reached in goes on from it.
-				const col =
-					(inContextRow(e.currentTarget) && column.current) ||
-					sideOf(e.currentTarget);
+				const col = sideOf(e.currentTarget);
 				for (
 					let i = at + arrow.step;
 					i >= 0 && i < buttons.length;
 					i += arrow.step
 				) {
 					const b = buttons[i] as HTMLButtonElement;
-					if (sideOf(b) === col || inContextRow(b)) {
+					if (sideOf(b) === col) {
 						next = b;
 						break;
 					}
 				}
-				column.current = col;
 			}
 			if (!next) return;
 			e.preventDefault();

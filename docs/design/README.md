@@ -339,8 +339,8 @@ decides where; nothing else does):
   or drag down the numbers; a second tap on touch; Up/Down move between the
   number buttons, one tab stop per file, Shift extends, Enter picks; side
   by side, Up/Down stay in their column of numbers, past rows blank on
-  that side, and Left/Right go to the other number of the row, a context
-  row's one button standing in both columns; the
+  that side, and Left/Right go to the other number of the row, both of a
+  context row's numbers picking its one line; the
   number cells are 48×20 targets on touch too (with a mouse they are as
   wide as the file's largest number needs, three digits at least), the owner's accepted
   exception to the 40px rule, for line numbers only, so rows keep their
