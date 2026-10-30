@@ -3,8 +3,9 @@
 #   scripts/devbox/update <tarball | rc | latest | version>
 # A tarball path (from pnpm pack) installs that file; rc, latest or a version
 # install carbonless-review@<spec> from npm. Installs with pnpm add -g on
-# Node 24, restarts crb.service, waits until it serves the new build and
-# prints its link. Run scripts/devbox/install once first.
+# Node 24, rewrites crb.service if Node 24 or crb moved, restarts it, waits
+# until it serves the new build and prints its link. Run
+# scripts/devbox/install once first.
 # Overrides for tests and odd setups: see lib.sh.
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -20,7 +21,8 @@ run pnpm add -g "$spec"
 to="$(installed_build)"
 [[ -n "$to" ]] || die "$PACKAGE is not installed after pnpm add -g $spec"
 
+write_unit "$(global_crb)"
 run systemctl --user restart "$UNIT"
 wait_for_build "$to"
 echo "crb: $(pretty_build "$from") -> $(pretty_build "$to")"
-echo "$(service_url)"
+service_url

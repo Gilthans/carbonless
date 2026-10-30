@@ -51,7 +51,11 @@ describe("scripts/devbox", { timeout: 60_000 }, () => {
 			writeFileSync(join(stubs, name), `#!/bin/sh\n${body}\n`);
 			chmodSync(join(stubs, name), 0o755);
 		};
-		stub("gh", 'test "$1 $2" = "auth status" && test -z "$GH_LOGGED_OUT"');
+		// Logged in only when asked as the service asks: no token, gh's own config dir.
+		stub(
+			"gh",
+			'test "$1 $2" = "auth status" && test -z "$GH_LOGGED_OUT$GH_TOKEN$GH_CONFIG_DIR$XDG_CONFIG_HOME"',
+		);
 		stub("loginctl", 'if [ -n "$NO_LINGER" ]; then echo no; else echo yes; fi');
 		stub("systemctl", "echo REAL systemctl >&2; exit 99");
 		stub("journalctl", "echo REAL journalctl >&2; exit 99");
@@ -72,6 +76,8 @@ describe("scripts/devbox", { timeout: 60_000 }, () => {
 			CRB_DEVBOX_PKG_DIR: join(dir, "pkg"),
 			CRB_DEVBOX_DRY_RUN: "1",
 			CRB_DEVBOX_TIMEOUT: "10",
+			GH_TOKEN: "from-the-shell",
+			GH_CONFIG_DIR: join(dir, "gh-private"),
 		};
 	});
 	afterEach(async () => {
@@ -117,6 +123,77 @@ describe("scripts/devbox", { timeout: 60_000 }, () => {
 				},
 			);
 		});
+
+	/** server.json as the crb serve with this pid writes it. */
+	const serverJson = (pid: number) => {
+		mkdirSync(join(dir, "state/carbonless"), { recursive: true });
+		writeFileSync(
+			join(dir, "state/carbonless/server.json"),
+			JSON.stringify({ url: "x", host: "x", port: 1, pid }),
+		);
+	};
+
+	/**
+	 * Real mode against stand-ins: a systemctl that logs its calls and reports
+	 * crb.service active with MainPID $FAKE_MAINPID, a journalctl, and a pnpm
+	 * whose global dir holds pkg until `add -g` switches it to pkg2.
+	 */
+	function realStubs(after = { version: "0.2.0", commit: "1".repeat(40) }) {
+		const stubs = join(dir, "real-stubs");
+		mkdirSync(stubs);
+		const stub = (name: string, body: string) => {
+			writeFileSync(join(stubs, name), `#!/bin/sh\n${body}\n`);
+			chmodSync(join(stubs, name), 0o755);
+		};
+		const ls = (pkg: string) =>
+			JSON.stringify([
+				{
+					path: join(pnpmHome(), "global/v11"),
+					dependencies: {
+						"carbonless-review": { version: "x", path: join(dir, pkg) },
+					},
+				},
+			]);
+		writeFileSync(join(dir, "ls.json"), ls("pkg"));
+		writeFileSync(join(dir, "ls-after.json"), ls("pkg2"));
+		mkdirSync(join(dir, "pkg2/dist"), { recursive: true });
+		writeFileSync(
+			join(dir, "pkg2/dist/build-info.json"),
+			JSON.stringify(after),
+		);
+		const log = join(dir, "calls.log");
+		stub(
+			"systemctl",
+			[
+				`echo "systemctl $*" >>"${log}"`,
+				'case "$*" in',
+				"*is-active*) exit 0 ;;",
+				'*show*) echo "$FAKE_MAINPID" ;;',
+				"esac",
+			].join("\n"),
+		);
+		stub("journalctl", 'echo "journal: crb failed to bind"');
+		stub(
+			"pnpm",
+			[
+				`echo "pnpm $*" >>"${log}"`,
+				'case "$1 $2" in',
+				'"bin -g") echo "$PNPM_HOME/bin" ;;',
+				`"ls -g") cat "${join(dir, "ls.json")}" ;;`,
+				`"add -g") cp "${join(dir, "ls-after.json")}" "${join(dir, "ls.json")}" ;;`,
+				"esac",
+			].join("\n"),
+		);
+		return {
+			env: {
+				PATH: `${stubs}:${env.PATH}`,
+				CRB_DEVBOX_DRY_RUN: "",
+				CRB_DEVBOX_PKG_DIR: "",
+				FAKE_MAINPID: "4242",
+			},
+			calls: () => readFileSync(log, "utf8"),
+		};
+	}
 
 	it("install writes a unit running the global crb serve on Node 24, without XDG_CONFIG_HOME", async () => {
 		const port = await serve("127.0.0.1");
@@ -232,5 +309,126 @@ describe("scripts/devbox", { timeout: 60_000 }, () => {
 		expect(r.stderr).toContain(
 			"dry-run: journalctl --user -u crb -n 30 --no-pager",
 		);
+	});
+	it("update reads the installed builds from pnpm ls -g and moves from one to the other", async () => {
+		const after = { version: "0.2.0", commit: "1".repeat(40) };
+		const real = realStubs(after);
+		const port = await serve("127.0.0.1", after);
+		serverJson(4242);
+		expect(
+			(
+				await run("install", [], {
+					CRB_DEVBOX_DRY_RUN: "1",
+					CRB_DEVBOX_PKG_DIR: join(dir, "pkg2"),
+				})
+			).code,
+		).toBe(0);
+		const r = await run("update", ["0.2.0"], real.env);
+		expect(r.stderr).toBe("");
+		expect(r.code).toBe(0);
+		expect(r.stdout).toContain("crb: 0.1.0 (abcdef0) -> 0.2.0 (1111111)\n");
+		expect(r.stdout).toMatch(new RegExp(`http://127\\.0\\.0\\.1:${port}/\n$`));
+		expect(real.calls()).toContain("pnpm add -g carbonless-review@0.2.0");
+		expect(real.calls()).toContain("systemctl --user restart crb");
+		// The unit didn't change: no reload.
+		expect(real.calls()).not.toContain("daemon-reload");
+		expect(real.calls()).toContain(
+			"systemctl --user show -p MainPID --value crb",
+		);
+	});
+
+	it("a crb serve that isn't crb.service doesn't pass for it", async () => {
+		await serve("127.0.0.1");
+		// server.json names the crb serve answering: pid 4242.
+		serverJson(4242);
+		const ok = await run("install", [], { CRB_DEVBOX_DRY_MAINPID: "4242" });
+		expect(ok.code).toBe(0);
+
+		// A hand-started crb holds the port while crb.service (MainPID 99, or
+		// inactive: 0) can't bind it: install restarts and then fails, naming it.
+		for (const main of ["99", "0"]) {
+			const r = await run("install", [], {
+				CRB_DEVBOX_DRY_MAINPID: main,
+				CRB_DEVBOX_TIMEOUT: "1",
+			});
+			expect(r.code).not.toBe(0);
+			expect(r.stdout).toContain("dry-run: systemctl --user restart crb");
+			expect(r.stderr).toContain(
+				`is served by pid 4242, not by crb.service (MainPID ${main})`,
+			);
+			expect(r.stderr).toContain("dry-run: journalctl --user -u crb");
+		}
+
+		// The same in real mode, through systemctl show.
+		const real = realStubs(BUILD);
+		const r = await run("update", ["rc"], {
+			...real.env,
+			FAKE_MAINPID: "99",
+			CRB_DEVBOX_TIMEOUT: "1",
+		});
+		expect(r.code).not.toBe(0);
+		expect(r.stderr).toContain(
+			"is served by pid 4242, not by crb.service (MainPID 99)",
+		);
+		expect(r.stderr).toContain("journal: crb failed to bind");
+	});
+
+	it("install fails when it can't read the installed build", async () => {
+		await serve("127.0.0.1");
+		mkdirSync(join(dir, "empty"));
+		const real = realStubs();
+		const r = await run("install", [], {
+			...real.env,
+			CRB_DEVBOX_PKG_DIR: join(dir, "empty"),
+		});
+		expect(r.code).not.toBe(0);
+		expect(r.stderr).toContain(
+			"can't read the installed carbonless-review's build",
+		);
+	});
+
+	it("update rewrites the unit when Node 24 moved, and reloads systemd", async () => {
+		await serve("127.0.0.1");
+		expect((await run("install")).code).toBe(0);
+		const newer = join(dir, "home/.nvm/versions/node/v24.9.0/bin");
+		mkdirSync(newer, { recursive: true });
+		symlinkSync(process.execPath, join(newer, "node"));
+		const r = await run("update", ["rc"]);
+		expect(r.code).toBe(0);
+		expect(r.stdout).toContain(`Wrote ${unitFile()}`);
+		expect(r.stdout).toContain("dry-run: systemctl --user daemon-reload");
+		expect(readFileSync(unitFile(), "utf8")).toContain(
+			`Environment="PATH=${newer}:`,
+		);
+		// Nothing moved: nothing rewritten.
+		const again = await run("update", ["rc"]);
+		expect(again.stdout).not.toContain("Wrote");
+		expect(again.stdout).not.toContain("daemon-reload");
+	});
+
+	it("escapes & and % in the unit's paths", async () => {
+		await serve("127.0.0.1");
+		const odd = join(dir, "pn&p%m");
+		mkdirSync(join(odd, "bin"), { recursive: true });
+		writeFileSync(join(odd, "bin/crb"), "#!/bin/sh\n");
+		chmodSync(join(odd, "bin/crb"), 0o755);
+		const r = await run("install", [], { PNPM_HOME: odd });
+		expect(r.code).toBe(0);
+		const escaped = join(dir, "pn&p%%m");
+		const unit = readFileSync(unitFile(), "utf8");
+		expect(unit).toContain(`ExecStart="${escaped}/bin/crb" serve`);
+		expect(unit).toContain(`:${escaped}/bin:`);
+	});
+
+	it("refuses serve.port 0: the service needs a fixed port", async () => {
+		mkdirSync(join(dir, "config/carbonless"), { recursive: true });
+		writeFileSync(
+			join(dir, "config/carbonless/config.json"),
+			JSON.stringify({ serve: { port: 0 } }),
+		);
+		const r = await run("install");
+		expect(r.code).not.toBe(0);
+		expect(r.stderr).toContain("serve.port is 0");
+		expect(existsSync(unitFile())).toBe(false);
 	});
 });

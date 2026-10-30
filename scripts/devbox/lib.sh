@@ -2,17 +2,19 @@
 #
 # Every path is overridable, so tests run these against temp dirs:
 #   XDG_CONFIG_HOME     config.json (carbonless/) and, by default, the unit dir
-#   XDG_STATE_HOME      the access key (carbonless/key)
+#   XDG_STATE_HOME      the access key and server.json (carbonless/)
 #   SYSTEMD_USER_DIR    where crb.service goes (default $XDG_CONFIG_HOME/systemd/user)
 #   PNPM_HOME           pnpm's global dir; the global crb is $PNPM_HOME/bin/crb
 #   CRB_NODE_BIN        Node 24's bin dir (default: ~/.nvm/versions/node/v24*/bin)
 #   CRB_DEVBOX_PKG_DIR  the installed package's dir (default: from pnpm ls -g)
 #   CRB_DEVBOX_DRY_RUN=1  print systemctl, journalctl and pnpm add instead of running them
+#   CRB_DEVBOX_DRY_MAINPID  under dry run, the service's MainPID (unset: not checked)
 #   CRB_DEVBOX_TIMEOUT  seconds to wait for the restarted server (default 60)
 
 UNIT=crb
 PACKAGE=carbonless-review
 DRY_RUN="${CRB_DEVBOX_DRY_RUN:-}"
+DEVBOX_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
 STATE_HOME="${XDG_STATE_HOME:-$HOME/.local/state}"
@@ -56,6 +58,24 @@ NODE_BIN="$(find_node_bin)"
 export PATH="$NODE_BIN:$PNPM_HOME/bin:$PATH"
 command -v pnpm >/dev/null || die "pnpm not found next to Node 24 ($NODE_BIN): corepack enable pnpm"
 
+# serve.host and serve.port from config.json (defaults as crb serve's).
+serve_address() {
+	node -e '
+		const fs = require("fs");
+		let serve = {};
+		try { serve = JSON.parse(fs.readFileSync(process.argv[1], "utf8")).serve ?? {}; } catch {}
+		const host = typeof serve.host === "string" && serve.host.trim() ? serve.host.trim() : "127.0.0.1";
+		const port = Number.isInteger(serve.port) ? serve.port : 4747;
+		if (port === 0) {
+			console.error(`error: serve.port is 0 in ${process.argv[1]}: the service needs a fixed port (e.g. 4747)`);
+			process.exit(1);
+		}
+		console.log(`${host} ${port}`);' "$CONFIG_HOME/carbonless/config.json"
+}
+address="$(serve_address)"
+SERVE_HOST="${address% *}"
+SERVE_PORT="${address##* }"
+
 # The global crb's path (it may not exist yet).
 global_crb() {
 	echo "$(pnpm bin -g)/crb"
@@ -94,22 +114,41 @@ pretty_build() {
 	echo "$version (${commit:0:7}$dirty)"
 }
 
-# serve.host and serve.port from config.json (defaults as crb serve's), as "host port".
-serve_address() {
-	node -e '
-		const fs = require("fs");
-		let serve = {};
-		try { serve = JSON.parse(fs.readFileSync(process.argv[1], "utf8")).serve ?? {}; } catch {}
-		const host = typeof serve.host === "string" && serve.host.trim() ? serve.host.trim() : "127.0.0.1";
-		const port = Number.isInteger(serve.port) ? serve.port : 4747;
-		console.log(`${host} ${port}`);' "$CONFIG_HOME/carbonless/config.json"
+# Writes crb.service from the template when it differs (Node 24 and the
+# global crb may have moved), and reloads systemd then. Sets UNIT_CHANGED.
+# The values are escaped for systemd (% is a specifier) and for bash's
+# replacement (& is the match).
+write_unit() {
+	local crb="$1" service_path="$NODE_BIN:$PNPM_HOME/bin" tool dir
+	# PATH for the service: Node 24, the global bin dir, then wherever git and gh live.
+	for tool in git gh; do
+		command -v "$tool" >/dev/null || die "$tool not found on PATH"
+		dir="$(dirname "$(command -v "$tool")")"
+		[[ ":$service_path:" == *":$dir:"* ]] || service_path="$service_path:$dir"
+	done
+	for dir in /usr/local/bin /usr/bin /bin; do
+		[[ ":$service_path:" == *":$dir:"* ]] || service_path="$service_path:$dir"
+	done
+	service_path="${service_path//%/%%}"
+	crb="${crb//%/%%}"
+	local unit
+	unit="$(<"$DEVBOX_DIR/crb.service.template")"
+	unit="${unit//@PATH@/"$service_path"}"
+	unit="${unit//@CRB@/"$crb"}"
+	UNIT_CHANGED=""
+	if [[ ! -f "$UNIT_FILE" || "$(<"$UNIT_FILE")" != "$unit" ]]; then
+		mkdir -p "$UNIT_DIR"
+		printf '%s\n' "$unit" >"$UNIT_FILE"
+		UNIT_CHANGED=1
+		echo "Wrote $UNIT_FILE"
+		run systemctl --user daemon-reload
+	fi
 }
 
 # The page's address: http://host:port/, with ?key= unless the host is loopback.
 # A wildcard bind (0.0.0.0, ::) is shown under this machine's name.
 service_url() {
-	local host port key=""
-	read -r host port < <(serve_address)
+	local host="$SERVE_HOST" key=""
 	case "$host" in
 	127.0.0.1 | ::1 | localhost) ;;
 	*)
@@ -121,7 +160,7 @@ service_url() {
 	0.0.0.0 | ::) host="$(hostname)" ;;
 	*:*) host="[$host]" ;;
 	esac
-	echo "http://$host:$port/$key"
+	echo "http://$host:$SERVE_PORT/$key"
 }
 
 # Whether the server at service_url answers GET /api/version with the build
@@ -141,13 +180,47 @@ serves_build() {
 			.catch(() => process.exit(1));' "${base}api/version$query" "$1"
 }
 
-# Waits until the service serves the build "<version> <commit>"; on timeout,
-# fails with the service's last log lines.
+# The pid of the crb serve that wrote server.json, or nothing.
+server_pid() {
+	node -e '
+		try {
+			const s = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+			if (Number.isInteger(s.pid)) console.log(s.pid);
+		} catch {}' "$STATE_HOME/carbonless/server.json"
+}
+
+# crb.service's MainPID when it is active, else 0.
+service_main_pid() {
+	if [[ -n "$DRY_RUN" ]]; then
+		echo "${CRB_DEVBOX_DRY_MAINPID:-0}"
+	elif systemctl --user is-active --quiet "$UNIT"; then
+		systemctl --user show -p MainPID --value "$UNIT"
+	else
+		echo 0
+	fi
+}
+
+# Whether the crb serve answering is crb.service itself, not a hand-started
+# one holding the port while the service fails to bind it.
+service_serves() {
+	[[ -n "$DRY_RUN" && -z "${CRB_DEVBOX_DRY_MAINPID:-}" ]] && return 0
+	local main pid
+	main="$(service_main_pid)"
+	pid="$(server_pid)"
+	[[ -n "$pid" && "$main" != 0 && "$main" == "$pid" ]]
+}
+
+# Waits until crb.service serves the build "<version> <commit>"; on timeout,
+# fails with the reason and the service's last log lines.
 wait_for_build() {
 	local want="$1" timeout="${CRB_DEVBOX_TIMEOUT:-60}" start=$SECONDS
-	until serves_build "$want"; do
+	until serves_build "$want" && service_serves; do
 		if ((SECONDS - start >= timeout)); then
-			echo "error: after ${timeout}s, $(service_url) does not serve $(pretty_build "$want"). Last log lines:" >&2
+			if serves_build "$want"; then
+				echo "error: after ${timeout}s, $(service_url) is served by pid $(server_pid), not by $UNIT.service (MainPID $(service_main_pid)): stop that crb serve. Last log lines:" >&2
+			else
+				echo "error: after ${timeout}s, $(service_url) does not serve $(pretty_build "$want"). Last log lines:" >&2
+			fi
 			run journalctl --user -u "$UNIT" -n 30 --no-pager >&2 || true
 			exit 1
 		fi

@@ -15,8 +15,9 @@ spec=""
 [[ $# -gt 0 ]] && spec="$(package_spec "$1")"
 echo "Node: $NODE_BIN"
 
-# The service sees gh's login under ~/.config/gh, not a token in this shell.
-env -u GH_TOKEN -u GITHUB_TOKEN gh auth status >/dev/null 2>&1 ||
+# The service sees gh's login under ~/.config/gh, not a token or another
+# config dir set in this shell.
+env -u GH_TOKEN -u GITHUB_TOKEN -u GH_CONFIG_DIR -u XDG_CONFIG_HOME gh auth status >/dev/null 2>&1 ||
 	die "gh is not logged in: run gh auth login, then rerun this"
 
 if [[ "$(loginctl show-user "$(id -un)" --property=Linger --value 2>/dev/null || true)" != yes ]]; then
@@ -31,33 +32,15 @@ crb="$(global_crb)"
 [[ -x "$crb" || -n "$DRY_RUN" ]] ||
 	die "$crb not found: pass a tarball or version to install it (scripts/devbox/install <spec>)"
 
-# PATH for the service: Node 24, the global bin dir, then wherever git and gh live.
-service_path="$NODE_BIN:$PNPM_HOME/bin"
-for tool in git gh; do
-	command -v "$tool" >/dev/null || die "$tool not found on PATH"
-	dir="$(dirname "$(command -v "$tool")")"
-	[[ ":$service_path:" == *":$dir:"* ]] || service_path="$service_path:$dir"
-done
-for dir in /usr/local/bin /usr/bin /bin; do
-	[[ ":$service_path:" == *":$dir:"* ]] || service_path="$service_path:$dir"
-done
-
-template="$(<"$here/crb.service.template")"
-unit="${template//@PATH@/$service_path}"
-unit="${unit//@CRB@/$crb}"
-changed=""
-if [[ ! -f "$UNIT_FILE" || "$(<"$UNIT_FILE")" != "$unit" ]]; then
-	mkdir -p "$UNIT_DIR"
-	printf '%s\n' "$unit" >"$UNIT_FILE"
-	changed=1
-	echo "Wrote $UNIT_FILE"
-fi
-
-run systemctl --user daemon-reload
+write_unit "$crb"
+[[ -n "$UNIT_CHANGED" ]] || run systemctl --user daemon-reload
 run systemctl --user enable "$UNIT"
 build="$(installed_build)"
-if [[ -n "$changed" || -n "$spec" ]] || ! serves_build "$build"; then
+if [[ -z "$build" && -z "$DRY_RUN" ]]; then
+	die "can't read the installed $PACKAGE's build (dist/build-info.json via pnpm ls -g)"
+fi
+if [[ -n "$UNIT_CHANGED" || -n "$spec" ]] || ! { serves_build "$build" && service_serves; }; then
 	run systemctl --user restart "$UNIT"
 fi
-[[ -n "$build" ]] && wait_for_build "$build"
+[[ -z "$build" ]] || wait_for_build "$build"
 echo "crb $(pretty_build "$build") is serving: $(service_url)"
