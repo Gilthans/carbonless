@@ -54,8 +54,9 @@ default `127.0.0.1:4747`.
 The page opens on the PR overview (checks, reviews, unresolved threads). The
 Files changed view lists every changed line grouped into clusters; mark clusters
 or files reviewed, or cross them off, and progress is saved as git refs
-(`refs/crb/...`) in crb's private clone, so it survives restarts. crb only
-reads from GitHub; it never pushes or comments.
+(`refs/crb/...`) in crb's private clone, so it survives restarts. crb writes
+to GitHub only when you act: replies, new comments, resolving threads, and
+editing or deleting your own comments.
 
 ## Remote machine
 

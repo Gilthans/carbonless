@@ -73,17 +73,10 @@ checking against a real PR): `docs/product-rules.md`.
   React + Vite + TanStack Query + Tailwind (`src/web`), shared types (`src/shared`).
 - `pnpm verify` runs lint (Biome), typecheck, unit tests (Vitest), Playwright
   tests and the package smoke test (`pnpm test:pack`: packs, installs the
-  tarball into a temp dir, runs its `crb`). Run it right before committing and before saying work is done; use
-  `pnpm verify:fast` (below) until then.
-- Full test runs take turns: `pnpm verify`'s unit and e2e stages, `pnpm
-  test:e2e` without spec files, `-g` or `--last-failed`, an all-specs
-  `verify:fast` and `pnpm flake-check` wait for a machine-wide lock
-  (`scripts/queue.mjs`, `flock` on `~/.cache/carbonless-verify.lock`),
-  printing whose run they wait for, so they never overload the machine (or
-  share a tree's `dist`) together. Waiting can take longer than a foreground
-  command may: run `pnpm verify` in the background (`run_in_background`);
-  a signal ends the wait. A queued run takes turns with the other full runs,
-  so Playwright takes a worker per core. `CRB_NO_QUEUE=1` skips the queue.
+- `pnpm verify` runs lint (Biome), typecheck, unit tests (Vitest), Playwright
+  tests and the package smoke test (`pnpm test:pack`: packs, installs the
+  tarball into a temp dir, runs its `crb`). Run it right before committing
+  and before saying work is done; use `pnpm verify:fast` (below) until then.
 - While iterating, run only what a change touches:
   - `pnpm verify:fast [base]`: lint, typecheck, the unit tests related to files
     changed since `base`, and the e2e specs mapped to them (`E2E_MAP` in
