@@ -78,7 +78,9 @@ const row = (section: Locator, side: "LEFT" | "RIGHT", n: number) =>
 
 /**
  * Selects characters `from`..`to` of new line `n` (the way a drag would)
- * and lets the pointer go.
+ * and lets the pointer go. Waits first for a highlighted token in the line,
+ * so the line must have one (a known language and a colored token, as every
+ * line of GREET has): a plain-text line would wait until the test times out.
  */
 async function selectText(
 	page: Page,
