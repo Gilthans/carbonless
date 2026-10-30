@@ -121,6 +121,7 @@ export const emptySearch: SearchResult = {
 	prs: [],
 	scope: null,
 	pending: false,
+	reposPending: false,
 };
 
 export function renderWithQuery(ui: ReactElement) {

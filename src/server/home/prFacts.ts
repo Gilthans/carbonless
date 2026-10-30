@@ -617,6 +617,47 @@ export async function fetchViewerTeams(
 	}
 }
 
+/** Relations to a repo that make it the viewer's (never a public stranger's). */
+const RELATIONS = "[OWNER, COLLABORATOR, ORGANIZATION_MEMBER]";
+const VIEWER_REPOS_QUERY = `query($cursor: String) { viewer { repositories(first: 100, after: $cursor, affiliations: ${RELATIONS}, ownerAffiliations: ${RELATIONS}, orderBy: { field: PUSHED_AT, direction: DESC }) { pageInfo { hasNextPage endCursor } nodes { nameWithOwner } } } rateLimit { cost remaining resetAt } }`;
+/** At most this many pages (100 each) of the viewer's repos. */
+const VIEWER_REPOS_MAX_PAGES = 50;
+
+/**
+ * Every repo the viewer owns, collaborates on or reaches as an org member,
+ * most recently pushed first, as lowercased `owner/repo` (owner, 2026-10-30:
+ * "search results should be my repos only, not public repos from github").
+ */
+export async function fetchViewerRepos(
+	signal?: AbortSignal,
+): Promise<string[]> {
+	const names: string[] = [];
+	let cursor: string | null = null;
+	for (let page = 0; page < VIEWER_REPOS_MAX_PAGES; page++) {
+		const data = await graphql(
+			[
+				"-f",
+				`query=${VIEWER_REPOS_QUERY}`,
+				...(cursor ? ["-f", `cursor=${cursor}`] : []),
+			],
+			"your repos",
+			newCost(),
+			signal,
+		);
+		const repos = rec(rec(data.viewer).repositories);
+		for (const node of list(repos)) {
+			const name = str(rec(node).nameWithOwner);
+			if (name && /^[^/\s]+\/[^/\s]+$/.test(name)) {
+				names.push(name.toLowerCase());
+			}
+		}
+		const info = rec(repos.pageInfo);
+		cursor = info.hasNextPage === true ? (str(info.endCursor) ?? null) : null;
+		if (!cursor) break;
+	}
+	return names;
+}
+
 const REPO_QUERY = `query($owner: String!, $name: String!) {
   repository(owner: $owner, name: $name) { nameWithOwner }
 }`;

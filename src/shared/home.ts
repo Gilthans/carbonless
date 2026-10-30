@@ -90,5 +90,6 @@ export interface SearchResult {
 	}[];
 	scope: string | null; // "owner/repo" when the query named one
 	pending: boolean; // a GitHub search is still running; ask again
+	reposPending: boolean; // the viewer's repo list isn't in yet: Repos shows a spinner (pending too)
 	error?: string; // the GitHub search failed (not pending); the rest still shows
 }

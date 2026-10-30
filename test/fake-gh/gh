@@ -3,7 +3,7 @@
 // src/server/clone.ts make, from the scenario JSON at $CRB_FAKE_GH (see
 // scenario.ts). Every call is appended to $CRB_FAKE_GH_LOG when set.
 import { execFileSync } from "node:child_process";
-import { appendFileSync, readFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync } from "node:fs";
 import { writeFileAtomic } from "./atomic.mjs";
 
 const args = process.argv.slice(2);
@@ -763,22 +763,13 @@ if (restPull && args[0] === "api" && !s.loggedOut) {
 }
 
 const cmd = `${args[0]} ${args[1]}`;
-// Home's open box: `search repos --limit N --json fullName -- <text>` and
-// `search prs --repo o/r --limit N --sort updated --json … -- <words…>`.
-if (args[0] === "search" && (args[1] === "repos" || args[1] === "prs") && !s.loggedOut) {
+// Home's open box: `search prs --repo o/r --limit N --sort updated --json … -- <words…>`.
+if (args[0] === "search" && args[1] === "prs" && !s.loggedOut) {
 	const dash = args.indexOf("--");
 	if (dash < 0) unsupported();
 	const words = args.slice(dash + 1).join(" ").toLowerCase().split(/\s+/).filter(Boolean);
 	if (s.search?.delayMs) sleep(s.search.delayMs);
 	if (s.search?.fail) fail(`gh: ${s.search.fail}`);
-	if (args[1] === "repos") {
-		const text = words.join(" ");
-		print(
-			(s.search?.repos ?? [])
-				.filter((r) => r.fullName.toLowerCase().includes(text))
-				.map((r) => ({ fullName: r.fullName })),
-		);
-	}
 	const repoName = args[args.indexOf("--repo") + 1] ?? "";
 	const key = Object.keys(s.repos ?? {}).find((k) => k.toLowerCase() === repoName.toLowerCase());
 	const prs = (key ? s.repos[key].prs : [])
@@ -900,6 +891,37 @@ switch (cmd) {
 							nodes: [...orgs].map(([login, teams]) => ({ login, teams: { nodes: teams } })),
 						},
 					},
+				},
+			});
+		}
+		// Home's open box: the repos the viewer is related to, paged.
+		if (/^query\(\$cursor: String\) \{ viewer \{ repositories\(/.test(f.query ?? "")) {
+			if (s.viewerReposDelayMs) sleep(s.viewerReposDelayMs);
+			// Held until the test lets it through (at most a minute).
+			for (let i = 0; s.viewerReposHold && !existsSync(s.viewerReposHold) && i < 1200; i++) sleep(50);
+			const listed = (name) =>
+				(new RegExp(`${name}: \\[([A-Z_, ]*)\\]`).exec(f.query)?.[1] ?? "")
+					.split(",")
+					.map((a) => a.trim())
+					.filter(Boolean);
+			const affiliations = listed("affiliations");
+			const ownerAffiliations = listed("ownerAffiliations");
+			const all = (s.viewerRepos ?? []).filter(
+				(r) => affiliations.includes(r.relation) && ownerAffiliations.includes(r.relation),
+			);
+			const size = s.viewerReposPageSize ?? 100;
+			const start = f.cursor ? Number(f.cursor.replace("cursor:", "")) : 0;
+			const end = start + size;
+			const hasNextPage = end < all.length;
+			print({
+				data: {
+					viewer: {
+						repositories: {
+							pageInfo: { hasNextPage, endCursor: hasNextPage ? `cursor:${end}` : null },
+							nodes: all.slice(start, end).map((r) => ({ nameWithOwner: r.name })),
+						},
+					},
+					rateLimit: { cost: 1, remaining: 4999, resetAt: "2030-01-01T00:00:00Z" },
 				},
 			});
 		}

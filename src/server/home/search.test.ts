@@ -79,7 +79,10 @@ afterEach(() => {
 	fx = undefined;
 });
 
-async function setup(started: StartedReview[] = []) {
+async function setup(
+	started: StartedReview[] = [],
+	options: { now?: () => number } = {},
+) {
 	fx = createHomeFixture({
 		repos: {
 			"acme/api": {
@@ -127,9 +130,13 @@ async function setup(started: StartedReview[] = []) {
 				],
 			},
 		},
-		search: {
-			repos: [{ fullName: "acme/apiary" }, { fullName: "zed/api-tools" }],
-		},
+		viewerRepos: [
+			{ name: "acme/apiary", relation: "ORGANIZATION_MEMBER" },
+			{ name: "Octo/api-notes", relation: "OWNER" },
+			{ name: "zed/api-tools", relation: "NONE" },
+			{ name: "friend/api-lab", relation: "COLLABORATOR" },
+			{ name: "acme/api", relation: "ORGANIZATION_MEMBER" },
+		],
 	});
 	const config: HomeConfig = {
 		views: [{ name: "My PRs", repos: ["acme/api"] }],
@@ -143,7 +150,7 @@ async function setup(started: StartedReview[] = []) {
 		started: { list: async () => started },
 	});
 	await home.refresh();
-	return { home, search: new HomeSearch(home) };
+	return { home, search: new HomeSearch(home, options) };
 }
 
 /** Asks until the GitHub search is in. */
@@ -168,7 +175,7 @@ describe("HomeSearch", () => {
 		expect(r.scope).toBe(null);
 	});
 
-	it("repos: the view's, then recent reviews', then GitHub's after 3 characters", async () => {
+	it("repos: the view's, then recent reviews', then the viewer's own; known ones while the list loads", async () => {
 		const started: StartedReview = {
 			owner: "other",
 			repo: "tool",
@@ -181,28 +188,78 @@ describe("HomeSearch", () => {
 			lastActedAt: iso(T0),
 		};
 		const { search } = await setup([started]);
-		const short = await search.search("a");
-		expect(short.pending).toBe(false);
-		expect(fx?.ghLog()).not.toMatch(/search repos/);
-		const first = await search.search("api");
-		expect(first.pending).toBe(true);
-		expect(first.repos[0]).toEqual({
-			name: "acme/api",
-			inView: true,
-			openCount: 3,
-		});
+		const first = await search.search("a");
+		// The viewer's list isn't in yet: what Home knows, flagged pending.
+		expect(first).toMatchObject({ pending: true, reposPending: true });
+		expect(first.repos).toEqual([
+			{ name: "acme/api", inView: true, openCount: 3 },
+		]);
 		const done = await settle(search, "api");
+		expect(done.reposPending).toBe(false);
 		expect(done.repos.map((r) => r.name)).toEqual([
 			"acme/api",
 			"acme/apiary",
-			"zed/api-tools",
+			"octo/api-notes",
+			"friend/api-lab",
 		]);
-		const tool = await settle(search, "tool");
+		const tool = await search.search("tool");
 		expect(tool.repos[0]).toEqual({
 			name: "other/tool",
 			inView: false,
 			openCount: null,
 		});
+		// Never GitHub's public repo search.
+		expect(fx?.ghLog()).not.toMatch(/search repos/);
+	});
+
+	it("never lists a public repo the viewer has no relation to; org-member and collaborator repos do show", async () => {
+		const { search } = await setup();
+		const r = await settle(search, "api-");
+		expect(r.repos.map((x) => x.name)).toEqual([
+			"octo/api-notes",
+			"friend/api-lab",
+		]);
+		expect((await search.search("zed")).repos).toEqual([]);
+		expect((await search.search("apiary")).repos).toEqual([
+			{ name: "acme/apiary", inView: false, openCount: null },
+		]);
+	});
+
+	it("reads the viewer's repos once, all pages, and again only after an hour", async () => {
+		const clock = { now: T0 };
+		const { search } = await setup([], { now: () => clock.now });
+		fx?.scenario({ viewerReposPageSize: 2 });
+		await settle(search, "a");
+		for (const q of ["ap", "api", "apia", "apiar", "acme", "x"]) {
+			expect((await search.search(q)).reposPending).toBe(false);
+		}
+		const reads = () =>
+			(fx?.ghLog().match(/viewer \{ repositories\(/g) ?? []).length;
+		// Five repos (one the query leaves out), two a page: 2 pages.
+		expect(reads()).toBe(2);
+		const names = (await search.search("api")).repos.map((r) => r.name);
+		expect(names).toContain("friend/api-lab");
+		clock.now = T0 + 59 * 60_000;
+		await search.search("api");
+		expect(reads()).toBe(2);
+		clock.now = T0 + 61 * 60_000;
+		fx?.scenario({
+			viewerRepos: [{ name: "acme/apinew", relation: "OWNER" }],
+		});
+		// Refreshed in the background: the old list meanwhile, never pending.
+		expect((await search.search("api")).reposPending).toBe(false);
+		await expect
+			.poll(async () => (await search.search("apinew")).repos.length)
+			.toBe(1);
+	});
+
+	it("a failed read of the viewer's repos ends pending, with the error, and keeps what Home knows", async () => {
+		const { search } = await setup();
+		fx?.scenario({ failGraphql: "repositories(" });
+		const r = await settle(search, "api");
+		expect(r).toMatchObject({ pending: false, reposPending: false });
+		expect(r.error).toMatch(/went wrong/);
+		expect(r.repos.map((x) => x.name)).toEqual(["acme/api"]);
 	});
 
 	it("a scoped view repo lists its PRs by latest activity, then words filter", async () => {

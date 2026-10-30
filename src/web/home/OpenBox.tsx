@@ -30,6 +30,8 @@ type Option =
 interface Group {
 	label: string;
 	options: Option[];
+	/** Still coming from GitHub: the heading spins over what's known. */
+	loading?: boolean;
 }
 
 /** How long typing rests before the server is asked. */
@@ -97,16 +99,18 @@ function groupsOf(
 				{
 					label: `${data.scope} · ${rest ? `"${rest}"` : "latest activity"}`,
 					options: prs,
+					loading: data.pending && !data.error,
 				},
 			],
 			words,
 		};
 	}
 	const groups: Group[] = [];
-	if (data.repos.length > 0) {
+	if (data.repos.length > 0 || data.reposPending) {
 		groups.push({
 			label: "Repos",
 			options: data.repos.map((repo) => ({ kind: "repo", repo })),
+			loading: data.reposPending,
 		});
 	}
 	if (prs.length > 0) groups.push({ label: "Pull requests", options: prs });
@@ -163,6 +167,7 @@ export function OpenBox(props: { className?: string }) {
 	// A failed GitHub search: said in the list, and nothing is pending.
 	const error = parsed.kind !== "pr" ? search.data?.error : undefined;
 	const pending = parsed.kind !== "pr" && !!search.data?.pending && !error;
+	const reposPending = pending && !!search.data?.reposPending;
 	const listOpen =
 		open && q.trim() !== "" && (options.length > 0 || pending || !!error);
 	const current = Math.min(active, Math.max(0, options.length - 1));
@@ -257,7 +262,9 @@ export function OpenBox(props: { className?: string }) {
 									aria-hidden
 									className="animate-spin motion-reduce:animate-none"
 								/>
-								<span className="sr-only">Searching GitHub</span>
+								<span className="sr-only">
+									{reposPending ? "Loading your repos" : "Searching GitHub"}
+								</span>
 							</>
 						)}
 					</span>
@@ -285,12 +292,23 @@ export function OpenBox(props: { className?: string }) {
 							const labelId = `${listId}-g${gi}`;
 							return (
 								// biome-ignore lint/a11y/useSemanticElements: a listbox's group of options; a fieldset holds form controls.
-								<div key={g.label} role="group" aria-labelledby={labelId}>
-									<div
-										id={labelId}
-										className="px-2.5 pt-1.5 pb-1 text-xs font-bold tracking-[0.12em] text-faint uppercase"
-									>
-										{g.label}
+								<div
+									key={g.label}
+									role="group"
+									aria-labelledby={labelId}
+									aria-busy={!!g.loading}
+								>
+									<div className="flex items-center gap-1.5 px-2.5 pt-1.5 pb-1 text-xs font-bold tracking-[0.12em] text-faint uppercase">
+										<span id={labelId} className="min-w-0 truncate">
+											{g.label}
+										</span>
+										{g.loading && (
+											<SyncIcon
+												size={12}
+												aria-hidden
+												className="shrink-0 animate-spin motion-reduce:animate-none"
+											/>
+										)}
 									</div>
 									{g.options.map((option) => {
 										index++;

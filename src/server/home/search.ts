@@ -3,12 +3,13 @@ import { GhError } from "../errors.js";
 import { parsePrArg, runGh } from "../gh.js";
 import { type PrFacts, prSlug } from "./facts.js";
 import type { HomeService } from "./homeService.js";
-import { fetchPrDetails } from "./prFacts.js";
+import { fetchPrDetails, fetchViewerRepos } from "./prFacts.js";
 
 /**
  * Home's open box: a PR named outright, a title search inside a repo, or
  * repos and PR titles at once. Answers at once from what Home knows; GitHub
- * searches run in the background and come in on a later ask (`pending`).
+ * reads run in the background and come in on a later ask (`pending`). Repos
+ * are only the viewer's: never GitHub's public repo search.
  */
 
 export type ParsedQuery =
@@ -44,8 +45,10 @@ export function parseQuery(q: string): ParsedQuery {
 
 /** GitHub searches start only for this many characters. */
 export const MIN_GITHUB_CHARS = 3;
-/** A finished GitHub search is reused this long. */
+/** A finished GitHub search (or a failed read of the viewer's repos) is reused this long. */
 const SEARCH_TTL_MS = 60_000;
+/** The viewer's repos are read again at most this often. */
+export const VIEWER_REPOS_TTL_MS = 3_600_000;
 const MAX_REPOS = 10;
 const MAX_PRS = 30;
 const MAX_CACHED = 200;
@@ -80,6 +83,13 @@ export class HomeSearch {
 	readonly #home: HomeService;
 	readonly #now: () => number;
 	readonly #searches = new Map<string, Pending<unknown>>();
+	/** The viewer's repos: one read per server, again at most hourly. */
+	#repos: {
+		names: string[] | null;
+		at: number;
+		loading: boolean;
+		error?: string;
+	} = { names: null, at: Number.NEGATIVE_INFINITY, loading: false };
 
 	constructor(home: HomeService, options: { now?: () => number } = {}) {
 		this.#home = home;
@@ -130,6 +140,40 @@ export class HomeSearch {
 	}
 
 	/**
+	 * The viewer's repos as last read, starting a read when there are none
+	 * (a failure is asked again after SEARCH_TTL_MS) or they are older than
+	 * VIEWER_REPOS_TTL_MS. A stale list keeps answering while it refreshes.
+	 */
+	#viewerRepos(): { names: string[]; pending: boolean; error?: string } {
+		const r = this.#repos;
+		const now = this.#now();
+		const ttl = r.names ? VIEWER_REPOS_TTL_MS : SEARCH_TTL_MS;
+		if (!r.loading && now - r.at >= ttl) {
+			r.loading = true;
+			fetchViewerRepos().then(
+				(names) => {
+					this.#repos = { names, at: this.#now(), loading: false };
+				},
+				(error: unknown) => {
+					r.loading = false;
+					r.at = this.#now();
+					r.error =
+						error instanceof Error
+							? error.message.replace(/^gh: /, "")
+							: String(error);
+				},
+			);
+		}
+		return {
+			names: r.names ?? [],
+			pending: r.names === null && r.loading,
+			...(r.names === null && !r.loading && r.error !== undefined
+				? { error: r.error }
+				: {}),
+		};
+	}
+
+	/**
 	 * The shown PRs, ranked and cut to MAX_PRS first, then flagged hidden
 	 * from one inbox read per repo (never one per match).
 	 */
@@ -157,6 +201,7 @@ export class HomeSearch {
 					prs: await this.#finish([asPr(hit)], known),
 					scope,
 					pending: false,
+					reposPending: false,
 				};
 			}
 			const read = this.#background(`pr:${scope}#${number}`, async () => {
@@ -165,7 +210,7 @@ export class HomeSearch {
 			});
 			const prs = read.result ? [asPr(read.result)] : [];
 			return withError(
-				{ repos: [], prs, scope, pending: read.pending },
+				{ repos: [], prs, scope, pending: read.pending, reposPending: false },
 				read.error,
 			);
 		}
@@ -196,7 +241,10 @@ export class HomeSearch {
 				[...local, ...remote.filter((p) => !seen.has(p.number))],
 				known,
 			);
-			return withError({ repos: [], prs, scope, pending }, error);
+			return withError(
+				{ repos: [], prs, scope, pending, reposPending: false },
+				error,
+			);
 		}
 		const { text, words } = parsed;
 		const repos: Repo[] = [];
@@ -219,15 +267,9 @@ export class HomeSearch {
 			const name = `${st.owner}/${st.repo}`.toLowerCase();
 			if (name.includes(text)) add({ name, inView: false, openCount: null });
 		}
-		let pending = false;
-		let error: string | undefined;
-		if (text.length >= MIN_GITHUB_CHARS) {
-			const found = this.#background(`repos:${text}`, () => searchRepos(text));
-			pending = found.pending;
-			error = found.error;
-			for (const name of found.result ?? []) {
-				add({ name, inView: viewRepos.includes(name), openCount: null });
-			}
+		const mine = this.#viewerRepos();
+		for (const name of mine.names) {
+			if (name.includes(text)) add({ name, inView: false, openCount: null });
 		}
 		const prs =
 			words.length === 0
@@ -237,8 +279,14 @@ export class HomeSearch {
 						known,
 					);
 		return withError(
-			{ repos: repos.slice(0, MAX_REPOS), prs, scope: null, pending },
-			error,
+			{
+				repos: repos.slice(0, MAX_REPOS),
+				prs,
+				scope: null,
+				pending: mine.pending,
+				reposPending: mine.pending,
+			},
+			mine.error,
 		);
 	}
 }
@@ -268,29 +316,6 @@ function json(out: string): unknown[] {
 		if (Array.isArray(v)) return v;
 	} catch {}
 	throw new GhError("gh returned output that is not JSON");
-}
-
-/** `gh search repos`: full names, lowercased. */
-export async function searchRepos(text: string): Promise<string[]> {
-	const out = await runGh(
-		[
-			"search",
-			"repos",
-			"--limit",
-			String(MAX_REPOS),
-			"--json",
-			"fullName",
-			"--",
-			text,
-		],
-		{ what: "the repo search" },
-	);
-	return json(out)
-		.map((r) => rec(r).fullName)
-		.filter(
-			(n): n is string => typeof n === "string" && /^[^/\s]+\/[^/\s]+$/.test(n),
-		)
-		.map((n) => n.toLowerCase());
 }
 
 /** `gh search prs --repo`: title words, by last activity. */

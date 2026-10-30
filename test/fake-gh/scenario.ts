@@ -165,13 +165,27 @@ export interface Scenario {
 	 */
 	viewerTeams?: string[] | null;
 	/**
-	 * `gh search repos` answers: repos whose full name holds the text. `gh
-	 * search prs --repo` matches the PRs of `repos` (title words, any order,
-	 * case-insensitive), newest activity first.
+	 * Repos as GitHub relates them to the viewer, most recently pushed
+	 * first; "NONE" is a public repo they have no relation to. The fake's
+	 * `viewer { repositories(affiliations, ownerAffiliations) }` answers those
+	 * whose relation is in both lists, `viewerReposPageSize` a page (100).
+	 */
+	viewerRepos?: {
+		name: string;
+		relation: "OWNER" | "COLLABORATOR" | "ORGANIZATION_MEMBER" | "NONE";
+	}[];
+	viewerReposPageSize?: number;
+	/** The viewer's repo list answers this late. */
+	viewerReposDelayMs?: number;
+	/** A path: the viewer's repo list answers once it exists (at most a minute). */
+	viewerReposHold?: string;
+	/**
+	 * `gh search prs --repo` matches the PRs of `repos` (title words, any
+	 * order, case-insensitive), newest activity first. Home never searches
+	 * GitHub's repos: `gh search repos` is unsupported.
 	 */
 	search?: {
-		repos?: { fullName: string }[];
-		/** Both searches fail with this as gh's message. */
+		/** The search fails with this as gh's message. */
 		fail?: string;
 		/** Answers this late. */
 		delayMs?: number;

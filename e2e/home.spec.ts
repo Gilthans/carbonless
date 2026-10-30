@@ -24,7 +24,12 @@ async function setup(
 	const made = await pr({
 		scenario: {
 			user: { login: VIEWER, avatarUrl: `https://avatars.example/${VIEWER}` },
-			search: { repos: [{ fullName: OWNER_REPO }, { fullName: "acme/api" }] },
+			viewerRepos: [
+				{ name: OWNER_REPO, relation: "COLLABORATOR" },
+				{ name: "acme/api", relation: "ORGANIZATION_MEMBER" },
+				// A public repo the viewer has no relation to: never listed.
+				{ name: "acme/widgetry", relation: "NONE" },
+			],
 		},
 	});
 	made.editScenario((s) => {
@@ -243,6 +248,39 @@ test("opens a PR by URL, by owner/repo#n and by repo then title words", async ({
 	).toBeVisible();
 	await box.press("Enter");
 	await expect(page).toHaveURL(new RegExp(`${reviewPath}$`));
+});
+
+test("Repos spins while the viewer's repos load, then lists only theirs", async ({
+	page,
+	workdir,
+	pr,
+	startCrb,
+}) => {
+	const made = await setup(workdir, pr);
+	const hold = join(workdir, "let-repos-through");
+	made.editScenario((s) => {
+		s.viewerReposHold = hold;
+	});
+	const crb = await startCrb();
+	const box = page.getByRole("combobox", { name: "Open a pull request" });
+	await goHome(page, crb.url);
+	await box.click();
+	await box.pressSequentially("acme");
+	const repos = page.getByRole("group", { name: "Repos" });
+	// The view's repo shows under the spinner while the list loads.
+	await expect(repos).toHaveAttribute("aria-busy", "true");
+	await expect(repos.locator(".animate-spin")).toBeVisible();
+	await expect(repos.getByRole("option").first()).toContainText("acme/api");
+	await expect(page.getByRole("status")).toHaveText("Loading your repos");
+	writeFileSync(hold, "");
+	await expect(repos).toHaveAttribute("aria-busy", "false", {
+		timeout: 15_000,
+	});
+	await expect(repos.getByRole("option")).toHaveText([
+		/acme\/api/,
+		new RegExp(OWNER_REPO),
+	]);
+	await expect(page.getByRole("status")).toHaveText("");
 });
 
 test("a snooze moves the row behind its footer, Wake up brings it back, and activity wakes it", async ({

@@ -86,6 +86,7 @@ const mixed = (q: string): SearchResult =>
 				),
 				scope: "acme/console",
 				pending: false,
+				reposPending: false,
 			}
 		: {
 				repos: [
@@ -98,6 +99,7 @@ const mixed = (q: string): SearchResult =>
 				],
 				scope: null,
 				pending: false,
+				reposPending: false,
 			};
 
 const box = () => screen.getByRole("combobox", { name: "Open a pull request" });
@@ -237,12 +239,19 @@ describe("OpenBox", () => {
 		const api = setup(() => {
 			calls++;
 			return calls === 1
-				? { repos: [], prs: [], scope: "far/away", pending: true }
+				? {
+						repos: [],
+						prs: [],
+						scope: "far/away",
+						pending: true,
+						reposPending: false,
+					}
 				: {
 						repos: [],
 						prs: [pr("far/away", 5, "Found later")],
 						scope: "far/away",
 						pending: false,
+						reposPending: false,
 					};
 		});
 		// One live region, mounted from the start, outside the listbox.
@@ -251,12 +260,77 @@ describe("OpenBox", () => {
 		await userEvent.type(box(), "far/away x");
 		await waitFor(() => expect(status).toHaveTextContent("Searching GitHub"));
 		expect(status.closest("[role=listbox]")).toBeNull();
+		// The scoped PRs' heading spins too.
+		const scoped = screen.getByRole("group", { name: /^far\/away ·/ });
+		expect(scoped).toHaveAttribute("aria-busy", "true");
+		expect(scoped.querySelector(".animate-spin")).not.toBeNull();
 		await screen.findByText("Found later", undefined, { timeout: 3000 });
 		expect(status).toHaveTextContent("");
+		expect(screen.getByRole("group", { name: /^far\/away ·/ })).toHaveAttribute(
+			"aria-busy",
+			"false",
+		);
 		expect(screen.getByRole("status")).toBe(status);
 		expect(
 			searches(api).filter((q) => q === "far/away x").length,
 		).toBeGreaterThanOrEqual(2);
+	});
+
+	it("Repos shows a spinner while the viewer's repos load, with the known ones under it", async () => {
+		let calls = 0;
+		setup(() => {
+			calls++;
+			const loading = calls === 1;
+			return {
+				repos: [
+					{ name: "acme/console", inView: true, openCount: 7 },
+					...(loading
+						? []
+						: [{ name: "acme/connect", inView: false, openCount: null }]),
+				],
+				prs: [],
+				scope: null,
+				pending: loading,
+				reposPending: loading,
+			};
+		});
+		const status = screen.getByRole("status");
+		await userEvent.type(box(), "con");
+		const list = await screen.findByRole("listbox");
+		const repos = within(list).getByRole("group", { name: "Repos" });
+		expect(repos).toHaveAttribute("aria-busy", "true");
+		expect(repos.querySelector(".animate-spin")).not.toBeNull();
+		expect(within(repos).getAllByRole("option")).toHaveLength(1);
+		expect(status).toHaveTextContent("Loading your repos");
+		await waitFor(
+			() => expect(within(repos).getAllByRole("option")).toHaveLength(2),
+			{ timeout: 3000 },
+		);
+		expect(repos).toHaveAttribute("aria-busy", "false");
+		expect(repos.querySelector(".animate-spin")).toBeNull();
+		expect(status).toHaveTextContent("");
+	});
+
+	it("Repos shows its heading and spinner before any repo is known", async () => {
+		setup(() => ({
+			repos: [],
+			prs: [pr("acme/api", 1, "Console fix")],
+			scope: null,
+			pending: true,
+			reposPending: true,
+		}));
+		await userEvent.type(box(), "con");
+		const list = await screen.findByRole("listbox");
+		const repos = within(list).getByRole("group", { name: "Repos" });
+		expect(repos).toHaveAttribute("aria-busy", "true");
+		expect(within(repos).queryAllByRole("option")).toHaveLength(0);
+		const prs = within(list).getByRole("group", { name: "Pull requests" });
+		expect(prs).toHaveAttribute("aria-busy", "false");
+		// The first option is the PR: the highlight skips the empty group.
+		expect(box()).toHaveAttribute(
+			"aria-activedescendant",
+			within(prs).getByRole("option").id,
+		);
 	});
 
 	it("/ focuses the box and Escape closes the list", async () => {
@@ -304,6 +378,7 @@ describe("OpenBox", () => {
 			prs: [pr("far/away", 5, "Cached one")],
 			scope: "far/away",
 			pending: false,
+			reposPending: false,
 			error: "gh: rate limited",
 		}));
 		await userEvent.type(box(), "far/away x");
