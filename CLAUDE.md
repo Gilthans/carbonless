@@ -71,8 +71,9 @@ checking against a real PR): `docs/product-rules.md`.
 
 - Node 24 (`nvm use`), pnpm. Stack: Fastify server + git CLI (`src/server`),
   React + Vite + TanStack Query + Tailwind (`src/web`), shared types (`src/shared`).
-- `pnpm verify` runs lint (Biome), typecheck, unit tests (Vitest) and Playwright
-  tests. Run it right before committing and before saying work is done; use
+- `pnpm verify` runs lint (Biome), typecheck, unit tests (Vitest), Playwright
+  tests and the package smoke test (`pnpm test:pack`: packs, installs the
+  tarball into a temp dir, runs its `crb`). Run it right before committing and before saying work is done; use
   `pnpm verify:fast` (below) until then.
 - Full test runs take turns: `pnpm verify`'s unit and e2e stages, `pnpm
   test:e2e` without spec files, `-g` or `--last-failed`, an all-specs
@@ -116,6 +117,11 @@ checking against a real PR): `docs/product-rules.md`.
   reads from GitHub, and writes to it only on the reviewer's explicit action
   (replies, new comments, resolving, editing and deleting your own comments):
   `docs/product-rules.md`, "Writing to GitHub".
+- Running main on the devbox: the always-on `crb serve` is the globally
+  installed package (`carbonless-review`) run by the systemd user service
+  `crb.service`; `scripts/devbox/install` sets it up, `scripts/devbox/update
+  <tarball | rc | latest | version>` moves it (README, "Remote machine").
+  Port 4747 is the service's; nothing else binds it.
 - Tests never call the real `gh`: `test/fake-gh/gh` serves a scenario
   (`test/fake-gh/scenario.ts`) via `$CRB_FAKE_GH`. The e2e harness
   (`e2e/fixtures.ts`) wires it onto `PATH` and drives the built CLI.

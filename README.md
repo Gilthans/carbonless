@@ -2,19 +2,31 @@
 
 A local, AI-assisted tool for reviewing GitHub pull requests.
 
-## Usage
+## Install
 
-Needs the GitHub CLI (`gh`), logged in (`gh auth login`).
+Needs Node 24, git, and the GitHub CLI (`gh`) logged in (`gh auth login`).
 
 ```sh
-pnpm install
-pnpm build
-node dist/cli.js https://github.com/<owner>/<repo>/pull/<n>
-node dist/cli.js <owner>/<repo>#<n>
-node dist/cli.js <n>        # a PR of the GitHub repo in the current directory
+pnpm add -g carbonless-review      # or: npm install -g carbonless-review
+pnpm add -g carbonless-review@latest   # upgrade
 ```
 
-Installed as a package, the command is `crb <pr>`. It asks this machine's
+Until the package is on npm, install from a tarball built from this repo:
+
+```sh
+pnpm install && pnpm pack          # makes carbonless-review-0.1.0.tgz
+pnpm add -g ./carbonless-review-0.1.0.tgz
+```
+
+## Usage
+
+```sh
+crb https://github.com/<owner>/<repo>/pull/<n>
+crb <owner>/<repo>#<n>
+crb <n>        # a PR of the GitHub repo in the current directory
+```
+
+`crb <pr>` asks this machine's
 `crb serve` for the PR's review and prints its link, `http://<host>:<port>/r/<id>`
 (nothing else on stdout); with no server running it starts one in the
 background (logging to `$XDG_STATE_HOME/carbonless/serve.log`). The server
@@ -45,9 +57,29 @@ or files reviewed, or cross them off, and progress is saved as git refs
 (`refs/crb/...`) in crb's private clone, so it survives restarts. crb only
 reads from GitHub; it never pushes or comments.
 
+## Remote machine
+
+An always-on `crb serve` on a machine you open from other devices (e.g. over
+Tailscale):
+
+1. Bind it there, in `~/.config/carbonless/config.json`:
+   `{ "serve": { "host": "<the machine's Tailscale IP>", "port": 4747 } }`.
+   Off loopback, pages need the access key (`~/.local/state/carbonless/key`);
+   the printed link carries it as `?key=`. To replace it, delete that file and
+   restart the service (by hand: `crb serve --new-key`).
+2. Run it as a systemd user service, from a checkout of this repo:
+   `scripts/devbox/install [<tarball | version>]`
+   (checks Node 24, `gh`'s login and linger, writes
+   `~/.config/systemd/user/crb.service`, starts it and prints the link).
+   For it to start at boot: `sudo loginctl enable-linger $USER`.
+3. Update it: `scripts/devbox/update <tarball | rc | latest | version>`
+   (installs, restarts, prints the version it moved from and to, and the link).
+4. Logs: `journalctl --user -u crb`.
+
 ## Development
 
-Requires Node 24 (`nvm use`) and pnpm.
+Requires Node 24 (`nvm use`) and pnpm. From a checkout, `pnpm build` and run
+`node dist/cli.js` in place of `crb`.
 
 | Command | What it does |
 |---|---|
@@ -56,6 +88,7 @@ Requires Node 24 (`nvm use`) and pnpm.
 | `pnpm test:e2e` | Build, then Playwright UI tests against the real CLI |
 | `pnpm lint` / `pnpm fix` | Biome lint + format check / auto-fix |
 | `pnpm typecheck` | TypeScript |
+| `pnpm test:pack` | Pack, install the tarball into a temp dir and run its `crb` |
 | `pnpm verify` | All of the above |
 
 Tests never call the real `gh`: `test/fake-gh/gh` answers from a scenario JSON
