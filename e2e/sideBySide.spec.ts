@@ -431,6 +431,8 @@ test("a four-digit file side by side on a phone: a thread's bubble takes no room
 		name: "1 comment on line 1150",
 	});
 	await expect(bubble).toBeVisible();
+	// Clear of the floating Files button, for the shot.
+	await row.evaluate((el) => el.scrollIntoView({ block: "center" }));
 	await shot(page, isMobile, "bubbles");
 	// Each code cell's text box: what is left of it inside its padding.
 	const boxes = await codeCells(row).evaluateAll((cells) =>
