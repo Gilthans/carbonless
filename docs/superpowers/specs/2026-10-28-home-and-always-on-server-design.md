@@ -282,8 +282,8 @@ from `gh`. A PR is in exactly one section:
 | Section | Rule |
 |---|---|
 | **Mine** | the viewer is the author (drafts included, with a Draft pill) |
-| **Reviewing** | not mine, and one of: a review is requested from the viewer (directly or via a team), the viewer has submitted a review or review comment, or the viewer has started it in carbonless |
-| **Up for grabs** | not mine, not a draft, no review requested from anyone and no review submitted by anyone |
+| **Reviewing** | not mine, and one of: a review is requested from the viewer directly (not only via a team), the viewer has submitted a review or review comment, or the viewer has started it in carbonless |
+| **Up for grabs** | not mine, not a draft, no review submitted by anyone, and no review requested from anyone except teams (owner, 2026-10-30: "prs addressed at a team and not directly at me that I haven't started reviewing should be up for grabs, not reviewing") |
 | **Other open** | every other open PR of the view's repos |
 | **Recently closed** | merged or closed in the last 3 days (owner, 2026-10-29); a quiet tail, violet merged icon or red closed icon |
 
@@ -441,7 +441,7 @@ parsed on every keystroke:
 |---|---|
 | A PR URL, `owner/repo#n`, or `#n` / `n` after a chosen repo | Enter opens it at once, view or not |
 | `owner/repo ` (a repo followed by a space) + text | title search inside that repo: words in any order, case-insensitive; open PRs first, then merged and closed, each by last activity |
-| anything else | two groups: **Repos** (the view's, then repos of recent reviews, then a GitHub search once 3+ characters are typed, debounced) and **Pull requests** (title matches across the view's cached PR lists, open and recently closed, with repo, author and age) |
+| anything else | two groups: **Repos** (only the viewer's repos: the view's, then repos of recent reviews, then every repo the viewer owns, collaborates on or reaches as an org member, read once from GitHub and cached; never public repos the viewer has no relation to (owner, 2026-10-30); while that list is still loading the group shows a spinner) and **Pull requests** (title matches across the view's cached PR lists, open and recently closed, with repo, author and age) |
 
 - Tab or Enter on a repo fills `owner/repo ` and lists that repo's PRs by
   latest activity, ready for title words. Enter on a PR opens it. A snoozed
