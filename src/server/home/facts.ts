@@ -31,6 +31,8 @@ export interface PrFacts {
 	};
 	/** Logins (not the author) who submitted a review or a review comment. */
 	reviewers: string[];
+	/** Those of `reviewers` who are bots (GitHub's Bot type, or a login ending `[bot]`). */
+	bots: string[];
 	/**
 	 * Each login's last activity on the PR (a commit, a comment, a review):
 	 * ISO time, by lowercased login.

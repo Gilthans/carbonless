@@ -90,10 +90,21 @@ export class HomeSearch {
 		loading: boolean;
 		error?: string;
 	} = { names: null, at: Number.NEGATIVE_INFINITY, loading: false };
+	readonly #maxRepoPages: number | undefined;
+	/** A cut list is logged once per server. */
+	#loggedCut = false;
 
-	constructor(home: HomeService, options: { now?: () => number } = {}) {
+	constructor(
+		home: HomeService,
+		options: { now?: () => number; maxRepoPages?: number } = {},
+	) {
 		this.#home = home;
 		this.#now = options.now ?? Date.now;
+		this.#maxRepoPages = options.maxRepoPages;
+		// Read with Home's refresh, so the first search rarely waits.
+		home.onRefresh(() => {
+			this.#viewerRepos();
+		});
 	}
 
 	/**
@@ -150,9 +161,15 @@ export class HomeSearch {
 		const ttl = r.names ? VIEWER_REPOS_TTL_MS : SEARCH_TTL_MS;
 		if (!r.loading && now - r.at >= ttl) {
 			r.loading = true;
-			fetchViewerRepos().then(
-				(names) => {
+			fetchViewerRepos({ maxPages: this.#maxRepoPages }).then(
+				({ names, truncated }) => {
 					this.#repos = { names, at: this.#now(), loading: false };
+					if (truncated && !this.#loggedCut) {
+						this.#loggedCut = true;
+						console.error(
+							`crb: your repos list stopped at ${names.length}; the least recently pushed don't show in search`,
+						);
+					}
 				},
 				(error: unknown) => {
 					r.loading = false;

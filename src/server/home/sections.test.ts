@@ -32,6 +32,7 @@ function pr(over: Partial<PrFacts> = {}): PrFacts {
 		reviewers: [],
 		lastActivity: {},
 		people: {},
+		bots: [],
 		...over,
 	};
 }
@@ -50,8 +51,11 @@ const started = (over: Partial<StartedReview> = {}): StartedReview => ({
 });
 
 const VIEWER = "Octo";
-const section = (p: PrFacts, s: StartedReview[] = []) =>
-	sectionOf(p, VIEWER, s, NOW);
+const section = (
+	p: PrFacts,
+	s: StartedReview[] = [],
+	teams: string[] | null = ["ACME/backend"],
+) => sectionOf(p, VIEWER, teams, s, NOW);
 
 describe("sectionOf", () => {
 	it("Mine: the viewer is the author, drafts included, case-insensitive", () => {
@@ -74,12 +78,18 @@ describe("sectionOf", () => {
 		);
 	});
 
-	it("a team's request alone: up for grabs until someone reviews (owner, 2026-10-30)", () => {
+	it("asked only of the viewer's teams: up for grabs until someone reviews (owner, 2026-10-30)", () => {
 		const team = { users: [], teams: ["acme/backend"] };
-		// Nobody reviewed: grabs, whether or not the viewer is in the team.
+		// Nobody reviewed: grabs.
 		expect(section(pr({ requested: team }))).toBe("grabs");
 		// Someone reviewed: Other open.
 		expect(section(pr({ requested: team, reviewers: ["bob"] }))).toBe("other");
+		// Only a bot reviewed: still grabs.
+		expect(
+			section(
+				pr({ requested: team, reviewers: ["copilot"], bots: ["copilot"] }),
+			),
+		).toBe("grabs");
 		// The team and the viewer directly: Reviewing.
 		expect(
 			section(pr({ requested: { users: ["octo"], teams: ["acme/backend"] } })),
@@ -92,6 +102,36 @@ describe("sectionOf", () => {
 		);
 		// A draft stays Other open.
 		expect(section(pr({ requested: team, draft: true }))).toBe("other");
+	});
+
+	it("a team the viewer isn't in, or teams unknown: Other open, nobody asked the viewer", () => {
+		const theirs = { users: [], teams: ["acme/frontend"] };
+		expect(section(pr({ requested: theirs }))).toBe("other");
+		// One of the viewer's teams and another: still someone else's ask.
+		expect(
+			section(
+				pr({
+					requested: { users: [], teams: ["acme/backend", "acme/frontend"] },
+				}),
+			),
+		).toBe("other");
+		// No read:org: a team request isn't the viewer's.
+		expect(
+			section(
+				pr({ requested: { users: [], teams: ["acme/backend"] } }),
+				[],
+				null,
+			),
+		).toBe("other");
+	});
+
+	it("a bot's review doesn't count as someone reviewed", () => {
+		expect(section(pr({ reviewers: ["copilot"], bots: ["copilot"] }))).toBe(
+			"grabs",
+		);
+		expect(
+			section(pr({ reviewers: ["copilot", "bob"], bots: ["copilot"] })),
+		).toBe("other");
 	});
 
 	it("Reviewing: the viewer submitted a review or a review comment", () => {
@@ -134,7 +174,7 @@ describe("sectionOf", () => {
 			"other",
 		);
 		expect(section(pr({ requested: { users: [], teams: ["acme/x"] } }))).toBe(
-			"grabs",
+			"other",
 		);
 		expect(section(pr({ reviewers: ["bob"] }))).toBe("other");
 	});

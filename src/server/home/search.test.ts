@@ -81,7 +81,7 @@ afterEach(() => {
 
 async function setup(
 	started: StartedReview[] = [],
-	options: { now?: () => number } = {},
+	options: { now?: () => number; maxRepoPages?: number } = {},
 ) {
 	fx = createHomeFixture({
 		repos: {
@@ -251,6 +251,63 @@ describe("HomeSearch", () => {
 		await expect
 			.poll(async () => (await search.search("apinew")).repos.length)
 			.toBe(1);
+		// A repo gone from the viewer's list is gone from Repos.
+		const after = (await search.search("api")).repos.map((r) => r.name);
+		expect(after).not.toContain("friend/api-lab");
+		expect(after).toEqual(["acme/api", "acme/apinew"]);
+	});
+
+	it("a failed first read is asked again after about a minute", async () => {
+		const clock = { now: T0 };
+		const { search } = await setup([], { now: () => clock.now });
+		fx?.scenario({ failGraphql: "repositories(" });
+		expect((await settle(search, "api")).error).toMatch(/went wrong/);
+		fx?.scenario({ failGraphql: undefined });
+		clock.now = T0 + 30_000;
+		// Within the minute: the same error, no new read.
+		expect(await search.search("api")).toMatchObject({
+			pending: false,
+			error: expect.stringMatching(/went wrong/),
+		});
+		clock.now = T0 + 61_000;
+		const r = await settle(search, "api");
+		expect(r.error).toBeUndefined();
+		expect(r.repos.map((x) => x.name)).toContain("friend/api-lab");
+	});
+
+	it("starts reading the viewer's repos when Home refreshes, before any search", async () => {
+		// setup refreshes Home before its search exists: nothing read yet.
+		const { home, search } = await setup();
+		const reads = () =>
+			(fx?.ghLog().match(/viewer \{ repositories\(/g) ?? []).length;
+		expect(reads()).toBe(0);
+		await home.refresh();
+		await expect.poll(reads).toBe(1);
+		await expect
+			.poll(async () => (await search.search("api")).reposPending)
+			.toBe(false);
+		expect(reads()).toBe(1);
+	});
+
+	it("a list cut at the page cap says so once in the log, and keeps what it read", async () => {
+		const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+		try {
+			const { search } = await setup([], { maxRepoPages: 2 });
+			fx?.scenario({ viewerReposPageSize: 1 });
+			const r = await settle(search, "a");
+			expect(r.repos.map((x) => x.name)).toEqual([
+				"acme/api",
+				"acme/apiary",
+				"octo/api-notes",
+			]);
+			await search.search("ap");
+			const cut = errors.mock.calls.filter((c) =>
+				String(c[0]).includes("your repos"),
+			);
+			expect(cut).toHaveLength(1);
+		} finally {
+			errors.mockRestore();
+		}
 	});
 
 	it("a failed read of the viewer's repos ends pending, with the error, and keeps what Home knows", async () => {

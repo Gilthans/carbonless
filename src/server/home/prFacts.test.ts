@@ -9,6 +9,7 @@ import {
 	fetchPrDetails,
 	fetchRepoPrs,
 	fetchViewer,
+	fetchViewerRepos,
 	fetchViewerTeams,
 	type Known,
 	mapPrNode,
@@ -369,6 +370,23 @@ describe("review decision", () => {
 		});
 		expect(mapPrNode("acme", "api", pr)?.decision).toBe("approved");
 	});
+	it("marks bot reviewers: GitHub's Bot type, or a login ending [bot]", () => {
+		const pr = homePr({
+			...base,
+			reviews: [
+				{ login: "copilot-pull-request-reviewer", bot: true, at: iso(NOW) },
+				{ login: "lint[bot]", at: iso(NOW) },
+				{ login: "bob", at: iso(NOW) },
+			],
+		});
+		const facts = mapPrNode("acme", "api", pr);
+		expect(facts?.reviewers).toEqual([
+			"copilot-pull-request-reviewer",
+			"lint[bot]",
+			"bob",
+		]);
+		expect(facts?.bots).toEqual(["copilot-pull-request-reviewer", "lint[bot]"]);
+	});
 	it("reads the head commit", () => {
 		const pr = homePr({ ...base, head: "a".repeat(40) });
 		expect(mapPrNode("acme", "api", pr)?.headOid).toBe("a".repeat(40));
@@ -425,5 +443,32 @@ describe("the viewer", () => {
 	it("teams unreadable (no read:org): null", async () => {
 		fx = createHomeFixture({ viewerTeams: null });
 		expect(await fetchViewerTeams("Octo")).toBe(null);
+	});
+});
+
+describe("fetchViewerRepos", () => {
+	it("reads every page; cut at the page cap, it says truncated", async () => {
+		fx = createHomeFixture({
+			viewerRepos: [
+				{ name: "Acme/One", relation: "OWNER" },
+				{ name: "acme/two", relation: "COLLABORATOR" },
+				{ name: "acme/three", relation: "ORGANIZATION_MEMBER" },
+				{ name: "zed/public", relation: "NONE" },
+			],
+			viewerReposPageSize: 1,
+		});
+		expect(await fetchViewerRepos()).toEqual({
+			names: ["acme/one", "acme/two", "acme/three"],
+			truncated: false,
+		});
+		expect(await fetchViewerRepos({ maxPages: 2 })).toEqual({
+			names: ["acme/one", "acme/two"],
+			truncated: true,
+		});
+		// Exactly at the cap with nothing left: not truncated.
+		expect(await fetchViewerRepos({ maxPages: 3 })).toEqual({
+			names: ["acme/one", "acme/two", "acme/three"],
+			truncated: false,
+		});
 	});
 });

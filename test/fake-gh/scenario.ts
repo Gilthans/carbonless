@@ -657,7 +657,8 @@ export function homePr(p: {
 	created?: string;
 	/** Logins, or `org/slug` for a team. */
 	requested?: string[];
-	reviews?: { login: string; state?: string; at: string }[];
+	/** `bot`: the author is a GitHub App (`__typename` Bot). */
+	reviews?: { login: string; state?: string; at: string; bot?: boolean }[];
 	comments?: { login: string; at: string }[];
 	commits?: { login?: string; at: string }[];
 	checks?: "SUCCESS" | "FAILURE" | "PENDING" | null;
@@ -676,9 +677,13 @@ export function homePr(p: {
 	const updatedAt =
 		p.updatedAt ?? times.at(-1) ?? p.created ?? "2026-10-01T00:00:00Z";
 	const person = (login: string) => ({ login, avatarUrl: avatar(login) });
+	const reviewer = (r: { login: string; bot?: boolean }) => ({
+		__typename: r.bot ? "Bot" : "User",
+		...person(r.login),
+	});
 	const latest = new Map<
 		string,
-		{ login: string; state: string; at: string }
+		{ login: string; state: string; at: string; bot?: boolean }
 	>();
 	for (const r of [...(p.reviews ?? [])].sort((a, b) =>
 		a.at.localeCompare(b.at),
@@ -710,7 +715,7 @@ export function homePr(p: {
 				__typename: "PullRequestReview",
 				submittedAt: r.at,
 				state: r.state ?? "COMMENTED",
-				author: person(r.login),
+				author: reviewer(r),
 			},
 		})),
 	].sort((a, b) => a.at.localeCompare(b.at));
@@ -747,7 +752,7 @@ export function homePr(p: {
 		},
 		latestReviews: {
 			nodes: [...latest.values()].map((r) => ({
-				author: person(r.login),
+				author: reviewer(r),
 				state: r.state,
 				submittedAt: r.at,
 			})),

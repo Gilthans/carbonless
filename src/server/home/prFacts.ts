@@ -19,10 +19,10 @@ export const PR_FIELDS = `number title url isDraft state updatedAt closedAt merg
 author { ${PERSON} }
 reviewDecision
 reviewRequests(first: 30) { nodes { requestedReviewer { __typename ... on User { ${PERSON} } ... on Mannequin { ${PERSON} } ... on Team { slug organization { login } avatarUrl(size: 40) } } } }
-latestReviews(first: 30) { nodes { author { ${PERSON} } state submittedAt } }
+latestReviews(first: 30) { nodes { author { __typename ${PERSON} } state submittedAt } }
 reviewThreads(first: 100) { totalCount nodes { isResolved } }
 commits(last: 1) { nodes { commit { committedDate statusCheckRollup { state } } } }
-timelineItems(last: 30, itemTypes: [PULL_REQUEST_COMMIT, ISSUE_COMMENT, PULL_REQUEST_REVIEW]) { nodes { __typename ... on PullRequestCommit { commit { committedDate author { user { ${PERSON} } } } } ... on IssueComment { createdAt author { ${PERSON} } } ... on PullRequestReview { submittedAt state author { ${PERSON} } } } }`;
+timelineItems(last: 30, itemTypes: [PULL_REQUEST_COMMIT, ISSUE_COMMENT, PULL_REQUEST_REVIEW]) { nodes { __typename ... on PullRequestCommit { commit { committedDate author { user { ${PERSON} } } } } ... on IssueComment { createdAt author { ${PERSON} } } ... on PullRequestReview { submittedAt state author { __typename ${PERSON} } } } }`;
 
 /** One query's worth of a repo's PR list: number and updatedAt only. */
 export const LIST_QUERY = `query($owner: String!, $name: String!, $openCursor: String, $closedCursor: String, $withOpen: Boolean!, $withClosed: Boolean!) {
@@ -141,19 +141,24 @@ export function mapPrNode(
 		lastActivity[key] = later(lastActivity[key], when);
 	};
 	const reviewers: string[] = [];
+	const bots: string[] = [];
 	/** Each reviewer's latest opinion, for a decision GitHub doesn't give. */
 	const opinions = new Set<string>();
-	const addReviewer = (p: Person | null, state: unknown) => {
+	const addReviewer = (p: Person | null, state: unknown, who: unknown) => {
 		// A pending review is visible to its author only, never activity.
 		if (!p || state === "PENDING" || isAuthor(p.login)) return;
-		if (!reviewers.some((r) => r.toLowerCase() === p.login.toLowerCase())) {
-			reviewers.push(p.login);
+		if (reviewers.some((r) => r.toLowerCase() === p.login.toLowerCase())) {
+			return;
+		}
+		reviewers.push(p.login);
+		if (rec(who).__typename === "Bot" || /\[bot\]$/i.test(p.login)) {
+			bots.push(p.login);
 		}
 	};
 	for (const r of list(n.latestReviews)) {
 		const p = meet(person(rec(r).author));
 		if (p && !isAuthor(p.login)) opinions.add(String(rec(r).state));
-		addReviewer(p, rec(r).state);
+		addReviewer(p, rec(r).state, rec(r).author);
 		if (rec(r).state !== "PENDING") acted(p, rec(r).submittedAt);
 	}
 	for (const item of list(n.timelineItems)) {
@@ -166,7 +171,7 @@ export function mapPrNode(
 			acted(meet(person(t.author)), t.createdAt);
 		} else if (t.__typename === "PullRequestReview" && t.state !== "PENDING") {
 			const p = meet(person(t.author));
-			addReviewer(p, t.state);
+			addReviewer(p, t.state, t.author);
 			acted(p, t.submittedAt);
 		}
 	}
@@ -206,6 +211,7 @@ export function mapPrNode(
 		unresolvedThreads,
 		requested: { users, teams },
 		reviewers,
+		bots,
 		lastActivity,
 		people,
 	};
@@ -621,7 +627,7 @@ export async function fetchViewerTeams(
 const RELATIONS = "[OWNER, COLLABORATOR, ORGANIZATION_MEMBER]";
 const VIEWER_REPOS_QUERY = `query($cursor: String) { viewer { repositories(first: 100, after: $cursor, affiliations: ${RELATIONS}, ownerAffiliations: ${RELATIONS}, orderBy: { field: PUSHED_AT, direction: DESC }) { pageInfo { hasNextPage endCursor } nodes { nameWithOwner } } } rateLimit { cost remaining resetAt } }`;
 /** At most this many pages (100 each) of the viewer's repos. */
-const VIEWER_REPOS_MAX_PAGES = 50;
+export const VIEWER_REPOS_MAX_PAGES = 50;
 
 /**
  * Every repo the viewer owns, collaborates on or reaches as an org member,
@@ -629,11 +635,12 @@ const VIEWER_REPOS_MAX_PAGES = 50;
  * "search results should be my repos only, not public repos from github").
  */
 export async function fetchViewerRepos(
-	signal?: AbortSignal,
-): Promise<string[]> {
+	options: { maxPages?: number; signal?: AbortSignal } = {},
+): Promise<{ names: string[]; truncated: boolean }> {
+	const { maxPages = VIEWER_REPOS_MAX_PAGES, signal } = options;
 	const names: string[] = [];
 	let cursor: string | null = null;
-	for (let page = 0; page < VIEWER_REPOS_MAX_PAGES; page++) {
+	for (let page = 0; page < maxPages; page++) {
 		const data = await graphql(
 			[
 				"-f",
@@ -655,7 +662,8 @@ export async function fetchViewerRepos(
 		cursor = info.hasNextPage === true ? (str(info.endCursor) ?? null) : null;
 		if (!cursor) break;
 	}
-	return names;
+	// Stopped at the cap with pages left: the least recently pushed are missing.
+	return { names, truncated: cursor !== null };
 }
 
 const REPO_QUERY = `query($owner: String!, $name: String!) {

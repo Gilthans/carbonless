@@ -521,14 +521,14 @@ describe("HomeService", () => {
 		await expect(home.setRepos(["no-slash"])).rejects.toThrow(/owner\/repo/);
 	});
 
-	it("teams unknown: a team's request still lands in Up for grabs", async () => {
+	it("teams unknown: a team's request lands in Other open", async () => {
 		fx = createHomeFixture({
 			repos: { "acme/api": { prs: scenarioPrs() } },
 			viewerTeams: null,
 		});
 		const view = await service().home.refresh();
-		expect(ids(view, "grabs")).toEqual([9, 3, 8]);
-		expect(ids(view, "other")).toEqual([4]);
+		expect(ids(view, "grabs")).toEqual([9, 3]);
+		expect(ids(view, "other")).toEqual([4, 8]);
 	});
 });
 

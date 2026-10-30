@@ -283,7 +283,7 @@ from `gh`. A PR is in exactly one section:
 |---|---|
 | **Mine** | the viewer is the author (drafts included, with a Draft pill) |
 | **Reviewing** | not mine, and one of: a review is requested from the viewer directly (not only via a team), the viewer has submitted a review or review comment, or the viewer has started it in carbonless |
-| **Up for grabs** | not mine, not a draft, no review submitted by anyone, and no review requested from anyone except teams (owner, 2026-10-30: "prs addressed at a team and not directly at me that I haven't started reviewing should be up for grabs, not reviewing") |
+| **Up for grabs** | not mine, not a draft, no review submitted by anyone, and no review requested from anyone except teams (owner, 2026-10-30: "prs addressed at a team and not directly at me that I haven't started reviewing should be up for grabs, not reviewing"). The teams are ones the viewer is in: a PR asked of a team the viewer isn't in, or when their teams can't be read (no `read:org`), goes to Other open; a bot's review doesn't count as reviewed |
 | **Other open** | every other open PR of the view's repos |
 | **Recently closed** | merged or closed in the last 3 days (owner, 2026-10-29); a quiet tail, violet merged icon or red closed icon |
 

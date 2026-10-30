@@ -166,6 +166,7 @@ export class HomeService {
 	#began = false;
 	/** The last refresh cost, for the report and the log. */
 	lastCost: RefreshCost = newCost();
+	readonly #onRefresh: (() => void)[] = [];
 
 	constructor(options: HomeServiceOptions) {
 		this.#config = options.config;
@@ -227,6 +228,11 @@ export class HomeService {
 		}
 	}
 
+	/** Calls `listener` as each refresh begins (search warms its repo list). */
+	onRefresh(listener: () => void): void {
+		this.#onRefresh.push(listener);
+	}
+
 	/** Refreshes from GitHub, joining one in flight; never throws for GitHub's failures. */
 	refresh(): Promise<HomeView> {
 		this.#inflight ??= this.#refresh().finally(() => {
@@ -254,6 +260,7 @@ export class HomeService {
 
 	async #refresh(): Promise<HomeView> {
 		const begun = this.#now();
+		for (const listener of this.#onRefresh) listener();
 		const { config, problems } = await this.#config.read();
 		this.#problems = problems;
 		const base = Math.max(1, config.refresh.minutes) * 60_000;
@@ -427,7 +434,7 @@ export class HomeService {
 			const started = startedBy.get(key) ?? [];
 			const listed = inView.has(`${facts.owner}/${facts.repo}`.toLowerCase());
 			if (!listed && started.length === 0) continue;
-			const section = sectionOf(facts, viewer.login, started, now);
+			const section = sectionOf(facts, viewer.login, this.#teams, started, now);
 			if (!section) continue;
 			const annotations = slug
 				? ((await inboxOf(facts.owner, facts.repo)).get(facts.number) ?? {})
