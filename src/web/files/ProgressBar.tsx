@@ -17,7 +17,16 @@ export const HATCH = "hatch";
 const OPEN_GAP = 6;
 
 /**
- * Reviewed fills from the left; crossed off is hatched at the right end.
+ * The most of a meter crossed off may take, in percent, so the rest has room
+ * to show progress toward done.
+ */
+const CROSSED_CAP = 20;
+
+/**
+ * Reviewed fills from the left; crossed off is hatched at the right end, at
+ * most `CROSSED_CAP` of the bar. The rest shows reviewed out of what isn't
+ * crossed off, so it agrees with the percentage; below the cap that is just
+ * reviewed ÷ total. With everything crossed off the bar is all hatch.
  * `incomplete`: something is still unreviewed even if the counts look full
  * (a rename weighs nothing in lines), so the meter is never shown full: both
  * segments shrink by the same factor to leave the gap, so neither vanishes
@@ -33,10 +42,15 @@ export function Meter({
 	incomplete?: boolean;
 	className?: string;
 }) {
-	const raw = (n: number) =>
-		counts.total === 0 ? 0 : (n / counts.total) * 100;
-	let reviewed = raw(counts.reviewed);
-	let crossed = raw(counts.crossedOff);
+	const { total, crossedOff } = counts;
+	const left = total - crossedOff;
+	let crossed =
+		total === 0
+			? 0
+			: left <= 0
+				? 100
+				: Math.min((crossedOff / total) * 100, CROSSED_CAP);
+	let reviewed = left <= 0 ? 0 : (counts.reviewed / left) * (100 - crossed);
 	if (incomplete && reviewed + crossed > 100 - OPEN_GAP) {
 		const scale = (100 - OPEN_GAP) / (reviewed + crossed);
 		reviewed *= scale;
