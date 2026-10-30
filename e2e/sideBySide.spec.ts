@@ -583,6 +583,7 @@ function stored(p: Pr) {
 	const s = JSON.parse(readFileSync(p.scenarioPath, "utf8")) as Scenario;
 	return (s.prs[7]?.graphql?.reviewThreads ?? []) as {
 		path: string;
+		subjectType: string;
 		line: number;
 		originalStartLine: number | null;
 		diffSide: string;
@@ -1012,4 +1013,92 @@ test("side by side, Up/Down on the number buttons stay in their column and Left/
 		selectionBar(page).getByRole("button", { name: "Comment" }),
 	).not.toHaveAttribute("aria-disabled", "true");
 	await expectNoPageOverflow(page);
+});
+
+test("side by side, the file bubble sits in the first row's right cell (a pair row once the gap above is loaded) and the pick bar right of the new numbers", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	if (isMobile) await page.setViewportSize({ width: 360, height: 780 });
+	const p = await pr(fixture);
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	await sideBySide(page, true);
+	const section = await expand(page, GREET);
+	await expect(table(section, "side-by-side")).toBeVisible();
+	// The diff's first row is the hidden line 1's gap row: the bubble is there.
+	const bubble = section.getByRole("button", { name: "Comment on file" });
+	await expect(section.getByTestId("gap-row").first()).toContainText(
+		"1 hidden line",
+	);
+	await expect(
+		section.getByTestId("gap-row").first().getByTestId("thread-bubble"),
+	).toHaveAccessibleName("Comment on file");
+	// Loaded, the first row is line 1's pair row: the bubble in its right cell.
+	await section.getByRole("button", { name: "Load 1 line above" }).click();
+	const first = rows(section).first();
+	await expect(first).toHaveAttribute("data-new-no", "1");
+	await expect(first).toHaveAttribute("data-kind", "context");
+	// The gap above is gone; the one left is below the hunk, without the bubble.
+	await expect(section.getByTestId("gap-row")).toHaveCount(1);
+	await expect(
+		section.getByTestId("gap-row").getByTestId("thread-bubble"),
+	).toHaveCount(0);
+	await expect(
+		first
+			.locator('td[data-testid="code"][data-side="RIGHT"]')
+			.getByTestId("thread-bubble"),
+	).toHaveAccessibleName("Comment on file");
+	await expect(
+		first
+			.locator('td[data-testid="code"][data-side="LEFT"]')
+			.getByTestId("thread-bubble"),
+	).toHaveCount(0);
+	// Its row opens right under the pair row, across all six columns.
+	await bubble.click();
+	const fileRow = section.getByTestId("file-threads");
+	await expect(fileRow).toBeVisible();
+	expect(
+		await fileRow.evaluate((el) => ({
+			under: el.previousElementSibling?.getAttribute("data-new-no"),
+			columns: el.querySelector("td")?.colSpan,
+		})),
+	).toEqual({ under: "1", columns: 6 });
+	const composer = section.getByTestId("new-thread");
+	await expect(composer).toContainText("whole file");
+	await composer.getByRole("textbox", { name: "Comment" }).fill("The file?");
+	await composer.getByRole("button", { name: "Comment" }).click();
+	await expect(section.getByTestId("new-thread")).toHaveCount(0);
+	await expect(
+		section.getByRole("button", { name: /1 comment on this file/ }),
+	).toHaveAttribute("aria-expanded", "true");
+	await expect(
+		fileRow.getByTestId("files-thread").filter({ hasText: "The file?" }),
+	).toBeVisible();
+	expect(stored(p)).toMatchObject([{ path: GREET, subjectType: "FILE" }]);
+	await expectNoPageOverflow(page);
+	// A pick on an old number: the bar sits just right of the row's new
+	// number (the right-side number cell), never over either number column.
+	const oldFive = pairs(section).nth(0).getByTestId("old");
+	await oldFive.scrollIntoViewIfNeeded();
+	if (isMobile) {
+		await oldFive.tap();
+		await expect(selectionBar(page)).toBeVisible();
+		return;
+	}
+	await oldFive.click();
+	await expect(selectionBar(page)).toBeVisible();
+	const row = await pairs(section).nth(0).boundingBox();
+	const newNumber = await pairs(section)
+		.nth(0)
+		.getByTestId("new")
+		.boundingBox();
+	const bar = await selectionBar(page).boundingBox();
+	if (!row || !newNumber || !bar) throw new Error("no geometry");
+	expect(bar.y).toBeGreaterThanOrEqual(row.y + row.height);
+	expect(bar.y).toBeLessThanOrEqual(row.y + 2 * row.height);
+	expect(bar.x).toBeGreaterThanOrEqual(newNumber.x + newNumber.width);
+	expect(bar.x).toBeLessThanOrEqual(newNumber.x + newNumber.width + 8);
 });
