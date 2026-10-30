@@ -103,6 +103,27 @@ const rows = (section: Locator) => section.locator('[data-testid="diff-line"]');
 const pairs = (section: Locator) =>
 	section.locator('[data-testid="diff-line"][data-kind="pair"]');
 const codeCells = (scope: Locator) => scope.locator('td[data-testid="code"]');
+/**
+ * A pair row's bubbles on `side`: in that side's code cell, or on a phone
+ * in the bubble row under the pair row (its left or right group).
+ */
+const bubblesOf = (row: Locator, side: "LEFT" | "RIGHT", isMobile: boolean) =>
+	(isMobile
+		? row
+				.locator("xpath=following-sibling::tr[1]")
+				.locator(`[data-bubbles="${side}"]`)
+		: codeCells(row).nth(side === "LEFT" ? 0 : 1)
+	).getByTestId("thread-bubble");
+/** What sits under a row: on a phone its bubble row comes first. */
+const under = (row: Locator, isMobile: boolean) =>
+	row.evaluate((tr, skip) => {
+		const next = tr.nextElementSibling;
+		return (
+			skip && next?.getAttribute("data-testid") === "bubble-row"
+				? next.nextElementSibling
+				: next
+		)?.getAttribute("data-testid");
+	}, isMobile);
 const table = (section: Locator, view: "unified" | "side-by-side") =>
 	section.locator(`table[data-view="${view}"]`);
 
@@ -113,12 +134,12 @@ async function expand(page: Page, path: string) {
 	return section;
 }
 
-/** DESIGN_SHOTS=<dir>: also save side-by-side-{desktop,phone}.png there. */
+/** DESIGN_SHOTS=<dir>: also save <name>-{desktop,phone}.png there (side-by-side by default). */
 const shots = process.env.DESIGN_SHOTS;
-const shot = (page: Page, isMobile: boolean) =>
+const shot = (page: Page, isMobile: boolean, name = "side-by-side") =>
 	shots
 		? page.screenshot({
-				path: `${shots}/side-by-side-${isMobile ? "phone" : "desktop"}.png`,
+				path: `${shots}/${name}-${isMobile ? "phone" : "desktop"}.png`,
 			})
 		: Promise.resolve();
 
@@ -204,33 +225,31 @@ test("Side by side lays clusters out as pairs in place, wraps long lines, and ke
 	await expect(codeCells(pairRows.nth(0)).nth(1)).toHaveClass(/bg-add-done/);
 	await expect(codeCells(pairRows.nth(2)).last()).toHaveClass(/bg-add-done/);
 
-	// A thread's bubble is in the cell of its side; it opens under the pair.
+	// A thread's bubble is in the cell of its side (on a phone, that side of
+	// the bubble row under the pair); it opens under the pair.
 	const row6 = section.locator('tr[data-testid="diff-line"][data-new-no="6"]');
 	await expect(row6).toHaveAttribute("data-old-no", "6");
-	const bubble = codeCells(row6).nth(1).getByTestId("thread-bubble");
+	const bubble = bubblesOf(row6, "RIGHT", isMobile);
 	await expect(bubble).toHaveAccessibleName("1 comment on line 6");
 	await expect(codeCells(row6).nth(1)).toHaveAttribute("data-commented", "");
 	await expect(codeCells(row6).nth(1)).toHaveClass(/thread-mark-cell/);
 	// The old side of the pair has no thread: no bubble and no mark there.
-	await expect(codeCells(row6).nth(0).getByTestId("thread-bubble")).toHaveCount(
-		0,
+	await expect(bubblesOf(row6, "LEFT", isMobile)).toHaveCount(0);
+	await expect(codeCells(row6).getByTestId("thread-bubble")).toHaveCount(
+		isMobile ? 0 : 1,
 	);
 	await expect(codeCells(row6).nth(0)).not.toHaveAttribute("data-commented");
 	await expect(codeCells(row6).nth(0)).not.toHaveClass(/thread-mark-cell/);
 	await expect(row6.getByTestId("old")).not.toHaveClass(/thread-mark-cell/);
 	const row5 = section.locator('tr[data-testid="diff-line"][data-old-no="5"]');
-	await expect(
-		codeCells(row5).nth(0).getByTestId("thread-bubble"),
-	).toHaveAccessibleName("1 comment on old line 5");
+	await expect(bubblesOf(row5, "LEFT", isMobile)).toHaveAccessibleName(
+		"1 comment on old line 5",
+	);
 	await bubble.click();
 	const threadRow = section.getByTestId("thread-row");
 	await expect(threadRow).toHaveCount(1);
 	await expect(threadRow).toContainText("New six");
-	expect(
-		await row6.evaluate((tr) =>
-			tr.nextElementSibling?.getAttribute("data-testid"),
-		),
-	).toBe("thread-row");
+	expect(await under(row6, isMobile)).toBe("thread-row");
 
 	// Off and on again: the open thread stays open (keyed by its line), the
 	// cluster stays reviewed, and nothing is fetched again.
@@ -372,6 +391,90 @@ test("a four-digit file side by side fits a phone: no page overflow, readable co
 		expect(target?.width).toBeGreaterThanOrEqual(40);
 		expect(target?.height).toBeGreaterThanOrEqual(40);
 	}
+});
+
+test("a four-digit file side by side on a phone: a thread's bubble takes no room from the code, in a row of its own", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	if (isMobile) await page.setViewportSize({ width: 360, height: 780 });
+	const p = await setup(pr);
+	const head = p.repo.shas.at(-1) ?? "";
+	p.editScenario((sc) => {
+		const graph = sc.prs[7]?.graphql;
+		if (!graph) throw new Error("no PR in the scenario");
+		graph.reviewThreads = [
+			...(graph.reviewThreads ?? []),
+			reviewThread({ path: LONG, line: 1150, subjectType: "LINE" }, [
+				threadComment({
+					login: "rev1",
+					text: "Long one",
+					commit: head,
+					diffHunk: "",
+				}),
+			]),
+		];
+	});
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	await sideBySide(page, true);
+	const section = await expand(page, LONG);
+	await expect(table(section, "side-by-side")).toBeVisible();
+	const row = section.locator(
+		'tr[data-testid="diff-line"][data-new-no="1150"]',
+	);
+	await expect(row).toHaveAttribute("data-kind", "pair");
+	await row.scrollIntoViewIfNeeded();
+	const bubble = section.getByRole("button", {
+		name: "1 comment on line 1150",
+	});
+	await expect(bubble).toBeVisible();
+	await shot(page, isMobile, "bubbles");
+	// Each code cell's text box: what is left of it inside its padding.
+	const boxes = await codeCells(row).evaluateAll((cells) =>
+		cells.map((td) => {
+			const css = getComputedStyle(td);
+			return (
+				td.clientWidth -
+				Number.parseFloat(css.paddingLeft) -
+				Number.parseFloat(css.paddingRight)
+			);
+		}),
+	);
+	const [left = 0, right = 0] = boxes;
+	if (isMobile) {
+		// The right cell, with the thread, keeps as much room as the left,
+		// without one: the bubble sits in the row under the pair row.
+		expect(right).toBeGreaterThanOrEqual(left - 1);
+		expect(right).toBeGreaterThanOrEqual(60);
+		const bubbles = row.locator("xpath=following-sibling::tr[1]");
+		await expect(bubbles).toHaveAttribute("data-testid", "bubble-row");
+		await expect(bubbles.getByTestId("thread-bubble")).toHaveCount(1);
+		await expect(codeCells(row).getByTestId("thread-bubble")).toHaveCount(0);
+		// The bubble's touch target stays 40px.
+		const box = await bubble.boundingBox();
+		expect(box?.width).toBeGreaterThanOrEqual(40);
+		expect(box?.height).toBeGreaterThanOrEqual(40);
+	} else {
+		// A wide screen keeps it in its cell, as before.
+		await expect(section.getByTestId("bubble-row")).toHaveCount(0);
+		await expect(
+			codeCells(row).nth(1).getByTestId("thread-bubble"),
+		).toHaveCount(1);
+	}
+	await bubble.click();
+	await expect(bubble).toHaveAttribute("aria-expanded", "true");
+	const opened = section.getByTestId("thread-row");
+	await expect(opened).toContainText("Long one");
+	await expect(bubble).toHaveAttribute(
+		"aria-controls",
+		(await opened.getAttribute("id")) ?? "",
+	);
+	await expectNoPageOverflow(page);
+	await bubble.click();
+	await expect(section.getByTestId("thread-row")).toHaveCount(0);
 });
 
 test("the Side by side switch keeps the row being read where it was", async ({
@@ -881,7 +984,7 @@ test("side by side, an opened thread and the composer sit under their side", asy
 		});
 
 	// The thread on new 6, under the right side.
-	await codeCells(row6).nth(1).getByTestId("thread-bubble").click();
+	await bubblesOf(row6, "RIGHT", isMobile).click();
 	const rightRow = section.getByTestId("thread-row");
 	await expect(rightRow).toHaveCount(1);
 	const rightCard = rightRow.getByTestId("files-thread");
@@ -893,7 +996,7 @@ test("side by side, an opened thread and the composer sit under their side", asy
 	await sideShot(page, isMobile, "right");
 
 	// The thread on old 5, under the left side, above the first.
-	await codeCells(row5).nth(0).getByTestId("thread-bubble").click();
+	await bubblesOf(row5, "LEFT", isMobile).click();
 	const rows = section.getByTestId("thread-row");
 	await expect(rows).toHaveCount(2);
 	const leftCard = rows.nth(0).getByTestId("files-thread");
@@ -965,7 +1068,9 @@ test("side by side, a cluster's floating controls stop above a thread opened und
 	const row15 = section.locator(
 		'tr[data-testid="diff-line"][data-new-no="15"]',
 	);
-	await codeCells(row15).nth(1).getByTestId("thread-bubble").click();
+	// On a phone the bubble is in the bubble row under row 15: the controls
+	// pass it by and still stop at the thread's row.
+	await bubblesOf(row15, "RIGHT", isMobile).click();
 	const threadRow = section.getByTestId("thread-row");
 	await expect(threadRow.getByTestId("thread-comment")).toHaveCount(1);
 	const newNo = await edges(row15.getByTestId("new"));
@@ -1088,26 +1193,23 @@ test("side by side, the file bubble sits in the first row's right cell (a pair r
 	await expect(
 		section.getByTestId("gap-row").getByTestId("thread-bubble"),
 	).toHaveCount(0);
-	await expect(
-		first
-			.locator('td[data-testid="code"][data-side="RIGHT"]')
-			.getByTestId("thread-bubble"),
-	).toHaveAccessibleName("Comment on file");
-	await expect(
-		first
-			.locator('td[data-testid="code"][data-side="LEFT"]')
-			.getByTestId("thread-bubble"),
-	).toHaveCount(0);
-	// Its row opens right under the pair row, across all six columns.
+	// (On a phone, the right of the bubble row under it.)
+	await expect(bubblesOf(first, "RIGHT", isMobile)).toHaveAccessibleName(
+		"Comment on file",
+	);
+	await expect(bubblesOf(first, "LEFT", isMobile)).toHaveCount(0);
+	await expect(codeCells(first).getByTestId("thread-bubble")).toHaveCount(
+		isMobile ? 0 : 1,
+	);
+	// Its row opens right under the pair row (and its bubble row), across
+	// all six columns.
 	await bubble.click();
 	const fileRow = section.getByTestId("file-threads");
 	await expect(fileRow).toBeVisible();
-	expect(
-		await fileRow.evaluate((el) => ({
-			under: el.previousElementSibling?.getAttribute("data-new-no"),
-			columns: el.querySelector("td")?.colSpan,
-		})),
-	).toEqual({ under: "1", columns: 6 });
+	expect(await under(first, isMobile)).toBe("file-threads");
+	expect(await fileRow.evaluate((el) => el.querySelector("td")?.colSpan)).toBe(
+		6,
+	);
 	const composer = section.getByTestId("new-thread");
 	await expect(composer).toContainText("whole file");
 	await composer.getByRole("textbox", { name: "Comment" }).fill("The file?");
