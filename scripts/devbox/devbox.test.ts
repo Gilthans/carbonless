@@ -1,0 +1,236 @@
+import { execFile } from "node:child_process";
+import {
+	chmodSync,
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	symlinkSync,
+	writeFileSync,
+} from "node:fs";
+import { createServer, type Server } from "node:http";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+
+// scripts/devbox/install and update, run dry (no systemctl, no pnpm add)
+// against temp dirs and a fake server standing in for crb serve.
+const here = dirname(fileURLToPath(import.meta.url));
+const BUILD = {
+	version: "0.1.0",
+	commit: "abcdef0123456789abcdef0123456789abcdef01",
+};
+
+interface Result {
+	code: number;
+	stdout: string;
+	stderr: string;
+}
+
+// Each script run spawns pnpm and node a few times: about a second apiece.
+describe("scripts/devbox", { timeout: 60_000 }, () => {
+	let dir: string;
+	let server: Server | undefined;
+	let env: NodeJS.ProcessEnv;
+	const nodeBin = () => join(dir, "home/.nvm/versions/node/v24.0.0/bin");
+	const pnpmHome = () => join(dir, "pnpm-home");
+	const unitFile = () => join(dir, "units/crb.service");
+
+	beforeEach(() => {
+		dir = mkdtempSync(join(tmpdir(), "crb-devbox-"));
+		// A Node 24 where install looks for one: ~/.nvm/versions/node/v24*/bin.
+		mkdirSync(nodeBin(), { recursive: true });
+		symlinkSync(process.execPath, join(nodeBin(), "node"));
+		// Stand-ins for gh, loginctl, and a systemctl/journalctl that fail the
+		// test if anything calls them for real.
+		const stubs = join(dir, "stubs");
+		mkdirSync(stubs);
+		const stub = (name: string, body: string) => {
+			writeFileSync(join(stubs, name), `#!/bin/sh\n${body}\n`);
+			chmodSync(join(stubs, name), 0o755);
+		};
+		stub("gh", 'test "$1 $2" = "auth status" && test -z "$GH_LOGGED_OUT"');
+		stub("loginctl", 'if [ -n "$NO_LINGER" ]; then echo no; else echo yes; fi');
+		stub("systemctl", "echo REAL systemctl >&2; exit 99");
+		stub("journalctl", "echo REAL journalctl >&2; exit 99");
+		// The installed package, as pnpm would leave it.
+		mkdirSync(join(dir, "pkg/dist"), { recursive: true });
+		writeFileSync(join(dir, "pkg/dist/build-info.json"), JSON.stringify(BUILD));
+		mkdirSync(join(pnpmHome(), "bin"), { recursive: true });
+		writeFileSync(join(pnpmHome(), "bin/crb"), "#!/bin/sh\n");
+		chmodSync(join(pnpmHome(), "bin/crb"), 0o755);
+		env = {
+			HOME: join(dir, "home"),
+			PATH: `${stubs}:${process.env.PATH}`,
+			XDG_CONFIG_HOME: join(dir, "config"),
+			XDG_STATE_HOME: join(dir, "state"),
+			XDG_DATA_HOME: join(dir, "data"),
+			SYSTEMD_USER_DIR: join(dir, "units"),
+			PNPM_HOME: pnpmHome(),
+			CRB_DEVBOX_PKG_DIR: join(dir, "pkg"),
+			CRB_DEVBOX_DRY_RUN: "1",
+			CRB_DEVBOX_TIMEOUT: "10",
+		};
+	});
+	afterEach(async () => {
+		await new Promise((resolve) =>
+			server ? server.close(resolve) : resolve(null),
+		);
+		server = undefined;
+		rmSync(dir, { recursive: true, force: true });
+	});
+
+	/** A fake crb serve answering /api/version with `build`; `key` required when given. */
+	async function serve(host: string, build = BUILD, key?: string) {
+		server = createServer((req, res) => {
+			const url = new URL(req.url ?? "/", "http://x");
+			if (key && url.searchParams.get("key") !== key) {
+				res.writeHead(401).end();
+			} else if (url.pathname === "/api/version") {
+				res.setHeader("content-type", "application/json");
+				res.end(JSON.stringify(build));
+			} else res.writeHead(404).end();
+		});
+		await new Promise<void>((resolve) => server?.listen(0, host, resolve));
+		const address = server.address();
+		const port = typeof address === "object" && address ? address.port : 0;
+		mkdirSync(join(dir, "config/carbonless"), { recursive: true });
+		writeFileSync(
+			join(dir, "config/carbonless/config.json"),
+			JSON.stringify({ serve: { host, port } }),
+		);
+		return port;
+	}
+
+	// Async, so the fake server in this process keeps answering meanwhile.
+	const run = (script: string, args: string[] = [], extra = {}) =>
+		new Promise<Result>((resolve) => {
+			execFile(
+				join(here, script),
+				args,
+				{ env: { ...env, ...extra } },
+				(error, stdout, stderr) => {
+					const code = error ? ((error as { code?: number }).code ?? 1) : 0;
+					resolve({ code, stdout, stderr });
+				},
+			);
+		});
+
+	it("install writes a unit running the global crb serve on Node 24, without XDG_CONFIG_HOME", async () => {
+		const port = await serve("127.0.0.1");
+		const r = await run("install");
+		expect(r.stderr).not.toContain("REAL");
+		expect(r.code).toBe(0);
+		const unit = readFileSync(unitFile(), "utf8");
+		expect(unit).toContain(`Environment="PATH=${nodeBin()}:${pnpmHome()}/bin:`);
+		expect(unit).toContain(`ExecStart="${pnpmHome()}/bin/crb" serve\n`);
+		expect(unit).toMatch(/^Type=simple$/m);
+		expect(unit).toMatch(/^Restart=on-failure$/m);
+		expect(unit).toMatch(/^RestartSec=5$/m);
+		expect(unit).toMatch(/^StartLimitIntervalSec=0$/m);
+		expect(unit).not.toMatch(/^Environment=.*XDG_CONFIG_HOME/m);
+		// git and gh are on the service's PATH.
+		const path = unit.match(/^Environment="PATH=(.*)"$/m)?.[1]?.split(":");
+		expect(path).toContain(join(dir, "stubs"));
+		expect(r.stdout).toContain("dry-run: systemctl --user daemon-reload");
+		expect(r.stdout).toContain("dry-run: systemctl --user enable crb");
+		expect(r.stdout).toContain("dry-run: systemctl --user restart crb");
+		expect(r.stdout).toContain(
+			`crb 0.1.0 (abcdef0) is serving: http://127.0.0.1:${port}/\n`,
+		);
+		expect(r.stderr).not.toContain("linger");
+
+		// Rerun: same unit, no restart of a service already serving the build.
+		const again = await run("install");
+		expect(again.code).toBe(0);
+		expect(again.stdout).not.toContain("Wrote");
+		expect(again.stdout).not.toContain("restart");
+		expect(readFileSync(unitFile(), "utf8")).toBe(unit);
+	});
+
+	it("install with a spec installs it; it warns about linger and needs gh's login", async () => {
+		await serve("127.0.0.1");
+		const r = await run("install", ["rc"], { NO_LINGER: "1" });
+		expect(r.code).toBe(0);
+		expect(r.stdout).toContain("dry-run: pnpm add -g carbonless-review@rc");
+		expect(r.stderr).toContain("sudo loginctl enable-linger");
+
+		const out = await run("install", [], { GH_LOGGED_OUT: "1" });
+		expect(out.code).not.toBe(0);
+		expect(out.stderr).toContain("gh auth login");
+	});
+
+	it("install without a spec needs crb installed", async () => {
+		rmSync(join(pnpmHome(), "bin/crb"));
+		const r = await run("install", [], { CRB_DEVBOX_DRY_RUN: "" });
+		expect(r.code).not.toBe(0);
+		expect(r.stderr).toContain("crb not found");
+		expect(r.stderr).not.toContain("REAL");
+		expect(existsSync(unitFile())).toBe(false);
+	});
+
+	it("install fails without Node 24", async () => {
+		rmSync(join(dir, "home/.nvm"), { recursive: true });
+		const fake = join(dir, "node22");
+		mkdirSync(fake);
+		writeFileSync(join(fake, "node"), "#!/bin/sh\necho v22.1.0\n");
+		chmodSync(join(fake, "node"), 0o755);
+		const r = await run("install", [], { CRB_NODE_BIN: fake });
+		expect(r.code).not.toBe(0);
+		expect(r.stderr).toContain("crb needs Node 24");
+	});
+
+	it("update installs a tarball, restarts and prints the link with the key", async () => {
+		mkdirSync(join(dir, "state/carbonless"), { recursive: true });
+		writeFileSync(join(dir, "state/carbonless/key"), "s3cret\n");
+		// 127.0.0.2 is loopback to the kernel but not to crb: it needs the key.
+		const port = await serve("127.0.0.2", BUILD, "s3cret");
+		expect((await run("install")).code).toBe(0);
+		const tarball = join(dir, "carbonless-review-0.1.0.tgz");
+		writeFileSync(tarball, "");
+		const r = await run("update", [tarball]);
+		expect(r.stderr).not.toContain("REAL");
+		expect(r.code).toBe(0);
+		expect(r.stdout).toContain(`dry-run: pnpm add -g ${tarball}\n`);
+		expect(r.stdout).toContain("dry-run: systemctl --user restart crb\n");
+		expect(r.stdout).toContain("crb: 0.1.0 (abcdef0) -> 0.1.0 (abcdef0)\n");
+		expect(r.stdout).toMatch(
+			new RegExp(`\nhttp://127\\.0\\.0\\.2:${port}/\\?key=s3cret\n$`),
+		);
+	});
+
+	it("update maps channels and versions to the package; refuses anything else", async () => {
+		await serve("127.0.0.1");
+		expect((await run("install")).code).toBe(0);
+		for (const spec of ["latest", "0.2.0", "0.2.0-rc.1"]) {
+			const r = await run("update", [spec]);
+			expect(r.code).toBe(0);
+			expect(r.stdout).toContain(
+				`dry-run: pnpm add -g carbonless-review@${spec}\n`,
+			);
+		}
+		const bad = await run("update", ["github:someone/else"]);
+		expect(bad.code).not.toBe(0);
+		expect(bad.stdout).not.toContain("pnpm add");
+	});
+
+	it("update needs the unit installed first", async () => {
+		const r = await run("update", ["rc"]);
+		expect(r.code).not.toBe(0);
+		expect(r.stderr).toContain("run scripts/devbox/install first");
+	});
+
+	it("update times out with the service's log when it never serves the new build", async () => {
+		await serve("127.0.0.1", { ...BUILD, commit: "0".repeat(40) });
+		mkdirSync(dirname(unitFile()), { recursive: true });
+		writeFileSync(unitFile(), "");
+		const r = await run("update", ["rc"], { CRB_DEVBOX_TIMEOUT: "1" });
+		expect(r.code).not.toBe(0);
+		expect(r.stderr).toContain("does not serve 0.1.0 (abcdef0)");
+		expect(r.stderr).toContain(
+			"dry-run: journalctl --user -u crb -n 30 --no-pager",
+		);
+	});
+});
