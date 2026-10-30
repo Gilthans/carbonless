@@ -67,7 +67,7 @@ installed_dir() {
 		echo "$CRB_DEVBOX_PKG_DIR"
 		return
 	fi
-	pnpm ls -g --json 2>/dev/null | node -e '
+	{ pnpm ls -g --json 2>/dev/null || true; } | node -e '
 		let s = ""; process.stdin.on("data", (d) => (s += d)).on("end", () => {
 			let roots = []; try { roots = JSON.parse(s); } catch {}
 			for (const r of roots) {
