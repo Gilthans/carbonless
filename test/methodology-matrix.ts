@@ -12,13 +12,17 @@ import {
 	it,
 	vi,
 } from "vitest";
+import { clonePath } from "../src/server/clone";
+import { buildSnapshot } from "../src/server/diff/snapshot";
+import { Session } from "../src/server/session";
+import type { Snapshot } from "../src/shared/types";
 import {
 	FAKE_GH_DIR,
 	reviewThread,
 	threadComment,
 	writeScenario,
-} from "../../test/fake-gh/scenario";
-import { GIT_TEST_TIMEOUTS, testGitEnv } from "../../test/git-fixture";
+} from "./fake-gh/scenario";
+import { GIT_TEST_TIMEOUTS, testGitEnv } from "./git-fixture";
 import {
 	BEFORE_LANDING,
 	BEFORE_REVIEW,
@@ -28,25 +32,31 @@ import {
 	type MethodologyRepo,
 	type Stage,
 	TIMES,
-} from "../../test/methodology-fixture";
-import type { Snapshot } from "../shared/types";
-import { clonePath } from "./clone";
-import { buildSnapshot } from "./diff/snapshot";
-import { Session } from "./session";
-
-// Real git and fake-gh processes: see GIT_TEST_TIMEOUTS.
-vi.setConfig(GIT_TEST_TIMEOUTS);
+	type Update,
+} from "./methodology-fixture";
 
 /**
  * The git-methodology matrix (docs/git-methodology.md): however the PR branch
  * was kept current and however the PR landed, carbonless shows the PR's own
  * changes, refuses only what GitHub says is merged, and keeps a started
  * review pinned.
+ *
+ * One test file per way of keeping the branch current
+ * (src/server/methodology-<update>.test.ts), so the matrix runs on several workers.
  */
 const NUMBER = 12;
 const ARG = `acme/widget#${NUMBER}`;
 
-describe.each(METHODOLOGIES)("$name", (m) => {
+export function methodologyMatrix(update: Update) {
+	// Real git and fake-gh processes: see GIT_TEST_TIMEOUTS.
+	vi.setConfig(GIT_TEST_TIMEOUTS);
+	describe.each(METHODOLOGIES.filter((m) => m.update === update))(
+		"$name",
+		matrix,
+	);
+}
+
+function matrix(m: (typeof METHODOLOGIES)[number]) {
 	let repo: MethodologyRepo;
 	/** The PR's intended change set: what every comparison must show. */
 	let reference: Snapshot;
@@ -369,4 +379,4 @@ describe.each(METHODOLOGIES)("$name", (m) => {
 		expect(beforeLanding.info().snapshotHead).toBe(repo.heads.updated);
 		expectPrOwnChanges(beforeLanding);
 	});
-});
+}

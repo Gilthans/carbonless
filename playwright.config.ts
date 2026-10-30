@@ -6,7 +6,8 @@ export default defineConfig({
 	testDir: "e2e",
 	fullyParallel: true,
 	forbidOnly: !!process.env.CI,
-	retries: process.env.CI ? 2 : 0,
+	// No retries, in CI either: a flaky test must fail visibly to get fixed.
+	retries: 0,
 	reporter: process.env.CI ? "github" : "list",
 	use: {
 		trace: "retain-on-failure",

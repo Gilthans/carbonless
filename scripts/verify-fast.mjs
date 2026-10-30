@@ -117,7 +117,7 @@ const reasons = [];
 for (const file of changed) {
 	// Unit-test-only files.
 	if (
-		/\.test\.tsx?$|^test\/(setup|diff-fixture|pr-fixture)\.ts$|^vitest\.config/.test(
+		/\.test\.tsx?$|^test\/(setup|diff-fixture|pr-fixture|methodology-matrix)\.ts$|^vitest\.config/.test(
 			file,
 		)
 	) {
@@ -157,9 +157,19 @@ const steps = [
 if (allE2e || e2e.size) {
 	steps.push(["pnpm", ["build"]]);
 	const files = allE2e ? [] : [...e2e].map((s) => `e2e/${s}.spec.ts`);
+	// The whole suite waits its turn on the machine (scripts/queue.mjs).
 	steps.push([
-		"pnpm",
-		["exec", "playwright", "test", ...files, ...passthrough],
+		"node",
+		[
+			"scripts/queue.mjs",
+			"--unless-filtered",
+			"pnpm",
+			"exec",
+			"playwright",
+			"test",
+			...files,
+			...passthrough,
+		],
 	]);
 }
 

@@ -75,6 +75,12 @@ checking against a real PR): `docs/product-rules.md`.
   tests. Run it right before committing and before saying work is done; use
   `pnpm verify:fast` (below) until then. Never run two `pnpm verify` at once in
   the same tree: one run's build deletes `dist` under the other's e2e tests.
+- Full test runs take turns on the machine: `pnpm verify`'s unit and e2e
+  stages, `pnpm test:e2e` without spec files or `-g`, an all-specs
+  `verify:fast` and `pnpm flake-check` wait for a machine-wide lock
+  (`scripts/queue.mjs`, `flock` on `~/.cache/carbonless-verify.lock`) and
+  print whose run they wait for. Running several at once only overloads the
+  machine into timeouts. `CRB_NO_QUEUE=1` skips the queue.
 - While iterating, run only what a change touches:
   - `pnpm verify:fast [base]`: lint, typecheck, the unit tests related to files
     changed since `base`, and the e2e specs mapped to them (`E2E_MAP` in
@@ -109,7 +115,15 @@ checking against a real PR): `docs/product-rules.md`.
   Gate hazards (`test/fake-gh/scenario.ts`): an unheld gh write saves the
   scenario it read at its start, so don't release while one is out; a held
   write, once released, drops test edits made while it waited.
-  Unit tests that run git and the fake gh use `GIT_TEST_TIMEOUTS`.
+  Unit tests that run git and the fake gh use `GIT_TEST_TIMEOUTS`. A speed
+  property is measured in CPU time (`process.threadCpuUsage`), or as "doesn't
+  wait" (a timeout of 0, a hold), never as wall-clock time. No automatic
+  retries (Playwright `retries`, Vitest `retry`): a flaky test fails visibly
+  and gets fixed.
+- `pnpm flake-check <files…> [--runs=N] [--load=L] [-g title]` runs unit
+  files or e2e specs N times (default 5) next to L busy loops (default 3 per
+  core). Run it on every test you add or change that involves timing,
+  concurrency, a spinner or a gate, and on a test you saw fail once.
 - If `nvm use` fails (e.g. in a sandbox), put `~/.nvm/versions/node/v24*/bin`
   first on `PATH`.
 - `pnpm compare-threads <pr> [--as-of <iso>] [--out <dir>]` checks every

@@ -111,10 +111,11 @@ test("exits promptly on SIGTERM while a page is open", async ({
 	const preconnect = connect(Number(port), hostname);
 	preconnect.on("error", () => {});
 	await new Promise((done) => preconnect.once("connect", done));
+	// stop() fails the test unless crb exits within STOP_GRACE_MS, far short
+	// of the minute a wait for these sockets would take.
 	const exit = await s.stop();
 	preconnect.destroy();
 	expect(exit?.code).toBe(0);
-	expect(exit?.ms).toBeLessThan(2_000);
 });
 
 test("--as-of needs an ISO time with a zone, and stays out of the usage", async ({

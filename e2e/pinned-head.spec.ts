@@ -85,6 +85,8 @@ test("--head reviewed shows the PR up to the commit you last reviewed", async ({
 		/On the reviewed commit/,
 	);
 	await expect(section).not.toContainText("On the head");
+	// Leave first: its page would poll the stopped server.
+	await page.goto("about:blank");
 	await s.stop();
 
 	// Without --head: the PR's head, in the PR's own review.

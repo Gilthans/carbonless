@@ -176,6 +176,8 @@ test("shows the PR as of a cutoff, with another login as you, in a review of its
 	).toHaveAttribute("aria-valuenow", /^[1-9]/);
 	// Shown at once; stored once nothing is left unsaved.
 	await expect(page.getByTestId("sync-notices")).toHaveCount(0);
+	// Leave first: its page would poll the stopped server.
+	await page.goto("about:blank");
 	await s.stop();
 
 	// The PR's own review is untouched by what was marked as of then. It has no

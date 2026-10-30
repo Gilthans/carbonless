@@ -81,7 +81,7 @@ state, head, commits (with dates) and a review on the first head.
 
 Every permutation proves:
 
-- `src/server/methodology.test.ts` (unit, 8 tests × 12):
+- `test/methodology-matrix.ts`, run by `src/server/methodology-<update>.test.ts` (unit, 8 tests × 12):
   - the snapshot equals the reference (B0 → the PR's first head: same files,
     same clusters and keys) at the opened and the updated stage, through a
     refresh and a fresh open;

@@ -559,10 +559,11 @@ describe("API", () => {
 		await new Promise<void>((done) => socket.once("connect", () => done()));
 		socket.write(`GET /api/session HTTP/1.1\r\nHost: ${host}\r\n`);
 		socket.on("error", () => {});
-		const started = Date.now();
+		const dropped = new Promise((done) => socket.once("close", done));
+		// The client never lets go: a close() that waited for it would hang
+		// until the test times out.
 		await app.close();
-		expect(Date.now() - started).toBeLessThan(1000);
-		socket.destroy();
+		await dropped;
 	});
 
 	it("maps a gh failure to 502", async () => {
