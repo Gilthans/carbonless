@@ -723,6 +723,39 @@ test("side by side, lines picked from an old number to a new one comment across 
 	await expectNoPageOverflow(page);
 });
 
+test("side by side, a context row's old number picks its line, and the comment goes to GitHub on RIGHT", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	test.skip(isMobile, "the desktop pick");
+	const p = await pr(fixture);
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	await sideBySide(page, true);
+	const section = await expand(page, GREET);
+	await expect(table(section, "side-by-side")).toBeVisible();
+	const context = section.locator('tr[data-kind="context"][data-old-no="4"]');
+	const oldFour = context.getByTestId("old");
+	await oldFour.click();
+	await expect(oldFour.getByRole("button", { name: "Line 4" })).toBeFocused();
+	// One line shown twice: both its cells are picked.
+	await expect(
+		context.locator('td[data-testid="code"][data-picked]'),
+	).toHaveCount(2);
+	await selectionBar(page).getByRole("button", { name: "Comment" }).click();
+	const composer = section.getByTestId("new-thread");
+	await composer.getByRole("textbox", { name: "Comment" }).fill("Context?");
+	await composer.getByRole("button", { name: "Comment" }).click();
+	await expect(
+		section.getByTestId("files-thread").filter({ hasText: "Context?" }),
+	).toBeVisible();
+	expect(stored(p)).toMatchObject([
+		{ path: GREET, line: 4, diffSide: "RIGHT" },
+	]);
+});
+
 test("side by side, a pick anchored on a new number and extended to an old one goes to GitHub in its order", async ({
 	page,
 	pr,
@@ -996,9 +1029,17 @@ test("side by side, Up/Down on the number buttons stay in their column and Left/
 	await page.keyboard.press("ArrowLeft");
 	await expect(button("Old line 6")).toBeFocused();
 	// Down from old 6: the third pair has no old line (new 7 alone), so on
-	// to the context row's button (old 7 / new 8); Up comes back to old 6.
+	// to the context row's old number (old 7 / new 8, one line named by its
+	// new number); Right is its new one; Up from there comes back to old 6.
+	const context = section.locator('tr[data-kind="context"][data-old-no="7"]');
 	await page.keyboard.press("ArrowDown");
-	await expect(button("Line 8")).toBeFocused();
+	await expect(context.getByTestId("old").getByRole("button")).toBeFocused();
+	await expect(
+		context.getByTestId("old").getByRole("button"),
+	).toHaveAccessibleName("Line 8");
+	await page.keyboard.press("ArrowRight");
+	await expect(context.getByTestId("new").getByRole("button")).toBeFocused();
+	await page.keyboard.press("ArrowLeft");
 	await page.keyboard.press("ArrowUp");
 	await expect(button("Old line 6")).toBeFocused();
 	// Shift+Right extends the pick across, old 5 → new 6 in GitHub's
