@@ -330,15 +330,24 @@ test("a PR chosen in the open box shows at once, loading, then becomes its revie
 	await expect(opening).toContainText("#8");
 	await expect(page.getByRole("status")).toContainText("Opening");
 	await expect(page).toHaveURL(new RegExp(`/pr/${OWNER_REPO}/8$`));
+	// The same address in another tab while the first open is held: two
+	// opens of the PR at once.
+	const prUrl = page.url();
+	const other = await page.context().newPage();
+	await other.goto(prUrl);
+	await expect(other.getByRole("status")).toContainText("Opening");
 	release(made.scenarioPath, "prView");
 	await expect(page).toHaveURL(/\/r\/[0-9a-z]{26}$/);
 	await expect(page.getByRole("heading", { level: 1 })).toHaveText(second);
 	const review = page.url();
+	// One review: the other tab lands on the same one.
+	await expect(other).toHaveURL(review);
+	await other.close();
 	// Back is Home, not the loading page.
 	await page.goBack();
 	await expect(section(page, "Mine")).toBeVisible();
-	// Opened again: the same review.
-	await rowOf(page, second).getByRole("link").click();
+	// The address opened again, after: the same review.
+	await page.goto(prUrl);
 	await expect(page).toHaveURL(review);
 });
 
