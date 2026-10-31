@@ -565,7 +565,7 @@ const marksOf = (keys: LineKey[], threads: RowThreads | undefined): Mark[] =>
  * (a pair row may open one per side, the left side's first), then the new
  * threads being written under it. When the shape splits them, each row
  * sits under its side, the composers a row per side with any (a context
- * line's are RIGHT: its bubble's cell); else every row spans the table and
+ * line's are RIGHT: what is written on it goes to GitHub on RIGHT); else every row spans the table and
  * both sides' composers share one.
  */
 function RowTail(props: {
