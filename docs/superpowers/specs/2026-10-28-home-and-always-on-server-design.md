@@ -193,8 +193,9 @@ Owner's decisions on this part (2026-10-28):
 - **URLs.** Home is `/`. A review is `/r/<review-id>` (the review's ULID
   from `refs/crb/lookup/...`) with `/r/<id>/files` and the rest as today.
   `/pr/<owner>/<repo>/<n>[?head=...]` resolves or creates the PR's review
-  and redirects to `/r/<id>`, so a typed or pasted address works too
-  **(call)**. The builder picks whether `/r/<id>` or the `/pr/...` form is
+  and goes on to `/r/<id>`, so a typed or pasted address works too
+  **(call)**; with the web UI it shows the PR loading at once and goes on
+  in place (Home, Open any PR). The builder picks whether `/r/<id>` or the `/pr/...` form is
   what the CLI prints; the printed one must be stable across restarts (both
   are).
 - **Shutdown** on the usual signals closes every session (today's
