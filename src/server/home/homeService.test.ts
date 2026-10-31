@@ -396,9 +396,11 @@ describe("HomeService", () => {
 		const woken = await home.annotate("acme", "api", 3, { op: "wake" });
 		expect(woken).toMatchObject({ hidden: null, woke: null, annotations: {} });
 
+		// The inbox stamps events with the real clock, not `clock`: the
+		// activity must land before `until` whatever today's date is.
 		const again = await home.annotate("acme", "api", 3, {
 			op: "snooze",
-			until: iso(T0 + 2 * DAY),
+			until: iso(Math.max(T0, Date.now()) + 2 * DAY),
 			wakeOnActivity: true,
 		});
 		const at = Date.parse(again.annotations.snooze?.at ?? "");
