@@ -1846,8 +1846,9 @@ describe("side by side (the cells contract)", () => {
 		];
 		expect(buttons).toHaveLength(2);
 		expect(buttons.map((b) => b.dataset.pick)).toEqual(["RIGHT:6", "RIGHT:6"]);
+		// Each named by the number it shows (old 5, new 6), for voice control.
 		expect(buttons.map((b) => b.getAttribute("aria-label"))).toEqual([
-			"Line 6",
+			"Old line 5",
 			"Line 6",
 		]);
 		const left = within(number("LEFT", 5)).getByRole("button");
@@ -2021,8 +2022,8 @@ describe("side by side (the cells contract)", () => {
 			expect.objectContaining({ side: "RIGHT", line: 6 }),
 		]);
 		expect(
-			within(row("RIGHT", 6)).queryByRole("button", { name: "Old line 5" }),
-		).toBeNull();
+			within(row("RIGHT", 6)).getByRole("button", { name: "Old line 5" }),
+		).toHaveAttribute("data-pick", "RIGHT:6");
 		expect(within(number("LEFT", 5)).getByRole("button")).toHaveFocus();
 	});
 

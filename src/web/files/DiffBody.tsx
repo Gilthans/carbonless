@@ -840,13 +840,15 @@ function PairRow(props: RowProps & { row: SideRow }) {
 			threads ? rowKeys(line) : [],
 			`on line ${line.newNo}`,
 		);
-		// The same line, its bubble on the right; each number a button for it.
+		// The same line, its bubble on the right; each number a button for
+		// it, named by the number it shows.
 		left = {
 			...right,
 			keys: [],
 			ending: [],
 			endKey: undefined,
 			open: false,
+			pick: { ...right.pick, label: `Old line ${line.oldNo}` },
 		};
 	} else {
 		if (row.del) {

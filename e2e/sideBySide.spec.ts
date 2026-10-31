@@ -844,7 +844,9 @@ test("side by side, a context row's old number picks its line, and the comment g
 	const context = section.locator('tr[data-kind="context"][data-old-no="4"]');
 	const oldFour = context.getByTestId("old");
 	await oldFour.click();
-	await expect(oldFour.getByRole("button", { name: "Line 4" })).toBeFocused();
+	await expect(
+		oldFour.getByRole("button", { name: "Old line 4" }),
+	).toBeFocused();
 	// One line shown twice: both its cells are picked.
 	await expect(
 		context.locator('td[data-testid="code"][data-picked]'),
@@ -1136,14 +1138,14 @@ test("side by side, Up/Down on the number buttons stay in their column and Left/
 	await page.keyboard.press("ArrowLeft");
 	await expect(button("Old line 6")).toBeFocused();
 	// Down from old 6: the third pair has no old line (new 7 alone), so on
-	// to the context row's old number (old 7 / new 8, one line named by its
-	// new number); Right is its new one; Up from there comes back to old 6.
+	// to the context row's old number (old 7 / new 8, each number naming its
+	// button); Right is its new one; Up from there comes back to old 6.
 	const context = section.locator('tr[data-kind="context"][data-old-no="7"]');
 	await page.keyboard.press("ArrowDown");
 	await expect(context.getByTestId("old").getByRole("button")).toBeFocused();
 	await expect(
 		context.getByTestId("old").getByRole("button"),
-	).toHaveAccessibleName("Line 8");
+	).toHaveAccessibleName("Old line 7");
 	await page.keyboard.press("ArrowRight");
 	await expect(context.getByTestId("new").getByRole("button")).toBeFocused();
 	await page.keyboard.press("ArrowLeft");
