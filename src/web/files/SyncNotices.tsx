@@ -1,24 +1,20 @@
 import {
 	AlertIcon,
 	ClockIcon,
-	LinkExternalIcon,
 	SyncIcon,
 	TrashIcon,
-	XIcon,
+	type XIcon,
 } from "@primer/octicons-react";
-import { type QueryClient, useQueryClient } from "@tanstack/react-query";
+import { useQueryClient } from "@tanstack/react-query";
 import { useLayoutEffect, useRef } from "react";
-import type { ReviewThread, ThreadsView } from "../../shared/types";
-import { headerLine, LabeledIcon } from "../overview/parts";
+import { LabeledIcon } from "../overview/parts";
 import { Tooltip } from "../Tooltip";
-import { NEW_THREAD } from "../threads/drafts";
-import { newThreadError } from "../threads/NewThread";
 import {
 	type ThreadWriteView,
 	useThreadWriter,
 	useThreadWrites,
 } from "../threads/threadWrites";
-import { safeHref } from "../ui";
+import { RefusedWrites, writeWhere } from "./RefusedWrites";
 import { describePending, pendingFiles } from "./stateSync";
 import { useSetStates, useSyncState } from "./useSetStates";
 
@@ -35,8 +31,9 @@ const changes = (n: number) => `${n} ${n === 1 ? "change" : "changes"}`;
  *   keep syncing. Also red once 5 transient failures in a row kept changes
  *   waiting (the last error and Retry), while retrying goes on.
  * The changes stay on screen either way. Thread writes (replies, resolve,
- * unresolve, edits, deletes) show the same way, one notice per thread, naming the thread
- * and the action (ThreadWriteNotices).
+ * unresolve, edits, deletes) on their way show the same way, one notice per
+ * thread, naming the thread and the action (ThreadWriteNotices); those
+ * GitHub refused are listed under one chip at the bottom (RefusedWrites).
  */
 export function SyncNotices() {
 	const { pending, rejected, delayed, failure, waiting, stalled } =
@@ -45,9 +42,10 @@ export function SyncNotices() {
 	const writes = useThreadWrites();
 	const stack = useRef<HTMLDivElement>(null);
 	const writeNotices = [...writes.threads.values()].filter(
-		(t) => t.failed || t.stalled || t.delayed || t.resumed,
+		(t) => t.stalled || t.delayed || t.resumed,
 	);
-	const shown = pending.size > 0 || writeNotices.length > 0;
+	const shown =
+		pending.size > 0 || writeNotices.length > 0 || writes.refused.length > 0;
 	// How far up from the window's bottom the notices reach, as
 	// --sync-notices, so the file list can pad its end by it.
 	useLayoutEffect(() => {
@@ -191,31 +189,9 @@ export function SyncNotices() {
 					</div>
 				)}
 			</div>
+			<RefusedWrites />
 		</div>
 	);
-}
-
-/**
- * Where a thread is, in a few words: its file and line, the file for a
- * file comment, "PR comment" when it has neither (or isn't listed).
- */
-export function threadLabel(thread: ReviewThread | undefined): string {
-	if (!thread?.path) return "PR comment";
-	const line = thread.subject === "file" ? null : headerLine(thread);
-	return line === null ? thread.path : `${thread.path}:${line}`;
-}
-
-/** The thread as the page's latest thread list has it. */
-function findThread(
-	client: QueryClient,
-	threadId: string,
-): ReviewThread | undefined {
-	const lists = client.getQueriesData<ThreadsView>({ queryKey: ["threads"] });
-	for (let i = lists.length - 1; i >= 0; i--) {
-		const found = lists[i]?.[1]?.threads.find((t) => t.id === threadId);
-		if (found) return found;
-	}
-	return undefined;
 }
 
 const NOTICE_RED =
@@ -280,100 +256,7 @@ function ThreadWriteNotices({ threads }: { threads: ThreadWriteView[] }) {
 	return (
 		<>
 			{threads.map((t) => {
-				const created = t.threadId.startsWith(NEW_THREAD)
-					? writer.drafts.newThread(t.threadId.slice(NEW_THREAD.length))?.create
-					: undefined;
-				const where = created
-					? created.subject === "file" || created.line === undefined
-						? created.path
-						: `${created.path}:${created.line}`
-					: threadLabel(findThread(client, t.threadId));
-				if (t.failed) {
-					const blocked = t.failed.code === "pending-review";
-					const changed =
-						t.failed.action === "Edit" && t.failed.code === "changed";
-					const commentId = t.failed.commentId ?? "";
-					const textButton = (
-						label: string,
-						testId: string,
-						onClick: () => void,
-					) => (
-						<button
-							type="button"
-							data-testid={testId}
-							onClick={onClick}
-							className="flex min-h-10 items-center rounded-md px-1 font-semibold text-link hover:underline focus-visible:outline-2 focus-visible:outline-accent"
-						>
-							{label}
-						</button>
-					);
-					const href = safeHref(t.failed.url);
-					return (
-						<div
-							key={t.threadId}
-							role="alert"
-							data-testid="write-failed"
-							className={NOTICE_RED}
-						>
-							<div className="flex items-start gap-2 bg-bad/10 py-1 pr-1 pl-3">
-								<LabeledIcon
-									icon={AlertIcon}
-									label="Not posted"
-									className="mt-2.5 text-bad"
-								/>
-								<div className="min-w-0 flex-1 py-2 text-sm">
-									<p className="break-words font-medium text-ink">
-										{t.failed.action} ·{" "}
-										<span className="font-mono text-xs">{where}</span>
-									</p>
-									<p className="break-words text-bad">
-										{t.failed.action === "New comment"
-											? newThreadError(t.failed, created)
-											: blocked
-												? "A pending review on GitHub blocks replies"
-												: changed
-													? "Changed on GitHub since you opened it"
-													: t.failed.error.message}
-									</p>
-									{changed && (
-										<div className="flex flex-wrap gap-x-3">
-											{textButton("Show theirs", "edit-show-theirs", () =>
-												writer.showTheirs(t.threadId),
-											)}
-											{textButton("Save anyway", "edit-save-anyway", () =>
-												writer.saveEdit(t.threadId, commentId, true),
-											)}
-										</div>
-									)}
-									{blocked && href && (
-										<a
-											href={href}
-											target="_blank"
-											rel="noreferrer"
-											className="inline-flex min-h-10 items-center gap-1 font-semibold text-link hover:underline focus-visible:outline-2 focus-visible:outline-accent"
-										>
-											Open on GitHub
-											<LinkExternalIcon size={14} aria-hidden />
-										</a>
-									)}
-								</div>
-								<div className="flex flex-col">
-									{!changed && retryButton(t, t.failed.action)}
-									{iconButton(
-										`Dismiss ${t.failed.action.toLowerCase()}`,
-										t.failed.action === "Reply"
-											? "Dismiss (the text stays in the box)"
-											: t.failed.action === "Edit"
-												? "Dismiss (the text stays in the editor)"
-												: "Dismiss",
-										XIcon,
-										() => writer.dismiss(t.threadId),
-									)}
-								</div>
-							</div>
-						</div>
-					);
-				}
+				const where = writeWhere(client, writer.drafts, t.threadId);
 				if (t.stalled) {
 					return (
 						<div

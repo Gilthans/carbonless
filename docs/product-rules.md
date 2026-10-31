@@ -187,7 +187,18 @@ unresolving one, and editing or deleting one of the viewer's comments in one
   posting again.
 - **Refused means refused.** When GitHub answers a write with an error, it
   is refused for good, with GitHub's message (401/403 forbidden, 404 gone,
-  anything else invalid), and nothing sends it again on its own. Only
+  anything else invalid), and nothing sends it again on its own. Every
+  refused write stays listed in one place on both pages (`RefusedWrites`)
+  until the reviewer's Retry lands (refused again, it stays with the new
+  message) or they drop it, after a confirmation (owner: "an always on
+  thing that allows to either retry or drop which requires confirmation").
+  A dropped reply, edit or new comment loses its text; a dropped resolve or
+  delete leaves GitHub as it is. Typing the reply again and sending it,
+  saving or cancelling the edit, or discarding the new comment settles it
+  too. Refusals are kept in `localStorage` beside the drafts
+  (`crb:refused:<owner>/<repo>#<n>`, `src/web/threads/refusals.ts`), so a
+  reload lists them again (a reply's, edit's or new comment's only while its
+  draft still holds it). Only
   GitHub's own trouble is transient (502 to the page, which retries): HTTP
   408, 429 or 5xx, a rate limit (a rate-limit 403 too), a timeout or no
   answer at all. A 404 for a thread GitHub still has is a refusal, not
@@ -215,11 +226,13 @@ unresolving one, and editing or deleting one of the viewer's comments in one
   text, the deleted comment left out).
 - **One thread, one write at a time.** Replies, resolving, edits and
   deletes on one thread run in the order asked, never at once.
-- **Leaving asks only when something would be lost** (owner: "refresh
+- **Leaving asks only when something would be lost or left unsettled** (owner: "refresh
   should only be dirty if information is lost"; `useUnsavedGuard`). It
-  asks for review states not yet stored, and for a resolve, unresolve or
-  delete not yet on GitHub (refused ones too, until let go; a delete in
-  its undo window too: nothing is sent yet and no later page sends it). It never asks for drafts (reply,
+  asks for review states not yet stored, for a resolve, unresolve or
+  delete not yet on GitHub (a delete in its undo window too: nothing is
+  sent yet and no later page sends it), and for any refused write until
+  its Retry lands or it is dropped (owner: "Until dropped or succeeded,
+  page should still ask"), though the next page lists it again. It never asks for drafts (reply,
   edit, new thread) or for replies, edits and new threads on their way:
   `localStorage` keeps them and the next page resends what was sent. Only
   while storage can't keep them (a private window, blocked site data) do

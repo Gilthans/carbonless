@@ -177,4 +177,75 @@ describe("useUnsavedGuard", () => {
 		act(() => writes.undoDelete("T1", "c1"));
 		expect(leave()).toBe(false);
 	});
+
+	it("asks exactly while a refused write is listed, kept or not: until Retry lands or it's dropped", async () => {
+		localStorage.clear();
+		const statuses = [403, 403, 403, 200];
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => {
+				const status = statuses.shift() ?? 200;
+				return new Response(
+					JSON.stringify(
+						status === 200
+							? {
+									threadId: "T1",
+									resolved: false,
+									commentCount: 2,
+									lastActivityAt: "2026-01-01T00:00:00Z",
+									attention: [],
+									yourTurn: false,
+									viewerCan: { reply: true, resolve: true, unresolve: true },
+									comments: { threadId: "T1", comments: [{ id: "c1" }] },
+								}
+							: { error: "no" },
+					),
+					{ status },
+				);
+			}),
+		);
+		const client = new QueryClient();
+		render(
+			<QueryClientProvider client={client}>
+				<Guard />
+			</QueryClientProvider>,
+		);
+		client.setQueryData(["overview"], { readId: "r1" });
+		client.setQueryData(["comments", "r1", "T1"], {
+			threadId: "T1",
+			comments: [{ id: "c1" }],
+		});
+		const writes = threadWritesFor(client);
+		act(() => writes.drafts.bind("crb:drafts:o/r#4"));
+		expect(leave()).toBe(false);
+		// A refused reply: its text is a draft storage keeps, but it's unsettled.
+		await act(async () => {
+			writes.reply("T1", "Refused");
+			await vi.waitFor(() => expect(writes.state().refused).toHaveLength(1));
+		});
+		expect(writes.drafts.durable()).toBe(true);
+		expect(leave()).toBe(true);
+		// Retried and refused again: still asks.
+		await act(async () => {
+			writes.retry("T1", "reply");
+			await vi.waitFor(() =>
+				expect(writes.state().refused[0]?.retrying).toBeUndefined(),
+			);
+		});
+		expect(leave()).toBe(true);
+		// Dropped: nothing asks.
+		act(() => writes.drop("T1", "reply"));
+		expect(leave()).toBe(false);
+		// Refused, then a Retry GitHub takes: asks until it lands.
+		await act(async () => {
+			writes.reply("T1", "Again");
+			await vi.waitFor(() => expect(writes.state().refused).toHaveLength(1));
+		});
+		expect(leave()).toBe(true);
+		await act(async () => {
+			writes.retry("T1", "reply");
+			await vi.waitFor(() => expect(writes.state().refused).toEqual([]));
+		});
+		expect(leave()).toBe(false);
+	});
 });

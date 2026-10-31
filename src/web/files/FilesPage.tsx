@@ -17,7 +17,7 @@ import { LabeledIcon } from "../overview/parts";
 import { useForgetPageScroll, usePageActive } from "../pageActive";
 import { useAppHeaderHeight, useHeight } from "../sticky";
 import { PeopleProvider } from "../threads/people";
-import { useThreadWrites } from "../threads/threadWrites";
+import { dropLosesText, useThreadWrites } from "../threads/threadWrites";
 import { usePrefetchComments } from "../threads/useThreadComments";
 import { useThreads } from "../threads/useThreads";
 import { ErrorMessage } from "../ui";
@@ -446,11 +446,8 @@ export function FilesPage() {
 	// The floating Files button makes way while a comment is being written
 	// (a box has focus) or one was refused: it would cover its buttons.
 	const writing = useWritingHere();
-	const refused = [...useThreadWrites().threads.values()].some(
-		(t) =>
-			t.failed?.action === "New comment" ||
-			t.failed?.action === "Reply" ||
-			t.failed?.action === "Edit",
+	const refused = useThreadWrites().refused.some(
+		(f) => dropLosesText(f) && !f.retrying,
 	);
 	const filesButton = !writing && !refused;
 

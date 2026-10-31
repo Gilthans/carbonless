@@ -96,6 +96,9 @@ export function useReviewView() {
  * - review states not yet stored: nothing keeps them past the page;
  * - a resolve or unresolve, or a delete (in its undo window or on its
  *   way), not yet on GitHub: nothing resends them (ThreadWritesState.lost);
+ * - any write GitHub refused, until a Retry lands or it is dropped (owner:
+ *   "Until dropped or succeeded, page should still ask"): kept across a
+ *   reload (refusals.ts), but leaving shouldn't pass it by unnoticed;
  * - drafts and their writes (replies, edits, new threads) only while
  *   storage can't keep them (DraftStore.durable): kept, a reload brings
  *   them back and resends what was sent (ThreadWrites.resume).

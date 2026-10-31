@@ -46,7 +46,9 @@ export function ReplyBox(props: {
 	const row = useRef<HTMLDivElement>(null);
 	// A refused reply is back in the box: keep it above the notice.
 	const refused =
-		useThreadWrites().threads.get(thread.id)?.failed?.action === "Reply";
+		useThreadWrites()
+			.threads.get(thread.id)
+			?.refused.some((f) => f.action === "Reply" && !f.retrying) ?? false;
 	useClearOfNotices(row, refused);
 	const blank = !text.trim();
 	const open = focused || !blank;

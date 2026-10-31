@@ -164,6 +164,22 @@ right once the file tree is a sidebar (md+), so neither is covered.
   transient failures in a row for waiting changes also turn the yellow
   notice red (the last error and Retry) while retrying goes on; a stored
   write clears it.
+- **Not posted** (`RefusedWrites`, `bad`): every thread write GitHub refused
+  (reply, new comment, edit, delete, resolve, unresolve), under one 40px red
+  chip at the stack's end (alert icon, count, chevron; "N not posted") on
+  both pages, until each is retried successfully or dropped (owner: "an
+  always on thing that allows to either retry or drop"). It can't be
+  dismissed; it opens and closes their list, which opens by itself when a
+  write is newly refused (not for ones kept from before a reload). Each
+  item: the action and where (`file:line`, mono), one clipped line of its
+  text (what Retry sends: the box, edit or new comment; a delete's
+  comment), GitHub's reason in `bad`, then 40px Retry (spins while
+  retrying; the item stays until GitHub takes it) and Drop. Drop swaps the
+  buttons for an in-place "Drop this? Its text is lost" (resolve, delete:
+  "Drop this?") with Cancel (focused; Escape too) and a red Drop. "Retry
+  all" heads the list when more than one can be retried. Kept in
+  `localStorage` beside the drafts (`crb:refused:…`), so a reload lists
+  them again.
 
 Both are `tone/10` over an opaque `raised` card with a `tone/50` border.
 While one shows, the file list's end is padded by how far up the notices
@@ -317,8 +333,11 @@ decides where; nothing else does):
   grey), named like the bubble and in the row's tooltip.
 - In an open file, file comments and threads whose line isn't in the diff
   get the **file bubble** on the diff's first row (a file cluster's row, a
-  hidden run's, a hunk header's, whichever comes first), where line
-  bubbles sit and beside one when that row has its own: the line bubble's
+  hidden run's, a hunk header's, whichever comes first; a row of its own
+  when the first row is code, so it never covers a line), centred on the
+  diff's visible width and kept there as long lines scroll (owner: "in the
+  center of that diff line instead of at the side, so it's more
+  prominent"), apart from the line bubbles at the right: the line bubble's
   pill with a file mark first ("2 comments on this file"); lines not in the
   diff add a `warn` alert to it ("…, line not in this diff") and to the
   thread's header ("Line not in this diff"). It opens a row right under
@@ -328,7 +347,9 @@ decides where; nothing else does):
   ("Comment on file", or "Comment on file — <why not>") that opens the
   composer at once. The header has no file comment button: closed, its
   bubble counts every thread in the file and opens the file, focusing the
-  file bubble, opened once the diff is in if it has threads.
+  file bubble, opened once the diff is in if it has threads. A click
+  anywhere else on a closed file's header (not its buttons, not the end of
+  a path selection) opens the file too, never the composer.
 
 ## Starting threads in Files changed
 
