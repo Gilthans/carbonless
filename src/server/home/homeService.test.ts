@@ -392,15 +392,16 @@ describe("HomeService", () => {
 		});
 		expect(snoozed).toMatchObject({ number: 3, hidden: "snoozed" });
 		expect(snoozed.annotations.snooze?.wakeOnActivity).toBe(true);
+		// Stamped by the service's clock, not the machine's: no test drifts
+		// with today's date.
+		expect(snoozed.annotations.snooze?.at).toBe(iso(T0));
 		expect(row(await home.view(), 3)?.hidden).toBe("snoozed");
 		const woken = await home.annotate("acme", "api", 3, { op: "wake" });
 		expect(woken).toMatchObject({ hidden: null, woke: null, annotations: {} });
 
-		// The inbox stamps events with the real clock, not `clock`: the
-		// activity must land before `until` whatever today's date is.
 		const again = await home.annotate("acme", "api", 3, {
 			op: "snooze",
-			until: iso(Math.max(T0, Date.now()) + 2 * DAY),
+			until: iso(T0 + 2 * DAY),
 			wakeOnActivity: true,
 		});
 		const at = Date.parse(again.annotations.snooze?.at ?? "");

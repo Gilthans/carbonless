@@ -171,8 +171,8 @@ export class HomeService {
 	constructor(options: HomeServiceOptions) {
 		this.#config = options.config;
 		this.#started = options.started ?? new StartedReviews();
-		this.#inbox = options.inbox ?? new InboxStore();
 		this.#now = options.now ?? Date.now;
+		this.#inbox = options.inbox ?? new InboxStore(this.#now);
 	}
 
 	/**

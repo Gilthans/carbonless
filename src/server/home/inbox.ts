@@ -209,6 +209,12 @@ const exists = (path: string) =>
 /** Reads and writes reviewers' inbox refs, one RefStore (and its cache) per repo. */
 export class InboxStore {
 	#stores = new Map<string, RefStore>();
+	readonly #now: () => number;
+
+	/** `now` stamps the events written: HomeService's clock. */
+	constructor(now: () => number = Date.now) {
+		this.#now = now;
+	}
 
 	#store(path: string): RefStore {
 		let store = this.#stores.get(path);
@@ -251,7 +257,7 @@ export class InboxStore {
 		// a clear before the snooze it ends (the fold orders by ts).
 		let last = -1;
 		for (const e of await store.readEvents(ref)) if (e.ts > last) last = e.ts;
-		const events = opEvents(slug, number, op, Math.max(Date.now(), last + 1));
+		const events = opEvents(slug, number, op, Math.max(this.#now(), last + 1));
 		await store.appendEvents(
 			ref,
 			`crb: ${SUMMARY[op.op]} #${number}`,
