@@ -4,6 +4,8 @@ Status: draft for the owner, 2026-10-31; the owner's answers to the builder chec
 
 Calls the coordinator made (the owner may overrule) are marked **(call)**.
 
+Doc (for comments): https://claude.ai/artifact/XeXueZHxuNREp8u3pmrXti
+
 Mockups: https://claude.ai/artifact/WJkYZwPYYYL69R3sEJu2ve
 
 ## Why
@@ -76,7 +78,7 @@ After the last file, a compact card: the reviewer's current verdict if any, the 
 
 - REST `POST /repos/{o}/{r}/pulls/{n}/reviews` with `event: APPROVE | REQUEST_CHANGES`, `commit_id` = the head the reviewer is viewing **(call: the viewed head, so GitHub records what was actually reviewed; on `--head reviewed` or a pinned snapshot that is an older commit, and the card says so before sending)**, and `body` only when the message box is used.
 - A pending review by the viewer makes GitHub refuse: checked on carbonless-scratch 2026-10-31, `POST …/reviews` with an `event` while the viewer has a PENDING review returns 422 "User can only have one pending review per pull request" and posts nothing. So GitHub itself guards the anti-goal; carbonless shows the existing pending-review notice and lists the verdict in the "not posted" chip. No pre-send check is needed.
-- GitHub requires a `body` for `REQUEST_CHANGES` (REST docs). See the open question below.
+- GitHub requires a `body` for `REQUEST_CHANGES` (REST docs), so Request changes is never sent without text (Goals).
 - **Retry safety:** before resending, carbonless reads the viewer's reviews and treats one with the same event, submitted after the first attempt started, as the landed verdict. A body carries the hidden `crb:v1` marker with the client id (as new threads do) when there is one.
 - The new verdict replaces the shown one at once (optimistic), with the sending clock; Overview's "Who's on it", the Timeline and the tab update when GitHub's answer comes back.
 - The fake gh gains `pulls/{n}/reviews` POST (and GraphQL fields below) so every case is testable without GitHub.
