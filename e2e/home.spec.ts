@@ -627,15 +627,14 @@ test("waiting on suggests people as you type: the viewer's orgs and repos' peopl
 	await expect(other.getByRole("button", { name: "1 waiting" })).toBeVisible();
 });
 
-test("on a short window the waiting-on suggestions stay inside it", async ({
+test("on a short window the waiting-on suggestions stay inside it, and inside the phone's sheet", async ({
 	page,
 	workdir,
 	pr,
 	startCrb,
 	isMobile,
 }) => {
-	test.skip(isMobile, "a desktop window's height; touch opens a bottom sheet");
-	await page.setViewportSize({ width: 1280, height: 600 });
+	if (!isMobile) await page.setViewportSize({ width: 1280, height: 600 });
 	const made = await setup(workdir, pr);
 	made.editScenario((s) => {
 		s.orgMembers = {
@@ -655,16 +654,37 @@ test("on a short window the waiting-on suggestions stay inside it", async ({
 		.pressSequentially("ali");
 	const list = page.getByRole("listbox", { name: "Suggestions" });
 	await expect(list.getByRole("option").first()).toBeVisible();
+	// Inside the window, and on a phone inside its sheet (a modal dialog
+	// that scrolls: anything above its top could never be reached).
 	const box = await list.evaluate((el) => {
 		const r = (el.parentElement as HTMLElement).getBoundingClientRect();
-		return { top: r.top, bottom: r.bottom, height: window.innerHeight };
+		const sheet = el.closest("dialog")?.getBoundingClientRect();
+		return {
+			top: r.top,
+			bottom: r.bottom,
+			height: window.innerHeight,
+			sheetTop: sheet?.top ?? 0,
+		};
 	});
-	expect(box.top).toBeGreaterThanOrEqual(0);
-	expect(box.bottom).toBeLessThanOrEqual(box.height);
-	// Every suggestion is reachable: the list scrolls.
-	const last = list.getByRole("option").last();
-	await last.scrollIntoViewIfNeeded();
-	await expect(last).toBeInViewport();
+	expect(box.top).toBeGreaterThanOrEqual(isMobile ? box.sheetTop : 0);
+	if (!isMobile) expect(box.bottom).toBeLessThanOrEqual(box.height);
+	// Every suggestion can be reached and tapped: the first and the last.
+	for (const option of [
+		list.getByRole("option").first(),
+		list.getByRole("option").last(),
+	]) {
+		await option.scrollIntoViewIfNeeded();
+		await expect(option).toBeInViewport();
+		const hit = await option.evaluate((el) => {
+			const r = el.getBoundingClientRect();
+			const at = document.elementFromPoint(
+				r.left + r.width / 2,
+				r.top + r.height / 2,
+			);
+			return !!at && el.contains(at);
+		});
+		expect(hit).toBe(true);
+	}
 });
 
 test("a note sits under the title on one line; hover or a tap shows all of it", async ({

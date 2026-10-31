@@ -262,7 +262,11 @@ function PersonInput(props: {
 		onOpen: () => setOpen(true),
 		onClose: () => setOpen(false),
 	});
-	const place = useListPlace(input, listOpen);
+	// With a mouse the panel is a popover: the list floats over it. On touch
+	// it's a bottom sheet that scrolls: the list grows it, in its flow, so
+	// nothing ends up above the sheet's top where no scroll reaches.
+	const floating = useMedia("(hover: hover)");
+	const place = useListPlace(input, listOpen && floating);
 	return (
 		<div className="relative">
 			<input
@@ -312,10 +316,14 @@ function PersonInput(props: {
 					onChoose={(p) => props.onPick(p.login)}
 					onHover={keys.setActive}
 					error={data?.error}
-					// Over the panel, not in it: under the input, or above it
+					// With a mouse, over the panel: under the input, or above it
 					// when the window has no room below; never past the window.
-					className={`absolute inset-x-0 z-50 ${place.up ? "bottom-full mb-1" : "top-full mt-1"}`}
-					style={{ maxHeight: place.max }}
+					className={
+						floating
+							? `absolute inset-x-0 z-50 ${place.up ? "bottom-full mb-1" : "top-full mt-1"}`
+							: "mt-1 max-h-60"
+					}
+					style={floating ? { maxHeight: place.max } : undefined}
 					render={(p) => (
 						<>
 							<Avatar person={p} size={20} />
