@@ -448,7 +448,7 @@ test("a snooze moves the row behind its footer, Wake up brings it back, and acti
 	await expect(
 		hidden.getByRole("img", { name: /^Snoozed until .*activity$/ }),
 	).toBeVisible();
-	await hidden.getByRole("button", { name: "Wake up" }).click();
+	await rowAction(page, hidden, "Wake up");
 	await expect(grabs.getByTestId("home-row")).toHaveCount(1);
 	await expect(foot).toBeHidden();
 
@@ -584,6 +584,63 @@ test("an open popover is on top of the rows after it", async ({
 	).toBeVisible();
 });
 
+test("rows end at their age; the actions float over the row's end on hover and focus", async ({
+	page,
+	workdir,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	await setup(workdir, pr);
+	const crb = await startReview(page, startCrb);
+	await goHome(page, crb.url);
+	const r = rowOf(section(page, "Up for grabs"), "Snapshot reviews");
+	const ageRight = async () => {
+		const row = await r.boundingBox();
+		const age = await r.locator("time").boundingBox();
+		if (!row || !age) throw new Error("no box");
+		return row.x + row.width - (age.x + age.width);
+	};
+	// Only the row's own padding (12px) after the age: no room kept for
+	// the actions.
+	const gap = await ageRight();
+	expect(gap).toBeLessThanOrEqual(13);
+	if (isMobile) {
+		const more = r.getByRole("button", { name: /^Actions for #/ });
+		const box = await more.boundingBox();
+		expect(box?.height ?? 0).toBeGreaterThanOrEqual(40);
+		expect(box?.width ?? 0).toBeGreaterThanOrEqual(40);
+		return;
+	}
+	const snooze = r.getByRole("button", { name: "Snooze", exact: true });
+	const bar = r.locator("[data-row-actions]");
+	await page.mouse.move(0, 0);
+	await expect(bar).toHaveCSS("opacity", "0");
+	await r.hover();
+	await expect(bar).toHaveCSS("opacity", "1");
+	// Over the row, not beside it: the age hasn't moved.
+	expect(await ageRight()).toBe(gap);
+	const barBox = await bar.boundingBox();
+	const rowBox = await r.boundingBox();
+	if (!barBox || !rowBox) throw new Error("no box");
+	expect(barBox.x + barBox.width).toBeLessThanOrEqual(rowBox.x + rowBox.width);
+	// Keyboard: focus in the row shows it too.
+	await page.mouse.move(0, 0);
+	await r.getByRole("link").focus();
+	await expect(bar).toHaveCSS("opacity", "1");
+	// Past the row's focusable signs (the age's exact date), to the bar.
+	for (
+		let i = 0;
+		i < 5 && !(await snooze.evaluate((el) => el === document.activeElement));
+		i++
+	) {
+		await page.keyboard.press("Tab");
+	}
+	await expect(snooze).toBeFocused();
+	await page.keyboard.press("Enter");
+	await expect(page.getByRole("dialog", { name: "Snooze" })).toBeVisible();
+});
+
 test("at 360px: no sideways scroll with the busiest rows, and 40px targets", async ({
 	page,
 	workdir,
@@ -608,11 +665,12 @@ test("at 360px: no sideways scroll with the busiest rows, and 40px targets", asy
 	);
 	await dialog.getByRole("button", { name: /Next Monday/ }).click();
 	await reviewing.getByRole("button", { name: "1 snoozed" }).click();
+	// Wake up is a row action: in the bar (hover), or the ⋯ sheet (touch).
 	await expect(
 		reviewing
 			.getByTestId("home-row-hidden")
-			.getByRole("button", { name: "Wake up" }),
-	).toBeVisible();
+			.getByRole("button", { name: isMobile ? /^Actions for #/ : "Wake up" }),
+	).toBeAttached();
 	const widths = await page.evaluate(() => ({
 		scroll: document.documentElement.scrollWidth,
 		client: document.documentElement.clientWidth,
@@ -649,7 +707,7 @@ test("at 360px: no sideways scroll with the busiest rows, and 40px targets", asy
 			busy.getByRole("button", { name: /^Actions for #/ }),
 			reviewing
 				.getByTestId("home-row-hidden")
-				.getByRole("button", { name: "Wake up" }),
+				.getByRole("button", { name: /^Actions for #/ }),
 			page.getByRole("button", { name: "Refresh" }),
 			page.getByRole("button", { name: "Edit repos" }),
 		];

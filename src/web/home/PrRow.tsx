@@ -16,7 +16,6 @@ import {
 	XCircleIcon,
 	ZapIcon,
 } from "@primer/octicons-react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useState } from "react";
 import type {
 	Coverage,
@@ -29,8 +28,9 @@ import { Meter } from "../files/ProgressBar";
 import { fullDate, RelativeTime } from "../RelativeTime";
 import { Tooltip } from "../Tooltip";
 import { hashTint, TINTS } from "../threads/people";
-import { ErrorMessage, safeHref } from "../ui";
-import { homeQuery, postAnnotation, prPath, setRow } from "./homeApi";
+import { safeHref } from "../ui";
+import { useMedia } from "../useMedia";
+import { prPath } from "./homeApi";
 
 /** An icon (or a few) that means something: a tooltip and an accessible name. */
 export function Sign(props: {
@@ -266,35 +266,6 @@ function Reason({ row }: { row: HomeRow }) {
 	return null;
 }
 
-/** Wake up: ends the snooze or the wait at once. */
-function WakeUp({ row }: { row: HomeRow }) {
-	const client = useQueryClient();
-	const wake = useMutation({
-		mutationFn: () => postAnnotation(row, { op: "wake" }),
-		onMutate: () => client.cancelQueries({ queryKey: homeQuery.queryKey }),
-		onSuccess: (answer) => setRow(client, answer),
-	});
-	return (
-		<>
-			<Tooltip content="Back among the visible rows" describe={false}>
-				{(trigger) => (
-					<button
-						type="button"
-						{...trigger}
-						onClick={() => wake.mutate()}
-						disabled={wake.isPending}
-						className="relative z-10 flex h-10 shrink-0 items-center gap-1.5 rounded-md px-2 text-sm text-ink-soft hover:bg-overlay hover:text-ink focus-visible:outline-2 focus-visible:outline-accent disabled:opacity-60"
-					>
-						<BellIcon size={14} aria-hidden />
-						Wake up
-					</button>
-				)}
-			</Tooltip>
-			{wake.isError && <ErrorMessage error={wake.error} />}
-		</>
-	);
-}
-
 /** The review a click on the PR's row opens: the only one, else the plain one. */
 function mainReview(reviews: RowReview[]): RowReview | undefined {
 	if (reviews.length === 1) return reviews[0];
@@ -370,16 +341,21 @@ export function PrRow(props: {
 	const hidden = row.hidden !== null;
 	const single = row.reviews.length === 1 ? row.reviews[0] : undefined;
 	const subs = row.reviews.length > 1 ? byLastActed(row.reviews) : [];
+	// On touch the actions' "⋯" floats at the row's top right: room for it
+	// at the title line's end (a phone), or the row's (one line).
+	const touch = !useMedia("(hover: hover)");
 	return (
 		<>
 			<li
 				data-testid={hidden ? "home-row-hidden" : "home-row"}
-				className={`group relative flex min-h-11 flex-wrap items-center gap-x-3 gap-y-1 border-t border-line px-3 py-2 text-sm first:border-t-0 hover:bg-raised focus-within:bg-raised sm:flex-nowrap`}
+				className={`group relative flex min-h-11 flex-wrap items-center gap-x-3 gap-y-1 border-t border-line px-3 py-2 text-sm first:border-t-0 hover:bg-raised focus-within:bg-raised sm:flex-nowrap ${touch ? "sm:pr-12" : ""}`}
 			>
 				<span className="order-2 max-w-[40%] min-w-0 truncate text-xs text-muted sm:order-none sm:w-36 sm:max-w-none sm:shrink-0 sm:text-sm">
 					{row.owner}/{row.repo}
 				</span>
-				<span className="order-1 flex min-w-0 basis-full items-center gap-2 sm:order-none sm:flex-1 sm:basis-auto">
+				<span
+					className={`order-1 flex min-w-0 basis-full items-center gap-2 sm:order-none sm:flex-1 sm:basis-auto ${touch ? "max-sm:pr-8" : ""}`}
+				>
 					<TitleLink row={row} />
 					{row.draft && (
 						<span className="shrink-0 rounded-full bg-overlay px-1.5 text-xs font-semibold text-muted">
@@ -423,9 +399,8 @@ export function PrRow(props: {
 					<span className="relative z-10 shrink-0 whitespace-nowrap">
 						<RelativeTime iso={row.updatedAt} />
 					</span>
-					{hidden && <WakeUp row={row} />}
-					{props.actions}
 				</span>
+				{props.actions}
 			</li>
 			{subs.map((review) => (
 				<SubRow key={review.id} review={review} />

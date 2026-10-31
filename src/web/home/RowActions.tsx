@@ -1,4 +1,5 @@
 import {
+	BellIcon,
 	CalendarIcon,
 	ClockIcon,
 	HourglassIcon,
@@ -288,6 +289,9 @@ export function RowActions(props: {
 		},
 	});
 	const pick = (op: AnnotationOp) => save.mutate(op);
+	// A hidden row's Wake up: ends the snooze or the wait at once.
+	const hidden = row.hidden !== null;
+	const wake = () => save.mutate({ op: "wake" });
 	// A popover closes on Escape and on a press or focus elsewhere.
 	useEffect(() => {
 		if (!panel || !hover) return;
@@ -331,7 +335,8 @@ export function RowActions(props: {
 						setPanel(null);
 						setSheet(true);
 					}}
-					className="relative z-10 -my-1 flex h-10 w-10 shrink-0 items-center justify-center rounded-md text-ink-soft hover:bg-overlay focus-visible:outline-2 focus-visible:outline-accent"
+					// Floats at the row's top right, over the title line's end.
+					className="absolute top-0.5 right-0.5 z-10 flex h-10 w-10 items-center justify-center rounded-md text-ink-soft hover:bg-overlay focus-visible:outline-2 focus-visible:outline-accent"
 				>
 					<KebabHorizontalIcon aria-hidden />
 				</button>
@@ -344,6 +349,17 @@ export function RowActions(props: {
 						body(panel)
 					) : (
 						<div className="space-y-0.5">
+							{hidden && (
+								<button
+									type="button"
+									className={itemClass}
+									onClick={wake}
+									disabled={save.isPending}
+								>
+									<BellIcon aria-hidden className="text-muted" />
+									Wake up
+								</button>
+							)}
 							{PANELS.map((p) => (
 								<button
 									key={p.id}
@@ -367,34 +383,34 @@ export function RowActions(props: {
 		<span
 			ref={wrapper}
 			data-row-actions
-			// Open, above the later rows' z-10 icons (one stacking context).
-			className={`relative flex shrink-0 items-center ${
+			// A small bar floating over the row's top right end: shown on hover
+			// and keyboard focus, taking no room in the row. Open, above the
+			// later rows' z-10 icons (one stacking context).
+			className={`absolute -top-4 right-2 flex items-center gap-0.5 rounded-lg border border-edge bg-overlay p-0.5 shadow-float ${
 				panel
 					? "z-30"
-					: "z-10 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100"
+					: "pointer-events-none z-20 opacity-0 group-focus-within:pointer-events-auto group-focus-within:opacity-100 group-hover:pointer-events-auto group-hover:opacity-100"
 			}`}
 		>
+			{hidden && (
+				<BarButton label="Wake up" onClick={wake} disabled={save.isPending}>
+					<BellIcon aria-hidden />
+				</BarButton>
+			)}
 			{PANELS.map((p) => (
-				<Tooltip key={p.id} content={p.label} describe={false}>
-					{(trigger) => (
-						<button
-							type="button"
-							{...trigger}
-							ref={(el) => {
-								trigger.ref(el);
-								if (el) buttons.current.set(p.id, el);
-								else buttons.current.delete(p.id);
-							}}
-							aria-label={p.label}
-							aria-haspopup="dialog"
-							aria-expanded={panel === p.id}
-							onClick={() => setPanel((o) => (o === p.id ? null : p.id))}
-							className="flex h-8 w-8 items-center justify-center rounded-md text-muted hover:bg-overlay hover:text-ink focus-visible:outline-2 focus-visible:outline-accent aria-expanded:bg-overlay aria-expanded:text-ink"
-						>
-							{p.icon}
-						</button>
-					)}
-				</Tooltip>
+				<BarButton
+					key={p.id}
+					label={p.label}
+					popup
+					expanded={panel === p.id}
+					buttonRef={(el) => {
+						if (el) buttons.current.set(p.id, el);
+						else buttons.current.delete(p.id);
+					}}
+					onClick={() => setPanel((o) => (o === p.id ? null : p.id))}
+				>
+					{p.icon}
+				</BarButton>
 			))}
 			{panel && (
 				<Popover label={PANELS.find((p) => p.id === panel)?.label ?? ""}>
@@ -402,7 +418,47 @@ export function RowActions(props: {
 					{save.isError && <ErrorMessage error={save.error} />}
 				</Popover>
 			)}
+			{!panel && save.isError && (
+				<span className="absolute top-full right-0 z-40 mt-1 w-72">
+					<ErrorMessage error={save.error} />
+				</span>
+			)}
 		</span>
+	);
+}
+
+/** One of the floating bar's icon buttons, with its tooltip. */
+function BarButton(props: {
+	label: string;
+	onClick: () => void;
+	children: ReactNode;
+	disabled?: boolean;
+	/** Opens a popover: aria-haspopup and aria-expanded. */
+	popup?: boolean;
+	expanded?: boolean;
+	buttonRef?: (el: HTMLButtonElement | null) => void;
+}) {
+	return (
+		<Tooltip content={props.label} describe={false}>
+			{(trigger) => (
+				<button
+					type="button"
+					{...trigger}
+					ref={(el) => {
+						trigger.ref(el);
+						props.buttonRef?.(el);
+					}}
+					aria-label={props.label}
+					aria-haspopup={props.popup ? "dialog" : undefined}
+					aria-expanded={props.popup ? !!props.expanded : undefined}
+					onClick={props.onClick}
+					disabled={props.disabled}
+					className="flex h-8 w-8 items-center justify-center rounded-md text-muted hover:bg-pressed hover:text-ink focus-visible:outline-2 focus-visible:outline-accent disabled:opacity-60 aria-expanded:bg-pressed aria-expanded:text-ink"
+				>
+					{props.children}
+				</button>
+			)}
+		</Tooltip>
 	);
 }
 

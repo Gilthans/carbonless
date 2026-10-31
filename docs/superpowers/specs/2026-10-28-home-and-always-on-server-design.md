@@ -375,9 +375,15 @@ code-review meaning.
   instead, the title carrying an external-link icon and the tooltip
   "Merged, nothing to review here. Open on GitHub"; `/pr/...` and
   `crb <pr>` answer with the same refusal as today.
-- **Hover actions** (desktop): snooze, waiting on, note. On touch the row
-  ends in a 40px "⋯" button that opens the same three as a bottom sheet
-  **(call)**; no hover, no long-press.
+- **Floating actions** (owner, 2026-10-31: "The actions can appear in a
+  floating menu bar, it doesn't need space saved"): the row keeps no room
+  for them; its last column (the age) ends at the row's right edge. With a
+  mouse: snooze, waiting on, note (and Wake up on a hidden row) are icon
+  buttons in a small bar floating over the row's top right end, shown on
+  hover and on keyboard focus in the row; their popovers open under it,
+  above the rows after it. On touch: a 40px "⋯" button floating at the
+  row's top right (the title line leaves room for it) opens the same
+  actions as a bottom sheet **(call)**; no hover, no long-press.
 
 ### Hidden rows
 
@@ -388,7 +394,8 @@ code-review meaning.
   waiting", a disclosure button (`aria-expanded`, 40px tall on touch) that
   reveals the rows in place, dimmed, each with its reason badge (the date,
   with a bolt when activity can wake it; the arrow and avatar of the
-  person it waits on) and a **Wake up** button (owner, 2026-10-29), which
+  person it waits on) and a **Wake up** action (owner, 2026-10-29; among the
+  row's floating actions since 2026-10-31), which
   ends the snooze or the wait at once and puts the row back among the
   visible ones. Collapsed again on reload.
 - A row that woke in the last 24 hours carries a small alarm badge

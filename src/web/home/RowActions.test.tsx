@@ -277,16 +277,85 @@ describe("RowActions", () => {
 		expect(within(pop).queryByRole("button", { name: "Clear" })).toBeNull();
 	});
 
+	it("floats the actions over the row's end, out of its columns, shown on hover and focus", async () => {
+		setup();
+		await screen.findByText("Seven");
+		const r = screen.getByTestId("home-row");
+		const bar = within(r)
+			.getByRole("button", { name: "Snooze" })
+			.closest("[data-row-actions]") as HTMLElement;
+		// Takes no room: absolute, not in the row's meta line.
+		expect(bar).toHaveClass("absolute");
+		expect(within(r).getByTestId("row-meta")).not.toContainElement(bar);
+		expect(bar).toHaveClass(
+			"opacity-0",
+			"pointer-events-none",
+			"group-hover:opacity-100",
+			"group-focus-within:opacity-100",
+		);
+		for (const name of ["Snooze", "Waiting on", "Note"]) {
+			within(bar).getByRole("button", { name });
+		}
+		expect(within(bar).queryByRole("button", { name: "Wake up" })).toBeNull();
+	});
+
+	it("puts a hidden row's Wake up in the bar, and on touch in the sheet", async () => {
+		const snoozed: HomeRow = {
+			...base,
+			hidden: "snoozed",
+			annotations: {
+				snooze: {
+					until: new Date(Date.now() + 86_400_000).toISOString(),
+					wakeOnActivity: true,
+					at: ago(10),
+				},
+			},
+		};
+		setup(() => base, snoozed);
+		await userEvent.click(
+			await screen.findByRole("button", { name: "1 snoozed" }),
+		);
+		const r = screen.getByTestId("home-row-hidden");
+		const wake = within(r).getByRole("button", { name: "Wake up" });
+		expect(wake.closest("[data-row-actions]")).not.toBeNull();
+		expect(within(r).getByTestId("row-meta")).not.toContainElement(wake);
+		cleanup();
+		vi.stubGlobal(
+			"matchMedia",
+			(query: string) =>
+				({
+					matches:
+						!query.includes("hover: hover") && !query.includes("min-width"),
+					media: query,
+					addEventListener: () => {},
+					removeEventListener: () => {},
+				}) as unknown as MediaQueryList,
+		);
+		const api = setup(() => base, snoozed);
+		await userEvent.click(
+			await screen.findByRole("button", { name: "1 snoozed" }),
+		);
+		const more = screen.getByRole("button", { name: "Actions for #7" });
+		expect(more).toHaveClass("absolute", "h-10", "w-10");
+		await userEvent.click(more);
+		const sheet = screen.getByRole("dialog", { name: "#7" });
+		await userEvent.click(
+			within(sheet).getByRole("button", { name: "Wake up" }),
+		);
+		await waitFor(() => expect(posted(api)).toEqual([{ op: "wake" }]));
+	});
+
 	it("raises an open popover above the rows after it", async () => {
 		setup();
 		await screen.findByText("Seven");
 		const snooze = screen.getByRole("button", { name: "Snooze" });
 		const wrapper = snooze.closest("[data-row-actions]");
-		expect(wrapper).toHaveClass("z-10");
+		// Closed, over the row above's z-10 icons it overlaps.
+		expect(wrapper).toHaveClass("z-20");
 		await userEvent.click(snooze);
 		// Above every row's z-10 icons, which share its stacking context.
 		expect(wrapper).toHaveClass("z-30");
-		expect(wrapper).not.toHaveClass("z-10");
+		expect(wrapper).not.toHaveClass("z-20");
 	});
 
 	it("Escape closes a popover and focus goes back to its button", async () => {
