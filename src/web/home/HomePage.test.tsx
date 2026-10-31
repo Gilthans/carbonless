@@ -182,6 +182,34 @@ describe("HomePage", () => {
 		expect(r.querySelector("time")).toHaveTextContent("1 hour ago");
 	});
 
+	it("shows a note on its own line under the title, one line at most, the whole of it in its tooltip", async () => {
+		const note = "first line of a long note\nsecond line\nthird";
+		fakeApi(
+			view({
+				other: [row({ title: "Migrate alerts", annotations: { note } })],
+			}),
+		);
+		renderWithQuery(<HomePage />);
+		const r = (await screen.findAllByTestId("home-row"))[0] as HTMLElement;
+		const shown = within(r).getByTestId("row-note");
+		const title = within(r).getByRole("link", { name: /Migrate alerts/ });
+		// Not beside the title: on a line of its own, after the title's.
+		expect(shown.contains(title)).toBe(false);
+		expect(title.parentElement?.contains(shown)).toBe(false);
+		expect(
+			title.compareDocumentPosition(shown) & Node.DOCUMENT_POSITION_FOLLOWING,
+		).toBeTruthy();
+		expect(shown).toHaveClass("truncate");
+		expect(within(shown).getByRole("img")).toHaveAccessibleName(
+			`Note: ${note}`,
+		);
+		within(shown).getByRole("img").focus();
+		const tip = await shownTooltip();
+		expect(tip.textContent).toBe(`Note: ${note}`);
+		// Its lines kept, not run together.
+		expect(tip.querySelector(".whitespace-pre-line")).not.toBeNull();
+	});
+
 	it("shows every title in full, wrapping inside the row, a long word too", async () => {
 		const long = `Refactor ${"configurationloader".repeat(6)} and more words after it`;
 		fakeApi(view({ other: [row({ number: 7, title: long })] }));

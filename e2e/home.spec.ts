@@ -565,6 +565,62 @@ test("waiting on someone hides the row until they act; a note shows on the row",
 	await expect(other.getByRole("button", { name: /waiting/ })).toBeHidden();
 });
 
+test("a note sits under the title on one line; hover or a tap shows all of it", async ({
+	page,
+	workdir,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	if (isMobile) await page.setViewportSize({ width: 360, height: 780 });
+	await setup(workdir, pr);
+	const crb = await startCrb();
+	await goHome(page, crb.url);
+	const other = section(page, "Other open");
+	const title = "Migrate alerts table";
+	const note = [
+		"Waiting for the alerts team to sign off on the migration window before this goes anywhere",
+		"then rerun the backfill",
+		"and tell Tomer",
+	].join("\n");
+	const dialog = await rowAction(page, rowOf(other, title), "Note");
+	await dialog.getByRole("textbox").fill(note);
+	await dialog.getByRole("button", { name: "Save" }).click();
+	const row = rowOf(other, title);
+	const shown = row.getByTestId("row-note");
+	await expect(shown).toBeVisible();
+	const link = row.getByRole("link", { name: new RegExp(title) });
+	const t = await link.boundingBox();
+	const n = await shown.boundingBox();
+	// Under the title, not beside it.
+	expect(n?.y ?? 0).toBeGreaterThanOrEqual((t?.y ?? 0) + (t?.height ?? 0) - 1);
+	// One line: as tall as a line of its text, cut with an ellipsis.
+	const line = await shown.evaluate((el) =>
+		Number.parseFloat(getComputedStyle(el).lineHeight),
+	);
+	expect(n?.height ?? 0).toBeLessThanOrEqual(line + 4);
+	expect(
+		await shown.evaluate((el) => {
+			const text = el.querySelector("[data-note-text]") as HTMLElement;
+			return (
+				getComputedStyle(text).textOverflow === "ellipsis" &&
+				text.scrollWidth > text.clientWidth
+			);
+		}),
+	).toBe(true);
+	// The whole note, its lines kept: on hover with a mouse, on a tap on touch.
+	const sign = shown.getByRole("img", { name: /^Note: / });
+	if (isMobile) await sign.tap();
+	else await sign.hover();
+	const tip = page
+		.locator("[role=tooltip]:not([hidden])")
+		.filter({ hasText: /^Note: / });
+	await expect(tip).toBeVisible();
+	await expect(tip).toContainText("and tell Tomer");
+	expect(await tip.innerText()).toBe(`Note: ${note}`);
+	await expectNoPageOverflow(page);
+});
+
 test("a failed refresh shows the warning and keeps the rows", async ({
 	page,
 	workdir,

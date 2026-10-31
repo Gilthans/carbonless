@@ -35,6 +35,8 @@ import { prPath } from "./homeApi";
 /** An icon (or a few) that means something: a tooltip and an accessible name. */
 export function Sign(props: {
 	label: string;
+	/** The tooltip, when it should show more than `label` does. */
+	tip?: ReactNode;
 	className?: string;
 	children: ReactNode;
 	testId?: string;
@@ -45,7 +47,7 @@ export function Sign(props: {
 	focusable?: boolean;
 }) {
 	return (
-		<Tooltip content={props.label} describe={false}>
+		<Tooltip content={props.tip ?? props.label} describe={false}>
 			{(trigger) => (
 				<span
 					{...trigger}
@@ -432,32 +434,50 @@ export function PrRow(props: {
 				</span>
 				<span
 					data-col="title"
-					className={`order-1 flex min-w-0 basis-full items-center gap-2 lg:order-none lg:basis-auto ${COLUMNS.title} ${touch ? "max-lg:pr-8" : "max-lg:min-h-8 max-lg:any-pointer-coarse:min-h-12"}`}
+					className={`order-1 flex min-w-0 basis-full flex-col justify-center gap-0.5 lg:order-none lg:basis-auto ${COLUMNS.title} ${touch ? "max-lg:pr-8" : ""}`}
 				>
-					<TitleLink row={row} />
-					{row.draft && (
-						<span className="shrink-0 rounded-full bg-overlay px-1.5 text-xs font-semibold text-muted">
-							Draft
-						</span>
-					)}
+					<span
+						className={`flex min-w-0 items-center gap-2 ${touch ? "" : "max-lg:min-h-8 max-lg:any-pointer-coarse:min-h-12"}`}
+					>
+						<TitleLink row={row} />
+						{row.draft && (
+							<span className="shrink-0 rounded-full bg-overlay px-1.5 text-xs font-semibold text-muted">
+								Draft
+							</span>
+						)}
+						{row.woke && (
+							<Sign
+								focusable
+								label={`Woke: ${row.woke.by}`}
+								className="text-warn"
+							>
+								<BellIcon size={12} aria-hidden />
+							</Sign>
+						)}
+					</span>
 					{row.annotations.note && (
-						<Sign
-							focusable
-							label={`Note: ${row.annotations.note}`}
-							className="max-w-48 min-w-0 shrink rounded-full border border-dashed border-line-strong px-1.5 text-xs text-muted"
+						// Under the title (owner, 2026-10-31), one line at most; the
+						// whole note, its lines kept, in the tooltip (hover, focus, tap).
+						<span
+							data-testid="row-note"
+							className="flex min-w-0 truncate text-xs leading-4 text-muted"
 						>
-							<NoteIcon size={12} aria-hidden />
-							<span className="truncate">{row.annotations.note}</span>
-						</Sign>
-					)}
-					{row.woke && (
-						<Sign
-							focusable
-							label={`Woke: ${row.woke.by}`}
-							className="text-warn"
-						>
-							<BellIcon size={12} aria-hidden />
-						</Sign>
+							<Sign
+								focusable
+								label={`Note: ${row.annotations.note}`}
+								tip={
+									<span className="whitespace-pre-line">
+										Note: {row.annotations.note}
+									</span>
+								}
+								className="max-w-full min-w-0 gap-1"
+							>
+								<NoteIcon size={12} aria-hidden className="shrink-0" />
+								<span data-note-text className="truncate">
+									{row.annotations.note}
+								</span>
+							</Sign>
+						</span>
 					)}
 				</span>
 				<span

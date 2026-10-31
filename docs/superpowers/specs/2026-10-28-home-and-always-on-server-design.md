@@ -340,8 +340,8 @@ refresh lists every PR (paginated), so the count is always the true one.
 
 ### A row
 
-Repo · number · title · pills (Draft; your note, dashed) · status icons ·
-turn · age or coverage · hover actions. Every icon has a tooltip and an
+Repo · number · title · pills (Draft) · status icons · turn · age or
+coverage · hover actions; your note on its own line under the title. Every icon has a tooltip and an
 accessible name (principle 6); colors are the design tokens with their
 code-review meaning.
 
@@ -451,7 +451,12 @@ Semantics:
   Waiting-on panel). "Me" never hides and shows the row under "you" in the
   turn column. Teams (`org/slug`) are not offered: a team never acts
   itself, so a wait on one could never end.
-- **Note** = free text shown as a dashed pill on the row; private to the
+- **Note** = free text on its own line under the row's title (owner,
+  2026-10-31: "the pr note should appear below the title if it exists,
+  not beside. it should take up no more than 1 line, the rest appearing
+  by hover on click"): a note icon and the text in `muted`, one line at
+  most, cut with an ellipsis; the whole note, its line breaks kept, in
+  its tooltip on hover or focus, and on a tap on touch. Private to the
   reviewer, never posted to GitHub.
 - Each is cleared by its own action (Wake up clears snooze and waiting-on;
   an empty note clears the note).
