@@ -188,8 +188,12 @@ export interface Scenario {
 	viewerReposHold?: string;
 	/** Members of the viewer's orgs, by org: Home's waiting-on suggestions. */
 	orgMembers?: Record<string, string[]>;
-	/** Orgs of `orgMembers` whose members GitHub refuses (SAML SSO not authorized). */
+	/** Orgs of `orgMembers` whose members GitHub refuses (SAML SSO not authorized): `organization: null`. */
 	orgMembersForbidden?: string[];
+	/** The same refusal with the org there and `membersWithRole: null`. */
+	orgMembersForbiddenMembers?: string[];
+	/** Orgs whose members read fails as a retry may fix (GitHub's rate limit). */
+	orgMembersFlaky?: string[];
 	/** Members per page of an org's member list (default 100). */
 	orgMembersPageSize?: number;
 	/**

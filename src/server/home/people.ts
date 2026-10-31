@@ -40,9 +40,16 @@ export class HomePeople {
 	#members: {
 		people: Person[] | null;
 		at: number;
+		/** Read again this long after `at`: sooner when an org failed. */
+		ttl: number;
 		loading: boolean;
 		error?: string;
-	} = { people: null, at: Number.NEGATIVE_INFINITY, loading: false };
+	} = {
+		people: null,
+		at: Number.NEGATIVE_INFINITY,
+		ttl: SEARCH_TTL_MS,
+		loading: false,
+	};
 	readonly #searches = new Map<string, Search>();
 	/** A cut list is logged once per server, a skipped org once each. */
 	#loggedCut = false;
@@ -69,12 +76,18 @@ export class HomePeople {
 	#orgMembers(): { people: Person[]; pending: boolean; error?: string } {
 		const m = this.#members;
 		const now = this.#now();
-		const ttl = m.people ? ORG_MEMBERS_TTL_MS : SEARCH_TTL_MS;
+		const ttl = m.people ? m.ttl : SEARCH_TTL_MS;
 		if (!m.loading && now - m.at >= ttl) {
 			m.loading = true;
 			fetchOrgMembers({ maxPages: this.#maxPages }).then(
-				({ people, truncated, skipped }) => {
-					this.#members = { people, at: this.#now(), loading: false };
+				({ people, truncated, skipped, failed }) => {
+					this.#members = {
+						people,
+						at: this.#now(),
+						// An org that failed as a retry may fix: asked again soon.
+						ttl: failed.length > 0 ? SEARCH_TTL_MS : ORG_MEMBERS_TTL_MS,
+						loading: false,
+					};
 					for (const org of skipped) {
 						if (this.#loggedSkip.has(org)) continue;
 						this.#loggedSkip.add(org);

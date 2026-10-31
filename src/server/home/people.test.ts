@@ -7,6 +7,7 @@ import {
 import type { PeopleResult } from "../../shared/home.js";
 import { type HomeConfig, HomeService } from "./homeService.js";
 import { HomePeople, ORG_MEMBERS_TTL_MS } from "./people.js";
+import { fetchOrgMembers } from "./prFacts.js";
 
 // Each fake gh call is a node process: give a loaded machine time.
 vi.setConfig({ testTimeout: 30_000 });
@@ -186,6 +187,52 @@ describe("HomePeople", () => {
 		expect(reads()).toBe(before);
 	});
 
+	it("a viewer whose only org is SAML-locked: no alert, and not read again before the hour", async () => {
+		const { people, clock } = await setup({
+			orgMembers: { locked: ["zara"] },
+			viewerTeams: [],
+			orgMembersForbidden: ["locked"],
+		});
+		const r = await settle(people, "bo");
+		expect(r.error).toBeUndefined();
+		expect(logins(r).close).toEqual(["bob", "bobby-tables"]);
+		const reads = () =>
+			(fx?.ghLog() ?? "").split("\n").filter((l) => /membersWithRole/.test(l))
+				.length;
+		expect(reads()).toBe(1);
+		clock.now = T0 + 10 * 60_000;
+		await settle(people, "bob");
+		await settle(people, "bobb");
+		expect(reads()).toBe(1);
+	});
+
+	it("an org failing as a retry may fix keeps the others and is read again after a minute", async () => {
+		const { people, clock } = await setup({
+			orgMembers: { acme: ["Octo", "zed"], beta: ["zoe"] },
+			orgMembersFlaky: ["beta"],
+		});
+		const r = await settle(people, "z");
+		expect(logins(r).close).toEqual(["zed"]);
+		expect(r.error).toBeUndefined();
+		const betaReads = () =>
+			(fx?.ghLog() ?? "")
+				.split("\n")
+				.filter((l) => /membersWithRole/.test(l) && /org=beta/.test(l)).length;
+		expect(betaReads()).toBe(1);
+		fx?.scenario({ orgMembersFlaky: [] });
+		clock.now = T0 + 59_000;
+		await settle(people, "zo");
+		expect(betaReads()).toBe(1);
+		clock.now = T0 + 61_000;
+		let again = await people.people("zo");
+		for (let i = 0; i < 200 && again.close.length === 0; i++) {
+			await new Promise((resolve) => setTimeout(resolve, 50));
+			again = await people.people("zo");
+		}
+		expect(logins(again).close).toEqual(["zoe"]);
+		expect(betaReads()).toBe(2);
+	});
+
 	it("without read:org, the repos' people still come; a failed user search says why", async () => {
 		const { people } = await setup({
 			viewerTeams: null,
@@ -194,5 +241,33 @@ describe("HomePeople", () => {
 		const r = await settle(people, "bo");
 		expect(logins(r)).toEqual({ close: ["bob", "bobby-tables"], others: [] });
 		expect(r.error).toMatch(/rate limit/);
+	});
+});
+
+describe("fetchOrgMembers", () => {
+	it("skips a SAML refusal in either shape (no org, or no members) and names it; a rate limit is failed, not skipped", async () => {
+		fx = createHomeFixture({
+			orgMembers: {
+				acme: ["ann"],
+				locked: ["x"],
+				halflocked: ["y"],
+				beta: ["z"],
+			},
+			orgMembersForbidden: ["locked"],
+			orgMembersForbiddenMembers: ["halflocked"],
+			orgMembersFlaky: ["beta"],
+		});
+		const r = await fetchOrgMembers();
+		expect(r.people.map((p) => p.login)).toEqual(["ann"]);
+		expect(r.skipped.sort()).toEqual(["halflocked", "locked"]);
+		expect(r.failed).toEqual(["beta"]);
+	});
+
+	it("throws only when every org failed as a retry may fix", async () => {
+		fx = createHomeFixture({
+			orgMembers: { beta: ["z"] },
+			orgMembersFlaky: ["beta"],
+		});
+		await expect(fetchOrgMembers()).rejects.toThrow(/rate limit/);
 	});
 });

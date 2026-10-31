@@ -675,19 +675,25 @@ export const ORG_MEMBERS_MAX_PAGES = 10;
 /**
  * The members of the viewer's orgs (one query for the orgs, one per page
  * of 100 members, each 1 point). Without `read:org` GitHub refuses the
- * orgs: none. An org GitHub won't list (SAML SSO the token isn't
- * authorized for, forbidden) is skipped and named in `skipped`; the rest
- * still come. Only when every org failed does it throw (offline, say), so
- * the caller asks again soon. `truncated` when an org stopped at the page
- * cap.
+ * orgs: none. An org GitHub refuses (SAML SSO the token isn't authorized
+ * for, forbidden: no org, or no members, in its partial answer) is
+ * answered and named in `skipped`; one that fails as a retry may fix (no
+ * answer: offline, a 5xx, a rate limit) is named in `failed`, the rest
+ * kept. Only when every org failed that way does it throw. `truncated`
+ * when an org stopped at the page cap.
  */
 export async function fetchOrgMembers(
 	options: { maxPages?: number; signal?: AbortSignal } = {},
-): Promise<{ people: Person[]; truncated: boolean; skipped: string[] }> {
+): Promise<{
+	people: Person[];
+	truncated: boolean;
+	skipped: string[];
+	failed: string[];
+}> {
 	const { maxPages = ORG_MEMBERS_MAX_PAGES, signal } = options;
 	let orgs: string[];
 	try {
-		// An org GitHub won't show comes back null in partial data: skipped.
+		// An org GitHub won't show comes back null in partial data: left out.
 		const data = await graphql(
 			["-f", `query=${ORGS_QUERY}`],
 			"your organizations",
@@ -700,18 +706,21 @@ export async function fetchOrgMembers(
 			.filter((o): o is string => o !== null && OWNER.test(o));
 	} catch (error) {
 		if (error instanceof GhError && /scope|read:org/i.test(error.message)) {
-			return { people: [], truncated: false, skipped: [] };
+			return { people: [], truncated: false, skipped: [], failed: [] };
 		}
 		throw error;
 	}
 	const people = new Map<string, Person>();
 	let truncated = false;
 	const skipped: string[] = [];
+	const failed: string[] = [];
 	let lastError: unknown;
 	for (const org of orgs) {
 		let cursor: string | null = null;
 		try {
 			for (let page = 0; page < maxPages; page++) {
+				// GitHub's refusal comes with data (the org, or its members, null);
+				// any other failure (a rate limit too) throws.
 				const data = await graphql(
 					[
 						"-f",
@@ -723,30 +732,58 @@ export async function fetchOrgMembers(
 					`the members of ${org}`,
 					newCost(),
 					signal,
-					hasData,
+					onlyRefusals,
 				);
-				if (data.organization == null) throw new GhError(`${org} refused`);
-				const members = rec(rec(data.organization).membersWithRole);
+				const members = rec(data.organization).membersWithRole;
+				if (data.organization == null || members == null) {
+					skipped.push(org);
+					cursor = null;
+					break;
+				}
 				for (const node of list(members)) {
 					const p = person(node);
 					if (p && !people.has(p.login.toLowerCase())) {
 						people.set(p.login.toLowerCase(), p);
 					}
 				}
-				const info = rec(members.pageInfo);
+				const info = rec(rec(members).pageInfo);
 				cursor =
 					info.hasNextPage === true ? (str(info.endCursor) ?? null) : null;
 				if (!cursor) break;
 			}
 		} catch (error) {
-			skipped.push(org);
+			failed.push(org);
 			lastError = error;
 			continue;
 		}
 		if (cursor) truncated = true;
 	}
-	if (orgs.length > 0 && skipped.length === orgs.length) throw lastError;
-	return { people: [...people.values()], truncated, skipped };
+	if (orgs.length > 0 && failed.length === orgs.length) throw lastError;
+	return { people: [...people.values()], truncated, skipped, failed };
+}
+
+/**
+ * An answer whose every error is GitHub refusing access (FORBIDDEN, SAML
+ * SSO the token isn't authorized for), with data: partial, taken.
+ */
+function onlyRefusals(stdout: string): boolean {
+	let answer: Obj;
+	try {
+		answer = rec(JSON.parse(stdout));
+	} catch {
+		return false;
+	}
+	const errors = answer.errors;
+	return (
+		answer.data !== undefined &&
+		Array.isArray(errors) &&
+		errors.length > 0 &&
+		errors.every(
+			(e) =>
+				rec(e).type === "FORBIDDEN" ||
+				/SAML|SSO/.test(String(rec(e).message ?? "")),
+		)
+	);
 }
 
 const USERS_QUERY = `query($q: String!) { search(query: $q, type: USER, first: 10) { nodes { __typename ... on User { login avatarUrl } } } rateLimit { cost remaining resetAt } }`;
