@@ -1746,6 +1746,33 @@ describe("side by side (the cells contract)", () => {
 		]);
 	});
 
+	it("a pick remembers the number column its focus was picked from: the bar goes by that side", async () => {
+		const { user } = setup();
+		await loaded();
+		// A removed line, by its old number: the left.
+		press(number("LEFT", 3));
+		expect(getPicks()).toMatchObject({
+			focus: { side: "LEFT", line: 3 },
+			column: "LEFT",
+		});
+		// Extended to an added line's new number: the focus is on the right.
+		press(number("RIGHT", 4), { shiftKey: true });
+		expect(getPicks()).toMatchObject({
+			focus: { side: "RIGHT", line: 4 },
+			column: "RIGHT",
+		});
+		// A context line by its old number: a RIGHT line, picked on the left.
+		press(number("LEFT", 5));
+		expect(getPicks()).toMatchObject({
+			focus: { side: "RIGHT", line: 6 },
+			column: "LEFT",
+		});
+		// From the keyboard: Shift+Right extends to the new column.
+		within(number("LEFT", 4)).getByRole("button").focus();
+		await user.keyboard("{Enter}{Shift>}{ArrowRight}{/Shift}");
+		expect(getPicks()?.column).toBe("RIGHT");
+	});
+
 	it("Down from an old number goes on down the old numbers through context rows (past the row with no old line)", async () => {
 		const { user } = setup();
 		await loaded();
@@ -2152,6 +2179,32 @@ describe("pickAnchor: the bar starts right of the row's numbers", () => {
 		old.querySelector("button")?.setAttribute("data-pick", "LEFT:10");
 		row.append(old, cellAt("new", 415, 38));
 		expect(pickAnchor(row)).toBe(415 + 38 + 6);
+	});
+
+	/** A side-by-side pair row: old number, old code, new number, new code. */
+	const pairRow = (view: "side-by-side" | "unified") => {
+		const table = document.createElement("table");
+		table.dataset.view = view;
+		const row = document.createElement("tr");
+		row.append(
+			cellAt("old", 60, 38),
+			cellAt("code", 98, 400),
+			cellAt("new", 498, 38),
+			cellAt("code", 536, 400),
+		);
+		table.append(row);
+		return row;
+	};
+
+	it("side by side: by the side the pick was made on, right of that side's number", () => {
+		expect(pickAnchor(pairRow("side-by-side"), "LEFT")).toBe(60 + 38 + 6);
+		expect(pickAnchor(pairRow("side-by-side"), "RIGHT")).toBe(498 + 38 + 6);
+		// No column known: as unified.
+		expect(pickAnchor(pairRow("side-by-side"))).toBe(498 + 38 + 6);
+	});
+
+	it("unified: right of the new numbers whichever column was picked", () => {
+		expect(pickAnchor(pairRow("unified"), "LEFT")).toBe(498 + 38 + 6);
 	});
 });
 

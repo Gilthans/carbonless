@@ -1164,7 +1164,7 @@ test("side by side, Up/Down on the number buttons stay in their column and Left/
 	await expectNoPageOverflow(page);
 });
 
-test("side by side, the file bubble sits in the first row's right cell (a pair row once the gap above is loaded) and the pick bar right of the new numbers", async ({
+test("side by side, the file bubble sits in the first row's right cell (a pair row once the gap above is loaded) and the pick bar by the side picked", async ({
 	page,
 	pr,
 	startCrb,
@@ -1237,26 +1237,59 @@ test("side by side, the file bubble sits in the first row's right cell (a pair r
 	expect(saved.width).toBe(written.width);
 	expect(stored(p)).toMatchObject([{ path: GREET, subjectType: "FILE" }]);
 	await expectNoPageOverflow(page);
-	// A pick on an old number: the bar sits just right of the row's new
-	// number (the right-side number cell), never over either number column.
-	const oldFive = pairs(section).nth(0).getByTestId("old");
+	// A pick on an old number: the bar sits by the left side, just right of
+	// the old number (never over a number column); on a new number, just
+	// right of the new number. On a phone it stays on screen.
+	const pair = pairs(section).nth(0);
+	const oldFive = pair.getByTestId("old");
+	const newFive = pair.getByTestId("new");
 	await oldFive.scrollIntoViewIfNeeded();
 	if (isMobile) {
-		await oldFive.tap();
-		await expect(selectionBar(page)).toBeVisible();
+		for (const number of [oldFive, newFive]) {
+			await number.tap();
+			await expect(selectionBar(page)).toBeVisible();
+			const bar = await selectionBar(page).boundingBox();
+			const width = page.viewportSize()?.width ?? 0;
+			if (!bar) throw new Error("no geometry");
+			expect(bar.x).toBeGreaterThanOrEqual(0);
+			expect(bar.x + bar.width).toBeLessThanOrEqual(width);
+			await expectNoPageOverflow(page);
+			await page.keyboard.press("Escape");
+			await expect(selectionBar(page)).toBeHidden();
+		}
 		return;
 	}
+	const row = await pair.boundingBox();
+	const oldNumber = await oldFive.boundingBox();
+	const newNumber = await newFive.boundingBox();
+	if (!row || !oldNumber || !newNumber) throw new Error("no geometry");
+	const barBox = async () => {
+		await expect(selectionBar(page)).toBeVisible();
+		const bar = await selectionBar(page).boundingBox();
+		if (!bar) throw new Error("no geometry");
+		expect(bar.y).toBeGreaterThanOrEqual(row.y + row.height);
+		expect(bar.y).toBeLessThanOrEqual(row.y + 2 * row.height);
+		return bar;
+	};
 	await oldFive.click();
-	await expect(selectionBar(page)).toBeVisible();
-	const row = await pairs(section).nth(0).boundingBox();
-	const newNumber = await pairs(section)
-		.nth(0)
-		.getByTestId("new")
-		.boundingBox();
-	const bar = await selectionBar(page).boundingBox();
-	if (!row || !newNumber || !bar) throw new Error("no geometry");
-	expect(bar.y).toBeGreaterThanOrEqual(row.y + row.height);
-	expect(bar.y).toBeLessThanOrEqual(row.y + 2 * row.height);
-	expect(bar.x).toBeGreaterThanOrEqual(newNumber.x + newNumber.width);
-	expect(bar.x).toBeLessThanOrEqual(newNumber.x + newNumber.width + 8);
+	const left = await barBox();
+	expect(left.x).toBeGreaterThanOrEqual(oldNumber.x + oldNumber.width);
+	expect(left.x).toBeLessThanOrEqual(oldNumber.x + oldNumber.width + 8);
+	expect(left.x + left.width).toBeLessThanOrEqual(newNumber.x);
+	// The same row's new number: the bar moves to the right side.
+	await newFive.click();
+	const right = await barBox();
+	expect(right.x).toBeGreaterThanOrEqual(newNumber.x + newNumber.width);
+	expect(right.x).toBeLessThanOrEqual(newNumber.x + newNumber.width + 8);
+	// Extended from the new number back to an old one: by the left again.
+	await pairs(section)
+		.nth(1)
+		.getByTestId("old")
+		.click({ modifiers: ["Shift"] });
+	await expect(section.locator("tr[data-picked]")).toHaveCount(2);
+	await expect(async () => {
+		const bar = await selectionBar(page).boundingBox();
+		expect(bar?.x).toBeGreaterThanOrEqual(oldNumber.x + oldNumber.width);
+		expect(bar?.x).toBeLessThanOrEqual(oldNumber.x + oldNumber.width + 8);
+	}).toPass();
 });

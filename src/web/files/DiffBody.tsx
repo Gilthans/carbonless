@@ -53,6 +53,7 @@ import { languageFor } from "./highlight";
 import type { Landing } from "./landing";
 import {
 	getPicks,
+	type Picks,
 	picked,
 	pickKey,
 	pickRange,
@@ -2360,18 +2361,23 @@ function usePicker(
 			row?.querySelector(`[${CODE_CELL}]`);
 		return cell ? cellLine(cell) : null;
 	};
-	const pickTo = (t: CellLine, extend: boolean) => {
+	// Picks with the number column their focus was picked from.
+	const withColumn = (next: Picks | null, column: Element) =>
+		next && { ...next, column: sideOf(column) };
+	const pickTo = (t: CellLine, extend: boolean, column: Element) => {
 		const cur = getPicks();
 		const mine = cur?.path === t.path ? cur : null;
 		if (extend && mine) {
-			setPicks(pickRange(cells(), mine.anchor, picked(t)) ?? mine);
+			setPicks(
+				withColumn(pickRange(cells(), mine.anchor, picked(t)), column) ?? mine,
+			);
 		} else if (
 			mine?.lines.length === 1 &&
 			pickKey(mine.anchor) === pickKey(t)
 		) {
 			setPicks(null);
 		} else {
-			setPicks(pickRange(cells(), picked(t), picked(t)));
+			setPicks(withColumn(pickRange(cells(), picked(t), picked(t)), column));
 		}
 		// Picked lines, not text: one or the other makes the span.
 		window.getSelection()?.removeAllRanges();
@@ -2397,24 +2403,33 @@ function usePicker(
 				e.currentTarget.closest("tr")?.querySelector<HTMLButtonElement>(button)
 			)?.focus({ preventScroll: true });
 			dragging.current = true;
-			pickTo(t, e.shiftKey);
+			pickTo(t, e.shiftKey, e.currentTarget);
 		},
 		onPointerEnter: (e) => {
 			if (!dragging.current || (e.buttons & 1) === 0) return;
 			const t = targetOf(e.currentTarget);
 			const cur = getPicks();
 			if (!t || cur?.path !== t.path) return;
-			setPicks(pickRange(cells(), cur.anchor, picked(t)) ?? cur);
+			setPicks(
+				withColumn(
+					pickRange(cells(), cur.anchor, picked(t)),
+					e.currentTarget,
+				) ?? cur,
+			);
 		},
 		onClick: (e) => {
 			const t = targetOf(e.currentTarget);
 			if (!t) return;
 			// The keyboard's Enter or Space on the number button.
-			if (e.detail === 0) pickTo(t, e.shiftKey);
+			if (e.detail === 0) pickTo(t, e.shiftKey, e.currentTarget);
 			// A tap: a second one extends (a mouse picked on pointer down).
 			else if (pointer.current !== "mouse") {
 				const cur = getPicks();
-				pickTo(t, cur?.path === t.path && pickKey(cur.anchor) !== pickKey(t));
+				pickTo(
+					t,
+					cur?.path === t.path && pickKey(cur.anchor) !== pickKey(t),
+					e.currentTarget,
+				);
 			}
 		},
 		onKeyDown: (e) => {
@@ -2459,7 +2474,7 @@ function usePicker(
 			if (!from || !to) return;
 			const cur = getPicks();
 			const anchor = cur?.path === from.path ? cur.anchor : picked(from);
-			setPicks(pickRange(cells(), anchor, picked(to)));
+			setPicks(withColumn(pickRange(cells(), anchor, picked(to)), next));
 		},
 		onFocus: (stop) => setFocused({ shown, stop }),
 	};

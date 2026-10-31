@@ -8,7 +8,7 @@ import {
 	useState,
 	useSyncExternalStore,
 } from "react";
-import type { FileView } from "../../shared/types";
+import type { DiffSide, FileView } from "../../shared/types";
 import { overviewQuery, sessionQuery } from "../api";
 import { useShortcut } from "../shortcuts";
 import { Tooltip } from "../Tooltip";
@@ -256,15 +256,25 @@ const ofSelection = (commit: string): BarTarget | null => {
 };
 
 /**
- * Where the bar starts for picked lines: just right of the row's last
- * number cell (the new numbers), whichever side's number was picked, so it
- * never covers the numbers a pick extends to.
+ * Where the bar starts for picked lines: just right of a number cell, so
+ * it never covers the numbers a pick extends to. Unified, the row's last
+ * (the new numbers), whichever was picked; side by side, the number of
+ * the side the pick's focus was picked from (`column`), so the bar is by
+ * the side the reader clicked.
  */
-export function pickAnchor(row: Element): number {
+export function pickAnchor(row: Element, column?: DiffSide): number {
+	const split =
+		row.closest("table")?.getAttribute("data-view") === "side-by-side";
 	const numbers = row.querySelectorAll(
 		'td[data-testid="old"], td[data-testid="new"]',
 	);
-	return rectOf(numbers[numbers.length - 1] ?? row).right + GAP;
+	const own =
+		split && column
+			? row.querySelector(
+					`td[data-testid="${column === "LEFT" ? "old" : "new"}"]`,
+				)
+			: null;
+	return rectOf(own ?? numbers[numbers.length - 1] ?? row).right + GAP;
 }
 
 const ofPicks = (picks: Picks, commit: string): BarTarget | null => {
@@ -299,7 +309,7 @@ const ofPicks = (picks: Picks, commit: string): BarTarget | null => {
 			Math.max(first.right, last.right) - Math.min(first.left, last.left),
 			last.bottom - first.top,
 		),
-		anchor: pickAnchor(lastRow),
+		anchor: pickAnchor(lastRow, picks.column),
 		after: true,
 		text: false,
 	};

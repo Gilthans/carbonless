@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from "react";
+import type { DiffSide } from "../../shared/types";
 import type { CellLine } from "./codeSpan";
 
 /** A picked row: its code cell's line, without the element. */
@@ -11,13 +12,16 @@ export const pickKey = (l: Pick<PickedLine, "side" | "line">) =>
 /**
  * Lines picked by their numbers in one file: `anchor` where the pick
  * started, `focus` where it was extended to; `lines` every row between
- * them, top down (the first and last make the span).
+ * them, top down (the first and last make the span). `column`: the
+ * number column `focus` was picked from (side by side, a context line's
+ * old number picks its RIGHT line from the left), where the bar goes.
  */
 export interface Picks {
 	path: string;
 	anchor: PickedLine;
 	focus: PickedLine;
 	lines: PickedLine[];
+	column?: DiffSide;
 }
 
 let picks: Picks | null = null;
