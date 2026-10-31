@@ -3,6 +3,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { RouterProvider } from "@tanstack/react-router";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { StrictMode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createAppRouter } from "./router";
 
@@ -50,10 +51,13 @@ const json = (status: number, body: unknown) =>
 
 function renderAt(path: string) {
 	const router = createAppRouter({ initialPath: path });
+	// As main.tsx renders it: StrictMode mounts the page twice.
 	render(
-		<QueryClientProvider client={new QueryClient()}>
-			<RouterProvider router={router} />
-		</QueryClientProvider>,
+		<StrictMode>
+			<QueryClientProvider client={new QueryClient()}>
+				<RouterProvider router={router} />
+			</QueryClientProvider>
+		</StrictMode>,
 	);
 	return router;
 }
