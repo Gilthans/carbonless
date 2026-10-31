@@ -9,7 +9,6 @@ import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import {
 	type KeyboardEvent,
 	type ReactNode,
-	useEffect,
 	useId,
 	useRef,
 	useState,
@@ -20,6 +19,13 @@ import { useShortcut, useShortcutHelp } from "../shortcuts";
 import { goTo, prPath, searchQuery } from "./homeApi";
 import { parseOpenInput } from "./openInput";
 import { Avatar, Sign } from "./PrRow";
+import {
+	DEBOUNCE_MS,
+	type SuggestionGroup,
+	SuggestionList,
+	useDebounced,
+	useSuggestionKeys,
+} from "./Suggestions";
 
 type Pr = SearchResult["prs"][number];
 type Option =
@@ -27,24 +33,7 @@ type Option =
 	| { kind: "pr"; pr: Pr }
 	| { kind: "open"; owner: string; repo: string; number: number };
 
-interface Group {
-	label: string;
-	options: Option[];
-	/** Still coming from GitHub: the heading spins over what's known. */
-	loading?: boolean;
-}
-
-/** How long typing rests before the server is asked. */
-const DEBOUNCE_MS = 150;
-
-function useDebounced<T>(value: T, ms: number): T {
-	const [out, setOut] = useState(value);
-	useEffect(() => {
-		const t = setTimeout(() => setOut(value), ms);
-		return () => clearTimeout(t);
-	}, [value, ms]);
-	return out;
-}
+type Group = SuggestionGroup<Option>;
 
 const HELP = [
 	{ keys: "Escape", label: "Close the list", group: "Home" as const },
@@ -140,7 +129,6 @@ const STATE_ICON: Record<Pr["state"], ReactNode> = {
 export function OpenBox(props: { className?: string }) {
 	const [q, setQ] = useState("");
 	const [open, setOpen] = useState(false);
-	const [active, setActive] = useState(0);
 	const input = useRef<HTMLInputElement>(null);
 	const listId = useId();
 	const optionId = useId();
@@ -170,13 +158,19 @@ export function OpenBox(props: { className?: string }) {
 	const reposPending = pending && !!search.data?.reposPending;
 	const listOpen =
 		open && q.trim() !== "" && (options.length > 0 || pending || !!error);
-	const current = Math.min(active, Math.max(0, options.length - 1));
+	const keys = useSuggestionKeys({
+		count: options.length,
+		listOpen,
+		onOpen: () => setOpen(true),
+		onClose: () => setOpen(false),
+	});
+	const current = keys.current;
 
 	const choose = (option: Option | undefined) => {
 		if (!option) return;
 		if (option.kind === "repo") {
 			setQ(`${option.repo.name} `);
-			setActive(0);
+			keys.reset();
 			setOpen(true);
 			input.current?.focus();
 			return;
@@ -185,13 +179,8 @@ export function OpenBox(props: { className?: string }) {
 	};
 
 	const onKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
-		if (e.key === "ArrowDown" || e.key === "ArrowUp") {
-			if (options.length === 0) return;
-			e.preventDefault();
-			setOpen(true);
-			const step = e.key === "ArrowDown" ? 1 : -1;
-			setActive((current + step + options.length) % options.length);
-		} else if (e.key === "Enter") {
+		if (keys.onKeyDown(e)) return;
+		if (e.key === "Enter") {
 			e.preventDefault();
 			if (parsed.kind === "pr") choose(options[0]);
 			else if (listOpen) choose(options[current]);
@@ -201,14 +190,9 @@ export function OpenBox(props: { className?: string }) {
 				e.preventDefault();
 				choose(option);
 			}
-		} else if (e.key === "Escape" && listOpen) {
-			e.preventDefault();
-			e.stopPropagation();
-			setOpen(false);
 		}
 	};
 
-	let index = -1;
 	return (
 		<div className={`relative min-w-0 ${props.className ?? ""}`}>
 			<search>
@@ -240,7 +224,7 @@ export function OpenBox(props: { className?: string }) {
 						value={q}
 						onChange={(e) => {
 							setQ(e.target.value);
-							setActive(0);
+							keys.reset();
 							setOpen(true);
 						}}
 						onFocus={() => setOpen(true)}
@@ -277,70 +261,19 @@ export function OpenBox(props: { className?: string }) {
 				</form>
 			</search>
 			{listOpen && (
-				// biome-ignore lint/a11y/noStaticElementInteractions: not an action; it keeps focus in the box while a click picks an option.
-				<div
-					onMouseDown={(e) => e.preventDefault()}
-					className="absolute inset-x-0 top-full z-40 mt-1 max-h-[70dvh] overflow-y-auto rounded-xl border border-edge bg-overlay p-1.5 shadow-float"
-				>
-					{error && (
-						<p role="alert" className="px-2.5 py-1.5 text-sm text-warn">
-							{error}
-						</p>
+				<SuggestionList
+					listId={listId}
+					optionId={optionId}
+					groups={groups}
+					current={current}
+					onChoose={choose}
+					onHover={keys.setActive}
+					error={error}
+					className="absolute inset-x-0 top-full z-40 mt-1"
+					render={(option, selected) => (
+						<OptionBody option={option} words={words} selected={selected} />
 					)}
-					<div id={listId} role="listbox" aria-label="Suggestions">
-						{groups.map((g, gi) => {
-							const labelId = `${listId}-g${gi}`;
-							return (
-								// biome-ignore lint/a11y/useSemanticElements: a listbox's group of options; a fieldset holds form controls.
-								<div
-									key={g.label}
-									role="group"
-									aria-labelledby={labelId}
-									aria-busy={!!g.loading}
-								>
-									<div className="flex items-center gap-1.5 px-2.5 pt-1.5 pb-1 text-xs font-bold tracking-[0.12em] text-faint uppercase">
-										<span id={labelId} className="min-w-0 truncate">
-											{g.label}
-										</span>
-										{g.loading && (
-											<SyncIcon
-												size={12}
-												aria-hidden
-												className="shrink-0 animate-spin motion-reduce:animate-none"
-											/>
-										)}
-									</div>
-									{g.options.map((option) => {
-										index++;
-										const i = index;
-										const selected = i === current;
-										return (
-											<div
-												key={i}
-												id={`${optionId}-${i}`}
-												role="option"
-												aria-selected={selected}
-												tabIndex={-1}
-												onClick={() => choose(option)}
-												onKeyDown={() => {}}
-												onMouseEnter={() => setActive(i)}
-												className={`flex min-h-10 cursor-pointer items-center gap-2.5 rounded-lg px-2.5 text-sm text-ink ${
-													selected ? "bg-pressed" : ""
-												}`}
-											>
-												<OptionBody
-													option={option}
-													words={words}
-													selected={selected}
-												/>
-											</div>
-										);
-									})}
-								</div>
-							);
-						})}
-					</div>
-				</div>
+				/>
 			)}
 		</div>
 	);

@@ -351,6 +351,40 @@ test("Repos spins while the viewer's repos load, then lists only theirs", async 
 	await expect(page.getByRole("status")).toHaveText("");
 });
 
+test("the view's repo input suggests the viewer's repos as you type", async ({
+	page,
+	workdir,
+	pr,
+	startCrb,
+}) => {
+	await setup(workdir, pr);
+	const crb = await startCrb();
+	await goHome(page, crb.url);
+	await page.getByRole("button", { name: "Edit repos" }).click();
+	const dialog = page.getByRole("dialog", { name: "My PRs" });
+	const field = dialog.getByRole("combobox", { name: "Add a repo" });
+	await field.pressSequentially("wid");
+	const repos = dialog.getByRole("group", { name: "Repos" });
+	// Only the viewer's repos: never acme/widgetry, public but not theirs.
+	await expect(repos.getByRole("option")).toHaveText([OWNER_REPO]);
+	await expect(
+		dialog.getByRole("group", { name: "Pull requests" }),
+	).toHaveCount(0);
+	await field.press("ArrowDown");
+	await field.press("Enter");
+	await expect(
+		dialog
+			.getByRole("list", { name: "Repos in this view" })
+			.getByRole("listitem"),
+	).toHaveText(["acme/api", OWNER_REPO]);
+	await expect(field).toHaveValue("");
+	await dialog.getByRole("button", { name: "Save" }).click();
+	await expect(dialog).toBeHidden();
+	await expect(
+		page.getByText("Add widget cache with a rather long title"),
+	).toBeVisible();
+});
+
 test("a snooze moves the row behind its footer, Wake up brings it back, and activity wakes it", async ({
 	page,
 	workdir,

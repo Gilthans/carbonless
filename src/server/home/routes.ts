@@ -128,7 +128,7 @@ export async function registerHomeRoutes(
 			}
 			return home.setRepos(repos as string[]);
 		});
-		scope.get<{ Querystring: { q?: unknown } }>(
+		scope.get<{ Querystring: { q?: unknown; only?: unknown } }>(
 			"/api/home/search",
 			(request) => {
 				const q = request.query.q ?? "";
@@ -137,7 +137,11 @@ export async function registerHomeRoutes(
 						`q must be at most ${MAX_QUERY} characters`,
 					);
 				}
-				return search.search(q);
+				const { only } = request.query;
+				if (only !== undefined && only !== "repos") {
+					throw new HomeRequestError("only must be repos");
+				}
+				return search.search(q, only === "repos" ? { only } : {});
 			},
 		);
 	});

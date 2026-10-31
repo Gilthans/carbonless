@@ -1,10 +1,21 @@
 import { PlusIcon, RepoIcon, XIcon } from "@primer/octicons-react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import {
+	keepPreviousData,
+	useMutation,
+	useQuery,
+	useQueryClient,
+} from "@tanstack/react-query";
 import { useEffect, useId, useRef, useState } from "react";
 import type { HomeView } from "../../shared/home";
 import { ErrorMessage } from "../ui";
 import { NOT_PHONE, useMedia } from "../useMedia";
-import { homeQuery, putView } from "./homeApi";
+import { homeQuery, putView, searchQuery } from "./homeApi";
+import {
+	DEBOUNCE_MS,
+	SuggestionList,
+	useDebounced,
+	useSuggestionKeys,
+} from "./Suggestions";
 
 /**
  * A repo as the view lists it, "owner/repo" lowercased, from that or a
@@ -59,8 +70,6 @@ export function ViewSettings(props: {
 	const dialog = useRef<HTMLDialogElement>(null);
 	const titleId = useId();
 	const [repos, setRepos] = useState(home.view.repos);
-	const [input, setInput] = useState("");
-	const [bad, setBad] = useState(false);
 	useEffect(() => {
 		const d = dialog.current;
 		if (!d) return;
@@ -72,8 +81,6 @@ export function ViewSettings(props: {
 			return;
 		}
 		setRepos(home.view.repos);
-		setInput("");
-		setBad(false);
 		if (d.hasAttribute("open")) return;
 		if (typeof d.showModal === "function") d.showModal();
 		else d.setAttribute("open", "");
@@ -154,40 +161,7 @@ export function ViewSettings(props: {
 							</li>
 						))}
 					</ul>
-					<form
-						onSubmit={(e) => {
-							e.preventDefault();
-							const name = parseRepo(input);
-							if (!name) {
-								setBad(true);
-								return;
-							}
-							add(name);
-							setInput("");
-							setBad(false);
-						}}
-						className="flex gap-1.5"
-					>
-						<input
-							aria-label="Add a repo"
-							aria-invalid={bad || undefined}
-							placeholder="owner/repo or GitHub URL"
-							value={input}
-							onChange={(e) => {
-								setInput(e.target.value);
-								setBad(false);
-							}}
-							autoComplete="off"
-							className="h-10 min-w-0 flex-1 rounded-md border border-line-strong bg-code px-2.5 text-sm text-ink placeholder:text-faint focus-visible:outline-2 focus-visible:outline-accent aria-invalid:border-bad"
-						/>
-						<button
-							type="submit"
-							aria-label="Add"
-							className={`${iconButton} border border-edge`}
-						>
-							<PlusIcon aria-hidden />
-						</button>
-					</form>
+					<RepoInput listed={listed} onAdd={add} disabled={save.isPending} />
 					{suggestions.length > 0 && (
 						<ul aria-label="Suggested" className="flex flex-wrap gap-1.5">
 							{suggestions.map((r) => (
@@ -226,5 +200,127 @@ export function ViewSettings(props: {
 				</div>
 			)}
 		</dialog>
+	);
+}
+
+/**
+ * Add a repo: `owner/repo` or a URL, with the viewer's repos suggested as
+ * you type (Home's search, its Repos group alone: the same source and
+ * matching as the open box). Arrows pick one, Enter or a click adds it;
+ * Enter with none picked adds what was typed.
+ */
+function RepoInput(props: {
+	listed: (name: string) => boolean;
+	onAdd: (name: string) => void;
+	disabled: boolean;
+}) {
+	const [input, setInput] = useState("");
+	const [bad, setBad] = useState(false);
+	const [open, setOpen] = useState(false);
+	const listId = useId();
+	const optionId = useId();
+	const q = input.trim();
+	const debounced = useDebounced(q, DEBOUNCE_MS);
+	const search = useQuery({
+		...searchQuery(debounced, "repos"),
+		enabled: debounced !== "",
+		placeholderData: keepPreviousData,
+	});
+	const data = q === "" ? undefined : search.data;
+	const options = (data?.repos ?? [])
+		.map((r) => r.name)
+		.filter((name) => !props.listed(name));
+	const loading = !!data?.reposPending;
+	const listOpen = open && (options.length > 0 || loading);
+	const keys = useSuggestionKeys({
+		count: options.length,
+		listOpen,
+		// What was typed comes first: a suggestion only once picked.
+		autoSelect: false,
+		onOpen: () => setOpen(true),
+		onClose: () => setOpen(false),
+	});
+	const done = (name: string) => {
+		props.onAdd(name);
+		setInput("");
+		setBad(false);
+		keys.reset();
+	};
+	const submit = () => {
+		const picked = listOpen ? options[keys.current] : undefined;
+		if (picked) return done(picked);
+		const name = parseRepo(input);
+		if (!name) {
+			setBad(true);
+			return;
+		}
+		done(name);
+	};
+	return (
+		<div>
+			<form
+				onSubmit={(e) => {
+					e.preventDefault();
+					submit();
+				}}
+				className="flex gap-1.5"
+			>
+				<input
+					role="combobox"
+					aria-label="Add a repo"
+					aria-autocomplete="list"
+					aria-expanded={listOpen}
+					aria-controls={listId}
+					aria-activedescendant={
+						listOpen && keys.current >= 0
+							? `${optionId}-${keys.current}`
+							: undefined
+					}
+					aria-invalid={bad || undefined}
+					placeholder="owner/repo or GitHub URL"
+					value={input}
+					readOnly={props.disabled}
+					onChange={(e) => {
+						setInput(e.target.value);
+						setBad(false);
+						setOpen(true);
+						keys.reset();
+					}}
+					onFocus={() => setOpen(true)}
+					onBlur={() => setOpen(false)}
+					onKeyDown={(e) => {
+						keys.onKeyDown(e);
+					}}
+					autoComplete="off"
+					spellCheck={false}
+					className="h-10 min-w-0 flex-1 rounded-md border border-line-strong bg-code px-2.5 text-sm text-ink placeholder:text-faint read-only:opacity-60 focus-visible:outline-2 focus-visible:outline-accent aria-invalid:border-bad"
+				/>
+				<button
+					type="submit"
+					aria-label="Add"
+					disabled={props.disabled}
+					className={`${iconButton} border border-edge disabled:opacity-60`}
+				>
+					<PlusIcon aria-hidden />
+				</button>
+			</form>
+			{listOpen && (
+				<SuggestionList
+					listId={listId}
+					optionId={optionId}
+					groups={[{ label: "Repos", options, loading }]}
+					current={keys.current}
+					onChoose={done}
+					onHover={keys.setActive}
+					className="mt-1 max-h-60"
+					render={(name) => (
+						<>
+							<RepoIcon size={14} aria-hidden className="shrink-0 text-muted" />
+							<span className="min-w-0 flex-1 truncate">{name}</span>
+						</>
+					)}
+				/>
+			)}
+		</div>
 	);
 }

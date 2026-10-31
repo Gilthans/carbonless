@@ -183,6 +183,17 @@ describe("/api/home", () => {
 			url: `/api/home/search?q=${"x".repeat(301)}`,
 		});
 		expect(long.statusCode).toBe(400);
+		const repos = await app.inject({
+			method: "GET",
+			url: `/api/home/search?q=${encodeURIComponent("login")}&only=repos`,
+		});
+		expect(repos.statusCode).toBe(200);
+		expect(repos.json<SearchResult>().prs).toEqual([]);
+		const bad = await app.inject({
+			method: "GET",
+			url: "/api/home/search?q=x&only=prs",
+		});
+		expect(bad.statusCode).toBe(400);
 	});
 });
 

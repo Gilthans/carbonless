@@ -203,8 +203,18 @@ export class HomeSearch {
 		return shown.map((p) => ({ ...p, hidden: hidden.get(prSlug(p)) ?? null }));
 	}
 
-	async search(q: string): Promise<SearchResult> {
-		const parsed = parseQuery(q);
+	/**
+	 * `only: "repos"` (the view settings' repo input): the Repos group alone,
+	 * the text matched as a repo name whatever it looks like.
+	 */
+	async search(
+		q: string,
+		options: { only?: "repos" } = {},
+	): Promise<SearchResult> {
+		const reposOnly = options.only === "repos";
+		const parsed: ParsedQuery = reposOnly
+			? { kind: "free", text: q.trim().toLowerCase(), words: [] }
+			: parseQuery(q);
 		const all = this.#home.knownPrs();
 		const known = new Map(all.map((f) => [prSlug(f), f]));
 		const viewRepos = await this.#home.viewRepos();

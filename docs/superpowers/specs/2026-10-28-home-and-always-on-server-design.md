@@ -267,6 +267,13 @@ Owner's decisions on this part (2026-10-28):
 
   The UI edits the first view (the pencil next to the repo chips: add by
   `owner/repo` or URL, remove, suggestions from repos of recent reviews);
+  the add input suggests the viewer's repos as you type (owner, 2026-10-31:
+  "should have auto-complete like the search bar, but only search for
+  repos"): the open box's Repos group alone (`GET /api/home/search?only=repos`,
+  the same source and matching), the same spinner while the viewer's repos
+  load, without the ones listed already; arrows pick one, Enter or a click
+  adds it, Enter with none picked adds what was typed, Escape closes the
+  list (the dialog stays);
   the server writes the file; a hand edit is picked up on the next refresh.
   A missing file means an empty view, and Home says so and offers to add
   repos. Several views in the file are kept but only the first is shown.

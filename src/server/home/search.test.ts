@@ -175,6 +175,23 @@ describe("HomeSearch", () => {
 		expect(r.scope).toBe(null);
 	});
 
+	it("repos only (view settings): no PR titles, and the text is a repo name whatever it looks like", async () => {
+		const { search } = await setup();
+		const r = await search.search("api", { only: "repos" });
+		expect(r.prs).toEqual([]);
+		expect(r.scope).toBe(null);
+		expect(r.repos[0]).toMatchObject({ name: "acme/api", inView: true });
+		expect((await search.search("login", { only: "repos" })).prs).toEqual([]);
+		for (const q of ["acme/api", "acme/api ", "acme/api#1"]) {
+			const named = await search.search(q, { only: "repos" });
+			expect(named.prs, q).toEqual([]);
+			expect(
+				named.repos.map((x) => x.name),
+				q,
+			).toEqual(q === "acme/api#1" ? [] : ["acme/api"]);
+		}
+	});
+
 	it("repos: the view's, then recent reviews', then the viewer's own; known ones while the list loads", async () => {
 		const started: StartedReview = {
 			owner: "other",

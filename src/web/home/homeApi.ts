@@ -36,10 +36,12 @@ export const postAnnotation = (row: RowKey, op: AnnotationOp) =>
 export const putView = (repos: string[]) =>
 	send<HomeView>("PUT", "/api/home/view", { repos });
 
-export const fetchSearch = (q: string, signal?: AbortSignal) =>
-	request<SearchResult>(`/api/home/search?${new URLSearchParams({ q })}`, {
-		signal,
-	});
+/** `only: "repos"`: the Repos group alone (the view settings' repo input). */
+export const fetchSearch = (q: string, signal?: AbortSignal, only?: "repos") =>
+	request<SearchResult>(
+		`/api/home/search?${new URLSearchParams(only ? { q, only } : { q })}`,
+		{ signal },
+	);
 
 export const homeQuery = queryOptions({
 	queryKey: ["home"],
@@ -51,10 +53,10 @@ export const homeQuery = queryOptions({
 	refetchOnWindowFocus: false,
 });
 
-export const searchQuery = (q: string) =>
+export const searchQuery = (q: string, only?: "repos") =>
 	queryOptions({
-		queryKey: ["home-search", q],
-		queryFn: ({ signal }) => fetchSearch(q, signal),
+		queryKey: ["home-search", q, only ?? "all"],
+		queryFn: ({ signal }) => fetchSearch(q, signal, only),
 		// A GitHub search still running: ask again shortly.
 		refetchInterval: (query) => (query.state.data?.pending ? 700 : false),
 		staleTime: 30_000,
