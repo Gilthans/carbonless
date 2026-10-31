@@ -6,6 +6,7 @@ import {
 	fireEvent,
 	render,
 	screen,
+	waitFor,
 	within,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -188,6 +189,8 @@ function setup(
 		clusters?: ClusterView[];
 		hunks?: FileHunks;
 		lead?: FileLead;
+		/** Two files' tables in one tree (the same file twice). */
+		twice?: boolean;
 	} = {},
 ) {
 	const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
@@ -222,17 +225,21 @@ function setup(
 	const threads: DiffThreads | undefined = opts.threads
 		? { readId: "r", snapshotHead: HEAD, threads: opts.threads }
 		: undefined;
+	const body = (
+		<DiffBody
+			file={file(opts.clusters ?? clusters)}
+			revision="r1"
+			onToggle={onToggle}
+			onCrossOff={onCrossOff}
+			threads={threads}
+			landing={opts.landing}
+			lead={opts.lead}
+		/>
+	);
 	render(
 		<QueryClientProvider client={queryClient}>
-			<DiffBody
-				file={file(opts.clusters ?? clusters)}
-				revision="r1"
-				onToggle={onToggle}
-				onCrossOff={onCrossOff}
-				threads={threads}
-				landing={opts.landing}
-				lead={opts.lead}
-			/>
+			{body}
+			{opts.twice && body}
 		</QueryClientProvider>,
 	);
 	const rows = () =>
@@ -1208,6 +1215,57 @@ describe("DiffBody side by side", () => {
 			expect(button).toHaveAttribute("aria-controls", opened.id);
 			await user.click(button);
 			expect(screen.queryByTestId("thread-row")).toBeNull();
+		});
+
+		it("crossing the breakpoint gives focus back to the bubble that has it, not one another file's table had before", async () => {
+			// A media query the test flips, telling every table.
+			let wide = true;
+			const listeners = new Set<() => void>();
+			vi.stubGlobal(
+				"matchMedia",
+				(query: string) =>
+					({
+						get matches() {
+							return wide;
+						},
+						media: query,
+						addEventListener: (_: string, l: () => void) => listeners.add(l),
+						removeEventListener: (_: string, l: () => void) =>
+							listeners.delete(l),
+					}) as unknown as MediaQueryList,
+			);
+			const flip = () =>
+				act(() => {
+					wide = !wide;
+					for (const l of listeners) l();
+				});
+			// Two files' tables, the same thread in each, one commit for both.
+			setup({
+				hunks: pairHunks(),
+				clusters: [pairCluster()],
+				threads: [thread("RIGHT", 6)],
+				twice: true,
+			});
+			await waitFor(() =>
+				expect(screen.getAllByTestId("thread-bubble")).toHaveLength(2),
+			);
+			const tables = () => Array.from(document.querySelectorAll("table"));
+			const bubbleIn = (t: number) =>
+				tables()[t]?.querySelector<HTMLElement>(
+					'[data-testid="thread-bubble"]',
+				) as HTMLElement;
+			act(() => bubbleIn(0).focus());
+			act(() => bubbleIn(1).focus());
+			flip();
+			expect(bubbleIn(1).closest('[data-testid="bubble-row"]')).not.toBeNull();
+			expect(bubbleIn(1)).toHaveFocus();
+			flip();
+			expect(bubbleIn(1)).toHaveFocus();
+			// Focus gone with its bubble's table: nothing takes it later.
+			// (The blur and the resize are separate tasks.)
+			await act(async () => bubbleIn(1).blur());
+			flip();
+			expect(document.activeElement).toBe(document.body);
 		});
 
 		it("gives a context line's threads one bubble, on the right of its bubble row", async () => {

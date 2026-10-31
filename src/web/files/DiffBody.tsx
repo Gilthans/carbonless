@@ -1896,7 +1896,8 @@ function useOneSideSelection(
  * bubbles between its code cells and a row of their own: new elements.
  * The bubble that had focus gets it back in its new place, found by its
  * name (unique in a file: a context line's two say which number they are
- * beside). Only when focus went nowhere else meanwhile.
+ * beside). Only when focus went nowhere else meanwhile: not when it left
+ * for another file's bubble, which keeps it there.
  */
 function useBubbleFocusKept(
 	scroller: RefObject<HTMLDivElement | null>,
@@ -1911,10 +1912,16 @@ function useBubbleFocusKept(
 		const onIn = (e: FocusEvent) => {
 			last.current = isBubble(e.target) ? e.target : null;
 		};
-		// Left for nowhere (not for a re-render's removal): forgotten.
+		// Left for another file or the rest of the page, or for nowhere (not
+		// for a re-render's removal, which names no element): forgotten.
 		const onOut = (e: FocusEvent) => {
 			const t = e.target;
-			if (!isBubble(t) || e.relatedTarget) return;
+			if (!isBubble(t)) return;
+			const to = e.relatedTarget;
+			if (to instanceof Node) {
+				if (!el.contains(to)) last.current = null;
+				return;
+			}
 			queueMicrotask(() => {
 				if (last.current === t && t.isConnected) last.current = null;
 			});
@@ -1926,10 +1933,16 @@ function useBubbleFocusKept(
 			el.removeEventListener("focusout", onOut);
 		};
 	}, [scroller]);
-	// biome-ignore lint/correctness/useExhaustiveDependencies: runs when the breakpoint is crossed.
+	// After every commit: a bubble gone in one that didn't cross the
+	// breakpoint (its thread deleted, its cluster collapsed) is forgotten.
+	const shownWide = useRef(wide);
 	useLayoutEffect(() => {
+		const crossed = shownWide.current !== wide;
+		shownWide.current = wide;
 		const was = last.current;
 		if (!was || was.isConnected) return;
+		last.current = null;
+		if (!crossed) return;
 		const active = document.activeElement;
 		if (active && active !== document.body) return;
 		const name = was.getAttribute("aria-label");
@@ -1939,7 +1952,7 @@ function useBubbleFocusKept(
 				`[data-testid="thread-bubble"][aria-label="${CSS.escape(name)}"]`,
 			)
 			?.focus({ preventScroll: true });
-	}, [scroller, wide]);
+	});
 }
 
 /**
