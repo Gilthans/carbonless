@@ -1428,7 +1428,7 @@ describe("Comment on file", () => {
 	};
 	const firstRow = () => document.querySelector("table tr") as HTMLElement;
 
-	it("stays on the first row when the gap above the first hunk is all loaded", async () => {
+	it("stays first when the gap above the first hunk is all loaded: on a row of its own, never over code", async () => {
 		const { user } = renderFile({}, { expanded: true, hunks: LATER });
 		await screen.findByTestId("gap-row");
 		expect(
@@ -1437,13 +1437,17 @@ describe("Comment on file", () => {
 		await user.click(screen.getByRole("button", { name: /Load .* above/ }));
 		await screen.findByText("line 1");
 		expect(screen.queryByTestId("gap-row")).not.toBeInTheDocument();
-		expect(firstRow().dataset.newNo).toBe("1");
+		const row = firstRow();
+		expect(row.dataset.testid).toBeUndefined();
 		expect(
-			within(firstRow()).getByRole("button", { name: "Comment on file" }),
+			within(row).getByRole("button", { name: "Comment on file" }),
 		).toBeInTheDocument();
+		const line1 = row.nextElementSibling as HTMLElement;
+		expect(line1.dataset.newNo).toBe("1");
+		expect(within(line1).queryByTestId("file-bubble-slot")).toBeNull();
 	});
 
-	it("shares a row with a line's bubble: side by side, each opening its own threads", async () => {
+	it("sits apart from a first line's bubble, each opening its own threads", async () => {
 		const { user } = renderFile(
 			{},
 			{
@@ -1457,19 +1461,30 @@ describe("Comment on file", () => {
 		);
 		await screen.findByText("line 1");
 		const row = firstRow();
-		expect(row.dataset.newNo).toBe("1");
-		const bubbles = within(row).getAllByTestId("thread-bubble");
-		expect(bubbles.map((b) => b.getAttribute("aria-label"))).toEqual([
-			"1 comment on this file",
-			"1 comment on line 1",
-		]);
-		// One slot holds both, so they never sit on each other.
-		expect(bubbles[0]?.parentElement).toBe(bubbles[1]?.parentElement);
-		await user.click(bubbles[1] as HTMLElement);
+		const file = within(row).getByTestId("thread-bubble");
+		expect(file).toHaveAccessibleName("1 comment on this file");
+		const line1 = row.nextElementSibling as HTMLElement;
+		expect(line1.dataset.newNo).toBe("1");
+		const line = within(line1).getByTestId("thread-bubble");
+		expect(line).toHaveAccessibleName("1 comment on line 1");
+		await user.click(line);
 		expect(screen.getByTestId("thread-row")).toBeInTheDocument();
 		expect(screen.queryByTestId("file-threads")).not.toBeInTheDocument();
-		await user.click(bubbles[0] as HTMLElement);
+		await user.click(file);
 		expect(row.nextElementSibling).toBe(screen.getByTestId("file-threads"));
+	});
+
+	it("a click on a closed file's header opens the file, not the composer; its controls keep their own", async () => {
+		const { user } = renderFile({}, { expanded: false, hunks: HUNKS });
+		const toggle = screen.getByRole("button", { name: "Expand file" });
+		await user.click(screen.getByTestId("file-path"));
+		expect(
+			screen.getByRole("button", { name: "Collapse file" }),
+		).toHaveAttribute("aria-expanded", "true");
+		expect(screen.queryByTestId("new-thread")).not.toBeInTheDocument();
+		// Open, a click on the header leaves it open.
+		await user.click(screen.getByTestId("file-path"));
+		expect(toggle).toHaveAttribute("aria-expanded", "true");
 	});
 
 	it("closed, a line past the end: the header's count opens the file, then the flagged file bubble once the diff says so, focused", async () => {

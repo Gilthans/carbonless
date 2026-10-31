@@ -93,6 +93,38 @@ export interface FileLead {
 	row: (rail?: string) => ReactNode;
 }
 
+/**
+ * Where the file bubble sits: centred on the diff's visible width, sticky so
+ * it stays there as long lines scroll (a sticky inset's percentage is of
+ * the scroller), taking no room from the row's text. Only on rows that
+ * aren't code (a hunk header, a gap, a cluster's label, a row of its own),
+ * so it never covers a line or its selection.
+ */
+export function FileBubbleSlot(props: { children: ReactNode }) {
+	return (
+		<span
+			data-testid="file-bubble-slot"
+			className="sticky left-[calc(50%-1.25rem)] z-[4] float-left -mr-10 flex w-10 justify-center"
+		>
+			{props.children}
+		</span>
+	);
+}
+
+/** The file bubble's own row (no row to share, or the first is code), and its threads' row. */
+function LeadRow({ lead }: { lead: FileLead }) {
+	return (
+		<>
+			<tr>
+				<td colSpan={COLUMNS} className="h-5 px-2">
+					<FileBubbleSlot>{lead.bubble}</FileBubbleSlot>
+				</td>
+			</tr>
+			{lead.row()}
+		</>
+	);
+}
+
 /** The cell padding that keeps `n` bubbles clear of the code. */
 const bubblePad = (n: number) =>
 	n === 0 ? "px-2" : n === 1 ? "pr-12 pl-2" : "pr-24 pl-2";
@@ -289,9 +321,8 @@ function LineRow(props: {
 	order?: number;
 	picker?: Picker;
 	composers?: RowComposers;
-	lead?: FileLead;
 }) {
-	const { line, state, threads, picker, lead } = props;
+	const { line, state, threads, picker } = props;
 	const cell = codeCellOf(line);
 	const key = pickKey(cell);
 	const isPicked = picker?.keys.has(key) ?? false;
@@ -381,23 +412,20 @@ function LineRow(props: {
 					data-len={line.text.length}
 					data-hunk={props.hunk}
 					data-order={props.order}
-					className={`whitespace-pre ${bubblePad((endKey ? 1 : 0) + (lead ? 1 : 0))}`}
+					className={`whitespace-pre ${bubblePad(endKey ? 1 : 0)}`}
 				>
-					{((endKey && threads) || lead) && (
+					{endKey && threads && (
 						<BubbleSlot>
-							{lead?.bubble}
-							{endKey && threads && (
-								<ThreadBubble
-									inline
-									threads={ending}
-									where={where}
-									open={open}
-									controls={open ? threads.idOf(endKey) : undefined}
-									onToggle={() => threads.toggle(keys)}
-									focus={threads.focus !== null && keys.includes(threads.focus)}
-									onFocused={threads.onFocused}
-								/>
-							)}
+							<ThreadBubble
+								inline
+								threads={ending}
+								where={where}
+								open={open}
+								controls={open ? threads.idOf(endKey) : undefined}
+								onToggle={() => threads.toggle(keys)}
+								focus={threads.focus !== null && keys.includes(threads.focus)}
+								onFocused={threads.onFocused}
+							/>
 						</BubbleSlot>
 					)}
 					{line.kind === "ws" ? (
@@ -432,7 +460,6 @@ function LineRow(props: {
 					/>
 				</td>
 			</tr>
-			{lead?.row(state ? RAIL[state] : undefined)}
 			{line.noNewline && (
 				<tr>
 					<Rail state={state} />
@@ -880,9 +907,12 @@ export function DiffBody(props: {
 		for (let n = from; n <= to; n++) {
 			const line = loaded.get(n);
 			if (line) {
+				// First in the table: the file bubble gets a row of its own
+				// above it, never over code.
+				const first = rows.length === 0 ? lead?.() : undefined;
+				if (first) rows.push(<LeadRow key={`c${n}:file`} lead={first} />);
 				rows.push(
 					<LineRow
-						lead={lead?.()}
 						key={`c${n}`}
 						line={line}
 						lang={lang}
@@ -1017,20 +1047,18 @@ export function DiffBody(props: {
 					</td>
 					<td
 						colSpan={COLUMNS - 2}
-						className={`font-sans ${bubblePad((runThreads.length > 0 ? 1 : 0) + (runLead ? 1 : 0))}`}
+						className={`font-sans ${bubblePad(runThreads.length > 0 ? 1 : 0)}`}
 					>
-						{(runThreads.length > 0 || runLead) && (
+						{runLead && <FileBubbleSlot>{runLead.bubble}</FileBubbleSlot>}
+						{runThreads.length > 0 && (
 							<BubbleSlot>
-								{runLead?.bubble}
-								{runThreads.length > 0 && (
-									<ThreadBubble
-										inline
-										threads={runThreads}
-										where={where}
-										open={false}
-										onToggle={openRunThreads}
-									/>
-								)}
+								<ThreadBubble
+									inline
+									threads={runThreads}
+									where={where}
+									open={false}
+									onToggle={openRunThreads}
+								/>
 							</BubbleSlot>
 						)}
 						{failed.length > 0 ? (
@@ -1085,11 +1113,8 @@ export function DiffBody(props: {
 					<td className="w-11 px-1 py-1 align-top whitespace-nowrap pointer-coarse:w-20">
 						{checkbox(cluster)}
 					</td>
-					<td
-						colSpan={COLUMNS - 2}
-						className={`${bubblePad(lead ? 1 : 0)} py-1 font-sans text-sm`}
-					>
-						{lead && <BubbleSlot>{lead.bubble}</BubbleSlot>}
+					<td colSpan={COLUMNS - 2} className="px-2 py-1 font-sans text-sm">
+						{lead && <FileBubbleSlot>{lead.bubble}</FileBubbleSlot>}
 						{cluster.label}
 						<CrossedOffNote cluster={cluster} id={noteId(cluster)} />
 					</td>
@@ -1170,12 +1195,7 @@ export function DiffBody(props: {
 				>
 					{lead && (
 						<tbody>
-							<tr>
-								<td colSpan={COLUMNS} className={`${bubblePad(1)} h-5`}>
-									<BubbleSlot>{lead.bubble}</BubbleSlot>
-								</td>
-							</tr>
-							{lead.row()}
+							<LeadRow lead={lead} />
 						</tbody>
 					)}
 					{clusterRows}
@@ -1396,8 +1416,8 @@ function HunkRows(props: {
 		<>
 			<tbody>
 				<tr className="bg-hunk text-hunk-ink">
-					<td colSpan={COLUMNS} className={`${bubblePad(lead ? 1 : 0)} py-0.5`}>
-						{lead && <BubbleSlot>{lead.bubble}</BubbleSlot>}
+					<td colSpan={COLUMNS} className="px-2 py-0.5">
+						{lead && <FileBubbleSlot>{lead.bubble}</FileBubbleSlot>}
 						{hunkHeader(hunk)}
 					</td>
 				</tr>
