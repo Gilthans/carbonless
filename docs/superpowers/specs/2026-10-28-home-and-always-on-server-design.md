@@ -390,11 +390,17 @@ code-review meaning.
   floating menu bar, it doesn't need space saved"): the row keeps no room
   for them; its last column (the age) ends at the row's right edge. With a
   mouse: snooze, waiting on, note (and Wake up on a hidden row) are icon
-  buttons in a small bar floating over the row's top right end, shown on
-  hover and on keyboard focus in the row; their popovers open under it,
-  above the rows after it. On touch: a 40px "⋯" button floating at the
+  buttons in a small bar floating over the row's right end, shown on
+  hover and on keyboard focus in the row. It stays inside its row (never
+  up under the sticky column header) and clear of the age: in columns just
+  left of Updated, stacked at the title line's end (that line is as tall
+  as the bar). Its buttons are compact for a fine pointer and 40px where
+  a coarse one exists (`any-pointer: coarse`); their popovers open under
+  it, above the rows after it. On touch: a 40px "⋯" button floating at the
   row's top right (the title line leaves room for it) opens the same
-  actions as a bottom sheet **(call)**; no hover, no long-press.
+  actions as a bottom sheet **(call)**; no hover, no long-press. A long
+  login or many signs stay inside their column (cut, whole in the
+  tooltip; or wrapped).
 
 ### Hidden rows
 
