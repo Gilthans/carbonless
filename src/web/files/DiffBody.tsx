@@ -844,15 +844,21 @@ function PairRow(props: RowProps & { row: SideRow }) {
 		const keys = threads ? rowKeys(line) : [];
 		const both = cellOf(line, line, keys, `on line ${line.newNo}`);
 		// One line shown twice, its threads' bubble in both cells: each
-		// opens them under its own side's key, so under the side clicked
-		// (a LEFT key under the left, any other under the right).
+		// opens them under its own side's key, so under the side clicked.
+		// Opened under both keys (a comment posted on it while open), the
+		// first opened keeps them (the open set keeps the order they came in).
 		const leftKey = lineKey("LEFT", line) ?? undefined;
 		const rightKey = lineKey("RIGHT", line) ?? undefined;
-		const openLeft = Boolean(
-			leftKey &&
-				threads?.open.has(leftKey) &&
-				!(rightKey && threads.open.has(rightKey)),
-		);
+		let firstOpen: LineKey | undefined;
+		if (threads && both.endKey) {
+			for (const k of threads.open) {
+				if (k === leftKey || k === rightKey) {
+					firstOpen = k;
+					break;
+				}
+			}
+		}
+		const openLeft = Boolean(leftKey && firstOpen === leftKey);
 		// The key the opened row is under (its id), for both bubbles.
 		const expanded = both.open ? (openLeft ? leftKey : rightKey) : undefined;
 		const shared = (focus: boolean) =>

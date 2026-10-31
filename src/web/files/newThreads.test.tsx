@@ -1714,6 +1714,53 @@ describe("side by side (the cells contract)", () => {
 		fireEvent.click(el, { detail: 1, ...init });
 	};
 
+	it("a context line's threads opened under the left stay there when a comment is posted on the line", async () => {
+		const { user } = setup({ threads: [thread({ side: "LEFT", line: 5 })] });
+		await loaded();
+		const context = row("RIGHT", 6);
+		/** Which half the opened thread card is under. */
+		const cardSide = () => {
+			const cells = [
+				...screen.getByTestId("thread-row").querySelectorAll(":scope > td"),
+			];
+			const card = cells.findIndex((td) =>
+				td.querySelector('[data-testid="files-thread"]'),
+			);
+			const blank = cells.findIndex(
+				(td) => td.classList.contains("bg-band") && td.childElementCount === 0,
+			);
+			return card < blank ? "LEFT" : "RIGHT";
+		};
+		const leftCode = context.querySelector(
+			`[${CODE_CELL}][data-side="LEFT"]`,
+		) as HTMLElement;
+		await user.click(within(leftCode).getByTestId("thread-bubble"));
+		expect(cardSide()).toBe("LEFT");
+		// A comment on the same line (RIGHT:6) opens where it lands: its
+		// key joins the open ones, and the row stays where it was opened.
+		act(() => {
+			openComposer(
+				{
+					path: PATH,
+					commit: HEAD,
+					subject: "line",
+					startSide: "RIGHT",
+					startLine: 6,
+					side: "RIGHT",
+					line: 6,
+					startCol: null,
+					endCol: null,
+				},
+				"ctx",
+			);
+		});
+		const box = await screen.findByRole("textbox", { name: "Comment" });
+		await user.type(box, "and here");
+		await user.keyboard("{Control>}{Enter}{/Control}");
+		expect(screen.getAllByTestId("thread-row")).toHaveLength(1);
+		expect(cardSide()).toBe("LEFT");
+	});
+
 	it("the keyboard: Up/Down stay in their column through context rows, Left/Right switch sides on every row, Shift extends", async () => {
 		const { user } = setup();
 		await loaded();
