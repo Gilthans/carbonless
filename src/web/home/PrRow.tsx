@@ -411,7 +411,9 @@ export function PrRow(props: {
 	const single = row.reviews.length === 1 ? row.reviews[0] : undefined;
 	const subs = row.reviews.length > 1 ? byLastActed(row.reviews) : [];
 	// On touch the actions' "⋯" floats at the row's top right: room for it
-	// at the title line's end (stacked), or the row's (one line).
+	// at the title line's end (stacked), or the row's (one line). With a
+	// mouse, stacked, the floating bar sits at the title line's end: the
+	// line is as tall as the bar, so it never reaches the age below.
 	const touch = !useMedia("(hover: hover)");
 	return (
 		<>
@@ -427,7 +429,7 @@ export function PrRow(props: {
 				</span>
 				<span
 					data-col="title"
-					className={`order-1 flex min-w-0 basis-full items-center gap-2 lg:order-none lg:basis-auto ${COLUMNS.title} ${touch ? "max-lg:pr-8" : ""}`}
+					className={`order-1 flex min-w-0 basis-full items-center gap-2 lg:order-none lg:basis-auto ${COLUMNS.title} ${touch ? "max-lg:pr-8" : "max-lg:min-h-8"}`}
 				>
 					<TitleLink row={row} />
 					{row.draft && (

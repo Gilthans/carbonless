@@ -294,7 +294,11 @@ describe("RowActions", () => {
 			"group-focus-within:opacity-100",
 		);
 		for (const name of ["Snooze", "Waiting on", "Note"]) {
-			within(bar).getByRole("button", { name });
+			// 40px wherever a finger may press it.
+			expect(within(bar).getByRole("button", { name })).toHaveClass(
+				"any-pointer-coarse:h-10",
+				"any-pointer-coarse:w-10",
+			);
 		}
 		expect(within(bar).queryByRole("button", { name: "Wake up" })).toBeNull();
 	});

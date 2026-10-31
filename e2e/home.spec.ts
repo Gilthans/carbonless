@@ -593,7 +593,7 @@ test("an open popover is on top of the rows after it", async ({
 	).toBeVisible();
 });
 
-test("rows end at their age; the actions float over the row's end on hover and focus", async ({
+test("rows end at their age; the actions float over the row's end, clear of the age, on hover and focus", async ({
 	page,
 	workdir,
 	pr,
@@ -629,10 +629,31 @@ test("rows end at their age; the actions float over the row's end on hover and f
 	await expect(bar).toHaveCSS("opacity", "1");
 	// Over the row, not beside it: the age hasn't moved.
 	expect(await ageRight()).toBe(gap);
-	const barBox = await bar.boundingBox();
-	const rowBox = await r.boundingBox();
-	if (!barBox || !rowBox) throw new Error("no box");
-	expect(barBox.x + barBox.width).toBeLessThanOrEqual(rowBox.x + rowBox.width);
+	// Inside its own row (never up under the sticky header) and clear of
+	// the age, in columns (lg) and stacked.
+	for (const width of [1280, 900]) {
+		await page.setViewportSize({ width, height: 800 });
+		await r.hover();
+		await expect(bar).toHaveCSS("opacity", "1");
+		const barBox = await bar.boundingBox();
+		const rowBox = await r.boundingBox();
+		const ageBox = await r.locator("time").boundingBox();
+		if (!barBox || !rowBox || !ageBox) throw new Error("no box");
+		expect(barBox.x + barBox.width, `${width}`).toBeLessThanOrEqual(
+			rowBox.x + rowBox.width,
+		);
+		expect(barBox.y, `${width}`).toBeGreaterThanOrEqual(rowBox.y - 0.5);
+		expect(barBox.y + barBox.height, `${width}`).toBeLessThanOrEqual(
+			rowBox.y + rowBox.height + 0.5,
+		);
+		const overlaps =
+			barBox.x < ageBox.x + ageBox.width &&
+			ageBox.x < barBox.x + barBox.width &&
+			barBox.y < ageBox.y + ageBox.height &&
+			ageBox.y < barBox.y + barBox.height;
+		expect(overlaps, `bar over the age at ${width}px`).toBe(false);
+	}
+	await page.setViewportSize({ width: 1280, height: 800 });
 	// Keyboard: focus in the row shows it too.
 	await page.mouse.move(0, 0);
 	await r.getByRole("link").focus();

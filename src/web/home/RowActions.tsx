@@ -383,11 +383,14 @@ export function RowActions(props: {
 		<span
 			ref={wrapper}
 			data-row-actions
-			// A small bar floating over the row's top right end, centered on
-			// its top border (34px tall): shown on hover and keyboard focus,
-			// taking no room in the row. Open, above the
-			// later rows' z-10 icons (one stacking context).
-			className={`absolute -top-[1.0625rem] right-2 flex items-center gap-0.5 rounded-lg border border-edge bg-overlay p-0.5 shadow-float ${
+			// A small bar floating over the row's right end, inside the row
+			// (never up under the sticky column header) and clear of its age:
+			// in columns (lg) just left of Updated (w-28 plus the row's
+			// padding), stacked at the title line's end (the age is on the
+			// line below). Shown on hover and keyboard focus, taking no room
+			// in the row. Open, above the later rows' z-10 icons (one stacking
+			// context).
+			className={`absolute top-1.5 right-2 flex lg:top-1/2 lg:right-[8.25rem] lg:-translate-y-1/2 items-center gap-0.5 rounded-lg border border-edge bg-overlay p-0.5 shadow-float ${
 				panel
 					? "z-30"
 					: "pointer-events-none z-20 opacity-0 group-focus-within:pointer-events-auto group-focus-within:opacity-100 group-hover:pointer-events-auto group-hover:opacity-100"
@@ -428,7 +431,11 @@ export function RowActions(props: {
 	);
 }
 
-/** One of the floating bar's icon buttons, with its tooltip. */
+/**
+ * One of the floating bar's icon buttons, with its tooltip: compact for a
+ * mouse, 40px wherever a finger may press it (a touch-screen laptop
+ * reports hover too).
+ */
 function BarButton(props: {
 	label: string;
 	onClick: () => void;
@@ -454,7 +461,7 @@ function BarButton(props: {
 					aria-expanded={props.popup ? !!props.expanded : undefined}
 					onClick={props.onClick}
 					disabled={props.disabled}
-					className="flex h-7 w-7 items-center justify-center rounded-md text-muted hover:bg-pressed hover:text-ink focus-visible:outline-2 focus-visible:outline-accent disabled:opacity-60 aria-expanded:bg-pressed aria-expanded:text-ink"
+					className="flex h-7 w-7 items-center justify-center rounded-md text-muted any-pointer-coarse:h-10 any-pointer-coarse:w-10 hover:bg-pressed hover:text-ink focus-visible:outline-2 focus-visible:outline-accent disabled:opacity-60 aria-expanded:bg-pressed aria-expanded:text-ink"
 				>
 					{props.children}
 				</button>
