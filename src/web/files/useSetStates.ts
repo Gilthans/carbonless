@@ -6,6 +6,7 @@ import {
 import { useEffect, useMemo, useSyncExternalStore } from "react";
 import type { StateChange } from "../../shared/types";
 import { postStates, reviewQuery, sessionQuery } from "../api";
+import { viewSaverFor } from "../home/viewSaver";
 import { unsent, useDrafts, useDraftsDurable } from "../threads/drafts";
 import { useThreadWrites } from "../threads/threadWrites";
 import { overlayReview, StateSync, type SyncState } from "./stateSync";
@@ -94,6 +95,7 @@ export function useReviewView() {
  * would lose something (owner: "refresh should only be dirty if
  * information is lost"):
  * - review states not yet stored: nothing keeps them past the page;
+ * - Home's view list not yet saved (viewSaverFor), for the same reason;
  * - a resolve or unresolve, or a delete (in its undo window or on its
  *   way), not yet on GitHub: nothing resends them (ThreadWritesState.lost);
  * - drafts and their writes (replies, edits, new threads) only while
@@ -105,7 +107,11 @@ export function useUnsavedGuard() {
 	const drafts = unsent(useDrafts());
 	const durable = useDraftsDurable();
 	const { busy, lost } = useThreadWrites();
-	const unsaved = states || lost || (!durable && (drafts || busy));
+	// Home's view list not yet saved: nothing sends it after the page.
+	const saver = viewSaverFor(useQueryClient());
+	const view =
+		useSyncExternalStore(saver.subscribe, saver.snapshot).intended !== null;
+	const unsaved = states || view || lost || (!durable && (drafts || busy));
 	useEffect(() => {
 		if (!unsaved) return;
 		const ask = (event: BeforeUnloadEvent) => {

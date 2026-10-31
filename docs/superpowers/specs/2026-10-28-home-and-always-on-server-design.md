@@ -293,7 +293,8 @@ Owner's decisions on this part (2026-10-28):
   rolls the view back. Only a refusal shows a red "Not saved" notice
   with the error, Retry and Dismiss, and puts the last saved view back;
   nothing refused is sent again on its own, and a newer save clears it
-  (**call**).
+  (**call**). Leaving the page while a list isn't saved asks first, as for
+  review states (`useUnsavedGuard`).
   The server writes the file; a hand edit is picked up on the next refresh.
   A missing file means an empty view, and Home says so and offers to add
   repos. Several views in the file are kept but only the first is shown.

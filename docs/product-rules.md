@@ -217,7 +217,8 @@ unresolving one, and editing or deleting one of the viewer's comments in one
   deletes on one thread run in the order asked, never at once.
 - **Leaving asks only when something would be lost** (owner: "refresh
   should only be dirty if information is lost"; `useUnsavedGuard`). It
-  asks for review states not yet stored, and for a resolve, unresolve or
+  asks for review states not yet stored, for Home's view list not yet
+  saved (it retries on its own while the page lasts), and for a resolve, unresolve or
   delete not yet on GitHub (refused ones too, until let go; a delete in
   its undo window too: nothing is sent yet and no later page sends it). It never asks for drafts (reply,
   edit, new thread) or for replies, edits and new threads on their way:

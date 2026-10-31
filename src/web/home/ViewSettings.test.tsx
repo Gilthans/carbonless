@@ -385,6 +385,28 @@ describe("ViewSettings", () => {
 			expect(chips()).toEqual(["acme/api", "acme/web"]);
 		});
 
+		it("the first lands while the second waits: the second stays shown, then lands", async () => {
+			const { held, bodies } = twoSaves();
+			renderWithQuery(<HomePage />);
+			await edit(removeConsole);
+			await waitFor(() => expect(held).toHaveLength(1));
+			await edit(addWeb);
+			held[0]?.(saved(["acme/api"]));
+			await waitFor(() => expect(held).toHaveLength(2));
+			// The first's answer is in, the newer list still over it.
+			expect(chips()).toEqual(["acme/api", "acme/web"]);
+			expect(
+				screen.getByRole("status", { name: "Saving" }),
+			).toBeInTheDocument();
+			held[1]?.(saved(["acme/api", "acme/web"]));
+			await waitFor(() =>
+				expect(screen.queryByRole("status", { name: "Saving" })).toBeNull(),
+			);
+			expect(chips()).toEqual(["acme/api", "acme/web"]);
+			expect(screen.queryByTestId("view-save-failed")).toBeNull();
+			expect(bodies()).toEqual([["acme/api"], ["acme/api", "acme/web"]]);
+		});
+
 		it("a refusal shown, then a newer save: the card goes, and its Retry can't come back", async () => {
 			const { held } = twoSaves();
 			renderWithQuery(<HomePage />);
@@ -447,6 +469,42 @@ describe("ViewSettings", () => {
 			);
 			expect(chips()).toEqual(["acme/api"]);
 			expect(screen.queryByRole("status", { name: "Saving" })).toBeNull();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("Retry on the 'still retrying' card starts over: not red, the next wait 1 s", async () => {
+		vi.useFakeTimers({ shouldAdvanceTime: true });
+		try {
+			const api = fakeApi(view(), {
+				"PUT /api/home/view": () =>
+					new Response(JSON.stringify({ error: "busy" }), { status: 503 }),
+			});
+			const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+			renderWithQuery(<HomePage />);
+			await user.click(
+				await screen.findByRole("button", { name: "Edit repos" }),
+			);
+			const dialog = screen.getByRole("dialog", { name: "My PRs" });
+			await user.click(
+				within(dialog).getByRole("button", { name: "Remove acme/console" }),
+			);
+			await user.click(within(dialog).getByRole("button", { name: "Save" }));
+			await act(() => vi.advanceTimersByTimeAsync(16_000));
+			const puts = () => api.calls.filter((c) => c.method === "PUT").length;
+			await user.click(
+				within(screen.getByTestId("view-save-stalled")).getByRole("button", {
+					name: "Retry saving",
+				}),
+			);
+			const n = await waitFor(() => {
+				const now = puts();
+				expect(screen.queryByTestId("view-save-stalled")).toBeNull();
+				return now;
+			});
+			await act(() => vi.advanceTimersByTimeAsync(1100));
+			expect(puts()).toBeGreaterThan(n);
 		} finally {
 			vi.useRealTimers();
 		}
