@@ -1,5 +1,11 @@
 // @vitest-environment jsdom
-import { cleanup, screen, waitFor, within } from "@testing-library/react";
+import {
+	cleanup,
+	fireEvent,
+	screen,
+	waitFor,
+	within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { SearchResult } from "../../shared/home";
@@ -147,6 +153,67 @@ describe("ViewSettings", () => {
 		expect(
 			within(dialog).getByRole("button", { name: "Remove acme/api" }),
 		).toBeEnabled();
+	});
+
+	it("opens with an empty repo input each time, whatever was typed before Cancel", async () => {
+		fakeApi(view());
+		renderWithQuery(<HomePage />);
+		const edit = await screen.findByRole("button", { name: "Edit repos" });
+		await userEvent.click(edit);
+		let dialog = screen.getByRole("dialog", { name: "My PRs" });
+		let field = within(dialog).getByRole("combobox", { name: "Add a repo" });
+		await userEvent.type(field, "garbage{Enter}");
+		expect(field).toHaveAttribute("aria-invalid", "true");
+		await userEvent.click(
+			within(dialog).getByRole("button", { name: "Cancel" }),
+		);
+		await userEvent.click(edit);
+		dialog = screen.getByRole("dialog", { name: "My PRs" });
+		field = within(dialog).getByRole("combobox", { name: "Add a repo" });
+		expect(field).toHaveValue("");
+		expect(field).not.toHaveAttribute("aria-invalid");
+	});
+
+	it("while the save is out, neither Enter nor a suggestion adds a repo", async () => {
+		let answer: (r: Response) => void = () => {};
+		fakeApi(view(), {
+			"GET /api/home/search": (): SearchResult => ({
+				...emptySearch,
+				repos: [{ name: "acme/zebra", inView: false, openCount: null }],
+			}),
+			"PUT /api/home/view": () =>
+				new Promise<Response>((done) => {
+					answer = done;
+				}),
+		});
+		renderWithQuery(<HomePage />);
+		await userEvent.click(
+			await screen.findByRole("button", { name: "Edit repos" }),
+		);
+		const dialog = screen.getByRole("dialog", { name: "My PRs" });
+		const field = within(dialog).getByRole("combobox", { name: "Add a repo" });
+		await userEvent.type(field, "acme/zed");
+		const option = await within(dialog).findByRole("option", {
+			name: "acme/zebra",
+		});
+		await userEvent.click(within(dialog).getByRole("button", { name: "Save" }));
+		await waitFor(() =>
+			expect(
+				within(dialog).getByRole("button", { name: "Save" }),
+			).toBeDisabled(),
+		);
+		// What the save is out with stays what it saves. A browser submits a
+		// read-only input's form on Enter (jsdom doesn't): submit it.
+		await userEvent.click(option);
+		fireEvent.submit(field.closest("form") as HTMLFormElement);
+		const listed = () =>
+			within(within(dialog).getByRole("list", { name: "Repos in this view" }))
+				.getAllByRole("listitem")
+				.map((li) => li.textContent);
+		expect(listed()).toEqual(["acme/api", "acme/console"]);
+		answer(new Response(JSON.stringify({ error: "nope" }), { status: 500 }));
+		await within(dialog).findByRole("alert");
+		expect(listed()).toEqual(["acme/api", "acme/console"]);
 	});
 
 	it("Cancel keeps the view as it was", async () => {

@@ -243,7 +243,7 @@ function RepoInput(props: {
 		.map((r) => r.name)
 		.filter((name) => !props.listed(name));
 	const loading = !!data?.reposPending;
-	const listOpen = open && (options.length > 0 || loading);
+	const listOpen = open && !props.disabled && (options.length > 0 || loading);
 	const keys = useSuggestionKeys({
 		count: options.length,
 		listOpen,
@@ -253,12 +253,15 @@ function RepoInput(props: {
 		onClose: () => setOpen(false),
 	});
 	const done = (name: string) => {
+		// While the save is out, what it saves can't change.
+		if (props.disabled) return;
 		props.onAdd(name);
 		setInput("");
 		setBad(false);
 		keys.reset();
 	};
 	const submit = () => {
+		if (props.disabled) return;
 		const picked = listOpen ? options[keys.current] : undefined;
 		if (picked) return done(picked);
 		const name = parseRepo(input);
