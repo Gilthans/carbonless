@@ -794,7 +794,9 @@ test("screenshot at desktop width (CRB_HOME_SHOTS only)", async ({
 	const dialog = await rowAction(page, rowOf(other, "Migrate alerts"), "Note");
 	await dialog.getByRole("textbox").fill("awaiting Tomer's decision");
 	await dialog.getByRole("button", { name: "Save" }).click();
+	await expect(dialog).toBeHidden();
 	await page.mouse.move(0, 0);
+	await page.locator("body").click({ position: { x: 1, y: 300 } });
 	await page.screenshot({
 		path: join(shots as string, "home-desktop.png"),
 		fullPage: true,
@@ -808,6 +810,13 @@ test("screenshot at desktop width (CRB_HOME_SHOTS only)", async ({
 		path: join(shots as string, "home-desktop-snooze.png"),
 	});
 	await page.keyboard.press("Escape");
+	await page.locator("body").click({ position: { x: 1, y: 300 } });
+	// The floating actions over a hovered row.
+	await rowOf(section(page, "Reviewing"), "Rate-limit").hover();
+	await page.screenshot({
+		path: join(shots as string, "home-desktop-actions.png"),
+	});
+	await page.mouse.move(0, 0);
 	await page
 		.getByRole("combobox", { name: "Open a pull request" })
 		.pressSequentially("acme");
@@ -815,4 +824,43 @@ test("screenshot at desktop width (CRB_HOME_SHOTS only)", async ({
 	await page.screenshot({
 		path: join(shots as string, "home-desktop-search.png"),
 	});
+});
+
+test("screenshots of view settings and the loading page (CRB_HOME_SHOTS only)", async ({
+	page,
+	workdir,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	const shots = process.env.CRB_HOME_SHOTS;
+	test.skip(!shots, "screenshots on request");
+	const at = isMobile ? "360-phone" : "desktop";
+	await page.setViewportSize(
+		isMobile ? { width: 360, height: 800 } : { width: 1280, height: 800 },
+	);
+	const made = await setup(workdir, pr);
+	const crb = await startCrb();
+	await goHome(page, crb.url);
+	await page.getByRole("button", { name: "Edit repos" }).click();
+	const dialog = page.getByRole("dialog", { name: "My PRs" });
+	await dialog
+		.getByRole("combobox", { name: "Add a repo" })
+		.pressSequentially("acme");
+	await expect(dialog.getByRole("option").first()).toBeVisible();
+	await page.screenshot({
+		path: join(shots as string, `view-settings-${at}.png`),
+	});
+	await page.keyboard.press("Escape");
+	await page.keyboard.press("Escape");
+	// The loading page, GitHub's answer held.
+	made.editScenario((s) => {
+		s.hold = ["prView"];
+	});
+	await page.goto(new URL("/pr/acme/widget/8", crb.url).href);
+	await expect(page.getByRole("status")).toContainText("Opening");
+	await page.screenshot({
+		path: join(shots as string, `opening-${at}.png`),
+	});
+	release(made.scenarioPath, "prView");
 });

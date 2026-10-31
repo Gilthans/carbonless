@@ -383,10 +383,11 @@ export function RowActions(props: {
 		<span
 			ref={wrapper}
 			data-row-actions
-			// A small bar floating over the row's top right end: shown on hover
-			// and keyboard focus, taking no room in the row. Open, above the
+			// A small bar floating over the row's top right end, centered on
+			// its top border (34px tall): shown on hover and keyboard focus,
+			// taking no room in the row. Open, above the
 			// later rows' z-10 icons (one stacking context).
-			className={`absolute -top-4 right-2 flex items-center gap-0.5 rounded-lg border border-edge bg-overlay p-0.5 shadow-float ${
+			className={`absolute -top-[1.0625rem] right-2 flex items-center gap-0.5 rounded-lg border border-edge bg-overlay p-0.5 shadow-float ${
 				panel
 					? "z-30"
 					: "pointer-events-none z-20 opacity-0 group-focus-within:pointer-events-auto group-focus-within:opacity-100 group-hover:pointer-events-auto group-hover:opacity-100"
@@ -453,7 +454,7 @@ function BarButton(props: {
 					aria-expanded={props.popup ? !!props.expanded : undefined}
 					onClick={props.onClick}
 					disabled={props.disabled}
-					className="flex h-8 w-8 items-center justify-center rounded-md text-muted hover:bg-pressed hover:text-ink focus-visible:outline-2 focus-visible:outline-accent disabled:opacity-60 aria-expanded:bg-pressed aria-expanded:text-ink"
+					className="flex h-7 w-7 items-center justify-center rounded-md text-muted hover:bg-pressed hover:text-ink focus-visible:outline-2 focus-visible:outline-accent disabled:opacity-60 aria-expanded:bg-pressed aria-expanded:text-ink"
 				>
 					{props.children}
 				</button>
