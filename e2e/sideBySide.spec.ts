@@ -1318,3 +1318,58 @@ test("side by side, the file bubble sits in the first row's right cell (a pair r
 		expect(bar.x + bar.width).toBeLessThanOrEqual(cNew.x);
 	}).toPass();
 });
+
+test("side by side, a context line's thread has its bubble in both cells and opens under the one clicked", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	test.skip(isMobile, "a phone shows the bubble once, in its own row");
+	const p = await pr(fixture);
+	const head = p.repo.shas.at(-1) ?? "";
+	// A thread GitHub placed LEFT on the context line old 8 / new 9.
+	p.editScenario((s) => {
+		const graph = s.prs[7]?.graphql;
+		if (!graph) throw new Error("no PR in the scenario");
+		graph.reviewThreads = [
+			reviewThread(
+				{ path: GREET, line: 8, diffSide: "LEFT", subjectType: "LINE" },
+				[
+					threadComment({
+						login: "rev2",
+						text: "Old eight",
+						commit: head,
+						diffHunk: "",
+					}),
+				],
+			),
+		];
+	});
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	await sideBySide(page, true);
+	const section = await expand(page, GREET);
+	const row = section.locator(
+		'tr[data-testid="diff-line"][data-kind="context"][data-old-no="8"]',
+	);
+	const left = bubblesOf(row, "LEFT", false);
+	const right = bubblesOf(row, "RIGHT", false);
+	await expect(left).toHaveAccessibleName("1 comment on old line 8");
+	await expect(right).toHaveAccessibleName("1 comment on line 9");
+	const card = section.getByTestId("thread-row").getByTestId("files-thread");
+	const oldCode = await edges(codeCells(row).nth(0));
+	const newNo = await edges(row.getByTestId("new"));
+	// From the left bubble: under the left side, both bubbles open.
+	await left.click();
+	await expect(card).toContainText("Old eight");
+	const c = await edges(card);
+	expect(c.right).toBeLessThanOrEqual(oldCode.right + 1);
+	await expect(right).toHaveAttribute("aria-expanded", "true");
+	// Either bubble closes it; from the right one it opens under the right.
+	await right.click();
+	await expect(card).toHaveCount(0);
+	await right.click();
+	await expect(card).toContainText("Old eight");
+	expect((await edges(card)).left).toBeGreaterThanOrEqual(newNo.left - 1);
+});
