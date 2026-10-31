@@ -671,6 +671,75 @@ test("rows end at their age; the actions float over the row's end, clear of the 
 	await expect(page.getByRole("dialog", { name: "Snooze" })).toBeVisible();
 });
 
+test("with a coarse pointer and hover (a touch laptop) the bar's buttons are 40px and stay clear of the age", async ({
+	page,
+	workdir,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	test.skip(isMobile, "the bar shows only with hover");
+	await setup(workdir, pr);
+	const crb = await startReview(page, startCrb);
+	await goHome(page, crb.url);
+	// Chromium can't emulate a coarse pointer that also hovers (touch
+	// emulation turns hover off): the page's own `(any-pointer: coarse)`
+	// rules are switched on, as such a laptop matches them.
+	const switched = await page.evaluate(() => {
+		let n = 0;
+		for (const sheet of document.styleSheets) {
+			const walk = (rules: CSSRuleList) => {
+				for (const rule of rules) {
+					if (rule instanceof CSSMediaRule) {
+						if (/any-pointer:\s*coarse/.test(rule.media.mediaText)) {
+							rule.media.mediaText = "all";
+							n++;
+						}
+						walk(rule.cssRules);
+					} else if ("cssRules" in rule) {
+						walk((rule as CSSGroupingRule).cssRules);
+					}
+				}
+			};
+			walk(sheet.cssRules);
+		}
+		return n;
+	});
+	expect(switched).toBeGreaterThan(0);
+	const r = rowOf(section(page, "Up for grabs"), "Snapshot reviews");
+	const bar = r.locator("[data-row-actions]");
+	for (const width of [1280, 900]) {
+		await page.setViewportSize({ width, height: 800 });
+		await r.hover();
+		await expect(bar).toHaveCSS("opacity", "1");
+		for (const name of ["Snooze", "Waiting on", "Note"]) {
+			const box = await r
+				.getByRole("button", { name, exact: true })
+				.boundingBox();
+			expect(box?.height ?? 0, `${name} at ${width}px`).toBeGreaterThanOrEqual(
+				40,
+			);
+			expect(box?.width ?? 0, `${name} at ${width}px`).toBeGreaterThanOrEqual(
+				40,
+			);
+		}
+		const barBox = await bar.boundingBox();
+		const rowBox = await r.boundingBox();
+		const ageBox = await r.locator("time").boundingBox();
+		if (!barBox || !rowBox || !ageBox) throw new Error("no box");
+		expect(barBox.y, `${width}`).toBeGreaterThanOrEqual(rowBox.y - 0.5);
+		expect(barBox.y + barBox.height, `${width}`).toBeLessThanOrEqual(
+			rowBox.y + rowBox.height + 0.5,
+		);
+		const overlaps =
+			barBox.x < ageBox.x + ageBox.width &&
+			ageBox.x < barBox.x + barBox.width &&
+			barBox.y < ageBox.y + ageBox.height &&
+			ageBox.y < barBox.y + barBox.height;
+		expect(overlaps, `bar over the age at ${width}px`).toBe(false);
+	}
+});
+
 test("at 360px: no sideways scroll with the busiest rows, and 40px targets", async ({
 	page,
 	workdir,

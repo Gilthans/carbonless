@@ -415,13 +415,14 @@ export function PrRow(props: {
 	// On touch the actions' "⋯" floats at the row's top right: room for it
 	// at the title line's end (stacked), or the row's (one line). With a
 	// mouse, stacked, the floating bar sits at the title line's end: the
-	// line is as tall as the bar, so it never reaches the age below.
+	// line is as tall as the bar (taller for a coarse pointer's 40px
+	// buttons), so it never reaches the age below; in columns, the row is.
 	const touch = !useMedia("(hover: hover)");
 	return (
 		<>
 			<li
 				data-testid={hidden ? "home-row-hidden" : "home-row"}
-				className={`group relative flex min-h-11 flex-wrap items-center gap-x-3 gap-y-1 border-t border-line px-3 py-2 text-sm first:border-t-0 hover:bg-raised focus-within:bg-raised lg:flex-nowrap ${touch ? "lg:pr-12" : ""}`}
+				className={`group relative flex min-h-11 flex-wrap any-pointer-coarse:min-h-12 items-center gap-x-3 gap-y-1 border-t border-line px-3 py-2 text-sm first:border-t-0 hover:bg-raised focus-within:bg-raised lg:flex-nowrap ${touch ? "lg:pr-12" : ""}`}
 			>
 				<span
 					data-col="repo"
@@ -431,7 +432,7 @@ export function PrRow(props: {
 				</span>
 				<span
 					data-col="title"
-					className={`order-1 flex min-w-0 basis-full items-center gap-2 lg:order-none lg:basis-auto ${COLUMNS.title} ${touch ? "max-lg:pr-8" : "max-lg:min-h-8"}`}
+					className={`order-1 flex min-w-0 basis-full items-center gap-2 lg:order-none lg:basis-auto ${COLUMNS.title} ${touch ? "max-lg:pr-8" : "max-lg:min-h-8 max-lg:any-pointer-coarse:min-h-12"}`}
 				>
 					<TitleLink row={row} />
 					{row.draft && (
