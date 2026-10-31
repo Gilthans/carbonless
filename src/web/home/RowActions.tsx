@@ -16,8 +16,10 @@ import {
 import {
 	type FormEvent,
 	type ReactNode,
+	type RefObject,
 	useEffect,
 	useId,
+	useLayoutEffect,
 	useRef,
 	useState,
 } from "react";
@@ -234,6 +236,7 @@ function PersonInput(props: {
 	onPick: (login: string) => void;
 }) {
 	const [open, setOpen] = useState(false);
+	const input = useRef<HTMLInputElement>(null);
 	const listId = useId();
 	const optionId = useId();
 	const q = props.value.trim().replace(/^@/, "");
@@ -259,9 +262,11 @@ function PersonInput(props: {
 		onOpen: () => setOpen(true),
 		onClose: () => setOpen(false),
 	});
+	const place = useListPlace(input, listOpen);
 	return (
-		<>
+		<div className="relative">
 			<input
+				ref={input}
 				role="combobox"
 				aria-label="Someone else"
 				aria-autocomplete="list"
@@ -307,7 +312,10 @@ function PersonInput(props: {
 					onChoose={(p) => props.onPick(p.login)}
 					onHover={keys.setActive}
 					error={data?.error}
-					className="mt-1 max-h-60"
+					// Over the panel, not in it: under the input, or above it
+					// when the window has no room below; never past the window.
+					className={`absolute inset-x-0 z-50 ${place.up ? "bottom-full mb-1" : "top-full mt-1"}`}
+					style={{ maxHeight: place.max }}
 					render={(p) => (
 						<>
 							<Avatar person={p} size={20} />
@@ -316,8 +324,45 @@ function PersonInput(props: {
 					)}
 				/>
 			)}
-		</>
+		</div>
 	);
+}
+
+/** Room below the list's input needed before it opens above it instead. */
+const LIST_MIN = 160;
+const LIST_MAX = 240;
+const LIST_MARGIN = 8;
+
+/**
+ * Where an input's suggestion list fits in the window: under it, or above
+ * it when there's more room there and too little below; its height capped
+ * to the room, so it never runs past the window (it scrolls).
+ */
+function useListPlace(
+	input: RefObject<HTMLElement | null>,
+	open: boolean,
+): { up: boolean; max: number } {
+	const [place, setPlace] = useState({ up: false, max: LIST_MAX });
+	useLayoutEffect(() => {
+		if (!open) return;
+		const measure = () => {
+			const r = input.current?.getBoundingClientRect();
+			if (!r) return;
+			const below = window.innerHeight - r.bottom - LIST_MARGIN;
+			const above = r.top - LIST_MARGIN;
+			const up = below < LIST_MIN && above > below;
+			const max = Math.max(0, Math.min(LIST_MAX, (up ? above : below) - 4));
+			setPlace((p) => (p.up === up && p.max === max ? p : { up, max }));
+		};
+		measure();
+		window.addEventListener("resize", measure);
+		window.addEventListener("scroll", measure, true);
+		return () => {
+			window.removeEventListener("resize", measure);
+			window.removeEventListener("scroll", measure, true);
+		};
+	}, [open, input]);
+	return place;
 }
 
 function NotePanel(props: {

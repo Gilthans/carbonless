@@ -1,5 +1,11 @@
 import { SyncIcon } from "@primer/octicons-react";
-import { type KeyboardEvent, type ReactNode, useEffect, useState } from "react";
+import {
+	type CSSProperties,
+	type KeyboardEvent,
+	type ReactNode,
+	useEffect,
+	useState,
+} from "react";
 
 /** A labelled group of a combobox's suggestions. */
 export interface SuggestionGroup<T> {
@@ -90,12 +96,14 @@ export function SuggestionList<T>(props: {
 	/** Said above the options (a failed GitHub search). */
 	error?: string;
 	className?: string;
+	style?: CSSProperties;
 }) {
 	let index = -1;
 	return (
 		// biome-ignore lint/a11y/noStaticElementInteractions: not an action; it keeps focus in the box while a click picks an option.
 		<div
 			onMouseDown={(e) => e.preventDefault()}
+			style={props.style}
 			className={`max-h-[70dvh] overflow-y-auto rounded-xl border border-edge bg-overlay p-1.5 shadow-float ${props.className ?? ""}`}
 		>
 			{props.error && (

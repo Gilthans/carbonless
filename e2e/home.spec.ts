@@ -627,6 +627,46 @@ test("waiting on suggests people as you type: the viewer's orgs and repos' peopl
 	await expect(other.getByRole("button", { name: "1 waiting" })).toBeVisible();
 });
 
+test("on a short window the waiting-on suggestions stay inside it", async ({
+	page,
+	workdir,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	test.skip(isMobile, "a desktop window's height; touch opens a bottom sheet");
+	await page.setViewportSize({ width: 1280, height: 600 });
+	const made = await setup(workdir, pr);
+	made.editScenario((s) => {
+		s.orgMembers = {
+			acme: [VIEWER, ...Array.from({ length: 12 }, (_, i) => `ali${i}`)],
+		};
+	});
+	const crb = await startCrb();
+	await goHome(page, crb.url);
+	const other = section(page, "Other open");
+	const dialog = await rowAction(
+		page,
+		rowOf(other, "Migrate alerts table"),
+		"Waiting on",
+	);
+	await dialog
+		.getByRole("combobox", { name: "Someone else" })
+		.pressSequentially("ali");
+	const list = page.getByRole("listbox", { name: "Suggestions" });
+	await expect(list.getByRole("option").first()).toBeVisible();
+	const box = await list.evaluate((el) => {
+		const r = (el.parentElement as HTMLElement).getBoundingClientRect();
+		return { top: r.top, bottom: r.bottom, height: window.innerHeight };
+	});
+	expect(box.top).toBeGreaterThanOrEqual(0);
+	expect(box.bottom).toBeLessThanOrEqual(box.height);
+	// Every suggestion is reachable: the list scrolls.
+	const last = list.getByRole("option").last();
+	await last.scrollIntoViewIfNeeded();
+	await expect(last).toBeInViewport();
+});
+
 test("a note sits under the title on one line; hover or a tap shows all of it", async ({
 	page,
 	workdir,
