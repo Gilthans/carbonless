@@ -396,7 +396,10 @@ export async function buildApp(
 		{ prefix: "/api/r/:id" },
 	);
 
-	// A typed or pasted address: the PR's review, opened if need be.
+	// A typed, pasted or clicked address: the PR's review, opened if need
+	// be. With the web UI the page answers at once and opens the review
+	// itself (POST /api/reviews, then on to /r/<id>), so the reviewer sees it
+	// load; without it, the open and a redirect.
 	app.get<{
 		Params: { owner: string; repo: string; number: string };
 		Querystring: { head?: string };
@@ -404,9 +407,12 @@ export async function buildApp(
 		const { owner, repo, number } = request.params;
 		try {
 			const req: OpenRequest = { pr: `${owner}/${repo}#${number}` };
-			parsePrArg(req.pr);
+			const parsed = parsePrArg(req.pr);
 			const { head } = request.query;
 			if (head !== undefined) req.head = parseHead(head);
+			if (webRoot && "owner" in parsed) {
+				return openingPage(reply, prTitle(options.home, parsed));
+			}
 			const { id } = await openReview(registry, req, options.progress);
 			return reply.redirect(`/r/${id}`, 302);
 		} catch (error) {
@@ -432,6 +438,20 @@ export async function buildApp(
 		const meta = `<meta name="crb-not-found" content="${escapeAttribute(reason)}">`;
 		return reply
 			.status(404)
+			.type("text/html; charset=utf-8")
+			.send(html.replace("</head>", `${meta}</head>`));
+	};
+	/** The web page for a /pr/... address, with the PR's title when Home knows it. */
+	const openingPage = async (
+		reply: import("fastify").FastifyReply,
+		title: string | null,
+	) => {
+		const html = await readFile(join(webRoot as string, "index.html"), "utf8");
+		const meta =
+			title === null
+				? ""
+				: `<meta name="crb-pr-title" content="${escapeAttribute(title)}">`;
+		return reply
 			.type("text/html; charset=utf-8")
 			.send(html.replace("</head>", `${meta}</head>`));
 	};
@@ -464,6 +484,23 @@ const escapeAttribute = (text: string) =>
 				c
 			] ?? c,
 	);
+
+/** `pr`'s title as Home last read it; null when Home doesn't know it. */
+function prTitle(
+	home: HomeService | undefined,
+	pr: { owner: string; repo: string; number: number },
+): string | null {
+	const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
+	const known = home
+		?.knownPrs()
+		.find(
+			(f) =>
+				f.number === pr.number &&
+				same(f.owner, pr.owner) &&
+				same(f.repo, pr.repo),
+		);
+	return known?.title ?? null;
+}
 
 /** Opens the review; a refusal is a RefusedReviewError (registry.ts). */
 const openReview = (

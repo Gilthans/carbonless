@@ -84,7 +84,7 @@ export function setRow(client: QueryClient, row: HomeRow) {
 export const prPath = (row: RowKey) =>
 	`/pr/${encodeURIComponent(row.owner)}/${encodeURIComponent(row.repo)}/${row.number}`;
 
-/** Leaves the page (a server route: `/pr/...` redirects to the review). */
+/** Leaves Home for `path` (`/pr/...` shows the PR loading, then its review). */
 export const goTo = (path: string) => {
 	window.location.assign(path);
 };

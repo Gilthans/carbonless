@@ -1,7 +1,8 @@
+import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Locator, Page } from "@playwright/test";
-import { bumpHomePr, homePr } from "../test/fake-gh/scenario";
+import { bumpHomePr, homePr, release } from "../test/fake-gh/scenario";
 import { fileAction, fileSection, openFiles } from "./files-ui";
 import { expect, OWNER_REPO, PR_NUMBER, type Pr, test } from "./fixtures";
 
@@ -248,6 +249,73 @@ test("opens a PR by URL, by owner/repo#n and by repo then title words", async ({
 	).toBeVisible();
 	await box.press("Enter");
 	await expect(page).toHaveURL(new RegExp(`${reviewPath}$`));
+});
+
+test("a PR chosen in the open box shows at once, loading, then becomes its review", async ({
+	page,
+	workdir,
+	pr,
+	startCrb,
+}) => {
+	const made = await setup(workdir, pr);
+	const second = "Second widget change";
+	// A second PR of the fixture repo, in the view: Home knows its title.
+	execFileSync("git", [
+		"-C",
+		made.repo.path,
+		"update-ref",
+		"refs/pull/8/head",
+		made.repo.shas.at(-1) ?? "",
+	]);
+	made.editScenario((s) => {
+		const first = s.prs[String(PR_NUMBER)];
+		if (!first) throw new Error("no fixture PR");
+		s.prs["8"] = {
+			...first,
+			view: { ...first.view, number: 8, title: second },
+		};
+		s.repos?.[OWNER_REPO]?.prs.push(
+			homePr({
+				repo: OWNER_REPO,
+				number: 8,
+				title: second,
+				author: "alice",
+				updatedAt: iso(30),
+			}),
+		);
+	});
+	writeFileSync(
+		join(workdir, "config", "carbonless", "config.json"),
+		JSON.stringify({
+			views: [{ name: "My PRs", repos: ["acme/api", OWNER_REPO] }],
+		}),
+	);
+	const crb = await startCrb();
+	await goHome(page, crb.url);
+	await expect(page.getByText(second)).toBeVisible();
+	// GitHub's answer for the PR is held: the review can't open yet.
+	made.editScenario((s) => {
+		s.hold = ["prView"];
+	});
+	const box = page.getByRole("combobox", { name: "Open a pull request" });
+	await box.click();
+	await box.pressSequentially(`${OWNER_REPO} second`);
+	await page.getByRole("option", { name: new RegExp(second) }).click();
+	const opening = page.getByTestId("opening");
+	await expect(opening).toContainText(second);
+	await expect(opening).toContainText("#8");
+	await expect(page.getByRole("status")).toContainText("Opening");
+	await expect(page).toHaveURL(new RegExp(`/pr/${OWNER_REPO}/8$`));
+	release(made.scenarioPath, "prView");
+	await expect(page).toHaveURL(/\/r\/[0-9a-z]{26}$/);
+	await expect(page.getByRole("heading", { level: 1 })).toHaveText(second);
+	const review = page.url();
+	// Back is Home, not the loading page.
+	await page.goBack();
+	await expect(section(page, "Mine")).toBeVisible();
+	// Opened again: the same review.
+	await rowOf(page, second).getByRole("link").click();
+	await expect(page).toHaveURL(review);
 });
 
 test("Repos spins while the viewer's repos load, then lists only theirs", async ({

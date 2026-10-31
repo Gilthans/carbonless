@@ -61,10 +61,10 @@ describe("review routes", () => {
 		expect(await screen.findByTestId("not-found")).toHaveTextContent(
 			"PR acme/widget#3 is closed; reopen it on GitHub to review",
 		);
-		expect(screen.getByRole("link", { name: "Home" })).toHaveAttribute(
-			"href",
-			"/",
-		);
+		// In the PR's frame (its logo) and under the reason.
+		for (const home of screen.getAllByRole("link", { name: "Home" })) {
+			expect(home).toHaveAttribute("href", "/");
+		}
 	});
 
 	it("any other unknown address: no such page", async () => {

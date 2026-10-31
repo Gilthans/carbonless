@@ -194,7 +194,8 @@ test("/pr/<owner>/<repo>/<n> opens the PR's review, or says why it can't", async
 	startCrb,
 	expectConsoleError,
 }) => {
-	expectConsoleError(/404/);
+	// The page asks the server to open #99, which refuses (409).
+	expectConsoleError(/409/);
 	await pr();
 	const s = await startCrb();
 	const origin = new URL(s.url).origin;
@@ -203,7 +204,9 @@ test("/pr/<owner>/<repo>/<n> opens the PR's review, or says why it can't", async
 	await expect(title(page)).toHaveText("Add widget cache");
 	await page.goto(`${origin}/pr/acme/widget/99`);
 	await expect(page.getByTestId("not-found")).toContainText("not found");
-	await expect(page.getByRole("link", { name: "Home" })).toBeVisible();
+	await expect(
+		page.getByRole("main").getByRole("link", { name: "Home" }),
+	).toBeVisible();
 });
 
 test("refuses a crb of another build, and says which runs", async ({

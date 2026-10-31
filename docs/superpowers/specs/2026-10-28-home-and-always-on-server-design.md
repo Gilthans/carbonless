@@ -450,8 +450,17 @@ parsed on every keystroke:
 - Title search in a repo outside the view, or beyond the cache in a view
   repo, uses `gh search prs --repo` after a short debounce, with a spinner
   in the list and no blocking of the typed results.
-- Opening a PR of a repo not yet cloned shows the review page's existing
-  loading state (the clone progress lines).
+- Choosing a PR (or any `/pr/owner/repo/n` address, `?head=` too) shows a
+  page at once (owner, 2026-10-31: "It should open a page immediately, that
+  loads while the backend data model is created"): the review page's frame
+  with the PR's title (when Home knows it, else `owner/repo #n`) and an
+  "Opening…" spinner, while the server opens the review (a clone if the repo
+  has none yet). Then it becomes `/r/<id>` in place (Back returns to where
+  the reviewer came from). A PR that can't be opened says why on that same
+  page. The server answers `/pr/...` with the page before any GitHub read;
+  the page asks `POST /api/reviews`, which joins an open of the same PR
+  under way, so opening it twice gives one review. The cross-site rule for
+  `/pr/...` is unchanged; the CLI still opens through `POST /api/reviews`.
 
 ### Refresh
 

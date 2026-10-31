@@ -1307,27 +1307,36 @@ describe("API", () => {
 			expect(pinned.headers.location).not.toBe(`/r/${id}`);
 		});
 
-		it("GET /pr/... that can't be opened is the web 404 page saying why", async () => {
+		it("GET /pr/... with the web UI answers the page at once; the page opens the review", async () => {
 			const web = mkdtempSync(join(tmpdir(), "crb-web-"));
 			writeFileSync(join(web, "index.html"), "<html><head></head><p>spa</p>");
 			const withWeb = await buildApp(registry, {
 				webRoot: web,
 				accessKey: "k3y",
 			});
+			const open = vi.spyOn(registry, "open");
 			try {
-				const missing = await withWeb.inject({
-					url: "/pr/acme/widget/99?key=k3y",
-				});
-				expect(missing.statusCode).toBe(404);
-				expect(missing.headers["content-type"]).toMatch(/text\/html/);
-				expect(missing.body).toMatch(
-					/<meta name="crb-not-found" content="[^"]*not found[^"]*"><\/head>/,
-				);
+				// A PR GitHub doesn't know: the page, which asks and says why.
+				for (const url of [
+					"/pr/acme/widget/12?key=k3y",
+					"/pr/acme/widget/99?key=k3y",
+					`/pr/acme/widget/12?key=k3y&head=${pr.head()}`,
+				]) {
+					const page = await withWeb.inject({ url });
+					expect(page.statusCode, url).toBe(200);
+					expect(page.headers["content-type"]).toMatch(/text\/html/);
+					expect(page.body).toContain("<p>spa</p>");
+					expect(page.body).not.toContain("crb-not-found");
+				}
+				expect(open).not.toHaveBeenCalled();
+				// An address that names no PR: the 404 page saying why, at once.
 				const bad = await withWeb.inject({
 					url: "/pr/acme/widget/0?key=k3y",
 				});
 				expect(bad.statusCode).toBe(404);
-				expect(bad.body).toContain("Not a PR");
+				expect(bad.body).toMatch(
+					/<meta name="crb-not-found" content="[^"]*Not a PR[^"]*"><\/head>/,
+				);
 				const quote = await withWeb.inject({
 					url: `/pr/acme/widget/12?key=k3y&head=${encodeURIComponent('"><script>')}`,
 				});
@@ -1335,10 +1344,11 @@ describe("API", () => {
 				expect(quote.body).not.toContain("<script>");
 				expect(quote.body).toContain("&quot;&gt;&lt;script&gt;");
 			} finally {
+				open.mockRestore();
 				await withWeb.close();
 				rmSync(web, { recursive: true, force: true });
 			}
-			// Without the web UI: JSON.
+			// Without the web UI: the open, then JSON saying why.
 			const json = await inject("/pr/acme/widget/99");
 			expect(json.statusCode).toBe(404);
 			expect(json.json().error).toMatch(/not found/);

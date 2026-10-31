@@ -15,6 +15,7 @@ import { ApiError, bindReview, sessionQuery } from "./api";
 import { parseFilesSearch } from "./files/landing";
 import { useUnsavedGuard } from "./files/useSetStates";
 import { HomePage } from "./home/HomePage";
+import { OpeningPage, parseOpeningSearch } from "./OpeningPage";
 import { FilesPage, OverviewPage } from "./pages";
 import { ShortcutsProvider } from "./shortcuts";
 
@@ -101,6 +102,14 @@ const homeRoute = createRoute({
 	component: HomePage,
 });
 
+/** A PR by its address: shows it loading while the server opens its review. */
+const openingRoute = createRoute({
+	getParentRoute: () => rootRoute,
+	path: "/pr/$owner/$repo/$number",
+	validateSearch: parseOpeningSearch,
+	component: OpeningPage,
+});
+
 const reviewRoute = createRoute({
 	getParentRoute: () => rootRoute,
 	path: "/r/$id",
@@ -135,6 +144,7 @@ const filesRoute = createRoute({
 
 const routeTree = rootRoute.addChildren([
 	homeRoute,
+	openingRoute,
 	reviewRoute.addChildren([overviewRoute, filesRoute]),
 ]);
 
