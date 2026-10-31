@@ -15,7 +15,7 @@ import { Tooltip } from "../Tooltip";
 import { ErrorMessage } from "../ui";
 import { homeQuery, postHomeRefresh } from "./homeApi";
 import { OpenBox } from "./OpenBox";
-import { Sign } from "./PrRow";
+import { ColumnHeader, Sign } from "./PrRow";
 import { Section } from "./Section";
 import { ViewSettings } from "./ViewSettings";
 
@@ -203,6 +203,11 @@ export function HomePage() {
 								</Tooltip>
 							)}
 						</div>
+						{data.sections.some((s) => s.rows.length > 0) && (
+							// One for the page, sticky: the columns are the same in
+							// every section.
+							<ColumnHeader />
+						)}
 						{data.sections.map((s) => (
 							<Section key={s.id} section={s} viewer={data.viewer.login} />
 						))}

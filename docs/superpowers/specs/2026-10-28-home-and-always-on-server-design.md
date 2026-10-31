@@ -327,6 +327,16 @@ turn · age or coverage · hover actions. Every icon has a tooltip and an
 accessible name (principle 6); colors are the design tokens with their
 code-review meaning.
 
+- **Columns and their header** (owner, 2026-10-31: "There should be titles
+  at the top of the list, so it's clear what are the elements of the
+  row"): from `lg` (1024px) up a row is one line of fixed columns, Repo ·
+  Pull request (number, title, pills; takes the rest) · Status · Turn ·
+  Reviewed (coverage) · Updated (age, at the row's right edge), and one
+  header for the page names them, in line with them, in short words; it
+  sticks at the top, so it names the columns of whichever section is in
+  view, folded or not. Below `lg` a row stacks (title; repo and the rest)
+  and nothing lines up across rows, so there is no header **(call)**. A
+  sub-row's coverage and age sit under the Reviewed and Updated columns.
 - **Title**: always whole (owner, 2026-10-31: "The title should fully
   appear in every row. It should wrap inside the row if necessary"):
   never truncated or ellipsised, on any width; a word longer than the row
@@ -510,7 +520,7 @@ parsed on every keystroke:
 
 ### Phone (principle 5)
 
-Rows stack to two lines (title; repo, icons, turn, age), the search box is
+Rows stack to two lines below `lg` (title; repo, icons, turn, age), the search box is
 full width under the header, section footers and the "⋯" button are 40px
 targets, nothing scrolls sideways at 360px. The phone project of the
 Playwright suite covers Home.

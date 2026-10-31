@@ -194,6 +194,56 @@ describe("HomePage", () => {
 		expect(link.parentElement).not.toHaveClass("truncate");
 	});
 
+	it("names the row's columns in one header, aligned with them on wide screens", async () => {
+		fakeApi(
+			view({
+				reviewing: [
+					row({
+						number: 3,
+						turn: { kind: "people", logins: ["noa"] },
+						reviews: [
+							{
+								id: "R1",
+								label: "head",
+								pinnedHead: null,
+								coverage: { done: 1, total: 2, unit: "lines" },
+								lastActedAt: ago(5),
+								headMoved: false,
+							},
+						],
+					}),
+				],
+				other: [row({ number: 4 })],
+			}),
+		);
+		renderWithQuery(<HomePage />);
+		await screen.findByText("#3");
+		const headers = screen.getAllByTestId("home-columns");
+		expect(headers).toHaveLength(1);
+		const header = headers[0] as HTMLElement;
+		// Only where the rows are columns (lg up); a phone's stacked rows have none.
+		expect(header).toHaveClass("hidden", "lg:flex");
+		const cols = [...header.querySelectorAll<HTMLElement>("[data-col]")];
+		expect(cols.map((c) => c.textContent)).toEqual([
+			"Repo",
+			"Pull request",
+			"Status",
+			"Turn",
+			"Reviewed",
+			"Updated",
+		]);
+		const width = (el: Element) =>
+			[...el.classList].filter((c) => /^lg:(w-|flex-1)/.test(c)).join(" ");
+		for (const r of screen.getAllByTestId("home-row")) {
+			for (const col of cols) {
+				const cell = r.querySelector(`[data-col="${col.dataset.col}"]`);
+				expect(cell, col.dataset.col).not.toBeNull();
+				expect(width(cell as Element), col.dataset.col).toBe(width(col));
+				expect(width(col)).not.toBe("");
+			}
+		}
+	});
+
 	it("leaves the author out on Mine, and says 'no reviewer' for an untaken PR", async () => {
 		fakeApi(
 			view({
@@ -432,13 +482,13 @@ describe("HomePage", () => {
 		await screen.findByText("Rate-limit gh polling per repo");
 		await userEvent.click(screen.getByRole("button", { name: "1 snoozed" }));
 		// jsdom has no layout: the 360px check is the e2e's. Here, every row's
-		// meta line may wrap on a phone (nowrap only from sm up).
+		// meta line may wrap until the row is columns (nowrap only from lg up).
 		for (const r of [
 			screen.getByTestId("home-row"),
 			screen.getByTestId("home-row-hidden"),
 		]) {
 			const meta = within(r).getByTestId("row-meta");
-			expect(meta).toHaveClass("flex-wrap", "sm:flex-nowrap");
+			expect(meta).toHaveClass("flex-wrap", "lg:flex-nowrap");
 			expect(meta).not.toHaveClass("flex-nowrap");
 		}
 	});

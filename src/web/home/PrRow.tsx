@@ -102,7 +102,7 @@ const personOf = (row: HomeRow, login: string): Person =>
 /** Checks, review decision, open threads and author, each only when it applies. */
 function StatusIcons({ row, section }: { row: HomeRow; section: SectionId }) {
 	return (
-		<span className="flex shrink-0 items-center gap-2">
+		<span className="flex shrink-0 items-center gap-1.5">
 			{row.state === "MERGED" && (
 				<Sign label="Merged" className="text-done">
 					<GitMergeIcon size={14} aria-hidden />
@@ -178,7 +178,10 @@ function TurnCell({ row, viewer }: { row: HomeRow; viewer: string }) {
 			{turn.logins.slice(0, 3).map((l) => (
 				<Avatar key={l} person={personOf(row, l)} me={same(l, viewer)} />
 			))}
-			<span aria-hidden className="hidden sm:inline">
+			<span
+				aria-hidden
+				className="hidden min-w-0 truncate sm:inline lg:max-w-16"
+			>
 				{turn.label === "merge"
 					? "merge"
 					: `${first}${names.length > 1 ? ` +${names.length - 1}` : ""}`}
@@ -327,9 +330,75 @@ function TitleLink({ row }: { row: HomeRow }) {
 }
 
 /**
- * One PR: repo, number and title, pills, status icons, turn, age and
- * coverage, and the row's actions. Two lines on a phone. A hidden row is
- * dimmed and carries its reason and Wake up.
+ * The row's columns from lg up (one line; below it a row stacks), shared
+ * by the rows and the header that names them (ColumnHeader): the last
+ * one ends at the row's right edge, the actions float over it.
+ */
+export const COLUMNS = {
+	repo: "lg:w-32 lg:shrink-0",
+	title: "lg:flex-1",
+	status: "lg:w-32 lg:shrink-0",
+	turn: "lg:w-36 lg:shrink-0",
+	coverage: "lg:w-36 lg:shrink-0",
+	updated: "lg:w-28 lg:shrink-0 lg:justify-end",
+} as const;
+export type Column = keyof typeof COLUMNS;
+
+const COLUMN_TITLES: Record<Column, string> = {
+	repo: "Repo",
+	title: "Pull request",
+	status: "Status",
+	turn: "Turn",
+	coverage: "Reviewed",
+	updated: "Updated",
+};
+
+/**
+ * The names of the rows' columns, over the page's lists: from lg up only,
+ * where the rows are columns (a phone's stacked rows have nothing to line
+ * up with). Its padding is a row's plus the list's border. Sticky, so it
+ * names the columns of whichever section is in view.
+ */
+export function ColumnHeader() {
+	// The rows' room for the touch "⋯" (PrRow).
+	const touch = !useMedia("(hover: hover)");
+	return (
+		<div
+			data-testid="home-columns"
+			aria-hidden
+			// Sticks at the top: whichever section is in view, its columns are named.
+			className={`sticky top-0 z-30 hidden items-center gap-x-3 border-b border-line bg-canvas px-[calc(0.75rem+1px)] py-1.5 text-xs font-bold tracking-[0.12em] text-faint uppercase lg:flex ${touch ? "pr-[calc(3rem+1px)]" : ""}`}
+		>
+			{(Object.keys(COLUMNS) as Column[]).map((c) => (
+				<span key={c} data-col={c} className={`flex ${COLUMNS[c]}`}>
+					{COLUMN_TITLES[c]}
+				</span>
+			))}
+		</div>
+	);
+}
+
+/** A row's cell of column `col`; below lg, an empty one takes no room. */
+function Cell(props: {
+	col: Column;
+	children?: ReactNode;
+	className?: string;
+}) {
+	return (
+		<span
+			data-col={props.col}
+			className={`flex min-w-0 items-center max-lg:empty:hidden ${COLUMNS[props.col]} ${props.className ?? ""}`}
+		>
+			{props.children}
+		</span>
+	);
+}
+
+/**
+ * One PR: repo, number and title, pills, status icons, turn, coverage and
+ * age, in columns from lg up; stacked below (title; repo and the rest). A
+ * hidden row is dimmed and carries its reason; its Wake up is among the
+ * actions, which float over the row's end.
  */
 export function PrRow(props: {
 	row: HomeRow;
@@ -342,19 +411,23 @@ export function PrRow(props: {
 	const single = row.reviews.length === 1 ? row.reviews[0] : undefined;
 	const subs = row.reviews.length > 1 ? byLastActed(row.reviews) : [];
 	// On touch the actions' "⋯" floats at the row's top right: room for it
-	// at the title line's end (a phone), or the row's (one line).
+	// at the title line's end (stacked), or the row's (one line).
 	const touch = !useMedia("(hover: hover)");
 	return (
 		<>
 			<li
 				data-testid={hidden ? "home-row-hidden" : "home-row"}
-				className={`group relative flex min-h-11 flex-wrap items-center gap-x-3 gap-y-1 border-t border-line px-3 py-2 text-sm first:border-t-0 hover:bg-raised focus-within:bg-raised sm:flex-nowrap ${touch ? "sm:pr-12" : ""}`}
+				className={`group relative flex min-h-11 flex-wrap items-center gap-x-3 gap-y-1 border-t border-line px-3 py-2 text-sm first:border-t-0 hover:bg-raised focus-within:bg-raised lg:flex-nowrap ${touch ? "lg:pr-12" : ""}`}
 			>
-				<span className="order-2 max-w-[40%] min-w-0 truncate text-xs text-muted sm:order-none sm:w-36 sm:max-w-none sm:shrink-0 sm:text-sm">
+				<span
+					data-col="repo"
+					className={`order-2 max-w-[40%] min-w-0 truncate text-xs text-muted lg:order-none lg:max-w-none lg:text-sm ${COLUMNS.repo}`}
+				>
 					{row.owner}/{row.repo}
 				</span>
 				<span
-					className={`order-1 flex min-w-0 basis-full items-center gap-2 sm:order-none sm:flex-1 sm:basis-auto ${touch ? "max-sm:pr-8" : ""}`}
+					data-col="title"
+					className={`order-1 flex min-w-0 basis-full items-center gap-2 lg:order-none lg:basis-auto ${COLUMNS.title} ${touch ? "max-lg:pr-8" : ""}`}
 				>
 					<TitleLink row={row} />
 					{row.draft && (
@@ -384,21 +457,29 @@ export function PrRow(props: {
 				</span>
 				<span
 					data-testid="row-meta"
-					// Wraps on a phone: a started row's icons, turn, coverage, age
-					// and "⋯" are wider than 360px.
-					className="order-3 flex min-w-0 flex-1 flex-wrap items-center justify-end gap-x-3 gap-y-1 text-xs text-muted sm:order-none sm:flex-none sm:flex-nowrap sm:justify-start sm:text-sm"
+					// Wraps while stacked: a started row's icons, turn, coverage and
+					// age are wider than 360px.
+					className="order-3 flex min-w-0 flex-1 flex-wrap items-center justify-end gap-x-3 gap-y-1 text-xs text-muted lg:order-none lg:flex-none lg:flex-nowrap lg:justify-start lg:text-sm"
 				>
-					<StatusIcons row={row} section={section} />
-					{hidden ? (
-						<Reason row={row} />
-					) : (
-						<TurnCell row={row} viewer={viewer} />
-					)}
-					{single?.headMoved && <HeadMoved />}
-					{single && <CoverageCell coverage={single.coverage} />}
-					<span className="relative z-10 shrink-0 whitespace-nowrap">
-						<RelativeTime iso={row.updatedAt} />
-					</span>
+					<Cell col="status">
+						<StatusIcons row={row} section={section} />
+					</Cell>
+					<Cell col="turn">
+						{hidden ? (
+							<Reason row={row} />
+						) : (
+							<TurnCell row={row} viewer={viewer} />
+						)}
+					</Cell>
+					<Cell col="coverage" className="gap-1.5">
+						{single?.headMoved && <HeadMoved />}
+						{single && <CoverageCell coverage={single.coverage} />}
+					</Cell>
+					<Cell col="updated">
+						<span className="relative z-10 shrink-0 whitespace-nowrap">
+							<RelativeTime iso={row.updatedAt} />
+						</span>
+					</Cell>
 				</span>
 				{props.actions}
 			</li>
@@ -414,7 +495,7 @@ function SubRow({ review }: { review: RowReview }) {
 	return (
 		<li
 			data-testid="home-subrow"
-			className="relative flex min-h-10 items-center gap-3 py-1 pr-3 pl-8 text-xs text-muted hover:bg-raised focus-within:bg-raised sm:pl-40 sm:text-sm"
+			className="relative flex min-h-10 items-center gap-3 py-1 pr-3 pl-8 text-xs text-muted hover:bg-raised focus-within:bg-raised lg:pl-38 lg:text-sm"
 		>
 			<a
 				href={`/r/${review.id}`}
@@ -429,12 +510,17 @@ function SubRow({ review }: { review: RowReview }) {
 					review.label
 				)}
 			</a>
+			{/* Under the PR row's Reviewed and Updated columns. */}
 			<span className="ml-auto flex items-center gap-3">
-				{review.headMoved && <HeadMoved />}
-				<CoverageCell coverage={review.coverage} />
-				<span className="relative z-10 whitespace-nowrap">
-					<RelativeTime iso={review.lastActedAt} />
-				</span>
+				<Cell col="coverage" className="gap-1.5">
+					{review.headMoved && <HeadMoved />}
+					<CoverageCell coverage={review.coverage} />
+				</Cell>
+				<Cell col="updated">
+					<span className="relative z-10 whitespace-nowrap">
+						<RelativeTime iso={review.lastActedAt} />
+					</span>
+				</Cell>
 			</span>
 		</li>
 	);

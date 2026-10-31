@@ -677,6 +677,8 @@ test("at 360px: no sideways scroll with the busiest rows, and 40px targets", asy
 	}));
 	expect(widths.scroll).toBeLessThanOrEqual(widths.client);
 	expect(await cutTitles(page)).toEqual([]);
+	// Stacked rows: no column header.
+	await expect(page.getByTestId("home-columns")).toBeHidden();
 	// Every row's second line keeps its parts inside it: with justify-end,
 	// a line that can't wrap spills out to the left, unseen by scrollWidth.
 	const spills = await page.evaluate(() =>
@@ -728,7 +730,7 @@ test("at 360px: no sideways scroll with the busiest rows, and 40px targets", asy
 	}
 });
 
-test("at desktop width every title shows in full", async ({
+test("at desktop width: every title in full, and the header names the columns in line with them", async ({
 	page,
 	workdir,
 	pr,
@@ -740,6 +742,39 @@ test("at desktop width every title shows in full", async ({
 	await goHome(page, crb.url);
 	await expect(page.getByText(/WidgetCacheInvalidation/)).toBeVisible();
 	expect(await cutTitles(page)).toEqual([]);
+	const header = page.getByTestId("home-columns");
+	await expect(header).toBeVisible();
+	await expect(header.locator("[data-col]")).toHaveText([
+		"Repo",
+		"Pull request",
+		"Status",
+		"Turn",
+		"Reviewed",
+		"Updated",
+	]);
+	// Each name starts where its column does, on every row.
+	const misaligned = await page.evaluate(() => {
+		const head = document.querySelector("[data-testid=home-columns]");
+		const out: string[] = [];
+		for (const name of head?.querySelectorAll<HTMLElement>("[data-col]") ??
+			[]) {
+			const col = name.dataset.col;
+			const x = name.getBoundingClientRect().left;
+			for (const row of document.querySelectorAll("[data-testid=home-row]")) {
+				const cell = row.querySelector(`[data-col="${col}"]`);
+				const left = cell?.getBoundingClientRect().left;
+				if (left === undefined || Math.abs(left - x) > 1) {
+					out.push(`${col}: ${left} vs ${x}`);
+				}
+			}
+		}
+		return out;
+	});
+	expect(misaligned).toEqual([]);
+	// Sticky: still there over a section further down.
+	await section(page, "Recently closed").scrollIntoViewIfNeeded();
+	await page.mouse.wheel(0, 2000);
+	await expect(header).toBeInViewport();
 });
 
 test("screenshot at desktop width (CRB_HOME_SHOTS only)", async ({
