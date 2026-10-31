@@ -1457,6 +1457,45 @@ describe("Comment on file", () => {
 		).toBeInTheDocument();
 	});
 
+	it("side by side, a file comment's composer spans its row across the table, as its posted thread will; a line's keeps its side and width", async () => {
+		sideBySide.set(true);
+		try {
+			const { user } = renderFile({}, { expanded: true, hunks: HUNKS });
+			await user.click(
+				await screen.findByRole("button", { name: "Comment on file" }),
+			);
+			const row = await screen.findByTestId("file-threads");
+			expect(row.querySelector("td")?.colSpan).toBe(6);
+			const card = within(row).getByTestId("new-thread");
+			// Not capped to a line composer's width: it fills the row.
+			expect(card.className).not.toMatch(/max-w-/);
+			act(() => {
+				openComposer({
+					path: PATH,
+					commit: HEAD,
+					subject: "line",
+					startSide: "LEFT",
+					startLine: 4,
+					side: "LEFT",
+					line: 4,
+				});
+			});
+			const line = await screen.findByTestId("new-thread-row");
+			// Under the left side: the card, then the right side's blank.
+			expect(
+				[...line.querySelectorAll(":scope > td")].map(
+					(td) => (td as HTMLTableCellElement).colSpan,
+				),
+			).toEqual([1, 1, 2, 2]);
+			expect(line.lastElementChild).toHaveClass("bg-band");
+			expect(within(line).getByTestId("new-thread").className).toMatch(
+				/max-w-\[40rem\]/,
+			);
+		} finally {
+			sideBySide.reset();
+		}
+	});
+
 	/** A hunk at new lines 5–6, the gap of lines 1–4 above it. */
 	const LATER: FileHunks = {
 		newLineCount: 6,

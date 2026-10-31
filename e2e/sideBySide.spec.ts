@@ -1214,15 +1214,27 @@ test("side by side, the file bubble sits in the first row's right cell (a pair r
 	);
 	const composer = section.getByTestId("new-thread");
 	await expect(composer).toContainText("whole file");
+	// Across the row while written, as the thread is once posted (not in
+	// the left half): all but the rail and controls columns and the card's
+	// padding.
+	const tableBox = await table(section, "side-by-side").boundingBox();
+	const written = await composer.boundingBox();
+	if (!tableBox || !written) throw new Error("no geometry");
+	expect(written.width).toBeGreaterThanOrEqual(tableBox.width - 64);
 	await composer.getByRole("textbox", { name: "Comment" }).fill("The file?");
 	await composer.getByRole("button", { name: "Comment" }).click();
 	await expect(section.getByTestId("new-thread")).toHaveCount(0);
 	await expect(
 		section.getByRole("button", { name: /1 comment on this file/ }),
 	).toHaveAttribute("aria-expanded", "true");
-	await expect(
-		fileRow.getByTestId("files-thread").filter({ hasText: "The file?" }),
-	).toBeVisible();
+	const posted = fileRow
+		.getByTestId("files-thread")
+		.filter({ hasText: "The file?" });
+	await expect(posted).toBeVisible();
+	const saved = await posted.boundingBox();
+	if (!saved) throw new Error("no geometry");
+	expect(saved.x).toBe(written.x);
+	expect(saved.width).toBe(written.width);
 	expect(stored(p)).toMatchObject([{ path: GREET, subjectType: "FILE" }]);
 	await expectNoPageOverflow(page);
 	// A pick on an old number: the bar sits just right of the row's new
