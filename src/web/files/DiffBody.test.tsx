@@ -6,6 +6,7 @@ import {
 	fireEvent,
 	render,
 	screen,
+	waitFor,
 	within,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -188,6 +189,8 @@ function setup(
 		clusters?: ClusterView[];
 		hunks?: FileHunks;
 		lead?: FileLead;
+		/** Two files' tables in one tree (the same file twice). */
+		twice?: boolean;
 	} = {},
 ) {
 	const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
@@ -222,17 +225,21 @@ function setup(
 	const threads: DiffThreads | undefined = opts.threads
 		? { readId: "r", snapshotHead: HEAD, threads: opts.threads }
 		: undefined;
+	const body = (
+		<DiffBody
+			file={file(opts.clusters ?? clusters)}
+			revision="r1"
+			onToggle={onToggle}
+			onCrossOff={onCrossOff}
+			threads={threads}
+			landing={opts.landing}
+			lead={opts.lead}
+		/>
+	);
 	render(
 		<QueryClientProvider client={queryClient}>
-			<DiffBody
-				file={file(opts.clusters ?? clusters)}
-				revision="r1"
-				onToggle={onToggle}
-				onCrossOff={onCrossOff}
-				threads={threads}
-				landing={opts.landing}
-				lead={opts.lead}
-			/>
+			{body}
+			{opts.twice && body}
 		</QueryClientProvider>,
 	);
 	const rows = () =>
@@ -948,7 +955,7 @@ describe("DiffBody side by side", () => {
 		expect(screen.getAllByTestId("thread-row")).toHaveLength(2);
 	});
 
-	it("gives a context line one bubble, in the right cell, for a thread on its old side, and marks both cells", async () => {
+	it("gives a context line its bubble in both cells, for a thread on its old side, and marks both cells", async () => {
 		setup({
 			hunks: pairHunks(),
 			clusters: [pairCluster()],
@@ -958,12 +965,11 @@ describe("DiffBody side by side", () => {
 		const row = lineRows()[0] as HTMLElement;
 		expect(row.dataset.kind).toBe("context");
 		expect(row).toHaveAttribute("data-commented");
-		expect(screen.getAllByTestId("thread-bubble")).toHaveLength(1);
+		// The same thread from either side, each named by the number beside it.
+		expect(screen.getAllByTestId("thread-bubble")).toHaveLength(2);
+		expect(bubble(row, "LEFT")).toHaveAccessibleName("1 comment on old line 4");
+		expect(bubble(row, "RIGHT")).toHaveAccessibleName("1 comment on line 4");
 		const right = code(row, "RIGHT") as HTMLElement;
-		expect(within(right).getByTestId("thread-bubble")).toBeInTheDocument();
-		expect(
-			code(row, "LEFT")?.querySelector('[data-testid="thread-bubble"]'),
-		).toBeNull();
 		expect(code(row, "LEFT")).toHaveAttribute("data-commented");
 		expect(right).toHaveAttribute("data-commented");
 		expect(code(row, "LEFT")).toHaveClass("thread-mark-cell");
@@ -1009,19 +1015,38 @@ describe("DiffBody side by side", () => {
 		).not.toBeNull();
 	});
 
-	it("opens a context line's thread on the right, whichever side it names", async () => {
+	it("opens a context line's threads under the bubble clicked, whichever side they name; either bubble closes them", async () => {
 		const { user } = setup({
 			hunks: pairHunks(),
 			clusters: [pairCluster()],
-			threads: [thread("LEFT", 4)],
+			threads: [thread("LEFT", 4), thread("RIGHT", 4)],
 		});
 		await screen.findByText("new seven");
 		const row = lineRows()[0] as HTMLElement;
 		expect(row.dataset.kind).toBe("context");
-		await user.click(bubble(row, "RIGHT"));
-		const opened = screen.getByTestId("thread-row");
+		const left = bubble(row, "LEFT");
+		const right = bubble(row, "RIGHT");
+		expect(left).toHaveAccessibleName("2 comments on old line 4");
+		await user.click(right);
+		let opened = screen.getByTestId("thread-row");
 		expect(row.nextElementSibling).toBe(opened);
 		expect(tail(opened)).toEqual({ spans: [1, 1, 2, 2], card: 3, blank: 2 });
+		expect(within(opened).getAllByTestId("files-thread")).toHaveLength(2);
+		// Both bubbles stand for the one row of threads.
+		for (const b of [left, right]) {
+			expect(b).toHaveAttribute("aria-expanded", "true");
+			expect(b).toHaveAttribute("aria-controls", opened.id);
+		}
+		await user.click(left);
+		expect(screen.queryByTestId("thread-row")).toBeNull();
+		expect(right).toHaveAttribute("aria-expanded", "false");
+		await user.click(left);
+		expect(screen.getAllByTestId("thread-row")).toHaveLength(1);
+		opened = screen.getByTestId("thread-row");
+		expect(tail(opened)).toEqual({ spans: [1, 1, 2, 2], card: 2, blank: 3 });
+		expect(right).toHaveAttribute("aria-controls", opened.id);
+		await user.click(right);
+		expect(screen.queryByTestId("thread-row")).toBeNull();
 	});
 
 	it("puts a composer under the side its span ends on", async () => {
@@ -1190,6 +1215,73 @@ describe("DiffBody side by side", () => {
 			expect(button).toHaveAttribute("aria-controls", opened.id);
 			await user.click(button);
 			expect(screen.queryByTestId("thread-row")).toBeNull();
+		});
+
+		it("crossing the breakpoint gives focus back to the bubble that has it, not one another file's table had before", async () => {
+			// A media query the test flips, telling every table.
+			let wide = true;
+			const listeners = new Set<() => void>();
+			vi.stubGlobal(
+				"matchMedia",
+				(query: string) =>
+					({
+						get matches() {
+							return wide;
+						},
+						media: query,
+						addEventListener: (_: string, l: () => void) => listeners.add(l),
+						removeEventListener: (_: string, l: () => void) =>
+							listeners.delete(l),
+					}) as unknown as MediaQueryList,
+			);
+			const flip = () =>
+				act(() => {
+					wide = !wide;
+					for (const l of listeners) l();
+				});
+			// Two files' tables, the same thread in each, one commit for both.
+			setup({
+				hunks: pairHunks(),
+				clusters: [pairCluster()],
+				threads: [thread("RIGHT", 6)],
+				twice: true,
+			});
+			await waitFor(() =>
+				expect(screen.getAllByTestId("thread-bubble")).toHaveLength(2),
+			);
+			const tables = () => Array.from(document.querySelectorAll("table"));
+			const bubbleIn = (t: number) =>
+				tables()[t]?.querySelector<HTMLElement>(
+					'[data-testid="thread-bubble"]',
+				) as HTMLElement;
+			act(() => bubbleIn(0).focus());
+			act(() => bubbleIn(1).focus());
+			flip();
+			expect(bubbleIn(1).closest('[data-testid="bubble-row"]')).not.toBeNull();
+			expect(bubbleIn(1)).toHaveFocus();
+			flip();
+			expect(bubbleIn(1)).toHaveFocus();
+			// Focus gone with its bubble's table: nothing takes it later.
+			// (The blur and the resize are separate tasks.)
+			await act(async () => bubbleIn(1).blur());
+			flip();
+			expect(document.activeElement).toBe(document.body);
+		});
+
+		it("gives a context line's threads one bubble, on the right of its bubble row", async () => {
+			phone();
+			setup({
+				hunks: pairHunks(),
+				clusters: [pairCluster()],
+				threads: [thread("LEFT", 4)],
+			});
+			await screen.findByText("new seven");
+			const row = lineRows()[0] as HTMLElement;
+			unpadded(row);
+			const bubbles = row.nextElementSibling as HTMLElement;
+			expect(sideBubbles(bubbles, "RIGHT")).toEqual(["1 comment on line 4"]);
+			expect(sideBubbles(bubbles, "LEFT")).toEqual([]);
+			expect(screen.getAllByTestId("thread-bubble")).toHaveLength(1);
 		});
 
 		it("puts a left cell's bubble on the left, and both sides' in one row", async () => {

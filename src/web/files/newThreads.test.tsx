@@ -1714,6 +1714,53 @@ describe("side by side (the cells contract)", () => {
 		fireEvent.click(el, { detail: 1, ...init });
 	};
 
+	it("a context line's threads opened under the left stay there when a comment is posted on the line", async () => {
+		const { user } = setup({ threads: [thread({ side: "LEFT", line: 5 })] });
+		await loaded();
+		const context = row("RIGHT", 6);
+		/** Which half the opened thread card is under. */
+		const cardSide = () => {
+			const cells = [
+				...screen.getByTestId("thread-row").querySelectorAll(":scope > td"),
+			];
+			const card = cells.findIndex((td) =>
+				td.querySelector('[data-testid="files-thread"]'),
+			);
+			const blank = cells.findIndex(
+				(td) => td.classList.contains("bg-band") && td.childElementCount === 0,
+			);
+			return card < blank ? "LEFT" : "RIGHT";
+		};
+		const leftCode = context.querySelector(
+			`[${CODE_CELL}][data-side="LEFT"]`,
+		) as HTMLElement;
+		await user.click(within(leftCode).getByTestId("thread-bubble"));
+		expect(cardSide()).toBe("LEFT");
+		// A comment on the same line (RIGHT:6) opens where it lands: its
+		// key joins the open ones, and the row stays where it was opened.
+		act(() => {
+			openComposer(
+				{
+					path: PATH,
+					commit: HEAD,
+					subject: "line",
+					startSide: "RIGHT",
+					startLine: 6,
+					side: "RIGHT",
+					line: 6,
+					startCol: null,
+					endCol: null,
+				},
+				"ctx",
+			);
+		});
+		const box = await screen.findByRole("textbox", { name: "Comment" });
+		await user.type(box, "and here");
+		await user.keyboard("{Control>}{Enter}{/Control}");
+		expect(screen.getAllByTestId("thread-row")).toHaveLength(1);
+		expect(cardSide()).toBe("LEFT");
+	});
+
 	it("the keyboard: Up/Down stay in their column through context rows, Left/Right switch sides on every row, Shift extends", async () => {
 		const { user } = setup();
 		await loaded();
@@ -1846,8 +1893,9 @@ describe("side by side (the cells contract)", () => {
 		];
 		expect(buttons).toHaveLength(2);
 		expect(buttons.map((b) => b.dataset.pick)).toEqual(["RIGHT:6", "RIGHT:6"]);
+		// Each named by the number it shows (old 5, new 6), for voice control.
 		expect(buttons.map((b) => b.getAttribute("aria-label"))).toEqual([
-			"Line 6",
+			"Old line 5",
 			"Line 6",
 		]);
 		const left = within(number("LEFT", 5)).getByRole("button");
@@ -1867,6 +1915,16 @@ describe("side by side (the cells contract)", () => {
 		press(number("LEFT", 5));
 		expect(left).toHaveFocus();
 		expect(getPicks()?.lines.map((l) => pickKey(l))).toEqual(["RIGHT:6"]);
+		// Its other number moves the pick to that column; the same one again
+		// clears it.
+		expect(getPicks()?.column).toBe("LEFT");
+		press(number("RIGHT", 6));
+		expect(getPicks()?.lines.map((l) => pickKey(l))).toEqual(["RIGHT:6"]);
+		expect(getPicks()?.column).toBe("RIGHT");
+		press(number("LEFT", 5));
+		expect(getPicks()?.column).toBe("LEFT");
+		press(number("LEFT", 5));
+		expect(getPicks()).toBeNull();
 	});
 
 	it("switching to unified after focusing a context row's left number keeps one number button in the tab order", async () => {
@@ -2021,8 +2079,8 @@ describe("side by side (the cells contract)", () => {
 			expect.objectContaining({ side: "RIGHT", line: 6 }),
 		]);
 		expect(
-			within(row("RIGHT", 6)).queryByRole("button", { name: "Old line 5" }),
-		).toBeNull();
+			within(row("RIGHT", 6)).getByRole("button", { name: "Old line 5" }),
+		).toHaveAttribute("data-pick", "RIGHT:6");
 		expect(within(number("LEFT", 5)).getByRole("button")).toHaveFocus();
 	});
 
