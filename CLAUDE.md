@@ -110,11 +110,7 @@ checking against a real PR): `docs/product-rules.md`.
   reads from GitHub, and writes to it only on the reviewer's explicit action
   (replies, new comments, resolving, editing and deleting your own comments):
   `docs/product-rules.md`, "Writing to GitHub".
-- Running main on the devbox: the always-on `crb serve` is the globally
-  installed package (`carbonless-review`) run by the systemd user service
-  `crb.service`; `scripts/devbox/install` sets it up, `scripts/devbox/update
-  <tarball | rc | latest | version>` moves it (README, "Remote machine").
-  Port 4747 is the service's; nothing else binds it.
+- Main on the devbox and branch instances: "Versions and instances" below.
 - Tests never call the real `gh`: `test/fake-gh/gh` serves a scenario
   (`test/fake-gh/scenario.ts`) via `$CRB_FAKE_GH`. The e2e harness
   (`e2e/fixtures.ts`) wires it onto `PATH` and drives the built CLI.
@@ -150,6 +146,60 @@ checking against a real PR): `docs/product-rules.md`.
     and the methodology test matrix.
   - `docs/product-rules.md`: product rules beyond the design principles.
 
+## Versions and instances
+
+The owner's main is the globally installed package (`carbonless-review`),
+run as `crb serve` by the systemd user service `crb.service` on port 4747,
+the owner's, with a stable key:
+`http://100.78.32.127:4747/?key=$(cat ~/.local/state/carbonless/key)`.
+It never runs a worktree's `dist`, and nothing else binds 4747. Setup and
+the scripts: README, "Remote machine". Logs: `journalctl --user -u crb`.
+
+**Branch instance (ad hoc):** whenever a branch has something the owner
+should see before it reaches master: a coordinator's "ready" report, a fix
+to QA, or the owner asking. One per branch, in that branch's worktree, never
+in the main checkout:
+1. `node scripts/crb-private-env.mjs "$PWD" <port>` (once; worktrees from
+   `scripts/agent-worktree.sh` already have `.envrc`), then
+   `source .envrc`. The port is fixed per branch, so its links survive
+   restarts: a free one from 4748–4799 (`ss -ltn`), never 4747.
+2. `pnpm build`, then `nohup node dist/cli.js serve --host 100.78.32.127
+   --port <port> > .crb-dev/serve.log 2>&1 &` and keep `$!`.
+3. `node dist/cli.js <pr>` prints the review's link; send that (Tailscale
+   IP, with the key).
+4. After a rebuild, stop it by its pid (or `pgrep -f "cli.js serve.*--port
+   <port>"`, never every cli.js) and start it again: the version handshake
+   refuses a `crb` whose build differs from the server's. Stop it, and say
+   so, when the branch merges or is dropped.
+
+**RC: every merge to master is a new RC** (the owner: merging a PR to main
+implies a new RC version). When the owner asks to merge:
+1. On the feature branch, bump `package.json` with a commit of its own
+   (`release: <version>`): from `X.Y.Z-rc.N` to `X.Y.Z-rc.N+1`; from a
+   release `X.Y.Z` to `X.Y+1.0-rc.1` (`X.Y.Z+1-rc.1` when the owner calls
+   it a fix). `0.1.0` was never released, so the first RC is `0.1.0-rc.1`.
+2. `pnpm verify` green, fast-forward `master`, tag `v<version>` (local
+   only until pushing tags is allowed).
+3. Pack from a clean tree at the tag, so the build's commit is the tag's
+   and not `-dirty`: `git worktree add --detach .worktrees/release
+   v<version>` (or `git -C .worktrees/release checkout --detach
+   v<version>`), `pnpm install --frozen-lockfile`, `pnpm pack
+   --pack-destination ~/.local/share/carbonless/releases`.
+4. `scripts/devbox/update ~/.local/share/carbonless/releases/carbonless-review-<version>.tgz`
+   (with Node 24 and `~/.local/share/pnpm/bin` on `PATH`): it waits for the
+   new build and prints `<from> -> <to>` and the link. Send the owner the
+   link and what is new since the last RC.
+5. Stop the instances of branches that just merged.
+
+**Release:** only when the owner asks ("release", "promote"). The RC the
+owner tried becomes `X.Y.Z`: a `release: X.Y.Z` commit on master that
+changes only the version, then steps 2–4 above. Before the first publish
+to npm, remind the owner that the license is still `UNLICENSED`. Until M2
+(`docs/superpowers/specs/2026-10-30-versions-and-distribution-design.md`)
+nothing is published: co-workers get the tarball, and `update rc|latest`
+has nothing to install. M2 replaces steps 1–3 with `pnpm release
+<rc|promote|patch|minor>` and CI publishing on a pushed tag.
+
 ## How we work
 
 - Work is split into briefs (`.superpowers/sdd/<plan>/*-brief.md`, git-ignored):
@@ -167,7 +217,8 @@ checking against a real PR): `docs/product-rules.md`.
   fixes with tests that fail without them may skip the re-review.
 - The coordinator cherry-picks reviewed commits onto the feature branch (or has
   the agent rebase when they conflict), runs `pnpm verify` on the combined
-  branch, restarts the owner's running instance and sends the link.
+  branch, (re)starts the branch's instance and sends its link ("Versions and
+  instances"). Main changes only through an RC.
 - Commits only via `git commit --only -- <paths>` in a shared tree; never a bare
   `git stash`. Merging to `master` only when the owner asks, as a fast-forward
   after a green `pnpm verify`. Never push, and never write to GitHub, with one
