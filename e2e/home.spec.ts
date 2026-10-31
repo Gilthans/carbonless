@@ -94,7 +94,9 @@ async function setup(
 					homePr({
 						repo: OWNER_REPO,
 						number: PR_NUMBER,
-						title: "Add widget cache with a rather long title",
+						// Long, with a word longer than a phone is wide.
+						title:
+							"Add widget cache with a rather long title: WidgetCacheInvalidationAcrossEveryRegionAndTenant",
 						author: "alice",
 						requested: [VIEWER, "bob", "carol"],
 						checks: "PENDING",
@@ -133,6 +135,28 @@ const section = (page: Page, name: string) =>
 	page.getByRole("region", { name: new RegExp(`^${name}`) });
 const rowOf = (scope: Page | Locator, title: string) =>
 	scope.getByTestId(/^home-row/).filter({ hasText: title });
+
+/**
+ * Every row's title is whole: not cut (no ellipsis, nothing past its box)
+ * and inside its row. Returns what isn't.
+ */
+function cutTitles(page: Page): Promise<string[]> {
+	return page.evaluate(() =>
+		[...document.querySelectorAll("[data-testid^=home-row] a")].flatMap((a) => {
+			const link = a as HTMLElement;
+			const row = link.closest("li")?.getBoundingClientRect();
+			const box = link.getBoundingClientRect();
+			const style = getComputedStyle(link);
+			const cut =
+				style.textOverflow === "ellipsis" ||
+				style.whiteSpace === "nowrap" ||
+				link.scrollWidth > link.clientWidth + 1 ||
+				!row ||
+				box.right > row.right + 0.5;
+			return cut ? [link.textContent ?? ""] : [];
+		}),
+	);
+}
 
 /** Starts the widget review (one file reviewed) and goes Home. */
 async function startReview(
@@ -594,6 +618,7 @@ test("at 360px: no sideways scroll with the busiest rows, and 40px targets", asy
 		client: document.documentElement.clientWidth,
 	}));
 	expect(widths.scroll).toBeLessThanOrEqual(widths.client);
+	expect(await cutTitles(page)).toEqual([]);
 	// Every row's second line keeps its parts inside it: with justify-end,
 	// a line that can't wrap spills out to the left, unseen by scrollWidth.
 	const spills = await page.evaluate(() =>
@@ -643,6 +668,20 @@ test("at 360px: no sideways scroll with the busiest rows, and 40px targets", asy
 			path: join(shots, `home-360${isMobile ? "-phone" : ""}.png`),
 		});
 	}
+});
+
+test("at desktop width every title shows in full", async ({
+	page,
+	workdir,
+	pr,
+	startCrb,
+}) => {
+	await page.setViewportSize({ width: 1280, height: 900 });
+	await setup(workdir, pr);
+	const crb = await startReview(page, startCrb);
+	await goHome(page, crb.url);
+	await expect(page.getByText(/WidgetCacheInvalidation/)).toBeVisible();
+	expect(await cutTitles(page)).toEqual([]);
 });
 
 test("screenshot at desktop width (CRB_HOME_SHOTS only)", async ({

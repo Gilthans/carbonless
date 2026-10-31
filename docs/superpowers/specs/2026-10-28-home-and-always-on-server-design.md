@@ -327,6 +327,11 @@ turn · age or coverage · hover actions. Every icon has a tooltip and an
 accessible name (principle 6); colors are the design tokens with their
 code-review meaning.
 
+- **Title**: always whole (owner, 2026-10-31: "The title should fully
+  appear in every row. It should wrap inside the row if necessary"):
+  never truncated or ellipsised, on any width; a word longer than the row
+  breaks, with no sideways scroll.
+
 - **Status icons**, in this order, each only when it applies: checks
   (`ok` passing, `bad` failing, `warn` running; none when there are no
   checks), review decision (`ok` approved, `bad` changes requested),

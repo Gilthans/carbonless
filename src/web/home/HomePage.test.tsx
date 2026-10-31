@@ -182,6 +182,18 @@ describe("HomePage", () => {
 		expect(r.querySelector("time")).toHaveTextContent("1 hour ago");
 	});
 
+	it("shows every title in full, wrapping inside the row, a long word too", async () => {
+		const long = `Refactor ${"configurationloader".repeat(6)} and more words after it`;
+		fakeApi(view({ other: [row({ number: 7, title: long })] }));
+		renderWithQuery(<HomePage />);
+		const link = await screen.findByRole("link", { name: new RegExp(long) });
+		// jsdom has no layout (the e2e measures): never cut, always wrapping.
+		expect(link).toHaveTextContent(long);
+		expect(link).not.toHaveClass("truncate");
+		expect(link).toHaveClass("[overflow-wrap:anywhere]");
+		expect(link.parentElement).not.toHaveClass("truncate");
+	});
+
 	it("leaves the author out on Mine, and says 'no reviewer' for an untaken PR", async () => {
 		fakeApi(
 			view({

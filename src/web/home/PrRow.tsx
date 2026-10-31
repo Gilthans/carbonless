@@ -315,7 +315,8 @@ function TitleLink({ row }: { row: HomeRow }) {
 	const tone = row.hidden
 		? "font-normal text-ink-soft"
 		: "font-medium text-ink";
-	const linkClass = `${tone} min-w-0 truncate rounded-sm after:absolute after:inset-0 after:content-[''] hover:text-link focus-visible:outline-2 focus-visible:outline-accent`;
+	// Whole, wrapping inside the row: a long unbroken word breaks too.
+	const linkClass = `${tone} min-w-0 [overflow-wrap:anywhere] rounded-sm after:absolute after:inset-0 after:content-[''] hover:text-link focus-visible:outline-2 focus-visible:outline-accent`;
 	const inner = (
 		<>
 			<span className="mr-1.5 font-normal text-faint tabular-nums">
