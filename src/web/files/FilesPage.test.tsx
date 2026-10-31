@@ -12,6 +12,7 @@ import { act, cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { FileView, ReviewView } from "../../shared/types";
+import { parseSearch, stringifySearch } from "../search";
 import { AppHeaderHeight } from "../sticky";
 import { LANDED_MS } from "./DiffBody";
 import { FilesPage, MISSING_HINT_MS } from "./FilesPage";
@@ -90,8 +91,11 @@ function renderPage(
 		history: createMemoryHistory({
 			initialEntries: [`/r/01testreview0000000000000a${initialPath}`],
 		}),
-		// As in the app (router.tsx): the router never scrolls the window.
+		// As in the app (router.tsx): the router never scrolls the window,
+		// and search values stay strings.
 		scrollRestoration: () => false,
+		parseSearch,
+		stringifySearch,
 	});
 	render(
 		<QueryClientProvider client={queryClient}>

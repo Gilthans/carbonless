@@ -28,7 +28,12 @@ import { FileDiff } from "./FileDiff";
 import { FileTree } from "./FileTree";
 import { filesPrefetchOrder } from "./filesPrefetch";
 import { useHeadSure } from "./headSure";
-import { type FilesSearch, type Landing, landingFile } from "./landing";
+import {
+	type FilesSearch,
+	type Landing,
+	landingFile,
+	parseFilesSearch,
+} from "./landing";
 import { ProgressBar } from "./ProgressBar";
 import { SelectionBar } from "./SelectionBar";
 import {
@@ -371,7 +376,11 @@ export function FilesPage() {
 	// A thread's file:line link (landing.ts): open that file alone; its diff
 	// scrolls to the line and highlights it, or says the line isn't there.
 	// The params are dropped once read, so the same link works again.
-	const search = useSearch({ strict: false }) as FilesSearch;
+	// Rendered among the review's kept pages, not in the files route's
+	// outlet: its search as the address has it (strings, search.ts), read
+	// as the route reads it.
+	const raw = useSearch({ strict: false }) as Record<string, unknown>;
+	const search: FilesSearch = parseFilesSearch(raw);
 	const navigate = useNavigate();
 	const id = useReviewId();
 	const [landing, setLanding] = useState<Landing | null>(null);
