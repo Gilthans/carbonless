@@ -93,12 +93,12 @@ if (process.env.CRB_QUEUE_HELD) {
 		mkdirSync(dir, { recursive: true });
 		const lock = join(dir, "carbonless-verify.lock");
 		const holder = `${lock}.holder`;
+		let busy = null;
 		if (spawnSync("flock", ["-n", lock, "true"]).status !== 0) {
-			let who = "another run";
+			busy = "another run";
 			try {
-				who = readFileSync(holder, "utf8").trim();
+				busy = readFileSync(holder, "utf8").trim();
 			} catch {}
-			console.log(`queue: waiting for ${who} to finish`);
 		}
 		// --no-fork: flock becomes this script again, holding the lock; a
 		// signal before then just ends the wait.
@@ -113,5 +113,8 @@ if (process.env.CRB_QUEUE_HELD) {
 				},
 			},
 		);
+		// Said once signals are passed on: a waiter told to stop at once still
+		// ends its wait.
+		if (busy) console.log(`queue: waiting for ${busy} to finish`);
 	}
 }
