@@ -591,11 +591,17 @@ export class ThreadWrites {
 		const failed = lane?.refused.get(key);
 		if (!lane || !failed || failed.retrying) return;
 		this.#settle(threadId, lane, key);
+		// A draft on its way (sent again, from another tab) isn't this
+		// refusal's any more: it stays, to land or be refused anew.
 		const { drafts } = this.#deps;
 		if (failed.action === "Reply") drafts.setText(threadId, "");
-		else if (failed.action === "New comment") drafts.discard(threadId);
-		else if (failed.action === "Edit" && failed.commentId) {
-			drafts.dropEdit(failed.commentId);
+		else if (failed.action === "New comment") {
+			const d = drafts.newThread(threadId.slice(NEW_THREAD.length));
+			if (!d?.create?.sending) drafts.discard(threadId);
+		} else if (failed.action === "Edit" && failed.commentId) {
+			if (!drafts.edit(failed.commentId)?.edit?.saving) {
+				drafts.dropEdit(failed.commentId);
+			}
 		}
 		this.#prune(threadId);
 		this.#changed();

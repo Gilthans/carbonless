@@ -439,7 +439,9 @@ function RefusedItem({
 					className="flex flex-wrap items-center justify-end gap-2 border-t border-bad/30 bg-bad/10 px-3 py-1"
 				>
 					<p id={askId} className="mr-auto text-sm font-semibold text-ink">
-						{dropLosesText(f) ? "Drop this? Its text is lost" : "Drop this?"}
+						{dropLosesText(f) && preview
+							? "Drop this? Its text is lost"
+							: "Drop this?"}
 					</p>
 					<button
 						ref={cancelButton}

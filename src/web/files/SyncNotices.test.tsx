@@ -203,6 +203,10 @@ describe("SyncNotices for thread writes", () => {
 		await userEvent.click(
 			within(item).getByRole("button", { name: "Drop reply" }),
 		);
+		// No text to lose: the plain question.
+		expect(
+			within(item).getByRole("alertdialog", { name: "Drop this?" }),
+		).toBeInTheDocument();
 		await userEvent.click(screen.getByTestId("refused-drop-yes"));
 		expect(screen.queryByTestId("refused-bar")).toBeNull();
 	});

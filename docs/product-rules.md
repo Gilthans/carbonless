@@ -202,7 +202,7 @@ unresolving one, and editing or deleting one of the viewer's comments in one
   saying so, and never settles it: only Drop does. "Show theirs" on an edit
   changed on GitHub keeps it listed until the edit is saved or dropped. A
   resolve or delete Retry already on its way when the page reloads still
-  reaches GitHub (the crb server sends it); the next page lists the
+  goes to GitHub (the crb server sends it); the next page lists the
   refusal again, and dropping it then can't call that back. Only
   GitHub's own trouble is transient (502 to the page, which retries): HTTP
   408, 429 or 5xx, a rate limit (a rate-limit 403 too), a timeout or no

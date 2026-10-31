@@ -1484,6 +1484,27 @@ describe("refused writes", () => {
 		expect(refusals.get()).toEqual([]);
 	});
 
+	it("Drop leaves a draft on its way alone (sent again, from another tab)", async () => {
+		const storage = memoryStorage();
+		let w = setup(storage);
+		drafts.setNew("n1", NEW_TARGET, "Sent elsewhere");
+		w.createThread("n1");
+		drafts.setEdit("T2", "c2", "Old", "Saved elsewhere");
+		w.saveEdit("T2", "c2");
+		for (const c of [...calls]) c.reject(new ApiError(403, "no"));
+		await flush();
+		// Another tab sends both again; this tab reloads meanwhile.
+		drafts.markNewSending("n1", "2026-01-03T12:00:00.000Z");
+		drafts.markSaving("c2", true);
+		w = setup(storage);
+		w.restore();
+		w.drop("new:n1", "create");
+		w.drop("T2", "edit:c2");
+		expect(w.state().refused).toEqual([]);
+		expect(drafts.newThread("n1")?.text).toBe("Sent elsewhere");
+		expect(drafts.edit("c2")?.text).toBe("Saved elsewhere");
+	});
+
 	it("a Retry with nothing to send keeps it listed (a cleared box, an edit back as it was)", async () => {
 		const w = setup();
 		w.reply("T1", "Text");
