@@ -1373,3 +1373,42 @@ test("side by side, a context line's thread has its bubble in both cells and ope
 	await expect(card).toContainText("Old eight");
 	expect((await edges(card)).left).toBeGreaterThanOrEqual(newNo.left - 1);
 });
+
+test("side by side, a focused bubble or number keeps focus as the window crosses the phone breakpoint", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	test.skip(isMobile, "resizes a desktop window");
+	await setup(pr);
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	await sideBySide(page, true);
+	const section = await expand(page, GREET);
+	const row6 = section.locator('tr[data-testid="diff-line"][data-new-no="6"]');
+	const row5 = section.locator('tr[data-testid="diff-line"][data-old-no="5"]');
+	const desktop = page.viewportSize() ?? { width: 1280, height: 720 };
+	const phone = { width: 500, height: desktop.height };
+	const focusedName = () =>
+		page.evaluate(() => document.activeElement?.getAttribute("aria-label"));
+	for (const [row, side, name] of [
+		[row6, "RIGHT", "1 comment on line 6"],
+		[row5, "LEFT", "1 comment on old line 5"],
+	] as const) {
+		await bubblesOf(row, side, false).focus();
+		await page.setViewportSize(phone);
+		// In the bubble row under the pair row now, still focused.
+		await expect(bubblesOf(row, side, true)).toBeFocused();
+		expect(await focusedName()).toBe(name);
+		await page.setViewportSize(desktop);
+		await expect(bubblesOf(row, side, false)).toBeFocused();
+	}
+	// A number button stays where it is: it keeps focus too.
+	const number = row6.getByTestId("new").getByRole("button");
+	await number.focus();
+	await page.setViewportSize(phone);
+	await expect(number).toBeFocused();
+	await page.setViewportSize(desktop);
+	await expect(number).toBeFocused();
+});

@@ -1262,6 +1262,7 @@ export function DiffBody(props: {
 	const table = useRef<HTMLTableElement>(null);
 	useStickyControls(root, scroller);
 	useVisibleWidth(scroller);
+	useBubbleFocusKept(scroller, wide);
 	const onPointerDown = useOneSideSelection(table, view);
 	const { hint, landed, pending } = useLanding(
 		root,
@@ -1888,6 +1889,57 @@ function useOneSideSelection(
 		pressed.current = true;
 		markSelecting(event.currentTarget, selectingSide(cell));
 	};
+}
+
+/**
+ * Side by side, crossing the phone breakpoint (`wide`) moves a pair row's
+ * bubbles between its code cells and a row of their own: new elements.
+ * The bubble that had focus gets it back in its new place, found by its
+ * name (unique in a file: a context line's two say which number they are
+ * beside). Only when focus went nowhere else meanwhile.
+ */
+function useBubbleFocusKept(
+	scroller: RefObject<HTMLDivElement | null>,
+	wide: boolean,
+) {
+	const last = useRef<HTMLElement | null>(null);
+	useEffect(() => {
+		const el = scroller.current;
+		if (!el) return;
+		const isBubble = (t: EventTarget | null): t is HTMLElement =>
+			t instanceof HTMLElement && t.dataset.testid === "thread-bubble";
+		const onIn = (e: FocusEvent) => {
+			last.current = isBubble(e.target) ? e.target : null;
+		};
+		// Left for nowhere (not for a re-render's removal): forgotten.
+		const onOut = (e: FocusEvent) => {
+			const t = e.target;
+			if (!isBubble(t) || e.relatedTarget) return;
+			queueMicrotask(() => {
+				if (last.current === t && t.isConnected) last.current = null;
+			});
+		};
+		el.addEventListener("focusin", onIn);
+		el.addEventListener("focusout", onOut);
+		return () => {
+			el.removeEventListener("focusin", onIn);
+			el.removeEventListener("focusout", onOut);
+		};
+	}, [scroller]);
+	// biome-ignore lint/correctness/useExhaustiveDependencies: runs when the breakpoint is crossed.
+	useLayoutEffect(() => {
+		const was = last.current;
+		if (!was || was.isConnected) return;
+		const active = document.activeElement;
+		if (active && active !== document.body) return;
+		const name = was.getAttribute("aria-label");
+		if (!name) return;
+		scroller.current
+			?.querySelector<HTMLElement>(
+				`[data-testid="thread-bubble"][aria-label="${CSS.escape(name)}"]`,
+			)
+			?.focus({ preventScroll: true });
+	}, [scroller, wide]);
 }
 
 /**
