@@ -142,3 +142,11 @@ Not scheduled yet; after everything above.
   those controls a negative `scroll-margin-top` of the header's own height and
   cover it with an e2e test that tabs into a stuck header.
 - Unit-switch scroll fixes are tested on Chromium only; check iOS Safari.
+- A text selection made in a line just before its highlighting arrives is
+  dropped (the highlighted spans replace the line's text nodes), and the
+  selection bar hides; keep the text nodes across the swap, or put the
+  selection back (found by the flake hunt, 2026-10-30).
+- First open after a reload: a card's edit box (an edit draft) waits for the
+  overview, then the threads, then the card's comments, three round trips in
+  a row; reading them in parallel would open it sooner (`docs/product-rules.md`,
+  first-open performance; found by the flake hunt, 2026-10-30).

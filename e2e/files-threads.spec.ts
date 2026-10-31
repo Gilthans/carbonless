@@ -1,5 +1,6 @@
 import type { Locator, Page } from "@playwright/test";
 import {
+	release,
 	reviewThread,
 	type Scenario,
 	threadComment,
@@ -146,14 +147,12 @@ async function openAll(scope: Locator) {
 	const closed = scope.locator(
 		'[data-testid="thread-bubble"][aria-expanded="false"]',
 	);
-	for (let i = 0; i < 20 && (await closed.count()) > 0; i++) {
-		// One may go as it opens (a gap's bubble moves to its row): try again.
-		await closed
-			.first()
-			.click({ timeout: 2000 })
-			.catch(() => {});
-	}
-	await expect(closed).toHaveCount(0);
+	// One may go as it opens (a gap's bubble moves to its row): try again,
+	// for as long as a loaded machine needs rather than a number of clicks.
+	await expect(async () => {
+		if ((await closed.count()) > 0) await closed.first().click();
+		await expect(closed).toHaveCount(0, { timeout: 1000 });
+	}).toPass({ timeout: 30_000 });
 }
 
 test("bubble on the commented line with count, dot and resolved state", async ({
@@ -301,7 +300,7 @@ test("a thread on an older commit is not shown", async ({
 	await expect(section).not.toContainText("From before");
 });
 
-test("file comment opens from the file header; a line not in the diff is flagged there", async ({
+test("file comment opens from the file header into the file bubble; a line not in the diff is flagged there", async ({
 	page,
 	pr,
 	startCrb,
@@ -320,12 +319,15 @@ test("file comment opens from the file header; a line not in the diff is flagged
 	await expect(
 		util.getByRole("button", { name: "Collapse file" }),
 	).toBeVisible();
-	await expect(util.getByTestId("thread-comment")).toContainText(
-		"Whole file note",
-	);
-	// The line past the file's end: in core.ts's header, flagged.
+	await expect(
+		util.getByTestId("file-threads").getByTestId("thread-comment"),
+	).toContainText("Whole file note");
+	await expect(
+		util.getByRole("button", { name: "1 comment on this file" }),
+	).toHaveAttribute("aria-expanded", "true");
+	// The line past the file's end: in core.ts's file bubble, flagged.
 	const core = await expand(page, CORE);
-	const flagged = core.locator("header").getByRole("button", {
+	const flagged = core.locator("table").getByRole("button", {
 		name: "1 comment on this file, line not in this diff",
 	});
 	await expect(flagged).toBeVisible();
@@ -340,7 +342,7 @@ test("file comment opens from the file header; a line not in the diff is flagged
 	if (shots) {
 		await core.locator("header").scrollIntoViewIfNeeded();
 		await page.screenshot({
-			path: `${shots}/files-header-thread-${isMobile ? "phone" : "desktop"}.png`,
+			path: `${shots}/files-file-bubble-${isMobile ? "phone" : "desktop"}.png`,
 		});
 	}
 });
@@ -445,7 +447,8 @@ test("slow comments: spinner, then comments", async ({
 	pr,
 	startCrb,
 }) => {
-	await setup(pr, { commentsDelayMs: 3000 });
+	// The comments wait until the test lets them go, however slow the page.
+	const p = await setup(pr, { hold: ["comments"] });
 	const s = await startCrb();
 	await openFiles(page, s.url);
 	const section = await expand(page, CORE);
@@ -456,6 +459,7 @@ test("slow comments: spinner, then comments", async ({
 	await expect(
 		thread.getByRole("status", { name: "Loading comments" }),
 	).toBeVisible();
+	release(p.scenarioPath, "comments");
 	await expect(thread.getByTestId("thread-comment")).toHaveCount(1, {
 		timeout: 15_000,
 	});
@@ -790,7 +794,8 @@ test("comments of the file opened next go first", async ({
 				]),
 			),
 		);
-		sc.commentsDelayMs = 2500;
+		// The first two stay out until f4 has opened.
+		sc.hold = ["comments"];
 	});
 	const s = await startCrb();
 	const asked: string[][] = [];
@@ -803,7 +808,10 @@ test("comments of the file opened next go first", async ({
 	await openFiles(page, s.url);
 	await expect.poll(() => asked.length).toBe(2);
 	// f4 (threads 120–159) opens while the first two are out.
-	await expand(page, names[3] as string);
+	const f4 = await expand(page, names[3] as string);
+	// Its threads are on screen (so first in line) before the others answer.
+	await expect(bubbles(f4).first()).toBeVisible();
+	release(p.scenarioPath, "comments");
 	await expect.poll(() => asked.length, { timeout: 20_000 }).toBeGreaterThan(2);
 	const third = asked[2] ?? [];
 	const index = (id: string) => Number(id.split("-")[1]);

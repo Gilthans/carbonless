@@ -2,7 +2,12 @@ import { type ChildProcess, spawn } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test as base, expect, type Page } from "@playwright/test";
+import {
+	test as base,
+	expect,
+	type Page,
+	type TestInfo,
+} from "@playwright/test";
 import type { GitFixture } from "../test/git-fixture";
 import {
 	CLI,
@@ -55,8 +60,28 @@ export function reviewPage(url: string, page: string, search = ""): string {
 
 const START_TIMEOUT_MS = 20_000;
 
-/** How long crb may take to exit after SIGTERM before the harness kills it. */
-const STOP_GRACE_MS = 3_000;
+/**
+ * How long crb may take to exit after SIGTERM before the harness kills it
+ * and fails the test. A crb that waited for the browser's sockets would take
+ * Node's 60 s headers timeout or longer; a loaded machine can stretch a
+ * prompt exit past a few seconds.
+ */
+const STOP_GRACE_MS = 10_000;
+
+/**
+ * Runs a test's setup step (a fixture repo, starting crb) and gives the test
+ * back the time it took: on a loaded machine these take seconds, and the
+ * test's own timeout is for its own steps. START_TIMEOUT_MS still bounds a
+ * start that hangs.
+ */
+async function untimed<T>(info: TestInfo, step: () => T | Promise<T>) {
+	const started = Date.now();
+	try {
+		return await step();
+	} finally {
+		if (info.timeout > 0) info.setTimeout(info.timeout + Date.now() - started);
+	}
+}
 
 export interface CrbExit {
 	code: number | null;
@@ -221,47 +246,49 @@ export const test = base.extend<{
 		rmSync(dir, { recursive: true, force: true });
 	},
 
-	pr: async ({ workdir }, use) => {
+	pr: async ({ workdir }, use, info) => {
 		const repos: GitFixture[] = [];
 		await use(async (opts = {}) => {
-			const pr = createPr(workdir, opts);
+			const pr = await untimed(info, () => createPr(workdir, opts));
 			repos.push(pr.repo);
 			return pr;
 		});
 		for (const repo of repos) repo.cleanup();
 	},
 
-	startCrb: async ({ workdir, context }, use) => {
+	startCrb: async ({ workdir, context }, use, info) => {
 		// One crb serve per test, started by the first crb <pr> (and again
 		// after a stop), as the CLI's auto-start would.
 		const servers: Served[] = [];
 		let current: Served | null = null;
 		let currentFlags = "";
-		await use(async (arg = `${OWNER_REPO}#${PR_NUMBER}`, extraArgs = []) => {
-			const { serve, client } = splitArgs(extraArgs);
-			const live =
-				current &&
-				current.child.exitCode === null &&
-				current.child.signalCode === null;
-			if (!current || !live) {
-				current = await startServe(workdir, serve);
-				currentFlags = serve.join(" ");
-				servers.push(current);
-			} else if (serve.length > 0 && serve.join(" ") !== currentFlags) {
-				throw new Error(
-					`crb serve already runs with "${currentFlags}", not "${serve.join(" ")}": stop() it first`,
-				);
-			}
-			const server = current;
-			const from = server.output().length;
-			const run = await runCli(workdir, [arg, ...client]);
-			const output = () => `${server.output().slice(from)}${run.output}`;
-			const url = run.stdout.trim().split("\n").at(-1) ?? "";
-			if (run.code !== 0 || !/^http:\/\//.test(url)) {
-				throw new CrbExitError(run.code, output());
-			}
-			return { url, output, stop: () => stopChild(server.child) };
-		});
+		await use((arg = `${OWNER_REPO}#${PR_NUMBER}`, extraArgs = []) =>
+			untimed(info, async () => {
+				const { serve, client } = splitArgs(extraArgs);
+				const live =
+					current &&
+					current.child.exitCode === null &&
+					current.child.signalCode === null;
+				if (!current || !live) {
+					current = await startServe(workdir, serve);
+					currentFlags = serve.join(" ");
+					servers.push(current);
+				} else if (serve.length > 0 && serve.join(" ") !== currentFlags) {
+					throw new Error(
+						`crb serve already runs with "${currentFlags}", not "${serve.join(" ")}": stop() it first`,
+					);
+				}
+				const server = current;
+				const from = server.output().length;
+				const run = await runCli(workdir, [arg, ...client]);
+				const output = () => `${server.output().slice(from)}${run.output}`;
+				const url = run.stdout.trim().split("\n").at(-1) ?? "";
+				if (run.code !== 0 || !/^http:\/\//.test(url)) {
+					throw new CrbExitError(run.code, output());
+				}
+				return { url, output, stop: () => stopChild(server.child) };
+			}),
+		);
 		// Pages would keep polling the stopped server and log connection errors.
 		await Promise.all(
 			context.pages().map((p) => p.goto("about:blank").catch(() => {})),

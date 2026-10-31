@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { writeFileAtomic } from "../../test/fake-gh/atomic.mjs";
 import {
 	editElsewhere,
@@ -8,6 +8,7 @@ import {
 	type Scenario,
 	threadComment,
 } from "../../test/fake-gh/scenario";
+import { GIT_TEST_TIMEOUTS } from "../../test/git-fixture";
 import { createPrFixture, type PrFixture } from "../../test/pr-fixture";
 import type { EditRequest, ThreadGone, ThreadUpdate } from "../shared/types";
 import { GhError } from "./errors";
@@ -19,6 +20,9 @@ import {
 	withoutComment,
 	writeWaits,
 } from "./threadWrites";
+
+// Real git and fake-gh processes: see GIT_TEST_TIMEOUTS.
+vi.setConfig(GIT_TEST_TIMEOUTS);
 
 /**
  * The viewer is the fake's gh login, Octo_Cat. T12-0: the viewer's
@@ -270,7 +274,7 @@ describe("editing and deleting comments", () => {
 		expect((await comments("T12-0"))?.comments).toHaveLength(2);
 	});
 
-	it("deleting the opener of a thread with replies edits it to [deleted]; deleting it again is done, editing it 400", async () => {
+	it("deleting the opener of a thread with replies edits it to [deleted]; deleting it again is done, editing it writes it back", async () => {
 		const answer = (await session.deleteThreadComment(
 			"T12-0",
 			"C12-0",
@@ -283,7 +287,7 @@ describe("editing and deleting comments", () => {
 			id: "C12-0",
 			body: "[deleted]",
 			deleted: true,
-			viewerCan: { update: false, delete: false },
+			viewerCan: { update: true, delete: false },
 		});
 		// A retry of the delete that landed: answered with the blanked opener.
 		const again = (await session.deleteThreadComment(
@@ -292,10 +296,16 @@ describe("editing and deleting comments", () => {
 		)) as ThreadUpdate;
 		expect(again.comment).toMatchObject({ id: "C12-0", deleted: true });
 		expect(again.commentCount).toBe(3);
-		await expect(
-			edit("C12-0", "Back", { from: "[deleted]" }),
-		).rejects.toMatchObject({ code: "invalid" });
 		expect(writeCalls()).toHaveLength(1);
+		// Owner: "allowing for me to edit it back if I want".
+		const back = await edit("C12-0", "Back", { from: "[deleted]" });
+		expect(back.comment).toMatchObject({
+			id: "C12-0",
+			body: "Back",
+			deleted: false,
+			viewerCan: { update: true, delete: true },
+		});
+		expect(writeCalls()).toHaveLength(2);
 	});
 
 	it("a blanked opener left alone may be deleted, and then really is: ThreadGone", async () => {
@@ -310,7 +320,7 @@ describe("editing and deleting comments", () => {
 		await session.refresh();
 		const t = await comments("T12-0");
 		expect(t?.comments.map((c) => [c.id, c.deleted, c.viewerCan])).toEqual([
-			["C12-0", true, { update: false, delete: true }],
+			["C12-0", true, { update: true, delete: true }],
 		]);
 		const answer = await session.deleteThreadComment("T12-0", "C12-0");
 		expect(answer).toEqual({ threadId: "T12-0", gone: true });

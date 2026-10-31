@@ -1,4 +1,5 @@
 import {
+	release,
 	reviewThread,
 	threadComment,
 	timelineComment,
@@ -156,7 +157,8 @@ test("the Timeline loads on its own: the rest of the page doesn't wait for it", 
 	pr,
 	startCrb,
 }) => {
-	await pr({ ...fixture, scenario: { timelineDelayMs: 2500 } });
+	// The timeline waits until the test lets it go.
+	const p = await pr({ ...fixture, scenario: { hold: ["timeline"] } });
 	const s = await startCrb();
 	await page.goto(s.url);
 	const section = page.getByRole("region", { name: "Timeline" });
@@ -164,6 +166,7 @@ test("the Timeline loads on its own: the rest of the page doesn't wait for it", 
 	await expect(
 		page.getByRole("region", { name: "Human reviews" }).getByTestId("thread"),
 	).toHaveCount(1);
+	release(p.scenarioPath, "timeline");
 	await expect(section.getByTestId("timeline-event")).toHaveCount(4, {
 		timeout: 15_000,
 	});

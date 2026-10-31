@@ -113,13 +113,28 @@ async function expectHidden(page: Page, kept: Locator, mark: string) {
 /** Tab through the whole page: focus never enters `kept`. */
 async function expectTabSkips(page: Page, kept: Locator) {
 	await page.locator("body").focus();
-	for (let i = 0; i < 40; i++) {
-		await page.keyboard.press("Tab");
-		const inside = await kept.evaluate((el) =>
-			el.contains(document.activeElement),
+	// Every focus move is recorded in the page, so the 40 presses need no
+	// round trip each.
+	await kept.evaluate((el) => {
+		const w = window as unknown as {
+			stops: boolean[];
+			watch?: AbortController;
+		};
+		w.watch?.abort();
+		w.watch = new AbortController();
+		w.stops = [];
+		document.addEventListener(
+			"focusin",
+			(e) => w.stops.push(el.contains(e.target as Node)),
+			{ signal: w.watch.signal },
 		);
-		expect(inside, `tab stop ${i + 1}`).toBe(false);
-	}
+	});
+	for (let i = 0; i < 40; i++) await page.keyboard.press("Tab");
+	const stops = await page.evaluate(
+		() => (window as unknown as { stops: boolean[] }).stops,
+	);
+	expect(stops.length).toBeGreaterThan(0);
+	expect(stops.indexOf(true), "first tab stop inside").toBe(-1);
 }
 
 /** What the Files page looks like, to compare after switching back. */
@@ -143,6 +158,9 @@ test("switching pages and back puts each one exactly where it was left", async (
 	startCrb,
 	isMobile,
 }, info) => {
+	// Long by nature (both pages, 40 Tab presses on each): a loaded machine
+	// needs more than the default 30 s for it.
+	test.slow();
 	const project = isMobile ? "phone" : "desktop";
 	if (isMobile) await page.setViewportSize({ width: 360, height: 780 });
 	await pr(fixture);

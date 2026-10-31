@@ -3,13 +3,15 @@ import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { FastifyInstance } from "fastify";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	prView,
+	release,
 	reviewThread,
 	type Scenario,
 	threadComment,
 } from "../../test/fake-gh/scenario";
+import { GIT_TEST_TIMEOUTS } from "../../test/git-fixture";
 import { createPrFixture, type PrFixture } from "../../test/pr-fixture";
 import type {
 	CommentsView,
@@ -20,6 +22,9 @@ import type {
 import { buildApp } from "./app";
 import { SessionRegistry } from "./registry";
 import { BUILD, VERSION_HEADER } from "./version";
+
+// Real git and fake-gh processes: see GIT_TEST_TIMEOUTS.
+vi.setConfig(GIT_TEST_TIMEOUTS);
 
 describe("API", () => {
 	let pr: PrFixture;
@@ -198,10 +203,12 @@ describe("API", () => {
 		});
 
 		it("gives each thread its attention set and anchor from the summary on", async () => {
-			const readId = await withThreads({ threadContentDelayMs: 2000 });
+			// The comments' text is held: the summary comes without it.
+			const readId = await withThreads({ hold: ["threadContent"] });
 			const { threads } = await get(
 				`/api/threads?read=${readId}&stage=summary`,
 			);
+			release(process.env.CRB_FAKE_GH ?? "", "threadContent");
 			const byPath = (path: string, line: number) =>
 				(threads as ReviewThread[]).find(
 					(t) => t.path === path && t.anchor?.line === line,
@@ -561,10 +568,11 @@ describe("API", () => {
 		await new Promise<void>((done) => socket.once("connect", () => done()));
 		socket.write(`GET /api/session HTTP/1.1\r\nHost: ${host}\r\n`);
 		socket.on("error", () => {});
-		const started = Date.now();
+		const dropped = new Promise((done) => socket.once("close", done));
+		// The client never lets go: a close() that waited for it would hang
+		// until the test times out.
 		await app.close();
-		expect(Date.now() - started).toBeLessThan(1000);
-		socket.destroy();
+		await dropped;
 	});
 
 	it("maps a gh failure to 502", async () => {
@@ -919,7 +927,7 @@ describe("API", () => {
 			expect(view.threads.map((t: ReviewThread) => t.id)).toEqual(["T12-0"]);
 		});
 
-		it("400 invalid: a blank, long or malformed edit, bad JSON, bad ids, an edit of a deleted opener", async () => {
+		it("400 invalid: a blank, long or malformed edit, bad JSON, bad ids", async () => {
 			await setup();
 			const bad = [
 				await patch("T12-0", "C12-0", { ...edit, body: " \n" }),
@@ -940,17 +948,26 @@ describe("API", () => {
 				expect(res.json().code, res.body).toBe("invalid");
 			}
 			expect(pr.ghLog()).not.toMatch(/-X (PATCH|DELETE)/);
+		});
+
+		it("200: a blanked opener deleted again is done, and an edit writes it back", async () => {
+			await setup();
 			expect((await del("T12-0", "C12-0")).statusCode).toBe(200);
-			// Editing the blanked opener is refused; deleting it again is done.
+			const again = await del("T12-0", "C12-0");
+			expect(again.statusCode).toBe(200);
+			expect(again.json().comment).toMatchObject({
+				deleted: true,
+				viewerCan: { update: true, delete: false },
+			});
 			const edited = await patch("T12-0", "C12-0", {
 				...edit,
 				from: "[deleted]",
 			});
-			expect(edited.statusCode).toBe(400);
-			expect(edited.json().code).toBe("invalid");
-			const again = await del("T12-0", "C12-0");
-			expect(again.statusCode).toBe(200);
-			expect(again.json().comment).toMatchObject({ deleted: true });
+			expect(edited.statusCode, edited.body).toBe(200);
+			expect(edited.json().comment).toMatchObject({
+				body: edit.body,
+				deleted: false,
+			});
 		});
 
 		it("403 writes-off as someone else; 403 forbidden for another's comment", async () => {

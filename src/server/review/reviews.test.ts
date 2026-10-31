@@ -11,10 +11,12 @@ import {
 	describe,
 	expect,
 	it,
+	vi,
 } from "vitest";
 import { createDiffFixture } from "../../../test/diff-fixture.js";
 import {
 	createBareRepo,
+	GIT_TEST_TIMEOUTS,
 	type GitFixture,
 	testGitEnv,
 } from "../../../test/git-fixture.js";
@@ -34,6 +36,9 @@ import {
 	StaleSnapshotError,
 	UnknownClusterError,
 } from "./reviews.js";
+
+// Real git and fake-gh processes: see GIT_TEST_TIMEOUTS.
+vi.setConfig(GIT_TEST_TIMEOUTS);
 
 const pr: ReviewPr = {
 	owner: "Acme",

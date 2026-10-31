@@ -6,7 +6,7 @@ import {
 import { useEffect, useMemo, useSyncExternalStore } from "react";
 import type { StateChange } from "../../shared/types";
 import { postStates, reviewQuery, sessionQuery } from "../api";
-import { unsent, useDrafts } from "../threads/drafts";
+import { unsent, useDrafts, useDraftsDurable } from "../threads/drafts";
 import { useThreadWrites } from "../threads/threadWrites";
 import { overlayReview, StateSync, type SyncState } from "./stateSync";
 
@@ -90,15 +90,22 @@ export function useReviewView() {
 }
 
 /**
- * Asks before the page unloads (reload, close, leave) with unsaved review
- * states, a reply draft with text, a reply not yet confirmed or a resolve
- * not yet on GitHub.
+ * Asks before the page unloads (reload, close, leave) only when leaving
+ * would lose something (owner: "refresh should only be dirty if
+ * information is lost"):
+ * - review states not yet stored: nothing keeps them past the page;
+ * - a resolve or unresolve, or a delete (in its undo window or on its
+ *   way), not yet on GitHub: nothing resends them (ThreadWritesState.lost);
+ * - drafts and their writes (replies, edits, new threads) only while
+ *   storage can't keep them (DraftStore.durable): kept, a reload brings
+ *   them back and resends what was sent (ThreadWrites.resume).
  */
 export function useUnsavedGuard() {
 	const states = useSyncState().pending.size > 0;
 	const drafts = unsent(useDrafts());
-	const writes = useThreadWrites().busy;
-	const unsaved = states || drafts || writes;
+	const durable = useDraftsDurable();
+	const { busy, lost } = useThreadWrites();
+	const unsaved = states || lost || (!durable && (drafts || busy));
 	useEffect(() => {
 		if (!unsaved) return;
 		const ask = (event: BeforeUnloadEvent) => {

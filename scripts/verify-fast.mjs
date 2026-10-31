@@ -62,7 +62,7 @@ const E2E_MAP = [
 	],
 	[/^src\/web\/threads\//, ["files-threads", "thread-people"]],
 	[
-		/^src\/web\/files\/(ThreadRow|FilesPage)\.tsx$|^src\/web\/overview\/OverviewPage\.tsx$|^test\/fake-gh\/demo-threads\.ts$|^src\/web\/index\.css$/,
+		/^src\/web\/files\/(ThreadRow|FilesPage)\.tsx$|^src\/web\/overview\/OverviewPage\.tsx$|^test\/fake-gh\/(demo-threads|showcase)\.ts$|^src\/web\/index\.css$/,
 		["thread-people"],
 	],
 	[
@@ -123,7 +123,7 @@ const reasons = [];
 for (const file of changed) {
 	// Unit-test-only files.
 	if (
-		/\.test\.tsx?$|^test\/(setup|diff-fixture|pr-fixture)\.ts$|^vitest\.config/.test(
+		/\.test\.tsx?$|^test\/(setup|diff-fixture|pr-fixture|methodology-matrix)\.ts$|^vitest\.config/.test(
 			file,
 		)
 	) {
@@ -163,9 +163,19 @@ const steps = [
 if (allE2e || e2e.size) {
 	steps.push(["pnpm", ["build"]]);
 	const files = allE2e ? [] : [...e2e].map((s) => `e2e/${s}.spec.ts`);
+	// The whole suite waits its turn on the machine (scripts/queue.mjs).
 	steps.push([
-		"pnpm",
-		["exec", "playwright", "test", ...files, ...passthrough],
+		"node",
+		[
+			"scripts/queue.mjs",
+			"--unless-filtered",
+			"pnpm",
+			"exec",
+			"playwright",
+			"test",
+			...files,
+			...passthrough,
+		],
 	]);
 }
 

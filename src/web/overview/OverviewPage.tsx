@@ -66,7 +66,6 @@ import { Tooltip, type TooltipTriggerProps } from "../Tooltip";
 import { CodeRows, CommentBody } from "../threads/CommentBody";
 import {
 	CommentActions,
-	DeletedPlaceholder,
 	DeletedRow,
 	EditedMark,
 	EditForm,
@@ -418,15 +417,72 @@ function lastUpdate(pr: PrOverview, threads: ThreadsView | undefined): string {
 	);
 }
 
-/** As GitHub shows it; the markdown source only if GitHub sent no HTML. */
+/**
+ * As GitHub shows it; the markdown source only if GitHub sent no HTML.
+ * Clipped at 280px (a height, not a line count: headings, lists, code and
+ * images have no common line) with a fade and "Show more"; shorter, whole.
+ */
 function Description({ pr }: { pr: PrOverview }) {
-	if (pr.bodyHtml.trim()) {
-		return <GithubHtml html={pr.bodyHtml} className="text-sm" />;
+	const [open, setOpen] = useState(false);
+	// State, not a ref: the box mounts only once there is a description.
+	const [box, setBox] = useState<HTMLDivElement | null>(null);
+	const id = useId();
+	const html = pr.bodyHtml.trim() !== "";
+	const text = !html && pr.body.trim() !== "";
+	const over = useOverflow(box, !open && (html || text), "y");
+	const clipped = over && !open;
+	useEffect(() => {
+		const el = box;
+		if (!el || !clipped) return;
+		// A keyboard user never lands on a clipped link.
+		const reveal = () => setOpen(true);
+		el.addEventListener("focusin", reveal);
+		return () => el.removeEventListener("focusin", reveal);
+	}, [box, clipped]);
+	if (!html && !text) {
+		return <p className="text-sm text-muted italic">No description</p>;
 	}
-	if (pr.body.trim()) {
-		return <p className="text-sm break-words whitespace-pre-wrap">{pr.body}</p>;
-	}
-	return <p className="text-sm text-muted italic">No description</p>;
+	return (
+		<div>
+			<div
+				ref={setBox}
+				id={id}
+				data-testid="description"
+				className={`relative ${open ? "" : "max-h-[17.5rem] overflow-hidden"}`}
+			>
+				{html ? (
+					<GithubHtml html={pr.bodyHtml} className="text-sm" />
+				) : (
+					<p className="text-sm break-words whitespace-pre-wrap">{pr.body}</p>
+				)}
+				{clipped && (
+					<div
+						aria-hidden
+						className="pointer-events-none absolute inset-x-0 bottom-0 h-10 bg-gradient-to-b from-transparent to-surface"
+					/>
+				)}
+			</div>
+			{over && (
+				<div className="flex justify-center">
+					<button
+						type="button"
+						aria-expanded={open}
+						aria-controls={id}
+						data-testid="description-more"
+						onClick={() => setOpen((o) => !o)}
+						className="-mb-2 flex min-h-10 items-center gap-1 rounded-md text-xs font-medium text-link hover:underline focus-visible:outline-2 focus-visible:outline-accent"
+					>
+						<ChevronDownIcon
+							size={16}
+							aria-hidden
+							className={`transition-transform motion-reduce:transition-none ${open ? "rotate-180" : ""}`}
+						/>
+						{open ? "Show less" : "Show more"}
+					</button>
+				</div>
+			)}
+		</div>
+	);
 }
 
 // ---- Who's on it ----
@@ -1428,9 +1484,6 @@ function ThreadItem({
 			: undefined;
 	const write = useCommentWrite(thread.id, first ?? NO_COMMENT);
 	const can = useCommentCan(first ?? NO_COMMENT);
-	const openerDeleted = first
-		? first.deleted
-		: thread.body.trim() === "[deleted]";
 	// Anything more to see: clipped text or code, a reply, or something to do.
 	const more =
 		codeMore ||
@@ -1482,10 +1535,6 @@ function ThreadItem({
 			className={`${commentSurface(opener.tint)} break-words`}
 		>
 			<SavingText text={write.saving} />
-		</div>
-	) : openerDeleted ? (
-		<div id={commentId}>
-			<DeletedPlaceholder />
 		</div>
 	) : !thread.loaded ? (
 		// Its text is still on its way: the comment's frame.
@@ -1624,7 +1673,7 @@ function ThreadItem({
 							opened&nbsp;
 							<RelativeTime iso={thread.createdAt} />
 						</span>
-						{first?.editedAt && !openerDeleted && (
+						{first?.editedAt && (
 							<span className={`${HEAD_PART} whitespace-nowrap`}>
 								<EditedMark iso={first.editedAt} />
 							</span>

@@ -1,5 +1,6 @@
 import type { Page } from "@playwright/test";
 import {
+	release,
 	reviewThread,
 	suggestionHtml,
 	threadComment,
@@ -96,6 +97,8 @@ test("shows the description as GitHub renders it, and who started reviewing", as
 	await expect(what.getByRole("checkbox")).toBeChecked();
 	await expect(what).not.toContainText("<!--");
 	await expect(what).not.toContainText("reviewer note");
+	// Short: whole, no toggle.
+	await expect(what.getByTestId("description-more")).toHaveCount(0);
 	const who = page.getByRole("region", { name: "Who's on it" });
 	await expect(who).toContainText("rev1 already started");
 	const changes = who.getByRole("img", { name: "Changes requested" });
@@ -106,6 +109,58 @@ test("shows the description as GitHub renders it, and who started reviewing", as
 	await expect(
 		page.getByText("Changes requested", { exact: true }),
 	).toBeVisible();
+});
+
+test("a long description folds: Show more, Show less", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	const points = Array.from(
+		{ length: 30 },
+		(_, i) => `Point ${i + 1}: caches the widget lookups.`,
+	);
+	await pr({
+		overview: { body: points.join("\n\n") },
+		bodyHTML: points.map((p) => `<p dir="auto">${p}</p>`).join("\n"),
+	});
+	const s = await startCrb();
+	await page.goto(s.url);
+	const what = page.getByRole("region", { name: "What it does" });
+	const body = what.getByTestId("description");
+	await expect(body.getByText("Point 1:")).toBeVisible();
+	const more = what.getByRole("button", { name: "Show more" });
+	await expect(more).toHaveAttribute("aria-expanded", "false");
+	const clipped = await body.boundingBox();
+	expect(clipped?.height).toBeLessThanOrEqual(281);
+	expect(clipped?.height).toBeGreaterThan(200);
+	const toggle = await more.boundingBox();
+	expect(toggle?.height ?? 0).toBeGreaterThanOrEqual(40);
+	// Clipped, not gone.
+	await expect(body.getByText("Point 30:")).toBeAttached();
+	if (process.env.DESIGN_SHOTS) {
+		await what.screenshot({
+			path: `${process.env.DESIGN_SHOTS}/description-folded-${isMobile ? "phone" : "desktop"}.png`,
+		});
+	}
+	await more.click();
+	const less = what.getByRole("button", { name: "Show less" });
+	await expect(less).toHaveAttribute("aria-expanded", "true");
+	expect((await body.boundingBox())?.height ?? 0).toBeGreaterThan(
+		(clipped?.height ?? 0) + 200,
+	);
+	await less.click();
+	await expect(more).toHaveAttribute("aria-expanded", "false");
+	expect((await body.boundingBox())?.height).toBeLessThanOrEqual(281);
+	// No sideways page scroll at the phone's width.
+	expect(
+		await page.evaluate(
+			() =>
+				document.documentElement.scrollWidth -
+				document.documentElement.clientWidth,
+		),
+	).toBeLessThanOrEqual(0);
 });
 
 test("says you're reviewing when only you have", async ({
@@ -815,10 +870,9 @@ test("the page never waits for the threads: lists, then cards, fill in as they c
 			]),
 		),
 	});
-	// The summaries are slow, the comments' text slower.
+	// The summaries wait, then the comments' text, each until let go.
 	p.editScenario((s) => {
-		s.threadsDelayMs = 1500;
-		s.threadContentDelayMs = 2500;
+		s.hold = ["threads", "threadContent"];
 	});
 	const s = await startCrb();
 	await page.goto(s.url);
@@ -830,6 +884,7 @@ test("the page never waits for the threads: lists, then cards, fill in as they c
 	).toBeVisible();
 	await expect(ready.getByTestId("threads-loading")).toHaveCount(2);
 	await expect(humans.getByTestId("thread")).toHaveCount(0);
+	release(p.scenarioPath, "threads");
 	// Then every card's header (the counts exact), the text still a frame.
 	await expect(humans.getByTestId("thread")).toHaveCount(5);
 	await expect(humans.getByText("12 unresolved")).toBeVisible();
@@ -844,6 +899,7 @@ test("the page never waits for the threads: lists, then cards, fill in as they c
 				document.documentElement.clientWidth,
 		),
 	).toBe(0);
+	release(p.scenarioPath, "threadContent");
 	// Then the text and code.
 	await expect(humans.getByTestId("thread-body").first()).toHaveText(
 		"Point 11",
@@ -1536,7 +1592,7 @@ test("slow comments show a spinner, then the replies", async ({
 }) => {
 	const p = await pr({ threads: [threeComments] });
 	p.editScenario((s) => {
-		s.commentsDelayMs = 3000;
+		s.hold = ["comments"];
 	});
 	const s = await startCrb();
 	await page.goto(s.url);
@@ -1545,6 +1601,7 @@ test("slow comments show a spinner, then the replies", async ({
 	await expect(
 		thread.getByRole("status", { name: "Loading comments" }),
 	).toBeVisible();
+	release(p.scenarioPath, "comments");
 	await expect(thread.getByTestId("thread-comment")).toHaveCount(2, {
 		timeout: 15_000,
 	});
@@ -1562,8 +1619,8 @@ test("a thread deleted after the list was read: the comments answer says deleted
 	const id = `T${p.number}-0`;
 	p.editScenario((s) => {
 		s.deletedThreads = [id];
-		// The cards' text comes late: the toggle opens before it does.
-		s.threadContentDelayMs = 3000;
+		// The cards' text waits: the toggle opens before it comes.
+		s.hold = ["threadContent"];
 	});
 	const answered = page.waitForResponse((r) => r.url().includes("/comments?"));
 	const s = await startCrb();
@@ -1573,6 +1630,7 @@ test("a thread deleted after the list was read: the comments answer says deleted
 	await expect(
 		thread.getByRole("status", { name: "Loading comments" }),
 	).toBeVisible();
+	release(p.scenarioPath, "threadContent");
 	// The comments endpoint is the path under test: it says deleted.
 	const body = (await (await answered).json()) as {
 		threads: { threadId: string; unavailable?: string }[];
@@ -1620,9 +1678,8 @@ test("comments are read before a card is opened", async ({
 	await answered;
 	const thread = card(page, "src/cache.ts");
 	await thread.getByRole("button", { name: "2 replies" }).click();
-	await expect(thread.getByTestId("thread-comment")).toHaveCount(2, {
-		timeout: 500,
-	});
+	// Already there: no spinner, ever (sawSpinner), however slow the page.
+	await expect(thread.getByTestId("thread-comment")).toHaveCount(2);
 	expect(
 		await page.evaluate(
 			() => (window as unknown as { sawSpinner?: boolean }).sawSpinner ?? false,

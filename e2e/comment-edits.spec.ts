@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import type { Locator, Page } from "@playwright/test";
 import {
 	editElsewhere,
+	release,
 	reviewThread,
 	type Scenario,
 	threadComment,
@@ -156,7 +157,8 @@ test("edit from an Overview card: shown at once, marked edited, still there afte
 	isMobile,
 }) => {
 	if (isMobile) await page.setViewportSize({ width: 360, height: 780 });
-	const p = await setup(pr, { editDelayMs: 800 });
+	// GitHub answers the edit only once the test has seen it saving.
+	const p = await setup(pr, { hold: ["edit"] });
 	const s = await startCrb();
 	await page.goto(s.url);
 	const c = card(page, "new.txt");
@@ -185,6 +187,7 @@ test("edit from an Overview card: shown at once, marked edited, still there afte
 	await expect(box).toHaveCount(0);
 	await expect(c.getByTestId("thread-body")).toContainText("My better take");
 	await expect(c.getByRole("img", { name: "Saving" })).toBeVisible();
+	release(p.scenarioPath, "edit");
 	await expect(c.getByRole("img", { name: "Saving" })).toHaveCount(0);
 	await expect(c.getByTestId("comment-edited")).toBeVisible();
 	await expect.poll(() => bodies(p, 0)).toEqual(["My better take"]);
@@ -210,13 +213,21 @@ test("an edit in progress survives a reload, opens its card and is listed in Dra
 	await openCard(c);
 	await c.getByRole("button", { name: "Edit" }).click();
 	await c.getByRole("textbox", { name: "Edit comment" }).fill("Half rewritten");
-	// The guard asks before the page goes.
-	page.once("dialog", (d) => void d.accept());
+	// Kept, it loses nothing: the reload doesn't ask.
+	const asked: string[] = [];
+	page.on("dialog", (d) => {
+		asked.push(d.type());
+		void d.accept();
+	});
 	await page.reload();
+	expect(asked).toEqual([]);
 	const again = card(page, "new.txt");
+	// The reloaded page reads the overview, the threads and the card's
+	// comments before the box can open: several requests, which a loaded
+	// machine stretches past the 5 s default.
 	await expect(
 		again.getByRole("textbox", { name: "Edit comment" }),
-	).toHaveValue("Half rewritten");
+	).toHaveValue("Half rewritten", { timeout: 20_000 });
 	await expect(humans(page).getByTestId("drafts-filter")).toHaveText("1 draft");
 	// Nothing reached GitHub.
 	expect(bodies(p, 0)).toEqual(["My take"]);
@@ -225,12 +236,39 @@ test("an edit in progress survives a reload, opens its card and is listed in Dra
 	await expect(humans(page).getByTestId("drafts-filter")).toHaveCount(0);
 });
 
+test("a reload in a delete's undo window asks first, and a dismissed ask stays", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	const p = await setup(pr);
+	const s = await startCrb();
+	await page.goto(s.url);
+	const c = card(page, "new.txt");
+	await openCard(c);
+	await confirmDelete(page, c.getByRole("button", { name: "Delete" }));
+	await expect(c.getByTestId("comment-deleted-row")).toBeVisible();
+	// Nothing is sent yet and nothing resends it: leaving would lose it.
+	const asked: string[] = [];
+	page.once("dialog", (d) => {
+		asked.push(d.type());
+		void d.dismiss();
+	});
+	await page.reload({ timeout: 2000 }).catch(() => {});
+	expect(asked).toEqual(["beforeunload"]);
+	await expect(c.getByTestId("comment-deleted-row")).toBeVisible();
+	await expect.poll(() => stored(p, 0).removed, { timeout: 10_000 }).toBe(true);
+});
+
 test("delete from an Overview card: Undo sends nothing; then the card fades and leaves", async ({
 	page,
 	pr,
 	startCrb,
 	isMobile,
 }) => {
+	// It waits out the 5 s undo window twice, then the fade: past the
+	// default 30 s on a loaded machine.
+	test.slow();
 	if (isMobile) await page.setViewportSize({ width: 360, height: 780 });
 	const p = await setup(pr);
 	const s = await startCrb();
@@ -301,13 +339,14 @@ test("leaving the page with the delete confirmation open leaves the other page u
 	await expect(page).toHaveURL(/\/files/);
 	// Nothing modal is left: Files changed takes clicks and Tab.
 	await expect(page.locator("dialog[open]")).toHaveCount(0);
-	await page.getByRole("link", { name: "Overview" }).click({ timeout: 3000 });
+	// (A dialog left modal would block the click until the test times out.)
+	await page.getByRole("link", { name: "Overview" }).click();
 	await expect(page).not.toHaveURL(/\/files/);
 	await expect(c.getByTestId("thread-body")).toContainText("My take");
 	expect(stored(p, 0).removed).toBe(false);
 });
 
-test("deleting an opener with replies leaves a deleted placeholder", async ({
+test("deleting an opener with replies leaves [deleted] as a normal comment, which Edit writes back", async ({
 	page,
 	pr,
 	startCrb,
@@ -326,18 +365,31 @@ test("deleting an opener with replies leaves a deleted placeholder", async ({
 		"It stays as [deleted] in the thread.",
 	);
 	await confirmation(page).getByRole("button", { name: "Delete" }).click();
-	await expect(c.getByTestId("comment-deleted")).toBeVisible({
+	await expect(c.getByTestId("thread-body")).toHaveText("[deleted]", {
 		timeout: 10_000,
 	});
 	await expect.poll(() => bodies(p, 2)).toEqual(["[deleted]", "Fair"]);
 	await page.reload();
 	const again = card(page, "b.txt");
-	await expect(again.getByTestId("comment-deleted")).toBeVisible();
+	await expect(again.getByTestId("thread-body")).toHaveText("[deleted]");
 	await openCard(again);
 	await expect(again.getByText("Fair")).toBeVisible();
-	await expect(again.getByRole("button", { name: "Edit" })).toHaveCount(0);
+	// Replies follow it: nothing more for Delete to do; Edit writes it back.
+	await expect(again.getByRole("button", { name: "Delete" })).toHaveCount(0);
 	expect(await overflow(page)).toBeLessThanOrEqual(0);
 	await shot(page, "deleted-opener", isMobile, again);
+	await again.getByRole("button", { name: "Edit" }).click();
+	const box = again.getByRole("textbox", { name: "Edit comment" });
+	await expect(box).toHaveValue("[deleted]");
+	await box.fill("Opening words, back");
+	await again.getByRole("button", { name: "Save" }).click();
+	await expect(again.getByTestId("thread-body")).toContainText(
+		"Opening words, back",
+	);
+	await expect(again.getByRole("img", { name: "Saving" })).toHaveCount(0);
+	await expect
+		.poll(() => bodies(p, 2))
+		.toEqual(["Opening words, back", "Fair"]);
 });
 
 test("edit and delete a reply from Files changed", async ({

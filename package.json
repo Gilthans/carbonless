@@ -20,9 +20,10 @@
 		"test": "vitest run",
 		"test:watch": "vitest",
 		"test:changed": "vitest run --changed",
-		"test:e2e": "pnpm build && playwright test",
-		"verify": "pnpm lint && pnpm typecheck && pnpm test && pnpm test:e2e",
+		"test:e2e": "pnpm build && node scripts/queue.mjs --unless-filtered playwright test",
+		"verify": "pnpm lint && pnpm typecheck && node scripts/queue.mjs sh -c 'pnpm test && pnpm test:e2e'",
 		"verify:fast": "node scripts/verify-fast.mjs",
+		"flake-check": "node scripts/flake-check.mjs",
 		"icons": "tsx scripts/render-icons.ts",
 		"compare-threads": "tsx scripts/compare-threads.ts"
 	},

@@ -134,12 +134,16 @@ unresolving one, and editing or deleting one of the viewer's comments in one
   ones don't count) edits its body to `[deleted]` instead (owner: "it
   should instead be edited to say [deleted]"), so the thread keeps its
   opener, place and code. Such an opener (body exactly `[deleted]`,
-  trimmed) is `ThreadComment.deleted`, shown as a placeholder, and can't
-  be edited (400); deleting it again is answered as done (a retry that
-  landed). Once no published comment follows it, the viewer may delete it,
-  and then it really goes. Deleting any other comment deletes it; deleting
-  a thread's last published comment removes the thread (`ThreadGone`),
-  and it leaves the session's kept reads.
+  trimmed) is `ThreadComment.deleted`, and shows like any other comment of
+  the viewer's: "[deleted]" as its text, with Edit, which writes it back
+  (owner: "it should look like a regular comment, and not like a deleted
+  one, allowing for me to edit it back if I want"). Delete is off on it
+  while published comments follow it (nothing more to do); deleting it
+  again is answered as done (a retry that landed). Once no published
+  comment follows it, the viewer may delete it, and then it really goes.
+  Deleting any other comment deletes it; deleting a thread's last
+  published comment removes the thread (`ThreadGone`), and it leaves the
+  session's kept reads.
   Whether published comments follow is GitHub's fresh list reconciled
   with this session's own writes: a reply it just posted counts even
   before GraphQL lists it, a comment it deleted doesn't count (and stays
@@ -211,8 +215,27 @@ unresolving one, and editing or deleting one of the viewer's comments in one
   text, the deleted comment left out).
 - **One thread, one write at a time.** Replies, resolving, edits and
   deletes on one thread run in the order asked, never at once.
+- **Leaving asks only when something would be lost** (owner: "refresh
+  should only be dirty if information is lost"; `useUnsavedGuard`). It
+  asks for review states not yet stored, and for a resolve, unresolve or
+  delete not yet on GitHub (refused ones too, until let go; a delete in
+  its undo window too: nothing is sent yet and no later page sends it). It never asks for drafts (reply,
+  edit, new thread) or for replies, edits and new threads on their way:
+  `localStorage` keeps them and the next page resends what was sent. Only
+  while storage can't keep them (a private window, blocked site data) do
+  they ask.
 - **Tests write only to the fake gh.** Real writes happen only on the
   owner's scratch PR (see `CLAUDE.md`).
+
+## A file is crossed off only when all of it is
+
+In the files unit (the progress bar, the file list) a file whose clusters
+are all crossed off counts as crossed off; a done file with any reviewed
+cluster counts as reviewed, however many of the rest were crossed off
+(owner: "A file should only be considered crossed off in the progress bar
+if all clusters are crossed off. Otherwise it should count as reviewed").
+A file with any unreviewed cluster is neither. The rule is one function
+(`fileFlags`, `src/shared/progress.ts`), used by the server and the page.
 
 ## "Ignore whitespace" is a view
 

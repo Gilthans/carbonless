@@ -23,7 +23,7 @@ The owner's words:
 - **Comment on a file:** every file, whatever its kind: text, empty, binary, renamed-only, mode-only, deleted or a submodule.
 - **Selection opens actions, not just a comment box.** "Comment" is the first action. The shape takes "Ask Claude" and other conversation kinds later without reworking the selection or the anchor.
 - **The lines carbonless marks are exactly GitHub's lines** (owner: "the review line that was marked is exactly the same one as appears in github"). A thread's highlighted lines in carbonless are the lines GitHub shows for it, for new threads and existing ones; the span always sits inside them. What carbonless sends is what it then reads back and shows, and the real-GitHub check compares them (`pnpm compare-threads`).
-- **Same feel as replies:** the new thread shows at once (the clock while sending); a yellow notice after 5 s; transient errors retry with backoff; anything else is red with the message and Retry. The draft is never lost: it survives a reload, shows in the Drafts filter, and leaving with one asks first.
+- **Same feel as replies:** the new thread shows at once (the clock while sending); a yellow notice after 5 s; transient errors retry with backoff; anything else is red with the message and Retry. The draft is never lost: it survives a reload and shows in the Drafts filter, so leaving with one doesn't ask (owner, later: "refresh should only be dirty if information is lost").
 
 ## Non-goals (this stage)
 
@@ -87,7 +87,7 @@ Owner: "It's a good first step. In the future we'll have to store things in our 
 
 ## The action bar (the extension point)
 
-- When a selection ends (mouse up, keyboard selection, or the phone's selection settling), a small floating bar appears next to its end with one icon button per available action, each ≥40px with a tooltip. On a phone it is a bar pinned to the bottom of the screen, above the system's own selection menu.
+- When a selection ends (mouse up, keyboard selection, or the phone's selection settling), a small floating bar appears next to its end with one icon button per available action, each ≥40px with a tooltip. By touch (a phone, in either orientation) it floats the same way, a little lower under text so the selection's end handle stays grabbable (the system's Copy menu sits above the selection), and inside the visual viewport.
 - Actions come from a registry: `{ id, icon, label, available(span) → true | reason, start(span) }`. This stage registers one action, **Comment**. "Ask Claude" later registers another and gets its own spec: where its answers live, what it may see. When an action isn't available its button stays visible, disabled, with the reason as its tooltip (for example "GitHub only takes comments on lines in the diff").
 - Keyboard: with a selection, `c` starts a comment. The bar's buttons are reachable with Tab, and Escape dismisses the bar.
 
@@ -109,7 +109,7 @@ Owner: "It's a good first step. In the future we'll have to store things in our 
 
 ## Commenting on a file
 
-- Every file header gets a comment icon button (tooltip "Comment on file", ≥40px), in every kind of file and whether the file is expanded or not. It opens the composer in the header's threads area, where file threads already show.
+- *(Changed by the owner, polish 2: a header icon meaning one thing closed and another open was unintuitive.)* An open file of every kind has a file bubble on its diff's first row, where line bubbles sit (a file cluster's row for a file with no diff rows). It counts the file's file threads (and lines not in the diff) and opens them in a row under it with a "Comment on file" button; with none it is an outline that opens the composer at once. The header has no comment button; closed, its count opens the file and the file bubble.
 - It posts with `subject_type: "file"`. If GitHub refuses a file comment on some kind of file (to be checked), the button is disabled there with GitHub's reason.
 
 ## Where it's off

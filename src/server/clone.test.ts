@@ -19,6 +19,7 @@ import {
 } from "../../test/fake-gh/scenario";
 import {
 	createGitFixture,
+	GIT_TEST_TIMEOUTS,
 	type GitFixture,
 	testGitEnv,
 } from "../../test/git-fixture";
@@ -30,6 +31,9 @@ import {
 	withRepoLock,
 } from "./clone";
 import { GhError, type PrMeta } from "./gh";
+
+// Real git and fake-gh processes: see GIT_TEST_TIMEOUTS.
+vi.setConfig(GIT_TEST_TIMEOUTS);
 
 const git = (cwd: string, ...args: string[]) =>
 	execFileSync("git", args, {
@@ -465,18 +469,19 @@ describe("withRepoLock", () => {
 		writeFileSync(`${path}.lock`, "12345\n");
 		const old = new Date(Date.now() - 11 * 60 * 1000);
 		utimesSync(`${path}.lock`, old, old);
-		const started = Date.now();
-		expect(await withRepoLock(path, async () => "got it")).toBe("got it");
-		expect(Date.now() - started).toBeLessThan(1000);
+		// No time to wait: only a lock judged stale at the first look is taken.
+		expect(
+			await withRepoLock(path, async () => "got it", { timeoutMs: 0 }),
+		).toBe("got it");
 	});
 
 	it("takes a fresh lock at once when its process is gone", async () => {
 		const path = join(tmp, "repo.git");
 		const dead = spawnSync(process.execPath, ["-e", ""]).pid;
 		writeFileSync(`${path}.lock`, `${hostname()} ${dead} token\n`);
-		const started = Date.now();
-		await withRepoLock(path, async () => {});
-		expect(Date.now() - started).toBeLessThan(1000);
+		expect(
+			await withRepoLock(path, async () => "got it", { timeoutMs: 0 }),
+		).toBe("got it");
 	});
 
 	it("keeps a long-running holder's lock fresh", {

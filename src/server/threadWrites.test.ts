@@ -1,12 +1,14 @@
 import { readFileSync } from "node:fs";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	listReplies,
 	prView,
+	release,
 	reviewThread,
 	type Scenario,
 	threadComment,
 } from "../../test/fake-gh/scenario";
+import { GIT_TEST_TIMEOUTS } from "../../test/git-fixture";
 import { createPrFixture, type PrFixture } from "../../test/pr-fixture";
 import type { ReplyRequest } from "../shared/types";
 import { GhError, WriteRefusedError } from "./errors";
@@ -21,6 +23,9 @@ import {
 	type ThreadWriteTarget,
 	writeWaits,
 } from "./threadWrites";
+
+// Real git and fake-gh processes: see GIT_TEST_TIMEOUTS.
+vi.setConfig(GIT_TEST_TIMEOUTS);
 
 /** T12-0's comment ids before any reply. */
 const KNOWN = ["C12-0", "C12-0-1"];
@@ -177,12 +182,16 @@ describe("thread writes", () => {
 	});
 
 	it("a resend while the first attempt still runs waits for it and doesn't post again", async () => {
-		threads({ replyDelayMs: 1500 });
+		// The first attempt's post is held until the resend is in.
+		threads({ hold: ["reply"] });
 		const clientId = "same";
 		const first = reply("Done", { clientId });
-		await new Promise((r) => setTimeout(r, 200));
+		await vi.waitFor(() => expect(writeCalls()).toHaveLength(1), {
+			timeout: 10_000,
+		});
 		// The connection dropped: the client resends.
 		const again = reply("Done", { clientId, retry: true });
+		release(process.env.CRB_FAKE_GH ?? "", "reply");
 		const [a, b] = await Promise.all([first, again]);
 		expect(bodies(0)).toEqual(["Should this expire?", "Why would it?", "Done"]);
 		expect(writeCalls()).toHaveLength(1);

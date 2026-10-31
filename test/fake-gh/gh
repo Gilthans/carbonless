@@ -26,6 +26,26 @@ const unsupported = () => fail(`fake gh: unsupported: ${args.join(" ")}`, 2);
 const sleep = (ms) =>
 	Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 /**
+ * Waits `ms`, then for as long as the scenario holds `op` (a test's gate:
+ * it releases the call by taking `op` out of `hold`, whatever the clock),
+ * unless `op` was let through when this call began. The scenario is re-read
+ * for that only; its new `hold` is kept, so a write saved after doesn't put
+ * the gate back. Other test edits made while it waited are overwritten if
+ * this call saves (a write): see the hazards in scenario.ts (HoldOp).
+ */
+function delay(op, ms) {
+	if (ms) sleep(ms);
+	if (!s.hold?.includes(op) || s.letThrough?.includes(op)) return;
+	for (;;) {
+		const hold = JSON.parse(readFileSync(process.env.CRB_FAKE_GH, "utf8")).hold;
+		if (!hold?.includes(op)) {
+			s.hold = hold;
+			return;
+		}
+		sleep(20);
+	}
+}
+/**
  * Writes the scenario back: writes (replies, resolving) last for the test.
  * Atomically, as other gh processes and the test read the file meanwhile.
  */
@@ -490,7 +510,7 @@ if (restCreate && !s.loggedOut) {
 	if (!pr) httpFail(404, "Not Found");
 	const f = failNextFor("comment");
 	if (f && !f.afterWrite) failAs(f);
-	if (s.commentDelayMs) sleep(s.commentDelayMs);
+	delay("comment", s.commentDelayMs);
 	if (!req.body?.trim()) httpFail(422, "Validation Failed", ["Body can't be blank"]);
 	const pending = (pr.graphql?.reviews ?? []).some(
 		(r) =>
@@ -588,7 +608,7 @@ if (restCreate && !s.loggedOut) {
 }
 if (restCompare && !s.loggedOut) {
 	if (args.slice(2).join(" ") !== "--jq .merge_base_commit.sha") unsupported();
-	if (s.compareDelayMs) sleep(s.compareDelayMs);
+	delay("compare", s.compareDelayMs);
 	const [, base, head] = restCompare;
 	let mb;
 	try {
@@ -622,7 +642,7 @@ if (restReply && !s.loggedOut) {
 	}
 	const f = failNextFor("reply");
 	if (f && !f.afterWrite) failAs(f);
-	if (s.replyDelayMs) sleep(s.replyDelayMs);
+	delay("reply", s.replyDelayMs);
 	const pending = (pr.graphql?.reviews ?? []).some(
 		(r) =>
 			r.state === "PENDING" &&
@@ -698,8 +718,7 @@ if (restComment && !s.loggedOut) {
 	const op = edit ? "edit" : "delete";
 	const f = failNextFor(op);
 	if (f && !f.afterWrite) failAs(f);
-	const delay = edit ? s.editDelayMs : s.deleteDelayMs;
-	if (delay) sleep(delay);
+	delay(op, edit ? s.editDelayMs : s.deleteDelayMs);
 	const shown = commentTexts(place.node).find((c) => c.databaseId === Number(id));
 	const allowed = edit ? shown?.viewerCanUpdate : shown?.viewerCanDelete;
 	if (allowed === false) httpFail(403, HTTP_MESSAGES[403]);
@@ -752,7 +771,7 @@ const restPull = /^repos\/[^/]+\/[^/]+\/pulls\/(\d+)\/comments$/.exec(
 );
 if (restPull && args[0] === "api" && !s.loggedOut) {
 	if (args.slice(2).join(" ") !== "--paginate --slurp") unsupported();
-	if (s.restListDelayMs) sleep(s.restListDelayMs);
+	delay("restList", s.restListDelayMs);
 	const pr = s.prs[restPull[1]];
 	if (!pr) fail("gh: Not Found (HTTP 404)");
 	const all = restComments(restPull[1], pr);
@@ -851,9 +870,7 @@ switch (cmd) {
 		}
 		const pr = s.prs[n];
 		if (!pr) notFound(n);
-		if (s.prViewDelayMs) {
-			Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, s.prViewDelayMs);
-		}
+		delay("prView", s.prViewDelayMs);
 		const out = {};
 		for (const f of wanted.split(",")) if (f in pr.view) out[f] = pr.view[f];
 		print(out);
@@ -1111,7 +1128,7 @@ switch (cmd) {
 			),
 		];
 		if (aliased.length) {
-			if (s.commentsDelayMs) sleep(s.commentsDelayMs);
+			delay("comments", s.commentsDelayMs);
 			const text = f.query.includes("bodyHTML");
 			const data = {};
 			const errors = [];
@@ -1140,8 +1157,8 @@ switch (cmd) {
 		// included: the first page of each (commentPageSize).
 		const byIds = /nodes\(ids: \[([^\]]*)\]\)/.exec(f.query);
 		if (byIds) {
-			if (s.threadContentDelayMs) sleep(s.threadContentDelayMs);
-			if (s.commentsDelayMs) sleep(s.commentsDelayMs);
+			delay("threadContent", s.threadContentDelayMs);
+			delay("comments", s.commentsDelayMs);
 			const ids = [...byIds[1].matchAll(/"([^"]*)"/g)].map((m) => m[1]);
 			const nodes = ids.map((id) => {
 				const node = threadById(id);
@@ -1178,7 +1195,7 @@ switch (cmd) {
 		// The timeline, a page by position (`skip`).
 		if (/timelineItems\(first: \d+, skip: \$skip/.test(f.query)) {
 			if (!pr0()) notFound(f.number);
-			if (s.timelineDelayMs) sleep(s.timelineDelayMs);
+			delay("timeline", s.timelineDelayMs);
 			const all = pr0().graphql?.timelineItems ?? [];
 			const size = Number(/timelineItems\(first: (\d+)/.exec(f.query)[1]);
 			const skip = Number(f.skip ?? 0);
@@ -1257,7 +1274,7 @@ switch (cmd) {
 		if (!pr) notFound(f.number);
 		let all = pr.graphql?.[conn] ?? [];
 		if (conn === "reviewThreads") {
-			if (s.threadsDelayMs) sleep(s.threadsDelayMs);
+			delay("threads", s.threadsDelayMs);
 			const raw = all;
 			all = threadNodes(f.number, raw).filter((_, k) => !allRemoved(raw[k]) && !hiddenThread(raw[k]));
 			// Only the fields asked for: a summary has no comment text, and

@@ -5,6 +5,7 @@ import {
 } from "@primer/octicons-react";
 import { useQueries, useQuery } from "@tanstack/react-query";
 import {
+	type CSSProperties,
 	Fragment,
 	type KeyboardEvent,
 	type MouseEvent,
@@ -23,6 +24,7 @@ import type {
 	ClusterView,
 	DiffLine,
 	DisplayHunk,
+	FileHunks,
 	FileView,
 	ReviewThread,
 } from "../../shared/types";
@@ -57,7 +59,7 @@ import {
 } from "./linePicks";
 import { describeSpan } from "./selectionActions";
 import { CONTROLS, SLOT, useStickyControls } from "./stickyControls";
-import { ThreadBubble } from "./ThreadBubble";
+import { BubbleSlot, ThreadBubble } from "./ThreadBubble";
 import { ThreadRow } from "./ThreadRow";
 import {
 	type FilePlacement,
@@ -80,6 +82,20 @@ export interface DiffThreads {
 	/** The PR's threads; placeThreads picks this file's. */
 	threads: ReviewThread[];
 }
+
+/**
+ * The file's own bubble and its threads' row (FileDiff): on the diff's
+ * first row, whatever kind it is, and right under it.
+ */
+export interface FileLead {
+	bubble: ReactNode;
+	/** The row of its threads, with the rail of the cluster it sits in. */
+	row: (rail?: string) => ReactNode;
+}
+
+/** The cell padding that keeps `n` bubbles clear of the code. */
+const bubblePad = (n: number) =>
+	n === 0 ? "px-2" : n === 1 ? "pr-12 pl-2" : "pr-24 pl-2";
 
 /** What a row needs of the file's threads: the placement and which bubbles are open. */
 interface RowThreads {
@@ -136,7 +152,31 @@ const rowKeys = (line: RowLine) =>
 		(k): k is LineKey => k !== null,
 	);
 
-const COLUMNS = 5;
+export const COLUMNS = 5;
+
+/**
+ * How many digits the file's number columns hold: its largest line number
+ * on either side, three at least (the side-by-side spec's "Gutters").
+ */
+export function numberDigits(data: FileHunks | undefined): number {
+	if (!data) return 3;
+	// The old file's length: the new one's, less what the hunks added.
+	let max = Math.max(
+		data.newLineCount,
+		data.hunks.reduce((n, h) => n + h.oldCount - h.newCount, data.newLineCount),
+	);
+	for (const h of data.hunks) {
+		for (const l of h.lines) max = Math.max(max, l.oldNo ?? 0, l.newNo ?? 0);
+	}
+	return Math.max(3, String(max).length);
+}
+
+/**
+ * A number column's width: its digits (`--num-w`, set on the table from
+ * numberDigits) and padding; on touch it keeps 48px, its tap target.
+ */
+const NUMBER_W =
+	"w-[var(--num-w,3rem)] pointer-coarse:w-[max(3rem,var(--num-w,3rem))]";
 
 const RAIL: Record<ClusterView["state"], string> = {
 	unreviewed: "bg-unreviewed",
@@ -249,8 +289,9 @@ function LineRow(props: {
 	order?: number;
 	picker?: Picker;
 	composers?: RowComposers;
+	lead?: FileLead;
 }) {
-	const { line, state, threads, picker } = props;
+	const { line, state, threads, picker, lead } = props;
 	const cell = codeCellOf(line);
 	const key = pickKey(cell);
 	const isPicked = picker?.keys.has(key) ?? false;
@@ -309,7 +350,7 @@ function LineRow(props: {
 			onPointerDown={picker?.onPointerDown}
 			onPointerEnter={picker?.onPointerEnter}
 			onClick={picker?.onClick}
-			className={`w-12 px-2 text-right align-top select-none ${numberBg} ${picker ? "cursor-pointer" : ""}`}
+			className={`${NUMBER_W} px-2 text-right align-top select-none ${numberBg} ${picker ? "cursor-pointer" : ""}`}
 		>
 			{number(which)}
 		</td>
@@ -340,19 +381,24 @@ function LineRow(props: {
 					data-len={line.text.length}
 					data-hunk={props.hunk}
 					data-order={props.order}
-					className={`whitespace-pre ${endKey ? "pr-12 pl-2" : "px-2"}`}
+					className={`whitespace-pre ${bubblePad((endKey ? 1 : 0) + (lead ? 1 : 0))}`}
 				>
-					{endKey && threads && (
-						<ThreadBubble
-							inline
-							threads={ending}
-							where={where}
-							open={open}
-							controls={open ? threads.idOf(endKey) : undefined}
-							onToggle={() => threads.toggle(keys)}
-							focus={threads.focus !== null && keys.includes(threads.focus)}
-							onFocused={threads.onFocused}
-						/>
+					{((endKey && threads) || lead) && (
+						<BubbleSlot>
+							{lead?.bubble}
+							{endKey && threads && (
+								<ThreadBubble
+									inline
+									threads={ending}
+									where={where}
+									open={open}
+									controls={open ? threads.idOf(endKey) : undefined}
+									onToggle={() => threads.toggle(keys)}
+									focus={threads.focus !== null && keys.includes(threads.focus)}
+									onFocused={threads.onFocused}
+								/>
+							)}
+						</BubbleSlot>
 					)}
 					{line.kind === "ws" ? (
 						<Tooltip content="Whitespace only" describe={false} lazy>
@@ -386,6 +432,7 @@ function LineRow(props: {
 					/>
 				</td>
 			</tr>
+			{lead?.row(state ? RAIL[state] : undefined)}
 			{line.noNewline && (
 				<tr>
 					<Rail state={state} />
@@ -609,6 +656,8 @@ export function DiffBody(props: {
 	threads?: DiffThreads;
 	/** These hunks are the viewed head's (not a Refresh's moment of the old ones). */
 	headSure?: boolean;
+	/** The file's bubble and its threads' row (FileDiff). */
+	lead?: FileLead;
 }) {
 	const { file, revision } = props;
 	const hunks = useQuery(hunksQuery(revision, file.index));
@@ -822,13 +871,18 @@ export function DiffBody(props: {
 
 	const hunkOf = (n: number) =>
 		`g${gaps.find((g) => g.from <= n && n <= g.to)?.index ?? ""}`;
-	const contextRows = (from: number, to: number) => {
+	const contextRows = (
+		from: number,
+		to: number,
+		lead?: () => FileLead | undefined,
+	) => {
 		const rows: ReactNode[] = [];
 		for (let n = from; n <= to; n++) {
 			const line = loaded.get(n);
 			if (line) {
 				rows.push(
 					<LineRow
+						lead={lead?.()}
 						key={`c${n}`}
 						line={line}
 						lang={lang}
@@ -850,7 +904,7 @@ export function DiffBody(props: {
 	 * them (its ↑/↓ buttons, "N hidden lines", loading or Retry, and a bubble
 	 * for the threads whose line is in it).
 	 */
-	const gapRows = (gap: Gap | undefined) => {
+	const gapRows = (gap: Gap | undefined, lead?: () => FileLead | undefined) => {
 		if (!gap) return null;
 		const gapThreads = placement?.gaps.get(gap.index) ?? [];
 		const runs = hiddenRuns(gap, loaded);
@@ -880,7 +934,7 @@ export function DiffBody(props: {
 		const rows: ReactNode[] = [];
 		let next = gap.from;
 		runs.forEach((run, i) => {
-			rows.push(...contextRows(next, run.from - 1));
+			rows.push(...contextRows(next, run.from - 1, lead));
 			next = run.to + 1;
 			const part: Gap = {
 				index: gap.index,
@@ -931,6 +985,7 @@ export function DiffBody(props: {
 					setFocusThread(target.key);
 				}
 			};
+			const runLead = lead?.();
 			const where =
 				run.from === run.to
 					? `on hidden line ${run.from}`
@@ -962,16 +1017,21 @@ export function DiffBody(props: {
 					</td>
 					<td
 						colSpan={COLUMNS - 2}
-						className={`font-sans ${runThreads.length ? "pr-12 pl-2" : "px-2"}`}
+						className={`font-sans ${bubblePad((runThreads.length > 0 ? 1 : 0) + (runLead ? 1 : 0))}`}
 					>
-						{runThreads.length > 0 && (
-							<ThreadBubble
-								inline
-								threads={runThreads}
-								where={where}
-								open={false}
-								onToggle={openRunThreads}
-							/>
+						{(runThreads.length > 0 || runLead) && (
+							<BubbleSlot>
+								{runLead?.bubble}
+								{runThreads.length > 0 && (
+									<ThreadBubble
+										inline
+										threads={runThreads}
+										where={where}
+										open={false}
+										onToggle={openRunThreads}
+									/>
+								)}
+							</BubbleSlot>
 						)}
 						{failed.length > 0 ? (
 							<span role="alert" className="text-bad">
@@ -994,12 +1054,75 @@ export function DiffBody(props: {
 					</td>
 				</tr>,
 			);
+			if (runLead) {
+				rows.push(
+					<Fragment key={`gap${gap.index}:${run.from}:file`}>
+						{runLead.row()}
+					</Fragment>,
+				);
+			}
 		});
-		rows.push(...contextRows(next, gap.to));
+		rows.push(...contextRows(next, gap.to, lead));
 		return <tbody key={`gap${gap.index}`}>{rows}</tbody>;
 	};
 
 	const gapAt = (index: number) => gaps.find((g) => g.index === index);
+
+	// The file's bubble goes on the first row shown, whichever it is: the
+	// rows below are built in the table's order, and the first to ask takes it.
+	let leadLeft = props.lead;
+	const takeLead = () => {
+		const lead = leadLeft;
+		leadLeft = undefined;
+		return lead;
+	};
+	const clusterRows = fileClusters.map((cluster) => {
+		const lead = takeLead();
+		return (
+			<tbody key={cluster.key} className="group">
+				<tr className={cluster.state === "reviewed" ? "text-muted" : ""}>
+					<Rail state={cluster.state} />
+					<td className="w-11 px-1 py-1 align-top whitespace-nowrap pointer-coarse:w-20">
+						{checkbox(cluster)}
+					</td>
+					<td
+						colSpan={COLUMNS - 2}
+						className={`${bubblePad(lead ? 1 : 0)} py-1 font-sans text-sm`}
+					>
+						{lead && <BubbleSlot>{lead.bubble}</BubbleSlot>}
+						{cluster.label}
+						<CrossedOffNote cluster={cluster} id={noteId(cluster)} />
+					</td>
+				</tr>
+				{lead?.row(RAIL[cluster.state])}
+			</tbody>
+		);
+	});
+	const hunkRows = hunks.data?.hunks.map((hunk, index) => (
+		<Fragment key={hunkHeader(hunk)}>
+			{gapRows(gapAt(index), takeLead)}
+			<HunkRows
+				hunk={hunk}
+				clusters={clusters}
+				lang={lang}
+				tabWidth={file.tabWidth}
+				checkbox={checkbox}
+				noteId={noteId}
+				landed={landed}
+				landingLine={landingLine}
+				threads={rowThreads}
+				ignoreWhitespace={ignoreWs}
+				hunkId={`h${index}`}
+				picker={picker}
+				composers={composers}
+				lead={takeLead()}
+			/>
+		</Fragment>
+	));
+	const tailRows =
+		hunks.data && gapRows(gapAt(hunks.data.hunks.length), takeLead);
+	// Nothing to show it on (no rows, or they failed to load): a row of its own.
+	const lead = hunks.isPending ? undefined : takeLead();
 
 	return (
 		<div ref={root}>
@@ -1037,45 +1160,27 @@ export function DiffBody(props: {
 				</div>
 			)}
 			<div ref={scroller} className="overflow-x-auto">
-				<table className="min-w-full border-collapse bg-code font-mono text-xs leading-5 text-code-ink">
-					{fileClusters.map((cluster) => (
-						<tbody key={cluster.key} className="group">
-							<tr className={cluster.state === "reviewed" ? "text-muted" : ""}>
-								<Rail state={cluster.state} />
-								<td className="w-11 px-1 py-1 align-top whitespace-nowrap pointer-coarse:w-20">
-									{checkbox(cluster)}
-								</td>
-								<td
-									colSpan={COLUMNS - 2}
-									className="px-2 py-1 font-sans text-sm"
-								>
-									{cluster.label}
-									<CrossedOffNote cluster={cluster} id={noteId(cluster)} />
+				<table
+					style={
+						{
+							"--num-w": `calc(${numberDigits(hunks.data)}ch + 1rem)`,
+						} as CSSProperties
+					}
+					className="min-w-full border-collapse bg-code font-mono text-xs leading-5 text-code-ink"
+				>
+					{lead && (
+						<tbody>
+							<tr>
+								<td colSpan={COLUMNS} className={`${bubblePad(1)} h-5`}>
+									<BubbleSlot>{lead.bubble}</BubbleSlot>
 								</td>
 							</tr>
+							{lead.row()}
 						</tbody>
-					))}
-					{hunks.data?.hunks.map((hunk, index) => (
-						<Fragment key={hunkHeader(hunk)}>
-							{gapRows(gapAt(index))}
-							<HunkRows
-								hunk={hunk}
-								clusters={clusters}
-								lang={lang}
-								tabWidth={file.tabWidth}
-								checkbox={checkbox}
-								noteId={noteId}
-								landed={landed}
-								landingLine={landingLine}
-								threads={rowThreads}
-								ignoreWhitespace={ignoreWs}
-								hunkId={`h${index}`}
-								picker={picker}
-								composers={composers}
-							/>
-						</Fragment>
-					))}
-					{hunks.data && gapRows(gapAt(hunks.data.hunks.length))}
+					)}
+					{clusterRows}
+					{hunkRows}
+					{tailRows}
 				</table>
 			</div>
 			{hunks.isPending && (
@@ -1266,8 +1371,10 @@ function HunkRows(props: {
 	hunkId: string;
 	picker?: Picker;
 	composers?: RowComposers;
+	/** The file's bubble, on the hunk's header row (the diff's first row). */
+	lead?: FileLead;
 }) {
-	const { threads, hunk, ignoreWhitespace } = props;
+	const { threads, hunk, ignoreWhitespace, lead } = props;
 	// The hunk's runs and their rows, once per hunk (the matching is O(n·m)
 	// over the whole hunk): not again on a toggle, a landing, a thread
 	// opening or a context load.
@@ -1289,10 +1396,12 @@ function HunkRows(props: {
 		<>
 			<tbody>
 				<tr className="bg-hunk text-hunk-ink">
-					<td colSpan={COLUMNS} className="px-2 py-0.5">
+					<td colSpan={COLUMNS} className={`${bubblePad(lead ? 1 : 0)} py-0.5`}>
+						{lead && <BubbleSlot>{lead.bubble}</BubbleSlot>}
 						{hunkHeader(hunk)}
 					</td>
 				</tr>
+				{lead?.row()}
 			</tbody>
 			{hunkRuns.map((run) => {
 				const first = run.lines[0];

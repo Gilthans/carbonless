@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import type { Locator, Page } from "@playwright/test";
 import { FADE_MS } from "../src/web/threads/threadWrites";
 import {
+	release,
 	reviewThread,
 	type Scenario,
 	threadComment,
@@ -122,7 +123,8 @@ test("reply from an Overview card: shown at once, still there after a reload", a
 	startCrb,
 	isMobile,
 }) => {
-	const p = await setup(pr, { replyDelayMs: 800 });
+	// GitHub answers the reply once the test has seen it sending.
+	const p = await setup(pr, { hold: ["reply"] });
 	const s = await startCrb();
 	await page.goto(s.url);
 	const c = card(page, "new.txt");
@@ -138,6 +140,7 @@ test("reply from an Overview card: shown at once, still there after a reload", a
 	const sending = c.getByTestId("thread-comment-sending");
 	await expect(sending).toContainText("Kept on purpose");
 	await expect(sending.getByRole("img", { name: "Sending" })).toBeVisible();
+	release(p.scenarioPath, "reply");
 	// GitHub's answer replaces it.
 	await expect(sending).toHaveCount(0);
 	await expect(
@@ -527,7 +530,8 @@ test("a reload with an unconfirmed reply posts it once", async ({
 	pr,
 	startCrb,
 }) => {
-	const p = await setup(pr, { replyDelayMs: 2500 });
+	// The post stays out until after the reload.
+	const p = await setup(pr, { hold: ["reply"] });
 	const s = await startCrb();
 	await page.goto(s.url);
 	const asked: string[] = [];
@@ -541,8 +545,9 @@ test("a reload with an unconfirmed reply posts it once", async ({
 	await send(c).click();
 	await expect(c.getByTestId("thread-comment-sending")).toBeVisible();
 	await page.reload();
-	// It asked first: the reply wasn't confirmed yet.
-	expect(asked).toContain("beforeunload");
+	// It didn't ask: its draft keeps it, and this page resends it.
+	expect(asked).toEqual([]);
+	release(p.scenarioPath, "reply");
 	const again = card(page, "new.txt");
 	await expect(again.getByRole("img", { name: "2 comments" })).toBeVisible({
 		timeout: 10_000,
@@ -567,8 +572,14 @@ test("the Drafts filter lists a thread with a draft, kept across a reload", asyn
 	await box.press("Escape");
 	const chip = humans(page).getByTestId("drafts-filter");
 	await expect(chip).toHaveText("1 draft");
-	page.once("dialog", (d) => void d.accept());
+	// A kept draft loses nothing: the reload doesn't ask.
+	const asked: string[] = [];
+	page.on("dialog", (d) => {
+		asked.push(d.type());
+		void d.accept();
+	});
 	await page.reload();
+	expect(asked).toEqual([]);
 	await humans(page).getByTestId("drafts-filter").click();
 	const list = humans(page).getByRole("list", { name: "Threads with a draft" });
 	await expect(list.getByTestId("thread")).toHaveCount(1);

@@ -172,11 +172,11 @@ test("crossing off keeps reviewed clusters, and undoing leaves clusters unreview
 		/^done · 3 lines added, 2 deleted · 2 clusters · 1 of 1 cluster reviewed, 1 crossed off$/,
 	);
 	await expect(bar).toContainText("1 / 3 clusters reviewed");
-	// In files, a file with a crossed-off cluster counts as crossed off, never
-	// reviewed: crossing off shrinks the work left only.
+	// In files, a done file with a reviewed cluster counts as reviewed; only
+	// one crossed off all through counts as crossed off.
 	await chooseUnit(page, "Files");
-	await expect(bar).toContainText("0 / 2 files reviewed");
-	await expect(bar).toHaveAttribute("aria-valuenow", "0");
+	await expect(bar).toContainText("1 / 3 files reviewed");
+	await expect(bar).toHaveAttribute("aria-valuenow", "33");
 	await expect(fileProgress(section)).toContainText("done · 1 crossed off");
 	await chooseUnit(page, "Clusters");
 
@@ -480,15 +480,41 @@ test("a click right as Undo cross-off swaps in doesn't undo", async ({
 	await openFiles(page, s.url);
 	const section = fileSection(page, "src/util.ts");
 	const bar = progress(page);
-	await fileAction(section, "Cross off file");
+	await expect(fileActionButton(section, "Cross off file")).toBeEnabled();
+	// A double click's second click lands on the button that swapped in. The
+	// page clicks it the moment it appears: from the test, a loaded machine
+	// could take longer than the guard's 500 ms (UNDO_ARM_MS) to get there.
+	const clickedAt = await section.evaluate(
+		(el) =>
+			new Promise<number>((done) => {
+				const undo = () =>
+					el.querySelector<HTMLButtonElement>(
+						'button[aria-label="Undo cross-off"][aria-pressed="true"]',
+					);
+				const watch = new MutationObserver(() => {
+					const button = undo();
+					if (!button) return;
+					watch.disconnect();
+					button.click();
+					done(performance.now());
+				});
+				// The same button may just be relabeled.
+				watch.observe(el, {
+					subtree: true,
+					childList: true,
+					attributeFilter: ["aria-label"],
+				});
+				el.querySelector<HTMLButtonElement>(
+					'button[aria-label="Cross off file"]',
+				)?.click();
+			}),
+	);
 	const undo = fileActionButton(section, "Undo cross-off");
-	await expect(undo).toBeEnabled();
-	// A double click's second click lands on the button that swapped in.
-	await undo.click();
 	await page.waitForTimeout(100);
 	await expect(undo).toBeVisible();
 	await expect(bar).toContainText("0 / 3 clusters reviewed");
-	await page.waitForTimeout(500);
+	// Once the guard is over, a click undoes.
+	await page.waitForFunction((t) => performance.now() > t + 500, clickedAt);
 	await undo.click();
 	await expect(fileActionButton(section, "Cross off file")).toBeEnabled();
 	await expect(bar).toContainText("0 / 4 clusters reviewed");

@@ -9,7 +9,6 @@ import { Tooltip } from "../Tooltip";
 import { CommentBody } from "./CommentBody";
 import {
 	CommentActions,
-	DeletedPlaceholder,
 	DeletedRow,
 	EditedMark,
 	EditForm,
@@ -343,7 +342,7 @@ function CommentItem(props: {
 				{saving ? (
 					<LabeledIcon icon={ClockIcon} label="Saving" className="text-warn" />
 				) : (
-					!c.deleted && <EditedMark iso={c.editedAt} />
+					<EditedMark iso={c.editedAt} />
 				)}
 				{!props.sending && !saving && !write.editing && (
 					<CommentActions
@@ -362,8 +361,6 @@ function CommentItem(props: {
 					thread={thread}
 					onClose={() => write.setEditing(false)}
 				/>
-			) : c.deleted && !saving ? (
-				<DeletedPlaceholder />
 			) : (
 				<div
 					data-testid="thread-comment-body"

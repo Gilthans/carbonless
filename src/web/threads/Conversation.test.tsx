@@ -1289,41 +1289,62 @@ describe("deleting a comment", () => {
 		}
 	});
 
-	it("an opener blanked by a delete shows as a muted placeholder, no Edit or Delete", async () => {
-		serve({
-			T1: {
-				comments: [
-					mine("c1", "[deleted]", {
-						deleted: true,
-						viewerCan: { update: false, delete: false },
-						editedAt: "2026-01-03T10:00:00Z",
-					}),
-					comment("c2", "rev1", "Reply"),
-				],
-			},
+	it('an opener blanked by a delete is a normal comment: "[deleted]" as text, edited, Edit to write it back', async () => {
+		const blanked = mine("c1", "[deleted]", {
+			deleted: true,
+			viewerCan: { update: true, delete: false },
+			editedAt: "2026-01-03T10:00:00Z",
 		});
+		serve({ T1: { comments: [blanked, comment("c2", "rev1", "Reply")] } });
+		writeAnswer = (_path, body) => {
+			expect(body).toEqual({
+				body: "Back again",
+				from: "[deleted]",
+				force: false,
+			});
+			const back = mine("c1", "Back again", {
+				editedAt: "2026-01-03T12:00:00Z",
+			});
+			return Promise.resolve(
+				json(answerWith([back, comment("c2", "rev1", "Reply")], back)),
+			);
+		};
 		renderWith(<Conversation readId="r1" thread={thread()} />, {
 			writes: "on",
 		});
 		const [opener] = await screen.findAllByTestId("thread-comment");
-		expect(
-			within(opener as HTMLElement).getByTestId("comment-deleted"),
-		).toHaveTextContent("deleted");
-		expect(
-			within(opener as HTMLElement).queryByTestId("comment-actions"),
-		).toBeNull();
-		expect(
-			within(opener as HTMLElement).queryByTestId("comment-edited"),
-		).toBeNull();
+		const o = within(opener as HTMLElement);
+		expect(o.getByTestId("thread-comment-body")).toHaveTextContent("[deleted]");
+		expect(o.queryByTestId("comment-deleted")).toBeNull();
+		expect(o.getByTestId("comment-edited")).toBeVisible();
+		// Replies follow it: nothing more for Delete to do.
+		expect(o.queryByRole("button", { name: "Delete" })).toBeNull();
+		await userEvent.click(o.getByRole("button", { name: "Edit" }));
+		const box = screen.getByRole("textbox", { name: "Edit comment" });
+		expect(box).toHaveValue("[deleted]");
+		await userEvent.clear(box);
+		await userEvent.type(box, "Back again");
+		await userEvent.click(screen.getByRole("button", { name: "Save" }));
+		await waitFor(() =>
+			expect(
+				within(
+					screen.getAllByTestId("thread-comment")[0] as HTMLElement,
+				).queryByRole("img", { name: "Saving" }),
+			).toBeNull(),
+		);
+		expect(writeMethods).toEqual(["PATCH"]);
+		expect(screen.getAllByTestId("thread-comment")[0]).toHaveTextContent(
+			"Back again",
+		);
 	});
 
-	it("a sole blanked opener GitHub lets the viewer delete keeps Delete, never Edit", async () => {
+	it("a sole blanked opener keeps Edit and Delete", async () => {
 		serve({
 			T1: {
 				comments: [
 					mine("c1", "[deleted]", {
 						deleted: true,
-						viewerCan: { update: false, delete: true },
+						viewerCan: { update: true, delete: true },
 					}),
 				],
 			},
@@ -1333,9 +1354,9 @@ describe("deleting a comment", () => {
 		});
 		const [opener] = await screen.findAllByTestId("thread-comment");
 		const o = within(opener as HTMLElement);
-		expect(o.getByTestId("comment-deleted")).toBeVisible();
+		expect(o.getByTestId("thread-comment-body")).toHaveTextContent("[deleted]");
 		expect(o.getByRole("button", { name: "Delete" })).toBeVisible();
-		expect(o.queryByRole("button", { name: "Edit" })).toBeNull();
+		expect(o.getByRole("button", { name: "Edit" })).toBeVisible();
 	});
 
 	it("deleting sends no body and no JSON content type", async () => {

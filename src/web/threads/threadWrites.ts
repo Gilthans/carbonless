@@ -158,6 +158,13 @@ export interface ThreadWritesState {
 	/** Anything not yet on GitHub (a refused resolve and a delete still undoable included). */
 	busy: boolean;
 	/**
+	 * Something not yet on GitHub that a reload would lose: a resolve or
+	 * unresolve (queued, on its way or refused), a delete (in its undo
+	 * window, on its way or refused, its Retry waiting). Replies, edits and new threads aren't: their
+	 * drafts keep them, and the next page resends them (resume()).
+	 */
+	lost: boolean;
+	/**
 	 * Threads whose last comment the viewer deleted: gone on GitHub, still
 	 * listed for FADE_MS (an Overview card fades) before the page drops them.
 	 */
@@ -1034,6 +1041,7 @@ export class ThreadWrites {
 		let nextDelay = Number.POSITIVE_INFINITY;
 		const threads = new Map<string, ThreadWriteView>();
 		let busy = false;
+		let lost = false;
 		for (const [threadId, lane] of this.#lanes) {
 			const head = lane.ops[0];
 			let delayed = false;
@@ -1048,6 +1056,14 @@ export class ThreadWrites {
 					? lastResolve.resolved
 					: lane.refusedResolved;
 			if (head || resolved !== undefined || lane.undo.size > 0) busy = true;
+			if (
+				resolved !== undefined ||
+				lane.undo.size > 0 ||
+				lane.ops.some((op) => op.kind === "delete") ||
+				lane.failed?.action === "Delete"
+			) {
+				lost = true;
+			}
 			threads.set(threadId, {
 				threadId,
 				...(resolved === undefined ? {} : { resolved }),
@@ -1096,6 +1112,7 @@ export class ThreadWrites {
 			threads,
 			pendingReview: this.#pendingReview,
 			busy,
+			lost,
 			gone: this.#goneIds,
 		};
 	}

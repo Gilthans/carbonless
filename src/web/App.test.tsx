@@ -415,18 +415,28 @@ describe("App", () => {
 		);
 	});
 
-	it("still asks before leaving with an unsent draft once Home shows", async () => {
+	it("still asks before leaving with a draft storage can't keep once Home shows", async () => {
 		const user = userEvent.setup();
 		const { client, router } = renderApp();
 		await screen.findByRole("region", { name: "What it does" });
-		act(() => draftsFor(client).setText("T-cache", "Half a thought"));
-		await user.click(screen.getByRole("link", { name: "Home" }));
-		await waitFor(() => expect(router.state.location.pathname).toBe("/"));
-		const ask = new Event("beforeunload", { cancelable: true });
-		window.dispatchEvent(ask);
-		expect(ask.defaultPrevented).toBe(true);
-		// Stored for the PR: gone again before the next test.
-		act(() => draftsFor(client).setText("T-cache", ""));
+		// A draft in storage needs no asking (useUnsavedGuard): storage fails.
+		const setItem = vi
+			.spyOn(Storage.prototype, "setItem")
+			.mockImplementation(() => {
+				throw new Error("quota");
+			});
+		try {
+			act(() => draftsFor(client).setText("T-cache", "Half a thought"));
+			await user.click(screen.getByRole("link", { name: "Home" }));
+			await waitFor(() => expect(router.state.location.pathname).toBe("/"));
+			const ask = new Event("beforeunload", { cancelable: true });
+			window.dispatchEvent(ask);
+			expect(ask.defaultPrevented).toBe(true);
+		} finally {
+			setItem.mockRestore();
+			// Gone again before the next test.
+			act(() => draftsFor(client).setText("T-cache", ""));
+		}
 	});
 
 	it("shows no kept page on an unknown path", async () => {
@@ -562,6 +572,70 @@ describe("OverviewPage", () => {
 		const what = await screen.findByRole("region", { name: "What it does" });
 		expect(what).toHaveTextContent("<b>raw</b>");
 		expect(what.querySelector("b")).toBeNull();
+	});
+
+	describe("a long description folds", () => {
+		afterEach(() => vi.restoreAllMocks());
+		/** jsdom has no layout: the description is `tall` px, clipped at 280. */
+		const heights = (tall: number) => {
+			const desc = (el: HTMLElement) => el.dataset.testid === "description";
+			vi.spyOn(HTMLElement.prototype, "scrollHeight", "get").mockImplementation(
+				function (this: HTMLElement) {
+					return desc(this) ? tall : 0;
+				},
+			);
+			vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockImplementation(
+				function (this: HTMLElement) {
+					return desc(this) ? Math.min(tall, 280) : 0;
+				},
+			);
+		};
+
+		it("over the height: clipped, faded, Show more and Show less, its text always there", async () => {
+			heights(900);
+			const user = userEvent.setup();
+			renderApp();
+			const what = await screen.findByRole("region", { name: "What it does" });
+			const body = within(what).getByTestId("description");
+			expect(body).toHaveClass("max-h-[17.5rem]", "overflow-hidden");
+			const more = await within(what).findByRole("button", {
+				name: "Show more",
+			});
+			expect(more).toHaveAttribute("aria-expanded", "false");
+			expect(more).toHaveAttribute("aria-controls", body.id);
+			// Clipped, still in the DOM (screen readers, find in page).
+			expect(within(body).getByText("widgets")).toBeInTheDocument();
+			await user.click(more);
+			expect(body).not.toHaveClass("max-h-[17.5rem]");
+			const less = within(what).getByRole("button", { name: "Show less" });
+			expect(less).toHaveAttribute("aria-expanded", "true");
+			await user.click(less);
+			expect(body).toHaveClass("max-h-[17.5rem]");
+		});
+
+		it("a keyboard user landing on a clipped link opens it", async () => {
+			heights(900);
+			renderApp();
+			const what = await screen.findByRole("region", { name: "What it does" });
+			await within(what).findByRole("button", { name: "Show more" });
+			const body = within(what).getByTestId("description");
+			act(() => {
+				body.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
+			});
+			expect(
+				within(what).getByRole("button", { name: "Show less" }),
+			).toHaveAttribute("aria-expanded", "true");
+		});
+
+		it("under the height: whole, no toggle", async () => {
+			heights(200);
+			renderApp();
+			const what = await screen.findByRole("region", { name: "What it does" });
+			expect(within(what).getByText("widgets")).toBeInTheDocument();
+			expect(
+				within(what).queryByRole("button", { name: /Show (more|less)/ }),
+			).toBeNull();
+		});
 	});
 
 	it("links the PR on GitHub with the GitHub mark", async () => {

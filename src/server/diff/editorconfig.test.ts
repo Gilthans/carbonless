@@ -1,6 +1,7 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
 	createGitFixture,
+	GIT_TEST_TIMEOUTS,
 	type GitFixture,
 } from "../../../test/git-fixture.js";
 import {
@@ -10,6 +11,9 @@ import {
 	tabWidthFor,
 } from "./editorconfig.js";
 import { buildSnapshot } from "./snapshot.js";
+
+// Real git and fake-gh processes: see GIT_TEST_TIMEOUTS.
+vi.setConfig(GIT_TEST_TIMEOUTS);
 
 describe("compileGlob", () => {
 	const matches = (glob: string, path: string) => compileGlob(glob).test(path);
@@ -62,9 +66,12 @@ describe("compileGlob", () => {
 			`${"{a,*}".repeat(30)}x`,
 		]) {
 			const glob_ = compileGlob(glob);
-			const start = performance.now();
+			// CPU time of this thread, not the wall clock: other processes on a
+			// loaded machine don't count, a backtracking match still does.
+			const start = process.threadCpuUsage();
 			glob_.test(path);
-			expect(performance.now() - start, glob).toBeLessThan(1000);
+			const { user, system } = process.threadCpuUsage(start);
+			expect((user + system) / 1000, glob).toBeLessThan(1000);
 		}
 	});
 

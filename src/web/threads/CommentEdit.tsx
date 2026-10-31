@@ -69,9 +69,10 @@ export function useCommentCan(comment: ThreadComment) {
 	const on = useWritesOn();
 	const ok = on && comment.id !== "" && !comment.pending;
 	return {
-		// A blanked opener is never edited back; GitHub may still let it be
-		// deleted (a sole one: the thread goes).
-		update: ok && !comment.deleted && comment.viewerCan.update,
+		// A blanked opener ("[deleted]") is a comment like any other: it may
+		// be written back, and deleted again once nothing follows it (the
+		// server's viewerCan).
+		update: ok && comment.viewerCan.update,
 		delete: ok && comment.viewerCan.delete,
 	};
 }
@@ -521,19 +522,6 @@ export function DeletedRow(props: {
 				<LabeledIcon icon={ClockIcon} label="Deleting" className="text-warn" />
 			)}
 		</div>
-	);
-}
-
-/** An opener blanked by a delete (its replies kept): a muted placeholder. */
-export function DeletedPlaceholder() {
-	return (
-		<p
-			data-testid="comment-deleted"
-			className="flex min-h-10 items-center gap-1.5 rounded-md border border-line px-3 text-sm text-muted italic"
-		>
-			<TrashIcon size={14} aria-hidden className="shrink-0" />
-			deleted
-		</p>
 	);
 }
 

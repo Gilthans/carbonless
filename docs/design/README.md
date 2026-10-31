@@ -41,6 +41,10 @@ Code-review conventions win over the brand palette:
   no blue, its violet would read as crossed off, and teal as green; periwinkle
   is the familiar link/focus blue, nudged toward the violet, at 4.5:1+.
 - The draft badge is grey in "What it does", as on GitHub.
+- A description taller than 280px is clipped there with a fade into
+  `surface` and a centred "Show more" / "Show less" toggle (chevron, ≥40px,
+  `aria-expanded`), like a thread card's; shorter ones show whole. A height,
+  not a line count: headings, lists, code and images share no line height.
 - Brand gradient only where no convention exists: the active tab's underline, primary actions (`cta`), the header glow, the logo.
 
 Syntax highlighting (`src/web/files/syntaxTheme.ts`) uses lightened brand
@@ -312,9 +316,19 @@ decides where; nothing else does):
   shows a dot before the counts (yellow your turn, green all resolved, else
   grey), named like the bubble and in the row's tooltip.
 - In an open file, file comments and threads whose line isn't in the diff
-  get the header bubble ("on this file"); the latter add a `warn` alert to
-  it ("…, line not in this diff") and to the thread's header ("Line not in
-  this diff"). Their threads open under the header.
+  get the **file bubble** on the diff's first row (a file cluster's row, a
+  hidden run's, a hunk header's, whichever comes first), where line
+  bubbles sit and beside one when that row has its own: the line bubble's
+  pill with a file mark first ("2 comments on this file"); lines not in the
+  diff add a `warn` alert to it ("…, line not in this diff") and to the
+  thread's header ("Line not in this diff"). It opens a row right under
+  that one, like a line's threads: the threads, then the Comment on file
+  button (only beside threads, or to say why commenting is off). With no
+  such threads it still shows, as a dashed outline with no count
+  ("Comment on file", or "Comment on file — <why not>") that opens the
+  composer at once. The header has no file comment button: closed, its
+  bubble counts every thread in the file and opens the file, focusing the
+  file bubble, opened once the diff is in if it has threads.
 
 ## Starting threads in Files changed
 
@@ -322,18 +336,26 @@ decides where; nothing else does):
   within one file) or **picking lines** by their numbers (click; shift-click
   or drag down the numbers; a second tap on touch; Up/Down move between the
   number buttons, one tab stop per file, Shift extends, Enter picks; the
-  number cells are 48×20 targets on a phone too, the owner's accepted
+  number cells are 48×20 targets on touch too (with a mouse they are as
+  wide as the file's largest number needs, three digits at least), the owner's accepted
   exception to the 40px rule, for line numbers only, so rows keep their
   height) brings
   up the **selection bar**: one 40px icon button per registered action
   (`selectionActions.ts`; Comment now), on `overlay` with `edge` and
-  `shadow-float`, just below the selection's end (above it when there's no
-  room), never over it; on a phone a bar pinned to the bottom (above the
-  safe area) quoting the selection. An action that can't run stays,
+  `shadow-float`, just below the selection's last line, centered where the
+  drag let go (its end, or its start for a backwards drag), or for picked
+  lines just right of the last one's number, never over the numbers a pick
+  extends to (above it when there's no room), never over it. By touch
+  (the press's pointer type, else a coarse pointer; not the width, so a
+  phone in landscape too) 28px under selected text (room for the end
+  handle; the system's Copy menu sits above), inside what the screen shows
+  (pinch zoom). An action that can't run stays,
   `aria-disabled`, with the reason as its tooltip. Pressing it doesn't take
   the selection; Escape dismisses it until the span changes and clears
   picked lines (`line-picked`). A selection taller than the screen gets the
-  bar beside it; on a phone the page pads its end by the bar's height. The
+  bar beside it; by touch with no room under a new selection, the page
+  moves up once to make it, after the finger lifts (the list's end padded
+  by the bar's room, so the last line can). The
   first Tab after a selection goes to the bar. A new text selection lets
   picked lines go.
 - **The composer** opens as a row under the span's last line, like an
@@ -352,8 +374,9 @@ decides where; nothing else does):
 - **A thread with a span** paints its exact characters with `span-mark` on
   its lines, in Files changed and in the Overview's code pane; when the
   columns don't fit the line any more, only the lines show.
-- **Comment on file**: a 40px comment icon in every file header (open or
-  closed, any kind of file); its composer shows under the header.
+- **Comment on file**: from the file bubble of any kind of open file (see
+  Threads in Files changed); its composer shows in the bubble's row. A file
+  comment being written while the file is closed shows under the header.
 
 ## Timeline (Overview)
 
