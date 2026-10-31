@@ -116,3 +116,39 @@ test("Ignore whitespace sits under hidden characters, off by default, and is rem
 	await whitespace.click();
 	await expect(whitespace).toHaveAttribute("aria-checked", "false");
 });
+
+test("Side by side is the third switch, under Ignore whitespace, off by default, and is remembered", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	if (isMobile) await page.setViewportSize({ width: 360, height: 780 });
+	await pr();
+	const s = await startCrb();
+	await page.goto(reviewPage(s.url, "files"));
+	const gear = page
+		.getByTestId("app-header-row")
+		.getByRole("button", { name: "Settings" });
+	await gear.click();
+	const dialog = page.getByRole("dialog", { name: "Settings" });
+	const switches = dialog.getByRole("switch");
+	await expect(switches).toHaveCount(3);
+	await expect(switches.nth(2)).toHaveAccessibleName("Side by side");
+	const whitespace = dialog.getByRole("switch", { name: "Ignore whitespace" });
+	const side = dialog.getByRole("switch", { name: "Side by side" });
+	await expect(side).toHaveAttribute("aria-checked", "false");
+	const w = await whitespace.boundingBox();
+	const b = await side.boundingBox();
+	expect(b?.y).toBeGreaterThanOrEqual((w?.y ?? 0) + (w?.height ?? 0) - 1);
+	expect(b?.height).toBeGreaterThanOrEqual(40);
+	await side.click();
+	await expect(side).toHaveAttribute("aria-checked", "true");
+	await expect(whitespace).toHaveAttribute("aria-checked", "false");
+	await page.reload();
+	await gear.click();
+	await expect(side).toHaveAttribute("aria-checked", "true");
+	await expect(whitespace).toHaveAttribute("aria-checked", "false");
+	await side.click();
+	await expect(side).toHaveAttribute("aria-checked", "false");
+});

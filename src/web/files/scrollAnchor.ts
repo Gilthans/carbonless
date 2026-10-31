@@ -8,8 +8,12 @@
 /** What to find again after the change, and where it was in the viewport. */
 export type ScrollAnchor = {
 	el: Element;
-	/** Finds the same row again should `el` have been replaced. */
-	selector: string;
+	/**
+	 * Finds the same row again should `el` have been replaced, tried in
+	 * order: by its exact numbers, then by its old number alone, then by its
+	 * new number alone (`selectorsOf`).
+	 */
+	selectors: string[];
 	top: number;
 };
 
@@ -51,14 +55,26 @@ function boxOf(el: Element): { top: number; bottom: number } {
 	return { top, bottom: top + (header?.offsetHeight ?? 0) };
 }
 
-/** A selector for `el` that survives a remount: its file and line numbers. */
-function selectorOf(el: Element): string {
+/**
+ * Selectors for `el` that survive a remount, by its file and line numbers:
+ * the exact numbers first, then the old number alone, then the new number
+ * alone. The fallbacks find the row again across a change of layout: a
+ * unified del row `old=5` is the side-by-side pair row `old=5,new=5`, and
+ * that pair row is the unified del row again.
+ */
+export function selectorsOf(el: Element): string[] {
 	const file = el.closest("[data-file-index]")?.getAttribute("data-file-index");
 	const fileSel = `[data-file-index="${file}"]`;
-	if (el.matches("[data-file-index]")) return fileSel;
+	if (el.matches("[data-file-index]")) return [fileSel];
 	const old = el.getAttribute("data-old-no");
 	const nu = el.getAttribute("data-new-no");
-	return `${fileSel} [data-testid=diff-line]${old ? `[data-old-no="${old}"]` : ":not([data-old-no])"}${nu ? `[data-new-no="${nu}"]` : ":not([data-new-no])"}`;
+	const row = `${fileSel} [data-testid=diff-line]`;
+	const byOld = old ? `[data-old-no="${old}"]` : ":not([data-old-no])";
+	const byNew = nu ? `[data-new-no="${nu}"]` : ":not([data-new-no])";
+	const selectors = [`${row}${byOld}${byNew}`];
+	if (old) selectors.push(`${row}${byOld}`);
+	if (nu) selectors.push(`${row}${byNew}`);
+	return selectors;
 }
 
 /**
@@ -77,14 +93,16 @@ export function captureAnchor(
 	);
 	const el = all[i];
 	if (!el) return null;
-	return { el, selector: selectorOf(el), top: boxOf(el).top };
+	return { el, selectors: selectorsOf(el), top: boxOf(el).top };
 }
 
 /** Scrolls so the anchor is back at its viewport top; no-op if it's gone. */
 export function restoreAnchor(anchor: ScrollAnchor, root: ParentNode): void {
-	const el = anchor.el.isConnected
-		? anchor.el
-		: root.querySelector(anchor.selector);
+	let el: Element | null = anchor.el.isConnected ? anchor.el : null;
+	for (const selector of anchor.selectors) {
+		if (el) break;
+		el = root.querySelector(selector);
+	}
 	if (!el) return;
 	const delta = boxOf(el).top - anchor.top;
 	if (Math.abs(delta) >= 1) window.scrollBy(0, delta);

@@ -29,11 +29,11 @@ import {
 	resetComposers,
 } from "../threads/newThreads";
 import type { SpanRange } from "../threads/spanMarks";
-import { ignoreWhitespace, showInvisibles } from "../viewSettings";
-import { CODE_CELL, spanOfRange } from "./codeSpan";
+import { ignoreWhitespace, showInvisibles, sideBySide } from "../viewSettings";
+import { CODE_CELL, cellLine, spanOfRange } from "./codeSpan";
 import { codeCellOf, DiffBody, type DiffThreads } from "./DiffBody";
 import { FileDiff } from "./FileDiff";
-import { getPicks, setPicks } from "./linePicks";
+import { getPicks, pickKey, setPicks } from "./linePicks";
 import {
 	currentView,
 	HANDLE_GAP,
@@ -547,7 +547,7 @@ describe("a selection's edges", () => {
 });
 
 describe("Ignore whitespace and GitHub's order", () => {
-	it("a range whose start comes after its end in GitHub's order is flagged, and Comment says why", async () => {
+	it("a range whose start comes after its end in GitHub's order goes the way GitHub takes it, as whole lines", async () => {
 		ignoreWhitespace.set(true);
 		setup();
 		await loaded();
@@ -556,23 +556,67 @@ describe("Ignore whitespace and GitHub's order", () => {
 		const pair = cell("RIGHT", 3);
 		expect(pair.closest("tr")?.getAttribute("data-kind")).toBe("ws");
 		const found = spanOfRange(rangeOf(point(pair, 2), at("LEFT", 4, 3)), HEAD);
-		expect(found).toMatchObject({
-			span: { startSide: "RIGHT", startLine: 3, side: "LEFT", line: 4 },
-			backwards: true,
+		// Old 4 first, then new 3; the selected characters (a tail of one
+		// line, a head of the other) fit no marker on the swapped ends. The
+		// cells stay as shown (the bar sits by them).
+		expect(found).toEqual({
+			span: {
+				path: PATH,
+				commit: HEAD,
+				subject: "line",
+				startSide: "LEFT",
+				startLine: 4,
+				side: "RIGHT",
+				line: 3,
+				startCol: null,
+				endCol: null,
+			},
+			inDiff: true,
+			cells: { head: pair, last: cell("LEFT", 4) },
 		});
 		expect(
 			commentAvailable(found?.span as CodeSpan, {
 				writes: "on",
 				commentLeft: true,
 				file: { binary: false, submodule: false },
-				backwards: true,
 			}),
-		).toBe("Turn off Ignore whitespace to comment on these lines together");
-		// The other way round is in GitHub's order.
+		).toBe(true);
+		// The other way round is in GitHub's order: as selected, with its columns.
 		expect(
-			spanOfRange(rangeOf(at("LEFT", 4, 0), at("RIGHT", 4, 3)), HEAD)
-				?.backwards,
-		).toBe(false);
+			spanOfRange(rangeOf(at("LEFT", 4, 0), at("RIGHT", 4, 3)), HEAD)?.span,
+		).toMatchObject({
+			startSide: "LEFT",
+			startLine: 4,
+			side: "RIGHT",
+			line: 4,
+			startCol: 0,
+			endCol: 3,
+		});
+	});
+
+	it("a selection from the ~ row through the deleted row below it: Comment is on and opens on old 4 – new 3", async () => {
+		ignoreWhitespace.set(true);
+		const { user } = setup();
+		await loaded();
+		selectAndRelease(rangeOf(at("RIGHT", 3, 2), at("LEFT", 4, 3)));
+		const bar = await screen.findByTestId("selection-bar");
+		const comment = within(bar).getByRole("button", { name: "Comment" });
+		expect(comment).not.toHaveAttribute("aria-disabled");
+		await user.click(comment);
+		expect(getComposers()).toMatchObject([
+			{
+				span: {
+					startSide: "LEFT",
+					startLine: 4,
+					side: "RIGHT",
+					line: 3,
+					startCol: null,
+					endCol: null,
+				},
+			},
+		]);
+		const composer = await screen.findByTestId("new-thread-row");
+		expect(within(composer).getByText("old 4 – new 3")).toBeInTheDocument();
 	});
 });
 
@@ -1413,6 +1457,45 @@ describe("Comment on file", () => {
 		).toBeInTheDocument();
 	});
 
+	it("side by side, a file comment's composer spans its row across the table, as its posted thread will; a line's keeps its side and width", async () => {
+		sideBySide.set(true);
+		try {
+			const { user } = renderFile({}, { expanded: true, hunks: HUNKS });
+			await user.click(
+				await screen.findByRole("button", { name: "Comment on file" }),
+			);
+			const row = await screen.findByTestId("file-threads");
+			expect(row.querySelector("td")?.colSpan).toBe(6);
+			const card = within(row).getByTestId("new-thread");
+			// Not capped to a line composer's width: it fills the row.
+			expect(card.className).not.toMatch(/max-w-/);
+			act(() => {
+				openComposer({
+					path: PATH,
+					commit: HEAD,
+					subject: "line",
+					startSide: "LEFT",
+					startLine: 4,
+					side: "LEFT",
+					line: 4,
+				});
+			});
+			const line = await screen.findByTestId("new-thread-row");
+			// Under the left side: the card, then the right side's blank.
+			expect(
+				[...line.querySelectorAll(":scope > td")].map(
+					(td) => (td as HTMLTableCellElement).colSpan,
+				),
+			).toEqual([1, 1, 2, 2]);
+			expect(line.lastElementChild).toHaveClass("bg-band");
+			expect(within(line).getByTestId("new-thread").className).toMatch(
+				/max-w-\[40rem\]/,
+			);
+		} finally {
+			sideBySide.reset();
+		}
+	});
+
 	/** A hunk at new lines 5–6, the gap of lines 1–4 above it. */
 	const LATER: FileHunks = {
 		newLineCount: 6,
@@ -1602,6 +1685,443 @@ describe("placeBar (desktop): never over the selection when it can help it", () 
 	});
 });
 
+describe("side by side (the cells contract)", () => {
+	beforeEach(() => sideBySide.set(true));
+	afterEach(() => sideBySide.reset());
+
+	/** The code cells carrying `attr`, as `side:line` of the line each stands for. */
+	const cellsWith = (attr: string, root: ParentNode = document) =>
+		[...root.querySelectorAll(`[${CODE_CELL}][${attr}]`)].map((c) => {
+			const l = cellLine(c);
+			return l ? pickKey(l) : "?";
+		});
+	const row = (side: "LEFT" | "RIGHT", n: number) =>
+		document.querySelector(
+			`tr[data-${side === "LEFT" ? "old" : "new"}-no="${n}"]`,
+		) as HTMLElement;
+	const number = (side: "LEFT" | "RIGHT", n: number) =>
+		row(side, n).querySelector(
+			`td[data-testid="${side === "LEFT" ? "old" : "new"}"]`,
+		) as HTMLElement;
+	const press = (el: Element, init: Partial<PointerEventInit> = {}) => {
+		fireEvent.pointerDown(el, {
+			pointerType: "mouse",
+			button: 0,
+			buttons: 1,
+			...init,
+		});
+		fireEvent.pointerUp(window);
+		fireEvent.click(el, { detail: 1, ...init });
+	};
+
+	it("the keyboard: Up/Down stay in their column through context rows, Left/Right switch sides on every row, Shift extends", async () => {
+		const { user } = setup();
+		await loaded();
+		const button = (side: "LEFT" | "RIGHT", n: number) =>
+			within(number(side, n)).getByRole("button");
+		button("LEFT", 3).focus();
+		// Down: the next old line, not this row's new one.
+		await user.keyboard("{ArrowDown}");
+		expect(button("LEFT", 4)).toHaveFocus();
+		await user.keyboard("{ArrowRight}");
+		expect(button("RIGHT", 4)).toHaveFocus();
+		await user.keyboard("{ArrowLeft}");
+		expect(button("LEFT", 4)).toHaveFocus();
+		// Up the new column from new 4: new 3.
+		await user.keyboard("{ArrowRight}{ArrowUp}");
+		expect(button("RIGHT", 3)).toHaveFocus();
+		// Shift+Down extends the pick down the column; Shift+Left across.
+		await user.keyboard("{Enter}");
+		await user.keyboard("{Shift>}{ArrowDown}{/Shift}");
+		expect(button("RIGHT", 4)).toHaveFocus();
+		expect(getPicks()?.lines.map((l) => pickKey(l))).toEqual([
+			"RIGHT:3",
+			"RIGHT:4",
+		]);
+		await user.keyboard("{Shift>}{ArrowLeft}{/Shift}");
+		expect(button("LEFT", 4)).toHaveFocus();
+		expect(getPicks()?.lines.map((l) => pickKey(l))).toEqual([
+			"LEFT:4",
+			"RIGHT:3",
+		]);
+	});
+
+	it("a pick remembers the number column its focus was picked from: the bar goes by that side", async () => {
+		const { user } = setup();
+		await loaded();
+		// A removed line, by its old number: the left.
+		press(number("LEFT", 3));
+		expect(getPicks()).toMatchObject({
+			focus: { side: "LEFT", line: 3 },
+			column: "LEFT",
+		});
+		// Extended to an added line's new number: the focus is on the right.
+		press(number("RIGHT", 4), { shiftKey: true });
+		expect(getPicks()).toMatchObject({
+			focus: { side: "RIGHT", line: 4 },
+			column: "RIGHT",
+		});
+		// A context line by its old number: a RIGHT line, picked on the left.
+		press(number("LEFT", 5));
+		expect(getPicks()).toMatchObject({
+			focus: { side: "RIGHT", line: 6 },
+			column: "LEFT",
+		});
+		// From the keyboard: Shift+Right extends to the new column.
+		within(number("LEFT", 4)).getByRole("button").focus();
+		await user.keyboard("{Enter}{Shift>}{ArrowRight}{/Shift}");
+		expect(getPicks()?.column).toBe("RIGHT");
+	});
+
+	it("a pick made in unified by a removed line's blank new number: side by side, the bar goes by the left", async () => {
+		sideBySide.set(false);
+		setup();
+		await loaded();
+		const removed = row("LEFT", 3);
+		expect(removed).not.toHaveAttribute("data-new-no");
+		press(removed.querySelector('td[data-testid="new"]') as Element);
+		// Unified number cells name no side: no column.
+		expect(getPicks()).toMatchObject({ focus: { side: "LEFT", line: 3 } });
+		expect(getPicks()?.column).toBeUndefined();
+		act(() => sideBySide.set(true));
+		const pair = row("LEFT", 3);
+		expect(pair.closest("table")?.dataset.view).toBe("side-by-side");
+		const at = (el: Element, left: number) => {
+			el.getBoundingClientRect = () => new DOMRect(left, 100, 38, 20);
+		};
+		at(number("LEFT", 3), 60);
+		at(pair.querySelector('td[data-testid="new"]') as Element, 498);
+		vi.stubGlobal("visualViewport", {
+			offsetLeft: 0,
+			offsetTop: 0,
+			width: 1000,
+			height: 800,
+		});
+		// Placed again on the next scroll: by the old number, the focus's side.
+		fireEvent.scroll(window);
+		const bar = await screen.findByTestId("selection-bar");
+		await vi.waitFor(() => expect(bar.style.left).toBe(`${60 + 38 + 6}px`));
+	});
+
+	it("Down from an old number goes on down the old numbers through context rows (past the row with no old line)", async () => {
+		const { user } = setup();
+		await loaded();
+		const button = (side: "LEFT" | "RIGHT", n: number) =>
+			within(number(side, n)).getByRole("button");
+		button("LEFT", 4).focus();
+		// New 5 has no old line: on to the context rows' old numbers.
+		await user.keyboard("{ArrowDown}");
+		expect(button("LEFT", 5)).toHaveFocus();
+		await user.keyboard("{ArrowDown}");
+		expect(button("LEFT", 6)).toHaveFocus();
+		// Up goes back the same way, still in the old column.
+		await user.keyboard("{ArrowUp}{ArrowUp}");
+		expect(button("LEFT", 4)).toHaveFocus();
+		// Up the old column onto the context rows above the pairs.
+		await user.keyboard("{ArrowUp}{ArrowUp}");
+		expect(button("LEFT", 2)).toHaveFocus();
+	});
+
+	it("Left/Right on a context row switch between its two numbers", async () => {
+		const { user } = setup();
+		await loaded();
+		const button = (side: "LEFT" | "RIGHT", n: number) =>
+			within(number(side, n)).getByRole("button");
+		button("RIGHT", 6).focus();
+		await user.keyboard("{ArrowLeft}");
+		expect(button("LEFT", 5)).toHaveFocus();
+		await user.keyboard("{ArrowLeft}");
+		expect(button("LEFT", 5)).toHaveFocus();
+		await user.keyboard("{ArrowRight}");
+		expect(button("RIGHT", 6)).toHaveFocus();
+	});
+
+	it("a context row has a pick button on both numbers: each named and picking its one RIGHT line, one tab stop between them", async () => {
+		const { user } = setup();
+		await loaded();
+		const buttons = [
+			...row("RIGHT", 6).querySelectorAll<HTMLButtonElement>(
+				"button[data-pick]",
+			),
+		];
+		expect(buttons).toHaveLength(2);
+		expect(buttons.map((b) => b.dataset.pick)).toEqual(["RIGHT:6", "RIGHT:6"]);
+		expect(buttons.map((b) => b.getAttribute("aria-label"))).toEqual([
+			"Line 6",
+			"Line 6",
+		]);
+		const left = within(number("LEFT", 5)).getByRole("button");
+		left.focus();
+		await user.keyboard("{Enter}");
+		expect(getPicks()?.lines.map((l) => pickKey(l))).toEqual(["RIGHT:6"]);
+		expect(cellsWith("data-picked")).toEqual(["RIGHT:6", "RIGHT:6"]);
+		expect(left).toHaveAttribute("aria-pressed", "true");
+		// The focused one is the file's one tab stop.
+		const stops = [
+			...document.querySelectorAll<HTMLButtonElement>("button[data-pick]"),
+		].filter((b) => b.tabIndex === 0);
+		expect(stops).toEqual([left]);
+		// A mouse press on it picks the same line and keeps focus on it.
+		press(number("LEFT", 5));
+		expect(getPicks()).toBeNull();
+		press(number("LEFT", 5));
+		expect(left).toHaveFocus();
+		expect(getPicks()?.lines.map((l) => pickKey(l))).toEqual(["RIGHT:6"]);
+	});
+
+	it("switching to unified after focusing a context row's left number keeps one number button in the tab order", async () => {
+		setup();
+		await loaded();
+		within(number("LEFT", 5)).getByRole("button").focus();
+		act(() => sideBySide.set(false));
+		await screen.findByRole("table");
+		expect(document.querySelector("table")?.dataset.view).toBe("unified");
+		const stops = [
+			...document.querySelectorAll<HTMLButtonElement>("button[data-pick]"),
+		].filter((b) => b.tabIndex === 0);
+		expect(stops).toHaveLength(1);
+	});
+
+	it("a pick from a context row's left number to a deleted line extends in GitHub's order", async () => {
+		const { user } = setup();
+		await loaded();
+		within(number("LEFT", 2)).getByRole("button").focus();
+		await user.keyboard("{Enter}");
+		press(number("LEFT", 4), { shiftKey: true });
+		expect(getPicks()?.lines.map((l) => pickKey(l))).toEqual([
+			"RIGHT:2",
+			"LEFT:3",
+			"LEFT:4",
+		]);
+	});
+
+	it("every code cell carries its side, a blank cell neither a side nor the cell mark", async () => {
+		setup();
+		await loaded();
+		expect(document.querySelector("table")?.dataset.view).toBe("side-by-side");
+		const cells = [...document.querySelectorAll(`[${CODE_CELL}]`)];
+		expect(cells.length).toBeGreaterThan(0);
+		for (const c of cells) {
+			expect(["LEFT", "RIGHT"]).toContain(c.getAttribute("data-side"));
+		}
+		const blank = row("RIGHT", 5).querySelector("td[data-blank]") as Element;
+		expect(blank.hasAttribute(CODE_CELL)).toBe(false);
+		expect(blank.hasAttribute("data-side")).toBe(false);
+		expect(row("RIGHT", 5).dataset.oldNo).toBeUndefined();
+	});
+
+	it("a span reads the side from the cell: a pair's right cell RIGHT by the new number, its left LEFT by the old one, a context line RIGHT from either cell", async () => {
+		setup();
+		await loaded();
+		expect(span(rangeOf(at("RIGHT", 4, 0), at("RIGHT", 4, 5)))).toMatchObject({
+			startSide: "RIGHT",
+			startLine: 4,
+			side: "RIGHT",
+			line: 4,
+			startCol: 0,
+			endCol: 5,
+		});
+		expect(span(rangeOf(at("LEFT", 4, 0), at("LEFT", 4, 5)))).toMatchObject({
+			startSide: "LEFT",
+			startLine: 4,
+			side: "LEFT",
+			line: 4,
+		});
+		// The context line old 5 / new 6, in its left cell.
+		const leftContext = row("RIGHT", 6).querySelector(
+			`[${CODE_CELL}][data-side="LEFT"]`,
+		) as HTMLElement;
+		expect(leftContext.dataset.kind).toBe("context");
+		expect(
+			span(rangeOf(point(leftContext, 0), point(leftContext, 3))),
+		).toMatchObject({
+			startSide: "RIGHT",
+			startLine: 6,
+			side: "RIGHT",
+			line: 6,
+		});
+		// Across the table with no side being selected: the cells in the
+		// order shown, a range across sides.
+		expect(span(rangeOf(at("LEFT", 3, 1), at("RIGHT", 4, 2)))).toMatchObject({
+			startSide: "LEFT",
+			startLine: 3,
+			side: "RIGHT",
+			line: 4,
+			startCol: 1,
+			endCol: 2,
+		});
+	});
+
+	it("while one side is being selected, the other side's cells are left out of the span", async () => {
+		setup();
+		await loaded();
+		const table = document.querySelector("table") as HTMLElement;
+		fireEvent.pointerDown(cell("RIGHT", 3), {
+			pointerType: "mouse",
+			button: 0,
+		});
+		expect(table.dataset.selecting).toBe("new");
+		// Ending at the start of the next right cell: the span ends on new
+		// line 3, not on the old line between them in the DOM.
+		expect(span(rangeOf(at("RIGHT", 3, 0), at("RIGHT", 4, 0)))).toMatchObject({
+			startSide: "RIGHT",
+			startLine: 3,
+			side: "RIGHT",
+			line: 3,
+			startCol: null,
+			endCol: null,
+		});
+		fireEvent.pointerUp(document);
+		fireEvent.pointerDown(cell("LEFT", 3), { pointerType: "mouse", button: 0 });
+		expect(table.dataset.selecting).toBe("old");
+		expect(span(rangeOf(at("LEFT", 3, 0), at("LEFT", 4, 0)))).toMatchObject({
+			startSide: "LEFT",
+			startLine: 3,
+			side: "LEFT",
+			line: 3,
+		});
+		fireEvent.pointerUp(document);
+	});
+
+	it("a number picks the line on its side, and paints that side's cells only; a context row's numbers pick its one RIGHT line", async () => {
+		setup();
+		await loaded();
+		press(number("LEFT", 3));
+		expect(cellsWith("data-picked")).toEqual(["LEFT:3"]);
+		expect(document.querySelectorAll("tr[data-picked]")).toHaveLength(1);
+		expect(number("LEFT", 3)).toHaveAttribute("data-picked", "true");
+		expect(number("RIGHT", 3)).not.toHaveAttribute("data-picked");
+		expect(cell("LEFT", 3)).toHaveClass("line-picked-cell");
+		expect(cell("RIGHT", 3)).not.toHaveClass("line-picked-cell");
+		// Each side's number is its own button; the pick's button took focus.
+		expect(
+			within(row("RIGHT", 3)).getByRole("button", { name: "Old line 3" }),
+		).toHaveFocus();
+		expect(
+			within(row("RIGHT", 3)).getByRole("button", { name: "Line 3" }),
+		).toBeInTheDocument();
+		// Extended to a new number: the cells between, in the order shown.
+		press(number("RIGHT", 4), { shiftKey: true });
+		expect(cellsWith("data-picked")).toEqual([
+			"LEFT:3",
+			"RIGHT:3",
+			"LEFT:4",
+			"RIGHT:4",
+		]);
+		expect(getPicks()).toMatchObject({
+			anchor: { side: "LEFT", line: 3 },
+			focus: { side: "RIGHT", line: 4 },
+		});
+		// A context line (old 5 / new 6) is one line: either number picks
+		// RIGHT:6, both its cells show it, and the pressed number's button
+		// takes focus.
+		press(number("LEFT", 5));
+		expect(cellsWith("data-picked")).toEqual(["RIGHT:6", "RIGHT:6"]);
+		expect(getPicks()?.lines).toEqual([
+			expect.objectContaining({ side: "RIGHT", line: 6 }),
+		]);
+		expect(
+			within(row("RIGHT", 6)).queryByRole("button", { name: "Old line 5" }),
+		).toBeNull();
+		expect(within(number("LEFT", 5)).getByRole("button")).toHaveFocus();
+	});
+
+	it("picks extend in GitHub's order, not the order shown: new 3 then old 4 is old 4 → new 3 and Comment is on; old 3 → old 4 washes no right-side cell", async () => {
+		const { user } = setup();
+		await loaded();
+		// Anchored on the right, extended to the left of the pair below: the
+		// shown order would be RIGHT:3 then LEFT:4, which GitHub refuses as
+		// backwards; GitHub's order of the hunk is del 4 then add 3.
+		press(number("RIGHT", 3));
+		press(number("LEFT", 4), { shiftKey: true });
+		expect(getPicks()?.lines.map((l) => pickKey(l))).toEqual([
+			"LEFT:4",
+			"RIGHT:3",
+		]);
+		expect(cellsWith("data-picked")).toEqual(["RIGHT:3", "LEFT:4"]);
+		const bar = await screen.findByTestId("selection-bar");
+		const comment = within(bar).getByRole("button", { name: "Comment" });
+		expect(comment).not.toHaveAttribute("aria-disabled");
+		await user.click(comment);
+		expect(getComposers()).toMatchObject([
+			{ span: { startSide: "LEFT", startLine: 4, side: "RIGHT", line: 3 } },
+		]);
+		await screen.findByTestId("new-thread-row");
+		expect(
+			within(screen.getByTestId("new-thread-row")).getByText("old 4 – new 3"),
+		).toBeInTheDocument();
+		act(() => resetComposers());
+		// Two old lines: only they are picked, not the new line shown between them.
+		press(number("LEFT", 3));
+		press(number("LEFT", 4), { shiftKey: true });
+		expect(cellsWith("data-picked")).toEqual(["LEFT:3", "LEFT:4"]);
+		expect(getPicks()?.lines.map((l) => pickKey(l))).toEqual([
+			"LEFT:3",
+			"LEFT:4",
+		]);
+	});
+
+	it("Comment on lines picked from an old number to a new one: the span crosses sides, the composer sits under the pair row and the range paints each side's cells", async () => {
+		const { user } = setup();
+		await loaded();
+		press(number("LEFT", 3));
+		press(number("RIGHT", 4), { shiftKey: true });
+		const bar = await screen.findByTestId("selection-bar");
+		await user.click(within(bar).getByRole("button", { name: "Comment" }));
+		expect(getComposers()).toMatchObject([
+			{
+				span: {
+					startSide: "LEFT",
+					startLine: 3,
+					side: "RIGHT",
+					line: 4,
+					startCol: null,
+					endCol: null,
+				},
+			},
+		]);
+		expect(cellsWith("data-picked")).toEqual([]);
+		const composer = await screen.findByTestId("new-thread-row");
+		expect(composer.previousElementSibling).toBe(row("RIGHT", 4));
+		expect(within(composer).getByText("old 3 – new 4")).toBeInTheDocument();
+		expect(
+			within(composer).getByRole("textbox", { name: "Comment" }),
+		).toHaveFocus();
+		expect(cellsWith("data-commented")).toEqual([
+			"LEFT:3",
+			"RIGHT:3",
+			"LEFT:4",
+			"RIGHT:4",
+		]);
+		expect(document.querySelectorAll("tr[data-commented]")).toHaveLength(2);
+	});
+
+	it("a thread's span is painted in the cell of its side only; a context line's in both its cells", async () => {
+		setup({
+			threads: [
+				thread({ line: 4, startCol: 0, endCol: 5 }),
+				thread({ line: 6, startCol: 0, endCol: 4 }),
+			],
+		});
+		await loaded();
+		const marked = (c: Element) =>
+			[...c.querySelectorAll("[data-span-mark]")]
+				.map((m) => m.textContent)
+				.join("");
+		expect(marked(cell("RIGHT", 4))).toBe("const");
+		expect(marked(cell("LEFT", 4))).toBe("");
+		expect(cellsWith("data-commented", row("RIGHT", 4))).toEqual(["RIGHT:4"]);
+		const context = row("RIGHT", 6);
+		expect(cellsWith("data-commented", context)).toEqual([
+			"RIGHT:6",
+			"RIGHT:6",
+		]);
+		for (const c of context.querySelectorAll(`[${CODE_CELL}]`)) {
+			expect(marked(c)).toBe("line");
+		}
+	});
+});
+
 describe("the bar sits by the selection (desktop)", () => {
 	const rect = (left: number, top: number, w: number, h: number) =>
 		new DOMRect(left, top, w, h);
@@ -1689,6 +2209,32 @@ describe("pickAnchor: the bar starts right of the row's numbers", () => {
 		old.querySelector("button")?.setAttribute("data-pick", "LEFT:10");
 		row.append(old, cellAt("new", 415, 38));
 		expect(pickAnchor(row)).toBe(415 + 38 + 6);
+	});
+
+	/** A side-by-side pair row: old number, old code, new number, new code. */
+	const pairRow = (view: "side-by-side" | "unified") => {
+		const table = document.createElement("table");
+		table.dataset.view = view;
+		const row = document.createElement("tr");
+		row.append(
+			cellAt("old", 60, 38),
+			cellAt("code", 98, 400),
+			cellAt("new", 498, 38),
+			cellAt("code", 536, 400),
+		);
+		table.append(row);
+		return row;
+	};
+
+	it("side by side: by the side the pick was made on, right of that side's number", () => {
+		expect(pickAnchor(pairRow("side-by-side"), "LEFT")).toBe(60 + 38 + 6);
+		expect(pickAnchor(pairRow("side-by-side"), "RIGHT")).toBe(498 + 38 + 6);
+		// No column known: as unified.
+		expect(pickAnchor(pairRow("side-by-side"))).toBe(498 + 38 + 6);
+	});
+
+	it("unified: right of the new numbers whichever column was picked", () => {
+		expect(pickAnchor(pairRow("unified"), "LEFT")).toBe(498 + 38 + 6);
 	});
 });
 

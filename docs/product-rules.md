@@ -266,3 +266,20 @@ of the row's actions (the floating bar with a mouse, the ⋯ sheet on touch). A
 long section folds behind "show N more", which only folds: the count is
 every row. Nothing automatic, AI or not, hides or drops a PR, and Home
 reads review progress but never writes it.
+
+## "Side by side" is a view
+
+Settings' "Side by side" (`src/web/files/sideBySide.ts`) lays the same
+hunks out as old-left / new-right rows, GitHub-style: the i-th removed line
+of a cluster run against the i-th added one, the surplus against a blank,
+context on both sides. It changes nothing but the layout: clusters, their
+keys, the +/− counts, progress, what is unreviewed, threads and their
+places, and the other settings' rows (a whitespace-only pair is one `~`
+row with each side's own text; a whitespace-only cluster is still one
+collapsed row) are the same in both views, and switching never changes
+review state or refetches anything. What it guarantees, pure and checked
+for any input (principle 2): every removed, added and context line of the
+hunk is in the rows exactly once per side, left cells in old-file order,
+right cells in new-file order, a changed line never in a cell of the wrong
+side, and a blank cell only once the other side has run out. The sides
+never widen the page: code wraps in its cell, on a phone too.

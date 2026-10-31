@@ -10,9 +10,16 @@ export interface ViewSetting {
 	/** The stored choice, else the default. */
 	read(): boolean;
 	set(next: boolean): void;
+	/** Sets the opposite of the value in hand (a shortcut's flip). */
+	toggle(): void;
 	/** Forgets the in-memory choice (tests), so the next read is from storage. */
 	reset(): void;
 	use(): boolean;
+	/**
+	 * Calls `onChange` synchronously inside `set()` when the value changes,
+	 * before React re-renders: a chance to measure the page as it was.
+	 */
+	subscribe(onChange: () => void): () => void;
 }
 
 export function viewSetting(key: string, fallback: boolean): ViewSetting {
@@ -34,22 +41,26 @@ export function viewSetting(key: string, fallback: boolean): ViewSetting {
 		value ??= read();
 		return value;
 	};
+	const set = (next: boolean) => {
+		const changed = value !== next;
+		value = next;
+		try {
+			localStorage.setItem(key, next ? "on" : "off");
+		} catch {
+			// Storage is a convenience only.
+		}
+		if (changed) for (const listener of listeners) listener();
+	};
 	return {
 		key,
 		read,
-		set(next) {
-			value = next;
-			try {
-				localStorage.setItem(key, next ? "on" : "off");
-			} catch {
-				// Storage is a convenience only.
-			}
-			for (const listener of listeners) listener();
-		},
+		set,
+		toggle: () => set(!current()),
 		reset() {
 			value = undefined;
 		},
 		use: () => useSyncExternalStore(subscribe, current),
+		subscribe,
 	};
 }
 
@@ -61,3 +72,6 @@ export const showInvisibles = viewSetting("crb.code.invisibles", true);
  * (src/web/files/whitespace.ts). Off unless turned on.
  */
 export const ignoreWhitespace = viewSetting("crb.diff.ignoreWhitespace", false);
+
+/** "Side by side": old left, new right (src/web/files/sideBySide.ts). Off unless turned on. */
+export const sideBySide = viewSetting("crb.diff.sideBySide", false);

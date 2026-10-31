@@ -23,6 +23,7 @@ import { usePrefetchComments } from "../threads/useThreadComments";
 import { useThreads } from "../threads/useThreads";
 import { ErrorMessage } from "../ui";
 import { useMedia, WIDE } from "../useMedia";
+import { ignoreWhitespace, sideBySide } from "../viewSettings";
 import type { DiffThreads } from "./DiffBody";
 import { FileDiff } from "./FileDiff";
 import { FileTree } from "./FileTree";
@@ -47,6 +48,7 @@ const NO_THREADS: ReviewThread[] = [];
 
 import { type Unit, useUnit } from "./unit";
 import { STALE_MESSAGE, useReviewView, useSyncState } from "./useSetStates";
+import { useViewShortcuts } from "./viewShortcuts";
 
 /**
  * The file tree on narrow screens: a modal sheet over the diffs, closed by
@@ -231,6 +233,8 @@ export function FilesPage() {
 	// False while another page shows (kept mounted, hidden): measuring and
 	// tracking pause, root styles are given back, the sheet closes.
 	const active = usePageActive();
+	// `w` and `s` flip the diff's view settings while this page shows.
+	useViewShortcuts();
 	const diffs = useRef<HTMLDivElement>(null);
 	const bar = useRef<HTMLDivElement>(null);
 	// The sticky stack, top down: the app header's compact row, the progress
@@ -309,6 +313,34 @@ export function FilesPage() {
 		unitAnchor.current = null;
 		if (a && diffs.current) restoreAnchor(a, diffs.current);
 	}, [unit]);
+	// So does switching a view setting that lays the rows out again (side
+	// by side, ignore whitespace): the anchor is taken as the setting
+	// changes, before React re-renders, and the row found again by its
+	// numbers once the new rows are in.
+	const settingAnchor = useRef<ScrollAnchor | null>(null);
+	useEffect(() => {
+		const capture = () => {
+			const root = diffs.current;
+			settingAnchor.current = root
+				? captureAnchor(root, appHeader + pageSticky)
+				: null;
+		};
+		const unsubscribe = [
+			sideBySide.subscribe(capture),
+			ignoreWhitespace.subscribe(capture),
+		];
+		return () => {
+			for (const off of unsubscribe) off();
+		};
+	}, [appHeader, pageSticky]);
+	const split = sideBySide.use();
+	const ignoreWs = ignoreWhitespace.use();
+	// biome-ignore lint/correctness/useExhaustiveDependencies: runs after each setting switch.
+	useLayoutEffect(() => {
+		const a = settingAnchor.current;
+		settingAnchor.current = null;
+		if (a && diffs.current) restoreAnchor(a, diffs.current);
+	}, [split, ignoreWs]);
 	/** The header to keep where it was on screen as files open and close. */
 	const anchor = useRef<{ index: number; top: number } | null>(null);
 	const sectionOf = (index: number) => document.getElementById(`file-${index}`);

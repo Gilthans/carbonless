@@ -1,4 +1,6 @@
+import { readFileSync } from "node:fs";
 import type { Locator, Page } from "@playwright/test";
+import type { Scenario } from "../test/fake-gh/scenario";
 import {
 	REINDENT_NEW,
 	REINDENT_OLD,
@@ -7,8 +9,16 @@ import {
 	WRAP_OLD,
 	WRAP_REMOVED,
 } from "../test/whitespace-fixture";
-import { fileSection, openFiles, progress } from "./files-ui";
-import { expect, type PrOptions, test } from "./fixtures";
+import {
+	fileSection,
+	ignoreWhitespace,
+	openFiles,
+	progress,
+	rowTop,
+	sideBySide,
+	underStack,
+} from "./files-ui";
+import { expect, type Pr, type PrOptions, test } from "./fixtures";
 
 const indent = Array.from({ length: 8 }, (_, i) => `indent ${i + 1}`);
 const mixed = Array.from({ length: 10 }, (_, i) => `mixed ${i + 1}`);
@@ -45,19 +55,6 @@ const fixture: PrOptions = {
 		},
 	],
 };
-
-/** Sets the "Ignore whitespace" switch in Settings and closes it again. */
-async function ignoreWhitespace(page: Page, on: boolean) {
-	const gear = page.getByRole("button", { name: "Settings" });
-	if ((await gear.getAttribute("aria-expanded")) !== "true") await gear.click();
-	const toggle = page.getByRole("switch", { name: "Ignore whitespace" });
-	if ((await toggle.getAttribute("aria-checked")) !== String(on)) {
-		await toggle.click();
-	}
-	await expect(toggle).toHaveAttribute("aria-checked", String(on));
-	await page.keyboard.press("Escape");
-	await expect(toggle).toBeHidden();
-}
 
 const rows = (section: Locator, kind: string) =>
 	section.locator(`[data-testid="diff-line"][data-kind="${kind}"]`);
@@ -217,6 +214,57 @@ test("Ignore whitespace pairs whitespace-only lines and collapses whitespace-onl
 	await expect(bar).toContainText("1 / 10 clusters reviewed");
 });
 
+test("the Ignore whitespace switch keeps the row being read where it was", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	if (isMobile) await page.setViewportSize({ width: 360, height: 780 });
+	await pr(fixture);
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	// Room below the last file to scroll a row up to the sticky stack and
+	// keep it there once the rows above it change.
+	await page.addStyleTag({ content: "main { padding-bottom: 200vh; }" });
+
+	// The mixed cluster: reading the added `mixed 6`, three rows up once
+	// the whitespace-only lines pair up (it becomes the ~ row of line 6,
+	// a new row the browser's own scroll anchoring loses track of).
+	let section = await expand(page, "src/mixed.ts");
+	const added = section.locator('[data-testid="diff-line"][data-new-no="6"]');
+	await expect(added).toHaveAttribute("data-kind", "add");
+	await underStack(added);
+	const header = await section.locator("header").boundingBox();
+	const stack = (header?.y ?? 0) + (header?.height ?? 0);
+	const before = await rowTop(added);
+	expect(Math.abs(before - stack)).toBeLessThanOrEqual(3);
+	await ignoreWhitespace(page, true);
+	await expect(added).toHaveAttribute("data-kind", "ws");
+	expect(Math.abs((await rowTop(added)) - before)).toBeLessThan(2);
+	// And back: the ~ row of line 6 is found again as the removed line
+	// (the old number first), where the ~ row was.
+	await ignoreWhitespace(page, false);
+	const removed = section.locator(
+		'[data-testid="diff-line"][data-old-no="6"]:not([data-new-no])',
+	);
+	await expect(removed).toHaveAttribute("data-kind", "del");
+	expect(Math.abs((await rowTop(removed)) - before)).toBeLessThan(2);
+
+	// A context row between clusters that collapse: put too.
+	section = await expand(page, "src/reindent.ts");
+	const context = section
+		.getByTestId("diff-line")
+		.filter({ hasText: /export function average/ });
+	await expect(context).toHaveAttribute("data-old-no", "18");
+	await underStack(context);
+	const contextBefore = await rowTop(context);
+	await ignoreWhitespace(page, true);
+	await expect(section.getByTestId("ws-cluster")).toHaveCount(5);
+	expect(Math.abs((await rowTop(context)) - contextBefore)).toBeLessThan(2);
+	expect(await overflow(page)).toBeLessThanOrEqual(0);
+});
+
 /** A 120-line file re-indented wholesale: one whitespace-only cluster. */
 const long = Array.from({ length: 120 }, (_, i) => `long ${i + 1}`);
 const longFixture: PrOptions = {
@@ -267,4 +315,135 @@ test("an expanded whitespace-only cluster's controls float below the file header
 	await expect(checkbox).toBeChecked();
 	await expect(progress(page)).toContainText("1 / 1 cluster reviewed");
 	expect(await overflow(page)).toBeLessThanOrEqual(0);
+});
+
+test("copying across a collapsed whitespace-only cluster takes the code alone: no cross-off, no words, in both views", async ({
+	page,
+	context,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	test.skip(isMobile, "a mouse drag and a keyboard copy");
+	await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+	await pr(fixture);
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	await ignoreWhitespace(page, true);
+	const section = await expand(page, "src/reindent.ts");
+	await expect(section.getByTestId("ws-cluster")).toHaveCount(5);
+	/** The RIGHT code cell of the context row numbered `n`. */
+	const cell = (n: number) =>
+		section.locator(
+			`tr[data-testid="diff-line"][data-new-no="${n}"] > td[data-testid="code"][data-side="RIGHT"]`,
+		);
+	/** Drags from the start of line 1's text to the end of line 5's. */
+	const copyAcross = async () => {
+		// A press on selected text would drag it: start from none.
+		await page.evaluate(() => getSelection()?.removeAllRanges());
+		const from = await cell(1).boundingBox();
+		const to = await cell(5).boundingBox();
+		if (!from || !to) throw new Error("a cell has no box");
+		await page.mouse.move(from.x + 4, from.y + from.height / 2);
+		await page.mouse.down();
+		await page.evaluate(
+			() =>
+				new Promise((done) =>
+					requestAnimationFrame(() => requestAnimationFrame(done)),
+				),
+		);
+		await page.mouse.move(to.x + to.width - 4, to.y + to.height / 2, {
+			steps: 12,
+		});
+		await page.mouse.up();
+		await page.keyboard.press("Control+C");
+		return page.evaluate(() => navigator.clipboard.readText());
+	};
+	for (const view of ["unified", "side-by-side"] as const) {
+		if (view === "side-by-side") await sideBySide(page, true);
+		await expect(section.locator("table")).toHaveAttribute("data-view", view);
+		// The first cluster's row (its controls and words) lies between them.
+		const copied = await copyAcross();
+		expect(copied, view).toContain("export interface Item {");
+		expect(copied, view).toContain("}");
+		expect(copied, view).not.toContain("⊘");
+		expect(copied, view).not.toContain("Whitespace only");
+	}
+});
+
+/** Threads the fake gh stores: where each one is anchored. */
+function stored(p: Pr) {
+	const s = JSON.parse(readFileSync(p.scenarioPath, "utf8")) as Scenario;
+	return (s.prs[7]?.graphql?.reviewThreads ?? []) as {
+		path: string;
+		line: number;
+		originalStartLine: number | null;
+		diffSide: string;
+		startDiffSide: string | null;
+	}[];
+}
+
+test("with Ignore whitespace on, a selection from a ~ row through the deleted row below it comments in GitHub's order", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	if (isMobile) await page.setViewportSize({ width: 360, height: 780 });
+	const p = await pr(fixture);
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	await ignoreWhitespace(page, true);
+	const section = await expand(page, "src/mixed.ts");
+	// The pair of line 3 shows ahead of the deleted `mixed 4`, which GitHub
+	// lists first: selected top down, the range is old 4 → new 3 to GitHub.
+	const pair = section.locator('[data-testid="diff-line"][data-new-no="3"]');
+	await expect(pair).toHaveAttribute("data-kind", "ws");
+	const deleted = section.locator(
+		'[data-testid="diff-line"][data-kind="del"][data-old-no="4"]',
+	);
+	await expect(deleted).toBeVisible();
+	expect(
+		await pair.evaluate((row) =>
+			row.nextElementSibling?.getAttribute("data-kind"),
+		),
+	).toBe("del");
+	await page.evaluate(() => {
+		const code = (sel: string) =>
+			document.querySelector(`${sel} [data-code]`) as Element;
+		const from = code(
+			'[data-path="src/mixed.ts"] tr[data-new-no="3"] > [data-code-cell][data-side="RIGHT"]',
+		);
+		const to = code(
+			'[data-path="src/mixed.ts"] tr[data-kind="del"][data-old-no="4"] > [data-code-cell][data-side="LEFT"]',
+		);
+		const range = document.createRange();
+		range.setStart(from, 0);
+		range.setEnd(to, to.childNodes.length);
+		const selection = document.getSelection();
+		selection?.removeAllRanges();
+		selection?.addRange(range);
+		document.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
+	});
+	const bar = page.getByTestId("selection-bar");
+	await expect(bar).toBeVisible();
+	const comment = bar.getByRole("button", { name: "Comment" });
+	await expect(comment).not.toHaveAttribute("aria-disabled", "true");
+	await comment.click();
+	const composer = section.getByTestId("new-thread");
+	await expect(composer).toContainText("old 4 – new 3");
+	await composer.getByRole("textbox", { name: "Comment" }).fill("Both?");
+	await composer.getByRole("button", { name: "Comment" }).click();
+	await expect(
+		section.getByTestId("files-thread").filter({ hasText: "Both?" }),
+	).toBeVisible();
+	expect(stored(p)).toMatchObject([
+		{
+			path: "src/mixed.ts",
+			line: 3,
+			originalStartLine: 4,
+			diffSide: "RIGHT",
+			startDiffSide: "LEFT",
+		},
+	]);
 });

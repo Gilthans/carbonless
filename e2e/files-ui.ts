@@ -89,3 +89,59 @@ export const barBottom = (page: Page) =>
 				?.closest(".sticky")
 				?.getBoundingClientRect().bottom ?? Number.NaN,
 	);
+
+/**
+ * Scrolls `row` two pixels under the stuck file header: the first row below
+ * the sticky stack, which is what a switch keeps where it is (captureAnchor
+ * takes the first row whose bottom is strictly below the stack, and one
+ * pixel is within rounding). Polled: the header sticks once the row is near
+ * the top, and the app header compacts a moment after a scroll, so the
+ * stack's bottom settles over a few frames.
+ */
+export async function underStack(row: Locator) {
+	await expect
+		.poll(() =>
+			row.evaluate((el) => {
+				const header = el.closest("section")?.querySelector("header");
+				const bottom = header?.getBoundingClientRect().bottom ?? 0;
+				const delta = el.getBoundingClientRect().top - bottom + 2;
+				if (Math.abs(delta) >= 1) window.scrollBy(0, delta);
+				return Math.abs(delta);
+			}),
+		)
+		.toBeLessThan(1);
+}
+
+/** The row's viewport top. */
+export const rowTop = async (row: Locator) =>
+	(await row.boundingBox())?.y ?? Number.NaN;
+
+/** Sets a Settings switch (by its label) and closes Settings again. */
+export async function setSwitch(page: Page, label: string, on: boolean) {
+	const gear = page.getByRole("button", { name: "Settings" });
+	if ((await gear.getAttribute("aria-expanded")) !== "true") await gear.click();
+	const toggle = page.getByRole("switch", { name: label });
+	if ((await toggle.getAttribute("aria-checked")) !== String(on)) {
+		await toggle.click();
+	}
+	await expect(toggle).toHaveAttribute("aria-checked", String(on));
+	await page.keyboard.press("Escape");
+	await expect(toggle).toBeHidden();
+}
+
+/** Settings' "Ignore whitespace". */
+export const ignoreWhitespace = (page: Page, on: boolean) =>
+	setSwitch(page, "Ignore whitespace", on);
+
+/** Settings' "Side by side". */
+export const sideBySide = (page: Page, on: boolean) =>
+	setSwitch(page, "Side by side", on);
+
+/** The page never scrolls sideways (principle 5). */
+export async function expectNoPageOverflow(page: Page) {
+	const { scrollWidth, clientWidth } = await page.evaluate(() => ({
+		scrollWidth: document.documentElement.scrollWidth,
+		clientWidth: document.documentElement.clientWidth,
+	}));
+	expect(scrollWidth).toBeLessThanOrEqual(clientWidth);
+}

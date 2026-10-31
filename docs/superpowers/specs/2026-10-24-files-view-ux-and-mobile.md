@@ -22,6 +22,16 @@ tool on a real PR. Everything not mentioned here stays as it is.
 - Crossed-off work stays visible as the hatched segment at the right end of the
   bar and still doesn't count toward the percentage
   (`reviewed ÷ (total − crossed off)`, floor, 0/0 → 100%).
+- The hatch takes at most 20% of any meter (page bar, file headers, tree rows,
+  every unit). Owner (2026-10-30): "the cross off part of the bar should be
+  limited to 20% of the bar. if it's more than that - it should take exactly
+  20%. so there's enough space to show actual progress to completion".
+  Crossed off `c = min(crossed off ÷ total, 20%)`; reviewed
+  `reviewed ÷ (total − crossed off) × (100% − c)`, so the rest agrees with the
+  percentage (below the cap this is exactly `reviewed ÷ total`). The gap kept
+  open while anything is unreviewed still comes out of both parts. With
+  everything crossed off the bar is all hatch. 7 reviewed, 395 crossed off,
+  11 left of 413 now draws 20% hatch and 31% green (was 94% and 1.6%).
 - Remove the "Crossed off, not reviewed: …" legend line.
 
 ## Crossing off
