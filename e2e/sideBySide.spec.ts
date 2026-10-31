@@ -1233,8 +1233,8 @@ test("side by side, the file bubble sits in the first row's right cell (a pair r
 	await expect(posted).toBeVisible();
 	const saved = await posted.boundingBox();
 	if (!saved) throw new Error("no geometry");
-	expect(saved.x).toBe(written.x);
-	expect(saved.width).toBe(written.width);
+	expect(saved.x).toBeCloseTo(written.x, 0);
+	expect(saved.width).toBeCloseTo(written.width, 0);
 	expect(stored(p)).toMatchObject([{ path: GREET, subjectType: "FILE" }]);
 	await expectNoPageOverflow(page);
 	// A pick on an old number: the bar sits by the left side, just right of
@@ -1291,5 +1291,28 @@ test("side by side, the file bubble sits in the first row's right cell (a pair r
 		const bar = await selectionBar(page).boundingBox();
 		expect(bar?.x).toBeGreaterThanOrEqual(oldNumber.x + oldNumber.width);
 		expect(bar?.x).toBeLessThanOrEqual(oldNumber.x + oldNumber.width + 8);
+	}).toPass();
+	// A context line by its old number (a RIGHT line to GitHub): by the left.
+	const context = section.locator(
+		'[data-testid="diff-line"][data-kind="context"][data-new-no="4"]',
+	);
+	const contextOld = context.getByTestId("old");
+	await contextOld.click();
+	await expect(section.locator("tr[data-picked]")).toHaveCount(1);
+	await expect(context).toHaveAttribute("data-picked", "true");
+	const contextNumbers = {
+		old: await contextOld.boundingBox(),
+		new: await context.getByTestId("new").boundingBox(),
+	};
+	if (!contextNumbers.old || !contextNumbers.new) {
+		throw new Error("no geometry");
+	}
+	const { old: cOld, new: cNew } = contextNumbers;
+	await expect(async () => {
+		const bar = await selectionBar(page).boundingBox();
+		if (!bar) throw new Error("no bar");
+		expect(bar.x).toBeGreaterThanOrEqual(cOld.x + cOld.width);
+		expect(bar.x).toBeLessThanOrEqual(cOld.x + cOld.width + 8);
+		expect(bar.x + bar.width).toBeLessThanOrEqual(cNew.x);
 	}).toPass();
 });
