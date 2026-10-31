@@ -1868,6 +1868,16 @@ describe("side by side (the cells contract)", () => {
 		press(number("LEFT", 5));
 		expect(left).toHaveFocus();
 		expect(getPicks()?.lines.map((l) => pickKey(l))).toEqual(["RIGHT:6"]);
+		// Its other number moves the pick to that column; the same one again
+		// clears it.
+		expect(getPicks()?.column).toBe("LEFT");
+		press(number("RIGHT", 6));
+		expect(getPicks()?.lines.map((l) => pickKey(l))).toEqual(["RIGHT:6"]);
+		expect(getPicks()?.column).toBe("RIGHT");
+		press(number("LEFT", 5));
+		expect(getPicks()?.column).toBe("LEFT");
+		press(number("LEFT", 5));
+		expect(getPicks()).toBeNull();
 	});
 
 	it("switching to unified after focusing a context row's left number keeps one number button in the tab order", async () => {

@@ -2290,7 +2290,8 @@ const sideOf = (b: Element): DiffSide =>
 
 /**
  * Picking lines by their numbers: a click (or tap) picks the row, again
- * clears it; shift-click, or dragging down the numbers with a mouse,
+ * clears it (side by side, a context line's other number moves the pick
+ * to its column instead); shift-click, or dragging down the numbers with a mouse,
  * extends from where the pick started; on touch a second tap extends. One
  * number button per code cell (a pair row has one per side), one of them
  * in the tab order (the last focused, else the first row's): Up/Down move
@@ -2381,7 +2382,11 @@ function usePicker(
 			mine?.lines.length === 1 &&
 			pickKey(mine.anchor) === pickKey(t)
 		) {
-			setPicks(null);
+			// Its number again clears it; a context line's other number
+			// (side by side) moves it to that column (none yet: its focus's).
+			const moved = withColumn(mine, column);
+			const was = mine.column ?? mine.focus.side;
+			setPicks(!moved?.column || moved.column === was ? null : moved);
 		} else {
 			setPicks(withColumn(pickRange(cells(), picked(t), picked(t)), column));
 		}
