@@ -173,8 +173,13 @@ right once the file tree is a sidebar (md+), so neither is covered.
   write is newly refused (not for ones kept from before a reload). Each
   item: the action and where (`file:line`, mono), one clipped line of its
   text (what Retry sends: the box, edit or new comment; a delete's
-  comment), GitHub's reason in `bad`, then 40px Retry (spins while
-  retrying; the item stays until GitHub takes it) and Drop. Drop swaps the
+  comment; "No text" in `muted` italics when there's none), GitHub's
+  reason in `bad`, then 40px Retry (spins while retrying; the item stays
+  until GitHub takes it; with nothing to send it is `faint`,
+  `aria-disabled`, "Nothing to send") and Drop. A Retry refused again
+  reopens the list, and each refusal is announced (`role="alert"`,
+  visually hidden). After a confirmed Drop, focus goes to the next item,
+  else the chip. Drop swaps the
   buttons for an in-place "Drop this? Its text is lost" (resolve, delete:
   "Drop this?") with Cancel (focused; Escape too) and a red Drop. "Retry
   all" heads the list when more than one can be retried. Kept in
@@ -335,7 +340,8 @@ decides where; nothing else does):
   get the **file bubble** on the diff's first row (a file cluster's row, a
   hidden run's, a hunk header's, whichever comes first; a row of its own
   when the first row is code, so it never covers a line), centred on the
-  diff's visible width and kept there as long lines scroll (owner: "in the
+  diff's visible width and kept there as long lines scroll (on touch the
+  row's text line is 40px, level with the bubble) (owner: "in the
   center of that diff line instead of at the side, so it's more
   prominent"), apart from the line bubbles at the right: the line bubble's
   pill with a file mark first ("2 comments on this file"); lines not in the

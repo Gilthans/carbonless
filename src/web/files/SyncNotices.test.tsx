@@ -182,6 +182,92 @@ describe("SyncNotices for thread writes", () => {
 		);
 	});
 
+	it("nothing to send: Retry says so and does nothing; the box shows no text; Drop is the way out", async () => {
+		statuses = [403];
+		const { writes, calls } = setup([thread({})]);
+		await act(async () => {
+			writes.reply("T1", "Gone soon");
+		});
+		const item = await screen.findByTestId("refused-write");
+		await act(async () => writes.drafts.setText("T1", ""));
+		expect(within(item).getByTestId("refused-preview-empty")).toHaveTextContent(
+			"No text",
+		);
+		const retry = within(item).getByRole("button", {
+			name: "Retry reply: nothing to send",
+		});
+		expect(retry).toHaveAttribute("aria-disabled", "true");
+		await userEvent.click(retry);
+		expect(calls).toHaveLength(1);
+		expect(screen.getByTestId("refused-write")).toBeInTheDocument();
+		await userEvent.click(
+			within(item).getByRole("button", { name: "Drop reply" }),
+		);
+		await userEvent.click(screen.getByTestId("refused-drop-yes"));
+		expect(screen.queryByTestId("refused-bar")).toBeNull();
+	});
+
+	it("a Retry refused again reopens a closed list and says so", async () => {
+		statuses = [403, 403];
+		const { writes } = setup([thread({})]);
+		await act(async () => {
+			writes.setResolved("T1", true);
+		});
+		await screen.findByTestId("refused-write");
+		expect(screen.getByTestId("refused-news")).toHaveTextContent(
+			"Resolve not posted: refused 403",
+		);
+		const chip = screen.getByTestId("refused-bar");
+		await userEvent.click(chip);
+		expect(screen.queryByTestId("refused-list")).toBeNull();
+		await act(async () => {
+			await new Promise((r) => setTimeout(r, 5));
+			writes.retry("T1", "resolve");
+		});
+		await vi.waitFor(() =>
+			expect(screen.getByTestId("refused-list")).toBeInTheDocument(),
+		);
+		expect(chip).toHaveAttribute("aria-expanded", "true");
+		expect(screen.getByTestId("refused-news")).toHaveAttribute("role", "alert");
+	});
+
+	it("after a confirmed Drop, focus goes to the next item, then to the chip", async () => {
+		statuses = [403, 403, 403];
+		const { writes } = setup([
+			thread({}),
+			thread({ id: "T2", line: 7 }),
+			thread({ id: "T3", line: 9 }),
+		]);
+		await act(async () => {
+			writes.setResolved("T1", true);
+			writes.setResolved("T2", true);
+			writes.setResolved("T3", true);
+		});
+		await vi.waitFor(() =>
+			expect(screen.getAllByTestId("refused-write")).toHaveLength(3),
+		);
+		const dropAt = async (i: number) => {
+			const item = screen.getAllByTestId("refused-write")[i] as HTMLElement;
+			await userEvent.click(
+				within(item).getByRole("button", { name: "Drop resolve" }),
+			);
+			await userEvent.click(screen.getByTestId("refused-drop-yes"));
+		};
+		await dropAt(0);
+		await vi.waitFor(() =>
+			expect(
+				within(
+					screen.getAllByTestId("refused-write")[0] as HTMLElement,
+				).getByRole("button", { name: "Retry resolve" }),
+			).toHaveFocus(),
+		);
+		// The last one: no next item, the chip.
+		await dropAt(1);
+		await vi.waitFor(() =>
+			expect(screen.getByTestId("refused-bar")).toHaveFocus(),
+		);
+	});
+
 	it("a reply resent from an earlier page says so, with Discard", async () => {
 		statuses = [];
 		const { writes, calls } = setup([thread({})]);

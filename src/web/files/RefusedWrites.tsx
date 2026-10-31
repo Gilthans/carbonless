@@ -136,21 +136,42 @@ export function RefusedWrites() {
 	const listId = useId();
 	// Opened in the same render as a new refusal, so the notices measure
 	// their full reach at once (useClearOfNotices scrolls a box above it).
-	const keys = refused.map((f) => `${f.threadId}\n${f.key}`).join("\0");
+	// A Retry refused again is news too (its `last` moves on).
+	const id = (f: RefusedWrite) => `${f.threadId}\n${f.key}\n${f.last ?? f.at}`;
+	const keys = refused.map(id).join("\0");
 	const [seen, setSeen] = useState("");
+	const [news, setNews] = useState<{ text: string; n: number } | null>(null);
 	if (keys !== seen) {
 		const before = new Set(seen.split("\0"));
-		const fresh = refused.some(
-			(f) => !before.has(`${f.threadId}\n${f.key}`) && f.at >= pageStart,
+		const fresh = refused.filter(
+			(f) => !before.has(id(f)) && (f.last ?? f.at) >= pageStart,
 		);
 		setSeen(keys);
-		if (fresh && !open) setOpen(true);
+		const latest = fresh.at(-1);
+		if (latest) {
+			if (!open) setOpen(true);
+			setNews({
+				text: `${latest.action} not posted: ${latest.error.message}`,
+				n: (news?.n ?? 0) + 1,
+			});
+		}
 	}
 	if (refused.length === 0) return null;
 	const n = refused.length;
 	const label = `${n} not posted`;
 	return (
 		<div className="pointer-events-none flex flex-col items-end gap-2">
+			{news && (
+				// Inserted anew for each refusal, so it's announced every time.
+				<p
+					key={news.n}
+					role="alert"
+					data-testid="refused-news"
+					className="sr-only"
+				>
+					{news.text}
+				</p>
+			)}
 			{open && <RefusedList id={listId} refused={refused} />}
 			<Tooltip content="Not posted" describe={false}>
 				{(trigger) => (
@@ -183,7 +204,25 @@ export function RefusedWrites() {
 function RefusedList(props: { id: string; refused: readonly RefusedWrite[] }) {
 	const writer = useThreadWriter();
 	const { refused } = props;
-	const retriable = refused.filter((f) => !f.retrying && f.code !== "changed");
+	const retriable = refused.filter(
+		(f) =>
+			!f.retrying && f.code !== "changed" && writer.sendable(f.threadId, f),
+	);
+	const list = useRef<HTMLUListElement>(null);
+	/** A dropped item's place goes to the next one, else the chip. */
+	const dropped = (index: number) =>
+		requestAnimationFrame(() => {
+			const items = list.current?.querySelectorAll<HTMLElement>(
+				'[data-testid="refused-write"]',
+			);
+			const next = items?.[index]?.querySelector<HTMLButtonElement>(
+				"button:not(:disabled)",
+			);
+			const chip = document.querySelector<HTMLButtonElement>(
+				'[data-testid="refused-bar"]',
+			);
+			(next ?? chip)?.focus();
+		});
 	return (
 		<section
 			id={props.id}
@@ -204,16 +243,29 @@ function RefusedList(props: { id: string; refused: readonly RefusedWrite[] }) {
 					</button>
 				</div>
 			)}
-			<ul className="max-h-[50vh] divide-y divide-line overflow-y-auto">
-				{refused.map((f) => (
-					<RefusedItem key={`${f.threadId}\n${f.key}`} write={f} />
+			<ul
+				ref={list}
+				className="max-h-[50vh] divide-y divide-line overflow-y-auto"
+			>
+				{refused.map((f, i) => (
+					<RefusedItem
+						key={`${f.threadId}\n${f.key}`}
+						write={f}
+						onDropped={() => dropped(i)}
+					/>
 				))}
 			</ul>
 		</section>
 	);
 }
 
-function RefusedItem({ write: f }: { write: RefusedWrite }) {
+function RefusedItem({
+	write: f,
+	onDropped,
+}: {
+	write: RefusedWrite;
+	onDropped: () => void;
+}) {
 	const client = useQueryClient();
 	const writer = useThreadWriter();
 	// Previews follow the drafts (what Retry would send now).
@@ -228,6 +280,8 @@ function RefusedItem({ write: f }: { write: RefusedWrite }) {
 	const where = writeWhere(client, writer.drafts, f.threadId);
 	const preview = previewOf(client, writer.drafts, f);
 	const changed = f.action === "Edit" && f.code === "changed";
+	// A cleared box, a gone draft: nothing to send, only Drop.
+	const nothing = !f.retrying && !writer.sendable(f.threadId, f);
 	const href = f.code === "pending-review" ? safeHref(f.url) : undefined;
 	const what = f.action.toLowerCase();
 	const cancel = () => {
@@ -239,6 +293,7 @@ function RefusedItem({ write: f }: { write: RefusedWrite }) {
 		if (f.action === "New comment") {
 			closeComposer(f.threadId.slice(NEW_THREAD.length));
 		}
+		onDropped();
 	};
 	return (
 		<li data-testid="refused-write" data-retrying={f.retrying || undefined}>
@@ -247,7 +302,7 @@ function RefusedItem({ write: f }: { write: RefusedWrite }) {
 					<p className="break-words font-medium text-ink">
 						{f.action} · <span className="font-mono text-xs">{where}</span>
 					</p>
-					{preview && (
+					{preview ? (
 						<p
 							data-testid="refused-preview"
 							className="truncate text-muted"
@@ -255,6 +310,15 @@ function RefusedItem({ write: f }: { write: RefusedWrite }) {
 						>
 							{preview}
 						</p>
+					) : (
+						dropLosesText(f) && (
+							<p
+								data-testid="refused-preview-empty"
+								className="text-muted italic"
+							>
+								No text
+							</p>
+						)
 					)}
 					<p className="break-words text-bad">{reasonOf(writer.drafts, f)}</p>
 					{changed && !f.retrying && (
@@ -299,7 +363,13 @@ function RefusedItem({ write: f }: { write: RefusedWrite }) {
 					<div className="flex">
 						{(!changed || !f.current) && (
 							<Tooltip
-								content={f.retrying ? "Retrying" : "Retry"}
+								content={
+									f.retrying
+										? "Retrying"
+										: nothing
+											? "Nothing to send"
+											: "Retry"
+								}
 								describe={false}
 							>
 								{(trigger) => (
@@ -307,11 +377,19 @@ function RefusedItem({ write: f }: { write: RefusedWrite }) {
 										type="button"
 										{...trigger}
 										aria-label={
-											f.retrying ? `Retrying ${what}` : `Retry ${what}`
+											f.retrying
+												? `Retrying ${what}`
+												: nothing
+													? `Retry ${what}: nothing to send`
+													: `Retry ${what}`
 										}
 										disabled={f.retrying}
-										onClick={() => writer.retry(f.threadId, f.key)}
-										className={ICON_BUTTON}
+										// Focusable still, so its tip says why.
+										aria-disabled={nothing || undefined}
+										onClick={() => {
+											if (!nothing) writer.retry(f.threadId, f.key);
+										}}
+										className={`${ICON_BUTTON} aria-disabled:text-faint aria-disabled:hover:bg-transparent`}
 									>
 										<SyncIcon
 											aria-hidden

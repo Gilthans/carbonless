@@ -910,7 +910,13 @@ describe("editing a comment", () => {
 		await userEvent.click(
 			within(notice).getByRole("button", { name: "Show theirs" }),
 		);
-		expect(screen.queryByTestId("refused-write")).toBeNull();
+		// Not saved yet: listed until saved or dropped, now without theirs.
+		expect(screen.getByTestId("refused-write")).toBeInTheDocument();
+		expect(
+			within(screen.getByTestId("refused-write")).queryByRole("button", {
+				name: "Show theirs",
+			}),
+		).toBeNull();
 		expect(
 			within(screen.getByTestId("edit-theirs")).getByText("Theirs"),
 		).toBeVisible();

@@ -2,6 +2,7 @@ import { QueryClient } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
 	EditRequest,
+	NewThreadRequest,
 	PrOverview,
 	ReplyRequest,
 	ResolveRequest,
@@ -32,9 +33,9 @@ import {
 } from "./threadWrites";
 
 interface Call {
-	op: "reply" | "resolve" | "edit" | "delete";
+	op: "reply" | "resolve" | "edit" | "delete" | "create";
 	threadId: string;
-	req: ReplyRequest | ResolveRequest | EditRequest | null;
+	req: ReplyRequest | ResolveRequest | EditRequest | NewThreadRequest | null;
 	commentId?: string;
 	resolve: (u: ThreadUpdate | ThreadGone) => void;
 	reject: (e: unknown) => void;
@@ -130,6 +131,16 @@ function setup(storage?: Storage) {
 		applied: (u) => applied.push(u),
 		drafts,
 		refusals,
+		create: (req) =>
+			new Promise((resolve, reject) => {
+				calls.push({
+					op: "create",
+					threadId: `new:${req.clientId}`,
+					req,
+					resolve: resolve as unknown as Call["resolve"],
+					reject,
+				});
+			}),
 		knownComments: (threadId) => known[threadId] ?? [],
 		newId: () => `cid${++ids}`,
 		confirmedResolved: (threadId) => confirmed[threadId],
@@ -836,8 +847,15 @@ describe("editing and deleting comments", () => {
 		expect(theirsCalls).toEqual([["T1", theirs]]);
 		expect(drafts.edit("c1")?.edit?.from).toBe("Theirs");
 		expect(drafts.edit("c1")?.text).toBe("Mine");
-		expect(w.state().threads.get("T1")).toBeUndefined();
+		// Not saved yet: still listed (Retry saves over theirs now), and leaving asks.
+		expect(failedOf(w, "T1")).toMatchObject({
+			key: "edit:c1",
+			code: "changed",
+		});
+		expect(failedOf(w, "T1")?.current).toBeUndefined();
+		expect(w.state().lost).toBe(true);
 		w.saveEdit("T1", "c1", true);
+		expect(failedOf(w, "T1")).toBeNull();
 		expect(calls[1]).toMatchObject({
 			op: "edit",
 			req: { body: "Mine", from: "Theirs", force: true },
@@ -1382,8 +1400,7 @@ describe("refused writes", () => {
 		expect(w.state().refused).toEqual([]);
 		expect(w.state().lost).toBe(false);
 		expect(refusals.get()).toEqual([]);
-		// The new thread had no way to go here (refused at once); the delete went once.
-		expect(calls).toHaveLength(1);
+		expect(calls.map((c) => c.op)).toEqual(["create", "delete"]);
 	});
 
 	it("a reload lists them again, and their Retry works", async () => {
@@ -1392,8 +1409,15 @@ describe("refused writes", () => {
 		w.reply("T1", "Still here");
 		w.setResolved("T2", true);
 		w.deleteComment("T3", "c3");
+		drafts.setEdit("T4", "c4", "Old", "Edited");
+		w.saveEdit("T4", "c4");
+		drafts.setNew("n5", NEW_TARGET, "A file remark");
+		w.createThread("n5");
 		await vi.advanceTimersByTimeAsync(DELETE_UNDO_MS);
+		// Four at once (MAX_IN_FLIGHT): the fifth goes as one is answered.
 		for (const c of [...calls]) c.reject(new ApiError(403, "no"));
+		await flush();
+		calls.at(-1)?.reject(new ApiError(403, "no"));
 		await flush();
 		// The next page: the same storage, nothing in memory.
 		w = setup(storage);
@@ -1404,42 +1428,98 @@ describe("refused writes", () => {
 		).toEqual([
 			["T1", "Reply", "no"],
 			["T2", "Resolve", "no"],
+			["T4", "Edit", "no"],
+			["new:n5", "New comment", "no"],
 			["T3", "Delete", "no"],
 		]);
 		expect(w.state().threads.get("T2")?.resolved).toBe(true);
 		expect(w.state().lost).toBe(true);
+		// A reload doesn't resend them (resume() finds nothing sending).
+		w.resume();
+		expect(calls).toEqual([]);
 		w.retry("T2", "resolve");
 		w.retry("T3", "delete:c3");
 		w.retry("T1", "reply");
+		w.retry("T4", "edit:c4");
+		w.retry("new:n5", "create");
+		// Four at once: the fifth goes once the first is answered.
+		calls[0]?.resolve(update("T2", { resolved: true }));
+		await flush();
 		expect(calls.map((c) => [c.op, c.req])).toEqual([
 			["resolve", { resolved: true }],
 			["delete", null],
 			["reply", expect.objectContaining({ body: "Still here" })],
+			["edit", { body: "Edited", from: "Old", force: false }],
+			[
+				"create",
+				expect.objectContaining({ clientId: "n5", body: "A file remark" }),
+			],
 		]);
 	});
 
-	it("a reload drops a kept refusal whose draft is gone (sent from another tab)", async () => {
+	it("a reload keeps listing a refusal whose draft is empty or gone: no text, only Drop", async () => {
 		const storage = memoryStorage();
 		let w = setup(storage);
-		w.reply("T1", "Sent elsewhere");
-		calls[0]?.reject(new ApiError(403, "no"));
+		w.reply("T1", "Cleared later");
+		drafts.setEdit("T2", "c2", "Old", "Edited");
+		w.saveEdit("T2", "c2");
+		drafts.setNew("n3", NEW_TARGET, "Gone later");
+		w.createThread("n3");
+		for (const c of [...calls]) c.reject(new ApiError(403, "no"));
 		await flush();
 		drafts.setText("T1", "");
+		drafts.dropEdit("c2");
+		drafts.discard("new:n3");
 		w = setup(storage);
 		w.restore();
+		const refused = w.state().refused;
+		expect(refused.map((f) => f.key)).toEqual(["reply", "edit:c2", "create"]);
+		for (const f of refused) expect(w.sendable(f.threadId, f)).toBe(false);
+		expect(w.state().lost).toBe(true);
+		for (const f of refused) w.retry(f.threadId, f.key);
+		expect(calls).toEqual([]);
+		expect(w.state().refused).toHaveLength(3);
+		for (const f of refused) w.drop(f.threadId, f.key);
 		expect(w.state().refused).toEqual([]);
 		expect(refusals.get()).toEqual([]);
 	});
 
-	it("a Retry of a reply whose box is empty settles it, sending nothing", async () => {
+	it("a Retry with nothing to send keeps it listed (a cleared box, an edit back as it was)", async () => {
 		const w = setup();
 		w.reply("T1", "Text");
+		drafts.setEdit("T2", "c2", "Old", "Edited");
+		w.saveEdit("T2", "c2");
 		calls[0]?.reject(new ApiError(403, "no"));
+		calls[1]?.reject(new ApiError(403, "no"));
 		await flush();
 		drafts.setText("T1", "");
+		drafts.setEdit("T2", "c2", "Old", "Old");
 		w.retry("T1", "reply");
-		expect(calls).toHaveLength(1);
-		expect(w.state().refused).toEqual([]);
+		w.retry("T2", "edit:c2");
+		w.retryAll();
+		expect(calls).toHaveLength(2);
+		expect(w.state().refused.map((f) => [f.key, f.retrying])).toEqual([
+			["reply", undefined],
+			["edit:c2", undefined],
+		]);
+		// Typed again: something to send.
+		drafts.setText("T1", "New text");
+		expect(w.sendable("T1", { action: "Reply" })).toBe(true);
+	});
+
+	it("a Retry refused again moves its `last` (news again), keeping its first `at`", async () => {
+		const w = setup();
+		w.setResolved("T1", true);
+		calls[0]?.reject(new ApiError(403, "no"));
+		await flush();
+		const first = w.state().refused[0];
+		vi.advanceTimersByTime(1000);
+		w.retry("T1", "resolve");
+		calls[1]?.reject(new ApiError(403, "no again"));
+		await flush();
+		const again = w.state().refused[0];
+		expect(again?.at).toBe(first?.at);
+		expect(again?.last).not.toBe(first?.last);
 	});
 
 	it("one thread keeps each refusal: a refused reply and a refused resolve both listed", async () => {

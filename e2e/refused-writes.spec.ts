@@ -331,6 +331,41 @@ test("a refused delete survives a reload, and its Retry deletes it", async ({
 	expect(await reload(page)).toBe(false);
 });
 
+test("a refused new comment survives a reload: its composer and the chip come back, and Retry posts it", async ({
+	page,
+	pr,
+	startCrb,
+	expectConsoleError,
+}) => {
+	expectConsoleError(/403/);
+	const p = await setup(pr, {
+		failNext: { op: "comment", status: 403, message: "Not allowed here" },
+	});
+	const s = await startCrb();
+	await page.goto(s.url);
+	await KINDS[4]?.write(page);
+	await expect(item(page)).toContainText("New comment · new.txt");
+	expect(await reload(page)).toBe(true);
+	await expect(chip(page)).toHaveAccessibleName("1 not posted");
+	const section = fileSection(page, "new.txt");
+	const toggle = section.getByRole("button", {
+		name: /(Expand|Collapse) file/,
+	});
+	if ((await toggle.getAttribute("aria-expanded")) !== "true")
+		await toggle.click();
+	await expect(
+		section.getByTestId("new-thread").getByRole("textbox", { name: "Comment" }),
+	).toHaveValue("A file remark");
+	await chip(page).click();
+	await expect(item(page).getByTestId("refused-preview")).toHaveText(
+		"A file remark",
+	);
+	await item(page).getByRole("button", { name: "Retry new comment" }).click();
+	await expect(chip(page)).toHaveCount(0);
+	await expect.poll(() => KINDS[4]?.landed(p)).toBe(true);
+	expect(await reload(page)).toBe(false);
+});
+
 test("a closed file's header opens it; the file bubble sits in the middle of the first row and opens the file composer", async ({
 	page,
 	pr,
@@ -368,6 +403,26 @@ test("a closed file's header opens it; the file bubble sits in the middle of the
 	).toBeLessThanOrEqual(3);
 	const box = await bubble.boundingBox();
 	if (isMobile) expect(box?.height ?? 0).toBeGreaterThanOrEqual(40);
+	// The `@@` text sits level with the bubble (a 40px one on touch too).
+	const textMiddle = await section
+		.locator("table tr")
+		.first()
+		.locator("td")
+		.first()
+		.evaluate((td) => {
+			const text = [...td.childNodes].find(
+				(n) => n.nodeType === Node.TEXT_NODE && n.textContent?.includes("@@"),
+			);
+			if (!text) return Number.NaN;
+			const range = document.createRange();
+			range.selectNodeContents(text);
+			const r = range.getBoundingClientRect();
+			return r.y + r.height / 2;
+		});
+	const pillBox = await pill.boundingBox();
+	expect(
+		Math.abs(textMiddle - ((pillBox?.y ?? 0) + (pillBox?.height ?? 0) / 2)),
+	).toBeLessThanOrEqual(3);
 	expect(box?.width ?? 0).toBeGreaterThanOrEqual(40);
 	await bubble.scrollIntoViewIfNeeded();
 	await shot(page, "file-bubble-centred", isMobile);

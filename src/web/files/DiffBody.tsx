@@ -111,6 +111,12 @@ export function FileBubbleSlot(props: { children: ReactNode }) {
 	);
 }
 
+/**
+ * A row's text beside the file bubble: on touch the bubble is 40px tall, so
+ * the text's line is too, centring it on the bubble (`@@`, "N hidden lines").
+ */
+const LEAD_LINE = "pointer-coarse:leading-10";
+
 /** The file bubble's own row (no row to share, or the first is code), and its threads' row. */
 function LeadRow({ lead }: { lead: FileLead }) {
 	return (
@@ -1047,7 +1053,7 @@ export function DiffBody(props: {
 					</td>
 					<td
 						colSpan={COLUMNS - 2}
-						className={`font-sans ${bubblePad(runThreads.length > 0 ? 1 : 0)}`}
+						className={`font-sans ${bubblePad(runThreads.length > 0 ? 1 : 0)} ${runLead ? LEAD_LINE : ""}`}
 					>
 						{runLead && <FileBubbleSlot>{runLead.bubble}</FileBubbleSlot>}
 						{runThreads.length > 0 && (
@@ -1113,7 +1119,10 @@ export function DiffBody(props: {
 					<td className="w-11 px-1 py-1 align-top whitespace-nowrap pointer-coarse:w-20">
 						{checkbox(cluster)}
 					</td>
-					<td colSpan={COLUMNS - 2} className="px-2 py-1 font-sans text-sm">
+					<td
+						colSpan={COLUMNS - 2}
+						className={`px-2 py-1 font-sans text-sm ${lead ? LEAD_LINE : ""}`}
+					>
 						{lead && <FileBubbleSlot>{lead.bubble}</FileBubbleSlot>}
 						{cluster.label}
 						<CrossedOffNote cluster={cluster} id={noteId(cluster)} />
@@ -1416,7 +1425,10 @@ function HunkRows(props: {
 		<>
 			<tbody>
 				<tr className="bg-hunk text-hunk-ink">
-					<td colSpan={COLUMNS} className="px-2 py-0.5">
+					<td
+						colSpan={COLUMNS}
+						className={`px-2 py-0.5 ${lead ? LEAD_LINE : ""}`}
+					>
 						{lead && <FileBubbleSlot>{lead.bubble}</FileBubbleSlot>}
 						{hunkHeader(hunk)}
 					</td>

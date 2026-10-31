@@ -134,6 +134,8 @@ export interface WriteFailure {
 	at: string;
 	/** Retried: on its way again, listed until GitHub has it. */
 	retrying?: boolean;
+	/** When GitHub last refused it (ISO): a repeat refusal is news again. */
+	last?: string;
 }
 
 /** A refused write and its thread (`new:<clientId>` for a new thread). */
@@ -440,6 +442,29 @@ export class ThreadWrites {
 		this.#pump();
 	}
 
+	/**
+	 * Whether a refused write's Retry has something to send now: a reply's
+	 * box, an edit's or new thread's draft with text (an edit's changed from
+	 * where it started); a resolve or delete always.
+	 */
+	sendable(
+		threadId: string,
+		f: Pick<WriteFailure, "action" | "commentId" | "resolved">,
+	): boolean {
+		const { drafts } = this.#deps;
+		if (f.action === "Reply") return drafts.text(threadId).trim() !== "";
+		if (f.action === "New comment") {
+			const d = drafts.newThread(threadId.slice(NEW_THREAD.length));
+			return Boolean(d?.create && !d.create.sending && d.text.trim());
+		}
+		if (f.action === "Edit") {
+			const d = drafts.edit(f.commentId ?? "");
+			return Boolean(d?.edit && d.text.trim() && d.text !== d.edit.from);
+		}
+		if (f.action === "Delete") return Boolean(f.commentId);
+		return f.resolved !== undefined;
+	}
+
 	/** Retries every refused write (but edits changed on GitHub). */
 	retryAll(): void {
 		for (const threadId of [...this.#lanes.keys()]) {
@@ -453,7 +478,7 @@ export class ThreadWrites {
 	/** The refusal's write, in line again (nothing to send: settled). */
 	#again(threadId: string, lane: Lane, key: string): void {
 		const failed = lane.refused.get(key);
-		if (!failed || failed.retrying) return;
+		if (!failed || failed.retrying || !this.sendable(threadId, failed)) return;
 		let op: Op | null = null;
 		if (failed.action === "Reply") {
 			const text = this.#deps.drafts.text(threadId);
@@ -482,10 +507,9 @@ export class ThreadWrites {
 		} else if (failed.resolved !== undefined) {
 			op = { kind: "resolve", resolved: failed.resolved };
 		}
-		if (!op) {
-			this.#settle(threadId, lane, key);
-			return;
-		}
+		// Nothing to send (a cleared box, a gone draft): it stays listed;
+		// only Drop lets it go.
+		if (!op) return;
 		op.again = true;
 		lane.refused.set(key, { ...failed, retrying: true });
 		// A reply's, edit's or new thread's draft holds it now, resent after
@@ -714,8 +738,10 @@ export class ThreadWrites {
 			} catch {}
 			this.#deps.drafts.setFrom(failed.commentId, failed.current.body);
 		}
-		this.#settle(threadId, lane, failed.key);
-		this.#prune(threadId);
+		// Not saved yet: listed (Retry saves it over theirs now, or Drop)
+		// until it is saved, cancelled or dropped.
+		const { current: _, ...rest } = failed;
+		lane.refused.set(failed.key, rest);
 		this.#changed();
 	}
 
@@ -864,43 +890,30 @@ export class ThreadWrites {
 
 	/** GitHub refused it: listed (a repeat keeps its place, with the new message) and kept. */
 	#refuse(threadId: string, lane: Lane, failure: Omit<WriteFailure, "at">) {
-		const at = lane.refused.get(failure.key)?.at ?? new Date().toISOString();
-		const f: WriteFailure = { ...failure, at };
+		const last = new Date().toISOString();
+		const at = lane.refused.get(failure.key)?.at ?? last;
+		const f: WriteFailure = { ...failure, at, last };
 		lane.refused.set(f.key, f);
 		this.#deps.refusals?.put(stored(threadId, f));
 	}
 
 	/**
-	 * Lists the refusals an earlier page kept (once the drafts are bound): a
-	 * reply's, edit's or new thread's only while its draft still holds it.
+	 * Lists the refusals an earlier page kept (once the drafts are bound),
+	 * all of them: one whose draft is empty or gone (cleared, or sent from
+	 * another tab) shows with no text, and only Drop lets it go.
 	 */
 	restore(): void {
 		const store = this.#deps.refusals;
 		if (!store) return;
-		const { drafts } = this.#deps;
 		for (const r of store.get()) {
-			const created =
-				r.action === "New comment"
-					? drafts.newThread(r.threadId.slice(NEW_THREAD.length))?.create
-					: undefined;
-			const edit =
-				r.action === "Edit" ? drafts.edit(r.commentId ?? "")?.edit : undefined;
-			const held =
-				r.action === "Reply"
-					? drafts.text(r.threadId).trim() !== ""
-					: r.action === "New comment"
-						? created !== undefined && !created.sending
-						: r.action === "Edit"
-							? edit !== undefined && !edit.saving
-							: true;
-			if (!held) {
-				store.remove(r.threadId, r.key);
-				continue;
-			}
 			const lane = this.#lane(r.threadId);
 			if (lane.refused.has(r.key)) continue;
 			const { threadId: _, message, ...rest } = r;
-			lane.refused.set(r.key, { ...rest, error: new Error(message) });
+			lane.refused.set(r.key, {
+				...rest,
+				error: new Error(message),
+				last: r.at,
+			});
 		}
 		this.#changed();
 	}

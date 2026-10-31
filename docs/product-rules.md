@@ -197,8 +197,13 @@ unresolving one, and editing or deleting one of the viewer's comments in one
   saving or cancelling the edit, or discarding the new comment settles it
   too. Refusals are kept in `localStorage` beside the drafts
   (`crb:refused:<owner>/<repo>#<n>`, `src/web/threads/refusals.ts`), so a
-  reload lists them again (a reply's, edit's or new comment's only while its
-  draft still holds it). Only
+  reload lists them all again. A Retry with nothing to send (a cleared box,
+  an edit back as it was, a draft gone, sent from another tab) is off,
+  saying so, and never settles it: only Drop does. "Show theirs" on an edit
+  changed on GitHub keeps it listed until the edit is saved or dropped. A
+  resolve or delete Retry already on its way when the page reloads still
+  reaches GitHub (the crb server sends it); the next page lists the
+  refusal again, and dropping it then can't call that back. Only
   GitHub's own trouble is transient (502 to the page, which retries): HTTP
   408, 429 or 5xx, a rate limit (a rate-limit 403 too), a timeout or no
   answer at all. A 404 for a thread GitHub still has is a refusal, not
