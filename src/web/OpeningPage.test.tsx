@@ -92,6 +92,19 @@ describe("/pr/<owner>/<repo>/<n>", () => {
 		});
 	});
 
+	it("pins an all-digit head as typed (not read as a number)", async () => {
+		const api = serve(() => json(200, { id: ID }));
+		const router = renderAt("/pr/acme/widget/7?head=1234567");
+		await waitFor(() =>
+			expect(router.state.location.pathname).toBe(`/r/${ID}`),
+		);
+		const post = api.fetch.mock.calls.find(([url]) => url === "/api/reviews");
+		expect(JSON.parse(String(post?.[1]?.body))).toEqual({
+			pr: "acme/widget#7",
+			head: "1234567",
+		});
+	});
+
 	it("without a known title, names the PR by repo and number", async () => {
 		serve(() => json(200, { id: ID }), true);
 		renderAt("/pr/acme/widget/7");

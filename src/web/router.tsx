@@ -17,6 +17,7 @@ import { useUnsavedGuard } from "./files/useSetStates";
 import { HomePage } from "./home/HomePage";
 import { OpeningPage, parseOpeningSearch } from "./OpeningPage";
 import { FilesPage, OverviewPage } from "./pages";
+import { parseSearch, stringifySearch } from "./search";
 import { ShortcutsProvider } from "./shortcuts";
 
 /**
@@ -160,6 +161,9 @@ export function createAppRouter(options: { initialPath?: string } = {}) {
 		// (stale once pages mount or a snapshot changes), and without it the
 		// router scrolls to the top after each navigation: off for every page.
 		scrollRestoration: () => false,
+		// Values stay strings: `?head=1234567` is a SHA prefix (search.ts).
+		parseSearch,
+		stringifySearch,
 	});
 }
 
