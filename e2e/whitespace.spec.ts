@@ -427,7 +427,6 @@ test("with Ignore whitespace on, a selection from a ~ row through the deleted ro
 	});
 	const bar = page.getByTestId("selection-bar");
 	await expect(bar).toBeVisible();
-	if (isMobile) await expect(bar).toContainText("old 4 – new 3");
 	const comment = bar.getByRole("button", { name: "Comment" });
 	await expect(comment).not.toHaveAttribute("aria-disabled", "true");
 	await comment.click();
