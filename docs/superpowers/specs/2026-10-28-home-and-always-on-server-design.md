@@ -284,12 +284,16 @@ Owner's decisions on this part (2026-10-28):
   keeps it) before the server answers; a spinner by the view's name shows
   while the server saves and reads the added repos; unconfirmed after
   5 s, the review page's yellow "Saving is delayed" notice says so, in
-  the same place. Saves go one at a time. A transient failure (crb
-  unreachable, a timeout, a 5xx) retries with the review state's backoff
-  (a PUT of the whole list is safe to repeat), the notice saying why; a
-  refusal, or 5 transient failures in a row, shows a red "Not saved"
-  notice with the error, Retry and Dismiss, and Home goes back to the
-  last saved view. Nothing refused is sent again on its own (**call**).
+  the same place. Saves go as the review state's do: one PUT at a time,
+  the newest list next (an older one superseded while out isn't sent
+  again); a transient failure (crb unreachable, a timeout, a 5xx)
+  retries with the review state's backoff for as long as it takes (a
+  PUT of the whole list is safe to repeat), the notice saying why, red
+  "Not saved yet, still retrying" with Retry after 5 in a row, and never
+  rolls the view back. Only a refusal shows a red "Not saved" notice
+  with the error, Retry and Dismiss, and puts the last saved view back;
+  nothing refused is sent again on its own, and a newer save clears it
+  (**call**).
   The server writes the file; a hand edit is picked up on the next refresh.
   A missing file means an empty view, and Home says so and offers to add
   repos. Several views in the file are kept but only the first is shown.

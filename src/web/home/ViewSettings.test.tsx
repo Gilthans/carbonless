@@ -308,6 +308,188 @@ describe("ViewSettings", () => {
 		await waitFor(() => expect(chips()).toEqual(["acme/api", "acme/nope"]));
 	});
 
+	describe("two saves in a row", () => {
+		/** PUTs answer in turn: `answers[i]` for the i-th, held until called. */
+		function twoSaves() {
+			const held: ((r: Response) => void)[] = [];
+			const api = fakeApi(view(), {
+				"PUT /api/home/view": () =>
+					new Promise<Response>((done) => {
+						held.push(done);
+					}),
+			});
+			const bodies = () =>
+				api.calls
+					.filter((c) => c.method === "PUT")
+					.map((c) => (c.body as { repos: string[] }).repos);
+			return { api, held, bodies };
+		}
+		async function edit(change: (dialog: HTMLElement) => Promise<void>) {
+			await userEvent.click(
+				await screen.findByRole("button", { name: "Edit repos" }),
+			);
+			const dialog = screen.getByRole("dialog", { name: "My PRs" });
+			await change(dialog);
+			await userEvent.click(
+				within(dialog).getByRole("button", { name: "Save" }),
+			);
+		}
+		const removeConsole = (dialog: HTMLElement) =>
+			userEvent.click(
+				within(dialog).getByRole("button", { name: "Remove acme/console" }),
+			);
+		const addWeb = (dialog: HTMLElement) =>
+			userEvent.type(
+				within(dialog).getByRole("combobox", { name: "Add a repo" }),
+				"acme/web{Enter}",
+			);
+		const saved = (repos: string[]) =>
+			Response.json(view({}, { view: { name: "My PRs", repos } }));
+
+		it("the first refused while the second waits: no card, the second lands, the first never again", async () => {
+			const { held, bodies } = twoSaves();
+			renderWithQuery(<HomePage />);
+			await edit(removeConsole);
+			await waitFor(() => expect(held).toHaveLength(1));
+			await edit(addWeb);
+			expect(chips()).toEqual(["acme/api", "acme/web"]);
+			held[0]?.(
+				new Response(JSON.stringify({ error: "nope" }), { status: 400 }),
+			);
+			await waitFor(() => expect(held).toHaveLength(2));
+			held[1]?.(saved(["acme/api", "acme/web"]));
+			await waitFor(() =>
+				expect(screen.queryByRole("status", { name: "Saving" })).toBeNull(),
+			);
+			expect(screen.queryByTestId("view-save-failed")).toBeNull();
+			expect(chips()).toEqual(["acme/api", "acme/web"]);
+			expect(bodies()).toEqual([["acme/api"], ["acme/api", "acme/web"]]);
+		});
+
+		it("the first failing transiently while the second waits: the newest goes next, the first never again", async () => {
+			const { held, bodies } = twoSaves();
+			renderWithQuery(<HomePage />);
+			await edit(removeConsole);
+			await waitFor(() => expect(held).toHaveLength(1));
+			await edit(addWeb);
+			held[0]?.(
+				new Response(JSON.stringify({ error: "busy" }), { status: 503 }),
+			);
+			await waitFor(() => expect(held).toHaveLength(2));
+			held[1]?.(saved(["acme/api", "acme/web"]));
+			await waitFor(() =>
+				expect(screen.queryByRole("status", { name: "Saving" })).toBeNull(),
+			);
+			await new Promise((r) => setTimeout(r, 1500));
+			expect(bodies()).toEqual([["acme/api"], ["acme/api", "acme/web"]]);
+			expect(chips()).toEqual(["acme/api", "acme/web"]);
+		});
+
+		it("a refusal shown, then a newer save: the card goes, and its Retry can't come back", async () => {
+			const { held } = twoSaves();
+			renderWithQuery(<HomePage />);
+			await edit(removeConsole);
+			await waitFor(() => expect(held).toHaveLength(1));
+			held[0]?.(
+				new Response(JSON.stringify({ error: "nope" }), { status: 400 }),
+			);
+			await screen.findByTestId("view-save-failed");
+			await edit(addWeb);
+			expect(screen.queryByTestId("view-save-failed")).toBeNull();
+		});
+	});
+
+	it("a long outage keeps retrying behind the red 'still retrying' card and never rolls the view back", async () => {
+		vi.useFakeTimers({ shouldAdvanceTime: true });
+		try {
+			let failing = true;
+			const api = fakeApi(view(), {
+				"PUT /api/home/view": () =>
+					failing
+						? new Response(JSON.stringify({ error: "busy" }), { status: 503 })
+						: view({}, { view: { name: "My PRs", repos: ["acme/api"] } }),
+			});
+			const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+			renderWithQuery(<HomePage />);
+			await user.click(
+				await screen.findByRole("button", { name: "Edit repos" }),
+			);
+			const dialog = screen.getByRole("dialog", { name: "My PRs" });
+			await user.click(
+				within(dialog).getByRole("button", { name: "Remove acme/console" }),
+			);
+			await user.click(within(dialog).getByRole("button", { name: "Save" }));
+			const puts = () => api.calls.filter((c) => c.method === "PUT").length;
+			// 1 + 2 + 4 + 8 s of backoff: the 5th failure.
+			await act(() => vi.advanceTimersByTimeAsync(16_000));
+			const stalled = screen.getByTestId("view-save-stalled");
+			expect(stalled).toHaveRole("alert");
+			expect(stalled).toHaveTextContent("busy");
+			expect(
+				within(stalled).getByRole("img", {
+					name: "Not saved yet, still retrying",
+				}),
+			).toBeInTheDocument();
+			expect(screen.queryByTestId("save-delayed")).toBeNull();
+			// A minute more: still the new view, still asking.
+			const n = puts();
+			await act(() => vi.advanceTimersByTimeAsync(60_000));
+			expect(puts()).toBeGreaterThan(n);
+			expect(chips()).toEqual(["acme/api"]);
+			expect(screen.queryByTestId("view-save-failed")).toBeNull();
+			expect(
+				screen.getByRole("status", { name: "Saving" }),
+			).toBeInTheDocument();
+			failing = false;
+			await act(() => vi.advanceTimersByTimeAsync(31_000));
+			await waitFor(() =>
+				expect(screen.queryByTestId("view-save-stalled")).toBeNull(),
+			);
+			expect(chips()).toEqual(["acme/api"]);
+			expect(screen.queryByRole("status", { name: "Saving" })).toBeNull();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("Retry on the 'still retrying' card asks at once", async () => {
+		vi.useFakeTimers({ shouldAdvanceTime: true });
+		try {
+			let failing = true;
+			const api = fakeApi(view(), {
+				"PUT /api/home/view": () =>
+					failing
+						? new Response(JSON.stringify({ error: "busy" }), { status: 503 })
+						: view({}, { view: { name: "My PRs", repos: ["acme/api"] } }),
+			});
+			const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+			renderWithQuery(<HomePage />);
+			await user.click(
+				await screen.findByRole("button", { name: "Edit repos" }),
+			);
+			const dialog = screen.getByRole("dialog", { name: "My PRs" });
+			await user.click(
+				within(dialog).getByRole("button", { name: "Remove acme/console" }),
+			);
+			await user.click(within(dialog).getByRole("button", { name: "Save" }));
+			await act(() => vi.advanceTimersByTimeAsync(16_000));
+			const stalled = screen.getByTestId("view-save-stalled");
+			failing = false;
+			const n = api.calls.filter((c) => c.method === "PUT").length;
+			await user.click(
+				within(stalled).getByRole("button", { name: "Retry saving" }),
+			);
+			await waitFor(() =>
+				expect(api.calls.filter((c) => c.method === "PUT").length).toBe(n + 1),
+			);
+			await waitFor(() =>
+				expect(screen.queryByTestId("view-save-stalled")).toBeNull(),
+			);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	it("Dismiss drops a refused save", async () => {
 		fakeApi(view(), {
 			"PUT /api/home/view": () =>
