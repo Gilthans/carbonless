@@ -446,6 +446,34 @@ test("the view's repo input suggests the viewer's repos as you type; Save shows 
 	await expect(page.getByTestId("view-repo")).toHaveText([OWNER_REPO]);
 });
 
+test("after Save the pencil's tooltip doesn't stay over the sections", async ({
+	page,
+	workdir,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	if (isMobile) await page.setViewportSize({ width: 360, height: 780 });
+	await setup(workdir, pr);
+	const crb = await startCrb();
+	await goHome(page, crb.url);
+	const pencil = page.getByRole("button", { name: "Edit repos" });
+	if (isMobile) await pencil.tap();
+	else await pencil.click();
+	const dialog = page.getByRole("dialog", { name: "My PRs" });
+	const save = dialog.getByRole("button", { name: "Save" });
+	if (isMobile) await save.tap();
+	else await save.click();
+	await expect(dialog).toBeHidden();
+	if (!isMobile) await page.mouse.move(0, 0);
+	const tip = page
+		.locator("[role=tooltip]:not([hidden])")
+		.filter({ hasText: "Edit repos" });
+	// Give a late tooltip its chance to show.
+	await page.waitForTimeout(500);
+	await expect(tip).toHaveCount(0);
+});
+
 test("a refused view save says why and puts the last saved view back", async ({
 	page,
 	workdir,

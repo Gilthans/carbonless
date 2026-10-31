@@ -63,6 +63,9 @@ export function HomePage() {
 	const [editing, setEditing] = useState(false);
 	const openHelp = useOpenShortcutsHelp();
 	const viewSave = useViewSave();
+	// Each Save: the pencil gets focus back, its tooltip mustn't stay over
+	// the sections (a tap keeps a focus tooltip open).
+	const [saves, setSaves] = useState(0);
 	const refresh = useMutation({
 		mutationFn: postHomeRefresh,
 		onMutate: () => client.cancelQueries({ queryKey: homeQuery.queryKey }),
@@ -203,7 +206,11 @@ export function HomePage() {
 									Add repos
 								</button>
 							) : (
-								<Tooltip content="Edit repos" describe={false}>
+								<Tooltip
+									content="Edit repos"
+									describe={false}
+									dismissKey={saves}
+								>
 									{(trigger) => (
 										<button
 											type="button"
@@ -229,7 +236,10 @@ export function HomePage() {
 						<ViewSettings
 							open={editing}
 							home={data}
-							onSave={viewSave.save}
+							onSave={(repos) => {
+								viewSave.save(repos);
+								setSaves((n) => n + 1);
+							}}
 							onClose={() => setEditing(false)}
 						/>
 						<ViewSaveNotices save={viewSave} name={data.view.name} />

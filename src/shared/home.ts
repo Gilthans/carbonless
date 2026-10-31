@@ -62,7 +62,7 @@ export interface HomeRow {
 export interface HomeSection {
 	id: SectionId;
 	rows: HomeRow[];
-} // hidden rows included, flagged; newest updatedAt first
+} // hidden rows included, flagged; the viewer's turn first, then newest updatedAt
 export interface HomeView {
 	viewer: Person;
 	view: { name: string; repos: string[] };

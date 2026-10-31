@@ -178,6 +178,13 @@ export function ViewSettings(props: {
 						<button
 							type="button"
 							onClick={() => {
+								// Shut first: focus goes back to the pencil now, so the
+								// save (HomePage) can close the tooltip that focus opens.
+								const d = dialog.current;
+								if (d?.hasAttribute("open")) {
+									if (typeof d.close === "function") d.close();
+									else d.removeAttribute("open");
+								}
 								props.onSave(repos);
 								props.onClose();
 							}}
