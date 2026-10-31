@@ -845,6 +845,53 @@ test("at desktop width: every title in full, and the header names the columns in
 	await expect(header).toBeInViewport();
 });
 
+test("at desktop width a long login or many signs stay inside their columns", async ({
+	page,
+	workdir,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	test.skip(isMobile, "columns with a mouse; touch shares the layout");
+	await page.setViewportSize({ width: 1280, height: 900 });
+	await setup(workdir, pr);
+	const crb = await startReview(page, startCrb);
+	await goHome(page, crb.url);
+	const other = section(page, "Other open");
+	const login = "a-rather-long-github-login-of-39-chars";
+	const dialog = await rowAction(
+		page,
+		rowOf(other, "Migrate alerts table"),
+		"Waiting on",
+	);
+	await dialog.getByRole("textbox", { name: "Someone else" }).fill(login);
+	await dialog.getByRole("textbox", { name: "Someone else" }).press("Enter");
+	await other.getByRole("button", { name: "1 waiting" }).click();
+	const hidden = other.getByTestId("home-row-hidden");
+	// Cut on the row, whole in its name (the tooltip).
+	await expect(
+		hidden.getByRole("img", { name: `Waiting on ${login}` }),
+	).toBeVisible();
+	const spills = await page.evaluate(() =>
+		[
+			...document.querySelectorAll("[data-testid^=home-row] [data-col]"),
+		].flatMap((cell) => {
+			const box = cell.getBoundingClientRect();
+			return [...cell.querySelectorAll("*")]
+				.map((el) => [el, el.getBoundingClientRect()] as const)
+				.filter(
+					([, r]) =>
+						r.width > 0 && (r.left < box.left - 1 || r.right > box.right + 1),
+				)
+				.map(
+					([el, r]) =>
+						`${(cell as HTMLElement).dataset.col}: ${el.textContent?.slice(0, 20)} ${r.left}–${r.right} outside ${box.left}–${box.right}`,
+				);
+		}),
+	);
+	expect(spills).toEqual([]);
+});
+
 test("screenshot at desktop width (CRB_HOME_SHOTS only)", async ({
 	page,
 	workdir,

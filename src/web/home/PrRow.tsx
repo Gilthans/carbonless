@@ -102,7 +102,8 @@ const personOf = (row: HomeRow, login: string): Person =>
 /** Checks, review decision, open threads and author, each only when it applies. */
 function StatusIcons({ row, section }: { row: HomeRow; section: SectionId }) {
 	return (
-		<span className="flex shrink-0 items-center gap-1.5">
+		// Many signs wrap inside the Status column rather than spill.
+		<span className="flex max-w-full min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1">
 			{row.state === "MERGED" && (
 				<Sign label="Merged" className="text-done">
 					<GitMergeIcon size={14} aria-hidden />
@@ -172,9 +173,9 @@ function TurnCell({ row, viewer }: { row: HomeRow; viewer: string }) {
 	return (
 		<Sign
 			label={label}
-			className={names.includes("you") ? "font-semibold text-ink" : ""}
+			className={`max-w-full min-w-0 ${names.includes("you") ? "font-semibold text-ink" : ""}`}
 		>
-			<ArrowRightIcon size={14} aria-hidden className="text-accent" />
+			<ArrowRightIcon size={14} aria-hidden className="shrink-0 text-accent" />
 			{turn.logins.slice(0, 3).map((l) => (
 				<Avatar key={l} person={personOf(row, l)} me={same(l, viewer)} />
 			))}
@@ -258,11 +259,12 @@ function Reason({ row }: { row: HomeRow }) {
 			<Sign
 				focusable
 				label={`Waiting on ${waiting.who}`}
-				className="rounded-full border border-edge bg-raised px-2 text-xs text-muted"
+				// Inside its column: a long login is cut, whole in the tooltip.
+				className="max-w-full min-w-0 rounded-full border border-edge bg-raised px-2 text-xs text-muted"
 			>
-				<ArrowRightIcon size={12} aria-hidden />
+				<ArrowRightIcon size={12} aria-hidden className="shrink-0" />
 				<Avatar person={personOf(row, waiting.who)} size={16} />
-				<span className="hidden sm:inline">{waiting.who}</span>
+				<span className="hidden min-w-0 truncate sm:inline">{waiting.who}</span>
 			</Sign>
 		);
 	}
