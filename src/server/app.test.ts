@@ -19,7 +19,8 @@ import type {
 	ReviewView,
 	SessionInfo,
 } from "../shared/types";
-import { buildApp } from "./app";
+import { buildApp, prTitle, withPrTitle } from "./app";
+import type { HomeService } from "./home/homeService";
 import { SessionRegistry } from "./registry";
 import { BUILD, VERSION_HEADER } from "./version";
 
@@ -1443,5 +1444,41 @@ describe("API", () => {
 			});
 			expect(own.statusCode).toBe(200);
 		});
+	});
+});
+
+describe("the opening page's title", () => {
+	const evil = '"><script>alert(1)</script>&amp; <b>';
+	it("is escaped in its meta: GitHub's title is anyone's text", () => {
+		const html = withPrTitle("<html><head></head><p>spa</p></html>", evil);
+		expect(html).not.toContain("<script>");
+		expect(html).not.toContain("<b>");
+		expect(html).toContain(
+			'<meta name="crb-pr-title" content="&quot;&gt;&lt;script&gt;alert(1)&lt;/script&gt;&amp;amp; &lt;b&gt;"></head>',
+		);
+		// Read back (as an HTML parser decodes it), it is the title as it was.
+		const content = /content="([^"]*)"/.exec(html)?.[1] ?? "";
+		const decoded = content.replace(
+			/&(quot|gt|lt|#39|amp);/g,
+			(_, e: string) =>
+				({ quot: '"', gt: ">", lt: "<", "#39": "'", amp: "&" })[e] ?? "",
+		);
+		expect(decoded).toBe(evil);
+		expect(withPrTitle("<head></head>", null)).toBe("<head></head>");
+	});
+
+	it("is Home's for that PR, by any case of its name; none when Home doesn't know it", () => {
+		const home = {
+			knownPrs: () => [
+				{ owner: "Acme", repo: "Widget", number: 7, title: evil },
+			],
+		} as unknown as HomeService;
+		expect(prTitle(home, { owner: "acme", repo: "widget", number: 7 })).toBe(
+			evil,
+		);
+		expect(prTitle(home, { owner: "acme", repo: "widget", number: 8 })).toBe(
+			null,
+		);
+		expect(prTitle(undefined, { owner: "a", repo: "b", number: 1 })).toBe(null);
 	});
 });

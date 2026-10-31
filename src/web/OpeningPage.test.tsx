@@ -105,6 +105,16 @@ describe("/pr/<owner>/<repo>/<n>", () => {
 		});
 	});
 
+	it("shows a title with markup in it as its text", async () => {
+		const evil = '"><script>alert(1)</script>&amp; <b>bold</b>';
+		meta("crb-pr-title", evil);
+		serve(() => json(200, { id: ID }), true);
+		renderAt("/pr/acme/widget/7");
+		const loading = await screen.findByTestId("opening");
+		expect(screen.getByRole("heading", { level: 1 }).textContent).toBe(evil);
+		expect(loading.querySelector("script, b")).toBeNull();
+	});
+
 	it("without a known title, names the PR by repo and number", async () => {
 		serve(() => json(200, { id: ID }), true);
 		renderAt("/pr/acme/widget/7");

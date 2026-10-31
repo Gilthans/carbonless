@@ -447,13 +447,9 @@ export async function buildApp(
 		title: string | null,
 	) => {
 		const html = await readFile(join(webRoot as string, "index.html"), "utf8");
-		const meta =
-			title === null
-				? ""
-				: `<meta name="crb-pr-title" content="${escapeAttribute(title)}">`;
 		return reply
 			.type("text/html; charset=utf-8")
-			.send(html.replace("</head>", `${meta}</head>`));
+			.send(withPrTitle(html, title));
 	};
 	if (webRoot) {
 		await app.register(fastifyStatic, { root: webRoot });
@@ -485,8 +481,18 @@ const escapeAttribute = (text: string) =>
 			] ?? c,
 	);
 
+/**
+ * The page `html` with the PR's `title` in its `crb-pr-title` meta (none
+ * for null), escaped: a PR's title is anyone's text.
+ */
+export function withPrTitle(html: string, title: string | null): string {
+	if (title === null) return html;
+	const meta = `<meta name="crb-pr-title" content="${escapeAttribute(title)}">`;
+	return html.replace("</head>", `${meta}</head>`);
+}
+
 /** `pr`'s title as Home last read it; null when Home doesn't know it. */
-function prTitle(
+export function prTitle(
 	home: HomeService | undefined,
 	pr: { owner: string; repo: string; number: number },
 ): string | null {
