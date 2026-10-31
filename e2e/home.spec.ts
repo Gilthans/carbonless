@@ -760,16 +760,42 @@ test("at 360px: no sideways scroll with the busiest rows, and 40px targets", asy
 	}
 });
 
-test("at desktop width: every title in full, and the header names the columns in line with them", async ({
+test("at desktop width: every title in full, and the header names the columns in line with them and the sub-rows", async ({
 	page,
 	workdir,
 	pr,
 	startCrb,
 }) => {
 	await page.setViewportSize({ width: 1280, height: 900 });
-	await setup(workdir, pr);
+	const made = await setup(workdir, pr);
 	const crb = await startReview(page, startCrb);
+	// A second review of the PR, pinned to its head and started: sub-rows.
+	// The head is a commit GitHub knows of the PR (a review on it).
+	const head = made.repo.shas.at(-1) ?? "";
+	made.editScenario((s) => {
+		const graphql = s.prs[String(PR_NUMBER)]?.graphql;
+		if (!graphql) throw new Error("no graphql");
+		graphql.reviews = [
+			{
+				author: { login: "rev1", __typename: "User" },
+				state: "COMMENTED",
+				submittedAt: "2026-01-04T00:00:00Z",
+				commit: { oid: head },
+			},
+		];
+	});
+	const origin = new URL(crb.url).origin;
+	await page.goto(`${origin}/pr/${OWNER_REPO}/${PR_NUMBER}?head=${head}`);
+	await expect(page).toHaveURL(/\/r\/[0-9a-z]{26}$/);
+	await openFiles(page, page.url(), "Lines");
+	await fileAction(fileSection(page, "new.txt"), "Mark remaining reviewed");
+	await expect(
+		fileSection(page, "new.txt").getByRole("progressbar", {
+			name: "File progress",
+		}),
+	).toHaveAttribute("aria-valuenow", "100");
 	await goHome(page, crb.url);
+	await expect(page.getByTestId("home-subrow")).toHaveCount(2);
 	await expect(page.getByText(/WidgetCacheInvalidation/)).toBeVisible();
 	expect(await cutTitles(page)).toEqual([]);
 	const header = page.getByTestId("home-columns");
@@ -795,6 +821,18 @@ test("at desktop width: every title in full, and the header names the columns in
 				const left = cell?.getBoundingClientRect().left;
 				if (left === undefined || Math.abs(left - x) > 1) {
 					out.push(`${col}: ${left} vs ${x}`);
+				}
+			}
+			// A sub-row's coverage and age, under Reviewed and Updated.
+			if (col !== "coverage" && col !== "updated") continue;
+			for (const row of document.querySelectorAll(
+				"[data-testid=home-subrow]",
+			)) {
+				const left = row
+					.querySelector(`[data-col="${col}"]`)
+					?.getBoundingClientRect().left;
+				if (left === undefined || Math.abs(left - x) > 1) {
+					out.push(`sub-row ${col}: ${left} vs ${x}`);
 				}
 			}
 		}

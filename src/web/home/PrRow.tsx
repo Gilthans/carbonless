@@ -494,10 +494,12 @@ export function PrRow(props: {
 
 /** One of a PR's several started reviews, under its row. */
 function SubRow({ review }: { review: RowReview }) {
+	// The PR row's room for the touch "⋯", so the columns line up.
+	const touch = !useMedia("(hover: hover)");
 	return (
 		<li
 			data-testid="home-subrow"
-			className="relative flex min-h-10 items-center gap-3 py-1 pr-3 pl-8 text-xs text-muted hover:bg-raised focus-within:bg-raised lg:pl-38 lg:text-sm"
+			className={`relative flex min-h-10 items-center gap-3 py-1 pr-3 pl-8 text-xs text-muted hover:bg-raised focus-within:bg-raised lg:pl-38 lg:text-sm ${touch ? "lg:pr-12" : ""}`}
 		>
 			<a
 				href={`/r/${review.id}`}
