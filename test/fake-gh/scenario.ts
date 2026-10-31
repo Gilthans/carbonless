@@ -463,9 +463,10 @@ export function threadComment(c: {
  * The calls `hold` can stop, each where its `…DelayMs` waits: `comments`
  * and `threadContent` are reads of threads' comments, `threads` their
  * summaries, `restList` the REST review comments, `comment` a new thread's
- * REST comment.
+ * REST comment, `home` Home's PR list and details queries (a refresh).
  */
 export type HoldOp =
+	| "home"
 	| "prView"
 	| "threads"
 	| "threadContent"

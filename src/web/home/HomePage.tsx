@@ -18,6 +18,7 @@ import { OpenBox } from "./OpenBox";
 import { ColumnHeader, Sign } from "./PrRow";
 import { Section } from "./Section";
 import { ViewSettings } from "./ViewSettings";
+import { useViewSave, ViewSaveNotices } from "./viewSave";
 
 /** The page asks for a refresh when shown if the last one is older than this. */
 export const STALE_MS = 30_000;
@@ -61,6 +62,7 @@ export function HomePage() {
 	const home = useQuery(homeQuery);
 	const [editing, setEditing] = useState(false);
 	const openHelp = useOpenShortcutsHelp();
+	const viewSave = useViewSave();
 	const refresh = useMutation({
 		mutationFn: postHomeRefresh,
 		onMutate: () => client.cancelQueries({ queryKey: homeQuery.queryKey }),
@@ -93,7 +95,8 @@ export function HomePage() {
 		document.title = "carbonless";
 	}, []);
 
-	const data = home.data;
+	// A save being made shows at once, laid over the server's last answer.
+	const data = home.data && viewSave.shown(home.data);
 	return (
 		<div className="min-h-screen bg-canvas font-sans text-ink">
 			<header className="border-b border-line bg-surface header-glow">
@@ -170,9 +173,21 @@ export function HomePage() {
 							<h1 className="font-display text-base font-bold">
 								{data.view.name}
 							</h1>
+							{viewSave.saving && (
+								<span role="status" aria-label="Saving">
+									<Sign label="Saving…" className="text-muted">
+										<SyncIcon
+											size={14}
+											aria-hidden
+											className="animate-spin motion-reduce:animate-none"
+										/>
+									</Sign>
+								</span>
+							)}
 							{data.view.repos.map((r) => (
 								<span
 									key={r}
+									data-testid="view-repo"
 									className="inline-flex h-7 max-w-full items-center gap-1.5 truncate rounded-full border border-edge bg-raised px-2.5 text-xs text-ink-soft"
 								>
 									<RepoIcon size={12} aria-hidden className="text-faint" />
@@ -214,8 +229,10 @@ export function HomePage() {
 						<ViewSettings
 							open={editing}
 							home={data}
+							onSave={viewSave.save}
 							onClose={() => setEditing(false)}
 						/>
+						<ViewSaveNotices save={viewSave} name={data.view.name} />
 					</>
 				)}
 			</main>

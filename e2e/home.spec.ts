@@ -3,7 +3,12 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Locator, Page } from "@playwright/test";
 import { bumpHomePr, homePr, release } from "../test/fake-gh/scenario";
-import { fileAction, fileSection, openFiles } from "./files-ui";
+import {
+	expectNoPageOverflow,
+	fileAction,
+	fileSection,
+	openFiles,
+} from "./files-ui";
 import { expect, OWNER_REPO, PR_NUMBER, type Pr, test } from "./fixtures";
 
 /**
@@ -384,13 +389,13 @@ test("Repos spins while the viewer's repos load, then lists only theirs", async 
 	await expect(page.getByRole("status")).toHaveText("");
 });
 
-test("the view's repo input suggests the viewer's repos as you type; Save spins while it saves", async ({
+test("the view's repo input suggests the viewer's repos as you type; Save shows the new view at once, warns while unconfirmed", async ({
 	page,
 	workdir,
 	pr,
 	startCrb,
 }) => {
-	await setup(workdir, pr);
+	const made = await setup(workdir, pr);
 	const crb = await startCrb();
 	await goHome(page, crb.url);
 	await page.getByRole("button", { name: "Edit repos" }).click();
@@ -411,28 +416,61 @@ test("the view's repo input suggests the viewer's repos as you type; Save spins 
 			.getByRole("listitem"),
 	).toHaveText(["acme/api", OWNER_REPO]);
 	await expect(field).toHaveValue("");
-	// The save is held: Save spins, nothing can change meanwhile.
-	let release = () => {};
-	const held = new Promise<void>((done) => {
-		release = done;
+	await dialog.getByRole("button", { name: "Remove acme/api" }).click();
+	// GitHub's answers for the refresh the save makes are held.
+	made.editScenario((s) => {
+		s.hold = ["home"];
 	});
-	await page.route("**/api/home/view", async (route) => {
-		await held;
-		await route.continue();
-	});
-	const save = dialog.getByRole("button", { name: "Save" });
-	await save.click();
-	await expect(save).toBeDisabled();
-	await expect(save.locator(".animate-spin")).toBeVisible();
-	await expect(field).toHaveAttribute("readonly", "");
-	await expect(
-		dialog.getByRole("button", { name: "Remove acme/api" }),
-	).toBeDisabled();
-	release();
+	await dialog.getByRole("button", { name: "Save" }).click();
+	// At once: the dialog shuts, acme/api's rows go, the chips are the new
+	// list, and a spinner says it saves.
 	await expect(dialog).toBeHidden();
+	await expect(page.getByText("Snooze PRs from the inbox")).toHaveCount(0);
+	await expect(page.getByTestId("view-repo")).toHaveText([OWNER_REPO]);
+	const saving = page.getByRole("status", { name: "Saving" });
+	await expect(saving).toBeVisible();
+	// Unconfirmed past 5 s: the system's delayed warning.
+	const delayed = page.getByTestId("save-delayed");
+	await expect(delayed).toBeVisible({ timeout: 15_000 });
+	await expect(delayed).toContainText("Saving My PRs…");
+	await expectNoPageOverflow(page);
+	release(made.scenarioPath, "home");
+	await expect(saving).toBeHidden();
+	await expect(delayed).toBeHidden();
 	await expect(
 		page.getByText("Add widget cache with a rather long title"),
 	).toBeVisible();
+	await expect(page.getByText("Snooze PRs from the inbox")).toHaveCount(0);
+	// The server kept it: a reload shows the same.
+	await page.reload();
+	await expect(page.getByTestId("view-repo")).toHaveText([OWNER_REPO]);
+});
+
+test("a refused view save says why and puts the last saved view back", async ({
+	page,
+	workdir,
+	pr,
+	startCrb,
+	expectConsoleError,
+}) => {
+	expectConsoleError(/status of 400/);
+	await setup(workdir, pr);
+	const crb = await startCrb();
+	await goHome(page, crb.url);
+	await page.getByRole("button", { name: "Edit repos" }).click();
+	const dialog = page.getByRole("dialog", { name: "My PRs" });
+	await dialog.getByRole("button", { name: "Remove acme/api" }).click();
+	await dialog
+		.getByRole("combobox", { name: "Add a repo" })
+		.fill("acme/nowhere");
+	await dialog.getByRole("combobox", { name: "Add a repo" }).press("Enter");
+	await dialog.getByRole("button", { name: "Save" }).click();
+	const failed = page.getByTestId("view-save-failed");
+	await expect(failed).toContainText("acme/nowhere not found");
+	await expect(page.getByTestId("view-repo")).toHaveText(["acme/api"]);
+	await expect(page.getByText("Snooze PRs from the inbox")).toBeVisible();
+	await failed.getByRole("button", { name: "Dismiss" }).click();
+	await expect(failed).toBeHidden();
 });
 
 test("a snooze moves the row behind its footer, Wake up brings it back, and activity wakes it", async ({
@@ -1037,6 +1075,22 @@ test("screenshots of view settings and the loading page (CRB_HOME_SHOTS only)", 
 	});
 	await page.keyboard.press("Escape");
 	await page.keyboard.press("Escape");
+	// A save unconfirmed past 5 s: the new view, its spinner, the warning.
+	await page.getByRole("button", { name: "Edit repos" }).click();
+	await dialog.getByRole("combobox", { name: "Add a repo" }).fill(OWNER_REPO);
+	await dialog.getByRole("combobox", { name: "Add a repo" }).press("Enter");
+	made.editScenario((s) => {
+		s.hold = ["home"];
+	});
+	await dialog.getByRole("button", { name: "Save" }).click();
+	await expect(page.getByTestId("save-delayed")).toBeVisible({
+		timeout: 15_000,
+	});
+	await page.screenshot({
+		path: join(shots as string, `view-saving-${at}.png`),
+	});
+	release(made.scenarioPath, "home");
+	await expect(page.getByRole("status", { name: "Saving" })).toBeHidden();
 	// The loading page, GitHub's answer held.
 	made.editScenario((s) => {
 		s.hold = ["prView"];

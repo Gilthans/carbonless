@@ -274,10 +274,23 @@ Owner's decisions on this part (2026-10-28):
   the same source and matching), the same spinner while the viewer's repos
   load, without the ones listed already; arrows pick one, Enter or a click
   adds it, Enter with none picked adds what was typed, Escape closes the
-  list (the dialog stays); while Save is out (owner, 2026-10-31: "there's
-  no spinner while it is working"), Save spins and is disabled and the
-  inputs are read-only; a failure shows why and gives them back;
-  the server writes the file; a hand edit is picked up on the next refresh.
+  list (the dialog stays). Save reacts at once, like the rest of the system
+  (owner, 2026-10-31: "when saving the repo list, behavior should match
+  the rest of the system: immediate reaction, if after 5 sec server hasn't
+  confirmed the update state show a warning, and a loading spinner
+  somewhere to indicate the state is reloading"; this replaces the
+  earlier spinning Save): the dialog closes and Home shows the new list
+  and drops the rows of removed repos (a started PR stays, as the server
+  keeps it) before the server answers; a spinner by the view's name shows
+  while the server saves and reads the added repos; unconfirmed after
+  5 s, the review page's yellow "Saving is delayed" notice says so, in
+  the same place. Saves go one at a time. A transient failure (crb
+  unreachable, a timeout, a 5xx) retries with the review state's backoff
+  (a PUT of the whole list is safe to repeat), the notice saying why; a
+  refusal, or 5 transient failures in a row, shows a red "Not saved"
+  notice with the error, Retry and Dismiss, and Home goes back to the
+  last saved view. Nothing refused is sent again on its own (**call**).
+  The server writes the file; a hand edit is picked up on the next refresh.
   A missing file means an empty view, and Home says so and offers to add
   repos. Several views in the file are kept but only the first is shown.
 - Per-device config is deliberate: which repos this machine watches is the

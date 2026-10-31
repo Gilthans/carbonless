@@ -119,7 +119,7 @@ interface Batch {
 }
 
 /** A transient failure in a few words, for the delayed notice. */
-function waitReason(error: unknown): string {
+export function waitReason(error: unknown): string {
 	if (error instanceof ApiError && error.status === 0) return "Can't reach crb";
 	return error instanceof Error ? error.message : String(error);
 }

@@ -957,7 +957,7 @@ switch (cmd) {
 		const homeList = (f.query ?? "").includes("open: pullRequests(states: OPEN");
 		const homeDetails = /\br\d+: repository\(owner: "/.test(f.query ?? "");
 		if (homeList || homeDetails) {
-			if (s.homeDelayMs) sleep(s.homeDelayMs);
+			delay("home", s.homeDelayMs);
 			if (s.rateLimited) {
 				process.stdout.write(
 					`${JSON.stringify({ data: null, errors: [{ type: "RATE_LIMITED", message: "API rate limit exceeded for user ID 1." }] })}\n`,

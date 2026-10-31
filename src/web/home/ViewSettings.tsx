@@ -1,15 +1,9 @@
-import { PlusIcon, RepoIcon, SyncIcon, XIcon } from "@primer/octicons-react";
-import {
-	keepPreviousData,
-	useMutation,
-	useQuery,
-	useQueryClient,
-} from "@tanstack/react-query";
+import { PlusIcon, RepoIcon, XIcon } from "@primer/octicons-react";
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { useEffect, useId, useRef, useState } from "react";
 import type { HomeView } from "../../shared/home";
-import { ErrorMessage } from "../ui";
 import { NOT_PHONE, useMedia } from "../useMedia";
-import { homeQuery, putView, searchQuery } from "./homeApi";
+import { searchQuery } from "./homeApi";
 import {
 	DEBOUNCE_MS,
 	SuggestionList,
@@ -56,17 +50,18 @@ const iconButton =
 
 /**
  * The view's repos: remove, add by owner/repo or URL, suggestions from
- * recent reviews. Saves through PUT /api/home/view. A centered dialog, a
+ * recent reviews. Save hands the list to `onSave` and closes: Home shows
+ * the new view at once while it saves (viewSave.tsx). A centered dialog, a
  * bottom sheet on a phone.
  */
 export function ViewSettings(props: {
 	open: boolean;
 	home: HomeView;
+	onSave: (repos: string[]) => void;
 	onClose: () => void;
 }) {
 	const { home } = props;
 	const phone = !useMedia(NOT_PHONE);
-	const client = useQueryClient();
 	const dialog = useRef<HTMLDialogElement>(null);
 	const titleId = useId();
 	const [repos, setRepos] = useState(home.view.repos);
@@ -85,15 +80,6 @@ export function ViewSettings(props: {
 		if (typeof d.showModal === "function") d.showModal();
 		else d.setAttribute("open", "");
 	}, [props.open, home.view.repos]);
-	const save = useMutation({
-		mutationFn: () => putView(repos),
-		onSuccess: (answer) => {
-			client.setQueryData(homeQuery.queryKey, answer);
-			props.onClose();
-		},
-	});
-	// While the save is out, nothing changes what it saves.
-	const saving = save.isPending;
 	// A hand-edited config may say Acme/API: repos compare without case.
 	const listed = (name: string) =>
 		repos.some((r) => r.toLowerCase() === name.toLowerCase());
@@ -156,15 +142,14 @@ export function ViewSettings(props: {
 									type="button"
 									aria-label={`Remove ${r}`}
 									onClick={() => setRepos(repos.filter((x) => x !== r))}
-									disabled={saving}
-									className={`${iconButton} hover:text-bad disabled:opacity-60`}
+									className={`${iconButton} hover:text-bad`}
 								>
 									<XIcon aria-hidden />
 								</button>
 							</li>
 						))}
 					</ul>
-					<RepoInput listed={listed} onAdd={add} disabled={saving} />
+					<RepoInput listed={listed} onAdd={add} />
 					{suggestions.length > 0 && (
 						<ul aria-label="Suggested" className="flex flex-wrap gap-1.5">
 							{suggestions.map((r) => (
@@ -173,8 +158,7 @@ export function ViewSettings(props: {
 										type="button"
 										aria-label={`Add ${r}`}
 										onClick={() => add(r)}
-										disabled={saving}
-										className="flex min-h-10 items-center gap-1.5 rounded-full border border-dashed border-edge px-3 text-sm text-muted hover:border-solid hover:text-ink focus-visible:outline-2 focus-visible:outline-accent disabled:opacity-60"
+										className="flex min-h-10 items-center gap-1.5 rounded-full border border-dashed border-edge px-3 text-sm text-muted hover:border-solid hover:text-ink focus-visible:outline-2 focus-visible:outline-accent"
 									>
 										<PlusIcon size={12} aria-hidden />
 										{r}
@@ -183,7 +167,6 @@ export function ViewSettings(props: {
 							))}
 						</ul>
 					)}
-					{save.isError && <ErrorMessage error={save.error} />}
 					<div className="flex justify-end gap-1.5">
 						<button
 							type="button"
@@ -194,18 +177,12 @@ export function ViewSettings(props: {
 						</button>
 						<button
 							type="button"
-							onClick={() => save.mutate()}
-							disabled={saving}
-							aria-busy={saving || undefined}
-							className="cta flex h-10 items-center gap-1.5 rounded-md px-4 text-sm font-semibold text-ink hover:brightness-110 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:opacity-60"
+							onClick={() => {
+								props.onSave(repos);
+								props.onClose();
+							}}
+							className="cta flex h-10 items-center gap-1.5 rounded-md px-4 text-sm font-semibold text-ink hover:brightness-110 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
 						>
-							{saving && (
-								<SyncIcon
-									size={14}
-									aria-hidden
-									className="animate-spin motion-reduce:animate-none"
-								/>
-							)}
 							Save
 						</button>
 					</div>
@@ -224,7 +201,6 @@ export function ViewSettings(props: {
 function RepoInput(props: {
 	listed: (name: string) => boolean;
 	onAdd: (name: string) => void;
-	disabled: boolean;
 }) {
 	const [input, setInput] = useState("");
 	const [bad, setBad] = useState(false);
@@ -243,7 +219,7 @@ function RepoInput(props: {
 		.map((r) => r.name)
 		.filter((name) => !props.listed(name));
 	const loading = !!data?.reposPending;
-	const listOpen = open && !props.disabled && (options.length > 0 || loading);
+	const listOpen = open && (options.length > 0 || loading);
 	const keys = useSuggestionKeys({
 		count: options.length,
 		listOpen,
@@ -253,15 +229,12 @@ function RepoInput(props: {
 		onClose: () => setOpen(false),
 	});
 	const done = (name: string) => {
-		// While the save is out, what it saves can't change.
-		if (props.disabled) return;
 		props.onAdd(name);
 		setInput("");
 		setBad(false);
 		keys.reset();
 	};
 	const submit = () => {
-		if (props.disabled) return;
 		const picked = listOpen ? options[keys.current] : undefined;
 		if (picked) return done(picked);
 		const name = parseRepo(input);
@@ -294,7 +267,6 @@ function RepoInput(props: {
 					aria-invalid={bad || undefined}
 					placeholder="owner/repo or GitHub URL"
 					value={input}
-					readOnly={props.disabled}
 					onChange={(e) => {
 						setInput(e.target.value);
 						setBad(false);
@@ -308,13 +280,12 @@ function RepoInput(props: {
 					}}
 					autoComplete="off"
 					spellCheck={false}
-					className="h-10 min-w-0 flex-1 rounded-md border border-line-strong bg-code px-2.5 text-sm text-ink placeholder:text-faint read-only:opacity-60 focus-visible:outline-2 focus-visible:outline-accent aria-invalid:border-bad"
+					className="h-10 min-w-0 flex-1 rounded-md border border-line-strong bg-code px-2.5 text-sm text-ink placeholder:text-faint focus-visible:outline-2 focus-visible:outline-accent aria-invalid:border-bad"
 				/>
 				<button
 					type="submit"
 					aria-label="Add"
-					disabled={props.disabled}
-					className={`${iconButton} border border-edge disabled:opacity-60`}
+					className={`${iconButton} border border-edge`}
 				>
 					<PlusIcon aria-hidden />
 				</button>

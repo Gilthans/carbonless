@@ -1,11 +1,5 @@
 // @vitest-environment jsdom
-import {
-	cleanup,
-	fireEvent,
-	screen,
-	waitFor,
-	within,
-} from "@testing-library/react";
+import { act, cleanup, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { SearchResult } from "../../shared/home";
@@ -25,6 +19,10 @@ afterEach(() => {
 	cleanup();
 	vi.unstubAllGlobals();
 });
+
+/** The view's repo chips on Home. */
+const chips = () =>
+	screen.queryAllByTestId("view-repo").map((c) => c.textContent);
 
 const started = (owner: string, repo: string, number: number) =>
 	row({
@@ -112,47 +110,220 @@ describe("ViewSettings", () => {
 		expect(screen.getByText("acme/web")).toBeInTheDocument();
 	});
 
-	it("while the save is out: a spinner on Save, everything read-only; a failure says why and gives the inputs back", async () => {
+	it("Save closes at once and shows the new view: removed rows go before the server answers, a spinner while it saves", async () => {
 		let answer: (r: Response) => void = () => {};
-		fakeApi(view({ mine: [started("far", "away", 1)] }), {
+		const api = fakeApi(
+			view({
+				mine: [
+					row({ number: 1, title: "API change" }),
+					row({ repo: "console", number: 2, title: "Console change" }),
+				],
+				reviewing: [started("acme", "console", 3)],
+			}),
+			{
+				"PUT /api/home/view": () =>
+					new Promise<Response>((done) => {
+						answer = done;
+					}),
+			},
+		);
+		const { client } = renderWithQuery(<HomePage />);
+		await userEvent.click(
+			await screen.findByRole("button", { name: "Edit repos" }),
+		);
+		const dialog = screen.getByRole("dialog", { name: "My PRs" });
+		await userEvent.click(
+			within(dialog).getByRole("button", { name: "Remove acme/console" }),
+		);
+		await userEvent.click(within(dialog).getByRole("button", { name: "Save" }));
+		// At once, with the PUT still out.
+		expect(screen.queryByRole("dialog")).toBeNull();
+		expect(screen.queryByText("Console change")).toBeNull();
+		expect(screen.getByText("API change")).toBeInTheDocument();
+		// A started PR stays, as the server keeps it.
+		expect(screen.getByText("#3")).toBeInTheDocument();
+		expect(chips()).toEqual(["acme/api"]);
+		expect(screen.getByRole("status", { name: "Saving" })).toBeInTheDocument();
+		expect(api.calls.find((c) => c.method === "PUT")?.body).toEqual({
+			repos: ["acme/api"],
+		});
+		// A read of the old view meanwhile doesn't bring the rows back.
+		await client.refetchQueries({ queryKey: ["home"] });
+		expect(screen.queryByText("Console change")).toBeNull();
+		answer(
+			Response.json(
+				view(
+					{ mine: [row({ number: 1, title: "API change" })] },
+					{ view: { name: "My PRs", repos: ["acme/api"] } },
+				),
+			),
+		);
+		await waitFor(() =>
+			expect(screen.queryByRole("status", { name: "Saving" })).toBeNull(),
+		);
+		expect(screen.queryByText("Console change")).toBeNull();
+		expect(screen.queryByTestId("save-delayed")).toBeNull();
+	});
+
+	it("an unconfirmed save shows the delayed warning after 5 s, gone once it lands", async () => {
+		vi.useFakeTimers({ shouldAdvanceTime: true });
+		try {
+			let answer: (r: Response) => void = () => {};
+			fakeApi(view(), {
+				"PUT /api/home/view": () =>
+					new Promise<Response>((done) => {
+						answer = done;
+					}),
+			});
+			const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+			renderWithQuery(<HomePage />);
+			await user.click(
+				await screen.findByRole("button", { name: "Edit repos" }),
+			);
+			const dialog = screen.getByRole("dialog", { name: "My PRs" });
+			await user.click(
+				within(dialog).getByRole("button", { name: "Remove acme/console" }),
+			);
+			await user.click(within(dialog).getByRole("button", { name: "Save" }));
+			await act(() => vi.advanceTimersByTimeAsync(4000));
+			expect(screen.queryByTestId("save-delayed")).toBeNull();
+			await act(() => vi.advanceTimersByTimeAsync(1500));
+			expect(screen.getByTestId("save-delayed")).toHaveTextContent(
+				"Saving My PRs…",
+			);
+			expect(
+				screen.getByRole("img", { name: "Saving is delayed" }),
+			).toBeInTheDocument();
+			answer(
+				Response.json(
+					view({}, { view: { name: "My PRs", repos: ["acme/api"] } }),
+				),
+			);
+			await waitFor(() =>
+				expect(screen.queryByTestId("save-delayed")).toBeNull(),
+			);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("retries a transient failure on its own, saying why it waits", async () => {
+		vi.useFakeTimers({ shouldAdvanceTime: true });
+		try {
+			let failing = true;
+			const api = fakeApi(view(), {
+				"PUT /api/home/view": () =>
+					failing
+						? new Response(JSON.stringify({ error: "busy" }), { status: 503 })
+						: view({}, { view: { name: "My PRs", repos: ["acme/api"] } }),
+			});
+			const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+			renderWithQuery(<HomePage />);
+			await user.click(
+				await screen.findByRole("button", { name: "Edit repos" }),
+			);
+			const dialog = screen.getByRole("dialog", { name: "My PRs" });
+			await user.click(
+				within(dialog).getByRole("button", { name: "Remove acme/console" }),
+			);
+			await user.click(within(dialog).getByRole("button", { name: "Save" }));
+			await act(() => vi.advanceTimersByTimeAsync(5500));
+			const puts = () => api.calls.filter((c) => c.method === "PUT").length;
+			expect(puts()).toBeGreaterThanOrEqual(2);
+			expect(screen.queryByRole("alert")).toBeNull();
+			expect(screen.getByTestId("save-delayed")).toHaveTextContent("busy");
+			// Still the new view meanwhile.
+			expect(chips()).toEqual(["acme/api"]);
+			failing = false;
+			await act(() => vi.advanceTimersByTimeAsync(8000));
+			await waitFor(() =>
+				expect(screen.queryByTestId("save-delayed")).toBeNull(),
+			);
+			expect(screen.queryByRole("status", { name: "Saving" })).toBeNull();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("a refused save says why and restores the last saved view; Retry sends it again", async () => {
+		let refuse = true;
+		const api = fakeApi(
+			view({
+				mine: [row({ repo: "console", number: 2, title: "Console change" })],
+			}),
+			{
+				"PUT /api/home/view": (call) =>
+					refuse
+						? new Response(
+								JSON.stringify({
+									error: "Repository acme/nope not found on GitHub",
+								}),
+								{ status: 400 },
+							)
+						: view(
+								{},
+								{
+									view: {
+										name: "My PRs",
+										repos: (call.body as { repos: string[] }).repos,
+									},
+								},
+							),
+			},
+		);
+		renderWithQuery(<HomePage />);
+		await userEvent.click(
+			await screen.findByRole("button", { name: "Edit repos" }),
+		);
+		const dialog = screen.getByRole("dialog", { name: "My PRs" });
+		await userEvent.click(
+			within(dialog).getByRole("button", { name: "Remove acme/console" }),
+		);
+		await userEvent.type(
+			within(dialog).getByRole("combobox", { name: "Add a repo" }),
+			"acme/nope{Enter}",
+		);
+		await userEvent.click(within(dialog).getByRole("button", { name: "Save" }));
+		const failed = await screen.findByTestId("view-save-failed");
+		expect(failed).toHaveRole("alert");
+		expect(failed).toHaveTextContent(
+			"Repository acme/nope not found on GitHub",
+		);
+		// The last saved view, rows and chips.
+		expect(screen.getByText("Console change")).toBeInTheDocument();
+		expect(chips()).toEqual(["acme/api", "acme/console"]);
+		expect(screen.queryByRole("status", { name: "Saving" })).toBeNull();
+		// Refused: never sent again on its own.
+		expect(api.calls.filter((c) => c.method === "PUT")).toHaveLength(1);
+		refuse = false;
+		await userEvent.click(
+			within(failed).getByRole("button", { name: "Retry saving" }),
+		);
+		await waitFor(() =>
+			expect(screen.queryByTestId("view-save-failed")).toBeNull(),
+		);
+		expect(api.calls.filter((c) => c.method === "PUT").at(-1)?.body).toEqual({
+			repos: ["acme/api", "acme/nope"],
+		});
+		await waitFor(() => expect(chips()).toEqual(["acme/api", "acme/nope"]));
+	});
+
+	it("Dismiss drops a refused save", async () => {
+		fakeApi(view(), {
 			"PUT /api/home/view": () =>
-				new Promise<Response>((done) => {
-					answer = done;
-				}),
+				new Response(JSON.stringify({ error: "nope" }), { status: 400 }),
 		});
 		renderWithQuery(<HomePage />);
 		await userEvent.click(
 			await screen.findByRole("button", { name: "Edit repos" }),
 		);
 		const dialog = screen.getByRole("dialog", { name: "My PRs" });
-		const save = within(dialog).getByRole("button", { name: "Save" });
-		await userEvent.click(save);
-		const field = within(dialog).getByRole("combobox", { name: "Add a repo" });
-		await waitFor(() => expect(save).toBeDisabled());
-		expect(save).toHaveAttribute("aria-busy", "true");
-		expect(save.querySelector(".animate-spin")).not.toBeNull();
-		expect(field).toHaveAttribute("readonly");
-		expect(
-			within(dialog).getByRole("button", { name: "Remove acme/api" }),
-		).toBeDisabled();
-		expect(
-			within(dialog).getByRole("button", { name: "Add far/away" }),
-		).toBeDisabled();
-		answer(
-			new Response(JSON.stringify({ error: "config is read-only" }), {
-				status: 500,
-			}),
+		await userEvent.click(within(dialog).getByRole("button", { name: "Save" }));
+		const failed = await screen.findByTestId("view-save-failed");
+		await userEvent.click(
+			within(failed).getByRole("button", { name: "Dismiss" }),
 		);
-		expect(await within(dialog).findByRole("alert")).toHaveTextContent(
-			"config is read-only",
-		);
-		expect(save).toBeEnabled();
-		expect(save).not.toHaveAttribute("aria-busy", "true");
-		expect(save.querySelector(".animate-spin")).toBeNull();
-		expect(field).not.toHaveAttribute("readonly");
-		expect(
-			within(dialog).getByRole("button", { name: "Remove acme/api" }),
-		).toBeEnabled();
+		expect(screen.queryByTestId("view-save-failed")).toBeNull();
 	});
 
 	it("opens with an empty repo input each time, whatever was typed before Cancel", async () => {
@@ -172,48 +343,6 @@ describe("ViewSettings", () => {
 		field = within(dialog).getByRole("combobox", { name: "Add a repo" });
 		expect(field).toHaveValue("");
 		expect(field).not.toHaveAttribute("aria-invalid");
-	});
-
-	it("while the save is out, neither Enter nor a suggestion adds a repo", async () => {
-		let answer: (r: Response) => void = () => {};
-		fakeApi(view(), {
-			"GET /api/home/search": (): SearchResult => ({
-				...emptySearch,
-				repos: [{ name: "acme/zebra", inView: false, openCount: null }],
-			}),
-			"PUT /api/home/view": () =>
-				new Promise<Response>((done) => {
-					answer = done;
-				}),
-		});
-		renderWithQuery(<HomePage />);
-		await userEvent.click(
-			await screen.findByRole("button", { name: "Edit repos" }),
-		);
-		const dialog = screen.getByRole("dialog", { name: "My PRs" });
-		const field = within(dialog).getByRole("combobox", { name: "Add a repo" });
-		await userEvent.type(field, "acme/zed");
-		const option = await within(dialog).findByRole("option", {
-			name: "acme/zebra",
-		});
-		await userEvent.click(within(dialog).getByRole("button", { name: "Save" }));
-		await waitFor(() =>
-			expect(
-				within(dialog).getByRole("button", { name: "Save" }),
-			).toBeDisabled(),
-		);
-		// What the save is out with stays what it saves. A browser submits a
-		// read-only input's form on Enter (jsdom doesn't): submit it.
-		await userEvent.click(option);
-		fireEvent.submit(field.closest("form") as HTMLFormElement);
-		const listed = () =>
-			within(within(dialog).getByRole("list", { name: "Repos in this view" }))
-				.getAllByRole("listitem")
-				.map((li) => li.textContent);
-		expect(listed()).toEqual(["acme/api", "acme/console"]);
-		answer(new Response(JSON.stringify({ error: "nope" }), { status: 500 }));
-		await within(dialog).findByRole("alert");
-		expect(listed()).toEqual(["acme/api", "acme/console"]);
 	});
 
 	it("Cancel keeps the view as it was", async () => {
