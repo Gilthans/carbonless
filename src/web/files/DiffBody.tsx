@@ -2361,9 +2361,13 @@ function usePicker(
 			row?.querySelector(`[${CODE_CELL}]`);
 		return cell ? cellLine(cell) : null;
 	};
-	// Picks with the number column their focus was picked from.
+	// Side by side, picks with the number column their focus was picked
+	// from (unified number cells name no side the line is shown on: a
+	// removed line's blank new number picks it too).
 	const withColumn = (next: Picks | null, column: Element) =>
-		next && { ...next, column: sideOf(column) };
+		next && view === "side-by-side"
+			? { ...next, column: sideOf(column) }
+			: next;
 	const pickTo = (t: CellLine, extend: boolean, column: Element) => {
 		const cur = getPicks();
 		const mine = cur?.path === t.path ? cur : null;

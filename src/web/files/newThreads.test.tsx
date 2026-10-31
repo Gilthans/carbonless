@@ -1773,6 +1773,36 @@ describe("side by side (the cells contract)", () => {
 		expect(getPicks()?.column).toBe("RIGHT");
 	});
 
+	it("a pick made in unified by a removed line's blank new number: side by side, the bar goes by the left", async () => {
+		sideBySide.set(false);
+		setup();
+		await loaded();
+		const removed = row("LEFT", 3);
+		expect(removed).not.toHaveAttribute("data-new-no");
+		press(removed.querySelector('td[data-testid="new"]') as Element);
+		// Unified number cells name no side: no column.
+		expect(getPicks()).toMatchObject({ focus: { side: "LEFT", line: 3 } });
+		expect(getPicks()?.column).toBeUndefined();
+		act(() => sideBySide.set(true));
+		const pair = row("LEFT", 3);
+		expect(pair.closest("table")?.dataset.view).toBe("side-by-side");
+		const at = (el: Element, left: number) => {
+			el.getBoundingClientRect = () => new DOMRect(left, 100, 38, 20);
+		};
+		at(number("LEFT", 3), 60);
+		at(pair.querySelector('td[data-testid="new"]') as Element, 498);
+		vi.stubGlobal("visualViewport", {
+			offsetLeft: 0,
+			offsetTop: 0,
+			width: 1000,
+			height: 800,
+		});
+		// Placed again on the next scroll: by the old number, the focus's side.
+		fireEvent.scroll(window);
+		const bar = await screen.findByTestId("selection-bar");
+		await vi.waitFor(() => expect(bar.style.left).toBe(`${60 + 38 + 6}px`));
+	});
+
 	it("Down from an old number goes on down the old numbers through context rows (past the row with no old line)", async () => {
 		const { user } = setup();
 		await loaded();

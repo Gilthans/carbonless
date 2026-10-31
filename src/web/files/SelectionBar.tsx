@@ -309,7 +309,8 @@ const ofPicks = (picks: Picks, commit: string): BarTarget | null => {
 			Math.max(first.right, last.right) - Math.min(first.left, last.left),
 			last.bottom - first.top,
 		),
-		anchor: pickAnchor(lastRow, picks.column),
+		// Side by side, by the number column picked from, else its focus's side.
+		anchor: pickAnchor(lastRow, picks.column ?? picks.focus.side),
 		after: true,
 		text: false,
 	};

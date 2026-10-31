@@ -12,8 +12,8 @@ export const pickKey = (l: Pick<PickedLine, "side" | "line">) =>
 /**
  * Lines picked by their numbers in one file: `anchor` where the pick
  * started, `focus` where it was extended to; `lines` every row between
- * them, top down (the first and last make the span). `column`: the
- * number column `focus` was picked from (side by side, a context line's
+ * them, top down (the first and last make the span). `column`, side by
+ * side only: the number column `focus` was picked from (a context line's
  * old number picks its RIGHT line from the left), where the bar goes.
  */
 export interface Picks {
