@@ -675,60 +675,78 @@ export const ORG_MEMBERS_MAX_PAGES = 10;
 /**
  * The members of the viewer's orgs (one query for the orgs, one per page
  * of 100 members, each 1 point). Without `read:org` GitHub refuses the
- * orgs: none. `truncated` when an org stopped at the page cap.
+ * orgs: none. An org GitHub won't list (SAML SSO the token isn't
+ * authorized for, forbidden) is skipped and named in `skipped`; the rest
+ * still come. Only when every org failed does it throw (offline, say), so
+ * the caller asks again soon. `truncated` when an org stopped at the page
+ * cap.
  */
 export async function fetchOrgMembers(
 	options: { maxPages?: number; signal?: AbortSignal } = {},
-): Promise<{ people: Person[]; truncated: boolean }> {
+): Promise<{ people: Person[]; truncated: boolean; skipped: string[] }> {
 	const { maxPages = ORG_MEMBERS_MAX_PAGES, signal } = options;
 	let orgs: string[];
 	try {
+		// An org GitHub won't show comes back null in partial data: skipped.
 		const data = await graphql(
 			["-f", `query=${ORGS_QUERY}`],
 			"your organizations",
 			newCost(),
 			signal,
+			(out) => hasData(out) && rec(rec(JSON.parse(out)).data).viewer != null,
 		);
 		orgs = list(rec(data.viewer).organizations)
 			.map((o) => str(rec(o).login))
 			.filter((o): o is string => o !== null && OWNER.test(o));
 	} catch (error) {
 		if (error instanceof GhError && /scope|read:org/i.test(error.message)) {
-			return { people: [], truncated: false };
+			return { people: [], truncated: false, skipped: [] };
 		}
 		throw error;
 	}
 	const people = new Map<string, Person>();
 	let truncated = false;
+	const skipped: string[] = [];
+	let lastError: unknown;
 	for (const org of orgs) {
 		let cursor: string | null = null;
-		for (let page = 0; page < maxPages; page++) {
-			const data = await graphql(
-				[
-					"-f",
-					`query=${MEMBERS_QUERY}`,
-					"-f",
-					`org=${org}`,
-					...(cursor ? ["-f", `cursor=${cursor}`] : []),
-				],
-				`the members of ${org}`,
-				newCost(),
-				signal,
-			);
-			const members = rec(rec(data.organization).membersWithRole);
-			for (const node of list(members)) {
-				const p = person(node);
-				if (p && !people.has(p.login.toLowerCase())) {
-					people.set(p.login.toLowerCase(), p);
+		try {
+			for (let page = 0; page < maxPages; page++) {
+				const data = await graphql(
+					[
+						"-f",
+						`query=${MEMBERS_QUERY}`,
+						"-f",
+						`org=${org}`,
+						...(cursor ? ["-f", `cursor=${cursor}`] : []),
+					],
+					`the members of ${org}`,
+					newCost(),
+					signal,
+					hasData,
+				);
+				if (data.organization == null) throw new GhError(`${org} refused`);
+				const members = rec(rec(data.organization).membersWithRole);
+				for (const node of list(members)) {
+					const p = person(node);
+					if (p && !people.has(p.login.toLowerCase())) {
+						people.set(p.login.toLowerCase(), p);
+					}
 				}
+				const info = rec(members.pageInfo);
+				cursor =
+					info.hasNextPage === true ? (str(info.endCursor) ?? null) : null;
+				if (!cursor) break;
 			}
-			const info = rec(members.pageInfo);
-			cursor = info.hasNextPage === true ? (str(info.endCursor) ?? null) : null;
-			if (!cursor) break;
+		} catch (error) {
+			skipped.push(org);
+			lastError = error;
+			continue;
 		}
 		if (cursor) truncated = true;
 	}
-	return { people: [...people.values()], truncated };
+	if (orgs.length > 0 && skipped.length === orgs.length) throw lastError;
+	return { people: [...people.values()], truncated, skipped };
 }
 
 const USERS_QUERY = `query($q: String!) { search(query: $q, type: USER, first: 10) { nodes { __typename ... on User { login avatarUrl } } } rateLimit { cost remaining resetAt } }`;

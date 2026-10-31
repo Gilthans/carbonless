@@ -911,6 +911,15 @@ switch (cmd) {
 			});
 		}
 		if (/organization\(login: \$org\) \{ membersWithRole\(/.test(f.query ?? "")) {
+			// An org whose SAML SSO the token isn't authorized for.
+			if ((s.orgMembersForbidden ?? []).some((o) => o.toLowerCase() === String(f.org).toLowerCase())) {
+				graphqlFail("organization", [
+					{
+						type: "FORBIDDEN",
+						message: `Resource protected by organization SAML enforcement. You must grant your OAuth token access to an organization within this enterprise.`,
+					},
+				]);
+			}
 			const members =
 				Object.entries(s.orgMembers ?? {}).find(([k]) => k.toLowerCase() === String(f.org).toLowerCase())?.[1] ?? [];
 			const size = s.orgMembersPageSize ?? 100;

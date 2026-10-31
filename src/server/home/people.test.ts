@@ -168,6 +168,24 @@ describe("HomePeople", () => {
 		]);
 	});
 
+	it("skips an org whose members GitHub refuses (SAML), keeps the others, and doesn't ask again before the hour", async () => {
+		const { people, clock } = await setup({
+			orgMembers: { acme: ["Octo", "zed"], locked: ["zara"] },
+			orgMembersForbidden: ["locked"],
+		});
+		const r = await settle(people, "z");
+		expect(logins(r).close).toEqual(["zed"]);
+		expect(r.error).toBeUndefined();
+		const reads = () =>
+			(fx?.ghLog() ?? "").split("\n").filter((l) => /membersWithRole/.test(l))
+				.length;
+		const before = reads();
+		clock.now = T0 + 10 * 60_000;
+		await settle(people, "za");
+		await settle(people, "zed");
+		expect(reads()).toBe(before);
+	});
+
 	it("without read:org, the repos' people still come; a failed user search says why", async () => {
 		const { people } = await setup({
 			viewerTeams: null,

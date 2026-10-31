@@ -44,8 +44,9 @@ export class HomePeople {
 		error?: string;
 	} = { people: null, at: Number.NEGATIVE_INFINITY, loading: false };
 	readonly #searches = new Map<string, Search>();
-	/** A cut list is logged once per server. */
+	/** A cut list is logged once per server, a skipped org once each. */
 	#loggedCut = false;
+	readonly #loggedSkip = new Set<string>();
 
 	constructor(
 		home: HomeService,
@@ -72,8 +73,15 @@ export class HomePeople {
 		if (!m.loading && now - m.at >= ttl) {
 			m.loading = true;
 			fetchOrgMembers({ maxPages: this.#maxPages }).then(
-				({ people, truncated }) => {
+				({ people, truncated, skipped }) => {
 					this.#members = { people, at: this.#now(), loading: false };
+					for (const org of skipped) {
+						if (this.#loggedSkip.has(org)) continue;
+						this.#loggedSkip.add(org);
+						console.error(
+							`crb: GitHub won't list ${org}'s members (SAML SSO or access); waiting-on suggests the others`,
+						);
+					}
 					if (truncated && !this.#loggedCut) {
 						this.#loggedCut = true;
 						console.error(
