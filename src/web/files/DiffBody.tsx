@@ -565,7 +565,7 @@ const marksOf = (keys: LineKey[], threads: RowThreads | undefined): Mark[] =>
  * (a pair row may open one per side, the left side's first), then the new
  * threads being written under it. When the shape splits them, each row
  * sits under its side, the composers a row per side with any (a context
- * line's are RIGHT: its bubble's cell); else every row spans the table and
+ * line's are RIGHT: what is written on it goes to GitHub on RIGHT); else every row spans the table and
  * both sides' composers share one.
  */
 function RowTail(props: {
@@ -794,6 +794,12 @@ interface Cell {
 	marks: Mark[];
 	order?: number;
 	pick: NumberPick;
+	/**
+	 * A context line's bubble, shown in both cells: the row's keys (what
+	 * closes it), whether its threads are open under either cell, and
+	 * whether this cell's bubble takes a focus asked of the line.
+	 */
+	shared?: { keys: LineKey[]; expanded?: LineKey; focus: boolean };
 }
 
 /**
@@ -801,14 +807,15 @@ interface Cell {
  * pair with a line on each side that has one (sideBySide.ts). Each cell is
  * under its own side's key, with its own paint, mark, bubble, landing, pick
  * and opened thread row (the left side's first); a context line is one line
- * shown twice: its bubble is in the right cell, under both its keys, and
- * its mark, spans, pick and landing paint both cells (either cell, and
+ * shown twice: its threads' bubble is in both cells (each opening them under
+ * its own side), and its mark, spans, pick and landing paint both cells
+ * (what is written on it is under the right cell; either cell, and
  * either number's button, picks or selects it as RIGHT, the cells contract). The file's bubble (`lead`, on
  * the diff's first row: a context row, with a cell on each side) sits in
  * the right cell beside the line's, its row right under the pair row. On a
  * phone (the shape that isn't `split`) a half is too narrow to keep room
  * for bubbles: they sit in a BubbleRow of their own right under the pair
- * row instead.
+ * row instead (a context line's once, on the right).
  */
 function PairRow(props: RowProps & { row: SideRow }) {
 	const { row, state, threads, shape, picker, lead } = props;
@@ -834,19 +841,44 @@ function PairRow(props: RowProps & { row: SideRow }) {
 	let right: Cell | undefined;
 	if (row.kind === "context") {
 		const line = row.line;
-		right = cellOf(
-			line,
-			line,
-			threads ? rowKeys(line) : [],
-			`on line ${line.newNo}`,
-		);
-		// The same line, its bubble on the right; each number a button for it.
+		const keys = threads ? rowKeys(line) : [];
+		const both = cellOf(line, line, keys, `on line ${line.newNo}`);
+		// One line shown twice, its threads' bubble in both cells: each
+		// opens them under its own side's key, so under the side clicked.
+		// Opened under both keys (a comment posted on it while open), the
+		// first opened keeps them (the open set keeps the order they came in).
+		const leftKey = lineKey("LEFT", line) ?? undefined;
+		const rightKey = lineKey("RIGHT", line) ?? undefined;
+		let firstOpen: LineKey | undefined;
+		if (threads && both.endKey) {
+			for (const k of threads.open) {
+				if (k === leftKey || k === rightKey) {
+					firstOpen = k;
+					break;
+				}
+			}
+		}
+		const openLeft = Boolean(leftKey && firstOpen === leftKey);
+		// The key the opened row is under (its id), for both bubbles.
+		const expanded = both.open ? (openLeft ? leftKey : rightKey) : undefined;
+		const shared = (focus: boolean) =>
+			both.endKey ? { keys, expanded, focus } : undefined;
+		right = {
+			...both,
+			endKey: both.endKey && rightKey,
+			open: both.open && !openLeft,
+			shared: shared(!shape.split || !openLeft),
+		};
+		// Each number a button for it, named by the number it shows; what
+		// is written on it is under the right cell.
 		left = {
-			...right,
+			...both,
 			keys: [],
-			ending: [],
-			endKey: undefined,
-			open: false,
+			endKey: both.endKey && leftKey,
+			open: openLeft,
+			where: `on old line ${line.oldNo}`,
+			pick: { ...both.pick, label: `Old line ${line.oldNo}` },
+			shared: shared(openLeft),
 		};
 	} else {
 		if (row.del) {
@@ -873,7 +905,7 @@ function PairRow(props: RowProps & { row: SideRow }) {
 	const isPicked = Boolean(left?.pick.picked || right?.pick.picked);
 	// Each side's cell, left first: what its threads open and what is being
 	// written on its keys follows it (a context line's keys are all in its
-	// right cell, so its rows are on the right).
+	// right cell, so what is written on it is on the right).
 	const sides: [DiffSide, Cell | undefined][] = [
 		["LEFT", left],
 		["RIGHT", right],
@@ -882,15 +914,23 @@ function PairRow(props: RowProps & { row: SideRow }) {
 	const bubblesOf = (side: DiffSide, cell: Cell | undefined): Bubbles => {
 		const fileBubble = side === "RIGHT" ? lead?.bubble : undefined;
 		const endKey = cell?.endKey;
+		const shared = cell?.shared;
+		// A context line's: open under either cell, the row's keys.
+		const expanded = shared ? shared.expanded : cell?.open && endKey;
+		const keys = shared?.keys ?? cell?.keys ?? [];
 		const lineBubble = cell && endKey && threads && (
 			<ThreadBubble
 				inline
 				threads={cell.ending}
 				where={cell.where}
-				open={cell.open}
-				controls={cell.open ? threads.idOf(endKey) : undefined}
-				onToggle={() => threads.toggle(endKey, cell.keys)}
-				focus={threads.focus !== null && cell.keys.includes(threads.focus)}
+				open={Boolean(expanded)}
+				controls={expanded ? threads.idOf(expanded) : undefined}
+				onToggle={() => threads.toggle(endKey, keys)}
+				focus={
+					threads.focus !== null &&
+					keys.includes(threads.focus) &&
+					(shared?.focus ?? true)
+				}
 				onFocused={threads.onFocused}
 			/>
 		);
@@ -965,7 +1005,8 @@ function PairRow(props: RowProps & { row: SideRow }) {
 			</tr>
 			{own && (
 				<BubbleRow
-					left={bubblesOf("LEFT", left)}
+					// A context line's bubble once, on the right.
+					left={row.kind === "context" ? {} : bubblesOf("LEFT", left)}
 					right={bubblesOf("RIGHT", right)}
 					state={state}
 				/>
@@ -1227,6 +1268,7 @@ export function DiffBody(props: {
 	const table = useRef<HTMLTableElement>(null);
 	useStickyControls(root, scroller);
 	useVisibleWidth(scroller);
+	useBubbleFocusKept(scroller, wide);
 	const onPointerDown = useOneSideSelection(table, view);
 	const { hint, landed, pending } = useLanding(
 		root,
@@ -1856,6 +1898,70 @@ function useOneSideSelection(
 }
 
 /**
+ * Side by side, crossing the phone breakpoint (`wide`) moves a pair row's
+ * bubbles between its code cells and a row of their own: new elements.
+ * The bubble that had focus gets it back in its new place, found by its
+ * name (unique in a file: a context line's two say which number they are
+ * beside). Only when focus went nowhere else meanwhile: not when it left
+ * for another file's bubble, which keeps it there.
+ */
+function useBubbleFocusKept(
+	scroller: RefObject<HTMLDivElement | null>,
+	wide: boolean,
+) {
+	const last = useRef<HTMLElement | null>(null);
+	useEffect(() => {
+		const el = scroller.current;
+		if (!el) return;
+		const isBubble = (t: EventTarget | null): t is HTMLElement =>
+			t instanceof HTMLElement && t.dataset.testid === "thread-bubble";
+		const onIn = (e: FocusEvent) => {
+			last.current = isBubble(e.target) ? e.target : null;
+		};
+		// Left for another file or the rest of the page, or for nowhere (not
+		// for a re-render's removal, which names no element): forgotten.
+		const onOut = (e: FocusEvent) => {
+			const t = e.target;
+			if (!isBubble(t)) return;
+			const to = e.relatedTarget;
+			if (to instanceof Node) {
+				if (!el.contains(to)) last.current = null;
+				return;
+			}
+			queueMicrotask(() => {
+				if (last.current === t && t.isConnected) last.current = null;
+			});
+		};
+		el.addEventListener("focusin", onIn);
+		el.addEventListener("focusout", onOut);
+		return () => {
+			el.removeEventListener("focusin", onIn);
+			el.removeEventListener("focusout", onOut);
+		};
+	}, [scroller]);
+	// After every commit: a bubble gone in one that didn't cross the
+	// breakpoint (its thread deleted, its cluster collapsed) is forgotten.
+	const shownWide = useRef(wide);
+	useLayoutEffect(() => {
+		const crossed = shownWide.current !== wide;
+		shownWide.current = wide;
+		const was = last.current;
+		if (!was || was.isConnected) return;
+		last.current = null;
+		if (!crossed) return;
+		const active = document.activeElement;
+		if (active && active !== document.body) return;
+		const name = was.getAttribute("aria-label");
+		if (!name) return;
+		scroller.current
+			?.querySelector<HTMLElement>(
+				`[data-testid="thread-bubble"][aria-label="${CSS.escape(name)}"]`,
+			)
+			?.focus({ preventScroll: true });
+	});
+}
+
+/**
  * Keeps `--diff-w` on the scroller at its visible width, so an opened
  * thread inside the (sideways scrolling) table fits the screen.
  */
@@ -2288,7 +2394,8 @@ const sideOf = (b: Element): DiffSide =>
 
 /**
  * Picking lines by their numbers: a click (or tap) picks the row, again
- * clears it; shift-click, or dragging down the numbers with a mouse,
+ * clears it (side by side, a context line's other number moves the pick
+ * to its column instead); shift-click, or dragging down the numbers with a mouse,
  * extends from where the pick started; on touch a second tap extends. One
  * number button per code cell (a pair row has one per side), one of them
  * in the tab order (the last focused, else the first row's): Up/Down move
@@ -2379,7 +2486,11 @@ function usePicker(
 			mine?.lines.length === 1 &&
 			pickKey(mine.anchor) === pickKey(t)
 		) {
-			setPicks(null);
+			// Its number again clears it; a context line's other number
+			// (side by side) moves it to that column (none yet: its focus's).
+			const moved = withColumn(mine, column);
+			const was = mine.column ?? mine.focus.side;
+			setPicks(!moved?.column || moved.column === was ? null : moved);
 		} else {
 			setPicks(withColumn(pickRange(cells(), picked(t), picked(t)), column));
 		}

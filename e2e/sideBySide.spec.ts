@@ -845,7 +845,9 @@ test("side by side, a context row's old number picks its line, and the comment g
 	const context = section.locator('tr[data-kind="context"][data-old-no="4"]');
 	const oldFour = context.getByTestId("old");
 	await oldFour.click();
-	await expect(oldFour.getByRole("button", { name: "Line 4" })).toBeFocused();
+	await expect(
+		oldFour.getByRole("button", { name: "Old line 4" }),
+	).toBeFocused();
 	// One line shown twice: both its cells are picked.
 	await expect(
 		context.locator('td[data-testid="code"][data-picked]'),
@@ -1137,14 +1139,14 @@ test("side by side, Up/Down on the number buttons stay in their column and Left/
 	await page.keyboard.press("ArrowLeft");
 	await expect(button("Old line 6")).toBeFocused();
 	// Down from old 6: the third pair has no old line (new 7 alone), so on
-	// to the context row's old number (old 7 / new 8, one line named by its
-	// new number); Right is its new one; Up from there comes back to old 6.
+	// to the context row's old number (old 7 / new 8, each number naming its
+	// button); Right is its new one; Up from there comes back to old 6.
 	const context = section.locator('tr[data-kind="context"][data-old-no="7"]');
 	await page.keyboard.press("ArrowDown");
 	await expect(context.getByTestId("old").getByRole("button")).toBeFocused();
 	await expect(
 		context.getByTestId("old").getByRole("button"),
-	).toHaveAccessibleName("Line 8");
+	).toHaveAccessibleName("Old line 7");
 	await page.keyboard.press("ArrowRight");
 	await expect(context.getByTestId("new").getByRole("button")).toBeFocused();
 	await page.keyboard.press("ArrowLeft");
@@ -1316,4 +1318,98 @@ test("side by side, the file bubble sits in the first row's right cell (a pair r
 		expect(bar.x).toBeLessThanOrEqual(cOld.x + cOld.width + 8);
 		expect(bar.x + bar.width).toBeLessThanOrEqual(cNew.x);
 	}).toPass();
+});
+
+test("side by side, a context line's thread has its bubble in both cells and opens under the one clicked", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	test.skip(isMobile, "a phone shows the bubble once, in its own row");
+	const p = await pr(fixture);
+	const head = p.repo.shas.at(-1) ?? "";
+	// A thread GitHub placed LEFT on the context line old 8 / new 9.
+	p.editScenario((s) => {
+		const graph = s.prs[7]?.graphql;
+		if (!graph) throw new Error("no PR in the scenario");
+		graph.reviewThreads = [
+			reviewThread(
+				{ path: GREET, line: 8, diffSide: "LEFT", subjectType: "LINE" },
+				[
+					threadComment({
+						login: "rev2",
+						text: "Old eight",
+						commit: head,
+						diffHunk: "",
+					}),
+				],
+			),
+		];
+	});
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	await sideBySide(page, true);
+	const section = await expand(page, GREET);
+	const row = section.locator(
+		'tr[data-testid="diff-line"][data-kind="context"][data-old-no="8"]',
+	);
+	const left = bubblesOf(row, "LEFT", false);
+	const right = bubblesOf(row, "RIGHT", false);
+	await expect(left).toHaveAccessibleName("1 comment on old line 8");
+	await expect(right).toHaveAccessibleName("1 comment on line 9");
+	const card = section.getByTestId("thread-row").getByTestId("files-thread");
+	const oldCode = await edges(codeCells(row).nth(0));
+	const newNo = await edges(row.getByTestId("new"));
+	// From the left bubble: under the left side, both bubbles open.
+	await left.click();
+	await expect(card).toContainText("Old eight");
+	const c = await edges(card);
+	expect(c.right).toBeLessThanOrEqual(oldCode.right + 1);
+	await expect(right).toHaveAttribute("aria-expanded", "true");
+	// Either bubble closes it; from the right one it opens under the right.
+	await right.click();
+	await expect(card).toHaveCount(0);
+	await right.click();
+	await expect(card).toContainText("Old eight");
+	expect((await edges(card)).left).toBeGreaterThanOrEqual(newNo.left - 1);
+});
+
+test("side by side, a focused bubble or number keeps focus as the window crosses the phone breakpoint", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	test.skip(isMobile, "resizes a desktop window");
+	await setup(pr);
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	await sideBySide(page, true);
+	const section = await expand(page, GREET);
+	const row6 = section.locator('tr[data-testid="diff-line"][data-new-no="6"]');
+	const row5 = section.locator('tr[data-testid="diff-line"][data-old-no="5"]');
+	const desktop = page.viewportSize() ?? { width: 1280, height: 720 };
+	const phone = { width: 500, height: desktop.height };
+	const focusedName = () =>
+		page.evaluate(() => document.activeElement?.getAttribute("aria-label"));
+	for (const [row, side, name] of [
+		[row6, "RIGHT", "1 comment on line 6"],
+		[row5, "LEFT", "1 comment on old line 5"],
+	] as const) {
+		await bubblesOf(row, side, false).focus();
+		await page.setViewportSize(phone);
+		// In the bubble row under the pair row now, still focused.
+		await expect(bubblesOf(row, side, true)).toBeFocused();
+		expect(await focusedName()).toBe(name);
+		await page.setViewportSize(desktop);
+		await expect(bubblesOf(row, side, false)).toBeFocused();
+	}
+	// A number button stays where it is: it keeps focus too.
+	const number = row6.getByTestId("new").getByRole("button");
+	await number.focus();
+	await page.setViewportSize(phone);
+	await expect(number).toBeFocused();
+	await page.setViewportSize(desktop);
+	await expect(number).toBeFocused();
 });
