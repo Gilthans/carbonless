@@ -332,6 +332,51 @@ describe("HomeService", () => {
 		expect(detailCalls() - before).toBeLessThanOrEqual(1);
 	});
 
+	it("puts the viewer's turn first in each section, then newest activity", async () => {
+		fx = createHomeFixture({
+			repos: {
+				"acme/api": {
+					prs: [
+						// Mine: bob's turn (newer), then mine to request a reviewer (8).
+						homePr({
+							repo: "acme/api",
+							number: 24,
+							author: "Octo",
+							requested: ["bob"],
+							updatedAt: iso(T0 - 1 * H),
+						}),
+						homePr({
+							repo: "acme/api",
+							number: 23,
+							author: "Octo",
+							updatedAt: iso(T0 - 5 * H),
+						}),
+						// Reviewing: the viewer reviewed last, alice's turn (newer);
+						// a review asked of the viewer (older).
+						homePr({
+							repo: "acme/api",
+							number: 21,
+							author: "alice",
+							reviews: [{ login: "Octo", at: iso(T0 - 1 * H) }],
+							updatedAt: iso(T0 - 1 * H),
+						}),
+						homePr({
+							repo: "acme/api",
+							number: 22,
+							author: "alice",
+							requested: ["octo"],
+							updatedAt: iso(T0 - 6 * H),
+						}),
+					],
+				},
+			},
+		});
+		const { home } = service();
+		const view = await home.refresh();
+		expect(ids(view, "mine")).toEqual([23, 24]);
+		expect(ids(view, "reviewing")).toEqual([22, 21]);
+	});
+
 	it("several started reviews of one PR: sub-rows, newest activity first", async () => {
 		fx = createHomeFixture({
 			repos: {

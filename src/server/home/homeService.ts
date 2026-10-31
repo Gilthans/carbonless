@@ -33,6 +33,7 @@ import {
 	repoExists,
 } from "./prFacts.js";
 import {
+	compareRows,
 	RECENTLY_CLOSED_MS,
 	recentlyClosed,
 	sectionOf,
@@ -445,11 +446,7 @@ export class HomeService {
 		}
 		const out: HomeSection[] = SECTIONS.map((id) => ({
 			id,
-			rows: (sections.get(id) ?? []).sort(
-				(a, b) =>
-					Date.parse(b.updatedAt) - Date.parse(a.updatedAt) ||
-					b.number - a.number,
-			),
+			rows: (sections.get(id) ?? []).sort(compareRows(viewer.login)),
 		}));
 		return {
 			viewer,
