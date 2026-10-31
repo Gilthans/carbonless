@@ -7,6 +7,7 @@ import {
 	type HomeService,
 	NotOnHomeError,
 } from "./homeService.js";
+import { HomePeople } from "./people.js";
 import type { HomeSearch } from "./search.js";
 
 /**
@@ -77,8 +78,11 @@ export async function registerHomeRoutes(
 		 * server whose Home is never opened never asks GitHub for it.
 		 */
 		startOnRequest?: boolean;
+		/** The waiting-on suggestions; one for `home` by default. */
+		people?: HomePeople;
 	} = {},
 ): Promise<void> {
+	const people = options.people ?? new HomePeople(home);
 	await app.register(async (scope) => {
 		if (options.startOnRequest !== false) {
 			scope.addHook("onRequest", async () => home.start());
@@ -142,6 +146,18 @@ export async function registerHomeRoutes(
 					throw new HomeRequestError("only must be repos");
 				}
 				return search.search(q, only === "repos" ? { only } : {});
+			},
+		);
+		scope.get<{ Querystring: { q?: unknown } }>(
+			"/api/home/people",
+			(request) => {
+				const q = request.query.q ?? "";
+				if (typeof q !== "string" || q.length > MAX_QUERY) {
+					throw new HomeRequestError(
+						`q must be at most ${MAX_QUERY} characters`,
+					);
+				}
+				return people.people(q);
 			},
 		);
 	});

@@ -186,6 +186,17 @@ export interface Scenario {
 	viewerReposDelayMs?: number;
 	/** A path: the viewer's repo list answers once it exists (at most a minute). */
 	viewerReposHold?: string;
+	/** Members of the viewer's orgs, by org: Home's waiting-on suggestions. */
+	orgMembers?: Record<string, string[]>;
+	/** Members per page of an org's member list (default 100). */
+	orgMembersPageSize?: number;
+	/**
+	 * Who GitHub's user search finds (logins containing the text); an
+	 * `{ login, org: true }` is an organization, which search returns too.
+	 */
+	githubUsers?: (string | { login: string; org: true })[];
+	/** GitHub's user search fails with this as gh's message, or answers late. */
+	userSearch?: { fail?: string; delayMs?: number };
 	/**
 	 * `gh search prs --repo` matches the PRs of `repos` (title words, any
 	 * order, case-insensitive), newest activity first. Home never searches

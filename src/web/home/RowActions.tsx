@@ -7,7 +7,12 @@ import {
 	NoteIcon,
 	ZapIcon,
 } from "@primer/octicons-react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import {
+	keepPreviousData,
+	useMutation,
+	useQuery,
+	useQueryClient,
+} from "@tanstack/react-query";
 import {
 	type FormEvent,
 	type ReactNode,
@@ -20,8 +25,14 @@ import type { AnnotationOp, HomeRow, Person } from "../../shared/home";
 import { Tooltip } from "../Tooltip";
 import { ErrorMessage } from "../ui";
 import { useMedia } from "../useMedia";
-import { homeQuery, postAnnotation, setRow } from "./homeApi";
+import { homeQuery, peopleQuery, postAnnotation, setRow } from "./homeApi";
 import { Avatar } from "./PrRow";
+import {
+	DEBOUNCE_MS,
+	SuggestionList,
+	useDebounced,
+	useSuggestionKeys,
+} from "./Suggestions";
 import { minPick, pickedDate, snoozePresets } from "./snooze";
 
 type Panel = "snooze" | "wait" | "note";
@@ -158,10 +169,11 @@ function WaitPanel(props: {
 	}
 	const current = row.annotations.waiting?.who;
 	const pressed = (login: string) => !!current && same(current, login);
+	const pick = (login: string) => props.onPick({ op: "wait", who: login });
 	const submit = (e: FormEvent) => {
 		e.preventDefault();
 		const login = who.trim().replace(/^@/, "");
-		if (login) props.onPick({ op: "wait", who: login });
+		if (login) pick(login);
 	};
 	return (
 		<div className="space-y-0.5">
@@ -190,14 +202,7 @@ function WaitPanel(props: {
 				</button>
 			))}
 			<form onSubmit={submit} className="px-1 py-0.5">
-				<input
-					aria-label="Someone else"
-					placeholder="Someone else…"
-					value={who}
-					onChange={(e) => setWho(e.target.value)}
-					autoComplete="off"
-					className={fieldClass}
-				/>
+				<PersonInput value={who} onChange={setWho} onPick={pick} />
 			</form>
 			{current && (
 				<div className="flex justify-end px-1 pt-1">
@@ -212,6 +217,106 @@ function WaitPanel(props: {
 				</div>
 			)}
 		</div>
+	);
+}
+
+/**
+ * "Someone else…": a login, with people suggested as you type (owner,
+ * 2026-10-31: "autocomplete on github users, with users from my orgs or
+ * interacting with my repos appearing first"): the viewer's orgs' members
+ * and their repos' people, then GitHub's user search (the server asks it
+ * from 2 characters). Arrows pick one, Enter or a click takes it; Enter
+ * with none picked takes what was typed. Teams are never offered.
+ */
+function PersonInput(props: {
+	value: string;
+	onChange: (value: string) => void;
+	onPick: (login: string) => void;
+}) {
+	const [open, setOpen] = useState(false);
+	const listId = useId();
+	const optionId = useId();
+	const q = props.value.trim().replace(/^@/, "");
+	const debounced = useDebounced(q, DEBOUNCE_MS);
+	const people = useQuery({
+		...peopleQuery(debounced),
+		enabled: debounced !== "",
+		placeholderData: keepPreviousData,
+	});
+	const data = q === "" ? undefined : people.data;
+	const usable = (list: Person[] | undefined) =>
+		(list ?? []).filter((p) => !p.login.includes("/"));
+	const close = usable(data?.close);
+	const others = usable(data?.others);
+	const options = [...close, ...others];
+	const loading = !!data?.pending;
+	const listOpen = open && q !== "" && (options.length > 0 || loading);
+	const keys = useSuggestionKeys({
+		count: options.length,
+		listOpen,
+		// What was typed comes first: a suggestion only once picked.
+		autoSelect: false,
+		onOpen: () => setOpen(true),
+		onClose: () => setOpen(false),
+	});
+	return (
+		<>
+			<input
+				role="combobox"
+				aria-label="Someone else"
+				aria-autocomplete="list"
+				aria-expanded={listOpen}
+				aria-controls={listId}
+				aria-activedescendant={
+					listOpen && keys.current >= 0
+						? `${optionId}-${keys.current}`
+						: undefined
+				}
+				placeholder="Someone else…"
+				value={props.value}
+				onChange={(e) => {
+					props.onChange(e.target.value);
+					setOpen(true);
+					keys.reset();
+				}}
+				onFocus={() => setOpen(true)}
+				onBlur={() => setOpen(false)}
+				onKeyDown={(e) => {
+					if (keys.onKeyDown(e)) return;
+					const picked = listOpen ? options[keys.current] : undefined;
+					if (e.key === "Enter" && picked) {
+						e.preventDefault();
+						props.onPick(picked.login);
+					}
+				}}
+				autoComplete="off"
+				spellCheck={false}
+				className={fieldClass}
+			/>
+			{listOpen && (
+				<SuggestionList
+					listId={listId}
+					optionId={optionId}
+					groups={[
+						{ label: "People", options: close, loading },
+						...(others.length > 0
+							? [{ label: "GitHub", options: others }]
+							: []),
+					]}
+					current={keys.current}
+					onChoose={(p) => props.onPick(p.login)}
+					onHover={keys.setActive}
+					error={data?.error}
+					className="mt-1 max-h-60"
+					render={(p) => (
+						<>
+							<Avatar person={p} size={20} />
+							<span className="min-w-0 flex-1 truncate">{p.login}</span>
+						</>
+					)}
+				/>
+			)}
+		</>
 	);
 }
 

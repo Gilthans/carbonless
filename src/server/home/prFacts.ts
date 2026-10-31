@@ -666,6 +666,93 @@ export async function fetchViewerRepos(
 	return { names, truncated: cursor !== null };
 }
 
+const ORGS_QUERY =
+	"query { viewer { organizations(first: 100) { nodes { login } } } rateLimit { cost remaining resetAt } }";
+const MEMBERS_QUERY = `query($org: String!, $cursor: String) { organization(login: $org) { membersWithRole(first: 100, after: $cursor) { pageInfo { hasNextPage endCursor } nodes { login avatarUrl } } } rateLimit { cost remaining resetAt } }`;
+/** At most this many pages (100 each) of one org's members. */
+export const ORG_MEMBERS_MAX_PAGES = 10;
+
+/**
+ * The members of the viewer's orgs (one query for the orgs, one per page
+ * of 100 members, each 1 point). Without `read:org` GitHub refuses the
+ * orgs: none. `truncated` when an org stopped at the page cap.
+ */
+export async function fetchOrgMembers(
+	options: { maxPages?: number; signal?: AbortSignal } = {},
+): Promise<{ people: Person[]; truncated: boolean }> {
+	const { maxPages = ORG_MEMBERS_MAX_PAGES, signal } = options;
+	let orgs: string[];
+	try {
+		const data = await graphql(
+			["-f", `query=${ORGS_QUERY}`],
+			"your organizations",
+			newCost(),
+			signal,
+		);
+		orgs = list(rec(data.viewer).organizations)
+			.map((o) => str(rec(o).login))
+			.filter((o): o is string => o !== null && OWNER.test(o));
+	} catch (error) {
+		if (error instanceof GhError && /scope|read:org/i.test(error.message)) {
+			return { people: [], truncated: false };
+		}
+		throw error;
+	}
+	const people = new Map<string, Person>();
+	let truncated = false;
+	for (const org of orgs) {
+		let cursor: string | null = null;
+		for (let page = 0; page < maxPages; page++) {
+			const data = await graphql(
+				[
+					"-f",
+					`query=${MEMBERS_QUERY}`,
+					"-f",
+					`org=${org}`,
+					...(cursor ? ["-f", `cursor=${cursor}`] : []),
+				],
+				`the members of ${org}`,
+				newCost(),
+				signal,
+			);
+			const members = rec(rec(data.organization).membersWithRole);
+			for (const node of list(members)) {
+				const p = person(node);
+				if (p && !people.has(p.login.toLowerCase())) {
+					people.set(p.login.toLowerCase(), p);
+				}
+			}
+			const info = rec(members.pageInfo);
+			cursor = info.hasNextPage === true ? (str(info.endCursor) ?? null) : null;
+			if (!cursor) break;
+		}
+		if (cursor) truncated = true;
+	}
+	return { people: [...people.values()], truncated };
+}
+
+const USERS_QUERY = `query($q: String!) { search(query: $q, type: USER, first: 10) { nodes { __typename ... on User { login avatarUrl } } } rateLimit { cost remaining resetAt } }`;
+
+/** GitHub's user search for `text` (1 point): users only, never orgs. */
+export async function searchUsers(
+	text: string,
+	signal?: AbortSignal,
+): Promise<Person[]> {
+	const data = await graphql(
+		["-f", `query=${USERS_QUERY}`, "-f", `q=${text} type:user`],
+		"the user search",
+		newCost(),
+		signal,
+	);
+	const out: Person[] = [];
+	for (const node of list(data.search)) {
+		if (rec(node).__typename !== "User") continue;
+		const p = person(node);
+		if (p) out.push(p);
+	}
+	return out;
+}
+
 const REPO_QUERY = `query($owner: String!, $name: String!) {
   repository(owner: $owner, name: $name) { nameWithOwner }
 }`;

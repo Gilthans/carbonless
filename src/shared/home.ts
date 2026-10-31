@@ -93,3 +93,10 @@ export interface SearchResult {
 	reposPending: boolean; // the viewer's repo list isn't in yet: Repos shows a spinner (pending too)
 	error?: string; // the GitHub search failed (not pending); the rest still shows
 }
+/** GET /api/home/people: who the waiting-on input suggests for `q`. */
+export interface PeopleResult {
+	close: Person[]; // the viewer's orgs' members and the people on their repos' PRs
+	others: Person[]; // GitHub's user search, from 2 characters; none of `close`
+	pending: boolean; // the org members or the user search are still coming; ask again
+	error?: string; // a GitHub read failed (not pending); the rest still shows
+}

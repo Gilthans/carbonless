@@ -887,6 +887,66 @@ switch (cmd) {
 		if (/^query \{ viewer \{ login avatarUrl/.test(f.query ?? "")) {
 			print({ data: { viewer: { login: s.user.login, avatarUrl: s.user.avatarUrl ?? "" } } });
 		}
+		// Home's waiting-on suggestions: the viewer's orgs (those of
+		// `orgMembers` and `viewerTeams`), an org's members by page, and
+		// GitHub's user search over `githubUsers`.
+		if (/^query \{ viewer \{ organizations\(first: 100\) \{ nodes \{ login \} \}/.test(f.query ?? "")) {
+			if (s.viewerTeams === null) {
+				graphqlFail("viewer", [
+					{
+						type: "INSUFFICIENT_SCOPES",
+						message: "Your token has not been granted the required scopes to execute this query. The 'organizations' field requires one of the following scopes: ['read:org'].",
+					},
+				]);
+			}
+			const orgs = new Set([
+				...Object.keys(s.orgMembers ?? {}),
+				...(s.viewerTeams ?? []).map((t) => t.split("/")[0]),
+			]);
+			print({
+				data: {
+					viewer: { organizations: { nodes: [...orgs].map((login) => ({ login })) } },
+					rateLimit: { cost: 1, remaining: 4999, resetAt: "2030-01-01T00:00:00Z" },
+				},
+			});
+		}
+		if (/organization\(login: \$org\) \{ membersWithRole\(/.test(f.query ?? "")) {
+			const members =
+				Object.entries(s.orgMembers ?? {}).find(([k]) => k.toLowerCase() === String(f.org).toLowerCase())?.[1] ?? [];
+			const size = s.orgMembersPageSize ?? 100;
+			const start = f.cursor ? Number(f.cursor.replace("cursor:", "")) : 0;
+			const end = start + size;
+			const hasNextPage = end < members.length;
+			print({
+				data: {
+					organization: {
+						membersWithRole: {
+							pageInfo: { hasNextPage, endCursor: hasNextPage ? `cursor:${end}` : null },
+							nodes: members.slice(start, end).map((login) => ({ login, avatarUrl: `https://avatars.example/${login}` })),
+						},
+					},
+					rateLimit: { cost: 1, remaining: 4999, resetAt: "2030-01-01T00:00:00Z" },
+				},
+			});
+		}
+		if (/search\(query: \$q, type: USER/.test(f.query ?? "")) {
+			if (s.userSearch?.delayMs) sleep(s.userSearch.delayMs);
+			if (s.userSearch?.fail) fail(`gh: ${s.userSearch.fail}`);
+			const text = String(f.q ?? "").replace(/\s+type:user$/, "").toLowerCase();
+			const users = (s.githubUsers ?? []).filter((u) => (typeof u === "string" ? u : u.login).toLowerCase().includes(text));
+			print({
+				data: {
+					search: {
+						nodes: users.slice(0, 10).map((u) =>
+							typeof u === "string"
+								? { __typename: "User", login: u, avatarUrl: `https://avatars.example/${u}` }
+								: { __typename: "Organization", login: u.login, avatarUrl: "" },
+						),
+					},
+					rateLimit: { cost: 1, remaining: 4999, resetAt: "2030-01-01T00:00:00Z" },
+				},
+			});
+		}
 		if (/^query \{ viewer \{ organizations/.test(f.query ?? "")) {
 			if (s.viewerTeams === null) {
 				graphqlFail("viewer", [

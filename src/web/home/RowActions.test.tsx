@@ -9,7 +9,7 @@ import {
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { HomeRow } from "../../shared/home";
+import type { HomeRow, PeopleResult } from "../../shared/home";
 import { HomePage } from "./HomePage";
 import { homeQuery } from "./homeApi";
 import { snoozePresets } from "./snooze";
@@ -456,6 +456,95 @@ describe("RowActions", () => {
 			within(pop).queryByRole("button", { name: /acme\/backend/ }),
 		).toBeNull();
 		within(pop).getByRole("button", { name: /noa/ });
+	});
+
+	describe("Someone else: suggestions as you type", () => {
+		const peopleFor = (q: string): PeopleResult => {
+			const text = q.trim().toLowerCase();
+			return {
+				close: [person("bob"), person("abbott"), person("acme/backend")].filter(
+					(p) => p.login.includes(text),
+				),
+				others:
+					text.length >= 2
+						? [person("bobcat"), person("boba")].filter((p) =>
+								p.login.includes(text),
+							)
+						: [],
+				pending: false,
+			};
+		};
+		function open() {
+			const api = fakeApi(view({ reviewing: [base] }), {
+				[ANNOTATE]: () => base,
+				"GET /api/home/people": (call) =>
+					peopleFor(new URL(call.url, "http://x").searchParams.get("q") ?? ""),
+			});
+			renderWithQuery(<HomePage />);
+			return api;
+		}
+		const field = () =>
+			within(screen.getByRole("dialog", { name: "Waiting on" })).getByRole(
+				"combobox",
+				{ name: "Someone else" },
+			);
+
+		it("yours first (orgs, your repos' people), then GitHub's; arrows and Enter pick one", async () => {
+			const api = open();
+			await screen.findByText("Seven");
+			await userEvent.click(screen.getByRole("button", { name: "Waiting on" }));
+			await userEvent.type(field(), "bo");
+			const people = await screen.findByRole("group", { name: "People" });
+			expect(
+				within(people)
+					.getAllByRole("option")
+					.map((o) => o.textContent),
+			).toEqual(["bob", "abbott"]);
+			const github = screen.getByRole("group", { name: "GitHub" });
+			expect(
+				within(github)
+					.getAllByRole("option")
+					.map((o) => o.textContent),
+			).toEqual(["bobcat", "boba"]);
+			expect(
+				api.calls.filter((c) => c.url.startsWith("/api/home/people")).at(-1)
+					?.url,
+			).toBe("/api/home/people?q=bo");
+			await userEvent.keyboard("{ArrowDown}{ArrowDown}{ArrowDown}{Enter}");
+			await waitFor(() =>
+				expect(posted(api as never)).toEqual([{ op: "wait", who: "bobcat" }]),
+			);
+		});
+
+		it("never offers a team, even if the server sent one", async () => {
+			open();
+			await screen.findByText("Seven");
+			await userEvent.click(screen.getByRole("button", { name: "Waiting on" }));
+			await userEvent.type(field(), "acme");
+			await waitFor(() =>
+				expect(
+					screen.queryByRole("option", { name: "acme/backend" }),
+				).toBeNull(),
+			);
+		});
+
+		it("a typed login nobody suggests is still taken; Escape closes the list, not the popover", async () => {
+			const api = open();
+			await screen.findByText("Seven");
+			await userEvent.click(screen.getByRole("button", { name: "Waiting on" }));
+			await userEvent.type(field(), "b");
+			await screen.findByRole("option", { name: "bob" });
+			await userEvent.keyboard("{Escape}");
+			expect(screen.queryByRole("listbox")).toBeNull();
+			expect(screen.getByRole("dialog", { name: "Waiting on" })).toBeVisible();
+			await userEvent.clear(field());
+			await userEvent.type(field(), "@zoe-unknown{Enter}");
+			await waitFor(() =>
+				expect(posted(api as never)).toEqual([
+					{ op: "wait", who: "zoe-unknown" },
+				]),
+			);
+		});
 	});
 
 	it("hides 'Me' while the viewer's login is unknown", async () => {

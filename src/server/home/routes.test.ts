@@ -5,7 +5,12 @@ import {
 	createHomeFixture,
 	type HomeFixture,
 } from "../../../test/home-fixture";
-import type { HomeRow, HomeView, SearchResult } from "../../shared/home.js";
+import type {
+	HomeRow,
+	HomeView,
+	PeopleResult,
+	SearchResult,
+} from "../../shared/home.js";
 import { type HomeConfig, HomeService } from "./homeService.js";
 import { MAX_NOTE, parseAnnotationOp, registerHomeRoutes } from "./routes.js";
 import { HomeSearch } from "./search.js";
@@ -194,6 +199,30 @@ describe("/api/home", () => {
 			url: "/api/home/search?q=x&only=prs",
 		});
 		expect(bad.statusCode).toBe(400);
+	});
+
+	it("GET people answers a PeopleResult", async () => {
+		const { app } = await setup();
+		fx?.scenario({ orgMembers: { acme: ["Octo", "olga"] } });
+		await app.inject({ method: "POST", url: "/api/home/refresh" });
+		let people: PeopleResult | undefined;
+		for (let i = 0; i < 200; i++) {
+			const res = await app.inject({
+				method: "GET",
+				url: "/api/home/people?q=o",
+			});
+			expect(res.statusCode).toBe(200);
+			people = res.json<PeopleResult>();
+			if (!people.pending) break;
+			await new Promise((resolve) => setTimeout(resolve, 50));
+		}
+		// Never the viewer: "Me" is theirs.
+		expect(people?.close.map((p) => p.login)).toEqual(["olga"]);
+		const long = await app.inject({
+			method: "GET",
+			url: `/api/home/people?q=${"x".repeat(301)}`,
+		});
+		expect(long.statusCode).toBe(400);
 	});
 });
 

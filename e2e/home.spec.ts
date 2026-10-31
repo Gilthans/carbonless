@@ -565,6 +565,40 @@ test("waiting on someone hides the row until they act; a note shows on the row",
 	await expect(other.getByRole("button", { name: /waiting/ })).toBeHidden();
 });
 
+test("waiting on suggests people as you type: the viewer's orgs and repos' people, then GitHub's", async ({
+	page,
+	workdir,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	if (isMobile) await page.setViewportSize({ width: 360, height: 780 });
+	const made = await setup(workdir, pr);
+	made.editScenario((s) => {
+		s.orgMembers = { acme: [VIEWER, "alicia", "malik"] };
+		s.githubUsers = ["alibaba-dev", "alice", { login: "alien-org", org: true }];
+	});
+	const crb = await startCrb();
+	await goHome(page, crb.url);
+	const other = section(page, "Other open");
+	const title = "Migrate alerts table";
+	const dialog = await rowAction(page, rowOf(other, title), "Waiting on");
+	const field = dialog.getByRole("combobox", { name: "Someone else" });
+	await field.pressSequentially("ali");
+	// alice authors the view's PRs, alicia and malik are in the viewer's
+	// org: theirs first, starting with the text first; then GitHub's, never
+	// an org.
+	await expect(
+		page.getByRole("group", { name: "People" }).getByRole("option"),
+	).toHaveText(["alice", "alicia", "malik"]);
+	await expect(
+		page.getByRole("group", { name: "GitHub" }).getByRole("option"),
+	).toHaveText(["alibaba-dev"]);
+	await expectNoPageOverflow(page);
+	await page.getByRole("option", { name: "alibaba-dev" }).click();
+	await expect(other.getByRole("button", { name: "1 waiting" })).toBeVisible();
+});
+
 test("a note sits under the title on one line; hover or a tap shows all of it", async ({
 	page,
 	workdir,
@@ -1027,8 +1061,8 @@ test("at desktop width a long login or many signs stay inside their columns", as
 		rowOf(other, "Migrate alerts table"),
 		"Waiting on",
 	);
-	await dialog.getByRole("textbox", { name: "Someone else" }).fill(login);
-	await dialog.getByRole("textbox", { name: "Someone else" }).press("Enter");
+	await dialog.getByRole("combobox", { name: "Someone else" }).fill(login);
+	await dialog.getByRole("combobox", { name: "Someone else" }).press("Enter");
 	await other.getByRole("button", { name: "1 waiting" }).click();
 	const hidden = other.getByTestId("home-row-hidden");
 	// Cut on the row, whole in its name (the tooltip).
@@ -1131,6 +1165,39 @@ test("screenshots of view settings and the loading page (CRB_HOME_SHOTS only)", 
 	});
 	await page.keyboard.press("Escape");
 	await page.keyboard.press("Escape");
+	// A long note under its title, then Waiting on's suggestions.
+	made.editScenario((s) => {
+		s.orgMembers = { acme: [VIEWER, "alicia", "malik"] };
+		s.githubUsers = ["alibaba-dev", "alice"];
+	});
+	const other = section(page, "Other open");
+	const note = await rowAction(page, rowOf(other, "Migrate alerts"), "Note");
+	await note
+		.getByRole("textbox")
+		.fill(
+			"Waiting for the alerts team to sign off on the migration window first\nthen rerun the backfill",
+		);
+	await note.getByRole("button", { name: "Save" }).click();
+	await expect(note).toBeHidden();
+	const waiting = await rowAction(
+		page,
+		rowOf(other, "Migrate alerts"),
+		"Waiting on",
+	);
+	await waiting
+		.getByRole("combobox", { name: "Someone else" })
+		.pressSequentially("ali");
+	await expect(page.getByRole("group", { name: "GitHub" })).toBeVisible();
+	await page.screenshot({
+		path: join(shots as string, `waiting-on-${at}.png`),
+	});
+	await page.keyboard.press("Escape");
+	await page.keyboard.press("Escape");
+	await page.mouse.move(0, 0);
+	await rowOf(other, "Migrate alerts").scrollIntoViewIfNeeded();
+	await page.screenshot({
+		path: join(shots as string, `note-${at}.png`),
+	});
 	// A save unconfirmed past 5 s: the new view, its spinner, the warning.
 	await page.getByRole("button", { name: "Edit repos" }).click();
 	await dialog.getByRole("combobox", { name: "Add a repo" }).fill(OWNER_REPO);

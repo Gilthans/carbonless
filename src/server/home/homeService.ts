@@ -605,6 +605,11 @@ export class HomeService {
 		return viewReposOf((await this.#config.read()).config);
 	}
 
+	/** The viewer's login, "" while it can't be read. */
+	async viewerLogin(): Promise<string> {
+		return (await this.#viewerOrBlank()).viewer.login;
+	}
+
 	/** Every PR Home knows (view repos and started ones), for search. */
 	knownPrs(): PrFacts[] {
 		return [...this.#facts.values()].map((k) => k.facts);

@@ -3,6 +3,7 @@ import type {
 	AnnotationOp,
 	HomeRow,
 	HomeView,
+	PeopleResult,
 	SearchResult,
 } from "../../shared/home";
 import { fetchJson } from "../api";
@@ -58,6 +59,19 @@ export const searchQuery = (q: string, only?: "repos") =>
 		queryKey: ["home-search", q, only ?? "all"],
 		queryFn: ({ signal }) => fetchSearch(q, signal, only),
 		// A GitHub search still running: ask again shortly.
+		refetchInterval: (query) => (query.state.data?.pending ? 700 : false),
+		staleTime: 30_000,
+	});
+
+/** Who the waiting-on input suggests for `q` (GitHub's users from 2 characters). */
+export const peopleQuery = (q: string) =>
+	queryOptions({
+		queryKey: ["home-people", q],
+		queryFn: ({ signal }) =>
+			request<PeopleResult>(`/api/home/people?${new URLSearchParams({ q })}`, {
+				signal,
+			}),
+		// The org members or GitHub's search still coming: ask again shortly.
 		refetchInterval: (query) => (query.state.data?.pending ? 700 : false),
 		staleTime: 30_000,
 	});

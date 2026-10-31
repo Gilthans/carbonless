@@ -451,6 +451,21 @@ Semantics:
   Waiting-on panel). "Me" never hides and shows the row under "you" in the
   turn column. Teams (`org/slug`) are not offered: a team never acts
   itself, so a wait on one could never end.
+- **Someone else** suggests people as you type (owner, 2026-10-31: "the
+  waiting on feature needs autocomplete on github users, with users from
+  my orgs or interacting with my repos appearing first";
+  `GET /api/home/people?q=`, `src/server/home/people.ts`): first
+  "People", the members of the viewer's orgs and everyone on the PRs Home
+  knows (authors, requested reviewers, reviewers, commenters), those whose
+  login starts with the text first, then by how many of those PRs they're
+  on; then "GitHub", GitHub's user search, only from 2 characters (typing
+  rests 150 ms first; a search is reused for a minute). Never the viewer
+  ("Me" is theirs), a team, a bot or an org. Arrows pick one, Enter or a
+  click takes it, Enter with none picked takes what was typed. Cost: the
+  org members are read once per server and again at most hourly (with
+  Home's refresh): one query for the orgs and one per 100 members, 1
+  point each, at most 10 pages an org; without `read:org` there are none
+  and the repos' people still come. Each user search is 1 point **(call)**.
 - **Note** = free text on its own line under the row's title (owner,
   2026-10-31: "the pr note should appear below the title if it exists,
   not beside. it should take up no more than 1 line, the rest appearing
