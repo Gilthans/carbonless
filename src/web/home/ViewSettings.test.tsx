@@ -106,6 +106,49 @@ describe("ViewSettings", () => {
 		expect(screen.getByText("acme/web")).toBeInTheDocument();
 	});
 
+	it("while the save is out: a spinner on Save, everything read-only; a failure says why and gives the inputs back", async () => {
+		let answer: (r: Response) => void = () => {};
+		fakeApi(view({ mine: [started("far", "away", 1)] }), {
+			"PUT /api/home/view": () =>
+				new Promise<Response>((done) => {
+					answer = done;
+				}),
+		});
+		renderWithQuery(<HomePage />);
+		await userEvent.click(
+			await screen.findByRole("button", { name: "Edit repos" }),
+		);
+		const dialog = screen.getByRole("dialog", { name: "My PRs" });
+		const save = within(dialog).getByRole("button", { name: "Save" });
+		await userEvent.click(save);
+		const field = within(dialog).getByRole("combobox", { name: "Add a repo" });
+		await waitFor(() => expect(save).toBeDisabled());
+		expect(save).toHaveAttribute("aria-busy", "true");
+		expect(save.querySelector(".animate-spin")).not.toBeNull();
+		expect(field).toHaveAttribute("readonly");
+		expect(
+			within(dialog).getByRole("button", { name: "Remove acme/api" }),
+		).toBeDisabled();
+		expect(
+			within(dialog).getByRole("button", { name: "Add far/away" }),
+		).toBeDisabled();
+		answer(
+			new Response(JSON.stringify({ error: "config is read-only" }), {
+				status: 500,
+			}),
+		);
+		expect(await within(dialog).findByRole("alert")).toHaveTextContent(
+			"config is read-only",
+		);
+		expect(save).toBeEnabled();
+		expect(save).not.toHaveAttribute("aria-busy", "true");
+		expect(save.querySelector(".animate-spin")).toBeNull();
+		expect(field).not.toHaveAttribute("readonly");
+		expect(
+			within(dialog).getByRole("button", { name: "Remove acme/api" }),
+		).toBeEnabled();
+	});
+
 	it("Cancel keeps the view as it was", async () => {
 		const api = fakeApi(view());
 		renderWithQuery(<HomePage />);

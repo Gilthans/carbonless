@@ -351,7 +351,7 @@ test("Repos spins while the viewer's repos load, then lists only theirs", async 
 	await expect(page.getByRole("status")).toHaveText("");
 });
 
-test("the view's repo input suggests the viewer's repos as you type", async ({
+test("the view's repo input suggests the viewer's repos as you type; Save spins while it saves", async ({
 	page,
 	workdir,
 	pr,
@@ -378,7 +378,24 @@ test("the view's repo input suggests the viewer's repos as you type", async ({
 			.getByRole("listitem"),
 	).toHaveText(["acme/api", OWNER_REPO]);
 	await expect(field).toHaveValue("");
-	await dialog.getByRole("button", { name: "Save" }).click();
+	// The save is held: Save spins, nothing can change meanwhile.
+	let release = () => {};
+	const held = new Promise<void>((done) => {
+		release = done;
+	});
+	await page.route("**/api/home/view", async (route) => {
+		await held;
+		await route.continue();
+	});
+	const save = dialog.getByRole("button", { name: "Save" });
+	await save.click();
+	await expect(save).toBeDisabled();
+	await expect(save.locator(".animate-spin")).toBeVisible();
+	await expect(field).toHaveAttribute("readonly", "");
+	await expect(
+		dialog.getByRole("button", { name: "Remove acme/api" }),
+	).toBeDisabled();
+	release();
 	await expect(dialog).toBeHidden();
 	await expect(
 		page.getByText("Add widget cache with a rather long title"),

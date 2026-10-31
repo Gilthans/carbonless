@@ -1,4 +1,4 @@
-import { PlusIcon, RepoIcon, XIcon } from "@primer/octicons-react";
+import { PlusIcon, RepoIcon, SyncIcon, XIcon } from "@primer/octicons-react";
 import {
 	keepPreviousData,
 	useMutation,
@@ -92,6 +92,8 @@ export function ViewSettings(props: {
 			props.onClose();
 		},
 	});
+	// While the save is out, nothing changes what it saves.
+	const saving = save.isPending;
 	// A hand-edited config may say Acme/API: repos compare without case.
 	const listed = (name: string) =>
 		repos.some((r) => r.toLowerCase() === name.toLowerCase());
@@ -154,14 +156,15 @@ export function ViewSettings(props: {
 									type="button"
 									aria-label={`Remove ${r}`}
 									onClick={() => setRepos(repos.filter((x) => x !== r))}
-									className={`${iconButton} hover:text-bad`}
+									disabled={saving}
+									className={`${iconButton} hover:text-bad disabled:opacity-60`}
 								>
 									<XIcon aria-hidden />
 								</button>
 							</li>
 						))}
 					</ul>
-					<RepoInput listed={listed} onAdd={add} disabled={save.isPending} />
+					<RepoInput listed={listed} onAdd={add} disabled={saving} />
 					{suggestions.length > 0 && (
 						<ul aria-label="Suggested" className="flex flex-wrap gap-1.5">
 							{suggestions.map((r) => (
@@ -170,7 +173,8 @@ export function ViewSettings(props: {
 										type="button"
 										aria-label={`Add ${r}`}
 										onClick={() => add(r)}
-										className="flex min-h-10 items-center gap-1.5 rounded-full border border-dashed border-edge px-3 text-sm text-muted hover:border-solid hover:text-ink focus-visible:outline-2 focus-visible:outline-accent"
+										disabled={saving}
+										className="flex min-h-10 items-center gap-1.5 rounded-full border border-dashed border-edge px-3 text-sm text-muted hover:border-solid hover:text-ink focus-visible:outline-2 focus-visible:outline-accent disabled:opacity-60"
 									>
 										<PlusIcon size={12} aria-hidden />
 										{r}
@@ -191,9 +195,17 @@ export function ViewSettings(props: {
 						<button
 							type="button"
 							onClick={() => save.mutate()}
-							disabled={save.isPending}
-							className="cta h-10 rounded-md px-4 text-sm font-semibold text-ink hover:brightness-110 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:opacity-60"
+							disabled={saving}
+							aria-busy={saving || undefined}
+							className="cta flex h-10 items-center gap-1.5 rounded-md px-4 text-sm font-semibold text-ink hover:brightness-110 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:opacity-60"
 						>
+							{saving && (
+								<SyncIcon
+									size={14}
+									aria-hidden
+									className="animate-spin motion-reduce:animate-none"
+								/>
+							)}
 							Save
 						</button>
 					</div>

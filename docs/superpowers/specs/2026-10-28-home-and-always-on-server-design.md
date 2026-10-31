@@ -273,7 +273,9 @@ Owner's decisions on this part (2026-10-28):
   the same source and matching), the same spinner while the viewer's repos
   load, without the ones listed already; arrows pick one, Enter or a click
   adds it, Enter with none picked adds what was typed, Escape closes the
-  list (the dialog stays);
+  list (the dialog stays); while Save is out (owner, 2026-10-31: "there's
+  no spinner while it is working"), Save spins and is disabled and the
+  inputs are read-only; a failure shows why and gives them back;
   the server writes the file; a hand edit is picked up on the next refresh.
   A missing file means an empty view, and Home says so and offers to add
   repos. Several views in the file are kept but only the first is shown.
