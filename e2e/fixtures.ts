@@ -46,8 +46,13 @@ export class CrbExitError extends Error {
 
 const START_TIMEOUT_MS = 20_000;
 
-/** How long crb may take to exit after SIGTERM before the harness kills it. */
-const STOP_GRACE_MS = 3_000;
+/**
+ * How long crb may take to exit after SIGTERM before the harness kills it
+ * and fails the test. A crb that waited for the browser's sockets would take
+ * Node's 60 s headers timeout or longer; a loaded machine can stretch a
+ * prompt exit past a few seconds.
+ */
+const STOP_GRACE_MS = 10_000;
 
 /**
  * Runs a test's setup step (a fixture repo, starting crb) and gives the test

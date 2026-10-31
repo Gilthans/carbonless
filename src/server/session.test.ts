@@ -428,7 +428,8 @@ describe("Session", () => {
 			const at = (i: number) =>
 				`2026-01-0${1 + Math.floor(i / 10)}T0${i % 10}:00:00Z`;
 			pr.scenario({
-				threadContentDelayMs: 300,
+				// The text waits for the test: the summary must come without it.
+				hold: ["threadContent"],
 				prs: {
 					12: {
 						view: prView({ headRefOid: head, baseRefName: "main" }),
@@ -457,6 +458,7 @@ describe("Session", () => {
 			expect(summary.threads[0]?.path).toBe("f11.txt");
 			expect(summary.threads.some((t) => t.loaded)).toBe(false);
 			expect(summary.threads[0]?.code?.anchor.line).toBe(1);
+			release(process.env.CRB_FAKE_GH ?? "", "threadContent");
 			const first = await s.threads(readId, "first");
 			const loaded = first.threads.filter((t) => t.loaded).map((t) => t.path);
 			expect(loaded).toEqual(

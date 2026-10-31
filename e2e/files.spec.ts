@@ -480,15 +480,41 @@ test("a click right as Undo cross-off swaps in doesn't undo", async ({
 	await openFiles(page, s.url);
 	const section = fileSection(page, "src/util.ts");
 	const bar = progress(page);
-	await fileAction(section, "Cross off file");
+	await expect(fileActionButton(section, "Cross off file")).toBeEnabled();
+	// A double click's second click lands on the button that swapped in. The
+	// page clicks it the moment it appears: from the test, a loaded machine
+	// could take longer than the guard's 500 ms (UNDO_ARM_MS) to get there.
+	const clickedAt = await section.evaluate(
+		(el) =>
+			new Promise<number>((done) => {
+				const undo = () =>
+					el.querySelector<HTMLButtonElement>(
+						'button[aria-label="Undo cross-off"][aria-pressed="true"]',
+					);
+				const watch = new MutationObserver(() => {
+					const button = undo();
+					if (!button) return;
+					watch.disconnect();
+					button.click();
+					done(performance.now());
+				});
+				// The same button may just be relabeled.
+				watch.observe(el, {
+					subtree: true,
+					childList: true,
+					attributeFilter: ["aria-label"],
+				});
+				el.querySelector<HTMLButtonElement>(
+					'button[aria-label="Cross off file"]',
+				)?.click();
+			}),
+	);
 	const undo = fileActionButton(section, "Undo cross-off");
-	await expect(undo).toBeEnabled();
-	// A double click's second click lands on the button that swapped in.
-	await undo.click();
 	await page.waitForTimeout(100);
 	await expect(undo).toBeVisible();
 	await expect(bar).toContainText("0 / 3 clusters reviewed");
-	await page.waitForTimeout(500);
+	// Once the guard is over, a click undoes.
+	await page.waitForFunction((t) => performance.now() > t + 500, clickedAt);
 	await undo.click();
 	await expect(fileActionButton(section, "Cross off file")).toBeEnabled();
 	await expect(bar).toContainText("0 / 4 clusters reviewed");

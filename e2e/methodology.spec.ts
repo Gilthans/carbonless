@@ -42,12 +42,15 @@ for (const m of METHODOLOGIES) {
 			stage("updated");
 			const crb = await startCrb();
 			await expectPrFiles(crb.url);
+			// Leave first: its page would poll the stopped server.
+			await page.goto("about:blank");
 			await crb.stop();
 
 			stage("landed");
 			if (m.landing === "open") {
 				const again = await startCrb();
 				await expectPrFiles(again.url);
+				await page.goto("about:blank");
 				await again.stop();
 			} else {
 				const exit = await startCrb().then(

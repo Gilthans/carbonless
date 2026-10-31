@@ -483,6 +483,70 @@ describe("OverviewPage", () => {
 		expect(what.querySelector("b")).toBeNull();
 	});
 
+	describe("a long description folds", () => {
+		afterEach(() => vi.restoreAllMocks());
+		/** jsdom has no layout: the description is `tall` px, clipped at 280. */
+		const heights = (tall: number) => {
+			const desc = (el: HTMLElement) => el.dataset.testid === "description";
+			vi.spyOn(HTMLElement.prototype, "scrollHeight", "get").mockImplementation(
+				function (this: HTMLElement) {
+					return desc(this) ? tall : 0;
+				},
+			);
+			vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockImplementation(
+				function (this: HTMLElement) {
+					return desc(this) ? Math.min(tall, 280) : 0;
+				},
+			);
+		};
+
+		it("over the height: clipped, faded, Show more and Show less, its text always there", async () => {
+			heights(900);
+			const user = userEvent.setup();
+			renderApp();
+			const what = await screen.findByRole("region", { name: "What it does" });
+			const body = within(what).getByTestId("description");
+			expect(body).toHaveClass("max-h-[17.5rem]", "overflow-hidden");
+			const more = await within(what).findByRole("button", {
+				name: "Show more",
+			});
+			expect(more).toHaveAttribute("aria-expanded", "false");
+			expect(more).toHaveAttribute("aria-controls", body.id);
+			// Clipped, still in the DOM (screen readers, find in page).
+			expect(within(body).getByText("widgets")).toBeInTheDocument();
+			await user.click(more);
+			expect(body).not.toHaveClass("max-h-[17.5rem]");
+			const less = within(what).getByRole("button", { name: "Show less" });
+			expect(less).toHaveAttribute("aria-expanded", "true");
+			await user.click(less);
+			expect(body).toHaveClass("max-h-[17.5rem]");
+		});
+
+		it("a keyboard user landing on a clipped link opens it", async () => {
+			heights(900);
+			renderApp();
+			const what = await screen.findByRole("region", { name: "What it does" });
+			await within(what).findByRole("button", { name: "Show more" });
+			const body = within(what).getByTestId("description");
+			act(() => {
+				body.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
+			});
+			expect(
+				within(what).getByRole("button", { name: "Show less" }),
+			).toHaveAttribute("aria-expanded", "true");
+		});
+
+		it("under the height: whole, no toggle", async () => {
+			heights(200);
+			renderApp();
+			const what = await screen.findByRole("region", { name: "What it does" });
+			expect(within(what).getByText("widgets")).toBeInTheDocument();
+			expect(
+				within(what).queryByRole("button", { name: /Show (more|less)/ }),
+			).toBeNull();
+		});
+	});
+
 	it("links the PR on GitHub with the GitHub mark", async () => {
 		renderApp();
 		const what = await screen.findByRole("region", { name: "What it does" });

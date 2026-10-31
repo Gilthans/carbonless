@@ -66,9 +66,12 @@ describe("compileGlob", () => {
 			`${"{a,*}".repeat(30)}x`,
 		]) {
 			const glob_ = compileGlob(glob);
-			const start = performance.now();
+			// CPU time of this thread, not the wall clock: other processes on a
+			// loaded machine don't count, a backtracking match still does.
+			const start = process.threadCpuUsage();
 			glob_.test(path);
-			expect(performance.now() - start, glob).toBeLessThan(1000);
+			const { user, system } = process.threadCpuUsage(start);
+			expect((user + system) / 1000, glob).toBeLessThan(1000);
 		}
 	});
 

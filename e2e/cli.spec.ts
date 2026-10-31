@@ -100,21 +100,31 @@ test("exits promptly on SIGTERM while a page is open", async ({
 }) => {
 	// The open page keeps polling the stopped server.
 	expectConsoleError(/Failed to load resource: net::ERR_/);
-	await pr();
+	const p = await pr();
+	// A read of GitHub stays under way: shutdown mustn't wait for it either.
+	p.editScenario((sc) => {
+		sc.hold = ["threads"];
+	});
 	const s = await startCrb();
+	const threadsAsked = page.waitForRequest(
+		(r) => new URL(r.url()).pathname === "/api/threads",
+	);
 	await page.goto(new URL("/files", s.url).href);
 	await expect(
 		page.getByRole("progressbar", { name: "Review progress" }),
 	).toBeVisible();
+	await threadsAsked;
 	// Browsers also keep preconnected sockets that never send a request.
 	const { hostname, port } = new URL(s.url);
 	const preconnect = connect(Number(port), hostname);
 	preconnect.on("error", () => {});
 	await new Promise((done) => preconnect.once("connect", done));
+	// stop() fails the test unless crb exits within STOP_GRACE_MS, far short
+	// of the minute a wait for these sockets would take; the held read is
+	// never released, so a shutdown waiting on it never ends.
 	const exit = await s.stop();
 	preconnect.destroy();
 	expect(exit?.code).toBe(0);
-	expect(exit?.ms).toBeLessThan(2_000);
 });
 
 test("--as-of needs an ISO time with a zone, and stays out of the usage", async ({

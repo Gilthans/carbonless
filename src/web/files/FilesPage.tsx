@@ -564,9 +564,10 @@ export function FilesPage() {
 									ref={diffs}
 									// Room for the floating Files button, and for the save notices
 									// (--sync-notices, SyncNotices): the last header can always
-									// scroll clear of them.
+									// scroll clear of them; and on touch for the selection bar
+									// under a selection in the last line (--selection-room).
 									style={{
-										paddingBottom: `max(${wide ? "0px" : "5rem"}, var(--sync-notices, 0px), var(--selection-bar, 0px))`,
+										paddingBottom: `max(${wide ? "0px" : "5rem"}, var(--sync-notices, 0px), var(--selection-room, 0px))`,
 									}}
 									className="min-w-0 flex-1 space-y-3"
 								>

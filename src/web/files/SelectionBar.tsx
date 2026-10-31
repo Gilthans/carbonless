@@ -17,7 +17,6 @@ import { CODE_CELL, inHunk, spanOfCells, spanOfRange } from "./codeSpan";
 import { getPicks, type Picks, setPicks, usePicks } from "./linePicks";
 import {
 	type CodeSpan,
-	describeSpan,
 	type SelectionAction,
 	type SelectionContext,
 	selectionActions,
@@ -40,51 +39,138 @@ export interface BarTarget {
 	 */
 	anchor: number;
 	after?: boolean;
-	/** A short quote of what is selected (the phone's bar). */
-	quote: string;
 	/** Text selected (vs lines picked). */
 	text: boolean;
 }
 
 const GAP = 6;
 const MARGIN = 8;
+/**
+ * Below text selected on a touch screen: room for the selection's end
+ * handle, which hangs under the last line, so it stays grabbable.
+ */
+export const HANDLE_GAP = 28;
+
+/**
+ * The part of the layout viewport the bar may use, in its (and
+ * getBoundingClientRect's) coordinates: what the visual viewport shows
+ * (pinch zoom pans and shrinks it), inside the safe-area insets.
+ */
+export interface BarView {
+	left?: number;
+	top?: number;
+	w: number;
+	h: number;
+}
 
 /** A span as one string, to tell spans apart. */
 const keyOf = (span: CodeSpan) => JSON.stringify(span);
 
 /**
- * Where the floating bar goes (desktop), never over the selection when it
- * can help it: below its visible end, else above its start, else beside it
- * (right, then left), else the viewport's bottom right corner. Below or
- * above, it goes by the target's `anchor`.
+ * Where the floating bar goes, never over the selection when it can help
+ * it: `below` its visible end (GAP, or HANDLE_GAP under text on a touch
+ * screen), else above its start, else beside it (right, then left), else
+ * the view's bottom right corner. Below or above, it goes by the target's
+ * `anchor`. It always stays inside `view`.
  */
 export function placeBar(
 	target: Pick<BarTarget, "first" | "last" | "box" | "anchor" | "after">,
 	size: { w: number; h: number },
-	view: { w: number; h: number },
+	view: BarView,
+	below = GAP,
 ): { top: number; left: number } {
 	const { w, h } = size;
+	const x0 = view.left ?? 0;
+	const y0 = view.top ?? 0;
+	const x1 = x0 + view.w;
+	const y1 = y0 + view.h;
 	const clampX = (x: number) =>
-		Math.round(Math.min(Math.max(MARGIN, x), view.w - w - MARGIN));
-	// The visible end: the last line, or the viewport's bottom when it's below.
-	const end = Math.min(target.last.bottom, view.h);
+		Math.round(Math.min(Math.max(x0 + MARGIN, x), x1 - w - MARGIN));
+	// The visible end: the last line, or the view's bottom when it's below.
+	const end = Math.min(target.last.bottom, y1);
 	const left = clampX(target.after ? target.anchor : target.anchor - w / 2);
-	if (target.last.bottom <= view.h && end + GAP + h <= view.h - MARGIN) {
-		return { top: Math.round(end + GAP), left };
+	if (target.last.bottom <= y1 && end + below + h <= y1 - MARGIN) {
+		return { top: Math.round(end + below), left };
 	}
-	if (target.first.top >= 0 && target.first.top - GAP - h >= MARGIN) {
+	if (target.first.top >= y0 && target.first.top - GAP - h >= y0 + MARGIN) {
 		return { top: Math.round(target.first.top - GAP - h), left };
 	}
 	const top = Math.round(
-		Math.min(Math.max(MARGIN, end - h), view.h - h - MARGIN),
+		Math.min(Math.max(y0 + MARGIN, end - h), y1 - h - MARGIN),
 	);
-	if (target.box.right + GAP + w <= view.w - MARGIN) {
+	if (target.box.right + GAP + w <= x1 - MARGIN) {
 		return { top, left: Math.round(target.box.right + GAP) };
 	}
-	if (target.box.left - GAP - w >= MARGIN) {
+	if (target.box.left - GAP - w >= x0 + MARGIN) {
 		return { top, left: Math.round(target.box.left - GAP - w) };
 	}
-	return { top: view.h - h - MARGIN, left: view.w - w - MARGIN };
+	return {
+		top: Math.round(y1 - h - MARGIN),
+		left: Math.round(x1 - w - MARGIN),
+	};
+}
+
+/**
+ * What the screen shows of the page now (BarView): the visual viewport.
+ * (The safe-area insets are 0 without `viewport-fit=cover`, which
+ * index.html doesn't set: the browser keeps the page out of them.)
+ */
+export function currentView(): BarView {
+	const vv = window.visualViewport;
+	return {
+		left: vv?.offsetLeft ?? 0,
+		top: vv?.offsetTop ?? 0,
+		w: vv?.width ?? document.documentElement.clientWidth,
+		h: vv?.height ?? window.innerHeight,
+	};
+}
+
+/**
+ * Touch decides the handle's room and the scroll-once, not the screen's
+ * width (a phone in landscape, a tablet): the last press's pointer type,
+ * else whether the main pointer is coarse.
+ */
+let lastPointer: string | null = null;
+/** A finger is on the screen (a selection may still be in the making). */
+let fingerDown = false;
+const lifted = new Set<() => void>();
+if (typeof document !== "undefined") {
+	document.addEventListener(
+		"pointerdown",
+		(e) => {
+			lastPointer = e.pointerType || lastPointer;
+		},
+		true,
+	);
+	document.addEventListener(
+		"touchstart",
+		() => {
+			fingerDown = true;
+		},
+		{ capture: true, passive: true },
+	);
+	const lift = (e: TouchEvent) => {
+		if (e.touches.length > 0) return;
+		fingerDown = false;
+		for (const f of lifted) f();
+	};
+	document.addEventListener("touchend", lift, true);
+	document.addEventListener("touchcancel", lift, true);
+}
+
+/** Whether the selection was made by touch (or a pen). */
+export function byTouch(): boolean {
+	if (lastPointer) return lastPointer !== "mouse";
+	return (
+		typeof window.matchMedia === "function" &&
+		window.matchMedia("(pointer: coarse)").matches
+	);
+}
+
+/** For tests: forget the last press and any finger. */
+export function resetPointer() {
+	lastPointer = null;
+	fingerDown = false;
 }
 
 /**
@@ -157,7 +243,6 @@ const ofSelection = (commit: string): BarTarget | null => {
 	}
 	const codeOf = (cell: Element) =>
 		rectOf(cell.querySelector("[data-code]") ?? cell);
-	const text = selection.toString().trim().split("\n")[0] ?? "";
 	return {
 		...found,
 		...textGeometry(
@@ -166,7 +251,6 @@ const ofSelection = (commit: string): BarTarget | null => {
 			reversed,
 		),
 		box,
-		quote: text.length > 40 ? `${text.slice(0, 40)}…` : text,
 		text: true,
 	};
 };
@@ -217,7 +301,6 @@ const ofPicks = (picks: Picks, commit: string): BarTarget | null => {
 		),
 		anchor: pickAnchor(lastRow),
 		after: true,
-		quote: "",
 		text: false,
 	};
 };
@@ -226,9 +309,10 @@ const ofPicks = (picks: Picks, commit: string): BarTarget | null => {
  * The actions for what is selected in Files changed: text in the code, or
  * lines picked by their numbers. One icon button per registered action
  * (selectionActions.ts), disabled with its reason as the tooltip when it
- * can't run there. On a desktop the bar floats just below the selection's
- * end (above it when there's no room), never over it; on a phone it is
- * pinned to the bottom, quoting the selection. It never takes the
+ * can't run there. The bar floats just below the selection's end (above
+ * it when there's no room), never over it; on a phone a little lower,
+ * clear of the selection's end handle, inside what the screen shows of
+ * the page (pinch zoom, the safe area). It never takes the
  * selection (a mouse press on it doesn't clear it: copying still works),
  * and the span is read when the selection settles, so an action gets it
  * even if a tap clears the selection first. Escape dismisses it and clears
@@ -276,11 +360,13 @@ export function SelectionBar(props: { files: readonly FileView[] }) {
 		document.addEventListener("selectionchange", later);
 		document.addEventListener("pointerup", now);
 		document.addEventListener("keyup", now);
+		lifted.add(now);
 		return () => {
 			clearTimeout(timer);
 			document.removeEventListener("selectionchange", later);
 			document.removeEventListener("pointerup", now);
 			document.removeEventListener("keyup", now);
+			lifted.delete(now);
 		};
 	}, [read]);
 	const target = text ?? (picks && commit ? ofPicks(picks, commit) : null);
@@ -295,7 +381,7 @@ export function SelectionBar(props: { files: readonly FileView[] }) {
 	const [, setTick] = useState(0);
 	const reading = text !== null;
 	useEffect(() => {
-		if (hidden || !wide) return;
+		if (hidden) return;
 		let frame = 0;
 		const move = () => {
 			if (frame) return;
@@ -307,6 +393,10 @@ export function SelectionBar(props: { files: readonly FileView[] }) {
 		};
 		window.addEventListener("scroll", move, { passive: true, capture: true });
 		window.addEventListener("resize", move);
+		// Pinch zoom pans and resizes what the screen shows, page unmoved.
+		const vv = window.visualViewport;
+		vv?.addEventListener("scroll", move);
+		vv?.addEventListener("resize", move);
 		// Lines moving under it without a scroll (a thread or composer
 		// opening, context loading, highlighting arriving): the page's
 		// files section changes size.
@@ -321,8 +411,10 @@ export function SelectionBar(props: { files: readonly FileView[] }) {
 			cancelAnimationFrame(frame);
 			window.removeEventListener("scroll", move, { capture: true });
 			window.removeEventListener("resize", move);
+			vv?.removeEventListener("scroll", move);
+			vv?.removeEventListener("resize", move);
 		};
-	}, [hidden, wide, reading, commit]);
+	}, [hidden, reading, commit]);
 	const clear = useCallback(() => {
 		setPicks(null);
 		setText(null);
@@ -375,46 +467,58 @@ export function SelectionBar(props: { files: readonly FileView[] }) {
 	const [place, setPlace] = useState<{ top: number; left: number } | null>(
 		null,
 	);
-	useLayoutEffect(() => {
-		const el = bar.current;
-		if (hidden || !target || !el || !wide) {
-			setPlace(null);
-			return;
-		}
-		const next = placeBar(
-			target,
-			{ w: el.offsetWidth, h: el.offsetHeight },
-			{ w: document.documentElement.clientWidth, h: window.innerHeight },
-		);
-		setPlace((p) => (p?.top === next.top && p.left === next.left ? p : next));
-	});
-	// A phone's bar sits at the bottom: the page can scroll past it
-	// (--selection-bar pads the file list), and a selection under it moves
-	// up once, when the bar first comes for a selection (not again as its
-	// handles are dragged: that would move the page under the finger).
-	const scrolled = useRef(false);
+	// By touch, room under text for its end handle.
+	const touch = byTouch();
+	const below = touch && target?.text ? HANDLE_GAP : GAP;
+	// A phone's own Copy menu sits above a selection: when the bar first
+	// comes for a selection by touch with no room under it, the page moves
+	// up once to make it (the list's end padded by --selection-room so it
+	// can), once the finger is off the screen: never under a finger, and
+	// not again as the handles are dragged. Per kind: picks giving way to
+	// a text selection get theirs.
+	const scrolled = useRef<"text" | "picks" | null>(null);
 	useLayoutEffect(() => {
 		const el = bar.current;
 		const root = document.documentElement;
-		if (hidden || !target || !el || wide) {
-			root.style.removeProperty("--selection-bar");
-			if (!target) scrolled.current = false;
+		if (!target) scrolled.current = null;
+		if (hidden || !target || !el) {
+			root.style.removeProperty("--selection-room");
+			setPlace(null);
 			return;
 		}
-		const top = el.getBoundingClientRect().top;
-		root.style.setProperty(
-			"--selection-bar",
-			`${Math.ceil(el.offsetHeight + MARGIN)}px`,
-		);
-		if (!scrolled.current) {
-			scrolled.current = true;
-			const under = target.last.bottom - (top - MARGIN);
-			if (under > 0) window.scrollBy(0, under);
+		const size = { w: el.offsetWidth, h: el.offsetHeight };
+		const room = below + size.h + MARGIN;
+		if (touch) root.style.setProperty("--selection-room", `${room}px`);
+		else root.style.removeProperty("--selection-room");
+		const view = currentView();
+		let at = target;
+		const kind = target.text ? "text" : "picks";
+		if (touch && !fingerDown && scrolled.current !== kind) {
+			scrolled.current = kind;
+			const top = view.top ?? 0;
+			const short = target.last.bottom + room - (top + view.h);
+			// Only while the selection's start stays on screen.
+			if (short > 0 && target.first.top - short >= top) {
+				const y = window.scrollY;
+				window.scrollBy({ top: short, behavior: "instant" });
+				// Where it is now (a scroll event reads it again a frame later).
+				const moved = window.scrollY - y;
+				const up = (r: DOMRect) =>
+					new DOMRect(r.x, r.y - moved, r.width, r.height);
+				at = {
+					...target,
+					first: up(target.first),
+					last: up(target.last),
+					box: up(target.box),
+				};
+			}
 		}
+		const next = placeBar(at, size, view, below);
+		setPlace((p) => (p?.top === next.top && p.left === next.left ? p : next));
 	});
 	useEffect(
 		() => () => {
-			document.documentElement.style.removeProperty("--selection-bar");
+			document.documentElement.style.removeProperty("--selection-room");
 		},
 		[],
 	);
@@ -479,25 +583,9 @@ export function SelectionBar(props: { files: readonly FileView[] }) {
 			}}
 			// A mouse press on the bar keeps the selection (and so copying).
 			onMouseDown={(e) => e.preventDefault()}
-			style={
-				wide
-					? ((place ?? { top: -9999, left: -9999 }) satisfies CSSProperties)
-					: undefined
-			}
-			className={
-				wide
-					? "fixed z-40 flex gap-0.5 rounded-lg border border-edge bg-overlay p-0.5 shadow-float"
-					: "fixed inset-x-0 bottom-0 z-40 flex items-center gap-1 border-t border-edge bg-overlay px-3 pt-1 pb-[max(0.25rem,env(safe-area-inset-bottom))] shadow-sheet"
-			}
+			style={(place ?? { top: -9999, left: -9999 }) satisfies CSSProperties}
+			className="fixed z-40 flex gap-0.5 rounded-lg border border-edge bg-overlay p-0.5 shadow-float"
 		>
-			{!wide && (
-				<p className="min-w-0 flex-1 truncate font-mono text-xs text-muted">
-					{target.quote && (
-						<span className="text-code-ink">{target.quote} · </span>
-					)}
-					{describeSpan(target.span)}
-				</p>
-			)}
 			{actions.map((action) => {
 				const ok = action.available(target.span, ctx);
 				const IconEl = action.icon;

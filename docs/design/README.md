@@ -41,6 +41,10 @@ Code-review conventions win over the brand palette:
   no blue, its violet would read as crossed off, and teal as green; periwinkle
   is the familiar link/focus blue, nudged toward the violet, at 4.5:1+.
 - The draft badge is grey in "What it does", as on GitHub.
+- A description taller than 280px is clipped there with a fade into
+  `surface` and a centred "Show more" / "Show less" toggle (chevron, ≥40px,
+  `aria-expanded`), like a thread card's; shorter ones show whole. A height,
+  not a line count: headings, lists, code and images share no line height.
 - Brand gradient only where no convention exists: the active tab's underline, primary actions (`cta`), the header glow, the logo.
 
 Syntax highlighting (`src/web/files/syntaxTheme.ts`) uses lightened brand
@@ -350,12 +354,17 @@ decides where; nothing else does):
   `shadow-float`, just below the selection's last line, centered where the
   drag let go (its end, or its start for a backwards drag), or for picked
   lines just right of the last one's number, never over the numbers a pick
-  extends to (above it when there's no room), never over it; on a phone a bar pinned to the bottom (above the
-  safe area) quoting the selection. An action that can't run stays,
+  extends to (above it when there's no room), never over it. By touch
+  (the press's pointer type, else a coarse pointer; not the width, so a
+  phone in landscape too) 28px under selected text (room for the end
+  handle; the system's Copy menu sits above), inside what the screen shows
+  (pinch zoom). An action that can't run stays,
   `aria-disabled`, with the reason as its tooltip. Pressing it doesn't take
   the selection; Escape dismisses it until the span changes and clears
   picked lines (`line-picked`). A selection taller than the screen gets the
-  bar beside it; on a phone the page pads its end by the bar's height. The
+  bar beside it; by touch with no room under a new selection, the page
+  moves up once to make it, after the finger lifts (the list's end padded
+  by the bar's room, so the last line can). The
   first Tab after a selection goes to the bar. A new text selection lets
   picked lines go.
 - **The composer** opens as a row under the span's last line, like an

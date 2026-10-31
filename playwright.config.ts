@@ -1,3 +1,4 @@
+import { availableParallelism } from "node:os";
 import { defineConfig, devices } from "@playwright/test";
 
 // Each test starts its own server on a throwaway git repo (see e2e/fixtures.ts),
@@ -5,9 +6,19 @@ import { defineConfig, devices } from "@playwright/test";
 export default defineConfig({
 	testDir: "e2e",
 	fullyParallel: true,
+	// A run that holds the machine-wide queue (scripts/queue.mjs) has the
+	// machine to itself: a worker per core (the whole suite ~18% faster than
+	// Playwright's half). Otherwise other runs may share it: the default.
+	workers: process.env.CRB_QUEUE_HELD ? availableParallelism() : undefined,
 	forbidOnly: !!process.env.CI,
-	retries: process.env.CI ? 2 : 0,
+	// No retries, in CI either: a flaky test must fail visibly to get fixed.
+	retries: 0,
 	reporter: process.env.CI ? "github" : "list",
+	// An expect waits for what the page brings: often a chain of requests
+	// (a reload reads the overview, then the threads, then the comments),
+	// which a machine running several suites stretches past the 5 s default.
+	// Speed isn't what these tests check; a missing thing still fails.
+	expect: { timeout: 10_000 },
 	use: {
 		trace: "retain-on-failure",
 	},
