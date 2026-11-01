@@ -29,6 +29,7 @@ import { ignoreWhitespace, sideBySide } from "../viewSettings";
 import type { DiffThreads } from "./DiffBody";
 import { FileDiff } from "./FileDiff";
 import { FileTree } from "./FileTree";
+import { treeOrder } from "./fileOrder";
 import { filesPrefetchOrder } from "./filesPrefetch";
 import { foldsKey } from "./folderFold";
 import { useHeadSure } from "./headSure";
@@ -123,7 +124,7 @@ function FilesSheet(props: {
 }
 
 /**
- * Tracks the file in view: the first file section crossing the band just
+ * Tracks the file in view: the first file section (in page order) crossing the band just
  * below the sticky app header and progress bar (`top` px tall together).
  * Not while the page is hidden (`active` false): nothing is in view then,
  * and the file in view when it shows again is the one it was left on.
@@ -150,7 +151,13 @@ export function useCurrentFile(
 					if (entry.isIntersecting) visible.add(index);
 					else visible.delete(index);
 				}
-				if (visible.size > 0) setCurrent(Math.min(...visible));
+				// The first in the page's order (fileOrder), not the lowest index.
+				const first = [
+					...root.querySelectorAll<HTMLElement>("[data-file-index]"),
+				]
+					.map((el) => Number(el.dataset.fileIndex))
+					.find((index) => visible.has(index));
+				if (first !== undefined) setCurrent(first);
 			},
 			{ rootMargin: `-${Math.round(top) + 1}px 0px -60% 0px` },
 		);
@@ -272,6 +279,8 @@ export const MISSING_HINT_MS = 8000;
 export function FilesPage() {
 	// The reviewer's intended states over the server's (useSetStates).
 	const { review, data } = useReviewView();
+	// The page's one order, the tree's (fileOrder): the diff list follows it.
+	const files = useMemo(() => (data ? treeOrder(data.files) : []), [data]);
 	const { stale } = useSyncState();
 	// False while another page shows (kept mounted, hidden): measuring and
 	// tracking pause, root styles are given back, the sheet closes.
@@ -496,7 +505,7 @@ export function FilesPage() {
 	}, [landing, active]);
 
 	// Comments are read in the background, the open file's threads first,
-	// then the other files' in file order (one prefetch for the page).
+	// then the other files' in the page's order (one prefetch for the page).
 	const {
 		threads,
 		all: allThreads,
@@ -515,18 +524,18 @@ export function FilesPage() {
 		() =>
 			data && threads
 				? filesPrefetchOrder(
-						data.files,
+						files,
 						threads.threads,
 						openIndex === null
 							? null
-							: data.files.findIndex((f) => f.index === openIndex),
+							: files.findIndex((f) => f.index === openIndex),
 						(f) =>
 							queryClient.getQueryData(
 								hunksQuery(data.revision, f.index).queryKey,
 							) ?? null,
 					)
 				: [],
-		[data, threads, openIndex, queryClient],
+		[data, files, threads, openIndex, queryClient],
 	);
 	usePrefetchComments(threads?.readId, prefetch);
 
@@ -551,7 +560,7 @@ export function FilesPage() {
 	const pr = useQuery(sessionQuery).data?.pr;
 	const tree = data && (
 		<FileTree
-			files={data.files}
+			files={files}
 			unit={unit}
 			current={current}
 			onSelect={select}
@@ -645,7 +654,7 @@ export function FilesPage() {
 									}}
 									className="min-w-0 flex-1 space-y-3"
 								>
-									{data.files.map((file) => (
+									{files.map((file) => (
 										<FileDiff
 											// A new snapshot can reuse an index for another file.
 											key={`${data.revision}:${file.index}`}

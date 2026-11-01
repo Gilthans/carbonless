@@ -4,6 +4,7 @@ import type { FileView, ReviewThread } from "../../shared/types";
 import { Spinner } from "../Spinner";
 import { Tooltip, TooltipPath } from "../Tooltip";
 import { ChangeKindIcon, changeKindLabel } from "./changeKind";
+import { buildTree, type Folder, filesIn, type Node } from "./fileOrder";
 import { type Folds, useFolds } from "./folderFold";
 import { Meter } from "./ProgressBar";
 import { ChangeCount, crossOffReasons, StatusIcon } from "./status";
@@ -17,78 +18,6 @@ import {
 } from "./unit";
 
 const NONE = () => [];
-
-type Node =
-	| { kind: "folder"; folder: Folder }
-	| { kind: "file"; file: FileView };
-interface Folder {
-	/** As shown: single-folder chains merged ("a/b"). */
-	name: string;
-	/** Full path from the root: the folder's identity (fold state). */
-	path: string;
-	children: Node[];
-}
-
-/** Folders in order of their first file; single-folder chains merge ("a/b"). */
-function buildTree(files: readonly FileView[]): Folder {
-	const root: Folder = { name: "", path: "", children: [] };
-	for (const file of files) {
-		const parts = file.path.split("/");
-		parts.pop();
-		let folder = root;
-		for (const part of parts) {
-			let child = folder.children.find(
-				(n): n is Extract<Node, { kind: "folder" }> =>
-					n.kind === "folder" && n.folder.name === part,
-			)?.folder;
-			if (!child) {
-				child = {
-					name: part,
-					path: folder.path ? `${folder.path}/${part}` : part,
-					children: [],
-				};
-				folder.children.push({ kind: "folder", folder: child });
-			}
-			folder = child;
-		}
-		folder.children.push({ kind: "file", file });
-	}
-	const compress = (folder: Folder): Folder => {
-		let merged = folder;
-		while (
-			merged.children.length === 1 &&
-			merged.children[0]?.kind === "folder"
-		) {
-			const only = merged.children[0].folder;
-			merged = {
-				name: `${merged.name}/${only.name}`,
-				path: only.path,
-				children: only.children,
-			};
-		}
-		return {
-			...merged,
-			children: merged.children.map((n) =>
-				n.kind === "folder"
-					? { kind: "folder", folder: compress(n.folder) }
-					: n,
-			),
-		};
-	};
-	return {
-		...root,
-		children: root.children.map((n) =>
-			n.kind === "folder" ? { kind: "folder", folder: compress(n.folder) } : n,
-		),
-	};
-}
-
-/** Every file under the folder, at any depth. */
-function filesIn(folder: Folder): FileView[] {
-	return folder.children.flatMap((n) =>
-		n.kind === "file" ? [n.file] : filesIn(n.folder),
-	);
-}
 
 const indent = (depth: number) => ({
 	paddingLeft: `${depth * 0.75 + 0.25}rem`,
@@ -314,7 +243,7 @@ function Children(props: Level & { nodes: Node[] }) {
 }
 
 /**
- * The changed files as a folder tree, in snapshot order, with review status.
+ * The changed files as a folder tree, in the page's order (fileOrder), with review status.
  * Folders fold (view state only, kept per PR under `foldKey`); the current
  * file's folded folders unfold whenever it changes.
  */

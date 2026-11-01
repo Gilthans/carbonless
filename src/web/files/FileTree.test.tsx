@@ -91,7 +91,7 @@ describe("FileTree", () => {
 		expect(row("api\\.g\\.cs").querySelector("s")).not.toBeNull();
 	});
 
-	it("nests files under folders, in snapshot order, with their status", () => {
+	it("nests files under folders, folders first, by name, with their status", () => {
 		render(
 			<FileTree
 				files={files}
@@ -110,10 +110,10 @@ describe("FileTree", () => {
 			.filter((b) => !b.hasAttribute("aria-expanded"))
 			.map((b) => b.textContent);
 		expect(items.map((t) => t?.match(/one|two|b\.ts|api/)?.[0])).toEqual([
+			"api",
 			"one",
 			"two",
 			"b.ts",
-			"api",
 		]);
 		const one = within(tree).getByRole("button", { name: /one\.ts/ });
 		expect(numbers(one)).toBe("1 of 2 clusters reviewed");
@@ -192,10 +192,8 @@ describe("FileTree", () => {
 				(t) => !t.hasAttribute("hidden"),
 			);
 		expect(shown()).toHaveLength(0);
-		// Past the folders src and a/deep.
-		await user.tab();
-		await user.tab();
-		await user.tab();
+		// Folders first, by name: past gen, its api.g.cs, src and a/deep.
+		for (let i = 0; i < 5; i++) await user.tab();
 		const first = screen.getByRole("button", { name: /one\.ts/ });
 		expect(first).toHaveFocus();
 		expect(shown()).toHaveLength(1);

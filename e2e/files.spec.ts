@@ -1295,3 +1295,54 @@ test("each file shows whether it was added, deleted, modified or renamed", async
 		),
 	).toBe(true);
 });
+
+test("the tree and the diff list share one order: folders first, then files, by name", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	// Git's order would be README.md, lib/…, src/B.ts, src/a…, src/z/….
+	await pr({
+		base: { "keep.txt": "keep\n" },
+		files: [
+			{
+				message: "PR change",
+				files: {
+					"README.md": "readme\n",
+					"lib/x.ts": "x\n",
+					"src/B.ts": "b\n",
+					"src/a.ts": "a\n",
+					"src/a10.ts": "a10\n",
+					"src/a2.ts": "a2\n",
+					"src/z/b.ts": "zb\n",
+				},
+			},
+		],
+	});
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	const order = [
+		"lib/x.ts",
+		"src/z/b.ts",
+		"src/a.ts",
+		"src/a2.ts",
+		"src/a10.ts",
+		"src/B.ts",
+		"README.md",
+	];
+	await expect(page.locator("[data-file-index] > header")).toHaveCount(7);
+	const sections = await page
+		.locator("[data-file-index]")
+		.evaluateAll((els) => els.map((el) => el.getAttribute("aria-label")));
+	expect(sections).toEqual(order);
+	await withTree(page, async (tree) => {
+		const rows = tree.locator("button:not([aria-expanded])");
+		await expect(rows).toHaveCount(7);
+		const names = await rows.evaluateAll((els) =>
+			els.map((el) => el.querySelector(".truncate")?.textContent?.trim() ?? ""),
+		);
+		expect(names).toEqual(order.map((p) => p.slice(p.lastIndexOf("/") + 1)));
+		// The file being read is the first in that order, not git's first.
+		await expect(rows.first()).toHaveAttribute("aria-current", "true");
+	});
+});
