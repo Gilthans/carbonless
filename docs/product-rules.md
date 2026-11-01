@@ -60,8 +60,10 @@ carbonless writes to GitHub only on the reviewer's explicit action, as the
 `gh` login, through `gh` (no server of its own): replying to a review thread,
 starting a new one (on lines, a span inside them, or a file), resolving or
 unresolving one, editing or deleting one of the viewer's comments in one,
-and the review verdict (`src/server/threadWrites.ts`,
-`src/server/newThreads.ts`, `src/server/verdict.ts`).
+and submitting the review verdict: Approve, Comment or Request changes,
+one submitted review per press (the Final Verdict tab and the end of Files
+changed; `src/server/threadWrites.ts`, `src/server/newThreads.ts`,
+`src/server/verdict.ts`).
 
 - **One explicit action, one write.** Every write is one click (or the send
   shortcut) on one thread. Nothing posts, resolves or retries a refused write
@@ -279,6 +281,26 @@ and the review verdict (`src/server/threadWrites.ts`,
   `localStorage` keeps them and the next page resends what was sent. Only
   while storage can't keep them (a private window, blocked site data) do
   they ask.
+- **On the page, the verdict is never gated.** Approve,
+  Comment and Request changes are always allowed, whatever the review's
+  progress, open threads or checks (owner: "approving/requesting changes
+  can be done regardless of the state of the review"); progress shows
+  beside them as information only. Approve sends at once; a message goes
+  only when "Include a message" is ticked and has text. GitHub refuses
+  Comment and Request changes without one, so pressing either without
+  text ticks the box and focuses it, sending nothing. One verdict is out
+  at a time: the buttons wait while it is (a double press posts one
+  review). It shows at once as sending ("You approved just now") and is
+  kept in `localStorage` (`crb:verdict:<owner>/<repo>#<n>`, with the
+  message draft) until GitHub has it: transient failures and a reload
+  resend it with the same client id and `retry: true`, so the server
+  finds one that landed. A refusal is listed with the other refused
+  writes as "Verdict" (its event kept, its message back in the box); a
+  pending review refuses it with the pending-review notice. It goes on
+  the snapshot's head (`commit`), and the card says so first when that
+  is an older commit (a pinned or reviewed head). On the viewer's own PR
+  only Comment is offered (GitHub refuses the others); as of a cutoff,
+  as another viewer, merged or closed, none.
 - **Tests write only to the fake gh.** Real writes happen only on the
   owner's scratch PR (see `CLAUDE.md`).
 

@@ -22,6 +22,7 @@ import { usePrefetchComments } from "../threads/useThreadComments";
 import { useThreads } from "../threads/useThreads";
 import { ErrorMessage } from "../ui";
 import { useMedia, WIDE } from "../useMedia";
+import { FilesVerdict } from "../verdict/FilesVerdict";
 import type { DiffThreads } from "./DiffBody";
 import { FileDiff } from "./FileDiff";
 import { FileTree } from "./FileTree";
@@ -517,7 +518,10 @@ export function FilesPage() {
 							</p>
 						)}
 						{data.files.length === 0 ? (
-							<p className="mt-4 text-muted">This PR changes no files.</p>
+							<>
+								<p className="mt-4 text-muted">This PR changes no files.</p>
+								<FilesVerdict threads={allThreads} />
+							</>
 						) : (
 							<div className="mt-4 flex gap-4">
 								{wide && (
@@ -555,6 +559,8 @@ export function FilesPage() {
 											headSure={headSure}
 										/>
 									))}
+									{/* After the last file: the verdict (the padding above keeps it clear of the Files button). */}
+									<FilesVerdict threads={allThreads} />
 								</div>
 							</div>
 						)}

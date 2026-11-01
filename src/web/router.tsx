@@ -8,7 +8,8 @@ import {
 } from "@tanstack/react-router";
 import { App } from "./App";
 import { parseFilesSearch } from "./files/landing";
-import { FilesPage, OverviewPage } from "./pages";
+import { parseOverviewSearch } from "./overview/threadLink";
+import { FilesPage, OverviewPage, VerdictPage } from "./pages";
 import { ShortcutsProvider } from "./shortcuts";
 
 function NotFound() {
@@ -46,6 +47,8 @@ const keptPage = () => null;
 const overviewRoute = createRoute({
 	getParentRoute: () => rootRoute,
 	path: "/",
+	// The Final Verdict tab's thread rows land on their card here.
+	validateSearch: parseOverviewSearch,
 	loader: () => OverviewPage.preload?.(),
 	component: keptPage,
 });
@@ -59,7 +62,18 @@ const filesRoute = createRoute({
 	component: keptPage,
 });
 
-const routeTree = rootRoute.addChildren([overviewRoute, filesRoute]);
+const verdictRoute = createRoute({
+	getParentRoute: () => rootRoute,
+	path: "/verdict",
+	loader: () => VerdictPage.preload?.(),
+	component: keptPage,
+});
+
+const routeTree = rootRoute.addChildren([
+	overviewRoute,
+	filesRoute,
+	verdictRoute,
+]);
 
 /** The app's router; `initialPath` uses in-memory history (tests). */
 export function createAppRouter(options: { initialPath?: string } = {}) {

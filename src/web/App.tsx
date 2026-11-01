@@ -19,6 +19,7 @@ import {
 	postRefresh,
 	reviewQuery,
 	sessionQuery,
+	verdictQuery,
 } from "./api";
 import { Logo, Mark, Wordmark } from "./brand/Brand";
 import { SyncNotices } from "./files/SyncNotices";
@@ -166,6 +167,8 @@ export function App() {
 			return Promise.all([
 				queryClient.invalidateQueries({ queryKey: overviewQuery.queryKey }),
 				queryClient.invalidateQueries({ queryKey: reviewQuery.queryKey }),
+				// Read only once the tab has shown (refetched only if so).
+				queryClient.invalidateQueries({ queryKey: verdictQuery.queryKey }),
 			]);
 		},
 	});
@@ -300,13 +303,25 @@ export function App() {
 								>
 									Overview
 								</Link>
+								{/* Short labels on a phone, where the full ones don't fit. */}
 								<Link
 									to="/files"
+									aria-label="Files changed"
 									activeOptions={{ includeSearch: false }}
 									className={tabClass}
 									activeProps={{ className: activeTabClass }}
 								>
-									Files changed
+									<span className="sm:hidden">Files</span>
+									<span className="hidden sm:inline">Files changed</span>
+								</Link>
+								<Link
+									to="/verdict"
+									aria-label="Final Verdict"
+									className={tabClass}
+									activeProps={{ className: activeTabClass }}
+								>
+									<span className="sm:hidden">Verdict</span>
+									<span className="hidden sm:inline">Final Verdict</span>
 								</Link>
 							</nav>
 						</div>

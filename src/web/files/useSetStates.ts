@@ -8,6 +8,7 @@ import type { StateChange } from "../../shared/types";
 import { postStates, reviewQuery, sessionQuery } from "../api";
 import { unsent, useDrafts, useDraftsDurable } from "../threads/drafts";
 import { useThreadWrites } from "../threads/threadWrites";
+import { useVerdictDraft, verdictDraftFor } from "../verdict/verdictDraft";
 import { overlayReview, StateSync, type SyncState } from "./stateSync";
 
 export { isStale } from "./stateSync";
@@ -108,7 +109,14 @@ export function useUnsavedGuard() {
 	const drafts = unsent(useDrafts());
 	const durable = useDraftsDurable();
 	const { busy, lost } = useThreadWrites();
-	const unsaved = states || lost || (!durable && (drafts || busy));
+	// The verdict's message and a verdict on its way, kept like the drafts.
+	const verdict = useVerdictDraft();
+	const verdictDurable = verdictDraftFor(useQueryClient()).durable();
+	const verdictUnsaved =
+		!verdictDurable &&
+		(verdict.text.trim() !== "" || verdict.sending !== undefined);
+	const unsaved =
+		states || lost || verdictUnsaved || (!durable && (drafts || busy));
 	useEffect(() => {
 		if (!unsaved) return;
 		const ask = (event: BeforeUnloadEvent) => {

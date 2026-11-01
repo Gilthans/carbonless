@@ -22,8 +22,14 @@ import {
 	type RefusedWrite,
 	useThreadWriter,
 	useThreadWrites,
+	VERDICT_LANE,
 } from "../threads/threadWrites";
 import { safeHref } from "../ui";
+import {
+	useVerdictDraft,
+	VERDICT_LABEL,
+	verdictDraftFor,
+} from "../verdict/verdictDraft";
 
 /**
  * Where a thread is, in a few words: its file and line, the file for a
@@ -54,6 +60,7 @@ export function writeWhere(
 	drafts: DraftStore,
 	threadId: string,
 ): string {
+	if (threadId === VERDICT_LANE) return "Final verdict";
 	if (threadId.startsWith(NEW_THREAD)) {
 		const c = drafts.newThread(threadId.slice(NEW_THREAD.length))?.create;
 		if (c) {
@@ -85,15 +92,18 @@ function previewOf(
 	f: RefusedWrite,
 ): string {
 	const text =
-		f.action === "Reply"
-			? drafts.text(f.threadId)
-			: f.action === "Edit"
-				? (drafts.edit(f.commentId ?? "")?.text ?? "")
-				: f.action === "New comment"
-					? (drafts.newThread(f.threadId.slice(NEW_THREAD.length))?.text ?? "")
-					: f.action === "Delete"
-						? commentText(client, f.commentId ?? "")
-						: "";
+		f.action === "Verdict"
+			? verdictDraftFor(client).text()
+			: f.action === "Reply"
+				? drafts.text(f.threadId)
+				: f.action === "Edit"
+					? (drafts.edit(f.commentId ?? "")?.text ?? "")
+					: f.action === "New comment"
+						? (drafts.newThread(f.threadId.slice(NEW_THREAD.length))?.text ??
+							"")
+						: f.action === "Delete"
+							? commentText(client, f.commentId ?? "")
+							: "";
 	return text.replace(/\s+/g, " ").trim();
 }
 
@@ -104,7 +114,9 @@ function reasonOf(drafts: DraftStore, f: RefusedWrite): string {
 		return newThreadError(f, c);
 	}
 	if (f.code === "pending-review") {
-		return "A pending review on GitHub blocks replies";
+		return f.action === "Verdict"
+			? "A pending review on GitHub blocks it"
+			: "A pending review on GitHub blocks replies";
 	}
 	if (f.action === "Edit" && f.code === "changed") {
 		return "Changed on GitHub since you opened it";
@@ -270,6 +282,7 @@ function RefusedItem({
 	const writer = useThreadWriter();
 	// Previews follow the drafts (what Retry would send now).
 	useDrafts();
+	useVerdictDraft();
 	const [confirming, setConfirming] = useState(false);
 	const cancelButton = useRef<HTMLButtonElement>(null);
 	const dropButton = useRef<HTMLButtonElement>(null);
@@ -277,7 +290,9 @@ function RefusedItem({
 	useEffect(() => {
 		if (confirming) cancelButton.current?.focus({ preventScroll: true });
 	}, [confirming]);
-	const where = writeWhere(client, writer.drafts, f.threadId);
+	const where = f.event
+		? VERDICT_LABEL[f.event]
+		: writeWhere(client, writer.drafts, f.threadId);
 	const preview = previewOf(client, writer.drafts, f);
 	const changed = f.action === "Edit" && f.code === "changed";
 	// A cleared box, a gone draft: nothing to send, only Drop.
@@ -439,7 +454,7 @@ function RefusedItem({
 					className="flex flex-wrap items-center justify-end gap-2 border-t border-bad/30 bg-bad/10 px-3 py-1"
 				>
 					<p id={askId} className="mr-auto text-sm font-semibold text-ink">
-						{dropLosesText(f) && preview
+						{(dropLosesText(f) || f.action === "Verdict") && preview
 							? "Drop this? Its text is lost"
 							: "Drop this?"}
 					</p>

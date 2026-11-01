@@ -29,6 +29,13 @@ export interface VerdictDraft {
 	sending?: VerdictSending;
 }
 
+/** A verdict's name, as its button says it. */
+export const VERDICT_LABEL: Record<VerdictEvent, string> = {
+	APPROVE: "Approve",
+	COMMENT: "Comment",
+	REQUEST_CHANGES: "Request changes",
+};
+
 export const verdictKey = (pr: {
 	owner: string;
 	repo: string;

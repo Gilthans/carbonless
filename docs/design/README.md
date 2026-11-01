@@ -405,6 +405,34 @@ decides where; nothing else does):
   Threads in Files changed); its composer shows in the bubble's row. A file
   comment being written while the file is closed shows under the header.
 
+## Final Verdict
+
+The third tab ("Verdict" on a phone, where "Final Verdict" and "Files
+changed" don't fit beside Refresh; the links keep their full names).
+
+- **GitHub's status first**, one prominent box: "GitHub: ready to merge"
+  (`ok`), "GitHub: blocked" (`bad`, with how many required rows), "GitHub:
+  waiting" (`warn`: only required checks still running), "GitHub:
+  checking…" (grey), "As of <date>", or "Merged" / "Closed" (`done`) with
+  no list under it.
+- **One blocker list**, a row per item with its kind's icon (check,
+  thread, person, branch). GitHub's requirements first, each with a
+  "Required by GitHub" chip (`bad` outline; its tooltip: GitHub won't merge
+  without it), red while unmet, yellow while a required check runs; the
+  rest yellow, never red. Threads link to their card on the Overview
+  (the reviewer's own first, five then "N more", bots as one count).
+  Unknown is grey ("Required approvals unknown"), never left out. Last, one
+  muted row for what's fine; "Ready to merge" (green, linking to GitHub)
+  only when GitHub says so and nothing is listed.
+- **The verdict card**, also after the last file in Files changed (with
+  "Blockers: N" linking to the tab): the reviewer's verdict on GitHub
+  ("You approved 2 hours ago · on an earlier push"; a clock while one is
+  sending), "Include a message" and its box, then Approve (`ok`), Comment
+  (neutral) and Request changes (`bad`), each with the owner's tooltip. On
+  a phone the three share one row, icon over a short label ("Changes").
+  Disabled ones stay focusable, their tooltip saying why. Progress below
+  the title is muted information, never a condition.
+
 ## Timeline (Overview)
 
 The Overview's last section. A vertical rail (`line-strong`, 1px) through

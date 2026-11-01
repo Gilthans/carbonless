@@ -233,7 +233,9 @@ function ThreadWriteNotices({ threads }: { threads: ThreadWriteView[] }) {
 			? "edit"
 			: t.action === "New comment"
 				? "comment"
-				: "reply";
+				: t.action === "Verdict"
+					? "verdict"
+					: "reply";
 	const discardButton = (t: ThreadWriteView) =>
 		iconButton(`Discard ${what(t)}`, "Discard", TrashIcon, () =>
 			writer.discardResumed(t.threadId),
@@ -299,7 +301,7 @@ function ThreadWriteNotices({ threads }: { threads: ThreadWriteView[] }) {
 							<div className="flex items-center gap-2 bg-warn/10 py-1 pr-1 pl-3 text-sm">
 								<LabeledIcon
 									icon={SyncIcon}
-									label={`Resending ${t.action === "Edit" ? "an edit" : t.action === "New comment" ? "a comment" : "a reply"} from before`}
+									label={`Resending ${t.action === "Edit" ? "an edit" : t.action === "New comment" ? "a comment" : t.action === "Verdict" ? "a verdict" : "a reply"} from before`}
 									className="text-warn"
 								/>
 								<p className="min-w-0 flex-1 break-words text-ink">
