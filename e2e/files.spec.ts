@@ -597,7 +597,11 @@ test("files start collapsed", async ({ page, pr, startCrb }) => {
 		await expect(fileSection(page, path)).toBeVisible();
 	}
 	await expect(page.getByTestId("diff-line")).toHaveCount(0);
-	await expect(page.getByRole("checkbox")).toHaveCount(0);
+	// No review checkboxes (the verdict card's "Include a message" aside).
+	for (const path of ["docs/new.md", "src/core.ts", "src/util.ts"]) {
+		await expect(fileSection(page, path).getByRole("checkbox")).toHaveCount(0);
+	}
+	await expect(page.getByRole("checkbox")).toHaveCount(1);
 	await withTree(page, (tree) =>
 		expect(tree.getByRole("button")).toHaveCount(3),
 	);
