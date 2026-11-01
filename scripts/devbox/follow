@@ -9,22 +9,36 @@
 #   - else git: origin/master, fetched into the repo, checked out in a clean
 #     worktree of its own, packed into releases/ and installed with
 #     scripts/devbox/update <tarball>.
-# When the new build doesn't come up, it reinstalls the build that was there
-# (from its tarball in releases/, made from the installed package when
-# missing), exits non-zero, and skips that build until a newer one appears.
-# One run at a time: a second one exits at once.
+# Every run also checks that crb.service serves the installed build; when it
+# doesn't, it reinstalls the last build that did (the "good" one).
+# When a new build doesn't come up (or doesn't build), it goes back to the
+# good one and exits non-zero; it tries that build again after 5, 30 and 120
+# minutes (CRB_DEVBOX_RETRY_DELAYS, in seconds), then skips it until a newer
+# one appears. While a build fails or is skipped, every run exits non-zero,
+# so systemctl --user status crb-follow shows it.
+# After a move, the copy of these scripts that crb-follow.service runs
+# becomes master's (install_scripts: only when they parse).
+# One run at a time, and never alongside update (lib.sh take_lock).
+# Never waits for input: no terminal prompts, stdin is /dev/null.
 # Overrides for tests and odd setups: see lib.sh.
 set -euo pipefail
+exec </dev/null
+export GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND="${GIT_SSH_COMMAND:-ssh -o BatchMode=yes}"
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib.sh
 source "$here/lib.sh"
 
 [[ $# -eq 0 ]] || die "usage: scripts/devbox/follow"
 STATE_DIR="$STATE_HOME/carbonless"
-# The build that failed to come up last, as "<source> <version> <commit>".
+# The build that failed last: its key ("<source> <version> <commit>"), how
+# many times it failed, and when (epoch seconds), one per line.
 FAILED_FILE="$STATE_DIR/follow-failed"
+# The tarball of the last build crb.service was seen serving.
+GOOD_FILE="$STATE_DIR/follow-good"
 RELEASES="$DATA_HOME/carbonless/releases"
 UPDATE="${CRB_DEVBOX_UPDATE:-$DEVBOX_DIR/update}"
+read -r -a RETRY_DELAYS <<<"${CRB_DEVBOX_RETRY_DELAYS:-300 1800 7200}"
+KEEP_RELEASES=5
 
 say() {
 	echo "crb-follow: $*"
@@ -32,13 +46,16 @@ say() {
 fail() {
 	echo "error: crb-follow: $*" >&2
 }
+# update, under the lock this run already holds.
+update() {
+	CRB_DEVBOX_LOCKED=1 "$UPDATE" "$@"
+}
 
-mkdir -p "$STATE_DIR"
-exec 9>"$STATE_DIR/follow.lock"
-if ! flock -n 9; then
-	say "another run is in progress"
+if ! take_lock nowait; then
+	say "another run (or scripts/devbox/update) is in progress"
 	exit 0
 fi
+rm -f "$RELEASES"/*.tgz.tmp
 
 current="$(installed_build)"
 
@@ -57,11 +74,9 @@ tarball_build() {
 			const b = JSON.parse(s); console.log(`${b.version} ${b.commit}`); });'
 }
 
-# A tarball of the installed build to roll back to, or nothing when nothing
-# is installed. Made from the installed package's files when releases/ has
-# none (installed from npm, or by hand).
-rollback_tarball() {
-	[[ -n "$current" ]] || return 0
+# The installed build's tarball in releases/, made from the installed
+# package's files when there is none (installed from npm, or by hand).
+installed_tarball() {
 	local tgz dir
 	tgz="$(tarball_name "${current%% *}" "${current#* }")"
 	if [[ ! -f "$tgz" ]]; then
@@ -73,30 +88,121 @@ rollback_tarball() {
 	echo "$tgz"
 }
 
-skip_if_failed() {
-	if [[ -f "$FAILED_FILE" && "$(<"$FAILED_FILE")" == "$1" ]]; then
-		say "skipping $2: it failed to come up before; staying on $(pretty_build "$current")"
-		exit 0
+good_tarball() {
+	local good=""
+	[[ -f "$GOOD_FILE" ]] && good="$(<"$GOOD_FILE")"
+	[[ -n "$good" && -f "$good" ]] && echo "$good"
+	return 0
+}
+
+# Whether crb.service serves the installed build, within
+# CRB_DEVBOX_HEALTH_WAIT seconds (default 30: it may be restarting).
+healthy() {
+	[[ -n "$current" ]] || return 1
+	local wait="${CRB_DEVBOX_HEALTH_WAIT:-30}" start=$SECONDS
+	until serves_build "$current" && service_serves; do
+		((SECONDS - start < wait)) || return 1
+		sleep 1
+	done
+}
+
+# When crb.service doesn't serve the installed build, reinstalls the good
+# one; exits 1 when that isn't possible or fails, so the next run tries again.
+heal() {
+	[[ -z "$HEALTHY" ]] || return 0
+	local good
+	good="$(good_tarball)"
+	if [[ -z "$good" ]]; then
+		fail "crb.service is not serving $(pretty_build "$current"), and there is no good build to reinstall"
+		exit 1
+	fi
+	fail "crb.service is not serving $(pretty_build "$current"); reinstalling $(pretty_build "$(tarball_build "$good")")"
+	if ! update "$good"; then
+		fail "reinstalling $good failed: crb is down"
+		exit 1
+	fi
+	current="$(installed_build)"
+	HEALTHY=1
+}
+
+# The failure state for a key: sets FAILED_COUNT and FAILED_AT (0 when the
+# last failure was another build's).
+read_failed() {
+	FAILED_COUNT=0 FAILED_AT=0
+	[[ -f "$FAILED_FILE" ]] || return 0
+	local lines=()
+	mapfile -t lines <"$FAILED_FILE"
+	[[ "${lines[0]:-}" == "$1" ]] || return 0
+	FAILED_COUNT="${lines[1]:-1}" FAILED_AT="${lines[2]:-0}"
+}
+
+record_failure() {
+	read_failed "$1"
+	printf '%s\n%s\n%s\n' "$1" "$((FAILED_COUNT + 1))" "$(date +%s)" >"$FAILED_FILE"
+	read_failed "$1"
+}
+
+# What happens next for a build that failed: the retry or the skip.
+next_try() {
+	if ((FAILED_COUNT > ${#RETRY_DELAYS[@]})); then
+		echo "skipping it until a newer build appears"
+	else
+		echo "trying again in $(((RETRY_DELAYS[FAILED_COUNT - 1] + 59) / 60)) min"
 	fi
 }
 
-# Installs a spec with update; on failure remembers the build (key) and rolls
-# back to the one installed before.
+# Exits 1 (after healing the installed build) while a build that failed
+# waits for its retry, or is skipped.
+check_retry() {
+	local key="$1" target="$2" delay
+	read_failed "$key"
+	((FAILED_COUNT > 0)) || return 0
+	if ((FAILED_COUNT <= ${#RETRY_DELAYS[@]})); then
+		delay="${RETRY_DELAYS[FAILED_COUNT - 1]}"
+		if (($(date +%s) - FAILED_AT >= delay)); then
+			say "trying $target again (it failed $FAILED_COUNT time(s))"
+			return 0
+		fi
+	fi
+	heal
+	fail "$target failed $FAILED_COUNT time(s): $(next_try); staying on $(pretty_build "$current")"
+	exit 1
+}
+
+# Keeps releases/ small: the installed and the good build's tarballs, and the
+# KEEP_RELEASES newest.
+prune_releases() {
+	local keep=() tgz n=0 good
+	good="$(good_tarball)"
+	keep+=("$good" "$(tarball_name "${current%% *}" "${current#* }")")
+	while IFS= read -r tgz; do
+		n=$((n + 1))
+		((n > KEEP_RELEASES)) || continue
+		[[ " ${keep[*]} " == *" $tgz "* ]] || rm -f "$tgz"
+	done < <(ls -t "$RELEASES"/"$PACKAGE"-*.tgz 2>/dev/null || true)
+}
+
+# Installs a spec with update. On success the new build is the good one;
+# on failure it counts the failure and goes back to the good build. Exits 1
+# on failure.
 move_to() {
-	local spec="$1" target="$2" key="$3" back
-	back="$(rollback_tarball)"
-	if "$UPDATE" "$spec"; then
+	local spec="$1" target="$2" key="$3" good
+	good="$(good_tarball)"
+	if update "$spec"; then
 		rm -f "$FAILED_FILE"
+		current="$(installed_build)"
+		installed_tarball >"$GOOD_FILE"
+		prune_releases
 		return 0
 	fi
-	echo "$key" >"$FAILED_FILE"
-	fail "$target did not come up (scripts/devbox/update $spec); skipping it until a newer build appears"
-	if [[ -z "$back" ]]; then
-		fail "nothing to roll back to: no build was installed before"
-	elif "$UPDATE" "$back"; then
-		fail "rolled back to $(pretty_build "$current")"
+	record_failure "$key"
+	fail "$target did not come up (scripts/devbox/update $spec): $(next_try)"
+	if [[ -z "$good" ]]; then
+		fail "nothing to go back to: crb.service never served a build before"
+	elif update "$good"; then
+		fail "went back to $(pretty_build "$(tarball_build "$good")")"
 	else
-		fail "rolling back to $(pretty_build "$current") ($back) failed too: crb is down"
+		fail "going back to $good failed too: crb is down"
 	fi
 	exit 1
 }
@@ -118,40 +224,69 @@ npm_rc() {
 		console.log(`${version} ${gitHead}`);' "$out"
 }
 
+up_to_date() {
+	heal
+	say "up to date: $(pretty_build "$current") is $1"
+}
+
 follow_npm() {
 	local version="${1%% *}" head="${1#* }"
 	local installed_version="${current%% *}" installed_commit="${current#* }"
 	if [[ -n "$current" && "$version" == "$installed_version" &&
 		(-z "$head" || "$head" == "$installed_commit") ]]; then
-		say "up to date: $(pretty_build "$current") is $PACKAGE@rc"
+		up_to_date "$PACKAGE@rc"
 		return 0
 	fi
 	local target="$PACKAGE@rc $version${head:+ (${head:0:7})}"
-	skip_if_failed "rc $version $head" "$target"
+	check_retry "rc $version $head" "$target"
 	move_to rc "$target" "rc $version $head"
+}
+
+# Fetches origin's master into the repo and prints its sha. The repo may be a
+# checkout others work in: this writes refs/remotes/origin/master (and its
+# objects) only. No FETCH_HEAD, tags, pruning, commit-graph or
+# gc/maintenance, whatever the repo's config says; nothing checked out.
+fetch_master() {
+	local repo="$1"
+	git -C "$repo" -c fetch.prune=false -c fetch.pruneTags=false \
+		-c submodule.recurse=false -c gc.auto=0 -c maintenance.auto=false \
+		fetch --quiet --no-tags --no-prune --no-write-fetch-head \
+		--no-write-commit-graph --no-auto-maintenance --no-recurse-submodules \
+		origin "+refs/heads/master:refs/remotes/origin/master"
+	git -C "$repo" rev-parse --verify --quiet "refs/remotes/origin/master^{commit}"
+}
+
+# The physical path of a dir.
+real_dir() {
+	(cd "$1" && pwd -P)
+}
+
+# Refuses to reset and clean anything but a linked worktree whose toplevel
+# is the build tree itself: never a main checkout, never a subdir of one.
+check_build_tree() {
+	local tree="$1" top git_dir common
+	top="$(git -C "$tree" rev-parse --show-toplevel)"
+	git_dir="$(git -C "$tree" rev-parse --path-format=absolute --git-dir)"
+	common="$(git -C "$tree" rev-parse --path-format=absolute --git-common-dir)"
+	[[ "$(real_dir "$top")" == "$(real_dir "$tree")" ]] ||
+		die "$tree is inside $top, not a worktree of its own: set CRB_DEVBOX_BUILD_TREE to a dir follow may wipe"
+	[[ "$(real_dir "$git_dir")" != "$(real_dir "$common")" ]] ||
+		die "$tree is a main checkout, not a worktree of its own: set CRB_DEVBOX_BUILD_TREE to a dir follow may wipe"
 }
 
 follow_git() {
 	local repo tree sha version target tgz pack built
 	repo="$(follow_repo)"
 	tree="${CRB_DEVBOX_BUILD_TREE:-$repo/.worktrees/follow}"
-	# The repo may be a checkout others work in: write refs/remotes/origin/master
-	# (and its objects) only. No FETCH_HEAD, tags, pruning, commit-graph or
-	# gc/maintenance, whatever the repo's config says; nothing checked out.
-	git -C "$repo" -c fetch.prune=false -c fetch.pruneTags=false \
-		-c submodule.recurse=false -c gc.auto=0 -c maintenance.auto=false \
-		fetch --quiet --no-tags --no-prune --no-write-fetch-head \
-		--no-write-commit-graph --no-auto-maintenance --no-recurse-submodules \
-		origin "+refs/heads/master:refs/remotes/origin/master"
-	sha="$(git -C "$repo" rev-parse --verify --quiet "refs/remotes/origin/master^{commit}")"
+	sha="$(fetch_master "$repo")"
 	if [[ -n "$current" && "${current#* }" == "$sha" ]]; then
-		say "up to date: $(pretty_build "$current") is origin/master"
+		up_to_date origin/master
 		return 0
 	fi
 	version="$(git -C "$repo" show "$sha:package.json" | node -e '
 		let s = ""; process.stdin.on("data", (d) => (s += d)).on("end", () => console.log(JSON.parse(s).version));')"
 	target="$(pretty_build "$version $sha") (origin/master)"
-	skip_if_failed "git $version $sha" "$target"
+	check_retry "git $version $sha" "$target"
 
 	tgz="$(tarball_name "$version" "$sha")"
 	if [[ ! -f "$tgz" ]]; then
@@ -162,17 +297,21 @@ follow_git() {
 			# --force: the tree may still be registered after its dir was
 			# removed (no worktree prune: that would touch others' worktrees).
 			git -C "$repo" worktree add --quiet --force --detach "$tree" "$sha"
-		else
-			git -C "$tree" checkout --quiet --detach --force "$sha"
 		fi
+		check_build_tree "$tree"
+		git -C "$tree" checkout --quiet --detach --force "$sha"
 		git -C "$tree" reset --quiet --hard "$sha"
 		git -C "$tree" clean --quiet -ffd
 		pack="$(mktemp -d)"
 		# shellcheck disable=SC2064
 		trap "rm -rf '$pack'" EXIT
-		if ! (cd "$tree" && pnpm install --frozen-lockfile && pnpm pack --pack-destination "$pack") >&2; then
-			echo "git $version $sha" >"$FAILED_FILE"
-			fail "building $target failed; skipping it until a newer commit appears"
+		# confirmModulesPurge=false: pnpm would otherwise ask before
+		# replacing an incompatible node_modules.
+		if ! (cd "$tree" && pnpm install --frozen-lockfile --config.confirmModulesPurge=false &&
+			pnpm pack --pack-destination "$pack") >&2; then
+			record_failure "git $version $sha"
+			heal
+			fail "building $target failed: $(next_try)"
 			exit 1
 		fi
 		built="$(tarball_build "$pack"/*.tgz)"
@@ -182,21 +321,31 @@ follow_git() {
 		mv "$pack"/*.tgz "$tgz"
 	fi
 	move_to "$tgz" "$target" "git $version $sha"
-	refresh_scripts "$tree" "$sha"
+	refresh_scripts "$repo" "$sha"
 }
 
-# After moving to master's build, the copy crb-follow.service runs becomes
-# master's scripts too (from the clean build tree, at the commit built).
+# After moving to a new build, the copy crb-follow.service runs becomes the
+# scripts of that commit (git archive: nothing checked out), if they parse.
+# A failure here only logs: crb itself has moved.
 refresh_scripts() {
-	local tree="$1" sha="$2"
-	if [[ "$(git -C "$tree" rev-parse HEAD 2>/dev/null)" != "$sha" ]] ||
-		[[ -n "$(git -C "$tree" status --porcelain 2>/dev/null)" ]]; then
-		fail "not refreshing $SCRIPTS_HOME: $tree is not a clean checkout of ${sha:0:7}"
+	local repo="$1" sha="$2" tmp
+	tmp="$(mktemp -d)"
+	if git -C "$repo" archive "$sha" scripts/devbox | tar -x -C "$tmp" &&
+		install_scripts "$tmp/scripts/devbox"; then
+		rm -rf "$tmp"
 		return 0
 	fi
-	install_scripts "$tree/scripts/devbox" ||
-		fail "not refreshing $SCRIPTS_HOME from ${sha:0:7}"
+	rm -rf "$tmp"
+	fail "kept $SCRIPTS_HOME as it was: the scripts at ${sha:0:7} could not be copied"
 }
+
+# The installed build, when crb.service serves it, is the good one.
+HEALTHY=""
+if healthy; then
+	HEALTHY=1
+	good="$(installed_tarball)"
+	[[ "$(good_tarball)" == "$good" ]] || echo "$good" >"$GOOD_FILE"
+fi
 
 rc="$(npm_rc)"
 if [[ -n "$rc" ]]; then

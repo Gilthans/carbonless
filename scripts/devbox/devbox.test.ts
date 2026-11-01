@@ -1,4 +1,4 @@
-import { execFile, execFileSync } from "node:child_process";
+import { execFile, execFileSync, spawn } from "node:child_process";
 import {
 	chmodSync,
 	existsSync,
@@ -237,6 +237,8 @@ describe("scripts/devbox", { timeout: 60_000 }, () => {
 		expect(r.code).toBe(0);
 		const service = readFileSync(join(dir, "units/crb-follow.service"), "utf8");
 		expect(service).toMatch(/^Type=oneshot$/m);
+		expect(service).toMatch(/^TimeoutStartSec=30min$/m);
+		expect(service).toContain('Environment="GIT_TERMINAL_PROMPT=0"');
 		// It runs install's copy of the scripts, not this checkout's.
 		const copy = join(dir, "data/carbonless/devbox");
 		expect(service).toContain(`ExecStart="${copy}/follow"\n`);
@@ -319,6 +321,70 @@ describe("scripts/devbox", { timeout: 60_000 }, () => {
 		expect(readFileSync(join(home, "update"), "utf8")).toBe(
 			readFileSync(join(here, "update"), "utf8"),
 		);
+	});
+
+	it("update waits for crb-follow's lock, unless follow runs it", async () => {
+		await serve("127.0.0.1");
+		expect((await run("install", ["--no-follow"])).code).toBe(0);
+		const lock = join(dir, "state/carbonless/devbox.lock");
+		const holder = spawn("flock", [lock, "-c", "echo held; sleep 60"]);
+		try {
+			await new Promise((resolve) => holder.stdout.once("data", resolve));
+			const r = await run("update", ["rc"], { CRB_DEVBOX_LOCK_WAIT: "1" });
+			expect(r.code).not.toBe(0);
+			expect(r.stdout).toContain(
+				"Waiting for another scripts/devbox follow or update",
+			);
+			expect(r.stderr).toContain(`still holds ${lock}`);
+			expect(r.stdout).not.toContain("pnpm add");
+			const inst = await run("install", ["--no-follow"], {
+				CRB_DEVBOX_LOCK_WAIT: "1",
+			});
+			expect(inst.code).not.toBe(0);
+
+			const under = await run("update", ["rc"], { CRB_DEVBOX_LOCKED: "1" });
+			expect(under.code).toBe(0);
+			expect(under.stdout).toContain(
+				"dry-run: pnpm add -g carbonless-review@rc",
+			);
+		} finally {
+			holder.kill();
+		}
+	});
+
+	it("install keeps the scripts' copy when a script doesn't parse, and drops leftovers", async () => {
+		await serve("127.0.0.1");
+		const home = join(dir, "devbox-home");
+		const extra = { CRB_DEVBOX_HOME: home, CRB_DEVBOX_REPO: join(dir, "repo") };
+		expect((await run("install", [], extra)).code).toBe(0);
+		const good = readlinkSync(home);
+		// A copy that stopped half way.
+		mkdirSync(join(dir, ".devbox-home.leftover"));
+		// A checkout whose update doesn't parse.
+		const bad = join(dir, "bad-checkout");
+		mkdirSync(bad);
+		for (const f of readdirSync(here)) {
+			if (!f.endsWith(".ts")) {
+				writeFileSync(join(bad, f), readFileSync(join(here, f)));
+				chmodSync(join(bad, f), statSync(join(here, f)).mode);
+			}
+		}
+		writeFileSync(join(bad, "update"), "#!/usr/bin/env bash\nif then (\n");
+		const r = await new Promise<Result>((resolve) => {
+			execFile(
+				join(bad, "install"),
+				[],
+				{ env: { ...env, ...extra } },
+				(error, stdout, stderr) =>
+					resolve({ code: error ? 1 : 0, stdout, stderr }),
+			);
+		});
+		expect(r.code).not.toBe(0);
+		expect(r.stderr).toContain("update doesn't parse: keeping");
+		expect(readlinkSync(home)).toBe(good);
+		expect(
+			readdirSync(dir).filter((f) => f.startsWith(".devbox-home")),
+		).toEqual([good]);
 	});
 
 	it("install defaults crb-follow's repo to this checkout's main one", async () => {

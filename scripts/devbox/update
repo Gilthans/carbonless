@@ -15,6 +15,8 @@ source "$here/lib.sh"
 [[ $# -eq 1 ]] || die "usage: scripts/devbox/update <tarball | rc | latest | version>"
 spec="$(package_spec "$1")"
 [[ -f "$UNIT_FILE" ]] || die "$UNIT_FILE not found: run scripts/devbox/install first"
+# Never alongside crb-follow (or another update).
+take_lock wait
 
 from="$(installed_build)"
 run pnpm add -g "$spec"

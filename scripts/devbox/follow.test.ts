@@ -9,10 +9,12 @@ import {
 	readlinkSync,
 	rmSync,
 	symlinkSync,
+	utimesSync,
 	writeFileSync,
 } from "node:fs";
+import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
@@ -40,6 +42,8 @@ describe("scripts/devbox/follow", { timeout: 60_000 }, () => {
 	let env: NodeJS.ProcessEnv;
 	let holder: ChildProcess | undefined;
 	let commits = 0;
+	let server: Server | undefined;
+	const served = () => join(dir, "served.json");
 	const repo = () => join(dir, "repo");
 	const tree = () => join(repo(), ".worktrees/follow");
 	const releases = () => join(dir, "data/carbonless/releases");
@@ -69,7 +73,7 @@ describe("scripts/devbox/follow", { timeout: 60_000 }, () => {
 		});
 
 	/** Pushes a commit with this package.json version to origin's master; returns its sha. */
-	async function push(version: string) {
+	async function push(version: string, scripts: Record<string, string> = {}) {
 		const work = join(dir, "work");
 		writeFileSync(
 			join(work, "package.json"),
@@ -79,7 +83,10 @@ describe("scripts/devbox/follow", { timeout: 60_000 }, () => {
 		// master's devbox scripts, which follow copies once it runs its build.
 		mkdirSync(join(work, "scripts/devbox"), { recursive: true });
 		for (const f of SCRIPTS) {
-			writeFileSync(join(work, "scripts/devbox", f), `# ${f} at ${commits}\n`);
+			writeFileSync(
+				join(work, "scripts/devbox", f),
+				scripts[f] ?? `# ${f} at ${commits}\n`,
+			);
 		}
 		await git(work, "add", ".");
 		await git(work, "commit", "-qm", `commit ${commits}`);
@@ -102,6 +109,7 @@ describe("scripts/devbox/follow", { timeout: 60_000 }, () => {
 		};
 		stub("systemctl", "echo REAL systemctl >&2; exit 99");
 		stub("journalctl", "echo REAL journalctl >&2; exit 99");
+		stub("gh", "exit 0");
 		// npm view carbonless-review@rc: $NPM_RC, $NPM_ERROR, else not published.
 		stub(
 			"npm",
@@ -113,11 +121,13 @@ describe("scripts/devbox/follow", { timeout: 60_000 }, () => {
 			].join("\n"),
 		);
 		// pnpm install logs the tree's state; pnpm pack packs a build-info of
-		// the checked-out commit, -dirty as scripts/build-info.mjs would.
+		// the checked-out commit, -dirty as scripts/build-info.mjs would. It
+		// reads stdin as a prompt would: follow must give it none to wait on.
 		stub(
 			"pnpm",
 			[
-				`echo "pnpm $* in $PWD status=[$(git status --porcelain | tr '\\n' ' ')]" >>"${log}"`,
+				"read -r answer || true",
+				`echo "pnpm $* in $PWD status=[$(git status --porcelain | tr '\\n' ' ')] prompt=$GIT_TERMINAL_PROMPT" >>"${log}"`,
 				'case "$1" in',
 				'install) [ -z "$PNPM_FAIL" ] || exit 1 ;;',
 				"pack)",
@@ -129,22 +139,46 @@ describe("scripts/devbox/follow", { timeout: 60_000 }, () => {
 				"esac",
 			].join("\n"),
 		);
-		// update installs the tarball's build (or rc's, $NPM_BUILD), unless
-		// its argument contains $UPDATE_FAIL.
+		// update installs the tarball's build (or rc's, $NPM_BUILD) and crb
+		// serves it. When its argument contains a word of $UPDATE_BROKEN it
+		// fails before installing; of $UPDATE_FAIL, it installs and crb is down.
 		const update = join(dir, "update");
+		const info = join(dir, "pkg/dist/build-info.json");
 		writeFileSync(
 			update,
 			[
 				"#!/bin/sh",
 				`echo "update $*" >>"${log}"`,
-				'if [ -n "$UPDATE_FAIL" ]; then case "$1" in *"$UPDATE_FAIL"*) echo "update: it never came up" >&2; exit 1 ;; esac; fi',
-				`if [ -f "$1" ]; then tar -xzOf "$1" package/dist/build-info.json >"${join(dir, "pkg/dist/build-info.json")}"`,
-				`else echo "$NPM_BUILD" >"${join(dir, "pkg/dist/build-info.json")}"; fi`,
+				'for w in $UPDATE_BROKEN; do case "$1" in *"$w"*) echo "update: pnpm add failed" >&2; exit 1 ;; esac; done',
+				`if [ -f "$1" ]; then tar -xzOf "$1" package/dist/build-info.json >"${info}"`,
+				`else echo "$NPM_BUILD" >"${info}"; fi`,
+				`for w in $UPDATE_FAIL; do case "$1" in *"$w"*) echo down >"${served()}"; echo "update: it never came up" >&2; exit 1 ;; esac; done`,
+				`cp "${info}" "${served()}"`,
 				'echo "crb: a -> b"',
 			].join("\n"),
 		);
 		chmodSync(update, 0o755);
 		mkdirSync(join(dir, "pkg/dist"), { recursive: true });
+		// A fake crb serve answering /api/version with served.json.
+		server = createServer((req, res) => {
+			const body = existsSync(served())
+				? readFileSync(served(), "utf8")
+				: "down";
+			if (req.url?.startsWith("/api/version") && !body.startsWith("down")) {
+				res.setHeader("content-type", "application/json");
+				res.end(body);
+			} else res.writeHead(503).end();
+		});
+		await new Promise<void>((resolve) =>
+			server?.listen(0, "127.0.0.1", resolve),
+		);
+		const address = server.address();
+		const port = typeof address === "object" && address ? address.port : 0;
+		mkdirSync(join(dir, "config/carbonless"), { recursive: true });
+		writeFileSync(
+			join(dir, "config/carbonless/config.json"),
+			JSON.stringify({ serve: { host: "127.0.0.1", port } }),
+		);
 		env = {
 			HOME: join(dir, "home"),
 			PATH: `${stubs}:${process.env.PATH}`,
@@ -156,6 +190,12 @@ describe("scripts/devbox/follow", { timeout: 60_000 }, () => {
 			CRB_DEVBOX_PKG_DIR: join(dir, "pkg"),
 			CRB_DEVBOX_REPO: repo(),
 			CRB_DEVBOX_UPDATE: update,
+			// The service's MainPID isn't checked: the fake server stands for it.
+			CRB_DEVBOX_DRY_RUN: "1",
+			CRB_DEVBOX_HEALTH_WAIT: "0",
+			CRB_DEVBOX_TIMEOUT: "5",
+			CRB_DEVBOX_RETRY_DELAYS: "0 0 0",
+			CRB_DEVBOX_LOCK_WAIT: "2",
 			GIT_CONFIG_NOSYSTEM: "1",
 			GIT_AUTHOR_NAME: "t",
 			GIT_AUTHOR_EMAIL: "t@example.com",
@@ -168,17 +208,22 @@ describe("scripts/devbox/follow", { timeout: 60_000 }, () => {
 		const first = await push("0.1.0");
 		await git(dir, "clone", "-q", join(dir, "origin.git"), "repo");
 		install("0.1.0", first);
+		writeFileSync(
+			served(),
+			JSON.stringify({ version: "0.1.0", commit: first }),
+		);
 	});
-	afterEach(() => {
+	afterEach(async () => {
 		holder?.kill();
 		holder = undefined;
+		await new Promise((resolve) => server?.close(resolve));
 		rmSync(dir, { recursive: true, force: true });
 	});
 
-	const run = (extra = {}) =>
+	const run = (extra = {}, script = join(here, "follow")) =>
 		new Promise<Result>((resolve) => {
 			execFile(
-				join(here, "follow"),
+				script,
 				[],
 				{ env: { ...env, ...extra } },
 				(error, stdout, stderr) => {
@@ -187,6 +232,8 @@ describe("scripts/devbox/follow", { timeout: 60_000 }, () => {
 				},
 			);
 		});
+	const updates = () => calls().match(/^update /gm)?.length ?? 0;
+	const short = (sha: string) => sha.slice(0, 7);
 
 	it("does nothing, in one line, when the installed build is origin/master", async () => {
 		const r = await run();
@@ -210,7 +257,7 @@ describe("scripts/devbox/follow", { timeout: 60_000 }, () => {
 			`crb-follow: building 0.1.0 (${sha.slice(0, 7)}) (origin/master)`,
 		);
 		expect(calls()).toContain(
-			`pnpm install --frozen-lockfile in ${tree()} status=[]`,
+			`pnpm install --frozen-lockfile --config.confirmModulesPurge=false in ${tree()} status=[] prompt=0`,
 		);
 		expect(calls()).toMatch(/pnpm pack --pack-destination /);
 		// Named by commit: the same version built again doesn't overwrite it.
@@ -274,16 +321,17 @@ describe("scripts/devbox/follow", { timeout: 60_000 }, () => {
 		expect(installed().commit).not.toBe(sha);
 	});
 
-	it("rolls back when the new build doesn't come up, and skips it until a newer one", async () => {
+	it("goes back to the good build when the new one doesn't come up; retries, then skips, failing all along", async () => {
 		const good = installed().commit;
 		const bad = await push("0.1.0");
-		const r = await run({ UPDATE_FAIL: bad.slice(0, 7) });
+		const failing = { UPDATE_FAIL: short(bad) };
+		const r = await run(failing);
 		expect(r.code).not.toBe(0);
 		expect(r.stderr).toContain(
-			`0.1.0 (${bad.slice(0, 7)}) (origin/master) did not come up`,
+			`0.1.0 (${short(bad)}) (origin/master) did not come up`,
 		);
-		expect(r.stderr).toContain(`rolled back to 0.1.0 (${good.slice(0, 7)})`);
-		// The previous build, from a tarball of the installed package.
+		expect(r.stderr).toContain(`went back to 0.1.0 (${short(good)})`);
+		// The good build: a tarball of the package crb.service was serving.
 		expect(calls()).toContain(
 			`update ${tarball("0.1.0", bad)}\nupdate ${tarball("0.1.0", good)}\n`,
 		);
@@ -291,44 +339,219 @@ describe("scripts/devbox/follow", { timeout: 60_000 }, () => {
 		// A build that didn't come up doesn't hand follow its scripts.
 		expect(copied()).toBeNull();
 
-		const next = await run({ UPDATE_FAIL: bad.slice(0, 7) });
-		expect(next.code).toBe(0);
-		expect(next.stdout).toBe(
-			`crb-follow: skipping 0.1.0 (${bad.slice(0, 7)}) (origin/master): it failed to come up before; staying on 0.1.0 (${good.slice(0, 7)})\n`,
+		// Retried (no delay here) three more times, then skipped: every run fails.
+		for (const n of [2, 3, 4]) {
+			const again = await run(failing);
+			expect(again.code).not.toBe(0);
+			expect(again.stdout).toContain(`trying 0.1.0 (${short(bad)})`);
+			expect(updates()).toBe(2 * n);
+		}
+		const skipped = await run(failing);
+		expect(skipped.code).not.toBe(0);
+		expect(skipped.stderr).toContain(
+			`0.1.0 (${short(bad)}) (origin/master) failed 4 time(s): skipping it until a newer build appears; staying on 0.1.0 (${short(good)})`,
 		);
-		expect(calls().match(/^update /gm)).toHaveLength(2);
+		expect(updates()).toBe(8);
 		expect(calls().match(/^pnpm install/gm)).toHaveLength(1);
 
 		const newer = await push("0.1.0");
-		const fixed = await run({ UPDATE_FAIL: bad.slice(0, 7) });
+		const fixed = await run(failing);
 		expect(fixed.code).toBe(0);
 		expect(installed()).toEqual({ version: "0.1.0", commit: newer });
 		expect(existsSync(join(dir, "state/carbonless/follow-failed"))).toBe(false);
 		expect(copied()).toBe("# follow at 3\n");
 	});
 
-	it("remembers a commit that fails to build", async () => {
+	it("a build that failed once comes in on a later try", async () => {
+		const sha = await push("0.1.0");
+		expect((await run({ UPDATE_FAIL: short(sha) })).code).not.toBe(0);
+		const r = await run();
+		expect(r.code).toBe(0);
+		expect(installed()).toEqual({ version: "0.1.0", commit: sha });
+	});
+
+	it("waits out the retry delay, failing meanwhile", async () => {
+		const sha = await push("0.1.0");
+		const extra = {
+			UPDATE_FAIL: short(sha),
+			CRB_DEVBOX_RETRY_DELAYS: "3600 7200 7200",
+		};
+		expect((await run(extra)).code).not.toBe(0);
+		const r = await run(extra);
+		expect(r.code).not.toBe(0);
+		expect(r.stderr).toContain(
+			`failed 1 time(s): trying again in 60 min; staying on 0.1.0`,
+		);
+		expect(updates()).toBe(2);
+	});
+
+	it("counts a commit that fails to build as a failure too", async () => {
 		await push("0.1.0");
 		const r = await run({ PNPM_FAIL: "1" });
 		expect(r.code).not.toBe(0);
-		expect(r.stderr).toContain("failed; skipping it");
-		const next = await run({ PNPM_FAIL: "1" });
-		expect(next.code).toBe(0);
-		expect(next.stdout).toContain("skipping");
+		expect(r.stderr).toContain("failed: trying again in 0 min");
+		const later = await run({
+			PNPM_FAIL: "1",
+			CRB_DEVBOX_RETRY_DELAYS: "3600 3600 3600",
+		});
+		expect(later.code).not.toBe(0);
+		expect(later.stderr).toContain("failed 1 time(s)");
 		expect(calls().match(/^pnpm install/gm)).toHaveLength(1);
 		expect(calls()).not.toContain("update");
 	});
 
-	it("exits quietly while another run holds the lock", async () => {
+	it("never calls a build that isn't served up to date: it reinstalls the good one, and fails while it can't", async () => {
+		const good = installed().commit;
+		const bad = await push("0.1.0");
+		// The new build installs but never comes up, and going back fails too.
+		const broken = { UPDATE_FAIL: short(bad), UPDATE_BROKEN: short(good) };
+		const r = await run(broken);
+		expect(r.code).not.toBe(0);
+		expect(r.stderr).toContain("going back to");
+		expect(installed()).toEqual({ version: "0.1.0", commit: bad });
+
+		// The installed build is origin/master's, but crb doesn't serve it.
+		for (let i = 0; i < 2; i++) {
+			const down = await run(broken);
+			expect(down.code).not.toBe(0);
+			expect(down.stdout).not.toContain("up to date");
+			expect(down.stderr).toContain(
+				`crb.service is not serving 0.1.0 (${short(bad)}); reinstalling 0.1.0 (${short(good)})`,
+			);
+			expect(down.stderr).toContain("failed: crb is down");
+		}
+
+		const healed = await run();
+		expect(healed.code).toBe(0);
+		expect(installed()).toEqual({ version: "0.1.0", commit: good });
+		expect(calls()).toContain(`update ${tarball("0.1.0", good)}\n`);
+	});
+
+	it("reinstalls the good build when crb stops serving it, and fails without one", async () => {
+		expect((await run()).code).toBe(0);
+		writeFileSync(served(), "down");
+		const r = await run();
+		expect(r.code).toBe(0);
+		expect(r.stderr).toContain("crb.service is not serving");
+		expect(r.stdout).toContain("up to date");
+		expect(readFileSync(served(), "utf8")).toContain(installed().commit);
+
+		rmSync(join(dir, "state/carbonless/follow-good"));
+		writeFileSync(served(), "down");
+		const none = await run();
+		expect(none.code).not.toBe(0);
+		expect(none.stderr).toContain("there is no good build to reinstall");
+	});
+
+	it("exits quietly while another run or update holds the lock", async () => {
 		await push("0.1.0");
-		const lock = join(dir, "state/carbonless/follow.lock");
+		const lock = join(dir, "state/carbonless/devbox.lock");
 		mkdirSync(dirname(lock), { recursive: true });
 		holder = spawn("flock", [lock, "-c", "echo held; sleep 60"]);
 		await new Promise((resolve) => holder?.stdout?.once("data", resolve));
 		const r = await run();
 		expect(r.code).toBe(0);
-		expect(r.stdout).toBe("crb-follow: another run is in progress\n");
+		expect(r.stdout).toBe(
+			"crb-follow: another run (or scripts/devbox/update) is in progress\n",
+		);
 		expect(calls()).toBe("");
+	});
+
+	it("runs the real update under its own lock without waiting on itself", async () => {
+		const sha = await push("0.1.0");
+		mkdirSync(join(dir, "units"), { recursive: true });
+		writeFileSync(join(dir, "units/crb.service"), "");
+		// Dry run: pnpm add only prints, so the installed build (and what the
+		// fake server answers) doesn't change.
+		const r = await run({ CRB_DEVBOX_UPDATE: "" });
+		expect(r.stderr).not.toContain("Waiting for another");
+		expect(r.code).toBe(0);
+		expect(r.stdout).toContain(`dry-run: pnpm add -g ${tarball("0.1.0", sha)}`);
+	});
+
+	it("never waits for input", async () => {
+		await push("0.1.0");
+		const r = await run();
+		expect(r.code).toBe(0);
+		expect(calls()).toMatch(/pnpm install .* prompt=0\n/);
+	});
+
+	it("refuses to wipe a build tree that is a main checkout or inside one", async () => {
+		await push("0.1.0");
+		writeFileSync(join(repo(), "mine.txt"), "keep me\n");
+		for (const tree of [repo(), join(repo(), "scripts")]) {
+			const r = await run({ CRB_DEVBOX_BUILD_TREE: tree });
+			expect(r.code).not.toBe(0);
+			expect(r.stderr).toMatch(
+				/not a worktree of its own|exists but is not a git worktree/,
+			);
+		}
+		expect(readFileSync(join(repo(), "mine.txt"), "utf8")).toBe("keep me\n");
+		expect(calls()).not.toContain("pnpm install");
+	});
+
+	it("keeps the copy of the scripts when master's don't parse", async () => {
+		await push("0.1.0");
+		expect((await run()).code).toBe(0);
+		const before = readlinkSync(copy());
+		const sha = await push("0.1.0", { "lib.sh": "if then fi (\n" });
+		const r = await run();
+		expect(r.code).toBe(0);
+		expect(installed().commit).toBe(sha);
+		expect(r.stderr).toContain("lib.sh doesn't parse");
+		expect(r.stderr).toContain(`kept ${copy()} as it was`);
+		expect(readlinkSync(copy())).toBe(before);
+		expect(copied()).toBe("# follow at 2\n");
+		expect(
+			readdirSync(dirname(copy())).filter((f) => f.startsWith(".devbox.")),
+		).toEqual([before]);
+	});
+
+	it("keeps releases/ to the installed, the good and the 5 newest builds; drops leftovers", async () => {
+		mkdirSync(releases(), { recursive: true });
+		const old = (name: string, age: number) => {
+			const f = join(releases(), name);
+			writeFileSync(f, "");
+			const t = Date.now() / 1000 - age;
+			utimesSync(f, t, t);
+		};
+		for (let i = 0; i < 8; i++)
+			old(`carbonless-review-0.0.${i}-aaaaaaa.tgz`, 1000 + i);
+		old("carbonless-review-0.0.9-bbbbbbb.tgz.tmp", 10);
+		const good = installed().commit;
+		const sha = await push("0.1.0");
+		expect((await run()).code).toBe(0);
+		const left = readdirSync(releases()).sort();
+		expect(left).toContain(basename(tarball("0.1.0", sha)));
+		expect(left).toContain(basename(tarball("0.1.0", good)));
+		expect(left).toHaveLength(5);
+		expect(left.filter((f) => f.endsWith(".tmp"))).toEqual([]);
+		// The newest of the old ones stay.
+		expect(left).toContain("carbonless-review-0.0.0-aaaaaaa.tgz");
+		expect(left).not.toContain("carbonless-review-0.0.7-aaaaaaa.tgz");
+	});
+
+	it("follows the main checkout of a repo with a separate git dir", async () => {
+		await git(
+			dir,
+			"clone",
+			"-q",
+			`--separate-git-dir=${join(dir, "sep.git")}`,
+			join(dir, "origin.git"),
+			"sep",
+		);
+		const scripts = join(dir, "sep/scripts/devbox");
+		for (const f of SCRIPTS) {
+			writeFileSync(join(scripts, f), readFileSync(join(here, f)));
+		}
+		chmodSync(join(scripts, "follow"), 0o755);
+		await push("0.1.0");
+		const r = await run({ CRB_DEVBOX_REPO: "" }, join(scripts, "follow"));
+		expect(r.stderr).toBe("");
+		expect(r.code).toBe(0);
+		expect(calls()).toContain(
+			`pnpm install --frozen-lockfile --config.confirmModulesPurge=false in ${join(dir, "sep/.worktrees/follow")} `,
+		);
 	});
 
 	it("cleans a dirty build tree, so the build is never -dirty", async () => {
@@ -341,7 +564,7 @@ describe("scripts/devbox/follow", { timeout: 60_000 }, () => {
 		expect(r.stderr).toBe("");
 		expect(r.code).toBe(0);
 		expect(calls().trim().split("\n").at(-3)).toBe(
-			`pnpm install --frozen-lockfile in ${tree()} status=[]`,
+			`pnpm install --frozen-lockfile --config.confirmModulesPurge=false in ${tree()} status=[] prompt=0`,
 		);
 		expect(installed()).toEqual({ version: "0.1.1-rc.1", commit: sha });
 		expect(existsSync(join(tree(), "stray.txt"))).toBe(false);

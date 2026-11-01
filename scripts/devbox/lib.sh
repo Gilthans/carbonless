@@ -16,6 +16,10 @@
 #   CRB_DEVBOX_REPO     the repo follow fetches master into (default: this checkout's)
 #   CRB_DEVBOX_BUILD_TREE  follow's build worktree (default <repo>/.worktrees/follow)
 #   CRB_DEVBOX_UPDATE   the update script follow runs (default: update, here)
+#   CRB_DEVBOX_HEALTH_WAIT  seconds follow waits for crb to serve the installed build (30)
+#   CRB_DEVBOX_RETRY_DELAYS  seconds before follow retries a failed build ("300 1800 7200")
+#   CRB_DEVBOX_LOCK_WAIT  seconds update and install wait for the devbox lock (900)
+#   CRB_DEVBOX_LOCKED   set by follow for the update it runs under its lock
 
 UNIT=crb
 PACKAGE=carbonless-review
@@ -267,10 +271,38 @@ follow_repo() {
 		echo "$CRB_DEVBOX_REPO"
 		return
 	fi
-	local common
-	common="$(git -C "$DEVBOX_DIR" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" ||
+	# In the main worktree, its toplevel (--separate-git-dir included); in a
+	# linked one, the first worktree git lists, which is the main one (git
+	# can't tell where a separate git dir's main worktree is from a linked
+	# worktree: set CRB_DEVBOX_REPO there).
+	local main="" git_dir common
+	git_dir="$(git -C "$DEVBOX_DIR" rev-parse --path-format=absolute --git-dir 2>/dev/null)" ||
 		die "$DEVBOX_DIR is not in a git checkout: set CRB_DEVBOX_REPO"
-	dirname "$common"
+	common="$(git -C "$DEVBOX_DIR" rev-parse --path-format=absolute --git-common-dir)"
+	if [[ "$git_dir" == "$common" ]]; then
+		main="$(git -C "$DEVBOX_DIR" rev-parse --show-toplevel)"
+	else
+		main="$(git -C "$DEVBOX_DIR" worktree list --porcelain | sed -n '1s/^worktree //p')"
+	fi
+	[[ -n "$main" ]] || die "can't find the main checkout of $DEVBOX_DIR: set CRB_DEVBOX_REPO"
+	echo "$main"
+}
+
+# follow and update take turns: two pnpm add -g in the global dir, or two
+# restarts of crb.service, must never overlap. follow sets CRB_DEVBOX_LOCKED
+# for the update it runs, which then doesn't take the lock its parent holds.
+LOCK_FILE="$STATE_HOME/carbonless/devbox.lock"
+# take_lock wait: waits up to CRB_DEVBOX_LOCK_WAIT seconds (default 900) for
+# the lock; take_lock nowait: returns 1 at once when it is taken.
+take_lock() {
+	[[ -z "${CRB_DEVBOX_LOCKED:-}" ]] || return 0
+	mkdir -p "$(dirname "$LOCK_FILE")"
+	exec 9>"$LOCK_FILE"
+	flock -n 9 && return 0
+	[[ "$1" == wait ]] || return 1
+	echo "Waiting for another scripts/devbox follow or update to finish ($LOCK_FILE)"
+	flock -w "${CRB_DEVBOX_LOCK_WAIT:-900}" 9 ||
+		die "another scripts/devbox follow or update still holds $LOCK_FILE"
 }
 
 # Whether $SCRIPTS_HOME holds exactly the scripts in this dir.
@@ -285,9 +317,11 @@ scripts_current() {
 # new dir next to it, then a symlink to that dir is renamed over
 # $SCRIPTS_HOME, so a run never sees half old, half new scripts (a running
 # follow keeps the files it has open). The dir it replaced is removed.
-# Prints a line when it changed anything; fails when $1 lacks a script.
+# Scripts that bash can't parse are never installed: the copy stays as it
+# was. Prints a line when it changed anything; fails when $1 lacks a script
+# or one doesn't parse.
 install_scripts() {
-	local src="$1" parent name new old="" f
+	local src="$1" parent name new old="" f entry
 	for f in "${SCRIPT_FILES[@]}"; do
 		[[ -f "$src/$f" ]] || { echo "error: $src/$f not found" >&2; return 1; }
 	done
@@ -295,17 +329,26 @@ install_scripts() {
 	parent="$(dirname "$SCRIPTS_HOME")"
 	name="$(basename "$SCRIPTS_HOME")"
 	mkdir -p "$parent"
+	[[ -L "$SCRIPTS_HOME" ]] && old="$(readlink "$SCRIPTS_HOME")"
+	# Leftovers of a copy that stopped half way.
+	for entry in "$parent/.$name".*; do
+		[[ -e "$entry" || -L "$entry" ]] || continue
+		[[ "$(basename "$entry")" == "$old" ]] || rm -rf "$entry"
+	done
 	new="$(mktemp -d "$parent/.$name.XXXXXX")"
 	chmod 755 "$new"
 	for f in "${SCRIPT_FILES[@]}"; do
-		cp "$src/$f" "$new/$f"
+		cp "$src/$f" "$new/$f" || { rm -rf "$new"; return 1; }
 	done
 	chmod +x "$new/follow" "$new/update"
-	if [[ -L "$SCRIPTS_HOME" ]]; then
-		old="$(readlink "$SCRIPTS_HOME")"
-	elif [[ -e "$SCRIPTS_HOME" ]]; then
-		rm -rf "$SCRIPTS_HOME"
-	fi
+	for f in follow update lib.sh; do
+		if ! bash -n "$new/$f"; then
+			echo "error: $src/$f doesn't parse: keeping $SCRIPTS_HOME as it was" >&2
+			rm -rf "$new"
+			return 1
+		fi
+	done
+	[[ -L "$SCRIPTS_HOME" || ! -e "$SCRIPTS_HOME" ]] || rm -rf "$SCRIPTS_HOME"
 	ln -s "$(basename "$new")" "$new.link"
 	mv -T "$new.link" "$SCRIPTS_HOME"
 	[[ -z "$old" || "$old" == */* ]] || rm -rf "${parent:?}/$old"

@@ -12,6 +12,10 @@ Description=carbonless: move crb serve to the newest master / rc build
 
 [Service]
 Type=oneshot
+# A hung fetch or pnpm install must not hold off every later tick.
+TimeoutStartSec=30min
+# Nothing may wait for input: a git credential prompt fails instead.
+Environment="GIT_TERMINAL_PROMPT=0"
 Environment="PATH=@PATH@"
 Environment="PNPM_HOME=@PNPM_HOME@"
 Environment="CRB_DEVBOX_REPO=@REPO@"

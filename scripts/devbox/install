@@ -27,6 +27,8 @@ for arg in "$@"; do
 	esac
 done
 echo "Node: $NODE_BIN"
+# Never alongside crb-follow or update.
+take_lock wait
 
 # The service sees gh's login under ~/.config/gh, not a token or another
 # config dir set in this shell.
