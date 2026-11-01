@@ -13,11 +13,16 @@ on:
 permissions:
   contents: read
 
+# Only a newer push to the same PR cancels a run. Master, tag and manual runs
+# get a group of their own (the run id), so none of them cancels another:
+# a tag's e2e must finish even when master moves on.
 concurrency:
-  group: ci-${{ github.ref }}
-  # A new push to a PR supersedes its running checks; master and tags run out.
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+# Don't give any job GH_TOKEN/GITHUB_TOKEN in its env until the unit tests'
+# stray real-gh call is fixed (a background `gh auth status` that outlives its
+# test's fake gh): with a token it would reach GitHub.
 jobs:
   checks:
     runs-on: ubuntu-latest
