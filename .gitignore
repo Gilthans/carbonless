@@ -10,3 +10,4 @@ playwright-report/
 .claude/worktrees/
 .crb-dev/
 .envrc
+*.tgz
