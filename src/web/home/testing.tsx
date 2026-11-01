@@ -1,5 +1,5 @@
 // Test helpers for the Home components: rows, views and a fake /api/home.
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClientProvider } from "@tanstack/react-query";
 import { configure, render, screen, waitFor } from "@testing-library/react";
 import type { ReactElement } from "react";
 import { vi } from "vitest";
@@ -11,6 +11,7 @@ import type {
 	SearchResult,
 	SectionId,
 } from "../../shared/home";
+import { newQueryClient } from "../queryClient";
 
 // A loaded machine (several worktrees' suites at once) can take over the
 // default second to render Home's first answer.
@@ -205,9 +206,8 @@ export const emptySearch: SearchResult = {
 };
 
 export function renderWithQuery(ui: ReactElement) {
-	const client = new QueryClient({
-		defaultOptions: { queries: { retry: false } },
-	});
+	// The app's own defaults: tests see what production does.
+	const client = newQueryClient();
 	return {
 		client,
 		...render(<QueryClientProvider client={client}>{ui}</QueryClientProvider>),

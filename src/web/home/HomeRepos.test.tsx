@@ -1,12 +1,15 @@
 // @vitest-environment jsdom
-import { cleanup, screen, waitFor, within } from "@testing-library/react";
+import { focusManager } from "@tanstack/react-query";
+import { act, cleanup, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { HomePage } from "./HomePage";
+import { homeQuery, repoKey } from "./homeApi";
 import {
 	type Call,
 	fakeApi,
 	held,
+	inOrder,
 	renderWithQuery,
 	repoAnswer,
 	row,
@@ -19,6 +22,7 @@ import {
 afterEach(() => {
 	cleanup();
 	vi.unstubAllGlobals();
+	focusManager.setFocused(undefined);
 });
 
 const section = (name: string) =>
@@ -324,5 +328,228 @@ describe("Home's repos", () => {
 			expect(repoGets(api.calls, "acme/api")).toHaveLength(2),
 		);
 		expect(repoGets(api.calls, "acme/console")).toHaveLength(1);
+	});
+
+	it("coming back to the page reads the repos and the view again once stale", async () => {
+		const api = fakeApi(
+			view({ mine: [row({ number: 1, title: "API change" })] }),
+		);
+		const { client } = renderWithQuery(<HomePage />);
+		await screen.findByText("API change");
+		await waitFor(() => expect(repoGets(api.calls)).toHaveLength(2));
+		const views = () =>
+			api.calls.filter((c) => c.method === "GET" && c.url === "/api/home")
+				.length;
+		const viewsBefore = views();
+		// An hour away (a locked phone): every answer is older than refresh.minutes.
+		const old = Date.now() - 3_600_000;
+		for (const name of ["acme/api", "acme/console"]) {
+			client.setQueryData(repoKey(name), client.getQueryData(repoKey(name)), {
+				updatedAt: old,
+			});
+		}
+		client.setQueryData(
+			homeQuery.queryKey,
+			client.getQueryData(homeQuery.queryKey),
+			{
+				updatedAt: old,
+			},
+		);
+		act(() => {
+			focusManager.setFocused(false);
+			focusManager.setFocused(true);
+		});
+		await waitFor(() => expect(repoGets(api.calls)).toHaveLength(4));
+		expect(views()).toBeGreaterThan(viewsBefore);
+	});
+
+	it("a repo never read (its first read failed) leaves the counts marked incomplete, never a bare 0 or none", async () => {
+		fakeApi(
+			view(
+				{ mine: [row({ number: 1, title: "API change" })] },
+				{
+					repos: {
+						"acme/console": {
+							rows: [],
+							refreshedAt: null,
+							error: "Rate limited by GitHub",
+							failures: 1,
+						},
+					},
+				},
+			),
+		);
+		renderWithQuery(<HomePage />);
+		await screen.findByText("API change");
+		await waitFor(() =>
+			expect(chip("acme/console")).toHaveAttribute("data-state", "failed"),
+		);
+		for (const name of ["Mine", "Reviewing", "Up for grabs"]) {
+			const s = section(name);
+			within(s).getByRole("img", {
+				name: "Without acme/console: Rate limited by GitHub",
+			});
+			expect(within(s).queryByTestId("section-none")).toBeNull();
+		}
+		expect(within(section("Mine")).getByRole("heading")).toHaveTextContent(
+			/Mine\s*1/,
+		);
+		expect(screen.queryAllByTestId("row-skeleton")).toHaveLength(0);
+	});
+
+	it("a repo that failed after a good read keeps its rows: counts complete, no marker", async () => {
+		fakeApi(
+			view(
+				{ mine: [row({ number: 1, title: "API change" })] },
+				{
+					repos: {
+						"acme/console": { error: "Rate limited by GitHub", failures: 1 },
+					},
+				},
+			),
+		);
+		renderWithQuery(<HomePage />);
+		await screen.findByText("API change");
+		await waitFor(() =>
+			expect(chip("acme/console")).toHaveAttribute("data-state", "failed"),
+		);
+		expect(
+			within(section("Mine")).queryByRole("img", { name: /^Without / }),
+		).toBeNull();
+		within(section("Reviewing")).getByTestId("section-none");
+	});
+
+	it("while a repo still loads, the footers show no numbers either", async () => {
+		const gate = held();
+		const rows = inOrder([
+			...Array.from({ length: 22 }, (_, i) =>
+				row({ number: i + 1, title: `PR ${i + 1}` }),
+			),
+			row({ number: 99, title: "Away", hidden: "snoozed" }),
+		]);
+		const api = fakeApi(view({ other: rows }), {
+			"GET /api/home/repos/acme/console": async () => {
+				await gate.gate;
+				return repoAnswer(api.state.home, "acme/console");
+			},
+		});
+		renderWithQuery(<HomePage />);
+		await screen.findByText("PR 1");
+		const other = section("Other open");
+		const foot = within(other).getByRole("button", { name: "show more" });
+		expect(foot.textContent).not.toMatch(/\d/);
+		const hidden = within(other).getByRole("button", { name: "snoozed" });
+		expect(hidden.textContent).not.toMatch(/\d/);
+		gate.release();
+		await within(other).findByRole("button", { name: "show 2 more" });
+		within(other).getByRole("button", { name: "1 snoozed" });
+	});
+
+	it("a repo added by a save not yet confirmed waits for the save: its chip says so, the counts don't spin for it", async () => {
+		const put = held();
+		const api = fakeApi(
+			view({ mine: [row({ number: 1, title: "API change" })] }),
+			{
+				"PUT /api/home/view": async (call) => {
+					await put.gate;
+					return {
+						...api.state.home,
+						view: {
+							name: "My PRs",
+							repos: (call.body as { repos: string[] }).repos,
+						},
+					};
+				},
+			},
+		);
+		renderWithQuery(<HomePage />);
+		await screen.findByText("API change");
+		await waitFor(() =>
+			expect(screen.queryByRole("status", { name: "Loading" })).toBeNull(),
+		);
+		await saveRepos(addRepo("acme/web"));
+		await waitFor(() =>
+			expect(chip("acme/web")).toHaveAttribute("data-state", "saving"),
+		);
+		within(chip("acme/web") as HTMLElement).getByRole("img", {
+			name: "Waiting for the save: acme/web",
+		});
+		expect(within(section("Mine")).getByRole("heading")).toHaveTextContent(
+			/Mine\s*1/,
+		);
+		expect(screen.queryAllByTestId("row-skeleton")).toHaveLength(0);
+		put.release();
+		await waitFor(() =>
+			expect(repoGets(api.calls, "acme/web")).toHaveLength(1),
+		);
+	});
+
+	it("Refresh reads fresh even while a timed read of the repo is out", async () => {
+		const gate = held();
+		let holdNext = false;
+		const api = fakeApi(view({ mine: [row()] }), {
+			"GET /api/home/repos/acme/api": async (call) => {
+				if (holdNext && !call.url.includes("fresh=1")) {
+					holdNext = false;
+					await gate.gate;
+				}
+				return repoAnswer(api.state.home, "acme/api");
+			},
+		});
+		const { client } = renderWithQuery(<HomePage />);
+		await screen.findByText("A change");
+		holdNext = true;
+		act(() => {
+			void client.refetchQueries({ queryKey: repoKey("acme/api") });
+		});
+		await waitFor(() =>
+			expect(repoGets(api.calls, "acme/api")).toHaveLength(2),
+		);
+		await userEvent.click(screen.getByRole("button", { name: "Refresh" }));
+		await waitFor(() =>
+			expect(repoGets(api.calls, "acme/api").map((c) => c.url)).toContain(
+				"/api/home/repos/acme/api?fresh=1",
+			),
+		);
+		gate.release();
+	});
+
+	it("a repo re-added is read again even if the view's own read lands before the save's answer", async () => {
+		const put = held();
+		const api = fakeApi(
+			view({
+				mine: [
+					row({ number: 1, title: "API change" }),
+					row({ repo: "console", number: 2, title: "Console change" }),
+				],
+			}),
+			{
+				"PUT /api/home/view": async (call) => {
+					const repos = (call.body as { repos: string[] }).repos;
+					if (repos.includes("acme/console")) await put.gate;
+					return { ...api.state.home, view: { name: "My PRs", repos } };
+				},
+			},
+		);
+		const { client } = renderWithQuery(<HomePage />);
+		await screen.findByText("Console change");
+		await saveRepos(removeRepo("acme/console"));
+		await waitFor(() =>
+			expect(screen.queryByRole("status", { name: "Saving" })).toBeNull(),
+		);
+		await saveRepos(addRepo("acme/console"));
+		// The server stored it; the view's timed read says so before the PUT answers.
+		api.state.home = {
+			...api.state.home,
+			view: { name: "My PRs", repos: ["acme/api", "acme/console"] },
+		};
+		await act(() => client.refetchQueries({ queryKey: homeQuery.queryKey }));
+		const before = repoGets(api.calls, "acme/console").length;
+		put.release();
+		await waitFor(() =>
+			expect(repoGets(api.calls, "acme/console").length).toBeGreaterThan(
+				before,
+			),
+		);
 	});
 });

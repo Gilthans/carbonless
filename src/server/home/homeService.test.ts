@@ -53,10 +53,11 @@ function service(
 		repos?: string[];
 		started?: StartedReview[];
 		clock?: { now: number };
+		minutes?: number;
 	} = {},
 ) {
 	const clock = opts.clock ?? { now: T0 };
-	const config = memoryConfig(opts.repos ?? ["acme/api"]);
+	const config = memoryConfig(opts.repos ?? ["acme/api"], opts.minutes);
 	const started = { list: async () => opts.started ?? [] };
 	const home = new HomeService({
 		config: config.access,
@@ -274,35 +275,56 @@ describe("HomeService", () => {
 		expect(fx.ghLog()).not.toMatch(/name=api\b/);
 	});
 
-	it("a fresh repo answers from the cache with no gh call; stale or asked fresh, it reads again", async () => {
+	it("one read per repo per refresh.minutes, however many clients ask; fresh always reads", async () => {
 		fx = createHomeFixture({ repos: { "acme/api": { prs: scenarioPrs() } } });
-		const { home, clock } = service();
+		const { home, clock } = service({ minutes: 2 });
+		// Client A's first ask reads.
 		await home.repo("acme", "api");
-		const calls = fx.ghLog();
-		clock.now += FRESH_MS - 1;
-		const cached = await home.repo("acme", "api");
-		expect(cached.rows.map((r) => r.number).sort()).toEqual([
+		expect(listReads(fx.ghLog())).toEqual(["api"]);
+		// Client B, a minute later, and A's own timed ask just under the
+		// period: the cache answers, with every row.
+		clock.now = T0 + 60_000;
+		const b = await home.repo("acme", "api");
+		expect(b.rows.map((r) => r.number).sort()).toEqual([
 			1, 2, 3, 4, 5, 6, 8, 9,
 		]);
-		expect(fx.ghLog()).toBe(calls);
-		clock.now += 1;
+		clock.now = T0 + 2 * 60_000 - 1;
+		await home.repo("acme", "api");
+		expect(listReads(fx.ghLog())).toEqual(["api"]);
+		// The period is up: the next ask, whoever's, reads.
+		clock.now = T0 + 2 * 60_000;
 		await home.repo("acme", "api");
 		expect(listReads(fx.ghLog())).toEqual(["api", "api"]);
+		// Refresh or Retry reads at once, however fresh the cache.
+		clock.now += 1000;
 		await home.repo("acme", "api", { fresh: true });
 		expect(listReads(fx.ghLog())).toEqual(["api", "api", "api"]);
+	});
+
+	it("never caches for less than FRESH_MS, whatever refresh.minutes says", async () => {
+		fx = createHomeFixture({ repos: { "acme/api": { prs: scenarioPrs() } } });
+		const { home, clock } = service({ minutes: 0 });
+		await home.repo("acme", "api");
+		clock.now = T0 + FRESH_MS - 1;
+		await home.repo("acme", "api");
+		expect(listReads(fx.ghLog())).toEqual(["api"]);
 	});
 
 	it("concurrent requests for one repo share one read; a cold repo waits for it", async () => {
 		fx = createHomeFixture({
 			repos: { "acme/api": { prs: scenarioPrs() } },
-			homeDelayMs: 300,
+			hold: ["home:acme/api"],
 		});
 		const { home } = service();
-		const [a, b, c] = await Promise.all([
+		const asks = Promise.all([
 			home.repo("acme", "api"),
 			home.repo("Acme", "API"),
 			home.repo("acme", "api", { fresh: true }),
 		]);
+		// The read is out and held: every ask is waiting on it.
+		await expect.poll(() => listReads(fx?.ghLog() ?? "")).toEqual(["api"]);
+		release(fx.path, "home:acme/api");
+		const [a, b, c] = await asks;
 		expect(a.rows).toHaveLength(8);
 		expect(b).toEqual(a);
 		expect(c).toEqual(a);
@@ -905,5 +927,57 @@ describe("configAccess", () => {
 			refresh: { minutes: 2 },
 		});
 		expect((await access.read()).problems).toEqual(["p"]);
+	});
+});
+
+describe("HomeService, review round 1", () => {
+	it("a repo taken out during its first read keeps what that read brings: back in, no cold read", async () => {
+		fx = createHomeFixture({
+			repos: { "acme/api": { prs: scenarioPrs() } },
+			hold: ["home:acme/api"],
+		});
+		const { home } = service();
+		await home.view();
+		const reading = home.repo("acme", "api");
+		await expect.poll(() => listReads(fx?.ghLog() ?? "")).toEqual(["api"]);
+		await home.setRepos([]);
+		release(fx.path, "home:acme/api");
+		await reading;
+		await home.setRepos(["acme/api"]);
+		const back = await home.repo("acme", "api");
+		expect(back.rows).toHaveLength(8);
+		// Answered from what the first read brought: no second read.
+		expect(listReads(fx.ghLog())).toEqual(["api"]);
+	});
+
+	it("a save keeps saying why the viewer can't be read", async () => {
+		fx = createHomeFixture({
+			repos: { "acme/api": { prs: scenarioPrs() } },
+			loggedOut: true,
+		});
+		const { home } = service();
+		expect((await home.view()).viewerError).toMatch(
+			/gh auth login|not logged in/i,
+		);
+		const saved = await home.setRepos(["acme/api"]);
+		expect(saved.viewerError).toMatch(/gh auth login|not logged in/i);
+	});
+
+	it("a repo's answer lists only that repo's clone for started reviews", async () => {
+		fx = createHomeFixture({ repos: { "acme/api": { prs: scenarioPrs() } } });
+		const only: (string | undefined)[] = [];
+		const home = new HomeService({
+			config: memoryConfig(["acme/api"]).access,
+			started: {
+				list: async (_slug, _coverage, repo) => {
+					only.push(repo);
+					return [];
+				},
+			},
+			now: () => T0,
+		});
+		await home.view();
+		await home.repo("acme", "api");
+		expect(only).toEqual([undefined, "acme/api"]);
 	});
 });

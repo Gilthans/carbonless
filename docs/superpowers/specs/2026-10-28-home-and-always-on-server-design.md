@@ -361,9 +361,13 @@ The page composes the sections from every view repo's rows (each repo
 its own read; the order rules above in `src/shared/homeSections.ts`).
 Until every view repo has answered once (a failure counts, with its
 error), each section's count is a spinner and placeholder rows stand
-where rows may still come (owner, 2026-11-01: "An empty result should
-always be easily distinguishable for a still loading result"); a
-section empty once all have answered says "none".
+where rows may still come, and the footers show no numbers ("show
+more", "snoozed") (owner, 2026-11-01: "An empty result should always be
+easily distinguishable for a still loading result"); a section empty
+once all have answered says "none". A repo whose reads have all failed
+is unknown, not empty: each section's count carries a red alert naming
+it and why ("Without acme/x: Rate limited by GitHub"), and no section
+says "none" until it has been read.
 
 ### A row
 
@@ -573,11 +577,14 @@ parsed on every keystroke:
   its section, turn, hidden reason, annotations and started reviews'
   coverage and sub-rows), its last good read's time and its last read's
   error. The page keeps one TanStack query per view repo, read again every
-  `refresh.minutes` (default 2) and on focus once that old, kept for 2
-  hours once out of the view. There is no server timer: the server reads a
-  repo from GitHub when asked and its facts are over 30 s old (or the
-  Refresh button or a chip's Retry asks with `fresh=1`), one read per repo
-  at a time, shared by every ask; otherwise it answers from its cache.
+  `refresh.minutes` (default 2) and on focus or reconnect once that old,
+  kept for 2 hours once out of the view. There is no server timer: the
+  server reads a repo from GitHub when asked and its facts are older than
+  `refresh.minutes` (30 s at least), or when the Refresh button or a
+  chip's Retry asks with `fresh=1` (a timed read out then is dropped, not
+  joined); one read per repo at a time, shared by every ask; otherwise it
+  answers from its cache. However many tabs and devices are open, a repo
+  costs one read per `refresh.minutes`.
   Only the view's repos are served (another answers 404 without a GitHub
   read), and no other repo is read, started PRs included. `GET /api/home`
   carries no rows: the viewer, the view, the config's problems, the
@@ -595,8 +602,9 @@ parsed on every keystroke:
 - One repo's failure or slowness never holds another's rows. While
   anything Home shows is being read or saved (the view, a repo, a save),
   a spinner shows by the view's name; a repo whose first read is still
-  out has a spinner on its chip; a failed one an alert on its chip with
-  the reason in its tooltip, and Retry beside it. The header shows the
+  out has a spinner on its chip; one a save is still adding, a clock
+  ("waiting for the save"; the counts don't wait for it); a failed one an
+  alert on its chip with the reason in its tooltip, and Retry beside it. The header shows the
   oldest repo's last read as relative text with the exact time on hover;
   it turns `warn` with the reasons (rate limited, offline, not found, `gh`
   error) when a read fails, and the lists keep the last good rows.

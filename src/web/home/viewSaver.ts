@@ -166,14 +166,19 @@ const savers = new WeakMap<QueryClient, ViewSaver>();
 export function viewSaverFor(client: QueryClient): ViewSaver {
 	let saver = savers.get(client);
 	if (!saver) {
+		// One PUT at a time (ViewSaver): the view the one out was sent from.
+		let sentFrom: string[] = [];
 		saver = new ViewSaver({
-			put: putView,
+			put: (repos) => {
+				// The view as this save leaves it: "added" is against it, not
+				// against a read of the view that lands meanwhile.
+				sentFrom = client.getQueryData(homeQuery.queryKey)?.view.repos ?? [];
+				return putView(repos);
+			},
 			stored: async (answer) => {
 				// A read of the old view still out mustn't land after the answer.
 				await client.cancelQueries({ queryKey: homeQuery.queryKey });
-				const before = new Set(
-					client.getQueryData(homeQuery.queryKey)?.view.repos ?? [],
-				);
+				const before = new Set(sentFrom);
 				// An added repo is read now, even one still cached from before
 				// it was removed (its rows show meanwhile): its query starts
 				// once the view says it's saved (HomePage).

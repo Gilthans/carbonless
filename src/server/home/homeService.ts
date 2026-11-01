@@ -73,9 +73,10 @@ export function configAccess<C extends HomeConfig>(
 }
 
 /**
- * A repo's facts answer from the cache this long after its last read; an
- * older ask reads GitHub again. Shorter than any refresh.minutes, so the
- * page's every timed ask is a read.
+ * A repo's facts answer from the cache for refresh.minutes after its last
+ * read began, never less than this: however many tabs and devices ask on
+ * their own timers, a repo costs one read per period. `fresh` (Refresh,
+ * Retry) always reads.
  */
 export const FRESH_MS = 30_000;
 /** A repo out of the view keeps its facts this long (re-added: incremental). */
@@ -168,6 +169,8 @@ export class HomeService {
 	/** Every started review, as the last view() listed them (search's recent repos). */
 	#startedList: StartedReview[] = [];
 	#problems: string[] = [];
+	/** Why the viewer's login couldn't be read, as of the last view(). */
+	#viewerError: string | null = null;
 	/** The last read's cost, for the report and the log. */
 	lastCost: RefreshCost = newCost();
 	readonly #onRefresh: (() => void)[] = [];
@@ -251,14 +254,18 @@ export class HomeService {
 		opts: { fresh?: boolean } = {},
 	): Promise<RepoHome> {
 		const name = `${owner}/${repo}`.toLowerCase();
-		if (!(await this.viewRepos()).includes(name)) {
+		const { config } = await this.#config.read();
+		const repos = viewReposOf(config);
+		this.#inView = new Set(repos);
+		if (!repos.includes(name)) {
 			throw new NotOnHomeError(`${name} is not in the view`);
 		}
 		const state = this.#state(name);
+		const period = Math.max(FRESH_MS, config.refresh.minutes * 60_000);
 		if (
 			state.reading ||
 			opts.fresh ||
-			this.#now() - state.checkedAt >= FRESH_MS
+			this.#now() - state.checkedAt >= period
 		) {
 			state.reading ??= this.#read(name, state).finally(() => {
 				state.reading = null;
@@ -365,6 +372,7 @@ export class HomeService {
 	 */
 	async view(): Promise<HomeView> {
 		const { viewer, error } = await this.#viewerOrBlank();
+		this.#viewerError = error;
 		if (viewer.login) {
 			try {
 				this.#startedList = await this.#started.list(
@@ -564,11 +572,19 @@ export class HomeService {
 		});
 		const now = this.#now();
 		for (const [name, state] of this.#repos) {
-			if (!repos.includes(name) && now - state.checkedAt > KEEP_MS) {
+			// One still on its first read keeps what that read brings.
+			if (
+				!repos.includes(name) &&
+				!state.reading &&
+				now - state.checkedAt > KEEP_MS
+			) {
 				this.#repos.delete(name);
 			}
 		}
-		return this.#homeView(this.#viewer ?? { login: "", avatarUrl: "" }, null);
+		return this.#homeView(
+			this.#viewer ?? { login: "", avatarUrl: "" },
+			this.#viewer ? null : this.#viewerError,
+		);
 	}
 
 	/** The first view's repos, `owner/repo` lowercased. */

@@ -269,9 +269,11 @@ every row. Nothing automatic, AI or not, hides or drops a PR, and Home
 reads review progress but never writes it.
 
 While a view repo's first read is still out, Home never shows a count or
-an empty section for it: counts are spinners and placeholder rows stand
-in until every repo has answered (owner, 2026-11-01: "An empty result
-should always be easily distinguishable for a still loading result").
+an empty section for it: counts are spinners (footers too) and
+placeholder rows stand in until every repo has answered (owner,
+2026-11-01: "An empty result should always be easily distinguishable for
+a still loading result"). A repo never read successfully is unknown, not
+empty: the counts carry an alert naming it, and no section says "none".
 
 ## "Side by side" is a view
 

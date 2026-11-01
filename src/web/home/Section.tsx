@@ -1,4 +1,4 @@
-import { ChevronRightIcon, SyncIcon } from "@primer/octicons-react";
+import { AlertIcon, ChevronRightIcon, SyncIcon } from "@primer/octicons-react";
 import { useEffect, useId, useRef, useState } from "react";
 import type { HomeRow, HomeSection, SectionId } from "../../shared/home";
 import { SkeletonBar } from "../overview/parts";
@@ -18,6 +18,18 @@ const HINTS: Partial<Record<SectionId, string>> = {
 	grabs: "ready, no reviewer yet",
 	closed: "last 3 days",
 };
+
+/** "snoozed · waiting": the kinds hidden, no counts (while still loading). */
+export function hiddenKinds(rows: HomeRow[]): string {
+	const kinds = new Set<string>(
+		rows.map((r) =>
+			r.hidden === "snoozed" || r.hidden === "waiting" ? r.hidden : "hidden",
+		),
+	);
+	return ["snoozed", "waiting", "hidden"]
+		.filter((k) => kinds.has(k))
+		.join(" · ");
+}
 
 /** A section shows this many visible rows, then "show N more". */
 export const FOLD = 20;
@@ -74,8 +86,14 @@ export function Section(props: {
 	section: HomeSection;
 	viewer: string;
 	loading?: boolean;
+	/**
+	 * Repos never read (their first read failed), with why: the count
+	 * leaves them out, so it says so, and never "none".
+	 */
+	missing?: string;
 }) {
 	const loading = props.loading ?? false;
+	const missing = loading ? undefined : props.missing;
 	const { id, rows } = props.section;
 	const headingId = useId();
 	const hiddenId = useId();
@@ -85,7 +103,8 @@ export function Section(props: {
 	const hidden = rows.filter((r) => r.hidden !== null);
 	const shown = all ? visible : visible.slice(0, FOLD);
 	const more = visible.length - shown.length;
-	const summary = hiddenSummary(hidden);
+	// Counts only once every repo has answered (no partial numbers).
+	const summary = loading ? hiddenKinds(hidden) : hiddenSummary(hidden);
 	const anyHidden = hidden.length > 0;
 	// A row the reviewer just hid: focus follows it to the footer.
 	const foot = useRef<HTMLButtonElement>(null);
@@ -119,10 +138,15 @@ export function Section(props: {
 							{visible.length}
 						</span>
 					)}
+					{missing && (
+						<Sign label={missing} className="self-center text-bad">
+							<AlertIcon size={12} aria-hidden />
+						</Sign>
+					)}
 				</h2>
 				{HINTS[id] && <p className="text-xs text-faint">{HINTS[id]}</p>}
 			</div>
-			{rows.length === 0 && !loading && (
+			{rows.length === 0 && !loading && !missing && (
 				<p
 					data-testid="section-none"
 					className="px-1 text-xs text-faint italic"
@@ -164,7 +188,7 @@ export function Section(props: {
 									onClick={() => setAll(true)}
 									className={footClass}
 								>
-									show {more} more
+									{loading ? "show more" : `show ${more} more`}
 								</button>
 							)}
 							{anyHidden && (

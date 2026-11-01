@@ -56,7 +56,10 @@ export const homeQuery = queryOptions({
 	queryFn: fetchHome,
 	// A hand edit of the config, a review started elsewhere.
 	refetchInterval: 60_000,
-	refetchOnWindowFocus: false,
+	// Back on the page (a phone unlocked, the network back): read again.
+	// The app's default is off; Home's data goes stale while away.
+	refetchOnWindowFocus: true,
+	refetchOnReconnect: true,
 });
 
 /** A repo out of the view keeps its rows this long: added back, they show at once. */
@@ -89,16 +92,24 @@ export const repoQuery = (name: string, minutes: number) =>
 		staleTime: Math.max(1, minutes) * 60_000,
 		gcTime: REPO_GC_MS,
 		refetchInterval: (query) => repoInterval(minutes, query.state.data),
+		// Back on the page once that old: read again (the app's default is off).
+		refetchOnWindowFocus: true,
+		refetchOnReconnect: true,
 	});
 
-/** Reads a repo from GitHub now, into its query (Refresh, Retry). */
-export const refetchRepo = (client: QueryClient, name: string) =>
-	client.fetchQuery({
+/**
+ * Reads a repo from GitHub now, into its query (Refresh, Retry): a timed
+ * read already out is dropped, not joined, so the answer is fresh.
+ */
+export const refetchRepo = async (client: QueryClient, name: string) => {
+	await client.cancelQueries({ queryKey: repoKey(name) });
+	return client.fetchQuery({
 		queryKey: repoKey(name),
 		queryFn: () => fetchRepo(name, true),
 		staleTime: 0,
 		gcTime: REPO_GC_MS,
 	});
+};
 
 export const searchQuery = (q: string, only?: "repos") =>
 	queryOptions({

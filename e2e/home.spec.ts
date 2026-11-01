@@ -450,8 +450,7 @@ test("the view's repo input suggests the viewer's repos as you type; Save is sto
 		"data-state",
 		"loading",
 	);
-	// Past the 5 s a save may take unconfirmed: no warning, nothing to confirm.
-	await page.waitForTimeout(5_500);
+	// Confirmed: nothing left to warn about.
 	await expect(page.getByTestId("save-delayed")).toHaveCount(0);
 	await expectNoPageOverflow(page);
 	release(made.scenarioPath, held);

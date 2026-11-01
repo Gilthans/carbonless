@@ -80,12 +80,6 @@ export function useSuggestionKeys(props: {
 }
 
 /**
- * The listbox of a combobox's suggestions, in groups with a spinner on
- * the ones still loading. The options' ids are `${optionId}-${i}`, `i`
- * counting across groups (the input's aria-activedescendant). A press in
- * it keeps focus in the input.
- */
-/**
  * Whether the suggestions for what's typed now are still on their way:
  * the debounce hasn't caught up, or its first answer isn't in (an older
  * text's answer shows meanwhile).
@@ -103,6 +97,12 @@ export function stillComing(
 	);
 }
 
+/**
+ * The listbox of a combobox's suggestions, in groups with a spinner on
+ * the ones still loading. The options' ids are `${optionId}-${i}`, `i`
+ * counting across groups (the input's aria-activedescendant). A press in
+ * it keeps focus in the input.
+ */
 export function SuggestionList<T>(props: {
 	listId: string;
 	optionId: string;

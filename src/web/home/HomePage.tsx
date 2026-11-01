@@ -1,5 +1,6 @@
 import {
 	AlertIcon,
+	ClockIcon,
 	PencilIcon,
 	QuestionIcon,
 	RepoIcon,
@@ -40,6 +41,23 @@ const failureOf = (q: RepoResult): string | null =>
 	q.isError ? q.error.message : (q.data?.error ?? null);
 
 /**
+ * Where a view repo is: "saving" (added by a save the server hasn't
+ * confirmed: nothing is read yet), "loading" (its first read is out),
+ * "unread" (it failed and never had a good read: its rows are unknown),
+ * "failed" (its last read failed, its rows kept) or "ready".
+ */
+type RepoState = "saving" | "loading" | "unread" | "failed" | "ready";
+function stateOf(query: RepoResult, saved: boolean): RepoState {
+	const failed = failureOf(query) !== null;
+	if (query.data === undefined) {
+		if (query.isError) return "unread";
+		return saved ? "loading" : "saving";
+	}
+	if (failed) return query.data.refreshedAt === null ? "unread" : "failed";
+	return "ready";
+}
+
+/**
  * The oldest of the repos' last reads (every repo is at least that
  * fresh), `warn` with the reasons when any read failed.
  */
@@ -78,26 +96,35 @@ function RefreshStatus(props: {
  * A view repo's chip: its name; a spinner until its first read is in; on
  * a failed read an alert with why, and Retry beside it.
  */
-function RepoChip(props: { name: string; query: RepoResult }) {
-	const { name, query } = props;
+function RepoChip(props: {
+	name: string;
+	query: RepoResult;
+	state: RepoState;
+}) {
+	const { name, query, state } = props;
 	const client = useQueryClient();
 	const failed = failureOf(query);
-	const loading = query.data === undefined && !query.isError;
 	const retry = useMutation({ mutationFn: () => refetchRepo(client, name) });
 	return (
 		<span className="inline-flex max-w-full items-center">
 			<span
 				data-testid="view-repo"
-				data-state={failed ? "failed" : loading ? "loading" : "ready"}
+				data-state={
+					state === "unread" ? "failed" : state === "ready" ? "ready" : state
+				}
 				className={`inline-flex h-7 max-w-full items-center gap-1.5 truncate rounded-full border bg-raised px-2.5 text-xs ${failed ? "border-bad/50 text-bad" : "border-edge text-ink-soft"}`}
 			>
 				{failed ? (
 					<Sign label={`${name}: ${failed}`}>
 						<AlertIcon size={12} aria-hidden />
 					</Sign>
-				) : loading ? (
+				) : state === "loading" ? (
 					<Sign label={`Loading ${name}`} className="text-faint">
 						<SyncIcon size={12} aria-hidden className={spin} />
+					</Sign>
+				) : state === "saving" ? (
+					<Sign label={`Waiting for the save: ${name}`} className="text-faint">
+						<ClockIcon size={12} aria-hidden />
 					</Sign>
 				) : (
 					<RepoIcon size={12} aria-hidden className="text-faint" />
@@ -156,10 +183,14 @@ export function HomePage() {
 			enabled: saved.has(name.toLowerCase()),
 		})),
 	});
-	const repos = names.map((name, i) => ({
-		name,
-		query: queries[i] as RepoResult,
-	}));
+	const repos = names.map((name, i) => {
+		const query = queries[i] as RepoResult;
+		return {
+			name,
+			query,
+			state: stateOf(query, saved.has(name.toLowerCase())),
+		};
+	});
 	const refresh = useMutation({
 		mutationFn: () =>
 			Promise.allSettled(names.map((name) => refetchRepo(client, name))),
@@ -168,9 +199,18 @@ export function HomePage() {
 	const busy = fetching || viewSave.saving || refresh.isPending;
 	// Until every repo has answered once (a failure counts), sections show
 	// placeholders, never a count of rows still to come.
+	// A repo a save is still adding isn't read yet: its chip says so,
+	// the counts don't wait for it.
 	const loading =
-		home.isPending ||
-		repos.some(({ query }) => query.data === undefined && !query.isError);
+		home.isPending || repos.some(({ state }) => state === "loading");
+	// Never read: the counts leave these out, and say so.
+	const unread = repos.filter(({ state }) => state === "unread");
+	const missing =
+		unread.length > 0
+			? `Without ${unread
+					.map(({ name, query }) => `${name}: ${failureOf(query)}`)
+					.join("; ")}`
+			: undefined;
 	const sections = composeSections(
 		repos.flatMap(({ query }) => query.data?.rows ?? []),
 		data?.viewer.login ?? "",
@@ -272,7 +312,12 @@ export function HomePage() {
 								</span>
 							)}
 							{repos.map((r) => (
-								<RepoChip key={r.name} name={r.name} query={r.query} />
+								<RepoChip
+									key={r.name}
+									name={r.name}
+									query={r.query}
+									state={r.state}
+								/>
 							))}
 							{data.view.repos.length === 0 ? (
 								<button
@@ -313,6 +358,7 @@ export function HomePage() {
 								section={s}
 								viewer={data.viewer.login}
 								loading={loading && data.view.repos.length > 0}
+								missing={missing}
 							/>
 						))}
 						<ViewSettings
