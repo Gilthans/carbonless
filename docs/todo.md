@@ -115,6 +115,10 @@ Not scheduled yet; after everything above.
   along the lines of git-appraise (owner, 2026-10-28). Until then a span rides
   in a hidden marker in the GitHub comment
   (`docs/superpowers/specs/2026-10-27-new-threads-design.md`).
+- **Search across the PR:** Files changed shows one file at a time, so the
+  browser's find can't reach the others; add a search over every changed
+  file (and threads) that jumps to each match (owner, 2026-11-01; not for
+  milestone 2).
 - **More keyboard shortcuts** for existing actions (next/previous file, mark
   reviewed, next unreviewed…), each in the `?` help (owner, 2026-10-28).
 - **Bots in human threads:** decide how bot comments (review bots, CI
