@@ -1,0 +1,13 @@
+# Runs crb-follow.service (scripts/devbox/follow) every 5 minutes. Written by
+# scripts/devbox/install from scripts/devbox/crb-follow.timer.
+# Pause: systemctl --user disable --now crb-follow.timer
+[Unit]
+Description=carbonless: check for a new crb build every 5 minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

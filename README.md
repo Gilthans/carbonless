@@ -69,13 +69,25 @@ Tailscale):
    the printed link carries it as `?key=`. To replace it, delete that file and
    restart the service (by hand: `crb serve --new-key`).
 2. Run it as a systemd user service, from a checkout of this repo:
-   `scripts/devbox/install [<tarball | version>]`
+   `scripts/devbox/install [--no-follow] [<tarball | version>]`
    (checks Node 24, `gh`'s login and linger, writes
    `~/.config/systemd/user/crb.service`, starts it and prints the link).
    For it to start at boot: `sudo loginctl enable-linger $USER`.
-3. Update it: `scripts/devbox/update <tarball | rc | latest | version>`
-   (installs, restarts, prints the version it moved from and to, and the link).
-4. Logs: `journalctl --user -u crb`.
+3. It follows master by itself: `crb-follow.timer` runs
+   `scripts/devbox/follow` every 5 minutes (from the checkout install ran
+   in). Once `carbonless-review` is on npm it installs the `rc` dist-tag
+   when that changes; until then it builds each new `origin/master` commit
+   in a clean worktree (`<repo>/.worktrees/follow`), packs it into
+   `~/.local/share/carbonless/releases/` and installs that. A build that
+   doesn't come up is rolled back and skipped until a newer one appears.
+   - See it: `journalctl --user -u crb-follow`, `systemctl --user list-timers`.
+   - Run it now: `systemctl --user start crb-follow` (or `scripts/devbox/follow`).
+   - Pause it: `systemctl --user disable --now crb-follow.timer`
+     (resume: `systemctl --user enable --now crb-follow.timer`).
+4. Move it by hand: `scripts/devbox/update <tarball | rc | latest | version>`
+   (installs, restarts, prints the version it moved from and to, and the
+   link). Pause the timer first, or follow moves it back to master's build.
+5. Logs: `journalctl --user -u crb`.
 
 The scripts and the service assume the default XDG dirs (`~/.config`, `~/.local/state`).
 

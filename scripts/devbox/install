@@ -1,18 +1,30 @@
 #!/usr/bin/env bash
 # Sets up the always-on crb serve as a systemd user service (crb.service):
-#   scripts/devbox/install [<tarball | rc | latest | version>]
+#   scripts/devbox/install [--no-follow] [<tarball | rc | latest | version>]
 # With a spec, installs that package first (see update); without one, the
 # globally installed crb must already be there. Checks Node 24, gh's login
 # and linger, writes ~/.config/systemd/user/crb.service, enables and
-# (re)starts it, waits until it answers and prints its link. Safe to rerun.
+# (re)starts it, waits until it answers and prints its link. Then, unless
+# --no-follow, writes and enables crb-follow.service and crb-follow.timer,
+# which move it to the newest master / rc build every 5 minutes
+# (scripts/devbox/follow). Safe to rerun.
 # Overrides for tests and odd setups: see lib.sh.
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib.sh
 source "$here/lib.sh"
 
-spec=""
-[[ $# -gt 0 ]] && spec="$(package_spec "$1")"
+spec="" follow=1
+for arg in "$@"; do
+	case "$arg" in
+	--no-follow) follow="" ;;
+	-*) die "usage: scripts/devbox/install [--no-follow] [<tarball | rc | latest | version>]" ;;
+	*)
+		[[ -z "$spec" ]] || die "usage: scripts/devbox/install [--no-follow] [<tarball | rc | latest | version>]"
+		spec="$(package_spec "$arg")"
+		;;
+	esac
+done
 echo "Node: $NODE_BIN"
 
 # The service sees gh's login under ~/.config/gh, not a token or another
@@ -32,6 +44,14 @@ crb="$(global_crb)"
 [[ -x "$crb" || -n "$DRY_RUN" ]] ||
 	die "$crb not found: pass a tarball or version to install it (scripts/devbox/install <spec>)"
 
+# crb-follow's units; the daemon-reload below picks up any change.
+if [[ -n "$follow" ]]; then
+	path="$(unit_path)"
+	repo="$(follow_repo)"
+	render_unit crb-follow.service.template "$UNIT_DIR/crb-follow.service" \
+		"PATH=$path" "PNPM_HOME=$PNPM_HOME" "REPO=$repo" "FOLLOW=$DEVBOX_DIR/follow" || true
+	render_unit crb-follow.timer "$UNIT_DIR/crb-follow.timer" || true
+fi
 write_unit "$crb"
 [[ -n "$UNIT_CHANGED" ]] || run systemctl --user daemon-reload
 run systemctl --user enable "$UNIT"
@@ -44,3 +64,7 @@ if [[ -n "$UNIT_CHANGED" || -n "$spec" ]] || ! { serves_build "$build" && servic
 fi
 [[ -z "$build" ]] || wait_for_build "$build"
 echo "crb $(pretty_build "$build") is serving: $(service_url)"
+if [[ -n "$follow" ]]; then
+	run systemctl --user enable --now crb-follow.timer
+	echo "crb follows rc / origin/master every 5 minutes: journalctl --user -u crb-follow"
+fi

@@ -10,6 +10,10 @@
 #   CRB_DEVBOX_DRY_RUN=1  print systemctl, journalctl and pnpm add instead of running them
 #   CRB_DEVBOX_DRY_MAINPID  under dry run, the service's MainPID (unset: not checked)
 #   CRB_DEVBOX_TIMEOUT  seconds to wait for the restarted server (default 60)
+#   XDG_DATA_HOME       releases/ (carbonless/), the tarballs follow builds and keeps
+#   CRB_DEVBOX_REPO     the repo follow fetches master into (default: this checkout's)
+#   CRB_DEVBOX_BUILD_TREE  follow's build worktree (default <repo>/.worktrees/follow)
+#   CRB_DEVBOX_UPDATE   the update script follow runs (default: update, here)
 
 UNIT=crb
 PACKAGE=carbonless-review
@@ -114,13 +118,10 @@ pretty_build() {
 	echo "$version (${commit:0:7}$dirty)"
 }
 
-# Writes crb.service from the template when it differs (Node 24 and the
-# global crb may have moved), and reloads systemd then. Sets UNIT_CHANGED.
-# The values are escaped for systemd (% is a specifier) and for bash's
-# replacement (& is the match).
-write_unit() {
-	local crb="$1" service_path="$NODE_BIN:$PNPM_HOME/bin" tool dir
-	# PATH for the service: Node 24, the global bin dir, then wherever git and gh live.
+# The PATH a unit runs with: Node 24, the global bin dir, then wherever git
+# and gh live, then the system dirs.
+unit_path() {
+	local service_path="$NODE_BIN:$PNPM_HOME/bin" tool dir
 	for tool in git gh; do
 		command -v "$tool" >/dev/null || die "$tool not found on PATH"
 		dir="$(dirname "$(command -v "$tool")")"
@@ -129,18 +130,39 @@ write_unit() {
 	for dir in /usr/local/bin /usr/bin /bin; do
 		[[ ":$service_path:" == *":$dir:"* ]] || service_path="$service_path:$dir"
 	done
-	service_path="${service_path//%/%%}"
-	crb="${crb//%/%%}"
-	local unit
-	unit="$(<"$DEVBOX_DIR/crb.service.template")"
-	unit="${unit//@PATH@/"$service_path"}"
-	unit="${unit//@CRB@/"$crb"}"
+	echo "$service_path"
+}
+
+# Writes a unit from its template (in this dir) when it differs, replacing
+# each @NAME@ given as NAME=value. The values are escaped for systemd (% is a
+# specifier) and for bash's replacement (& is the match). Returns 0 when it
+# wrote the file, 1 when the file was already so.
+render_unit() {
+	local template="$1" file="$2" pair name value unit
+	shift 2
+	unit="$(<"$DEVBOX_DIR/$template")"
+	for pair in "$@"; do
+		name="${pair%%=*}"
+		value="${pair#*=}"
+		value="${value//%/%%}"
+		unit="${unit//@"$name"@/"$value"}"
+	done
+	if [[ -f "$file" && "$(<"$file")" == "$unit" ]]; then
+		return 1
+	fi
+	mkdir -p "$(dirname "$file")"
+	printf '%s\n' "$unit" >"$file"
+	echo "Wrote $file"
+}
+
+# Writes crb.service from the template when it differs (Node 24 and the
+# global crb may have moved), and reloads systemd then. Sets UNIT_CHANGED.
+write_unit() {
+	local path
+	path="$(unit_path)"
 	UNIT_CHANGED=""
-	if [[ ! -f "$UNIT_FILE" || "$(<"$UNIT_FILE")" != "$unit" ]]; then
-		mkdir -p "$UNIT_DIR"
-		printf '%s\n' "$unit" >"$UNIT_FILE"
+	if render_unit crb.service.template "$UNIT_FILE" "PATH=$path" "CRB=$1"; then
 		UNIT_CHANGED=1
-		echo "Wrote $UNIT_FILE"
 		run systemctl --user daemon-reload
 	fi
 }
@@ -229,6 +251,18 @@ wait_for_build() {
 		fi
 		sleep 1
 	done
+}
+
+# The repo whose origin/master is followed: the main checkout of the one
+# these scripts are in, unless CRB_DEVBOX_REPO says otherwise.
+follow_repo() {
+	if [[ -n "${CRB_DEVBOX_REPO:-}" ]]; then
+		echo "$CRB_DEVBOX_REPO"
+		return
+	fi
+	local common
+	common="$(git -C "$DEVBOX_DIR" rev-parse --path-format=absolute --git-common-dir)"
+	dirname "$common"
 }
 
 # What pnpm add -g installs for a spec: a tarball's absolute path, or

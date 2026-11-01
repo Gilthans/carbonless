@@ -1,0 +1,17 @@
+# Moves crb.service to the newest build (scripts/devbox/follow), run by
+# crb-follow.timer. Written by scripts/devbox/install from
+# scripts/devbox/crb-follow.service.template: edit the template and rerun
+# install, not this file.
+#
+# XDG_CONFIG_HOME is deliberately not set, as for crb.service: git fetches
+# with gh's login, and follow reads the same config.json as your shell.
+# Logs: journalctl --user -u crb-follow
+[Unit]
+Description=carbonless: move crb serve to the newest master / rc build
+
+[Service]
+Type=oneshot
+Environment="PATH=@PATH@"
+Environment="PNPM_HOME=@PNPM_HOME@"
+Environment="CRB_DEVBOX_REPO=@REPO@"
+ExecStart="@FOLLOW@"

@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import {
 	chmodSync,
 	existsSync,
@@ -225,6 +225,64 @@ describe("scripts/devbox", { timeout: 60_000 }, () => {
 		expect(again.stdout).not.toContain("Wrote");
 		expect(again.stdout).not.toContain("restart");
 		expect(readFileSync(unitFile(), "utf8")).toBe(unit);
+	});
+
+	it("install writes and enables crb-follow's service and timer, unless --no-follow", async () => {
+		await serve("127.0.0.1");
+		const r = await run("install", [], { CRB_DEVBOX_REPO: join(dir, "repo") });
+		expect(r.stderr).not.toContain("REAL");
+		expect(r.code).toBe(0);
+		const service = readFileSync(join(dir, "units/crb-follow.service"), "utf8");
+		expect(service).toMatch(/^Type=oneshot$/m);
+		expect(service).toContain(`ExecStart="${join(here, "follow")}"\n`);
+		expect(service).toContain(`Environment="PNPM_HOME=${pnpmHome()}"`);
+		expect(service).toContain(
+			`Environment="CRB_DEVBOX_REPO=${join(dir, "repo")}"`,
+		);
+		expect(service).toContain(
+			`Environment="PATH=${nodeBin()}:${pnpmHome()}/bin:`,
+		);
+		expect(service).not.toMatch(/^Environment=.*XDG_CONFIG_HOME/m);
+		const timer = readFileSync(join(dir, "units/crb-follow.timer"), "utf8");
+		expect(timer).toMatch(/^OnBootSec=2min$/m);
+		expect(timer).toMatch(/^OnUnitActiveSec=5min$/m);
+		expect(timer).toMatch(/^Persistent=true$/m);
+		expect(r.stdout).toContain(
+			`Wrote ${join(dir, "units/crb-follow.service")}`,
+		);
+		expect(r.stdout).toContain(
+			"dry-run: systemctl --user enable --now crb-follow.timer",
+		);
+		expect(r.stdout.match(/daemon-reload/g)).toHaveLength(1);
+
+		// Rerun: nothing rewritten.
+		const again = await run("install", [], {
+			CRB_DEVBOX_REPO: join(dir, "repo"),
+		});
+		expect(again.code).toBe(0);
+		expect(again.stdout).not.toContain("Wrote");
+
+		rmSync(join(dir, "units"), { recursive: true });
+		const off = await run("install", ["--no-follow"]);
+		expect(off.code).toBe(0);
+		expect(existsSync(join(dir, "units/crb-follow.timer"))).toBe(false);
+		expect(off.stdout).not.toContain("crb-follow");
+		expect(existsSync(unitFile())).toBe(true);
+	});
+
+	it("install defaults crb-follow's repo to this checkout's main one", async () => {
+		await serve("127.0.0.1");
+		expect((await run("install", ["--no-follow", "--bogus"])).code).not.toBe(0);
+		const r = await run("install");
+		expect(r.code).toBe(0);
+		const common = execFileSync(
+			"git",
+			["rev-parse", "--path-format=absolute", "--git-common-dir"],
+			{ cwd: here, encoding: "utf8" },
+		).trim();
+		expect(
+			readFileSync(join(dir, "units/crb-follow.service"), "utf8"),
+		).toContain(`Environment="CRB_DEVBOX_REPO=${dirname(common)}"`);
 	});
 
 	it("install with a spec installs it; it warns about linger and needs gh's login", async () => {

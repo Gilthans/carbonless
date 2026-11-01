@@ -160,7 +160,8 @@ run as `crb serve` by the systemd user service `crb.service` on port 4747,
 the owner's, with a stable key:
 `http://100.78.32.127:4747/?key=$(cat ~/.local/state/carbonless/key)`.
 It never runs a worktree's `dist`, and nothing else binds 4747. Setup and
-the scripts: README, "Remote machine". Logs: `journalctl --user -u crb`.
+the scripts: README, "Remote machine". Logs: `journalctl --user -u crb`;
+moves to new builds: `journalctl --user -u crb-follow`.
 
 **Branch instance (ad hoc):** whenever a branch has something the owner
 should see before it reaches master: a coordinator's "ready" report, a fix
@@ -180,27 +181,28 @@ in the main checkout:
    so, when the branch merges or is dropped.
 
 **RC: every merge to master is a new RC** (the owner: merging a PR to main
-implies a new RC version). When the owner asks to merge:
+implies a new RC version). Nobody deploys it: `crb-follow.timer` on the
+devbox (`scripts/devbox/follow`, README "Remote machine") moves main to
+`origin/master`'s newest build within ~5 minutes. When the owner asks to merge:
 1. On the feature branch, bump `package.json` with a commit of its own
    (`release: <version>`): from `X.Y.Z-rc.N` to `X.Y.Z-rc.N+1`; from a
    release `X.Y.Z` to `X.Y+1.0-rc.1` (`X.Y.Z+1-rc.1` when the owner calls
    it a fix). `0.1.0` was never released, so the first RC is `0.1.0-rc.1`.
+   The bump names the RC; deploying doesn't need it. Until npm publishing
+   lands, a merge without one is deployed too, under the same version from
+   another commit: that's fine, follow and update compare version and commit.
 2. `pnpm verify` green, fast-forward `master`, tag `v<version>` (local
    only until pushing tags is allowed).
-3. Pack from a clean tree at the tag, so the build's commit is the tag's
-   and not `-dirty`: `git worktree add --detach .worktrees/release
-   v<version>` (or `git -C .worktrees/release checkout --detach
-   v<version>`), `pnpm install --frozen-lockfile`, `pnpm pack
-   --pack-destination ~/.local/share/carbonless/releases`.
-4. `scripts/devbox/update ~/.local/share/carbonless/releases/carbonless-review-<version>.tgz`
-   (with Node 24 and `~/.local/share/pnpm/bin` on `PATH`): it waits for the
-   new build and prints `<from> -> <to>` and the link. Send the owner the
-   link and what is new since the last RC.
-5. Stop the instances of branches that just merged.
+3. Once master is on `origin` (follow fetches it from there, not from the
+   local branch), within ~5 minutes `journalctl --user -u crb-follow` shows
+   `crb: <from> -> <to>` and the link (a failed build shows an error and
+   main stays on the previous one). Send the owner the link and what is new
+   since the last RC.
+4. Stop the instances of branches that just merged.
 
 **Release:** only when the owner asks ("release", "promote"). The RC the
 owner tried becomes `X.Y.Z`: a `release: X.Y.Z` commit on master that
-changes only the version, then steps 2–4 above. Before the first publish
+changes only the version, then steps 2–3 above. Before the first publish
 to npm, remind the owner that the license is still `UNLICENSED`. Until M2
 (`docs/superpowers/specs/2026-10-30-versions-and-distribution-design.md`)
 nothing is published: co-workers get the tarball, and `update rc|latest`

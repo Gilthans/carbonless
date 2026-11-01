@@ -1,0 +1,184 @@
+#!/usr/bin/env bash
+# Moves the always-on crb serve to the newest build, if there is one:
+#   scripts/devbox/follow
+# crb-follow.timer runs it every 5 minutes (scripts/devbox/install); it is
+# safe to run by hand at any time. The newest build comes from:
+#   - npm, once carbonless-review is published there: the rc dist-tag
+#     (scripts/devbox/update rc) when its version or commit differs from the
+#     installed build's;
+#   - else git: origin/master, fetched into the repo, checked out in a clean
+#     worktree of its own, packed into releases/ and installed with
+#     scripts/devbox/update <tarball>.
+# When the new build doesn't come up, it reinstalls the build that was there
+# (from its tarball in releases/, made from the installed package when
+# missing), exits non-zero, and skips that build until a newer one appears.
+# One run at a time: a second one exits at once.
+# Overrides for tests and odd setups: see lib.sh.
+set -euo pipefail
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib.sh
+source "$here/lib.sh"
+
+[[ $# -eq 0 ]] || die "usage: scripts/devbox/follow"
+STATE_DIR="$STATE_HOME/carbonless"
+# The build that failed to come up last, as "<source> <version> <commit>".
+FAILED_FILE="$STATE_DIR/follow-failed"
+RELEASES="${XDG_DATA_HOME:-$HOME/.local/share}/carbonless/releases"
+UPDATE="${CRB_DEVBOX_UPDATE:-$DEVBOX_DIR/update}"
+
+say() {
+	echo "crb-follow: $*"
+}
+fail() {
+	echo "error: crb-follow: $*" >&2
+}
+
+mkdir -p "$STATE_DIR"
+exec 9>"$STATE_DIR/follow.lock"
+if ! flock -n 9; then
+	say "another run is in progress"
+	exit 0
+fi
+
+current="$(installed_build)"
+
+# releases/carbonless-review-<version>-<commit, short>.tgz: one per build, so
+# an RC version built again from a later commit doesn't overwrite the last.
+tarball_name() {
+	local version="$1" commit="$2" dirty=""
+	[[ "$commit" == *-dirty ]] && dirty="-dirty" && commit="${commit%-dirty}"
+	echo "$RELEASES/$PACKAGE-$version-${commit:0:7}$dirty.tgz"
+}
+
+# The build "<version> <commit>" inside a tarball.
+tarball_build() {
+	tar -xzOf "$1" package/dist/build-info.json |
+		node -e 'let s = ""; process.stdin.on("data", (d) => (s += d)).on("end", () => {
+			const b = JSON.parse(s); console.log(`${b.version} ${b.commit}`); });'
+}
+
+# A tarball of the installed build to roll back to, or nothing when nothing
+# is installed. Made from the installed package's files when releases/ has
+# none (installed from npm, or by hand).
+rollback_tarball() {
+	[[ -n "$current" ]] || return 0
+	local tgz dir
+	tgz="$(tarball_name "${current%% *}" "${current#* }")"
+	if [[ ! -f "$tgz" ]]; then
+		dir="$(installed_dir)"
+		mkdir -p "$RELEASES"
+		tar -czf "$tgz.tmp" -C "$dir" --exclude=./node_modules --transform 's,^\.,package,' .
+		mv "$tgz.tmp" "$tgz"
+	fi
+	echo "$tgz"
+}
+
+skip_if_failed() {
+	if [[ -f "$FAILED_FILE" && "$(<"$FAILED_FILE")" == "$1" ]]; then
+		say "skipping $2: it failed to come up before; staying on $(pretty_build "$current")"
+		exit 0
+	fi
+}
+
+# Installs a spec with update; on failure remembers the build (key) and rolls
+# back to the one installed before.
+move_to() {
+	local spec="$1" target="$2" key="$3" back
+	back="$(rollback_tarball)"
+	if "$UPDATE" "$spec"; then
+		rm -f "$FAILED_FILE"
+		return 0
+	fi
+	echo "$key" >"$FAILED_FILE"
+	fail "$target did not come up (scripts/devbox/update $spec); skipping it until a newer build appears"
+	if [[ -z "$back" ]]; then
+		fail "nothing to roll back to: no build was installed before"
+	elif "$UPDATE" "$back"; then
+		fail "rolled back to $(pretty_build "$current")"
+	else
+		fail "rolling back to $(pretty_build "$current") ($back) failed too: crb is down"
+	fi
+	exit 1
+}
+
+# The rc dist-tag as "<version> <gitHead>" (gitHead may be empty); nothing
+# when the package or the tag isn't on npm. Fails when npm can't be asked.
+npm_rc() {
+	local out
+	if ! out="$(npm view "$PACKAGE@rc" version gitHead --json 2>&1)"; then
+		[[ "$out" == *E404* ]] && return 0
+		fail "npm view $PACKAGE@rc failed:"
+		echo "$out" >&2
+		exit 1
+	fi
+	[[ -n "$out" ]] || return 0
+	node -e '
+		const v = JSON.parse(process.argv[1]);
+		const { version, gitHead = "" } = typeof v === "string" ? { version: v } : v;
+		console.log(`${version} ${gitHead}`);' "$out"
+}
+
+follow_npm() {
+	local version="${1%% *}" head="${1#* }"
+	local installed_version="${current%% *}" installed_commit="${current#* }"
+	if [[ -n "$current" && "$version" == "$installed_version" &&
+		(-z "$head" || "$head" == "$installed_commit") ]]; then
+		say "up to date: $(pretty_build "$current") is $PACKAGE@rc"
+		return 0
+	fi
+	local target="$PACKAGE@rc $version${head:+ (${head:0:7})}"
+	skip_if_failed "rc $version $head" "$target"
+	move_to rc "$target" "rc $version $head"
+}
+
+follow_git() {
+	local repo tree sha version target tgz pack built
+	repo="$(follow_repo)"
+	tree="${CRB_DEVBOX_BUILD_TREE:-$repo/.worktrees/follow}"
+	git -C "$repo" fetch --quiet origin "+refs/heads/master:refs/remotes/origin/master"
+	sha="$(git -C "$repo" rev-parse --verify --quiet "refs/remotes/origin/master^{commit}")"
+	if [[ -n "$current" && "${current#* }" == "$sha" ]]; then
+		say "up to date: $(pretty_build "$current") is origin/master"
+		return 0
+	fi
+	version="$(git -C "$repo" show "$sha:package.json" | node -e '
+		let s = ""; process.stdin.on("data", (d) => (s += d)).on("end", () => console.log(JSON.parse(s).version));')"
+	target="$(pretty_build "$version $sha") (origin/master)"
+	skip_if_failed "git $version $sha" "$target"
+
+	tgz="$(tarball_name "$version" "$sha")"
+	if [[ ! -f "$tgz" ]]; then
+		say "building $target in $tree"
+		# A clean checkout of exactly that commit, so the build isn't -dirty.
+		if [[ ! -e "$tree/.git" ]]; then
+			[[ ! -e "$tree" ]] || die "$tree exists but is not a git worktree: move it away"
+			git -C "$repo" worktree prune
+			git -C "$repo" worktree add --quiet --detach "$tree" "$sha"
+		else
+			git -C "$tree" checkout --quiet --detach --force "$sha"
+		fi
+		git -C "$tree" reset --quiet --hard "$sha"
+		git -C "$tree" clean --quiet -ffd
+		pack="$(mktemp -d)"
+		# shellcheck disable=SC2064
+		trap "rm -rf '$pack'" EXIT
+		if ! (cd "$tree" && pnpm install --frozen-lockfile && pnpm pack --pack-destination "$pack") >&2; then
+			echo "git $version $sha" >"$FAILED_FILE"
+			fail "building $target failed; skipping it until a newer commit appears"
+			exit 1
+		fi
+		built="$(tarball_build "$pack"/*.tgz)"
+		[[ "$built" == "$version $sha" ]] ||
+			die "the tarball built from $sha says it is $(pretty_build "$built")"
+		mkdir -p "$RELEASES"
+		mv "$pack"/*.tgz "$tgz"
+	fi
+	move_to "$tgz" "$target" "git $version $sha"
+}
+
+rc="$(npm_rc)"
+if [[ -n "$rc" ]]; then
+	follow_npm "$rc"
+else
+	follow_git
+fi
