@@ -11,6 +11,8 @@
 #   CRB_DEVBOX_DRY_MAINPID  under dry run, the service's MainPID (unset: not checked)
 #   CRB_DEVBOX_TIMEOUT  seconds to wait for the restarted server (default 60)
 #   XDG_DATA_HOME       releases/ (carbonless/), the tarballs follow builds and keeps
+#   CRB_DEVBOX_HOME     the copy of these scripts crb-follow.service runs
+#                       (default $XDG_DATA_HOME/carbonless/devbox)
 #   CRB_DEVBOX_REPO     the repo follow fetches master into (default: this checkout's)
 #   CRB_DEVBOX_BUILD_TREE  follow's build worktree (default <repo>/.worktrees/follow)
 #   CRB_DEVBOX_UPDATE   the update script follow runs (default: update, here)
@@ -19,6 +21,11 @@ UNIT=crb
 PACKAGE=carbonless-review
 DRY_RUN="${CRB_DEVBOX_DRY_RUN:-}"
 DEVBOX_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
+# crb-follow.service runs a copy of these scripts, not a checkout's, so it
+# never depends on what a checkout has checked out (install_scripts).
+SCRIPTS_HOME="${CRB_DEVBOX_HOME:-$DATA_HOME/carbonless/devbox}"
+SCRIPT_FILES=(follow update lib.sh crb.service.template crb-follow.service.template crb-follow.timer)
 
 CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
 STATE_HOME="${XDG_STATE_HOME:-$HOME/.local/state}"
@@ -261,8 +268,48 @@ follow_repo() {
 		return
 	fi
 	local common
-	common="$(git -C "$DEVBOX_DIR" rev-parse --path-format=absolute --git-common-dir)"
+	common="$(git -C "$DEVBOX_DIR" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" ||
+		die "$DEVBOX_DIR is not in a git checkout: set CRB_DEVBOX_REPO"
 	dirname "$common"
+}
+
+# Whether $SCRIPTS_HOME holds exactly the scripts in this dir.
+scripts_current() {
+	local src="$1" f
+	for f in "${SCRIPT_FILES[@]}"; do
+		cmp -s "$src/$f" "$SCRIPTS_HOME/$f" || return 1
+	done
+}
+
+# Copies the scripts in dir $1 to $SCRIPTS_HOME, atomically: they go into a
+# new dir next to it, then a symlink to that dir is renamed over
+# $SCRIPTS_HOME, so a run never sees half old, half new scripts (a running
+# follow keeps the files it has open). The dir it replaced is removed.
+# Prints a line when it changed anything; fails when $1 lacks a script.
+install_scripts() {
+	local src="$1" parent name new old="" f
+	for f in "${SCRIPT_FILES[@]}"; do
+		[[ -f "$src/$f" ]] || { echo "error: $src/$f not found" >&2; return 1; }
+	done
+	scripts_current "$src" && return 0
+	parent="$(dirname "$SCRIPTS_HOME")"
+	name="$(basename "$SCRIPTS_HOME")"
+	mkdir -p "$parent"
+	new="$(mktemp -d "$parent/.$name.XXXXXX")"
+	chmod 755 "$new"
+	for f in "${SCRIPT_FILES[@]}"; do
+		cp "$src/$f" "$new/$f"
+	done
+	chmod +x "$new/follow" "$new/update"
+	if [[ -L "$SCRIPTS_HOME" ]]; then
+		old="$(readlink "$SCRIPTS_HOME")"
+	elif [[ -e "$SCRIPTS_HOME" ]]; then
+		rm -rf "$SCRIPTS_HOME"
+	fi
+	ln -s "$(basename "$new")" "$new.link"
+	mv -T "$new.link" "$SCRIPTS_HOME"
+	[[ -z "$old" || "$old" == */* ]] || rm -rf "${parent:?}/$old"
+	echo "Copied the devbox scripts to $SCRIPTS_HOME"
 }
 
 # What pnpm add -g installs for a spec: a tarball's absolute path, or

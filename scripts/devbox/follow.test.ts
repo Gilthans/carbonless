@@ -4,7 +4,9 @@ import {
 	existsSync,
 	mkdirSync,
 	mkdtempSync,
+	readdirSync,
 	readFileSync,
+	readlinkSync,
 	rmSync,
 	symlinkSync,
 	writeFileSync,
@@ -18,6 +20,14 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 // stand-ins for npm, pnpm and update. systemctl and journalctl fail the test
 // if anything calls them.
 const here = dirname(fileURLToPath(import.meta.url));
+const SCRIPTS = [
+	"follow",
+	"update",
+	"lib.sh",
+	"crb.service.template",
+	"crb-follow.service.template",
+	"crb-follow.timer",
+];
 
 interface Result {
 	code: number;
@@ -42,6 +52,10 @@ describe("scripts/devbox/follow", { timeout: 60_000 }, () => {
 			join(dir, "pkg/dist/build-info.json"),
 			JSON.stringify({ version, commit }),
 		);
+	const copy = () => join(dir, "data/carbonless/devbox");
+	/** The scripts' copy, or null when there is none. */
+	const copied = (f = "follow") =>
+		existsSync(join(copy(), f)) ? readFileSync(join(copy(), f), "utf8") : null;
 	const calls = () => {
 		const log = join(dir, "calls.log");
 		return existsSync(log) ? readFileSync(log, "utf8") : "";
@@ -62,6 +76,11 @@ describe("scripts/devbox/follow", { timeout: 60_000 }, () => {
 			JSON.stringify({ name: "carbonless-review", version }),
 		);
 		writeFileSync(join(work, "file.txt"), `${++commits}\n`);
+		// master's devbox scripts, which follow copies once it runs its build.
+		mkdirSync(join(work, "scripts/devbox"), { recursive: true });
+		for (const f of SCRIPTS) {
+			writeFileSync(join(work, "scripts/devbox", f), `# ${f} at ${commits}\n`);
+		}
 		await git(work, "add", ".");
 		await git(work, "commit", "-qm", `commit ${commits}`);
 		await git(work, "push", "-q", "origin", "HEAD:master");
@@ -70,6 +89,7 @@ describe("scripts/devbox/follow", { timeout: 60_000 }, () => {
 
 	beforeEach(async () => {
 		dir = mkdtempSync(join(tmpdir(), "crb-follow-"));
+		commits = 0;
 		const nodeBin = join(dir, "home/.nvm/versions/node/v24.0.0/bin");
 		mkdirSync(nodeBin, { recursive: true });
 		symlinkSync(process.execPath, join(nodeBin, "node"));
@@ -198,6 +218,11 @@ describe("scripts/devbox/follow", { timeout: 60_000 }, () => {
 		expect(installed()).toEqual({ version: "0.1.0", commit: sha });
 		expect(await git(tree(), "rev-parse", "HEAD")).toBe(sha);
 		expect(r.stdout).toContain("crb: a -> b");
+		// The service's copy of the scripts is now master's, atomically: a
+		// symlink to a fresh dir.
+		for (const f of SCRIPTS) expect(copied(f)).toBe(`# ${f} at 2\n`);
+		expect(readlinkSync(copy())).toMatch(/^\.devbox\.\w+$/);
+		expect(r.stdout).toContain(`Copied the devbox scripts to ${copy()}`);
 		// The build it left keeps a tarball to come back to.
 		expect(existsSync(tarball("0.1.0", before))).toBe(true);
 
@@ -222,6 +247,8 @@ describe("scripts/devbox/follow", { timeout: 60_000 }, () => {
 		expect(calls()).toContain("update rc\n");
 		expect(calls()).not.toContain("pnpm");
 		expect(installed()).toEqual(rc);
+		// The npm package carries no devbox scripts: the copy stays.
+		expect(copied()).toBeNull();
 
 		const again = await run(extra);
 		expect(again.stdout).toBe(
@@ -261,6 +288,8 @@ describe("scripts/devbox/follow", { timeout: 60_000 }, () => {
 			`update ${tarball("0.1.0", bad)}\nupdate ${tarball("0.1.0", good)}\n`,
 		);
 		expect(installed()).toEqual({ version: "0.1.0", commit: good });
+		// A build that didn't come up doesn't hand follow its scripts.
+		expect(copied()).toBeNull();
 
 		const next = await run({ UPDATE_FAIL: bad.slice(0, 7) });
 		expect(next.code).toBe(0);
@@ -275,6 +304,7 @@ describe("scripts/devbox/follow", { timeout: 60_000 }, () => {
 		expect(fixed.code).toBe(0);
 		expect(installed()).toEqual({ version: "0.1.0", commit: newer });
 		expect(existsSync(join(dir, "state/carbonless/follow-failed"))).toBe(false);
+		expect(copied()).toBe("# follow at 3\n");
 	});
 
 	it("remembers a commit that fails to build", async () => {
@@ -315,5 +345,51 @@ describe("scripts/devbox/follow", { timeout: 60_000 }, () => {
 		);
 		expect(installed()).toEqual({ version: "0.1.1-rc.1", commit: sha });
 		expect(existsSync(join(tree(), "stray.txt"))).toBe(false);
+		// Copied from the clean tree, so not the edit made in it; the copy
+		// it replaced is gone.
+		expect(copied()).toBe("# follow at 3\n");
+		expect(
+			readdirSync(dirname(copy())).filter((f) => f.startsWith(".devbox.")),
+		).toEqual([readlinkSync(copy())]);
+	});
+
+	it("fetching writes only refs/remotes/origin/master in the repo, and touches nothing checked out", async () => {
+		// Someone works in the repo: a branch, uncommitted edits, no FETCH_HEAD.
+		await git(repo(), "switch", "-qc", "feature");
+		writeFileSync(join(repo(), "file.txt"), "work in progress\n");
+		writeFileSync(join(repo(), "notes.txt"), "untracked\n");
+		// origin has a tag and another branch follow mustn't bring in.
+		await git(join(dir, "work"), "tag", "v9");
+		await git(join(dir, "work"), "push", "-q", "origin", "v9", "HEAD:other");
+		await git(repo(), "config", "fetch.prune", "true");
+		await git(repo(), "update-ref", "refs/remotes/origin/gone", "HEAD");
+		const sha = await push("0.1.0");
+		const refs = async () =>
+			(
+				await git(
+					repo(),
+					"for-each-ref",
+					// A symref (origin/HEAD) by its target.
+					"--format=%(refname) %(if)%(symref)%(then)-> %(symref)%(else)%(objectname)%(end)",
+				)
+			)
+				.split("\n")
+				.filter((l) => !l.startsWith("refs/remotes/origin/master "));
+		const before = await refs();
+		const status = await git(repo(), "status", "--porcelain=v2", "--branch");
+
+		const r = await run();
+		expect(r.code).toBe(0);
+		expect(await git(repo(), "rev-parse", "refs/remotes/origin/master")).toBe(
+			sha,
+		);
+		expect(await refs()).toEqual(before);
+		expect(await git(repo(), "status", "--porcelain=v2", "--branch")).toBe(
+			status,
+		);
+		expect(readFileSync(join(repo(), "file.txt"), "utf8")).toBe(
+			"work in progress\n",
+		);
+		expect(existsSync(join(repo(), ".git/FETCH_HEAD"))).toBe(false);
 	});
 });

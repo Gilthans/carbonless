@@ -4,8 +4,11 @@ import {
 	existsSync,
 	mkdirSync,
 	mkdtempSync,
+	readdirSync,
 	readFileSync,
+	readlinkSync,
 	rmSync,
+	statSync,
 	symlinkSync,
 	writeFileSync,
 } from "node:fs";
@@ -234,7 +237,22 @@ describe("scripts/devbox", { timeout: 60_000 }, () => {
 		expect(r.code).toBe(0);
 		const service = readFileSync(join(dir, "units/crb-follow.service"), "utf8");
 		expect(service).toMatch(/^Type=oneshot$/m);
-		expect(service).toContain(`ExecStart="${join(here, "follow")}"\n`);
+		// It runs install's copy of the scripts, not this checkout's.
+		const copy = join(dir, "data/carbonless/devbox");
+		expect(service).toContain(`ExecStart="${copy}/follow"\n`);
+		for (const f of [
+			"follow",
+			"update",
+			"lib.sh",
+			"crb.service.template",
+			"crb-follow.service.template",
+			"crb-follow.timer",
+		]) {
+			expect(readFileSync(join(copy, f), "utf8")).toBe(
+				readFileSync(join(here, f), "utf8"),
+			);
+		}
+		expect(r.stdout).toContain(`Copied the devbox scripts to ${copy}`);
 		expect(service).toContain(`Environment="PNPM_HOME=${pnpmHome()}"`);
 		expect(service).toContain(
 			`Environment="CRB_DEVBOX_REPO=${join(dir, "repo")}"`,
@@ -246,7 +264,7 @@ describe("scripts/devbox", { timeout: 60_000 }, () => {
 		const timer = readFileSync(join(dir, "units/crb-follow.timer"), "utf8");
 		expect(timer).toMatch(/^OnBootSec=2min$/m);
 		expect(timer).toMatch(/^OnUnitActiveSec=5min$/m);
-		expect(timer).toMatch(/^Persistent=true$/m);
+		expect(timer).not.toMatch(/^Persistent=/m);
 		expect(r.stdout).toContain(
 			`Wrote ${join(dir, "units/crb-follow.service")}`,
 		);
@@ -261,6 +279,7 @@ describe("scripts/devbox", { timeout: 60_000 }, () => {
 		});
 		expect(again.code).toBe(0);
 		expect(again.stdout).not.toContain("Wrote");
+		expect(again.stdout).not.toContain("Copied");
 
 		rmSync(join(dir, "units"), { recursive: true });
 		const off = await run("install", ["--no-follow"]);
@@ -268,6 +287,38 @@ describe("scripts/devbox", { timeout: 60_000 }, () => {
 		expect(existsSync(join(dir, "units/crb-follow.timer"))).toBe(false);
 		expect(off.stdout).not.toContain("crb-follow");
 		expect(existsSync(unitFile())).toBe(true);
+	});
+
+	it("install replaces the scripts' copy atomically, through a symlink to a new dir", async () => {
+		await serve("127.0.0.1");
+		const home = join(dir, "devbox-home");
+		const extra = { CRB_DEVBOX_HOME: home, CRB_DEVBOX_REPO: join(dir, "repo") };
+		// An older copy, as a plain dir (or from an older install).
+		mkdirSync(home);
+		writeFileSync(join(home, "follow"), "old\n");
+		expect((await run("install", [], extra)).code).toBe(0);
+		const first = readlinkSync(home);
+		expect(first).toMatch(/^\.devbox-home\.\w+$/);
+		expect(readFileSync(join(home, "follow"), "utf8")).toBe(
+			readFileSync(join(here, "follow"), "utf8"),
+		);
+		expect(statSync(join(home, "follow")).mode & 0o111).not.toBe(0);
+		expect(
+			readFileSync(join(dir, "units/crb-follow.service"), "utf8"),
+		).toContain(`ExecStart="${home}/follow"`);
+
+		// A changed copy is replaced by a new dir; the old one goes.
+		writeFileSync(join(home, "update"), "tampered\n");
+		expect((await run("install", [], extra)).code).toBe(0);
+		const second = readlinkSync(home);
+		expect(second).not.toBe(first);
+		expect(existsSync(join(dir, first))).toBe(false);
+		expect(
+			readdirSync(dir).filter((f) => f.startsWith(".devbox-home")),
+		).toEqual([second]);
+		expect(readFileSync(join(home, "update"), "utf8")).toBe(
+			readFileSync(join(here, "update"), "utf8"),
+		);
 	});
 
 	it("install defaults crb-follow's repo to this checkout's main one", async () => {

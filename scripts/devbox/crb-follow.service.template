@@ -1,5 +1,6 @@
-# Moves crb.service to the newest build (scripts/devbox/follow), run by
-# crb-follow.timer. Written by scripts/devbox/install from
+# Moves crb.service to the newest build, run by crb-follow.timer. It runs
+# install's copy of scripts/devbox (~/.local/share/carbonless/devbox), which
+# follow refreshes from each master build, not a checkout's scripts. Written by scripts/devbox/install from
 # scripts/devbox/crb-follow.service.template: edit the template and rerun
 # install, not this file.
 #

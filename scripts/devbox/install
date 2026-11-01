@@ -5,9 +5,10 @@
 # globally installed crb must already be there. Checks Node 24, gh's login
 # and linger, writes ~/.config/systemd/user/crb.service, enables and
 # (re)starts it, waits until it answers and prints its link. Then, unless
-# --no-follow, writes and enables crb-follow.service and crb-follow.timer,
-# which move it to the newest master / rc build every 5 minutes
-# (scripts/devbox/follow). Safe to rerun.
+# --no-follow, copies these scripts to ~/.local/share/carbonless/devbox and
+# writes and enables crb-follow.service (running that copy's follow) and
+# crb-follow.timer, which move it to the newest master / rc build every 5
+# minutes (scripts/devbox/follow). Safe to rerun.
 # Overrides for tests and odd setups: see lib.sh.
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -48,8 +49,10 @@ crb="$(global_crb)"
 if [[ -n "$follow" ]]; then
 	path="$(unit_path)"
 	repo="$(follow_repo)"
+	# A copy of these scripts that follow keeps current from master's.
+	install_scripts "$DEVBOX_DIR"
 	render_unit crb-follow.service.template "$UNIT_DIR/crb-follow.service" \
-		"PATH=$path" "PNPM_HOME=$PNPM_HOME" "REPO=$repo" "FOLLOW=$DEVBOX_DIR/follow" || true
+		"PATH=$path" "PNPM_HOME=$PNPM_HOME" "REPO=$repo" "FOLLOW=$SCRIPTS_HOME/follow" || true
 	render_unit crb-follow.timer "$UNIT_DIR/crb-follow.timer" || true
 fi
 write_unit "$crb"

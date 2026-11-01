@@ -74,10 +74,12 @@ Tailscale):
    `~/.config/systemd/user/crb.service`, starts it and prints the link).
    For it to start at boot: `sudo loginctl enable-linger $USER`.
 3. It follows master by itself: `crb-follow.timer` runs
-   `scripts/devbox/follow` every 5 minutes (from the checkout install ran
-   in). Once `carbonless-review` is on npm it installs the `rc` dist-tag
+   `scripts/devbox/follow` every 5 minutes, from a copy install makes in
+   `~/.local/share/carbonless/devbox/` (refreshed from each master build,
+   so it never depends on what a checkout has checked out). Once `carbonless-review` is on npm it installs the `rc` dist-tag
    when that changes; until then it builds each new `origin/master` commit
-   in a clean worktree (`<repo>/.worktrees/follow`), packs it into
+   in a worktree of its own (`<repo>/.worktrees/follow`; fetching writes
+   only `refs/remotes/origin/master`), packs it into
    `~/.local/share/carbonless/releases/` and installs that. A build that
    doesn't come up is rolled back and skipped until a newer one appears.
    - See it: `journalctl --user -u crb-follow`, `systemctl --user list-timers`.
