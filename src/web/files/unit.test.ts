@@ -4,8 +4,10 @@ import { fileFlags } from "../../shared/progress";
 import type { ClusterState, ClusterView, FileView } from "../../shared/types";
 import {
 	describeFileProgress,
+	describeFolderProgress,
 	type FormatOptions,
 	fileUnitProgress,
+	folderUnitProgress,
 	formatFileProgress,
 	nothingLeft,
 	pageCounts,
@@ -290,5 +292,67 @@ describe("the remembered unit", () => {
 		});
 		expect(readUnit()).toBe("lines");
 		expect(() => writeUnit("clusters")).not.toThrow();
+	});
+});
+
+describe("folderUnitProgress", () => {
+	const at = (path: string, clusters: ClusterView[]) => ({
+		...file(clusters),
+		path,
+		additions: 2,
+		deletions: 1,
+	});
+	const open = at("d/a.ts", [cluster("reviewed", 3), cluster("unreviewed", 5)]);
+	const done = at("d/b.ts", [cluster("reviewed", 2)]);
+	const crossed = at("d/c.ts", [cluster("crossed-off", 4)]);
+	const rename = at("d/r.ts", [cluster("unreviewed", 0, "file")]);
+
+	it("sums the files' counts in the unit, and the change counts", () => {
+		const p = folderUnitProgress([open, done, crossed], "lines");
+		expect(p.counts).toEqual({ total: 14, reviewed: 5, crossedOff: 4 });
+		expect(p.additions).toBe(6);
+		expect(p.deletions).toBe(3);
+		expect(p.clusters).toHaveLength(4);
+		expect(p.clustersLeft).toBe(1);
+		expect(p.filesLeft).toBe(1);
+		expect(p.done).toBe(false);
+		expect(describeFolderProgress(p, "lines")).toBe(
+			"5 / 10 lines · 1 file left",
+		);
+		const c = folderUnitProgress([open, done, crossed], "clusters");
+		expect(c.counts).toEqual({ total: 4, reviewed: 2, crossedOff: 1 });
+		expect(describeFolderProgress(c, "clusters")).toBe(
+			"2 / 3 clusters · 1 file left",
+		);
+		const f = folderUnitProgress([open, done, crossed], "files");
+		expect(f.counts).toEqual({ total: 3, reviewed: 1, crossedOff: 1 });
+		expect(describeFolderProgress(f, "files")).toBe("1 / 2 files");
+	});
+
+	it("stays unfinished while a cluster without changed lines is left", () => {
+		const p = folderUnitProgress([done, rename], "lines");
+		// The lines look full; the rename keeps it open.
+		expect(p.counts).toEqual({ total: 2, reviewed: 2, crossedOff: 0 });
+		expect(p.clustersLeft).toBe(1);
+		expect(p.done).toBe(false);
+		expect(describeFolderProgress(p, "lines")).toBe(
+			"2 / 2 lines · 1 file left",
+		);
+		// Nothing but renames: counted in clusters, like a file.
+		const only = folderUnitProgress([rename], "lines");
+		expect(only.counts).toEqual({ total: 1, reviewed: 0, crossedOff: 0 });
+		// Everything counted crossed off, a rename left: the files left say it.
+		const rest = folderUnitProgress([crossed, rename], "lines");
+		expect(describeFolderProgress(rest, "lines")).toBe("1 file left");
+	});
+
+	it("is done only when every file is; crossed off when every file is", () => {
+		const p = folderUnitProgress([done, crossed], "lines");
+		expect(p.done).toBe(true);
+		expect(p.crossedOff).toBe(false);
+		expect(describeFolderProgress(p, "lines")).toBe("done");
+		const x = folderUnitProgress([crossed], "clusters");
+		expect(x.crossedOff).toBe(true);
+		expect(describeFolderProgress(x, "clusters")).toBe("crossed off");
 	});
 });

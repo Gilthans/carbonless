@@ -87,14 +87,17 @@ export function StatusIcon({
 	);
 }
 
+/** What a change count reads: a file's, or a folder's sums. */
+export type Changes = Pick<FileView, "additions" | "deletions" | "clusters">;
+
 /** "2 clusters". */
-export function clusterCount(file: FileView): string {
+export function clusterCount(file: Changes): string {
 	const n = file.clusters.length;
 	return `${n} ${n === 1 ? "cluster" : "clusters"}`;
 }
 
 /** "12 lines added, 3 deleted". */
-export function lineCount(file: FileView): string {
+export function lineCount(file: Changes): string {
 	const lines = file.additions === 1 ? "line" : "lines";
 	return `${file.additions} ${lines} added, ${file.deletions} deleted`;
 }
@@ -107,7 +110,7 @@ export function ChangeCount({
 	file,
 	hover,
 }: {
-	file: FileView;
+	file: Changes;
 	hover?: HoverProps;
 }) {
 	return (

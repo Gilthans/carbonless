@@ -107,6 +107,7 @@ describe("FileTree", () => {
 		expect(folders("a/deep")).toHaveLength(1);
 		const items = within(tree)
 			.getAllByRole("button")
+			.filter((b) => !b.hasAttribute("aria-expanded"))
 			.map((b) => b.textContent);
 		expect(items.map((t) => t?.match(/one|two|b\.ts|api/)?.[0])).toEqual([
 			"one",
@@ -191,6 +192,9 @@ describe("FileTree", () => {
 				(t) => !t.hasAttribute("hidden"),
 			);
 		expect(shown()).toHaveLength(0);
+		// Past the folders src and a/deep.
+		await user.tab();
+		await user.tab();
 		await user.tab();
 		const first = screen.getByRole("button", { name: /one\.ts/ });
 		expect(first).toHaveFocus();
@@ -334,5 +338,208 @@ describe("tooltip paths", () => {
 			["src/a/x.ts", "CODE", expect.stringContaining("font-mono")],
 			["y.ts", "CODE", expect.stringContaining("font-mono")],
 		]);
+	});
+});
+
+describe("folders", () => {
+	afterEach(() => {
+		cleanup();
+		localStorage.clear();
+		vi.restoreAllMocks();
+	});
+
+	const folder = (path: string) =>
+		document.querySelector<HTMLElement>(
+			`[data-folder="${path}"]`,
+		) as HTMLElement;
+	const fileRow = (name: RegExp) => screen.queryByRole("button", { name });
+
+	it("shows each folder's accumulated progress in a file row's columns", () => {
+		render(
+			<FileTree
+				files={files}
+				unit="clusters"
+				current={null}
+				onSelect={() => {}}
+			/>,
+		);
+		const src = folder("src");
+		expect(src.tagName).toBe("BUTTON");
+		expect(src).toHaveAttribute("aria-expanded", "true");
+		expect(numbers(src)).toBe("2 / 4 clusters · 2 files left");
+		expect(src).toHaveAccessibleName(/^src.*2 \/ 4 clusters · 2 files left$/);
+		expect(
+			within(src).getByRole("img", { name: "9 lines added, 3 deleted" }),
+		).toBeInTheDocument();
+		expect(
+			within(src).getByRole("img", { name: "4 clusters" }),
+		).toBeInTheDocument();
+		expect(part(bar(src), "reviewed")).toBe(50);
+		expect(src).not.toHaveAttribute("data-finished");
+		expect(numbers(folder("src/a/deep"))).toBe("2 / 3 clusters · 1 file left");
+		// All crossed off: finished, styled like a finished file.
+		const gen = folder("gen");
+		expect(numbers(gen)).toBe("crossed off");
+		expect(gen).toHaveAttribute("data-finished");
+		expect(gen.className).toContain("bg-ok/8");
+		expect(part(bar(gen), "crossed-off")).toBe(100);
+	});
+
+	it("follows the unit", () => {
+		const { rerender } = render(
+			<FileTree
+				files={files}
+				unit="lines"
+				current={null}
+				onSelect={() => {}}
+			/>,
+		);
+		expect(numbers(folder("src"))).toBe("4 / 8 lines · 2 files left");
+		rerender(
+			<FileTree
+				files={files}
+				unit="files"
+				current={null}
+				onSelect={() => {}}
+			/>,
+		);
+		expect(numbers(folder("src"))).toBe("1 / 3 files");
+	});
+
+	it("folds and unfolds by click, Enter and Space; folding changes no numbers", async () => {
+		const user = userEvent.setup();
+		const onSelect = vi.fn();
+		render(
+			<FileTree
+				files={files}
+				unit="clusters"
+				current={null}
+				onSelect={onSelect}
+			/>,
+		);
+		const src = folder("src");
+		const before = numbers(src);
+		const width = part(bar(src), "reviewed");
+		await user.click(src);
+		expect(src).toHaveAttribute("aria-expanded", "false");
+		expect(fileRow(/one\.ts/)).toBeNull();
+		expect(fileRow(/b\.ts/)).toBeNull();
+		expect(folder("src/a/deep")).toBeNull();
+		// Others stay.
+		expect(fileRow(/api\.g\.cs/)).not.toBeNull();
+		expect(numbers(src)).toBe(before);
+		expect(part(bar(src), "reviewed")).toBe(width);
+		expect(src).not.toHaveAttribute("data-finished");
+		await user.keyboard("{Enter}");
+		expect(src).toHaveAttribute("aria-expanded", "true");
+		expect(fileRow(/one\.ts/)).not.toBeNull();
+		await user.keyboard(" ");
+		expect(src).toHaveAttribute("aria-expanded", "false");
+		expect(onSelect).not.toHaveBeenCalled();
+	});
+
+	it("never shows a folded folder finished while anything in it is left", async () => {
+		const renamed = file(5, "docs/new.md", ["unreviewed"]);
+		renamed.clusters = renamed.clusters.map((c) => ({
+			...c,
+			kind: "file" as const,
+			lines: 0,
+		}));
+		const docs = [file(4, "docs/a.md", ["reviewed"]), renamed];
+		render(
+			<FileTree files={docs} unit="lines" current={null} onSelect={() => {}} />,
+		);
+		const row = folder("docs");
+		await userEvent.click(row);
+		expect(row).toHaveAttribute("aria-expanded", "false");
+		// Every line is reviewed, but the rename is left.
+		expect(numbers(row)).toBe("2 / 2 lines · 1 file left");
+		expect(part(bar(row), "reviewed")).toBeLessThan(100);
+		expect(row).not.toHaveAttribute("data-finished");
+		expect(row.className).not.toContain("bg-ok");
+	});
+
+	it("unfolds the current file's folders when it changes, and marks a folded row holding it", async () => {
+		const user = userEvent.setup();
+		const tree = (current: number | null) => (
+			<FileTree
+				files={files}
+				unit="clusters"
+				current={current}
+				onSelect={() => {}}
+			/>
+		);
+		const { rerender } = render(tree(2));
+		// Fold the folder holding the current file: it stays folded.
+		await user.click(folder("src"));
+		expect(folder("src")).toHaveAttribute("aria-expanded", "false");
+		expect(folder("src")).toHaveAttribute("data-holds-current");
+		expect(folder("src").className).toContain("bg-accent/12");
+		expect(document.querySelectorAll('[aria-current="true"]')).toHaveLength(0);
+		rerender(tree(2));
+		expect(folder("src")).toHaveAttribute("aria-expanded", "false");
+		// Another file outside it: nothing unfolds, and the mark goes.
+		rerender(tree(3));
+		expect(folder("src")).toHaveAttribute("aria-expanded", "false");
+		expect(folder("src")).not.toHaveAttribute("data-holds-current");
+		// A file deep inside it (Next, a link): every folded ancestor unfolds.
+		await user.click(folder("src"));
+		await user.click(folder("src"));
+		await user.click(folder("src/a/deep"));
+		await user.click(folder("src"));
+		rerender(tree(0));
+		expect(folder("src")).toHaveAttribute("aria-expanded", "true");
+		expect(folder("src/a/deep")).toHaveAttribute("aria-expanded", "true");
+		expect(fileRow(/one\.ts/)).toHaveAttribute("aria-current", "true");
+	});
+
+	it("keeps folds per PR in storage and ignores unknown paths", async () => {
+		const key = "crb:folds:o/r#1";
+		localStorage.setItem(key, JSON.stringify(["gen", "nope", 5]));
+		const tree = (k: string) => (
+			<FileTree
+				files={files}
+				unit="clusters"
+				current={null}
+				onSelect={() => {}}
+				foldKey={k}
+			/>
+		);
+		const { unmount } = render(tree(key));
+		expect(folder("gen")).toHaveAttribute("aria-expanded", "false");
+		expect(folder("src")).toHaveAttribute("aria-expanded", "true");
+		await userEvent.click(folder("src"));
+		expect(JSON.parse(localStorage.getItem(key) ?? "")).toEqual(
+			expect.arrayContaining(["gen", "src"]),
+		);
+		unmount();
+		render(tree(key));
+		expect(folder("src")).toHaveAttribute("aria-expanded", "false");
+		cleanup();
+		// Another PR has its own.
+		render(tree("crb:folds:o/r#2"));
+		expect(folder("src")).toHaveAttribute("aria-expanded", "true");
+	});
+
+	it("folds in memory when storage throws", async () => {
+		vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
+			throw new Error("blocked");
+		});
+		vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+			throw new Error("blocked");
+		});
+		render(
+			<FileTree
+				files={files}
+				unit="clusters"
+				current={null}
+				onSelect={() => {}}
+				foldKey="crb:folds:o/r#1"
+			/>,
+		);
+		expect(folder("src")).toHaveAttribute("aria-expanded", "true");
+		await userEvent.click(folder("src"));
+		expect(folder("src")).toHaveAttribute("aria-expanded", "false");
+		expect(fileRow(/one\.ts/)).toBeNull();
 	});
 });

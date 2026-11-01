@@ -30,6 +30,7 @@ import type { DiffThreads } from "./DiffBody";
 import { FileDiff } from "./FileDiff";
 import { FileTree } from "./FileTree";
 import { filesPrefetchOrder } from "./filesPrefetch";
+import { foldsKey } from "./folderFold";
 import { useHeadSure } from "./headSure";
 import {
 	type FilesSearch,
@@ -546,6 +547,8 @@ export function FilesPage() {
 	);
 	const filesButton = !writing && !refused;
 
+	// Folded folders are kept per PR, once it's known.
+	const pr = useQuery(sessionQuery).data?.pr;
 	const tree = data && (
 		<FileTree
 			files={data.files}
@@ -554,6 +557,7 @@ export function FilesPage() {
 			onSelect={select}
 			threadsOf={(f) => threadsByPath.get(f.path) ?? NO_THREADS}
 			threadsLoading={threadsLoading}
+			foldKey={pr ? foldsKey(pr) : null}
 		/>
 	);
 

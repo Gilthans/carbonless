@@ -1,23 +1,37 @@
+import { ChevronDownIcon, ChevronRightIcon } from "@primer/octicons-react";
+import { useMemo } from "react";
 import type { FileView, ReviewThread } from "../../shared/types";
 import { Spinner } from "../Spinner";
 import { Tooltip, TooltipPath } from "../Tooltip";
 import { ChangeKindIcon, changeKindLabel } from "./changeKind";
+import { type Folds, useFolds } from "./folderFold";
 import { Meter } from "./ProgressBar";
 import { ChangeCount, crossOffReasons, StatusIcon } from "./status";
 import { bubbleLabel } from "./ThreadBubble";
-import { describeFileProgress, fileUnitProgress, type Unit } from "./unit";
+import {
+	describeFileProgress,
+	describeFolderProgress,
+	fileUnitProgress,
+	folderUnitProgress,
+	type Unit,
+} from "./unit";
+
+const NONE = () => [];
 
 type Node =
 	| { kind: "folder"; folder: Folder }
 	| { kind: "file"; file: FileView };
 interface Folder {
+	/** As shown: single-folder chains merged ("a/b"). */
 	name: string;
+	/** Full path from the root: the folder's identity (fold state). */
+	path: string;
 	children: Node[];
 }
 
 /** Folders in order of their first file; single-folder chains merge ("a/b"). */
-function buildTree(files: FileView[]): Folder {
-	const root: Folder = { name: "", children: [] };
+function buildTree(files: readonly FileView[]): Folder {
+	const root: Folder = { name: "", path: "", children: [] };
 	for (const file of files) {
 		const parts = file.path.split("/");
 		parts.pop();
@@ -28,7 +42,11 @@ function buildTree(files: FileView[]): Folder {
 					n.kind === "folder" && n.folder.name === part,
 			)?.folder;
 			if (!child) {
-				child = { name: part, children: [] };
+				child = {
+					name: part,
+					path: folder.path ? `${folder.path}/${part}` : part,
+					children: [],
+				};
 				folder.children.push({ kind: "folder", folder: child });
 			}
 			folder = child;
@@ -42,10 +60,14 @@ function buildTree(files: FileView[]): Folder {
 			merged.children[0]?.kind === "folder"
 		) {
 			const only = merged.children[0].folder;
-			merged = { name: `${merged.name}/${only.name}`, children: only.children };
+			merged = {
+				name: `${merged.name}/${only.name}`,
+				path: only.path,
+				children: only.children,
+			};
 		}
 		return {
-			name: merged.name,
+			...merged,
 			children: merged.children.map((n) =>
 				n.kind === "folder"
 					? { kind: "folder", folder: compress(n.folder) }
@@ -54,11 +76,18 @@ function buildTree(files: FileView[]): Folder {
 		};
 	};
 	return {
-		name: "",
+		...root,
 		children: root.children.map((n) =>
 			n.kind === "folder" ? { kind: "folder", folder: compress(n.folder) } : n,
 		),
 	};
+}
+
+/** Every file under the folder, at any depth. */
+function filesIn(folder: Folder): FileView[] {
+	return folder.children.flatMap((n) =>
+		n.kind === "file" ? [n.file] : filesIn(n.folder),
+	);
 }
 
 const indent = (depth: number) => ({
@@ -170,14 +199,95 @@ function FileItem(props: {
 	);
 }
 
-function Children(props: {
-	nodes: Node[];
+interface Level {
 	unit: Unit;
 	depth: number;
 	current: number | null;
+	/** The current file's path, if any. */
+	currentPath: string | undefined;
 	onSelect: (index: number) => void;
 	threadsOf: (file: FileView) => ReviewThread[];
-}) {
+	folds: Folds;
+}
+
+/**
+ * A folder: a toggle that folds its subtree away, with its files'
+ * accumulated progress in the same columns as a file row's, open or folded.
+ * Folding is view state only: the numbers and the meter never change with
+ * it, and a folder with anything unreviewed never looks finished.
+ */
+function FolderItem(props: Level & { folder: Folder }) {
+	const { folder, unit, folds } = props;
+	const p = folderUnitProgress(filesIn(folder), unit);
+	const numbers = describeFolderProgress(p, unit);
+	const folded = folds.folded.has(folder.path);
+	// Folded over the current file: the row stands in for it.
+	const holdsCurrent =
+		folded && !!props.currentPath?.startsWith(`${folder.path}/`);
+	const Chevron = folded ? ChevronRightIcon : ChevronDownIcon;
+	return (
+		<li>
+			{/* The numbers are in the name already: the tooltip only shows them. */}
+			<Tooltip
+				content={
+					<>
+						<TooltipPath>{folder.path}</TooltipPath> · {numbers}
+					</>
+				}
+				describe={false}
+			>
+				{(trigger) => (
+					<button
+						type="button"
+						{...trigger}
+						aria-expanded={!folded}
+						data-folder={folder.path}
+						data-finished={p.done || undefined}
+						data-holds-current={holdsCurrent || undefined}
+						onClick={() => folds.toggle(folder.path)}
+						style={indent(props.depth)}
+						className={`flex w-full items-center gap-1.5 rounded-md py-0.5 pr-1 pointer-coarse:min-h-10 text-left text-sm text-muted transition-colors hover:bg-overlay focus-visible:outline-2 focus-visible:outline-accent motion-reduce:transition-none ${
+							holdsCurrent
+								? "bg-accent/12 shadow-[inset_2px_0_0_var(--color-accent)]"
+								: p.done
+									? "bg-ok/8 shadow-[inset_2px_0_0_var(--color-ok-fill)]"
+									: ""
+						}`}
+					>
+						<Chevron
+							size={16}
+							aria-hidden
+							className="w-4 shrink-0 text-faint"
+						/>
+						<span className="min-w-0 flex-1 truncate font-mono text-[0.8125rem]">
+							{folder.name}
+						</span>
+						<ChangeCount file={p} />
+						<span data-testid="tree-numbers" className="sr-only">
+							{numbers}
+						</span>
+						<span
+							aria-hidden
+							data-testid="tree-meter"
+							className="flex h-4 w-10 shrink-0 items-center"
+						>
+							<Meter
+								counts={p.counts}
+								incomplete={p.clustersLeft > 0}
+								className="h-1.5 w-full"
+							/>
+						</span>
+					</button>
+				)}
+			</Tooltip>
+			{!folded && (
+				<Children {...props} nodes={folder.children} depth={props.depth + 1} />
+			)}
+		</li>
+	);
+}
+
+function Children(props: Level & { nodes: Node[] }) {
 	return (
 		<ul>
 			{props.nodes.map((node) =>
@@ -192,40 +302,22 @@ function Children(props: {
 						threads={props.threadsOf(node.file)}
 					/>
 				) : (
-					<li key={`d:${node.folder.name}`}>
-						<Tooltip
-							content={<TooltipPath>{node.folder.name}</TooltipPath>}
-							describe={false}
-						>
-							{(trigger) => (
-								<div
-									{...trigger}
-									style={indent(props.depth)}
-									className="truncate py-0.5 font-mono text-[0.8125rem] text-muted"
-								>
-									<span aria-hidden className="mr-1 text-faint">
-										▾
-									</span>
-									{node.folder.name}
-								</div>
-							)}
-						</Tooltip>
-						<Children
-							nodes={node.folder.children}
-							unit={props.unit}
-							depth={props.depth + 1}
-							current={props.current}
-							onSelect={props.onSelect}
-							threadsOf={props.threadsOf}
-						/>
-					</li>
+					<FolderItem
+						key={`d:${node.folder.path}`}
+						{...props}
+						folder={node.folder}
+					/>
 				),
 			)}
 		</ul>
 	);
 }
 
-/** The changed files as a folder tree, in snapshot order, with review status. */
+/**
+ * The changed files as a folder tree, in snapshot order, with review status.
+ * Folders fold (view state only, kept per PR under `foldKey`); the current
+ * file's folded folders unfold whenever it changes.
+ */
 export function FileTree(props: {
 	files: FileView[];
 	unit: Unit;
@@ -235,7 +327,12 @@ export function FileTree(props: {
 	threadsOf?: (file: FileView) => ReviewThread[];
 	/** The threads are still on their way: no file's dot means none yet. */
 	threadsLoading?: boolean;
+	/** Where this PR's fold state is kept (foldsKey); null: in memory only. */
+	foldKey?: string | null;
 }) {
+	const { files, current } = props;
+	const tree = useMemo(() => buildTree(files), [files]);
+	const folds = useFolds(props.foldKey ?? null, files, current);
 	return (
 		<nav
 			aria-label="Files"
@@ -252,12 +349,18 @@ export function FileTree(props: {
 				/>
 			)}
 			<Children
-				nodes={buildTree(props.files).children}
+				nodes={tree.children}
 				unit={props.unit}
 				depth={0}
-				current={props.current}
+				current={current}
+				currentPath={
+					current === null
+						? undefined
+						: files.find((f) => f.index === current)?.path
+				}
 				onSelect={props.onSelect}
-				threadsOf={props.threadsOf ?? (() => [])}
+				threadsOf={props.threadsOf ?? NONE}
+				folds={folds}
 			/>
 		</nav>
 	);

@@ -12,7 +12,7 @@ import {
 	treeNumbers,
 	withTree,
 } from "./files-ui";
-import { expect, type PrOptions, test } from "./fixtures";
+import { expect, type PrOptions, reviewPage, test } from "./fixtures";
 
 const core = Array.from({ length: 78 }, (_, i) => `core ${i + 1}`);
 const util = Array.from({ length: 10 }, (_, i) => `util ${i + 1}`);
@@ -602,9 +602,57 @@ test("files start collapsed", async ({ page, pr, startCrb }) => {
 		await expect(fileSection(page, path).getByRole("checkbox")).toHaveCount(0);
 	}
 	await expect(page.getByRole("checkbox")).toHaveCount(1);
-	await withTree(page, (tree) =>
-		expect(tree.getByRole("button")).toHaveCount(3),
+	await withTree(page, async (tree) => {
+		await expect(tree.locator("button:not([aria-expanded])")).toHaveCount(3);
+		// The folders, open.
+		await expect(tree.locator("button[aria-expanded=true]")).toHaveCount(2);
+	});
+});
+
+test("a folded folder keeps its progress, unfolds for its file, and stays folded on reload", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	await pr(fixture);
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	const src = (tree: Locator) => tree.locator('button[data-folder="src"]');
+	await withTree(page, async (tree) => {
+		await expect(treeNumbers(tree, /^src/)).toHaveText(
+			"0 / 3 clusters · 2 files left",
+		);
+		await src(tree).click();
+		await expect(src(tree)).toHaveAttribute("aria-expanded", "false");
+		await expect(tree.getByRole("button", { name: /core\.ts/ })).toHaveCount(0);
+		await expect(tree.getByRole("button", { name: /util\.ts/ })).toHaveCount(0);
+		// Its numbers and meter stay, unfinished.
+		await expect(treeNumbers(tree, /^src/)).toHaveText(
+			"0 / 3 clusters · 2 files left",
+		);
+		await expect(src(tree).getByTestId("tree-meter")).toBeVisible();
+		await expect(src(tree)).not.toHaveAttribute("data-finished");
+	});
+	// Folding changes no progress.
+	await expect(progress(page)).toHaveAttribute(
+		"aria-valuetext",
+		/0 \/ 4 clusters reviewed/,
 	);
+	await page.reload();
+	await expect(progress(page)).toBeVisible();
+	await withTree(page, async (tree) => {
+		await expect(src(tree)).toHaveAttribute("aria-expanded", "false");
+		await expect(tree.getByRole("button", { name: /new\.md/ })).toBeVisible();
+	});
+	// Going to a file inside it (a link) unfolds it.
+	await page.goto(reviewPage(s.url, "files", "?path=src/util.ts"));
+	await expect(
+		fileSection(page, "src/util.ts").getByTestId("diff-line").first(),
+	).toBeVisible();
+	await withTree(page, async (tree) => {
+		await expect(src(tree)).toHaveAttribute("aria-expanded", "true");
+		await expect(tree.getByRole("button", { name: /util\.ts/ })).toBeVisible();
+	});
 });
 
 test("a write from a tab on an old snapshot reloads it", async ({
