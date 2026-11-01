@@ -298,7 +298,8 @@ changed; `src/server/threadWrites.ts`, `src/server/newThreads.ts`,
   writes as "Verdict", keeping its event and the message it was sent
   with (or none): its Retry sends exactly that, never what the box holds
   since. Any verdict landing (a Retry, a resend after a reload, a new
-  press) settles a listed one, so no Retry can post a second review. A
+  press) settles a listed one, so no Retry can post a second review;
+  its message, unless just sent, goes back in the box (never lost). A
   pending review refuses it with the pending-review notice. The Files
   end card reads GitHub's merge facts only once the page's first open
   has settled and the card is on screen. It goes on

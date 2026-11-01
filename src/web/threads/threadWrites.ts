@@ -449,13 +449,29 @@ export class ThreadWrites {
 		if (event !== "APPROVE" && !text) return false;
 		if (this.#verdictOut() || store?.sending()) return false;
 		const lane = this.#lane(VERDICT_LANE);
-		this.#settle(VERDICT_LANE, lane, refusalKey({ kind: "verdict" }));
-		this.#push(lane, {
-			kind: "verdict",
-			sending: this.#newVerdict(event, text, commit),
-			retry: false,
-		});
+		const sending = this.#newVerdict(event, text, commit);
+		// The new press supersedes a refused one; its message stays the reviewer's.
+		this.#settleVerdict(lane, sending.body);
+		this.#push(lane, { kind: "verdict", sending, retry: false });
 		return true;
+	}
+
+	/**
+	 * A refused verdict is superseded (a new press, or another verdict
+	 * landed): settled, so its Retry can't post a second review, but its
+	 * message is never lost: back in the box (after a blank line if the box
+	 * has other text; left as is if it already holds it), unless `sent` is
+	 * that same message.
+	 */
+	#settleVerdict(lane: Lane, sent: string | undefined): void {
+		const key = refusalKey({ kind: "verdict" });
+		const body = lane.refused.get(key)?.body;
+		this.#settle(VERDICT_LANE, lane, key);
+		const store = this.#deps.verdictDraft;
+		if (!store || !body?.trim() || body === sent) return;
+		const now = store.text();
+		if (now === body || now.split("\n\n").includes(body)) return;
+		store.setText(now.trim() ? `${now}\n\n${body}` : body);
 	}
 
 	/** A verdict is in line, on its way or waiting out a backoff. */
@@ -856,7 +872,17 @@ export class ThreadWrites {
 		for (const at of dropped) this.#deps.drafts.confirm(threadId, at);
 		for (const id of edits) this.#deps.drafts.dropEdit(id);
 		for (const id of created) this.#deps.drafts.discard(newThreadKey(id));
-		if (verdict) this.#deps.verdictDraft?.setSending(null);
+		if (verdict) {
+			this.#deps.verdictDraft?.setSending(null);
+			// The refusal this resend was the Retry of is listed again, not
+			// retrying: Retry and Drop work, and leaving asks.
+			const key = refusalKey({ kind: "verdict" });
+			const refused = lane.refused.get(key);
+			if (refused?.retrying) {
+				const { retrying: _, ...rest } = refused;
+				lane.refused.set(key, rest);
+			}
+		}
 		this.#prune(threadId);
 		this.#changed();
 		this.#pump();
@@ -1275,8 +1301,10 @@ export class ThreadWrites {
 		}
 		// Whichever verdict landed (a Retry, a resend after a reload, a new
 		// press), a refused one listed is settled: GitHub has the reviewer's
-		// verdict, and its Retry would post a second review.
-		this.#settle(laneId, lane, refusalKey(op));
+		// verdict, and its Retry would post a second review. Its own Retry
+		// sent its message; another's leaves it in the box.
+		if (op.again) this.#settle(laneId, lane, refusalKey(op));
+		else this.#settleVerdict(lane, sending.body);
 		// GitHub took a review: no pending review stands in the way.
 		this.#pendingReview = null;
 		this.#deps.posted?.();
@@ -1318,7 +1346,10 @@ export class ThreadWrites {
 			op.discarded
 		) {
 			// Discarded while out: it didn't land, or a reload shows it did.
-			if (op.again) this.#settle(threadId, lane, refusalKey(op));
+			// A verdict's refusal stays listed (discardResumed let it go).
+			if (op.again && op.kind !== "verdict") {
+				this.#settle(threadId, lane, refusalKey(op));
+			}
 			lane.ops.shift();
 			lane.attempt = 0;
 			lane.waiting = null;

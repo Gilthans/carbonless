@@ -357,19 +357,85 @@ describe("ThreadWrites: the verdict", () => {
 		expect(calls).toHaveLength(1);
 	});
 
-	it("settles a refused verdict when a new press lands", async () => {
+	it("keeps a refused verdict's message when a new press supersedes it", async () => {
 		const w = setup();
-		w.submitVerdict("APPROVE", undefined, HEAD);
+		w.submitVerdict("REQUEST_CHANGES", "Please add tests", HEAD);
+		await flush();
+		calls[0]?.reject(refusedError("pending-review"));
+		await flush();
+		// The box is empty: the message lives on the refusal.
+		expect(store.text()).toBe("");
+		expect(w.submitVerdict("APPROVE", undefined, HEAD)).toBe(true);
+		await flush();
+		// Superseded: no Retry left to post a second review…
+		expect(w.state().refused).toEqual([]);
+		expect(refusals.get()).toEqual([]);
+		// …and the message is back in the box, not sent with the approval.
+		expect(store.text()).toBe("Please add tests");
+		expect(calls[1]?.req.event).toBe("APPROVE");
+		expect(calls[1]?.req.body).toBeUndefined();
+	});
+
+	it("puts a superseded message after other text, once", async () => {
+		const w = setup();
+		w.submitVerdict("COMMENT", "First thought", HEAD);
 		await flush();
 		calls[0]?.reject(refusedError("forbidden", 403));
 		await flush();
-		expect(w.submitVerdict("COMMENT", "ok", HEAD)).toBe(true);
+		store.setText("Typed since");
+		w.submitVerdict("APPROVE", undefined, HEAD);
+		expect(store.text()).toBe("Typed since\n\nFirst thought");
+		// The same text already there: left as is.
+		const again = setup();
+		again.submitVerdict("COMMENT", "Same", HEAD);
 		await flush();
-		calls[1]?.resolve(answer("COMMENTED"));
+		calls[0]?.reject(refusedError("forbidden", 403));
 		await flush();
-		expect(w.state().refused).toEqual([]);
-		expect(refusals.get()).toEqual([]);
+		store.setText("Same");
+		again.submitVerdict("APPROVE", undefined, HEAD);
+		expect(store.text()).toBe("Same");
+		// Pressed with that same message: sent, not put back.
+		const resent = setup();
+		resent.submitVerdict("COMMENT", "Once", HEAD);
+		await flush();
+		calls[0]?.reject(refusedError("forbidden", 403));
+		await flush();
+		store.setText("Once");
+		resent.submitVerdict("COMMENT", "Once", HEAD);
+		expect(store.text()).toBe("");
 	});
+
+	it("lets a discarded resend of a Retry go: the refusal can be retried or dropped again", async () => {
+		const storage = memoryStorage();
+		const first = setup(storage);
+		first.submitVerdict("COMMENT", "Hmm", HEAD);
+		await flush();
+		calls[0]?.reject(refusedError("forbidden", 403));
+		await flush();
+		first.retry(VERDICT_LANE, "verdict");
+		await flush();
+		const w = setup(storage);
+		w.restore();
+		w.resume();
+		await flush();
+		calls[0]?.reject(new ApiError(502, "Bad gateway"));
+		await flush();
+		expect(w.state().refused[0]?.retrying).toBe(true);
+		w.discardResumed(VERDICT_LANE);
+		const f = w.state().refused[0];
+		expect(f?.retrying).toBeUndefined();
+		expect(w.state().lost).toBe(true);
+		expect(f && w.sendable(VERDICT_LANE, f)).toBe(true);
+		w.retry(VERDICT_LANE, "verdict");
+		await flush();
+		expect(calls[1]?.req).toMatchObject({ event: "COMMENT", body: "Hmm" });
+		calls[1]?.reject(refusedError("forbidden", 403));
+		await flush();
+		w.drop(VERDICT_LANE, "verdict");
+		expect(w.state().refused).toEqual([]);
+		expect(w.state().lost).toBe(false);
+	});
+
 	it("restores a refused verdict after a reload, and an approval retries without a message", async () => {
 		const storage = memoryStorage();
 		const first = setup(storage);
