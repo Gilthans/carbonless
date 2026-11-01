@@ -43,9 +43,9 @@ import { StartedReviews } from "./started.js";
 /**
  * Home's state: GitHub's PR facts for the view's repos only (a PR started
  * elsewhere isn't read), refreshed on a timer (single flight, backing off
- * on failure), kept in memory as a cache only. The view, the inbox refs and the clones are the
- * state; every HomeView is folded afresh against the clock, so a snooze
- * whose date passes wakes on the next read.
+ * on failure), kept in memory as a cache only. The view, the inbox refs
+ * and the clones are the state; every HomeView is folded afresh against
+ * the clock, so a snooze whose date passes wakes on the next read.
  */
 
 /** The parts of crb's config Home reads and writes (src/server/config.ts). */
@@ -128,7 +128,11 @@ export function refreshReason(error: unknown): string {
 }
 
 interface StartedSource {
-	list(slug: string): Promise<StartedReview[]>;
+	/** Coverage only for the repos `withCoverage` names (StartedReviews.list). */
+	list(
+		slug: string,
+		withCoverage?: ReadonlySet<string>,
+	): Promise<StartedReview[]>;
 }
 
 export interface HomeServiceOptions {
@@ -291,7 +295,10 @@ export class HomeService {
 				}
 			}
 			try {
-				this.#startedList = await this.#started.list(slugify(viewer.login));
+				this.#startedList = await this.#started.list(
+					slugify(viewer.login),
+					inView,
+				);
 			} catch (error) {
 				fail(error, "started reviews");
 			}
@@ -373,7 +380,10 @@ export class HomeService {
 		const { viewer } = await this.#viewerOrBlank();
 		if (viewer.login) {
 			try {
-				this.#startedList = await this.#started.list(slugify(viewer.login));
+				this.#startedList = await this.#started.list(
+					slugify(viewer.login),
+					new Set(await this.viewRepos()),
+				);
 			} catch {
 				// Keep the last list; the next refresh says why.
 			}
@@ -437,6 +447,15 @@ export class HomeService {
 					: new Date(this.#refreshedAt).toISOString(),
 			refreshError: this.#refreshError ?? viewerError,
 			sections: out,
+			startedRepos: [
+				...new Set(
+					[...this.#startedList]
+						.sort(
+							(a, b) => Date.parse(b.lastActedAt) - Date.parse(a.lastActedAt),
+						)
+						.map((s) => `${s.owner}/${s.repo}`.toLowerCase()),
+				),
+			],
 		};
 	}
 
@@ -493,7 +512,9 @@ export class HomeService {
 				id: s.id,
 				label: s.pinnedHead ? s.pinnedHead.slice(0, 7) : "head",
 				pinnedHead: s.pinnedHead,
-				coverage: s.coverage,
+				// Listed before the repo joined the view: none read yet, so
+				// nothing claimed (the next read has it).
+				coverage: s.coverage ?? { done: 0, total: 0, unit: "clusters" },
 				lastActedAt: s.lastActedAt,
 				headMoved: pr.headOid !== "" && s.head !== pr.headOid,
 			}));

@@ -55,18 +55,19 @@ describe("parseRepo", () => {
 });
 
 describe("suggestedRepos", () => {
-	it("lists repos of started reviews outside the view, once each", () => {
-		const home = view({
-			mine: [started("far", "away", 1), started("acme", "api", 2)],
-			reviewing: [started("Far", "Away", 3), row({ owner: "x", repo: "y" })],
-		});
-		expect(suggestedRepos(home)).toEqual(["far/away"]);
+	it("lists the server's started-review repos the view doesn't, in its order", () => {
+		// As the server sends it: no rows outside the view, the repos apart.
+		const home = view(
+			{ mine: [started("acme", "api", 2)] },
+			{ startedRepos: ["far/away", "acme/api", "near/by"] },
+		);
+		expect(suggestedRepos(home)).toEqual(["far/away", "near/by"]);
 	});
 });
 
 describe("ViewSettings", () => {
 	it("removes, adds by URL or suggestion, and saves through PUT /api/home/view", async () => {
-		const api = fakeApi(view({ mine: [started("far", "away", 1)] }), {
+		const api = fakeApi(view({}, { startedRepos: ["far/away"] }), {
 			"PUT /api/home/view": (call) =>
 				view(
 					{},
@@ -108,6 +109,46 @@ describe("ViewSettings", () => {
 		// The answer is the page's new view.
 		await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
 		expect(screen.getByText("acme/web")).toBeInTheDocument();
+	});
+
+	it("a removed repo of a started review comes back as a one-click chip", async () => {
+		fakeApi(
+			view(
+				{ reviewing: [started("acme", "console", 3)] },
+				{ startedRepos: ["acme/console"] },
+			),
+			{
+				"PUT /api/home/view": () => new Promise<Response>(() => {}),
+			},
+		);
+		renderWithQuery(<HomePage />);
+		const edit = async () => {
+			await userEvent.click(
+				await screen.findByRole("button", { name: "Edit repos" }),
+			);
+			return screen.getByRole("dialog", { name: "My PRs" });
+		};
+		let dialog = await edit();
+		expect(
+			within(dialog).queryByRole("list", { name: "Suggested" }),
+		).toBeNull();
+		await userEvent.click(
+			within(dialog).getByRole("button", { name: "Remove acme/console" }),
+		);
+		// Within the dialog too, before Save.
+		expect(
+			within(dialog).getByRole("button", { name: "Add acme/console" }),
+		).toBeInTheDocument();
+		await userEvent.click(within(dialog).getByRole("button", { name: "Save" }));
+		dialog = await edit();
+		await userEvent.click(
+			within(dialog).getByRole("button", { name: "Add acme/console" }),
+		);
+		expect(
+			within(within(dialog).getByRole("list", { name: "Repos in this view" }))
+				.getAllByRole("listitem")
+				.map((li) => li.textContent),
+		).toEqual(["acme/api", "acme/console"]);
 	});
 
 	it("Save closes at once and shows the new view: removed rows go before the server answers, started ones too, a spinner while it saves", async () => {

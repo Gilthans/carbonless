@@ -63,7 +63,8 @@ export interface StartedReview {
 	/** The head of the viewer's patch set: what the coverage is of. */
 	head: string;
 	asOf: string | null;
-	coverage: Coverage;
+	/** Null when not asked for (a repo outside the view: never shown). */
+	coverage: Coverage | null;
 	/** The viewer's last event in the review's progress ref. */
 	lastActedAt: string;
 }

@@ -80,8 +80,15 @@ export class StartedReviews {
 		return snap;
 	}
 
-	/** Every review `slug` has started, in any clone, as-of reviews left out. */
-	async list(slug: string): Promise<StartedReview[]> {
+	/**
+	 * Every review `slug` has started, in any clone, as-of reviews left out.
+	 * Coverage only for repos `withCoverage` names (`owner/repo`, lowercased;
+	 * all when not given): Home shows no other.
+	 */
+	async list(
+		slug: string,
+		withCoverage?: ReadonlySet<string>,
+	): Promise<StartedReview[]> {
 		const root = reposDir();
 		const owners = await readdir(root).catch(() => [] as string[]);
 		const repos = (
@@ -97,7 +104,7 @@ export class StartedReviews {
 		).flat();
 		const found = await Promise.all(
 			repos.map((r) =>
-				this.#inRepo(r, slug).catch((error) => {
+				this.#inRepo(r, slug, withCoverage).catch((error) => {
 					// A broken clone costs its own reviews, never the scan.
 					console.error(
 						`crb: skipped started reviews in ${r}: ${String(error)}`,
@@ -109,7 +116,11 @@ export class StartedReviews {
 		return found.flat();
 	}
 
-	async #inRepo(repo: string, slug: string): Promise<StartedReview[]> {
+	async #inRepo(
+		repo: string,
+		slug: string,
+		withCoverage: ReadonlySet<string> | undefined,
+	): Promise<StartedReview[]> {
 		// Only the viewer's progress refs: one listing, no review's meta read
 		// unless the viewer acted in it.
 		const out = await runGit(
@@ -130,7 +141,7 @@ export class StartedReviews {
 			.filter((id): id is string => id !== undefined);
 		const reviews = await Promise.all(
 			ids.map((id) =>
-				this.#review(repo, id, slug).catch((error) => {
+				this.#review(repo, id, slug, withCoverage).catch((error) => {
 					console.error(
 						`crb: skipped review ${id} in ${repo}: ${String(error)}`,
 					);
@@ -145,6 +156,7 @@ export class StartedReviews {
 		repo: string,
 		id: string,
 		slug: string,
+		withCoverage: ReadonlySet<string> | undefined,
 	): Promise<StartedReview | null> {
 		const store = this.#store(repo);
 		const [meta, events] = await Promise.all([
@@ -161,18 +173,22 @@ export class StartedReviews {
 		if (!progress.patchset) return null;
 		let last = 0;
 		for (const e of events) if (e.ts > last) last = e.ts;
-		let coverage: Coverage;
-		try {
-			const { mergeBase, head } = progress.patchset;
-			coverage = coverageOf(
-				await this.#snapshot(repo, mergeBase, head),
-				progress,
-			);
-		} catch {
-			// The patch set's commits aren't readable: no coverage to claim.
-			coverage = { done: 0, total: 0, unit: "clusters" };
-		}
 		const { owner, repo: name, number } = created.pr;
+		const wanted =
+			!withCoverage || withCoverage.has(`${owner}/${name}`.toLowerCase());
+		let coverage: Coverage | null = null;
+		if (wanted) {
+			try {
+				const { mergeBase, head } = progress.patchset;
+				coverage = coverageOf(
+					await this.#snapshot(repo, mergeBase, head),
+					progress,
+				);
+			} catch {
+				// The patch set's commits aren't readable: no coverage to claim.
+				coverage = { done: 0, total: 0, unit: "clusters" };
+			}
+		}
 		return {
 			owner,
 			repo: name,

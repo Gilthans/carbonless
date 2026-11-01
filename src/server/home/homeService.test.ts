@@ -293,9 +293,26 @@ describe("HomeService", () => {
 			coverage: { done: 37, total: 120, unit: "lines" as const },
 			lastActedAt: iso(T0 - 2 * H),
 		});
-		const started = [review("other", "tool", 5), review("acme", "api", 3)];
-		const { home } = service({ started });
+		const started = [
+			{ ...review("other", "tool", 5), lastActedAt: iso(T0 - H) },
+			review("acme", "api", 3),
+		];
+		const asked: (ReadonlySet<string> | undefined)[] = [];
+		const home = new HomeService({
+			config: memoryConfig(["acme/api"]).access,
+			started: {
+				list: async (_slug, withCoverage) => {
+					asked.push(withCoverage);
+					return started;
+				},
+			},
+			now: () => T0,
+		});
 		const view = await home.refresh();
+		// Coverage is asked only for the view's repos.
+		expect(asked.map((s) => [...(s ?? [])])).toEqual([["acme/api"]]);
+		// The view dialog's suggestions: every started review's repo, newest first.
+		expect(view.startedRepos).toEqual(["other/tool", "acme/api"]);
 		const rows = view.sections.flatMap((s) => s.rows);
 		expect(rows.filter((r) => r.repo === "tool")).toEqual([]);
 		expect(fx.ghLog()).not.toMatch(/other|tool/);
@@ -338,7 +355,12 @@ describe("HomeService", () => {
 		await setView([]);
 		// Before any refresh: the view reads the config.
 		expect(row(await home.view(), 3)).toBeUndefined();
-		expect(row(await home.refresh(), 3)).toBeUndefined();
+		const out = await home.refresh();
+		expect(row(out, 3)).toBeUndefined();
+		// Its facts go too, started or not: search and annotate don't see them.
+		expect(home.knownPrs()).toEqual([]);
+		// A chip to add it back.
+		expect(out.startedRepos).toEqual(["acme/api"]);
 		await setView(["acme/api"]);
 		const back = await home.refresh();
 		expect(ids(back, "reviewing")).toContain(3);

@@ -70,6 +70,12 @@ export interface HomeView {
 	refreshedAt: string | null;
 	refreshError: string | null; // last refresh's failure, rows kept
 	sections: HomeSection[]; // all five, always, in order
+	/**
+	 * Repos (`owner/repo`, lowercased) of the viewer's started reviews,
+	 * newest activity first, in the view or not: the view dialog suggests
+	 * the ones it doesn't list.
+	 */
+	startedRepos: string[];
 }
 export type AnnotationOp =
 	| { op: "snooze"; until: string; wakeOnActivity: boolean }

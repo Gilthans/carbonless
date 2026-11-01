@@ -492,11 +492,15 @@ test("removing a repo from the view takes its started rows with it; adding it ba
 	await expect(page.getByText("Snooze PRs from the inbox")).toBeVisible();
 	await expect(page.getByTestId("view-repo")).toHaveText(["acme/api"]);
 	await expect(widget()).toHaveCount(0);
-	// Back in the view: the row returns with its coverage after the read.
+	// Back in the view with one click on its chip: the row returns with its
+	// coverage after the read.
 	dialog = await edit();
-	const field = dialog.getByRole("combobox", { name: "Add a repo" });
-	await field.fill(OWNER_REPO);
-	await field.press("Enter");
+	await dialog.getByRole("button", { name: `Add ${OWNER_REPO}` }).click();
+	await expect(
+		dialog
+			.getByRole("list", { name: "Repos in this view" })
+			.getByRole("listitem"),
+	).toHaveText(["acme/api", OWNER_REPO]);
 	await dialog.getByRole("button", { name: "Save" }).click();
 	await expect(dialog).toBeHidden();
 	await expect(coverage()).toBeVisible();

@@ -266,7 +266,9 @@ Owner's decisions on this part (2026-10-28):
   ```
 
   The UI edits the first view (the pencil next to the repo chips: add by
-  `owner/repo` or URL, remove, suggestions from repos of recent reviews);
+  `owner/repo` or URL, remove, suggestions from repos of recent reviews:
+  one-click chips for the repos of the viewer's started reviews the list
+  doesn't name, newest first, so a repo just removed is one click away);
   the add input suggests the viewer's repos as you type (owner, 2026-10-31:
   "should have auto-complete like the search bar, but only search for
   repos"): the open box's Repos group alone (`GET /api/home/search?only=repos`,
