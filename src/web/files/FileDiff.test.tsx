@@ -10,6 +10,7 @@ import {
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { expectLoadingThen, heldJson } from "../../../test/loading";
 import type {
 	ClusterView,
 	DiffLine,
@@ -118,21 +119,32 @@ function Shown({ unit }: { unit: Unit }) {
 }
 
 type Result = { status: number; body: unknown };
-type Handler = (url: URL, init?: RequestInit) => Result | Promise<Result>;
+type Handler = (
+	url: URL,
+	init?: RequestInit,
+) => Result | Promise<Result> | Promise<Response>;
 
 function setup(
 	f: FileView,
 	handler: Handler = () => ({ status: 404, body: {} }),
-	fileHunks: FileHunks = hunks,
+	fileHunks: FileHunks | (() => Promise<Response>) = hunks,
 	unit: Unit = "clusters",
 ) {
 	const fetchMock = vi.fn(
 		async (input: RequestInfo | URL, init?: RequestInit) => {
 			const url = new URL(String(input), "http://test");
+			// Held (test/loading.ts): answered when the test lets it go.
+			if (
+				url.pathname === "/api/files/0/hunks" &&
+				typeof fileHunks === "function"
+			) {
+				return fileHunks();
+			}
 			const result =
 				url.pathname === "/api/files/0/hunks"
 					? { status: 200, body: fileHunks }
 					: await handler(url, init);
+			if (result instanceof Response) return result;
 			return new Response(JSON.stringify(result.body), {
 				status: result.status,
 			});
@@ -1238,6 +1250,40 @@ describe("FileDiff", () => {
 		answerRead?.();
 		await new Promise((resolve) => setTimeout(resolve, 20));
 		expect(queryClient.getQueryData(reviewQuery.queryKey)).toEqual(after);
+	});
+
+	it("while a file's lines load: a spinner, never an empty diff", async () => {
+		const lines = heldJson();
+		const { user } = setup(
+			file([cluster("k1")]),
+			undefined,
+			() => lines.response,
+		);
+		await user.click(screen.getByRole("button", { name: "Expand file" }));
+		await expectLoadingThen({
+			loading: () => screen.queryByRole("status", { name: "Loading diff" }),
+			empty: [() => screen.queryByText("Loading diff…")],
+			release: () => lines.release(hunks),
+			result: () => screen.queryByText("new five"),
+		});
+	});
+
+	it("while a gap's lines load: a spinner in its row, never its bare count", async () => {
+		const context = heldJson();
+		const { user } = setup(file([cluster("k1")]), () => context.response);
+		await user.click(screen.getByRole("button", { name: "Expand file" }));
+		await user.click(
+			await screen.findByRole("button", { name: "Load 20 lines below" }),
+		);
+		await expectLoadingThen({
+			loading: () => screen.queryByRole("status", { name: "Loading lines" }),
+			empty: [() => screen.queryByText("Loading…")],
+			release: () =>
+				context.release(
+					Array.from({ length: 20 }, (_, i) => ctx(9 + i, 9 + i)),
+				),
+			result: () => screen.queryByText("line 28"),
+		});
 	});
 
 	it("retries a context range that failed", async () => {
