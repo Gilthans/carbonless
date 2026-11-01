@@ -1,0 +1,101 @@
+# Every push to master whose CI passed becomes an RC: X.Y.Z-rc.N on npm's
+# `rc` dist-tag and the git tag vX.Y.Z-rc.N, where X.Y.Z is master's
+# package.json version (the next release). The version is set only in this
+# runner's checkout, never committed. docs/releasing.md.
+name: Publish RC
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [master]
+
+permissions:
+  contents: write # the vX.Y.Z-rc.N tag
+
+concurrency:
+  # One publish at a time (shared with promote), so two never pick the same N.
+  group: npm-publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    # A push to master (not a PR whose branch is called master), CI green.
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      SHA: ${{ github.event.workflow_run.head_sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+      - name: Still master's tip?
+        id: tip
+        # CI runs can finish out of order: only the newest push is published
+        # (it holds the older ones), so `rc` never moves back.
+        run: |
+          tip="$(git ls-remote origin refs/heads/master | cut -f1)"
+          if [[ "$tip" == "$SHA" ]]; then
+            echo "publish=true" >>"$GITHUB_OUTPUT"
+          else
+            echo "::notice::master moved on to $tip: skipping $SHA"
+            echo "publish=false" >>"$GITHUB_OUTPUT"
+          fi
+      - if: steps.tip.outputs.publish == 'true'
+        uses: pnpm/action-setup@v4
+        with:
+          version: 12.14.0
+      - if: steps.tip.outputs.publish == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+      - if: steps.tip.outputs.publish == 'true'
+        run: pnpm install --frozen-lockfile
+      - name: Version
+        id: version
+        if: steps.tip.outputs.publish == 'true'
+        run: pnpm exec tsx scripts/release.ts ci:rc-version | tee -a "$GITHUB_OUTPUT"
+      - name: Set the version (the tree stays clean)
+        if: steps.tip.outputs.publish == 'true'
+        run: pnpm exec tsx scripts/release.ts ci:set-version "${{ steps.version.outputs.version }}"
+      - name: Pack
+        if: steps.tip.outputs.publish == 'true'
+        run: |
+          mkdir -p "$RUNNER_TEMP/pack"
+          pnpm pack --pack-destination "$RUNNER_TEMP/pack"
+          tgz="$(ls "$RUNNER_TEMP"/pack/carbonless-review-*.tgz)"
+          echo "TGZ=$tgz" >>"$GITHUB_ENV"
+          # The build must say what it is: this version, this commit, not -dirty.
+          tar -xzOf "$tgz" package/dist/build-info.json | tee "$RUNNER_TEMP/build-info.json"
+          node -e '
+            const b = require(process.argv[1]);
+            if (b.version !== process.argv[2] || b.commit !== process.argv[3]) {
+              console.error(`build-info is ${b.version} ${b.commit}`);
+              process.exit(1);
+            }' "$RUNNER_TEMP/build-info.json" "${{ steps.version.outputs.version }}" "$SHA"
+      - name: Publish to npm (rc)
+        # Before the package's first publish, npm would make whatever is
+        # published first `latest`: the first version must be a release
+        # (pnpm release promote), so this only tags the RC in git.
+        if: steps.tip.outputs.publish == 'true' && steps.version.outputs.first_publish == 'false'
+        run: npm publish "$TGZ" --tag rc --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - name: Tag
+        if: steps.tip.outputs.publish == 'true'
+        run: |
+          tag="v${{ steps.version.outputs.version }}"
+          git tag "$tag" "$SHA"
+          git push origin "refs/tags/$tag"
+          if [[ "${{ steps.version.outputs.first_publish }}" == true ]]; then
+            echo "::warning::carbonless-review is not on npm yet: $tag is tagged, not published. Its first version must be a release: pnpm release promote $tag"
+            echo "First publish: $tag is tagged only. Run \`pnpm release promote $tag\`." >>"$GITHUB_STEP_SUMMARY"
+          else
+            echo "Published carbonless-review@${{ steps.version.outputs.version }} on \`rc\`, tagged $tag." >>"$GITHUB_STEP_SUMMARY"
+          fi

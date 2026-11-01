@@ -1,0 +1,136 @@
+# Publishes a tried RC as a release: the RC tag's commit, checked in full
+# (e2e too), published again as X.Y.Z on npm's `latest`, tagged vX.Y.Z; then
+# a PR "next: <X.Y.Z bumped>" with docs/changelog.md for the owner to merge.
+# Started by `pnpm release promote` on the owner's word. docs/releasing.md.
+name: Promote
+
+on:
+  workflow_dispatch:
+    inputs:
+      rc:
+        description: RC tag to release (vX.Y.Z-rc.N; empty = the newest)
+        required: false
+        default: ""
+      next:
+        description: The next release after it
+        type: choice
+        options: [minor, patch, major]
+        default: minor
+
+permissions:
+  contents: write # the vX.Y.Z tag and the next/* branch
+  pull-requests: write # the "next" PR
+
+concurrency:
+  group: npm-publish
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      GH_TOKEN: ${{ github.token }}
+      # Inputs reach the shell as variables, never pasted into scripts.
+      RC_INPUT: ${{ inputs.rc }}
+      NEXT_INPUT: ${{ inputs.next }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12.14.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+      - run: pnpm install --frozen-lockfile
+      - name: Plan
+        id: plan
+        run: pnpm exec tsx scripts/release.ts ci:promote-plan "$RC_INPUT" | tee -a "$GITHUB_OUTPUT"
+      - name: Check out the RC
+        run: |
+          echo "RC_DIR=$RUNNER_TEMP/rc" >>"$GITHUB_ENV"
+          RC_DIR="$RUNNER_TEMP/rc"
+          git worktree add --detach "$RC_DIR" "refs/tags/${{ steps.plan.outputs.tag }}"
+          echo "RC_SHA=$(git rev-parse "refs/tags/${{ steps.plan.outputs.tag }}^{commit}")" >>"$GITHUB_ENV"
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+      - name: Install the RC
+        working-directory: ${{ runner.temp }}/rc
+        run: pnpm install --frozen-lockfile
+      - name: Set the version (the tree stays clean)
+        # master's release.ts: the RC's commit may predate it.
+        run: pnpm exec tsx scripts/release.ts ci:set-version "${{ steps.plan.outputs.release }}" "$RC_DIR"
+      - name: Checks
+        working-directory: ${{ runner.temp }}/rc
+        run: |
+          pnpm lint
+          pnpm typecheck
+          pnpm test
+      - name: Playwright
+        working-directory: ${{ runner.temp }}/rc
+        run: |
+          pnpm exec playwright install --with-deps chromium
+          pnpm test:e2e
+      - name: Pack smoke test
+        working-directory: ${{ runner.temp }}/rc
+        run: pnpm test:pack
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: |
+            ${{ runner.temp }}/rc/playwright-report/
+            ${{ runner.temp }}/rc/test-results/
+          retention-days: 14
+      - name: Pack
+        working-directory: ${{ runner.temp }}/rc
+        run: |
+          mkdir -p "$RUNNER_TEMP/pack"
+          pnpm pack --pack-destination "$RUNNER_TEMP/pack"
+          tgz="$(ls "$RUNNER_TEMP"/pack/carbonless-review-*.tgz)"
+          echo "TGZ=$tgz" >>"$GITHUB_ENV"
+          tar -xzOf "$tgz" package/dist/build-info.json | tee "$RUNNER_TEMP/build-info.json"
+          node -e '
+            const b = require(process.argv[1]);
+            if (b.version !== process.argv[2] || b.commit !== process.argv[3]) {
+              console.error(`build-info is ${b.version} ${b.commit}`);
+              process.exit(1);
+            }' "$RUNNER_TEMP/build-info.json" "${{ steps.plan.outputs.release }}" "$RC_SHA"
+      - name: Publish to npm (latest)
+        run: npm publish "$TGZ" --tag latest --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - name: Move rc to the release
+        # So main, which follows rc, never runs behind latest.
+        if: steps.plan.outputs.move_rc == 'true'
+        run: npm dist-tag add "carbonless-review@${{ steps.plan.outputs.release }}" rc
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - name: Tag
+        run: |
+          git tag "v${{ steps.plan.outputs.release }}" "$RC_SHA"
+          git push origin "refs/tags/v${{ steps.plan.outputs.release }}"
+      - name: Next version and changelog PR
+        run: |
+          release="${{ steps.plan.outputs.release }}"
+          next="$(pnpm exec tsx scripts/release.ts ci:bump "$release" "$NEXT_INPUT" | sed -n 's/^next=//p')"
+          branch="next/$next"
+          git switch -c "$branch"
+          pnpm exec tsx scripts/release.ts ci:write-version "$next"
+          pnpm exec tsx scripts/release.ts ci:changelog "$release" "$RC_SHA"
+          git add package.json docs/changelog.md
+          git commit -m "next: $next" -m "Released $release (${{ steps.plan.outputs.tag }}); merges to master now publish $next-rc.N."
+          git push --force origin "$branch"
+          if ! gh pr view "$branch" --json url --jq .url; then
+            gh pr create --base master --head "$branch" --title "next: $next" \
+              --body "Released **$release** from ${{ steps.plan.outputs.tag }} (npm \`latest\`). This sets master's next release to $next and adds $release to docs/changelog.md."
+          fi
+          {
+            echo "Released carbonless-review@$release on \`latest\` from ${{ steps.plan.outputs.tag }}."
+            echo "Next: $next (PR from $branch)."
+          } >>"$GITHUB_STEP_SUMMARY"

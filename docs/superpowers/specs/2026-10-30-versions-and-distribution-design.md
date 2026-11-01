@@ -81,6 +81,13 @@ refuses a client whose version or commit differs.
    <patch|minor|rc|promote>` bumps, writes `docs/changelog.md`, commits and
    tags. `scripts/devbox/update` takes `rc` and `latest`. Done when a
    co-worker installs with one command and main moves to `rc` and back.
+   As built (2026-11-01; `docs/releasing.md`): pushes reach master only
+   through PRs, so master's version is the next release and every push
+   whose CI passes publishes `X.Y.Z-rc.N` (workflow `publish-rc`); `pnpm
+   release promote` runs workflow `promote` (republish as `X.Y.Z`, then a
+   "next" PR with the changelog); `pnpm release next` sets another next
+   version. The repo is private, so no `--provenance`: an `NPM_TOKEN`
+   secret. License: MIT.
 3. **M3, co-worker polish, on demand.** `crb doctor` (git, gh login, Node,
    cache dir), issues on the repo, the update notice, maybe `crb
    self-update`.
