@@ -229,20 +229,24 @@ and the review verdict (`src/server/threadWrites.ts`,
   `forbidden` with GitHub's message. One press, one review: verdicts run
   one at a time per PR and are remembered by client id; a retry first
   lists the PR's reviews (REST) for the viewer's one in the event's state
-  carrying its marker, or, sent without a message, an empty one submitted
-  since this server's first attempt (10 s of slack for GitHub's clock;
+  carrying its marker, or, sent without a message, an empty one on the
+  same commit submitted since this server's first attempt (10 s of slack for GitHub's clock;
   after a restart, the client's `attemptedAt` less 2 minutes), and posts
   only if there is none. A verdict that lands drops the kept overview
   and verdict reads, so the next ones read GitHub again.
 - **What blocks is read only for the Final Verdict.** `GET /api/verdict`
   is one GraphQL read (`mergeStateStatus`, `reviewDecision`, the
   requested reviewers with `asCodeOwner`, the reviews with their commits,
-  the head's checks with `isRequired`) beside the base branch's rule
+  the head's checks with `isRequired`; should GitHub refuse that field,
+  read again without it, `required` then null) beside the base branch's rule
   (branch, protection and `rules/branches` reads, `src/server/verdict.ts`
   `ruleOf`), never on first open. A rule that can't be read (no admin
   access: protection 403/404 on a protected branch, where an empty rules
   list means unknown, not none; a private repo on a free plan; any
-  failed read) is `null`, never an error. As of a cutoff, GitHub's
+  failed read) is `null`, never an error. Each reviewer counts by their
+  latest approval, change request or dismissal (GitHub's
+  latestOpinionatedReviews), their latest comment only when they have none:
+  a reply after approving leaves the approval standing. As of a cutoff, GitHub's
   present-only facts (merge state, decision, rule, required flags,
   code-owner requests) are null, never today's; on a merged or closed PR
   the merge state, decision and rule are.

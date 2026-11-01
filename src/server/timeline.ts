@@ -9,6 +9,7 @@ import type {
 } from "../shared/types.js";
 import { atOrBefore } from "./asOf.js";
 import { visibleAt } from "./commentTime.js";
+import { stripMarker } from "./marker.js";
 
 /**
  * The PR's timeline from GitHub's timeline items (gh.ts fetchTimeline):
@@ -126,7 +127,7 @@ function entries(input: TimelineInput, gaps: string[]): Entry[] {
 				// Not submitted (the viewer's pending review): nobody sees it yet.
 				if (!VERDICTS.has(state) || !str(n.submittedAt)) break;
 				const actor = actorOf(n.author);
-				const text = firstLine(n.bodyText);
+				const text = firstLine(stripMarker(str(n.bodyText)));
 				// A plain reply is a COMMENTED review with no text: its comment alone.
 				if (state !== "COMMENTED" || text) {
 					out.push({
@@ -164,7 +165,7 @@ function entries(input: TimelineInput, gaps: string[]): Entry[] {
 							at,
 							path: str(c.path),
 							line: lineOf(c),
-							text: firstLine(c.bodyText),
+							text: firstLine(stripMarker(str(c.bodyText))),
 							url: str(c.url),
 							threadId:
 								(id && threadOf(id)) || (root && threadOf(root)) || null,
@@ -180,7 +181,7 @@ function entries(input: TimelineInput, gaps: string[]): Entry[] {
 					item: {
 						kind: "conversation",
 						at: str(n.createdAt),
-						text: firstLine(n.bodyText),
+						text: firstLine(stripMarker(str(n.bodyText))),
 						url: str(n.url),
 					},
 				});

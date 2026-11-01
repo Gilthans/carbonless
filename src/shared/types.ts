@@ -594,11 +594,17 @@ export interface VerdictFacts {
 		codeOwners: boolean | null;
 		strict: boolean | null;
 	} | null;
-	/** Requested reviewers GitHub asked as code owners (`asCodeOwner`). */
+	/**
+	 * Requested reviewers GitHub asked as code owners (`asCodeOwner`); [] in
+	 * as-of views (who GitHub asks is known only now).
+	 */
 	codeOwnerRequests: { name: string; team: boolean }[];
 	/**
-	 * Each reviewer's latest submitted review (PENDING ones left out), newest
-	 * first, with the commit it was on; as of the cutoff in as-of views.
+	 * Each reviewer's verdict, newest first: their latest opinionated review
+	 * (APPROVED, CHANGES_REQUESTED or DISMISSED, as GitHub's
+	 * latestOpinionatedReviews and PrOverview's `opinion`), else their latest
+	 * COMMENTED one; PENDING ones left out. `submittedAt` and `commitId` are
+	 * the chosen review's. As of the cutoff in as-of views, by the same rule.
 	 */
 	reviews: {
 		author: string;
@@ -608,7 +614,7 @@ export interface VerdictFacts {
 		you: boolean;
 		bot: boolean;
 	}[];
-	/** The PR's head on GitHub when this was read. */
+	/** The PR's head on GitHub when this was read; in as-of views, the cutoff's head. */
 	head: string;
 	/** When the server finished reading this from GitHub (its clock). */
 	fetchedAt: string;

@@ -111,16 +111,25 @@ const unprotected = (a: RestAnswer) =>
 type Review = VerdictFacts["reviews"][number];
 
 /**
- * Each reviewer's latest submitted review, newest first, as
- * PrOverview.reviews takes it (pending ones left out; as of a cutoff,
- * those submitted by then), with the commit it was on.
+ * Each reviewer's verdict, newest first: their latest opinionated review
+ * (approved, changes requested or dismissed, as GitHub's
+ * latestOpinionatedReviews and PrOverview's `opinion`), else their latest
+ * comment; pending ones left out, as of a cutoff those submitted by then;
+ * with the commit it was on. A reply after an approval (a COMMENTED
+ * review) leaves the approval standing.
  */
 function latestReviews(
 	nodes: unknown[],
 	viewer: string,
 	asOf: string | undefined,
 ): Review[] {
-	const byReviewer = new Map<string, Review>();
+	/** Each reviewer's latest opinionated review, and latest of any kind. */
+	const opinionated = new Map<string, Review>();
+	const any = new Map<string, Review>();
+	const later = (map: Map<string, Review>, key: string, review: Review) => {
+		const prev = map.get(key);
+		if (!prev || prev.submittedAt <= review.submittedAt) map.set(key, review);
+	};
 	for (const raw of nodes) {
 		const r = obj(raw);
 		const who = obj(r.author);
@@ -128,23 +137,21 @@ function latestReviews(
 		const state = str(r.state);
 		if (!name || !REVIEW_STATES.has(state)) continue;
 		if (asOf && !atOrBefore(r.submittedAt, asOf)) continue;
-		const at = str(r.submittedAt);
 		const key = name.toLowerCase();
-		const prev = byReviewer.get(key);
-		if (!prev || prev.submittedAt <= at) {
-			byReviewer.set(key, {
-				author: name,
-				state: state as ReviewVerdict,
-				submittedAt: at,
-				commitId: str(obj(r.commit).oid),
-				you: slugify(name) === slugify(viewer),
-				bot: isBotAuthor(who),
-			});
-		}
+		const review: Review = {
+			author: name,
+			state: state as ReviewVerdict,
+			submittedAt: str(r.submittedAt),
+			commitId: str(obj(r.commit).oid),
+			you: slugify(name) === slugify(viewer),
+			bot: isBotAuthor(who),
+		};
+		later(any, key, review);
+		if (state !== "COMMENTED") later(opinionated, key, review);
 	}
-	return [...byReviewer.values()].sort((a, b) =>
-		b.submittedAt.localeCompare(a.submittedAt),
-	);
+	return [...any.keys()]
+		.map((key) => opinionated.get(key) ?? (any.get(key) as Review))
+		.sort((a, b) => b.submittedAt.localeCompare(a.submittedAt));
 }
 
 /**
@@ -312,12 +319,12 @@ export const ATTEMPT_SLACK_MS = 2 * 60_000;
  * The review in `reviews` that is `req` landed already: the viewer's,
  * in the event's state, not another client id's, and either carrying
  * `req`'s marker (a body was sent) or, with no body sent (nothing to
- * mark), empty and submitted no earlier than `since` (ms). The oldest
+ * mark), empty, on `req`'s commit and submitted no earlier than `since` (ms). The oldest
  * such one; null if none.
  */
 export function findLanded(
 	reviews: readonly RestReview[],
-	req: Pick<VerdictRequest, "clientId" | "event" | "body">,
+	req: Pick<VerdictRequest, "clientId" | "event" | "body" | "commit">,
 	viewer: string,
 	since: number,
 	claimed: ReadonlySet<string> = new Set(),
@@ -330,7 +337,9 @@ export function findLanded(
 			!claimed.has(r.nodeId) &&
 			(marked
 				? parseMarker(r.body)?.id === req.clientId
-				: r.body.trim() === "" && Date.parse(r.submittedAt) >= since),
+				: r.body.trim() === "" &&
+					r.commitId === req.commit &&
+					Date.parse(r.submittedAt) >= since),
 	);
 	return (
 		matches.sort((a, b) => a.submittedAt.localeCompare(b.submittedAt))[0] ??

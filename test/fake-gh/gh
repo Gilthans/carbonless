@@ -1035,7 +1035,7 @@ switch (cmd) {
 			const v = pr.view ?? {};
 			const size = s.pageSize ?? 100;
 			const reviews = pr.graphql?.reviews ?? [];
-			const checks = checkContexts(v.statusCheckRollup ?? [], true);
+			const checks = checkContexts(v.statusCheckRollup ?? [], f.query.includes("isRequired"));
 			const page = (all) => ({
 				pageInfo: {
 					hasNextPage: all.length > size,

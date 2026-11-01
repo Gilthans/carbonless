@@ -501,9 +501,11 @@ const commitChecksQuery = (
  * What the Final Verdict tab reads of the PR in one round trip: GitHub's
  * merge state and review decision, the requested reviewers (which as code
  * owners), the first page of reviews (with their commits) and of the
- * head's checks (with isRequired).
+ * head's checks (with isRequired, unless `required` is false).
  */
-const VERDICT_QUERY = `query($owner: String!, $name: String!, $number: Int!) {
+const verdictQuery = (
+	required: boolean,
+) => `query($owner: String!, $name: String!, $number: Int!) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
       state mergeStateStatus reviewDecision headRefOid baseRefName
@@ -531,7 +533,7 @@ const VERDICT_QUERY = `query($owner: String!, $name: String!, $number: Int!) {
               contexts(first: 100) {
                 pageInfo { hasNextPage endCursor }
                 nodes {
-              ${checkFields(true)}
+              ${checkFields(required)}
                 }
               }
             }
@@ -1885,7 +1887,7 @@ export async function fetchMergeBase(
 
 /** What `GET /api/verdict` reads of GitHub, before verdict.ts maps it. */
 export interface VerdictRead {
-	/** GitHub's pullRequest node (VERDICT_QUERY); null as of a cutoff (not read). */
+	/** GitHub's pullRequest node (verdictQuery); null as of a cutoff (not read). */
 	pr: Record<string, unknown> | null;
 	/** Every review node, oldest first. */
 	reviews: unknown[];
@@ -1896,12 +1898,29 @@ export interface VerdictRead {
 }
 
 /**
- * The Final Verdict's read of PR `ref`: one GraphQL call (VERDICT_QUERY),
- * and more only for reviews or checks past their first 100.
+ * The Final Verdict's read of PR `ref`: one GraphQL call (verdictQuery),
+ * and more only for reviews or checks past their first 100. Should GitHub
+ * refuse `isRequired` (a field error fails the whole call), it is read
+ * again without it: the checks then carry no isRequired (required null).
  */
 export async function fetchVerdict(
 	ref: PrRef,
 	read: ReadSignal = {},
+): Promise<VerdictRead> {
+	try {
+		return await fetchVerdictWith(ref, read, true);
+	} catch (error) {
+		if (error instanceof GhAbortedError || !(error instanceof GhError)) {
+			throw error;
+		}
+		return fetchVerdictWith(ref, read, false);
+	}
+}
+
+async function fetchVerdictWith(
+	ref: PrRef,
+	read: ReadSignal,
+	required: boolean,
 ): Promise<VerdictRead> {
 	return notFoundAsPr(ref, async () => {
 		const out = safeJson(
@@ -1910,7 +1929,7 @@ export async function fetchVerdict(
 					"api",
 					"graphql",
 					"-f",
-					`query=${VERDICT_QUERY}`,
+					`query=${verdictQuery(required)}`,
 					"-f",
 					`owner=${ref.owner}`,
 					"-f",
@@ -1946,7 +1965,7 @@ export async function fetchVerdict(
 				: reviewConn.nodes,
 			checkInfo.hasNextPage === true && typeof checkInfo.endCursor === "string"
 				? fetchCommitChecks(ref, head, read, {
-						required: true,
+						required,
 						after: checkInfo.endCursor,
 						nodes: firstChecks,
 					})

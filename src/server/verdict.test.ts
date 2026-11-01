@@ -4,7 +4,7 @@ import { writeFileAtomic } from "../../test/fake-gh/atomic.mjs";
 import { prView, release, type Scenario } from "../../test/fake-gh/scenario";
 import { GIT_TEST_TIMEOUTS } from "../../test/git-fixture";
 import { createPrFixture, type PrFixture } from "../../test/pr-fixture";
-import type { VerdictRequest } from "../shared/types";
+import type { VerdictFacts, VerdictRequest } from "../shared/types";
 import { GhError, WriteRefusedError } from "./errors";
 import type { RestAnswer, RestReview, RuleReads, VerdictRead } from "./gh";
 import { markerFor } from "./marker";
@@ -134,7 +134,7 @@ describe("mapVerdict", () => {
 		]);
 	});
 
-	it("each reviewer's latest submitted review with its commit, newest first; pending ones left out", () => {
+	it("each reviewer's latest opinionated review with its commit, newest first; pending ones left out", () => {
 		const facts = map({
 			...read(),
 			reviews: [
@@ -189,6 +189,62 @@ describe("mapVerdict", () => {
 				you: true,
 				bot: false,
 			},
+		]);
+	});
+
+	it("a reply after an approval (a COMMENTED review) leaves the approval: the opinion's time and commit", () => {
+		const reviews = [
+			{
+				author: user("ravi"),
+				state: "APPROVED",
+				submittedAt: "2026-01-02T00:00:00Z",
+				commit: { oid: OLD },
+			},
+			{
+				author: user("ravi"),
+				state: "COMMENTED",
+				submittedAt: "2026-01-03T00:00:00Z",
+				commit: { oid: HEAD },
+			},
+			{
+				author: user("dima"),
+				state: "COMMENTED",
+				submittedAt: "2026-01-01T00:00:00Z",
+				commit: { oid: OLD },
+			},
+			{
+				author: user("dima"),
+				state: "COMMENTED",
+				submittedAt: "2026-01-04T00:00:00Z",
+				commit: { oid: HEAD },
+			},
+			{
+				author: user("Octo_Cat"),
+				state: "CHANGES_REQUESTED",
+				submittedAt: "2026-01-05T00:00:00Z",
+				commit: { oid: HEAD },
+			},
+			{
+				author: user("Octo_Cat"),
+				state: "COMMENTED",
+				submittedAt: "2026-01-06T00:00:00Z",
+				commit: { oid: HEAD },
+			},
+		];
+		const brief = (facts: VerdictFacts) =>
+			facts.reviews.map((r) => [r.author, r.state, r.submittedAt, r.commitId]);
+		expect(brief(map({ ...read(), reviews }))).toEqual([
+			["Octo_Cat", "CHANGES_REQUESTED", "2026-01-05T00:00:00Z", HEAD],
+			// Only replies: their latest comment.
+			["dima", "COMMENTED", "2026-01-04T00:00:00Z", HEAD],
+			["ravi", "APPROVED", "2026-01-02T00:00:00Z", OLD],
+		]);
+		// As of a cutoff, by the same rule among the reviews made by then.
+		expect(
+			brief(map({ ...read(), pr: null, reviews }, "2026-01-03T12:00:00Z")),
+		).toEqual([
+			["ravi", "APPROVED", "2026-01-02T00:00:00Z", OLD],
+			["dima", "COMMENTED", "2026-01-01T00:00:00Z", OLD],
 		]);
 	});
 
@@ -516,7 +572,12 @@ describe("findLanded", () => {
 	const at = Date.parse("2026-11-01T10:00:00Z");
 
 	it("with a message: the viewer's review in the event's state carrying this client id's marker", () => {
-		const req = { clientId: "v1", event: "COMMENT" as const, body: "Hm" };
+		const req = {
+			clientId: "v1",
+			commit: HEAD,
+			event: "COMMENT" as const,
+			body: "Hm",
+		};
 		const mine = review({
 			nodeId: "PRR_mine",
 			state: "COMMENTED",
@@ -546,7 +607,12 @@ describe("findLanded", () => {
 
 	it("a marker typed in the message is the reviewer's text: only the trailing one is carbonless's", () => {
 		const typed = "See <!-- crb:v1 id=v1 -->";
-		const req = { clientId: "v2", event: "COMMENT" as const, body: typed };
+		const req = {
+			clientId: "v2",
+			commit: HEAD,
+			event: "COMMENT" as const,
+			body: typed,
+		};
 		const posted = review({
 			state: "COMMENTED",
 			body: typed + markerFor("v2"),
@@ -556,7 +622,7 @@ describe("findLanded", () => {
 		expect(
 			findLanded(
 				[review({ state: "COMMENTED", body: "See this" })],
-				{ clientId: "v1", event: "COMMENT", body: "See" },
+				{ clientId: "v1", commit: HEAD, event: "COMMENT", body: "See" },
 				"octo-cat",
 				0,
 			),
@@ -564,7 +630,7 @@ describe("findLanded", () => {
 	});
 
 	it("without a message: the viewer's empty review in the event's state submitted since the first attempt, not one claimed", () => {
-		const req = { clientId: "v1", event: "APPROVE" as const };
+		const req = { clientId: "v1", commit: HEAD, event: "APPROVE" as const };
 		const before = review({
 			nodeId: "PRR_old",
 			submittedAt: "2026-11-01T09:59:59Z",
@@ -590,6 +656,15 @@ describe("findLanded", () => {
 		expect(findLanded([before, withText], req, "octo-cat", at)).toBeNull();
 		expect(
 			findLanded([review({ state: "COMMENTED" })], req, "octo-cat", at),
+		).toBeNull();
+		// An empty approval on another commit (GitHub's web, another crb) isn't this one.
+		expect(
+			findLanded(
+				[review({ submittedAt: "2026-11-01T10:00:02Z", commitId: OLD })],
+				req,
+				"octo-cat",
+				at,
+			),
 		).toBeNull();
 	});
 });
@@ -799,6 +874,27 @@ describe("the verdict, through the session and the fake gh", () => {
 			expect(facts.reviews.map((r) => r.author)).toEqual(["c", "b", "a"]);
 		});
 
+		it("GitHub refusing isRequired: read again without it, required unknown (null), the rest as read", async () => {
+			scenario(
+				{ failGraphql: "isRequired" },
+				{
+					statusCheckRollup: [
+						{
+							__typename: "StatusContext",
+							context: "jira",
+							state: "FAILURE",
+							required: true,
+						},
+					],
+				},
+			);
+			const facts = await session.verdict();
+			expect(facts.checks).toEqual([
+				{ name: "jira", status: "failing", required: null },
+			]);
+			expect(facts.mergeStateStatus).toBe("BLOCKED");
+		});
+
 		it("no checks at all: an empty list", async () => {
 			scenario({}, { statusCheckRollup: [] });
 			expect((await session.verdict()).checks).toEqual([]);
@@ -860,7 +956,8 @@ describe("the verdict, through the session and the fake gh", () => {
 			await expect(session.verdict(0)).rejects.toBeInstanceOf(GhError);
 			scenario();
 			await session.verdict();
-			expect(calls()).toBe(5);
+			// The failed read was asked twice: with isRequired, then without.
+			expect(calls()).toBe(6);
 		});
 
 		it("merged or closed: GitHub's merge facts and the rule are null; checks and reviews stay", async () => {
@@ -1233,6 +1330,24 @@ describe("the verdict, through the session and the fake gh", () => {
 			expect(answer.review.id).toBe("PRR_12_1");
 			expect(posts()).toHaveLength(1);
 			expect(stored()).toHaveLength(2);
+		});
+
+		it("an empty approval of the viewer's on another commit, just now (GitHub's web), isn't this one: the retry posts once", async () => {
+			scenario({}, {}, [
+				{
+					author: user("Octo_Cat"),
+					state: "APPROVED",
+					submittedAt: new Date().toISOString().replace(/\.\d+Z$/, "Z"),
+					body: "",
+					commit: { oid: OLD },
+				},
+			]);
+			const answer = await session.submitVerdict(request({ retry: true }));
+			expect(answer.review).toMatchObject({
+				id: "PRR_12_1",
+				commitId: pr.head(),
+			});
+			expect(posts()).toHaveLength(1);
 		});
 
 		it("an unknown outcome: the retry lists again after each wait before posting", async () => {
