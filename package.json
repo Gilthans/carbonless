@@ -2,7 +2,7 @@
 	"name": "carbonless-review",
 	"version": "0.1.0",
 	"description": "Local, AI-assisted tool for reading the changes between two git commits",
-	"license": "UNLICENSED",
+	"license": "MIT",
 	"repository": {
 		"type": "git",
 		"url": "git+https://github.com/Gilthans/carbonless.git"
