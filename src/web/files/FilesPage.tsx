@@ -197,10 +197,15 @@ function useDiffThreads(): {
 				: undefined,
 		[readId, view, snapshotHead, gone],
 	);
-	// No overview or session, no threads: that's their failure too.
+	// No overview or session, no threads: that's their failure too. Only
+	// with nothing kept: a refetch failing over a kept one (a Refresh)
+	// leaves its threads loading.
 	const failed = view
 		? null
-		: (error ?? overview.error ?? session.error ?? null);
+		: (error ??
+			(overview.data ? null : overview.error) ??
+			(session.data ? null : session.error) ??
+			null);
 	return {
 		threads,
 		all: view?.threads,
