@@ -96,6 +96,15 @@ unresolving one, and editing or deleting one of the viewer's comments in one
   patch set). One compare per snapshot, asked lazily and never
   waited for by the overview (true until GitHub says); a write waits for
   it.
+- **What is posted reads as typed.** GitHub's markdown reads `<String>`
+  in `List<String>`, or `<T>`, as an HTML tag and drops it. Every body
+  carbonless posts (new thread, reply, edit) has a backslash before each
+  `<` that starts a tag GitHub drops (`List\<String>`), outside code
+  spans and blocks; `a < b`, autolinks, HTML comments and the tags GitHub
+  keeps stay as they are (`src/shared/markdownEscape.ts`, applied on the
+  server where the write is built, before the marker). The page gets
+  bodies without those escapes, so the edit box shows what was typed and
+  the edit, retry and dedupe checks compare the text as posted.
 - **A hidden marker carries what GitHub can't.** A new thread's opening
   comment ends in an HTML comment GitHub doesn't render,
   `<!-- crb:v1 id=<clientId> -->`, with `span=<startLine>:<startCol>-<line>:<endCol>`

@@ -282,6 +282,17 @@ describe("thread writes", () => {
 		expect(answer.commentCount).toBe(3);
 	});
 
+	it("a reply's tags GitHub would drop go escaped; the comment reads as typed, and its retry finds it", async () => {
+		threads({ failNext: { op: "reply", status: 502, afterWrite: true } });
+		const clientId = "lt";
+		const typed = "List<String> and <T>, `Map<K>`, a < b";
+		await expect(reply(typed, { clientId })).rejects.toBeInstanceOf(GhError);
+		expect(bodies(0)?.at(-1)).toBe("List\\<String> and \\<T>, `Map<K>`, a < b");
+		const answer = await reply(typed, { clientId, retry: true });
+		expect(writeCalls()).toHaveLength(1);
+		expect(answer.comment).toMatchObject({ id: "C12-0-2", body: typed });
+	});
+
 	it("a retry whose first attempt didn't land posts it", async () => {
 		threads({ failNext: { op: "reply", status: 502 } });
 		const clientId = "failed";
@@ -317,7 +328,8 @@ describe("thread writes", () => {
 			attention: ["octo-author"],
 			comment: {
 				body: "Later <b>",
-				html: '<p dir="auto">Later &lt;b&gt;</p>',
+				// The fake drops tags, as GitHub's markdown does.
+				html: '<p dir="auto">Later </p>',
 				author: "Octo_Cat",
 			},
 		});

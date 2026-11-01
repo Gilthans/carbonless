@@ -201,6 +201,54 @@ test("edit from an Overview card: shown at once, marked edited, still there afte
 	await expect(page.getByRole("tooltip")).toContainText(/^Edited 20\d\d/);
 });
 
+test("`<` as typed: a reply reads List<String> and <T> on GitHub and here, and edits as typed", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	if (isMobile) await page.setViewportSize({ width: 360, height: 780 });
+	const typed = "List<String> and <T>";
+	const p = await setup(pr);
+	const s = await startCrb();
+	await page.goto(s.url);
+	const c = card(page, "new.txt");
+	await openCard(c);
+	const reply = c.getByRole("textbox", { name: "Reply" });
+	await reply.fill(typed);
+	await reply.press("Control+Enter");
+	// Escaped for GitHub, which would drop `<String>` and `<T>` as tags.
+	await expect
+		.poll(() => bodies(p, 0))
+		.toEqual(["My take", "List\\<String> and \\<T>"]);
+	await expect(c.getByTestId("thread-comment-sending")).toHaveCount(0);
+	const mine = c.getByTestId("thread-comment").filter({ hasText: typed });
+	await expect(mine).toHaveCount(1);
+	await mine.getByRole("button", { name: "Edit" }).click();
+	const box = c.getByRole("textbox", { name: "Edit comment" });
+	await expect(box).toHaveValue(typed);
+	await box.fill(`${typed}, Map<K>`);
+	await box.press("Control+Enter");
+	await expect
+		.poll(() => bodies(p, 0))
+		.toEqual(["My take", "List\\<String> and \\<T>, Map\\<K>"]);
+	await page.reload();
+	const again = card(page, "new.txt");
+	await openCard(again);
+	await expect(
+		again.getByTestId("thread-comment").filter({ hasText: `${typed}, Map<K>` }),
+	).toHaveCount(1);
+	await again
+		.getByTestId("thread-comment")
+		.filter({ hasText: "Map<K>" })
+		.getByRole("button", { name: "Edit" })
+		.click();
+	await expect(
+		again.getByRole("textbox", { name: "Edit comment" }),
+	).toHaveValue(`${typed}, Map<K>`);
+	expect(await overflow(page)).toBeLessThanOrEqual(0);
+});
+
 test("an edit in progress survives a reload, opens its card and is listed in Drafts", async ({
 	page,
 	pr,

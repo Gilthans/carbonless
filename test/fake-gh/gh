@@ -239,7 +239,7 @@ function storeReply(n, i, body) {
 	const listed = t.comments?.nodes ?? [];
 	// Older fixtures keep the opener only in `first`.
 	const before = listed.length ? listed : (t.first?.nodes ?? []).slice(0, 1);
-	const html = `<p dir="auto">${escapeHtml(body)}</p>`;
+	const html = `<p dir="auto">${escapeHtml(rendered(body))}</p>`;
 	t.comments = {
 		...(t.comments ?? {}),
 		totalCount: (t.comments?.totalCount ?? before.length) + 1,
@@ -249,7 +249,7 @@ function storeReply(n, i, body) {
 				author,
 				...times,
 				body,
-				bodyText: body,
+				bodyText: rendered(body),
 				bodyHTML: html,
 				...(s.replyUnlistedMs ? { hiddenUntil: Date.now() + s.replyUnlistedMs } : {}),
 				...(s.replyUnlisted ? { unlisted: true } : {}),
@@ -264,7 +264,7 @@ function storeReply(n, i, body) {
 		node_id: t.comments.nodes[j].id ?? `C${n}-${i}-${j}`,
 		in_reply_to_id: restId(i, 0),
 		body,
-		body_text: body,
+		body_text: rendered(body),
 		body_html: html,
 		user: { login: s.user.login, avatar_url: s.user.avatarUrl ?? "" },
 		created_at: now,
@@ -498,8 +498,37 @@ function hunkTo(hunks, side, line) {
 	}
 	return null;
 }
-/** A body as GitHub's plain text and HTML have it: an HTML comment at its end dropped. */
-const rendered = (body) => body.replace(/\s*<!--(?:(?!-->)[^])*-->\s*$/, "");
+/**
+ * A body as GitHub's plain text and HTML have it: an HTML comment at its
+ * end dropped, and, like GitHub's markdown, outside code (fences and
+ * backtick spans) a backslash escape gives its character and an HTML tag
+ * (`<String>` in `List<String>`) is dropped. A sketch, not CommonMark.
+ */
+const rendered = (body) => {
+	const text = body.replace(/\s*<!--(?:(?!-->)[^])*-->\s*$/, "");
+	let fence = false;
+	return text
+		.split("\n")
+		.map((line) => {
+			if (/^\s*(```|~~~)/.test(line)) {
+				fence = !fence;
+				return line;
+			}
+			if (fence) return line;
+			return line
+				.split(/(`+[^`]*`+)/)
+				.map((part, k) =>
+					k % 2
+						? part
+						: part.replace(
+								/\\([!-/:-@[-`{-~])|<\/?[A-Za-z][A-Za-z0-9-]*(?:\s[^<>]*)?\/?>/g,
+								(m, escaped) => escaped ?? "",
+							),
+				)
+				.join("");
+		})
+		.join("\n");
+};
 if (restCreate && !s.loggedOut) {
 	const [, n] = restCreate;
 	if (args.slice(4).join(" ") !== "-H Accept: application/vnd.github.full+json --input -") {

@@ -1,3 +1,4 @@
+import { unescapeTags } from "../shared/markdownEscape.js";
 import type {
 	CodeAnchor,
 	DiffSide,
@@ -309,7 +310,8 @@ export function mapComments(
 			pending,
 			// carbonless's marker (marker.ts) stays on the server.
 			html: stripMarkerHtml(str(c.bodyHTML)),
-			body: stripMarker(str(c.body)),
+			// As typed: without the escapes carbonless posts (markdownEscape.ts).
+			body: unescapeTags(stripMarker(str(c.body))),
 			// GitHub's plain-text rendering; the raw body is a fallback.
 			text: stripMarker(str(c.bodyText) || str(c.body)),
 			editedAt: str(c.lastEditedAt) || null,
@@ -500,7 +502,7 @@ export function mapThreads(
 			excerpt: text.replace(/\s+/g, " ").trim().slice(0, 200),
 			html: stripMarkerHtml(str(first.bodyHTML)),
 			// The raw markdown: suggested changes come from it exactly.
-			body: stripMarker(str(first.body)),
+			body: unescapeTags(stripMarker(str(first.body))),
 			createdAt,
 			lastActivityAt,
 			author: firstLogin,

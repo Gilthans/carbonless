@@ -98,6 +98,13 @@ describe("fake gh", () => {
 		await expect(view).resolves.toMatchObject({ headOid: "a".repeat(40) });
 	});
 
+	it("refuses a repository name from gh that isn't a plain path segment (cache paths are built from it)", async () => {
+		scenario({ nameWithOwner: "acme/.." });
+		await expect(resolvePrRef("12", tmp)).rejects.toThrow(
+			/Could not find the GitHub repository/,
+		);
+	});
+
 	it("fails repo view outside a GitHub repository", async () => {
 		await expect(resolvePrRef("12", tmp)).rejects.toThrow(/git remotes/);
 	});

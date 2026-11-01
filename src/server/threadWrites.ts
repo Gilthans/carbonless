@@ -1,3 +1,4 @@
+import { escapeTags, unescapeTags } from "../shared/markdownEscape.js";
 import {
 	type DeleteAnswer,
 	type EditRequest,
@@ -138,7 +139,7 @@ export function replyProblem(req: unknown): string | null {
 	if (typeof r.body !== "string" || !r.body.trim()) {
 		return "A reply can't be blank";
 	}
-	if (r.body.length > MAX_REPLY) {
+	if (escapeTags(r.body).length > MAX_REPLY) {
 		return `A reply is at most ${MAX_REPLY} characters`;
 	}
 	if (typeof r.attemptedAt !== "string") return "attemptedAt must be a string";
@@ -171,7 +172,8 @@ export function replyProblem(req: unknown): string | null {
 
 /**
  * The comment in a thread's content that is this reply already: by the
- * viewer, the same body (line ends and trailing whitespace aside), and
+ * viewer, the same body as posted (escapeTags; line ends and trailing
+ * whitespace aside), and
  * new to the client when it first sent the reply (not in `known`), nor
  * another reply this session posted (`claimed`). The oldest such one;
  * null if none. No clocks: the client's may be off.
@@ -183,7 +185,7 @@ export function findReply(
 	known: readonly string[],
 	claimed: ReadonlySet<string> = new Set(),
 ): Json | null {
-	const want = normal(body);
+	const want = normal(escapeTags(body));
 	const old = new Set(known);
 	return (
 		arr(obj(obj(content).comments).nodes)
@@ -433,7 +435,13 @@ export async function replyToThread(
 	if (commentId === null) throw gone("GitHub gave no comment to reply to");
 	let reply: PostedReply;
 	try {
-		reply = await postReply(target.ref, commentId, req.body, target.prUrl);
+		// GitHub would drop the tags in `List<String>`: escaped, as typed.
+		reply = await postReply(
+			target.ref,
+			commentId,
+			escapeTags(req.body),
+			target.prUrl,
+		);
 	} catch (error) {
 		if (error instanceof WriteRefusedError) {
 			if (error.code === "pending-review" && error.url) {
@@ -487,7 +495,7 @@ export function editProblem(req: unknown): string | null {
 	if (typeof r.body !== "string" || !r.body.trim()) {
 		return "A comment can't be blank: delete it instead";
 	}
-	if (r.body.length > MAX_REPLY) {
+	if (escapeTags(r.body).length > MAX_REPLY) {
 		return `A comment is at most ${MAX_REPLY} characters`;
 	}
 	if (typeof r.from !== "string") return "from must be a string";
@@ -770,15 +778,18 @@ export async function editComment(
 		return withEdited(base, commentId, text);
 	};
 	// Compared without carbonless's marker, which the page never sees,
-	// and put back on the new text (marker.ts).
+	// and put back on the new text (marker.ts). The new text as it would
+	// be posted (escapeTags); `from` as the page had it (unescaped).
 	const shown = normal(stripMarker(rest.body));
-	if (shown === normal(req.body)) {
+	const typed = escapeTags(req.body);
+	if (shown === normal(typed)) {
 		return update(target, threadId, answerNodes(now, rest), now, commentId);
 	}
-	if (!req.force && shown !== normal(req.from)) {
+	const from = normal(req.from);
+	if (!req.force && shown !== from && normal(unescapeTags(shown)) !== from) {
 		throw changed(answerNodes(now, rest), commentId);
 	}
-	const body = req.body + markerText(rest.body);
+	const body = typed + markerText(rest.body);
 	if (body.length > MAX_REPLY) {
 		throw new WriteRefusedError(
 			`A comment is at most ${MAX_REPLY - (body.length - req.body.length)} characters`,
