@@ -1,6 +1,6 @@
 {
 	"name": "carbonless-review",
-	"version": "0.1.0-rc.2",
+	"version": "0.1.0-rc.3",
 	"description": "Local, AI-assisted tool for reading the changes between two git commits",
 	"license": "UNLICENSED",
 	"repository": {
