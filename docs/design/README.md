@@ -325,7 +325,9 @@ decides where; nothing else does):
   keeps the cluster's rail at its left, and the cluster's floating controls
   stop above it while it passes, then float again below it. After a Refresh the previous read's threads stay until the
   new one's land; threads that couldn't be read show a `warn` "Threads not
-  shown" notice under the progress bar, never an empty diff.
+  shown" notice under the progress bar, never an empty diff. While they
+  load, "Loading comments" spins at the progress bar's end, atop the file
+  tree and in place of an open file's bubble.
 - A line in a collapsed gap: the hidden run's row has the bubble ("on
   hidden lines 20–79"); tapping it loads the thread's lines (from the
   nearer loaded edge when it is within 200 lines, else just a few around
