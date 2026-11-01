@@ -23,6 +23,7 @@ import {
 	type GitFixture,
 	testGitEnv,
 } from "../../test/git-fixture";
+import { settleGh } from "../../test/settle-gh";
 import {
 	clonePath,
 	ensureClone,
@@ -30,7 +31,7 @@ import {
 	fetchPr,
 	withRepoLock,
 } from "./clone";
-import { GhError, ghIdle, type PrMeta } from "./gh";
+import { GhError, type PrMeta } from "./gh";
 
 // Real git and fake-gh processes: see GIT_TEST_TIMEOUTS.
 vi.setConfig(GIT_TEST_TIMEOUTS);
@@ -124,14 +125,17 @@ describe("private clone", () => {
 	});
 
 	afterEach(async () => {
-		await ghIdle();
-		for (const [k, v] of Object.entries(saved)) {
-			if (v === undefined) delete process.env[k];
-			else process.env[k] = v;
+		try {
+			await settleGh(process.env.CRB_FAKE_GH);
+		} finally {
+			for (const [k, v] of Object.entries(saved)) {
+				if (v === undefined) delete process.env[k];
+				else process.env[k] = v;
+			}
+			for (const k of Object.keys(saved)) delete saved[k];
+			fixture.cleanup();
+			rmSync(tmp, { recursive: true, force: true });
 		}
-		for (const k of Object.keys(saved)) delete saved[k];
-		fixture.cleanup();
-		rmSync(tmp, { recursive: true, force: true });
 	});
 
 	it("puts clones under XDG_CACHE_HOME, owner and repo lowercased", () => {

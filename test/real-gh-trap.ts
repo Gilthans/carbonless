@@ -37,9 +37,11 @@ exit 1
 	);
 	chmodSync(gh, 0o755);
 	process.env.PATH = `${dir}${delimiter}${process.env.PATH ?? ""}`;
+	// The trap stays on disk until this process exits: teardown runs before
+	// the workers are gone, and a late gh must still land on the trap.
+	process.on("exit", () => rmSync(dir, { recursive: true, force: true }));
 	return () => {
 		const calls = existsSync(log) ? readFileSync(log, "utf8") : "";
-		rmSync(dir, { recursive: true, force: true });
 		if (calls) {
 			throw new Error(`Tests reached the real gh:\n${calls}`);
 		}

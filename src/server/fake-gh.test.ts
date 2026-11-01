@@ -14,6 +14,7 @@ import {
 	writeScenario,
 } from "../../test/fake-gh/scenario";
 import { GIT_TEST_TIMEOUTS, testGitEnv } from "../../test/git-fixture";
+import { settleGh } from "../../test/settle-gh";
 import { GhError, WriteRefusedError } from "./errors";
 import {
 	deleteComment,
@@ -24,7 +25,6 @@ import {
 	fetchThreadContents,
 	fetchThreadSummaries,
 	fetchTimeline,
-	ghIdle,
 	patchComment,
 	postReply,
 	postResolved,
@@ -64,13 +64,16 @@ describe("fake gh", () => {
 	});
 
 	afterEach(async () => {
-		await ghIdle();
-		for (const [k, v] of Object.entries(saved)) {
-			if (v === undefined) delete process.env[k];
-			else process.env[k] = v;
+		try {
+			await settleGh(process.env.CRB_FAKE_GH);
+		} finally {
+			for (const [k, v] of Object.entries(saved)) {
+				if (v === undefined) delete process.env[k];
+				else process.env[k] = v;
+			}
+			for (const k of Object.keys(saved)) delete saved[k];
+			rmSync(tmp, { recursive: true, force: true });
 		}
-		for (const k of Object.keys(saved)) delete saved[k];
-		rmSync(tmp, { recursive: true, force: true });
 	});
 
 	it("is an executable file", () => {

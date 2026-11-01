@@ -181,6 +181,19 @@ describe("thread writes", () => {
 		expect(view[0]?.comments).toHaveLength(3);
 	});
 
+	it("a held reply left unreleased (a test failing first) doesn't hang the fixture's cleanup", async () => {
+		threads({ hold: ["reply"] });
+		const fixtureScenario = process.env.CRB_FAKE_GH;
+		const first = reply("Done").catch((e: unknown) => e);
+		await vi.waitFor(() => expect(writeCalls()).toHaveLength(1), {
+			timeout: 10_000,
+		});
+		// Cleanup opens the gate and waits for the write, within its bound.
+		await pr.cleanup();
+		expect(process.env.CRB_FAKE_GH).not.toBe(fixtureScenario);
+		await first;
+	});
+
 	it("a resend while the first attempt still runs waits for it and doesn't post again", async () => {
 		// The first attempt's post is held until the resend is in.
 		threads({ hold: ["reply"] });

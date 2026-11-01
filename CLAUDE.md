@@ -121,10 +121,10 @@ checking against a real PR): `docs/product-rules.md`.
 - Tests never call the real `gh`: `test/fake-gh/gh` serves a scenario
   (`test/fake-gh/scenario.ts`) via `$CRB_FAKE_GH`. The e2e harness
   (`e2e/fixtures.ts`) wires it onto `PATH` and drives the built CLI. In
-  unit tests a trap `gh` sits first on `PATH` behind the fake
+  unit tests a trap `gh` sits on `PATH` behind the fake
   (`test/real-gh-trap.ts`) and fails the run, naming the test, when a call
-  gets past the fake: put a fake gh in front of `PATH`, never replace it,
-  and `await ghIdle()` (`src/server/gh.ts`) before restoring the env.
+  gets past the fake: prepend a fake gh to `PATH`, never replace `PATH`,
+  and `await settleGh()` (`test/settle-gh.ts`) before restoring the env.
 - Tests must pass on a loaded machine (several suites often run at once). A
   test of a loading state holds the fake gh's answer (scenario `hold`, then
   `release()` once it has seen the spinner) rather than racing a `…DelayMs`;

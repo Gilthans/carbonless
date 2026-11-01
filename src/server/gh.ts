@@ -162,18 +162,19 @@ function problemLine(text: string): string {
 	return fatal ?? lines[0] ?? "";
 }
 
-/** gh calls (runGh, runWrite) started and not yet finished. */
-let inFlight = 0;
+/** gh calls (runGh, runWrite) started and not yet finished: their args. */
+const inFlight = new Set<{ args: string[] }>();
 let idleWaiters: (() => void)[] = [];
 
 /** Counts a gh call from its start to its end, follow-up gh runs included. */
-async function tracked<T>(call: () => Promise<T>): Promise<T> {
-	inFlight++;
+async function tracked<T>(args: string[], call: () => Promise<T>): Promise<T> {
+	const entry = { args };
+	inFlight.add(entry);
 	try {
 		return await call();
 	} finally {
-		inFlight--;
-		if (inFlight === 0) {
+		inFlight.delete(entry);
+		if (inFlight.size === 0) {
 			const waiters = idleWaiters;
 			idleWaiters = [];
 			for (const w of waiters) w();
@@ -185,15 +186,39 @@ async function tracked<T>(call: () => Promise<T>): Promise<T> {
  * Resolves once no gh call is running, nor starts within a timer tick of
  * the last one ending (a read's next page, a failed read's sibling).
  * Test fixtures await it before they take the fake gh off PATH: a call
- * still going would otherwise end on the real gh.
+ * still going would otherwise end on the real gh. With `timeoutMs`, fails
+ * after that long naming the calls still running (a gate left held).
  */
-export async function ghIdle(): Promise<void> {
-	for (;;) {
-		if (inFlight > 0) {
-			await new Promise<void>((resolve) => idleWaiters.push(resolve));
+export async function ghIdle(timeoutMs?: number): Promise<void> {
+	let timer: NodeJS.Timeout | undefined;
+	const timedOut =
+		timeoutMs === undefined
+			? undefined
+			: new Promise<never>((_, reject) => {
+					timer = setTimeout(() => {
+						const calls = [...inFlight].map(
+							(c) => `gh ${c.args.join(" ").slice(0, 120)}`,
+						);
+						reject(
+							new Error(
+								`gh calls still running after ${timeoutMs / 1000} s:\n${calls.join("\n")}`,
+							),
+						);
+					}, timeoutMs);
+				});
+	const idle = (async () => {
+		for (;;) {
+			if (inFlight.size > 0) {
+				await new Promise<void>((resolve) => idleWaiters.push(resolve));
+			}
+			await new Promise((resolve) => setTimeout(resolve, 0));
+			if (inFlight.size === 0) return;
 		}
-		await new Promise((resolve) => setTimeout(resolve, 0));
-		if (inFlight === 0) return;
+	})();
+	try {
+		await (timedOut ? Promise.race([idle, timedOut]) : idle);
+	} finally {
+		clearTimeout(timer);
 	}
 }
 
@@ -201,7 +226,7 @@ export function runGh(
 	args: string[],
 	opts: Parameters<typeof runGhNow>[1] = {},
 ): Promise<string> {
-	return tracked(() => runGhNow(args, opts));
+	return tracked(args, () => runGhNow(args, opts));
 }
 
 async function runGhNow(
@@ -1410,7 +1435,7 @@ function runWrite(
 	special: (a: WriteAnswer) => WriteRefusedError | null,
 	input?: string,
 ): Promise<string> {
-	return tracked(() => runWriteNow(args, what, special, input));
+	return tracked(args, () => runWriteNow(args, what, special, input));
 }
 
 async function runWriteNow(
