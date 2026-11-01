@@ -20,6 +20,9 @@ import {
 	type ThreadsView,
 	type ThreadUpdate,
 	type TimelineView,
+	type VerdictAnswer,
+	type VerdictFacts,
+	type VerdictRequest,
 	type WriteError,
 } from "../shared/types";
 
@@ -190,6 +193,12 @@ export const deleteComment = (threadId: string, commentId: string) =>
 	request<ThreadUpdate | ThreadGone>(commentPath(threadId, commentId), {
 		method: "DELETE",
 	});
+
+/** Submits the reviewer's verdict to GitHub: one review (Final Verdict). */
+export const postVerdict = (req: VerdictRequest) =>
+	post<VerdictAnswer>("/api/verdict", req);
+
+export const fetchVerdict = () => request<VerdictFacts>("/api/verdict");
 
 export const postRefresh = () => post<SessionInfo>("/api/refresh");
 export const fetchHead = () => request<SessionInfo>("/api/head");
@@ -600,6 +609,17 @@ export const revalidateOverviewQuery = (fetchedAt: string, maxAge: number) =>
 		},
 		staleTime: Number.POSITIVE_INFINITY,
 	});
+
+/**
+ * What GitHub says about merging, for the Final Verdict tab: read the first
+ * time something shows it (never on first open), again on Refresh and once
+ * a verdict lands.
+ */
+export const verdictQuery = queryOptions({
+	queryKey: ["verdict"],
+	queryFn: fetchVerdict,
+	staleTime: Number.POSITIVE_INFINITY,
+});
 
 export const reviewQuery = queryOptions({
 	queryKey: ["review"],

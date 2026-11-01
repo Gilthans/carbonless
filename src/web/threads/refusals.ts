@@ -1,4 +1,5 @@
 import type { QueryClient } from "@tanstack/react-query";
+import type { VerdictEvent } from "../../shared/types";
 
 /**
  * Writes GitHub refused, per PR, kept until the reviewer retries them
@@ -16,7 +17,8 @@ export type RefusedAction =
 	| "Unresolve"
 	| "Edit"
 	| "Delete"
-	| "New comment";
+	| "New comment"
+	| "Verdict";
 
 export interface StoredRefusal {
 	/** The thread's lane (`new:<clientId>` for a new thread). */
@@ -33,6 +35,8 @@ export interface StoredRefusal {
 	force?: boolean;
 	/** A resolve or unresolve: the state intended. */
 	resolved?: boolean;
+	/** A verdict (lane `verdict`): the event pressed; its message is the verdict draft's. */
+	event?: VerdictEvent;
 	/** When GitHub refused it (ISO). */
 	at: string;
 }
@@ -50,7 +54,13 @@ const ACTIONS: readonly unknown[] = [
 	"Edit",
 	"Delete",
 	"New comment",
+	"Verdict",
 ];
+const EVENTS: readonly unknown[] = [
+	"APPROVE",
+	"COMMENT",
+	"REQUEST_CHANGES",
+] satisfies VerdictEvent[];
 const optString = (v: unknown) => v === undefined || typeof v === "string";
 const optBool = (v: unknown) => v === undefined || typeof v === "boolean";
 
@@ -69,7 +79,10 @@ function isStored(value: unknown): value is StoredRefusal {
 		optString(r.url) &&
 		optString(r.commentId) &&
 		optBool(r.force) &&
-		optBool(r.resolved)
+		optBool(r.resolved) &&
+		(r.event === undefined || EVENTS.includes(r.event)) &&
+		// A verdict can't be retried without its event.
+		(r.action !== "Verdict" || r.event !== undefined)
 	);
 }
 

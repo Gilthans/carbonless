@@ -729,6 +729,7 @@ describe("overlayThreads", () => {
 			busy: true,
 			lost: true,
 			refused: [],
+			verdict: null,
 			gone: new Set<string>(),
 		};
 		const out = overlayThreads(

@@ -82,3 +82,47 @@ describe("RefusalStore", () => {
 		expect(broken.durable()).toBe(false);
 	});
 });
+
+describe("RefusalStore: a refused verdict", () => {
+	it("keeps its event across a reload, and skips one without a known event", () => {
+		const storage = memoryStorage();
+		const a = new RefusalStore(() => storage);
+		a.bind(KEY);
+		a.put(
+			refusal({
+				threadId: "verdict",
+				key: "verdict",
+				action: "Verdict",
+				event: "REQUEST_CHANGES",
+				code: "pending-review",
+				url: "https://github.com/o/r/pull/1/files",
+				resolved: undefined,
+			}),
+		);
+		const b = new RefusalStore(() => storage);
+		b.bind(KEY);
+		expect(b.get()).toEqual([
+			expect.objectContaining({
+				threadId: "verdict",
+				action: "Verdict",
+				event: "REQUEST_CHANGES",
+				code: "pending-review",
+			}),
+		]);
+		storage.setItem(
+			KEY,
+			JSON.stringify([
+				refusal({ threadId: "verdict", key: "verdict", action: "Verdict" }),
+				refusal({
+					threadId: "verdict",
+					key: "verdict",
+					action: "Verdict",
+					event: "MERGE" as never,
+				}),
+			]),
+		);
+		const c = new RefusalStore(() => storage);
+		c.bind(KEY);
+		expect(c.get()).toEqual([]);
+	});
+});

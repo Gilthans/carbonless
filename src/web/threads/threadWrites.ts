@@ -16,6 +16,9 @@ import type {
 	ThreadGone,
 	ThreadsView,
 	ThreadUpdate,
+	VerdictAnswer,
+	VerdictEvent,
+	VerdictRequest,
 } from "../../shared/types";
 import {
 	ApiError,
@@ -26,7 +29,9 @@ import {
 	postReply,
 	postResolved,
 	postThread,
+	postVerdict,
 	sessionQuery,
+	verdictQuery,
 } from "../api";
 import {
 	DELAYED_MS,
@@ -34,6 +39,12 @@ import {
 	RETRY_DELAYS_MS,
 	STALL_ATTEMPTS,
 } from "../files/stateSync";
+import {
+	type VerdictSending,
+	type VerdictStore,
+	verdictDraftFor,
+	verdictKey,
+} from "../verdict/verdictDraft";
 import {
 	type DraftStore,
 	draftsFor,
@@ -49,6 +60,9 @@ import {
 	refusalsKey,
 	type StoredRefusal,
 } from "./refusals";
+
+/** The verdict's lane: one verdict at a time, refused ones listed as "Verdict". */
+export const VERDICT_LANE = "verdict";
 
 /** A random id for a reply; unique enough where randomUUID is missing (plain http). */
 function newClientId(): string {
@@ -98,6 +112,19 @@ type Op =
 	  }
 	| { kind: "delete"; commentId: string; again?: boolean }
 	| {
+			kind: "verdict";
+			/** The press, as kept across reloads: every resend sends it again. */
+			sending: VerdictSending;
+			/** A resend after a failed or unknown attempt: the server looks for it first. */
+			retry: boolean;
+			/** Resent on load, left unconfirmed by an earlier page. */
+			resumed?: boolean;
+			/** The reviewer discarded it: not sent again (one already out may land). */
+			discarded?: boolean;
+			/** A refused verdict's Retry: landing settles the refusal. */
+			again?: boolean;
+	  }
+	| {
 			kind: "create";
 			clientId: string;
 			/** A resend after a failed or unknown attempt: the server looks for it first. */
@@ -130,6 +157,8 @@ export interface WriteFailure {
 	force?: boolean;
 	/** A refused resolve or unresolve: the state intended. */
 	resolved?: boolean;
+	/** A refused verdict: the event pressed (its message is back in the verdict draft). */
+	event?: VerdictEvent;
 	/** When GitHub refused it (ISO; a repeat keeps the first): the list's order. */
 	at: string;
 	/** Retried: on its way again, listed until GitHub has it. */
@@ -191,6 +220,8 @@ export interface ThreadWritesState {
 	lost: boolean;
 	/** Every refused write, oldest first (RefusedWrites). */
 	refused: readonly RefusedWrite[];
+	/** A verdict pressed and not yet on GitHub: shown at once, as sending. */
+	verdict: { event: VerdictEvent; attemptedAt: string } | null;
 	/**
 	 * Threads whose last comment the viewer deleted: gone on GitHub, still
 	 * listed for FADE_MS (an Overview card fades) before the page drops them.
@@ -234,6 +265,14 @@ export interface ThreadWritesDeps {
 	created?: (answer: NewThreadAnswer) => void;
 	/** Where refusals are kept across reloads (none: memory only). */
 	refusals?: RefusalStore;
+	/** Submits a verdict (`POST /api/verdict`). */
+	verdict?: (req: VerdictRequest) => Promise<VerdictAnswer>;
+	/** A verdict GitHub took: into the page. */
+	verdictLanded?: (answer: VerdictAnswer, event: VerdictEvent) => void;
+	/** The verdict's message and the verdict on its way, kept across reloads. */
+	verdictDraft?: VerdictStore;
+	/** The head a verdict goes on now (the session's snapshot head). */
+	verdictCommit?: () => string;
 }
 
 interface Lane {
@@ -253,22 +292,24 @@ interface Lane {
 }
 
 const actionOf = (op: Op): WriteAction =>
-	op.kind === "create"
-		? "New comment"
-		: op.kind === "reply"
-			? "Reply"
-			: op.kind === "edit"
-				? "Edit"
-				: op.kind === "delete"
-					? "Delete"
-					: op.resolved
-						? "Resolve"
-						: "Unresolve";
+	op.kind === "verdict"
+		? "Verdict"
+		: op.kind === "create"
+			? "New comment"
+			: op.kind === "reply"
+				? "Reply"
+				: op.kind === "edit"
+					? "Edit"
+					: op.kind === "delete"
+						? "Delete"
+						: op.resolved
+							? "Resolve"
+							: "Unresolve";
 
 /** A write's slot for its refusal: a thread has one reply box and one resolve state. */
 export const refusalKey = (
 	op:
-		| { kind: "reply" | "create" | "resolve" }
+		| { kind: "reply" | "create" | "resolve" | "verdict" }
 		| { kind: "edit" | "delete"; commentId: string },
 ): string =>
 	op.kind === "edit" || op.kind === "delete"
@@ -308,6 +349,7 @@ const stored = (threadId: string, f: WriteFailure): StoredRefusal => ({
 	...(f.commentId ? { commentId: f.commentId } : {}),
 	...(f.force ? { force: true } : {}),
 	...(f.resolved !== undefined ? { resolved: f.resolved } : {}),
+	...(f.event ? { event: f.event } : {}),
 });
 
 const asError = (error: unknown) =>
@@ -388,6 +430,54 @@ export class ThreadWrites {
 	}
 
 	/**
+	 * Submits the reviewer's verdict on `commit` (one review on GitHub),
+	 * with `body` when a message is included (needed for COMMENT and
+	 * REQUEST_CHANGES: blank, nothing is sent). It shows at once as
+	 * sending, kept across reloads (verdictDraft) until GitHub has it; the
+	 * message leaves the box meanwhile. One at a time: a press while one is
+	 * on its way sends nothing (false).
+	 */
+	submitVerdict(event: VerdictEvent, body: string | undefined, commit: string) {
+		const store = this.#deps.verdictDraft;
+		const text = body?.trim() ? body : undefined;
+		if (event !== "APPROVE" && !text) return false;
+		if (this.#verdictOut() || store?.sending()) return false;
+		const lane = this.#lane(VERDICT_LANE);
+		this.#settle(VERDICT_LANE, lane, refusalKey({ kind: "verdict" }));
+		this.#push(lane, {
+			kind: "verdict",
+			sending: this.#newVerdict(event, text, commit),
+			retry: false,
+		});
+		return true;
+	}
+
+	/** A verdict is in line, on its way or waiting out a backoff. */
+	#verdictOut(): boolean {
+		return (this.#lanes.get(VERDICT_LANE)?.ops.length ?? 0) > 0;
+	}
+
+	/** A new verdict's identity, kept (and the message taken from the box) until GitHub has it. */
+	#newVerdict(
+		event: VerdictEvent,
+		body: string | undefined,
+		commit: string,
+	): VerdictSending {
+		const sending: VerdictSending = {
+			clientId: (this.#deps.newId ?? newClientId)(),
+			event,
+			...(body ? { body } : {}),
+			commit,
+			attemptedAt: this.#stamp(),
+			sentOnce: false,
+		};
+		const store = this.#deps.verdictDraft;
+		store?.setSending(sending);
+		if (body) store?.setText("");
+		return sending;
+	}
+
+	/**
 	 * Resolves or unresolves the thread. Back to the state GitHub has with
 	 * none of it on its way (an undo, a refused one let go): nothing is sent,
 	 * and what waited in line for it is dropped.
@@ -449,9 +539,15 @@ export class ThreadWrites {
 	 */
 	sendable(
 		threadId: string,
-		f: Pick<WriteFailure, "action" | "commentId" | "resolved">,
+		f: Pick<WriteFailure, "action" | "commentId" | "resolved" | "event">,
 	): boolean {
 		const { drafts } = this.#deps;
+		if (f.action === "Verdict") {
+			// Approve goes without a message; the others need one.
+			const store = this.#deps.verdictDraft;
+			if (!f.event || !this.#deps.verdict || store?.sending()) return false;
+			return f.event === "APPROVE" || (store?.text().trim() ?? "") !== "";
+		}
 		if (f.action === "Reply") return drafts.text(threadId).trim() !== "";
 		if (f.action === "New comment") {
 			const d = drafts.newThread(threadId.slice(NEW_THREAD.length));
@@ -480,7 +576,20 @@ export class ThreadWrites {
 		const failed = lane.refused.get(key);
 		if (!failed || failed.retrying || !this.sendable(threadId, failed)) return;
 		let op: Op | null = null;
-		if (failed.action === "Reply") {
+		if (failed.action === "Verdict" && failed.event) {
+			// Refused for good: a new verdict (a new client id, today's head),
+			// with what the message box holds now.
+			const text = this.#deps.verdictDraft?.text() ?? "";
+			op = {
+				kind: "verdict",
+				sending: this.#newVerdict(
+					failed.event,
+					text.trim() ? text : undefined,
+					this.#deps.verdictCommit?.() ?? "",
+				),
+				retry: false,
+			};
+		} else if (failed.action === "Reply") {
 			const text = this.#deps.drafts.text(threadId);
 			if (text.trim()) {
 				// Refused for good: a new reply to GitHub (a new client id, and
@@ -524,6 +633,24 @@ export class ThreadWrites {
 	 * land, so it shows once.
 	 */
 	resume(): void {
+		const verdict = this.#deps.verdictDraft?.sending();
+		if (verdict) {
+			const lane = this.#lane(VERDICT_LANE);
+			const known = lane.ops.some(
+				(op) =>
+					op.kind === "verdict" && op.sending.clientId === verdict.clientId,
+			);
+			if (!known) {
+				// Cut short by a reload: it may have landed, so the server looks first.
+				lane.ops.push({
+					kind: "verdict",
+					sending: verdict,
+					retry: true,
+					resumed: true,
+				});
+				if (lane.ops.length === 1) lane.since = Date.now();
+			}
+		}
 		for (const d of this.#deps.drafts.get()) {
 			if (d.create?.sending) {
 				const { clientId } = d.create;
@@ -594,7 +721,10 @@ export class ThreadWrites {
 		// A draft on its way (sent again, from another tab) isn't this
 		// refusal's any more: it stays, to land or be refused anew.
 		const { drafts } = this.#deps;
-		if (failed.action === "Reply") drafts.setText(threadId, "");
+		if (failed.action === "Verdict") {
+			const store = this.#deps.verdictDraft;
+			if (!store?.sending()) store?.setText("");
+		} else if (failed.action === "Reply") drafts.setText(threadId, "");
 		else if (failed.action === "New comment") {
 			const d = drafts.newThread(threadId.slice(NEW_THREAD.length));
 			if (!d?.create?.sending) drafts.discard(threadId);
@@ -656,7 +786,16 @@ export class ThreadWrites {
 		const dropped: string[] = [];
 		const edits: string[] = [];
 		const created: string[] = [];
+		let verdict = false;
 		lane.ops = lane.ops.filter((op, i) => {
+			if (op.kind === "verdict" && op.resumed) {
+				verdict = true;
+				if (i === 0 && lane.sending) {
+					op.discarded = true;
+					return true;
+				}
+				return false;
+			}
 			if (op.kind === "edit" && op.resumed) {
 				edits.push(op.commentId);
 				if (i === 0 && lane.sending) {
@@ -683,7 +822,7 @@ export class ThreadWrites {
 		});
 		// The one waiting out a backoff is gone: the next goes now.
 		if (
-			dropped.length + edits.length + created.length > 0 &&
+			dropped.length + edits.length + created.length + (verdict ? 1 : 0) > 0 &&
 			!lane.sending &&
 			lane.timer !== undefined
 		) {
@@ -697,6 +836,7 @@ export class ThreadWrites {
 		for (const at of dropped) this.#deps.drafts.confirm(threadId, at);
 		for (const id of edits) this.#deps.drafts.dropEdit(id);
 		for (const id of created) this.#deps.drafts.discard(newThreadKey(id));
+		if (verdict) this.#deps.verdictDraft?.setSending(null);
 		this.#prune(threadId);
 		this.#changed();
 		this.#pump();
@@ -952,6 +1092,7 @@ export class ThreadWrites {
 
 	async #send(threadId: string, lane: Lane, op: Op) {
 		if (op.kind === "create") return this.#sendCreate(threadId, lane, op);
+		if (op.kind === "verdict") return this.#sendVerdict(threadId, lane, op);
 		let update: ThreadUpdate | ThreadGone;
 		try {
 			if (op.kind === "reply") {
@@ -1069,6 +1210,63 @@ export class ThreadWrites {
 		this.#pump();
 	}
 
+	/** A verdict's post: the press as kept, resent as it was. */
+	async #sendVerdict(
+		laneId: string,
+		lane: Lane,
+		op: Extract<Op, { kind: "verdict" }>,
+	) {
+		const store = this.#deps.verdictDraft;
+		let answer: VerdictAnswer;
+		const { sending } = op;
+		try {
+			if (op.discarded) throw new Error("Discarded");
+			if (!this.#deps.verdict) throw new Error("Can't send a verdict here");
+			const req: VerdictRequest = {
+				clientId: sending.clientId,
+				event: sending.event,
+				...(sending.body ? { body: sending.body } : {}),
+				commit: sending.commit,
+				attemptedAt: sending.attemptedAt,
+				// Out once already (this page or an earlier one): look first.
+				retry:
+					op.retry ||
+					(store?.sending()?.clientId === sending.clientId &&
+						store.sending()?.sentOnce === true),
+			};
+			const out = this.#deps.verdict(req);
+			store?.markSent(sending.clientId);
+			answer = await out;
+		} catch (error) {
+			lane.sending = false;
+			this.#inFlight--;
+			this.#failed(laneId, lane, op, error);
+			return;
+		}
+		lane.sending = false;
+		this.#inFlight--;
+		if (store?.sending()?.clientId === sending.clientId) {
+			store.setSending(null);
+		}
+		try {
+			this.#deps.verdictLanded?.(answer, sending.event);
+		} catch {
+			// Showing it failed; GitHub has it all the same.
+		}
+		if (op.again) this.#settle(laneId, lane, refusalKey(op));
+		// GitHub took a review: no pending review stands in the way.
+		this.#pendingReview = null;
+		this.#deps.posted?.();
+		lane.ops.shift();
+		lane.attempt = 0;
+		lane.waiting = null;
+		lane.lastTransient = null;
+		lane.since = Date.now();
+		this.#prune(laneId);
+		this.#changed();
+		this.#pump();
+	}
+
 	/** GitHub's answer into the page, and what it settles. */
 	#landed(threadId: string, op: Op, answer: ThreadUpdate | ThreadGone) {
 		try {
@@ -1090,7 +1288,10 @@ export class ThreadWrites {
 
 	#failed(threadId: string, lane: Lane, op: Op, error: unknown) {
 		if (
-			(op.kind === "reply" || op.kind === "edit" || op.kind === "create") &&
+			(op.kind === "reply" ||
+				op.kind === "edit" ||
+				op.kind === "create" ||
+				op.kind === "verdict") &&
 			op.discarded
 		) {
 			// Discarded while out: it didn't land, or a reload shows it did.
@@ -1107,7 +1308,13 @@ export class ThreadWrites {
 		}
 		if (isTransient(error)) {
 			// It may have landed: the resend asks GitHub first.
-			if (op.kind === "reply" || op.kind === "create") op.retry = true;
+			if (
+				op.kind === "reply" ||
+				op.kind === "create" ||
+				op.kind === "verdict"
+			) {
+				op.retry = true;
+			}
 			const wait =
 				RETRY_DELAYS_MS[Math.min(lane.attempt, RETRY_DELAYS_MS.length - 1)];
 			lane.attempt++;
@@ -1155,8 +1362,16 @@ export class ThreadWrites {
 				? { current: write.current }
 				: {}),
 			...(op.kind === "edit" && op.force ? { force: true } : {}),
+			...(op.kind === "verdict" ? { event: op.sending.event } : {}),
 		};
-		if (op.kind === "edit") {
+		if (op.kind === "verdict") {
+			// Not on GitHub: its message back in the box, as typed.
+			this.#deps.verdictDraft?.returnToBox(op.sending.clientId);
+			if (write?.code === "pending-review" && write.url) {
+				this.#pendingReview = { url: write.url };
+			}
+			this.#refuse(threadId, lane, failure);
+		} else if (op.kind === "edit") {
 			// Back in its editor, as typed: nothing typed is lost.
 			this.#deps.drafts.markSaving(op.commentId, false);
 			this.#refuse(threadId, lane, failure);
@@ -1196,6 +1411,16 @@ export class ThreadWrites {
 		let busy = false;
 		let lost = false;
 		const refused: RefusedWrite[] = [];
+		const verdictOp = this.#lanes
+			.get(VERDICT_LANE)
+			?.ops.find((op) => op.kind === "verdict" && !op.discarded);
+		const verdict =
+			verdictOp?.kind === "verdict"
+				? {
+						event: verdictOp.sending.event,
+						attemptedAt: verdictOp.sending.attemptedAt,
+					}
+				: null;
 		for (const [threadId, lane] of this.#lanes) {
 			const head = lane.ops[0];
 			let delayed = false;
@@ -1257,7 +1482,8 @@ export class ThreadWrites {
 				resumed:
 					(head?.kind === "reply" ||
 						head?.kind === "edit" ||
-						head?.kind === "create") &&
+						head?.kind === "create" ||
+						head?.kind === "verdict") &&
 					head.resumed === true &&
 					!head.discarded,
 				delayed,
@@ -1279,6 +1505,7 @@ export class ThreadWrites {
 			busy,
 			lost,
 			refused: refused.sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0)),
+			verdict,
 			gone: this.#goneIds,
 		};
 	}
@@ -1419,6 +1646,56 @@ export function dropThread(client: QueryClient, threadId: string): void {
 	);
 }
 
+/**
+ * A verdict GitHub took, into the page at once (the tab's and the
+ * Overview's "you" review), then everything it changes read again:
+ * the overview ("Who's on it"), the verdict facts and the timeline.
+ */
+export function applyVerdict(client: QueryClient, answer: VerdictAnswer): void {
+	const { review } = answer;
+	const viewer = client.getQueryData(sessionQuery.queryKey)?.viewer ?? "";
+	client.setQueryData(verdictQuery.queryKey, (facts) =>
+		facts
+			? {
+					...facts,
+					reviews: [
+						{
+							author: viewer,
+							state: review.state,
+							submittedAt: review.submittedAt,
+							commitId: review.commitId,
+							you: true,
+							bot: false,
+						},
+						...facts.reviews.filter((r) => !r.you),
+					],
+				}
+			: facts,
+	);
+	client.setQueryData(overviewQuery.queryKey, (o) => {
+		if (!o) return o;
+		const mine = o.reviews.find((r) => r.you);
+		const opinion = review.state === "COMMENTED" ? mine?.opinion : review.state;
+		return {
+			...o,
+			reviews: [
+				{
+					author: mine?.author ?? viewer,
+					state: review.state,
+					...(opinion ? { opinion } : {}),
+					submittedAt: review.submittedAt,
+					you: true,
+					bot: false,
+				},
+				...o.reviews.filter((r) => !r.you),
+			],
+		};
+	});
+	void client.invalidateQueries({ queryKey: overviewQuery.queryKey });
+	void client.invalidateQueries({ queryKey: verdictQuery.queryKey });
+	void client.invalidateQueries({ queryKey: ["timeline"] });
+}
+
 /** The page's one ThreadWrites (and its drafts), per query client. */
 export function threadWritesFor(client: QueryClient): ThreadWrites {
 	let writes = pages.get(client);
@@ -1435,6 +1712,11 @@ export function threadWritesFor(client: QueryClient): ThreadWrites {
 			theirs: (threadId, comment) => applyComment(client, threadId, comment),
 			drafts: draftsFor(client),
 			refusals: refusalsFor(client),
+			verdict: postVerdict,
+			verdictDraft: verdictDraftFor(client),
+			verdictCommit: () =>
+				client.getQueryData(sessionQuery.queryKey)?.snapshotHead ?? "",
+			verdictLanded: (answer) => applyVerdict(client, answer),
 			confirmedResolved: (threadId) => {
 				const lists = client.getQueriesData<ThreadsView>({
 					queryKey: ["threads"],
@@ -1502,18 +1784,20 @@ export function useThreadWritesSetup(): void {
 	const pr = session.data?.pr;
 	const key = pr ? draftsKey(pr) : null;
 	const refusedKey = pr ? refusalsKey(pr) : null;
+	const verdictDraft = pr ? verdictKey(pr) : null;
 	const on = useWritesOn();
 	const resumed = useRef(false);
 	useEffect(() => {
-		if (!key || !refusedKey) return;
+		if (!key || !refusedKey || !verdictDraft) return;
 		writes.drafts.bind(key);
 		refusalsFor(client).bind(refusedKey);
+		verdictDraftFor(client).bind(verdictDraft);
 		if (on && !resumed.current) {
 			resumed.current = true;
 			writes.restore();
 			writes.resume();
 		}
-	}, [writes, client, key, refusedKey, on]);
+	}, [writes, client, key, refusedKey, verdictDraft, on]);
 }
 
 /** Threads as the reviewer intends them: a resolve not yet confirmed shows at once. */
