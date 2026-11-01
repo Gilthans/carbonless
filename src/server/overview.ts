@@ -671,8 +671,14 @@ export function mapOverview(
 		b[1].submittedAt.localeCompare(a[1].submittedAt),
 	);
 	const reviews: Review[] = reviewers.map(([key, review]) => {
-		const opinion = opinions.get(key)?.state;
-		return opinion ? { ...review, opinion } : review;
+		const op = opinions.get(key);
+		// Dismissed, then a comment of theirs: Comment withdrew it (as
+		// verdict.ts standingOf), so the comment alone stands.
+		const withdrawn =
+			op?.state === "DISMISSED" &&
+			review.state === "COMMENTED" &&
+			review.submittedAt > op.at;
+		return op && !withdrawn ? { ...review, opinion: op.state } : review;
 	});
 
 	const last = new Map<

@@ -423,7 +423,14 @@ changed" don't fit beside Refresh; the links keep their full names).
   (the reviewer's own first, five then "N more", bots as one count).
   Unknown is grey ("Required approvals unknown"), never left out. Last, one
   muted row for what's fine; "Ready to merge" (green, linking to GitHub)
-  only when GitHub says so and nothing is listed.
+  only when GitHub says so and nothing is listed (checks passing, no
+  conflicts; who approved is under Reviews).
+- **Reviews**, between the list and the card, only when someone reviewed:
+  a row per reviewer with `REVIEW_ICON`'s icon and colour (dismissed rows
+  muted), the name linking to the review on GitHub, a "you" chip on the
+  viewer's row (first), the time and "earlier push" muted on the right;
+  bots in their own list under a stronger rule. The header counts approvals
+  (`ok` check) and change requests (`bad`) as icon + number.
 - **The verdict card**, also after the last file in Files changed (with
   "Blockers: N" linking to the tab): the reviewer's verdict on GitHub
   ("You approved 2 hours ago · on an earlier push"; a clock while one is
@@ -431,7 +438,10 @@ changed" don't fit beside Refresh; the links keep their full names).
   (neutral) and Request changes (`bad`), each with the owner's tooltip. On
   a phone the three share one row, icon over a short label ("Changes").
   Disabled ones stay focusable, their tooltip saying why. Progress below
-  the title is muted information, never a condition.
+  the title is muted information, never a condition. Comment's tooltip
+  adds "Replaces your approval" (or request for changes) when one stands;
+  a dismissal GitHub refused shows as a `warn` notice in the card
+  ("Commented; your request for changes still stands: <GitHub's message>").
 
 ## Timeline (Overview)
 

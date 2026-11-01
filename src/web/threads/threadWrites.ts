@@ -228,6 +228,11 @@ export interface ThreadWritesState {
 	/** A verdict pressed and not yet on GitHub: shown at once, as sending. */
 	verdict: { event: VerdictEvent; attemptedAt: string } | null;
 	/**
+	 * The last comment this page sent posted, but the opinion it withdraws
+	 * still stands on GitHub (VerdictAnswer.stillStands); until the next press.
+	 */
+	verdictStillStands: NonNullable<VerdictAnswer["stillStands"]> | null;
+	/**
 	 * Threads whose last comment the viewer deleted: gone on GitHub, still
 	 * listed for FADE_MS (an Overview card fades) before the page drops them.
 	 */
@@ -389,6 +394,7 @@ export class ThreadWrites {
 	readonly #lanes = new Map<string, Lane>();
 	#inFlight = 0;
 	#pendingReview: { url: string } | null = null;
+	#stillStands: ThreadWritesState["verdictStillStands"] = null;
 	#lastAttempt = 0;
 	#delayTimer: ReturnType<typeof setTimeout> | undefined;
 	/** Threads gone on GitHub, fading before the page drops them. */
@@ -450,6 +456,7 @@ export class ThreadWrites {
 		if (this.#verdictOut() || store?.sending()) return false;
 		const lane = this.#lane(VERDICT_LANE);
 		const sending = this.#newVerdict(event, text, commit);
+		this.#stillStands = null;
 		// The new press supersedes a refused one; its message stays the reviewer's.
 		this.#settleVerdict(lane, sending.body);
 		this.#push(lane, { kind: "verdict", sending, retry: false });
@@ -1294,6 +1301,9 @@ export class ThreadWrites {
 		if (store?.sending()?.clientId === sending.clientId) {
 			store.setSending(null);
 		}
+		// A comment landed and the opinion it withdraws still stands: said
+		// once, as a notice; never "not posted" (the comment is on GitHub).
+		this.#stillStands = answer.stillStands ?? null;
 		try {
 			this.#deps.verdictLanded?.(answer, sending.event);
 		} catch {
@@ -1570,6 +1580,7 @@ export class ThreadWrites {
 			lost,
 			refused: refused.sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0)),
 			verdict,
+			verdictStillStands: this.#stillStands,
 			gone: this.#goneIds,
 		};
 	}
@@ -1718,28 +1729,40 @@ export function dropThread(client: QueryClient, threadId: string): void {
 export function applyVerdict(client: QueryClient, answer: VerdictAnswer): void {
 	const { review } = answer;
 	const viewer = client.getQueryData(sessionQuery.queryKey)?.viewer ?? "";
-	client.setQueryData(verdictQuery.queryKey, (facts) =>
-		facts
-			? {
-					...facts,
-					reviews: [
-						{
-							author: viewer,
-							state: review.state,
-							submittedAt: review.submittedAt,
-							commitId: review.commitId,
-							you: true,
-							bot: false,
-						},
-						...facts.reviews.filter((r) => !r.you),
-					],
-				}
-			: facts,
-	);
+	client.setQueryData(verdictQuery.queryKey, (facts) => {
+		if (!facts) return facts;
+		// A comment whose withdrawal failed: the opinion still stands, as shown.
+		const standing = facts.reviews.find(
+			(r) => r.you && r.state === answer.stillStands?.state,
+		);
+		if (standing) return facts;
+		return {
+			...facts,
+			reviews: [
+				{
+					author: viewer,
+					state: review.state,
+					submittedAt: review.submittedAt,
+					commitId: review.commitId,
+					...(review.url ? { url: review.url } : {}),
+					you: true,
+					bot: false,
+				},
+				...facts.reviews.filter((r) => !r.you),
+			],
+		};
+	});
 	client.setQueryData(overviewQuery.queryKey, (o) => {
 		if (!o) return o;
 		const mine = o.reviews.find((r) => r.you);
-		const opinion = review.state === "COMMENTED" ? mine?.opinion : review.state;
+		// A comment keeps the opinion before it, unless it withdrew it (or
+		// it was dismissed: a comment after that reads as the comment).
+		const opinion =
+			review.state !== "COMMENTED"
+				? review.state
+				: answer.dismissed || mine?.opinion === "DISMISSED"
+					? undefined
+					: mine?.opinion;
 		return {
 			...o,
 			reviews: [

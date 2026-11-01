@@ -463,6 +463,163 @@ describe("Final Verdict tab", () => {
 		);
 	});
 
+	it("lists every reviewer's verdict: yours first, the others newest first, bots apart; earlier pushes said", async () => {
+		const at = (
+			author: string,
+			state: VerdictFacts["reviews"][number]["state"],
+			submittedAt: string,
+			more: Partial<VerdictFacts["reviews"][number]> = {},
+		) => ({
+			author,
+			state,
+			submittedAt,
+			commitId: HEAD,
+			you: false,
+			bot: false,
+			...more,
+		});
+		renderApp({
+			"/api/verdict": ok({
+				...facts,
+				reviews: [
+					at("renovate", "COMMENTED", "2026-01-06T00:00:00Z", { bot: true }),
+					at("maya", "APPROVED", "2026-01-05T00:00:00Z", {
+						url: "https://github.com/acme/widget/pull/12#pullrequestreview-5",
+					}),
+					at("ravi", "CHANGES_REQUESTED", "2026-01-04T00:00:00Z"),
+					at("octo", "COMMENTED", "2026-01-02T00:00:00Z", { you: true }),
+					at("dima", "APPROVED", "2026-01-01T00:00:00Z", { commitId: OLD }),
+					at("lee", "DISMISSED", "2026-01-01T00:00:00Z"),
+				],
+			}),
+		});
+		const section = await screen.findByTestId("verdict-reviews");
+		const people = within(section).getByRole("list", { name: "Reviews" });
+		const rows = within(people).getAllByTestId("review-row");
+		const names = ["octo", "maya", "ravi", "dima", "lee"];
+		expect(
+			rows.map((r) => names.find((n) => r.textContent?.startsWith(n))),
+		).toEqual(["octo", "maya", "ravi", "dima", "lee"]);
+		expect(rows[0]).toHaveAttribute("data-you", "true");
+		expect(rows[0]).toHaveTextContent("you");
+		expect(rows.map((r) => r.dataset.state)).toEqual([
+			"COMMENTED",
+			"APPROVED",
+			"CHANGES_REQUESTED",
+			"APPROVED",
+			"DISMISSED",
+		]);
+		expect(within(rows[1] as HTMLElement).getByRole("link")).toHaveAttribute(
+			"href",
+			"https://github.com/acme/widget/pull/12#pullrequestreview-5",
+		);
+		expect(within(rows[2] as HTMLElement).queryByRole("link")).toBeNull();
+		expect(
+			rows.filter((r) => within(r).queryByTestId("review-earlier")),
+		).toEqual([rows[3]]);
+		const bots = within(section).getByRole("list", { name: "Bot reviews" });
+		expect(within(bots).getAllByTestId("review-row")).toHaveLength(1);
+		expect(within(bots).getByRole("img", { name: "bot" })).toBeInTheDocument();
+		// The header counts, icon-first.
+		expect(
+			within(section).getByRole("img", { name: "2 approved" }),
+		).toBeInTheDocument();
+		expect(
+			within(section).getByRole("img", { name: "1 requested changes" }),
+		).toBeInTheDocument();
+		// Between the blockers and the card.
+		const blockersList = screen.getByRole("list", { name: "Blockers" });
+		expect(
+			blockersList.compareDocumentPosition(section) &
+				Node.DOCUMENT_POSITION_FOLLOWING,
+		).toBeTruthy();
+		expect(
+			section.compareDocumentPosition(await card()) &
+				Node.DOCUMENT_POSITION_FOLLOWING,
+		).toBeTruthy();
+		// Approvals aren't repeated in the summary row.
+		expect(blockersList).not.toHaveTextContent("approved");
+	});
+
+	it("has no Reviews section when no one reviewed", async () => {
+		renderApp({ "/api/verdict": ok({ ...facts, reviews: [] }) });
+		await screen.findByTestId("github-status");
+		expect(screen.queryByTestId("verdict-reviews")).toBeNull();
+	});
+
+	it("Comment's tip says it replaces a standing approval or request for changes", async () => {
+		const mine = (state: VerdictFacts["reviews"][number]["state"]) =>
+			ok({
+				...facts,
+				reviews: [
+					{
+						author: "octo",
+						state,
+						submittedAt: "2026-01-04T00:00:00Z",
+						commitId: HEAD,
+						you: true,
+						bot: false,
+					},
+				],
+			});
+		renderApp({ "/api/verdict": mine("CHANGES_REQUESTED") });
+		await waitFor(async () =>
+			expect(await button("Comment")).toHaveAccessibleDescription(
+				`${VERDICT_TIPS.COMMENT}Replaces your request for changes`,
+			),
+		);
+		cleanup();
+		renderApp({ "/api/verdict": mine("APPROVED") });
+		await waitFor(async () =>
+			expect(await button("Comment")).toHaveAccessibleDescription(
+				`${VERDICT_TIPS.COMMENT}Replaces your approval`,
+			),
+		);
+		cleanup();
+		renderApp({ "/api/verdict": mine("COMMENTED") });
+		await screen.findByTestId("verdict-reviews");
+		expect(await button("Comment")).toHaveAccessibleDescription(
+			VERDICT_TIPS.COMMENT,
+		);
+	});
+
+	it("a comment whose withdrawal failed: a yellow notice that the opinion stands, nothing under not posted", async () => {
+		renderApp({
+			"/api/verdict": verdictRoute(
+				(req) =>
+					new Response(
+						JSON.stringify({
+							...landed(req.event === "APPROVE" ? "APPROVED" : "COMMENTED"),
+							...(req.event === "COMMENT"
+								? {
+										stillStands: {
+											state: "CHANGES_REQUESTED",
+											message: "Resource not accessible by integration",
+										},
+									}
+								: {}),
+						} satisfies VerdictAnswer),
+						{ status: 200 },
+					),
+			),
+		});
+		const user = userEvent.setup();
+		await user.click(await button("Comment"));
+		await user.type(screen.getByRole("textbox", { name: "Message" }), "Ok");
+		await user.click(await button("Comment"));
+		const notice = await screen.findByTestId("verdict-still-stands");
+		expect(notice).toHaveTextContent(
+			"Commented; your request for changes still stands: Resource not accessible by integration",
+		);
+		expect(screen.queryByTestId("refused-write")).toBeNull();
+		expect(posted).toHaveLength(1);
+		// The next press clears it.
+		await user.click(await button("Approve"));
+		await waitFor(() =>
+			expect(screen.queryByTestId("verdict-still-stands")).toBeNull(),
+		);
+	});
+
 	it("shows progress as information only", async () => {
 		renderApp();
 		expect(await screen.findByTestId("verdict-info")).toHaveTextContent(

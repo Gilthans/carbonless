@@ -55,7 +55,7 @@ export const isViewer = (login: string, viewer: string) =>
  * Everything between the PR and merging, as one list: GitHub's own
  * requirements first (tagged, red while unmet), then what a careful
  * reviewer would want settled (yellow), then one muted green row for
- * what's fine. Nothing unmet and GitHub saying CLEAN/HAS_HOOKS: one green
+ * what's fine (checks passing, no conflicts; who approved is under Reviews). Nothing unmet and GitHub saying CLEAN/HAS_HOOKS: one green
  * "Ready to merge" row; an empty list alone never says ready (the rule may
  * be unreadable). Merged or closed: nothing.
  */
@@ -280,11 +280,7 @@ export function blockers(
 	if (passing > 0) {
 		fine.push(`${passing} ${passing === 1 ? "check" : "checks"} passing`);
 	}
-	if (approved.length > 0) {
-		fine.push(
-			`${approved.map((r) => (r.you ? "you" : r.author)).join(", ")} approved`,
-		);
-	}
+	// Who approved is listed under Reviews (VerdictPage), not here.
 	if (overview.mergeable === "MERGEABLE" && state !== "DIRTY") {
 		fine.push("no conflicts");
 	}

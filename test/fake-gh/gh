@@ -636,6 +636,9 @@ const restReviews =
 	args[0] === "api" && args[1] !== "-X"
 		? /^repos\/[^/]+\/[^/]+\/pulls\/(\d+)\/reviews$/.exec(args[1] ?? "")
 		: null;
+/** A review node as GraphQL lists it: with its `url` (REST's html_url) unless it has one. */
+const withUrl = (n, r, i) =>
+	r.state === "PENDING" || r.url ? r : { ...r, url: restReview(n, r, i).html_url };
 /** A review node as REST shows it (`PRR_<pr>_<index>` unless it has an id). */
 const restReview = (n, r, i) => ({
 	id: r.databaseId ?? 9000 + i,
@@ -647,6 +650,34 @@ const restReview = (n, r, i) => ({
 	commit_id: r.commit?.oid ?? null,
 	html_url: `https://github.com/${s.nameWithOwner ?? "acme/widget"}/pull/${n}#pullrequestreview-${r.databaseId ?? 9000 + i}`,
 });
+/** Whether anyone's standing opinion (their latest opinionated review) requests changes. */
+function changesRequested(pr) {
+	const latest = new Map();
+	for (const r of pr.graphql?.reviews ?? []) {
+		if (!["APPROVED", "CHANGES_REQUESTED", "DISMISSED"].includes(r.state)) continue;
+		latest.set(r.author?.login?.toLowerCase(), r.state);
+	}
+	return [...latest.values()].includes("CHANGES_REQUESTED");
+}
+/**
+ * GitHub's reviewDecision after a review write that changed whether
+ * changes are requested (`before`): CHANGES_REQUESTED once someone asks;
+ * when the last such opinion goes (dismissed, replaced), what it was
+ * before (default REVIEW_REQUIRED). A scenario's own decision otherwise stays.
+ */
+function decide(pr, before) {
+	const after = changesRequested(pr);
+	if (after === before) return;
+	pr.view ??= {};
+	if (after) {
+		pr.decisionBefore = pr.view.reviewDecision ?? null;
+		pr.view.reviewDecision = "CHANGES_REQUESTED";
+	} else if (pr.view.reviewDecision === "CHANGES_REQUESTED") {
+		pr.view.reviewDecision =
+			pr.decisionBefore === undefined ? "REVIEW_REQUIRED" : pr.decisionBefore;
+		delete pr.decisionBefore;
+	}
+}
 if (restReviewPost && !s.loggedOut) {
 	const [, n] = restReviewPost;
 	if (args.slice(4).join(" ") !== "--input -") unsupported();
@@ -692,7 +723,9 @@ if (restReviewPost && !s.loggedOut) {
 		commit: { oid: req.commit_id },
 	};
 	pr.graphql ??= {};
+	const blocked = changesRequested(pr);
 	pr.graphql.reviews = [...reviews, review];
+	decide(pr, blocked);
 	pr.graphql.timelineItems = [
 		...(pr.graphql.timelineItems ?? []),
 		{
@@ -718,6 +751,43 @@ if (restReviews && !s.loggedOut) {
 	const pages = [];
 	for (let i = 0; i < all.length; i += size) pages.push(all.slice(i, i + size));
 	print(pages.length ? pages : [[]]);
+}
+// A dismissal: `api -X PUT repos/<o>/<r>/pulls/<n>/reviews/<id>/dismissals
+// --input -` (by REST id), GitHub's texts as checked on carbonless-scratch
+// (2026-11-01). The review becomes DISMISSED; a review of the viewer's
+// only unless the scenario says otherwise (GitHub lets anyone with write
+// access dismiss any review).
+const restDismiss =
+	args[0] === "api" && args[1] === "-X" && args[2] === "PUT"
+		? /^repos\/[^/]+\/[^/]+\/pulls\/(\d+)\/reviews\/(\d+)\/dismissals$/.exec(args[3] ?? "")
+		: null;
+if (restDismiss && !s.loggedOut) {
+	const [, n, id] = restDismiss;
+	if (args.slice(4).join(" ") !== "--input -") unsupported();
+	const req = JSON.parse(readFileSync(0, "utf8"));
+	const pr = s.prs[n];
+	if (!pr) httpFail(404, "Not Found");
+	const f = failNextFor("dismiss");
+	if (f && !f.afterWrite) failAs(f);
+	delay("dismiss", 0);
+	if (typeof req.message !== "string" || !req.message) {
+		httpFail(422, 'Invalid request.\n\n"message" wasn\'t supplied.');
+	}
+	const reviews = pr.graphql?.reviews ?? [];
+	const i = reviews.findIndex((r, k) => (r.databaseId ?? 9000 + k) === Number(id));
+	if (i < 0) httpFail(404, "Not Found");
+	const review = reviews[i];
+	if (review.state !== "APPROVED" && review.state !== "CHANGES_REQUESTED") {
+		httpFail(422, "Validation Failed", [
+			`Can not dismiss a ${review.state.toLowerCase()} pull request review`,
+		]);
+	}
+	const blocked = changesRequested(pr);
+	review.state = "DISMISSED";
+	decide(pr, blocked);
+	save();
+	if (f) failAs(f);
+	print(restReview(n, review, i));
 }
 // The base branch's rule (verdict.ts ruleOf): `api repos/<o>/<r>/branches/<b>`,
 // `…/branches/<b>/protection` and `api repos/<o>/<r>/rules/branches/<b>
@@ -786,7 +856,7 @@ if (ruleRead && !s.loggedOut) {
 	}
 	print([list]);
 }
-if (args[0] === "api" && args[1] === "-X" && !restReply && !restComment && !restCreate && !restReviewPost) unsupported();
+if (args[0] === "api" && args[1] === "-X" && !restReply && !restComment && !restCreate && !restReviewPost && !restDismiss) unsupported();
 if (restReply && !s.loggedOut) {
 	const [, n, id] = restReply;
 	if (args.slice(4).join(" ") !== "-H Accept: application/vnd.github.full+json --input -") {
@@ -957,7 +1027,7 @@ const known = [
 	"repo clone",
 	"pr view",
 ];
-if (!known.includes(cmd) && !restPull && !restReply && !restComment && !restGetComment && !restCreate && !restCompare && !restReviewPost && !restReviews && !ruleRead) {
+if (!known.includes(cmd) && !restPull && !restReply && !restComment && !restGetComment && !restCreate && !restCompare && !restReviewPost && !restReviews && !restDismiss && !ruleRead) {
 	unsupported();
 }
 
@@ -1058,7 +1128,7 @@ switch (cmd) {
 									requestedReviewer: r,
 								})),
 							},
-							reviews: page(reviews),
+							reviews: page(reviews.map((r, i) => withUrl(f.number, r, i))),
 							commits: {
 								nodes: [
 									{
@@ -1311,6 +1381,7 @@ switch (cmd) {
 		}
 		if (!pr) notFound(f.number);
 		let all = pr.graphql?.[conn] ?? [];
+		if (conn === "reviews") all = all.map((r, i) => withUrl(f.number, r, i));
 		if (conn === "reviewThreads") {
 			delay("threads", s.threadsDelayMs);
 			const raw = all;

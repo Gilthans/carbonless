@@ -431,7 +431,7 @@ const QUERIES = {
 	// The commit a review was made on dates the PR's head (as-of mode).
 	reviews: connectionQuery(
 		"reviews",
-		`${AUTHOR} state submittedAt commit { oid }`,
+		`${AUTHOR} state submittedAt url commit { oid }`,
 	),
 	commits: connectionQuery(
 		"commits",
@@ -523,7 +523,7 @@ const verdictQuery = (
       }
       reviews(first: 100) {
         pageInfo { hasNextPage endCursor }
-        nodes { ${AUTHOR} state submittedAt commit { oid } }
+        nodes { ${AUTHOR} state submittedAt url commit { oid } }
       }
       commits(last: 1) {
         nodes {
@@ -2052,12 +2052,16 @@ export async function fetchRuleReads(
 export interface RestReview {
 	/** Its GraphQL node id. */
 	nodeId: string;
+	/** Its REST id (what a dismissal goes to); 0 when GitHub gave none. */
+	restId: number;
 	login: string;
 	state: string;
 	body: string;
 	/** "" while pending. */
 	submittedAt: string;
 	commitId: string;
+	/** The review on GitHub (`html_url`); "" when GitHub gave none. */
+	url: string;
 }
 
 function restReviewFrom(raw: unknown): RestReview | null {
@@ -2066,11 +2070,13 @@ function restReviewFrom(raw: unknown): RestReview | null {
 	if (!str(r.node_id)) return null;
 	return {
 		nodeId: str(r.node_id),
+		restId: typeof r.id === "number" ? r.id : 0,
 		login: str(rec(r.user).login),
 		state: str(r.state),
 		body: str(r.body),
 		submittedAt: str(r.submitted_at),
 		commitId: str(r.commit_id),
+		url: str(r.html_url),
 	};
 }
 
@@ -2131,6 +2137,43 @@ export async function postReview(
 		throw new GhError("gh returned an unexpected response for the verdict");
 	}
 	return posted;
+}
+
+/** What a dismissal of the reviewer's own opinion says on GitHub. */
+export const DISMISS_MESSAGE = "Changed to a comment";
+
+/**
+ * Dismisses review `restId` of PR `ref` (REST `PUT …/reviews/{id}/dismissals`,
+ * `event: DISMISS`, DISMISS_MESSAGE): how Comment withdraws the viewer's
+ * standing approval or change request. One already dismissed is done
+ * (GitHub's 422 "Can not dismiss a dismissed pull request review", checked
+ * on carbonless-scratch 2026-11-01); other refusals by writeRefusal, a
+ * GhError when it may land if sent again.
+ */
+export async function dismissReview(ref: PrRef, restId: number): Promise<void> {
+	try {
+		await runWrite(
+			[
+				"api",
+				"-X",
+				"PUT",
+				`repos/${ref.owner}/${ref.repo}/pulls/${ref.number}/reviews/${restId}/dismissals`,
+				"--input",
+				"-",
+			],
+			"the dismissal",
+			() => null,
+			JSON.stringify({ message: DISMISS_MESSAGE, event: "DISMISS" }),
+		);
+	} catch (error) {
+		if (
+			error instanceof WriteRefusedError &&
+			/dismiss a dismissed/i.test(error.message)
+		) {
+			return;
+		}
+		throw error;
+	}
 }
 
 /** Every review of PR `ref` by REST (what a verdict's retry looks among), oldest first. */

@@ -63,7 +63,26 @@ unresolving one, editing or deleting one of the viewer's comments in one,
 and submitting the review verdict: Approve, Comment or Request changes,
 one submitted review per press (the Final Verdict tab and the end of Files
 changed; `src/server/threadWrites.ts`, `src/server/newThreads.ts`,
-`src/server/verdict.ts`).
+`src/server/verdict.ts`). Comment over the viewer's own standing Approve or
+Request changes also dismisses that review (REST `PUT
+…/reviews/{id}/dismissals`, message "Changed to a comment"), as the
+owner's tooltip defines Comment: "No approval, but approval by someone
+else acceptable". GitHub keeps the latest APPROVED or CHANGES_REQUESTED
+review standing through later comments, so without the dismissal the
+switch wouldn't happen.
+
+- **Withdrawing an opinion by Comment.** The comment posts first, then the
+  dismissal, so a failed dismissal never leaves the reviewer with neither.
+  The review dismissed is the viewer's latest opinionated one, from a fresh
+  REST read at send time, and only if it predates the comment (never anyone
+  else's, never a newer verdict). A dismissal GitHub refuses is still a
+  success (the comment is on GitHub): a yellow notice says the opinion still
+  stands, with GitHub's message, and nothing goes to "not posted". A resend
+  under the same client id never posts again but finishes the dismissal; one
+  already dismissed counts as done (GitHub's 422 "Can not dismiss a
+  dismissed pull request review", carbonless-scratch 2026-11-01). Reading
+  reviews, a dismissed opinion followed by a comment of the same reviewer
+  reads as that comment.
 
 - **One explicit action, one write.** Every write is one click (or the send
   shortcut) on one thread. Nothing posts, resolves or retries a refused write

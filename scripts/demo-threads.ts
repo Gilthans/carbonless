@@ -79,7 +79,10 @@ try {
 		graph.reviewThreads = demoThreads(made.repo);
 		graph.timelineItems = demoTimeline(made.repo.shas);
 		// What blocks the merge (the Final Verdict tab).
-		const verdict = demoVerdict(made.repo.shas.at(-1) ?? "");
+		const verdict = demoVerdict(
+			made.repo.shas.at(-1) ?? "",
+			made.repo.shas.at(-2),
+		);
 		const pr = s.prs[PR_NUMBER];
 		if (pr) pr.view = { ...pr.view, ...verdict.view };
 		graph.reviews = verdict.reviews;

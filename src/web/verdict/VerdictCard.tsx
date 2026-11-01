@@ -1,4 +1,5 @@
 import {
+	AlertIcon,
 	CheckIcon,
 	ClockIcon,
 	CommentIcon,
@@ -42,6 +43,26 @@ export const VERDICT_TIPS: Record<VerdictEvent, string> = {
 };
 
 export const OWN_PR_TIP = "Authors can't approve their own PR";
+
+/** The viewer's standing opinion, as Comment's tooltip and its notice name it. */
+const OPINION_NAME = {
+	APPROVED: "approval",
+	CHANGES_REQUESTED: "request for changes",
+} as const;
+
+/**
+ * The viewer's approval or change request standing on GitHub (Comment
+ * withdraws it): the verdict read's, else the Overview's opinion.
+ */
+export function standingOpinion(
+	facts: VerdictFacts | undefined,
+	overview: PrOverview,
+): keyof typeof OPINION_NAME | null {
+	const state = facts
+		? facts.reviews.find((r) => r.you)?.state
+		: overview.reviews.find((r) => r.you)?.opinion;
+	return state === "APPROVED" || state === "CHANGES_REQUESTED" ? state : null;
+}
 
 const BUTTONS: {
 	event: VerdictEvent;
@@ -196,6 +217,19 @@ export function VerdictCard(props: {
 		off ??
 		(sending ? "Sending your verdict" : null) ??
 		(overview.youAuthor && event !== "COMMENT" ? OWN_PR_TIP : null);
+	const standing = standingOpinion(props.facts, overview);
+	const tipOf = (event: VerdictEvent) =>
+		event === "COMMENT" && standing ? (
+			// Text nodes, not an element: a hidden tip's description keeps them.
+			<>
+				{VERDICT_TIPS.COMMENT}
+				<br />
+				{`Replaces your ${OPINION_NAME[standing]}`}
+			</>
+		) : (
+			VERDICT_TIPS[event]
+		);
+	const stillStands = writes.verdictStillStands;
 	const older =
 		!off &&
 		session.snapshotHead !== "" &&
@@ -275,6 +309,19 @@ export function VerdictCard(props: {
 			{overview.writes === "on" && overview.state === "OPEN" && (
 				<WriteWarnings pr={overview} threads={undefined} />
 			)}
+			{stillStands && (
+				<p
+					data-testid="verdict-still-stands"
+					role="status"
+					className="flex items-start gap-1.5 rounded-md border border-warn/40 bg-warn/10 px-3 py-2 text-sm text-warn"
+				>
+					<AlertIcon size={16} aria-hidden className="mt-0.5 shrink-0" />
+					<span className="min-w-0 break-words">
+						Commented; your {OPINION_NAME[stillStands.state]} still stands:{" "}
+						{stillStands.message}
+					</span>
+				</p>
+			)}
 			{older && (
 				<p
 					data-testid="verdict-older"
@@ -315,7 +362,7 @@ export function VerdictCard(props: {
 				{BUTTONS.map((b) => {
 					const reason = reasonOf(b.event);
 					return (
-						<Tooltip key={b.event} content={reason ?? VERDICT_TIPS[b.event]}>
+						<Tooltip key={b.event} content={reason ?? tipOf(b.event)}>
 							{(trigger) => (
 								<button
 									type="button"

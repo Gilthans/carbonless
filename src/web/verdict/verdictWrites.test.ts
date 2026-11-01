@@ -1,3 +1,4 @@
+import { QueryClient } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
 	ThreadUpdate,
@@ -9,7 +10,11 @@ import { ApiError } from "../api";
 import { DELAYED_MS, RETRY_DELAYS_MS } from "../files/stateSync";
 import { DraftStore } from "../threads/drafts";
 import { RefusalStore } from "../threads/refusals";
-import { ThreadWrites, VERDICT_LANE } from "../threads/threadWrites";
+import {
+	applyVerdict,
+	ThreadWrites,
+	VERDICT_LANE,
+} from "../threads/threadWrites";
 import { VerdictStore } from "./verdictDraft";
 
 function memoryStorage(): Storage {
@@ -452,5 +457,70 @@ describe("ThreadWrites: the verdict", () => {
 		await flush();
 		expect(calls[0]?.req).toMatchObject({ event: "APPROVE", retry: false });
 		expect(calls[0]?.req.body).toBeUndefined();
+	});
+});
+
+describe("applyVerdict: a comment over a standing opinion", () => {
+	const mine = {
+		author: "octo",
+		state: "CHANGES_REQUESTED" as const,
+		submittedAt: "2026-01-01T00:00:00Z",
+		commitId: HEAD,
+		you: true,
+		bot: false,
+	};
+	const setup = () => {
+		const client = new QueryClient();
+		client.setQueryData(["session"], { viewer: "octo" });
+		client.setQueryData(["overview"], {
+			reviews: [
+				{
+					author: "octo",
+					state: "CHANGES_REQUESTED",
+					opinion: "CHANGES_REQUESTED",
+					submittedAt: mine.submittedAt,
+					you: true,
+					bot: false,
+				},
+			],
+		});
+		client.setQueryData(["verdict"], { reviews: [mine], head: HEAD });
+		return client;
+	};
+	const comment = (more: Partial<VerdictAnswer>): VerdictAnswer => ({
+		review: {
+			id: "R2",
+			state: "COMMENTED",
+			submittedAt: "2026-01-02T00:00:00Z",
+			commitId: HEAD,
+			body: "Ok",
+		},
+		...more,
+	});
+	const you = (client: QueryClient, key: string) =>
+		(
+			client.getQueryData([key]) as {
+				reviews: { you: boolean; state: string; opinion?: string }[];
+			}
+		).reviews.find((r) => r.you);
+
+	it("withdrawn: reads as commented, no opinion left", () => {
+		const client = setup();
+		applyVerdict(client, comment({ dismissed: "CHANGES_REQUESTED" }));
+		expect(you(client, "verdict")?.state).toBe("COMMENTED");
+		expect(you(client, "overview")).toMatchObject({ state: "COMMENTED" });
+		expect(you(client, "overview")?.opinion).toBeUndefined();
+	});
+
+	it("still standing: the opinion stays as shown", () => {
+		const client = setup();
+		applyVerdict(
+			client,
+			comment({
+				stillStands: { state: "CHANGES_REQUESTED", message: "No" },
+			}),
+		);
+		expect(you(client, "verdict")?.state).toBe("CHANGES_REQUESTED");
+		expect(you(client, "overview")?.opinion).toBe("CHANGES_REQUESTED");
 	});
 });

@@ -1102,6 +1102,7 @@ describe("API", () => {
 					submittedAt: expect.any(String),
 					commitId: pr.head(),
 					body: "Fine.",
+					url: "https://github.com/acme/widget/pull/12#pullrequestreview-9000",
 				},
 			});
 			expect((await get("/api/overview")).reviews[0]).toMatchObject({

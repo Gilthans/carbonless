@@ -227,7 +227,8 @@ export interface PrOverview {
 	 * One entry per reviewer, newest activity first. `state` and `submittedAt`
 	 * are the reviewer's latest review; `opinion` is their latest approving,
 	 * blocking or dismissed review, so a later plain comment doesn't hide a
-	 * change request.
+	 * change request; none when it was dismissed and they commented after
+	 * it (Comment withdrew it: `state` says COMMENTED alone).
 	 */
 	reviews: {
 		author: string;
@@ -603,14 +604,18 @@ export interface VerdictFacts {
 	 * Each reviewer's verdict, newest first: their latest opinionated review
 	 * (APPROVED, CHANGES_REQUESTED or DISMISSED, as GitHub's
 	 * latestOpinionatedReviews and PrOverview's `opinion`), else their latest
-	 * COMMENTED one; PENDING ones left out. `submittedAt` and `commitId` are
-	 * the chosen review's. As of the cutoff in as-of views, by the same rule.
+	 * COMMENTED one; PENDING ones left out. A dismissed review followed by a
+	 * comment of theirs reads as that comment (Comment withdrew it). `submittedAt`,
+	 * `commitId` and `url` are the chosen review's. As of the cutoff in as-of
+	 * views, by the same rule.
 	 */
 	reviews: {
 		author: string;
 		state: ReviewVerdict;
 		submittedAt: string;
 		commitId: string;
+		/** The review on GitHub (GraphQL `url`); absent when GitHub gave none. */
+		url?: string;
 		you: boolean;
 		bot: boolean;
 	}[];
@@ -651,7 +656,20 @@ export interface VerdictAnswer {
 		commitId: string;
 		/** Without the marker. */
 		body: string;
+		/** The review on GitHub (REST `html_url`); absent when GitHub gave none. */
+		url?: string;
 	};
+	/**
+	 * COMMENT only, over the viewer's standing approval or change request:
+	 * that opinion, withdrawn (dismissed on GitHub) after the comment posted.
+	 */
+	dismissed?: "APPROVED" | "CHANGES_REQUESTED";
+	/**
+	 * COMMENT only: the comment posted, but dismissing the standing opinion
+	 * failed (no write access, a GitHub error), so it still stands; GitHub's
+	 * message. Still a success: the comment is on GitHub, never resent.
+	 */
+	stillStands?: { state: "APPROVED" | "CHANGES_REQUESTED"; message: string };
 }
 
 /** The longest reply GitHub takes (a comment body's limit). */

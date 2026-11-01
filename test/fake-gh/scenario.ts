@@ -61,10 +61,18 @@ export interface Scenario {
 	failNext?: {
 		/**
 		 * Also a comment's REST edit ("edit") or delete ("delete"), a new
-		 * thread's REST comment ("comment"), or a verdict's REST review
-		 * ("verdict"; stored as submitted with `afterWrite`).
+		 * thread's REST comment ("comment"), a verdict's REST review
+		 * ("verdict"; stored as submitted with `afterWrite`), or a review's
+		 * REST dismissal ("dismiss"; dismissed with `afterWrite`).
 		 */
-		op: "reply" | "resolve" | "edit" | "delete" | "comment" | "verdict";
+		op:
+			| "reply"
+			| "resolve"
+			| "edit"
+			| "delete"
+			| "comment"
+			| "verdict"
+			| "dismiss";
 		status?: number;
 		afterWrite?: boolean;
 		/** GitHub's message (default: the status's usual one). */
@@ -188,9 +196,13 @@ export interface Scenario {
 				 * `reviews` nodes; one by the viewer (`user`) in state "PENDING"
 				 * makes the fake refuse replies, new threads and verdicts as
 				 * GitHub does (422). Each may carry its `commit: { oid }`, `body`,
-				 * `id` (default `PRR_<pr>_<index>`) and REST `databaseId`; a
-				 * verdict (REST `pulls/<n>/reviews`) is appended here, and to the
-				 * timeline.
+				 * `id` (default `PRR_<pr>_<index>`), REST `databaseId` (default
+				 * 9000 + index) and `url`; a verdict (REST `pulls/<n>/reviews`)
+				 * is appended here, and to the timeline; a dismissal (REST
+				 * `…/reviews/<id>/dismissals`) turns one DISMISSED. Either,
+				 * when it changes whether anyone's standing opinion requests
+				 * changes, sets the view's `reviewDecision` as GitHub would
+				 * (CHANGES_REQUESTED, or back to what it was before).
 				 */
 				reviews?: unknown[];
 				/** `commits` nodes: `{ commit: { oid, committedDate, pushedDate } }`. */
@@ -443,7 +455,8 @@ export function threadComment(c: {
  * The calls `hold` can stop, each where its `…DelayMs` waits: `comments`
  * and `threadContent` are reads of threads' comments, `threads` their
  * summaries, `restList` the REST review comments, `comment` a new thread's
- * REST comment, `verdict` a verdict's REST review.
+ * REST comment, `verdict` a verdict's REST review, `dismiss` a review's
+ * REST dismissal.
  */
 export type HoldOp =
 	| "prView"
@@ -457,7 +470,8 @@ export type HoldOp =
 	| "comment"
 	| "edit"
 	| "delete"
-	| "verdict";
+	| "verdict"
+	| "dismiss";
 
 /** Lets the held calls of kind `op` go (the scenario file at `path`, its writes kept). */
 export function release(path: string, op: HoldOp): void {

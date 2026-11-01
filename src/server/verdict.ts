@@ -10,6 +10,7 @@ import {
 import { atOrBefore } from "./asOf.js";
 import { WriteRefusedError } from "./errors.js";
 import {
+	dismissReview,
 	fetchReviews,
 	type PrRef,
 	postReview,
@@ -116,7 +117,9 @@ type Review = VerdictFacts["reviews"][number];
  * latestOpinionatedReviews and PrOverview's `opinion`), else their latest
  * comment; pending ones left out, as of a cutoff those submitted by then;
  * with the commit it was on. A reply after an approval (a COMMENTED
- * review) leaves the approval standing.
+ * review) leaves the approval standing; a comment after a dismissed
+ * review reads as that comment (Comment withdrew the opinion: GitHub
+ * dismissed it, and lists no opinion of theirs any more).
  */
 function latestReviews(
 	nodes: unknown[],
@@ -138,11 +141,13 @@ function latestReviews(
 		if (!name || !REVIEW_STATES.has(state)) continue;
 		if (asOf && !atOrBefore(r.submittedAt, asOf)) continue;
 		const key = name.toLowerCase();
+		const url = str(r.url);
 		const review: Review = {
 			author: name,
 			state: state as ReviewVerdict,
 			submittedAt: str(r.submittedAt),
 			commitId: str(obj(r.commit).oid),
+			...(url ? { url } : {}),
 			you: slugify(name) === slugify(viewer),
 			bot: isBotAuthor(who),
 		};
@@ -150,8 +155,28 @@ function latestReviews(
 		if (state !== "COMMENTED") later(opinionated, key, review);
 	}
 	return [...any.keys()]
-		.map((key) => opinionated.get(key) ?? (any.get(key) as Review))
+		.map((key) => standingOf(opinionated.get(key), any.get(key) as Review))
 		.sort((a, b) => b.submittedAt.localeCompare(a.submittedAt));
+}
+
+/**
+ * A reviewer's verdict from their latest opinionated review and their
+ * latest of any kind: the opinion, unless it was dismissed and they
+ * commented after it (then the comment).
+ */
+export function standingOf<T extends { state: string; submittedAt: string }>(
+	opinion: T | undefined,
+	latest: T,
+): T {
+	if (!opinion) return latest;
+	if (
+		opinion.state === "DISMISSED" &&
+		latest.state === "COMMENTED" &&
+		latest.submittedAt > opinion.submittedAt
+	) {
+		return latest;
+	}
+	return opinion;
 }
 
 /**
@@ -221,6 +246,11 @@ export function mapVerdict(input: {
 export interface VerdictRecord {
 	event: VerdictEvent;
 	answer: VerdictAnswer;
+	/**
+	 * Done: false only for a comment on GitHub whose withdrawal of the
+	 * standing opinion (withdraw) hasn't finished; a resend finishes it.
+	 */
+	settled: boolean;
 }
 
 /** What sending a verdict needs of the session (Session.submitVerdict). */
@@ -354,8 +384,82 @@ const answerOf = (r: RestReview): VerdictAnswer => ({
 		submittedAt: r.submittedAt,
 		commitId: r.commitId,
 		body: stripMarker(r.body),
+		...(r.url ? { url: r.url } : {}),
 	},
 });
+
+type Opinion = "APPROVED" | "CHANGES_REQUESTED";
+
+/**
+ * The viewer's opinion that their comment `commentId` (submitted at
+ * `commentAt`) withdraws: their latest opinionated review (approved,
+ * changes requested or dismissed; pending ones aside), if it is an
+ * approval or a change request from before the comment. Null when there
+ * is none, it is dismissed already, or it came after the comment (a newer
+ * verdict a resend must not undo). Never anyone else's.
+ */
+export function standingOpinion(
+	reviews: readonly RestReview[],
+	viewer: string,
+	commentId: string,
+	commentAt: string,
+): (RestReview & { state: Opinion }) | null {
+	const mine = reviews.filter((r) => slugify(r.login) === slugify(viewer));
+	const at = mine.findIndex((r) => r.nodeId === commentId);
+	const opinions = mine.filter((r) =>
+		["APPROVED", "CHANGES_REQUESTED", "DISMISSED"].includes(r.state),
+	);
+	const latest = opinions.at(-1);
+	if (!latest) return null;
+	// REST lists reviews oldest first; without the comment listed, by time.
+	const after =
+		at >= 0
+			? mine.indexOf(latest) > at
+			: Date.parse(latest.submittedAt) > Date.parse(commentAt);
+	if (after) return null;
+	if (latest.state !== "APPROVED" && latest.state !== "CHANGES_REQUESTED") {
+		return null;
+	}
+	return latest as RestReview & { state: Opinion };
+}
+
+/**
+ * Comment withdraws the viewer's standing opinion (owner's tooltip: "No
+ * approval, but approval by someone else acceptable"): once the comment
+ * is on GitHub, the opinion it leaves behind (standingOpinion, from a
+ * fresh REST read) is dismissed. A dismissal GitHub refuses or fails
+ * leaves the comment posted: the answer says the opinion still stands.
+ * A failed read throws (GhError): the record stays unsettled, so the
+ * resend finishes it without posting again.
+ */
+async function withdraw(
+	target: VerdictTarget,
+	comment: VerdictAnswer,
+): Promise<VerdictAnswer> {
+	const standing = standingOpinion(
+		await fetchReviews(target.ref),
+		target.viewer,
+		comment.review.id,
+		comment.review.submittedAt,
+	);
+	if (!standing) return comment;
+	try {
+		if (!standing.restId) throw new Error("GitHub gave no id for the review");
+		await dismissReview(target.ref, standing.restId);
+		return { ...comment, dismissed: standing.state };
+	} catch (error) {
+		return {
+			...comment,
+			stillStands: {
+				state: standing.state,
+				message:
+					error instanceof Error && error.message
+						? error.message
+						: "GitHub didn't dismiss it",
+			},
+		};
+	}
+}
 
 /**
  * Sends the reviewer's verdict to GitHub, at once, as the gh login: one
@@ -365,8 +469,10 @@ const answerOf = (r: RestReview): VerdictAnswer => ({
  * `req.clientId` is answered as it is, and a retry (`req.retry`) first
  * lists the PR's reviews for it (findLanded), posting only if none is
  * there. Only a post is checked against the head ("stale" otherwise). A
- * pending review of the viewer's refuses it ("pending-review"). The
- * session runs these one at a time per PR (Session.submitVerdict).
+ * pending review of the viewer's refuses it ("pending-review"). A comment
+ * then withdraws the viewer's standing approval or change request
+ * (withdraw), on a resend too until that is done. The session runs these
+ * one at a time per PR (Session.submitVerdict).
  */
 export async function submitVerdict(
 	target: VerdictTarget,
@@ -383,16 +489,14 @@ export async function submitVerdict(
 				"invalid",
 			);
 		}
-		return known.answer;
+		if (known.settled) return known.answer;
+		return settle(target, req, known.answer);
 	}
 	if (req.retry) {
 		const found = await lookFor(target, req);
 		if (found) {
-			const answer = answerOf(found);
-			target.rememberSent(req.clientId, { event: req.event, answer });
 			target.setInDoubt(req.clientId, false);
-			target.landed();
-			return answer;
+			return settle(target, req, answerOf(found));
 		}
 	}
 	if (req.commit !== target.head) {
@@ -426,13 +530,38 @@ export async function submitVerdict(
 		}
 		throw error;
 	}
-	const answer = answerOf(posted);
-	target.rememberSent(req.clientId, { event: req.event, answer });
 	target.setInDoubt(req.clientId, false);
 	// It posted: no pending review stands in the way (any more).
 	target.setPendingReview(null);
+	return settle(target, req, answerOf(posted));
+}
+
+/**
+ * The review `answer` is on GitHub: remembered at once (a resend never
+ * posts it again), then, for a comment, the standing opinion withdrawn,
+ * and remembered as done.
+ */
+async function settle(
+	target: VerdictTarget,
+	req: VerdictRequest,
+	answer: VerdictAnswer,
+): Promise<VerdictAnswer> {
+	const comment = req.event === "COMMENT";
+	target.rememberSent(req.clientId, {
+		event: req.event,
+		answer,
+		settled: !comment,
+	});
 	target.landed();
-	return answer;
+	if (!comment) return answer;
+	const done = await withdraw(target, answer);
+	target.rememberSent(req.clientId, {
+		event: req.event,
+		answer: done,
+		settled: true,
+	});
+	target.landed();
+	return done;
 }
 
 /**

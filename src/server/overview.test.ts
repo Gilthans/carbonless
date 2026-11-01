@@ -105,6 +105,30 @@ describe("mapOverview", () => {
 		]);
 	});
 
+	it("a dismissed opinion followed by a comment of theirs: no opinion (Comment withdrew it); dismissed alone stays", () => {
+		const g = graph();
+		const at = (state: string, login: string, submittedAt: string) => ({
+			author: { login },
+			state,
+			submittedAt,
+		});
+		g.reviews = [
+			at("DISMISSED", "maya", "2026-01-05T00:00:00Z"),
+			at("COMMENTED", "maya", "2026-01-06T00:00:00Z"),
+			at("COMMENTED", "dima", "2026-01-05T00:00:00Z"),
+			at("DISMISSED", "dima", "2026-01-06T00:00:00Z"),
+		];
+		const r = withThreads(view(), g, VIEWER).reviews;
+		expect(r.find((x) => x.author === "maya")).toMatchObject({
+			state: "COMMENTED",
+		});
+		expect(r.find((x) => x.author === "maya")?.opinion).toBeUndefined();
+		expect(r.find((x) => x.author === "dima")).toMatchObject({
+			state: "DISMISSED",
+			opinion: "DISMISSED",
+		});
+	});
+
 	it("recognises the viewer by login or by slug", () => {
 		for (const viewer of ["jdoe_acme", "jdoe-acme", "JDoe_Acme"]) {
 			const r = withThreads(view(), graph(), viewer);

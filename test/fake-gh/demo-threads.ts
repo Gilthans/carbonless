@@ -39,6 +39,9 @@ export const DEMO_PEOPLE = {
 	dima: { login: "dima" },
 	/** Requests changes (the Final Verdict demo); speaks in no thread. */
 	ravi: { login: "ravi", avatarUrl: avatar(3) },
+	/** Approve (the Final Verdict's Reviews): maya on the head, lee earlier. */
+	maya: { login: "maya" },
+	lee: { login: "lee" },
 	author: { login: "octo-author", avatarUrl: avatar(2) },
 	viewer: { login: "Octo_Cat", avatarUrl: avatar(583231) },
 	bot: { login: "renovate", bot: true },
@@ -81,10 +84,14 @@ export function demoTimeline(shas: string[]): unknown[] {
  * What blocks the demo PR from merging (the Final Verdict tab), as fields
  * of its `view` and its `reviews` nodes, once the head is known: a
  * required check failing, one running, three passing; changes requested
- * by ravi (GitHub's decision with it); a code-owner request to a team; the
- * base branch's rule unreadable (no `rule`: protected, hidden).
+ * by ravi (GitHub's decision with it); approvals by maya (on the head)
+ * and lee (on `earlier`, an earlier push); a code-owner request to a
+ * team; the base branch's rule unreadable (no `rule`: protected, hidden).
  */
-export function demoVerdict(head: string): {
+export function demoVerdict(
+	head: string,
+	earlier: string = head,
+): {
 	view: Record<string, unknown>;
 	reviews: unknown[];
 } {
@@ -145,6 +152,20 @@ export function demoVerdict(head: string): {
 				state: "CHANGES_REQUESTED",
 				submittedAt: "2026-01-04T12:00:00Z",
 				body: "The retry needs a cap on the total wait.",
+				commit: { oid: head },
+			},
+			{
+				author: { login: DEMO_PEOPLE.lee.login, __typename: "User" },
+				state: "APPROVED",
+				submittedAt: "2026-01-03T09:00:00Z",
+				body: "",
+				commit: { oid: earlier },
+			},
+			{
+				author: { login: DEMO_PEOPLE.maya.login, __typename: "User" },
+				state: "APPROVED",
+				submittedAt: "2026-01-04T13:00:00Z",
+				body: "",
 				commit: { oid: head },
 			},
 		],

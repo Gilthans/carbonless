@@ -64,7 +64,8 @@ Order, top to bottom:
    - **Threads:** "N unresolved", expanding to one row per thread (file:line or file, opener, last reply, time) linking to the thread on the Overview; the reviewer's own threads first **(call)**. Bot threads count separately, as on the Overview.
    - **Approvals:** "1 of 2 approvals" from the repo's rule, code-owner approval when required (which owners are still missing), requested reviewers with no answer, reviewers whose latest verdict requests changes. GitHub's own `reviewDecision` (APPROVED / REVIEW_REQUIRED / CHANGES_REQUESTED) is the source of truth for the summary; the detail rows explain it.
    - **Branch:** conflicts with the base; behind the base when the rule requires up-to-date; Draft.
-3. **Your verdict:**
+3. **Reviews** (owner, 2026-11-01: "verdict screen should list all existing approvals separately, as well as my own verdict"): one row per reviewer, the viewer's first and marked "you", then the others newest first, bots apart: the state's icon and colour, the name linking to the review on GitHub, when, "earlier push" when on another commit. The header counts approvals and change requests. No reviews: no section. Approvals aren't repeated in the blockers' green summary row; a change request stays a required blocker too. Not on the Files end card.
+4. **Your verdict:**
    - The reviewer's current verdict on GitHub if any ("You approved 2 h ago at abc1234"), with the note when it was on an older head ("on an earlier push").
    - Three buttons, **Approve** (green), **Comment** (neutral) and **Request changes** (red), icon + short text, ≥40px, each with its tooltip (Goals).
    - **Include a message** checkbox; when checked, a text box (same editor as replies, drafts kept across reloads like replies) appears under it and is sent as the review body.
@@ -83,6 +84,7 @@ After the last file, a compact card: the reviewer's current verdict if any, the 
 - GitHub requires a `body` for `REQUEST_CHANGES` and `COMMENT` (REST docs), so neither is sent without text (Goals).
 - **Retry safety:** before resending, carbonless reads the viewer's reviews and treats one with the same event, submitted after the first attempt started, as the landed verdict. A body carries the hidden `crb:v1` marker with the client id (as new threads do) when there is one.
 - The new verdict replaces the shown one at once (optimistic), with the sending clock; Overview's "Who's on it", the Timeline and the tab update when GitHub's answer comes back.
+- **Switching to Comment** (owner, 2026-11-01: "if i request changes and then want to switch it to a comment, it doesn't switch"): GitHub keeps the latest APPROVED or CHANGES_REQUESTED review through later comments, so Comment over the viewer's standing one posts the comment, then dismisses that review ("Changed to a comment"). Comment's tooltip adds "Replaces your approval" / "Replaces your request for changes"; a refused dismissal answers success with `stillStands` and a yellow notice, never "not posted" (`docs/product-rules.md`, "Writing to GitHub").
 - The fake gh gains `pulls/{n}/reviews` POST (and GraphQL fields below) so every case is testable without GitHub.
 
 ## Reading what blocks

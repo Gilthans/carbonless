@@ -548,3 +548,182 @@ test("a reload while a verdict is on its way resends it: one review lands, under
 	expect(posts).toHaveLength(2);
 	expect(submitted(p)).toHaveLength(1);
 });
+
+const reviewRows = (page: Page) =>
+	page
+		.getByTestId("verdict-reviews")
+		.getByRole("list", { name: "Reviews", exact: true })
+		.getByTestId("review-row");
+
+test("switching to Comment withdraws a request for changes: You commented, the Reviews row and the blocker follow", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	const p = await setup(pr);
+	const s = await startCrb();
+	await page.goto(`${s.url}verdict`);
+	const card = tabCard(page);
+	await card.getByRole("checkbox", { name: "Include a message" }).check();
+	await card.getByRole("textbox", { name: "Message" }).fill("Please add tests");
+	await verdictButton(card, "Request changes").click();
+	await expect(card.getByTestId("your-verdict")).toContainText(
+		"You requested changes",
+	);
+	const blocker = page
+		.getByRole("list", { name: "Blockers" })
+		.getByTestId("blocker")
+		.filter({ hasText: "Changes requested by you" });
+	await expect(blocker).toHaveAttribute("data-required", "true");
+	await expect(reviewRows(page).first()).toHaveAttribute(
+		"data-state",
+		"CHANGES_REQUESTED",
+	);
+	// Before pressing, Comment says what it does to the standing opinion.
+	await expect(verdictButton(card, "Comment")).toHaveAccessibleDescription(
+		/Replaces your request for changes/,
+	);
+	await card.getByRole("checkbox", { name: "Include a message" }).check();
+	await card.getByRole("textbox", { name: "Message" }).fill("Fine after all");
+	await verdictButton(card, "Comment").click();
+	await expect(card.getByTestId("your-verdict")).toContainText("You commented");
+	await expect
+		.poll(() => submitted(p).map((r) => r.state))
+		.toEqual(["DISMISSED", "COMMENTED"]);
+	await expect(blocker).toHaveCount(0);
+	await expect(reviewRows(page).first()).toHaveAttribute(
+		"data-state",
+		"COMMENTED",
+	);
+	await expect(reviewRows(page).first()).toHaveAttribute("data-you", "true");
+	// Held through the read: GitHub agrees.
+	await expect(card.getByTestId("your-verdict")).toContainText("You commented");
+	await expect(verdictButton(card, "Comment")).toHaveAccessibleDescription(
+		"No approval, but approval by someone else acceptable",
+	);
+	await expect(page.getByTestId("verdict-still-stands")).toHaveCount(0);
+	await shot(page, "verdict-switched", isMobile);
+});
+
+test("a refused dismissal: the comment posts, a yellow notice says the request for changes stands, nothing under not posted", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	const p = await setup(pr);
+	const s = await startCrb();
+	await page.goto(`${s.url}verdict`);
+	const card = tabCard(page);
+	await card.getByRole("checkbox", { name: "Include a message" }).check();
+	await card.getByRole("textbox", { name: "Message" }).fill("Please add tests");
+	await verdictButton(card, "Request changes").click();
+	await expect
+		.poll(() => submitted(p).map((r) => r.state))
+		.toEqual(["CHANGES_REQUESTED"]);
+	await expect(
+		card.getByTestId("your-verdict").getByRole("img", { name: "Sending" }),
+	).toHaveCount(0);
+	p.editScenario((sc) => {
+		sc.failNext = {
+			op: "dismiss",
+			status: 403,
+			message: "Resource not accessible by integration",
+		};
+	});
+	await card.getByRole("checkbox", { name: "Include a message" }).check();
+	await card.getByRole("textbox", { name: "Message" }).fill("Fine after all");
+	await verdictButton(card, "Comment").click();
+	const notice = card.getByTestId("verdict-still-stands");
+	await expect(notice).toContainText(
+		"Commented; your request for changes still stands: Resource not accessible by integration",
+	);
+	await expect
+		.poll(() => submitted(p).map((r) => r.state))
+		.toEqual(["CHANGES_REQUESTED", "COMMENTED"]);
+	await expect(chip(page)).toHaveCount(0);
+	// GitHub's view: the request for changes stands.
+	await expect(card.getByTestId("your-verdict")).toContainText(
+		"You requested changes",
+	);
+	await shot(page, "verdict-still-stands", isMobile);
+});
+
+test("the Reviews section lists each reviewer: yours first, approvals and changes requested, earlier pushes; no horizontal scroll", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	const p = await setup(pr);
+	const head = p.repo.shas.at(-1) ?? "";
+	const earlier = p.repo.shas.at(-2) ?? "";
+	p.editScenario((sc) => {
+		const graph = sc.prs[7]?.graphql;
+		if (!graph) throw new Error("no PR in the scenario");
+		const review = (login: string, state: string, at: string, oid = head) => ({
+			author: { login, __typename: "User" },
+			state,
+			submittedAt: at,
+			body: "",
+			commit: { oid },
+		});
+		graph.reviews = [
+			review(
+				"maya-with-a-rather-long-login",
+				"APPROVED",
+				"2026-01-03T09:00:00Z",
+			),
+			review("lee", "APPROVED", "2026-01-02T09:00:00Z", earlier),
+			review("ravi", "CHANGES_REQUESTED", "2026-01-03T10:00:00Z"),
+			review("Octo_Cat", "COMMENTED", "2026-01-02T10:00:00Z"),
+			{
+				...review("renovate", "COMMENTED", "2026-01-03T11:00:00Z"),
+				author: { login: "renovate", __typename: "Bot" },
+			},
+		];
+	});
+	const s = await startCrb();
+	await page.goto(`${s.url}verdict`);
+	const section = page.getByTestId("verdict-reviews");
+	await expect(reviewRows(page)).toHaveCount(4);
+	await expect(reviewRows(page).first()).toHaveAttribute("data-you", "true");
+	await expect(reviewRows(page).nth(1)).toContainText("ravi");
+	await expect(reviewRows(page).nth(1)).toHaveAttribute(
+		"data-state",
+		"CHANGES_REQUESTED",
+	);
+	await expect(reviewRows(page).nth(2)).toHaveAttribute(
+		"data-state",
+		"APPROVED",
+	);
+	await expect(reviewRows(page).nth(3)).toContainText("lee");
+	await expect(
+		reviewRows(page).nth(3).getByTestId("review-earlier"),
+	).toBeVisible();
+	await expect(reviewRows(page).nth(2).getByRole("link")).toHaveAttribute(
+		"href",
+		/#pullrequestreview-\d+$/,
+	);
+	await expect(
+		section
+			.getByRole("list", { name: "Bot reviews" })
+			.getByTestId("review-row"),
+	).toHaveCount(1);
+	await expect(section.getByRole("img", { name: "2 approved" })).toBeVisible();
+	await expect(
+		section.getByRole("img", { name: "1 requested changes" }),
+	).toBeVisible();
+	// Approvals aren't folded into the summary row any more.
+	await expect(page.getByRole("list", { name: "Blockers" })).not.toContainText(
+		"approved",
+	);
+	const overflow = await page.evaluate(
+		() =>
+			document.documentElement.scrollWidth -
+			document.documentElement.clientWidth,
+	);
+	expect(overflow).toBeLessThanOrEqual(0);
+	await shot(page, "verdict-reviews", isMobile);
+});

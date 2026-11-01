@@ -6,7 +6,13 @@ import { GIT_TEST_TIMEOUTS } from "../../test/git-fixture";
 import { createPrFixture, type PrFixture } from "../../test/pr-fixture";
 import type { VerdictFacts, VerdictRequest } from "../shared/types";
 import { GhError, WriteRefusedError } from "./errors";
-import type { RestAnswer, RestReview, RuleReads, VerdictRead } from "./gh";
+import {
+	dismissReview,
+	type RestAnswer,
+	type RestReview,
+	type RuleReads,
+	type VerdictRead,
+} from "./gh";
 import { markerFor } from "./marker";
 import { parseHead } from "./pinnedHead";
 import { Session } from "./session";
@@ -16,6 +22,7 @@ import {
 	findLanded,
 	mapVerdict,
 	ruleOf,
+	standingOpinion,
 	verdictBody,
 	verdictProblem,
 } from "./verdict";
@@ -245,6 +252,71 @@ describe("mapVerdict", () => {
 		).toEqual([
 			["ravi", "APPROVED", "2026-01-02T00:00:00Z", OLD],
 			["dima", "COMMENTED", "2026-01-01T00:00:00Z", OLD],
+		]);
+	});
+
+	it("a dismissed review followed by a comment reads as the comment; a dismissal after the comment, or no comment, as dismissed", () => {
+		const reviews = [
+			// Octo_Cat requested changes, then commented (Comment withdrew it).
+			{
+				author: user("Octo_Cat"),
+				state: "DISMISSED",
+				submittedAt: "2026-01-01T00:00:00Z",
+				commit: { oid: OLD },
+				url: "https://github.com/acme/widget/pull/12#pullrequestreview-1",
+			},
+			{
+				author: user("Octo_Cat"),
+				state: "COMMENTED",
+				submittedAt: "2026-01-02T00:00:00Z",
+				commit: { oid: HEAD },
+				url: "https://github.com/acme/widget/pull/12#pullrequestreview-2",
+			},
+			// ravi's approval dismissed by someone else, no comment after it.
+			{
+				author: user("ravi"),
+				state: "COMMENTED",
+				submittedAt: "2026-01-01T00:00:00Z",
+				commit: { oid: OLD },
+			},
+			{
+				author: user("ravi"),
+				state: "DISMISSED",
+				submittedAt: "2026-01-03T00:00:00Z",
+				commit: { oid: HEAD },
+			},
+			// dima approved again after a withdrawn opinion: the approval.
+			{
+				author: user("dima"),
+				state: "DISMISSED",
+				submittedAt: "2026-01-01T00:00:00Z",
+				commit: { oid: OLD },
+			},
+			{
+				author: user("dima"),
+				state: "COMMENTED",
+				submittedAt: "2026-01-02T00:00:00Z",
+				commit: { oid: OLD },
+			},
+			{
+				author: user("dima"),
+				state: "APPROVED",
+				submittedAt: "2026-01-04T00:00:00Z",
+				commit: { oid: HEAD },
+			},
+		];
+		const facts = map({ ...read(), reviews });
+		expect(
+			facts.reviews.map((r) => [r.author, r.state, r.submittedAt, r.url]),
+		).toEqual([
+			["dima", "APPROVED", "2026-01-04T00:00:00Z", undefined],
+			["ravi", "DISMISSED", "2026-01-03T00:00:00Z", undefined],
+			[
+				"Octo_Cat",
+				"COMMENTED",
+				"2026-01-02T00:00:00Z",
+				"https://github.com/acme/widget/pull/12#pullrequestreview-2",
+			],
 		]);
 	});
 
@@ -562,11 +634,13 @@ describe("verdictProblem and verdictBody", () => {
 describe("findLanded", () => {
 	const review = (over: Partial<RestReview>): RestReview => ({
 		nodeId: "PRR_1",
+		restId: 1,
 		login: "Octo_Cat",
 		state: "APPROVED",
 		body: "",
 		submittedAt: "2026-11-01T10:00:00Z",
 		commitId: HEAD,
+		url: "",
 		...over,
 	});
 	const at = Date.parse("2026-11-01T10:00:00Z");
@@ -673,6 +747,66 @@ describe("findLanded", () => {
  * PR acme/widget#12 (test/pr-fixture.ts), its author octo-author; the
  * viewer is Octo_Cat.
  */
+describe("standingOpinion", () => {
+	const review = (over: Partial<RestReview>): RestReview => ({
+		nodeId: "PRR_1",
+		restId: 1,
+		login: "Octo_Cat",
+		state: "APPROVED",
+		body: "",
+		submittedAt: "2026-11-01T10:00:00Z",
+		commitId: HEAD,
+		url: "",
+		...over,
+	});
+	const comment = review({
+		nodeId: "C",
+		restId: 9,
+		state: "COMMENTED",
+		submittedAt: "2026-11-01T11:00:00Z",
+	});
+	const standing = (reviews: RestReview[]) =>
+		standingOpinion(reviews, "octo-cat", "C", comment.submittedAt)?.nodeId ??
+		null;
+
+	it("the viewer's latest approval or change request before the comment", () => {
+		expect(
+			standing([
+				review({ nodeId: "A" }),
+				review({ nodeId: "R", state: "CHANGES_REQUESTED" }),
+				review({ nodeId: "X", state: "COMMENTED" }),
+				comment,
+			]),
+		).toBe("R");
+	});
+
+	it("none: never anyone else's, nor a dismissed one, nor one after the comment, nor a pending one", () => {
+		expect(standing([review({ login: "ravi" }), comment])).toBeNull();
+		expect(
+			standing([
+				review({ nodeId: "A" }),
+				review({ nodeId: "D", state: "DISMISSED" }),
+				comment,
+			]),
+		).toBeNull();
+		expect(
+			standing([
+				review({ nodeId: "R", state: "CHANGES_REQUESTED" }),
+				comment,
+				review({ nodeId: "A2", submittedAt: comment.submittedAt }),
+			]),
+		).toBeNull();
+		expect(
+			standing([review({ nodeId: "P", state: "PENDING" }), comment]),
+		).toBeNull();
+		// The comment not listed: by time.
+		expect(
+			standing([review({ nodeId: "A", submittedAt: "2026-11-01T12:00:00Z" })]),
+		).toBeNull();
+		expect(standing([review({ nodeId: "A" })])).toBe("A");
+	});
+});
+
 describe("the verdict, through the session and the fake gh", () => {
 	let pr: PrFixture;
 	let session: Session;
@@ -1055,6 +1189,7 @@ describe("the verdict, through the session and the fake gh", () => {
 						state: "CHANGES_REQUESTED",
 						submittedAt: "2026-01-03T00:00:00Z",
 						commitId: then,
+						url: "https://github.com/acme/widget/pull/12#pullrequestreview-9000",
 						you: true,
 						bot: false,
 					},
@@ -1078,6 +1213,7 @@ describe("the verdict, through the session and the fake gh", () => {
 					submittedAt: expect.any(String),
 					commitId: pr.head(),
 					body: "",
+					url: "https://github.com/acme/widget/pull/12#pullrequestreview-9000",
 				},
 			});
 			expect(posts()).toHaveLength(1);
@@ -1385,6 +1521,168 @@ describe("the verdict, through the session and the fake gh", () => {
 				.catch((e: unknown) => e);
 			expect(transient).toBeInstanceOf(GhError);
 			expect(transient).not.toBeInstanceOf(WriteRefusedError);
+		});
+	});
+
+	describe("Comment withdraws a standing opinion", () => {
+		const mine = (state: string) => ({
+			author: user("Octo_Cat"),
+			state,
+			submittedAt: "2026-01-03T00:00:00Z",
+			commit: { oid: pr.head() },
+			body: "",
+		});
+		const dismissals = () =>
+			pr
+				.ghLog()
+				.split("\n")
+				.filter((l) =>
+					/^api -X PUT repos\/acme\/widget\/pulls\/12\/reviews\/\d+\/dismissals /.test(
+						l,
+					),
+				);
+		const comment = (more: Partial<VerdictRequest> = {}) =>
+			request({ event: "COMMENT", body: "Fine by me", ...more });
+
+		it("over a request for changes: posts the comment, then dismisses it; reads as commented, GitHub no longer blocks", async () => {
+			scenario({}, { reviewDecision: "CHANGES_REQUESTED" }, [
+				mine("CHANGES_REQUESTED"),
+			]);
+			const answer = await session.submitVerdict(comment());
+			expect(answer).toMatchObject({
+				review: { state: "COMMENTED", body: "Fine by me" },
+				dismissed: "CHANGES_REQUESTED",
+			});
+			expect(answer.stillStands).toBeUndefined();
+			expect(posts()).toHaveLength(1);
+			expect(dismissals()).toEqual([
+				"api -X PUT repos/acme/widget/pulls/12/reviews/9000/dismissals --input -",
+			]);
+			// The comment first, then the dismissal.
+			const log = pr.ghLog();
+			expect(log.indexOf("-X POST")).toBeLessThan(log.indexOf("-X PUT"));
+			expect(stored().map((r) => r.state)).toEqual(["DISMISSED", "COMMENTED"]);
+			const facts = await session.verdict();
+			expect(facts.reviews).toEqual([
+				expect.objectContaining({ state: "COMMENTED", you: true }),
+			]);
+			expect(facts.reviewDecision).toBe("REVIEW_REQUIRED");
+			const [you] = (await session.overview()).reviews;
+			expect(you).toMatchObject({ state: "COMMENTED", you: true });
+			expect(you?.opinion).toBeUndefined();
+		});
+
+		it("over an approval: the same", async () => {
+			scenario({}, {}, [mine("APPROVED")]);
+			const answer = await session.submitVerdict(comment());
+			expect(answer.dismissed).toBe("APPROVED");
+			expect(dismissals()).toHaveLength(1);
+			expect(stored().map((r) => r.state)).toEqual(["DISMISSED", "COMMENTED"]);
+		});
+
+		it("no standing opinion of the viewer's: nothing dismissed, never someone else's", async () => {
+			scenario({}, {}, [
+				{ ...mine("CHANGES_REQUESTED"), author: user("ravi") },
+				mine("COMMENTED"),
+			]);
+			const answer = await session.submitVerdict(comment());
+			expect(answer.dismissed).toBeUndefined();
+			expect(answer.stillStands).toBeUndefined();
+			expect(dismissals()).toEqual([]);
+			expect(stored().map((r) => r.state)).toEqual([
+				"CHANGES_REQUESTED",
+				"COMMENTED",
+				"COMMENTED",
+			]);
+		});
+
+		it("Approve and Request changes never dismiss (they replace each other on GitHub)", async () => {
+			scenario({}, {}, [mine("CHANGES_REQUESTED")]);
+			await session.submitVerdict(request());
+			expect(dismissals()).toEqual([]);
+		});
+
+		it("a refused dismissal: the comment landed, the answer says the opinion still stands with GitHub's message; a resend posts nothing", async () => {
+			scenario({ failNext: { op: "dismiss", status: 403 } }, {}, [
+				mine("CHANGES_REQUESTED"),
+			]);
+			const req = comment();
+			const answer = await session.submitVerdict(req);
+			expect(answer).toMatchObject({
+				review: { state: "COMMENTED" },
+				stillStands: {
+					state: "CHANGES_REQUESTED",
+					message: "Resource not accessible by integration",
+				},
+			});
+			expect(answer.dismissed).toBeUndefined();
+			expect(stored().map((r) => r.state)).toEqual([
+				"CHANGES_REQUESTED",
+				"COMMENTED",
+			]);
+			expect(await session.submitVerdict({ ...req, retry: true })).toEqual(
+				answer,
+			);
+			expect(posts()).toHaveLength(1);
+			expect(dismissals()).toHaveLength(1);
+			// GitHub's view: the request for changes stands.
+			expect((await session.verdict()).reviews).toEqual([
+				expect.objectContaining({ state: "CHANGES_REQUESTED", you: true }),
+			]);
+		});
+
+		it("the comment landed but its answer was lost: the retry posts nothing and still dismisses, after a restart too", async () => {
+			scenario(
+				{ failNext: { op: "verdict", status: 502, afterWrite: true } },
+				{},
+				[mine("APPROVED")],
+			);
+			const req = comment();
+			await expect(session.submitVerdict(req)).rejects.toBeInstanceOf(GhError);
+			expect(stored().map((r) => r.state)).toEqual(["APPROVED", "COMMENTED"]);
+			expect(dismissals()).toEqual([]);
+			const restarted = await Session.open(pr.arg, process.cwd());
+			const answer = await restarted.submitVerdict({ ...req, retry: true });
+			expect(answer).toMatchObject({
+				review: { state: "COMMENTED", body: "Fine by me" },
+				dismissed: "APPROVED",
+			});
+			expect(posts()).toHaveLength(1);
+			expect(dismissals()).toHaveLength(1);
+			expect(stored().map((r) => r.state)).toEqual(["DISMISSED", "COMMENTED"]);
+		});
+
+		it("a retry never dismisses a verdict given after the comment", async () => {
+			scenario(
+				{ failNext: { op: "verdict", status: 502, afterWrite: true } },
+				{},
+				[mine("CHANGES_REQUESTED")],
+			);
+			const req = comment();
+			await expect(session.submitVerdict(req)).rejects.toBeInstanceOf(GhError);
+			// Approved since (another press, GitHub's UI).
+			await session.submitVerdict(request());
+			const answer = await session.submitVerdict({ ...req, retry: true });
+			expect(answer.dismissed).toBeUndefined();
+			expect(dismissals()).toEqual([]);
+			expect(stored().map((r) => r.state)).toEqual([
+				"CHANGES_REQUESTED",
+				"COMMENTED",
+				"APPROVED",
+			]);
+		});
+
+		it("dismissing a review already dismissed counts as done", async () => {
+			scenario({}, {}, [mine("DISMISSED")]);
+			await expect(
+				dismissReview({ owner: "acme", repo: "widget", number: 12 }, 9000),
+			).resolves.toBeUndefined();
+			// GitHub's own text for it, not this function's.
+			expect(dismissals()).toHaveLength(1);
+			scenario({}, {}, [mine("COMMENTED")]);
+			await expect(
+				dismissReview({ owner: "acme", repo: "widget", number: 12 }, 9000),
+			).rejects.toThrow("Can not dismiss a commented pull request review");
 		});
 	});
 });

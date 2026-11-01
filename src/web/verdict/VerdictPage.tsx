@@ -19,7 +19,12 @@ import { Link } from "@tanstack/react-router";
 import { useId, useState } from "react";
 import type { PrOverview, SessionInfo, VerdictFacts } from "../../shared/types";
 import { overviewQuery, sessionQuery, verdictQuery } from "../api";
-import { LabeledIcon, SkeletonBar } from "../overview/parts";
+import {
+	BotIcon,
+	LabeledIcon,
+	REVIEW_ICON,
+	SkeletonBar,
+} from "../overview/parts";
 import { RelativeTime } from "../RelativeTime";
 import { Tooltip } from "../Tooltip";
 import { useThreads } from "../threads/useThreads";
@@ -284,11 +289,128 @@ function Blockers(props: {
 	);
 }
 
+type ReviewRow = VerdictFacts["reviews"][number];
+
+/**
+ * Every reviewer's verdict, one row each (owner: "verdict screen should
+ * list all existing approvals separately, as well as my own verdict"):
+ * the viewer's first, marked "you", then the others newest first, bots
+ * apart at the end. Each row: the state's icon and colour, the name
+ * (linking to the review on GitHub when known), when, and "earlier push"
+ * when it was on another commit than the head. None at all: no section.
+ */
+export function Reviews({ facts }: { facts: VerdictFacts }) {
+	const headingId = useId();
+	if (facts.reviews.length === 0) return null;
+	const people = [
+		...facts.reviews.filter((r) => r.you),
+		...facts.reviews.filter((r) => !r.you && !r.bot),
+	];
+	const bots = facts.reviews.filter((r) => !r.you && r.bot);
+	const count = (state: ReviewRow["state"]) =>
+		facts.reviews.filter((r) => r.state === state).length;
+	const approved = count("APPROVED");
+	const changes = count("CHANGES_REQUESTED");
+	return (
+		<section
+			aria-labelledby={headingId}
+			data-testid="verdict-reviews"
+			className="overflow-hidden rounded-xl border border-line bg-surface"
+		>
+			<div className="flex flex-wrap items-center gap-x-3 border-b border-line bg-raised px-4 py-1.5">
+				<h2
+					id={headingId}
+					className="py-1.5 text-[0.8125rem] font-semibold tracking-[0.2em] text-label uppercase"
+				>
+					Reviews
+				</h2>
+				{approved > 0 && (
+					<LabeledIcon
+						icon={REVIEW_ICON.APPROVED.icon}
+						label={`${approved} approved`}
+						text={String(approved)}
+						className={`gap-1 text-sm font-semibold ${REVIEW_ICON.APPROVED.className}`}
+					/>
+				)}
+				{changes > 0 && (
+					<LabeledIcon
+						icon={REVIEW_ICON.CHANGES_REQUESTED.icon}
+						label={`${changes} requested changes`}
+						text={String(changes)}
+						className={`gap-1 text-sm font-semibold ${REVIEW_ICON.CHANGES_REQUESTED.className}`}
+					/>
+				)}
+			</div>
+			<ul aria-label="Reviews" className="divide-y divide-line">
+				{people.map((r) => (
+					<ReviewLine key={r.author} review={r} head={facts.head} />
+				))}
+			</ul>
+			{bots.length > 0 && (
+				<ul
+					aria-label="Bot reviews"
+					className="divide-y divide-line border-t border-line-strong"
+				>
+					{bots.map((r) => (
+						<ReviewLine key={r.author} review={r} head={facts.head} />
+					))}
+				</ul>
+			)}
+		</section>
+	);
+}
+
+function ReviewLine({ review, head }: { review: ReviewRow; head: string }) {
+	const shown = REVIEW_ICON[review.state];
+	const href = safeHref(review.url);
+	const dismissed = review.state === "DISMISSED";
+	const name = <span className="break-all">{review.author}</span>;
+	return (
+		<li
+			data-testid="review-row"
+			data-state={review.state}
+			data-you={review.you || undefined}
+			className={`flex min-h-11 flex-wrap items-center gap-x-2.5 gap-y-0.5 px-4 py-1 text-sm ${dismissed ? "text-muted" : ""}`}
+		>
+			<LabeledIcon
+				icon={shown.icon}
+				label={shown.label}
+				className={shown.className}
+			/>
+			{href ? (
+				<a
+					href={href}
+					target="_blank"
+					rel="noreferrer noopener"
+					className={`${LINK} inline-flex min-h-10 min-w-0 items-center gap-1`}
+				>
+					{name}
+					<LinkExternalIcon size={12} aria-hidden className="text-muted" />
+				</a>
+			) : (
+				name
+			)}
+			{review.you && (
+				<span className="rounded-full border border-line-strong px-2 py-0.5 text-xs text-ink-soft">
+					you
+				</span>
+			)}
+			{review.bot && <BotIcon />}
+			<span className="ml-auto flex items-center gap-1.5 text-xs whitespace-nowrap text-muted">
+				<RelativeTime iso={review.submittedAt} />
+				{review.commitId !== "" && review.commitId !== head && (
+					<span data-testid="review-earlier">· earlier push</span>
+				)}
+			</span>
+		</li>
+	);
+}
+
 /**
  * The Final Verdict tab (owner: "It should have all blockers to merging
  * the PR … This should allow us to approve or request changes"): GitHub's
- * status first, then one list of what stands in the way, then the
- * reviewer's verdict. Its GitHub read (`/api/verdict`) is made only once
+ * status first, then one list of what stands in the way, every reviewer's
+ * verdict, then the reviewer's own. Its GitHub read (`/api/verdict`) is made only once
  * this page shows; Refresh reads it again.
  */
 export function VerdictPage() {
@@ -321,6 +443,7 @@ export function VerdictPage() {
 					threads={threads}
 				/>
 			)}
+			{facts.data && <Reviews facts={facts.data} />}
 			{pr && session && (
 				<VerdictCard
 					place="tab"

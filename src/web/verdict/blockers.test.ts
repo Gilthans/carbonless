@@ -214,7 +214,8 @@ describe("blockers", () => {
 			"octo",
 		);
 		expect(tagged(known)).toEqual(["1 of 2 approvals"]);
-		expect(known.at(-1)?.text).toContain("maya approved");
+		// Who approved is listed under Reviews, not in the summary row.
+		expect(known.map((r) => r.text).join(" ")).not.toContain("maya");
 	});
 
 	it("tags code owners only when the rule requires them; unknown, a detail of review required", () => {
@@ -418,7 +419,7 @@ describe("blockers", () => {
 					tone: "ok",
 					text: "Ready to merge",
 					href: PR,
-					detail: "2 checks passing · maya approved · no conflicts",
+					detail: "2 checks passing · no conflicts",
 				}),
 			]);
 		}
