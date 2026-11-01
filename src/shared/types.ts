@@ -552,6 +552,102 @@ export interface NewThreadAnswer {
 	comments: ThreadComments;
 }
 
+/** A verdict the reviewer can send: one submitted review (Final Verdict). */
+export type VerdictEvent = "APPROVE" | "COMMENT" | "REQUEST_CHANGES";
+
+/**
+ * `GET /api/verdict`: what GitHub says about merging, read for the Final
+ * Verdict tab only (never on first open). Present-only facts are null in
+ * as-of views and on merged or closed PRs, never shown as of now.
+ */
+export interface VerdictFacts {
+	/** GitHub's `mergeStateStatus`; null as-of, merged or closed. */
+	mergeStateStatus:
+		| "BEHIND"
+		| "BLOCKED"
+		| "CLEAN"
+		| "DIRTY"
+		| "DRAFT"
+		| "HAS_HOOKS"
+		| "UNKNOWN"
+		| "UNSTABLE"
+		| null;
+	/** GitHub's `reviewDecision`; null when no review rule applies, as-of, merged or closed. */
+	reviewDecision: "APPROVED" | "CHANGES_REQUESTED" | "REVIEW_REQUIRED" | null;
+	/**
+	 * The head's checks, as `PrOverview.checks` (as of the cutoff in as-of
+	 * views), each with GitHub's `isRequired`: null when unknown (as-of).
+	 */
+	checks: {
+		name: string;
+		status: "failing" | "pending" | "passing";
+		url?: string;
+		required: boolean | null;
+	}[];
+	/**
+	 * The base branch's review rule, from branch protection or rulesets;
+	 * null when it can't be read (no admin access: an empty rule list on a
+	 * protected branch is unknown, not none). Inside, null = that part unknown.
+	 */
+	rule: {
+		approvals: number | null;
+		codeOwners: boolean | null;
+		strict: boolean | null;
+	} | null;
+	/** Requested reviewers GitHub asked as code owners (`asCodeOwner`). */
+	codeOwnerRequests: { name: string; team: boolean }[];
+	/**
+	 * Each reviewer's latest submitted review (PENDING ones left out), newest
+	 * first, with the commit it was on; as of the cutoff in as-of views.
+	 */
+	reviews: {
+		author: string;
+		state: ReviewVerdict;
+		submittedAt: string;
+		commitId: string;
+		you: boolean;
+		bot: boolean;
+	}[];
+	/** The PR's head on GitHub when this was read. */
+	head: string;
+	/** When the server finished reading this from GitHub (its clock). */
+	fetchedAt: string;
+}
+
+/** `POST /api/verdict`: submit a review with an event. */
+export interface VerdictRequest {
+	/** The client's own id, the same on every resend (a reload's too). */
+	clientId: string;
+	event: VerdictEvent;
+	/**
+	 * Markdown as typed (no marker); required (non-empty after trim) for
+	 * COMMENT and REQUEST_CHANGES, optional for APPROVE. ≤ MAX_REPLY minus the marker.
+	 */
+	body?: string;
+	/** The head the reviewer is viewing: must be the session's snapshot head, else 409 code "stale". */
+	commit: string;
+	attemptedAt: string;
+	/** A resend after a failed or unknown attempt: look for it first. */
+	retry: boolean;
+}
+
+/**
+ * 200: the review as GitHub recorded it. Refusals are `WriteError`s:
+ * "pending-review" (the viewer has an unsubmitted review; `url` = the PR's
+ * files page), "forbidden" (e.g. approving one's own PR), "writes-off",
+ * "invalid", "stale".
+ */
+export interface VerdictAnswer {
+	review: {
+		id: string;
+		state: ReviewVerdict;
+		submittedAt: string;
+		commitId: string;
+		/** Without the marker. */
+		body: string;
+	};
+}
+
 /** The longest reply GitHub takes (a comment body's limit). */
 export const MAX_REPLY = 65536;
 
