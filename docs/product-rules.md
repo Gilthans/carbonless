@@ -102,7 +102,8 @@ unresolving one, and editing or deleting one of the viewer's comments in one
   `<` that starts a tag GitHub drops (`List\<String>`), outside code
   spans and blocks (a fence closes only in its own container, as on
   GitHub); `a < b`, autolinks, bare links (an escape would land in the
-  link), HTML comments and the tags GitHub keeps stay as they are
+  link: `http(s)://` or `ftp://` after anything but a letter, or a
+  word starting `www.`), HTML comments and the tags GitHub keeps stay as they are
   (`src/shared/markdownEscape.ts`, applied on the
   server where the write is built, before the marker). The page gets
   bodies without those escapes, so the edit box shows what was typed and

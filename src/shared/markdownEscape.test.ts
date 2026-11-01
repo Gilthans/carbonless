@@ -155,6 +155,35 @@ const CASES: [string, string, string][] = [
 	["not a URL", "xhttps://x<T>", "xhttps://x\\<T>"],
 	// A bare one-letter closing tag goes with its opening one.
 	["one-letter closing", "<B>bold</B> <b>b</b>", "\\<B>bold\\</B> <b>b</b>"],
+	// A fence on a list item's later line: its column is its own indent,
+	// so a closer further left (which, on GitHub, opens a new fence) keeps it open.
+	[
+		"list fence after a blank line",
+		"- item\n\n  ```\n  code\n```\nList<T>\n```",
+		"- item\n\n  ```\n  code\n```\nList<T>\n```",
+	],
+	[
+		"list fence, no blank line",
+		"- item\n  ```\n  code\n```\nList<T>\n```",
+		"- item\n  ```\n  code\n```\nList<T>\n```",
+	],
+	[
+		"ordered list fence",
+		"1. item\n   ```\n   x\n ```\nList<T>\n```",
+		"1. item\n   ```\n   x\n ```\nList<T>\n```",
+	],
+	// GitHub links http(s):// and ftp:// after anything but a letter.
+	["quoted URL", '"https://x.com/a<T>"', '"https://x.com/a<T>"'],
+	["single-quoted URL", "'https://x.com/a<T>'", "'https://x.com/a<T>'"],
+	["URL after a colon", "see:https://x.com/a<T>", "see:https://x.com/a<T>"],
+	["URL after =", "a=https://x.com/a<T>", "a=https://x.com/a<T>"],
+	["URL after a dot", "a.https://x.com/a<T>", "a.https://x.com/a<T>"],
+	["URL after a digit", "1https://x.com/a<T>", "1https://x.com/a<T>"],
+	["upper-case scheme", "HTTPS://x.com/a<T>", "HTTPS://x.com/a<T>"],
+	["ftp", "ftp://x.com/a<T>", "ftp://x.com/a<T>"],
+	["ftp after a colon", "x:ftp://x.com/a<T>", "x:ftp://x.com/a<T>"],
+	["WWW is no link", "WWW.example.com/a<T>", "WWW.example.com/a\\<T>"],
+	["URL then a new word", "https://x.com/a <T>", "https://x.com/a \\<T>"],
 	["empty", "", ""],
 ];
 
@@ -183,6 +212,8 @@ describe("escapeTags", () => {
 		["unclosed quotes", '<a b="'.repeat(10000) + "<T>".repeat(2000)],
 		["headings", "# <T>\n".repeat(9000)],
 		["URLs", "https://x<a".repeat(6000)],
+		["a URL word, then <T>s", `https://x.com/a${"<T>".repeat(20_000)}`],
+		["schemes everywhere", "1https://".repeat(7000)],
 		[
 			"a 64 KB mix",
 			[
@@ -260,6 +291,11 @@ describe("unescapeTags", () => {
 			"    ```\n",
 			"(",
 			"<!x",
+			'"',
+			":",
+			"ftp://",
+			"WWW.",
+			"1http://",
 		];
 		let seed = 7;
 		const rand = () => {

@@ -126,8 +126,8 @@ const TAG =
 	/<(\/)?([A-Za-z][A-Za-z0-9-]*)((?:\s+[A-Za-z_:][A-Za-z0-9_.:-]*(?:\s*=\s*(?:[^\s"'=<>`]+|'[^']*'|"[^"]*"))?)*)\s*(\/?)>/y;
 const AUTOLINK =
 	/<(?:[A-Za-z][A-Za-z0-9+.-]{1,31}:[^\s<>]*|[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*)>/y;
-/** Where GFM's extended autolinks start (`https://…`, `www.…`). */
-const BARE_URL = /^(?:https?:\/\/|www\.)/i;
+/** The schemes GitHub links bare (`https://…`), any case, after anything but a letter. */
+const SCHEMES = ["https", "http", "ftp"];
 
 /** Whether GitHub drops tag `name` (so it is escaped). */
 function dropped(name: string, closing: boolean, bare: boolean): boolean {
@@ -161,6 +161,8 @@ class Inline {
 	/** Where the current run of non-space text starts, up to #wordAt. */
 	#word = 0;
 	#wordAt = 0;
+	/** Whether that run holds a scheme GitHub links (`https://`), up to #wordAt. */
+	#linked = false;
 
 	constructor(seg: string) {
 		this.#seg = seg;
@@ -198,15 +200,36 @@ class Inline {
 		return of.at[of.next] ?? -1;
 	}
 
-	/** Whether `at` is inside a bare URL GitHub links (its non-space run starts like one). */
+	/**
+	 * Whether `at` is inside a bare URL GitHub links (GFM's extended
+	 * autolinks, as GitHub has them): its run of non-space text holds
+	 * `https://`, `http://` or `ftp://` (any case) not right after an
+	 * ASCII letter, or starts (after any of `*_~(`) with a lowercase
+	 * `www.`. One forward pointer: linear.
+	 */
 	#inBareUrl(at: number): boolean {
 		const seg = this.#seg;
 		for (; this.#wordAt < at; this.#wordAt++) {
-			if (/\s/.test(seg[this.#wordAt] ?? "")) this.#word = this.#wordAt + 1;
+			const k = this.#wordAt;
+			const c = seg[k] ?? "";
+			if (/\s/.test(c)) {
+				this.#word = k + 1;
+				this.#linked = false;
+			} else if (c === ":" && seg.startsWith("//", k + 1)) {
+				this.#linked ||= SCHEMES.some((scheme) => {
+					const from = k - scheme.length;
+					return (
+						from >= this.#word &&
+						seg.slice(from, k).toLowerCase() === scheme &&
+						!/[A-Za-z]/.test(seg[from - 1] ?? "")
+					);
+				});
+			}
 		}
+		if (this.#linked) return true;
 		let w = this.#word;
 		while (w < at && "*_~(".includes(seg[w] ?? "")) w++;
-		return BARE_URL.test(seg.slice(w, Math.min(at, w + 8)));
+		return seg.startsWith("www.", w) && w + 4 <= at;
 	}
 
 	/**
@@ -325,7 +348,7 @@ interface Fence {
 	char: string;
 	len: number;
 	depth: number;
-	/** The column of the list item's content it is in; 0 outside a list. */
+	/** Its opening line's column (indent and list markers): a closer needs it, plus 0-3 spaces. */
 	column: number;
 }
 
@@ -336,12 +359,13 @@ function fenceOpen(line: string): Fence | null {
 	const run = m?.[2] ?? "";
 	if (!m || (run[0] === "`" && (m[3] ?? "").includes("`"))) return null;
 	const before = m[1] ?? "";
-	const listed = /[-*+.)]/.test(before);
 	return {
 		char: run[0] ?? "`",
 		len: run.length,
 		depth,
-		column: listed ? indentOf(before.replace(/[^\s]/g, " ")).cols : 0,
+		// Its own indent, list markers included: a closer further left may
+		// be outside its list item, where it opens a new fence instead.
+		column: indentOf(before.replace(/[^\s]/g, " ")).cols,
 	};
 }
 
