@@ -211,6 +211,12 @@ export function HomePage() {
 					.map(({ name, query }) => `${name}: ${failureOf(query)}`)
 					.join("; ")}`
 			: undefined;
+	// Added by a save not confirmed yet: not read, so not counted either.
+	const adding = repos.filter(({ state }) => state === "saving");
+	const waiting =
+		adding.length > 0
+			? `Waiting for the save: ${adding.map(({ name }) => name).join(", ")}`
+			: undefined;
 	const sections = composeSections(
 		repos.flatMap(({ query }) => query.data?.rows ?? []),
 		data?.viewer.login ?? "",
@@ -359,6 +365,7 @@ export function HomePage() {
 								viewer={data.viewer.login}
 								loading={loading && data.view.repos.length > 0}
 								missing={missing}
+								waiting={waiting}
 							/>
 						))}
 						<ViewSettings

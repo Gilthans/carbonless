@@ -980,4 +980,31 @@ describe("HomeService, review round 1", () => {
 		await home.repo("acme", "api");
 		expect(only).toEqual([undefined, "acme/api"]);
 	});
+
+	it("a failing repo is read less often whoever asks: the cache period doubles per failure; fresh still reads", async () => {
+		fx = createHomeFixture({
+			repos: { "acme/api": { prs: scenarioPrs() } },
+			rateLimited: true,
+		});
+		const { home, clock } = service({ minutes: 2 });
+		await home.repo("acme", "api");
+		clock.now += 2 * 60_000;
+		// Retry: a fresh read, failing again.
+		expect((await home.repo("acme", "api", { fresh: true })).failures).toBe(2);
+		expect(listReads(fx.ghLog())).toHaveLength(2);
+		// Two failures: 2 min × 4 = 8 min. A focus or another device asking
+		// meanwhile gets the cache.
+		const read = clock.now;
+		clock.now = read + 2 * 60_000;
+		await home.repo("acme", "api");
+		clock.now = read + 8 * 60_000 - 1;
+		await home.repo("acme", "api");
+		expect(listReads(fx.ghLog())).toHaveLength(2);
+		clock.now = read + 8 * 60_000;
+		await home.repo("acme", "api");
+		expect(listReads(fx.ghLog())).toHaveLength(3);
+		// Retry reads at once.
+		await home.repo("acme", "api", { fresh: true });
+		expect(listReads(fx.ghLog())).toHaveLength(4);
+	});
 });

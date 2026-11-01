@@ -605,7 +605,39 @@ test("a repo GitHub doesn't know is saved, and its chip says so with Retry; the 
 	).toBeVisible();
 	await expect(page.getByTestId("view-save-failed")).toHaveCount(0);
 	await expect(page.getByText("Snooze PRs from the inbox")).toBeVisible();
+	// Never read: every section's count says so; no section says none.
+	await expect(
+		section(page, "Reviewing").getByRole("img", {
+			name: "Without acme/nowhere: Not found on GitHub",
+		}),
+	).toBeVisible();
+	await expect(page.getByTestId("section-none")).toHaveCount(0);
+	// At 360px, with an unread repo and one a held save is adding.
+	await page.setViewportSize({ width: 360, height: 780 });
 	await expectNoPageOverflow(page);
+	let answer: () => void = () => {};
+	const putHeld = new Promise<void>((r) => {
+		answer = r;
+	});
+	await page.route("**/api/home/view", async (route) => {
+		if (route.request().method() === "PUT") await putHeld;
+		await route.continue();
+	});
+	await page.getByRole("button", { name: "Edit repos" }).click();
+	await field.fill(OWNER_REPO);
+	await field.press("Enter");
+	await dialog.getByRole("button", { name: "Save" }).click();
+	await expect(dialog).toBeHidden();
+	const adding = page.getByTestId("view-repo").filter({ hasText: OWNER_REPO });
+	await expect(adding).toHaveAttribute("data-state", "saving");
+	await expect(
+		section(page, "Mine").getByRole("img", {
+			name: `Waiting for the save: ${OWNER_REPO}`,
+		}),
+	).toBeVisible();
+	await expectNoPageOverflow(page);
+	answer();
+	await expect(adding).not.toHaveAttribute("data-state", "saving");
 });
 
 test("one repo's read held: the other's rows show, the held one and the sections spin, no counts; released, its rows and the counts come", async ({

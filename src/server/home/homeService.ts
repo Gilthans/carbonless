@@ -74,11 +74,13 @@ export function configAccess<C extends HomeConfig>(
 
 /**
  * A repo's facts answer from the cache for refresh.minutes after its last
- * read began, never less than this: however many tabs and devices ask on
- * their own timers, a repo costs one read per period. `fresh` (Refresh,
- * Retry) always reads.
+ * read began (doubled per failure in a row, up to MAX_BACKOFF_MS), never
+ * less than this: however many tabs and devices ask on their own timers,
+ * a repo costs one read per period. `fresh` (Refresh, Retry) always reads.
  */
 export const FRESH_MS = 30_000;
+/** A failing repo's cache period doubles per failure, up to this. */
+export const MAX_BACKOFF_MS = 30 * 60_000;
 /** A repo out of the view keeps its facts this long (re-added: incremental). */
 export const KEEP_MS = 3_600_000;
 /** The viewer's teams are read again this often. */
@@ -261,7 +263,15 @@ export class HomeService {
 			throw new NotOnHomeError(`${name} is not in the view`);
 		}
 		const state = this.#state(name);
-		const period = Math.max(FRESH_MS, config.refresh.minutes * 60_000);
+		// Doubled per failure in a row: a repo backing off is read no more
+		// often for a focus or another device asking.
+		const period = Math.max(
+			FRESH_MS,
+			Math.min(
+				MAX_BACKOFF_MS,
+				config.refresh.minutes * 60_000 * 2 ** Math.min(state.failures, 10),
+			),
+		);
 		if (
 			state.reading ||
 			opts.fresh ||

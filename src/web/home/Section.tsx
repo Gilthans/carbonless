@@ -1,4 +1,9 @@
-import { AlertIcon, ChevronRightIcon, SyncIcon } from "@primer/octicons-react";
+import {
+	AlertIcon,
+	ChevronRightIcon,
+	ClockIcon,
+	SyncIcon,
+} from "@primer/octicons-react";
 import { useEffect, useId, useRef, useState } from "react";
 import type { HomeRow, HomeSection, SectionId } from "../../shared/home";
 import { SkeletonBar } from "../overview/parts";
@@ -91,9 +96,15 @@ export function Section(props: {
 	 * leaves them out, so it says so, and never "none".
 	 */
 	missing?: string;
+	/**
+	 * Repos a save is still adding, not read yet: the count leaves them
+	 * out too, so it says so, and never "none".
+	 */
+	waiting?: string;
 }) {
 	const loading = props.loading ?? false;
 	const missing = loading ? undefined : props.missing;
+	const waiting = loading ? undefined : props.waiting;
 	const { id, rows } = props.section;
 	const headingId = useId();
 	const hiddenId = useId();
@@ -139,14 +150,20 @@ export function Section(props: {
 						</span>
 					)}
 					{missing && (
-						<Sign label={missing} className="self-center text-bad">
+						// Focusable: a tap on a phone shows why.
+						<Sign label={missing} focusable className="self-center text-bad">
 							<AlertIcon size={12} aria-hidden />
+						</Sign>
+					)}
+					{waiting && (
+						<Sign label={waiting} focusable className="self-center text-faint">
+							<ClockIcon size={12} aria-hidden />
 						</Sign>
 					)}
 				</h2>
 				{HINTS[id] && <p className="text-xs text-faint">{HINTS[id]}</p>}
 			</div>
-			{rows.length === 0 && !loading && !missing && (
+			{rows.length === 0 && !loading && !missing && !waiting && (
 				<p
 					data-testid="section-none"
 					className="px-1 text-xs text-faint italic"

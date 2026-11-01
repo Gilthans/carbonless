@@ -341,6 +341,15 @@ describe("Home's repos", () => {
 			api.calls.filter((c) => c.method === "GET" && c.url === "/api/home")
 				.length;
 		const viewsBefore = views();
+		// A focus right after the view's answer doesn't ask for it again.
+		await act(async () => {
+			focusManager.setFocused(false);
+			focusManager.setFocused(true);
+			await Promise.resolve();
+		});
+		// (A refetch would be under way by now.)
+		expect(client.getQueryState(homeQuery.queryKey)?.fetchStatus).toBe("idle");
+		expect(views()).toBe(viewsBefore);
 		// An hour away (a locked phone): every answer is older than refresh.minutes.
 		const old = Date.now() - 3_600_000;
 		for (const name of ["acme/api", "acme/console"]) {
@@ -386,9 +395,12 @@ describe("Home's repos", () => {
 		);
 		for (const name of ["Mine", "Reviewing", "Up for grabs"]) {
 			const s = section(name);
-			within(s).getByRole("img", {
-				name: "Without acme/console: Rate limited by GitHub",
-			});
+			// Focusable: a tap on a phone shows why.
+			expect(
+				within(s).getByRole("img", {
+					name: "Without acme/console: Rate limited by GitHub",
+				}),
+			).toHaveAttribute("tabindex", "0");
 			expect(within(s).queryByTestId("section-none")).toBeNull();
 		}
 		expect(within(section("Mine")).getByRole("heading")).toHaveTextContent(
@@ -478,6 +490,14 @@ describe("Home's repos", () => {
 			/Mine\s*1/,
 		);
 		expect(screen.queryAllByTestId("row-skeleton")).toHaveLength(0);
+		// Not read yet: no section claims to be complete or empty.
+		for (const name of ["Mine", "Reviewing", "Other open"]) {
+			const sign = within(section(name)).getByRole("img", {
+				name: "Waiting for the save: acme/web",
+			});
+			expect(sign).toHaveAttribute("tabindex", "0");
+			expect(within(section(name)).queryByTestId("section-none")).toBeNull();
+		}
 		put.release();
 		await waitFor(() =>
 			expect(repoGets(api.calls, "acme/web")).toHaveLength(1),

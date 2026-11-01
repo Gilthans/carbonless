@@ -56,10 +56,10 @@ export const homeQuery = queryOptions({
 	queryFn: fetchHome,
 	// A hand edit of the config, a review started elsewhere.
 	refetchInterval: 60_000,
-	// Back on the page (a phone unlocked, the network back): read again.
-	// The app's default is off; Home's data goes stale while away.
+	// Back on the page (a phone unlocked): read again once 30 s old. The
+	// app's default is off; Home's data goes stale while away.
+	staleTime: 30_000,
 	refetchOnWindowFocus: true,
-	refetchOnReconnect: true,
 });
 
 /** A repo out of the view keeps its rows this long: added back, they show at once. */
@@ -94,7 +94,6 @@ export const repoQuery = (name: string, minutes: number) =>
 		refetchInterval: (query) => repoInterval(minutes, query.state.data),
 		// Back on the page once that old: read again (the app's default is off).
 		refetchOnWindowFocus: true,
-		refetchOnReconnect: true,
 	});
 
 /**
