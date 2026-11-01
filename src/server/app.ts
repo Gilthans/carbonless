@@ -9,6 +9,7 @@ import {
 	type ReplyRequest,
 	type StateChange,
 	type ThreadsStage,
+	type VerdictRequest,
 	type WriteError,
 } from "../shared/types.js";
 import { registerAccessKey, registerHostCheck } from "./access.js";
@@ -28,6 +29,7 @@ import {
 	UnknownReadError,
 } from "./session.js";
 import { editProblem, replyProblem } from "./threadWrites.js";
+import { verdictProblem } from "./verdict.js";
 
 export interface AppOptions {
 	/** Directory with the built web UI. Omit to serve only the API. */
@@ -294,6 +296,28 @@ export async function buildApp(
 				commentIdParam(request.params.commentId),
 			),
 	);
+	// What blocks the merge (read only when asked); `maxAge` as for the overview.
+	app.get<{ Querystring: { maxAge?: string } }>("/api/verdict", (request) => {
+		const { maxAge } = request.query;
+		if (maxAge !== undefined && !INDEX.test(maxAge)) {
+			throw new BadRequestError("maxAge must be a number of milliseconds");
+		}
+		return session.verdict(maxAge === undefined ? undefined : Number(maxAge));
+	});
+	// The reviewer's verdict, sent to GitHub at once (verdict.ts).
+	app.post("/api/verdict", (request) => {
+		const problem = verdictProblem(request.body);
+		if (problem) throw new WriteRefusedError(problem, "invalid");
+		const r = request.body as VerdictRequest;
+		return session.submitVerdict({
+			clientId: r.clientId,
+			event: r.event,
+			...(r.body === undefined ? {} : { body: r.body }),
+			commit: r.commit,
+			attemptedAt: r.attemptedAt,
+			retry: r.retry,
+		});
+	});
 	app.post("/api/refresh", () => session.refresh());
 	app.get("/api/head", () => session.checkHead());
 
@@ -331,7 +355,7 @@ const isThreadWrite = (method: string, url: string) =>
 	/^\/api\/threads\/[^/?]+\/(replies|resolved|comments\/[^/?]+)(\?|$)/.test(
 		url,
 	) ||
-	(method === "POST" && /^\/api\/threads(\?|$)/.test(url));
+	(method === "POST" && /^\/api\/(threads|verdict)(\?|$)/.test(url));
 
 function threadIdParam(raw: string): string {
 	if (!NODE_ID.test(raw)) {

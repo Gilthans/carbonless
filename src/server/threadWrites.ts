@@ -119,7 +119,7 @@ const str = (v: unknown): string => (typeof v === "string" ? v : "");
 /** A body as compared by the dedupe: line ends and trailing space aside. */
 const normal = (body: string) => body.replace(/\r\n/g, "\n").trimEnd();
 
-export function writesOff(target: ThreadWriteTarget): void {
+export function writesOff(target: Pick<ThreadWriteTarget, "writes">): void {
 	if (target.writes === "on") return;
 	throw new WriteRefusedError(
 		target.writes === "as-of"

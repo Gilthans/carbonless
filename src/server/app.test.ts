@@ -1038,6 +1038,159 @@ describe("API", () => {
 		});
 	});
 
+	describe("the verdict", () => {
+		const setup = async (
+			over: Partial<Scenario> = {},
+			view: Record<string, unknown> = {},
+			reviews: unknown[] = [],
+		) => {
+			pr.scenario({
+				prs: {
+					12: {
+						view: prView({
+							headRefOid: pr.head(),
+							baseRefName: "main",
+							mergeStateStatus: "BLOCKED",
+							reviewDecision: "REVIEW_REQUIRED",
+							...view,
+						}),
+						graphql: { reviewThreads: [], reviews },
+					},
+				},
+				...over,
+			});
+		};
+		const ok = () => ({
+			clientId: "v1",
+			event: "APPROVE",
+			commit: pr.head(),
+			attemptedAt: new Date().toISOString(),
+			retry: false,
+		});
+
+		it("GET: what blocks the merge, kept; maxAge as for the overview", async () => {
+			await setup();
+			const facts = await get("/api/verdict");
+			expect(facts).toMatchObject({
+				mergeStateStatus: "BLOCKED",
+				reviewDecision: "REVIEW_REQUIRED",
+				rule: null,
+				head: pr.head(),
+			});
+			expect(await get("/api/verdict")).toEqual(facts);
+			expect(await get("/api/verdict?maxAge=600000")).toEqual(facts);
+			for (const bad of ["-1", "1.5", "soon", ""]) {
+				const res = await inject(`/api/verdict?maxAge=${bad}`);
+				expect(res.statusCode, bad).toBe(400);
+			}
+			await setup({ failGraphql: "mergeStateStatus" });
+			expect((await inject("/api/verdict?maxAge=0")).statusCode).toBe(502);
+		});
+
+		it("POST 200: the review as GitHub recorded it, without the marker", async () => {
+			await setup();
+			const res = await post("/api/verdict", {
+				...ok(),
+				event: "COMMENT",
+				body: "Fine.",
+			});
+			expect(res.statusCode, res.body).toBe(200);
+			expect(res.json()).toEqual({
+				review: {
+					id: "PRR_12_0",
+					state: "COMMENTED",
+					submittedAt: expect.any(String),
+					commitId: pr.head(),
+					body: "Fine.",
+				},
+			});
+			expect((await get("/api/overview")).reviews[0]).toMatchObject({
+				author: "Octo_Cat",
+				state: "COMMENTED",
+			});
+		});
+
+		it("POST 400 invalid, 409 stale, 409 pending-review, 403 forbidden, 502", async () => {
+			await setup();
+			for (const bad of [
+				{ ...ok(), event: "MERGE" },
+				{ ...ok(), event: "REQUEST_CHANGES" },
+				{ ...ok(), event: "COMMENT", body: " " },
+				{ ...ok(), body: "x".repeat(65536) },
+				{ ...ok(), clientId: "a b" },
+				{ event: "APPROVE" },
+			]) {
+				const res = await post("/api/verdict", bad);
+				expect(res.statusCode, res.body).toBe(400);
+				expect(res.json().code).toBe("invalid");
+			}
+			const json = await inject("/api/verdict", {
+				method: "POST",
+				payload: "{nope",
+				headers: { host, "content-type": "application/json" },
+			});
+			expect(json.statusCode).toBe(400);
+			expect(json.json().code).toBe("invalid");
+			const stale = await post("/api/verdict", {
+				...ok(),
+				commit: "f".repeat(40),
+			});
+			expect(stale.statusCode).toBe(409);
+			expect(stale.json().code).toBe("stale");
+			expect(pr.ghLog()).not.toMatch(/pulls\/12\/reviews/);
+			await setup({}, {}, [
+				{ author: { login: "Octo_Cat" }, state: "PENDING" },
+			]);
+			const pending = await post("/api/verdict", ok());
+			expect(pending.statusCode).toBe(409);
+			expect(pending.json()).toMatchObject({
+				code: "pending-review",
+				url: "https://github.com/acme/widget/pull/12/files",
+			});
+			await setup({}, { author: { login: "Octo_Cat" } });
+			const own = await post("/api/verdict", { ...ok(), clientId: "v2" });
+			expect(own.statusCode).toBe(403);
+			expect(own.json()).toEqual({
+				code: "forbidden",
+				error: "Can not approve your own pull request",
+			});
+			await setup({ failNext: { op: "verdict", status: 502 } });
+			const failed = await post("/api/verdict", { ...ok(), clientId: "v3" });
+			expect(failed.statusCode).toBe(502);
+		});
+
+		it("POST 403 writes-off as someone else (--viewer)", async () => {
+			await setup();
+			const theirs = await Session.open(pr.arg, process.cwd(), () => {}, {
+				viewer: "someone-else",
+			});
+			const other = await buildApp(theirs, { accessKey: null });
+			try {
+				await other.listen({ port: 0, host: "127.0.0.1" });
+				const address = other.server.address();
+				if (!address || typeof address === "string") throw new Error("no port");
+				const res = await other.inject({
+					method: "POST",
+					url: "/api/verdict",
+					payload: ok(),
+					headers: { host: `127.0.0.1:${address.port}` },
+				});
+				expect(res.statusCode, res.body).toBe(403);
+				expect(res.json().code).toBe("writes-off");
+				// Reading what blocks is fine.
+				const read = await other.inject({
+					method: "GET",
+					url: "/api/verdict",
+					headers: { host: `127.0.0.1:${address.port}` },
+				});
+				expect(read.statusCode, read.body).toBe(200);
+			} finally {
+				await other.close();
+			}
+			expect(pr.ghLog()).not.toMatch(/-X POST .*reviews/);
+		});
+	});
+
 	describe("with a web root and an access key", () => {
 		let web: string;
 		let keyed: FastifyInstance;

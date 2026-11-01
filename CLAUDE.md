@@ -105,7 +105,8 @@ checking against a real PR): `docs/product-rules.md`.
   installed), or `CRB_PR=<pr> pnpm dev` for watch mode. It clones into its own
   cache (`~/.cache/carbonless`), never into the reviewer's working copies. It
   reads from GitHub, and writes to it only on the reviewer's explicit action
-  (replies, new comments, resolving, editing and deleting your own comments):
+  (replies, new comments, resolving, editing and deleting your own comments,
+  the review verdict):
   `docs/product-rules.md`, "Writing to GitHub".
 - Tests never call the real `gh`: `test/fake-gh/gh` serves a scenario
   (`test/fake-gh/scenario.ts`) via `$CRB_FAKE_GH`. The e2e harness

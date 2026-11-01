@@ -59,8 +59,9 @@ On a phone there's no keyboard: the help isn't offered there.
 carbonless writes to GitHub only on the reviewer's explicit action, as the
 `gh` login, through `gh` (no server of its own): replying to a review thread,
 starting a new one (on lines, a span inside them, or a file), resolving or
-unresolving one, and editing or deleting one of the viewer's comments in one
-(`src/server/threadWrites.ts`, `src/server/newThreads.ts`).
+unresolving one, editing or deleting one of the viewer's comments in one,
+and the review verdict (`src/server/threadWrites.ts`,
+`src/server/newThreads.ts`, `src/server/verdict.ts`).
 
 - **One explicit action, one write.** Every write is one click (or the send
   shortcut) on one thread. Nothing posts, resolves or retries a refused write
@@ -213,6 +214,38 @@ unresolving one, and editing or deleting one of the viewer's comments in one
   answer to the post) or the thread was deleted right after. Posting a
   reply clears the pending-review warning (finding one by the dedupe
   doesn't), and a pending-review refusal sets it.
+- **The verdict is one submitted review.** Approve, Comment or Request
+  changes is REST `POST /repos/{o}/{r}/pulls/{n}/reviews` with `event`,
+  `commit_id` the snapshot's head (an older commit on `--head` or a
+  started patch set: what was reviewed; any other is 409 `stale`) and no
+  `comments`; a `body` only when the reviewer typed a message, ending in
+  the hidden `crb:v1` marker with the client id (no span), stripped from
+  every body the server sends. Comment and Request changes need a message
+  (400 otherwise, as GitHub refuses them). It is never gated on review
+  progress, open threads or checks. A pending review of the viewer's
+  refuses it (GitHub's 422, "User can only have one pending review per
+  pull request": 409 `pending-review`, nothing sent, never joined or
+  submitted); approving or requesting changes on one's own PR is 403
+  `forbidden` with GitHub's message. One press, one review: verdicts run
+  one at a time per PR and are remembered by client id; a retry first
+  lists the PR's reviews (REST) for the viewer's one in the event's state
+  carrying its marker, or, sent without a message, an empty one submitted
+  since this server's first attempt (10 s of slack for GitHub's clock;
+  after a restart, the client's `attemptedAt` less 2 minutes), and posts
+  only if there is none. A verdict that lands drops the kept overview
+  and verdict reads, so the next ones read GitHub again.
+- **What blocks is read only for the Final Verdict.** `GET /api/verdict`
+  is one GraphQL read (`mergeStateStatus`, `reviewDecision`, the
+  requested reviewers with `asCodeOwner`, the reviews with their commits,
+  the head's checks with `isRequired`) beside the base branch's rule
+  (branch, protection and `rules/branches` reads, `src/server/verdict.ts`
+  `ruleOf`), never on first open. A rule that can't be read (no admin
+  access: protection 403/404 on a protected branch, where an empty rules
+  list means unknown, not none; a private repo on a free plan; any
+  failed read) is `null`, never an error. As of a cutoff, GitHub's
+  present-only facts (merge state, decision, rule, required flags,
+  code-owner requests) are null, never today's; on a merged or closed PR
+  the merge state, decision and rule are.
 - **Off where it can't be the reviewer's.** No writes as of a cutoff
   (`--as-of`) or as `--viewer` someone other than the `gh` login
   (`PrOverview.writes`); merged, closed and `--head` views write as GitHub
