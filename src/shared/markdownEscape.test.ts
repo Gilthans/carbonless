@@ -109,6 +109,52 @@ const CASES: [string, string, string][] = [
 		"<details>\n<summary>List<T></summary>\n\nList<T>\n</details>",
 		"<details>\n<summary>List<T></summary>\n\nList\\<T>\n</details>",
 	],
+	// A fence closes only in its own container, indented 0-3 spaces.
+	[
+		"suggestion with an indented inner fence",
+		"```suggestion\n1. Build:\n    ```sh\n    make\n    ```\nUse List<T> here\n```\nList<T>",
+		"```suggestion\n1. Build:\n    ```sh\n    make\n    ```\nUse List<T> here\n```\nList\\<T>",
+	],
+	[
+		"closer indented 4",
+		"```\n    ```\nList<T>\n```\n<T>",
+		"```\n    ```\nList<T>\n```\n\\<T>",
+	],
+	[
+		"quoted closer in a top-level fence",
+		"```md\n> ```\nList<T>\n```\n<T>",
+		"```md\n> ```\nList<T>\n```\n\\<T>",
+	],
+	[
+		"listed closer in a top-level fence",
+		"```md\n- ```\nList<T>\n```\n<T>",
+		"```md\n- ```\nList<T>\n```\n\\<T>",
+	],
+	[
+		"list fence closes in its item",
+		"- ```\n  List<T>\n  ```\n- <T>",
+		"- ```\n  List<T>\n  ```\n- \\<T>",
+	],
+	[
+		"closer indented 3",
+		"```\nList<T>\n   ```\n<T>",
+		"```\nList<T>\n   ```\n\\<T>",
+	],
+	// GFM autolinks a bare URL: an escape there would land in the link.
+	[
+		"bare URL",
+		"see https://x.com/List<T> here, <T>",
+		"see https://x.com/List<T> here, \\<T>",
+	],
+	[
+		"www link",
+		"see www.example.com/a<T> here",
+		"see www.example.com/a<T> here",
+	],
+	["URL in parentheses", "(http://x.y/a<T>)", "(http://x.y/a<T>)"],
+	["not a URL", "xhttps://x<T>", "xhttps://x\\<T>"],
+	// A bare one-letter closing tag goes with its opening one.
+	["one-letter closing", "<B>bold</B> <b>b</b>", "\\<B>bold\\</B> <b>b</b>"],
 	["empty", "", ""],
 ];
 
@@ -121,6 +167,45 @@ describe("escapeTags", () => {
 		for (const [, typed] of CASES) {
 			expect(escapeTags(escapeTags(typed))).toBe(escapeTags(typed));
 		}
+	});
+
+	it.each([
+		["unclosed processing instructions", "<?".repeat(30000)],
+		["unclosed declarations", "<!a".repeat(20000)],
+		["unclosed CDATA", "<![CDATA[".repeat(7000)],
+		["unclosed comments", "<!--".repeat(16000)],
+		[
+			"backtick runs of every length",
+			Array.from({ length: 350 }, (_, i) => `${"`".repeat(i + 1)} <T> `).join(
+				"",
+			),
+		],
+		["unclosed quotes", '<a b="'.repeat(10000) + "<T>".repeat(2000)],
+		["headings", "# <T>\n".repeat(9000)],
+		["URLs", "https://x<a".repeat(6000)],
+		[
+			"a 64 KB mix",
+			[
+				"<?",
+				"<!a",
+				"<![CDATA[",
+				"<!--",
+				'<a b="',
+				"`".repeat(7),
+				"https://x<T",
+				"\\<T>",
+				"<T>",
+				"```\n",
+				"> ",
+			]
+				.join(" ")
+				.repeat(1200)
+				.slice(0, 65_536),
+		],
+	])("stays linear: %s", (_, body) => {
+		const t = process.threadCpuUsage();
+		unescapeTags(escapeTags(body));
+		expect(process.threadCpuUsage(t).user).toBeLessThan(300_000);
 	});
 
 	it("stays linear on a long body", () => {
@@ -166,13 +251,22 @@ describe("unescapeTags", () => {
 			"x<y",
 			"\r\n",
 			"- ",
+			"https://",
+			"www.",
+			"</B>",
+			"<?",
+			"?>",
+			"> ```\n",
+			"    ```\n",
+			"(",
+			"<!x",
 		];
 		let seed = 7;
 		const rand = () => {
 			seed = (seed * 1103515245 + 12345) % 2 ** 31;
 			return seed / 2 ** 31;
 		};
-		for (let n = 0; n < 3000; n++) {
+		for (let n = 0; n < 6000; n++) {
 			const len = 1 + Math.floor(rand() * 12);
 			let x = "";
 			for (let k = 0; k < len; k++)

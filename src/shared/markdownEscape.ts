@@ -124,21 +124,21 @@ const BLOCK_TAGS = new Set([
 /** An HTML tag as CommonMark reads one (open or closing), at the regex's lastIndex. */
 const TAG =
 	/<(\/)?([A-Za-z][A-Za-z0-9-]*)((?:\s+[A-Za-z_:][A-Za-z0-9_.:-]*(?:\s*=\s*(?:[^\s"'=<>`]+|'[^']*'|"[^"]*"))?)*)\s*(\/?)>/y;
-/** Processing instructions, declarations and CDATA: GitHub drops them too. */
-const OTHER_MARKUP =
-	/<(?:\?[\s\S]*?\?>|![A-Za-z][^>]*>|!\[CDATA\[[\s\S]*?\]\]>)/y;
-const COMMENT = /<!--[\s\S]*?-->/y;
 const AUTOLINK =
 	/<(?:[A-Za-z][A-Za-z0-9+.-]{1,31}:[^\s<>]*|[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*)>/y;
+/** Where GFM's extended autolinks start (`https://…`, `www.…`). */
+const BARE_URL = /^(?:https?:\/\/|www\.)/i;
 
 /** Whether GitHub drops tag `name` (so it is escaped). */
 function dropped(name: string, closing: boolean, bare: boolean): boolean {
 	const n = name.toLowerCase();
 	if (TAG_FILTER.has(n)) return false;
 	if (!GITHUB_KEPT_TAGS.has(n)) return true;
+	// `Foo<B>` is a type parameter, not bold: `<B>` and `</B>` both.
+	if (/^[A-Z]$/.test(name)) return bare;
 	if (closing) return false;
-	// `<a>` without an href GitHub drops; `Foo<B>` is a type parameter, not bold.
-	return bare && (n === "a" || /^[A-Z]$/.test(name));
+	// `<a>` without an href GitHub drops.
+	return bare && n === "a";
 }
 
 /** A `<` that starts a tag GitHub drops, and whether it is escaped already. */
@@ -148,68 +148,141 @@ interface Hit {
 }
 
 /**
- * What the markup at `at` (a `<`) is: a tag or markup GitHub drops
- * ("drop"), something to skip whole (kept tag, comment, autolink; its
- * end), or plain text (null).
+ * One stretch of inline markdown (a paragraph or a heading), scanned
+ * once from left to right. Each terminator (`-->`, `?>`, a backtick run
+ * of a given length...) is looked for at most once per position it can
+ * be at: the scan only moves forward, so a found one (or none) holds
+ * until the scan passes it. Linear in the stretch's length.
  */
-function markupAt(text: string, at: number): "drop" | { end: number } | null {
-	for (const skip of [COMMENT, AUTOLINK]) {
-		skip.lastIndex = at;
-		if (skip.test(text)) return { end: skip.lastIndex };
-	}
-	TAG.lastIndex = at;
-	const tag = TAG.exec(text);
-	if (tag) {
-		const bare = !(tag[3] ?? "").trim() && !tag[4];
-		return dropped(tag[2] ?? "", !!tag[1], bare)
-			? "drop"
-			: { end: TAG.lastIndex };
-	}
-	OTHER_MARKUP.lastIndex = at;
-	return OTHER_MARKUP.test(text) ? "drop" : null;
-}
+class Inline {
+	readonly #seg: string;
+	readonly #next = new Map<string, number>();
+	#runs: Map<number, { at: number[]; next: number }> | null = null;
+	/** Where the current run of non-space text starts, up to #wordAt. */
+	#word = 0;
+	#wordAt = 0;
 
-/** Inline markdown in `text` from `start` to `end`: the hits outside code spans. */
-function scanInline(text: string, start: number, end: number, hits: Hit[]) {
-	const seg = text.slice(0, end);
-	let i = start;
-	while (i < end) {
-		const c = seg[i];
-		if (c === "\\") {
-			if (seg[i + 1] === "<" && markupAt(seg, i + 1) === "drop") {
-				hits.push({ at: i + 1, escaped: true });
+	constructor(seg: string) {
+		this.#seg = seg;
+	}
+
+	/** Where `s` next occurs at or after `from`; -1 if never. */
+	#find(s: string, from: number): number {
+		const known = this.#next.get(s);
+		if (known !== undefined && (known < 0 || known >= from)) return known;
+		const at = this.#seg.indexOf(s, from);
+		this.#next.set(s, at);
+		return at;
+	}
+
+	/** Where a run of exactly `n` backticks starts at or after `from`; -1 if none. */
+	#closingRun(from: number, n: number): number {
+		if (!this.#runs) {
+			// Every run, once: its starts by length, in order.
+			const runs = new Map<number, { at: number[]; next: number }>();
+			const seg = this.#seg;
+			for (let i = seg.indexOf("`"); i >= 0; ) {
+				let k = 1;
+				while (seg[i + k] === "`") k++;
+				const of = runs.get(k) ?? { at: [], next: 0 };
+				of.at.push(i);
+				runs.set(k, of);
+				i = seg.indexOf("`", i + k);
 			}
-			i += 2;
-		} else if (c === "`") {
-			let n = 1;
-			while (seg[i + n] === "`") n++;
-			const close = closingRun(seg, i + n, n);
-			i = close < 0 ? i + n : close + n;
-		} else if (c === "<") {
-			// An angle-bracketed link destination: `[text](<dest>)`.
-			if (seg[i - 1] === "(" && seg[i - 2] === "]") {
+			this.#runs = runs;
+		}
+		const of = this.#runs.get(n);
+		if (!of) return -1;
+		// The scan only moves forward: so does each length's pointer.
+		while (of.next < of.at.length && (of.at[of.next] ?? 0) < from) of.next++;
+		return of.at[of.next] ?? -1;
+	}
+
+	/** Whether `at` is inside a bare URL GitHub links (its non-space run starts like one). */
+	#inBareUrl(at: number): boolean {
+		const seg = this.#seg;
+		for (; this.#wordAt < at; this.#wordAt++) {
+			if (/\s/.test(seg[this.#wordAt] ?? "")) this.#word = this.#wordAt + 1;
+		}
+		let w = this.#word;
+		while (w < at && "*_~(".includes(seg[w] ?? "")) w++;
+		return BARE_URL.test(seg.slice(w, Math.min(at, w + 8)));
+	}
+
+	/**
+	 * What the markup at `at` (a `<`) is: a tag or markup GitHub drops
+	 * ("drop"), something to skip whole (kept tag, comment, autolink; its
+	 * end), or plain text (null).
+	 */
+	#markupAt(at: number): "drop" | { end: number } | null {
+		const seg = this.#seg;
+		if (seg.startsWith("<!--", at)) {
+			const close = this.#find("-->", at + 4);
+			return close < 0 ? null : { end: close + 3 };
+		}
+		AUTOLINK.lastIndex = at;
+		if (AUTOLINK.test(seg)) return { end: AUTOLINK.lastIndex };
+		TAG.lastIndex = at;
+		const tag = TAG.exec(seg);
+		if (tag) {
+			const bare = !(tag[3] ?? "").trim() && !tag[4];
+			return dropped(tag[2] ?? "", !!tag[1], bare)
+				? "drop"
+				: { end: TAG.lastIndex };
+		}
+		// Processing instructions, CDATA and declarations: GitHub drops them too.
+		if (seg[at + 1] === "?")
+			return this.#find("?>", at + 2) < 0 ? null : "drop";
+		if (seg.startsWith("<![CDATA[", at)) {
+			return this.#find("]]>", at + 9) < 0 ? null : "drop";
+		}
+		if (seg[at + 1] === "!" && /[A-Za-z]/.test(seg[at + 2] ?? "")) {
+			return this.#find(">", at + 3) < 0 ? null : "drop";
+		}
+		return null;
+	}
+
+	/** The hits, at their place in the stretch plus `offset`. */
+	scan(offset: number, hits: Hit[]): void {
+		const seg = this.#seg;
+		let i = 0;
+		while (i < seg.length) {
+			const c = seg[i];
+			if (c === "\\") {
+				if (
+					seg[i + 1] === "<" &&
+					!this.#inBareUrl(i) &&
+					this.#markupAt(i + 1) === "drop"
+				) {
+					hits.push({ at: offset + i + 1, escaped: true });
+				}
+				i += 2;
+			} else if (c === "`") {
+				let n = 1;
+				while (seg[i + n] === "`") n++;
+				const close = this.#closingRun(i + n, n);
+				i = close < 0 ? i + n : close + n;
+			} else if (c === "<") {
+				// An angle-bracketed link destination, `[text](<dest>)`, and a
+				// bare URL GitHub links (an escape would land inside the link):
+				// left as they are.
+				if ((seg[i - 1] === "(" && seg[i - 2] === "]") || this.#inBareUrl(i)) {
+					i++;
+					continue;
+				}
+				const m = this.#markupAt(i);
+				if (m === "drop") hits.push({ at: offset + i, escaped: false });
+				i = m && m !== "drop" ? m.end : i + 1;
+			} else {
 				i++;
-				continue;
 			}
-			const m = markupAt(seg, i);
-			if (m === "drop") hits.push({ at: i, escaped: false });
-			i = m && m !== "drop" ? m.end : i + 1;
-		} else {
-			i++;
 		}
 	}
 }
 
-/** Where a run of exactly `n` backticks starts at or after `from`; -1 if none. */
-function closingRun(text: string, from: number, n: number): number {
-	let i = text.indexOf("`", from);
-	while (i >= 0) {
-		let k = 1;
-		while (text[i + k] === "`") k++;
-		if (k === n) return i;
-		i = text.indexOf("`", i + k);
-	}
-	return -1;
+/** Inline markdown in `text` from `start` to `end`: the hits outside code spans. */
+function scanInline(text: string, start: number, end: number, hits: Hit[]) {
+	new Inline(text.slice(start, end)).scan(start, hits);
 }
 
 /** A line's indent in columns (a tab to the next multiple of 4) and where its text starts. */
@@ -227,11 +300,68 @@ function indentOf(line: string): { cols: number; at: number } {
 /** A line without its block quote markers (`> `). */
 const unquoted = (line: string) => line.replace(/^(?: {0,3}> ?)+/, "");
 
-/** A line without block quote and list markers, for fences (lists err towards code). */
-const unmarked = (line: string) =>
-	line.replace(/^(?:\s*(?:>|[-*+]|\d{1,9}[.)])(?=\s|$) ?)+/, "");
+/** A line's block quote depth and the rest after its markers. */
+function quoteDepth(line: string): { depth: number; rest: string } {
+	let depth = 0;
+	let rest = line;
+	for (let m = QUOTE.exec(rest); m; m = QUOTE.exec(rest)) {
+		depth++;
+		rest = rest.slice(m[0].length);
+	}
+	return { depth, rest };
+}
+const QUOTE = /^ {0,3}> ?/;
 
-const FENCE = /^\s*(`{3,}|~{3,})([^\n]*)$/;
+/**
+ * A fence's opening line: block quotes, then any list markers, then the
+ * fence (lists and any indent err towards code). Its container (quote
+ * depth, a list item's content column) is where it must close.
+ */
+const FENCE_OPEN =
+	/^([ \t]*(?:(?:[-*+]|\d{1,9}[.)])[ \t]+)*)(`{3,}|~{3,})([^\n]*)$/;
+const FENCE_CLOSE = /^(`{3,}|~{3,})[ \t]*\r?$/;
+
+interface Fence {
+	char: string;
+	len: number;
+	depth: number;
+	/** The column of the list item's content it is in; 0 outside a list. */
+	column: number;
+}
+
+/** The fence `line` opens; null if none. */
+function fenceOpen(line: string): Fence | null {
+	const { depth, rest } = quoteDepth(line);
+	const m = FENCE_OPEN.exec(rest);
+	const run = m?.[2] ?? "";
+	if (!m || (run[0] === "`" && (m[3] ?? "").includes("`"))) return null;
+	const before = m[1] ?? "";
+	const listed = /[-*+.)]/.test(before);
+	return {
+		char: run[0] ?? "`",
+		len: run.length,
+		depth,
+		column: listed ? indentOf(before.replace(/[^\s]/g, " ")).cols : 0,
+	};
+}
+
+/**
+ * Whether `line` closes `fence`: as CommonMark, in the same container
+ * (its quote markers, its list item's column), then 0-3 spaces. In
+ * doubt it stays open: code is never escaped.
+ */
+function closes(fence: Fence, line: string): boolean {
+	let rest = line;
+	for (let k = 0; k < fence.depth; k++) {
+		const m = QUOTE.exec(rest);
+		if (!m) return false;
+		rest = rest.slice(m[0].length);
+	}
+	const { cols, at } = indentOf(rest);
+	if (cols < fence.column || cols - fence.column > 3) return false;
+	const m = FENCE_CLOSE.exec(rest.slice(at));
+	return m?.[1]?.[0] === fence.char && (m[1]?.length ?? 0) >= fence.len;
+}
 
 /** Whether `line` opens an HTML block GitHub keeps (left alone), and how it ends. */
 function htmlBlock(
@@ -259,7 +389,7 @@ function htmlBlock(
 /** Every `<` in `text` that starts a tag GitHub drops, outside code and HTML blocks. */
 function hitsOf(text: string): Hit[] {
 	const hits: Hit[] = [];
-	let fence: { char: string; len: number } | null = null;
+	let fence: Fence | null = null;
 	let html: "comment" | "pre" | "blank" | null = null;
 	let prev: "blank" | "para" | "other" = "blank";
 	/** Where the paragraph being gathered starts; -1 if none. */
@@ -276,14 +406,7 @@ function hitsOf(text: string): Hit[] {
 		const line = text.slice(pos, end);
 		const blank = !line.trim();
 		if (fence) {
-			const close = FENCE.exec(unmarked(line));
-			if (
-				close?.[1]?.[0] === fence.char &&
-				close[1].length >= fence.len &&
-				!(close[2] ?? "").trim()
-			) {
-				fence = null;
-			}
+			if (closes(fence, line)) fence = null;
 			prev = "other";
 		} else if (html) {
 			if (
@@ -298,12 +421,12 @@ function hitsOf(text: string): Hit[] {
 			flush();
 			prev = "blank";
 		} else {
-			const open = FENCE.exec(unmarked(line));
+			const open = fenceOpen(line);
 			const quoted = unquoted(line);
 			const block = htmlBlock(quoted, prev === "para");
-			if (open && !(open[1]?.[0] === "`" && (open[2] ?? "").includes("`"))) {
+			if (open) {
 				flush();
-				fence = { char: open[1]?.[0] ?? "`", len: open[1]?.length ?? 3 };
+				fence = open;
 				prev = "other";
 			} else if (indentOf(quoted).cols >= 4 && prev !== "para") {
 				// Indented code: it can't interrupt a paragraph.
@@ -339,6 +462,7 @@ function hitsOf(text: string): Hit[] {
  * drops, so it shows as typed. Idempotent: an escaped `<` stays as is.
  */
 export function escapeTags(body: string): string {
+	if (!body.includes("<")) return body;
 	const hits = hitsOf(body).filter((h) => !h.escaped);
 	if (!hits.length) return body;
 	let out = "";
@@ -356,6 +480,7 @@ export function escapeTags(body: string): string {
  * escapeTags(unescapeTags(escapeTags(x))) === escapeTags(x).
  */
 export function unescapeTags(body: string): string {
+	if (!body.includes("\\<")) return body;
 	const hits = hitsOf(body).filter((h) => h.escaped);
 	if (!hits.length) return body;
 	let out = "";

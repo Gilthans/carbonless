@@ -100,8 +100,10 @@ unresolving one, and editing or deleting one of the viewer's comments in one
   in `List<String>`, or `<T>`, as an HTML tag and drops it. Every body
   carbonless posts (new thread, reply, edit) has a backslash before each
   `<` that starts a tag GitHub drops (`List\<String>`), outside code
-  spans and blocks; `a < b`, autolinks, HTML comments and the tags GitHub
-  keeps stay as they are (`src/shared/markdownEscape.ts`, applied on the
+  spans and blocks (a fence closes only in its own container, as on
+  GitHub); `a < b`, autolinks, bare links (an escape would land in the
+  link), HTML comments and the tags GitHub keeps stay as they are
+  (`src/shared/markdownEscape.ts`, applied on the
   server where the write is built, before the marker). The page gets
   bodies without those escapes, so the edit box shows what was typed and
   the edit, retry and dedupe checks compare the text as posted.
