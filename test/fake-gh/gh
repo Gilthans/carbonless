@@ -4,6 +4,7 @@
 // scenario.ts). Every call is appended to $CRB_FAKE_GH_LOG when set.
 import { execFileSync } from "node:child_process";
 import { appendFileSync, existsSync, readFileSync } from "node:fs";
+import { GITHUB_KEPT_TAGS } from "../../src/shared/markdownEscape.ts";
 import { writeFileAtomic } from "./atomic.mjs";
 
 const args = process.argv.slice(2);
@@ -239,7 +240,7 @@ function storeReply(n, i, body) {
 	const listed = t.comments?.nodes ?? [];
 	// Older fixtures keep the opener only in `first`.
 	const before = listed.length ? listed : (t.first?.nodes ?? []).slice(0, 1);
-	const html = `<p dir="auto">${escapeHtml(rendered(body))}</p>`;
+	const html = renderedHtml(body);
 	t.comments = {
 		...(t.comments ?? {}),
 		totalCount: (t.comments?.totalCount ?? before.length) + 1,
@@ -498,37 +499,61 @@ function hunkTo(hunks, side, line) {
 	}
 	return null;
 }
+/** Tags GitHub's markdown leaves void (nothing to close). */
+const VOID_TAGS = new Set(["br", "hr", "img", "source", "wbr"]);
 /**
  * A body as GitHub's plain text and HTML have it: an HTML comment at its
- * end dropped, and, like GitHub's markdown, outside code (fences and
- * backtick spans) a backslash escape gives its character and an HTML tag
+ * end dropped and, like GitHub's markdown, outside code (fences and
+ * backtick spans) a backslash escape gives its character, a tag GitHub
+ * keeps (GITHUB_KEPT_TAGS) stays a tag in the HTML (closed at the end
+ * if left open, as GitHub's parser does), and any other tag
  * (`<String>` in `List<String>`) is dropped. A sketch, not CommonMark.
  */
-const rendered = (body) => {
-	const text = body.replace(/\s*<!--(?:(?!-->)[^])*-->\s*$/, "");
+function render(body) {
+	const source = body.replace(/\s*<!--(?:(?!-->)[^])*-->\s*$/, "");
+	let text = "";
+	let html = "";
+	const open = [];
+	const literal = (t) => {
+		text += t;
+		html += escapeHtml(t);
+	};
 	let fence = false;
-	return text
-		.split("\n")
-		.map((line) => {
-			if (/^\s*(```|~~~)/.test(line)) {
-				fence = !fence;
-				return line;
+	source.split("\n").forEach((line, n) => {
+		if (n > 0) literal("\n");
+		if (/^\s*(```|~~~)/.test(line)) fence = !fence;
+		if (fence || /^\s*(```|~~~)/.test(line)) return literal(line);
+		line.split(/(`+[^`]*`+)/).forEach((part, k) => {
+			if (k % 2) return literal(part);
+			const inline =
+				/\\([!-/:-@[-`{-~])|<(\/?)([A-Za-z][A-Za-z0-9-]*)(?:\s[^<>]*)?\/?>/g;
+			let from = 0;
+			for (const m of part.matchAll(inline)) {
+				literal(part.slice(from, m.index));
+				from = m.index + m[0].length;
+				if (m[1] !== undefined) {
+					literal(m[1]);
+					continue;
+				}
+				const name = m[3].toLowerCase();
+				if (!GITHUB_KEPT_TAGS.has(name)) continue;
+				html += m[0];
+				if (VOID_TAGS.has(name)) continue;
+				if (m[2]) {
+					const at = open.lastIndexOf(name);
+					if (at >= 0) open.splice(at, 1);
+				} else open.push(name);
 			}
-			if (fence) return line;
-			return line
-				.split(/(`+[^`]*`+)/)
-				.map((part, k) =>
-					k % 2
-						? part
-						: part.replace(
-								/\\([!-/:-@[-`{-~])|<\/?[A-Za-z][A-Za-z0-9-]*(?:\s[^<>]*)?\/?>/g,
-								(m, escaped) => escaped ?? "",
-							),
-				)
-				.join("");
-		})
-		.join("\n");
-};
+			literal(part.slice(from));
+		});
+	});
+	html += open.reverse().map((name) => `</${name}>`).join("");
+	return { text, html };
+}
+/** A body as GitHub's plain text has it (render). */
+const rendered = (body) => render(body).text;
+/** A comment's bodyHTML as GitHub renders it (render). */
+const renderedHtml = (body) => `<p dir="auto">${render(body).html}</p>`;
 if (restCreate && !s.loggedOut) {
 	const [, n] = restCreate;
 	if (args.slice(4).join(" ") !== "-H Accept: application/vnd.github.full+json --input -") {
@@ -586,7 +611,7 @@ if (restCreate && !s.loggedOut) {
 		...(s.user.avatarUrl ? { avatarUrl: s.user.avatarUrl } : {}),
 	};
 	const times = { createdAt: now, publishedAt: now, state: "SUBMITTED" };
-	const html = `<p dir="auto">${escapeHtml(rendered(req.body))}</p>`;
+	const html = renderedHtml(req.body);
 	const text = { body: req.body, bodyText: rendered(req.body), bodyHTML: html };
 	const opener = { author, ...times, ...text, diffHunk, originalCommit: { oid: req.commit_id } };
 	const thread = {
@@ -756,7 +781,7 @@ if (restComment && !s.loggedOut) {
 	const now = new Date().toISOString().replace(/\.\d+Z$/, "Z");
 	if (edit) {
 		if (!body?.trim()) httpFail(422, "Validation Failed", ["Body can't be blank"]);
-		const html = `<p dir="auto">${escapeHtml(rendered(body))}</p>`;
+		const html = renderedHtml(body);
 		// The opener's text may live only in `first` (older fixtures).
 		const targets = j === 0 && opener && opener !== c ? [c, opener] : [c];
 		for (const x of targets) {

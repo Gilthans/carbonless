@@ -133,15 +133,24 @@ export function writesOff(target: ThreadWriteTarget): void {
 export const gone = (message = "The thread is gone from GitHub") =>
 	new WriteRefusedError(message, "gone");
 
+/**
+ * The most characters `body` may have as typed when it is too long once
+ * escaped for GitHub (escapeTags, which GitHub's limit counts); null
+ * when it fits.
+ */
+function tooLong(body: string): number | null {
+	const posted = escapeTags(body).length;
+	return posted > MAX_REPLY ? MAX_REPLY - (posted - body.length) : null;
+}
+
 /** Why a reply can't be sent as it is; null when it can. */
 export function replyProblem(req: unknown): string | null {
 	const r = obj(req);
 	if (typeof r.body !== "string" || !r.body.trim()) {
 		return "A reply can't be blank";
 	}
-	if (escapeTags(r.body).length > MAX_REPLY) {
-		return `A reply is at most ${MAX_REPLY} characters`;
-	}
+	const reply = tooLong(r.body);
+	if (reply !== null) return `A reply is at most ${reply} characters`;
 	if (typeof r.attemptedAt !== "string") return "attemptedAt must be a string";
 	if (typeof r.retry !== "boolean") return "retry must be true or false";
 	// A thread always has its opener: an empty list would let any older
@@ -495,9 +504,8 @@ export function editProblem(req: unknown): string | null {
 	if (typeof r.body !== "string" || !r.body.trim()) {
 		return "A comment can't be blank: delete it instead";
 	}
-	if (escapeTags(r.body).length > MAX_REPLY) {
-		return `A comment is at most ${MAX_REPLY} characters`;
-	}
+	const edit = tooLong(r.body);
+	if (edit !== null) return `A comment is at most ${edit} characters`;
 	if (typeof r.from !== "string") return "from must be a string";
 	if (typeof r.force !== "boolean") return "force must be true or false";
 	return null;

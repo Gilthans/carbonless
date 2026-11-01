@@ -10,14 +10,16 @@ import {
 } from "../../test/fake-gh/scenario";
 import { GIT_TEST_TIMEOUTS } from "../../test/git-fixture";
 import { createPrFixture, type PrFixture } from "../../test/pr-fixture";
-import type { ReplyRequest } from "../shared/types";
+import { MAX_REPLY, type ReplyRequest } from "../shared/types";
 import { GhError, WriteRefusedError } from "./errors";
 import { OverviewRead } from "./overviewRead";
 import { Session } from "./session";
 import type { ThreadCodeSource } from "./threadCode";
 import {
+	editProblem,
 	findReply,
 	LIST_WAITS_MS,
+	replyProblem,
 	replyToThread,
 	setResolved,
 	type ThreadWriteTarget,
@@ -328,8 +330,8 @@ describe("thread writes", () => {
 			attention: ["octo-author"],
 			comment: {
 				body: "Later <b>",
-				// The fake drops tags, as GitHub's markdown does.
-				html: '<p dir="auto">Later </p>',
+				// GitHub keeps <b> (closing it): no escape for a tag it keeps.
+				html: '<p dir="auto">Later <b></b></p>',
 				author: "Octo_Cat",
 			},
 		});
@@ -614,6 +616,30 @@ describe("thread writes off and refused before GitHub", () => {
 				replyToThread(target("on"), "T1", r as ReplyRequest),
 			).rejects.toMatchObject({ code: "invalid" });
 		}
+	});
+});
+
+describe("length once escaped", () => {
+	it("a body that fits as typed but not once escaped is refused with the limit on the text as typed", () => {
+		// 21,000 escapes: 21,000 characters less room for the typed text.
+		const body = `${"<T>".repeat(21_000)}${"x".repeat(MAX_REPLY - 63_000)}`;
+		const limit = `at most ${MAX_REPLY - 21_000} characters`;
+		expect(
+			replyProblem({
+				body,
+				attemptedAt: "",
+				retry: false,
+				clientId: "c",
+				knownCommentIds: [],
+			}),
+		).toBe(`A reply is ${limit}`);
+		expect(editProblem({ body, from: "", force: false })).toBe(
+			`A comment is ${limit}`,
+		);
+		// As typed, with no escapes: the plain limit.
+		expect(
+			editProblem({ body: "x".repeat(MAX_REPLY + 1), from: "", force: false }),
+		).toBe(`A comment is at most ${MAX_REPLY} characters`);
 	});
 });
 
