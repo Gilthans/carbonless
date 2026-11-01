@@ -1,4 +1,9 @@
-import { type ChildProcess, execFile, spawn } from "node:child_process";
+import {
+	type ChildProcess,
+	execFile,
+	execFileSync,
+	spawn,
+} from "node:child_process";
 import {
 	chmodSync,
 	existsSync,
@@ -110,6 +115,17 @@ describe("scripts/devbox/follow", { timeout: 60_000 }, () => {
 		stub("systemctl", "echo REAL systemctl >&2; exit 99");
 		stub("journalctl", "echo REAL journalctl >&2; exit 99");
 		stub("gh", "exit 0");
+		// tar, except that with $TAR_FAIL a snapshot of the installed package
+		// (--transform) leaves a partial file and fails, as a full disk would.
+		stub(
+			"tar",
+			[
+				'case "$*" in *--transform*) if [ -n "$TAR_FAIL" ]; then echo partial >"$2"; exit 1; fi ;; esac',
+				`exec ${execFileSync("sh", ["-c", "command -v tar"], { encoding: "utf8" }).trim()} "$@"`,
+			].join("\n"),
+		);
+		// ssh logs how it was called and fails (no host is real here).
+		stub("ssh", `echo "ssh $*" >>"${log}"; exit 255`);
 		// npm view carbonless-review@rc: $NPM_RC, $NPM_ERROR, else not published.
 		stub(
 			"npm",
@@ -132,7 +148,7 @@ describe("scripts/devbox/follow", { timeout: 60_000 }, () => {
 				'install) [ -z "$PNPM_FAIL" ] || exit 1 ;;',
 				"pack)",
 				"  v=$(node -p 'require(\"./package.json\").version')",
-				'  c=$(git rev-parse HEAD); [ -z "$(git status --porcelain)" ] || c="$c-dirty"',
+				'  c=$(git rev-parse HEAD); [ -z "$(git status --porcelain)$PACK_DIRTY" ] || c="$c-dirty"',
 				'  t=$(mktemp -d); mkdir -p "$t/package/dist"',
 				'  printf \'{"version":"%s","commit":"%s"}\' "$v" "$c" >"$t/package/dist/build-info.json"',
 				'  tar -czf "$3/carbonless-review-$v.tgz" -C "$t" package; rm -rf "$t" ;;',
@@ -456,6 +472,146 @@ describe("scripts/devbox/follow", { timeout: 60_000 }, () => {
 		const none = await run();
 		expect(none.code).not.toBe(0);
 		expect(none.stderr).toContain("there is no good build to reinstall");
+	});
+
+	it("a fetch that fails is never up to date: it exits 1", async () => {
+		await git(repo(), "remote", "set-url", "origin", join(dir, "missing.git"));
+		const r = await run();
+		expect(r.code).not.toBe(0);
+		expect(r.stdout).not.toContain("up to date");
+		expect(r.stderr).toContain("fetching origin/master into");
+		expect(calls()).not.toContain("update");
+	});
+
+	it("from npm, a fetch that fails keeps the scripts' copy", async () => {
+		await git(repo(), "remote", "set-url", "origin", join(dir, "missing.git"));
+		const rc = { version: "0.2.0-rc.1", commit: "2".repeat(40) };
+		const r = await run({
+			NPM_RC: JSON.stringify({ version: rc.version }),
+			NPM_BUILD: JSON.stringify(rc),
+		});
+		expect(r.code).toBe(0);
+		expect(installed()).toEqual(rc);
+		expect(r.stderr).toContain("could not fetch origin/master");
+		expect(copied()).toBeNull();
+	});
+
+	it("never keeps a partial tarball of the installed build, nor makes it the good one", async () => {
+		const first = installed().commit;
+		const r = await run({ TAR_FAIL: "1" });
+		expect(r.stderr).toContain("could not keep a tarball of");
+		expect(existsSync(tarball("0.1.0", first))).toBe(false);
+		expect(existsSync(`${tarball("0.1.0", first)}.tmp`)).toBe(false);
+		expect(existsSync(join(dir, "state/carbonless/follow-good"))).toBe(false);
+		// Once tar works, the snapshot is made whole.
+		expect((await run()).code).toBe(0);
+		expect(
+			readFileSync(join(dir, "state/carbonless/follow-good"), "utf8"),
+		).toBe(`${tarball("0.1.0", first)}\n`);
+	});
+
+	it("a build whose tarball says another build counts as a failure, not a rebuild every tick", async () => {
+		await push("0.1.0");
+		const extra = {
+			PACK_DIRTY: "1",
+			CRB_DEVBOX_RETRY_DELAYS: "3600 3600 3600",
+		};
+		const r = await run(extra);
+		expect(r.code).not.toBe(0);
+		expect(r.stderr).toMatch(
+			/says it is 0\.1\.0 \(\w{7}-dirty\): trying again in 60 min/,
+		);
+		const again = await run(extra);
+		expect(again.code).not.toBe(0);
+		expect(calls().match(/^pnpm install/gm)).toHaveLength(1);
+		expect(calls()).not.toContain("update");
+	});
+
+	it("a crb serve that isn't crb.service's doesn't make it restart main", async () => {
+		expect((await run()).code).toBe(0);
+		// A branch instance started without its .envrc wrote server.json.
+		mkdirSync(join(dir, "state/carbonless"), { recursive: true });
+		writeFileSync(
+			join(dir, "state/carbonless/server.json"),
+			JSON.stringify({ url: "x", host: "x", port: 1, pid: 4242 }),
+		);
+		const r = await run({ CRB_DEVBOX_DRY_MAINPID: "99" });
+		expect(r.code).toBe(0);
+		expect(r.stdout).toContain("up to date");
+		expect(calls()).not.toContain("update");
+		// crb.service inactive: that is a fault.
+		const down = await run({ CRB_DEVBOX_DRY_MAINPID: "0" });
+		expect(down.stderr).toContain("crb.service is not serving");
+		expect(calls()).toContain("update");
+	});
+
+	it("a follow-failed it can't read, or from the future, doesn't hold a build back", async () => {
+		const sha = await push("0.1.0");
+		const failed = join(dir, "state/carbonless/follow-failed");
+		mkdirSync(dirname(failed), { recursive: true });
+		const extra = {
+			CRB_DEVBOX_RETRY_DELAYS: "3600 3600 3600",
+			UPDATE_FAIL: short(sha),
+		};
+		writeFileSync(failed, `git 0.1.0 ${sha}\nabc\nxyz\n`);
+		const r = await run(extra);
+		expect(r.stderr).not.toContain("unbound variable");
+		expect(r.stdout).toContain(`trying 0.1.0 (${short(sha)})`);
+		expect(updates()).toBe(2);
+
+		const future = Math.floor(Date.now() / 1000) + 1_000_000;
+		writeFileSync(failed, `git 0.1.0 ${sha}\n1\n${future}\n`);
+		const back = await run({ CRB_DEVBOX_RETRY_DELAYS: "3600 3600 3600" });
+		expect(back.code).toBe(0);
+		expect(installed()).toEqual({ version: "0.1.0", commit: sha });
+	});
+
+	it("an exported CRB_DEVBOX_LOCKED doesn't let follow past the lock", async () => {
+		await push("0.1.0");
+		const lock = join(dir, "state/carbonless/devbox.lock");
+		mkdirSync(dirname(lock), { recursive: true });
+		holder = spawn("flock", [lock, "-c", "echo held; sleep 60"]);
+		await new Promise((resolve) => holder?.stdout?.once("data", resolve));
+		const r = await run({ CRB_DEVBOX_LOCKED: "1" });
+		expect(r.code).toBe(0);
+		expect(r.stdout).toContain("another run");
+		expect(calls()).toBe("");
+	});
+
+	it("fetches over ssh in batch mode, unless the repo or the caller chose its ssh", async () => {
+		await git(
+			repo(),
+			"remote",
+			"set-url",
+			"origin",
+			"ssh://git@example.invalid/x.git",
+		);
+		expect((await run()).code).not.toBe(0);
+		expect(calls()).toMatch(/^ssh -o BatchMode=yes .*example\.invalid/m);
+
+		const own = join(dir, "own-ssh");
+		writeFileSync(
+			own,
+			`#!/bin/sh\necho "own-ssh $*" >>"${join(dir, "calls.log")}"; exit 255\n`,
+		);
+		chmodSync(own, 0o755);
+		await git(repo(), "config", "core.sshCommand", own);
+		expect((await run()).code).not.toBe(0);
+		expect(calls()).toMatch(/^own-ssh .*example\.invalid/m);
+		expect(calls().match(/^ssh /gm)).toHaveLength(1);
+	});
+
+	it("refuses a build tree that is a worktree on a branch", async () => {
+		await push("0.1.0");
+		const agent = join(repo(), ".worktrees/agent");
+		await git(repo(), "worktree", "add", "-qb", "agent", agent);
+		writeFileSync(join(agent, "file.txt"), "agent's work\n");
+		const r = await run({ CRB_DEVBOX_BUILD_TREE: agent });
+		expect(r.code).not.toBe(0);
+		expect(r.stderr).toContain("is on a branch");
+		expect(readFileSync(join(agent, "file.txt"), "utf8")).toBe(
+			"agent's work\n",
+		);
 	});
 
 	it("exits quietly while another run or update holds the lock", async () => {

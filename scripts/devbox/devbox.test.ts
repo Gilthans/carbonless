@@ -342,6 +342,14 @@ describe("scripts/devbox", { timeout: 60_000 }, () => {
 			});
 			expect(inst.code).not.toBe(0);
 
+			// Only update honours CRB_DEVBOX_LOCKED.
+			const lockedInstall = await run("install", ["--no-follow"], {
+				CRB_DEVBOX_LOCKED: "1",
+				CRB_DEVBOX_LOCK_WAIT: "1",
+			});
+			expect(lockedInstall.code).not.toBe(0);
+			expect(lockedInstall.stderr).toContain(`still holds ${lock}`);
+
 			const under = await run("update", ["rc"], { CRB_DEVBOX_LOCKED: "1" });
 			expect(under.code).toBe(0);
 			expect(under.stdout).toContain(

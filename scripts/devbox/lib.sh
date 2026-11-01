@@ -222,6 +222,16 @@ server_pid() {
 		} catch {}' "$STATE_HOME/carbonless/server.json"
 }
 
+# Whether crb.service is active (under dry run: unless
+# CRB_DEVBOX_DRY_MAINPID is 0).
+service_active() {
+	if [[ -n "$DRY_RUN" ]]; then
+		[[ "${CRB_DEVBOX_DRY_MAINPID:-}" != 0 ]]
+	else
+		systemctl --user is-active --quiet "$UNIT"
+	fi
+}
+
 # crb.service's MainPID when it is active, else 0.
 service_main_pid() {
 	if [[ -n "$DRY_RUN" ]]; then

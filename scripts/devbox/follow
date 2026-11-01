@@ -24,7 +24,9 @@
 # Overrides for tests and odd setups: see lib.sh.
 set -euo pipefail
 exec </dev/null
-export GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND="${GIT_SSH_COMMAND:-ssh -o BatchMode=yes}"
+export GIT_TERMINAL_PROMPT=0
+# Only update runs under another's lock (lib.sh take_lock).
+unset CRB_DEVBOX_LOCKED
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib.sh
 source "$here/lib.sh"
@@ -83,8 +85,12 @@ installed_tarball() {
 	if [[ ! -f "$tgz" ]]; then
 		dir="$(installed_dir)"
 		mkdir -p "$RELEASES"
-		tar -czf "$tgz.tmp" -C "$dir" --exclude=./node_modules --transform 's,^\.,package,' .
-		mv "$tgz.tmp" "$tgz"
+		# Never a partial tarball under the final name (set -e is off in $(...)).
+		{ tar -czf "$tgz.tmp" -C "$dir" --exclude=./node_modules --transform 's,^\.,package,' . &&
+			mv "$tgz.tmp" "$tgz"; } || {
+			rm -f "$tgz.tmp"
+			return 1
+		}
 	fi
 	echo "$tgz"
 }
@@ -101,7 +107,7 @@ good_tarball() {
 healthy() {
 	[[ -n "$current" ]] || return 1
 	local wait="${CRB_DEVBOX_HEALTH_WAIT:-30}" start=$SECONDS
-	until serves_build "$current" && service_serves; do
+	until serves_build "$current" && service_active; do
 		((SECONDS - start < wait)) || return 1
 		sleep 1
 	done
@@ -134,7 +140,10 @@ read_failed() {
 	local lines=()
 	mapfile -t lines <"$FAILED_FILE"
 	[[ "${lines[0]:-}" == "$1" ]] || return 0
-	FAILED_COUNT="${lines[1]:-1}" FAILED_AT="${lines[2]:-0}"
+	FAILED_COUNT="${lines[1]:-}" FAILED_AT="${lines[2]:-}"
+	# A file that doesn't parse counts as one failure, due now.
+	[[ "$FAILED_COUNT" =~ ^[1-9][0-9]{0,5}$ ]] || FAILED_COUNT=1
+	[[ "$FAILED_AT" =~ ^[0-9]{1,12}$ ]] || FAILED_AT=0
 }
 
 record_failure() {
@@ -160,7 +169,9 @@ check_retry() {
 	((FAILED_COUNT > 0)) || return 0
 	if ((FAILED_COUNT <= ${#RETRY_DELAYS[@]})); then
 		delay="${RETRY_DELAYS[FAILED_COUNT - 1]}"
-		if (($(date +%s) - FAILED_AT >= delay)); then
+		local elapsed=$(($(date +%s) - FAILED_AT))
+		# A failure "in the future" (the clock went back) is due now.
+		if ((elapsed < 0 || elapsed >= delay)); then
 			say "trying $target again (it failed $FAILED_COUNT time(s))"
 			return 0
 		fi
@@ -192,7 +203,11 @@ move_to() {
 	if update "$spec"; then
 		rm -f "$FAILED_FILE"
 		current="$(installed_build)"
-		installed_tarball >"$GOOD_FILE"
+		if good="$(installed_tarball)"; then
+			echo "$good" >"$GOOD_FILE"
+		else
+			fail "could not keep a tarball of $(pretty_build "$current"): the good build stays $(good_tarball)"
+		fi
 		prune_releases
 		return 0
 	fi
@@ -256,11 +271,15 @@ follow_npm() {
 # gc/maintenance, whatever the repo's config says; nothing checked out.
 fetch_master() {
 	local repo="$1"
+	# No ssh prompt either, unless the repo or the caller chose its own ssh.
+	if [[ -z "${GIT_SSH_COMMAND:-}" && -z "$(git -C "$repo" config core.sshCommand || true)" ]]; then
+		export GIT_SSH_COMMAND="ssh -o BatchMode=yes"
+	fi
 	git -C "$repo" -c fetch.prune=false -c fetch.pruneTags=false \
 		-c submodule.recurse=false -c gc.auto=0 -c maintenance.auto=false \
 		fetch --quiet --no-tags --no-prune --no-write-fetch-head \
 		--no-write-commit-graph --no-auto-maintenance --no-recurse-submodules \
-		origin "+refs/heads/master:refs/remotes/origin/master"
+		origin "+refs/heads/master:refs/remotes/origin/master" || return 1
 	git -C "$repo" rev-parse --verify --quiet "refs/remotes/origin/master^{commit}"
 }
 
@@ -280,13 +299,20 @@ check_build_tree() {
 		die "$tree is inside $top, not a worktree of its own: set CRB_DEVBOX_BUILD_TREE to a dir follow may wipe"
 	[[ "$(real_dir "$git_dir")" != "$(real_dir "$common")" ]] ||
 		die "$tree is a main checkout, not a worktree of its own: set CRB_DEVBOX_BUILD_TREE to a dir follow may wipe"
+	# follow always leaves it detached; a worktree on a branch is someone's.
+	! git -C "$tree" symbolic-ref -q HEAD >/dev/null ||
+		die "$tree is on a branch, not a worktree of its own: set CRB_DEVBOX_BUILD_TREE to a dir follow may wipe"
 }
 
 follow_git() {
 	local repo tree sha version target tgz pack built
 	repo="$(follow_repo)"
 	tree="${CRB_DEVBOX_BUILD_TREE:-$repo/.worktrees/follow}"
-	sha="$(fetch_master "$repo")"
+	if ! sha="$(fetch_master "$repo")"; then
+		heal
+		fail "fetching origin/master into $repo failed; staying on $(pretty_build "$current")"
+		exit 1
+	fi
 	if [[ -n "$current" && "${current#* }" == "$sha" ]]; then
 		up_to_date origin/master
 		return 0
@@ -322,9 +348,13 @@ follow_git() {
 			fail "building $target failed: $(next_try)"
 			exit 1
 		fi
-		built="$(tarball_build "$pack"/*.tgz)"
-		[[ "$built" == "$version $sha" ]] ||
-			die "the tarball built from $sha says it is $(pretty_build "$built")"
+		built="$(tarball_build "$pack"/*.tgz)" || built=""
+		if [[ "$built" != "$version $sha" ]]; then
+			record_failure "git $version $sha"
+			heal
+			fail "the tarball built from ${sha:0:7} says it is $(pretty_build "$built"): $(next_try)"
+			exit 1
+		fi
 		mkdir -p "$RELEASES"
 		mv "$pack"/*.tgz "$tgz"
 	fi
@@ -351,8 +381,11 @@ refresh_scripts() {
 HEALTHY=""
 if healthy; then
 	HEALTHY=1
-	good="$(installed_tarball)"
-	[[ "$(good_tarball)" == "$good" ]] || echo "$good" >"$GOOD_FILE"
+	if good="$(installed_tarball)"; then
+		[[ "$(good_tarball)" == "$good" ]] || echo "$good" >"$GOOD_FILE"
+	else
+		fail "could not keep a tarball of $(pretty_build "$current")"
+	fi
 fi
 
 rc="$(npm_rc)"
