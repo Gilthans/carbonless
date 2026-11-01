@@ -2,10 +2,9 @@ import type {
 	AnnotationOp,
 	Annotations,
 	HomeRow,
-	HomeSection,
 	HomeView,
 	Person,
-	SectionId,
+	RepoHome,
 } from "../../shared/home.js";
 import { GhError } from "../errors.js";
 import { slugify } from "../slug.js";
@@ -29,10 +28,8 @@ import {
 	type Known,
 	newCost,
 	type RefreshCost,
-	repoExists,
 } from "./prFacts.js";
 import {
-	compareRows,
 	RECENTLY_CLOSED_MS,
 	sectionOf,
 	turnOf,
@@ -41,11 +38,14 @@ import {
 import { StartedReviews } from "./started.js";
 
 /**
- * Home's state: GitHub's PR facts for the view's repos only (a PR started
- * elsewhere isn't read), refreshed on a timer (single flight, backing off
- * on failure), kept in memory as a cache only. The view, the inbox refs
- * and the clones are the state; every HomeView is folded afresh against
- * the clock, so a snooze whose date passes wakes on the next read.
+ * Home's state: GitHub's PR facts per view repo (a PR started elsewhere
+ * isn't read), each repo read when the page asks for it and its facts are
+ * older than FRESH_MS (one read per repo at a time, shared), kept in
+ * memory as a cache only. The page's queries drive freshness (owner,
+ * 2026-11-01: "Every repo PR list should have its own tanstack query");
+ * there is no server timer. The view, the inbox refs and the clones are
+ * the state; every answer is folded afresh against the clock, so a snooze
+ * whose date passes wakes on the next read.
  */
 
 /** The parts of crb's config Home reads and writes (src/server/config.ts). */
@@ -72,14 +72,14 @@ export function configAccess<C extends HomeConfig>(
 	};
 }
 
-export const SECTIONS: readonly SectionId[] = [
-	"mine",
-	"reviewing",
-	"grabs",
-	"other",
-	"closed",
-];
-export const MAX_BACKOFF_MS = 30 * 60_000;
+/**
+ * A repo's facts answer from the cache this long after its last read; an
+ * older ask reads GitHub again. Shorter than any refresh.minutes, so the
+ * page's every timed ask is a read.
+ */
+export const FRESH_MS = 30_000;
+/** A repo out of the view keeps its facts this long (re-added: incremental). */
+export const KEEP_MS = 3_600_000;
 /** The viewer's teams are read again this often. */
 const TEAMS_MAX_AGE_MS = 30 * 60_000;
 const DEFAULT_VIEW = "My PRs";
@@ -101,21 +101,12 @@ export function parseRepo(input: string): string | null {
 	return `${m[1]}/${m[2]}`.toLowerCase();
 }
 
-/**
- * A failure that says GitHub can't be asked right now (rate limited,
- * unreachable, logged out): the refresh backs off. A repo that doesn't
- * exist is its own error and slows nothing.
- */
-export function isTransient(error: unknown): boolean {
-	const message = error instanceof Error ? error.message : String(error);
-	return /rate limit|could not resolve host|ENOTFOUND|ECONNREFUSED|ETIMEDOUT|network is unreachable|dial tcp|connection reset|took longer than|not logged in|gh auth login/i.test(
-		message,
-	);
-}
-
-/** Why a refresh failed, short, for the header's warning. */
+/** Why a read failed, short, for the repo's status. */
 export function refreshReason(error: unknown): string {
 	const message = error instanceof Error ? error.message : String(error);
+	if (/could not resolve to a repository/i.test(message)) {
+		return "Not found on GitHub";
+	}
 	if (/rate limit/i.test(message)) return "Rate limited by GitHub";
 	if (
 		/could not resolve host|ENOTFOUND|ECONNREFUSED|ETIMEDOUT|network is unreachable|dial tcp|connection reset/i.test(
@@ -128,11 +119,30 @@ export function refreshReason(error: unknown): string {
 }
 
 interface StartedSource {
-	/** Coverage only for the repos `withCoverage` names (StartedReviews.list). */
+	/**
+	 * Coverage only for the repos `withCoverage` names; `only`: that repo's
+	 * clone alone (StartedReviews.list).
+	 */
 	list(
 		slug: string,
 		withCoverage?: ReadonlySet<string>,
+		only?: string,
 	): Promise<StartedReview[]>;
+}
+
+/** What Home knows of one repo (`owner/repo`, lowercased). */
+interface RepoState {
+	/** By PR number. */
+	facts: Map<number, Known>;
+	/** When the last read that worked began (fetchRepoPrs' listedSince). */
+	listedAt: number | undefined;
+	/** When the last read, worked or not, began: FRESH_MS counts from it. */
+	checkedAt: number;
+	error: string | null;
+	failures: number;
+	/** The viewer's started reviews of its PRs, as of its last answer. */
+	started: StartedReview[];
+	reading: Promise<void> | null;
 }
 
 export interface HomeServiceOptions {
@@ -151,23 +161,14 @@ export class HomeService {
 	#viewer: Person | null = null;
 	#teams: string[] | null = null;
 	#teamsAt = Number.NEGATIVE_INFINITY;
-	/** By prSlug. */
-	#facts = new Map<string, Known>();
-	/** Per view repo: when its last successful refresh began (listedSince). */
-	#listedAt = new Map<string, number>();
+	#teamsReading: Promise<void> | null = null;
+	readonly #repos = new Map<string, RepoState>();
+	/** The view's repos as last read from the config (knownPrs is sync). */
+	#inView = new Set<string>();
+	/** Every started review, as the last view() listed them (search's recent repos). */
 	#startedList: StartedReview[] = [];
-	#refreshedAt: number | null = null;
-	#refreshError: string | null = null;
 	#problems: string[] = [];
-	#inflight: Promise<HomeView> | null = null;
-	/** One more refresh, after the one in flight (refreshAfterCurrent). */
-	#queued: Promise<HomeView> | null = null;
-	#delay: number | null = null;
-	#timer: NodeJS.Timeout | null = null;
-	#stopped = true;
-	/** start() or stop() was called. */
-	#began = false;
-	/** The last refresh cost, for the report and the log. */
+	/** The last read's cost, for the report and the log. */
 	lastCost: RefreshCost = newCost();
 	readonly #onRefresh: (() => void)[] = [];
 
@@ -176,39 +177,6 @@ export class HomeService {
 		this.#started = options.started ?? new StartedReviews();
 		this.#now = options.now ?? Date.now;
 		this.#inbox = options.inbox ?? new InboxStore(this.#now);
-	}
-
-	/**
-	 * Refreshes now and then on the timer, until stop(). Once only: later
-	 * calls (every Home request) do nothing, and nothing restarts it after
-	 * stop().
-	 */
-	start(): void {
-		if (this.#began) return;
-		this.#began = true;
-		this.#stopped = false;
-		void this.refresh().catch(() => {});
-	}
-
-	stop(): void {
-		this.#began = true;
-		this.#stopped = true;
-		if (this.#timer) clearTimeout(this.#timer);
-		this.#timer = null;
-	}
-
-	/** How long until the next timed refresh: refresh.minutes, doubled per failure up to MAX_BACKOFF_MS. */
-	nextDelayMs(): number {
-		return this.#delay ?? 2 * 60_000;
-	}
-
-	#schedule(): void {
-		if (this.#stopped) return;
-		if (this.#timer) clearTimeout(this.#timer);
-		this.#timer = setTimeout(() => {
-			void this.refresh().catch(() => {});
-		}, this.nextDelayMs());
-		this.#timer.unref();
 	}
 
 	async #ensureViewer(): Promise<Person> {
@@ -231,222 +199,196 @@ export class HomeService {
 		}
 	}
 
-	/** Calls `listener` as each refresh begins (search warms its repo list). */
+	/** Calls `listener` as each repo read begins (search warms its repo list). */
 	onRefresh(listener: () => void): void {
 		this.#onRefresh.push(listener);
 	}
 
-	/** Refreshes from GitHub, joining one in flight; never throws for GitHub's failures. */
-	refresh(): Promise<HomeView> {
-		this.#inflight ??= this.#refresh().finally(() => {
-			this.#inflight = null;
-			this.#schedule();
+	/** The viewer's teams, read again after TEAMS_MAX_AGE_MS; one read at a time. */
+	async #ensureTeams(login: string, at: number): Promise<string | null> {
+		if (at - this.#teamsAt < TEAMS_MAX_AGE_MS) return null;
+		let failed: string | null = null;
+		this.#teamsReading ??= fetchViewerTeams(login)
+			.then((teams) => {
+				this.#teams = teams;
+				this.#teamsAt = at;
+			})
+			.finally(() => {
+				this.#teamsReading = null;
+			});
+		await this.#teamsReading.catch((error) => {
+			failed = `teams: ${refreshReason(error)}`;
 		});
-		return this.#inflight;
+		return failed;
+	}
+
+	#state(name: string): RepoState {
+		let state = this.#repos.get(name);
+		if (!state) {
+			state = {
+				facts: new Map(),
+				listedAt: undefined,
+				checkedAt: Number.NEGATIVE_INFINITY,
+				error: null,
+				failures: 0,
+				started: [],
+				reading: null,
+			};
+			this.#repos.set(name, state);
+		}
+		return state;
 	}
 
 	/**
-	 * A refresh that starts after any in flight (which may have read an older
-	 * config): one queued at most, shared by every caller meanwhile.
+	 * One view repo's rows: read from GitHub first when its facts are older
+	 * than FRESH_MS (or `fresh`), joining a read in flight; from the cache
+	 * otherwise. A repo out of the view is a NotOnHomeError, asked of no one.
+	 * GitHub's failures are the answer's `error`, never a throw.
 	 */
-	refreshAfterCurrent(): Promise<HomeView> {
-		const running = this.#inflight;
-		if (!running) return this.refresh();
-		this.#queued ??= running
-			.catch(() => undefined)
-			.then(() => {
-				this.#queued = null;
-				return this.refresh();
+	async repo(
+		owner: string,
+		repo: string,
+		opts: { fresh?: boolean } = {},
+	): Promise<RepoHome> {
+		const name = `${owner}/${repo}`.toLowerCase();
+		if (!(await this.viewRepos()).includes(name)) {
+			throw new NotOnHomeError(`${name} is not in the view`);
+		}
+		const state = this.#state(name);
+		if (
+			state.reading ||
+			opts.fresh ||
+			this.#now() - state.checkedAt >= FRESH_MS
+		) {
+			state.reading ??= this.#read(name, state).finally(() => {
+				state.reading = null;
 			});
-		return this.#queued;
+			await state.reading;
+		}
+		return this.#repoView(name, state);
 	}
 
-	async #refresh(): Promise<HomeView> {
+	async #read(name: string, state: RepoState): Promise<void> {
 		const begun = this.#now();
 		for (const listener of this.#onRefresh) listener();
-		const { config, problems } = await this.#config.read();
-		this.#problems = problems;
-		const base = Math.max(1, config.refresh.minutes) * 60_000;
-		const repos = viewReposOf(config);
-		const inView = new Set(repos);
+		const [owner = "", repo = ""] = name.split("/");
 		const cost = newCost();
-		const errors: string[] = [];
-		// Back off when GitHub can't be asked, or nothing could be read.
-		let transient = false;
-		let failedRepos = 0;
-		const fail = (error: unknown, what?: string) => {
-			const reason = refreshReason(error);
-			errors.push(what ? `${what}: ${reason}` : reason);
-			if (isTransient(error)) transient = true;
-		};
-		let viewer: Person | null = null;
 		try {
-			viewer = await this.#ensureViewer();
+			const viewer = await this.#ensureViewer();
+			const teamsError = await this.#ensureTeams(viewer.login, begun);
+			const missing: number[] = [];
+			const prs = await fetchRepoPrs(owner, repo, begun - RECENTLY_CLOSED_MS, {
+				known: state.facts,
+				listedSince: state.listedAt,
+				now: begun,
+				cost,
+				missing,
+			});
+			const facts = new Map<number, Known>();
+			for (const pr of prs) {
+				const before = state.facts.get(pr.number);
+				// Kept facts keep the time they were read.
+				const readAt = before && before.facts === pr ? before.readAt : begun;
+				facts.set(pr.number, { facts: pr, readAt });
+			}
+			state.facts = facts;
+			state.listedAt = begun;
+			state.failures = 0;
+			const errors = [
+				...(teamsError ? [teamsError] : []),
+				...(missing.length > 0
+					? [
+							`${missing.map((n) => `${name}#${n}`).join(", ")}: not read from GitHub`,
+						]
+					: []),
+			];
+			state.error = errors.length > 0 ? errors.join("; ") : null;
 		} catch (error) {
-			fail(error);
+			state.failures++;
+			state.error = refreshReason(error);
+		} finally {
+			state.checkedAt = begun;
+			this.lastCost = cost;
 		}
-		if (viewer) {
-			if (begun - this.#teamsAt >= TEAMS_MAX_AGE_MS) {
-				try {
-					this.#teams = await fetchViewerTeams(viewer.login);
-					this.#teamsAt = begun;
-				} catch (error) {
-					fail(error, "teams");
-				}
-			}
-			try {
-				this.#startedList = await this.#started.list(
-					slugify(viewer.login),
-					inView,
-				);
-			} catch (error) {
-				fail(error, "started reviews");
-			}
-			const closedSince = begun - RECENTLY_CLOSED_MS;
-			await Promise.all(
-				repos.map(async (name) => {
-					const [owner = "", repo = ""] = name.split("/");
-					const known = new Map<number, Known>();
-					for (const [key, k] of this.#facts) {
-						if (key.startsWith(`${name}#`)) known.set(k.facts.number, k);
-					}
-					const missing: number[] = [];
-					try {
-						const prs = await fetchRepoPrs(owner, repo, closedSince, {
-							known,
-							listedSince: this.#listedAt.get(name),
-							now: begun,
-							cost,
-							missing,
-						});
-						for (const key of [...this.#facts.keys()]) {
-							if (key.startsWith(`${name}#`)) this.#facts.delete(key);
-						}
-						for (const pr of prs) this.#remember(pr, known, begun);
-						this.#listedAt.set(name, begun);
-						if (missing.length > 0) {
-							errors.push(
-								`${missing.map((n) => `${name}#${n}`).join(", ")}: not read from GitHub`,
-							);
-						}
-					} catch (error) {
-						failedRepos++;
-						fail(error, name);
-					}
-				}),
-			);
-			// Facts of repos that left the view (owner, 2026-11-01: "only prs
-			// from the selected repos should appear"): started ones too.
-			for (const [key, { facts }] of this.#facts) {
-				const repo = `${facts.owner}/${facts.repo}`.toLowerCase();
-				if (!inView.has(repo)) this.#facts.delete(key);
-			}
-			for (const name of [...this.#listedAt.keys()]) {
-				if (!inView.has(name)) this.#listedAt.delete(name);
-			}
-		}
-		this.lastCost = cost;
-		const allFailed = repos.length > 0 && failedRepos === repos.length;
-		const backOff = viewer === null || transient || allFailed;
-		this.#refreshError =
-			errors.length > 0 ? [...new Set(errors)].join("; ") : null;
-		if (backOff) {
-			this.#delay = Math.min(
-				MAX_BACKOFF_MS,
-				Math.max(base, this.#delay ?? base) * 2,
-			);
-		} else {
-			this.#refreshedAt = begun;
-			this.#delay = base;
-		}
-		// Its started list was just read.
-		return this.#view();
-	}
-
-	#remember(pr: PrFacts, known: ReadonlyMap<number, Known>, at: number) {
-		const before = known.get(pr.number);
-		// Kept facts keep the time they were read.
-		const readAt = before && before.facts === pr ? before.readAt : at;
-		this.#facts.set(prSlug(pr), { facts: pr, readAt });
 	}
 
 	/**
-	 * Home as of now, from the cache, the inbox refs and the clock. The
-	 * started reviews are listed again on every read (one for-each-ref per
-	 * clone, snapshots cached): coverage is never staler than the progress
-	 * refs, and a review started since the last refresh shows at once.
+	 * A repo's answer as of now, from its facts, the inbox ref and the
+	 * clock. Its started reviews are listed again on every answer (one
+	 * for-each-ref, snapshots cached): coverage is never staler than the
+	 * progress refs, and a review started since the last read shows at once.
+	 */
+	async #repoView(name: string, state: RepoState): Promise<RepoHome> {
+		const now = this.#now();
+		const viewer = this.#viewer ?? { login: "", avatarUrl: "" };
+		const slug = slugify(viewer.login);
+		if (viewer.login) {
+			try {
+				state.started = (
+					await this.#started.list(slug, new Set([name]), name)
+				).filter((s) => `${s.owner}/${s.repo}`.toLowerCase() === name);
+			} catch {
+				// Keep the last list.
+			}
+		}
+		const [owner = "", repo = ""] = name.split("/");
+		const inbox: Map<number, Annotations> = slug
+			? await this.#inbox.read(slug, owner, repo).catch(() => new Map())
+			: new Map();
+		const rows: HomeRow[] = [];
+		for (const { facts } of state.facts.values()) {
+			const started = state.started.filter((s) => s.number === facts.number);
+			const row = this.#row(
+				facts,
+				viewer,
+				started,
+				inbox.get(facts.number) ?? {},
+				now,
+			);
+			if (row) rows.push(row);
+		}
+		const refreshedAt = state.listedAt;
+		return {
+			repo: name,
+			rows,
+			refreshedAt:
+				refreshedAt === undefined ? null : new Date(refreshedAt).toISOString(),
+			error: state.error,
+			failures: state.failures,
+		};
+	}
+
+	/**
+	 * Home's view: the viewer, the repos, the config's problems and the
+	 * started reviews' repos. No repo is read here (each has its own
+	 * request), only the viewer's login the first time.
 	 */
 	async view(): Promise<HomeView> {
-		const { viewer } = await this.#viewerOrBlank();
+		const { viewer, error } = await this.#viewerOrBlank();
 		if (viewer.login) {
 			try {
 				this.#startedList = await this.#started.list(
 					slugify(viewer.login),
-					new Set(await this.viewRepos()),
+					new Set(),
 				);
 			} catch {
-				// Keep the last list; the next refresh says why.
+				// Keep the last list.
 			}
 		}
-		return this.#view();
+		return this.#homeView(viewer, error);
 	}
 
-	async #view(): Promise<HomeView> {
-		const now = this.#now();
+	async #homeView(viewer: Person, viewerError: string | null) {
 		const { config, problems } = await this.#config.read();
-		const first = config.views[0];
+		this.#problems = problems;
 		const repos = viewReposOf(config);
-		const { viewer, error: viewerError } = await this.#viewerOrBlank();
-		const slug = slugify(viewer.login);
-		const inView = new Set(repos);
-		const startedBy = new Map<string, StartedReview[]>();
-		for (const s of this.#startedList) {
-			const key = prSlug(s);
-			startedBy.set(key, [...(startedBy.get(key) ?? []), s]);
-		}
-		const inboxes = new Map<string, Map<number, Annotations>>();
-		const inboxOf = async (owner: string, repo: string) => {
-			const key = `${owner}/${repo}`.toLowerCase();
-			let inbox = inboxes.get(key);
-			if (!inbox) {
-				inbox = await this.#inbox
-					.read(slug, owner, repo)
-					.catch(() => new Map());
-				inboxes.set(key, inbox);
-			}
-			return inbox;
-		};
-		const sections = new Map<SectionId, HomeRow[]>(
-			SECTIONS.map((id) => [id, []]),
-		);
-		for (const [key, { facts }] of this.#facts) {
-			const started = startedBy.get(key) ?? [];
-			// Only the view's repos, started or not: the cache may still hold
-			// a repo just taken out, until the next refresh.
-			if (!inView.has(`${facts.owner}/${facts.repo}`.toLowerCase())) continue;
-			const section = sectionOf(facts, viewer.login, this.#teams, started, now);
-			if (!section) continue;
-			const annotations = slug
-				? ((await inboxOf(facts.owner, facts.repo)).get(facts.number) ?? {})
-				: {};
-			sections
-				.get(section)
-				?.push(this.#row(facts, viewer, started, annotations, now));
-		}
-		const out: HomeSection[] = SECTIONS.map((id) => ({
-			id,
-			rows: (sections.get(id) ?? []).sort(compareRows(viewer.login)),
-		}));
+		this.#inView = new Set(repos);
 		return {
 			viewer,
-			view: { name: first?.name ?? DEFAULT_VIEW, repos },
-			configProblems: [...new Set([...this.#problems, ...problems])],
-			refreshedAt:
-				this.#refreshedAt === null
-					? null
-					: new Date(this.#refreshedAt).toISOString(),
-			refreshError: this.#refreshError ?? viewerError,
-			sections: out,
+			view: { name: config.views[0]?.name ?? DEFAULT_VIEW, repos },
+			configProblems: [...new Set(this.#problems)],
+			viewerError,
+			refreshMinutes: Math.max(1, config.refresh.minutes),
 			startedRepos: [
 				...new Set(
 					[...this.#startedList]
@@ -456,16 +398,19 @@ export class HomeService {
 						.map((s) => `${s.owner}/${s.repo}`.toLowerCase()),
 				),
 			],
-		};
+		} satisfies HomeView;
 	}
 
+	/** The row Home shows for `pr`, in its section; null when it shows none. */
 	#row(
 		pr: PrFacts,
 		viewer: Person,
 		started: readonly StartedReview[],
 		annotations: Annotations,
 		now: number,
-	): HomeRow {
+	): HomeRow | null {
+		const section = sectionOf(pr, viewer.login, this.#teams, started, now);
+		if (!section) return null;
 		const hidden = hiddenReason(annotations, pr, now, viewer.login);
 		// A wait overrides the turn while it holds, snoozed or not; one on
 		// the viewer ("me") always.
@@ -522,6 +467,7 @@ export class HomeService {
 			owner: pr.owner,
 			repo: pr.repo,
 			number: pr.number,
+			section,
 			title: pr.title,
 			url: pr.url,
 			author: pr.author,
@@ -550,14 +496,27 @@ export class HomeService {
 		number: number,
 		op: AnnotationOp,
 	): Promise<HomeRow> {
-		const key = prSlug({ owner, repo, number });
-		const known = this.#facts.get(key);
-		if (!known)
+		const name = `${owner}/${repo}`.toLowerCase();
+		const state = this.#repos.get(name);
+		const known = state?.facts.get(number);
+		const viewer = known && (await this.#ensureViewer());
+		const shown =
+			state &&
+			known &&
+			viewer &&
+			(await this.viewRepos()).includes(name) &&
+			sectionOf(
+				known.facts,
+				viewer.login,
+				this.#teams,
+				state.started,
+				this.#now(),
+			);
+		if (!state || !known || !viewer || !shown)
 			throw new NotOnHomeError(`${owner}/${repo}#${number} is not on Home`);
 		if (op.op === "snooze" && !(Date.parse(op.until) > this.#now())) {
 			throw new HomeRequestError("A snooze must end in the future");
 		}
-		const viewer = await this.#ensureViewer();
 		const { owner: o, repo: r } = known.facts;
 		const annotations = await this.#inbox.append(
 			slugify(viewer.login),
@@ -566,11 +525,26 @@ export class HomeService {
 			number,
 			op,
 		);
-		const started = this.#startedList.filter((s) => prSlug(s) === key);
-		return this.#row(known.facts, viewer, started, annotations, this.#now());
+		const started = state.started.filter((s) => s.number === number);
+		const row = this.#row(
+			known.facts,
+			viewer,
+			started,
+			annotations,
+			this.#now(),
+		);
+		if (!row)
+			throw new NotOnHomeError(`${owner}/${repo}#${number} is not on Home`);
+		return row;
 	}
 
-	/** Sets the first view's repos (made "My PRs" if none) and refreshes. */
+	/**
+	 * Sets the first view's repos (made "My PRs" if none) and answers the
+	 * view at once: no GitHub call, no read (owner, 2026-11-01: "Saving
+	 * saves the configured repos immediately"). A repo GitHub doesn't know
+	 * says so in its own answer. Facts of repos out of the view for over
+	 * KEEP_MS go.
+	 */
 	async setRepos(input: readonly string[]): Promise<HomeView> {
 		const repos: string[] = [];
 		for (const item of input) {
@@ -581,15 +555,6 @@ export class HomeService {
 				);
 			if (!repos.includes(name)) repos.push(name);
 		}
-		// A repo new to the view must exist (a typo would fail every refresh).
-		const before = new Set(await this.viewRepos());
-		for (const name of repos) {
-			if (before.has(name)) continue;
-			const [owner = "", repo = ""] = name.split("/");
-			if ((await repoExists(owner, repo)) === false) {
-				throw new HomeRequestError(`Repository ${name} not found on GitHub`);
-			}
-		}
 		await this.#config.update((c) => {
 			const [first, ...rest] = c.views;
 			return {
@@ -597,12 +562,20 @@ export class HomeService {
 				views: [{ ...(first ?? { name: DEFAULT_VIEW }), repos }, ...rest],
 			};
 		});
-		return this.refreshAfterCurrent();
+		const now = this.#now();
+		for (const [name, state] of this.#repos) {
+			if (!repos.includes(name) && now - state.checkedAt > KEEP_MS) {
+				this.#repos.delete(name);
+			}
+		}
+		return this.#homeView(this.#viewer ?? { login: "", avatarUrl: "" }, null);
 	}
 
 	/** The first view's repos, `owner/repo` lowercased. */
 	async viewRepos(): Promise<string[]> {
-		return viewReposOf((await this.#config.read()).config);
+		const repos = viewReposOf((await this.#config.read()).config);
+		this.#inView = new Set(repos);
+		return repos;
 	}
 
 	/** The viewer's login, "" while it can't be read. */
@@ -610,12 +583,14 @@ export class HomeService {
 		return (await this.#viewerOrBlank()).viewer.login;
 	}
 
-	/** Every PR Home knows (the view repos'), for search. */
+	/** Every PR Home knows of the view's repos, for search. */
 	knownPrs(): PrFacts[] {
-		return [...this.#facts.values()].map((k) => k.facts);
+		return [...this.#repos]
+			.filter(([name]) => this.#inView.has(name))
+			.flatMap(([, state]) => [...state.facts.values()].map((k) => k.facts));
 	}
 
-	/** The viewer's started reviews as of the last refresh. */
+	/** The viewer's started reviews as of the last view. */
 	startedReviews(): readonly StartedReview[] {
 		return this.#startedList;
 	}

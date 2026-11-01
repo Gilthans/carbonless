@@ -12,22 +12,11 @@ import { Tooltip } from "../Tooltip";
 import { viewSaverFor } from "./viewSaver";
 
 /**
- * Home as it will be once `repos` are saved: the view lists them, and the
- * rows of repos taken out go, started ones too, as the server will drop
- * them. Rows of added repos come with the server's answer.
+ * Home as it will be once `repos` are saved: the view lists them. The page
+ * shows only the listed repos' rows, so a removed repo's go at once.
  */
 export function pendingView(home: HomeView, repos: string[]): HomeView {
-	const inView = new Set(repos.map((r) => r.toLowerCase()));
-	return {
-		...home,
-		view: { ...home.view, repos },
-		sections: home.sections.map((s) => ({
-			...s,
-			rows: s.rows.filter((r) =>
-				inView.has(`${r.owner}/${r.repo}`.toLowerCase()),
-			),
-		})),
-	};
+	return { ...home, view: { ...home.view, repos } };
 }
 
 export interface ViewSave {

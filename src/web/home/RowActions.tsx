@@ -27,7 +27,7 @@ import type { AnnotationOp, HomeRow, Person } from "../../shared/home";
 import { Tooltip } from "../Tooltip";
 import { ErrorMessage } from "../ui";
 import { useMedia } from "../useMedia";
-import { homeQuery, peopleQuery, postAnnotation, setRow } from "./homeApi";
+import { peopleQuery, postAnnotation, repoKey, setRow } from "./homeApi";
 import { Avatar } from "./PrRow";
 import {
 	DEBOUNCE_MS,
@@ -36,6 +36,8 @@ import {
 	useSuggestionKeys,
 } from "./Suggestions";
 import { minPick, pickedDate, snoozePresets } from "./snooze";
+
+const repoOf = (row: HomeRow) => `${row.owner}/${row.repo}`;
 
 type Panel = "snooze" | "wait" | "note";
 
@@ -436,11 +438,12 @@ export function RowActions(props: {
 	const buttons = useRef(new Map<Panel, HTMLButtonElement>());
 	const save = useMutation({
 		mutationFn: (op: AnnotationOp) => postAnnotation(row, op),
-		// A read of Home already under way would land after the answer and
-		// put the old row back: it's dropped.
-		onMutate: () => client.cancelQueries({ queryKey: homeQuery.queryKey }),
+		// A read of its repo already under way would land after the answer
+		// and put the old row back: it's dropped, and the repo read again.
+		onMutate: () => client.cancelQueries({ queryKey: repoKey(repoOf(row)) }),
 		onSuccess: (answer) => {
 			setRow(client, answer);
+			void client.invalidateQueries({ queryKey: repoKey(repoOf(row)) });
 			setPanel(null);
 			setSheet(false);
 			if (answer.hidden !== null && row.hidden === null) props.onHidden?.();

@@ -4,6 +4,7 @@ import type {
 	HomeRow,
 	HomeView,
 	PeopleResult,
+	RepoHome,
 	SearchResult,
 } from "../../shared/home";
 import { fetchJson } from "../api";
@@ -20,9 +21,14 @@ const send = <T>(method: string, path: string, body: unknown) =>
 	});
 
 export const fetchHome = () => request<HomeView>("/api/home");
-/** Refreshes from GitHub (joins one in flight) and answers the new view. */
-export const postHomeRefresh = () =>
-	request<HomeView>("/api/home/refresh", { method: "POST" });
+
+/** One view repo's rows; `fresh`: read from GitHub now (Refresh, Retry). */
+export const fetchRepo = (name: string, fresh = false) => {
+	const [owner = "", repo = ""] = name.split("/");
+	return request<RepoHome>(
+		`/api/home/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}${fresh ? "?fresh=1" : ""}`,
+	);
+};
 
 /** Where a row's PR is in the API and in the cache. */
 export type RowKey = Pick<HomeRow, "owner" | "repo" | "number">;
@@ -44,15 +50,55 @@ export const fetchSearch = (q: string, signal?: AbortSignal, only?: "repos") =>
 		{ signal },
 	);
 
+/** The view: name, repos, viewer, started repos (no rows: repoQuery's). */
 export const homeQuery = queryOptions({
-	queryKey: ["home"],
+	queryKey: ["home", "view"],
 	queryFn: fetchHome,
-	// The server refreshes on its own: pick up what it found (and snoozes
-	// whose date has passed) while the page stays open.
+	// A hand edit of the config, a review started elsewhere.
 	refetchInterval: 60_000,
-	// The page asks for a refresh on focus itself (HomePage).
 	refetchOnWindowFocus: false,
 });
+
+/** A repo out of the view keeps its rows this long: added back, they show at once. */
+export const REPO_GC_MS = 2 * 3_600_000;
+/** Failing reads back off, doubling, up to this. */
+export const MAX_BACKOFF_MS = 30 * 60_000;
+
+export const repoKey = (name: string) =>
+	["home", "repo", name.toLowerCase()] as const;
+
+/**
+ * How long until a repo is read again: refresh.minutes, doubled per
+ * failed read in a row (the server counts them) up to MAX_BACKOFF_MS.
+ */
+export function repoInterval(minutes: number, data: RepoHome | undefined) {
+	const base = Math.max(1, minutes) * 60_000;
+	const failures = data?.failures ?? 0;
+	return Math.min(MAX_BACKOFF_MS, base * 2 ** Math.min(failures, 10));
+}
+
+/**
+ * One view repo's rows (owner, 2026-11-01: "Every repo PR list should have
+ * its own tanstack query, so it is automatically cached and refreshed"):
+ * read again every refresh.minutes and on focus once that old.
+ */
+export const repoQuery = (name: string, minutes: number) =>
+	queryOptions({
+		queryKey: repoKey(name),
+		queryFn: () => fetchRepo(name),
+		staleTime: Math.max(1, minutes) * 60_000,
+		gcTime: REPO_GC_MS,
+		refetchInterval: (query) => repoInterval(minutes, query.state.data),
+	});
+
+/** Reads a repo from GitHub now, into its query (Refresh, Retry). */
+export const refetchRepo = (client: QueryClient, name: string) =>
+	client.fetchQuery({
+		queryKey: repoKey(name),
+		queryFn: () => fetchRepo(name, true),
+		staleTime: 0,
+		gcTime: REPO_GC_MS,
+	});
 
 export const searchQuery = (q: string, only?: "repos") =>
 	queryOptions({
@@ -81,18 +127,12 @@ const sameRow = (a: RowKey, b: RowKey) =>
 	a.owner.toLowerCase() === b.owner.toLowerCase() &&
 	a.repo.toLowerCase() === b.repo.toLowerCase();
 
-/** Puts a row the server answered in place of its old self, in its section. */
+/** Puts a row the server answered in place of its old self, in its repo's rows. */
 export function setRow(client: QueryClient, row: HomeRow) {
-	client.setQueryData<HomeView>(homeQuery.queryKey, (view) =>
-		view
-			? {
-					...view,
-					sections: view.sections.map((s) => ({
-						...s,
-						rows: s.rows.map((r) => (sameRow(r, row) ? row : r)),
-					})),
-				}
-			: view,
+	client.setQueryData<RepoHome>(repoKey(`${row.owner}/${row.repo}`), (repo) =>
+		repo
+			? { ...repo, rows: repo.rows.map((r) => (sameRow(r, row) ? row : r)) }
+			: repo,
 	);
 }
 

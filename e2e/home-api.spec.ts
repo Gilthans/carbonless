@@ -1,12 +1,13 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { HomeView } from "../src/shared/home";
+import type { HomeView, RepoHome } from "../src/shared/home";
+import { composeSections } from "../src/shared/homeSections";
 import { homePr, writeScenario } from "../test/fake-gh/scenario";
 import { expect, startServe, stopChild, test } from "./fixtures";
 
 /**
  * Smoke test of Home's server side in the built `crb serve`: the API
- * answers the fake gh scenario's sections. The page's tests (home.spec.ts)
+ * answers the view and its repo's rows, which compose into the sections. The page's tests (home.spec.ts)
  * build on this.
  */
 test("crb serve answers /api/home with the scenario's sections", async ({
@@ -61,13 +62,17 @@ test("crb serve answers /api/home with the scenario's sections", async ({
 	try {
 		const api = (path: string, init?: RequestInit) =>
 			fetch(new URL(path, served.url), init);
-		expect((await api("/api/home")).status).toBe(200);
-		const view = (await (
-			await api("/api/home/refresh", { method: "POST" })
-		).json()) as HomeView;
-		expect(view.refreshError).toBe(null);
+		const view = (await (await api("/api/home")).json()) as HomeView;
+		expect(view.view.repos).toEqual(["acme/api"]);
+		const repo = (await (
+			await api("/api/home/repos/acme/api")
+		).json()) as RepoHome;
+		expect(repo.error).toBe(null);
 		expect(
-			view.sections.map((s) => [s.id, s.rows.map((r) => r.number)]),
+			composeSections(repo.rows, view.viewer.login).map((s) => [
+				s.id,
+				s.rows.map((r) => r.number),
+			]),
 		).toEqual([
 			["mine", [1]],
 			["reviewing", [2]],

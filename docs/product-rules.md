@@ -268,6 +268,11 @@ long section folds behind "show N more", which only folds: the count is
 every row. Nothing automatic, AI or not, hides or drops a PR, and Home
 reads review progress but never writes it.
 
+While a view repo's first read is still out, Home never shows a count or
+an empty section for it: counts are spinners and placeholder rows stand
+in until every repo has answered (owner, 2026-11-01: "An empty result
+should always be easily distinguishable for a still loading result").
+
 ## "Side by side" is a view
 
 Settings' "Side by side" (`src/web/files/sideBySide.ts`) lays the same

@@ -9,6 +9,7 @@ import type {
 	HomeRow,
 	HomeView,
 	PeopleResult,
+	RepoHome,
 	SearchResult,
 } from "../../shared/home.js";
 import { type HomeConfig, HomeService } from "./homeService.js";
@@ -59,47 +60,76 @@ async function setup() {
 		started: { list: async () => [] },
 	});
 	app = Fastify();
-	await registerHomeRoutes(app, home, new HomeSearch(home), {
-		startOnRequest: false,
-	});
+	await registerHomeRoutes(app, home, new HomeSearch(home));
 	return { app, config: () => config };
 }
 
 describe("/api/home", () => {
-	it("GET and POST refresh answer the HomeView", async () => {
+	it("GET answers the view without reading a repo; each repo has its own GET", async () => {
 		const { app } = await setup();
-		const before = (
-			await app.inject({ method: "GET", url: "/api/home" })
-		).json<HomeView>();
-		expect(before.refreshedAt).toBe(null);
-		const res = await app.inject({ method: "POST", url: "/api/home/refresh" });
+		const res = await app.inject({ method: "GET", url: "/api/home" });
 		expect(res.statusCode).toBe(200);
 		const view = res.json<HomeView>();
-		expect(view.sections[0]?.rows.map((r) => r.number)).toEqual([1]);
-		const again = (
-			await app.inject({ method: "GET", url: "/api/home" })
-		).json<HomeView>();
-		expect(again.refreshedAt).toBe(view.refreshedAt);
+		expect(view.view.repos).toEqual(["acme/api"]);
+		expect(view).not.toHaveProperty("sections");
+		expect(fx?.ghLog()).not.toMatch(/pullRequests/);
+		const repo = await app.inject({
+			method: "GET",
+			url: "/api/home/repos/acme/api",
+		});
+		expect(repo.statusCode).toBe(200);
+		const answer = repo.json<RepoHome>();
+		expect(answer.repo).toBe("acme/api");
+		expect(answer.rows.map((r) => [r.number, r.section])).toEqual([
+			[1, "mine"],
+		]);
+		expect(answer.refreshedAt).not.toBe(null);
+		// Fresh: the cache answers; fresh=1 reads again.
+		const reads = () => (fx?.ghLog().match(/withOpen=/g) ?? []).length;
+		const before = reads();
+		await app.inject({ method: "GET", url: "/api/home/repos/acme/api" });
+		expect(reads()).toBe(before);
+		await app.inject({
+			method: "GET",
+			url: "/api/home/repos/acme/api?fresh=1",
+		});
+		expect(reads()).toBe(before + 1);
 	});
 
-	it("GET and POST refresh answer 200 with the reason while gh is logged out", async () => {
+	it("a repo out of the view is 404 with no gh call; a malformed one 400", async () => {
+		const { app } = await setup();
+		const out = await app.inject({
+			method: "GET",
+			url: "/api/home/repos/other/tool",
+		});
+		expect(out.statusCode).toBe(404);
+		expect(fx?.ghLog()).toBe("");
+		const bad = await app.inject({
+			method: "GET",
+			url: "/api/home/repos/-x/tool",
+		});
+		expect(bad.statusCode).toBe(400);
+	});
+
+	it("GET and a repo's GET answer 200 with the reason while gh is logged out", async () => {
 		const { app } = await setup();
 		fx?.scenario({ loggedOut: true });
-		for (const [method, url] of [
-			["GET", "/api/home"],
-			["POST", "/api/home/refresh"],
-		] as const) {
-			const res = await app.inject({ method, url });
-			expect(res.statusCode).toBe(200);
-			expect(res.json<HomeView>().refreshError).toMatch(
-				/gh auth login|not logged in/i,
-			);
-		}
+		const view = await app.inject({ method: "GET", url: "/api/home" });
+		expect(view.statusCode).toBe(200);
+		expect(view.json<HomeView>().viewerError).toMatch(
+			/gh auth login|not logged in/i,
+		);
+		const repo = await app.inject({
+			method: "GET",
+			url: "/api/home/repos/acme/api",
+		});
+		expect(repo.statusCode).toBe(200);
+		expect(repo.json<RepoHome>().error).toMatch(/gh auth login|not logged in/i);
 	});
 
 	it("annotations: each op, the row back", async () => {
 		const { app } = await setup();
-		await app.inject({ method: "POST", url: "/api/home/refresh" });
+		await app.inject({ method: "GET", url: "/api/home/repos/acme/api" });
 		const post = (body: unknown) =>
 			app.inject({
 				method: "POST",
@@ -124,7 +154,7 @@ describe("/api/home", () => {
 
 	it("annotations: 400 on a bad op, a past until, a long note; 404 off Home", async () => {
 		const { app } = await setup();
-		await app.inject({ method: "POST", url: "/api/home/refresh" });
+		await app.inject({ method: "GET", url: "/api/home/repos/acme/api" });
 		const post = (url: string, body: unknown) =>
 			app.inject({ method: "POST", url, payload: body as object });
 		const url = "/api/home/prs/acme/api/1/annotations";
@@ -150,16 +180,26 @@ describe("/api/home", () => {
 		).toBe(400);
 	});
 
-	it("PUT view writes the config's repos", async () => {
+	it("PUT view writes the config's repos at once, asking GitHub nothing", async () => {
 		const { app, config } = await setup();
 		const res = await app.inject({
 			method: "PUT",
 			url: "/api/home/view",
-			payload: { repos: ["Acme/API"] },
+			payload: { repos: ["Acme/API", "acme/nowhere"] },
 		});
 		expect(res.statusCode).toBe(200);
-		expect(config().views[0]?.repos).toEqual(["acme/api"]);
-		expect(res.json<HomeView>().view.repos).toEqual(["acme/api"]);
+		expect(config().views[0]?.repos).toEqual(["acme/api", "acme/nowhere"]);
+		expect(res.json<HomeView>().view.repos).toEqual([
+			"acme/api",
+			"acme/nowhere",
+		]);
+		expect(fx?.ghLog()).toBe("");
+		// The typo answers its own error once read.
+		const typo = await app.inject({
+			method: "GET",
+			url: "/api/home/repos/acme/nowhere",
+		});
+		expect(typo.json<RepoHome>().error).toBe("Not found on GitHub");
 		const bad = await app.inject({
 			method: "PUT",
 			url: "/api/home/view",
@@ -176,7 +216,7 @@ describe("/api/home", () => {
 
 	it("GET search answers a SearchResult", async () => {
 		const { app } = await setup();
-		await app.inject({ method: "POST", url: "/api/home/refresh" });
+		await app.inject({ method: "GET", url: "/api/home/repos/acme/api" });
 		const res = await app.inject({
 			method: "GET",
 			url: `/api/home/search?q=${encodeURIComponent("login")}`,
@@ -204,7 +244,7 @@ describe("/api/home", () => {
 	it("GET people answers a PeopleResult", async () => {
 		const { app } = await setup();
 		fx?.scenario({ orgMembers: { acme: ["Octo", "olga"] } });
-		await app.inject({ method: "POST", url: "/api/home/refresh" });
+		await app.inject({ method: "GET", url: "/api/home/repos/acme/api" });
 		let people: PeopleResult | undefined;
 		for (let i = 0; i < 200; i++) {
 			const res = await app.inject({

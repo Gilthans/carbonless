@@ -1,12 +1,11 @@
 import { describe, expect, it } from "vitest";
+import { viewersTurn } from "../../shared/homeSections.js";
 import type { PrFacts, StartedReview } from "./facts.js";
 import {
-	compareRows,
 	RECENTLY_CLOSED_MS,
 	sectionOf,
 	turnOf,
 	turnWithWaiting,
-	viewersTurn,
 } from "./sections.js";
 
 const NOW = Date.parse("2026-10-29T12:00:00Z");
@@ -402,27 +401,5 @@ describe("viewersTurn", () => {
 				VIEWER,
 			),
 		).toBe(false);
-	});
-});
-
-describe("compareRows", () => {
-	const r = (number: number, minutesAgo: number, turn: string[] | null) => ({
-		number,
-		updatedAt: iso(NOW - minutesAgo * 60_000),
-		turn: turn
-			? ({ kind: "people", logins: turn } as const)
-			: ({ kind: "no-reviewer" } as const),
-	});
-	it("puts the viewer's turn first, then last activity, newest first, in each group", () => {
-		const rows = [
-			r(1, 1, ["bob"]),
-			r(2, 50, ["octo"]),
-			r(3, 5, null),
-			r(4, 10, ["Octo", "bob"]),
-			r(5, 5, ["alice"]),
-		];
-		expect([...rows].sort(compareRows(VIEWER)).map((x) => x.number)).toEqual([
-			4, 2, 1, 5, 3,
-		]);
 	});
 });

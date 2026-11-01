@@ -281,11 +281,18 @@ Owner's decisions on this part (2026-10-28):
   confirmed the update state show a warning, and a loading spinner
   somewhere to indicate the state is reloading"; this replaces the
   earlier spinning Save): the dialog closes and Home shows the new list
-  and drops the rows of removed repos (started ones too, as the server
-  drops them) before the server answers; a spinner by the view's name shows
-  while the server saves and reads the added repos; unconfirmed after
-  5 s, the review page's yellow "Saving is delayed" notice says so, in
-  the same place. Saves go as the review state's do: one PUT at a time,
+  and drops the rows of removed repos (started ones too) before the
+  server answers; a spinner by the view's name shows while the server
+  saves; unconfirmed after 5 s, the review page's yellow "Saving is
+  delayed" notice says so, in the same place. Saving only stores the list
+  (owner, 2026-11-01: "Saving saves the configured repos immediately"):
+  `PUT /api/home/view` checks the shape, writes the config and answers,
+  with no GitHub call and no read, so it lands in well under a second
+  whatever the repos. The added repos are then read each on its own
+  (Refresh, below): a repo GitHub doesn't know (a typo) shows on its chip
+  as "Not found on GitHub" with Retry, and the pencil removes it. A
+  removed repo's rows go at once and its read stops; added back within
+  the hour, its last rows show at once while it is read again. Saves go as the review state's do: one PUT at a time,
   the newest list next (an older one superseded while out isn't sent
   again); a transient failure (crb unreachable, a timeout, a 5xx)
   retries with the review state's backoff for as long as it takes (a
@@ -296,7 +303,8 @@ Owner's decisions on this part (2026-10-28):
   nothing refused is sent again on its own, and a newer save clears it
   (**call**). Leaving the page while a list isn't saved asks first, as for
   review states (`useUnsavedGuard`).
-  The server writes the file; a hand edit is picked up on the next refresh.
+  The server writes the file; a hand edit is picked up on the next read
+  of the view (every minute).
   A missing file means an empty view, and Home says so and offers to add
   repos. Several views in the file are kept but only the first is shown.
 - Per-device config is deliberate: which repos this machine watches is the
@@ -349,6 +357,13 @@ closed for 3 days like a merged one, then drops off. A section longer
 than 20 rows shows 20 and a "show N more" footer line next to the hidden
 count (owner's wording; 20 is a **call**): a fold, never a drop, and the
 refresh lists every PR (paginated), so the count is always the true one.
+The page composes the sections from every view repo's rows (each repo
+its own read; the order rules above in `src/shared/homeSections.ts`).
+Until every view repo has answered once (a failure counts, with its
+error), each section's count is a spinner and placeholder rows stand
+where rows may still come (owner, 2026-11-01: "An empty result should
+always be easily distinguishable for a still loading result"); a
+section empty once all have answered says "none".
 
 ### A row
 
@@ -551,27 +566,45 @@ parsed on every keystroke:
 
 ### Refresh
 
-- The server refreshes every view repo every `refresh.minutes` (default
-  2), and no other repo, started PRs included: the PR list with the fields the
+- Each view repo is read on its own (owner, 2026-11-01: "Every repo PR
+  list should have its own tanstack query, so it is automatically cached
+  and refreshed. If anything is refreshing, we should see a spinner"):
+  `GET /api/home/repos/:owner/:repo` answers that repo's rows (each with
+  its section, turn, hidden reason, annotations and started reviews'
+  coverage and sub-rows), its last good read's time and its last read's
+  error. The page keeps one TanStack query per view repo, read again every
+  `refresh.minutes` (default 2) and on focus once that old, kept for 2
+  hours once out of the view. There is no server timer: the server reads a
+  repo from GitHub when asked and its facts are over 30 s old (or the
+  Refresh button or a chip's Retry asks with `fresh=1`), one read per repo
+  at a time, shared by every ask; otherwise it answers from its cache.
+  Only the view's repos are served (another answers 404 without a GitHub
+  read), and no other repo is read, started PRs included. `GET /api/home`
+  carries no rows: the viewer, the view, the config's problems, the
+  refresh minutes and the started reviews' repos.
+- What a read fetches: the PR list with the fields the
   sections, rows and turn rules need (number, title, author, draft, state,
   merged-at, updated-at, review requests, latest reviews and review
   decision, checks rollup, unresolved thread count, the dates and authors
   of the last commit, comment and review). GraphQL, paginated at 100 per
-  page, is the likely shape; `gh pr list --json` lacks unresolved threads.
-  Builder's call, with the fake `gh` extended to serve it. Every open PR is
+  page, incremental after the first read. Every open PR is
   listed, however many: the budget is measured in the report (points per
   refresh per repo at 100 and 300 open PRs) and must leave a 3-repo view at
   2 minutes well under a tenth of GitHub's hourly GraphQL allowance; if it
   doesn't, the interval's default goes up before any PR is left out.
-- The page asks for a refresh when opened or focused if the last one is
-  older than 30 seconds, and has a refresh button. The header shows the
-  last refresh as relative text with the exact time on hover; it turns
-  `warn` with the reason (rate limited, offline, `gh` error) when a refresh
-  fails, and the lists keep the last good data.
-- On a rate-limit or repeated failure the interval doubles up to 30 minutes
-  and resets on success.
-- Refresh results are kept in the server's memory only as a cache; the
-  config and refs are the state. A restart refreshes within seconds.
+- One repo's failure or slowness never holds another's rows. While
+  anything Home shows is being read or saved (the view, a repo, a save),
+  a spinner shows by the view's name; a repo whose first read is still
+  out has a spinner on its chip; a failed one an alert on its chip with
+  the reason in its tooltip, and Retry beside it. The header shows the
+  oldest repo's last read as relative text with the exact time on hover;
+  it turns `warn` with the reasons (rate limited, offline, not found, `gh`
+  error) when a read fails, and the lists keep the last good rows.
+- A repo whose reads keep failing is asked less often: the interval
+  doubles per failure in a row, up to 30 minutes, and resets on success.
+- Read results are kept in the server's memory only as a cache; the
+  config and refs are the state. A restart reads each repo on the first
+  ask.
 
 ### Phone (principle 5)
 
@@ -656,10 +689,10 @@ Listed in the `?` help like the review page's.
 
 Calls made while building, each open to the owner's overrule:
 
-- **Home's refresh starts on the first Home request**, not when the
-  server starts (F3, call): a server that only hands out review links
-  spends no GitHub budget. After a restart, the first Home open asks for
-  a refresh and shows the sections once it returns.
+- **Home reads GitHub only when its page asks** (F3, call; since
+  2026-11-01 per repo, brief I): a server that only hands out review
+  links spends no GitHub budget, and a server with no Home open spends
+  none either (no server timer).
 - **Home's coverage is in lines**, falling back to clusters when only
   clusters without changed lines are left (F4, call). The Files page's
   unit is a browser setting the server can't see, so "37 / 120" on Home

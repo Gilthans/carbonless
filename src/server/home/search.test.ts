@@ -149,7 +149,8 @@ async function setup(
 		},
 		started: { list: async () => started },
 	});
-	await home.refresh();
+	await home.view();
+	await home.repo("acme", "api", { fresh: true });
 	return { home, search: new HomeSearch(home, options) };
 }
 
@@ -292,13 +293,14 @@ describe("HomeSearch", () => {
 		expect(r.repos.map((x) => x.name)).toContain("friend/api-lab");
 	});
 
-	it("starts reading the viewer's repos when Home refreshes, before any search", async () => {
+	it("starts reading the viewer's repos when Home reads a repo, before any search", async () => {
 		// setup refreshes Home before its search exists: nothing read yet.
 		const { home, search } = await setup();
 		const reads = () =>
 			(fx?.ghLog().match(/viewer \{ repositories\(/g) ?? []).length;
 		expect(reads()).toBe(0);
-		await home.refresh();
+		await home.view();
+		await home.repo("acme", "api", { fresh: true });
 		await expect.poll(reads).toBe(1);
 		await expect
 			.poll(async () => (await search.search("api")).reposPending)
@@ -427,7 +429,8 @@ describe("HomeSearch, fix round 1", () => {
 			},
 			started: { list: async () => [] },
 		});
-		await home.refresh();
+		await home.view();
+		await home.repo("acme", "api", { fresh: true });
 		// An inbox to read: one note.
 		await home.annotate("acme", "api", 1, { op: "note", text: "x" });
 		const search = new HomeSearch(home);

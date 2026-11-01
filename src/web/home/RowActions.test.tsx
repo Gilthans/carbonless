@@ -11,7 +11,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { HomeRow, PeopleResult } from "../../shared/home";
 import { HomePage } from "./HomePage";
-import { homeQuery } from "./homeApi";
+import { repoKey } from "./homeApi";
 import { snoozePresets } from "./snooze";
 import {
 	ago,
@@ -19,6 +19,7 @@ import {
 	fakeApi,
 	person,
 	renderWithQuery,
+	repoAnswer,
 	row,
 	view,
 } from "./testing";
@@ -391,14 +392,14 @@ describe("RowActions", () => {
 		);
 	});
 
-	it("an older GET /api/home in flight can't undo a write on screen", async () => {
+	it("an older read of the row's repo in flight can't undo a write on screen", async () => {
 		let release: (v: unknown) => void = () => {};
 		const api = setup(() => ({
 			...base,
 			annotations: { note: "kept" },
 		}));
 		await screen.findByText("Seven");
-		const old = view({ reviewing: [base] });
+		const old = repoAnswer(view({ reviewing: [base] }), "acme/api");
 		api.fetch.mockImplementationOnce(
 			() =>
 				new Promise((resolve) => {
@@ -412,7 +413,7 @@ describe("RowActions", () => {
 		);
 		// A refetch starts (the poll, a focus) and hangs.
 		act(() => {
-			void api.client.refetchQueries({ queryKey: homeQuery.queryKey });
+			void api.client.refetchQueries({ queryKey: repoKey("acme/api") });
 		});
 		await userEvent.click(screen.getByRole("button", { name: "Note" }));
 		const pop = screen.getByRole("dialog", { name: "Note" });

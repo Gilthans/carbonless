@@ -6,7 +6,7 @@ import {
 	STALL_ATTEMPTS,
 	waitReason,
 } from "../files/stateSync";
-import { homeQuery, putView } from "./homeApi";
+import { homeQuery, putView, repoKey } from "./homeApi";
 
 interface SaveState {
 	/** The newest repos asked for and not yet stored; null when none. */
@@ -171,6 +171,20 @@ export function viewSaverFor(client: QueryClient): ViewSaver {
 			stored: async (answer) => {
 				// A read of the old view still out mustn't land after the answer.
 				await client.cancelQueries({ queryKey: homeQuery.queryKey });
+				const before = new Set(
+					client.getQueryData(homeQuery.queryKey)?.view.repos ?? [],
+				);
+				// An added repo is read now, even one still cached from before
+				// it was removed (its rows show meanwhile): its query starts
+				// once the view says it's saved (HomePage).
+				for (const name of answer.view.repos) {
+					if (!before.has(name)) {
+						void client.invalidateQueries(
+							{ queryKey: repoKey(name) },
+							{ cancelRefetch: false },
+						);
+					}
+				}
 				client.setQueryData(homeQuery.queryKey, answer);
 			},
 			refused: () => {

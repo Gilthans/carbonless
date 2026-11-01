@@ -480,10 +480,12 @@ export function threadComment(c: {
  * The calls `hold` can stop, each where its `…DelayMs` waits: `comments`
  * and `threadContent` are reads of threads' comments, `threads` their
  * summaries, `restList` the REST review comments, `comment` a new thread's
- * REST comment, `home` Home's PR list and details queries (a refresh).
+ * REST comment, `home` Home's PR list and details queries (a refresh),
+ * `home:<owner/repo>` (lowercased) those of that one repo only.
  */
 export type HoldOp =
 	| "home"
+	| `home:${string}`
 	| "prView"
 	| "threads"
 	| "threadContent"

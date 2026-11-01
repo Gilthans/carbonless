@@ -70,7 +70,8 @@ async function setup(over: Parameters<typeof createHomeFixture>[0] = {}) {
 		started: { list: async () => [] },
 		now: () => clock.now,
 	});
-	await home.refresh();
+	await home.view();
+	await home.repo("acme", "api", { fresh: true });
 	return {
 		home,
 		clock,

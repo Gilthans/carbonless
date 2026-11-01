@@ -1050,6 +1050,13 @@ switch (cmd) {
 		const homeDetails = /\br\d+: repository\(owner: "/.test(f.query ?? "");
 		if (homeList || homeDetails) {
 			delay("home", s.homeDelayMs);
+			// One repo's reads held alone: `home:<owner/repo>` (lowercased).
+			const named = homeList
+				? [`${f.owner}/${f.name}`]
+				: [...f.query.matchAll(/\br\d+: repository\(owner: ("[^"]*"), name: ("[^"]*")\)/g)].map(
+						([, o, n]) => `${JSON.parse(o)}/${JSON.parse(n)}`,
+					);
+			for (const name of new Set(named.map((n) => n.toLowerCase()))) delay(`home:${name}`);
 			if (s.rateLimited) {
 				process.stdout.write(
 					`${JSON.stringify({ data: null, errors: [{ type: "RATE_LIMITED", message: "API rate limit exceeded for user ID 1." }] })}\n`,

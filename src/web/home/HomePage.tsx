@@ -5,48 +5,124 @@ import {
 	RepoIcon,
 	SyncIcon,
 } from "@primer/octicons-react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useRef, useState } from "react";
-import type { HomeView } from "../../shared/home";
+import {
+	type UseQueryResult,
+	useIsFetching,
+	useMutation,
+	useQueries,
+	useQuery,
+	useQueryClient,
+} from "@tanstack/react-query";
+import { useEffect, useState } from "react";
+import type { RepoHome } from "../../shared/home";
+import { composeSections } from "../../shared/homeSections";
 import { Logo } from "../brand/Brand";
 import { RelativeTime } from "../RelativeTime";
 import { useOpenShortcutsHelp } from "../shortcuts";
 import { Tooltip } from "../Tooltip";
 import { ErrorMessage } from "../ui";
-import { homeQuery, postHomeRefresh } from "./homeApi";
+import { homeQuery, refetchRepo, repoQuery } from "./homeApi";
 import { OpenBox } from "./OpenBox";
 import { ColumnHeader, Sign } from "./PrRow";
 import { Section } from "./Section";
 import { ViewSettings } from "./ViewSettings";
 import { useViewSave, ViewSaveNotices } from "./viewSave";
 
-/** The page asks for a refresh when shown if the last one is older than this. */
-export const STALE_MS = 30_000;
-
-const stale = (home: HomeView | undefined) =>
-	!!home &&
-	(!home.refreshedAt || Date.now() - Date.parse(home.refreshedAt) > STALE_MS);
-
 const iconButton =
 	"flex h-10 w-10 shrink-0 items-center justify-center rounded-md text-ink-soft transition-colors hover:bg-overlay hover:text-ink focus-visible:outline-2 focus-visible:outline-accent disabled:opacity-60 motion-reduce:transition-none";
 
-/** The last refresh's age; `warn` with the reason when it failed. */
-function RefreshStatus({ home }: { home: HomeView }) {
-	const failed = home.refreshError;
+const spin = "animate-spin motion-reduce:animate-none";
+
+type RepoResult = UseQueryResult<RepoHome>;
+
+/** Why a repo shows nothing new: its GET failed, or its GitHub read did. */
+const failureOf = (q: RepoResult): string | null =>
+	q.isError ? q.error.message : (q.data?.error ?? null);
+
+/**
+ * The oldest of the repos' last reads (every repo is at least that
+ * fresh), `warn` with the reasons when any read failed.
+ */
+function RefreshStatus(props: {
+	repos: { name: string; query: RepoResult }[];
+	viewerError: string | null;
+}) {
+	const failures = [
+		...(props.viewerError ? [props.viewerError] : []),
+		...props.repos.flatMap(({ name, query }) => {
+			const why = failureOf(query);
+			return why ? [`${name}: ${why}`] : [];
+		}),
+	];
+	const times = props.repos.map(({ query }) => query.data?.refreshedAt);
+	const oldest = times.every((t) => t)
+		? (times as string[]).sort()[0]
+		: undefined;
+	if (props.repos.length === 0 && failures.length === 0) return null;
 	return (
 		<span
 			data-testid="refresh-status"
-			className={`flex shrink-0 items-center gap-1.5 text-xs ${failed ? "text-warn" : "text-muted"}`}
+			className={`flex shrink-0 items-center gap-1.5 text-xs ${failures.length ? "text-warn" : "text-muted"}`}
 		>
-			{failed && (
-				<Sign label={`Refresh failed: ${failed}`}>
+			{failures.length > 0 && (
+				<Sign label={`Refresh failed: ${failures.join("; ")}`}>
 					<AlertIcon size={14} aria-hidden />
 				</Sign>
 			)}
-			{home.refreshedAt ? (
-				<RelativeTime iso={home.refreshedAt} />
-			) : (
-				<span>never</span>
+			{oldest ? <RelativeTime iso={oldest} /> : null}
+		</span>
+	);
+}
+
+/**
+ * A view repo's chip: its name; a spinner until its first read is in; on
+ * a failed read an alert with why, and Retry beside it.
+ */
+function RepoChip(props: { name: string; query: RepoResult }) {
+	const { name, query } = props;
+	const client = useQueryClient();
+	const failed = failureOf(query);
+	const loading = query.data === undefined && !query.isError;
+	const retry = useMutation({ mutationFn: () => refetchRepo(client, name) });
+	return (
+		<span className="inline-flex max-w-full items-center">
+			<span
+				data-testid="view-repo"
+				data-state={failed ? "failed" : loading ? "loading" : "ready"}
+				className={`inline-flex h-7 max-w-full items-center gap-1.5 truncate rounded-full border bg-raised px-2.5 text-xs ${failed ? "border-bad/50 text-bad" : "border-edge text-ink-soft"}`}
+			>
+				{failed ? (
+					<Sign label={`${name}: ${failed}`}>
+						<AlertIcon size={12} aria-hidden />
+					</Sign>
+				) : loading ? (
+					<Sign label={`Loading ${name}`} className="text-faint">
+						<SyncIcon size={12} aria-hidden className={spin} />
+					</Sign>
+				) : (
+					<RepoIcon size={12} aria-hidden className="text-faint" />
+				)}
+				{name}
+			</span>
+			{failed && (
+				<Tooltip content={`Retry ${name}`} describe={false}>
+					{(trigger) => (
+						<button
+							type="button"
+							{...trigger}
+							aria-label={`Retry ${name}`}
+							onClick={() => retry.mutate()}
+							disabled={query.isFetching}
+							className={iconButton}
+						>
+							<SyncIcon
+								size={14}
+								aria-hidden
+								className={query.isFetching ? spin : ""}
+							/>
+						</button>
+					)}
+				</Tooltip>
 			)}
 		</span>
 	);
@@ -54,8 +130,9 @@ function RefreshStatus({ home }: { home: HomeView }) {
 
 /**
  * Home: the view's PRs in five sections, the open box, the view's repos
- * and the refresh. Asks the server for a refresh on open and on focus when
- * the last one is older than 30 s; the server refreshes on its own too.
+ * and the refresh. Each view repo is its own query (repoQuery), read again
+ * every refresh.minutes; the sections are composed here from all of them,
+ * so one repo's failure or slowness never holds the others' rows.
  */
 export function HomePage() {
 	const client = useQueryClient();
@@ -66,40 +143,42 @@ export function HomePage() {
 	// Each Save: the pencil gets focus back, its tooltip mustn't stay over
 	// the sections (a tap keeps a focus tooltip open).
 	const [saves, setSaves] = useState(0);
-	const refresh = useMutation({
-		mutationFn: postHomeRefresh,
-		onMutate: () => client.cancelQueries({ queryKey: homeQuery.queryKey }),
-		onSuccess: (answer) => client.setQueryData(homeQuery.queryKey, answer),
+	// A save being made shows at once, laid over the server's last answer.
+	const data = home.data && viewSave.shown(home.data);
+	const saved = new Set(home.data?.view.repos ?? []);
+	const minutes = home.data?.refreshMinutes ?? 2;
+	const names = data?.view.repos ?? [];
+	// A repo is asked only once the server's view lists it (a save still
+	// out would 404 it); one added back shows its cached rows meanwhile.
+	const queries = useQueries({
+		queries: names.map((name) => ({
+			...repoQuery(name, minutes),
+			enabled: saved.has(name.toLowerCase()),
+		})),
 	});
-	// The latest, for the focus listener and the first answer.
-	const latest = useRef({ data: home.data, refresh });
-	latest.current = { data: home.data, refresh };
-	const asked = useRef(false);
-	useEffect(() => {
-		const maybe = () => {
-			const { data, refresh } = latest.current;
-			if (stale(data) && !refresh.isPending) refresh.mutate();
-		};
-		if (home.data && !asked.current) {
-			asked.current = true;
-			maybe();
-		}
-		const onVisible = () => {
-			if (document.visibilityState === "visible") maybe();
-		};
-		window.addEventListener("focus", maybe);
-		document.addEventListener("visibilitychange", onVisible);
-		return () => {
-			window.removeEventListener("focus", maybe);
-			document.removeEventListener("visibilitychange", onVisible);
-		};
-	}, [home.data]);
+	const repos = names.map((name, i) => ({
+		name,
+		query: queries[i] as RepoResult,
+	}));
+	const refresh = useMutation({
+		mutationFn: () =>
+			Promise.allSettled(names.map((name) => refetchRepo(client, name))),
+	});
+	const fetching = useIsFetching({ queryKey: ["home"] }) > 0;
+	const busy = fetching || viewSave.saving || refresh.isPending;
+	// Until every repo has answered once (a failure counts), sections show
+	// placeholders, never a count of rows still to come.
+	const loading =
+		home.isPending ||
+		repos.some(({ query }) => query.data === undefined && !query.isError);
+	const sections = composeSections(
+		repos.flatMap(({ query }) => query.data?.rows ?? []),
+		data?.viewer.login ?? "",
+	);
 	useEffect(() => {
 		document.title = "carbonless";
 	}, []);
 
-	// A save being made shows at once, laid over the server's last answer.
-	const data = home.data && viewSave.shown(home.data);
 	return (
 		<div className="min-h-screen bg-canvas font-sans text-ink">
 			<header className="border-b border-line bg-surface header-glow">
@@ -118,7 +197,9 @@ export function HomePage() {
 					</Tooltip>
 					<OpenBox className="order-last w-full sm:order-none sm:max-w-xl sm:flex-1" />
 					<div className="ml-auto flex items-center gap-1">
-						{data && <RefreshStatus home={data} />}
+						{data && (
+							<RefreshStatus repos={repos} viewerError={data.viewerError} />
+						)}
 						<Tooltip content="Refresh from GitHub" describe={false}>
 							{(trigger) => (
 								<button
@@ -131,11 +212,7 @@ export function HomePage() {
 								>
 									<SyncIcon
 										aria-hidden
-										className={
-											refresh.isPending
-												? "animate-spin motion-reduce:animate-none"
-												: ""
-										}
+										className={refresh.isPending ? spin : ""}
 									/>
 								</button>
 							)}
@@ -157,9 +234,11 @@ export function HomePage() {
 				</div>
 			</header>
 			<main className="mx-auto max-w-6xl space-y-5 px-3 py-4 sm:px-6">
-				{home.isPending && <p className="text-muted">Loading…</p>}
 				{home.isError && <ErrorMessage error={home.error} />}
-				{refresh.isError && <ErrorMessage error={refresh.error} />}
+				{home.isPending &&
+					sections.map((s) => (
+						<Section key={s.id} section={s} viewer="" loading />
+					))}
 				{data && (
 					<>
 						{data.configProblems.length > 0 && (
@@ -176,26 +255,24 @@ export function HomePage() {
 							<h1 className="font-display text-base font-bold">
 								{data.view.name}
 							</h1>
-							{viewSave.saving && (
-								<span role="status" aria-label="Saving">
-									<Sign label="Saving…" className="text-muted">
-										<SyncIcon
-											size={14}
-											aria-hidden
-											className="animate-spin motion-reduce:animate-none"
-										/>
+							{busy && (
+								// Anything Home shows being read or saved: the view, a
+								// repo, a save (owner, 2026-11-01: "If anything is
+								// refreshing, we should see a spinner").
+								<span
+									role="status"
+									aria-label={viewSave.saving ? "Saving" : "Loading"}
+								>
+									<Sign
+										label={viewSave.saving ? "Saving…" : "Loading…"}
+										className="text-muted"
+									>
+										<SyncIcon size={14} aria-hidden className={spin} />
 									</Sign>
 								</span>
 							)}
-							{data.view.repos.map((r) => (
-								<span
-									key={r}
-									data-testid="view-repo"
-									className="inline-flex h-7 max-w-full items-center gap-1.5 truncate rounded-full border border-edge bg-raised px-2.5 text-xs text-ink-soft"
-								>
-									<RepoIcon size={12} aria-hidden className="text-faint" />
-									{r}
-								</span>
+							{repos.map((r) => (
+								<RepoChip key={r.name} name={r.name} query={r.query} />
 							))}
 							{data.view.repos.length === 0 ? (
 								<button
@@ -225,13 +302,18 @@ export function HomePage() {
 								</Tooltip>
 							)}
 						</div>
-						{data.sections.some((s) => s.rows.length > 0) && (
+						{sections.some((s) => s.rows.length > 0) && (
 							// One for the page, sticky: the columns are the same in
 							// every section.
 							<ColumnHeader />
 						)}
-						{data.sections.map((s) => (
-							<Section key={s.id} section={s} viewer={data.viewer.login} />
+						{sections.map((s) => (
+							<Section
+								key={s.id}
+								section={s}
+								viewer={data.viewer.login}
+								loading={loading && data.view.repos.length > 0}
+							/>
 						))}
 						<ViewSettings
 							open={editing}

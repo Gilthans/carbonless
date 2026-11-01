@@ -1,7 +1,8 @@
-import { ChevronRightIcon } from "@primer/octicons-react";
+import { ChevronRightIcon, SyncIcon } from "@primer/octicons-react";
 import { useEffect, useId, useRef, useState } from "react";
 import type { HomeRow, HomeSection, SectionId } from "../../shared/home";
-import { PrRow } from "./PrRow";
+import { SkeletonBar } from "../overview/parts";
+import { PrRow, Sign } from "./PrRow";
 import { RowActions } from "./RowActions";
 
 export const SECTION_LABELS: Record<SectionId, string> = {
@@ -45,12 +46,36 @@ export function hiddenSummary(rows: HomeRow[]): string {
 const footClass =
 	"flex min-h-10 items-center gap-1.5 rounded-md px-3 text-xs text-muted hover:bg-raised hover:text-ink focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent";
 
+/** A row still on its way: grey bars where its title and meta will be. */
+function SkeletonRow() {
+	return (
+		<li
+			data-testid="row-skeleton"
+			aria-hidden
+			className="space-y-2 border-t border-line px-3 py-3 first:border-t-0"
+		>
+			<SkeletonBar className="w-2/3 max-w-md" />
+			<SkeletonBar className="w-1/3 max-w-48" />
+		</li>
+	);
+}
+
 /**
  * One section: its visible rows (20, then a fold), and its hidden ones
  * behind a footer that counts them and reveals them in place. Nothing is
- * dropped: the count in the heading is every visible row.
+ * dropped: the count in the heading is every visible row. While `loading`
+ * (a view repo's first read isn't in) the count is a spinner and
+ * placeholder rows stand where rows may still come, so a section still
+ * loading never reads as empty (owner, 2026-11-01: "An empty result should
+ * always be easily distinguishable for a still loading result"); loaded
+ * and empty, it says none.
  */
-export function Section(props: { section: HomeSection; viewer: string }) {
+export function Section(props: {
+	section: HomeSection;
+	viewer: string;
+	loading?: boolean;
+}) {
+	const loading = props.loading ?? false;
 	const { id, rows } = props.section;
 	const headingId = useId();
 	const hiddenId = useId();
@@ -81,15 +106,39 @@ export function Section(props: { section: HomeSection; viewer: string }) {
 					className="flex items-baseline gap-2 text-xs font-bold tracking-[0.14em] text-label uppercase"
 				>
 					{SECTION_LABELS[id]}
-					<span className="font-semibold tracking-normal text-faint tabular-nums">
-						{visible.length}
-					</span>
+					{loading ? (
+						<Sign label="Loading" className="self-center text-faint">
+							<SyncIcon
+								size={12}
+								aria-hidden
+								className="animate-spin motion-reduce:animate-none"
+							/>
+						</Sign>
+					) : (
+						<span className="font-semibold tracking-normal text-faint tabular-nums">
+							{visible.length}
+						</span>
+					)}
 				</h2>
 				{HINTS[id] && <p className="text-xs text-faint">{HINTS[id]}</p>}
 			</div>
-			{rows.length > 0 && (
+			{rows.length === 0 && !loading && (
+				<p
+					data-testid="section-none"
+					className="px-1 text-xs text-faint italic"
+				>
+					none
+				</p>
+			)}
+			{(rows.length > 0 || loading) && (
 				<div className="rounded-xl border border-line bg-surface">
 					<ul>
+						{loading && rows.length === 0 && (
+							<>
+								<SkeletonRow />
+								<SkeletonRow />
+							</>
+						)}
 						{shown.map((row) => (
 							<PrRow
 								key={key(row)}
@@ -105,6 +154,7 @@ export function Section(props: { section: HomeSection; viewer: string }) {
 								}
 							/>
 						))}
+						{loading && rows.length > 0 && <SkeletonRow />}
 					</ul>
 					{(more > 0 || anyHidden) && (
 						<div className="flex flex-wrap items-center gap-x-2 border-t border-line px-1 py-0.5">

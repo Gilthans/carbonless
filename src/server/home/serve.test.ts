@@ -6,7 +6,7 @@ import {
 	createHomeFixture,
 	type HomeFixture,
 } from "../../../test/home-fixture";
-import type { HomeView } from "../../shared/home.js";
+import type { HomeView, RepoHome } from "../../shared/home.js";
 import { type StartedServer, startServer } from "../serve.js";
 
 // Each fake gh call is a node process: give a loaded machine time.
@@ -68,33 +68,28 @@ describe("Home in a real crb serve", () => {
 		return { url: server.url, configFile };
 	}
 
-	it("answers /api/home from the scenario, and starts its refresh on the first request", async () => {
+	it("answers /api/home and each view repo's rows from the scenario", async () => {
 		const { url } = await start();
-		const first = await fetch(`${url}/api/home`);
-		expect(first.status).toBe(200);
-		const view = (await (
-			await fetch(`${url}/api/home/refresh`, { method: "POST" })
-		).json()) as HomeView;
+		const res = await fetch(`${url}/api/home`);
+		expect(res.status).toBe(200);
+		const view = (await res.json()) as HomeView;
 		expect(view.viewer.login).toBe("Octo");
 		expect(view.view).toEqual({ name: "My PRs", repos: ["acme/api"] });
+		const repo = (await (
+			await fetch(`${url}/api/home/repos/acme/api`)
+		).json()) as RepoHome;
 		expect(
-			view.sections.map((s) => [s.id, s.rows.map((r) => r.number)]),
+			repo.rows
+				.map((r) => [r.number, r.section])
+				.sort((a, b) => Number(a[0]) - Number(b[0])),
 		).toEqual([
-			["mine", [1]],
-			["reviewing", []],
-			["grabs", [2]],
-			["other", []],
-			["closed", []],
+			[1, "mine"],
+			[2, "grabs"],
 		]);
 	});
 
 	it("refuses cross-site writes like every /api write", async () => {
 		const { url } = await start();
-		const res = await fetch(`${url}/api/home/refresh`, {
-			method: "POST",
-			headers: { "sec-fetch-site": "cross-site" },
-		});
-		expect(res.status).toBe(403);
 		const put = await fetch(`${url}/api/home/view`, {
 			method: "PUT",
 			headers: {

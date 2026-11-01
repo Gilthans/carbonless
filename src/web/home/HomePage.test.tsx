@@ -13,6 +13,7 @@ import { HomePage } from "./HomePage";
 import {
 	ago,
 	fakeApi,
+	inOrder,
 	person,
 	renderWithQuery,
 	row,
@@ -48,7 +49,7 @@ describe("HomePage", () => {
 		);
 		fakeApi(view({ other: rows }));
 		renderWithQuery(<HomePage />);
-		await screen.findByText("PR 1");
+		await screen.findByText("PR 25");
 		const other = section("Other open");
 		expect(within(other).getAllByTestId("home-row")).toHaveLength(20);
 		expect(within(other).getByRole("heading")).toHaveTextContent("25");
@@ -63,7 +64,7 @@ describe("HomePage", () => {
 		const until = new Date(Date.now() + 2 * 86_400_000).toISOString();
 		fakeApi(
 			view({
-				mine: [
+				mine: inOrder([
 					row({ number: 1, title: "Visible" }),
 					row({
 						number: 2,
@@ -88,7 +89,7 @@ describe("HomePage", () => {
 						annotations: { waiting: { who: "noa", at: ago(10) } },
 						people: { noa: person("noa") },
 					}),
-				],
+				]),
 				reviewing: [
 					row({
 						number: 5,
@@ -412,20 +413,29 @@ describe("HomePage", () => {
 		).toBeInTheDocument();
 	});
 
-	it("shows the last refresh, in warn with the reason when it failed", async () => {
+	it("shows the oldest repo read, in warn with the reasons when one failed", async () => {
 		fakeApi(
 			view(
 				{ mine: [row()] },
-				{ refreshedAt: ago(0.2), refreshError: "GitHub rate limit" },
+				{
+					repos: {
+						"acme/api": { refreshedAt: ago(0.2) },
+						"acme/console": {
+							refreshedAt: ago(5),
+							error: "Rate limited by GitHub",
+							failures: 1,
+						},
+					},
+				},
 			),
 		);
 		renderWithQuery(<HomePage />);
 		const status = await screen.findByTestId("refresh-status");
-		expect(status).toHaveClass("text-warn");
+		await waitFor(() => expect(status).toHaveClass("text-warn"));
 		within(status).getByRole("img", {
-			name: "Refresh failed: GitHub rate limit",
+			name: "Refresh failed: acme/console: Rate limited by GitHub",
 		});
-		expect(status.querySelector("time")).toBeInTheDocument();
+		expect(status.querySelector("time")).toHaveTextContent("5 minutes ago");
 		// The rows stay.
 		expect(screen.getByText("A change")).toBeInTheDocument();
 	});
@@ -450,33 +460,6 @@ describe("HomePage", () => {
 			await screen.findByRole("button", { name: "Add repos" }),
 		);
 		expect(screen.getByRole("dialog", { name: "My PRs" })).toBeInTheDocument();
-	});
-
-	it("asks for a refresh on open when the last one is older than 30 s, and not when it's fresh", async () => {
-		const stale = fakeApi(view({ mine: [row()] }, { refreshedAt: ago(1) }));
-		const { unmount } = renderWithQuery(<HomePage />);
-		await waitFor(() =>
-			expect(
-				stale.calls.some(
-					(c) => c.method === "POST" && c.url === "/api/home/refresh",
-				),
-			).toBe(true),
-		);
-		unmount();
-		const fresh = fakeApi(view({ mine: [row()] }, { refreshedAt: ago(0.1) }));
-		renderWithQuery(<HomePage />);
-		await screen.findByText("A change");
-		expect(fresh.calls.some((c) => c.url === "/api/home/refresh")).toBe(false);
-	});
-
-	it("refreshes on the button", async () => {
-		const api = fakeApi(view({ mine: [row()] }));
-		renderWithQuery(<HomePage />);
-		await screen.findByText("A change");
-		await userEvent.click(screen.getByRole("button", { name: "Refresh" }));
-		await waitFor(() =>
-			expect(api.calls.some((c) => c.url === "/api/home/refresh")).toBe(true),
-		);
 	});
 
 	it("lets a phone row's second line wrap, even the worst case", async () => {
@@ -524,10 +507,10 @@ describe("HomePage", () => {
 	it("counts a hidden row of an unknown kind in the footer, with Wake up", async () => {
 		fakeApi(
 			view({
-				other: [
+				other: inOrder([
 					row({ number: 1, title: "Muted", hidden: "muted" as "snoozed" }),
 					row({ number: 2, title: "Snoozed, no date", hidden: "snoozed" }),
-				],
+				]),
 			}),
 		);
 		renderWithQuery(<HomePage />);
@@ -544,12 +527,12 @@ describe("HomePage", () => {
 	});
 
 	it("shows the fold and the hidden footer together", async () => {
-		const rows = [
+		const rows = inOrder([
 			...Array.from({ length: 22 }, (_, i) =>
 				row({ number: i + 1, title: `PR ${i + 1}` }),
 			),
 			row({ number: 99, title: "Away", hidden: "waiting" }),
-		];
+		]);
 		fakeApi(view({ other: rows }));
 		renderWithQuery(<HomePage />);
 		await screen.findByText("PR 1");
@@ -561,19 +544,6 @@ describe("HomePage", () => {
 		);
 		expect(within(other).getAllByTestId("home-row")).toHaveLength(20);
 		within(other).getByText("Away");
-	});
-
-	it("asks for a refresh on focus and on showing the tab again while stale", async () => {
-		const stale = view({ mine: [row()] }, { refreshedAt: ago(5) });
-		const api = fakeApi(stale, { "POST /api/home/refresh": () => stale });
-		renderWithQuery(<HomePage />);
-		const refreshes = () =>
-			api.calls.filter((c) => c.url === "/api/home/refresh").length;
-		await waitFor(() => expect(refreshes()).toBe(1));
-		fireEvent.focus(window);
-		await waitFor(() => expect(refreshes()).toBe(2));
-		fireEvent(document, new Event("visibilitychange"));
-		await waitFor(() => expect(refreshes()).toBe(3));
 	});
 
 	it("opens the reason badge's tooltip on keyboard focus", async () => {
@@ -624,14 +594,14 @@ describe("HomePage", () => {
 		});
 		fakeApi(
 			view({
-				reviewing: [
+				reviewing: inOrder([
 					row({ number: 1, title: "One", reviews: [review("A", true, 5)] }),
 					row({
 						number: 2,
 						title: "Two",
 						reviews: [review("B", false, 5), review("P", true, 50)],
 					}),
-				],
+				]),
 			}),
 		);
 		renderWithQuery(<HomePage />);
