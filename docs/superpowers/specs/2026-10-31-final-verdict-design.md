@@ -1,6 +1,6 @@
-# Final Verdict: what blocks the merge, and approve / request changes
+# Final Verdict: what blocks the merge, and approve / comment / request changes
 
-Status: draft for the owner, 2026-10-31; the owner's answers to the builder check folded in.
+Status: approved by the owner 2026-11-01, with two changes from their doc comments folded in (a Comment verdict; one blocker list).
 
 Calls the coordinator made (the owner may overrule) are marked **(call)**.
 
@@ -24,22 +24,24 @@ The owner's words:
 ## Goals
 
 - **A third tab, "Final Verdict"**, next to Overview and Files changed, answering: what stands between this PR and merging, and what is my verdict?
-- **GitHub's verdict first, with why**: whether GitHub would let the PR merge now, and the reasons it wouldn't.
-- **Our blockers as well**, each with where to deal with it, whether or not GitHub enforces it:
+- **GitHub's status first**: one prominent line saying whether GitHub would let the PR merge now (ready, blocked or waiting).
+- **One list of blockers** (owner, 2026-11-01: "There should be 1 list of blockers, but it should be clear which are mandatory by github and which aren't"), each with where to deal with it. The ones GitHub requires come first, tagged "Required by GitHub"; the rest are plainly not required:
   - checks failing or still running (required ones first, when GitHub says which are required);
   - unresolved review threads (count, each linking to the thread on the Overview);
   - approvals still missing: what the repo requires (count, code owners) against who has approved, plus requested reviewers who haven't answered and reviewers whose latest verdict is "changes requested";
   - merge conflicts with the base, the base having moved on when the repo requires up-to-date branches, and Draft state.
   - When neither GitHub nor our list has anything, a single green "Ready to merge" line.
-- **Approve or Request changes**, sent to GitHub as one submitted review, from the tab and from a small verdict section after the last file in Files changed.
+- **Approve, Comment or Request changes**, sent to GitHub as one submitted review, from the tab and from a small verdict section after the last file in Files changed. Each button's tooltip says what it means (owner, 2026-11-01, verbatim):
+  - Approve: "Allow merging after remaining comments are resolved"
+  - Request changes: "Disallow merging without another review"
+  - Comment: "No approval, but approval by someone else acceptable"
 - **Always allowed, whatever the review state.** Unreviewed lines, open threads and failing checks never block or warn the verdict. Approving with open comments means "fine to merge once these are resolved, no re-review".
-- **No message by default.** An "Include a message" checkbox opens a text box; unchecked, nothing is sent as the body. GitHub refuses Request changes without a body, so pressing **Request changes** with the box unchecked ticks it and focuses the text box; it sends once there is text (owner, 2026-10-31). Approve stays one click.
+- **No message by default.** An "Include a message" checkbox opens a text box; unchecked, nothing is sent as the body. GitHub refuses Request changes and Comment without a body, so pressing either with the box unchecked ticks it and focuses the text box; it sends once there is text (owner, 2026-10-31). Approve stays one click.
 - **Same feel as the other writes:** the verdict shows at once with the sending clock, a yellow notice after 5 s, transient errors retried, a refusal listed in the always-on "not posted" chip (brief U) with Retry / Drop, and the leave guard asking while one is unsettled.
 
 ## Non-goals
 
 - Merging the PR, or enabling auto-merge. The tab says "Ready to merge" and links to the PR on GitHub **(call)**.
-- A "Comment" verdict (a review with only a body). The owner asked for Approve and Request changes. Plain comments already exist as threads.
 - Batching the reviewer's new comments into the review. Comments stay single writes, posted as they are made (new-threads spec); the verdict is its own review.
 - Dismissing other people's reviews, re-requesting reviews, editing CODEOWNERS or branch rules.
 - Submitting or discarding a pending review the reviewer started on GitHub.
@@ -56,29 +58,29 @@ The owner's words:
 
 Order, top to bottom:
 
-1. **GitHub's verdict, prominent, with why** (owner: "github's final verdict should appear in prominence and it should be clear why, but our blockers should appear as well"). A banner from GitHub's own facts (`mergeStateStatus`, `reviewDecision`, required checks, `mergeable`, Draft): "GitHub: ready to merge" (green), "GitHub: blocked" (red) or "GitHub: waiting" (yellow, only required checks still running), followed by the reasons GitHub blocks it, each one line: "Required check failing: jira / jira_status_check", "Review required", "Changes requested by ravi", "Conflicts with main", "Branch is behind main", "Draft". When the rule can't be read, the reasons come from what GitHub does report (`reviewDecision`, required check flags, `mergeStateStatus`).
-2. **Our blockers** (carbonless's view, shown as well, below GitHub's verdict): everything a careful reviewer would want settled even when GitHub allows the merge. Items GitHub also enforces are marked "required"; the rest are yellow, not red, so they never read as GitHub blocking. Grouped, each group collapsed to one row with a count when long:
-   - **Checks:** failing (red), running (yellow), each with its name and a link to the run; passing ones folded into a "N passing" row. Required checks marked with a "required" tag when GitHub reports it.
+1. **GitHub's status, prominent** (owner: "github's final verdict should appear in prominence and it should be clear why, but our blockers should appear as well"). A line from GitHub's own facts (`mergeStateStatus`, `reviewDecision`, required checks, `mergeable`, Draft): "GitHub: ready to merge" (green), "GitHub: blocked" (red) or "GitHub: waiting" (yellow, only required checks still running). The why is the list right under it.
+2. **Blockers, one list** (owner, 2026-11-01). GitHub's requirements first, each tagged "Required by GitHub" and red while unmet: "Required check failing: jira / jira_status_check", "Review required", "Changes requested by ravi", "Conflicts with main", "Branch is behind main", "Draft". When the rule can't be read, these come from what GitHub does report (`reviewDecision`, required check flags, `mergeStateStatus`). Then the rest, untagged and yellow, never red, so they never read as GitHub blocking: everything a careful reviewer would want settled even when GitHub allows the merge. Each row carries its kind's icon (check, thread, person, branch). An item is in the list once: a failing required check is a required row, not also a check row. What the rows say, by kind:
+   - **Checks:** failing (red if required, else yellow), running (yellow), each with its name and a link to the run; passing ones folded into one "N passing" row at the end.
    - **Threads:** "N unresolved", expanding to one row per thread (file:line or file, opener, last reply, time) linking to the thread on the Overview; the reviewer's own threads first **(call)**. Bot threads count separately, as on the Overview.
    - **Approvals:** "1 of 2 approvals" from the repo's rule, code-owner approval when required (which owners are still missing), requested reviewers with no answer, reviewers whose latest verdict requests changes. GitHub's own `reviewDecision` (APPROVED / REVIEW_REQUIRED / CHANGES_REQUESTED) is the source of truth for the summary; the detail rows explain it.
    - **Branch:** conflicts with the base; behind the base when the rule requires up-to-date; Draft.
 3. **Your verdict:**
    - The reviewer's current verdict on GitHub if any ("You approved 2 h ago at abc1234"), with the note when it was on an older head ("on an earlier push").
-   - Two buttons, **Approve** (green) and **Request changes** (red), icon + short text, ≥40px.
+   - Three buttons, **Approve** (green), **Comment** (neutral) and **Request changes** (red), icon + short text, ≥40px, each with its tooltip (Goals).
    - **Include a message** checkbox; when checked, a text box (same editor as replies, drafts kept across reloads like replies) appears under it and is sent as the review body.
    - Information only, small and muted: "You reviewed 120 of 340 lines", "2 of your threads are open" **(call: shown, never blocking)**.
-   - On the reviewer's own PR the buttons are disabled with a tooltip ("Authors can't review their own PR"), as GitHub refuses it.
+   - On the reviewer's own PR, Approve and Request changes are disabled with a tooltip ("Authors can't approve their own PR"), as GitHub refuses them; Comment stays on (GitHub accepts a COMMENT review from the author).
    - In as-of and `--viewer` views, where writes are off, the buttons are disabled the same way the reply box is.
 
 ## The verdict section at the end of Files changed
 
-After the last file, a compact card: the reviewer's current verdict if any, the two buttons, and the "Include a message" checkbox with its box. It is the same component as on the tab, without the blockers. The phone's floating Files button must not cover it (extra room at the list's end, as brief S did for the selection bar).
+After the last file, a compact card: the reviewer's current verdict if any, the three buttons, and the "Include a message" checkbox with its box. It is the same component as on the tab, without the blockers. The phone's floating Files button must not cover it (extra room at the list's end, as brief S did for the selection bar).
 
 ## Writing the verdict
 
-- REST `POST /repos/{o}/{r}/pulls/{n}/reviews` with `event: APPROVE | REQUEST_CHANGES`, `commit_id` = the head the reviewer is viewing **(call: the viewed head, so GitHub records what was actually reviewed; on `--head reviewed` or a pinned snapshot that is an older commit, and the card says so before sending)**, and `body` only when the message box is used.
+- REST `POST /repos/{o}/{r}/pulls/{n}/reviews` with `event: APPROVE | COMMENT | REQUEST_CHANGES`, `commit_id` = the head the reviewer is viewing **(call: the viewed head, so GitHub records what was actually reviewed; on `--head reviewed` or a pinned snapshot that is an older commit, and the card says so before sending)**, and `body` only when the message box is used (always, for Comment and Request changes).
 - A pending review by the viewer makes GitHub refuse: checked on carbonless-scratch 2026-10-31, `POST …/reviews` with an `event` while the viewer has a PENDING review returns 422 "User can only have one pending review per pull request" and posts nothing. So GitHub itself guards the anti-goal; carbonless shows the existing pending-review notice and lists the verdict in the "not posted" chip. No pre-send check is needed.
-- GitHub requires a `body` for `REQUEST_CHANGES` (REST docs), so Request changes is never sent without text (Goals).
+- GitHub requires a `body` for `REQUEST_CHANGES` and `COMMENT` (REST docs), so neither is sent without text (Goals).
 - **Retry safety:** before resending, carbonless reads the viewer's reviews and treats one with the same event, submitted after the first attempt started, as the landed verdict. A body carries the hidden `crb:v1` marker with the client id (as new threads do) when there is one.
 - The new verdict replaces the shown one at once (optimistic), with the sending clock; Overview's "Who's on it", the Timeline and the tab update when GitHub's answer comes back.
 - The fake gh gains `pulls/{n}/reviews` POST (and GraphQL fields below) so every case is testable without GitHub.
@@ -101,12 +103,12 @@ New reads, in the Overview's existing GraphQL call where possible so no extra ro
 
 ## Phone
 
-The tab bar has three tabs at 360px: short labels ("Overview", "Files", "Verdict") **(call)**, icons with tooltips and accessible names as today. The verdict card stacks the two buttons side by side at full width. Every target ≥40px; no horizontal page scroll.
+The tab bar has three tabs at 360px: short labels ("Overview", "Files", "Verdict") **(call)**, icons with tooltips and accessible names as today. The three verdict buttons share one full-width row, icon over a short label ("Approve", "Comment", "Changes") **(call)**. Every target ≥40px; no horizontal page scroll.
 
 ## Tests
 
-- Unit: blocker list from GitHub facts (each status, required vs not, rules unreadable → "unknown", nothing blocking → ready); verdict write (event, commit, body only when included, marker), retry finds the landed review and doesn't post twice, pending review refusal, author's own PR disabled, as-of/viewer disabled.
-- Playwright desktop and phone with the fake gh: open the tab, see each kind of blocker; approve without a message → "You approved" and the Overview's reviewer list updates; request changes with a message; a refused verdict goes to the chip and Retry lands it; the Files changed end card works and isn't covered on the phone; the tab bar fits at 360px.
+- Unit: blocker list from GitHub facts (each status, required vs not, rules unreadable → "unknown", nothing blocking → ready); verdict write (event, commit, body only when included, marker), retry finds the landed review and doesn't post twice, pending review refusal, author's own PR allows only Comment, Comment and Request changes never sent empty, as-of/viewer disabled.
+- Playwright desktop and phone with the fake gh: open the tab, see each kind of blocker; approve without a message → "You approved" and the Overview's reviewer list updates; comment and request changes with a message; the tooltips; a refused verdict goes to the chip and Retry lands it; the Files changed end card works and isn't covered on the phone; the tab bar fits at 360px.
 - Gallery: a `verdict` case with failing and running checks, unresolved threads, a requested reviewer, a changes-requested review and a code-owner rule if the gallery repo can have one (branch protection on the playground repo is approved as a GitHub write there). The scratch PR is where the owner presses the real buttons.
 
 ## Left to the builder
