@@ -45,7 +45,7 @@ result should always be easily distinguishable for a still loading result."
 
 - **Where the result goes.** While an answer is on its way, a spinner
   (`Spinner`, `src/web/Spinner.tsx`: the spinning sync icon, a tooltip and
-  an accessible name, `role="status"`) or a skeleton (`SkeletonBar`, grey
+  an accessible name to find it by, `role="status"`) or a skeleton (`SkeletonBar`, grey
   bars where text will be) shows in the place the result will take, and
   the region it fills is `aria-busy`. A whole page's code still loading
   shows a spinner too, never a blank page.
@@ -54,11 +54,13 @@ result should always be easily distinguishable for a still loading result."
   activity" or empty list, no outline that means "no comments yet". When a
   part of the page is loaded and another isn't (the diff, then its
   comments), the part still loading says so where its results will show
-  (Files changed: "Loading comments" in the progress bar and on the open
-  file's bubble).
-- **Errors are a third state.** A failed read shows its error (red, with
-  Retry where it can), never the empty state and never a spinner that
-  keeps on.
+  (Files changed: "Loading comments" in the progress bar, the file tree and
+  the open file's bubble; the Timeline: "Loading threads" on a review run
+  and its comments).
+- **Errors are a third state.** A failed read shows its error (red; or a
+  `warn` notice where only a part is missing, per "Flag uncertainty", like
+  Files changed's "Threads not shown"; with Retry where it can), never the
+  empty state and never a spinner that keeps on.
 - **Tested by holding the answer.** Each loading state has a test that
   holds the answer (e2e: the fake gh's `hold`; unit: a held fetch from
   `test/loading.ts`), asserts the loading state is visible and the empty

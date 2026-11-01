@@ -253,11 +253,7 @@ function OverviewContent({
 
 /** The sections' frames while GitHub is read: grey bars where text will be. */
 function OverviewSkeleton() {
-	const bar = (width: string) => (
-		<div
-			className={`h-3 animate-pulse rounded bg-overlay motion-reduce:animate-none ${width}`}
-		/>
-	);
+	const bar = (width: string) => <SkeletonBar className={width} />;
 	return (
 		<div data-testid="overview-loading" aria-busy="true" className="space-y-6">
 			<p className="sr-only">Loading the PR from GitHub…</p>

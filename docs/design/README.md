@@ -177,14 +177,19 @@ Design principle 8: loading never looks empty. Two shapes, both shared
 
 - **Spinner**: the octicon sync arrows spinning in `muted` (still under
   reduced motion), a tooltip and an accessible name saying what is loading
-  ("Loading comments", "Loading diff"), `role="status"`. For a small slot
-  (a chip, a bubble, a gap row) or a whole page whose code is on its way.
+  ("Loading comments", "Loading diff"), `role="status"` so it can be found
+  by that name; an icon-only one isn't read out as it appears, so many on a
+  page stay quiet. Visible text beside the icon when the slot has room
+  ("Opening…"). For a small slot (a chip, a gap row) or a whole page whose
+  code is on its way. Inside a control that has its own name (a thread
+  bubble), the bare `SpinnerIcon`.
 - **Skeleton**: `SkeletonBar`, `h-3` `overlay` bars pulsing where text will
   be, in the frame of what is coming (a section, a card, the header's
   title), the region `aria-busy` with a screen-reader "Loading…".
 
 No 0, "None", empty meter or empty-list text shows until the answer says
-so; an error replaces the spinner in `bad`.
+so; an error replaces the spinner in `bad`, or a `warn` notice where only
+a part is missing (flag uncertainty: "Threads not shown").
 
 ## Settings
 

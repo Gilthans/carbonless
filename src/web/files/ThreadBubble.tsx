@@ -3,12 +3,12 @@ import {
 	CheckIcon,
 	CommentIcon,
 	FileIcon,
-	SyncIcon,
 } from "@primer/octicons-react";
 import type { ReactNode } from "react";
 import { useEffect, useRef } from "react";
 import type { ReviewThread } from "../../shared/types";
 import { plural } from "../overview/parts";
+import { SpinnerIcon } from "../Spinner";
 import { Tooltip } from "../Tooltip";
 
 /**
@@ -53,10 +53,11 @@ export function ThreadBubble(props: {
 	where?: string;
 	file?: boolean;
 	/** Its name when it has no threads (`file`). */
-	label?: string /**
+	label?: string;
+	/**
 	 * The threads are still on their way: it spins, named "Loading
 	 * comments", never the outline that means none (principle 8).
-	 */;
+	 */
 	loading?: boolean;
 	/** Take focus once shown (then `onFocused`). */
 	focus?: boolean;
@@ -119,10 +120,7 @@ export function ThreadBubble(props: {
 					>
 						{props.file && <FileIcon size={12} />}
 						{loading ? (
-							<SyncIcon
-								size={12}
-								className="animate-spin motion-reduce:animate-none"
-							/>
+							<SpinnerIcon size={12} />
 						) : resolved ? (
 							<CheckIcon size={12} className="text-ok" />
 						) : (
