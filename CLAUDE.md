@@ -63,9 +63,23 @@ These guide every feature. If a change conflicts with one of them, stop and rais
    "merged" is GitHub's PR state, not ancestry). The methodology matrix
    (`docs/git-methodology.md`) proves it; history-sensitive changes extend it.
 
+8. **Loading never looks empty.** Whenever something is loading, a visible
+   spinner or skeleton shows where the result will appear (the owner:
+   "Whenever something is loading, there should be a visible spinner
+   somewhere relevant"). A result still on its way never reads as an empty
+   one: no 0 counts, empty lists, "none" or "no X" text, blank meters or 0%
+   while it is pending; the empty state shows only once the answer says
+   empty, and an error is distinct from both. Use the shared `Spinner` and
+   `SkeletonBar` (`src/web/Spinner.tsx`), with an accessible name and
+   `aria-busy` on the region. Enforce it in tests: hold the answer (the fake
+   gh's `hold`, or a held fetch), assert the loading state and the absence
+   of the empty one, release, assert the result (`expectLoadingThen` in
+   `e2e/fixtures.ts` and `test/loading.ts`). More: `docs/product-rules.md`.
+
 More product rules learned while building (GitHub as one comment source among
 several, flagging uncertainty, dating by visibility, first-open performance,
-checking against a real PR): `docs/product-rules.md`.
+loading never looking empty, checking against a real PR):
+`docs/product-rules.md`.
 
 ## Development
 

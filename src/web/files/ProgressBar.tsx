@@ -1,4 +1,4 @@
-import { type Ref, useId } from "react";
+import { type ReactNode, type Ref, useId } from "react";
 import type { Counts, Progress } from "../../shared/types";
 import {
 	clustersLeft,
@@ -112,6 +112,8 @@ export function ProgressBar(props: {
 	progress: Progress;
 	unit: Unit;
 	onUnitChange: (unit: Unit) => void;
+	/** At the row's end: what is still loading for the page (a Spinner). */
+	children?: ReactNode;
 }) {
 	const { progress, unit } = props;
 	const counts = pageCounts(progress, unit);
@@ -181,6 +183,7 @@ export function ProgressBar(props: {
 						)}
 					</span>
 				</div>
+				{props.children}
 			</div>
 			{hiddenLeft && <p className="mt-1 text-xs text-warn">{note}</p>}
 		</div>

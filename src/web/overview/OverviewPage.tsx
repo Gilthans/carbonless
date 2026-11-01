@@ -62,6 +62,7 @@ import { useReviewView } from "../files/useSetStates";
 import { GithubHtml, ImageErrorContext } from "../GithubHtml";
 import { RelativeTime, relativeTime, useNow } from "../RelativeTime";
 import { useReviewId } from "../reviewId";
+import { Spinner } from "../Spinner";
 import { Tooltip, type TooltipTriggerProps } from "../Tooltip";
 import { CodeRows, CommentBody } from "../threads/CommentBody";
 import {
@@ -240,6 +241,7 @@ function OverviewContent({
 					<Timeline
 						pr={overview.data}
 						threads={threads.view}
+						threadsLoading={!threads.view && !threads.error}
 						onShowThread={showThread}
 					/>
 				</>
@@ -251,11 +253,7 @@ function OverviewContent({
 
 /** The sections' frames while GitHub is read: grey bars where text will be. */
 function OverviewSkeleton() {
-	const bar = (width: string) => (
-		<div
-			className={`h-3 animate-pulse rounded bg-overlay motion-reduce:animate-none ${width}`}
-		/>
-	);
+	const bar = (width: string) => <SkeletonBar className={width} />;
 	return (
 		<div data-testid="overview-loading" aria-busy="true" className="space-y-6">
 			<p className="sr-only">Loading the PR from GitHub…</p>
@@ -317,9 +315,7 @@ function ReviewFilesButton() {
 					</span>
 				)}
 			</Link>
-			{review.isPending && (
-				<span className="text-sm text-muted">Loading progress…</span>
-			)}
+			{review.isPending && <Spinner label="Loading review progress" />}
 			{review.isError && <ErrorMessage error={review.error} />}
 		</div>
 	);

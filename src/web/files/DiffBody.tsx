@@ -31,6 +31,7 @@ import type {
 } from "../../shared/types";
 import { contextQuery, hunksQuery, overviewQuery } from "../api";
 import { CodeLine, type Mark } from "../code/Invisibles";
+import { Spinner } from "../Spinner";
 import { Tooltip } from "../Tooltip";
 import { canMove, spanTexts } from "../threads/draftMove";
 import { type LineTexts, useDrafts } from "../threads/drafts";
@@ -1647,7 +1648,7 @@ export function DiffBody(props: {
 								</button>
 							</span>
 						) : pending ? (
-							"Loading…"
+							<Spinner label="Loading lines" size={14} />
 						) : remaining > 0 ? (
 							`${remaining} hidden ${remaining === 1 ? "line" : "lines"}`
 						) : null}
@@ -1806,9 +1807,9 @@ export function DiffBody(props: {
 			{hunks.isPending && (
 				// A screen tall while loading, so a file picked in the tree can
 				// scroll its header to the top before its lines arrive.
-				<p className="min-h-[100dvh] px-3 py-2 text-sm text-muted">
-					Loading diff…
-				</p>
+				<div aria-busy="true" className="min-h-[100dvh] px-3 py-2">
+					<Spinner label="Loading diff" />
+				</div>
 			)}
 			{hunks.isError && (
 				<div className="p-2">

@@ -348,6 +348,8 @@ export function FileDiff(props: {
 	landing?: Landing;
 	/** The PR's review threads, placed on this file's diff. */
 	threads?: DiffThreads;
+	/** The threads are still on their way: the file's bubble spins. */
+	threadsLoading?: boolean;
 	/** The diff shown is the viewed head's (useHeadSure). */
 	headSure?: boolean;
 }) {
@@ -549,6 +551,7 @@ export function FileDiff(props: {
 				inline
 				file
 				threads={header.map((h) => h.thread)}
+				loading={props.threadsLoading && !props.threads}
 				where="on this file"
 				label={
 					fileComment.ok === true
