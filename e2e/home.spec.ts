@@ -342,14 +342,18 @@ test("a PR chosen in the open box shows at once, loading, then becomes its revie
 	const opening = page.getByTestId("opening");
 	await expect(opening).toContainText(second);
 	await expect(opening).toContainText("#8");
-	await expect(page.getByRole("status")).toContainText("Opening");
+	await expect(page.getByRole("main").getByRole("status")).toContainText(
+		"Opening",
+	);
 	await expect(page).toHaveURL(new RegExp(`/pr/${OWNER_REPO}/8$`));
 	// The same address in another tab while the first open is held: two
 	// opens of the PR at once.
 	const prUrl = page.url();
 	const other = await page.context().newPage();
 	await other.goto(prUrl);
-	await expect(other.getByRole("status")).toContainText("Opening");
+	await expect(other.getByRole("main").getByRole("status")).toContainText(
+		"Opening",
+	);
 	release(made.scenarioPath, "prView");
 	await expect(page).toHaveURL(/\/r\/[0-9a-z]{26}$/);
 	await expect(page.getByRole("heading", { level: 1 })).toHaveText(second);
@@ -386,7 +390,9 @@ test("Repos spins while the viewer's repos load, then lists only theirs", async 
 	await expect(repos).toHaveAttribute("aria-busy", "true");
 	await expect(repos.locator(".animate-spin")).toBeVisible();
 	await expect(repos.getByRole("option").first()).toContainText("acme/api");
-	await expect(page.getByRole("status")).toHaveText("Loading your repos");
+	// The open box's own live region.
+	const boxStatus = page.getByRole("search").getByRole("status");
+	await expect(boxStatus).toHaveText("Loading your repos");
 	writeFileSync(hold, "");
 	await expect(repos).toHaveAttribute("aria-busy", "false", {
 		timeout: 15_000,
@@ -395,7 +401,7 @@ test("Repos spins while the viewer's repos load, then lists only theirs", async 
 		/acme\/api/,
 		new RegExp(OWNER_REPO),
 	]);
-	await expect(page.getByRole("status")).toHaveText("");
+	await expect(boxStatus).toHaveText("");
 });
 
 test("the view's repo input suggests the viewer's repos as you type; Save is stored at once while the added repo still reads", async ({
@@ -1451,7 +1457,9 @@ test("screenshots of view settings and the loading page (CRB_HOME_SHOTS only)", 
 		s.hold = ["prView"];
 	});
 	await page.goto(new URL("/pr/acme/widget/8", crb.url).href);
-	await expect(page.getByRole("status")).toContainText("Opening");
+	await expect(page.getByRole("main").getByRole("status")).toContainText(
+		"Opening",
+	);
 	await page.screenshot({
 		path: join(shots as string, `opening-${at}.png`),
 	});
