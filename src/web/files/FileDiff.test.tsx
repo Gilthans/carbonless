@@ -1262,7 +1262,12 @@ describe("FileDiff", () => {
 		await user.click(screen.getByRole("button", { name: "Expand file" }));
 		await expectLoadingThen({
 			loading: () => screen.queryByRole("status", { name: "Loading diff" }),
-			empty: [() => screen.queryByText("Loading diff…")],
+			empty: [
+				// No rows, no gap counts: nothing reads as an empty file.
+				() => screen.queryByText(/hidden lines?$/),
+				() => screen.queryByText("line 2"),
+				() => screen.queryByText("Loading diff…"),
+			],
 			release: () => lines.release(hunks),
 			result: () => screen.queryByText("new five"),
 		});
@@ -1272,12 +1277,17 @@ describe("FileDiff", () => {
 		const context = heldJson();
 		const { user } = setup(file([cluster("k1")]), () => context.response);
 		await user.click(screen.getByRole("button", { name: "Expand file" }));
+		expect(await screen.findByText("42 hidden lines")).toBeInTheDocument();
 		await user.click(
 			await screen.findByRole("button", { name: "Load 20 lines below" }),
 		);
 		await expectLoadingThen({
 			loading: () => screen.queryByRole("status", { name: "Loading lines" }),
-			empty: [() => screen.queryByText("Loading…")],
+			empty: [
+				// The gap's own count isn't shown as if nothing were coming.
+				() => screen.queryByText("42 hidden lines"),
+				() => screen.queryByText("Loading…"),
+			],
 			release: () =>
 				context.release(
 					Array.from({ length: 20 }, (_, i) => ctx(9 + i, 9 + i)),

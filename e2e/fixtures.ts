@@ -337,7 +337,8 @@ export function watchConsoleErrors(page: Page): ConsoleErrorWatch {
  * Loading never looks empty (design principle 8), on a page: while the
  * answer is held (the fake gh's `hold`), `loading` is visible and none of
  * `empty` (nor `result`) is; once `release()` lets it go (`release(path,
- * op)`), `result` shows and `loading` is gone.
+ * op)`), `result` shows and `loading` is gone. `release` may assert more
+ * while still held before it lets the answer go.
  */
 export async function expectLoadingThen(opts: {
 	loading: Locator;
