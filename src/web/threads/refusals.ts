@@ -35,8 +35,10 @@ export interface StoredRefusal {
 	force?: boolean;
 	/** A resolve or unresolve: the state intended. */
 	resolved?: boolean;
-	/** A verdict (lane `verdict`): the event pressed; its message is the verdict draft's. */
+	/** A verdict (lane `verdict`): the event pressed. */
 	event?: VerdictEvent;
+	/** A verdict: the message it was sent with, if any (its Retry sends it). */
+	body?: string;
 	/** When GitHub refused it (ISO). */
 	at: string;
 }
@@ -81,6 +83,7 @@ function isStored(value: unknown): value is StoredRefusal {
 		optBool(r.force) &&
 		optBool(r.resolved) &&
 		(r.event === undefined || EVENTS.includes(r.event)) &&
+		optString(r.body) &&
 		// A verdict can't be retried without its event.
 		(r.action !== "Verdict" || r.event !== undefined)
 	);

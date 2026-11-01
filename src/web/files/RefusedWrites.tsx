@@ -25,11 +25,7 @@ import {
 	VERDICT_LANE,
 } from "../threads/threadWrites";
 import { safeHref } from "../ui";
-import {
-	useVerdictDraft,
-	VERDICT_LABEL,
-	verdictDraftFor,
-} from "../verdict/verdictDraft";
+import { VERDICT_LABEL } from "../verdict/verdictDraft";
 
 /**
  * Where a thread is, in a few words: its file and line, the file for a
@@ -93,7 +89,7 @@ function previewOf(
 ): string {
 	const text =
 		f.action === "Verdict"
-			? verdictDraftFor(client).text()
+			? (f.body ?? "")
 			: f.action === "Reply"
 				? drafts.text(f.threadId)
 				: f.action === "Edit"
@@ -282,7 +278,6 @@ function RefusedItem({
 	const writer = useThreadWriter();
 	// Previews follow the drafts (what Retry would send now).
 	useDrafts();
-	useVerdictDraft();
 	const [confirming, setConfirming] = useState(false);
 	const cancelButton = useRef<HTMLButtonElement>(null);
 	const dropButton = useRef<HTMLButtonElement>(null);

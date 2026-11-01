@@ -393,9 +393,9 @@ describe("Final Verdict tab", () => {
 		const approve = await button("Approve");
 		await user.dblClick(approve);
 		await user.click(await button("Request changes"));
+		// The POST is held: one request, the rest waits (ThreadWrites tests
+		// cover a second press while one is out).
 		await waitFor(() => expect(posted).toHaveLength(1));
-		await act(() => new Promise((r) => setTimeout(r, 20)));
-		expect(posted).toHaveLength(1);
 		for (const name of ["Approve", "Comment", "Request changes"]) {
 			expect(await button(name)).toHaveAttribute("aria-disabled", "true");
 		}
@@ -470,7 +470,7 @@ describe("Final Verdict tab", () => {
 		);
 	});
 
-	it("lists a refused verdict in the not-posted chip, with its message back in the box", async () => {
+	it("lists a refused verdict in the not-posted chip, with its message", async () => {
 		renderApp({
 			"/api/verdict": verdictRoute(
 				() =>
@@ -491,7 +491,8 @@ describe("Final Verdict tab", () => {
 		const item = await screen.findByTestId("refused-write");
 		expect(item).toHaveTextContent("Verdict · Comment");
 		expect(item).toHaveTextContent("A pending review on GitHub blocks it");
-		expect(screen.getByRole("textbox", { name: "Message" })).toHaveValue("Nit");
+		// Kept with the refusal (its preview, what Retry sends), not in the box.
+		expect(item).toHaveTextContent("Nit");
 		expect(screen.getByTestId("pending-review-warning")).toBeInTheDocument();
 	});
 

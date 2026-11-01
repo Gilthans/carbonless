@@ -308,8 +308,10 @@ describe("blockers", () => {
 			[],
 			"octo",
 		);
+		// li reviewed an earlier push and was asked again: still awaited.
 		expect(texts(rows).filter((t) => t.startsWith("Waiting"))).toEqual([
 			"Waiting on maya",
+			"Waiting on li",
 			"Waiting on @acme/core",
 		]);
 	});
@@ -348,9 +350,9 @@ describe("blockers", () => {
 		expect(blockerCount(rows)).toBe(8);
 	});
 
-	it("says the approvals requirement is unknown when GitHub doesn't tell", () => {
+	it("says the approvals requirement is unknown when GitHub doesn't tell, unless it would merge now", () => {
 		const rows = blockers(
-			facts({ mergeStateStatus: "CLEAN", rule: null, reviewDecision: null }),
+			facts({ mergeStateStatus: "UNKNOWN", rule: null, reviewDecision: null }),
 			overview(),
 			[],
 			"octo",
@@ -359,6 +361,43 @@ describe("blockers", () => {
 			"Required approvals unknown",
 		);
 		expect(blockerCount(rows)).toBe(0);
+		// CLEAN: GitHub's requirements are met; ready, no unknown beside it.
+		const clean = blockers(
+			facts({ mergeStateStatus: "CLEAN", rule: null, reviewDecision: null }),
+			overview(),
+			[],
+			"octo",
+		);
+		expect(clean.map((r) => r.kind)).toEqual(["ready"]);
+	});
+
+	it("keeps checks of the same name and state apart", () => {
+		const rows = blockers(
+			facts({
+				checks: [
+					{
+						name: "test",
+						status: "failing",
+						required: false,
+						url: "https://ci/1",
+					},
+					{
+						name: "test",
+						status: "failing",
+						required: false,
+						url: "https://ci/2",
+					},
+					{ name: "test", status: "failing", required: false },
+					{ name: "test", status: "failing", required: false },
+				],
+			}),
+			overview(),
+			[],
+			"octo",
+		);
+		const ids = rows.filter((r) => r.kind === "check").map((r) => r.id);
+		expect(ids).toHaveLength(4);
+		expect(new Set(ids).size).toBe(4);
 	});
 
 	it("says ready to merge only when nothing is unmet and GitHub says CLEAN or HAS_HOOKS", () => {

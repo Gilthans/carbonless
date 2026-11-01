@@ -242,8 +242,9 @@ describe("ThreadWrites: the verdict", () => {
 		expect(w.state().verdict).toBeNull();
 	});
 
-	it("lists a refusal as Verdict with its event; the message goes back to the box; Retry posts anew", async () => {
+	it("lists a refusal as Verdict with its event and message; Retry posts that again, not the box", async () => {
 		const w = setup();
+		store.setText("Fix it");
 		w.submitVerdict("REQUEST_CHANGES", "Fix it", HEAD);
 		await flush();
 		calls[0]?.reject(refusedError("pending-review"));
@@ -254,6 +255,7 @@ describe("ThreadWrites: the verdict", () => {
 				key: "verdict",
 				action: "Verdict",
 				event: "REQUEST_CHANGES",
+				body: "Fix it",
 				code: "pending-review",
 			}),
 		]);
@@ -262,18 +264,15 @@ describe("ThreadWrites: the verdict", () => {
 		});
 		expect(w.state().lost).toBe(true);
 		expect(w.state().verdict).toBeNull();
-		expect(store.text()).toBe("Fix it");
 		expect(store.sending()).toBeUndefined();
-		// Kept across a reload, with its event.
-		expect(refusals.get()[0]).toMatchObject({ event: "REQUEST_CHANGES" });
-		// Retry: a new verdict on today's head, with the box's text.
+		// Kept across a reload, with its event and message.
+		expect(refusals.get()[0]).toMatchObject({
+			event: "REQUEST_CHANGES",
+			body: "Fix it",
+		});
+		// Typed since: not what the Retry sends.
+		store.setText("Something else");
 		commit = NEW_HEAD;
-		expect(
-			w.sendable(VERDICT_LANE, {
-				action: "Verdict",
-				event: "REQUEST_CHANGES",
-			}),
-		).toBe(true);
 		w.retry(VERDICT_LANE, "verdict");
 		await flush();
 		expect(calls[1]?.req).toMatchObject({
@@ -283,6 +282,7 @@ describe("ThreadWrites: the verdict", () => {
 			commit: NEW_HEAD,
 			retry: false,
 		});
+		expect(store.text()).toBe("Something else");
 		expect(w.state().refused[0]?.retrying).toBe(true);
 		calls[1]?.resolve(answer("CHANGES_REQUESTED"));
 		await flush();
@@ -291,23 +291,85 @@ describe("ThreadWrites: the verdict", () => {
 		expect(w.state().pendingReview).toBeNull();
 	});
 
-	it("can't retry a refused comment with an empty box; Drop clears it and its message", async () => {
+	it("retries a refused approval without a message when the box was off, whatever the box holds", async () => {
+		const w = setup();
+		// Ticked, typed, unticked: the text stays in the draft, not sent.
+		store.setText("nit: rename x");
+		w.submitVerdict("APPROVE", undefined, HEAD);
+		await flush();
+		expect(calls[0]?.req.body).toBeUndefined();
+		calls[0]?.reject(refusedError("forbidden", 403));
+		await flush();
+		w.retry(VERDICT_LANE, "verdict");
+		await flush();
+		expect(calls[1]?.req).toMatchObject({ event: "APPROVE" });
+		expect(calls[1]?.req.body).toBeUndefined();
+		expect(store.text()).toBe("nit: rename x");
+	});
+
+	it("drops a refused verdict and its message; nothing is sent", async () => {
 		const w = setup();
 		w.submitVerdict("COMMENT", "Hmm", HEAD);
 		await flush();
 		calls[0]?.reject(refusedError("forbidden", 403));
 		await flush();
-		store.setText("");
-		const f = w.state().refused[0];
-		expect(f && w.sendable(VERDICT_LANE, f)).toBe(false);
-		store.setText("Hmm again");
+		store.setText("typed since");
 		w.drop(VERDICT_LANE, "verdict");
 		expect(w.state().refused).toEqual([]);
 		expect(refusals.get()).toEqual([]);
-		expect(store.text()).toBe("");
+		// The box's newer text is the reviewer's, not the refusal's.
+		expect(store.text()).toBe("typed since");
 		expect(w.state().lost).toBe(false);
+		expect(calls).toHaveLength(1);
 	});
 
+	it("settles a refusal whose Retry a reload cut short, once the resend lands: no second review", async () => {
+		const storage = memoryStorage();
+		const first = setup(storage);
+		first.submitVerdict("APPROVE", undefined, HEAD);
+		await flush();
+		calls[0]?.reject(refusedError("forbidden", 403));
+		await flush();
+		first.retry(VERDICT_LANE, "verdict");
+		await flush();
+		expect(calls).toHaveLength(2);
+		const retried = calls[1]?.req.clientId;
+		// Reload while the Retry is out.
+		const w = setup(storage);
+		w.restore();
+		w.resume();
+		await flush();
+		expect(calls.map((c) => c.req)).toEqual([
+			expect.objectContaining({ clientId: retried, retry: true }),
+		]);
+		// Listed as retrying meanwhile: no Retry to press.
+		const f = w.state().refused[0];
+		expect(f?.retrying).toBe(true);
+		expect(f && w.sendable(VERDICT_LANE, f)).toBe(false);
+		calls[0]?.resolve(answer("APPROVED"));
+		await flush();
+		expect(w.state().refused).toEqual([]);
+		expect(refusals.get()).toEqual([]);
+		expect(w.state().lost).toBe(false);
+		w.retry(VERDICT_LANE, "verdict");
+		w.retryAll();
+		await flush();
+		expect(calls).toHaveLength(1);
+	});
+
+	it("settles a refused verdict when a new press lands", async () => {
+		const w = setup();
+		w.submitVerdict("APPROVE", undefined, HEAD);
+		await flush();
+		calls[0]?.reject(refusedError("forbidden", 403));
+		await flush();
+		expect(w.submitVerdict("COMMENT", "ok", HEAD)).toBe(true);
+		await flush();
+		calls[1]?.resolve(answer("COMMENTED"));
+		await flush();
+		expect(w.state().refused).toEqual([]);
+		expect(refusals.get()).toEqual([]);
+	});
 	it("restores a refused verdict after a reload, and an approval retries without a message", async () => {
 		const storage = memoryStorage();
 		const first = setup(storage);

@@ -355,18 +355,14 @@ test("a refused verdict: listed under the chip, Retry lands it; a second one is 
 	await card.getByRole("textbox", { name: "Message" }).fill("Second thoughts");
 	await verdictButton(card, "Comment").click();
 	await expect(item(page)).toContainText("Verdict · Comment");
+	// Its message is kept with it (what Retry would send), not in the box.
 	await expect(item(page)).toContainText("Second thoughts");
-	await expect(card.getByRole("textbox", { name: "Message" })).toHaveValue(
-		"Second thoughts",
-	);
 	await item(page).getByRole("button", { name: "Drop verdict" }).click();
 	await page
 		.getByRole("alertdialog", { name: "Drop this? Its text is lost" })
 		.getByRole("button", { name: "Drop" })
 		.click();
 	await expect(chip(page)).toHaveCount(0);
-	// Its message is gone with it.
-	await expect(card.getByRole("textbox", { name: "Message" })).toHaveValue("");
 	expect(submitted(p)).toHaveLength(1);
 });
 
@@ -461,6 +457,7 @@ test("the three tabs, Refresh and the title fit at 360px with no horizontal scro
 		nav.getByRole("link", { name: "Files changed" }),
 		nav.getByRole("link", { name: "Final Verdict" }),
 		page.getByRole("button", { name: "Refresh" }),
+		page.getByRole("button", { name: "Settings" }),
 	]) {
 		const box = await el.boundingBox();
 		expect(box?.x ?? -1).toBeGreaterThanOrEqual(0);
@@ -484,4 +481,70 @@ test("the three tabs, Refresh and the title fit at 360px with no horizontal scro
 	await expect(verdictButton(card, "Request changes")).toHaveText("Changes", {
 		useInnerText: true,
 	});
+});
+
+test("the Files end card reads GitHub's merge facts only once the first open has settled", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	const p = await setup(pr, { hold: ["threads"] });
+	const s = await startCrb();
+	const verdictReads: string[] = [];
+	page.on("request", (r) => {
+		if (new URL(r.url()).pathname === "/api/verdict" && r.method() === "GET") {
+			verdictReads.push(r.url());
+		}
+	});
+	await page.goto(`${s.url}files`);
+	// A short PR: the card is on screen at once, while the threads are held.
+	const card = filesCard(page);
+	await expect(card).toBeInViewport();
+	await expect(card.getByTestId("verdict-blockers-link")).toHaveText(
+		"Blockers",
+	);
+	expect(verdictReads).toEqual([]);
+	release(p.scenarioPath, "threads");
+	await expect(card.getByTestId("verdict-blockers-link")).toHaveText(
+		/Blockers: \d+/,
+	);
+	expect(verdictReads).toHaveLength(1);
+});
+
+test("a reload while a verdict is on its way resends it: one review lands, under the same client id", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	const p = await setup(pr, { hold: ["verdict"] });
+	const s = await startCrb();
+	const posts: { clientId: string; retry: boolean }[] = [];
+	page.on("request", (r) => {
+		if (new URL(r.url()).pathname === "/api/verdict" && r.method() === "POST") {
+			posts.push(r.postDataJSON() as { clientId: string; retry: boolean });
+		}
+	});
+	page.on("dialog", (d) => void d.accept());
+	await page.goto(`${s.url}verdict`);
+	await verdictButton(tabCard(page), "Approve").click();
+	await expect.poll(() => posts.length).toBe(1);
+	await page.reload();
+	// The next page resends what was pressed, looking for it first.
+	await expect.poll(() => posts.length).toBe(2);
+	expect(posts[1]).toMatchObject({ clientId: posts[0]?.clientId, retry: true });
+	await expect(tabCard(page).getByTestId("your-verdict")).toContainText(
+		"You approved just now",
+	);
+	release(p.scenarioPath, "verdict");
+	await expect(
+		tabCard(page).getByTestId("your-verdict").getByRole("img", {
+			name: "Sending",
+		}),
+	).toHaveCount(0);
+	await expect
+		.poll(() => submitted(p).map((r) => r.state))
+		.toEqual(["APPROVED"]);
+	// Settled: nothing more goes out.
+	expect(posts).toHaveLength(2);
+	expect(submitted(p)).toHaveLength(1);
 });

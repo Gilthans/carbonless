@@ -189,7 +189,9 @@ export function VerdictCard(props: {
 	const headingId = useId();
 	const boxId = useId();
 	const off = offReason(overview);
-	const sending = writes.threads.get("verdict")?.action === "Verdict";
+	// A verdict out (a resent or discarded one too) shows as sending: the
+	// buttons wait for it, and say so.
+	const sending = writes.verdict !== null;
 	const reasonOf = (event: VerdictEvent) =>
 		off ??
 		(sending ? "Sending your verdict" : null) ??

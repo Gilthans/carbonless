@@ -412,6 +412,10 @@ export function FilesPage() {
 	// Comments are read in the background, the open file's threads first,
 	// then the other files' in file order (one prefetch for the page).
 	const { threads, all: allThreads, failed: threadsFailed } = useDiffThreads();
+	// The first open's own reads are in (the files, their threads): only
+	// then may the verdict card read GitHub's merge facts.
+	const firstOpenSettled =
+		data !== undefined && (allThreads !== undefined || threadsFailed !== null);
 	// A Refresh shows the new head before its diff: drafts move only once
 	// the diff shown is that head's.
 	const headSure = useHeadSure(threads?.snapshotHead, data?.revision);
@@ -520,7 +524,7 @@ export function FilesPage() {
 						{data.files.length === 0 ? (
 							<>
 								<p className="mt-4 text-muted">This PR changes no files.</p>
-								<FilesVerdict threads={allThreads} />
+								<FilesVerdict threads={allThreads} settled={firstOpenSettled} />
 							</>
 						) : (
 							<div className="mt-4 flex gap-4">
@@ -560,7 +564,10 @@ export function FilesPage() {
 										/>
 									))}
 									{/* After the last file: the verdict (the padding above keeps it clear of the Files button). */}
-									<FilesVerdict threads={allThreads} />
+									<FilesVerdict
+										threads={allThreads}
+										settled={firstOpenSettled}
+									/>
 								</div>
 							</div>
 						)}

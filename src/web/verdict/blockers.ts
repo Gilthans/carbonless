@@ -74,12 +74,16 @@ export function blockers(
 	// Checks: required first (failing, then running), then the others.
 	const failing = facts.checks.filter((c) => c.status === "failing");
 	const running = facts.checks.filter((c) => c.status === "pending");
+	// A check's identity: its run, else its place (names repeat: matrix jobs).
+	const checkId = new Map(
+		facts.checks.map((c, i) => [c, c.url ? `check:${c.url}` : `check:#${i}`]),
+	);
 	const checkRow = (
 		c: VerdictFacts["checks"][number],
 		tone: BlockerRow["tone"],
 		req: boolean,
 	): BlockerRow => ({
-		id: `check:${c.status}:${c.name}`,
+		id: checkId.get(c) ?? `check:${c.name}`,
 		kind: "check",
 		tone,
 		required: req,
@@ -230,8 +234,9 @@ export function blockers(
 			});
 		}
 	}
-	// Not one already named above (a code owner, a reviewer asking for changes).
-	const answered = new Set(facts.reviews.map((r) => r.author.toLowerCase()));
+	// Every reviewer GitHub still awaits (asked again after an earlier
+	// review too), but one already named above (a code owner, a reviewer
+	// asking for changes).
 	const blocking = new Set(
 		facts.reviewDecision === "CHANGES_REQUESTED"
 			? facts.reviews
@@ -242,7 +247,6 @@ export function blockers(
 	for (const r of overview.requestedReviewers) {
 		if (owners.some((o) => same(o.name, r.name))) continue;
 		if (blocking.has(r.name.toLowerCase())) continue;
-		if (!r.team && answered.has(r.name.toLowerCase())) continue;
 		rest.push({
 			id: `requested:${r.name}`,
 			kind: "person",
@@ -252,8 +256,14 @@ export function blockers(
 			href: pr,
 		});
 	}
-	// GitHub doesn't say what the repo requires: unknown, never "none".
-	if (facts.rule === null && facts.reviewDecision === null) {
+	// GitHub doesn't say what the repo requires: unknown, never "none";
+	// unless GitHub says it would merge now (its requirements are met).
+	if (
+		facts.rule === null &&
+		facts.reviewDecision === null &&
+		state !== "CLEAN" &&
+		state !== "HAS_HOOKS"
+	) {
 		rest.push({
 			id: "approvals:unknown",
 			kind: "person",

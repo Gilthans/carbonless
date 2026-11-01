@@ -157,8 +157,13 @@ export interface WriteFailure {
 	force?: boolean;
 	/** A refused resolve or unresolve: the state intended. */
 	resolved?: boolean;
-	/** A refused verdict: the event pressed (its message is back in the verdict draft). */
+	/** A refused verdict: the event pressed. */
 	event?: VerdictEvent;
+	/**
+	 * A refused verdict: the message it was sent with (none when "Include a
+	 * message" was off): what its Retry sends, never the box's text now.
+	 */
+	body?: string;
 	/** When GitHub refused it (ISO; a repeat keeps the first): the list's order. */
 	at: string;
 	/** Retried: on its way again, listed until GitHub has it. */
@@ -350,6 +355,7 @@ const stored = (threadId: string, f: WriteFailure): StoredRefusal => ({
 	...(f.force ? { force: true } : {}),
 	...(f.resolved !== undefined ? { resolved: f.resolved } : {}),
 	...(f.event ? { event: f.event } : {}),
+	...(f.body ? { body: f.body } : {}),
 });
 
 const asError = (error: unknown) =>
@@ -457,11 +463,15 @@ export class ThreadWrites {
 		return (this.#lanes.get(VERDICT_LANE)?.ops.length ?? 0) > 0;
 	}
 
-	/** A new verdict's identity, kept (and the message taken from the box) until GitHub has it. */
+	/**
+	 * A new verdict's identity, kept until GitHub has it; a press (`fromBox`)
+	 * takes its message out of the box.
+	 */
 	#newVerdict(
 		event: VerdictEvent,
 		body: string | undefined,
 		commit: string,
+		fromBox = true,
 	): VerdictSending {
 		const sending: VerdictSending = {
 			clientId: (this.#deps.newId ?? newClientId)(),
@@ -473,7 +483,7 @@ export class ThreadWrites {
 		};
 		const store = this.#deps.verdictDraft;
 		store?.setSending(sending);
-		if (body) store?.setText("");
+		if (body && fromBox) store?.setText("");
 		return sending;
 	}
 
@@ -539,14 +549,19 @@ export class ThreadWrites {
 	 */
 	sendable(
 		threadId: string,
-		f: Pick<WriteFailure, "action" | "commentId" | "resolved" | "event">,
+		f: Pick<
+			WriteFailure,
+			"action" | "commentId" | "resolved" | "event" | "body"
+		>,
 	): boolean {
 		const { drafts } = this.#deps;
 		if (f.action === "Verdict") {
-			// Approve goes without a message; the others need one.
+			// What was pressed, again: Approve goes without a message; the
+			// others had one. Not while a verdict is on its way.
 			const store = this.#deps.verdictDraft;
 			if (!f.event || !this.#deps.verdict || store?.sending()) return false;
-			return f.event === "APPROVE" || (store?.text().trim() ?? "") !== "";
+			if (this.#verdictOut()) return false;
+			return f.event === "APPROVE" || (f.body?.trim() ?? "") !== "";
 		}
 		if (f.action === "Reply") return drafts.text(threadId).trim() !== "";
 		if (f.action === "New comment") {
@@ -578,14 +593,14 @@ export class ThreadWrites {
 		let op: Op | null = null;
 		if (failed.action === "Verdict" && failed.event) {
 			// Refused for good: a new verdict (a new client id, today's head),
-			// with what the message box holds now.
-			const text = this.#deps.verdictDraft?.text() ?? "";
+			// sending exactly what was pressed (its message, or none).
 			op = {
 				kind: "verdict",
 				sending: this.#newVerdict(
 					failed.event,
-					text.trim() ? text : undefined,
+					failed.body?.trim() ? failed.body : undefined,
 					this.#deps.verdictCommit?.() ?? "",
+					false,
 				),
 				retry: false,
 			};
@@ -642,11 +657,18 @@ export class ThreadWrites {
 			);
 			if (!known) {
 				// Cut short by a reload: it may have landed, so the server looks first.
+				// A refused verdict listed again (restore()) is the one this
+				// Retry was for: retrying, settled when it lands.
+				const refused = lane.refused.get(refusalKey({ kind: "verdict" }));
+				if (refused) {
+					lane.refused.set(refused.key, { ...refused, retrying: true });
+				}
 				lane.ops.push({
 					kind: "verdict",
 					sending: verdict,
 					retry: true,
 					resumed: true,
+					...(refused ? { again: true } : {}),
 				});
 				if (lane.ops.length === 1) lane.since = Date.now();
 			}
@@ -721,10 +743,8 @@ export class ThreadWrites {
 		// A draft on its way (sent again, from another tab) isn't this
 		// refusal's any more: it stays, to land or be refused anew.
 		const { drafts } = this.#deps;
-		if (failed.action === "Verdict") {
-			const store = this.#deps.verdictDraft;
-			if (!store?.sending()) store?.setText("");
-		} else if (failed.action === "Reply") drafts.setText(threadId, "");
+		// A refused verdict's message goes with it (it lives on the refusal).
+		if (failed.action === "Reply") drafts.setText(threadId, "");
 		else if (failed.action === "New comment") {
 			const d = drafts.newThread(threadId.slice(NEW_THREAD.length));
 			if (!d?.create?.sending) drafts.discard(threadId);
@@ -1253,7 +1273,10 @@ export class ThreadWrites {
 		} catch {
 			// Showing it failed; GitHub has it all the same.
 		}
-		if (op.again) this.#settle(laneId, lane, refusalKey(op));
+		// Whichever verdict landed (a Retry, a resend after a reload, a new
+		// press), a refused one listed is settled: GitHub has the reviewer's
+		// verdict, and its Retry would post a second review.
+		this.#settle(laneId, lane, refusalKey(op));
 		// GitHub took a review: no pending review stands in the way.
 		this.#pendingReview = null;
 		this.#deps.posted?.();
@@ -1362,11 +1385,20 @@ export class ThreadWrites {
 				? { current: write.current }
 				: {}),
 			...(op.kind === "edit" && op.force ? { force: true } : {}),
-			...(op.kind === "verdict" ? { event: op.sending.event } : {}),
+			...(op.kind === "verdict"
+				? {
+						event: op.sending.event,
+						...(op.sending.body ? { body: op.sending.body } : {}),
+					}
+				: {}),
 		};
 		if (op.kind === "verdict") {
-			// Not on GitHub: its message back in the box, as typed.
-			this.#deps.verdictDraft?.returnToBox(op.sending.clientId);
+			// Not on GitHub: kept on the refusal, as sent (its Retry sends it).
+			if (
+				this.#deps.verdictDraft?.sending()?.clientId === op.sending.clientId
+			) {
+				this.#deps.verdictDraft.setSending(null);
+			}
 			if (write?.code === "pending-review" && write.url) {
 				this.#pendingReview = { url: write.url };
 			}
@@ -1413,7 +1445,8 @@ export class ThreadWrites {
 		const refused: RefusedWrite[] = [];
 		const verdictOp = this.#lanes
 			.get(VERDICT_LANE)
-			?.ops.find((op) => op.kind === "verdict" && !op.discarded);
+			// One discarded but still out shows too: the buttons wait for it.
+			?.ops.find((op) => op.kind === "verdict");
 		const verdict =
 			verdictOp?.kind === "verdict"
 				? {

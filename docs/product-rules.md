@@ -295,8 +295,13 @@ changed; `src/server/threadWrites.ts`, `src/server/newThreads.ts`,
   message draft) until GitHub has it: transient failures and a reload
   resend it with the same client id and `retry: true`, so the server
   finds one that landed. A refusal is listed with the other refused
-  writes as "Verdict" (its event kept, its message back in the box); a
-  pending review refuses it with the pending-review notice. It goes on
+  writes as "Verdict", keeping its event and the message it was sent
+  with (or none): its Retry sends exactly that, never what the box holds
+  since. Any verdict landing (a Retry, a resend after a reload, a new
+  press) settles a listed one, so no Retry can post a second review. A
+  pending review refuses it with the pending-review notice. The Files
+  end card reads GitHub's merge facts only once the page's first open
+  has settled and the card is on screen. It goes on
   the snapshot's head (`commit`), and the card says so first when that
   is an older commit (a pinned or reviewed head). On the viewer's own PR
   only Comment is offered (GitHub refuses the others); as of a cutoff,

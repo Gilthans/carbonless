@@ -144,20 +144,6 @@ export class VerdictStore {
 		);
 	}
 
-	/**
-	 * A refused verdict's message back into the box, ahead of anything
-	 * typed since; its sending is settled.
-	 */
-	returnToBox(clientId: string): void {
-		this.#update((d) => {
-			if (d.sending?.clientId !== clientId) return d;
-			const body = d.sending.body ?? "";
-			const text =
-				body && d.text ? `${body}\n\n${d.text}` : body ? body : d.text;
-			return { text };
-		});
-	}
-
 	#stored(): VerdictDraft | null {
 		if (this.#key === null) return null;
 		try {
