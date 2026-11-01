@@ -490,12 +490,38 @@ describe("RowActions", () => {
 				{ name: "Someone else" },
 			);
 
+		it("spins while the answer for what's typed is coming; nobody found says no matches", async () => {
+			let release: () => void = () => {};
+			const gate = new Promise<void>((r) => {
+				release = r;
+			});
+			fakeApi(view({ reviewing: [base] }), {
+				[ANNOTATE]: () => base,
+				"GET /api/home/people": () =>
+					gate.then(() => ({ close: [], others: [], pending: false })),
+			});
+			renderWithQuery(<HomePage />);
+			await screen.findByText("Seven");
+			await userEvent.click(screen.getByRole("button", { name: "Waiting on" }));
+			await userEvent.type(field(), "zz");
+			const group = await screen.findByRole("group", { name: "People" });
+			expect(group).toHaveAttribute("aria-busy", "true");
+			expect(screen.queryByTestId("suggestions-empty")).toBeNull();
+			release();
+			expect(await screen.findByTestId("suggestions-empty")).toHaveTextContent(
+				"No matches",
+			);
+		});
+
 		it("yours first (orgs, your repos' people), then GitHub's; arrows and Enter pick one", async () => {
 			const api = open();
 			await screen.findByText("Seven");
 			await userEvent.click(screen.getByRole("button", { name: "Waiting on" }));
 			await userEvent.type(field(), "bo");
 			const people = await screen.findByRole("group", { name: "People" });
+			await waitFor(() =>
+				expect(within(people).getAllByRole("option").length).toBeGreaterThan(0),
+			);
 			expect(
 				within(people)
 					.getAllByRole("option")

@@ -7,6 +7,7 @@ import { searchQuery } from "./homeApi";
 import {
 	DEBOUNCE_MS,
 	SuggestionList,
+	stillComing,
 	useDebounced,
 	useSuggestionKeys,
 } from "./Suggestions";
@@ -223,8 +224,9 @@ function RepoInput(props: {
 	const options = (data?.repos ?? [])
 		.map((r) => r.name)
 		.filter((name) => !props.listed(name));
-	const loading = !!data?.reposPending;
-	const listOpen = open && (options.length > 0 || loading);
+	const loading = !!data?.reposPending || stillComing(q, debounced, search);
+	const none = !loading && !!data && options.length === 0;
+	const listOpen = open && q !== "" && (options.length > 0 || loading || none);
 	const keys = useSuggestionKeys({
 		count: options.length,
 		listOpen,
@@ -300,6 +302,7 @@ function RepoInput(props: {
 					listId={listId}
 					optionId={optionId}
 					groups={[{ label: "Repos", options, loading }]}
+					empty="No matches"
 					current={keys.current}
 					onChoose={done}
 					onHover={keys.setActive}

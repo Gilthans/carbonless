@@ -32,6 +32,7 @@ import { Avatar } from "./PrRow";
 import {
 	DEBOUNCE_MS,
 	SuggestionList,
+	stillComing,
 	useDebounced,
 	useSuggestionKeys,
 } from "./Suggestions";
@@ -254,8 +255,9 @@ function PersonInput(props: {
 	const close = usable(data?.close);
 	const others = usable(data?.others);
 	const options = [...close, ...others];
-	const loading = !!data?.pending;
-	const listOpen = open && q !== "" && (options.length > 0 || loading);
+	const loading = !!data?.pending || stillComing(q, debounced, people);
+	const none = !loading && !!data && options.length === 0 && !data.error;
+	const listOpen = open && q !== "" && (options.length > 0 || loading || none);
 	const keys = useSuggestionKeys({
 		count: options.length,
 		listOpen,
@@ -318,6 +320,7 @@ function PersonInput(props: {
 					onChoose={(p) => props.onPick(p.login)}
 					onHover={keys.setActive}
 					error={data?.error}
+					empty="No matches"
 					// With a mouse, over the panel: under the input, or above it
 					// when the window has no room below; never past the window.
 					className={

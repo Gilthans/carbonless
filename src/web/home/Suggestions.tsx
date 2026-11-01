@@ -85,6 +85,24 @@ export function useSuggestionKeys(props: {
  * counting across groups (the input's aria-activedescendant). A press in
  * it keeps focus in the input.
  */
+/**
+ * Whether the suggestions for what's typed now are still on their way:
+ * the debounce hasn't caught up, or its first answer isn't in (an older
+ * text's answer shows meanwhile).
+ */
+export function stillComing(
+	q: string,
+	debounced: string,
+	query: { isPlaceholderData: boolean; isFetching: boolean; data?: unknown },
+): boolean {
+	return (
+		q !== "" &&
+		(q !== debounced ||
+			query.isPlaceholderData ||
+			(query.isFetching && query.data === undefined))
+	);
+}
+
 export function SuggestionList<T>(props: {
 	listId: string;
 	optionId: string;
@@ -95,6 +113,11 @@ export function SuggestionList<T>(props: {
 	render: (option: T, selected: boolean) => ReactNode;
 	/** Said above the options (a failed GitHub search). */
 	error?: string;
+	/**
+	 * Said when every group has loaded and none has an option: an empty
+	 * answer never looks like one still loading (owner, 2026-11-01).
+	 */
+	empty?: string;
 	className?: string;
 	style?: CSSProperties;
 }) {
@@ -111,6 +134,16 @@ export function SuggestionList<T>(props: {
 					{props.error}
 				</p>
 			)}
+			{props.empty &&
+				!props.error &&
+				props.groups.every((g) => !g.loading && g.options.length === 0) && (
+					<p
+						data-testid="suggestions-empty"
+						className="px-2.5 py-1.5 text-sm text-muted"
+					>
+						{props.empty}
+					</p>
+				)}
 			<div id={props.listId} role="listbox" aria-label="Suggestions">
 				{props.groups.map((g, gi) => {
 					const labelId = `${props.listId}-g${gi}`;
