@@ -15,8 +15,8 @@
 //                                             a branch and PR setting master's next release
 //
 // Steps the workflows run (not for people): ci:rc-version, ci:set-version,
-// ci:write-version, ci:promote-plan, ci:changelog, ci:bump. They print KEY=value lines for
-// $GITHUB_OUTPUT.
+// ci:write-version, ci:promote-plan, ci:changelog, ci:bump, ci:rc-fixup. They
+// print KEY=value lines for $GITHUB_OUTPUT and read the checkout's tags.
 import { execFileSync, spawn } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -29,9 +29,11 @@ import {
 	KINDS,
 	type Kind,
 	next,
+	npmState,
 	parseVersion,
 	promote,
 	type Runner,
+	rcBehindLatest,
 	rcToPublish,
 	releasePrs,
 	renderChangelog,
@@ -64,6 +66,8 @@ const io: Io = {
 	log: (line) => console.log(line),
 	repo: process.env.GITHUB_REPOSITORY || DEFAULT_REPO,
 	now: () => new Date(),
+	// ci:* steps read the checkout's tags; they get no token to ask origin.
+	tags: process.argv[2]?.startsWith("ci:") ? "local" : "origin",
 	sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
 };
 
@@ -132,12 +136,14 @@ async function main(argv: string[]) {
 			return;
 		}
 		case "ci:rc-version": {
-			const { version, firstPublish } = await rcToPublish(
+			const { version, firstPublish, blocked } = await rcToPublish(
 				io,
 				packageVersion(process.cwd()),
 			);
 			console.log(`version=${version}`);
 			console.log(`first_publish=${firstPublish}`);
+			console.log(`publish=${blocked === null}`);
+			console.log(`blocked=${blocked ?? ""}`);
 			return;
 		}
 		case "ci:set-version": {
@@ -158,7 +164,11 @@ async function main(argv: string[]) {
 			const plan = await resolvePromote(io, rest[0] ?? "");
 			console.log(`tag=${plan.tag}`);
 			console.log(`release=${plan.release}`);
-			console.log(`move_rc=${plan.moveRc}`);
+			return;
+		}
+		case "ci:rc-fixup": {
+			// The version `rc` must move to so it isn't behind `latest`, or empty.
+			console.log(`move_rc_to=${rcBehindLatest(await npmState(io)) ?? ""}`);
 			return;
 		}
 		case "ci:changelog": {

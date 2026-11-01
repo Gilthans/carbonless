@@ -22,15 +22,22 @@ permissions:
   pull-requests: write # the "next" PR
 
 concurrency:
-  group: npm-publish
+  # Its own group: a publish-rc queued meanwhile can't cancel it, nor it a
+  # pending publish-rc. Running at the same time is safe: publish-rc makes no
+  # RC of a released version, and both end by moving rc up to latest when
+  # it is behind, so whichever finishes last leaves rc on the newer.
+  group: promote
   cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash # -eo pipefail: `cmd | tee` fails when cmd does
 
 jobs:
   promote:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
-      GH_TOKEN: ${{ github.token }}
       # Inputs reach the shell as variables, never pasted into scripts.
       RC_INPUT: ${{ inputs.rc }}
       NEXT_INPUT: ${{ inputs.next }}
@@ -38,7 +45,10 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: master
-          fetch-depth: 0
+          fetch-depth: 0 # every tag, and history for the changelog
+          # The write token stays out of .git/config while dependencies'
+          # code and the tests run; only the steps that push get it.
+          persist-credentials: false
       - uses: pnpm/action-setup@v4
         with:
           version: 12.14.0
@@ -105,17 +115,28 @@ jobs:
         run: npm publish "$TGZ" --tag latest --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-      - name: Move rc to the release
-        # So main, which follows rc, never runs behind latest.
-        if: steps.plan.outputs.move_rc == 'true'
-        run: npm dist-tag add "carbonless-review@${{ steps.plan.outputs.release }}" rc
+      - name: Is rc behind latest?
+        # So main, which follows rc, never runs behind latest. Asked after
+        # publishing, not planned before: a publish-rc may have run meanwhile.
+        id: fixup
+        run: pnpm exec tsx scripts/release.ts ci:rc-fixup | tee -a "$GITHUB_OUTPUT"
+      - name: Move rc to latest
+        if: steps.fixup.outputs.move_rc_to != ''
+        run: npm dist-tag add "carbonless-review@${{ steps.fixup.outputs.move_rc_to }}" rc
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
       - name: Tag
+        env:
+          TOKEN: ${{ github.token }}
         run: |
           git tag "v${{ steps.plan.outputs.release }}" "$RC_SHA"
-          git push origin "refs/tags/v${{ steps.plan.outputs.release }}"
+          auth="$(printf 'x-access-token:%s' "$TOKEN" | base64 -w0)"
+          echo "::add-mask::$auth"
+          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" \
+            push origin "refs/tags/v${{ steps.plan.outputs.release }}"
       - name: Next version and changelog PR
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           release="${{ steps.plan.outputs.release }}"
           next="$(pnpm exec tsx scripts/release.ts ci:bump "$release" "$NEXT_INPUT" | sed -n 's/^next=//p')"
@@ -125,8 +146,12 @@ jobs:
           pnpm exec tsx scripts/release.ts ci:changelog "$release" "$RC_SHA"
           git add package.json docs/changelog.md
           git commit -m "next: $next" -m "Released $release (${{ steps.plan.outputs.tag }}); merges to master now publish $next-rc.N."
-          git push --force origin "$branch"
-          if ! gh pr view "$branch" --json url --jq .url; then
+          auth="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+          echo "::add-mask::$auth"
+          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" \
+            push --force origin "$branch"
+          open="$(gh pr list --head "$branch" --state open --json url --jq '.[0].url // ""')"
+          if [[ -z "$open" ]]; then
             gh pr create --base master --head "$branch" --title "next: $next" \
               --body "Released **$release** from ${{ steps.plan.outputs.tag }} (npm \`latest\`). This sets master's next release to $next and adds $release to docs/changelog.md."
           fi

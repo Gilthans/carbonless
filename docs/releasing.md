@@ -23,7 +23,10 @@ pushes master or tags by hand. `package.json`'s `version` on master is the
    out exactly that commit and, if it is still master's tip (CI runs can
    finish out of order; the newest push holds the older ones), publishes
    `X.Y.Z-rc.N` to `rc` and pushes the tag `vX.Y.Z-rc.N`. `N` is one past
-   the highest `X.Y.Z-rc.*` among the tags and npm's versions.
+   the highest `X.Y.Z-rc.*` among the tags and npm's versions. Once `X.Y.Z`
+   is released, merges publish nothing (a warning says why) until the
+   "next" PR below moves master's version on: an `X.Y.Z-rc.N` would sort
+   before `X.Y.Z` and move `rc` backwards.
 2. **Main follows `rc`.** The coordinator runs `scripts/devbox/update rc` and
    sends the owner the link.
 3. **Promote → release**, only on the owner's word: `pnpm release promote
@@ -74,6 +77,15 @@ and `install` exempt `carbonless-review`
 at once. Co-workers running `pnpm add -g carbonless-review` get a release a
 day after it is published, or at once with that same flag.
 
+### Tokens
+
+Both workflows check out with `persist-credentials: false`: the write token
+is not in `.git/config` while `pnpm install`, the build or the tests run.
+Only the steps that reach origin (the tip check, pushing tags and the
+`next/*` branch, the PR) get `GITHUB_TOKEN`, and only the `npm publish` and
+`npm dist-tag` steps get `NPM_TOKEN`. Steps that need tags read the
+checkout's own (a full-history checkout has every tag).
+
 ### What GITHUB_TOKEN can't do
 
 Tags and PRs created with the workflow's `GITHUB_TOKEN` start no workflows.
@@ -103,13 +115,35 @@ token of the owner's.
 When the token expires, publish-rc and promote fail at `npm publish` with a
 401: make a new one and replace the secret.
 
+### Two workflows at once
+
+Each workflow has its own concurrency group: GitHub keeps one pending run
+per group and cancels the older, so a shared group could silently drop a
+promote. publish-rc runs one at a time (no two pick the same `N`); a
+pending one replaced by a newer CI completion is harmless, since only
+master's tip publishes. A promote and a publish-rc may overlap: publish-rc
+makes no RC of a released version, and both end by moving `rc` to `latest`
+when `rc` is behind (`ci:rc-fixup`, reading npm with `--prefer-online`), so
+whichever finishes last leaves `rc` on the newer. At worst, a publish-rc that
+checked just before the release lands publishes `X.Y.Z-rc.N` after `X.Y.Z`
+(its tag sorts before the release's), and `rc` is put back on `X.Y.Z` by the
+same run.
+
 ## When something fails
 
 - **publish-rc failed before `npm publish`:** nothing is published; the next
   merge publishes the next number. To retry the same commit, re-run the job.
+  Re-running a publish-rc (or CI) whose RC was already published publishes
+  the same commit again as `rc.N+1`: harmless, just a spare number.
 - **Published, but the tag push failed:** push the tag by hand on the owner's
   word (`git tag vX.Y.Z-rc.N <sha> && git push origin vX.Y.Z-rc.N`); the next
   RC's number already skips it (npm's versions count).
 - **promote failed after publishing:** the release is on npm. Push the
   missing `vX.Y.Z` tag on the RC's commit and run `pnpm release next minor`
   for the next-version PR; promoting again refuses an existing release.
+  That PR changes only the version: `docs/changelog.md` gets no entry for
+  the release; add it by hand in the same PR if wanted.
+- **`npm dist-tag add ... rc` failed** (`rc` stays behind `latest`): nothing
+  else is wrong. The next publish-rc run moves it (any merge; it does so even
+  when it publishes no RC), or on the owner's word: `npm dist-tag add
+  carbonless-review@X.Y.Z rc`.

@@ -199,6 +199,12 @@ export type Runner = (
 
 export type Io = {
 	run: Runner;
+	/**
+	 * Where tags come from: origin (`git ls-remote`, for people) or the
+	 * checkout's own (the workflows: a full-history checkout has every tag,
+	 * and steps that run dependency code get no token to reach origin).
+	 */
+	tags?: "origin" | "local";
 	log: (line: string) => void;
 	repo: string;
 	now: () => Date;
@@ -220,8 +226,11 @@ async function must(
 	return r.stdout;
 }
 
-/** The tags on GitHub (origin), without fetching them. */
+/** The tags on GitHub: origin's, without fetching, or the checkout's (Io.tags). */
 export async function remoteTags(io: Io): Promise<string[]> {
+	if (io.tags === "local") {
+		return tagNames(await must(io, "git", ["tag", "-l", "v*"]));
+	}
 	return tagNames(
 		await must(io, "git", ["ls-remote", "--tags", "--refs", "origin", "v*"]),
 	);
@@ -240,6 +249,8 @@ export async function npmState(io: Io): Promise<NpmState> {
 		"dist-tags",
 		"versions",
 		"--json",
+		// Fresh from the registry, not npm's cache: a publish may have just happened.
+		"--prefer-online",
 	]);
 	if (r.code !== 0) {
 		if (/E404|404 Not Found/.test(r.stderr + r.stdout)) return null;
@@ -438,6 +449,8 @@ export async function next(
 		return url;
 	} finally {
 		await io.run("git", ["worktree", "remove", "--force", worktree]);
+		// Pushed (or failed): a local branch left behind would only block a retry.
+		await io.run("git", ["branch", "-D", branch]);
 	}
 }
 
@@ -448,11 +461,14 @@ export async function next(
  * What a push to master publishes: the next RC of package.json's `X.Y.Z`.
  * `firstPublish` when the package isn't on npm yet: its first version must
  * be a release, or npm makes the RC `latest` (docs/releasing.md).
+ * `blocked` (a reason) when `X.Y.Z` is released already (its tag or its npm
+ * version exists): until the "next" PR moves master on, an RC of it would
+ * sort before the release and move `rc` backwards.
  */
 export async function rcToPublish(
 	io: Io,
 	packageVersion: string,
-): Promise<{ version: string; firstPublish: boolean }> {
+): Promise<{ version: string; firstPublish: boolean; blocked: string | null }> {
 	const next = parseVersion(packageVersion);
 	if (!next || next.rc !== undefined) {
 		throw new Error(
@@ -460,21 +476,38 @@ export async function rcToPublish(
 		);
 	}
 	const [tags, npm] = await Promise.all([remoteTags(io), npmState(io)]);
+	const release = formatVersion(next);
+	const released =
+		tags.includes(tagOf(next)) || (npm?.versions.includes(release) ?? false);
 	return {
 		version: formatVersion(nextRc(next, tags, npm?.versions ?? [])),
 		firstPublish: npm === null,
+		blocked: released
+			? `${release} is released and master's version is still ${release}: merge the "next" PR first; no RC is published until then`
+			: null,
 	};
 }
 
 /**
- * The RC tag a promote publishes (`given`, else the newest on origin), the
- * release it becomes, and whether npm's `rc` should move to that release
- * (when `rc` is missing or older, so main never runs behind `latest`).
+ * The version npm's `rc` should move to so it is never behind `latest` (main
+ * follows `rc`), or null. Both workflows run this after publishing, so a
+ * promote and an RC publish racing each other end with `rc` on the newer.
+ */
+export function rcBehindLatest(npm: NpmState): string | null {
+	const latest = parseVersion(npm?.distTags.latest ?? "");
+	if (!latest) return null;
+	const rc = parseVersion(npm?.distTags.rc ?? "");
+	return !rc || compareVersions(rc, latest) < 0 ? formatVersion(latest) : null;
+}
+
+/**
+ * The RC tag a promote publishes (`given`, else the newest on origin) and the
+ * release it becomes.
  */
 export async function resolvePromote(
 	io: Io,
 	given: string,
-): Promise<{ tag: string; release: string; moveRc: boolean }> {
+): Promise<{ tag: string; release: string }> {
 	const tags = await remoteTags(io);
 	const tag = given.trim() || newestTag(tags, true)?.tag;
 	if (!tag) throw new Error("no v*-rc.* tag on origin to promote");
@@ -491,12 +524,7 @@ export async function resolvePromote(
 	) {
 		throw new Error(`${formatVersion(release)} is already released`);
 	}
-	const rc = parseVersion(npm?.distTags.rc ?? "");
-	return {
-		tag,
-		release: formatVersion(release),
-		moveRc: !rc || compareVersions(rc, release) < 0,
-	};
+	return { tag, release: formatVersion(release) };
 }
 
 /**

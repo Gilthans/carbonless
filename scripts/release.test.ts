@@ -22,6 +22,7 @@ import {
 	previousRelease,
 	promote,
 	type RunResult,
+	rcBehindLatest,
 	rcToPublish,
 	releasePrs,
 	renderChangelog,
@@ -196,6 +197,7 @@ describe("workflow steps", () => {
 		expect(await rcToPublish(io, "0.1.0")).toEqual({
 			version: "0.1.0-rc.2",
 			firstPublish: true,
+			blocked: null,
 		});
 	});
 
@@ -210,8 +212,61 @@ describe("workflow steps", () => {
 		expect(await rcToPublish(io, "0.2.0")).toEqual({
 			version: "0.2.0-rc.3",
 			firstPublish: false,
+			blocked: null,
 		});
 		await expect(rcToPublish(io, "0.2.0-rc.1")).rejects.toThrow(/X\.Y\.Z/);
+	});
+
+	it("no RC of a version that is released: rc would move backwards", async () => {
+		// promote published 0.1.0; master stays at 0.1.0 until "next: 0.2.0" merges.
+		const byNpm = fakeIo({
+			"git ls-remote": lsRemote("v0.1.0-rc.4"),
+			"npm view": npmView({ latest: "0.1.0", rc: "0.1.0" }, [
+				"0.1.0-rc.4",
+				"0.1.0",
+			]),
+		});
+		const r = await rcToPublish(byNpm.io, "0.1.0");
+		expect(r.blocked).toMatch(/0\.1\.0 is released.*"next" PR/);
+		// Its tag alone is enough (npm's view may lag a publish).
+		const byTag = fakeIo({
+			"git ls-remote": lsRemote("v0.1.0-rc.4", "v0.1.0"),
+			"npm view": npmView({ latest: "0.0.9", rc: "0.1.0-rc.4" }, [
+				"0.0.9",
+				"0.1.0-rc.4",
+			]),
+		});
+		expect((await rcToPublish(byTag.io, "0.1.0")).blocked).not.toBeNull();
+		expect((await rcToPublish(byTag.io, "0.2.0")).blocked).toBeNull();
+	});
+
+	it("the workflows' steps read the checkout's tags, never origin", async () => {
+		const { io, calls } = fakeIo({
+			"git tag -l": "v0.1.0-rc.1\nv0.1.0-rc.7\n",
+			"npm view": NPM_404,
+		});
+		io.tags = "local";
+		expect((await rcToPublish(io, "0.1.0")).version).toBe("0.1.0-rc.8");
+		expect(calls.some((c) => c.startsWith("git ls-remote"))).toBe(false);
+		expect(calls).toContain(
+			"npm view carbonless-review dist-tags versions --json --prefer-online",
+		);
+	});
+
+	it("rc is never left behind latest", () => {
+		const state = (distTags: Record<string, string>) => ({
+			distTags,
+			versions: [],
+		});
+		expect(rcBehindLatest(null)).toBeNull();
+		expect(rcBehindLatest(state({ latest: "0.1.0" }))).toBe("0.1.0");
+		expect(rcBehindLatest(state({ latest: "0.1.0", rc: "0.1.0-rc.9" }))).toBe(
+			"0.1.0",
+		);
+		expect(rcBehindLatest(state({ latest: "0.1.0", rc: "0.1.0" }))).toBeNull();
+		expect(
+			rcBehindLatest(state({ latest: "0.1.0", rc: "0.2.0-rc.1" })),
+		).toBeNull();
 	});
 
 	it("an npm failure other than 404 fails, never passes for a first publish", async () => {
@@ -222,7 +277,7 @@ describe("workflow steps", () => {
 		await expect(rcToPublish(io, "0.1.0")).rejects.toThrow(/ETIMEDOUT/);
 	});
 
-	it("promote plans the newest RC by default and moves rc when it lags", async () => {
+	it("promote plans the newest RC by default", async () => {
 		const { io } = fakeIo({
 			"git ls-remote": lsRemote("v0.1.0-rc.2", "v0.1.0-rc.10"),
 			"npm view": NPM_404,
@@ -230,7 +285,6 @@ describe("workflow steps", () => {
 		expect(await resolvePromote(io, "")).toEqual({
 			tag: "v0.1.0-rc.10",
 			release: "0.1.0",
-			moveRc: true,
 		});
 		expect(await resolvePromote(io, "v0.1.0-rc.2")).toMatchObject({
 			release: "0.1.0",
@@ -241,7 +295,7 @@ describe("workflow steps", () => {
 		await expect(resolvePromote(io, "v0.1.0")).rejects.toThrow(/not an RC/);
 	});
 
-	it("promote refuses a release that exists; leaves a newer rc alone", async () => {
+	it("promote refuses a release that exists; an older RC whose release doesn't is fine", async () => {
 		const done = fakeIo({
 			"git ls-remote": lsRemote("v0.1.0-rc.2", "v0.1.0"),
 			"npm view": npmView({ latest: "0.1.0" }, ["0.1.0"]),
@@ -259,7 +313,6 @@ describe("workflow steps", () => {
 		expect(await resolvePromote(newer.io, "v0.1.1-rc.1")).toEqual({
 			tag: "v0.1.1-rc.1",
 			release: "0.1.1",
-			moveRc: false,
 		});
 	});
 });
@@ -422,6 +475,7 @@ describe("pnpm release", () => {
 				"git push": "",
 				"gh pr create": "https://github.com/owner/repo/pull/9\n",
 				"git worktree remove": "",
+				"git branch -D": "",
 			});
 
 		it("a kind bumps the newest release; a PR changes only package.json", async () => {
@@ -440,7 +494,10 @@ describe("pnpm release", () => {
 				/^git commit --only -m next: 0\.2\.1\n[\s\S]*-- package\.json$/,
 			);
 			expect(calls).toContain("git push -u origin next/0.2.1");
-			expect(calls.at(-1)).toBe(`git worktree remove --force ${wt}`);
+			expect(calls.slice(-2)).toEqual([
+				`git worktree remove --force ${wt}`,
+				"git branch -D next/0.2.1",
+			]);
 		});
 
 		it("takes an explicit version; refuses one not after the newest release, or master's", async () => {

@@ -14,16 +14,23 @@ permissions:
   contents: write # the vX.Y.Z-rc.N tag
 
 concurrency:
-  # One publish at a time (shared with promote), so two never pick the same N.
-  group: npm-publish
+  # One RC publish at a time, so two never pick the same N. Its own group:
+  # a pending run here never cancels a pending promote, or the other way.
+  group: publish-rc
   cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash # -eo pipefail: `cmd | tee` fails when cmd does
 
 jobs:
   publish:
-    # A push to master (not a PR whose branch is called master), CI green.
+    # A push to master of this repository (not a PR whose branch is called
+    # master, not a fork), CI green.
     if: >-
       github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.event == 'push'
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
@@ -32,13 +39,21 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
-          fetch-depth: 0
+          fetch-depth: 0 # every tag, for the RC number
+          # The write token stays out of .git/config while dependencies'
+          # code runs; only the steps that talk to origin get it.
+          persist-credentials: false
       - name: Still master's tip?
         id: tip
         # CI runs can finish out of order: only the newest push is published
         # (it holds the older ones), so `rc` never moves back.
+        env:
+          TOKEN: ${{ github.token }}
         run: |
-          tip="$(git ls-remote origin refs/heads/master | cut -f1)"
+          auth="$(printf 'x-access-token:%s' "$TOKEN" | base64 -w0)"
+          echo "::add-mask::$auth"
+          tip="$(git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" \
+            ls-remote origin refs/heads/master | cut -f1)"
           if [[ "$tip" == "$SHA" ]]; then
             echo "publish=true" >>"$GITHUB_OUTPUT"
           else
@@ -61,11 +76,18 @@ jobs:
         id: version
         if: steps.tip.outputs.publish == 'true'
         run: pnpm exec tsx scripts/release.ts ci:rc-version | tee -a "$GITHUB_OUTPUT"
+      - name: Released already?
+        if: steps.version.outputs.publish == 'false'
+        env:
+          REASON: ${{ steps.version.outputs.blocked }}
+        run: |
+          echo "::warning::$REASON"
+          echo "No RC: $REASON" >>"$GITHUB_STEP_SUMMARY"
       - name: Set the version (the tree stays clean)
-        if: steps.tip.outputs.publish == 'true'
+        if: steps.version.outputs.publish == 'true'
         run: pnpm exec tsx scripts/release.ts ci:set-version "${{ steps.version.outputs.version }}"
       - name: Pack
-        if: steps.tip.outputs.publish == 'true'
+        if: steps.version.outputs.publish == 'true'
         run: |
           mkdir -p "$RUNNER_TEMP/pack"
           pnpm pack --pack-destination "$RUNNER_TEMP/pack"
@@ -83,19 +105,35 @@ jobs:
         # Before the package's first publish, npm would make whatever is
         # published first `latest`: the first version must be a release
         # (pnpm release promote), so this only tags the RC in git.
-        if: steps.tip.outputs.publish == 'true' && steps.version.outputs.first_publish == 'false'
+        if: steps.version.outputs.publish == 'true' && steps.version.outputs.first_publish == 'false'
         run: npm publish "$TGZ" --tag rc --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
       - name: Tag
-        if: steps.tip.outputs.publish == 'true'
+        if: steps.version.outputs.publish == 'true'
+        env:
+          TOKEN: ${{ github.token }}
         run: |
           tag="v${{ steps.version.outputs.version }}"
           git tag "$tag" "$SHA"
-          git push origin "refs/tags/$tag"
+          auth="$(printf 'x-access-token:%s' "$TOKEN" | base64 -w0)"
+          echo "::add-mask::$auth"
+          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" \
+            push origin "refs/tags/$tag"
           if [[ "${{ steps.version.outputs.first_publish }}" == true ]]; then
             echo "::warning::carbonless-review is not on npm yet: $tag is tagged, not published. Its first version must be a release: pnpm release promote $tag"
             echo "First publish: $tag is tagged only. Run \`pnpm release promote $tag\`." >>"$GITHUB_STEP_SUMMARY"
           else
             echo "Published carbonless-review@${{ steps.version.outputs.version }} on \`rc\`, tagged $tag." >>"$GITHUB_STEP_SUMMARY"
           fi
+      - name: Is rc behind latest?
+        # A promote may have published a release meanwhile (it runs in its
+        # own group): whichever of the two finishes last puts rc on the newer.
+        id: fixup
+        if: steps.version.outputs.first_publish == 'false'
+        run: pnpm exec tsx scripts/release.ts ci:rc-fixup | tee -a "$GITHUB_OUTPUT"
+      - name: Move rc to latest
+        if: steps.fixup.outputs.move_rc_to != ''
+        run: npm dist-tag add "carbonless-review@${{ steps.fixup.outputs.move_rc_to }}" rc
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
