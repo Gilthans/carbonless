@@ -63,7 +63,9 @@ export interface Scenario {
 		 * Also a comment's REST edit ("edit") or delete ("delete"), a new
 		 * thread's REST comment ("comment"), a verdict's REST review
 		 * ("verdict"; stored as submitted with `afterWrite`), or a review's
-		 * REST dismissal ("dismiss"; dismissed with `afterWrite`).
+		 * REST dismissal ("dismiss"; dismissed with `afterWrite`), or the
+		 * REST list of a PR's reviews ("reviews", a read: `afterWrite` means
+		 * nothing).
 		 */
 		op:
 			| "reply"
@@ -72,7 +74,8 @@ export interface Scenario {
 			| "delete"
 			| "comment"
 			| "verdict"
-			| "dismiss";
+			| "dismiss"
+			| "reviews";
 		status?: number;
 		afterWrite?: boolean;
 		/** GitHub's message (default: the status's usual one). */
@@ -200,9 +203,11 @@ export interface Scenario {
 				 * 9000 + index) and `url`; a verdict (REST `pulls/<n>/reviews`)
 				 * is appended here, and to the timeline; a dismissal (REST
 				 * `…/reviews/<id>/dismissals`) turns one DISMISSED. Either,
-				 * when it changes whether anyone's standing opinion requests
-				 * changes, sets the view's `reviewDecision` as GitHub would
-				 * (CHANGES_REQUESTED, or back to what it was before).
+				 * when it changes what the standing opinions say, sets the
+				 * view's `reviewDecision` as GitHub would where that can be
+				 * told without the rule's count: CHANGES_REQUESTED, back to
+				 * what it was before, or APPROVED to REVIEW_REQUIRED when the
+				 * last approval goes; never to APPROVED.
 				 */
 				reviews?: unknown[];
 				/** `commits` nodes: `{ commit: { oid, committedDate, pushedDate } }`. */

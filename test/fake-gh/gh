@@ -650,32 +650,44 @@ const restReview = (n, r, i) => ({
 	commit_id: r.commit?.oid ?? null,
 	html_url: `https://github.com/${s.nameWithOwner ?? "acme/widget"}/pull/${n}#pullrequestreview-${r.databaseId ?? 9000 + i}`,
 });
-/** Whether anyone's standing opinion (their latest opinionated review) requests changes. */
-function changesRequested(pr) {
+/**
+ * What the standing opinions (each reviewer's latest opinionated review)
+ * say together: "changes" if anyone requests changes, else "approved" if
+ * anyone approves, else "none".
+ */
+function standingSay(pr) {
 	const latest = new Map();
 	for (const r of pr.graphql?.reviews ?? []) {
 		if (!["APPROVED", "CHANGES_REQUESTED", "DISMISSED"].includes(r.state)) continue;
 		latest.set(r.author?.login?.toLowerCase(), r.state);
 	}
-	return [...latest.values()].includes("CHANGES_REQUESTED");
+	const states = [...latest.values()];
+	if (states.includes("CHANGES_REQUESTED")) return "changes";
+	return states.includes("APPROVED") ? "approved" : "none";
 }
 /**
- * GitHub's reviewDecision after a review write that changed whether
- * changes are requested (`before`): CHANGES_REQUESTED once someone asks;
- * when the last such opinion goes (dismissed, replaced), what it was
- * before (default REVIEW_REQUIRED). A scenario's own decision otherwise stays.
+ * GitHub's reviewDecision after a review write that changed what the
+ * standing opinions say (`before`, standingSay's): CHANGES_REQUESTED
+ * once someone asks; when the last such opinion goes (dismissed,
+ * replaced), what it was before (default REVIEW_REQUIRED); APPROVED
+ * becomes REVIEW_REQUIRED when the last approval goes. A decision these
+ * can't derive (APPROVED once enough approve: the count is the rule's)
+ * stays the scenario's.
  */
 function decide(pr, before) {
-	const after = changesRequested(pr);
+	const after = standingSay(pr);
 	if (after === before) return;
 	pr.view ??= {};
-	if (after) {
+	if (after === "changes") {
 		pr.decisionBefore = pr.view.reviewDecision ?? null;
 		pr.view.reviewDecision = "CHANGES_REQUESTED";
 	} else if (pr.view.reviewDecision === "CHANGES_REQUESTED") {
 		pr.view.reviewDecision =
 			pr.decisionBefore === undefined ? "REVIEW_REQUIRED" : pr.decisionBefore;
 		delete pr.decisionBefore;
+	}
+	if (after === "none" && pr.view.reviewDecision === "APPROVED") {
+		pr.view.reviewDecision = "REVIEW_REQUIRED";
 	}
 }
 if (restReviewPost && !s.loggedOut) {
@@ -723,9 +735,9 @@ if (restReviewPost && !s.loggedOut) {
 		commit: { oid: req.commit_id },
 	};
 	pr.graphql ??= {};
-	const blocked = changesRequested(pr);
+	const before = standingSay(pr);
 	pr.graphql.reviews = [...reviews, review];
-	decide(pr, blocked);
+	decide(pr, before);
 	pr.graphql.timelineItems = [
 		...(pr.graphql.timelineItems ?? []),
 		{
@@ -746,6 +758,8 @@ if (restReviews && !s.loggedOut) {
 	if (args.slice(2).join(" ") !== "--paginate --slurp") unsupported();
 	const pr = s.prs[restReviews[1]];
 	if (!pr) httpFail(404, "Not Found");
+	const f = failNextFor("reviews");
+	if (f) failAs(f);
 	const all = (pr.graphql?.reviews ?? []).map((r, i) => restReview(restReviews[1], r, i));
 	const size = s.pageSize ?? 30;
 	const pages = [];
@@ -754,9 +768,8 @@ if (restReviews && !s.loggedOut) {
 }
 // A dismissal: `api -X PUT repos/<o>/<r>/pulls/<n>/reviews/<id>/dismissals
 // --input -` (by REST id), GitHub's texts as checked on carbonless-scratch
-// (2026-11-01). The review becomes DISMISSED; a review of the viewer's
-// only unless the scenario says otherwise (GitHub lets anyone with write
-// access dismiss any review).
+// (2026-11-01). Any review by its id becomes DISMISSED, whoever wrote it
+// (as GitHub lets a repo admin); only an approval or a change request.
 const restDismiss =
 	args[0] === "api" && args[1] === "-X" && args[2] === "PUT"
 		? /^repos\/[^/]+\/[^/]+\/pulls\/(\d+)\/reviews\/(\d+)\/dismissals$/.exec(args[3] ?? "")
@@ -782,9 +795,9 @@ if (restDismiss && !s.loggedOut) {
 			`Can not dismiss a ${review.state.toLowerCase()} pull request review`,
 		]);
 	}
-	const blocked = changesRequested(pr);
+	const before = standingSay(pr);
 	review.state = "DISMISSED";
-	decide(pr, blocked);
+	decide(pr, before);
 	save();
 	if (f) failAs(f);
 	print(restReview(n, review, i));

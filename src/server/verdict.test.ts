@@ -320,6 +320,27 @@ describe("mapVerdict", () => {
 		]);
 	});
 
+	it("a request for changes withdrawn by a comment in the same second reads as the comment", () => {
+		const facts = map({
+			...read(),
+			reviews: [
+				{
+					author: user("Octo_Cat"),
+					state: "DISMISSED",
+					submittedAt: "2026-01-01T00:00:00Z",
+					commit: { oid: HEAD },
+				},
+				{
+					author: user("Octo_Cat"),
+					state: "COMMENTED",
+					submittedAt: "2026-01-01T00:00:00Z",
+					commit: { oid: HEAD },
+				},
+			],
+		});
+		expect(facts.reviews.map((r) => r.state)).toEqual(["COMMENTED"]);
+	});
+
 	it("code-owner requests only, users and teams", () => {
 		const facts = map(
 			read({
@@ -1572,10 +1593,29 @@ describe("the verdict, through the session and the fake gh", () => {
 			expect(you?.opinion).toBeUndefined();
 		});
 
-		it("over an approval: the same", async () => {
-			scenario({}, {}, [mine("APPROVED")]);
+		it("over an approval: the same; GitHub's approval goes", async () => {
+			scenario({}, { reviewDecision: "APPROVED" }, [mine("APPROVED")]);
 			const answer = await session.submitVerdict(comment());
 			expect(answer.dismissed).toBe("APPROVED");
+			expect(dismissals()).toHaveLength(1);
+			expect(stored().map((r) => r.state)).toEqual(["DISMISSED", "COMMENTED"]);
+			expect((await session.verdict()).reviewDecision).toBe("REVIEW_REQUIRED");
+		});
+
+		it("the fresh read after the comment fails: the resend posts nothing and finishes the dismissal", async () => {
+			scenario({ failNext: { op: "reviews", status: 502 } }, {}, [
+				mine("CHANGES_REQUESTED"),
+			]);
+			const req = comment();
+			await expect(session.submitVerdict(req)).rejects.toBeInstanceOf(GhError);
+			expect(posts()).toHaveLength(1);
+			expect(dismissals()).toEqual([]);
+			const answer = await session.submitVerdict({ ...req, retry: true });
+			expect(answer).toMatchObject({
+				review: { state: "COMMENTED", body: "Fine by me" },
+				dismissed: "CHANGES_REQUESTED",
+			});
+			expect(posts()).toHaveLength(1);
 			expect(dismissals()).toHaveLength(1);
 			expect(stored().map((r) => r.state)).toEqual(["DISMISSED", "COMMENTED"]);
 		});

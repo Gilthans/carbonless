@@ -677,7 +677,7 @@ export function mapOverview(
 		const withdrawn =
 			op?.state === "DISMISSED" &&
 			review.state === "COMMENTED" &&
-			review.submittedAt > op.at;
+			review.submittedAt >= op.at;
 		return op && !withdrawn ? { ...review, opinion: op.state } : review;
 	});
 

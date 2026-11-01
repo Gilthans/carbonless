@@ -1731,11 +1731,9 @@ export function applyVerdict(client: QueryClient, answer: VerdictAnswer): void {
 	const viewer = client.getQueryData(sessionQuery.queryKey)?.viewer ?? "";
 	client.setQueryData(verdictQuery.queryKey, (facts) => {
 		if (!facts) return facts;
-		// A comment whose withdrawal failed: the opinion still stands, as shown.
-		const standing = facts.reviews.find(
-			(r) => r.you && r.state === answer.stillStands?.state,
-		);
-		if (standing) return facts;
+		// A comment whose withdrawal failed: the opinion still stands, so
+		// nothing reads "commented" over it; the re-read shows GitHub's.
+		if (answer.stillStands) return facts;
 		return {
 			...facts,
 			reviews: [

@@ -523,4 +523,27 @@ describe("applyVerdict: a comment over a standing opinion", () => {
 		expect(you(client, "verdict")?.state).toBe("CHANGES_REQUESTED");
 		expect(you(client, "overview")?.opinion).toBe("CHANGES_REQUESTED");
 	});
+
+	it("still standing, the cache's row another state (stale): nothing written over it", () => {
+		const client = setup();
+		client.setQueryData(["verdict"], {
+			reviews: [{ ...mine, state: "APPROVED" }],
+			head: HEAD,
+		});
+		applyVerdict(
+			client,
+			comment({
+				stillStands: { state: "CHANGES_REQUESTED", message: "No" },
+			}),
+		);
+		expect(you(client, "verdict")?.state).toBe("APPROVED");
+		client.setQueryData(["verdict"], { reviews: [], head: HEAD });
+		applyVerdict(
+			client,
+			comment({
+				stillStands: { state: "CHANGES_REQUESTED", message: "No" },
+			}),
+		);
+		expect(you(client, "verdict")).toBeUndefined();
+	});
 });

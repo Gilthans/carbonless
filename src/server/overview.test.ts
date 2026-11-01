@@ -113,6 +113,9 @@ describe("mapOverview", () => {
 			submittedAt,
 		});
 		g.reviews = [
+			// The same second: still the comment after it.
+			at("DISMISSED", "lee", "2026-01-05T00:00:00Z"),
+			at("COMMENTED", "lee", "2026-01-05T00:00:00Z"),
 			at("DISMISSED", "maya", "2026-01-05T00:00:00Z"),
 			at("COMMENTED", "maya", "2026-01-06T00:00:00Z"),
 			at("COMMENTED", "dima", "2026-01-05T00:00:00Z"),
@@ -123,6 +126,10 @@ describe("mapOverview", () => {
 			state: "COMMENTED",
 		});
 		expect(r.find((x) => x.author === "maya")?.opinion).toBeUndefined();
+		expect(r.find((x) => x.author === "lee")).toMatchObject({
+			state: "COMMENTED",
+		});
+		expect(r.find((x) => x.author === "lee")?.opinion).toBeUndefined();
 		expect(r.find((x) => x.author === "dima")).toMatchObject({
 			state: "DISMISSED",
 			opinion: "DISMISSED",

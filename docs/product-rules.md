@@ -87,7 +87,11 @@ switch wouldn't happen.
 - **One explicit action, one write.** Every write is one click (or the send
   shortcut) on one thread. Nothing posts, resolves or retries a refused write
   on its own, nothing is written as a side effect of review progress, and no
-  AI-written text is posted. Resolving never changes review progress.
+  AI-written text is posted. Resolving never changes review progress. The
+  one exception is Comment over the viewer's own standing approval or
+  request for changes: that one press makes two writes, the comment and
+  then the dismissal of that review, since that is what Comment means
+  (below). Its tooltip says so before the press.
 - **Immediate, never into a pending review.** Replies use REST
   `POST /repos/{o}/{r}/pulls/{n}/comments/{commentId}/replies` (to the
   thread's first comment), never GraphQL `addPullRequestReviewThreadReply`,

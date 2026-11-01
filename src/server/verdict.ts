@@ -172,7 +172,8 @@ export function standingOf<T extends { state: string; submittedAt: string }>(
 	if (
 		opinion.state === "DISMISSED" &&
 		latest.state === "COMMENTED" &&
-		latest.submittedAt > opinion.submittedAt
+		// The same second too: GitHub's times are whole seconds.
+		latest.submittedAt >= opinion.submittedAt
 	) {
 		return latest;
 	}
