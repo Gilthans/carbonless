@@ -89,6 +89,10 @@ const E2E_MAP = [
 		/^src\/web\/threads\/(threadWrites|refusals|drafts)\.ts$|^src\/web\/files\/(SyncNotices|RefusedWrites|useSetStates|FileDiff|DiffBody)\.tsx?$/,
 		["refused-writes"],
 	],
+	[
+		/^src\/web\/verdict\/|^src\/server\/verdict\.ts$|^src\/web\/(App|pages|router)\.tsx?$|^src\/web\/files\/(FilesPage|RefusedWrites)\.tsx$|^src\/web\/threads\/(threadWrites|refusals)\.ts$/,
+		["verdict"],
+	],
 	[/^src\/server\/review\//, ["files", "persistence"]],
 	[/^src\/web\/code\//, ["invisibles", "whitespace", "files"]],
 	[/^src\/web\/shortcuts\.tsx$/, ["shortcuts", "settings"]],
