@@ -123,7 +123,9 @@ const reviewRoute = createRoute({
  * The pages render in the review's layout, kept alive once visited
  * (`KeptPages`), not in its <Outlet>. A route's loader loads its page's
  * code, so the router switches pages only once it can render (`preload` is
- * gone once loaded).
+ * gone once loaded). A pending component of its own keeps the first load's
+ * wait inside the layout: the header shows, and KeptPages spins where the
+ * page will be (principle 8), instead of the whole page waiting blank.
  */
 const keptPage = () => null;
 
@@ -132,6 +134,7 @@ const overviewRoute = createRoute({
 	path: "/",
 	loader: () => OverviewPage.preload?.(),
 	component: keptPage,
+	pendingComponent: keptPage,
 });
 
 const filesRoute = createRoute({
@@ -141,6 +144,7 @@ const filesRoute = createRoute({
 	validateSearch: parseFilesSearch,
 	loader: () => FilesPage.preload?.(),
 	component: keptPage,
+	pendingComponent: keptPage,
 });
 
 const routeTree = rootRoute.addChildren([
