@@ -2249,6 +2249,44 @@ describe("Timeline", () => {
 		expect(items[1]).toHaveTextContent("Should this expire?");
 	});
 
+	it("while the threads load, a review run and its comments spin, never read as threadless", async () => {
+		const user = userEvent.setup();
+		const threads = heldJson();
+		const { threads: list, ...rest } = overview;
+		const { rows } = await events({
+			"/api/overview": ok(rest),
+			"/api/threads": { status: 200, body: threads.response },
+		});
+		const row = rows[2] as HTMLElement;
+		await user.click(
+			within(row).getByRole("button", { name: "Show 3 comments" }),
+		);
+		const items = () => within(row).getAllByTestId("timeline-item");
+		await expectLoadingThen({
+			loading: () =>
+				within(row).queryByRole("status", { name: "Loading threads" }),
+			empty: [
+				// A comment read as being in no thread.
+				() => within(row).queryByRole("img", { name: "Comment" }),
+			],
+			release: () => threads.release({ threads: list, complete: true }),
+			result: () => within(row).queryByTestId("timeline-resolved"),
+		});
+		expect(
+			within(items()[1] as HTMLElement).getByRole("img", {
+				name: "Unresolved",
+			}),
+		).toBeInTheDocument();
+		expect(
+			within(items()[3] as HTMLElement).getByRole("link", {
+				name: "Go to the thread",
+			}),
+		).toBeInTheDocument();
+		expect(
+			within(row).queryAllByRole("status", { name: "Loading thread" }),
+		).toHaveLength(0);
+	});
+
 	it("as of a cutoff, counts a run's threads without claiming any resolved or not", async () => {
 		const user = userEvent.setup();
 		const asOf = "2026-01-05T00:00:00Z";

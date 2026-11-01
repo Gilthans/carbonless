@@ -241,6 +241,7 @@ function OverviewContent({
 					<Timeline
 						pr={overview.data}
 						threads={threads.view}
+						threadsLoading={!threads.view && !threads.error}
 						onShowThread={showThread}
 					/>
 				</>
