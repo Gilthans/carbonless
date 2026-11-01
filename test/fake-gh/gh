@@ -4,7 +4,7 @@
 // scenario.ts). Every call is appended to $CRB_FAKE_GH_LOG when set.
 import { execFileSync } from "node:child_process";
 import { appendFileSync, existsSync, readFileSync } from "node:fs";
-import { GITHUB_KEPT_TAGS } from "../../src/shared/markdownEscape.ts";
+import { KEPT_TAGS as GITHUB_KEPT_TAGS } from "./keptTags.mjs";
 import { writeFileAtomic } from "./atomic.mjs";
 
 const args = process.argv.slice(2);
