@@ -9,6 +9,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { ghIdle } from "../src/server/gh";
 import { Session } from "../src/server/session";
 import {
 	FAKE_GH_DIR,
@@ -146,6 +147,7 @@ export function createPrFixture(): PrFixture {
 			// Sessions' background reads stop before the fake gh and the
 			// throwaway cache go: none may reach the real gh.
 			await Session.closeAll();
+			await ghIdle();
 			for (const [k, v] of Object.entries(saved)) {
 				if (v === undefined) delete process.env[k];
 				else process.env[k] = v;

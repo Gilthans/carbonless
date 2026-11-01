@@ -30,7 +30,7 @@ import {
 	fetchPr,
 	withRepoLock,
 } from "./clone";
-import { GhError, type PrMeta } from "./gh";
+import { GhError, ghIdle, type PrMeta } from "./gh";
 
 // Real git and fake-gh processes: see GIT_TEST_TIMEOUTS.
 vi.setConfig(GIT_TEST_TIMEOUTS);
@@ -123,7 +123,8 @@ describe("private clone", () => {
 		scenario();
 	});
 
-	afterEach(() => {
+	afterEach(async () => {
+		await ghIdle();
 		for (const [k, v] of Object.entries(saved)) {
 			if (v === undefined) delete process.env[k];
 			else process.env[k] = v;

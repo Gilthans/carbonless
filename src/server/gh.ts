@@ -162,7 +162,49 @@ function problemLine(text: string): string {
 	return fatal ?? lines[0] ?? "";
 }
 
-export async function runGh(
+/** gh calls (runGh, runWrite) started and not yet finished. */
+let inFlight = 0;
+let idleWaiters: (() => void)[] = [];
+
+/** Counts a gh call from its start to its end, follow-up gh runs included. */
+async function tracked<T>(call: () => Promise<T>): Promise<T> {
+	inFlight++;
+	try {
+		return await call();
+	} finally {
+		inFlight--;
+		if (inFlight === 0) {
+			const waiters = idleWaiters;
+			idleWaiters = [];
+			for (const w of waiters) w();
+		}
+	}
+}
+
+/**
+ * Resolves once no gh call is running, nor starts within a timer tick of
+ * the last one ending (a read's next page, a failed read's sibling).
+ * Test fixtures await it before they take the fake gh off PATH: a call
+ * still going would otherwise end on the real gh.
+ */
+export async function ghIdle(): Promise<void> {
+	for (;;) {
+		if (inFlight > 0) {
+			await new Promise<void>((resolve) => idleWaiters.push(resolve));
+		}
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		if (inFlight === 0) return;
+	}
+}
+
+export function runGh(
+	args: string[],
+	opts: Parameters<typeof runGhNow>[1] = {},
+): Promise<string> {
+	return tracked(() => runGhNow(args, opts));
+}
+
+async function runGhNow(
 	args: string[],
 	opts: GhRun & {
 		/**
@@ -172,8 +214,13 @@ export async function runGh(
 		partial?: (stdout: string) => boolean;
 	} = {},
 ): Promise<string> {
+	// The environment of the moment the call starts, for every gh it runs:
+	// the logged-out check below starts later, when process.env (PATH, the
+	// account) may have changed, and must ask the gh the call was made with.
+	const env = { ...(opts.env ?? process.env) };
 	const result = await spawnGh(args, {
 		...opts,
+		env,
 		timeoutMs: opts.timeoutMs ?? GH_TIMEOUT_MS,
 	});
 	if (result.code === 0) return result.stdout;
@@ -181,10 +228,10 @@ export async function runGh(
 	if (LOGGED_OUT.test(result.stderr)) throw new GhError(NOT_LOGGED_IN);
 	const isAuthStatus = args[0] === "auth" && args[1] === "status";
 	if (!isAuthStatus) {
-		const host = process.env.GH_HOST || "github.com";
+		const host = env.GH_HOST || "github.com";
 		const auth = await spawnGh(
 			["auth", "status", "--active", "--hostname", host],
-			{ cwd: opts.cwd, env: opts.env, signal: opts.signal },
+			{ cwd: opts.cwd, env, signal: opts.signal },
 		);
 		if (auth.code !== 0 && LOGGED_OUT.test(auth.stderr)) {
 			throw new GhError(NOT_LOGGED_IN);
@@ -1357,7 +1404,16 @@ export function writeRefusal(
  * A write's gh call: its answer, the refusal it is (WriteRefusedError,
  * `special` first), or a GhError when it may land if sent again.
  */
-async function runWrite(
+function runWrite(
+	args: string[],
+	what: string,
+	special: (a: WriteAnswer) => WriteRefusedError | null,
+	input?: string,
+): Promise<string> {
+	return tracked(() => runWriteNow(args, what, special, input));
+}
+
+async function runWriteNow(
 	args: string[],
 	what: string,
 	special: (a: WriteAnswer) => WriteRefusedError | null,

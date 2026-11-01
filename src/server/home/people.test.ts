@@ -13,8 +13,8 @@ import { fetchOrgMembers } from "./prFacts.js";
 vi.setConfig({ testTimeout: 30_000 });
 
 let fx: HomeFixture | undefined;
-afterEach(() => {
-	fx?.cleanup();
+afterEach(async () => {
+	await fx?.cleanup();
 	fx = undefined;
 });
 

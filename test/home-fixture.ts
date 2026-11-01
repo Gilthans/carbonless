@@ -1,6 +1,7 @@
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { ghIdle } from "../src/server/gh";
 import { FAKE_GH_DIR, type Scenario, writeScenario } from "./fake-gh/scenario";
 
 export interface HomeFixture {
@@ -11,7 +12,7 @@ export interface HomeFixture {
 	current: () => Scenario;
 	/** Every gh call so far, one per line. */
 	ghLog: () => string;
-	cleanup: () => void;
+	cleanup: () => Promise<void>;
 }
 
 /**
@@ -55,7 +56,9 @@ export function createHomeFixture(s: Partial<Scenario> = {}): HomeFixture {
 			const log = join(tmp, "gh.log");
 			return existsSync(log) ? readFileSync(log, "utf8") : "";
 		},
-		cleanup: () => {
+		cleanup: async () => {
+			// gh calls still going end on the fake gh, not the real one.
+			await ghIdle();
 			for (const [k, v] of Object.entries(saved)) {
 				if (v === undefined) delete process.env[k];
 				else process.env[k] = v;

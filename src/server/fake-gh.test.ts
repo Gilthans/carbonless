@@ -24,6 +24,7 @@ import {
 	fetchThreadContents,
 	fetchThreadSummaries,
 	fetchTimeline,
+	ghIdle,
 	patchComment,
 	postReply,
 	postResolved,
@@ -62,7 +63,8 @@ describe("fake gh", () => {
 		scenario();
 	});
 
-	afterEach(() => {
+	afterEach(async () => {
+		await ghIdle();
 		for (const [k, v] of Object.entries(saved)) {
 			if (v === undefined) delete process.env[k];
 			else process.env[k] = v;

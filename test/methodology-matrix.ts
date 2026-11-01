@@ -14,6 +14,7 @@ import {
 } from "vitest";
 import { clonePath } from "../src/server/clone";
 import { buildSnapshot } from "../src/server/diff/snapshot";
+import { ghIdle } from "../src/server/gh";
 import { Session } from "../src/server/session";
 import type { Snapshot } from "../src/shared/types";
 import {
@@ -95,6 +96,7 @@ function matrix(m: (typeof METHODOLOGIES)[number]) {
 	afterEach(async () => {
 		// Background reads stop before the fake gh and the cache go.
 		await Session.closeAll();
+		await ghIdle();
 		for (const [k, v] of Object.entries(saved)) {
 			if (v === undefined) delete process.env[k];
 			else process.env[k] = v;
