@@ -14,7 +14,8 @@ import { expect, OWNER_REPO, PR_NUMBER, type Pr, test } from "./fixtures";
 /**
  * Home in the built `crb serve`, on a fake gh scenario: acme/api in the
  * view with a PR for each section, and the review PR (acme/widget#7, a
- * real repo) outside the view, which the viewer starts.
+ * real repo), which the viewer starts; its repo is in the view only when
+ * a test says so (Home lists only the view's repos, started or not).
  */
 
 const VIEWER = "Octo";
@@ -26,6 +27,7 @@ const iso = (minutesAgo: number) =>
 async function setup(
 	workdir: string,
 	pr: (opts?: object) => Promise<Pr>,
+	{ widgetInView = false } = {},
 ): Promise<Pr> {
 	const made = await pr({
 		scenario: {
@@ -120,7 +122,14 @@ async function setup(
 	mkdirSync(config, { recursive: true });
 	writeFileSync(
 		join(config, "config.json"),
-		JSON.stringify({ views: [{ name: "My PRs", repos: ["acme/api"] }] }),
+		JSON.stringify({
+			views: [
+				{
+					name: "My PRs",
+					repos: widgetInView ? ["acme/api", OWNER_REPO] : ["acme/api"],
+				},
+			],
+		}),
 	);
 	return made;
 }
@@ -198,13 +207,13 @@ async function goHome(page: Page, url: string) {
 	await expect(page.getByText("Snooze PRs from the inbox")).toBeVisible();
 }
 
-test("shows the sections from GitHub, and a started review outside the view with its coverage", async ({
+test("shows the sections from GitHub, and a started review with its coverage", async ({
 	page,
 	workdir,
 	pr,
 	startCrb,
 }) => {
-	await setup(workdir, pr);
+	await setup(workdir, pr, { widgetInView: true });
 	const crb = await startReview(page, startCrb);
 	await goHome(page, crb.url);
 	const titles = async (name: string) =>
@@ -444,6 +453,55 @@ test("the view's repo input suggests the viewer's repos as you type; Save shows 
 	// The server kept it: a reload shows the same.
 	await page.reload();
 	await expect(page.getByTestId("view-repo")).toHaveText([OWNER_REPO]);
+});
+
+test("removing a repo from the view takes its started rows with it; adding it back brings them back", async ({
+	page,
+	workdir,
+	pr,
+	startCrb,
+}) => {
+	// Owner, 2026-11-01: "only prs from the selected repos should appear".
+	const made = await setup(workdir, pr, { widgetInView: true });
+	const crb = await startReview(page, startCrb);
+	await goHome(page, crb.url);
+	const widget = () => rowOf(page, "Add widget cache");
+	const coverage = () =>
+		widget().getByRole("img", { name: /^1 of \d+ lines? reviewed$/ });
+	await expect(coverage()).toBeVisible();
+	const edit = async () => {
+		await page.getByRole("button", { name: "Edit repos" }).click();
+		return page.getByRole("dialog", { name: "My PRs" });
+	};
+	let dialog = await edit();
+	await dialog.getByRole("button", { name: `Remove ${OWNER_REPO}` }).click();
+	made.editScenario((s) => {
+		s.hold = ["home"];
+	});
+	await dialog.getByRole("button", { name: "Save" }).click();
+	// At once, before the server answers.
+	await expect(dialog).toBeHidden();
+	await expect(widget()).toHaveCount(0);
+	const saving = page.getByRole("status", { name: "Saving" });
+	release(made.scenarioPath, "home");
+	await expect(saving).toBeHidden();
+	await expect(widget()).toHaveCount(0);
+	await expect(page.getByText("Snooze PRs from the inbox")).toBeVisible();
+	// The server's own read says the same.
+	await page.reload();
+	await expect(page.getByText("Snooze PRs from the inbox")).toBeVisible();
+	await expect(page.getByTestId("view-repo")).toHaveText(["acme/api"]);
+	await expect(widget()).toHaveCount(0);
+	// Back in the view: the row returns with its coverage after the read.
+	dialog = await edit();
+	const field = dialog.getByRole("combobox", { name: "Add a repo" });
+	await field.fill(OWNER_REPO);
+	await field.press("Enter");
+	await dialog.getByRole("button", { name: "Save" }).click();
+	await expect(dialog).toBeHidden();
+	await expect(coverage()).toBeVisible();
+	await page.reload();
+	await expect(coverage()).toBeVisible();
 });
 
 test("after Save the pencil's tooltip doesn't stay over the sections", async ({
@@ -775,7 +833,7 @@ test("an open popover is on top of the rows after it", async ({
 	isMobile,
 }) => {
 	test.skip(isMobile, "popovers are desktop's; touch uses the sheet");
-	await setup(workdir, pr);
+	await setup(workdir, pr, { widgetInView: true });
 	const crb = await startReview(page, startCrb);
 	await goHome(page, crb.url);
 	// The first row of Reviewing has another row and more sections below it.
@@ -816,7 +874,7 @@ test("rows end at their age; the actions float over the row's end, clear of the 
 	startCrb,
 	isMobile,
 }) => {
-	await setup(workdir, pr);
+	await setup(workdir, pr, { widgetInView: true });
 	const crb = await startReview(page, startCrb);
 	await goHome(page, crb.url);
 	const r = rowOf(section(page, "Up for grabs"), "Snapshot reviews");
@@ -895,7 +953,7 @@ test("with a coarse pointer and hover (a touch laptop) the bar's buttons are 40p
 	isMobile,
 }) => {
 	test.skip(isMobile, "the bar shows only with hover");
-	await setup(workdir, pr);
+	await setup(workdir, pr, { widgetInView: true });
 	const crb = await startReview(page, startCrb);
 	await goHome(page, crb.url);
 	// Chromium can't emulate a coarse pointer that also hovers (touch
@@ -964,7 +1022,7 @@ test("at 360px: no sideways scroll with the busiest rows, and 40px targets", asy
 	isMobile,
 }) => {
 	await page.setViewportSize({ width: 360, height: 800 });
-	await setup(workdir, pr);
+	await setup(workdir, pr, { widgetInView: true });
 	const crb = await startReview(page, startCrb);
 	await goHome(page, crb.url);
 	const reviewing = section(page, "Reviewing");
@@ -1052,7 +1110,7 @@ test("at desktop width: every title in full, and the header names the columns in
 	startCrb,
 }) => {
 	await page.setViewportSize({ width: 1280, height: 900 });
-	const made = await setup(workdir, pr);
+	const made = await setup(workdir, pr, { widgetInView: true });
 	const crb = await startReview(page, startCrb);
 	// A second review of the PR, pinned to its head and started: sub-rows.
 	// The head is a commit GitHub knows of the PR (a review on it).
@@ -1139,7 +1197,7 @@ test("at desktop width a long login or many signs stay inside their columns", as
 }) => {
 	test.skip(isMobile, "columns with a mouse; touch shares the layout");
 	await page.setViewportSize({ width: 1280, height: 900 });
-	await setup(workdir, pr);
+	await setup(workdir, pr, { widgetInView: true });
 	const crb = await startReview(page, startCrb);
 	await goHome(page, crb.url);
 	const other = section(page, "Other open");
@@ -1187,7 +1245,7 @@ test("screenshot at desktop width (CRB_HOME_SHOTS only)", async ({
 	const shots = process.env.CRB_HOME_SHOTS;
 	test.skip(!shots || isMobile, "screenshots on request, desktop only");
 	await page.setViewportSize({ width: 1280, height: 900 });
-	await setup(workdir, pr);
+	await setup(workdir, pr, { widgetInView: true });
 	const crb = await startReview(page, startCrb);
 	await goHome(page, crb.url);
 	const other = section(page, "Other open");

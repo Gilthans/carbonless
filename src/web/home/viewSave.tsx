@@ -13,9 +13,8 @@ import { viewSaverFor } from "./viewSaver";
 
 /**
  * Home as it will be once `repos` are saved: the view lists them, and the
- * rows of repos taken out go, as the server will drop them (a started PR
- * stays: Home lists those from any repo). Rows of added repos come with
- * the server's answer.
+ * rows of repos taken out go, started ones too, as the server will drop
+ * them. Rows of added repos come with the server's answer.
  */
 export function pendingView(home: HomeView, repos: string[]): HomeView {
 	const inView = new Set(repos.map((r) => r.toLowerCase()));
@@ -24,10 +23,8 @@ export function pendingView(home: HomeView, repos: string[]): HomeView {
 		view: { ...home.view, repos },
 		sections: home.sections.map((s) => ({
 			...s,
-			rows: s.rows.filter(
-				(r) =>
-					r.reviews.length > 0 ||
-					inView.has(`${r.owner}/${r.repo}`.toLowerCase()),
+			rows: s.rows.filter((r) =>
+				inView.has(`${r.owner}/${r.repo}`.toLowerCase()),
 			),
 		})),
 	};

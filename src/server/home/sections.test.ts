@@ -158,15 +158,13 @@ describe("sectionOf", () => {
 		);
 	});
 
-	it("started in a repo outside the view goes through the same table", () => {
-		const outside = { owner: "other", repo: "tool" };
-		const mine = pr({ ...outside, author: person("octo") });
-		const s = [started(outside)];
-		expect(section(mine, s)).toBe("mine");
-		expect(section(pr(outside), s)).toBe("reviewing");
-		expect(
-			section(pr({ ...outside, state: "MERGED", closedAt: iso(NOW - DAY) }), s),
-		).toBe("closed");
+	it("a started PR goes through the same table: mine stays Mine, a merged one is closed", () => {
+		const s = [started()];
+		expect(section(pr({ author: person("octo") }), s)).toBe("mine");
+		expect(section(pr(), s)).toBe("reviewing");
+		expect(section(pr({ state: "MERGED", closedAt: iso(NOW - DAY) }), s)).toBe(
+			"closed",
+		);
 	});
 
 	it("Up for grabs: not mine, not a draft, no person requested, no review", () => {

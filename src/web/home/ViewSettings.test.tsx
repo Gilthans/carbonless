@@ -110,7 +110,7 @@ describe("ViewSettings", () => {
 		expect(screen.getByText("acme/web")).toBeInTheDocument();
 	});
 
-	it("Save closes at once and shows the new view: removed rows go before the server answers, a spinner while it saves", async () => {
+	it("Save closes at once and shows the new view: removed rows go before the server answers, started ones too, a spinner while it saves", async () => {
 		let answer: (r: Response) => void = () => {};
 		const api = fakeApi(
 			view({
@@ -118,7 +118,7 @@ describe("ViewSettings", () => {
 					row({ number: 1, title: "API change" }),
 					row({ repo: "console", number: 2, title: "Console change" }),
 				],
-				reviewing: [started("acme", "console", 3)],
+				reviewing: [started("acme", "console", 3), started("acme", "api", 4)],
 			}),
 			{
 				"PUT /api/home/view": () =>
@@ -140,8 +140,10 @@ describe("ViewSettings", () => {
 		expect(screen.queryByRole("dialog")).toBeNull();
 		expect(screen.queryByText("Console change")).toBeNull();
 		expect(screen.getByText("API change")).toBeInTheDocument();
-		// A started PR stays, as the server keeps it.
-		expect(screen.getByText("#3")).toBeInTheDocument();
+		// A started PR of the removed repo goes too (owner, 2026-11-01: "only
+		// prs from the selected repos should appear"); one of a kept repo stays.
+		expect(screen.queryByText("#3")).toBeNull();
+		expect(screen.getByText("#4")).toBeInTheDocument();
 		expect(chips()).toEqual(["acme/api"]);
 		expect(screen.getByRole("status", { name: "Saving" })).toBeInTheDocument();
 		expect(api.calls.find((c) => c.method === "PUT")?.body).toEqual({
@@ -150,6 +152,7 @@ describe("ViewSettings", () => {
 		// A read of the old view meanwhile doesn't bring the rows back.
 		await client.refetchQueries({ queryKey: ["home"] });
 		expect(screen.queryByText("Console change")).toBeNull();
+		expect(screen.queryByText("#3")).toBeNull();
 		answer(
 			Response.json(
 				view(
