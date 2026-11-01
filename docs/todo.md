@@ -124,6 +124,13 @@ Not scheduled yet; after everything above.
 - **Attention set:** like Gerrit's, but computed automatically as far as
   possible (whose turn it is on each PR), plus a view of pending review work
   across PRs.
+- **`<` inside raw HTML lines of a comment:** escapeTags leaves lines in an
+  HTML block GitHub keeps as they are (`<img …>` alone on a line followed
+  by `List<T> here`, `<br>` then `List<T>`, `<details><summary>List<T></summary>`),
+  so GitHub still drops `<T>` there. A backslash shows literally in raw
+  HTML, but `&lt;` renders as `<` (probed 2026-11-01): escape those `<` as
+  `&lt;`, with unescapeTags undoing it in those lines only
+  (`src/shared/markdownEscape.ts`; review of brief A, finding 4).
 - **Custom agent pre-review actions and instructions:** let the reviewer define
   their own AI steps to run before a review starts (and standing instructions for
   how their agent should help), so each reviewer's workflow is their own.
