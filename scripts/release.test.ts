@@ -269,6 +269,50 @@ describe("workflow steps", () => {
 		).toBeNull();
 	});
 
+	it("rc's floor is what this run published, whatever a stale read says", () => {
+		const state = (distTags: Record<string, string>) => ({
+			distTags,
+			versions: [],
+		});
+		// Promote's first publish, read back as a 404.
+		expect(rcBehindLatest(null, "0.1.0")).toBe("0.1.0");
+		// Promote of 0.2.0, latest not updated yet.
+		expect(
+			rcBehindLatest(state({ latest: "0.1.0", rc: "0.2.0-rc.3" }), "0.2.0"),
+		).toBe("0.2.0");
+		// publish-rc's read misses its own 0.2.0-rc.1: rc is not moved back to 0.1.0.
+		expect(
+			rcBehindLatest(state({ latest: "0.1.0", rc: "0.1.0" }), "0.2.0-rc.1"),
+		).toBe("0.2.0-rc.1");
+		expect(
+			rcBehindLatest(state({ latest: "0.1.0", rc: "0.1.0" }), "0.2.0-rc.1"),
+		).not.toBe("0.1.0");
+		// A release that landed meanwhile still wins over this run's RC.
+		expect(
+			rcBehindLatest(
+				state({ latest: "0.1.0", rc: "0.1.0-rc.5" }),
+				"0.1.0-rc.5",
+			),
+		).toBe("0.1.0");
+		// rc already on (or past) the floor: nothing to do.
+		expect(
+			rcBehindLatest(
+				state({ latest: "0.1.0", rc: "0.2.0-rc.1" }),
+				"0.2.0-rc.1",
+			),
+		).toBeNull();
+	});
+
+	it("promote refuses a release that isn't newer than latest", async () => {
+		const { io } = fakeIo({
+			"git ls-remote": lsRemote("v0.1.1-rc.1", "v0.2.0"),
+			"npm view": npmView({ latest: "0.2.0" }, ["0.2.0"]),
+		});
+		await expect(resolvePromote(io, "v0.1.1-rc.1")).rejects.toThrow(
+			/0\.1\.1 is not newer than latest \(0\.2\.0\)/,
+		);
+	});
+
 	it("an npm failure other than 404 fails, never passes for a first publish", async () => {
 		const { io } = fakeIo({
 			"git ls-remote": lsRemote(),

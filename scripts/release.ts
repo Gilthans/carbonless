@@ -167,8 +167,13 @@ async function main(argv: string[]) {
 			return;
 		}
 		case "ci:rc-fixup": {
-			// The version `rc` must move to so it isn't behind `latest`, or empty.
-			console.log(`move_rc_to=${rcBehindLatest(await npmState(io)) ?? ""}`);
+			// ci:rc-fixup [<version this run published>]: the version `rc` must
+			// move to so it isn't behind latest nor that version, or empty.
+			const published = rest[0] ?? "";
+			if (published && !parseVersion(published)) usage();
+			console.log(
+				`move_rc_to=${rcBehindLatest(await npmState(io), published || undefined) ?? ""}`,
+			);
 			return;
 		}
 		case "ci:changelog": {

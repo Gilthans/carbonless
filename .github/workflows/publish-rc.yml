@@ -52,8 +52,8 @@ jobs:
         run: |
           auth="$(printf 'x-access-token:%s' "$TOKEN" | base64 -w0)"
           echo "::add-mask::$auth"
-          tip="$(git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" \
-            ls-remote origin refs/heads/master | cut -f1)"
+          tip="$(GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.https://github.com/.extraheader \
+            GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $auth" git ls-remote origin refs/heads/master | cut -f1)"
           if [[ "$tip" == "$SHA" ]]; then
             echo "publish=true" >>"$GITHUB_OUTPUT"
           else
@@ -118,8 +118,8 @@ jobs:
           git tag "$tag" "$SHA"
           auth="$(printf 'x-access-token:%s' "$TOKEN" | base64 -w0)"
           echo "::add-mask::$auth"
-          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" \
-            push origin "refs/tags/$tag"
+          GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.https://github.com/.extraheader \
+            GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $auth" git push origin "refs/tags/$tag"
           if [[ "${{ steps.version.outputs.first_publish }}" == true ]]; then
             echo "::warning::carbonless-review is not on npm yet: $tag is tagged, not published. Its first version must be a release: pnpm release promote $tag"
             echo "First publish: $tag is tagged only. Run \`pnpm release promote $tag\`." >>"$GITHUB_STEP_SUMMARY"
@@ -131,7 +131,13 @@ jobs:
         # own group): whichever of the two finishes last puts rc on the newer.
         id: fixup
         if: steps.version.outputs.first_publish == 'false'
-        run: pnpm exec tsx scripts/release.ts ci:rc-fixup | tee -a "$GITHUB_OUTPUT"
+        # This run's RC, if it published one: a stale read can't move rc below it.
+        run: |
+          published=""
+          if [[ "${{ steps.version.outputs.publish }}" == true ]]; then
+            published="${{ steps.version.outputs.version }}"
+          fi
+          pnpm exec tsx scripts/release.ts ci:rc-fixup ${published:+"$published"} | tee -a "$GITHUB_OUTPUT"
       - name: Move rc to latest
         if: steps.fixup.outputs.move_rc_to != ''
         run: npm dist-tag add "carbonless-review@${{ steps.fixup.outputs.move_rc_to }}" rc

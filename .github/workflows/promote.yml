@@ -119,7 +119,9 @@ jobs:
         # So main, which follows rc, never runs behind latest. Asked after
         # publishing, not planned before: a publish-rc may have run meanwhile.
         id: fixup
-        run: pnpm exec tsx scripts/release.ts ci:rc-fixup | tee -a "$GITHUB_OUTPUT"
+        # The release as the floor: right after publishing, the read may still
+        # be stale (even a 404 on the first publish).
+        run: pnpm exec tsx scripts/release.ts ci:rc-fixup "${{ steps.plan.outputs.release }}" | tee -a "$GITHUB_OUTPUT"
       - name: Move rc to latest
         if: steps.fixup.outputs.move_rc_to != ''
         run: npm dist-tag add "carbonless-review@${{ steps.fixup.outputs.move_rc_to }}" rc
@@ -132,8 +134,8 @@ jobs:
           git tag "v${{ steps.plan.outputs.release }}" "$RC_SHA"
           auth="$(printf 'x-access-token:%s' "$TOKEN" | base64 -w0)"
           echo "::add-mask::$auth"
-          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" \
-            push origin "refs/tags/v${{ steps.plan.outputs.release }}"
+          GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.https://github.com/.extraheader \
+            GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $auth" git push origin "refs/tags/v${{ steps.plan.outputs.release }}"
       - name: Next version and changelog PR
         env:
           GH_TOKEN: ${{ github.token }}
@@ -148,8 +150,8 @@ jobs:
           git commit -m "next: $next" -m "Released $release (${{ steps.plan.outputs.tag }}); merges to master now publish $next-rc.N."
           auth="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
           echo "::add-mask::$auth"
-          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" \
-            push --force origin "$branch"
+          GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.https://github.com/.extraheader \
+            GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $auth" git push --force origin "$branch"
           open="$(gh pr list --head "$branch" --state open --json url --jq '.[0].url // ""')"
           if [[ -z "$open" ]]; then
             gh pr create --base master --head "$branch" --title "next: $next" \

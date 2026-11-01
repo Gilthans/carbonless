@@ -492,12 +492,26 @@ export async function rcToPublish(
  * The version npm's `rc` should move to so it is never behind `latest` (main
  * follows `rc`), or null. Both workflows run this after publishing, so a
  * promote and an RC publish racing each other end with `rc` on the newer.
+ *
+ * `published` is what this run just published (promote: the release;
+ * publish-rc: its RC, if any). The read can be stale (a CDN may still serve
+ * the packument from before, even a 404 right after the first publish), so
+ * the floor is the newer of `published` and the `latest` read, and `rc` is
+ * never moved below `published`: a read that misses this run's own RC can't
+ * move `rc` back past it.
  */
-export function rcBehindLatest(npm: NpmState): string | null {
-	const latest = parseVersion(npm?.distTags.latest ?? "");
-	if (!latest) return null;
+export function rcBehindLatest(
+	npm: NpmState,
+	published?: string,
+): string | null {
+	const candidates = [
+		parseVersion(published ?? ""),
+		parseVersion(npm?.distTags.latest ?? ""),
+	].filter((v): v is Version => v !== null);
+	const floor = candidates.sort(compareVersions).at(-1);
+	if (!floor) return null;
 	const rc = parseVersion(npm?.distTags.rc ?? "");
-	return !rc || compareVersions(rc, latest) < 0 ? formatVersion(latest) : null;
+	return !rc || compareVersions(rc, floor) < 0 ? formatVersion(floor) : null;
 }
 
 /**
@@ -523,6 +537,13 @@ export async function resolvePromote(
 		npm?.versions.includes(formatVersion(release))
 	) {
 		throw new Error(`${formatVersion(release)} is already released`);
+	}
+	// `npm publish --tag latest` would move latest backwards.
+	const latest = parseVersion(npm?.distTags.latest ?? "");
+	if (latest && compareVersions(release, latest) <= 0) {
+		throw new Error(
+			`${formatVersion(release)} is not newer than latest (${formatVersion(latest)})`,
+		);
 	}
 	return { tag, release: formatVersion(release) };
 }

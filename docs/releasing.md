@@ -82,9 +82,11 @@ day after it is published, or at once with that same flag.
 Both workflows check out with `persist-credentials: false`: the write token
 is not in `.git/config` while `pnpm install`, the build or the tests run.
 Only the steps that reach origin (the tip check, pushing tags and the
-`next/*` branch, the PR) get `GITHUB_TOKEN`, and only the `npm publish` and
-`npm dist-tag` steps get `NPM_TOKEN`. Steps that need tags read the
-checkout's own (a full-history checkout has every tag).
+`next/*` branch, the PR) get `GITHUB_TOKEN` (git gets it through
+`GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_0`/`GIT_CONFIG_VALUE_0`, not on its
+command line), and only the `npm publish` and `npm dist-tag` steps get
+`NPM_TOKEN`. Steps that need tags read the checkout's own (a full-history
+checkout has every tag).
 
 ### What GITHUB_TOKEN can't do
 
@@ -122,12 +124,17 @@ per group and cancels the older, so a shared group could silently drop a
 promote. publish-rc runs one at a time (no two pick the same `N`); a
 pending one replaced by a newer CI completion is harmless, since only
 master's tip publishes. A promote and a publish-rc may overlap: publish-rc
-makes no RC of a released version, and both end by moving `rc` to `latest`
-when `rc` is behind (`ci:rc-fixup`, reading npm with `--prefer-online`), so
-whichever finishes last leaves `rc` on the newer. At worst, a publish-rc that
-checked just before the release lands publishes `X.Y.Z-rc.N` after `X.Y.Z`
-(its tag sorts before the release's), and `rc` is put back on `X.Y.Z` by the
-same run.
+makes no RC of a released version, and both end with `ci:rc-fixup
+[<version this run published>]`: it moves `rc` up to the newer of `latest`
+(read with `--prefer-online`) and the version passed in, when `rc` is below
+that or missing. The version passed in is the floor because the read can be
+stale (a 404 right after the first publish, a `latest` not yet updated, a
+read that misses this run's own RC): `rc` is never moved below what the run
+itself published. So whichever finishes last leaves `rc` on the newer. At
+worst, a publish-rc that checked just before the release lands publishes
+`X.Y.Z-rc.N` after `X.Y.Z` (its tag sorts before the release's), and `rc` is
+put back on `X.Y.Z` by the same run. Promote refuses a release that isn't
+newer than `latest`, so `latest` never moves back either.
 
 ## When something fails
 
