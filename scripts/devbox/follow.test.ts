@@ -284,8 +284,6 @@ describe("scripts/devbox/follow", { timeout: 60_000 }, () => {
 		const extra = {
 			NPM_RC: JSON.stringify({ version: rc.version, gitHead: rc.commit }),
 			NPM_BUILD: JSON.stringify(rc),
-			// npm alone decides: no git.
-			CRB_DEVBOX_REPO: join(dir, "nowhere"),
 		};
 		const r = await run(extra);
 		expect(r.stderr).toBe("");
@@ -294,8 +292,10 @@ describe("scripts/devbox/follow", { timeout: 60_000 }, () => {
 		expect(calls()).toContain("update rc\n");
 		expect(calls()).not.toContain("pnpm");
 		expect(installed()).toEqual(rc);
-		// The npm package carries no devbox scripts: the copy stays.
-		expect(copied()).toBeNull();
+		// The npm package carries no devbox scripts: origin/master's are
+		// copied, without building anything.
+		expect(copied()).toBe("# follow at 1\n");
+		expect(existsSync(tree())).toBe(false);
 
 		const again = await run(extra);
 		expect(again.stdout).toBe(
@@ -310,6 +310,21 @@ describe("scripts/devbox/follow", { timeout: 60_000 }, () => {
 		});
 		expect(moved.code).toBe(0);
 		expect(calls().match(/^update rc/gm)).toHaveLength(2);
+	});
+
+	it("from npm, a repo it can't fetch only keeps the scripts' copy as it was", async () => {
+		const rc = { version: "0.2.0-rc.1", commit: "2".repeat(40) };
+		const r = await run({
+			NPM_RC: JSON.stringify({ version: rc.version }),
+			NPM_BUILD: JSON.stringify(rc),
+			CRB_DEVBOX_REPO: join(dir, "nowhere"),
+		});
+		expect(r.code).toBe(0);
+		expect(installed()).toEqual(rc);
+		expect(r.stderr).toContain(
+			`kept ${copy()} as it was: could not fetch origin/master`,
+		);
+		expect(copied()).toBeNull();
 	});
 
 	it("fails without falling back to git when npm can't be asked", async () => {

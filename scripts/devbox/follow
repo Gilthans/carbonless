@@ -17,7 +17,8 @@
 # one appears. While a build fails or is skipped, every run exits non-zero,
 # so systemctl --user status crb-follow shows it.
 # After a move, the copy of these scripts that crb-follow.service runs
-# becomes master's (install_scripts: only when they parse).
+# becomes origin/master's (install_scripts: only when they parse), from npm
+# too.
 # One run at a time, and never alongside update (lib.sh take_lock).
 # Never waits for input: no terminal prompts, stdin is /dev/null.
 # Overrides for tests and odd setups: see lib.sh.
@@ -240,6 +241,13 @@ follow_npm() {
 	local target="$PACKAGE@rc $version${head:+ (${head:0:7})}"
 	check_retry "rc $version $head" "$target"
 	move_to rc "$target" "rc $version $head"
+	# The package carries no devbox scripts: take origin/master's.
+	local repo sha
+	if repo="$(follow_repo)" && sha="$(fetch_master "$repo")"; then
+		refresh_scripts "$repo" "$sha"
+	else
+		fail "kept $SCRIPTS_HOME as it was: could not fetch origin/master"
+	fi
 }
 
 # Fetches origin's master into the repo and prints its sha. The repo may be a

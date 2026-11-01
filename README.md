@@ -75,8 +75,8 @@ Tailscale):
    For it to start at boot: `sudo loginctl enable-linger $USER`.
 3. It follows master by itself: `crb-follow.timer` runs
    `scripts/devbox/follow` every 5 minutes, from a copy install makes in
-   `~/.local/share/carbonless/devbox/` (refreshed from each new build's
-   commit, so it never depends on what a checkout has checked out). Once
+   `~/.local/share/carbonless/devbox/` (refreshed from `origin/master`
+   after each move, so it never depends on what a checkout has checked out). Once
    `carbonless-review` is on npm it installs the `rc` dist-tag when that
    changes; until then it builds each new `origin/master` commit in a
    worktree of its own (`<repo>/.worktrees/follow`; fetching writes only
