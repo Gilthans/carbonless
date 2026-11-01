@@ -6,13 +6,14 @@ import type { FileView } from "../../shared/types";
  * each file's identity; only the order shown changes.
  */
 
-const collator = new Intl.Collator(undefined, {
+const collator = new Intl.Collator("en", {
 	numeric: true,
 	sensitivity: "base",
 });
 
 /**
- * Like a file explorer: case-insensitive and numeric-aware ("a2" before
+ * Like a file explorer, the same on every machine (one locale):
+ * case-insensitive and numeric-aware ("a2" before
  * "a10"), then bytewise so equal-looking names still order the same way.
  */
 export function byName(a: string, b: string): number {

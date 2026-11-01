@@ -346,6 +346,17 @@ describe("folderUnitProgress", () => {
 		expect(describeFolderProgress(rest, "lines")).toBe("1 file left");
 	});
 
+	it("counts a file without clusters as left", () => {
+		const empty = at("d/e.ts", []);
+		const p = folderUnitProgress([done, empty], "lines");
+		expect(p.done).toBe(false);
+		expect(p.filesLeft).toBe(1);
+		expect(p.clustersLeft).toBe(0);
+		expect(describeFolderProgress(p, "lines")).toBe(
+			"2 / 2 lines · 1 file left",
+		);
+	});
+
 	it("is done only when every file is; crossed off when every file is", () => {
 		const p = folderUnitProgress([done, crossed], "lines");
 		expect(p.done).toBe(true);

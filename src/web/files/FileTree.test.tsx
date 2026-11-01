@@ -540,4 +540,92 @@ describe("folders", () => {
 		expect(folder("src")).toHaveAttribute("aria-expanded", "false");
 		expect(fileRow(/one\.ts/)).toBeNull();
 	});
+	it("keeps a stored fold over the current file on load, remount and the first settle", () => {
+		const key = "crb:folds:o/r#3";
+		localStorage.setItem(key, JSON.stringify(["src"]));
+		const tree = (current: number | null, revealSeq = 0) => (
+			<FileTree
+				files={files}
+				unit="clusters"
+				current={current}
+				onSelect={() => {}}
+				foldKey={key}
+				revealSeq={revealSeq}
+			/>
+		);
+		// Mounted with the current file inside it (a remount: the sheet).
+		const { unmount } = render(tree(0));
+		expect(folder("src")).toHaveAttribute("aria-expanded", "false");
+		expect(folder("src")).toHaveAttribute("data-holds-current");
+		unmount();
+		// A reload: nothing current, then the file in view settles.
+		const { rerender } = render(tree(null));
+		rerender(tree(0));
+		expect(folder("src")).toHaveAttribute("aria-expanded", "false");
+		expect(JSON.parse(localStorage.getItem(key) ?? "")).toEqual(["src"]);
+		// Scrolling on to another file inside it reveals it.
+		rerender(tree(1));
+		expect(folder("src")).toHaveAttribute("aria-expanded", "true");
+		expect(localStorage.getItem(key)).toBeNull();
+	});
+
+	it("reveals on an explicit navigation, even right after load", () => {
+		const key = "crb:folds:o/r#4";
+		localStorage.setItem(key, JSON.stringify(["src", "gen"]));
+		const tree = (current: number | null, revealSeq: number) => (
+			<FileTree
+				files={files}
+				unit="clusters"
+				current={current}
+				onSelect={() => {}}
+				foldKey={key}
+				revealSeq={revealSeq}
+			/>
+		);
+		const { rerender } = render(tree(null, 0));
+		// A link on a cold open: null to a file, with a reveal request.
+		rerender(tree(2, 1));
+		expect(folder("src")).toHaveAttribute("aria-expanded", "true");
+		expect(folder("gen")).toHaveAttribute("aria-expanded", "false");
+		expect(JSON.parse(localStorage.getItem(key) ?? "")).toEqual(["gen"]);
+	});
+
+	it("keeps folds made before the PR is known, and reveals a link's file once it is", async () => {
+		const key = "crb:folds:o/r#5";
+		localStorage.setItem(key, JSON.stringify(["src"]));
+		const tree = (k: string | null, current: number | null, seq: number) => (
+			<FileTree
+				files={files}
+				unit="clusters"
+				current={current}
+				onSelect={() => {}}
+				foldKey={k}
+				revealSeq={seq}
+			/>
+		);
+		const { rerender } = render(tree(null, null, 0));
+		await userEvent.click(folder("gen"));
+		// A link landed before the session: its file is in src.
+		rerender(tree(null, 2, 1));
+		rerender(tree(key, 2, 1));
+		expect(folder("gen")).toHaveAttribute("aria-expanded", "false");
+		expect(folder("src")).toHaveAttribute("aria-expanded", "true");
+		expect(JSON.parse(localStorage.getItem(key) ?? "")).toEqual(["gen"]);
+	});
+
+	it("never draws a folder's meter full while a file without clusters is left", () => {
+		const empty: FileView = { ...file(7, "docs/empty.md", []), done: false };
+		render(
+			<FileTree
+				files={[file(6, "docs/a.md", ["reviewed"]), empty]}
+				unit="lines"
+				current={null}
+				onSelect={() => {}}
+			/>,
+		);
+		const row = folder("docs");
+		expect(numbers(row)).toBe("2 / 2 lines · 1 file left");
+		expect(part(bar(row), "reviewed")).toBeLessThan(100);
+		expect(row).not.toHaveAttribute("data-finished");
+	});
 });

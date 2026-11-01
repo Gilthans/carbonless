@@ -81,7 +81,10 @@ function FileItem(props: {
 					>
 						<StatusIcon file={file} />
 						<ChangeKindIcon file={file} />
-						<span className="min-w-0 flex-1 truncate font-mono text-[0.8125rem]">
+						<span
+							data-testid="tree-name"
+							className="min-w-0 flex-1 truncate font-mono text-[0.8125rem]"
+						>
 							{file.crossedOff ? (
 								<s className="text-muted decoration-done">{name}</s>
 							) : (
@@ -188,7 +191,10 @@ function FolderItem(props: Level & { folder: Folder }) {
 							aria-hidden
 							className="w-4 shrink-0 text-faint"
 						/>
-						<span className="min-w-0 flex-1 truncate font-mono text-[0.8125rem]">
+						<span
+							data-testid="tree-name"
+							className="min-w-0 flex-1 truncate font-mono text-[0.8125rem]"
+						>
 							{folder.name}
 						</span>
 						<ChangeCount file={p} />
@@ -202,7 +208,9 @@ function FolderItem(props: Level & { folder: Folder }) {
 						>
 							<Meter
 								counts={p.counts}
-								incomplete={p.clustersLeft > 0}
+								// Never full while any file is left (one with no
+								// clusters counts nothing but isn't done either).
+								incomplete={!p.done}
 								className="h-1.5 w-full"
 							/>
 						</span>
@@ -258,10 +266,20 @@ export function FileTree(props: {
 	threadsLoading?: boolean;
 	/** Where this PR's fold state is kept (foldsKey); null: in memory only. */
 	foldKey?: string | null;
+	/**
+	 * Bumped on each explicit navigation (a pick, a link): the current
+	 * file's folded folders unfold, even right after load.
+	 */
+	revealSeq?: number;
 }) {
 	const { files, current } = props;
 	const tree = useMemo(() => buildTree(files), [files]);
-	const folds = useFolds(props.foldKey ?? null, files, current);
+	const folds = useFolds(
+		props.foldKey ?? null,
+		files,
+		current,
+		props.revealSeq,
+	);
 	return (
 		<nav
 			aria-label="Files"

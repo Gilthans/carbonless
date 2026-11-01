@@ -609,7 +609,7 @@ test("files start collapsed", async ({ page, pr, startCrb }) => {
 	});
 });
 
-test("a folded folder keeps its progress, unfolds for its file, and stays folded on reload", async ({
+test("a folded folder keeps its progress, unfolds for its file, and stays folded on reload, the first one too", async ({
 	page,
 	pr,
 	startCrb,
@@ -618,6 +618,8 @@ test("a folded folder keeps its progress, unfolds for its file, and stays folded
 	const s = await startCrb();
 	await openFiles(page, s.url);
 	const src = (tree: Locator) => tree.locator('button[data-folder="src"]');
+	// The first folder: it holds the file in view after a reload.
+	const docs = (tree: Locator) => tree.locator('button[data-folder="docs"]');
 	await withTree(page, async (tree) => {
 		await expect(treeNumbers(tree, /^src/)).toHaveText(
 			"0 / 3 clusters · 2 files left",
@@ -632,6 +634,8 @@ test("a folded folder keeps its progress, unfolds for its file, and stays folded
 		);
 		await expect(src(tree).getByTestId("tree-meter")).toBeVisible();
 		await expect(src(tree)).not.toHaveAttribute("data-finished");
+		await docs(tree).click();
+		await expect(docs(tree)).toHaveAttribute("aria-expanded", "false");
 	});
 	// Folding changes no progress.
 	await expect(progress(page)).toHaveAttribute(
@@ -642,9 +646,12 @@ test("a folded folder keeps its progress, unfolds for its file, and stays folded
 	await expect(progress(page)).toBeVisible();
 	await withTree(page, async (tree) => {
 		await expect(src(tree)).toHaveAttribute("aria-expanded", "false");
-		await expect(tree.getByRole("button", { name: /new\.md/ })).toBeVisible();
+		// The file in view settled on docs/new.md: docs stays folded, marked.
+		await expect(docs(tree)).toHaveAttribute("data-holds-current");
+		await expect(docs(tree)).toHaveAttribute("aria-expanded", "false");
+		await expect(tree.getByRole("button", { name: /new\.md/ })).toHaveCount(0);
 	});
-	// Going to a file inside it (a link) unfolds it.
+	// Going to a file inside it (a link, on a fresh load) unfolds it.
 	await page.goto(reviewPage(s.url, "files", "?path=src/util.ts"));
 	await expect(
 		fileSection(page, "src/util.ts").getByTestId("diff-line").first(),
@@ -1339,7 +1346,11 @@ test("the tree and the diff list share one order: folders first, then files, by 
 		const rows = tree.locator("button:not([aria-expanded])");
 		await expect(rows).toHaveCount(7);
 		const names = await rows.evaluateAll((els) =>
-			els.map((el) => el.querySelector(".truncate")?.textContent?.trim() ?? ""),
+			els.map(
+				(el) =>
+					el.querySelector("[data-testid=tree-name]")?.textContent?.trim() ??
+					"",
+			),
 		);
 		expect(names).toEqual(order.map((p) => p.slice(p.lastIndexOf("/") + 1)));
 		// The file being read is the first in that order, not git's first.

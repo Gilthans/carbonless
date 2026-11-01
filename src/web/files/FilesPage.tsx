@@ -279,6 +279,8 @@ export const MISSING_HINT_MS = 8000;
 export function FilesPage() {
 	// The reviewer's intended states over the server's (useSetStates).
 	const { review, data } = useReviewView();
+	// Bumped on each explicit navigation: the tree reveals the file.
+	const [reveal, setReveal] = useState(0);
 	// The page's one order, the tree's (fileOrder): the diff list follows it.
 	const files = useMemo(() => (data ? treeOrder(data.files) : []), [data]);
 	const { stale } = useSyncState();
@@ -441,6 +443,7 @@ export function FilesPage() {
 	/** A file picked in the tree: open it alone and bring its header to the top. */
 	const select = (index: number) => {
 		setCurrent(index);
+		setReveal((n) => n + 1);
 		anchor.current = null;
 		setOpen(keyOf(index));
 		const fromSheet = sheetOpen;
@@ -488,6 +491,7 @@ export function FilesPage() {
 		});
 		if (!file) return;
 		setCurrent(file.index);
+		setReveal((n) => n + 1);
 		anchor.current = null;
 		setOpen(keyOf(file.index));
 	}, [active, data, search.path, search.line, search.side, search.moved]);
@@ -567,6 +571,7 @@ export function FilesPage() {
 			threadsOf={(f) => threadsByPath.get(f.path) ?? NO_THREADS}
 			threadsLoading={threadsLoading}
 			foldKey={pr ? foldsKey(pr) : null}
+			revealSeq={reveal}
 		/>
 	);
 
