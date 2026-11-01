@@ -62,6 +62,7 @@ import { useReviewView } from "../files/useSetStates";
 import { GithubHtml, ImageErrorContext } from "../GithubHtml";
 import { RelativeTime, relativeTime, useNow } from "../RelativeTime";
 import { useReviewId } from "../reviewId";
+import { Spinner } from "../Spinner";
 import { Tooltip, type TooltipTriggerProps } from "../Tooltip";
 import { CodeRows, CommentBody } from "../threads/CommentBody";
 import {
@@ -317,9 +318,7 @@ function ReviewFilesButton() {
 					</span>
 				)}
 			</Link>
-			{review.isPending && (
-				<span className="text-sm text-muted">Loading progress…</span>
-			)}
+			{review.isPending && <Spinner label="Loading review progress" />}
 			{review.isError && <ErrorMessage error={review.error} />}
 		</div>
 	);

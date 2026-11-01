@@ -141,15 +141,8 @@ export const REVIEW_ICON: Record<
 	},
 };
 
-/** A grey bar where text is still on its way. */
-export function SkeletonBar(props: { className: string }) {
-	return (
-		<div
-			aria-hidden
-			className={`h-3 animate-pulse rounded bg-overlay motion-reduce:animate-none ${props.className}`}
-		/>
-	);
-}
+/** A grey bar where text is still on its way (shared: `Spinner.tsx`). */
+export { SkeletonBar } from "../Spinner";
 
 /**
  * A chip with a tooltip. Interactive (`onClick`) chips are buttons; the rest

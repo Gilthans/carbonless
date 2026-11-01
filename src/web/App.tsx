@@ -27,6 +27,7 @@ import { KeptPages, useActivePage } from "./pages";
 import { fullDate } from "./RelativeTime";
 import { useReviewId } from "./reviewId";
 import { Settings } from "./Settings";
+import { SkeletonBar, Spinner } from "./Spinner";
 import { useShortcutHelp } from "./shortcuts";
 import { AppHeaderHeight } from "./sticky";
 import { Tooltip } from "./Tooltip";
@@ -219,7 +220,20 @@ export function App() {
 					}`}
 				>
 					<div className="mx-auto max-w-5xl px-4 pt-3 pb-2 sm:px-6 sm:pt-4">
-						{session.isPending && <p className="text-muted">Loading…</p>}
+						{session.isPending && (
+							// The title's frame, where it will show (principle 8).
+							<div
+								aria-busy="true"
+								data-testid="header-loading"
+								className="flex min-h-11 items-center gap-2 sm:min-h-12 sm:gap-3"
+							>
+								<Spinner label="Loading the PR" size={20} />
+								<div className="min-w-0 flex-1 space-y-2.5">
+									<SkeletonBar className="w-2/3 max-w-sm" />
+									<SkeletonBar className="w-1/3 max-w-40" />
+								</div>
+							</div>
+						)}
 						{session.isError && <ErrorMessage error={session.error} />}
 						{pr && (
 							<div className="flex items-center gap-2 sm:gap-3">

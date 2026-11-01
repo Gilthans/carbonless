@@ -5,6 +5,7 @@ import { join } from "node:path";
 import {
 	test as base,
 	expect,
+	type Locator,
 	type Page,
 	type TestInfo,
 } from "@playwright/test";
@@ -330,6 +331,31 @@ export function watchConsoleErrors(page: Page): ConsoleErrorWatch {
 		unexpected: () =>
 			errors.filter((text) => !expected.some((pattern) => pattern.test(text))),
 	};
+}
+
+/**
+ * Loading never looks empty (design principle 8), on a page: while the
+ * answer is held (the fake gh's `hold`), `loading` is visible and none of
+ * `empty` (nor `result`) is; once `release()` lets it go (`release(path,
+ * op)`), `result` shows and `loading` is gone.
+ */
+export async function expectLoadingThen(opts: {
+	loading: Locator;
+	empty?: Locator[];
+	release: () => void | Promise<void>;
+	result: Locator;
+	/** For the result, after the release (a slow machine). */
+	timeout?: number;
+}): Promise<void> {
+	await expect(opts.loading).toBeVisible();
+	for (const empty of opts.empty ?? []) await expect(empty).toHaveCount(0);
+	await expect(opts.result).toHaveCount(0);
+	await opts.release();
+	await expect(opts.result.first()).toBeVisible({
+		timeout: opts.timeout ?? 15_000,
+	});
+	await expect(opts.loading).toHaveCount(0);
+	for (const empty of opts.empty ?? []) await expect(empty).toHaveCount(0);
 }
 
 export { expect };

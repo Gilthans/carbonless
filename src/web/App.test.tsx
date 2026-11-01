@@ -13,6 +13,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { codeFromHunk } from "../../test/code-window";
 import { suggestionHtml } from "../../test/fake-gh/scenario";
+import { expectLoadingThen, heldJson } from "../../test/loading";
 import type {
 	CodeWindow,
 	PrOverview,
@@ -234,6 +235,8 @@ function mockApi(routes: Routes) {
 			const route = routes[path];
 			if (!route) return new Response("{}", { status: 404 });
 			if (route.body === NEVER) return new Promise<Response>(() => {});
+			// Held (test/loading.ts): answered when the test lets it go.
+			if (route.body instanceof Promise) return route.body as Promise<Response>;
 			return new Response(JSON.stringify(route.body), { status: route.status });
 		},
 	);
@@ -455,9 +458,8 @@ describe("App", () => {
 				headMoved: true,
 			}),
 		});
-		expect(await screen.findByRole("status")).toHaveTextContent(
-			"New commits were pushed",
-		);
+		const banner = await screen.findByText(/New commits were pushed/);
+		expect(banner.closest('[role="status"]')).not.toBeNull();
 	});
 
 	it("shows no banner, and no error, when the head check fails", async () => {
@@ -466,7 +468,7 @@ describe("App", () => {
 		});
 		await screen.findByRole("heading", { level: 1 });
 		await waitFor(() => expect(calls("/api/head")).toBe(1));
-		expect(screen.queryByRole("status")).toBeNull();
+		expect(screen.queryByText(/New commits were pushed/)).toBeNull();
 		expect(screen.queryByRole("alert")).toBeNull();
 	});
 
@@ -526,6 +528,19 @@ describe("App", () => {
 		await user.keyboard("{Escape}");
 		expect(gear).toHaveAttribute("aria-expanded", "false");
 		expect(gear).toHaveFocus();
+	});
+
+	it("while the PR loads, the header is a frame with a spinner, never blank", async () => {
+		const session = heldJson();
+		renderApp({ "/api/session": { status: 200, body: session.response } });
+		await expectLoadingThen({
+			loading: () => screen.queryByRole("status", { name: "Loading the PR" }),
+			empty: [() => screen.queryByText("Loading…")],
+			release: () => session.release(info),
+			result: () =>
+				screen.queryByRole("heading", { level: 1, name: "Add widget cache" }),
+		});
+		expect(screen.queryByTestId("header-loading")).toBeNull();
 	});
 
 	it("shows the server's error message", async () => {
@@ -2019,6 +2034,22 @@ describe("OverviewPage", () => {
 		renderApp();
 		await screen.findByRole("heading", { level: 1 });
 		expect(screen.queryByTestId("as-of")).toBeNull();
+	});
+
+	it("while review progress loads, the Review files button spins, never 0 clusters", async () => {
+		const progress = heldJson();
+		renderApp({ "/api/review": { status: 200, body: progress.response } });
+		const link = await screen.findByRole("link", { name: /Review files/ });
+		await expectLoadingThen({
+			loading: () =>
+				screen.queryByRole("status", { name: "Loading review progress" }),
+			empty: [
+				() => within(link).queryByText(/clusters/),
+				() => screen.queryByText("Loading progress…"),
+			],
+			release: () => progress.release(review),
+			result: () => within(link).queryByText("2 / 5 clusters · 40%"),
+		});
 	});
 
 	it("shows review progress on the Review files button", async () => {
