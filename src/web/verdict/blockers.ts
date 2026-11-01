@@ -41,6 +41,17 @@ export const THREADS_SHOWN = 5;
 const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
 
 /**
+ * Whether a GitHub login is the session's viewer, which is a slug
+ * (`SessionInfo.viewer`: lowercase, other characters as "-", as the server's
+ * slugify): "Octo_Cat" is "octo-cat".
+ */
+export const isViewer = (login: string, viewer: string) =>
+	login
+		.toLowerCase()
+		.replace(/[^a-z0-9-]/g, "-")
+		.slice(0, 64) === viewer.toLowerCase();
+
+/**
  * Everything between the PR and merging, as one list: GitHub's own
  * requirements first (tagged, red while unmet), then what a careful
  * reviewer would want settled (yellow), then one muted green row for
@@ -170,8 +181,8 @@ export function blockers(
 		(t) => !t.resolved && t.unavailable === undefined && t.id !== "",
 	);
 	const human = open.filter((t) => !t.bot);
-	const mine = human.filter((t) => same(t.author, viewer));
-	const theirs = human.filter((t) => !same(t.author, viewer));
+	const mine = human.filter((t) => isViewer(t.author, viewer));
+	const theirs = human.filter((t) => !isViewer(t.author, viewer));
 	const threadRows = [...mine, ...theirs].map(
 		(t): BlockerRow => ({
 			id: `thread:${t.id}`,
@@ -180,7 +191,7 @@ export function blockers(
 			required: false,
 			text: t.excerpt,
 			detail: threadLabel(t),
-			who: same(t.author, viewer) ? "you" : t.author,
+			who: isViewer(t.author, viewer) ? "you" : t.author,
 			at: t.lastActivityAt,
 			threadId: t.id,
 		}),

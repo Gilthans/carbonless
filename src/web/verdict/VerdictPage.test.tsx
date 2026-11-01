@@ -569,6 +569,37 @@ describe("Final Verdict tab", () => {
 		expect(within(end).getByRole("button", { name: "Approve" })).toBeTruthy();
 	});
 
+	it("keeps the Files end card quiet when GitHub's facts can't be read", async () => {
+		const seen: IntersectionObserverCallback[] = [];
+		vi.stubGlobal(
+			"IntersectionObserver",
+			class {
+				constructor(cb: IntersectionObserverCallback) {
+					seen.push(cb);
+				}
+				observe() {}
+				disconnect() {}
+			},
+		);
+		renderApp(
+			{ "/api/verdict": { status: 502, body: { error: "gh failed" } } },
+			"/files",
+		);
+		const end = await screen.findByTestId("verdict-card-files");
+		act(() => {
+			for (const cb of seen) {
+				cb(
+					[{ isIntersecting: true } as IntersectionObserverEntry],
+					{} as IntersectionObserver,
+				);
+			}
+		});
+		await waitFor(() => expect(verdictReads()).toBe(1));
+		expect(within(end).getByRole("link", { name: "Blockers" })).toBeTruthy();
+		expect(within(end).queryByText(/gh failed/)).toBeNull();
+		expect(within(end).getByRole("button", { name: "Approve" })).toBeTruthy();
+	});
+
 	it("says merged with no list under it, and disables the buttons", async () => {
 		renderApp({
 			"/api/overview": ok({ ...overview, state: "MERGED" }),

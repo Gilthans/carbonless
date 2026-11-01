@@ -319,16 +319,17 @@ describe("blockers", () => {
 			thread("b1", { bot: true, author: "ci-bot" }),
 			thread("m1"),
 			thread("m2"),
-			thread("o1", { author: "Octo" }),
+			thread("o1", { author: "Octo_Cat" }),
 			thread("m3"),
 			thread("m4"),
 			thread("m5"),
-			thread("o2", { author: "octo" }),
+			thread("o2", { author: "octo-cat" }),
 			thread("r1", { resolved: true }),
 			thread("u1", { unavailable: "unreadable" }),
 			thread("b2", { bot: true, author: "ci-bot" }),
 		];
-		const rows = blockers(facts(), overview(), list, "octo");
+		// The viewer is a slug: "Octo_Cat" is "octo-cat".
+		const rows = blockers(facts(), overview(), list, "octo-cat");
 		const threadRows = rows.filter((r) => r.kind === "thread");
 		expect(threadRows.map((r) => r.threadId ?? r.text)).toEqual([
 			"o1",

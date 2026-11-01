@@ -200,6 +200,7 @@ test("the tab isn't read on first open of the Overview, only once shown; it list
 	const threads = list.locator('[data-kind="thread"]');
 	await expect(threads).toHaveCount(2);
 	await expect(threads.first()).toContainText("My own question");
+	await expect(threads.first()).toContainText("you");
 	await expect(threads.nth(1)).toContainText("a.txt:2");
 	await expect(row("Waiting on rev2")).toBeVisible();
 	await expect(row(/1 check passing/)).toHaveAttribute("data-kind", "summary");
@@ -364,7 +365,8 @@ test("a refused verdict: listed under the chip, Retry lands it; a second one is 
 		.getByRole("button", { name: "Drop" })
 		.click();
 	await expect(chip(page)).toHaveCount(0);
-	await expect(card.getByRole("textbox", { name: "Message" })).toHaveCount(0);
+	// Its message is gone with it.
+	await expect(card.getByRole("textbox", { name: "Message" })).toHaveValue("");
 	expect(submitted(p)).toHaveLength(1);
 });
 
@@ -444,9 +446,11 @@ test("the three tabs, Refresh and the title fit at 360px with no horizontal scro
 	const nav = page.getByRole("navigation", { name: "PR pages" });
 	await expect(nav.getByRole("link", { name: "Files changed" })).toHaveText(
 		"Files",
+		{ useInnerText: true },
 	);
 	await expect(nav.getByRole("link", { name: "Final Verdict" })).toHaveText(
 		"Verdict",
+		{ useInnerText: true },
 	);
 	// Scrolled until the header sticks, the title's pill shows beside them.
 	await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
@@ -477,5 +481,7 @@ test("the three tabs, Refresh and the title fit at 360px with no horizontal scro
 		),
 	);
 	expect(new Set(tops).size).toBe(1);
-	await expect(verdictButton(card, "Request changes")).toHaveText("Changes");
+	await expect(verdictButton(card, "Request changes")).toHaveText("Changes", {
+		useInnerText: true,
+	});
 });

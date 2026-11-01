@@ -31,6 +31,7 @@ import { WriteWarnings } from "../overview/WriteWarnings";
 import { RelativeTime } from "../RelativeTime";
 import { Tooltip } from "../Tooltip";
 import { useThreadWriter, useThreadWrites } from "../threads/threadWrites";
+import { isViewer } from "./blockers";
 import { useVerdictDraft, verdictDraftFor } from "./verdictDraft";
 
 /** The owner's words for each verdict (verbatim): each button's tooltip. */
@@ -228,9 +229,7 @@ export function VerdictCard(props: {
 	const { data: review } = useReviewView();
 	const lines = review?.progress.lines;
 	const mine = (props.threads ?? []).filter(
-		(t) =>
-			t.author.toLowerCase() === session.viewer.toLowerCase() &&
-			t.unavailable === undefined,
+		(t) => isViewer(t.author, session.viewer) && t.unavailable === undefined,
 	);
 	const open = mine.filter((t) => !t.resolved).length;
 	const info: string[] = [];
