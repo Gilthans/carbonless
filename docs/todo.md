@@ -119,6 +119,9 @@ Not scheduled yet; after everything above.
   browser's find can't reach the others; add a search over every changed
   file (and threads) that jumps to each match (owner, 2026-11-01; not for
   milestone 2).
+- **Install as a web app:** a PWA (manifest, icons, a service worker that
+  only caches the app shell) so carbonless can be added to the phone's home
+  screen and the desktop's app list (owner, 2026-11-01).
 - **More keyboard shortcuts** for existing actions (next/previous file, mark
   reviewed, next unreviewed…), each in the `?` help (owner, 2026-10-28).
 - **Bots in human threads:** decide how bot comments (review bots, CI
