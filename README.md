@@ -7,16 +7,13 @@ A local, AI-assisted tool for reviewing GitHub pull requests.
 Needs Node 24, git, and the GitHub CLI (`gh`) logged in (`gh auth login`).
 
 ```sh
-pnpm add -g carbonless-review      # or: npm install -g carbonless-review
-pnpm add -g carbonless-review@latest   # upgrade
+pnpm add -g carbonless-review          # install (or: npm install -g carbonless-review)
+pnpm add -g carbonless-review@latest   # upgrade (or: pnpm update -g carbonless-review)
+pnpm add -g carbonless-review@rc       # the release candidate channel
 ```
 
-Until the package is on npm, install from a tarball built from this repo:
-
-```sh
-pnpm install && pnpm pack          # makes carbonless-review-0.1.0.tgz
-pnpm add -g ./carbonless-review-0.1.0.tgz
-```
+pnpm installs a version a day after it is published (its `minimumReleaseAge`);
+add `--config.minimumReleaseAgeExclude=carbonless-review` to get it at once.
 
 ## Usage
 
@@ -122,3 +119,12 @@ against throwaway git repos.
 
 Layout: `src/cli.ts` (entry), `src/server` (Fastify + git + gh), `src/web` (React),
 `src/shared` (types used by both), `test/` (shared test helpers), `e2e/` (Playwright).
+
+## Maintainers
+
+Every merge to master publishes a release candidate; `pnpm release promote`
+turns one into a release: `docs/releasing.md` (and the npm and GitHub setup).
+
+## License
+
+MIT: `LICENSE`.
