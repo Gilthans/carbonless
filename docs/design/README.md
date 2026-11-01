@@ -170,6 +170,22 @@ While one shows, the file list's end is padded by how far up the notices
 reach (`--sync-notices`), so the last header can scroll clear of them.
 Leaving the page with anything unsaved asks first (`beforeunload`).
 
+## Loading
+
+Design principle 8: loading never looks empty. Two shapes, both shared
+(`src/web/Spinner.tsx`):
+
+- **Spinner**: the octicon sync arrows spinning in `muted` (still under
+  reduced motion), a tooltip and an accessible name saying what is loading
+  ("Loading comments", "Loading diff"), `role="status"`. For a small slot
+  (a chip, a bubble, a gap row) or a whole page whose code is on its way.
+- **Skeleton**: `SkeletonBar`, `h-3` `overlay` bars pulsing where text will
+  be, in the frame of what is coming (a section, a card, the header's
+  title), the region `aria-busy` with a screen-reader "Loading…".
+
+No 0, "None", empty meter or empty-list text shows until the answer says
+so; an error replaces the spinner in `bad`.
+
 ## Settings
 
 A gear (tooltip "Settings", 40px) at the right of the app bar's last row,
