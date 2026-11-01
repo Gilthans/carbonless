@@ -471,6 +471,13 @@ test("threads loading: spinners in the bar and on the file, never no comments", 
 				bar.getByRole("status", { name: "Loading comments" }),
 			).toBeVisible();
 			await expect(util.getByTestId("thread-bubble")).toHaveCount(0);
+			// And the tree, whose files have no dots yet.
+			await withTree(page, async (tree) => {
+				await expect(
+					tree.getByRole("status", { name: "Loading comments" }),
+				).toBeVisible();
+				await expect(tree).toHaveAttribute("aria-busy", "true");
+			});
 			release(p.scenarioPath, "threads");
 		},
 		result: core.getByRole("button", {
@@ -486,6 +493,12 @@ test("threads loading: spinners in the bar and on the file, never no comments", 
 	await expect(
 		core.getByRole("button", { name: /^Comment on file|on this file/ }),
 	).toBeVisible();
+	await withTree(page, async (tree) => {
+		await expect(
+			tree.getByRole("status", { name: "Loading comments" }),
+		).toHaveCount(0);
+		await expect(tree).not.toHaveAttribute("aria-busy");
+	});
 });
 
 test("slow comments: spinner, then comments", async ({

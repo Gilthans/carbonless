@@ -546,6 +546,7 @@ export function FilesPage() {
 			current={current}
 			onSelect={select}
 			threadsOf={(f) => threadsByPath.get(f.path) ?? NO_THREADS}
+			threadsLoading={threadsLoading}
 		/>
 	);
 
