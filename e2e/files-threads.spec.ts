@@ -6,7 +6,14 @@ import {
 	threadComment,
 } from "../test/fake-gh/scenario";
 import { fileSection, openFiles, progress, withTree } from "./files-ui";
-import { expect, type Pr, type PrOptions, reviewPage, test } from "./fixtures";
+import {
+	expect,
+	expectLoadingThen,
+	type Pr,
+	type PrOptions,
+	reviewPage,
+	test,
+} from "./fixtures";
 
 const core = Array.from({ length: 78 }, (_, i) => `core ${i + 1}`);
 const util = Array.from({ length: 10 }, (_, i) => `util ${i + 1}`);
@@ -439,6 +446,45 @@ test("threads show when /files is the first page", async ({
 		row(section, "new", 16).getByRole("button", {
 			name: "2 comments on line 16, your turn",
 		}),
+	).toBeVisible();
+});
+
+test("threads loading: spinners in the bar and on the file, never no comments", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	// The threads' summaries wait until the test lets them go.
+	const p = await setup(pr, { hold: ["threads"] });
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	const bar = page.locator("[data-page-bar]");
+	const core = await expand(page, CORE);
+	const util = fileSection(page, UTIL);
+	// The open file's bubble spins rather than offering a first comment.
+	await expectLoadingThen({
+		loading: core.getByRole("button", { name: "Loading comments" }),
+		empty: [core.getByRole("button", { name: "Comment on file" })],
+		release: async () => {
+			// The bar says so too, and a closed file has no count yet.
+			await expect(
+				bar.getByRole("status", { name: "Loading comments" }),
+			).toBeVisible();
+			await expect(util.getByTestId("thread-bubble")).toHaveCount(0);
+			release(p.scenarioPath, "threads");
+		},
+		result: core.getByRole("button", {
+			name: "2 comments on line 16, your turn",
+		}),
+	});
+	await expect(
+		bar.getByRole("status", { name: "Loading comments" }),
+	).toHaveCount(0);
+	await expect(
+		util.getByRole("button", { name: "1 comment in this file" }),
+	).toBeVisible();
+	await expect(
+		core.getByRole("button", { name: /^Comment on file|on this file/ }),
 	).toBeVisible();
 });
 

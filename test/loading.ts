@@ -38,5 +38,4 @@ export async function expectLoadingThen(opts: {
 	opts.release();
 	await waitFor(() => expect(opts.result()).toBeInTheDocument());
 	expect(opts.loading()).toBeNull();
-	for (const empty of opts.empty ?? []) expect(empty()).toBeNull();
 }

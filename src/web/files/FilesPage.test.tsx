@@ -11,6 +11,7 @@ import {
 import { act, cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { expectLoadingThen, heldJson } from "../../../test/loading";
 import type { FileView, ReviewView } from "../../shared/types";
 import { parseSearch, stringifySearch } from "../search";
 import { AppHeaderHeight } from "../sticky";
@@ -62,7 +63,10 @@ const otherFile: FileView = { ...oneFile, index: 1, path: "b.txt" };
 const noHunks = { newLineCount: 0, hunks: [] };
 
 function renderPage(
-	responses: Record<string, () => { status: number; body: unknown }>,
+	responses: Record<
+		string,
+		() => { status: number; body: unknown } | Promise<Response>
+	>,
 	/** The app header's compact height, as App provides it. */
 	appHeader = 0,
 	initialPath = "/files",
@@ -71,6 +75,8 @@ function renderPage(
 		const path = new URL(String(input), "http://test").pathname;
 		const respond = responses[path];
 		const result = respond ? respond() : { status: 404, body: {} };
+		// Held (test/loading.ts): answered when the test lets it go.
+		if (result instanceof Promise) return result;
 		return new Response(JSON.stringify(result.body), { status: result.status });
 	});
 	vi.stubGlobal("fetch", fetchMock);
@@ -116,6 +122,22 @@ describe("FilesPage", () => {
 		cleanup();
 		vi.unstubAllGlobals();
 		vi.restoreAllMocks();
+	});
+
+	it("while the diff loads: its frame and a spinner, never no files or 0%", async () => {
+		const review = heldJson();
+		renderPage({ "/api/review": () => review.response });
+		await expectLoadingThen({
+			loading: () => screen.queryByRole("status", { name: "Loading the diff" }),
+			empty: [
+				() => screen.queryByText("This PR changes no files."),
+				() => screen.queryByRole("progressbar", { name: "Review progress" }),
+				() => screen.queryByText("Loading the diff…"),
+			],
+			release: () => review.release({ ...emptyReview, files: [oneFile] }),
+			result: () => screen.queryByRole("region", { name: "a.txt" }),
+		});
+		expect(screen.queryByTestId("files-loading")).toBeNull();
 	});
 
 	it("says when the PR changes no files", async () => {

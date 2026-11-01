@@ -3,6 +3,7 @@ import {
 	CheckIcon,
 	CommentIcon,
 	FileIcon,
+	SyncIcon,
 } from "@primer/octicons-react";
 import type { ReactNode } from "react";
 import { useEffect, useRef } from "react";
@@ -52,15 +53,21 @@ export function ThreadBubble(props: {
 	where?: string;
 	file?: boolean;
 	/** Its name when it has no threads (`file`). */
-	label?: string;
+	label?: string /**
+	 * The threads are still on their way: it spins, named "Loading
+	 * comments", never the outline that means none (principle 8).
+	 */;
+	loading?: boolean;
 	/** Take focus once shown (then `onFocused`). */
 	focus?: boolean;
 	onFocused?: () => void;
 }) {
 	const { threads } = props;
-	const empty = threads.length === 0;
-	const label =
-		empty && props.label
+	const loading = props.loading === true;
+	const empty = threads.length === 0 && !loading;
+	const label = loading
+		? "Loading comments"
+		: empty && props.label
 			? props.label
 			: bubbleLabel(threads, props.flagged, props.where);
 	const button = useRef<HTMLButtonElement | null>(null);
@@ -71,7 +78,8 @@ export function ThreadBubble(props: {
 		onFocused?.();
 	}, [focus, onFocused]);
 	const count = threads.reduce((n, t) => n + t.commentCount, 0);
-	const resolved = !empty && threads.every((t) => t.resolved);
+	const resolved =
+		threads.length > 0 && !loading && threads.every((t) => t.resolved);
 	const yourTurn = threads.some((t) => t.yourTurn && !t.resolved);
 	return (
 		// Toggling closes its tip, so a tap doesn't leave it over the thread.
@@ -87,6 +95,7 @@ export function ThreadBubble(props: {
 					data-testid="thread-bubble"
 					data-file={props.file || undefined}
 					aria-label={label}
+					aria-busy={loading || undefined}
 					aria-expanded={props.open}
 					aria-controls={props.controls}
 					onClick={props.onToggle}
@@ -109,12 +118,17 @@ export function ThreadBubble(props: {
 						}`}
 					>
 						{props.file && <FileIcon size={12} />}
-						{resolved ? (
+						{loading ? (
+							<SyncIcon
+								size={12}
+								className="animate-spin motion-reduce:animate-none"
+							/>
+						) : resolved ? (
 							<CheckIcon size={12} className="text-ok" />
 						) : (
 							<CommentIcon size={12} />
 						)}
-						{!empty && count}
+						{!empty && !loading && count}
 						{props.flagged && <AlertIcon size={12} className="text-warn" />}
 						{yourTurn && (
 							<span

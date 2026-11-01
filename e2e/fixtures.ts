@@ -355,7 +355,6 @@ export async function expectLoadingThen(opts: {
 		timeout: opts.timeout ?? 15_000,
 	});
 	await expect(opts.loading).toHaveCount(0);
-	for (const empty of opts.empty ?? []) await expect(empty).toHaveCount(0);
 }
 
 export { expect };
