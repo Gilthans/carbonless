@@ -49,7 +49,7 @@ describe("tokenize", () => {
 	});
 
 	it("keeps combining marks in their word", () => {
-		expect(tokenize("ét")).toEqual(["ét"]);
+		expect(tokenize("e\u0301t")).toEqual(["e\u0301t"]);
 		expect(tokenize("ét")).toEqual(["ét"]);
 	});
 
@@ -97,7 +97,7 @@ describe("wordMarks", () => {
 			old: [[3, 5]],
 			new: [[3, 5]],
 		});
-		expect(wordMarks("café x", "café y")).toEqual({
+		expect(wordMarks("cafe\u0301 x", "cafe\u0301 y")).toEqual({
 			old: [[6, 7]],
 			new: [[6, 7]],
 		});
