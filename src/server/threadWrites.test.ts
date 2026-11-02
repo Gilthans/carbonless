@@ -1,6 +1,8 @@
 import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { writeFileAtomic } from "../../test/fake-gh/atomic.mjs";
 import {
+	type HoldOp,
 	listReplies,
 	prView,
 	release,
@@ -295,6 +297,16 @@ describe("thread writes", () => {
 		expect(writeCalls()).toHaveLength(1);
 		expect(answer.comment).toMatchObject({ id: "C12-0-2", body: "Done" });
 		expect(answer.commentCount).toBe(3);
+		// The re-read that found it is in the kept read with the answer: a
+		// reload from here lists it.
+		const { readId } = await session.overview();
+		const kept = await session.comments(readId, ["T12-0"]);
+		expect(kept.threads[0]?.comments.map((c) => c.body)).toEqual([
+			"Should this expire?",
+			"Why would it?",
+			"Done",
+		]);
+		expect(await thread0()).toMatchObject({ commentCount: 3 });
 	});
 
 	it("a reply's tags GitHub would drop go escaped; the comment reads as typed, and its retry finds it", async () => {
@@ -413,6 +425,259 @@ describe("thread writes", () => {
 		await expect(
 			session.setThreadResolved("T12-0", false),
 		).resolves.toMatchObject({ resolved: false });
+	});
+
+	describe("a write GitHub took shows in the kept read at once, its re-read still out", () => {
+		/** Reads of threads' comments by id (a write's re-read has one). */
+		const contentReads = () =>
+			(pr.ghLog().match(/nodes\(ids: \[/g) ?? []).length;
+		const gh = () => process.env.CRB_FAKE_GH ?? "";
+		/** Sets the fake gh's `hold`, the rest of what it stored kept. */
+		const hold = (ops: HoldOp[]) => {
+			const s = stored() as unknown as Scenario;
+			s.hold = ops;
+			writeFileAtomic(gh(), JSON.stringify(s, null, "\t"));
+		};
+		/**
+		 * Runs `write` with its re-read held (the test releases it), once
+		 * that re-read is out. A write that reads the thread first (an edit,
+		 * a delete) is held at GitHub (`op`) until that read is done.
+		 */
+		const holdReread = async (
+			write: () => Promise<unknown>,
+			op?: "edit" | "delete",
+		) => {
+			const { readId } = await session.overview();
+			// The read's own comments are in: only the re-read is held.
+			await session.threads(readId, "full");
+			const writes = () =>
+				(pr.ghLog().match(/^api -X (PATCH|DELETE) /gm) ?? []).length;
+			const sent = writes();
+			hold(op ? [op] : ["threadContent"]);
+			const written = write();
+			written.catch(() => {});
+			if (op) {
+				await vi.waitFor(() => expect(writes()).toBe(sent + 1), {
+					timeout: 10_000,
+				});
+				// Only `hold` changes: the held write keeps it once released.
+				hold(["threadContent"]);
+			}
+			const before = contentReads();
+			await vi.waitFor(() => expect(contentReads()).toBe(before + 1), {
+				timeout: 10_000,
+			});
+			return { readId, written };
+		};
+		const thread = async (readId: string) =>
+			(await session.threads(readId, "summary")).threads.find(
+				(x) => x.id === "T12-0",
+			);
+		const bodiesIn = async (readId: string) =>
+			(await session.comments(readId, ["T12-0"])).threads[0]?.comments.map(
+				(c) => c.body,
+			);
+
+		it("a resolve, then an unresolve: the threads say so while the re-read is held", async () => {
+			const { readId, written } = await holdReread(() =>
+				session.setThreadResolved("T12-0", true),
+			);
+			expect(stored().prs[12]?.graphql.reviewThreads[0]?.isResolved).toBe(true);
+			// A reload asks while GitHub has it: answered now, not after the re-read.
+			expect(await thread(readId)).toMatchObject({
+				resolved: true,
+				attention: [],
+				viewerCan: { resolve: false, unresolve: true },
+			});
+			release(gh(), "threadContent");
+			await written;
+			const back = await holdReread(() =>
+				session.setThreadResolved("T12-0", false),
+			);
+			expect(await thread(readId)).toMatchObject({
+				resolved: false,
+				viewerCan: { resolve: true, unresolve: false },
+			});
+			release(gh(), "threadContent");
+			await back.written;
+			expect(await thread(readId)).toMatchObject({ resolved: false });
+		});
+
+		it("a reply: the comments and the count have it", async () => {
+			const { readId, written } = await holdReread(() => reply("Landed"));
+			expect(await bodiesIn(readId)).toEqual([
+				"Should this expire?",
+				"Why would it?",
+				"Landed",
+			]);
+			expect(await thread(readId)).toMatchObject({ commentCount: 3 });
+			release(gh(), "threadContent");
+			await written;
+			expect(await bodiesIn(readId)).toHaveLength(3);
+		});
+
+		it("an edit and a delete: the comments have the new text, then lose it", async () => {
+			const posted = await reply("Mine");
+			const id = posted.comment?.id ?? "";
+			const edit = await holdReread(
+				() =>
+					session.editThreadComment("T12-0", id, {
+						body: "Mine, edited",
+						from: "Mine",
+						force: false,
+					}),
+				"edit",
+			);
+			expect(await bodiesIn(edit.readId)).toContain("Mine, edited");
+			release(gh(), "threadContent");
+			await edit.written;
+			const del = await holdReread(
+				() => session.deleteThreadComment("T12-0", id),
+				"delete",
+			);
+			expect(await bodiesIn(del.readId)).toEqual([
+				"Should this expire?",
+				"Why would it?",
+			]);
+			expect(await thread(del.readId)).toMatchObject({ commentCount: 2 });
+			release(gh(), "threadContent");
+			await del.written;
+		});
+
+		it("a Refresh's read whose summaries come in after a resolve shows it resolved", async () => {
+			const { readId: first } = await session.overview();
+			await session.threads(first, "full");
+			const summaries = () =>
+				(pr.ghLog().match(/reviewThreads\(first:/g) ?? []).length;
+			const before = summaries();
+			hold(["threads"]);
+			// The new read's summaries are read before the resolve, held.
+			const refreshed = session.refresh();
+			refreshed.catch(() => {});
+			await vi.waitFor(() => expect(summaries()).toBe(before + 1), {
+				timeout: 10_000,
+			});
+			hold(["threads", "thread"]);
+			const reads = threadReads();
+			const written = session.setThreadResolved("T12-0", true);
+			written.catch(() => {});
+			// GitHub has it; the re-read is held.
+			await vi.waitFor(() => expect(threadReads()).toBe(reads + 1), {
+				timeout: 10_000,
+			});
+			release(gh(), "threads");
+			const { readId } = await session.overview();
+			expect(readId).not.toBe(first);
+			expect(await thread(readId)).toMatchObject({
+				resolved: true,
+				attention: [],
+			});
+			release(gh(), "thread");
+			await written;
+			await refreshed;
+			expect(await thread(readId)).toMatchObject({ resolved: true });
+		});
+
+		it("a Refresh's read whose comments come in after a reply has it", async () => {
+			const { readId: first } = await session.overview();
+			await session.threads(first, "full");
+			hold(["threadContent"]);
+			const before = contentReads();
+			// The new read's comments are read before the reply, held.
+			const refreshed = session.refresh();
+			refreshed.catch(() => {});
+			await vi.waitFor(() => expect(contentReads()).toBe(before + 1), {
+				timeout: 10_000,
+			});
+			const { readId } = await session.overview();
+			expect(readId).not.toBe(first);
+			hold(["threadContent", "thread"]);
+			const reads = threadReads();
+			const written = reply("Landed");
+			written.catch(() => {});
+			await vi.waitFor(() => expect(threadReads()).toBe(reads + 1), {
+				timeout: 10_000,
+			});
+			// The read's comments, as GitHub had them before the reply, come in.
+			release(gh(), "threadContent");
+			expect(await bodiesIn(readId)).toEqual([
+				"Should this expire?",
+				"Why would it?",
+				"Landed",
+			]);
+			expect(await thread(readId)).toMatchObject({ commentCount: 3 });
+			release(gh(), "thread");
+			await written;
+			await refreshed;
+		});
+
+		it("deleting a thread's last comment drops it at once, one deleted before that GitHub still lists left out", async () => {
+			pr.scenario({
+				prs: {
+					12: {
+						view: prView({ headRefOid: pr.head(), baseRefName: "main" }),
+						graphql: {
+							reviewThreads: [
+								reviewThread({ path: "a.txt", line: 2 }, [
+									said("Octo_Cat", "One", 1),
+									said("Octo_Cat", "Two", 2),
+								]),
+							],
+							reviews: [],
+						},
+					},
+				},
+				// GraphQL keeps listing a deleted comment a while.
+				writeUnlistedMs: 600_000,
+			});
+			const s2 = await Session.open(pr.arg, process.cwd());
+			const r1 = (await s2.overview()).readId;
+			await s2.threads(r1, "full");
+			await s2.deleteThreadComment("T12-0", "C12-0-1");
+			// A Refresh's read: GitHub still lists "Two".
+			await s2.refresh();
+			const r2 = (await s2.overview()).readId;
+			expect(r2).not.toBe(r1);
+			await s2.threads(r2, "full");
+			const listed = async (readId: string) =>
+				(await s2.threads(readId, "summary")).threads.map((t) => t.id);
+			const deletes = () =>
+				(pr.ghLog().match(/^api -X DELETE /gm) ?? []).length;
+			const sent = deletes();
+			hold(["delete"]);
+			const written = s2.deleteThreadComment("T12-0", "C12-0");
+			written.catch(() => {});
+			await vi.waitFor(() => expect(deletes()).toBe(sent + 1), {
+				timeout: 10_000,
+			});
+			// The delete's re-read is held once GitHub has it.
+			hold(["threadContent"]);
+			const before = contentReads();
+			await vi.waitFor(() => expect(contentReads()).toBe(before + 1), {
+				timeout: 10_000,
+			});
+			expect(await listed(r2)).toEqual([]);
+			expect(await listed(r1)).toEqual([]);
+			release(gh(), "threadContent");
+			await expect(written).resolves.toEqual({
+				threadId: "T12-0",
+				gone: true,
+			});
+			expect(await listed(r2)).toEqual([]);
+		});
+
+		it("a re-read that fails leaves the write shown, and reads never wait on it", async () => {
+			const { readId } = await session.overview();
+			await session.threads(readId, "full");
+			// The write goes through; every read of threads' comments fails.
+			threads({ failGraphql: "nodes(ids:" });
+			await expect(
+				session.setThreadResolved("T12-0", true),
+			).rejects.toBeInstanceOf(GhError);
+			expect(stored().prs[12]?.graphql.reviewThreads[0]?.isResolved).toBe(true);
+			expect(await thread(readId)).toMatchObject({ resolved: true });
+			expect(await bodiesIn(readId)).toHaveLength(2);
+		});
 	});
 
 	it("a reply then a resolve on one thread land in that order", async () => {
@@ -597,6 +862,7 @@ describe("thread writes off and refused before GitHub", () => {
 		setInDoubt: () => {},
 		claimedIds: () => new Set(),
 		setPendingReview: () => {},
+		known: () => {},
 	});
 	const req: ReplyRequest = {
 		body: "Hi",
