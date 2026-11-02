@@ -208,6 +208,14 @@ Design principle 8: loading never looks empty. Two shapes, both shared
   be, in the frame of what is coming (a section, a card, the header's
   title), the region `aria-busy` with a screen-reader "Loading…".
 
+A spinner appears in place; showing or hiding it never moves anything
+(owner, 2026-11-02: "Make sure spinners appear somewhere static so the UI
+doesn't jitter"): it takes a fixed slot kept whether or not it spins (the
+busy sign by Home's view name, the open box's, the Files bar's), replaces
+something of its size (a chip's icon, a section's count, held as wide as
+two digits), or is laid over, letting taps through (the file tree's). Tests hold the answer and
+compare bounding boxes before, while and after.
+
 No 0, "None", empty meter or empty-list text shows until the answer says
 so; an error replaces the spinner in `bad`, or a `warn` notice where only
 a part is missing (flag uncertainty: "Threads not shown").

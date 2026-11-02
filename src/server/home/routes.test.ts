@@ -96,14 +96,14 @@ describe("/api/home", () => {
 		expect(reads()).toBe(before + 1);
 	});
 
-	it("a repo out of the view is 404 with no gh call; a malformed one 400", async () => {
+	it("a repo out of the view is served (any repo the settings may add); a malformed one 400", async () => {
 		const { app } = await setup();
 		const out = await app.inject({
 			method: "GET",
 			url: "/api/home/repos/other/tool",
 		});
-		expect(out.statusCode).toBe(404);
-		expect(fx?.ghLog()).toBe("");
+		expect(out.statusCode).toBe(200);
+		expect(out.json<RepoHome>().repo).toBe("other/tool");
 		const bad = await app.inject({
 			method: "GET",
 			url: "/api/home/repos/-x/tool",

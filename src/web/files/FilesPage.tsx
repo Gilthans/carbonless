@@ -574,8 +574,11 @@ export function FilesPage() {
 							unit={unit}
 							onUnitChange={setUnit}
 						>
-							{/* Every count and bubble waits on them (principle 8). */}
-							{threadsLoading && <Spinner label="Loading comments" />}
+							{/* Every count and bubble waits on them (principle 8). Its
+							    place is kept, so the bar moves nothing when it goes. */}
+							<span className="flex h-4 w-4 shrink-0 items-center">
+								{threadsLoading && <Spinner label="Loading comments" />}
+							</span>
 						</ProgressBar>
 						{stale && (
 							<p
