@@ -99,6 +99,20 @@ export class OverviewRead {
 	 * left out of the lists, their comments "deleted".
 	 */
 	readonly #dropped = new Map<string, number>();
+	/**
+	 * Writes GitHub took, by thread, ahead of their re-reads (applyKnown):
+	 * applied whenever the thread is read here.
+	 */
+	readonly #known = new Map<
+		string,
+		{
+			edit: (nodes: { summary: unknown; content: unknown }) => {
+				summary: unknown;
+				content: unknown;
+			};
+			seq: number;
+		}[]
+	>();
 	/** The PR author (the overview's), once the summary is in. */
 	#prAuthor = "";
 	/** Summary nodes, then with their content merged in as it arrives. */
@@ -274,6 +288,45 @@ export class OverviewRead {
 		if ((this.#dropped.get(id) ?? -1) > seq) return;
 		this.#dropped.delete(id);
 		this.#written.set(id, { ...nodes, seq });
+		this.#forgetKnown(id, seq);
+	}
+
+	/**
+	 * What a write GitHub just took is known to do to thread `id` (`edit`
+	 * of its nodes, the content undefined while not in), ahead of its
+	 * re-read: kept and applied to the thread whenever it is read here,
+	 * this read's own summary and content too when they come in later,
+	 * until a re-read (a later `seq`) replaces it. applyWrite's rules.
+	 */
+	applyKnown(
+		id: string,
+		edit: (nodes: { summary: unknown; content: unknown }) => {
+			summary: unknown;
+			content: unknown;
+		},
+		seq: number,
+		startedAt: number,
+	): void {
+		if (this.started > startedAt) return;
+		const prev = this.#written.get(id);
+		if (prev && prev.seq > seq) return;
+		if ((this.#dropped.get(id) ?? -1) > seq) return;
+		const known = this.#known.get(id) ?? [];
+		this.#known.set(id, [...known, { edit, seq }]);
+	}
+
+	/** Thread `id`'s nodes with the known edits newer than any re-read applied. */
+	#withKnown(
+		id: string,
+		summary: unknown,
+		content: unknown,
+	): { summary: unknown; content: unknown } {
+		const after = this.#written.get(id)?.seq ?? -1;
+		let nodes = { summary, content };
+		for (const k of this.#known.get(id) ?? []) {
+			if (k.seq > after) nodes = k.edit(nodes);
+		}
+		return nodes;
 	}
 
 	/**
@@ -298,6 +351,13 @@ export class OverviewRead {
 		code.catch(() => {});
 	}
 
+	/** Drops thread `id`'s known edits a re-read (`seq`) has replaced. */
+	#forgetKnown(id: string, seq: number): void {
+		const left = (this.#known.get(id) ?? []).filter((k) => k.seq > seq);
+		if (left.length > 0) this.#known.set(id, left);
+		else this.#known.delete(id);
+	}
+
 	/** Whether a write dropped thread `id` (dropThread). */
 	dropped(id: string): boolean {
 		return this.#dropped.has(id);
@@ -314,6 +374,7 @@ export class OverviewRead {
 		if (prev && prev.seq > seq) return;
 		this.#written.delete(id);
 		this.#dropped.set(id, seq);
+		this.#forgetKnown(id, seq);
 	}
 
 	/**
@@ -342,21 +403,38 @@ export class OverviewRead {
 	/** Thread `id`'s summary node as this read has it (a write's, if any). */
 	summaryOf(id: string): unknown {
 		if (this.#dropped.has(id)) return undefined;
-		const written = this.#written.get(id);
-		if (written) return written.summary;
-		return this.#nodes.find((n) => (n as { id?: unknown })?.id === id);
+		const node =
+			this.#written.get(id)?.summary ??
+			this.#nodes.find((n) => (n as { id?: unknown })?.id === id);
+		return node === undefined ? undefined : this.#summary(node);
 	}
 
-	/** A thread's summary node, a write's in place of this read's. */
+	/** A thread's summary node: a write's in place of this read's, known edits on it. */
 	#summary(node: unknown): unknown {
 		const id = (node as { id?: unknown })?.id;
-		return (typeof id === "string" && this.#written.get(id)?.summary) || node;
+		if (typeof id !== "string") return node;
+		const summary = this.#written.get(id)?.summary || node;
+		if (!this.#known.has(id)) return summary;
+		return this.#withKnown(id, summary, this.#rawContent(id)).summary;
 	}
 
-	/** A thread's content as in (a write's first), GONE, or undefined. */
+	/** A thread's content as in (a write's first, known edits on it), GONE, or undefined. */
 	#content(id: string): unknown {
 		if (this.#dropped.has(id)) return GONE;
-		return this.#written.get(id)?.content ?? this.#contents.get(id);
+		const content = this.#written.get(id)?.content ?? this.#contents.get(id);
+		if (!this.#known.has(id) || content === undefined || content === GONE) {
+			return content;
+		}
+		const summary =
+			this.#written.get(id)?.summary ??
+			this.#nodes.find((n) => (n as { id?: unknown })?.id === id);
+		return this.#withKnown(id, summary ?? {}, content).content;
+	}
+
+	/** A thread's content as in, a write's first: no known edits. */
+	#rawContent(id: string): unknown {
+		const content = this.#written.get(id)?.content ?? this.#contents.get(id);
+		return content === GONE ? undefined : content;
 	}
 
 	/** This read's thread nodes, and those writes started that it lacks. */

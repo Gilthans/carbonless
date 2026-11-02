@@ -1,5 +1,11 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { writeFileAtomic } from "../test/fake-gh/atomic.mjs";
 import {
@@ -61,6 +67,8 @@ export interface Pr {
 	moveHead: (commit: FixtureCommit) => string;
 	/** Edits the fake gh's scenario in place (lost on the next moveHead). */
 	editScenario: (edit: (s: Scenario) => void) => void;
+	/** Every fake gh call so far, a line each (its args), in the order they started. */
+	ghLog: () => string;
 }
 
 const BASE_FILE = Array.from({ length: 30 }, (_, i) => `line ${i + 1}`);
@@ -85,6 +93,7 @@ export function crbEnv(workdir: string): NodeJS.ProcessEnv {
 	return testGitEnv({
 		PATH: `${FAKE_GH_DIR}:${process.env.PATH ?? ""}`,
 		CRB_FAKE_GH: join(workdir, "fake-gh-scenario.json"),
+		CRB_FAKE_GH_LOG: join(workdir, "fake-gh.log"),
 		XDG_CACHE_HOME: join(workdir, "cache"),
 		XDG_STATE_HOME: join(workdir, "state"),
 		XDG_CONFIG_HOME: join(workdir, "config"),
@@ -165,6 +174,10 @@ export function createPr(workdir: string, opts: PrOptions = {}): Pr {
 			const s = JSON.parse(readFileSync(scenarioPath, "utf8")) as Scenario;
 			edit(s);
 			writeFileAtomic(scenarioPath, JSON.stringify(s, null, "\t"));
+		},
+		ghLog: () => {
+			const log = join(workdir, "fake-gh.log");
+			return existsSync(log) ? readFileSync(log, "utf8") : "";
 		},
 	};
 }

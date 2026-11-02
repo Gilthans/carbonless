@@ -136,10 +136,6 @@ Not scheduled yet; after everything above.
   word's start like `*_~(`. And a scheme inside `<https://…>`, `[d](https://…)`
   or an `href` marks the whole word a URL, so a `<T>` glued after it is left
   for GitHub to drop (as before escaping existed).
-- **Flaky e2e:** `thread-writes.spec.ts` "reply and resolve from Files
-  changed" failed 3 times in full `pnpm verify` runs (2026-11-01, chromium and
-  phone): the resolved state is wrong after a reload under load. It passes
-  flake-check ×6; find the race, no retry.
 - **Custom agent pre-review actions and instructions:** let the reviewer define
   their own AI steps to run before a review starts (and standing instructions for
   how their agent should help), so each reviewer's workflow is their own.

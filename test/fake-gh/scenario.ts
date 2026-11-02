@@ -25,6 +25,8 @@ export interface Scenario {
 	prViewDelayMs?: number;
 	/** Each page of review threads (their summaries) answers this late. */
 	threadsDelayMs?: number;
+	/** A read of one thread by id (a write's re-read) answers this late. */
+	threadDelayMs?: number;
 	/** Each read of threads' comments by id answers this late. */
 	threadContentDelayMs?: number;
 	/**
@@ -479,7 +481,7 @@ export function threadComment(c: {
  *
  * The calls `hold` can stop, each where its `…DelayMs` waits: `comments`
  * and `threadContent` are reads of threads' comments, `threads` their
- * summaries, `restList` the REST review comments, `comment` a new thread's
+ * summaries, `thread` one thread's summary by id (a write's re-read), `restList` the REST review comments, `comment` a new thread's
  * REST comment, `home` Home's PR list and details queries (a refresh),
  * `home:<owner/repo>` (lowercased) those of that one repo only.
  */
@@ -488,6 +490,7 @@ export type HoldOp =
 	| `home:${string}`
 	| "prView"
 	| "threads"
+	| "thread"
 	| "threadContent"
 	| "comments"
 	| "timeline"
