@@ -17,6 +17,7 @@ import {
 	writeScenario,
 } from "./fake-gh/scenario";
 import { createGitFixture, type GitFixture, testGitEnv } from "./git-fixture";
+import { settleGh } from "./settle-gh";
 
 export interface PrFixture {
 	/** What to pass to Session.open / crb. */
@@ -146,12 +147,16 @@ export function createPrFixture(): PrFixture {
 			// Sessions' background reads stop before the fake gh and the
 			// throwaway cache go: none may reach the real gh.
 			await Session.closeAll();
-			for (const [k, v] of Object.entries(saved)) {
-				if (v === undefined) delete process.env[k];
-				else process.env[k] = v;
+			try {
+				await settleGh(join(tmp, "fake-gh-scenario.json"));
+			} finally {
+				for (const [k, v] of Object.entries(saved)) {
+					if (v === undefined) delete process.env[k];
+					else process.env[k] = v;
+				}
+				repo.cleanup();
+				rmSync(tmp, { recursive: true, force: true });
 			}
-			repo.cleanup();
-			rmSync(tmp, { recursive: true, force: true });
 		},
 	};
 }
