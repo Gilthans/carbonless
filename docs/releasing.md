@@ -142,16 +142,16 @@ token of the owner's.
 
 Each workflow has its own concurrency group: GitHub keeps one pending run
 per group and cancels the older, so a shared group could silently drop a
-promote. publish-rc runs one at a time (no two pick the same `N`); a
-pending one replaced by a newer CI completion is harmless, since only
-master's tip publishes. A release and a publish-rc may overlap: publish-rc
-makes no RC of a released version, and it and release-finish end with
-`ci:rc-fixup [<version this run published>]`: it moves `rc` up to the
-newer of `latest` (read with `--prefer-online`) and the version passed in,
-when `rc` is below that or missing. The version passed in is the floor
-because the read can be stale (a 404 right after the first publish, a
-`latest` not yet updated, a read that misses this run's own RC): `rc` is
-never moved below what the run itself published. So whichever finishes last leaves `rc` on the newer. At
+promote. publish-rc runs one at a time (no two pick the same `N`); a pending
+one replaced by a newer CI completion is harmless, since only master's tip
+publishes. A release and a publish-rc may overlap: publish-rc makes no RC of
+a released version, and it and release-finish end with `ci:rc-fixup
+[<version this run published>]`: it moves `rc` up to the newer of `latest`
+(read with `--prefer-online`) and the version passed in, when `rc` is below
+that or missing. The version passed in is the floor because the read can be
+stale (a 404 right after the first publish, a `latest` not yet updated, a
+read that misses this run's own RC): `rc` is never moved below what the run
+itself published. So whichever finishes last leaves `rc` on the newer. At
 worst, a publish-rc that checked just before the release lands publishes
 `X.Y.Z-rc.N` after `X.Y.Z` (its tag sorts before the release's), and `rc` is
 put back on `X.Y.Z` by the same run. Promote and `pnpm release publish`
