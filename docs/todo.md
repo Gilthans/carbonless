@@ -12,7 +12,7 @@ In priority order.
   later), in order:** review threads in Files changed and the Overview
   (done); view at the commit you last reviewed (`--head reviewed`); instant
   saves; actions from the UI that write to GitHub (comment, reply, resolve,
-  approve / request changes); then carrying threads and progress over from
+  approve / request changes: done 2026-11-02, Final Verdict); then carrying threads and progress over from
   earlier snapshots.
 
 ## 0. Parity with the GitHub review workflow
@@ -173,3 +173,52 @@ Not scheduled yet; after everything above.
   overview, then the threads, then the card's comments, three round trips in
   a row; reading them in parallel would open it sooner (`docs/product-rules.md`,
   first-open performance; found by the flake hunt, 2026-10-30).
+
+## Final Verdict: parked
+
+- A verdict resent with `retry: false` after a 502 (the answer lost, the
+  review landed) posts a second review; only `retry: true` looks for the
+  landed one first (server review of brief V, L1).
+- Rulesets readable while branch protection is hidden (403) are dropped:
+  `rule` reads null instead of the rulesets' values (brief V, L5).
+- Fake gh gaps: it never sets `reviewDecision` APPROVED once enough
+  approvals are in (that depends on the repo's required count), and its
+  GraphQL and REST answers for rulesets and protection cover only the
+  shapes the tests use (briefs V L4, X L2).
+- Withdrawing an opinion by Comment, on real GitHub: the refusal text for a
+  reviewer without write access is unchecked (the owner is admin on both
+  playground repos; tests assume 403 "Resource not accessible by
+  integration"). A dismissal that times out may have gone through, yet the
+  notice says the opinion still stands and nothing retries it; the next read
+  corrects the card (brief X, L4).
+- The Files end card reads `/api/verdict` on a short PR during the first
+  visit to Files changed, right after that visit's own reads settle (the
+  card is on screen at once). Within the spirit of "never on first open of
+  another tab", not its letter.
+
+## Small UI leftovers (2026-11-01)
+
+- The `?` help list doesn't scroll with the keyboard.
+- Phone: the floating Files button can cover a reply box, and stays aside
+  while refusals are listed.
+- On a merged PR, a LEFT thread's code shows GitHub's hunk.
+
+## Housekeeping
+
+- `scripts/queue.mjs`: a SIGKILL to the queue's process group kills both
+  `queue.mjs` processes and frees the lock, but the test run keeps going
+  outside the queue with nobody reading it (measured; TERM, INT and HUP are
+  handled). Run the child in its own group and kill it when the waiter dies,
+  or hold the lock in the child.
+- Old agent worktrees under `.worktrees/` and stray processes (e.g. old
+  `threads-c` instances on test-automation#99) pile up; prune them.
+
+## Final Verdict and Home
+
+- A verdict that lands shows on Home only at Home's next refresh (about a
+  minute): the review's server could tell Home to re-read that PR, and the
+  open Home page then show it (merge of master into Final Verdict, 2026-11-02).
+- Two reviews of the same PR (one pinned to a head, say) share reply
+  drafts and thread-write refusals, which are keyed per PR, as on master
+  (a verdict's draft, pending send and refusal are per review since the
+  merge).
