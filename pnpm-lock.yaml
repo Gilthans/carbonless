@@ -14,9 +14,6 @@ importers:
       '@fastify/static':
         specifier: ^10.1.6
         version: 10.1.6
-      diff-match-patch:
-        specifier: ^1.0.5
-        version: 1.0.5
       fastify:
         specifier: ^5.12.7
         version: 5.12.7
@@ -75,6 +72,9 @@ importers:
       '@vitejs/plugin-react':
         specifier: ^6.1.2
         version: 6.1.2(vite@8.3.4(@types/node@26.6.5)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15))
+      diff-match-patch:
+        specifier: ^1.0.5
+        version: 1.0.5
       dompurify:
         specifier: 3.4.16
         version: 3.4.16
