@@ -63,9 +63,10 @@ editing or deleting your own comments.
 An always-on `crb serve` on a machine you open from other devices (e.g. over
 Tailscale):
 
-1. Install it: `pnpm release local` from a checkout (builds, packs into
-   `~/.local/share/carbonless/releases/` and installs the global `crb`;
-   `--no-install` only packs), or from npm once it is published there.
+1. Install it: in a checkout, `pnpm install`, then `pnpm release local`
+   (builds, packs into `~/.local/share/carbonless/releases/` and installs
+   the global `crb`; `--no-install` only packs), or from npm once it is
+   published there.
 2. Bind it, in `~/.config/carbonless/config.json`:
    `{ "serve": { "host": "<the machine's Tailscale IP>", "port": 4747 } }`.
    Off loopback, pages need the access key (`~/.local/state/carbonless/key`);

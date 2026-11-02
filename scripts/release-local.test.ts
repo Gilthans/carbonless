@@ -1,5 +1,6 @@
 import { execFile, execFileSync } from "node:child_process";
 import {
+	chmodSync,
 	existsSync,
 	mkdirSync,
 	mkdtempSync,
@@ -135,6 +136,25 @@ describe("releaseLocal, over a fake runner", () => {
 		expect(calls.some((c) => c.startsWith("pnpm add"))).toBe(false);
 	});
 
+	it("fails when pnpm add -g fails, keeping the tarball", async () => {
+		failing = "pnpm add";
+		await expect(releaseLocal(io, opts())).rejects.toThrow("pnpm add -g");
+		expect(
+			existsSync(join(dir, "out/carbonless-review-0.1.0-abcdef0.tgz")),
+		).toBe(true);
+	});
+
+	it("leaves no .tmp behind when the copy fails", async () => {
+		const tmp = join(dir, "out/carbonless-review-0.1.0-abcdef0.tgz.tmp");
+		mkdirSync(join(dir, "out"));
+		// A read-only file where the copy goes: copying onto it fails.
+		writeFileSync(tmp, "");
+		chmodSync(tmp, 0o444);
+		await expect(releaseLocal(io, opts())).rejects.toThrow();
+		expect(existsSync(tmp)).toBe(false);
+		expect(calls.some((c) => c.startsWith("pnpm add"))).toBe(false);
+	});
+
 	it("refuses a checkout that isn't carbonless-review", async () => {
 		writeFileSync(
 			join(dir, "root/package.json"),
@@ -213,12 +233,17 @@ describe("pnpm release local", { timeout: 120_000 }, () => {
 	});
 	afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
-	const release = (...args: string[]) =>
+	const release = (...args: (string | Record<string, string>)[]) =>
 		new Promise<RunResult>((resolve) => {
+			const extra = args.find((a) => typeof a === "object") ?? {};
 			execFile(
 				join(here, "../node_modules/.bin/tsx"),
-				[join(here, "release.ts"), "local", ...args],
-				{ cwd: pkg(), env },
+				[
+					join(here, "release.ts"),
+					"local",
+					...args.filter((a): a is string => typeof a === "string"),
+				],
+				{ cwd: pkg(), env: { ...env, ...extra } },
 				(error, stdout, stderr) =>
 					resolve({
 						code: error ? ((error as { code?: number }).code ?? 1) : 0,
@@ -262,6 +287,17 @@ describe("pnpm release local", { timeout: 120_000 }, () => {
 		);
 		expect(r.stdout).toBe(`${join(out, name ?? "")}\n`);
 		expect(existsSync(join(pnpmHome(), "bin/crb"))).toBe(false);
+	});
+
+	it("a relative --out is the caller's (INIT_CWD), not the package root's", async () => {
+		const caller = join(dir, "caller");
+		mkdirSync(caller);
+		const r = await release("--out", "rel", "--no-install", {
+			INIT_CWD: caller,
+		});
+		expect(r.code).toBe(0);
+		expect(readdirSync(join(caller, "rel"))).toHaveLength(1);
+		expect(existsSync(join(pkg(), "rel"))).toBe(false);
 	});
 
 	it("refuses unknown arguments", async () => {

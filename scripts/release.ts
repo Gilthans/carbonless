@@ -9,7 +9,7 @@
 import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { type LocalIo, type Runner, releaseLocal } from "./release-local.js";
 
 /** Runs a command, showing its output on stderr as it comes. */
@@ -63,6 +63,9 @@ async function main(argv: string[]) {
 				else usage();
 			}
 			if (!out) usage();
+			// pnpm runs scripts from the package root; a relative --out is the
+			// caller's, as INIT_CWD keeps it.
+			out = resolve(process.env.INIT_CWD || process.cwd(), out);
 			const scratch = mkdtempSync(join(tmpdir(), "crb-release-"));
 			try {
 				// pnpm runs package scripts from the package's root.

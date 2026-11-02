@@ -121,8 +121,14 @@ export async function releaseLocal(
 	const tarball = join(out, tarballName(build));
 	// Copy, then rename: never a partial tarball under its final name, and
 	// the scratch dir may be on another filesystem.
-	copyFileSync(from, `${tarball}.tmp`);
-	renameSync(`${tarball}.tmp`, tarball);
+	const tmp = `${tarball}.tmp`;
+	try {
+		copyFileSync(from, tmp);
+		renameSync(tmp, tarball);
+	} catch (error) {
+		rmSync(tmp, { force: true });
+		throw error;
+	}
 	rmSync(from);
 	io.log(`Packed ${prettyBuild(build)}: ${tarball}`);
 	if (opts.install) {
