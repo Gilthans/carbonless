@@ -1167,7 +1167,7 @@ test("side by side, Up/Down on the number buttons stay in their column and Left/
 	await expectNoPageOverflow(page);
 });
 
-test("side by side, the file bubble sits in the first row's right cell (a pair row once the gap above is loaded) and the pick bar by the side picked", async ({
+test("side by side, the file bubble sits on the first row (a row of its own above a pair row once the gap above is loaded) and the pick bar by the side picked", async ({
 	page,
 	pr,
 	startCrb,
@@ -1188,7 +1188,8 @@ test("side by side, the file bubble sits in the first row's right cell (a pair r
 	await expect(
 		section.getByTestId("gap-row").first().getByTestId("thread-bubble"),
 	).toHaveAccessibleName("Comment on file");
-	// Loaded, the first row is line 1's pair row: the bubble in its right cell.
+	// Loaded, the first row of code is line 1's pair row: the bubble gets a
+	// row of its own above it, never over code.
 	await section.getByRole("button", { name: "Load 1 line above" }).click();
 	const first = rows(section).first();
 	await expect(first).toHaveAttribute("data-new-no", "1");
@@ -1198,20 +1199,29 @@ test("side by side, the file bubble sits in the first row's right cell (a pair r
 	await expect(
 		section.getByTestId("gap-row").getByTestId("thread-bubble"),
 	).toHaveCount(0);
-	// (On a phone, the right of the bubble row under it.)
-	await expect(bubblesOf(first, "RIGHT", isMobile)).toHaveAccessibleName(
+	const slot = section.getByTestId("file-bubble-slot");
+	await expect(slot.getByTestId("thread-bubble")).toHaveAccessibleName(
 		"Comment on file",
 	);
-	await expect(bubblesOf(first, "LEFT", isMobile)).toHaveCount(0);
-	await expect(codeCells(first).getByTestId("thread-bubble")).toHaveCount(
-		isMobile ? 0 : 1,
-	);
-	// Its row opens right under the pair row (and its bubble row), across
-	// all six columns.
+	await expect(first.getByTestId("thread-bubble")).toHaveCount(0);
+	expect(
+		await first.evaluate(
+			(tr) =>
+				!!tr.previousElementSibling?.querySelector(
+					'[data-testid="file-bubble-slot"]',
+				),
+		),
+	).toBe(true);
+	// Its row opens right under the bubble's row, above line 1, across all
+	// six columns.
 	await bubble.click();
 	const fileRow = section.getByTestId("file-threads");
 	await expect(fileRow).toBeVisible();
-	expect(await under(first, isMobile)).toBe("file-threads");
+	expect(
+		await first.evaluate((tr) =>
+			tr.previousElementSibling?.getAttribute("data-testid"),
+		),
+	).toBe("file-threads");
 	expect(await fileRow.evaluate((el) => el.querySelector("td")?.colSpan)).toBe(
 		6,
 	);
