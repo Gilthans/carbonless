@@ -88,8 +88,13 @@ const E2E_MAP = [
 		["new-threads"],
 	],
 	[/^src\/server\/review\//, ["files", "persistence"]],
-	// Unit-test data only (wordBlocks.fixture.test.ts): no spec reads it.
-	[/^test\/fixtures\/inline-diff\//, []],
+	// Unit-test data (wordBlocks.fixture.test.ts); inlineDiff.spec.ts reads
+	// a few of its cases.
+	[/^test\/fixtures\/inline-diff\//, ["inlineDiff"]],
+	[
+		/^src\/web\/files\/(wordDiff|wordBlocks|whitespace)\.ts$|^src\/web\/code\/Invisibles\.tsx$|^src\/web\/files\/DiffBody\.tsx$/,
+		["inlineDiff"],
+	],
 	[
 		/^src\/server\/home\/|^src\/shared\/home(Sections)?\.ts$/,
 		["home-api", "home"],
