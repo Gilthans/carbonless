@@ -23,6 +23,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
 	bump,
+	checkRcPublish,
 	DEFAULT_REPO,
 	formatVersion,
 	type Io,
@@ -39,6 +40,7 @@ import {
 	renderChangelog,
 	resolvePromote,
 	status,
+	withGitHead,
 	withVersion,
 } from "./release-lib.js";
 import { localCommand } from "./release-local.js";
@@ -100,9 +102,16 @@ const packageVersion = (dir: string) =>
 function setVersion(version: string, dir: string) {
 	if (!parseVersion(version)) throw new Error(`not a version: ${version}`);
 	const file = join(dir, "package.json");
-	writeFileSync(file, withVersion(readFileSync(file, "utf8"), version));
 	const git = (...args: string[]) =>
 		execFileSync("git", args, { cwd: dir, encoding: "utf8" });
+	// gitHead: npm then records the commit, so an RC or a release can be
+	// told from a master build of the same version (`crb --version` shows the
+	// commit; the devbox's npm mode compares it).
+	const head = git("rev-parse", "HEAD").trim();
+	writeFileSync(
+		file,
+		withGitHead(withVersion(readFileSync(file, "utf8"), version), head),
+	);
 	git("update-index", "--skip-worktree", "package.json");
 	const dirty = git("status", "--porcelain");
 	if (dirty !== "") throw new Error(`the tree is not clean:\n${dirty}`);
@@ -150,6 +159,14 @@ async function main(argv: string[]) {
 			const [version, dir = process.cwd()] = rest;
 			if (!version) usage();
 			setVersion(version, dir);
+			return;
+		}
+		case "ci:check-publish": {
+			// ci:check-publish <tag> <version>: fails unless it is rc and X.Y.Z-rc.N.
+			const [tag, version] = rest;
+			if (!tag || !version) usage();
+			checkRcPublish(version, tag);
+			console.log(`ok: ${version} to ${tag}`);
 			return;
 		}
 		case "ci:write-version": {

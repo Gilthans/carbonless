@@ -298,8 +298,18 @@ export async function status(io: Io): Promise<void> {
 	);
 	if (!npm) io.log(`npm:     ${PACKAGE} is not published yet`);
 	if (nextVersion && nextVersion.rc === undefined) {
-		const rc = nextRc(nextVersion, tags, npm?.versions ?? []);
-		io.log(`next merge to master publishes ${formatVersion(rc)}`);
+		// What publish-rc will do, by the same logic (master's history from
+		// the local origin/master: the interim RCs are old enough for it).
+		const plan = await rcToPublish(io, next, "origin/master");
+		if (plan.blocked) {
+			io.log(`next merge to master publishes nothing: ${plan.blocked}`);
+		} else if (plan.firstPublish) {
+			io.log(
+				`next merge to master tags v${plan.version} only: ${PACKAGE} is not on npm yet, its first version is a release (pnpm release promote v${plan.version})`,
+			);
+		} else {
+			io.log(`next merge to master publishes ${plan.version} on rc`);
+		}
 	} else {
 		io.log(`warning: master's version ${next} is not a release X.Y.Z`);
 	}
@@ -471,23 +481,41 @@ export async function next(
  * to rc.4 on master, their tags local only): their numbers count as used, so
  * no CI-published RC repeats one. Nothing when git can't say.
  */
-export async function historyVersions(io: Io): Promise<string[]> {
-	const r = await io.run("git", [
+export async function historyVersions(io: Io, ref = "HEAD"): Promise<string[]> {
+	// A shallow history would undercount, and reuse a number.
+	const shallow = await must(io, "git", [
+		"rev-parse",
+		"--is-shallow-repository",
+	]);
+	if (shallow.trim() === "true") {
+		throw new Error(
+			"the checkout is shallow: package.json's history needs it all (fetch-depth: 0)",
+		);
+	}
+	const log = await must(io, "git", [
 		"log",
 		"-p",
 		"--format=",
+		ref,
 		"--",
 		"package.json",
 	]);
-	if (r.code !== 0) return [];
-	return [...r.stdout.matchAll(/^[+-]\s*"version":\s*"([^"]+)"/gm)].flatMap(
-		(m) => (m[1] ? [m[1]] : []),
+	return [...log.matchAll(/^[+-]\s*"version":\s*"([^"]+)"/gm)].flatMap((m) =>
+		m[1] ? [m[1]] : [],
 	);
 }
 
+/**
+ * What a push of master with this package.json version publishes: the next
+ * RC, whether it only tags (npm has no carbonless-review yet: its first
+ * version must be a release), or why nothing (blocked). publish-rc runs it
+ * on the pushed commit (history `HEAD`); `pnpm release status` on
+ * `origin/master`.
+ */
 export async function rcToPublish(
 	io: Io,
 	packageVersion: string,
+	historyRef = "HEAD",
 ): Promise<{ version: string; firstPublish: boolean; blocked: string | null }> {
 	const next = parseVersion(packageVersion);
 	if (!next || next.rc !== undefined) {
@@ -498,7 +526,7 @@ export async function rcToPublish(
 	const [tags, npm, history] = await Promise.all([
 		remoteTags(io),
 		npmState(io),
-		historyVersions(io),
+		historyVersions(io, historyRef),
 	]);
 	const release = formatVersion(next);
 	const released =
@@ -544,6 +572,52 @@ export function rcBehindLatest(
  * The RC tag a promote publishes (`given`, else the newest on origin) and the
  * release it becomes.
  */
+/**
+ * Whether the tag's commit is in master's history: the workflows ask the
+ * checkout (master, full history), people ask GitHub (no fetch).
+ */
+async function onMaster(io: Io, tag: string): Promise<boolean> {
+	if (io.tags === "local") {
+		const r = await io.run("git", [
+			"merge-base",
+			"--is-ancestor",
+			`refs/tags/${tag}^{commit}`,
+			"HEAD",
+		]);
+		if (r.code === 0 || r.code === 1) return r.code === 0;
+		throw new Error(`git merge-base failed: ${r.stderr.trim()}`);
+	}
+	const status = await must(io, "gh", [
+		"api",
+		`repos/${io.repo}/compare/${tag}...master`,
+		"--jq",
+		".status",
+	]);
+	// master is ahead of the tag, or at it.
+	return ["ahead", "identical"].includes(status.trim());
+}
+
+/** The version a publish step may publish under `rc`: `X.Y.Z-rc.N`, nothing else. */
+export function checkRcPublish(version: string, tag: string): void {
+	if (tag !== "rc")
+		throw new Error(`publish-rc publishes to rc only, not ${tag}`);
+	const v = parseVersion(version);
+	if (!v || v.rc === undefined || formatVersion(v) !== version) {
+		throw new Error(`refusing to publish ${version} to rc: not X.Y.Z-rc.N`);
+	}
+}
+
+/** package.json's text with `"gitHead": "<sha>"` after its version. */
+export function withGitHead(packageJson: string, sha: string): string {
+	if (!/^[0-9a-f]{40}$/.test(sha)) throw new Error(`not a commit: ${sha}`);
+	const without = packageJson.replace(/^\t"gitHead": "[^"]*",?\n/m, "");
+	const re = /^(\t"version": "[^"]*")(,?)\n/m;
+	if (!re.test(without)) {
+		throw new Error('package.json has no top-level "version" line');
+	}
+	return without.replace(re, `$1,\n\t"gitHead": "${sha}"$2\n`);
+}
+
 export async function resolvePromote(
 	io: Io,
 	given: string,
@@ -556,6 +630,11 @@ export async function resolvePromote(
 		throw new Error(`not an RC tag (vX.Y.Z-rc.N): ${tag}`);
 	}
 	if (!tags.includes(tag)) throw new Error(`${tag} is not on origin`);
+	if (!(await onMaster(io, tag))) {
+		throw new Error(
+			`${tag} is not on master: only an RC of a master commit can be released`,
+		);
+	}
 	const release = releaseOf(version);
 	const npm = await npmState(io);
 	if (

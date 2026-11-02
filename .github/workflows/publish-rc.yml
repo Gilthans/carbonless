@@ -101,14 +101,25 @@ jobs:
               console.error(`build-info is ${b.version} ${b.commit}`);
               process.exit(1);
             }' "$RUNNER_TEMP/build-info.json" "${{ steps.version.outputs.version }}" "$SHA"
+      - name: Only an X.Y.Z-rc.N, only to rc
+        # A guard against our own bugs, before any token is in the step.
+        if: steps.version.outputs.publish == 'true' && steps.version.outputs.first_publish == 'false'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          pnpm exec tsx scripts/release.ts ci:check-publish rc "$VERSION"
+          [[ "$(basename "$TGZ")" == "carbonless-review-$VERSION.tgz" ]] || {
+            echo "::error::$TGZ is not carbonless-review-$VERSION.tgz"
+            exit 1
+          }
       - name: Publish to npm (rc)
         # Before the package's first publish, npm would make whatever is
         # published first `latest`: the first version must be a release
         # (pnpm release promote), so this only tags the RC in git.
         if: steps.version.outputs.publish == 'true' && steps.version.outputs.first_publish == 'false'
-        run: npm publish "$TGZ" --tag rc --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish "$TGZ" --tag rc --access public
       - name: Tag
         if: steps.version.outputs.publish == 'true'
         env:

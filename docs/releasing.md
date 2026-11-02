@@ -58,7 +58,12 @@ the newest tags, and what the next merge will publish.
 The workflows set the version only in the runner's checkout
 (`tsx scripts/release.ts ci:set-version`), then mark `package.json`
 `git update-index --skip-worktree`, so `git status` stays empty and
-`scripts/build-info.mjs` records the commit itself, not `<sha>-dirty`. This
+`scripts/build-info.mjs` records the commit itself, not `<sha>-dirty`. It
+also writes the commit as `gitHead` into that `package.json`, which npm
+keeps, so an RC or a release is told apart from a build of master with the
+same version: between a merge and its release, builds made from master (by
+hand, or by the devbox while it follows git) carry the version of the
+release they precede, e.g. `0.1.0 (<sha>)`. This
 works for any commit, including RC tags whose `build-info.mjs` predates it
 (an environment variable read by the build would not). Both workflows unpack
 the tarball they are about to publish and fail unless its
@@ -97,8 +102,8 @@ command line), and only the `npm publish` and `npm dist-tag` steps get
 `NPM_TOKEN`. Promote's `check` job, which runs the RC's dependencies and
 tests, has read-only permissions and no npm token; the `publish` job, which
 only installs master's dependencies and publishes the tarball `check` made,
-gets the write permissions and waits for the owner's approval. Steps that need tags read the checkout's own (a full-history
-checkout has every tag).
+gets the write permissions and waits for the owner's approval. Steps that
+need tags read the checkout's own (a full-history checkout has every tag).
 
 ### What GITHUB_TOKEN can't do
 
@@ -165,10 +170,13 @@ When the token expires, publish-rc and promote fail at `npm publish` with a
 3. `pnpm release promote` (the newest RC), then approve the run's
    `publish` job: `0.1.0` goes to `latest` (and `rc`), `v0.1.0` is tagged,
    and the PR "next: 0.2.0" opens.
-4. `npm view carbonless-review dist-tags` shows `latest: 0.1.0, rc: 0.1.0`.
-   Switch the devbox's local setup to npm mode
+4. `npm view carbonless-review dist-tags` shows `latest: 0.1.0, rc: 0.1.0`,
+   and `npm view carbonless-review@0.1.0 gitHead` the commit of the
+   promoted RC. Switch the devbox's local setup to npm mode
    (`echo npm > ~/.config/carbonless-devbox/source`), so main follows `rc`
-   from then on.
+   from then on; run its follow once (`systemctl --user start crb-follow`)
+   and check that `crb --version` says `0.1.0 (<that commit>)`, not a
+   master build's commit.
 5. Merge "next: 0.2.0": every merge after it publishes `0.2.0-rc.N`.
 
 ## When something fails

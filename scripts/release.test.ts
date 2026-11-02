@@ -12,6 +12,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	bump,
+	checkRcPublish,
 	compareVersions,
 	type Io,
 	newestTag,
@@ -150,6 +151,14 @@ function fakeIo(
 ) {
 	const calls: string[] = [];
 	const lines: string[] = [];
+	// A full checkout with nothing in package.json's history, and RC tags on
+	// master, unless a test says otherwise.
+	const defaults: typeof handlers = {
+		"git rev-parse --is-shallow-repository": "false\n",
+		"git log -p": "",
+		"git merge-base --is-ancestor": "",
+		"gh api repos/owner/repo/compare/": "ahead\n",
+	};
 	const io: Io = {
 		repo: "owner/repo",
 		log: (line) => lines.push(line),
@@ -158,13 +167,17 @@ function fakeIo(
 		run: async (cmd, args) => {
 			const line = [cmd, ...args].join(" ");
 			calls.push(line);
-			const key = Object.keys(handlers)
-				.filter((k) => line.startsWith(k))
-				.sort((a, b) => b.length - a.length)[0];
-			if (key === undefined) {
+			const pick = (from: typeof handlers) =>
+				Object.keys(from)
+					.filter((k) => line.startsWith(k))
+					.sort((a, b) => b.length - a.length)[0];
+			const own = pick(handlers);
+			const fallback = own === undefined ? pick(defaults) : undefined;
+			if (own === undefined && fallback === undefined) {
 				return { code: 127, stdout: "", stderr: `unexpected: ${line}` };
 			}
-			const handler = handlers[key] ?? "";
+			const handler =
+				(own !== undefined ? handlers[own] : defaults[fallback ?? ""]) ?? "";
 			const out = typeof handler === "function" ? handler([...args]) : handler;
 			return typeof out === "string"
 				? { code: 0, stdout: out, stderr: "" }
@@ -218,7 +231,7 @@ describe("workflow steps", () => {
 			"git log -p": history,
 		});
 		expect((await rcToPublish(io, "0.1.0")).version).toBe("0.1.0-rc.5");
-		expect(calls).toContain("git log -p --format= -- package.json");
+		expect(calls).toContain("git log -p --format= HEAD -- package.json");
 		// Another release's RCs don't count.
 		expect((await rcToPublish(io, "0.3.0")).version).toBe("0.3.0-rc.1");
 	});
@@ -260,6 +273,45 @@ describe("workflow steps", () => {
 		});
 		expect((await rcToPublish(byTag.io, "0.1.0")).blocked).not.toBeNull();
 		expect((await rcToPublish(byTag.io, "0.2.0")).blocked).toBeNull();
+	});
+
+	it("package.json's history must be whole: a shallow checkout or a git error fails, never undercounts", async () => {
+		const shallow = fakeIo({
+			"git ls-remote": lsRemote("v0.1.0-rc.1"),
+			"npm view": NPM_404,
+			"git rev-parse --is-shallow-repository": "true\n",
+		});
+		await expect(rcToPublish(shallow.io, "0.1.0")).rejects.toThrow(/shallow/);
+		const broken = fakeIo({
+			"git ls-remote": lsRemote("v0.1.0-rc.1"),
+			"npm view": NPM_404,
+			"git log -p": { code: 128, stderr: "fatal: bad revision" },
+		});
+		await expect(rcToPublish(broken.io, "0.1.0")).rejects.toThrow(
+			/git log -p .* failed \(128\): fatal: bad revision/,
+		);
+	});
+
+	it("publish-rc publishes only an X.Y.Z-rc.N, only to rc", () => {
+		expect(() => checkRcPublish("0.2.0-rc.3", "rc")).not.toThrow();
+		for (const bad of [
+			"0.2.0",
+			"0.2.0-rc.3 ",
+			"0.2.0-beta.1",
+			"x",
+			"0.2.0-rc.03",
+		]) {
+			expect(() => checkRcPublish(bad, "rc")).toThrow(/refusing/);
+		}
+		expect(() => checkRcPublish("0.2.0-rc.3", "latest")).toThrow(/rc only/);
+		const wf = readFileSync(
+			join(import.meta.dirname, "../.github/workflows/publish-rc.yml"),
+			"utf8",
+		);
+		const check = wf.indexOf("ci:check-publish rc");
+		expect(check).toBeGreaterThan(-1);
+		expect(check).toBeLessThan(wf.indexOf("npm publish"));
+		expect(wf).toContain('npm publish "$TGZ" --tag rc --access public');
 	});
 
 	it("the workflows' steps read the checkout's tags, never origin", async () => {
@@ -361,6 +413,36 @@ describe("workflow steps", () => {
 		await expect(resolvePromote(io, "v0.1.0")).rejects.toThrow(/not an RC/);
 	});
 
+	it("promote refuses an RC tag whose commit isn't on master", async () => {
+		// People: GitHub's compare of the tag and master.
+		const people = fakeIo({
+			"git ls-remote": lsRemote("v0.1.0-rc.4", "v0.1.0-rc.9"),
+			"npm view": NPM_404,
+			"gh api repos/owner/repo/compare/v0.1.0-rc.9...master": "diverged\n",
+		});
+		await expect(resolvePromote(people.io, "")).rejects.toThrow(
+			"v0.1.0-rc.9 is not on master",
+		);
+		expect(people.calls).toContain(
+			"gh api repos/owner/repo/compare/v0.1.0-rc.9...master --jq .status",
+		);
+		// The workflow: its master checkout's history.
+		const ci = fakeIo({
+			"git tag -l": "v0.1.0-rc.4\nv0.1.0-rc.9\n",
+			"npm view": NPM_404,
+			"git merge-base --is-ancestor refs/tags/v0.1.0-rc.9": { code: 1 },
+		});
+		ci.io.tags = "local";
+		await expect(resolvePromote(ci.io, "")).rejects.toThrow("is not on master");
+		expect(await resolvePromote(ci.io, "v0.1.0-rc.4")).toEqual({
+			tag: "v0.1.0-rc.4",
+			release: "0.1.0",
+		});
+		expect(ci.calls).toContain(
+			"git merge-base --is-ancestor refs/tags/v0.1.0-rc.4^{commit} HEAD",
+		);
+	});
+
 	it("promote refuses a release that exists; an older RC whose release doesn't is fine", async () => {
 		const done = fakeIo({
 			"git ls-remote": lsRemote("v0.1.0-rc.2", "v0.1.0"),
@@ -456,19 +538,37 @@ describe("pnpm release", () => {
 			"master:  next release 0.2.0",
 			"rc:      npm 0.2.0-rc.1, newest tag v0.2.0-rc.1",
 			"latest:  npm 0.1.0, newest tag v0.1.0",
-			"next merge to master publishes 0.2.0-rc.2",
+			"next merge to master publishes 0.2.0-rc.2 on rc",
 		]);
 	});
 
-	it("status before the first publish", async () => {
-		const { io, lines } = fakeIo({
+	it("status says what publish-rc will do: the first publish only tags, after the interim RCs in origin/master's history", async () => {
+		const { io, lines, calls } = fakeIo({
 			"gh api": contents("0.1.0"),
 			"git ls-remote": lsRemote("v0.1.0-rc.1"),
 			"npm view": NPM_404,
+			"git log -p": '+\t"version": "0.1.0",\n-\t"version": "0.1.0-rc.4",',
 		});
 		await status(io);
 		expect(lines).toContain("npm:     carbonless-review is not published yet");
-		expect(lines).toContain("next merge to master publishes 0.1.0-rc.2");
+		expect(lines).toContain(
+			"next merge to master tags v0.1.0-rc.5 only: carbonless-review is not on npm yet, its first version is a release (pnpm release promote v0.1.0-rc.5)",
+		);
+		expect(calls).toContain(
+			"git log -p --format= origin/master -- package.json",
+		);
+	});
+
+	it("status says when a merge publishes nothing: the release is out, the next PR isn't merged", async () => {
+		const { io, lines } = fakeIo({
+			"gh api": contents("0.1.0"),
+			"git ls-remote": lsRemote("v0.1.0-rc.5", "v0.1.0"),
+			"npm view": npmView({ latest: "0.1.0", rc: "0.1.0" }, ["0.1.0"]),
+		});
+		await status(io);
+		expect(lines.at(-1)).toMatch(
+			/^next merge to master publishes nothing: 0\.1\.0 is released/,
+		);
 	});
 
 	it("promote dispatches the workflow for the newest RC and prints the run's URL", async () => {
@@ -625,6 +725,14 @@ describe("ci:set-version", { timeout: 30_000 }, () => {
 		expect(readFileSync(join(repo, "package.json"), "utf8")).toContain(
 			'"version": "0.1.0-rc.2"',
 		);
+		// npm records the commit as gitHead: an RC or release is told apart
+		// from a master build of the same version.
+		const pkg = JSON.parse(readFileSync(join(repo, "package.json"), "utf8"));
+		expect(pkg).toEqual({
+			name: "carbonless-review",
+			version: "0.1.0-rc.2",
+			gitHead: git("rev-parse", "HEAD"),
+		});
 		expect(git("status", "--porcelain")).toBe("");
 		execFileSync("node", ["scripts/build-info.mjs"], { cwd: repo });
 		expect(
