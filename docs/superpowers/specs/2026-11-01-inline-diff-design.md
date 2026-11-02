@@ -1,6 +1,6 @@
 # Highlighting what changed inside a line, step 1: GitHub's rules
 
-Status: draft for the owner's review (2026-11-01).
+Status: approved by the owner (2026-11-02), with the tighter marks.
 
 ## Why
 
@@ -77,7 +77,7 @@ the test fixture (below).
   `Diff_EditCost = 3`). On PR #14 this gives GitHub's exact marks on 153 of
   158 pairs; on the 899 public pairs, 785. The five PR #14 differences are
   where GitHub's folding is looser or places an inserted indent after the
-  kept one (`04`, `05`, `06`, `13`, `41`); see **Open for the owner**.
+  kept one (`04`, `05`, `06`, `13`, `41`); see **Decided by the owner**.
 - **Look** (mockups in the published page): a stronger tint of the line's own color behind the marked
   characters: new tokens `add-word` / `del-word` (and `add-word-done` /
   `del-word-done` on reviewed lines, fading with the row as `add-done` /
@@ -170,16 +170,13 @@ in the report, not gated (wall clock is too noisy for a 10% gate).
   view for the design shots.
 - **Contrast:** `theme.test.ts` on the new tokens with every syntax color.
 
-## Open for the owner
+## Decided by the owner
 
-- **GitHub's folding, exactly, or tighter marks?** On five PR #14 pairs
-  GitHub's marks differ from the token diff, mostly by folding unchanged
-  text into a mark: `const area = width * height` marks `width` though it
-  didn't change; the tighter diff marks only the spaces and `*`. Copying
-  GitHub exactly would need its (unpublished) merge rule, reverse-engineered
-  pair by pair; the token diff already agrees on 97% of PR #14 and 87% of
-  the public pairs. Proposal: keep the token diff, list the differences in
-  the test as known, and treat "tighter than GitHub" as acceptable.
+- **Tighter marks, not GitHub's folding** (2026-11-02): "You can go ahead
+  and use the tighter version. I'm not 100% it's strictly better, but I'm
+  not sure it's an interesting edge case anyway, so let's do what's
+  easier." The token diff stays; the five PR #14 differences (`04`, `05`,
+  `06`, `13`, `41`) are the test's known differences.
 
 ## Calls made here (the owner may overrule)
 
