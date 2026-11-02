@@ -30,7 +30,7 @@ import type {
 	ReviewThread,
 } from "../../shared/types";
 import { contextQuery, hunksQuery, overviewQuery } from "../api";
-import { CodeLine, type Mark } from "../code/Invisibles";
+import { CodeLine, type Mark, type Words } from "../code/Invisibles";
 import { Spinner } from "../Spinner";
 import { Tooltip } from "../Tooltip";
 import { canMove, spanTexts } from "../threads/draftMove";
@@ -72,13 +72,8 @@ import {
 	lineKey,
 	placeThreads,
 } from "./threadPlacement";
-import {
-	type DiffRow,
-	matchHunk,
-	pairRun,
-	runs,
-	whitespaceOnly,
-} from "./whitespace";
+import { type DiffRow, viewRuns, whitespaceOnly } from "./whitespace";
+import { hunkWordMarks } from "./wordBlocks";
 
 /** Review threads to show in a file's diff (FilesPage), and the read they come from. */
 export interface DiffThreads {
@@ -481,6 +476,8 @@ function CodeCell(props: {
 	/** In a hunk: its line's index in GitHub's order of it. */
 	order?: number;
 	marks: readonly Mark[];
+	/** A pair's changed tokens on the line, tinted (wordBlocks.ts). */
+	words?: Words;
 	/** Side by side only: the cell's own paint, kind, landing, mark and pick. */
 	cell?: {
 		paint: string;
@@ -519,6 +516,7 @@ function CodeCell(props: {
 				tabWidth={props.tabWidth}
 				newline={!line.noNewline}
 				marks={props.marks}
+				words={props.words}
 			/>
 		</td>
 	);
@@ -555,11 +553,28 @@ interface RowProps {
 	composers?: RowComposers;
 	/** The file's bubble and its threads' row (the diff's first row). */
 	lead?: FileLead;
+	/** The hunk's paired lines' word marks (hunkWordMarks), by line. */
+	words?: ReadonlyMap<DiffLine, readonly Mark[]>;
 }
 
 /** The spans painted over a cell's characters: those of the threads on its keys. */
 const marksOf = (keys: LineKey[], threads: RowThreads | undefined): Mark[] =>
 	threads ? keys.flatMap((k) => threads.placement.marks.get(k) ?? []) : [];
+
+/**
+ * A line's word marks and their tint: its kind's, faded on a reviewed
+ * cluster (as REVIEWED_ROW_BG fades the row). A whitespace-only row has none.
+ */
+function wordsOf(
+	line: RowLine,
+	words: ReadonlyMap<DiffLine, readonly Mark[]> | undefined,
+	reviewed: boolean,
+): Words | undefined {
+	if (line.kind !== "add" && line.kind !== "del") return undefined;
+	const marks = words?.get(line);
+	if (!marks) return undefined;
+	return { marks, tone: reviewed ? `${line.kind}-done` : line.kind };
+}
 
 /**
  * What follows a row of lines: the opened rows of the threads ending on it
@@ -740,6 +755,7 @@ function LineRow(props: RowProps & { line: RowLine; order?: number }) {
 					hunk={props.hunk}
 					order={props.order}
 					marks={marksOf(keys, threads)}
+					words={wordsOf(line, props.words, reviewed)}
 					lead={lead?.bubble}
 					bubble={
 						endKey &&
@@ -793,6 +809,7 @@ interface Cell {
 	landed?: Landed["phase"];
 	where: string;
 	marks: Mark[];
+	words?: Words;
 	order?: number;
 	pick: NumberPick;
 	/**
@@ -834,6 +851,7 @@ function PairRow(props: RowProps & { row: SideRow }) {
 			landed: landedPhase(props.landed, line),
 			where,
 			marks: marksOf(keys, threads),
+			words: wordsOf(line, props.words, reviewed),
 			order: props.orderOf?.(source),
 			pick: pickOf(codeCellOf(line), true, picker),
 		};
@@ -970,6 +988,7 @@ function PairRow(props: RowProps & { row: SideRow }) {
 					hunk={props.hunk}
 					order={cell.order}
 					marks={cell.marks}
+					words={cell.words}
 					lead={bubbles.lead}
 					cell={{
 						paint: `${bg} ${mark}`,
@@ -1992,7 +2011,8 @@ const FADE_MS = 1000;
 const LANDED_ROW = {
 	on: "[&>td:first-child]:bg-accent!",
 	fading:
-		"[&>td]:transition-shadow [&>td]:duration-1000 motion-reduce:[&>td]:transition-none",
+		// The wash fades on the cells and, through --wash, on their word marks.
+		"[&>td]:[transition-property:box-shadow,--wash] [&>td]:duration-1000 motion-reduce:[&>td]:transition-none",
 } as const;
 /** A landed unified row: the tint over every cell, and the rail. */
 const LANDED_CLASS = {
@@ -2155,21 +2175,18 @@ function HunkRows(props: {
 	// over the whole hunk): not again on a toggle, a landing, a thread
 	// opening or a context load. Side by side, the rows laid out as pairs
 	// (sideBySide.ts): the whitespace rows are its input, so the two settings
-	// compose.
-	const hunkRuns = useMemo(() => {
-		const twins = ignoreWhitespace ? matchHunk(hunk.lines) : null;
-		return runs(hunk.lines).map((run) => {
-			const rows = (
-				twins && run.key !== undefined
-					? pairRun(run.lines, twins)
-					: run.lines.map((line) => ({ kind: "line", line }))
-			) as DiffRow[];
-			return {
-				...run,
-				rows,
-				side: view === "side-by-side" ? layoutRows(rows) : null,
-			};
-		});
+	// compose. The word marks of the hunk's pairs with them, over all its
+	// runs' rows (a block may span two clusters), computed here, with the
+	// rows: a pair is never shown plain while its marks are pending.
+	const { hunkRuns, words } = useMemo(() => {
+		const runs = viewRuns(hunk.lines, ignoreWhitespace).map((run) => ({
+			...run,
+			side: view === "side-by-side" ? layoutRows(run.rows) : null,
+		}));
+		return {
+			hunkRuns: runs,
+			words: hunkWordMarks(runs.flatMap((run) => run.rows)),
+		};
 	}, [hunk, ignoreWhitespace, view]);
 	const columns = columnsOf(view);
 	return (
@@ -2203,6 +2220,7 @@ function HunkRows(props: {
 					orderOf,
 					picker: props.picker,
 					composers: props.composers,
+					words,
 				};
 				/** The run's rows, the cluster's controls on the first when given. */
 				const runRows = (controls?: ReactNode) =>

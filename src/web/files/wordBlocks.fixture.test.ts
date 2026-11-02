@@ -15,7 +15,7 @@ import {
 import { buildSnapshot, loadFileHunks } from "../../server/diff/snapshot";
 import type { DiffLine, DisplayHunk } from "../../shared/types";
 import type { Mark } from "../code/Invisibles";
-import { type DiffRow, matchHunk, pairRun, runs } from "./whitespace";
+import { type DiffRow, viewRuns } from "./whitespace";
 import { hunkWordMarks } from "./wordBlocks";
 
 /**
@@ -140,12 +140,7 @@ function githubLines(file: GitHubFile, ignoreWhitespace: boolean): Line[] {
 
 /** A hunk's rows as the view lays them out (HunkRows), every run's rows. */
 function rowsOf(hunk: DisplayHunk, ignoreWhitespace: boolean): DiffRow[] {
-	const twins = ignoreWhitespace ? matchHunk(hunk.lines) : null;
-	return runs(hunk.lines).flatMap((run) =>
-		twins && run.key !== undefined
-			? pairRun(run.lines, twins)
-			: run.lines.map((line): DiffRow => ({ kind: "line", line })),
-	);
+	return viewRuns(hunk.lines, ignoreWhitespace).flatMap((run) => run.rows);
 }
 
 function ourLines(

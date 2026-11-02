@@ -652,6 +652,95 @@ describe("diff colors", () => {
 		expect(hueGap(tinted("add"), tinted("del"))).toBeGreaterThan(90);
 	});
 
+	it("word marks keep every code and syntax color at 4.5:1 and stay add/del", () => {
+		// A pair's changed tokens (CodeLine `words`): a stronger tint of the
+		// line's own color, on live and reviewed rows, also under a thread's
+		// wash (mark-tint, accent/8), which shows over them (--wash).
+		const WORDS = [
+			["add-word", "add", "del"],
+			["del-word", "del", "add"],
+			["add-word-done", "add-done", "del-done"],
+			["del-word-done", "del-done", "add-done"],
+		] as const;
+		const dist = (a: string, b: string) =>
+			Math.hypot(...rgb(a).map((v, i) => v - (rgb(b)[i] ?? 0)));
+		for (const [word, own, other] of WORDS) {
+			for (const back of [
+				token(word),
+				over(token("accent"), 0.08, token(word)),
+			]) {
+				for (const fg of ["code-ink", "faint", "add-ink", "del-ink"]) {
+					expect(
+						contrast(token(fg), back),
+						`${fg} on ${word} (${back})`,
+					).toBeGreaterThanOrEqual(4.5);
+				}
+				for (const [name, color] of Object.entries(SYNTAX)) {
+					expect(
+						contrast(color, back),
+						`${name} on ${word} (${back})`,
+					).toBeGreaterThanOrEqual(4.5);
+				}
+			}
+			// Its own kind's hue, and it stands out from its row.
+			expect(
+				dist(token(word), token(own)),
+				`${word} nearer ${own} than ${other}`,
+			).toBeLessThan(dist(token(word), token(other)));
+			expect(
+				dist(token(word), token(own)),
+				`${word} on ${own}`,
+			).toBeGreaterThan(12);
+			expect(
+				chroma(token(word)),
+				`${word} stronger than ${own}`,
+			).toBeGreaterThan(chroma(token(own)));
+		}
+		// Reviewed rows fade their marks with them.
+		for (const kind of ["add", "del"]) {
+			expect(
+				dist(token(`${kind}-word-done`), token(`${kind}-done`)),
+			).toBeLessThan(dist(token(`${kind}-word`), token(kind)));
+		}
+	});
+
+	it("a thread's or a pick's wash shows over word marks", () => {
+		// The washes are inset shadows on the cells, painted under the cell's
+		// content: a word mark's background would hide them. Each wash names
+		// its color --wash (on the cells it washes) and paints with it, and a
+		// word mark layers --wash over its own tint.
+		const utility = (name: string) => {
+			const at = css.indexOf(`@utility ${name} {`);
+			expect(at, `@utility ${name}`).toBeGreaterThanOrEqual(0);
+			let depth = 0;
+			for (let i = css.indexOf("{", at); i < css.length; i++) {
+				if (css[i] === "{") depth++;
+				else if (css[i] === "}" && --depth === 0) return css.slice(at, i + 1);
+			}
+			throw new Error(`unclosed @utility ${name}`);
+		};
+		for (const name of [
+			"mark-tint",
+			"mark-tint-cell",
+			"thread-mark",
+			"thread-mark-cell",
+			"line-picked",
+			"line-picked-cell",
+		]) {
+			const body = utility(name);
+			// Every 100vmax wash shadow is var(--wash), and --wash is set.
+			expect(body, name).toMatch(/--wash:\s*color-mix\(/);
+			const washes = [...body.matchAll(/inset 0 0 0 100vmax\s+([^;,]+)/g)];
+			expect(washes.length, name).toBeGreaterThan(0);
+			for (const [, color] of washes)
+				expect(color?.trim(), name).toBe("var(--wash)");
+		}
+		expect(css).toMatch(/@property --wash \{[^}]*inherits: true/);
+		expect(css).toMatch(
+			/\[data-word\] \{[^}]*background-image: linear-gradient\(\s*var\(--wash\),\s*var\(--wash\)\s*\)/,
+		);
+	});
+
 	it("keeps added green and deleted red apart from each other", () => {
 		// Green: between yellow-green and teal; red: between magenta and red.
 		for (const green of ["ok", "ok-fill", "add-ink"]) {

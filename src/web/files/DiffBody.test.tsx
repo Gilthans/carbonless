@@ -225,9 +225,9 @@ function setup(
 	const threads: DiffThreads | undefined = opts.threads
 		? { readId: "r", snapshotHead: HEAD, threads: opts.threads }
 		: undefined;
-	const body = (
+	const bodyOf = (cs: ClusterView[]) => (
 		<DiffBody
-			file={file(opts.clusters ?? clusters)}
+			file={file(cs)}
 			revision="r1"
 			onToggle={onToggle}
 			onCrossOff={onCrossOff}
@@ -236,12 +236,15 @@ function setup(
 			lead={opts.lead}
 		/>
 	);
-	render(
+	const tree = (cs: ClusterView[]) => (
 		<QueryClientProvider client={queryClient}>
-			{body}
-			{opts.twice && body}
-		</QueryClientProvider>,
+			{bodyOf(cs)}
+			{opts.twice && bodyOf(cs)}
+		</QueryClientProvider>
 	);
+	const { rerender } = render(tree(opts.clusters ?? clusters));
+	/** The same tree with the clusters' new states (no remount). */
+	const restate = (cs: ClusterView[]) => rerender(tree(cs));
 	const rows = () =>
 		Array.from(
 			document.querySelectorAll<HTMLElement>('[data-testid="diff-line"]'),
@@ -265,6 +268,7 @@ function setup(
 		rows,
 		collapsed,
 		calls,
+		restate,
 		user: userEvent.setup(),
 	};
 }
@@ -1973,4 +1977,155 @@ describe("number columns: as wide as the file's largest line number needs", () =
 			"pointer-coarse:w-[max(3rem,var(--num-w,3rem))]",
 		);
 	});
+});
+
+describe("DiffBody word marks", () => {
+	beforeEach(() => {
+		// The describe above leaves its last table mounted.
+		cleanup();
+		showInvisibles.set(false);
+		window.scrollTo = vi.fn();
+	});
+	afterEach(() => {
+		cleanup();
+		vi.unstubAllGlobals();
+		localStorage.clear();
+		showInvisibles.reset();
+		ignoreWhitespace.reset();
+		sideBySide.reset();
+	});
+
+	/** One hunk: context, then `dels` removed and `adds` added lines, then context. */
+	const block = (
+		dels: string[],
+		adds: string[],
+		keys: [string, string] = ["c", "c"],
+	): FileHunks => ({
+		newLineCount: 12,
+		hunks: [
+			{
+				oldStart: 1,
+				oldCount: dels.length + 2,
+				newStart: 1,
+				newCount: adds.length + 2,
+				lines: [
+					ctx(1, 1),
+					...dels.map((t, i) => del(2 + i, t, keys[0])),
+					...adds.map((t, i) => add(2 + i, t, keys[1])),
+					ctx(2 + dels.length, 2 + adds.length),
+				],
+			},
+		],
+	});
+	const words = (root: ParentNode = document) =>
+		Array.from(root.querySelectorAll<HTMLElement>("[data-word]"));
+	const marked = (root: ParentNode = document) =>
+		words(root).map((w) => [w.textContent, w.className]);
+	const cellOf = (side: "LEFT" | "RIGHT") =>
+		document.querySelector<HTMLElement>(
+			`[data-kind="pair"] td[data-testid="code"][data-side="${side}"]`,
+		) as HTMLElement;
+	/** Waits for a line's text in the diff (marks split it into elements). */
+	const shown = (text: string) =>
+		waitFor(() =>
+			expect(
+				Array.from(
+					document.querySelectorAll('td[data-testid="code"]'),
+					(td) => td.textContent ?? "",
+				).some((t) => t.includes(text)),
+			).toBe(true),
+		);
+	const rowOf = (kind: string) =>
+		document.querySelector<HTMLElement>(
+			`[data-testid="diff-line"][data-kind="${kind}"]`,
+		) as HTMLElement;
+	const RENAME = block(["const userCount = 1;"], ["const memberCount = 1;"]);
+
+	it("marks a renamed word on both lines of a pair, unified", async () => {
+		sideBySide.set(false);
+		setup({ hunks: RENAME, clusters: [cluster("c")] });
+		await shown("memberCount");
+		expect(marked(rowOf("del"))).toEqual([["userCount", "bg-del-word"]]);
+		expect(marked(rowOf("add"))).toEqual([["memberCount", "bg-add-word"]]);
+	});
+
+	it("marks each half of a side-by-side pair row with its own line's marks", async () => {
+		sideBySide.set(true);
+		setup({ hunks: RENAME, clusters: [cluster("c")] });
+		await shown("memberCount");
+		expect(marked(cellOf("LEFT"))).toEqual([["userCount", "bg-del-word"]]);
+		expect(marked(cellOf("RIGHT"))).toEqual([["memberCount", "bg-add-word"]]);
+	});
+
+	it("pairs a block whose removed and added lines are in two clusters", async () => {
+		sideBySide.set(false);
+		setup({
+			hunks: block(["a = 1"], ["a = 2"], ["x", "y"]),
+			clusters: [cluster("x"), cluster("y")],
+		});
+		await shown("a = 2");
+		expect(marked()).toEqual([
+			["1", "bg-del-word"],
+			["2", "bg-add-word"],
+		]);
+	});
+
+	for (const view of ["unified", "side-by-side"] as const) {
+		it(`leaves an unequal block plain (${view})`, async () => {
+			sideBySide.set(view === "side-by-side");
+			setup({
+				hunks: block(["a = 1"], ["a = 2", "b = 3"]),
+				clusters: [cluster("c")],
+			});
+			await shown("b = 3");
+			expect(words()).toEqual([]);
+		});
+
+		it(`uses the reviewed tints on a reviewed pair, following its state in place (${view})`, async () => {
+			sideBySide.set(view === "side-by-side");
+			const { restate } = setup({
+				hunks: RENAME,
+				clusters: [cluster("c", { state: "reviewed" })],
+			});
+			await shown("memberCount");
+			expect(marked()).toEqual([
+				["userCount", "bg-del-word-done"],
+				["memberCount", "bg-add-word-done"],
+			]);
+			const before = words();
+			restate([cluster("c")]);
+			expect(marked()).toEqual([
+				["userCount", "bg-del-word"],
+				["memberCount", "bg-add-word"],
+			]);
+			// The same elements: no remount.
+			expect(words()).toEqual(before);
+			restate([cluster("c", { state: "reviewed" })]);
+			expect(marked().map(([, c]) => c)).toEqual([
+				"bg-del-word-done",
+				"bg-add-word-done",
+			]);
+		});
+
+		it(`gives a whitespace-only row no marks with Ignore whitespace on, other pairs keep theirs (${view})`, async () => {
+			sideBySide.set(view === "side-by-side");
+			ignoreWhitespace.set(true);
+			setup();
+			await shown("const x = 2;");
+			// "mixed": x = 1 → 2 stays a pair; the re-indented y is a ~ row.
+			expect(marked()).toEqual([
+				["1", "bg-del-word"],
+				["2", "bg-add-word"],
+			]);
+			for (const row of document.querySelectorAll(
+				'[data-testid="diff-line"][data-kind="ws"], td[data-kind="ws"]',
+			)) {
+				expect(words(row)).toEqual([]);
+			}
+			act(() => ignoreWhitespace.set(false));
+			// Off: the re-indented pairs are marked too (tabs vs spaces): the
+			// "ws" cluster's three and y.
+			await waitFor(() => expect(words()).toHaveLength(10));
+		});
+	}
 });

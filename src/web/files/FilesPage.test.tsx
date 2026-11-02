@@ -518,9 +518,11 @@ describe("FilesPage", () => {
 				act(() => vi.advanceTimersByTime(LANDED_MS));
 				expect(landed).not.toHaveAttribute("data-landed");
 				expect(landed).not.toHaveClass("mark-tint");
-				expect(landed.className).toMatch(/transition-shadow/);
+				expect(landed.className).toMatch(
+					/transition-property:box-shadow,--wash/,
+				);
 				act(() => vi.advanceTimersByTime(1000));
-				expect(landed.className).not.toMatch(/transition-shadow/);
+				expect(landed.className).not.toMatch(/transition-property/);
 			} finally {
 				vi.useRealTimers();
 			}

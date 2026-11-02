@@ -24,6 +24,7 @@ import {
 	pairRun,
 	runs,
 	stripWhitespace,
+	viewRuns,
 	whitespaceEqual,
 	whitespaceOnly,
 } from "./whitespace";
@@ -581,5 +582,41 @@ describe("pairHunk", () => {
 			const rows = pairHunk(lines);
 			expectCoverage(lines, rows);
 		}
+	});
+});
+
+describe("viewRuns", () => {
+	const lines: DiffLine[] = [
+		ctx(1, 1, "a"),
+		del(2, "b"),
+		del(3, "c"),
+		add(2, "  b"),
+		add(3, "d"),
+		ctx(4, 4, "e"),
+	];
+
+	it("keeps every line as it is with Ignore whitespace off", () => {
+		const out = viewRuns(lines, false);
+		expect(out.map((r) => r.key)).toEqual([undefined, "k", undefined]);
+		expect(trace(out.flatMap((r) => r.rows))).toEqual([
+			" 1/1",
+			"-2",
+			"-3",
+			"+2",
+			"+3",
+			" 4/4",
+		]);
+	});
+
+	it("pairs each cluster run with Ignore whitespace on, as pairHunk", () => {
+		const out = viewRuns(lines, true);
+		expect(out.map((r) => r.lines)).toEqual(runs(lines).map((r) => r.lines));
+		expect(trace(out.flatMap((r) => r.rows))).toEqual([
+			" 1/1",
+			"~2/2",
+			"-3",
+			"+3",
+			" 4/4",
+		]);
 	});
 });

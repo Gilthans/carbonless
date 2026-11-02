@@ -9,6 +9,7 @@ import {
 	colorPieces,
 	copyWithOriginals,
 	INVISIBLES_STORAGE_KEY,
+	rangeText,
 	readShowInvisibles,
 	resetShowInvisibles,
 	setShowInvisibles,
@@ -171,6 +172,97 @@ describe("a thread's span on a line (marks)", () => {
 			{ text: "abc", marked: true },
 		]);
 		expect(splitMarks("abc", 0, [])).toEqual([{ text: "abc", marked: false }]);
+	});
+});
+
+describe("a pair's word marks on a line (words)", () => {
+	const words = () =>
+		Array.from(line().querySelectorAll<HTMLElement>("[data-word]"));
+
+	it("tints exactly the marked characters, synchronously, under the syntax colors", async () => {
+		const text = "const userCount = 1;";
+		renderLine({
+			text,
+			lang: "typescript",
+			words: { marks: [[6, 15]], tone: "add" },
+		});
+		// Painted with the first render, before any highlighting arrives.
+		expect(words().map((w) => w.textContent)).toEqual(["userCount"]);
+		await waitFor(() =>
+			expect(line().querySelector("span[style*='color']")).not.toBeNull(),
+		);
+		expect(words().map((w) => w.textContent)).toEqual(["userCount"]);
+		const [word] = words();
+		expect(word).toHaveClass("bg-add-word");
+		// The syntax color sits inside the tint: background only.
+		expect(word?.querySelector("span[style*='color']")).not.toBeNull();
+		expect(word?.getAttribute("style")).toBeNull();
+		expect(line().querySelector("[data-code]")?.textContent).toBe(text);
+	});
+
+	it("keeps each mark its own element, one tone per line", () => {
+		renderLine({
+			text: "a + b - c",
+			lang: null,
+			words: {
+				marks: [
+					[0, 1],
+					[8, 9],
+				],
+				tone: "del-done",
+			},
+		});
+		expect(words().map((w) => w.textContent)).toEqual(["a", "c"]);
+		for (const w of words()) expect(w).toHaveClass("bg-del-word-done");
+	});
+
+	it("marks the invisibles inside a mark with it, so a changed indent shows as tinted dots", () => {
+		const text = "        if (x)";
+		renderLine({
+			text,
+			lang: null,
+			newline: false,
+			words: { marks: [[4, 8]], tone: "add" },
+		});
+		expect(words().map((w) => w.textContent)).toEqual(["    "]);
+		const [word] = words();
+		expect(word?.querySelector('[data-inv="space"]')).toHaveAttribute(
+			"data-glyph",
+			"····",
+		);
+		expect(seen(line())).toBe("········if (x)");
+		expect(line().querySelector("[data-code]")?.textContent).toBe(text);
+	});
+
+	it("lets a thread's span win where they overlap, the word tint showing outside it", () => {
+		const text = "const userCount = 1;";
+		renderLine({
+			text,
+			lang: null,
+			marks: [[10, 20]],
+			words: { marks: [[6, 15]], tone: "add" },
+		});
+		expect(words().map((w) => w.textContent)).toEqual(["user"]);
+		const spans = [...line().querySelectorAll("[data-span-mark]")];
+		expect(spans.map((m) => m.textContent).join("")).toBe("Count = 1;");
+		expect(
+			line().querySelector(
+				"[data-word] [data-span-mark], [data-span-mark] [data-word], [data-word][data-span-mark]",
+			),
+		).toBeNull();
+		expect(line().querySelector("[data-code]")?.textContent).toBe(text);
+	});
+
+	it("copies the original text", () => {
+		const text = "\tlet  a\u00A0=  b;";
+		renderLine({
+			text,
+			lang: null,
+			words: { marks: [[1, 9]], tone: "del" },
+		});
+		const range = document.createRange();
+		range.selectNodeContents(line().querySelector("[data-code]") as Node);
+		expect(rangeText(range)).toBe(text);
 	});
 });
 
