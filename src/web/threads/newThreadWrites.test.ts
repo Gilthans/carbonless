@@ -253,7 +253,7 @@ describe("ThreadWrites: new threads", () => {
 			);
 			await flush();
 			const view = w.state().threads.get("new:c1");
-			expect(view?.failed).toMatchObject({ action: "New comment", code });
+			expect(view?.refused[0]).toMatchObject({ action: "New comment", code });
 			expect(drafts.newThread("c1")).toMatchObject({ text: "Keep me" });
 			expect(drafts.newThread("c1")?.create?.sending).toBeUndefined();
 			expect(w.state().pendingReview).toEqual(url ? { url } : null);

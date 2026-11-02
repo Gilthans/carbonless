@@ -19,11 +19,12 @@ import { useReviewId } from "../reviewId";
 import { SkeletonBar, Spinner } from "../Spinner";
 import { useAppHeaderHeight, useHeight } from "../sticky";
 import { PeopleProvider } from "../threads/people";
-import { useThreadWrites } from "../threads/threadWrites";
+import { dropLosesText, useThreadWrites } from "../threads/threadWrites";
 import { usePrefetchComments } from "../threads/useThreadComments";
 import { useThreads } from "../threads/useThreads";
 import { ErrorMessage } from "../ui";
 import { useMedia, WIDE } from "../useMedia";
+import { FilesVerdict } from "../verdict/FilesVerdict";
 import { ignoreWhitespace, sideBySide } from "../viewSettings";
 import type { DiffThreads } from "./DiffBody";
 import { FileDiff } from "./FileDiff";
@@ -501,6 +502,10 @@ export function FilesPage() {
 		failed: threadsFailed,
 		loading: threadsLoading,
 	} = useDiffThreads();
+	// The first open's own reads are in (the files, their threads): only
+	// then may the verdict card read GitHub's merge facts.
+	const firstOpenSettled =
+		data !== undefined && (allThreads !== undefined || threadsFailed !== null);
 	// A Refresh shows the new head before its diff: drafts move only once
 	// the diff shown is that head's.
 	const headSure = useHeadSure(threads?.snapshotHead, data?.revision);
@@ -536,11 +541,8 @@ export function FilesPage() {
 	// The floating Files button makes way while a comment is being written
 	// (a box has focus) or one was refused: it would cover its buttons.
 	const writing = useWritingHere();
-	const refused = [...useThreadWrites().threads.values()].some(
-		(t) =>
-			t.failed?.action === "New comment" ||
-			t.failed?.action === "Reply" ||
-			t.failed?.action === "Edit",
+	const refused = useThreadWrites().refused.some(
+		(f) => dropLosesText(f) && !f.retrying,
 	);
 	const filesButton = !writing && !refused;
 
@@ -617,7 +619,10 @@ export function FilesPage() {
 							</p>
 						)}
 						{data.files.length === 0 ? (
-							<p className="mt-4 text-muted">This PR changes no files.</p>
+							<>
+								<p className="mt-4 text-muted">This PR changes no files.</p>
+								<FilesVerdict threads={allThreads} settled={firstOpenSettled} />
+							</>
 						) : (
 							<div className="mt-4 flex gap-4">
 								{wide && (
@@ -656,6 +661,11 @@ export function FilesPage() {
 											headSure={headSure}
 										/>
 									))}
+									{/* After the last file: the verdict (the padding above keeps it clear of the Files button). */}
+									<FilesVerdict
+										threads={allThreads}
+										settled={firstOpenSettled}
+									/>
 								</div>
 							</div>
 						)}

@@ -308,6 +308,12 @@ const HTTP_MESSAGES = {
 	502: "Bad Gateway",
 	503: "Service Unavailable",
 };
+/**
+ * Check contexts as GraphQL answers them: with `isRequired` (a context's
+ * `required`, default false) when asked, never the scenario's own field.
+ */
+const checkContexts = (contexts, required) =>
+	contexts.map(({ required: r, ...c }) => (required ? { ...c, isRequired: r === true } : c));
 /** A comment without its text, as a summary lists it. */
 const summaryOf = ({ body, bodyText, bodyHTML, diffHunk, ...rest }) => rest;
 /**
@@ -673,7 +679,251 @@ if (restCompare && !s.loggedOut) {
 	process.stdout.write(`${mb}\n`);
 	process.exit(0);
 }
-if (args[0] === "api" && args[1] === "-X" && !restReply && !restComment && !restCreate) unsupported();
+// A verdict: `api -X POST repos/<o>/<r>/pulls/<n>/reviews --input -`
+// (GitHub's REST review, submitted at once), and the REST list of a PR's
+// reviews: `api repos/<o>/<r>/pulls/<n>/reviews --paginate --slurp`.
+const restReviewPost =
+	args[0] === "api" && args[1] === "-X" && args[2] === "POST"
+		? /^repos\/[^/]+\/[^/]+\/pulls\/(\d+)\/reviews$/.exec(args[3] ?? "")
+		: null;
+const restReviews =
+	args[0] === "api" && args[1] !== "-X"
+		? /^repos\/[^/]+\/[^/]+\/pulls\/(\d+)\/reviews$/.exec(args[1] ?? "")
+		: null;
+/** A review node as GraphQL lists it: with its `url` (REST's html_url) unless it has one. */
+const withUrl = (n, r, i) =>
+	r.state === "PENDING" || r.url ? r : { ...r, url: restReview(n, r, i).html_url };
+/** A review node as REST shows it (`PRR_<pr>_<index>` unless it has an id). */
+const restReview = (n, r, i) => ({
+	id: r.databaseId ?? 9000 + i,
+	node_id: r.id ?? `PRR_${n}_${i}`,
+	user: { login: r.author?.login ?? "", avatar_url: r.author?.avatarUrl ?? "" },
+	body: r.body ?? "",
+	state: r.state,
+	...(r.state === "PENDING" ? {} : { submitted_at: r.submittedAt ?? null }),
+	commit_id: r.commit?.oid ?? null,
+	html_url: `https://github.com/${s.nameWithOwner ?? "acme/widget"}/pull/${n}#pullrequestreview-${r.databaseId ?? 9000 + i}`,
+});
+/**
+ * What the standing opinions (each reviewer's latest opinionated review)
+ * say together: "changes" if anyone requests changes, else "approved" if
+ * anyone approves, else "none".
+ */
+function standingSay(pr) {
+	const latest = new Map();
+	for (const r of pr.graphql?.reviews ?? []) {
+		if (!["APPROVED", "CHANGES_REQUESTED", "DISMISSED"].includes(r.state)) continue;
+		latest.set(r.author?.login?.toLowerCase(), r.state);
+	}
+	const states = [...latest.values()];
+	if (states.includes("CHANGES_REQUESTED")) return "changes";
+	return states.includes("APPROVED") ? "approved" : "none";
+}
+/**
+ * GitHub's reviewDecision after a review write that changed what the
+ * standing opinions say (`before`, standingSay's): CHANGES_REQUESTED
+ * once someone asks; when the last such opinion goes (dismissed,
+ * replaced), what it was before (default REVIEW_REQUIRED); APPROVED
+ * becomes REVIEW_REQUIRED when the last approval goes. A decision these
+ * can't derive (APPROVED once enough approve: the count is the rule's)
+ * stays the scenario's.
+ */
+function decide(pr, before) {
+	const after = standingSay(pr);
+	if (after === before) return;
+	pr.view ??= {};
+	if (after === "changes") {
+		pr.decisionBefore = pr.view.reviewDecision ?? null;
+		pr.view.reviewDecision = "CHANGES_REQUESTED";
+	} else if (pr.view.reviewDecision === "CHANGES_REQUESTED") {
+		pr.view.reviewDecision =
+			pr.decisionBefore === undefined ? "REVIEW_REQUIRED" : pr.decisionBefore;
+		delete pr.decisionBefore;
+	}
+	if (after === "none" && pr.view.reviewDecision === "APPROVED") {
+		pr.view.reviewDecision = "REVIEW_REQUIRED";
+	}
+}
+if (restReviewPost && !s.loggedOut) {
+	const [, n] = restReviewPost;
+	if (args.slice(4).join(" ") !== "--input -") unsupported();
+	const req = JSON.parse(readFileSync(0, "utf8"));
+	const pr = s.prs[n];
+	if (!pr) httpFail(404, "Not Found");
+	const f = failNextFor("verdict");
+	if (f && !f.afterWrite) failAs(f);
+	delay("verdict", 0);
+	const states = { APPROVE: "APPROVED", COMMENT: "COMMENTED", REQUEST_CHANGES: "CHANGES_REQUESTED" };
+	if (!states[req.event]) httpFail(422, "Unprocessable Entity", ["Review event is not included in the list"]);
+	if (req.comments) unsupported();
+	const viewer = s.user.login.toLowerCase();
+	const reviews = pr.graphql?.reviews ?? [];
+	if (reviews.some((r) => r.state === "PENDING" && r.author?.login?.toLowerCase() === viewer)) {
+		// Checked on carbonless-scratch (2026-10-31).
+		httpFail(422, "Unprocessable Entity", ["User can only have one pending review per pull request"]);
+	}
+	if (pr.view?.author?.login?.toLowerCase() === viewer && req.event !== "COMMENT") {
+		// GitHub's exact texts (carbonless-scratch, 2026-11-01).
+		httpFail(422, "Unprocessable Entity", [
+			req.event === "APPROVE"
+				? "Review Can not approve your own pull request"
+				: "Review Can not request changes on your own pull request",
+		]);
+	}
+	if (req.event !== "APPROVE" && !req.body?.trim()) {
+		httpFail(422, "Unprocessable Entity", ["Review Body is required"]);
+	}
+	const now = new Date().toISOString().replace(/\.\d+Z$/, "Z");
+	const i = reviews.length;
+	const review = {
+		id: `PRR_${n}_${i}`,
+		databaseId: 9000 + i,
+		author: {
+			login: s.user.login,
+			__typename: "User",
+			...(s.user.avatarUrl ? { avatarUrl: s.user.avatarUrl } : {}),
+		},
+		state: states[req.event],
+		submittedAt: now,
+		body: req.body ?? "",
+		commit: { oid: req.commit_id },
+	};
+	pr.graphql ??= {};
+	const before = standingSay(pr);
+	pr.graphql.reviews = [...reviews, review];
+	decide(pr, before);
+	pr.graphql.timelineItems = [
+		...(pr.graphql.timelineItems ?? []),
+		{
+			__typename: "PullRequestReview",
+			author: { login: s.user.login, __typename: "User", avatarUrl: s.user.avatarUrl ?? "" },
+			state: review.state,
+			submittedAt: now,
+			bodyText: rendered(review.body),
+			url: restReview(n, review, i).html_url,
+			comments: { totalCount: 0, nodes: [] },
+		},
+	];
+	save();
+	if (f) failAs(f);
+	print(restReview(n, review, i));
+}
+if (restReviews && !s.loggedOut) {
+	if (args.slice(2).join(" ") !== "--paginate --slurp") unsupported();
+	const pr = s.prs[restReviews[1]];
+	if (!pr) httpFail(404, "Not Found");
+	const f = failNextFor("reviews");
+	if (f) failAs(f);
+	const all = (pr.graphql?.reviews ?? []).map((r, i) => restReview(restReviews[1], r, i));
+	const size = s.pageSize ?? 30;
+	const pages = [];
+	for (let i = 0; i < all.length; i += size) pages.push(all.slice(i, i + size));
+	print(pages.length ? pages : [[]]);
+}
+// A dismissal: `api -X PUT repos/<o>/<r>/pulls/<n>/reviews/<id>/dismissals
+// --input -` (by REST id), GitHub's texts as checked on carbonless-scratch
+// (2026-11-01). Any review by its id becomes DISMISSED, whoever wrote it
+// (as GitHub lets a repo admin); only an approval or a change request.
+const restDismiss =
+	args[0] === "api" && args[1] === "-X" && args[2] === "PUT"
+		? /^repos\/[^/]+\/[^/]+\/pulls\/(\d+)\/reviews\/(\d+)\/dismissals$/.exec(args[3] ?? "")
+		: null;
+if (restDismiss && !s.loggedOut) {
+	const [, n, id] = restDismiss;
+	if (args.slice(4).join(" ") !== "--input -") unsupported();
+	const req = JSON.parse(readFileSync(0, "utf8"));
+	const pr = s.prs[n];
+	if (!pr) httpFail(404, "Not Found");
+	const f = failNextFor("dismiss");
+	if (f && !f.afterWrite) failAs(f);
+	delay("dismiss", 0);
+	if (typeof req.message !== "string" || !req.message) {
+		httpFail(422, 'Invalid request.\n\n"message" wasn\'t supplied.');
+	}
+	const reviews = pr.graphql?.reviews ?? [];
+	const i = reviews.findIndex((r, k) => (r.databaseId ?? 9000 + k) === Number(id));
+	if (i < 0) httpFail(404, "Not Found");
+	const review = reviews[i];
+	if (review.state !== "APPROVED" && review.state !== "CHANGES_REQUESTED") {
+		httpFail(422, "Validation Failed", [
+			`Can not dismiss a ${review.state.toLowerCase()} pull request review`,
+		]);
+	}
+	const before = standingSay(pr);
+	review.state = "DISMISSED";
+	decide(pr, before);
+	save();
+	if (f) failAs(f);
+	print(restReview(n, review, i));
+}
+// The base branch's rule (verdict.ts ruleOf): `api repos/<o>/<r>/branches/<b>`,
+// `…/branches/<b>/protection` and `api repos/<o>/<r>/rules/branches/<b>
+// --paginate --slurp`, from the rule of the PR whose base it is (`rule`).
+const ruleRead = (() => {
+	if (args[0] !== "api" || args[1] === "-X") return null;
+	const path = args[1] ?? "";
+	const protection = /^repos\/[^/]+\/[^/]+\/branches\/(.+)\/protection$/.exec(path);
+	if (protection) return { read: "protection", branch: protection[1] };
+	const rules = /^repos\/[^/]+\/[^/]+\/rules\/branches\/(.+)$/.exec(path);
+	if (rules) return { read: "rules", branch: rules[1] };
+	const branch = /^repos\/[^/]+\/[^/]+\/branches\/(.+)$/.exec(path);
+	if (branch) return { read: "branch", branch: branch[1] };
+	return null;
+})();
+if (ruleRead && !s.loggedOut) {
+	const { read } = ruleRead;
+	const branch = ruleRead.branch.split("/").map(decodeURIComponent).join("/");
+	if (args.slice(2).join(" ") !== (read === "rules" ? "--paginate --slurp" : "")) unsupported();
+	if (s.ruleFail?.read === read) {
+		if (s.ruleFail.malformed) {
+			process.stdout.write("{not json\n");
+			process.exit(0);
+		}
+		const status = s.ruleFail.status ?? 500;
+		httpFail(status, HTTP_MESSAGES[status] ?? "Error");
+	}
+	const pr = Object.values(s.prs).find((p) => (p.view?.baseRefName ?? "main") === branch);
+	// No PR on it: an unprotected branch. A PR's without a rule: protected,
+	// its rule hidden (no admin access: 404 Not Found, an empty rules list).
+	const none = { approvals: 0, codeOwners: false, strict: false };
+	const rule = pr ? pr.rule : none;
+	const any = rule && (rule.approvals > 0 || rule.codeOwners || rule.strict);
+	if (read === "branch") print({ name: branch, protected: rule ? Boolean(any) : true });
+	if (read === "protection") {
+		if (!rule) httpFail(404, "Not Found");
+		// An admin's answer for a branch without classic protection.
+		if (!rule.classic || !any) httpFail(404, "Branch not protected");
+		print({
+			required_pull_request_reviews: {
+				required_approving_review_count: rule.approvals,
+				require_code_owner_reviews: rule.codeOwners,
+			},
+			required_status_checks: { strict: rule.strict, contexts: [] },
+		});
+	}
+	const list = [];
+	if (rule && !rule.classic && (rule.approvals > 0 || rule.codeOwners)) {
+		list.push({
+			type: "pull_request",
+			parameters: {
+				required_approving_review_count: rule.approvals,
+				require_code_owner_review: rule.codeOwners,
+			},
+			ruleset_source_type: "Repository",
+			ruleset_id: 1,
+		});
+	}
+	if (rule && !rule.classic && rule.strict) {
+		list.push({
+			type: "required_status_checks",
+			parameters: { strict_required_status_checks_policy: true, required_status_checks: [] },
+			ruleset_source_type: "Repository",
+			ruleset_id: 1,
+		});
+	}
+	print([list]);
+}
+if (args[0] === "api" && args[1] === "-X" && !restReply && !restComment && !restCreate && !restReviewPost && !restDismiss) unsupported();
 if (restReply && !s.loggedOut) {
 	const [, n, id] = restReply;
 	if (args.slice(4).join(" ") !== "-H Accept: application/vnd.github.full+json --input -") {
@@ -867,7 +1117,7 @@ const known = [
 	"repo clone",
 	"pr view",
 ];
-if (!known.includes(cmd) && !restPull && !restReply && !restComment && !restGetComment && !restCreate && !restCompare) {
+if (!known.includes(cmd) && !restPull && !restReply && !restComment && !restGetComment && !restCreate && !restCompare && !restReviewPost && !restReviews && !restDismiss && !ruleRead) {
 	unsupported();
 }
 
@@ -935,6 +1185,54 @@ switch (cmd) {
 		const pr0 = () => s.prs[f.number];
 		if (s.failGraphql && f.query?.includes(s.failGraphql)) {
 			fail("GraphQL: Something went wrong while executing your query.");
+		}
+		// The Final Verdict's read (gh.ts VERDICT_QUERY): the PR's merge
+		// state, review decision, requested reviewers, first page of
+		// reviews and the head's checks with isRequired.
+		if (/mergeStateStatus/.test(f.query ?? "")) {
+			const pr = pr0();
+			if (!pr) notFound(f.number);
+			const v = pr.view ?? {};
+			const size = s.pageSize ?? 100;
+			const reviews = pr.graphql?.reviews ?? [];
+			const checks = checkContexts(v.statusCheckRollup ?? [], f.query.includes("isRequired"));
+			const page = (all) => ({
+				pageInfo: {
+					hasNextPage: all.length > size,
+					endCursor: all.length > size ? `cursor:${size}` : null,
+				},
+				nodes: all.slice(0, size),
+			});
+			print({
+				data: {
+					repository: {
+						pullRequest: {
+							state: v.state ?? "OPEN",
+							mergeStateStatus: v.mergeStateStatus ?? "UNKNOWN",
+							reviewDecision: v.reviewDecision ?? null,
+							headRefOid: v.headRefOid,
+							baseRefName: v.baseRefName ?? "main",
+							reviewRequests: {
+								nodes: (v.reviewRequests ?? []).map(({ asCodeOwner, ...r }) => ({
+									asCodeOwner: asCodeOwner === true,
+									requestedReviewer: r,
+								})),
+							},
+							reviews: page(reviews.map((r, i) => withUrl(f.number, r, i))),
+							commits: {
+								nodes: [
+									{
+										commit: {
+											oid: v.headRefOid,
+											statusCheckRollup: checks.length ? { contexts: page(checks) } : null,
+										},
+									},
+								],
+							},
+						},
+					},
+				},
+			});
 		}
 		// Home (src/server/home): the viewer, their teams, repos' PR lists
 		// and PR details by alias, from `repos`.
@@ -1392,14 +1690,17 @@ switch (cmd) {
 		}
 		// One commit's checks: object(oid) { ... statusCheckRollup { contexts } }.
 		if (conn === "contexts") {
-			const commit = s.commits?.[f.oid];
+			// Else the head of a PR: its statusCheckRollup (the verdict's pages).
+			const headOf = Object.values(s.prs).find((p) => p.view?.headRefOid === f.oid);
+			const commit =
+				s.commits?.[f.oid] ?? (headOf ? { contexts: headOf.view.statusCheckRollup ?? [] } : undefined);
 			if (commit === undefined) {
 				print({ data: { repository: { object: null } } });
 			}
 			if (commit.contexts === null) {
 				print({ data: { repository: { object: { statusCheckRollup: null } } } });
 			}
-			const all = commit.contexts ?? [];
+			const all = checkContexts(commit.contexts ?? [], f.query.includes("isRequired"));
 			const size = s.pageSize ?? 100;
 			const start = f.endCursor ? Number(f.endCursor.replace("cursor:", "")) : 0;
 			const end = start + size;
@@ -1427,6 +1728,7 @@ switch (cmd) {
 		}
 		if (!pr) notFound(f.number);
 		let all = pr.graphql?.[conn] ?? [];
+		if (conn === "reviews") all = all.map((r, i) => withUrl(f.number, r, i));
 		if (conn === "reviewThreads") {
 			delay("threads", s.threadsDelayMs);
 			const raw = all;

@@ -107,13 +107,39 @@ On a phone there's no keyboard: the help isn't offered there.
 carbonless writes to GitHub only on the reviewer's explicit action, as the
 `gh` login, through `gh` (no server of its own): replying to a review thread,
 starting a new one (on lines, a span inside them, or a file), resolving or
-unresolving one, and editing or deleting one of the viewer's comments in one
-(`src/server/threadWrites.ts`, `src/server/newThreads.ts`).
+unresolving one, editing or deleting one of the viewer's comments in one,
+and submitting the review verdict: Approve, Comment or Request changes,
+one submitted review per press (the Final Verdict tab and the end of Files
+changed; `src/server/threadWrites.ts`, `src/server/newThreads.ts`,
+`src/server/verdict.ts`). Comment over the viewer's own standing Approve or
+Request changes also dismisses that review (REST `PUT
+…/reviews/{id}/dismissals`, message "Changed to a comment"), as the
+owner's tooltip defines Comment: "No approval, but approval by someone
+else acceptable". GitHub keeps the latest APPROVED or CHANGES_REQUESTED
+review standing through later comments, so without the dismissal the
+switch wouldn't happen.
+
+- **Withdrawing an opinion by Comment.** The comment posts first, then the
+  dismissal, so a failed dismissal never leaves the reviewer with neither.
+  The review dismissed is the viewer's latest opinionated one, from a fresh
+  REST read at send time, and only if it predates the comment (never anyone
+  else's, never a newer verdict). A dismissal GitHub refuses is still a
+  success (the comment is on GitHub): a yellow notice says the opinion still
+  stands, with GitHub's message, and nothing goes to "not posted". A resend
+  under the same client id never posts again but finishes the dismissal; one
+  already dismissed counts as done (GitHub's 422 "Can not dismiss a
+  dismissed pull request review", carbonless-scratch 2026-11-01). Reading
+  reviews, a dismissed opinion followed by a comment of the same reviewer
+  reads as that comment.
 
 - **One explicit action, one write.** Every write is one click (or the send
   shortcut) on one thread. Nothing posts, resolves or retries a refused write
   on its own, nothing is written as a side effect of review progress, and no
-  AI-written text is posted. Resolving never changes review progress.
+  AI-written text is posted. Resolving never changes review progress. The
+  one exception is Comment over the viewer's own standing approval or
+  request for changes: that one press makes two writes, the comment and
+  then the dismissal of that review, since that is what Comment means
+  (below). Its tooltip says so before the press.
 - **Immediate, never into a pending review.** Replies use REST
   `POST /repos/{o}/{r}/pulls/{n}/comments/{commentId}/replies` (to the
   thread's first comment), never GraphQL `addPullRequestReviewThreadReply`,
@@ -247,7 +273,23 @@ unresolving one, and editing or deleting one of the viewer's comments in one
   posting again.
 - **Refused means refused.** When GitHub answers a write with an error, it
   is refused for good, with GitHub's message (401/403 forbidden, 404 gone,
-  anything else invalid), and nothing sends it again on its own. Only
+  anything else invalid), and nothing sends it again on its own. Every
+  refused write stays listed in one place on both pages (`RefusedWrites`)
+  until the reviewer's Retry lands (refused again, it stays with the new
+  message) or they drop it, after a confirmation (owner: "an always on
+  thing that allows to either retry or drop which requires confirmation").
+  A dropped reply, edit or new comment loses its text; a dropped resolve or
+  delete leaves GitHub as it is. Typing the reply again and sending it,
+  saving or cancelling the edit, or discarding the new comment settles it
+  too. Refusals are kept in `localStorage` beside the drafts
+  (`crb:refused:<owner>/<repo>#<n>`, `src/web/threads/refusals.ts`), so a
+  reload lists them all again. A Retry with nothing to send (a cleared box,
+  an edit back as it was, a draft gone, sent from another tab) is off,
+  saying so, and never settles it: only Drop does. "Show theirs" on an edit
+  changed on GitHub keeps it listed until the edit is saved or dropped. A
+  resolve or delete Retry already on its way when the page reloads still
+  goes to GitHub (the crb server sends it); the next page lists the
+  refusal again, and dropping it then can't call that back. Only
   GitHub's own trouble is transient (502 to the page, which retries): HTTP
   408, 429 or 5xx, a rate limit (a rate-limit 403 too), a timeout or no
   answer at all. A 404 for a thread GitHub still has is a refusal, not
@@ -257,6 +299,46 @@ unresolving one, and editing or deleting one of the viewer's comments in one
   answer to the post) or the thread was deleted right after. Posting a
   reply clears the pending-review warning (finding one by the dedupe
   doesn't), and a pending-review refusal sets it.
+- **The verdict is one submitted review.** Approve, Comment or Request
+  changes is REST `POST /repos/{o}/{r}/pulls/{n}/reviews` with `event`,
+  `commit_id` the snapshot's head (an older commit on `--head` or a
+  started patch set: what was reviewed; any other is 409 `stale`) and no
+  `comments`; a `body` only when the reviewer typed a message, ending in
+  the hidden `crb:v1` marker with the client id (no span), stripped from
+  every body the server sends. Comment and Request changes need a message
+  (400 otherwise, as GitHub refuses them). It is never gated on review
+  progress, open threads or checks. A pending review of the viewer's
+  refuses it (GitHub's 422, "User can only have one pending review per
+  pull request": 409 `pending-review`, nothing sent, never joined or
+  submitted); approving or requesting changes on one's own PR is 403
+  `forbidden` with GitHub's message. One press, one review: verdicts run
+  one at a time per review (its session on the server) and are remembered
+  by client id there; the page keeps a verdict on its way, and a refused
+  one, under that review's own key (`crb:verdict:…@<review id>`,
+  `crb:refused:…@<review id>`), so only the review that pressed resends or
+  retries it, never another review of the same PR; a retry first
+  lists the PR's reviews (REST) for the viewer's one in the event's state
+  carrying its marker, or, sent without a message, an empty one on the
+  same commit submitted since this server's first attempt (10 s of slack for GitHub's clock;
+  after a restart, the client's `attemptedAt` less 2 minutes), and posts
+  only if there is none. A verdict that lands drops the kept overview
+  and verdict reads, so the next ones read GitHub again.
+- **What blocks is read only for the Final Verdict.** `GET /api/r/<id>/verdict`
+  is one GraphQL read (`mergeStateStatus`, `reviewDecision`, the
+  requested reviewers with `asCodeOwner`, the reviews with their commits,
+  the head's checks with `isRequired`; should GitHub refuse that field,
+  read again without it, `required` then null) beside the base branch's rule
+  (branch, protection and `rules/branches` reads, `src/server/verdict.ts`
+  `ruleOf`), never on first open. A rule that can't be read (no admin
+  access: protection 403/404 on a protected branch, where an empty rules
+  list means unknown, not none; a private repo on a free plan; any
+  failed read) is `null`, never an error. Each reviewer counts by their
+  latest approval, change request or dismissal (GitHub's
+  latestOpinionatedReviews), their latest comment only when they have none:
+  a reply after approving leaves the approval standing. As of a cutoff, GitHub's
+  present-only facts (merge state, decision, rule, required flags,
+  code-owner requests) are null, never today's; on a merged or closed PR
+  the merge state, decision and rule are.
 - **Off where it can't be the reviewer's.** No writes as of a cutoff
   (`--as-of`) or as `--viewer` someone other than the `gh` login
   (`PrOverview.writes`); merged, closed and `--head` views write as GitHub
@@ -281,16 +363,44 @@ unresolving one, and editing or deleting one of the viewer's comments in one
   before GitHub lists it: the page's resend after a reload brings it.
 - **One thread, one write at a time.** Replies, resolving, edits and
   deletes on one thread run in the order asked, never at once.
-- **Leaving asks only when something would be lost** (owner: "refresh
+- **Leaving asks only when something would be lost or left unsettled** (owner: "refresh
   should only be dirty if information is lost"; `useUnsavedGuard`). It
   asks for review states not yet stored, for Home's view list not yet
-  saved (it retries on its own while the page lasts), and for a resolve, unresolve or
-  delete not yet on GitHub (refused ones too, until let go; a delete in
-  its undo window too: nothing is sent yet and no later page sends it). It never asks for drafts (reply,
+  saved (it retries on its own while the page lasts), for a resolve,
+  unresolve or delete not yet on GitHub (a delete in its undo window too:
+  nothing is sent yet and no later page sends it), and for any refused
+  write until its Retry lands or it is dropped (owner: "Until dropped or
+  succeeded, page should still ask"), though the next page lists it again. It never asks for drafts (reply,
   edit, new thread) or for replies, edits and new threads on their way:
   `localStorage` keeps them and the next page resends what was sent. Only
   while storage can't keep them (a private window, blocked site data) do
   they ask.
+- **On the page, the verdict is never gated.** Approve,
+  Comment and Request changes are always allowed, whatever the review's
+  progress, open threads or checks (owner: "approving/requesting changes
+  can be done regardless of the state of the review"); progress shows
+  beside them as information only. Approve sends at once; a message goes
+  only when "Include a message" is ticked and has text. GitHub refuses
+  Comment and Request changes without one, so pressing either without
+  text ticks the box and focuses it, sending nothing. One verdict is out
+  at a time: the buttons wait while it is (a double press posts one
+  review). It shows at once as sending ("You approved just now") and is
+  kept in `localStorage` (`crb:verdict:<owner>/<repo>#<n>`, with the
+  message draft) until GitHub has it: transient failures and a reload
+  resend it with the same client id and `retry: true`, so the server
+  finds one that landed. A refusal is listed with the other refused
+  writes as "Verdict", keeping its event and the message it was sent
+  with (or none): its Retry sends exactly that, never what the box holds
+  since. Any verdict landing (a Retry, a resend after a reload, a new
+  press) settles a listed one, so no Retry can post a second review;
+  its message, unless just sent, goes back in the box (never lost). A
+  pending review refuses it with the pending-review notice. The Files
+  end card reads GitHub's merge facts only once the page's first open
+  has settled and the card is on screen. It goes on
+  the snapshot's head (`commit`), and the card says so first when that
+  is an older commit (a pinned or reviewed head). On the viewer's own PR
+  only Comment is offered (GitHub refuses the others); as of a cutoff,
+  as another viewer, merged or closed, none.
 - **Tests write only to the fake gh.** Real writes happen only on the
   owner's scratch PR (see `CLAUDE.md`).
 

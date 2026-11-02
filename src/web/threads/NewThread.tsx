@@ -91,7 +91,9 @@ export function NewThread(props: {
 	const { clientId, span } = item;
 	const writer = useThreadWriter();
 	const lane = useThreadWrites().threads.get(newThreadKey(clientId));
-	const failed = lane?.failed?.action === "New comment" ? lane.failed : null;
+	const failed =
+		lane?.refused.find((f) => f.action === "New comment" && !f.retrying) ??
+		null;
 	const viewer = useQuery({ ...sessionQuery, enabled: false }).data?.viewer;
 	const box = useRef<HTMLTextAreaElement>(null);
 	const card = useRef<HTMLElement>(null);

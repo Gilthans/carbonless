@@ -733,7 +733,7 @@ test("a repo GitHub doesn't know is saved, and its chip says so with Retry; the 
 	pr,
 	startCrb,
 }) => {
-	await setup(workdir, pr);
+	const made = await setup(workdir, pr);
 	const crb = await startCrb();
 	await goHome(page, crb.url);
 	await page.getByRole("button", { name: "Edit repos" }).click();
@@ -773,6 +773,12 @@ test("a repo GitHub doesn't know is saved, and its chip says so with Retry; the 
 		if (route.request().method() === "PUT") await putHeld;
 		await route.continue();
 	});
+	// Its read, started as it's picked, held too: answered first, Save
+	// would show its rows at once (ready), never the wait.
+	const read = `home:${OWNER_REPO}` as const;
+	made.editScenario((s) => {
+		s.hold = [read];
+	});
 	await page.getByRole("button", { name: "Edit repos" }).click();
 	await field.fill(OWNER_REPO);
 	await field.press("Enter");
@@ -787,7 +793,9 @@ test("a repo GitHub doesn't know is saved, and its chip says so with Retry; the 
 	).toBeVisible();
 	await expectNoPageOverflow(page);
 	answer();
-	await expect(adding).not.toHaveAttribute("data-state", "saving");
+	await expect(adding).toHaveAttribute("data-state", "loading");
+	release(made.scenarioPath, read);
+	await expect(adding).toHaveAttribute("data-state", "ready");
 });
 
 test("one repo's read held: the other's rows show, the held one and the sections spin, no counts; released, its rows and the counts come", async ({

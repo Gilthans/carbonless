@@ -62,10 +62,22 @@ export interface Scenario {
 	 */
 	failNext?: {
 		/**
-		 * Also a comment's REST edit ("edit") or delete ("delete"), or a new
-		 * thread's REST comment ("comment").
+		 * Also a comment's REST edit ("edit") or delete ("delete"), a new
+		 * thread's REST comment ("comment"), a verdict's REST review
+		 * ("verdict"; stored as submitted with `afterWrite`), or a review's
+		 * REST dismissal ("dismiss"; dismissed with `afterWrite`), or the
+		 * REST list of a PR's reviews ("reviews", a read: `afterWrite` means
+		 * nothing).
 		 */
-		op: "reply" | "resolve" | "edit" | "delete" | "comment";
+		op:
+			| "reply"
+			| "resolve"
+			| "edit"
+			| "delete"
+			| "comment"
+			| "verdict"
+			| "dismiss"
+			| "reviews";
 		status?: number;
 		afterWrite?: boolean;
 		/** GitHub's message (default: the status's usual one). */
@@ -134,6 +146,15 @@ export interface Scenario {
 	 * whose node id is the key; the fake derives the rest from the threads.
 	 */
 	restEdits?: Record<string, Record<string, unknown>>;
+	/**
+	 * One read of the base branch's rule fails (verdict.ts ruleOf): GitHub's
+	 * HTTP `status` (default 500), or output that isn't JSON (`malformed`).
+	 */
+	ruleFail?: {
+		read: "branch" | "protection" | "rules";
+		status?: number;
+		malformed?: boolean;
+	};
 	/** Nodes per GraphQL page (default 100, like gh.ts asks for; REST: 30). */
 	pageSize?: number;
 	/**
@@ -219,8 +240,27 @@ export interface Scenario {
 	prs: Record<
 		string,
 		{
-			/** `gh pr view --json` object; only the requested fields are printed. */
+			/**
+			 * `gh pr view --json` object; only the requested fields are printed.
+			 * The Final Verdict's GraphQL read takes its `state`,
+			 * `mergeStateStatus` (default UNKNOWN), `reviewDecision` (default
+			 * null), `reviewRequests` (each with `asCodeOwner`, default false)
+			 * and `statusCheckRollup` (each with `required`, GitHub's
+			 * isRequired, default false) from here too.
+			 */
 			view: Record<string, unknown>;
+			/**
+			 * The base branch's review rule (verdict.ts ruleOf), as rulesets
+			 * (or, `classic`, branch protection) an admin can read; absent:
+			 * protected, the rule hidden (no admin access). All zero: an
+			 * unprotected branch.
+			 */
+			rule?: {
+				approvals: number;
+				codeOwners: boolean;
+				strict: boolean;
+				classic?: boolean;
+			};
 			/** Full node lists of each PR connection; the fake pages them. */
 			graphql?: {
 				/** The description as GitHub renders it (`pullRequest { bodyHTML }`). */
@@ -229,7 +269,17 @@ export interface Scenario {
 				comments?: unknown[];
 				/**
 				 * `reviews` nodes; one by the viewer (`user`) in state "PENDING"
-				 * makes the fake refuse replies and new threads as GitHub does (422).
+				 * makes the fake refuse replies, new threads and verdicts as
+				 * GitHub does (422). Each may carry its `commit: { oid }`, `body`,
+				 * `id` (default `PRR_<pr>_<index>`), REST `databaseId` (default
+				 * 9000 + index) and `url`; a verdict (REST `pulls/<n>/reviews`)
+				 * is appended here, and to the timeline; a dismissal (REST
+				 * `…/reviews/<id>/dismissals`) turns one DISMISSED. Either,
+				 * when it changes what the standing opinions say, sets the
+				 * view's `reviewDecision` as GitHub would where that can be
+				 * told without the rule's count: CHANGES_REQUESTED, back to
+				 * what it was before, or APPROVED to REVIEW_REQUIRED when the
+				 * last approval goes; never to APPROVED.
 				 */
 				reviews?: unknown[];
 				/** `commits` nodes: `{ commit: { oid, committedDate, pushedDate } }`. */
@@ -481,8 +531,10 @@ export function threadComment(c: {
  *
  * The calls `hold` can stop, each where its `…DelayMs` waits: `comments`
  * and `threadContent` are reads of threads' comments, `threads` their
- * summaries, `thread` one thread's summary by id (a write's re-read), `restList` the REST review comments, `comment` a new thread's
- * REST comment, `home` Home's PR list and details queries (a refresh),
+ * summaries, `thread` one thread's summary by id (a write's re-read),
+ * `restList` the REST review comments, `comment` a new thread's REST
+ * comment, `verdict` a verdict's REST review, `dismiss` a review's REST
+ * dismissal, `home` Home's PR list and details queries (a refresh),
  * `home:<owner/repo>` (lowercased) those of that one repo only.
  */
 export type HoldOp =
@@ -499,7 +551,9 @@ export type HoldOp =
 	| "reply"
 	| "comment"
 	| "edit"
-	| "delete";
+	| "delete"
+	| "verdict"
+	| "dismiss";
 
 /** Lets the held calls of kind `op` go (the scenario file at `path`, its writes kept). */
 export function release(path: string, op: HoldOp): void {

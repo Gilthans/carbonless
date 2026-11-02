@@ -99,6 +99,67 @@ export interface FileLead {
 	row: (columns: number, rail?: string) => ReactNode;
 }
 
+/**
+ * Where the file bubble sits in the unified view: centred on the diff's
+ * visible width, sticky so it stays there as long lines scroll (a sticky
+ * inset's percentage is of the scroller), taking no room from the row's
+ * text. Only on rows that aren't code (a hunk header, a gap, a cluster's
+ * label, a row of its own), so it never covers a line or its selection.
+ * Side by side it sits at the right with the line bubbles, in the first
+ * row's right cell when that is code (PairRow).
+ */
+export function FileBubbleSlot(props: { children: ReactNode }) {
+	return (
+		<span
+			data-testid="file-bubble-slot"
+			className="sticky left-[calc(50%-1.25rem)] z-[4] float-left -mr-10 flex w-10 justify-center"
+		>
+			{props.children}
+		</span>
+	);
+}
+
+/**
+ * A row's text beside the file bubble: on touch the bubble is 40px tall, so
+ * the text's line is too, centring it on the bubble (`@@`, "N hidden lines").
+ */
+const LEAD_LINE = "pointer-coarse:leading-10";
+
+/**
+ * The file bubble's own row (no row to share; unified, also when the first
+ * row is code), and its threads' row: centred unified, at the right side
+ * by side.
+ */
+function LeadRow(props: { lead: FileLead; columns: number; centred: boolean }) {
+	const { lead, columns, centred } = props;
+	return (
+		<>
+			<tr>
+				<td
+					colSpan={columns}
+					className={`${centred ? "px-2" : bubblePad(1)} h-5`}
+				>
+					<LeadSlot lead={lead} centred={centred} />
+				</td>
+			</tr>
+			{lead.row(columns)}
+		</>
+	);
+}
+
+/** The file bubble on a row that isn't code: centred unified, at the right side by side. */
+function LeadSlot(props: { lead: FileLead; centred: boolean }) {
+	return props.centred ? (
+		<FileBubbleSlot>{props.lead.bubble}</FileBubbleSlot>
+	) : (
+		<BubbleSlot>{props.lead.bubble}</BubbleSlot>
+	);
+}
+
+/** A non-code row's text cell beside the file bubble: its padding and line. */
+const leadText = (lead: FileLead | undefined, centred: boolean, others = 0) =>
+	`${bubblePad(others + (lead && !centred ? 1 : 0))} ${lead && centred ? LEAD_LINE : ""}`;
+
 /** The cell padding that keeps `n` bubbles clear of the code. */
 const bubblePad = (n: number) =>
 	n === 0 ? "px-2" : n === 1 ? "pr-12 pl-2" : "pr-24 pl-2";
@@ -460,7 +521,7 @@ function NumberCell(props: {
 }
 
 /**
- * A line's code: its bubbles (the file's, `lead`, on the diff's first row;
+ * A line's code: its bubbles (the file's, `lead`, side by side on the diff's first row;
  * threads ending on it, `bubble`), sign and text, with the spans painted
  * over its characters (`marks`). Unified, the row carries the
  * paint and the line keeps its width (the table scrolls sideways); side by
@@ -553,8 +614,6 @@ interface RowProps {
 	orderOf?: (line: DiffLine) => number | undefined;
 	picker?: Picker;
 	composers?: RowComposers;
-	/** The file's bubble and its threads' row (the diff's first row). */
-	lead?: FileLead;
 }
 
 /** The spans painted over a cell's characters: those of the threads on its keys. */
@@ -677,7 +736,7 @@ function NoNewlineRow(props: {
 
 /** One line as a unified row: its numbers on both sides and its code. */
 function LineRow(props: RowProps & { line: RowLine; order?: number }) {
-	const { line, state, threads, shape, picker, lead } = props;
+	const { line, state, threads, shape, picker } = props;
 	const cell = codeCellOf(line);
 	const isPicked = picker?.keys.has(pickKey(cell)) ?? false;
 	const reviewed = state === "reviewed";
@@ -740,7 +799,6 @@ function LineRow(props: RowProps & { line: RowLine; order?: number }) {
 					hunk={props.hunk}
 					order={props.order}
 					marks={marksOf(keys, threads)}
-					lead={lead?.bubble}
 					bubble={
 						endKey &&
 						threads && (
@@ -758,7 +816,6 @@ function LineRow(props: RowProps & { line: RowLine; order?: number }) {
 					}
 				/>
 			</tr>
-			{lead?.row(columnsOf(shape.view), state ? RAIL[state] : undefined)}
 			{line.noNewline && <NoNewlineRow shape={shape} state={state} />}
 			<RowTail
 				opened={open && endKey ? [{ endKey, ending, side: cell.side }] : []}
@@ -818,7 +875,13 @@ interface Cell {
  * for bubbles: they sit in a BubbleRow of their own right under the pair
  * row instead (a context line's once, on the right).
  */
-function PairRow(props: RowProps & { row: SideRow }) {
+function PairRow(
+	props: RowProps & {
+		row: SideRow;
+		/** The file's bubble and its threads' row (the diff's first row). */
+		lead?: FileLead;
+	},
+) {
 	const { row, state, threads, shape, picker, lead } = props;
 	const reviewed = state === "reviewed";
 	const cellOf = (
@@ -1250,6 +1313,8 @@ export function DiffBody(props: {
 		[view, wide],
 	);
 	const columns = columnsOf(view);
+	// Unified, the file bubble is centred on rows that aren't code (FileBubbleSlot).
+	const centred = view === "unified";
 	const [ranges, setRanges] = useState<[number, number][]>([]);
 	const contexts = useQueries({
 		queries: ranges.map(([from, to]) =>
@@ -1477,6 +1542,19 @@ export function DiffBody(props: {
 		for (let n = from; n <= to; n++) {
 			const line = loaded.get(n);
 			if (line) {
+				// First in the table: the file bubble. Unified, a row of its
+				// own above it, never over code; side by side, in its right cell.
+				const first = rows.length === 0 ? lead?.() : undefined;
+				if (first && centred) {
+					rows.push(
+						<LeadRow
+							key={`c${n}:file`}
+							lead={first}
+							columns={columns}
+							centred
+						/>,
+					);
+				}
 				const row = {
 					shape,
 					lang,
@@ -1486,11 +1564,15 @@ export function DiffBody(props: {
 					hunk: hunkOf(n),
 					picker,
 					composers,
-					lead: lead?.(),
 				};
 				rows.push(
 					view === "side-by-side" ? (
-						<PairRow key={`c${n}`} row={{ kind: "context", line }} {...row} />
+						<PairRow
+							key={`c${n}`}
+							row={{ kind: "context", line }}
+							lead={first}
+							{...row}
+						/>
 					) : (
 						<LineRow key={`c${n}`} line={line} {...row} />
 					),
@@ -1618,11 +1700,14 @@ export function DiffBody(props: {
 					</td>
 					<td
 						colSpan={columns - 2}
-						className={`font-sans ${bubblePad((runThreads.length > 0 ? 1 : 0) + (runLead ? 1 : 0))}`}
+						className={`font-sans ${leadText(runLead, centred, runThreads.length > 0 ? 1 : 0)}`}
 					>
-						{(runThreads.length > 0 || runLead) && (
+						{runLead && centred && (
+							<FileBubbleSlot>{runLead.bubble}</FileBubbleSlot>
+						)}
+						{(runThreads.length > 0 || (runLead && !centred)) && (
 							<BubbleSlot>
-								{runLead?.bubble}
+								{!centred && runLead?.bubble}
 								{runThreads.length > 0 && (
 									<ThreadBubble
 										inline
@@ -1686,9 +1771,9 @@ export function DiffBody(props: {
 					<ControlsCell className="py-1">{checkbox(cluster)}</ControlsCell>
 					<td
 						colSpan={columns - 2}
-						className={`${bubblePad(lead ? 1 : 0)} py-1 font-sans text-sm`}
+						className={`${leadText(lead, centred)} py-1 font-sans text-sm`}
 					>
-						{lead && <BubbleSlot>{lead.bubble}</BubbleSlot>}
+						{lead && <LeadSlot lead={lead} centred={centred} />}
 						{cluster.label}
 						<CrossedOffNote cluster={cluster} id={noteId(cluster)} />
 					</td>
@@ -1791,12 +1876,7 @@ export function DiffBody(props: {
 					)}
 					{lead && (
 						<tbody>
-							<tr>
-								<td colSpan={columns} className={`${bubblePad(1)} h-5`}>
-									<BubbleSlot>{lead.bubble}</BubbleSlot>
-								</td>
-							</tr>
-							{lead.row(columns)}
+							<LeadRow lead={lead} columns={columns} centred={centred} />
 						</tbody>
 					)}
 					{clusterRows}
@@ -2172,12 +2252,14 @@ function HunkRows(props: {
 		});
 	}, [hunk, ignoreWhitespace, view]);
 	const columns = columnsOf(view);
+	// Unified, the file bubble is centred on rows that aren't code (FileBubbleSlot).
+	const centred = view === "unified";
 	return (
 		<>
 			<tbody>
 				<tr className="bg-hunk text-hunk-ink">
-					<td colSpan={columns} className={`${bubblePad(lead ? 1 : 0)} py-0.5`}>
-						{lead && <BubbleSlot>{lead.bubble}</BubbleSlot>}
+					<td colSpan={columns} className={`${leadText(lead, centred)} py-0.5`}>
+						{lead && <LeadSlot lead={lead} centred={centred} />}
 						{hunkHeader(hunk)}
 					</td>
 				</tr>

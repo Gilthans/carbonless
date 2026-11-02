@@ -24,7 +24,12 @@ import { fullDate } from "../RelativeTime";
 import { Tooltip } from "../Tooltip";
 import { CommentBody } from "./CommentBody";
 import { useEditDraft } from "./drafts";
-import { useThreadWriter, useThreadWrites, useWritesOn } from "./threadWrites";
+import {
+	refusalKey,
+	useThreadWriter,
+	useThreadWrites,
+	useWritesOn,
+} from "./threadWrites";
 
 /**
  * What the viewer's writes do to one comment right now: an edit saving
@@ -346,13 +351,12 @@ export function EditForm(props: {
 	const draft = useEditDraft(comment.id);
 	// GitHub's newer text, never saved over unseen: shown while the
 	// changed-on-GitHub refusal is open, and once Show theirs took it in.
-	const failed = useThreadWrites().threads.get(threadId)?.failed;
-	const refused =
-		failed?.action === "Edit" &&
-		failed.code === "changed" &&
-		failed.commentId === comment.id
-			? failed.current
-			: undefined;
+	const failed = useThreadWrites()
+		.threads.get(threadId)
+		?.refused.find(
+			(f) => f.key === refusalKey({ kind: "edit", commentId: comment.id }),
+		);
+	const refused = failed?.code === "changed" ? failed.current : undefined;
 	const theirs = refused ?? (draft?.edit?.theirs ? comment : undefined);
 	const from = draft?.edit?.from ?? comment.body;
 	const text = draft?.text ?? from;
