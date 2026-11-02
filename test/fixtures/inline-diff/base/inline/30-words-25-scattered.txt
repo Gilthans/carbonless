@@ -1,0 +1,7 @@
+// 30-words-25-scattered.txt before context line 1
+// 30-words-25-scattered.txt before context line 2
+// 30-words-25-scattered.txt before context line 3
+maple thunder stone ember cloud silver copper violet lemon piano garnet river
+// 30-words-25-scattered.txt after context line 1
+// 30-words-25-scattered.txt after context line 2
+// 30-words-25-scattered.txt after context line 3

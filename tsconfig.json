@@ -15,5 +15,7 @@
 		"types": ["node", "vite/client", "@testing-library/jest-dom/vitest"],
 		"noEmit": true
 	},
-	"include": ["src", "e2e", "test", "scripts", "*.config.ts"]
+	"include": ["src", "e2e", "test", "scripts", "*.config.ts"],
+	// The gallery's case files, data for wordBlocks.fixture.test.ts.
+	"exclude": ["test/fixtures/inline-diff"]
 }

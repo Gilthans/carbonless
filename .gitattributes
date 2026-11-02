@@ -1,0 +1,3 @@
+# The gallery's case files, byte for byte (CRLF cases included).
+test/fixtures/inline-diff/base/** -text
+test/fixtures/inline-diff/case/** -text

@@ -1,0 +1,9 @@
+// 43-block-3x1-match-first.ts before context line 1
+// 43-block-3x1-match-first.ts before context line 2
+// 43-block-3x1-match-first.ts before context line 3
+const port = Number(env.PORT ?? 8080);
+import { a } from './a';
+import { b } from './b';
+// 43-block-3x1-match-first.ts after context line 1
+// 43-block-3x1-match-first.ts after context line 2
+// 43-block-3x1-match-first.ts after context line 3

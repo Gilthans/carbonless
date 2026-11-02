@@ -1,0 +1,266 @@
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import {
+	createGitFixture,
+	GIT_TEST_TIMEOUTS,
+	type GitFixture,
+} from "../../../test/git-fixture";
+import { buildSnapshot, loadFileHunks } from "../../server/diff/snapshot";
+import type { DiffLine, DisplayHunk } from "../../shared/types";
+import type { Mark } from "../code/Invisibles";
+import { type DiffRow, matchHunk, pairRun, runs } from "./whitespace";
+import { hunkWordMarks } from "./wordBlocks";
+
+/**
+ * Carbonless's marks against GitHub's, on the gallery's inline-diff case
+ * (Gilthans/carbonless-gallery#14, our playground; rebuilt by
+ * scripts/inline-diff-fixtures.mjs). The case files go through carbonless's
+ * own diff, as the server serves them, then the view's rows and
+ * hunkWordMarks. Every difference from GitHub's observed marks is listed in
+ * known-differences.json with its reason; the list may only shrink.
+ */
+
+// Real git processes: see GIT_TEST_TIMEOUTS.
+vi.setConfig(GIT_TEST_TIMEOUTS);
+
+const DIR = fileURLToPath(
+	new URL("../../../test/fixtures/inline-diff/", import.meta.url),
+);
+const read = (path: string) => readFileSync(`${DIR}${path}`, "utf8");
+
+interface GitHubPair {
+	old: string;
+	new: string;
+	oldMarks: Mark[];
+	newMarks: Mark[];
+}
+interface GitHubBlock {
+	shape: string;
+	pairs: GitHubPair[];
+	removed?: { text: string; marks: Mark[] }[];
+	added?: { text: string; marks: Mark[] }[];
+}
+interface GitHubFile {
+	blocks: GitHubBlock[];
+	hiddenWithIgnoreWhitespace?: boolean;
+}
+interface Known {
+	file: string;
+	/** A pair's index in the file, `line <i>` for a line of an unequal block, or `shape`. */
+	pair: number | string;
+	/** The setting the difference shows under; both when absent. */
+	ignoreWhitespace?: boolean;
+	reason: string;
+}
+interface Mismatch {
+	file: string;
+	pair: number | string;
+	ignoreWhitespace: boolean;
+	detail: string;
+}
+
+const github = JSON.parse(read("github-marks.json")) as {
+	files: Record<string, GitHubFile>;
+};
+const known = JSON.parse(read("known-differences.json")) as Known[];
+const paths = Object.keys(github.files);
+
+/** A changed line as GitHub shows it, with the unit it belongs to. */
+interface Line {
+	kind: "del" | "add";
+	text: string;
+	marks: readonly Mark[];
+	unit: number | string;
+}
+
+function githubLines(file: GitHubFile, ignoreWhitespace: boolean): Line[] {
+	const lines: Line[] = [];
+	let pair = 0;
+	const hidden = ignoreWhitespace && file.hiddenWithIgnoreWhitespace === true;
+	const marks = (m: Mark[]) => (hidden ? [] : m);
+	for (const block of file.blocks) {
+		if (block.removed || block.added) {
+			for (const r of block.removed ?? []) {
+				lines.push({
+					kind: "del",
+					text: r.text,
+					marks: marks(r.marks),
+					unit: "",
+				});
+			}
+			for (const a of block.added ?? []) {
+				lines.push({
+					kind: "add",
+					text: a.text,
+					marks: marks(a.marks),
+					unit: "",
+				});
+			}
+			continue;
+		}
+		const at = pair;
+		block.pairs.forEach((p, i) => {
+			lines.push({
+				kind: "del",
+				text: p.old,
+				marks: marks(p.oldMarks),
+				unit: at + i,
+			});
+		});
+		block.pairs.forEach((p, i) => {
+			lines.push({
+				kind: "add",
+				text: p.new,
+				marks: marks(p.newMarks),
+				unit: at + i,
+			});
+		});
+		pair += block.pairs.length;
+	}
+	lines.forEach((l, i) => {
+		if (l.unit === "") l.unit = `line ${i}`;
+	});
+	return lines;
+}
+
+/** A hunk's rows as the view lays them out (HunkRows), every run's rows. */
+function rowsOf(hunk: DisplayHunk, ignoreWhitespace: boolean): DiffRow[] {
+	const twins = ignoreWhitespace ? matchHunk(hunk.lines) : null;
+	return runs(hunk.lines).flatMap((run) =>
+		twins && run.key !== undefined
+			? pairRun(run.lines, twins)
+			: run.lines.map((line): DiffRow => ({ kind: "line", line })),
+	);
+}
+
+function ourLines(
+	hunks: DisplayHunk[],
+	ignoreWhitespace: boolean,
+): { line: DiffLine; marks: readonly Mark[] }[] {
+	return hunks.flatMap((hunk) => {
+		const marks = hunkWordMarks(rowsOf(hunk, ignoreWhitespace));
+		return hunk.lines
+			.filter((l) => l.kind !== "context")
+			.map((line) => ({ line, marks: marks.get(line) ?? [] }));
+	});
+}
+
+const show = (text: string, marks: readonly Mark[]) => {
+	let out = "";
+	let at = 0;
+	for (const [from, to] of marks) {
+		out += `${text.slice(at, from)}[${text.slice(from, to)}]`;
+		at = to;
+	}
+	return JSON.stringify(out + text.slice(at));
+};
+
+function compare(
+	file: string,
+	hunks: DisplayHunk[],
+	ignoreWhitespace: boolean,
+): Mismatch[] {
+	const theirs = githubLines(
+		github.files[file] as GitHubFile,
+		ignoreWhitespace,
+	);
+	const ours = ourLines(hunks, ignoreWhitespace);
+	const same =
+		theirs.length === ours.length &&
+		theirs.every(
+			(t, i) => t.kind === ours[i]?.line.kind && t.text === ours[i]?.line.text,
+		);
+	if (!same) {
+		const describe = (xs: { kind: string; text: string }[]) =>
+			xs.map((x) => `${x.kind === "del" ? "-" : "+"}${x.text}`).join("\n");
+		return [
+			{
+				file,
+				pair: "shape",
+				ignoreWhitespace,
+				detail: `GitHub:\n${describe(theirs)}\nours:\n${describe(ours.map((o) => o.line))}`,
+			},
+		];
+	}
+	const out = new Map<number | string, Mismatch>();
+	theirs.forEach((t, i) => {
+		const o = ours[i] as (typeof ours)[number];
+		if (JSON.stringify(t.marks) === JSON.stringify(o.marks)) return;
+		const prev = out.get(t.unit);
+		const line = `${t.kind === "del" ? "-" : "+"} GitHub ${show(t.text, t.marks)}\n  ours   ${show(t.text, o.marks)}`;
+		out.set(t.unit, {
+			file,
+			pair: t.unit,
+			ignoreWhitespace,
+			detail: prev ? `${prev.detail}\n${line}` : line,
+		});
+	});
+	return [...out.values()];
+}
+
+let fixture: GitFixture;
+const hunksOf = new Map<string, DisplayHunk[]>();
+
+beforeAll(async () => {
+	fixture = createGitFixture([
+		{
+			message: "base",
+			files: Object.fromEntries(paths.map((p) => [p, read(`base/${p}`)])),
+		},
+		{
+			message: "case",
+			files: Object.fromEntries(paths.map((p) => [p, read(`case/${p}`)])),
+		},
+	]);
+	const [base, head] = fixture.shas as [string, string];
+	const snapshot = await buildSnapshot(fixture.path, base, head);
+	for (const file of snapshot.files) {
+		const { hunks } = await loadFileHunks(fixture.path, snapshot, file.index);
+		hunksOf.set(file.path, hunks);
+	}
+});
+
+afterAll(() => fixture?.cleanup());
+
+describe("word marks against GitHub's (gallery PR #14)", () => {
+	it("has every case file", () => {
+		expect(paths.length).toBe(79);
+		expect([...hunksOf.keys()].sort()).toEqual([...paths].sort());
+	});
+
+	const matches = (k: Known, m: Mismatch) =>
+		k.file === m.file &&
+		k.pair === m.pair &&
+		(k.ignoreWhitespace === undefined ||
+			k.ignoreWhitespace === m.ignoreWhitespace);
+
+	it("matches GitHub but for the known differences, which may only shrink", () => {
+		const mismatches = paths.flatMap((file) =>
+			[false, true].flatMap((ws) => compare(file, hunksOf.get(file) ?? [], ws)),
+		);
+		const unlisted = mismatches.filter(
+			(m) => !known.some((k) => matches(k, m)),
+		);
+		expect(
+			unlisted.map(
+				(m) =>
+					`${m.file} pair ${m.pair} (ignore whitespace ${m.ignoreWhitespace ? "on" : "off"})\n${m.detail}`,
+			),
+		).toEqual([]);
+		// A listed difference must still show, in each setting it names.
+		const stale = known.filter((k) =>
+			(k.ignoreWhitespace === undefined
+				? [false, true]
+				: [k.ignoreWhitespace]
+			).some(
+				(ws) =>
+					!mismatches.some((m) => matches(k, m) && m.ignoreWhitespace === ws),
+			),
+		);
+		expect(
+			stale,
+			"now matches GitHub: remove it from known-differences.json",
+		).toEqual([]);
+	});
+});
