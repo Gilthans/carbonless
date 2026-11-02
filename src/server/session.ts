@@ -712,6 +712,13 @@ export class Session {
 			setPendingReview: (pending) => {
 				for (const read of this.#reads) read.setPendingReview(pending);
 			},
+			known: (id, edit) => {
+				const seq = ++this.#writeSeq;
+				const startedAt = Date.now();
+				for (const read of this.#reads) {
+					read.applyKnown(id, edit, seq, startedAt);
+				}
+			},
 		};
 	}
 

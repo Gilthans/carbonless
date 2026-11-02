@@ -94,6 +94,47 @@ export interface ThreadWriteTarget {
 	claimedIds: (exceptClientId: string) => Set<string>;
 	/** Sets the kept reads' pendingReview (a 409 turns it on, a reply off). */
 	setPendingReview: (pending: { url: string } | null) => void;
+	/**
+	 * Puts what a write GitHub just took is known to do (`edit` of thread
+	 * `id` as each kept read has it) into the kept reads at once, ahead of
+	 * its re-read, which replaces it: a page loaded meanwhile shows the
+	 * write without waiting on GitHub.
+	 */
+	known: (id: string, edit: (nodes: ThreadNodes) => ThreadNodes) => void;
+}
+
+/**
+ * `edit` of a thread's nodes; while a read doesn't have its content yet,
+ * of its summary only (the content stays the read's own).
+ */
+export const onNodes =
+	(edit: (nodes: ThreadNodes) => ThreadNodes) =>
+	(nodes: ThreadNodes): ThreadNodes =>
+		nodes.content === undefined
+			? {
+					summary: edit({ summary: nodes.summary, content: {} }).summary,
+					content: undefined,
+				}
+			: edit(nodes);
+
+/** `nodes` resolved or not, the viewer's resolve and unresolve as GitHub sets them. */
+export function withResolved(
+	nodes: ThreadNodes,
+	resolved: boolean,
+): ThreadNodes {
+	const s = obj(nodes.summary);
+	// GitHub's own: who can resolve can unresolve, and the other way.
+	const can = s.viewerCanResolve === true || s.viewerCanUnresolve === true;
+	return {
+		summary: {
+			...s,
+			isResolved: resolved,
+			...(can
+				? { viewerCanResolve: !resolved, viewerCanUnresolve: resolved }
+				: {}),
+		},
+		content: nodes.content,
+	};
 }
 
 /** Re-reads of a thread after a reply until GitHub lists it, and the waits between. */
@@ -474,6 +515,10 @@ export async function replyToThread(
 	target.setInDoubt(req.clientId, false);
 	const record = { threadId, nodeId: reply.nodeId, reply };
 	target.remember(req.clientId, record);
+	target.known(
+		threadId,
+		onNodes((n) => withPosted(n, reply)),
+	);
 	// It posted: no pending review stands in the way (any more).
 	target.setPendingReview(null);
 	return answerWith(target, threadId, record);
@@ -493,6 +538,7 @@ export async function setResolved(
 		if (!(await fetchThread(target.ref, threadId))) throw gone();
 	}
 	await postResolved(threadId, resolved);
+	target.known(threadId, (n) => withResolved(n, resolved));
 	const read = await reread(target, threadId);
 	if (!read.nodes) throw gone();
 	return update(target, threadId, read.nodes, read);
@@ -807,6 +853,10 @@ export async function editComment(
 	const edited = await patchOrGone(target, restId, () =>
 		patchComment(target.ref, restId, body),
 	);
+	target.known(
+		threadId,
+		onNodes((n) => withEdited(n, commentId, edited)),
+	);
 	const shows = (nodes: ThreadNodes) =>
 		contentComments(nodes).some(
 			(c) =>
@@ -852,6 +902,27 @@ function threadGone(
 ): ThreadGone {
 	target.drop(threadId, read.seq, read.startedAt);
 	return { threadId, gone: true };
+}
+
+/**
+ * Comment `commentId`, which GitHub just deleted, out of the kept reads
+ * (known): the thread gone when no published comment of it is left.
+ */
+function knownDeleted(
+	target: ThreadWriteTarget,
+	threadId: string,
+	commentId: string,
+): void {
+	// This one (markDeleted) and any deleted before that GraphQL still lists.
+	const without = (n: ThreadNodes) =>
+		withoutDeleted(target, withoutComment(n, commentId));
+	const cached = target.cached(threadId);
+	const left = cached && without(cached);
+	if (left && !contentComments(left).some((c) => visibleAt(c) !== null)) {
+		target.drop(threadId, target.nextSeq(), Date.now());
+		return;
+	}
+	target.known(threadId, onNodes(without));
 }
 
 /**
@@ -905,6 +976,10 @@ export async function deleteThreadComment(
 				DELETED_BODY + markerText(str(comment.body)),
 			),
 		);
+		target.known(
+			threadId,
+			onNodes((n) => withEdited(n, commentId, edited)),
+		);
 		const shows = (nodes: ThreadNodes) =>
 			contentComments(nodes).some(
 				(c) => str(c.id) === commentId && isDeletedBody(str(c.body)),
@@ -932,6 +1007,7 @@ export async function deleteThreadComment(
 		}
 	}
 	target.markDeleted(commentId);
+	knownDeleted(target, threadId, commentId);
 	const listed = (nodes: ThreadNodes) =>
 		contentComments(nodes).some((c) => str(c.id) === commentId);
 	const read = await rereadUntil(target, threadId, (n) => !listed(n));
