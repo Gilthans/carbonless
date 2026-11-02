@@ -54,8 +54,10 @@ const iconButton =
 /**
  * The view's repos: remove, add by owner/repo or URL, suggestions from
  * recent reviews. Save hands the list to `onSave` and closes: Home shows
- * the new view at once while it saves (viewSave.tsx). A centered dialog, a
- * bottom sheet on a phone.
+ * the new view at once while it saves (viewSave.tsx). A dialog near the
+ * top, a full bottom sheet on a phone: its top stays put, so the repo
+ * suggestions (floating under the input, room kept below) never move what
+ * a click is on its way to (a click lands where its press began).
  */
 export function ViewSettings(props: {
 	open: boolean;
@@ -68,6 +70,7 @@ export function ViewSettings(props: {
 	const dialog = useRef<HTMLDialogElement>(null);
 	const titleId = useId();
 	const [repos, setRepos] = useState(home.view.repos);
+	const [listOpen, setListOpen] = useState(false);
 	/** The repos picked since the dialog opened. */
 	const picked = useRef(new Set<string>());
 	useEffect(() => {
@@ -137,8 +140,8 @@ export function ViewSettings(props: {
 			}}
 			className={
 				phone
-					? "m-0 mt-auto max-h-[85dvh] w-full max-w-none rounded-t-2xl border-t border-edge bg-surface p-0 text-ink shadow-sheet backdrop:bg-canvas/70 backdrop:backdrop-blur-[2px]"
-					: "m-auto w-[min(32rem,calc(100vw-2rem))] max-w-none rounded-xl border border-edge bg-surface p-0 text-ink shadow-float backdrop:bg-canvas/70 backdrop:backdrop-blur-[2px]"
+					? "m-0 mt-auto h-[85dvh] max-h-[85dvh] w-full max-w-none rounded-t-2xl border-t border-edge bg-surface p-0 text-ink shadow-sheet backdrop:bg-canvas/70 backdrop:backdrop-blur-[2px]"
+					: "mx-auto mt-[10dvh] mb-auto max-h-[80dvh] w-[min(32rem,calc(100vw-2rem))] max-w-none rounded-xl border border-edge bg-surface p-0 text-ink shadow-float backdrop:bg-canvas/70 backdrop:backdrop-blur-[2px]"
 			}
 		>
 			<div className="flex items-center justify-between border-b border-line py-1 pr-1 pl-4">
@@ -178,49 +181,52 @@ export function ViewSettings(props: {
 							</li>
 						))}
 					</ul>
-					<RepoInput listed={listed} onAdd={add} />
-					{suggestions.length > 0 && (
-						<ul aria-label="Suggested" className="flex flex-wrap gap-1.5">
-							{suggestions.map((r) => (
-								<li key={r}>
-									<button
-										type="button"
-										aria-label={`Add ${r}`}
-										onClick={() => add(r)}
-										className="flex min-h-10 items-center gap-1.5 rounded-full border border-dashed border-edge px-3 text-sm text-muted hover:border-solid hover:text-ink focus-visible:outline-2 focus-visible:outline-accent"
-									>
-										<PlusIcon size={12} aria-hidden />
-										{r}
-									</button>
-								</li>
-							))}
-						</ul>
-					)}
-					<div className="flex justify-end gap-1.5">
-						<button
-							type="button"
-							onClick={cancel}
-							className="h-10 rounded-md border border-edge px-3 text-sm text-ink-soft hover:bg-overlay focus-visible:outline-2 focus-visible:outline-accent"
-						>
-							Cancel
-						</button>
-						<button
-							type="button"
-							onClick={() => {
-								// Shut first: focus goes back to the pencil now, so the
-								// save (HomePage) can close the tooltip that focus opens.
-								const d = dialog.current;
-								if (d?.hasAttribute("open")) {
-									if (typeof d.close === "function") d.close();
-									else d.removeAttribute("open");
-								}
-								props.onSave(repos);
-								props.onClose();
-							}}
-							className="cta flex h-10 items-center gap-1.5 rounded-md px-4 text-sm font-semibold text-ink hover:brightness-110 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
-						>
-							Save
-						</button>
+					<RepoInput listed={listed} onAdd={add} onListOpen={setListOpen} />
+					{/* Room for the open list, which floats over what follows. */}
+					<div className={`space-y-3 ${listOpen ? "min-h-60" : ""}`}>
+						{suggestions.length > 0 && (
+							<ul aria-label="Suggested" className="flex flex-wrap gap-1.5">
+								{suggestions.map((r) => (
+									<li key={r}>
+										<button
+											type="button"
+											aria-label={`Add ${r}`}
+											onClick={() => add(r)}
+											className="flex min-h-10 items-center gap-1.5 rounded-full border border-dashed border-edge px-3 text-sm text-muted hover:border-solid hover:text-ink focus-visible:outline-2 focus-visible:outline-accent"
+										>
+											<PlusIcon size={12} aria-hidden />
+											{r}
+										</button>
+									</li>
+								))}
+							</ul>
+						)}
+						<div className="flex justify-end gap-1.5">
+							<button
+								type="button"
+								onClick={cancel}
+								className="h-10 rounded-md border border-edge px-3 text-sm text-ink-soft hover:bg-overlay focus-visible:outline-2 focus-visible:outline-accent"
+							>
+								Cancel
+							</button>
+							<button
+								type="button"
+								onClick={() => {
+									// Shut first: focus goes back to the pencil now, so the
+									// save (HomePage) can close the tooltip that focus opens.
+									const d = dialog.current;
+									if (d?.hasAttribute("open")) {
+										if (typeof d.close === "function") d.close();
+										else d.removeAttribute("open");
+									}
+									props.onSave(repos);
+									props.onClose();
+								}}
+								className="cta flex h-10 items-center gap-1.5 rounded-md px-4 text-sm font-semibold text-ink hover:brightness-110 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+							>
+								Save
+							</button>
+						</div>
 					</div>
 				</div>
 			)}
@@ -237,6 +243,7 @@ export function ViewSettings(props: {
 function RepoInput(props: {
 	listed: (name: string) => boolean;
 	onAdd: (name: string) => void;
+	onListOpen: (open: boolean) => void;
 }) {
 	const [input, setInput] = useState("");
 	const [bad, setBad] = useState(false);
@@ -265,6 +272,8 @@ function RepoInput(props: {
 		onOpen: () => setOpen(true),
 		onClose: () => setOpen(false),
 	});
+	const { onListOpen } = props;
+	useEffect(() => onListOpen(listOpen), [listOpen, onListOpen]);
 	const done = (name: string) => {
 		props.onAdd(name);
 		setInput("");
@@ -282,7 +291,7 @@ function RepoInput(props: {
 		done(name);
 	};
 	return (
-		<div>
+		<div className="relative">
 			<form
 				onSubmit={(e) => {
 					e.preventDefault();
@@ -336,7 +345,7 @@ function RepoInput(props: {
 					current={keys.current}
 					onChoose={done}
 					onHover={keys.setActive}
-					className="mt-1 max-h-60"
+					className="absolute inset-x-0 top-full z-10 mt-1 max-h-60"
 					render={(name) => (
 						<>
 							<RepoIcon size={14} aria-hidden className="shrink-0 text-muted" />

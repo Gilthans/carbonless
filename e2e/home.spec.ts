@@ -473,6 +473,46 @@ test("the view's repo input suggests the viewer's repos as you type; Save is sto
 	await expect(page.getByTestId("view-repo")).toHaveText([OWNER_REPO]);
 });
 
+test("with the repo suggestions open, one click (a tap) on Add adds what was typed; the list never moves Add", async ({
+	page,
+	workdir,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	// Owner, 2026-11-02, on Add missing the click while the list is open:
+	// "sure go ahead and fix it".
+	await setup(workdir, pr);
+	const crb = await startCrb();
+	await goHome(page, crb.url);
+	await page.getByRole("button", { name: "Edit repos" }).click();
+	const dialog = page.getByRole("dialog", { name: "My PRs" });
+	const field = dialog.getByRole("combobox", { name: "Add a repo" });
+	const add = dialog.getByRole("button", { name: "Add", exact: true });
+	// Neither Add nor what the list floats over (Save) moves.
+	const boxes = () =>
+		Promise.all(
+			[add, dialog.getByRole("button", { name: "Save" })].map((b) =>
+				b.boundingBox(),
+			),
+		);
+	await field.focus();
+	const closed = await boxes();
+	await field.pressSequentially(OWNER_REPO);
+	const list = dialog.getByRole("listbox", { name: "Suggestions" });
+	await expect(list.getByRole("option")).toHaveText([OWNER_REPO]);
+	expect(await boxes()).toEqual(closed);
+	if (isMobile) await add.tap();
+	else await add.click();
+	await expect(
+		dialog
+			.getByRole("list", { name: "Repos in this view" })
+			.getByRole("listitem"),
+	).toHaveText(["acme/api", OWNER_REPO]);
+	await expect(field).toHaveValue("");
+	await expect(list).toHaveCount(0);
+});
+
 test("a repo picked in the settings is read at once: saved after its read, its rows come with no second read", async ({
 	page,
 	workdir,
@@ -868,6 +908,57 @@ test("waiting on suggests people as you type: the viewer's orgs and repos' peopl
 	await expectNoPageOverflow(page);
 	await page.getByRole("option", { name: "alibaba-dev" }).click();
 	await expect(other.getByRole("button", { name: "1 waiting" })).toBeVisible();
+});
+
+test("with the waiting-on suggestions open, a tap on a person takes it; the list moves neither the people nor Clear", async ({
+	page,
+	workdir,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	const made = await setup(workdir, pr);
+	made.editScenario((s) => {
+		s.orgMembers = { acme: [VIEWER, "alicia", "malik"] };
+	});
+	const crb = await startCrb();
+	await goHome(page, crb.url);
+	const other = section(page, "Other open");
+	const title = "Migrate alerts table";
+	/**
+	 * Opens Waiting on, then its suggestions: `name` doesn't move. With a
+	 * mouse the list floats over the panel (over the target too, above or
+	 * below the input): shut first. On touch it floats below the input,
+	 * and a person above it is tapped with the list open.
+	 */
+	const withList = async (row: Locator, name: string | RegExp) => {
+		const dialog = await rowAction(page, row, "Waiting on");
+		const field = dialog.getByRole("combobox", { name: "Someone else" });
+		const target = dialog.getByRole("button", { name });
+		await field.focus();
+		const closed = await target.boundingBox();
+		await field.pressSequentially("ali");
+		await expect(
+			page.getByRole("group", { name: "People" }).getByRole("option"),
+		).toHaveText(["alice", "alicia", "malik"]);
+		expect(await target.boundingBox()).toEqual(closed);
+		return { field, target };
+	};
+	const bob = await withList(rowOf(other, title), /^bob/);
+	if (isMobile) await bob.target.tap();
+	else {
+		await bob.field.press("Escape");
+		await bob.target.click();
+	}
+	const foot = other.getByRole("button", { name: "1 waiting" });
+	await expect(foot).toBeVisible();
+	await expect(other.getByTestId("home-row")).toHaveCount(0);
+	await foot.click();
+	const clear = await withList(other.getByTestId("home-row-hidden"), "Clear");
+	await clear.field.press("Escape");
+	await clear.target.click();
+	await expect(other.getByTestId("home-row")).toHaveCount(1);
+	await expect(foot).toBeHidden();
 });
 
 test("on a short window the waiting-on suggestions stay inside it, and inside the phone's sheet", async ({
