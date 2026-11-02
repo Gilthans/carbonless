@@ -65,6 +65,8 @@ refuses a client whose version or commit differs.
      globally installed `crb serve` (Node 24 pinned; `XDG_CONFIG_HOME` left
      unset so `gh` keeps its login), `install`, and `update <tarball |
      channel>` (install, restart, print the link).
+     (2026-11-02: superseded by `pnpm release local` and a local setup
+     outside the repo; the README keeps a short unit snippet.)
    - README install part with the "Remote machine" section.
    - A smoke test that packs, installs into a temp prefix and runs the
      installed `crb`.
