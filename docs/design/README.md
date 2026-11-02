@@ -164,6 +164,27 @@ right once the file tree is a sidebar (md+), so neither is covered.
   transient failures in a row for waiting changes also turn the yellow
   notice red (the last error and Retry) while retrying goes on; a stored
   write clears it.
+- **Not posted** (`RefusedWrites`, `bad`): every thread write GitHub refused
+  (reply, new comment, edit, delete, resolve, unresolve), under one 40px red
+  chip at the stack's end (alert icon, count, chevron; "N not posted") on
+  both pages, until each is retried successfully or dropped (owner: "an
+  always on thing that allows to either retry or drop"). It can't be
+  dismissed; it opens and closes their list, which opens by itself when a
+  write is newly refused (not for ones kept from before a reload). Each
+  item: the action and where (`file:line`, mono), one clipped line of its
+  text (what Retry sends: the box, edit or new comment; a delete's
+  comment; "No text" in `muted` italics when there's none), GitHub's
+  reason in `bad`, then 40px Retry (spins while retrying; the item stays
+  until GitHub takes it; with nothing to send it is `faint`,
+  `aria-disabled`, "Nothing to send") and Drop. A Retry refused again
+  reopens the list, and each refusal is announced (`role="alert"`,
+  visually hidden). After a confirmed Drop, focus goes to the next item,
+  else the chip. Drop swaps the
+  buttons for an in-place "Drop this? Its text is lost" (resolve, delete:
+  "Drop this?") with Cancel (focused; Escape too) and a red Drop. "Retry
+  all" heads the list when more than one can be retried. Kept in
+  `localStorage` beside the drafts (`crb:refused:…`; a refused verdict
+  under the review's own key), so a reload lists them again.
 
 Both are `tone/10` over an opaque `raised` card with a `tone/50` border.
 While one shows, the file list's end is padded by how far up the notices
@@ -354,8 +375,14 @@ decides where; nothing else does):
   grey), named like the bubble and in the row's tooltip.
 - In an open file, file comments and threads whose line isn't in the diff
   get the **file bubble** on the diff's first row (a file cluster's row, a
-  hidden run's, a hunk header's, whichever comes first), where line
-  bubbles sit and beside one when that row has its own: the line bubble's
+  hidden run's, a hunk header's, whichever comes first). Unified: a row of
+  its own when the first row is code, so it never covers a line, and
+  centred on the diff's visible width, kept there as long lines scroll (on
+  touch the row's text line is 40px, level with the bubble) (owner: "in
+  the center of that diff line instead of at the side, so it's more
+  prominent"), apart from the line bubbles at the right. Side by side: at
+  the right with the line bubbles, in the first row's right cell when
+  that is code (on a phone, in the bubble row under it). It is the line bubble's
   pill with a file mark first ("2 comments on this file"); lines not in the
   diff add a `warn` alert to it ("…, line not in this diff") and to the
   thread's header ("Line not in this diff"). It opens a row right under
@@ -365,7 +392,9 @@ decides where; nothing else does):
   ("Comment on file", or "Comment on file — <why not>") that opens the
   composer at once. The header has no file comment button: closed, its
   bubble counts every thread in the file and opens the file, focusing the
-  file bubble, opened once the diff is in if it has threads.
+  file bubble, opened once the diff is in if it has threads. A click
+  anywhere else on a closed file's header (not its buttons, not the end of
+  a path selection) opens the file too, never the composer.
 
 ## Starting threads in Files changed
 
@@ -417,6 +446,44 @@ decides where; nothing else does):
 - **Comment on file**: from the file bubble of any kind of open file (see
   Threads in Files changed); its composer shows in the bubble's row. A file
   comment being written while the file is closed shows under the header.
+
+## Final Verdict
+
+The third tab ("Verdict" on a phone, where "Final Verdict" and "Files
+changed" don't fit beside Refresh; the links keep their full names).
+
+- **GitHub's status first**, one prominent box: "GitHub: ready to merge"
+  (`ok`), "GitHub: blocked" (`bad`, with how many required rows), "GitHub:
+  waiting" (`warn`: only required checks still running), "GitHub:
+  checking…" (grey), "As of <date>", or "Merged" / "Closed" (`done`) with
+  no list under it.
+- **One blocker list**, a row per item with its kind's icon (check,
+  thread, person, branch). GitHub's requirements first, each with a
+  "Required by GitHub" chip (`bad` outline; its tooltip: GitHub won't merge
+  without it), red while unmet, yellow while a required check runs; the
+  rest yellow, never red. Threads link to their card on the Overview
+  (the reviewer's own first, five then "N more", bots as one count).
+  Unknown is grey ("Required approvals unknown"), never left out. Last, one
+  muted row for what's fine; "Ready to merge" (green, linking to GitHub)
+  only when GitHub says so and nothing is listed (checks passing, no
+  conflicts; who approved is under Reviews).
+- **Reviews**, between the list and the card, only when someone reviewed:
+  a row per reviewer with `REVIEW_ICON`'s icon and colour (dismissed rows
+  muted), the name linking to the review on GitHub, a "you" chip on the
+  viewer's row (first), the time and "earlier push" muted on the right;
+  bots in their own list under a stronger rule. The header counts approvals
+  (`ok` check) and change requests (`bad`) as icon + number.
+- **The verdict card**, also after the last file in Files changed (with
+  "Blockers: N" linking to the tab): the reviewer's verdict on GitHub
+  ("You approved 2 hours ago · on an earlier push"; a clock while one is
+  sending), "Include a message" and its box, then Approve (`ok`), Comment
+  (neutral) and Request changes (`bad`), each with the owner's tooltip. On
+  a phone the three share one row, icon over a short label ("Changes").
+  Disabled ones stay focusable, their tooltip saying why. Progress below
+  the title is muted information, never a condition. Comment's tooltip
+  adds "Replaces your approval" (or request for changes) when one stands;
+  a dismissal GitHub refused shows as a `warn` notice in the card
+  ("Commented; your request for changes still stands: <GitHub's message>").
 
 ## Timeline (Overview)
 

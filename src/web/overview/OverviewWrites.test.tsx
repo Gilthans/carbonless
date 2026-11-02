@@ -700,8 +700,8 @@ describe("WriteWarnings in who's on it", () => {
 		expect(
 			await within(who).findByTestId("pending-review-warning"),
 		).toBeInTheDocument();
-		// The red notice says so, with the link; the draft is kept.
-		const notice = await screen.findByTestId("write-failed");
+		// Listed as refused, with the link; the draft is kept.
+		const notice = await screen.findByTestId("refused-write");
 		expect(notice).toHaveTextContent(
 			"A pending review on GitHub blocks replies",
 		);
@@ -1046,7 +1046,7 @@ describe("editing and deleting from an Overview card", () => {
 			" mine",
 		);
 		await user.click(within(card).getByRole("button", { name: "Save" }));
-		const notice = await screen.findByTestId("write-failed");
+		const notice = await screen.findByTestId("refused-write");
 		await user.click(
 			within(notice).getByRole("button", { name: "Show theirs" }),
 		);

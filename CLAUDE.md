@@ -131,7 +131,9 @@ loading never looking empty, checking against a real PR):
   `crb --version` must match the server's, or `crb <pr>` refuses. It clones into its own
   cache (`~/.cache/carbonless`), never into the reviewer's working copies. It
   reads from GitHub, and writes to it only on the reviewer's explicit action
-  (replies, new comments, resolving, editing and deleting your own comments):
+  (replies, new comments, resolving, editing and deleting your own comments,
+  the review verdict: approve, comment, request changes, and Comment
+  dismissing your own standing approval or change request):
   `docs/product-rules.md`, "Writing to GitHub".
 - Main on the devbox and branch instances: "Versions and instances" below.
 - Tests never call the real `gh`: `test/fake-gh/gh` serves a scenario

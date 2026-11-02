@@ -16,6 +16,9 @@ import type {
 	ThreadsView,
 	ThreadUpdate,
 	TimelineView,
+	VerdictAnswer,
+	VerdictFacts,
+	VerdictRequest,
 } from "../shared/types.js";
 import { ensureClone, fetchPr } from "./clone.js";
 import { buildSnapshot, loadContext, loadFileHunks } from "./diff/snapshot.js";
@@ -24,6 +27,9 @@ import {
 	fetchMergeBase,
 	fetchPinnedHead,
 	fetchPrMeta,
+	fetchRuleReads,
+	fetchVerdict,
+	fetchVerdictAsOf,
 	type PrMeta,
 	type PrRef,
 	resolvePrRef,
@@ -51,6 +57,13 @@ import {
 	setResolved,
 	type ThreadWriteTarget,
 } from "./threadWrites.js";
+import {
+	mapVerdict,
+	ruleOf,
+	submitVerdict,
+	type VerdictRecord,
+	type VerdictTarget,
+} from "./verdict.js";
 
 /** Reads kept for pages still showing them (see Session.threads). */
 const KEPT_READS = 3;
@@ -70,6 +83,16 @@ const COMMENT_LEFT_RETRY_MS = 30_000;
 
 /** The write queue new threads share (one PR's: one at a time). */
 const NEW_THREADS = "new-threads";
+/** The write queue verdicts share (one PR's: one at a time). */
+const VERDICTS = "verdicts";
+
+/** A read of what blocks the merge (Session.verdict). */
+interface VerdictReadState {
+	facts: Promise<VerdictFacts>;
+	/** When it started, and came in (ms); null while under way. */
+	started: number;
+	ended: number | null;
+}
 
 /** A read of the overview that is no longer kept (HTTP 410). */
 export class UnknownReadError extends Error {}
@@ -157,6 +180,12 @@ export class Session {
 	readonly #started = new Map<string, StartedRecord>();
 	/** commentLeft for one snapshot (its base and head): asked, then known. */
 	#commentLeft: CommentLeft | null = null;
+	/** The last read of what blocks the merge (verdict()); a Refresh drops it. */
+	#verdictRead: VerdictReadState | null = null;
+	/** Verdicts this session sent, by the client's id for each. */
+	readonly #verdicts = new Map<string, VerdictRecord>();
+	/** When this server first tried to post each verdict, by client id (ms). */
+	readonly #verdictAttempts = new Map<string, number>();
 
 	private constructor(
 		private readonly repo: string,
@@ -452,6 +481,113 @@ export class Session {
 	}
 
 	/**
+	 * What GitHub says about merging the PR (VerdictFacts), read only when
+	 * asked (the Final Verdict tab; never on first open): its GraphQL read
+	 * and the base branch's rule at once, a failed rule read giving none.
+	 * Kept like the overview: served while at most `maxAgeMs` old (by
+	 * default at any age), else a read under way that started no longer
+	 * ago, else a new read. A Refresh or a verdict landing drops it; a
+	 * failed read isn't kept.
+	 */
+	verdict(maxAgeMs = Number.POSITIVE_INFINITY): Promise<VerdictFacts> {
+		if (this.#closed) {
+			return Promise.reject(new SessionClosedError("The session is closed"));
+		}
+		const now = Date.now();
+		const last = this.#verdictRead;
+		if (
+			last &&
+			maxAgeMs > 0 &&
+			now - (last.ended ?? last.started) <= maxAgeMs
+		) {
+			return last.facts;
+		}
+		const read: VerdictReadState = {
+			started: now,
+			ended: null,
+			facts: this.#readVerdict(),
+		};
+		this.#verdictRead = read;
+		read.facts.then(
+			() => {
+				read.ended = Date.now();
+			},
+			() => {
+				if (this.#verdictRead === read) this.#verdictRead = null;
+			},
+		);
+		return read.facts;
+	}
+
+	async #readVerdict(): Promise<VerdictFacts> {
+		const { asOf, viewer } = this.options;
+		const ref = this.#ref();
+		const signal = this.#stop.signal;
+		const [read, rule] = await Promise.all([
+			asOf
+				? fetchVerdictAsOf(ref, this.#meta.headOid, { signal })
+				: fetchVerdict(ref, { signal }),
+			// Present-only: not read as of a cutoff. Any failure is no rule.
+			asOf
+				? null
+				: fetchRuleReads(ref, this.#meta.baseBranch, { signal }).then(
+						ruleOf,
+						() => null,
+					),
+		]);
+		return mapVerdict({
+			read,
+			rule,
+			viewer: viewer ?? this.viewer,
+			asOf,
+			fetchedAt: new Date().toISOString(),
+		});
+	}
+
+	/**
+	 * Sends the reviewer's verdict to GitHub (verdict.ts), after any
+	 * verdict still being sent: a resend waits for the first attempt, then
+	 * finds it sent.
+	 */
+	submitVerdict(req: VerdictRequest): Promise<VerdictAnswer> {
+		return this.#threadExclusive(VERDICTS, () =>
+			submitVerdict(this.#verdictTarget(), req),
+		);
+	}
+
+	#verdictTarget(): VerdictTarget {
+		const write = this.#writeTarget();
+		return {
+			ref: write.ref,
+			prUrl: write.prUrl,
+			viewer: write.viewer,
+			writes: write.writes,
+			// The snapshot the verdict is checked against, even if a Refresh
+			// moves the session's while it runs.
+			head: this.#snapshot.head,
+			sent: (clientId) => this.#verdicts.get(clientId),
+			rememberSent: (clientId, record) => this.#verdicts.set(clientId, record),
+			firstAttempt: (clientId) => this.#verdictAttempts.get(clientId),
+			setFirstAttempt: (clientId, at) =>
+				this.#verdictAttempts.set(clientId, at),
+			inDoubt: write.inDoubt,
+			setInDoubt: write.setInDoubt,
+			claimedIds: (except) =>
+				new Set(
+					[...this.#verdicts]
+						.filter(([clientId]) => clientId !== except)
+						.map(([, r]) => r.answer.review.id),
+				),
+			setPendingReview: write.setPendingReview,
+			landed: () => {
+				// Read again when next asked, not now: the answer doesn't wait.
+				this.#verdictRead = null;
+				for (const read of this.#reads) this.#superseded.add(read);
+			},
+		};
+	}
+
+	/**
 	 * Whether new comments may go on LEFT lines (PrOverview.commentLeft):
 	 * whether GitHub's merge base for the snapshot's head (its compare of
 	 * the base branch and it, which a LEFT line resolves against) is the
@@ -718,6 +854,7 @@ export class Session {
 	refresh(): Promise<SessionInfo> {
 		// Commits and code that couldn't be had may be there now.
 		this.#threadCode.forgetFailures();
+		this.#verdictRead = null;
 		// As of a cutoff nothing moves but the overview is read again.
 		if (this.options.asOf) {
 			this.#rereadOverview();

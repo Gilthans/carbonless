@@ -16,7 +16,8 @@ import { parseFilesSearch } from "./files/landing";
 import { useUnsavedGuard } from "./files/useSetStates";
 import { HomePage } from "./home/HomePage";
 import { OpeningPage, parseOpeningSearch } from "./OpeningPage";
-import { FilesPage, OverviewPage } from "./pages";
+import { parseOverviewSearch } from "./overview/threadLink";
+import { FilesPage, OverviewPage, VerdictPage } from "./pages";
 import { parseSearch, stringifySearch } from "./search";
 import { ShortcutsProvider } from "./shortcuts";
 
@@ -133,6 +134,8 @@ const keptPage = () => null;
 const overviewRoute = createRoute({
 	getParentRoute: () => reviewRoute,
 	path: "/",
+	// The Final Verdict tab's thread rows land on their card here.
+	validateSearch: parseOverviewSearch,
 	loader: () => OverviewPage.preload?.(),
 	component: keptPage,
 	pendingComponent: keptPage,
@@ -152,10 +155,20 @@ const filesRoute = createRoute({
 	pendingMinMs: 0,
 });
 
+const verdictRoute = createRoute({
+	getParentRoute: () => reviewRoute,
+	path: "/verdict",
+	loader: () => VerdictPage.preload?.(),
+	component: keptPage,
+	pendingComponent: keptPage,
+	pendingMs: 0,
+	pendingMinMs: 0,
+});
+
 const routeTree = rootRoute.addChildren([
 	homeRoute,
 	openingRoute,
-	reviewRoute.addChildren([overviewRoute, filesRoute]),
+	reviewRoute.addChildren([overviewRoute, filesRoute, verdictRoute]),
 ]);
 
 /** The app's router; `initialPath` uses in-memory history (tests). */

@@ -1,6 +1,7 @@
 import { CommentIcon } from "@primer/octicons-react";
 import { useQuery } from "@tanstack/react-query";
 import {
+	type MouseEvent,
 	type ReactNode,
 	useEffect,
 	useId,
@@ -333,6 +334,24 @@ function FileProgress(props: {
  * (`--app-header`, `--files-bar`) while
  * its diff scrolls. State actions show at once; useSetStates syncs them.
  */
+/**
+ * A click on a closed file's header opens it, unless it was on one of its
+ * controls (they do their own thing; the thread count opens it too) or
+ * ended a text selection of the path.
+ */
+function opensFile(event: MouseEvent<HTMLElement>): boolean {
+	const target = event.target as Element | null;
+	if (target?.closest("button, a, input, select, textarea, label")) {
+		return false;
+	}
+	const selection = window.getSelection();
+	return (
+		!selection ||
+		selection.isCollapsed ||
+		!event.currentTarget.contains(selection.anchorNode)
+	);
+}
+
 export function FileDiff(props: {
 	file: FileView;
 	revision: string;
@@ -612,9 +631,15 @@ export function FileDiff(props: {
 				file.done ? "border-ok-fill/50" : "border-line"
 			}`}
 		>
+			{/* The ▸ button is the keyboard's way; a click anywhere else opens a closed file too. */}
+			{/* biome-ignore lint/a11y/noStaticElementInteractions: see above. */}
 			<header
 				ref={headerEl}
 				data-finished={file.done || undefined}
+				onClick={(event) => {
+					if (expanded || !opensFile(event)) return;
+					setExpanded(true);
+				}}
 				// Square corners: the section clips them at the top, and a stuck
 				// header must not let lines show through. Finished (every cluster
 				// reviewed or crossed off): an opaque green wash and a green left

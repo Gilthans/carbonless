@@ -14,6 +14,7 @@ import {
 	avatar40,
 	fetchOverview,
 	fetchPrMeta,
+	fetchRuleReads,
 	fetchThreadCommentPages,
 	fetchThreadContents,
 	fetchThreadSummaries,
@@ -246,6 +247,16 @@ describe("runGh with a fake gh", () => {
 			"gh calls still running after 0.05 s:\ngh pr view 12",
 		);
 		await call;
+	});
+
+	it("ghIdle counts the verdict's rule reads (REST answers, not runGh)", async () => {
+		setEnv({ FAKE_SLEEP: "1" });
+		const reads = fetchRuleReads(ref, "main");
+		await expect(ghIdle(50)).rejects.toThrow(
+			/gh calls still running after 0\.05 s:\ngh api repos\/Acme\/Widget\/branches\/main/,
+		);
+		// The fake knows no REST path: each read is GitHub's refusal.
+		expect((await reads).branch.ok).toBe(false);
 	});
 
 	it("does not call an offline failure 'not logged in'", async () => {

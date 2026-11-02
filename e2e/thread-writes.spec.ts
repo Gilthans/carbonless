@@ -483,15 +483,16 @@ test("a failing reply keeps its text, with Retry", async ({
 	const box = await openReply(c);
 	await box.fill("Try again");
 	await send(c).click();
-	const notice = page.getByTestId("write-failed");
+	const notice = page.getByTestId("refused-write");
 	await expect(notice).toContainText("Reply · new.txt:1");
 	await expect(box).toHaveValue("Try again");
-	const dismiss = notice.getByRole("button", { name: "Dismiss reply" });
-	const size = await dismiss.boundingBox();
+	const drop = notice.getByRole("button", { name: "Drop reply" });
+	const size = await drop.boundingBox();
 	expect(size?.height ?? 0).toBeGreaterThanOrEqual(40);
 	expect(size?.width ?? 0).toBeGreaterThanOrEqual(40);
 	await notice.getByRole("button", { name: "Retry reply" }).click();
 	await expect(notice).toHaveCount(0);
+	await expect(page.getByTestId("refused-bar")).toHaveCount(0);
 	await expect(box).toHaveValue("");
 	await expect(
 		c.getByTestId("thread-comment").filter({ hasText: "Try again" }),
@@ -527,7 +528,7 @@ test("a pending review shows the warning and refuses replies with the link", asy
 	const box = await openReply(c);
 	await box.fill("Blocked");
 	await send(c).click();
-	const notice = page.getByTestId("write-failed");
+	const notice = page.getByTestId("refused-write");
 	await expect(notice).toContainText(
 		"A pending review on GitHub blocks replies",
 	);

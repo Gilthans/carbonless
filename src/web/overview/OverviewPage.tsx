@@ -26,7 +26,7 @@ import {
 	useQuery,
 	useQueryClient,
 } from "@tanstack/react-query";
-import { Link } from "@tanstack/react-router";
+import { Link, useNavigate, useSearch } from "@tanstack/react-router";
 import {
 	type CSSProperties,
 	type ReactNode,
@@ -60,6 +60,7 @@ import {
 import { type FilesSearch, threadTarget } from "../files/landing";
 import { useReviewView } from "../files/useSetStates";
 import { GithubHtml, ImageErrorContext } from "../GithubHtml";
+import { usePageActive } from "../pageActive";
 import { RelativeTime, relativeTime, useNow } from "../RelativeTime";
 import { useReviewId } from "../reviewId";
 import { Spinner } from "../Spinner";
@@ -116,6 +117,7 @@ import {
 import { prefetchOrder, type ShownThreads } from "./prefetchOrder";
 import { Timeline } from "./Timeline";
 import { threadKeys } from "./threadKeys";
+import type { OverviewSearch } from "./threadLink";
 import { WriteWarnings } from "./WriteWarnings";
 
 type Review = PrOverview["reviews"][number];
@@ -220,6 +222,23 @@ function OverviewContent({
 		(id: string) => setFocus((f) => ({ id, seq: (f?.seq ?? 0) + 1 })),
 		[],
 	);
+	// A thread's link from elsewhere (the Final Verdict tab): its card in
+	// view. The param is dropped once read, so the same link works again.
+	const search = useSearch({ strict: false }) as OverviewSearch;
+	const navigate = useNavigate();
+	const active = usePageActive();
+	const reviewId = useReviewId();
+	useEffect(() => {
+		if (!active || !search.thread) return;
+		showThread(search.thread);
+		void navigate({
+			to: "/r/$id",
+			params: { id: reviewId },
+			search: {},
+			replace: true,
+			resetScroll: false,
+		});
+	}, [active, search.thread, showThread, navigate, reviewId]);
 	return (
 		<div className="space-y-6">
 			{overview.isPending && <OverviewSkeleton />}

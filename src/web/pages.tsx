@@ -16,6 +16,10 @@ export const FilesPage = lazyRouteComponent(
 	() => import("./files/FilesPage"),
 	"FilesPage",
 );
+export const VerdictPage = lazyRouteComponent(
+	() => import("./verdict/VerdictPage"),
+	"VerdictPage",
+);
 
 /** A page whose code is still on its way: a spinner, never blank. */
 function PageLoading() {
@@ -27,7 +31,11 @@ function PageLoading() {
 }
 
 /** The pages kept alive, by route id, in DOM order. */
-const PAGES = { "/r/$id/": OverviewPage, "/r/$id/files": FilesPage } as const;
+const PAGES = {
+	"/r/$id/": OverviewPage,
+	"/r/$id/files": FilesPage,
+	"/r/$id/verdict": VerdictPage,
+} as const;
 export type PageId = keyof typeof PAGES;
 const isPage = (id: string): id is PageId => id in PAGES;
 
@@ -101,6 +109,7 @@ export function KeptPages() {
 	const [forgetters] = useState<Record<PageId, () => void>>(() => ({
 		"/r/$id/": () => forget("/r/$id/"),
 		"/r/$id/files": () => forget("/r/$id/files"),
+		"/r/$id/verdict": () => forget("/r/$id/verdict"),
 	}));
 	return (Object.keys(PAGES) as PageId[])
 		.filter((id) => visited.includes(id))

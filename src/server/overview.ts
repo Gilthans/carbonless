@@ -44,7 +44,7 @@ function login(value: unknown): string {
  * GraphQL says `__typename: "Bot"`; the login spellings `xyz[bot]` and
  * `app/xyz` are a fallback only (REST-style and `gh pr view` author fields).
  */
-function isBotAuthor(author: Json): boolean {
+export function isBotAuthor(author: Json): boolean {
 	const name = str(author.login);
 	return (
 		author.__typename === "Bot" ||
@@ -53,7 +53,7 @@ function isBotAuthor(author: Json): boolean {
 	);
 }
 
-const REVIEW_STATES = new Set([
+export const REVIEW_STATES = new Set([
 	"APPROVED",
 	"CHANGES_REQUESTED",
 	"COMMENTED",
@@ -69,7 +69,7 @@ const FAILING_CONCLUSIONS = new Set([
 
 type Check = PrOverview["checks"][number];
 
-function mapCheck(raw: unknown): Check | null {
+export function mapCheck(raw: unknown): Check | null {
 	const c = obj(raw);
 	if (c.__typename === "StatusContext" || "context" in c) {
 		const name = str(c.context);
@@ -99,7 +99,7 @@ function mapCheck(raw: unknown): Check | null {
  * A commit's check contexts as they stood at `cutoff`: started later, left
  * out; finished later, pending.
  */
-function checksAsOf(nodes: unknown[], cutoff: string): unknown[] {
+export function checksAsOf(nodes: unknown[], cutoff: string): unknown[] {
 	const out: unknown[] = [];
 	for (const raw of nodes) {
 		const c = obj(raw);
@@ -117,7 +117,7 @@ function checksAsOf(nodes: unknown[], cutoff: string): unknown[] {
 	return out;
 }
 
-const CHECK_ORDER = { failing: 0, pending: 1, passing: 2 } as const;
+export const CHECK_ORDER = { failing: 0, pending: 1, passing: 2 } as const;
 
 const SIDES = new Set(["LEFT", "RIGHT"]);
 type Side = DiffSide;
@@ -673,8 +673,14 @@ export function mapOverview(
 		b[1].submittedAt.localeCompare(a[1].submittedAt),
 	);
 	const reviews: Review[] = reviewers.map(([key, review]) => {
-		const opinion = opinions.get(key)?.state;
-		return opinion ? { ...review, opinion } : review;
+		const op = opinions.get(key);
+		// Dismissed, then a comment of theirs: Comment withdrew it (as
+		// verdict.ts standingOf), so the comment alone stands.
+		const withdrawn =
+			op?.state === "DISMISSED" &&
+			review.state === "COMMENTED" &&
+			review.submittedAt >= op.at;
+		return op && !withdrawn ? { ...review, opinion: op.state } : review;
 	});
 
 	const last = new Map<

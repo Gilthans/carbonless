@@ -2,8 +2,9 @@
  * Runs the built CLI on the showcase PR (test/fake-gh/showcase.ts: one of
  * every kind of file change, three commits) with its review threads
  * (test/fake-gh/demo-threads.ts), against the fake gh, so they can be seen
- * and tried: replies, new comments, edits, deletes and resolving write to
- * the fake gh's scenario, never to GitHub. The gallery's `showcase` PR has
+ * and tried: replies, new comments, edits, deletes, resolving and the
+ * verdict write to the fake gh's scenario, never to GitHub. What blocks
+ * the merge is demoVerdict's mix. The gallery's `showcase` PR has
  * the same code and threads on GitHub.
  *
  *   pnpm build && pnpm tsx scripts/demo-threads.ts --port 4790 --host <ip>
@@ -30,6 +31,7 @@ import {
 	DEMO_PR,
 	demoThreads,
 	demoTimeline,
+	demoVerdict,
 } from "../test/fake-gh/demo-threads";
 
 const { values } = parseArgs({
@@ -78,6 +80,14 @@ try {
 		if (!graph) return;
 		graph.reviewThreads = demoThreads(made.repo);
 		graph.timelineItems = demoTimeline(made.repo.shas);
+		// What blocks the merge (the Final Verdict tab).
+		const verdict = demoVerdict(
+			made.repo.shas.at(-1) ?? "",
+			made.repo.shas.at(-2),
+		);
+		const pr = s.prs[PR_NUMBER];
+		if (pr) pr.view = { ...pr.view, ...verdict.view };
+		graph.reviews = verdict.reviews;
 	});
 } catch (error) {
 	cleanup();
