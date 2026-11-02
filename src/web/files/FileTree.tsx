@@ -245,10 +245,10 @@ export function FileTree(props: {
 		>
 			{props.threadsLoading && (
 				// Laid over the first row's end, so the tree doesn't move when
-				// it goes.
+				// it goes; taps go through to the row under it.
 				<Spinner
 					label="Loading comments"
-					className="absolute top-0 right-0 z-[5] h-6 rounded-full border border-line bg-raised px-1 shadow-control"
+					className="pointer-events-none absolute top-0 right-0 z-[5] h-6 rounded-full border border-line bg-raised px-1 shadow-control"
 				/>
 			)}
 			<Children

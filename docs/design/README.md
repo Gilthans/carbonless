@@ -192,7 +192,7 @@ A spinner appears in place; showing or hiding it never moves anything
 doesn't jitter"): it takes a fixed slot kept whether or not it spins (the
 busy sign by Home's view name, the open box's, the Files bar's), replaces
 something of its size (a chip's icon, a section's count, held as wide as
-two digits), or is laid over (the file tree's). Tests hold the answer and
+two digits), or is laid over, letting taps through (the file tree's). Tests hold the answer and
 compare bounding boxes before, while and after.
 
 No 0, "None", empty meter or empty-list text shows until the answer says

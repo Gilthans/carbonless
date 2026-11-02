@@ -250,7 +250,8 @@ export class HomeService {
 	 * cache otherwise. Any repo, in the view or not: the view settings read
 	 * a repo as it is picked, so saving it finds the answer here (it stays
 	 * out of knownPrs until saved, and goes KEEP_MS after a save leaves it
-	 * out). GitHub's failures are the answer's `error`, never a throw.
+	 * out, or on any ask once read over KEEP_MS ago). GitHub's failures are
+	 * the answer's `error`, never a throw.
 	 */
 	async repo(
 		owner: string,
@@ -261,6 +262,8 @@ export class HomeService {
 		const { config } = await this.#config.read();
 		const repos = viewReposOf(config);
 		this.#inView = new Set(repos);
+		// Picks never saved don't stay for the process's life.
+		this.#evict(repos, name);
 		const state = this.#state(name);
 		// Doubled per failure in a row: a repo backing off is read no more
 		// often for a focus or another device asking.
@@ -579,10 +582,23 @@ export class HomeService {
 				views: [{ ...(first ?? { name: DEFAULT_VIEW }), repos }, ...rest],
 			};
 		});
+		this.#evict(repos);
+		return this.#homeView(
+			this.#viewer ?? { login: "", avatarUrl: "" },
+			this.#viewer ? null : this.#viewerError,
+		);
+	}
+
+	/**
+	 * Drops the facts of repos out of the view (`repos`) last read over
+	 * KEEP_MS ago, but `asked` (the repo being asked for) and one still on
+	 * a read (it keeps what that read brings).
+	 */
+	#evict(repos: readonly string[], asked?: string) {
 		const now = this.#now();
 		for (const [name, state] of this.#repos) {
-			// One still on its first read keeps what that read brings.
 			if (
+				name !== asked &&
 				!repos.includes(name) &&
 				!state.reading &&
 				now - state.checkedAt > KEEP_MS
@@ -590,10 +606,6 @@ export class HomeService {
 				this.#repos.delete(name);
 			}
 		}
-		return this.#homeView(
-			this.#viewer ?? { login: "", avatarUrl: "" },
-			this.#viewer ? null : this.#viewerError,
-		);
 	}
 
 	/** The first view's repos, `owner/repo` lowercased. */

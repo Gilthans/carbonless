@@ -605,7 +605,8 @@ parsed on every keystroke:
   Any repo is served, so the dialog can read a repo as it's picked
   (before 2026-11-02 a repo out of the view answered 404); nothing else
   reads a repo out of the view, started PRs included, and its facts stay
-  out of search until it's saved. `GET /api/home`
+  out of search until it's saved; a pick never saved is dropped on any
+  ask an hour after its read. `GET /api/home`
   carries no rows: the viewer, the view, the config's problems, the
   refresh minutes and the started reviews' repos.
 - What a read fetches: the PR list with the fields the

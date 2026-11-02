@@ -4,7 +4,7 @@ import { act, cleanup, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { HomePage } from "./HomePage";
-import { homeQuery, repoKey } from "./homeApi";
+import { homeQuery, isPicked, repoKey } from "./homeApi";
 import {
 	type Call,
 	fakeApi,
@@ -811,5 +811,95 @@ describe("a repo picked in the view settings", () => {
 		await addRepo("acme/web")(dialog);
 		await userEvent.click(within(dialog).getByRole("button", { name: "Save" }));
 		expect(screen.getByText("Web change")).toBeInTheDocument();
+	});
+
+	it("a pick removed from the draft, or the settings cancelled, is forgotten: a later save reads it like any added repo", async () => {
+		pickApi();
+		const { client } = renderWithQuery(<HomePage />);
+		await screen.findByText("API change");
+		let dialog = await openSettings();
+		await addRepo("acme/web")(dialog);
+		expect(isPicked(client, "acme/web")).toBe(true);
+		await userEvent.click(
+			within(dialog).getByRole("button", { name: "Remove acme/web" }),
+		);
+		expect(isPicked(client, "acme/web")).toBe(false);
+		await addRepo("acme/web")(dialog);
+		await addRepo("acme/infra")(dialog);
+		await userEvent.click(
+			within(dialog).getByRole("button", { name: "Cancel" }),
+		);
+		expect(isPicked(client, "acme/web")).toBe(false);
+		expect(isPicked(client, "acme/infra")).toBe(false);
+		dialog = await openSettings();
+		await addRepo("acme/web")(dialog);
+		await userEvent.keyboard("{Escape}");
+		expect(isPicked(client, "acme/web")).toBe(false);
+		// Saved: the pick stays until the save's answer settles it.
+		dialog = await openSettings();
+		await addRepo("acme/web")(dialog);
+		await userEvent.click(within(dialog).getByRole("button", { name: "Save" }));
+		await waitFor(() =>
+			expect(screen.queryByRole("status", { name: "Saving" })).toBeNull(),
+		);
+		expect(isPicked(client, "acme/web")).toBe(false);
+		expect(chip("acme/web")).toBeDefined();
+	});
+
+	it("cancelling the settings while an earlier save is out keeps that save's pick: still one read", async () => {
+		const put = held();
+		const api = pickApi({
+			"PUT /api/home/view": async (call) => {
+				await put.gate;
+				const repos = (call.body as { repos: string[] }).repos;
+				api.state.home = { ...api.state.home, view: { name: "My PRs", repos } };
+				const { sections: _, repos: __, ...rest } = api.state.home;
+				return rest;
+			},
+		});
+		const { client } = renderWithQuery(<HomePage />);
+		await screen.findByText("API change");
+		let dialog = await openSettings();
+		await addRepo("acme/web")(dialog);
+		await userEvent.click(within(dialog).getByRole("button", { name: "Save" }));
+		dialog = await openSettings();
+		await userEvent.click(
+			within(dialog).getByRole("button", { name: "Cancel" }),
+		);
+		expect(isPicked(client, "acme/web")).toBe(true);
+		put.release();
+		await waitFor(() =>
+			expect(chip("acme/web")).toHaveAttribute("data-state", "ready"),
+		);
+		await waitFor(() =>
+			expect(screen.queryByRole("status", { name: "Loading" })).toBeNull(),
+		);
+		expect(repoGets(api.calls, "acme/web")).toHaveLength(1);
+	});
+
+	it("a pick's read is cancellable (Refresh drops a read that's out)", async () => {
+		const gate = held();
+		const api = pickApi({
+			"GET /api/home/repos/acme/web": async () => {
+				await gate.gate;
+				return repoAnswer(api.state.home, "acme/web");
+			},
+		});
+		const { client } = renderWithQuery(<HomePage />);
+		await screen.findByText("API change");
+		const dialog = await openSettings();
+		await addRepo("acme/web")(dialog);
+		await waitFor(() =>
+			expect(repoGets(api.calls, "acme/web")).toHaveLength(1),
+		);
+		const i = api.calls.findIndex((c) =>
+			c.url.startsWith("/api/home/repos/acme/web"),
+		);
+		const signal = (api.fetch.mock.calls[i]?.[1] as RequestInit | undefined)
+			?.signal;
+		expect(signal?.aborted).toBe(false);
+		await act(() => client.cancelQueries({ queryKey: repoKey("acme/web") }));
+		expect(signal?.aborted).toBe(true);
+		gate.release();
 	});
 });

@@ -542,6 +542,45 @@ test("threads loading: the spinners move nothing in the bar, the tree or the fil
 	});
 });
 
+test("threads loading: the tree's spinner never takes a tap from the files under it", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	if (isMobile) await page.setViewportSize({ width: 360, height: 780 });
+	const p = await setup(pr, { hold: ["threads"] });
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	const sheet = page.getByRole("button", { name: "Files", exact: true });
+	if (await sheet.isVisible()) await sheet.click();
+	const tree = page.getByTestId("file-tree");
+	const pill = tree.getByRole("status", { name: "Loading comments" });
+	await expect(pill).toBeVisible();
+	const at = await pill.boundingBox();
+	const file = tree.getByRole("button", { name: /core\.ts/ });
+	const box = await file.boundingBox();
+	if (!at || !box) throw new Error("no boxes");
+	// What a tap at the pill's middle lands on: never the pill.
+	const hit = await page.evaluate(
+		([x, y]) => {
+			const el = document.elementFromPoint(x as number, y as number);
+			return el?.closest("[role=status]") ? "pill" : "below";
+		},
+		[at.x + at.width / 2, at.y + at.height / 2],
+	);
+	expect(hit).toBe("below");
+	// The first file's right end, as high as the pill reaches: it opens.
+	await page.mouse.click(
+		at.x + at.width / 2,
+		Math.max(box.y + 2, Math.min(at.y + at.height - 2, box.y + box.height - 2)),
+	);
+	await expect(
+		fileSection(page, CORE).getByTestId("diff-line").first(),
+	).toBeVisible();
+	release(p.scenarioPath, "threads");
+});
+
 test("slow comments: spinner, then comments", async ({
 	page,
 	pr,

@@ -12,6 +12,7 @@ import {
 	FRESH_MS,
 	type HomeConfig,
 	HomeService,
+	KEEP_MS,
 } from "./homeService.js";
 
 // Each fake gh call is a node process: give a loaded machine time.
@@ -364,6 +365,17 @@ describe("HomeService", () => {
 		expect(listReads(fx.ghLog())).toEqual(["nowhere"]);
 		await home.repo("acme", "nowhere", { fresh: true });
 		expect(listReads(fx.ghLog())).toEqual(["nowhere", "nowhere"]);
+	});
+
+	it("a pick never saved goes an hour after its read, on the next ask of any repo", async () => {
+		fx = createHomeFixture({ repos: { "acme/api": { prs: scenarioPrs() } } });
+		const { home, clock } = service();
+		expect((await home.repo("acme", "nowhere")).failures).toBe(1);
+		clock.now = T0 + KEEP_MS + 1;
+		// No save comes; another repo's ask clears it out.
+		await home.repo("acme", "api");
+		// Asked again: a new repo to Home, its failures counted afresh.
+		expect((await home.repo("acme", "nowhere")).failures).toBe(1);
 	});
 
 	it("setRepos makes no GitHub call and doesn't wait for a read in flight", async () => {

@@ -7,7 +7,7 @@ import {
 import { useEffect, useId, useRef, useState } from "react";
 import type { HomeView } from "../../shared/home";
 import { NOT_PHONE, useMedia } from "../useMedia";
-import { prefetchRepo, searchQuery } from "./homeApi";
+import { dropPick, prefetchRepo, searchQuery } from "./homeApi";
 import {
 	DEBOUNCE_MS,
 	SuggestionList,
@@ -68,6 +68,8 @@ export function ViewSettings(props: {
 	const dialog = useRef<HTMLDialogElement>(null);
 	const titleId = useId();
 	const [repos, setRepos] = useState(home.view.repos);
+	/** The repos picked since the dialog opened. */
+	const picked = useRef(new Set<string>());
 	useEffect(() => {
 		const d = dialog.current;
 		if (!d) return;
@@ -80,6 +82,7 @@ export function ViewSettings(props: {
 		}
 		setRepos(home.view.repos);
 		if (d.hasAttribute("open")) return;
+		picked.current = new Set();
 		if (typeof d.showModal === "function") d.showModal();
 		else d.setAttribute("open", "");
 	}, [props.open, home.view.repos]);
@@ -94,7 +97,23 @@ export function ViewSettings(props: {
 		const saved = home.view.repos.some(
 			(r) => r.toLowerCase() === name.toLowerCase(),
 		);
-		if (!saved) prefetchRepo(client, name, home.refreshMinutes);
+		if (!saved) {
+			prefetchRepo(client, name, home.refreshMinutes);
+			picked.current.add(name.toLowerCase());
+		}
+	};
+	const remove = (name: string) => {
+		setRepos(repos.filter((x) => x !== name));
+		if (picked.current.delete(name.toLowerCase())) dropPick(client, name);
+	};
+	// Closed without saving: this opening's picks are forgotten (their
+	// answers stay cached); an earlier save's, still out, are kept. Not on
+	// the dialog's own close event: Save closes it too, and its picks wait
+	// for the save's answer.
+	const cancel = () => {
+		for (const r of picked.current) dropPick(client, r);
+		picked.current.clear();
+		props.onClose();
 	};
 	const suggestions = suggestedRepos(home, repos);
 	return (
@@ -104,17 +123,17 @@ export function ViewSettings(props: {
 			onClose={props.onClose}
 			onCancel={(e) => {
 				e.preventDefault();
-				props.onClose();
+				cancel();
 			}}
 			onKeyDown={(e) => {
 				if (e.key === "Escape") {
 					e.preventDefault();
-					props.onClose();
+					cancel();
 				}
 			}}
 			onClick={(e) => {
 				// A click on the backdrop lands on the dialog itself.
-				if (e.target === dialog.current) props.onClose();
+				if (e.target === dialog.current) cancel();
 			}}
 			className={
 				phone
@@ -129,7 +148,7 @@ export function ViewSettings(props: {
 				<button
 					type="button"
 					aria-label="Close"
-					onClick={props.onClose}
+					onClick={cancel}
 					className={iconButton}
 				>
 					<XIcon aria-hidden />
@@ -151,7 +170,7 @@ export function ViewSettings(props: {
 								<button
 									type="button"
 									aria-label={`Remove ${r}`}
-									onClick={() => setRepos(repos.filter((x) => x !== r))}
+									onClick={() => remove(r)}
 									className={`${iconButton} hover:text-bad`}
 								>
 									<XIcon aria-hidden />
@@ -180,7 +199,7 @@ export function ViewSettings(props: {
 					<div className="flex justify-end gap-1.5">
 						<button
 							type="button"
-							onClick={props.onClose}
+							onClick={cancel}
 							className="h-10 rounded-md border border-edge px-3 text-sm text-ink-soft hover:bg-overlay focus-visible:outline-2 focus-visible:outline-accent"
 						>
 							Cancel

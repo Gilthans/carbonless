@@ -512,7 +512,9 @@ test("a repo picked in the settings is read at once: saved after its read, its r
 	await expect(page.getByRole("status", { name: "Loading" })).toBeHidden();
 	release(made.scenarioPath, held);
 	expect((await answered).status()).toBe(200);
-	// Held again: a second read would never answer.
+	// Held again, so a fresh second read would never answer; the guard
+	// is the page's request count staying at 1 (a plain second ask would
+	// be answered from the server's cache).
 	made.editScenario((s) => {
 		s.hold = [held];
 	});

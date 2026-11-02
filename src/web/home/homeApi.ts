@@ -23,10 +23,15 @@ const send = <T>(method: string, path: string, body: unknown) =>
 export const fetchHome = () => request<HomeView>("/api/home");
 
 /** One view repo's rows; `fresh`: read from GitHub now (Refresh, Retry). */
-export const fetchRepo = (name: string, fresh = false) => {
+export const fetchRepo = (
+	name: string,
+	fresh = false,
+	signal?: AbortSignal,
+) => {
 	const [owner = "", repo = ""] = name.split("/");
 	return request<RepoHome>(
 		`/api/home/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}${fresh ? "?fresh=1" : ""}`,
+		signal ? { signal } : undefined,
 	);
 };
 
@@ -147,16 +152,31 @@ export function prefetchRepo(
 	void client.prefetchQuery({
 		...repoQuery(name, minutes),
 		staleTime: 0,
-		queryFn: async () => {
+		queryFn: async ({ signal }) => {
 			try {
-				const answer = await fetchRepo(name);
-				return neverRead(answer) && saved() ? fetchRepo(name, true) : answer;
+				const answer = await fetchRepo(name, false, signal);
+				return neverRead(answer) && saved()
+					? fetchRepo(name, true, signal)
+					: answer;
 			} catch (error) {
-				if (saved()) return fetchRepo(name, true);
+				if (saved() && !signal.aborted) return fetchRepo(name, true, signal);
 				throw error;
 			}
 		},
 	});
+}
+
+/** Whether `name` is picked and not yet settled by a save (tests). */
+export const isPicked = (client: QueryClient, name: string) =>
+	picksOf(client).has(name.toLowerCase());
+
+/**
+ * Forgets a pick (removed from the draft, the settings cancelled): a later
+ * save of that repo reads it like any added repo, never trusting a pick
+ * it didn't make. Its cached answer stays.
+ */
+export function dropPick(client: QueryClient, name: string) {
+	picksOf(client).delete(name.toLowerCase());
 }
 
 /**
