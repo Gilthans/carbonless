@@ -2,10 +2,13 @@ import type { QueryClient } from "@tanstack/react-query";
 import type { VerdictEvent } from "../../shared/types";
 
 /**
- * Writes GitHub refused, per PR, kept until the reviewer retries them
- * successfully or drops them (ThreadWrites): in `localStorage`
- * (`crb:refused:<owner>/<repo>#<number>`), beside the drafts, so a reload
- * lists them again. What a refused reply, edit or new thread said stays in
+ * Writes GitHub refused, kept until the reviewer retries them successfully
+ * or drops them (ThreadWrites): in `localStorage`, beside the drafts, so a
+ * reload lists them again. Thread writes are per PR
+ * (`crb:refused:<owner>/<repo>#<number>`), like the drafts; a refused
+ * verdict is the review's own (`crb:refused:…@<review id>`, refusalsKey's
+ * `review`): only the review that pressed it retries it, as the server
+ * keeps verdicts per review. What a refused reply, edit or new thread said stays in
  * its draft (drafts.ts); this keeps that it was refused, and why. A
  * resolve's intended state and a delete's comment live only here. Storage
  * that throws or is missing falls back to memory for the page's life.
@@ -43,11 +46,18 @@ export interface StoredRefusal {
 	at: string;
 }
 
-export const refusalsKey = (pr: {
-	owner: string;
-	repo: string;
-	number: number;
-}) => `crb:refused:${pr.owner}/${pr.repo}#${pr.number}`;
+export const refusalsKey = (
+	pr: {
+		owner: string;
+		repo: string;
+		number: number;
+	},
+	review?: string,
+) =>
+	`crb:refused:${pr.owner}/${pr.repo}#${pr.number}${review === undefined ? "" : `@${review}`}`;
+
+/** The lane whose refusals are the review's own (threadWrites VERDICT_LANE). */
+const OWN_LANE = "verdict";
 
 const ACTIONS: readonly unknown[] = [
 	"Reply",
@@ -107,6 +117,8 @@ function defaultStorage(): Storage | undefined {
 export class RefusalStore {
 	readonly #storage: () => Storage | undefined;
 	#key: string | null = null;
+	/** Where the verdict lane's refusals go, when apart from the rest. */
+	#ownKey: string | null = null;
 	#all: readonly StoredRefusal[] = [];
 	#behind = false;
 
@@ -114,10 +126,14 @@ export class RefusalStore {
 		this.#storage = storage;
 	}
 
-	/** Keeps them under `key` from now on: the stored ones join those refused before. */
-	bind(key: string): void {
-		if (this.#key === key) return;
+	/**
+	 * Keeps them under `key` from now on (the verdict's under `ownKey`, when
+	 * given): the stored ones join those refused before.
+	 */
+	bind(key: string, ownKey?: string): void {
+		if (this.#key === key && this.#ownKey === (ownKey ?? null)) return;
 		this.#key = key;
+		this.#ownKey = ownKey ?? null;
 		const now = this.#all;
 		const stored = (this.#stored() ?? []).filter(
 			(s) => !now.some((n) => same(n, s.threadId, s.key)),
@@ -143,19 +159,31 @@ export class RefusalStore {
 		this.#update((all) => all.filter((r) => !same(r, threadId, key)));
 	}
 
+	/** Whether a refusal is kept under the review's own key. */
+	#own = (r: StoredRefusal) => this.#ownKey !== null && r.threadId === OWN_LANE;
+
 	#stored(): StoredRefusal[] | null {
 		if (this.#key === null) return null;
 		try {
 			const storage = this.#storage();
 			if (!storage) return null;
-			const raw = storage.getItem(this.#key);
-			if (!raw) return [];
-			try {
-				const parsed: unknown = JSON.parse(raw);
-				return Array.isArray(parsed) ? parsed.filter(isStored) : [];
-			} catch {
-				return [];
-			}
+			const read = (key: string) => {
+				const raw = storage.getItem(key);
+				if (!raw) return [];
+				try {
+					const parsed: unknown = JSON.parse(raw);
+					return Array.isArray(parsed) ? parsed.filter(isStored) : [];
+				} catch {
+					return [];
+				}
+			};
+			const own = this.#ownKey;
+			// Apart: another review's verdict under the PR's key isn't ours.
+			if (own === null) return read(this.#key);
+			return [
+				...read(this.#key).filter((r) => !this.#own(r)),
+				...read(own).filter((r) => this.#own(r)),
+			];
 		} catch {
 			return null;
 		}
@@ -173,8 +201,22 @@ export class RefusalStore {
 		if (this.#key === null) return;
 		try {
 			const storage = this.#storage();
-			if (all.length === 0) storage?.removeItem(this.#key);
-			else storage?.setItem(this.#key, JSON.stringify(all));
+			const write = (key: string, list: readonly StoredRefusal[]) => {
+				if (list.length === 0) storage?.removeItem(key);
+				else storage?.setItem(key, JSON.stringify(list));
+			};
+			const own = this.#ownKey;
+			if (own === null) write(this.#key, all);
+			else {
+				write(
+					this.#key,
+					all.filter((r) => !this.#own(r)),
+				);
+				write(
+					own,
+					all.filter((r) => this.#own(r)),
+				);
+			}
 			this.#behind = !storage;
 		} catch {
 			this.#behind = true;

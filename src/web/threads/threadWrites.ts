@@ -39,7 +39,9 @@ import {
 	RETRY_DELAYS_MS,
 	STALL_ATTEMPTS,
 } from "../files/stateSync";
+import { useReviewId } from "../reviewId";
 import {
+	dropPrWideVerdict,
 	type VerdictSending,
 	type VerdictStore,
 	verdictDraftFor,
@@ -1867,22 +1869,26 @@ export function useThreadWritesSetup(): void {
 	const writes = threadWritesFor(client);
 	const session = useQuery({ ...sessionQuery, enabled: false });
 	const pr = session.data?.pr;
+	// The verdict is the review's own (verdictDraft.ts); the rest the PR's.
+	const review = useReviewId();
 	const key = pr ? draftsKey(pr) : null;
 	const refusedKey = pr ? refusalsKey(pr) : null;
-	const verdictDraft = pr ? verdictKey(pr) : null;
+	const ownRefusedKey = pr ? refusalsKey(pr, review) : null;
+	const verdictDraft = pr ? verdictKey(pr, review) : null;
 	const on = useWritesOn();
 	const resumed = useRef(false);
 	useEffect(() => {
-		if (!key || !refusedKey || !verdictDraft) return;
+		if (!key || !refusedKey || !ownRefusedKey || !verdictDraft) return;
 		writes.drafts.bind(key);
-		refusalsFor(client).bind(refusedKey);
+		refusalsFor(client).bind(refusedKey, ownRefusedKey);
 		verdictDraftFor(client).bind(verdictDraft);
+		if (pr) dropPrWideVerdict(pr);
 		if (on && !resumed.current) {
 			resumed.current = true;
 			writes.restore();
 			writes.resume();
 		}
-	}, [writes, client, key, refusedKey, verdictDraft, on]);
+	}, [writes, client, pr, key, refusedKey, ownRefusedKey, verdictDraft, on]);
 }
 
 /** Threads as the reviewer intends them: a resolve not yet confirmed shows at once. */

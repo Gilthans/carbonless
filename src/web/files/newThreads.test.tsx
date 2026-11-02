@@ -1557,6 +1557,72 @@ describe("Comment on file", () => {
 		expect(row.nextElementSibling).toBe(screen.getByTestId("file-threads"));
 	});
 
+	it("side by side, stays on the first row when the gap above the first hunk is all loaded: in its pair row", async () => {
+		sideBySide.set(true);
+		try {
+			const { user } = renderFile({}, { expanded: true, hunks: LATER });
+			await screen.findByTestId("gap-row");
+			expect(
+				within(firstRow()).getByRole("button", { name: "Comment on file" }),
+			).toBeInTheDocument();
+			await user.click(screen.getByRole("button", { name: /Load .* above/ }));
+			await screen.findAllByText("line 1");
+			expect(screen.queryByTestId("gap-row")).not.toBeInTheDocument();
+			expect(firstRow().dataset.newNo).toBe("1");
+			expect(
+				within(firstRow()).getByRole("button", { name: "Comment on file" }),
+			).toBeInTheDocument();
+		} finally {
+			sideBySide.reset();
+		}
+	});
+
+	it("side by side, shares a row with a line's bubble: one slot in the right cell holds both, each opening its own threads", async () => {
+		sideBySide.set(true);
+		try {
+			const { user } = renderFile(
+				{},
+				{
+					expanded: true,
+					hunks: LATER,
+					threads: [fileThread(), thread({ line: 1 })],
+				},
+			);
+			await user.click(
+				await screen.findByRole("button", { name: /Load .* above/ }),
+			);
+			await screen.findAllByText("line 1");
+			const row = firstRow();
+			expect(row.dataset.newNo).toBe("1");
+			// Wide, the bubbles sit in the code cells: left first, then right.
+			const [left, right] = [
+				...row.querySelectorAll('td[data-testid="code"]'),
+			] as HTMLElement[];
+			const bubbles = within(right as HTMLElement).getAllByTestId(
+				"thread-bubble",
+			);
+			expect(bubbles.map((b) => b.getAttribute("aria-label"))).toEqual([
+				"1 comment on this file",
+				"1 comment on line 1",
+			]);
+			// One slot holds both, so they never sit on each other.
+			expect(bubbles[0]?.parentElement).toBe(bubbles[1]?.parentElement);
+			// A context line's bubble shows in both cells; the file's only right.
+			expect(
+				within(left as HTMLElement)
+					.getAllByTestId("thread-bubble")
+					.map((b) => b.getAttribute("aria-label")),
+			).toEqual(["1 comment on old line 1"]);
+			await user.click(bubbles[1] as HTMLElement);
+			expect(screen.getByTestId("thread-row")).toBeInTheDocument();
+			expect(screen.queryByTestId("file-threads")).not.toBeInTheDocument();
+			await user.click(bubbles[0] as HTMLElement);
+			expect(row.nextElementSibling).toBe(screen.getByTestId("file-threads"));
+		} finally {
+			sideBySide.reset();
+		}
+	});
+
 	it("a click on a closed file's header opens the file, not the composer; its controls keep their own", async () => {
 		const { user } = renderFile({}, { expanded: false, hunks: HUNKS });
 		const toggle = screen.getByRole("button", { name: "Expand file" });

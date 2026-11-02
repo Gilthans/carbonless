@@ -183,8 +183,8 @@ right once the file tree is a sidebar (md+), so neither is covered.
   buttons for an in-place "Drop this? Its text is lost" (resolve, delete:
   "Drop this?") with Cancel (focused; Escape too) and a red Drop. "Retry
   all" heads the list when more than one can be retried. Kept in
-  `localStorage` beside the drafts (`crb:refused:…`), so a reload lists
-  them again.
+  `localStorage` beside the drafts (`crb:refused:…`; a refused verdict
+  under the review's own key), so a reload lists them again.
 
 Both are `tone/10` over an opaque `raised` card with a `tone/50` border.
 While one shows, the file list's end is padded by how far up the notices

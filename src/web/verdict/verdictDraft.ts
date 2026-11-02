@@ -3,12 +3,16 @@ import { useSyncExternalStore } from "react";
 import type { VerdictEvent } from "../../shared/types";
 
 /**
- * The reviewer's verdict draft, per PR: the "Include a message" text, and a
- * verdict pressed and not yet confirmed by GitHub. Kept in `localStorage`
- * (`crb:verdict:<owner>/<repo>#<number>`, apart from the reply drafts) so
- * a reload loses neither: a verdict on its way is resent then, with
- * `retry: true` and the same client id (ThreadWrites.resume), and the
- * server finds one that landed. Storage that throws or is missing falls
+ * The reviewer's verdict draft, per review: the "Include a message" text,
+ * and a verdict pressed and not yet confirmed by GitHub. Kept in
+ * `localStorage` (`crb:verdict:<owner>/<repo>#<number>@<review id>`, apart
+ * from the reply drafts) so a reload loses neither: a verdict on its way
+ * is resent then, with `retry: true` and the same client id
+ * (ThreadWrites.resume), and the server finds one that landed. Per review,
+ * not per PR: the server keeps a review's verdicts (its queue, the client
+ * ids it sent) on that review's session, so only the review that pressed
+ * may resend (another review of the PR, pinned elsewhere, would post it
+ * again or refuse it as stale). Storage that throws or is missing falls
  * back to memory for the page's life.
  */
 
@@ -36,11 +40,32 @@ export const VERDICT_LABEL: Record<VerdictEvent, string> = {
 	REQUEST_CHANGES: "Request changes",
 };
 
-export const verdictKey = (pr: {
-	owner: string;
-	repo: string;
-	number: number;
-}) => `crb:verdict:${pr.owner}/${pr.repo}#${pr.number}`;
+export const verdictKey = (
+	pr: {
+		owner: string;
+		repo: string;
+		number: number;
+	},
+	review: string,
+) => `crb:verdict:${pr.owner}/${pr.repo}#${pr.number}@${review}`;
+
+/**
+ * Drops the PR-wide verdict entry (`crb:verdict:<owner>/<repo>#<number>`)
+ * that builds before per-review keys wrote. Not moved over: which review
+ * pressed it is unknown, and moving it to whichever loads first is the
+ * double send the per-review key prevents. No release ever wrote it (the
+ * verdict first ships with per-review keys); only branch instances did.
+ */
+export function dropPrWideVerdict(
+	pr: { owner: string; repo: string; number: number },
+	storage: () => Storage | undefined = defaultStorage,
+): void {
+	try {
+		storage()?.removeItem(`crb:verdict:${pr.owner}/${pr.repo}#${pr.number}`);
+	} catch {
+		// Storage that throws keeps nothing to drop.
+	}
+}
 
 const EVENTS: readonly unknown[] = [
 	"APPROVE",

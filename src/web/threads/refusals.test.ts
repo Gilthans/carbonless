@@ -126,3 +126,47 @@ describe("RefusalStore: a refused verdict", () => {
 		expect(c.get()).toEqual([]);
 	});
 });
+
+describe("RefusalStore: a verdict's refusal is the review's own", () => {
+	const PR = { owner: "o", repo: "r", number: 1 };
+	const verdict = refusal({
+		threadId: "verdict",
+		key: "verdict",
+		action: "Verdict",
+		event: "APPROVE",
+		resolved: undefined,
+	});
+
+	it("keeps it under the review's key, thread writes under the PR's; another review lists only the PR's", () => {
+		const storage = memoryStorage();
+		const a = new RefusalStore(() => storage);
+		a.bind(KEY, refusalsKey(PR, "A"));
+		a.put(verdict);
+		a.put(refusal());
+		expect(JSON.parse(storage.getItem(KEY) ?? "[]")).toEqual([refusal()]);
+		expect(JSON.parse(storage.getItem(refusalsKey(PR, "A")) ?? "[]")).toEqual([
+			verdict,
+		]);
+		const b = new RefusalStore(() => storage);
+		b.bind(KEY, refusalsKey(PR, "B"));
+		expect(b.get()).toEqual([refusal()]);
+		// B settling the PR's leaves A's verdict alone.
+		b.remove("T1", "resolve");
+		expect(storage.getItem(KEY)).toBeNull();
+		expect(storage.getItem(refusalsKey(PR, "A"))).not.toBeNull();
+	});
+
+	it("ignores, then drops, a verdict left under the PR's key by an older build", () => {
+		const storage = memoryStorage();
+		storage.setItem(KEY, JSON.stringify([verdict, refusal()]));
+		const b = new RefusalStore(() => storage);
+		b.bind(KEY, refusalsKey(PR, "B"));
+		expect(b.get()).toEqual([refusal()]);
+		b.put(refusal({ threadId: "T2" }));
+		expect(
+			(JSON.parse(storage.getItem(KEY) ?? "[]") as StoredRefusal[]).map(
+				(r) => r.threadId,
+			),
+		).toEqual(["T1", "T2"]);
+	});
+});

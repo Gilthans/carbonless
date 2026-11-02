@@ -295,7 +295,11 @@ switch wouldn't happen.
   pull request": 409 `pending-review`, nothing sent, never joined or
   submitted); approving or requesting changes on one's own PR is 403
   `forbidden` with GitHub's message. One press, one review: verdicts run
-  one at a time per PR and are remembered by client id; a retry first
+  one at a time per review (its session on the server) and are remembered
+  by client id there; the page keeps a verdict on its way, and a refused
+  one, under that review's own key (`crb:verdict:…@<review id>`,
+  `crb:refused:…@<review id>`), so only the review that pressed resends or
+  retries it, never another review of the same PR; a retry first
   lists the PR's reviews (REST) for the viewer's one in the event's state
   carrying its marker, or, sent without a message, an empty one on the
   same commit submitted since this server's first attempt (10 s of slack for GitHub's clock;
