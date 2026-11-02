@@ -206,19 +206,24 @@ in the main checkout:
    refuses a `crb` whose build differs from the server's. Stop it, and say
    so, when the branch merges or is dropped.
 
-**RC: every merge to master is a new RC** (the owner: merging a PR to main
-implies a new RC version). Changes reach master only as PRs ("How we
-work"). After one merges:
-1. Within ~5 minutes the follow timer builds `origin/master` and moves 4747
-   to it (`crb --version` shows the commit). If `journalctl --user -u
-   crb-follow` shows a failure, tell the owner what it says; don't install
-   by hand.
-2. Send the owner the link and what is new since the last build.
-3. Stop the instances of branches that just merged.
+**RC: every merge to master is a new RC**, published by GitHub Actions,
+never from this machine (`docs/releasing.md`). master's `package.json`
+version is the next release `X.Y.Z`; nobody bumps it to an RC. Changes
+reach master only as PRs ("How we work"). After one merges:
+1. The `Publish RC` run on that merge (`gh run list --workflow
+   publish-rc.yml`) publishes `X.Y.Z-rc.N` to npm's `rc` and tags
+   `vX.Y.Z-rc.N`; until the first release it only tags. A run that says
+   "master moved on" skipped a commit a newer merge holds.
+2. Within ~5 minutes the follow timer moves 4747 to the new build
+   (`origin/master`'s, or npm's `rc` once the owner has switched it after
+   the first publish; `crb --version` shows the commit). If `journalctl
+   --user -u crb-follow` shows a failure, tell the owner what it says;
+   don't install by hand.
+3. Send the owner the link and what is new since the last RC.
+4. Stop the instances of branches that just merged.
 
-There is no version-bump commit per PR: builds are told apart by commit
-(`0.1.0-rc.4 (b7f8508)`). The release-flip branch, once merged, makes CI
-publish `X.Y.Z-rc.N` to npm on every master push.
+`pnpm release status` shows master's next version, `rc` and `latest` on npm
+and in tags, and what the next merge publishes.
 
 **By hand** (another machine, or the timer paused): in a clean tree of the
 commit (`git worktree add --detach .worktrees/release <ref>`, `pnpm install
@@ -226,10 +231,21 @@ commit (`git worktree add --detach .worktrees/release <ref>`, `pnpm install
 `~/.local/share/carbonless/releases` (its last line is the tarball) and
 installs the global `crb`; then `systemctl --user restart crb`.
 
-**Release:** only when the owner asks ("release", "promote"). Before the
-first npm publish, remind the owner of the license (MIT, chosen on the
-release-flip branch). Until release-flip merges nothing is published:
-co-workers get a tarball or run `pnpm release local` in a checkout.
+**Release:** only on the owner's word ("release", "promote"):
+1. `pnpm release promote [<rc tag>] [--next patch|minor|major]` (default:
+   the newest RC, then minor) starts the promote workflow and prints its
+   link. It checks the RC in full and packs `X.Y.Z`; it publishes nothing.
+2. When the run is green, send the owner its link and summary. **The owner**
+   runs `pnpm release publish` on their machine: it checks the tarball,
+   publishes it to npm's `latest` with their npm login (npm asks for their
+   two-factor OTP) and starts release-finish (the `vX.Y.Z` tag, `rc`, the
+   "next: X.Y+1.0" PR with the changelog). Agents never run `pnpm release
+   publish` and never ask for, or handle, the OTP.
+3. The owner merges the "next" PR like any other. For another next
+   version (a fix release): `pnpm release next <patch|minor|major|X.Y.Z>`
+   opens that PR.
+After the first release (0.1.0) the owner switches the devbox's follow to
+npm (`docs/releasing.md`, "Flipping the switch").
 
 ## How we work
 
@@ -267,6 +283,11 @@ co-workers get a tarball or run `pnpm release local` in a checkout.
   merge. A PR is merged only on the owner's explicit word for that PR (by
   the owner on GitHub, or by an agent with `gh pr merge`). Never push
   `master` or `v*` tags.
+- On the owner's word only: `pnpm release promote` (starts the promote
+  workflow, which checks and packs; it publishes nothing) and `pnpm release
+  next` (pushes a `next/*` branch, opens its PR) on Gilthans/carbonless.
+  `pnpm release status` only reads. `pnpm release publish` is the owner's
+  alone (their npm OTP): agents never run it or ask for the OTP.
 - Commits only via `git commit --only -- <paths>` in a shared tree; never a bare
   `git stash`. On Gilthans/carbonless, GitHub writes are limited to the
   above: pushing branches, opening, updating and merging PRs, and commenting
