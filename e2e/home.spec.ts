@@ -513,6 +513,54 @@ test("with the repo suggestions open, one click (a tap) on Add adds what was typ
 	await expect(list).toHaveCount(0);
 });
 
+test("on a short window with many repos, the dialog scrolled to the open list: Add stays put and one click (a tap) adds", async ({
+	page,
+	workdir,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	await page.setViewportSize(
+		isMobile ? { width: 360, height: 640 } : { width: 1280, height: 600 },
+	);
+	await setup(workdir, pr);
+	const crb = await startCrb();
+	await goHome(page, crb.url);
+	await page.getByRole("button", { name: "Edit repos" }).click();
+	const dialog = page.getByRole("dialog", { name: "My PRs" });
+	const field = dialog.getByRole("combobox", { name: "Add a repo" });
+	const add = dialog.getByRole("button", { name: "Add", exact: true });
+	const listed = dialog
+		.getByRole("list", { name: "Repos in this view" })
+		.getByRole("listitem");
+	const more = ["acme/r1", "acme/r2", "acme/r3", "acme/r4", "acme/r5"];
+	for (const r of more) {
+		await field.fill(r);
+		await field.press("Enter");
+	}
+	await expect(listed).toHaveCount(6);
+	await field.pressSequentially(OWNER_REPO);
+	const list = dialog.getByRole("listbox", { name: "Suggestions" });
+	await expect(list.getByRole("option")).toHaveText([OWNER_REPO]);
+	// Scrolled down to see the whole list (the dialog is shorter).
+	await dialog.evaluate((d) => {
+		d.scrollTop = d.scrollHeight;
+	});
+	await expect(list.getByRole("option")).toBeInViewport();
+	const open = await add.boundingBox();
+	// The list shut (the press's blur) moves nothing.
+	await field.evaluate((el) => (el as HTMLElement).blur());
+	await expect(list).toHaveCount(0);
+	expect(await add.boundingBox()).toEqual(open);
+	await field.focus();
+	await expect(list.getByRole("option")).toHaveText([OWNER_REPO]);
+	expect(await add.boundingBox()).toEqual(open);
+	if (isMobile) await add.tap();
+	else await add.click();
+	await expect(listed).toHaveCount(7);
+	await expect(listed.last()).toHaveText(OWNER_REPO);
+});
+
 test("a repo picked in the settings is read at once: saved after its read, its rows come with no second read", async ({
 	page,
 	workdir,
@@ -910,13 +958,16 @@ test("waiting on suggests people as you type: the viewer's orgs and repos' peopl
 	await expect(other.getByRole("button", { name: "1 waiting" })).toBeVisible();
 });
 
-test("with the waiting-on suggestions open, a tap on a person takes it; the list moves neither the people nor Clear", async ({
+test("with the waiting-on suggestions open, one click (a tap) on a person takes it; the list moves neither the people nor Clear", async ({
 	page,
 	workdir,
 	pr,
 	startCrb,
 	isMobile,
 }) => {
+	// Tall enough that a mouse's list opens under the input, clear of the
+	// people above it.
+	if (!isMobile) await page.setViewportSize({ width: 1280, height: 1000 });
 	const made = await setup(workdir, pr);
 	made.editScenario((s) => {
 		s.orgMembers = { acme: [VIEWER, "alicia", "malik"] };
@@ -925,12 +976,7 @@ test("with the waiting-on suggestions open, a tap on a person takes it; the list
 	await goHome(page, crb.url);
 	const other = section(page, "Other open");
 	const title = "Migrate alerts table";
-	/**
-	 * Opens Waiting on, then its suggestions: `name` doesn't move. With a
-	 * mouse the list floats over the panel (over the target too, above or
-	 * below the input): shut first. On touch it floats below the input,
-	 * and a person above it is tapped with the list open.
-	 */
+	/** Opens Waiting on, then its suggestions: `name` doesn't move. */
 	const withList = async (row: Locator, name: string | RegExp) => {
 		const dialog = await rowAction(page, row, "Waiting on");
 		const field = dialog.getByRole("combobox", { name: "Someone else" });
@@ -946,15 +992,13 @@ test("with the waiting-on suggestions open, a tap on a person takes it; the list
 	};
 	const bob = await withList(rowOf(other, title), /^bob/);
 	if (isMobile) await bob.target.tap();
-	else {
-		await bob.field.press("Escape");
-		await bob.target.click();
-	}
+	else await bob.target.click();
 	const foot = other.getByRole("button", { name: "1 waiting" });
 	await expect(foot).toBeVisible();
 	await expect(other.getByTestId("home-row")).toHaveCount(0);
 	await foot.click();
 	const clear = await withList(other.getByTestId("home-row-hidden"), "Clear");
+	// The list floats over Clear: shut first.
 	await clear.field.press("Escape");
 	await clear.target.click();
 	await expect(other.getByTestId("home-row")).toHaveCount(1);

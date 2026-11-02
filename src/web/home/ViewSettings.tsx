@@ -4,7 +4,7 @@ import {
 	useQuery,
 	useQueryClient,
 } from "@tanstack/react-query";
-import { useEffect, useId, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import type { HomeView } from "../../shared/home";
 import { NOT_PHONE, useMedia } from "../useMedia";
 import { dropPick, prefetchRepo, searchQuery } from "./homeApi";
@@ -56,8 +56,9 @@ const iconButton =
  * recent reviews. Save hands the list to `onSave` and closes: Home shows
  * the new view at once while it saves (viewSave.tsx). A dialog near the
  * top, a full bottom sheet on a phone: its top stays put, so the repo
- * suggestions (floating under the input, room kept below) never move what
- * a click is on its way to (a click lands where its press began).
+ * suggestions (floating under the input, their room kept below from their
+ * first opening until the dialog closes) never move what a click is on its
+ * way to (a click lands where its press began).
  */
 export function ViewSettings(props: {
 	open: boolean;
@@ -70,7 +71,14 @@ export function ViewSettings(props: {
 	const dialog = useRef<HTMLDialogElement>(null);
 	const titleId = useId();
 	const [repos, setRepos] = useState(home.view.repos);
-	const [listOpen, setListOpen] = useState(false);
+	/**
+	 * The suggestions have opened since the dialog did: their room stays
+	 * until it closes, so a scrolled dialog never shrinks under a press.
+	 */
+	const [listRoom, setListRoom] = useState(false);
+	const keepListRoom = useCallback((open: boolean) => {
+		if (open) setListRoom(true);
+	}, []);
 	/** The repos picked since the dialog opened. */
 	const picked = useRef(new Set<string>());
 	useEffect(() => {
@@ -86,6 +94,7 @@ export function ViewSettings(props: {
 		setRepos(home.view.repos);
 		if (d.hasAttribute("open")) return;
 		picked.current = new Set();
+		setListRoom(false);
 		if (typeof d.showModal === "function") d.showModal();
 		else d.setAttribute("open", "");
 	}, [props.open, home.view.repos]);
@@ -181,9 +190,9 @@ export function ViewSettings(props: {
 							</li>
 						))}
 					</ul>
-					<RepoInput listed={listed} onAdd={add} onListOpen={setListOpen} />
-					{/* Room for the open list, which floats over what follows. */}
-					<div className={`space-y-3 ${listOpen ? "min-h-60" : ""}`}>
+					<RepoInput listed={listed} onAdd={add} onListOpen={keepListRoom} />
+					{/* Room for the list, which floats over what follows. */}
+					<div className={`space-y-3 ${listRoom ? "min-h-60" : ""}`}>
 						{suggestions.length > 0 && (
 							<ul aria-label="Suggested" className="flex flex-wrap gap-1.5">
 								{suggestions.map((r) => (
