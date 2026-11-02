@@ -1,5 +1,6 @@
 import {
 	chmodSync,
+	existsSync,
 	mkdtempSync,
 	readFileSync,
 	rmSync,
@@ -8,6 +9,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { settleGh } from "../../test/settle-gh";
 import {
 	avatar40,
 	fetchOverview,
@@ -17,6 +19,7 @@ import {
 	fetchThreadSummaries,
 	GhAbortedError,
 	GhError,
+	ghIdle,
 	joinEnds,
 	onlyMissingNodes,
 	parsePrArg,
@@ -89,6 +92,8 @@ describe("slugify", () => {
 describe("runGh", () => {
 	it("reports a missing gh binary", async () => {
 		const saved = process.env.PATH;
+		// Replacing PATH drops the real gh trap too; safe here only because a
+		// gh that can't start runs no follow-up (no logged-out check).
 		process.env.PATH = "/nonexistent-dir";
 		try {
 			await expect(runGh(["auth", "status"])).rejects.toThrow(
@@ -103,6 +108,7 @@ describe("runGh", () => {
 /**
  * A tiny fake `gh` on PATH. Behaviour comes from env vars:
  * FAKE_AUTH=out (auth status fails logged out), FAKE_AUTH=net (fails offline),
+ * FAKE_AUTH_SLEEP (auth status answers after that long, then logs "auth answered"),
  * FAKE_PRVIEW_ERR / FAKE_GQL_ERR (stderr of a failing call), FAKE_VIEW (stdout
  * of `pr view`), FAKE_GQL_DIR (dir with <connection>-<page>.json responses,
  * and body-1.json for the description's bodyHTML).
@@ -113,6 +119,7 @@ echo "$*" >> "$FAKE_LOG"
 [ -n "$FAKE_SLEEP" ] && sleep "$FAKE_SLEEP"
 case "$1 $2" in
 "auth status")
+  [ -n "$FAKE_AUTH_SLEEP" ] && { sleep "$FAKE_AUTH_SLEEP"; echo "auth answered" >> "$FAKE_LOG"; }
   [ "$FAKE_AUTH" = out ] && { echo "You are not logged into any GitHub hosts. To log in, run: gh auth login" >&2; exit 1; }
   [ "$FAKE_AUTH" = net ] && { echo "error connecting to api.github.com" >&2; exit 1; }
   exit 0 ;;
@@ -145,7 +152,8 @@ describe("runGh with a fake gh", () => {
 		writeFileSync(bin, FAKE_GH);
 		chmodSync(bin, 0o755);
 		setEnv({
-			PATH: `${dir}:/usr/bin:/bin`,
+			// The real gh trap (test/real-gh-trap.ts) stays behind the fake.
+			PATH: `${dir}:${process.env.PATH ?? ""}`,
 			FAKE_LOG: join(dir, "log"),
 			FAKE_AUTH: "",
 			FAKE_PRVIEW_ERR: "",
@@ -154,12 +162,17 @@ describe("runGh with a fake gh", () => {
 		writeFileSync(join(dir, "log"), "");
 	});
 
-	afterEach(() => {
-		for (const [k, v] of Object.entries(saved)) {
-			if (v === undefined) delete process.env[k];
-			else process.env[k] = v;
+	afterEach(async () => {
+		// A failed read's sibling calls end on this fake gh, not the real one.
+		try {
+			await settleGh();
+		} finally {
+			for (const [k, v] of Object.entries(saved)) {
+				if (v === undefined) delete process.env[k];
+				else process.env[k] = v;
+			}
+			rmSync(dir, { recursive: true, force: true });
 		}
-		rmSync(dir, { recursive: true, force: true });
 	});
 
 	const ref = { owner: "Acme", repo: "Widget", number: 12 };
@@ -187,6 +200,52 @@ describe("runGh with a fake gh", () => {
 		});
 		await expect(fetchPrMeta(ref)).rejects.toThrow("gh is not logged in");
 		expect(log()).toContain("auth status --active --hostname ghe.example.com");
+	});
+
+	it("checks the login with the gh and account the call started with", async () => {
+		// A test fixture restoring PATH, or the reviewer switching accounts,
+		// while a failed call is about to run its logged-out check.
+		setEnv({ FAKE_PRVIEW_ERR: "boom", FAKE_AUTH: "out", GH_HOST: "" });
+		const other = mkdtempSync(join(tmpdir(), "other-gh-"));
+		writeFileSync(join(other, "gh"), FAKE_GH);
+		chmodSync(join(other, "gh"), 0o755);
+		try {
+			const call = runGh(["pr", "view", "12"]);
+			setEnv({
+				PATH: `${other}:${saved.PATH ?? ""}`,
+				FAKE_LOG: join(other, "log"),
+				FAKE_AUTH: "",
+				GH_HOST: "other.example.com",
+			});
+			await expect(call).rejects.toThrow("gh is not logged in");
+			expect(log()).toBe(
+				"pr view 12\nauth status --active --hostname github.com\n",
+			);
+			expect(existsSync(join(other, "log"))).toBe(false);
+		} finally {
+			rmSync(other, { recursive: true, force: true });
+		}
+	});
+
+	it("ghIdle waits for a call's logged-out check, not just its first gh", async () => {
+		// The check answers well after the first gh: only a ghIdle that waits
+		// for it sees "auth answered".
+		setEnv({ FAKE_PRVIEW_ERR: "boom", FAKE_AUTH_SLEEP: "0.5", GH_HOST: "" });
+		const call = runGh(["pr", "view", "12"]).catch((e: Error) => e.message);
+		await ghIdle();
+		expect(log()).toBe(
+			"pr view 12\nauth status --active --hostname github.com\nauth answered\n",
+		);
+		await expect(call).resolves.toBe("boom");
+	});
+
+	it("a bounded ghIdle names the gh calls still running", async () => {
+		setEnv({ FAKE_SLEEP: "1", FAKE_VIEW: "{}" });
+		const call = runGh(["pr", "view", "12"]);
+		await expect(ghIdle(50)).rejects.toThrow(
+			"gh calls still running after 0.05 s:\ngh pr view 12",
+		);
+		await call;
 	});
 
 	it("does not call an offline failure 'not logged in'", async () => {

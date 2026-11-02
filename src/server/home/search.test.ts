@@ -74,8 +74,8 @@ describe("parseQuery", () => {
 const T0 = Date.now();
 const iso = (ms: number) => new Date(ms).toISOString();
 let fx: HomeFixture | undefined;
-afterEach(() => {
-	fx?.cleanup();
+afterEach(async () => {
+	await fx?.cleanup();
 	fx = undefined;
 });
 
