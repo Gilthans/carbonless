@@ -8,7 +8,7 @@ import {
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { ClusterState, FileView } from "../../shared/types";
+import type { ClusterState, FileView, ReviewThread } from "../../shared/types";
 import { FileTree } from "./FileTree";
 
 function file(
@@ -781,6 +781,187 @@ describe("folders", () => {
 		expect(numbers(row)).toBe("2 / 2 lines · 1 file left");
 		expect(part(bar(row), "reviewed")).toBeLessThan(100);
 		expect(row).not.toHaveAttribute("data-finished");
+	});
+});
+
+/** A review thread on `path`: open and not the viewer's turn unless said. */
+const thread = (
+	path: string,
+	more: Partial<ReviewThread> = {},
+): ReviewThread => ({
+	id: `T:${path}`,
+	path,
+	line: 1,
+	currentLine: 1,
+	loaded: true,
+	excerpt: "",
+	html: "",
+	body: "",
+	createdAt: "2026-01-03T09:00:00Z",
+	lastActivityAt: "2026-01-03T09:00:00Z",
+	author: "rev1",
+	bot: false,
+	avatarUrl: "",
+	participants: [],
+	commentCount: 1,
+	hasReply: false,
+	outdated: false,
+	resolved: false,
+	code: null,
+	anchor: null,
+	attention: [],
+	yourTurn: false,
+	viewerCan: { reply: true, resolve: true, unresolve: false },
+	commit: "",
+	subject: "line",
+	...more,
+});
+
+/** Threads by file path. */
+const threadsBy =
+	(threads: ReviewThread[]) =>
+	(f: FileView): ReviewThread[] =>
+		threads.filter((t) => t.path === f.path);
+
+describe("a folded folder's waiting dot", () => {
+	afterEach(() => {
+		cleanup();
+		localStorage.clear();
+	});
+
+	const folder = (path: string) =>
+		document.querySelector<HTMLElement>(
+			`[data-folder="${path}"]`,
+		) as HTMLElement;
+	const dot = (row: HTMLElement) =>
+		row.querySelector<HTMLElement>('[data-testid="tree-threads"]');
+	const tree = (
+		threads: ReviewThread[],
+		list: FileView[] = files,
+		loading = false,
+	) => (
+		<FileTree
+			files={list}
+			unit="clusters"
+			current={null}
+			onSelect={() => {}}
+			threadsOf={threadsBy(threads)}
+			threadsLoading={loading}
+		/>
+	);
+
+	it("shows a yellow dot, named after the numbers, when a thread deep inside waits on you; open, nothing new", async () => {
+		const user = userEvent.setup();
+		render(
+			tree([
+				thread("src/a/deep/one.ts", { yourTurn: true }),
+				thread("src/a/deep/two.ts", { yourTurn: true }),
+				thread("src/b.ts"),
+			]),
+		);
+		const src = folder("src");
+		// Open: its files show their own dots; the folder none.
+		expect(dot(src)).toBeNull();
+		expect(src).not.toHaveAccessibleName(/wait/);
+		await user.click(src);
+		const d = dot(src);
+		expect(d).not.toBeNull();
+		expect(d?.querySelector(".bg-warn")).not.toBeNull();
+		expect(src).toHaveAccessibleName(
+			new RegExp(`${numbers(src)}, 2 threads wait on you$`),
+		);
+		// In the file rows' column: before the counts, the meter last.
+		const kids = [...src.children];
+		expect(kids.indexOf(d as Element)).toBeLessThan(
+			kids.indexOf(
+				src.querySelector('[data-testid="tree-numbers"]') as Element,
+			),
+		);
+		expect(kids.at(-1)).toBe(bar(src));
+		// The tooltip says it too, on focus.
+		src.focus();
+		await waitFor(() =>
+			expect(
+				document.querySelector('[role="tooltip"]:not([hidden])'),
+			).toHaveTextContent("2 threads wait on you"),
+		);
+		// A nested folded folder says it too; the other one stays plain.
+		await user.click(src);
+		await user.click(folder("src/a/deep"));
+		expect(folder("src/a/deep")).toHaveAccessibleName(/2 threads wait on you$/);
+		expect(dot(folder("gen"))).toBeNull();
+	});
+
+	it("says one thread in the singular and coexists with the accent dot", async () => {
+		const user = userEvent.setup();
+		render(
+			<FileTree
+				files={files}
+				unit="clusters"
+				current={2}
+				opened={2}
+				onSelect={() => {}}
+				threadsOf={threadsBy([thread("src/b.ts", { yourTurn: true })])}
+			/>,
+		);
+		await user.click(folder("src"));
+		expect(dot(folder("src"))).not.toBeNull();
+		expect(
+			folder("src").querySelector('[data-testid="tree-dot"]'),
+		).not.toBeNull();
+		expect(folder("src")).toHaveAccessibleName(
+			/files left, 1 thread waits on you, holds the opened file$/,
+		);
+	});
+
+	it("shows nothing for resolved threads, others' turns, or while threads load", async () => {
+		const user = userEvent.setup();
+		const { rerender } = render(
+			tree([
+				thread("src/b.ts", { yourTurn: true, resolved: true }),
+				thread("src/a/deep/one.ts"),
+			]),
+		);
+		await user.click(folder("src"));
+		expect(dot(folder("src"))).toBeNull();
+		expect(folder("src")).not.toHaveAccessibleName(/wait/);
+		const waiting = [thread("src/b.ts", { yourTurn: true })];
+		rerender(tree(waiting, files, true));
+		expect(dot(folder("src"))).toBeNull();
+		rerender(tree(waiting));
+		expect(dot(folder("src"))).not.toBeNull();
+	});
+
+	it("counts only real files, never old paths", async () => {
+		const user = userEvent.setup();
+		const moved: FileView[] = [
+			{
+				...file(0, "new/x.ts", ["unreviewed"]),
+				status: "renamed",
+				oldPath: "old/x.ts",
+			},
+			{
+				...file(1, "new/y.ts", ["unreviewed"]),
+				status: "renamed",
+				oldPath: "lib/y.ts",
+			},
+			file(2, "lib/c.ts", ["unreviewed"]),
+		];
+		render(
+			tree(
+				[
+					thread("new/x.ts", { yourTurn: true }),
+					thread("new/y.ts", { yourTurn: true }),
+				],
+				moved,
+			),
+		);
+		await user.click(screen.getByRole("button", { name: "Fold all" }));
+		// A ghost (old paths only) and a folder whose waiting file only
+		// passed through: no dot. Where the files are now: one.
+		expect(dot(folder("old"))).toBeNull();
+		expect(dot(folder("lib"))).toBeNull();
+		expect(folder("new")).toHaveAccessibleName(/2 threads wait on you$/);
 	});
 });
 

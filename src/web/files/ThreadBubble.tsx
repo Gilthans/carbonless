@@ -11,6 +11,20 @@ import { plural } from "../overview/parts";
 import { SpinnerIcon } from "../Spinner";
 import { Tooltip } from "../Tooltip";
 
+/** A thread waits on the viewer: their turn, and not resolved. */
+export const waitsOnYou = (t: ReviewThread) => t.yourTurn && !t.resolved;
+
+/**
+ * How many threads wait on the viewer, said like the bubble: "1 thread
+ * waits on you", "2 threads wait on you"; "" when none do.
+ */
+export function waitingLabel(threads: ReviewThread[]): string {
+	const n = threads.filter(waitsOnYou).length;
+	return n === 0
+		? ""
+		: `${plural(n, "thread")} ${n === 1 ? "waits" : "wait"} on you`;
+}
+
 /**
  * The bubble's name: its comment count and where ("on line 16", "in this
  * file"), then what stands out.
@@ -27,7 +41,7 @@ export function bubbleLabel(
 	if (threads.length > 0 && threads.every((t) => t.resolved)) {
 		parts.push("resolved");
 	}
-	if (threads.some((t) => t.yourTurn && !t.resolved)) parts.push("your turn");
+	if (threads.some(waitsOnYou)) parts.push("your turn");
 	if (flagged) parts.push("line not in this diff");
 	return parts.join(", ");
 }
@@ -81,7 +95,7 @@ export function ThreadBubble(props: {
 	const count = threads.reduce((n, t) => n + t.commentCount, 0);
 	const resolved =
 		threads.length > 0 && !loading && threads.every((t) => t.resolved);
-	const yourTurn = threads.some((t) => t.yourTurn && !t.resolved);
+	const yourTurn = threads.some(waitsOnYou);
 	return (
 		// Toggling closes its tip, so a tap doesn't leave it over the thread.
 		<Tooltip content={label} describe={false} dismissKey={props.open}>
