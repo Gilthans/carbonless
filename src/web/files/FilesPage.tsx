@@ -411,15 +411,16 @@ export function FilesPage() {
 	/** The header to keep where it was on screen as files open and close. */
 	const anchor = useRef<{ index: number; top: number } | null>(null);
 	const sectionOf = (index: number) => document.getElementById(`file-${index}`);
-	const toggleFile = (index: number, expanded: boolean) => {
+	const toggleFile = (index: number, expanded: boolean, auto = false) => {
 		// Where the reader sees the header, stuck or not.
 		const header = headerOf(index);
 		anchor.current = header
 			? { index, top: header.getBoundingClientRect().top }
 			: null;
 		setOpen(expanded ? keyOf(index) : null);
-		// Opening a file from its header opens it in the tree too.
-		if (expanded) openInTree(index);
+		// Opening a file from its header opens it in the tree too; a failed
+		// save reopening it (auto) isn't the reviewer opening it.
+		if (expanded && !auto) openInTree(index);
 	};
 	// Closing the file above, or the one being read, would move the header
 	// that was just used: scroll so it stays under the pointer.
@@ -683,8 +684,8 @@ export function FilesPage() {
 											revision={data.revision}
 											unit={unit}
 											expanded={open === keyOf(file.index)}
-											onExpandedChange={(expanded) =>
-												toggleFile(file.index, expanded)
+											onExpandedChange={(expanded, auto) =>
+												toggleFile(file.index, expanded, auto)
 											}
 											otherOpen={openIndex !== null && openIndex !== file.index}
 											landing={

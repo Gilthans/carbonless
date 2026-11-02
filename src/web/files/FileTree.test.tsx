@@ -508,7 +508,7 @@ describe("folders", () => {
 		expect(fileRow(/one\.ts/)).not.toBeNull();
 	});
 
-	it("dots the opened file and the one in view, on their rows and folders; opened wins", async () => {
+	it("dots the opened file (filled) and the one in view (a ring), on their rows and folders; opened wins", async () => {
 		const tree = (current: number | null, opened: number | null) => (
 			<FileTree
 				files={files}
@@ -531,6 +531,12 @@ describe("folders", () => {
 		}
 		expect(dot(one())).toBe("in view");
 		expect(one()).toHaveAccessibleName(/in view/);
+		// Both accent: a ring for the file in view, filled for the opened one.
+		const look = (row: HTMLElement) =>
+			row.querySelector('[data-testid="tree-dot"]')?.getAttribute("class") ??
+			"";
+		expect(look(one())).toContain("border-accent");
+		expect(look(one())).not.toContain("bg-");
 		expect(dot(folder("gen"))).toBeNull();
 		// Opened api.g.cs, scrolled to one.ts: each its own dot.
 		rerender(tree(0, 3));
@@ -539,6 +545,8 @@ describe("folders", () => {
 			/crossed off, holds the opened file$/,
 		);
 		expect(dot(fileRow(/api\.g\.cs/) as HTMLElement)).toBe("opened");
+		expect(look(fileRow(/api\.g\.cs/) as HTMLElement)).toContain("bg-accent");
+		expect(look(fileRow(/api\.g\.cs/) as HTMLElement)).not.toContain("border");
 		expect(dot(folder("src"))).toBe("in view");
 		// Opened two.ts while one.ts is in view: the shared folders show
 		// only the opened dot.
@@ -828,6 +836,7 @@ describe("renamed files", () => {
 			expect(onSelect).toHaveBeenLastCalledWith(index);
 		}
 		expect(moved("old/x.ts")).toHaveAccessibleName("x.ts, moved away");
+		expect(moved("old/x.ts")).toHaveAccessibleDescription("moved to new/x.ts");
 		// The new path's rename icon is green.
 		const now = screen
 			.getAllByRole("button", { name: /x\.ts/ })
@@ -854,6 +863,8 @@ describe("renamed files", () => {
 		);
 		const ghost = folder("old");
 		expect(ghost).toHaveAttribute("data-ghost");
+		expect(ghost).toHaveAccessibleName("old, moved away");
+		expect(folder("new")).not.toHaveAccessibleName(/moved away/);
 		expect(ghost.className).toContain("opacity-60");
 		expect(ghost.querySelector('[data-testid="tree-meter"]')).toBeNull();
 		expect(ghost.querySelector('[data-testid="tree-numbers"]')).toBeNull();

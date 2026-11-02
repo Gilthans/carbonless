@@ -5,7 +5,7 @@ import {
 	FoldIcon,
 	UnfoldIcon,
 } from "@primer/octicons-react";
-import { useMemo } from "react";
+import { useId, useMemo } from "react";
 import type { FileView, ReviewThread } from "../../shared/types";
 import { Spinner } from "../Spinner";
 import { Tooltip, TooltipPath } from "../Tooltip";
@@ -58,7 +58,7 @@ const markText = (mark: Mark, folder: boolean) =>
 		? `holds the ${mark === "opened" ? "opened file" : "file in view"}`
 		: mark);
 
-/** The row's dot: teal for the opened file, accent for the one in view. */
+/** The row's dot, in accent: filled for the opened file, a ring for the one in view. */
 function MarkDot({ mark }: { mark: Mark }) {
 	if (!mark) return null;
 	return (
@@ -67,7 +67,7 @@ function MarkDot({ mark }: { mark: Mark }) {
 			data-testid="tree-dot"
 			data-mark={mark}
 			className={`h-1.5 w-1.5 shrink-0 rounded-full ${
-				mark === "opened" ? "bg-teal" : "bg-accent"
+				mark === "opened" ? "bg-accent" : "border border-accent"
 			}`}
 		/>
 	);
@@ -286,6 +286,7 @@ function FolderItem(props: Level & { folder: Folder }) {
 								</span>
 							</>
 						)}
+						{ghost && <span className="sr-only">, moved away</span>}
 						{said && <span className="sr-only">, {said}</span>}
 						{!ghost && (
 							<span
@@ -322,6 +323,7 @@ function MovedItem(props: {
 }) {
 	const { file } = props;
 	const old = file.oldPath ?? "";
+	const where = useId();
 	return (
 		<li>
 			<Tooltip
@@ -337,6 +339,7 @@ function MovedItem(props: {
 					<button
 						type="button"
 						{...trigger}
+						aria-describedby={where}
 						data-moved={old}
 						onClick={() => props.onSelect(file.index)}
 						style={indent(props.depth)}
@@ -358,6 +361,11 @@ function MovedItem(props: {
 					</button>
 				)}
 			</Tooltip>
+			{/* Where it went: the row's description, outside it so its name
+			    doesn't carry the new path (a lookup by that path finds one row). */}
+			<span id={where} className="sr-only">
+				moved to {file.path}
+			</span>
 		</li>
 	);
 }

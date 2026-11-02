@@ -1402,21 +1402,17 @@ test("a renamed file's old path opens it; a folder of old paths is a ghost; fold
 	await expect(
 		section.getByRole("button", { name: "Collapse file" }),
 	).toBeVisible();
-	await page
-		.getByRole("button", { name: "Files", exact: true })
-		.isVisible()
-		.then(async (sheet) => {
-			if (sheet)
-				await page.getByRole("button", { name: "Files", exact: true }).click();
-		});
-	const tree = page.getByTestId("file-tree");
-	await page.getByRole("button", { name: "Fold all" }).click();
-	await expect(tree.locator("button[aria-expanded=true]")).toHaveCount(0);
-	await expect(tree.locator("button[aria-expanded=false]")).toHaveCount(3);
-	await expect(tree.locator("button[data-moved]")).toHaveCount(0);
-	await page.getByRole("button", { name: "Open all" }).click();
-	await expect(tree.locator("button[aria-expanded=false]")).toHaveCount(0);
-	await expect(tree.locator("button[data-moved]")).toHaveCount(1);
+	// The toolbar sits above the tree: in the sheet on a phone (withTree).
+	await withTree(page, async (tree) => {
+		const panel = tree.locator("xpath=..");
+		await panel.getByRole("button", { name: "Fold all" }).click();
+		await expect(tree.locator("button[aria-expanded=true]")).toHaveCount(0);
+		await expect(tree.locator("button[aria-expanded=false]")).toHaveCount(3);
+		await expect(tree.locator("button[data-moved]")).toHaveCount(0);
+		await panel.getByRole("button", { name: "Open all" }).click();
+		await expect(tree.locator("button[aria-expanded=false]")).toHaveCount(0);
+		await expect(tree.locator("button[data-moved]")).toHaveCount(1);
+	});
 });
 
 test("the tree and the diff list share one order: folders first, then files, by name", async ({
