@@ -189,7 +189,8 @@ describe("FilesPage", () => {
 			"/api/session": () => ({ status: 200, body: session }),
 			"/api/overview": () =>
 				overviewReads++ === 0
-					? { status: 200, body: { readId: "read1" } }
+					? // The verdict card after the files reads its reviews.
+						{ status: 200, body: { readId: "read1", reviews: [] } }
 					: { status: 502, body: { error: "gh is down" } },
 			"/api/threads": () => threads.response,
 		});

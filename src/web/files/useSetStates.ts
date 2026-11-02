@@ -9,6 +9,7 @@ import { postStates, reviewQuery, sessionQuery } from "../api";
 import { viewSaverFor } from "../home/viewSaver";
 import { unsent, useDrafts, useDraftsDurable } from "../threads/drafts";
 import { useThreadWrites } from "../threads/threadWrites";
+import { useVerdictDraft, verdictDraftFor } from "../verdict/verdictDraft";
 import { overlayReview, StateSync, type SyncState } from "./stateSync";
 
 export { isStale } from "./stateSync";
@@ -98,6 +99,9 @@ export function useReviewView() {
  * - Home's view list not yet saved (viewSaverFor), for the same reason;
  * - a resolve or unresolve, or a delete (in its undo window or on its
  *   way), not yet on GitHub: nothing resends them (ThreadWritesState.lost);
+ * - any write GitHub refused, until a Retry lands or it is dropped (owner:
+ *   "Until dropped or succeeded, page should still ask"): kept across a
+ *   reload (refusals.ts), but leaving shouldn't pass it by unnoticed;
  * - drafts and their writes (replies, edits, new threads) only while
  *   storage can't keep them (DraftStore.durable): kept, a reload brings
  *   them back and resends what was sent (ThreadWrites.resume).
@@ -107,11 +111,18 @@ export function useUnsavedGuard() {
 	const drafts = unsent(useDrafts());
 	const durable = useDraftsDurable();
 	const { busy, lost } = useThreadWrites();
+	// The verdict's message and a verdict on its way, kept like the drafts.
+	const verdict = useVerdictDraft();
+	const verdictDurable = verdictDraftFor(useQueryClient()).durable();
+	const verdictUnsaved =
+		!verdictDurable &&
+		(verdict.text.trim() !== "" || verdict.sending !== undefined);
 	// Home's view list not yet saved: nothing sends it after the page.
 	const saver = viewSaverFor(useQueryClient());
 	const view =
 		useSyncExternalStore(saver.subscribe, saver.snapshot).intended !== null;
-	const unsaved = states || view || lost || (!durable && (drafts || busy));
+	const unsaved =
+		states || view || lost || verdictUnsaved || (!durable && (drafts || busy));
 	useEffect(() => {
 		if (!unsaved) return;
 		const ask = (event: BeforeUnloadEvent) => {

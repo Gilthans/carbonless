@@ -504,7 +504,7 @@ const QUERIES = {
 	// The commit a review was made on dates the PR's head (as-of mode).
 	reviews: connectionQuery(
 		"reviews",
-		`${AUTHOR} state submittedAt commit { oid }`,
+		`${AUTHOR} state submittedAt url commit { oid }`,
 	),
 	commits: connectionQuery(
 		"commits",
@@ -539,8 +539,21 @@ const CONNECTION_NAMES: Record<keyof typeof QUERIES, string> = {
 	commits: "the PR's commits",
 };
 
-/** One commit's check contexts (as-of mode), paged like the PR connections. */
-const COMMIT_CHECKS_QUERY = `query($owner: String!, $name: String!, $oid: GitObjectID!, $endCursor: String) {
+/** A check context's fields; with `required`, GitHub's isRequired for PR `$number`. */
+const checkFields = (required: boolean) => {
+	const r = required ? " isRequired(pullRequestNumber: $number)" : "";
+	return `__typename
+              ... on CheckRun { name status conclusion detailsUrl startedAt completedAt${r} }
+              ... on StatusContext { context state targetUrl createdAt${r} }`;
+};
+
+/**
+ * One commit's check contexts (as-of mode; the verdict's pages past the
+ * first), paged like the PR connections.
+ */
+const commitChecksQuery = (
+	required: boolean,
+) => `query($owner: String!, $name: String!, $oid: GitObjectID!${required ? ", $number: Int!" : ""}, $endCursor: String) {
   repository(owner: $owner, name: $name) {
     object(oid: $oid) {
       ... on Commit {
@@ -548,9 +561,54 @@ const COMMIT_CHECKS_QUERY = `query($owner: String!, $name: String!, $oid: GitObj
           contexts(first: 100, after: $endCursor) {
             pageInfo { hasNextPage endCursor }
             nodes {
-              __typename
-              ... on CheckRun { name status conclusion detailsUrl startedAt completedAt }
-              ... on StatusContext { context state targetUrl createdAt }
+              ${checkFields(required)}
+            }
+          }
+        }
+      }
+    }
+  }
+}`;
+
+/**
+ * What the Final Verdict tab reads of the PR in one round trip: GitHub's
+ * merge state and review decision, the requested reviewers (which as code
+ * owners), the first page of reviews (with their commits) and of the
+ * head's checks (with isRequired, unless `required` is false).
+ */
+const verdictQuery = (
+	required: boolean,
+) => `query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      state mergeStateStatus reviewDecision headRefOid baseRefName
+      reviewRequests(first: 100) {
+        nodes {
+          asCodeOwner
+          requestedReviewer {
+            __typename
+            ... on User { login }
+            ... on Bot { login }
+            ... on Mannequin { login }
+            ... on Team { name slug }
+          }
+        }
+      }
+      reviews(first: 100) {
+        pageInfo { hasNextPage endCursor }
+        nodes { ${AUTHOR} state submittedAt url commit { oid } }
+      }
+      commits(last: 1) {
+        nodes {
+          commit {
+            oid
+            statusCheckRollup {
+              contexts(first: 100) {
+                pageInfo { hasNextPage endCursor }
+                nodes {
+              ${checkFields(required)}
+                }
+              }
             }
           }
         }
@@ -689,14 +747,20 @@ async function fetchConnection(
 	throw new GhError(`Too many ${connection} to read for this PR`);
 }
 
-/** Every check context of commit `oid`; [] when it has none. */
+/**
+ * Every check context of commit `oid`; [] when it has none. With
+ * `required`, each carries GitHub's isRequired for the PR (`ref.number`);
+ * `after` and `nodes` go on from a page already read.
+ */
 async function fetchCommitChecks(
 	ref: PrRef,
 	oid: string,
 	read: ReadSignal = {},
+	from: { required?: boolean; after?: string; nodes?: unknown[] } = {},
 ): Promise<unknown[]> {
-	const nodes: unknown[] = [];
-	let after: string | undefined;
+	const nodes: unknown[] = [...(from.nodes ?? [])];
+	const required = from.required === true;
+	let after = from.after;
 	for (let page = 0; page < MAX_PAGES; page++) {
 		const out = safeJson(
 			await runGh(
@@ -704,13 +768,14 @@ async function fetchCommitChecks(
 					"api",
 					"graphql",
 					"-f",
-					`query=${COMMIT_CHECKS_QUERY}`,
+					`query=${commitChecksQuery(required)}`,
 					"-f",
 					`owner=${ref.owner}`,
 					"-f",
 					`name=${ref.repo}`,
 					"-f",
 					`oid=${oid}`,
+					...(required ? ["-F", `number=${ref.number}`] : []),
 					...(after ? ["-f", `endCursor=${after}`] : []),
 				],
 				{ ...read, what: "the checks" },
@@ -1900,4 +1965,330 @@ export async function fetchMergeBase(
 		throw new GhError("gh returned an unexpected response for the merge base");
 	}
 	return sha;
+}
+
+/** What `GET /api/r/<id>/verdict` reads of GitHub, before verdict.ts maps it. */
+export interface VerdictRead {
+	/** GitHub's pullRequest node (verdictQuery); null as of a cutoff (not read). */
+	pr: Record<string, unknown> | null;
+	/** Every review node, oldest first. */
+	reviews: unknown[];
+	/** Every check context of the head (as of a cutoff: the cutoff's head). */
+	checks: unknown[];
+	/** The head the checks are of. */
+	head: string;
+}
+
+/**
+ * The Final Verdict's read of PR `ref`: one GraphQL call (verdictQuery),
+ * and more only for reviews or checks past their first 100. Should GitHub
+ * refuse `isRequired` (a field error fails the whole call), it is read
+ * again without it: the checks then carry no isRequired (required null).
+ */
+export async function fetchVerdict(
+	ref: PrRef,
+	read: ReadSignal = {},
+): Promise<VerdictRead> {
+	try {
+		return await fetchVerdictWith(ref, read, true);
+	} catch (error) {
+		if (error instanceof GhAbortedError || !(error instanceof GhError)) {
+			throw error;
+		}
+		return fetchVerdictWith(ref, read, false);
+	}
+}
+
+async function fetchVerdictWith(
+	ref: PrRef,
+	read: ReadSignal,
+	required: boolean,
+): Promise<VerdictRead> {
+	return notFoundAsPr(ref, async () => {
+		const out = safeJson(
+			await runGh(
+				[
+					"api",
+					"graphql",
+					"-f",
+					`query=${verdictQuery(required)}`,
+					"-f",
+					`owner=${ref.owner}`,
+					"-f",
+					`name=${ref.repo}`,
+					"-F",
+					`number=${ref.number}`,
+				],
+				{ ...read, what: "what blocks the merge" },
+			),
+		);
+		const pr = rec(rec(rec(out).data).repository).pullRequest;
+		if (pr === null || typeof pr !== "object" || Array.isArray(pr)) {
+			throw new GhError(`PR ${ref.owner}/${ref.repo}#${ref.number} not found`);
+		}
+		const p = rec(pr);
+		const unexpected = () =>
+			new GhError("gh returned an unexpected response for the verdict");
+		const reviewConn = rec(p.reviews);
+		if (!Array.isArray(reviewConn.nodes)) throw unexpected();
+		const commit = rec(
+			(rec(p.commits).nodes as unknown[] | undefined)?.[0],
+		).commit;
+		const head = rec(commit).oid;
+		if (typeof head !== "string" || !OID_FORM.test(head)) throw unexpected();
+		const rollup = rec(commit).statusCheckRollup;
+		const checkConn = rec(rec(rollup).contexts);
+		if (rollup !== null && !Array.isArray(checkConn.nodes)) throw unexpected();
+		const firstChecks = rollup === null ? [] : (checkConn.nodes as unknown[]);
+		const checkInfo = rec(checkConn.pageInfo);
+		const [reviews, checks] = await Promise.all([
+			rec(reviewConn.pageInfo).hasNextPage === true
+				? fetchConnection(ref, "reviews", read)
+				: reviewConn.nodes,
+			checkInfo.hasNextPage === true && typeof checkInfo.endCursor === "string"
+				? fetchCommitChecks(ref, head, read, {
+						required,
+						after: checkInfo.endCursor,
+						nodes: firstChecks,
+					})
+				: firstChecks,
+		]);
+		return { pr: p, reviews, checks, head };
+	});
+}
+
+/**
+ * The Final Verdict's read as of a cutoff: the PR's reviews and the
+ * cutoff's head's checks, as the overview's as-of read has them; nothing
+ * GitHub only knows of now.
+ */
+export async function fetchVerdictAsOf(
+	ref: PrRef,
+	head: string,
+	read: ReadSignal = {},
+): Promise<VerdictRead> {
+	return notFoundAsPr(ref, async () => {
+		const [reviews, checks] = await Promise.all([
+			fetchConnection(ref, "reviews", read),
+			fetchCommitChecks(ref, head, read),
+		]);
+		return { pr: null, reviews, checks, head };
+	});
+}
+
+/** A REST read's answer: its JSON, or GitHub's refusal (status null: none given). */
+export type RestAnswer =
+	| { ok: true; json: unknown }
+	| { ok: false; status: number | null; message: string };
+
+/** A REST GET, its refusal an answer rather than an error (rule reads). */
+function restRead(
+	path: string,
+	what: string,
+	read: ReadSignal,
+	paginate = false,
+): Promise<RestAnswer> {
+	const args = ["api", path, ...(paginate ? ["--paginate", "--slurp"] : [])];
+	// Counted like runGh's (ghIdle), with the environment of its start.
+	return tracked(args, () =>
+		restReadNow(args, what, { ...read, env: { ...process.env } }),
+	);
+}
+
+async function restReadNow(
+	args: string[],
+	what: string,
+	read: ReadSignal & { env: NodeJS.ProcessEnv },
+): Promise<RestAnswer> {
+	const result = await spawnGh(args, {
+		...read,
+		timeoutMs: GH_TIMEOUT_MS,
+		what,
+	});
+	if (result.code === 0) {
+		try {
+			return { ok: true, json: JSON.parse(result.stdout) };
+		} catch {
+			return { ok: false, status: null, message: "not JSON" };
+		}
+	}
+	const a = writeAnswer(result.stdout, result.stderr);
+	return { ok: false, status: a.status, message: a.message };
+}
+
+/** The base branch's rule as GitHub lets the viewer read it (verdict.ts ruleOf). */
+export interface RuleReads {
+	/** `GET branches/{b}`: `protected`, among others. */
+	branch: RestAnswer;
+	/** `GET branches/{b}/protection`: the classic protection (admin only). */
+	protection: RestAnswer;
+	/** `GET rules/branches/{b}`, every page: the rulesets' rules. */
+	rules: RestAnswer;
+}
+
+/** Reads branch `branch`'s rule three ways at once (RuleReads). */
+export async function fetchRuleReads(
+	ref: PrRef,
+	branch: string,
+	read: ReadSignal = {},
+): Promise<RuleReads> {
+	// A branch name's own slashes stay (GitHub takes them); anything else is escaped.
+	const b = branch.split("/").map(encodeURIComponent).join("/");
+	const repo = `repos/${ref.owner}/${ref.repo}`;
+	const [branchAnswer, protection, rules] = await Promise.all([
+		restRead(`${repo}/branches/${b}`, "the base branch", read),
+		restRead(`${repo}/branches/${b}/protection`, "the branch protection", read),
+		restRead(`${repo}/rules/branches/${b}`, "the branch rules", read, true),
+	]);
+	return { branch: branchAnswer, protection, rules };
+}
+
+/** A pull request review as REST answers or lists it. */
+export interface RestReview {
+	/** Its GraphQL node id. */
+	nodeId: string;
+	/** Its REST id (what a dismissal goes to); 0 when GitHub gave none. */
+	restId: number;
+	login: string;
+	state: string;
+	body: string;
+	/** "" while pending. */
+	submittedAt: string;
+	commitId: string;
+	/** The review on GitHub (`html_url`); "" when GitHub gave none. */
+	url: string;
+}
+
+function restReviewFrom(raw: unknown): RestReview | null {
+	const r = rec(raw);
+	const str = (v: unknown) => (typeof v === "string" ? v : "");
+	if (!str(r.node_id)) return null;
+	return {
+		nodeId: str(r.node_id),
+		restId: typeof r.id === "number" ? r.id : 0,
+		login: str(rec(r.user).login),
+		state: str(r.state),
+		body: str(r.body),
+		submittedAt: str(r.submitted_at),
+		commitId: str(r.commit_id),
+		url: str(r.html_url),
+	};
+}
+
+/**
+ * Submits a review with `event` on commit `commit` of PR `ref`, at once
+ * (REST `pulls/{n}/reviews`; no `comments`, `body` only when given). A
+ * pending review of the viewer's (GitHub's 422) → "pending-review" with
+ * the PR's files page; approving or requesting changes on one's own PR
+ * (422) → "forbidden" with GitHub's message; other refusals by
+ * writeRefusal. A GhError when it may land if sent again (it may also
+ * have landed already).
+ */
+export async function postReview(
+	ref: PrRef,
+	review: { event: string; commit: string; body?: string },
+	prUrl: string,
+): Promise<RestReview> {
+	const out = await runWrite(
+		[
+			"api",
+			"-X",
+			"POST",
+			`repos/${ref.owner}/${ref.repo}/pulls/${ref.number}/reviews`,
+			"--input",
+			"-",
+		],
+		"the verdict",
+		(a) => {
+			if (a.status !== 422) return null;
+			if (/pending review/i.test(a.message)) {
+				return new WriteRefusedError(
+					"A pending review on GitHub blocks the verdict: submit or discard it",
+					"pending-review",
+					`${prUrl.replace(/\/+$/, "")}/files`,
+				);
+			}
+			const own =
+				/can ?not (approve|request changes on) your own pull request/i.exec(
+					a.message,
+				);
+			if (own) {
+				const said = own[0];
+				return new WriteRefusedError(
+					said.charAt(0).toUpperCase() + said.slice(1),
+					"forbidden",
+				);
+			}
+			return null;
+		},
+		JSON.stringify({
+			event: review.event,
+			commit_id: review.commit,
+			...(review.body === undefined ? {} : { body: review.body }),
+		}),
+	);
+	const posted = restReviewFrom(safeJson(out));
+	if (!posted) {
+		throw new GhError("gh returned an unexpected response for the verdict");
+	}
+	return posted;
+}
+
+/** What a dismissal of the reviewer's own opinion says on GitHub. */
+export const DISMISS_MESSAGE = "Changed to a comment";
+
+/**
+ * Dismisses review `restId` of PR `ref` (REST `PUT …/reviews/{id}/dismissals`,
+ * `event: DISMISS`, DISMISS_MESSAGE): how Comment withdraws the viewer's
+ * standing approval or change request. One already dismissed is done
+ * (GitHub's 422 "Can not dismiss a dismissed pull request review", checked
+ * on carbonless-scratch 2026-11-01); other refusals by writeRefusal, a
+ * GhError when it may land if sent again.
+ */
+export async function dismissReview(ref: PrRef, restId: number): Promise<void> {
+	try {
+		await runWrite(
+			[
+				"api",
+				"-X",
+				"PUT",
+				`repos/${ref.owner}/${ref.repo}/pulls/${ref.number}/reviews/${restId}/dismissals`,
+				"--input",
+				"-",
+			],
+			"the dismissal",
+			() => null,
+			JSON.stringify({ message: DISMISS_MESSAGE, event: "DISMISS" }),
+		);
+	} catch (error) {
+		if (
+			error instanceof WriteRefusedError &&
+			/dismiss a dismissed/i.test(error.message)
+		) {
+			return;
+		}
+		throw error;
+	}
+}
+
+/** Every review of PR `ref` by REST (what a verdict's retry looks among), oldest first. */
+export async function fetchReviews(ref: PrRef): Promise<RestReview[]> {
+	const out = safeJson(
+		await runGh(
+			[
+				"api",
+				`repos/${ref.owner}/${ref.repo}/pulls/${ref.number}/reviews`,
+				"--paginate",
+				"--slurp",
+			],
+			{ what: "the PR's reviews" },
+		),
+	);
+	if (!Array.isArray(out)) {
+		throw new GhError("gh returned an unexpected response for the reviews");
+	}
+	return out.flat().flatMap((raw) => {
+		const r = restReviewFrom(raw);
+		return r ? [r] : [];
+	});
 }

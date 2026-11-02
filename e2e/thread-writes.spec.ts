@@ -292,6 +292,54 @@ test("reply and resolve from Files changed", async ({ page, pr, startCrb }) => {
 	).toHaveCount(0);
 });
 
+test("a reload while an unresolve is read back shows it unresolved at once", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	const p = await setup(pr);
+	p.editScenario((s) => {
+		const t = s.prs[7]?.graphql?.reviewThreads?.[1] as
+			| { isResolved: boolean }
+			| undefined;
+		if (t) t.isResolved = true;
+	});
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	const section = () => fileSection(page, "a.txt");
+	await section().getByRole("button", { name: "Expand file" }).click();
+	const resolvedBubble = () =>
+		line2(section()).getByRole("button", {
+			name: /^1 comment on line 2, resolved/,
+		});
+	await resolvedBubble().click();
+	const unresolve = section()
+		.getByTestId("files-thread")
+		.getByRole("button", { name: "Unresolve" });
+	await expect(unresolve).toBeVisible();
+	// The page's comments are in: from here only the write's re-read reads them.
+	await expect(
+		section().getByTestId("thread-comment").filter({ hasText: "Changed how?" }),
+	).toHaveCount(1);
+	const contentReads = () => (p.ghLog().match(/nodes\(ids: \[/g) ?? []).length;
+	const before = contentReads();
+	p.editScenario((x) => {
+		x.hold = ["threadContent"];
+	});
+	await unresolve.click();
+	// GitHub has it and the server's read-back of the thread is out, held.
+	await expect.poll(contentReads).toBe(before + 1);
+	expect(storedResolved(p, "a.txt")).toBe(false);
+	await page.reload();
+	await section().getByRole("button", { name: "Expand file" }).click();
+	// Answered without waiting for the read-back.
+	await expect(
+		line2(section()).getByRole("button", { name: /^1 comment on line 2/ }),
+	).toBeVisible();
+	await expect(resolvedBubble()).toHaveCount(0);
+	release(p.scenarioPath, "threadContent");
+});
+
 test("resolve from an Overview card fades, then moves; unresolve brings it back", async ({
 	page,
 	pr,
@@ -435,15 +483,16 @@ test("a failing reply keeps its text, with Retry", async ({
 	const box = await openReply(c);
 	await box.fill("Try again");
 	await send(c).click();
-	const notice = page.getByTestId("write-failed");
+	const notice = page.getByTestId("refused-write");
 	await expect(notice).toContainText("Reply · new.txt:1");
 	await expect(box).toHaveValue("Try again");
-	const dismiss = notice.getByRole("button", { name: "Dismiss reply" });
-	const size = await dismiss.boundingBox();
+	const drop = notice.getByRole("button", { name: "Drop reply" });
+	const size = await drop.boundingBox();
 	expect(size?.height ?? 0).toBeGreaterThanOrEqual(40);
 	expect(size?.width ?? 0).toBeGreaterThanOrEqual(40);
 	await notice.getByRole("button", { name: "Retry reply" }).click();
 	await expect(notice).toHaveCount(0);
+	await expect(page.getByTestId("refused-bar")).toHaveCount(0);
 	await expect(box).toHaveValue("");
 	await expect(
 		c.getByTestId("thread-comment").filter({ hasText: "Try again" }),
@@ -479,7 +528,7 @@ test("a pending review shows the warning and refuses replies with the link", asy
 	const box = await openReply(c);
 	await box.fill("Blocked");
 	await send(c).click();
-	const notice = page.getByTestId("write-failed");
+	const notice = page.getByTestId("refused-write");
 	await expect(notice).toContainText(
 		"A pending review on GitHub blocks replies",
 	);

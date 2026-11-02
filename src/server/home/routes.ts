@@ -95,7 +95,8 @@ export async function registerHomeRoutes(
 		});
 
 		scope.get("/api/home", () => home.view());
-		// One view repo's rows; `fresh=1` reads GitHub now (Refresh, Retry).
+		// A repo's rows (in the view, or picked in its settings: any repo);
+		// `fresh=1` reads GitHub now (Refresh, Retry, a save after a failed pick).
 		scope.get<{
 			Params: { owner: string; repo: string };
 			Querystring: { fresh?: unknown };

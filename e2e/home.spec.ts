@@ -383,6 +383,7 @@ test("Repos spins while the viewer's repos load, then lists only theirs", async 
 	const crb = await startCrb();
 	const box = page.getByRole("combobox", { name: "Open a pull request" });
 	await goHome(page, crb.url);
+	const width = (await box.boundingBox())?.width;
 	await box.click();
 	await box.pressSequentially("acme");
 	const repos = page.getByRole("group", { name: "Repos" });
@@ -393,6 +394,8 @@ test("Repos spins while the viewer's repos load, then lists only theirs", async 
 	// The open box's own live region.
 	const boxStatus = page.getByRole("search").getByRole("status");
 	await expect(boxStatus).toHaveText("Loading your repos");
+	// Its spinner has its own place: the input keeps its width.
+	expect((await box.boundingBox())?.width).toBe(width);
 	writeFileSync(hold, "");
 	await expect(repos).toHaveAttribute("aria-busy", "false", {
 		timeout: 15_000,
@@ -423,6 +426,13 @@ test("the view's repo input suggests the viewer's repos as you type; Save is sto
 	await expect(
 		dialog.getByRole("group", { name: "Pull requests" }),
 	).toHaveCount(0);
+	// GitHub's answers for the added repo are held (its read starts as it's
+	// picked): saving doesn't wait for them (owner, 2026-11-01: "Saving
+	// saves the configured repos immediately").
+	const held = `home:${OWNER_REPO}` as const;
+	made.editScenario((s) => {
+		s.hold = [held];
+	});
 	await field.press("ArrowDown");
 	await field.press("Enter");
 	await expect(
@@ -432,13 +442,6 @@ test("the view's repo input suggests the viewer's repos as you type; Save is sto
 	).toHaveText(["acme/api", OWNER_REPO]);
 	await expect(field).toHaveValue("");
 	await dialog.getByRole("button", { name: "Remove acme/api" }).click();
-	// GitHub's answers for the added repo are held: saving doesn't wait for
-	// them (owner, 2026-11-01: "Saving saves the configured repos
-	// immediately").
-	const held = `home:${OWNER_REPO}` as const;
-	made.editScenario((s) => {
-		s.hold = [held];
-	});
 	const put = page.waitForResponse(
 		(r) => r.url().endsWith("/api/home/view") && r.request().method() === "PUT",
 	);
@@ -468,6 +471,65 @@ test("the view's repo input suggests the viewer's repos as you type; Save is sto
 	// The server kept it: a reload shows the same.
 	await page.reload();
 	await expect(page.getByTestId("view-repo")).toHaveText([OWNER_REPO]);
+});
+
+test("a repo picked in the settings is read at once: saved after its read, its rows come with no second read", async ({
+	page,
+	workdir,
+	pr,
+	startCrb,
+}) => {
+	// Owner, 2026-11-02: "after a repo is selected into the view, the
+	// tanstack query for it should start populating in the background".
+	const made = await setup(workdir, pr);
+	const crb = await startCrb();
+	const reads: string[] = [];
+	page.on("request", (r) => {
+		if (r.url().includes(`/api/home/repos/${OWNER_REPO}`)) reads.push(r.url());
+	});
+	await goHome(page, crb.url);
+	await expect(page.getByRole("status", { name: "Loading" })).toBeHidden();
+	const held = `home:${OWNER_REPO}` as const;
+	made.editScenario((s) => {
+		s.hold = [held];
+	});
+	await page.getByRole("button", { name: "Edit repos" }).click();
+	const dialog = page.getByRole("dialog", { name: "My PRs" });
+	const answered = page.waitForResponse((r) =>
+		r.url().includes(`/api/home/repos/${OWNER_REPO}`),
+	);
+	const field = dialog.getByRole("combobox", { name: "Add a repo" });
+	await field.fill(OWNER_REPO);
+	await field.press("Enter");
+	await expect(
+		dialog
+			.getByRole("list", { name: "Repos in this view" })
+			.getByRole("listitem"),
+	).toHaveText(["acme/api", OWNER_REPO]);
+	await expect.poll(() => reads.length).toBe(1);
+	// Nothing on the page meanwhile.
+	await expect(page.getByTestId("view-repo")).toHaveText(["acme/api"]);
+	await expect(page.getByRole("status", { name: "Loading" })).toBeHidden();
+	release(made.scenarioPath, held);
+	expect((await answered).status()).toBe(200);
+	// Held again, so a fresh second read would never answer; the guard
+	// is the page's request count staying at 1 (a plain second ask would
+	// be answered from the server's cache).
+	made.editScenario((s) => {
+		s.hold = [held];
+	});
+	await dialog.getByRole("button", { name: "Save" }).click();
+	await expect(
+		page.getByText("Add widget cache with a rather long title"),
+	).toBeVisible();
+	await expect(page.getByRole("status", { name: "Saving" })).toBeHidden();
+	await expect(
+		page.getByTestId("view-repo").filter({ hasText: OWNER_REPO }),
+	).toHaveAttribute("data-state", "ready");
+	await expect(page.getByRole("status", { name: "Loading" })).toBeHidden();
+	expect(reads).toHaveLength(1);
+	await expectNoPageOverflow(page);
+	release(made.scenarioPath, held);
 });
 
 test("removing a repo from the view takes its started rows with it; adding it back brings them back", async ({
@@ -583,7 +645,7 @@ test("a repo GitHub doesn't know is saved, and its chip says so with Retry; the 
 	pr,
 	startCrb,
 }) => {
-	await setup(workdir, pr);
+	const made = await setup(workdir, pr);
 	const crb = await startCrb();
 	await goHome(page, crb.url);
 	await page.getByRole("button", { name: "Edit repos" }).click();
@@ -623,6 +685,12 @@ test("a repo GitHub doesn't know is saved, and its chip says so with Retry; the 
 		if (route.request().method() === "PUT") await putHeld;
 		await route.continue();
 	});
+	// Its read, started as it's picked, held too: answered first, Save
+	// would show its rows at once (ready), never the wait.
+	const read = `home:${OWNER_REPO}` as const;
+	made.editScenario((s) => {
+		s.hold = [read];
+	});
 	await page.getByRole("button", { name: "Edit repos" }).click();
 	await field.fill(OWNER_REPO);
 	await field.press("Enter");
@@ -637,7 +705,9 @@ test("a repo GitHub doesn't know is saved, and its chip says so with Retry; the 
 	).toBeVisible();
 	await expectNoPageOverflow(page);
 	answer();
-	await expect(adding).not.toHaveAttribute("data-state", "saving");
+	await expect(adding).toHaveAttribute("data-state", "loading");
+	release(made.scenarioPath, read);
+	await expect(adding).toHaveAttribute("data-state", "ready");
 });
 
 test("one repo's read held: the other's rows show, the held one and the sections spin, no counts; released, its rows and the counts come", async ({
@@ -1357,6 +1427,86 @@ test("at desktop width a long login or many signs stay inside their columns", as
 		}),
 	);
 	expect(spills).toEqual([]);
+});
+
+/**
+ * Where `targets` are on the page now: a spinner showing or going must
+ * leave every one where it was (owner, 2026-11-02: "Make sure spinners
+ * appear somewhere static so the UI doesn't jitter").
+ */
+async function boxes(targets: Locator[]) {
+	return Promise.all(targets.map((t) => t.boundingBox()));
+}
+
+test("a refresh's spinners move nothing: the view's name, its chips, the first section and row stay put", async ({
+	page,
+	workdir,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	if (isMobile) await page.setViewportSize({ width: 360, height: 780 });
+	const made = await setup(workdir, pr, { widgetInView: true });
+	const crb = await startCrb();
+	await goHome(page, crb.url);
+	const loading = page.getByRole("status", { name: "Loading" });
+	await expect(loading).toBeHidden();
+	const mine = section(page, "Mine");
+	const targets = [
+		page.getByRole("heading", { level: 1 }),
+		page.getByTestId("view-repo").first(),
+		page.getByTestId("view-repo").last(),
+		page.getByRole("button", { name: "Edit repos" }),
+		mine.getByRole("heading"),
+		mine.getByTestId(/^home-row/).first(),
+		page.getByRole("button", { name: "Refresh" }),
+	];
+	const before = await boxes(targets);
+	made.editScenario((s) => {
+		s.hold = ["home"];
+	});
+	await page.getByRole("button", { name: "Refresh" }).click();
+	await expect(loading).toBeVisible();
+	expect(await boxes(targets)).toEqual(before);
+	release(made.scenarioPath, "home");
+	await expect(loading).toBeHidden();
+	expect(await boxes(targets)).toEqual(before);
+	await expectNoPageOverflow(page);
+});
+
+test("a section's count spinner holds the count's place: its heading and hint don't move when the count comes", async ({
+	page,
+	workdir,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	if (isMobile) await page.setViewportSize({ width: 360, height: 780 });
+	const made = await setup(workdir, pr, { widgetInView: true });
+	const held = `home:${OWNER_REPO}` as const;
+	made.editScenario((s) => {
+		s.hold = [held];
+	});
+	const crb = await startCrb();
+	await goHome(page, crb.url);
+	const reviewing = section(page, "Reviewing");
+	await expect(reviewing.getByRole("img", { name: "Loading" })).toBeVisible();
+	const heading = reviewing.getByRole("heading");
+	const hint = reviewing.getByText("requested or started");
+	// Rows coming above may move the section down; within it, nothing moves.
+	const place = async () => {
+		const [h, t] = await boxes([heading, hint]);
+		return {
+			height: h?.height,
+			x: h?.x,
+			hintX: t?.x,
+			hintDy: (t?.y ?? 0) - (h?.y ?? 0),
+		};
+	};
+	const before = await place();
+	release(made.scenarioPath, held);
+	await expect(heading).toHaveText(/Reviewing\s*2/);
+	expect(await place()).toEqual(before);
 });
 
 test("screenshot at desktop width (CRB_HOME_SHOTS only)", async ({

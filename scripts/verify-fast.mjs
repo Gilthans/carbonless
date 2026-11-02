@@ -87,6 +87,14 @@ const E2E_MAP = [
 		/^src\/web\/files\/(codeSpan|linePicks|selectionActions|SelectionBar|DiffBody|FileDiff|SyncNotices)\.tsx?$|^src\/web\/threads\/(NewThread|newThreads|drafts|threadWrites|spanMarks)\.tsx?$|^src\/web\/code\/Invisibles\.tsx$|^src\/server\/(newThreads|marker)\.ts$/,
 		["new-threads"],
 	],
+	[
+		/^src\/web\/threads\/(threadWrites|refusals|drafts)\.ts$|^src\/web\/files\/(SyncNotices|RefusedWrites|useSetStates|FileDiff|DiffBody)\.tsx?$/,
+		["refused-writes"],
+	],
+	[
+		/^src\/web\/verdict\/|^src\/server\/verdict\.ts$|^src\/web\/(App|pages|router)\.tsx?$|^src\/web\/files\/(FilesPage|RefusedWrites)\.tsx$|^src\/web\/threads\/(threadWrites|refusals)\.ts$/,
+		["verdict"],
+	],
 	[/^src\/server\/review\//, ["files", "persistence"]],
 	// Unit-test data (wordBlocks.fixture.test.ts); inlineDiff.spec.ts reads
 	// a few of its cases.

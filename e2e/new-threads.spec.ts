@@ -539,7 +539,7 @@ test("a pending review refuses it with the link, the draft kept", async ({
 	const box = composer.getByRole("textbox", { name: "Comment" });
 	await box.fill("Blocked");
 	await box.press("Control+Enter");
-	const notice = page.getByTestId("write-failed");
+	const notice = page.getByTestId("refused-write");
 	await expect(notice).toContainText(
 		"A pending review on GitHub blocks comments",
 	);

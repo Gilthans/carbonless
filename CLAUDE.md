@@ -69,7 +69,9 @@ These guide every feature. If a change conflicts with one of them, stop and rais
    somewhere relevant"). A result still on its way never reads as an empty
    one: no 0 counts, empty lists, "none" or "no X" text, blank meters or 0%
    while it is pending; the empty state shows only once the answer says
-   empty, and an error is distinct from both. Use the shared `Spinner` and
+   empty, and an error is distinct from both. A spinner appears in place:
+   showing or hiding it never moves anything (a kept slot, an icon it
+   replaces, or laid over). Use the shared `Spinner` and
    `SkeletonBar` (`src/web/Spinner.tsx`), with an accessible name and
    `aria-busy` on the region. Enforce it in tests: hold the answer (the fake
    gh's `hold`, or a held fetch), assert the loading state and the absence
@@ -129,7 +131,9 @@ loading never looking empty, checking against a real PR):
   `crb --version` must match the server's, or `crb <pr>` refuses. It clones into its own
   cache (`~/.cache/carbonless`), never into the reviewer's working copies. It
   reads from GitHub, and writes to it only on the reviewer's explicit action
-  (replies, new comments, resolving, editing and deleting your own comments):
+  (replies, new comments, resolving, editing and deleting your own comments,
+  the review verdict: approve, comment, request changes, and Comment
+  dismissing your own standing approval or change request):
   `docs/product-rules.md`, "Writing to GitHub".
 - Main on the devbox and branch instances: "Versions and instances" below.
 - Tests never call the real `gh`: `test/fake-gh/gh` serves a scenario
@@ -177,8 +181,13 @@ The owner's main is the globally installed package (`carbonless-review`),
 run as `crb serve` by the systemd user service `crb.service` on port 4747,
 the owner's, with a stable key:
 `http://100.78.32.127:4747/?key=$(cat ~/.local/state/carbonless/key)`.
-It never runs a worktree's `dist`, and nothing else binds 4747. Setup and
-the scripts: README, "Remote machine". Logs: `journalctl --user -u crb`.
+It never runs a worktree's `dist`, and nothing else binds 4747. Setup:
+README, "Remote machine". Logs: `journalctl --user -u crb`. The owner's
+devbox moves main to `origin/master`'s newest build by itself, within ~5
+minutes of a merge, through local setup outside the repo
+(`~/.local/share/carbonless-devbox`, `crb-follow.timer`; logs: `journalctl
+--user -u crb-follow`). To put another build on 4747 by hand, pause it
+first (`systemctl --user stop crb-follow.timer`) and start it again after.
 
 **Branch instance (ad hoc):** whenever a branch has something the owner
 should see before it reaches master: a coordinator's "ready" report, a fix
@@ -198,32 +207,29 @@ in the main checkout:
    so, when the branch merges or is dropped.
 
 **RC: every merge to master is a new RC** (the owner: merging a PR to main
-implies a new RC version). When the owner asks to merge:
-1. On the feature branch, bump `package.json` with a commit of its own
-   (`release: <version>`): from `X.Y.Z-rc.N` to `X.Y.Z-rc.N+1`; from a
-   release `X.Y.Z` to `X.Y+1.0-rc.1` (`X.Y.Z+1-rc.1` when the owner calls
-   it a fix). `0.1.0` was never released, so the first RC is `0.1.0-rc.1`.
-2. `pnpm verify` green, fast-forward `master`, tag `v<version>` (local
-   only until pushing tags is allowed).
-3. Pack from a clean tree at the tag, so the build's commit is the tag's
-   and not `-dirty`: `git worktree add --detach .worktrees/release
-   v<version>` (or `git -C .worktrees/release checkout --detach
-   v<version>`), `pnpm install --frozen-lockfile`, `pnpm pack
-   --pack-destination ~/.local/share/carbonless/releases`.
-4. `scripts/devbox/update ~/.local/share/carbonless/releases/carbonless-review-<version>.tgz`
-   (with Node 24 and `~/.local/share/pnpm/bin` on `PATH`): it waits for the
-   new build and prints `<from> -> <to>` and the link. Send the owner the
-   link and what is new since the last RC.
-5. Stop the instances of branches that just merged.
+implies a new RC version). Changes reach master only as PRs ("How we
+work"). After one merges:
+1. Within ~5 minutes the follow timer builds `origin/master` and moves 4747
+   to it (`crb --version` shows the commit). If `journalctl --user -u
+   crb-follow` shows a failure, tell the owner what it says; don't install
+   by hand.
+2. Send the owner the link and what is new since the last build.
+3. Stop the instances of branches that just merged.
 
-**Release:** only when the owner asks ("release", "promote"). The RC the
-owner tried becomes `X.Y.Z`: a `release: X.Y.Z` commit on master that
-changes only the version, then steps 2–4 above. Before the first publish
-to npm, remind the owner that the license is still `UNLICENSED`. Until M2
-(`docs/superpowers/specs/2026-10-30-versions-and-distribution-design.md`)
-nothing is published: co-workers get the tarball, and `update rc|latest`
-has nothing to install. M2 replaces steps 1–3 with `pnpm release
-<rc|promote|patch|minor>` and CI publishing on a pushed tag.
+There is no version-bump commit per PR: builds are told apart by commit
+(`0.1.0-rc.4 (b7f8508)`). The release-flip branch, once merged, makes CI
+publish `X.Y.Z-rc.N` to npm on every master push.
+
+**By hand** (another machine, or the timer paused): in a clean tree of the
+commit (`git worktree add --detach .worktrees/release <ref>`, `pnpm install
+--frozen-lockfile`), `pnpm release local` builds, packs into
+`~/.local/share/carbonless/releases` (its last line is the tarball) and
+installs the global `crb`; then `systemctl --user restart crb`.
+
+**Release:** only when the owner asks ("release", "promote"). Before the
+first npm publish, remind the owner of the license (MIT, chosen on the
+release-flip branch). Until release-flip merges nothing is published:
+co-workers get a tarball or run `pnpm release local` in a checkout.
 
 ## How we work
 

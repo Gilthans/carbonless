@@ -227,7 +227,8 @@ export interface PrOverview {
 	 * One entry per reviewer, newest activity first. `state` and `submittedAt`
 	 * are the reviewer's latest review; `opinion` is their latest approving,
 	 * blocking or dismissed review, so a later plain comment doesn't hide a
-	 * change request.
+	 * change request; none when it was dismissed and they commented after
+	 * it (Comment withdrew it: `state` says COMMENTED alone).
 	 */
 	reviews: {
 		author: string;
@@ -550,6 +551,125 @@ export interface NewThreadRequest {
 export interface NewThreadAnswer {
 	thread: ReviewThread;
 	comments: ThreadComments;
+}
+
+/** A verdict the reviewer can send: one submitted review (Final Verdict). */
+export type VerdictEvent = "APPROVE" | "COMMENT" | "REQUEST_CHANGES";
+
+/**
+ * `GET /api/verdict`: what GitHub says about merging, read for the Final
+ * Verdict tab only (never on first open). Present-only facts are null in
+ * as-of views and on merged or closed PRs, never shown as of now.
+ */
+export interface VerdictFacts {
+	/** GitHub's `mergeStateStatus`; null as-of, merged or closed. */
+	mergeStateStatus:
+		| "BEHIND"
+		| "BLOCKED"
+		| "CLEAN"
+		| "DIRTY"
+		| "DRAFT"
+		| "HAS_HOOKS"
+		| "UNKNOWN"
+		| "UNSTABLE"
+		| null;
+	/** GitHub's `reviewDecision`; null when no review rule applies, as-of, merged or closed. */
+	reviewDecision: "APPROVED" | "CHANGES_REQUESTED" | "REVIEW_REQUIRED" | null;
+	/**
+	 * The head's checks, as `PrOverview.checks` (as of the cutoff in as-of
+	 * views), each with GitHub's `isRequired`: null when unknown (as-of).
+	 */
+	checks: {
+		name: string;
+		status: "failing" | "pending" | "passing";
+		url?: string;
+		required: boolean | null;
+	}[];
+	/**
+	 * The base branch's review rule, from branch protection or rulesets;
+	 * null when it can't be read (no admin access: an empty rule list on a
+	 * protected branch is unknown, not none). Inside, null = that part unknown.
+	 */
+	rule: {
+		approvals: number | null;
+		codeOwners: boolean | null;
+		strict: boolean | null;
+	} | null;
+	/**
+	 * Requested reviewers GitHub asked as code owners (`asCodeOwner`); [] in
+	 * as-of views (who GitHub asks is known only now).
+	 */
+	codeOwnerRequests: { name: string; team: boolean }[];
+	/**
+	 * Each reviewer's verdict, newest first: their latest opinionated review
+	 * (APPROVED, CHANGES_REQUESTED or DISMISSED, as GitHub's
+	 * latestOpinionatedReviews and PrOverview's `opinion`), else their latest
+	 * COMMENTED one; PENDING ones left out. A dismissed review followed by a
+	 * comment of theirs reads as that comment (Comment withdrew it). `submittedAt`,
+	 * `commitId` and `url` are the chosen review's. As of the cutoff in as-of
+	 * views, by the same rule.
+	 */
+	reviews: {
+		author: string;
+		state: ReviewVerdict;
+		submittedAt: string;
+		commitId: string;
+		/** The review on GitHub (GraphQL `url`); absent when GitHub gave none. */
+		url?: string;
+		you: boolean;
+		bot: boolean;
+	}[];
+	/** The PR's head on GitHub when this was read; in as-of views, the cutoff's head. */
+	head: string;
+	/** When the server finished reading this from GitHub (its clock). */
+	fetchedAt: string;
+}
+
+/** `POST /api/verdict`: submit a review with an event. */
+export interface VerdictRequest {
+	/** The client's own id, the same on every resend (a reload's too). */
+	clientId: string;
+	event: VerdictEvent;
+	/**
+	 * Markdown as typed (no marker); required (non-empty after trim) for
+	 * COMMENT and REQUEST_CHANGES, optional for APPROVE. ≤ MAX_REPLY minus the marker.
+	 */
+	body?: string;
+	/** The head the reviewer is viewing: must be the session's snapshot head, else 409 code "stale". */
+	commit: string;
+	attemptedAt: string;
+	/** A resend after a failed or unknown attempt: look for it first. */
+	retry: boolean;
+}
+
+/**
+ * 200: the review as GitHub recorded it. Refusals are `WriteError`s:
+ * "pending-review" (the viewer has an unsubmitted review; `url` = the PR's
+ * files page), "forbidden" (e.g. approving one's own PR), "writes-off",
+ * "invalid", "stale".
+ */
+export interface VerdictAnswer {
+	review: {
+		id: string;
+		state: ReviewVerdict;
+		submittedAt: string;
+		commitId: string;
+		/** Without the marker. */
+		body: string;
+		/** The review on GitHub (REST `html_url`); absent when GitHub gave none. */
+		url?: string;
+	};
+	/**
+	 * COMMENT only, over the viewer's standing approval or change request:
+	 * that opinion, withdrawn (dismissed on GitHub) after the comment posted.
+	 */
+	dismissed?: "APPROVED" | "CHANGES_REQUESTED";
+	/**
+	 * COMMENT only: the comment posted, but dismissing the standing opinion
+	 * failed (no write access, a GitHub error), so it still stands; GitHub's
+	 * message. Still a success: the comment is on GitHub, never resent.
+	 */
+	stillStands?: { state: "APPROVED" | "CHANGES_REQUESTED"; message: string };
 }
 
 /** The longest reply GitHub takes (a comment body's limit). */

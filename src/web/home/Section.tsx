@@ -136,8 +136,10 @@ export function Section(props: {
 					className="flex items-baseline gap-2 text-xs font-bold tracking-[0.14em] text-label uppercase"
 				>
 					{SECTION_LABELS[id]}
+					{/* The spinner and the count share one place, as wide as a
+					    two-digit count: one replacing the other moves nothing. */}
 					{loading ? (
-						<Sign label="Loading" className="self-center text-faint">
+						<Sign label="Loading" className="min-w-4 self-center text-faint">
 							<SyncIcon
 								size={12}
 								aria-hidden
@@ -145,7 +147,7 @@ export function Section(props: {
 							/>
 						</Sign>
 					) : (
-						<span className="font-semibold tracking-normal text-faint tabular-nums">
+						<span className="inline-block min-w-4 font-semibold tracking-normal text-faint tabular-nums">
 							{visible.length}
 						</span>
 					)}

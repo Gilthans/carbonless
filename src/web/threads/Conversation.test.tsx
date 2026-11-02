@@ -861,7 +861,7 @@ describe("editing a comment", () => {
 		await userEvent.clear(box);
 		await userEvent.type(box, "Mine");
 		await userEvent.click(screen.getByRole("button", { name: "Save" }));
-		const notice = await screen.findByTestId("write-failed");
+		const notice = await screen.findByTestId("refused-write");
 		expect(notice).toHaveTextContent("Edit");
 		expect(notice).toHaveTextContent("Changed on GitHub since you opened it");
 		expect(
@@ -871,7 +871,7 @@ describe("editing a comment", () => {
 			within(notice).getByRole("button", { name: "Save anyway" }),
 		);
 		await waitFor(() =>
-			expect(screen.queryByTestId("write-failed")).toBeNull(),
+			expect(screen.queryByTestId("refused-write")).toBeNull(),
 		);
 		expect(writeCalls.map((c) => c.body)).toEqual([
 			{ body: "Mine", from: "Old", force: false },
@@ -903,14 +903,20 @@ describe("editing a comment", () => {
 			" mine",
 		);
 		await userEvent.click(screen.getByRole("button", { name: "Save" }));
-		const notice = await screen.findByTestId("write-failed");
+		const notice = await screen.findByTestId("refused-write");
 		// GitHub's newer text is on screen above the editor, never saved over unseen.
 		const theirs = await screen.findByTestId("edit-theirs");
 		expect(within(theirs).getByText("Theirs")).toBeVisible();
 		await userEvent.click(
 			within(notice).getByRole("button", { name: "Show theirs" }),
 		);
-		expect(screen.queryByTestId("write-failed")).toBeNull();
+		// Not saved yet: listed until saved or dropped, now without theirs.
+		expect(screen.getByTestId("refused-write")).toBeInTheDocument();
+		expect(
+			within(screen.getByTestId("refused-write")).queryByRole("button", {
+				name: "Show theirs",
+			}),
+		).toBeNull();
 		expect(
 			within(screen.getByTestId("edit-theirs")).getByText("Theirs"),
 		).toBeVisible();

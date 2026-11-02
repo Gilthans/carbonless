@@ -26,6 +26,27 @@ const build = (nodes: unknown[], more: { asOf?: string } = {}) =>
 	buildTimeline({ nodes, commitCount: null, ...more });
 
 describe("buildTimeline", () => {
+	it("strips carbonless's marker from review, comment and conversation text itself, whatever GitHub's bodyText keeps", () => {
+		const marked = "LGTM <!-- crb:v1 id=v1 -->";
+		const { events } = build([
+			timelineReview({
+				login: "bob",
+				at: at(1),
+				state: "APPROVED",
+				text: marked,
+				comments: [{ id: "c1", path: "a.ts", line: 3, text: marked }],
+			}),
+			timelineComment({ login: "ann", at: at(2), text: marked }),
+		]);
+		expect(JSON.stringify(events)).not.toContain("crb:");
+		const texts = events.flatMap((e) =>
+			e.kind === "review"
+				? e.items.map((i) => ("text" in i ? i.text : ""))
+				: [],
+		);
+		expect(texts).toEqual(["LGTM", "LGTM", "LGTM"]);
+	});
+
 	it("makes runs of one author's commits and one person's review activity", () => {
 		const { events, gaps } = build([
 			timelineCommit({ login: "ann", at: at(1), oid: sha(1) }),
