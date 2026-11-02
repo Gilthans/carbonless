@@ -292,7 +292,7 @@ test("reply and resolve from Files changed", async ({ page, pr, startCrb }) => {
 	).toHaveCount(0);
 });
 
-test("a reload while an unresolve is read back shows it unresolved", async ({
+test("a reload while an unresolve is read back shows it unresolved at once", async ({
 	page,
 	pr,
 	startCrb,
@@ -321,21 +321,23 @@ test("a reload while an unresolve is read back shows it unresolved", async ({
 	await expect(
 		section().getByTestId("thread-comment").filter({ hasText: "Changed how?" }),
 	).toHaveCount(1);
+	const contentReads = () => (p.ghLog().match(/nodes\(ids: \[/g) ?? []).length;
+	const before = contentReads();
 	p.editScenario((x) => {
 		x.hold = ["threadContent"];
 	});
 	await unresolve.click();
-	// GitHub has it; the server's read-back of the thread is held.
-	await expect.poll(() => storedResolved(p, "a.txt")).toBe(false);
-	const threadsAsked = page.waitForRequest(/\/threads\?read=/);
+	// GitHub has it and the server's read-back of the thread is out, held.
+	await expect.poll(contentReads).toBe(before + 1);
+	expect(storedResolved(p, "a.txt")).toBe(false);
 	await page.reload();
-	await threadsAsked;
-	release(p.scenarioPath, "threadContent");
 	await section().getByRole("button", { name: "Expand file" }).click();
+	// Answered without waiting for the read-back.
 	await expect(
 		line2(section()).getByRole("button", { name: /^1 comment on line 2/ }),
 	).toBeVisible();
 	await expect(resolvedBubble()).toHaveCount(0);
+	release(p.scenarioPath, "threadContent");
 });
 
 test("resolve from an Overview card fades, then moves; unresolve brings it back", async ({

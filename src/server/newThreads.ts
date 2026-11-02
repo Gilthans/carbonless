@@ -311,32 +311,28 @@ async function answer(
 	clientId: string,
 	record: StartedRecord,
 ): Promise<NewThreadAnswer> {
-	// GitHub has it: the kept reads wait until they list it.
-	const { id, nodes } = await target.landed(async () => {
-		let threadId = record.threadId ?? null;
-		for (let i = 0; !threadId; i++) {
-			threadId = await findThreadOf(target.ref, record.nodeId);
-			const wait = LIST_WAITS_MS[i];
-			if (threadId || wait === undefined) break;
-			await writeWaits.sleep(wait);
-		}
-		threadId ??= await findThreadOf(target.ref, record.nodeId, true);
-		if (!threadId) {
-			throw new GhError(
-				"Posted, but GitHub doesn't list the new thread yet: try again",
-			);
-		}
-		record.threadId = threadId;
-		target.rememberStarted(clientId, record);
-		const id = threadId;
-		const read = await rereadUntil(target, id, (n) => lists(n, record.nodeId));
-		if (!read.nodes || !lists(read.nodes, record.nodeId)) {
-			throw gone("Posted, but the thread is gone from GitHub");
-		}
-		const nodes = withoutDeleted(target, read.nodes);
-		target.add(id, nodes, read.seq, read.startedAt);
-		return { id, nodes };
-	});
+	let threadId = record.threadId ?? null;
+	for (let i = 0; !threadId; i++) {
+		threadId = await findThreadOf(target.ref, record.nodeId);
+		const wait = LIST_WAITS_MS[i];
+		if (threadId || wait === undefined) break;
+		await writeWaits.sleep(wait);
+	}
+	threadId ??= await findThreadOf(target.ref, record.nodeId, true);
+	if (!threadId) {
+		throw new GhError(
+			"Posted, but GitHub doesn't list the new thread yet: try again",
+		);
+	}
+	record.threadId = threadId;
+	target.rememberStarted(clientId, record);
+	const id = threadId;
+	const read = await rereadUntil(target, id, (n) => lists(n, record.nodeId));
+	if (!read.nodes || !lists(read.nodes, record.nodeId)) {
+		throw gone("Posted, but the thread is gone from GitHub");
+	}
+	const nodes = withoutDeleted(target, read.nodes);
+	target.add(id, nodes, read.seq, read.startedAt);
 	const [thread] = mapThreads([withContent(nodes.summary, nodes.content)], {
 		prAuthor: await target.prAuthor(),
 		viewer: target.viewer,

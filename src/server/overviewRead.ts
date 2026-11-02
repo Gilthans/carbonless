@@ -33,12 +33,6 @@ export interface ReadSources {
 	code: ThreadCodeSource;
 	/** The thread code's diff base, once known (a Refresh moves the snapshot). */
 	base: () => Promise<DiffBase>;
-	/**
-	 * Once no write GitHub already has is still being read back into the
-	 * read (Session: ThreadWriteTarget.landed): threads and comments wait
-	 * for it, so they never miss a write that landed.
-	 */
-	landed?: () => Promise<void>;
 }
 
 /** A read's overview: the session adds what isn't GitHub's read (commentLeft). */
@@ -258,7 +252,6 @@ export class OverviewRead {
 	/** The threads once `stage` is in, with all that is in by then. */
 	async threads(stage: ThreadsStage): Promise<ThreadsView> {
 		await this.#stages[stage];
-		await this.#sources.landed?.();
 		return this.#view();
 	}
 
@@ -281,6 +274,36 @@ export class OverviewRead {
 		if ((this.#dropped.get(id) ?? -1) > seq) return;
 		this.#dropped.delete(id);
 		this.#written.set(id, { ...nodes, seq });
+	}
+
+	/**
+	 * Thread `id` as a write GitHub just took leaves it, before any re-read:
+	 * `edit` of the thread as this read has it now (its content undefined
+	 * while not in), by applyWrite's rules (`seq`, `startedAt`). A later
+	 * re-read replaces it. Nothing for a thread this read doesn't list.
+	 */
+	applyKnown(
+		id: string,
+		edit: (nodes: { summary: unknown; content: unknown }) => {
+			summary: unknown;
+			content: unknown;
+		},
+		seq: number,
+		startedAt: number,
+	): void {
+		if (this.started > startedAt) return;
+		const prev = this.#written.get(id);
+		if (prev && prev.seq > seq) return;
+		if (this.#dropped.has(id)) return;
+		const summary = this.summaryOf(id);
+		if (summary === undefined) return;
+		const content = this.#content(id);
+		const next = edit({
+			summary,
+			content: content === GONE ? undefined : content,
+		});
+		// Undefined content: this read's own, once it comes in.
+		this.#written.set(id, { ...next, seq });
 	}
 
 	/**
@@ -408,7 +431,6 @@ export class OverviewRead {
 	async comments(ids: string[]): Promise<CommentsView> {
 		await this.#stages.summary;
 		await this.#textsStarted.catch(() => {});
-		await this.#sources.landed?.();
 		const summaries = new Map<string, unknown>();
 		for (const raw of this.#all()) {
 			const node = this.#summary(raw);

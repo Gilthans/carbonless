@@ -144,8 +144,6 @@ export class Session {
 	#writeSeq = 0;
 	/** Each thread's writes, one at a time (#threadExclusive). */
 	readonly #threadWrites = new Map<string, Promise<void>>();
-	/** Writes GitHub has, their re-reads not in the kept reads yet (ThreadWriteTarget.landed). */
-	readonly #landing = new Set<Promise<void>>();
 	/**
 	 * Replies this session posted, by the client's id for each: a resend
 	 * (while the first attempt runs, or after a reload) finds it here.
@@ -578,22 +576,14 @@ export class Session {
 			setPendingReview: (pending) => {
 				for (const read of this.#reads) read.setPendingReview(pending);
 			},
-			landed: (after) => {
-				const run = after();
-				const settled = run.then(
-					() => {},
-					() => {},
-				);
-				this.#landing.add(settled);
-				void settled.then(() => this.#landing.delete(settled));
-				return run;
+			known: (id, edit) => {
+				const seq = ++this.#writeSeq;
+				const startedAt = Date.now();
+				for (const read of this.#reads) {
+					read.applyKnown(id, edit, seq, startedAt);
+				}
 			},
 		};
-	}
-
-	/** Once every write GitHub has is in the kept reads (#landing), those landing meanwhile too. */
-	async #landed(): Promise<void> {
-		while (this.#landing.size > 0) await Promise.all(this.#landing);
 	}
 
 	#newThreadTarget(): NewThreadTarget {
@@ -637,7 +627,6 @@ export class Session {
 			writes: this.writes(),
 			asOf: asOf ? { at: asOf, head: this.#meta.headOid } : undefined,
 			code: this.#threadCode,
-			landed: () => this.#landed(),
 			base: async () => {
 				await ready?.catch(() => {});
 				return {
