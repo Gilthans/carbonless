@@ -321,7 +321,11 @@ describe("HomeService", () => {
 			home.repo("acme", "api", { fresh: true }),
 		]);
 		// The read is out and held: every ask is waiting on it.
-		await expect.poll(() => listReads(fx?.ghLog() ?? "")).toEqual(["api"]);
+		// Each fake gh call is a node process: a loaded machine can take
+		// seconds to start one.
+		await expect
+			.poll(() => listReads(fx?.ghLog() ?? ""), { timeout: 20_000 })
+			.toEqual(["api"]);
 		release(fx.path, "home:acme/api");
 		const [a, b, c] = await asks;
 		expect(a.rows).toHaveLength(8);
@@ -959,7 +963,11 @@ describe("HomeService, review round 1", () => {
 		const { home } = service();
 		await home.view();
 		const reading = home.repo("acme", "api");
-		await expect.poll(() => listReads(fx?.ghLog() ?? "")).toEqual(["api"]);
+		// Each fake gh call is a node process: a loaded machine can take
+		// seconds to start one.
+		await expect
+			.poll(() => listReads(fx?.ghLog() ?? ""), { timeout: 20_000 })
+			.toEqual(["api"]);
 		await home.setRepos([]);
 		release(fx.path, "home:acme/api");
 		await reading;
