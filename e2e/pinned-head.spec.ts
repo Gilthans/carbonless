@@ -59,7 +59,8 @@ test("--head reviewed shows the PR up to the commit you last reviewed", async ({
 
 	const s = await startCrb(undefined, ["--head", "reviewed"]);
 	await page.goto(s.url);
-	const banner = page.getByRole("status");
+	// The banner, not a section's loading spinner (also a status).
+	const banner = page.getByRole("status").filter({ hasText: "Viewing" });
 	await expect(banner).toHaveText(
 		`Viewing ${then.slice(0, 7)}; this PR has newer commits.`,
 	);

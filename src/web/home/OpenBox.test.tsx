@@ -10,6 +10,7 @@ import { parseOpenInput } from "./openInput";
 import {
 	ago,
 	type Call,
+	emptySearch,
 	fakeApi,
 	person,
 	renderWithQuery,
@@ -234,6 +235,28 @@ describe("OpenBox", () => {
 		expect(goTo).toHaveBeenLastCalledWith("/pr/acme/api/4790");
 	});
 
+	it("spins while the first answer for what's typed is coming; an empty answer says no matches", async () => {
+		let release: () => void = () => {};
+		const gate = new Promise<void>((r) => {
+			release = r;
+		});
+		setup(
+			() =>
+				gate.then(() => ({
+					...emptySearch,
+				})) as unknown as SearchResult,
+		);
+		const status = screen.getByRole("status");
+		await userEvent.type(box(), "zzz");
+		await waitFor(() => expect(status).toHaveTextContent("Searching GitHub"));
+		expect(screen.queryByTestId("suggestions-empty")).toBeNull();
+		release();
+		expect(await screen.findByTestId("suggestions-empty")).toHaveTextContent(
+			"No matches",
+		);
+		expect(status).toHaveTextContent("");
+	});
+
 	it("asks again while a GitHub search is pending, with a spinner", async () => {
 		let calls = 0;
 		const api = setup(() => {
@@ -261,7 +284,7 @@ describe("OpenBox", () => {
 		await waitFor(() => expect(status).toHaveTextContent("Searching GitHub"));
 		expect(status.closest("[role=listbox]")).toBeNull();
 		// The scoped PRs' heading spins too.
-		const scoped = screen.getByRole("group", { name: /^far\/away ·/ });
+		const scoped = await screen.findByRole("group", { name: /^far\/away ·/ });
 		expect(scoped).toHaveAttribute("aria-busy", "true");
 		expect(scoped.querySelector(".animate-spin")).not.toBeNull();
 		await screen.findByText("Found later", undefined, { timeout: 3000 });

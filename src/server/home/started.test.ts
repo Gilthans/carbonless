@@ -87,6 +87,18 @@ describe("StartedReviews", () => {
 		);
 	});
 
+	it("asked for one repo, scans only that repo's clone", async () => {
+		const id = await reviews.findOrCreateReview(PR, "octo");
+		const [first] = keys();
+		await reviews.recordStates(id, "octo", snap, [
+			{ key: first as string, state: "reviewed" },
+		]);
+		expect(await scanner().list("octo", undefined, "acme/other")).toEqual([]);
+		expect(
+			(await scanner().list("octo", undefined, "Acme/Widget")).map((s) => s.id),
+		).toEqual([id]);
+	});
+
 	it("crossed-off lines leave the total; clusters stand in when lines look done", async () => {
 		const id = await reviews.findOrCreateReview(PR, "octo");
 		const all = keys();

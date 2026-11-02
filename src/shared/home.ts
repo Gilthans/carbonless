@@ -35,6 +35,8 @@ export interface HomeRow {
 	owner: string;
 	repo: string;
 	number: number;
+	/** The one section it belongs to (the page merges every repo's rows). */
+	section: SectionId;
 	title: string;
 	url: string;
 	author: Person;
@@ -63,19 +65,30 @@ export interface HomeSection {
 	id: SectionId;
 	rows: HomeRow[];
 } // hidden rows included, flagged; the viewer's turn first, then newest updatedAt
+/** GET /api/home: everything Home shows that isn't one repo's. */
 export interface HomeView {
 	viewer: Person;
 	view: { name: string; repos: string[] };
 	configProblems: string[];
-	refreshedAt: string | null;
-	refreshError: string | null; // last refresh's failure, rows kept
-	sections: HomeSection[]; // all five, always, in order
+	/** Why the viewer's login can't be read (offline, logged out); null when it can. */
+	viewerError: string | null;
+	/** The config's refresh.minutes: how often the page reads each repo again. */
+	refreshMinutes: number;
 	/**
 	 * Repos (`owner/repo`, lowercased) of the viewer's started reviews,
 	 * newest activity first, in the view or not: the view dialog suggests
 	 * the ones it doesn't list.
 	 */
 	startedRepos: string[];
+}
+/** GET /api/home/repos/:owner/:repo: one view repo's rows. */
+export interface RepoHome {
+	repo: string; // owner/repo, lowercased
+	rows: HomeRow[]; // every section's, unordered (composeSections orders them)
+	refreshedAt: string | null; // the last read of GitHub that worked
+	error: string | null; // the last read's failure, rows kept
+	/** Reads in a row that failed: the page backs off (doubling, up to 30 min). */
+	failures: number;
 }
 export type AnnotationOp =
 	| { op: "snooze"; until: string; wakeOnActivity: boolean }

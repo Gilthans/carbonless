@@ -342,14 +342,18 @@ test("a PR chosen in the open box shows at once, loading, then becomes its revie
 	const opening = page.getByTestId("opening");
 	await expect(opening).toContainText(second);
 	await expect(opening).toContainText("#8");
-	await expect(page.getByRole("status")).toContainText("Opening");
+	await expect(page.getByRole("main").getByRole("status")).toContainText(
+		"Opening",
+	);
 	await expect(page).toHaveURL(new RegExp(`/pr/${OWNER_REPO}/8$`));
 	// The same address in another tab while the first open is held: two
 	// opens of the PR at once.
 	const prUrl = page.url();
 	const other = await page.context().newPage();
 	await other.goto(prUrl);
-	await expect(other.getByRole("status")).toContainText("Opening");
+	await expect(other.getByRole("main").getByRole("status")).toContainText(
+		"Opening",
+	);
 	release(made.scenarioPath, "prView");
 	await expect(page).toHaveURL(/\/r\/[0-9a-z]{26}$/);
 	await expect(page.getByRole("heading", { level: 1 })).toHaveText(second);
@@ -386,7 +390,9 @@ test("Repos spins while the viewer's repos load, then lists only theirs", async 
 	await expect(repos).toHaveAttribute("aria-busy", "true");
 	await expect(repos.locator(".animate-spin")).toBeVisible();
 	await expect(repos.getByRole("option").first()).toContainText("acme/api");
-	await expect(page.getByRole("status")).toHaveText("Loading your repos");
+	// The open box's own live region.
+	const boxStatus = page.getByRole("search").getByRole("status");
+	await expect(boxStatus).toHaveText("Loading your repos");
 	writeFileSync(hold, "");
 	await expect(repos).toHaveAttribute("aria-busy", "false", {
 		timeout: 15_000,
@@ -395,10 +401,10 @@ test("Repos spins while the viewer's repos load, then lists only theirs", async 
 		/acme\/api/,
 		new RegExp(OWNER_REPO),
 	]);
-	await expect(page.getByRole("status")).toHaveText("");
+	await expect(boxStatus).toHaveText("");
 });
 
-test("the view's repo input suggests the viewer's repos as you type; Save shows the new view at once, warns while unconfirmed", async ({
+test("the view's repo input suggests the viewer's repos as you type; Save is stored at once while the added repo still reads", async ({
 	page,
 	workdir,
 	pr,
@@ -426,29 +432,38 @@ test("the view's repo input suggests the viewer's repos as you type; Save shows 
 	).toHaveText(["acme/api", OWNER_REPO]);
 	await expect(field).toHaveValue("");
 	await dialog.getByRole("button", { name: "Remove acme/api" }).click();
-	// GitHub's answers for the refresh the save makes are held.
+	// GitHub's answers for the added repo are held: saving doesn't wait for
+	// them (owner, 2026-11-01: "Saving saves the configured repos
+	// immediately").
+	const held = `home:${OWNER_REPO}` as const;
 	made.editScenario((s) => {
-		s.hold = ["home"];
+		s.hold = [held];
 	});
+	const put = page.waitForResponse(
+		(r) => r.url().endsWith("/api/home/view") && r.request().method() === "PUT",
+	);
 	await dialog.getByRole("button", { name: "Save" }).click();
 	// At once: the dialog shuts, acme/api's rows go, the chips are the new
-	// list, and a spinner says it saves.
+	// list.
 	await expect(dialog).toBeHidden();
 	await expect(page.getByText("Snooze PRs from the inbox")).toHaveCount(0);
 	await expect(page.getByTestId("view-repo")).toHaveText([OWNER_REPO]);
-	const saving = page.getByRole("status", { name: "Saving" });
-	await expect(saving).toBeVisible();
-	// Unconfirmed past 5 s: the system's delayed warning.
-	const delayed = page.getByTestId("save-delayed");
-	await expect(delayed).toBeVisible({ timeout: 15_000 });
-	await expect(delayed).toContainText("Saving My PRs…");
+	// Stored while the read is still held: the save is done, the repo loads.
+	expect((await put).status()).toBe(200);
+	await expect(page.getByRole("status", { name: "Saving" })).toBeHidden();
+	await expect(page.getByRole("status", { name: "Loading" })).toBeVisible();
+	await expect(page.getByTestId("view-repo")).toHaveAttribute(
+		"data-state",
+		"loading",
+	);
+	// Confirmed: nothing left to warn about.
+	await expect(page.getByTestId("save-delayed")).toHaveCount(0);
 	await expectNoPageOverflow(page);
-	release(made.scenarioPath, "home");
-	await expect(saving).toBeHidden();
-	await expect(delayed).toBeHidden();
+	release(made.scenarioPath, held);
 	await expect(
 		page.getByText("Add widget cache with a rather long title"),
 	).toBeVisible();
+	await expect(page.getByRole("status", { name: "Loading" })).toBeHidden();
 	await expect(page.getByText("Snooze PRs from the inbox")).toHaveCount(0);
 	// The server kept it: a reload shows the same.
 	await page.reload();
@@ -550,17 +565,121 @@ test("a refused view save says why and puts the last saved view back", async ({
 	await page.getByRole("button", { name: "Edit repos" }).click();
 	const dialog = page.getByRole("dialog", { name: "My PRs" });
 	await dialog.getByRole("button", { name: "Remove acme/api" }).click();
-	await dialog
-		.getByRole("combobox", { name: "Add a repo" })
-		.fill("acme/nowhere");
+	// The page takes it; GitHub's names can't start with a dash.
+	await dialog.getByRole("combobox", { name: "Add a repo" }).fill("-acme/x");
 	await dialog.getByRole("combobox", { name: "Add a repo" }).press("Enter");
 	await dialog.getByRole("button", { name: "Save" }).click();
 	const failed = page.getByTestId("view-save-failed");
-	await expect(failed).toContainText("acme/nowhere not found");
+	await expect(failed).toContainText("Not a repository: -acme/x");
 	await expect(page.getByTestId("view-repo")).toHaveText(["acme/api"]);
 	await expect(page.getByText("Snooze PRs from the inbox")).toBeVisible();
 	await failed.getByRole("button", { name: "Dismiss" }).click();
 	await expect(failed).toBeHidden();
+});
+
+test("a repo GitHub doesn't know is saved, and its chip says so with Retry; the other's rows stay", async ({
+	page,
+	workdir,
+	pr,
+	startCrb,
+}) => {
+	await setup(workdir, pr);
+	const crb = await startCrb();
+	await goHome(page, crb.url);
+	await page.getByRole("button", { name: "Edit repos" }).click();
+	const dialog = page.getByRole("dialog", { name: "My PRs" });
+	const field = dialog.getByRole("combobox", { name: "Add a repo" });
+	await field.fill("acme/nowhere");
+	await field.press("Enter");
+	await dialog.getByRole("button", { name: "Save" }).click();
+	await expect(dialog).toBeHidden();
+	const typo = page
+		.getByTestId("view-repo")
+		.filter({ hasText: "acme/nowhere" });
+	await expect(typo).toHaveAttribute("data-state", "failed");
+	await expect(
+		typo.getByRole("img", { name: "acme/nowhere: Not found on GitHub" }),
+	).toBeVisible();
+	await expect(
+		page.getByRole("button", { name: "Retry acme/nowhere" }),
+	).toBeVisible();
+	await expect(page.getByTestId("view-save-failed")).toHaveCount(0);
+	await expect(page.getByText("Snooze PRs from the inbox")).toBeVisible();
+	// Never read: every section's count says so; no section says none.
+	await expect(
+		section(page, "Reviewing").getByRole("img", {
+			name: "Without acme/nowhere: Not found on GitHub",
+		}),
+	).toBeVisible();
+	await expect(page.getByTestId("section-none")).toHaveCount(0);
+	// At 360px, with an unread repo and one a held save is adding.
+	await page.setViewportSize({ width: 360, height: 780 });
+	await expectNoPageOverflow(page);
+	let answer: () => void = () => {};
+	const putHeld = new Promise<void>((r) => {
+		answer = r;
+	});
+	await page.route("**/api/home/view", async (route) => {
+		if (route.request().method() === "PUT") await putHeld;
+		await route.continue();
+	});
+	await page.getByRole("button", { name: "Edit repos" }).click();
+	await field.fill(OWNER_REPO);
+	await field.press("Enter");
+	await dialog.getByRole("button", { name: "Save" }).click();
+	await expect(dialog).toBeHidden();
+	const adding = page.getByTestId("view-repo").filter({ hasText: OWNER_REPO });
+	await expect(adding).toHaveAttribute("data-state", "saving");
+	await expect(
+		section(page, "Mine").getByRole("img", {
+			name: `Waiting for the save: ${OWNER_REPO}`,
+		}),
+	).toBeVisible();
+	await expectNoPageOverflow(page);
+	answer();
+	await expect(adding).not.toHaveAttribute("data-state", "saving");
+});
+
+test("one repo's read held: the other's rows show, the held one and the sections spin, no counts; released, its rows and the counts come", async ({
+	page,
+	workdir,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	if (isMobile) await page.setViewportSize({ width: 360, height: 780 });
+	const made = await setup(workdir, pr, { widgetInView: true });
+	const held = `home:${OWNER_REPO}` as const;
+	made.editScenario((s) => {
+		s.hold = [held];
+	});
+	const crb = await startCrb();
+	await page.goto(home(crb.url));
+	await expect(page.getByText("Snooze PRs from the inbox")).toBeVisible();
+	await expect(page.getByRole("status", { name: "Loading" })).toBeVisible();
+	const widget = page.getByTestId("view-repo").filter({ hasText: OWNER_REPO });
+	await expect(widget).toHaveAttribute("data-state", "loading");
+	await expect(
+		widget.getByRole("img", { name: `Loading ${OWNER_REPO}` }),
+	).toBeVisible();
+	for (const name of ["Mine", "Reviewing", "Up for grabs", "Other open"]) {
+		const s = section(page, name);
+		await expect(s.getByRole("img", { name: "Loading" })).toBeVisible();
+		await expect(s.getByRole("heading")).not.toHaveText(/\d/);
+		await expect(s.getByTestId("row-skeleton").first()).toBeVisible();
+	}
+	await expect(page.getByText("Add widget cache")).toHaveCount(0);
+	await expectNoPageOverflow(page);
+	release(made.scenarioPath, held);
+	await expect(page.getByText("Add widget cache")).toBeVisible();
+	await expect(page.getByRole("status", { name: "Loading" })).toBeHidden();
+	await expect(page.getByTestId("row-skeleton")).toHaveCount(0);
+	await expect(section(page, "Reviewing").getByRole("heading")).toHaveText(
+		/Reviewing\s*2/,
+	);
+	await expect(section(page, "Other open").getByRole("heading")).toHaveText(
+		/Other open\s*1/,
+	);
 });
 
 test("a snooze moves the row behind its footer, Wake up brings it back, and activity wakes it", async ({
@@ -810,7 +929,6 @@ test("a failed refresh shows the warning and keeps the rows", async ({
 	workdir,
 	pr,
 	startCrb,
-	expectConsoleError,
 }) => {
 	const made = await setup(workdir, pr);
 	const crb = await startCrb();
@@ -818,13 +936,15 @@ test("a failed refresh shows the warning and keeps the rows", async ({
 	made.editScenario((s) => {
 		s.rateLimited = true;
 	});
-	expectConsoleError(/Failed to load resource/);
 	await page.getByRole("button", { name: "Refresh" }).click();
 	const status = page.getByTestId("refresh-status");
 	await expect(
 		status.getByRole("img", { name: /^Refresh failed: / }),
 	).toBeVisible();
 	await expect(status).toHaveClass(/text-warn/);
+	await expect(
+		page.getByRole("button", { name: "Retry acme/api" }),
+	).toBeVisible();
 	await expect(page.getByText("Snooze PRs from the inbox")).toBeVisible();
 	await expect(page.getByText("Rate-limit gh polling per repo")).toBeVisible();
 });
@@ -1369,7 +1489,9 @@ test("screenshots of view settings and the loading page (CRB_HOME_SHOTS only)", 
 		s.hold = ["prView"];
 	});
 	await page.goto(new URL("/pr/acme/widget/8", crb.url).href);
-	await expect(page.getByRole("status")).toContainText("Opening");
+	await expect(page.getByRole("main").getByRole("status")).toContainText(
+		"Opening",
+	);
 	await page.screenshot({
 		path: join(shots as string, `opening-${at}.png`),
 	});

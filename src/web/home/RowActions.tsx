@@ -27,15 +27,18 @@ import type { AnnotationOp, HomeRow, Person } from "../../shared/home";
 import { Tooltip } from "../Tooltip";
 import { ErrorMessage } from "../ui";
 import { useMedia } from "../useMedia";
-import { homeQuery, peopleQuery, postAnnotation, setRow } from "./homeApi";
+import { peopleQuery, postAnnotation, repoKey, setRow } from "./homeApi";
 import { Avatar } from "./PrRow";
 import {
 	DEBOUNCE_MS,
 	SuggestionList,
+	stillComing,
 	useDebounced,
 	useSuggestionKeys,
 } from "./Suggestions";
 import { minPick, pickedDate, snoozePresets } from "./snooze";
+
+const repoOf = (row: HomeRow) => `${row.owner}/${row.repo}`;
 
 type Panel = "snooze" | "wait" | "note";
 
@@ -252,8 +255,9 @@ function PersonInput(props: {
 	const close = usable(data?.close);
 	const others = usable(data?.others);
 	const options = [...close, ...others];
-	const loading = !!data?.pending;
-	const listOpen = open && q !== "" && (options.length > 0 || loading);
+	const loading = !!data?.pending || stillComing(q, debounced, people);
+	const none = !loading && !!data && options.length === 0 && !data.error;
+	const listOpen = open && q !== "" && (options.length > 0 || loading || none);
 	const keys = useSuggestionKeys({
 		count: options.length,
 		listOpen,
@@ -316,6 +320,7 @@ function PersonInput(props: {
 					onChoose={(p) => props.onPick(p.login)}
 					onHover={keys.setActive}
 					error={data?.error}
+					empty="No matches"
 					// With a mouse, over the panel: under the input, or above it
 					// when the window has no room below; never past the window.
 					className={
@@ -436,11 +441,12 @@ export function RowActions(props: {
 	const buttons = useRef(new Map<Panel, HTMLButtonElement>());
 	const save = useMutation({
 		mutationFn: (op: AnnotationOp) => postAnnotation(row, op),
-		// A read of Home already under way would land after the answer and
-		// put the old row back: it's dropped.
-		onMutate: () => client.cancelQueries({ queryKey: homeQuery.queryKey }),
+		// A read of its repo already under way would land after the answer
+		// and put the old row back: it's dropped, and the repo read again.
+		onMutate: () => client.cancelQueries({ queryKey: repoKey(repoOf(row)) }),
 		onSuccess: (answer) => {
 			setRow(client, answer);
+			void client.invalidateQueries({ queryKey: repoKey(repoOf(row)) });
 			setPanel(null);
 			setSheet(false);
 			if (answer.hidden !== null && row.hidden === null) props.onHidden?.();

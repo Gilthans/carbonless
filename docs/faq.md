@@ -143,3 +143,14 @@ setup) and gh looks there too, finds no login, and every review fails. Set
 `scripts/agent-worktree.sh` do (`$GH_CONFIG_DIR` if set, else
 `${XDG_CONFIG_HOME:-~/.config}/gh` from before the override); by hand,
 `export GH_CONFIG_DIR=~/.config/gh` before changing `XDG_CONFIG_HOME`.
+
+## Why does my comment show `\<` in GitHub's edit box?
+
+GitHub's markdown reads `<String>` in `List<String>` (or `<T>`) as an
+HTML tag and drops it, so the comment would read `List`. carbonless
+posts what you type with a backslash before such a `<`
+(`List\<String>`), which GitHub shows as `List<String>`. Edit it in
+carbonless and the box shows it as you typed it; GitHub's own edit box
+shows the backslash. Code (in backticks or a code block), `a < b` and
+the tags GitHub keeps (`<b>`, `<details>`, `<kbd>`, ...) are left as they
+are.

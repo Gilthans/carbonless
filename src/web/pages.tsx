@@ -5,6 +5,7 @@ import {
 } from "@tanstack/react-router";
 import { Suspense, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { ForgetPageScroll, PageActive } from "./pageActive";
+import { Spinner } from "./Spinner";
 
 /** Pages load on demand: the shell renders before markdown or diff code arrives. */
 export const OverviewPage = lazyRouteComponent(
@@ -15,6 +16,15 @@ export const FilesPage = lazyRouteComponent(
 	() => import("./files/FilesPage"),
 	"FilesPage",
 );
+
+/** A page whose code is still on its way: a spinner, never blank. */
+function PageLoading() {
+	return (
+		<div aria-busy="true" className="flex min-h-40 justify-center py-10">
+			<Spinner label="Loading the page" size={24} />
+		</div>
+	);
+}
 
 /** The pages kept alive, by route id, in DOM order. */
 const PAGES = { "/r/$id/": OverviewPage, "/r/$id/files": FilesPage } as const;
@@ -108,7 +118,7 @@ export function KeptPages() {
 				>
 					<PageActive value={on}>
 						<ForgetPageScroll value={forgetters[id]}>
-							<Suspense fallback={null}>
+							<Suspense fallback={<PageLoading />}>
 								<Page />
 							</Suspense>
 						</ForgetPageScroll>

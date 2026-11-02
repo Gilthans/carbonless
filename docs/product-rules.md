@@ -35,6 +35,37 @@ both right after `crb` starts and when it has been running a while. Never block
 a page on slow data: render what is ready, show skeletons per section, and load
 long lists in stages (what's visible plus one "load more" page first). Caching
 for reloads is secondary.
+The skeletons and spinners follow "Loading never looks empty" below.
+
+## Loading never looks empty
+
+Design principle 8 (`CLAUDE.md`). The owner: "Whenever something is
+loading, there should be a visible spinner somewhere relevant. An empty
+result should always be easily distinguishable for a still loading result."
+
+- **Where the result goes.** While an answer is on its way, a spinner
+  (`Spinner`, `src/web/Spinner.tsx`: the spinning sync icon, a tooltip and
+  an accessible name to find it by, `role="status"`) or a skeleton (`SkeletonBar`, grey
+  bars where text will be) shows in the place the result will take, and
+  the region it fills is `aria-busy`. A whole page's code still loading
+  shows a spinner too, never a blank page.
+- **Never as empty.** Until the answer says empty, nothing reads as empty:
+  no 0 counts or 0%, no empty meter, no "None", "No threads", "No
+  activity" or empty list, no outline that means "no comments yet". When a
+  part of the page is loaded and another isn't (the diff, then its
+  comments), the part still loading says so where its results will show
+  (Files changed: "Loading comments" in the progress bar, the file tree and
+  the open file's bubble; the Timeline: "Loading threads" on a review run
+  and its comments).
+- **Errors are a third state.** A failed read shows its error (red; or a
+  `warn` notice where only a part is missing, per "Flag uncertainty", like
+  Files changed's "Threads not shown"; with Retry where it can), never the
+  empty state and never a spinner that keeps on.
+- **Tested by holding the answer.** Each loading state has a test that
+  holds the answer (e2e: the fake gh's `hold`; unit: a held fetch from
+  `test/loading.ts`), asserts the loading state is visible and the empty
+  one absent, releases, and asserts the result (`expectLoadingThen`, in
+  `e2e/fixtures.ts` and `test/loading.ts`). Never a timing race.
 
 ## Verify against a real PR, not only fixtures
 
@@ -96,6 +127,18 @@ unresolving one, and editing or deleting one of the viewer's comments in one
   patch set). One compare per snapshot, asked lazily and never
   waited for by the overview (true until GitHub says); a write waits for
   it.
+- **What is posted reads as typed.** GitHub's markdown reads `<String>`
+  in `List<String>`, or `<T>`, as an HTML tag and drops it. Every body
+  carbonless posts (new thread, reply, edit) has a backslash before each
+  `<` that starts a tag GitHub drops (`List\<String>`), outside code
+  spans and blocks (a fence closes only in its own container, as on
+  GitHub); `a < b`, autolinks, bare links (an escape would land in the
+  link: `http(s)://` or `ftp://` after anything but a letter, or a
+  word starting `www.`), HTML comments and the tags GitHub keeps stay as they are
+  (`src/shared/markdownEscape.ts`, applied on the
+  server where the write is built, before the marker). The page gets
+  bodies without those escapes, so the edit box shows what was typed and
+  the edit, retry and dedupe checks compare the text as posted.
 - **A hidden marker carries what GitHub can't.** A new thread's opening
   comment ends in an HTML comment GitHub doesn't render,
   `<!-- crb:v1 id=<clientId> -->`, with `span=<startLine>:<startCol>-<line>:<endCol>`
@@ -267,6 +310,13 @@ of the row's actions (the floating bar with a mouse, the ⋯ sheet on touch). A
 long section folds behind "show N more", which only folds: the count is
 every row. Nothing automatic, AI or not, hides or drops a PR, and Home
 reads review progress but never writes it.
+
+While a view repo's first read is still out, Home never shows a count or
+an empty section for it: counts are spinners (footers too) and
+placeholder rows stand in until every repo has answered (owner,
+2026-11-01: "An empty result should always be easily distinguishable for
+a still loading result"). A repo never read successfully is unknown, not
+empty: the counts carry an alert naming it, and no section says "none".
 
 ## "Side by side" is a view
 

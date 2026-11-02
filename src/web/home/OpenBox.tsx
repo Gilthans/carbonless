@@ -23,6 +23,7 @@ import {
 	DEBOUNCE_MS,
 	type SuggestionGroup,
 	SuggestionList,
+	stillComing,
 	useDebounced,
 	useSuggestionKeys,
 } from "./Suggestions";
@@ -154,10 +155,19 @@ export function OpenBox(props: { className?: string }) {
 	const options = groups.flatMap((g) => g.options);
 	// A failed GitHub search: said in the list, and nothing is pending.
 	const error = parsed.kind !== "pr" ? search.data?.error : undefined;
-	const pending = parsed.kind !== "pr" && !!search.data?.pending && !error;
+	const coming =
+		parsed.kind !== "pr" && stillComing(q.trim(), debounced.trim(), search);
+	const pending =
+		parsed.kind !== "pr" && (coming || (!!search.data?.pending && !error));
 	const reposPending = pending && !!search.data?.reposPending;
+	// Nothing found, and nothing still coming: the list says so.
+	const none = !pending && !error && !!search.data && options.length === 0;
+	// While the first answer for what's typed is coming, the box's own
+	// spinner says so; the list opens with something to show.
 	const listOpen =
-		open && q.trim() !== "" && (options.length > 0 || pending || !!error);
+		open &&
+		q.trim() !== "" &&
+		(options.length > 0 || (pending && !coming) || !!error || none);
 	const keys = useSuggestionKeys({
 		count: options.length,
 		listOpen,
@@ -269,6 +279,7 @@ export function OpenBox(props: { className?: string }) {
 					onChoose={choose}
 					onHover={keys.setActive}
 					error={error}
+					empty="No matches"
 					className="absolute inset-x-0 top-full z-40 mt-1"
 					render={(option, selected) => (
 						<OptionBody option={option} words={words} selected={selected} />

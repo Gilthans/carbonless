@@ -79,9 +79,9 @@ describe("useUnsavedGuard", () => {
 									viewer: { login: "dan", avatarUrl: "" },
 									view: { name: "My PRs", repos: ["acme/api"] },
 									configProblems: [],
-									refreshedAt: null,
-									refreshError: null,
-									sections: [],
+									viewerError: null,
+									refreshMinutes: 2,
+									startedRepos: [],
 								}),
 							);
 					}),

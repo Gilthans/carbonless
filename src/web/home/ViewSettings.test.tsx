@@ -728,6 +728,8 @@ describe("ViewSettings", () => {
 			expect(field).toHaveAttribute("aria-expanded", "true");
 			expect(field).toHaveAttribute("aria-controls", list.id);
 			const group = within(list).getByRole("group", { name: "Repos" });
+			// A spinner until the answer is in, then its options.
+			await within(group).findByRole("option");
 			// acme/console is in the view already.
 			expect(
 				within(group)
@@ -771,7 +773,7 @@ describe("ViewSettings", () => {
 		it("a typed owner/repo that isn't suggested is still added; Escape closes the list, not the dialog", async () => {
 			const { dialog, field } = await open(() => repos(["acme/zebra"]));
 			await userEvent.type(field, "acme/zed");
-			await within(dialog).findByRole("listbox");
+			await within(dialog).findByRole("option");
 			await userEvent.keyboard("{Escape}");
 			expect(within(dialog).queryByRole("listbox")).toBeNull();
 			expect(
@@ -781,6 +783,24 @@ describe("ViewSettings", () => {
 			await within(dialog).findByRole("listbox");
 			await userEvent.keyboard("{Escape}{Enter}");
 			expect(listed(dialog)).toContain("acme/zed");
+		});
+
+		it("spins while the answer for what's typed is coming; an empty answer says no matches", async () => {
+			let release: () => void = () => {};
+			const gate = new Promise<void>((r) => {
+				release = r;
+			});
+			const { dialog, field } = await open(
+				() => gate.then(() => repos([])) as unknown as SearchResult,
+			);
+			await userEvent.type(field, "zzz");
+			const group = await within(dialog).findByRole("group", { name: "Repos" });
+			expect(group).toHaveAttribute("aria-busy", "true");
+			expect(within(dialog).queryByTestId("suggestions-empty")).toBeNull();
+			release();
+			expect(
+				await within(dialog).findByTestId("suggestions-empty"),
+			).toHaveTextContent("No matches");
 		});
 
 		it("spins while the viewer's repos load", async () => {

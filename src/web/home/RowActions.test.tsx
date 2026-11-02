@@ -11,7 +11,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { HomeRow, PeopleResult } from "../../shared/home";
 import { HomePage } from "./HomePage";
-import { homeQuery } from "./homeApi";
+import { repoKey } from "./homeApi";
 import { snoozePresets } from "./snooze";
 import {
 	ago,
@@ -19,6 +19,7 @@ import {
 	fakeApi,
 	person,
 	renderWithQuery,
+	repoAnswer,
 	row,
 	view,
 } from "./testing";
@@ -391,14 +392,14 @@ describe("RowActions", () => {
 		);
 	});
 
-	it("an older GET /api/home in flight can't undo a write on screen", async () => {
+	it("an older read of the row's repo in flight can't undo a write on screen", async () => {
 		let release: (v: unknown) => void = () => {};
 		const api = setup(() => ({
 			...base,
 			annotations: { note: "kept" },
 		}));
 		await screen.findByText("Seven");
-		const old = view({ reviewing: [base] });
+		const old = repoAnswer(view({ reviewing: [base] }), "acme/api");
 		api.fetch.mockImplementationOnce(
 			() =>
 				new Promise((resolve) => {
@@ -412,7 +413,7 @@ describe("RowActions", () => {
 		);
 		// A refetch starts (the poll, a focus) and hangs.
 		act(() => {
-			void api.client.refetchQueries({ queryKey: homeQuery.queryKey });
+			void api.client.refetchQueries({ queryKey: repoKey("acme/api") });
 		});
 		await userEvent.click(screen.getByRole("button", { name: "Note" }));
 		const pop = screen.getByRole("dialog", { name: "Note" });
@@ -489,12 +490,38 @@ describe("RowActions", () => {
 				{ name: "Someone else" },
 			);
 
+		it("spins while the answer for what's typed is coming; nobody found says no matches", async () => {
+			let release: () => void = () => {};
+			const gate = new Promise<void>((r) => {
+				release = r;
+			});
+			fakeApi(view({ reviewing: [base] }), {
+				[ANNOTATE]: () => base,
+				"GET /api/home/people": () =>
+					gate.then(() => ({ close: [], others: [], pending: false })),
+			});
+			renderWithQuery(<HomePage />);
+			await screen.findByText("Seven");
+			await userEvent.click(screen.getByRole("button", { name: "Waiting on" }));
+			await userEvent.type(field(), "zz");
+			const group = await screen.findByRole("group", { name: "People" });
+			expect(group).toHaveAttribute("aria-busy", "true");
+			expect(screen.queryByTestId("suggestions-empty")).toBeNull();
+			release();
+			expect(await screen.findByTestId("suggestions-empty")).toHaveTextContent(
+				"No matches",
+			);
+		});
+
 		it("yours first (orgs, your repos' people), then GitHub's; arrows and Enter pick one", async () => {
 			const api = open();
 			await screen.findByText("Seven");
 			await userEvent.click(screen.getByRole("button", { name: "Waiting on" }));
 			await userEvent.type(field(), "bo");
 			const people = await screen.findByRole("group", { name: "People" });
+			await waitFor(() =>
+				expect(within(people).getAllByRole("option").length).toBeGreaterThan(0),
+			);
 			expect(
 				within(people)
 					.getAllByRole("option")

@@ -1,4 +1,3 @@
-import { SyncIcon } from "@primer/octicons-react";
 import { useQuery } from "@tanstack/react-query";
 import {
 	Link,
@@ -10,6 +9,7 @@ import { useEffect } from "react";
 import { ApiError, fetchJson } from "./api";
 import { Logo } from "./brand/Brand";
 import { NotFound, notFoundReason } from "./router";
+import { Spinner } from "./Spinner";
 import { Tooltip } from "./Tooltip";
 import { ErrorMessage } from "./ui";
 
@@ -118,16 +118,9 @@ export function OpeningPage() {
 				) : error ? (
 					<ErrorMessage error={error} />
 				) : (
-					<p
-						role="status"
-						className="flex items-center gap-2 text-sm text-muted"
-					>
-						<SyncIcon
-							aria-hidden
-							className="animate-spin motion-reduce:animate-none"
-						/>
+					<Spinner label="Opening the PR" className="text-sm">
 						Opening…
-					</p>
+					</Spinner>
 				)}
 			</main>
 		</div>

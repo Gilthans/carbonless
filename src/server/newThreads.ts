@@ -1,3 +1,4 @@
+import { escapeTags } from "../shared/markdownEscape.js";
 import {
 	type CodeAnchor,
 	type CodeWindow,
@@ -156,7 +157,10 @@ export function placeOf(req: NewThreadRequest): ThreadPlace {
 	};
 }
 
-/** The body posted for `req`: as typed, with the marker (marker.ts). */
+/**
+ * The body posted for `req`: as typed (the tags GitHub would drop
+ * escaped, markdownEscape.ts), with the marker (marker.ts).
+ */
 export function postedBody(req: NewThreadRequest): string {
 	const span =
 		req.subject === "line" &&
@@ -169,7 +173,7 @@ export function postedBody(req: NewThreadRequest): string {
 					endCol: req.endCol,
 				}
 			: null;
-	return req.body + markerFor(req.clientId, span);
+	return escapeTags(req.body) + markerFor(req.clientId, span);
 }
 
 /**

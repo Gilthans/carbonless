@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { readdir } from "node:fs/promises";
 import { join } from "node:path";
 import type { Coverage } from "../../shared/home.js";
@@ -83,25 +84,30 @@ export class StartedReviews {
 	/**
 	 * Every review `slug` has started, in any clone, as-of reviews left out.
 	 * Coverage only for repos `withCoverage` names (`owner/repo`, lowercased;
-	 * all when not given): Home shows no other.
+	 * all when not given): Home shows no other. `only` (`owner/repo`): that
+	 * repo's clone alone, no other is scanned.
 	 */
 	async list(
 		slug: string,
 		withCoverage?: ReadonlySet<string>,
+		only?: string,
 	): Promise<StartedReview[]> {
 		const root = reposDir();
-		const owners = await readdir(root).catch(() => [] as string[]);
-		const repos = (
-			await Promise.all(
-				owners.map(async (o) =>
-					(
-						await readdir(join(root, o)).catch(() => [] as string[])
+		const repos = only
+			? [join(root, `${only.toLowerCase()}.git`)].filter((r) => existsSync(r))
+			: (
+					await Promise.all(
+						(
+							await readdir(root).catch(() => [] as string[])
+						).map(async (o) =>
+							(
+								await readdir(join(root, o)).catch(() => [] as string[])
+							)
+								.filter((r) => r.endsWith(".git"))
+								.map((r) => join(root, o, r)),
+						),
 					)
-						.filter((r) => r.endsWith(".git"))
-						.map((r) => join(root, o, r)),
-				),
-			)
-		).flat();
+				).flat();
 		const found = await Promise.all(
 			repos.map((r) =>
 				this.#inRepo(r, slug, withCoverage).catch((error) => {

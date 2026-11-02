@@ -1,11 +1,11 @@
-import { AlertIcon, ClockIcon, SyncIcon } from "@primer/octicons-react";
+import { AlertIcon, ClockIcon } from "@primer/octicons-react";
 import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useState } from "react";
 import type { ReviewThread, ThreadComment } from "../../shared/types";
 import { ApiError, sessionQuery } from "../api";
 import { BotIcon, LabeledIcon, plural } from "../overview/parts";
 import { RelativeTime } from "../RelativeTime";
-import { Tooltip } from "../Tooltip";
+import { Spinner } from "../Spinner";
 import { CommentBody } from "./CommentBody";
 import {
 	CommentActions,
@@ -173,23 +173,11 @@ export function ThreadComments(props: {
 		query.error instanceof ApiError && query.error.status === 410;
 	if (query.isPending || readGone) {
 		return (
-			<Tooltip content="Loading comments" describe={false}>
-				{(trigger) => (
-					<p
-						{...trigger}
-						role="status"
-						aria-label="Loading comments"
-						data-testid="comments-loading"
-						className="flex min-h-10 w-fit items-center px-1 text-muted"
-					>
-						<SyncIcon
-							size={16}
-							aria-hidden
-							className="animate-spin motion-reduce:animate-none"
-						/>
-					</p>
-				)}
-			</Tooltip>
+			<Spinner
+				label="Loading comments"
+				testId="comments-loading"
+				className="min-h-10 px-1"
+			/>
 		);
 	}
 	if (query.isError) {

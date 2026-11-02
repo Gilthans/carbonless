@@ -73,20 +73,12 @@ export async function registerHomeRoutes(
 	home: HomeService,
 	search: HomeSearch,
 	options: {
-		/**
-		 * Start Home's timed refresh on its first request (default): a
-		 * server whose Home is never opened never asks GitHub for it.
-		 */
-		startOnRequest?: boolean;
 		/** The waiting-on suggestions; one for `home` by default. */
 		people?: HomePeople;
 	} = {},
 ): Promise<void> {
 	const people = options.people ?? new HomePeople(home);
 	await app.register(async (scope) => {
-		if (options.startOnRequest !== false) {
-			scope.addHook("onRequest", async () => home.start());
-		}
 		scope.setErrorHandler((error, _request, reply) => {
 			const send = (status: number, message: string) =>
 				reply.status(status).send({ error: message });
@@ -103,7 +95,17 @@ export async function registerHomeRoutes(
 		});
 
 		scope.get("/api/home", () => home.view());
-		scope.post("/api/home/refresh", () => home.refresh());
+		// One view repo's rows; `fresh=1` reads GitHub now (Refresh, Retry).
+		scope.get<{
+			Params: { owner: string; repo: string };
+			Querystring: { fresh?: unknown };
+		}>("/api/home/repos/:owner/:repo", (request) => {
+			const { owner, repo } = request.params;
+			if (!OWNER.test(owner) || !REPO.test(repo)) {
+				throw new HomeRequestError(`Not a repository: ${owner}/${repo}`);
+			}
+			return home.repo(owner, repo, { fresh: request.query.fresh === "1" });
+		});
 		scope.post<{ Params: { owner: string; repo: string; number: string } }>(
 			"/api/home/prs/:owner/:repo/:number/annotations",
 			(request) => {

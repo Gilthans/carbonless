@@ -127,27 +127,3 @@ export function turnWithWaiting(
 		logins: [sameLogin(waiting.who, viewer) ? viewer : waiting.who],
 	};
 }
-
-/** The turn names the viewer (a team they're in names the team, not them). */
-export function viewersTurn(turn: Turn, viewer: string): boolean {
-	return (
-		!!viewer &&
-		turn.kind === "people" &&
-		turn.logins.some((l) => sameLogin(l, viewer))
-	);
-}
-
-/**
- * A section's order (owner, 2026-10-31: "things in my turn should appear
- * before things with someone else's turn"): the viewer's turn first, then
- * by last GitHub activity, newest first, in each group.
- */
-export function compareRows(viewer: string) {
-	return (
-		a: { turn: Turn; updatedAt: string; number: number },
-		b: { turn: Turn; updatedAt: string; number: number },
-	): number =>
-		Number(viewersTurn(b.turn, viewer)) - Number(viewersTurn(a.turn, viewer)) ||
-		Date.parse(b.updatedAt) - Date.parse(a.updatedAt) ||
-		b.number - a.number;
-}

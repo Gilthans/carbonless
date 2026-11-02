@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { KEPT_TAGS } from "../../test/fake-gh/keptTags.mjs";
 import {
 	FAKE_GH_DIR,
 	prView,
@@ -14,6 +15,7 @@ import {
 	writeScenario,
 } from "../../test/fake-gh/scenario";
 import { GIT_TEST_TIMEOUTS, testGitEnv } from "../../test/git-fixture";
+import { GITHUB_KEPT_TAGS } from "../shared/markdownEscape";
 import { GhError, WriteRefusedError } from "./errors";
 import {
 	deleteComment,
@@ -96,6 +98,17 @@ describe("fake gh", () => {
 		expect(answered).toBe(false);
 		release(process.env.CRB_FAKE_GH ?? "", "prView");
 		await expect(view).resolves.toMatchObject({ headOid: "a".repeat(40) });
+	});
+
+	it("renders with GitHub's kept tags: its copy is GITHUB_KEPT_TAGS", () => {
+		expect([...KEPT_TAGS].sort()).toEqual([...GITHUB_KEPT_TAGS].sort());
+	});
+
+	it("refuses a repository name from gh that isn't a plain path segment (cache paths are built from it)", async () => {
+		scenario({ nameWithOwner: "acme/.." });
+		await expect(resolvePrRef("12", tmp)).rejects.toThrow(
+			/Could not find the GitHub repository/,
+		);
 	});
 
 	it("fails repo view outside a GitHub repository", async () => {

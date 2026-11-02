@@ -48,7 +48,7 @@ export async function startServer(opts: {
 	const key = loopback ? null : (fresh ?? (await accessKey()));
 
 	const registry = new SessionRegistry();
-	// Home's refresh starts on its first request (routes.ts) and stops here.
+	// Home reads GitHub only when its page asks (no timer to stop).
 	const home = new HomeService({
 		config: configAccess(readConfig, updateConfig),
 	});
@@ -63,7 +63,6 @@ export async function startServer(opts: {
 	try {
 		await app.listen({ port, host });
 	} catch (error) {
-		home.stop();
 		await registry.closeAll();
 		if ((error as NodeJS.ErrnoException).code === "EADDRINUSE") {
 			throw new Error(`Port ${port} on ${host} is already in use`);
@@ -91,7 +90,6 @@ export async function startServer(opts: {
 		key,
 		close: () => {
 			closed ??= (async () => {
-				home.stop();
 				await removeServerState();
 				await app.close();
 				// Their background reads of GitHub and the clones stop with them.

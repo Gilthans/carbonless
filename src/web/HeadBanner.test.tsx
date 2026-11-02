@@ -15,7 +15,7 @@ const info: SessionInfo = {
 		url: "https://github.com/acme/widget/pull/12",
 	},
 	viewer: "octo",
-	snapshotHead: "abcdef1234567890".repeat(2) + "abcdef12",
+	snapshotHead: `${"abcdef1234567890".repeat(2)}abcdef12`,
 	currentHead: "f".repeat(40),
 	headMoved: true,
 	patchset: 1,
