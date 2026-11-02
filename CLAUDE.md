@@ -69,7 +69,9 @@ These guide every feature. If a change conflicts with one of them, stop and rais
    somewhere relevant"). A result still on its way never reads as an empty
    one: no 0 counts, empty lists, "none" or "no X" text, blank meters or 0%
    while it is pending; the empty state shows only once the answer says
-   empty, and an error is distinct from both. Use the shared `Spinner` and
+   empty, and an error is distinct from both. A spinner appears in place:
+   showing or hiding it never moves anything (a kept slot, an icon it
+   replaces, or laid over). Use the shared `Spinner` and
    `SkeletonBar` (`src/web/Spinner.tsx`), with an accessible name and
    `aria-busy` on the region. Enforce it in tests: hold the answer (the fake
    gh's `hold`, or a held fetch), assert the loading state and the absence
