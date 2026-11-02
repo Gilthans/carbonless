@@ -57,6 +57,11 @@ result should always be easily distinguishable for a still loading result."
   (Files changed: "Loading comments" in the progress bar, the file tree and
   the open file's bubble; the Timeline: "Loading threads" on a review run
   and its comments).
+- **In place, never moving the page.** A spinner appears in place:
+  showing or hiding it never moves anything (owner, 2026-11-02: "Make sure
+  spinners appear somewhere static so the UI doesn't jitter"). It takes a
+  slot kept whether or not it spins, replaces something of its size, or is
+  laid over; tested by comparing bounding boxes before, while and after.
 - **Errors are a third state.** A failed read shows its error (red; or a
   `warn` notice where only a part is missing, per "Flag uncertainty", like
   Files changed's "Threads not shown"; with Retry where it can), never the

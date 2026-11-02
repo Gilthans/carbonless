@@ -244,10 +244,11 @@ export function OpenBox(props: { className?: string }) {
 						spellCheck={false}
 						className="min-w-0 flex-1 bg-transparent px-2.5 text-sm text-ink outline-none placeholder:text-faint"
 					/>
-					{/* Always mounted, so a screen reader hears it start. */}
+					{/* Always mounted, so a screen reader hears it start; as wide
+					    as its spinner, so the input never narrows when it spins. */}
 					<span
 						role="status"
-						className="my-auto mr-2 flex shrink-0 items-center text-faint"
+						className="my-auto mr-2 flex w-3 shrink-0 items-center text-faint"
 					>
 						{pending && (
 							<>

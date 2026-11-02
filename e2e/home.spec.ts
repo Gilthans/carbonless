@@ -383,6 +383,7 @@ test("Repos spins while the viewer's repos load, then lists only theirs", async 
 	const crb = await startCrb();
 	const box = page.getByRole("combobox", { name: "Open a pull request" });
 	await goHome(page, crb.url);
+	const width = (await box.boundingBox())?.width;
 	await box.click();
 	await box.pressSequentially("acme");
 	const repos = page.getByRole("group", { name: "Repos" });
@@ -393,6 +394,8 @@ test("Repos spins while the viewer's repos load, then lists only theirs", async 
 	// The open box's own live region.
 	const boxStatus = page.getByRole("search").getByRole("status");
 	await expect(boxStatus).toHaveText("Loading your repos");
+	// Its spinner has its own place: the input keeps its width.
+	expect((await box.boundingBox())?.width).toBe(width);
 	writeFileSync(hold, "");
 	await expect(repos).toHaveAttribute("aria-busy", "false", {
 		timeout: 15_000,
@@ -1414,6 +1417,86 @@ test("at desktop width a long login or many signs stay inside their columns", as
 		}),
 	);
 	expect(spills).toEqual([]);
+});
+
+/**
+ * Where `targets` are on the page now: a spinner showing or going must
+ * leave every one where it was (owner, 2026-11-02: "Make sure spinners
+ * appear somewhere static so the UI doesn't jitter").
+ */
+async function boxes(targets: Locator[]) {
+	return Promise.all(targets.map((t) => t.boundingBox()));
+}
+
+test("a refresh's spinners move nothing: the view's name, its chips, the first section and row stay put", async ({
+	page,
+	workdir,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	if (isMobile) await page.setViewportSize({ width: 360, height: 780 });
+	const made = await setup(workdir, pr, { widgetInView: true });
+	const crb = await startCrb();
+	await goHome(page, crb.url);
+	const loading = page.getByRole("status", { name: "Loading" });
+	await expect(loading).toBeHidden();
+	const mine = section(page, "Mine");
+	const targets = [
+		page.getByRole("heading", { level: 1 }),
+		page.getByTestId("view-repo").first(),
+		page.getByTestId("view-repo").last(),
+		page.getByRole("button", { name: "Edit repos" }),
+		mine.getByRole("heading"),
+		mine.getByTestId(/^home-row/).first(),
+		page.getByRole("button", { name: "Refresh" }),
+	];
+	const before = await boxes(targets);
+	made.editScenario((s) => {
+		s.hold = ["home"];
+	});
+	await page.getByRole("button", { name: "Refresh" }).click();
+	await expect(loading).toBeVisible();
+	expect(await boxes(targets)).toEqual(before);
+	release(made.scenarioPath, "home");
+	await expect(loading).toBeHidden();
+	expect(await boxes(targets)).toEqual(before);
+	await expectNoPageOverflow(page);
+});
+
+test("a section's count spinner holds the count's place: its heading and hint don't move when the count comes", async ({
+	page,
+	workdir,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	if (isMobile) await page.setViewportSize({ width: 360, height: 780 });
+	const made = await setup(workdir, pr, { widgetInView: true });
+	const held = `home:${OWNER_REPO}` as const;
+	made.editScenario((s) => {
+		s.hold = [held];
+	});
+	const crb = await startCrb();
+	await goHome(page, crb.url);
+	const reviewing = section(page, "Reviewing");
+	await expect(reviewing.getByRole("img", { name: "Loading" })).toBeVisible();
+	const heading = reviewing.getByRole("heading");
+	const hint = reviewing.getByText("requested or started");
+	// Rows coming above may move the section down; within it, nothing moves.
+	const place = async () => {
+		const [h, t] = await boxes([heading, hint]);
+		return {
+			height: h?.height,
+			x: h?.x,
+			hintX: t?.x,
+			hintDy: (t?.y ?? 0) - (h?.y ?? 0),
+		};
+	};
+	const before = await place();
+	release(made.scenarioPath, held);
+	await expect(heading).toHaveText(/Reviewing\s*2/);
+	expect(await place()).toEqual(before);
 });
 
 test("screenshot at desktop width (CRB_HOME_SHOTS only)", async ({

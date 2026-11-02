@@ -241,9 +241,15 @@ export function FileTree(props: {
 			aria-label="Files"
 			aria-busy={props.threadsLoading || undefined}
 			data-testid="file-tree"
+			className="relative"
 		>
 			{props.threadsLoading && (
-				<Spinner label="Loading comments" className="min-h-8 px-1" />
+				// Laid over the first row's end, so the tree doesn't move when
+				// it goes.
+				<Spinner
+					label="Loading comments"
+					className="absolute top-0 right-0 z-[5] h-6 rounded-full border border-line bg-raised px-1 shadow-control"
+				/>
 			)}
 			<Children
 				nodes={buildTree(props.files).children}

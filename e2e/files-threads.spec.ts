@@ -501,6 +501,47 @@ test("threads loading: spinners in the bar and on the file, never no comments", 
 	});
 });
 
+test("threads loading: the spinners move nothing in the bar, the tree or the files", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	// Owner, 2026-11-02: "Make sure spinners appear somewhere static so the
+	// UI doesn't jitter".
+	if (isMobile) await page.setViewportSize({ width: 360, height: 780 });
+	const p = await setup(pr, { hold: ["threads"] });
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	const bar = page.locator("[data-page-bar]");
+	const spinner = bar.getByRole("status", { name: "Loading comments" });
+	await expect(spinner).toBeVisible();
+	// The open file grows by its threads (content, not a spinner): its top
+	// stays.
+	const targets = [bar, bar.getByRole("progressbar"), fileSection(page, CORE)];
+	const where = async () =>
+		(await Promise.all(targets.map((t) => t.boundingBox()))).map((b, i) =>
+			i === 2 ? { x: b?.x, y: b?.y, width: b?.width } : b,
+		);
+	const before = await where();
+	let treeBefore: unknown;
+	await withTree(page, async (tree) => {
+		await expect(
+			tree.getByRole("status", { name: "Loading comments" }),
+		).toBeVisible();
+		treeBefore = await tree.getByRole("button").first().boundingBox();
+	});
+	release(p.scenarioPath, "threads");
+	await expect(spinner).toHaveCount(0);
+	expect(await where()).toEqual(before);
+	await withTree(page, async (tree) => {
+		await expect(tree).not.toHaveAttribute("aria-busy");
+		expect(await tree.getByRole("button").first().boundingBox()).toEqual(
+			treeBefore,
+		);
+	});
+});
+
 test("slow comments: spinner, then comments", async ({
 	page,
 	pr,

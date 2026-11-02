@@ -309,22 +309,30 @@ export function HomePage() {
 							<h1 className="font-display text-base font-bold">
 								{data.view.name}
 							</h1>
-							{busy && (
-								// Anything Home shows being read or saved: the view, a
-								// repo, a save (owner, 2026-11-01: "If anything is
-								// refreshing, we should see a spinner").
-								<span
-									role="status"
-									aria-label={viewSave.saving ? "Saving" : "Loading"}
-								>
-									<Sign
-										label={viewSave.saving ? "Saving…" : "Loading…"}
-										className="text-muted"
+							{/* Its place is kept, spinning or not: showing it moves
+							    nothing (owner, 2026-11-02: "Make sure spinners appear
+							    somewhere static so the UI doesn't jitter"). */}
+							<span
+								data-testid="busy-slot"
+								className="inline-flex h-4 w-4 shrink-0 items-center justify-center"
+							>
+								{busy && (
+									// Anything Home shows being read or saved: the view, a
+									// repo, a save (owner, 2026-11-01: "If anything is
+									// refreshing, we should see a spinner").
+									<span
+										role="status"
+										aria-label={viewSave.saving ? "Saving" : "Loading"}
 									>
-										<SyncIcon size={14} aria-hidden className={spin} />
-									</Sign>
-								</span>
-							)}
+										<Sign
+											label={viewSave.saving ? "Saving…" : "Loading…"}
+											className="text-muted"
+										>
+											<SyncIcon size={14} aria-hidden className={spin} />
+										</Sign>
+									</span>
+								)}
+							</span>
 							{repos.map((r) => (
 								<RepoChip
 									key={r.name}
