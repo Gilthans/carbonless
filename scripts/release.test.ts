@@ -201,6 +201,28 @@ describe("workflow steps", () => {
 		});
 	});
 
+	it("the RC after the flip skips the interim RCs set in package.json by hand, whose tags never reached origin", async () => {
+		// master's package.json went 0.1.0-rc.1 … 0.1.0-rc.4, then 0.1.0 (the flip);
+		// only v0.1.0-rc.1 is on origin.
+		const history = [
+			'-\t"version": "0.1.0-rc.4",',
+			'+\t"version": "0.1.0",',
+			'-\t"version": "0.1.0-rc.3",',
+			'+\t"version": "0.1.0-rc.4",',
+			'+\t"version": "0.1.0-rc.1",',
+			'+  "version": "0.2.0-rc.9",',
+		].join("\n");
+		const { io, calls } = fakeIo({
+			"git ls-remote": lsRemote("v0.1.0-rc.1"),
+			"npm view": NPM_404,
+			"git log -p": history,
+		});
+		expect((await rcToPublish(io, "0.1.0")).version).toBe("0.1.0-rc.5");
+		expect(calls).toContain("git log -p --format= -- package.json");
+		// Another release's RCs don't count.
+		expect((await rcToPublish(io, "0.3.0")).version).toBe("0.3.0-rc.1");
+	});
+
 	it("later pushes count npm's versions too", async () => {
 		const { io } = fakeIo({
 			"git ls-remote": lsRemote("v0.1.0", "v0.2.0-rc.1"),

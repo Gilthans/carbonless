@@ -1,7 +1,11 @@
 # Publishes a tried RC as a release: the RC tag's commit, checked in full
 # (e2e too), published again as X.Y.Z on npm's `latest`, tagged vX.Y.Z; then
 # a PR "next: <X.Y.Z bumped>" with docs/changelog.md for the owner to merge.
-# Started by `pnpm release promote` on the owner's word. docs/releasing.md.
+# Started by `pnpm release promote` on the owner's word. Two jobs: `check`
+# (the RC built and tested in full, packed) runs at once; `publish` (npm, the
+# tag, the next PR) runs in the GitHub environment `npm-release`, whose
+# required reviewer is the owner: nothing is published until they approve the
+# run, whoever started it. docs/releasing.md.
 name: Promote
 
 on:
@@ -18,8 +22,7 @@ on:
         default: minor
 
 permissions:
-  contents: write # the vX.Y.Z tag and the next/* branch
-  pull-requests: write # the "next" PR
+  contents: read
 
 concurrency:
   # Its own group: a publish-rc queued meanwhile can't cancel it, nor it a
@@ -34,20 +37,23 @@ defaults:
     shell: bash # -eo pipefail: `cmd | tee` fails when cmd does
 
 jobs:
-  promote:
+  check:
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    permissions:
+      contents: read
     env:
       # Inputs reach the shell as variables, never pasted into scripts.
       RC_INPUT: ${{ inputs.rc }}
-      NEXT_INPUT: ${{ inputs.next }}
+    outputs:
+      tag: ${{ steps.plan.outputs.tag }}
+      release: ${{ steps.plan.outputs.release }}
+      sha: ${{ steps.rc.outputs.sha }}
     steps:
       - uses: actions/checkout@v4
         with:
           ref: master
-          fetch-depth: 0 # every tag, and history for the changelog
-          # The write token stays out of .git/config while dependencies'
-          # code and the tests run; only the steps that push get it.
+          fetch-depth: 0 # every tag
           persist-credentials: false
       - uses: pnpm/action-setup@v4
         with:
@@ -56,19 +62,19 @@ jobs:
         with:
           node-version-file: .nvmrc
           cache: pnpm
-          registry-url: https://registry.npmjs.org
       - run: pnpm install --frozen-lockfile
       - name: Plan
         id: plan
         run: pnpm exec tsx scripts/release.ts ci:promote-plan "$RC_INPUT" | tee -a "$GITHUB_OUTPUT"
       - name: Check out the RC
+        id: rc
         run: |
           echo "RC_DIR=$RUNNER_TEMP/rc" >>"$GITHUB_ENV"
           RC_DIR="$RUNNER_TEMP/rc"
           git worktree add --detach "$RC_DIR" "refs/tags/${{ steps.plan.outputs.tag }}"
-          echo "RC_SHA=$(git rev-parse "refs/tags/${{ steps.plan.outputs.tag }}^{commit}")" >>"$GITHUB_ENV"
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          sha="$(git rev-parse "refs/tags/${{ steps.plan.outputs.tag }}^{commit}")"
+          echo "RC_SHA=$sha" >>"$GITHUB_ENV"
+          echo "sha=$sha" >>"$GITHUB_OUTPUT"
       - name: Install the RC
         working-directory: ${{ runner.temp }}/rc
         run: pnpm install --frozen-lockfile
@@ -103,7 +109,6 @@ jobs:
           mkdir -p "$RUNNER_TEMP/pack"
           pnpm pack --pack-destination "$RUNNER_TEMP/pack"
           tgz="$(ls "$RUNNER_TEMP"/pack/carbonless-review-*.tgz)"
-          echo "TGZ=$tgz" >>"$GITHUB_ENV"
           tar -xzOf "$tgz" package/dist/build-info.json | tee "$RUNNER_TEMP/build-info.json"
           node -e '
             const b = require(process.argv[1]);
@@ -111,6 +116,60 @@ jobs:
               console.error(`build-info is ${b.version} ${b.commit}`);
               process.exit(1);
             }' "$RUNNER_TEMP/build-info.json" "${{ steps.plan.outputs.release }}" "$RC_SHA"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-tarball
+          path: ${{ runner.temp }}/pack/carbonless-review-*.tgz
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: check
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # The owner is this environment's required reviewer: the run waits here
+    # for their approval. NPM_TOKEN may be an environment secret of it.
+    environment: npm-release
+    permissions:
+      contents: write # the vX.Y.Z tag and the next/* branch
+      pull-requests: write # the "next" PR
+    env:
+      NEXT_INPUT: ${{ inputs.next }}
+      TAG: ${{ needs.check.outputs.tag }}
+      RELEASE: ${{ needs.check.outputs.release }}
+      RC_SHA: ${{ needs.check.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0 # every tag, and history for the changelog
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12.14.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+      - run: pnpm install --frozen-lockfile
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-tarball
+          path: ${{ runner.temp }}/pack
+      - name: The tarball the check job tested
+        run: |
+          tgz="$(ls "$RUNNER_TEMP"/pack/carbonless-review-*.tgz)"
+          echo "TGZ=$tgz" >>"$GITHUB_ENV"
+          tar -xzOf "$tgz" package/dist/build-info.json >"$RUNNER_TEMP/build-info.json"
+          node -e '
+            const b = require(process.argv[1]);
+            if (b.version !== process.argv[2] || b.commit !== process.argv[3]) {
+              console.error(`build-info is ${b.version} ${b.commit}`);
+              process.exit(1);
+            }' "$RUNNER_TEMP/build-info.json" "$RELEASE" "$RC_SHA"
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
       - name: Publish to npm (latest)
         run: npm publish "$TGZ" --tag latest --access public
         env:
@@ -121,7 +180,7 @@ jobs:
         id: fixup
         # The release as the floor: right after publishing, the read may still
         # be stale (even a 404 on the first publish).
-        run: pnpm exec tsx scripts/release.ts ci:rc-fixup "${{ steps.plan.outputs.release }}" | tee -a "$GITHUB_OUTPUT"
+        run: pnpm exec tsx scripts/release.ts ci:rc-fixup "$RELEASE" | tee -a "$GITHUB_OUTPUT"
       - name: Move rc to latest
         if: steps.fixup.outputs.move_rc_to != ''
         run: npm dist-tag add "carbonless-review@${{ steps.fixup.outputs.move_rc_to }}" rc
@@ -131,23 +190,22 @@ jobs:
         env:
           TOKEN: ${{ github.token }}
         run: |
-          git tag "v${{ steps.plan.outputs.release }}" "$RC_SHA"
+          git tag "v$RELEASE" "$RC_SHA"
           auth="$(printf 'x-access-token:%s' "$TOKEN" | base64 -w0)"
           echo "::add-mask::$auth"
           GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.https://github.com/.extraheader \
-            GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $auth" git push origin "refs/tags/v${{ steps.plan.outputs.release }}"
+            GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $auth" git push origin "refs/tags/v$RELEASE"
       - name: Next version and changelog PR
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          release="${{ steps.plan.outputs.release }}"
-          next="$(pnpm exec tsx scripts/release.ts ci:bump "$release" "$NEXT_INPUT" | sed -n 's/^next=//p')"
+          next="$(pnpm exec tsx scripts/release.ts ci:bump "$RELEASE" "$NEXT_INPUT" | sed -n 's/^next=//p')"
           branch="next/$next"
           git switch -c "$branch"
           pnpm exec tsx scripts/release.ts ci:write-version "$next"
-          pnpm exec tsx scripts/release.ts ci:changelog "$release" "$RC_SHA"
+          pnpm exec tsx scripts/release.ts ci:changelog "$RELEASE" "$RC_SHA"
           git add package.json docs/changelog.md
-          git commit -m "next: $next" -m "Released $release (${{ steps.plan.outputs.tag }}); merges to master now publish $next-rc.N."
+          git commit -m "next: $next" -m "Released $RELEASE ($TAG); merges to master now publish $next-rc.N."
           auth="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
           echo "::add-mask::$auth"
           GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.https://github.com/.extraheader \
@@ -155,9 +213,9 @@ jobs:
           open="$(gh pr list --head "$branch" --state open --json url --jq '.[0].url // ""')"
           if [[ -z "$open" ]]; then
             gh pr create --base master --head "$branch" --title "next: $next" \
-              --body "Released **$release** from ${{ steps.plan.outputs.tag }} (npm \`latest\`). This sets master's next release to $next and adds $release to docs/changelog.md."
+              --body "Released **$RELEASE** from $TAG (npm \`latest\`). This sets master's next release to $next and adds $RELEASE to docs/changelog.md."
           fi
           {
-            echo "Released carbonless-review@$release on \`latest\` from ${{ steps.plan.outputs.tag }}."
+            echo "Released carbonless-review@$RELEASE on \`latest\` from $TAG."
             echo "Next: $next (PR from $branch)."
           } >>"$GITHUB_STEP_SUMMARY"

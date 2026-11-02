@@ -465,6 +465,26 @@ export async function next(
  * version exists): until the "next" PR moves master on, an RC of it would
  * sort before the release and move `rc` backwards.
  */
+/**
+ * The versions package.json has had in this checkout's history. Before the
+ * switch to CI-published RCs, interim RCs were set there by hand (0.1.0-rc.2
+ * to rc.4 on master, their tags local only): their numbers count as used, so
+ * no CI-published RC repeats one. Nothing when git can't say.
+ */
+export async function historyVersions(io: Io): Promise<string[]> {
+	const r = await io.run("git", [
+		"log",
+		"-p",
+		"--format=",
+		"--",
+		"package.json",
+	]);
+	if (r.code !== 0) return [];
+	return [...r.stdout.matchAll(/^[+-]\s*"version":\s*"([^"]+)"/gm)].flatMap(
+		(m) => (m[1] ? [m[1]] : []),
+	);
+}
+
 export async function rcToPublish(
 	io: Io,
 	packageVersion: string,
@@ -475,12 +495,18 @@ export async function rcToPublish(
 			`package.json's version must be the next release X.Y.Z: ${packageVersion}`,
 		);
 	}
-	const [tags, npm] = await Promise.all([remoteTags(io), npmState(io)]);
+	const [tags, npm, history] = await Promise.all([
+		remoteTags(io),
+		npmState(io),
+		historyVersions(io),
+	]);
 	const release = formatVersion(next);
 	const released =
 		tags.includes(tagOf(next)) || (npm?.versions.includes(release) ?? false);
 	return {
-		version: formatVersion(nextRc(next, tags, npm?.versions ?? [])),
+		version: formatVersion(
+			nextRc(next, tags, [...(npm?.versions ?? []), ...history]),
+		),
 		firstPublish: npm === null,
 		blocked: released
 			? `${release} is released and master's version is still ${release}: merge the "next" PR first; no RC is published until then`

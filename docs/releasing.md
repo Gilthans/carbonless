@@ -8,7 +8,7 @@ How carbonless reaches npm as `carbonless-review`. Decisions:
 | npm dist-tag | Version | Who |
 |---|---|---|
 | `latest` | `X.Y.Z` | co-workers: `pnpm add -g carbonless-review` |
-| `rc` | `X.Y.Z-rc.N` (or the release itself, right after one) | the owner's main on the devbox |
+| `rc` | `X.Y.Z-rc.N` (or the release itself, right after one) | trying the next release; the owner's main, once it follows npm |
 
 `latest` never points at an RC.
 
@@ -23,16 +23,24 @@ pushes master or tags by hand. `package.json`'s `version` on master is the
    out exactly that commit and, if it is still master's tip (CI runs can
    finish out of order; the newest push holds the older ones), publishes
    `X.Y.Z-rc.N` to `rc` and pushes the tag `vX.Y.Z-rc.N`. `N` is one past
-   the highest `X.Y.Z-rc.*` among the tags and npm's versions. Once `X.Y.Z`
+   the highest `X.Y.Z-rc.*` among the tags, npm's versions and the versions
+   `package.json` has had on master (the interim RCs before this flow were
+   set there by hand, their tags never pushed). Once `X.Y.Z`
    is released, merges publish nothing (a warning says why) until the
    "next" PR below moves master's version on: an `X.Y.Z-rc.N` would sort
    before `X.Y.Z` and move `rc` backwards.
-2. **Main follows `rc`.** The coordinator runs `scripts/devbox/update rc` and
-   sends the owner the link.
+2. **Main moves by itself.** The owner's devbox moves main to master's newest
+   build within minutes of a merge, through local setup outside this repo;
+   after the first npm publish the owner switches it to follow `rc` instead
+   (see "Flipping the switch"). The coordinator checks it moved and sends
+   the owner the link.
 3. **Promote → release**, only on the owner's word: `pnpm release promote
    [<rc tag>] [--next patch|minor|major]` starts `.github/workflows/promote.yml`
-   and prints the run's link. It checks out the RC tag (default: the newest),
-   runs every check including Playwright, publishes that commit again as
+   and prints the run's link. Its `check` job checks out the RC tag (default:
+   the newest), runs every check including Playwright and packs it. Its
+   `publish` job runs in the GitHub environment `npm-release` and **waits
+   for the owner to approve it** on the run's page (Review deployments),
+   whoever started the run; then it publishes that tested tarball as
    `X.Y.Z` on `latest` (and moves `rc` to it when `rc` is older), tags
    `vX.Y.Z` on the RC's commit, and opens the PR **"next: X.Y+1.0"** (or
    the `--next` bump) that sets master's version and adds the release's
@@ -71,11 +79,12 @@ merge publishes RCs.
 ### pnpm's release-age delay
 
 pnpm 11+ skips versions published less than a day ago (`minimumReleaseAge`,
-default 1440 minutes) and quietly installs an older one. `scripts/devbox/update`
-and `install` exempt `carbonless-review`
-(`--config.minimumReleaseAgeExclude=carbonless-review`), so main gets a new RC
-at once. Co-workers running `pnpm add -g carbonless-review` get a release a
-day after it is published, or at once with that same flag.
+default 1440 minutes) and quietly installs an older one. Installs of our own
+builds exempt `carbonless-review`
+(`--config.minimumReleaseAgeExclude=carbonless-review`; `pnpm release local`
+does), so a new RC arrives at once. Co-workers running `pnpm add -g
+carbonless-review` get a release a day after it is published, or at once with
+that same flag.
 
 ### Tokens
 
@@ -85,7 +94,10 @@ Only the steps that reach origin (the tip check, pushing tags and the
 `next/*` branch, the PR) get `GITHUB_TOKEN` (git gets it through
 `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_0`/`GIT_CONFIG_VALUE_0`, not on its
 command line), and only the `npm publish` and `npm dist-tag` steps get
-`NPM_TOKEN`. Steps that need tags read the checkout's own (a full-history
+`NPM_TOKEN`. Promote's `check` job, which runs the RC's dependencies and
+tests, has read-only permissions and no npm token; the `publish` job, which
+only installs master's dependencies and publishes the tarball `check` made,
+gets the write permissions and waits for the owner's approval. Steps that need tags read the checkout's own (a full-history
 checkout has every tag).
 
 ### What GITHUB_TOKEN can't do
@@ -96,26 +108,6 @@ before releasing instead), and the "next" PR shows no CI checks until
 someone pushes to it or closes and reopens it. If the owner makes CI a
 required check on master, that PR needs one of those, or the workflows a
 token of the owner's.
-
-## Setup (the owner, once)
-
-1. **npm:** an account with two-factor authentication. Create a granular
-   access token (npmjs.com → Access Tokens → Generate New Token → Granular):
-   packages and scopes **Read and write**, for `carbonless-review` (before
-   the first publish: all packages), with **Bypass two-factor
-   authentication** checked (CI can't answer 2FA), and an expiry you note
-   down.
-2. **GitHub, Gilthans/carbonless → Settings:**
-   - Secrets and variables → Actions → New repository secret `NPM_TOKEN`,
-     the token from step 1. Only the owner handles it.
-   - Actions → General → Workflow permissions: **Read and write
-     permissions**, and **Allow GitHub Actions to create and approve pull
-     requests** (the "next" PR).
-3. The repo is private, so npm provenance (`--provenance`) is not
-   available; the workflows publish with the token alone.
-
-When the token expires, publish-rc and promote fail at `npm publish` with a
-401: make a new one and replace the secret.
 
 ### Two workflows at once
 
@@ -136,8 +128,54 @@ worst, a publish-rc that checked just before the release lands publishes
 put back on `X.Y.Z` by the same run. Promote refuses a release that isn't
 newer than `latest`, so `latest` never moves back either.
 
+## Setup (the owner, once)
+
+1. **npm:** an account with two-factor authentication. Create a granular
+   access token (npmjs.com → Access Tokens → Generate New Token → Granular):
+   packages and scopes **Read and write**, for `carbonless-review` (before
+   the first publish: all packages), with **Bypass two-factor
+   authentication** checked (CI can't answer 2FA), and an expiry you note
+   down.
+2. **GitHub, Gilthans/carbonless → Settings:**
+   - Environments → New environment **`npm-release`**: Required reviewers:
+     yourself (leave "Prevent self-review" off, so you can approve runs you
+     started); Deployment branches and tags: Selected, `master`. Promote's
+     publishing job runs here, so nothing reaches `latest` without your
+     click, even when an agent starts the run.
+   - Secrets and variables → Actions → New repository secret `NPM_TOKEN`,
+     the token from step 1 (only you handle it). It must be a repository
+     secret: publish-rc publishes RCs automatically, in no environment. (A
+     second token kept as an `npm-release` environment secret of the same
+     name would be the one promote uses.)
+   - Actions → General → Workflow permissions: **Read and write
+     permissions**, and **Allow GitHub Actions to create and approve pull
+     requests** (the "next" PR).
+3. The repo is private, so npm provenance (`--provenance`) is not
+   available; the workflows publish with the token alone.
+
+When the token expires, publish-rc and promote fail at `npm publish` with a
+401: make a new one and replace the secret.
+
+## Flipping the switch
+
+1. The setup above; then merge the PR that brings these workflows.
+2. Its CI run makes publish-rc tag `v0.1.0-rc.N` (N after the interim RCs)
+   without publishing (the package isn't on npm yet); the run's summary says
+   to promote it.
+3. `pnpm release promote` (the newest RC), then approve the run's
+   `publish` job: `0.1.0` goes to `latest` (and `rc`), `v0.1.0` is tagged,
+   and the PR "next: 0.2.0" opens.
+4. `npm view carbonless-review dist-tags` shows `latest: 0.1.0, rc: 0.1.0`.
+   Switch the devbox's local setup to npm mode
+   (`echo npm > ~/.config/carbonless-devbox/source`), so main follows `rc`
+   from then on.
+5. Merge "next: 0.2.0": every merge after it publishes `0.2.0-rc.N`.
+
 ## When something fails
 
+- **promote is waiting:** its `publish` job waits for the owner's approval
+  (the run's page → Review deployments). Rejecting it publishes nothing;
+  the RC stays as it is.
 - **publish-rc failed before `npm publish`:** nothing is published; the next
   merge publishes the next number. To retry the same commit, re-run the job.
   Re-running a publish-rc (or CI) whose RC was already published publishes
@@ -154,3 +192,14 @@ newer than `latest`, so `latest` never moves back either.
   else is wrong. The next publish-rc run moves it (any merge; it does so even
   when it publishes no RC), or on the owner's word: `npm dist-tag add
   carbonless-review@X.Y.Z rc`.
+
+## Later cleanup
+
+- **A release PR instead of a dispatch:** a bot keeps a "release X.Y.Z" PR
+  open (changelog and version), and merging it is the release (the
+  release-please / changesets pattern); it would replace `pnpm release
+  promote`, the environment approval and the "next" PR.
+- **npm trusted publishing (OIDC)** instead of `NPM_TOKEN`, once the package
+  exists: no long-lived token. It needs npm CLI ≥ 11.5.1 (≥ 11.21.0 for
+  `dist-tag`) and allows one trusted workflow per package, so publish-rc and
+  promote would become one workflow.

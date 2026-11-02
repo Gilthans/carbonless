@@ -84,8 +84,9 @@ refuses a client whose version or commit differs.
    As built (2026-11-01; `docs/releasing.md`): pushes reach master only
    through PRs, so master's version is the next release and every push
    whose CI passes publishes `X.Y.Z-rc.N` (workflow `publish-rc`); `pnpm
-   release promote` runs workflow `promote` (republish as `X.Y.Z`, then a
-   "next" PR with the changelog); `pnpm release next` sets another next
+   release promote` runs workflow `promote` (republish as `X.Y.Z` once the
+   owner approves its `npm-release` environment, then a "next" PR with the
+   changelog); `pnpm release next` sets another next
    version. The repo is private, so no `--provenance`: an `NPM_TOKEN`
    secret. License: MIT.
 3. **M3, co-worker polish, on demand.** `crb doctor` (git, gh login, Node,

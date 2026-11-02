@@ -15,6 +15,8 @@ pnpm add -g carbonless-review@rc       # the release candidate channel
 pnpm installs a version a day after it is published (its `minimumReleaseAge`);
 add `--config.minimumReleaseAgeExclude=carbonless-review` to get it at once.
 
+From a checkout instead (any branch): `pnpm install && pnpm release local`.
+
 ## Usage
 
 ```sh
@@ -62,8 +64,8 @@ Tailscale):
 
 1. Install it: in a checkout, `pnpm install`, then `pnpm release local`
    (builds, packs into `~/.local/share/carbonless/releases/` and installs
-   the global `crb`; `--no-install` only packs), or from npm once it is
-   published there.
+   the global `crb`; `--no-install` only packs), or from npm:
+   `pnpm add -g carbonless-review` (`@rc` for the release candidates).
 2. Bind it, in `~/.config/carbonless/config.json`:
    `{ "serve": { "host": "<the machine's Tailscale IP>", "port": 4747 } }`.
    Off loopback, pages need the access key (`~/.local/state/carbonless/key`);
