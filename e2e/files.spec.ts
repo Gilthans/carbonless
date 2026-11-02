@@ -1306,7 +1306,7 @@ test("each file shows whether it was added, deleted, modified or renamed", async
 	).toBe(true);
 });
 
-test("scrolling into a folded folder never unfolds it; its dot follows the file in view", async ({
+test("scrolling into a folded folder never unfolds it; opening a file from its header does", async ({
 	page,
 	pr,
 	startCrb,
@@ -1341,20 +1341,31 @@ test("scrolling into a folded folder never unfolds it; its dot follows the file 
 			"false",
 		);
 	});
-	// Open the long file and scroll down past it.
+	// Open the long file from its header and scroll down past it.
 	const section = await expand(page, "docs/long.md");
 	await expect(section.getByTestId("diff-line").first()).toBeVisible();
 	await page.evaluate(() =>
 		window.scrollTo(0, document.documentElement.scrollHeight),
 	);
 	await withTree(page, async (tree) => {
-		// The file in view moved into src: its dot did, the fold held.
+		// The file in view moved into src: its dot did, the fold held; docs
+		// keeps the opened file's dot.
 		await expect(folderRow(tree, "src")).toHaveAttribute("data-holds-current");
 		await expect(folderRow(tree, "src")).toHaveAttribute(
 			"aria-expanded",
 			"false",
 		);
 		await expect(tree.locator('[data-folder-group="src"] ul')).toHaveCount(0);
+		await expect(folderRow(tree, "docs")).toHaveAttribute("data-holds-opened");
+	});
+	// Opening a file inside it from its own header unfolds it.
+	await expand(page, "src/n.ts");
+	await withTree(page, async (tree) => {
+		await expect(folderRow(tree, "src")).toHaveAttribute(
+			"aria-expanded",
+			"true",
+		);
+		await expect(folderRow(tree, "src")).toHaveAttribute("data-holds-opened");
 	});
 });
 

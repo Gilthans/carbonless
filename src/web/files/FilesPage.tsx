@@ -418,6 +418,8 @@ export function FilesPage() {
 			? { index, top: header.getBoundingClientRect().top }
 			: null;
 		setOpen(expanded ? keyOf(index) : null);
+		// Opening a file from its header opens it in the tree too.
+		if (expanded) openInTree(index);
 	};
 	// Closing the file above, or the one being read, would move the header
 	// that was just used: scroll so it stays under the pointer.
