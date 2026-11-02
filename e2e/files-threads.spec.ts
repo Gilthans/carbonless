@@ -709,8 +709,11 @@ test("a folded folder shows a yellow dot when a thread inside waits on you", asy
 		// The folder row stays in the file rows' columns, inside the tree.
 		const box = await src.boundingBox();
 		const treeBox = await tree.boundingBox();
-		expect(box && treeBox && box.x + box.width).toBeLessThanOrEqual(
-			(treeBox?.x ?? 0) + (treeBox?.width ?? 0) + 1,
+		expect(box).not.toBeNull();
+		expect(treeBox).not.toBeNull();
+		if (!box || !treeBox) return;
+		expect(box.x + box.width).toBeLessThanOrEqual(
+			treeBox.x + treeBox.width + 1,
 		);
 		await src.click();
 		await expect(src.getByTestId("tree-threads")).toHaveCount(0);
