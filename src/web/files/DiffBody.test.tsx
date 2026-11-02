@@ -1315,7 +1315,7 @@ describe("DiffBody side by side", () => {
 			expect(screen.getAllByTestId("bubble-row")).toHaveLength(2);
 		});
 
-		it("gives the file bubble a row of its own above a first row of code, the file's threads under it", async () => {
+		it("moves the file bubble on the first row to its bubble row, the file's threads under it", async () => {
 			phone();
 			const { user } = setup({
 				hunks: pairHunks(),
@@ -1349,20 +1349,16 @@ describe("DiffBody side by side", () => {
 			const first = lineRows()[0] as HTMLElement;
 			expect(first).toHaveAttribute("data-new-no", "1");
 			unpadded(first);
-			// Above line 1: the file bubble's own row, then its threads' row.
-			const fileThreads = first.previousElementSibling as HTMLElement;
-			expect(fileThreads).toHaveAttribute("data-testid", "file-threads-row");
-			const own = fileThreads.previousElementSibling as HTMLElement;
-			expect(
-				within(within(own).getByTestId("file-bubble-slot")).getByRole(
-					"button",
-					{ name: "Comment on file" },
-				),
-			).toBeInTheDocument();
-			// Line 1's bubble row holds only its own threads' bubble.
 			const bubbles = first.nextElementSibling as HTMLElement;
 			expect(bubbles).toHaveAttribute("data-testid", "bubble-row");
-			expect(sideBubbles(bubbles, "RIGHT")).toEqual(["1 comment on line 1"]);
+			expect(sideBubbles(bubbles, "RIGHT")).toEqual([
+				"Comment on file",
+				"1 comment on line 1",
+			]);
+			expect(bubbles.nextElementSibling).toHaveAttribute(
+				"data-testid",
+				"file-threads-row",
+			);
 		});
 
 		it("keeps bubbles in their cells on a wide screen and in unified", async () => {

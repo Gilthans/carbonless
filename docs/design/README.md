@@ -367,12 +367,14 @@ decides where; nothing else does):
   grey), named like the bubble and in the row's tooltip.
 - In an open file, file comments and threads whose line isn't in the diff
   get the **file bubble** on the diff's first row (a file cluster's row, a
-  hidden run's, a hunk header's, whichever comes first; a row of its own
-  when the first row is code, so it never covers a line), centred on the
-  diff's visible width and kept there as long lines scroll (on touch the
-  row's text line is 40px, level with the bubble) (owner: "in the
-  center of that diff line instead of at the side, so it's more
-  prominent"), apart from the line bubbles at the right: the line bubble's
+  hidden run's, a hunk header's, whichever comes first). Unified: a row of
+  its own when the first row is code, so it never covers a line, and
+  centred on the diff's visible width, kept there as long lines scroll (on
+  touch the row's text line is 40px, level with the bubble) (owner: "in
+  the center of that diff line instead of at the side, so it's more
+  prominent"), apart from the line bubbles at the right. Side by side: at
+  the right with the line bubbles, in the first row's right cell when
+  that is code (on a phone, in the bubble row under it). It is the line bubble's
   pill with a file mark first ("2 comments on this file"); lines not in the
   diff add a `warn` alert to it ("…, line not in this diff") and to the
   thread's header ("Line not in this diff"). It opens a row right under
