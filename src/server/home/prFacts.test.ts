@@ -25,8 +25,8 @@ const iso = (ms: number) => new Date(ms).toISOString();
 const SINCE = NOW - 3 * DAY;
 
 let fx: HomeFixture;
-afterEach(() => {
-	fx?.cleanup();
+afterEach(async () => {
+	await fx?.cleanup();
 	fx = undefined as unknown as HomeFixture;
 });
 
