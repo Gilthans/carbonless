@@ -95,6 +95,7 @@ refs/crb/reviews/<review-id>/meta                            shared review metad
 refs/crb/reviews/<review-id>/reviewers/<reviewer>/progress        one per reviewer
 refs/crb/reviews/<review-id>/reviewers/<reviewer>/patchsets/<n>   head of patch set n
 refs/crb/lookup/<source>/<key-hash>                               lookup: source key → review id
+refs/crb/inbox/<reviewer>                                         one per reviewer per repo: Home's annotations
 ```
 
 - **meta** holds review-level events: created, closed, compacted. Anyone may
@@ -246,6 +247,56 @@ Write rules, enforced in code and tested:
   append-only, so there's nothing to merge.
 - **Several refs at once** (for example progress and a new `patchsets/<n>` ref
   when a patch set starts) use one `git update-ref --stdin` transaction.
+
+## Inbox ref
+
+Home's per-PR annotations (snooze, waiting on, note; spec
+`docs/superpowers/specs/2026-10-28-home-and-always-on-server-design.md`) are
+the reviewer's own, so they live in `refs/crb/inbox/<reviewer>` of each
+repo's cache clone, next to the review refs: one ref per reviewer per
+repository, written only by that reviewer (GitDB 3, 16), events only
+(GitDB 5), in the commit format above (empty tree, slug identities,
+compare-and-swap). Written by `src/server/home/inbox.ts`.
+
+| Type | Payload |
+|---|---|
+| `pr-snoozed` | `pr` (number), `until` (ms since epoch), `wakeOnActivity` |
+| `pr-waiting-on` | `pr`, `who` (a GitHub login; the reviewer's own means me) |
+| `pr-note` | `pr`, `text` (empty clears the note) |
+| `pr-cleared` | `pr`, `kind` (`snooze` or `waiting`) |
+
+- **Write rule**, enforced on write and on read: all four need
+  `by: "human"`. Nothing automatic hides a PR; an inbox event by anyone
+  else is skipped by readers.
+- **Fold:** deduplicate by `id`, sort by `(ts, id)`, the last event per
+  (PR, kind) wins. Home's Wake up writes one commit of two `pr-cleared`
+  events. New events are stamped after the ref's newest, so a clock
+  stepping back can't reorder a clear before what it clears.
+- **Hiding is computed, never stored:** a snooze hides until `until`, or
+  until the PR's GitHub `updatedAt` is strictly later than the snooze
+  event's `ts` when `wakeOnActivity`; a wait hides until the named login's
+  last commit, comment or review is later than the event. Both are folded
+  against the current time on every read.
+- **A repo without a clone.** crb commits use the empty tree, so the ref is
+  written into a bare repository with none of the project's objects:
+  `ensureRepoInit` (`src/server/clone.ts`) runs `git init --bare` and marks
+  the repo `crb.initOnly`, with no call to GitHub. The review's first open
+  (`ensureClone`) then clones beside it and fetches the branches, tags, HEAD
+  and remote URL in locally, keeping the inbox ref in place, and drops the
+  mark. The remote URL is the clone's (as `gh repo clone` chose it), not
+  guessed at init. The cost: an annotated, never-opened repo's first open
+  clones aside and then fetches locally, about twice the disk and time of a
+  plain clone, once. `ensureRepoInit` never waits on the repo lock when the
+  repo exists, so an annotation doesn't queue behind a running clone.
+- **"Me":** a wait on the reviewer's own login. It never hides and shows
+  as "you"; no sentinel value is stored (`me` is a real GitHub login).
+- **Privacy:** notes are private to the reviewer. Nothing pushes crb refs
+  yet; when sync arrives, the inbox ref stays local unless the reviewer
+  turns it on (GitDB 20).
+- **Size**, measured 2026-10-29: 100 commits (125 events: snoozes, waits,
+  notes, wakes over 30 PRs) took 404 KiB loose and 18 KiB packed after
+  `git gc`; an append took 14 ms and a cold read of the fold 5 ms. No
+  compaction, as for review refs.
 
 ## Reading
 

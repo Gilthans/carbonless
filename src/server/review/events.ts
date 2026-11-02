@@ -62,11 +62,53 @@ export interface ReviewClosedEvent extends EventBase {
 	mergeCommit?: string;
 }
 
+/**
+ * Inbox events (`refs/crb/inbox/<reviewer>`, one ref per reviewer per repo):
+ * the reviewer's own annotations of a PR on Home. Only a human writes them.
+ * See docs/review-data-storage.md ("Inbox ref").
+ */
+export interface PrSnoozedEvent extends EventBase {
+	type: "pr-snoozed";
+	/** PR number. */
+	pr: number;
+	/** Ms since epoch. */
+	until: number;
+	/** Activity on the PR after the snooze (its `updatedAt`) wakes it too. */
+	wakeOnActivity: boolean;
+}
+
+export interface PrWaitingOnEvent extends EventBase {
+	type: "pr-waiting-on";
+	pr: number;
+	/** A GitHub login; the reviewer's own means "me". */
+	who: string;
+}
+
+export interface PrNoteEvent extends EventBase {
+	type: "pr-note";
+	pr: number;
+	/** Empty clears the note. */
+	text: string;
+}
+
+export interface PrClearedEvent extends EventBase {
+	type: "pr-cleared";
+	pr: number;
+	kind: "snooze" | "waiting";
+}
+
+export type InboxEvent =
+	| PrSnoozedEvent
+	| PrWaitingOnEvent
+	| PrNoteEvent
+	| PrClearedEvent;
+
 export type CrbEvent =
 	| ReviewCreatedEvent
 	| PatchsetStartedEvent
 	| ClusterStateEvent
-	| ReviewClosedEvent;
+	| ReviewClosedEvent
+	| InboxEvent;
 
 export type CrbEventType = CrbEvent["type"];
 export type EventOf<T extends CrbEventType> = Extract<CrbEvent, { type: T }>;
@@ -76,6 +118,18 @@ export type EventPayload<T extends CrbEventType> = Omit<
 > & { details?: Record<string, unknown> };
 
 const SLUG = /^[a-z0-9-]{1,64}$/;
+/** A GitHub login. */
+const LOGIN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
+/** The latest moment a JS Date holds (ms): later `until`s are skipped on read. */
+const MAX_DATE_MS = 8.64e15;
+/** Longest note a reader keeps (the API's write limit is lower). */
+export const MAX_NOTE_READ = 2000;
+const INBOX_TYPES: readonly string[] = [
+	"pr-snoozed",
+	"pr-waiting-on",
+	"pr-note",
+	"pr-cleared",
+] satisfies InboxEvent["type"][];
 const LOWER_ULID = /^[0-9a-hjkmnp-tv-z]{26}$/;
 const CLUSTER_STATES: readonly string[] = [
 	"unreviewed",
@@ -112,6 +166,9 @@ export function newEvent<T extends CrbEventType>(
 export function validateForWrite(e: CrbEvent): void {
 	if (e.type === "cluster-state" && e.by !== "human") {
 		throw new Error("cluster-state events must be written by a human");
+	}
+	if (INBOX_TYPES.includes(e.type) && e.by !== "human") {
+		throw new Error(`${e.type} events must be written by a human`);
 	}
 	if (parseEvent(JSON.parse(JSON.stringify(e))) === null) {
 		throw new Error(`Refusing to write an invalid ${e.type} event`);
@@ -253,6 +310,57 @@ function parseEvent(raw: unknown): CrbEvent | null {
 				outcome,
 				...(mergeCommit !== undefined ? { mergeCommit } : {}),
 			};
+		}
+		case "pr-snoozed":
+		case "pr-waiting-on":
+		case "pr-note":
+		case "pr-cleared":
+			// Fail safe: only a human annotates a PR (nothing automatic hides one).
+			return base.by === "human" ? parseInboxEvent(raw, base) : null;
+		default:
+			return null;
+	}
+}
+
+function parseInboxEvent(
+	raw: Obj,
+	base: Omit<InboxEvent, "type" | "pr">,
+): InboxEvent | null {
+	const { pr } = raw;
+	if (!isPosInt(pr)) return null;
+	switch (raw.type) {
+		case "pr-snoozed": {
+			const { until, wakeOnActivity } = raw;
+			if (
+				!Number.isSafeInteger(until) ||
+				(until as number) < 0 ||
+				(until as number) > MAX_DATE_MS
+			) {
+				return null;
+			}
+			if (typeof wakeOnActivity !== "boolean") return null;
+			return {
+				...base,
+				type: "pr-snoozed",
+				pr,
+				until: until as number,
+				wakeOnActivity,
+			};
+		}
+		case "pr-waiting-on": {
+			const { who } = raw;
+			if (typeof who !== "string" || !LOGIN.test(who)) return null;
+			return { ...base, type: "pr-waiting-on", pr, who };
+		}
+		case "pr-note": {
+			const { text } = raw;
+			if (typeof text !== "string" || text.length > MAX_NOTE_READ) return null;
+			return { ...base, type: "pr-note", pr, text };
+		}
+		case "pr-cleared": {
+			const { kind } = raw;
+			if (kind !== "snooze" && kind !== "waiting") return null;
+			return { ...base, type: "pr-cleared", pr, kind };
 		}
 		default:
 			return null;

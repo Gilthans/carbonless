@@ -405,7 +405,7 @@ test("a file closes at once on marking it all, and reopens if the save fails", a
 	const held: (() => void)[] = [];
 	// Only the first write waits; the parts it's split into answer at once.
 	let holding = true;
-	await page.route("**/api/review/states", async (route) => {
+	await page.route("**/api/r/*/review/states", async (route) => {
 		if (holding) {
 			await new Promise<void>((r) => {
 				held.push(r);
@@ -437,14 +437,14 @@ test("a file closes at once on marking it all, and reopens if the save fails", a
 	).toBeVisible();
 	await expect(section.getByTestId("diff-line").first()).toBeVisible();
 	await expect(progress(page)).toContainText("2 / 4 clusters reviewed");
-	await page.unroute("**/api/review/states");
+	await page.unroute("**/api/r/*/review/states");
 	await failed.getByRole("button", { name: "Retry saving" }).click();
 	await expect(failed).toBeHidden();
 
 	// Opening another file before the failure: that file stays open, and
 	// this one stays closed.
 	holding = true;
-	await page.route("**/api/review/states", async (route) => {
+	await page.route("**/api/r/*/review/states", async (route) => {
 		if (holding) {
 			await new Promise<void>((r) => {
 				held.push(r);
@@ -850,7 +850,7 @@ test("a failed save doesn't reopen a file the reviewer scrolled away from", asyn
 	const s = await startCrb();
 	await openFiles(page, s.url);
 	const held: (() => void)[] = [];
-	await page.route("**/api/review/states", async (route) => {
+	await page.route("**/api/r/*/review/states", async (route) => {
 		await new Promise<void>((r) => {
 			held.push(r);
 		});

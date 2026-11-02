@@ -10,12 +10,13 @@ import {
 	stat,
 	utimes,
 } from "node:fs/promises";
-import { homedir, hostname } from "node:os";
-import { dirname, isAbsolute, join } from "node:path";
+import { hostname } from "node:os";
+import { dirname, join } from "node:path";
 import { GhError } from "./errors.js";
 import type { PrMeta } from "./gh.js";
 import { runGh } from "./gh.js";
 import { GitError, inheritedEnv, runGit } from "./git.js";
+import { cacheDir } from "./paths.js";
 
 /**
  * carbonless's own bare clone of a GitHub repository. The reviewer's working
@@ -32,12 +33,8 @@ export function clonePath(owner: string, repo: string): string {
 			throw new GhError(`Not a GitHub owner/repo: ${owner}/${repo}`);
 		}
 	}
-	const xdg = process.env.XDG_CACHE_HOME;
-	// The XDG spec says relative values are invalid and must be ignored.
-	const cache = xdg && isAbsolute(xdg) ? xdg : join(homedir(), ".cache");
 	return join(
-		cache,
-		"carbonless",
+		cacheDir(),
 		"repos",
 		owner.toLowerCase(),
 		`${repo.toLowerCase()}.git`,
@@ -177,9 +174,13 @@ const exists = (path: string) =>
 		() => false,
 	);
 
+/** Config key marking a repo ensureRepoInit made and no clone has filled yet. */
+const INIT_ONLY = "crb.initOnly";
+
 /**
  * The bare clone of `owner/repo`, cloning it through `gh` the first time
- * (calling `onClone` just before).
+ * (calling `onClone` just before). A repo ensureRepoInit made is filled
+ * the same way, its own refs (crb's) kept.
  */
 export async function ensureClone(
 	owner: string,
@@ -191,40 +192,115 @@ export async function ensureClone(
 		if (await exists(path)) {
 			// Clones made before auto gc was turned off.
 			await disableAutoGc(path);
+			if (await isInitOnly(path)) {
+				onClone();
+				await fillInitOnly(owner, repo, path);
+			}
 			return;
 		}
 		// Clone next to the target and rename on success, so a crash mid-clone
 		// never leaves something at `path` that looks like a complete clone.
-		// Only the lock holder touches `.partial`, so a leftover is safe to wipe.
-		const partial = `${path}.partial`;
 		onClone();
+		await cloneAside(owner, repo, path, async (partial) => {
+			await disableAutoGc(partial);
+			await rename(partial, path);
+		});
+	});
+	return path;
+}
+
+/**
+ * The repo's bare repository, made empty (no fetch, no call to GitHub) when
+ * there is none yet: enough to write crb refs, which use only the empty
+ * tree (a Home annotation of a PR never opened). The next ensureClone
+ * fetches the project into it.
+ */
+export async function ensureRepoInit(
+	owner: string,
+	repo: string,
+): Promise<string> {
+	const path = clonePath(owner, repo);
+	// An existing repo needs nothing: never wait behind a clone or fetch
+	// holding the lock (crb refs are compare-and-swap anyway).
+	if (await exists(path)) return path;
+	await withRepoLock(path, async () => {
+		if (await exists(path)) return;
+		const partial = `${path}.init`;
 		await rm(partial, { recursive: true, force: true });
 		try {
-			await runGh(
-				[
-					"repo",
-					"clone",
-					`${owner}/${repo}`,
-					partial,
-					"--",
-					"--bare",
-					"--quiet",
-				],
-				{
-					cwd: dirname(path),
-					// gh runs git; GIT_DIR and friends must not redirect the clone.
-					env: inheritedEnv(),
-					// A first clone of a big repo can take long: no limit.
-					timeoutMs: 0,
-				},
-			);
+			await runGit(dirname(path), ["init", "--quiet", "--bare", partial]);
 			await disableAutoGc(partial);
+			await runGit(partial, ["config", INIT_ONLY, "true"]);
 			await rename(partial, path);
 		} finally {
 			await rm(partial, { recursive: true, force: true });
 		}
 	});
 	return path;
+}
+
+const isInitOnly = async (path: string) =>
+	(
+		await runGit(path, ["config", "--get", INIT_ONLY], { allowFailure: true })
+	).trim() === "true";
+
+/**
+ * Clones into `<path>.partial` through `gh` and hands it to `use`; the
+ * partial clone is removed afterwards whatever happens. Only the lock
+ * holder touches `.partial`, so a leftover is safe to wipe.
+ */
+async function cloneAside(
+	owner: string,
+	repo: string,
+	path: string,
+	use: (partial: string) => Promise<void>,
+): Promise<void> {
+	const partial = `${path}.partial`;
+	await rm(partial, { recursive: true, force: true });
+	try {
+		await runGh(
+			["repo", "clone", `${owner}/${repo}`, partial, "--", "--bare", "--quiet"],
+			{
+				cwd: dirname(path),
+				// gh runs git; GIT_DIR and friends must not redirect the clone.
+				env: inheritedEnv(),
+				// A first clone of a big repo can take long: no limit.
+				timeoutMs: 0,
+			},
+		);
+		await use(partial);
+	} finally {
+		await rm(partial, { recursive: true, force: true });
+	}
+}
+
+/**
+ * Fills an init-only repo from a fresh clone beside it: its branches, tags,
+ * HEAD and remote, fetched locally, so crb refs written meanwhile stay
+ * where they are. The mark goes last: a crash before it just fills again.
+ */
+async function fillInitOnly(owner: string, repo: string, path: string) {
+	await cloneAside(owner, repo, path, async (partial) => {
+		await runGit(path, [
+			"fetch",
+			"--quiet",
+			"--no-tags",
+			partial,
+			"+refs/heads/*:refs/heads/*",
+			"+refs/tags/*:refs/tags/*",
+		]);
+		const head = (
+			await runGit(partial, ["symbolic-ref", "HEAD"], { allowFailure: true })
+		).trim();
+		if (head) await runGit(path, ["symbolic-ref", "HEAD", head]);
+		const url = (
+			await runGit(partial, ["config", "--get", "remote.origin.url"], {
+				allowFailure: true,
+			})
+		).trim();
+		if (url) await runGit(path, ["config", "remote.origin.url", url]);
+		await runGit(path, ["config", "--unset", INIT_ONLY]);
+	});
 }
 
 /**

@@ -1,4 +1,4 @@
-import { type Ref, useId } from "react";
+import { type ReactNode, type Ref, useId } from "react";
 import type { Counts, Progress } from "../../shared/types";
 import {
 	clustersLeft,
@@ -17,9 +17,21 @@ export const HATCH = "hatch";
 const OPEN_GAP = 6;
 
 /**
- * Reviewed fills from the left; crossed off is hatched at the right end.
+ * The most of a meter crossed off may take, in percent, so the rest has room
+ * to show progress toward done.
+ */
+const CROSSED_CAP = 20;
+
+/**
+ * Reviewed fills from the left; crossed off is hatched at the right end, at
+ * most `CROSSED_CAP` of the bar. The rest shows reviewed out of what isn't
+ * crossed off, so it agrees with the percentage; below the cap that is just
+ * reviewed ÷ total. With everything crossed off the bar is all hatch.
  * `incomplete`: something is still unreviewed even if the counts look full
- * (a rename weighs nothing in lines), so the meter is never shown full.
+ * (a rename weighs nothing in lines), so the meter is never shown full: both
+ * segments shrink by the same factor to leave the gap, so neither vanishes
+ * while its count is above zero (7 reviewed next to 395 crossed off is a
+ * sliver of green, not none).
  */
 export function Meter({
 	counts,
@@ -30,17 +42,19 @@ export function Meter({
 	incomplete?: boolean;
 	className?: string;
 }) {
-	const raw = (n: number) =>
-		counts.total === 0 ? 0 : (n / counts.total) * 100;
-	let reviewed = raw(counts.reviewed);
-	let crossed = raw(counts.crossedOff);
-	if (incomplete) {
-		const over = reviewed + crossed - (100 - OPEN_GAP);
-		if (over > 0) {
-			const fromReviewed = Math.min(reviewed, over);
-			reviewed -= fromReviewed;
-			crossed = Math.max(0, crossed - (over - fromReviewed));
-		}
+	const { total, crossedOff } = counts;
+	const left = total - crossedOff;
+	let crossed =
+		total === 0
+			? 0
+			: left <= 0
+				? 100
+				: Math.min((crossedOff / total) * 100, CROSSED_CAP);
+	let reviewed = left <= 0 ? 0 : (counts.reviewed / left) * (100 - crossed);
+	if (incomplete && reviewed + crossed > 100 - OPEN_GAP) {
+		const scale = (100 - OPEN_GAP) / (reviewed + crossed);
+		reviewed *= scale;
+		crossed *= scale;
 	}
 	const widths = { reviewed, crossed };
 	// Spans, so a meter can sit inside a button (a tree row).
@@ -98,6 +112,8 @@ export function ProgressBar(props: {
 	progress: Progress;
 	unit: Unit;
 	onUnitChange: (unit: Unit) => void;
+	/** At the row's end: what is still loading for the page (a Spinner). */
+	children?: ReactNode;
 }) {
 	const { progress, unit } = props;
 	const counts = pageCounts(progress, unit);
@@ -167,6 +183,7 @@ export function ProgressBar(props: {
 						)}
 					</span>
 				</div>
+				{props.children}
 			</div>
 			{hiddenLeft && <p className="mt-1 text-xs text-warn">{note}</p>}
 		</div>

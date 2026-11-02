@@ -6,6 +6,7 @@ import {
 import { useEffect, useMemo, useSyncExternalStore } from "react";
 import type { StateChange } from "../../shared/types";
 import { postStates, reviewQuery, sessionQuery } from "../api";
+import { viewSaverFor } from "../home/viewSaver";
 import { unsent, useDrafts, useDraftsDurable } from "../threads/drafts";
 import { useThreadWrites } from "../threads/threadWrites";
 import { useVerdictDraft, verdictDraftFor } from "../verdict/verdictDraft";
@@ -95,6 +96,7 @@ export function useReviewView() {
  * would lose something (owner: "refresh should only be dirty if
  * information is lost"):
  * - review states not yet stored: nothing keeps them past the page;
+ * - Home's view list not yet saved (viewSaverFor), for the same reason;
  * - a resolve or unresolve, or a delete (in its undo window or on its
  *   way), not yet on GitHub: nothing resends them (ThreadWritesState.lost);
  * - any write GitHub refused, until a Retry lands or it is dropped (owner:
@@ -115,8 +117,12 @@ export function useUnsavedGuard() {
 	const verdictUnsaved =
 		!verdictDurable &&
 		(verdict.text.trim() !== "" || verdict.sending !== undefined);
+	// Home's view list not yet saved: nothing sends it after the page.
+	const saver = viewSaverFor(useQueryClient());
+	const view =
+		useSyncExternalStore(saver.subscribe, saver.snapshot).intended !== null;
 	const unsaved =
-		states || lost || verdictUnsaved || (!durable && (drafts || busy));
+		states || view || lost || verdictUnsaved || (!durable && (drafts || busy));
 	useEffect(() => {
 		if (!unsaved) return;
 		const ask = (event: BeforeUnloadEvent) => {

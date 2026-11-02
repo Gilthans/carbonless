@@ -314,6 +314,16 @@ export class Session {
 		);
 	}
 
+	/** The review's id (its `/r/<id>` URL). */
+	get id(): string {
+		return this.reviewId;
+	}
+
+	/** Whether close() has been called. */
+	get closed(): boolean {
+		return this.#closed !== null;
+	}
+
 	info(): SessionInfo {
 		const { owner, repo, number, title, url, headOid } = this.#meta;
 		return {

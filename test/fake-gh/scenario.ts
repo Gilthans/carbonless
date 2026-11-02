@@ -165,6 +165,76 @@ export interface Scenario {
 	 * for the pages after its first (`node(id) { ... on PullRequestReview }`).
 	 */
 	reviewComments?: Record<string, unknown[]>;
+	/**
+	 * Home's repos, by `owner/repo` (any case): every PR as a GitHub
+	 * pullRequest node (homePr builds one). The fake lists them (number and
+	 * updatedAt, newest first, `homePageSize` a page) for prFacts.ts's list
+	 * query and serves them whole to its details query. Independent of `prs`
+	 * (the PR a review opens) and `repoPath`. To make a PR change between
+	 * refreshes, rewrite the scenario (bumpHomePr).
+	 */
+	repos?: Record<string, { prs: HomePrNode[] }>;
+	/** PRs per page of Home's list query (default 100, like GitHub's). */
+	homePageSize?: number;
+	/** Home's list and details queries answer this late. */
+	homeDelayMs?: number;
+	/** Home's list and details queries fail as GitHub's rate limit does. */
+	rateLimited?: boolean;
+	/**
+	 * PRs (by repo, then number) Home's list query leaves out, as if they
+	 * slid to an already read page between two pages' reads.
+	 */
+	homeListSkip?: Record<string, number[]>;
+	/** PRs whose details GitHub answers null, with an error (partial data). */
+	homeDetailsNull?: Record<string, number[]>;
+	/**
+	 * The viewer's teams (`org/slug`); null: reading them fails as with a
+	 * token missing `read:org`. Absent: no teams.
+	 */
+	viewerTeams?: string[] | null;
+	/**
+	 * Repos as GitHub relates them to the viewer, most recently pushed
+	 * first; "NONE" is a public repo they have no relation to. The fake's
+	 * `viewer { repositories(affiliations, ownerAffiliations) }` answers those
+	 * whose relation is in both lists, `viewerReposPageSize` a page (100).
+	 */
+	viewerRepos?: {
+		name: string;
+		relation: "OWNER" | "COLLABORATOR" | "ORGANIZATION_MEMBER" | "NONE";
+	}[];
+	viewerReposPageSize?: number;
+	/** The viewer's repo list answers this late. */
+	viewerReposDelayMs?: number;
+	/** A path: the viewer's repo list answers once it exists (at most a minute). */
+	viewerReposHold?: string;
+	/** Members of the viewer's orgs, by org: Home's waiting-on suggestions. */
+	orgMembers?: Record<string, string[]>;
+	/** Orgs of `orgMembers` whose members GitHub refuses (SAML SSO not authorized): `organization: null`. */
+	orgMembersForbidden?: string[];
+	/** The same refusal with the org there and `membersWithRole: null`. */
+	orgMembersForbiddenMembers?: string[];
+	/** Orgs whose members read fails as a retry may fix (GitHub's rate limit). */
+	orgMembersFlaky?: string[];
+	/** Members per page of an org's member list (default 100). */
+	orgMembersPageSize?: number;
+	/**
+	 * Who GitHub's user search finds (logins containing the text); an
+	 * `{ login, org: true }` is an organization, which search returns too.
+	 */
+	githubUsers?: (string | { login: string; org: true })[];
+	/** GitHub's user search fails with this as gh's message, or answers late. */
+	userSearch?: { fail?: string; delayMs?: number };
+	/**
+	 * `gh search prs --repo` matches the PRs of `repos` (title words, any
+	 * order, case-insensitive), newest activity first. Home never searches
+	 * GitHub's repos: `gh search repos` is unsupported.
+	 */
+	search?: {
+		/** The search fails with this as gh's message. */
+		fail?: string;
+		/** Answers this late. */
+		delayMs?: number;
+	};
 	prs: Record<
 		string,
 		{
@@ -461,9 +531,12 @@ export function threadComment(c: {
  * and `threadContent` are reads of threads' comments, `threads` their
  * summaries, `restList` the REST review comments, `comment` a new thread's
  * REST comment, `verdict` a verdict's REST review, `dismiss` a review's
- * REST dismissal.
+ * REST dismissal, `home` Home's PR list and details queries (a refresh),
+ * `home:<owner/repo>` (lowercased) those of that one repo only.
  */
 export type HoldOp =
+	| "home"
+	| `home:${string}`
 	| "prView"
 	| "threads"
 	| "threadContent"
@@ -666,4 +739,216 @@ export function timelineFact(
 		createdAt: at,
 		...rest,
 	};
+}
+
+/** A PR as Home's GraphQL queries read it (prFacts.ts PR_FIELDS). */
+export interface HomePrNode {
+	number: number;
+	title: string;
+	url: string;
+	isDraft: boolean;
+	state: "OPEN" | "MERGED" | "CLOSED";
+	updatedAt: string;
+	closedAt: string | null;
+	mergedAt: string | null;
+	headRefOid: string;
+	author: { login: string; avatarUrl: string } | null;
+	reviewDecision: "APPROVED" | "CHANGES_REQUESTED" | "REVIEW_REQUIRED" | null;
+	reviewRequests: { nodes: { requestedReviewer: Record<string, unknown> }[] };
+	latestReviews: {
+		nodes: {
+			author: { login: string; avatarUrl: string };
+			state: string;
+			submittedAt: string;
+		}[];
+	};
+	reviewThreads: { totalCount: number; nodes: { isResolved: boolean }[] };
+	commits: {
+		nodes: {
+			commit: {
+				committedDate: string;
+				statusCheckRollup: { state: string } | null;
+			};
+		}[];
+	};
+	timelineItems: { nodes: Record<string, unknown>[] };
+}
+
+const avatar = (login: string) => `https://avatars.example/${login}`;
+
+/**
+ * A Home PR node from the facts a test cares about. Activity (`reviews`,
+ * `comments`, `commits`) goes into the timeline, reviews also into
+ * latestReviews (the latest per login); `updatedAt` defaults to the
+ * latest of them, else `created`.
+ */
+export function homePr(p: {
+	repo: string;
+	number: number;
+	title?: string;
+	author: string;
+	draft?: boolean;
+	state?: "OPEN" | "MERGED" | "CLOSED";
+	/** When it was merged or closed. */
+	closedAt?: string;
+	updatedAt?: string;
+	created?: string;
+	/** Logins, or `org/slug` for a team. */
+	requested?: string[];
+	/** `bot`: the author is a GitHub App (`__typename` Bot). */
+	reviews?: { login: string; state?: string; at: string; bot?: boolean }[];
+	comments?: { login: string; at: string }[];
+	commits?: { login?: string; at: string }[];
+	checks?: "SUCCESS" | "FAILURE" | "PENDING" | null;
+	decision?: "APPROVED" | "CHANGES_REQUESTED" | null;
+	threads?: { resolved?: number; unresolved?: number };
+	/** The head commit (default: one per number). */
+	head?: string;
+}): HomePrNode {
+	const state = p.state ?? "OPEN";
+	const times = [
+		...(p.reviews ?? []).map((r) => r.at),
+		...(p.comments ?? []).map((c) => c.at),
+		...(p.commits ?? []).map((c) => c.at),
+		...(p.closedAt ? [p.closedAt] : []),
+	].sort();
+	const updatedAt =
+		p.updatedAt ?? times.at(-1) ?? p.created ?? "2026-10-01T00:00:00Z";
+	const person = (login: string) => ({ login, avatarUrl: avatar(login) });
+	const reviewer = (r: { login: string; bot?: boolean }) => ({
+		__typename: r.bot ? "Bot" : "User",
+		...person(r.login),
+	});
+	const latest = new Map<
+		string,
+		{ login: string; state: string; at: string; bot?: boolean }
+	>();
+	for (const r of [...(p.reviews ?? [])].sort((a, b) =>
+		a.at.localeCompare(b.at),
+	)) {
+		latest.set(r.login.toLowerCase(), { ...r, state: r.state ?? "COMMENTED" });
+	}
+	const timeline = [
+		...(p.commits ?? []).map((c) => ({
+			at: c.at,
+			node: {
+				__typename: "PullRequestCommit",
+				commit: {
+					committedDate: c.at,
+					author: { user: c.login ? person(c.login) : null },
+				},
+			},
+		})),
+		...(p.comments ?? []).map((c) => ({
+			at: c.at,
+			node: {
+				__typename: "IssueComment",
+				createdAt: c.at,
+				author: person(c.login),
+			},
+		})),
+		...(p.reviews ?? []).map((r) => ({
+			at: r.at,
+			node: {
+				__typename: "PullRequestReview",
+				submittedAt: r.at,
+				state: r.state ?? "COMMENTED",
+				author: reviewer(r),
+			},
+		})),
+	].sort((a, b) => a.at.localeCompare(b.at));
+	const lastCommit = [...(p.commits ?? [])]
+		.sort((a, b) => a.at.localeCompare(b.at))
+		.at(-1);
+	const [owner = "", name = ""] = p.repo.split("/");
+	return {
+		number: p.number,
+		title: p.title ?? `PR ${p.number}`,
+		url: `https://github.com/${owner}/${name}/pull/${p.number}`,
+		isDraft: p.draft ?? false,
+		state,
+		updatedAt,
+		closedAt: state === "OPEN" ? null : (p.closedAt ?? updatedAt),
+		mergedAt: state === "MERGED" ? (p.closedAt ?? updatedAt) : null,
+		headRefOid: p.head ?? p.number.toString(16).padStart(40, "0"),
+		author: person(p.author),
+		reviewDecision: p.decision ?? null,
+		reviewRequests: {
+			nodes: (p.requested ?? []).map((r) => {
+				const [org, slug] = r.split("/");
+				return {
+					requestedReviewer: slug
+						? {
+								__typename: "Team",
+								slug,
+								organization: { login: org },
+								avatarUrl: avatar(r),
+							}
+						: { __typename: "User", ...person(r) },
+				};
+			}),
+		},
+		latestReviews: {
+			nodes: [...latest.values()].map((r) => ({
+				author: reviewer(r),
+				state: r.state,
+				submittedAt: r.at,
+			})),
+		},
+		reviewThreads: {
+			totalCount: (p.threads?.resolved ?? 0) + (p.threads?.unresolved ?? 0),
+			nodes: [
+				...Array.from({ length: p.threads?.resolved ?? 0 }, () => ({
+					isResolved: true,
+				})),
+				...Array.from({ length: p.threads?.unresolved ?? 0 }, () => ({
+					isResolved: false,
+				})),
+			],
+		},
+		commits: {
+			nodes: lastCommit
+				? [
+						{
+							commit: {
+								committedDate: lastCommit.at,
+								statusCheckRollup: p.checks ? { state: p.checks } : null,
+							},
+						},
+					]
+				: [],
+		},
+		timelineItems: { nodes: timeline.slice(-30).map((t) => t.node) },
+	};
+}
+
+/**
+ * Activity on a Home PR between refreshes: its updatedAt moves to `at`,
+ * and with `by`, that login's comment at `at` joins its timeline. Writes
+ * the scenario at `path` (as $CRB_FAKE_GH) back.
+ */
+export function bumpHomePr(
+	path: string,
+	repo: string,
+	number: number,
+	at: string,
+	by?: string,
+): void {
+	const s = JSON.parse(readFileSync(path, "utf8")) as Scenario;
+	const key = Object.keys(s.repos ?? {}).find(
+		(k) => k.toLowerCase() === repo.toLowerCase(),
+	);
+	const pr = key
+		? s.repos?.[key]?.prs.find((p) => p.number === number)
+		: undefined;
+	if (!pr) throw new Error(`No Home PR ${repo}#${number} in the scenario`);
+	pr.updatedAt = at;
+	if (by) {
+		pr.timelineItems.nodes.push({
+			__typename: "IssueComment",
+			createdAt: at,
+			author: { login: by, avatarUrl: avatar(by) },
+		});
+	}
+	writeFileAtomic(path, JSON.stringify(s, null, "\t"));
 }

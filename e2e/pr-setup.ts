@@ -77,12 +77,17 @@ const DEFAULT_COMMITS: FixtureCommit[] = [
 /** The built CLI. */
 export const CLI = resolve(import.meta.dirname, "../dist/cli.js");
 
-/** The environment crb runs in: the fake gh first on PATH, caches in `workdir`. */
+/**
+ * The environment crb runs in: the fake gh first on PATH; cache, state
+ * (server.json, key) and config in `workdir`, never the reviewer's.
+ */
 export function crbEnv(workdir: string): NodeJS.ProcessEnv {
 	return testGitEnv({
 		PATH: `${FAKE_GH_DIR}:${process.env.PATH ?? ""}`,
 		CRB_FAKE_GH: join(workdir, "fake-gh-scenario.json"),
 		XDG_CACHE_HOME: join(workdir, "cache"),
+		XDG_STATE_HOME: join(workdir, "state"),
+		XDG_CONFIG_HOME: join(workdir, "config"),
 	});
 }
 

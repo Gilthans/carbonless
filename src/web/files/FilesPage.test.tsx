@@ -8,10 +8,20 @@ import {
 	Outlet,
 	RouterProvider,
 } from "@tanstack/react-router";
-import { act, cleanup, render, screen, within } from "@testing-library/react";
+import {
+	act,
+	cleanup,
+	render,
+	screen,
+	waitFor,
+	within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { expectLoadingThen, heldJson } from "../../../test/loading";
 import type { FileView, ReviewView } from "../../shared/types";
+import { overviewQuery } from "../api";
+import { parseSearch, stringifySearch } from "../search";
 import { AppHeaderHeight } from "../sticky";
 import { LANDED_MS } from "./DiffBody";
 import { FilesPage, MISSING_HINT_MS } from "./FilesPage";
@@ -57,11 +67,28 @@ const oneFile: FileView = {
 	],
 };
 
+const session = {
+	pr: { owner: "acme", repo: "widget", number: 12, title: "T", url: "" },
+	viewer: "octo",
+	snapshotHead: "b".repeat(40),
+	currentHead: "b".repeat(40),
+	headMoved: false,
+	patchset: null,
+	asOf: null,
+	pinnedHead: null,
+};
+
 const otherFile: FileView = { ...oneFile, index: 1, path: "b.txt" };
 const noHunks = { newLineCount: 0, hunks: [] };
 
+/** The query client of the page last rendered. */
+let lastClient: QueryClient;
+
 function renderPage(
-	responses: Record<string, () => { status: number; body: unknown }>,
+	responses: Record<
+		string,
+		() => { status: number; body: unknown } | Promise<Response>
+	>,
 	/** The app header's compact height, as App provides it. */
 	appHeader = 0,
 	initialPath = "/files",
@@ -70,26 +97,34 @@ function renderPage(
 		const path = new URL(String(input), "http://test").pathname;
 		const respond = responses[path];
 		const result = respond ? respond() : { status: 404, body: {} };
+		// Held (test/loading.ts): answered when the test lets it go.
+		if (result instanceof Promise) return result;
 		return new Response(JSON.stringify(result.body), { status: result.status });
 	});
 	vi.stubGlobal("fetch", fetchMock);
 	const queryClient = new QueryClient({
 		defaultOptions: { queries: { retry: false } },
 	});
+	lastClient = queryClient;
 	// FilesPage reads its search params (thread-link landings): a router
-	// with just this page at /files.
+	// with just this page, at a review's /files.
 	const root = createRootRoute({ component: Outlet });
 	const files = createRoute({
 		getParentRoute: () => root,
-		path: "/files",
+		path: "/r/$id/files",
 		validateSearch: parseFilesSearch,
 		component: FilesPage,
 	});
 	const router = createRouter({
 		routeTree: root.addChildren([files]),
-		history: createMemoryHistory({ initialEntries: [initialPath] }),
-		// As in the app (router.tsx): the router never scrolls the window.
+		history: createMemoryHistory({
+			initialEntries: [`/r/01testreview0000000000000a${initialPath}`],
+		}),
+		// As in the app (router.tsx): the router never scrolls the window,
+		// and search values stay strings.
 		scrollRestoration: () => false,
+		parseSearch,
+		stringifySearch,
 	});
 	render(
 		<QueryClientProvider client={queryClient}>
@@ -110,6 +145,81 @@ describe("FilesPage", () => {
 		cleanup();
 		vi.unstubAllGlobals();
 		vi.restoreAllMocks();
+	});
+
+	it("while the diff loads: its frame and a spinner, never no files or 0%", async () => {
+		const review = heldJson();
+		renderPage({ "/api/review": () => review.response });
+		await expectLoadingThen({
+			loading: () => screen.queryByRole("status", { name: "Loading the diff" }),
+			empty: [
+				() => screen.queryByText("This PR changes no files."),
+				() => screen.queryByRole("progressbar", { name: "Review progress" }),
+				() => screen.queryByText("Loading the diff…"),
+			],
+			release: () => review.release({ ...emptyReview, files: [oneFile] }),
+			result: () => screen.queryByRole("region", { name: "a.txt" }),
+		});
+		expect(screen.queryByTestId("files-loading")).toBeNull();
+	});
+
+	it("no overview, no threads: says they couldn't be read, no spinner", async () => {
+		renderPage({
+			"/api/review": () => ({
+				status: 200,
+				body: { ...emptyReview, files: [oneFile] },
+			}),
+			"/api/session": () => ({ status: 200, body: session }),
+			"/api/overview": () => ({ status: 502, body: { error: "gh is down" } }),
+		});
+		expect(await screen.findByTestId("threads-failed")).toBeInTheDocument();
+		expect(
+			screen.queryAllByRole("status", { name: "Loading comments" }),
+		).toHaveLength(0);
+	});
+
+	it("an overview refetch failing while the threads load keeps them loading", async () => {
+		let overviewReads = 0;
+		const threads = heldJson();
+		renderPage({
+			"/api/review": () => ({
+				status: 200,
+				body: { ...emptyReview, files: [oneFile] },
+			}),
+			"/api/session": () => ({ status: 200, body: session }),
+			"/api/overview": () =>
+				overviewReads++ === 0
+					? // The verdict card after the files reads its reviews.
+						{ status: 200, body: { readId: "read1", reviews: [] } }
+					: { status: 502, body: { error: "gh is down" } },
+			"/api/threads": () => threads.response,
+		});
+		const bar = await within(
+			await screen
+				.findByRole("progressbar", { name: "Review progress" })
+				.then((p) => p.closest("[data-page-bar]") as HTMLElement),
+		).findByRole("status", { name: "Loading comments" });
+		await act(async () => {
+			await lastClient
+				.refetchQueries({ queryKey: overviewQuery.queryKey })
+				.catch(() => {});
+			// The query cache notifies on a timeout.
+			await new Promise((r) => setTimeout(r, 20));
+		});
+		expect(overviewReads).toBe(2);
+		expect(lastClient.getQueryState(overviewQuery.queryKey)?.status).toBe(
+			"error",
+		);
+		// The old overview is kept: its threads are still on their way.
+		expect(screen.queryByTestId("threads-failed")).toBeNull();
+		expect(bar).toBeInTheDocument();
+		threads.release({ threads: [], complete: true });
+		await waitFor(() =>
+			expect(
+				screen.queryAllByRole("status", { name: "Loading comments" }),
+			).toHaveLength(0),
+		);
+		expect(screen.queryByTestId("threads-failed")).toBeNull();
 	});
 
 	it("says when the PR changes no files", async () => {

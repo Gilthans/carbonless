@@ -6,7 +6,7 @@ import {
 	type XIcon,
 } from "@primer/octicons-react";
 import { useQueryClient } from "@tanstack/react-query";
-import { useLayoutEffect, useRef } from "react";
+import { type ReactNode, useLayoutEffect, useRef } from "react";
 import { LabeledIcon } from "../overview/parts";
 import { Tooltip } from "../Tooltip";
 import {
@@ -19,6 +19,90 @@ import { describePending, pendingFiles } from "./stateSync";
 import { useSetStates, useSyncState } from "./useSetStates";
 
 const changes = (n: number) => `${n} ${n === 1 ? "change" : "changes"}`;
+
+/**
+ * Where the save notices stack, fixed at the bottom of the window: above
+ * the floating Files button while there is one (narrow), bottom right from
+ * md up. Home's view save uses the same place.
+ */
+export const NOTICE_STACK =
+	"pointer-events-none fixed inset-x-3 bottom-20 z-40 flex flex-col gap-2 sm:inset-x-auto sm:left-4 sm:w-96 md:right-4 md:bottom-4 md:left-auto md:w-80";
+
+/** Yellow: a save that has waited over DELAYED_MS, why, and what it saves. */
+export function DelayedNotice(props: {
+	what: string;
+	/** Why it waits (the last transient failure), if it failed meanwhile. */
+	waiting?: string | null;
+	detail?: string;
+	testId?: string;
+}) {
+	return (
+		<div
+			data-testid={props.testId ?? "save-delayed"}
+			className="pointer-events-auto overflow-hidden rounded-lg border border-warn/50 bg-raised shadow-float"
+		>
+			<div className="flex min-h-10 items-center gap-2 bg-warn/10 px-3 py-2 text-sm">
+				<LabeledIcon
+					icon={ClockIcon}
+					label="Saving is delayed"
+					className="text-warn"
+				/>
+				<p className="min-w-0 flex-1 break-words text-ink">
+					{props.what}
+					{props.waiting && (
+						<span
+							data-testid="save-waiting"
+							className="block text-xs break-words text-muted"
+						>
+							{props.waiting}
+						</span>
+					)}
+					{props.detail && (
+						<span className="block font-mono text-xs break-words text-muted">
+							{props.detail}
+						</span>
+					)}
+				</p>
+			</div>
+		</div>
+	);
+}
+
+/** Red: a save refused (or stalled), what it was, the error, and its buttons. */
+export function FailedNotice(props: {
+	testId: string;
+	label: string;
+	what: string;
+	detail?: string;
+	error: string;
+	actions: ReactNode;
+}) {
+	return (
+		<div
+			role="alert"
+			data-testid={props.testId}
+			className="pointer-events-auto overflow-hidden rounded-lg border border-bad/50 bg-raised shadow-float"
+		>
+			<div className="flex items-start gap-2 bg-bad/10 py-1 pr-1 pl-3">
+				<LabeledIcon
+					icon={AlertIcon}
+					label={props.label}
+					className="mt-2.5 text-bad"
+				/>
+				<div className="min-w-0 flex-1 py-2 text-sm">
+					<p className="break-words font-medium text-ink">{props.what}</p>
+					{props.detail && (
+						<p className="font-mono text-xs break-words text-muted">
+							{props.detail}
+						</p>
+					)}
+					<p className="break-words text-bad">{props.error}</p>
+				</div>
+				{props.actions}
+			</div>
+		</div>
+	);
+}
 
 /**
  * Unsaved review state, fixed at the bottom of the window: above the
@@ -98,95 +182,36 @@ export function SyncNotices() {
 		</Tooltip>
 	);
 	return (
-		<div
-			ref={stack}
-			data-testid="sync-notices"
-			className="pointer-events-none fixed inset-x-3 bottom-20 z-40 flex flex-col gap-2 sm:inset-x-auto sm:left-4 sm:w-96 md:right-4 md:bottom-4 md:left-auto md:w-80"
-		>
+		<div ref={stack} data-testid="sync-notices" className={NOTICE_STACK}>
 			<ThreadWriteNotices threads={writeNotices} />
 			{failure && rejected.size > 0 && (
-				<div
-					role="alert"
-					data-testid="save-failed"
-					className="pointer-events-auto overflow-hidden rounded-lg border border-bad/50 bg-raised shadow-float"
-				>
-					<div className="flex items-start gap-2 bg-bad/10 py-1 pr-1 pl-3">
-						<LabeledIcon
-							icon={AlertIcon}
-							label="Not saved"
-							className="mt-2.5 text-bad"
-						/>
-						<div className="min-w-0 flex-1 py-2 text-sm">
-							<p className="break-words font-medium text-ink">
-								{describePending(rejected)}
-							</p>
-							{rejected.size > 1 && (
-								<p className="font-mono text-xs break-words text-muted">
-									{pendingFiles(rejected)}
-								</p>
-							)}
-							<p className="break-words text-bad">{failure.message}</p>
-						</div>
-						{retryButton}
-					</div>
-				</div>
+				<FailedNotice
+					testId="save-failed"
+					label="Not saved"
+					what={describePending(rejected)}
+					detail={rejected.size > 1 ? pendingFiles(rejected) : undefined}
+					error={failure.message}
+					actions={retryButton}
+				/>
 			)}
 			{showStalled && (
 				// Transient failures that kept on: red, though retrying goes on.
-				<div
-					role="alert"
-					data-testid="save-stalled"
-					className="pointer-events-auto overflow-hidden rounded-lg border border-bad/50 bg-raised shadow-float"
-				>
-					<div className="flex items-start gap-2 bg-bad/10 py-1 pr-1 pl-3">
-						<LabeledIcon
-							icon={AlertIcon}
-							label="Not saved yet, still retrying"
-							className="mt-2.5 text-bad"
-						/>
-						<div className="min-w-0 flex-1 py-2 text-sm">
-							<p className="break-words font-medium text-ink">
-								{describePending(syncing)}
-							</p>
-							{syncing.size > 1 && (
-								<p className="font-mono text-xs break-words text-muted">
-									{pendingFiles(syncing)}
-								</p>
-							)}
-							<p className="break-words text-bad">{stalled.message}</p>
-						</div>
-						{retryButton}
-					</div>
-				</div>
+				<FailedNotice
+					testId="save-stalled"
+					label="Not saved yet, still retrying"
+					what={describePending(syncing)}
+					detail={syncing.size > 1 ? pendingFiles(syncing) : undefined}
+					error={stalled.message}
+					actions={retryButton}
+				/>
 			)}
 			<div role="status">
 				{showDelayed && (
-					<div
-						data-testid="save-delayed"
-						className="pointer-events-auto overflow-hidden rounded-lg border border-warn/50 bg-raised shadow-float"
-					>
-						<div className="flex min-h-10 items-center gap-2 bg-warn/10 px-3 py-2 text-sm">
-							<LabeledIcon
-								icon={ClockIcon}
-								label="Saving is delayed"
-								className="text-warn"
-							/>
-							<p className="min-w-0 flex-1 break-words text-ink">
-								Saving {changes(syncing.size)}…
-								{waiting && (
-									<span
-										data-testid="save-waiting"
-										className="block text-xs break-words text-muted"
-									>
-										{waiting}
-									</span>
-								)}
-								<span className="block font-mono text-xs break-words text-muted">
-									{pendingFiles(syncing)}
-								</span>
-							</p>
-						</div>
-					</div>
+					<DelayedNotice
+						what={`Saving ${changes(syncing.size)}…`}
+						waiting={waiting}
+						detail={pendingFiles(syncing)}
+					/>
 				)}
 			</div>
 			<RefusedWrites />

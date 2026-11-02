@@ -69,7 +69,41 @@ function isComment(value: unknown): value is ThreadComment {
 	);
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+/**
+ * The review this page shows (its id, from `/r/<id>`): bound once per page
+ * load by the review's route (ReviewRoot), so a request still under way for
+ * it can never reach another review. Unbound (component tests), the
+ * review routes are asked as `/api/<x>`.
+ */
+let boundReview: string | null = null;
+
+/**
+ * Binds the page to review `id`; false when it already shows another (the
+ * caller loads the page anew).
+ */
+export function bindReview(id: string): boolean {
+	boundReview ??= id;
+	return boundReview === id;
+}
+
+/** `/api/<x>` of the bound review: `/api/r/<id>/<x>`. */
+export const reviewApiPath = (path: string): string =>
+	boundReview === null
+		? path
+		: path.replace(/^\/api\//, `/api/r/${encodeURIComponent(boundReview)}/`);
+
+/** A request to the review's API (`/api/<x>`, see reviewApiPath). */
+const request = <T>(path: string, init?: RequestInit): Promise<T> =>
+	fetchJson<T>(reviewApiPath(path), init);
+
+/**
+ * GETs (or `init`s) `path` and returns its JSON; an ApiError for a failure,
+ * with the server's message.
+ */
+export async function fetchJson<T>(
+	path: string,
+	init?: RequestInit,
+): Promise<T> {
 	let response: Response;
 	try {
 		response = await fetch(path, init);

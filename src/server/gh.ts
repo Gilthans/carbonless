@@ -226,7 +226,8 @@ export async function resolvePrRef(arg: string, cwd: string): Promise<PrRef> {
 	const name = (safeJson(out) as { nameWithOwner?: unknown } | null)
 		?.nameWithOwner;
 	const [owner, repo, extra] = typeof name === "string" ? name.split("/") : [];
-	if (!owner || !repo || extra !== undefined) {
+	// Plain path segments, as parsePrArg's: cache paths are built from them.
+	if (!owner || !repo || extra !== undefined || !validOwnerRepo(owner, repo)) {
 		throw new GhError(`Could not find the GitHub repository for ${cwd}`);
 	}
 	return { owner, repo, number: parsed.number };
@@ -1885,7 +1886,7 @@ export async function fetchMergeBase(
 	return sha;
 }
 
-/** What `GET /api/verdict` reads of GitHub, before verdict.ts maps it. */
+/** What `GET /api/r/<id>/verdict` reads of GitHub, before verdict.ts maps it. */
 export interface VerdictRead {
 	/** GitHub's pullRequest node (verdictQuery); null as of a cutoff (not read). */
 	pr: Record<string, unknown> | null;

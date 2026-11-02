@@ -123,3 +123,34 @@ across an unchanged line stays a change (a loop wrapped in an `if` shows
 the `if`, its `}` and the `log` line that crossed the loop's closing brace;
 the rest of the body goes quiet). It can show a little more as changed
 than `git diff -w` would, never less.
+
+## Why does Home show coverage in lines, when the Files page shows files?
+
+Home counts a started review's coverage in changed lines, the finest unit,
+so "37 / 120" never looks further along than the review is. When every
+changed line is reviewed but clusters without changed lines (a rename, a
+mode change) are left, it counts clusters instead, so it never reads as
+done early. The Files page's Lines / Clusters / Files choice is a setting
+of your browser, which the server that builds Home can't see, so the two
+can show different units for the same review.
+
+## Why does gh say "not logged in" when crb runs with its own XDG_CONFIG_HOME?
+
+gh keeps its login in `$XDG_CONFIG_HOME/gh`. Point `XDG_CONFIG_HOME` somewhere
+else for crb (a worktree's `.envrc`, `pnpm dev`'s `.crb-dev`, your own
+setup) and gh looks there too, finds no login, and every review fails. Set
+`GH_CONFIG_DIR` to gh's real config dir as well: `pnpm dev` and
+`scripts/agent-worktree.sh` do (`$GH_CONFIG_DIR` if set, else
+`${XDG_CONFIG_HOME:-~/.config}/gh` from before the override); by hand,
+`export GH_CONFIG_DIR=~/.config/gh` before changing `XDG_CONFIG_HOME`.
+
+## Why does my comment show `\<` in GitHub's edit box?
+
+GitHub's markdown reads `<String>` in `List<String>` (or `<T>`) as an
+HTML tag and drops it, so the comment would read `List`. carbonless
+posts what you type with a backslash before such a `<`
+(`List\<String>`), which GitHub shows as `List<String>`. Edit it in
+carbonless and the box shows it as you typed it; GitHub's own edit box
+shows the backslash. Code (in backticks or a code block), `a < b` and
+the tags GitHub keeps (`<b>`, `<details>`, `<kbd>`, ...) are left as they
+are.

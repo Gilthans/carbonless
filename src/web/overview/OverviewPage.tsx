@@ -31,7 +31,6 @@ import {
 	type CSSProperties,
 	type ReactNode,
 	type Ref,
-	type RefObject,
 	useCallback,
 	useEffect,
 	useId,
@@ -63,6 +62,8 @@ import { useReviewView } from "../files/useSetStates";
 import { GithubHtml, ImageErrorContext } from "../GithubHtml";
 import { usePageActive } from "../pageActive";
 import { RelativeTime, relativeTime, useNow } from "../RelativeTime";
+import { useReviewId } from "../reviewId";
+import { Spinner } from "../Spinner";
 import { Tooltip, type TooltipTriggerProps } from "../Tooltip";
 import { CodeRows, CommentBody } from "../threads/CommentBody";
 import {
@@ -226,11 +227,18 @@ function OverviewContent({
 	const search = useSearch({ strict: false }) as OverviewSearch;
 	const navigate = useNavigate();
 	const active = usePageActive();
+	const reviewId = useReviewId();
 	useEffect(() => {
 		if (!active || !search.thread) return;
 		showThread(search.thread);
-		void navigate({ to: "/", search: {}, replace: true, resetScroll: false });
-	}, [active, search.thread, showThread, navigate]);
+		void navigate({
+			to: "/r/$id",
+			params: { id: reviewId },
+			search: {},
+			replace: true,
+			resetScroll: false,
+		});
+	}, [active, search.thread, showThread, navigate, reviewId]);
 	return (
 		<div className="space-y-6">
 			{overview.isPending && <OverviewSkeleton />}
@@ -252,6 +260,7 @@ function OverviewContent({
 					<Timeline
 						pr={overview.data}
 						threads={threads.view}
+						threadsLoading={!threads.view && !threads.error}
 						onShowThread={showThread}
 					/>
 				</>
@@ -263,11 +272,7 @@ function OverviewContent({
 
 /** The sections' frames while GitHub is read: grey bars where text will be. */
 function OverviewSkeleton() {
-	const bar = (width: string) => (
-		<div
-			className={`h-3 animate-pulse rounded bg-overlay motion-reduce:animate-none ${width}`}
-		/>
-	);
+	const bar = (width: string) => <SkeletonBar className={width} />;
 	return (
 		<div data-testid="overview-loading" aria-busy="true" className="space-y-6">
 			<p className="sr-only">Loading the PR from GitHub…</p>
@@ -314,10 +319,12 @@ function ExternalLink(props: {
 
 function ReviewFilesButton() {
 	const { review, data } = useReviewView();
+	const id = useReviewId();
 	return (
 		<div className="flex flex-col items-center gap-3">
 			<Link
-				to="/files"
+				to="/r/$id/files"
+				params={{ id }}
 				className="cta inline-flex min-h-10 items-center gap-2 rounded-lg px-4 py-2 text-sm font-semibold text-ink transition-[filter] hover:brightness-110 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent motion-reduce:transition-none"
 			>
 				Review files
@@ -327,9 +334,7 @@ function ReviewFilesButton() {
 					</span>
 				)}
 			</Link>
-			{review.isPending && (
-				<span className="text-sm text-muted">Loading progress…</span>
-			)}
+			{review.isPending && <Spinner label="Loading review progress" />}
 			{review.isError && <ErrorMessage error={review.error} />}
 		</div>
 	);
@@ -434,27 +439,28 @@ function lastUpdate(pr: PrOverview, threads: ThreadsView | undefined): string {
  */
 function Description({ pr }: { pr: PrOverview }) {
 	const [open, setOpen] = useState(false);
-	const box = useRef<HTMLDivElement>(null);
+	// State, not a ref: the box mounts only once there is a description.
+	const [box, setBox] = useState<HTMLDivElement | null>(null);
 	const id = useId();
 	const html = pr.bodyHtml.trim() !== "";
 	const text = !html && pr.body.trim() !== "";
 	const over = useOverflow(box, !open && (html || text), "y");
 	const clipped = over && !open;
 	useEffect(() => {
-		const el = box.current;
+		const el = box;
 		if (!el || !clipped) return;
 		// A keyboard user never lands on a clipped link.
 		const reveal = () => setOpen(true);
 		el.addEventListener("focusin", reveal);
 		return () => el.removeEventListener("focusin", reveal);
-	}, [clipped]);
+	}, [box, clipped]);
 	if (!html && !text) {
 		return <p className="text-sm text-muted italic">No description</p>;
 	}
 	return (
 		<div>
 			<div
-				ref={box}
+				ref={setBox}
 				id={id}
 				data-testid="description"
 				className={`relative ${open ? "" : "max-h-[17.5rem] overflow-hidden"}`}
@@ -1390,15 +1396,20 @@ interface OrphanDraftItem {
 	label: string;
 }
 
-/** Overflowing `el` (when `axis` is "both", sideways too), re-measured as it resizes. */
+/**
+ * Overflowing `el` (when `axis` is "both", sideways too), re-measured as it
+ * resizes. `el` is the element itself (a callback ref's state), not a ref
+ * object: the box can mount after the card (the code pane replaces its
+ * frame once the code arrives), and is measured again whenever it does.
+ */
 function useOverflow(
-	el: RefObject<HTMLElement | null>,
+	el: HTMLElement | null,
 	active: boolean,
 	axis: "y" | "both",
 ): boolean {
 	const [over, setOver] = useState(false);
 	useLayoutEffect(() => {
-		const box = el.current;
+		const box = el;
 		if (!box || !active) return;
 		const measure = () =>
 			setOver(
@@ -1457,8 +1468,9 @@ function ThreadItem({
 	useEffect(() => {
 		if (draftsShown) setOpen(true);
 	}, [draftsShown]);
-	const codeBox = useRef<HTMLElement>(null);
-	const commentBox = useRef<HTMLDivElement>(null);
+	// State, not refs: either box can mount later than the card.
+	const [codeBox, setCodeBox] = useState<HTMLElement | null>(null);
+	const [commentBox, setCommentBox] = useState<HTMLDivElement | null>(null);
 	const codeMore = useOverflow(codeBox, !open, "both");
 	const codeOverflowsOpen = useOverflow(codeBox, open, "both");
 	const commentMore = useOverflow(commentBox, !open, "y");
@@ -1502,13 +1514,13 @@ function ThreadItem({
 	});
 	const commentClipped = commentMore && !open;
 	useEffect(() => {
-		const el = commentBox.current;
+		const el = commentBox;
 		if (!el || !commentClipped) return;
 		// A keyboard user never lands on a clipped link.
 		const reveal = () => setOpen(true);
 		el.addEventListener("focusin", reveal);
 		return () => el.removeEventListener("focusin", reveal);
-	}, [commentClipped]);
+	}, [commentBox, commentClipped]);
 	const comment = thread.unavailable ? (
 		// Its text will never come: said so, plainly.
 		<UnavailableText id={commentId} reason={thread.unavailable} />
@@ -1554,7 +1566,7 @@ function ThreadItem({
 		</div>
 	) : thread.html.trim() ? (
 		<div
-			ref={commentBox}
+			ref={setCommentBox}
 			id={commentId}
 			data-testid="thread-body"
 			data-tint={opener.tint}
@@ -1576,7 +1588,7 @@ function ThreadItem({
 		</div>
 	) : (
 		<p
-			ref={commentBox}
+			ref={setCommentBox}
 			id={commentId}
 			data-testid="thread-body"
 			data-tint={opener.tint}
@@ -1734,7 +1746,7 @@ function ThreadItem({
 				) : thread.code && rows.length > 0 ? (
 					<div className="grid gap-3 md:grid-cols-2 md:items-start">
 						<ThreadCodePane
-							ref={codeBox}
+							ref={setCodeBox}
 							id={codeId}
 							path={thread.path}
 							lines={rows}
@@ -1988,6 +2000,7 @@ function ThreadPlace({
 	line: number | null;
 	target: FilesSearch;
 }) {
+	const id = useReviewId();
 	const moved =
 		!thread.outdated &&
 		thread.currentLine !== null &&
@@ -2000,7 +2013,8 @@ function ThreadPlace({
 			{(trigger) => (
 				<Link
 					{...trigger}
-					to="/files"
+					to="/r/$id/files"
+					params={{ id }}
 					search={target}
 					data-testid="thread-place"
 					className="inline-flex min-h-10 max-w-full items-center rounded-sm font-mono text-xs break-all text-link hover:underline focus-visible:outline-2 focus-visible:outline-accent"

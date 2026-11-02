@@ -15,7 +15,12 @@ import {
 import { usePageActive } from "./pageActive";
 import { Tooltip, TooltipLayer } from "./Tooltip";
 
-export type ShortcutGroup = "Global" | "Files changed" | "Overview" | "Threads";
+export type ShortcutGroup =
+	| "Global"
+	| "Home"
+	| "Files changed"
+	| "Overview"
+	| "Threads";
 
 /**
  * A keyboard shortcut. `keys` is the key (`e.key`: "c", "?", "Enter"),
@@ -36,6 +41,7 @@ type HelpEntry = Omit<Shortcut, "run" | "when">;
 
 const GROUPS: ShortcutGroup[] = [
 	"Global",
+	"Home",
 	"Files changed",
 	"Overview",
 	"Threads",
@@ -49,9 +55,9 @@ const BUILT_IN: HelpEntry[] = [
 
 /** The page showing, by its URL (the help puts its group first). */
 function currentPageGroup(): ShortcutGroup {
-	return /\/files\/?$/.test(window.location.pathname)
-		? "Files changed"
-		: "Overview";
+	const path = window.location.pathname;
+	if (path === "/") return "Home";
+	return /\/files\/?$/.test(path) ? "Files changed" : "Overview";
 }
 
 interface Registered {
@@ -266,8 +272,11 @@ export function ShortcutsProvider(props: { children: ReactNode }) {
 	);
 }
 
-/** One key as caps: "Mod+Enter" → [Ctrl] + [Enter] (⌘ on a Mac). */
-function Keys({ keys }: { keys: string }) {
+/**
+ * One key as caps: "Mod+Enter" → [Ctrl] + [Enter] (⌘ on a Mac). The help's
+ * rows, and a control that has a key (a Settings row) on a desktop.
+ */
+export function Keys({ keys }: { keys: string }) {
 	const names: Record<string, string> = {
 		Mod: isMac() ? "⌘" : "Ctrl",
 		Meta: "⌘",

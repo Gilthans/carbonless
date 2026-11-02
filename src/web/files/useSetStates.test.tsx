@@ -2,6 +2,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, render } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { viewSaverFor } from "../home/viewSaver";
 import { draftsFor } from "../threads/drafts";
 import { threadWritesFor } from "../threads/threadWrites";
 import { stateSyncFor, useUnsavedGuard } from "./useSetStates";
@@ -62,6 +63,46 @@ describe("useUnsavedGuard", () => {
 			await new Promise((r) => setTimeout(r, 0));
 		});
 		expect(stateSyncFor(client).getState().pending.size).toBe(0);
+		expect(leave()).toBe(false);
+	});
+
+	it("asks while Home's view list isn't saved yet (nothing resends it after the page)", async () => {
+		let answer: (() => void) | undefined;
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(
+				() =>
+					new Promise<Response>((resolve) => {
+						answer = () =>
+							resolve(
+								Response.json({
+									viewer: { login: "dan", avatarUrl: "" },
+									view: { name: "My PRs", repos: ["acme/api"] },
+									configProblems: [],
+									viewerError: null,
+									refreshMinutes: 2,
+									startedRepos: [],
+								}),
+							);
+					}),
+			),
+		);
+		const client = new QueryClient();
+		render(
+			<QueryClientProvider client={client}>
+				<Guard />
+			</QueryClientProvider>,
+		);
+		expect(leave()).toBe(false);
+		await act(async () => {
+			viewSaverFor(client).save(["acme/api"]);
+		});
+		expect(leave()).toBe(true);
+		await act(async () => {
+			answer?.();
+			await new Promise((r) => setTimeout(r, 0));
+		});
+		expect(viewSaverFor(client).snapshot().intended).toBeNull();
 		expect(leave()).toBe(false);
 	});
 

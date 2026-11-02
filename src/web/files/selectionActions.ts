@@ -30,8 +30,6 @@ export interface SelectionContext {
 	 * not expanded context). Undefined: unknown, taken as yes.
 	 */
 	inDiff?: boolean;
-	/** Its start comes after its end in GitHub's order (Ignore whitespace's pairs). */
-	backwards?: boolean;
 }
 
 /** One thing a selection can start: Comment now, more kinds later. */
@@ -72,9 +70,6 @@ export function commentAvailable(
 	}
 	if (!ctx.commentLeft && sides(span).includes("LEFT")) {
 		return "Old lines can't take comments with this pinned head";
-	}
-	if (ctx.backwards) {
-		return "Turn off Ignore whitespace to comment on these lines together";
 	}
 	// Checked on GitHub: a line only expanded context shows is refused (a
 	// range across hunks is taken).

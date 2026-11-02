@@ -5,6 +5,7 @@ import {
 } from "@tanstack/react-router";
 import { Suspense, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { ForgetPageScroll, PageActive } from "./pageActive";
+import { Spinner } from "./Spinner";
 
 /** Pages load on demand: the shell renders before markdown or diff code arrives. */
 export const OverviewPage = lazyRouteComponent(
@@ -20,11 +21,20 @@ export const VerdictPage = lazyRouteComponent(
 	"VerdictPage",
 );
 
+/** A page whose code is still on its way: a spinner, never blank. */
+function PageLoading() {
+	return (
+		<div aria-busy="true" className="flex min-h-40 justify-center py-10">
+			<Spinner label="Loading the page" size={24} />
+		</div>
+	);
+}
+
 /** The pages kept alive, by route id, in DOM order. */
 const PAGES = {
-	"/": OverviewPage,
-	"/files": FilesPage,
-	"/verdict": VerdictPage,
+	"/r/$id/": OverviewPage,
+	"/r/$id/files": FilesPage,
+	"/r/$id/verdict": VerdictPage,
 } as const;
 export type PageId = keyof typeof PAGES;
 const isPage = (id: string): id is PageId => id in PAGES;
@@ -97,9 +107,9 @@ export function KeptPages() {
 	if (active && !visited.includes(active)) setVisited([...visited, active]);
 	const forget = useWindowScrollPerPage(active);
 	const [forgetters] = useState<Record<PageId, () => void>>(() => ({
-		"/": () => forget("/"),
-		"/files": () => forget("/files"),
-		"/verdict": () => forget("/verdict"),
+		"/r/$id/": () => forget("/r/$id/"),
+		"/r/$id/files": () => forget("/r/$id/files"),
+		"/r/$id/verdict": () => forget("/r/$id/verdict"),
 	}));
 	return (Object.keys(PAGES) as PageId[])
 		.filter((id) => visited.includes(id))
@@ -109,14 +119,15 @@ export function KeptPages() {
 			return (
 				<div
 					key={id}
-					data-page={id}
+					// The page's own path in the review: "/" or "/files".
+					data-page={id.slice("/r/$id".length).replace(/^$/, "/")}
 					hidden={!on}
 					inert={!on}
 					aria-hidden={on ? undefined : true}
 				>
 					<PageActive value={on}>
 						<ForgetPageScroll value={forgetters[id]}>
-							<Suspense fallback={null}>
+							<Suspense fallback={<PageLoading />}>
 								<Page />
 							</Suspense>
 						</ForgetPageScroll>

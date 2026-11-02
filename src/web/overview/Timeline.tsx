@@ -34,6 +34,8 @@ import type {
 import { sessionQuery, timelineQuery } from "../api";
 import { type FilesSearch, threadTarget } from "../files/landing";
 import { RelativeTime } from "../RelativeTime";
+import { useReviewId } from "../reviewId";
+import { Spinner } from "../Spinner";
 import { Tooltip } from "../Tooltip";
 import { ErrorMessage, safeHref } from "../ui";
 import {
@@ -62,11 +64,14 @@ const short = (oid: string) => oid.slice(0, 7);
 export function Timeline({
 	pr,
 	threads,
+	threadsLoading = false,
 	onShowThread,
 }: {
 	pr: PrOverview;
 	/** The review threads, once their summaries are in. */
 	threads: ThreadsView | undefined;
+	/** They are still on their way (not failed): runs and comments spin. */
+	threadsLoading?: boolean;
 	/** Brings a thread card above into view. */
 	onShowThread: (threadId: string) => void;
 }) {
@@ -130,6 +135,7 @@ export function Timeline({
 								event={event}
 								pr={pr}
 								threads={threads ? byId : undefined}
+								threadsLoading={threadsLoading}
 								onShowThread={onShowThread}
 							/>
 						))}
@@ -202,11 +208,13 @@ function TimelineRow({
 	event,
 	pr,
 	threads,
+	threadsLoading,
 	onShowThread,
 }: {
 	event: TimelineEvent;
 	pr: PrOverview;
 	threads: Map<string, ReviewThread> | undefined;
+	threadsLoading: boolean;
 	onShowThread: (threadId: string) => void;
 }) {
 	const [open, setOpen] = useState(false);
@@ -243,6 +251,10 @@ function TimelineRow({
 								{event.kind === "review" && (
 									<Verdicts items={event.items} bare={comments === 0} />
 								)}
+								{event.kind === "review" &&
+									comments > 0 &&
+									!threads &&
+									threadsLoading && <Spinner label="Loading threads" />}
 								{event.kind === "review" && threads && (
 									<ResolvedChip
 										items={event.items}
@@ -304,6 +316,7 @@ function TimelineRow({
 										key={i}
 										item={item}
 										threads={threads}
+										threadsLoading={threadsLoading}
 										onShowThread={onShowThread}
 									/>
 								))}
@@ -510,15 +523,22 @@ function CommitLink({
 function ReviewItem({
 	item,
 	threads,
+	threadsLoading,
 	onShowThread,
 }: {
 	item: TimelineReviewItem;
 	threads: Map<string, ReviewThread> | undefined;
+	threadsLoading: boolean;
 	onShowThread: (threadId: string) => void;
 }) {
 	if (item.kind === "comment") {
 		return (
-			<CommentItem item={item} threads={threads} onShowThread={onShowThread} />
+			<CommentItem
+				item={item}
+				threads={threads}
+				loading={threadsLoading && !threads && Boolean(item.threadId)}
+				onShowThread={onShowThread}
+			/>
 		);
 	}
 	const icon =
@@ -545,13 +565,17 @@ function ReviewItem({
 function CommentItem({
 	item,
 	threads,
+	loading,
 	onShowThread,
 }: {
 	item: TimelineReviewComment;
 	threads: Map<string, ReviewThread> | undefined;
+	/** Its thread is still on its way: its state spins (principle 8). */
+	loading: boolean;
 	onShowThread: (threadId: string) => void;
 }) {
 	const session = useQuery(sessionQuery);
+	const id = useReviewId();
 	const thread = item.threadId ? threads?.get(item.threadId) : undefined;
 	const target: FilesSearch = thread
 		? threadTarget(thread, session.data, headerLine(thread))
@@ -578,7 +602,9 @@ function CommentItem({
 			data-testid="timeline-item"
 			className="flex flex-wrap items-center gap-x-2 text-sm"
 		>
-			{state ? (
+			{loading ? (
+				<Spinner label="Loading thread" />
+			) : state ? (
 				<LabeledIcon
 					icon={state.icon}
 					label={state.label}
@@ -593,7 +619,8 @@ function CommentItem({
 			)}
 			{item.path && (
 				<Link
-					to="/files"
+					to="/r/$id/files"
+					params={{ id }}
 					search={target}
 					data-testid="timeline-place"
 					className="inline-flex min-h-10 max-w-full items-center rounded-sm font-mono text-xs break-all text-link hover:underline focus-visible:outline-2 focus-visible:outline-accent"

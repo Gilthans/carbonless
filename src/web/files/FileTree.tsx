@@ -1,4 +1,5 @@
 import type { FileView, ReviewThread } from "../../shared/types";
+import { Spinner } from "../Spinner";
 import { Tooltip, TooltipPath } from "../Tooltip";
 import { ChangeKindIcon, changeKindLabel } from "./changeKind";
 import { Meter } from "./ProgressBar";
@@ -232,9 +233,18 @@ export function FileTree(props: {
 	onSelect: (index: number) => void;
 	/** Each file's review threads on the viewed head (fileThreads). */
 	threadsOf?: (file: FileView) => ReviewThread[];
+	/** The threads are still on their way: no file's dot means none yet. */
+	threadsLoading?: boolean;
 }) {
 	return (
-		<nav aria-label="Files" data-testid="file-tree">
+		<nav
+			aria-label="Files"
+			aria-busy={props.threadsLoading || undefined}
+			data-testid="file-tree"
+		>
+			{props.threadsLoading && (
+				<Spinner label="Loading comments" className="min-h-8 px-1" />
+			)}
 			<Children
 				nodes={buildTree(props.files).children}
 				unit={props.unit}

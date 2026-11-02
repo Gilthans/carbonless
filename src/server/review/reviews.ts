@@ -1,10 +1,19 @@
 import { createHash } from "node:crypto";
+import { readdir } from "node:fs/promises";
+import { join } from "node:path";
 import { ulid } from "ulid";
 import type { Snapshot, StateChange } from "../../shared/types.js";
 import { runGit } from "../git.js";
-import { type ClusterStateEvent, isSlug, newEvent } from "./events.js";
+import {
+	type ClusterStateEvent,
+	type CrbEvent,
+	isSlug,
+	newEvent,
+	parseEventLines,
+	type ReviewCreatedEvent,
+} from "./events.js";
 import { foldProgress, type ProgressState } from "./fold.js";
-import { RefConflictError, type RefStore } from "./refStore.js";
+import { RefConflictError, RefStore } from "./refStore.js";
 
 /** The pull request fields a review records (Task 5's PrMeta fits this). */
 export interface ReviewPr {
@@ -313,4 +322,101 @@ function checkSlug(slug: string): void {
 
 function checkReviewId(id: string): void {
 	if (!REVIEW_ID.test(id)) throw new Error(`Invalid review id: ${id}`);
+}
+
+/** A review as its meta ref records it: which PR, and which view of it. */
+export interface StoredReview {
+	id: string;
+	/** The source key (prKey). */
+	key: string;
+	pr: ReviewPr;
+	/** As of this cutoff (dev mode). */
+	asOf?: string;
+	/** Pinned on this head (crb --head). */
+	head?: string;
+}
+
+const META = /^refs\/crb\/reviews\/([0-9a-hjkmnp-tv-z]{26})\/meta$/;
+
+function storedReview(id: string, events: CrbEvent[]): StoredReview | null {
+	const created = events.find(
+		(e): e is ReviewCreatedEvent => e.type === "review-created",
+	);
+	if (!created) return null;
+	const { asOf, head } = created.details ?? {};
+	return {
+		id,
+		key: created.key,
+		pr: created.pr,
+		...(typeof asOf === "string" ? { asOf } : {}),
+		...(typeof head === "string" ? { head } : {}),
+	};
+}
+
+/**
+ * The repo's reviews whose meta refs match `pattern`, read in one git call
+ * from the tips' messages (the meta ref's tip is its review-created commit);
+ * a tip that isn't falls back to reading the whole ref.
+ */
+async function readMetas(
+	repoDir: string,
+	pattern: string,
+): Promise<StoredReview[]> {
+	const out = await runGit(repoDir, [
+		"-c",
+		"i18n.logOutputEncoding=UTF-8",
+		"for-each-ref",
+		"--format=%(refname)%00%(contents)%00",
+		pattern,
+	]);
+	const parts = out.split("\0");
+	const found: (StoredReview | null | Promise<StoredReview | null>)[] = [];
+	for (let i = 0; i + 1 < parts.length; i += 2) {
+		const ref = (parts[i] ?? "").trim();
+		const id = META.exec(ref)?.[1];
+		if (!id) continue;
+		const tip = storedReview(id, parseEventLines(parts[i + 1] ?? ""));
+		found.push(
+			tip ??
+				new RefStore(repoDir).readEvents(ref).then((e) => storedReview(id, e)),
+		);
+	}
+	return (await Promise.all(found)).filter(
+		(r): r is StoredReview => r !== null,
+	);
+}
+
+/** Every review in a clone, from its meta refs (Home's started scan). */
+export function listReviews(repoDir: string): Promise<StoredReview[]> {
+	return readMetas(repoDir, "refs/crb/reviews/*/meta");
+}
+
+/**
+ * The review `id` and the clone that holds it, searched among the cache's
+ * clones (`<cacheRoot>/repos/<owner>/<repo>.git`): how a server that never
+ * opened it (a restart, a bookmark) finds it. Null when none has it.
+ */
+export async function findReviewById(
+	cacheRoot: string,
+	id: string,
+): Promise<{ repoDir: string; review: StoredReview } | null> {
+	if (!REVIEW_ID.test(id)) return null;
+	const repos = join(cacheRoot, "repos");
+	const dirs = async (dir: string) =>
+		(await readdir(dir, { withFileTypes: true }).catch(() => []))
+			.filter((d) => d.isDirectory())
+			.map((d) => join(dir, d.name));
+	const clones = (await Promise.all((await dirs(repos)).map(dirs)))
+		.flat()
+		.filter((d) => d.endsWith(".git"));
+	const hits = await Promise.all(
+		clones.map(async (repoDir) => {
+			const [review] = await readMetas(
+				repoDir,
+				`refs/crb/reviews/${id}/meta`,
+			).catch(() => []);
+			return review ? { repoDir, review } : null;
+		}),
+	);
+	return hits.find((h) => h !== null) ?? null;
 }

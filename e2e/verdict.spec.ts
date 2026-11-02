@@ -6,7 +6,7 @@ import {
 	type Scenario,
 	threadComment,
 } from "../test/fake-gh/scenario";
-import { expect, type Pr, type PrOptions, test } from "./fixtures";
+import { expect, type Pr, type PrOptions, reviewPage, test } from "./fixtures";
 
 /**
  * The Final Verdict tab and the verdict card (also after the last file in
@@ -166,7 +166,10 @@ test("the tab isn't read on first open of the Overview, only once shown; it list
 	const s = await startCrb();
 	const verdictReads: string[] = [];
 	page.on("request", (r) => {
-		if (new URL(r.url()).pathname === "/api/verdict" && r.method() === "GET") {
+		if (
+			/^\/api\/r\/[^/]+\/verdict$/.test(new URL(r.url()).pathname) &&
+			r.method() === "GET"
+		) {
 			verdictReads.push(r.url());
 		}
 	});
@@ -221,7 +224,7 @@ test("approve with no message: You approved, and the Overview's reviewer list sh
 }) => {
 	const p = await setup(pr);
 	const s = await startCrb();
-	await page.goto(`${s.url}verdict`);
+	await page.goto(reviewPage(s.url, "verdict"));
 	const card = tabCard(page);
 	await expect(verdictButton(card, "Approve")).toHaveAccessibleDescription(
 		"Allow merging after remaining comments are resolved",
@@ -258,7 +261,7 @@ test("comment with a message; request changes with the box off opens and focuses
 }) => {
 	const p = await setup(pr);
 	const s = await startCrb();
-	await page.goto(`${s.url}verdict`);
+	await page.goto(reviewPage(s.url, "verdict"));
 	const card = tabCard(page);
 	await card.getByRole("checkbox", { name: "Include a message" }).check();
 	await card.getByRole("textbox", { name: "Message" }).fill("Reads well");
@@ -300,7 +303,7 @@ test("a verdict on its way shows at once, holds the buttons, and posts once for 
 }) => {
 	const p = await setup(pr, { hold: ["verdict"] });
 	const s = await startCrb();
-	await page.goto(`${s.url}verdict`);
+	await page.goto(reviewPage(s.url, "verdict"));
 	const card = tabCard(page);
 	await verdictButton(card, "Approve").dblclick();
 	await expect(card.getByTestId("your-verdict")).toContainText(
@@ -335,7 +338,7 @@ test("a refused verdict: listed under the chip, Retry lands it; a second one is 
 		failNext: { op: "verdict", status: 403, message: "Not allowed here" },
 	});
 	const s = await startCrb();
-	await page.goto(`${s.url}verdict`);
+	await page.goto(reviewPage(s.url, "verdict"));
 	const card = tabCard(page);
 	await verdictButton(card, "Approve").click();
 	await expect(chip(page)).toHaveAccessibleName("1 not posted");
@@ -375,7 +378,7 @@ test("a pending review on GitHub refuses the verdict with the pending-review not
 	expectConsoleError(/409/);
 	await setup(pr, {}, { reviews: [PENDING] });
 	const s = await startCrb();
-	await page.goto(`${s.url}verdict`);
+	await page.goto(reviewPage(s.url, "verdict"));
 	const card = tabCard(page);
 	// Read up front, as on the Overview.
 	await expect(card.getByTestId("pending-review-warning")).toBeVisible();
@@ -396,7 +399,7 @@ test("the Files changed end card: the verdict, its blockers' count, clear of the
 }) => {
 	const p = await setup(pr);
 	const s = await startCrb();
-	await page.goto(`${s.url}files`);
+	await page.goto(reviewPage(s.url, "files"));
 	const card = filesCard(page);
 	await card.scrollIntoViewIfNeeded();
 	await expect(card.getByTestId("verdict-blockers-link")).toHaveText(
@@ -437,7 +440,7 @@ test("the three tabs, Refresh and the title fit at 360px with no horizontal scro
 	await setup(pr);
 	const s = await startCrb();
 	await page.setViewportSize({ width: 360, height: 740 });
-	await page.goto(`${s.url}verdict`);
+	await page.goto(reviewPage(s.url, "verdict"));
 	await expect(page.getByTestId("github-status")).toBeVisible();
 	const nav = page.getByRole("navigation", { name: "PR pages" });
 	await expect(nav.getByRole("link", { name: "Files changed" })).toHaveText(
@@ -492,11 +495,14 @@ test("the Files end card reads GitHub's merge facts only once the first open has
 	const s = await startCrb();
 	const verdictReads: string[] = [];
 	page.on("request", (r) => {
-		if (new URL(r.url()).pathname === "/api/verdict" && r.method() === "GET") {
+		if (
+			/^\/api\/r\/[^/]+\/verdict$/.test(new URL(r.url()).pathname) &&
+			r.method() === "GET"
+		) {
 			verdictReads.push(r.url());
 		}
 	});
-	await page.goto(`${s.url}files`);
+	await page.goto(reviewPage(s.url, "files"));
 	// A short PR: the card is on screen at once, while the threads are held.
 	const card = filesCard(page);
 	await expect(card).toBeInViewport();
@@ -520,12 +526,15 @@ test("a reload while a verdict is on its way resends it: one review lands, under
 	const s = await startCrb();
 	const posts: { clientId: string; retry: boolean }[] = [];
 	page.on("request", (r) => {
-		if (new URL(r.url()).pathname === "/api/verdict" && r.method() === "POST") {
+		if (
+			/^\/api\/r\/[^/]+\/verdict$/.test(new URL(r.url()).pathname) &&
+			r.method() === "POST"
+		) {
 			posts.push(r.postDataJSON() as { clientId: string; retry: boolean });
 		}
 	});
 	page.on("dialog", (d) => void d.accept());
-	await page.goto(`${s.url}verdict`);
+	await page.goto(reviewPage(s.url, "verdict"));
 	await verdictButton(tabCard(page), "Approve").click();
 	await expect.poll(() => posts.length).toBe(1);
 	await page.reload();
@@ -563,7 +572,7 @@ test("switching to Comment withdraws a request for changes: You commented, the R
 }) => {
 	const p = await setup(pr);
 	const s = await startCrb();
-	await page.goto(`${s.url}verdict`);
+	await page.goto(reviewPage(s.url, "verdict"));
 	const card = tabCard(page);
 	await card.getByRole("checkbox", { name: "Include a message" }).check();
 	await card.getByRole("textbox", { name: "Message" }).fill("Please add tests");
@@ -614,7 +623,7 @@ test("a refused dismissal: the comment posts, a yellow notice says the request f
 }) => {
 	const p = await setup(pr);
 	const s = await startCrb();
-	await page.goto(`${s.url}verdict`);
+	await page.goto(reviewPage(s.url, "verdict"));
 	const card = tabCard(page);
 	await card.getByRole("checkbox", { name: "Include a message" }).check();
 	await card.getByRole("textbox", { name: "Message" }).fill("Please add tests");
@@ -685,7 +694,7 @@ test("the Reviews section lists each reviewer: yours first, approvals and change
 		];
 	});
 	const s = await startCrb();
-	await page.goto(`${s.url}verdict`);
+	await page.goto(reviewPage(s.url, "verdict"));
 	const section = page.getByTestId("verdict-reviews");
 	await expect(reviewRows(page)).toHaveCount(4);
 	await expect(reviewRows(page).first()).toHaveAttribute("data-you", "true");

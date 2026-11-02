@@ -35,6 +35,37 @@ both right after `crb` starts and when it has been running a while. Never block
 a page on slow data: render what is ready, show skeletons per section, and load
 long lists in stages (what's visible plus one "load more" page first). Caching
 for reloads is secondary.
+The skeletons and spinners follow "Loading never looks empty" below.
+
+## Loading never looks empty
+
+Design principle 8 (`CLAUDE.md`). The owner: "Whenever something is
+loading, there should be a visible spinner somewhere relevant. An empty
+result should always be easily distinguishable for a still loading result."
+
+- **Where the result goes.** While an answer is on its way, a spinner
+  (`Spinner`, `src/web/Spinner.tsx`: the spinning sync icon, a tooltip and
+  an accessible name to find it by, `role="status"`) or a skeleton (`SkeletonBar`, grey
+  bars where text will be) shows in the place the result will take, and
+  the region it fills is `aria-busy`. A whole page's code still loading
+  shows a spinner too, never a blank page.
+- **Never as empty.** Until the answer says empty, nothing reads as empty:
+  no 0 counts or 0%, no empty meter, no "None", "No threads", "No
+  activity" or empty list, no outline that means "no comments yet". When a
+  part of the page is loaded and another isn't (the diff, then its
+  comments), the part still loading says so where its results will show
+  (Files changed: "Loading comments" in the progress bar, the file tree and
+  the open file's bubble; the Timeline: "Loading threads" on a review run
+  and its comments).
+- **Errors are a third state.** A failed read shows its error (red; or a
+  `warn` notice where only a part is missing, per "Flag uncertainty", like
+  Files changed's "Threads not shown"; with Retry where it can), never the
+  empty state and never a spinner that keeps on.
+- **Tested by holding the answer.** Each loading state has a test that
+  holds the answer (e2e: the fake gh's `hold`; unit: a held fetch from
+  `test/loading.ts`), asserts the loading state is visible and the empty
+  one absent, releases, and asserts the result (`expectLoadingThen`, in
+  `e2e/fixtures.ts` and `test/loading.ts`). Never a timing race.
 
 ## Verify against a real PR, not only fixtures
 
@@ -122,6 +153,18 @@ switch wouldn't happen.
   patch set). One compare per snapshot, asked lazily and never
   waited for by the overview (true until GitHub says); a write waits for
   it.
+- **What is posted reads as typed.** GitHub's markdown reads `<String>`
+  in `List<String>`, or `<T>`, as an HTML tag and drops it. Every body
+  carbonless posts (new thread, reply, edit) has a backslash before each
+  `<` that starts a tag GitHub drops (`List\<String>`), outside code
+  spans and blocks (a fence closes only in its own container, as on
+  GitHub); `a < b`, autolinks, bare links (an escape would land in the
+  link: `http(s)://` or `ftp://` after anything but a letter, or a
+  word starting `www.`), HTML comments and the tags GitHub keeps stay as they are
+  (`src/shared/markdownEscape.ts`, applied on the
+  server where the write is built, before the marker). The page gets
+  bodies without those escapes, so the edit box shows what was typed and
+  the edit, retry and dedupe checks compare the text as posted.
 - **A hidden marker carries what GitHub can't.** A new thread's opening
   comment ends in an HTML comment GitHub doesn't render,
   `<!-- crb:v1 id=<clientId> -->`, with `span=<startLine>:<startCol>-<line>:<endCol>`
@@ -259,7 +302,7 @@ switch wouldn't happen.
   after a restart, the client's `attemptedAt` less 2 minutes), and posts
   only if there is none. A verdict that lands drops the kept overview
   and verdict reads, so the next ones read GitHub again.
-- **What blocks is read only for the Final Verdict.** `GET /api/verdict`
+- **What blocks is read only for the Final Verdict.** `GET /api/r/<id>/verdict`
   is one GraphQL read (`mergeStateStatus`, `reviewDecision`, the
   requested reviewers with `asCodeOwner`, the reviews with their commits,
   the head's checks with `isRequired`; should GitHub refuse that field,
@@ -295,11 +338,12 @@ switch wouldn't happen.
   deletes on one thread run in the order asked, never at once.
 - **Leaving asks only when something would be lost or left unsettled** (owner: "refresh
   should only be dirty if information is lost"; `useUnsavedGuard`). It
-  asks for review states not yet stored, for a resolve, unresolve or
-  delete not yet on GitHub (a delete in its undo window too: nothing is
-  sent yet and no later page sends it), and for any refused write until
-  its Retry lands or it is dropped (owner: "Until dropped or succeeded,
-  page should still ask"), though the next page lists it again. It never asks for drafts (reply,
+  asks for review states not yet stored, for Home's view list not yet
+  saved (it retries on its own while the page lasts), for a resolve,
+  unresolve or delete not yet on GitHub (a delete in its undo window too:
+  nothing is sent yet and no later page sends it), and for any refused
+  write until its Retry lands or it is dropped (owner: "Until dropped or
+  succeeded, page should still ask"), though the next page lists it again. It never asks for drafts (reply,
   edit, new thread) or for replies, edits and new threads on their way:
   `localStorage` keeps them and the next page resends what was sent. Only
   while storage can't keep them (a private window, blocked site data) do
@@ -360,3 +404,39 @@ exactly once, and dropping the lines shown as added or removed from the two
 sides leaves them whitespace-equal, so a block moved across an unchanged
 line, or a line that crossed one, is never shown as whitespace-only. It may
 show more as changed than `git diff -w` does, never less.
+
+## Home never hides a PR on its own
+
+Home lists PRs; the reviewer decides what to set aside. Only the reviewer's
+own snooze or waiting-on hides a row (annotations are `by: "human"` events,
+never written by anything automatic). A hidden row stays in its section,
+counted in the section's footer ("2 snoozed · 1 waiting", any other reason
+as "N hidden"), and one click reveals it with its reason; Wake up is one
+of the row's actions (the floating bar with a mouse, the ⋯ sheet on touch). A
+long section folds behind "show N more", which only folds: the count is
+every row. Nothing automatic, AI or not, hides or drops a PR, and Home
+reads review progress but never writes it.
+
+While a view repo's first read is still out, Home never shows a count or
+an empty section for it: counts are spinners (footers too) and
+placeholder rows stand in until every repo has answered (owner,
+2026-11-01: "An empty result should always be easily distinguishable for
+a still loading result"). A repo never read successfully is unknown, not
+empty: the counts carry an alert naming it, and no section says "none".
+
+## "Side by side" is a view
+
+Settings' "Side by side" (`src/web/files/sideBySide.ts`) lays the same
+hunks out as old-left / new-right rows, GitHub-style: the i-th removed line
+of a cluster run against the i-th added one, the surplus against a blank,
+context on both sides. It changes nothing but the layout: clusters, their
+keys, the +/− counts, progress, what is unreviewed, threads and their
+places, and the other settings' rows (a whitespace-only pair is one `~`
+row with each side's own text; a whitespace-only cluster is still one
+collapsed row) are the same in both views, and switching never changes
+review state or refetches anything. What it guarantees, pure and checked
+for any input (principle 2): every removed, added and context line of the
+hunk is in the rows exactly once per side, left cells in old-file order,
+right cells in new-file order, a changed line never in a cell of the wrong
+side, and a blank cell only once the other side has run out. The sides
+never widen the page: code wraps in its cell, on a phone too.

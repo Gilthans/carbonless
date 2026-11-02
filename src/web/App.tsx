@@ -23,11 +23,12 @@ import {
 } from "./api";
 import { Logo, Mark, Wordmark } from "./brand/Brand";
 import { SyncNotices } from "./files/SyncNotices";
-import { useUnsavedGuard } from "./files/useSetStates";
 import { HeadBanner } from "./HeadBanner";
 import { KeptPages, useActivePage } from "./pages";
 import { fullDate } from "./RelativeTime";
+import { useReviewId } from "./reviewId";
 import { Settings } from "./Settings";
+import { SkeletonBar, Spinner } from "./Spinner";
 import { useShortcutHelp } from "./shortcuts";
 import { AppHeaderHeight } from "./sticky";
 import { Tooltip } from "./Tooltip";
@@ -151,7 +152,6 @@ function useStickyHeader(
 export function App() {
 	const queryClient = useQueryClient();
 	const session = useQuery(sessionQuery);
-	useUnsavedGuard();
 	useThreadWritesSetup();
 	useShortcutHelp(EDITOR_KEYS);
 	// Writes into the session cache (so only once the session has loaded, or
@@ -177,7 +177,8 @@ export function App() {
 	const revalidating = useIsFetching({ queryKey: ["overview-revalidate"] }) > 0;
 	const refreshing = refresh.isPending || revalidating;
 	// Follows the page showing, which switches only once it can render.
-	const wide = useActivePage() === "/files";
+	const wide = useActivePage() === "/r/$id/files";
+	const id = useReviewId();
 	const pr = session.data?.pr;
 	const prUrl = safeHref(pr?.url);
 	// The tab names the PR, so several reviews open side by side tell apart.
@@ -222,11 +223,36 @@ export function App() {
 					}`}
 				>
 					<div className="mx-auto max-w-5xl px-4 pt-3 pb-2 sm:px-6 sm:pt-4">
-						{session.isPending && <p className="text-muted">Loading…</p>}
+						{session.isPending && (
+							// The title's frame, where it will show (principle 8).
+							<div
+								aria-busy="true"
+								data-testid="header-loading"
+								className="flex min-h-11 items-center gap-2 sm:min-h-12 sm:gap-3"
+							>
+								<Spinner label="Loading the PR" size={20} />
+								<div className="min-w-0 flex-1 space-y-2.5">
+									<SkeletonBar className="w-2/3 max-w-sm" />
+									<SkeletonBar className="w-1/3 max-w-40" />
+								</div>
+							</div>
+						)}
 						{session.isError && <ErrorMessage error={session.error} />}
 						{pr && (
 							<div className="flex items-center gap-2 sm:gap-3">
-								<Logo className="-my-1.5 h-11 w-11 shrink-0 sm:h-12 sm:w-12" />
+								<Tooltip content="Home" describe={false}>
+									{(trigger) => (
+										<Link
+											{...trigger}
+											to="/"
+											aria-label="Home"
+											data-testid="home-link"
+											className="-my-1.5 shrink-0 rounded-full focus-visible:outline-2 focus-visible:outline-accent"
+										>
+											<Logo className="h-11 w-11 sm:h-12 sm:w-12" />
+										</Link>
+									)}
+								</Tooltip>
 								<div
 									data-testid="header-title"
 									className="flex min-w-0 flex-wrap items-baseline gap-x-2"
@@ -294,7 +320,8 @@ export function App() {
 							</span>
 							<nav aria-label="PR pages" className="flex shrink-0 self-stretch">
 								<Link
-									to="/"
+									to="/r/$id"
+									params={{ id }}
 									// Matched on the path only: a query (the first
 									// load's ?key=) must not unmark the tab.
 									activeOptions={{ exact: true, includeSearch: false }}
@@ -305,7 +332,8 @@ export function App() {
 								</Link>
 								{/* Short labels on a phone, where the full ones don't fit. */}
 								<Link
-									to="/files"
+									to="/r/$id/files"
+									params={{ id }}
 									aria-label="Files changed"
 									activeOptions={{ includeSearch: false }}
 									className={tabClass}
@@ -315,8 +343,10 @@ export function App() {
 									<span className="hidden sm:inline">Files changed</span>
 								</Link>
 								<Link
-									to="/verdict"
+									to="/r/$id/verdict"
+									params={{ id }}
 									aria-label="Final Verdict"
+									activeOptions={{ includeSearch: false }}
 									className={tabClass}
 									activeProps={{ className: activeTabClass }}
 								>

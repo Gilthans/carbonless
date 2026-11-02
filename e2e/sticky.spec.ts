@@ -1,5 +1,12 @@
 import type { Locator, Page } from "@playwright/test";
-import { barBottom, fileSection, openFiles, progress } from "./files-ui";
+import {
+	barBottom,
+	expectNoPageOverflow,
+	fileSection,
+	openFiles,
+	progress,
+	sideBySide,
+} from "./files-ui";
 import { expect, type PrOptions, test } from "./fixtures";
 
 const text = (lines: string[]) => `${lines.join("\n")}\n`;
@@ -39,14 +46,6 @@ const box = async (locator: Locator) => {
 const appHeader = (page: Page) => page.locator("body header").first();
 const appRow = (page: Page) => page.getByTestId("app-header-row");
 const compactTitle = (page: Page) => page.getByTestId("compact-title");
-
-async function expectNoPageOverflow(page: Page) {
-	const { scrollWidth, clientWidth } = await page.evaluate(() => ({
-		scrollWidth: document.documentElement.scrollWidth,
-		clientWidth: document.documentElement.clientWidth,
-	}));
-	expect(scrollWidth).toBeLessThanOrEqual(clientWidth);
-}
 
 /** Scrolls deep into the long cluster of b/long.ts, opened. */
 async function deepInLongCluster(page: Page, open = true) {
@@ -214,6 +213,64 @@ test("a long cluster's checkbox and cross-off stay below the file header", async
 	await expect
 		.poll(async () => (await box(checkbox)).bottom)
 		.toBeLessThanOrEqual((await box(section.locator("header"))).bottom);
+	await expectNoPageOverflow(page);
+});
+
+test("a long cluster's controls float over it side by side too", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	if (isMobile) await page.setViewportSize({ width: 360, height: 780 });
+	await pr(fixture);
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	await sideBySide(page, true);
+	const section = await deepInLongCluster(page);
+	await expect(
+		section.locator('table[data-view="side-by-side"]'),
+	).toBeVisible();
+	const first = section
+		.getByTestId("diff-line")
+		.filter({ hasText: /long 1 changed$/ });
+	await expect(first).toHaveAttribute("data-kind", "pair");
+	await expect(first).not.toBeInViewport();
+	const checkbox = section
+		.getByRole("checkbox", { name: "Mark cluster reviewed" })
+		.first();
+	const cross = section
+		.getByRole("button", { name: "Cross off cluster" })
+		.first();
+	await expect(checkbox).toBeInViewport();
+	await expect(cross).toBeInViewport();
+	await expect(section.locator("[data-stuck]")).toHaveCount(1);
+	const header = await box(section.locator("header"));
+	const target = await box(section.getByTestId("cluster-box-target").first());
+	expect(target.top).toBeGreaterThanOrEqual(header.bottom - 1);
+	expect(target.top - header.bottom).toBeLessThanOrEqual(isMobile ? 4 : 8);
+	if (isMobile) expect(target.height).toBeGreaterThanOrEqual(40);
+	const line = section
+		.getByTestId("diff-line")
+		.filter({ hasText: /long 95 changed$/ });
+	const lineTop = (await box(line)).top;
+	// Still operable there: it marks its own cluster, both sides fading.
+	await checkbox.click();
+	await expect(checkbox).toBeChecked();
+	await expect(
+		section.getByRole("checkbox", { name: "Mark cluster reviewed" }).nth(1),
+	).not.toBeChecked();
+	await expect(line).toHaveAttribute("data-reviewed", "true");
+	await expect(line.locator('td[data-testid="code"]').first()).toHaveClass(
+		/bg-del-done/,
+	);
+	await expect(line.locator('td[data-testid="code"]').last()).toHaveClass(
+		/bg-add-done/,
+	);
+	await expect((await box(line)).top).toBe(lineTop);
+	await expect(
+		section.getByRole("progressbar", { name: "File progress" }),
+	).toHaveAttribute("aria-valuetext", /1 of 2 clusters reviewed/);
 	await expectNoPageOverflow(page);
 });
 

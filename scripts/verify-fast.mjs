@@ -77,6 +77,7 @@ const E2E_MAP = [
 			"sticky",
 			"invisibles",
 			"whitespace",
+			"sideBySide",
 			"mobile",
 			"saves",
 		],
@@ -94,11 +95,16 @@ const E2E_MAP = [
 		["verdict"],
 	],
 	[/^src\/server\/review\//, ["files", "persistence"]],
+	[
+		/^src\/server\/home\/|^src\/shared\/home(Sections)?\.ts$/,
+		["home-api", "home"],
+	],
+	[/^src\/web\/home\/|^src\/web\/router\.tsx$/, ["home"]],
 	[/^src\/web\/code\//, ["invisibles", "whitespace", "files"]],
-	[/^src\/web\/shortcuts\.tsx$/, ["shortcuts", "settings"]],
+	[/^src\/web\/shortcuts\.tsx$/, ["shortcuts", "settings", "home"]],
 	[
 		/^src\/web\/(Settings\.tsx|viewSettings\.ts)$/,
-		["settings", "invisibles", "whitespace", "shortcuts"],
+		["settings", "invisibles", "whitespace", "sideBySide", "shortcuts"],
 	],
 	[/^src\/web\/sticky\.ts$/, ["sticky", "files"]],
 	[
@@ -114,6 +120,10 @@ const E2E_MAP = [
 	[/^src\/server\/access\.ts$|^src\/web\/accessKey\.ts$/, ["cli", "keepalive"]],
 	[/^test\/methodology-fixture\.ts$/, ["methodology"]],
 	[/^e2e\/files-ui\.ts$/, ["files", "sticky", "mobile"]],
+	[
+		/^src\/(cli|client)\.ts$|^src\/server\/(serve|registry|serverState|config|paths|version|app)\.ts$|^src\/web\/(router\.tsx|reviewId\.ts|api\.ts|App\.tsx|pages\.tsx)$|^scripts\/build-info\.mjs$/,
+		["serve", "cli"],
+	],
 ];
 // Shared plumbing: anything here can break any spec.
 const ALL =

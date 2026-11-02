@@ -15,6 +15,8 @@ import type { ReviewThread } from "../../shared/types";
 import { hunksQuery, overviewQuery, sessionQuery } from "../api";
 import { LabeledIcon } from "../overview/parts";
 import { useForgetPageScroll, usePageActive } from "../pageActive";
+import { useReviewId } from "../reviewId";
+import { SkeletonBar, Spinner } from "../Spinner";
 import { useAppHeaderHeight, useHeight } from "../sticky";
 import { PeopleProvider } from "../threads/people";
 import { dropLosesText, useThreadWrites } from "../threads/threadWrites";
@@ -23,12 +25,18 @@ import { useThreads } from "../threads/useThreads";
 import { ErrorMessage } from "../ui";
 import { useMedia, WIDE } from "../useMedia";
 import { FilesVerdict } from "../verdict/FilesVerdict";
+import { ignoreWhitespace, sideBySide } from "../viewSettings";
 import type { DiffThreads } from "./DiffBody";
 import { FileDiff } from "./FileDiff";
 import { FileTree } from "./FileTree";
 import { filesPrefetchOrder } from "./filesPrefetch";
 import { useHeadSure } from "./headSure";
-import { type FilesSearch, type Landing, landingFile } from "./landing";
+import {
+	type FilesSearch,
+	type Landing,
+	landingFile,
+	parseFilesSearch,
+} from "./landing";
 import { ProgressBar } from "./ProgressBar";
 import { SelectionBar } from "./SelectionBar";
 import {
@@ -42,6 +50,7 @@ const NO_THREADS: ReviewThread[] = [];
 
 import { type Unit, useUnit } from "./unit";
 import { STALE_MESSAGE, useReviewView, useSyncState } from "./useSetStates";
+import { useViewShortcuts } from "./viewShortcuts";
 
 /**
  * The file tree on narrow screens: a modal sheet over the diffs, closed by
@@ -164,6 +173,8 @@ function useDiffThreads(): {
 	/** Every thread of the read, on this head or not (people's tints). */
 	all: ReviewThread[] | undefined;
 	failed: Error | null;
+	/** Still on their way: nothing failed and none are in yet. */
+	loading: boolean;
 } {
 	const overview = useQuery(overviewQuery);
 	const session = useQuery(sessionQuery);
@@ -187,7 +198,21 @@ function useDiffThreads(): {
 				: undefined,
 		[readId, view, snapshotHead, gone],
 	);
-	return { threads, all: view?.threads, failed: view ? null : error };
+	// No overview or session, no threads: that's their failure too. Only
+	// with nothing kept: a refetch failing over a kept one (a Refresh)
+	// leaves its threads loading.
+	const failed = view
+		? null
+		: (error ??
+			(overview.data ? null : overview.error) ??
+			(session.data ? null : session.error) ??
+			null);
+	return {
+		threads,
+		all: view?.threads,
+		failed,
+		loading: !threads && !failed,
+	};
 }
 
 /** A text box on the page has focus (a comment or a reply being written). */
@@ -213,6 +238,30 @@ function useWritingHere(): boolean {
 	return writing;
 }
 
+/**
+ * The page's frame while the diff loads (principle 8): the progress bar's
+ * row with a spinner, and file cards' headers, never "no files" or 0%.
+ */
+function FilesSkeleton() {
+	return (
+		<div data-testid="files-loading" aria-busy="true" className="space-y-3">
+			<div className="flex min-h-10 items-center gap-3 border-b border-line py-2">
+				<Spinner label="Loading the diff" />
+				<SkeletonBar className="flex-1" />
+			</div>
+			{["w-1/2", "w-2/3", "w-2/5"].map((w) => (
+				<div
+					key={w}
+					aria-hidden
+					className="flex min-h-12 items-center rounded-lg border border-line bg-surface px-3"
+				>
+					<SkeletonBar className={w} />
+				</div>
+			))}
+		</div>
+	);
+}
+
 const headerOf = (index: number) =>
 	document.querySelector<HTMLElement>(`#file-${index} > header`);
 
@@ -226,6 +275,8 @@ export function FilesPage() {
 	// False while another page shows (kept mounted, hidden): measuring and
 	// tracking pause, root styles are given back, the sheet closes.
 	const active = usePageActive();
+	// `w` and `s` flip the diff's view settings while this page shows.
+	useViewShortcuts();
 	const diffs = useRef<HTMLDivElement>(null);
 	const bar = useRef<HTMLDivElement>(null);
 	// The sticky stack, top down: the app header's compact row, the progress
@@ -304,6 +355,34 @@ export function FilesPage() {
 		unitAnchor.current = null;
 		if (a && diffs.current) restoreAnchor(a, diffs.current);
 	}, [unit]);
+	// So does switching a view setting that lays the rows out again (side
+	// by side, ignore whitespace): the anchor is taken as the setting
+	// changes, before React re-renders, and the row found again by its
+	// numbers once the new rows are in.
+	const settingAnchor = useRef<ScrollAnchor | null>(null);
+	useEffect(() => {
+		const capture = () => {
+			const root = diffs.current;
+			settingAnchor.current = root
+				? captureAnchor(root, appHeader + pageSticky)
+				: null;
+		};
+		const unsubscribe = [
+			sideBySide.subscribe(capture),
+			ignoreWhitespace.subscribe(capture),
+		];
+		return () => {
+			for (const off of unsubscribe) off();
+		};
+	}, [appHeader, pageSticky]);
+	const split = sideBySide.use();
+	const ignoreWs = ignoreWhitespace.use();
+	// biome-ignore lint/correctness/useExhaustiveDependencies: runs after each setting switch.
+	useLayoutEffect(() => {
+		const a = settingAnchor.current;
+		settingAnchor.current = null;
+		if (a && diffs.current) restoreAnchor(a, diffs.current);
+	}, [split, ignoreWs]);
 	/** The header to keep where it was on screen as files open and close. */
 	const anchor = useRef<{ index: number; top: number } | null>(null);
 	const sectionOf = (index: number) => document.getElementById(`file-${index}`);
@@ -371,8 +450,13 @@ export function FilesPage() {
 	// A thread's file:line link (landing.ts): open that file alone; its diff
 	// scrolls to the line and highlights it, or says the line isn't there.
 	// The params are dropped once read, so the same link works again.
-	const search = useSearch({ strict: false }) as FilesSearch;
+	// Rendered among the review's kept pages, not in the files route's
+	// outlet: its search as the address has it (strings, search.ts), read
+	// as the route reads it.
+	const raw = useSearch({ strict: false }) as Record<string, unknown>;
+	const search: FilesSearch = parseFilesSearch(raw);
 	const navigate = useNavigate();
+	const id = useReviewId();
 	const [landing, setLanding] = useState<Landing | null>(null);
 	const landingSeq = useRef(0);
 	// biome-ignore lint/correctness/useExhaustiveDependencies: runs per landing.
@@ -386,7 +470,8 @@ export function FilesPage() {
 			seq: landingSeq.current,
 		});
 		void navigate({
-			to: "/files",
+			to: "/r/$id/files",
+			params: { id },
 			search: {},
 			replace: true,
 			resetScroll: false,
@@ -411,7 +496,12 @@ export function FilesPage() {
 
 	// Comments are read in the background, the open file's threads first,
 	// then the other files' in file order (one prefetch for the page).
-	const { threads, all: allThreads, failed: threadsFailed } = useDiffThreads();
+	const {
+		threads,
+		all: allThreads,
+		failed: threadsFailed,
+		loading: threadsLoading,
+	} = useDiffThreads();
 	// The first open's own reads are in (the files, their threads): only
 	// then may the verdict card read GitHub's merge facts.
 	const firstOpenSettled =
@@ -463,6 +553,7 @@ export function FilesPage() {
 			current={current}
 			onSelect={select}
 			threadsOf={(f) => threadsByPath.get(f.path) ?? NO_THREADS}
+			threadsLoading={threadsLoading}
 		/>
 	);
 
@@ -473,7 +564,7 @@ export function FilesPage() {
 				style={{ "--files-bar": `${barHeight}px` } as CSSProperties}
 			>
 				<h2 className="sr-only">Files changed</h2>
-				{review.isPending && <p className="text-muted">Loading the diff…</p>}
+				{review.isPending && <FilesSkeleton />}
 				{review.isError && <ErrorMessage error={review.error} />}
 				{data && (
 					<>
@@ -482,7 +573,10 @@ export function FilesPage() {
 							progress={data.progress}
 							unit={unit}
 							onUnitChange={setUnit}
-						/>
+						>
+							{/* Every count and bubble waits on them (principle 8). */}
+							{threadsLoading && <Spinner label="Loading comments" />}
+						</ProgressBar>
 						{stale && (
 							<p
 								role="status"
@@ -560,6 +654,7 @@ export function FilesPage() {
 												landing?.index === file.index ? landing : undefined
 											}
 											threads={threads}
+											threadsLoading={threadsLoading}
 											headSure={headSure}
 										/>
 									))}

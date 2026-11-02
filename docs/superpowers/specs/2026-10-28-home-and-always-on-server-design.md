@@ -114,10 +114,9 @@ Owner's decisions on this part (2026-10-28):
 - **`crb` as a thin client**: `crb <pr>` asks the running server for the
   review and prints its link; no running server means it starts one. Claude
   Code, or anyone, gets a link by running it.
-- **Home** at the server root: the view's PRs in four static sections,
-  recently closed ones, the PRs you've started reviewing anywhere, each row
-  with GitHub's facts, whose turn it looks like, and your coverage once
-  you've started.
+- **Home** at the server root: the view's PRs in four static sections and
+  recently closed ones, only from the view's repos, each row with GitHub's
+  facts, whose turn it looks like, and your coverage once you've started.
 - **Open any PR** from one box: paste a URL, type `owner/repo#n`, or search
   repos and titles at once, in or outside the view.
 - **Per-PR annotations that are yours**: snooze to a date (waking on
@@ -193,8 +192,9 @@ Owner's decisions on this part (2026-10-28):
 - **URLs.** Home is `/`. A review is `/r/<review-id>` (the review's ULID
   from `refs/crb/lookup/...`) with `/r/<id>/files` and the rest as today.
   `/pr/<owner>/<repo>/<n>[?head=...]` resolves or creates the PR's review
-  and redirects to `/r/<id>`, so a typed or pasted address works too
-  **(call)**. The builder picks whether `/r/<id>` or the `/pr/...` form is
+  and goes on to `/r/<id>`, so a typed or pasted address works too
+  **(call)**; with the web UI it shows the PR loading at once and goes on
+  in place (Home, Open any PR). The builder picks whether `/r/<id>` or the `/pr/...` form is
   what the CLI prints; the printed one must be stable across restarts (both
   are).
 - **Shutdown** on the usual signals closes every session (today's
@@ -209,6 +209,10 @@ Owner's decisions on this part (2026-10-28):
   `scripts/agent-worktree.sh` set a private `XDG_STATE_HOME` and
   `XDG_CONFIG_HOME` inside the worktree (git-ignored), so a branch's
   `crb <pr>` finds or starts its own server, never main's.
+  gh keeps its login under `$XDG_CONFIG_HOME/gh`, so they also pin
+  `GH_CONFIG_DIR` to the real one (`$GH_CONFIG_DIR`, else
+  `${XDG_CONFIG_HOME:-~/.config}/gh`, read before the override); anyone
+  running crb with their own `XDG_CONFIG_HOME` must do the same (FAQ).
 - **Version handshake** (same agreement; format set by the
   versioning/distribution work). The CLI never hands a request to a
   mismatched server silently.
@@ -262,8 +266,45 @@ Owner's decisions on this part (2026-10-28):
   ```
 
   The UI edits the first view (the pencil next to the repo chips: add by
-  `owner/repo` or URL, remove, suggestions from repos of recent reviews);
-  the server writes the file; a hand edit is picked up on the next refresh.
+  `owner/repo` or URL, remove, suggestions from repos of recent reviews:
+  one-click chips for the repos of the viewer's started reviews the list
+  doesn't name, newest first, so a repo just removed is one click away);
+  the add input suggests the viewer's repos as you type (owner, 2026-10-31:
+  "should have auto-complete like the search bar, but only search for
+  repos"): the open box's Repos group alone (`GET /api/home/search?only=repos`,
+  the same source and matching), the same spinner while the viewer's repos
+  load, without the ones listed already; arrows pick one, Enter or a click
+  adds it, Enter with none picked adds what was typed, Escape closes the
+  list (the dialog stays). Save reacts at once, like the rest of the system
+  (owner, 2026-10-31: "when saving the repo list, behavior should match
+  the rest of the system: immediate reaction, if after 5 sec server hasn't
+  confirmed the update state show a warning, and a loading spinner
+  somewhere to indicate the state is reloading"; this replaces the
+  earlier spinning Save): the dialog closes and Home shows the new list
+  and drops the rows of removed repos (started ones too) before the
+  server answers; a spinner by the view's name shows while the server
+  saves; unconfirmed after 5 s, the review page's yellow "Saving is
+  delayed" notice says so, in the same place. Saving only stores the list
+  (owner, 2026-11-01: "Saving saves the configured repos immediately"):
+  `PUT /api/home/view` checks the shape, writes the config and answers,
+  with no GitHub call and no read, so it lands in well under a second
+  whatever the repos. The added repos are then read each on its own
+  (Refresh, below): a repo GitHub doesn't know (a typo) shows on its chip
+  as "Not found on GitHub" with Retry, and the pencil removes it. A
+  removed repo's rows go at once and its read stops; added back within
+  the hour, its last rows show at once while it is read again. Saves go as the review state's do: one PUT at a time,
+  the newest list next (an older one superseded while out isn't sent
+  again); a transient failure (crb unreachable, a timeout, a 5xx)
+  retries with the review state's backoff for as long as it takes (a
+  PUT of the whole list is safe to repeat), the notice saying why, red
+  "Not saved yet, still retrying" with Retry after 5 in a row, and never
+  rolls the view back. Only a refusal shows a red "Not saved" notice
+  with the error, Retry and Dismiss, and puts the last saved view back;
+  nothing refused is sent again on its own, and a newer save clears it
+  (**call**). Leaving the page while a list isn't saved asks first, as for
+  review states (`useUnsavedGuard`).
+  The server writes the file; a hand edit is picked up on the next read
+  of the view (every minute).
   A missing file means an empty view, and Home says so and offers to add
   repos. Several views in the file are kept but only the first is shown.
 - Per-device config is deliberate: which repos this machine watches is the
@@ -279,18 +320,24 @@ from `gh`. A PR is in exactly one section:
 |---|---|
 | **Mine** | the viewer is the author (drafts included, with a Draft pill) |
 | **Reviewing** | not mine, and one of: a review is requested from the viewer directly (not only via a team), the viewer has submitted a review or review comment, or the viewer has started it in carbonless |
-| **Up for grabs** | not mine, not a draft, no review submitted by anyone, and no review requested from anyone except teams (owner, 2026-10-30: "prs addressed at a team and not directly at me that I haven't started reviewing should be up for grabs, not reviewing") |
+| **Up for grabs** | not mine, not a draft, no review submitted by anyone, and no review requested from anyone except teams (owner, 2026-10-30: "prs addressed at a team and not directly at me that I haven't started reviewing should be up for grabs, not reviewing"). The teams are ones the viewer is in: a PR asked of a team the viewer isn't in, or when their teams can't be read (no `read:org`), goes to Other open; a bot's review doesn't count as reviewed |
 | **Other open** | every other open PR of the view's repos |
 | **Recently closed** | merged or closed in the last 3 days (owner, 2026-10-29); a quiet tail, violet merged icon or red closed icon |
 
 **Which PRs are considered:** every open or recently closed PR of the
-view's repos, plus every PR the viewer has **started** in carbonless,
-whatever its repo. A started PR goes through the same table: the owner's
-own PR of Claude's changes in a repo outside the view lands in Mine, a
-colleague's in Reviewing, a merged one in Recently closed. (Builder check:
-the owner's main case, "any change Claude made that I want to review", is
-mostly their own PRs, so Mine must carry coverage and the any-repo rule
-like Reviewing.)
+view's repos, and nothing else (owner, 2026-11-01: "only prs from the
+selected repos should appear, it's unintuitive orherwise"; this replaces
+the earlier rule that listed every started PR whatever its repo). A
+started PR of a view repo goes through the same table: the owner's own PR
+of Claude's changes lands in Mine, a colleague's in Reviewing, a merged
+one in Recently closed, each with its coverage. A PR started in a repo
+outside the view isn't on Home and costs no GitHub read; it stays
+reachable by its `/r/<id>` link, `crb <pr>` and the open box. Removing a
+repo drops all its rows, started ones included; adding it back brings
+them back after the read. Annotations on its PRs stay stored and show
+again when it returns. (Builder check: the owner's main case, "any change
+Claude made that I want to review", is mostly their own PRs, so Mine must
+carry coverage like Reviewing.)
 
 **Started** = the viewer has a patch set for the PR in carbonless, in any
 of the PR's reviews (its plain review or a `--head` pinned one; `--as-of`
@@ -300,19 +347,49 @@ a patch set exists only after the reviewer's first action
 GitHub's facts put it.
 
 Hint under a title when it helps ("requested or started", "ready, no
-reviewer yet"). Rows in a section are ordered by last GitHub activity,
-newest first **(call)**. A PR closed without merging stays in Recently
+reviewer yet"). Rows in a section put the viewer's turn first (owner,
+2026-10-31: "everything should be sorted so things in my turn should
+appear before things with someone else's turn": the turn column names
+them, by the turn table below or their own waiting-on "Me"; a team
+they're in doesn't count), then by last GitHub activity, newest first,
+in each group **(call)**. Sub-rows keep their order under their PR. A PR closed without merging stays in Recently
 closed for 3 days like a merged one, then drops off. A section longer
 than 20 rows shows 20 and a "show N more" footer line next to the hidden
 count (owner's wording; 20 is a **call**): a fold, never a drop, and the
 refresh lists every PR (paginated), so the count is always the true one.
+The page composes the sections from every view repo's rows (each repo
+its own read; the order rules above in `src/shared/homeSections.ts`).
+Until every view repo has answered once (a failure counts, with its
+error), each section's count is a spinner and placeholder rows stand
+where rows may still come, and the footers show no numbers ("show
+more", "snoozed") (owner, 2026-11-01: "An empty result should always be
+easily distinguishable for a still loading result"); a section empty
+once all have answered says "none". A repo whose reads have all failed
+is unknown, not empty: each section's count carries a red alert naming
+it and why ("Without acme/x: Rate limited by GitHub"), and no section
+says "none" until it has been read.
 
 ### A row
 
-Repo · number · title · pills (Draft; your note, dashed) · status icons ·
-turn · age or coverage · hover actions. Every icon has a tooltip and an
+Repo · number · title · pills (Draft) · status icons · turn · age or
+coverage · hover actions; your note on its own line under the title. Every icon has a tooltip and an
 accessible name (principle 6); colors are the design tokens with their
 code-review meaning.
+
+- **Columns and their header** (owner, 2026-10-31: "There should be titles
+  at the top of the list, so it's clear what are the elements of the
+  row"): from `lg` (1024px) up a row is one line of fixed columns, Repo ·
+  Pull request (number, title, pills; takes the rest) · Status · Turn ·
+  Reviewed (coverage) · Updated (age, at the row's right edge), and one
+  header for the page names them, in line with them, in short words; it
+  sticks at the top, so it names the columns of whichever section is in
+  view, folded or not. Below `lg` a row stacks (title; repo and the rest)
+  and nothing lines up across rows, so there is no header **(call)**. A
+  sub-row's coverage and age sit under the Reviewed and Updated columns.
+- **Title**: always whole (owner, 2026-10-31: "The title should fully
+  appear in every row. It should wrap inside the row if necessary"):
+  never truncated or ellipsised, on any width; a word longer than the row
+  breaks, with no sideways scroll.
 
 - **Status icons**, in this order, each only when it applies: checks
   (`ok` passing, `bad` failing, `warn` running; none when there are no
@@ -331,7 +408,7 @@ code-review meaning.
   | 5 | approved | author, labelled "merge" |
   | 6 | reviewers exist, last activity (commit, comment, review) was the author's | the reviewers who have reviewed |
   | 7 | reviewers exist, last activity was a reviewer's | author |
-  | 8 | no reviewers | "no reviewer" |
+  | 8 | no reviewers | the viewer's own PR: you ("No reviewer: request one"); anyone else's: "no reviewer" |
 
   A manual waiting-on (below) overrides the column for the viewer. This
   table is the seed of the attention set; it's data on the row, never a
@@ -357,9 +434,21 @@ code-review meaning.
   instead, the title carrying an external-link icon and the tooltip
   "Merged, nothing to review here. Open on GitHub"; `/pr/...` and
   `crb <pr>` answer with the same refusal as today.
-- **Hover actions** (desktop): snooze, waiting on, note. On touch the row
-  ends in a 40px "⋯" button that opens the same three as a bottom sheet
-  **(call)**; no hover, no long-press.
+- **Floating actions** (owner, 2026-10-31: "The actions can appear in a
+  floating menu bar, it doesn't need space saved"): the row keeps no room
+  for them; its last column (the age) ends at the row's right edge. With a
+  mouse: snooze, waiting on, note (and Wake up on a hidden row) are icon
+  buttons in a small bar floating over the row's right end, shown on
+  hover and on keyboard focus in the row. It stays inside its row (never
+  up under the sticky column header) and clear of the age: in columns just
+  left of Updated, stacked at the title line's end (that line is as tall
+  as the bar). Its buttons are compact for a fine pointer and 40px where
+  a coarse one exists (`any-pointer: coarse`); their popovers open under
+  it, above the rows after it. On touch: a 40px "⋯" button floating at the
+  row's top right (the title line leaves room for it) opens the same
+  actions as a bottom sheet **(call)**; no hover, no long-press. A long
+  login or many signs stay inside their column (cut, whole in the
+  tooltip; or wrapped).
 
 ### Hidden rows
 
@@ -370,7 +459,8 @@ code-review meaning.
   waiting", a disclosure button (`aria-expanded`, 40px tall on touch) that
   reveals the rows in place, dimmed, each with its reason badge (the date,
   with a bolt when activity can wake it; the arrow and avatar of the
-  person it waits on) and a **Wake up** button (owner, 2026-10-29), which
+  person it waits on) and a **Wake up** action (owner, 2026-10-29; among the
+  row's floating actions since 2026-10-31), which
   ends the snooze or the wait at once and puts the row back among the
   visible ones. Collapsed again on reload.
 - A row that woke in the last 24 hours carries a small alarm badge
@@ -386,11 +476,33 @@ Semantics:
   default. Activity = the PR's GitHub `updatedAt` is later than the moment
   of snoozing **(call)**: a push, comment, review or state change all
   count; nothing else does.
-- **Waiting on** = a login, or "me". The PR hides until the named person's
-  activity (a commit, comment or review by them later than the annotation)
-  or until cleared. "Me" never hides and shows the row under "you" in the
-  turn column.
-- **Note** = free text shown as a dashed pill on the row; private to the
+- **Waiting on** = a login; "Me" is the viewer's own login. The PR hides
+  until the named person's activity (a commit, comment or review by them
+  later than the annotation) or until cleared (Wake up, or Clear in the
+  Waiting-on panel). "Me" never hides and shows the row under "you" in the
+  turn column. Teams (`org/slug`) are not offered: a team never acts
+  itself, so a wait on one could never end.
+- **Someone else** suggests people as you type (owner, 2026-10-31: "the
+  waiting on feature needs autocomplete on github users, with users from
+  my orgs or interacting with my repos appearing first";
+  `GET /api/home/people?q=`, `src/server/home/people.ts`): first
+  "People", the members of the viewer's orgs and everyone on the PRs Home
+  knows (authors, requested reviewers, reviewers, commenters), those whose
+  login starts with the text first, then by how many of those PRs they're
+  on; then "GitHub", GitHub's user search, only from 2 characters (typing
+  rests 150 ms first; a search is reused for a minute). Never the viewer
+  ("Me" is theirs), a team, a bot or an org. Arrows pick one, Enter or a
+  click takes it, Enter with none picked takes what was typed. Cost: the
+  org members are read once per server and again at most hourly (with
+  Home's refresh): one query for the orgs and one per 100 members, 1
+  point each, at most 10 pages an org; without `read:org` there are none
+  and the repos' people still come. Each user search is 1 point **(call)**.
+- **Note** = free text on its own line under the row's title (owner,
+  2026-10-31: "the pr note should appear below the title if it exists,
+  not beside. it should take up no more than 1 line, the rest appearing
+  by hover on click"): a note icon and the text in `muted`, one line at
+  most, cut with an ellipsis; the whole note, its line breaks kept, in
+  its tooltip on hover or focus, and on a tap on touch. Private to the
   reviewer, never posted to GitHub.
 - Each is cleared by its own action (Wake up clears snooze and waiting-on;
   an empty note clears the note).
@@ -408,7 +520,7 @@ by the builder, and departed from only with a stated reason)**:
   | Type | Payload |
   |---|---|
   | `pr-snoozed` | PR number, `until` (ms since epoch), `wakeOnActivity` |
-  | `pr-waiting-on` | PR number, `who` (login or `me`) |
+  | `pr-waiting-on` | PR number, `who` (a login; the reviewer's own means me) |
   | `pr-note` | PR number, `text` (empty clears) |
   | `pr-cleared` | PR number, `kind` (`snooze` / `waiting`) |
 
@@ -444,37 +556,76 @@ parsed on every keystroke:
 - Title search in a repo outside the view, or beyond the cache in a view
   repo, uses `gh search prs --repo` after a short debounce, with a spinner
   in the list and no blocking of the typed results.
-- Opening a PR of a repo not yet cloned shows the review page's existing
-  loading state (the clone progress lines).
+- Choosing a PR (or any `/pr/owner/repo/n` address, `?head=` too) shows a
+  page at once (owner, 2026-10-31: "It should open a page immediately, that
+  loads while the backend data model is created"): the review page's frame
+  with the PR's title (when Home knows it, else `owner/repo #n`) and an
+  "Opening…" spinner, while the server opens the review (a clone if the repo
+  has none yet). Then it becomes `/r/<id>` in place (Back returns to where
+  the reviewer came from). A PR that can't be opened says why on that same
+  page. The server answers `/pr/...` with the page before any GitHub read;
+  the page asks `POST /api/reviews`, which joins an open of the same PR
+  under way, so opening it twice gives one review. The cross-site rule for
+  `/pr/...` is unchanged; the CLI still opens through `POST /api/reviews`.
 
 ### Refresh
 
-- The server refreshes every view repo every `refresh.minutes` (default
-  2) and every started PR regardless of repo (a merged or closed one for
-  3 days after it closed, then no more): the PR list with the fields the
+- Each view repo is read on its own (owner, 2026-11-01: "Every repo PR
+  list should have its own tanstack query, so it is automatically cached
+  and refreshed. If anything is refreshing, we should see a spinner"):
+  `GET /api/home/repos/:owner/:repo` answers that repo's rows (each with
+  its section, turn, hidden reason, annotations and started reviews'
+  coverage and sub-rows), its last good read's time and its last read's
+  error. The page keeps one TanStack query per view repo, read again every
+  `refresh.minutes` (default 2) and on focus or reconnect once that old
+  (the view on focus once 30 s old),
+  kept for 2 hours once out of the view. There is no server timer: the
+  server reads a repo from GitHub when asked and its facts are older than
+  `refresh.minutes` (30 s at least; doubled per failed read in a row, up
+  to 30 minutes, so a focus or another device can't read a repo that is
+  backing off), or when the Refresh button or a chip's Retry asks with
+  `fresh=1`. One read per repo at a time, shared by every ask: the page
+  drops its own timed ask for a fresh one, but on the server a fresh ask
+  joins a read already running. Otherwise it answers from its cache.
+  However many tabs and devices are open, a repo costs one read per
+  `refresh.minutes`. So rows on screen can be up to about twice
+  `refresh.minutes` old (a client served from the cache reads again a
+  period after that answer); the header's time says how old.
+  Only the view's repos are served (another answers 404 without a GitHub
+  read), and no other repo is read, started PRs included. `GET /api/home`
+  carries no rows: the viewer, the view, the config's problems, the
+  refresh minutes and the started reviews' repos.
+- What a read fetches: the PR list with the fields the
   sections, rows and turn rules need (number, title, author, draft, state,
   merged-at, updated-at, review requests, latest reviews and review
   decision, checks rollup, unresolved thread count, the dates and authors
   of the last commit, comment and review). GraphQL, paginated at 100 per
-  page, is the likely shape; `gh pr list --json` lacks unresolved threads.
-  Builder's call, with the fake `gh` extended to serve it. Every open PR is
+  page, incremental after the first read. Every open PR is
   listed, however many: the budget is measured in the report (points per
   refresh per repo at 100 and 300 open PRs) and must leave a 3-repo view at
   2 minutes well under a tenth of GitHub's hourly GraphQL allowance; if it
   doesn't, the interval's default goes up before any PR is left out.
-- The page asks for a refresh when opened or focused if the last one is
-  older than 30 seconds, and has a refresh button. The header shows the
-  last refresh as relative text with the exact time on hover; it turns
-  `warn` with the reason (rate limited, offline, `gh` error) when a refresh
-  fails, and the lists keep the last good data.
-- On a rate-limit or repeated failure the interval doubles up to 30 minutes
-  and resets on success.
-- Refresh results are kept in the server's memory only as a cache; the
-  config and refs are the state. A restart refreshes within seconds.
+- One repo's failure or slowness never holds another's rows. While
+  anything Home shows is being read or saved (the view, a repo, a save),
+  a spinner shows by the view's name; a repo whose first read is still
+  out has a spinner on its chip; one a save is still adding, a clock
+  ("waiting for the save"; the counts don't wait for it); a failed one an
+  alert on its chip with the reason in its tooltip, and Retry beside it.
+  Each section's count carries the same clock or alert (focusable, so a
+  tap shows it on a phone), and no section says "none", while such a repo
+  is in the view. The header shows the
+  oldest repo's last read as relative text with the exact time on hover;
+  it turns `warn` with the reasons (rate limited, offline, not found, `gh`
+  error) when a read fails, and the lists keep the last good rows.
+- A repo whose reads keep failing is asked less often: the interval
+  doubles per failure in a row, up to 30 minutes, and resets on success.
+- Read results are kept in the server's memory only as a cache; the
+  config and refs are the state. A restart reads each repo on the first
+  ask.
 
 ### Phone (principle 5)
 
-Rows stack to two lines (title; repo, icons, turn, age), the search box is
+Rows stack to two lines below `lg` (title; repo, icons, turn, age), the search box is
 full width under the header, section footers and the "⋯" button are 40px
 targets, nothing scrolls sideways at 360px. The phone project of the
 Playwright suite covers Home.
@@ -511,8 +662,9 @@ Listed in the `?` help like the review page's.
 ## Tests
 
 - **Unit:** section assignment and turn rules over PR facts (every row of
-  both tables, plus "started anywhere" and the viewer-as-team-reviewer
-  case); grouping of a PR's started reviews into sub-rows by last
+  both tables, plus a started PR and the viewer-as-team-reviewer
+  case; a started PR in a repo outside the view gives no row and no
+  GitHub read); grouping of a PR's started reviews into sub-rows by last
   activity; the "show N more" fold never changing the section's count; snooze and waiting-on folding, hiding and waking (date passed,
   activity with and without the switch, the named person's activity vs
   someone else's); the inbox write rules (`by: "human"` only; unknown types
@@ -525,8 +677,9 @@ Listed in the `?` help like the review page's.
 - **Playwright** (fake `gh` scenario with several repos and a PR list per
   repo), desktop and phone projects: Home shows the four sections and
   recently closed (merged and closed-unmerged) from the scenario; Wake up on
-  a snoozed row; a started review in a repo outside
-  the view appears in Reviewing with its coverage; open by URL, by
+  a snoozed row; a started review appears in Reviewing with its coverage;
+  removing its repo from the view drops its row at once and after the
+  server's read, adding it back brings it back; open by URL, by
   `owner/repo#n`, by repo-then-title; a snoozed row leaves its section and
   shows in the footer, reveals on click, wakes on activity after the
   scenario changes and a refresh; waiting-on hides and clears on that
@@ -548,6 +701,23 @@ Listed in the `?` help like the review page's.
 - Component structure on the web side (TanStack Query for Home's data and
   refresh, TanStack Router routes for `/`, `/r/<id>/...`, `/pr/...`).
 - Wording of hints, empty states and tooltips, within principle 6.
+
+## Changes in implementation
+
+Calls made while building, each open to the owner's overrule:
+
+- **Home reads GitHub only when its page asks** (F3, call; since
+  2026-11-01 per repo, brief I): a server that only hands out review
+  links spends no GitHub budget, and a server with no Home open spends
+  none either (no server timer).
+- **Home's coverage is in lines**, falling back to clusters when only
+  clusters without changed lines are left (F4, call). The Files page's
+  unit is a browser setting the server can't see, so "37 / 120" on Home
+  can differ from the unit the Files page shows (`docs/faq.md`).
+- **A row whose only started review is pinned opens that review** (F5,
+  call), not a new plain one: with one review there are no sub-rows, so
+  the pinned review would otherwise be unreachable from Home, and the
+  row's coverage is that review's.
 
 ## Open questions for the owner
 

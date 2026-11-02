@@ -74,7 +74,9 @@ export const MAX_NEW_THREAD = MAX_REPLY - 200;
  * posts it (ThreadWrites); Escape or Cancel drops it, asking first when
  * anything was typed. What's typed is a draft from the first keystroke
  * (drafts.ts `create`). Posted, it shows as sending (the clock) until
- * GitHub has it; refused, the box is back with why.
+ * GitHub has it; refused, the box is back with why. A line comment's
+ * card keeps a readable width; a file comment's spans its row, as the
+ * file's threads do once it is posted (FileThreadsRow).
  */
 export function NewThread(props: {
 	item: NewThreadItem;
@@ -145,7 +147,7 @@ export function NewThread(props: {
 			data-testid="new-thread"
 			data-sending={item.sending || undefined}
 			aria-label="New comment"
-			className="min-w-0 max-w-[40rem] overflow-hidden rounded-lg border border-edge bg-surface"
+			className={`min-w-0 ${span.subject === "file" ? "" : "max-w-[40rem]"} overflow-hidden rounded-lg border border-edge bg-surface`}
 		>
 			<div className="flex min-h-8 min-w-0 items-center gap-2 border-b border-line bg-band px-2.5 py-1 text-xs">
 				{props.quote && (

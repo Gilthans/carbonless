@@ -136,6 +136,9 @@ let fetched: string[];
 const statePosts = () =>
 	fetched.filter((p) => p === "/api/review/states").length;
 
+/** The review the tests show. */
+const REVIEW = "01testreview0000000000000a";
+
 function renderOverview(
 	o: Partial<PrOverview>,
 	threads: ReviewThread[],
@@ -162,7 +165,11 @@ function renderOverview(
 	vi.stubGlobal(
 		"fetch",
 		vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-			const path = new URL(String(input), "http://test").pathname;
+			// The review's routes, as /api/<x>.
+			const path = new URL(String(input), "http://test").pathname.replace(
+				`/api/r/${REVIEW}/`,
+				"/api/",
+			);
 			fetched.push(path);
 			if (path.startsWith("/api/threads/")) {
 				posts.push({
@@ -217,7 +224,9 @@ function renderOverview(
 	});
 	render(
 		<QueryClientProvider client={client}>
-			<RouterProvider router={createAppRouter({ initialPath: "/" })} />
+			<RouterProvider
+				router={createAppRouter({ initialPath: `/r/${REVIEW}` })}
+			/>
 		</QueryClientProvider>,
 	);
 	return client;

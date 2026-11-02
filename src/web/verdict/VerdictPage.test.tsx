@@ -211,7 +211,17 @@ function verdictRoute(
 	};
 }
 
-function renderApp(routes: Partial<Routes> = {}, path = "/verdict") {
+/** The tests' review: the page binds to it (api.ts bindReview). */
+const ID = "01testreview0000000000000a";
+/** A review route's path as the routes below name it: `/api/<x>`. */
+const local = (input: RequestInfo | URL) =>
+	new URL(String(input), "http://test").pathname.replace(
+		`/api/r/${ID}/`,
+		"/api/",
+	);
+
+function renderApp(routes: Partial<Routes> = {}, page = "/verdict") {
+	const path = `/r/${ID}${page === "/" ? "" : page}`;
 	posted = [];
 	const all: Routes = {
 		"/api/session": ok(info),
@@ -223,7 +233,7 @@ function renderApp(routes: Partial<Routes> = {}, path = "/verdict") {
 		...routes,
 	} as Routes;
 	fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-		const p = new URL(String(input), "http://test").pathname;
+		const p = local(input);
 		const route = all[p];
 		if (!route) return new Response("{}", { status: 404 });
 		if (typeof route === "function") return route(init);
@@ -246,7 +256,7 @@ function renderApp(routes: Partial<Routes> = {}, path = "/verdict") {
 const verdictReads = () =>
 	fetchMock.mock.calls.filter(
 		([input, init]) =>
-			String(input) === "/api/verdict" &&
+			local(input) === "/api/verdict" &&
 			(init as RequestInit | undefined)?.method !== "POST",
 	).length;
 
@@ -267,8 +277,8 @@ describe("Final Verdict tab", () => {
 		await waitFor(() => expect(fetchMock).toHaveBeenCalled());
 		expect(verdictReads()).toBe(0);
 		const tab = screen.getByRole("link", { name: "Final Verdict" });
-		expect(tab).toHaveAttribute("href", "/verdict");
-		await router.navigate({ to: "/verdict" });
+		expect(tab).toHaveAttribute("href", `/r/${ID}/verdict`);
+		await router.navigate({ to: "/r/$id/verdict", params: { id: ID } });
 		expect(await screen.findByTestId("github-status")).toHaveTextContent(
 			"GitHub: blocked",
 		);
@@ -307,7 +317,7 @@ describe("Final Verdict tab", () => {
 		expect(rows.indexOf(own)).toBeLessThan(rows.indexOf(row("About t1")));
 		expect(within(own).getByRole("link")).toHaveAttribute(
 			"href",
-			"/?thread=t2",
+			`/r/${ID}?thread=t2`,
 		);
 		expect(row("Waiting on maya")).toBeTruthy();
 		expect(row("1 check passing")).toHaveAttribute("data-kind", "summary");
@@ -709,7 +719,7 @@ describe("Final Verdict tab", () => {
 		renderApp({}, "/files");
 		const end = await screen.findByTestId("verdict-card-files");
 		const link = within(end).getByRole("link", { name: "Blockers" });
-		expect(link).toHaveAttribute("href", "/verdict");
+		expect(link).toHaveAttribute("href", `/r/${ID}/verdict`);
 		expect(verdictReads()).toBe(0);
 		act(() => {
 			for (const cb of seen) {

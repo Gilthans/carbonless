@@ -24,7 +24,7 @@ import {
 import { OrphanDraft } from "../threads/OrphanDraft";
 import { useThreadWriter } from "../threads/threadWrites";
 import { ChangeKindIcon, changeKindLabel } from "./changeKind";
-import { COLUMNS, DiffBody, type DiffThreads, type FileLead } from "./DiffBody";
+import { DiffBody, type DiffThreads, type FileLead } from "./DiffBody";
 import type { Landing } from "./landing";
 import { Meter } from "./ProgressBar";
 import { type CodeSpan, commentAvailable } from "./selectionActions";
@@ -37,7 +37,7 @@ import {
 	StatusIcon,
 } from "./status";
 import { ThreadBubble } from "./ThreadBubble";
-import { ThreadBlock } from "./ThreadRow";
+import { TailRow, ThreadBlock } from "./ThreadRow";
 import { fileThreads, placeThreads } from "./threadPlacement";
 import {
 	describeFileProgress,
@@ -173,32 +173,28 @@ function FileCommentButton(props: { file: FileView; commit: string }) {
 
 /**
  * The file bubble's row (on the diff's first row): the file's threads, the
- * file comments being written and Comment on file, at the diff's visible
- * width like a line's ThreadRow.
+ * file comments being written and Comment on file, across the table's
+ * `columns` (both views) at the diff's visible width like a line's ThreadRow.
  */
 function FileThreadsRow(props: {
 	id: string;
+	columns: number;
 	rail?: string;
 	threads: ReactNode;
 	composers: ReactNode;
 	comment: ReactNode;
 }) {
 	return (
-		<tr data-testid="file-threads" id={props.id}>
-			<td colSpan={COLUMNS} className="p-0">
-				<div className="sticky left-0 w-[var(--diff-w,100%)] max-w-full space-y-2 border-y border-line bg-canvas py-2 pr-2 pl-3 font-sans text-sm leading-normal whitespace-normal text-ink">
-					{props.rail && (
-						<span
-							aria-hidden
-							className={`absolute inset-y-0 left-0 w-1 ${props.rail}`}
-						/>
-					)}
-					{props.threads}
-					{props.composers}
-					{props.comment}
-				</div>
-			</td>
-		</tr>
+		<TailRow
+			testId="file-threads"
+			id={props.id}
+			place={{ columns: props.columns }}
+			rail={props.rail}
+		>
+			{props.threads}
+			{props.composers}
+			{props.comment}
+		</TailRow>
 	);
 }
 
@@ -371,6 +367,8 @@ export function FileDiff(props: {
 	landing?: Landing;
 	/** The PR's review threads, placed on this file's diff. */
 	threads?: DiffThreads;
+	/** The threads are still on their way: the file's bubble spins. */
+	threadsLoading?: boolean;
 	/** The diff shown is the viewed head's (useHeadSure). */
 	headSure?: boolean;
 }) {
@@ -572,6 +570,7 @@ export function FileDiff(props: {
 				inline
 				file
 				threads={header.map((h) => h.thread)}
+				loading={props.threadsLoading && !props.threads}
 				where="on this file"
 				label={
 					fileComment.ok === true
@@ -593,11 +592,12 @@ export function FileDiff(props: {
 		),
 		// With no threads the bubble itself is the composer entry: the row's
 		// button shows only beside threads, or to say why commenting is off.
-		row: (rail) =>
+		row: (columns, rail) =>
 			(fileOpen && (header.length > 0 || fileComment.ok !== true)) ||
 			fileItems.length > 0 ? (
 				<FileThreadsRow
 					id={fileThreadsId}
+					columns={columns}
 					rail={rail}
 					threads={
 						fileOpen && props.threads

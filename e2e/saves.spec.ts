@@ -36,7 +36,7 @@ const fixture: PrOptions = {
  */
 async function holdWrites(page: Page) {
 	const held: Route[] = [];
-	await page.route("**/api/review/states", (route) => {
+	await page.route("**/api/r/*/review/states", (route) => {
 		held.push(route);
 	});
 	return {
@@ -80,7 +80,7 @@ test("a click shows at once while its write is held, and a reload shows what was
 	await expect(page.getByRole("status").filter({ has: delayed })).toBeVisible();
 	await writes.release("pass");
 	await expect(delayed).toBeHidden();
-	await page.unroute("**/api/review/states");
+	await page.unroute("**/api/r/*/review/states");
 
 	await page.reload();
 	await expect(fileProgress(fileSection(page, "src/a.ts"))).toContainText(
@@ -115,7 +115,7 @@ test("a failing write shows what failed with its message, and Retry saves it", a
 	expect(box?.width).toBeGreaterThanOrEqual(40);
 	expect(box?.height).toBeGreaterThanOrEqual(40);
 
-	await page.unroute("**/api/review/states");
+	await page.unroute("**/api/r/*/review/states");
 	await retry.click();
 	await expect(alert).toBeHidden();
 	await page.reload();
@@ -226,7 +226,7 @@ test("a change refused for good doesn't hold up the next ones", async ({
 	await openFiles(page, s.url);
 	// The first key written is refused every time; the rest go through.
 	let refused: string | undefined;
-	await page.route("**/api/review/states", async (route) => {
+	await page.route("**/api/r/*/review/states", async (route) => {
 		const { changes } = route.request().postDataJSON() as {
 			changes: { key: string }[];
 		};
@@ -247,7 +247,7 @@ test("a change refused for good doesn't hold up the next ones", async ({
 	// b is stored: only a is left unsaved.
 	await expect(alert).toContainText("Reviewed · src/a.ts");
 	await expect(page.getByTestId("save-delayed")).toHaveCount(0);
-	await page.unroute("**/api/review/states");
+	await page.unroute("**/api/r/*/review/states");
 	await page.reload();
 	await expect(progress(page)).toContainText("1 / 2 clusters reviewed");
 	await expect(fileProgress(fileSection(page, "src/b.ts"))).toContainText(
@@ -266,7 +266,7 @@ test("a write that fails transiently is retried and stored, with no error", asyn
 	const s = await startCrb();
 	await openFiles(page, s.url);
 	let failures = 0;
-	await page.route("**/api/review/states", async (route) => {
+	await page.route("**/api/r/*/review/states", async (route) => {
 		if (failures < 2) {
 			failures++;
 			await route.fulfill({
@@ -283,7 +283,7 @@ test("a write that fails transiently is retried and stored, with no error", asyn
 	});
 	expect(failures).toBe(2);
 	await expect(page.getByRole("alert")).toHaveCount(0);
-	await page.unroute("**/api/review/states");
+	await page.unroute("**/api/r/*/review/states");
 	await page.reload();
 	await expect(fileProgress(fileSection(page, "src/a.ts"))).toContainText(
 		"1 / 1 cluster",
@@ -318,7 +318,7 @@ test("the last file header can scroll clear of a notice", async ({
 	await pr(manyFixture);
 	const s = await startCrb();
 	await openFiles(page, s.url);
-	await page.route("**/api/review/states", (route) =>
+	await page.route("**/api/r/*/review/states", (route) =>
 		route.fulfill({
 			status: 400,
 			contentType: "application/json",
@@ -355,7 +355,7 @@ test("a save that keeps failing transiently turns red after 5 tries, and still s
 	await openFiles(page, s.url);
 	let failing = true;
 	let tries = 0;
-	await page.route("**/api/review/states", async (route) => {
+	await page.route("**/api/r/*/review/states", async (route) => {
 		tries++;
 		if (failing) {
 			await route.fulfill({
@@ -383,7 +383,7 @@ test("a save that keeps failing transiently turns red after 5 tries, and still s
 	failing = false;
 	await page.clock.runFor(15_000);
 	await expect(page.getByTestId("sync-notices")).toHaveCount(0);
-	await page.unroute("**/api/review/states");
+	await page.unroute("**/api/r/*/review/states");
 	await page.reload();
 	await expect(fileProgress(fileSection(page, "src/a.ts"))).toContainText(
 		"1 / 1 cluster",

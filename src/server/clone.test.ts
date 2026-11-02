@@ -23,7 +23,13 @@ import {
 	type GitFixture,
 	testGitEnv,
 } from "../../test/git-fixture";
-import { clonePath, ensureClone, fetchPr, withRepoLock } from "./clone";
+import {
+	clonePath,
+	ensureClone,
+	ensureRepoInit,
+	fetchPr,
+	withRepoLock,
+} from "./clone";
 import { GhError, type PrMeta } from "./gh";
 
 // Real git and fake-gh processes: see GIT_TEST_TIMEOUTS.
@@ -35,6 +41,14 @@ const git = (cwd: string, ...args: string[]) =>
 		encoding: "utf8",
 		env: testGitEnv(),
 	}).trim();
+
+/** A config value; "" when unset. */
+const configOf = (path: string, key: string) =>
+	spawnSync("git", ["config", "--get", key], {
+		cwd: path,
+		encoding: "utf8",
+		env: testGitEnv(),
+	}).stdout.trim();
 
 /** Every ref, HEAD and the working tree status: what fetching must not change. */
 const repoState = (path: string) =>
@@ -158,6 +172,82 @@ describe("private clone", () => {
 		);
 		expect(existsSync(`${path}.partial`)).toBe(false);
 		expect(existsSync(`${path}.lock`)).toBe(false);
+	});
+
+	it("ensureRepoInit makes an empty bare repo without asking GitHub", async () => {
+		const path = await ensureRepoInit("Acme", "Widget");
+		expect(path).toBe(clonePath("acme", "widget"));
+		expect(git(path, "rev-parse", "--is-bare-repository")).toBe("true");
+		expect(git(path, "for-each-ref")).toBe("");
+		expect(git(path, "count-objects", "-v")).toMatch(/^count: 0$/m);
+		expect(git(path, "config", "--get", "gc.auto")).toBe("0");
+		expect(ghLog()).toBe("");
+		// Again: nothing changes.
+		const inode = statSync(join(path, "HEAD")).ino;
+		expect(await ensureRepoInit("acme", "widget")).toBe(path);
+		expect(statSync(join(path, "HEAD")).ino).toBe(inode);
+	});
+
+	it("ensureClone fills an init-only repo, keeping its crb refs", async () => {
+		const path = await ensureRepoInit("acme", "widget");
+		const empty = git(path, "hash-object", "-w", "-t", "tree", "/dev/null");
+		const commit = execFileSync("git", ["commit-tree", empty, "-m", "crb: x"], {
+			cwd: path,
+			encoding: "utf8",
+			env: testGitEnv({
+				GIT_AUTHOR_NAME: "dan",
+				GIT_AUTHOR_EMAIL: "dan@crb",
+				GIT_COMMITTER_NAME: "crb",
+				GIT_COMMITTER_EMAIL: "crb@crb",
+			}),
+		}).trim();
+		git(path, "update-ref", "refs/crb/inbox/dan", commit);
+		let cloned = false;
+		expect(await ensureClone("acme", "widget", () => (cloned = true))).toBe(
+			path,
+		);
+		expect(cloned).toBe(true);
+		expect(git(path, "rev-parse", "refs/crb/inbox/dan")).toBe(commit);
+		expect(git(path, "rev-parse", "main")).toBe(shas.base);
+		expect(git(path, "symbolic-ref", "HEAD")).toBe(
+			git(fixture.path, "symbolic-ref", "HEAD"),
+		);
+		expect(git(path, "config", "--get", "remote.origin.url")).toBe(
+			fixture.path,
+		);
+		expect(configOf(path, "crb.initOnly")).toBe("");
+		expect(existsSync(`${path}.partial`)).toBe(false);
+		// A complete clone now: no second clone, and the PR fetches as usual.
+		expect(await ensureClone("acme", "widget")).toBe(path);
+		expect(ghLog().match(/^repo clone /gm)).toHaveLength(1);
+		const fetched = await fetchPr(path, meta());
+		expect(fetched.head).toBe(shas.head);
+		expect(git(path, "rev-parse", "refs/crb/inbox/dan")).toBe(commit);
+	});
+
+	it("ensureRepoInit doesn't wait for the lock when the repo exists (a clone running)", async () => {
+		const path = await ensureRepoInit("acme", "widget");
+		let release = () => {};
+		const held = withRepoLock(
+			path,
+			() => new Promise<void>((r) => (release = r)),
+		);
+		await new Promise((r) => setTimeout(r, 50));
+		const started = Date.now();
+		expect(await ensureRepoInit("acme", "widget")).toBe(path);
+		expect(Date.now() - started).toBeLessThan(1000);
+		release();
+		await held;
+	});
+
+	it("ensureRepoInit leaves an existing clone alone", async () => {
+		const path = await ensureClone("acme", "widget");
+		const refs = () =>
+			git(path, "for-each-ref", "--format=%(refname) %(objectname)");
+		const before = refs();
+		await ensureRepoInit("acme", "widget");
+		expect(refs()).toBe(before);
+		expect(configOf(path, "crb.initOnly")).toBe("");
 	});
 
 	it("serializes concurrent opens with the lock", async () => {

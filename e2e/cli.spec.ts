@@ -1,5 +1,5 @@
 import { connect } from "node:net";
-import { CrbExitError, expect, test } from "./fixtures";
+import { CrbExitError, expect, reviewPage, test } from "./fixtures";
 
 async function exitOf(promise: Promise<unknown>): Promise<CrbExitError> {
 	const error = await promise.then(
@@ -62,7 +62,7 @@ test("the access key leaves the address bar once loaded, and Overview is the cur
 	await page.goto(s.url.replace("0.0.0.0", "127.0.0.1"));
 	const overview = page.getByRole("link", { name: "Overview" });
 	await expect(overview).toHaveAttribute("aria-current", "page");
-	await expect(page).toHaveURL(/^http:\/\/127\.0\.0\.1:\d+\/$/);
+	await expect(page).toHaveURL(/^http:\/\/127\.0\.0\.1:\d+\/r\/[0-9a-z]{26}$/);
 	// The cookie carries the key from here on.
 	await page.reload();
 	await expect(
@@ -106,10 +106,10 @@ test("exits promptly on SIGTERM while a page is open", async ({
 		sc.hold = ["threads"];
 	});
 	const s = await startCrb();
-	const threadsAsked = page.waitForRequest(
-		(r) => new URL(r.url()).pathname === "/api/threads",
+	const threadsAsked = page.waitForRequest((r) =>
+		/^\/api\/r\/[^/]+\/threads$/.test(new URL(r.url()).pathname),
 	);
-	await page.goto(new URL("/files", s.url).href);
+	await page.goto(reviewPage(s.url, "files"));
 	await expect(
 		page.getByRole("progressbar", { name: "Review progress" }),
 	).toBeVisible();

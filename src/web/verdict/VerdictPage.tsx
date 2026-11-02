@@ -26,6 +26,7 @@ import {
 	SkeletonBar,
 } from "../overview/parts";
 import { RelativeTime } from "../RelativeTime";
+import { useReviewId } from "../reviewId";
 import { Tooltip } from "../Tooltip";
 import { useThreads } from "../threads/useThreads";
 import { ErrorMessage, safeHref } from "../ui";
@@ -92,6 +93,7 @@ function RequiredTag() {
 }
 
 function RowText({ row }: { row: BlockerRow }) {
+	const reviewId = useReviewId();
 	const href = safeHref(row.href);
 	const body = (
 		<>
@@ -105,7 +107,12 @@ function RowText({ row }: { row: BlockerRow }) {
 	);
 	if (row.threadId) {
 		return (
-			<Link to="/" search={{ thread: row.threadId }} className={LINK}>
+			<Link
+				to="/r/$id"
+				params={{ id: reviewId }}
+				search={{ thread: row.threadId }}
+				className={LINK}
+			>
 				{body}
 			</Link>
 		);

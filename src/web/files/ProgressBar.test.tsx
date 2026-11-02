@@ -3,7 +3,7 @@ import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Progress } from "../../shared/types";
-import { ProgressBar } from "./ProgressBar";
+import { Meter, ProgressBar } from "./ProgressBar";
 
 const sample: Progress = {
 	clusters: { total: 39, reviewed: 18, crossedOff: 4 },
@@ -110,6 +110,113 @@ describe("ProgressBar", () => {
 			"aria-valuetext",
 			"Nothing left to review: 2 clusters crossed off, 0 reviewed",
 		);
+	});
+
+	it("keeps the gap for unreviewed work without emptying a segment", () => {
+		const width = (name: string) =>
+			Number.parseFloat(
+				document.querySelector<HTMLElement>(`[data-part="${name}"]`)?.style
+					.width ?? "NaN",
+			);
+		// 7 reviewed, 395 crossed off, 11 left: the gap's 3.3 points used to
+		// come out of the 1.7-point reviewed segment first, leaving no green
+		// at all under a "38%".
+		const { rerender } = render(
+			<Meter
+				counts={{ total: 413, reviewed: 7, crossedOff: 395 }}
+				incomplete
+			/>,
+		);
+		expect(width("reviewed")).toBeGreaterThan(1);
+		expect(width("crossed-off")).toBe(20);
+		// The mirror: two crossed off beside 95 reviewed keep their hatch.
+		rerender(
+			<Meter counts={{ total: 100, reviewed: 95, crossedOff: 2 }} incomplete />,
+		);
+		expect(width("crossed-off")).toBeGreaterThan(1);
+		expect(width("reviewed")).toBeGreaterThan(90);
+		expect(width("reviewed") + width("crossed-off")).toBeCloseTo(94, 5);
+		// Room for the gap already: nothing moves.
+		rerender(
+			<Meter
+				counts={{ total: 100, reviewed: 50, crossedOff: 20 }}
+				incomplete
+			/>,
+		);
+		expect(width("reviewed")).toBe(50);
+		expect(width("crossed-off")).toBe(20);
+		// Nothing left: the counts are drawn as they are.
+		rerender(<Meter counts={{ total: 100, reviewed: 98, crossedOff: 2 }} />);
+		expect(width("reviewed")).toBe(98);
+		expect(width("crossed-off")).toBe(2);
+	});
+
+	it("caps the crossed-off part at 20% of the bar", () => {
+		const width = (name: string) =>
+			Number.parseFloat(
+				document.querySelector<HTMLElement>(`[data-part="${name}"]`)?.style
+					.width ?? "NaN",
+			);
+		// The owner's review: 7 reviewed, 395 crossed off, 11 left of 413. The
+		// hatch takes exactly 20%; the other 80% shows 7 of 18, like the "38%".
+		const { rerender } = render(
+			<Meter
+				counts={{ total: 413, reviewed: 7, crossedOff: 395 }}
+				incomplete
+			/>,
+		);
+		expect(width("crossed-off")).toBe(20);
+		expect(width("reviewed")).toBeCloseTo((7 / 18) * 80, 5);
+		// Past the cap and nearly done: the gap still comes out of both parts.
+		rerender(
+			<Meter
+				counts={{ total: 413, reviewed: 17, crossedOff: 395 }}
+				incomplete
+			/>,
+		);
+		const r = (17 / 18) * 80;
+		expect(width("reviewed")).toBeCloseTo((r * 94) / (r + 20), 5);
+		expect(width("crossed-off")).toBeCloseTo((20 * 94) / (r + 20), 5);
+		// One reviewed beside a huge cross-off is never zero green.
+		rerender(
+			<Meter counts={{ total: 10000, reviewed: 1, crossedOff: 9000 }} />,
+		);
+		expect(width("crossed-off")).toBe(20);
+		expect(width("reviewed")).toBeGreaterThan(0);
+		expect(width("reviewed")).toBeCloseTo(0.08, 5);
+		// Without the gap, reviewed + crossed fill the bar when all is done.
+		rerender(<Meter counts={{ total: 413, reviewed: 18, crossedOff: 395 }} />);
+		expect(width("reviewed")).toBeCloseTo(80, 5);
+		expect(width("crossed-off")).toBe(20);
+	});
+
+	it("draws counts as they are at or below the cap", () => {
+		const width = (name: string) =>
+			Number.parseFloat(
+				document.querySelector<HTMLElement>(`[data-part="${name}"]`)?.style
+					.width ?? "NaN",
+			);
+		// 10% crossed off: reviewed ÷ (total − crossed) × 90% = reviewed ÷ total.
+		const { rerender } = render(
+			<Meter counts={{ total: 100, reviewed: 30, crossedOff: 10 }} />,
+		);
+		expect(width("reviewed")).toBeCloseTo(30, 10);
+		expect(width("crossed-off")).toBe(10);
+		rerender(<Meter counts={{ total: 7, reviewed: 3, crossedOff: 1 }} />);
+		expect(width("reviewed")).toBeCloseTo((3 / 7) * 100, 10);
+		expect(width("crossed-off")).toBeCloseTo((1 / 7) * 100, 10);
+		// Nothing crossed off.
+		rerender(<Meter counts={{ total: 9, reviewed: 4, crossedOff: 0 }} />);
+		expect(width("reviewed")).toBeCloseTo((4 / 9) * 100, 10);
+		expect(width("crossed-off")).toBe(0);
+		// Everything crossed off: nothing left to show progress for, all hatch.
+		rerender(<Meter counts={{ total: 5, reviewed: 0, crossedOff: 5 }} />);
+		expect(width("reviewed")).toBe(0);
+		expect(width("crossed-off")).toBe(100);
+		// Empty: nothing drawn.
+		rerender(<Meter counts={{ total: 0, reviewed: 0, crossedOff: 0 }} />);
+		expect(width("reviewed")).toBe(0);
+		expect(width("crossed-off")).toBe(0);
 	});
 
 	it("says when clusters without changed lines are left", () => {

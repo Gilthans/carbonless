@@ -191,16 +191,43 @@ While one shows, the file list's end is padded by how far up the notices
 reach (`--sync-notices`), so the last header can scroll clear of them.
 Leaving the page with anything unsaved asks first (`beforeunload`).
 
+## Loading
+
+Design principle 8: loading never looks empty. Two shapes, both shared
+(`src/web/Spinner.tsx`):
+
+- **Spinner**: the octicon sync arrows spinning in `muted` (still under
+  reduced motion), a tooltip and an accessible name saying what is loading
+  ("Loading comments", "Loading diff"), `role="status"` so it can be found
+  by that name; an icon-only one isn't read out as it appears, so many on a
+  page stay quiet. Visible text beside the icon when the slot has room
+  ("Opening…"). For a small slot (a chip, a gap row) or a whole page whose
+  code is on its way. Inside a control that has its own name (a thread
+  bubble), the bare `SpinnerIcon`.
+- **Skeleton**: `SkeletonBar`, `h-3` `overlay` bars pulsing where text will
+  be, in the frame of what is coming (a section, a card, the header's
+  title), the region `aria-busy` with a screen-reader "Loading…".
+
+No 0, "None", empty meter or empty-list text shows until the answer says
+so; an error replaces the spinner in `bad`, or a `warn` notice where only
+a part is missing (flag uncertainty: "Threads not shown").
+
 ## Settings
 
 A gear (tooltip "Settings", 40px) at the right of the app bar's last row,
 so it stays in the compact sticky header too. It opens a small popover
 under it, a bottom sheet on a phone (`<dialog>`; Escape, a click outside or
 the backdrop, and Close on the sheet close it, focus back on the gear).
-Each setting is a full-width switch row (`role="switch"`, 44px): "Show
-hidden characters" (`crb.code.invisibles`, on by default) and "Ignore
-whitespace" (`crb.diff.ignoreWhitespace`, off by default), each a
-`viewSetting` (`src/web/viewSettings.ts`) remembered in `localStorage`.
+Each setting is a full-width switch row (`role="switch"`, 44px), in this
+order: "Show hidden characters" (`crb.code.invisibles`, on by default),
+"Ignore whitespace" (`crb.diff.ignoreWhitespace`, off by default) and "Side
+by side" (`crb.diff.sideBySide`, off by default; old file left, new right,
+`src/web/files/sideBySide.ts`), each a `viewSetting`
+(`src/web/viewSettings.ts`) remembered in `localStorage` and taking effect
+at once, without a reload. On Files changed, `w` flips "Ignore whitespace"
+and `s` "Side by side" (`src/web/files/viewShortcuts.tsx`, listed in the
+help under Files changed); on desktop their rows show the key as a cap
+after the label (the help's `Keys`), out of the switch's name.
 More rows go into `SettingsList` (`src/web/Settings.tsx`). Below them, on
 desktop only, "Keyboard shortcuts" (keyboard icon) opens the shortcuts help.
 
@@ -324,7 +351,9 @@ decides where; nothing else does):
   keeps the cluster's rail at its left, and the cluster's floating controls
   stop above it while it passes, then float again below it. After a Refresh the previous read's threads stay until the
   new one's land; threads that couldn't be read show a `warn` "Threads not
-  shown" notice under the progress bar, never an empty diff.
+  shown" notice under the progress bar, never an empty diff. While they
+  load, "Loading comments" spins at the progress bar's end, atop the file
+  tree and in place of an open file's bubble.
 - A line in a collapsed gap: the hidden run's row has the bubble ("on
   hidden lines 20–79"); tapping it loads the thread's lines (from the
   nearer loaded edge when it is within 200 lines, else just a few around
@@ -362,7 +391,10 @@ decides where; nothing else does):
 - **Selecting** text in the code (any row kind, across rows and sides,
   within one file) or **picking lines** by their numbers (click; shift-click
   or drag down the numbers; a second tap on touch; Up/Down move between the
-  number buttons, one tab stop per file, Shift extends, Enter picks; the
+  number buttons, one tab stop per file, Shift extends, Enter picks; side
+  by side, Up/Down stay in their column of numbers, past rows blank on
+  that side, and Left/Right go to the other number of the row, both of a
+  context row's numbers picking its one line; the
   number cells are 48×20 targets on touch too (with a mouse they are as
   wide as the file's largest number needs, three digits at least), the owner's accepted
   exception to the 40px rule, for line numbers only, so rows keep their

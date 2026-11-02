@@ -13,6 +13,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { codeFromHunk } from "../../test/code-window";
 import { suggestionHtml } from "../../test/fake-gh/scenario";
+import { expectLoadingThen, heldJson } from "../../test/loading";
 import type {
 	CodeWindow,
 	PrOverview,
@@ -230,10 +231,12 @@ let fetchMock: ReturnType<typeof mockApi>;
 function mockApi(routes: Routes) {
 	const fetchMock = vi.fn(
 		async (input: RequestInfo | URL, _init?: RequestInit) => {
-			const path = new URL(String(input), "http://test").pathname;
+			const path = apiPath(input);
 			const route = routes[path];
 			if (!route) return new Response("{}", { status: 404 });
 			if (route.body === NEVER) return new Promise<Response>(() => {});
+			// Held (test/loading.ts): answered when the test lets it go.
+			if (route.body instanceof Promise) return route.body as Promise<Response>;
 			return new Response(JSON.stringify(route.body), { status: route.status });
 		},
 	);
@@ -250,7 +253,31 @@ const ok = (body: unknown) => ({ status: 200, body });
  * the server does (every stage at once, complete), unless a test gives
  * `/api/threads` itself.
  */
+/** The review the tests show (its page is /r/<ID>). */
+const ID = "01testreview0000000000000a";
+
+/** A request's path, its review's routes as `/api/<x>`. */
+const apiPath = (input: RequestInfo | URL) => {
+	const path = new URL(String(input), "http://test").pathname;
+	const review = `/api/r/${ID}/`;
+	if (path.startsWith("/api/r/") && !path.startsWith(review)) {
+		throw new Error(`A request for another review: ${path}`);
+	}
+	return path.replace(review, "/api/");
+};
+
+/** A request's URL, its review's routes as `/api/<x>`. */
+const local = (input: RequestInfo | URL) =>
+	String(input).replace(`/api/r/${ID}/`, "/api/");
+
+/** Where a review page of the tests' review is. */
+const at = (page: "/" | "/files") => ({
+	to: page === "/" ? ("/r/$id" as const) : ("/r/$id/files" as const),
+	params: { id: ID },
+});
+
 function renderApp(routes: Partial<Routes> = {}, path = "/") {
+	path = `/r/${ID}${path === "/" ? "" : path.startsWith("/?") ? path.slice(1) : path}`;
 	const all = {
 		"/api/session": ok(info),
 		"/api/overview": ok(overview),
@@ -279,7 +306,7 @@ function renderApp(routes: Partial<Routes> = {}, path = "/") {
 }
 
 const calls = (path: string) =>
-	fetchMock.mock.calls.filter(([input]) => String(input) === path).length;
+	fetchMock.mock.calls.filter(([input]) => local(input) === path).length;
 
 describe("App", () => {
 	afterEach(() => {
@@ -303,9 +330,9 @@ describe("App", () => {
 	it("does not ask GitHub again when the overview remounts", async () => {
 		const { router } = renderApp();
 		await screen.findByRole("region", { name: "What it does" });
-		await router.navigate({ to: "/files" });
+		await router.navigate(at("/files"));
 		await screen.findByRole("region", { name: "Files changed" });
-		await router.navigate({ to: "/" });
+		await router.navigate(at("/"));
 		await screen.findByRole("region", { name: "What it does" });
 		expect(calls("/api/overview")).toBe(1);
 		expect(calls("/api/session")).toBe(1);
@@ -314,7 +341,7 @@ describe("App", () => {
 	it("keeps a visited page mounted, hidden and inert, while the other shows", async () => {
 		const { router } = renderApp();
 		const what = await screen.findByRole("region", { name: "What it does" });
-		await router.navigate({ to: "/files" });
+		await router.navigate(at("/files"));
 		const files = await screen.findByRole("region", { name: "Files changed" });
 		await screen.findByRole("progressbar", { name: "Review progress" });
 		const reads = calls("/api/review");
@@ -326,14 +353,14 @@ describe("App", () => {
 		expect(kept).toHaveAttribute("aria-hidden", "true");
 		expect(what).toBeInTheDocument();
 		expect(screen.queryByRole("region", { name: "What it does" })).toBeNull();
-		await router.navigate({ to: "/" });
+		await router.navigate(at("/"));
 		// The same elements come back: nothing remounted.
 		expect(await screen.findByRole("region", { name: "What it does" })).toBe(
 			what,
 		);
 		expect(files.closest("[data-page]")).toHaveAttribute("hidden");
 		expect(screen.queryByRole("region", { name: "Files changed" })).toBeNull();
-		await router.navigate({ to: "/files" });
+		await router.navigate(at("/files"));
 		expect(await screen.findByRole("region", { name: "Files changed" })).toBe(
 			files,
 		);
@@ -346,10 +373,79 @@ describe("App", () => {
 		expect(calls("/api/overview")).toBe(1);
 	});
 
+	it("the logo links Home", async () => {
+		const user = userEvent.setup();
+		const { router } = renderApp();
+		const home = await screen.findByRole("link", { name: "Home" });
+		expect(home).toHaveAttribute("href", "/");
+		await user.click(home);
+		await waitFor(() => expect(router.state.location.pathname).toBe("/"));
+		expect(screen.queryByRole("region", { name: "What it does" })).toBeNull();
+	});
+
+	it("an unknown review is the not-found page, with the way Home", async () => {
+		renderApp({
+			"/api/session": {
+				status: 404,
+				body: { error: "No review x", code: "unknown-review" },
+			},
+		});
+		expect(await screen.findByTestId("not-found")).toHaveTextContent(
+			"No such review.",
+		);
+		expect(screen.getByRole("link", { name: "Home" })).toHaveAttribute(
+			"href",
+			"/",
+		);
+	});
+
+	it("a review its PR now refuses says why, with the way Home", async () => {
+		renderApp({
+			"/api/session": {
+				status: 409,
+				body: {
+					error: "PR acme/widget#12 is already merged; nothing to review",
+					code: "refused",
+				},
+			},
+		});
+		expect(await screen.findByTestId("not-found")).toHaveTextContent(
+			"PR acme/widget#12 is already merged; nothing to review",
+		);
+		expect(screen.getByRole("link", { name: "Home" })).toHaveAttribute(
+			"href",
+			"/",
+		);
+	});
+
+	it("still asks before leaving with a draft storage can't keep once Home shows", async () => {
+		const user = userEvent.setup();
+		const { client, router } = renderApp();
+		await screen.findByRole("region", { name: "What it does" });
+		// A draft in storage needs no asking (useUnsavedGuard): storage fails.
+		const setItem = vi
+			.spyOn(Storage.prototype, "setItem")
+			.mockImplementation(() => {
+				throw new Error("quota");
+			});
+		try {
+			act(() => draftsFor(client).setText("T-cache", "Half a thought"));
+			await user.click(screen.getByRole("link", { name: "Home" }));
+			await waitFor(() => expect(router.state.location.pathname).toBe("/"));
+			const ask = new Event("beforeunload", { cancelable: true });
+			window.dispatchEvent(ask);
+			expect(ask.defaultPrevented).toBe(true);
+		} finally {
+			setItem.mockRestore();
+			// Gone again before the next test.
+			act(() => draftsFor(client).setText("T-cache", ""));
+		}
+	});
+
 	it("shows no kept page on an unknown path", async () => {
 		const { router } = renderApp();
 		await screen.findByRole("region", { name: "What it does" });
-		await router.navigate({ to: "/nope" as "/" });
+		await router.navigate({ to: `/r/${ID}/nope` as "/" });
 		expect(await screen.findByText(/No such page/)).toBeInTheDocument();
 		expect(screen.queryByRole("region", { name: "What it does" })).toBeNull();
 	});
@@ -362,9 +458,8 @@ describe("App", () => {
 				headMoved: true,
 			}),
 		});
-		expect(await screen.findByRole("status")).toHaveTextContent(
-			"New commits were pushed",
-		);
+		const banner = await screen.findByText(/New commits were pushed/);
+		expect(banner.closest('[role="status"]')).not.toBeNull();
 	});
 
 	it("shows no banner, and no error, when the head check fails", async () => {
@@ -373,7 +468,7 @@ describe("App", () => {
 		});
 		await screen.findByRole("heading", { level: 1 });
 		await waitFor(() => expect(calls("/api/head")).toBe(1));
-		expect(screen.queryByRole("status")).toBeNull();
+		expect(screen.queryByText(/New commits were pushed/)).toBeNull();
 		expect(screen.queryByRole("alert")).toBeNull();
 	});
 
@@ -417,8 +512,10 @@ describe("App", () => {
 		).findByRole("button", { name: "Settings" });
 		await user.click(gear);
 		expect(gear).toHaveAttribute("aria-expanded", "true");
-		// Focus moves on through the switches and the shortcuts entry, then
-		// out of the popover.
+		// Focus moves on through the three switches and the shortcuts
+		// entry, then out of the popover.
+		await user.tab();
+		expect(gear).toHaveAttribute("aria-expanded", "true");
 		await user.tab();
 		expect(gear).toHaveAttribute("aria-expanded", "true");
 		await user.tab();
@@ -431,6 +528,19 @@ describe("App", () => {
 		await user.keyboard("{Escape}");
 		expect(gear).toHaveAttribute("aria-expanded", "false");
 		expect(gear).toHaveFocus();
+	});
+
+	it("while the PR loads, the header is a frame with a spinner, never blank", async () => {
+		const session = heldJson();
+		renderApp({ "/api/session": { status: 200, body: session.response } });
+		await expectLoadingThen({
+			loading: () => screen.queryByRole("status", { name: "Loading the PR" }),
+			empty: [() => screen.queryByText("Loading…")],
+			release: () => session.release(info),
+			result: () =>
+				screen.queryByRole("heading", { level: 1, name: "Add widget cache" }),
+		});
+		expect(screen.queryByTestId("header-loading")).toBeNull();
 	});
 
 	it("shows the server's error message", async () => {
@@ -909,7 +1019,9 @@ describe("OverviewPage", () => {
 		expect(place).toHaveAttribute(
 			"href",
 			expect.stringMatching(
-				/^\/files\?path=src%2Fcache\.ts&line=42&side=RIGHT/,
+				new RegExp(
+					`^/r/${ID}/files\\?path=src%2Fcache\\.ts&line=42&side=RIGHT`,
+				),
 			),
 		);
 		const count = within(human).getByRole("img", { name: "3 comments" });
@@ -1533,7 +1645,7 @@ describe("OverviewPage", () => {
 		const signals: AbortSignal[] = [];
 		const routes = fetchMock.getMockImplementation();
 		fetchMock.mockImplementation(async (input, init) => {
-			if (String(input) === "/api/overview?maxAge=15000") {
+			if (local(input) === "/api/overview?maxAge=15000") {
 				if (init?.signal) signals.push(init.signal);
 				await gate;
 				init?.signal?.throwIfAborted();
@@ -1584,7 +1696,7 @@ describe("OverviewPage", () => {
 		const { release } = oldRead();
 		const routes = fetchMock.getMockImplementation();
 		fetchMock.mockImplementation(async (input, init) => {
-			const url = String(input);
+			const url = local(input);
 			if (url.startsWith("/api/timeline")) {
 				if (url.includes("read=read2")) return new Promise<Response>(() => {});
 				return new Response(
@@ -1689,7 +1801,7 @@ describe("OverviewPage", () => {
 		});
 		const routes = fetchMock.getMockImplementation();
 		fetchMock.mockImplementation(async (input, init) => {
-			const url = String(input);
+			const url = local(input);
 			if (url.startsWith("/api/threads")) {
 				if (url.includes("stage=summary")) {
 					return new Response(
@@ -1724,6 +1836,65 @@ describe("OverviewPage", () => {
 			"Should this expire?",
 		);
 		expect(within(card).queryByTestId("thread-body-loading")).toBeNull();
+	});
+
+	it("measures a code pane that arrives after its card: clipped, it takes focus to scroll", async () => {
+		// The card renders first with the code's frame, then the pane mounts
+		// in its place: its overflow must be measured then, not only at the
+		// card's mount (an e2e race, overview.spec.ts "an opened long range").
+		const pane = (el: HTMLElement) => el.tagName === "FIGURE";
+		const scroll = vi
+			.spyOn(HTMLElement.prototype, "scrollHeight", "get")
+			.mockImplementation(function (this: HTMLElement) {
+				return pane(this) ? 1200 : 0;
+			});
+		const client = vi
+			.spyOn(HTMLElement.prototype, "clientHeight", "get")
+			.mockImplementation(function (this: HTMLElement) {
+				return pane(this) ? 158 : 0;
+			});
+		try {
+			const full = overview.threads;
+			const summary = full.map((t) => ({
+				...t,
+				code: t.code && { ...t.code, rows: [], source: "pending" },
+			}));
+			renderApp({ "/api/threads": ok(NEVER) });
+			let release = () => {};
+			const gate = new Promise<void>((r) => {
+				release = r;
+			});
+			const routes = fetchMock.getMockImplementation();
+			fetchMock.mockImplementation(async (input, init) => {
+				const url = local(input);
+				if (url.startsWith("/api/threads")) {
+					if (url.includes("stage=summary")) {
+						return new Response(
+							JSON.stringify({ threads: summary, complete: false }),
+						);
+					}
+					await gate;
+					return new Response(
+						JSON.stringify({ threads: full, complete: true }),
+					);
+				}
+				if (!routes) throw new Error("no mock");
+				return routes(input, init);
+			});
+			const humans = await screen.findByRole("region", {
+				name: "Human reviews",
+			});
+			const card = await within(humans).findByTestId("thread");
+			expect(within(card).getByTestId("thread-code-loading")).toBeVisible();
+			release();
+			const code = await within(humans).findByRole("figure", {
+				name: "Code at src/cache.ts",
+			});
+			await waitFor(() => expect(code).toHaveAttribute("tabindex", "0"));
+		} finally {
+			scroll.mockRestore();
+			client.mockRestore();
+		}
 	});
 
 	it("says when the threads couldn't be read, leaving no list busy forever", async () => {
@@ -1774,7 +1945,7 @@ describe("OverviewPage", () => {
 		expect(await within(humans).findAllByTestId("thread")).not.toHaveLength(0);
 		const routes = fetchMock.getMockImplementation();
 		fetchMock.mockImplementation(async (input, init) => {
-			const url = String(input);
+			const url = local(input);
 			if (url === "/api/overview") {
 				const { threads: _, ...rest } = overview;
 				return new Response(JSON.stringify({ ...rest, readId: "read2" }));
@@ -1865,11 +2036,27 @@ describe("OverviewPage", () => {
 		expect(screen.queryByTestId("as-of")).toBeNull();
 	});
 
+	it("while review progress loads, the Review files button spins, never 0 clusters", async () => {
+		const progress = heldJson();
+		renderApp({ "/api/review": { status: 200, body: progress.response } });
+		const link = await screen.findByRole("link", { name: /Review files/ });
+		await expectLoadingThen({
+			loading: () =>
+				screen.queryByRole("status", { name: "Loading review progress" }),
+			empty: [
+				() => within(link).queryByText(/clusters/),
+				() => screen.queryByText("Loading progress…"),
+			],
+			release: () => progress.release(review),
+			result: () => within(link).queryByText("2 / 5 clusters · 40%"),
+		});
+	});
+
 	it("shows review progress on the Review files button", async () => {
 		renderApp();
 		const link = await screen.findByRole("link", { name: /Review files/ });
 		expect(await within(link).findByText(/2 \/ 5/)).toBeInTheDocument();
-		expect(link).toHaveAttribute("href", "/files");
+		expect(link).toHaveAttribute("href", `/r/${ID}/files`);
 	});
 });
 
@@ -2055,8 +2242,49 @@ describe("Timeline", () => {
 		).toBeInTheDocument();
 		const place = within(items[1] as HTMLElement).getByTestId("timeline-place");
 		expect(place).toHaveTextContent("src/cache.ts:42");
-		expect(place).toHaveAttribute("href", expect.stringContaining("/files?"));
+		expect(place).toHaveAttribute(
+			"href",
+			expect.stringContaining(`/r/${ID}/files?`),
+		);
 		expect(items[1]).toHaveTextContent("Should this expire?");
+	});
+
+	it("while the threads load, a review run and its comments spin, never read as threadless", async () => {
+		const user = userEvent.setup();
+		const threads = heldJson();
+		const { threads: list, ...rest } = overview;
+		const { rows } = await events({
+			"/api/overview": ok(rest),
+			"/api/threads": { status: 200, body: threads.response },
+		});
+		const row = rows[2] as HTMLElement;
+		await user.click(
+			within(row).getByRole("button", { name: "Show 3 comments" }),
+		);
+		const items = () => within(row).getAllByTestId("timeline-item");
+		await expectLoadingThen({
+			loading: () =>
+				within(row).queryByRole("status", { name: "Loading threads" }),
+			empty: [
+				// A comment read as being in no thread.
+				() => within(row).queryByRole("img", { name: "Comment" }),
+			],
+			release: () => threads.release({ threads: list, complete: true }),
+			result: () => within(row).queryByTestId("timeline-resolved"),
+		});
+		expect(
+			within(items()[1] as HTMLElement).getByRole("img", {
+				name: "Unresolved",
+			}),
+		).toBeInTheDocument();
+		expect(
+			within(items()[3] as HTMLElement).getByRole("link", {
+				name: "Go to the thread",
+			}),
+		).toBeInTheDocument();
+		expect(
+			within(row).queryAllByRole("status", { name: "Loading thread" }),
+		).toHaveLength(0);
 	});
 
 	it("as of a cutoff, counts a run's threads without claiming any resolved or not", async () => {

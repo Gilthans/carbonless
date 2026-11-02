@@ -375,6 +375,34 @@ describe("color tokens", () => {
 		}
 	});
 
+	it("Home's rows, popovers and open box keep their text and icons readable", () => {
+		// The open box's list and the row popovers: overlay, the highlighted
+		// option pressed; marked title words (link), state icons, hints
+		// (muted: faint only for the group headings, never on pressed).
+		expect(contrast(token("faint"), token("overlay"))).toBeGreaterThanOrEqual(
+			4.5,
+		);
+		for (const bg of ["overlay", "pressed"]) {
+			for (const text of ["ink", "ink-soft", "muted", "link", "done", "bad"]) {
+				expect(
+					contrast(token(text), token(bg)),
+					`${text} on ${bg}`,
+				).toBeGreaterThanOrEqual(4.5);
+			}
+		}
+		// A hovered row (raised): its status icons and the turn's arrow.
+		for (const tone of ["ok", "bad", "warn", "done", "accent", "faint"]) {
+			expect(
+				contrast(token(tone), token("raised")),
+				`${tone} on raised`,
+			).toBeGreaterThanOrEqual(4.5);
+		}
+		// The snooze date's OK button: canvas on accent.
+		expect(contrast(token("canvas"), token("accent"))).toBeGreaterThanOrEqual(
+			4.5,
+		);
+	});
+
 	it("controls, fills and indicators stand out at 3:1", () => {
 		const parts = [
 			"line-strong",

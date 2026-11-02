@@ -3,7 +3,8 @@
 // src/server/clone.ts make, from the scenario JSON at $CRB_FAKE_GH (see
 // scenario.ts). Every call is appended to $CRB_FAKE_GH_LOG when set.
 import { execFileSync } from "node:child_process";
-import { appendFileSync, readFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync } from "node:fs";
+import { KEPT_TAGS as GITHUB_KEPT_TAGS } from "./keptTags.mjs";
 import { writeFileAtomic } from "./atomic.mjs";
 
 const args = process.argv.slice(2);
@@ -239,7 +240,7 @@ function storeReply(n, i, body) {
 	const listed = t.comments?.nodes ?? [];
 	// Older fixtures keep the opener only in `first`.
 	const before = listed.length ? listed : (t.first?.nodes ?? []).slice(0, 1);
-	const html = `<p dir="auto">${escapeHtml(body)}</p>`;
+	const html = renderedHtml(body);
 	t.comments = {
 		...(t.comments ?? {}),
 		totalCount: (t.comments?.totalCount ?? before.length) + 1,
@@ -249,7 +250,7 @@ function storeReply(n, i, body) {
 				author,
 				...times,
 				body,
-				bodyText: body,
+				bodyText: rendered(body),
 				bodyHTML: html,
 				...(s.replyUnlistedMs ? { hiddenUntil: Date.now() + s.replyUnlistedMs } : {}),
 				...(s.replyUnlisted ? { unlisted: true } : {}),
@@ -264,7 +265,7 @@ function storeReply(n, i, body) {
 		node_id: t.comments.nodes[j].id ?? `C${n}-${i}-${j}`,
 		in_reply_to_id: restId(i, 0),
 		body,
-		body_text: body,
+		body_text: rendered(body),
 		body_html: html,
 		user: { login: s.user.login, avatar_url: s.user.avatarUrl ?? "" },
 		created_at: now,
@@ -504,8 +505,61 @@ function hunkTo(hunks, side, line) {
 	}
 	return null;
 }
-/** A body as GitHub's plain text and HTML have it: an HTML comment at its end dropped. */
-const rendered = (body) => body.replace(/\s*<!--(?:(?!-->)[^])*-->\s*$/, "");
+/** Tags GitHub's markdown leaves void (nothing to close). */
+const VOID_TAGS = new Set(["br", "hr", "img", "source", "wbr"]);
+/**
+ * A body as GitHub's plain text and HTML have it: an HTML comment at its
+ * end dropped and, like GitHub's markdown, outside code (fences and
+ * backtick spans) a backslash escape gives its character, a tag GitHub
+ * keeps (GITHUB_KEPT_TAGS) stays a tag in the HTML (closed at the end
+ * if left open, as GitHub's parser does), and any other tag
+ * (`<String>` in `List<String>`) is dropped. A sketch, not CommonMark.
+ */
+function render(body) {
+	const source = body.replace(/\s*<!--(?:(?!-->)[^])*-->\s*$/, "");
+	let text = "";
+	let html = "";
+	const open = [];
+	const literal = (t) => {
+		text += t;
+		html += escapeHtml(t);
+	};
+	let fence = false;
+	source.split("\n").forEach((line, n) => {
+		if (n > 0) literal("\n");
+		if (/^\s*(```|~~~)/.test(line)) fence = !fence;
+		if (fence || /^\s*(```|~~~)/.test(line)) return literal(line);
+		line.split(/(`+[^`]*`+)/).forEach((part, k) => {
+			if (k % 2) return literal(part);
+			const inline =
+				/\\([!-/:-@[-`{-~])|<(\/?)([A-Za-z][A-Za-z0-9-]*)(?:\s[^<>]*)?\/?>/g;
+			let from = 0;
+			for (const m of part.matchAll(inline)) {
+				literal(part.slice(from, m.index));
+				from = m.index + m[0].length;
+				if (m[1] !== undefined) {
+					literal(m[1]);
+					continue;
+				}
+				const name = m[3].toLowerCase();
+				if (!GITHUB_KEPT_TAGS.has(name)) continue;
+				html += m[0];
+				if (VOID_TAGS.has(name)) continue;
+				if (m[2]) {
+					const at = open.lastIndexOf(name);
+					if (at >= 0) open.splice(at, 1);
+				} else open.push(name);
+			}
+			literal(part.slice(from));
+		});
+	});
+	html += open.reverse().map((name) => `</${name}>`).join("");
+	return { text, html };
+}
+/** A body as GitHub's plain text has it (render). */
+const rendered = (body) => render(body).text;
+/** A comment's bodyHTML as GitHub renders it (render). */
+const renderedHtml = (body) => `<p dir="auto">${render(body).html}</p>`;
 if (restCreate && !s.loggedOut) {
 	const [, n] = restCreate;
 	if (args.slice(4).join(" ") !== "-H Accept: application/vnd.github.full+json --input -") {
@@ -563,7 +617,7 @@ if (restCreate && !s.loggedOut) {
 		...(s.user.avatarUrl ? { avatarUrl: s.user.avatarUrl } : {}),
 	};
 	const times = { createdAt: now, publishedAt: now, state: "SUBMITTED" };
-	const html = `<p dir="auto">${escapeHtml(rendered(req.body))}</p>`;
+	const html = renderedHtml(req.body);
 	const text = { body: req.body, bodyText: rendered(req.body), bodyHTML: html };
 	const opener = { author, ...times, ...text, diffHunk, originalCommit: { oid: req.commit_id } };
 	const thread = {
@@ -977,7 +1031,7 @@ if (restComment && !s.loggedOut) {
 	const now = new Date().toISOString().replace(/\.\d+Z$/, "Z");
 	if (edit) {
 		if (!body?.trim()) httpFail(422, "Validation Failed", ["Body can't be blank"]);
-		const html = `<p dir="auto">${escapeHtml(rendered(body))}</p>`;
+		const html = renderedHtml(body);
 		// The opener's text may live only in `first` (older fixtures).
 		const targets = j === 0 && opener && opener !== c ? [c, opener] : [c];
 		for (const x of targets) {
@@ -1032,6 +1086,29 @@ if (restPull && args[0] === "api" && !s.loggedOut) {
 }
 
 const cmd = `${args[0]} ${args[1]}`;
+// Home's open box: `search prs --repo o/r --limit N --sort updated --json … -- <words…>`.
+if (args[0] === "search" && args[1] === "prs" && !s.loggedOut) {
+	const dash = args.indexOf("--");
+	if (dash < 0) unsupported();
+	const words = args.slice(dash + 1).join(" ").toLowerCase().split(/\s+/).filter(Boolean);
+	if (s.search?.delayMs) sleep(s.search.delayMs);
+	if (s.search?.fail) fail(`gh: ${s.search.fail}`);
+	const repoName = args[args.indexOf("--repo") + 1] ?? "";
+	const key = Object.keys(s.repos ?? {}).find((k) => k.toLowerCase() === repoName.toLowerCase());
+	const prs = (key ? s.repos[key].prs : [])
+		.filter((p) => words.every((w) => p.title.toLowerCase().includes(w)))
+		.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+	print(
+		prs.map((p) => ({
+			number: p.number,
+			title: p.title,
+			author: { login: p.author?.login ?? "", is_bot: false },
+			state: p.state.toLowerCase(),
+			updatedAt: p.updatedAt,
+			repository: { name: repoName.split("/")[1], nameWithOwner: key },
+		})),
+	);
+}
 const known = [
 	"auth status",
 	"api user",
@@ -1156,6 +1233,262 @@ switch (cmd) {
 					},
 				},
 			});
+		}
+		// Home (src/server/home): the viewer, their teams, repos' PR lists
+		// and PR details by alias, from `repos`.
+		if (/^query \{ viewer \{ login avatarUrl/.test(f.query ?? "")) {
+			print({ data: { viewer: { login: s.user.login, avatarUrl: s.user.avatarUrl ?? "" } } });
+		}
+		// Home's waiting-on suggestions: the viewer's orgs (those of
+		// `orgMembers` and `viewerTeams`), an org's members by page, and
+		// GitHub's user search over `githubUsers`.
+		if (/^query \{ viewer \{ organizations\(first: 100\) \{ nodes \{ login \} \}/.test(f.query ?? "")) {
+			if (s.viewerTeams === null) {
+				graphqlFail("viewer", [
+					{
+						type: "INSUFFICIENT_SCOPES",
+						message: "Your token has not been granted the required scopes to execute this query. The 'organizations' field requires one of the following scopes: ['read:org'].",
+					},
+				]);
+			}
+			const orgs = new Set([
+				...Object.keys(s.orgMembers ?? {}),
+				...(s.viewerTeams ?? []).map((t) => t.split("/")[0]),
+			]);
+			print({
+				data: {
+					viewer: { organizations: { nodes: [...orgs].map((login) => ({ login })) } },
+					rateLimit: { cost: 1, remaining: 4999, resetAt: "2030-01-01T00:00:00Z" },
+				},
+			});
+		}
+		if (/organization\(login: \$org\) \{ membersWithRole\(/.test(f.query ?? "")) {
+			const named = (list) => (list ?? []).some((o) => o.toLowerCase() === String(f.org).toLowerCase());
+			// A failure a retry may fix: GitHub's rate limit (data null).
+			if (named(s.orgMembersFlaky)) {
+				graphqlFail("organization", [
+					{ type: "RATE_LIMITED", message: "API rate limit exceeded for user ID 1." },
+				]);
+			}
+			// SAML SSO refused with the org there but its members nulled.
+			if (named(s.orgMembersForbiddenMembers)) {
+				process.stdout.write(
+					`${JSON.stringify({
+						data: { organization: { membersWithRole: null } },
+						errors: [
+							{
+								type: "FORBIDDEN",
+								path: ["organization", "membersWithRole"],
+								message: "Resource protected by organization SAML enforcement. You must grant your OAuth token access to this organization.",
+							},
+						],
+					})}\n`,
+				);
+				fail("gh: Resource protected by organization SAML enforcement.");
+			}
+			// An org whose SAML SSO the token isn't authorized for.
+			if (named(s.orgMembersForbidden)) {
+				graphqlFail("organization", [
+					{
+						type: "FORBIDDEN",
+						message: `Resource protected by organization SAML enforcement. You must grant your OAuth token access to an organization within this enterprise.`,
+					},
+				]);
+			}
+			const members =
+				Object.entries(s.orgMembers ?? {}).find(([k]) => k.toLowerCase() === String(f.org).toLowerCase())?.[1] ?? [];
+			const size = s.orgMembersPageSize ?? 100;
+			const start = f.cursor ? Number(f.cursor.replace("cursor:", "")) : 0;
+			const end = start + size;
+			const hasNextPage = end < members.length;
+			print({
+				data: {
+					organization: {
+						membersWithRole: {
+							pageInfo: { hasNextPage, endCursor: hasNextPage ? `cursor:${end}` : null },
+							nodes: members.slice(start, end).map((login) => ({ login, avatarUrl: `https://avatars.example/${login}` })),
+						},
+					},
+					rateLimit: { cost: 1, remaining: 4999, resetAt: "2030-01-01T00:00:00Z" },
+				},
+			});
+		}
+		if (/search\(query: \$q, type: USER/.test(f.query ?? "")) {
+			if (s.userSearch?.delayMs) sleep(s.userSearch.delayMs);
+			if (s.userSearch?.fail) fail(`gh: ${s.userSearch.fail}`);
+			const text = String(f.q ?? "").replace(/\s+type:user$/, "").toLowerCase();
+			const users = (s.githubUsers ?? []).filter((u) => (typeof u === "string" ? u : u.login).toLowerCase().includes(text));
+			print({
+				data: {
+					search: {
+						nodes: users.slice(0, 10).map((u) =>
+							typeof u === "string"
+								? { __typename: "User", login: u, avatarUrl: `https://avatars.example/${u}` }
+								: { __typename: "Organization", login: u.login, avatarUrl: "" },
+						),
+					},
+					rateLimit: { cost: 1, remaining: 4999, resetAt: "2030-01-01T00:00:00Z" },
+				},
+			});
+		}
+		if (/^query \{ viewer \{ organizations/.test(f.query ?? "")) {
+			if (s.viewerTeams === null) {
+				graphqlFail("viewer", [
+					{
+						type: "INSUFFICIENT_SCOPES",
+						message: "Your token has not been granted the required scopes to execute this query. The 'organizations' field requires one of the following scopes: ['read:org'].",
+					},
+				]);
+			}
+			const orgs = new Map();
+			for (const t of s.viewerTeams ?? []) {
+				const [org, slug] = t.split("/");
+				orgs.set(org, [...(orgs.get(org) ?? []), { slug }]);
+			}
+			print({
+				data: {
+					viewer: {
+						organizations: {
+							nodes: [...orgs].map(([login, teams]) => ({ login, teams: { nodes: teams } })),
+						},
+					},
+				},
+			});
+		}
+		// Home's open box: the repos the viewer is related to, paged.
+		if (/^query\(\$cursor: String\) \{ viewer \{ repositories\(/.test(f.query ?? "")) {
+			if (s.viewerReposDelayMs) sleep(s.viewerReposDelayMs);
+			// Held until the test lets it through (at most a minute).
+			for (let i = 0; s.viewerReposHold && !existsSync(s.viewerReposHold) && i < 1200; i++) sleep(50);
+			const listed = (name) =>
+				(new RegExp(`${name}: \\[([A-Z_, ]*)\\]`).exec(f.query)?.[1] ?? "")
+					.split(",")
+					.map((a) => a.trim())
+					.filter(Boolean);
+			const affiliations = listed("affiliations");
+			const ownerAffiliations = listed("ownerAffiliations");
+			const all = (s.viewerRepos ?? []).filter(
+				(r) => affiliations.includes(r.relation) && ownerAffiliations.includes(r.relation),
+			);
+			const size = s.viewerReposPageSize ?? 100;
+			const start = f.cursor ? Number(f.cursor.replace("cursor:", "")) : 0;
+			const end = start + size;
+			const hasNextPage = end < all.length;
+			print({
+				data: {
+					viewer: {
+						repositories: {
+							pageInfo: { hasNextPage, endCursor: hasNextPage ? `cursor:${end}` : null },
+							nodes: all.slice(start, end).map((r) => ({ nameWithOwner: r.name })),
+						},
+					},
+					rateLimit: { cost: 1, remaining: 4999, resetAt: "2030-01-01T00:00:00Z" },
+				},
+			});
+		}
+		// Home's existence check of a repo added to the view.
+		if (/repository\(owner: \$owner, name: \$name\) \{ nameWithOwner \}/.test(f.query ?? "")) {
+			const key = Object.keys(s.repos ?? {}).find(
+				(k) => k.toLowerCase() === `${f.owner}/${f.name}`.toLowerCase(),
+			);
+			if (!key) {
+				graphqlFail("repository", [
+					{ type: "NOT_FOUND", message: `Could not resolve to a Repository with the name '${f.owner}/${f.name}'.` },
+				]);
+			}
+			print({ data: { repository: { nameWithOwner: key } } });
+		}
+		const homeList = (f.query ?? "").includes("open: pullRequests(states: OPEN");
+		const homeDetails = /\br\d+: repository\(owner: "/.test(f.query ?? "");
+		if (homeList || homeDetails) {
+			delay("home", s.homeDelayMs);
+			// One repo's reads held alone: `home:<owner/repo>` (lowercased).
+			const named = homeList
+				? [`${f.owner}/${f.name}`]
+				: [...f.query.matchAll(/\br\d+: repository\(owner: ("[^"]*"), name: ("[^"]*")\)/g)].map(
+						([, o, n]) => `${JSON.parse(o)}/${JSON.parse(n)}`,
+					);
+			for (const name of new Set(named.map((n) => n.toLowerCase()))) delay(`home:${name}`);
+			if (s.rateLimited) {
+				process.stdout.write(
+					`${JSON.stringify({ data: null, errors: [{ type: "RATE_LIMITED", message: "API rate limit exceeded for user ID 1." }] })}\n`,
+				);
+				fail("gh: API rate limit exceeded for user ID 1.");
+			}
+			const homeRepo = (owner, name) => {
+				const key = Object.keys(s.repos ?? {}).find(
+					(k) => k.toLowerCase() === `${owner}/${name}`.toLowerCase(),
+				);
+				return key ? s.repos[key] : undefined;
+			};
+			const rateLimit = { cost: 1, remaining: 4999, resetAt: "2030-01-01T00:00:00Z" };
+			if (homeList) {
+				const r = homeRepo(f.owner, f.name);
+				if (!r) {
+					graphqlFail("repository", [
+						{ type: "NOT_FOUND", message: `Could not resolve to a Repository with the name '${f.owner}/${f.name}'.` },
+					]);
+				}
+				const size = s.homePageSize ?? 100;
+				const skip = Object.entries(s.homeListSkip ?? {}).find(
+					([k]) => k.toLowerCase() === `${f.owner}/${f.name}`.toLowerCase(),
+				)?.[1] ?? [];
+				const byUpdated = (states) =>
+					r.prs
+						.filter((p) => states.includes(p.state) && !skip.includes(p.number))
+						.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || b.number - a.number);
+				const page = (all, cursor, fields) => {
+					const start = cursor ? Number(cursor.replace("cursor:", "")) : 0;
+					const end = start + size;
+					const hasNextPage = end < all.length;
+					return {
+						pageInfo: { hasNextPage, endCursor: hasNextPage ? `cursor:${end}` : null },
+						nodes: all.slice(start, end).map((p) => Object.fromEntries(fields.map((k) => [k, p[k]]))),
+					};
+				};
+				const repository = {};
+				if (f.withOpen === "true") {
+					repository.open = page(byUpdated(["OPEN"]), f.openCursor, ["number", "updatedAt"]);
+				}
+				if (f.withClosed === "true") {
+					repository.closed = page(byUpdated(["MERGED", "CLOSED"]), f.closedCursor, [
+						"number",
+						"updatedAt",
+						"closedAt",
+						"mergedAt",
+					]);
+				}
+				print({ data: { rateLimit, repository } });
+			}
+			// r<i>: repository(owner: "o", name: "n") { p<n>: pullRequest(number: <n>) { ...F } … }
+			const data = { rateLimit };
+			const errors = [];
+			const heads = [...f.query.matchAll(/\b(r\d+): repository\(owner: ("[^"]*"), name: ("[^"]*")\)/g)];
+			for (const [k, m] of heads.entries()) {
+				const [, alias, owner, name] = m;
+				// This repo's PR aliases: up to the next repo (or the fragment).
+				const body = f.query.slice(m.index, heads[k + 1]?.index ?? f.query.indexOf("fragment F"));
+				const r = homeRepo(JSON.parse(owner), JSON.parse(name));
+				if (!r) {
+					data[alias] = null;
+					errors.push({ type: "NOT_FOUND", path: [alias], message: `Could not resolve to a Repository with the name '${JSON.parse(owner)}/${JSON.parse(name)}'.` });
+					continue;
+				}
+				data[alias] = {};
+				const nulls = Object.entries(s.homeDetailsNull ?? {}).find(
+					([k]) => k.toLowerCase() === `${JSON.parse(owner)}/${JSON.parse(name)}`.toLowerCase(),
+				)?.[1] ?? [];
+				for (const [, n] of body.matchAll(/p(\d+): pullRequest\(number: \d+\)/g)) {
+					const pr = nulls.includes(Number(n)) ? undefined : r.prs.find((p) => p.number === Number(n));
+					data[alias][`p${n}`] = pr ?? null;
+					if (!pr) errors.push({ type: "NOT_FOUND", path: [alias, `p${n}`], message: `Could not resolve to a PullRequest with the number of ${n}.` });
+				}
+			}
+			if (errors.length) {
+				process.stdout.write(`${JSON.stringify({ data, errors })}\n`);
+				fail(`gh: ${errors[0].message}`);
+			}
+			print({ data });
 		}
 		// Resolving: mutation($id: ID!) { (un)resolveReviewThread(input: …) }.
 		const mutation = /^mutation\(\$id: ID!\) \{ (resolveReviewThread|unresolveReviewThread)\(/.exec(

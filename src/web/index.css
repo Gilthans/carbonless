@@ -162,6 +162,44 @@
 }
 
 /*
+ * The same two marks on one cell (side by side: the landed-on line's cells,
+ * and the commented range's cells, on their side only): mark-tint-cell is the
+ * wash, thread-mark-cell the wash with the tinted number and the stripe at
+ * the code cell's left edge. The same colors as above (theme.test.ts).
+ */
+@utility mark-tint-cell {
+	box-shadow: inset 0 0 0 100vmax
+		color-mix(in srgb, var(--color-accent) 8%, transparent);
+}
+
+@utility thread-mark-cell {
+	box-shadow: inset 0 0 0 100vmax
+		color-mix(in srgb, var(--color-accent) 8%, transparent);
+	&[data-testid="old"],
+	&[data-testid="new"] {
+		box-shadow: inset 0 0 0 100vmax
+			color-mix(in srgb, var(--color-accent) 20%, transparent);
+	}
+	&[data-testid="code"] {
+		box-shadow:
+			inset 3px 0 0 var(--color-accent),
+			inset 0 0 0 100vmax
+			color-mix(in srgb, var(--color-accent) 8%, transparent);
+	}
+}
+
+/*
+ * Side by side, a text selection stays on one side (DiffBody's
+ * `data-selecting`): while one side is being selected, the other side's code
+ * cells can't be, so a drag across the table selects one side and Copy gives
+ * its lines. Line numbers and signs are select-none on their own.
+ */
+table[data-selecting="old"] td[data-side="RIGHT"],
+table[data-selecting="new"] td[data-side="LEFT"] {
+	user-select: none;
+}
+
+/*
  * A thread's exact span over its characters: the `span` navy behind them
  * (every code color keeps 4.5:1 on it, theme.test.ts) and a 2px accent
  * underline, over thread-mark's lines.
@@ -184,6 +222,24 @@
 	}
 	& > td[data-testid="old"],
 	& > td[data-testid="new"] {
+		box-shadow: inset 0 0 0 100vmax
+			color-mix(in srgb, var(--color-accent) 35%, transparent);
+		color: var(--color-ink);
+	}
+}
+
+/*
+ * The same pick on one cell (side by side: the picked line's number and
+ * code cells, on their side only). On a cell that is also marked (a thread
+ * mark, a landing) the mark's wash wins, as thread-mark and mark-tint win
+ * over line-picked in unified (Tailwind orders the utilities, and these
+ * come first); the pick still shows in the number's ink.
+ */
+@utility line-picked-cell {
+	box-shadow: inset 0 0 0 100vmax
+		color-mix(in srgb, var(--color-accent) 10%, transparent);
+	&[data-testid="old"],
+	&[data-testid="new"] {
 		box-shadow: inset 0 0 0 100vmax
 			color-mix(in srgb, var(--color-accent) 35%, transparent);
 		color: var(--color-ink);

@@ -30,6 +30,7 @@ import { useReviewView } from "../files/useSetStates";
 import { LabeledIcon } from "../overview/parts";
 import { WriteWarnings } from "../overview/WriteWarnings";
 import { RelativeTime } from "../RelativeTime";
+import { useReviewId } from "../reviewId";
 import { Tooltip } from "../Tooltip";
 import { useThreadWriter, useThreadWrites } from "../threads/threadWrites";
 import { isViewer } from "./blockers";
@@ -185,6 +186,7 @@ export function VerdictCard(props: {
 	blockers?: number | null;
 }) {
 	const { overview, session, place } = props;
+	const reviewId = useReviewId();
 	const client = useQueryClient();
 	const writer = useThreadWriter();
 	const writes = useThreadWrites();
@@ -291,7 +293,8 @@ export function VerdictCard(props: {
 				<CurrentVerdict facts={props.facts} overview={overview} />
 				{place === "files" && (
 					<Link
-						to="/verdict"
+						to="/r/$id/verdict"
+						params={{ id: reviewId }}
 						data-testid="verdict-blockers-link"
 						className="ml-auto flex min-h-10 items-center rounded-md px-1 text-sm font-medium text-link hover:underline focus-visible:outline-2 focus-visible:outline-accent"
 					>
