@@ -63,21 +63,36 @@ editing or deleting your own comments.
 An always-on `crb serve` on a machine you open from other devices (e.g. over
 Tailscale):
 
-1. Bind it there, in `~/.config/carbonless/config.json`:
+1. Install it: `pnpm release local` from a checkout (builds, packs into
+   `~/.local/share/carbonless/releases/` and installs the global `crb`;
+   `--no-install` only packs), or from npm once it is published there.
+2. Bind it, in `~/.config/carbonless/config.json`:
    `{ "serve": { "host": "<the machine's Tailscale IP>", "port": 4747 } }`.
    Off loopback, pages need the access key (`~/.local/state/carbonless/key`);
-   the printed link carries it as `?key=`. To replace it, delete that file and
-   restart the service (by hand: `crb serve --new-key`).
-2. Run it as a systemd user service, from a checkout of this repo:
-   `scripts/devbox/install [<tarball | version>]`
-   (checks Node 24, `gh`'s login and linger, writes
-   `~/.config/systemd/user/crb.service`, starts it and prints the link).
-   For it to start at boot: `sudo loginctl enable-linger $USER`.
-3. Update it: `scripts/devbox/update <tarball | rc | latest | version>`
-   (installs, restarts, prints the version it moved from and to, and the link).
-4. Logs: `journalctl --user -u crb`.
+   the printed link carries it as `?key=`.
+3. Run it as a systemd user service, `~/.config/systemd/user/crb.service`
+   (`PATH` must reach Node 24, the global `crb`, `git` and `gh`; don't set
+   `XDG_CONFIG_HOME`, so it sees your `gh` login and config):
 
-The scripts and the service assume the default XDG dirs (`~/.config`, `~/.local/state`).
+   ```ini
+   [Unit]
+   Description=carbonless review server (crb serve)
+   StartLimitIntervalSec=0
+
+   [Service]
+   Environment="PATH=<Node 24 bin dir>:%h/.local/share/pnpm/bin:/usr/local/bin:/usr/bin:/bin"
+   ExecStart=%h/.local/share/pnpm/bin/crb serve
+   Restart=on-failure
+   RestartSec=5
+
+   [Install]
+   WantedBy=default.target
+   ```
+
+   Then `systemctl --user daemon-reload && systemctl --user enable --now crb`,
+   and `sudo loginctl enable-linger $USER` so it runs without a login and
+   starts at boot. After `pnpm release local`: `systemctl --user restart crb`.
+   Logs: `journalctl --user -u crb`.
 
 ## Development
 
@@ -91,6 +106,7 @@ Requires Node 24 (`nvm use`) and pnpm. From a checkout, `pnpm build` and run
 | `pnpm test:e2e` | Build, then Playwright UI tests against the real CLI |
 | `pnpm lint` / `pnpm fix` | Biome lint + format check / auto-fix |
 | `pnpm typecheck` | TypeScript |
+| `pnpm release local` | Build, pack and install this checkout as the global `crb` |
 | `pnpm test:pack` | Pack, install the tarball into a temp dir and run its `crb` |
 | `pnpm verify` | All of the above |
 
