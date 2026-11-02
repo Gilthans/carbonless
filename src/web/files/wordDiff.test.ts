@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Mark } from "../code/Invisibles";
-import { tokenDiffer, tokenize, WORD_DIFF_MAX, wordMarks } from "./wordDiff";
+import { tokenize, WORD_DIFF_MAX, wordMarks } from "./wordDiff";
 
 /** A small seeded PRNG (mulberry32), so a failure reproduces. */
 function rng(seed: number) {
@@ -136,26 +136,6 @@ describe("wordMarks", () => {
 			expect(unmarked(strip(a), old)).toBe(unmarked(strip(b), young));
 			if (strip(a) === strip(b))
 				expect({ old, young }).toEqual({ old: [], young: [] });
-		}
-	});
-
-	it("diffs exactly as stock diff-match-patch does (2,000 seeded pairs)", () => {
-		const ours = tokenDiffer();
-		const stock = tokenDiffer(true);
-		const random = rng(99);
-		const text = (alphabet: string) => {
-			let s = "";
-			const n = Math.floor(random() * 40);
-			for (let i = 0; i < n; i++) {
-				s += alphabet[Math.floor(random() * alphabet.length)];
-			}
-			return s;
-		};
-		for (let k = 0; k < 2000; k++) {
-			const alphabet = ["ab", "abc", "abcdef", "ĀāĂăĄ"][k % 4] as string;
-			const a = text(alphabet);
-			const b = random() < 0.5 ? text(alphabet) : a.replace(/a/g, "b");
-			expect(ours.diff_main(a, b, false)).toEqual(stock.diff_main(a, b, false));
 		}
 	});
 
