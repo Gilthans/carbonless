@@ -81,10 +81,14 @@ the test fixture (below).
   an inserted indent after the kept one (`04`, `05`); see **Decided by the owner**.
 - **Look** (mockups in the published page): a stronger tint of the line's own color behind the marked
   characters: new tokens `add-word` / `del-word` (and `add-word-done` /
-  `del-word-done` on reviewed lines, fading with the row as `add-done` /
-  `del-done` do). Every code and syntax color keeps 4.5:1 on them, and they
-  keep the add/del hues (`theme.test.ts` checks both, like the existing
-  pairs). No underline, no box: GitHub's convention. Mockups below.
+  `del-word-done` on reviewed lines, the same step up from `add-done` /
+  `del-done` as the live marks from their rows). They are GitHub-bright
+  (`#1e5a43` / `#5c2441`), the owner's choice over 4.5:1 for every color
+  (see **Decided by the owner**): some code colors read under 4.5:1 on
+  them, the faint dots and comments most. `theme.test.ts` pins each
+  color's contrast on each mark, under no wash, a thread's and a pick's,
+  at its value when chosen (it may rise, never drop), and checks the
+  add/del hues. No underline, no box: GitHub's convention. Mockups below.
 - **With the rest of a line:** syntax colors stay on top of the tint.
   Invisibles (`·`, `\t`, line endings, escapes) inside a marked range are
   marked with it, so a changed indent shows as tinted dots. A thread's
@@ -140,8 +144,9 @@ in the report, not gated (wall clock is too noisy for a 10% gate).
 - **A mark on an unchanged line or an unchanged token GitHub wouldn't
   mark,** or a context line marked. Marks live only inside removed/added
   lines of a pair.
-- **A mark whose contrast breaks 4.5:1** for any syntax color, or that reads
-  as a different meaning than add/del.
+- **A mark less readable than the owner chose** (any color's contrast
+  on it below its pinned floor), or that reads as a different meaning
+  than add/del.
 - **Slower first opens** beyond the budget.
 
 ## Tests
@@ -169,7 +174,10 @@ in the report, not gated (wall clock is too noisy for a 10% gate).
   an unequal block (no marks), a 1,024-character pair (no marks); Ignore
   whitespace on hides the whitespace-only pair's marks; a screenshot per
   view for the design shots.
-- **Contrast:** `theme.test.ts` on the new tokens with every syntax color.
+- **Contrast:** `theme.test.ts` on the new tokens with every code and
+  syntax color, under no wash, accent/8 and accent/10: each pinned at its
+  contrast when chosen; the rows at 4.5:1 under the same washes (the
+  added row's pick-wash gap, from before, pinned).
 
 ## Decided by the owner
 
@@ -178,6 +186,12 @@ in the report, not gated (wall clock is too noisy for a 10% gate).
   not sure it's an interesting edge case anyway, so let's do what's
   easier." The token diff stays; the five PR #14 differences (`04`, `05`,
   `06`, `13`, `41`) are the test's known differences.
+- **Bright marks over 4.5:1** (2026-11-02, after comparing four tint
+  options in screenshots: as built at 4.5:1, a darker green well, the
+  mockup's bright marks, quieter rows with compliant marks): "(d) seems
+  much less visible than (c). Let's go with (c) please". The marks are
+  the mockup's `#1e5a43` / `#5c2441`; on the green one the faint dots
+  read at 2.81:1 and several syntax colors at 3.9–4.1:1.
 
 ## Calls made here (the owner may overrule)
 
@@ -191,5 +205,5 @@ in the report, not gated (wall clock is too noisy for a 10% gate).
 - The gallery's case files and GitHub's observed marks are committed as
   test fixtures; carbonless's own diff decides block shape, and any
   difference from GitHub is a listed known difference.
-- Tint values are the builder's, within the contrast rules; the mockups
-  show proposed values.
+- The reviewed marks' values (`#25493b` / `#492840`, the live marks'
+  step from their rows applied to the reviewed rows).

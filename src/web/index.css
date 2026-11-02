@@ -79,14 +79,14 @@
 	--color-del-done: #1b1420;
 	/*
 	 * A pair's changed tokens (word marks): a stronger tint of the line's own
-	 * color, quieter on reviewed lines. Every code and syntax color keeps
-	 * 4.5:1 on them, under a thread's wash too (theme.test.ts); `faint` (the
-	 * invisibles' dots) is what bounds how bright they can be.
+	 * color, GitHub-bright (the owner's choice, 2026-11-02), the same step
+	 * up from a reviewed row as from a live one. Some code colors read under
+	 * 4.5:1 on them; theme.test.ts pins each at its contrast when chosen.
 	 */
-	--color-add-word: #002e19;
-	--color-del-word: #4b1232;
-	--color-add-word-done: #09291d;
-	--color-del-word-done: #33182b;
+	--color-add-word: #1e5a43;
+	--color-del-word: #5c2441;
+	--color-add-word-done: #25493b;
+	--color-del-word-done: #492840;
 	--color-hunk: #151936;
 	--color-hunk-ink: #a7b0e8;
 
