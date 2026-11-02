@@ -245,10 +245,12 @@ export class HomeService {
 	}
 
 	/**
-	 * One view repo's rows: read from GitHub first when its facts are older
-	 * than FRESH_MS (or `fresh`), joining a read in flight; from the cache
-	 * otherwise. A repo out of the view is a NotOnHomeError, asked of no one.
-	 * GitHub's failures are the answer's `error`, never a throw.
+	 * A repo's rows: read from GitHub first when its facts are older than
+	 * the cache period (or `fresh`), joining a read in flight; from the
+	 * cache otherwise. Any repo, in the view or not: the view settings read
+	 * a repo as it is picked, so saving it finds the answer here (it stays
+	 * out of knownPrs until saved, and goes KEEP_MS after a save leaves it
+	 * out). GitHub's failures are the answer's `error`, never a throw.
 	 */
 	async repo(
 		owner: string,
@@ -259,9 +261,6 @@ export class HomeService {
 		const { config } = await this.#config.read();
 		const repos = viewReposOf(config);
 		this.#inView = new Set(repos);
-		if (!repos.includes(name)) {
-			throw new NotOnHomeError(`${name} is not in the view`);
-		}
 		const state = this.#state(name);
 		// Doubled per failure in a row: a repo backing off is read no more
 		// often for a focus or another device asking.

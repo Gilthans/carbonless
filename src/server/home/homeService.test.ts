@@ -12,7 +12,6 @@ import {
 	FRESH_MS,
 	type HomeConfig,
 	HomeService,
-	NotOnHomeError,
 } from "./homeService.js";
 
 // Each fake gh call is a node process: give a loaded machine time.
@@ -331,15 +330,36 @@ describe("HomeService", () => {
 		expect(listReads(fx.ghLog())).toEqual(["api"]);
 	});
 
-	it("a repo outside the view is refused (404) without asking GitHub", async () => {
+	it("a repo outside the view is served (the settings' prefetch), and once saved answers from that read", async () => {
 		fx = createHomeFixture({
 			repos: { "acme/api": { prs: scenarioPrs() }, "other/tool": { prs: [] } },
 		});
+		const { home, clock } = service();
+		const picked = await home.repo("other", "tool");
+		expect(picked).toMatchObject({ repo: "other/tool", error: null });
+		expect(picked.refreshedAt).not.toBe(null);
+		expect(listReads(fx.ghLog())).toEqual(["tool"]);
+		// Saved ten seconds later: the page's ask is the prefetch's answer.
+		clock.now = T0 + 10_000;
+		await home.setRepos(["acme/api", "other/tool"]);
+		expect(await home.repo("other", "tool")).toEqual(picked);
+		expect(listReads(fx.ghLog())).toEqual(["tool"]);
+	});
+
+	it("a typed repo GitHub doesn't know, prefetched: its error, and a fresh ask reads again despite the backoff", async () => {
+		fx = createHomeFixture({ repos: { "acme/api": { prs: scenarioPrs() } } });
 		const { home } = service();
-		await expect(home.repo("other", "tool")).rejects.toBeInstanceOf(
-			NotOnHomeError,
-		);
-		expect(fx.ghLog()).toBe("");
+		expect(await home.repo("acme", "nowhere")).toMatchObject({
+			refreshedAt: null,
+			error: "Not found on GitHub",
+			failures: 1,
+		});
+		await home.setRepos(["acme/api", "acme/nowhere"]);
+		// A non-fresh ask keeps to the backoff; the save's fresh try reads.
+		await home.repo("acme", "nowhere");
+		expect(listReads(fx.ghLog())).toEqual(["nowhere"]);
+		await home.repo("acme", "nowhere", { fresh: true });
+		expect(listReads(fx.ghLog())).toEqual(["nowhere", "nowhere"]);
 	});
 
 	it("setRepos makes no GitHub call and doesn't wait for a read in flight", async () => {
@@ -522,10 +542,10 @@ describe("HomeService", () => {
 		expect(row(out, 3)).toBeUndefined();
 		// Its facts go too, started or not: search and annotate don't see them.
 		expect(home.knownPrs()).toEqual([]);
-		// Not served either: the page drops its query.
-		await expect(home.repo("acme", "api")).rejects.toBeInstanceOf(
-			NotOnHomeError,
-		);
+		// Asked on its own (the settings picking it again), it's served: from
+		// the cache, still not in knownPrs.
+		expect((await home.repo("acme", "api")).repo).toBe("acme/api");
+		expect(home.knownPrs()).toEqual([]);
 		// A chip to add it back.
 		expect(out.startedRepos).toEqual(["acme/api"]);
 		await setView(["acme/api"]);

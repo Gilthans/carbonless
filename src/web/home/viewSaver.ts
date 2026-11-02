@@ -6,7 +6,7 @@ import {
 	STALL_ATTEMPTS,
 	waitReason,
 } from "../files/stateSync";
-import { homeQuery, putView, repoKey } from "./homeApi";
+import { homeQuery, putView, repoKey, settlePick } from "./homeApi";
 
 interface SaveState {
 	/** The newest repos asked for and not yet stored; null when none. */
@@ -183,7 +183,8 @@ export function viewSaverFor(client: QueryClient): ViewSaver {
 				// it was removed (its rows show meanwhile): its query starts
 				// once the view says it's saved (HomePage).
 				for (const name of answer.view.repos) {
-					if (!before.has(name)) {
+					// Picked in the settings: its read is out or in already.
+					if (!before.has(name) && !settlePick(client, name)) {
 						void client.invalidateQueries(
 							{ queryKey: repoKey(name) },
 							{ cancelRefetch: false },

@@ -1,9 +1,13 @@
 import { PlusIcon, RepoIcon, XIcon } from "@primer/octicons-react";
-import { keepPreviousData, useQuery } from "@tanstack/react-query";
+import {
+	keepPreviousData,
+	useQuery,
+	useQueryClient,
+} from "@tanstack/react-query";
 import { useEffect, useId, useRef, useState } from "react";
 import type { HomeView } from "../../shared/home";
 import { NOT_PHONE, useMedia } from "../useMedia";
-import { searchQuery } from "./homeApi";
+import { prefetchRepo, searchQuery } from "./homeApi";
 import {
 	DEBOUNCE_MS,
 	SuggestionList,
@@ -82,8 +86,15 @@ export function ViewSettings(props: {
 	// A hand-edited config may say Acme/API: repos compare without case.
 	const listed = (name: string) =>
 		repos.some((r) => r.toLowerCase() === name.toLowerCase());
+	const client = useQueryClient();
 	const add = (name: string) => {
-		if (!listed(name)) setRepos([...repos, name]);
+		if (listed(name)) return;
+		setRepos([...repos, name]);
+		// Read it now, so it's ready or nearly by Save.
+		const saved = home.view.repos.some(
+			(r) => r.toLowerCase() === name.toLowerCase(),
+		);
+		if (!saved) prefetchRepo(client, name, home.refreshMinutes);
 	};
 	const suggestions = suggestedRepos(home, repos);
 	return (

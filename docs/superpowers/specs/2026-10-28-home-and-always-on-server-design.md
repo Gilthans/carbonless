@@ -290,9 +290,20 @@ Owner's decisions on this part (2026-10-28):
   with no GitHub call and no read, so it lands in well under a second
   whatever the repos. The added repos are then read each on its own
   (Refresh, below): a repo GitHub doesn't know (a typo) shows on its chip
-  as "Not found on GitHub" with Retry, and the pencil removes it. A
+  as "Not found on GitHub" with Retry, and the pencil removes it. A repo
+  is read as soon as it's picked in the dialog (a suggestion, or a typed
+  repo accepted; owner, 2026-11-02: "after a repo is selected into the
+  view, the tanstack query for it should start populating in the
+  background. That way, by the time I hit save it could be ready or
+  almost ready"): the same query Home shows it from, a plain ask (the
+  server's period and backoff hold), nothing on the page until Save. Save
+  then joins that read or uses its answer, with no second read; a pick
+  whose read failed (a typo) is read again, fresh, on Save, and its
+  failure never shows meanwhile. Removed from the dialog or cancelled, it
+  leaves only its cached answer. A
   removed repo's rows go at once and its read stops; added back within
-  the hour, its last rows show at once while it is read again. Saves go as the review state's do: one PUT at a time,
+  the hour, its last rows show at once while it is read again (as it's
+  picked). Saves go as the review state's do: one PUT at a time,
   the newest list next (an older one superseded while out isn't sent
   again); a transient failure (crb unreachable, a timeout, a 5xx)
   retries with the review state's backoff for as long as it takes (a
@@ -591,8 +602,10 @@ parsed on every keystroke:
   `refresh.minutes`. So rows on screen can be up to about twice
   `refresh.minutes` old (a client served from the cache reads again a
   period after that answer); the header's time says how old.
-  Only the view's repos are served (another answers 404 without a GitHub
-  read), and no other repo is read, started PRs included. `GET /api/home`
+  Any repo is served, so the dialog can read a repo as it's picked
+  (before 2026-11-02 a repo out of the view answered 404); nothing else
+  reads a repo out of the view, started PRs included, and its facts stay
+  out of search until it's saved. `GET /api/home`
   carries no rows: the viewer, the view, the config's problems, the
   refresh minutes and the started reviews' repos.
 - What a read fetches: the PR list with the fields the

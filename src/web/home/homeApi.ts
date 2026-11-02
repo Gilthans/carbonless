@@ -110,6 +110,83 @@ export const refetchRepo = async (client: QueryClient, name: string) => {
 	});
 };
 
+/** A repo whose reads have all failed: its rows are unknown, not none. */
+export const neverRead = (data: RepoHome) =>
+	data.error !== null && data.refreshedAt === null;
+
+/** Repos picked in the view settings since their last save, per page. */
+const picks = new WeakMap<QueryClient, Set<string>>();
+const picksOf = (client: QueryClient) => {
+	let set = picks.get(client);
+	if (!set) {
+		set = new Set();
+		picks.set(client, set);
+	}
+	return set;
+};
+
+/**
+ * A repo picked into the view settings' draft starts its read now, into
+ * the query Home will show it from (owner, 2026-11-02: "by the time I hit
+ * save it could be ready or almost ready"). Nothing shows until it's
+ * saved: Home observes only the view's repos. A plain ask, so the
+ * server's period and backoff hold; picked again, it asks again (the
+ * server's cache answers inside its period). If its read fails and the
+ * repo was saved meanwhile, that failure is never its answer: it reads
+ * again, fresh, in the same fetch.
+ */
+export function prefetchRepo(
+	client: QueryClient,
+	name: string,
+	minutes: number,
+) {
+	const key = name.toLowerCase();
+	picksOf(client).add(key);
+	const saved = () =>
+		client.getQueryData(homeQuery.queryKey)?.view.repos.includes(key) ?? false;
+	void client.prefetchQuery({
+		...repoQuery(name, minutes),
+		staleTime: 0,
+		queryFn: async () => {
+			try {
+				const answer = await fetchRepo(name);
+				return neverRead(answer) && saved() ? fetchRepo(name, true) : answer;
+			} catch (error) {
+				if (saved()) return fetchRepo(name, true);
+				throw error;
+			}
+		},
+	});
+}
+
+/**
+ * A repo a save just added: true when it was picked (prefetchRepo), and
+ * then its pick's read is its answer (joined while out, used once in). A
+ * pick that failed is read again now, fresh, from no data: a failed
+ * prefetch never stands as the saved repo's answer, nor shows meanwhile.
+ * False: never picked, the caller reads it.
+ */
+export function settlePick(client: QueryClient, name: string): boolean {
+	const key = name.toLowerCase();
+	if (!picksOf(client).delete(key)) return false;
+	const state = client.getQueryState<RepoHome>(repoKey(key));
+	if (!state) return false;
+	if (state.fetchStatus === "fetching") return true;
+	if (state.status === "error" || (state.data && neverRead(state.data))) {
+		void client.resetQueries({ queryKey: repoKey(key), exact: true });
+		// Synchronously out, before Home's own ask can start a plain one.
+		client
+			.fetchQuery({
+				queryKey: repoKey(key),
+				queryFn: () => fetchRepo(key, true),
+				staleTime: 0,
+				gcTime: REPO_GC_MS,
+			})
+			.catch(() => {});
+	}
+	return true;
+}
+
 export const searchQuery = (q: string, only?: "repos") =>
 	queryOptions({
 		queryKey: ["home-search", q, only ?? "all"],

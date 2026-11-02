@@ -423,6 +423,13 @@ test("the view's repo input suggests the viewer's repos as you type; Save is sto
 	await expect(
 		dialog.getByRole("group", { name: "Pull requests" }),
 	).toHaveCount(0);
+	// GitHub's answers for the added repo are held (its read starts as it's
+	// picked): saving doesn't wait for them (owner, 2026-11-01: "Saving
+	// saves the configured repos immediately").
+	const held = `home:${OWNER_REPO}` as const;
+	made.editScenario((s) => {
+		s.hold = [held];
+	});
 	await field.press("ArrowDown");
 	await field.press("Enter");
 	await expect(
@@ -432,13 +439,6 @@ test("the view's repo input suggests the viewer's repos as you type; Save is sto
 	).toHaveText(["acme/api", OWNER_REPO]);
 	await expect(field).toHaveValue("");
 	await dialog.getByRole("button", { name: "Remove acme/api" }).click();
-	// GitHub's answers for the added repo are held: saving doesn't wait for
-	// them (owner, 2026-11-01: "Saving saves the configured repos
-	// immediately").
-	const held = `home:${OWNER_REPO}` as const;
-	made.editScenario((s) => {
-		s.hold = [held];
-	});
 	const put = page.waitForResponse(
 		(r) => r.url().endsWith("/api/home/view") && r.request().method() === "PUT",
 	);
@@ -468,6 +468,63 @@ test("the view's repo input suggests the viewer's repos as you type; Save is sto
 	// The server kept it: a reload shows the same.
 	await page.reload();
 	await expect(page.getByTestId("view-repo")).toHaveText([OWNER_REPO]);
+});
+
+test("a repo picked in the settings is read at once: saved after its read, its rows come with no second read", async ({
+	page,
+	workdir,
+	pr,
+	startCrb,
+}) => {
+	// Owner, 2026-11-02: "after a repo is selected into the view, the
+	// tanstack query for it should start populating in the background".
+	const made = await setup(workdir, pr);
+	const crb = await startCrb();
+	const reads: string[] = [];
+	page.on("request", (r) => {
+		if (r.url().includes(`/api/home/repos/${OWNER_REPO}`)) reads.push(r.url());
+	});
+	await goHome(page, crb.url);
+	await expect(page.getByRole("status", { name: "Loading" })).toBeHidden();
+	const held = `home:${OWNER_REPO}` as const;
+	made.editScenario((s) => {
+		s.hold = [held];
+	});
+	await page.getByRole("button", { name: "Edit repos" }).click();
+	const dialog = page.getByRole("dialog", { name: "My PRs" });
+	const answered = page.waitForResponse((r) =>
+		r.url().includes(`/api/home/repos/${OWNER_REPO}`),
+	);
+	const field = dialog.getByRole("combobox", { name: "Add a repo" });
+	await field.fill(OWNER_REPO);
+	await field.press("Enter");
+	await expect(
+		dialog
+			.getByRole("list", { name: "Repos in this view" })
+			.getByRole("listitem"),
+	).toHaveText(["acme/api", OWNER_REPO]);
+	await expect.poll(() => reads.length).toBe(1);
+	// Nothing on the page meanwhile.
+	await expect(page.getByTestId("view-repo")).toHaveText(["acme/api"]);
+	await expect(page.getByRole("status", { name: "Loading" })).toBeHidden();
+	release(made.scenarioPath, held);
+	expect((await answered).status()).toBe(200);
+	// Held again: a second read would never answer.
+	made.editScenario((s) => {
+		s.hold = [held];
+	});
+	await dialog.getByRole("button", { name: "Save" }).click();
+	await expect(
+		page.getByText("Add widget cache with a rather long title"),
+	).toBeVisible();
+	await expect(page.getByRole("status", { name: "Saving" })).toBeHidden();
+	await expect(
+		page.getByTestId("view-repo").filter({ hasText: OWNER_REPO }),
+	).toHaveAttribute("data-state", "ready");
+	await expect(page.getByRole("status", { name: "Loading" })).toBeHidden();
+	expect(reads).toHaveLength(1);
+	await expectNoPageOverflow(page);
+	release(made.scenarioPath, held);
 });
 
 test("removing a repo from the view takes its started rows with it; adding it back brings them back", async ({

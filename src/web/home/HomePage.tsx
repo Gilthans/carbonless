@@ -195,7 +195,15 @@ export function HomePage() {
 		mutationFn: () =>
 			Promise.allSettled(names.map((name) => refetchRepo(client, name))),
 	});
-	const fetching = useIsFetching({ queryKey: ["home"] }) > 0;
+	// The view's own reads only: a repo picked in the settings and not
+	// saved shows nothing.
+	const shownKeys = new Set(names.map((n) => n.toLowerCase()));
+	const fetching =
+		useIsFetching({
+			predicate: ({ queryKey: [home, kind, name] }) =>
+				home === "home" &&
+				(kind === "view" || (kind === "repo" && shownKeys.has(String(name)))),
+		}) > 0;
 	const busy = fetching || viewSave.saving || refresh.isPending;
 	// Until every repo has answered once (a failure counts), sections show
 	// placeholders, never a count of rows still to come.

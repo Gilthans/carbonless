@@ -235,7 +235,7 @@ describe("Home's repos", () => {
 		expect(repoGets(api.calls)).toHaveLength(3);
 	});
 
-	it("removing a repo drops its rows at once and asks nothing; added back, its rows show at once and it is read again", async () => {
+	it("removing a repo drops its rows at once and asks nothing; added back, its rows show at once and it is read again, once", async () => {
 		const answers: ((r: Response) => void)[] = [];
 		const api = fakeApi(
 			view({
@@ -276,13 +276,20 @@ describe("Home's repos", () => {
 				"acme/console{Enter}",
 			);
 		});
-		// From the cache, with the PUT still out.
+		// From the cache, with the PUT still out; read again as it was picked.
 		expect(screen.getByText("Console change")).toBeInTheDocument();
-		expect(repoGets(api.calls, "acme/console")).toHaveLength(1);
-		answers.shift()?.(new Response());
 		await waitFor(() =>
 			expect(repoGets(api.calls, "acme/console")).toHaveLength(2),
 		);
+		answers.shift()?.(new Response());
+		await waitFor(() =>
+			expect(screen.queryByRole("status", { name: "Saving" })).toBeNull(),
+		);
+		await waitFor(() =>
+			expect(screen.queryByRole("status", { name: "Loading" })).toBeNull(),
+		);
+		// The save adds no read of its own.
+		expect(repoGets(api.calls, "acme/console")).toHaveLength(2);
 		expect(repoGets(api.calls, "acme/api")).toHaveLength(1);
 	});
 
@@ -459,9 +466,15 @@ describe("Home's repos", () => {
 
 	it("a repo added by a save not yet confirmed waits for the save: its chip says so, the counts don't spin for it", async () => {
 		const put = held();
+		// Its read, started as it was picked, still out too.
+		const read = held();
 		const api = fakeApi(
 			view({ mine: [row({ number: 1, title: "API change" })] }),
 			{
+				"GET /api/home/repos/acme/web": async () => {
+					await read.gate;
+					return repoAnswer(api.state.home, "acme/web");
+				},
 				"PUT /api/home/view": async (call) => {
 					await put.gate;
 					return {
@@ -500,8 +513,13 @@ describe("Home's repos", () => {
 		}
 		put.release();
 		await waitFor(() =>
-			expect(repoGets(api.calls, "acme/web")).toHaveLength(1),
+			expect(chip("acme/web")).toHaveAttribute("data-state", "loading"),
 		);
+		read.release();
+		await waitFor(() =>
+			expect(chip("acme/web")).toHaveAttribute("data-state", "ready"),
+		);
+		expect(repoGets(api.calls, "acme/web")).toHaveLength(1);
 	});
 
 	it("Refresh reads fresh even while a timed read of the repo is out", async () => {
@@ -534,7 +552,7 @@ describe("Home's repos", () => {
 		gate.release();
 	});
 
-	it("a repo re-added is read again even if the view's own read lands before the save's answer", async () => {
+	it("a repo re-added is read again as it's picked, and only then, even if the view's own read lands before the save's answer", async () => {
 		const put = held();
 		const api = fakeApi(
 			view({
@@ -557,19 +575,241 @@ describe("Home's repos", () => {
 		await waitFor(() =>
 			expect(screen.queryByRole("status", { name: "Saving" })).toBeNull(),
 		);
+		const before = repoGets(api.calls, "acme/console").length;
 		await saveRepos(addRepo("acme/console"));
+		await waitFor(() =>
+			expect(repoGets(api.calls, "acme/console")).toHaveLength(before + 1),
+		);
 		// The server stored it; the view's timed read says so before the PUT answers.
 		api.state.home = {
 			...api.state.home,
 			view: { name: "My PRs", repos: ["acme/api", "acme/console"] },
 		};
 		await act(() => client.refetchQueries({ queryKey: homeQuery.queryKey }));
-		const before = repoGets(api.calls, "acme/console").length;
 		put.release();
 		await waitFor(() =>
-			expect(repoGets(api.calls, "acme/console").length).toBeGreaterThan(
-				before,
-			),
+			expect(screen.queryByRole("status", { name: "Saving" })).toBeNull(),
 		);
+		await waitFor(() =>
+			expect(screen.queryByRole("status", { name: "Loading" })).toBeNull(),
+		);
+		expect(repoGets(api.calls, "acme/console")).toHaveLength(before + 1);
+	});
+});
+
+// Owner, 2026-11-02: "after a repo is selected into the view, the tanstack
+// query for it should start populating in the background. That way, by the
+// time I hit save it could be ready or almost ready."
+describe("a repo picked in the view settings", () => {
+	/** The view with acme/web's rows, PUT storing what it's sent. */
+	function pickApi(handlers: Parameters<typeof fakeApi>[1] = {}) {
+		const api = fakeApi(
+			view({
+				mine: [
+					row({ number: 1, title: "API change" }),
+					row({ repo: "web", number: 3, title: "Web change" }),
+				],
+			}),
+			{
+				"PUT /api/home/view": (call) => {
+					const repos = (call.body as { repos: string[] }).repos;
+					api.state.home = {
+						...api.state.home,
+						view: { name: "My PRs", repos },
+					};
+					const { sections: _, repos: __, ...rest } = api.state.home;
+					return rest;
+				},
+				...handlers,
+			},
+		);
+		return api;
+	}
+	async function openSettings() {
+		await userEvent.click(
+			await screen.findByRole("button", { name: "Edit repos" }),
+		);
+		return screen.getByRole("dialog", { name: "My PRs" });
+	}
+	/** Nothing of acme/web on the page: no chip, row or spinner for it. */
+	function nothingShown() {
+		expect(chip("acme/web")).toBeUndefined();
+		expect(screen.queryByText("Web change")).toBeNull();
+		expect(screen.queryByRole("status", { name: "Loading" })).toBeNull();
+	}
+
+	it("starts its read as it's picked, shows nothing until saved, and the save uses that answer", async () => {
+		const gate = held();
+		const api = pickApi({
+			"GET /api/home/repos/acme/web": async () => {
+				await gate.gate;
+				return repoAnswer(api.state.home, "acme/web");
+			},
+		});
+		renderWithQuery(<HomePage />);
+		await screen.findByText("API change");
+		await waitFor(() =>
+			expect(screen.queryByRole("status", { name: "Loading" })).toBeNull(),
+		);
+		const dialog = await openSettings();
+		// Typing alone asks nothing; accepting the chip does.
+		const field = within(dialog).getByRole("combobox", { name: "Add a repo" });
+		await userEvent.type(field, "acme/web");
+		expect(repoGets(api.calls, "acme/web")).toHaveLength(0);
+		await userEvent.type(field, "{Enter}");
+		await waitFor(() =>
+			expect(repoGets(api.calls, "acme/web")).toHaveLength(1),
+		);
+		expect(repoGets(api.calls, "acme/web")[0]?.url).toBe(
+			"/api/home/repos/acme/web",
+		);
+		nothingShown();
+		gate.release();
+		await waitFor(() =>
+			expect(api.fetch.mock.results.length).toBe(api.calls.length),
+		);
+		nothingShown();
+		await userEvent.click(within(dialog).getByRole("button", { name: "Save" }));
+		expect(await screen.findByText("Web change")).toBeInTheDocument();
+		await waitFor(() =>
+			expect(screen.queryByRole("status", { name: "Saving" })).toBeNull(),
+		);
+		await waitFor(() =>
+			expect(chip("acme/web")).toHaveAttribute("data-state", "ready"),
+		);
+		expect(screen.queryByRole("status", { name: "Loading" })).toBeNull();
+		expect(repoGets(api.calls, "acme/web")).toHaveLength(1);
+	});
+
+	it("saved while its read is still out: the page joins that read", async () => {
+		const gate = held();
+		const api = pickApi({
+			"GET /api/home/repos/acme/web": async () => {
+				await gate.gate;
+				return repoAnswer(api.state.home, "acme/web");
+			},
+		});
+		renderWithQuery(<HomePage />);
+		await screen.findByText("API change");
+		const dialog = await openSettings();
+		await addRepo("acme/web")(dialog);
+		await userEvent.click(within(dialog).getByRole("button", { name: "Save" }));
+		await waitFor(() =>
+			expect(screen.queryByRole("status", { name: "Saving" })).toBeNull(),
+		);
+		await waitFor(() =>
+			expect(chip("acme/web")).toHaveAttribute("data-state", "loading"),
+		);
+		gate.release();
+		expect(await screen.findByText("Web change")).toBeInTheDocument();
+		expect(repoGets(api.calls, "acme/web")).toHaveLength(1);
+	});
+
+	it("a pick GitHub doesn't know fails quietly; saving it reads again, fresh, and then says why", async () => {
+		const api = pickApi();
+		api.state.home = {
+			...api.state.home,
+			repos: {
+				"acme/nowhere": {
+					rows: [],
+					refreshedAt: null,
+					error: "Not found on GitHub",
+					failures: 1,
+				},
+			},
+		};
+		renderWithQuery(<HomePage />);
+		await screen.findByText("API change");
+		const dialog = await openSettings();
+		await addRepo("acme/nowhere")(dialog);
+		await waitFor(() =>
+			expect(repoGets(api.calls, "acme/nowhere")).toHaveLength(1),
+		);
+		await waitFor(() =>
+			expect(api.fetch.mock.results.length).toBe(api.calls.length),
+		);
+		// Quietly: nothing on the page says it failed.
+		expect(screen.queryByText(/Not found on GitHub/)).toBeNull();
+		expect(
+			screen.queryByRole("img", { name: /Not found on GitHub/ }),
+		).toBeNull();
+		await userEvent.click(within(dialog).getByRole("button", { name: "Save" }));
+		await waitFor(() =>
+			expect(repoGets(api.calls, "acme/nowhere").map((c) => c.url)).toEqual([
+				"/api/home/repos/acme/nowhere",
+				"/api/home/repos/acme/nowhere?fresh=1",
+			]),
+		);
+		await waitFor(() =>
+			expect(chip("acme/nowhere")).toHaveAttribute("data-state", "failed"),
+		);
+		within(section("Mine")).getByRole("img", {
+			name: "Without acme/nowhere: Not found on GitHub",
+		});
+	});
+
+	it("a pick whose read fails after the save landed is read again, fresh, never shown failed meanwhile", async () => {
+		const first = held();
+		const second = held();
+		const failed = {
+			repo: "acme/nowhere",
+			rows: [],
+			refreshedAt: null,
+			error: "Not found on GitHub",
+			failures: 1,
+		};
+		const api = pickApi({
+			"GET /api/home/repos/acme/nowhere": async (call) => {
+				await (call.url.endsWith("fresh=1") ? second : first).gate;
+				return failed;
+			},
+		});
+		renderWithQuery(<HomePage />);
+		await screen.findByText("API change");
+		const dialog = await openSettings();
+		await addRepo("acme/nowhere")(dialog);
+		await userEvent.click(within(dialog).getByRole("button", { name: "Save" }));
+		await waitFor(() =>
+			expect(screen.queryByRole("status", { name: "Saving" })).toBeNull(),
+		);
+		first.release();
+		await waitFor(() =>
+			expect(repoGets(api.calls, "acme/nowhere").map((c) => c.url)).toEqual([
+				"/api/home/repos/acme/nowhere",
+				"/api/home/repos/acme/nowhere?fresh=1",
+			]),
+		);
+		// The pick's failure isn't the saved repo's answer: still loading.
+		expect(chip("acme/nowhere")).toHaveAttribute("data-state", "loading");
+		second.release();
+		await waitFor(() =>
+			expect(chip("acme/nowhere")).toHaveAttribute("data-state", "failed"),
+		);
+	});
+
+	it("removed from the draft, or the settings cancelled: nothing on the page; picked again, its answer is there at once", async () => {
+		const api = pickApi();
+		const { client } = renderWithQuery(<HomePage />);
+		await screen.findByText("API change");
+		let dialog = await openSettings();
+		await addRepo("acme/web")(dialog);
+		await waitFor(() =>
+			expect(client.getQueryData(repoKey("acme/web"))).toBeDefined(),
+		);
+		await userEvent.click(
+			within(dialog).getByRole("button", { name: "Remove acme/web" }),
+		);
+		nothingShown();
+		await addRepo("acme/web")(dialog);
+		await userEvent.click(
+			within(dialog).getByRole("button", { name: "Cancel" }),
+		);
+		nothingShown();
+		expect(api.calls.filter((c) => c.method === "PUT")).toHaveLength(0);
+		// Picked and saved again later: its rows show at once, from the cache.
+		dialog = await openSettings();
+		await addRepo("acme/web")(dialog);
+		await userEvent.click(within(dialog).getByRole("button", { name: "Save" }));
+		expect(screen.getByText("Web change")).toBeInTheDocument();
 	});
 });
