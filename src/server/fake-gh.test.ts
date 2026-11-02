@@ -15,6 +15,7 @@ import {
 	writeScenario,
 } from "../../test/fake-gh/scenario";
 import { GIT_TEST_TIMEOUTS, testGitEnv } from "../../test/git-fixture";
+import { settleGh } from "../../test/settle-gh";
 import { GITHUB_KEPT_TAGS } from "../shared/markdownEscape";
 import { GhError, WriteRefusedError } from "./errors";
 import {
@@ -64,13 +65,17 @@ describe("fake gh", () => {
 		scenario();
 	});
 
-	afterEach(() => {
-		for (const [k, v] of Object.entries(saved)) {
-			if (v === undefined) delete process.env[k];
-			else process.env[k] = v;
+	afterEach(async () => {
+		try {
+			await settleGh(process.env.CRB_FAKE_GH);
+		} finally {
+			for (const [k, v] of Object.entries(saved)) {
+				if (v === undefined) delete process.env[k];
+				else process.env[k] = v;
+			}
+			for (const k of Object.keys(saved)) delete saved[k];
+			rmSync(tmp, { recursive: true, force: true });
 		}
-		for (const k of Object.keys(saved)) delete saved[k];
-		rmSync(tmp, { recursive: true, force: true });
 	});
 
 	it("is an executable file", () => {

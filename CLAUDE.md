@@ -136,7 +136,11 @@ loading never looking empty, checking against a real PR):
 - Main on the devbox and branch instances: "Versions and instances" below.
 - Tests never call the real `gh`: `test/fake-gh/gh` serves a scenario
   (`test/fake-gh/scenario.ts`) via `$CRB_FAKE_GH`. The e2e harness
-  (`e2e/fixtures.ts`) wires it onto `PATH` and drives the built CLI.
+  (`e2e/fixtures.ts`) wires it onto `PATH` and drives the built CLI. In
+  unit tests a trap `gh` sits on `PATH` behind the fake
+  (`test/real-gh-trap.ts`) and fails the run, naming the test, when a call
+  gets past the fake: prepend a fake gh to `PATH`, never replace `PATH`,
+  and `await settleGh()` (`test/settle-gh.ts`) before restoring the env.
 - Tests must pass on a loaded machine (several suites often run at once). A
   test of a loading state holds the fake gh's answer (scenario `hold`, then
   `release()` once it has seen the spinner) rather than racing a `…DelayMs`;
@@ -250,9 +254,19 @@ has nothing to install. M2 replaces steps 1–3 with `pnpm release
   the agent rebase when they conflict), runs `pnpm verify` on the combined
   branch, (re)starts the branch's instance and sends its link ("Versions and
   instances"). Main changes only through an RC.
+- Every change reaches `master` through a PR on Gilthans/carbonless. Agents
+  may push any branch there except `master` (`--force-with-lease` only on
+  their own branch, after a rebase), and open a PR after a green local
+  `pnpm verify`: a title, and a body with what changed, what to QA (with
+  links), edge cases, and the attribution line. CI
+  (`.github/workflows/ci.yml`) must be green before asking the owner to
+  merge. A PR is merged only on the owner's explicit word for that PR (by
+  the owner on GitHub, or by an agent with `gh pr merge`). Never push
+  `master` or `v*` tags.
 - Commits only via `git commit --only -- <paths>` in a shared tree; never a bare
-  `git stash`. Merging to `master` only when the owner asks, as a fast-forward
-  after a green `pnpm verify`. Never push, and never write to GitHub, with one
+  `git stash`. On Gilthans/carbonless, GitHub writes are limited to the
+  above: pushing branches, opening, updating and merging PRs, and commenting
+  on our own PRs. Never write to any other repo on GitHub, with one
   exception: the owner's two playground repos, where any git or GitHub
   write is approved (commit, push, force-push, PRs, comments, reviews,
   deletes): https://github.com/Gilthans/carbonless-scratch (PR #1 is for

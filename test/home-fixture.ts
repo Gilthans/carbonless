@@ -2,6 +2,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FAKE_GH_DIR, type Scenario, writeScenario } from "./fake-gh/scenario";
+import { settleGh } from "./settle-gh";
 
 export interface HomeFixture {
 	/** The scenario file ($CRB_FAKE_GH), for bumpHomePr. */
@@ -11,7 +12,7 @@ export interface HomeFixture {
 	current: () => Scenario;
 	/** Every gh call so far, one per line. */
 	ghLog: () => string;
-	cleanup: () => void;
+	cleanup: () => Promise<void>;
 }
 
 /**
@@ -55,12 +56,16 @@ export function createHomeFixture(s: Partial<Scenario> = {}): HomeFixture {
 			const log = join(tmp, "gh.log");
 			return existsSync(log) ? readFileSync(log, "utf8") : "";
 		},
-		cleanup: () => {
-			for (const [k, v] of Object.entries(saved)) {
-				if (v === undefined) delete process.env[k];
-				else process.env[k] = v;
+		cleanup: async () => {
+			try {
+				await settleGh(path);
+			} finally {
+				for (const [k, v] of Object.entries(saved)) {
+					if (v === undefined) delete process.env[k];
+					else process.env[k] = v;
+				}
+				rmSync(tmp, { recursive: true, force: true });
 			}
-			rmSync(tmp, { recursive: true, force: true });
 		},
 	};
 }

@@ -25,7 +25,7 @@ let app: FastifyInstance | undefined;
 afterEach(async () => {
 	await app?.close();
 	app = undefined;
-	fx?.cleanup();
+	await fx?.cleanup();
 	fx = undefined;
 });
 
