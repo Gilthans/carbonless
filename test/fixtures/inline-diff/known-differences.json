@@ -2,28 +2,48 @@
 	{
 		"file": "inline/04-reindent-and-change.ts",
 		"pair": 0,
+		"ours": {
+			"old": [],
+			"new": [[0, 4], [19, 20]]
+		},
 		"reason": "Inserted indent: GitHub marks the added spaces after the kept indent, ours before it (the same diff of equal spaces, placed differently). The `=` mark is the same."
 	},
 	{
 		"file": "inline/05-whitespace-indent-only.ts",
 		"pair": 0,
 		"ignoreWhitespace": false,
+		"ours": {
+			"old": [],
+			"new": [[0, 4]]
+		},
 		"reason": "Inserted indent: GitHub marks the added spaces after the kept indent, ours before it. With Ignore whitespace on the pair is a `~` row on both."
 	},
 	{
 		"file": "inline/06-whitespace-inner-only.ts",
 		"pair": 0,
 		"ignoreWhitespace": false,
+		"ours": {
+			"old": [[13, 18], [20, 21]],
+			"new": [[11, 12], [15, 20]]
+		},
 		"reason": "GitHub's looser folding: it folds the unchanged `width` and spaces between the changed spaces into one mark; ours marks the changed tokens only (owner, 2026-11-02: the tighter version). With Ignore whitespace on the pair is a `~` row on both."
 	},
 	{
 		"file": "inline/13-punctuation-only.ts",
 		"pair": 0,
+		"ours": {
+			"old": [[15, 41]],
+			"new": [[15, 41]]
+		},
 		"reason": "diff_cleanupEfficiency (Diff_EditCost 3) folds the one-token words between the changed quotes into one mark; GitHub keeps the words unmarked (owner, 2026-11-02: the diff-match-patch version, not a copy of GitHub's folding)."
 	},
 	{
 		"file": "inline/41-block-2x2-second-different.ts",
 		"pair": 1,
+		"ours": {
+			"old": [[0, 32]],
+			"new": [[0, 32]]
+		},
 		"reason": "A mostly different pair: diff_cleanupEfficiency folds the lone common `height` into the surrounding marks, so the whole changed span is one mark; GitHub keeps `height` unmarked (owner, 2026-11-02)."
 	}
 ]

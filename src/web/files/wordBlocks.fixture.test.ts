@@ -57,12 +57,20 @@ interface Known {
 	pair: number | string;
 	/** The setting the difference shows under; both when absent. */
 	ignoreWhitespace?: boolean;
+	/** Our marks of the pair's lines, pinned: a change to them fails too. */
+	ours?: Ours;
 	reason: string;
+}
+/** Our marks of a unit's removed line and added line (absent sides: none). */
+interface Ours {
+	old?: Mark[];
+	new?: Mark[];
 }
 interface Mismatch {
 	file: string;
 	pair: number | string;
 	ignoreWhitespace: boolean;
+	ours?: Ours;
 	detail: string;
 }
 
@@ -202,6 +210,18 @@ function compare(
 			detail: prev ? `${prev.detail}\n${line}` : line,
 		});
 	});
+	for (const m of out.values()) {
+		const ours_: Ours = {};
+		theirs.forEach((t, i) => {
+			if (t.unit !== m.pair) return;
+			const marks = [...(ours[i] as (typeof ours)[number]).marks].map(
+				([from, to]): Mark => [from, to],
+			);
+			if (t.kind === "del") ours_.old = marks;
+			else ours_.new = marks;
+		});
+		m.ours = ours_;
+	}
 	return [...out.values()];
 }
 
@@ -239,7 +259,12 @@ describe("word marks against GitHub's (gallery PR #14)", () => {
 		k.file === m.file &&
 		k.pair === m.pair &&
 		(k.ignoreWhitespace === undefined ||
-			k.ignoreWhitespace === m.ignoreWhitespace);
+			k.ignoreWhitespace === m.ignoreWhitespace) &&
+		JSON.stringify(k.ours) === JSON.stringify(m.ours);
+
+	it("pins our marks in every known difference but a shape one", () => {
+		expect(known.filter((k) => k.pair !== "shape" && !k.ours)).toEqual([]);
+	});
 
 	it("matches GitHub but for the known differences, which may only shrink", () => {
 		const mismatches = paths.flatMap((file) =>
@@ -251,7 +276,7 @@ describe("word marks against GitHub's (gallery PR #14)", () => {
 		expect(
 			unlisted.map(
 				(m) =>
-					`${m.file} pair ${m.pair} (ignore whitespace ${m.ignoreWhitespace ? "on" : "off"})\n${m.detail}`,
+					`${m.file} pair ${m.pair} (ignore whitespace ${m.ignoreWhitespace ? "on" : "off"}; ours ${JSON.stringify(m.ours)})\n${m.detail}`,
 			),
 		).toEqual([]);
 		// A listed difference must still show, in each setting it names.
