@@ -1225,6 +1225,7 @@ switch (cmd) {
 		}
 		// One thread's summary by id, and its PR (a write's re-read).
 		if (/node\(id: \$id\) \{\s*\.\.\. on PullRequestReviewThread \{/.test(f.query)) {
+			delay("thread", s.threadDelayMs);
 			const place = threadPlace(f.id);
 			if (!place) {
 				process.stdout.write(

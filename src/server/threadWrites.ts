@@ -913,16 +913,16 @@ function knownDeleted(
 	threadId: string,
 	commentId: string,
 ): void {
+	// This one (markDeleted) and any deleted before that GraphQL still lists.
+	const without = (n: ThreadNodes) =>
+		withoutDeleted(target, withoutComment(n, commentId));
 	const cached = target.cached(threadId);
-	const left = cached && withoutComment(cached, commentId);
+	const left = cached && without(cached);
 	if (left && !contentComments(left).some((c) => visibleAt(c) !== null)) {
 		target.drop(threadId, target.nextSeq(), Date.now());
 		return;
 	}
-	target.known(
-		threadId,
-		onNodes((n) => withoutComment(n, commentId)),
-	);
+	target.known(threadId, onNodes(without));
 }
 
 /**
