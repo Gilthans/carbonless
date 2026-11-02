@@ -192,8 +192,9 @@ describe("FileTree", () => {
 				(t) => !t.hasAttribute("hidden"),
 			);
 		expect(shown()).toHaveLength(0);
-		// Folders first, by name: past gen, its api.g.cs, src and a/deep.
-		for (let i = 0; i < 5; i++) await user.tab();
+		// Past Fold all and Open all, then folders first, by name: gen, its
+		// api.g.cs, src and a/deep.
+		for (let i = 0; i < 7; i++) await user.tab();
 		const first = screen.getByRole("button", { name: /one\.ts/ });
 		expect(first).toHaveFocus();
 		expect(shown()).toHaveLength(1);
@@ -888,5 +889,46 @@ describe("renamed files", () => {
 			expect(ghost).toHaveAttribute("aria-expanded", "false");
 			expect(moved("old/x.ts")).toBeNull();
 		});
+	});
+
+	it("folds every folder with Fold all, ghosts too, and opens them with Open all", async () => {
+		const key = "crb:folds:o/r#9";
+		const user = userEvent.setup();
+		const { unmount } = render(
+			<FileTree
+				files={tree}
+				unit="clusters"
+				current={0}
+				onSelect={() => {}}
+				foldKey={key}
+			/>,
+		);
+		await user.click(screen.getByRole("button", { name: "Fold all" }));
+		for (const path of ["lib", "new", "old"]) {
+			expect(folder(path), path).toHaveAttribute("aria-expanded", "false");
+		}
+		// The file in view stays hidden: only opening a file reveals it.
+		expect(screen.queryByRole("button", { name: /c\.ts/ })).toBeNull();
+		expect(JSON.parse(localStorage.getItem(key) ?? "").sort()).toEqual([
+			"lib",
+			"new",
+			"old",
+		]);
+		unmount();
+		render(
+			<FileTree
+				files={tree}
+				unit="clusters"
+				current={0}
+				onSelect={() => {}}
+				foldKey={key}
+			/>,
+		);
+		expect(folder("new")).toHaveAttribute("aria-expanded", "false");
+		await user.click(screen.getByRole("button", { name: "Open all" }));
+		for (const path of ["lib", "new", "old"]) {
+			expect(folder(path), path).toHaveAttribute("aria-expanded", "true");
+		}
+		expect(localStorage.getItem(key)).toBeNull();
 	});
 });

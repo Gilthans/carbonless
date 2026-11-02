@@ -44,6 +44,8 @@ export const foldedAncestors = (folded: ReadonlySet<string>, path: string) =>
 export interface Folds {
 	folded: ReadonlySet<string>;
 	toggle: (folder: string) => void;
+	/** Folds exactly these (Fold all), or none (Open all). */
+	setAll: (folders: readonly string[]) => void;
 }
 
 interface FoldState {
@@ -134,5 +136,7 @@ export function useFolds(
 				if (!folded.delete(folder)) folded.add(folder);
 				return { ...s, folded, dirty: true };
 			}),
+		setAll: (folders) =>
+			setState((s) => ({ ...s, folded: new Set(folders), dirty: true })),
 	};
 }

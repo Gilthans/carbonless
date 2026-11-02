@@ -2,13 +2,21 @@ import {
 	ChevronDownIcon,
 	ChevronRightIcon,
 	DiffRenamedIcon,
+	FoldIcon,
+	UnfoldIcon,
 } from "@primer/octicons-react";
 import { useMemo } from "react";
 import type { FileView, ReviewThread } from "../../shared/types";
 import { Spinner } from "../Spinner";
 import { Tooltip, TooltipPath } from "../Tooltip";
 import { ChangeKindIcon, changeKindLabel } from "./changeKind";
-import { buildTree, type Folder, filesIn, type Node } from "./fileOrder";
+import {
+	buildTree,
+	type Folder,
+	filesIn,
+	folderPaths,
+	type Node,
+} from "./fileOrder";
 import { type Folds, useFolds } from "./folderFold";
 import { Meter } from "./ProgressBar";
 import { ChangeCount, crossOffReasons, StatusIcon } from "./status";
@@ -388,6 +396,30 @@ function Children(props: Level & { nodes: Node[] }) {
 	);
 }
 
+/** A Fold all / Open all icon button above the tree. */
+function TreeAction(props: {
+	label: string;
+	icon: typeof FoldIcon;
+	onClick: () => void;
+}) {
+	const { icon: Icon } = props;
+	return (
+		<Tooltip content={props.label}>
+			{(trigger) => (
+				<button
+					type="button"
+					{...trigger}
+					aria-label={props.label}
+					onClick={props.onClick}
+					className="flex h-7 w-7 items-center justify-center rounded-md text-muted transition-colors hover:bg-overlay hover:text-ink focus-visible:outline-2 focus-visible:outline-accent motion-reduce:transition-none pointer-coarse:h-10 pointer-coarse:w-10"
+				>
+					<Icon size={16} aria-hidden />
+				</button>
+			)}
+		</Tooltip>
+	);
+}
+
 /**
  * The changed files as a folder tree, in the page's order (fileOrder), with
  * review status; a renamed file also shows at its old path. Folders fold
@@ -418,6 +450,7 @@ export function FileTree(props: {
 	const { files, current } = props;
 	const opened = props.opened ?? null;
 	const tree = useMemo(() => buildTree(files), [files]);
+	const allFolders = useMemo(() => folderPaths(tree), [tree]);
 	const folds = useFolds(props.foldKey ?? null, files, {
 		seq: props.revealSeq ?? 0,
 		index: opened,
@@ -425,31 +458,51 @@ export function FileTree(props: {
 	const pathOf = (index: number | null) =>
 		index === null ? undefined : files.find((f) => f.index === index)?.path;
 	return (
-		<nav
-			aria-label="Files"
-			aria-busy={props.threadsLoading || undefined}
-			data-testid="file-tree"
-			className="relative"
-		>
-			{props.threadsLoading && (
-				// Laid over the first row's end, so the tree doesn't move when
-				// it goes; taps go through to the row under it.
-				<Spinner
-					label="Loading comments"
-					className="pointer-events-none absolute top-0 right-0 z-[5] h-6 rounded-full border border-line bg-raised px-1 shadow-control"
-				/>
+		<div>
+			{allFolders.length > 0 && (
+				<div
+					role="toolbar"
+					aria-label="Folders"
+					className="mb-1 flex justify-end gap-1"
+				>
+					<TreeAction
+						label="Fold all"
+						icon={FoldIcon}
+						onClick={() => folds.setAll(allFolders)}
+					/>
+					<TreeAction
+						label="Open all"
+						icon={UnfoldIcon}
+						onClick={() => folds.setAll([])}
+					/>
+				</div>
 			)}
-			<Children
-				nodes={tree.children}
-				unit={props.unit}
-				depth={0}
-				current={current}
-				currentPath={pathOf(current)}
-				openedPath={pathOf(opened)}
-				onSelect={props.onSelect}
-				threadsOf={props.threadsOf ?? NONE}
-				folds={folds}
-			/>
-		</nav>
+			<nav
+				aria-label="Files"
+				aria-busy={props.threadsLoading || undefined}
+				data-testid="file-tree"
+				className="relative"
+			>
+				{props.threadsLoading && (
+					// Laid over the first row's end, so the tree doesn't move when
+					// it goes; taps go through to the row under it.
+					<Spinner
+						label="Loading comments"
+						className="pointer-events-none absolute top-0 right-0 z-[5] h-6 rounded-full border border-line bg-raised px-1 shadow-control"
+					/>
+				)}
+				<Children
+					nodes={tree.children}
+					unit={props.unit}
+					depth={0}
+					current={current}
+					currentPath={pathOf(current)}
+					openedPath={pathOf(opened)}
+					onSelect={props.onSelect}
+					threadsOf={props.threadsOf ?? NONE}
+					folds={folds}
+				/>
+			</nav>
+		</div>
 	);
 }
