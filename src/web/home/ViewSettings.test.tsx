@@ -55,18 +55,19 @@ describe("parseRepo", () => {
 });
 
 describe("suggestedRepos", () => {
-	it("lists repos of started reviews outside the view, once each", () => {
-		const home = view({
-			mine: [started("far", "away", 1), started("acme", "api", 2)],
-			reviewing: [started("Far", "Away", 3), row({ owner: "x", repo: "y" })],
-		});
-		expect(suggestedRepos(home)).toEqual(["far/away"]);
+	it("lists the server's started-review repos the view doesn't, in its order", () => {
+		// As the server sends it: no rows outside the view, the repos apart.
+		const home = view(
+			{ mine: [started("acme", "api", 2)] },
+			{ startedRepos: ["far/away", "acme/api", "near/by"] },
+		);
+		expect(suggestedRepos(home)).toEqual(["far/away", "near/by"]);
 	});
 });
 
 describe("ViewSettings", () => {
 	it("removes, adds by URL or suggestion, and saves through PUT /api/home/view", async () => {
-		const api = fakeApi(view({ mine: [started("far", "away", 1)] }), {
+		const api = fakeApi(view({}, { startedRepos: ["far/away"] }), {
 			"PUT /api/home/view": (call) =>
 				view(
 					{},
@@ -110,7 +111,47 @@ describe("ViewSettings", () => {
 		expect(screen.getByText("acme/web")).toBeInTheDocument();
 	});
 
-	it("Save closes at once and shows the new view: removed rows go before the server answers, a spinner while it saves", async () => {
+	it("a removed repo of a started review comes back as a one-click chip", async () => {
+		fakeApi(
+			view(
+				{ reviewing: [started("acme", "console", 3)] },
+				{ startedRepos: ["acme/console"] },
+			),
+			{
+				"PUT /api/home/view": () => new Promise<Response>(() => {}),
+			},
+		);
+		renderWithQuery(<HomePage />);
+		const edit = async () => {
+			await userEvent.click(
+				await screen.findByRole("button", { name: "Edit repos" }),
+			);
+			return screen.getByRole("dialog", { name: "My PRs" });
+		};
+		let dialog = await edit();
+		expect(
+			within(dialog).queryByRole("list", { name: "Suggested" }),
+		).toBeNull();
+		await userEvent.click(
+			within(dialog).getByRole("button", { name: "Remove acme/console" }),
+		);
+		// Within the dialog too, before Save.
+		expect(
+			within(dialog).getByRole("button", { name: "Add acme/console" }),
+		).toBeInTheDocument();
+		await userEvent.click(within(dialog).getByRole("button", { name: "Save" }));
+		dialog = await edit();
+		await userEvent.click(
+			within(dialog).getByRole("button", { name: "Add acme/console" }),
+		);
+		expect(
+			within(within(dialog).getByRole("list", { name: "Repos in this view" }))
+				.getAllByRole("listitem")
+				.map((li) => li.textContent),
+		).toEqual(["acme/api", "acme/console"]);
+	});
+
+	it("Save closes at once and shows the new view: removed rows go before the server answers, started ones too, a spinner while it saves", async () => {
 		let answer: (r: Response) => void = () => {};
 		const api = fakeApi(
 			view({
@@ -118,7 +159,7 @@ describe("ViewSettings", () => {
 					row({ number: 1, title: "API change" }),
 					row({ repo: "console", number: 2, title: "Console change" }),
 				],
-				reviewing: [started("acme", "console", 3)],
+				reviewing: [started("acme", "console", 3), started("acme", "api", 4)],
 			}),
 			{
 				"PUT /api/home/view": () =>
@@ -140,8 +181,10 @@ describe("ViewSettings", () => {
 		expect(screen.queryByRole("dialog")).toBeNull();
 		expect(screen.queryByText("Console change")).toBeNull();
 		expect(screen.getByText("API change")).toBeInTheDocument();
-		// A started PR stays, as the server keeps it.
-		expect(screen.getByText("#3")).toBeInTheDocument();
+		// A started PR of the removed repo goes too (owner, 2026-11-01: "only
+		// prs from the selected repos should appear"); one of a kept repo stays.
+		expect(screen.queryByText("#3")).toBeNull();
+		expect(screen.getByText("#4")).toBeInTheDocument();
 		expect(chips()).toEqual(["acme/api"]);
 		expect(screen.getByRole("status", { name: "Saving" })).toBeInTheDocument();
 		expect(api.calls.find((c) => c.method === "PUT")?.body).toEqual({
@@ -150,6 +193,7 @@ describe("ViewSettings", () => {
 		// A read of the old view meanwhile doesn't bring the rows back.
 		await client.refetchQueries({ queryKey: ["home"] });
 		expect(screen.queryByText("Console change")).toBeNull();
+		expect(screen.queryByText("#3")).toBeNull();
 		answer(
 			Response.json(
 				view(

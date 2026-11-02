@@ -130,6 +130,18 @@ describe("StartedReviews", () => {
 		]);
 	});
 
+	it("reads coverage only for the repos asked: none for one outside the view", async () => {
+		const id = await reviews.findOrCreateReview(PR, "octo");
+		await reviews.recordStates(id, "octo", snap, [
+			{ key: keys()[0] as string, state: "reviewed" },
+		]);
+		const [outside] = await scanner().list("octo", new Set(["acme/api"]));
+		expect(outside).toMatchObject({ id, coverage: null });
+		expect(builds).toBe(0);
+		const [inView] = await scanner().list("octo", new Set(["acme/widget"]));
+		expect(inView?.coverage?.done).toBeGreaterThan(0);
+	});
+
 	it("caches the snapshot by (repo, merge base, head), coverage by progress", async () => {
 		const id = await reviews.findOrCreateReview(PR, "octo");
 		const [a, b] = keys();
@@ -145,7 +157,7 @@ describe("StartedReviews", () => {
 		]);
 		const [after] = await s.list("octo");
 		expect(builds).toBe(1);
-		expect(after?.coverage.done).toBeGreaterThan(0);
+		expect(after?.coverage?.done).toBeGreaterThan(0);
 	});
 
 	it("a broken clone or review is skipped, not the whole scan", async () => {

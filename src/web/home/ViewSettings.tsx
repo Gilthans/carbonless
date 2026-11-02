@@ -30,19 +30,17 @@ export function parseRepo(input: string): string | null {
 	return `${m[1]}/${m[2]}`.toLowerCase();
 }
 
-/** Repos of the reviewer's started reviews that the view doesn't list. */
-export function suggestedRepos(home: HomeView): string[] {
-	const inView = new Set(home.view.repos.map((r) => r.toLowerCase()));
-	const out: string[] = [];
-	for (const s of home.sections) {
-		for (const r of s.rows) {
-			const name = `${r.owner}/${r.repo}`.toLowerCase();
-			if (r.reviews.length > 0 && !inView.has(name) && !out.includes(name)) {
-				out.push(name);
-			}
-		}
-	}
-	return out;
+/**
+ * Repos of the reviewer's started reviews that `repos` (the view's, or the
+ * dialog's list) don't name, newest activity first, as the server sends
+ * them: a repo just taken out comes back as one click.
+ */
+export function suggestedRepos(
+	home: HomeView,
+	repos: readonly string[] = home.view.repos,
+): string[] {
+	const listed = new Set(repos.map((r) => r.toLowerCase()));
+	return home.startedRepos.filter((r) => !listed.has(r.toLowerCase()));
 }
 
 const iconButton =
@@ -86,7 +84,7 @@ export function ViewSettings(props: {
 	const add = (name: string) => {
 		if (!listed(name)) setRepos([...repos, name]);
 	};
-	const suggestions = suggestedRepos(home).filter((r) => !listed(r));
+	const suggestions = suggestedRepos(home, repos);
 	return (
 		<dialog
 			ref={dialog}

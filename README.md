@@ -94,6 +94,10 @@ Requires Node 24 (`nvm use`) and pnpm. From a checkout, `pnpm build` and run
 | `pnpm test:pack` | Pack, install the tarball into a temp dir and run its `crb` |
 | `pnpm verify` | All of the above |
 
+CI (`.github/workflows/ci.yml`) runs lint, typecheck, unit tests and the pack
+smoke test on every PR and push to master, and Playwright on `v*` tags and on
+demand.
+
 Tests never call the real `gh`: `test/fake-gh/gh` answers from a scenario JSON
 (`$CRB_FAKE_GH`, optional call log in `$CRB_FAKE_GH_LOG`). The Playwright
 harness (`e2e/fixtures.ts`) puts it first on `PATH` and runs the built CLI

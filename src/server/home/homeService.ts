@@ -23,7 +23,6 @@ import {
 	wokeOf,
 } from "./inbox.js";
 import {
-	fetchPrDetails,
 	fetchRepoPrs,
 	fetchViewer,
 	fetchViewerTeams,
@@ -35,7 +34,6 @@ import {
 import {
 	compareRows,
 	RECENTLY_CLOSED_MS,
-	recentlyClosed,
 	sectionOf,
 	turnOf,
 	turnWithWaiting,
@@ -43,11 +41,11 @@ import {
 import { StartedReviews } from "./started.js";
 
 /**
- * Home's state: GitHub's PR facts for the view's repos and every started
- * PR, refreshed on a timer (single flight, backing off on failure), kept in
- * memory as a cache only. The view, the inbox refs and the clones are the
- * state; every HomeView is folded afresh against the clock, so a snooze
- * whose date passes wakes on the next read.
+ * Home's state: GitHub's PR facts for the view's repos only (a PR started
+ * elsewhere isn't read), refreshed on a timer (single flight, backing off
+ * on failure), kept in memory as a cache only. The view, the inbox refs
+ * and the clones are the state; every HomeView is folded afresh against
+ * the clock, so a snooze whose date passes wakes on the next read.
  */
 
 /** The parts of crb's config Home reads and writes (src/server/config.ts). */
@@ -130,7 +128,11 @@ export function refreshReason(error: unknown): string {
 }
 
 interface StartedSource {
-	list(slug: string): Promise<StartedReview[]>;
+	/** Coverage only for the repos `withCoverage` names (StartedReviews.list). */
+	list(
+		slug: string,
+		withCoverage?: ReadonlySet<string>,
+	): Promise<StartedReview[]>;
 }
 
 export interface HomeServiceOptions {
@@ -293,7 +295,10 @@ export class HomeService {
 				}
 			}
 			try {
-				this.#startedList = await this.#started.list(slugify(viewer.login));
+				this.#startedList = await this.#started.list(
+					slugify(viewer.login),
+					inView,
+				);
 			} catch (error) {
 				fail(error, "started reviews");
 			}
@@ -330,31 +335,11 @@ export class HomeService {
 					}
 				}),
 			);
-			// Started PRs outside the view, until 3 days after they closed.
-			const outside = this.#startedList.filter((st) => {
-				if (inView.has(`${st.owner}/${st.repo}`.toLowerCase())) return false;
-				const k = this.#facts.get(prSlug(st));
-				return !k || k.facts.state === "OPEN" || recentlyClosed(k.facts, begun);
-			});
-			const unique = [
-				...new Map(outside.map((st) => [prSlug(st), st])).values(),
-			];
-			if (unique.length > 0) {
-				try {
-					const read = await fetchPrDetails(
-						unique.map(({ owner, repo, number }) => ({ owner, repo, number })),
-						cost,
-					);
-					for (const pr of read) this.#remember(pr, new Map(), begun);
-				} catch (error) {
-					fail(error, "started PRs");
-				}
-			}
-			// Facts of repos that left the view, but for started PRs.
-			const startedKeys = new Set(this.#startedList.map(prSlug));
+			// Facts of repos that left the view (owner, 2026-11-01: "only prs
+			// from the selected repos should appear"): started ones too.
 			for (const [key, { facts }] of this.#facts) {
 				const repo = `${facts.owner}/${facts.repo}`.toLowerCase();
-				if (!inView.has(repo) && !startedKeys.has(key)) this.#facts.delete(key);
+				if (!inView.has(repo)) this.#facts.delete(key);
 			}
 			for (const name of [...this.#listedAt.keys()]) {
 				if (!inView.has(name)) this.#listedAt.delete(name);
@@ -395,7 +380,10 @@ export class HomeService {
 		const { viewer } = await this.#viewerOrBlank();
 		if (viewer.login) {
 			try {
-				this.#startedList = await this.#started.list(slugify(viewer.login));
+				this.#startedList = await this.#started.list(
+					slugify(viewer.login),
+					new Set(await this.viewRepos()),
+				);
 			} catch {
 				// Keep the last list; the next refresh says why.
 			}
@@ -433,8 +421,9 @@ export class HomeService {
 		);
 		for (const [key, { facts }] of this.#facts) {
 			const started = startedBy.get(key) ?? [];
-			const listed = inView.has(`${facts.owner}/${facts.repo}`.toLowerCase());
-			if (!listed && started.length === 0) continue;
+			// Only the view's repos, started or not: the cache may still hold
+			// a repo just taken out, until the next refresh.
+			if (!inView.has(`${facts.owner}/${facts.repo}`.toLowerCase())) continue;
 			const section = sectionOf(facts, viewer.login, this.#teams, started, now);
 			if (!section) continue;
 			const annotations = slug
@@ -458,6 +447,15 @@ export class HomeService {
 					: new Date(this.#refreshedAt).toISOString(),
 			refreshError: this.#refreshError ?? viewerError,
 			sections: out,
+			startedRepos: [
+				...new Set(
+					[...this.#startedList]
+						.sort(
+							(a, b) => Date.parse(b.lastActedAt) - Date.parse(a.lastActedAt),
+						)
+						.map((s) => `${s.owner}/${s.repo}`.toLowerCase()),
+				),
+			],
 		};
 	}
 
@@ -514,7 +512,9 @@ export class HomeService {
 				id: s.id,
 				label: s.pinnedHead ? s.pinnedHead.slice(0, 7) : "head",
 				pinnedHead: s.pinnedHead,
-				coverage: s.coverage,
+				// Listed before the repo joined the view: none read yet, so
+				// nothing claimed (the next read has it).
+				coverage: s.coverage ?? { done: 0, total: 0, unit: "clusters" },
 				lastActedAt: s.lastActedAt,
 				headMoved: pr.headOid !== "" && s.head !== pr.headOid,
 			}));
@@ -610,7 +610,7 @@ export class HomeService {
 		return (await this.#viewerOrBlank()).viewer.login;
 	}
 
-	/** Every PR Home knows (view repos and started ones), for search. */
+	/** Every PR Home knows (the view repos'), for search. */
 	knownPrs(): PrFacts[] {
 		return [...this.#facts.values()].map((k) => k.facts);
 	}

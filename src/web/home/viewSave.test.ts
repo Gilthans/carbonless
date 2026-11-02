@@ -36,11 +36,13 @@ describe("pendingView", () => {
 		);
 	});
 
-	it("keeps a started PR of a removed repo: Home lists started PRs from any repo", () => {
-		const home = view({ reviewing: [started("acme", "console", 4)] });
+	it("drops a started PR of a removed repo too: Home lists only the view's repos", () => {
+		const home = view({
+			reviewing: [started("acme", "console", 4), started("acme", "api", 5)],
+		});
 		const shown = pendingView(home, ["acme/api"]);
 		expect(shown.sections.flatMap((s) => s.rows).map((r) => r.number)).toEqual([
-			4,
+			5,
 		]);
 	});
 

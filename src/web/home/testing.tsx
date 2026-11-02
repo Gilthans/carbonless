@@ -72,6 +72,7 @@ export function view(
 		sections: SECTION_IDS.map(
 			(id): HomeSection => ({ id, rows: rows[id] ?? [] }),
 		),
+		startedRepos: [],
 		...over,
 	};
 }

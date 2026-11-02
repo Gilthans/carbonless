@@ -114,10 +114,9 @@ Owner's decisions on this part (2026-10-28):
 - **`crb` as a thin client**: `crb <pr>` asks the running server for the
   review and prints its link; no running server means it starts one. Claude
   Code, or anyone, gets a link by running it.
-- **Home** at the server root: the view's PRs in four static sections,
-  recently closed ones, the PRs you've started reviewing anywhere, each row
-  with GitHub's facts, whose turn it looks like, and your coverage once
-  you've started.
+- **Home** at the server root: the view's PRs in four static sections and
+  recently closed ones, only from the view's repos, each row with GitHub's
+  facts, whose turn it looks like, and your coverage once you've started.
 - **Open any PR** from one box: paste a URL, type `owner/repo#n`, or search
   repos and titles at once, in or outside the view.
 - **Per-PR annotations that are yours**: snooze to a date (waking on
@@ -267,7 +266,9 @@ Owner's decisions on this part (2026-10-28):
   ```
 
   The UI edits the first view (the pencil next to the repo chips: add by
-  `owner/repo` or URL, remove, suggestions from repos of recent reviews);
+  `owner/repo` or URL, remove, suggestions from repos of recent reviews:
+  one-click chips for the repos of the viewer's started reviews the list
+  doesn't name, newest first, so a repo just removed is one click away);
   the add input suggests the viewer's repos as you type (owner, 2026-10-31:
   "should have auto-complete like the search bar, but only search for
   repos"): the open box's Repos group alone (`GET /api/home/search?only=repos`,
@@ -280,8 +281,8 @@ Owner's decisions on this part (2026-10-28):
   confirmed the update state show a warning, and a loading spinner
   somewhere to indicate the state is reloading"; this replaces the
   earlier spinning Save): the dialog closes and Home shows the new list
-  and drops the rows of removed repos (a started PR stays, as the server
-  keeps it) before the server answers; a spinner by the view's name shows
+  and drops the rows of removed repos (started ones too, as the server
+  drops them) before the server answers; a spinner by the view's name shows
   while the server saves and reads the added repos; unconfirmed after
   5 s, the review page's yellow "Saving is delayed" notice says so, in
   the same place. Saves go as the review state's do: one PUT at a time,
@@ -316,13 +317,19 @@ from `gh`. A PR is in exactly one section:
 | **Recently closed** | merged or closed in the last 3 days (owner, 2026-10-29); a quiet tail, violet merged icon or red closed icon |
 
 **Which PRs are considered:** every open or recently closed PR of the
-view's repos, plus every PR the viewer has **started** in carbonless,
-whatever its repo. A started PR goes through the same table: the owner's
-own PR of Claude's changes in a repo outside the view lands in Mine, a
-colleague's in Reviewing, a merged one in Recently closed. (Builder check:
-the owner's main case, "any change Claude made that I want to review", is
-mostly their own PRs, so Mine must carry coverage and the any-repo rule
-like Reviewing.)
+view's repos, and nothing else (owner, 2026-11-01: "only prs from the
+selected repos should appear, it's unintuitive orherwise"; this replaces
+the earlier rule that listed every started PR whatever its repo). A
+started PR of a view repo goes through the same table: the owner's own PR
+of Claude's changes lands in Mine, a colleague's in Reviewing, a merged
+one in Recently closed, each with its coverage. A PR started in a repo
+outside the view isn't on Home and costs no GitHub read; it stays
+reachable by its `/r/<id>` link, `crb <pr>` and the open box. Removing a
+repo drops all its rows, started ones included; adding it back brings
+them back after the read. Annotations on its PRs stay stored and show
+again when it returns. (Builder check: the owner's main case, "any change
+Claude made that I want to review", is mostly their own PRs, so Mine must
+carry coverage like Reviewing.)
 
 **Started** = the viewer has a patch set for the PR in carbonless, in any
 of the PR's reviews (its plain review or a `--head` pinned one; `--as-of`
@@ -545,8 +552,7 @@ parsed on every keystroke:
 ### Refresh
 
 - The server refreshes every view repo every `refresh.minutes` (default
-  2) and every started PR regardless of repo (a merged or closed one for
-  3 days after it closed, then no more): the PR list with the fields the
+  2), and no other repo, started PRs included: the PR list with the fields the
   sections, rows and turn rules need (number, title, author, draft, state,
   merged-at, updated-at, review requests, latest reviews and review
   decision, checks rollup, unresolved thread count, the dates and authors
@@ -606,8 +612,9 @@ Listed in the `?` help like the review page's.
 ## Tests
 
 - **Unit:** section assignment and turn rules over PR facts (every row of
-  both tables, plus "started anywhere" and the viewer-as-team-reviewer
-  case); grouping of a PR's started reviews into sub-rows by last
+  both tables, plus a started PR and the viewer-as-team-reviewer
+  case; a started PR in a repo outside the view gives no row and no
+  GitHub read); grouping of a PR's started reviews into sub-rows by last
   activity; the "show N more" fold never changing the section's count; snooze and waiting-on folding, hiding and waking (date passed,
   activity with and without the switch, the named person's activity vs
   someone else's); the inbox write rules (`by: "human"` only; unknown types
@@ -620,8 +627,9 @@ Listed in the `?` help like the review page's.
 - **Playwright** (fake `gh` scenario with several repos and a PR list per
   repo), desktop and phone projects: Home shows the four sections and
   recently closed (merged and closed-unmerged) from the scenario; Wake up on
-  a snoozed row; a started review in a repo outside
-  the view appears in Reviewing with its coverage; open by URL, by
+  a snoozed row; a started review appears in Reviewing with its coverage;
+  removing its repo from the view drops its row at once and after the
+  server's read, adding it back brings it back; open by URL, by
   `owner/repo#n`, by repo-then-title; a snoozed row leaves its section and
   shows in the footer, reveals on click, wakes on activity after the
   scenario changes and a refresh; waiting-on hides and clears on that

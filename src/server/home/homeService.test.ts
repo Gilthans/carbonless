@@ -269,7 +269,7 @@ describe("HomeService", () => {
 		expect(ids(view, "mine")).toEqual([50, 1]);
 	});
 
-	it("started PRs outside the view show, refreshed until 3 days after closing", async () => {
+	it("a started review in a repo outside the view: no row, no GitHub read of that repo", async () => {
 		const outside = homePr({
 			repo: "other/tool",
 			number: 5,
@@ -277,59 +277,95 @@ describe("HomeService", () => {
 			updatedAt: iso(T0 - H),
 		});
 		fx = createHomeFixture({
-			repos: { "acme/api": { prs: [] }, "other/tool": { prs: [outside] } },
+			repos: {
+				"acme/api": { prs: scenarioPrs() },
+				"other/tool": { prs: [outside] },
+			},
 		});
-		const started: StartedReview = {
-			owner: "other",
-			repo: "tool",
-			number: 5,
-			id: "01jbaaaaaaaaaaaaaaaaaaaaaa",
+		const review = (owner: string, repo: string, number: number) => ({
+			owner,
+			repo,
+			number,
+			id: `01jb${owner[0]}${String(number).padStart(21, "0")}`,
 			pinnedHead: null,
-			head: "5".padStart(40, "0"),
+			head: String(number).padStart(40, "0"),
 			asOf: null,
-			coverage: { done: 37, total: 120, unit: "lines" },
+			coverage: { done: 37, total: 120, unit: "lines" as const },
 			lastActedAt: iso(T0 - 2 * H),
-		};
-		const clock = { now: T0 };
-		const { home } = service({ started: [started], clock });
-		let view = await home.refresh();
-		expect(ids(view, "reviewing")).toEqual([5]);
-		expect(row(view, 5)?.reviews).toEqual([
+		});
+		const started = [
+			{ ...review("other", "tool", 5), lastActedAt: iso(T0 - H) },
+			review("acme", "api", 3),
+		];
+		const asked: (ReadonlySet<string> | undefined)[] = [];
+		const home = new HomeService({
+			config: memoryConfig(["acme/api"]).access,
+			started: {
+				list: async (_slug, withCoverage) => {
+					asked.push(withCoverage);
+					return started;
+				},
+			},
+			now: () => T0,
+		});
+		const view = await home.refresh();
+		// Coverage is asked only for the view's repos.
+		expect(asked.map((s) => [...(s ?? [])])).toEqual([["acme/api"]]);
+		// The view dialog's suggestions: every started review's repo, newest first.
+		expect(view.startedRepos).toEqual(["other/tool", "acme/api"]);
+		const rows = view.sections.flatMap((s) => s.rows);
+		expect(rows.filter((r) => r.repo === "tool")).toEqual([]);
+		expect(fx.ghLog()).not.toMatch(/other|tool/);
+		expect(home.knownPrs().map((p) => p.repo)).not.toContain("tool");
+		// One in a view repo still shows, in Reviewing, with its coverage.
+		expect(ids(view, "reviewing")).toContain(3);
+		expect(row(view, 3)?.reviews).toEqual([
 			{
-				id: started.id,
+				id: started[1]?.id,
 				label: "head",
 				pinnedHead: null,
-				coverage: started.coverage,
-				lastActedAt: started.lastActedAt,
+				coverage: started[1]?.coverage,
+				lastActedAt: started[1]?.lastActedAt,
 				headMoved: false,
 			},
 		]);
-		const merged = homePr({
-			repo: "other/tool",
-			number: 5,
-			author: "carol",
-			state: "MERGED",
-			closedAt: iso(T0 + H),
-		});
-		fx.scenario({
-			repos: { "acme/api": { prs: [] }, "other/tool": { prs: [merged] } },
-		});
-		clock.now = T0 + 2 * H;
-		view = await home.refresh();
-		expect(ids(view, "closed")).toEqual([5]);
-		expect(row(view, 5)?.openable).toBe(true);
-		const detailCalls = () =>
-			fx
-				?.ghLog()
-				.split("\n")
-				.filter((l) => l.includes("other")).length ?? 0;
-		clock.now = T0 + 4 * DAY;
-		const before = detailCalls();
-		view = await home.refresh();
-		expect(ids(view, "closed")).toEqual([]);
+	});
+
+	it("a repo leaving the view takes its started rows at once; back, they and their annotations return", async () => {
+		fx = createHomeFixture({ repos: { "acme/api": { prs: scenarioPrs() } } });
+		const started: StartedReview = {
+			owner: "acme",
+			repo: "api",
+			number: 3,
+			id: "01jbaaaaaaaaaaaaaaaaaaaaaa",
+			pinnedHead: null,
+			head: "3".padStart(40, "0"),
+			asOf: null,
+			coverage: { done: 1, total: 2, unit: "lines" },
+			lastActedAt: iso(T0 - H),
+		};
+		const { home, config } = service({ started: [started] });
 		await home.refresh();
-		// Read once more to learn it's past 3 days, then no more.
-		expect(detailCalls() - before).toBeLessThanOrEqual(1);
+		await home.annotate("acme", "api", 3, { op: "note", text: "after lunch" });
+		const setView = (repos: string[]) =>
+			config.access.update((c) => ({
+				...c,
+				views: [{ name: "My PRs", repos }],
+			}));
+		await setView([]);
+		// Before any refresh: the view reads the config.
+		expect(row(await home.view(), 3)).toBeUndefined();
+		const out = await home.refresh();
+		expect(row(out, 3)).toBeUndefined();
+		// Its facts go too, started or not: search and annotate don't see them.
+		expect(home.knownPrs()).toEqual([]);
+		// A chip to add it back.
+		expect(out.startedRepos).toEqual(["acme/api"]);
+		await setView(["acme/api"]);
+		const back = await home.refresh();
+		expect(ids(back, "reviewing")).toContain(3);
+		expect(row(back, 3)?.reviews).toHaveLength(1);
+		expect(row(back, 3)?.annotations.note).toBe("after lunch");
 	});
 
 	it("puts the viewer's turn first in each section, then newest activity", async () => {
