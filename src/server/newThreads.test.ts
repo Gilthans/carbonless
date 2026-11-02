@@ -621,6 +621,19 @@ describe("new threads", () => {
 		expect(posts()).toHaveLength(0);
 	});
 
+	it("a new thread's tags GitHub would drop go escaped, before the marker; it reads back as typed", async () => {
+		const req = request({ body: "Why not List<String>?" });
+		const { thread, comments } = await session.startThread(req);
+		expect(stored().at(-1)?.comments.nodes[0]?.body).toBe(
+			`Why not List\\<String>?\n\n<!-- crb:v1 id=${req.clientId} -->`,
+		);
+		expect(thread.body).toBe("Why not List<String>?");
+		expect(comments.comments[0]?.body).toBe("Why not List<String>?");
+		expect(postedBody(request({ clientId: "a1", body: "<T>" }))).toBe(
+			"\\<T>\n\n<!-- crb:v1 id=a1 -->",
+		);
+	});
+
 	it("postedBody: the marker with the posted lines, only with a span", () => {
 		expect(postedBody(request({ clientId: "a1" }))).toBe(
 			"Why not a map?\n\n<!-- crb:v1 id=a1 -->",

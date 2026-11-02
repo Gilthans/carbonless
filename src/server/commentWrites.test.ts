@@ -143,6 +143,22 @@ describe("editing and deleting comments", () => {
 		expect((await comments("T12-0"))?.comments[2]?.body).toBe("Fair enough.");
 	});
 
+	it("an edit escapes tags GitHub would drop; the comment edits as typed, and the same text again sends nothing", async () => {
+		const typed = "Use List<String>, not <T>";
+		const answer = await edit("C12-0-2", typed);
+		expect(writeCalls()).toHaveLength(1);
+		const stored = JSON.parse(readFileSync(scenarioPath(), "utf8")).prs[12]
+			.graphql.reviewThreads[0].comments.nodes[2].body;
+		expect(stored).toBe("Use List\\<String>, not \\<T>");
+		expect(answer.comment?.body).toBe(typed);
+		expect((await comments("T12-0"))?.comments[2]?.body).toBe(typed);
+		// Unchanged: done, nothing sent; from as the page had it: no 409.
+		await edit("C12-0-2", typed, { from: typed });
+		expect(writeCalls()).toHaveLength(1);
+		await edit("C12-0-2", "Use List<Integer>", { from: typed });
+		expect(writeCalls()).toHaveLength(2);
+	});
+
 	it("an edit whose body is already on GitHub sends no PATCH (a retry that landed)", async () => {
 		const answer = await edit("C12-0-2", "Fair.  \r\n", { from: "anything" });
 		expect(writeCalls()).toEqual([]);

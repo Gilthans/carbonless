@@ -236,6 +236,14 @@ has nothing to install. M2 replaces steps 1–3 with `pnpm release
   (`git log --stat` + `git diff -U10` of the range, saved to a file). Findings
   go back to the same implementer as fix rounds, then a scoped re-review; small
   fixes with tests that fail without them may skip the re-review.
+- Review checklist (every reviewer brief carries it, on top of the brief's own):
+  - **Input sanitization.** Text from the reviewer, a PR, GitHub or git
+    (bodies, titles, names, paths, refs) is escaped or sanitized wherever it
+    reaches HTML (`innerHTML`, `dangerouslySetInnerHTML`, `DOMParser`, server
+    meta), markdown posted to GitHub (`escapeTags`,
+    `src/shared/markdownEscape.ts`), argv, URLs or hrefs (`safeHref`) and git
+    args (checked OIDs and refs, paths after `--`), with a test that fails
+    without it.
 - The coordinator cherry-picks reviewed commits onto the feature branch (or has
   the agent rebase when they conflict), runs `pnpm verify` on the combined
   branch, (re)starts the branch's instance and sends its link ("Versions and
