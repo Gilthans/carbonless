@@ -14,14 +14,18 @@ import {
 	bump,
 	checkRcPublish,
 	compareVersions,
+	finishPlan,
 	type Io,
 	newestTag,
 	next,
 	nextRc,
+	type PublishIo,
+	parseManifest,
 	parseTag,
 	parseVersion,
 	previousRelease,
 	promote,
+	publishRelease,
 	type RunResult,
 	rcBehindLatest,
 	rcToPublish,
@@ -30,6 +34,7 @@ import {
 	resolvePromote,
 	status,
 	tagNames,
+	tarballDigests,
 	withVersion,
 } from "./release-lib.js";
 
@@ -763,5 +768,280 @@ describe("ci:set-version", { timeout: 30_000 }, () => {
 				{ encoding: "utf8", stdio: "pipe" },
 			),
 		).toThrow(/not clean/);
+	});
+});
+
+describe("pnpm release publish (the owner's, with npm's OTP)", () => {
+	const SHA = "a".repeat(40);
+	let dir: string;
+	beforeEach(() => {
+		dir = mkdtempSync(join(tmpdir(), "crb-publish-test-"));
+	});
+	afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+	/** A promote run's artifact: the tarball and its manifest. */
+	function artifact({
+		version = "0.1.0",
+		built = { version: "0.1.0", commit: SHA },
+		manifest = {} as Record<string, string>,
+	} = {}) {
+		const out = join(dir, "artifact");
+		const pkg = join(dir, "pkg/package/dist");
+		mkdirSync(pkg, { recursive: true });
+		mkdirSync(out, { recursive: true });
+		writeFileSync(join(pkg, "build-info.json"), JSON.stringify(built));
+		const tgz = join(out, `carbonless-review-${version}.tgz`);
+		execFileSync("tar", ["-czf", tgz, "-C", join(dir, "pkg"), "package"]);
+		const m = {
+			version,
+			tag: `v${version}-rc.5`,
+			sha: SHA,
+			...tarballDigests(readFileSync(tgz)),
+			next: "minor",
+			tarball: `carbonless-review-${version}.tgz`,
+			...manifest,
+		};
+		writeFileSync(join(out, "manifest.json"), JSON.stringify(m));
+		return { out, manifest: m };
+	}
+
+	/** A PublishIo over fakeIo: the download copies `out`, real tar. */
+	function publishIo(
+		out: string,
+		handlers: Parameters<typeof fakeIo>[0] = {},
+		{ answer = true, npmCode = 0 } = {},
+	) {
+		const fake = fakeIo({
+			"gh run list": JSON.stringify([{ databaseId: 77 }]),
+			"gh run download": (args) => {
+				const to = args[args.indexOf("--dir") + 1] ?? "";
+				for (const f of ["manifest.json", "carbonless-review-0.1.0.tgz"]) {
+					if (existsSync(join(out, f))) {
+						writeFileSync(join(to, f), readFileSync(join(out, f)));
+					}
+				}
+				return "";
+			},
+			tar: (args) => execFileSync("tar", args, { encoding: "utf8" }),
+			"gh api repos/owner/repo/commits/v0.1.0-rc.5": `${SHA}\n`,
+			"npm view carbonless-review@0.1.0 dist.integrity": "",
+			"npm view carbonless-review dist-tags": NPM_404,
+			"gh workflow run release-finish.yml": "",
+			...handlers,
+		});
+		const asked: string[] = [];
+		const ran: string[] = [];
+		const io: PublishIo = {
+			...fake.io,
+			ask: async (q) => {
+				asked.push(q);
+				return answer;
+			},
+			interactive: async (cmd, args) => {
+				ran.push([cmd, ...args].join(" "));
+				return npmCode;
+			},
+		};
+		return { ...fake, io, asked, ran };
+	}
+
+	it("publishes the newest promote run's checked tarball to latest, npm asking for the OTP, then starts release-finish", async () => {
+		const { out, manifest } = artifact();
+		const p = publishIo(out);
+		await publishRelease(p.io);
+		expect(p.calls).toContain(
+			"gh run list --repo owner/repo --workflow promote.yml --status success --limit 1 --json databaseId",
+		);
+		expect(
+			p.calls.some((c) =>
+				c.startsWith("gh run download 77 --repo owner/repo --name release"),
+			),
+		).toBe(true);
+		expect(p.asked).toHaveLength(1);
+		expect(p.lines.join("\n")).toContain(`sha256 ${manifest.sha256}`);
+		expect(p.ran).toHaveLength(1);
+		expect(p.ran[0]).toMatch(
+			/^npm publish \S+\/carbonless-review-0\.1\.0\.tgz --tag latest --access public$/,
+		);
+		// No OTP passed: npm asks on the terminal.
+		expect(p.ran[0]).not.toContain("otp");
+		expect(p.calls).toContain(
+			"gh workflow run release-finish.yml --repo owner/repo --ref master -f version=0.1.0 -f run=77",
+		);
+	});
+
+	it("refuses a tarball whose sha256 isn't the manifest's", async () => {
+		const { out } = artifact({ manifest: { sha256: "0".repeat(64) } });
+		const p = publishIo(out);
+		await expect(publishRelease(p.io, "77")).rejects.toThrow(
+			"not the tarball promote checked",
+		);
+		expect(p.ran).toEqual([]);
+		expect(p.asked).toEqual([]);
+	});
+
+	it("refuses a tarball whose build-info isn't the RC's commit at the release's version", async () => {
+		const other = artifact({
+			built: { version: "0.1.0", commit: "b".repeat(40) },
+		});
+		const p = publishIo(other.out);
+		await expect(publishRelease(p.io, "77")).rejects.toThrow(
+			/build-info is 0\.1\.0 b{40}, not 0\.1\.0 a{40}/,
+		);
+		expect(p.ran).toEqual([]);
+	});
+
+	it("refuses an RC tag that GitHub has elsewhere, or that isn't on master", async () => {
+		const { out } = artifact();
+		const moved = publishIo(out, {
+			"gh api repos/owner/repo/commits/v0.1.0-rc.5": `${"c".repeat(40)}\n`,
+		});
+		await expect(publishRelease(moved.io, "77")).rejects.toThrow(
+			/v0\.1\.0-rc\.5 is at c{40} on GitHub/,
+		);
+		const off = publishIo(out, {
+			"gh api repos/owner/repo/compare/v0.1.0-rc.5...master": "diverged\n",
+		});
+		await expect(publishRelease(off.io, "77")).rejects.toThrow(
+			"v0.1.0-rc.5 is not on master",
+		);
+		expect([...moved.ran, ...off.ran]).toEqual([]);
+	});
+
+	it("refuses a manifest whose version is not a release", () => {
+		const { out } = artifact({ manifest: { version: "0.1.0-rc.5" } });
+		expect(() =>
+			parseManifest(readFileSync(join(out, "manifest.json"), "utf8")),
+		).toThrow("not a promote manifest");
+	});
+
+	it("a version npm has with this tarball isn't published again; finish still starts", async () => {
+		const { out, manifest } = artifact();
+		const p = publishIo(out, {
+			"npm view carbonless-review@0.1.0 dist.integrity": `${manifest.integrity}\n`,
+		});
+		await publishRelease(p.io, "77");
+		expect(p.ran).toEqual([]);
+		expect(p.lines.join("\n")).toContain("not published again");
+		expect(
+			p.calls.some((c) => c.startsWith("gh workflow run release-finish.yml")),
+		).toBe(true);
+	});
+
+	it("a version npm has with another tarball fails", async () => {
+		const { out } = artifact();
+		const p = publishIo(out, {
+			"npm view carbonless-review@0.1.0 dist.integrity": "sha512-b3RoZXI=\n",
+		});
+		await expect(publishRelease(p.io, "77")).rejects.toThrow(
+			"already on npm with another tarball",
+		);
+		expect(p.ran).toEqual([]);
+	});
+
+	it("does nothing without a yes; a failed npm publish starts nothing and says how to retry", async () => {
+		const { out } = artifact();
+		const no = publishIo(out, {}, { answer: false });
+		await publishRelease(no.io, "77");
+		expect(no.ran).toEqual([]);
+		expect(no.calls.some((c) => c.startsWith("gh workflow run"))).toBe(false);
+
+		const failing = publishIo(out, {}, { npmCode: 1 });
+		await expect(publishRelease(failing.io, "77")).rejects.toThrow(
+			"run pnpm release publish 77 again",
+		);
+		expect(failing.calls.some((c) => c.startsWith("gh workflow run"))).toBe(
+			false,
+		);
+		await expect(publishRelease(failing.io, "77; rm")).rejects.toThrow(
+			"not a run id",
+		);
+	});
+});
+
+describe("release-finish: each step only once", () => {
+	const SHA = "a".repeat(40);
+	const manifest = {
+		version: "0.1.0",
+		tag: "v0.1.0-rc.5",
+		sha: SHA,
+		sha256: "0".repeat(64),
+		integrity: "sha512-cmVsZWFzZQ==",
+		next: "minor" as const,
+		tarball: "carbonless-review-0.1.0.tgz",
+	};
+	const finishIo = (integrity: string | null, tagAt?: string) =>
+		fakeIo({
+			"npm view carbonless-review@0.1.0 dist.integrity":
+				integrity === null ? NPM_404 : `${integrity}\n`,
+			"git rev-parse -q --verify refs/tags/v0.1.0^{commit}":
+				tagAt === undefined ? { code: 1 } : `${tagAt}\n`,
+		}).io;
+
+	it("fails unless npm has the release with the promote run's tarball", async () => {
+		await expect(
+			finishPlan(finishIo(null), "0.1.0", manifest, "0.1.0"),
+		).rejects.toThrow("is not on npm: run pnpm release publish first");
+		await expect(
+			finishPlan(finishIo("sha512-b3RoZXI="), "0.1.0", manifest, "0.1.0"),
+		).rejects.toThrow("is another tarball");
+		await expect(
+			finishPlan(finishIo(manifest.integrity), "0.2.0", manifest, "0.1.0"),
+		).rejects.toThrow("released 0.1.0, not 0.2.0");
+	});
+
+	it("pushes the tag once, refuses one elsewhere, and opens the next PR only while master is still on the release", async () => {
+		expect(
+			await finishPlan(
+				finishIo(manifest.integrity),
+				"0.1.0",
+				manifest,
+				"0.1.0",
+			),
+		).toEqual({ pushTag: true, nextPr: true });
+		expect(
+			await finishPlan(
+				finishIo(manifest.integrity, SHA),
+				"0.1.0",
+				manifest,
+				"0.1.0",
+			),
+		).toEqual({ pushTag: false, nextPr: true });
+		expect(
+			await finishPlan(
+				finishIo(manifest.integrity, SHA),
+				"0.1.0",
+				manifest,
+				"0.2.0",
+			),
+		).toEqual({ pushTag: false, nextPr: false });
+		await expect(
+			finishPlan(
+				finishIo(manifest.integrity, "b".repeat(40)),
+				"0.1.0",
+				manifest,
+				"0.1.0",
+			),
+		).rejects.toThrow(/v0\.1\.0 is at b{40}, not a{40}/);
+	});
+
+	it("each workflow step it plans is skipped when the plan says done", () => {
+		const wf = readFileSync(
+			join(import.meta.dirname, "../.github/workflows/release-finish.yml"),
+			"utf8",
+		);
+		expect(wf).toContain("if: steps.plan.outputs.push_tag == 'true'");
+		expect(wf).toContain("if: steps.plan.outputs.next_pr == 'true'");
+		expect(wf).toContain("if: steps.fixup.outputs.move_rc_to != ''");
+		// NPM_TOKEN only for npm dist-tag; nothing publishes here.
+		expect(wf.match(/secrets\.NPM_TOKEN/g)).toHaveLength(1);
+		expect(wf).not.toContain("npm publish");
+		const promote = readFileSync(
+			join(import.meta.dirname, "../.github/workflows/promote.yml"),
+			"utf8",
+		);
+		expect(promote).not.toContain("NPM_TOKEN");
+		expect(promote).not.toContain("npm publish");
+		expect(promote).not.toContain("environment:");
 	});
 });

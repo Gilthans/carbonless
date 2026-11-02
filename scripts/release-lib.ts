@@ -1,4 +1,6 @@
-import { readFileSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 // Version math and the steps behind `pnpm release` and the publish-rc and
@@ -349,7 +351,9 @@ export async function promote(
 		"-f",
 		`next=${next}`,
 	]);
-	io.log(`Promoting ${tag} to ${release} (then next: ${next})`);
+	io.log(
+		`Promoting ${tag}: checks and packs ${release}; then the owner runs pnpm release publish (npm OTP)`,
+	);
 	let url = RUN_URL.exec(out)?.[0];
 	for (let i = 0; !url && i < 20; i++) {
 		await io.sleep(1500);
@@ -694,4 +698,307 @@ export async function releasePrs(
 		picked.push({ number: pr.number, title: pr.title, mergedAt: pr.mergedAt });
 	}
 	return picked;
+}
+
+// ---------------------------------------------------------------------------
+// Releasing: promote (CI) checks and packs, the owner publishes with npm's
+// two-factor OTP (`pnpm release publish`), release-finish (CI) tags, moves
+// rc and opens the next PR. Every step can run again.
+
+/** What promote's check job made: the tarball and what it must be. */
+export type Manifest = {
+	version: string; // X.Y.Z
+	tag: string; // the RC tag it was built from
+	sha: string; // that tag's commit
+	sha256: string; // hex, of the tarball
+	integrity: string; // sha512-<base64>, as npm records it
+	next: Kind; // the bump of the "next" PR
+	tarball: string; // its file name in the artifact
+};
+
+/** promote's manifest.json, checked field by field. */
+export function parseManifest(text: string): Manifest {
+	const m = JSON.parse(text) as Partial<Manifest>;
+	const version = parseVersion(m.version ?? "");
+	const tag = parseTag(m.tag ?? "");
+	if (
+		!version ||
+		version.rc !== undefined ||
+		formatVersion(version) !== m.version ||
+		!tag ||
+		tag.rc === undefined ||
+		formatVersion(releaseOf(tag)) !== m.version ||
+		!/^[0-9a-f]{40}$/.test(m.sha ?? "") ||
+		!/^[0-9a-f]{64}$/.test(m.sha256 ?? "") ||
+		!/^sha512-[A-Za-z0-9+/]+=*$/.test(m.integrity ?? "") ||
+		!(KINDS as readonly string[]).includes(m.next ?? "") ||
+		m.tarball !== `${PACKAGE}-${m.version}.tgz`
+	) {
+		throw new Error(`not a promote manifest: ${text.trim()}`);
+	}
+	return m as Manifest;
+}
+
+/** A tarball's sha256 (hex) and npm integrity (sha512, base64). */
+export function tarballDigests(data: Buffer): {
+	sha256: string;
+	integrity: string;
+} {
+	return {
+		sha256: createHash("sha256").update(data).digest("hex"),
+		integrity: `sha512-${createHash("sha512").update(data).digest("base64")}`,
+	};
+}
+
+/** The integrity npm has for `version`, or null when npm doesn't have it. */
+export async function publishedIntegrity(
+	io: Io,
+	version: string,
+): Promise<string | null> {
+	const r = await io.run("npm", [
+		"view",
+		`${PACKAGE}@${version}`,
+		"dist.integrity",
+		"--prefer-online",
+	]);
+	if (r.code !== 0) {
+		if (/E404|404 Not Found/.test(r.stderr + r.stdout)) return null;
+		throw new Error(
+			`npm view ${PACKAGE}@${version} failed: ${r.stderr.trim()}`,
+		);
+	}
+	return r.stdout.trim() || null;
+}
+
+/**
+ * Whether npm needs this tarball published: false when npm already has the
+ * version with this very tarball (a publish that ran before), an error when
+ * npm has it with another one.
+ */
+export async function needsPublish(io: Io, m: Manifest): Promise<boolean> {
+	const published = await publishedIntegrity(io, m.version);
+	if (published === null) return true;
+	if (published === m.integrity) return false;
+	throw new Error(
+		`${PACKAGE}@${m.version} is already on npm with another tarball (${published}, not ${m.integrity}): it can't be published again`,
+	);
+}
+
+export type PublishIo = Io & {
+	/** Asks the person a yes/no question; true only on yes. */
+	ask: (question: string) => Promise<boolean>;
+	/** Runs a command on the person's terminal (npm asks for the OTP there). */
+	interactive: (cmd: string, args: readonly string[]) => Promise<number>;
+};
+
+/**
+ * The tarball of a promote run, checked: its sha256 and integrity are the
+ * manifest's, its build-info is the release's version at the RC tag's
+ * commit, that tag points there on GitHub, and the commit is on master.
+ */
+export async function checkedRelease(
+	io: Io,
+	dir: string,
+): Promise<{ manifest: Manifest; tarball: string }> {
+	const manifest = parseManifest(
+		readFileSync(join(dir, "manifest.json"), "utf8"),
+	);
+	const tarball = join(dir, manifest.tarball);
+	const digests = tarballDigests(readFileSync(tarball));
+	if (
+		digests.sha256 !== manifest.sha256 ||
+		digests.integrity !== manifest.integrity
+	) {
+		throw new Error(
+			`${manifest.tarball}'s sha256 is ${digests.sha256}, the manifest says ${manifest.sha256}: not the tarball promote checked`,
+		);
+	}
+	const info = JSON.parse(
+		await must(io, "tar", ["-xzOf", tarball, "package/dist/build-info.json"]),
+	) as { version?: string; commit?: string };
+	if (info.version !== manifest.version || info.commit !== manifest.sha) {
+		throw new Error(
+			`the tarball's build-info is ${info.version} ${info.commit}, not ${manifest.version} ${manifest.sha}`,
+		);
+	}
+	const tagSha = (
+		await must(io, "gh", [
+			"api",
+			`repos/${io.repo}/commits/${manifest.tag}`,
+			"--jq",
+			".sha",
+		])
+	).trim();
+	if (tagSha !== manifest.sha) {
+		throw new Error(
+			`${manifest.tag} is at ${tagSha} on GitHub, not ${manifest.sha} (the commit promote built)`,
+		);
+	}
+	if (!(await onMaster({ ...io, tags: "origin" }, manifest.tag))) {
+		throw new Error(`${manifest.tag} is not on master`);
+	}
+	return { manifest, tarball };
+}
+
+/** The newest successful promote run's id. */
+async function newestPromoteRun(io: Io): Promise<string> {
+	const runs = JSON.parse(
+		await must(io, "gh", [
+			"run",
+			"list",
+			"--repo",
+			io.repo,
+			"--workflow",
+			"promote.yml",
+			"--status",
+			"success",
+			"--limit",
+			"1",
+			"--json",
+			"databaseId",
+		]),
+	) as { databaseId: number }[];
+	const id = runs[0]?.databaseId;
+	if (!id)
+		throw new Error("no successful promote run: pnpm release promote first");
+	return String(id);
+}
+
+/**
+ * `pnpm release publish [<run-id>]`: the owner publishes a promote run's
+ * tarball to npm's latest with their own login (npm asks for the OTP), then
+ * starts release-finish. Safe to run again: a version npm already has with
+ * this tarball isn't published twice.
+ */
+export async function publishRelease(
+	io: PublishIo,
+	runId?: string,
+): Promise<void> {
+	if (runId !== undefined && !/^\d+$/.test(runId)) {
+		throw new Error(`not a run id: ${runId}`);
+	}
+	const run = runId ?? (await newestPromoteRun(io));
+	const dir = mkdtempSync(join(tmpdir(), "crb-publish-"));
+	try {
+		await must(io, "gh", [
+			"run",
+			"download",
+			run,
+			"--repo",
+			io.repo,
+			"--name",
+			"release",
+			"--dir",
+			dir,
+		]);
+		const { manifest, tarball } = await checkedRelease(io, dir);
+		const publish = await needsPublish(io, manifest);
+		const latest = (await npmState(io))?.distTags.latest;
+		const latestV = parseVersion(latest ?? "");
+		const releaseV = parseVersion(manifest.version);
+		if (
+			publish &&
+			latestV &&
+			releaseV &&
+			compareVersions(releaseV, latestV) <= 0
+		) {
+			throw new Error(
+				`${manifest.version} is not newer than latest (${latest})`,
+			);
+		}
+		io.log(
+			`Release ${manifest.version} from ${manifest.tag} (${manifest.sha})`,
+		);
+		io.log(
+			`  promote run ${run}, ${manifest.tarball}, sha256 ${manifest.sha256}`,
+		);
+		io.log(
+			publish
+				? `  npm: publish to latest (now ${latest ?? "nothing"}); npm asks for your OTP`
+				: `  npm: already has ${manifest.version} with this tarball, not published again`,
+		);
+		io.log(
+			`  then release-finish: tag v${manifest.version}, rc, changelog, "next: ${manifest.next}" PR`,
+		);
+		if (!(await io.ask(`Go on? [y/N] `))) {
+			io.log("Nothing done.");
+			return;
+		}
+		if (publish) {
+			const code = await io.interactive("npm", [
+				"publish",
+				tarball,
+				"--tag",
+				"latest",
+				"--access",
+				"public",
+			]);
+			if (code !== 0) {
+				throw new Error(
+					`npm publish failed (${code}); nothing else was done: run pnpm release publish ${run} again`,
+				);
+			}
+		}
+		await must(io, "gh", [
+			"workflow",
+			"run",
+			"release-finish.yml",
+			"--repo",
+			io.repo,
+			"--ref",
+			"master",
+			"-f",
+			`version=${manifest.version}`,
+			"-f",
+			`run=${run}`,
+		]);
+		io.log(
+			`Published ${manifest.version}; release-finish started: https://github.com/${io.repo}/actions/workflows/release-finish.yml`,
+		);
+		io.log(
+			`If it fails, start it again (each step skips what is done): gh workflow run release-finish.yml --repo ${io.repo} --ref master -f version=${manifest.version} -f run=${run}`,
+		);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+}
+
+/**
+ * What release-finish still has to do for a published release: whether to
+ * push the tag (no when origin's tag already points at the RC's commit; an
+ * error when it points elsewhere) and to open the next PR (no once master
+ * has moved past the release). Fails unless npm has the version with the
+ * manifest's tarball.
+ */
+export async function finishPlan(
+	io: Io,
+	version: string,
+	m: Manifest,
+	masterVersion: string,
+): Promise<{ pushTag: boolean; nextPr: boolean }> {
+	if (m.version !== version) {
+		throw new Error(`the promote run released ${m.version}, not ${version}`);
+	}
+	const published = await publishedIntegrity(io, version);
+	if (published !== m.integrity) {
+		throw new Error(
+			published === null
+				? `${PACKAGE}@${version} is not on npm: run pnpm release publish first`
+				: `${PACKAGE}@${version} on npm is another tarball (${published}, not ${m.integrity})`,
+		);
+	}
+	const tag = await io.run("git", [
+		"rev-parse",
+		"-q",
+		"--verify",
+		`refs/tags/v${version}^{commit}`,
+	]);
+	let pushTag = true;
+	if (tag.code === 0) {
+		if (tag.stdout.trim() !== m.sha) {
+			throw new Error(`v${version} is at ${tag.stdout.trim()}, not ${m.sha}`);
+		}
+		pushTag = false;
+	}
+	return { pushTag, nextPr: masterVersion === version };
 }

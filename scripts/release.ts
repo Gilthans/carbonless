@@ -11,6 +11,11 @@
 //                                             runs the promote workflow: <rc tag> (default: the
 //                                             newest) published as X.Y.Z on latest, then a
 //                                             "next" PR (default minor); prints the run's URL
+//   pnpm release publish [<run-id>]
+//                                             THE OWNER ONLY: publishes a promote run's checked
+//                                             tarball (default: the newest) to npm's latest with
+//                                             their login and two-factor OTP, then starts
+//                                             release-finish; agents never run it
 //   pnpm release next <patch|minor|major|X.Y.Z>
 //                                             a branch and PR setting master's next release
 //
@@ -21,18 +26,23 @@ import { execFileSync, spawn } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createInterface } from "node:readline/promises";
 import {
 	bump,
 	checkRcPublish,
 	DEFAULT_REPO,
+	finishPlan,
 	formatVersion,
 	type Io,
 	KINDS,
 	type Kind,
 	next,
 	npmState,
+	type PublishIo,
+	parseManifest,
 	parseVersion,
 	promote,
+	publishRelease,
 	type Runner,
 	rcBehindLatest,
 	rcToPublish,
@@ -40,6 +50,7 @@ import {
 	renderChangelog,
 	resolvePromote,
 	status,
+	tarballDigests,
 	withGitHead,
 	withVersion,
 } from "./release-lib.js";
@@ -73,9 +84,30 @@ const io: Io = {
 	sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
 };
 
+const publishIo: PublishIo = {
+	...io,
+	ask: async (question) => {
+		const rl = createInterface({
+			input: process.stdin,
+			output: process.stdout,
+		});
+		try {
+			return /^y(es)?$/i.test((await rl.question(question)).trim());
+		} finally {
+			rl.close();
+		}
+	},
+	interactive: (cmd, args) =>
+		new Promise((resolve, reject) => {
+			const child = spawn(cmd, args, { stdio: "inherit" });
+			child.on("error", reject);
+			child.on("close", (code) => resolve(code ?? 1));
+		}),
+};
+
 function usage(): never {
 	console.error(
-		"usage: pnpm release local [--out <dir>] [--no-install] | status | promote [<rc tag>] [--next patch|minor|major] | next <patch|minor|major|X.Y.Z>",
+		"usage: pnpm release local [--out <dir>] [--no-install] | status | promote [<rc tag>] [--next patch|minor|major] | publish [<run-id>] | next <patch|minor|major|X.Y.Z>",
 	);
 	process.exit(2);
 }
@@ -136,6 +168,46 @@ async function main(argv: string[]) {
 				else usage();
 			}
 			await promote(io, tag, kind);
+			return;
+		}
+		case "publish": {
+			if (rest.length > 1) usage();
+			await publishRelease(publishIo, rest[0]);
+			return;
+		}
+		case "ci:manifest": {
+			// ci:manifest <tgz> <release> <rc tag> <sha> <next>: promote's manifest.json.
+			const [tgz, version, tag, sha, nextKind] = rest;
+			if (!tgz || !version || !tag || !sha || !nextKind) usage();
+			const manifest = parseManifest(
+				JSON.stringify({
+					version,
+					tag,
+					sha,
+					...tarballDigests(readFileSync(tgz)),
+					next: nextKind,
+					tarball: tgz.split("/").at(-1),
+				}),
+			);
+			console.log(JSON.stringify(manifest, null, "\t"));
+			return;
+		}
+		case "ci:finish-plan": {
+			// ci:finish-plan <X.Y.Z> <manifest.json>: what release-finish still does.
+			const [version, file] = rest;
+			if (!version || !file) usage();
+			const manifest = parseManifest(readFileSync(file, "utf8"));
+			const plan = await finishPlan(
+				io,
+				version,
+				manifest,
+				packageVersion(process.cwd()),
+			);
+			console.log(`sha=${manifest.sha}`);
+			console.log(`rc_tag=${manifest.tag}`);
+			console.log(`next=${manifest.next}`);
+			console.log(`push_tag=${plan.pushTag}`);
+			console.log(`next_pr=${plan.nextPr}`);
 			return;
 		}
 		case "next": {
