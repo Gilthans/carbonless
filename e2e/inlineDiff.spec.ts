@@ -7,7 +7,7 @@ import {
 	openFiles,
 	sideBySide,
 } from "./files-ui";
-import { expect, type PrOptions, test } from "./fixtures";
+import { expect, type PrOptions, reviewPage, test } from "./fixtures";
 
 /**
  * A handful of the gallery's inline-diff cases (Gilthans/carbonless-gallery
@@ -164,3 +164,48 @@ for (const view of ["unified", "side-by-side"] as const) {
 		await expectNoPageOverflow(page);
 	});
 }
+
+test("a landing's and a pick's wash show over the word marks, and the landing's fades from them", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	test.skip(isMobile, "the washes are the same CSS on a phone");
+	await pr(fixture);
+	const s = await startCrb();
+	const path = "inline/01-rename-identifier.ts";
+	await page.goto(
+		reviewPage(
+			s.url,
+			"files",
+			`?path=${encodeURIComponent(path)}&line=4&side=RIGHT`,
+		),
+	);
+	const section = fileSection(page, path);
+	const row = section.locator('tr[data-testid="diff-line"][data-kind="add"]');
+	const word = row.locator("[data-word]");
+	await expect(word).toHaveText("memberCount");
+	/** The wash layered over the mark's tint (index.css, [data-word]). */
+	const wash = () =>
+		word.evaluate((el) =>
+			getComputedStyle(el).getPropertyValue("--wash").trim(),
+		);
+	const none = await section
+		.locator('tr[data-testid="diff-line"][data-kind="del"] [data-word]')
+		.evaluate((el) => getComputedStyle(el).getPropertyValue("--wash").trim());
+	expect(none).toBe("rgba(0, 0, 0, 0)");
+	// Landed: the accent wash reaches the mark...
+	await expect(row).toHaveAttribute("data-landed");
+	expect(await wash()).not.toBe(none);
+	expect(
+		await word.evaluate((el) => getComputedStyle(el).backgroundImage),
+	).toContain("linear-gradient");
+	// ...and fades from it with the row, to nothing.
+	await expect(row).not.toHaveAttribute("data-landed", { timeout: 5000 });
+	await expect.poll(wash).toBe(none);
+	// A pick's wash reaches it too.
+	await row.locator('td[data-testid="new"] button').click();
+	await expect(row).toHaveAttribute("data-picked");
+	await expect.poll(wash).not.toBe(none);
+});
