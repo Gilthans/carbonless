@@ -1303,6 +1303,58 @@ test("each file shows whether it was added, deleted, modified or renamed", async
 	).toBe(true);
 });
 
+test("scrolling into a folded folder never unfolds it; its dot follows the file in view", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	const long = Array.from({ length: 120 }, (_, i) => `long ${i + 1}`);
+	await pr({
+		base: { "docs/a.md": "a\n", "src/long.ts": text(long) },
+		files: [
+			{
+				message: "PR change",
+				files: {
+					"docs/a.md": "a changed\n",
+					"src/long.ts": text(long.map((l) => `${l} changed`)),
+				},
+			},
+		],
+	});
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	const folderRow = (tree: Locator, path: string) =>
+		tree.locator(`button[data-folder="${path}"]`);
+	await withTree(page, async (tree) => {
+		// The file in view is docs/a.md: docs has the dot, src not.
+		await expect(folderRow(tree, "docs")).toHaveAttribute("data-holds-current");
+		await expect(folderRow(tree, "src")).not.toHaveAttribute(
+			"data-holds-current",
+		);
+		await folderRow(tree, "src").click();
+		await expect(folderRow(tree, "src")).toHaveAttribute(
+			"aria-expanded",
+			"false",
+		);
+	});
+	// Open the long file from its own header and scroll down into it.
+	const section = await expand(page, "src/long.ts");
+	await expect(section.getByTestId("diff-line").first()).toBeVisible();
+	await section.getByTestId("diff-line").last().scrollIntoViewIfNeeded();
+	await withTree(page, async (tree) => {
+		// The file in view moved into src: the dot did, the fold held.
+		await expect(folderRow(tree, "src")).toHaveAttribute("data-holds-current");
+		await expect(folderRow(tree, "docs")).not.toHaveAttribute(
+			"data-holds-current",
+		);
+		await expect(folderRow(tree, "src")).toHaveAttribute(
+			"aria-expanded",
+			"false",
+		);
+		await expect(tree.getByRole("button", { name: /long\.ts/ })).toHaveCount(0);
+	});
+});
+
 test("the tree and the diff list share one order: folders first, then files, by name", async ({
 	page,
 	pr,

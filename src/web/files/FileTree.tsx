@@ -19,6 +19,9 @@ import {
 
 const NONE = () => [];
 
+/** What a folder row's dot says. */
+const HOLDS_CURRENT = "holds the current file";
+
 const indent = (depth: number) => ({
 	paddingLeft: `${depth * 0.75 + 0.25}rem`,
 });
@@ -153,17 +156,23 @@ function FolderItem(props: Level & { folder: Folder }) {
 	const p = folderUnitProgress(filesIn(folder), unit);
 	const numbers = describeFolderProgress(p, unit);
 	const folded = folds.folded.has(folder.path);
-	// Folded over the current file: the row stands in for it.
-	const holdsCurrent =
-		folded && !!props.currentPath?.startsWith(`${folder.path}/`);
+	// A breadcrumb: the current file is somewhere inside, open or folded.
+	const holdsCurrent = !!props.currentPath?.startsWith(`${folder.path}/`);
 	const Chevron = folded ? ChevronRightIcon : ChevronDownIcon;
 	return (
-		<li>
+		// The whole group (row and children) in a subtle border, nested
+		// groups inside it, each a small step in: folders read apart from files.
+		<li
+			data-folder-group={folder.path}
+			style={{ marginLeft: `${props.depth * 0.75}rem` }}
+			className="my-0.5 rounded-md border border-line"
+		>
 			{/* The numbers are in the name already: the tooltip only shows them. */}
 			<Tooltip
 				content={
 					<>
 						<TooltipPath>{folder.path}</TooltipPath> · {numbers}
+						{holdsCurrent && ` · ${HOLDS_CURRENT}`}
 					</>
 				}
 				describe={false}
@@ -177,13 +186,11 @@ function FolderItem(props: Level & { folder: Folder }) {
 						data-finished={p.done || undefined}
 						data-holds-current={holdsCurrent || undefined}
 						onClick={() => folds.toggle(folder.path)}
-						style={indent(props.depth)}
+						style={indent(0)}
 						className={`flex w-full items-center gap-1.5 rounded-md py-0.5 pr-1 pointer-coarse:min-h-10 text-left text-sm text-muted transition-colors hover:bg-overlay focus-visible:outline-2 focus-visible:outline-accent motion-reduce:transition-none ${
-							holdsCurrent
-								? "bg-accent/12 shadow-[inset_2px_0_0_var(--color-accent)]"
-								: p.done
-									? "bg-ok/8 shadow-[inset_2px_0_0_var(--color-ok-fill)]"
-									: ""
+							p.done
+								? "bg-ok/8 shadow-[inset_2px_0_0_var(--color-ok-fill)]"
+								: "bg-band"
 						}`}
 					>
 						<Chevron
@@ -193,10 +200,20 @@ function FolderItem(props: Level & { folder: Folder }) {
 						/>
 						<span
 							data-testid="tree-name"
-							className="min-w-0 flex-1 truncate font-mono text-[0.8125rem]"
+							className="min-w-0 truncate font-mono text-[0.8125rem]"
 						>
 							{folder.name}
 						</span>
+						<span className="flex min-w-0 flex-1 items-center">
+							{holdsCurrent && (
+								<span
+									aria-hidden
+									data-testid="holds-current"
+									className="h-1.5 w-1.5 shrink-0 rounded-full bg-accent"
+								/>
+							)}
+						</span>
+						{holdsCurrent && <span className="sr-only">{HOLDS_CURRENT}</span>}
 						<ChangeCount file={p} />
 						<span data-testid="tree-numbers" className="sr-only">
 							{numbers}
@@ -211,15 +228,15 @@ function FolderItem(props: Level & { folder: Folder }) {
 								// Never full while any file is left (one with no
 								// clusters counts nothing but isn't done either).
 								incomplete={!p.done}
+								// Crossed off at its true share (owner).
+								proportional
 								className="h-1.5 w-full"
 							/>
 						</span>
 					</button>
 				)}
 			</Tooltip>
-			{!folded && (
-				<Children {...props} nodes={folder.children} depth={props.depth + 1} />
-			)}
+			{!folded && <Children {...props} nodes={folder.children} depth={1} />}
 		</li>
 	);
 }

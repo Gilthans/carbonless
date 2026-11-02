@@ -363,6 +363,21 @@ describe("folders", () => {
 		);
 		const src = folder("src");
 		expect(src.tagName).toBe("BUTTON");
+		// The whole group (row and children) in a border; nested groups nest.
+		const group = src.closest("li");
+		expect(group?.className).toContain("border-line");
+		expect(group?.contains(folder("src/a/deep"))).toBe(true);
+		expect(folder("src/a/deep").closest("li")?.className).toContain(
+			"border-line",
+		);
+		expect(group?.contains(screen.getByRole("button", { name: /b\.ts/ }))).toBe(
+			true,
+		);
+		// The row itself is tinted, unlike a file's.
+		expect(src.className).toContain("bg-band");
+		expect(
+			screen.getByRole("button", { name: /b\.ts/ }).className,
+		).not.toContain("bg-band");
 		expect(src).toHaveAttribute("aria-expanded", "true");
 		expect(numbers(src)).toBe("2 / 4 clusters · 2 files left");
 		expect(src).toHaveAccessibleName(/^src.*2 \/ 4 clusters · 2 files left$/);
@@ -457,8 +472,37 @@ describe("folders", () => {
 		expect(row.className).not.toContain("bg-ok");
 	});
 
-	it("unfolds the current file's folders when it changes, and marks a folded row holding it", async () => {
+	it("unfolds a folded folder only when a file inside it is opened, never on scrolling", async () => {
 		const user = userEvent.setup();
+		const tree = (current: number | null, seq: number) => (
+			<FileTree
+				files={files}
+				unit="clusters"
+				current={current}
+				onSelect={() => {}}
+				revealSeq={seq}
+			/>
+		);
+		const { rerender } = render(tree(2, 0));
+		await user.click(folder("src"));
+		await user.click(folder("src/a/deep"));
+		await user.click(folder("src"));
+		expect(folder("src")).toHaveAttribute("aria-expanded", "false");
+		// Scrolling through files inside it: it stays folded.
+		rerender(tree(0, 0));
+		rerender(tree(1, 0));
+		rerender(tree(3, 0));
+		rerender(tree(0, 0));
+		expect(folder("src")).toHaveAttribute("aria-expanded", "false");
+		// Opening a file deep inside it (a pick, a link): every folded
+		// ancestor unfolds.
+		rerender(tree(0, 1));
+		expect(folder("src")).toHaveAttribute("aria-expanded", "true");
+		expect(folder("src/a/deep")).toHaveAttribute("aria-expanded", "true");
+		expect(fileRow(/one\.ts/)).toHaveAttribute("aria-current", "true");
+	});
+
+	it("puts a dot on every folder holding the current file, open or folded", async () => {
 		const tree = (current: number | null) => (
 			<FileTree
 				files={files}
@@ -467,28 +511,59 @@ describe("folders", () => {
 				onSelect={() => {}}
 			/>
 		);
-		const { rerender } = render(tree(2));
-		// Fold the folder holding the current file: it stays folded.
-		await user.click(folder("src"));
-		expect(folder("src")).toHaveAttribute("aria-expanded", "false");
-		expect(folder("src")).toHaveAttribute("data-holds-current");
-		expect(folder("src").className).toContain("bg-accent/12");
+		const { rerender } = render(tree(0));
+		const dot = (path: string) =>
+			folder(path).querySelector('[data-testid="holds-current"]');
+		for (const path of ["src", "src/a/deep"]) {
+			expect(dot(path), path).not.toBeNull();
+			expect(dot(path), path).toHaveAttribute("aria-hidden", "true");
+			expect(folder(path)).toHaveAccessibleName(/holds the current file/);
+			expect(folder(path)).not.toHaveAttribute("aria-current");
+		}
+		expect(dot("gen")).toBeNull();
+		expect(folder("gen")).not.toHaveAccessibleName(/holds the current file/);
+		// Folded, it keeps the dot: the only row left showing it.
+		await userEvent.click(folder("src"));
+		expect(dot("src")).not.toBeNull();
 		expect(document.querySelectorAll('[aria-current="true"]')).toHaveLength(0);
-		rerender(tree(2));
-		expect(folder("src")).toHaveAttribute("aria-expanded", "false");
-		// Another file outside it: nothing unfolds, and the mark goes.
 		rerender(tree(3));
-		expect(folder("src")).toHaveAttribute("aria-expanded", "false");
-		expect(folder("src")).not.toHaveAttribute("data-holds-current");
-		// A file deep inside it (Next, a link): every folded ancestor unfolds.
-		await user.click(folder("src"));
-		await user.click(folder("src"));
-		await user.click(folder("src/a/deep"));
-		await user.click(folder("src"));
-		rerender(tree(0));
-		expect(folder("src")).toHaveAttribute("aria-expanded", "true");
-		expect(folder("src/a/deep")).toHaveAttribute("aria-expanded", "true");
-		expect(fileRow(/one\.ts/)).toHaveAttribute("aria-current", "true");
+		expect(dot("src")).toBeNull();
+		expect(dot("gen")).not.toBeNull();
+		rerender(tree(null));
+		expect(
+			document.querySelectorAll('[data-testid="holds-current"]'),
+		).toHaveLength(0);
+	});
+
+	it("draws a folder's crossed-off share at its true size, unlike a file's", () => {
+		render(
+			<FileTree
+				files={[
+					file(0, "d/a.ts", ["crossed-off", "crossed-off"]),
+					file(1, "d/b.ts", ["unreviewed", "unreviewed"]),
+				]}
+				unit="clusters"
+				current={null}
+				onSelect={() => {}}
+			/>,
+		);
+		expect(part(bar(folder("d")), "crossed-off")).toBe(50);
+		expect(part(bar(folder("d")), "reviewed")).toBe(0);
+		// A file's meter keeps the cap (a whole crossed-off file is all hatch).
+		const half = file(2, "e/c.ts", ["crossed-off", "unreviewed"]);
+		cleanup();
+		render(
+			<FileTree
+				files={[half]}
+				unit="clusters"
+				current={null}
+				onSelect={() => {}}
+			/>,
+		);
+		expect(
+			part(bar(screen.getByRole("button", { name: /c\.ts/ })), "crossed-off"),
+		).toBe(20);
+		expect(part(bar(folder("e")), "crossed-off")).toBeCloseTo(50);
 	});
 
 	it("keeps folds per PR in storage and ignores unknown paths", async () => {
@@ -540,7 +615,7 @@ describe("folders", () => {
 		expect(folder("src")).toHaveAttribute("aria-expanded", "false");
 		expect(fileRow(/one\.ts/)).toBeNull();
 	});
-	it("keeps a stored fold over the current file on load, remount and the first settle", () => {
+	it("keeps a stored fold over the current file on load, remount and scrolling", () => {
 		const key = "crb:folds:o/r#3";
 		localStorage.setItem(key, JSON.stringify(["src"]));
 		const tree = (current: number | null, revealSeq = 0) => (
@@ -553,20 +628,63 @@ describe("folders", () => {
 				revealSeq={revealSeq}
 			/>
 		);
-		// Mounted with the current file inside it (a remount: the sheet).
-		const { unmount } = render(tree(0));
+		// Mounted with the current file inside it (a remount: the sheet), even
+		// after earlier picks (revealSeq already above 0).
+		const { unmount } = render(tree(0, 3));
 		expect(folder("src")).toHaveAttribute("aria-expanded", "false");
 		expect(folder("src")).toHaveAttribute("data-holds-current");
 		unmount();
-		// A reload: nothing current, then the file in view settles.
+		// A reload: nothing current, then the file in view settles, then the
+		// reviewer scrolls on.
 		const { rerender } = render(tree(null));
 		rerender(tree(0));
+		rerender(tree(1));
 		expect(folder("src")).toHaveAttribute("aria-expanded", "false");
 		expect(JSON.parse(localStorage.getItem(key) ?? "")).toEqual(["src"]);
-		// Scrolling on to another file inside it reveals it.
-		rerender(tree(1));
+		// Opening a file in it unfolds it.
+		rerender(tree(1, 1));
 		expect(folder("src")).toHaveAttribute("aria-expanded", "true");
 		expect(localStorage.getItem(key)).toBeNull();
+	});
+
+	it("writes storage only when the folds change", async () => {
+		const set = vi.spyOn(Storage.prototype, "setItem");
+		const tree = (current: number | null) => (
+			<FileTree
+				files={files}
+				unit="clusters"
+				current={current}
+				onSelect={() => {}}
+				foldKey="crb:folds:o/r#6"
+			/>
+		);
+		const { rerender } = render(tree(null));
+		expect(set).not.toHaveBeenCalled();
+		await userEvent.click(folder("gen"));
+		expect(set).toHaveBeenCalledTimes(1);
+		rerender(tree(0));
+		rerender(tree(1));
+		rerender(tree(2));
+		expect(set).toHaveBeenCalledTimes(1);
+	});
+
+	it("doesn't redo an earlier reveal once the PR is known", () => {
+		const key = "crb:folds:o/r#7";
+		localStorage.setItem(key, JSON.stringify(["src"]));
+		const tree = (k: string | null) => (
+			<FileTree
+				files={files}
+				unit="clusters"
+				current={0}
+				onSelect={() => {}}
+				foldKey={k}
+				// A pick made earlier, before this mount.
+				revealSeq={2}
+			/>
+		);
+		const { rerender } = render(tree(null));
+		rerender(tree(key));
+		expect(folder("src")).toHaveAttribute("aria-expanded", "false");
 	});
 
 	it("reveals on an explicit navigation, even right after load", () => {
