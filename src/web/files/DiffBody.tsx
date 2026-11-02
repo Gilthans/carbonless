@@ -2011,8 +2011,9 @@ const FADE_MS = 1000;
 const LANDED_ROW = {
 	on: "[&>td:first-child]:bg-accent!",
 	fading:
-		// The wash fades on the cells and, through --wash, on their word marks.
-		"[&>td]:[transition-property:box-shadow,--wash] [&>td]:duration-1000 motion-reduce:[&>td]:transition-none",
+		// The wash fades on the cells and, through --wash, on their word marks
+		// (Tailwind's easing, as transition-shadow had).
+		"[&>td]:[transition-property:box-shadow,--wash] [&>td]:ease-(--default-transition-timing-function) [&>td]:duration-1000 motion-reduce:[&>td]:transition-none",
 } as const;
 /** A landed unified row: the tint over every cell, and the rail. */
 const LANDED_CLASS = {
