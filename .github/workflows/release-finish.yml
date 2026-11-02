@@ -57,6 +57,10 @@ jobs:
           cache: pnpm
           registry-url: https://registry.npmjs.org
       - run: pnpm install --frozen-lockfile
+      - name: Only a successful promote of master
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: pnpm exec tsx scripts/release.ts ci:check-run "$RUN"
       - uses: actions/download-artifact@v4
         with:
           name: release
@@ -64,7 +68,8 @@ jobs:
           github-token: ${{ github.token }}
           path: ${{ runner.temp }}/release
       - name: Plan
-        # Fails unless npm has VERSION with the manifest's tarball.
+        # Fails unless the manifest's tag is at its commit on master and npm
+        # has VERSION with its tarball (waiting up to 5 min for the registry).
         id: plan
         run: pnpm exec tsx scripts/release.ts ci:finish-plan "$VERSION" "$RUNNER_TEMP/release/manifest.json" | tee -a "$GITHUB_OUTPUT"
       - name: Tag
@@ -99,15 +104,23 @@ jobs:
           git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
           next="$(pnpm exec tsx scripts/release.ts ci:bump "$VERSION" "$NEXT_KIND" | sed -n 's/^next=//p')"
           branch="next/$next"
-          git switch -C "$branch"
-          pnpm exec tsx scripts/release.ts ci:write-version "$next"
-          pnpm exec tsx scripts/release.ts ci:changelog "$VERSION" "$SHA"
-          git add package.json docs/changelog.md
-          git commit -m "next: $next" -m "Released $VERSION ($RC_TAG); merges to master now publish $next-rc.N."
           auth="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
           echo "::add-mask::$auth"
-          GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.https://github.com/.extraheader \
-            GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $auth" git push --force origin "$branch"
+          export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.https://github.com/.extraheader \
+            GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $auth"
+          # A rerun leaves an existing next branch alone (someone may have
+          # pushed to it, e.g. to get CI checks): it only opens the PR.
+          if git ls-remote --exit-code --heads origin "$branch" >/dev/null; then
+            echo "$branch is already on origin: not pushed again"
+          else
+            git switch -c "$branch"
+            pnpm exec tsx scripts/release.ts ci:write-version "$next"
+            pnpm exec tsx scripts/release.ts ci:changelog "$VERSION" "$SHA"
+            git add package.json docs/changelog.md
+            git commit -m "next: $next" -m "Released $VERSION ($RC_TAG); merges to master now publish $next-rc.N."
+            git push origin "$branch"
+          fi
+          unset GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0
           open="$(gh pr list --head "$branch" --state open --json url --jq '.[0].url // ""')"
           if [[ -z "$open" ]]; then
             gh pr create --base master --head "$branch" --title "next: $next" \

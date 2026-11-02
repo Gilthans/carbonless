@@ -573,10 +573,6 @@ export function rcBehindLatest(
 }
 
 /**
- * The RC tag a promote publishes (`given`, else the newest on origin) and the
- * release it becomes.
- */
-/**
  * Whether the tag's commit is in master's history: the workflows ask the
  * checkout (master, full history), people ask GitHub (no fetch).
  */
@@ -622,6 +618,10 @@ export function withGitHead(packageJson: string, sha: string): string {
 	return without.replace(re, `$1,\n\t"gitHead": "${sha}"$2\n`);
 }
 
+/**
+ * The RC tag a promote checks (`given`, else the newest on origin) and the
+ * release it becomes.
+ */
 export async function resolvePromote(
 	io: Io,
 	given: string,
@@ -821,14 +821,7 @@ export async function checkedRelease(
 			`the tarball's build-info is ${info.version} ${info.commit}, not ${manifest.version} ${manifest.sha}`,
 		);
 	}
-	const tagSha = (
-		await must(io, "gh", [
-			"api",
-			`repos/${io.repo}/commits/${manifest.tag}`,
-			"--jq",
-			".sha",
-		])
-	).trim();
+	const tagSha = await tagCommit(io, manifest.tag);
 	if (tagSha !== manifest.sha) {
 		throw new Error(
 			`${manifest.tag} is at ${tagSha} on GitHub, not ${manifest.sha} (the commit promote built)`,
@@ -838,6 +831,114 @@ export async function checkedRelease(
 		throw new Error(`${manifest.tag} is not on master`);
 	}
 	return { manifest, tarball };
+}
+
+/** The commit a tag points at on GitHub, exactly (a branch of that name doesn't count). */
+async function tagCommit(io: Io, tag: string): Promise<string> {
+	const ref = JSON.parse(
+		await must(io, "gh", [
+			"api",
+			`repos/${io.repo}/git/ref/tags/${tag}`,
+			"--jq",
+			".object",
+		]),
+	) as { sha?: string; type?: string };
+	if (ref.type === "commit") return ref.sha ?? "";
+	if (ref.type === "tag") {
+		// An annotated tag: its object.
+		return (
+			await must(io, "gh", [
+				"api",
+				`repos/${io.repo}/git/tags/${ref.sha}`,
+				"--jq",
+				".object.sha",
+			])
+		).trim();
+	}
+	throw new Error(`${tag} is not a tag of a commit on GitHub`);
+}
+
+/**
+ * Fails unless the run is a successful promote of master, dispatched: the
+ * only runs whose artifact is what promote checked.
+ */
+export async function checkPromoteRun(io: Io, run: string): Promise<void> {
+	if (!/^\d+$/.test(run)) throw new Error(`not a run id: ${run}`);
+	const r = JSON.parse(
+		await must(io, "gh", [
+			"api",
+			`repos/${io.repo}/actions/runs/${run}`,
+			"--jq",
+			"{path, head_branch, event, conclusion}",
+		]),
+	) as {
+		path?: string;
+		head_branch?: string;
+		event?: string;
+		conclusion?: string;
+	};
+	const wrong = [
+		r.path === ".github/workflows/promote.yml" ? "" : `workflow ${r.path}`,
+		r.head_branch === "master" ? "" : `branch ${r.head_branch}`,
+		r.event === "workflow_dispatch" ? "" : `event ${r.event}`,
+		r.conclusion === "success" ? "" : `conclusion ${r.conclusion}`,
+	].filter(Boolean);
+	if (wrong.length > 0) {
+		throw new Error(
+			`run ${run} is not a successful promote of master (${wrong.join(", ")})`,
+		);
+	}
+}
+
+/**
+ * Waits until npm shows `version` (the registry may lag a publish), every
+ * 15 s for up to 5 min: "match" when it has this integrity, "missing" when it
+ * never showed; an error when npm has another tarball.
+ */
+export async function waitForIntegrity(
+	io: Io,
+	version: string,
+	integrity: string,
+	tries = 21,
+): Promise<"match" | "missing"> {
+	for (let i = 0; i < tries; i++) {
+		if (i > 0) await io.sleep(15_000);
+		const published = await publishedIntegrity(io, version);
+		if (published === integrity) return "match";
+		if (published !== null) {
+			throw new Error(
+				`${PACKAGE}@${version} on npm is another tarball (${published}, not ${integrity})`,
+			);
+		}
+	}
+	return "missing";
+}
+
+/**
+ * Fails unless the checkout `pnpm release publish` runs from is clean and
+ * its release code and package.json are origin/master's: the OTP approves
+ * whatever this code publishes.
+ */
+async function checkPublishingCheckout(io: Io): Promise<void> {
+	const dirty = await must(io, "git", ["status", "--porcelain"]);
+	if (dirty.trim() !== "") {
+		throw new Error(
+			"run pnpm release publish from a clean checkout of origin/master (this one has changes)",
+		);
+	}
+	const diff = await io.run("git", [
+		"diff",
+		"--quiet",
+		"origin/master",
+		"--",
+		"scripts/release*.ts",
+		"package.json",
+	]);
+	if (diff.code !== 0) {
+		throw new Error(
+			"run pnpm release publish from origin/master's code: scripts/release*.ts or package.json differ from origin/master here (git fetch, then check out origin/master)",
+		);
+	}
 }
 
 /** The newest successful promote run's id. */
@@ -850,6 +951,10 @@ async function newestPromoteRun(io: Io): Promise<string> {
 			io.repo,
 			"--workflow",
 			"promote.yml",
+			"--branch",
+			"master",
+			"--event",
+			"workflow_dispatch",
 			"--status",
 			"success",
 			"--limit",
@@ -877,7 +982,9 @@ export async function publishRelease(
 	if (runId !== undefined && !/^\d+$/.test(runId)) {
 		throw new Error(`not a run id: ${runId}`);
 	}
+	await checkPublishingCheckout(io);
 	const run = runId ?? (await newestPromoteRun(io));
+	await checkPromoteRun(io, run);
 	const dir = mkdtempSync(join(tmpdir(), "crb-publish-"));
 	try {
 		await must(io, "gh", [
@@ -925,6 +1032,16 @@ export async function publishRelease(
 			return;
 		}
 		if (publish) {
+			// The tarball again, right before publishing: not swapped meanwhile.
+			const now = tarballDigests(readFileSync(tarball));
+			if (
+				now.sha256 !== manifest.sha256 ||
+				now.integrity !== manifest.integrity
+			) {
+				throw new Error(
+					`${manifest.tarball} changed after it was checked (sha256 ${now.sha256}): not publishing`,
+				);
+			}
 			const code = await io.interactive("npm", [
 				"publish",
 				tarball,
@@ -933,11 +1050,28 @@ export async function publishRelease(
 				"--access",
 				"public",
 			]);
-			if (code !== 0) {
+			if (
+				code !== 0 &&
+				(await waitForIntegrity(
+					io,
+					manifest.version,
+					manifest.integrity,
+					1,
+				)) !== "match"
+			) {
 				throw new Error(
 					`npm publish failed (${code}); nothing else was done: run pnpm release publish ${run} again`,
 				);
 			}
+		}
+		// release-finish checks npm has it: wait until npm shows it.
+		if (
+			(await waitForIntegrity(io, manifest.version, manifest.integrity)) !==
+			"match"
+		) {
+			throw new Error(
+				`npm doesn't show ${manifest.version} yet; once it does, start release-finish: gh workflow run release-finish.yml --repo ${io.repo} --ref master -f version=${manifest.version} -f run=${run}`,
+			);
 		}
 		await must(io, "gh", [
 			"workflow",
@@ -979,12 +1113,30 @@ export async function finishPlan(
 	if (m.version !== version) {
 		throw new Error(`the promote run released ${m.version}, not ${version}`);
 	}
-	const published = await publishedIntegrity(io, version);
-	if (published !== m.integrity) {
+	// The manifest's tag and commit, checked here too: the tag is at that
+	// commit, and the commit is on master (this checkout, full history).
+	const rcTag = await io.run("git", [
+		"rev-parse",
+		"-q",
+		"--verify",
+		`refs/tags/${m.tag}^{commit}`,
+	]);
+	if (rcTag.code !== 0 || rcTag.stdout.trim() !== m.sha) {
 		throw new Error(
-			published === null
-				? `${PACKAGE}@${version} is not on npm: run pnpm release publish first`
-				: `${PACKAGE}@${version} on npm is another tarball (${published}, not ${m.integrity})`,
+			`${m.tag} is not at ${m.sha} here (${rcTag.stdout.trim() || "no such tag"})`,
+		);
+	}
+	const ancestor = await io.run("git", [
+		"merge-base",
+		"--is-ancestor",
+		m.sha,
+		"HEAD",
+	]);
+	if (ancestor.code !== 0) throw new Error(`${m.sha} is not on master`);
+	// The registry may lag the owner's publish.
+	if ((await waitForIntegrity(io, version, m.integrity)) !== "match") {
+		throw new Error(
+			`npm doesn't show ${PACKAGE}@${version} yet: start release-finish again in a few minutes (or, if it was never published, pnpm release publish first)`,
 		);
 	}
 	const tag = await io.run("git", [

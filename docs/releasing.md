@@ -44,20 +44,28 @@ pushes master or tags by hand. `package.json`'s `version` on master is the
      integrity); its summary shows them. It publishes nothing and has no
      npm token.
    - **The owner** runs `pnpm release publish [<run-id>]` (default: the
-     newest successful promote run) on their own machine. It downloads the
-     artifact, checks the tarball's sha256 against the manifest, its
-     `build-info.json` against the version and the RC tag's commit (which
-     must be the tag's commit on GitHub, and on master), shows what it is
-     about to do and asks y/N. Then `npm publish <tarball> --tag latest`
-     with the owner's npm login: npm asks for the two-factor OTP. Agents
-     never run it, and never ask for the OTP.
-   - It then starts `.github/workflows/release-finish.yml` (version and
-     promote run as inputs), which checks npm has that version with that
-     very tarball, tags `vX.Y.Z` on the RC's commit, moves `rc` up to it
-     when `rc` is older, and opens the PR **"next: X.Y+1.0"** (or the
-     `--next` bump) that sets master's version and adds the release's
-     merged PRs to `docs/changelog.md`. The owner merges that PR like any
-     other; its merge publishes `X.Y+1.0-rc.1`.
+     newest successful promote run of master) on their own machine, at a
+     terminal, from a clean checkout of `origin/master`: it refuses local
+     changes, or release code and `package.json` that differ from
+     `origin/master`. It takes only a successful, dispatched promote run of
+     master, downloads its artifact, checks the tarball's sha256 against
+     the manifest, its `build-info.json` against the version and the RC
+     tag's commit (which must be the tag's commit on GitHub, and on master),
+     shows what it is about to do and asks y/N. It checks the tarball's
+     sha256 once more, then runs `npm publish <tarball> --tag latest` with
+     the owner's npm login: npm asks for the two-factor OTP (with a security
+     key or passkey as the second factor, it prints a browser URL to
+     approve instead). Agents never run it, and never ask for the OTP.
+   - It waits until npm shows the version with that tarball (the registry
+     can lag a publish by minutes), then starts
+     `.github/workflows/release-finish.yml` (version and promote run as
+     inputs), which checks the run again, that the manifest's tag is at its
+     commit on master, and that npm has that version with that very
+     tarball (waiting up to 5 minutes), tags `vX.Y.Z` on the RC's commit,
+     moves `rc` up to it when `rc` is older, and opens the PR **"next:
+     X.Y+1.0"** (or the `--next` bump) that sets master's version and adds
+     the release's merged PRs to `docs/changelog.md`. The owner merges
+     that PR like any other; its merge publishes `X.Y+1.0-rc.1`.
 4. **A different next version** (a fix release instead of a minor, say):
    `pnpm release next <patch|minor|major|X.Y.Z>` opens a PR setting master's
    version (a kind bumps the newest release).
@@ -129,12 +137,18 @@ hardening: take the `workflow` scope off this machine's gh login (`gh auth
 refresh --remove-scopes workflow`), so pushes from it can't add or change
 workflows.
 
+On the owner's machine the OTP approves whatever the code that asks for it
+publishes, and agents run as the same user there. So run `pnpm release
+publish` from a clean checkout at `origin/master` (it refuses anything
+else), read its summary, and never keep the CI token on this machine.
+
 ### What GITHUB_TOKEN can't do
 
 Tags and PRs created with the workflow's `GITHUB_TOKEN` start no workflows.
 So an RC tag doesn't run CI's tag-only Playwright job (promote runs it
 before releasing instead), and the "next" PR shows no CI checks until
-someone pushes to it or closes and reopens it. If the owner makes CI a
+someone pushes to it or closes and reopens it (a rerun of release-finish
+leaves such pushes alone). If the owner makes CI a
 required check on master, that PR needs one of those, or the workflows a
 token of the owner's.
 
@@ -201,7 +215,9 @@ the secret.
    from then on; run its follow once (`systemctl --user start crb-follow`)
    and check that `crb --version` says `0.1.0 (<that commit>)`, not a
    master build's commit.
-5. Merge "next: 0.2.0": every merge after it publishes `0.2.0-rc.N`.
+5. Replace `NPM_TOKEN` with a granular token for `carbonless-review` only
+   (the package exists now), and revoke the all-packages one from setup.
+6. Merge "next: 0.2.0": every merge after it publishes `0.2.0-rc.N`.
 
 ## When something fails
 
@@ -220,7 +236,10 @@ the secret.
   run=<promote run id>` (or re-run the failed job). Each step skips what is
   done: the tag when origin's already points at the RC's commit, the move
   of `rc` when it isn't behind, the "next" PR once master's version moved
-  on (an open one is updated). `pnpm release publish` run again also starts
+  on (an existing `next/X.Y.Z` branch is left as it is; only its PR is
+  opened if missing). It needs the promote run's artifact, which GitHub
+  keeps for 30 days: after that, tag and open the "next" PR by hand
+  (`pnpm release next`). `pnpm release publish` run again also starts
   it, without publishing twice (npm already has that tarball).
 - **`npm dist-tag add ... rc` failed** (`rc` stays behind `latest`): nothing
   else is wrong. The next publish-rc run moves it (any merge; it does so even

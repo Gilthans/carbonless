@@ -163,6 +163,8 @@ function fakeIo(
 		"git log -p": "",
 		"git merge-base --is-ancestor": "",
 		"gh api repos/owner/repo/compare/": "ahead\n",
+		"git status --porcelain": "",
+		"git diff --quiet origin/master": "",
 	};
 	const io: Io = {
 		repo: "owner/repo",
@@ -806,12 +808,33 @@ describe("pnpm release publish (the owner's, with npm's OTP)", () => {
 	}
 
 	/** A PublishIo over fakeIo: the download copies `out`, real tar. */
+	const goodRun = JSON.stringify({
+		path: ".github/workflows/promote.yml",
+		head_branch: "master",
+		event: "workflow_dispatch",
+		conclusion: "success",
+	});
+
 	function publishIo(
 		out: string,
 		handlers: Parameters<typeof fakeIo>[0] = {},
-		{ answer = true, npmCode = 0 } = {},
+		{
+			answer = true,
+			npmCode = 0,
+			// npm's answer after the publish: the tarball, or (a registry lag)
+			// nothing for this many reads first.
+			lag = 0,
+			onAsk = () => {},
+		} = {},
 	) {
+		let published = false;
+		let reads = 0;
 		const fake = fakeIo({
+			"gh api repos/owner/repo/actions/runs/": goodRun,
+			"gh api repos/owner/repo/git/ref/tags/v0.1.0-rc.5": JSON.stringify({
+				sha: SHA,
+				type: "commit",
+			}),
 			"gh run list": JSON.stringify([{ databaseId: 77 }]),
 			"gh run download": (args) => {
 				const to = args[args.indexOf("--dir") + 1] ?? "";
@@ -823,8 +846,12 @@ describe("pnpm release publish (the owner's, with npm's OTP)", () => {
 				return "";
 			},
 			tar: (args) => execFileSync("tar", args, { encoding: "utf8" }),
-			"gh api repos/owner/repo/commits/v0.1.0-rc.5": `${SHA}\n`,
-			"npm view carbonless-review@0.1.0 dist.integrity": "",
+			"npm view carbonless-review@0.1.0 dist.integrity": () => {
+				if (!published) return "";
+				return reads++ < lag
+					? ""
+					: `${JSON.parse(readFileSync(join(out, "manifest.json"), "utf8")).integrity}\n`;
+			},
 			"npm view carbonless-review dist-tags": NPM_404,
 			"gh workflow run release-finish.yml": "",
 			...handlers,
@@ -835,10 +862,13 @@ describe("pnpm release publish (the owner's, with npm's OTP)", () => {
 			...fake.io,
 			ask: async (q) => {
 				asked.push(q);
+				onAsk();
 				return answer;
 			},
 			interactive: async (cmd, args) => {
 				ran.push([cmd, ...args].join(" "));
+				// A failed exit may still have published (a timeout after the upload).
+				if (npmCode === 0 || npmCode === 99) published = true;
 				return npmCode;
 			},
 		};
@@ -850,7 +880,7 @@ describe("pnpm release publish (the owner's, with npm's OTP)", () => {
 		const p = publishIo(out);
 		await publishRelease(p.io);
 		expect(p.calls).toContain(
-			"gh run list --repo owner/repo --workflow promote.yml --status success --limit 1 --json databaseId",
+			"gh run list --repo owner/repo --workflow promote.yml --branch master --event workflow_dispatch --status success --limit 1 --json databaseId",
 		);
 		expect(
 			p.calls.some((c) =>
@@ -894,7 +924,10 @@ describe("pnpm release publish (the owner's, with npm's OTP)", () => {
 	it("refuses an RC tag that GitHub has elsewhere, or that isn't on master", async () => {
 		const { out } = artifact();
 		const moved = publishIo(out, {
-			"gh api repos/owner/repo/commits/v0.1.0-rc.5": `${"c".repeat(40)}\n`,
+			"gh api repos/owner/repo/git/ref/tags/v0.1.0-rc.5": JSON.stringify({
+				sha: "c".repeat(40),
+				type: "commit",
+			}),
 		});
 		await expect(publishRelease(moved.io, "77")).rejects.toThrow(
 			/v0\.1\.0-rc\.5 is at c{40} on GitHub/,
@@ -906,6 +939,144 @@ describe("pnpm release publish (the owner's, with npm's OTP)", () => {
 			"v0.1.0-rc.5 is not on master",
 		);
 		expect([...moved.ran, ...off.ran]).toEqual([]);
+	});
+
+	it("takes only a successful, dispatched promote run of master", async () => {
+		const { out } = artifact();
+		for (const [bad, why] of [
+			[{ head_branch: "try-promote" }, "branch try-promote"],
+			[
+				{ path: ".github/workflows/other.yml" },
+				"workflow .github/workflows/other.yml",
+			],
+			[{ conclusion: "failure" }, "conclusion failure"],
+			[{ event: "push" }, "event push"],
+		] as const) {
+			const p = publishIo(out, {
+				"gh api repos/owner/repo/actions/runs/77": JSON.stringify({
+					...JSON.parse(goodRun),
+					...bad,
+				}),
+			});
+			await expect(publishRelease(p.io, "77")).rejects.toThrow(
+				`run 77 is not a successful promote of master (${why})`,
+			);
+			expect(p.calls.some((c) => c.startsWith("gh run download"))).toBe(false);
+		}
+	});
+
+	it("resolves the RC tag exactly, an annotated one through its object", async () => {
+		const { out } = artifact();
+		const p = publishIo(out, {
+			"gh api repos/owner/repo/git/ref/tags/v0.1.0-rc.5": JSON.stringify({
+				sha: "d".repeat(40),
+				type: "tag",
+			}),
+			[`gh api repos/owner/repo/git/tags/${"d".repeat(40)}`]: `${SHA}\n`,
+		});
+		await publishRelease(p.io, "77");
+		expect(p.ran).toHaveLength(1);
+		expect(p.calls.some((c) => c.includes("/commits/"))).toBe(false);
+	});
+
+	it("waits for npm to show the release before starting release-finish", async () => {
+		const { out } = artifact();
+		const p = publishIo(out, {}, { lag: 3 });
+		await publishRelease(p.io, "77");
+		expect(
+			p.calls.filter((c) => c.startsWith("npm view carbonless-review@0.1.0"))
+				.length,
+		).toBeGreaterThan(4);
+		expect(
+			p.calls.some((c) => c.startsWith("gh workflow run release-finish.yml")),
+		).toBe(true);
+
+		const never = publishIo(out, {}, { lag: 1000 });
+		await expect(publishRelease(never.io, "77")).rejects.toThrow(
+			"npm doesn't show 0.1.0 yet; once it does, start release-finish",
+		);
+		expect(never.calls.some((c) => c.startsWith("gh workflow run"))).toBe(
+			false,
+		);
+	});
+
+	it("a failed npm publish whose tarball is on npm anyway counts as published", async () => {
+		const { out } = artifact();
+		const p = publishIo(out, {}, { npmCode: 99 });
+		await publishRelease(p.io, "77");
+		expect(
+			p.calls.some((c) => c.startsWith("gh workflow run release-finish.yml")),
+		).toBe(true);
+	});
+
+	it("refuses to run from a dirty checkout or from code that isn't origin/master's", async () => {
+		const { out } = artifact();
+		const dirty = publishIo(out, {
+			"git status --porcelain": " M scripts/release-lib.ts\n",
+		});
+		await expect(publishRelease(dirty.io, "77")).rejects.toThrow(
+			"from a clean checkout",
+		);
+		const changed = publishIo(out, {
+			"git diff --quiet origin/master": { code: 1 },
+		});
+		await expect(publishRelease(changed.io, "77")).rejects.toThrow(
+			"scripts/release*.ts or package.json differ from origin/master",
+		);
+		expect(changed.calls).toContain(
+			"git diff --quiet origin/master -- scripts/release*.ts package.json",
+		);
+		expect(
+			[...dirty.calls, ...changed.calls].some((c) => c.startsWith("gh ")),
+		).toBe(false);
+	});
+
+	it("refuses a tarball swapped while the question waits", async () => {
+		const { out } = artifact();
+		let dir = "";
+		const p = publishIo(
+			out,
+			{},
+			{
+				onAsk: () => {
+					writeFileSync(join(dir, "carbonless-review-0.1.0.tgz"), "swapped");
+				},
+			},
+		);
+		const download = p.io.run;
+		p.io.run = async (cmd, args, opts) => {
+			if (cmd === "gh" && args[1] === "download") {
+				dir = args[args.indexOf("--dir") + 1] ?? "";
+			}
+			return download(cmd, args, opts);
+		};
+		await expect(publishRelease(p.io, "77")).rejects.toThrow(
+			"changed after it was checked",
+		);
+		expect(p.ran).toEqual([]);
+	});
+
+	it("refuses a release that isn't newer than latest", async () => {
+		const { out } = artifact();
+		const p = publishIo(out, {
+			"npm view carbonless-review dist-tags": npmView({ latest: "0.2.0" }, [
+				"0.2.0",
+			]),
+		});
+		await expect(publishRelease(p.io, "77")).rejects.toThrow(
+			"0.1.0 is not newer than latest (0.2.0)",
+		);
+		expect(p.ran).toEqual([]);
+	});
+
+	it("needs a terminal: never answered through a pipe", () => {
+		expect(() =>
+			execFileSync(
+				join(import.meta.dirname, "../node_modules/.bin/tsx"),
+				[join(import.meta.dirname, "release.ts"), "publish"],
+				{ encoding: "utf8", stdio: ["pipe", "pipe", "pipe"], input: "y\n" },
+			),
+		).toThrow(/needs the owner at a terminal/);
 	});
 
 	it("refuses a manifest whose version is not a release", () => {
@@ -970,24 +1141,73 @@ describe("release-finish: each step only once", () => {
 		next: "minor" as const,
 		tarball: "carbonless-review-0.1.0.tgz",
 	};
-	const finishIo = (integrity: string | null, tagAt?: string) =>
+	const finishIo = (
+		integrity: string | null,
+		tagAt?: string,
+		handlers: Parameters<typeof fakeIo>[0] = {},
+	) =>
 		fakeIo({
 			"npm view carbonless-review@0.1.0 dist.integrity":
 				integrity === null ? NPM_404 : `${integrity}\n`,
 			"git rev-parse -q --verify refs/tags/v0.1.0^{commit}":
 				tagAt === undefined ? { code: 1 } : `${tagAt}\n`,
+			"git rev-parse -q --verify refs/tags/v0.1.0-rc.5^{commit}": `${SHA}\n`,
+			"git merge-base --is-ancestor": "",
+			...handlers,
 		}).io;
 
 	it("fails unless npm has the release with the promote run's tarball", async () => {
 		await expect(
 			finishPlan(finishIo(null), "0.1.0", manifest, "0.1.0"),
-		).rejects.toThrow("is not on npm: run pnpm release publish first");
+		).rejects.toThrow(
+			"npm doesn't show carbonless-review@0.1.0 yet: start release-finish again",
+		);
 		await expect(
 			finishPlan(finishIo("sha512-b3RoZXI="), "0.1.0", manifest, "0.1.0"),
 		).rejects.toThrow("is another tarball");
 		await expect(
 			finishPlan(finishIo(manifest.integrity), "0.2.0", manifest, "0.1.0"),
 		).rejects.toThrow("released 0.1.0, not 0.2.0");
+	});
+
+	it("refuses a manifest whose tag isn't at its commit, or whose commit isn't on master", async () => {
+		await expect(
+			finishPlan(
+				finishIo(manifest.integrity, undefined, {
+					"git rev-parse -q --verify refs/tags/v0.1.0-rc.5^{commit}": `${"e".repeat(40)}\n`,
+				}),
+				"0.1.0",
+				manifest,
+				"0.1.0",
+			),
+		).rejects.toThrow(/v0\.1\.0-rc\.5 is not at a{40} here \(e{40}\)/);
+		await expect(
+			finishPlan(
+				finishIo(manifest.integrity, undefined, {
+					"git merge-base --is-ancestor": { code: 1 },
+				}),
+				"0.1.0",
+				manifest,
+				"0.1.0",
+			),
+		).rejects.toThrow(/a{40} is not on master/);
+	});
+
+	it("waits for the registry to show the release before failing", async () => {
+		let reads = 0;
+		const sleeps: number[] = [];
+		const io = finishIo(null, undefined, {
+			"npm view carbonless-review@0.1.0 dist.integrity": () =>
+				reads++ < 2 ? NPM_404 : `${manifest.integrity}\n`,
+		});
+		io.sleep = async (ms) => {
+			sleeps.push(ms);
+		};
+		expect(await finishPlan(io, "0.1.0", manifest, "0.1.0")).toEqual({
+			pushTag: true,
+			nextPr: true,
+		});
+		expect(sleeps).toEqual([15_000, 15_000]);
 	});
 
 	it("pushes the tag once, refuses one elsewhere, and opens the next PR only while master is still on the release", async () => {
@@ -1033,6 +1253,14 @@ describe("release-finish: each step only once", () => {
 		expect(wf).toContain("if: steps.plan.outputs.push_tag == 'true'");
 		expect(wf).toContain("if: steps.plan.outputs.next_pr == 'true'");
 		expect(wf).toContain("if: steps.fixup.outputs.move_rc_to != ''");
+		// The run is checked before its artifact is used.
+		expect(wf.indexOf('ci:check-run "$RUN"')).toBeGreaterThan(-1);
+		expect(wf.indexOf('ci:check-run "$RUN"')).toBeLessThan(
+			wf.indexOf("actions/download-artifact"),
+		);
+		// A rerun never force-pushes over an existing next branch.
+		expect(wf).not.toContain("--force");
+		expect(wf).toContain('git ls-remote --exit-code --heads origin "$branch"');
 		// NPM_TOKEN only for npm dist-tag; nothing publishes here.
 		expect(wf.match(/secrets\.NPM_TOKEN/g)).toHaveLength(1);
 		expect(wf).not.toContain("npm publish");
@@ -1043,5 +1271,14 @@ describe("release-finish: each step only once", () => {
 		expect(promote).not.toContain("NPM_TOKEN");
 		expect(promote).not.toContain("npm publish");
 		expect(promote).not.toContain("environment:");
+		// What the owner publishes is named on the run and in its summary.
+		expect(promote).toContain(
+			// biome-ignore lint/suspicious/noTemplateCurlyInString: GitHub expressions
+			"run-name: Promote ${{ inputs.rc || 'the newest RC' }} (next ${{ inputs.next }})",
+		);
+		expect(promote).toContain(
+			'for (const k of ["version", "tag", "sha", "sha256", "integrity", "next", "tarball"])',
+		);
+		expect(promote).toContain("pnpm release publish $GITHUB_RUN_ID");
 	});
 });

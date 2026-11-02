@@ -9,8 +9,8 @@
 //   pnpm release status                       master's next version, rc and latest on npm and in tags
 //   pnpm release promote [<rc tag>] [--next patch|minor|major]
 //                                             runs the promote workflow: <rc tag> (default: the
-//                                             newest) published as X.Y.Z on latest, then a
-//                                             "next" PR (default minor); prints the run's URL
+//                                             newest) checked in full and packed as X.Y.Z (it
+//                                             publishes nothing); prints the run's URL
 //   pnpm release publish [<run-id>]
 //                                             THE OWNER ONLY: publishes a promote run's checked
 //                                             tarball (default: the newest) to npm's latest with
@@ -20,8 +20,9 @@
 //                                             a branch and PR setting master's next release
 //
 // Steps the workflows run (not for people): ci:rc-version, ci:set-version,
-// ci:write-version, ci:promote-plan, ci:changelog, ci:bump, ci:rc-fixup. They
-// print KEY=value lines for $GITHUB_OUTPUT and read the checkout's tags.
+// ci:check-publish, ci:write-version, ci:promote-plan, ci:manifest,
+// ci:check-run, ci:finish-plan, ci:changelog, ci:bump, ci:rc-fixup. They print
+// KEY=value lines for $GITHUB_OUTPUT and read the checkout's tags.
 import { execFileSync, spawn } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -29,6 +30,7 @@ import { join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import {
 	bump,
+	checkPromoteRun,
 	checkRcPublish,
 	DEFAULT_REPO,
 	finishPlan,
@@ -172,6 +174,12 @@ async function main(argv: string[]) {
 		}
 		case "publish": {
 			if (rest.length > 1) usage();
+			// The owner at a terminal, answering y/N and npm's OTP: never piped.
+			if (!process.stdin.isTTY || !process.stdout.isTTY) {
+				throw new Error(
+					"pnpm release publish needs the owner at a terminal (it asks y/N, and npm asks for the OTP)",
+				);
+			}
 			await publishRelease(publishIo, rest[0]);
 			return;
 		}
@@ -190,6 +198,14 @@ async function main(argv: string[]) {
 				}),
 			);
 			console.log(JSON.stringify(manifest, null, "\t"));
+			return;
+		}
+		case "ci:check-run": {
+			// ci:check-run <run id>: fails unless a successful dispatched promote of master.
+			const [run] = rest;
+			if (!run) usage();
+			await checkPromoteRun(io, run);
+			console.log(`ok: run ${run}`);
 			return;
 		}
 		case "ci:finish-plan": {

@@ -138,8 +138,8 @@ jobs:
             echo "Published carbonless-review@${{ steps.version.outputs.version }} on \`rc\`, tagged $tag." >>"$GITHUB_STEP_SUMMARY"
           fi
       - name: Is rc behind latest?
-        # A promote may have published a release meanwhile (it runs in its
-        # own group): whichever of the two finishes last puts rc on the newer.
+        # The owner may have published a release meanwhile (release-finish
+        # runs this too): whichever finishes last puts rc on the newer.
         id: fixup
         if: steps.version.outputs.first_publish == 'false'
         # This run's RC, if it published one: a stale read can't move rc below it.
