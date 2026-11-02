@@ -139,10 +139,9 @@ describe("wordMarks", () => {
 		}
 	});
 
-	it("marks 2,000 pairs of 120-character lines in under 100 ms of CPU", () => {
-		// Code-like lines: 400 identifiers, keywords, numbers, operators and
-		// punctuation; about 10% of each line's tokens changed.
-		const random = rng(7);
+	/** Code-like 120-character lines: 400 identifiers, keywords, numbers, operators. */
+	const codeLines = (seed: number) => {
+		const random = rng(seed);
 		const pick = <T>(xs: readonly T[]): T =>
 			xs[Math.floor(random() * xs.length)] as T;
 		const parts = ["get", "set", "user", "count", "total", "item", "map", "id"]
@@ -153,21 +152,23 @@ describe("wordMarks", () => {
 		);
 		const words = [...idents, "const", "return", "if", "await", "42", "0"];
 		const seps = [" ", ".", "(", ")", ", ", " = ", "; ", " + ", " => ", "["];
-		const lineOf = () => {
+		const line = () => {
 			let s = "";
 			while (s.length < 120) s += pick(words) + pick(seps);
 			return s.slice(0, 120);
 		};
-		const pairs: [string, string][] = [];
-		for (let i = 0; i < 2000; i++) {
-			const a = lineOf();
-			const changed = tokenize(a)
+		/** The line with about 10% of its tokens changed. */
+		const edit = (text: string) =>
+			tokenize(text)
 				.map((t) => (random() < 0.1 ? pick(words) : t))
-				.join("");
-			pairs.push([a, changed.slice(0, 120)]);
-		}
-		for (const [a, b] of pairs) wordMarks(a, b); // warm up
-		// The best of three: other suites on the machine only ever add time.
+				.join("")
+				.slice(0, 120);
+		return { line, edit };
+	};
+
+	/** CPU µs of marking every pair, after a warm-up: the best of three (load only adds time). */
+	const bestCpu = (pairs: readonly (readonly [string, string])[]) => {
+		for (const [a, b] of pairs) wordMarks(a, b);
 		let best = Number.POSITIVE_INFINITY;
 		for (let run = 0; run < 3; run++) {
 			const before = process.threadCpuUsage();
@@ -175,7 +176,27 @@ describe("wordMarks", () => {
 			const spent = process.threadCpuUsage(before);
 			best = Math.min(best, spent.user + spent.system);
 		}
-		console.info(`wordMarks: 2,000 pairs in ${best} µs CPU`);
+		return best;
+	};
+
+	it("marks 2,000 pairs of similar 120-character lines in under 100 ms of CPU", () => {
+		// An equal block of edited lines: about 10% of each line's tokens changed.
+		const { line, edit } = codeLines(7);
+		const pairs = Array.from({ length: 2000 }, () => {
+			const a = line();
+			return [a, edit(a)] as const;
+		});
+		const best = bestCpu(pairs);
+		console.info(`wordMarks: 2,000 similar pairs in ${best} µs CPU`);
 		expect(best).toBeLessThan(100_000);
+	});
+
+	it("marks 2,000 pairs of unrelated 120-character lines in under 400 ms of CPU", () => {
+		// A rewritten block: every pair two unrelated lines (GitHub marks them all).
+		const { line } = codeLines(11);
+		const pairs = Array.from({ length: 2000 }, () => [line(), line()] as const);
+		const best = bestCpu(pairs);
+		console.info(`wordMarks: 2,000 unrelated pairs in ${best} µs CPU`);
+		expect(best).toBeLessThan(400_000);
 	});
 });
