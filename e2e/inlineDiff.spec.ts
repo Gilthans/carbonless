@@ -70,10 +70,30 @@ async function expand(page: Page, name: string) {
 	return section;
 }
 
+/** A case's first removed and first added line (git's diff of base and case). */
+function changed(name: string): { del: string; add: string } {
+	const base = read("base", name).split("\n");
+	const next = read("case", name).split("\n");
+	const at = base.findIndex((l, i) => l !== next[i]);
+	return { del: base[at] as string, add: next[at] as string };
+}
+
+/**
+ * The marked text of a case's lines, once its changed lines show (so an
+ * expected "none" can't pass before they render). A whitespace-only row
+ * (`ws`) shows only its new text in unified.
+ */
 async function expectMarks(
 	section: Locator,
+	name: string,
 	expected: { del: string[]; add: string[] },
+	ws = false,
 ) {
+	const lines = changed(name);
+	const code = section.locator('td[data-testid="code"] [data-code]');
+	for (const text of ws ? [lines.add] : [lines.del, lines.add]) {
+		await expect(code.filter({ hasText: text }).first()).toBeVisible();
+	}
 	await expect.poll(() => marked(section, "LEFT")).toEqual(expected.del);
 	await expect.poll(() => marked(section, "RIGHT")).toEqual(expected.add);
 }
@@ -103,7 +123,11 @@ for (const view of ["unified", "side-by-side"] as const) {
 		for (const name of CASES) {
 			const section = await expand(page, name);
 			await expect(section.locator(`table[data-view="${view}"]`)).toBeVisible();
-			await expectMarks(section, EXPECTED[name] as (typeof EXPECTED)[string]);
+			await expectMarks(
+				section,
+				name,
+				EXPECTED[name] as (typeof EXPECTED)[string],
+			);
 			if (name.startsWith("01-")) {
 				// A tint on the line's own text: its code is all there.
 				await expect(
@@ -128,9 +152,13 @@ for (const view of ["unified", "side-by-side"] as const) {
 				await expect(
 					section.locator('[data-testid="diff-line"]').first(),
 				).toBeVisible();
-				await expectMarks(section, { del: [], add: [] });
+				await expectMarks(section, name, { del: [], add: [] }, true);
 			} else {
-				await expectMarks(section, EXPECTED[name] as (typeof EXPECTED)[string]);
+				await expectMarks(
+					section,
+					name,
+					EXPECTED[name] as (typeof EXPECTED)[string],
+				);
 			}
 		}
 		await expectNoPageOverflow(page);
