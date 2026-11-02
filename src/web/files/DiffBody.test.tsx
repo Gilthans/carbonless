@@ -2099,8 +2099,14 @@ describe("DiffBody word marks", () => {
 				["memberCount", "bg-add-word"],
 			]);
 			// The same elements: no remount.
-			expect(words()).toEqual(before);
+			const same = () => {
+				const now = words();
+				expect(now).toHaveLength(before.length);
+				for (const [i, w] of now.entries()) expect(w).toBe(before[i]);
+			};
+			same();
 			restate([cluster("c", { state: "reviewed" })]);
+			same();
 			expect(marked().map(([, c]) => c)).toEqual([
 				"bg-del-word-done",
 				"bg-add-word-done",
