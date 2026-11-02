@@ -29,7 +29,9 @@ import { ignoreWhitespace, sideBySide } from "../viewSettings";
 import type { DiffThreads } from "./DiffBody";
 import { FileDiff } from "./FileDiff";
 import { FileTree } from "./FileTree";
+import { treeOrder } from "./fileOrder";
 import { filesPrefetchOrder } from "./filesPrefetch";
+import { foldsKey } from "./folderFold";
 import { useHeadSure } from "./headSure";
 import {
 	type FilesSearch,
@@ -122,7 +124,7 @@ function FilesSheet(props: {
 }
 
 /**
- * Tracks the file in view: the first file section crossing the band just
+ * Tracks the file in view: the first file section (in page order) crossing the band just
  * below the sticky app header and progress bar (`top` px tall together).
  * Not while the page is hidden (`active` false): nothing is in view then,
  * and the file in view when it shows again is the one it was left on.
@@ -149,7 +151,13 @@ export function useCurrentFile(
 					if (entry.isIntersecting) visible.add(index);
 					else visible.delete(index);
 				}
-				if (visible.size > 0) setCurrent(Math.min(...visible));
+				// The first in the page's order (fileOrder), not the lowest index.
+				const first = [
+					...root.querySelectorAll<HTMLElement>("[data-file-index]"),
+				]
+					.map((el) => Number(el.dataset.fileIndex))
+					.find((index) => visible.has(index));
+				if (first !== undefined) setCurrent(first);
 			},
 			{ rootMargin: `-${Math.round(top) + 1}px 0px -60% 0px` },
 		);
@@ -271,6 +279,14 @@ export const MISSING_HINT_MS = 8000;
 export function FilesPage() {
 	// The reviewer's intended states over the server's (useSetStates).
 	const { review, data } = useReviewView();
+	// Bumped on each opening of a file (a pick, a link, its header): the
+	// tree reveals it.
+	const [reveal, setReveal] = useState(0);
+	// The file last opened, by snapshot and index: the tree marks it until
+	// another one is opened.
+	const [opened, setOpened] = useState<string | null>(null);
+	// The page's one order, the tree's (fileOrder): the diff list follows it.
+	const files = useMemo(() => (data ? treeOrder(data.files) : []), [data]);
 	const { stale } = useSyncState();
 	// False while another page shows (kept mounted, hidden): measuring and
 	// tracking pause, root styles are given back, the sheet closes.
@@ -317,6 +333,15 @@ export function FilesPage() {
 	// with every file closed.
 	const [open, setOpen] = useState<string | null>(null);
 	const keyOf = (index: number) => `${data?.revision}:${index}`;
+	/** A file opened: the tree marks it and unfolds its folders. */
+	const openInTree = (index: number) => {
+		setOpened(keyOf(index));
+		setReveal((n) => n + 1);
+	};
+	const openedIndex =
+		data && opened?.startsWith(`${data.revision}:`)
+			? Number(opened.slice(data.revision.length + 1))
+			: null;
 	const openIndex =
 		data && open?.startsWith(`${data.revision}:`)
 			? Number(open.slice(data.revision.length + 1))
@@ -386,13 +411,16 @@ export function FilesPage() {
 	/** The header to keep where it was on screen as files open and close. */
 	const anchor = useRef<{ index: number; top: number } | null>(null);
 	const sectionOf = (index: number) => document.getElementById(`file-${index}`);
-	const toggleFile = (index: number, expanded: boolean) => {
+	const toggleFile = (index: number, expanded: boolean, auto = false) => {
 		// Where the reader sees the header, stuck or not.
 		const header = headerOf(index);
 		anchor.current = header
 			? { index, top: header.getBoundingClientRect().top }
 			: null;
 		setOpen(expanded ? keyOf(index) : null);
+		// Opening a file from its header opens it in the tree too; a failed
+		// save reopening it (auto) isn't the reviewer opening it.
+		if (expanded && !auto) openInTree(index);
 	};
 	// Closing the file above, or the one being read, would move the header
 	// that was just used: scroll so it stays under the pointer.
@@ -431,6 +459,7 @@ export function FilesPage() {
 	/** A file picked in the tree: open it alone and bring its header to the top. */
 	const select = (index: number) => {
 		setCurrent(index);
+		openInTree(index);
 		anchor.current = null;
 		setOpen(keyOf(index));
 		const fromSheet = sheetOpen;
@@ -478,6 +507,7 @@ export function FilesPage() {
 		});
 		if (!file) return;
 		setCurrent(file.index);
+		openInTree(file.index);
 		anchor.current = null;
 		setOpen(keyOf(file.index));
 	}, [active, data, search.path, search.line, search.side, search.moved]);
@@ -495,7 +525,7 @@ export function FilesPage() {
 	}, [landing, active]);
 
 	// Comments are read in the background, the open file's threads first,
-	// then the other files' in file order (one prefetch for the page).
+	// then the other files' in the page's order (one prefetch for the page).
 	const {
 		threads,
 		all: allThreads,
@@ -514,18 +544,18 @@ export function FilesPage() {
 		() =>
 			data && threads
 				? filesPrefetchOrder(
-						data.files,
+						files,
 						threads.threads,
 						openIndex === null
 							? null
-							: data.files.findIndex((f) => f.index === openIndex),
+							: files.findIndex((f) => f.index === openIndex),
 						(f) =>
 							queryClient.getQueryData(
 								hunksQuery(data.revision, f.index).queryKey,
 							) ?? null,
 					)
 				: [],
-		[data, threads, openIndex, queryClient],
+		[data, files, threads, openIndex, queryClient],
 	);
 	usePrefetchComments(threads?.readId, prefetch);
 
@@ -546,14 +576,19 @@ export function FilesPage() {
 	);
 	const filesButton = !writing && !refused;
 
+	// Folded folders are kept per PR, once it's known.
+	const pr = useQuery(sessionQuery).data?.pr;
 	const tree = data && (
 		<FileTree
-			files={data.files}
+			files={files}
 			unit={unit}
 			current={current}
 			onSelect={select}
 			threadsOf={(f) => threadsByPath.get(f.path) ?? NO_THREADS}
 			threadsLoading={threadsLoading}
+			foldKey={pr ? foldsKey(pr) : null}
+			revealSeq={reveal}
+			opened={openedIndex}
 		/>
 	);
 
@@ -641,7 +676,7 @@ export function FilesPage() {
 									}}
 									className="min-w-0 flex-1 space-y-3"
 								>
-									{data.files.map((file) => (
+									{files.map((file) => (
 										<FileDiff
 											// A new snapshot can reuse an index for another file.
 											key={`${data.revision}:${file.index}`}
@@ -649,8 +684,8 @@ export function FilesPage() {
 											revision={data.revision}
 											unit={unit}
 											expanded={open === keyOf(file.index)}
-											onExpandedChange={(expanded) =>
-												toggleFile(file.index, expanded)
+											onExpandedChange={(expanded, auto) =>
+												toggleFile(file.index, expanded, auto)
 											}
 											otherOpen={openIndex !== null && openIndex !== file.index}
 											landing={

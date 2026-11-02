@@ -357,7 +357,11 @@ export function FileDiff(props: {
 	revision: string;
 	unit: Unit;
 	expanded?: boolean;
-	onExpandedChange?: (expanded: boolean) => void;
+	/**
+	 * `auto`: not the reviewer's doing (a failed save reopening the file), so
+	 * it doesn't count as opening it.
+	 */
+	onExpandedChange?: (expanded: boolean, auto?: boolean) => void;
 	/**
 	 * Another file is open (FilesPage keeps one open at a time). Read only to
 	 * decide whether a failed file-wide save may reopen this file.
@@ -375,9 +379,9 @@ export function FileDiff(props: {
 	const { file, revision } = props;
 	const [ownExpanded, setOwnExpanded] = useState(false);
 	const expanded = props.expanded ?? ownExpanded;
-	const setExpanded = (next: boolean) => {
+	const setExpanded = (next: boolean, auto = false) => {
 		if (props.expanded === undefined) setOwnExpanded(next);
-		props.onExpandedChange?.(next);
+		props.onExpandedChange?.(next, auto);
 	};
 	// Read after an await: the reviewer may have reopened this file, or opened
 	// another, while a file-wide save ran.
@@ -413,7 +417,7 @@ export function FileDiff(props: {
 				!otherOpenNow.current &&
 				onScreen(headerEl.current)
 			) {
-				setExpanded(true);
+				setExpanded(true, true);
 			}
 		});
 	};
