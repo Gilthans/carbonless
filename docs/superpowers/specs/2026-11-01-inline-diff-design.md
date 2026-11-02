@@ -75,9 +75,10 @@ the test fixture (below).
 - **What:** the changed tokens, computed by a token diff of the two lines
   (diff-match-patch over the tokens, `diff_cleanupEfficiency` with
   `Diff_EditCost = 3`). On PR #14 this gives GitHub's exact marks on 153 of
-  158 pairs; on the 899 public pairs, 785. The five PR #14 differences are
-  where GitHub's folding is looser or places an inserted indent after the
-  kept one (`04`, `05`, `06`, `13`, `41`); see **Decided by the owner**.
+  158 pairs; on the 899 public pairs, 785. The five PR #14 differences:
+  GitHub folds an unchanged token into a mark (`06`), our cleanup folds
+  short shared tokens where GitHub doesn't (`13`, `41`), and GitHub places
+  an inserted indent after the kept one (`04`, `05`); see **Decided by the owner**.
 - **Look** (mockups in the published page): a stronger tint of the line's own color behind the marked
   characters: new tokens `add-word` / `del-word` (and `add-word-done` /
   `del-word-done` on reviewed lines, fading with the row as `add-done` /
