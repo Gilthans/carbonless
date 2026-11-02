@@ -23,6 +23,7 @@ import {
 	type GitFixture,
 	testGitEnv,
 } from "../../test/git-fixture";
+import { settleGh } from "../../test/settle-gh";
 import {
 	clonePath,
 	ensureClone,
@@ -123,14 +124,18 @@ describe("private clone", () => {
 		scenario();
 	});
 
-	afterEach(() => {
-		for (const [k, v] of Object.entries(saved)) {
-			if (v === undefined) delete process.env[k];
-			else process.env[k] = v;
+	afterEach(async () => {
+		try {
+			await settleGh(process.env.CRB_FAKE_GH);
+		} finally {
+			for (const [k, v] of Object.entries(saved)) {
+				if (v === undefined) delete process.env[k];
+				else process.env[k] = v;
+			}
+			for (const k of Object.keys(saved)) delete saved[k];
+			fixture.cleanup();
+			rmSync(tmp, { recursive: true, force: true });
 		}
-		for (const k of Object.keys(saved)) delete saved[k];
-		fixture.cleanup();
-		rmSync(tmp, { recursive: true, force: true });
 	});
 
 	it("puts clones under XDG_CACHE_HOME, owner and repo lowercased", () => {

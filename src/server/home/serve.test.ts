@@ -26,7 +26,7 @@ describe("Home in a real crb serve", () => {
 		server = undefined;
 		process.env.XDG_STATE_HOME = saved.state;
 		process.env.XDG_CONFIG_HOME = saved.config;
-		fx?.cleanup();
+		await fx?.cleanup();
 		fx = undefined;
 	});
 

@@ -13,7 +13,10 @@ export default defineConfig({
 	forbidOnly: !!process.env.CI,
 	// No retries, in CI either: a flaky test must fail visibly to get fixed.
 	retries: 0,
-	reporter: process.env.CI ? "github" : "list",
+	// CI: annotations, a log, and an HTML report the workflow uploads on failure.
+	reporter: process.env.CI
+		? [["github"], ["list"], ["html", { open: "never" }]]
+		: "list",
 	// An expect waits for what the page brings: often a chain of requests
 	// (a reload reads the overview, then the threads, then the comments),
 	// which a machine running several suites stretches past the 5 s default.
