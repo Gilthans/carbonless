@@ -603,8 +603,11 @@ test("files start collapsed", async ({ page, pr, startCrb }) => {
 	}
 	await expect(page.getByRole("checkbox")).toHaveCount(1);
 	await withTree(page, async (tree) => {
-		await expect(tree.locator("button:not([aria-expanded])")).toHaveCount(3);
-		// The folders, open.
+		await expect(
+			tree.locator("button:not([aria-expanded]):not([data-moved])"),
+		).toHaveCount(3);
+		// The rename's old path, and the folders, open.
+		await expect(tree.locator("button[data-moved]")).toHaveCount(1);
 		await expect(tree.locator("button[aria-expanded=true]")).toHaveCount(2);
 	});
 });
@@ -1308,15 +1311,21 @@ test("scrolling into a folded folder never unfolds it; its dot follows the file 
 	pr,
 	startCrb,
 }) => {
-	const long = Array.from({ length: 120 }, (_, i) => `long ${i + 1}`);
+	const long = Array.from({ length: 40 }, (_, i) => `long ${i + 1}`);
+	// Enough small files below it that scrolling to the end brings one into view.
+	const small = Object.fromEntries(
+		"abcdefghijklmn".split("").map((n) => [`src/${n}.ts`, `${n}\n`]),
+	);
 	await pr({
-		base: { "docs/a.md": "a\n", "src/long.ts": text(long) },
+		base: { "docs/long.md": text(long), ...small },
 		files: [
 			{
 				message: "PR change",
 				files: {
-					"docs/a.md": "a changed\n",
-					"src/long.ts": text(long.map((l) => `${l} changed`)),
+					"docs/long.md": text(long.map((l) => `${l} changed`)),
+					...Object.fromEntries(
+						Object.keys(small).map((p) => [p, `${p} changed\n`]),
+					),
 				},
 			},
 		],
@@ -1326,33 +1335,62 @@ test("scrolling into a folded folder never unfolds it; its dot follows the file 
 	const folderRow = (tree: Locator, path: string) =>
 		tree.locator(`button[data-folder="${path}"]`);
 	await withTree(page, async (tree) => {
-		// The file in view is docs/a.md: docs has the dot, src not.
-		await expect(folderRow(tree, "docs")).toHaveAttribute("data-holds-current");
-		await expect(folderRow(tree, "src")).not.toHaveAttribute(
-			"data-holds-current",
-		);
 		await folderRow(tree, "src").click();
 		await expect(folderRow(tree, "src")).toHaveAttribute(
 			"aria-expanded",
 			"false",
 		);
 	});
-	// Open the long file from its own header and scroll down into it.
-	const section = await expand(page, "src/long.ts");
+	// Open the long file and scroll down past it.
+	const section = await expand(page, "docs/long.md");
 	await expect(section.getByTestId("diff-line").first()).toBeVisible();
-	await section.getByTestId("diff-line").last().scrollIntoViewIfNeeded();
+	await page.evaluate(() =>
+		window.scrollTo(0, document.documentElement.scrollHeight),
+	);
 	await withTree(page, async (tree) => {
-		// The file in view moved into src: the dot did, the fold held.
+		// The file in view moved into src: its dot did, the fold held.
 		await expect(folderRow(tree, "src")).toHaveAttribute("data-holds-current");
-		await expect(folderRow(tree, "docs")).not.toHaveAttribute(
-			"data-holds-current",
-		);
 		await expect(folderRow(tree, "src")).toHaveAttribute(
 			"aria-expanded",
 			"false",
 		);
-		await expect(tree.getByRole("button", { name: /long\.ts/ })).toHaveCount(0);
+		await expect(tree.locator('[data-folder-group="src"] ul')).toHaveCount(0);
 	});
+});
+
+test("a renamed file's old path opens it; a folder of old paths is a ghost", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	await pr({
+		base: { "old/moved.ts": "moved\n", "keep/a.ts": "a\n" },
+		files: [
+			{
+				message: "PR change",
+				rename: { "old/moved.ts": "new/moved.ts" },
+				files: { "keep/a.ts": "a changed\n" },
+			},
+		],
+	});
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	// The diff list has the file once, at its new path.
+	await expect(page.locator("[data-file-index]")).toHaveCount(2);
+	await withTree(page, async (tree) => {
+		const ghost = tree.locator('button[data-folder="old"]');
+		await expect(ghost).toHaveAttribute("data-ghost");
+		await expect(ghost.getByTestId("tree-meter")).toHaveCount(0);
+		await expect(ghost.getByTestId("tree-numbers")).toHaveCount(0);
+		await expect(
+			tree.locator('button[data-folder="new"]').getByTestId("tree-meter"),
+		).toBeVisible();
+	});
+	await pickInTree(page, /moved\.ts.*moved away/);
+	const section = fileSection(page, "new/moved.ts");
+	await expect(
+		section.getByRole("button", { name: "Collapse file" }),
+	).toBeVisible();
 });
 
 test("the tree and the diff list share one order: folders first, then files, by name", async ({

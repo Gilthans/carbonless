@@ -474,68 +474,94 @@ describe("folders", () => {
 
 	it("unfolds a folded folder only when a file inside it is opened, never on scrolling", async () => {
 		const user = userEvent.setup();
-		const tree = (current: number | null, seq: number) => (
+		const tree = (
+			current: number | null,
+			opened: number | null,
+			seq: number,
+		) => (
 			<FileTree
 				files={files}
 				unit="clusters"
 				current={current}
+				opened={opened}
 				onSelect={() => {}}
 				revealSeq={seq}
 			/>
 		);
-		const { rerender } = render(tree(2, 0));
+		const { rerender } = render(tree(2, null, 0));
 		await user.click(folder("src"));
 		await user.click(folder("src/a/deep"));
 		await user.click(folder("src"));
 		expect(folder("src")).toHaveAttribute("aria-expanded", "false");
 		// Scrolling through files inside it: it stays folded.
-		rerender(tree(0, 0));
-		rerender(tree(1, 0));
-		rerender(tree(3, 0));
-		rerender(tree(0, 0));
+		rerender(tree(0, null, 0));
+		rerender(tree(1, null, 0));
+		rerender(tree(3, null, 0));
+		rerender(tree(0, null, 0));
 		expect(folder("src")).toHaveAttribute("aria-expanded", "false");
-		// Opening a file deep inside it (a pick, a link): every folded
-		// ancestor unfolds.
-		rerender(tree(0, 1));
+		// Opening a file deep inside it (a pick, a link, its header): every
+		// folded ancestor unfolds, whichever file is in view.
+		rerender(tree(3, 0, 1));
 		expect(folder("src")).toHaveAttribute("aria-expanded", "true");
 		expect(folder("src/a/deep")).toHaveAttribute("aria-expanded", "true");
-		expect(fileRow(/one\.ts/)).toHaveAttribute("aria-current", "true");
+		expect(fileRow(/one\.ts/)).not.toBeNull();
 	});
 
-	it("puts a dot on every folder holding the current file, open or folded", async () => {
-		const tree = (current: number | null) => (
+	it("dots the opened file and the one in view, on their rows and folders; opened wins", async () => {
+		const tree = (current: number | null, opened: number | null) => (
 			<FileTree
 				files={files}
 				unit="clusters"
 				current={current}
+				opened={opened}
 				onSelect={() => {}}
 			/>
 		);
-		const { rerender } = render(tree(0));
-		const dot = (path: string) =>
-			folder(path).querySelector('[data-testid="holds-current"]');
+		const { rerender } = render(tree(0, null));
+		const dot = (row: HTMLElement) =>
+			row
+				.querySelector('[data-testid="tree-dot"]')
+				?.getAttribute("data-mark") ?? null;
+		const one = () => fileRow(/one\.ts/) as HTMLElement;
 		for (const path of ["src", "src/a/deep"]) {
-			expect(dot(path), path).not.toBeNull();
-			expect(dot(path), path).toHaveAttribute("aria-hidden", "true");
-			expect(folder(path)).toHaveAccessibleName(/holds the current file/);
+			expect(dot(folder(path)), path).toBe("in view");
+			expect(folder(path)).toHaveAccessibleName(/holds the file in view$/);
 			expect(folder(path)).not.toHaveAttribute("aria-current");
 		}
-		expect(dot("gen")).toBeNull();
-		expect(folder("gen")).not.toHaveAccessibleName(/holds the current file/);
-		// Folded, it keeps the dot: the only row left showing it.
+		expect(dot(one())).toBe("in view");
+		expect(one()).toHaveAccessibleName(/in view/);
+		expect(dot(folder("gen"))).toBeNull();
+		// Opened api.g.cs, scrolled to one.ts: each its own dot.
+		rerender(tree(0, 3));
+		expect(dot(folder("gen"))).toBe("opened");
+		expect(folder("gen")).toHaveAccessibleName(
+			/crossed off, holds the opened file$/,
+		);
+		expect(dot(fileRow(/api\.g\.cs/) as HTMLElement)).toBe("opened");
+		expect(dot(folder("src"))).toBe("in view");
+		// Opened two.ts while one.ts is in view: the shared folders show
+		// only the opened dot.
+		rerender(tree(0, 1));
+		expect(dot(folder("src"))).toBe("opened");
+		expect(dot(folder("src/a/deep"))).toBe("opened");
+		expect(folder("src")).not.toHaveAccessibleName(/in view/);
+		expect(dot(one())).toBe("in view");
+		expect(dot(fileRow(/two\.ts/) as HTMLElement)).toBe("opened");
+		// The opened file is in view too: one dot, opened.
+		rerender(tree(1, 1));
+		expect(dot(fileRow(/two\.ts/) as HTMLElement)).toBe("opened");
+		expect(document.querySelectorAll('[data-mark="in view"]')).toHaveLength(0);
+		// Folded, the folder keeps its dot.
 		await userEvent.click(folder("src"));
-		expect(dot("src")).not.toBeNull();
+		expect(dot(folder("src"))).toBe("opened");
 		expect(document.querySelectorAll('[aria-current="true"]')).toHaveLength(0);
-		rerender(tree(3));
-		expect(dot("src")).toBeNull();
-		expect(dot("gen")).not.toBeNull();
-		rerender(tree(null));
-		expect(
-			document.querySelectorAll('[data-testid="holds-current"]'),
-		).toHaveLength(0);
+		rerender(tree(null, null));
+		expect(document.querySelectorAll('[data-testid="tree-dot"]')).toHaveLength(
+			0,
+		);
 	});
 
-	it("draws a folder's crossed-off share at its true size, unlike a file's", () => {
+	it("caps a folder's crossed-off share like a file's", () => {
 		render(
 			<FileTree
 				files={[
@@ -547,23 +573,8 @@ describe("folders", () => {
 				onSelect={() => {}}
 			/>,
 		);
-		expect(part(bar(folder("d")), "crossed-off")).toBe(50);
+		expect(part(bar(folder("d")), "crossed-off")).toBe(20);
 		expect(part(bar(folder("d")), "reviewed")).toBe(0);
-		// A file's meter keeps the cap (a whole crossed-off file is all hatch).
-		const half = file(2, "e/c.ts", ["crossed-off", "unreviewed"]);
-		cleanup();
-		render(
-			<FileTree
-				files={[half]}
-				unit="clusters"
-				current={null}
-				onSelect={() => {}}
-			/>,
-		);
-		expect(
-			part(bar(screen.getByRole("button", { name: /c\.ts/ })), "crossed-off"),
-		).toBe(20);
-		expect(part(bar(folder("e")), "crossed-off")).toBeCloseTo(50);
 	});
 
 	it("keeps folds per PR in storage and ignores unknown paths", async () => {
@@ -618,21 +629,26 @@ describe("folders", () => {
 	it("keeps a stored fold over the current file on load, remount and scrolling", () => {
 		const key = "crb:folds:o/r#3";
 		localStorage.setItem(key, JSON.stringify(["src"]));
-		const tree = (current: number | null, revealSeq = 0) => (
+		const tree = (
+			current: number | null,
+			revealSeq = 0,
+			opened: number | null = null,
+		) => (
 			<FileTree
 				files={files}
 				unit="clusters"
 				current={current}
+				opened={opened}
 				onSelect={() => {}}
 				foldKey={key}
 				revealSeq={revealSeq}
 			/>
 		);
-		// Mounted with the current file inside it (a remount: the sheet), even
-		// after earlier picks (revealSeq already above 0).
-		const { unmount } = render(tree(0, 3));
+		// Mounted with the opened file inside it (a remount: the sheet), after
+		// earlier picks (revealSeq already above 0).
+		const { unmount } = render(tree(0, 3, 0));
 		expect(folder("src")).toHaveAttribute("aria-expanded", "false");
-		expect(folder("src")).toHaveAttribute("data-holds-current");
+		expect(folder("src")).toHaveAttribute("data-holds-opened");
 		unmount();
 		// A reload: nothing current, then the file in view settles, then the
 		// reviewer scrolls on.
@@ -642,7 +658,7 @@ describe("folders", () => {
 		expect(folder("src")).toHaveAttribute("aria-expanded", "false");
 		expect(JSON.parse(localStorage.getItem(key) ?? "")).toEqual(["src"]);
 		// Opening a file in it unfolds it.
-		rerender(tree(1, 1));
+		rerender(tree(1, 1, 1));
 		expect(folder("src")).toHaveAttribute("aria-expanded", "true");
 		expect(localStorage.getItem(key)).toBeNull();
 	});
@@ -676,6 +692,7 @@ describe("folders", () => {
 				files={files}
 				unit="clusters"
 				current={0}
+				opened={0}
 				onSelect={() => {}}
 				foldKey={k}
 				// A pick made earlier, before this mount.
@@ -695,6 +712,7 @@ describe("folders", () => {
 				files={files}
 				unit="clusters"
 				current={current}
+				opened={current}
 				onSelect={() => {}}
 				foldKey={key}
 				revealSeq={revealSeq}
@@ -708,24 +726,33 @@ describe("folders", () => {
 		expect(JSON.parse(localStorage.getItem(key) ?? "")).toEqual(["gen"]);
 	});
 
-	it("keeps folds made before the PR is known, and reveals a link's file once it is", async () => {
+	it("keeps folds made before the PR is known, and reveals the linked file once it is", async () => {
 		const key = "crb:folds:o/r#5";
-		localStorage.setItem(key, JSON.stringify(["src"]));
-		const tree = (k: string | null, current: number | null, seq: number) => (
+		localStorage.setItem(key, JSON.stringify(["src", "gen"]));
+		const tree = (
+			k: string | null,
+			current: number | null,
+			opened: number | null,
+			seq: number,
+		) => (
 			<FileTree
 				files={files}
 				unit="clusters"
 				current={current}
+				opened={opened}
 				onSelect={() => {}}
 				foldKey={k}
 				revealSeq={seq}
 			/>
 		);
-		const { rerender } = render(tree(null, null, 0));
+		const { rerender } = render(tree(null, null, null, 0));
 		await userEvent.click(folder("gen"));
 		// A link landed before the session: its file is in src.
-		rerender(tree(null, 2, 1));
-		rerender(tree(key, 2, 1));
+		rerender(tree(null, 2, 2, 1));
+		// The scroll tracker moved on to gen's file before the key arrived:
+		// the reveal is still the linked file's.
+		rerender(tree(null, 3, 2, 1));
+		rerender(tree(key, 3, 2, 1));
 		expect(folder("gen")).toHaveAttribute("aria-expanded", "false");
 		expect(folder("src")).toHaveAttribute("aria-expanded", "true");
 		expect(JSON.parse(localStorage.getItem(key) ?? "")).toEqual(["gen"]);
@@ -745,5 +772,121 @@ describe("folders", () => {
 		expect(numbers(row)).toBe("2 / 2 lines · 1 file left");
 		expect(part(bar(row), "reviewed")).toBeLessThan(100);
 		expect(row).not.toHaveAttribute("data-finished");
+	});
+});
+
+describe("renamed files", () => {
+	afterEach(() => {
+		cleanup();
+		localStorage.clear();
+	});
+
+	const folder = (path: string) =>
+		document.querySelector<HTMLElement>(
+			`[data-folder="${path}"]`,
+		) as HTMLElement;
+	const moved = (old: string) =>
+		document.querySelector<HTMLElement>(`[data-moved="${old}"]`) as HTMLElement;
+	const renamed = (index: number, path: string, oldPath: string): FileView => ({
+		...file(index, path, ["unreviewed"]),
+		status: "renamed",
+		oldPath,
+	});
+	// Moved to another folder, renamed in place, and a plain file.
+	const tree = [
+		renamed(0, "new/x.ts", "old/x.ts"),
+		renamed(1, "lib/b.ts", "lib/a.ts"),
+		file(2, "lib/c.ts", ["reviewed"]),
+	];
+
+	it("shows the old path as a faded entry that opens the same file", async () => {
+		const onSelect = vi.fn();
+		render(
+			<FileTree
+				files={tree}
+				unit="clusters"
+				current={null}
+				onSelect={onSelect}
+			/>,
+		);
+		for (const [old, index] of [
+			["old/x.ts", 0],
+			["lib/a.ts", 1],
+		] as const) {
+			const entry = moved(old);
+			expect(entry, old).not.toBeNull();
+			expect(entry.className).toContain("opacity-60");
+			// Reversed rename icon in red; no counts, meter or status.
+			const icon = entry.querySelector("svg");
+			expect(icon?.getAttribute("class")).toContain("text-bad");
+			expect(icon?.getAttribute("class")).toContain("-scale-x-100");
+			expect(entry.querySelector('[data-testid="tree-meter"]')).toBeNull();
+			expect(entry.querySelector('[data-testid="change-count"]')).toBeNull();
+			expect(within(entry).queryByRole("img")).toBeNull();
+			await userEvent.click(entry);
+			expect(onSelect).toHaveBeenLastCalledWith(index);
+		}
+		expect(moved("old/x.ts")).toHaveAccessibleName("x.ts, moved away");
+		// The new path's rename icon is green.
+		const now = screen
+			.getAllByRole("button", { name: /x\.ts/ })
+			.find((b) => !b.hasAttribute("data-moved")) as HTMLElement;
+		expect(
+			now.querySelector('[data-testid="change-kind"]')?.getAttribute("class"),
+		).toContain("text-ok");
+		// Its tooltip says where it went.
+		const tips = [...document.querySelectorAll('[role="tooltip"]')].map(
+			(t) => t.textContent,
+		);
+		expect(tips).toContain("old/x.ts → new/x.ts");
+	});
+
+	it("counts each file once, at its new path; a folder of old paths is a ghost", () => {
+		render(
+			<FileTree
+				files={tree}
+				unit="clusters"
+				current={0}
+				opened={1}
+				onSelect={() => {}}
+			/>,
+		);
+		const ghost = folder("old");
+		expect(ghost).toHaveAttribute("data-ghost");
+		expect(ghost.className).toContain("opacity-60");
+		expect(ghost.querySelector('[data-testid="tree-meter"]')).toBeNull();
+		expect(ghost.querySelector('[data-testid="tree-numbers"]')).toBeNull();
+		expect(ghost.querySelector('[data-testid="change-count"]')).toBeNull();
+		expect(ghost).toHaveAttribute("aria-expanded", "true");
+		// Old paths never get dots, nor do their ghost folders.
+		expect(ghost.querySelector('[data-testid="tree-dot"]')).toBeNull();
+		expect(
+			moved("old/x.ts").querySelector('[data-testid="tree-dot"]'),
+		).toBeNull();
+		expect(
+			moved("lib/a.ts").querySelector('[data-testid="tree-dot"]'),
+		).toBeNull();
+		// A folder with real files and old paths: numbers from the real ones.
+		expect(
+			folder("lib").querySelector('[data-testid="tree-numbers"]')?.textContent,
+		).toBe("1 / 2 clusters · 1 file left");
+		expect(
+			folder("new").querySelector('[data-testid="tree-numbers"]')?.textContent,
+		).toBe("0 / 1 cluster · 1 file left");
+		expect(
+			folder("lib")
+				.querySelector('[data-testid="tree-dot"]')
+				?.getAttribute("data-mark"),
+		).toBe("opened");
+		expect(
+			folder("new")
+				.querySelector('[data-testid="tree-dot"]')
+				?.getAttribute("data-mark"),
+		).toBe("in view");
+		// Ghosts fold like any folder.
+		return userEvent.click(ghost).then(() => {
+			expect(ghost).toHaveAttribute("aria-expanded", "false");
+			expect(moved("old/x.ts")).toBeNull();
+		});
 	});
 });

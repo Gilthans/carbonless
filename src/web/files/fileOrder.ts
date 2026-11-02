@@ -20,14 +20,20 @@ export function byName(a: string, b: string): number {
 	return collator.compare(a, b) || (a < b ? -1 : a > b ? 1 : 0);
 }
 
+const base = (path: string) => path.slice(path.lastIndexOf("/") + 1);
 const nameOf = (n: Node) =>
 	n.kind === "folder"
 		? n.folder.name
-		: n.file.path.slice(n.file.path.lastIndexOf("/") + 1);
+		: base(n.kind === "moved" ? (n.file.oldPath ?? "") : n.file.path);
 
+/**
+ * A tree entry: a folder, a file at its path, or a renamed file's old path
+ * ("moved": where it was; it counts nothing and selects the same file).
+ */
 export type Node =
 	| { kind: "folder"; folder: Folder }
-	| { kind: "file"; file: FileView };
+	| { kind: "file"; file: FileView }
+	| { kind: "moved"; file: FileView };
 export interface Folder {
 	/** As shown: single-folder chains merged ("a/b"). */
 	name: string;
@@ -39,12 +45,18 @@ export interface Folder {
 /**
  * The changed files as a folder tree: at every level folders first, then
  * files, each by name (byName); single-folder chains merge ("a/b") and sort
- * by that name.
+ * by that name. A renamed file has a second entry at its old path.
  */
 export function buildTree(files: readonly FileView[]): Folder {
 	const root: Folder = { name: "", path: "", children: [] };
-	for (const file of files) {
-		const parts = file.path.split("/");
+	const entries = files.flatMap((file): (Node & { path: string })[] => [
+		{ kind: "file", file, path: file.path },
+		...(file.status === "renamed" && file.oldPath
+			? [{ kind: "moved" as const, file, path: file.oldPath }]
+			: []),
+	]);
+	for (const { path, ...entry } of entries) {
+		const parts = path.split("/");
 		parts.pop();
 		let folder = root;
 		for (const part of parts) {
@@ -62,7 +74,7 @@ export function buildTree(files: readonly FileView[]): Folder {
 			}
 			folder = child;
 		}
-		folder.children.push({ kind: "file", file });
+		folder.children.push(entry as Node);
 	}
 	const compress = (folder: Folder): Folder => {
 		let merged = folder;
@@ -95,10 +107,17 @@ export function buildTree(files: readonly FileView[]): Folder {
 	return { ...root, children: sorted(root.children) };
 }
 
-/** Every file under the folder, at any depth. */
+/** Every file under the folder, at any depth (at its path: not old paths). */
 export function filesIn(folder: Folder): FileView[] {
 	return folder.children.flatMap((n) =>
-		n.kind === "file" ? [n.file] : filesIn(n.folder),
+		n.kind === "file" ? [n.file] : n.kind === "folder" ? filesIn(n.folder) : [],
+	);
+}
+
+/** Every folder path in the tree, ghost folders too. */
+export function folderPaths(folder: Folder): string[] {
+	return folder.children.flatMap((n) =>
+		n.kind === "folder" ? [n.folder.path, ...folderPaths(n.folder)] : [],
 	);
 }
 

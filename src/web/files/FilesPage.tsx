@@ -279,8 +279,12 @@ export const MISSING_HINT_MS = 8000;
 export function FilesPage() {
 	// The reviewer's intended states over the server's (useSetStates).
 	const { review, data } = useReviewView();
-	// Bumped on each explicit navigation: the tree reveals the file.
+	// Bumped on each opening of a file (a pick, a link, its header): the
+	// tree reveals it.
 	const [reveal, setReveal] = useState(0);
+	// The file last opened, by snapshot and index: the tree marks it until
+	// another one is opened.
+	const [opened, setOpened] = useState<string | null>(null);
 	// The page's one order, the tree's (fileOrder): the diff list follows it.
 	const files = useMemo(() => (data ? treeOrder(data.files) : []), [data]);
 	const { stale } = useSyncState();
@@ -329,6 +333,15 @@ export function FilesPage() {
 	// with every file closed.
 	const [open, setOpen] = useState<string | null>(null);
 	const keyOf = (index: number) => `${data?.revision}:${index}`;
+	/** A file opened: the tree marks it and unfolds its folders. */
+	const openInTree = (index: number) => {
+		setOpened(keyOf(index));
+		setReveal((n) => n + 1);
+	};
+	const openedIndex =
+		data && opened?.startsWith(`${data.revision}:`)
+			? Number(opened.slice(data.revision.length + 1))
+			: null;
 	const openIndex =
 		data && open?.startsWith(`${data.revision}:`)
 			? Number(open.slice(data.revision.length + 1))
@@ -443,7 +456,7 @@ export function FilesPage() {
 	/** A file picked in the tree: open it alone and bring its header to the top. */
 	const select = (index: number) => {
 		setCurrent(index);
-		setReveal((n) => n + 1);
+		openInTree(index);
 		anchor.current = null;
 		setOpen(keyOf(index));
 		const fromSheet = sheetOpen;
@@ -491,7 +504,7 @@ export function FilesPage() {
 		});
 		if (!file) return;
 		setCurrent(file.index);
-		setReveal((n) => n + 1);
+		openInTree(file.index);
 		anchor.current = null;
 		setOpen(keyOf(file.index));
 	}, [active, data, search.path, search.line, search.side, search.moved]);
@@ -572,6 +585,7 @@ export function FilesPage() {
 			threadsLoading={threadsLoading}
 			foldKey={pr ? foldsKey(pr) : null}
 			revealSeq={reveal}
+			opened={openedIndex}
 		/>
 	);
 

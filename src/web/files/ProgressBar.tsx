@@ -32,18 +32,14 @@ const CROSSED_CAP = 20;
  * segments shrink by the same factor to leave the gap, so neither vanishes
  * while its count is above zero (7 reviewed next to 395 crossed off is a
  * sliver of green, not none).
- * `proportional`: crossed off takes its true share, uncapped (a folder's
- * meter: half crossed off is half the bar).
  */
 export function Meter({
 	counts,
 	incomplete = false,
-	proportional = false,
 	className = "",
 }: {
 	counts: Counts;
 	incomplete?: boolean;
-	proportional?: boolean;
 	className?: string;
 }) {
 	const { total, crossedOff } = counts;
@@ -53,10 +49,7 @@ export function Meter({
 			? 0
 			: left <= 0
 				? 100
-				: Math.min(
-						(crossedOff / total) * 100,
-						proportional ? 100 : CROSSED_CAP,
-					);
+				: Math.min((crossedOff / total) * 100, CROSSED_CAP);
 	let reviewed = left <= 0 ? 0 : (counts.reviewed / left) * (100 - crossed);
 	if (incomplete && reviewed + crossed > 100 - OPEN_GAP) {
 		const scale = (100 - OPEN_GAP) / (reviewed + crossed);

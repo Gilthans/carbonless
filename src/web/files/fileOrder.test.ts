@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 import type { FileView } from "../../shared/types";
-import { buildTree, byName, treeOrder } from "./fileOrder";
+import {
+	buildTree,
+	byName,
+	filesIn,
+	folderPaths,
+	treeOrder,
+} from "./fileOrder";
 
 const at = (index: number, path: string) => ({ index, path }) as FileView;
 
@@ -65,5 +71,40 @@ describe("treeOrder", () => {
 		expect(byName("a2", "a10")).toBeLessThan(0);
 		expect(byName("B", "a")).toBeGreaterThan(0);
 		expect(byName("a", "a")).toBe(0);
+	});
+
+	it("gives a renamed file a second entry at its old path, counted nowhere", () => {
+		const moved = {
+			...at(0, "new/place/x.ts"),
+			status: "renamed",
+			oldPath: "old/x.ts",
+		} as FileView;
+		const inPlace = {
+			...at(1, "lib/b.ts"),
+			status: "renamed",
+			oldPath: "lib/a.ts",
+		} as FileView;
+		const plain = at(2, "lib/c.ts");
+		const tree = buildTree([moved, inPlace, plain]);
+		const shape = (f: ReturnType<typeof buildTree>): unknown[] =>
+			f.children.map((n) =>
+				n.kind === "folder"
+					? { [n.folder.name]: shape(n.folder) }
+					: `${n.kind}:${n.kind === "moved" ? n.file.oldPath : n.file.path}`,
+			);
+		expect(shape(tree)).toEqual([
+			{ lib: ["moved:lib/a.ts", "file:lib/b.ts", "file:lib/c.ts"] },
+			{ "new/place": ["file:new/place/x.ts"] },
+			{ old: ["moved:old/x.ts"] },
+		]);
+		// The diff list: each file once, at its new path.
+		expect(treeOrder([moved, inPlace, plain]).map((f) => f.index)).toEqual([
+			1, 2, 0,
+		]);
+		const old = tree.children.find(
+			(n) => n.kind === "folder" && n.folder.name === "old",
+		);
+		expect(old?.kind === "folder" && filesIn(old.folder)).toEqual([]);
+		expect(folderPaths(tree)).toEqual(["lib", "new/place", "old"]);
 	});
 });

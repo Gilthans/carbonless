@@ -1,4 +1,8 @@
-import { ChevronDownIcon, ChevronRightIcon } from "@primer/octicons-react";
+import {
+	ChevronDownIcon,
+	ChevronRightIcon,
+	DiffRenamedIcon,
+} from "@primer/octicons-react";
 import { useMemo } from "react";
 import type { FileView, ReviewThread } from "../../shared/types";
 import { Spinner } from "../Spinner";
@@ -19,8 +23,47 @@ import {
 
 const NONE = () => [];
 
-/** What a folder row's dot says. */
-const HOLDS_CURRENT = "holds the current file";
+/**
+ * Which file a row marks: the one opened (picked, linked or expanded; it
+ * wins when a row is both) or the one in view while scrolling.
+ */
+type Mark = "opened" | "in view" | null;
+
+const markOf = (
+	path: string | undefined,
+	opened: string | undefined,
+	inView: string | undefined,
+): Mark =>
+	path === undefined
+		? null
+		: opened !== undefined && (opened === path || opened.startsWith(`${path}/`))
+			? "opened"
+			: inView !== undefined &&
+					(inView === path || inView.startsWith(`${path}/`))
+				? "in view"
+				: null;
+
+/** What a row's dot says: "opened", or "holds the opened file" on a folder. */
+const markText = (mark: Mark, folder: boolean) =>
+	mark &&
+	(folder
+		? `holds the ${mark === "opened" ? "opened file" : "file in view"}`
+		: mark);
+
+/** The row's dot: teal for the opened file, accent for the one in view. */
+function MarkDot({ mark }: { mark: Mark }) {
+	if (!mark) return null;
+	return (
+		<span
+			aria-hidden
+			data-testid="tree-dot"
+			data-mark={mark}
+			className={`h-1.5 w-1.5 shrink-0 rounded-full ${
+				mark === "opened" ? "bg-teal" : "bg-accent"
+			}`}
+		/>
+	);
+}
 
 const indent = (depth: number) => ({
 	paddingLeft: `${depth * 0.75 + 0.25}rem`,
@@ -36,10 +79,11 @@ function FileItem(props: {
 	unit: Unit;
 	depth: number;
 	current: boolean;
+	mark: Mark;
 	onSelect: (index: number) => void;
 	threads: ReviewThread[];
 }) {
-	const { file, unit, threads } = props;
+	const { file, unit, threads, mark } = props;
 	// Its review threads, as the bubble says them: a yellow dot when one
 	// waits on the viewer, green when all are resolved, else grey.
 	const talk =
@@ -83,10 +127,14 @@ function FileItem(props: {
 						}`}
 					>
 						<StatusIcon file={file} />
-						<ChangeKindIcon file={file} />
+						{/* A rename's new path in green: where the file is now. */}
+						<ChangeKindIcon
+							file={file}
+							tone={file.status === "renamed" ? "text-ok" : undefined}
+						/>
 						<span
 							data-testid="tree-name"
-							className="min-w-0 flex-1 truncate font-mono text-[0.8125rem]"
+							className="min-w-0 truncate font-mono text-[0.8125rem]"
 						>
 							{file.crossedOff ? (
 								<s className="text-muted decoration-done">{name}</s>
@@ -103,6 +151,9 @@ function FileItem(props: {
 									</span>
 								))}
 						</span>
+						<span className="flex min-w-0 flex-1 items-center">
+							<MarkDot mark={mark} />
+						</span>
 						{talk && (
 							<span
 								data-testid="tree-threads"
@@ -116,6 +167,7 @@ function FileItem(props: {
 						<span data-testid="tree-numbers" className="sr-only">
 							{numbers}
 						</span>
+						{mark && <span className="sr-only">, {markText(mark, false)}</span>}
 						<span
 							aria-hidden
 							data-testid="tree-meter"
@@ -138,8 +190,10 @@ interface Level {
 	unit: Unit;
 	depth: number;
 	current: number | null;
-	/** The current file's path, if any. */
+	/** The path of the file in view, if any. */
 	currentPath: string | undefined;
+	/** The path of the opened file, if any. */
+	openedPath: string | undefined;
 	onSelect: (index: number) => void;
 	threadsOf: (file: FileView) => ReviewThread[];
 	folds: Folds;
@@ -153,11 +207,15 @@ interface Level {
  */
 function FolderItem(props: Level & { folder: Folder }) {
 	const { folder, unit, folds } = props;
-	const p = folderUnitProgress(filesIn(folder), unit);
-	const numbers = describeFolderProgress(p, unit);
+	const files = filesIn(folder);
+	// Only renamed files' old paths inside: a faded ghost with no numbers.
+	const ghost = files.length === 0;
+	const p = folderUnitProgress(files, unit);
+	const numbers = ghost ? "" : describeFolderProgress(p, unit);
 	const folded = folds.folded.has(folder.path);
-	// A breadcrumb: the current file is somewhere inside, open or folded.
-	const holdsCurrent = !!props.currentPath?.startsWith(`${folder.path}/`);
+	// A breadcrumb: the opened file, or the one in view, is inside.
+	const mark = markOf(folder.path, props.openedPath, props.currentPath);
+	const said = markText(mark, true);
 	const Chevron = folded ? ChevronRightIcon : ChevronDownIcon;
 	return (
 		// The whole group (row and children) in a subtle border, nested
@@ -171,8 +229,9 @@ function FolderItem(props: Level & { folder: Folder }) {
 			<Tooltip
 				content={
 					<>
-						<TooltipPath>{folder.path}</TooltipPath> · {numbers}
-						{holdsCurrent && ` · ${HOLDS_CURRENT}`}
+						<TooltipPath>{folder.path}</TooltipPath>
+						{ghost ? " · moved away" : ` · ${numbers}`}
+						{said && ` · ${said}`}
 					</>
 				}
 				describe={false}
@@ -183,14 +242,18 @@ function FolderItem(props: Level & { folder: Folder }) {
 						{...trigger}
 						aria-expanded={!folded}
 						data-folder={folder.path}
-						data-finished={p.done || undefined}
-						data-holds-current={holdsCurrent || undefined}
+						data-ghost={ghost || undefined}
+						data-finished={(!ghost && p.done) || undefined}
+						data-holds-current={mark === "in view" || undefined}
+						data-holds-opened={mark === "opened" || undefined}
 						onClick={() => folds.toggle(folder.path)}
 						style={indent(0)}
 						className={`flex w-full items-center gap-1.5 rounded-md py-0.5 pr-1 pointer-coarse:min-h-10 text-left text-sm text-muted transition-colors hover:bg-overlay focus-visible:outline-2 focus-visible:outline-accent motion-reduce:transition-none ${
-							p.done
-								? "bg-ok/8 shadow-[inset_2px_0_0_var(--color-ok-fill)]"
-								: "bg-band"
+							ghost
+								? "opacity-60"
+								: p.done
+									? "bg-ok/8 shadow-[inset_2px_0_0_var(--color-ok-fill)]"
+									: "bg-band"
 						}`}
 					>
 						<Chevron
@@ -205,38 +268,88 @@ function FolderItem(props: Level & { folder: Folder }) {
 							{folder.name}
 						</span>
 						<span className="flex min-w-0 flex-1 items-center">
-							{holdsCurrent && (
-								<span
-									aria-hidden
-									data-testid="holds-current"
-									className="h-1.5 w-1.5 shrink-0 rounded-full bg-accent"
+							<MarkDot mark={mark} />
+						</span>
+						{!ghost && (
+							<>
+								<ChangeCount file={p} />
+								<span data-testid="tree-numbers" className="sr-only">
+									{numbers}
+								</span>
+							</>
+						)}
+						{said && <span className="sr-only">, {said}</span>}
+						{!ghost && (
+							<span
+								aria-hidden
+								data-testid="tree-meter"
+								className="flex h-4 w-10 shrink-0 items-center"
+							>
+								<Meter
+									counts={p.counts}
+									// Never full while any file is left (one with no
+									// clusters counts nothing but isn't done either).
+									incomplete={!p.done}
+									className="h-1.5 w-full"
 								/>
-							)}
-						</span>
-						{holdsCurrent && <span className="sr-only">{HOLDS_CURRENT}</span>}
-						<ChangeCount file={p} />
-						<span data-testid="tree-numbers" className="sr-only">
-							{numbers}
-						</span>
-						<span
-							aria-hidden
-							data-testid="tree-meter"
-							className="flex h-4 w-10 shrink-0 items-center"
-						>
-							<Meter
-								counts={p.counts}
-								// Never full while any file is left (one with no
-								// clusters counts nothing but isn't done either).
-								incomplete={!p.done}
-								// Crossed off at its true share (owner).
-								proportional
-								className="h-1.5 w-full"
-							/>
-						</span>
+							</span>
+						)}
 					</button>
 				)}
 			</Tooltip>
 			{!folded && <Children {...props} nodes={folder.children} depth={1} />}
+		</li>
+	);
+}
+
+/**
+ * A renamed file's old path: where it was. Faded, the rename icon reversed
+ * in red (like a deletion), no counts: it adds nothing to any progress.
+ * Picking it opens the file at its new path.
+ */
+function MovedItem(props: {
+	file: FileView;
+	depth: number;
+	onSelect: (index: number) => void;
+}) {
+	const { file } = props;
+	const old = file.oldPath ?? "";
+	return (
+		<li>
+			<Tooltip
+				content={
+					<>
+						<TooltipPath>{old}</TooltipPath> →{" "}
+						<TooltipPath>{file.path}</TooltipPath>
+					</>
+				}
+				describe={false}
+			>
+				{(trigger) => (
+					<button
+						type="button"
+						{...trigger}
+						data-moved={old}
+						onClick={() => props.onSelect(file.index)}
+						style={indent(props.depth)}
+						className="flex w-full items-center gap-1.5 rounded-md py-0.5 pr-1 pointer-coarse:min-h-10 text-left text-sm text-muted opacity-60 transition-colors hover:bg-overlay hover:opacity-100 focus-visible:outline-2 focus-visible:outline-accent motion-reduce:transition-none"
+					>
+						<span aria-hidden className="w-4 shrink-0" />
+						<DiffRenamedIcon
+							size={12}
+							aria-hidden
+							className="shrink-0 -scale-x-100 text-bad"
+						/>
+						<span
+							data-testid="tree-name"
+							className="min-w-0 flex-1 truncate font-mono text-[0.8125rem]"
+						>
+							{old.slice(old.lastIndexOf("/") + 1)}
+						</span>
+						<span className="sr-only">, moved away</span>
+					</button>
+				)}
+			</Tooltip>
 		</li>
 	);
 }
@@ -252,8 +365,16 @@ function Children(props: Level & { nodes: Node[] }) {
 						unit={props.unit}
 						depth={props.depth}
 						current={props.current === node.file.index}
+						mark={markOf(node.file.path, props.openedPath, props.currentPath)}
 						onSelect={props.onSelect}
 						threads={props.threadsOf(node.file)}
+					/>
+				) : node.kind === "moved" ? (
+					<MovedItem
+						key={`m:${node.file.index}`}
+						file={node.file}
+						depth={props.depth}
+						onSelect={props.onSelect}
 					/>
 				) : (
 					<FolderItem
@@ -268,14 +389,19 @@ function Children(props: Level & { nodes: Node[] }) {
 }
 
 /**
- * The changed files as a folder tree, in the page's order (fileOrder), with review status.
- * Folders fold (view state only, kept per PR under `foldKey`); the current
- * file's folded folders unfold whenever it changes.
+ * The changed files as a folder tree, in the page's order (fileOrder), with
+ * review status; a renamed file also shows at its old path. Folders fold
+ * (view state only, kept per PR under `foldKey`); opening a file
+ * (`revealSeq`) unfolds its folded folders. Dots mark the opened file and
+ * the one in view, on their rows and their folders.
  */
 export function FileTree(props: {
 	files: FileView[];
 	unit: Unit;
+	/** The file in view (scroll-tracked). */
 	current: number | null;
+	/** The file last opened (picked, linked or expanded); null: none yet. */
+	opened?: number | null;
 	onSelect: (index: number) => void;
 	/** Each file's review threads on the viewed head (fileThreads). */
 	threadsOf?: (file: FileView) => ReviewThread[];
@@ -284,19 +410,20 @@ export function FileTree(props: {
 	/** Where this PR's fold state is kept (foldsKey); null: in memory only. */
 	foldKey?: string | null;
 	/**
-	 * Bumped on each explicit navigation (a pick, a link): the current
-	 * file's folded folders unfold, even right after load.
+	 * Bumped on each opening of a file (a pick, a link, a header): the
+	 * opened file's folded folders unfold, even right after load.
 	 */
 	revealSeq?: number;
 }) {
 	const { files, current } = props;
+	const opened = props.opened ?? null;
 	const tree = useMemo(() => buildTree(files), [files]);
-	const folds = useFolds(
-		props.foldKey ?? null,
-		files,
-		current,
-		props.revealSeq,
-	);
+	const folds = useFolds(props.foldKey ?? null, files, {
+		seq: props.revealSeq ?? 0,
+		index: opened,
+	});
+	const pathOf = (index: number | null) =>
+		index === null ? undefined : files.find((f) => f.index === index)?.path;
 	return (
 		<nav
 			aria-label="Files"
@@ -317,11 +444,8 @@ export function FileTree(props: {
 				unit={props.unit}
 				depth={0}
 				current={current}
-				currentPath={
-					current === null
-						? undefined
-						: files.find((f) => f.index === current)?.path
-				}
+				currentPath={pathOf(current)}
+				openedPath={pathOf(opened)}
 				onSelect={props.onSelect}
 				threadsOf={props.threadsOf ?? NONE}
 				folds={folds}

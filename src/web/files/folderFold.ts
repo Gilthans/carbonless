@@ -51,8 +51,8 @@ interface FoldState {
 	folded: ReadonlySet<string>;
 	/** The last reveal request seen. */
 	reveal: number;
-	/** A reveal asked for before the PR was known: redone on its folds. */
-	pending: boolean;
+	/** The file of a reveal asked for before the PR was known: redone on its folds. */
+	pending: number | null;
 	/** Changed here since read: to be written to storage. */
 	dirty: boolean;
 }
@@ -62,45 +62,44 @@ interface FoldState {
  * merged into the PR's stored folds once it is).
  *
  * A folded folder opens only when the reviewer opens a file inside it: each
- * new `reveal` request (a tree pick, a link) unfolds the current file's
- * folded folders. Scrolling, the page's first settle and a remount never
- * do, so a fold holds until then, across reloads too.
+ * new reveal request (`reveal.seq`: a tree pick, a link, expanding a file
+ * from its header) unfolds the folded folders holding `reveal.index`.
+ * Scrolling, the page's first settle and a remount never do, so a fold
+ * holds until then, across reloads too.
  */
 export function useFolds(
 	key: string | null,
 	files: readonly FileView[],
-	current: number | null,
-	reveal = 0,
+	reveal: { seq: number; index: number | null } = { seq: 0, index: null },
 ): Folds {
 	const [state, setState] = useState<FoldState>(() => ({
 		key,
 		folded: readFolds(key),
-		reveal,
-		pending: false,
+		reveal: reveal.seq,
+		pending: null,
 		dirty: false,
 	}));
 	let next = state;
-	let asked = next.reveal !== reveal;
+	let target: number | null = next.reveal !== reveal.seq ? reveal.index : null;
 	if (next.key !== key) {
 		// The PR became known (or changed): its remembered folds, plus any
 		// made before it was known.
 		const folded = readFolds(key);
 		if (next.key === null) for (const f of next.folded) folded.add(f);
-		// A reveal asked for while it wasn't known applies to these too.
-		asked ||= next.key === null && next.pending;
+		// A reveal asked for while it wasn't known applies to these too: its
+		// own file, not whatever is current now.
+		if (target === null && next.key === null) target = next.pending;
 		next = {
 			...next,
 			key,
 			folded,
-			pending: false,
+			pending: null,
 			dirty: next.key === null && next.folded.size > 0,
 		};
 	}
-	if (asked) {
+	if (next.reveal !== reveal.seq || target !== null) {
 		const path =
-			current === null
-				? undefined
-				: files.find((f) => f.index === current)?.path;
+			target === null ? undefined : files.find((f) => f.index === target)?.path;
 		const open = path ? foldedAncestors(next.folded, path) : [];
 		let { folded, dirty } = next;
 		if (open.length > 0) {
@@ -109,7 +108,16 @@ export function useFolds(
 			folded = kept;
 			dirty = true;
 		}
-		next = { ...next, folded, dirty, reveal, pending: key === null };
+		next = {
+			...next,
+			folded,
+			dirty,
+			reveal: reveal.seq,
+			pending:
+				key === null && next.reveal !== reveal.seq
+					? reveal.index
+					: next.pending,
+		};
 	}
 	if (next !== state) setState(next);
 	// Storage is written after render, only for changes made here, and only
