@@ -1,6 +1,12 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import githubMarks from "../../../test/fixtures/inline-diff/github-marks.json" with {
+	type: "json",
+};
+import knownDifferences from "../../../test/fixtures/inline-diff/known-differences.json" with {
+	type: "json",
+};
 import {
 	createGitFixture,
 	GIT_TEST_TIMEOUTS,
@@ -60,10 +66,10 @@ interface Mismatch {
 	detail: string;
 }
 
-const github = JSON.parse(read("github-marks.json")) as {
-	files: Record<string, GitHubFile>;
-};
-const known = JSON.parse(read("known-differences.json")) as Known[];
+// Imported, not read, so vitest's changed-file graph runs this test when
+// only the data changes.
+const github = githubMarks as unknown as { files: Record<string, GitHubFile> };
+const known = knownDifferences as unknown as Known[];
 const paths = Object.keys(github.files);
 
 /** A changed line as GitHub shows it, with the unit it belongs to. */
