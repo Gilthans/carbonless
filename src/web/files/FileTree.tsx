@@ -20,7 +20,7 @@ import {
 import { type Folds, useFolds } from "./folderFold";
 import { Meter } from "./ProgressBar";
 import { ChangeCount, crossOffReasons, StatusIcon } from "./status";
-import { bubbleLabel } from "./ThreadBubble";
+import { bubbleLabel, waitingLabel, waitsOnYou } from "./ThreadBubble";
 import {
 	describeFileProgress,
 	describeFolderProgress,
@@ -96,7 +96,7 @@ function FileItem(props: {
 	// waits on the viewer, green when all are resolved, else grey.
 	const talk =
 		threads.length > 0 ? bubbleLabel(threads, false, "in this file") : "";
-	const dot = threads.some((t) => t.yourTurn && !t.resolved)
+	const dot = threads.some(waitsOnYou)
 		? "bg-warn"
 		: threads.every((t) => t.resolved)
 			? "bg-ok"
@@ -204,6 +204,8 @@ interface Level {
 	openedPath: string | undefined;
 	onSelect: (index: number) => void;
 	threadsOf: (file: FileView) => ReviewThread[];
+	/** The threads are still on their way: no folder says none wait. */
+	threadsLoading: boolean;
 	folds: Folds;
 }
 
@@ -224,6 +226,13 @@ function FolderItem(props: Level & { folder: Folder }) {
 	// A breadcrumb: the opened file, or the one in view, is inside.
 	const mark = markOf(folder.path, props.openedPath, props.currentPath);
 	const said = markText(mark, true);
+	// Folded, its files' dots are hidden: a yellow dot when a thread in a
+	// file inside (old paths aside) waits on the viewer. Nothing while the
+	// threads load.
+	const waiting =
+		folded && !ghost && !props.threadsLoading
+			? waitingLabel(files.flatMap((f) => props.threadsOf(f)))
+			: "";
 	const Chevron = folded ? ChevronRightIcon : ChevronDownIcon;
 	return (
 		// The whole group (row and children) in a subtle border, nested
@@ -239,6 +248,7 @@ function FolderItem(props: Level & { folder: Folder }) {
 					<>
 						<TooltipPath>{folder.path}</TooltipPath>
 						{ghost ? " · moved away" : ` · ${numbers}`}
+						{waiting && ` · ${waiting}`}
 						{said && ` · ${said}`}
 					</>
 				}
@@ -278,6 +288,16 @@ function FolderItem(props: Level & { folder: Folder }) {
 						<span className="flex min-w-0 flex-1 items-center">
 							<MarkDot mark={mark} />
 						</span>
+						{waiting && (
+							// The file rows' thread column; its name follows the numbers.
+							<span
+								aria-hidden
+								data-testid="tree-threads"
+								className="flex h-4 w-2 shrink-0 items-center"
+							>
+								<span className="h-2 w-2 rounded-full bg-warn" />
+							</span>
+						)}
 						{!ghost && (
 							<>
 								<ChangeCount file={p} />
@@ -285,6 +305,11 @@ function FolderItem(props: Level & { folder: Folder }) {
 									{numbers}
 								</span>
 							</>
+						)}
+						{waiting && (
+							<span data-testid="tree-waiting" className="sr-only">
+								, {waiting}
+							</span>
 						)}
 						{ghost && <span className="sr-only">, moved away</span>}
 						{said && <span className="sr-only">, {said}</span>}
@@ -508,6 +533,7 @@ export function FileTree(props: {
 					openedPath={pathOf(opened)}
 					onSelect={props.onSelect}
 					threadsOf={props.threadsOf ?? NONE}
+					threadsLoading={props.threadsLoading === true}
 					folds={folds}
 				/>
 			</nav>
