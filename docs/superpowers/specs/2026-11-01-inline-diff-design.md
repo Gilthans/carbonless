@@ -113,7 +113,9 @@ never shown plain while its marks are pending, since a plain pair already
 means "GitHub would mark nothing here" (the owner's loading rule,
 2026-11-01: "An empty result should always be easily distinguishable for a
 still loading result"). If the budget below ever forces them off the main
-thread, a pending pair shows a spinner in its rows, never bare plain lines.
+thread, a pending pair shows the shared `Spinner` (`src/web/Spinner.tsx`,
+design principle 8) in a fixed slot of its rows, never bare plain lines, and
+its test holds the work and asserts the spinner (`test/loading.ts`).
 Budget (call): computing the marks of 2,000 pairs of 120-character lines
 (an equal block, the worst case DiffBody meets, since it renders a file's
 rows at once) takes under 100 ms of CPU time (`process.threadCpuUsage`, a
