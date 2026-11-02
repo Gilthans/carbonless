@@ -33,6 +33,12 @@ export interface ReadSources {
 	code: ThreadCodeSource;
 	/** The thread code's diff base, once known (a Refresh moves the snapshot). */
 	base: () => Promise<DiffBase>;
+	/**
+	 * Once no write GitHub already has is still being read back into the
+	 * read (Session: ThreadWriteTarget.landed): threads and comments wait
+	 * for it, so they never miss a write that landed.
+	 */
+	landed?: () => Promise<void>;
 }
 
 /** A read's overview: the session adds what isn't GitHub's read (commentLeft). */
@@ -252,6 +258,7 @@ export class OverviewRead {
 	/** The threads once `stage` is in, with all that is in by then. */
 	async threads(stage: ThreadsStage): Promise<ThreadsView> {
 		await this.#stages[stage];
+		await this.#sources.landed?.();
 		return this.#view();
 	}
 
@@ -401,6 +408,7 @@ export class OverviewRead {
 	async comments(ids: string[]): Promise<CommentsView> {
 		await this.#stages.summary;
 		await this.#textsStarted.catch(() => {});
+		await this.#sources.landed?.();
 		const summaries = new Map<string, unknown>();
 		for (const raw of this.#all()) {
 			const node = this.#summary(raw);

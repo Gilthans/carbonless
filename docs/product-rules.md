@@ -261,6 +261,9 @@ unresolving one, and editing or deleting one of the viewer's comments in one
   GitHub's GraphQL may lag a REST write: the re-read is tried again a few
   times, then the answer shows the write anyway (the reply added, the new
   text, the deleted comment left out).
+  Once GitHub has a write, the kept reads' threads and comments wait for
+  its re-read: a page loaded meanwhile (a reload while the answer is out)
+  shows the write, never the state before it.
 - **One thread, one write at a time.** Replies, resolving, edits and
   deletes on one thread run in the order asked, never at once.
 - **Leaving asks only when something would be lost** (owner: "refresh

@@ -415,6 +415,47 @@ describe("thread writes", () => {
 		).resolves.toMatchObject({ resolved: false });
 	});
 
+	describe("a page read while a landed write's re-read is out shows the write", () => {
+		/** Reads of threads' comments by id (a write's re-read has one). */
+		const contentReads = () =>
+			(pr.ghLog().match(/nodes\(ids: \[/g) ?? []).length;
+		/** Holds the next re-read's comments until `release`, once the write is in. */
+		const holdReread = async (write: () => Promise<unknown>) => {
+			const { readId } = await session.overview();
+			// The read's own comments are in: only the re-read is held.
+			await session.threads(readId, "full");
+			threads({ hold: ["threadContent"] });
+			const before = contentReads();
+			const written = write();
+			await vi.waitFor(() => expect(contentReads()).toBe(before + 1), {
+				timeout: 10_000,
+			});
+			return { readId, written };
+		};
+
+		it("a resolve: the threads say resolved", async () => {
+			const { readId, written } = await holdReread(() =>
+				session.setThreadResolved("T12-0", true),
+			);
+			expect(stored().prs[12]?.graphql.reviewThreads[0]?.isResolved).toBe(true);
+			// A reload asks while GitHub has it and the answer isn't in.
+			const view = session.threads(readId, "summary");
+			release(process.env.CRB_FAKE_GH ?? "", "threadContent");
+			await written;
+			const t = (await view).threads.find((x) => x.id === "T12-0");
+			expect(t).toMatchObject({ resolved: true, attention: [] });
+		});
+
+		it("a reply: its comments have it", async () => {
+			const { readId, written } = await holdReread(() => reply("Landed"));
+			const view = session.comments(readId, ["T12-0"]);
+			release(process.env.CRB_FAKE_GH ?? "", "threadContent");
+			await written;
+			const texts = (await view).threads[0]?.comments.map((c) => c.body);
+			expect(texts).toContain("Landed");
+		});
+	});
+
 	it("a reply then a resolve on one thread land in that order", async () => {
 		threads({ replyDelayMs: 800 });
 		const replied = reply("First");
@@ -597,6 +638,7 @@ describe("thread writes off and refused before GitHub", () => {
 		setInDoubt: () => {},
 		claimedIds: () => new Set(),
 		setPendingReview: () => {},
+		landed: (after) => after(),
 	});
 	const req: ReplyRequest = {
 		body: "Hi",

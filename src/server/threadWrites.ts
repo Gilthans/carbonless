@@ -94,6 +94,12 @@ export interface ThreadWriteTarget {
 	claimedIds: (exceptClientId: string) => Set<string>;
 	/** Sets the kept reads' pendingReview (a 409 turns it on, a reply off). */
 	setPendingReview: (pending: { url: string } | null) => void;
+	/**
+	 * Runs `after`, a write's re-read and answer once GitHub has the write:
+	 * until it settles, the kept reads' threads and comments wait for it,
+	 * so a page loaded meanwhile (a reload) shows the write.
+	 */
+	landed: <T>(after: () => Promise<T>) => Promise<T>;
 }
 
 /** Re-reads of a thread after a reply until GitHub lists it, and the waits between. */
@@ -476,7 +482,7 @@ export async function replyToThread(
 	target.remember(req.clientId, record);
 	// It posted: no pending review stands in the way (any more).
 	target.setPendingReview(null);
-	return answerWith(target, threadId, record);
+	return target.landed(() => answerWith(target, threadId, record));
 }
 
 /**
@@ -493,9 +499,11 @@ export async function setResolved(
 		if (!(await fetchThread(target.ref, threadId))) throw gone();
 	}
 	await postResolved(threadId, resolved);
-	const read = await reread(target, threadId);
-	if (!read.nodes) throw gone();
-	return update(target, threadId, read.nodes, read);
+	return target.landed(async () => {
+		const read = await reread(target, threadId);
+		if (!read.nodes) throw gone();
+		return update(target, threadId, read.nodes, read);
+	});
 }
 
 /** Why an edit can't be saved as it is; null when it can. */
@@ -812,10 +820,12 @@ export async function editComment(
 			(c) =>
 				str(c.id) === commentId && normal(str(c.body)) === normal(edited.body),
 		);
-	const read = await rereadUntil(target, threadId, shows);
-	if (!read.nodes) throw gone("Edited, but the thread is gone from GitHub");
-	const nodes = shows(read.nodes) ? read.nodes : answerNodes(read, edited);
-	return update(target, threadId, nodes, read, commentId);
+	return target.landed(async () => {
+		const read = await rereadUntil(target, threadId, shows);
+		if (!read.nodes) throw gone("Edited, but the thread is gone from GitHub");
+		const nodes = shows(read.nodes) ? read.nodes : answerNodes(read, edited);
+		return update(target, threadId, nodes, read, commentId);
+	});
 }
 
 /**
@@ -909,12 +919,14 @@ export async function deleteThreadComment(
 			contentComments(nodes).some(
 				(c) => str(c.id) === commentId && isDeletedBody(str(c.body)),
 			);
-		const read = await rereadUntil(target, threadId, shows);
-		if (!read.nodes) return threadGone(target, threadId, read);
-		const nodes = shows(read.nodes)
-			? read.nodes
-			: withEdited(read.nodes, commentId, edited);
-		return update(target, threadId, nodes, read, commentId);
+		return target.landed(async () => {
+			const read = await rereadUntil(target, threadId, shows);
+			if (!read.nodes) return threadGone(target, threadId, read);
+			const nodes = shows(read.nodes)
+				? read.nodes
+				: withEdited(read.nodes, commentId, edited);
+			return update(target, threadId, nodes, read, commentId);
+		});
 	}
 	try {
 		await deleteComment(target.ref, restId);
@@ -934,15 +946,17 @@ export async function deleteThreadComment(
 	target.markDeleted(commentId);
 	const listed = (nodes: ThreadNodes) =>
 		contentComments(nodes).some((c) => str(c.id) === commentId);
-	const read = await rereadUntil(target, threadId, (n) => !listed(n));
-	if (!read.nodes) return threadGone(target, threadId, read);
-	// Deleted (and what this session deleted before): gone from the
-	// answer even while GraphQL still lists it.
-	const nodes = withoutDeleted(target, read.nodes);
-	// None published left (at most the viewer's pending ones, which the
-	// lists leave out): gone from the page.
-	if (!contentComments(nodes).some((c) => visibleAt(c) !== null)) {
-		return threadGone(target, threadId, read);
-	}
-	return update(target, threadId, nodes, read);
+	return target.landed(async () => {
+		const read = await rereadUntil(target, threadId, (n) => !listed(n));
+		if (!read.nodes) return threadGone(target, threadId, read);
+		// Deleted (and what this session deleted before): gone from the
+		// answer even while GraphQL still lists it.
+		const nodes = withoutDeleted(target, read.nodes);
+		// None published left (at most the viewer's pending ones, which the
+		// lists leave out): gone from the page.
+		if (!contentComments(nodes).some((c) => visibleAt(c) !== null)) {
+			return threadGone(target, threadId, read);
+		}
+		return update(target, threadId, nodes, read);
+	});
 }

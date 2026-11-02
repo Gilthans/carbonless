@@ -606,6 +606,7 @@ describe("comment writes off before GitHub", () => {
 		setInDoubt: () => {},
 		claimedIds: () => new Set(),
 		setPendingReview: () => {},
+		landed: (after) => after(),
 	});
 
 	it("as of a cutoff → writes-off", async () => {
