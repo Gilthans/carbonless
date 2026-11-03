@@ -1757,17 +1757,24 @@ test("screenshots of view settings and the loading page (CRB_HOME_SHOTS only)", 
 	await page.getByRole("button", { name: "Edit repos" }).click();
 	await dialog.getByRole("combobox", { name: "Add a repo" }).fill(OWNER_REPO);
 	await dialog.getByRole("combobox", { name: "Add a repo" }).press("Enter");
-	made.editScenario((s) => {
-		s.hold = ["home"];
+	// Saving makes no gh call: the PUT itself is held.
+	let answer: () => void = () => {};
+	const putHeld = new Promise<void>((r) => {
+		answer = r;
+	});
+	await page.route("**/api/home/view", async (route) => {
+		if (route.request().method() === "PUT") await putHeld;
+		await route.continue();
 	});
 	await dialog.getByRole("button", { name: "Save" }).click();
+	// The warning shows past 5 s.
 	await expect(page.getByTestId("save-delayed")).toBeVisible({
 		timeout: 15_000,
 	});
 	await page.screenshot({
 		path: join(shots as string, `view-saving-${at}.png`),
 	});
-	release(made.scenarioPath, "home");
+	answer();
 	await expect(page.getByRole("status", { name: "Saving" })).toBeHidden();
 	// The loading page, GitHub's answer held.
 	made.editScenario((s) => {
