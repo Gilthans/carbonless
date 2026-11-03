@@ -72,6 +72,18 @@ result should always be easily distinguishable for a still loading result."
   one absent, releases, and asserts the result (`expectLoadingThen`, in
   `e2e/fixtures.ts` and `test/loading.ts`). Never a timing race.
 
+## A suggestion list never moves a button
+
+A combobox's suggestions float over what follows the input; they never push
+anything. The dialog or sheet holding one keeps its top where it is (a
+dialog near the top, room kept below for the list; a full-height bottom
+sheet on a phone), so the list opening or closing moves nothing. A click
+lands only where its press began, and a press on a button blurs the input,
+which closes the list: anything the list moved would miss the click (brief
+L, 2026-11-02: Add took two clicks while the list was open). Tested by
+comparing the buttons' bounding boxes with the list open and closed, then
+one click (a tap) with it open.
+
 ## Verify against a real PR, not only fixtures
 
 Synthetic fixtures prove behaviour; a real PR proves the assumptions about the
