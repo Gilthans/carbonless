@@ -124,8 +124,10 @@ Layout: `src/cli.ts` (entry), `src/server` (Fastify + git + gh), `src/web` (Reac
 
 ## Maintainers
 
-Every merge to master publishes a release candidate; `pnpm release promote`
-turns one into a release: `docs/releasing.md` (and the npm and GitHub setup).
+Every merge to master publishes a release candidate to npm through trusted
+publishing (no npm token anywhere); `pnpm release promote` stages one as a
+release, and the owner approves it with npm two-factor (`pnpm release
+publish`): `docs/releasing.md` (and the npm and GitHub setup).
 
 ## License
 

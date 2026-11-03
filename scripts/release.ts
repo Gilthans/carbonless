@@ -8,21 +8,24 @@
 //                                             is the tarball's path
 //   pnpm release status                       master's next version, rc and latest on npm and in tags
 //   pnpm release promote [<rc tag>] [--next patch|minor|major]
-//                                             runs the promote workflow: <rc tag> (default: the
-//                                             newest) checked in full and packed as X.Y.Z (it
-//                                             publishes nothing); prints the run's URL
+//                                             starts release.yml's promote: <rc tag> (default:
+//                                             the newest) checked in full, packed as X.Y.Z and
+//                                             staged on npm (hidden until approved); prints the
+//                                             run's URL
 //   pnpm release publish [<run-id>]
-//                                             THE OWNER ONLY: publishes a promote run's checked
-//                                             tarball (default: the newest) to npm's latest with
-//                                             their login and two-factor OTP, then starts
-//                                             release-finish; agents never run it
+//                                             THE OWNER ONLY: checks a promote run's staged
+//                                             tarball (default: the newest run) and approves it
+//                                             (npm stage approve, with their two-factor OTP), or
+//                                             for the very first release publishes it; then
+//                                             starts release-finish; agents never run it
 //   pnpm release next <patch|minor|major|X.Y.Z>
 //                                             a branch and PR setting master's next release
 //
 // Steps the workflows run (not for people): ci:rc-version, ci:set-version,
 // ci:check-publish, ci:write-version, ci:promote-plan, ci:manifest,
-// ci:check-run, ci:finish-plan, ci:changelog, ci:bump, ci:rc-fixup. They print
-// KEY=value lines for $GITHUB_OUTPUT and read the checkout's tags.
+// ci:check-run, ci:finish-plan, ci:changelog, ci:bump, ci:rc-fixup (the
+// workflow itself runs scripts/rc-fixup.mjs, with no dependencies). They
+// print KEY=value lines for $GITHUB_OUTPUT and read the checkout's tags.
 import { execFileSync, spawn } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";

@@ -1,10 +1,18 @@
 import { createHash } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+	mkdirSync,
+	mkdtempSync,
+	readdirSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { rcMoveTo } from "./rc-fixup.mjs";
 
-// Version math and the steps behind `pnpm release` and the publish-rc and
-// promote workflows (docs/releasing.md). Everything that touches git, gh or
+// Version math and the steps behind `pnpm release` and the release and
+// release-finish workflows (docs/releasing.md). Everything that touches git, gh or
 // npm goes through a Runner, so tests drive it with no network.
 
 export const PACKAGE = "carbonless-review";
@@ -300,7 +308,7 @@ export async function status(io: Io): Promise<void> {
 	);
 	if (!npm) io.log(`npm:     ${PACKAGE} is not published yet`);
 	if (nextVersion && nextVersion.rc === undefined) {
-		// What publish-rc will do, by the same logic (master's history from
+		// What an RC run will do, by the same logic (master's history from
 		// the local origin/master: the interim RCs are old enough for it).
 		const plan = await rcToPublish(io, next, "origin/master");
 		if (plan.blocked) {
@@ -341,18 +349,20 @@ export async function promote(
 	const out = await must(io, "gh", [
 		"workflow",
 		"run",
-		"promote.yml",
+		"release.yml",
 		"--repo",
 		io.repo,
 		"--ref",
 		"master",
+		"-f",
+		"mode=promote",
 		"-f",
 		`rc=${tag}`,
 		"-f",
 		`next=${next}`,
 	]);
 	io.log(
-		`Promoting ${tag}: checks and packs ${release}; then the owner runs pnpm release publish (npm OTP)`,
+		`Promoting ${tag}: checks ${release}, packs and stages it on npm; then the owner approves it: pnpm release publish (npm OTP)`,
 	);
 	let url = RUN_URL.exec(out)?.[0];
 	for (let i = 0; !url && i < 20; i++) {
@@ -364,7 +374,7 @@ export async function promote(
 				"--repo",
 				io.repo,
 				"--workflow",
-				"promote.yml",
+				"release.yml",
 				"--event",
 				"workflow_dispatch",
 				"--limit",
@@ -377,7 +387,7 @@ export async function promote(
 		url = runs.find((r) => Date.parse(r.createdAt) >= started - 30_000)?.url;
 	}
 	const shown =
-		url ?? `https://github.com/${io.repo}/actions/workflows/promote.yml`;
+		url ?? `https://github.com/${io.repo}/actions/workflows/release.yml`;
 	io.log(shown);
 	return shown;
 }
@@ -469,7 +479,7 @@ export async function next(
 }
 
 // ---------------------------------------------------------------------------
-// Steps the workflows run (.github/workflows/publish-rc.yml, promote.yml).
+// Steps the workflows run (.github/workflows/release.yml, release-finish.yml).
 
 /**
  * What a push to master publishes: the next RC of package.json's `X.Y.Z`.
@@ -512,7 +522,7 @@ export async function historyVersions(io: Io, ref = "HEAD"): Promise<string[]> {
 /**
  * What a push of master with this package.json version publishes: the next
  * RC, whether it only tags (npm has no carbonless-review yet: its first
- * version must be a release), or why nothing (blocked). publish-rc runs it
+ * version must be a release), or why nothing (blocked). The RC run does it
  * on the pushed commit (history `HEAD`); `pnpm release status` on
  * `origin/master`.
  */
@@ -552,7 +562,7 @@ export async function rcToPublish(
  * promote and an RC publish racing each other end with `rc` on the newer.
  *
  * `published` is what this run just published (promote: the release;
- * publish-rc: its RC, if any). The read can be stale (a CDN may still serve
+ * an RC run: its RC, if any). The read can be stale (a CDN may still serve
  * the packument from before, even a 404 right after the first publish), so
  * the floor is the newer of `published` and the `latest` read, and `rc` is
  * never moved below `published`: a read that misses this run's own RC can't
@@ -562,14 +572,8 @@ export function rcBehindLatest(
 	npm: NpmState,
 	published?: string,
 ): string | null {
-	const candidates = [
-		parseVersion(published ?? ""),
-		parseVersion(npm?.distTags.latest ?? ""),
-	].filter((v): v is Version => v !== null);
-	const floor = candidates.sort(compareVersions).at(-1);
-	if (!floor) return null;
-	const rc = parseVersion(npm?.distTags.rc ?? "");
-	return !rc || compareVersions(rc, floor) < 0 ? formatVersion(floor) : null;
+	// The workflows run scripts/rc-fixup.mjs itself (no dependencies there).
+	return rcMoveTo(npm?.distTags, published);
 }
 
 /**
@@ -600,7 +604,7 @@ async function onMaster(io: Io, tag: string): Promise<boolean> {
 /** The version a publish step may publish under `rc`: `X.Y.Z-rc.N`, nothing else. */
 export function checkRcPublish(version: string, tag: string): void {
 	if (tag !== "rc")
-		throw new Error(`publish-rc publishes to rc only, not ${tag}`);
+		throw new Error(`an RC run publishes to rc only, not ${tag}`);
 	const v = parseVersion(version);
 	if (!v || v.rc === undefined || formatVersion(v) !== version) {
 		throw new Error(`refusing to publish ${version} to rc: not X.Y.Z-rc.N`);
@@ -714,6 +718,9 @@ export type Manifest = {
 	integrity: string; // sha512-<base64>, as npm records it
 	next: Kind; // the bump of the "next" PR
 	tarball: string; // its file name in the artifact
+	// npm's id of the staged version (promote's stage job), absent before
+	// the package's first publish (nothing to stage on yet).
+	stageId?: string;
 };
 
 /** promote's manifest.json, checked field by field. */
@@ -732,7 +739,11 @@ export function parseManifest(text: string): Manifest {
 		!/^[0-9a-f]{64}$/.test(m.sha256 ?? "") ||
 		!/^sha512-[A-Za-z0-9+/]+=*$/.test(m.integrity ?? "") ||
 		!(KINDS as readonly string[]).includes(m.next ?? "") ||
-		m.tarball !== `${PACKAGE}-${m.version}.tgz`
+		m.tarball !== `${PACKAGE}-${m.version}.tgz` ||
+		(m.stageId !== undefined &&
+			!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+				m.stageId,
+			))
 	) {
 		throw new Error(`not a promote manifest: ${text.trim()}`);
 	}
@@ -869,16 +880,18 @@ export async function checkPromoteRun(io: Io, run: string): Promise<void> {
 			"api",
 			`repos/${io.repo}/actions/runs/${run}`,
 			"--jq",
-			"{path, head_branch, event, conclusion}",
+			"{path, head_branch, event, conclusion, display_title}",
 		]),
 	) as {
 		path?: string;
 		head_branch?: string;
 		event?: string;
 		conclusion?: string;
+		display_title?: string;
 	};
 	const wrong = [
-		r.path === ".github/workflows/promote.yml" ? "" : `workflow ${r.path}`,
+		r.path === ".github/workflows/release.yml" ? "" : `workflow ${r.path}`,
+		r.display_title?.startsWith("Promote ") ? "" : `run "${r.display_title}"`,
 		r.head_branch === "master" ? "" : `branch ${r.head_branch}`,
 		r.event === "workflow_dispatch" ? "" : `event ${r.event}`,
 		r.conclusion === "success" ? "" : `conclusion ${r.conclusion}`,
@@ -941,6 +954,34 @@ async function checkPublishingCheckout(io: Io): Promise<void> {
 	}
 }
 
+/**
+ * Fails unless the version npm staged under `stageId` is the tarball promote
+ * checked: `npm stage download` (a read) into `dir`, then its sha256 and
+ * integrity against the manifest.
+ */
+async function checkStaged(
+	io: Io,
+	stageId: string,
+	m: Manifest,
+	dir: string,
+): Promise<void> {
+	const into = join(dir, "staged");
+	mkdirSync(into);
+	await must(io, "npm", ["stage", "download", stageId], { cwd: into });
+	const files = readdirSync(into).filter((f) => f.endsWith(".tgz"));
+	if (files.length !== 1 || !files[0]) {
+		throw new Error(
+			`npm stage download ${stageId} gave ${files.length} tarballs`,
+		);
+	}
+	const staged = tarballDigests(readFileSync(join(into, files[0])));
+	if (staged.sha256 !== m.sha256 || staged.integrity !== m.integrity) {
+		throw new Error(
+			`the staged ${stageId} is not the tarball promote checked (sha256 ${staged.sha256}, not ${m.sha256})`,
+		);
+	}
+}
+
 /** The newest successful promote run's id. */
 async function newestPromoteRun(io: Io): Promise<string> {
 	const runs = JSON.parse(
@@ -950,7 +991,7 @@ async function newestPromoteRun(io: Io): Promise<string> {
 			"--repo",
 			io.repo,
 			"--workflow",
-			"promote.yml",
+			"release.yml",
 			"--branch",
 			"master",
 			"--event",
@@ -958,12 +999,15 @@ async function newestPromoteRun(io: Io): Promise<string> {
 			"--status",
 			"success",
 			"--limit",
-			"1",
+			"20",
 			"--json",
-			"databaseId",
+			"databaseId,displayTitle",
 		]),
-	) as { databaseId: number }[];
-	const id = runs[0]?.databaseId;
+	) as { databaseId: number; displayTitle: string }[];
+	// The dispatches are promotes and rc fix-ups; the run name tells them apart.
+	const id = runs.find((r) =>
+		r.displayTitle.startsWith("Promote "),
+	)?.databaseId;
 	if (!id)
 		throw new Error("no successful promote run: pnpm release promote first");
 	return String(id);
@@ -1000,7 +1044,8 @@ export async function publishRelease(
 		]);
 		const { manifest, tarball } = await checkedRelease(io, dir);
 		const publish = await needsPublish(io, manifest);
-		const latest = (await npmState(io))?.distTags.latest;
+		const npm = await npmState(io);
+		const latest = npm?.distTags.latest;
 		const latestV = parseVersion(latest ?? "");
 		const releaseV = parseVersion(manifest.version);
 		if (
@@ -1013,6 +1058,15 @@ export async function publishRelease(
 				`${manifest.version} is not newer than latest (${latest})`,
 			);
 		}
+		// Staged by promote (approve it), or the package's first publish (the
+		// owner publishes it; there was nothing to stage on).
+		const stageId = manifest.stageId;
+		if (publish && !stageId && npm !== null) {
+			throw new Error(
+				`promote run ${run} staged nothing, and ${PACKAGE} is on npm now: run pnpm release promote again`,
+			);
+		}
+		if (publish && stageId) await checkStaged(io, stageId, manifest, dir);
 		io.log(
 			`Release ${manifest.version} from ${manifest.tag} (${manifest.sha})`,
 		);
@@ -1020,9 +1074,11 @@ export async function publishRelease(
 			`  promote run ${run}, ${manifest.tarball}, sha256 ${manifest.sha256}`,
 		);
 		io.log(
-			publish
-				? `  npm: publish to latest (now ${latest ?? "nothing"}); npm asks for your OTP`
-				: `  npm: already has ${manifest.version} with this tarball, not published again`,
+			!publish
+				? `  npm: already has ${manifest.version} with this tarball, not published again`
+				: stageId
+					? `  npm: approve staged ${stageId} (the same tarball) to latest (now ${latest ?? "nothing"}); npm asks for your OTP`
+					: `  npm: first publish, to latest; npm asks for your OTP`,
 		);
 		io.log(
 			`  then release-finish: tag v${manifest.version}, rc, changelog, "next: ${manifest.next}" PR`,
@@ -1032,24 +1088,29 @@ export async function publishRelease(
 			return;
 		}
 		if (publish) {
-			// The tarball again, right before publishing: not swapped meanwhile.
-			const now = tarballDigests(readFileSync(tarball));
-			if (
-				now.sha256 !== manifest.sha256 ||
-				now.integrity !== manifest.integrity
-			) {
-				throw new Error(
-					`${manifest.tarball} changed after it was checked (sha256 ${now.sha256}): not publishing`,
-				);
+			let code: number;
+			if (stageId) {
+				code = await io.interactive("npm", ["stage", "approve", stageId]);
+			} else {
+				// The tarball again, right before publishing: not swapped meanwhile.
+				const now = tarballDigests(readFileSync(tarball));
+				if (
+					now.sha256 !== manifest.sha256 ||
+					now.integrity !== manifest.integrity
+				) {
+					throw new Error(
+						`${manifest.tarball} changed after it was checked (sha256 ${now.sha256}): not publishing`,
+					);
+				}
+				code = await io.interactive("npm", [
+					"publish",
+					tarball,
+					"--tag",
+					"latest",
+					"--access",
+					"public",
+				]);
 			}
-			const code = await io.interactive("npm", [
-				"publish",
-				tarball,
-				"--tag",
-				"latest",
-				"--access",
-				"public",
-			]);
 			if (
 				code !== 0 &&
 				(await waitForIntegrity(
@@ -1060,7 +1121,7 @@ export async function publishRelease(
 				)) !== "match"
 			) {
 				throw new Error(
-					`npm publish failed (${code}); nothing else was done: run pnpm release publish ${run} again`,
+					`npm ${stageId ? "stage approve" : "publish"} failed (${code}); nothing else was done: run pnpm release publish ${run} again`,
 				);
 			}
 		}

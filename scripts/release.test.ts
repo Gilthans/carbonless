@@ -3,6 +3,7 @@ import {
 	existsSync,
 	mkdirSync,
 	mkdtempSync,
+	readdirSync,
 	readFileSync,
 	rmSync,
 	writeFileSync,
@@ -10,6 +11,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { rcMoveTo } from "./rc-fixup.mjs";
 import {
 	bump,
 	checkRcPublish,
@@ -151,7 +153,7 @@ function fakeIo(
 		string,
 		| Partial<RunResult>
 		| string
-		| ((args: string[]) => Partial<RunResult> | string)
+		| ((args: string[], opts?: { cwd?: string }) => Partial<RunResult> | string)
 	>,
 ) {
 	const calls: string[] = [];
@@ -171,7 +173,7 @@ function fakeIo(
 		log: (line) => lines.push(line),
 		now: () => new Date("2026-11-04T10:00:00Z"),
 		sleep: async () => {},
-		run: async (cmd, args) => {
+		run: async (cmd, args, opts) => {
 			const line = [cmd, ...args].join(" ");
 			calls.push(line);
 			const pick = (from: typeof handlers) =>
@@ -185,7 +187,8 @@ function fakeIo(
 			}
 			const handler =
 				(own !== undefined ? handlers[own] : defaults[fallback ?? ""]) ?? "";
-			const out = typeof handler === "function" ? handler([...args]) : handler;
+			const out =
+				typeof handler === "function" ? handler([...args], opts) : handler;
 			return typeof out === "string"
 				? { code: 0, stdout: out, stderr: "" }
 				: { code: 0, stdout: "", stderr: "", ...out };
@@ -299,7 +302,7 @@ describe("workflow steps", () => {
 		);
 	});
 
-	it("publish-rc publishes only an X.Y.Z-rc.N, only to rc", () => {
+	it("an RC run publishes only an X.Y.Z-rc.N, only to rc", () => {
 		expect(() => checkRcPublish("0.2.0-rc.3", "rc")).not.toThrow();
 		for (const bad of [
 			"0.2.0",
@@ -312,13 +315,22 @@ describe("workflow steps", () => {
 		}
 		expect(() => checkRcPublish("0.2.0-rc.3", "latest")).toThrow(/rc only/);
 		const wf = readFileSync(
-			join(import.meta.dirname, "../.github/workflows/publish-rc.yml"),
+			join(import.meta.dirname, "../.github/workflows/release.yml"),
 			"utf8",
 		);
-		const check = wf.indexOf("ci:check-publish rc");
-		expect(check).toBeGreaterThan(-1);
-		expect(check).toBeLessThan(wf.indexOf("npm publish"));
-		expect(wf).toContain('npm publish "$TGZ" --tag rc --access public');
+		// In the build (the version and its tarball), and again right before
+		// the publish, in the job that has no dependency code.
+		expect(wf).toContain(
+			'pnpm exec tsx scripts/release.ts ci:check-publish rc "$VERSION"',
+		);
+		const guard = wf.indexOf(
+			'[[ "$VERSION" =~ ^[0-9]+\\.[0-9]+\\.[0-9]+-rc\\.[0-9]+$ ]]',
+		);
+		expect(guard).toBeGreaterThan(-1);
+		expect(guard).toBeLessThan(wf.indexOf("npm publish"));
+		expect(wf).toContain(
+			'npm publish "$TGZ" --tag rc --access public --provenance=false',
+		);
 	});
 
 	it("the workflows' steps read the checkout's tags, never origin", async () => {
@@ -332,6 +344,32 @@ describe("workflow steps", () => {
 		expect(calls).toContain(
 			"npm view carbonless-review dist-tags versions --json --prefer-online",
 		);
+	});
+
+	it("rc's fix-up runs without dependencies, and refuses a bad version before asking npm", () => {
+		expect(rcMoveTo({ latest: "0.2.0", rc: "0.2.0-rc.3" }, undefined)).toBe(
+			"0.2.0",
+		);
+		expect(
+			rcMoveTo({ latest: "0.2.0", rc: "0.3.0-rc.1" }, undefined),
+		).toBeNull();
+		expect(rcMoveTo(null, "0.1.0")).toBe("0.1.0");
+		const r = (() => {
+			try {
+				execFileSync(
+					process.execPath,
+					[join(import.meta.dirname, "rc-fixup.mjs"), "1.0"],
+					{
+						stdio: "pipe",
+						env: { ...process.env, PATH: "/nonexistent" },
+					},
+				);
+				return 0;
+			} catch (error) {
+				return (error as { status?: number }).status;
+			}
+		})();
+		expect(r).toBe(2);
 	});
 
 	it("rc is never left behind latest", () => {
@@ -582,12 +620,12 @@ describe("pnpm release", () => {
 		const { io, calls, lines } = fakeIo({
 			"git ls-remote": lsRemote("v0.1.0-rc.2", "v0.1.0-rc.3"),
 			"gh workflow run":
-				"✓ Created workflow_dispatch event for promote.yml at master\nhttps://github.com/owner/repo/actions/runs/42\n",
+				"✓ Created workflow_dispatch event for release.yml at master\nhttps://github.com/owner/repo/actions/runs/42\n",
 		});
 		const url = await promote(io, undefined, "minor");
 		expect(url).toBe("https://github.com/owner/repo/actions/runs/42");
 		expect(calls).toContain(
-			"gh workflow run promote.yml --repo owner/repo --ref master -f rc=v0.1.0-rc.3 -f next=minor",
+			"gh workflow run release.yml --repo owner/repo --ref master -f mode=promote -f rc=v0.1.0-rc.3 -f next=minor",
 		);
 		expect(lines.at(-1)).toBe(url);
 	});
@@ -809,7 +847,8 @@ describe("pnpm release publish (the owner's, with npm's OTP)", () => {
 
 	/** A PublishIo over fakeIo: the download copies `out`, real tar. */
 	const goodRun = JSON.stringify({
-		path: ".github/workflows/promote.yml",
+		path: ".github/workflows/release.yml",
+		display_title: "Promote the newest RC (next minor)",
 		head_branch: "master",
 		event: "workflow_dispatch",
 		conclusion: "success",
@@ -835,7 +874,11 @@ describe("pnpm release publish (the owner's, with npm's OTP)", () => {
 				sha: SHA,
 				type: "commit",
 			}),
-			"gh run list": JSON.stringify([{ databaseId: 77 }]),
+			// The newest dispatched run is an rc fix-up, not a promote.
+			"gh run list": JSON.stringify([
+				{ databaseId: 78, displayTitle: "rc up to 0.0.9" },
+				{ databaseId: 77, displayTitle: "Promote the newest RC (next minor)" },
+			]),
 			"gh run download": (args) => {
 				const to = args[args.indexOf("--dir") + 1] ?? "";
 				for (const f of ["manifest.json", "carbonless-review-0.1.0.tgz"]) {
@@ -880,7 +923,7 @@ describe("pnpm release publish (the owner's, with npm's OTP)", () => {
 		const p = publishIo(out);
 		await publishRelease(p.io);
 		expect(p.calls).toContain(
-			"gh run list --repo owner/repo --workflow promote.yml --branch master --event workflow_dispatch --status success --limit 1 --json databaseId",
+			"gh run list --repo owner/repo --workflow release.yml --branch master --event workflow_dispatch --status success --limit 20 --json databaseId,displayTitle",
 		);
 		expect(
 			p.calls.some((c) =>
@@ -951,6 +994,7 @@ describe("pnpm release publish (the owner's, with npm's OTP)", () => {
 			],
 			[{ conclusion: "failure" }, "conclusion failure"],
 			[{ event: "push" }, "event push"],
+			[{ display_title: "rc up to 0.0.9" }, 'run "rc up to 0.0.9"'],
 		] as const) {
 			const p = publishIo(out, {
 				"gh api repos/owner/repo/actions/runs/77": JSON.stringify({
@@ -1079,6 +1123,112 @@ describe("pnpm release publish (the owner's, with npm's OTP)", () => {
 		).toThrow(/needs the owner at a terminal/);
 	});
 
+	describe("after the first release: approving what promote staged", () => {
+		const STAGE = "0f1e2d3c-4b5a-4968-8776-655443322110";
+		const onNpm = {
+			"npm view carbonless-review dist-tags": npmView({ latest: "0.0.9" }, [
+				"0.0.9",
+			]),
+		};
+		/** `npm stage download` writing `file`'s bytes into its cwd. */
+		const stageDownload = (file: string) => ({
+			[`npm stage download ${STAGE}`]: (
+				_args: string[],
+				opts?: { cwd?: string },
+			) => {
+				writeFileSync(
+					join(opts?.cwd ?? "", `carbonless-review-0.1.0-${STAGE}.tgz`),
+					readFileSync(file),
+				);
+				return "";
+			},
+		});
+
+		it("checks the staged tarball is promote's, then npm stage approve (npm asks for the OTP), then release-finish", async () => {
+			const { out } = artifact({ manifest: { stageId: STAGE } });
+			const p = publishIo(out, {
+				...onNpm,
+				...stageDownload(join(out, "carbonless-review-0.1.0.tgz")),
+			});
+			await publishRelease(p.io, "77");
+			expect(p.calls).toContain(`npm stage download ${STAGE}`);
+			expect(p.lines.join("\n")).toContain(`approve staged ${STAGE}`);
+			expect(p.ran).toEqual([`npm stage approve ${STAGE}`]);
+			expect(
+				p.calls.some((c) => c.startsWith("gh workflow run release-finish.yml")),
+			).toBe(true);
+		});
+
+		it("refuses a staged version that isn't the tarball promote checked", async () => {
+			const { out } = artifact({ manifest: { stageId: STAGE } });
+			const other = join(dir, "other.tgz");
+			writeFileSync(other, "not it");
+			const p = publishIo(out, { ...onNpm, ...stageDownload(other) });
+			await expect(publishRelease(p.io, "77")).rejects.toThrow(
+				`the staged ${STAGE} is not the tarball promote checked`,
+			);
+			expect(p.ran).toEqual([]);
+			expect(p.asked).toEqual([]);
+		});
+
+		it("approved on npmjs.com already: nothing to approve, release-finish starts", async () => {
+			const { out, manifest } = artifact({ manifest: { stageId: STAGE } });
+			const p = publishIo(out, {
+				...onNpm,
+				"npm view carbonless-review@0.1.0 dist.integrity": `${manifest.integrity}\n`,
+			});
+			await publishRelease(p.io, "77");
+			expect(p.calls.some((c) => c.startsWith("npm stage"))).toBe(false);
+			expect(p.ran).toEqual([]);
+			expect(
+				p.calls.some((c) => c.startsWith("gh workflow run release-finish.yml")),
+			).toBe(true);
+		});
+
+		it("a failed approve whose version is live anyway counts as done", async () => {
+			const { out } = artifact({ manifest: { stageId: STAGE } });
+			const p = publishIo(
+				out,
+				{
+					...onNpm,
+					...stageDownload(join(out, "carbonless-review-0.1.0.tgz")),
+				},
+				{ npmCode: 99 },
+			);
+			await publishRelease(p.io, "77");
+			expect(
+				p.calls.some((c) => c.startsWith("gh workflow run release-finish.yml")),
+			).toBe(true);
+			const failing = publishIo(
+				out,
+				{
+					...onNpm,
+					...stageDownload(join(out, "carbonless-review-0.1.0.tgz")),
+				},
+				{ npmCode: 1 },
+			);
+			await expect(publishRelease(failing.io, "77")).rejects.toThrow(
+				"npm stage approve failed (1)",
+			);
+		});
+
+		it("a promote run that staged nothing can't be published once the package exists", async () => {
+			const { out } = artifact();
+			const p = publishIo(out, onNpm);
+			await expect(publishRelease(p.io, "77")).rejects.toThrow(
+				"promote run 77 staged nothing, and carbonless-review is on npm now",
+			);
+			expect(p.ran).toEqual([]);
+		});
+
+		it("only a stage id npm could have made", () => {
+			const { out } = artifact({ manifest: { stageId: "../../x" } });
+			expect(() =>
+				parseManifest(readFileSync(join(out, "manifest.json"), "utf8")),
+			).toThrow("not a promote manifest");
+		});
+	});
+
 	it("refuses a manifest whose version is not a release", () => {
 		const { out } = artifact({ manifest: { version: "0.1.0-rc.5" } });
 		expect(() =>
@@ -1129,6 +1279,21 @@ describe("pnpm release publish (the owner's, with npm's OTP)", () => {
 		);
 	});
 });
+
+/** A workflow file's text. */
+const workflow = (file: string) =>
+	readFileSync(join(import.meta.dirname, "../.github/workflows", file), "utf8");
+
+/** A workflow's jobs, as [name, text]. */
+function jobs(text: string): [string, string][] {
+	const body = text.slice(text.indexOf("\njobs:\n") + 7);
+	const parts = body.split(/^ {2}([\w-]+):$/m);
+	const out: [string, string][] = [];
+	for (let i = 1; i < parts.length; i += 2) {
+		out.push([parts[i] ?? "", parts[i + 1] ?? ""]);
+	}
+	return out;
+}
 
 describe("release-finish: each step only once", () => {
 	const SHA = "a".repeat(40);
@@ -1246,13 +1411,9 @@ describe("release-finish: each step only once", () => {
 	});
 
 	it("each workflow step it plans is skipped when the plan says done", () => {
-		const wf = readFileSync(
-			join(import.meta.dirname, "../.github/workflows/release-finish.yml"),
-			"utf8",
-		);
+		const wf = workflow("release-finish.yml");
 		expect(wf).toContain("if: steps.plan.outputs.push_tag == 'true'");
 		expect(wf).toContain("if: steps.plan.outputs.next_pr == 'true'");
-		expect(wf).toContain("if: steps.fixup.outputs.move_rc_to != ''");
 		// The run is checked before its artifact is used.
 		expect(wf.indexOf('ci:check-run "$RUN"')).toBeGreaterThan(-1);
 		expect(wf.indexOf('ci:check-run "$RUN"')).toBeLessThan(
@@ -1261,24 +1422,70 @@ describe("release-finish: each step only once", () => {
 		// A rerun never force-pushes over an existing next branch.
 		expect(wf).not.toContain("--force");
 		expect(wf).toContain('git ls-remote --exit-code --heads origin "$branch"');
-		// NPM_TOKEN only for npm dist-tag; nothing publishes here.
-		expect(wf.match(/secrets\.NPM_TOKEN/g)).toHaveLength(1);
-		expect(wf).not.toContain("npm publish");
-		const promote = readFileSync(
-			join(import.meta.dirname, "../.github/workflows/promote.yml"),
-			"utf8",
+		// rc moves through release.yml (the registered trusted publisher).
+		expect(wf).toContain(
+			'gh workflow run release.yml --repo "$GITHUB_REPOSITORY" --ref master -f mode=fixup -f version="$VERSION"',
 		);
-		expect(promote).not.toContain("NPM_TOKEN");
-		expect(promote).not.toContain("npm publish");
-		expect(promote).not.toContain("environment:");
-		// What the owner publishes is named on the run and in its summary.
-		expect(promote).toContain(
-			// biome-ignore lint/suspicious/noTemplateCurlyInString: GitHub expressions
-			"run-name: Promote ${{ inputs.rc || 'the newest RC' }} (next ${{ inputs.next }})",
+		expect(wf).not.toMatch(/npm (publish|dist-tag|stage)/);
+		const promote = jobs(workflow("release.yml"))
+			.filter(([name]) => name.startsWith("promote-"))
+			.map(([, text]) => text)
+			.join("\n");
+		const release = workflow("release.yml");
+		// What the owner approves is named on the run and in its summary.
+		expect(release).toContain(
+			"inputs.mode == 'promote' && format('Promote {0} (next {1})', inputs.rc || 'the newest RC', inputs.next)",
 		);
 		expect(promote).toContain(
 			'for (const k of ["version", "tag", "sha", "sha256", "integrity", "next", "tarball"])',
 		);
 		expect(promote).toContain("pnpm release publish $GITHUB_RUN_ID");
+		// A release is only staged (latest, fixed at stage time); never published.
+		expect(promote).toContain(
+			'npm stage publish "$TGZ" --tag latest --access public --provenance=false --json',
+		);
+		expect(promote).not.toMatch(/npm publish|npm dist-tag/);
+	});
+
+	it("no workflow has an npm token; only master's `npm` environment gets OIDC, with no dependency code", () => {
+		const files = readdirSync(
+			join(import.meta.dirname, "../.github/workflows"),
+		).filter((f) => f.endsWith(".yml"));
+		const withOidc: string[] = [];
+		for (const file of files) {
+			const text = workflow(file);
+			expect(text, file).not.toMatch(
+				/NPM_TOKEN|NODE_AUTH_TOKEN|_authToken|registry-url/,
+			);
+			// Not for the whole workflow: only per job.
+			expect(text.slice(0, text.indexOf("\njobs:\n")), file).not.toMatch(
+				/^\s+id-token:/m,
+			);
+			for (const [name, job] of jobs(text)) {
+				const npmWrite = /npm (publish|dist-tag|stage publish)/.test(job);
+				const oidc = /id-token: write/.test(job);
+				if (oidc) withOidc.push(`${file}:${name}`);
+				// npm writes only with OIDC, in the environment; OIDC only there.
+				if (npmWrite) expect(oidc, `${file}:${name}`).toBe(true);
+				if (oidc) {
+					expect(job, `${file}:${name}`).toMatch(/^ {4}environment: npm$/m);
+					expect(job, `${file}:${name}`).not.toMatch(/pnpm (install|exec)|tsx/);
+				}
+			}
+		}
+		expect(withOidc.sort()).toEqual([
+			"release.yml:fixup",
+			"release.yml:promote-stage",
+			"release.yml:rc-publish",
+		]);
+		// The fix-up those jobs run has no dependencies.
+		const fixup = readFileSync(
+			join(import.meta.dirname, "rc-fixup.mjs"),
+			"utf8",
+		);
+		expect(fixup.match(/^import .* from "([^"]+)";$/gm)).toEqual([
+			'import { execFileSync } from "node:child_process";',
+			'import { fileURLToPath } from "node:url";',
+		]);
 	});
 });

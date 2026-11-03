@@ -81,15 +81,15 @@ refuses a client whose version or commit differs.
    <patch|minor|rc|promote>` bumps, writes `docs/changelog.md`, commits and
    tags. `scripts/devbox/update` takes `rc` and `latest`. Done when a
    co-worker installs with one command and main moves to `rc` and back.
-   As built (2026-11-01; `docs/releasing.md`): pushes reach master only
-   through PRs, so master's version is the next release and every push
-   whose CI passes publishes `X.Y.Z-rc.N` (workflow `publish-rc`); `pnpm
-   release promote` runs workflow `promote` (checks and packs the RC as
-   `X.Y.Z`), the owner publishes it with their npm OTP (`pnpm release
-   publish`), and workflow `release-finish` tags it and opens a "next" PR
-   with the changelog; `pnpm release next` sets another next
-   version. The repo is private, so no `--provenance`: an `NPM_TOKEN`
-   secret. License: MIT.
+   As built (2026-11-03; `docs/releasing.md`): pushes reach master only
+   through PRs, so master's version is the next release; one workflow,
+   `release.yml`, publishes `X.Y.Z-rc.N` on every green push and, on `pnpm
+   release promote`, stages `X.Y.Z` (npm staged publishing) for the owner
+   to approve with 2FA (`pnpm release publish`), all through npm Trusted
+   Publishing in a master-only `npm` environment, with no npm token;
+   `release-finish` tags and opens a "next" PR with the changelog; `pnpm
+   release next` sets another next version. The repo is private, so no
+   provenance. License: MIT.
 3. **M3, co-worker polish, on demand.** `crb doctor` (git, gh login, Node,
    cache dir), issues on the repo, the update notice, maybe `crb
    self-update`.

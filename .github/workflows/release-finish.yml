@@ -1,9 +1,11 @@
-# Finishes a release the owner published (`pnpm release publish`, which
-# starts this; or by hand with the same inputs): checks npm has X.Y.Z with
-# the promote run's tarball, tags vX.Y.Z on the RC's commit, moves rc up to
-# it, and opens the "next" PR with docs/changelog.md. Every step skips what
-# is already done, so it can run again after a failure. NPM_TOKEN only for
-# `npm dist-tag`. docs/releasing.md.
+# Finishes a release the owner published or approved (`pnpm release
+# publish` starts this; after approving on npmjs.com, start it by hand with
+# the same inputs): checks npm has X.Y.Z with the promote run's tarball,
+# tags vX.Y.Z on the RC's commit, starts release.yml's fixup (rc up to the
+# release; npm's trusted publisher is release.yml, not this file), and opens
+# the "next" PR with docs/changelog.md. Every step skips what is already
+# done, so it can run again after a failure. No npm credentials at all.
+# docs/releasing.md.
 name: Release finish
 run-name: Finish release ${{ inputs.version }}
 
@@ -20,7 +22,7 @@ on:
 permissions:
   contents: write # the vX.Y.Z tag and the next/* branch
   pull-requests: write # the "next" PR
-  actions: read # the promote run's artifact
+  actions: write # the promote run's artifact; starting release.yml's fixup
 
 concurrency:
   group: release-finish
@@ -55,7 +57,6 @@ jobs:
         with:
           node-version-file: .nvmrc
           cache: pnpm
-          registry-url: https://registry.npmjs.org
       - run: pnpm install --frozen-lockfile
       - name: Only a successful promote of master
         env:
@@ -83,15 +84,12 @@ jobs:
           echo "::add-mask::$auth"
           GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.https://github.com/.extraheader \
             GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $auth" git push origin "refs/tags/v$VERSION"
-      - name: Is rc behind latest?
-        # The release as the floor: right after publishing, the read may be stale.
-        id: fixup
-        run: pnpm exec tsx scripts/release.ts ci:rc-fixup "$VERSION" | tee -a "$GITHUB_OUTPUT"
-      - name: Move rc up
-        if: steps.fixup.outputs.move_rc_to != ''
-        run: npm dist-tag add "carbonless-review@${{ steps.fixup.outputs.move_rc_to }}" rc
+      - name: rc up to the release (release.yml's fixup)
+        # A workflow_dispatch made with GITHUB_TOKEN does start a run. That
+        # run moves rc only when it is behind, so starting it again is safe.
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run release.yml --repo "$GITHUB_REPOSITORY" --ref master -f mode=fixup -f version="$VERSION"
       - name: Next version and changelog PR
         if: steps.plan.outputs.next_pr == 'true'
         env:

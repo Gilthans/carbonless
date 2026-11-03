@@ -19,10 +19,11 @@ pushes master or tags by hand. `package.json`'s `version` on master is the
 **next release** `X.Y.Z`; no commit ever bumps it to an RC.
 
 1. **Merge → RC.** CI (`.github/workflows/ci.yml`, workflow `CI`) runs on the
-   push to master. When it passes, `.github/workflows/publish-rc.yml` checks
+   push to master. When it passes, `.github/workflows/release.yml` checks
    out exactly that commit and, if it is still master's tip (CI runs can
-   finish out of order; the newest push holds the older ones), publishes
-   `X.Y.Z-rc.N` to `rc` and pushes the tag `vX.Y.Z-rc.N`. `N` is one past
+   finish out of order; the newest push holds the older ones), builds it,
+   publishes `X.Y.Z-rc.N` to `rc` through npm's trusted publishing (no
+   token) and pushes the tag `vX.Y.Z-rc.N`. `N` is one past
    the highest `X.Y.Z-rc.*` among the tags, npm's versions and the versions
    `package.json` has had on master (the interim RCs before this flow were
    set there by hand, their tags never pushed). Once `X.Y.Z`
@@ -36,36 +37,42 @@ pushes master or tags by hand. `package.json`'s `version` on master is the
    the owner the link.
 3. **Promote → release**, only on the owner's word, in three steps:
    - `pnpm release promote [<rc tag>] [--next patch|minor|major]` starts
-     `.github/workflows/promote.yml` and prints the run's link. It checks
-     out the RC tag (default: the newest; it must be on master), runs every
-     check including Playwright, sets the version `X.Y.Z` (and the RC's
-     commit as `gitHead`) and packs it. The run's artifact `release` holds
-     the tarball and a manifest (version, RC tag, commit, sha256, npm
-     integrity); its summary shows them. It publishes nothing and has no
-     npm token.
-   - **The owner** runs `pnpm release publish [<run-id>]` (default: the
-     newest successful promote run of master) on their own machine, at a
-     terminal, from a clean checkout of `origin/master`: it refuses local
-     changes, or release code and `package.json` that differ from
-     `origin/master`. It takes only a successful, dispatched promote run of
+     `.github/workflows/release.yml` (mode `promote`) and prints the run's
+     link. It checks out the RC tag (default: the newest; it must be on
+     master), runs every check including Playwright, sets the version
+     `X.Y.Z` (and the RC's commit as `gitHead`), packs it, and **stages**
+     it on npm (`npm stage publish --tag latest`): the version is uploaded
+     but hidden, with its dist-tag fixed, until a maintainer approves it
+     with two-factor. The run's artifact `release` holds the tarball and a
+     manifest (version, RC tag, commit, sha256, npm integrity, stage id);
+     its summary shows them.
+   - **The owner** approves it: `pnpm release publish [<run-id>]` (default:
+     the newest successful promote run of master), on their own machine,
+     at a terminal, from a clean checkout of `origin/master` (it refuses
+     local changes, or release code and `package.json` that differ from
+     `origin/master`). It takes only a successful, dispatched promote run of
      master, downloads its artifact, checks the tarball's sha256 against
-     the manifest, its `build-info.json` against the version and the RC
-     tag's commit (which must be the tag's commit on GitHub, and on master),
-     shows what it is about to do and asks y/N. It checks the tarball's
-     sha256 once more, then runs `npm publish <tarball> --tag latest` with
-     the owner's npm login: npm asks for the two-factor OTP (with a security
-     key or passkey as the second factor, it prints a browser URL to
-     approve instead). Agents never run it, and never ask for the OTP.
+     the manifest and its `build-info.json` against the version and the RC
+     tag's commit (the tag's commit on GitHub, on master), downloads the
+     staged version (`npm stage download`) and checks it is that very
+     tarball, shows what it is about to do and asks y/N. Then `npm stage
+     approve <id>`: npm asks for the two-factor OTP (with a security key or
+     passkey as the second factor, it prints a browser URL to approve
+     instead), and the version goes live on `latest`. Approving on
+     npmjs.com (carbonless-review → Staged Packages) works too: then run
+     `pnpm release publish <run-id>` anyway (it sees the version is live,
+     approves nothing, and goes on), or start release-finish by hand.
+     Agents never run it, and never ask for the OTP.
    - It waits until npm shows the version with that tarball (the registry
-     can lag a publish by minutes), then starts
-     `.github/workflows/release-finish.yml` (version and promote run as
-     inputs), which checks the run again, that the manifest's tag is at its
-     commit on master, and that npm has that version with that very
-     tarball (waiting up to 5 minutes), tags `vX.Y.Z` on the RC's commit,
-     moves `rc` up to it when `rc` is older, and opens the PR **"next:
-     X.Y+1.0"** (or the `--next` bump) that sets master's version and adds
-     the release's merged PRs to `docs/changelog.md`. The owner merges
-     that PR like any other; its merge publishes `X.Y+1.0-rc.1`.
+     can lag by minutes), then starts `.github/workflows/release-finish.yml`
+     (version and promote run as inputs), which checks the run again, that
+     the manifest's tag is at its commit on master, and that npm has that
+     version with that very tarball (waiting up to 5 minutes), tags
+     `vX.Y.Z` on the RC's commit, has `release.yml` move `rc` up to it
+     (mode `fixup`), and opens the PR **"next: X.Y+1.0"** (or the `--next`
+     bump) that sets master's version and adds the release's merged PRs to
+     `docs/changelog.md`. The owner merges that PR like any other; its
+     merge publishes `X.Y+1.0-rc.1`.
 4. **A different next version** (a fix release instead of a minor, say):
    `pnpm release next <patch|minor|major|X.Y.Z>` opens a PR setting master's
    version (a kind bumps the newest release).
@@ -85,23 +92,25 @@ same version: between a merge and its release, builds made from master (by
 hand, or by the devbox while it follows git) carry the version of the
 release they precede, e.g. `0.1.0 (<sha>)`. This
 works for any commit, including RC tags whose `build-info.mjs` predates it
-(an environment variable read by the build would not). publish-rc and
-promote unpack the tarball they pack and fail unless its
+(an environment variable read by the build would not). The RC and promote
+jobs unpack the tarball they pack and fail unless its
 `dist/build-info.json` says this version and this commit; `pnpm release
-publish` checks it again before publishing.
+publish` checks it again before approving.
 
 ### The first publish
 
 A package's first publish gets `latest` even when published with `--tag
 rc` (the registry's reported behaviour; not testable here without
 publishing), and `latest` can't be removed afterwards, only moved to another
-version. The flow doesn't rely on either answer: the first version on npm
-is a release. While `carbonless-review` isn't on npm (`npm view` answers
-404), publish-rc tags `vX.Y.Z-rc.N` but publishes nothing and says `pnpm
-release promote vX.Y.Z-rc.N` in the run's summary. The owner's `pnpm
-release publish` of that promote is the first publish (`0.1.0` on
-`latest`; release-finish sets `rc` to it too); from then on every merge
-publishes RCs.
+version. And npm's trusted publishers can only be added to a package that
+exists. So the first version on npm is a release, published by the owner:
+while `carbonless-review` isn't on npm (`npm view` answers 404), the RC run
+tags `vX.Y.Z-rc.N` but publishes nothing and says `pnpm release promote
+vX.Y.Z-rc.N` in its summary; that promote run checks and packs but stages
+nothing (its summary says so), and the owner's `pnpm release publish`
+publishes it with `npm publish` and their OTP (`0.1.0` on `latest`;
+release-finish then sets `rc` to it too). From then on every merge
+publishes an RC and every promote stages a release.
 
 ### pnpm's release-age delay
 
@@ -113,34 +122,49 @@ does), so a new RC arrives at once. Co-workers running `pnpm add -g
 carbonless-review` get a release a day after it is published, or at once with
 that same flag.
 
-### Tokens
+### Trusted publishing
 
-Releases (`latest`) are published only from the owner's machine, with
-their npm login and its two-factor OTP: no workflow can publish one. The CI
-token `NPM_TOKEN` (no OTP) is used by publish-rc's `npm publish --tag rc`
-and by `npm dist-tag` in publish-rc and release-finish; promote has none.
+No npm token exists anywhere: not in the repo's secrets, not on this
+machine. The workflow `release.yml` is registered on npmjs.com as a trusted
+publisher of `carbonless-review` (GitHub Actions, `Gilthans/carbonless`,
+`release.yml`, environment `npm`, publish and dist-tag allowed; staging is
+always allowed), and npm hands its jobs a short-lived credential through
+OIDC. One registered file on purpose: a new trusted-publisher entry
+expires unless it publishes within 2 days, and every RC keeps this one in
+use. npm CLI 12.2.1 is installed in those jobs (trusted publishing needs
+≥ 11.5.1, `dist-tag` ≥ 11.21.0 or ≥ 12.2.0, staging ≥ 11.15.0). The repo
+is private, so npm makes no provenance (`--provenance=false`).
 
-All workflows check out with `persist-credentials: false`: the write token
+Only three jobs get `id-token: write` (`rc-publish`, `promote-stage`,
+`fixup`), each in the GitHub environment `npm`, which only `master` may
+use, and each runs node, npm and git only: no `pnpm install`, no
+dependency code (the rc fix-up is `scripts/rc-fixup.mjs`, which imports
+nothing). The jobs that build and test have no npm credential at all.
+release-finish has none either: it starts `release.yml`'s fix-up.
+
+What this stops, and what it doesn't:
+- A release can't go live without the owner's two-factor: CI only stages
+  it, and staging needs a maintainer's 2FA to approve.
+- An RC needs only a run of `release.yml` from `master` in the `npm`
+  environment, so anyone who can push to master (through a PR the owner
+  merges) or change `release.yml` on master can publish RCs, but not
+  releases. A workflow on another branch gets no npm credential.
+- With "Require two-factor authentication and disallow tokens" set on the
+  package, no npm token can publish it; the trusted publisher still can.
+- On the owner's machine the OTP approves whatever the code that asks for
+  it approves, and agents run as the same user there. So run `pnpm release
+  publish` from a clean checkout at `origin/master` (it refuses anything
+  else) and read its summary. Optional hardening: take the `workflow` scope
+  off this machine's gh login (`gh auth refresh --remove-scopes workflow`),
+  so pushes from it can't change workflows.
+
+All workflows check out with `persist-credentials: false`: the GitHub token
 is not in `.git/config` while `pnpm install`, the build or the tests run.
 Only the steps that reach origin (the tip check, pushing tags and the
-`next/*` branch, the PR) get `GITHUB_TOKEN` (git gets it through
-`GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_0`/`GIT_CONFIG_VALUE_0`, not on its
-command line), and only the npm steps get `NPM_TOKEN`. Steps that need
-tags read the checkout's own (a full-history checkout has every tag).
-
-What this does and doesn't stop: the CI token can publish any version
-under any tag, and any workflow on any branch can read a repository
-secret. So the OTP keeps releases from happening by mistake, or by an agent
-that follows the rules (agents never run `pnpm release publish`); it does
-not stop a workflow written on purpose to publish with `NPM_TOKEN`. Optional
-hardening: take the `workflow` scope off this machine's gh login (`gh auth
-refresh --remove-scopes workflow`), so pushes from it can't add or change
-workflows.
-
-On the owner's machine the OTP approves whatever the code that asks for it
-publishes, and agents run as the same user there. So run `pnpm release
-publish` from a clean checkout at `origin/master` (it refuses anything
-else), read its summary, and never keep the CI token on this machine.
+`next/*` branch, the PR, starting the fix-up) get `GITHUB_TOKEN` (git gets
+it through `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_0`/`GIT_CONFIG_VALUE_0`, not
+on its command line). Steps that need tags read the checkout's own (a
+full-history checkout has every tag).
 
 ### What GITHUB_TOKEN can't do
 
@@ -154,84 +178,85 @@ token of the owner's.
 
 ### Two workflows at once
 
-Each workflow has its own concurrency group: GitHub keeps one pending run
-per group and cancels the older, so a shared group could silently drop a
-promote. publish-rc runs one at a time (no two pick the same `N`); a pending
-one replaced by a newer CI completion is harmless, since only master's tip
-publishes. A release and a publish-rc may overlap: publish-rc makes no RC of
-a released version, and it and release-finish end with `ci:rc-fixup
-[<version this run published>]`: it moves `rc` up to the newer of `latest`
+Each kind of `release.yml` run (RC, promote, fix-up) has its own
+concurrency group: GitHub keeps one pending run per group and cancels the
+older, so a shared group could silently drop a promote. RC runs go one at a
+time (no two pick the same `N`); a pending one replaced by a newer CI
+completion is harmless, since only master's tip publishes. A release and an
+RC run may overlap: no RC is made of a released version, and the RC run
+and the fix-up end with `scripts/rc-fixup.mjs [<version this run
+published>]`: it moves `rc` up to the newer of `latest`
 (read with `--prefer-online`) and the version passed in, when `rc` is below
 that or missing. The version passed in is the floor because the read can be
 stale (a 404 right after the first publish, a `latest` not yet updated, a
 read that misses this run's own RC): `rc` is never moved below what the run
 itself published. So whichever finishes last leaves `rc` on the newer. At
-worst, a publish-rc that checked just before the release lands publishes
+worst, an RC run that checked just before the release lands publishes
 `X.Y.Z-rc.N` after `X.Y.Z` (its tag sorts before the release's), and `rc` is
 put back on `X.Y.Z` by the same run. Promote and `pnpm release publish`
 refuse a release that isn't newer than `latest`, so `latest` never moves
 back either.
 
-## Setup (the owner, once)
+## Setup and flipping the switch (the owner)
 
-1. **npm:** an account with two-factor authentication for **authorization
-   and writes** (npmjs.com → Account → Two-Factor Authentication): every
-   publish from your login asks for the OTP. Log in on your machine
-   (`npm login`).
-2. **The CI token:** a granular access token (npmjs.com → Access Tokens →
-   Generate New Token → Granular): packages and scopes **Read and write**,
-   for `carbonless-review` (before the first publish: all packages), with
-   **Bypass two-factor authentication** checked (CI can't answer an OTP),
-   and an expiry you note down. Only publish-rc (RCs) and the `npm
-   dist-tag` steps use it; releases never do.
-3. **GitHub, Gilthans/carbonless → Settings:**
-   - Secrets and variables → Actions → New repository secret `NPM_TOKEN`,
-     the token from step 2 (only you handle it).
+In this order:
+
+1. **npm two-factor** on the account `gilthans` for **authorization and
+   writes** (done), and `npm login` on this machine.
+2. **GitHub, Gilthans/carbonless → Settings:**
+   - Environments → New environment **`npm`**: Deployment branches and
+     tags → Selected → `master`. No reviewers, no secrets.
    - Actions → General → Workflow permissions: **Read and write
      permissions**, and **Allow GitHub Actions to create and approve pull
      requests** (the "next" PR).
-   - No environment is needed.
-4. The repo is private, so npm provenance (`--provenance`) is not
-   available.
+3. Merge the PR that brings these workflows. Its CI run makes `release.yml`
+   tag `v0.1.0-rc.N` (N after the interim RCs) without publishing (the
+   package isn't on npm yet); the summary says to promote it.
+4. `pnpm release promote` (the newest RC). When its run is green, on this
+   machine: `pnpm release publish` (answer y, then the OTP). This first
+   one is published, not staged: `0.1.0` goes to `latest`; release-finish
+   tags `v0.1.0`, opens "next: 0.2.0", and asks `release.yml` to move `rc`
+   (that fix-up fails until step 5: no trusted publisher yet; harmless).
+5. **npmjs.com → carbonless-review → Settings → Trusted publishing:** add
+   GitHub Actions: organization or user `Gilthans`, repository
+   `carbonless`, workflow filename `release.yml`, environment `npm`; allow
+   `npm publish` and `npm dist-tag` (staging is always allowed). It
+   expires unless used within 2 days: merge "next: 0.2.0" (step 7) within
+   that time, which publishes `0.2.0-rc.1` with it.
+6. **Settings → Publishing access:** "Require two-factor authentication
+   and disallow tokens".
+7. Merge "next: 0.2.0": `0.2.0-rc.1` is published to `rc` by the trusted
+   publisher. Check `npm view carbonless-review dist-tags` (`latest:
+   0.1.0, rc: 0.2.0-rc.1`) and `npm view carbonless-review@0.1.0 gitHead`
+   (the promoted RC's commit).
+8. Switch the devbox's local setup to npm mode (`echo npm >
+   ~/.config/carbonless-devbox/source`), so main follows `rc`; run its
+   follow once (`systemctl --user start crb-follow`) and check that `crb
+   --version` says `0.2.0-rc.1 (<its commit>)`.
 
-When the CI token expires, publish-rc fails at `npm publish` (and
-release-finish at `npm dist-tag`) with a 401: make a new one and replace
-the secret.
-
-## Flipping the switch
-
-1. The setup above; then merge the PR that brings these workflows.
-2. Its CI run makes publish-rc tag `v0.1.0-rc.N` (N after the interim RCs)
-   without publishing (the package isn't on npm yet); the run's summary says
-   to promote it.
-3. `pnpm release promote` (the newest RC). When its run is green, on your
-   machine: `pnpm release publish` (answer y, then the OTP). `0.1.0` goes
-   to `latest`; release-finish then tags `v0.1.0`, sets `rc` to it and
-   opens the PR "next: 0.2.0".
-4. `npm view carbonless-review dist-tags` shows `latest: 0.1.0, rc: 0.1.0`,
-   and `npm view carbonless-review@0.1.0 gitHead` the commit of the
-   promoted RC. Switch the devbox's local setup to npm mode
-   (`echo npm > ~/.config/carbonless-devbox/source`), so main follows `rc`
-   from then on; run its follow once (`systemctl --user start crb-follow`)
-   and check that `crb --version` says `0.1.0 (<that commit>)`, not a
-   master build's commit.
-5. Replace `NPM_TOKEN` with a granular token for `carbonless-review` only
-   (the package exists now), and revoke the all-packages one from setup.
-6. Merge "next: 0.2.0": every merge after it publishes `0.2.0-rc.N`.
+From then on a release is: `pnpm release promote` (CI stages it), then
+`pnpm release publish` (the owner approves it with the OTP).
 
 ## When something fails
 
-- **publish-rc failed before `npm publish`:** nothing is published; the next
-  merge publishes the next number. To retry the same commit, re-run the job.
-  Re-running a publish-rc (or CI) whose RC was already published publishes
-  the same commit again as `rc.N+1`: harmless, just a spare number.
+- **The RC run failed before `npm publish`:** nothing is published; the next
+  merge publishes the next number. To retry the same commit, re-run the
+  failed jobs. Re-running an RC run (or CI) whose RC was already published
+  publishes the same commit again as `rc.N+1`: harmless, a spare number.
 - **Published, but the tag push failed:** the next RC's number already
   skips it (npm's versions count); the owner may push the tag by hand
   (`git tag vX.Y.Z-rc.N <sha> && git push origin vX.Y.Z-rc.N`).
-- **promote failed:** nothing is published; fix and run it again.
-- **`pnpm release publish` failed at `npm publish`** (a wrong OTP, the
-  network): nothing else was done; run it again with the same run id.
-- **release-finish failed** (after the release is on npm): start it again,
+- **`npm publish` or `npm dist-tag` fails with a 401/403:** the trusted
+  publisher doesn't match (file name `release.yml`, environment `npm`,
+  repository) or expired (unused for 2 days after it was added): fix or
+  re-add it on npmjs.com, then re-run.
+- **promote failed:** nothing is live; fix and run it again. A version
+  staged by a failed run stays staged until rejected: `npm stage list
+  carbonless-review`, then `npm stage reject <id>` (2FA). The tag of a
+  staged version can't be changed: reject and stage again.
+- **`pnpm release publish` failed at `npm stage approve`** (a wrong OTP,
+  the network): nothing else was done; run it again with the same run id.
+- **release-finish failed** (after the release is live): start it again,
   `gh workflow run release-finish.yml --ref master -f version=X.Y.Z -f
   run=<promote run id>` (or re-run the failed job). Each step skips what is
   done: the tag when origin's already points at the RC's commit, the move
@@ -239,19 +264,18 @@ the secret.
   on (an existing `next/X.Y.Z` branch is left as it is; only its PR is
   opened if missing). It needs the promote run's artifact, which GitHub
   keeps for 30 days: after that, tag and open the "next" PR by hand
-  (`pnpm release next`). `pnpm release publish` run again also starts
-  it, without publishing twice (npm already has that tarball).
-- **`npm dist-tag add ... rc` failed** (`rc` stays behind `latest`): nothing
-  else is wrong. The next publish-rc run moves it (any merge; it does so even
-  when it publishes no RC), or release-finish run again.
+  (`pnpm release next`). `pnpm release publish` run again also starts it,
+  without approving twice (npm already has that tarball).
+- **`rc` stays behind `latest`** (the fix-up failed): nothing else is
+  wrong. The next RC run moves it (any merge; it does so even when it
+  publishes no RC), or `gh workflow run release.yml --ref master -f
+  mode=fixup -f version=X.Y.Z`.
 
 ## Later cleanup
 
 - **A release PR instead of a dispatch:** a bot keeps a "release X.Y.Z" PR
   open (changelog and version), and merging it is the release (the
-  release-please / changesets pattern); the owner's OTP publish would stay
-  the gate.
-- **npm trusted publishing (OIDC)** instead of `NPM_TOKEN` for RCs and
-  dist-tags, once the package exists: no long-lived token in the repo. It
-  needs npm CLI ≥ 11.5.1 (≥ 11.21.0 for `dist-tag`) and allows one trusted
-  workflow per package.
+  release-please / changesets pattern); staging with the owner's approval
+  would stay the gate.
+- **Public repository:** npm provenance (where the package was built)
+  would then come for free with trusted publishing.
