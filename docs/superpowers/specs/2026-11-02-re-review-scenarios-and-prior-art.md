@@ -1,6 +1,6 @@
 # Re-review after new pushes: scenarios and prior art
 
-2026-11-02 · Discussion draft. Commentable copy: https://claude.ai/artifact/Rn3ZYY1mdj1Nh44gYw1MLJ (the doc is the working copy; this file mirrors it).
+2026-11-02, decisions of 2026-11-03 folded in. Commentable copy: https://claude.ai/artifact/Rn3ZYY1mdj1Nh44gYw1MLJ (the doc is the working copy; this file mirrors it).
 
 ## The problem
 
@@ -13,8 +13,8 @@ A reviewer comes back to a PR after the author pushed more commits. Today carbon
 ### Vocabulary
 
 - **Snapshot**: what the reviewer sees, `(B, H)`: the three-dot diff from `merge-base(base, H)` to head `H`. `B` below means that merge base.
-- **Patch set (PS)**: a snapshot the reviewer acted on (marked, crossed off; today a comment does not start one, see Open decisions). Pinned by a ref, so its head survives force-pushes.
-- **Revision**: any head the tool has seen. The current one is `R` = `(B2, H2)`; the reviewer's last patch set is `PS1` = `(B1, H1)`.
+- **Patch set (PS)**: the owner's "changeset": a snapshot the reviewer took a lasting action on: marked or crossed off a cluster, commented, gave a verdict (owner, 2026-11-03; that today a comment does not start one is an oversight to fix). Pinned by a ref, so its head survives force-pushes.
+- **Revision**: the identity of one PR state, the pair (merge base, head), one per push the tool has seen. A snapshot is the diff of one revision, so the two differ only as data and view. The current one is `R` = `(B2, H2)`; the reviewer's last patch set is `PS1` = `(B1, H1)`.
 - **Interdiff**: the author's own changes between `PS1` and `R`, with changes that came from the base factored out.
 - **Virtual rebase `H1'`**: `H1` merged onto `B2` by `git merge-tree` without touching any branch, so `diff(H1', H2)` is the interdiff. Probed on 2026-11-02 with git 2.53: clean for a rebase and for a base merge-in, and a conflict is reported per file with the conflict markers available (see The interdiff).
 - **Carry**: moving a cluster state or a comment anchor from `PS1` to `R`, recorded as an event (`by: auto`), never silently.
@@ -70,7 +70,7 @@ A comment's anchor is `(path, commit, side, line range, optional span)` (`CodeAn
 | C18 | File-level comment (no line) | Common | Nothing to map; follows renames (C7), unplaced on delete (C8). |
 | C19 | GitHub's own `line` (its current position) disagrees with ours | Unknown until measured | Treat as the "different snapshot" chip does: show ours, flag the disagreement, never trust either blindly. |
 
-**What "review progress updates" adds.** The reviewer also wants to know what happened to threads since their last visit: new replies, resolved by whom, new threads by others (C10). That is attention-set work, listed in `docs/todo.md`; it only needs the mapping above to show each thread in place.
+**What "review progress updates" adds.** Review progress (reviewed and crossed-off clusters) maps the same way, at cluster scale, so a reviewer who opens the diff to the merge base again finds all of it in place: that is the next section, Scenarios: carrying review progress (owner, 2026-11-03: "similar to comment mapping, but on a larger scale"). Thread activity since the last visit: new replies, resolved by whom, new threads by others (C10). That is attention-set work, listed in `docs/todo.md`; it only needs the mapping above to show each thread in place.
 
 ## Scenarios: carrying review progress
 
@@ -79,12 +79,12 @@ A cluster's identity is its path, its exact removed and added lines, and 3 uncha
 | # | Scenario | Common? | Expected outcome |
 | --- | --- | --- | --- |
 | P1 | Cluster identical in `R` (same lines, same context) | Most clusters on every push | Carried automatically, recorded as an event (`by: auto`, from `PS1`). Deterministic, no AI. |
-| P2 | Cluster's changed lines identical, context lines differ (the base, or a neighbouring edit, changed a line within 3 of it) | Common in S3/S4 and near fixes | Identity says "different". Decision needed: carry with a "context changed" mark, or leave unreviewed. See Open decisions. |
+| P2 | Cluster's changed lines identical, context lines differ (the base, or a neighbouring edit, changed a line within 3 of it) | Common in S3/S4 and near fixes | Carried (owner, 2026-11-03): context is not part of the carry rule. Context lines the PR changed are a cluster of their own; ones the base changed are not in the diff at all. |
 | P3 | Cluster edited (the author reworked the lines) | The fix itself | Not carried. Shown as reworked: the cluster plus a mini interdiff of what changed inside it since `PS1`. Reviewer marks it again. |
 | P4 | Cluster split in two, or two merged, by an insertion in the middle or a removed gap | Common | Not carried as clusters. Line-level carry would say which lines were seen and which are new; needs a decision on whether states are per cluster or per line (today: per cluster). |
 | P5 | Cluster moved within the file (line numbers only) | Every push | Carried (identity has no line numbers). |
 | P6 | Cluster moved to another file (rename) | Refactors | Carried through the rename pair; identity includes the path, so the carry rule needs the rename map. |
-| P7 | Crossed-off cluster (e.g. generated file) regenerated with different content | Common for lockfiles, snapshots | The reason was a preference, not a verdict on those lines. Candidate rule: a crossed-off file stays crossed off while it is still the same kind of change; shown, never hidden. Decision needed. |
+| P7 | Crossed-off cluster (e.g. generated file) regenerated with different content | Common for lockfiles, snapshots | The reason was a preference, not a verdict on those lines. Carried by the same rule as reviewed (owner, 2026-11-03): only a cluster that traces exactly; a regenerated cluster is crossed off again. |
 | P8 | Reviewed in `PS1`, reworked in `PS2`, reverted to `PS1`'s content in `PS3` | Rare | Carry from any earlier patch set whose cluster matches, not only the last one. Patch set heads are all pinned, so this is cheap. |
 | P9 | Trivial rebase or squash (S4a, S5): every cluster identical | Very common before merge | Everything carries; the page says "rebased, nothing new" and moving is one tap. |
 | P10 | Formatter sweep: every cluster's lines changed by whitespace only | Occasional, painful | Not carried (principle 2: whitespace changes are changes). The interdiff shows them collapsed as quiet rows (the Ignore whitespace view), so marking them is fast. |
@@ -116,7 +116,7 @@ The interdiff answers "what did the author change since I looked". It is optiona
 | I9 | S7, retargeted | `B2` is on another branch; same machinery, but `merge-base(B2, H1)` may be far back and the virtual rebase may conflict widely. Fall back to I10. |
 | I10 | The virtual rebase can't be built (unrelated histories, a shallow clone, a binary conflict) | Fail closed: show the full new snapshot as unreviewed and say the interdiff is unavailable. Never a guess. |
 | I11 | Several patch sets: `PS1`, `PS2`, now `R` | The reviewer picks the "since" point; default is their last patch set. |
-| I12 | The reviewer never acted (no patch set) but did look | Nothing to diff from. A "last seen head" could be recorded on first open; decision needed. |
+| I12 | The reviewer never acted (no patch set) but did look | A comment or verdict now starts a patch set (owner, 2026-11-03). Merely opening records a last-seen head to diff from, without starting one (my call). |
 | I13 | Base merged in a file the PR also edits, no conflict, both changed nearby lines | `diff(H1', H2)` is empty for that file, but the cluster's context changed (P2). The interdiff is empty and the carry rule decides. |
 
 **Where the interdiff shows.** Two reasonable places, not mutually exclusive: a filter on Files changed (show only clusters that are new or reworked since `PS1`; carried clusters stay reachable and marked), and a view of the interdiff as its own diff, each hunk tagged new, rework, or due to rebase. Mockups belong in the design doc that follows this one.
@@ -206,19 +206,19 @@ My recommendation, for discussion, is the first option under each heading. Nothi
 
 ### The engine: one line mapping, three uses
 
-1. **GitLab's three-diff trace, on our clone** (recommended). For a comment on `(Hx, side, line)`: a `RIGHT` line maps through `diff(Hx:f, H2:f)`; a `LEFT` line through `diff(Bx:f, B2:f)` where `Bx` is the old side the commenter saw (which `threadCode.ts` already works out); then the new MR diff `diff(B2:f, H2:f)` says whether the line is still added, became unchanged, or was removed. Deterministic, uses git's own diff, works in every shape of history, and gives each thread one of three outcomes with a reason. Phabricator's and Gerrit's offset mapping is the same idea with less care on the old side.
+1. **GitLab's three-diff trace, on our clone** (recommended). For a comment on `(Hx, side, line)`: a `RIGHT` line maps through `diff(Hx:f, H2:f)`; a `LEFT` line through `diff(Bx:f, B2:f)` where `Bx` is the old side the commenter saw (which `threadCode.ts` already works out); then the new MR diff `diff(B2:f, H2:f)` says whether the line is still added, became unchanged, or was removed. Deterministic, uses git's own diff, works in every shape of history, and gives each thread one of three outcomes with a reason. Phabricator's and Gerrit's offset mapping is the same idea with less care on the old side. Agreed 2026-11-03, with two properties to keep: the tracer is a library of its own (pure functions, diffs in, positions out, no git calls, its own isolated tests), and it never assumes the new commits descend from the old ones.
 2. Trust GitHub's `line`/`isOutdated`. Rejected: undocumented rule, hides outdated threads, fails on force-push, and principle 2 says never rely on the host's answer alone. We can still compare against it and flag disagreement, as the "different snapshot" chip does.
 3. Text search for the commented lines. Rejected as the primary method (C15, duplicate lines), kept as a fallback candidate for moved code, always labelled a guess.
 
 ### Carry-over of review progress
 
-1. **Exact identity carries, everything else is shown as rework** (recommended). Cluster identity unchanged (path or rename pair, same removed and added lines, same context) carries as an `auto` event from the matching patch set, any earlier one included (P8). A reworked cluster shows the old cluster's lines against the new ones, so the reviewer reads the delta, and marks it again. Gerrit's identical-blob rule and Reviewable's reviewed-at-revision are the precedents; ours is finer (cluster, not file).
-2. Add a `context-only` rule (P2): carry when only the 3 surrounding lines changed and the interdiff for that file is empty, marked so in the event and in the UI. Saves re-reading on base merges near a change, at the cost of a reviewer not seeing new neighbours. Your call (below).
-3. Per-line states instead of per-cluster, so a split cluster carries its untouched lines (P4). Bigger change to the storage format and the UI; defer unless P4 turns out common on real PRs.
+1. **Exact identity carries, everything else is shown as rework** (recommended). Agreed 2026-11-03 with the rule sharpened: the exact change carries. A cluster's removed and added lines, traced by the engine to their place in the new snapshot (path or rename pair), are identical there. Context is not part of the rule: context lines the PR changed form a cluster of their own, ones the base changed are not in the diff. A cluster whose run of changes was reworked is unticked. Crossed off carries by the same rule. The carry is an `auto` event from the matching patch set, any earlier one included (P8). A reworked cluste r shows the old cluster's lines against the new ones, so the reviewer reads the delta, and marks it again. Gerrit's identical-blob rule and Reviewable's reviewed-at-revision are the precedents; ours is finer (cluster, not file).
+2. Add a `context-only` rule (P2): carry when only the 3 surrounding lines changed and the interdiff for that file is empty, marked so in the event and in the UI. Settled by option 1 (owner, 2026-11-03): context is not in the rule, so nothing is lost on base merges near a change.
+3. Per-line states instead of per-cluster, so a split cluster carries its untouched lines (P4). Bigger change to the storage format and the UI. Parked on the todo list (owner, 2026-11-03): first find a way to measure how often clusters split on real PRs.
 
 ### The interdiff
 
-1. **Virtual rebase by `merge-tree`** (recommended): `H1' = merge-tree(B2, H1)`, interdiff `= diff(H1', H2)`; a conflicted file shows git's conflict against the author's resolution (I5); if `merge-tree` can't run, the interdiff is unavailable and everything is unreviewed (I10). Proven by two probes; needs the methodology matrix extended with S3, S4b, S8 and a shape where `merge-tree` fails.
+1. **Virtual rebase by `merge-tree`** (recommended): `H1' = merge-tree(B2, H1)`, interdiff `= diff(H1', H2)`; a conflicted file shows git's conflict against the author's resolution (I5); if `merge-tree` can't run, the interdiff is unavailable and everything is unreviewed (I10). This is the diff of diffs the owner described, diff(B1 to H1) against diff(B2 to H2), computed by git on file content rather than on patch text, so context drift and line numbers after a rebase add no noise and duplicate lines pair by position. A conflicted file needs no special handling to be correct: it shows as rework either way; the conflict markers are only an optional baseline for reading the resolution. Agreed 2026-11-03. Proven by two probes; needs the methodology matrix extended with S3, S4b, S8 and a shape where `merge-tree` fails.
 2. Gerrit's subtraction: `diff(H1, H2)` minus hunks also in `diff(B1, B2)`, marked due to rebase. Approximate, loses overlapping hunks "in doubt", no help with conflicts. Fallback only.
 3. `git range-diff` per commit. Useful as a bonus view when commits correspond; useless after squashes and merges. Not the basis.
 
@@ -227,6 +227,12 @@ My recommendation, for discussion, is the first option under each heading. Nothi
 1. **Files changed, filtered to "since PS1"** (recommended): carried clusters collapse with a carried mark, reworked and new clusters open, unplaced threads listed under their file; the full snapshot is one toggle away. Reviewable's "Show Diffs to Review" is the precedent. The reviewer moves to `R` explicitly from the banner, which says the shape: "3 new commits", "rebased, nothing new", "rebased with 2 conflicts".
 2. A separate interdiff page. Keeps Files changed simple but splits the reviewer's attention across two diffs. Possible later for "compare any two patch sets" (P16).
 3. Both, one engine. Likely where this ends up; start with 1.
+
+**Constraints (owner, 2026-11-03), all inside Files changed:**
+
+1. The reviewer can always go back to any changeset exactly as it was when they reviewed it, comments and review marks as they were. Patch set heads are pinned, so even a force-push can't take that away; the merge base lives in the base branch's history, so pinning it too (one more ref per patch set) closes the last gap, a rewritten base.
+2. With two or more changesets, the reviewer can see either the interdiff between two consecutive changesets or the diff to the merge base.
+3. Each changeset has its own state and data model, and a changeset's interdiff and base diff share it: a comment made on one shows on the other, review state is correlated intuitively. Both views are projections of one changeset's state; the carry from the previous changeset seeds it.
 
 ### Context for unplaced threads
 
@@ -239,13 +245,35 @@ Carry events (`by: auto`) in the reviewer's progress ref, naming source patch se
 
 ## Open decisions (yours)
 
-- [ ] **Context-only carry (P2, I13):** carry a cluster whose changed lines are identical but whose 3 context lines differ, marked "context changed", or leave it unreviewed? Recommendation: carry when the interdiff for that file is empty, mark it, make the rule easy to switch off.
-- [ ] **Crossed-off carry (P7):** does a crossed-off cluster stay crossed off when its file is regenerated with new content, or must it be crossed off again? Recommendation: carry while the file is still crossed off wholesale, show it, let the reviewer undo.
-- [ ] **What starts a patch set:** today only marking a cluster. Should a comment, or merely opening the PR, pin the head (I12)? Recommendation: a comment or verdict starts one; opening records a "last seen" head without starting one.
-- [ ] **Resolved threads:** place them too (GitLab) or only unresolved ones (Gerrit, for speed)? Recommendation: all, lazily, since we already build every thread's code.
-- [ ] **Default view on return:** land on "since your last patch set" or on the full snapshot with carried marks? Recommendation: "since", with the full view a toggle away, because that is what makes a 200-file PR re-review take two minutes.
-- [ ] **AI's role:** limited to proposing candidate locations for moved code and "addressed by commit X" annotations, all editable, never marking or hiding (principles 1, 2). Confirm.
+- [ ] **Context-only carry (P2, I13):** carry a cluster whose changed lines are identical but whose 3 context lines differ, marked "context changed", or leave it unreviewed? Decided 2026-11-03: context is not part of the rule. An exact change that traces to its new place carries; a reworked run of changes is unticked.
+- [ ] **Crossed-off carry (P7):** does a crossed-off cluster stay crossed off when its file is regenerated with new content, or must it be crossed off again? Decided 2026-11-03: crossed off carries by the same cluster rule as reviewed, nothing file-wide; a regenerated cluster is crossed off again.
+- [ ] **What starts a patch set:** today only marking a cluster. Should a comment, or merely opening the PR, pin the head (I12)? Decided 2026-11-03: any lasting reviewer action starts one (mark, cross off, comment, verdict); marking-only today is an oversight. Opening alone records a last-seen head without starting one (my call; say if not).
+- [ ] **Resolved threads:** place them too (GitLab) or only unresolved ones (Gerrit, for speed)? Decided 2026-11-03: unresolved threads only, as Gerrit does. A thread unresolved later is placed from then on: placement is computed at read time from the current resolved state, never cached past a resolve or unresolve.
+- [ ] **Default view on return:** land on "since your last patch set" or on the full snapshot with carried marks? Decided 2026-11-03: "since", with the full view a toggle away.
+- [ ] **AI's role:** limited to proposing candidate locations for moved code and "addressed by commit X" annotations, all editable, never marking or hiding (principles 1, 2). Decided 2026-11-03: no AI in this round. Later it associates changes with comments, confirms comments were addressed and helps associate clusters, always as editable suggestions.
+
+## Gallery and test coverage
+
+Five gallery cases (six PRs) cover every scenario above; each PR has curated patch sets, so you can open it at each one, see the case, and judge whether the behaviour is acceptable. A seeding script per case does the reviewer's part reproducibly: open the PR pinned on the first head, mark and cross off the listed clusters, post the listed comments through carbonless, then push the next head. Comments must be made before the next push, so the script runs the pushes in order. Marks live in the local review refs; the script seeds them in whichever clone opens the gallery.
+
+| Case (`base/<case>`, `case/<case>`) | Pushes, each a patch set | Scenarios shown |
+| --- | --- | --- |
+| `rr-append` | PS1: one tall file with a duplicated block, a generated file, 8 threads on every anchor kind. Push 2: lines inserted above, one commented line edited, one deleted, a range partly changed, a suggestion applied verbatim, one duplicate block moved, a whitespace-only edit, a span's line reflowed, a cluster split by an insertion, the generated file regenerated, one thread resolved and another unresolved. Approve on PS1 before push 2. | S1, C1, C2, C3, C4, C14, C15, C16, C17, C18, P1, P3, P4, P5, P7, P12, P13, I1, X1, X2, resolved then unresolved |
+| `rr-rebase` | PS1 on the fork point. Base gains a commit touching lines near, and one inside the context of, the PR's clusters. Push 2: trivial rebase. Push 3: rebase plus an amend of a commented line and a squash of the commits. Push 4: force-push back to push 2's content. One comment made on GitHub's own "changes since your last review" view on a LEFT line between push 2 and 3. | S2, S4a, S4c, S5, S6, C5, C6, C11, C12, C13, P2, P8, P9, I3, I4, I11, I13 |
+| `rr-merge-in` | PS1. Base changes a line the PR also changed and a file the PR didn't. Push 2: the author merges the base in and resolves the conflict with something other than either side; a second file merges cleanly. | S3, S4b, I2, I5, X6, conflict baseline |
+| `rr-moves` | PS1: three files. Push 2: one file renamed with a commented line inside, one deleted with a thread on it, a commented function extracted to a new file, a whole-file formatter sweep on the third, one reviewed commit reverted. | S9, C7, C8, C9, P6, P10, P11, X3, X4, X5, X8 |
+| `rr-stacked` (two PRs) | Parent PR on `base/rr-stacked`, child PR on the parent's branch, PS1 on the child. The parent lands by squash and its branch is deleted, so GitHub retargets the child; push 2: the child rebases. | S7, S8, I8 |
+
+Not in the gallery: C10 needs comments from a second GitHub account (list it only if you have one; otherwise it is test-only), C19 can only be observed on real PRs, I10 and S10 are test-only (unrelated histories, a swapped fork).
+
+**Tests**, each failing without the feature:
+
+- **Tracer library** (pure, no git): a table-driven case per C1–C19 with synthetic diffs, plus a property checked for any input: every traced position lands on a line that exists in the new snapshot or is reported unplaced with a reason; nothing is dropped and nothing lands on a line whose text differs without being marked changed.
+- **Carry rules**: a case per P1–P12, plus the fail-closed property: a carried state names a cluster in `R` whose removed and added lines equal the source cluster's; any corrupt, missing or invented carry event leaves the cluster unreviewed (principle 2). Crossed off carries by the same rule.
+- **Interdiff**: the methodology matrix (`test/methodology-fixture.ts`) grows a fourth branch update, rebase with amend, a conflicting merge-base-in, and a stacked-squash landing, and asserts the interdiff per I1–I9; I10 with a shallow clone and with unrelated histories asserts "unavailable, everything unreviewed".
+- **End to end** (Playwright, desktop and phone): each gallery case rebuilt as a fixture with the fake gh: the banner says the shape, the "since" filter shows exactly the reworked and new clusters, unplaced threads list their fate, going back to PS1 shows it exactly as reviewed (constraint 1), the interdiff and base views of one changeset share state (constraint 3).
+- **Real PR**: `pnpm compare-threads` on gytpol/test-automation#99 as of each of its review rounds, read-only, checks thread placement against GitHub's own `line` (C19).
 
 ## What happens next
 
-After this discussion: a design doc with mockups (desktop and phone) for the banner, the "since" filter, reworked clusters and unplaced threads; the methodology matrix extended with the shapes above; a gallery PR per edge case (S3, S4b, S8, C5, P4, P10). The worktree `.worktrees/re-review` (branch `re-review` from master) holds this document.
+After this discussion: a design doc with mockups (desktop and phone) for the banner, the "since" filter, reworked clusters and unplaced threads; the methodology matrix extended with the shapes above; a gallery PR per edge case (S3, S4b, S8, C5, P4, P10). Parked on the todo list: per-line states (P4), once there is a way to measure how often clusters split. The worktree `.worktrees/re-review` (branch `re-review` from master) holds this document.
