@@ -190,6 +190,8 @@ jobs:
         with:
           node-version-file: .nvmrc
       - name: npm with trusted publishing and dist-tag (>= 12.2)
+        # Outside the checkout: no project .npmrc applies.
+        working-directory: ${{ runner.temp }}
         run: npm install -g npm@12.2.1
       - if: env.PUBLISH == 'true'
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
@@ -224,6 +226,8 @@ jobs:
             });' "$VERSION"
           echo "TGZ=$tgz" >>"$GITHUB_ENV"
       - name: Publish to npm (rc)
+        # Outside the checkout: no project .npmrc applies.
+        working-directory: ${{ runner.temp }}
         # Before the package's first publish, npm would make whatever is
         # published first `latest`: the first version must be a release
         # (the owner's), so this only tags the RC in git.
@@ -248,6 +252,8 @@ jobs:
             echo "Published carbonless-review@$VERSION on \`rc\`, tagged $tag." >>"$GITHUB_STEP_SUMMARY"
           fi
       - name: Is rc behind latest?
+        # Outside the checkout: no project .npmrc applies.
+        working-directory: ${{ runner.temp }}
         # A release may have been published meanwhile: whichever finishes
         # last puts rc on the newer. This run's RC, if it published one, is
         # the floor: a stale read can't move rc below it.
@@ -256,8 +262,10 @@ jobs:
         run: |
           published=""
           [[ "$PUBLISH" != true ]] || published="$VERSION"
-          node scripts/rc-fixup.mjs ${published:+"$published"} | tee -a "$GITHUB_OUTPUT"
+          node "$GITHUB_WORKSPACE/scripts/rc-fixup.mjs" ${published:+"$published"} | tee -a "$GITHUB_OUTPUT"
       - name: Move rc up
+        # Outside the checkout: no project .npmrc applies.
+        working-directory: ${{ runner.temp }}
         if: steps.fixup.outputs.move_rc_to != ''
         env:
           MOVE_TO: ${{ steps.fixup.outputs.move_rc_to }}
@@ -381,6 +389,8 @@ jobs:
         with:
           node-version: 24
       - name: npm with staged publishing (>= 12.2)
+        # Outside the checkout: no project .npmrc applies.
+        working-directory: ${{ runner.temp }}
         run: npm install -g npm@12.2.1
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
@@ -414,6 +424,8 @@ jobs:
             console.log(`VERSION=${m.version}`);
             console.log(`TGZ=${process.env.RUNNER_TEMP}/release/${m.tarball}`);' >>"$GITHUB_ENV"
       - name: On npm yet?
+        # Outside the checkout: no project .npmrc applies.
+        working-directory: ${{ runner.temp }}
         id: npm
         run: |
           if out="$(npm view carbonless-review version --prefer-online 2>&1)"; then
@@ -425,31 +437,15 @@ jobs:
             exit 1
           fi
       - name: Stage on npm (latest, hidden until the owner approves)
+        # Outside the checkout: no project .npmrc applies.
+        working-directory: ${{ runner.temp }}
         if: steps.npm.outputs.exists == 'true'
         # The tag is fixed at stage time (npm stage: "The tag is an immutable
         # property of the staged package"). The repo is private: no provenance.
         run: |
-          # One staged entry per version: another one already staged (an
-          # earlier promote) would leave two to choose from on npmjs.com.
-          if list="$(npm stage list carbonless-review --json 2>/dev/null)"; then
-            other="$(node -e '
-              const seen = [];
-              const walk = (v) => {
-                if (Array.isArray(v)) v.forEach(walk);
-                else if (v && typeof v === "object") {
-                  if (v.version === process.argv[2]) seen.push(v.id ?? v.stageId ?? "?");
-                  Object.values(v).forEach(walk);
-                }
-              };
-              walk(JSON.parse(process.argv[1] || "null"));
-              console.log(seen.join(" "));' "$list" "$VERSION")"
-            if [[ -n "$other" ]]; then
-              echo "::error::carbonless-review@$VERSION is already staged ($other): reject it first (npm stage reject <id>), then promote again"
-              exit 1
-            fi
-          else
-            echo "::warning::could not list staged versions (npm stage list); check npmjs.com → Staged Packages for an older $VERSION"
-          fi
+          # (npm stage list needs the owner's interactive login, not OIDC:
+          # a second staged entry for this version is caught by the owner's
+          # pnpm release publish, which refuses until it is rejected.)
           out="$(npm stage publish "$TGZ" --tag latest --access public --provenance=false --json)"
           echo "$out"
           # --json prints { "carbonless-review": { ..., "stageId": "<uuid>" } }.
@@ -512,13 +508,19 @@ jobs:
         with:
           node-version-file: .nvmrc
       - name: npm with trusted dist-tag (>= 12.2)
+        # Outside the checkout: no project .npmrc applies.
+        working-directory: ${{ runner.temp }}
         run: npm install -g npm@12.2.1
       - name: Is rc behind the release?
+        # Outside the checkout: no project .npmrc applies.
+        working-directory: ${{ runner.temp }}
         id: fixup
         run: |
           [[ "$RELEASE" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::not X.Y.Z: $RELEASE"; exit 1; }
-          node scripts/rc-fixup.mjs "$RELEASE" | tee -a "$GITHUB_OUTPUT"
+          node "$GITHUB_WORKSPACE/scripts/rc-fixup.mjs" "$RELEASE" | tee -a "$GITHUB_OUTPUT"
       - name: Move rc up
+        # Outside the checkout: no project .npmrc applies.
+        working-directory: ${{ runner.temp }}
         if: steps.fixup.outputs.move_rc_to != ''
         env:
           MOVE_TO: ${{ steps.fixup.outputs.move_rc_to }}

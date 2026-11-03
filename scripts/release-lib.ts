@@ -969,6 +969,51 @@ async function checkPublishingCheckout(io: Io): Promise<void> {
 }
 
 /**
+ * The ids of the staged entries for `version` in `npm stage list --json`'s
+ * answer, whatever its shape (entries with a `version` and an `id` or
+ * `stageId`; "?" when an entry has no id).
+ */
+export function stagedIds(listJson: string, version: string): string[] {
+	const ids: string[] = [];
+	const walk = (v: unknown) => {
+		if (Array.isArray(v)) v.forEach(walk);
+		else if (v && typeof v === "object") {
+			const o = v as Record<string, unknown>;
+			if (o.version === version) {
+				const id = o.id ?? o.stageId;
+				ids.push(typeof id === "string" ? id : "?");
+			}
+			Object.values(o).forEach(walk);
+		}
+	};
+	walk(JSON.parse(listJson || "null"));
+	return [...new Set(ids)];
+}
+
+/**
+ * Fails when npm has another staged entry for this version than the one this
+ * promote run staged (a second promote of the same version stages a second
+ * one): reject the others first, so the one approved on npmjs.com can only
+ * be this one. A read with the owner's login (npm stage list doesn't take
+ * an OIDC token, so CI can't check this).
+ */
+async function checkOnlyStaged(
+	io: Io,
+	stageId: string,
+	version: string,
+): Promise<void> {
+	const others = stagedIds(
+		await must(io, "npm", ["stage", "list", PACKAGE, "--json"]),
+		version,
+	).filter((id) => id !== stageId);
+	if (others.length > 0) {
+		throw new Error(
+			`${PACKAGE}@${version} is staged more than once: ${stageId} (this promote run) and ${others.join(", ")}. Reject the others first (npm stage reject <id>, with your OTP; or on npmjs.com), then run this again`,
+		);
+	}
+}
+
+/**
  * Fails unless the version npm staged under `stageId` is the tarball promote
  * checked: `npm stage download` (a read) into `dir`, then its sha256 and
  * integrity against the manifest.
@@ -1080,7 +1125,10 @@ export async function publishRelease(
 				`promote run ${run} staged nothing, and ${PACKAGE} is on npm now: run pnpm release promote again`,
 			);
 		}
-		if (publish && stageId) await checkStaged(io, stageId, manifest, dir);
+		if (publish && stageId) {
+			await checkOnlyStaged(io, stageId, manifest.version);
+			await checkStaged(io, stageId, manifest, dir);
+		}
 		io.log(
 			`Release ${manifest.version} from ${manifest.tag} (${manifest.sha})`,
 		);

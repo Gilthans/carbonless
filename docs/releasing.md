@@ -58,10 +58,13 @@ pushes master or tags by hand. `package.json`'s `version` on master is the
      tarball, shows what it is about to do and asks y/N. Then `npm stage
      approve <id>`: npm asks for the two-factor OTP (with a security key or
      passkey as the second factor, it prints a browser URL to approve
-     instead), and the version goes live on `latest`. Approving on
-     npmjs.com (carbonless-review → Staged Packages; promote stages at most
-     one entry per version, but check its version and stage id against the
-     run's summary) works too: then run
+     instead), and the version goes live on `latest`. Before asking, it
+     refuses while npm has another staged entry for that version (a second
+     promote of the same version stages a second one; CI can't list staged
+     versions, npm only lets a logged-in maintainer) and names both ids:
+     reject the other first. Approving on npmjs.com (carbonless-review →
+     Staged Packages) works too, but approve only the stage id in the
+     promote run's summary; then run
      `pnpm release publish <run-id>` anyway (it sees the version is live,
      approves nothing, and goes on), or start release-finish by hand.
      Agents never run it, and never ask for the OTP.
@@ -231,8 +234,19 @@ back either.
 
 These steps assume GitHub environments, rules on `master` and enforced
 code owners are available: a public repository, or GitHub Pro ("Without
-GitHub Pro or a public repository" above says what is lost otherwise). In
-this order:
+GitHub Pro or a public repository" above says what is lost otherwise).
+
+**On GitHub Free with a private repository** (today), only steps 1, 3 and
+4 are safe, plus step 2's last item (Actions may create PRs): no trusted
+publisher exists yet, so nothing in CI can publish, and the owner publishes
+0.1.0 with their OTP. Step 3's run makes GitHub create the environment
+`npm` with no branch rule. Then make the repository public or upgrade to
+GitHub Pro, finish step 2 (add the `master` rule to that existing `npm`
+environment, and the rule on `master`), and only then do step 5 (its
+2-day window starts there), 6, 7 and 8. Never add the trusted publisher
+while `npm` has no branch rule.
+
+In this order:
 
 1. **npm two-factor** on the account `gilthans` for **authorization and
    writes** (done), and `npm login` on this machine.
@@ -276,10 +290,10 @@ this order:
    --version` says `0.2.0-rc.1 (<its commit>)`.
 
 From then on a release is: `pnpm release promote` (CI stages it), then
-`pnpm release publish` (the owner approves it with the OTP). On
-npmjs.com's Staged Packages tab there is one staged entry per version
-(promote refuses to stage a second), but check the version and stage id
-against the promote run's summary before approving there.
+`pnpm release publish` (the owner approves it with the OTP). Promoting the
+same version twice leaves two staged entries on npmjs.com's Staged Packages
+tab: `pnpm release publish` refuses until the extra one is rejected, and on
+the website, approve only the stage id in the promote run's summary.
 
 ## When something fails
 
@@ -296,9 +310,9 @@ against the promote run's summary before approving there.
   re-add it on npmjs.com, then re-run.
 - **promote failed:** nothing is live; fix and run it again. A version
   staged by a failed run stays staged until rejected (its stage id is in
-  the run's summary; promote refuses to stage the same version again until
-  it is): `npm stage list
-  carbonless-review`, then `npm stage reject <id>` (2FA). The tag of a
+  the run's summary; `pnpm release publish` refuses while two entries of
+  one version are staged): `npm stage list carbonless-review`, then `npm
+  stage reject <id>` (2FA). The tag of a
   staged version can't be changed: reject and stage again.
 - **`pnpm release publish` failed at `npm stage approve`** (a wrong OTP,
   the network): nothing else was done; run it again with the same run id.

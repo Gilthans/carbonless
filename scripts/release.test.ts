@@ -34,6 +34,7 @@ import {
 	releasePrs,
 	renderChangelog,
 	resolvePromote,
+	stagedIds,
 	status,
 	tagNames,
 	tarballDigests,
@@ -1162,6 +1163,9 @@ describe("pnpm release publish (the owner's, with npm's OTP)", () => {
 			"npm view carbonless-review dist-tags": npmView({ latest: "0.0.9" }, [
 				"0.0.9",
 			]),
+			"npm stage list carbonless-review --json": JSON.stringify([
+				{ id: STAGE, version: "0.1.0" },
+			]),
 		};
 		/** `npm stage download` writing `file`'s bytes into its cwd. */
 		const stageDownload = (file: string) => ({
@@ -1190,6 +1194,36 @@ describe("pnpm release publish (the owner's, with npm's OTP)", () => {
 			expect(
 				p.calls.some((c) => c.startsWith("gh workflow run release-finish.yml")),
 			).toBe(true);
+		});
+
+		it("refuses while another staged entry for the version exists, naming both ids", async () => {
+			const { out } = artifact({ manifest: { stageId: STAGE } });
+			const OTHER = "99999999-8888-4777-8666-555555555555";
+			const p = publishIo(out, {
+				...onNpm,
+				...stageDownload(join(out, "carbonless-review-0.1.0.tgz")),
+				"npm stage list carbonless-review --json": JSON.stringify([
+					{ id: OTHER, version: "0.1.0" },
+					{ id: STAGE, version: "0.1.0" },
+				]),
+			});
+			await expect(publishRelease(p.io, "77")).rejects.toThrow(
+				`carbonless-review@0.1.0 is staged more than once: ${STAGE} (this promote run) and ${OTHER}`,
+			);
+			expect(p.asked).toEqual([]);
+			expect(p.ran).toEqual([]);
+			expect(
+				stagedIds(
+					JSON.stringify({
+						items: [
+							{ stageId: OTHER, version: "0.1.0" },
+							{ version: "0.1.0" },
+							{ id: STAGE, version: "0.0.9" },
+						],
+					}),
+					"0.1.0",
+				),
+			).toEqual([OTHER, "?"]);
 		});
 
 		it("refuses a staged version that isn't the tarball promote checked", async () => {
@@ -1320,7 +1354,7 @@ describe("pnpm release publish (the owner's, with npm's OTP)", () => {
  * text (the summaries name the owner's commands).
  */
 const DEPENDENCY_CODE =
-	/\bpnpm\b(?! release (promote|publish)\b)|\b(yarn|npx|tsx)\b|\bnpm (ci|exec|x|run|run-script|test|start|i|add|install(?! -g npm@\d+\.\d+\.\d+\b))\b|node_modules/;
+	/\bpnpm\b(?! release (promote|publish)\b)|\b(yarn|npx|tsx|bun|bunx)\b|\bnpm (ci|exec|x|run|run-script|test|start|i|add|install(?! -g npm@\d+\.\d+\.\d+\b))\b|node_modules/;
 
 /** Every `run:` value of a workflow: its line and the lines nested under it. */
 function runValues(text: string): string[] {
@@ -1538,11 +1572,10 @@ describe("release-finish: each step only once", () => {
 		expect(stage).toContain(
 			'p.name !== "carbonless-review" || p.version !== m.version || p.publishConfig !== undefined',
 		);
-		// Another staged entry for the version stops a second stage (M2); the
-		// stage id is parsed as JSON, not grepped (M3), and shown at once.
-		expect(
-			stage.indexOf("npm stage list carbonless-review --json"),
-		).toBeLessThan(stage.indexOf('npm stage publish "$TGZ"'));
+		// npm stage list needs the owner's login, not OIDC: CI doesn't try it
+		// (pnpm release publish checks for a second staged entry). The stage
+		// id is parsed as JSON, not grepped (M3), and shown at once.
+		expect(code(stage)).not.toContain("npm stage list");
 		expect(stage).toContain('(o["carbonless-review"] ?? o).stageId');
 		expect(stage).not.toContain("grep -oE");
 		// The two node snippets, run as they are in the workflow.
@@ -1554,22 +1587,6 @@ describe("release-finish: each step only once", () => {
 			execFileSync(process.execPath, ["-e", code, ...args], {
 				encoding: "utf8",
 			}).trim();
-		const staged = snippet(`other="$(node -e '`);
-		const listed = JSON.stringify([
-			{ id: "11111111-2222-4333-8444-555555555555", version: "0.2.0" },
-			{ id: "66666666-7777-4888-8999-aaaaaaaaaaaa", version: "0.1.9" },
-		]);
-		expect(run(staged, listed, "0.2.0")).toBe(
-			"11111111-2222-4333-8444-555555555555",
-		);
-		expect(run(staged, listed, "0.3.0")).toBe("");
-		expect(run(staged, "[]", "0.2.0")).toBe("");
-		expect(stage).toContain(
-			'if list="$(npm stage list carbonless-review --json 2>/dev/null)"; then',
-		);
-		expect(stage).toMatch(
-			/if \[\[ -n "\$other" \]\]; then\n.*already staged.*\n\s+exit 1/,
-		);
 		const stageIdOf = snippet(`id="$(node -e '`);
 		const id = "0f1e2d3c-4b5a-4968-8776-655443322110";
 		expect(
@@ -1581,6 +1598,24 @@ describe("release-finish: each step only once", () => {
 				JSON.stringify({ "carbonless-review": { stageId: "x; rm" } }),
 			),
 		).toBe("");
+		// npm runs outside the checkout in the OIDC jobs: no project .npmrc.
+		for (const [name, job] of byName) {
+			if (!/id-token: write/.test(job)) continue;
+			for (const step of job.split(/\n(?= {6}- )/)) {
+				if (!step.startsWith("      - ")) continue; // the job's header
+				const body = code(step);
+				if (
+					/\bnpm (install|i|publish|view|dist-tag|stage)\b|rc-fixup\.mjs/.test(
+						body,
+					)
+				) {
+					expect(step, `${name}`).toContain(
+						// biome-ignore lint/suspicious/noTemplateCurlyInString: GitHub expressions
+						"working-directory: ${{ runner.temp }}\n",
+					);
+				}
+			}
+		}
 		// Step outputs reach run: through env, never pasted into scripts.
 		for (const file of ["release.yml", "release-finish.yml"]) {
 			const runs = runValues(workflow(file));
@@ -1646,6 +1681,8 @@ describe("release-finish: each step only once", () => {
 			"pnpm release local",
 			"node node_modules/x/cli.js",
 			"tsx a.ts",
+			"bun install",
+			"bunx foo",
 		]) {
 			expect(bad).toMatch(DEPENDENCY_CODE);
 		}
@@ -1669,6 +1706,9 @@ describe("release-finish: each step only once", () => {
 			"/.github/",
 			"/scripts/release*.ts",
 			"/scripts/rc-fixup.mjs",
+			"/.npmrc",
+			"/.nvmrc",
+			"/package.json",
 		]) {
 			expect(owners).toMatch(
 				new RegExp(`^${path.replace(/[.*]/g, "\\$&")} @Gilthans$`, "m"),
