@@ -832,6 +832,20 @@ export async function checkedRelease(
 			`the tarball's build-info is ${info.version} ${info.commit}, not ${manifest.version} ${manifest.sha}`,
 		);
 	}
+	// What npm publishes is the tarball's own package.json: exactly
+	// carbonless-review at this version, with no publishConfig (which could
+	// send it to another registry or under another tag).
+	const pkg = JSON.parse(
+		await must(io, "tar", ["-xzOf", tarball, "package/package.json"]),
+	) as { name?: string; version?: string; publishConfig?: unknown };
+	const wrong = [
+		pkg.name === PACKAGE ? "" : `name ${pkg.name}`,
+		pkg.version === manifest.version ? "" : `version ${pkg.version}`,
+		pkg.publishConfig === undefined ? "" : "a publishConfig",
+	].filter(Boolean);
+	if (wrong.length > 0) {
+		throw new Error(`the tarball's package.json says ${wrong.join(", ")}`);
+	}
 	const tagSha = await tagCommit(io, manifest.tag);
 	if (tagSha !== manifest.sha) {
 		throw new Error(

@@ -23,9 +23,10 @@
 //
 // Steps the workflows run (not for people): ci:rc-version, ci:set-version,
 // ci:check-publish, ci:write-version, ci:promote-plan, ci:manifest,
-// ci:check-run, ci:finish-plan, ci:changelog, ci:bump, ci:rc-fixup (the
-// workflow itself runs scripts/rc-fixup.mjs, with no dependencies). They
-// print KEY=value lines for $GITHUB_OUTPUT and read the checkout's tags.
+// ci:check-run, ci:finish-plan, ci:changelog, ci:bump. They print KEY=value
+// lines for $GITHUB_OUTPUT and read the checkout's tags. (The rc fix-up is
+// scripts/rc-fixup.mjs, with no dependencies, for the jobs that hold npm's
+// OIDC credential.)
 import { execFileSync, spawn } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -42,14 +43,12 @@ import {
 	KINDS,
 	type Kind,
 	next,
-	npmState,
 	type PublishIo,
 	parseManifest,
 	parseVersion,
 	promote,
 	publishRelease,
 	type Runner,
-	rcBehindLatest,
 	rcToPublish,
 	releasePrs,
 	renderChangelog,
@@ -272,16 +271,6 @@ async function main(argv: string[]) {
 			const plan = await resolvePromote(io, rest[0] ?? "");
 			console.log(`tag=${plan.tag}`);
 			console.log(`release=${plan.release}`);
-			return;
-		}
-		case "ci:rc-fixup": {
-			// ci:rc-fixup [<version this run published>]: the version `rc` must
-			// move to so it isn't behind latest nor that version, or empty.
-			const published = rest[0] ?? "";
-			if (published && !parseVersion(published)) usage();
-			console.log(
-				`move_rc_to=${rcBehindLatest(await npmState(io), published || undefined) ?? ""}`,
-			);
 			return;
 		}
 		case "ci:changelog": {

@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // Moves npm's `rc` dist-tag up when it is behind (main follows `rc`, so it
 // must never run behind `latest`). No dependencies, on purpose: it runs in
-// the jobs that can get npm's OIDC token (publish-rc's publish and fixup
-// jobs), where no dependency code runs (docs/releasing.md, "Trusted
+// the jobs that can get npm's OIDC token (release.yml's rc-publish and
+// fixup jobs), where no dependency code runs (docs/releasing.md, "Trusted
 // publishing").
 //
 //   node scripts/rc-fixup.mjs [<version this run published>]

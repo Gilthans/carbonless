@@ -59,7 +59,9 @@ pushes master or tags by hand. `package.json`'s `version` on master is the
      approve <id>`: npm asks for the two-factor OTP (with a security key or
      passkey as the second factor, it prints a browser URL to approve
      instead), and the version goes live on `latest`. Approving on
-     npmjs.com (carbonless-review → Staged Packages) works too: then run
+     npmjs.com (carbonless-review → Staged Packages; promote stages at most
+     one entry per version, but check its version and stage id against the
+     run's summary) works too: then run
      `pnpm release publish <run-id>` anyway (it sees the version is live,
      approves nothing, and goes on), or start release-finish by hand.
      Agents never run it, and never ask for the OTP.
@@ -139,16 +141,32 @@ Only three jobs get `id-token: write` (`rc-publish`, `promote-stage`,
 `fixup`), each in the GitHub environment `npm`, which only `master` may
 use, and each runs node, npm and git only: no `pnpm install`, no
 dependency code (the rc fix-up is `scripts/rc-fixup.mjs`, which imports
-nothing). The jobs that build and test have no npm credential at all.
-release-finish has none either: it starts `release.yml`'s fix-up.
+nothing), and every action pinned to a commit. Before `npm publish` or
+`npm stage publish` they read the tarball's own `package/package.json`
+(what npm actually publishes) and refuse anything but `carbonless-review`
+at exactly the expected version with no `publishConfig`: the tarball was
+built in a job that runs dependency code. The jobs that build and test
+have no npm credential at all. release-finish has none either: it starts
+`release.yml`'s fix-up.
 
-What this stops, and what it doesn't:
-- A release can't go live without the owner's two-factor: CI only stages
-  it, and staging needs a maintainer's 2FA to approve.
-- An RC needs only a run of `release.yml` from `master` in the `npm`
-  environment, so anyone who can push to master (through a PR the owner
-  merges) or change `release.yml` on master can publish RCs, but not
-  releases. A workflow on another branch gets no npm credential.
+**Master is the real gate.** npm can't limit a trusted publisher to some
+dist-tags: an entry allowed to publish and move dist-tags can do both for
+any version and any tag, `latest` included. So:
+- Releases normally go live only with the owner's two-factor: CI stages
+  them, and approving a staged version needs a maintainer's 2FA.
+- But any code that runs in those three jobs on `master` can publish any
+  version, or point `latest` at any version, with no 2FA: a change to
+  `release.yml` (or to `scripts/rc-fixup.mjs`) merged into master, or a
+  compromised action or npm release used there. Whoever can change master
+  can publish.
+- What keeps that to the owner, on GitHub: a rule on `master` (PRs
+  required, no direct or force pushes, no bypass), `CODEOWNERS` (the
+  release workflows and scripts are the owner's) with code owners'
+  review required, and the environment `npm` limited to `master` (npm
+  checks the repository, the workflow file and the environment name, not
+  the branch: the environment's branch rule is the only thing that keeps
+  a workflow on another branch from getting npm's credential). Merging
+  only PRs the owner read, on the owner's word, is the rest.
 - With "Require two-factor authentication and disallow tokens" set on the
   package, no npm token can publish it; the trusted publisher still can.
 - On the owner's machine the OTP approves whatever the code that asks for
@@ -157,6 +175,18 @@ What this stops, and what it doesn't:
   else) and read its summary. Optional hardening: take the `workflow` scope
   off this machine's gh login (`gh auth refresh --remove-scopes workflow`),
   so pushes from it can't change workflows.
+
+**Without GitHub Pro or a public repository** (the repo is private on
+GitHub Free today): GitHub offers no environments, no rules on `master`
+and no enforced `CODEOWNERS` there. Then the `npm` environment named in the
+jobs is created on first use with no branch rule, so a workflow pushed on
+any branch, by anyone who can push one (agents included), can get npm's
+credential and publish, `latest` included; and master takes direct pushes
+from anyone with write access. Staging and the owner's OTP still keep
+releases from going live by accident, but nothing on GitHub then stops a
+deliberate publish. Before adding the trusted publisher (step 5 below),
+either make the repository public or upgrade to GitHub Pro, so that the
+environment rule, the master rule and code owners exist.
 
 All workflows check out with `persist-credentials: false`: the GitHub token
 is not in `.git/config` while `pnpm install`, the build or the tests run.
@@ -199,16 +229,26 @@ back either.
 
 ## Setup and flipping the switch (the owner)
 
-In this order:
+These steps assume GitHub environments, rules on `master` and enforced
+code owners are available: a public repository, or GitHub Pro ("Without
+GitHub Pro or a public repository" above says what is lost otherwise). In
+this order:
 
 1. **npm two-factor** on the account `gilthans` for **authorization and
    writes** (done), and `npm login` on this machine.
-2. **GitHub, Gilthans/carbonless → Settings:**
+2. **GitHub, Gilthans/carbonless → Settings**, all before step 3:
    - Environments → New environment **`npm`**: Deployment branches and
-     tags → Selected → `master`. No reviewers, no secrets.
-   - Actions → General → Workflow permissions: **Read and write
-     permissions**, and **Allow GitHub Actions to create and approve pull
-     requests** (the "next" PR).
+     tags → Selected → `master`. No reviewers, no secrets. Then check the
+     environment's page shows that rule: a job that names a missing
+     environment makes GitHub create it with **no** rule, which would let
+     any branch's workflow get npm's credential.
+   - Rules (or Branches) → a rule for `master`: pull requests required, no
+     direct pushes, no force pushes, no deletion, no bypass; require
+     review from code owners (`.github/CODEOWNERS` makes `.github/` and
+     the release scripts the owner's).
+   - Actions → General → **Allow GitHub Actions to create and approve pull
+     requests** (the "next" PR). The default workflow permissions can stay
+     read-only: every workflow here asks for what it needs.
 3. Merge the PR that brings these workflows. Its CI run makes `release.yml`
    tag `v0.1.0-rc.N` (N after the interim RCs) without publishing (the
    package isn't on npm yet); the summary says to promote it.
@@ -217,12 +257,13 @@ In this order:
    one is published, not staged: `0.1.0` goes to `latest`; release-finish
    tags `v0.1.0`, opens "next: 0.2.0", and asks `release.yml` to move `rc`
    (that fix-up fails until step 5: no trusted publisher yet; harmless).
-5. **npmjs.com → carbonless-review → Settings → Trusted publishing:** add
-   GitHub Actions: organization or user `Gilthans`, repository
-   `carbonless`, workflow filename `release.yml`, environment `npm`; allow
-   `npm publish` and `npm dist-tag` (staging is always allowed). It
-   expires unless used within 2 days: merge "next: 0.2.0" (step 7) within
-   that time, which publishes `0.2.0-rc.1` with it.
+5. Check once more that Settings → Environments → `npm` shows Deployment
+   branches: `master`. Then **npmjs.com → carbonless-review → Settings →
+   Trusted publishing:** add GitHub Actions: organization or user
+   `Gilthans`, repository `carbonless`, workflow filename `release.yml`,
+   environment `npm`; allow `npm publish` and `npm dist-tag` (staging is
+   always allowed). It expires unless used within 2 days: merge "next:
+   0.2.0" (step 7) within that time, which publishes `0.2.0-rc.1` with it.
 6. **Settings → Publishing access:** "Require two-factor authentication
    and disallow tokens".
 7. Merge "next: 0.2.0": `0.2.0-rc.1` is published to `rc` by the trusted
@@ -235,7 +276,10 @@ In this order:
    --version` says `0.2.0-rc.1 (<its commit>)`.
 
 From then on a release is: `pnpm release promote` (CI stages it), then
-`pnpm release publish` (the owner approves it with the OTP).
+`pnpm release publish` (the owner approves it with the OTP). On
+npmjs.com's Staged Packages tab there is one staged entry per version
+(promote refuses to stage a second), but check the version and stage id
+against the promote run's summary before approving there.
 
 ## When something fails
 
@@ -251,7 +295,9 @@ From then on a release is: `pnpm release promote` (CI stages it), then
   repository) or expired (unused for 2 days after it was added): fix or
   re-add it on npmjs.com, then re-run.
 - **promote failed:** nothing is live; fix and run it again. A version
-  staged by a failed run stays staged until rejected: `npm stage list
+  staged by a failed run stays staged until rejected (its stage id is in
+  the run's summary; promote refuses to stage the same version again until
+  it is): `npm stage list
   carbonless-review`, then `npm stage reject <id>` (2FA). The tag of a
   staged version can't be changed: reject and stage again.
 - **`pnpm release publish` failed at `npm stage approve`** (a wrong OTP,

@@ -293,7 +293,10 @@ flipping the switch").
   `pnpm release status` only reads. `pnpm release publish` (approving a
   staged release, or the first publish) is the owner's alone (their npm
   OTP): agents never run it, never run `npm stage approve`, and never ask
-  for the OTP.
+  for the OTP. Code in master's release workflows can publish to npm
+  without that 2FA (`docs/releasing.md`, "Trusted publishing"): a PR that
+  touches `.github/` or the release scripts (`.github/CODEOWNERS`) says so
+  in its body, for the owner's review.
 - Commits only via `git commit --only -- <paths>` in a shared tree; never a bare
   `git stash`. On Gilthans/carbonless, GitHub writes are limited to the
   above: pushing branches, opening, updating and merging PRs, and commenting

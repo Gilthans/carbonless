@@ -824,12 +824,20 @@ describe("pnpm release publish (the owner's, with npm's OTP)", () => {
 		version = "0.1.0",
 		built = { version: "0.1.0", commit: SHA },
 		manifest = {} as Record<string, string>,
+		packageJson = {
+			name: "carbonless-review",
+			version: "0.1.0",
+		} as Record<string, unknown>,
 	} = {}) {
 		const out = join(dir, "artifact");
 		const pkg = join(dir, "pkg/package/dist");
 		mkdirSync(pkg, { recursive: true });
 		mkdirSync(out, { recursive: true });
 		writeFileSync(join(pkg, "build-info.json"), JSON.stringify(built));
+		writeFileSync(
+			join(dir, "pkg/package/package.json"),
+			JSON.stringify(packageJson),
+		);
 		const tgz = join(out, `carbonless-review-${version}.tgz`);
 		execFileSync("tar", ["-czf", tgz, "-C", join(dir, "pkg"), "package"]);
 		const m = {
@@ -962,6 +970,31 @@ describe("pnpm release publish (the owner's, with npm's OTP)", () => {
 			/build-info is 0\.1\.0 b{40}, not 0\.1\.0 a{40}/,
 		);
 		expect(p.ran).toEqual([]);
+	});
+
+	it("refuses a tarball whose own package.json isn't carbonless-review at the release, or has a publishConfig", async () => {
+		for (const [packageJson, why] of [
+			[{ name: "other", version: "0.1.0" }, "name other"],
+			[{ name: "carbonless-review", version: "0.1.1" }, "version 0.1.1"],
+			[
+				{
+					name: "carbonless-review",
+					version: "0.1.0",
+					publishConfig: { tag: "latest" },
+				},
+				"a publishConfig",
+			],
+		] as const) {
+			rmSync(join(dir, "pkg"), { recursive: true, force: true });
+			rmSync(join(dir, "artifact"), { recursive: true, force: true });
+			const { out } = artifact({ packageJson: { ...packageJson } });
+			const p = publishIo(out);
+			await expect(publishRelease(p.io, "77")).rejects.toThrow(
+				`the tarball's package.json says ${why}`,
+			);
+			expect(p.ran).toEqual([]);
+			expect(p.asked).toEqual([]);
+		}
 	});
 
 	it("refuses an RC tag that GitHub has elsewhere, or that isn't on master", async () => {
@@ -1280,6 +1313,43 @@ describe("pnpm release publish (the owner's, with npm's OTP)", () => {
 	});
 });
 
+/**
+ * Running dependency code: a package manager installing or running
+ * packages, or anything from node_modules. Only `npm install -g npm@X.Y.Z`
+ * (npm itself, pinned) is allowed, and `pnpm release promote|publish` as
+ * text (the summaries name the owner's commands).
+ */
+const DEPENDENCY_CODE =
+	/\bpnpm\b(?! release (promote|publish)\b)|\b(yarn|npx|tsx)\b|\bnpm (ci|exec|x|run|run-script|test|start|i|add|install(?! -g npm@\d+\.\d+\.\d+\b))\b|node_modules/;
+
+/** Every `run:` value of a workflow: its line and the lines nested under it. */
+function runValues(text: string): string[] {
+	const out: string[] = [];
+	const lines = text.split("\n");
+	for (let i = 0; i < lines.length; i++) {
+		const m = /^(\s*(?:- )?)run: /.exec(lines[i] ?? "");
+		if (!m) continue;
+		const indent = (m[1] ?? "").length;
+		const value = [lines[i] ?? ""];
+		while (
+			i + 1 < lines.length &&
+			((lines[i + 1] ?? "").trim() === "" ||
+				(lines[i + 1] ?? "").search(/\S/) > indent)
+		) {
+			value.push(lines[++i] ?? "");
+		}
+		out.push(value.join("\n"));
+	}
+	return out;
+}
+
+/** A job's text without its comment lines. */
+const code = (job: string) =>
+	job
+		.split("\n")
+		.filter((line) => !line.trim().startsWith("#"))
+		.join("\n");
+
 /** A workflow file's text. */
 const workflow = (file: string) =>
 	readFileSync(join(import.meta.dirname, "../.github/workflows", file), "utf8");
@@ -1447,6 +1517,78 @@ describe("release-finish: each step only once", () => {
 		expect(promote).not.toMatch(/npm publish|npm dist-tag/);
 	});
 
+	it("the OIDC jobs check the tarball's own package.json, and promote stages once per version", () => {
+		const byName = new Map(jobs(workflow("release.yml")));
+		const rc = byName.get("rc-publish") ?? "";
+		const stage = byName.get("promote-stage") ?? "";
+		// The name, the exact version and no publishConfig, before npm sees it.
+		for (const [job, before] of [
+			[rc, 'npm publish "$TGZ"'],
+			[stage, 'npm stage publish "$TGZ"'],
+		] as const) {
+			const check = job.indexOf("package/package.json");
+			expect(check).toBeGreaterThan(-1);
+			expect(check).toBeLessThan(job.indexOf(before));
+			expect(job).toContain("publishConfig");
+		}
+		expect(rc).toContain(
+			// biome-ignore lint/suspicious/noTemplateCurlyInString: shell text
+			'p.version === process.argv[1] ? "" : `version ${p.version}`',
+		);
+		expect(stage).toContain(
+			'p.name !== "carbonless-review" || p.version !== m.version || p.publishConfig !== undefined',
+		);
+		// Another staged entry for the version stops a second stage (M2); the
+		// stage id is parsed as JSON, not grepped (M3), and shown at once.
+		expect(
+			stage.indexOf("npm stage list carbonless-review --json"),
+		).toBeLessThan(stage.indexOf('npm stage publish "$TGZ"'));
+		expect(stage).toContain('(o["carbonless-review"] ?? o).stageId');
+		expect(stage).not.toContain("grep -oE");
+		// The two node snippets, run as they are in the workflow.
+		const snippet = (after: string) => {
+			const start = stage.indexOf(after) + after.length;
+			return stage.slice(start, stage.indexOf("'", start));
+		};
+		const run = (code: string, ...args: string[]) =>
+			execFileSync(process.execPath, ["-e", code, ...args], {
+				encoding: "utf8",
+			}).trim();
+		const staged = snippet(`other="$(node -e '`);
+		const listed = JSON.stringify([
+			{ id: "11111111-2222-4333-8444-555555555555", version: "0.2.0" },
+			{ id: "66666666-7777-4888-8999-aaaaaaaaaaaa", version: "0.1.9" },
+		]);
+		expect(run(staged, listed, "0.2.0")).toBe(
+			"11111111-2222-4333-8444-555555555555",
+		);
+		expect(run(staged, listed, "0.3.0")).toBe("");
+		expect(run(staged, "[]", "0.2.0")).toBe("");
+		expect(stage).toContain(
+			'if list="$(npm stage list carbonless-review --json 2>/dev/null)"; then',
+		);
+		expect(stage).toMatch(
+			/if \[\[ -n "\$other" \]\]; then\n.*already staged.*\n\s+exit 1/,
+		);
+		const stageIdOf = snippet(`id="$(node -e '`);
+		const id = "0f1e2d3c-4b5a-4968-8776-655443322110";
+		expect(
+			run(stageIdOf, JSON.stringify({ "carbonless-review": { stageId: id } })),
+		).toBe(id);
+		expect(
+			run(
+				stageIdOf,
+				JSON.stringify({ "carbonless-review": { stageId: "x; rm" } }),
+			),
+		).toBe("");
+		// Step outputs reach run: through env, never pasted into scripts.
+		for (const file of ["release.yml", "release-finish.yml"]) {
+			const runs = runValues(workflow(file));
+			expect(runs.length, file).toBeGreaterThan(5);
+			for (const run of runs) expect(run, file).not.toContain("${{");
+		}
+	});
+
 	it("no workflow has an npm token; only master's `npm` environment gets OIDC, with no dependency code", () => {
 		const files = readdirSync(
 			join(import.meta.dirname, "../.github/workflows"),
@@ -1469,7 +1611,13 @@ describe("release-finish: each step only once", () => {
 				if (npmWrite) expect(oidc, `${file}:${name}`).toBe(true);
 				if (oidc) {
 					expect(job, `${file}:${name}`).toMatch(/^ {4}environment: npm$/m);
-					expect(job, `${file}:${name}`).not.toMatch(/pnpm (install|exec)|tsx/);
+					// No dependency code: no package manager runs anything but
+					// installing npm itself (pinned), nothing from node_modules.
+					expect(code(job), `${file}:${name}`).not.toMatch(DEPENDENCY_CODE);
+					// Third-party actions run with the OIDC credential too: pinned.
+					for (const uses of job.match(/uses: \S+/g) ?? []) {
+						expect(uses, `${file}:${name}`).toMatch(/@[0-9a-f]{40}$/);
+					}
 				}
 			}
 		}
@@ -1478,6 +1626,54 @@ describe("release-finish: each step only once", () => {
 			"release.yml:promote-stage",
 			"release.yml:rc-publish",
 		]);
+		// Every action in the release workflows is pinned to a commit.
+		for (const file of ["release.yml", "release-finish.yml"]) {
+			for (const uses of workflow(file).match(/uses: \S+/g) ?? []) {
+				expect(uses, file).toMatch(/@[0-9a-f]{40}$/);
+			}
+		}
+		// What counts as dependency code.
+		for (const bad of [
+			"npm ci",
+			"npm install",
+			"npm i express",
+			"npm install -g npm@latest",
+			"npx foo",
+			"npm exec foo",
+			"npm run build",
+			"yarn",
+			"pnpm -r build",
+			"pnpm release local",
+			"node node_modules/x/cli.js",
+			"tsx a.ts",
+		]) {
+			expect(bad).toMatch(DEPENDENCY_CODE);
+		}
+		for (const fine of [
+			"npm install -g npm@12.2.1",
+			'npm publish "$TGZ" --tag rc',
+			"npm dist-tag add x rc",
+			"npm stage publish x",
+			"npm view carbonless-review version",
+			"node scripts/rc-fixup.mjs",
+			"echo `pnpm release publish 77`",
+		]) {
+			expect(fine).not.toMatch(DEPENDENCY_CODE);
+		}
+		// What can publish is the owner's to review (with a rule on master).
+		const owners = readFileSync(
+			join(import.meta.dirname, "../.github/CODEOWNERS"),
+			"utf8",
+		);
+		for (const path of [
+			"/.github/",
+			"/scripts/release*.ts",
+			"/scripts/rc-fixup.mjs",
+		]) {
+			expect(owners).toMatch(
+				new RegExp(`^${path.replace(/[.*]/g, "\\$&")} @Gilthans$`, "m"),
+			);
+		}
 		// The fix-up those jobs run has no dependencies.
 		const fixup = readFileSync(
 			join(import.meta.dirname, "rc-fixup.mjs"),

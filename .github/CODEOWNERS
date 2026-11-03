@@ -1,0 +1,9 @@
+# What can publish carbonless-review to npm: the release workflows and the
+# scripts they run. A rule on master that requires code owners' review
+# makes every change to them the owner's (docs/releasing.md, "Trusted
+# publishing").
+/.github/ @Gilthans
+/scripts/release*.ts @Gilthans
+/scripts/rc-fixup.mjs @Gilthans
+/scripts/rc-fixup.d.mts @Gilthans
+/scripts/build-info.mjs @Gilthans

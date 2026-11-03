@@ -127,7 +127,9 @@ Layout: `src/cli.ts` (entry), `src/server` (Fastify + git + gh), `src/web` (Reac
 Every merge to master publishes a release candidate to npm through trusted
 publishing (no npm token anywhere); `pnpm release promote` stages one as a
 release, and the owner approves it with npm two-factor (`pnpm release
-publish`): `docs/releasing.md` (and the npm and GitHub setup).
+publish`). The release workflows on master can publish without that
+approval, so master's rules and code owners are the real gate:
+`docs/releasing.md` (and the npm and GitHub setup).
 
 ## License
 
