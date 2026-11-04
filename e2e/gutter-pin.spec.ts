@@ -11,16 +11,19 @@ import { expect, type Pr, type PrOptions, test } from "./fixtures";
 
 const text = (lines: string[]) => `${lines.join("\n")}\n`;
 const WIDE = "src/wide.ts";
+// Renamed in the PR: a file cluster's label row above its hunk.
+const WIDE_WAS = "src/old-wide.ts";
 const lines = Array.from({ length: 14 }, (_, i) =>
 	i === 4 ? `const wide5 = "${"wide ".repeat(80)}";` : `wide ${i + 1}`,
 );
 const SHORT = "src/short.ts";
 const short = Array.from({ length: 8 }, (_, i) => `short ${i + 1}`);
 const fixture: PrOptions = {
-	base: { [WIDE]: text(lines), [SHORT]: text(short) },
+	base: { [WIDE_WAS]: text(lines), [SHORT]: text(short) },
 	files: [
 		{
 			message: "PR change",
+			rename: { [WIDE_WAS]: WIDE },
 			files: {
 				[WIDE]: text(lines.map((l, i) => (i === 2 ? "wide 3 changed" : l))),
 				[SHORT]: text(short.map((l, i) => (i === 3 ? "short 4 changed" : l))),
@@ -109,15 +112,24 @@ test("line numbers and the gutter stay put while the code scrolls sideways", asy
 		context: context.getByTestId("code"),
 		added: added.getByTestId("code"),
 	};
+	// The file cluster's label row: rail, controls, then the label's cell.
 	const clusterRow = section.locator("tbody.group > tr").first();
 	const cluster = {
 		rail: clusterRow.locator("td").first(),
 		controls: clusterRow.locator("td").nth(1),
 	};
+	await expect(clusterRow).toContainText(`Renamed from ${WIDE_WAS}`);
+	// A row's words stay in view too: the label, the hunk header, a gap's count.
+	const words = {
+		label: clusterRow.getByText(`Renamed from ${WIDE_WAS}`),
+		hunk: section.getByTestId("hunk-header").getByText(/^@@ /),
+		gap: section.getByTestId("gap-row").getByText(/hidden lines$/),
+	};
 	const before = {
 		context: await xs(rows.context),
 		added: await xs(rows.added),
 		cluster: await xs(cluster),
+		words: await xs(words),
 		code: await xs(code),
 	};
 	const scroller = diffScroller(section);
@@ -136,6 +148,7 @@ test("line numbers and the gutter stay put while the code scrolls sideways", asy
 		context: await xs(rows.context),
 		added: await xs(rows.added),
 		cluster: await xs(cluster),
+		words: await xs(words),
 		code: await xs(code),
 	};
 	// The code moved, the leading cells did not.
@@ -147,6 +160,7 @@ test("line numbers and the gutter stay put while the code scrolls sideways", asy
 		expect(after[k], k).toEqual(before[k]);
 	}
 	expect(after.cluster).toEqual(before.cluster);
+	expect(after.words).toEqual(before.words);
 	// Opaque: the row's own tint, never the code showing through.
 	for (const [k, r] of Object.entries(rows)) {
 		for (const [name, cell] of Object.entries(r)) {
@@ -178,10 +192,11 @@ test("line numbers and the gutter stay put while the code scrolls sideways", asy
 	await page.keyboard.press("Escape");
 	await expect(section.locator("tr[data-picked]")).toHaveCount(0);
 
-	// The checkbox still marks the cluster from its pinned cell.
-	const checkbox = section.getByRole("checkbox", {
-		name: "Mark cluster reviewed",
-	});
+	// The checkbox still marks the cluster from its pinned cell (on the
+	// cluster's first row, the deleted line; the file cluster's is above).
+	const checkbox = section
+		.locator('tr[data-testid="diff-line"]')
+		.getByRole("checkbox", { name: "Mark cluster reviewed" });
 	await checkbox.click();
 	await expect(checkbox).toBeChecked();
 	await expect(added).toHaveAttribute("data-reviewed", "true");

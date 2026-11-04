@@ -452,6 +452,17 @@ const PIN_NUMBER: Record<DiffSide, string> = {
 	LEFT: `${PIN} left-12 pointer-coarse:left-23`,
 	RIGHT: `${PIN} left-[calc(3rem+var(--num-w,3rem))] pointer-coarse:left-[calc(5.75rem+max(3rem,var(--num-w,3rem)))]`,
 };
+/**
+ * A row's words stay in view too (a cluster's label says what it is): an
+ * inline sticky span at its cell's start, past the cells before it and the
+ * cell's own `pl-2`. After the rail and controls (a file cluster's label, a
+ * gap's "N hidden lines", a whitespace cluster's words), after the rail
+ * alone (a crossed-off note, "No newline"), or from the table's edge (a
+ * hunk header).
+ */
+const PIN_TEXT = `${PIN} inline-block left-14 pointer-coarse:left-25`;
+const PIN_TEXT_RAIL = `${PIN} inline-block left-3`;
+const PIN_TEXT_EDGE = `${PIN} inline-block left-2`;
 
 const RAIL: Record<ClusterView["state"], string> = {
 	unreviewed: "bg-unreviewed",
@@ -1157,7 +1168,7 @@ function NoNewlineRow(props: {
 			<tr data-testid="no-newline" className="select-none">
 				<Rail state={props.state} />
 				<td colSpan={columns - 1} className="px-2 text-muted italic">
-					{NO_NEWLINE}
+					<span className={PIN_TEXT_RAIL}>{NO_NEWLINE}</span>
 				</td>
 			</tr>
 		);
@@ -2759,38 +2770,40 @@ export function DiffBody(props: {
 								)}
 							</BubbleSlot>
 						)}
-						{failed.length > 0 || short.length > 0 ? (
-							<span role="alert" className="text-bad">
-								{failed[0]?.error?.message ?? "Lines didn't load"}{" "}
-								<button
-									type="button"
-									onClick={() => {
-										for (const f of [...failed, ...short]) void f.refetch();
-									}}
-									className="rounded border border-bad/60 px-1.5 text-xs hover:bg-bad/15 focus-visible:outline-2 focus-visible:outline-accent"
-								>
-									Retry
-								</button>
-							</span>
-						) : pending || remaining > 0 ? (
-							<Labelled
-								label={
-									pending ? (
-										<Spinner label="Loading lines" size={14} />
-									) : (
-										`${remaining} hidden ${remaining === 1 ? "line" : "lines"}`
-									)
-								}
-								heading={heading}
-								reserve={labelReserve(
-									"var(--ctl-w) + 0.5rem",
-									bubbles + (runLead && !centred ? (runLead.count ?? 1) : 0),
-									runLead && centred
-										? { count: runLead.count ?? 1 }
-										: undefined,
-								)}
-							/>
-						) : null}
+						<span className={PIN_TEXT}>
+							{failed.length > 0 || short.length > 0 ? (
+								<span role="alert" className="text-bad">
+									{failed[0]?.error?.message ?? "Lines didn't load"}{" "}
+									<button
+										type="button"
+										onClick={() => {
+											for (const f of [...failed, ...short]) void f.refetch();
+										}}
+										className="rounded border border-bad/60 px-1.5 text-xs hover:bg-bad/15 focus-visible:outline-2 focus-visible:outline-accent"
+									>
+										Retry
+									</button>
+								</span>
+							) : pending || remaining > 0 ? (
+								<Labelled
+									label={
+										pending ? (
+											<Spinner label="Loading lines" size={14} />
+										) : (
+											`${remaining} hidden ${remaining === 1 ? "line" : "lines"}`
+										)
+									}
+									heading={heading}
+									reserve={labelReserve(
+										"var(--ctl-w) + 0.5rem",
+										bubbles + (runLead && !centred ? (runLead.count ?? 1) : 0),
+										runLead && centred
+											? { count: runLead.count ?? 1 }
+											: undefined,
+									)}
+								/>
+							) : null}
+						</span>
 					</td>
 				</GapRowTr>,
 			);
@@ -2828,8 +2841,10 @@ export function DiffBody(props: {
 						className={`${leadText(lead, centred)} py-1 font-sans text-sm`}
 					>
 						{lead && <LeadSlot lead={lead} centred={centred} />}
-						{cluster.label}
-						<CrossedOffNote cluster={cluster} id={noteId(cluster)} />
+						<span className={PIN_TEXT}>
+							{cluster.label}
+							<CrossedOffNote cluster={cluster} id={noteId(cluster)} />
+						</span>
 					</td>
 				</tr>
 				{lead?.row(columns, RAIL[cluster.state])}
@@ -2974,6 +2989,10 @@ export function DiffBody(props: {
 					ref={proxy}
 					data-testid="diff-scrollbar"
 					aria-hidden
+					// Chrome makes a scroller with nothing focusable in it a Tab
+					// stop: not this one (the pointer scrolls it; the keyboard
+					// has the lines).
+					tabIndex={-1}
 					className="sticky bottom-[max(5rem,var(--sync-notices,0px),var(--selection-room,0px))] z-[6] overflow-x-auto [scrollbar-width:thin] data-[overlay]:h-2.5 md:bottom-[max(var(--sync-notices,0px),var(--selection-room,0px))]"
 				>
 					<div style={{ width: overflow }} className="h-px" />
@@ -3521,15 +3540,17 @@ function HunkRows(props: {
 				>
 					<td colSpan={columns} className={`${leadText(lead, centred)} py-0.5`}>
 						{lead && <LeadSlot lead={lead} centred={centred} />}
-						<Labelled
-							label={hunkHeader(hunk)}
-							heading={props.heading}
-							reserve={labelReserve(
-								"0.5rem",
-								lead && !centred ? (lead.count ?? 1) : 0,
-								lead && centred ? { count: lead.count ?? 1 } : undefined,
-							)}
-						/>
+						<span className={PIN_TEXT_EDGE}>
+							<Labelled
+								label={hunkHeader(hunk)}
+								heading={props.heading}
+								reserve={labelReserve(
+									"0.5rem",
+									lead && !centred ? (lead.count ?? 1) : 0,
+									lead && centred ? { count: lead.count ?? 1 } : undefined,
+								)}
+							/>
+						</span>
 					</td>
 				</tr>
 				{lead?.row(columns)}
@@ -3710,10 +3731,12 @@ function HunkRows(props: {
 							<tr>
 								<Rail state={cluster.state} />
 								<td colSpan={columns - 1} className="px-2 text-xs">
-									<CrossedOffNote
-										cluster={cluster}
-										id={props.noteId(cluster)}
-									/>
+									<span className={PIN_TEXT_RAIL}>
+										<CrossedOffNote
+											cluster={cluster}
+											id={props.noteId(cluster)}
+										/>
+									</span>
 								</td>
 							</tr>
 						)}
@@ -3767,7 +3790,9 @@ function WhitespaceCluster(props: {
 					colSpan={props.columns - 2}
 					className="px-2 font-sans text-xs select-none"
 				>
-					<span className="flex items-center gap-1">
+					<span
+						className={`${PIN} flex w-fit items-center gap-1 left-14 pointer-coarse:left-25`}
+					>
 						{props.pinned ? (
 							<span className="text-muted">{words}</span>
 						) : (

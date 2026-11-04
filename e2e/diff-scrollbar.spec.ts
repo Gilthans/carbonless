@@ -106,6 +106,21 @@ test("the diff's horizontal scrollbar stays within reach while any of the diff i
 	});
 	await expect.poll(() => bar.evaluate((el) => el.scrollLeft)).toBe(40);
 
+	// Not a Tab stop (Chrome makes a scroller without focusable children
+	// one): Tab from the last line's number button passes it by.
+	await section
+		.getByTestId("diff-line")
+		.last()
+		.getByTestId("new")
+		.getByRole("button")
+		.focus();
+	await page.keyboard.press("Tab");
+	expect(
+		await page.evaluate(
+			() => document.activeElement?.getAttribute("data-testid") ?? null,
+		),
+	).not.toBe("diff-scrollbar");
+
 	// The diff's end in view: the bar sits right under the table.
 	await section.getByTestId("diff-line").last().scrollIntoViewIfNeeded();
 	await expect
