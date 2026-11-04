@@ -376,7 +376,9 @@ describe("App", () => {
 	it("the logo links Home", async () => {
 		const user = userEvent.setup();
 		const { router } = renderApp();
-		const home = await screen.findByRole("link", { name: "Home" });
+		// The full header's logo (the compact row's mark links Home too).
+		const home = await screen.findByTestId("home-link");
+		expect(home).toHaveAccessibleName("Home");
 		expect(home).toHaveAttribute("href", "/");
 		await user.click(home);
 		await waitFor(() => expect(router.state.location.pathname).toBe("/"));
@@ -430,7 +432,7 @@ describe("App", () => {
 			});
 		try {
 			act(() => draftsFor(client).setText("T-cache", "Half a thought"));
-			await user.click(screen.getByRole("link", { name: "Home" }));
+			await user.click(screen.getByTestId("home-link"));
 			await waitFor(() => expect(router.state.location.pathname).toBe("/"));
 			const ask = new Event("beforeunload", { cancelable: true });
 			window.dispatchEvent(ask);
@@ -2087,7 +2089,16 @@ describe("App header", () => {
 		// jsdom has no layout: never stuck, so it is out of reach.
 		const compact = screen.getByTestId("compact-title");
 		expect(compact).toHaveAttribute("inert");
-		expect(compact).toHaveAccessibleName("Back to top: Add widget cache #12");
+		expect(compact).toHaveAccessibleName("Back to top: Add widget cache");
+		// So are the mark's Home link and the number's GitHub link beside it.
+		const home = screen.getByTestId("compact-home-link");
+		expect(home).toHaveAttribute("inert");
+		expect(home).toHaveAccessibleName("Home");
+		expect(home).toHaveAttribute("href", "/");
+		const number = screen.getByTestId("compact-pr-link");
+		expect(number).toHaveAttribute("inert");
+		expect(number).toHaveAccessibleName("#12 on GitHub");
+		expect(number).toHaveAttribute("target", "_blank");
 	});
 });
 

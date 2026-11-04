@@ -41,6 +41,14 @@ const tabClass =
 // The active tab's underline is the brand gradient, over the header's border.
 const activeTabClass =
 	"font-semibold text-ink after:absolute after:inset-x-1.5 after:-bottom-px after:h-0.5 after:rounded-full after:brand-rule";
+// The compact pill's title and number: a 40px tap target (principle 5)
+// centred on the text, without growing the pill.
+const compactTapClass =
+	"relative before:absolute before:inset-x-0 before:top-1/2 before:h-10 before:-translate-y-1/2 before:content-['']";
+// The number keeps its width beside the clamped title, and goes when the
+// pill's slot (a phone's narrowest) has no room for both.
+const compactNumberClass =
+	"shrink-0 rounded-full font-medium text-muted @max-[4rem]:hidden";
 
 /**
  * As-of mode's marker: the PR is shown as it was at `iso`. Its tooltip says
@@ -304,19 +312,33 @@ export function App() {
 					>
 						{/*
 						 * The mark fades into the compact row as the header sticks
-						 * (--compact), where the full logo above has scrolled away. Its
-						 * slot keeps its width, so the tabs never move.
+						 * (--compact), where the full logo above has scrolled away, and
+						 * goes Home like the logo (inert until stuck). Its slot keeps
+						 * its width, so the tabs never move: the link's tap target
+						 * overflows the slot (the tabs, positioned, stay on top).
 						 */}
 						<div className="flex shrink-0 items-center self-stretch">
 							<span
-								aria-hidden
 								className="flex w-7 shrink-0 justify-center"
 								style={{
 									opacity: "var(--compact, 0)",
 									transform: "scale(calc(0.6 + 0.4 * var(--compact, 0)))",
 								}}
 							>
-								<Mark className="h-6 w-6" />
+								<Tooltip content="Home" describe={false}>
+									{(trigger) => (
+										<Link
+											{...trigger}
+											to="/"
+											inert={!stuck}
+											aria-label="Home"
+											data-testid="compact-home-link"
+											className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full focus-visible:outline-2 focus-visible:outline-accent"
+										>
+											<Mark className="h-6 w-6" />
+										</Link>
+									)}
+								</Tooltip>
 							</span>
 							<nav aria-label="PR pages" className="flex shrink-0 self-stretch">
 								<Link
@@ -358,42 +380,60 @@ export function App() {
 						{/*
 						 * The title again, small, centered between the tabs and Refresh
 						 * on a light pill, fading in over the last stretch before the
-						 * header sticks (--compact, scroll-linked). It takes you back to
-						 * the top, to the full title. Inert until stuck.
+						 * header sticks (--compact, scroll-linked). The title takes you
+						 * back to the top, to the full title; the number beside it goes
+						 * to the PR on GitHub. Both inert until stuck.
 						 */}
-						<div className="flex min-w-0 flex-1 justify-center">
+						<div className="@container flex min-h-10 min-w-0 flex-1 items-center justify-center">
 							{pr && (
-								<Tooltip content={`${pr.title} #${pr.number}`} describe={false}>
-									{(trigger) => (
-										<button
-											type="button"
-											{...trigger}
-											inert={!stuck}
-											aria-label={`Back to top: ${pr.title} #${pr.number}`}
-											data-testid="compact-title"
-											onClick={toTop}
-											style={{
-												opacity: "var(--compact, 0)",
-												transform:
-													"translateY(calc((1 - var(--compact, 0)) * 0.375rem))",
-											}}
-											className="group flex min-h-10 max-w-full min-w-0 items-center rounded-full focus-visible:outline-2 focus-visible:outline-accent"
-										>
-											<span
-												data-testid="compact-title-pill"
-												className="min-w-0 rounded-full bg-raised px-2.5 py-0.5 text-center text-xs leading-4 font-semibold text-ink ring-1 ring-line group-hover:bg-overlay group-hover:ring-line-strong sm:px-3 sm:text-sm sm:leading-5"
+								<span
+									data-testid="compact-title-pill"
+									style={{
+										opacity: "var(--compact, 0)",
+										transform:
+											"translateY(calc((1 - var(--compact, 0)) * 0.375rem))",
+									}}
+									className="flex max-w-full min-w-0 items-center gap-x-1 rounded-full bg-raised px-2.5 py-0.5 text-center text-xs leading-4 font-semibold text-ink ring-1 ring-line hover:bg-overlay hover:ring-line-strong sm:px-3 sm:text-sm sm:leading-5"
+								>
+									<Tooltip content={pr.title} describe={false}>
+										{(trigger) => (
+											<button
+												type="button"
+												{...trigger}
+												inert={!stuck}
+												aria-label={`Back to top: ${pr.title}`}
+												data-testid="compact-title"
+												onClick={toTop}
+												className={`${compactTapClass} min-w-0 rounded-full focus-visible:outline-2 focus-visible:outline-accent`}
 											>
 												{/* Two short lines on a phone, one on wider screens. */}
 												<span className="line-clamp-2 break-words sm:line-clamp-1">
-													{pr.title}{" "}
-													<span className="font-medium text-muted">
-														#{pr.number}
-													</span>
+													{pr.title}
 												</span>
-											</span>
-										</button>
+											</button>
+										)}
+									</Tooltip>
+									{prUrl ? (
+										<Tooltip content="Open on GitHub" describe={false}>
+											{(trigger) => (
+												<a
+													{...trigger}
+													href={prUrl}
+													target="_blank"
+													rel="noreferrer"
+													inert={!stuck}
+													aria-label={`#${pr.number} on GitHub`}
+													data-testid="compact-pr-link"
+													className={`${compactTapClass} ${compactNumberClass} hover:text-link hover:underline focus-visible:outline-2 focus-visible:outline-accent`}
+												>
+													#{pr.number}
+												</a>
+											)}
+										</Tooltip>
+									) : (
+										<span className={compactNumberClass}>#{pr.number}</span>
 									)}
-								</Tooltip>
+								</span>
 							)}
 						</div>
 						<Tooltip content="Reload the PR from GitHub" describe={false}>

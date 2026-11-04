@@ -1,6 +1,6 @@
 import type { Locator, Page } from "@playwright/test";
 import { reviewThread, threadComment } from "../test/fake-gh/scenario";
-import { fileSection, openFiles, progress } from "./files-ui";
+import { fileSection, openFiles, progress, tapHeight } from "./files-ui";
 import { expect, type PrOptions, test } from "./fixtures";
 
 /**
@@ -295,7 +295,10 @@ test("the compact title is centered between the tabs and Refresh, on a pill", as
 		.click();
 	await page.evaluate(() => window.scrollTo(0, 1500));
 	const title = page.getByTestId("compact-title");
-	await expect(title).toHaveCSS("opacity", "1");
+	await expect(page.getByTestId("compact-title-pill")).toHaveCSS(
+		"opacity",
+		"1",
+	);
 	const box = async (l: Locator) => {
 		const b = await l.boundingBox();
 		if (!b) throw new Error("not rendered");
@@ -308,7 +311,7 @@ test("the compact title is centered between the tabs and Refresh, on a pill", as
 	expect(Math.abs(pill.x + pill.width / 2 - gapCenter)).toBeLessThanOrEqual(4);
 	expect(pill.x).toBeGreaterThanOrEqual(nav.x + nav.width);
 	expect(pill.x + pill.width).toBeLessThanOrEqual(refresh.x);
-	expect((await box(title)).height).toBeGreaterThanOrEqual(40);
+	expect(await tapHeight(title)).toBeGreaterThanOrEqual(40);
 	const bg = await page
 		.getByTestId("compact-title-pill")
 		.evaluate((el) => getComputedStyle(el).backgroundColor);
