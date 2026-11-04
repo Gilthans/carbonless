@@ -26,7 +26,8 @@ import { hunkWordMarks } from "./wordBlocks";
  * hunkWordMarks. Every difference from GitHub's observed marks is listed in
  * known-differences.json with its reason. The list may only shrink, except by
  * an owner decision: dated and quoted in the entry's reason, and recorded in
- * the spec's "Decided by the owner" (2026-11-04 grew it from 5 to 23).
+ * the spec's "Decided by the owner" (2026-11-04 grew it from 5 to 23; the
+ * same day's bridging of spaces between two changes shrank it to 8).
  */
 
 // Real git processes: see GIT_TEST_TIMEOUTS.

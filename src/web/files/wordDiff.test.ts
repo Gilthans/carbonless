@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Mark } from "../code/Invisibles";
-import { tokenize, WORD_DIFF_MAX, wordMarks } from "./wordDiff";
+import { tokenize, tokenMarks, WORD_DIFF_MAX, wordMarks } from "./wordDiff";
 
 /** A small seeded PRNG (mulberry32), so a failure reproduces. */
 function rng(seed: number) {
@@ -109,21 +109,80 @@ describe("wordMarks", () => {
 		expect(wordMarks(a, b)).toEqual({ old: quotes, new: quotes });
 	});
 
-	it("folds nothing: each changed word its own mark, the spaces between plain", () => {
+	it("bridges the spaces between two changes: one mark per side", () => {
+		// Owner, 2026-11-04: "Merge the spaces between two changes into one.
+		// That makes sense."
 		expect(wordMarks("a b c d", "w x y z")).toEqual({
+			old: [[0, 7]],
+			new: [[0, 7]],
+		});
+	});
+
+	it("bridges a tab run and a mixed space/tab run between two changes", () => {
+		expect(wordMarks("a\t\tb", "x\t\ty")).toEqual({
+			old: [[0, 4]],
+			new: [[0, 4]],
+		});
+		expect(wordMarks("a \t b;", "x \t y;")).toEqual({
+			old: [[0, 5]],
+			new: [[0, 5]],
+		});
+	});
+
+	it("never bridges a word, a digit run or punctuation between two changes", () => {
+		expect(wordMarks("foo(a, b)", "bar(a, c)")).toEqual({
+			old: [
+				[0, 3],
+				[7, 8],
+			],
+			new: [
+				[0, 3],
+				[7, 8],
+			],
+		});
+		expect(wordMarks("x a y", "z a w")).toEqual({
 			old: [
 				[0, 1],
-				[2, 3],
 				[4, 5],
-				[6, 7],
 			],
 			new: [
 				[0, 1],
-				[2, 3],
 				[4, 5],
-				[6, 7],
 			],
 		});
+		expect(wordMarks("x 42 y", "z 42 w")).toEqual({
+			old: [
+				[0, 1],
+				[5, 6],
+			],
+			new: [
+				[0, 1],
+				[5, 6],
+			],
+		});
+		expect(wordMarks("x , y", "z , w")).toEqual({
+			old: [
+				[0, 1],
+				[4, 5],
+			],
+			new: [
+				[0, 1],
+				[4, 5],
+			],
+		});
+	});
+
+	it("never bridges whitespace next to only one change", () => {
+		expect(wordMarks("a  ", "b  ")).toEqual({ old: [[0, 1]], new: [[0, 1]] });
+		expect(wordMarks("  a b", "  x y")).toEqual({
+			old: [[2, 5]],
+			new: [[2, 5]],
+		});
+		expect(wordMarks("a b \t", "x y \t")).toEqual({
+			old: [[0, 3]],
+			new: [[0, 3]],
+		});
+		expect(wordMarks("a b c", "a b")).toEqual({ old: [[3, 5]], new: [] });
 	});
 
 	it("marks a renamed identifier as one token", () => {
@@ -179,7 +238,7 @@ describe("wordMarks", () => {
 		});
 	});
 
-	it("is exactly a token diff, for any pair (500 seeded pairs)", () => {
+	it("before bridging, is exactly a token diff, for any pair (500 seeded pairs)", () => {
 		const alphabet = ["a", "b", "c", " ", "_", ".", "é", "👍", "\t", "1"];
 		const random = rng(20261102);
 		const line = () => {
@@ -193,7 +252,7 @@ describe("wordMarks", () => {
 		for (let k = 0; k < 500; k++) {
 			const a = line();
 			const b = line();
-			const { old, new: young } = wordMarks(a, b);
+			const { old, new: young } = tokenMarks(a, b);
 			// A \r both lines end in is never marked; one only one has is a token.
 			const both = a.endsWith("\r") && b.endsWith("\r");
 			const strip = (s: string) => (both ? s.slice(0, -1) : s);
@@ -217,7 +276,7 @@ describe("wordMarks", () => {
 		}
 	});
 
-	it("never marks a token the diff keeps: shared words first, then spaces (1,000 seeded pairs)", () => {
+	it("before bridging, never marks a token the diff keeps: shared words first, then spaces (1,000 seeded pairs)", () => {
 		// Words first: the non-whitespace tokens left unmarked are a longest
 		// common subsequence of the two lines' non-whitespace tokens (no shared
 		// word is traded for a space). Then nothing folds: between two kept
@@ -277,7 +336,7 @@ describe("wordMarks", () => {
 		for (let k = 0; k < 1000; k++) {
 			const a = line();
 			const b = line();
-			const { old, new: young } = wordMarks(a, b);
+			const { old, new: young } = tokenMarks(a, b);
 			const both = a.endsWith("\r") && b.endsWith("\r");
 			const ta = tokens(a, old, both);
 			const tb = tokens(b, young, both);
@@ -316,6 +375,84 @@ describe("wordMarks", () => {
 				});
 			});
 		}
+	});
+
+	it("bridges exactly the whitespace runs between two changes, nothing else (1,000 seeded pairs)", () => {
+		// Owner, 2026-11-04: "Merge the spaces between two changes into one."
+		// Oracle, per side: the token diff's marks (tokenMarks), plus every run
+		// of unmarked tokens that are all whitespace with a marked token right
+		// before and right after it. So an unchanged word, digit run or
+		// punctuation token is never inside a mark, and the kept words are
+		// still a longest common subsequence (the test above).
+		const blank = (t: string) => /^\s$/u.test(t);
+		const flags = (ts: string[], marks: readonly Mark[]) => {
+			let at = 0;
+			return ts.map((t) => {
+				const marked = marks.some(([f, to]) => at >= f && at < to);
+				at += t.length;
+				return marked;
+			});
+		};
+		const words = ["width", "x", "a", "42", "=", "*", "(", ")", ";", "'"];
+		words.push("  ", "\t", " \t", "😀", "é", "e\u0301");
+		const random = rng(20261105);
+		const line = () => {
+			let s = "";
+			const n = Math.floor(random() * 16);
+			for (let i = 0; i < n; i++) {
+				const r = random();
+				s += r < 0.35 ? (r < 0.05 ? "\t" : " ") : "";
+				if (r < 0.1) continue;
+				s += words[Math.floor(random() * words.length)];
+			}
+			return random() < 0.1 ? `${s}\r` : s;
+		};
+		let bridged = 0;
+		for (let k = 0; k < 1000; k++) {
+			const a = line();
+			const b = line();
+			const both = a.endsWith("\r") && b.endsWith("\r");
+			const raw = tokenMarks(a, b);
+			const got = wordMarks(a, b);
+			for (const [text, rawMarks, marks] of [
+				[a, raw.old, got.old],
+				[b, raw.new, got.new],
+			] as const) {
+				const body = both ? text.slice(0, -1) : text;
+				const edges = boundaries(text);
+				let last = -1;
+				for (const [from, to] of marks) {
+					expect(from).toBeGreaterThan(last); // sorted, apart (merged)
+					expect(to).toBeGreaterThan(from);
+					expect(to).toBeLessThanOrEqual(body.length);
+					expect(edges.has(from) && edges.has(to)).toBe(true);
+					last = to;
+				}
+				const ts = tokenize(body);
+				const before = flags(ts, rawMarks);
+				const expected = [...before];
+				for (let i = 0; i < ts.length; ) {
+					if (before[i] || !blank(ts[i] as string)) {
+						i++;
+						continue;
+					}
+					let e = i;
+					while (e < ts.length && !before[e] && blank(ts[e] as string)) e++;
+					if (i > 0 && before[i - 1] && e < ts.length && before[e]) {
+						expected.fill(true, i, e);
+						bridged++;
+					}
+					i = e;
+				}
+				const after = flags(ts, marks);
+				expect({ text, after }).toEqual({ text, after: expected });
+				ts.forEach((t, i) => {
+					if (!blank(t)) expect(after[i]).toBe(before[i]);
+				});
+			}
+		}
+		// The seeds do reach the rule.
+		expect(bridged).toBeGreaterThan(100);
 	});
 
 	/** Code-like 120-character lines: 400 identifiers, keywords, numbers, operators. */

@@ -3,8 +3,9 @@ import type { Mark } from "../code/Invisibles";
 
 /**
  * Word marks inside one pair of lines: GitHub's tokens, pairing and length
- * cut, the owner's marking rules (words first, nothing folds, a lone `\r`
- * marked; spec: docs/superpowers/specs/2026-11-01-inline-diff-design.md).
+ * cut, the owner's marking rules (words first, nothing folds but the
+ * spaces between two changes, a lone `\r` marked; spec:
+ * docs/superpowers/specs/2026-11-01-inline-diff-design.md).
  * A pair with a line this long or longer (UTF-16 `length`) has no marks, as
  * on GitHub.
  */
@@ -189,9 +190,10 @@ function ranges(changed: Uint8Array, ends: number[]): Mark[] {
  *    spaces included.
  * A token is marked when a diff says it changed; nothing folds (owner,
  * 2026-11-04). A trailing `\r` is marked only when one line alone ends in
- * it. No marks when either line is too long.
+ * it. No marks when either line is too long. Before bridging: `wordMarks`
+ * is what the view shows.
  */
-export function wordMarks(
+export function tokenMarks(
 	oldText: string,
 	newText: string,
 ): { old: Mark[]; new: Mark[] } {
@@ -240,4 +242,52 @@ export function wordMarks(
 	}
 	gap(ta.ends.length, tb.ends.length);
 	return { old: ranges(changedA, ta.ends), new: ranges(changedB, tb.ends) };
+}
+
+/** Whitespace only, at least one code point. */
+const BLANKS = /^\s+$/u;
+
+/** Whether `[from, to)` of `text` is whitespace only (spaces and tabs without the regex). */
+function blankRun(text: string, from: number, to: number): boolean {
+	if (from >= to) return false;
+	for (let i = from; i < to; i++) {
+		const c = text.charCodeAt(i);
+		if (c !== 0x20 && c !== 0x09) return BLANKS.test(text.slice(from, to));
+	}
+	return true;
+}
+
+/**
+ * Two marks joined when only whitespace sits between them (owner,
+ * 2026-11-04: "Merge the spaces between two changes into one. That makes
+ * sense."). Marks are merged ranges of whole tokens and every whitespace
+ * code point is a token of its own, so the gap between two marks is
+ * unchanged tokens, all whitespace exactly when this matches.
+ */
+function bridge(text: string, marks: Mark[]): Mark[] {
+	const out: [number, number][] = [];
+	for (const [from, to] of marks) {
+		const last = out[out.length - 1];
+		if (last && blankRun(text, last[1], from)) last[1] = to;
+		else out.push([from, to]);
+	}
+	return out;
+}
+
+/**
+ * The marks the view shows: `tokenMarks`, then on each side a run of
+ * unchanged whitespace with a change right before and right after it is
+ * marked too, so the two changes and the spaces between are one mark. An
+ * unchanged word, digit run or punctuation token keeps two changes apart;
+ * whitespace next to one change alone stays plain.
+ */
+export function wordMarks(
+	oldText: string,
+	newText: string,
+): { old: Mark[]; new: Mark[] } {
+	const marks = tokenMarks(oldText, newText);
+	return {
+		old: bridge(oldText, marks.old),
+		new: bridge(newText, marks.new),
+	};
 }

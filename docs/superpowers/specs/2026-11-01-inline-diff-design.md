@@ -53,8 +53,8 @@ the test fixture (below).
   between changes into one mark: `const area = width * height` →
   `const area  =  width*height` marks `= width * ` / ` =  width*` (the
   unchanged `width` folded in), while separate changes far apart stay
-  separate marks. Carbonless aligns words first and folds nothing (see
-  **What** under **The marks**).
+  separate marks. Carbonless aligns words first and folds only the spaces
+  between two changes (see **What** under **The marks**).
 - **Whitespace.** Indentation and inner spaces are tokens like any other: a
   re-indent is marked, an added indent after the kept one. A pair that
   differs only by `\r\n` vs `\n` shows no marks (carbonless marks that
@@ -83,19 +83,28 @@ the test fixture (below).
   2. **Then the gaps:** each run between two anchors (and before the
      first, after the last) is diffed token by token, spaces included.
 
-  A token is marked when a diff says it changed, and nothing else is:
-  no cleanup folds unchanged tokens into a mark (owner, 2026-11-04: "I'd
-  rather for the punctuation to be marked separately, instead of the
-  entire token"). Adjacent changed tokens merge into one mark, so a run
-  of changed words reads as one mark per word with the unchanged spaces
-  between them plain. A trailing `\r` both lines end in is never marked;
+  A token is marked when a diff says it changed; no cleanup folds
+  unchanged tokens into a mark (owner, 2026-11-04: "I'd rather for the
+  punctuation to be marked separately, instead of the entire token"),
+  with one exception:
+  3. **Spaces between two changes:** on each side, a run of unchanged
+     tokens that are all whitespace (spaces, tabs, mixed), with a changed
+     token right before and right after it on that side, is marked too,
+     so the two changes and the spaces between them are one mark (owner,
+     2026-11-04: "Merge the spaces between two changes into one. That
+     makes sense."). An unchanged word, digit run or punctuation token
+     between two changes keeps them apart (cases `06`, `13`), and
+     whitespace next to one change only (leading, trailing, beside an
+     unchanged word) stays plain.
+
+  Adjacent changed tokens merge into one mark, so a run of changed words
+  reads as one mark. A trailing `\r` both lines end in is never marked;
   one only one line ends in is a changed token and is marked (owner,
-  2026-11-04, case `22`). On PR #14 this gives GitHub's exact marks on 143
-  of 166 pairs (the 899 public pairs not re-measured). The 23 PR #14
-  differences: GitHub folds the unchanged spaces and punctuation between
-  changes into one mark (`06`, `11`, `13`, `21`, `30-*`, `31-*`, `41`,
-  `46`, `47`), and GitHub doesn't mark a lone `\r` (`22`, `23`); see
-  **Decided by the owner**.
+  2026-11-04, case `22`). On PR #14 this gives GitHub's exact marks on 158
+  of 166 pairs (the 899 public pairs not re-measured). The 8 PR #14
+  differences: GitHub folds unchanged words, punctuation, or a space next
+  to one change into a mark (`06`, `13`, `21`, `41`, `46`), and GitHub
+  doesn't mark a lone `\r` (`22`, `23`); see **Decided by the owner**.
 - **Look** (mockups in the published page): a stronger tint of the line's own color behind the marked
   characters: new tokens `add-word` / `del-word` (and `add-word-done` /
   `del-word-done` on reviewed lines, the same step up from `add-done` /
@@ -195,13 +204,17 @@ in the report, not gated (wall clock is too noisy for a 10% gate).
   cut, Ignore whitespace on and off) or in which characters, is on a
   known-differences list with its reason. The list may only shrink, except
   by an owner decision, dated and quoted in the entry's reason and recorded
-  under **Decided by the owner** (2026-11-04 grew it from 5 to 23).
+  under **Decided by the owner** (2026-11-04 grew it from 5 to 23; the
+  same day's bridging rule shrank it to 8).
 - **Unit, properties:** marks are within the line, sorted, non-overlapping,
   on token boundaries; unmarking every mark gives back both lines' common
   tokens in order (the marks are exactly a diff); the unmarked
   non-whitespace tokens are a longest common subsequence of the lines'
   non-whitespace tokens, and between two of them the unmarked tokens are
-  a longest common subsequence of that gap (words first, nothing folds);
+  a longest common subsequence of that gap (words first, nothing folds),
+  all before bridging; after it, the marks add exactly each run of
+  unmarked whitespace with a mark right before and after it, so an
+  unchanged non-whitespace token is never inside a mark;
   an equal pair has no marks; a pair over the cut and every unequal block
   have none; a `\r` only one line ends in is marked.
 - **Unit, render:** a marked token renders with the word tint over its
@@ -223,14 +236,19 @@ in the report, not gated (wall clock is too noisy for a 10% gate).
 - **Tighter marks, not GitHub's folding** (2026-11-02): "You can go ahead
   and use the tighter version. I'm not 100% it's strictly better, but I'm
   not sure it's an interesting edge case anyway, so let's do what's
-  easier." Superseded by the next three (2026-11-04).
+  easier." Superseded by the next four (2026-11-04).
 - **Unchanged words are never marked** (2026-11-04, owner QA of carbonless
   PR #13, gallery #14 case `06`): "Number (6) highlights the "width" token despite it not being
   changed (only whitespace changed)". Words are aligned first (**What**).
 - **No folding** (2026-11-04, same QA, case `13`): "I'd rather for the punctuation
   to be marked separately, instead of the entire token". No
   `diff_cleanupEfficiency`; very different lines get one mark per changed
-  word.
+  word, joined by the next rule.
+- **Spaces between two changes are one mark** (2026-11-04, asked after the
+  no-folding marks: keep one mark per changed word, or merge a run of
+  spaces between two changes?): "Merge the spaces between two changes into
+  one. That makes sense." Only whitespace bridges; words and punctuation
+  between changes keep them apart (**What**, step 3).
 - **A lone `\r` is marked** (2026-11-04, same QA, case `22`): "it's very confusing
   to see there's a diff despite having nothing visibly change. Also, when
   hidden characters are shown, the \r is not highlighted - it should be."
