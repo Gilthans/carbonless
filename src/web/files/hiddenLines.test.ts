@@ -88,6 +88,16 @@ describe("hiddenLines", () => {
 		expect(hiddenLines(ws, words, 4)).toEqual(new Set([d2, a2]));
 	});
 
+	it("names a line whose changed trailing blank is bridged onto a visible change", () => {
+		// "a  " → "x \t": the tab changed and draws nothing, bridged to `x`.
+		const d = del("a  ");
+		const a = add("x \t");
+		const ws = rows(d, a);
+		const words = hunkWordMarks(ws);
+		expect(words.get(a)).toEqual([[0, 3]]);
+		expect(hiddenLines(ws, words, 4).has(a)).toBe(true);
+	});
+
 	it("reads a last line without a newline as the reader sees it: its \\r is drawn", () => {
 		const d = del("x", true);
 		const a = add("x\r", true);

@@ -88,12 +88,15 @@ the test fixture (below).
   punctuation to be marked separately, instead of the entire token"),
   with one exception:
   3. **Spaces between two changes:** on each side, a run of unchanged
-     tokens that are all whitespace (spaces, tabs, mixed), with a changed
+     tokens that are all spaces and tabs (mixed too), with a changed
      token right before and right after it on that side, is marked too,
      so the two changes and the spaces between them are one mark (owner,
      2026-11-04: "Merge the spaces between two changes into one. That
      makes sense."). An unchanged word, digit run or punctuation token
-     between two changes keeps them apart (cases `06`, `13`), and
+     between two changes keeps them apart (cases `06`, `13`), as does
+     other whitespace (a no-break, ideographic or zero-width no-break
+     space draws as a `\uXXXX` escape; a mid-line `\r`, `\v`, `\f` or
+     line separator isn't a plain blank), and
      whitespace next to one change only (leading, trailing, beside an
      unchanged word) stays plain.
 
@@ -123,8 +126,10 @@ the test fixture (below).
   over the row and keep showing over word marks.
 - **A change hidden characters hide** (owner, 2026-11-04): with Show
   hidden characters off, a line whose marks hold a change that doesn't
-  show (`hiddenChange.ts`: a mark that draws nothing, i.e. a CRLF's `\r`
-  or trailing spaces and tabs, or a line that looks exactly like its
+  show (`hiddenChange.ts`: a mark that reaches into what draws nothing,
+  i.e. a CRLF's `\r` or trailing spaces and tabs, even when it starts on
+  something drawn, as a changed trailing tab bridged onto the change before
+  it does; or a line that looks exactly like its
   partner, i.e. a tab swapped for spaces of the same width) gets a yellow
   ⚠ in its sign's place, as wide as the sign so the code never moves (a
   40px target on a touch screen, reaching right from the cell's edge,
@@ -213,7 +218,7 @@ in the report, not gated (wall clock is too noisy for a 10% gate).
   non-whitespace tokens, and between two of them the unmarked tokens are
   a longest common subsequence of that gap (words first, nothing folds),
   all before bridging; after it, the marks add exactly each run of
-  unmarked whitespace with a mark right before and after it, so an
+  unmarked spaces and tabs with a mark right before and after it, so an
   unchanged non-whitespace token is never inside a mark;
   an equal pair has no marks; a pair over the cut and every unequal block
   have none; a `\r` only one line ends in is marked.
@@ -247,7 +252,7 @@ in the report, not gated (wall clock is too noisy for a 10% gate).
 - **Spaces between two changes are one mark** (2026-11-04, asked after the
   no-folding marks: keep one mark per changed word, or merge a run of
   spaces between two changes?): "Merge the spaces between two changes into
-  one. That makes sense." Only whitespace bridges; words and punctuation
+  one. That makes sense." Only spaces and tabs bridge; words and punctuation
   between changes keep them apart (**What**, step 3).
 - **A lone `\r` is marked** (2026-11-04, same QA, case `22`): "it's very confusing
   to see there's a diff despite having nothing visibly change. Also, when

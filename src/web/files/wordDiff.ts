@@ -244,25 +244,27 @@ export function tokenMarks(
 	return { old: ranges(changedA, ta.ends), new: ranges(changedB, tb.ends) };
 }
 
-/** Whitespace only, at least one code point. */
-const BLANKS = /^\s+$/u;
-
-/** Whether `[from, to)` of `text` is whitespace only (spaces and tabs without the regex). */
+/**
+ * Whether `[from, to)` of `text` is spaces and tabs only, at least one.
+ * Other whitespace doesn't bridge: no-break, ideographic and zero-width
+ * no-break spaces draw as `\uXXXX` escapes, and a mid-line `\r`, `\v`, `\f`
+ * or line separator isn't a plain blank.
+ */
 function blankRun(text: string, from: number, to: number): boolean {
 	if (from >= to) return false;
 	for (let i = from; i < to; i++) {
 		const c = text.charCodeAt(i);
-		if (c !== 0x20 && c !== 0x09) return BLANKS.test(text.slice(from, to));
+		if (c !== 0x20 && c !== 0x09) return false;
 	}
 	return true;
 }
 
 /**
- * Two marks joined when only whitespace sits between them (owner,
+ * Two marks joined when only spaces and tabs sit between them (owner,
  * 2026-11-04: "Merge the spaces between two changes into one. That makes
  * sense."). Marks are merged ranges of whole tokens and every whitespace
  * code point is a token of its own, so the gap between two marks is
- * unchanged tokens, all whitespace exactly when this matches.
+ * unchanged tokens, all spaces and tabs exactly when `blankRun` says so.
  */
 function bridge(text: string, marks: Mark[]): Mark[] {
 	const out: [number, number][] = [];
@@ -276,7 +278,7 @@ function bridge(text: string, marks: Mark[]): Mark[] {
 
 /**
  * The marks the view shows: `tokenMarks`, then on each side a run of
- * unchanged whitespace with a change right before and right after it is
+ * unchanged spaces and tabs with a change right before and right after it is
  * marked too, so the two changes and the spaces between are one mark. An
  * unchanged word, digit run or punctuation token keeps two changes apart;
  * whitespace next to one change alone stays plain.

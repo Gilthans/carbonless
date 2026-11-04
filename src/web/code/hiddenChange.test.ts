@@ -128,10 +128,30 @@ describe("hiddenChange", () => {
 		);
 	});
 
-	it("isn't a mark that also covers something drawn (the change shows there)", () => {
+	it("isn't a mark that covers only something drawn before the trailing blanks", () => {
+		expect(
+			hiddenChange("x; // c ", [[2, 7]], { partner: { text: "x; " } }),
+		).toBe(false);
+	});
+
+	it("is a mark that reaches into the trailing blanks: a changed one there draws nothing", () => {
+		// Marks are whole changed tokens, merged or bridged across unchanged
+		// spaces between two changes, so a mark ends in the trail only when
+		// a trailing blank changed. "a  " → "x \t": [[0,1],[2,3]] bridged.
+		expect(hiddenChange("x \t", [[0, 3]], { partner: { text: "a  " } })).toBe(
+			true,
+		);
+		expect(
+			hiddenChange("baz \t", [[0, 5]], { partner: { text: "foo bar" } }),
+		).toBe(true);
+		// A lone \r merged onto the changed token before it ("a b\r" vs "x y").
+		expect(hiddenChange("a b\r", [[0, 4]], { partner: { text: "x y" } })).toBe(
+			true,
+		);
+		// The whole added tail, its trailing space included.
 		expect(
 			hiddenChange("x; // c ", [[2, 8]], { partner: { text: "x;" } }),
-		).toBe(false);
+		).toBe(true);
 	});
 
 	it("is any mark that draws nothing, beside one that shows", () => {

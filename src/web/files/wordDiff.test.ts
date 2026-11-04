@@ -172,6 +172,35 @@ describe("wordMarks", () => {
 		});
 	});
 
+	it("bridges only spaces and tabs: other whitespace keeps two changes apart", () => {
+		// No-break, ideographic and zero-width no-break spaces draw as
+		// \uXXXX escapes; a mid-line \r, \v, \f and U+2028 are not plain blanks.
+		const two = {
+			old: [
+				[0, 1],
+				[2, 3],
+			],
+			new: [
+				[0, 1],
+				[2, 3],
+			],
+		};
+		for (const sep of [
+			"\u00a0",
+			"\u3000",
+			"\ufeff",
+			"\r",
+			"\v",
+			"\f",
+			"\u2028",
+		]) {
+			expect({ sep, marks: wordMarks(`a${sep}b`, `x${sep}y`) }).toEqual({
+				sep,
+				marks: two,
+			});
+		}
+	});
+
 	it("never bridges whitespace next to only one change", () => {
 		expect(wordMarks("a  ", "b  ")).toEqual({ old: [[0, 1]], new: [[0, 1]] });
 		expect(wordMarks("  a b", "  x y")).toEqual({
@@ -380,11 +409,11 @@ describe("wordMarks", () => {
 	it("bridges exactly the whitespace runs between two changes, nothing else (1,000 seeded pairs)", () => {
 		// Owner, 2026-11-04: "Merge the spaces between two changes into one."
 		// Oracle, per side: the token diff's marks (tokenMarks), plus every run
-		// of unmarked tokens that are all whitespace with a marked token right
+		// of unmarked tokens that are all spaces or tabs with a marked token right
 		// before and right after it. So an unchanged word, digit run or
 		// punctuation token is never inside a mark, and the kept words are
 		// still a longest common subsequence (the test above).
-		const blank = (t: string) => /^\s$/u.test(t);
+		const blank = (t: string) => t === " " || t === "\t";
 		const flags = (ts: string[], marks: readonly Mark[]) => {
 			let at = 0;
 			return ts.map((t) => {
@@ -394,7 +423,7 @@ describe("wordMarks", () => {
 			});
 		};
 		const words = ["width", "x", "a", "42", "=", "*", "(", ")", ";", "'"];
-		words.push("  ", "\t", " \t", "😀", "é", "e\u0301");
+		words.push("  ", "\t", " \t", "😀", "é", "e\u0301", "\u00a0", "\u3000");
 		const random = rng(20261105);
 		const line = () => {
 			let s = "";
@@ -447,7 +476,12 @@ describe("wordMarks", () => {
 				const after = flags(ts, marks);
 				expect({ text, after }).toEqual({ text, after: expected });
 				ts.forEach((t, i) => {
-					if (!blank(t)) expect(after[i]).toBe(before[i]);
+					if (!blank(t))
+						expect({ text, i, after: after[i] }).toEqual({
+							text,
+							i,
+							after: before[i],
+						});
 				});
 			}
 		}
