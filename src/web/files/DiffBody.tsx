@@ -2165,6 +2165,8 @@ export function DiffBody(props: {
 	const table = useRef<HTMLTableElement>(null);
 	useStickyControls(root, scroller);
 	useVisibleWidth(scroller);
+	const proxy = useRef<HTMLDivElement>(null);
+	const overflow = useScrollbarProxy(scroller, table, proxy);
 	useBubbleFocusKept(scroller, wide);
 	const onPointerDown = useOneSideSelection(table, view);
 	const { hint, landed, pending } = useLanding(
@@ -2919,7 +2921,11 @@ export function DiffBody(props: {
 					)}
 				</div>
 			)}
-			<div ref={scroller} className="overflow-x-auto">
+			{/* Its own bar is hidden: the proxy below is the one bar (useScrollbarProxy). */}
+			<div
+				ref={scroller}
+				className="overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+			>
 				{/*
 				 * Unified, the table is as wide as its longest line and scrolls in
 				 * the div; side by side it is the div's width, its two code columns
@@ -2960,6 +2966,19 @@ export function DiffBody(props: {
 					{tailRows}
 				</table>
 			</div>
+			{overflow !== null && (
+				// Stuck to the viewport's bottom while the diff's end is below it,
+				// clear of what floats there (the phone's Files button below md,
+				// the save notices, the selection bar: FilesPage's paddingBottom).
+				<div
+					ref={proxy}
+					data-testid="diff-scrollbar"
+					aria-hidden
+					className="sticky bottom-[max(5rem,var(--sync-notices,0px),var(--selection-room,0px))] z-[6] overflow-x-auto [scrollbar-width:thin] data-[overlay]:h-2.5 md:bottom-[max(var(--sync-notices,0px),var(--selection-room,0px))]"
+				>
+					<div style={{ width: overflow }} className="h-px" />
+				</div>
+			)}
 			{props.from !== undefined && hunks.data && unshownToRead > 0 && (
 				// Clusters the engine says are to read (reworked or new) with no
 				// line in these hunks (unreviewed on the compared patch set and
@@ -3142,6 +3161,60 @@ function useBubbleFocusKept(
 			)
 			?.focus({ preventScroll: true });
 	});
+}
+
+/**
+ * The diff's horizontal scrollbar, usable whenever any of the diff is on
+ * screen: `proxy`, a scroll box under the table holding a spacer as wide as
+ * the table, is sticky at the viewport's bottom while the diff's end is
+ * below it and sits at the diff's end once that is in view. It scrolls the
+ * table and follows it: each one's scroll sets the other's `scrollLeft`,
+ * and one already there sets nothing, so there is no loop. Rendered (the
+ * returned width, the table's) only while the table is wider than its box,
+ * measured again when either changes size (ResizeObserver), never per
+ * frame.
+ */
+function useScrollbarProxy(
+	scroller: RefObject<HTMLDivElement | null>,
+	table: RefObject<HTMLTableElement | null>,
+	proxy: RefObject<HTMLDivElement | null>,
+): number | null {
+	const [width, setWidth] = useState<number | null>(null);
+	useLayoutEffect(() => {
+		const el = scroller.current;
+		if (!el) return;
+		const measure = () =>
+			setWidth(el.scrollWidth > el.clientWidth ? el.scrollWidth : null);
+		measure();
+		if (typeof ResizeObserver === "undefined") return;
+		const observer = new ResizeObserver(measure);
+		observer.observe(el);
+		if (table.current) observer.observe(table.current);
+		return () => observer.disconnect();
+	}, [scroller, table]);
+	const shown = width !== null;
+	useEffect(() => {
+		const el = scroller.current;
+		const bar = proxy.current;
+		if (!shown || !el || !bar) return;
+		const follow = (from: HTMLElement, to: HTMLElement) => () => {
+			if (to.scrollLeft !== from.scrollLeft) to.scrollLeft = from.scrollLeft;
+		};
+		const tableScrolled = follow(el, bar);
+		const barScrolled = follow(bar, el);
+		// The bar starts where the table is (a scroll kept from before).
+		tableScrolled();
+		// An overlay scrollbar (a phone's, a Mac's with a trackpad) takes no
+		// room and draws inside the box: the box is made tall enough for it.
+		if (bar.offsetHeight === bar.clientHeight) bar.dataset.overlay = "";
+		el.addEventListener("scroll", tableScrolled, { passive: true });
+		bar.addEventListener("scroll", barScrolled, { passive: true });
+		return () => {
+			el.removeEventListener("scroll", tableScrolled);
+			bar.removeEventListener("scroll", barScrolled);
+		};
+	}, [scroller, proxy, shown]);
+	return width;
 }
 
 /**

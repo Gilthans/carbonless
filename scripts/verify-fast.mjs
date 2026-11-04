@@ -117,6 +117,8 @@ const E2E_MAP = [
 			"tree-resize",
 			"find",
 			"gutter-pin",
+			"diff-scrollbar",
+			"keepalive",
 		],
 	],
 	[/^src\/web\/index\.css$/, ["gutter-pin", "sticky"]],
