@@ -1,10 +1,10 @@
 # Re-review after new pushes: design
 
-2026-11-04. Commentable copy: https://claude.ai/artifact/AhZDkCdqR4dyayMnFdsAqr (the doc is the working copy; this file mirrors it). Mockups: https://claude.ai/artifact/EP31yvNhgGwQEfdgMmDXuD
+2026-11-04. Commentable copy: https://claude.ai/artifact/M74PoxCz754YzTV7Nabwvd (the doc is the working copy; this file mirrors it). Mockups: https://claude.ai/artifact/WixND7ZrR3EMTAHAqMR7iL. Earlier copies under another account: doc https://claude.ai/artifact/AhZDkCdqR4dyayMnFdsAqr, mockups https://claude.ai/artifact/EP31yvNhgGwQEfdgMmDXuD
 
 ## Intent
 
-A reviewer who comes back to a PR after the author pushed should re-read only what the author changed, with every comment and every review mark where it belongs, and should be able to go back to any earlier patch set exactly as they reviewed it. This closes the last gap before the owner reviews exclusively in carbonless (end of milestone 2). The scenarios, the survey of other tools and the decisions behind this design are in [Re-review after new pushes: scenarios and prior art](https://claude.ai/artifact/Rn3ZYY1mdj1Nh44gYw1MLJ); scenario ids below (S4b, C5, P3, I5, X2) refer to its tables.
+A reviewer who comes back to a PR after the author pushed should re-read only what the author changed, with every comment and every review mark where it belongs, and should be able to go back to any earlier patch set exactly as they reviewed it. This closes the last gap before the owner reviews exclusively in carbonless (end of milestone 2). The scenarios, the survey of other tools and the decisions behind this design are in [Re-review after new pushes: scenarios and prior art](https://claude.ai/artifact/NSJ9cTzqqRV1BiMqFBLLYE); scenario ids below (S4b, C5, P3, I5, X2) refer to its tables.
 
 ### Goals
 
@@ -191,7 +191,7 @@ Above the buttons: "You approved `a1b2c3d` (PS1), 2 days ago" and "Since then: 3
 
 ## Mockups
 
-[Re-review Mockups](https://claude.ai/artifact/EP31yvNhgGwQEfdgMmDXuD): six slices of Files changed, desktop and phone, in the app's own tokens.
+[Re-review Mockups](https://claude.ai/artifact/WixND7ZrR3EMTAHAqMR7iL): six slices of Files changed, desktop and phone, in the app's own tokens.
 
 1. **Banner and Move**: appended commits (yellow), trivial rebase (green, "nothing new"), rebase with conflicts (red); Move is the one action.
 2. **Patch set switcher**: your patch sets with date, shape and progress; the current head last with Move; the since/base segmented control; the phone sheet.

@@ -1,6 +1,6 @@
 # Re-review after new pushes: scenarios and prior art
 
-2026-11-02, decisions of 2026-11-03 folded in. Commentable copy: https://claude.ai/artifact/Rn3ZYY1mdj1Nh44gYw1MLJ (the doc is the working copy; this file mirrors it).
+2026-11-02, decisions of 2026-11-03 and 2026-11-04 folded in. Commentable copy: https://claude.ai/artifact/NSJ9cTzqqRV1BiMqFBLLYE (the doc is the working copy; this file mirrors it). Earlier copy under another account: https://claude.ai/artifact/Rn3ZYY1mdj1Nh44gYw1MLJ
 
 ## The problem
 
