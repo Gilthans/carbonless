@@ -60,6 +60,38 @@ describe("tokenize", () => {
 });
 
 describe("wordMarks", () => {
+	it("case 06: marks only the changed spaces, never the unchanged `width`", () => {
+		// Owner QA of PR #14, case 06: only whitespace changed around `=` and `*`.
+		const a = "const area = width * height + margin;";
+		const b = "const area  =  width*height + margin;";
+		const marks = wordMarks(a, b);
+		// Old: the spaces either side of `*` went. New: one space each side of
+		// `=` came (placed after the kept one, as diff-match-patch does).
+		expect(marks).toEqual({
+			old: [
+				[18, 19],
+				[20, 21],
+			],
+			new: [
+				[11, 12],
+				[14, 15],
+			],
+		});
+		const widthAt = (text: string) => [
+			text.indexOf("width"),
+			text.indexOf("width") + 5,
+		];
+		for (const [text, ranges] of [
+			[a, marks.old],
+			[b, marks.new],
+		] as const) {
+			const [from, to] = widthAt(text) as [number, number];
+			for (const [f, t] of ranges) expect(t <= from || f >= to).toBe(true);
+			// Every mark is whitespace only.
+			for (const [f, t] of ranges) expect(text.slice(f, t).trim()).toBe("");
+		}
+	});
+
 	it("marks a renamed identifier as one token", () => {
 		expect(wordMarks("const userCount = 1;", "const memberCount = 1;")).toEqual(
 			{ old: [[6, 15]], new: [[6, 17]] },
