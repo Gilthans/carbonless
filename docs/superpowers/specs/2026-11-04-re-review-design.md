@@ -39,7 +39,9 @@ A reviewer who comes back to a PR after the author pushed should re-read only wh
 - **Carry**: a cluster state of `PS1` moved to its cluster in `R` by the engine, recorded as an `auto` event naming source and rule.
 - **Placement**: where a thread sits in a snapshot: placed, placed but changed, or unplaced with a fate. Computed by the engine, stored only when discretion decided it.
 - **Since view**: Files changed filtered to what needs the reviewer's eyes in `R`: reworked and new clusters, changed and unplaced threads; carried clusters collapse with a carried mark.
-- **Base view**: Files changed showing `R`'s whole diff to its merge base, with carried marks. Same state as the since view; two projections of one patch set.
+- **Base view**: Files changed showing `R`'s whole diff to its merge base, with carried marks. Same state as the since view; two projections of one patch set, chosen by where the base marker sits.
+- **Patch set graph**: the rail in the Files changed header: the base-branch dot, one dot per patch set, and a hollow head dot when the head is newer than the last patch set; a viewed marker and a base marker on it set the comparison (owner, 2026-11-04).
+- **Viewing the head**: putting the viewed marker on the head dot shows the since view computed by the engine, with provisional carried marks. Nothing is written until the first lasting action, which starts the patch set.
 
 ## Data model and storage
 
@@ -47,7 +49,7 @@ Everything below extends `docs/review-data-storage.md` without changing what exi
 
 ### What starts a patch set
 
-Any lasting reviewer action on a snapshot: marking or crossing off a cluster (today), opening a new thread, submitting a verdict (new): each names a head. A reply, a resolve or an unresolve acts on a thread, not on a snapshot: they never start a patch set and are allowed from anywhere (the Overview after a push, an old patch set). A patch set is identified by its snapshot id, the number being a display label: Move onto a head whose snapshot already is one of the reviewer's patch sets resumes that patch set with its own states (a force-push back to an earlier head, S6, brings PS2's marks back), so two patch sets never share a snapshot id and `cluster-state` keeps its format. With no patch set yet, Move starts PS1 on the current head with no `since`; the since view needs a patch set, so the last-seen head only feeds the banner's count. The first such action on a snapshot that isn't the reviewer's current patch set writes `patchset-started` and the pin refs in one `update-ref --stdin` transaction, before the action's own event or GitHub write. Opening the PR alone never starts one: the server keeps a last-seen head per review in its own state directory (not in git: it is UI state, private to this crb instance), so the banner can say "3 new commits since you last looked" even before a patch set exists.
+Any lasting reviewer action on a snapshot: marking or crossing off a cluster (today), opening a new thread, submitting a verdict (new): each names a head. A reply, a resolve or an unresolve acts on a thread, not on a snapshot: they never start a patch set and are allowed from anywhere (the Overview after a push, an old patch set). A patch set is identified by its snapshot id, the number being a display label: viewing a head whose snapshot already is one of the reviewer's patch sets shows that patch set with its own states (a force-push back to an earlier head, S6, brings PS2's marks back), so two patch sets never share a snapshot id and `cluster-state` keeps its format. With no patch set yet, the first action starts PS1 on the viewed head with no `since`; the since view needs a patch set, so the last-seen head only feeds the banner's count. Viewing the head (the head dot of the graph, or the banner's View) writes nothing: the page shows the since view from the engine's answer, carried marks provisional (owner, 2026-11-04). The first such action on a snapshot that isn't yet a patch set writes `patchset-started` and the pin refs in one `update-ref --stdin` transaction, before the action's own event or GitHub write. Opening the PR alone never starts one: the server keeps a last-seen head per review in its own state directory (not in git: it is UI state, private to this crb instance), so the banner can say "3 new commits since you last looked" even before a patch set exists.
 
 ### Refs
 
@@ -140,8 +142,8 @@ Built on what exists: `Session` (`src/server/session.ts`) owns the snapshot and 
 | --- | --- | --- |
 | `GET /session` (exists) | adds `patchsets[]` (number, head, merge base, started, shape, since), `lastSeen` | What the banner and the switcher read; cheap, no engine work. |
 | `GET /rereview?from=<ps>&to=<head>` | `{ shape, interdiff: available or unavailable+reason, files: [{ index, path, clusters: [{ key, kind: carried or reworked or new or gone, from?, old?: lines }] }], threads: [{ id, placement }] }` | The engine's answer for one pair, computed in the background on first ask and cached by `(from snapshot id, to head, TRACER_VERSION)`. Never awaited by the first page load: the page shows PS1 and polls this for the banner's counts. |
-| `POST /rereview/move { to: <head> }` | the new `ReviewView` plus the `rereview` answer | Writes `patchset-started` (n+1, since, shape), the two pin refs, and the `carried` events, in one transaction after the engine ran. Idempotent on the same head: a second call answers the existing patch set. |
-| `GET /review?patchset=<n>` | `ReviewView` of that patch set | Old patch sets are read-only; the snapshot is rebuilt from the pinned OIDs (cached by snapshot id, as today). |
+| First lasting action on a viewed head (states, a new thread, a verdict) | the new `ReviewView` | Not a route of its own: the action's route starts the patch set (n+1, since, shape), writes the two pin refs and the `carried` events, then the action's own event, in one transaction after the engine ran; a later action finds the patch set. |
+| `GET /review?patchset=<n>` | `ReviewView` of that patch set | Old patch sets are read-only; the snapshot is rebuilt from the pinned OIDs (cached by snapshot id, as today). `GET /review?head=<oid>` is the viewed head before it is a patch set: no stored state, the engine's provisional carries overlaid by the page. |
 | `GET /files/:index/hunks?revision=` (exists) | unchanged | The since view asks for hunks of the current patch set; reworked clusters' old lines come from `GET /rereview` (they are short), not from a second hunks call. |
 | `POST /threads/:id/placement { patchset, anchor }` | the thread re-placed | Writes `thread-placed`; validated against the patch set's snapshot first (400 otherwise). |
 
@@ -158,15 +160,23 @@ Everything lives in Files changed and the Final Verdict tab; the Overview is unt
 
 ### Banner (`HeadBanner.tsx`)
 
-Replaces today's three variants. While the engine runs: "Newer commits" with a spinner. Then one line by shape: "3 new commits since PS1 · 2 files, 5 clusters changed", "Rebased, nothing new · every cluster carries", "Rebased, 2 files had conflicts", "Base merged in, nothing new", "Squashed, nothing new", "Head moved back: 4 reviewed clusters gone", "Retargeted to `main`". One action, Move, with the target head; `--head` pinned views keep today's banner and never offer Move, and so does a PR GitHub reports merged or closed (its landed head's three-dot diff is empty, not a removal; `docs/git-methodology.md`). Yellow wash for something to read, green for nothing new, red for conflicts or removals.
+Replaces today's three variants. While the engine runs: "Newer commits" with a spinner. Then one line by shape: "3 new commits since PS1 · 2 files, 5 clusters changed", "Rebased, nothing new · every cluster carries", "Rebased, 2 files had conflicts", "Base merged in, nothing new", "Squashed, nothing new", "Head moved back: 4 reviewed clusters gone", "Retargeted to `main`". One action, View, which puts the viewed marker on the head dot and writes nothing; `--head` pinned views keep today's banner and never offer View, and so does a PR GitHub reports merged or closed (its landed head's three-dot diff is empty, not a removal; `docs/git-methodology.md`). Yellow wash for something to read, green for nothing new, red for conflicts or removals.
 
-### Patch set switcher
+### Patch set graph
 
-The header pill (today's `PS1 · a1b2c3d`) opens a list: the reviewer's patch sets with their date, shape and progress; the current head last, with Move when it is newer. Picking an old patch set opens it read-only with an "as reviewed · read-only" chip and a "Back to PSn" button; marks are locked, replies still send. Its threads are those published before the next patch set started (the as-of machinery, cutoff = the next `patchset-started` time; the current patch set has no cutoff), all of them placed, resolved ones with a resolved chip, since GitHub keeps no history of resolved state. Files changed stops filtering threads to the viewed head (`threadsOnHead`): placement replaces it, which also closes the todo item on threads from earlier commits. On a phone it is a bottom sheet (40px rows).
+A horizontal rail in the Files changed header (owner, 2026-11-04): the base-branch dot first, labelled with the branch name and static even when the base moves later; one dot per patch set of the reviewer; a hollow, dashed head dot when the head is newer than the last patch set. Two markers sit on the rail: the **viewed** marker (accent) and the **base** marker (violet, "base"), always to the left of the viewed one. The comparison is where they sit: base on the branch dot is the base view, base on an earlier patch set is the since view from it (any earlier one, not only the previous).
+
+- **Dot details** (hover; tap on a phone): commit and when it was made, the merge base it was reviewed against, when the review started, progress, the verdict given on it. The head dot's card is the banner's line.
+- **Connector details**: what happened between two neighbours, from shape detection: commits and days, merges from the base, rebased or force-pushed, conflicts, retargeted. The connector to the head dot is dashed.
+- **Moving the markers**: drag (on a phone too; tap is details, drag is move). Keyboard: `[` and `]` move the viewed marker, with Shift the base marker.
+- **Base marker rule when the viewed marker moves**: on the branch dot it stays; on the previous patch set it follows by one (it stays "the previous"); anywhere else it is remembered as that patch set.
+- **Viewing the head** shows the since view at once, computed by the engine, with provisional carried marks and the progress bar counting them; nothing is stored. The first mark, new thread or verdict starts the patch set, and the head dot becomes a patch set dot.
+- **An old patch set** opens read-only with an "as reviewed" chip; marks are locked, replies still send. Its threads are those published before the next patch set started (the as-of machinery, cutoff = the next `patchset-started` time; the current patch set has no cutoff), all of them placed, resolved ones with a resolved chip, since GitHub keeps no history of resolved state. Files changed stops filtering threads to the viewed head (`threadsOnHead`): placement replaces it, which also closes the todo item on threads from earlier commits.
+- **Phone**: the rail scrolls sideways if it must; dots and markers are 40px targets; details open as a bottom sheet with View and Compare from here as a fallback for drag.
 
 ### Since and base views
 
-A segmented control beside the pill: "Since PS1" and "Base". Both show the current patch set with the same marks (one state); the since view filters and reshapes:
+The two markers set the comparison: the base marker on the branch dot is the base view, on an earlier patch set the since view from it. Both show the viewed patch set with the same marks (one state); the since view filters and reshapes:
 
 - **Carried cluster**: collapsed to one 40px row with its green rail, checked box, "Carried from PS1 · 12 lines · identical" and a chevron (the whitespace-only collapsed row's pattern, `DiffBody.tsx`). Expanding shows the diff; collapsing again on file open. Unticking it is a human `cluster-state` event, as any.
 - **Reworked cluster**: open, yellow rail, chip "reworked since PS1"; the lines the reviewer saw sit in a quiet band above the cluster with "PS1" in the gutter (old lines only, never a diff of a diff); the cluster itself is unreviewed.
@@ -187,14 +197,14 @@ Above the buttons: "You approved `a1b2c3d` (PS1), 2 days ago" and "Since then: 3
 
 ### Keyboard and phone
 
-`m` moves to the new head from the banner, `[` and `]` step between patch sets, `s` toggles since/base; all in the `?` help. On a phone the banner stacks its action full width, the switcher is a sheet, chips wrap under the path in the file header, and every row is 40px.
+`m` views the new head from the banner, `[` and `]` move the viewed marker, Shift+`[` and Shift+`]` the base marker; all in the `?` help. On a phone the banner stacks its action full width, the switcher is a sheet, chips wrap under the path in the file header, and every row is 40px.
 
 ## Mockups
 
 [Re-review Mockups](https://claude.ai/artifact/WixND7ZrR3EMTAHAqMR7iL): six slices of Files changed, desktop and phone, in the app's own tokens.
 
 1. **Banner and Move**: appended commits (yellow), trivial rebase (green, "nothing new"), rebase with conflicts (red); Move is the one action.
-2. **Patch set switcher**: your patch sets with date, shape and progress; the current head last with Move; the since/base segmented control; the phone sheet.
+2. **Patch set graph**: the rail with the base dot, your patch sets and the head dot; the viewed and base markers; a hover card; connector labels; the phone version (tap for details, drag to move).
 3. **Since view**: one file with a carried cluster collapsed green, a reworked cluster with PS1's lines in a quiet band above it, a new cluster; header chips; notes on the empty view, gone clusters, conflicts and the base view.
 4. **Threads**: a changed thread's card with old and new lines and its fate line; the unplaced list under a file header with fates (deleted in a commit, moved?).
 5. **Final Verdict**: what you approved and what changed since, with PS2's meter; the identical-diff case with "Approve again".
@@ -204,25 +214,25 @@ Above the buttons: "You approved `a1b2c3d` (PS1), 2 days ago" and "Since then: 3
 
 ### Returning after a push (S1)
 
-1. The reviewer opens the PR. The page loads pinned on `PS1` as today (first open stays fast: nothing new is computed before the page shows). The banner says "3 new commits since PS1" with a Move action; the server starts computing the shape, the interdiff and the placements in the background.
-2. Move: the server writes `patchset-started` (PS2, since PS1, shape S1) and the pin refs, runs carry and writes one `carried` event per rule, then answers with PS2's snapshot. The page lands on the since view: files with reworked or new clusters open, carried clusters collapsed with a carried mark, changed and unplaced threads listed. The progress bar counts PS2.
+1. The reviewer opens the PR. The page loads pinned on `PS1` as today (first open stays fast: nothing new is computed before the page shows). The banner says "3 new commits since PS1" with a View action; the server starts computing the shape, the interdiff and the placements in the background.
+2. View: the page lands on the since view of the head, computed by the engine, carried marks provisional, nothing written. The first mark (or new thread, or verdict) starts PS2: the server writes `patchset-started` (since PS1, shape S1), the pin refs, one `carried` event per rule and the mark, in one transaction. The since view: files with reworked or new clusters open, carried clusters collapsed with a carried mark, changed and unplaced threads listed. The progress bar counts PS2.
 3. The reviewer reads the delta, marks what they read, replies where needed, and gives a verdict on PS2's head.
 
 ### A trivial rebase (S4a) or squash (S5)
 
-The banner says "rebased, nothing new" (or "squashed, nothing new"); Move carries everything and the since view is empty with a line saying so; the base view is one tap away. The verdict tab offers to re-approve on the new head, saying the diff is identical.
+The banner says "rebased, nothing new" (or "squashed, nothing new"); View shows an empty since view with a line saying so (everything carries, provisionally until the first action); the base view is one tap away. The verdict tab offers to re-approve on the new head, saying the diff is identical.
 
 ### A rebase with conflicts (S4b)
 
-The banner says "rebased, 2 files had conflicts". After Move, those files are open in the since view, each cluster of the author's resolution new; the thread cards of threads in those files show their code as commented plus the fate. Clusters outside the conflicted files carry as usual.
+The banner says "rebased, 2 files had conflicts". After View, those files are open in the since view, each cluster of the author's resolution new; the thread cards of threads in those files show their code as commented plus the fate. Clusters outside the conflicted files carry as usual.
 
 ### Going back
 
-The patch set switcher (in the Files changed header) lists PS1, PS2 and the current head when it is newer, with each patch set's date and shape. Picking PS1 opens it read-only as reviewed: its diff, its marks, its threads placed as then (stored placements of PS1 apply; computed ones are recomputed from the same inputs, which are pinned, so they come out the same). Marks can't be changed on an old patch set; a reply can still be sent (it is a reply on GitHub, not a mark).
+The graph shows the base dot, PS1, PS2 and the head dot when newer. Dragging the viewed marker to PS1 opens it read-only as reviewed: its diff, its marks, its threads placed as then (stored placements of PS1 apply; computed ones are recomputed from the same inputs, which are pinned, so they come out the same). Marks can't be changed on an old patch set; a reply can still be sent (it is a reply on GitHub, not a mark).
 
 ### Several patch sets
 
-On PS3, the since view defaults to "since PS2"; the switcher lets the reviewer pick "since PS1" (the interdiff `H1'` to `H3`) or the base view. Carry on the move to PS3 consulted PS2 first, then PS1, so a cluster reverted to PS1's content (P8) arrives carried with `from: 1`.
+On PS3 the base marker, having been on the previous patch set, follows to PS2; dragging it to PS1 gives "since PS1" (the interdiff `H1'` to `H3`) or the base view. Carry on starting PS3 consulted PS2 first, then PS1, so a cluster reverted to PS1's content (P8) arrives carried with `from: 1`.
 
 ### Threads
 
@@ -238,13 +248,13 @@ Each fails without the feature; timing-sensitive ones go through `pnpm flake-che
 - **Shape** (`shape.test.ts`): S1 to S9 on throwaway repos (`test/git-fixture.ts`), plus merge-tree failures (unrelated histories, a shallow clone).
 - **Interdiff** (`interdiff.test.ts`): I1 to I10 on the same repos; the two probes of 2026-11-02 become tests.
 - **Carry** (`carry.test.ts`): P1 to P12; the fail-closed property: for random edits between two snapshots, every carried cluster's removed and added lines equal the source's; a corrupted `carried` event (wrong key, non-human source, missing source) never marks anything; crossed off carries by the same rule.
-- **Store** (`events.test.ts`, `fold.test.ts`, `reviews.test.ts`): `carried` and `thread-placed` parse and validate; `by: auto` refused on `cluster-state`; folding several patch sets; old patch sets read-only; the `-base` ref written in the same transaction and read back after `gc --prune=now` with the base branch rewritten; a new thread and a verdict each start a patch set, a reply, resolve or unresolve never does; Move onto an earlier patch set's head resumes it; the storage size of a 200-cluster move measured and asserted under a budget.
+- **Store** (`events.test.ts`, `fold.test.ts`, `reviews.test.ts`): `carried` and `thread-placed` parse and validate; `by: auto` refused on `cluster-state`; folding several patch sets; old patch sets read-only; the `-base` ref written in the same transaction and read back after `gc --prune=now` with the base branch rewritten; a new thread and a verdict each start a patch set, a reply, resolve or unresolve never does; viewing an earlier patch set's head shows it; the storage size of a 200-cluster move measured and asserted under a budget.
 - **Placement** (`placement.test.ts`): threads on `Hx` with every fate, resolved threads skipped, a stored `thread-placed` overriding and a stale one failing closed.
 - **Methodology matrix** (`test/methodology-fixture.ts`): `UPDATES` grows `rebase-amend`, `merge-base-in-conflict` and `stacked-squash` (a parent PR squashed into the base, the child rebased); every permutation asserts the shape, the interdiff and the carry through `Session.open`, Move and a fresh open; `e2e/methodology.spec.ts` follows.
 
 ### End to end (`e2e/rereview.spec.ts`, desktop and phone)
 
-The fixtures gain `forceHead(commit)` beside `moveHead` (rewrites `refs/pull/<n>/head` to a non-descendant and adds the force-push event to the scenario). Specs: the banner's shapes and its loading state (the engine held, then released); Move lands on the since view with exactly the reworked and new clusters open and the carried ones collapsed; unticking a carried cluster; a reworked cluster's old lines; a gone cluster; the switcher opens PS1 read-only with its marks and placements; since/base share state; changed and unplaced threads with fates; resolve then unresolve; the verdict tab's since line and re-approve; `--head` views never offer Move.
+The fixtures gain `forceHead(commit)` beside `moveHead` (rewrites `refs/pull/<n>/head` to a non-descendant and adds the force-push event to the scenario). Specs: the banner's shapes and its loading state (the engine held, then released); View lands on the since view with exactly the reworked and new clusters open and the carried ones collapsed, and writes nothing; the first mark starts the patch set with the carries; unticking a carried cluster; a reworked cluster's old lines; a gone cluster; dragging the viewed marker to PS1 opens it read-only with its marks and placements; the base marker's follow and stay rules; the base view and the since view share state; changed and unplaced threads with fates; resolve then unresolve; the verdict tab's since line and re-approve; `--head` views never offer View.
 
 ### Gallery (Gilthans/carbonless-gallery)
 
@@ -260,8 +270,8 @@ One PR per step on Gilthans/carbonless, each with its brief, a fresh review and 
 
 1. **Tracer library** (`src/shared/tracer/`): mappers, trace, ranges, spans, the C1 to C19 table tests and the property test. No server or UI change.
 2. **Storage**: a new thread and a verdict start a patch set; `-base` pin refs; `carried` and `thread-placed` events with their write rules and fold; last-seen head; storage doc updated and the size measured.
-3. **Shape, interdiff and carry** on the server, with the methodology matrix grown by rebase-with-amend, conflicting merge-base-in and stacked-squash shapes, asserting I1 to I10 and P1 to P12. The move endpoint, with no UI yet.
-4. **Files changed: banner, Move, the switcher, carried marks, the since view** (desktop and phone), gallery cases `rr-append` and `rr-rebase`.
+3. **Shape, interdiff and carry** on the server, with the methodology matrix grown by rebase-with-amend, conflicting merge-base-in and stacked-squash shapes, asserting I1 to I10 and P1 to P12. The start-on-first-action path, with no UI yet.
+4. **Files changed: banner, the patch set graph, carried marks, the since view** (desktop and phone), gallery cases `rr-append` and `rr-rebase`.
 5. **Thread placement**: the engine's placements through `placeThreads`, changed and unplaced threads with fates, the unplaced list, resolved-only skipping; gallery cases `rr-merge-in` and `rr-moves`.
 6. **Verdict tab**: what changed since your verdict, re-approve on an identical diff; gallery case `rr-stacked`; the real-PR check.
 
@@ -276,5 +286,5 @@ One PR per step on Gilthans/carbonless, each with its brief, a fresh review and 
 
 - [x] Landmarks for other people's comment heads: deferred to a later round (owner, 2026-11-04).
 - [ ] Should an old patch set allow new marks (editing history) or stay read-only, as designed here?
-- [ ] Calls made after the builder check, say if any is wrong: a reply, resolve or unresolve never starts a patch set (only a new thread, a verdict or a mark does); Move onto an earlier patch set's head resumes that patch set; an untick is never undone by an older patch set's mark; an old patch set shows the threads published before the next one started, resolved ones included; no Move on a merged or closed PR; the head poll also watches the base branch name and the merge base.
+- [ ] Calls made after the builder check, say if any is wrong: a reply, resolve or unresolve never starts a patch set (only a new thread, a verdict or a mark does); viewing an earlier patch set's head shows that patch set; an untick is never undone by an older patch set's mark; an old patch set shows the threads published before the next one started, resolved ones included; no Move on a merged or closed PR; the head poll also watches the base branch name and the merge base.
 - [ ] Once sync lands, should `thread-placed` be shared through `meta` so other reviewers see a dragged thread where you put it?
