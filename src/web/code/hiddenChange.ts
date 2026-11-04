@@ -30,6 +30,18 @@ function trailFrom(pieces: Piece[]): number {
 	return trail;
 }
 
+/** The line's leading spaces and tabs, and how many columns they take. */
+function indentOf(text: string, tabWidth: number) {
+	const raw = /^[ \t]*/.exec(text)?.[0] ?? "";
+	// As renderInvisibles clamps it.
+	const width = Number.isFinite(tabWidth)
+		? Math.min(32, Math.max(1, Math.round(tabWidth)))
+		: DEFAULT_TAB_WIDTH;
+	let columns = 0;
+	for (const ch of raw) columns += ch === "\t" ? width - (columns % width) : 1;
+	return { raw, columns };
+}
+
 /** What is on screen, column for column, with trailing blanks left out. */
 const look = (pieces: Piece[]) =>
 	pieces
@@ -49,8 +61,8 @@ const look = (pieces: Piece[]) =>
  * Whether a changed line's word marks hold a change that doesn't show while
  * "Show hidden characters" is off, so the reader should be told: a mark
  * that draws nothing (a line ending's `\r`, trailing spaces or tabs), or a
- * line that looks exactly like its partner (a tab swapped for spaces of the
- * same width). Escaped characters (zero widths, no-break spaces, bidi
+ * line that looks exactly like its partner, or an indent swapped for one as
+ * wide (a tab for spaces of the same width), even beside a visible change. Escaped characters (zero widths, no-break spaces, bidi
  * controls) show as `\uXXXX` either way, so they never count.
  */
 export function hiddenChange(
@@ -64,6 +76,17 @@ export function hiddenChange(
 	const trail = trailFrom(pieces);
 	if (marks.some(([from, to]) => to > from && from >= trail)) return true;
 	if (!partner) return false;
+	// An indent swapped for one as wide (tabs ↔ spaces): its mark is a
+	// tinted blank like the old one, whatever else on the line changed.
+	const indent = indentOf(text, tabWidth);
+	const other = indentOf(partner.text, tabWidth);
+	if (
+		indent.raw !== other.raw &&
+		indent.columns === other.columns &&
+		marks.some(([from, to]) => to > from && from < indent.raw.length)
+	) {
+		return true;
+	}
 	return (
 		look(pieces) ===
 		look(piecesOff(partner.text, tabWidth, partner.newline ?? true))

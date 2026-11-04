@@ -59,6 +59,46 @@ describe("hiddenChange", () => {
 		).toBe(true);
 	});
 
+	it("is an indent swapped for one as wide, on a line that also changes visibly", () => {
+		expect(
+			hiddenChange(
+				"\tfoo(a);",
+				[
+					[0, 1],
+					[5, 6],
+				],
+				{ partner: { text: "    foo(b);" } },
+			),
+		).toBe(true);
+		expect(
+			hiddenChange(
+				"    foo(b);",
+				[
+					[0, 4],
+					[8, 9],
+				],
+				{ partner: { text: "\tfoo(a);" } },
+			),
+		).toBe(true);
+	});
+
+	it("isn't an indent widened on a line that also changes visibly", () => {
+		expect(
+			hiddenChange(
+				"\t\tfoo(b);",
+				[
+					[1, 2],
+					[6, 7],
+				],
+				{ partner: { text: "\tfoo(a);" } },
+			),
+		).toBe(false);
+		// Same characters, a word changed: only the word is marked anyway.
+		expect(
+			hiddenChange("\tfoo(b);", [[5, 6]], { partner: { text: "\tfoo(a);" } }),
+		).toBe(false);
+	});
+
 	it("isn't a tab swapped for spaces of another width", () => {
 		expect(
 			hiddenChange("\tx", [[0, 1]], {
