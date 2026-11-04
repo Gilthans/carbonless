@@ -177,7 +177,9 @@ in the report, not gated (wall clock is too noisy for a 10% gate).
   compares: carbonless's blocks are the truth for shape, and every
   difference from GitHub, in which pairs are marked (block shape, length
   cut, Ignore whitespace on and off) or in which characters, is on a
-  known-differences list with its reason. The list may only shrink.
+  known-differences list with its reason. The list may only shrink, except
+  by an owner decision, dated and quoted in the entry's reason and recorded
+  under **Decided by the owner** (2026-11-04 grew it from 5 to 23).
 - **Unit, properties:** marks are within the line, sorted, non-overlapping,
   on token boundaries; unmarking every mark gives back both lines' common
   tokens in order (the marks are exactly a diff); the unmarked

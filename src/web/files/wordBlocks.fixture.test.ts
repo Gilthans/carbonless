@@ -24,7 +24,9 @@ import { hunkWordMarks } from "./wordBlocks";
  * scripts/inline-diff-fixtures.mjs). The case files go through carbonless's
  * own diff, as the server serves them, then the view's rows and
  * hunkWordMarks. Every difference from GitHub's observed marks is listed in
- * known-differences.json with its reason; the list may only shrink.
+ * known-differences.json with its reason. The list may only shrink, except by
+ * an owner decision: dated and quoted in the entry's reason, and recorded in
+ * the spec's "Decided by the owner" (2026-11-04 grew it from 5 to 23).
  */
 
 // Real git processes: see GIT_TEST_TIMEOUTS.
@@ -261,7 +263,7 @@ describe("word marks against GitHub's (gallery PR #14)", () => {
 		expect(known.filter((k) => k.pair !== "shape" && !k.ours)).toEqual([]);
 	});
 
-	it("matches GitHub but for the known differences, which may only shrink", () => {
+	it("matches GitHub but for the known differences, which grow only by an owner decision", () => {
 		const mismatches = paths.flatMap((file) =>
 			[false, true].flatMap((ws) => compare(file, hunksOf.get(file) ?? [], ws)),
 		);
@@ -273,6 +275,7 @@ describe("word marks against GitHub's (gallery PR #14)", () => {
 				(m) =>
 					`${m.file} pair ${m.pair} (ignore whitespace ${m.ignoreWhitespace ? "on" : "off"}; ours ${JSON.stringify(m.ours)})\n${m.detail}`,
 			),
+			"a new difference from GitHub: fix it, or list it only on an owner decision (dated, quoted in its reason)",
 		).toEqual([]);
 		// A listed difference must still show, in each setting it names.
 		const stale = known.filter((k) =>
