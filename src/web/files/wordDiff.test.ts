@@ -322,6 +322,13 @@ describe("wordMarks", () => {
 		return { line, edit };
 	};
 
+	/**
+	 * The budget tests' wall-clock timeout: they gate CPU time, and four
+	 * rounds of 2,000 pairs on a loaded machine (load 40 on 4 cores) take
+	 * 5–8 s of wall time for under 1 s of CPU.
+	 */
+	const LOADED = 30_000;
+
 	/** CPU µs of marking every pair, after a warm-up: the best of three (load only adds time). */
 	const bestCpu = (pairs: readonly (readonly [string, string])[]) => {
 		for (const [a, b] of pairs) wordMarks(a, b);
@@ -335,24 +342,35 @@ describe("wordMarks", () => {
 		return best;
 	};
 
-	it("marks 2,000 pairs of similar 120-character lines in under 100 ms of CPU", () => {
-		// An equal block of edited lines: about 10% of each line's tokens changed.
-		const { line, edit } = codeLines(7);
-		const pairs = Array.from({ length: 2000 }, () => {
-			const a = line();
-			return [a, edit(a)] as const;
-		});
-		const best = bestCpu(pairs);
-		console.info(`wordMarks: 2,000 similar pairs in ${best} µs CPU`);
-		expect(best).toBeLessThan(100_000);
-	});
+	it(
+		"marks 2,000 pairs of similar 120-character lines in under 100 ms of CPU",
+		() => {
+			// An equal block of edited lines: about 10% of each line's tokens changed.
+			const { line, edit } = codeLines(7);
+			const pairs = Array.from({ length: 2000 }, () => {
+				const a = line();
+				return [a, edit(a)] as const;
+			});
+			const best = bestCpu(pairs);
+			console.info(`wordMarks: 2,000 similar pairs in ${best} µs CPU`);
+			expect(best).toBeLessThan(100_000);
+		},
+		LOADED,
+	);
 
-	it("marks 2,000 pairs of unrelated 120-character lines in under 400 ms of CPU", () => {
-		// A rewritten block: every pair two unrelated lines (GitHub marks them all).
-		const { line } = codeLines(11);
-		const pairs = Array.from({ length: 2000 }, () => [line(), line()] as const);
-		const best = bestCpu(pairs);
-		console.info(`wordMarks: 2,000 unrelated pairs in ${best} µs CPU`);
-		expect(best).toBeLessThan(400_000);
-	});
+	it(
+		"marks 2,000 pairs of unrelated 120-character lines in under 400 ms of CPU",
+		() => {
+			// A rewritten block: every pair two unrelated lines (GitHub marks them all).
+			const { line } = codeLines(11);
+			const pairs = Array.from(
+				{ length: 2000 },
+				() => [line(), line()] as const,
+			);
+			const best = bestCpu(pairs);
+			console.info(`wordMarks: 2,000 unrelated pairs in ${best} µs CPU`);
+			expect(best).toBeLessThan(400_000);
+		},
+		LOADED,
+	);
 });
