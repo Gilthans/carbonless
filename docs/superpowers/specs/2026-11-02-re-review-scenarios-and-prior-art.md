@@ -12,16 +12,16 @@ A reviewer comes back to a PR after the author pushed more commits. Today carbon
 
 ### Vocabulary
 
-- **Snapshot**: what the reviewer sees, `(B, H)`: the three-dot diff from `merge-base(base, H)` to head `H`. `B` below means that merge base.
+- **Snapshot**: one PR state, one per push the tool has seen, and what the reviewer sees of it: the pair `(B, H)`: the three-dot diff from `merge-base(base, H)` to head `H`. `B` below means that merge base.
 - **Patch set (PS)**: the owner's "changeset": a snapshot the reviewer took a lasting action on: marked or crossed off a cluster, commented, gave a verdict (owner, 2026-11-03; that today a comment does not start one is an oversight to fix). Pinned by a ref, so its head survives force-pushes.
-- **Revision**: the identity of one PR state, the pair (merge base, head), one per push the tool has seen. A snapshot is the diff of one revision, so the two differ only as data and view. The current one is `R` = `(B2, H2)`; the reviewer's last patch set is `PS1` = `(B1, H1)`.
+- **Revision**: folded into snapshot, one term for the pair and its diff (owner, 2026-11-04); "revision" in docs/review-data-storage.md means the same and is renamed in the design. The current snapshot is `R` = `(B2, H2)`; the reviewer's last patch set is `PS1` = `(B1, H1)`.
 - **Interdiff**: the author's own changes between `PS1` and `R`, with changes that came from the base factored out.
 - **Virtual rebase `H1'`**: `H1` merged onto `B2` by `git merge-tree` without touching any branch, so `diff(H1', H2)` is the interdiff. Probed on 2026-11-02 with git 2.53: clean for a rebase and for a base merge-in, and a conflict is reported per file with the conflict markers available (see The interdiff).
 - **Carry**: moving a cluster state or a comment anchor from `PS1` to `R`, recorded as an event (`by: auto`), never silently.
 
-## How the new revision relates to your patch set
+## How the new snapshot relates to your patch set
 
-Every scenario below happens in one of these shapes, and a design has to behave the same in all of them (principle 7). `H1 ⊂ H2` means the old head is an ancestor of the new one.
+Every scenario below happens in one of these shapes ("revision" in the tables below reads as snapshot), and a design has to behave the same in all of them (principle 7). `H1 ⊂ H2` means the old head is an ancestor of the new one.
 
 | # | Shape | Head | Merge base | What a naive `diff(H1, H2)` shows |
 | --- | --- | --- | --- | --- |
@@ -59,7 +59,7 @@ A comment's anchor is `(path, commit, side, line range, optional span)` (`CodeAn
 | C7 | File renamed between snapshots | Common in refactors | Follow the rename (git's detection, which Files changed already pairs). Comments move with the file. |
 | C8 | File deleted, or the whole file reverted | Occasional | All its comments unplaced; shown under the file's header with their old code (we already keep the commit by OID). |
 | C9 | The commented code moved to another file (function extracted) | Occasional, high value | Line mapping within the file fails. Moved-code matching (todo item 2) may find it; proposed as a candidate the reviewer confirms, never asserted. |
-| C10 | Comments by other people on intermediate heads the reviewer never saw (`H1 < Hx < H2`) | Every multi-reviewer PR | Same mapping from `Hx`; also flagged as new since the reviewer's last visit. |
+| C10 | Comments by other people on intermediate heads the reviewer never saw (`H1 < Hx < H2`) | Every multi-reviewer PR | Same mapping from `Hx`; also flagged as new since the reviewer's last visit. Proposed (2026-11-04, see the thread): their head is a shared landmark the reviewer can diff from or to, derived from GitHub, not a patch set in the reviewer's own progress. |
 | C11 | Comment on a commit a rebase dropped (S4) | Every rebased PR | We fetch that commit by OID already. Map `Hx → H2` by file content; commit ancestry is irrelevant. |
 | C12 | Comment made on GitHub in a "changes since your last review" view, on a `LEFT` line | Rare but real (todo: LEFT placement) | Its `LEFT` line belongs to an earlier PR head, not to `B`. Only GitHub's `diff_hunk` reveals that. Locate by text in that head, then map. |
 | C13 | Comment on a line that was changed, then changed back (S9, or a fix then a revert) | Rare | Placed, unchanged, if the text matches again. A chain of patch sets, not just the last, should be consulted. |
@@ -241,7 +241,7 @@ My recommendation, for discussion, is the first option under each heading. Nothi
 
 ### Storage
 
-Carry events (`by: auto`) in the reviewer's progress ref, naming source patch set, cluster key and rule; a `patchset-started` for `R` with `details.since` = `PS1` and the shape (S1..S9) it detected; the pinned `patchsets/<n>` refs already keep every old head alive, so any pair can be compared later. Thread anchors are recomputed, never stored, since they derive from git. This stays within `docs/review-data-storage.md` "Deferred" and `docs/gitdb-design-principles.md`.
+Carry events (`by: auto`) in the reviewer's progress ref, naming source patch set, cluster key and rule; a `patchset-started` for `R` with `details.since` = `PS1` and the shape (S1..S9) it detected; the pinned `patchsets/<n>` refs already keep every old head alive, so any pair can be compared later. Thread anchors are computed by the engine by default and stored only where discretion decided them (owner, 2026-11-04): a placement event (thread, patch set, anchor, by human or ai, engine version) wins over the engine's answer, and is validated against the snapshot before use (a line that isn't there fails closed to unplaced). So AI or the reviewer can settle ambiguous cases later without a migration, and the deterministic path stays free and small. This stays within `docs/review-data-storage.md` "Deferred" and `docs/gitdb-design-principles.md`.
 
 ## Open decisions (yours)
 
