@@ -179,7 +179,7 @@
 			"old": [[0, 5], [13, 14], [15, 32]],
 			"new": [[0, 9], [10, 17], [24, 26], [27, 32]]
 		},
-		"reason": "Shared tokens are kept: `height`, `(` and the spaces between changes stay unmarked, as words-first and nothing folds (owner, 2026-11-04, case 13). GitHub keeps `height` unmarked too but folds the spaces and `(` into its marks."
+		"reason": "`height` and the spaces between changes stay unmarked (words first, nothing folds: owner, 2026-11-04, case 13: \"I'd rather for the punctuation to be marked separately, instead of the entire token\"); GitHub also keeps `height` but folds the spaces into its marks."
 	},
 	{
 		"file": "inline/46-block-5x5-odd-similar.ts",
@@ -197,7 +197,7 @@
 			"old": [[0, 10], [11, 16]],
 			"new": [[0, 3], [4, 7], [8, 20]]
 		},
-		"reason": "Nothing folds (owner, 2026-11-04, case 13: \"I'd rather for the punctuation to be marked separately, instead of the entire token\"): the unchanged spaces and punctuation (the shared `(`) between changed tokens stay unmarked, so a changed run is several marks; GitHub folds them into one mark."
+		"reason": "Nothing folds (owner, 2026-11-04, case 13: \"I'd rather for the punctuation to be marked separately, instead of the entire token\"): the unchanged spaces and punctuation (the shared `(` and `)`) between changed tokens stay unmarked, so a changed run is several marks; GitHub folds them into one mark."
 	},
 	{
 		"file": "inline/47-block-5x5-shifted.ts",
