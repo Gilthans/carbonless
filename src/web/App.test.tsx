@@ -22,7 +22,7 @@ import type {
 	SessionInfo,
 	TimelineView,
 } from "../shared/types";
-import { COMPACT_RAMP, compactProgress } from "./App";
+import { COMPACT_RAMP, compactNumberHideClass, compactProgress } from "./App";
 import { resetShowInvisibles, setShowInvisibles } from "./code/Invisibles";
 import { createAppRouter } from "./router";
 import { draftsFor } from "./threads/drafts";
@@ -376,7 +376,9 @@ describe("App", () => {
 	it("the logo links Home", async () => {
 		const user = userEvent.setup();
 		const { router } = renderApp();
-		const home = await screen.findByRole("link", { name: "Home" });
+		// The full header's logo (the compact row's mark links Home too).
+		const home = await screen.findByTestId("home-link");
+		expect(home).toHaveAccessibleName("Home");
 		expect(home).toHaveAttribute("href", "/");
 		await user.click(home);
 		await waitFor(() => expect(router.state.location.pathname).toBe("/"));
@@ -430,7 +432,7 @@ describe("App", () => {
 			});
 		try {
 			act(() => draftsFor(client).setText("T-cache", "Half a thought"));
-			await user.click(screen.getByRole("link", { name: "Home" }));
+			await user.click(screen.getByTestId("home-link"));
 			await waitFor(() => expect(router.state.location.pathname).toBe("/"));
 			const ask = new Event("beforeunload", { cancelable: true });
 			window.dispatchEvent(ask);
@@ -2087,7 +2089,48 @@ describe("App header", () => {
 		// jsdom has no layout: never stuck, so it is out of reach.
 		const compact = screen.getByTestId("compact-title");
 		expect(compact).toHaveAttribute("inert");
-		expect(compact).toHaveAccessibleName("Back to top: Add widget cache #12");
+		expect(compact).toHaveAccessibleName("Back to top: Add widget cache");
+		// So are the mark's Home link and the number's GitHub link beside it.
+		const home = screen.getByTestId("compact-home-link");
+		expect(home).toHaveAttribute("inert");
+		expect(home).toHaveAccessibleName("Home");
+		expect(home).toHaveAttribute("href", "/");
+		const number = screen.getByTestId("compact-pr-link");
+		expect(number).toHaveAttribute("inert");
+		expect(number).toHaveAccessibleName("#12 on GitHub");
+		expect(number).toHaveAttribute("target", "_blank");
+		expect(number).toHaveAttribute("rel", "noreferrer");
+		expect(number).toHaveAttribute(
+			"href",
+			"https://github.com/acme/widget/pull/12",
+		);
+	});
+
+	it("a PR url that isn't http(s) gets no number link: the number is plain text", async () => {
+		renderApp({
+			"/api/session": ok({
+				...info,
+				pr: { ...info.pr, url: "javascript:alert(1)" },
+			}),
+		});
+		await screen.findByRole("heading", { level: 1 });
+		expect(screen.queryByTestId("compact-pr-link")).toBeNull();
+		const pill = screen.getByTestId("compact-title-pill");
+		expect(pill).toHaveTextContent("Add widget cache");
+		expect(pill).toHaveTextContent("#12");
+		expect(pill.querySelector("a")).toBeNull();
+		expect(screen.getByTestId("header-title").querySelector("a")).toBeNull();
+	});
+
+	it("hides the compact number where its digits would crush the title", () => {
+		// Padding and gap 1.5rem, ~0.45rem a character, a 2.5rem title floor.
+		expect(compactNumberHideClass(7)).toBe("@max-[5rem]:hidden");
+		expect(compactNumberHideClass(12)).toBe("@max-[5.5rem]:hidden");
+		expect(compactNumberHideClass(123)).toBe("@max-[6rem]:hidden");
+		expect(compactNumberHideClass(1234)).toBe("@max-[6.5rem]:hidden");
+		expect(compactNumberHideClass(12345)).toBe("@max-[7rem]:hidden");
+		expect(compactNumberHideClass(123456)).toBe("@max-[7.5rem]:hidden");
+		expect(compactNumberHideClass(98765432)).toBe("@max-[7.5rem]:hidden");
 	});
 });
 

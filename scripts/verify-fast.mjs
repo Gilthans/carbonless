@@ -81,7 +81,12 @@ const E2E_MAP = [
 			"sideBySide",
 			"mobile",
 			"saves",
+			"tree-resize",
 		],
+	],
+	[
+		/^src\/web\/(viewSettings|useMedia)\.ts$|^src\/web\/Tooltip\.tsx$/,
+		["tree-resize"],
 	],
 	[
 		/^src\/web\/files\/(codeSpan|linePicks|selectionActions|SelectionBar|DiffBody|FileDiff|SyncNotices)\.tsx?$|^src\/web\/threads\/(NewThread|newThreads|drafts|threadWrites|spanMarks)\.tsx?$|^src\/web\/code\/Invisibles\.tsx$|^src\/server\/(newThreads|marker)\.ts$/,

@@ -15,7 +15,7 @@ uses is checked for WCAG AA in `src/web/theme.test.ts`; add new pairs there.
 | --- | --- |
 | `canvas` `surface` `raised` `overlay` `pressed` | page, cards/header, section and file headers, tooltips/hover, pressed |
 | `band` | subsection bands (Human/Bot reviews) and thread card headers: between `surface` and `raised` |
-| `line` / `line-strong` / `edge` | decorative dividers / outlines of controls (3:1) / floating layers, scrollbars |
+| `line` / `line-strong` / `edge` | decorative dividers / outlines of controls (3:1) / floating layers, scrollbars. The file tree's resize handle is a `line` rule, `line-strong` under the pointer and `accent` (2px) while focused or dragged |
 | `ink` `ink-soft` `muted` `faint` | text, strongest to weakest (all 4.5:1 on every surface) |
 | `label` | letter-spaced violet capitals for section labels |
 | `accent` `link` | focus rings, the pointed-at cluster rail, selected segment, current file; links |
