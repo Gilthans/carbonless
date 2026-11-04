@@ -130,6 +130,20 @@ test("the app header compacts after scrolling and its tabs work from deep down",
 	await expect(progress(page)).toBeVisible();
 });
 
+/**
+ * The overview scrolled to its end: the header stuck, cheaply (no diff to
+ * expand), for the compact row's own tests.
+ */
+async function stuckOnOverview(page: Page, url: string) {
+	await page.goto(url);
+	await expect(
+		page.getByRole("region", { name: "What it does" }),
+	).toBeVisible();
+	await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+	await expect(compactPill(page)).toHaveCSS("opacity", "1");
+	await expect(compactTitle(page)).not.toHaveAttribute("inert");
+}
+
 test("once stuck, the compact mark goes Home and the number to the PR on GitHub", async ({
 	page,
 	pr,
@@ -139,7 +153,7 @@ test("once stuck, the compact mark goes Home and the number to the PR on GitHub"
 	if (isMobile) await page.setViewportSize({ width: 360, height: 780 });
 	await pr(fixture);
 	const s = await startCrb();
-	await openFiles(page, s.url);
+	await page.goto(s.url);
 	const home = page.getByTestId("compact-home-link");
 	const number = page.getByTestId("compact-pr-link");
 	// At the top, out of reach like the title: neither focusable nor clickable.
@@ -147,8 +161,7 @@ test("once stuck, the compact mark goes Home and the number to the PR on GitHub"
 	await expect(home).toHaveAttribute("inert");
 	await expect(number).toHaveAttribute("inert");
 
-	await deepInLongCluster(page);
-	await expect(compactTitle(page)).not.toHaveAttribute("inert");
+	await stuckOnOverview(page, s.url);
 	await expect(home).not.toHaveAttribute("inert");
 	if (isMobile) {
 		// At 360px the pill's slot holds the clamped title alone: the number
@@ -183,7 +196,25 @@ test("once stuck, the compact mark goes Home and the number to the PR on GitHub"
 	}
 	await expectNoPageOverflow(page);
 
-	// Tab order: mark, tabs, title, number, Refresh.
+	// The mark goes Home.
+	await home.click();
+	await expect(page).toHaveURL(`${new URL(s.url).origin}/`);
+});
+
+test("the compact row's keyboard order: mark, tabs, title, number, Refresh", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	// Wide enough for the number (the 360px floor is the test above's).
+	if (isMobile) await page.setViewportSize({ width: 412, height: 780 });
+	await pr(fixture);
+	const s = await startCrb();
+	await stuckOnOverview(page, s.url);
+	const home = page.getByTestId("compact-home-link");
+	const number = page.getByTestId("compact-pr-link");
+	// Keyboard focus (a key press first marks the input as the keyboard).
 	await page.keyboard.press("Shift");
 	await home.focus();
 	await expect(home).toBeFocused();
@@ -204,10 +235,6 @@ test("once stuck, the compact mark goes Home and the number to the PR on GitHub"
 	// None of that moved the page: the row is stuck.
 	expect(await page.evaluate(() => window.scrollY)).toBeGreaterThan(0);
 	await expect(compactPill(page)).toHaveCSS("opacity", "1");
-
-	// The mark goes Home.
-	await home.click();
-	await expect(page).toHaveURL(`${new URL(s.url).origin}/`);
 });
 
 test("the overview's header compacts too", async ({
