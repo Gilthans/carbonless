@@ -53,10 +53,12 @@ the test fixture (below).
   between changes into one mark: `const area = width * height` →
   `const area  =  width*height` marks `= width * ` / ` =  width*` (the
   unchanged `width` folded in), while separate changes far apart stay
-  separate marks.
+  separate marks. Carbonless aligns words first and folds nothing (see
+  **What** under **The marks**).
 - **Whitespace.** Indentation and inner spaces are tokens like any other: a
   re-indent is marked, an added indent after the kept one. A pair that
-  differs only by `\r\n` vs `\n` shows no marks. With Hide whitespace on,
+  differs only by `\r\n` vs `\n` shows no marks (carbonless marks that
+  `\r`: see **What**). With Hide whitespace on,
   whitespace-only pairs are gone; every other pair keeps the same marks,
   whitespace marks included.
 - **Split = unified.** Split view marks exactly the characters unified does
@@ -72,13 +74,28 @@ the test fixture (below).
   row's two halves (the side-by-side layout already pairs GitHub's way, so
   an equal block's pair rows are exactly the marked pairs; an unequal
   block's pair rows stay plain).
-- **What:** the changed tokens, computed by a token diff of the two lines
-  (diff-match-patch over the tokens, `diff_cleanupEfficiency` with
-  `Diff_EditCost = 3`). On PR #14 this gives GitHub's exact marks on 153 of
-  158 pairs; on the 899 public pairs, 785. The five PR #14 differences:
-  GitHub folds an unchanged token into a mark (`06`), our cleanup folds
-  short shared tokens where GitHub doesn't (`13`, `41`), and GitHub places
-  an inserted indent after the kept one (`04`, `05`); see **Decided by the owner**.
+- **What:** the changed tokens, computed by two token diffs of the two
+  lines (diff-match-patch over one character per token, no time limit, so
+  exact):
+  1. **Words first:** the non-whitespace tokens alone. Their equal tokens
+     are anchors, so a shared word is never traded for a shared space
+     (case `06`: only the changed spaces are marked, never `width`).
+  2. **Then the gaps:** each run between two anchors (and before the
+     first, after the last) is diffed token by token, spaces included.
+
+  A token is marked when a diff says it changed, and nothing else is:
+  no cleanup folds unchanged tokens into a mark (owner, 2026-11-04: "I'd
+  rather for the punctuation to be marked separately, instead of the
+  entire token"). Adjacent changed tokens merge into one mark, so a run
+  of changed words reads as one mark per word with the unchanged spaces
+  between them plain. A trailing `\r` both lines end in is never marked;
+  one only one line ends in is a changed token and is marked (owner,
+  2026-11-04, case `22`). On PR #14 this gives GitHub's exact marks on 143
+  of 166 pairs (the 899 public pairs not re-measured). The 23 PR #14
+  differences: GitHub folds the unchanged spaces and punctuation between
+  changes into one mark (`06`, `11`, `13`, `21`, `30-*`, `31-*`, `41`,
+  `46`, `47`), and GitHub doesn't mark a lone `\r` (`22`, `23`); see
+  **Decided by the owner**.
 - **Look** (mockups in the published page): a stronger tint of the line's own color behind the marked
   characters: new tokens `add-word` / `del-word` (and `add-word-done` /
   `del-word-done` on reviewed lines, the same step up from `add-done` /
@@ -131,7 +148,7 @@ in the report, not gated (wall clock is too noisy for a 10% gate).
 ## Non-goals (step 1)
 
 - Marks GitHub doesn't make: unequal blocks, splits/joins, moved lines,
-  lines of 1,024+ characters, CRLF-only pairs. They are step 2's.
+  lines of 1,024+ characters. They are step 2's.
 - Pairing by similarity, or changing which lines share a row (step 2).
 - A setting to turn marks off (GitHub has none; ask if wanted).
 - Any change to what the server sends.
@@ -163,8 +180,12 @@ in the report, not gated (wall clock is too noisy for a 10% gate).
   known-differences list with its reason. The list may only shrink.
 - **Unit, properties:** marks are within the line, sorted, non-overlapping,
   on token boundaries; unmarking every mark gives back both lines' common
-  tokens in order (the marks are exactly a diff); an equal pair has no
-  marks; a pair over the cut and every unequal block have none.
+  tokens in order (the marks are exactly a diff); the unmarked
+  non-whitespace tokens are a longest common subsequence of the lines'
+  non-whitespace tokens, and between two of them the unmarked tokens are
+  a longest common subsequence of that gap (words first, nothing folds);
+  an equal pair has no marks; a pair over the cut and every unequal block
+  have none; a `\r` only one line ends in is marked.
 - **Unit, render:** a marked token renders with the word tint over its
   syntax color; invisibles inside a mark are marked; a span mark wins;
   reviewed rows use the `-done` tokens.
@@ -184,8 +205,18 @@ in the report, not gated (wall clock is too noisy for a 10% gate).
 - **Tighter marks, not GitHub's folding** (2026-11-02): "You can go ahead
   and use the tighter version. I'm not 100% it's strictly better, but I'm
   not sure it's an interesting edge case anyway, so let's do what's
-  easier." The token diff stays; the five PR #14 differences (`04`, `05`,
-  `06`, `13`, `41`) are the test's known differences.
+  easier." Superseded by the next three (2026-11-04).
+- **Unchanged words are never marked** (2026-11-04, QA of PR #13, case
+  `06`): "Number (6) highlights the "width" token despite it not being
+  changed (only whitespace changed)". Words are aligned first (**What**).
+- **No folding** (2026-11-04, case `13`): "I'd rather for the punctuation
+  to be marked separately, instead of the entire token". No
+  `diff_cleanupEfficiency`; very different lines get one mark per changed
+  word.
+- **A lone `\r` is marked** (2026-11-04, case `22`): "it's very confusing
+  to see there's a diff despite having nothing visibly change. Also, when
+  hidden characters are shown, the \r is not highlighted - it should be."
+  A CRLF-only pair is no longer plain.
 - **Bright marks over 4.5:1** (2026-11-02, after comparing four tint
   options in screenshots: as built at 4.5:1, a darker green well, the
   mockup's bright marks, quieter rows with compliant marks): "(d) seems

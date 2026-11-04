@@ -2130,8 +2130,8 @@ describe("DiffBody word marks", () => {
 			}
 			act(() => ignoreWhitespace.set(false));
 			// Off: the re-indented pairs are marked too (tabs vs spaces): the
-			// "ws" cluster's three and y.
-			await waitFor(() => expect(words()).toHaveLength(10));
+			// "ws" cluster's three and y, plus line 3's lone trailing \r.
+			await waitFor(() => expect(words()).toHaveLength(11));
 		});
 	}
 });

@@ -1,49 +1,211 @@
 [
 	{
-		"file": "inline/04-reindent-and-change.ts",
-		"pair": 0,
-		"ours": {
-			"old": [],
-			"new": [[0, 4], [19, 20]]
-		},
-		"reason": "Inserted indent: GitHub marks the added spaces after the kept indent, ours before it (the same diff of equal spaces, placed differently). The `=` mark is the same."
-	},
-	{
-		"file": "inline/05-whitespace-indent-only.ts",
-		"pair": 0,
-		"ignoreWhitespace": false,
-		"ours": {
-			"old": [],
-			"new": [[0, 4]]
-		},
-		"reason": "Inserted indent: GitHub marks the added spaces after the kept indent, ours before it. With Ignore whitespace on the pair is a `~` row on both."
-	},
-	{
 		"file": "inline/06-whitespace-inner-only.ts",
 		"pair": 0,
 		"ignoreWhitespace": false,
 		"ours": {
-			"old": [[13, 18], [20, 21]],
-			"new": [[11, 12], [15, 20]]
+			"old": [[18, 19], [20, 21]],
+			"new": [[11, 12], [14, 15]]
 		},
-		"reason": "GitHub's looser folding: it folds the unchanged `width` and spaces between the changed spaces into one mark; ours marks the changed tokens only (owner, 2026-11-02: the tighter version). With Ignore whitespace on the pair is a `~` row on both."
+		"reason": "Owner, 2026-11-04 (case 06): \"highlights the \\\"width\\\" token despite it not being changed (only whitespace changed)\". Shared words are aligned first, so only the changed spaces are marked; GitHub folds the unchanged `width` and spaces between the changed spaces into one mark. With Ignore whitespace on the pair is a `~` row on both."
+	},
+	{
+		"file": "inline/11-leading-part-changed.ts",
+		"pair": 0,
+		"ours": {
+			"old": [[0, 3], [4, 11]],
+			"new": [[0, 6], [7, 25]]
+		},
+		"reason": "Nothing folds (owner, 2026-11-04, case 13: \"I'd rather for the punctuation to be marked separately, instead of the entire token\"): the unchanged spaces between changed tokens stay unmarked, so a changed run is several marks; GitHub folds them into one mark."
 	},
 	{
 		"file": "inline/13-punctuation-only.ts",
 		"pair": 0,
 		"ours": {
-			"old": [[15, 41]],
-			"new": [[15, 41]]
+			"old": [[15, 16], [21, 22], [24, 25], [29, 30], [32, 33], [38, 39], [40, 41]],
+			"new": [[15, 16], [21, 22], [24, 25], [29, 30], [32, 33], [38, 39], [40, 41]]
 		},
-		"reason": "diff_cleanupEfficiency (Diff_EditCost 3) folds the one-token words between the changed quotes into one mark; GitHub keeps the words unmarked (owner, 2026-11-02: the diff-match-patch version, not a copy of GitHub's folding)."
+		"reason": "Owner, 2026-11-04 (case 13): \"I'd rather for the punctuation to be marked separately, instead of the entire token\". Each changed quote and the `;`/`,` is its own mark; GitHub folds each `', '` (quote, comma, space, quote) into one mark."
+	},
+	{
+		"file": "inline/21-completely-different.ts",
+		"pair": 0,
+		"ours": {
+			"old": [[0, 5], [6, 11], [12, 27], [28, 38], [39, 40], [41, 42], [44, 45]],
+			"new": [[0, 5], [6, 9], [10, 15], [16, 20], [21, 32], [33, 36], [38, 51]]
+		},
+		"reason": "Nothing folds (owner, 2026-11-04, case 13: \"I'd rather for the punctuation to be marked separately, instead of the entire token\"): the unchanged spaces between changed tokens stay unmarked, so a changed run is several marks; GitHub folds them into one mark."
+	},
+	{
+		"file": "inline/22-crlf-only.ts",
+		"pair": 0,
+		"ignoreWhitespace": false,
+		"ours": {
+			"old": [],
+			"new": [[35, 36]]
+		},
+		"reason": "Owner, 2026-11-04 (case 22): \"it's very confusing to see there's a diff despite having nothing visibly change. Also, when hidden characters are shown, the \\r is not highlighted - it should be.\" A trailing `\\r` only one line has is a changed token; GitHub shows the pair plain. With Ignore whitespace on the pair is a `~` row on both."
+	},
+	{
+		"file": "inline/23-crlf-and-change.ts",
+		"pair": 0,
+		"ours": {
+			"old": [[29, 33]],
+			"new": [[29, 34], [36, 37]]
+		},
+		"reason": "Owner, 2026-11-04 (case 22): a trailing `\\r` only one line has is a changed token and is marked; GitHub leaves it unmarked. The `text`/`input` mark is the same."
+	},
+	{
+		"file": "inline/30-words-08-scattered.txt",
+		"pair": 0,
+		"ours": {
+			"old": [[6, 13], [14, 19], [20, 25], [26, 31], [32, 38], [39, 45], [46, 52], [53, 58], [59, 64], [65, 71], [72, 77]],
+			"new": [[6, 13], [14, 19], [20, 26], [27, 33], [34, 40], [41, 47], [48, 54], [55, 60], [61, 67], [68, 74], [75, 81]]
+		},
+		"reason": "Nothing folds (owner, 2026-11-04, case 13: \"I'd rather for the punctuation to be marked separately, instead of the entire token\"): the unchanged spaces between changed tokens stay unmarked, so a changed run is several marks; GitHub folds them into one mark."
+	},
+	{
+		"file": "inline/30-words-17-scattered.txt",
+		"pair": 0,
+		"ours": {
+			"old": [[6, 13], [14, 19], [20, 25], [26, 31], [32, 38], [46, 52], [53, 58], [59, 64], [65, 71], [72, 77]],
+			"new": [[6, 13], [14, 19], [20, 26], [27, 33], [34, 40], [48, 54], [55, 61], [62, 67], [68, 74], [75, 81]]
+		},
+		"reason": "Nothing folds (owner, 2026-11-04, case 13: \"I'd rather for the punctuation to be marked separately, instead of the entire token\"): the unchanged spaces between changed tokens stay unmarked, so a changed run is several marks; GitHub folds them into one mark."
+	},
+	{
+		"file": "inline/30-words-25-scattered.txt",
+		"pair": 0,
+		"ours": {
+			"old": [[6, 13], [14, 19], [20, 25], [32, 38], [39, 45], [46, 52], [59, 64], [65, 71], [72, 77]],
+			"new": [[6, 13], [14, 19], [20, 26], [33, 39], [40, 46], [47, 53], [60, 66], [67, 72], [73, 79]]
+		},
+		"reason": "Nothing folds (owner, 2026-11-04, case 13: \"I'd rather for the punctuation to be marked separately, instead of the entire token\"): the unchanged spaces between changed tokens stay unmarked, so a changed run is several marks; GitHub folds them into one mark."
+	},
+	{
+		"file": "inline/30-words-33-scattered.txt",
+		"pair": 0,
+		"ours": {
+			"old": [[6, 13], [14, 19], [26, 31], [32, 38], [46, 52], [53, 58], [65, 71], [72, 77]],
+			"new": [[6, 13], [14, 19], [26, 32], [33, 39], [47, 53], [54, 60], [67, 73], [74, 79]]
+		},
+		"reason": "Nothing folds (owner, 2026-11-04, case 13: \"I'd rather for the punctuation to be marked separately, instead of the entire token\"): the unchanged spaces between changed tokens stay unmarked, so a changed run is several marks; GitHub folds them into one mark."
+	},
+	{
+		"file": "inline/30-words-42-scattered.txt",
+		"pair": 0,
+		"ours": {
+			"old": [[6, 13], [20, 25], [26, 31], [39, 45], [53, 58], [59, 64], [72, 77]],
+			"new": [[6, 13], [20, 25], [26, 32], [40, 46], [54, 60], [61, 67], [75, 81]]
+		},
+		"reason": "Nothing folds (owner, 2026-11-04, case 13: \"I'd rather for the punctuation to be marked separately, instead of the entire token\"): the unchanged spaces between changed tokens stay unmarked, so a changed run is several marks; GitHub folds them into one mark."
+	},
+	{
+		"file": "inline/31-words-08-prefix.txt",
+		"pair": 0,
+		"ours": {
+			"old": [[6, 13], [14, 19], [20, 25], [26, 31], [32, 38], [39, 45], [46, 52], [53, 58], [59, 64], [65, 71], [72, 77]],
+			"new": [[6, 13], [14, 19], [20, 26], [27, 33], [34, 40], [41, 47], [48, 54], [55, 60], [61, 67], [68, 74], [75, 81]]
+		},
+		"reason": "Nothing folds (owner, 2026-11-04, case 13: \"I'd rather for the punctuation to be marked separately, instead of the entire token\"): the unchanged spaces between changed tokens stay unmarked, so a changed run is several marks; GitHub folds them into one mark."
+	},
+	{
+		"file": "inline/31-words-17-prefix.txt",
+		"pair": 0,
+		"ours": {
+			"old": [[14, 19], [20, 25], [26, 31], [32, 38], [39, 45], [46, 52], [53, 58], [59, 64], [65, 71], [72, 77]],
+			"new": [[14, 21], [22, 27], [28, 34], [35, 41], [42, 48], [49, 55], [56, 62], [63, 68], [69, 75], [76, 82]]
+		},
+		"reason": "Nothing folds (owner, 2026-11-04, case 13: \"I'd rather for the punctuation to be marked separately, instead of the entire token\"): the unchanged spaces between changed tokens stay unmarked, so a changed run is several marks; GitHub folds them into one mark."
+	},
+	{
+		"file": "inline/31-words-25-prefix.txt",
+		"pair": 0,
+		"ours": {
+			"old": [[20, 25], [26, 31], [32, 38], [39, 45], [46, 52], [53, 58], [59, 64], [65, 71], [72, 77]],
+			"new": [[20, 27], [28, 33], [34, 40], [41, 47], [48, 54], [55, 61], [62, 68], [69, 74], [75, 81]]
+		},
+		"reason": "Nothing folds (owner, 2026-11-04, case 13: \"I'd rather for the punctuation to be marked separately, instead of the entire token\"): the unchanged spaces between changed tokens stay unmarked, so a changed run is several marks; GitHub folds them into one mark."
+	},
+	{
+		"file": "inline/31-words-33-prefix.txt",
+		"pair": 0,
+		"ours": {
+			"old": [[26, 31], [32, 38], [39, 45], [46, 52], [53, 58], [59, 64], [65, 71], [72, 77]],
+			"new": [[26, 33], [34, 39], [40, 46], [47, 53], [54, 60], [61, 67], [68, 74], [75, 80]]
+		},
+		"reason": "Nothing folds (owner, 2026-11-04, case 13: \"I'd rather for the punctuation to be marked separately, instead of the entire token\"): the unchanged spaces between changed tokens stay unmarked, so a changed run is several marks; GitHub folds them into one mark."
+	},
+	{
+		"file": "inline/31-words-42-prefix.txt",
+		"pair": 0,
+		"ours": {
+			"old": [[32, 38], [39, 45], [46, 52], [53, 58], [59, 64], [65, 71], [72, 77]],
+			"new": [[32, 39], [40, 45], [46, 52], [53, 59], [60, 66], [67, 73], [74, 80]]
+		},
+		"reason": "Nothing folds (owner, 2026-11-04, case 13: \"I'd rather for the punctuation to be marked separately, instead of the entire token\"): the unchanged spaces between changed tokens stay unmarked, so a changed run is several marks; GitHub folds them into one mark."
+	},
+	{
+		"file": "inline/31-words-50-prefix.txt",
+		"pair": 0,
+		"ours": {
+			"old": [[39, 45], [46, 52], [53, 58], [59, 64], [65, 71], [72, 77]],
+			"new": [[39, 46], [47, 52], [53, 59], [60, 66], [67, 73], [74, 80]]
+		},
+		"reason": "Nothing folds (owner, 2026-11-04, case 13: \"I'd rather for the punctuation to be marked separately, instead of the entire token\"): the unchanged spaces between changed tokens stay unmarked, so a changed run is several marks; GitHub folds them into one mark."
+	},
+	{
+		"file": "inline/31-words-58-prefix.txt",
+		"pair": 0,
+		"ours": {
+			"old": [[46, 52], [53, 58], [59, 64], [65, 71], [72, 77]],
+			"new": [[46, 53], [54, 59], [60, 66], [67, 73], [74, 80]]
+		},
+		"reason": "Nothing folds (owner, 2026-11-04, case 13: \"I'd rather for the punctuation to be marked separately, instead of the entire token\"): the unchanged spaces between changed tokens stay unmarked, so a changed run is several marks; GitHub folds them into one mark."
+	},
+	{
+		"file": "inline/31-words-75-prefix.txt",
+		"pair": 0,
+		"ours": {
+			"old": [[59, 64], [65, 71], [72, 77]],
+			"new": [[59, 66], [67, 72], [73, 79]]
+		},
+		"reason": "Nothing folds (owner, 2026-11-04, case 13: \"I'd rather for the punctuation to be marked separately, instead of the entire token\"): the unchanged spaces between changed tokens stay unmarked, so a changed run is several marks; GitHub folds them into one mark."
 	},
 	{
 		"file": "inline/41-block-2x2-second-different.ts",
 		"pair": 1,
 		"ours": {
-			"old": [[0, 32]],
-			"new": [[0, 32]]
+			"old": [[0, 5], [13, 14], [15, 32]],
+			"new": [[0, 9], [10, 17], [24, 26], [27, 32]]
 		},
-		"reason": "A mostly different pair: diff_cleanupEfficiency folds the lone common `height` into the surrounding marks, so the whole changed span is one mark; GitHub keeps `height` unmarked (owner, 2026-11-02)."
+		"reason": "Shared tokens are kept: `height`, `(` and the spaces between changes stay unmarked, as words-first and nothing folds (owner, 2026-11-04, case 13). GitHub keeps `height` unmarked too but folds the spaces and `(` into its marks."
+	},
+	{
+		"file": "inline/46-block-5x5-odd-similar.ts",
+		"pair": 1,
+		"ours": {
+			"old": [[0, 12], [13, 17]],
+			"new": [[0, 15], [16, 27]]
+		},
+		"reason": "Nothing folds (owner, 2026-11-04, case 13: \"I'd rather for the punctuation to be marked separately, instead of the entire token\"): the unchanged spaces and punctuation (the shared `(`) between changed tokens stay unmarked, so a changed run is several marks; GitHub folds them into one mark."
+	},
+	{
+		"file": "inline/46-block-5x5-odd-similar.ts",
+		"pair": 3,
+		"ours": {
+			"old": [[0, 10], [11, 16]],
+			"new": [[0, 3], [4, 7], [8, 20]]
+		},
+		"reason": "Nothing folds (owner, 2026-11-04, case 13: \"I'd rather for the punctuation to be marked separately, instead of the entire token\"): the unchanged spaces and punctuation (the shared `(`) between changed tokens stay unmarked, so a changed run is several marks; GitHub folds them into one mark."
+	},
+	{
+		"file": "inline/47-block-5x5-shifted.ts",
+		"pair": 0,
+		"ours": {
+			"old": [[0, 5], [6, 8], [9, 10], [11, 24], [25, 28]],
+			"new": [[0, 2], [3, 9], [10, 15], [16, 18], [19, 22]]
+		},
+		"reason": "Nothing folds (owner, 2026-11-04, case 13: \"I'd rather for the punctuation to be marked separately, instead of the entire token\"): the unchanged spaces between changed tokens stay unmarked, so a changed run is several marks; GitHub folds them into one mark."
 	}
 ]

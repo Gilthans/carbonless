@@ -54,11 +54,25 @@ export function tokenize(text: string): string[] {
 
 /** Token to its one-character code, for the pair being diffed. */
 const codes = new Map<string, number>();
+/** The codes (from `codes`) of whitespace tokens. */
+const blanks = new Set<number>();
+/** A whitespace code point: a token of its own. */
+const BLANK = /^\s$/u;
 
-/** The line's tokens as one character each (`codes`), and each one's end. */
-function encode(text: string): { chars: string; ends: number[] } {
+/**
+ * The line's tokens as one character each (`codes`), each one's end, and
+ * its non-whitespace tokens alone: their indices (`at`) and characters.
+ */
+function encode(text: string): {
+	chars: string;
+	ends: number[];
+	at: number[];
+	words: string;
+} {
 	const units: number[] = [];
 	const ends: number[] = [];
+	const at: number[] = [];
+	const words: number[] = [];
 	for (let i = 0; i < text.length; ) {
 		const end = tokenEnd(text, i);
 		const t = text.slice(i, end);
@@ -66,38 +80,114 @@ function encode(text: string): { chars: string; ends: number[] } {
 		if (c === undefined) {
 			c = 0x100 + codes.size;
 			codes.set(t, c);
+			if (BLANK.test(t)) blanks.add(c);
+		}
+		if (!blanks.has(c)) {
+			at.push(units.length);
+			words.push(c);
 		}
 		units.push(c);
 		ends.push(end);
 		i = end;
 	}
-	return { chars: String.fromCharCode(...units), ends };
+	return {
+		chars: String.fromCharCode(...units),
+		ends,
+		at,
+		words: String.fromCharCode(...words),
+	};
 }
 
 /** A plain pair. */
 const none = (): { old: Mark[]; new: Mark[] } => ({ old: [], new: [] });
 
-/** The token diff: no time limit (exact), and the owner's tighter marks. */
+/** The token diff: no time limit, so exact (a longest common subsequence). */
 const dmp = new DiffMatchPatch();
 dmp.Diff_Timeout = 0;
-dmp.Diff_EditCost = 3;
 
-/** One trailing `\r` is never part of a mark (a CRLF-only pair is plain). */
-const withoutCr = (text: string): string =>
-	text.endsWith("\r") ? text.slice(0, -1) : text;
+/**
+ * Diffs tokens `[fromA, toA)` of `a` against `[fromB, toB)` of `b` (one
+ * character per token) and flags each changed one in `changedA` /
+ * `changedB`. A shared prefix and suffix are kept without running the diff;
+ * a side left empty leaves the other all changed.
+ */
+function flag(
+	a: string,
+	fromA: number,
+	toA: number,
+	changedA: Uint8Array,
+	b: string,
+	fromB: number,
+	toB: number,
+	changedB: Uint8Array,
+) {
+	while (
+		fromA < toA &&
+		fromB < toB &&
+		a.charCodeAt(fromA) === b.charCodeAt(fromB)
+	) {
+		fromA++;
+		fromB++;
+	}
+	while (
+		fromA < toA &&
+		fromB < toB &&
+		a.charCodeAt(toA - 1) === b.charCodeAt(toB - 1)
+	) {
+		toA--;
+		toB--;
+	}
+	if (fromA === toA || fromB === toB) {
+		changedA.fill(1, fromA, toA);
+		changedB.fill(1, fromB, toB);
+		return;
+	}
+	let ia = fromA;
+	let ib = fromB;
+	for (const [op, chars] of dmp.diff_main(
+		a.slice(fromA, toA),
+		b.slice(fromB, toB),
+		false,
+	)) {
+		const n = chars.length;
+		if (op === DiffMatchPatch.DIFF_EQUAL) {
+			ia += n;
+			ib += n;
+		} else if (op === DiffMatchPatch.DIFF_DELETE) {
+			changedA.fill(1, ia, ia + n);
+			ia += n;
+		} else {
+			changedB.fill(1, ib, ib + n);
+			ib += n;
+		}
+	}
+}
 
-/** Adds `[from, to)` to sorted ranges, joining it to the last when they touch. */
-function push(ranges: [number, number][], from: number, to: number) {
-	const last = ranges[ranges.length - 1];
-	if (last && last[1] === from) last[1] = to;
-	else ranges.push([from, to]);
+/** The changed tokens' ranges, adjacent ones merged. */
+function ranges(changed: Uint8Array, ends: number[]): Mark[] {
+	const out: [number, number][] = [];
+	for (let i = 0; i < changed.length; i++) {
+		if (!changed[i]) continue;
+		const from = i === 0 ? 0 : (ends[i - 1] as number);
+		const to = ends[i] as number;
+		const last = out[out.length - 1];
+		if (last && last[1] === from) last[1] = to;
+		else out.push([from, to]);
+	}
+	return out;
 }
 
 /**
  * The changed tokens of a removed line (`old`) and its paired added line
- * (`new`), as sorted, non-overlapping, merged UTF-16 ranges: a token diff
- * (diff-match-patch over one character per token) tightened by
- * `diff_cleanupEfficiency`. No marks when either line is too long.
+ * (`new`), as sorted, non-overlapping, merged UTF-16 ranges. Two token
+ * diffs (diff-match-patch over one character per token, exact):
+ * 1. the non-whitespace tokens alone; their equal tokens are anchors, so a
+ *    shared word is never traded for a shared space;
+ * 2. each gap between anchors (and before the first, after the last),
+ *    spaces included.
+ * A token is marked when a diff says it changed; nothing folds (owner,
+ * 2026-11-04). A trailing `\r` is marked only when one line alone ends in
+ * it. No marks when either line is too long.
  */
 export function wordMarks(
 	oldText: string,
@@ -106,35 +196,46 @@ export function wordMarks(
 	if (oldText.length >= WORD_DIFF_MAX || newText.length >= WORD_DIFF_MAX) {
 		return none();
 	}
-	const a = withoutCr(oldText);
-	const b = withoutCr(newText);
+	// A trailing `\r` both lines end in is never marked; one only one line
+	// ends in is a changed (whitespace) token like any other (owner,
+	// 2026-11-04: a CRLF-only pair is not plain).
+	const cr = oldText.endsWith("\r") && newText.endsWith("\r");
+	const a = cr ? oldText.slice(0, -1) : oldText;
+	const b = cr ? newText.slice(0, -1) : newText;
 	if (a === b) return none();
 	// Each distinct token as one character (from U+0100, far below the
 	// surrogates: a pair has at most 2,046 tokens).
 	codes.clear();
+	blanks.clear();
 	const ta = encode(a);
 	const tb = encode(b);
-	const diffs = dmp.diff_main(ta.chars, tb.chars, false);
-	dmp.diff_cleanupEfficiency(diffs);
-	const old: [number, number][] = [];
-	const young: [number, number][] = [];
-	// Token counts walked on each side; a token's range is ends[i-1]..ends[i].
-	let ia = 0;
+	const changedA = new Uint8Array(ta.ends.length);
+	const changedB = new Uint8Array(tb.ends.length);
+	// Pass 1: the words. Their equal tokens are the anchors.
+	let ia = 0; // word index walked
 	let ib = 0;
-	const endOf = (ends: number[], i: number) =>
-		i === 0 ? 0 : (ends[i - 1] as number);
-	for (const [op, chars] of diffs) {
+	// Token indices just past the last anchor.
+	let ga = 0;
+	let gb = 0;
+	const gap = (endA: number, endB: number) =>
+		flag(ta.chars, ga, endA, changedA, tb.chars, gb, endB, changedB);
+	for (const [op, chars] of dmp.diff_main(ta.words, tb.words, false)) {
 		const n = chars.length;
-		if (op === DiffMatchPatch.DIFF_EQUAL) {
+		if (op === DiffMatchPatch.DIFF_DELETE) ia += n;
+		else if (op === DiffMatchPatch.DIFF_INSERT) ib += n;
+		else {
+			for (let k = 0; k < n; k++) {
+				const anchorA = ta.at[ia + k] as number;
+				const anchorB = tb.at[ib + k] as number;
+				// Pass 2: the gap before this anchor, spaces included.
+				gap(anchorA, anchorB);
+				ga = anchorA + 1;
+				gb = anchorB + 1;
+			}
 			ia += n;
-			ib += n;
-		} else if (op === DiffMatchPatch.DIFF_DELETE) {
-			push(old, endOf(ta.ends, ia), endOf(ta.ends, ia + n));
-			ia += n;
-		} else {
-			push(young, endOf(tb.ends, ib), endOf(tb.ends, ib + n));
 			ib += n;
 		}
 	}
-	return { old, new: young };
+	gap(ta.ends.length, tb.ends.length);
+	return { old: ranges(changedA, ta.ends), new: ranges(changedB, tb.ends) };
 }

@@ -113,9 +113,11 @@ describe("hunkWordMarks", () => {
 		expect([...marks.keys()]).toEqual([d2, a2]);
 	});
 
-	it("leaves lines that differ only by a trailing \\r out of the map", () => {
+	it("marks a trailing \\r only one line of a pair has (owner, 2026-11-04)", () => {
 		const d = del("same\r");
 		const a = add("same");
-		expect(hunkWordMarks(rows(d, a)).size).toBe(0);
+		const marks = hunkWordMarks(rows(d, a));
+		expect(marks.get(d)).toEqual([[4, 5]]);
+		expect(marks.has(a)).toBe(false);
 	});
 });
