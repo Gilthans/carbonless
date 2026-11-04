@@ -20,3 +20,13 @@ export function useMedia(query: string): boolean {
 				: true,
 	);
 }
+
+const onResize = (onChange: () => void) => {
+	window.addEventListener("resize", onChange);
+	return () => window.removeEventListener("resize", onChange);
+};
+
+/** The window's width in CSS pixels, kept current as it is resized. */
+export function useViewportWidth(): number {
+	return useSyncExternalStore(onResize, () => window.innerWidth);
+}
