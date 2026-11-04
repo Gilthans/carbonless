@@ -3,6 +3,7 @@ import type { DiffLine } from "../../shared/types";
 import type { Mark } from "../code/Invisibles";
 import { hiddenLines } from "./hiddenLines";
 import type { DiffRow } from "./whitespace";
+import { hunkPairs, hunkWordMarks } from "./wordBlocks";
 
 const del = (text: string, noNewline?: boolean): DiffLine => ({
 	kind: "del",
@@ -58,6 +59,33 @@ describe("hiddenLines", () => {
 		const words = marks([d, [[0, 1]]], [a, [[0, 4]]]);
 		// Not a pair: the marks are someone else's (and the look compares nothing).
 		expect(hiddenLines(rows(d, ctx("c"), a), words, 4).size).toBe(0);
+	});
+
+	it("checks every marked line for a mark that draws nothing, paired or not", () => {
+		// Marks from some other pairing than today's equal blocks.
+		const d = del("let a = 1;");
+		const a1 = add("let a = 1;  ");
+		const a2 = add("x\r");
+		const hidden = hiddenLines(
+			rows(d, a1, a2),
+			marks([a1, [[10, 12]]], [a2, [[1, 2]]]),
+			4,
+		);
+		expect([...hidden]).toEqual([a1, a2]);
+	});
+
+	it("pairs lines as the word marks do (hunkPairs)", () => {
+		const d1 = del("a");
+		const d2 = del("\tx");
+		const a1 = add("b");
+		const a2 = add("    x");
+		const ws = rows(ctx("c"), d1, d2, a1, a2, del("z"), ctx("e"));
+		expect(hunkPairs(ws)).toEqual([
+			[d1, a1],
+			[d2, a2],
+		]);
+		const words = hunkWordMarks(ws);
+		expect(hiddenLines(ws, words, 4)).toEqual(new Set([d2, a2]));
 	});
 
 	it("reads a last line without a newline as the reader sees it: its \\r is drawn", () => {

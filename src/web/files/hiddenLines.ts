@@ -2,13 +2,13 @@ import type { DiffLine } from "../../shared/types";
 import { hiddenChange } from "../code/hiddenChange";
 import type { Mark } from "../code/Invisibles";
 import type { DiffRow } from "./whitespace";
+import { hunkPairs } from "./wordBlocks";
 
 /**
  * The hunk's marked lines whose change doesn't show while "Show hidden
- * characters" is off (hiddenChange.ts): each line compared with the line
- * it pairs with, paired as hunkWordMarks (wordBlocks.ts) pairs them (a run
- * of removed lines directly followed by as many added ones, i-th with
- * i-th; a context or whitespace-only row ends a block).
+ * characters" is off (hiddenChange.ts). Every marked line is checked for a
+ * mark that draws nothing; a paired line (hunkPairs, the pairing its marks
+ * come from) is also compared with its partner.
  */
 export function hiddenLines(
 	rows: readonly DiffRow[],
@@ -17,36 +17,22 @@ export function hiddenLines(
 ): ReadonlySet<DiffLine> {
 	const hidden = new Set<DiffLine>();
 	if (words.size === 0) return hidden;
-	const check = (line: DiffLine, partner: DiffLine) => {
-		const marks = words.get(line);
-		if (!marks) return;
+	const partners = new Map<DiffLine, DiffLine>();
+	for (const [del, add] of hunkPairs(rows)) {
+		partners.set(del, add);
+		partners.set(add, del);
+	}
+	for (const [line, marks] of words) {
+		const partner = partners.get(line);
 		const change = hiddenChange(line.text, marks, {
 			tabWidth,
 			newline: !line.noNewline,
-			partner: { text: partner.text, newline: !partner.noNewline },
+			partner: partner && {
+				text: partner.text,
+				newline: !partner.noNewline,
+			},
 		});
 		if (change) hidden.add(line);
-	};
-	let dels: DiffLine[] = [];
-	let adds: DiffLine[] = [];
-	const flush = () => {
-		if (dels.length > 0 && dels.length === adds.length) {
-			dels.forEach((del, i) => {
-				const add = adds[i] as DiffLine;
-				check(del, add);
-				check(add, del);
-			});
-		}
-		dels = [];
-		adds = [];
-	};
-	for (const row of rows) {
-		if (row.kind !== "line" || row.line.kind === "context") flush();
-		else if (row.line.kind === "del") {
-			if (adds.length > 0) flush();
-			dels.push(row.line);
-		} else adds.push(row.line);
 	}
-	flush();
 	return hidden;
 }
