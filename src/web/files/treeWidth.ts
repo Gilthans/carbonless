@@ -1,20 +1,33 @@
-import { useViewportWidth } from "../useMedia";
+import { type RefObject, useLayoutEffect, useState } from "react";
 import { numberSetting } from "../viewSettings";
 
-/** The desktop file tree's width, in px: its default (18rem), floor and keyboard step. */
-export const TREE_WIDTH = { default: 288, min: 160, step: 16 } as const;
+/**
+ * The desktop file tree's width, in px: its default (18rem), the sliver
+ * either side may be squeezed to (the tree's floor, and what the diffs keep
+ * at the tree's widest: enough to grab the handle and come back), and the
+ * keyboard step.
+ */
+export const TREE_WIDTH = {
+	default: 288,
+	min: 24,
+	sliver: 24,
+	step: 16,
+} as const;
 
-/** The widest the tree may be: half the window, so the diffs keep the rest. */
-export const treeWidthMax = (viewport: number) =>
-	Math.max(TREE_WIDTH.min, Math.floor(viewport / 2));
+/**
+ * The widest the tree may be in `room` px (its row less the handle): all of
+ * it but the diffs' sliver, never under the floor.
+ */
+export const treeWidthMax = (room: number) =>
+	Math.max(TREE_WIDTH.min, Math.floor(room) - TREE_WIDTH.sliver);
 
-/** `width` in whole px, within the tree's range for this window. */
-export const clampTreeWidth = (width: number, viewport: number) =>
-	Math.min(treeWidthMax(viewport), Math.max(TREE_WIDTH.min, Math.round(width)));
+/** `width` in whole px, between the floor and `max`. */
+export const clampTreeWidth = (width: number, max: number) =>
+	Math.min(max, Math.max(TREE_WIDTH.min, Math.round(width)));
 
 /**
  * The remembered width (`crb.files.treeWidth`): whole px, never under the
- * floor. The window's half is applied when shown (useTreeWidth), so a width
+ * floor. The row's maximum is applied when shown (useTreeWidth), so a width
  * chosen on a wide screen comes back once the window is wide again.
  */
 export const treeWidth = numberSetting(
@@ -50,14 +63,41 @@ export function treeWidthKey(
 	}
 }
 
-/** The tree's width for this window, and how to change it. */
-export function useTreeWidth() {
+/** The tree's width given `room` px for it and the diffs, and how to change it. */
+export function useTreeWidth(room: number) {
 	const stored = treeWidth.use();
-	const viewport = useViewportWidth();
+	const max = treeWidthMax(room);
 	return {
-		width: clampTreeWidth(stored, viewport),
+		width: clampTreeWidth(stored, max),
 		min: TREE_WIDTH.min,
-		max: treeWidthMax(viewport),
-		set: (width: number) => treeWidth.set(clampTreeWidth(width, viewport)),
+		max,
+		set: (width: number) => treeWidth.set(clampTreeWidth(width, max)),
 	};
+}
+
+/**
+ * The room the tree column (the tree and its handle) shares with the diffs:
+ * its row's width less the handle's, measured before paint and kept current
+ * as the row (the window) or the handle changes size.
+ */
+export function useTreeRoom(column: RefObject<HTMLElement | null>): number {
+	const [room, setRoom] = useState(() => window.innerWidth);
+	useLayoutEffect(() => {
+		const el = column.current;
+		const row = el?.parentElement;
+		if (!el || !row) return;
+		const handle = el.querySelector<HTMLElement>('[role="separator"]');
+		const measure = () =>
+			setRoom(row.getBoundingClientRect().width - (handle?.offsetWidth ?? 0));
+		measure();
+		if (typeof ResizeObserver === "undefined") {
+			window.addEventListener("resize", measure);
+			return () => window.removeEventListener("resize", measure);
+		}
+		const observer = new ResizeObserver(measure);
+		observer.observe(row);
+		if (handle) observer.observe(handle);
+		return () => observer.disconnect();
+	}, [column]);
+	return room;
 }

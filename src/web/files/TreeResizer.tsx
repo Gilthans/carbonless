@@ -6,7 +6,12 @@ import {
 	useState,
 } from "react";
 import { Tooltip } from "../Tooltip";
-import { TREE_WIDTH, treeWidthKey, useTreeWidth } from "./treeWidth";
+import {
+	TREE_WIDTH,
+	treeWidthKey,
+	useTreeRoom,
+	useTreeWidth,
+} from "./treeWidth";
 
 /**
  * The desktop file tree column: the tree at its remembered width and the
@@ -14,9 +19,13 @@ import { TREE_WIDTH, treeWidthKey, useTreeWidth } from "./treeWidth";
  * component so a window resize re-renders only this, not the whole page.
  */
 export function TreeColumn(props: { tree: ReactNode }) {
-	const treeWidth = useTreeWidth();
+	const column = useRef<HTMLDivElement>(null);
+	const treeWidth = useTreeWidth(useTreeRoom(column));
 	return (
-		<div className="sticky top-[calc(var(--app-header,0px)+var(--files-bar,0px)+1rem)] flex max-h-[calc(100dvh-var(--app-header,0px)-var(--files-bar,0px)-2rem)] shrink-0 self-start">
+		<div
+			ref={column}
+			className="sticky top-[calc(var(--app-header,0px)+var(--files-bar,0px)+1rem)] flex max-h-[calc(100dvh-var(--app-header,0px)-var(--files-bar,0px)-2rem)] shrink-0 self-start"
+		>
 			<aside style={{ width: treeWidth.width }} className="overflow-y-auto">
 				{props.tree}
 			</aside>

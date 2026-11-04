@@ -25,7 +25,8 @@ const fixture: PrOptions = {
 };
 
 const DEFAULT = 288;
-const MIN = 160;
+/** The sliver either side may be squeezed to. */
+const SLIVER = 24;
 
 const handle = (page: Page) =>
 	page.getByRole("separator", { name: "Resize file tree" });
@@ -38,6 +39,22 @@ const diffsWidth = (page: Page) =>
 	page
 		.getByRole("region", { name: "src/a.ts" })
 		.evaluate((el) => el.parentElement?.getBoundingClientRect().width ?? 0);
+/** The widest the tree may be: its row less the handle, less the diffs' sliver. */
+const maxWidth = (page: Page) =>
+	handle(page).evaluate((el, sliver) => {
+		const row = el.parentElement?.parentElement;
+		if (!row) throw new Error("no row");
+		const width = (e: Element) => e.getBoundingClientRect().width;
+		return Math.floor(width(row) - width(el)) - sliver;
+	}, SLIVER);
+/** The handle is wholly on screen, so the tree can always be brought back. */
+async function expectHandleInView(page: Page) {
+	await expect(handle(page)).toBeVisible();
+	const box = await handle(page).boundingBox();
+	const viewport = page.viewportSize()?.width ?? 0;
+	expect(box?.x ?? -1).toBeGreaterThanOrEqual(0);
+	expect((box?.x ?? 0) + (box?.width ?? 0)).toBeLessThanOrEqual(viewport);
+}
 
 /** Drags the handle by `dx` pixels with the mouse. */
 async function drag(page: Page, dx: number) {
@@ -108,10 +125,15 @@ test.describe("desktop", () => {
 		await pr(fixture);
 		const s = await startCrb();
 		await openFiles(page, s.url);
-		const max = await page.evaluate(() => Math.floor(window.innerWidth / 2));
+		const max = await maxWidth(page);
+		expect(max).toBeGreaterThan(DEFAULT * 2);
 		await handle(page).focus();
 		await expect(handle(page)).toBeFocused();
-		await expect(handle(page)).toHaveAttribute("aria-valuemin", `${MIN}`);
+		// The tooltip names it (it closes later, when a move takes it far away).
+		await expect(page.locator('[role="tooltip"]:not([hidden])')).toHaveText(
+			"Resize file tree",
+		);
+		await expect(handle(page)).toHaveAttribute("aria-valuemin", `${SLIVER}`);
 		await expect(handle(page)).toHaveAttribute("aria-valuemax", `${max}`);
 		for (let i = 0; i < 3; i++) await page.keyboard.press("ArrowLeft");
 		await expect(handle(page)).toHaveAttribute(
@@ -127,20 +149,19 @@ test.describe("desktop", () => {
 		await page.keyboard.press("End");
 		await expect(handle(page)).toHaveAttribute("aria-valuenow", `${max}`);
 		expect(await width(page)).toBeCloseTo(max, 0);
+		await expectHandleInView(page);
 		await page.keyboard.press("Home");
-		await expect(handle(page)).toHaveAttribute("aria-valuenow", `${MIN}`);
-		expect(await width(page)).toBeCloseTo(MIN, 0);
+		await expect(handle(page)).toHaveAttribute("aria-valuenow", `${SLIVER}`);
+		expect(await width(page)).toBeCloseTo(SLIVER, 0);
+		await expectHandleInView(page);
 		await page.keyboard.press("Enter");
 		await expect(handle(page)).toHaveAttribute("aria-valuenow", `${DEFAULT}`);
 		expect(await width(page)).toBeCloseTo(DEFAULT, 0);
-		// Still focused, and the tooltip names it.
+		// Still focused.
 		await expect(handle(page)).toBeFocused();
-		await expect(page.locator('[role="tooltip"]:not([hidden])')).toHaveText(
-			"Resize file tree",
-		);
 	});
 
-	test("the width is clamped: a drag past the half way stops there and the diffs keep their room", async ({
+	test("either side squeezes to a sliver: a far drag stops with the handle in view", async ({
 		page,
 		pr,
 		startCrb,
@@ -149,24 +170,31 @@ test.describe("desktop", () => {
 		const s = await startCrb();
 		await openFiles(page, s.url);
 		const viewport = page.viewportSize()?.width ?? 0;
-		const max = await page.evaluate(() => Math.floor(window.innerWidth / 2));
+		const max = await maxWidth(page);
 		await drag(page, viewport);
 		await expect(handle(page)).toHaveAttribute("aria-valuenow", `${max}`);
 		expect(await width(page)).toBeCloseTo(max, 0);
-		expect(await diffsWidth(page)).toBeGreaterThan(viewport / 3);
-		// And a smaller window clamps it again, without forgetting the choice.
+		// The diffs keep their sliver (the row's fraction of a pixel at most on top).
+		const diffs = await diffsWidth(page);
+		expect(diffs).toBeGreaterThanOrEqual(SLIVER);
+		expect(diffs).toBeLessThan(SLIVER + 1);
+		await expectHandleInView(page);
+		// A smaller window clamps it again, without forgetting the choice.
 		await page.setViewportSize({ width: 800, height: 720 });
-		const smaller = await page.evaluate(() =>
-			Math.floor(window.innerWidth / 2),
-		);
+		const smaller = await maxWidth(page);
+		expect(smaller).toBeLessThan(max);
 		await expect(handle(page)).toHaveAttribute("aria-valuenow", `${smaller}`);
-		expect(await diffsWidth(page)).toBeGreaterThan(800 / 3);
+		await expectHandleInView(page);
 		expect(
 			await page.evaluate(() => localStorage.getItem("crb.files.treeWidth")),
 		).toBe(`${max}`);
-		// Far left stops at the minimum.
+		// Far left stops at the tree's sliver.
 		await drag(page, -viewport);
-		await expect(handle(page)).toHaveAttribute("aria-valuenow", `${MIN}`);
-		expect(await width(page)).toBeCloseTo(MIN, 0);
+		await expect(handle(page)).toHaveAttribute("aria-valuenow", `${SLIVER}`);
+		expect(await width(page)).toBeCloseTo(SLIVER, 0);
+		await expectHandleInView(page);
+		// And a double click brings the default back.
+		await handle(page).dblclick();
+		await expect(handle(page)).toHaveAttribute("aria-valuenow", `${DEFAULT}`);
 	});
 });

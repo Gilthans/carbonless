@@ -10,85 +10,85 @@ import {
 	useTreeWidth,
 } from "./treeWidth";
 
-const setViewport = (width: number) => {
-	Object.defineProperty(window, "innerWidth", {
-		configurable: true,
-		writable: true,
-		value: width,
-	});
-	window.dispatchEvent(new Event("resize"));
-};
-
 describe("tree width", () => {
 	afterEach(() => {
 		localStorage.clear();
 		treeWidth.reset();
-		setViewport(1024);
 	});
 
-	it("defaults to 18rem, at least 160px, at most half the viewport", () => {
+	it("defaults to 18rem; either side may be squeezed to a 24px sliver", () => {
 		expect(TREE_WIDTH.default).toBe(288);
-		expect(TREE_WIDTH.min).toBe(160);
+		expect(TREE_WIDTH.min).toBe(24);
+		expect(TREE_WIDTH.sliver).toBe(24);
 		expect(TREE_WIDTH.step).toBe(16);
 		expect(treeWidth.key).toBe("crb.files.treeWidth");
 		expect(treeWidth.read()).toBe(288);
-		expect(treeWidthMax(1280)).toBe(640);
-		expect(treeWidthMax(1281)).toBe(640);
-		// Never below the minimum, however narrow the window.
-		expect(treeWidthMax(300)).toBe(160);
+		// The row less the handle: all of it but the diffs' sliver.
+		expect(treeWidthMax(1264)).toBe(1240);
+		expect(treeWidthMax(1264.8)).toBe(1240);
+		// Never below the floor, however narrow the row.
+		expect(treeWidthMax(30)).toBe(24);
+		expect(treeWidthMax(0)).toBe(24);
 	});
 
-	it("clamps a width to the viewport's range", () => {
-		expect(clampTreeWidth(100, 1280)).toBe(160);
-		expect(clampTreeWidth(2000, 1280)).toBe(640);
-		expect(clampTreeWidth(300, 1280)).toBe(300);
-		expect(clampTreeWidth(300.6, 1280)).toBe(301);
+	it("clamps a width to the range in hand", () => {
+		expect(clampTreeWidth(10, 1240)).toBe(24);
+		expect(clampTreeWidth(2000, 1240)).toBe(1240);
+		expect(clampTreeWidth(300, 1240)).toBe(300);
+		expect(clampTreeWidth(300.6, 1240)).toBe(301);
 	});
 
-	it("stores whole pixels, never under the minimum", () => {
+	it("stores whole pixels, never under the floor", () => {
 		treeWidth.set(300.4);
 		expect(localStorage.getItem("crb.files.treeWidth")).toBe("300");
 		treeWidth.set(5);
-		expect(localStorage.getItem("crb.files.treeWidth")).toBe("160");
+		expect(localStorage.getItem("crb.files.treeWidth")).toBe("24");
 		localStorage.setItem("crb.files.treeWidth", "wide");
 		expect(treeWidth.read()).toBe(288);
 	});
 
 	it("steps by key: arrows 16px (Shift 64), Home/End to the ends, Enter to the default", () => {
-		const at = { width: 300, min: 160, max: 640 };
+		const at = { width: 300, min: 24, max: 1240 };
 		expect(treeWidthKey("ArrowLeft", false, at)).toBe(284);
 		expect(treeWidthKey("ArrowRight", false, at)).toBe(316);
 		expect(treeWidthKey("ArrowLeft", true, at)).toBe(236);
 		expect(treeWidthKey("ArrowRight", true, at)).toBe(364);
-		expect(treeWidthKey("Home", false, at)).toBe(160);
-		expect(treeWidthKey("End", false, at)).toBe(640);
+		expect(treeWidthKey("Home", false, at)).toBe(24);
+		expect(treeWidthKey("End", false, at)).toBe(1240);
 		expect(treeWidthKey("Enter", false, at)).toBe(288);
 		expect(treeWidthKey("Tab", false, at)).toBeNull();
 		expect(treeWidthKey("a", true, at)).toBeNull();
 		// Clamped at the ends.
-		expect(treeWidthKey("ArrowLeft", true, { ...at, width: 170 })).toBe(160);
-		expect(treeWidthKey("ArrowRight", false, { ...at, width: 636 })).toBe(640);
+		expect(treeWidthKey("ArrowLeft", true, { ...at, width: 40 })).toBe(24);
+		expect(treeWidthKey("ArrowRight", false, { ...at, width: 1230 })).toBe(
+			1240,
+		);
+		// Enter in a row too narrow for the default goes to its end.
+		expect(treeWidthKey("Enter", false, { ...at, max: 200 })).toBe(200);
 	});
 
-	it("shows the stored width clamped to the viewport, re-clamped on resize", () => {
-		localStorage.setItem("crb.files.treeWidth", "600");
-		setViewport(1280);
-		const { result } = renderHook(() => useTreeWidth());
-		expect(result.current.width).toBe(600);
-		expect(result.current.min).toBe(160);
-		expect(result.current.max).toBe(640);
-		// A narrower window: the diffs keep at least half of it.
-		act(() => setViewport(1000));
-		expect(result.current.width).toBe(500);
-		expect(result.current.max).toBe(500);
+	it("shows the stored width clamped to the room, re-clamped as the room changes", () => {
+		localStorage.setItem("crb.files.treeWidth", "1000");
+		const { result, rerender } = renderHook(
+			({ room }: { room: number }) => useTreeWidth(room),
+			{ initialProps: { room: 1264 } },
+		);
+		expect(result.current.width).toBe(1000);
+		expect(result.current.min).toBe(24);
+		expect(result.current.max).toBe(1240);
+		// A narrower row: the diffs keep their sliver.
+		rerender({ room: 600 });
+		expect(result.current.width).toBe(576);
+		expect(result.current.max).toBe(576);
 		// Back wide: the stored width is still what the viewer chose.
-		act(() => setViewport(1280));
-		expect(result.current.width).toBe(600);
-		// Setting clamps to the viewport in hand.
+		rerender({ room: 1264 });
+		expect(result.current.width).toBe(1000);
+		expect(localStorage.getItem("crb.files.treeWidth")).toBe("1000");
+		// Setting clamps to the room in hand.
 		act(() => result.current.set(5000));
-		expect(result.current.width).toBe(640);
-		expect(localStorage.getItem("crb.files.treeWidth")).toBe("640");
-		act(() => result.current.set(100));
-		expect(result.current.width).toBe(160);
+		expect(result.current.width).toBe(1240);
+		expect(localStorage.getItem("crb.files.treeWidth")).toBe("1240");
+		act(() => result.current.set(1));
+		expect(result.current.width).toBe(24);
 	});
 });
