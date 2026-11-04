@@ -5,6 +5,7 @@ import {
 	fileSection,
 	ignoreWhitespace,
 	openFiles,
+	setSwitch,
 	sideBySide,
 } from "./files-ui";
 import { expect, type PrOptions, reviewPage, test } from "./fixtures";
@@ -208,4 +209,155 @@ test("a landing's and a pick's wash show over the word marks, and the landing's 
 	await row.locator('td[data-testid="new"] button').click();
 	await expect(row).toHaveAttribute("data-picked");
 	await expect.poll(wash).not.toBe(none);
+});
+
+/**
+ * Hidden-character cases: trailing spaces (07), tabs → spaces (08), CRLF
+ * only (22), a zero-width and a no-break space (64), and a visible rename
+ * (01) to compare with.
+ */
+const HIDDEN = [
+	"01-rename-identifier.ts",
+	"07-trailing-space-only.ts",
+	"08-tabs-to-spaces.ts",
+	"22-crlf-only.ts",
+	"64-hidden-unicode.ts",
+];
+const hiddenFixture: PrOptions = {
+	base: Object.fromEntries(
+		HIDDEN.map((name) => [`inline/${name}`, read("base", name)]),
+	),
+	files: [
+		{
+			message: "Hidden character cases",
+			files: Object.fromEntries(
+				HIDDEN.map((name) => [`inline/${name}`, read("case", name)]),
+			),
+		},
+	],
+};
+const WARNING = "Hidden characters changed. Turn on Show hidden characters";
+const warnings = (section: Locator) =>
+	section.getByRole("button", { name: new RegExp(`^${WARNING}`) });
+/** Settings' "Show hidden characters", read without changing it. */
+async function hiddenSwitch(page: Page): Promise<boolean> {
+	const gear = page.getByRole("button", { name: "Settings" });
+	await gear.click();
+	const toggle = page.getByRole("switch", { name: "Show hidden characters" });
+	const on = (await toggle.getAttribute("aria-checked")) === "true";
+	await page.keyboard.press("Escape");
+	await expect(toggle).toBeHidden();
+	return on;
+}
+/** The left edge of a cell's code text. */
+const codeLeft = (cell: Locator) =>
+	cell.locator("[data-code]").evaluate((el) => el.getBoundingClientRect().left);
+
+for (const view of ["unified", "side-by-side"] as const) {
+	test(`warns where a change doesn't show with hidden characters off, and turns them on (${view})`, async ({
+		page,
+		pr,
+		startCrb,
+		isMobile,
+	}) => {
+		if (isMobile) await page.setViewportSize({ width: 360, height: 780 });
+		await pr(hiddenFixture);
+		const s = await startCrb();
+		await openFiles(page, s.url);
+		await sideBySide(page, view === "side-by-side");
+		await setSwitch(page, "Show hidden characters", false);
+
+		// A visible rename: no warning.
+		const rename = await expand(page, "01-rename-identifier.ts");
+		await expectMarks(rename, "01-rename-identifier.ts", {
+			del: ["userCount"],
+			add: ["memberCount"],
+		});
+		await expect(warnings(rename)).toHaveCount(0);
+
+		// The zero-width and no-break spaces show as escapes, tinted: no warning.
+		const unicode = await expand(page, "64-hidden-unicode.ts");
+		const added = unicode.locator(
+			'td[data-testid="code"][data-side="RIGHT"] [data-word]',
+		);
+		await expect(added).toHaveText(["user\u200BName", "\u00A0"]);
+		await expect(added.locator('[data-inv="escape"]')).toHaveCount(2);
+		await expect(warnings(unicode)).toHaveCount(0);
+
+		// Tabs → spaces of the same width: both lines warn.
+		const tabs = await expand(page, "08-tabs-to-spaces.ts");
+		await expect(warnings(tabs)).toHaveCount(2);
+
+		// Trailing spaces: the added line warns, in the sign's place.
+		const trailing = await expand(page, "07-trailing-space-only.ts");
+		const warning = warnings(trailing);
+		await expect(warning).toHaveCount(1);
+		await expect(warning).toHaveAccessibleName(
+			isMobile ? WARNING : `${WARNING} (h)`,
+		);
+		const cell = trailing
+			.locator('td[data-testid="code"][data-side="RIGHT"]')
+			.filter({ hasText: "const ready" });
+		await expect(cell.getByRole("button", { name: /^Hidden/ })).toHaveCount(1);
+		// The code starts where a line without a warning starts.
+		const plain = trailing
+			.locator('td[data-testid="code"][data-side="RIGHT"]')
+			.filter({ hasText: "after context line 1" });
+		expect(await codeLeft(cell)).toBeCloseTo(await codeLeft(plain), 0);
+		expect(
+			await warning.evaluate((el) => getComputedStyle(el).userSelect),
+		).toBe("none");
+		if (isMobile) {
+			// A finger gets 40px around it.
+			const hit = await warning.evaluate((el) => {
+				const b = getComputedStyle(el, "::before");
+				return [Number.parseFloat(b.width), Number.parseFloat(b.height)];
+			});
+			for (const side of hit) expect(side).toBeGreaterThanOrEqual(40);
+		} else await warning.hover();
+		if (!isMobile) {
+			await expect(
+				page.locator('[role="tooltip"]:not([hidden])', { hasText: WARNING }),
+			).toBeVisible();
+		}
+		await shot(trailing, `hidden-${view}-off`, isMobile);
+		await expectNoPageOverflow(page);
+		if (isMobile) await warning.tap();
+		else await warning.click();
+		// On: the icons go, the trailing spaces show as tinted dots.
+		await expect(
+			page.getByRole("button", { name: /^Hidden characters changed/ }),
+		).toHaveCount(0);
+		await expect(
+			cell.locator('[data-word] [data-inv="space"]'),
+		).toHaveAttribute("data-glyph", "···");
+		await page.mouse.move(0, 0);
+		await shot(trailing, `hidden-${view}-on`, isMobile);
+		expect(await hiddenSwitch(page)).toBe(true);
+	});
+}
+
+// Needs the `\r` mark (Brief C, branch inline-anchor): until then case 22's
+// pair has no marks, so nothing to warn about.
+test.fixme("a CRLF-only change warns with hidden characters off, and shows a tinted \\r\\n once on", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	if (isMobile) await page.setViewportSize({ width: 360, height: 780 });
+	await pr(hiddenFixture);
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	await setSwitch(page, "Show hidden characters", false);
+	const crlf = await expand(page, "22-crlf-only.ts");
+	const warning = warnings(crlf);
+	await expect(warning).toHaveCount(1);
+	if (isMobile) await warning.tap();
+	else await warning.click();
+	await expect(warnings(crlf)).toHaveCount(0);
+	await expect(crlf.locator('[data-word] [data-inv="eol"]')).toHaveAttribute(
+		"data-glyph",
+		"\\r\\n",
+	);
 });

@@ -234,6 +234,22 @@ describe("a pair's word marks on a line (words)", () => {
 		expect(line().querySelector("[data-code]")?.textContent).toBe(text);
 	});
 
+	it("tints a CRLF ending's marker when the mark covers its \\r", () => {
+		const text = "const a = 1;\r";
+		renderLine({
+			text,
+			lang: null,
+			words: { marks: [[12, 13]], tone: "add" },
+		});
+		const [word] = words();
+		expect(word?.querySelector('[data-inv="eol"]')).toHaveAttribute(
+			"data-glyph",
+			"\\r\\n",
+		);
+		expect(words()).toHaveLength(1);
+		expect(line().querySelector("[data-code]")?.textContent).toBe(text);
+	});
+
 	it("lets a thread's span win where they overlap, the word tint showing outside it", () => {
 		const text = "const userCount = 1;";
 		renderLine({

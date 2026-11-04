@@ -295,6 +295,11 @@ const MARKED = "span-mark";
 export interface Words {
 	marks: readonly Mark[];
 	tone: "add" | "del" | "add-done" | "del-done";
+	/**
+	 * The change doesn't show while hidden characters are off
+	 * (hiddenChange.ts): its code cell warns in the sign's place.
+	 */
+	hidden?: boolean;
 }
 
 /** Each tone's tint (index.css; written out whole, for Tailwind). */

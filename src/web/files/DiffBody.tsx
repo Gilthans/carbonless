@@ -1,4 +1,5 @@
 import {
+	AlertIcon,
 	ChevronDownIcon,
 	ChevronRightIcon,
 	InfoIcon,
@@ -30,7 +31,13 @@ import type {
 	ReviewThread,
 } from "../../shared/types";
 import { contextQuery, hunksQuery, overviewQuery } from "../api";
-import { CodeLine, type Mark, type Words } from "../code/Invisibles";
+import {
+	CodeLine,
+	type Mark,
+	useShowInvisibles,
+	type Words,
+} from "../code/Invisibles";
+import { DEFAULT_TAB_WIDTH } from "../code/invisibles";
 import { Spinner } from "../Spinner";
 import { Tooltip } from "../Tooltip";
 import { canMove, spanTexts } from "../threads/draftMove";
@@ -47,9 +54,10 @@ import type { SpanRange } from "../threads/spanMarks";
 import { useThreadWriter } from "../threads/threadWrites";
 import { ErrorMessage } from "../ui";
 import { NOT_PHONE, useMedia } from "../useMedia";
-import { ignoreWhitespace, sideBySide } from "../viewSettings";
+import { ignoreWhitespace, showInvisibles, sideBySide } from "../viewSettings";
 import { type CellLine, CODE_CELL, cellLine } from "./codeSpan";
 import { EXPAND_STEP, fileGaps, type Gap, gapState } from "./gaps";
+import { hiddenLines } from "./hiddenLines";
 import { languageFor } from "./highlight";
 import type { Landing } from "./landing";
 import {
@@ -72,6 +80,7 @@ import {
 	lineKey,
 	placeThreads,
 } from "./threadPlacement";
+import { VIEW_KEYS } from "./viewShortcuts";
 import { type DiffRow, viewRuns, whitespaceOnly } from "./whitespace";
 import { hunkWordMarks } from "./wordBlocks";
 
@@ -470,6 +479,35 @@ function Sign({ kind }: { kind: RowLine["kind"] }) {
 }
 
 /**
+ * In the sign's place, on a line whose change doesn't show while hidden
+ * characters are off (hiddenChange.ts): a warning that turns them on. As
+ * wide as the sign, so the code doesn't move; a finger gets 40px around it.
+ * The sign comes back once they show.
+ */
+function HiddenWarning({ kind }: { kind: RowLine["kind"] }) {
+	const show = useShowInvisibles();
+	const wide = useMedia(NOT_PHONE);
+	if (show) return <Sign kind={kind} />;
+	const label = `Hidden characters changed. Turn on Show hidden characters${wide ? ` (${VIEW_KEYS.showInvisibles})` : ""}`;
+	return (
+		<Tooltip content={label} describe={false} lazy>
+			{(trigger) => (
+				<button
+					{...trigger}
+					type="button"
+					aria-label={label}
+					data-hidden-change=""
+					onClick={() => showInvisibles.set(true)}
+					className="relative z-[1] mr-2 inline-flex w-[1ch] cursor-pointer select-none justify-center align-[-1px] text-warn focus-visible:outline-2 focus-visible:outline-accent pointer-coarse:before:absolute pointer-coarse:before:top-1/2 pointer-coarse:before:left-1/2 pointer-coarse:before:size-10 pointer-coarse:before:-translate-1/2 pointer-coarse:before:content-['']"
+				>
+					<AlertIcon size={12} aria-hidden />
+				</button>
+			)}
+		</Tooltip>
+	);
+}
+
+/**
  * A line's number on one side (`old`/`new`), as wide as the file's numbers
  * need. With a picker, the pointer picks its row's line from it (the
  * number's own cell side by side, the code cell's line in unified), and the
@@ -570,7 +608,11 @@ function CodeCell(props: {
 					{bubble}
 				</BubbleSlot>
 			)}
-			<Sign kind={line.kind} />
+			{props.words?.hidden ? (
+				<HiddenWarning kind={line.kind} />
+			) : (
+				<Sign kind={line.kind} />
+			)}
 			<CodeLine
 				text={line.text}
 				lang={props.lang}
@@ -614,6 +656,8 @@ interface RowProps {
 	composers?: RowComposers;
 	/** The hunk's paired lines' word marks (hunkWordMarks), by line. */
 	words?: ReadonlyMap<DiffLine, readonly Mark[]>;
+	/** The marked lines whose change doesn't show with hidden characters off (hiddenLines). */
+	hidden?: ReadonlySet<DiffLine>;
 }
 
 /** The spans painted over a cell's characters: those of the threads on its keys. */
@@ -626,13 +670,17 @@ const marksOf = (keys: LineKey[], threads: RowThreads | undefined): Mark[] =>
  */
 function wordsOf(
 	line: RowLine,
-	words: ReadonlyMap<DiffLine, readonly Mark[]> | undefined,
+	props: Pick<RowProps, "words" | "hidden">,
 	reviewed: boolean,
 ): Words | undefined {
 	if (line.kind !== "add" && line.kind !== "del") return undefined;
-	const marks = words?.get(line);
+	const marks = props.words?.get(line);
 	if (!marks) return undefined;
-	return { marks, tone: reviewed ? `${line.kind}-done` : line.kind };
+	return {
+		marks,
+		tone: reviewed ? `${line.kind}-done` : line.kind,
+		hidden: props.hidden?.has(line) || undefined,
+	};
 }
 
 /**
@@ -814,7 +862,7 @@ function LineRow(props: RowProps & { line: RowLine; order?: number }) {
 					hunk={props.hunk}
 					order={props.order}
 					marks={marksOf(keys, threads)}
-					words={wordsOf(line, props.words, reviewed)}
+					words={wordsOf(line, props, reviewed)}
 					bubble={
 						endKey &&
 						threads && (
@@ -914,7 +962,7 @@ function PairRow(
 			landed: landedPhase(props.landed, line),
 			where,
 			marks: marksOf(keys, threads),
-			words: wordsOf(line, props.words, reviewed),
+			words: wordsOf(line, props, reviewed),
 			order: props.orderOf?.(source),
 			pick: pickOf(codeCellOf(line), true, picker),
 		};
@@ -2269,6 +2317,16 @@ function HunkRows(props: {
 			words: hunkWordMarks(runs.flatMap((run) => run.rows)),
 		};
 	}, [hunk, ignoreWhitespace, view]);
+	// The lines whose change doesn't show with hidden characters off.
+	const hidden = useMemo(
+		() =>
+			hiddenLines(
+				hunkRuns.flatMap((run) => run.rows),
+				words,
+				props.tabWidth ?? DEFAULT_TAB_WIDTH,
+			),
+		[hunkRuns, words, props.tabWidth],
+	);
 	const columns = columnsOf(view);
 	// Unified, the file bubble is centred on rows that aren't code (FileBubbleSlot).
 	const centred = view === "unified";
@@ -2304,6 +2362,7 @@ function HunkRows(props: {
 					picker: props.picker,
 					composers: props.composers,
 					words,
+					hidden,
 				};
 				/** The run's rows, the cluster's controls on the first when given. */
 				const runRows = (controls?: ReactNode) =>

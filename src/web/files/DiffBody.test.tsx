@@ -2113,6 +2113,73 @@ describe("DiffBody word marks", () => {
 			]);
 		});
 
+		it(`warns on a line whose change doesn't show with hidden characters off; activating it turns them on (${view})`, async () => {
+			sideBySide.set(view === "side-by-side");
+			setup({
+				hunks: block(["let s = 1;"], ["let s = 1;   "]),
+				clusters: [cluster("c")],
+			});
+			await shown("let s = 1;");
+			const cell =
+				view === "unified"
+					? (rowOf("add").querySelector(
+							'td[data-testid="code"]',
+						) as HTMLElement)
+					: cellOf("RIGHT");
+			const warning = within(cell).getByRole("button", {
+				name: "Hidden characters changed. Turn on Show hidden characters (h)",
+			});
+			expect(
+				screen.getAllByRole("button", { name: /Hidden characters/ }),
+			).toHaveLength(1);
+			// In the sign's place: before the code, kept out of a copy.
+			expect(warning.nextElementSibling).toHaveAttribute("data-code");
+			expect(warning).toHaveClass("select-none");
+			expect(cell.querySelector("[data-code]")?.textContent).toBe(
+				"let s = 1;   ",
+			);
+			fireEvent.click(warning);
+			expect(showInvisibles.read()).toBe(true);
+			expect(
+				screen.queryByRole("button", { name: /Hidden characters/ }),
+			).toBeNull();
+			// The trailing spaces show now, tinted as the change.
+			expect(
+				words(cell)[0]?.querySelector('[data-inv="space"]'),
+			).toHaveAttribute("data-glyph", "···");
+		});
+
+		it(`warns on both lines of a tab swapped for spaces of the same width, not on a visible change (${view})`, async () => {
+			sideBySide.set(view === "side-by-side");
+			setup({
+				hunks: block(
+					["\tx = 1;", "const userCount = 1;"],
+					["    x = 1;", "const memberCount = 1;"],
+				),
+				clusters: [cluster("c")],
+			});
+			await shown("memberCount");
+			const warnings = screen.getAllByRole("button", {
+				name: /Hidden characters changed/,
+			});
+			expect(warnings.map((w) => w.closest("td")?.textContent)).toEqual(
+				view === "unified"
+					? [
+							expect.stringContaining("\tx = 1;"),
+							expect.stringContaining("    x = 1;"),
+						]
+					: [
+							expect.stringContaining("\tx = 1;"),
+							expect.stringContaining("    x = 1;"),
+						],
+			);
+			// Hidden characters on: no warnings.
+			act(() => showInvisibles.set(true));
+			expect(
+				screen.queryByRole("button", { name: /Hidden characters/ }),
+			).toBeNull();
+		});
+
 		it(`gives a whitespace-only row no marks with Ignore whitespace on, other pairs keep theirs (${view})`, async () => {
 			sideBySide.set(view === "side-by-side");
 			ignoreWhitespace.set(true);
