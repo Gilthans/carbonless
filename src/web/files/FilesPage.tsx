@@ -46,6 +46,7 @@ import {
 	restoreAnchor,
 	type ScrollAnchor,
 } from "./scrollAnchor";
+import { TreeColumn } from "./TreeResizer";
 import { threadsOnHead } from "./threadPlacement";
 
 const NO_THREADS: ReviewThread[] = [];
@@ -659,12 +660,9 @@ export function FilesPage() {
 								<FilesVerdict threads={allThreads} settled={firstOpenSettled} />
 							</>
 						) : (
-							<div className="mt-4 flex gap-4">
-								{wide && (
-									<aside className="sticky top-[calc(var(--app-header,0px)+var(--files-bar,0px)+1rem)] max-h-[calc(100dvh-var(--app-header,0px)-var(--files-bar,0px)-2rem)] w-72 shrink-0 self-start overflow-y-auto">
-										{tree}
-									</aside>
-								)}
+							<div className="mt-4 flex">
+								{/* The handle's 1rem is the gap to the diffs. */}
+								{wide && <TreeColumn tree={tree} />}
 								<div
 									ref={diffs}
 									// Room for the floating Files button, and for the save notices
