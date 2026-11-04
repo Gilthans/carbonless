@@ -54,6 +54,20 @@ priority; a one-time setup step per harness is acceptable; a status
 indicator in the UI is wanted (and later in `crb doctor`); one active
 agent per review for now.
 
+After the builder check (2026-11-04):
+
+> "The user settings question isn't so simple. We should leave it as an
+> install time decision. I think it's great the session has
+> slack/notion/jira connectors, I can ask to look at the bug to check
+> stuff, look at slack to see what somebody said, look at CX to see if
+> prod metrics flag something. Let's default to keeping those settings,
+> actually. I'd rather start with permissive and close gradually."
+
+> "Showing streamed text sounds amazing. If it isn't a large amount of
+> work I'd much prefer it."
+
+> "One agent per review per machine sounds right."
+
 This is the first slice of `docs/todo.md` item 3, "Send AI to investigate
 while reviewing".
 
@@ -171,13 +185,15 @@ hole carbonless never sees.
 `config.json` (`src/server/config.ts`) gets an `agent` section:
 
 ```json
-"agent": { "command": "claude-agent-acp", "args": [], "env": {} }
+"agent": { "command": "claude-agent-acp", "args": [], "env": {}, "leash": "open" }
 ```
 
 - `command` is resolved on `PATH` or absolute; `args` and `env` are
   passed as given, `env` on top of the server's environment. Validation
   follows the file's pattern: a bad part is replaced by the default and
   reported in `problems`.
+- `leash` is `open` (default) or `strict`: an install-time decision, see
+  "The leash". The owner: start permissive and close gradually.
 - **Default (call):** when `agent` is absent, carbonless looks for
   `claude-agent-acp` on `PATH` and uses it if found; otherwise no agent.
   `"agent": null` turns the feature off even if the adapter is installed.
@@ -281,8 +297,8 @@ The envelope, per prompt:
   turn's `stop`. It is stored when the turn ends, with the stop reason; a
   turn that ends with `cancelled`, `refusal`, `max_tokens` or an error
   stores what came with that reason, shown as a chip on the message.
-- **While the turn runs, the reviewer sees it happen (recommended; owner's
-  decision, "Open questions").** The status endpoint carries, in memory,
+- **While the turn runs, the reviewer sees it happen (owner, 2026-11-04:
+  "Showing streamed text sounds amazing").** The status endpoint carries, in memory,
   the text streamed so far and an activity list: each tool call's kind and
   title as the agent reports it (`tool_call` updates: "Read src/x.ts",
   "git log --oneline -5") and, for each permission request, carbonless's
@@ -301,10 +317,10 @@ carbonless answers every `session/request_permission` by the tool call's
 | kind | Decision |
 |---|---|
 | `read`, `search`, `think` | allow (allow_once; never allow_always) |
-| `execute` | allow only when `rawInput.command` matches a read-only allowlist: `git` with `log`, `show`, `diff`, `blame`, `grep`, `ls-files`, `rev-parse`, `cat-file`, `status`; `rg`, `grep`, `find`, `ls`, `cat`, `head`, `tail`, `wc`, `sed -n`, `awk`, `tree`; no `|`, `>`, `;`, `&&` outside the allowlist, no `-i`. Everything else rejected. |
-| `edit`, `delete`, `move` | reject |
-| `fetch` | reject (an exfiltration channel: untrusted PR content + network) |
-| `switch_mode`, `other`, unknown | reject |
+| `execute` | allow only when `rawInput.command` matches a read-only allowlist: `git` with `log`, `show`, `diff`, `blame`, `grep`, `ls-files`, `rev-parse`, `cat-file`, `status`; `rg`, `grep`, `find`, `ls`, `cat`, `head`, `tail`, `wc`, `sed -n`, `awk`, `tree`; no `|`, `>`, `;`, `&&` outside the allowlist, no `-i`. Everything else rejected. Both leash levels. |
+| `edit`, `delete`, `move` | reject, both levels: the feature's premise is "without making any changes" |
+| `switch_mode` | reject, both levels |
+| `fetch`, `other`, unknown | **open:** allow (the reviewer's own connectors and tools: look at the Jira bug, read the Slack thread, check the metrics). **strict:** reject (`fetch` is an exfiltration channel: untrusted PR content + network; `other` is any tool carbonless can't classify). |
 
 - Rejections use `reject_once` and the agent gets the reason in the next
   prompt's envelope as a `notice` (call), so it can tell the reviewer;
@@ -317,33 +333,39 @@ carbonless answers every `session/request_permission` by the tool call's
 it.** A harness answers some tool calls from the reviewer's own
 configuration before any permission request reaches carbonless: Claude
 Code's safe-list ran `git log` without asking in the spike, and the
-reviewer's global settings, hooks, connectors and plugins would apply the
-same way. On this devbox the agent inherited this account's claude.ai
-connectors (Slack, Notion, Jira) until told not to. So:
+reviewer's global settings, hooks, connectors and plugins apply the same
+way. On this devbox the agent inherited this account's claude.ai
+connectors (Slack, Notion, Jira). The owner wants exactly that by
+default: the buddy can look at the bug, read what someone said in Slack,
+check production metrics. So the leash has two levels, chosen at install
+time in `config.json` (`agent.leash`):
 
-- **The Claude connector passes session options that strip all of it
-  (call), verified in the spike:** `session/new` with
+- **`open` (default).** The agent runs with the reviewer's own harness
+  configuration: settings, hooks, connectors, plugins. carbonless still
+  refuses every file change and every shell command outside the read-only
+  allowlist, and allows the rest (`fetch`, `other`). What the harness
+  pre-allows from the reviewer's own settings never reaches carbonless.
+  The residual, stated in the FAQ: a hostile PR can make the agent use the
+  reviewer's connectors and network (read, and write where a connector
+  can), and anything the reviewer's own allow rules permit. Every call
+  shows in the activity line, so it is visible, not silent.
+- **`strict`.** For the Claude connector, `session/new` carries
   `_meta.claudeCode.options = { settingSources: [], strictMcpConfig: true,
-  tools: ["Read", "Grep", "Glob", "Bash"] }` (the `tools` allowlist is
-  accepted by the adapter; the builder confirms it takes effect, else
-  `disallowedTools` naming every write, network and harness tool:
-  `Edit`, `Write`, `MultiEdit`, `NotebookEdit`, `WebFetch`, `WebSearch`,
-  `Agent`, `Workflow`, `SendMessage`, `PushNotification`,
-  `RemoteTrigger`, `CronCreate`, `Monitor`, `Skill`, `ToolSearch`). No
-  user settings means no allow rules, no hooks and no user MCP servers;
-  strict MCP config means no connectors or plugins; the tool allowlist
-  means every write goes through Bash, where the policy sees it. The
-  harness's safe-list still auto-allows read-only commands, which is fine.
-- **Other agents get only carbonless's gate.** Gemini CLI, Goose, OpenCode
-  and the rest load their own global config, and carbonless has no generic
-  way to turn it off. The FAQ says so and shows each harness's clean
-  profile flag where one exists (`gemini --acp` with a profile directory,
-  Codex `--profile` with `sandbox_mode = "read-only"`). The security table
-  below states the residual honestly: with a harness other than the Claude
-  connector, the leash is as strong as the harness's own permission model
-  plus carbonless's rejections of what it is asked about.
-- Known residual with Claude: anything its safe-list auto-allows (read-only
-  commands) runs unasked. Nothing on that list writes.
+  tools: ["Read", "Grep", "Glob", "Bash"] }` (verified in the spike: no
+  user settings, so no allow rules, hooks or user MCP servers; no
+  connectors or plugins; every write goes through Bash, where the policy
+  sees it. The `tools` allowlist is accepted by the adapter; the builder
+  confirms it takes effect, else `disallowedTools` naming every write,
+  network and harness tool). For other harnesses the FAQ shows each one's
+  clean-profile flag where one exists (`gemini --acp` with a profile
+  directory, Codex `--profile` with `sandbox_mode = "read-only"`); there is
+  no generic way to do it from carbonless.
+- Known residual at both levels with Claude: anything its safe-list
+  auto-allows (read-only commands) runs unasked. Nothing on that list
+  writes.
+- Closing gradually is the plan: later levels can refuse connector writes
+  by tool name or annotation, once the activity line has shown what the
+  buddy actually uses.
 - The policy is one pure function with a table test; the fake agent (below)
   exercises every kind.
 - `session/cancel` is sent when the reviewer presses Stop on an answering
@@ -453,11 +475,11 @@ exit code and stderr tail; the next question respawns once.
 
 | Threat | Where it is stopped |
 |---|---|
-| PR content (code, README, CLAUDE.md, comments) instructs the agent | Policy rejects every write, command outside the allowlist, and fetch; the fixed preamble says data can't instruct |
+| PR content (code, README, CLAUDE.md, comments) instructs the agent | Policy rejects every write and command outside the allowlist (and, at `strict`, fetch and unknown tools); the fixed preamble says data can't instruct; every call shows in the activity line |
 | PR adds harness config (hooks, MCP servers, allow rules) | `cwd` is the tree's parent; a fixture PR with a hook that writes a marker proves the marker never appears |
 | Agent reply exfiltrates through the UI | Replies render without remote images or HTML |
 | Agent writes to GitHub or review state | No tool, API or ref lets it; `gh` is not on the allowlist |
-| The reviewer's own harness config pre-allows writes, hooks or connectors | Claude connector: session options strip user settings, connectors and every tool but Read/Grep/Glob/Bash. Other harnesses: residual, stated in the FAQ with each one's clean-profile flag |
+| The reviewer's own harness config pre-allows writes, hooks or connectors | `open` (default): accepted by the owner as the reviewer's own trust, visible in the activity line, stated in the FAQ. `strict`: Claude connector session options strip user settings, connectors and every tool but Read/Grep/Glob/Bash; other harnesses get their clean-profile flag from the FAQ |
 | Two servers on one machine both answer | The per-review claim in the cache; the other server shows `elsewhere` |
 | carbonless pays for or runs a model | It spawns the reviewer's harness with the reviewer's login; no key passes through |
 | Adapter is hostile or compromised | Out of scope: the reviewer installs it; same trust as the harness itself |
@@ -479,8 +501,9 @@ exit code and stderr tail; the next question respawns once.
 
 ## Tests
 
-- **Unit:** the policy table (every kind, commands in and out of the
-  allowlist, `sed -i`, `&&` and `|` chains, `git push`, `gh`); the event
+- **Unit:** the policy table at both leash levels (every kind, commands in
+  and out of the allowlist, `sed -i`, `&&` and `|` chains, `git push`,
+  `gh`); the Claude connector's session options per level; the event
   fold (waiting, resolved, dedupe, `ai` on the wrong type dropped); the
   store (CAS, size cap, activity cap); the claim (taken, held by a live
   pid, freed by a dead one);
@@ -523,24 +546,15 @@ combined to capture both text and stop reason; the spawn's environment
 (`PATH`, `HOME`, the server's env minus secrets the builder identifies);
 worktree cleanup of stale `agents/` dirs on server start.
 
-## Open questions for the owner
+## Builder check, answered
 
-From the builder check (2026-11-04). The third question it raised, the
-reviewer's own harness config bypassing the leash, was answered by a
-further spike run and is now in "The leash".
+The check (2026-11-04) raised three questions; all are settled above.
 
-1. **Watch the agent work, or wait for the answer?** The spec recommends
-   showing the streamed text and a collapsed activity line (files read,
-   commands run, requests refused) while the agent answers, and keeping
-   the activity with the message. It is what "a terminal open by the
-   review screen" shows, and it makes the leash's refusals visible to you.
-   The alternative is a spinner until the whole reply lands and nothing
-   stored but the text: less to build, less to store, and the PR's
-   attempts stay invisible unless the agent mentions them. Decides the
-   status endpoint, the card, the event format (measured now, not later)
-   and the fake agent.
-2. **One agent per review per machine (the claim) is a call; say if you'd
-   rather have each server run its own.** With the claim, the branch
-   instance you QA on will show `elsewhere` when main also has the review
-   open, and the holder answers. Per-server agents would mean duplicate
-   answers and double token spend on the same question.
+1. **The reviewer's own harness config bypassing the leash:** an
+   install-time `leash` level, `open` by default (the owner's decision:
+   keep the connectors, start permissive, close gradually), `strict`
+   available with the verified Claude session options.
+2. **Watch the agent work:** yes, streamed text and the activity line
+   (owner: "Showing streamed text sounds amazing").
+3. **One agent per review per machine:** yes, the claim (owner: "sounds
+   right").
