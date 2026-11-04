@@ -92,6 +92,23 @@ describe("wordMarks", () => {
 		}
 	});
 
+	it("case 13: marks each changed quote and the `;` on its own, never the words between", () => {
+		// Owner QA of PR #14, case 13 (2026-11-04): punctuation marked
+		// separately, not folded into one mark with the words.
+		const a = "const items = ['alpha', 'beta', 'gamma'];";
+		const b = 'const items = ["alpha", "beta", "gamma"],';
+		const quotes: [number, number][] = [
+			[15, 16],
+			[21, 22],
+			[24, 25],
+			[29, 30],
+			[32, 33],
+			[38, 39],
+			[40, 41],
+		];
+		expect(wordMarks(a, b)).toEqual({ old: quotes, new: quotes });
+	});
+
 	it("marks a renamed identifier as one token", () => {
 		expect(wordMarks("const userCount = 1;", "const memberCount = 1;")).toEqual(
 			{ old: [[6, 15]], new: [[6, 17]] },
@@ -168,6 +185,100 @@ describe("wordMarks", () => {
 			expect(unmarked(strip(a), old)).toBe(unmarked(strip(b), young));
 			if (strip(a) === strip(b))
 				expect({ old, young }).toEqual({ old: [], young: [] });
+		}
+	});
+
+	it("never marks a token the diff keeps: shared words first, then spaces (1,000 seeded pairs)", () => {
+		// Words first: the non-whitespace tokens left unmarked are a longest
+		// common subsequence of the two lines' non-whitespace tokens (no shared
+		// word is traded for a space). Then nothing folds: between two kept
+		// words, the kept tokens are a longest common subsequence of that gap.
+		const blank = (t: string) => /^\s$/u.test(t);
+		const lcs = (xs: readonly string[], ys: readonly string[]) => {
+			let prev = new Array<number>(ys.length + 1).fill(0);
+			for (const x of xs) {
+				const row = [0];
+				ys.forEach((y, j) => {
+					row.push(
+						x === y
+							? (prev[j] as number) + 1
+							: Math.max(prev[j + 1] as number, row[j] as number),
+					);
+				});
+				prev = row;
+			}
+			return prev[ys.length] as number;
+		};
+		/** Each token with whether it is marked. */
+		const tokens = (text: string, marks: readonly Mark[]) => {
+			let at = 0;
+			return tokenize(text.replace(/\r$/, "")).map((t) => {
+				const marked = marks.some(([f, to]) => at >= f && at < to);
+				at += t.length;
+				return { t, marked };
+			});
+		};
+		/** The tokens between kept words: gap i is before kept word i. */
+		const gaps = (ts: { t: string; marked: boolean }[]) => {
+			const out: { t: string; marked: boolean }[][] = [[]];
+			for (const x of ts) {
+				if (!x.marked && !blank(x.t)) out.push([]);
+				else out[out.length - 1]?.push(x);
+			}
+			return out;
+		};
+		const words = ["width", "x", "a", "b", "=", "*", "(", ")", ";", "'"];
+		const random = rng(20261104);
+		const line = () => {
+			let s = "";
+			const n = Math.floor(random() * 16);
+			for (let i = 0; i < n; i++) {
+				const r = random();
+				s += r < 0.35 ? (r < 0.05 ? "\t" : " ") : "";
+				s += words[Math.floor(random() * words.length)];
+			}
+			return random() < 0.1 ? `${s}\r` : s;
+		};
+		for (let k = 0; k < 1000; k++) {
+			const a = line();
+			const b = line();
+			const { old, new: young } = wordMarks(a, b);
+			const ta = tokens(a, old);
+			const tb = tokens(b, young);
+			const keptWords = (ts: typeof ta) =>
+				ts.filter((x) => !x.marked && !blank(x.t)).map((x) => x.t);
+			const ka = keptWords(ta);
+			expect({ a, b, kept: ka }).toEqual({ a, b, kept: keptWords(tb) });
+			expect({ a, b, words: ka.length }).toEqual({
+				a,
+				b,
+				words: lcs(
+					ta.filter((x) => !blank(x.t)).map((x) => x.t),
+					tb.filter((x) => !blank(x.t)).map((x) => x.t),
+				),
+			});
+			const ga = gaps(ta);
+			const gb = gaps(tb);
+			ga.forEach((gap, i) => {
+				const other = gb[i] ?? [];
+				const kept = (g: typeof gap) =>
+					g.filter((x) => !x.marked).map((x) => x.t);
+				expect({ a, b, i, kept: kept(gap) }).toEqual({
+					a,
+					b,
+					i,
+					kept: kept(other),
+				});
+				expect({ a, b, i, length: kept(gap).length }).toEqual({
+					a,
+					b,
+					i,
+					length: lcs(
+						gap.map((x) => x.t),
+						other.map((x) => x.t),
+					),
+				});
+			});
 		}
 	});
 
