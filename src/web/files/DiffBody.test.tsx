@@ -1901,13 +1901,11 @@ describe("DiffBody side by side", () => {
 				[...cells].every(
 					(el) =>
 						el.className.includes("w-[var(--num-w,3rem)]") &&
-						el.className.includes(
-							"pointer-coarse:w-[max(3rem,var(--num-w,3rem))]",
-						),
+						el.className.includes("min-w-[var(--num-w,3rem)]"),
 				)
 			);
 		};
-		expect(width()).toBe("calc(4ch + 1rem)");
+		expect(width()).toBe("calc(4ch + var(--num-pad, 1rem))");
 		expect(document.querySelectorAll("col")).toHaveLength(6);
 		expect(
 			[...document.querySelectorAll("col")].filter((c) =>
@@ -1925,11 +1923,11 @@ describe("DiffBody side by side", () => {
 			clusters: [pairCluster()],
 		});
 		await screen.findByText("new seven");
-		expect(width()).toBe("calc(3ch + 1rem)");
+		expect(width()).toBe("calc(3ch + var(--num-pad, 1rem))");
 		expect(sized()).toBe(true);
 		// Unified too.
 		act(() => sideBySide.set(false));
-		expect(width()).toBe("calc(3ch + 1rem)");
+		expect(width()).toBe("calc(3ch + var(--num-pad, 1rem))");
 		expect(sized()).toBe(true);
 		// A deleted tail numbers higher on the old side than the new file is long.
 		cleanup();
@@ -1949,7 +1947,7 @@ describe("DiffBody side by side", () => {
 			clusters: [pairCluster()],
 		});
 		await screen.findByText("gone");
-		expect(width()).toBe("calc(4ch + 1rem)");
+		expect(width()).toBe("calc(4ch + var(--num-pad, 1rem))");
 	});
 
 	it("keeps unified's markup, its code cell naming its side", async () => {
@@ -2147,13 +2145,11 @@ describe("number columns: as wide as the file's largest line number needs", () =
 		);
 		const row = await screen.findByTestId("diff-line");
 		expect(row.closest("table")?.style.getPropertyValue("--num-w")).toBe(
-			"calc(4ch + 1rem)",
+			"calc(4ch + var(--num-pad, 1rem))",
 		);
 		const number = within(row).getByTestId("new");
 		expect(number.className).toContain("w-[var(--num-w,3rem)]");
-		expect(number.className).toContain(
-			"pointer-coarse:w-[max(3rem,var(--num-w,3rem))]",
-		);
+		expect(number.className).toContain("min-w-[var(--num-w,3rem)]");
 	});
 });
 

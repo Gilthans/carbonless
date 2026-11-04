@@ -1,6 +1,12 @@
 import type { Locator } from "@playwright/test";
 import { reviewThread, threadComment } from "../test/fake-gh/scenario";
-import { fileSection, openFiles } from "./files-ui";
+import {
+	expectNoPageOverflow,
+	fileSection,
+	openFiles,
+	tapHeight,
+	tapWidth,
+} from "./files-ui";
 import { expect, type Pr, type PrOptions, test } from "./fixtures";
 
 /**
@@ -168,7 +174,9 @@ test("line numbers and the gutter stay put while the code scrolls sideways", asy
 		}
 	}
 	await expectOpaque(cluster.controls, "cluster controls");
-	// What's on top at each pinned cell is the cell, not the code under it.
+	// What's on top at each pinned cell is the cell (or, over a controls
+	// cell on touch, the cluster's stacked controls reaching down from its
+	// first row), never the code under it.
 	for (const [k, r] of Object.entries(rows)) {
 		for (const [name, cell] of Object.entries(r)) {
 			const covered = await cell.evaluate((el) => {
@@ -177,7 +185,12 @@ test("line numbers and the gutter stay put while the code scrolls sideways", asy
 					b.left + b.width / 2,
 					b.top + b.height / 2,
 				);
-				return hit !== null && el.contains(hit);
+				if (!hit) return false;
+				return (
+					el.contains(hit) ||
+					((el as HTMLTableCellElement).cellIndex === 1 &&
+						hit.closest("[data-sticky-controls]") !== null)
+				);
 			});
 			expect(covered, `${k} ${name} on top`).toBe(true);
 		}
@@ -231,4 +244,148 @@ test("line numbers and the gutter stay put while the code scrolls sideways", asy
 	).toBe(true);
 	await expectAdjacent(otherRow);
 	await expectAdjacent(other.locator("tbody.group > tr").first());
+});
+
+/** A cell's width and left padding, in px. */
+const metrics = (cell: Locator) =>
+	cell.evaluate((el) => {
+		const css = getComputedStyle(el);
+		return {
+			width: el.getBoundingClientRect().width,
+			pad: Number.parseFloat(css.paddingLeft),
+		};
+	});
+
+test("a narrow diff (the tree dragged wide) tightens the leading columns; with room they stay roomy", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	test.skip(isMobile, "a phone is cramped by itself (the next test)");
+	await setup(pr);
+	const s = await startCrb();
+	const cells = async () => {
+		const section = fileSection(page, WIDE);
+		await section.getByRole("button", { name: "Expand file" }).click();
+		const row = section.locator('tr[data-testid="diff-line"][data-new-no="4"]');
+		await expect(row).toBeVisible();
+		return {
+			section,
+			row,
+			controls: row.locator("td").nth(1),
+			old: row.getByTestId("old"),
+			new: row.getByTestId("new"),
+			sign: row.getByTestId("code").locator("> span[aria-hidden]").first(),
+		};
+	};
+	// With room (the default tree width): the roomy layout.
+	await openFiles(page, s.url);
+	const roomy = await cells();
+	expect(await metrics(roomy.controls)).toEqual({ width: 44, pad: 4 });
+	const roomyNumber = await metrics(roomy.old);
+	expect(roomyNumber.pad).toBe(8);
+	expect(await metrics(roomy.new)).toEqual(roomyNumber);
+	expect(
+		await roomy.sign.evaluate((el) => getComputedStyle(el).marginRight),
+	).toBe("8px");
+	expect(
+		await roomy.section.locator("table").getAttribute("data-tight"),
+	).toBeNull();
+
+	// The tree dragged wide: the diff's box is narrow, so the columns tighten.
+	await page.evaluate(() => localStorage.setItem("crb.files.treeWidth", "700"));
+	await page.reload();
+	await expect(fileSection(page, WIDE)).toBeVisible();
+	const tight = await cells();
+	const scroller = diffScroller(tight.section);
+	expect(await scroller.evaluate((el) => el.clientWidth)).toBeLessThan(640);
+	await expect(tight.section.locator("table")).toHaveAttribute(
+		"data-tight",
+		"true",
+	);
+	expect(await metrics(tight.controls)).toEqual({ width: 38, pad: 2 });
+	const tightNumber = await metrics(tight.old);
+	expect(tightNumber.pad).toBe(4);
+	expect(tightNumber.width).toBeCloseTo(roomyNumber.width - 8, 0);
+	expect(await metrics(tight.new)).toEqual(tightNumber);
+	expect(
+		await tight.sign.evaluate((el) => getComputedStyle(el).marginRight),
+	).toBe("4px");
+	// Pinned at the new sums: nothing moves but the code.
+	const pinned = {
+		rail: tight.row.locator("td").first(),
+		controls: tight.controls,
+		old: tight.old,
+		new: tight.new,
+	};
+	await expectAdjacent(tight.row);
+	const before = await xs(pinned);
+	const codeBefore = await x(tight.row.getByTestId("code"));
+	await scroller.evaluate((el) => {
+		el.scrollLeft = 120;
+	});
+	await expect.poll(() => scroller.evaluate((el) => el.scrollLeft)).toBe(120);
+	expect(await xs(pinned)).toEqual(before);
+	expect(await x(tight.row.getByTestId("code"))).toBeCloseTo(
+		codeBefore - 120,
+		0,
+	);
+});
+
+test("a phone is cramped: a narrow pinned block whose controls and numbers still take a tap while scrolled", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	test.skip(!isMobile, "touch targets");
+	await setup(pr);
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	const section = fileSection(page, WIDE);
+	await section.getByRole("button", { name: "Expand file" }).click();
+	const row = section.locator('tr[data-testid="diff-line"][data-new-no="4"]');
+	await expect(row).toBeVisible();
+	await expect(section.locator("table")).toHaveAttribute("data-tight", "true");
+	// Rail, controls and both numbers of a 3-digit file: well under 120px.
+	const rail = await row.locator("td").first().boundingBox();
+	const last = await row.getByTestId("new").boundingBox();
+	if (!rail || !last) throw new Error("not rendered");
+	expect(last.x + last.width - rail.x).toBeLessThan(120);
+	// The numbers together are the pick's target, 40px wide at least.
+	const old = await row.getByTestId("old").boundingBox();
+	if (!old) throw new Error("not rendered");
+	expect(last.x + last.width - old.x).toBeGreaterThanOrEqual(40);
+
+	const scroller = diffScroller(section);
+	await scroller.evaluate((el) => {
+		el.scrollLeft = 120;
+	});
+	await expect.poll(() => scroller.evaluate((el) => el.scrollLeft)).toBe(120);
+	// The two controls' 40px targets, by what a tap would hit.
+	// On the cluster's first row, the deleted line (the file cluster above
+	// has its own).
+	const lines = section.locator('tr[data-testid="diff-line"]');
+	const boxTarget = lines.getByTestId("cluster-box-target");
+	const cross = lines.getByRole("button", { name: "Cross off cluster" });
+	for (const target of [boxTarget, cross]) {
+		expect(await tapWidth(target)).toBeGreaterThanOrEqual(40);
+		expect(await tapHeight(target)).toBeGreaterThanOrEqual(40);
+	}
+	const b = await boxTarget.boundingBox();
+	if (!b) throw new Error("not rendered");
+	await page.touchscreen.tap(b.x + b.width / 2, b.y + b.height / 2);
+	await expect(
+		lines.getByRole("checkbox", { name: "Mark cluster reviewed" }),
+	).toBeChecked();
+	// A tap on either number picks the line.
+	await row.getByTestId("old").tap();
+	await expect(row).toHaveAttribute("data-picked", "true");
+	await page.keyboard.press("Escape");
+	await expect(section.locator("tr[data-picked]")).toHaveCount(0);
+	await row.getByTestId("new").tap();
+	await expect(row).toHaveAttribute("data-picked", "true");
+	expect(await scroller.evaluate((el) => el.scrollLeft)).toBe(120);
+	await expectNoPageOverflow(page);
 });
