@@ -2,9 +2,11 @@ import DiffMatchPatch from "diff-match-patch";
 import type { Mark } from "../code/Invisibles";
 
 /**
- * Word marks inside one pair of lines, GitHub's way (spec:
- * docs/superpowers/specs/2026-11-01-inline-diff-design.md). A pair with a
- * line this long or longer (UTF-16 `length`) has no marks, as on GitHub.
+ * Word marks inside one pair of lines: GitHub's tokens, pairing and length
+ * cut, the owner's marking rules (words first, nothing folds, a lone `\r`
+ * marked; spec: docs/superpowers/specs/2026-11-01-inline-diff-design.md).
+ * A pair with a line this long or longer (UTF-16 `length`) has no marks, as
+ * on GitHub.
  */
 export const WORD_DIFF_MAX = 1024;
 
