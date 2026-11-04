@@ -109,6 +109,23 @@ describe("wordMarks", () => {
 		expect(wordMarks(a, b)).toEqual({ old: quotes, new: quotes });
 	});
 
+	it("folds nothing: each changed word its own mark, the spaces between plain", () => {
+		expect(wordMarks("a b c d", "w x y z")).toEqual({
+			old: [
+				[0, 1],
+				[2, 3],
+				[4, 5],
+				[6, 7],
+			],
+			new: [
+				[0, 1],
+				[2, 3],
+				[4, 5],
+				[6, 7],
+			],
+		});
+	});
+
 	it("marks a renamed identifier as one token", () => {
 		expect(wordMarks("const userCount = 1;", "const memberCount = 1;")).toEqual(
 			{ old: [[6, 15]], new: [[6, 17]] },
@@ -239,7 +256,12 @@ describe("wordMarks", () => {
 			}
 			return out;
 		};
-		const words = ["width", "x", "a", "b", "=", "*", "(", ")", ";", "'"];
+		// Whitespace runs, an emoji (a surrogate pair) and both forms of `é`
+		// among the words; a step may add only its separator, so a line can
+		// be whitespace only.
+		const words = ["width", "x", "a", "b", "=", "*", "(", ")", ";", "'"].concat(
+			["  ", "\t", "😀", "é", "e\u0301"],
+		);
 		const random = rng(20261104);
 		const line = () => {
 			let s = "";
@@ -247,6 +269,7 @@ describe("wordMarks", () => {
 			for (let i = 0; i < n; i++) {
 				const r = random();
 				s += r < 0.35 ? (r < 0.05 ? "\t" : " ") : "";
+				if (r < 0.1) continue;
 				s += words[Math.floor(random() * words.length)];
 			}
 			return random() < 0.1 ? `${s}\r` : s;
