@@ -381,9 +381,8 @@ for (const view of ["unified", "side-by-side"] as const) {
 	});
 }
 
-// Needs the `\r` mark (Brief C, branch inline-anchor): until then case 22's
-// pair has no marks, so nothing to warn about.
-test.fixme("a CRLF-only change warns with hidden characters off, and shows a tinted \\r\\n once on", async ({
+// Case 22: the new line's lone `\r` is marked (owner, 2026-11-04), so it warns.
+test("a CRLF-only change warns with hidden characters off, and shows a tinted \\r\\n once on", async ({
 	page,
 	pr,
 	startCrb,
