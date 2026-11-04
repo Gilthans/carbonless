@@ -118,9 +118,14 @@ the test fixture (below).
   or trailing spaces and tabs, or a line that looks exactly like its
   partner, i.e. a tab swapped for spaces of the same width) gets a yellow
   ⚠ in its sign's place, as wide as the sign so the code never moves (a
-  40px target on a touch screen). Its tooltip and name: "Hidden
+  40px target on a touch screen, reaching right from the cell's edge,
+  never over the number). The ⚠ replaces the `+`/`−` sign while it shows:
+  that line's side is told by its color and which number it has. It is
+  not a tab stop (`h` is the keyboard's way). Its tooltip and name: "Hidden
   characters changed. Turn on Show hidden characters (h)"; activating it
-  turns them on and it goes. Escaped characters (zero widths, no-break
+  turns them on and it goes, focus moving to its line. An indent swapped for
+  one as wide warns even beside a visible change. Nothing is computed while
+  hidden characters show. Escaped characters (zero widths, no-break
   spaces, bidi controls) show as `\uXXXX` either way: no ⚠. `h` toggles
   the setting (desktop), beside `w` and `s`.
 - **Copy:** marks are background only; a copy gives the code.
