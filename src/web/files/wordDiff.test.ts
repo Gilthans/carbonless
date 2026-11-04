@@ -61,7 +61,7 @@ describe("tokenize", () => {
 
 describe("wordMarks", () => {
 	it("case 06: marks only the changed spaces, never the unchanged `width`", () => {
-		// Owner QA of PR #14, case 06: only whitespace changed around `=` and `*`.
+		// Owner QA of PR #13 (gallery #14, case 06): only whitespace changed around `=` and `*`.
 		const a = "const area = width * height + margin;";
 		const b = "const area  =  width*height + margin;";
 		const marks = wordMarks(a, b);
@@ -93,7 +93,7 @@ describe("wordMarks", () => {
 	});
 
 	it("case 13: marks each changed quote and the `;` on its own, never the words between", () => {
-		// Owner QA of PR #14, case 13 (2026-11-04): punctuation marked
+		// Owner QA of PR #13 (gallery #14, case 13), 2026-11-04: punctuation marked
 		// separately, not folded into one mark with the words.
 		const a = "const items = ['alpha', 'beta', 'gamma'];";
 		const b = 'const items = ["alpha", "beta", "gamma"],';
@@ -124,7 +124,7 @@ describe("wordMarks", () => {
 	});
 
 	it("case 22: marks a trailing \\r only one line has", () => {
-		// Owner QA of PR #14, case 22 (2026-11-04): "it's very confusing to see
+		// Owner QA of PR #13 (gallery #14, case 22), 2026-11-04: "it's very confusing to see
 		// there's a diff despite having nothing visibly change. Also, when
 		// hidden characters are shown, the \\r is not highlighted - it should be."
 		const a = "const eol = detectLineEnding(text);";

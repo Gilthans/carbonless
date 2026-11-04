@@ -208,14 +208,14 @@ in the report, not gated (wall clock is too noisy for a 10% gate).
   and use the tighter version. I'm not 100% it's strictly better, but I'm
   not sure it's an interesting edge case anyway, so let's do what's
   easier." Superseded by the next three (2026-11-04).
-- **Unchanged words are never marked** (2026-11-04, QA of PR #13, case
-  `06`): "Number (6) highlights the "width" token despite it not being
+- **Unchanged words are never marked** (2026-11-04, owner QA of carbonless
+  PR #13, gallery #14 case `06`): "Number (6) highlights the "width" token despite it not being
   changed (only whitespace changed)". Words are aligned first (**What**).
-- **No folding** (2026-11-04, case `13`): "I'd rather for the punctuation
+- **No folding** (2026-11-04, same QA, case `13`): "I'd rather for the punctuation
   to be marked separately, instead of the entire token". No
   `diff_cleanupEfficiency`; very different lines get one mark per changed
   word.
-- **A lone `\r` is marked** (2026-11-04, case `22`): "it's very confusing
+- **A lone `\r` is marked** (2026-11-04, same QA, case `22`): "it's very confusing
   to see there's a diff despite having nothing visibly change. Also, when
   hidden characters are shown, the \r is not highlighted - it should be."
   A CRLF-only pair is no longer plain.
