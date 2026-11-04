@@ -32,7 +32,7 @@ A reviewer who comes back to a PR after the author pushed should re-read only wh
 
 - **Snapshot**: one PR state, the pair (merge base `B`, head `H`), and its three-dot diff. One per push the tool has seen. The current one is `R = (B2, H2)`. The storage doc's "revision" is renamed to this.
 - **Patch set (PS)**, the owner's "changeset": a snapshot the reviewer took a lasting action on: marked or crossed off a cluster, opened a thread, gave a verdict (a reply, resolve or unresolve acts on a thread, not on the snapshot). Identified by its snapshot id; numbered per reviewer in start order (PS1, PS2); pinned by refs so its head and merge base outlive force-pushes and base rewrites. The reviewer's latest is `PS1 = (B1, H1)` in formulas.
-- **Landmark** (proposed, awaiting the owner's yes): a head someone else commented or gave a verdict on, derived from GitHub, shown on the snapshot list and usable as a since/to point. Not a patch set: it has no state of this reviewer's.
+- **Landmark** (deferred, owner 2026-11-04): a head someone else commented or gave a verdict on, derived from GitHub, usable as a since/to point. Not in this round; nothing here depends on it.
 - **Shape**: how `R` relates to `PS1` (S1 appended, S3 base merged in, S4a trivial rebase, S4b rebase with conflicts, S4c rework, S5 squash, S6 backwards, S7 retargeted, S8 stacked parent landed, S9 revert), detected per move and recorded.
 - **Virtual rebase `H1'`**: `git merge-tree --write-tree B2 H1`: the old head as if rebased onto the new base, built without touching any branch.
 - **Interdiff**: `diff(H1', H2)`, the author's own changes since `PS1`; the diff of the two patches with the base's changes folded out. For S1 it equals `diff(H1, H2)`.
@@ -138,7 +138,7 @@ Built on what exists: `Session` (`src/server/session.ts`) owns the snapshot and 
 
 | Route | Answer | Notes |
 | --- | --- | --- |
-| `GET /session` (exists) | adds `patchsets[]` (number, head, merge base, started, shape, since), `landmarks[]` (head, who, when, count), `lastSeen` | What the banner and the switcher read; cheap, no engine work. |
+| `GET /session` (exists) | adds `patchsets[]` (number, head, merge base, started, shape, since), `lastSeen` | What the banner and the switcher read; cheap, no engine work. |
 | `GET /rereview?from=<ps>&to=<head>` | `{ shape, interdiff: available or unavailable+reason, files: [{ index, path, clusters: [{ key, kind: carried or reworked or new or gone, from?, old?: lines }] }], threads: [{ id, placement }] }` | The engine's answer for one pair, computed in the background on first ask and cached by `(from snapshot id, to head, TRACER_VERSION)`. Never awaited by the first page load: the page shows PS1 and polls this for the banner's counts. |
 | `POST /rereview/move { to: <head> }` | the new `ReviewView` plus the `rereview` answer | Writes `patchset-started` (n+1, since, shape), the two pin refs, and the `carried` events, in one transaction after the engine ran. Idempotent on the same head: a second call answers the existing patch set. |
 | `GET /review?patchset=<n>` | `ReviewView` of that patch set | Old patch sets are read-only; the snapshot is rebuilt from the pinned OIDs (cached by snapshot id, as today). |
@@ -162,7 +162,7 @@ Replaces today's three variants. While the engine runs: "Newer commits" with a s
 
 ### Patch set switcher
 
-The header pill (today's `PS1 · a1b2c3d`) opens a list: the reviewer's patch sets with their date, shape and progress; landmarks in grey (someone's comments on a head); the current head last, with Move when it is newer. Picking an old patch set opens it read-only with an "as reviewed · read-only" chip and a "Back to PSn" button; marks are locked, replies still send. Its threads are those published before the next patch set started (the as-of machinery, cutoff = the next `patchset-started` time; the current patch set has no cutoff), all of them placed, resolved ones with a resolved chip, since GitHub keeps no history of resolved state. Files changed stops filtering threads to the viewed head (`threadsOnHead`): placement replaces it, which also closes the todo item on threads from earlier commits. On a phone it is a bottom sheet (40px rows).
+The header pill (today's `PS1 · a1b2c3d`) opens a list: the reviewer's patch sets with their date, shape and progress; the current head last, with Move when it is newer. Picking an old patch set opens it read-only with an "as reviewed · read-only" chip and a "Back to PSn" button; marks are locked, replies still send. Its threads are those published before the next patch set started (the as-of machinery, cutoff = the next `patchset-started` time; the current patch set has no cutoff), all of them placed, resolved ones with a resolved chip, since GitHub keeps no history of resolved state. Files changed stops filtering threads to the viewed head (`threadsOnHead`): placement replaces it, which also closes the todo item on threads from earlier commits. On a phone it is a bottom sheet (40px rows).
 
 ### Since and base views
 
@@ -194,7 +194,7 @@ Above the buttons: "You approved `a1b2c3d` (PS1), 2 days ago" and "Since then: 3
 [Re-review Mockups](https://claude.ai/artifact/EP31yvNhgGwQEfdgMmDXuD): six slices of Files changed, desktop and phone, in the app's own tokens.
 
 1. **Banner and Move**: appended commits (yellow), trivial rebase (green, "nothing new"), rebase with conflicts (red); Move is the one action.
-2. **Patch set switcher**: your patch sets with date, shape and progress; a landmark in grey; the current head last with Move; the since/base segmented control; the phone sheet.
+2. **Patch set switcher**: your patch sets with date, shape and progress; the current head last with Move; the since/base segmented control; the phone sheet.
 3. **Since view**: one file with a carried cluster collapsed green, a reworked cluster with PS1's lines in a quiet band above it, a new cluster; header chips; notes on the empty view, gone clusters, conflicts and the base view.
 4. **Threads**: a changed thread's card with old and new lines and its fate line; the unplaced list under a file header with fates (deleted in a commit, moved?).
 5. **Final Verdict**: what you approved and what changed since, with PS2's meter; the identical-diff case with "Approve again".
@@ -274,7 +274,7 @@ One PR per step on Gilthans/carbonless, each with its brief, a fresh review and 
 
 ### Open questions (owner)
 
-- [ ] Landmarks for other people's comment heads: yes or make them real patch sets? (thread in the discussion doc)
+- [x] Landmarks for other people's comment heads: deferred to a later round (owner, 2026-11-04).
 - [ ] Should an old patch set allow new marks (editing history) or stay read-only, as designed here?
 - [ ] Calls made after the builder check, say if any is wrong: a reply, resolve or unresolve never starts a patch set (only a new thread, a verdict or a mark does); Move onto an earlier patch set's head resumes that patch set; an untick is never undone by an older patch set's mark; an old patch set shows the threads published before the next one started, resolved ones included; no Move on a merged or closed PR; the head poll also watches the base branch name and the merge base.
 - [ ] Once sync lands, should `thread-placed` be shared through `meta` so other reviewers see a dragged thread where you put it?
