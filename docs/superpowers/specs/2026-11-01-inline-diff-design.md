@@ -112,6 +112,17 @@ the test fixture (below).
   span (`span-mark`, opaque) wins over a word mark where they overlap; a
   thread's lines (`mark-tint`) and picked lines (`line-picked`) are washes
   over the row and keep showing over word marks.
+- **A change hidden characters hide** (owner, 2026-11-04): with Show
+  hidden characters off, a line whose marks hold a change that doesn't
+  show (`hiddenChange.ts`: a mark that draws nothing, i.e. a CRLF's `\r`
+  or trailing spaces and tabs, or a line that looks exactly like its
+  partner, i.e. a tab swapped for spaces of the same width) gets a yellow
+  ⚠ in its sign's place, as wide as the sign so the code never moves (a
+  40px target on a touch screen). Its tooltip and name: "Hidden
+  characters changed. Turn on Show hidden characters (h)"; activating it
+  turns them on and it goes. Escaped characters (zero widths, no-break
+  spaces, bidi controls) show as `\uXXXX` either way: no ⚠. `h` toggles
+  the setting (desktop), beside `w` and `s`.
 - **Copy:** marks are background only; a copy gives the code.
 - **Accessibility:** marks are visual, as on GitHub; the line's sign and
   its row's accessible name already say it changed. Nothing is announced
