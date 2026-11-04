@@ -62,14 +62,17 @@ export function changeKindLabel(file: ChangedFile): string {
 export function ChangeKindIcon({
 	file,
 	tooltip = false,
+	tone,
 }: {
 	file: ChangedFile;
 	tooltip?: boolean;
+	/** A color token class in place of the kind's own (the tree's renames). */
+	tone?: string;
 }) {
 	const kind = KIND[file.status] ?? KIND.modified;
 	const label = changeKindLabel(file);
 	const icon = <kind.icon size={12} aria-hidden className="block" />;
-	const className = `inline-flex shrink-0 items-center ${kind.className}`;
+	const className = `inline-flex shrink-0 items-center ${tone ?? kind.className}`;
 	if (!tooltip) {
 		return (
 			<span

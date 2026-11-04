@@ -114,10 +114,12 @@ describe("the file tree", () => {
 				onSelect={() => {}}
 			/>,
 		);
+		// The file's own row, not a rename's old-path entry.
 		const kind = (name: RegExp) =>
 			screen
-				.getByRole("button", { name })
-				.querySelector('[data-testid="change-kind"]')
+				.getAllByRole("button", { name })
+				.find((b) => !b.hasAttribute("data-moved"))
+				?.querySelector('[data-testid="change-kind"]')
 				?.getAttribute("aria-label");
 		expect(kind(/new\.ts/)).toBe("Added");
 		expect(kind(/gone\.ts/)).toBe("Deleted");

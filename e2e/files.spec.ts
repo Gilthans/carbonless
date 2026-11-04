@@ -12,7 +12,7 @@ import {
 	treeNumbers,
 	withTree,
 } from "./files-ui";
-import { expect, type PrOptions, test } from "./fixtures";
+import { expect, type PrOptions, reviewPage, test } from "./fixtures";
 
 const core = Array.from({ length: 78 }, (_, i) => `core ${i + 1}`);
 const util = Array.from({ length: 10 }, (_, i) => `util ${i + 1}`);
@@ -602,9 +602,67 @@ test("files start collapsed", async ({ page, pr, startCrb }) => {
 		await expect(fileSection(page, path).getByRole("checkbox")).toHaveCount(0);
 	}
 	await expect(page.getByRole("checkbox")).toHaveCount(1);
-	await withTree(page, (tree) =>
-		expect(tree.getByRole("button")).toHaveCount(3),
+	await withTree(page, async (tree) => {
+		await expect(
+			tree.locator("button:not([aria-expanded]):not([data-moved])"),
+		).toHaveCount(3);
+		// The rename's old path, and the folders, open.
+		await expect(tree.locator("button[data-moved]")).toHaveCount(1);
+		await expect(tree.locator("button[aria-expanded=true]")).toHaveCount(2);
+	});
+});
+
+test("a folded folder keeps its progress, unfolds for its file, and stays folded on reload, the first one too", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	await pr(fixture);
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	const src = (tree: Locator) => tree.locator('button[data-folder="src"]');
+	// The first folder: it holds the file in view after a reload.
+	const docs = (tree: Locator) => tree.locator('button[data-folder="docs"]');
+	await withTree(page, async (tree) => {
+		await expect(treeNumbers(tree, /^src/)).toHaveText(
+			"0 / 3 clusters · 2 files left",
+		);
+		await src(tree).click();
+		await expect(src(tree)).toHaveAttribute("aria-expanded", "false");
+		await expect(tree.getByRole("button", { name: /core\.ts/ })).toHaveCount(0);
+		await expect(tree.getByRole("button", { name: /util\.ts/ })).toHaveCount(0);
+		// Its numbers and meter stay, unfinished.
+		await expect(treeNumbers(tree, /^src/)).toHaveText(
+			"0 / 3 clusters · 2 files left",
+		);
+		await expect(src(tree).getByTestId("tree-meter")).toBeVisible();
+		await expect(src(tree)).not.toHaveAttribute("data-finished");
+		await docs(tree).click();
+		await expect(docs(tree)).toHaveAttribute("aria-expanded", "false");
+	});
+	// Folding changes no progress.
+	await expect(progress(page)).toHaveAttribute(
+		"aria-valuetext",
+		/0 \/ 4 clusters reviewed/,
 	);
+	await page.reload();
+	await expect(progress(page)).toBeVisible();
+	await withTree(page, async (tree) => {
+		await expect(src(tree)).toHaveAttribute("aria-expanded", "false");
+		// The file in view settled on docs/new.md: docs stays folded, marked.
+		await expect(docs(tree)).toHaveAttribute("data-holds-current");
+		await expect(docs(tree)).toHaveAttribute("aria-expanded", "false");
+		await expect(tree.getByRole("button", { name: /new\.md/ })).toHaveCount(0);
+	});
+	// Going to a file inside it (a link, on a fresh load) unfolds it.
+	await page.goto(reviewPage(s.url, "files", "?path=src/util.ts"));
+	await expect(
+		fileSection(page, "src/util.ts").getByTestId("diff-line").first(),
+	).toBeVisible();
+	await withTree(page, async (tree) => {
+		await expect(src(tree)).toHaveAttribute("aria-expanded", "true");
+		await expect(tree.getByRole("button", { name: /util\.ts/ })).toBeVisible();
+	});
 });
 
 test("a write from a tab on an old snapshot reloads it", async ({
@@ -1246,4 +1304,168 @@ test("each file shows whether it was added, deleted, modified or renamed", async
 			() => document.documentElement.scrollWidth <= window.innerWidth,
 		),
 	).toBe(true);
+});
+
+test("scrolling into a folded folder never unfolds it; opening a file from its header does", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	const long = Array.from({ length: 40 }, (_, i) => `long ${i + 1}`);
+	// Enough small files below it that scrolling to the end brings one into view.
+	const small = Object.fromEntries(
+		"abcdefghijklmn".split("").map((n) => [`src/${n}.ts`, `${n}\n`]),
+	);
+	await pr({
+		base: { "docs/long.md": text(long), ...small },
+		files: [
+			{
+				message: "PR change",
+				files: {
+					"docs/long.md": text(long.map((l) => `${l} changed`)),
+					...Object.fromEntries(
+						Object.keys(small).map((p) => [p, `${p} changed\n`]),
+					),
+				},
+			},
+		],
+	});
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	const folderRow = (tree: Locator, path: string) =>
+		tree.locator(`button[data-folder="${path}"]`);
+	await withTree(page, async (tree) => {
+		await folderRow(tree, "src").click();
+		await expect(folderRow(tree, "src")).toHaveAttribute(
+			"aria-expanded",
+			"false",
+		);
+	});
+	// Open the long file from its header and scroll down past it.
+	const section = await expand(page, "docs/long.md");
+	await expect(section.getByTestId("diff-line").first()).toBeVisible();
+	await page.evaluate(() =>
+		window.scrollTo(0, document.documentElement.scrollHeight),
+	);
+	await withTree(page, async (tree) => {
+		// The file in view moved into src: its dot did, the fold held; docs
+		// keeps the opened file's dot.
+		await expect(folderRow(tree, "src")).toHaveAttribute("data-holds-current");
+		await expect(folderRow(tree, "src")).toHaveAttribute(
+			"aria-expanded",
+			"false",
+		);
+		await expect(tree.locator('[data-folder-group="src"] ul')).toHaveCount(0);
+		await expect(folderRow(tree, "docs")).toHaveAttribute("data-holds-opened");
+	});
+	// Opening a file inside it from its own header unfolds it.
+	await expand(page, "src/n.ts");
+	await withTree(page, async (tree) => {
+		await expect(folderRow(tree, "src")).toHaveAttribute(
+			"aria-expanded",
+			"true",
+		);
+		await expect(folderRow(tree, "src")).toHaveAttribute("data-holds-opened");
+	});
+});
+
+test("a renamed file's old path opens it; a folder of old paths is a ghost; fold all and open all", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	await pr({
+		base: { "old/moved.ts": "moved\n", "keep/a.ts": "a\n" },
+		files: [
+			{
+				message: "PR change",
+				rename: { "old/moved.ts": "new/moved.ts" },
+				files: { "keep/a.ts": "a changed\n" },
+			},
+		],
+	});
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	// The diff list has the file once, at its new path.
+	await expect(page.locator("[data-file-index]")).toHaveCount(2);
+	await withTree(page, async (tree) => {
+		const ghost = tree.locator('button[data-folder="old"]');
+		await expect(ghost).toHaveAttribute("data-ghost");
+		await expect(ghost.getByTestId("tree-meter")).toHaveCount(0);
+		await expect(ghost.getByTestId("tree-numbers")).toHaveCount(0);
+		await expect(
+			tree.locator('button[data-folder="new"]').getByTestId("tree-meter"),
+		).toBeVisible();
+	});
+	await pickInTree(page, /moved\.ts.*moved away/);
+	const section = fileSection(page, "new/moved.ts");
+	await expect(
+		section.getByRole("button", { name: "Collapse file" }),
+	).toBeVisible();
+	// The toolbar sits above the tree: in the sheet on a phone (withTree).
+	await withTree(page, async (tree) => {
+		const panel = tree.locator("xpath=..");
+		await panel.getByRole("button", { name: "Fold all" }).click();
+		await expect(tree.locator("button[aria-expanded=true]")).toHaveCount(0);
+		await expect(tree.locator("button[aria-expanded=false]")).toHaveCount(3);
+		await expect(tree.locator("button[data-moved]")).toHaveCount(0);
+		await panel.getByRole("button", { name: "Open all" }).click();
+		await expect(tree.locator("button[aria-expanded=false]")).toHaveCount(0);
+		await expect(tree.locator("button[data-moved]")).toHaveCount(1);
+	});
+});
+
+test("the tree and the diff list share one order: folders first, then files, by name", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	// Git's order would be README.md, lib/…, src/B.ts, src/a…, src/z/….
+	await pr({
+		base: { "keep.txt": "keep\n" },
+		files: [
+			{
+				message: "PR change",
+				files: {
+					"README.md": "readme\n",
+					"lib/x.ts": "x\n",
+					"src/B.ts": "b\n",
+					"src/a.ts": "a\n",
+					"src/a10.ts": "a10\n",
+					"src/a2.ts": "a2\n",
+					"src/z/b.ts": "zb\n",
+				},
+			},
+		],
+	});
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	const order = [
+		"lib/x.ts",
+		"src/z/b.ts",
+		"src/a.ts",
+		"src/a2.ts",
+		"src/a10.ts",
+		"src/B.ts",
+		"README.md",
+	];
+	await expect(page.locator("[data-file-index] > header")).toHaveCount(7);
+	const sections = await page
+		.locator("[data-file-index]")
+		.evaluateAll((els) => els.map((el) => el.getAttribute("aria-label")));
+	expect(sections).toEqual(order);
+	await withTree(page, async (tree) => {
+		const rows = tree.locator("button:not([aria-expanded])");
+		await expect(rows).toHaveCount(7);
+		const names = await rows.evaluateAll((els) =>
+			els.map(
+				(el) =>
+					el.querySelector("[data-testid=tree-name]")?.textContent?.trim() ??
+					"",
+			),
+		);
+		expect(names).toEqual(order.map((p) => p.slice(p.lastIndexOf("/") + 1)));
+		// The file being read is the first in that order, not git's first.
+		await expect(rows.first()).toHaveAttribute("aria-current", "true");
+	});
 });

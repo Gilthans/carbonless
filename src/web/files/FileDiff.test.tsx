@@ -914,7 +914,7 @@ describe("FileDiff", () => {
 		);
 		const { rerender } = render(shown(false));
 		await userEvent.click(screen.getByRole("button", { name: "Expand file" }));
-		expect(onExpandedChange).toHaveBeenLastCalledWith(true);
+		expect(onExpandedChange).toHaveBeenLastCalledWith(true, false);
 		// Still closed until the owner opens it.
 		expect(screen.queryByRole("checkbox")).toBeNull();
 		await rerender(shown(true));
@@ -922,7 +922,7 @@ describe("FileDiff", () => {
 		await userEvent.click(
 			screen.getByRole("button", { name: "Collapse file" }),
 		);
-		expect(onExpandedChange).toHaveBeenLastCalledWith(false);
+		expect(onExpandedChange).toHaveBeenLastCalledWith(false, false);
 	});
 
 	/**
@@ -1062,6 +1062,51 @@ describe("FileDiff", () => {
 		).toBeInTheDocument();
 	});
 
+	it("says a reopen after a failed save isn't the reviewer's doing", async () => {
+		let answer: (() => void) | undefined;
+		const f = file([cluster("k1")]);
+		const onExpandedChange = vi.fn();
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+				if (init?.method === "POST") {
+					await new Promise<void>((r) => {
+						answer = r;
+					});
+					return new Response(JSON.stringify({ error: "boom" }), {
+						status: 400,
+					});
+				}
+				return new Response(JSON.stringify(hunks), { status: 200 });
+			}),
+		);
+		const queryClient = new QueryClient();
+		const shown = (expanded: boolean) => (
+			<QueryClientProvider client={queryClient}>
+				<FileDiff
+					file={f}
+					revision="r1"
+					unit="clusters"
+					expanded={expanded}
+					onExpandedChange={onExpandedChange}
+				/>
+				<SyncNotices />
+			</QueryClientProvider>
+		);
+		const { rerender } = render(shown(true));
+		await userEvent.click(
+			screen.getByRole("button", { name: "Mark remaining reviewed" }),
+		);
+		// Closed by the reviewer's action.
+		expect(onExpandedChange).toHaveBeenLastCalledWith(false, false);
+		await rerender(shown(false));
+		await waitFor(() => expect(answer).toBeDefined());
+		await act(async () => answer?.());
+		expect(await screen.findByText(/boom/)).toBeInTheDocument();
+		// Reopened automatically: flagged so it doesn't count as opening it.
+		expect(onExpandedChange).toHaveBeenLastCalledWith(true, true);
+	});
+
 	it("doesn't reopen a failed file the reviewer already reopened", async () => {
 		let answer: (() => void) | undefined;
 		const f = file([cluster("k1")]);
@@ -1097,7 +1142,7 @@ describe("FileDiff", () => {
 		await userEvent.click(
 			screen.getByRole("button", { name: "Mark remaining reviewed" }),
 		);
-		expect(onExpandedChange).toHaveBeenLastCalledWith(false);
+		expect(onExpandedChange).toHaveBeenLastCalledWith(false, false);
 		await rerender(shown(false));
 		// The reviewer opened it again before the save failed.
 		await rerender(shown(true));
@@ -1143,7 +1188,7 @@ describe("FileDiff", () => {
 		await userEvent.click(
 			screen.getByRole("button", { name: "Mark remaining reviewed" }),
 		);
-		expect(onExpandedChange).toHaveBeenLastCalledWith(false);
+		expect(onExpandedChange).toHaveBeenLastCalledWith(false, false);
 		await rerender(shown(false, false));
 		// The reviewer opened the next file before the save failed.
 		await rerender(shown(false, true));

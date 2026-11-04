@@ -416,6 +416,39 @@ describe("FilesPage", () => {
 		).toBeInTheDocument();
 	});
 
+	it("expanding a file from its header opens it in the tree: its folders unfold and it's marked opened", async () => {
+		const a = { ...oneFile, path: "d/a.txt" };
+		const b = { ...otherFile, path: "e/b.txt" };
+		renderPage({
+			"/api/review": () => ({
+				status: 200,
+				body: { ...emptyReview, files: [a, b] },
+			}),
+			"/api/files/0/hunks": () => ({ status: 200, body: noHunks }),
+			"/api/files/1/hunks": () => ({ status: 200, body: noHunks }),
+		});
+		const user = userEvent.setup();
+		const section = await screen.findByRole("region", { name: "e/b.txt" });
+		const tree = screen.getByTestId("file-tree");
+		const folder = () => tree.querySelector('[data-folder="e"]') as HTMLElement;
+		await user.click(folder());
+		expect(folder()).toHaveAttribute("aria-expanded", "false");
+		await user.click(
+			within(section).getByRole("button", { name: "Expand file" }),
+		);
+		expect(folder()).toHaveAttribute("aria-expanded", "true");
+		expect(folder()).toHaveAttribute("data-holds-opened");
+		const row = within(tree).getByRole("button", { name: /b\.txt/ });
+		expect(
+			row.querySelector('[data-testid="tree-dot"]')?.getAttribute("data-mark"),
+		).toBe("opened");
+		// Collapsing it again keeps the mark: it was the last one opened.
+		await user.click(
+			within(section).getByRole("button", { name: "Collapse file" }),
+		);
+		expect(folder()).toHaveAttribute("data-holds-opened");
+	});
+
 	it("on a narrow screen, opens the file tree from a floating button", async () => {
 		vi.stubGlobal(
 			"matchMedia",

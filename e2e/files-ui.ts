@@ -34,6 +34,14 @@ export const fileSection = (page: Page, path: string) =>
 	page.getByRole("region", { name: path });
 
 /**
+ * The tree is in a sheet behind the Files button below the app's WIDE
+ * breakpoint (768px). Decided by the viewport, not by whether the button
+ * shows right now (it hides while a comment is being written), and the click
+ * waits for it.
+ */
+const narrow = (page: Page) => (page.viewportSize()?.width ?? 1280) < 768;
+
+/**
  * Runs `use` with the file tree: the sidebar on desktop, the sheet behind the
  * floating Files button on a phone (closed again afterwards).
  */
@@ -42,7 +50,7 @@ export async function withTree(
 	use: (tree: Locator) => Promise<void>,
 ) {
 	const button = page.getByRole("button", { name: "Files", exact: true });
-	const sheet = await button.isVisible();
+	const sheet = narrow(page);
 	if (sheet) await button.click();
 	const tree = page.getByTestId("file-tree");
 	await expect(tree).toBeVisible();
@@ -59,7 +67,7 @@ export async function withTree(
 /** Picks a file in the tree (from the sheet on a phone, which then closes). */
 export async function pickInTree(page: Page, name: RegExp) {
 	const button = page.getByRole("button", { name: "Files", exact: true });
-	if (await button.isVisible()) await button.click();
+	if (narrow(page)) await button.click();
 	await page.getByTestId("file-tree").getByRole("button", { name }).click();
 	await expect(page.getByRole("dialog", { name: "Files" })).toBeHidden();
 }

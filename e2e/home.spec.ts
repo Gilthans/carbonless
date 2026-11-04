@@ -473,6 +473,94 @@ test("the view's repo input suggests the viewer's repos as you type; Save is sto
 	await expect(page.getByTestId("view-repo")).toHaveText([OWNER_REPO]);
 });
 
+test("with the repo suggestions open, one click (a tap) on Add adds what was typed; the list never moves Add", async ({
+	page,
+	workdir,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	// Owner, 2026-11-02, on Add missing the click while the list is open:
+	// "sure go ahead and fix it".
+	await setup(workdir, pr);
+	const crb = await startCrb();
+	await goHome(page, crb.url);
+	await page.getByRole("button", { name: "Edit repos" }).click();
+	const dialog = page.getByRole("dialog", { name: "My PRs" });
+	const field = dialog.getByRole("combobox", { name: "Add a repo" });
+	const add = dialog.getByRole("button", { name: "Add", exact: true });
+	// Neither Add nor what the list floats over (Save) moves.
+	const boxes = () =>
+		Promise.all(
+			[add, dialog.getByRole("button", { name: "Save" })].map((b) =>
+				b.boundingBox(),
+			),
+		);
+	await field.focus();
+	const closed = await boxes();
+	await field.pressSequentially(OWNER_REPO);
+	const list = dialog.getByRole("listbox", { name: "Suggestions" });
+	await expect(list.getByRole("option")).toHaveText([OWNER_REPO]);
+	expect(await boxes()).toEqual(closed);
+	if (isMobile) await add.tap();
+	else await add.click();
+	await expect(
+		dialog
+			.getByRole("list", { name: "Repos in this view" })
+			.getByRole("listitem"),
+	).toHaveText(["acme/api", OWNER_REPO]);
+	await expect(field).toHaveValue("");
+	await expect(list).toHaveCount(0);
+});
+
+test("on a short window with many repos, the dialog scrolled to the open list: Add stays put and one click (a tap) adds", async ({
+	page,
+	workdir,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	await page.setViewportSize(
+		isMobile ? { width: 360, height: 640 } : { width: 1280, height: 600 },
+	);
+	await setup(workdir, pr);
+	const crb = await startCrb();
+	await goHome(page, crb.url);
+	await page.getByRole("button", { name: "Edit repos" }).click();
+	const dialog = page.getByRole("dialog", { name: "My PRs" });
+	const field = dialog.getByRole("combobox", { name: "Add a repo" });
+	const add = dialog.getByRole("button", { name: "Add", exact: true });
+	const listed = dialog
+		.getByRole("list", { name: "Repos in this view" })
+		.getByRole("listitem");
+	const more = ["acme/r1", "acme/r2", "acme/r3", "acme/r4", "acme/r5"];
+	for (const r of more) {
+		await field.fill(r);
+		await field.press("Enter");
+	}
+	await expect(listed).toHaveCount(6);
+	await field.pressSequentially(OWNER_REPO);
+	const list = dialog.getByRole("listbox", { name: "Suggestions" });
+	await expect(list.getByRole("option")).toHaveText([OWNER_REPO]);
+	// Scrolled down to see the whole list (the dialog is shorter).
+	await dialog.evaluate((d) => {
+		d.scrollTop = d.scrollHeight;
+	});
+	await expect(list.getByRole("option")).toBeInViewport();
+	const open = await add.boundingBox();
+	// The list shut (the press's blur) moves nothing.
+	await field.evaluate((el) => (el as HTMLElement).blur());
+	await expect(list).toHaveCount(0);
+	expect(await add.boundingBox()).toEqual(open);
+	await field.focus();
+	await expect(list.getByRole("option")).toHaveText([OWNER_REPO]);
+	expect(await add.boundingBox()).toEqual(open);
+	if (isMobile) await add.tap();
+	else await add.click();
+	await expect(listed).toHaveCount(7);
+	await expect(listed.last()).toHaveText(OWNER_REPO);
+});
+
 test("a repo picked in the settings is read at once: saved after its read, its rows come with no second read", async ({
 	page,
 	workdir,
@@ -876,6 +964,53 @@ test("waiting on suggests people as you type: the viewer's orgs and repos' peopl
 	await expectNoPageOverflow(page);
 	await page.getByRole("option", { name: "alibaba-dev" }).click();
 	await expect(other.getByRole("button", { name: "1 waiting" })).toBeVisible();
+});
+
+test("with the waiting-on suggestions open, one click (a tap) on a person takes it; the list moves neither the people nor Clear", async ({
+	page,
+	workdir,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	// Tall enough that a mouse's list opens under the input, clear of the
+	// people above it.
+	if (!isMobile) await page.setViewportSize({ width: 1280, height: 1000 });
+	const made = await setup(workdir, pr);
+	made.editScenario((s) => {
+		s.orgMembers = { acme: [VIEWER, "alicia", "malik"] };
+	});
+	const crb = await startCrb();
+	await goHome(page, crb.url);
+	const other = section(page, "Other open");
+	const title = "Migrate alerts table";
+	/** Opens Waiting on, then its suggestions: `name` doesn't move. */
+	const withList = async (row: Locator, name: string | RegExp) => {
+		const dialog = await rowAction(page, row, "Waiting on");
+		const field = dialog.getByRole("combobox", { name: "Someone else" });
+		const target = dialog.getByRole("button", { name });
+		await field.focus();
+		const closed = await target.boundingBox();
+		await field.pressSequentially("ali");
+		await expect(
+			page.getByRole("group", { name: "People" }).getByRole("option"),
+		).toHaveText(["alice", "alicia", "malik"]);
+		expect(await target.boundingBox()).toEqual(closed);
+		return { field, target };
+	};
+	const bob = await withList(rowOf(other, title), /^bob/);
+	if (isMobile) await bob.target.tap();
+	else await bob.target.click();
+	const foot = other.getByRole("button", { name: "1 waiting" });
+	await expect(foot).toBeVisible();
+	await expect(other.getByTestId("home-row")).toHaveCount(0);
+	await foot.click();
+	const clear = await withList(other.getByTestId("home-row-hidden"), "Clear");
+	// The list floats over Clear: shut first.
+	await clear.field.press("Escape");
+	await clear.target.click();
+	await expect(other.getByTestId("home-row")).toHaveCount(1);
+	await expect(foot).toBeHidden();
 });
 
 test("on a short window the waiting-on suggestions stay inside it, and inside the phone's sheet", async ({
@@ -1622,17 +1757,24 @@ test("screenshots of view settings and the loading page (CRB_HOME_SHOTS only)", 
 	await page.getByRole("button", { name: "Edit repos" }).click();
 	await dialog.getByRole("combobox", { name: "Add a repo" }).fill(OWNER_REPO);
 	await dialog.getByRole("combobox", { name: "Add a repo" }).press("Enter");
-	made.editScenario((s) => {
-		s.hold = ["home"];
+	// Saving makes no gh call: the PUT itself is held.
+	let answer: () => void = () => {};
+	const putHeld = new Promise<void>((r) => {
+		answer = r;
+	});
+	await page.route("**/api/home/view", async (route) => {
+		if (route.request().method() === "PUT") await putHeld;
+		await route.continue();
 	});
 	await dialog.getByRole("button", { name: "Save" }).click();
+	// The warning shows past 5 s.
 	await expect(page.getByTestId("save-delayed")).toBeVisible({
 		timeout: 15_000,
 	});
 	await page.screenshot({
 		path: join(shots as string, `view-saving-${at}.png`),
 	});
-	release(made.scenarioPath, "home");
+	answer();
 	await expect(page.getByRole("status", { name: "Saving" })).toBeHidden();
 	// The loading page, GitHub's answer held.
 	made.editScenario((s) => {

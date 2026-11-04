@@ -26,9 +26,12 @@ const fixture: PrOptions = {
 								: [l],
 					)
 					.join("\n")}\n`,
-				"empty.txt": "",
+				// In a folder, so src/greet.ts comes last (folders first, by name).
+				"assets/empty.txt": "",
 			},
-			binary: { "logo.png": new Uint8Array([137, 80, 78, 71, 0, 1, 2, 0]) },
+			binary: {
+				"assets/logo.png": new Uint8Array([137, 80, 78, 71, 0, 1, 2, 0]),
+			},
 		},
 	],
 };
@@ -219,7 +222,7 @@ test("pick lines by their numbers and comment on them", async ({
 	]);
 });
 
-for (const path of [GREET, "logo.png", "empty.txt"]) {
+for (const path of [GREET, "assets/logo.png", "assets/empty.txt"]) {
 	test(`comment on a whole file from its bubble: ${path}`, async ({
 		page,
 		pr,
@@ -245,7 +248,8 @@ for (const path of [GREET, "logo.png", "empty.txt"]) {
 		const composer = section.getByTestId("new-thread");
 		await expect(composer).toContainText("whole file");
 		await composer.getByRole("textbox", { name: "Comment" }).fill("A 2x one?");
-		if (path === "logo.png") await shot(page, "new-thread-file", isMobile);
+		if (path === "assets/logo.png")
+			await shot(page, "new-thread-file", isMobile);
 		await composer.getByRole("button", { name: "Comment" }).click();
 		await expect(section.getByTestId("new-thread")).toHaveCount(0);
 		// Posted: the bubble counts it, its thread open under the first row.

@@ -197,9 +197,11 @@ test.describe("phone", () => {
 		await expect(button).toBeFocused();
 
 		await button.click();
-		const target = fileSection(page, "src/f23.ts");
+		// Mid-list in the page's order (folders first, then f0…f23), so
+		// there's room below to scroll its header to the top.
+		const target = fileSection(page, "src/f16.ts");
 		await expect(target).not.toBeInViewport();
-		await sheet.getByRole("button", { name: /f23\.ts/ }).click();
+		await sheet.getByRole("button", { name: /f16\.ts/ }).click();
 		await expect(sheet).toBeHidden();
 		await expect(target).toBeInViewport();
 		// Opened, its header at the top below the page bar, focused.

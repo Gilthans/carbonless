@@ -684,6 +684,47 @@ test("a commented range is marked on added rows too, unlike a landed line", asyn
 	}
 });
 
+test("a folded folder shows a yellow dot when a thread inside waits on you", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	await setup(pr);
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	// Threads loaded: core.ts's bubble says it's the viewer's turn.
+	await expect(
+		fileSection(page, CORE)
+			.locator("header")
+			.getByRole("button", { name: "9 comments in this file, your turn" }),
+	).toBeVisible();
+	await withTree(page, async (tree) => {
+		const src = tree.locator('[data-folder="src"]');
+		// Open: no folder dot; the file row has its own.
+		await expect(src.getByTestId("tree-threads")).toHaveCount(0);
+		await src.click();
+		await expect(src).toHaveAttribute("aria-expanded", "false");
+		await expect(src.getByTestId("tree-threads")).toBeVisible();
+		await expect(src).toHaveAccessibleName(/, 1 thread waits on you/);
+		// The folder row stays in the file rows' columns, inside the tree.
+		const box = await src.boundingBox();
+		const treeBox = await tree.boundingBox();
+		expect(box).not.toBeNull();
+		expect(treeBox).not.toBeNull();
+		if (!box || !treeBox) return;
+		expect(box.x + box.width).toBeLessThanOrEqual(
+			treeBox.x + treeBox.width + 1,
+		);
+		await src.click();
+		await expect(src.getByTestId("tree-threads")).toHaveCount(0);
+		await expect(
+			tree
+				.getByRole("button", { name: /core\.ts/ })
+				.getByTestId("tree-threads"),
+		).toHaveText("9 comments in this file, your turn");
+	});
+});
+
 test("a closed file counts its threads; a binary file's line thread is flagged before it opens", async ({
 	page,
 	pr,

@@ -266,8 +266,10 @@ function PersonInput(props: {
 		onOpen: () => setOpen(true),
 		onClose: () => setOpen(false),
 	});
-	// With a mouse the panel is a popover: the list floats over it. On touch
-	// it's a bottom sheet that scrolls: the list grows it, in its flow, so
+	// The list floats over the panel, never moving what a press is on its
+	// way to (a click lands where its press began). With a mouse the panel
+	// is a popover: the list goes under the input, or above it. On touch
+	// it's a full bottom sheet that scrolls: always under the input, so
 	// nothing ends up above the sheet's top where no scroll reaches.
 	const floating = useMedia("(hover: hover)");
 	const place = useListPlace(input, listOpen && floating);
@@ -321,12 +323,12 @@ function PersonInput(props: {
 					onHover={keys.setActive}
 					error={data?.error}
 					empty="No matches"
-					// With a mouse, over the panel: under the input, or above it
-					// when the window has no room below; never past the window.
+					// With a mouse under the input, or above it when the window
+					// has no room below; never past the window.
 					className={
 						floating
 							? `absolute inset-x-0 z-50 ${place.up ? "bottom-full mb-1" : "top-full mt-1"}`
-							: "mt-1 max-h-60"
+							: "absolute inset-x-0 top-full z-50 mt-1 max-h-60"
 					}
 					style={floating ? { maxHeight: place.max } : undefined}
 					render={(p) => (
@@ -506,6 +508,8 @@ export function RowActions(props: {
 				</button>
 				<Sheet
 					open={sheet}
+					// Its top stays put while the suggestions open and close.
+					full={panel === "wait"}
 					title={`#${row.number}`}
 					onClose={() => setSheet(false)}
 				>
@@ -653,9 +657,13 @@ function Popover(props: { label: string; children: ReactNode }) {
 	);
 }
 
-/** A bottom sheet (modal dialog): Close, Escape or the backdrop close it. */
+/**
+ * A bottom sheet (modal dialog): Close, Escape or the backdrop close it.
+ * As tall as what it holds, or `full`: 85% of the window whatever it holds.
+ */
 export function Sheet(props: {
 	open: boolean;
+	full?: boolean;
 	title: string;
 	onClose: () => void;
 	children: ReactNode;
@@ -695,7 +703,7 @@ export function Sheet(props: {
 				// A click on the backdrop lands on the dialog itself.
 				if (e.target === dialog.current) props.onClose();
 			}}
-			className="m-0 mt-auto max-h-[85dvh] w-full max-w-none rounded-t-2xl border-t border-edge bg-surface p-0 text-ink shadow-sheet backdrop:bg-canvas/70 backdrop:backdrop-blur-[2px]"
+			className={`m-0 mt-auto max-h-[85dvh] w-full max-w-none rounded-t-2xl ${props.full ? "h-[85dvh]" : ""} border-t border-edge bg-surface p-0 text-ink shadow-sheet backdrop:bg-canvas/70 backdrop:backdrop-blur-[2px]`}
 		>
 			<div className="flex items-center justify-between border-b border-line py-1 pr-1 pl-4">
 				<h2

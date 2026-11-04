@@ -239,3 +239,89 @@ export function describeFileProgress(file: FileView, unit: Unit): string {
 	const shown = counts.total - counts.crossedOff;
 	return `${counts.reviewed} of ${shown} ${unitWord(unit, shown)} reviewed${crossed}${left}`;
 }
+
+export interface FolderUnitProgress {
+	/**
+	 * The folder's files' counts summed in the unit (clusters when none of
+	 * them has changed lines), behind its meter.
+	 */
+	counts: Counts;
+	/** Unreviewed clusters in any of its files. */
+	clustersLeft: number;
+	/** Files not done. */
+	filesLeft: number;
+	/** Every file is done (reviewed or crossed off). */
+	done: boolean;
+	/** Every file is wholly crossed off. */
+	crossedOff: boolean;
+	additions: number;
+	deletions: number;
+	/** Every cluster of its files, for the change count. */
+	clusters: FileView["clusters"];
+}
+
+/**
+ * A folder's accumulated progress: its files' counts summed, by the same
+ * rules as a file's. Done only when every file is; a cluster left anywhere
+ * keeps it unfinished (the meter `incomplete`), whatever the counts say.
+ */
+export function folderUnitProgress(
+	files: readonly FileView[],
+	unit: Unit,
+): FolderUnitProgress {
+	const sum = (weight: (lines: number) => number): Counts => {
+		const counts: Counts = { total: 0, reviewed: 0, crossedOff: 0 };
+		for (const file of files) {
+			const c = clusterCounts(file, weight);
+			counts.total += c.total;
+			counts.reviewed += c.reviewed;
+			counts.crossedOff += c.crossedOff;
+		}
+		return counts;
+	};
+	let counts: Counts;
+	if (unit === "files") {
+		counts = { total: 0, reviewed: 0, crossedOff: 0 };
+		for (const file of files) {
+			const c = fileUnitProgress(file, "files").counts;
+			counts.total += c.total;
+			counts.reviewed += c.reviewed;
+			counts.crossedOff += c.crossedOff;
+		}
+	} else {
+		counts = sum(unit === "lines" ? (n) => n : () => 1);
+		if (counts.total === 0) counts = sum(() => 1);
+	}
+	return {
+		counts,
+		clustersLeft: files.reduce(
+			(n, f) => n + f.clusters.filter((c) => c.state === "unreviewed").length,
+			0,
+		),
+		filesLeft: files.filter((f) => !f.done).length,
+		done: files.every((f) => f.done),
+		crossedOff: files.length > 0 && files.every((f) => f.crossedOff),
+		additions: files.reduce((n, f) => n + f.additions, 0),
+		deletions: files.reduce((n, f) => n + f.deletions, 0),
+		clusters: files.flatMap((f) => f.clusters),
+	};
+}
+
+/**
+ * A folder's progress with the exact numbers, for its row's name and
+ * tooltip: "3 / 8 lines · 2 files left", "1 / 3 files", "done" or
+ * "crossed off". Files left are always said while any is, so a folder never
+ * reads finished while something in it is unreviewed.
+ */
+export function describeFolderProgress(
+	p: FolderUnitProgress,
+	unit: Unit,
+): string {
+	if (p.done) return p.crossedOff ? "crossed off" : "done";
+	const shown = p.counts.total - p.counts.crossedOff;
+	const left = `${p.filesLeft} ${unitWord("files", p.filesLeft)} left`;
+	if (unit === "files")
+		return `${p.counts.reviewed} / ${shown} ${unitWord(unit, shown)}`;
+	if (shown === 0) return left;
+	return `${p.counts.reviewed} / ${shown} ${unitWord(unit, shown)} · ${left}`;
+}
