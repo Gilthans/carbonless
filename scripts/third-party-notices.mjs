@@ -9,9 +9,15 @@
 // and carry their own notices.
 import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { dirname, join, resolve, sep } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 export const FILE_NAME = "THIRD-PARTY-NOTICES.md";
+
+/** The committed texts (overrides, extra notices): licenses/ in the repo. */
+export const LICENSES_DIR = fileURLToPath(
+	new URL("../licenses", import.meta.url),
+);
 
 /**
  * Packages offered under a choice of licenses, and the one we use.
@@ -22,11 +28,27 @@ export const LICENSE_CHOICES = {
 };
 
 /**
- * Packages that ship no license file of their own. Each entry names the
- * committed text under licenses/ that stands for it, and says where it
- * came from. Keep it short and explain every line.
+ * Committed texts under licenses/ added to a package's entry: for a package
+ * that ships no license file of its own, or whose shipped files carry more
+ * authors than its own license names. Each says where the text came from.
+ * Keep it short and explain every line.
  */
-export const LICENSE_OVERRIDES = {};
+export const LICENSE_OVERRIDES = {
+	// The TextMate grammars it bundles were converted from other projects
+	// (VS Code's, a TextMate bundle): one row per grammar we ship.
+	"@shikijs/langs": {
+		file: "shiki-grammars.md",
+		source: "shiki's tm-grammars metadata and the grammars' license files",
+	},
+};
+
+/**
+ * Packages whose shipped modules each need a row in their override file:
+ * `@shikijs/langs/dist/<grammar>.mjs` needs a `| <grammar> |` row.
+ */
+export const ROWS_PER_MODULE = {
+	"@shikijs/langs": /\/dist\/([^/]+)\.mjs$/,
+};
 
 /**
  * License files that also carry other packages' licenses, cut to the
@@ -69,8 +91,13 @@ export function virtualPackageFile(id, root) {
 	}
 }
 
-/** License, licence, copying, notice files (any extension or suffix). */
-const LICENSE_FILE = /^(licen[cs]e|copying|notice)([.-].*)?$/i;
+/**
+ * License, licence, copying, notice files, and third-party ones
+ * (THIRD-PARTY-LICENSE, THIRD-PARTY-NOTICES, ThirdPartyNotices), with any
+ * extension or suffix.
+ */
+export const LICENSE_FILE =
+	/^((third[-_ ]?party[-_ ]?)?(licen[cs]es?|notices?)|copying)([.-].*)?$/i;
 
 /**
  * The package directory a module path belongs to: the last `node_modules`
@@ -78,17 +105,18 @@ const LICENSE_FILE = /^(licen[cs]e|copying|notice)([.-].*)?$/i;
  * and virtual modules.
  */
 export function packageRoot(id) {
-	const file = id.split("?")[0] ?? "";
+	// Bundler ids use "/" on every platform; Node paths may use "\\".
+	const file = (id.split("?")[0] ?? "").replaceAll("\\", "/");
 	if (file.startsWith("\0")) return null;
-	const marker = `${sep}node_modules${sep}`;
+	const marker = "/node_modules/";
 	const at = file.lastIndexOf(marker);
 	if (at < 0) return null;
-	const after = file.slice(at + marker.length).split(sep);
+	const after = file.slice(at + marker.length).split("/");
 	const parts = after[0]?.startsWith("@")
 		? after.slice(0, 2)
 		: after.slice(0, 1);
 	if (parts.length === 0 || parts.some((p) => !p)) return null;
-	return file.slice(0, at + marker.length) + parts.join(sep);
+	return file.slice(0, at + marker.length) + parts.join("/");
 }
 
 /** The text of `repository` (string or { url }), cleaned for display. */
@@ -121,13 +149,20 @@ export function collectPackages(
 		choices = LICENSE_CHOICES,
 		overrides = LICENSE_OVERRIDES,
 		cuts = LICENSE_CUTS,
+		rowsPerModule = ROWS_PER_MODULE,
 		overridesDir,
 	} = {},
 ) {
 	const roots = new Set();
 	for (const id of moduleIds) {
 		const root = packageRoot(id);
-		if (root && existsSync(join(root, "package.json"))) roots.add(root);
+		if (!root) continue;
+		if (!existsSync(join(root, "package.json"))) {
+			throw new Error(
+				`third-party notices: ${root} (from ${id}) has no package.json`,
+			);
+		}
+		roots.add(root);
 	}
 	const byKey = new Map();
 	const missing = [];
@@ -154,7 +189,7 @@ export function collectPackages(
 		});
 		const override = overrides[pkg.name];
 		if (override) {
-			const file = join(overridesDir ?? "licenses", override.file);
+			const file = join(overridesDir ?? LICENSES_DIR, override.file);
 			texts.push({
 				file: `${override.file} (${override.source})`,
 				text: readFileSync(file, "utf8").trim(),
@@ -169,6 +204,36 @@ export function collectPackages(
 			url: repositoryOf(pkg) ?? pkg.homepage,
 			texts,
 		});
+	}
+	// A shipped module that needs a row (a grammar) and has none.
+	for (const [name, pattern] of Object.entries(rowsPerModule)) {
+		const override = overrides[name];
+		const shipped = new Set();
+		for (const id of moduleIds) {
+			const root = packageRoot(id);
+			const file = (id.split("?")[0] ?? "").replaceAll("\\", "/");
+			if (!root?.endsWith(`/node_modules/${name}`)) continue;
+			const m = pattern.exec(file.slice(root.length));
+			if (m?.[1]) shipped.add(m[1]);
+		}
+		if (shipped.size === 0) continue;
+		const rows = override
+			? readFileSync(join(overridesDir ?? LICENSES_DIR, override.file), "utf8")
+			: "";
+		const without = [...shipped]
+			.filter(
+				(g) =>
+					!new RegExp(
+						`^\\| ${g.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} \\|`,
+						"m",
+					).test(rows),
+			)
+			.sort();
+		if (without.length > 0) {
+			throw new Error(
+				`third-party notices: ${name} ships ${without.join(", ")} with no row in licenses/${override?.file ?? "(no file)"}`,
+			);
+		}
 	}
 	if (missing.length > 0) {
 		throw new Error(
@@ -197,10 +262,10 @@ export function renderNotices(packages) {
 		lines.push(`## ${p.name}@${p.version}`, "");
 		lines.push(
 			p.chosen
-				? `License: ${p.license}; used under ${p.chosen}.`
-				: `License: ${p.license}`,
+				? `- License: ${p.license}; used under ${p.chosen}.`
+				: `- License: ${p.license}`,
 		);
-		if (p.url) lines.push(`Source: ${p.url}`);
+		if (p.url) lines.push(`- Source: ${p.url}`);
 		lines.push("");
 		for (const t of p.texts) {
 			// A fence longer than any run of backticks in the text.
@@ -267,7 +332,11 @@ function readCssEntry(manifest) {
  * every module of the build, the packages CSS files reach through
  * `@import`, and the original files of emitted assets (fonts).
  */
-export function thirdPartyNotices({ overridesDir } = {}) {
+export function thirdPartyNotices({
+	overridesDir,
+	// A floor: if these aren't found, the collection itself is broken.
+	required = ["react", "dompurify"],
+} = {}) {
 	let root = "";
 	let outDir = "";
 	const ids = new Set();
@@ -287,13 +356,16 @@ export function thirdPartyNotices({ overridesDir } = {}) {
 			return null;
 		},
 		generateBundle(_options, bundle) {
-			for (const id of this.getModuleIds()) ids.add(id);
+			// Stylesheets end up in CSS assets, not in a chunk's code.
+			for (const id of this.getModuleIds()) {
+				if (/\.css($|\?)/.test(id)) ids.add(id);
+			}
 			for (const out of Object.values(bundle)) {
 				if (out.type === "chunk") {
+					// Only what reaches a chunk's code: tree-shaken modules don't ship.
 					for (const [id, mod] of Object.entries(out.modules)) {
-						if (id.startsWith("\0") && mod.renderedLength > 0) {
-							ids.add(virtualPackageFile(id, root));
-						}
+						if (mod.renderedLength <= 0) continue;
+						ids.add(id.startsWith("\0") ? virtualPackageFile(id, root) : id);
 					}
 					continue;
 				}
@@ -304,8 +376,15 @@ export function thirdPartyNotices({ overridesDir } = {}) {
 		},
 		writeBundle() {
 			const packages = collectPackages(ids, {
-				overridesDir: overridesDir ?? join(dirname(outDir), "..", "licenses"),
+				overridesDir: overridesDir ?? LICENSES_DIR,
 			});
+			const names = new Set(packages.map((p) => p.name));
+			const lost = required.filter((name) => !names.has(name));
+			if (lost.length > 0) {
+				throw new Error(
+					`third-party notices: ${lost.join(", ")} not found in the build: the collection is broken (scripts/third-party-notices.mjs)`,
+				);
+			}
 			writeFileSync(join(dirname(outDir), FILE_NAME), renderNotices(packages));
 		},
 	};

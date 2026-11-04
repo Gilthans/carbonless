@@ -117,6 +117,14 @@ publishes it with `npm publish` and their OTP (`0.1.0` on `latest`;
 release-finish then sets `rc` to it too). From then on every merge
 publishes an RC and every promote stages a release.
 
+### Third-party notices
+
+Every build writes `dist/THIRD-PARTY-NOTICES.md`
+(`scripts/third-party-notices.mjs`): the licenses of what the web page
+bundles, so every tarball carries them.
+Promote only an RC built after it was added (an older RC's tarball has no
+notices file); the first release, 0.1.0, is from such an RC anyway.
+
 ### pnpm's release-age delay
 
 pnpm 11+ skips versions published less than a day ago (`minimumReleaseAge`,

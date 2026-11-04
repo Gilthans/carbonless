@@ -13,6 +13,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	collectPackages,
 	cssPackageFiles,
+	LICENSES_DIR,
 	packageRoot,
 	renderNotices,
 	thirdPartyNotices,
@@ -170,6 +171,86 @@ describe("the third-party notices collector", () => {
 		).toThrow("no longer has");
 	});
 
+	it("takes third-party license and notice files too (rolldown's THIRD-PARTY-LICENSE)", () => {
+		const r = pkg(
+			"bundler-runtime",
+			{ license: "MIT" },
+			{
+				LICENSE: "own",
+				"THIRD-PARTY-LICENSE": "esbuild: Copyright (c) 2020 Evan Wallace",
+				"ThirdPartyNotices.txt": "more",
+				"third-party-notices.md": "and more",
+				"thirdparty.js": "not a license",
+			},
+		);
+		expect(
+			collectPackages([join(r, "x.js")], { overrides: {} })[0]?.texts.map(
+				(t) => t.file,
+			),
+		).toEqual([
+			"LICENSE",
+			"THIRD-PARTY-LICENSE",
+			"ThirdPartyNotices.txt",
+			"third-party-notices.md",
+		]);
+	});
+
+	it("fails on a module whose package has no package.json, on any path separator", () => {
+		const root = join(nm, "loose");
+		mkdirSync(root, { recursive: true });
+		expect(() =>
+			collectPackages([join(root, "x.js")], { overrides: {} }),
+		).toThrow("has no package.json");
+		const a = pkg("win", { license: "MIT" }, { LICENSE: "MIT" });
+		expect(packageRoot(join(a, "x.js").replaceAll("/", "\\"))).toBe(a);
+	});
+
+	it("each shipped grammar needs a row in its override file", () => {
+		const langs = pkg(
+			"@shikijs/langs",
+			{ license: "MIT" },
+			{
+				LICENSE: "shiki",
+				"dist/go.mjs": "",
+				"dist/yaml.mjs": "",
+				"dist/zig.mjs": "",
+			},
+		);
+		const licenses = join(dir, "licenses");
+		mkdirSync(licenses);
+		writeFileSync(
+			join(licenses, "grammars.md"),
+			"| Grammar | Source |\n|---|---|\n| go | x |\n| yaml | y |\n",
+		);
+		const options = {
+			overridesDir: licenses,
+			overrides: { "@shikijs/langs": { file: "grammars.md", source: "s" } },
+		};
+		const shipped = ["go", "yaml"].map((g) => join(langs, `dist/${g}.mjs`));
+		const list = collectPackages(shipped, options);
+		expect(list[0]?.texts.map((t) => t.file)).toEqual([
+			"LICENSE",
+			"grammars.md (s)",
+		]);
+		expect(() =>
+			collectPackages([...shipped, join(langs, "dist/zig.mjs")], options),
+		).toThrow("@shikijs/langs ships zig with no row in licenses/grammars.md");
+	});
+
+	it("the real grammars file has a row for every grammar the app can load", () => {
+		const rows = readFileSync(join(LICENSES_DIR, "shiki-grammars.md"), "utf8");
+		const app = readFileSync(
+			join(repoRoot, "src/web/files/highlight.ts"),
+			"utf8",
+		);
+		const loaded = [...app.matchAll(/shiki\/langs\/([\w-]+)\.mjs/g)].map(
+			(m) => m[1],
+		);
+		expect(loaded.length).toBeGreaterThan(10);
+		for (const g of loaded) expect(rows).toContain(`| ${g} |`);
+		expect(LICENSES_DIR).toBe(join(repoRoot, "licenses"));
+	});
+
 	it("fences a license text that itself has backticks", () => {
 		const text = renderNotices([
 			{
@@ -232,6 +313,7 @@ describe("the third-party notices collector", () => {
 		mkdirSync(join(dir, "out", "web"), { recursive: true }); // vite makes it
 		const plugin = thirdPartyNotices({
 			overridesDir: join(dir, "licenses"),
+			required: [],
 		}) as unknown as {
 			configResolved: (c: unknown) => void;
 			generateBundle: (this: unknown, o: unknown, b: unknown) => void;
@@ -255,6 +337,21 @@ describe("the third-party notices collector", () => {
 		);
 		expect(notices).toContain("## font-pkg@1.0.0");
 		expect(notices).toContain("SIL OPEN FONT LICENSE");
+		// License and source as list items: separate lines when rendered.
+		expect(notices).toContain("## font-pkg@1.0.0\n\n- License: OFL-1.1\n");
+		// The floor: a build whose notices lack react is a broken collection.
+		const strict = thirdPartyNotices({
+			overridesDir: join(dir, "licenses"),
+		}) as unknown as typeof plugin;
+		strict.configResolved({ root, build: { outDir: "../out/web" } });
+		strict.generateBundle.call(
+			{ getModuleIds: () => [][Symbol.iterator]() },
+			{},
+			{},
+		);
+		expect(() => strict.writeBundle()).toThrow(
+			"react, dompurify not found in the build",
+		);
 	});
 
 	it("knows which package a bundled virtual module comes from, and fails on an unknown one", () => {
@@ -286,7 +383,7 @@ describe("the notices of the real build", { timeout: 180_000 }, () => {
 	let out: string;
 	afterEach(() => rmSync(out, { recursive: true, force: true }));
 
-	it("lists react, shiki, tailwindcss, dompurify under Apache-2.0, both fonts with the OFL text, and vite's own license only", async () => {
+	it("lists react, @shikijs/core, tailwindcss, dompurify under Apache-2.0, both fonts with the OFL text, the grammars' rows, rolldown's third-party notices, vite's own license only, and nothing tree-shaken", async () => {
 		out = mkdtempSync(join(tmpdir(), "crb-notices-build-"));
 		const { build } = await import("vite");
 		await build({
@@ -306,7 +403,7 @@ describe("the notices of the real build", { timeout: 180_000 }, () => {
 		for (const name of [
 			"react",
 			"react-dom",
-			"shiki",
+			"@shikijs/core",
 			"tailwindcss",
 			"@tanstack/react-query",
 		]) {
@@ -324,7 +421,22 @@ describe("the notices of the real build", { timeout: 180_000 }, () => {
 		}
 		expect(section("vite")).toContain("MIT License");
 		expect(section("vite")).not.toContain("Licenses of bundled dependencies");
-		section("rolldown");
+		// rollup's and esbuild's notices for the runtime rolldown writes in.
+		expect(section("rolldown")).toContain("Evan Wallace");
+		// The grammars' upstream authors, one row per shipped grammar.
+		const langs = section("@shikijs/langs");
+		for (const row of [
+			"| csharp |",
+			"| yaml |",
+			"FichteFoll",
+			"Microsoft Corporation",
+		]) {
+			expect(langs).toContain(row);
+		}
+		// Only what reaches the output: shiki's own modules are re-exports
+		// (no code), seroval is imported but tree-shaken away.
+		expect(notices).not.toMatch(/^## shiki@/m);
+		expect(notices).not.toMatch(/^## seroval@/m);
 		// Build-only tools don't ship.
 		for (const tool of [
 			"typescript",

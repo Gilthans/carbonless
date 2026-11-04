@@ -26,8 +26,15 @@ export function collectPackages(
 		choices?: Record<string, string>;
 		overrides?: Record<string, { file: string; source: string }>;
 		cuts?: Record<string, { file: string; before: string }>;
+		rowsPerModule?: Record<string, RegExp>;
 		overridesDir?: string;
 	},
 ): NoticePackage[];
 export function renderNotices(packages: NoticePackage[]): string;
-export function thirdPartyNotices(options?: { overridesDir?: string }): Plugin;
+export function thirdPartyNotices(options?: {
+	overridesDir?: string;
+	required?: string[];
+}): Plugin;
+export const LICENSES_DIR: string;
+export const LICENSE_FILE: RegExp;
+export const ROWS_PER_MODULE: Record<string, RegExp>;
