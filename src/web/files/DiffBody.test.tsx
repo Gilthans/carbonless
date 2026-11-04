@@ -3261,3 +3261,79 @@ describe("DiffBody: hunk headings and the clickable gap row", () => {
 		expect(held).toHaveBeenCalledTimes(1);
 	});
 });
+
+describe("the diff's scrollbar proxy (useScrollbarProxy)", () => {
+	const proxy = () =>
+		document.querySelector<HTMLElement>('[data-testid="diff-scrollbar"]');
+	/** The bar's scroller: the table's box right before it. */
+	const scrollerOf = (bar: HTMLElement) =>
+		bar.previousElementSibling as HTMLElement;
+	const scroller = () =>
+		[...document.querySelectorAll<HTMLElement>("div.overflow-x-auto")].find(
+			(el) => el.querySelector("table") !== null,
+		) as HTMLElement;
+	/** The scroller's table is `scroll` wide in a `client` box; everything else keeps jsdom's 0. */
+	const widths = (scroll: number, client: number) => {
+		const isScroller = (el: Element) =>
+			el.classList.contains("overflow-x-auto") &&
+			el.querySelector("table") !== null;
+		vi.spyOn(Element.prototype, "scrollWidth", "get").mockImplementation(
+			function (this: Element) {
+				return isScroller(this) ? scroll : 0;
+			},
+		);
+		vi.spyOn(Element.prototype, "clientWidth", "get").mockImplementation(
+			function (this: Element) {
+				return isScroller(this) ? client : 0;
+			},
+		);
+	};
+	// An earlier describe's tree may still be in the document: only this one's.
+	beforeEach(() => cleanup());
+	afterEach(() => {
+		cleanup();
+		vi.restoreAllMocks();
+		vi.unstubAllGlobals();
+	});
+
+	it("scrolls the table and follows it, writing nothing that is already there", async () => {
+		widths(3000, 800);
+		setup({ hunks: pairHunks(), clusters: [pairCluster()] });
+		await screen.findByText("new seven");
+		const bar = proxy();
+		expect(bar).not.toBeNull();
+		if (!bar) return;
+		// Out of the Tab order, with a spacer as wide as the table.
+		expect(bar.tabIndex).toBe(-1);
+		expect((bar.firstElementChild as HTMLElement).style.width).toBe("3000px");
+		const table = scrollerOf(bar);
+		expect(table.querySelector("table")).not.toBeNull();
+		const set = vi.spyOn(Element.prototype, "scrollLeft", "set");
+		table.scrollLeft = 120;
+		table.dispatchEvent(new Event("scroll"));
+		expect(bar.scrollLeft).toBe(120);
+		// The echo (the bar's own scroll event, nothing to change) writes
+		// nothing: no loop.
+		set.mockClear();
+		bar.dispatchEvent(new Event("scroll"));
+		expect(set).not.toHaveBeenCalled();
+		expect(table.scrollLeft).toBe(120);
+		// The other way round: the bar drives the table.
+		bar.scrollLeft = 40;
+		set.mockClear();
+		bar.dispatchEvent(new Event("scroll"));
+		expect(set).toHaveBeenCalledTimes(1);
+		expect(table.scrollLeft).toBe(40);
+		set.mockClear();
+		table.dispatchEvent(new Event("scroll"));
+		expect(set).not.toHaveBeenCalled();
+	});
+
+	it("isn't there while the table fits its box", async () => {
+		widths(800, 800);
+		setup({ hunks: pairHunks(), clusters: [pairCluster()] });
+		await screen.findByText("new seven");
+		expect(proxy()).toBeNull();
+		expect(scroller().scrollLeft).toBe(0);
+	});
+});
