@@ -133,4 +133,6 @@ approval, so master's rules and code owners are the real gate:
 
 ## License
 
-MIT: `LICENSE`.
+MIT: `LICENSE`. The packages bundled into the web page keep their own
+licenses: `dist/THIRD-PARTY-NOTICES.md` in the npm package, written by the
+build (`scripts/third-party-notices.mjs`).
