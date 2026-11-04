@@ -27,10 +27,16 @@ import {
 	LANDED_MS,
 	numberDigits,
 } from "./DiffBody";
+import { hiddenLines } from "./hiddenLines";
 import type { Landing } from "./landing";
 import { setPicks } from "./linePicks";
 import type { CodeSpan } from "./selectionActions";
 import { ThreadBubble } from "./ThreadBubble";
+
+vi.mock("./hiddenLines", async (original) => {
+	const real = await original<typeof import("./hiddenLines")>();
+	return { hiddenLines: vi.fn(real.hiddenLines) };
+});
 
 vi.mock("./highlight", () => ({
 	languageFor: () => null,
@@ -2135,11 +2141,17 @@ describe("DiffBody word marks", () => {
 			// In the sign's place: before the code, kept out of a copy.
 			expect(warning.nextElementSibling).toHaveAttribute("data-code");
 			expect(warning).toHaveClass("select-none");
+			// Not a tab stop: the keyboard has h.
+			expect(warning).toHaveAttribute("tabindex", "-1");
 			expect(cell.querySelector("[data-code]")?.textContent).toBe(
 				"let s = 1;   ",
 			);
+			warning.focus();
 			fireEvent.click(warning);
 			expect(showInvisibles.read()).toBe(true);
+			// Focus stays on the line, not lost to the page.
+			expect(document.activeElement).not.toBe(document.body);
+			expect(cell.closest("tr")?.contains(document.activeElement)).toBe(true);
 			expect(
 				screen.queryByRole("button", { name: /Hidden characters/ }),
 			).toBeNull();
@@ -2147,6 +2159,24 @@ describe("DiffBody word marks", () => {
 			expect(
 				words(cell)[0]?.querySelector('[data-inv="space"]'),
 			).toHaveAttribute("data-glyph", "···");
+		});
+
+		it(`doesn't look for hidden changes while hidden characters show (${view})`, async () => {
+			sideBySide.set(view === "side-by-side");
+			showInvisibles.set(true);
+			const spy = vi.mocked(hiddenLines);
+			spy.mockClear();
+			setup({
+				hunks: block(["let s = 1;"], ["let s = 1;   "]),
+				clusters: [cluster("c")],
+			});
+			await shown("let s = 1;");
+			expect(spy).not.toHaveBeenCalled();
+			act(() => showInvisibles.set(false));
+			expect(spy).toHaveBeenCalled();
+			expect(
+				screen.getAllByRole("button", { name: /Hidden characters/ }),
+			).toHaveLength(1);
 		});
 
 		it(`warns on both lines of a tab swapped for spaces of the same width, not on a visible change (${view})`, async () => {

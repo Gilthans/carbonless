@@ -335,6 +335,29 @@ for (const view of ["unified", "side-by-side"] as const) {
 				return [Number.parseFloat(b.width), Number.parseFloat(b.height)];
 			});
 			for (const side of hit) expect(side).toBeGreaterThanOrEqual(40);
+			// A tap beside the icon hits it; a tap on the line's number, even at
+			// its edge, still reaches the number cell (picks the line).
+			const hits = await warning.evaluate((el) => {
+				el.scrollIntoView({ block: "center" });
+				const box = el.getBoundingClientRect();
+				const y = box.top + box.height / 2;
+				const at = (x: number, dy = 0) =>
+					el.contains(document.elementFromPoint(x, y + dy));
+				const number = el
+					.closest("td")
+					?.previousElementSibling?.getBoundingClientRect();
+				const onNumber = number
+					? document
+							.elementFromPoint(number.right - 3, y)
+							?.closest('td[data-testid="new"]') !== null
+					: false;
+				return {
+					right: at(box.right + 15),
+					below: at(box.left + box.width / 2, 15),
+					onNumber,
+				};
+			});
+			expect(hits).toEqual({ right: true, below: true, onNumber: true });
 		} else await warning.hover();
 		if (!isMobile) {
 			await expect(

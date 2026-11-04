@@ -479,10 +479,31 @@ function Sign({ kind }: { kind: RowLine["kind"] }) {
 }
 
 /**
+ * Before a warning goes, moves focus it holds to its line: the line's number
+ * button (its own side's first), else the code cell itself.
+ */
+function keepFocusOnLine(warning: HTMLElement) {
+	if (document.activeElement !== warning) return;
+	const cell = warning.closest("td");
+	const row = cell?.closest("tr");
+	const target =
+		cell?.previousElementSibling?.querySelector<HTMLElement>("button") ??
+		row?.querySelector<HTMLElement>(
+			'td[data-testid="old"] button, td[data-testid="new"] button',
+		) ??
+		cell;
+	if (!target) return;
+	if (target === cell) cell.tabIndex = -1;
+	target.focus({ preventScroll: true });
+}
+
+/**
  * In the sign's place, on a line whose change doesn't show while hidden
  * characters are off (hiddenChange.ts): a warning that turns them on. As
- * wide as the sign, so the code doesn't move; a finger gets 40px around it.
- * The sign comes back once they show.
+ * wide as the sign, so the code doesn't move; a finger gets 40px from the
+ * cell's edge rightwards (never over the number). The sign comes back once
+ * they show. Not a tab stop (a changed line ending can put one on every
+ * line): the keyboard has `h`.
  */
 function HiddenWarning({ kind }: { kind: RowLine["kind"] }) {
 	const show = useShowInvisibles();
@@ -496,9 +517,13 @@ function HiddenWarning({ kind }: { kind: RowLine["kind"] }) {
 					{...trigger}
 					type="button"
 					aria-label={label}
+					tabIndex={-1}
 					data-hidden-change=""
-					onClick={() => showInvisibles.set(true)}
-					className="relative z-[1] mr-2 inline-flex w-[1ch] cursor-pointer select-none justify-center align-[-1px] text-warn focus-visible:outline-2 focus-visible:outline-accent pointer-coarse:before:absolute pointer-coarse:before:top-1/2 pointer-coarse:before:left-1/2 pointer-coarse:before:size-10 pointer-coarse:before:-translate-1/2 pointer-coarse:before:content-['']"
+					onClick={(e) => {
+						keepFocusOnLine(e.currentTarget);
+						showInvisibles.set(true);
+					}}
+					className="relative z-[1] mr-2 inline-flex w-[1ch] cursor-pointer select-none justify-center align-[-1px] text-warn focus-visible:outline-2 focus-visible:outline-accent pointer-coarse:before:absolute pointer-coarse:before:top-1/2 pointer-coarse:before:-left-2 pointer-coarse:before:size-10 pointer-coarse:before:-translate-y-1/2 pointer-coarse:before:content-['']"
 				>
 					<AlertIcon size={12} aria-hidden />
 				</button>
@@ -638,6 +663,8 @@ function BlankCells({ side }: { side: DiffSide }) {
 		</>
 	);
 }
+
+const NO_LINES: ReadonlySet<DiffLine> = new Set();
 
 /** What every row of a line takes from its hunk and file. */
 interface RowProps {
@@ -2317,15 +2344,19 @@ function HunkRows(props: {
 			words: hunkWordMarks(runs.flatMap((run) => run.rows)),
 		};
 	}, [hunk, ignoreWhitespace, view]);
-	// The lines whose change doesn't show with hidden characters off.
+	// The lines whose change doesn't show with hidden characters off (none
+	// to look for while they show).
+	const showHidden = useShowInvisibles();
 	const hidden = useMemo(
 		() =>
-			hiddenLines(
-				hunkRuns.flatMap((run) => run.rows),
-				words,
-				props.tabWidth ?? DEFAULT_TAB_WIDTH,
-			),
-		[hunkRuns, words, props.tabWidth],
+			showHidden
+				? NO_LINES
+				: hiddenLines(
+						hunkRuns.flatMap((run) => run.rows),
+						words,
+						props.tabWidth ?? DEFAULT_TAB_WIDTH,
+					),
+		[showHidden, hunkRuns, words, props.tabWidth],
 	);
 	const columns = columnsOf(view);
 	// Unified, the file bubble is centred on rows that aren't code (FileBubbleSlot).
