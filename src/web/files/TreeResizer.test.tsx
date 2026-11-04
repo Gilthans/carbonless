@@ -14,9 +14,9 @@ describe("TreeResizer", () => {
 	afterEach(() => {
 		cleanup();
 		vi.clearAllMocks();
-		document.body.style.cursor = "";
-		document.body.style.userSelect = "";
+		document.documentElement.removeAttribute("data-resizing");
 	});
+	const resizing = () => document.documentElement.hasAttribute("data-resizing");
 
 	const setup = (width = 300) => {
 		const onWidth = vi.fn();
@@ -42,8 +42,8 @@ describe("TreeResizer", () => {
 		const { handle, onWidth } = setup();
 		fireEvent.pointerDown(handle, { pointerId: 7, button: 0, clientX: 300 });
 		expect(capture.set).toHaveBeenCalledWith(7);
-		expect(document.body.style.userSelect).toBe("none");
-		expect(document.body.style.cursor).toBe("col-resize");
+		// html[data-resizing] (index.css): the resize cursor everywhere, no selection.
+		expect(resizing()).toBe(true);
 		expect(handle).toHaveAttribute("data-dragging");
 		fireEvent.pointerMove(handle, { pointerId: 7, clientX: 420 });
 		expect(onWidth).toHaveBeenLastCalledWith(420);
@@ -51,8 +51,7 @@ describe("TreeResizer", () => {
 		expect(onWidth).toHaveBeenLastCalledWith(250);
 		fireEvent.pointerUp(handle, { pointerId: 7, clientX: 250 });
 		expect(capture.release).toHaveBeenCalledWith(7);
-		expect(document.body.style.userSelect).toBe("");
-		expect(document.body.style.cursor).toBe("");
+		expect(resizing()).toBe(false);
 		expect(handle).not.toHaveAttribute("data-dragging");
 		// A move after release does nothing.
 		fireEvent.pointerMove(handle, { pointerId: 7, clientX: 500 });
@@ -65,9 +64,29 @@ describe("TreeResizer", () => {
 		expect(capture.set).not.toHaveBeenCalled();
 		fireEvent.pointerDown(handle, { pointerId: 2, button: 0, clientX: 300 });
 		fireEvent.pointerCancel(handle, { pointerId: 2 });
-		expect(document.body.style.userSelect).toBe("");
+		expect(resizing()).toBe(false);
 		fireEvent.pointerMove(handle, { pointerId: 2, clientX: 400 });
 		expect(onWidth).not.toHaveBeenCalled();
+	});
+
+	it("forgets a drag whose capture was lost, and a fresh press starts a new one", () => {
+		const { handle, onWidth } = setup();
+		fireEvent.pointerDown(handle, { pointerId: 3, button: 0, clientX: 300 });
+		expect(resizing()).toBe(true);
+		// The window lost the pointer (a dialog, the node detached): no up, no cancel.
+		fireEvent.lostPointerCapture(handle, { pointerId: 3 });
+		expect(resizing()).toBe(false);
+		expect(handle).not.toHaveAttribute("data-dragging");
+		fireEvent.pointerMove(handle, { pointerId: 3, clientX: 400 });
+		expect(onWidth).not.toHaveBeenCalled();
+		// The next press drags again.
+		fireEvent.pointerDown(handle, { pointerId: 4, button: 0, clientX: 300 });
+		expect(capture.set).toHaveBeenLastCalledWith(4);
+		expect(resizing()).toBe(true);
+		fireEvent.pointerMove(handle, { pointerId: 4, clientX: 350 });
+		expect(onWidth).toHaveBeenLastCalledWith(350);
+		fireEvent.pointerUp(handle, { pointerId: 4, clientX: 350 });
+		expect(resizing()).toBe(false);
 	});
 
 	it("resizes from the keyboard and resets on Enter or a double click", () => {

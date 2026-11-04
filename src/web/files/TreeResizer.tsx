@@ -1,6 +1,29 @@
-import { type PointerEvent, useEffect, useRef, useState } from "react";
+import {
+	type PointerEvent,
+	type ReactNode,
+	useEffect,
+	useRef,
+	useState,
+} from "react";
 import { Tooltip } from "../Tooltip";
-import { TREE_WIDTH, treeWidthKey } from "./treeWidth";
+import { TREE_WIDTH, treeWidthKey, useTreeWidth } from "./treeWidth";
+
+/**
+ * The desktop file tree column: the tree at its remembered width and the
+ * drag handle, stuck together (the handle is the tree's height). Its own
+ * component so a window resize re-renders only this, not the whole page.
+ */
+export function TreeColumn(props: { tree: ReactNode }) {
+	const treeWidth = useTreeWidth();
+	return (
+		<div className="sticky top-[calc(var(--app-header,0px)+var(--files-bar,0px)+1rem)] flex max-h-[calc(100dvh-var(--app-header,0px)-var(--files-bar,0px)-2rem)] shrink-0 self-start">
+			<aside style={{ width: treeWidth.width }} className="overflow-y-auto">
+				{props.tree}
+			</aside>
+			<TreeResizer {...treeWidth} onWidth={treeWidth.set} />
+		</div>
+	);
+}
 
 /**
  * The drag handle between the file tree and the diffs (desktop): a thin
@@ -18,19 +41,16 @@ export function TreeResizer(props: {
 	const [dragging, setDragging] = useState(false);
 	const drag = useRef<{ id: number; x: number; width: number } | null>(null);
 
-	// While dragging, nothing gets selected and the cursor stays a resize
-	// cursor wherever the pointer goes.
+	// While dragging, the resize cursor shows wherever the captured pointer
+	// goes and nothing gets selected (html[data-resizing] in index.css).
 	useEffect(() => {
 		if (!dragging) return;
-		const { cursor, userSelect } = document.body.style;
-		document.body.style.cursor = "col-resize";
-		document.body.style.userSelect = "none";
-		return () => {
-			document.body.style.cursor = cursor;
-			document.body.style.userSelect = userSelect;
-		};
+		document.documentElement.setAttribute("data-resizing", "");
+		return () => document.documentElement.removeAttribute("data-resizing");
 	}, [dragging]);
 
+	// Also the capture going away on its own (the window losing the
+	// pointer to a dialog, the node detached): no stale drag survives it.
 	const end = (e: PointerEvent<HTMLDivElement>) => {
 		if (drag.current?.id !== e.pointerId) return;
 		drag.current = null;
@@ -58,7 +78,9 @@ export function TreeResizer(props: {
 					tabIndex={0}
 					data-dragging={dragging || undefined}
 					onPointerDown={(e) => {
-						if (e.button !== 0 || drag.current) return;
+						// A fresh primary press always starts a drag: one whose
+						// capture was lost without an up or cancel is forgotten.
+						if (e.button !== 0) return;
 						drag.current = {
 							id: e.pointerId,
 							x: e.clientX,
@@ -74,6 +96,7 @@ export function TreeResizer(props: {
 					}}
 					onPointerUp={end}
 					onPointerCancel={end}
+					onLostPointerCapture={end}
 					onDoubleClick={() => props.onWidth(TREE_WIDTH.default)}
 					onKeyDown={(e) => {
 						trigger.onKeyDown(e);
@@ -82,7 +105,7 @@ export function TreeResizer(props: {
 						e.preventDefault();
 						props.onWidth(next);
 					}}
-					className="group flex w-4 shrink-0 cursor-col-resize touch-none justify-center self-stretch outline-none"
+					className="group flex w-4 shrink-0 cursor-col-resize touch-none justify-center self-stretch outline-none pointer-coarse:w-6"
 				>
 					<span aria-hidden className={`h-full ${line}`} />
 				</div>

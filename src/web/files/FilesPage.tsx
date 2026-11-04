@@ -46,9 +46,8 @@ import {
 	restoreAnchor,
 	type ScrollAnchor,
 } from "./scrollAnchor";
-import { TreeResizer } from "./TreeResizer";
+import { TreeColumn } from "./TreeResizer";
 import { threadsOnHead } from "./threadPlacement";
-import { useTreeWidth } from "./treeWidth";
 
 const NO_THREADS: ReviewThread[] = [];
 
@@ -329,7 +328,6 @@ export function FilesPage() {
 
 	const [unit, saveUnit] = useUnit();
 	const wide = useMedia(WIDE);
-	const treeWidth = useTreeWidth();
 	const [sheetOpen, setSheetOpen] = useState(false);
 
 	// One file open at a time, by snapshot and index: a new snapshot starts
@@ -663,20 +661,8 @@ export function FilesPage() {
 							</>
 						) : (
 							<div className="mt-4 flex">
-								{wide && (
-									// The tree and its resize handle stick together; the
-									// handle is the tree's height. The handle's 1rem is the
-									// gap to the diffs.
-									<div className="sticky top-[calc(var(--app-header,0px)+var(--files-bar,0px)+1rem)] flex max-h-[calc(100dvh-var(--app-header,0px)-var(--files-bar,0px)-2rem)] shrink-0 self-start">
-										<aside
-											style={{ width: treeWidth.width }}
-											className="overflow-y-auto"
-										>
-											{tree}
-										</aside>
-										<TreeResizer {...treeWidth} onWidth={treeWidth.set} />
-									</div>
-								)}
+								{/* The handle's 1rem is the gap to the diffs. */}
+								{wide && <TreeColumn tree={tree} />}
 								<div
 									ref={diffs}
 									// Room for the floating Files button, and for the save notices
