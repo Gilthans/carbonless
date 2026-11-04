@@ -190,6 +190,10 @@ test.describe("phone", () => {
 		const sheet = page.getByRole("dialog", { name: "Files" });
 		await expect(sheet).toBeVisible();
 		await expect(sheet.getByTestId("file-tree")).toBeVisible();
+		// No resize handle: the sheet takes the screen's width.
+		await expect(
+			page.getByRole("separator", { name: "Resize file tree" }),
+		).toHaveCount(0);
 
 		// Escape closes it, and focus goes back to the button.
 		await page.keyboard.press("Escape");
