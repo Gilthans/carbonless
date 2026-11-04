@@ -60,8 +60,14 @@ function orphanMarks(line: string): string[] {
 	return found;
 }
 
-/** "path:line": raw characters allowed there (none so far). */
-const ALLOWED = new Set<string>();
+/**
+ * "path:line": raw characters allowed there: the gallery's hidden-unicode
+ * case (inline-diff #64), byte for byte as on GitHub.
+ */
+const ALLOWED = new Set<string>([
+	"test/fixtures/inline-diff/case/inline/64-hidden-unicode.ts:4",
+	"test/fixtures/inline-diff/case/inline/64-hidden-unicode.ts:8",
+]);
 
 function* files(dir: string): Generator<string> {
 	for (const entry of readdirSync(dir, { withFileTypes: true })) {

@@ -3751,6 +3751,53 @@
      ]
     }
    ]
+  },
+  "inline/64-hidden-unicode.ts": {
+   "blocks": [
+    {
+     "shape": "1/1",
+     "pairs": [
+      {
+       "old": "const userName = session.user;",
+       "new": "const user\u200bName = session.user;",
+       "oldMarks": [
+        [
+         6,
+         14
+        ]
+       ],
+       "newMarks": [
+        [
+         6,
+         15
+        ]
+       ]
+      }
+     ]
+    },
+    {
+     "shape": "1/1",
+     "pairs": [
+      {
+       "old": "const greeting = \"Hello, world\";",
+       "new": "const greeting = \"Hello,\u00a0world\";",
+       "oldMarks": [
+        [
+         24,
+         25
+        ]
+       ],
+       "newMarks": [
+        [
+         24,
+         25
+        ]
+       ]
+      }
+     ]
+    }
+   ],
+   "observed": "page_data/diff_entries at head fd85851 (w=0 and w=1 identical), signed in, 2026-11-04"
   }
  }
 }

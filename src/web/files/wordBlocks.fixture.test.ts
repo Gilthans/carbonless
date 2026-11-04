@@ -248,7 +248,7 @@ afterAll(() => fixture?.cleanup());
 
 describe("word marks against GitHub's (gallery PR #14)", () => {
 	it("has every case file", () => {
-		expect(paths.length).toBe(79);
+		expect(paths.length).toBe(80);
 		expect([...hunksOf.keys()].sort()).toEqual([...paths].sort());
 	});
 
