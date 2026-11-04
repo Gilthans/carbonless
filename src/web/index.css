@@ -373,6 +373,32 @@ table[data-selecting="new"] td[data-side="LEFT"] {
 	:focus-visible {
 		outline-color: var(--color-accent);
 	}
+
+	/*
+	 * The diff table's leading cells stay at the scroller's left edge while
+	 * the code scrolls under them (DiffBody's sticky cells): each paints its
+	 * row's background, so the code never shows through, a row without a
+	 * tint of its own taking the table's through its tbody. A utility on
+	 * the row or the cell (bg-add, bg-add-gutter, bg-band) still wins.
+	 */
+	table[data-view] :is(tbody, tr, td.sticky) {
+		background-color: inherit;
+	}
+	/*
+	 * Stuck over the code, two cells meeting on a fraction of a device
+	 * pixel (a phone's scale) each cover that pixel in part, and the code
+	 * under them shows through it as a dotted seam. A 2px strip in the
+	 * cell's own color and tint, astride its right edge and under the next
+	 * cell, covers that pixel whole.
+	 */
+	table[data-view] td.sticky:has(+ td.sticky)::after {
+		content: "";
+		position: absolute;
+		inset: 0 -1px 0 auto;
+		width: 2px;
+		background-color: inherit;
+		box-shadow: inherit;
+	}
 }
 
 /*

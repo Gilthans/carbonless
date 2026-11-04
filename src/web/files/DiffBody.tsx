@@ -419,10 +419,39 @@ export function numberDigits(data: FileHunks | undefined): number {
 /**
  * A number column's width: its digits (`--num-w`, set on the table from
  * numberDigits) and padding; on touch it keeps 48px, its tap target. On the
- * number cells in both views, and on the side-by-side table's `col`s.
+ * number cells in both views, and on the side-by-side table's `col`s. A
+ * minimum too (NUMBER_MIN_W), like the other leading columns' widths: a
+ * table wider than its box (a long line, what makes it scroll) lays its
+ * columns out at their minimum widths, where a plain `width` is only a
+ * wish, and the pinned cells' offsets below count on these.
  */
 const NUMBER_W =
 	"w-[var(--num-w,3rem)] pointer-coarse:w-[max(3rem,var(--num-w,3rem))]";
+const NUMBER_MIN_W =
+	"min-w-[var(--num-w,3rem)] pointer-coarse:min-w-[max(3rem,var(--num-w,3rem))]";
+/** The controls column: 44px; on touch its two 40px targets and padding, 88px. */
+const CONTROLS_W = "w-11 min-w-11 pointer-coarse:w-22 pointer-coarse:min-w-22";
+
+/**
+ * The row's leading cells (rail, controls, old and new numbers) stay at the
+ * scroller's left edge while the code scrolls under them: sticky, each at
+ * the sum of the widths before it (the rail's 0.25rem, the controls' 2.75rem
+ * or 5.5rem on touch, then a number's). Each paints its row's background
+ * (index.css: a sticky cell inherits it), so no code shows through. Unified
+ * only for the numbers (side by side never scrolls, and its new number
+ * sits elsewhere).
+ */
+const PIN = "sticky";
+/**
+ * A stuck cell is a stacking context, so its floating controls (position:
+ * fixed, stickyControls.ts) would paint under the cells of the rows below:
+ * while they float, the cell rises above them (the controls' own z-[5]).
+ */
+const PIN_CONTROLS = `${PIN} left-1 has-[[data-stuck]]:z-[5]`;
+const PIN_NUMBER: Record<DiffSide, string> = {
+	LEFT: `${PIN} left-12 pointer-coarse:left-23`,
+	RIGHT: `${PIN} left-[calc(3rem+var(--num-w,3rem))] pointer-coarse:left-[calc(5.75rem+max(3rem,var(--num-w,3rem)))]`,
+};
 
 const RAIL: Record<ClusterView["state"], string> = {
 	unreviewed: "bg-unreviewed",
@@ -550,7 +579,9 @@ function Rail({
 		: state
 			? `${RAIL[state]} group-hover:bg-accent group-hover:bg-none group-focus-within:bg-accent group-focus-within:bg-none`
 			: "";
-	return <td aria-hidden className={`w-1 min-w-1 p-0 ${color}`} />;
+	return (
+		<td aria-hidden className={`${PIN} left-0 w-1 min-w-1 p-0 ${color}`} />
+	);
 }
 
 /**
@@ -637,7 +668,7 @@ const pickOf = (
 function ControlsCell(props: { children?: ReactNode; className?: string }) {
 	return (
 		<td
-			className={`w-11 px-1 align-top whitespace-nowrap select-none pointer-coarse:w-20 ${props.className ?? ""}`}
+			className={`${PIN_CONTROLS} ${CONTROLS_W} px-1 align-top whitespace-nowrap select-none ${props.className ?? ""}`}
 		>
 			{props.children}
 		</td>
@@ -793,7 +824,7 @@ function NumberCell(props: {
 			onPointerDown={picker?.onPointerDown}
 			onPointerEnter={picker?.onPointerEnter}
 			onClick={picker?.onClick}
-			className={`${NUMBER_W} px-2 text-right align-top select-none ${props.className} ${picker ? "cursor-pointer" : ""}`}
+			className={`${NUMBER_W} ${NUMBER_MIN_W} px-2 text-right align-top select-none ${props.className} ${picker ? "cursor-pointer" : ""}`}
 		>
 			{picker && pick?.button && n !== undefined ? (
 				<button
@@ -1197,14 +1228,14 @@ function LineRow(props: RowProps & { line: RowLine; order?: number }) {
 				<NumberCell
 					side="LEFT"
 					n={line.oldNo}
-					className={numberBg}
+					className={`${numberBg} ${PIN_NUMBER.LEFT}`}
 					picker={picker}
 					pick={pick("LEFT")}
 				/>
 				<NumberCell
 					side="RIGHT"
 					n={line.newNo}
-					className={numberBg}
+					className={`${numberBg} ${PIN_NUMBER.RIGHT}`}
 					picker={picker}
 					pick={pick("RIGHT")}
 				/>
@@ -2666,7 +2697,7 @@ export function DiffBody(props: {
 					// Not code: a selection across it leaves it out.
 					className="group/gap bg-hunk text-hunk-ink select-none [--ctl-w:3rem] pointer-coarse:[--ctl-w:5.25rem]"
 				>
-					<td colSpan={2} className="px-1">
+					<td colSpan={2} className={`${PIN} left-0 px-1`}>
 						<div
 							className={`flex ${buttons.length > 1 ? "flex-col items-start" : ""}`}
 						>
@@ -2911,6 +2942,7 @@ export function DiffBody(props: {
 					{view === "side-by-side" && (
 						<colgroup>
 							<col className="w-1" />
+							{/* Fixed layout takes the col's width: 80px on touch, its targets. */}
 							<col className="w-11 pointer-coarse:w-20" />
 							<col className={NUMBER_W} />
 							<col />
