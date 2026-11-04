@@ -115,13 +115,23 @@ describe("wordMarks", () => {
 		);
 	});
 
-	it("leaves equal lines and a trailing \\r alone", () => {
+	it("leaves equal lines and a \\r both lines end in alone", () => {
 		expect(wordMarks("abc", "abc")).toEqual({ old: [], new: [] });
-		expect(wordMarks("a\r", "a")).toEqual({ old: [], new: [] });
-		expect(wordMarks("a", "a\r")).toEqual({ old: [], new: [] });
+		expect(wordMarks("a\r", "a\r")).toEqual({ old: [], new: [] });
 		const { old, new: young } = wordMarks("a b\r", "a c\r");
 		expect(old).toEqual([[2, 3]]);
 		expect(young).toEqual([[2, 3]]);
+	});
+
+	it("case 22: marks a trailing \\r only one line has", () => {
+		// Owner QA of PR #14, case 22 (2026-11-04): "it's very confusing to see
+		// there's a diff despite having nothing visibly change. Also, when
+		// hidden characters are shown, the \\r is not highlighted - it should be."
+		const a = "const eol = detectLineEnding(text);";
+		const b = "const eol = detectLineEnding(text);\r";
+		expect(wordMarks(a, b)).toEqual({ old: [], new: [[35, 36]] });
+		expect(wordMarks(b, a)).toEqual({ old: [[35, 36]], new: [] });
+		expect(wordMarks("a\r", "b")).toEqual({ old: [[0, 2]], new: [[0, 1]] });
 	});
 
 	it("marks the whole other line when one side is empty", () => {
@@ -167,6 +177,9 @@ describe("wordMarks", () => {
 			const a = line();
 			const b = line();
 			const { old, new: young } = wordMarks(a, b);
+			// A \r both lines end in is never marked; one only one has is a token.
+			const both = a.endsWith("\r") && b.endsWith("\r");
+			const strip = (s: string) => (both ? s.slice(0, -1) : s);
 			for (const [text, marks] of [
 				[a, old],
 				[b, young],
@@ -176,12 +189,11 @@ describe("wordMarks", () => {
 				for (const [from, to] of marks) {
 					expect(from).toBeGreaterThan(last); // sorted, apart (merged)
 					expect(to).toBeGreaterThan(from);
-					expect(to).toBeLessThanOrEqual(text.replace(/\r$/, "").length);
+					expect(to).toBeLessThanOrEqual(strip(text).length);
 					expect(edges.has(from) && edges.has(to)).toBe(true);
 					last = to;
 				}
 			}
-			const strip = (s: string) => s.replace(/\r$/, "");
 			expect(unmarked(strip(a), old)).toBe(unmarked(strip(b), young));
 			if (strip(a) === strip(b))
 				expect({ old, young }).toEqual({ old: [], young: [] });
@@ -210,9 +222,9 @@ describe("wordMarks", () => {
 			return prev[ys.length] as number;
 		};
 		/** Each token with whether it is marked. */
-		const tokens = (text: string, marks: readonly Mark[]) => {
+		const tokens = (text: string, marks: readonly Mark[], both: boolean) => {
 			let at = 0;
-			return tokenize(text.replace(/\r$/, "")).map((t) => {
+			return tokenize(both ? text.slice(0, -1) : text).map((t) => {
 				const marked = marks.some(([f, to]) => at >= f && at < to);
 				at += t.length;
 				return { t, marked };
@@ -243,8 +255,9 @@ describe("wordMarks", () => {
 			const a = line();
 			const b = line();
 			const { old, new: young } = wordMarks(a, b);
-			const ta = tokens(a, old);
-			const tb = tokens(b, young);
+			const both = a.endsWith("\r") && b.endsWith("\r");
+			const ta = tokens(a, old, both);
+			const tb = tokens(b, young, both);
 			const keptWords = (ts: typeof ta) =>
 				ts.filter((x) => !x.marked && !blank(x.t)).map((x) => x.t);
 			const ka = keptWords(ta);
