@@ -46,9 +46,26 @@ const activeTabClass =
 const compactTapClass =
 	"relative before:absolute before:inset-x-0 before:top-1/2 before:h-10 before:-translate-y-1/2 before:content-['']";
 // The number keeps its width beside the clamped title, and goes when the
-// pill's slot (a phone's narrowest) has no room for both.
-const compactNumberClass =
-	"shrink-0 rounded-full font-medium text-muted @max-[4rem]:hidden";
+// pill's column (a phone's narrowest) has no room for both.
+const compactNumberClass = "shrink-0 rounded-full font-medium text-muted";
+// Below which column width the number hides, by its digits: the pill's
+// padding and gap (1.5rem), the number (~0.45rem a character at text-xs)
+// and a 2.5rem floor for the title, so the back-to-top target stays a tap
+// wide. Whole class strings, which Tailwind needs to see.
+const compactNumberHide = [
+	"@max-[5rem]:hidden",
+	"@max-[5.5rem]:hidden",
+	"@max-[6rem]:hidden",
+	"@max-[6.5rem]:hidden",
+	"@max-[7rem]:hidden",
+	"@max-[7.5rem]:hidden",
+];
+
+/** The class hiding the compact pill's number where it would crush the title. */
+export function compactNumberHideClass(number: number): string {
+	const digits = String(Math.abs(Math.trunc(number))).length;
+	return compactNumberHide[digits - 1] ?? "@max-[7.5rem]:hidden";
+}
 
 /**
  * As-of mode's marker: the PR is shown as it was at `iso`. Its tooltip says
@@ -424,14 +441,18 @@ export function App() {
 													inert={!stuck}
 													aria-label={`#${pr.number} on GitHub`}
 													data-testid="compact-pr-link"
-													className={`${compactTapClass} ${compactNumberClass} hover:text-link hover:underline focus-visible:outline-2 focus-visible:outline-accent`}
+													className={`${compactTapClass} ${compactNumberClass} ${compactNumberHideClass(pr.number)} hover:text-link hover:underline focus-visible:outline-2 focus-visible:outline-accent`}
 												>
 													#{pr.number}
 												</a>
 											)}
 										</Tooltip>
 									) : (
-										<span className={compactNumberClass}>#{pr.number}</span>
+										<span
+											className={`${compactNumberClass} ${compactNumberHideClass(pr.number)}`}
+										>
+											#{pr.number}
+										</span>
 									)}
 								</span>
 							)}

@@ -22,7 +22,7 @@ import type {
 	SessionInfo,
 	TimelineView,
 } from "../shared/types";
-import { COMPACT_RAMP, compactProgress } from "./App";
+import { COMPACT_RAMP, compactNumberHideClass, compactProgress } from "./App";
 import { resetShowInvisibles, setShowInvisibles } from "./code/Invisibles";
 import { createAppRouter } from "./router";
 import { draftsFor } from "./threads/drafts";
@@ -2099,6 +2099,38 @@ describe("App header", () => {
 		expect(number).toHaveAttribute("inert");
 		expect(number).toHaveAccessibleName("#12 on GitHub");
 		expect(number).toHaveAttribute("target", "_blank");
+		expect(number).toHaveAttribute("rel", "noreferrer");
+		expect(number).toHaveAttribute(
+			"href",
+			"https://github.com/acme/widget/pull/12",
+		);
+	});
+
+	it("a PR url that isn't http(s) gets no number link: the number is plain text", async () => {
+		renderApp({
+			"/api/session": ok({
+				...info,
+				pr: { ...info.pr, url: "javascript:alert(1)" },
+			}),
+		});
+		await screen.findByRole("heading", { level: 1 });
+		expect(screen.queryByTestId("compact-pr-link")).toBeNull();
+		const pill = screen.getByTestId("compact-title-pill");
+		expect(pill).toHaveTextContent("Add widget cache");
+		expect(pill).toHaveTextContent("#12");
+		expect(pill.querySelector("a")).toBeNull();
+		expect(screen.getByTestId("header-title").querySelector("a")).toBeNull();
+	});
+
+	it("hides the compact number where its digits would crush the title", () => {
+		// Padding and gap 1.5rem, ~0.45rem a character, a 2.5rem title floor.
+		expect(compactNumberHideClass(7)).toBe("@max-[5rem]:hidden");
+		expect(compactNumberHideClass(12)).toBe("@max-[5.5rem]:hidden");
+		expect(compactNumberHideClass(123)).toBe("@max-[6rem]:hidden");
+		expect(compactNumberHideClass(1234)).toBe("@max-[6.5rem]:hidden");
+		expect(compactNumberHideClass(12345)).toBe("@max-[7rem]:hidden");
+		expect(compactNumberHideClass(123456)).toBe("@max-[7.5rem]:hidden");
+		expect(compactNumberHideClass(98765432)).toBe("@max-[7.5rem]:hidden");
 	});
 });
 
