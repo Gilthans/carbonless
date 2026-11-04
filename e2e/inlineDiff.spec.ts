@@ -253,8 +253,52 @@ async function hiddenSwitch(page: Page): Promise<boolean> {
 const codeLeft = (cell: Locator) =>
 	cell.locator("[data-code]").evaluate((el) => el.getBoundingClientRect().left);
 
+/** Opens Files changed with hidden characters off, in `view`. */
+async function hiddenOff(
+	page: Page,
+	url: string,
+	view: "unified" | "side-by-side",
+) {
+	await openFiles(page, url);
+	await sideBySide(page, view === "side-by-side");
+	await setSwitch(page, "Show hidden characters", false);
+}
+
+test("warns on a tab swapped for spaces, not on a visible rename nor on escaped characters", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	if (isMobile) await page.setViewportSize({ width: 360, height: 780 });
+	await pr(hiddenFixture);
+	const s = await startCrb();
+	await hiddenOff(page, s.url, "unified");
+
+	// A visible rename: no warning.
+	const rename = await expand(page, "01-rename-identifier.ts");
+	await expectMarks(rename, "01-rename-identifier.ts", {
+		del: ["userCount"],
+		add: ["memberCount"],
+	});
+	await expect(warnings(rename)).toHaveCount(0);
+
+	// The zero-width and no-break spaces show as escapes, tinted: no warning.
+	const unicode = await expand(page, "64-hidden-unicode.ts");
+	const added = unicode.locator(
+		'td[data-testid="code"][data-side="RIGHT"] [data-word]',
+	);
+	await expect(added).toHaveText(["user\u200BName", "\u00A0"]);
+	await expect(added.locator('[data-inv="escape"]')).toHaveCount(2);
+	await expect(warnings(unicode)).toHaveCount(0);
+
+	// Tabs → spaces of the same width: both lines warn.
+	const tabs = await expand(page, "08-tabs-to-spaces.ts");
+	await expect(warnings(tabs)).toHaveCount(2);
+});
+
 for (const view of ["unified", "side-by-side"] as const) {
-	test(`warns where a change doesn't show with hidden characters off, and turns them on (${view})`, async ({
+	test(`warns where trailing spaces changed with hidden characters off, and turns them on (${view})`, async ({
 		page,
 		pr,
 		startCrb,
@@ -263,30 +307,7 @@ for (const view of ["unified", "side-by-side"] as const) {
 		if (isMobile) await page.setViewportSize({ width: 360, height: 780 });
 		await pr(hiddenFixture);
 		const s = await startCrb();
-		await openFiles(page, s.url);
-		await sideBySide(page, view === "side-by-side");
-		await setSwitch(page, "Show hidden characters", false);
-
-		// A visible rename: no warning.
-		const rename = await expand(page, "01-rename-identifier.ts");
-		await expectMarks(rename, "01-rename-identifier.ts", {
-			del: ["userCount"],
-			add: ["memberCount"],
-		});
-		await expect(warnings(rename)).toHaveCount(0);
-
-		// The zero-width and no-break spaces show as escapes, tinted: no warning.
-		const unicode = await expand(page, "64-hidden-unicode.ts");
-		const added = unicode.locator(
-			'td[data-testid="code"][data-side="RIGHT"] [data-word]',
-		);
-		await expect(added).toHaveText(["user\u200BName", "\u00A0"]);
-		await expect(added.locator('[data-inv="escape"]')).toHaveCount(2);
-		await expect(warnings(unicode)).toHaveCount(0);
-
-		// Tabs → spaces of the same width: both lines warn.
-		const tabs = await expand(page, "08-tabs-to-spaces.ts");
-		await expect(warnings(tabs)).toHaveCount(2);
+		await hiddenOff(page, s.url, view);
 
 		// Trailing spaces: the added line warns, in the sign's place.
 		const trailing = await expand(page, "07-trailing-space-only.ts");
