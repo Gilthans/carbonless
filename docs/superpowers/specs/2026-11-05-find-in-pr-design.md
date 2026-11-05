@@ -191,13 +191,25 @@ file forgets its expansions; this changes that for the page as a whole:
 
 A Playwright test covers it: expand, close, reopen, the rows are there.
 
-The **current hit** when the term changes **(call)**: the first hit in the
-open file at or after the row under the sticky stack (what the scroll anchor
-reads), else the first hit in the open file, else the first hit in the PR.
-This is what makes the bar feel like the browser's find on a big PR: typing
-finds the nearest thing, not the top of the diff. Next and previous wrap
-around at both ends, as the browser's do. Deleting the term and typing it
-again starts over by the same rule.
+**Typing never moves the page (owner's decision, 2026-11-05).** As the
+term changes, the bar marks and counts; nothing scrolls and no other file
+opens until Enter, Shift+Enter, an arrow or Mod+g is pressed:
+
+> "When starting to search or typing, don't jump to the first result until
+> one of the buttons is clicked. First result caret should always be first
+> match in the current open file, and only jump to another file if there
+> aren't any matches in current file"
+
+So the **caret** (the current hit) when the term changes is the first hit
+in the open file, painted `find-current` where it is, on screen or not; when
+the open file has none, it is the first hit after the open file in reading
+order (wrapping), shown only by the count ("1 of 41") and the tree's chip,
+its file not yet opened. A caret placed by typing is **not yet shown**: the
+first step (Enter, ↓, Mod+g, and also Shift+Enter, ↑) shows it, scrolling to
+it and opening its file if needed; the steps after that move to the next or
+previous hit. Next and previous wrap around at both ends, as the browser's
+do. Deleting the term and typing it again starts over by the same rule. With
+no file open, the caret is the first hit in the PR, unshown until a step.
 
 ## Stepping to a hit
 
@@ -329,8 +341,9 @@ Unit (Vitest):
 - `findInPr`: occurrences per line (non-overlapping, column order), case
   folding (with a string whose folded length differs), paths and old paths,
   binary files (path hits only), order across files (tree order), expanded
-  context in line order, the current-hit rule (nearest at or after the
-  anchor, wrap).
+  context in line order, the caret rule (first hit in the open file, else
+  the first after it in reading order, else the PR's first; the first step
+  shows it, later steps move; wrap).
 - **Integrity** (the principle-2 habit): for random files and terms, the
   count equals the hits painted in the open file plus the tree's counts of
   the closed files; every painted mark is a real occurrence; no line of the
@@ -346,10 +359,13 @@ Unit (Vitest):
 
 Playwright (desktop and phone projects):
 
-- Cmd+F / Ctrl+F opens the bar focused; a term shows "n of m"; Enter steps
-  into another file, which opens, with the row in view below the sticky
-  stack and the current mark on the matched characters; Shift+Enter goes
-  back; stepping past the end wraps.
+- Cmd+F / Ctrl+F opens the bar focused; typing a term shows "n of m" and
+  the marks, and the page does not scroll (the scroll position is the same
+  after typing); the first Enter scrolls to the open file's first hit; the
+  next Enter steps into another file, which opens, with the row in view
+  below the sticky stack and the current mark on the matched characters;
+  Shift+Enter goes back; stepping past the end wraps. A term with no hit in
+  the open file: the count says "1 of m", no file opens until Enter.
 - The header button opens and closes the bar (phone: the only way in).
 - A path hit opens the file at its header with the path highlighted; the
   tree chips show counts; folded folders show sums.
