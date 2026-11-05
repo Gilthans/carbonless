@@ -9,6 +9,7 @@ import {
 	colorPieces,
 	copyWithOriginals,
 	INVISIBLES_STORAGE_KEY,
+	rangeText,
 	readShowInvisibles,
 	resetShowInvisibles,
 	setShowInvisibles,
@@ -171,6 +172,144 @@ describe("a thread's span on a line (marks)", () => {
 			{ text: "abc", marked: true },
 		]);
 		expect(splitMarks("abc", 0, [])).toEqual([{ text: "abc", marked: false }]);
+	});
+});
+
+describe("a pair's word marks on a line (words)", () => {
+	const words = () =>
+		Array.from(line().querySelectorAll<HTMLElement>("[data-word]"));
+
+	it("tints exactly the marked characters, synchronously, under the syntax colors", async () => {
+		const text = "const userCount = 1;";
+		renderLine({
+			text,
+			lang: "typescript",
+			words: { marks: [[6, 15]], tone: "add" },
+		});
+		// Painted with the first render, before any highlighting arrives.
+		expect(words().map((w) => w.textContent)).toEqual(["userCount"]);
+		await waitFor(() =>
+			expect(line().querySelector("span[style*='color']")).not.toBeNull(),
+		);
+		expect(words().map((w) => w.textContent)).toEqual(["userCount"]);
+		const [word] = words();
+		expect(word).toHaveClass("bg-add-word");
+		// The syntax color sits inside the tint: background only.
+		expect(word?.querySelector("span[style*='color']")).not.toBeNull();
+		expect(word?.getAttribute("style")).toBeNull();
+		expect(line().querySelector("[data-code]")?.textContent).toBe(text);
+	});
+
+	it("keeps each mark its own element, one tone per line", () => {
+		renderLine({
+			text: "a + b - c",
+			lang: null,
+			words: {
+				marks: [
+					[0, 1],
+					[8, 9],
+				],
+				tone: "del-done",
+			},
+		});
+		expect(words().map((w) => w.textContent)).toEqual(["a", "c"]);
+		for (const w of words()) expect(w).toHaveClass("bg-del-word-done");
+	});
+
+	it("marks the invisibles inside a mark with it, so a changed indent shows as tinted dots", () => {
+		const text = "        if (x)";
+		renderLine({
+			text,
+			lang: null,
+			newline: false,
+			words: { marks: [[4, 8]], tone: "add" },
+		});
+		expect(words().map((w) => w.textContent)).toEqual(["    "]);
+		const [word] = words();
+		expect(word?.querySelector('[data-inv="space"]')).toHaveAttribute(
+			"data-glyph",
+			"····",
+		);
+		expect(seen(line())).toBe("········if (x)");
+		expect(line().querySelector("[data-code]")?.textContent).toBe(text);
+	});
+
+	it("tints a CRLF ending's marker when the mark covers its \\r", () => {
+		const text = "const a = 1;\r";
+		renderLine({
+			text,
+			lang: null,
+			words: { marks: [[12, 13]], tone: "add" },
+		});
+		const [word] = words();
+		expect(word?.querySelector('[data-inv="eol"]')).toHaveAttribute(
+			"data-glyph",
+			"\\r\\n",
+		);
+		expect(words()).toHaveLength(1);
+		expect(line().querySelector("[data-code]")?.textContent).toBe(text);
+	});
+
+	it("lets a thread's span win where they overlap, the word tint showing outside it", () => {
+		const text = "const userCount = 1;";
+		renderLine({
+			text,
+			lang: null,
+			marks: [[10, 20]],
+			words: { marks: [[6, 15]], tone: "add" },
+		});
+		expect(words().map((w) => w.textContent)).toEqual(["user"]);
+		const spans = [...line().querySelectorAll("[data-span-mark]")];
+		expect(spans.map((m) => m.textContent).join("")).toBe("Count = 1;");
+		expect(
+			line().querySelector(
+				"[data-word] [data-span-mark], [data-span-mark] [data-word], [data-word][data-span-mark]",
+			),
+		).toBeNull();
+		expect(line().querySelector("[data-code]")?.textContent).toBe(text);
+	});
+
+	it("labels a kept emoji selector or joiner inside a mark while hidden characters show, never outside (owner, 2026-11-04)", async () => {
+		// Case 65's pets ZWJ (marked), then an unmarked family and smile.
+		const text = "🐶\u200D🐱 👨\u200D👩 😀\uFE0F\tx";
+		renderLine({
+			text,
+			lang: null,
+			newline: false,
+			words: { marks: [[2, 3]], tone: "add" },
+		});
+		const [word] = words();
+		expect(word?.querySelector('[data-inv="escape"]')).toHaveAttribute(
+			"data-glyph",
+			"\\u200D",
+		);
+		expect(
+			word?.querySelector('[data-inv="escape"]')?.getAttribute("aria-label"),
+		).toBe("U+200D zero width joiner");
+		// 2 + 6 + 2 + 1 + 2 + 1 + 2 = 16: the tab's marker takes a full stop.
+		expect(seen(line())).toBe("🐶\\u200D🐱 👨\u200D👩 😀\uFE0F\\tx");
+		expect(kinds()).toEqual(["escape", "tab"]);
+		// Copy gives the raw characters back.
+		const range = document.createRange();
+		range.selectNodeContents(line().querySelector("[data-code]") as Node);
+		expect(rangeText(range)).toBe(text);
+		// Off: the emoji stay whole, the mark draws nothing.
+		await userEvent.click(await hiddenCharacters());
+		expect(seen(line())).toBe(text.replace("\t", ""));
+		expect(kinds()).toEqual(["tab"]);
+		expect(line().querySelector("[data-code]")?.textContent).toBe(text);
+	});
+
+	it("copies the original text", () => {
+		const text = "\tlet  a\u00A0=  b;";
+		renderLine({
+			text,
+			lang: null,
+			words: { marks: [[1, 9]], tone: "del" },
+		});
+		const range = document.createRange();
+		range.selectNodeContents(line().querySelector("[data-code]") as Node);
+		expect(rangeText(range)).toBe(text);
 	});
 });
 

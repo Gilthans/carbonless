@@ -77,6 +77,16 @@
 	/* Reviewed lines: the add/del tints, quieter. */
 	--color-add-done: #121c1b;
 	--color-del-done: #1b1420;
+	/*
+	 * A pair's changed tokens (word marks): a stronger tint of the line's own
+	 * color, GitHub-bright (the owner's choice, 2026-11-02), the same step
+	 * up from a reviewed row as from a live one. Some code colors read under
+	 * 4.5:1 on them; theme.test.ts pins each at its contrast when chosen.
+	 */
+	--color-add-word: #1e5a43;
+	--color-del-word: #5c2441;
+	--color-add-word-done: #25493b;
+	--color-del-word-done: #492840;
 	--color-hunk: #151936;
 	--color-hunk-ink: #a7b0e8;
 
@@ -131,8 +141,8 @@
  */
 @utility mark-tint {
 	& > td {
-		box-shadow: inset 0 0 0 100vmax
-			color-mix(in srgb, var(--color-accent) 8%, transparent);
+		--wash: color-mix(in srgb, var(--color-accent) 8%, transparent);
+		box-shadow: inset 0 0 0 100vmax var(--wash);
 	}
 }
 
@@ -145,19 +155,19 @@
  */
 @utility thread-mark {
 	& > td {
-		box-shadow: inset 0 0 0 100vmax
-			color-mix(in srgb, var(--color-accent) 8%, transparent);
+		--wash: color-mix(in srgb, var(--color-accent) 8%, transparent);
+		box-shadow: inset 0 0 0 100vmax var(--wash);
 	}
 	& > td[data-testid="old"],
 	& > td[data-testid="new"] {
-		box-shadow: inset 0 0 0 100vmax
-			color-mix(in srgb, var(--color-accent) 20%, transparent);
+		--wash: color-mix(in srgb, var(--color-accent) 20%, transparent);
+		box-shadow: inset 0 0 0 100vmax var(--wash);
 	}
 	& > td:last-child {
+		--wash: color-mix(in srgb, var(--color-accent) 8%, transparent);
 		box-shadow:
 			inset 3px 0 0 var(--color-accent),
-			inset 0 0 0 100vmax
-			color-mix(in srgb, var(--color-accent) 8%, transparent);
+			inset 0 0 0 100vmax var(--wash);
 	}
 }
 
@@ -168,23 +178,22 @@
  * the code cell's left edge. The same colors as above (theme.test.ts).
  */
 @utility mark-tint-cell {
-	box-shadow: inset 0 0 0 100vmax
-		color-mix(in srgb, var(--color-accent) 8%, transparent);
+	--wash: color-mix(in srgb, var(--color-accent) 8%, transparent);
+	box-shadow: inset 0 0 0 100vmax var(--wash);
 }
 
 @utility thread-mark-cell {
-	box-shadow: inset 0 0 0 100vmax
-		color-mix(in srgb, var(--color-accent) 8%, transparent);
+	--wash: color-mix(in srgb, var(--color-accent) 8%, transparent);
+	box-shadow: inset 0 0 0 100vmax var(--wash);
 	&[data-testid="old"],
 	&[data-testid="new"] {
-		box-shadow: inset 0 0 0 100vmax
-			color-mix(in srgb, var(--color-accent) 20%, transparent);
+		--wash: color-mix(in srgb, var(--color-accent) 20%, transparent);
+		box-shadow: inset 0 0 0 100vmax var(--wash);
 	}
 	&[data-testid="code"] {
 		box-shadow:
 			inset 3px 0 0 var(--color-accent),
-			inset 0 0 0 100vmax
-			color-mix(in srgb, var(--color-accent) 8%, transparent);
+			inset 0 0 0 100vmax var(--wash);
 	}
 }
 
@@ -217,13 +226,13 @@ table[data-selecting="new"] td[data-side="LEFT"] {
  */
 @utility line-picked {
 	& > td {
-		box-shadow: inset 0 0 0 100vmax
-			color-mix(in srgb, var(--color-accent) 10%, transparent);
+		--wash: color-mix(in srgb, var(--color-accent) 10%, transparent);
+		box-shadow: inset 0 0 0 100vmax var(--wash);
 	}
 	& > td[data-testid="old"],
 	& > td[data-testid="new"] {
-		box-shadow: inset 0 0 0 100vmax
-			color-mix(in srgb, var(--color-accent) 35%, transparent);
+		--wash: color-mix(in srgb, var(--color-accent) 35%, transparent);
+		box-shadow: inset 0 0 0 100vmax var(--wash);
 		color: var(--color-ink);
 	}
 }
@@ -236,14 +245,31 @@ table[data-selecting="new"] td[data-side="LEFT"] {
  * come first); the pick still shows in the number's ink.
  */
 @utility line-picked-cell {
-	box-shadow: inset 0 0 0 100vmax
-		color-mix(in srgb, var(--color-accent) 10%, transparent);
+	--wash: color-mix(in srgb, var(--color-accent) 10%, transparent);
+	box-shadow: inset 0 0 0 100vmax var(--wash);
 	&[data-testid="old"],
 	&[data-testid="new"] {
-		box-shadow: inset 0 0 0 100vmax
-			color-mix(in srgb, var(--color-accent) 35%, transparent);
+		--wash: color-mix(in srgb, var(--color-accent) 35%, transparent);
+		box-shadow: inset 0 0 0 100vmax var(--wash);
 		color: var(--color-ink);
 	}
+}
+
+/*
+ * The washes above are inset shadows on the cells, painted under the
+ * cell's content, so a word mark's background would hide them: each names
+ * its color --wash on the cells it washes, and a word mark (CodeLine's
+ * `words`, `data-word`) layers it over its own tint. Registered, so a
+ * landing's wash fades on the marks with the cell (LANDED_ROW).
+ */
+@property --wash {
+	syntax: "<color>";
+	inherits: true;
+	initial-value: transparent;
+}
+
+[data-word] {
+	background-image: linear-gradient(var(--wash), var(--wash));
 }
 
 /* The header's faint brand glow, over its solid surface color. */

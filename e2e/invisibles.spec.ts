@@ -215,3 +215,29 @@ test("code shows invisible characters, and copying gives back the original", asy
 		"false",
 	);
 });
+
+test("h flips Show hidden characters from the keyboard; the switch reads it and shows the key", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	test.skip(isMobile, "no keyboard shortcuts on a phone");
+	await pr(fixture);
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	const section = fileSection(page, "src/inv.ts");
+	await section.getByRole("button", { name: "Expand file" }).click();
+	await expect(section.locator('[data-inv="space"]').first()).toBeAttached();
+	await page.keyboard.press("h");
+	await expect(section.locator('[data-inv="space"]')).toHaveCount(0);
+	const toggle = await hiddenChars(page);
+	await expect(toggle).toHaveAttribute("aria-checked", "false");
+	await expect(toggle.locator("kbd")).toHaveText("h");
+	await page.keyboard.press("Escape");
+	await expect(toggle).toBeHidden();
+	await page.keyboard.press("h");
+	await expect(section.locator('[data-inv="space"]').first()).toBeAttached();
+	expect(await glyphs(section, "eol")).toContain('"\\\\r\\\\n" / ""');
+	await expect(await hiddenChars(page)).toHaveAttribute("aria-checked", "true");
+});

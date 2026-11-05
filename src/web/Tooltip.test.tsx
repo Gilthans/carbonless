@@ -168,6 +168,20 @@ describe("Tooltip dismissal and clicks", () => {
 		expect(screen.queryByRole("tooltip")).toBeNull();
 	});
 
+	it("stays open on mouse leave after a touch or pen tap focused it", () => {
+		render(<Host onAction={() => {}} />);
+		const button = screen.getByRole("button", { name: "Go" });
+		for (const pointerType of ["touch", "pen"]) {
+			fireEvent.pointerDown(button, { pointerType });
+			fireEvent.mouseDown(button);
+			act(() => button.focus());
+			fireEvent.mouseEnter(button);
+			fireEvent.mouseLeave(button);
+			expect(screen.getByRole("tooltip")).toBeInTheDocument();
+			act(() => button.blur());
+		}
+	});
+
 	it("stays open on mouse leave while keyboard focus is on it", async () => {
 		vi.useRealTimers();
 		const user = userEvent.setup({ delay: null });
