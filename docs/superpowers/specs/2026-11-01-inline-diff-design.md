@@ -169,7 +169,7 @@ the test fixture (below).
   it off, a mark holding one warns (⚠), beside a visible change too.
   Marks that hold one as part of a real sequence (a family's ZWJs, a text
   heart's VS16) warn as well, and so do a joining script's ZWJ/ZWNJ (a
-  Persian `می‌روم`) inside a mark, labelled likewise when hidden
+  Persian word's `\u200C`) inside a mark, labelled likewise when hidden
   characters show: it overstates, never hides. A copy gives
   the raw characters, as with every escape.
 - **Copy:** marks are background only; a copy gives the code.
