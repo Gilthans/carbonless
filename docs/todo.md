@@ -218,6 +218,10 @@ Not scheduled yet; after everything above.
 - `e2e/keepalive.spec.ts:367` ("a diff scrolled sideways…") failed once in a
   full verify (2026-11-02, chromium): it sets `scrollLeft` right after
   expanding and read back 0. Passed 20/20 in flake-check; find the race.
+- Two unit tests failed once each under heavy load (2026-11-04, load ~19 on
+  4 cores) and passed flake-check after: `highlight.test.ts` "colors code in
+  a known language" (10/10), and `wordDiff.test.ts`'s 100 ms CPU budget for
+  similar pairs (5/5; isolated runs take 51–89 ms, so little headroom).
 - Old agent worktrees under `.worktrees/` and stray processes (e.g. old
   `threads-c` instances on test-automation#99) pile up; prune them.
 
