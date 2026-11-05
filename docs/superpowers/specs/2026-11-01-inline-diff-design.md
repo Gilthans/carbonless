@@ -129,8 +129,9 @@ the test fixture (below).
   show (`hiddenChange.ts`: a mark that reaches into what draws nothing,
   i.e. a CRLF's `\r` or trailing spaces and tabs, even when it starts on
   something drawn, as a changed trailing tab bridged onto the change before
-  it does; or a line that looks exactly like its
-  partner, i.e. a tab swapped for spaces of the same width) gets a yellow
+  it does; a line that looks exactly like its
+  partner, i.e. a tab swapped for spaces of the same width; or a mark
+  holding an emoji's selector, joiner or tag, see below) gets a yellow
   ⚠ in its sign's place, as wide as the sign so the code never moves (a
   40px target on a touch screen, reaching right from the cell's edge,
   never over the number). The ⚠ replaces the `+`/`−` sign while it shows:
@@ -142,6 +143,19 @@ the test fixture (below).
   hidden characters show. Escaped characters (zero widths, no-break
   spaces, bidi controls) show as `\uXXXX` either way: no ⚠. `h` toggles
   the setting (desktop), beside `w` and `s`.
+- **An emoji's hidden change** (owner, 2026-11-04, gallery #14 case `65`):
+  the selectors, joiners and tags `invisibles.ts` keeps unescaped (VS15,
+  VS16 and other variation selectors after an emoji, a ZWJ or ZWNJ in an
+  emoji sequence or a joining script, an RGI flag's tags) draw nothing,
+  so a mark on one alone is 0 px wide. With Show hidden characters on,
+  one that lies inside a word mark draws as its `\uXXXX` escape label
+  (`\uFE0F`, `\u200D`), tinted with the mark, its tooltip naming it, the
+  next tab stop counted after the label; outside the marks (context
+  lines, unmarked lines, other emoji on the line) emoji stay whole. With
+  it off, a mark holding one warns (⚠), beside a visible change too.
+  Marks that hold one as part of a real sequence (a family's ZWJs, a text
+  heart's VS16) warn as well: it overstates, never hides. A copy gives
+  the raw characters, as with every escape.
 - **Copy:** marks are background only; a copy gives the code.
 - **Accessibility:** marks are visual, as on GitHub; the line's sign and
   its row's accessible name already say it changed. Nothing is announced
@@ -258,6 +272,12 @@ in the report, not gated (wall clock is too noisy for a 10% gate).
   to see there's a diff despite having nothing visibly change. Also, when
   hidden characters are shown, the \r is not highlighted - it should be."
   A CRLF-only pair is no longer plain.
+- **An emoji's selector or joiner shows inside its mark** (2026-11-04,
+  same QA, case `65`): "hidden chars settings should show hidden
+  characters". Proposed: with Show hidden characters on, draw them as
+  `\uFE0F` / `\u200D` labels inside the mark; with it off, show the ⚠.
+  The owner: "yes what you said sounds correct" (**A change hidden
+  characters hide**, **An emoji's hidden change**).
 - **Bright marks over 4.5:1** (2026-11-02, after comparing four tint
   options in screenshots: as built at 4.5:1, a darker green well, the
   mockup's bright marks, quieter rows with compliant marks): "(d) seems

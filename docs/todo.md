@@ -149,7 +149,9 @@ Not scheduled yet; after everything above.
 
 ## Invisible characters: parked
 
-- ZWJ between emoji that aren't a known emoji sequence, and a redundant VS16, stay unescaped.
+- ZWJ between emoji that aren't a known emoji sequence, and a redundant VS16, stay unescaped
+  outside word marks (inside one they show as `\u200D` / `\uFE0F` labels, or warn with
+  hidden characters off): on a context line, an added file, or a line without a pair.
 - `rangeText` (copy) adds no line breaks at `<p>`, `<div>` or `<br>`, only between table rows.
 - Some UAX #11 wide ranges are missing from the tab-stop width table.
 - No keyboard path reaches the escape markers (their tooltips open on hover and tap only).

@@ -104,6 +104,25 @@ describe("hiddenLines", () => {
 		expect(hiddenLines(rows(d, a), marks([a, [[1, 2]]]), 4).size).toBe(0);
 	});
 
+	it("names case 65's lines whose change is a kept emoji selector or joiner", () => {
+		const pairs = [
+			['export const smile = "😀";', 'export const smile = "😀\uFE0F";'],
+			['export const pets = "🐶🐱";', 'export const pets = "🐶\u200D🐱";'],
+			[
+				'export const party = ["🎉", "todo"];',
+				'export const party = ["🎉\uFE0F", "done"];',
+			],
+		];
+		for (const [before, after] of pairs) {
+			const d = del(before as string);
+			const a = add(after as string);
+			const ws = rows(d, a);
+			const words = hunkWordMarks(ws);
+			expect(words.has(a), after).toBe(true);
+			expect(hiddenLines(ws, words, 4).has(a), after).toBe(true);
+		}
+	});
+
 	it("names nothing without marks", () => {
 		expect(hiddenLines(rows(del("a "), add("a")), new Map(), 4).size).toBe(0);
 	});

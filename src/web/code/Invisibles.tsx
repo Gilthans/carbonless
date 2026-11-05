@@ -430,7 +430,8 @@ const NO_MARKS: readonly Mark[] = [];
  * end of file"). Copying the line copies the original text. `marks`: a
  * thread's exact characters, painted. `words`: a pair's changed tokens,
  * tinted (background only, under the syntax colors; invisibles inside a
- * mark are tinted with it), painted with the first render. The line's text
+ * mark are tinted with it, a kept emoji selector or joiner there escaped
+ * while they show), painted with the first render. The line's text
  * is in one `[data-code]` element holding only its characters (codeSpan.ts
  * reads columns from it).
  */
@@ -458,16 +459,17 @@ export function CodeLine(props: {
 		staleTime: Number.POSITIVE_INFINITY,
 	});
 	const tabWidth = props.tabWidth ?? DEFAULT_TAB_WIDTH;
+	const words = props.words?.marks ?? NO_MARKS;
+	// A kept emoji selector or joiner inside a word mark shows as its escape.
 	const pieces = useMemo(
-		() => renderInvisibles(text, tabWidth, { newline, show }),
-		[text, tabWidth, newline, show],
+		() => renderInvisibles(text, tabWidth, { newline, show, marks: words }),
+		[text, tabWidth, newline, show, words],
 	);
 	const segments = useMemo(
 		() => colorPieces(pieces, tokens.data ?? []),
 		[pieces, tokens.data],
 	);
 	const marks = props.marks ?? NO_MARKS;
-	const words = props.words?.marks ?? NO_MARKS;
 	const highlighted = Boolean(tokens.data?.length);
 	const leaves: Leaf[] = [];
 	pieces.forEach((piece, i) => {

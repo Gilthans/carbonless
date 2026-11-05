@@ -62,8 +62,10 @@ const look = (pieces: Piece[]) =>
  * "Show hidden characters" is off, so the reader should be told: a mark
  * reaching into what draws nothing (a line ending's `\r`, trailing spaces
  * or tabs), even when it starts on something drawn; a line that looks
- * exactly like its partner; or an indent swapped for one as wide (a tab for
- * spaces of the same width), even beside a visible change. Escaped
+ * exactly like its partner; an indent swapped for one as wide (a tab for
+ * spaces of the same width), even beside a visible change; or a selector,
+ * joiner or tag kept unescaped inside an emoji (or a joining script), which
+ * shows as `\uXXXX` only while hidden characters are on. Escaped
  * characters (zero widths, no-break spaces, bidi controls) show as
  * `\uXXXX` either way, so they never count.
  */
@@ -74,6 +76,12 @@ export function hiddenChange(
 ): boolean {
 	if (marks.length === 0) return false;
 	const { tabWidth = DEFAULT_TAB_WIDTH, newline = true, partner } = options;
+	// A selector, joiner or tag kept inside an emoji (or a script that needs
+	// it) draws nothing until hidden characters show it (owner, 2026-11-04).
+	const shown = renderInvisibles(text, tabWidth, { newline, marks });
+	if (shown.some((p) => p.kind === "escape" && p.kept)) {
+		return true;
+	}
 	const pieces = piecesOff(text, tabWidth, newline);
 	const trail = trailFrom(pieces);
 	// A mark reaching into the trailing blanks holds a changed one there:

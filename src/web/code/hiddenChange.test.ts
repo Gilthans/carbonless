@@ -167,6 +167,35 @@ describe("hiddenChange", () => {
 		).toBe(true);
 	});
 
+	it("is a kept emoji selector or joiner in a mark: it draws nothing (owner, 2026-11-04)", () => {
+		// Case 65: smile's redundant VS16, pets' ZWJ.
+		expect(
+			hiddenChange('export const smile = "😀\uFE0F";', [[24, 25]], {
+				partner: { text: 'export const smile = "😀";' },
+			}),
+		).toBe(true);
+		expect(
+			hiddenChange('export const pets = "🐶\u200D🐱";', [[23, 24]], {
+				partner: { text: 'export const pets = "🐶🐱";' },
+			}),
+		).toBe(true);
+		// party: beside a visible change.
+		expect(
+			hiddenChange(
+				'export const party = ["🎉\uFE0F", "done"];',
+				[
+					[25, 26],
+					[30, 34],
+				],
+				{ partner: { text: 'export const party = ["🎉", "todo"];' } },
+			),
+		).toBe(true);
+		// The controls warn too: it overstates, never hides.
+		expect(hiddenChange("❤\uFE0F", [[1, 2]])).toBe(true);
+		// Outside the mark, nothing.
+		expect(hiddenChange("😀\uFE0F x", [[4, 5]])).toBe(false);
+	});
+
 	it("is nothing without marks", () => {
 		expect(hiddenChange("x\r", [], { partner: { text: "x" } })).toBe(false);
 	});

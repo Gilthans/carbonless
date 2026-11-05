@@ -404,3 +404,88 @@ test("a CRLF-only change warns with hidden characters off, and shows a tinted \\
 		"\\r\\n",
 	);
 });
+
+/**
+ * Case 65 (gallery #14, inline/65-emoji-hidden.ts): emoji whose change is a
+ * kept selector or joiner. Hidden characters off: a ⚠; on: the `\uFE0F` /
+ * `\u200D` labels inside the marks (owner, 2026-11-04).
+ */
+const EMOJI_BASE = [
+	'export const smile = "😀";',
+	'export const pets = "🐶🐱";',
+	"",
+	'export const party = ["🎉", "todo"];',
+	"",
+].join("\n");
+const EMOJI_CASE = [
+	'export const smile = "😀\uFE0F";',
+	'export const pets = "🐶\u200D🐱";',
+	"",
+	'export const party = ["🎉\uFE0F", "done"];',
+	"",
+].join("\n");
+
+test("an emoji's changed selector or joiner warns with hidden characters off, and shows as a label inside its mark once on", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	if (isMobile) await page.setViewportSize({ width: 360, height: 780 });
+	await pr({
+		base: { "inline/65-emoji-hidden.ts": EMOJI_BASE },
+		files: [
+			{
+				message: "Emoji hidden changes",
+				files: { "inline/65-emoji-hidden.ts": EMOJI_CASE },
+			},
+		],
+	});
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	await setSwitch(page, "Show hidden characters", false);
+	const section = await expand(page, "65-emoji-hidden.ts");
+	const added = (name: string) =>
+		section
+			.locator('td[data-testid="code"][data-side="RIGHT"]')
+			.filter({ hasText: `const ${name}` });
+	for (const name of ["smile", "pets", "party"]) {
+		await expect(
+			added(name).getByRole("button", { name: /^Hidden characters/ }),
+			name,
+		).toHaveCount(1);
+		// The emoji stay whole: no label anywhere.
+		await expect(added(name).locator('[data-inv="escape"]')).toHaveCount(0);
+	}
+	await expectNoPageOverflow(page);
+	// A phone has no shortcuts: Settings' switch there (tapping the ⚠ on
+	// adjacent rows is another change's).
+	if (isMobile) await setSwitch(page, "Show hidden characters", true);
+	else await page.keyboard.press("h");
+	await expect(warnings(section)).toHaveCount(0);
+	const labels = (name: string) =>
+		added(name).locator('[data-word] [data-inv="escape"]');
+	await expect(labels("smile")).toHaveAttribute("data-glyph", "\\uFE0F");
+	await expect(labels("pets")).toHaveAttribute("data-glyph", "\\u200D");
+	await expect(labels("party")).toHaveAttribute("data-glyph", "\\uFE0F");
+	await expect(labels("smile")).toBeVisible();
+	// Only inside the marks: the removed lines keep their emoji whole.
+	await expect(
+		section.locator(
+			'td[data-testid="code"][data-side="LEFT"] [data-inv="escape"]',
+		),
+	).toHaveCount(0);
+	// The visible change beside it is marked as before.
+	await expect(added("party").locator("[data-word]")).toHaveText([
+		"\uFE0F",
+		"done",
+	]);
+	// A copy gives back the raw characters.
+	expect(
+		await added("pets")
+			.locator("[data-code]")
+			.evaluate((el) => el.textContent),
+	).toBe('export const pets = "🐶\u200D🐱";');
+	await shot(section, "emoji-hidden-on", isMobile);
+	await expectNoPageOverflow(page);
+});

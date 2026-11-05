@@ -269,6 +269,37 @@ describe("a pair's word marks on a line (words)", () => {
 		expect(line().querySelector("[data-code]")?.textContent).toBe(text);
 	});
 
+	it("labels a kept emoji selector or joiner inside a mark while hidden characters show, never outside (owner, 2026-11-04)", async () => {
+		// Case 65's pets ZWJ (marked), then an unmarked family and smile.
+		const text = "🐶\u200D🐱 👨\u200D👩 😀\uFE0F\tx";
+		renderLine({
+			text,
+			lang: null,
+			newline: false,
+			words: { marks: [[2, 3]], tone: "add" },
+		});
+		const [word] = words();
+		expect(word?.querySelector('[data-inv="escape"]')).toHaveAttribute(
+			"data-glyph",
+			"\\u200D",
+		);
+		expect(
+			word?.querySelector('[data-inv="escape"]')?.getAttribute("aria-label"),
+		).toBe("U+200D zero width joiner");
+		// 2 + 6 + 2 + 1 + 2 + 1 + 2 = 16: the tab's marker takes a full stop.
+		expect(seen(line())).toBe("🐶\\u200D🐱 👨\u200D👩 😀\uFE0F\\tx");
+		expect(kinds()).toEqual(["escape", "tab"]);
+		// Copy gives the raw characters back.
+		const range = document.createRange();
+		range.selectNodeContents(line().querySelector("[data-code]") as Node);
+		expect(rangeText(range)).toBe(text);
+		// Off: the emoji stay whole, the mark draws nothing.
+		await userEvent.click(await hiddenCharacters());
+		expect(seen(line())).toBe(text.replace("\t", ""));
+		expect(kinds()).toEqual(["tab"]);
+		expect(line().querySelector("[data-code]")?.textContent).toBe(text);
+	});
+
 	it("copies the original text", () => {
 		const text = "\tlet  a\u00A0=  b;";
 		renderLine({
