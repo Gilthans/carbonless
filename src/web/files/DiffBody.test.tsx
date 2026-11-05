@@ -2161,6 +2161,35 @@ describe("DiffBody word marks", () => {
 			).toHaveAttribute("data-glyph", "···");
 		});
 
+		it(`a touch or pen tap on the warning only explains where the switch is; a mouse click turns it on (${view})`, async () => {
+			sideBySide.set(view === "side-by-side");
+			setup({
+				hunks: block(["let s = 1;"], ["let s = 1;   "]),
+				clusters: [cluster("c")],
+			});
+			await shown("let s = 1;");
+			const warning = () =>
+				screen.getByRole("button", { name: /^Hidden characters changed/ });
+			for (const pointerType of ["touch", "pen"]) {
+				fireEvent.pointerDown(warning(), { pointerType });
+				fireEvent.click(warning());
+				expect(showInvisibles.read()).toBe(false);
+				expect(document.activeElement).toBe(warning());
+				const tip = () =>
+					screen
+						.queryAllByRole("tooltip", { hidden: true })
+						.filter((t) => t.textContent?.startsWith("Hidden") && !t.hidden);
+				expect(tip().map((t) => t.textContent)).toEqual([
+					"Hidden characters changed. Turn on Show hidden characters in Settings",
+				]);
+				act(() => warning().blur());
+				expect(tip()).toEqual([]);
+			}
+			fireEvent.pointerDown(warning(), { pointerType: "mouse" });
+			fireEvent.click(warning());
+			expect(showInvisibles.read()).toBe(true);
+		});
+
 		it(`doesn't look for hidden changes while hidden characters show (${view})`, async () => {
 			sideBySide.set(view === "side-by-side");
 			showInvisibles.set(true);

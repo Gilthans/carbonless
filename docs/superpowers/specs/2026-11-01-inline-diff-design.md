@@ -137,8 +137,15 @@ the test fixture (below).
   never over the number). The ⚠ replaces the `+`/`−` sign while it shows:
   that line's side is told by its color and which number it has. It is
   not a tab stop (`h` is the keyboard's way). Its tooltip and name: "Hidden
-  characters changed. Turn on Show hidden characters (h)"; activating it
-  turns them on and it goes, focus moving to its line. An indent swapped for
+  characters changed. Turn on Show hidden characters (h)"; a mouse click
+  (or Enter) turns them on and it goes, focus moving to its line. A touch
+  or pen tap only opens its tooltip, "Hidden characters changed. Turn on
+  Show hidden characters in Settings", and changes nothing; a tap elsewhere
+  closes it (owner, 2026-11-04: "in phone, clicking the warning icon should
+  show tooltip instead of changing the hidden char setting. it's unintended
+  un-undoable action if someone doesn't know this setting"). The pointer
+  that tapped decides (`pointerType`), not the screen width, so a phone in
+  landscape behaves the same. An indent swapped for
   one as wide warns even beside a visible change. Nothing is computed while
   hidden characters show. Escaped characters (zero widths, no-break
   spaces, bidi controls) show as `\uXXXX` either way: no ⚠. `h` toggles

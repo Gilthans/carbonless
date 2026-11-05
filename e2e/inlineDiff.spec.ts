@@ -237,6 +237,8 @@ const hiddenFixture: PrOptions = {
 	],
 };
 const WARNING = "Hidden characters changed. Turn on Show hidden characters";
+/** The tooltip a touch tap on the warning opens. */
+const TAPPED = `${WARNING} in Settings`;
 const warnings = (section: Locator) =>
 	section.getByRole("button", { name: new RegExp(`^${WARNING}`) });
 /** Settings' "Show hidden characters", read without changing it. */
@@ -248,6 +250,16 @@ async function hiddenSwitch(page: Page): Promise<boolean> {
 	await page.keyboard.press("Escape");
 	await expect(toggle).toBeHidden();
 	return on;
+}
+/** Settings' "Show hidden characters", checked off and then turned on, in one visit. */
+async function turnOnHidden(page: Page) {
+	await page.getByRole("button", { name: "Settings" }).click();
+	const toggle = page.getByRole("switch", { name: "Show hidden characters" });
+	await expect(toggle).toHaveAttribute("aria-checked", "false");
+	await toggle.click();
+	await expect(toggle).toHaveAttribute("aria-checked", "true");
+	await page.keyboard.press("Escape");
+	await expect(toggle).toBeHidden();
 }
 /** The left edge of a cell's code text. */
 const codeLeft = (cell: Locator) =>
@@ -304,6 +316,9 @@ for (const view of ["unified", "side-by-side"] as const) {
 		startCrb,
 		isMobile,
 	}) => {
+		// A phone also measures the 40px target and walks a tap's tooltip and
+		// Settings: four settings visits in all, past the default under load.
+		test.slow(isMobile);
 		if (isMobile) await page.setViewportSize({ width: 360, height: 780 });
 		await pr(hiddenFixture);
 		const s = await startCrb();
@@ -366,8 +381,21 @@ for (const view of ["unified", "side-by-side"] as const) {
 		}
 		await shot(trailing, `hidden-${view}-off`, isMobile);
 		await expectNoPageOverflow(page);
-		if (isMobile) await warning.tap();
-		else await warning.click();
+		if (isMobile) {
+			// A tap only explains (owner, 2026-11-04): the tooltip says where the
+			// switch is, nothing changes; a tap elsewhere closes it.
+			await warning.tap();
+			await expect(
+				page.locator('[role="tooltip"]:not([hidden])', { hasText: TAPPED }),
+			).toBeVisible();
+			await expect(warning).toHaveCount(1);
+			await expect(cell.locator('[data-inv="space"]')).toHaveCount(0);
+			await plain.tap();
+			await expect(
+				page.locator('[role="tooltip"]:not([hidden])', { hasText: WARNING }),
+			).toHaveCount(0);
+			await turnOnHidden(page);
+		} else await warning.click();
 		// On: the icons go, the trailing spaces show as tinted dots.
 		await expect(
 			page.getByRole("button", { name: /^Hidden characters changed/ }),
@@ -396,9 +424,23 @@ test("a CRLF-only change warns with hidden characters off, and shows a tinted \\
 	const crlf = await expand(page, "22-crlf-only.ts");
 	const warning = warnings(crlf);
 	await expect(warning).toHaveCount(1);
-	if (isMobile) await warning.tap();
-	else await warning.click();
+	if (isMobile) {
+		// A tap explains where the switch is and changes nothing.
+		await warning.tap();
+		await expect(
+			page.locator('[role="tooltip"]:not([hidden])', { hasText: TAPPED }),
+		).toBeVisible();
+		await expect(warning).toHaveCount(1);
+		// No "\r\n" label: hidden characters are still off.
+		await expect(
+			crlf.locator('[data-inv="eol"][data-glyph="\\\\r\\\\n"]'),
+		).toHaveCount(0);
+		await turnOnHidden(page);
+	} else await warning.click();
 	await expect(warnings(crlf)).toHaveCount(0);
+	await expect(
+		crlf.locator('[data-inv="eol"][data-glyph="\\\\r\\\\n"]'),
+	).toHaveCount(1);
 	await expect(crlf.locator('[data-word] [data-inv="eol"]')).toHaveAttribute(
 		"data-glyph",
 		"\\r\\n",

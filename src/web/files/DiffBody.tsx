@@ -497,21 +497,32 @@ function keepFocusOnLine(warning: HTMLElement) {
 	target.focus({ preventScroll: true });
 }
 
+/** Whether a tap by this pointer (`PointerEvent.pointerType`) only explains the warning. */
+const tapExplains = (pointerType: string) =>
+	pointerType === "touch" || pointerType === "pen";
+
 /**
  * In the sign's place, on a line whose change doesn't show while hidden
  * characters are off (hiddenChange.ts): a warning that turns them on. As
  * wide as the sign, so the code doesn't move; a finger gets 40px from the
  * cell's edge rightwards (never over the number). The sign comes back once
  * they show. Not a tab stop (a changed line ending can put one on every
- * line): the keyboard has `h`.
+ * line): the keyboard has `h`. A touch or pen tap only opens its tooltip,
+ * which says where the switch is (owner, 2026-11-04: a tap shouldn't change
+ * a setting the reader may not know); decided by the pointer that tapped,
+ * not the screen width, so a phone in landscape behaves the same.
  */
 function HiddenWarning({ kind }: { kind: RowLine["kind"] }) {
 	const show = useShowInvisibles();
 	const wide = useMedia(NOT_PHONE);
+	const [tapped, setTapped] = useState(false);
 	if (show) return <Sign kind={kind} />;
 	const label = `Hidden characters changed. Turn on Show hidden characters${wide ? ` (${VIEW_KEYS.showInvisibles})` : ""}`;
+	const tip = tapped
+		? "Hidden characters changed. Turn on Show hidden characters in Settings"
+		: label;
 	return (
-		<Tooltip content={label} describe={false} lazy>
+		<Tooltip content={tip} describe={false} lazy>
 			{(trigger) => (
 				<button
 					{...trigger}
@@ -519,7 +530,13 @@ function HiddenWarning({ kind }: { kind: RowLine["kind"] }) {
 					aria-label={label}
 					tabIndex={-1}
 					data-hidden-change=""
+					onPointerDown={(e) => setTapped(tapExplains(e.pointerType))}
 					onClick={(e) => {
+						if (tapped) {
+							// Focus opens the tooltip (and a tap elsewhere closes it).
+							e.currentTarget.focus({ preventScroll: true });
+							return;
+						}
 						keepFocusOnLine(e.currentTarget);
 						showInvisibles.set(true);
 					}}
