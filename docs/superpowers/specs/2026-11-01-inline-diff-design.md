@@ -154,7 +154,9 @@ the test fixture (below).
   lines, unmarked lines, other emoji on the line) emoji stay whole. With
   it off, a mark holding one warns (⚠), beside a visible change too.
   Marks that hold one as part of a real sequence (a family's ZWJs, a text
-  heart's VS16) warn as well: it overstates, never hides. A copy gives
+  heart's VS16) warn as well, and so do a joining script's ZWJ/ZWNJ (a
+  Persian `می‌روم`) inside a mark, labelled likewise when hidden
+  characters show: it overstates, never hides. A copy gives
   the raw characters, as with every escape.
 - **Copy:** marks are background only; a copy gives the code.
 - **Accessibility:** marks are visual, as on GitHub; the line's sign and
