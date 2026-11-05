@@ -60,8 +60,8 @@ everything you said sounds correct".
 
 ## Non-goals (this stage)
 
-- Regular expressions, whole-word or case-sensitive toggles. Plain
-  case-insensitive text, like the browser's find.
+- Regular expressions or a whole-word toggle. Plain text, like the
+  browser's find, with one option: match case (below).
 - Searching lines the diff doesn't show (unchanged lines outside the hunks'
   context that nobody expanded). That needs the whole file text and
   auto-expanding context; a later stage if wanted.
@@ -116,7 +116,7 @@ everything you said sounds correct".
 
 ```
 ┌ app header: Overview · Files changed · Verdict        🔍 ↻ ⚙ ┐
-│ [🔍 saveDraft____________________] 3 of 41 ◌   ↑  ↓   ✕    │
+│ [🔍 saveDraft_______________ Aa ] 3 of 41 ◌   ↑  ↓   ✕    │
 │ ■■■■■■■■□□□□□ 61% · 12/20 files                              │  ← progress bar
 │ src/web/files/FileDiff.tsx                     + 12 − 3  ☐  │  ← open file's header
 ```
@@ -133,6 +133,13 @@ everything you said sounds correct".
 - ↑ ↓ ✕: icon buttons (`ChevronUpIcon`, `ChevronDownIcon`, `XIcon`), 40px,
   tooltips "Previous (Shift+Enter)", "Next (Enter)", "Close (Esc)",
   `aria-label` the same. Disabled while there are no hits.
+- **Match case** (owner's decision, 2026-11-05: "Should be a toggle"):
+  an "Aa" toggle at the right end of the box, 40px, `aria-pressed`,
+  tooltip "Match case". Off by default (case-insensitive, like the
+  browser's find); on, the term matches exactly. Remembered per viewer like
+  the other view settings (`viewSetting("crb.find.matchCase", false)`)
+  **(call)**. Flipping it recomputes the hits; the caret rule applies as if
+  the term had been retyped.
 - Empty box: no hits, no count, no marks, no spinner (nothing is being
   searched). The hunk prefetch still runs once the bar is open.
 
@@ -140,13 +147,14 @@ Phone (≤ 640px): the bar takes the full width, the box shrinks, the count
 collapses to "3/41", the arrows and ✕ stay 40px.
 
 ```
-│ [🔍 saveDraft________] 3/41 ◌ ↑ ↓ ✕ │
+│ [🔍 saveDraft____ Aa] 3/41 ◌ ↑ ↓ ✕ │
 ```
 
 ## What is searched, and in what order
 
 A **hit** is one occurrence of the term, as the browser's find counts them:
-case-insensitive, plain text, non-overlapping, left to right within a line.
+plain text, case-insensitive unless Match case is on, non-overlapping, left
+to right within a line.
 The term is matched as typed (spaces included) against the **raw text** of
 the line, not against the hidden-character markers the view draws (`·`,
 `\t`, `\n`): a search for two spaces finds two spaces. A highlight covers
@@ -339,7 +347,8 @@ debounce unless measured to need one.
 Unit (Vitest):
 
 - `findInPr`: occurrences per line (non-overlapping, column order), case
-  folding (with a string whose folded length differs), paths and old paths,
+  folding (with a string whose folded length differs) and Match case on,
+  paths and old paths,
   binary files (path hits only), order across files (tree order), expanded
   context in line order, the caret rule (first hit in the open file, else
   the first after it in reading order, else the PR's first; the first step
@@ -374,6 +383,8 @@ Playwright (desktop and phone projects):
   settles, never a time bound).
 - Side by side and ignore whitespace: the same count and the same current
   hit after switching.
+- Match case: the count changes when toggled; the setting survives a
+  reload.
 - Escape closes and clears marks; reopening restores the term.
 - Shortcuts help lists the new keys under Files changed.
 - `pnpm flake-check` on every new spec (spinners and gates are involved).
