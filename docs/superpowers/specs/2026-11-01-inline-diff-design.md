@@ -134,7 +134,9 @@ the test fixture (below).
   holding an emoji's selector, joiner or tag, see below) gets a yellow
   ⚠ in its sign's place, as wide as the sign so the code never moves (a
   40px target on a touch screen, reaching right from the cell's edge,
-  never over the number). The ⚠ replaces the `+`/`−` sign while it shows:
+  never over the number; its own 20px line wins over a warned neighbour's
+  target that reaches into it, so two warned rows in a row each keep their
+  taps). The ⚠ replaces the `+`/`−` sign while it shows:
   that line's side is told by its color and which number it has. It is
   not a tab stop (`h` is the keyboard's way). Its tooltip and name: "Hidden
   characters changed. Turn on Show hidden characters (h)"; a mouse click

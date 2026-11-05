@@ -497,6 +497,15 @@ function keepFocusOnLine(warning: HTMLElement) {
 	target.focus({ preventScroll: true });
 }
 
+/**
+ * The ⚠'s touch target: 40px square (`::before`), reaching into the rows
+ * above and below, and over it its own line's 20px band (`::after`), so
+ * where two warned rows' squares overlap the tap goes to the row it's on.
+ * The button makes no stacking context: the two layers order across rows.
+ */
+const WARNING_TARGET =
+	"pointer-coarse:before:absolute pointer-coarse:before:top-1/2 pointer-coarse:before:-left-2 pointer-coarse:before:z-[1] pointer-coarse:before:size-10 pointer-coarse:before:-translate-y-1/2 pointer-coarse:before:content-[''] pointer-coarse:after:absolute pointer-coarse:after:top-1/2 pointer-coarse:after:-left-2 pointer-coarse:after:z-[2] pointer-coarse:after:h-5 pointer-coarse:after:w-10 pointer-coarse:after:-translate-y-1/2 pointer-coarse:after:content-['']";
+
 /** Whether a tap by this pointer (`PointerEvent.pointerType`) only explains the warning. */
 const tapExplains = (pointerType: string) =>
 	pointerType === "touch" || pointerType === "pen";
@@ -540,7 +549,7 @@ function HiddenWarning({ kind }: { kind: RowLine["kind"] }) {
 						keepFocusOnLine(e.currentTarget);
 						showInvisibles.set(true);
 					}}
-					className="relative z-[1] mr-2 inline-flex w-[1ch] cursor-pointer select-none justify-center align-[-1px] text-warn focus-visible:outline-2 focus-visible:outline-accent pointer-coarse:before:absolute pointer-coarse:before:top-1/2 pointer-coarse:before:-left-2 pointer-coarse:before:size-10 pointer-coarse:before:-translate-y-1/2 pointer-coarse:before:content-['']"
+					className={`relative mr-2 inline-flex w-[1ch] cursor-pointer select-none justify-center align-[-1px] text-warn focus-visible:outline-2 focus-visible:outline-accent ${WARNING_TARGET}`}
 				>
 					<AlertIcon size={12} aria-hidden />
 				</button>

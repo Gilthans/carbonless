@@ -309,6 +309,39 @@ test("warns on a tab swapped for spaces, not on a visible rename nor on escaped 
 	await expect(warnings(tabs)).toHaveCount(2);
 });
 
+// Two warned rows one above the other (unified): each 40px target reaches
+// into the other's row, yet a tap on either ⚠ is that row's own.
+test("a tap on either of two adjacent warnings opens that one's tooltip", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	test.skip(!isMobile, "taps: the phone project");
+	await page.setViewportSize({ width: 360, height: 780 });
+	await pr(hiddenFixture);
+	const s = await startCrb();
+	await hiddenOff(page, s.url, "unified");
+	const tabs = await expand(page, "08-tabs-to-spaces.ts");
+	const both = warnings(tabs);
+	await expect(both).toHaveCount(2);
+	// Adjacent rows: the second ⚠ sits one line below the first.
+	const [a, b] = await both.evaluateAll((els) =>
+		els.map((el) => el.getBoundingClientRect().top),
+	);
+	expect((b ?? 0) - (a ?? 0)).toBeLessThan(40);
+	const tip = page.locator('[role="tooltip"]:not([hidden])', {
+		hasText: TAPPED,
+	});
+	for (const i of [0, 1, 0]) {
+		await both.nth(i).tap();
+		await expect(both.nth(i)).toBeFocused();
+		await expect(tip).toHaveCount(1);
+		await expect(tip).toBeVisible();
+	}
+	await expect(both).toHaveCount(2);
+});
+
 for (const view of ["unified", "side-by-side"] as const) {
 	test(`warns where trailing spaces changed with hidden characters off, and turns them on (${view})`, async ({
 		page,
