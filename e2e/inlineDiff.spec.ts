@@ -243,7 +243,7 @@ const warnings = (section: Locator) =>
 	section.getByRole("button", { name: new RegExp(`^${WARNING}`) });
 /** Settings' "Show hidden characters", read without changing it. */
 async function hiddenSwitch(page: Page): Promise<boolean> {
-	const gear = page.getByRole("button", { name: "Settings" });
+	const gear = page.getByRole("button", { name: "Settings", exact: true });
 	await gear.click();
 	const toggle = page.getByRole("switch", { name: "Show hidden characters" });
 	const on = (await toggle.getAttribute("aria-checked")) === "true";
@@ -253,7 +253,7 @@ async function hiddenSwitch(page: Page): Promise<boolean> {
 }
 /** Settings' "Show hidden characters", checked off and then turned on, in one visit. */
 async function turnOnHidden(page: Page) {
-	await page.getByRole("button", { name: "Settings" }).click();
+	await page.getByRole("button", { name: "Settings", exact: true }).click();
 	const toggle = page.getByRole("switch", { name: "Show hidden characters" });
 	await expect(toggle).toHaveAttribute("aria-checked", "false");
 	await toggle.click();
@@ -349,8 +349,9 @@ for (const view of ["unified", "side-by-side"] as const) {
 		startCrb,
 		isMobile,
 	}) => {
-		// A phone also measures the 40px target and walks a tap's tooltip and
-		// Settings: four settings visits in all, past the default under load.
+		// A phone also measures the 40px target and walks a tap's tooltip, and
+		// opens Settings four times (Side by side, hidden characters off, on
+		// again after the tap, the final check): past the default under load.
 		test.slow(isMobile);
 		if (isMobile) await page.setViewportSize({ width: 360, height: 780 });
 		await pr(hiddenFixture);
@@ -362,7 +363,8 @@ for (const view of ["unified", "side-by-side"] as const) {
 		const warning = warnings(trailing);
 		await expect(warning).toHaveCount(1);
 		await expect(warning).toHaveAccessibleName(
-			isMobile ? WARNING : `${WARNING} (h)`,
+			// No hover: the name says where the switch is, as a tap's tooltip does.
+			isMobile ? TAPPED : `${WARNING} (h)`,
 		);
 		const cell = trailing
 			.locator('td[data-testid="code"][data-side="RIGHT"]')

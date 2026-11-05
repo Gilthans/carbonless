@@ -2190,6 +2190,74 @@ describe("DiffBody word marks", () => {
 			expect(showInvisibles.read()).toBe(true);
 		});
 
+		it(`decides by the click's own input: a touch that went down elsewhere still only explains (${view})`, async () => {
+			sideBySide.set(view === "side-by-side");
+			setup({
+				hunks: block(["\tx = 1;"], ["    x = 1;"]),
+				clusters: [cluster("c")],
+			});
+			await shown("x = 1;");
+			const both = () =>
+				screen.getAllByRole("button", { name: /^Hidden characters changed/ });
+			expect(both()).toHaveLength(2);
+			const [a, b] = both() as [HTMLElement, HTMLElement];
+			// Down on the line's code (touch adjustment moves the click onto the ⚠).
+			const code = a.closest("td") as HTMLElement;
+			fireEvent.pointerDown(code, { pointerType: "touch" });
+			fireEvent.click(a);
+			expect(showInvisibles.read()).toBe(false);
+			// Down on one ⚠, the click on its neighbour.
+			fireEvent.pointerDown(a, { pointerType: "touch" });
+			fireEvent.click(b);
+			expect(showInvisibles.read()).toBe(false);
+			expect(document.activeElement).toBe(b);
+			// A key after the tap: Enter acts as itself (turns them on).
+			fireEvent.keyDown(b, { key: "Enter" });
+			fireEvent.click(b);
+			expect(showInvisibles.read()).toBe(true);
+		});
+
+		it(`after a tap, a mouse click turns them on (${view})`, async () => {
+			sideBySide.set(view === "side-by-side");
+			setup({
+				hunks: block(["let s = 1;"], ["let s = 1;   "]),
+				clusters: [cluster("c")],
+			});
+			await shown("let s = 1;");
+			const warning = () =>
+				screen.getByRole("button", { name: /^Hidden characters changed/ });
+			fireEvent.pointerDown(warning(), { pointerType: "touch" });
+			fireEvent.click(warning());
+			expect(showInvisibles.read()).toBe(false);
+			fireEvent.pointerDown(warning(), { pointerType: "mouse" });
+			fireEvent.click(warning());
+			expect(showInvisibles.read()).toBe(true);
+		});
+
+		it(`on a screen without hover its name says where the switch is (${view})`, async () => {
+			vi.stubGlobal(
+				"matchMedia",
+				(query: string) =>
+					({
+						matches: false,
+						media: query,
+						addEventListener: () => {},
+						removeEventListener: () => {},
+					}) as unknown as MediaQueryList,
+			);
+			sideBySide.set(view === "side-by-side");
+			setup({
+				hunks: block(["let s = 1;"], ["let s = 1;   "]),
+				clusters: [cluster("c")],
+			});
+			await shown("let s = 1;");
+			expect(
+				screen.getByRole("button", { name: /^Hidden characters changed/ }),
+			).toHaveAccessibleName(
+				"Hidden characters changed. Turn on Show hidden characters in Settings",
+			);
+		});
+
 		it(`doesn't look for hidden changes while hidden characters show (${view})`, async () => {
 			sideBySide.set(view === "side-by-side");
 			showInvisibles.set(true);

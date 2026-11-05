@@ -39,7 +39,7 @@ import {
 } from "../code/Invisibles";
 import { DEFAULT_TAB_WIDTH } from "../code/invisibles";
 import { Spinner } from "../Spinner";
-import { Tooltip } from "../Tooltip";
+import { clickPointer, isTap, Tooltip } from "../Tooltip";
 import { canMove, spanTexts } from "../threads/draftMove";
 import { type LineTexts, useDrafts } from "../threads/drafts";
 import { NewThread, quoteOf } from "../threads/NewThread";
@@ -506,10 +506,6 @@ function keepFocusOnLine(warning: HTMLElement) {
 const WARNING_TARGET =
 	"pointer-coarse:before:absolute pointer-coarse:before:top-1/2 pointer-coarse:before:-left-2 pointer-coarse:before:z-[1] pointer-coarse:before:size-10 pointer-coarse:before:-translate-y-1/2 pointer-coarse:before:content-[''] pointer-coarse:after:absolute pointer-coarse:after:top-1/2 pointer-coarse:after:-left-2 pointer-coarse:after:z-[2] pointer-coarse:after:h-5 pointer-coarse:after:w-10 pointer-coarse:after:-translate-y-1/2 pointer-coarse:after:content-['']";
 
-/** Whether a tap by this pointer (`PointerEvent.pointerType`) only explains the warning. */
-const tapExplains = (pointerType: string) =>
-	pointerType === "touch" || pointerType === "pen";
-
 /**
  * In the sign's place, on a line whose change doesn't show while hidden
  * characters are off (hiddenChange.ts): a warning that turns them on. As
@@ -518,30 +514,38 @@ const tapExplains = (pointerType: string) =>
  * they show. Not a tab stop (a changed line ending can put one on every
  * line): the keyboard has `h`. A touch or pen tap only opens its tooltip,
  * which says where the switch is (owner, 2026-11-04: a tap shouldn't change
- * a setting the reader may not know); decided by the pointer that tapped,
- * not the screen width, so a phone in landscape behaves the same.
+ * a setting the reader may not know); decided by the click's own pointer
+ * (clickPointer), not the screen width, so a phone in landscape behaves the
+ * same. On a screen without hover its name says where the switch is too (a
+ * screen reader's activation there is a tap).
  */
 function HiddenWarning({ kind }: { kind: RowLine["kind"] }) {
 	const show = useShowInvisibles();
 	const wide = useMedia(NOT_PHONE);
+	const hover = useMedia("(hover: hover)");
+	// The tooltip after a tap says where the switch is, until focus leaves.
 	const [tapped, setTapped] = useState(false);
 	if (show) return <Sign kind={kind} />;
-	const label = `Hidden characters changed. Turn on Show hidden characters${wide ? ` (${VIEW_KEYS.showInvisibles})` : ""}`;
-	const tip = tapped
-		? "Hidden characters changed. Turn on Show hidden characters in Settings"
-		: label;
+	const turnOn = `Hidden characters changed. Turn on Show hidden characters${wide ? ` (${VIEW_KEYS.showInvisibles})` : ""}`;
+	const inSettings =
+		"Hidden characters changed. Turn on Show hidden characters in Settings";
+	const label = hover ? turnOn : inSettings;
 	return (
-		<Tooltip content={tip} describe={false} lazy>
+		<Tooltip content={tapped ? inSettings : label} describe={false} lazy>
 			{(trigger) => (
 				<button
 					{...trigger}
+					onBlur={() => {
+						setTapped(false);
+						trigger.onBlur();
+					}}
 					type="button"
 					aria-label={label}
 					tabIndex={-1}
 					data-hidden-change=""
-					onPointerDown={(e) => setTapped(tapExplains(e.pointerType))}
 					onClick={(e) => {
-						if (tapped) {
+						if (isTap(clickPointer(e))) {
+							setTapped(true);
 							// Focus opens the tooltip (and a tap elsewhere closes it).
 							e.currentTarget.focus({ preventScroll: true });
 							return;

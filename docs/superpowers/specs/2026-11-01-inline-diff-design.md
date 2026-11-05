@@ -139,16 +139,21 @@ the test fixture (below).
   taps). The ⚠ replaces the `+`/`−` sign while it shows:
   that line's side is told by its color and which number it has. It is
   not a tab stop (`h` is the keyboard's way). Its tooltip and name: "Hidden
-  characters changed. Turn on Show hidden characters (h)"; a mouse click
-  (or Enter) turns them on and it goes, focus moving to its line. A touch
-  or pen tap only opens its tooltip, "Hidden characters changed. Turn on
-  Show hidden characters in Settings", and changes nothing; a tap elsewhere
-  closes it (owner, 2026-11-04: "in phone, clicking the warning icon should
-  show tooltip instead of changing the hidden char setting. it's unintended
-  un-undoable action if someone doesn't know this setting"). The pointer
-  that tapped decides (`pointerType`), not the screen width, so a phone in
-  landscape behaves the same. An indent swapped for
-  one as wide warns even beside a visible change. Nothing is computed while
+  characters changed. Turn on Show hidden characters (h)"; a click by a
+  mouse, or by a key (Enter, a screen reader's activate on a desktop),
+  turns them on and it goes, focus moving to its line. A touch or pen tap
+  only opens its tooltip, "Hidden characters changed. Turn on Show hidden
+  characters in Settings", and changes nothing; a tap elsewhere closes it
+  (owner, 2026-11-04: "in phone, clicking the warning icon should show
+  tooltip instead of changing the hidden char setting. it's unintended
+  un-undoable action if someone doesn't know this setting"). Each click
+  decides by its own input: its `pointerType`, else the page's last
+  pointerdown (a tap's click can land off where it went down), and a key
+  press resets that, so a tap never changes what a later key or mouse
+  click does. Not by the screen width: a phone in landscape behaves the
+  same. On a screen without hover its name is the tooltip's "… in
+  Settings" text, so a screen reader there says where the switch is. An
+  indent swapped for one as wide warns even beside a visible change. Nothing is computed while
   hidden characters show. Escaped characters (zero widths, no-break
   spaces, bidi controls) show as `\uXXXX` either way: no ⚠. `h` toggles
   the setting (desktop), beside `w` and `s`.

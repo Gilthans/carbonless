@@ -126,7 +126,7 @@ export const rowTop = async (row: Locator) =>
 
 /** Sets a Settings switch (by its label) and closes Settings again. */
 export async function setSwitch(page: Page, label: string, on: boolean) {
-	const gear = page.getByRole("button", { name: "Settings" });
+	const gear = page.getByRole("button", { name: "Settings", exact: true });
 	if ((await gear.getAttribute("aria-expanded")) !== "true") await gear.click();
 	const toggle = page.getByRole("switch", { name: label });
 	if ((await toggle.getAttribute("aria-checked")) !== String(on)) {
