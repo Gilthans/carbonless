@@ -172,6 +172,8 @@ export function AgentThreadRow(props: {
 	rail?: string;
 	/** Their line isn't in this diff (the file's header). */
 	unplaced?: boolean;
+	/** Asked on an earlier head (the file's header): each card says on which. */
+	outdated?: boolean;
 }) {
 	const status = useQuery({ ...agentStatusQuery, enabled: false }).data;
 	return (
@@ -187,6 +189,7 @@ export function AgentThreadRow(props: {
 					thread={t}
 					status={status}
 					unplaced={props.unplaced}
+					outdated={props.outdated ? t.anchor.commit : undefined}
 				/>
 			))}
 		</TailRow>

@@ -573,20 +573,18 @@ export function FilesPage() {
 
 	// The reviewer's agent threads (their own read, beside GitHub's): the
 	// tree's second dot; the diffs read them from this query's cache.
-	const sessionHead = useQuery(sessionQuery).data?.snapshotHead;
 	const agentThreads = useQuery({
 		...agentThreadsQuery,
 		enabled: useAgentOn(),
 	}).data?.threads;
 	const agentThreadsByPath = useMemo(() => {
 		const byPath = new Map<string, AgentThread[]>();
-		const head = threads?.snapshotHead ?? sessionHead;
+		// On any head: one asked on an earlier head shows in its file's lead.
 		for (const t of agentThreads ?? []) {
-			if (!head || t.anchor.commit !== head) continue;
 			byPath.set(t.anchor.path, [...(byPath.get(t.anchor.path) ?? []), t]);
 		}
 		return byPath;
-	}, [agentThreads, threads?.snapshotHead, sessionHead]);
+	}, [agentThreads]);
 
 	// The floating Files button makes way while a comment is being written
 	// (a box has focus) or one was refused: it would cover its buttons.

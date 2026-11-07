@@ -11,14 +11,17 @@ import {
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { expectLoadingThen, heldJson } from "../../../test/loading";
+import type { AgentThread } from "../../shared/agent";
 import type {
 	ClusterView,
 	DiffLine,
 	FileHunks,
 	FileView,
 	ReviewView,
+	SessionInfo,
 } from "../../shared/types";
-import { reviewQuery } from "../api";
+import { agentThreadsQuery } from "../agent/api";
+import { reviewQuery, sessionQuery } from "../api";
 import { resetShowInvisibles, setShowInvisibles } from "../code/Invisibles";
 import { ignoreWhitespace } from "../viewSettings";
 import { FileDiff, UNDO_ARM_MS } from "./FileDiff";
@@ -1475,5 +1478,61 @@ describe("FileDiff", () => {
 		expect(
 			screen.getByRole("progressbar", { name: "File progress" }),
 		).toHaveTextContent("1 / 1 cluster");
+	});
+});
+
+describe("FileDiff: agent threads asked on an earlier head", () => {
+	afterEach(() => {
+		cleanup();
+		vi.unstubAllGlobals();
+	});
+
+	it("are still reachable in the file's lead, marked outdated", async () => {
+		const user = userEvent.setup();
+		const { queryClient } = setup(file([cluster("k1")]));
+		const earlier: AgentThread = {
+			id: "A1",
+			anchor: {
+				subject: "line",
+				path: "src/a.ts",
+				commit: "e".repeat(40),
+				side: "RIGHT",
+				line: 5,
+				startSide: "RIGHT",
+				startLine: 5,
+			},
+			openedBy: "human",
+			at: "2026-11-07T10:00:00Z",
+			messages: [
+				{ id: "m1", by: "human", at: "2026-11-07T10:00:00Z", text: "Why?" },
+			],
+			resolved: false,
+			waiting: false,
+		};
+		await act(async () => {
+			queryClient.setQueryData(sessionQuery.queryKey, {
+				snapshotHead: "f".repeat(40),
+			} as SessionInfo);
+			queryClient.setQueryData(agentThreadsQuery.queryKey, {
+				threads: [earlier],
+			});
+			await new Promise((r) => setTimeout(r, 0));
+		});
+		// Closed: the header counts it.
+		const closed = await screen.findByTestId("agent-bubble");
+		expect(closed).toHaveAccessibleName("1 agent thread in this file");
+		await user.click(closed);
+		// Open: in the lead row, the card says it is from an earlier version.
+		const card = await screen.findByTestId("agent-thread");
+		expect(
+			within(card).getByRole("img", {
+				name: "Asked on an earlier version (eeeeeee)",
+			}),
+		).toBeTruthy();
+		expect(
+			screen
+				.getAllByTestId("agent-bubble")
+				.some((b) => b.getAttribute("aria-label")?.includes("on this file")),
+		).toBe(true);
 	});
 });

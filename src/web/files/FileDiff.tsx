@@ -556,8 +556,13 @@ export function FileDiff(props: {
 		() => (agentAll ?? []).map(agentPlaceable),
 		[agentAll],
 	);
-	const agentMine = snapshotHead
-		? fileThreads(agentPlaceables, file.path, snapshotHead).map((p) => p.thread)
+	// Every agent thread on the file, on this head or an earlier one: those
+	// asked on an earlier head show in the lead row, marked outdated.
+	const agentMine = agentPlaceables
+		.filter((p) => p.path === file.path)
+		.map((p) => p.thread);
+	const agentOutdated = snapshotHead
+		? agentMine.filter((t) => t.anchor.commit !== snapshotHead)
 		: [];
 	const agentHeader = snapshotHead
 		? placeThreads({
@@ -569,6 +574,16 @@ export function FileDiff(props: {
 				noLines: file.binary || file.submodule,
 			}).header
 		: [];
+	const agentGroups = [
+		...(["file", "unplaced"] as const).map((reason) => ({
+			reason,
+			threads: agentHeader
+				.filter((h) => h.reason === reason)
+				.map((h) => h.thread.thread),
+		})),
+		{ reason: "outdated" as const, threads: agentOutdated },
+	].filter((g) => g.threads.length > 0);
+	const agentLead = agentGroups.flatMap((g) => g.threads);
 	const [agentOpen, setAgentOpen] = useState(false);
 	const agentThreadsId = useId();
 	const agentFileItems = useAgentComposers().filter(
@@ -614,7 +629,7 @@ export function FileDiff(props: {
 	 * file; with none it is an outline that starts a comment at once.
 	 */
 	const lead: FileLead = {
-		count: agentHeader.length > 0 ? 2 : 1,
+		count: agentLead.length > 0 ? 2 : 1,
 		bubble: (
 			<>
 				<ThreadBubble
@@ -640,10 +655,10 @@ export function FileDiff(props: {
 						setFileOpen(!fileOpen);
 					}}
 				/>
-				{agentHeader.length > 0 && (
+				{agentLead.length > 0 && (
 					<AgentBubble
 						inline
-						threads={agentHeader.map((h) => h.thread.thread)}
+						threads={agentLead}
 						where="on this file"
 						open={agentOpen}
 						controls={agentOpen ? agentThreadsId : undefined}
@@ -683,19 +698,17 @@ export function FileDiff(props: {
 					/>
 				) : null}
 				{agentOpen &&
-					(["file", "unplaced"] as const).map((reason) => {
-						const list = agentHeader.filter((h) => h.reason === reason);
-						return list.length > 0 ? (
-							<AgentThreadRow
-								key={reason}
-								id={reason === "file" ? agentThreadsId : undefined}
-								threads={list.map((h) => h.thread.thread)}
-								place={{ columns }}
-								rail={rail}
-								unplaced={reason === "unplaced"}
-							/>
-						) : null;
-					})}
+					agentGroups.map((g, i) => (
+						<AgentThreadRow
+							key={g.reason}
+							id={i === 0 ? agentThreadsId : undefined}
+							threads={g.threads}
+							place={{ columns }}
+							rail={rail}
+							unplaced={g.reason === "unplaced"}
+							outdated={g.reason === "outdated"}
+						/>
+					))}
 				{agentComposers && (
 					<TailRow testId="agent-composer-row" place={{ columns }} rail={rail}>
 						{agentComposers}
@@ -780,7 +793,7 @@ export function FileDiff(props: {
 										where="in this file"
 										open={false}
 										onToggle={() => {
-											if (agentHeader.length > 0) setAgentOpen(true);
+											if (agentLead.length > 0) setAgentOpen(true);
 											setExpanded(true);
 										}}
 									/>

@@ -1,6 +1,7 @@
 import {
 	AlertIcon,
 	CheckCircleIcon,
+	HistoryIcon,
 	IssueReopenedIcon,
 	SparkleFillIcon,
 	SquareFillIcon,
@@ -248,6 +249,8 @@ export function AgentThreadCard(props: {
 	status: AgentStatus | undefined;
 	/** Its line isn't in this diff: shown in the file's header instead. */
 	unplaced?: boolean;
+	/** Asked on this earlier head (its commit): marked outdated. */
+	outdated?: string;
 }) {
 	const { thread, status } = props;
 	const client = useQueryClient();
@@ -299,6 +302,15 @@ export function AgentThreadCard(props: {
 						label="Resolved"
 						className="text-ok"
 					/>
+				)}
+				{props.outdated && (
+					<span data-testid="agent-outdated" className="flex">
+						<LabeledIcon
+							icon={HistoryIcon}
+							label={`Asked on an earlier version (${props.outdated.slice(0, 7)})`}
+							className="text-muted"
+						/>
+					</span>
 				)}
 				{props.unplaced && (
 					<LabeledIcon
