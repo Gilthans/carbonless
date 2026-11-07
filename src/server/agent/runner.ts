@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import type {
 	RequestPermissionRequest,
@@ -280,7 +281,10 @@ export class AgentRunner {
 		const config = this.#config;
 		if (this.#proc && this.#proc.key !== this.#key) await this.#stopProc();
 		if (!config) {
-			// Off: another server may take the review's agent.
+			// Off: another server may take the review's agent (and sweep its
+			// dir), so the tree goes with the claim.
+			await this.#checkout?.remove().catch(() => {});
+			this.#checkout = null;
 			await this.#release?.().catch(() => {});
 			this.#release = null;
 			this.#set("off");
@@ -307,6 +311,10 @@ export class AgentRunner {
 		// The config moved while the claim was taken: the next round has it.
 		if (this.#config !== config) return null;
 		this.#set("starting");
+		// A tree removed under us (a sweep, by hand) is made again.
+		if (this.#checkout && !existsSync(join(this.#checkout.tree, ".git"))) {
+			this.#checkout = null;
+		}
 		try {
 			this.#checkout ??= await createCheckout(
 				this.#deps.cacheClone,

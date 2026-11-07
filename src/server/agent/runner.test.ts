@@ -482,7 +482,7 @@ describe("AgentRunner", () => {
 		expect((await runner.status()).state).toBe("off");
 	});
 
-	it("an agent set to none releases the claim, so another server may take it", async () => {
+	it("an agent set to none releases the claim and removes the tree; set again, both come back", async () => {
 		makeRunner().poke();
 		await until((s) => s.state === "ready");
 		config = { agent: null, problems: [] };
@@ -491,6 +491,15 @@ describe("AgentRunner", () => {
 		expect(() =>
 			execFileSync("test", ["-e", join(agentsDir(), REVIEW, "claim.json")]),
 		).toThrow();
+		// The tree goes with it: a sweep by the next holder can't pull it
+		// from under a cwd this runner still points at.
+		expect(() =>
+			execFileSync("test", ["-e", join(agentsDir(), REVIEW, "tree")]),
+		).toThrow();
+		config = { agent: AGENT, problems: [] };
+		await runner.status();
+		await until((s) => s.state === "ready");
+		expect(treeHead()).toBe(origin.shas[1]);
 	});
 
 	it("a config change during a turn stores nothing; the new agent answers the thread", async () => {
