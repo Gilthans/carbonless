@@ -171,7 +171,14 @@ export function useCurrentFile(
 					.find((index) => visible.has(index));
 				if (first !== undefined) setCurrent(first);
 			},
-			{ rootMargin: `-${Math.round(top) + 1}px 0px -60% 0px` },
+			{
+				// The top 40% of what is left under the sticky stack: a taller
+				// header above the bar (the patch set graph at the top of the
+				// page) never leaves the first file out of the band on load.
+				rootMargin: `-${Math.round(top) + 1}px 0px -${Math.round(
+					(window.innerHeight - top) * 0.6,
+				)}px 0px`,
+			},
 		);
 		for (const section of root.querySelectorAll("[data-file-index]")) {
 			observer.observe(section);
