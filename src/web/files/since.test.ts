@@ -10,6 +10,7 @@ import {
 	eyesOf,
 	goneFiles,
 	nothingSince,
+	shownView,
 	sinceByFile,
 	toReadCount,
 } from "./since";
@@ -252,5 +253,73 @@ describe("nothingSince", () => {
 describe("carriedCount", () => {
 	it("counts the view's carried clusters", () => {
 		expect(carriedCount(v)).toBe(2);
+	});
+});
+
+describe("shownView", () => {
+	const raw = view([
+		file(0, "core.ts", [
+			cluster("a", "unreviewed"),
+			cluster("b", "unreviewed"),
+		]),
+	]);
+	const carries = answer([
+		{
+			index: 0,
+			path: "core.ts",
+			conflict: false,
+			clusters: [
+				{ key: "a", kind: "reworked" },
+				{
+					key: "b",
+					kind: "carried",
+					from: 1,
+					state: "reviewed",
+					rule: "exact",
+				},
+			],
+		},
+	]);
+	const pending = (key: string, state: ClusterState) =>
+		new Map([
+			[
+				key,
+				{
+					change: { key, state },
+					revision: "r2",
+					path: "core.ts",
+					version: 1,
+					since: 0,
+				},
+			],
+		]);
+	it("lays the engine's carries over a viewed head that is no patch set yet", () => {
+		const out = shownView({ ...raw, patchset: null }, carries, new Map());
+		expect(out.files[0]?.clusters[1]).toMatchObject({
+			state: "reviewed",
+			carried: { from: 1, rule: "exact" },
+		});
+	});
+	it("a started patch set gets no overlay: its marks are the fold's", () => {
+		const started = { ...raw, patchset: 2 };
+		expect(shownView(started, carries, new Map())).toBe(started);
+	});
+	it("a pending untick beats a provisional carry (the human's mark wins)", () => {
+		const out = shownView(
+			{ ...raw, patchset: null },
+			carries,
+			pending("b", "unreviewed"),
+		);
+		expect(out.files[0]?.clusters[1]?.state).toBe("unreviewed");
+		expect(out.files[0]?.clusters[1]?.carried).toBeUndefined();
+		expect(out.progress.clusters.reviewed).toBe(0);
+	});
+	it("a pending mark applies without an answer too", () => {
+		const out = shownView(
+			{ ...raw, patchset: null },
+			null,
+			pending("a", "reviewed"),
+		);
+		expect(out.files[0]?.clusters[0]?.state).toBe("reviewed");
 	});
 });

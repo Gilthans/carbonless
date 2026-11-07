@@ -113,7 +113,9 @@ export function useReviewView(target: ReviewTarget = CURRENT_REVIEW) {
 		() => review.data && overlayReview(review.data, pending),
 		[review.data, pending],
 	);
-	return { review, data };
+	// `raw` and `pending` for a caller that lays something of its own under
+	// the pending states (useSince).
+	return { review, data, raw: review.data, pending };
 }
 
 /**

@@ -1,10 +1,41 @@
+import { overlayCarries } from "../../shared/rereview/overlay";
 import type {
 	ClusterKind,
 	FileView,
 	RereviewAnswer,
 	ReviewView,
 } from "../../shared/types";
+import { overlayReview, type PendingChange } from "./stateSync";
 import type { Unit } from "./unit";
+
+/**
+ * The review to show: the engine's provisional carries laid over the
+ * served view only while it is no patch set yet (a started one has its
+ * marks in the fold, as the server guards too), and the reviewer's pending
+ * states over that, so a human mark always wins over a carry (principle 2:
+ * an untick the reviewer made never snaps back to the engine's mark).
+ */
+export function shownView(
+	raw: ReviewView,
+	answer: RereviewAnswer | null,
+	pending: ReadonlyMap<string, PendingChange>,
+): ReviewView {
+	// A key with a pending change is the reviewer's: no carry lands on it
+	// (not even its `carried` tag).
+	const theirs =
+		answer && pending.size > 0
+			? {
+					...answer,
+					files: answer.files.map((f) => ({
+						...f,
+						clusters: f.clusters.filter((c) => !pending.has(c.key)),
+					})),
+				}
+			: answer;
+	const carried =
+		raw.patchset === null && theirs ? overlayCarries(raw, theirs) : raw;
+	return overlayReview(carried, pending);
+}
 
 /** One cluster of the engine's answer: its kind, and its source for carried and gone. */
 export type KindEntry = RereviewAnswer["files"][number]["clusters"][number];

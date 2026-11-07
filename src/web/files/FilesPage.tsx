@@ -311,10 +311,11 @@ export function FilesPage() {
 	const session = useQuery(sessionQuery).data;
 	const comparison = useComparison(session);
 	// The reviewer's intended states over the server's (useSetStates).
-	const { review, data: served } = useReviewView(comparison.target);
+	const { review, raw: servedRaw, pending } = useReviewView(comparison.target);
 	// The engine's answer for the comparison: the since view's chips and
-	// hunks, the provisional carries over a viewed head.
-	const sinceView = useSince(comparison, session, served);
+	// hunks, the provisional carries over a viewed head (under the
+	// reviewer's pending states, shownView).
+	const sinceView = useSince(comparison, session, servedRaw, pending);
 	const data = sinceView.shown;
 	const latest = session?.patchsets.at(-1)?.number ?? null;
 	// An earlier patch set opens as reviewed: its marks are locked.

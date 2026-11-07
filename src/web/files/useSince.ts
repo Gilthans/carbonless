@@ -1,6 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
 import { useMemo } from "react";
-import { overlayCarries } from "../../shared/rereview/overlay";
 import type {
 	RereviewAnswer,
 	ReviewView,
@@ -8,7 +7,8 @@ import type {
 } from "../../shared/types";
 import { type RereviewTo, rereviewQuery } from "../api";
 import type { Comparison } from "./comparison";
-import { type FileSince, sinceByFile } from "./since";
+import { type FileSince, shownView, sinceByFile } from "./since";
+import type { PendingChange } from "./stateSync";
 
 export interface SinceView {
 	/** The comparison base's patch set: the since view; null for the full diff. */
@@ -21,7 +21,11 @@ export interface SinceView {
 	/** Asked and not answered yet (a spinner in every slot that waits on it). */
 	pending: boolean;
 	error: Error | null;
-	/** The review to show: the served one, with the provisional carries over a viewed head. */
+	/**
+	 * The review to show: the served one with the engine's provisional
+	 * carries over a viewed head that is no patch set yet, and the
+	 * reviewer's pending states over that (shownView).
+	 */
 	shown: ReviewView | undefined;
 	/** What the engine says per file index, once answered. */
 	byFile: Map<number, FileSince> | null;
@@ -37,7 +41,9 @@ export interface SinceView {
 export function useSince(
 	comparison: Comparison,
 	session: SessionInfo | undefined,
-	served: ReviewView | undefined,
+	/** The review as served (no pending states on it). */
+	raw: ReviewView | undefined,
+	pendingStates: ReadonlyMap<string, PendingChange>,
 ): SinceView {
 	const latest = session?.patchsets.at(-1)?.number ?? null;
 	const { viewing, base } = comparison;
@@ -62,8 +68,8 @@ export function useSince(
 	const overlay = viewing?.kind === "head";
 	const shown = useMemo(
 		() =>
-			served && answer && overlay ? overlayCarries(served, answer) : served,
-		[served, answer, overlay],
+			raw ? shownView(raw, overlay ? answer : null, pendingStates) : undefined,
+		[raw, answer, overlay, pendingStates],
 	);
 	const byFile = useMemo(
 		() => (answer && shown ? sinceByFile(answer, shown) : null),
