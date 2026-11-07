@@ -78,7 +78,9 @@ export function FindBar(props: {
 	const caseLabel = "Match case";
 
 	return (
-		<search
+		// biome-ignore lint/a11y/useSemanticElements: jsdom doesn't give <search> its role, so tests couldn't find the bar.
+		<div
+			role="search"
 			aria-label="Find in PR"
 			data-testid="find-bar"
 			className="flex items-center gap-1 border-b border-line bg-surface px-2 py-1"
@@ -95,6 +97,8 @@ export function FindBar(props: {
 					value={props.term}
 					onChange={(e) => props.onTerm(e.target.value)}
 					onKeyDown={(e) => {
+						// Enter that confirms an IME composition isn't a step.
+						if (e.nativeEvent.isComposing || e.keyCode === 229) return;
 						if (e.key === "Enter") {
 							e.preventDefault();
 							if (e.shiftKey) props.onPrevious();
@@ -125,21 +129,26 @@ export function FindBar(props: {
 					)}
 				</Tooltip>
 			</div>
-			{props.count && (
-				<span
-					data-testid="find-count"
-					aria-live="polite"
-					className="shrink-0 text-sm text-muted tabular-nums"
-				>
-					<span className="hidden sm:inline">
-						{props.count.at} of {props.count.of}
-					</span>
-					<span className="sm:hidden">
-						{props.count.at}/{props.count.of}
-					</span>
-				</span>
-			)}
-			{props.searching && props.count && <Spinner label="Searching files…" />}
+			{/* Always there, so the first count is announced and showing it moves nothing. */}
+			<span
+				data-testid="find-count"
+				aria-live="polite"
+				className="min-w-[7ch] shrink-0 text-right text-sm text-muted tabular-nums sm:min-w-[10ch]"
+			>
+				{props.count && (
+					<>
+						<span className="hidden sm:inline">
+							{props.count.at} of {props.count.of}
+						</span>
+						<span className="sm:hidden">
+							{props.count.at}/{props.count.of}
+						</span>
+					</>
+				)}
+			</span>
+			<span className="flex h-4 w-4 shrink-0 items-center justify-center">
+				{props.searching && props.count && <Spinner label="Searching files…" />}
+			</span>
 			{props.failed > 0 && (
 				<IconButton label={failedLabel} onClick={props.onRetry}>
 					<AlertIcon aria-hidden className="text-warn" />
@@ -162,6 +171,6 @@ export function FindBar(props: {
 			<IconButton label="Close (Esc)" onClick={props.onClose}>
 				<XIcon aria-hidden />
 			</IconButton>
-		</search>
+		</div>
 	);
 }

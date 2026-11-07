@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ComponentProps } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -64,8 +64,31 @@ describe("FindBar", () => {
 			).disabled,
 		).toBe(true);
 		rerender(bar(props({ count: null, searching: true })));
-		expect(screen.queryByTestId("find-count")).toBeNull();
+		expect(screen.getByTestId("find-count")).toBeEmptyDOMElement();
 		expect(screen.queryByRole("status")).toBeNull();
+	});
+
+	it("keeps the count's live region in place, so the first count is announced", () => {
+		const { rerender } = render(bar(props({ count: null })));
+		const region = screen.getByTestId("find-count");
+		expect(region.getAttribute("aria-live")).toBe("polite");
+		rerender(bar(props()));
+		expect(screen.getByTestId("find-count")).toBe(region);
+	});
+
+	it("can be found by its search role", () => {
+		render(bar(props()));
+		expect(screen.getByRole("search", { name: "Find in PR" })).toBeTruthy();
+	});
+
+	it("ignores Enter that confirms an IME composition", () => {
+		const p = props();
+		render(bar(p));
+		fireEvent.keyDown(box(), { key: "Enter", isComposing: true });
+		fireEvent.keyDown(box(), { key: "Enter", keyCode: 229 });
+		expect(p.onNext).not.toHaveBeenCalled();
+		fireEvent.keyDown(box(), { key: "Enter" });
+		expect(p.onNext).toHaveBeenCalledTimes(1);
 	});
 
 	it("shows the short count for a phone beside the long one", () => {
