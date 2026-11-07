@@ -118,12 +118,15 @@ const BIDI = /[\u202A-\u202E\u2066-\u2069]/g;
 const ANSI_CSI = /\u001b\[[0-?]*[ -/]*[@-~]/g;
 // biome-ignore lint/suspicious/noControlCharactersInRegex: C0 controls are what it strips
 const C0 = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g;
+/** Unicode tag characters (invisible ASCII look-alikes). */
+const TAGS = /[\u{E0000}-\u{E007F}]/gu;
 
 /**
  * Third-party text (a PR's title and body) as it may enter an envelope:
  * without HTML comments, <picture>, <img>, zero-width (a joiner inside an
  * emoji sequence stays) and bidi characters,
- * ANSI CSI sequences and C0 controls (tab, newline and return stay).
+ * ANSI CSI sequences, C0 controls (tab, newline and return stay) and
+ * Unicode tag characters (U+E0000–U+E007F).
  */
 export function sanitizeThirdParty(text: string): string {
 	return text
@@ -134,7 +137,43 @@ export function sanitizeThirdParty(text: string): string {
 		.replace(LONE_ZWJ, "")
 		.replace(BIDI, "")
 		.replace(ANSI_CSI, "")
-		.replace(C0, "");
+		.replace(C0, "")
+		.replace(TAGS, "");
+}
+
+/**
+ * `env` with every text from the PR sanitised (sanitizeThirdParty): the
+ * base and head ref names, the anchor's path (and so its file), the PR's
+ * title, body and file paths. The reviewer's and the agent's messages stay.
+ */
+export function sanitizeEnvelope(env: PromptEnvelope): PromptEnvelope {
+	const s = sanitizeThirdParty;
+	const { review, thread, pr } = env;
+	return {
+		...env,
+		review: {
+			...review,
+			base: { ...review.base, ref: s(review.base.ref) },
+			head: { ...review.head, ref: s(review.head.ref) },
+		},
+		thread: {
+			...thread,
+			anchor: {
+				...thread.anchor,
+				path: s(thread.anchor.path),
+				file: s(thread.anchor.file),
+			},
+		},
+		...(pr
+			? {
+					pr: {
+						title: s(pr.title),
+						body: s(pr.body),
+						files: pr.files.map(s),
+					},
+				}
+			: {}),
+	};
 }
 
 /**

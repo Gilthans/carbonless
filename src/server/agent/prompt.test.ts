@@ -7,6 +7,7 @@ import {
 	mimeTypeOf,
 	type PromptEnvelope,
 	type PromptReview,
+	sanitizeEnvelope,
 	sanitizeThirdParty,
 } from "./prompt.js";
 
@@ -154,10 +155,42 @@ describe("sanitizeThirdParty", () => {
 	it("strips C0 controls but tab, newline and return", () => {
 		expect(sanitizeThirdParty("a\u0000b\u0007c\td\ne\rf")).toBe("abc\td\ne\rf");
 	});
+	it("strips Unicode tag characters", () => {
+		expect(sanitizeThirdParty(`a${ch(0xe0041)}${ch(0xe007f)}b`)).toBe("ab");
+	});
 	it("keeps CJK and emoji", () => {
 		const coder = `${ch(0x1f469)}${ch(0x200d)}${ch(0x1f4bb)}`;
 		expect(sanitizeThirdParty(`锁 🔒 ${coder}`)).toBe(`锁 🔒 ${coder}`);
 	});
+});
+
+describe("sanitizeEnvelope", () => {
+	const dirty = `x${ch(0x202e)}${ch(0xe0041)}y`;
+	const env: PromptEnvelope = {
+		...envelope(right),
+		review: {
+			...review,
+			base: { ...review.base, ref: dirty },
+			head: { ...review.head, ref: dirty },
+		},
+		pr: { title: dirty, body: dirty, files: [dirty] },
+	};
+	env.thread.anchor = {
+		...env.thread.anchor,
+		path: dirty,
+		file: `${TREE}/${dirty}`,
+	};
+	const clean = sanitizeEnvelope(env);
+	it("cleans the base ref", () => expect(clean.review.base.ref).toBe("xy"));
+	it("cleans the head ref", () => expect(clean.review.head.ref).toBe("xy"));
+	it("cleans the anchor's path and file", () => {
+		expect(clean.thread.anchor.path).toBe("xy");
+		expect(clean.thread.anchor.file).toBe(`${TREE}/xy`);
+	});
+	it("cleans the PR's title, body and files", () =>
+		expect(clean.pr).toEqual({ title: "xy", body: "xy", files: ["xy"] }));
+	it("leaves the messages as written", () =>
+		expect(clean.messages).toEqual(env.messages));
 });
 
 describe("isSafePath / mimeTypeOf", () => {

@@ -25,7 +25,7 @@ import {
 	type PromptEnvelope,
 	type PromptMessage,
 	type PromptReview,
-	sanitizeThirdParty,
+	sanitizeEnvelope,
 } from "./prompt.js";
 import type { AgentThreadFold, AgentThreadStore } from "./store.js";
 
@@ -440,15 +440,11 @@ export class AgentRunner {
 		let pr: PromptEnvelope["pr"];
 		if (!this.#prompted) {
 			pr = await facts.prFacts().then(
-				(p) => ({
-					title: sanitizeThirdParty(p.title),
-					body: sanitizeThirdParty(p.body),
-					files: p.files,
-				}),
+				(p) => ({ title: p.title, body: p.body, files: p.files }),
 				() => undefined,
 			);
 		}
-		const env: PromptEnvelope = {
+		const env: PromptEnvelope = sanitizeEnvelope({
 			kind: "agent_thread",
 			review,
 			thread: { id: thread.id, anchor: anchorFor(thread.anchor, review) },
@@ -466,7 +462,7 @@ export class AgentRunner {
 			),
 			...(notice ? { notice } : {}),
 			...(pr ? { pr } : {}),
-		};
+		});
 		const [anchored, hunk] = await Promise.all([
 			facts.anchored(thread.anchor).catch(() => null),
 			facts.hunk(thread.anchor).catch(() => null),
