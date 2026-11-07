@@ -347,6 +347,26 @@ export class ThreadCodeSource {
 	}
 
 	/**
+	 * A comment's own snapshot: its commit and the base its diff is taken
+	 * against (#left, as for its code; `lenient` for a range wholly on the
+	 * new side). Null, never a guess, when the commit can't be had or the
+	 * base isn't certain.
+	 */
+	async endpoints(
+		anchor: CodeAnchor,
+		base: DiffBase,
+	): Promise<{ base: string; head: string } | null> {
+		try {
+			if (!OID.test(anchor.commit)) return null;
+			if (!(await this.#commit(anchor.commit))) return null;
+			const left = await this.#left(anchor, base, true);
+			return left ? { base: left, head: anchor.commit } : null;
+		} catch {
+			return null;
+		}
+	}
+
+	/**
 	 * The rows of `anchor`'s window in the PR's diff at its commit. Null,
 	 * never a guess, when the commit can't be had, the old side isn't
 	 * certain (see #left), the file's diff can't be had (#fileLines) or

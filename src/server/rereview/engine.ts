@@ -83,14 +83,14 @@ export const rereviewKey = (
 	`${fromRevision}:${toRevision}:${earlierRevisions.join("+")}:${TRACER_VERSION}.${ENGINE_VERSION}`;
 
 /** A mapper under which no line survives (the file is not on that side). */
-const NONE: LineMapper = {
+export const NONE: LineMapper = {
 	oldToNew: () => null,
 	newToOld: () => null,
 	hunkRemovingOld: () => null,
 	hunkAddingNew: () => null,
 };
 
-interface DiffEntry {
+export interface DiffEntry {
 	oldPath?: string;
 	status: FileStatus;
 	hunks: MapHunk[];
@@ -103,7 +103,7 @@ const literal = (path: string) => `:(literal)${path}`;
  * The files changed from `old` to `fresh` among `paths`, by their new
  * path, with their -U0 hunks: the line mappers' input.
  */
-async function diffMap(
+export async function diffMap(
 	repo: string,
 	old: string,
 	fresh: string,
@@ -147,7 +147,7 @@ function pathsOf(snapshot: Snapshot, into: Set<string>): void {
 	}
 }
 
-const linesMapper = (clusters: readonly Cluster[]) =>
+export const linesMapper = (clusters: readonly Cluster[]) =>
 	createLineMapper(clusters.filter((c) => c.kind === "lines"));
 
 /**

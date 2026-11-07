@@ -1653,6 +1653,206 @@ describe("API", () => {
 		});
 	});
 
+	describe("thread placement routes", () => {
+		/** The fake gh's scenario with these threads (moveHead resets it). */
+		const withThreads = (threads: unknown[]) =>
+			pr.scenario({
+				prs: {
+					12: {
+						view: prView({ headRefOid: pr.head(), baseRefName: "main" }),
+						graphql: {
+							bodyHTML: "",
+							reviewThreads: threads as never,
+							reviews: [],
+							comments: [],
+							timelineItems: [],
+						},
+					},
+				},
+			} as Partial<Scenario>);
+		/** A thread on a.txt line 2 (PS1's "line 2 changed") and one on new.txt. */
+		const threadsOn = (commit: string, resolved: boolean) => [
+			reviewThread({ path: "a.txt", line: 2, subjectType: "LINE" }, [
+				threadComment({ login: "rev", text: "Why?", commit, diffHunk: "" }),
+			]),
+			reviewThread(
+				{ path: "new.txt", line: 1, subjectType: "LINE", isResolved: resolved },
+				[threadComment({ login: "rev", text: "Hm", commit, diffHunk: "" })],
+			),
+		];
+		const placementsOf = async (query: string) => {
+			for (;;) {
+				const answer = await get(`/api/placements?${query}`);
+				if (!answer.pending) return answer;
+				await new Promise((r) => setTimeout(r, 20));
+			}
+		};
+		const byId = (answer: { threads: { id: string; placement: unknown }[] }) =>
+			Object.fromEntries(answer.threads.map((t) => [t.id, t.placement]));
+		/** PS1 started, the threads made on it, then a push rewriting line 2. */
+		const setup = async (resolved = true) => {
+			const ps1: ReviewView = await get("/api/review");
+			const [key = ""] = keys(ps1);
+			const marked = await post("/api/review/states", {
+				revision: ps1.revision,
+				changes: [{ key, state: "reviewed" }],
+			});
+			expect(marked.statusCode, marked.body).toBe(200);
+			const h1 = pr.head();
+			const lines = Array.from({ length: 30 }, (_, i) => `line ${i + 1}`);
+			lines[1] = "line 2 reworked";
+			lines[25] = "line 26 changed";
+			const h2 = pr.moveHead({ "a.txt": `${lines.join("\n")}\n` });
+			withThreads(threadsOn(h1, resolved));
+			const { readId } = await get("/api/overview?maxAge=0");
+			return { h1, h2, readId: readId as string };
+		};
+
+		it("GET /placements: pending, then each unresolved thread placed; resolved ones skipped and placed again once unresolved; 400, 404, 410", async () => {
+			const { h1, h2, readId } = await setup();
+			const first = await get(`/api/placements?read=${readId}&head=${h2}`);
+			expect(first).toEqual({ pending: true });
+			const answer = await placementsOf(`read=${readId}&head=${h2}`);
+			expect(answer).toMatchObject({ readId, patchset: null });
+			expect(byId(answer)).toEqual({
+				"T12-0": {
+					kind: "changed",
+					anchor: {
+						path: "a.txt",
+						startSide: "RIGHT",
+						startLine: 2,
+						side: "RIGHT",
+						line: 2,
+					},
+					old: {
+						side: "RIGHT",
+						startLine: 2,
+						line: 2,
+						text: ["line 2 changed"],
+					},
+				},
+			});
+			// On PS1 itself: placed, as made.
+			expect(byId(await placementsOf(`read=${readId}&ps=1`))).toEqual({
+				"T12-0": expect.objectContaining({ kind: "placed" }),
+			});
+			// Unresolved on GitHub: the next read places it.
+			withThreads(threadsOn(h1, false));
+			const { readId: next } = await get("/api/overview?maxAge=0");
+			expect(
+				Object.keys(byId(await placementsOf(`read=${next}&head=${h2}`))),
+			).toEqual(["T12-0", "T12-1"]);
+			for (const bad of [
+				`read=${next}`,
+				`head=${h2}`,
+				`read=${next}&ps=0`,
+				`read=${next}&head=main`,
+				`read=${next}&ps=1&head=${h2}`,
+			]) {
+				expect((await inject(`/api/placements?${bad}`)).statusCode, bad).toBe(
+					400,
+				);
+			}
+			expect(
+				(await inject(`/api/placements?read=${next}&ps=9`)).statusCode,
+			).toBe(404);
+			expect(
+				(await inject(`/api/placements?read=nope&head=${h2}`)).statusCode,
+			).toBe(410);
+		});
+
+		it("the engine's answer carries the placements of the newest read once they are in", async () => {
+			const { h2, readId } = await setup();
+			await placementsOf(`read=${readId}&head=${h2}`);
+			for (;;) {
+				const answer = await get(`/api/rereview?from=1&head=${h2}`);
+				if (answer.pending) {
+					await new Promise((r) => setTimeout(r, 20));
+					continue;
+				}
+				expect(answer.threads).toEqual([
+					{
+						id: "T12-0",
+						placement: expect.objectContaining({ kind: "changed" }),
+					},
+				]);
+				break;
+			}
+		});
+
+		it("POST /threads/:id/placement writes thread-placed on the latest patch set; the placements then have it; refuses what doesn't fit", async () => {
+			const { h2, readId } = await setup();
+			// PS2 on the new head (a mark starts it).
+			const view: ReviewView = await get(`/api/review?head=${h2}`);
+			const started = await post("/api/review/states", {
+				revision: view.revision,
+				changes: [
+					{ key: view.files[0]?.clusters[0]?.key ?? "", state: "reviewed" },
+				],
+			});
+			expect(started.statusCode, started.body).toBe(200);
+			const anchor = {
+				path: "a.txt",
+				startSide: "RIGHT",
+				startLine: 20,
+				side: "RIGHT",
+				line: 20,
+			};
+			const ok = await post("/api/threads/T12-0/placement", {
+				patchset: 2,
+				anchor,
+			});
+			expect(ok.statusCode, ok.body).toBe(200);
+			expect(ok.json()).toEqual({
+				id: "T12-0",
+				placement: { kind: "placed", anchor, changed: false },
+			});
+			expect(byId(await placementsOf(`read=${readId}&ps=2`))["T12-0"]).toEqual({
+				kind: "placed",
+				anchor,
+				changed: false,
+			});
+			const refused = async (body: unknown, status = 400) => {
+				const res = await post("/api/threads/T12-0/placement", body);
+				expect(res.statusCode, JSON.stringify(body)).toBe(status);
+			};
+			// Each check on its own: the patch set, every anchor field, the
+			// path and lines against the patch set's files.
+			await refused({ patchset: 9, anchor });
+			await refused({ patchset: 0, anchor });
+			await refused({ patchset: "2", anchor });
+			await refused({ patchset: 2 });
+			await refused({ patchset: 2, anchor: { ...anchor, side: "UP" } });
+			await refused({ patchset: 2, anchor: { ...anchor, startSide: 1 } });
+			await refused({ patchset: 2, anchor: { ...anchor, line: 0 } });
+			await refused({ patchset: 2, anchor: { ...anchor, startLine: 1.5 } });
+			await refused({ patchset: 2, anchor: { ...anchor, path: "" } });
+			await refused({ patchset: 2, anchor: { ...anchor, path: "nope.txt" } });
+			await refused({
+				patchset: 2,
+				anchor: { ...anchor, path: "<b>x</b>.txt" },
+			});
+			await refused({
+				patchset: 2,
+				anchor: { ...anchor, line: 31, startLine: 31 },
+			});
+			await refused({ patchset: 2, anchor: { ...anchor, startLine: 25 } });
+			// An earlier patch set is read-only.
+			await refused({ patchset: 1, anchor }, 409);
+			const bad = await post("/api/threads/no%20id/placement", {
+				patchset: 2,
+				anchor,
+			});
+			expect(bad.statusCode).toBe(400);
+			// Nothing of the refused ones landed.
+			expect(byId(await placementsOf(`read=${readId}&ps=2`))["T12-0"]).toEqual({
+				kind: "placed",
+				anchor,
+				changed: false,
+			});
+		});
+	});
+
 	describe("with a web root and an access key", () => {
 		let web: string;
 		let keyed: FastifyInstance;

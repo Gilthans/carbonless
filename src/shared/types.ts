@@ -927,6 +927,21 @@ export interface RereviewAnswer {
 	threads: { id: string; placement: ThreadPlacement }[];
 }
 
+/**
+ * Every unresolved thread's place in one snapshot, for one read of GitHub
+ * (`GET /placements`): the tracer's placement with the reviewer's stored
+ * ones laid over. Resolved threads are not placed (the page shows them
+ * on their own head only).
+ */
+export interface PlacementsAnswer {
+	readId: string;
+	/** The snapshot id placed into. */
+	revision: string;
+	/** Its patch set (where a drag stores one); null for a head that is none yet. */
+	patchset: number | null;
+	threads: { id: string; placement: ThreadPlacement }[];
+}
+
 export interface SessionInfo {
 	pr: {
 		owner: string;

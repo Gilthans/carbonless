@@ -6,10 +6,12 @@ import Fastify, { type FastifyInstance, type FastifyRequest } from "fastify";
 import {
 	type ClusterState,
 	COMMENTS_BATCH,
+	type DiffSide,
 	type EditRequest,
 	type NewThreadRequest,
 	type ReplyRequest,
 	type StateChange,
+	type ThreadAnchorRef,
 	type ThreadsStage,
 	type VerdictRequest,
 	type WriteError,
@@ -30,6 +32,7 @@ import {
 	type SessionRegistry,
 	UnknownReviewError,
 } from "./registry.js";
+import { InvalidPlacementError } from "./rereview/threads.js";
 import {
 	InvalidChangeError,
 	RefusedChangeError,
@@ -166,6 +169,9 @@ export async function buildApp(
 			return reply.status(400).send({ error: error.message, keys: error.keys });
 		}
 		if (error instanceof BadRequestError) return send(400, error.message);
+		if (error instanceof InvalidPlacementError) {
+			return send(400, error.message);
+		}
 		if (
 			error instanceof RangeError &&
 			(NO_FILE.test(error.message) || NO_PATCHSET.test(error.message))
@@ -316,6 +322,28 @@ export async function buildApp(
 						: { head: oidParam("head", head) },
 				);
 			});
+			// Every unresolved thread of read `read` placed into a patch set
+			// (`ps`) or a head's snapshot (`head`): `{ pending: true }` until
+			// git's part is done (Session.placements).
+			review.get<{
+				Querystring: { read?: unknown; ps?: unknown; head?: unknown };
+			}>("/placements", (request) => {
+				const { read, ps, head } = request.query;
+				if ((ps === undefined) === (head === undefined)) {
+					throw new BadRequestError(
+						"ps (a patch set) or head (a commit id), one of them",
+					);
+				}
+				if (typeof read !== "string" || !read) {
+					throw new BadRequestError("read is required");
+				}
+				return sessionOf(request).placements(
+					ps !== undefined
+						? { patchset: patchsetParam(ps) }
+						: { head: oidParam("head", head) },
+					read,
+				);
+			});
 			// A file's hunks; with `from=<n>`, the since view's: the interdiff
 			// from patch set n to the snapshot (Session.interdiffHunks).
 			review.get<{
@@ -421,6 +449,19 @@ export async function buildApp(
 					return sessionOf(request).setThreadResolved(
 						threadIdParam(request.params.threadId),
 						resolved,
+					);
+				},
+			);
+			// The reviewer places a thread on lines of their latest patch set
+			// (a drag): `thread-placed`, checked against the patch set first.
+			review.post<{ Params: { threadId: string } }>(
+				"/threads/:threadId/placement",
+				(request) => {
+					const { patchset, anchor } = parsePlacementBody(request.body);
+					return sessionOf(request).placeThread(
+						threadIdParam(request.params.threadId),
+						patchset,
+						anchor,
 					);
 				},
 			);
@@ -696,6 +737,49 @@ function oidParam(name: string, raw: unknown): string {
 		throw new BadRequestError(`${name} must be a commit id`);
 	}
 	return raw;
+}
+
+/**
+ * A placement request: a patch set number and an anchor whose sides are
+ * LEFT or RIGHT, lines positive integers and path a non-empty string (the
+ * session checks it against the patch set's files).
+ */
+function parsePlacementBody(body: unknown): {
+	patchset: number;
+	anchor: ThreadAnchorRef;
+} {
+	const fail = (message: string) => new InvalidPlacementError(message);
+	if (typeof body !== "object" || body === null) {
+		throw fail("A placement is { patchset, anchor }");
+	}
+	const { patchset, anchor } = body as { patchset?: unknown; anchor?: unknown };
+	if (
+		typeof patchset !== "number" ||
+		!Number.isInteger(patchset) ||
+		patchset < 1
+	) {
+		throw fail("patchset must be a patch set number");
+	}
+	if (typeof anchor !== "object" || anchor === null) {
+		throw fail("anchor is required");
+	}
+	const { path, startSide, startLine, side, line } = anchor as Record<
+		string,
+		unknown
+	>;
+	const isSide = (v: unknown): v is DiffSide => v === "LEFT" || v === "RIGHT";
+	const isLine = (v: unknown): v is number =>
+		typeof v === "number" && Number.isInteger(v) && v >= 1 && v < 2 ** 31;
+	if (typeof path !== "string" || path === "" || path.length > 4096) {
+		throw fail("anchor.path must be a file's path");
+	}
+	if (!isSide(side) || !isSide(startSide)) {
+		throw fail("anchor sides must be LEFT or RIGHT");
+	}
+	if (!isLine(line) || !isLine(startLine)) {
+		throw fail("anchor lines must be positive integers");
+	}
+	return { patchset, anchor: { path, startSide, startLine, side, line } };
 }
 
 function parseStatesBody(body: unknown): {

@@ -1,4 +1,6 @@
 import { overlayCarries } from "../shared/rereview/overlay.js";
+import { type ThreadInput, validAnchor } from "../shared/rereview/placement.js";
+import { TRACER_VERSION } from "../shared/tracer/index.js";
 import type {
 	CommentsView,
 	DeleteAnswer,
@@ -7,6 +9,7 @@ import type {
 	FileHunks,
 	NewThreadAnswer,
 	NewThreadRequest,
+	PlacementsAnswer,
 	PrOverview,
 	ReplyRequest,
 	RereviewAnswer,
@@ -14,6 +17,7 @@ import type {
 	SessionInfo,
 	Snapshot,
 	StateChange,
+	ThreadAnchorRef,
 	ThreadsStage,
 	ThreadsView,
 	ThreadUpdate,
@@ -64,6 +68,11 @@ import {
 	traceRereview,
 } from "./rereview/engine.js";
 import { checkOid, commitsSince } from "./rereview/shape.js";
+import {
+	InvalidPlacementError,
+	type PlacedThread,
+	ThreadPlacer,
+} from "./rereview/threads.js";
 import { buildReviewView } from "./review/coverage.js";
 import type { PatchsetRecord, ProgressState } from "./review/fold.js";
 import { RefStore } from "./review/refStore.js";
@@ -162,6 +171,16 @@ interface RereviewJob {
 }
 
 /**
+ * Thread placement into one snapshot for one read (`Session.placements`):
+ * git's part, started on the first ask and never waited for.
+ */
+interface PlacingJob {
+	done: { target: Snapshot; inputs: ThreadInput[] } | null;
+	error: Error | null;
+	settled: Promise<void>;
+}
+
+/**
  * Why a PR has no review to open: merged, closed (reopening it on GitHub is
  * the way back), or, for an open PR, that its review couldn't be read.
  */
@@ -248,6 +267,10 @@ export class Session {
 	readonly #jobs = new Map<string, RereviewJob>();
 	/** Snapshots of viewed heads being built, by snapshot id. */
 	readonly #building = new Map<string, Promise<Snapshot>>();
+	/** Thread placement's git work, cached by OIDs. */
+	readonly #placer: ThreadPlacer;
+	/** Placement jobs, by `${target}|${readId}` (placements). */
+	readonly #placing = new Map<string, PlacingJob>();
 
 	private constructor(
 		private readonly repo: string,
@@ -272,6 +295,7 @@ export class Session {
 		this.#snapshotBase = progress.patchset?.baseBranch ?? meta.baseBranch;
 		if (head) this.#fetched(meta, head.mergeBase);
 		this.#threadCode = new ThreadCodeSource(repo);
+		this.#placer = new ThreadPlacer(repo, this.#threadCode);
 		Session.#open.add(this);
 	}
 
@@ -295,6 +319,7 @@ export class Session {
 			await Promise.all([
 				...[...this.#live].map((r) => r.settled),
 				...[...this.#jobs.values()].map((j) => j.settled),
+				...[...this.#placing.values()].map((j) => j.settled),
 				this.#queue,
 			]);
 		})();
@@ -511,7 +536,191 @@ export class Session {
 		}
 		if (!job.done) return { pending: true };
 		const { target, traced } = job.done;
-		return (await this.#answerFor(since, target, traced)).answer;
+		const { answer } = await this.#answerFor(since, target, traced);
+		return { ...answer, threads: await this.#placedNow(target) };
+	}
+
+	/**
+	 * The threads' placements in `target` for the newest read, when its
+	 * placement job is done; else none yet (started, never waited for:
+	 * the page reads them by read, `placements`).
+	 */
+	async #placedNow(target: Snapshot): Promise<PlacedThread[]> {
+		const read = this.#reads.findLast((r) => !this.#superseded.has(r));
+		if (!read) return [];
+		const job = this.#placingJob(target.revision, async () => target, read.id);
+		if (!job.done) return [];
+		return (await this.#placedFor(job.done.target, job.done.inputs)).threads;
+	}
+
+	/**
+	 * Every unresolved thread of read `readId` placed into a target: a
+	 * patch set (its pinned snapshot) or a head. `pending` at once while
+	 * git's part runs in the background (started on the first ask, once per
+	 * target and read); then the placements with the reviewer's stored ones
+	 * of the target's patch set laid over, as they stand. An
+	 * UnknownReadError when the read is no longer kept; a RangeError for a
+	 * patch set that is none of the reviewer's.
+	 */
+	async placements(
+		to: { patchset: number } | { head: string },
+		readId: string,
+	): Promise<PlacementsAnswer | { pending: true }> {
+		if (this.#closed) throw new SessionClosedError("The session is closed");
+		if (!this.#reads.some((r) => r.id === readId)) {
+			throw new UnknownReadError(`No read ${readId}`);
+		}
+		let key: string;
+		let snapshot: () => Promise<Snapshot>;
+		if ("patchset" in to) {
+			const record = this.#patchsets.find((p) => p.number === to.patchset);
+			if (!record) throw new RangeError(`No patch set ${to.patchset}`);
+			key = record.revision;
+			snapshot = () => this.#snapshotOf(record);
+		} else {
+			const head = checkOid(to.head);
+			key = `head:${head}`;
+			snapshot = () => this.#headSnapshot(head);
+		}
+		const job = this.#placingJob(key, snapshot, readId);
+		if (job.error) {
+			for (const [k, j] of this.#placing)
+				if (j === job) this.#placing.delete(k);
+			throw job.error;
+		}
+		if (!job.done) return { pending: true };
+		return this.#placedFor(job.done.target, job.done.inputs, readId);
+	}
+
+	#placingJob(
+		key: string,
+		snapshot: () => Promise<Snapshot>,
+		readId: string,
+	): PlacingJob {
+		const id = `${key}|${readId}`;
+		const known = this.#placing.get(id);
+		if (known) return known;
+		const job: PlacingJob = {
+			done: null,
+			error: null,
+			settled: Promise.resolve(),
+		};
+		job.settled = (async () => {
+			try {
+				const read = this.#reads.find((r) => r.id === readId);
+				if (!read) throw new UnknownReadError(`No read ${readId}`);
+				const [target, view] = await Promise.all([
+					snapshot(),
+					read.threads("summary"),
+				]);
+				// Filed under its snapshot id too: a head and its patch set share it.
+				this.#placing.set(`${target.revision}|${readId}`, job);
+				const inputs = await this.#placer.inputs(
+					target,
+					view.threads,
+					this.#diffBase(),
+				);
+				job.done = { target, inputs };
+			} catch (error) {
+				job.error = error as Error;
+			}
+		})();
+		this.#placing.set(id, job);
+		return job;
+	}
+
+	/** The comparison's diff base, as the threads' code panes take it. */
+	#diffBase() {
+		return {
+			snapshot: this.#snapshot.base,
+			ref: `refs/remotes/origin/${this.#meta.baseBranch}`,
+		};
+	}
+
+	/** Placements of `inputs` with the reviewer's stored ones of the target's patch set. */
+	async #placedFor(
+		target: Snapshot,
+		inputs: readonly ThreadInput[],
+		readId = "",
+	): Promise<PlacementsAnswer> {
+		const progress = await this.#progress();
+		const record = progress.patchsets.find(
+			(p) => p.revision === target.revision,
+		);
+		const stored = new Map<string, ThreadAnchorRef>();
+		for (const [id, e] of record
+			? (progress.placements.get(record.number) ?? new Map())
+			: new Map()) {
+			stored.set(id, e.anchor);
+		}
+		return {
+			readId,
+			revision: target.revision,
+			patchset: record?.number ?? null,
+			threads: await this.#placer.place(target, inputs, stored),
+		};
+	}
+
+	/**
+	 * The reviewer places thread `threadId` on `anchor` in their latest
+	 * patch set `patchset` (a drag): checked against that patch set's
+	 * snapshot first (an InvalidPlacementError for an unknown patch set, a
+	 * path that is no file of it or lines outside the file; a
+	 * ReadOnlyPatchsetError for an earlier one), then a `thread-placed`
+	 * event. Answers the thread's new placement.
+	 */
+	placeThread(
+		threadId: string,
+		patchset: number,
+		anchor: ThreadAnchorRef,
+	): Promise<PlacedThread> {
+		return this.#exclusive(async () => {
+			const progress = await this.#progress();
+			const record = progress.patchsets.find((p) => p.number === patchset);
+			if (!record) {
+				throw new InvalidPlacementError(`No patch set ${patchset}`);
+			}
+			if (progress.patchset && record.number !== progress.patchset.number) {
+				throw new ReadOnlyPatchsetError(
+					`Patch set ${patchset} is read-only: a later one exists`,
+				);
+			}
+			const target = await this.#snapshotOf(record);
+			const counts = new Map<string, number | null>();
+			for (const side of ["LEFT", "RIGHT"] as const) {
+				counts.set(
+					side,
+					typeof anchor.path === "string"
+						? await this.#placer.lineCount(target, anchor.path, side)
+						: null,
+				);
+			}
+			if (
+				!validAnchor(anchor, (path, side) =>
+					path === anchor.path ? (counts.get(side) ?? null) : null,
+				)
+			) {
+				throw new InvalidPlacementError(
+					"The place is not a line of a file in this patch set",
+				);
+			}
+			const { path, startSide, startLine, side, line } = anchor;
+			const clean = { path, startSide, startLine, side, line };
+			this.#noted(
+				await this.reviews.recordPlacement(
+					this.reviewId,
+					this.viewer,
+					patchset,
+					threadId,
+					clean,
+					TRACER_VERSION,
+				),
+			);
+			return {
+				id: threadId,
+				placement: { kind: "placed", anchor: clean, changed: false },
+			};
+		});
 	}
 
 	/**
