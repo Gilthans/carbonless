@@ -123,7 +123,7 @@ export interface ReviewAgentSource {
 }
 
 /** The agent config from config.json, with the problems that concern it. */
-async function agentConfig(): Promise<{
+export async function agentConfig(): Promise<{
 	agent: AgentConfig | null;
 	problems: string[];
 }> {

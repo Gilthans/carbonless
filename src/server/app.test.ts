@@ -1243,6 +1243,40 @@ describe("API", () => {
 					headers: { host, "content-type": "application/json" },
 				});
 
+			it("GET says what is configured, with the agent's problems", async () => {
+				rmSync(file(), { force: true });
+				const read = async () => {
+					const res = await raw("/api/config/agent");
+					expect(res.statusCode, res.body).toBe(200);
+					return res.json();
+				};
+				expect(await read()).toEqual({ agent: null, problems: [] });
+				const agent = {
+					command: "claude-agent-acp",
+					args: [],
+					env: {},
+					leash: "open",
+				};
+				writeFileSync(file(), JSON.stringify({ agent }));
+				expect(await read()).toEqual({ agent, problems: [] });
+				writeFileSync(
+					file(),
+					JSON.stringify({
+						serve: { port: "x" },
+						agent: { ...agent, leash: "strict" },
+					}),
+				);
+				expect(await read()).toEqual({
+					agent,
+					problems: ['agent.leash "strict" is not available yet; using "open"'],
+				});
+				writeFileSync(file(), JSON.stringify({ agent: "claude" }));
+				expect(await read()).toEqual({
+					agent: null,
+					problems: ["agent must be an object or null; agent disabled"],
+				});
+			});
+
 			it("writes the agent and keeps unknown keys", async () => {
 				writeFileSync(
 					file(),

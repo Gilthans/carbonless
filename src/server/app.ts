@@ -23,7 +23,7 @@ import {
 import { registerAccessKey, registerHostCheck } from "./access.js";
 import { checkAgent } from "./agent/acp.js";
 import { agentsDir } from "./agent/checkout.js";
-import type { AgentHost } from "./agent/host.js";
+import { type AgentHost, agentConfig } from "./agent/host.js";
 import { isSafePath } from "./agent/prompt.js";
 import { UnknownAgentThreadError } from "./agent/store.js";
 import { parseAsOf } from "./asOf.js";
@@ -483,7 +483,8 @@ export async function buildApp(
 		{ prefix: "/api/r/:id" },
 	);
 
-	// The setup modal: save the agent, or try it once.
+	// The setup modal: what is configured, save the agent, or try it once.
+	app.get("/api/config/agent", () => agentConfig());
 	app.put("/api/config/agent", async (request) => {
 		const agent = parseAgentConfig(request.body, true);
 		try {
