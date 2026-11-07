@@ -55,6 +55,8 @@ export type ThreadPlacement =
 			kind: "changed";
 			anchor: ThreadAnchorRef;
 			old: { side: DiffSide; startLine: number; line: number; text: string[] };
+			/** The replacing lines' text in the target (empty when unknown). */
+			now: string[];
 	  }
 	/**
 	 * Under the file at `path` (its path in the target), fate first;
@@ -99,6 +101,8 @@ export interface ThreadInput {
 	 * line the PR added, for `reverted`.
 	 */
 	own?: LineMapper;
+	/** Text in the target snapshot, for a changed thread's new lines. */
+	newLineText?: (pos: Position) => string | null;
 }
 
 const isLine = (n: unknown): n is number =>
@@ -187,6 +191,21 @@ function fateOf(
 	return "deleted";
 }
 
+/** The target's text of a placed range (one side), else its end alone. */
+function nowText(t: ThreadInput, start: Position, end: Position): string[] {
+	const read = t.newLineText;
+	if (!read) return [];
+	const from =
+		start.side === end.side && start.line <= end.line ? start.line : end.line;
+	const text: string[] = [];
+	for (let n = from; n <= end.line; n++) {
+		const line = read({ side: end.side, line: n });
+		if (line === null) return [];
+		text.push(line);
+	}
+	return text;
+}
+
 const refOf = (
 	path: string,
 	start: { side: DiffSide; line: number },
@@ -255,6 +274,7 @@ export function placeThread(
 				kind: "changed",
 				anchor: refOf(path, start, start),
 				old: old(),
+				now: nowText(t, start, start),
 			};
 		}
 		const fate = fateOf(end, t, diffs);
@@ -274,7 +294,12 @@ export function placeThread(
 		first.kind === "changed" ||
 		start.kind === "unplaced"
 	) {
-		return { kind: "changed", anchor: refOf(path, first, end), old: old() };
+		return {
+			kind: "changed",
+			anchor: refOf(path, first, end),
+			old: old(),
+			now: nowText(t, first, end),
+		};
 	}
 	return { kind: "placed", anchor: refOf(path, first, end), changed: false };
 }

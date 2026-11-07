@@ -229,6 +229,8 @@ export class ThreadPlacer {
 					newPath,
 					inComparison,
 					own: mapperOf(ownEntry),
+					newLineText: (pos) =>
+						(pos.side === "RIGHT" ? newRight : newLeft)?.[pos.line - 1] ?? null,
 					diffs: {
 						ac: mapperOf(baseEntry?.entry),
 						bd: mapperOf(head?.entry),

@@ -78,9 +78,12 @@ describe("placeThread", () => {
 		});
 	});
 
-	it("C2: an edited line is changed, on its replacement, with the old text", () => {
+	it("C2: an edited line is changed, on its replacement, with the old text and the new", () => {
 		const p = placeThread(
-			input({ diffs: diffs({ bd: createLineMapper([h(5, 1, 5, 1)]) }) }),
+			input({
+				diffs: diffs({ bd: createLineMapper([h(5, 1, 5, 1)]) }),
+				newLineText: (pos) => `new ${pos.line}`,
+			}),
 			count,
 		);
 		expect(p).toEqual({
@@ -93,6 +96,7 @@ describe("placeThread", () => {
 				line: 5,
 			},
 			old: { side: "RIGHT", startLine: 5, line: 5, text: ["old 5"] },
+			now: ["new 5"],
 		});
 	});
 

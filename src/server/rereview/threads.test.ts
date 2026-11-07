@@ -237,6 +237,7 @@ describe("ThreadPlacer", () => {
 				line: 7,
 			},
 			old: { side: "RIGHT", startLine: 5, line: 5, text: ["a 5 x"] },
+			now: ["a 5 y"],
 		});
 		expect(of(ts.deleted)).toEqual({
 			kind: "unplaced",

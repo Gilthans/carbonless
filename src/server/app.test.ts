@@ -1730,6 +1730,7 @@ describe("API", () => {
 						line: 2,
 						text: ["line 2 changed"],
 					},
+					now: ["line 2 reworked"],
 				},
 			});
 			// On PS1 itself: placed, as made.
