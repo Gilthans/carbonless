@@ -232,26 +232,57 @@ export function colorPieces(pieces: Piece[], tokens: Token[]): Segment[][] {
 /** A span's characters in a line: UTF-16 offsets, `to` exclusive. */
 export type Mark = readonly [from: number, to: number];
 
-/** The parts of `text` (starting at offset `start`) inside and outside the marks. */
+/** A find hit over a line's characters; `current` is the one being stepped on. */
+export interface FindMark {
+	from: number;
+	to: number;
+	current: boolean;
+}
+
+/** How a find paints a stretch of characters: the current hit wins over the rest. */
+function findAt(
+	finds: readonly FindMark[],
+	from: number,
+	to: number,
+): "mark" | "current" | undefined {
+	let found: "mark" | "current" | undefined;
+	for (const find of finds) {
+		if (find.from < to && find.to > from) {
+			if (find.current) return "current";
+			found = "mark";
+		}
+	}
+	return found;
+}
+
+/**
+ * The parts of `text` (starting at offset `start`) inside and outside the
+ * marks, cut at the finds' edges too; a part a find covers carries `find`.
+ */
 export function splitMarks(
 	text: string,
 	start: number,
 	marks: readonly Mark[],
-): { text: string; marked: boolean }[] {
+	finds: readonly FindMark[] = [],
+): { text: string; marked: boolean; find?: "mark" | "current" }[] {
 	const end = start + text.length;
 	const cuts = new Set([start, end]);
-	for (const [from, to] of marks) {
-		if (from > start && from < end) cuts.add(from);
-		if (to > start && to < end) cuts.add(to);
-	}
+	const edges = [
+		...marks.flat(),
+		...finds.flatMap(({ from, to }) => [from, to]),
+	];
+	for (const at of edges) if (at > start && at < end) cuts.add(at);
 	const points = [...cuts].sort((a, b) => a - b);
-	const parts: { text: string; marked: boolean }[] = [];
+	const parts: { text: string; marked: boolean; find?: "mark" | "current" }[] =
+		[];
 	for (let i = 0; i + 1 < points.length; i++) {
 		const from = points[i] as number;
 		const to = points[i + 1] as number;
+		const find = findAt(finds, from, to);
 		parts.push({
 			text: text.slice(from - start, to - start),
 			marked: marks.some(([f, t]) => f <= from && to <= t),
+			...(find ? { find } : {}),
 		});
 	}
 	return parts;
@@ -260,11 +291,15 @@ export function splitMarks(
 /** A thread's exact span over its characters (`span-mark`, index.css). */
 const MARKED = "span-mark";
 
+/** A find hit (`find-mark`) and the current one (`find-current`), index.css; over a span. */
+const FIND_CLASS = { mark: "find-mark", current: "find-current" } as const;
+
 /** A run of ordinary text, colored by the highlighting tokens it overlaps. */
 function TextRun(props: {
 	start: number;
 	segments: Segment[];
 	marks: readonly Mark[];
+	finds: readonly FindMark[];
 }) {
 	let at = props.start;
 	return (
@@ -272,20 +307,25 @@ function TextRun(props: {
 			{props.segments.flatMap((segment) => {
 				const from = at;
 				at += segment.text.length;
-				const parts = props.marks.length
-					? splitMarks(segment.text, from, props.marks)
-					: [{ text: segment.text, marked: false }];
+				const parts =
+					props.marks.length || props.finds.length
+						? splitMarks(segment.text, from, props.marks, props.finds)
+						: [{ text: segment.text, marked: false }];
 				let offset = from;
 				return parts.map((part) => {
 					const key = offset;
 					offset += part.text.length;
 					const style = segment.token ? tokenStyle(segment.token) : undefined;
-					return part.marked || style ? (
+					const find = "find" in part ? part.find : undefined;
+					const span = part.marked && !find;
+					return span || find || style ? (
 						<span
 							key={key}
 							style={style}
-							data-span-mark={part.marked || undefined}
-							className={part.marked ? MARKED : undefined}
+							data-span-mark={span || undefined}
+							data-find-mark={find === "mark" || undefined}
+							data-find-current={find === "current" || undefined}
+							className={find ? FIND_CLASS[find] : span ? MARKED : undefined}
 						>
 							{part.text}
 						</span>
@@ -299,13 +339,33 @@ function TextRun(props: {
 }
 
 const NO_MARKS: readonly Mark[] = [];
+const NO_FINDS: readonly FindMark[] = [];
+
+/** The wrapper a hidden-character marker takes when a find or a span covers it. */
+function wrapped(
+	piece: Exclude<Piece, { kind: "text" }>,
+	marks: readonly Mark[],
+	finds: readonly FindMark[],
+): Record<string, string | true> | null {
+	const to = piece.start + piece.raw.length;
+	const find = findAt(finds, piece.start, to);
+	if (find) {
+		return find === "current"
+			? { "data-find-current": true, className: FIND_CLASS.current }
+			: { "data-find-mark": true, className: FIND_CLASS.mark };
+	}
+	return marks.some(([f, t]) => f < to && t > piece.start)
+		? { "data-span-mark": true, className: MARKED }
+		: null;
+}
 
 /**
  * One line of code, highlighted (plain until the highlighting arrives), with
  * its invisible characters shown (Notepad++ style, see invisibles.ts).
  * `newline`: a newline follows the line (false before git's "No newline at
  * end of file"). Copying the line copies the original text. `marks`: a
- * thread's exact characters, painted. The line's text is in one
+ * thread's exact characters, painted; `finds`: search hits, painted over
+ * them (the current one apart). The line's text is in one
  * `[data-code]` element holding only its characters (codeSpan.ts reads
  * columns from it).
  */
@@ -315,6 +375,7 @@ export function CodeLine(props: {
 	tabWidth?: number;
 	newline?: boolean;
 	marks?: readonly Mark[];
+	finds?: readonly FindMark[];
 }) {
 	const { text, lang, newline = true } = props;
 	const show = useShowInvisibles();
@@ -341,11 +402,12 @@ export function CodeLine(props: {
 		[pieces, tokens.data],
 	);
 	const marks = props.marks ?? NO_MARKS;
+	const finds = props.finds ?? NO_FINDS;
 	return (
 		<span data-code="">
 			{pieces.map((piece, i) =>
 				piece.kind === "text" ? (
-					tokens.data?.length || marks.length ? (
+					tokens.data?.length || marks.length || finds.length ? (
 						<TextRun
 							key={piece.start}
 							start={piece.start}
@@ -355,18 +417,15 @@ export function CodeLine(props: {
 									: [{ text: piece.raw }]
 							}
 							marks={marks}
+							finds={finds}
 						/>
 					) : (
 						piece.raw
 					)
-				) : marks.some(
-						([from, to]) =>
-							from < piece.start + piece.raw.length && to > piece.start,
-					) ? (
+				) : wrapped(piece, marks, finds) ? (
 					<span
 						key={`${piece.kind}${piece.start}`}
-						data-span-mark
-						className={MARKED}
+						{...wrapped(piece, marks, finds)}
 					>
 						<Marker piece={piece} />
 					</span>

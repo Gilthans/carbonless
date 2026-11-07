@@ -178,6 +178,35 @@ describe("color tokens", () => {
 		}
 	});
 
+	it("a find hit (find-mark) keeps every code color at 4.5:1 and stands apart from span-mark and the row washes", () => {
+		const back = token("find");
+		for (const fg of ["code-ink", "faint", "add-ink", "del-ink"]) {
+			expect(contrast(token(fg), back), `${fg} on find`).toBeGreaterThanOrEqual(
+				4.5,
+			);
+		}
+		for (const [name, color] of Object.entries(SYNTAX)) {
+			expect(contrast(color, back), `${name} on find`).toBeGreaterThanOrEqual(
+				4.5,
+			);
+		}
+		const apart = (other: number[]) =>
+			Math.hypot(...rgb(back).map((v, i) => v - (other[i] ?? 0)));
+		expect(apart(rgb(token("span"))), "find apart from span").toBeGreaterThan(
+			40,
+		);
+		for (const bg of ["code", "add", "del", "add-done", "del-done"]) {
+			const row = over(token("accent"), 0.08, token(bg));
+			expect(apart(rgb(row)), `find apart from ${bg}`).toBeGreaterThan(40);
+		}
+	});
+
+	it("the current find hit (find-current) reads canvas on orange at 4.5:1", () => {
+		expect(contrast(token("canvas"), token("orange"))).toBeGreaterThanOrEqual(
+			4.5,
+		);
+	});
+
 	it("picked line numbers (line-picked, accent/35) read at 4.5:1", () => {
 		for (const bg of [
 			"code",
