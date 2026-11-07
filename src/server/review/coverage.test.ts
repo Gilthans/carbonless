@@ -6,7 +6,7 @@ import type {
 	Snapshot,
 } from "../../shared/types.js";
 import { buildReviewView } from "./coverage.js";
-import type { ProgressState } from "./fold.js";
+import type { PatchsetRecord, ProgressState, StateEntry } from "./fold.js";
 
 const REV = "a".repeat(64);
 
@@ -41,26 +41,52 @@ function snapshot(files: FileSummary[], revision = REV): Snapshot {
 	return { base: "1".repeat(40), head: "2".repeat(40), revision, files };
 }
 
+type Stored = ClusterState | [ClusterState, string] | StateEntry;
+
+/** One patch set on `revision` (none when null) with these states. */
 function progress(
-	states: Record<string, ClusterState | [ClusterState, string]>,
+	states: Record<string, Stored>,
 	revision: string | null = REV,
 ): ProgressState {
-	return {
-		patchset: revision
-			? {
-					number: 1,
-					revision,
-					mergeBase: "1".repeat(40),
-					head: "2".repeat(40),
-				}
-			: null,
-		states: new Map(
-			Object.entries(states).map(([key, s]) =>
-				Array.isArray(s)
-					? [key, { state: s[0], reason: s[1] }]
-					: [key, { state: s }],
+	return progressOf(revision ? [[1, revision, states]] : []);
+}
+
+/** Patch sets in start order, each with its own states. */
+function progressOf(
+	sets: [number, string, Record<string, Stored>][],
+): ProgressState {
+	const patchsets: PatchsetRecord[] = sets.map(([number, revision]) => ({
+		number,
+		revision,
+		mergeBase: "1".repeat(40),
+		head: "2".repeat(40),
+		startedAt: number,
+		since: number > 1 ? number - 1 : null,
+		shape: null,
+		baseBranch: null,
+		interdiff: null,
+	}));
+	const statesByRevision = new Map(
+		sets.map(([, revision, states]) => [
+			revision,
+			new Map<string, StateEntry>(
+				Object.entries(states).map(([key, s]) =>
+					Array.isArray(s)
+						? [key, { state: s[0], reason: s[1] }]
+						: typeof s === "string"
+							? [key, { state: s }]
+							: [key, s],
+				),
 			),
-		),
+		]),
+	);
+	const patchset = patchsets.at(-1) ?? null;
+	return {
+		patchsets,
+		patchset,
+		states: (patchset && statesByRevision.get(patchset.revision)) ?? new Map(),
+		statesByRevision,
+		placements: new Map(),
 	};
 }
 
@@ -246,5 +272,74 @@ describe("buildReviewView", () => {
 			crossedOff: 0,
 			done: 0,
 		});
+	});
+
+	it("applies each patch set's own states to its own snapshot", () => {
+		const OTHER = "d".repeat(64);
+		const both = progressOf([
+			[1, REV, { k1: "reviewed", k2: "reviewed" }],
+			[2, OTHER, { k3: "crossed-off" }],
+		]);
+		const ps1 = buildReviewView(three, both);
+		expect(ps1.patchset).toBe(1);
+		expect(ps1.files.flatMap((f) => f.clusters.map((c) => c.state))).toEqual([
+			"reviewed",
+			"reviewed",
+			"unreviewed",
+		]);
+		const ps2 = buildReviewView(
+			snapshot([three.files[0], three.files[1]] as FileSummary[], OTHER),
+			both,
+		);
+		expect(ps2.patchset).toBe(2);
+		expect(ps2.files.flatMap((f) => f.clusters.map((c) => c.state))).toEqual([
+			"unreviewed",
+			"unreviewed",
+			"crossed-off",
+		]);
+	});
+
+	it("shows a carried state with where it came from", () => {
+		const view = buildReviewView(
+			three,
+			progress({
+				k1: { state: "reviewed", carried: { from: 1, rule: "exact" } },
+				k2: {
+					state: "crossed-off",
+					reason: "generated",
+					carried: { from: 1, rule: "rename" },
+				},
+				k3: "reviewed",
+			}),
+		);
+		const [k1, k2] = view.files[0]?.clusters ?? [];
+		expect(k1).toMatchObject({
+			state: "reviewed",
+			carried: { from: 1, rule: "exact" },
+		});
+		expect(k2).toMatchObject({
+			state: "crossed-off",
+			reason: "generated",
+			carried: { from: 1, rule: "rename" },
+		});
+		expect(view.files[1]?.clusters[0]).not.toHaveProperty("carried");
+		expect(view.progress.clusters).toEqual({
+			total: 3,
+			reviewed: 2,
+			crossedOff: 1,
+		});
+	});
+
+	it("never shows a carried mark on an unreviewed cluster", () => {
+		const view = buildReviewView(
+			three,
+			progress({
+				k1: { state: "unreviewed", carried: { from: 1, rule: "exact" } },
+			}),
+		);
+		expect(view.files[0]?.clusters[0]).toEqual(
+			expect.objectContaining({ state: "unreviewed" }),
+		);
+		expect(view.files[0]?.clusters[0]).not.toHaveProperty("carried");
 	});
 });

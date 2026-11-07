@@ -81,6 +81,11 @@ export interface ClusterView extends Cluster {
 	state: ClusterState;
 	/** Only for crossed-off clusters. */
 	reason?: string;
+	/**
+	 * The state was carried by the engine from that patch set under that
+	 * rule (and not re-marked by hand since). Never on an unreviewed cluster.
+	 */
+	carried?: { from: number; rule: "exact" | "rename" };
 }
 
 export interface FileView extends Omit<FileSummary, "clusters"> {

@@ -238,12 +238,15 @@ describe("recordStates", () => {
 			]),
 		).toBe(`${snap.head}\n`);
 		const progress = await svc.getProgress(id, "dan");
-		expect(progress.patchset).toEqual({
+		expect(progress.patchset).toMatchObject({
 			number: 1,
 			revision: snap.revision,
 			mergeBase: snap.base,
 			head: snap.head,
+			since: null,
+			shape: null,
 		});
+		expect(progress.patchsets).toEqual([progress.patchset]);
 		expect(progress.states.get(k1)).toEqual({ state: "reviewed" });
 	});
 
