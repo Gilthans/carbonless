@@ -23,6 +23,24 @@ export type ShapeCode =
 	| "S6"
 	| "S7";
 
+/**
+ * What shape detection found between a patch set and a newer snapshot
+ * (src/server/rereview/shape.ts): the code, how many commits the new head
+ * has over the old one (over the merge base after a force-push), whether
+ * the old head virtually rebased onto the new base gives the new head's
+ * tree, and the virtual rebase itself: ok, with conflicts (the paths), or
+ * none could be built (unrelated histories, a shallow clone, an error).
+ */
+export interface Shape {
+	code: ShapeCode;
+	commits: number;
+	identical: boolean;
+	conflicts: string[];
+	virtualRebase: "ok" | "conflict" | "unrelated" | "shallow" | "error";
+	/** The virtual rebase's tree OID (`H1'`); null when none could be built. */
+	virtualHead: string | null;
+}
+
 export interface Cluster {
 	/** Identity, see Task 2. */
 	key: string;
