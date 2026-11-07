@@ -150,6 +150,13 @@ describe("AcpAgent", () => {
 		);
 	});
 
+	it("a stderr log that can't be opened is dropped, the agent still runs", async () => {
+		scenario();
+		// A directory: opening it for append fails (EISDIR).
+		const { agent } = await spawn({ stderrFile: dir });
+		expect((await agent.prompt(text("hi"))).text).toBe("ok");
+	});
+
 	it("ENOENT → not-found", async () => {
 		scenario();
 		const failure = await AcpAgent.spawn(

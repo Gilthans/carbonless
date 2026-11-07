@@ -142,7 +142,12 @@ async function start(
 	let file: WriteStream | null = null;
 	if (opts.stderrFile) {
 		mkdirSync(dirname(opts.stderrFile), { recursive: true });
-		file = createWriteStream(opts.stderrFile, { flags: "a" });
+		const stream = createWriteStream(opts.stderrFile, { flags: "a" });
+		// A log that can't be written is dropped, never the server.
+		stream.on("error", () => {
+			if (file === stream) file = null;
+		});
+		file = stream;
 	}
 	let tail = "";
 	const stderr = () => tail;
