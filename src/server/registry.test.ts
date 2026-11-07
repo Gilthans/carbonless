@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { acpLog, releaseAcp, useFakeAcp } from "../../test/fake-acp/scenario";
 import { prView } from "../../test/fake-gh/scenario";
+import { GIT_TEST_TIMEOUTS } from "../../test/git-fixture";
 import { createPrFixture, type PrFixture } from "../../test/pr-fixture";
 import { parseAsOf } from "./asOf";
 import {
@@ -59,33 +60,38 @@ describe("SessionRegistry", () => {
 		expect(await r.get(first.id)).toBe(first.session);
 	});
 
-	it("open returns before the agent has answered initialize; it starts after", async () => {
-		const fake = useFakeAcp(pr.repo.path, {
-			agent: { name: "fake-acp", version: "1.0.0" },
-			hold: ["initialize"],
-		});
-		try {
-			const { session } = await registry().open({ pr: pr.arg });
-			const host = session.agent;
-			if (!host) throw new Error("no agent");
-			// Held: the open did not wait for the handshake.
-			await vi.waitFor(
-				async () => expect((await host.status()).state).toBe("starting"),
-				{ timeout: 20_000, interval: 20 },
-			);
-			releaseAcp(fake.scenario, "initialize");
-			await vi.waitFor(
-				async () => expect((await host.status()).state).toBe("ready"),
-				{ timeout: 20_000, interval: 20 },
-			);
-			expect(
-				acpLog(fake.log).filter((e) => e.method === "initialize"),
-			).toHaveLength(1);
-		} finally {
-			await Promise.all(registries.splice(0).map((r) => r.closeAll()));
-			fake.restore();
-		}
-	});
+	it(
+		"open returns before the agent has answered initialize; it starts after",
+		async () => {
+			const fake = useFakeAcp(pr.repo.path, {
+				agent: { name: "fake-acp", version: "1.0.0" },
+				hold: ["initialize"],
+			});
+			try {
+				const { session } = await registry().open({ pr: pr.arg });
+				const host = session.agent;
+				if (!host) throw new Error("no agent");
+				// Held: the open did not wait for the handshake.
+				await vi.waitFor(
+					async () => expect((await host.status()).state).toBe("starting"),
+					{ timeout: 20_000, interval: 20 },
+				);
+				releaseAcp(fake.scenario, "initialize");
+				await vi.waitFor(
+					async () => expect((await host.status()).state).toBe("ready"),
+					{ timeout: 20_000, interval: 20 },
+				);
+				expect(
+					acpLog(fake.log).filter((e) => e.method === "initialize"),
+				).toHaveLength(1);
+			} finally {
+				await Promise.all(registries.splice(0).map((r) => r.closeAll()));
+				fake.restore();
+			}
+			// Real git, gh and agent processes: see GIT_TEST_TIMEOUTS.
+		},
+		GIT_TEST_TIMEOUTS.testTimeout,
+	);
 
 	it("concurrent opens of one PR share one session", async () => {
 		const r = registry();
