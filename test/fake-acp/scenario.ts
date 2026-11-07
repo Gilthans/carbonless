@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { ActivityKind, AgentStop } from "../../src/shared/agent.js";
 import { writeFileAtomic } from "../fake-gh/atomic.mjs";
@@ -71,4 +71,46 @@ export function acpLog(path: string): AcpLogEntry[] {
 		.split("\n")
 		.filter(Boolean)
 		.map((line) => JSON.parse(line) as AcpLogEntry);
+}
+
+/**
+ * Puts the fake agent on PATH (first) with scenario `s` and writes a
+ * config.json naming `claude-agent-acp` under $XDG_CONFIG_HOME, for unit
+ * tests that open real sessions. Returns the scenario and log paths and a
+ * restore() that puts the env back.
+ */
+export function useFakeAcp(
+	dir: string,
+	s: AcpScenario,
+): { scenario: string; log: string; restore: () => void } {
+	const scenario = writeAcpScenario(dir, s);
+	const log = join(dir, "fake-acp.log");
+	const saved = {
+		PATH: process.env.PATH,
+		CRB_FAKE_ACP: process.env.CRB_FAKE_ACP,
+		CRB_FAKE_ACP_LOG: process.env.CRB_FAKE_ACP_LOG,
+	};
+	process.env.PATH = `${FAKE_ACP_BIN}:${process.env.PATH}`;
+	process.env.CRB_FAKE_ACP = scenario;
+	process.env.CRB_FAKE_ACP_LOG = log;
+	const configDir = join(process.env.XDG_CONFIG_HOME as string, "carbonless");
+	mkdirSync(configDir, { recursive: true });
+	const configFile = join(configDir, "config.json");
+	writeFileAtomic(
+		configFile,
+		JSON.stringify({
+			agent: { command: "claude-agent-acp", args: [], env: {}, leash: "open" },
+		}),
+	);
+	return {
+		scenario,
+		log,
+		restore: () => {
+			for (const [k, v] of Object.entries(saved)) {
+				if (v === undefined) delete process.env[k];
+				else process.env[k] = v;
+			}
+			rmSync(configFile, { force: true });
+		},
+	};
 }
