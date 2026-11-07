@@ -49,16 +49,19 @@ export function agentTip(status: AgentStatus): string {
 }
 
 /**
- * Keeps the agent threads in step with the status: whenever its state, the
- * thread being answered or the waiting count moves, the threads are read
- * again (a reply landed, a question was taken up).
+ * Keeps the agent threads in step with the status: whenever its state
+ * (or when it last changed), the thread being answered or the waiting count
+ * moves, the threads are read again (a reply landed, a question was taken
+ * up).
  */
 export function useAgentSync(
 	client: QueryClient,
 	status: AgentStatus | undefined,
 ): void {
+	// `since` moves on every state change: a turn that began and ended
+	// between two polls still shows.
 	const key = status
-		? `${status.state}|${status.answering?.thread ?? ""}|${status.waiting}`
+		? `${status.state}|${status.since}|${status.answering?.thread ?? ""}|${status.waiting}`
 		: "";
 	const last = useRef(key);
 	useEffect(() => {

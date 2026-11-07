@@ -135,6 +135,9 @@ describe("the agent chip", () => {
 		);
 		await set(status());
 		await waitFor(() => expect(invalidate).toHaveBeenCalledTimes(2));
+		// A whole turn between two polls: ready again, but since it moved.
+		await set(status({ since: "2026-11-07T10:05:00Z" }));
+		await waitFor(() => expect(invalidate).toHaveBeenCalledTimes(3));
 		expect(invalidate).toHaveBeenCalledWith({
 			queryKey: agentThreadsQuery.queryKey,
 			exact: true,
