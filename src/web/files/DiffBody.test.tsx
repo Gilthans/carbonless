@@ -11,6 +11,7 @@ import {
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { heldJson } from "../../../test/loading";
 import type {
 	ClusterView,
 	DiffLine,
@@ -23,6 +24,7 @@ import { ignoreWhitespace, showInvisibles, sideBySide } from "../viewSettings";
 import { contextRanges } from "./contextRanges";
 import {
 	DiffBody,
+	type DiffFind,
 	type DiffThreads,
 	type FileLead,
 	LANDED_MS,
@@ -194,10 +196,17 @@ function setup(
 		twice?: boolean;
 		/** The page's query client, kept when a file closes and opens again. */
 		queryClient?: QueryClient;
+		/** The find's view of the file. */
+		find?: DiffFind;
+		/** The hunks' answer, when the test holds it. */
+		hunksResponse?: Promise<Response>;
 	} = {},
 ) {
 	const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
 		const url = new URL(String(input), "http://test");
+		if (url.pathname === "/api/files/0/hunks" && opts.hunksResponse) {
+			return opts.hunksResponse;
+		}
 		const body =
 			url.pathname === "/api/files/0/hunks"
 				? (opts.hunks ?? hunks)
@@ -230,23 +239,28 @@ function setup(
 	const threads: DiffThreads | undefined = opts.threads
 		? { readId: "r", snapshotHead: HEAD, threads: opts.threads }
 		: undefined;
-	const body = (
-		<DiffBody
-			file={file(opts.clusters ?? clusters)}
-			revision="r1"
-			onToggle={onToggle}
-			onCrossOff={onCrossOff}
-			threads={threads}
-			landing={opts.landing}
-			lead={opts.lead}
-		/>
-	);
-	render(
-		<QueryClientProvider client={queryClient}>
-			{body}
-			{opts.twice && body}
-		</QueryClientProvider>,
-	);
+	const fileView = file(opts.clusters ?? clusters);
+	const tree = (find: DiffFind | undefined) => {
+		const body = (
+			<DiffBody
+				file={fileView}
+				revision="r1"
+				onToggle={onToggle}
+				onCrossOff={onCrossOff}
+				threads={threads}
+				landing={opts.landing}
+				lead={opts.lead}
+				find={find}
+			/>
+		);
+		return (
+			<QueryClientProvider client={queryClient}>
+				{body}
+				{opts.twice && body}
+			</QueryClientProvider>
+		);
+	};
+	const { container, rerender } = render(tree(opts.find));
 	const rows = () =>
 		Array.from(
 			document.querySelectorAll<HTMLElement>('[data-testid="diff-line"]'),
@@ -271,6 +285,10 @@ function setup(
 		collapsed,
 		calls,
 		user: userEvent.setup(),
+		/** DiffBody's own root element. */
+		root: container.firstElementChild as HTMLElement,
+		/** The same DiffBody with another find. */
+		refind: (find: DiffFind | undefined) => rerender(tree(find)),
 	};
 }
 
@@ -2006,5 +2024,124 @@ describe("number columns: as wide as the file's largest line number needs", () =
 		expect(number.className).toContain(
 			"pointer-coarse:w-[max(3rem,var(--num-w,3rem))]",
 		);
+	});
+});
+
+describe("DiffBody find", () => {
+	beforeEach(() => {
+		showInvisibles.set(false);
+		window.scrollTo = vi.fn();
+	});
+	afterEach(() => {
+		cleanup();
+		contextRanges.reset();
+		vi.unstubAllGlobals();
+		vi.restoreAllMocks();
+		localStorage.clear();
+		showInvisibles.reset();
+		ignoreWhitespace.reset();
+		sideBySide.reset();
+	});
+
+	/** A find whose current hit is `current`, with no marks. */
+	const findAt = (
+		current: DiffFind["current"],
+		stepSeq = 0,
+		marksOf: DiffFind["marksOf"] = () => [],
+	): DiffFind => ({ marksOf, current, stepSeq });
+
+	it("paints the find's marks on each line's cell and the current hit's row", async () => {
+		setup({
+			find: findAt({ old: false, line: 8 }, 0, (side, line) =>
+				side === "RIGHT" && line === 8
+					? [{ from: 6, to: 7, current: true }]
+					: side === "LEFT" && line === 8
+						? [{ from: 6, to: 7, current: false }]
+						: [],
+			),
+		});
+		await screen.findByText("line 12");
+		const added = document.querySelector('tr[data-new-no="8"]') as HTMLElement;
+		expect(added).toHaveAttribute("data-find-current");
+		expect(added).toHaveClass("mark-tint");
+		expect(added.querySelector("[data-find-current]")?.textContent).toBe("x");
+		const deleted = document.querySelector(
+			'tr[data-old-no="8"]:not([data-new-no])',
+		) as HTMLElement;
+		expect(deleted.querySelector("[data-find-mark]")?.textContent).toBe("x");
+		expect(deleted).not.toHaveAttribute("data-find-current");
+		expect(deleted.querySelector("[data-find-current]")).toBeNull();
+		expect(deleted).not.toHaveClass("mark-tint");
+		// No other row is current.
+		expect(document.querySelectorAll("tr[data-find-current]")).toHaveLength(1);
+	});
+
+	it("side by side, the current hit paints its side's cell; a context line both cells", async () => {
+		sideBySide.set(true);
+		const code = (row: Element, side: "LEFT" | "RIGHT") =>
+			row.querySelector(`td[data-testid="code"][data-side="${side}"]`);
+		const { refind } = setup({ find: findAt({ old: true, line: 8 }) });
+		// A context line shows on both sides.
+		await screen.findAllByText("line 12");
+		const pair = document.querySelector('tr[data-old-no="8"]') as HTMLElement;
+		expect(pair).toHaveAttribute("data-new-no", "8");
+		expect(code(pair, "LEFT")).toHaveAttribute("data-find-current");
+		expect(code(pair, "LEFT")).toHaveClass("mark-tint-cell");
+		expect(code(pair, "RIGHT")).not.toHaveAttribute("data-find-current");
+		expect(code(pair, "RIGHT")).not.toHaveClass("mark-tint-cell");
+		expect(document.querySelectorAll("td[data-find-current]")).toHaveLength(1);
+		refind(findAt({ old: false, line: 5 }));
+		const row5 = document.querySelector('tr[data-new-no="5"]') as HTMLElement;
+		expect(row5.dataset.kind).toBe("context");
+		expect(code(row5, "LEFT")).toHaveAttribute("data-find-current");
+		expect(code(row5, "RIGHT")).toHaveAttribute("data-find-current");
+		expect(code(row5, "LEFT")).toHaveClass("mark-tint-cell");
+		expect(code(row5, "RIGHT")).toHaveClass("mark-tint-cell");
+		expect(code(pair, "LEFT")).not.toHaveAttribute("data-find-current");
+	});
+
+	it("a step scrolls the current hit's row under the sticky stack once the hunks are in", async () => {
+		const held = heldJson();
+		const current = { old: false, line: 8 };
+		const { root, refind } = setup({
+			find: findAt(current, 1),
+			hunksResponse: held.response,
+		});
+		// The sticky stack: the app header and the files bar.
+		root.style.setProperty("--app-header", "48px");
+		root.style.setProperty("--files-bar", "40px");
+		vi.spyOn(
+			HTMLTableRowElement.prototype,
+			"getBoundingClientRect",
+		).mockImplementation(function (this: HTMLTableRowElement) {
+			return {
+				top: this.dataset.newNo === "8" && !this.dataset.oldNo ? 500 : 0,
+			} as DOMRect;
+		});
+		await waitFor(() =>
+			expect(screen.queryByText("line 12")).not.toBeInTheDocument(),
+		);
+		expect(window.scrollTo).not.toHaveBeenCalled();
+		await act(async () => held.release(hunks));
+		await screen.findByText("line 12");
+		await waitFor(() => expect(window.scrollTo).toHaveBeenCalledTimes(1));
+		// A few lines of context above it stay in view (useLanding's 60).
+		expect(window.scrollTo).toHaveBeenCalledWith({ top: 500 - 48 - 40 - 60 });
+		// The same step again (any re-render) doesn't scroll.
+		refind(findAt({ ...current }, 1));
+		expect(window.scrollTo).toHaveBeenCalledTimes(1);
+		// The next step does.
+		refind(findAt(current, 2));
+		expect(window.scrollTo).toHaveBeenCalledTimes(2);
+	});
+
+	it("a collapsed whitespace-only cluster holding the current hit opens", async () => {
+		ignoreWhitespace.set(true);
+		const { collapsed } = setup({ find: findAt({ old: false, line: 3 }) });
+		await screen.findByText("Whitespace only · 6 lines");
+		expect(collapsed()[0]).toHaveAttribute("data-expanded");
+		const row = document.querySelector('tr[data-new-no="3"]') as HTMLElement;
+		expect(row).not.toBeNull();
+		expect(row).toHaveAttribute("data-find-current");
 	});
 });
