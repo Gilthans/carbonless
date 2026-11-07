@@ -49,6 +49,7 @@ import { ErrorMessage } from "../ui";
 import { NOT_PHONE, useMedia } from "../useMedia";
 import { ignoreWhitespace, sideBySide } from "../viewSettings";
 import { type CellLine, CODE_CELL, cellLine } from "./codeSpan";
+import { contextRanges } from "./contextRanges";
 import { EXPAND_STEP, fileGaps, type Gap, gapState } from "./gaps";
 import { languageFor } from "./highlight";
 import type { Landing } from "./landing";
@@ -1315,7 +1316,7 @@ export function DiffBody(props: {
 	const columns = columnsOf(view);
 	// Unified, the file bubble is centred on rows that aren't code (FileBubbleSlot).
 	const centred = view === "unified";
-	const [ranges, setRanges] = useState<[number, number][]>([]);
+	const ranges = contextRanges.use(revision, file.index);
 	const contexts = useQueries({
 		queries: ranges.map(([from, to]) =>
 			contextQuery(revision, file.index, from, to),
@@ -1375,9 +1376,7 @@ export function DiffBody(props: {
 		? fileGaps(hunks.data.hunks, hunks.data.newLineCount)
 		: [];
 	const addRange = (from: number, to: number) =>
-		setRanges((r) =>
-			r.some(([f, t]) => f === from && t === to) ? r : [...r, [from, to]],
-		);
+		contextRanges.add(revision, file.index, from, to);
 
 	// New threads being written on this file's lines, on the viewed head;
 	// those on another head are orphans (their lines are gone).

@@ -21,6 +21,7 @@ import type {
 import { reviewQuery } from "../api";
 import { resetShowInvisibles, setShowInvisibles } from "../code/Invisibles";
 import { ignoreWhitespace } from "../viewSettings";
+import { contextRanges } from "./contextRanges";
 import { FileDiff, UNDO_ARM_MS } from "./FileDiff";
 import { SyncNotices } from "./SyncNotices";
 import type { Unit } from "./unit";
@@ -199,6 +200,7 @@ describe("FileDiff", () => {
 	afterEach(() => {
 		localStorage.clear();
 		resetShowInvisibles();
+		contextRanges.reset();
 		ignoreWhitespace.reset();
 		cleanup();
 		vi.unstubAllGlobals();

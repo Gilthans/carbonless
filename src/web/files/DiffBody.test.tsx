@@ -20,6 +20,7 @@ import type {
 } from "../../shared/types";
 import { openComposer, resetComposers } from "../threads/newThreads";
 import { ignoreWhitespace, showInvisibles, sideBySide } from "../viewSettings";
+import { contextRanges } from "./contextRanges";
 import {
 	DiffBody,
 	type DiffThreads,
@@ -191,6 +192,8 @@ function setup(
 		lead?: FileLead;
 		/** Two files' tables in one tree (the same file twice). */
 		twice?: boolean;
+		/** The page's query client, kept when a file closes and opens again. */
+		queryClient?: QueryClient;
 	} = {},
 ) {
 	const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
@@ -217,9 +220,11 @@ function setup(
 		return new Response(JSON.stringify(body), { status: 200 });
 	});
 	vi.stubGlobal("fetch", fetchMock);
-	const queryClient = new QueryClient({
-		defaultOptions: { queries: { retry: false } },
-	});
+	const queryClient =
+		opts.queryClient ??
+		new QueryClient({
+			defaultOptions: { queries: { retry: false } },
+		});
 	const onToggle = vi.fn();
 	const onCrossOff = vi.fn();
 	const threads: DiffThreads | undefined = opts.threads
@@ -277,6 +282,7 @@ describe("DiffBody with Ignore whitespace", () => {
 	});
 	afterEach(() => {
 		cleanup();
+		contextRanges.reset();
 		vi.unstubAllGlobals();
 		localStorage.clear();
 		showInvisibles.reset();
@@ -717,6 +723,7 @@ describe("DiffBody side by side", () => {
 	});
 	afterEach(() => {
 		cleanup();
+		contextRanges.reset();
 		vi.unstubAllGlobals();
 		localStorage.clear();
 		showInvisibles.reset();
@@ -1661,6 +1668,33 @@ describe("DiffBody side by side", () => {
 		act(() => sideBySide.set(true));
 		expect(collapsed()[0]).toHaveAttribute("data-expanded");
 		expect(lineRows()).toHaveLength(12);
+	});
+
+	it("keeps expanded context when the file closes and opens again", async () => {
+		const queryClient = new QueryClient({
+			defaultOptions: { queries: { retry: false } },
+		});
+		const open = () =>
+			setup({ hunks: { ...hunks, newLineCount: 20 }, queryClient });
+		const first = open();
+		const gap = (await screen.findAllByTestId("gap-row"))[0] as HTMLElement;
+		await first.user.click(
+			within(gap).getAllByRole("button", { name: /below/ })[0] as HTMLElement,
+		);
+		await waitFor(() =>
+			expect(document.querySelector('tr[data-new-no="13"]')).not.toBeNull(),
+		);
+		const loads = (calls: string[]) =>
+			calls.filter((url) => url.includes("/context")).length;
+		expect(loads(first.calls())).toBe(1);
+
+		// The file closes (DiffBody unmounts) and opens again.
+		cleanup();
+		const again = open();
+		await waitFor(() =>
+			expect(document.querySelector('tr[data-new-no="13"]')).not.toBeNull(),
+		);
+		expect(loads(again.calls())).toBe(0);
 	});
 
 	it("spans every table-wide row over six columns, five in unified", async () => {

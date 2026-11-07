@@ -589,6 +589,32 @@ test("loading more lines", async ({ page, pr, startCrb }) => {
 	await expect(line("core 1").getByTestId("old")).toHaveText("1");
 });
 
+test("expanded context is still there after closing and reopening the file", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	await pr(fixture);
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	const section = await expand(page, "src/core.ts");
+	const line = (content: string) =>
+		section
+			.getByTestId("diff-line")
+			.filter({ hasText: new RegExp(`${content}$`) });
+	await expect(line("core 9")).toHaveCount(0);
+	await section.getByRole("button", { name: "Load all 3 lines" }).click();
+	await expect(line("core 9")).toHaveCount(1);
+
+	await section.getByRole("button", { name: "Collapse file" }).click();
+	await expect(section.getByTestId("diff-line")).toHaveCount(0);
+	await section.getByRole("button", { name: "Expand file" }).click();
+	await expect(line("core 9")).toHaveCount(1);
+	await expect(
+		section.getByRole("button", { name: "Load all 3 lines" }),
+	).toHaveCount(0);
+});
+
 test("files start collapsed", async ({ page, pr, startCrb }) => {
 	await pr(fixture);
 	const s = await startCrb();
