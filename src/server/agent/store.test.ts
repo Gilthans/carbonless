@@ -145,6 +145,45 @@ describe("AgentThreadStore", () => {
 		expect(reply.waiting).toBe(true);
 	});
 
+	it("a reply sent during a turn still waits after the answer lands (replyTo), also for a fresh store", async () => {
+		const t = await ask("Why a lock?", "c1");
+		const asked = t.messages[0]?.id as string;
+		// The reply lands while the agent answers the first question.
+		await store.message(t.id, {
+			by: "human",
+			text: "And here?",
+			clientId: "c2",
+		});
+		const after = await store.message(t.id, {
+			by: "ai",
+			text: "Two writers race.",
+			agent,
+			stop: "end_turn",
+			activity: [],
+			replyTo: asked,
+		});
+		expect(after.messages.map((m) => m.text)).toEqual([
+			"Why a lock?",
+			"And here?",
+			"Two writers race.",
+		]);
+		expect(after.messages[2]?.replyTo).toBe(asked);
+		expect(after.waiting).toBe(true);
+		const fresh = new AgentThreadStore(new RefStore(repo), REVIEW, "dan");
+		expect((await fresh.read())[0]?.waiting).toBe(true);
+		// Answered with the reply in the prompt: no longer waiting.
+		const reply = after.messages[1]?.id as string;
+		const done = await store.message(t.id, {
+			by: "ai",
+			text: "Here too.",
+			agent,
+			stop: "end_turn",
+			activity: [],
+			replyTo: reply,
+		});
+		expect(done.waiting).toBe(false);
+	});
+
 	it("open with a seen clientId returns the same thread (also after a fresh store on the same repo)", async () => {
 		const t = await ask("Why?", "c1");
 		expect(await ask("Why?", "c1")).toEqual(t);

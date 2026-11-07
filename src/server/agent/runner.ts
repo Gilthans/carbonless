@@ -124,12 +124,6 @@ export class AgentRunner {
 	#prompted = false;
 	/** A rejected permission's reason, for the thread's next envelope. */
 	readonly #notices = new Map<string, string>();
-	/**
-	 * Threads with a human message sent while their turn ran: the reply
-	 * lands after it, so the thread reads answered, but that message
-	 * wasn't in the prompt. Answered next (in memory only).
-	 */
-	readonly #owed = new Set<string>();
 	/** Agents that went away by crashing (their last turn is stored). */
 	readonly #crashedAgents = new WeakSet<AcpAgent>();
 	#pump: Promise<void> | null = null;
@@ -404,9 +398,7 @@ export class AgentRunner {
 			if (this.#closed || this.#proc?.agent !== agent) return;
 			if (this.#proc.key !== this.#key || !agent.alive) return;
 			const threads = await this.#deps.store.read();
-			const next = threads.find(
-				(t) => !t.resolved && (t.waiting || this.#owed.has(t.id)),
-			);
+			const next = threads.find((t) => !t.resolved && t.waiting);
 			if (!next) {
 				if (this.#current(agent)) this.#set("ready");
 				return;
@@ -456,8 +448,9 @@ export class AgentRunner {
 			facts.hunk(thread.anchor).catch(() => null),
 		]);
 		if (this.#closed || this.#proc?.agent !== agent) return false;
-		this.#owed.delete(thread.id);
-		const asked = humans(thread);
+		// The answer names the last human message it saw: a reply sent while
+		// the turn runs lands before the answer and still waits (the fold).
+		const asked = thread.messages.findLast((m) => m.by === "human")?.id;
 		const answering: Answering = {
 			thread: thread.id,
 			text: "",
@@ -483,14 +476,14 @@ export class AgentRunner {
 			this.#closed ||
 			(this.#proc?.agent !== agent && !this.#crashedLast(agent));
 		if (stoppedOnPurpose) return false;
-		let stored: AgentThreadFold;
 		try {
-			stored = await this.#deps.store.message(thread.id, {
+			await this.#deps.store.message(thread.id, {
 				by: "ai",
 				text: reply.text,
 				agent: agent.info,
 				stop: reply.stop,
 				activity: answering.activity,
+				...(asked ? { replyTo: asked } : {}),
 			});
 		} catch (error) {
 			this.#set("error", {
@@ -498,7 +491,6 @@ export class AgentRunner {
 			});
 			return false;
 		}
-		if (humans(stored) > asked) this.#owed.add(thread.id);
 		// Gone (a crash): onExit says so; the next question respawns.
 		if (this.#proc?.agent !== agent || !agent.alive) return false;
 		if (reply.stop !== "error") this.#crashes = 0;
@@ -553,9 +545,6 @@ export class AgentRunner {
 		return d.response;
 	}
 }
-
-const humans = (t: AgentThreadFold): number =>
-	t.messages.filter((m) => m.by === "human").length;
 
 function startError(error: unknown): string {
 	if (error instanceof AgentStartError) {

@@ -69,6 +69,8 @@ export interface AgentMessage {
 	agent?: AgentIdentity;
 	stop?: AgentStop;
 	activity?: AgentActivity[];
+	/** ai only: the id of the last human message its prompt included. */
+	replyTo?: string;
 }
 
 export interface AgentThread {
@@ -78,7 +80,10 @@ export interface AgentThread {
 	at: string;
 	messages: AgentMessage[];
 	resolved: boolean;
-	/** last message is a human's */
+	/**
+	 * A human message no answer has seen: the last message is a human's,
+	 * or one came after the last answer's `replyTo`.
+	 */
 	waiting: boolean;
 	code?: CodeWindow;
 }

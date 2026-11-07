@@ -245,6 +245,11 @@ describe("AgentRunner", () => {
 			"a b",
 		]);
 		expect(second?.messages[2]?.author).toEqual({ role: "agent" });
+		// Durable: the first answer names the question it saw, so the reply
+		// waited in the ref itself, not in the runner's memory.
+		const stored = (await threads())[0]?.messages ?? [];
+		expect(stored[2]?.replyTo).toBe(stored[0]?.id);
+		expect(stored[3]?.replyTo).toBe(stored[1]?.id);
 	});
 
 	it("status reports starting → ready → busy → ready with answering.text growing while held", async () => {

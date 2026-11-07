@@ -320,7 +320,7 @@ tree, slug identities, compare-and-swap). Written by
 | Type | By | Payload |
 |---|---|---|
 | `agent-thread-opened` | human or ai | `thread` (lowercase ULID), `anchor` (`subject` `line`: path, commit, side, line, startSide, startLine, optional columns; or `file`: path, commit), `text`, optional `truncated`; `agent` `{name, version}` (required by ai); a human's carries `details.clientId` |
-| `agent-message` | human or ai | `thread`, `text`, optional `truncated`; ai: `agent`, `stop` (the ACP stop reason or `error`), `activity` (`{kind, title, decision?}`, titles only); a human's carries `details.clientId` |
+| `agent-message` | human or ai | `thread`, `text`, optional `truncated`; ai: `agent`, `stop` (the ACP stop reason or `error`), `activity` (`{kind, title, decision?}`, titles only), `replyTo` (the event id of the last human message the prompt included; a lower ULID, ai only); a human's carries `details.clientId` |
 | `agent-thread-resolved` | human | `thread`, `resolved` (`false` reopens) |
 
 - **Write rule**, enforced on write and on read: the agent may open a
@@ -329,8 +329,13 @@ tree, slug identities, compare-and-swap). Written by
   `agent`.
 - **Fold:** deduplicate by `id`, sort by `(ts, id)`. Threads in the order
   they were opened; the opening text is the first message. A thread waits
-  while its last message is a human's (an agent-opened one doesn't until
-  the reviewer replies); resolved is the last `agent-thread-resolved`'s
+  while a human message has no answer: one comes after the last ai
+  message's `replyTo` (the last human message its prompt included), or,
+  for an ai message without `replyTo`, after that ai message; with no ai
+  message, any human message waits (an agent-opened one doesn't until the
+  reviewer replies). A reply sent while its thread's turn runs is stamped
+  before the answer, so `replyTo` is what keeps it waiting, across
+  restarts; resolved is the last `agent-thread-resolved`'s
   word, false before any. Messages and resolves of a thread never opened
   are dropped. New events are stamped after the ref's newest.
 - **Resends:** a human's question carries the page's `clientId` in

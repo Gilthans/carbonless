@@ -139,6 +139,11 @@ export interface AgentMessageEvent extends EventBase {
 	agent?: AgentIdentity;
 	stop?: AgentStop;
 	activity?: AgentActivity[];
+	/**
+	 * ai only: the event id of the last human message the prompt included.
+	 * A human message after it still waits for an answer.
+	 */
+	replyTo?: string;
 }
 
 export interface AgentThreadResolvedEvent extends EventBase {
@@ -578,6 +583,15 @@ function parseAgentEvent(
 			const activity =
 				raw.activity === undefined ? undefined : parseActivity(raw.activity);
 			if (activity === null) return null;
+			const { replyTo } = raw;
+			if (
+				replyTo !== undefined &&
+				(base.by !== "ai" ||
+					typeof replyTo !== "string" ||
+					!LOWER_ULID.test(replyTo))
+			) {
+				return null;
+			}
 			return {
 				...base,
 				type: "agent-message",
@@ -586,6 +600,7 @@ function parseAgentEvent(
 				...extras,
 				...(stop !== undefined ? { stop: stop as AgentStop } : {}),
 				...(activity ? { activity } : {}),
+				...(replyTo !== undefined ? { replyTo } : {}),
 			};
 		}
 		case "agent-thread-resolved": {

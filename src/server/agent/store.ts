@@ -67,13 +67,16 @@ function messageOf(
 		...(e.type === "agent-message" && e.activity
 			? { activity: e.activity }
 			: {}),
+		...(e.type === "agent-message" && e.replyTo !== undefined
+			? { replyTo: e.replyTo }
+			: {}),
 	};
 }
 
 /**
  * The threads, in the order they were opened: events deduplicated by id and
  * sorted by (ts, id). A thread's opening text is its first message; it waits
- * when its last message is a human's; resolved is the last resolve's word.
+ * while a human message has no answer (isWaiting); resolved is the last resolve's word.
  * Messages and resolves of a thread never opened are dropped.
  */
 export function foldAgentThreads(
@@ -113,8 +116,31 @@ export function foldAgentThreads(
 		}
 	}
 	const out = [...threads.values()];
-	for (const t of out) t.waiting = t.messages.at(-1)?.by === "human";
+	for (const t of out) t.waiting = isWaiting(t.messages);
 	return out;
+}
+
+/**
+ * Whether a human message waits for an answer: one after the last ai
+ * message's `replyTo` (the last human message its prompt included), or,
+ * for an ai message without it, after that ai message.
+ */
+function isWaiting(messages: readonly AgentMessage[]): boolean {
+	let lastAi = -1;
+	for (let i = messages.length - 1; i >= 0; i--) {
+		if (messages[i]?.by === "ai") {
+			lastAi = i;
+			break;
+		}
+	}
+	const ai = messages[lastAi];
+	if (!ai) return messages.length > 0;
+	const answered = ai.replyTo
+		? messages.findIndex((m) => m.id === ai.replyTo)
+		: lastAi;
+	// A replyTo the fold doesn't hold: the ai message itself is the mark.
+	const mark = answered < 0 ? lastAi : answered;
+	return messages.some((m, i) => i > mark && m.by === "human");
 }
 
 /** The text within MAX_AGENT_TEXT UTF-8 bytes, cut on a code point boundary. */
@@ -152,6 +178,8 @@ type MessageInput =
 			agent: AgentIdentity;
 			stop: AgentStop;
 			activity: AgentActivity[];
+			/** The id of the last human message the prompt included. */
+			replyTo?: string;
 	  };
 
 /**
@@ -239,6 +267,7 @@ export class AgentThreadStore {
 								agent: input.agent,
 								stop: input.stop,
 								activity: capActivity(input.activity),
+								...(input.replyTo ? { replyTo: input.replyTo } : {}),
 							}
 						: { details: { clientId: input.clientId } }),
 				},

@@ -350,6 +350,20 @@ describe("agent events", () => {
 		]);
 	});
 
+	it("keeps an ai message's replyTo; drops a bad one or a human's", () => {
+		const answering = { ...reply, replyTo: opened.id };
+		expect(parseEventLines(msg([answering]))).toEqual([answering]);
+		expect(
+			parseEventLines(
+				msg([
+					{ ...reply, replyTo: "NOT-A-ULID" },
+					{ ...reply, replyTo: 7 },
+					{ ...reply, by: "human", replyTo: opened.id },
+				]),
+			),
+		).toEqual([]);
+	});
+
 	it("drops agent-thread-resolved by ai and an ai opened thread without agent", () => {
 		const aiResolved = { ...resolved, by: "ai" };
 		const aiOpened = { ...opened, by: "ai" };
