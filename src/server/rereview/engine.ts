@@ -323,10 +323,24 @@ export async function traceRereview(
 	// A since cluster with no image whose lines the interdiff doesn't show
 	// either (no removal at its place in the virtual rebase, no restored
 	// line in the new head) went into the base: absorbed, not gone.
+	// A file-level since cluster (binary, submodule, mode) is shown by the
+	// interdiff's file-level cluster, or deletion, of the path it came from.
+	const fileKeys = new Map<string, string[]>();
+	for (const file of ps.snapshot.files) {
+		fileKeys.set(
+			file.path,
+			file.clusters.filter((c) => c.kind === "file").map((c) => c.key),
+		);
+	}
 	const shown = new Set<string>();
 	for (const f of interdiff.files) {
 		const old = lineKeys.old[f.oldPath ?? f.path] ?? {};
 		const fresh = lineKeys.new[f.path] ?? {};
+		if (f.status === "deleted" || f.clusters.some((c) => c.kind === "file")) {
+			for (const key of fileKeys.get(f.oldPath ?? f.path) ?? []) {
+				shown.add(key);
+			}
+		}
 		for (const c of f.clusters) {
 			if (c.kind !== "lines") continue;
 			for (let i = 0; i < c.oldCount; i++) {

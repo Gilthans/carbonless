@@ -503,6 +503,44 @@ describe("the engine", () => {
 		expect(kinds(reverted.answer)["extra.txt"]).toEqual(["gone:1"]);
 	});
 
+	it("R1: a reviewed binary file the author removes again is gone, not absorbed", async () => {
+		const fx = createGitFixture([
+			{ message: "base", files: { "a.txt": "a1\na2\n" } },
+		]);
+		try {
+			const git = (...args: string[]) =>
+				execFileSync("git", args, {
+					cwd: fx.path,
+					encoding: "utf8",
+					stdio: "pipe",
+					env: testGitEnv(),
+				}).trim();
+			const b0 = fx.shas[0] as string;
+			writeFileSync(join(fx.path, "bin.dat"), Buffer.from([0, 1, 2]));
+			git("add", "--all");
+			git("commit", "--quiet", "-m", "PR: bin.dat");
+			const p1 = git("rev-parse", "HEAD");
+			git("rm", "--quiet", "bin.dat");
+			git("commit", "--quiet", "-m", "PR: drop bin.dat");
+			const h2 = git("rev-parse", "HEAD");
+			const ps1 = await buildSnapshot(fx.path, b0, p1);
+			expect(ps1.files.map((f) => f.clusters.map((c) => c.kind))).toEqual([
+				["file"],
+			]);
+			const result = await computeRereview(
+				fx.path,
+				since(1, ps1, marked(ps1)),
+				[],
+				targetOf(await buildSnapshot(fx.path, b0, h2)),
+			);
+			expect(result.answer.shape.code).toBe("S1");
+			expect(kinds(result.answer)).toEqual({ "bin.dat": ["gone:1"] });
+			expect(result.absorbed).toEqual([]);
+		} finally {
+			fx.cleanup();
+		}
+	});
+
 	it("the cache key names the since and earlier snapshots, not their numbers", () => {
 		const a = "a".repeat(64);
 		const b = "b".repeat(64);
