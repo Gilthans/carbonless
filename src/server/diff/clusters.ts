@@ -192,6 +192,7 @@ export function clustersFromSection(
  * the listing. Each file must have exactly one section and every section
  * must belong to a listed file, or this throws.
  * `encodings[i]`: how to decode file i's lines (default: per section).
+ * `paths`: the pathspec the listing was made with, if any.
  */
 export async function buildAllClusters(
 	repo: string,
@@ -199,6 +200,7 @@ export async function buildAllClusters(
 	head: string,
 	files: ChangedFile[],
 	encodings: (TextEncoding | undefined)[] = [],
+	paths: string[] = [],
 ): Promise<Omit<Cluster, "key">[][]> {
 	const patch = await runGitBuffer(repo, [
 		...DIFF_ARGS,
@@ -206,6 +208,7 @@ export async function buildAllClusters(
 		base,
 		head,
 		"--",
+		...paths,
 	]);
 	const sections = splitPatch(patch);
 	const result = files.map((file, i) => {

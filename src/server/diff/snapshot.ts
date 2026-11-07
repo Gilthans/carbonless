@@ -30,7 +30,7 @@ function remember(oid: string, bytes: Buffer): void {
 const isZeroOid = (oid: string) => /^0+$/.test(oid);
 
 /** Reads blobs by OID with one `git cat-file --batch` for all cache misses. */
-async function readBlobs(
+export async function readBlobs(
 	repo: string,
 	oids: string[],
 ): Promise<Map<string, Buffer>> {
@@ -81,14 +81,14 @@ async function resolveBlobs(repo: string, names: string[]): Promise<string[]> {
 }
 
 /** Old and new text of a file, decoded the same way on both sides. */
-interface FileText {
+export interface FileText {
 	encoding: TextEncoding;
 	oldLines: string[];
 	newLines: string[];
 	noNewlineAtEnd: boolean;
 }
 
-function fileText(oldBytes: Buffer, newBytes: Buffer): FileText {
+export function fileText(oldBytes: Buffer, newBytes: Buffer): FileText {
 	const encoding = chooseEncoding(oldBytes, newBytes);
 	const after = decodeLines(newBytes, encoding);
 	return {

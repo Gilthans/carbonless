@@ -1,113 +1,19 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { GIT_TEST_TIMEOUTS, testGitEnv } from "../../../test/git-fixture";
 import {
-	createGitFixture,
-	GIT_TEST_TIMEOUTS,
-	testGitEnv,
-} from "../../../test/git-fixture";
+	createRereviewHistory,
+	type RereviewHistory,
+} from "../../../test/rereview-fixture";
 import { checkOid, detectShape, type Endpoints } from "./shape";
 
 // Real git processes: see GIT_TEST_TIMEOUTS.
 vi.setConfig(GIT_TEST_TIMEOUTS);
 
-const LINES = Array.from({ length: 40 }, (_, i) => `line ${i + 1}`);
-const aTxt = (changes: Record<number, string>) =>
-	`${LINES.map((l, i) => changes[i + 1] ?? l).join("\n")}\n`;
-
-/**
- * One PR history with every shape the engine tells apart: the PR (two
- * commits on b0) and the base moving on (b1), with and without touching a
- * line the PR changed (b1c), and each way the author may have updated.
- */
-function history() {
-	const fx = createGitFixture([
-		{ message: "base", files: { "a.txt": aTxt({}) } },
-	]);
-	const git = (...args: string[]) =>
-		execFileSync("git", args, {
-			cwd: fx.path,
-			encoding: "utf8",
-			stdio: "pipe",
-			env: testGitEnv(),
-		}).trim();
-	const commit = (message: string, files: Record<string, string>) => {
-		for (const [name, content] of Object.entries(files)) {
-			writeFileSync(join(fx.path, name), content);
-		}
-		git("add", "--all");
-		git("commit", "--quiet", "-m", message);
-		return git("rev-parse", "HEAD");
-	};
-	const checkout = (sha: string) => git("checkout", "--quiet", "--detach", sha);
-	const b0 = fx.shas[0] as string;
-	const p1 = commit("PR: line 2", { "a.txt": aTxt({ 2: "two" }) });
-	const p2 = commit("PR: line 30", {
-		"a.txt": aTxt({ 2: "two", 30: "thirty" }),
-	});
-	const h3 = commit("PR: line 35", {
-		"a.txt": aTxt({ 2: "two", 30: "thirty", 35: "thirty-five" }),
-	});
-	checkout(b0);
-	const b1 = commit("base: line 15", { "a.txt": aTxt({ 15: "fifteen" }) });
-	checkout(b0);
-	const b1c = commit("base: line 30", { "a.txt": aTxt({ 30: "thirty-base" }) });
-	// S3: the base merged into the PR.
-	checkout(p2);
-	git("merge", "--quiet", "--no-ff", "-m", "Merge base", b1);
-	const merged = git("rev-parse", "HEAD");
-	// S4a: a trivial rebase onto b1.
-	checkout(b1);
-	git("cherry-pick", "--quiet", p1, p2);
-	const rebased = git("rev-parse", "HEAD");
-	// S4c: a rebase plus an amend.
-	git("commit", "--quiet", "--amend", "--no-edit", "--allow-empty");
-	const amended = commit("PR: line 30, amended", {
-		"a.txt": aTxt({ 2: "two", 15: "fifteen", 30: "thirty!" }),
-	});
-	// S4b: a rebase onto a base that changed line 30 too, resolved by hand.
-	checkout(b1c);
-	git("cherry-pick", "--quiet", p1);
-	const resolved = commit("PR: line 30 (resolved)", {
-		"a.txt": aTxt({ 2: "two", 30: "thirty resolved" }),
-	});
-	// S5: the two PR commits squashed into one, same content.
-	checkout(b0);
-	git("merge", "--quiet", "--squash", p2);
-	git("commit", "--quiet", "-m", "PR (squashed)");
-	const squashed = git("rev-parse", "HEAD");
-	// Unrelated: another root.
-	git("checkout", "--quiet", "--orphan", "other");
-	git("rm", "-rfq", ".");
-	const orphan = commit("orphan", { "z.txt": "z\n" });
-	const orphanHead = commit("orphan: more", { "z.txt": "zz\n" });
-	git("checkout", "--quiet", "main");
-	// Branches for the shallow clone to fetch.
-	git("branch", "-f", "pr", p2);
-	git("branch", "-f", "rebased", rebased);
-	git("branch", "-f", "moved", b1);
-	return {
-		path: fx.path,
-		cleanup: fx.cleanup,
-		b0,
-		p1,
-		p2,
-		h3,
-		b1,
-		b1c,
-		merged,
-		rebased,
-		amended,
-		resolved,
-		squashed,
-		orphan,
-		orphanHead,
-	};
-}
-
-type History = ReturnType<typeof history>;
+type History = RereviewHistory;
 
 const ep = (
 	mergeBase: string,
@@ -123,7 +29,7 @@ describe("detectShape", () => {
 	let h: History;
 	let tree: (rev: string) => string;
 	beforeAll(() => {
-		h = history();
+		h = createRereviewHistory();
 		tree = (rev) =>
 			execFileSync("git", ["rev-parse", `${rev}^{tree}`], {
 				cwd: h.path,
