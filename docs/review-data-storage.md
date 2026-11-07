@@ -285,12 +285,15 @@ a reader drops what breaks them:
   append-only, so there's nothing to merge.
 - **Several refs at once** (progress and the new `patchsets/<n>` and
   `patchsets/<n>-base` refs when a patch set starts) use one
-  `git update-ref --stdin` transaction. A start that loses the race on the
-  progress ref reads again and retries: if the snapshot is a patch set by
-  now, nothing is written; if another tab started a different patch set in
-  between, the start is refused as stale (its `since` and carries were
-  computed against the patch set that was the latest), and the client
-  computes it again.
+  `git update-ref --stdin` transaction. A start's `since` must be the
+  latest patch set's number as the store holds it at that moment (none for
+  PS1): its carries were computed against that patch set, and landing them
+  past a newer one would skip that one's human states (principle 2: an
+  untick there must stand). A start whose `since` is anything else is
+  refused as stale (HTTP 409), whether it lost a race just now or was
+  computed long ago, and the client computes it again. A start that loses
+  the race on the progress ref reads again and retries; if the snapshot is
+  a patch set by now, nothing is written.
 - **Starting the next patch set.** `recordStates` on a snapshot that is none
   of the reviewer's patch sets starts one when told how
   (`PatchsetStart`: `since`, `shape`, `baseBranch`, `interdiff` and the

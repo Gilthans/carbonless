@@ -56,6 +56,8 @@ const pr: ReviewPr = {
 let fixture: GitFixture;
 /** Same tree and parent as the PR head, different commit: a force-push. */
 let rewrittenHead: string;
+/** Same tree again, on top of the rewritten head: a third distinct head. */
+let thirdHead: string;
 let repo: string;
 let cleanup: () => void;
 let store: RefStore;
@@ -85,6 +87,15 @@ beforeAll(() => {
 		"head, rebased",
 	);
 	fixtureGit("branch", "rewritten", rewrittenHead);
+	thirdHead = fixtureGit(
+		"commit-tree",
+		`${head}^{tree}`,
+		"-p",
+		rewrittenHead,
+		"-m",
+		"head, rebased again",
+	);
+	fixtureGit("branch", "third", thirdHead);
 });
 afterAll(() => fixture.cleanup());
 
@@ -96,6 +107,7 @@ beforeEach(async () => {
 		fixture.path,
 		"main:refs/heads/main",
 		"rewritten:refs/heads/rewritten",
+		"third:refs/heads/third",
 	]);
 	store = new RefStore(repo);
 	svc = new ReviewService(store);
@@ -836,6 +848,91 @@ describe("patch set n+1", () => {
 			state: "reviewed",
 		});
 		expect(final.patchset?.number).toBe(2);
+	});
+
+	it("a start whose since isn't the latest patch set is stale, however it arrives", async () => {
+		// PS1: k1 reviewed. PS2 carries it; the reviewer unticks it there.
+		await svc.recordStates(id, "dan", snap, [{ key: k1, state: "reviewed" }]);
+		const carryK1 = {
+			type: "carried" as const,
+			from: 1,
+			rule: "exact" as const,
+			states: [{ key: k1, fromKey: k1, state: "reviewed" as const }],
+		};
+		await svc.ensurePatchset(
+			id,
+			"dan",
+			otherSnap,
+			start({ carried: [carryK1] }),
+		);
+		await svc.recordStates(id, "dan", otherSnap, [
+			{ key: k1, state: "unreviewed" },
+		]);
+		// A tab whose engine answer was computed while PS1 was the latest:
+		// landing it would carry PS1's reviewed over PS2's untick.
+		const third = await buildSnapshot(
+			repo,
+			fixture.shas[0] as string,
+			thirdHead,
+		);
+		expect(third.revision).not.toBe(otherSnap.revision);
+		const stale = svc.ensurePatchset(
+			id,
+			"dan",
+			third,
+			start({ since: 1, carried: [carryK1] }),
+		);
+		await expect(stale).rejects.toBeInstanceOf(StaleSnapshotError);
+		await expect(stale).rejects.not.toBeInstanceOf(ReadOnlyPatchsetError);
+		await expect(
+			svc.recordStates(
+				id,
+				"dan",
+				third,
+				[
+					{
+						key: k1,
+						state: "reviewed",
+					},
+				],
+				start({ since: 1, carried: [carryK1] }),
+			),
+		).rejects.toBeInstanceOf(StaleSnapshotError);
+		const progress = await svc.getProgress(id, "dan");
+		expect(progress.patchsets.map((p) => p.number)).toEqual([1, 2]);
+		expect(progress.states.get(k1)).toEqual({ state: "unreviewed" });
+		expect(await store.tip(pinRef(3))).toBeNull();
+		// With the right since it lands as PS3.
+		const landed = await svc.ensurePatchset(
+			id,
+			"dan",
+			third,
+			start({ since: 2 }),
+		);
+		expect(landed.patchset).toMatchObject({ number: 3, since: 2 });
+	});
+
+	it("a start for PS1 that names a since is stale, not an invalid event", async () => {
+		const stale = svc.recordStates(
+			id,
+			"dan",
+			snap,
+			[{ key: k1, state: "reviewed" }],
+			start({ since: 1 }),
+		);
+		await expect(stale).rejects.toBeInstanceOf(StaleSnapshotError);
+		await expect(
+			svc.ensurePatchset(id, "dan", snap, start({ since: 1 })),
+		).rejects.toBeInstanceOf(StaleSnapshotError);
+		expect((await svc.getProgress(id, "dan")).patchsets).toEqual([]);
+		// since: null is PS1's start.
+		const first = await svc.ensurePatchset(
+			id,
+			"dan",
+			snap,
+			start({ since: null }),
+		);
+		expect(first.patchset).toMatchObject({ number: 1, since: null });
 	});
 
 	it("storage: a start carrying 200 clusters is one small commit", async () => {

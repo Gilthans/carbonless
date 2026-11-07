@@ -227,7 +227,9 @@ export class ReviewService {
 	 * commit holding `patchset-started` (n+1, since, shape) and the carried
 	 * events, and one transaction moving the progress ref and creating the
 	 * two pin refs (so a second start of the same number fails and reads
-	 * again). A lost race on the progress ref is retried.
+	 * again). A lost race on the progress ref is retried. `start.since` must
+	 * be the latest patch set's number (null with none): a start computed
+	 * against an older one is refused as stale, whenever it arrives.
 	 */
 	async ensurePatchset(
 		reviewId: string,
@@ -238,29 +240,36 @@ export class ReviewService {
 		checkReviewId(reviewId);
 		checkSlug(slug);
 		const ref = progressRef(reviewId, slug);
-		let number: number | null = null;
 		for (let attempt = 1; ; attempt++) {
+			// The tip first, then the events: a fold newer than the parent only
+			// makes the compare-and-swap fail and retry, never the reverse.
+			const tip = await this.store.tip(ref);
 			const existing = await this.store.readEvents(ref);
 			const progress = foldProgress(existing);
 			if (progress.patchsets.some((p) => p.revision === snapshot.revision)) {
 				return progress;
 			}
-			const next = (progress.patchset?.number ?? 0) + 1;
-			// `start` was computed against the latest patch set of the first
-			// try: if another tab started one since, the caller recomputes.
-			if (number !== null && next !== number) {
+			// `since` and the carries were computed against the latest patch
+			// set as the caller saw it. If that is not the latest now (another
+			// tab or process started one, or the caller believes in a PS1 that
+			// isn't there), landing them would skip that patch set's human
+			// states (principle 2): the caller computes the start again.
+			const latest = progress.patchset?.number ?? null;
+			if (start.since !== latest) {
 				throw new StaleSnapshotError(
-					`Patch set ${next - 1} was started on another snapshot; reload the review`,
+					latest === null
+						? "No patch set yet; reload the review"
+						: `Patch set ${latest} is the latest; reload the review`,
 				);
 			}
-			number = next;
 			try {
 				await this.#startPatchset(
 					reviewId,
 					slug,
 					snapshot,
 					start,
-					progress,
+					tip,
+					latest ?? 0,
 					stamper(existing),
 				);
 				return this.getProgress(reviewId, slug);
@@ -417,12 +426,14 @@ export class ReviewService {
 		slug: string,
 		snapshot: Snapshot,
 		start: PatchsetStart,
-		progress: ProgressState,
+		/** The progress ref's tip the start builds on (null: no ref yet). */
+		tip: string | null,
+		/** The latest patch set's number (0: none). */
+		latest: number,
 		stamp: () => number,
 	): Promise<void> {
 		const ref = progressRef(reviewId, slug);
-		const tip = await this.store.tip(ref);
-		const number = (progress.patchset?.number ?? 0) + 1;
+		const number = latest + 1;
 		const { since, shape, baseBranch, interdiff } = start;
 		const started = newEvent(
 			"patchset-started",
