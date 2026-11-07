@@ -553,31 +553,40 @@ export function SelectionBar(props: { files: readonly FileView[] }) {
 		action.start(target.span);
 		clear();
 	};
-	// `c` starts a comment on what is selected (desktop only: a phone has
-	// no keyboard shortcuts). Ctrl/Cmd+C stays the browser's copy.
 	const shown = target && ctx && !hidden ? { target, ctx } : null;
 	const now = useRef(shown);
 	now.current = shown;
+	// `c` comments on what is selected, `a` asks the agent (desktop only: a
+	// phone has no keyboard shortcuts). Ctrl/Cmd+C stays the browser's copy.
+	const byKey = (key: string) => () => {
+		const cur = now.current;
+		const action = selectionActions().find((a) => a.shortcut === key);
+		return (
+			wide &&
+			cur !== null &&
+			action !== undefined &&
+			action.available(cur.target.span, cur.ctx) === true
+		);
+	};
+	const runKey = (key: string) => (e: KeyboardEvent) => {
+		const action = selectionActions().find((a) => a.shortcut === key);
+		if (!action || !now.current) return;
+		e.preventDefault();
+		run(action);
+	};
 	useShortcut({
 		keys: "c",
 		label: "Comment on selection",
 		group: "Files changed",
-		when: () => {
-			const cur = now.current;
-			const comment = selectionActions().find((a) => a.shortcut === "c");
-			return (
-				wide &&
-				cur !== null &&
-				comment !== undefined &&
-				comment.available(cur.target.span, cur.ctx) === true
-			);
-		},
-		run: (e) => {
-			const comment = selectionActions().find((a) => a.shortcut === "c");
-			if (!comment || !now.current) return;
-			e.preventDefault();
-			run(comment);
-		},
+		when: byKey("c"),
+		run: runKey("c"),
+	});
+	useShortcut({
+		keys: "a",
+		label: "Ask agent about selection",
+		group: "Files changed",
+		when: byKey("a"),
+		run: runKey("a"),
 	});
 	if (!target || hidden || !ctx) return null;
 	return (
@@ -629,7 +638,11 @@ export function SelectionBar(props: { files: readonly FileView[] }) {
 									}}
 									className="flex h-10 w-10 items-center justify-center rounded-md text-ink hover:bg-pressed focus-visible:outline-2 focus-visible:outline-accent aria-disabled:cursor-not-allowed aria-disabled:text-faint aria-disabled:hover:bg-transparent"
 								>
-									<IconEl size={18} aria-hidden />
+									<IconEl
+										size={18}
+										aria-hidden
+										className={ok === true ? action.iconClassName : undefined}
+									/>
 								</button>
 							</span>
 						)}
