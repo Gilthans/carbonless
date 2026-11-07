@@ -1,12 +1,5 @@
 import { randomUUID } from "node:crypto";
-import {
-	link,
-	mkdir,
-	readFile,
-	rename,
-	unlink,
-	writeFile,
-} from "node:fs/promises";
+import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 /** Who holds a review's agent on this machine: a server's pid and port. */
@@ -60,7 +53,8 @@ export async function readClaim(dir: string): Promise<ClaimFile | null> {
 /**
  * One agent per review per machine: `<dir>/claim.json`, created O_EXCL with
  * `self` in it. A claim whose pid is dead, or a file that isn't a claim, is
- * removed and taken once more; a live holder's is not: `{ ok: false, holder }`.
+ * replaced, by one taker at a time (claim.lock); a live holder's is not:
+ * `{ ok: false, holder }`.
  */
 export async function takeClaim(
 	dir: string,
@@ -68,55 +62,67 @@ export async function takeClaim(
 ): Promise<ClaimResult> {
 	await mkdir(dir, { recursive: true });
 	const path = join(dir, "claim.json");
+	const lock = join(dir, "claim.lock");
 	const token = randomUUID();
 	const mine: ClaimFile = { pid: self.pid, port: self.port, token };
-	for (let attempt = 0; ; attempt++) {
+	const write = async (): Promise<boolean> => {
 		try {
 			await writeFile(path, JSON.stringify(mine), { flag: "wx" });
-			return {
-				ok: true,
-				release: async () => {
-					const now = await readClaim(dir);
-					if (now?.token === token) await unlink(path).catch(() => {});
-				},
-			};
+			return true;
 		} catch (error) {
 			if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+			return false;
 		}
+	};
+	const taken: ClaimResult = {
+		ok: true,
+		release: async () => {
+			const now = await readClaim(dir);
+			if (now?.token === token) await unlink(path).catch(() => {});
+		},
+	};
+	const heldBy = (c: ClaimFile | null): ClaimResult => ({
+		ok: false,
+		holder: c ? { pid: c.pid, port: c.port } : { pid: 0, port: 0 },
+	});
+	for (let attempt = 0; attempt < 3; attempt++) {
+		if (await write()) return taken;
 		const stale = await readText(path);
 		if (stale === null) continue;
 		const held = parseClaim(stale);
-		if (held && pidAlive(held.pid)) {
-			return { ok: false, holder: { pid: held.pid, port: held.port } };
-		}
-		if (attempt >= 3) {
-			return {
-				ok: false,
-				holder: held ? { pid: held.pid, port: held.port } : { pid: 0, port: 0 },
-			};
-		}
-		// Take the stale file away atomically: one taker's rename wins. A
-		// file that turns out not to be the stale one read (someone's fresh
-		// claim, moved in the meantime) goes back, and stands.
-		const aside = `${path}.${token}.stale`;
+		if (held && pidAlive(held.pid)) return heldBy(held);
+		// A dead holder's claim is replaced under claim.lock, by one taker at
+		// a time: only it removes claim.json, and only the stale text it read.
 		try {
-			await rename(path, aside);
-		} catch {
+			await writeFile(lock, JSON.stringify({ pid: self.pid }), { flag: "wx" });
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+			const other = parseClaimPid(await readText(lock));
+			if (other !== null && pidAlive(other)) {
+				// Another taker is replacing it: theirs, once written.
+				return heldBy(await readClaim(dir));
+			}
+			// A lock left by a taker that died mid-way.
+			await unlink(lock).catch(() => {});
 			continue;
 		}
-		const moved = await readText(aside);
-		if (moved !== stale) {
-			await link(aside, path).catch(() => {});
-			await unlink(aside).catch(() => {});
-			const theirs = moved === null ? null : parseClaim(moved);
-			return {
-				ok: false,
-				holder: theirs
-					? { pid: theirs.pid, port: theirs.port }
-					: { pid: 0, port: 0 },
-			};
+		try {
+			if ((await readText(path)) === stale) await unlink(path).catch(() => {});
+			if (await write()) return taken;
+		} finally {
+			await unlink(lock).catch(() => {});
 		}
-		await unlink(aside).catch(() => {});
+	}
+	return heldBy(await readClaim(dir));
+}
+
+function parseClaimPid(text: string | null): number | null {
+	if (text === null) return null;
+	try {
+		const { pid } = JSON.parse(text);
+		return Number.isInteger(pid) ? pid : null;
+	} catch {
+		return null;
 	}
 }
 
