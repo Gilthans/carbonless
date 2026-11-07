@@ -353,6 +353,43 @@ describe("re-review events", () => {
 		).toThrow(/human/);
 	});
 
+	it("a carried entry without fromKey reads as carried from the same key", () => {
+		const explicit = {
+			...carried,
+			states: [{ key: K, fromKey: K, state: "reviewed" }],
+		};
+		const omitted = { ...carried, states: [{ key: K, state: "reviewed" }] };
+		const [a] = parseEventLines(msg([explicit]));
+		const [b] = parseEventLines(msg([omitted]));
+		expect(a).toEqual(explicit);
+		expect(b).toEqual(explicit);
+		expect(() =>
+			validateForWrite(omitted as unknown as CrbEvent),
+		).not.toThrow();
+		// Mixed entries keep each one's own source.
+		const mixed = {
+			...carried,
+			states: [
+				{ key: K, state: "crossed-off" },
+				{ key: K2, fromKey: K3, state: "reviewed" },
+			],
+		};
+		expect(parseEventLines(msg([mixed]))[0]).toEqual({
+			...carried,
+			states: [
+				{ key: K, fromKey: K, state: "crossed-off" },
+				{ key: K2, fromKey: K3, state: "reviewed" },
+			],
+		});
+		// An absent fromKey never excuses a bad key or state.
+		const bad = [
+			{ ...carried, states: [{ key: "k", state: "reviewed" }] },
+			{ ...carried, states: [{ key: K, state: "unreviewed" }] },
+			{ ...carried, states: [{ key: K, fromKey: null, state: "reviewed" }] },
+		];
+		expect(parseEventLines(msg(bad))).toEqual([]);
+	});
+
 	it("skips malformed carried events", () => {
 		const entry = { key: K, fromKey: K2, state: "reviewed" };
 		const bad: unknown[] = [

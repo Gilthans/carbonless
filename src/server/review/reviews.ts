@@ -455,7 +455,18 @@ export class ReviewService {
 			newEvent(
 				"carried",
 				slug,
-				{ from, to: number, rule, states },
+				{
+					from,
+					to: number,
+					rule,
+					// An entry carried from the same key says so by omission:
+					// half the bytes of the common case (see the storage doc).
+					states: states.map(({ key, fromKey, state }) =>
+						fromKey === undefined || fromKey === key
+							? { key, state }
+							: { key, fromKey, state },
+					),
+				},
 				"auto",
 				stamp(),
 			),

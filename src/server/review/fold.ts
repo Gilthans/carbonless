@@ -118,7 +118,9 @@ export function foldProgress(events: CrbEvent[]): ProgressState {
 				const target = statesByRevision.get(to.revision);
 				if (!source || !target) break;
 				for (const entry of e.states) {
-					const origin = source.get(entry.fromKey);
+					// Parse fills fromKey in; the fallback keeps the guard whole
+					// for an event that didn't pass through it.
+					const origin = source.get(entry.fromKey ?? entry.key);
 					// Only a human reviewed or crossed-off state carries, and only
 					// as what it is: a forged or stale entry leaves the target alone.
 					if (

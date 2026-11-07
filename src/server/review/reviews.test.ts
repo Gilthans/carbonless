@@ -935,34 +935,119 @@ describe("patch set n+1", () => {
 		expect(first.patchset).toMatchObject({ number: 1, since: null });
 	});
 
-	it("storage: a start carrying 200 clusters is one small commit", async () => {
-		await svc.recordStates(id, "dan", snap, [{ key: k1, state: "reviewed" }]);
-		const hex = (i: number) =>
-			createHash("sha256").update(`cluster ${i}`).digest("hex");
-		const states = Array.from({ length: 200 }, (_, i) => ({
-			key: hex(i),
-			fromKey: hex(1000 + i),
-			state: i % 3 === 0 ? ("crossed-off" as const) : ("reviewed" as const),
-		}));
-		await svc.ensurePatchset(
+	it("writes a carried entry's fromKey only when it differs from key; the fold is the same", async () => {
+		await svc.recordStates(id, "dan", snap, [
+			{ key: k1, state: "reviewed" },
+			{ key: k2, state: "crossed-off" },
+		]);
+		const progress = await svc.ensurePatchset(
 			id,
 			"dan",
 			otherSnap,
-			start({ carried: [{ type: "carried", from: 1, rule: "exact", states }] }),
+			start({
+				carried: [
+					{
+						type: "carried",
+						from: 1,
+						rule: "exact",
+						states: [
+							{ key: k1, fromKey: k1, state: "reviewed" },
+							{ key: k1 === k2 ? k1 : k2, fromKey: k2, state: "crossed-off" },
+						],
+					},
+					{
+						type: "carried",
+						from: 1,
+						rule: "rename",
+						states: [{ key: "9".repeat(64), fromKey: k1, state: "reviewed" }],
+					},
+				],
+			}),
 		);
 		const tip = (await store.tip(progressRef())) as string;
-		const size = Number((await runGit(repo, ["cat-file", "-s", tip])).trim());
-		const raw = await runGit(repo, ["cat-file", "commit", tip]);
-		const packed = deflateSync(Buffer.from(raw, "utf8")).length;
-		const events = await store.readEvents(progressRef());
-		expect(events.filter((e) => e.type === "carried")).toHaveLength(1);
-		// Measured for docs/review-data-storage.md ("Measurements"): each
-		// entry is two 64-hex keys and a state, about 170 bytes; git stores
-		// the object deflated. The plan's 16 KiB raw assumed 32-hex keys.
-		console.log(
-			`carried commit, 200 entries: ${size} bytes raw, ${packed} deflated`,
+		const message = await runGit(repo, ["log", "-1", "--format=%B", tip]);
+		const [, exact, rename] = message
+			.trim()
+			.split("\n")
+			.slice(2)
+			.map((l) => JSON.parse(l));
+		expect(exact.states).toEqual([
+			{ key: k1, state: "reviewed" },
+			{ key: k2, state: "crossed-off" },
+		]);
+		expect(rename.states).toEqual([
+			{ key: "9".repeat(64), fromKey: k1, state: "reviewed" },
+		]);
+		// Read back, every entry names its source; the fold sees no difference.
+		const [event] = (await store.readEvents(progressRef())).filter(
+			(e) => e.type === "carried",
 		);
-		expect(size).toBeLessThan(40 * 1024);
-		expect(packed).toBeLessThan(20 * 1024);
+		expect(event?.type === "carried" && event.states).toEqual([
+			{ key: k1, fromKey: k1, state: "reviewed" },
+			{ key: k2, fromKey: k2, state: "crossed-off" },
+		]);
+		expect(progress.states.get(k1)).toEqual({
+			state: "reviewed",
+			carried: { from: 1, rule: "exact" },
+		});
+		expect(progress.states.get(k2)).toEqual({
+			state: "crossed-off",
+			carried: { from: 1, rule: "exact" },
+		});
+		expect(progress.states.get("9".repeat(64))).toEqual({
+			state: "reviewed",
+			carried: { from: 1, rule: "rename" },
+		});
+	});
+
+	it("storage: a start carrying 200 clusters is one small commit", async () => {
+		const hex = (i: number) =>
+			createHash("sha256").update(`cluster ${i}`).digest("hex");
+		const entries = (fromOffset: number) =>
+			Array.from({ length: 200 }, (_, i) => ({
+				key: hex(i),
+				fromKey: hex(fromOffset + i),
+				state: i % 3 === 0 ? ("crossed-off" as const) : ("reviewed" as const),
+			}));
+		const measure = async (
+			slug: string,
+			states: ReturnType<typeof entries>,
+		) => {
+			await svc.recordStates(id, slug, snap, [{ key: k1, state: "reviewed" }]);
+			await svc.ensurePatchset(
+				id,
+				slug,
+				otherSnap,
+				start({
+					carried: [{ type: "carried", from: 1, rule: "exact", states }],
+				}),
+			);
+			const tip = (await store.tip(progressRef(slug))) as string;
+			const raw = await runGit(repo, ["cat-file", "commit", tip]);
+			const size = Number((await runGit(repo, ["cat-file", "-s", tip])).trim());
+			const events = await store.readEvents(progressRef(slug));
+			const carried = events.filter((e) => e.type === "carried");
+			expect(carried).toHaveLength(1);
+			expect(carried[0]?.type === "carried" && carried[0].states).toHaveLength(
+				200,
+			);
+			return { size, packed: deflateSync(Buffer.from(raw, "utf8")).length };
+		};
+		// Every entry carried from the same key (the exact rule's usual case):
+		// fromKey is omitted. Measured for docs/review-data-storage.md.
+		const same = await measure("dan", entries(0));
+		console.log(
+			`carried commit, 200 entries, fromKey = key: ${same.size} bytes raw, ${same.packed} deflated`,
+		);
+		expect(same.size).toBeLessThan(20 * 1024);
+		expect(same.packed).toBeLessThan(10 * 1024);
+		// Every entry from another key (renames, moved context): two 64-hex
+		// keys and a state each, about 170 bytes.
+		const different = await measure("eve", entries(1000));
+		console.log(
+			`carried commit, 200 entries, fromKey ≠ key: ${different.size} bytes raw, ${different.packed} deflated`,
+		);
+		expect(different.size).toBeLessThan(40 * 1024);
+		expect(different.packed).toBeLessThan(20 * 1024);
 	});
 });

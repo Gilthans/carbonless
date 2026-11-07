@@ -69,8 +69,13 @@ export interface ClusterStateEvent extends EventBase {
 export interface CarriedEntry {
 	/** The cluster in the `to` patch set. */
 	key: string;
-	/** The cluster in the `from` patch set it was carried from. */
-	fromKey: string;
+	/**
+	 * The cluster in the `from` patch set it was carried from. Written only
+	 * when it differs from `key` (the exact rule's usual case has them equal,
+	 * and a key is 64 hex characters); a read entry always has it, parse
+	 * fills in `key`.
+	 */
+	fromKey?: string;
 	state: "reviewed" | "crossed-off";
 }
 
@@ -391,7 +396,9 @@ function parseEvent(raw: unknown): CrbEvent | null {
 			const entries: CarriedEntry[] = [];
 			for (const entry of states) {
 				if (!isObj(entry)) return null;
-				const { key, fromKey, state } = entry;
+				const { key, state } = entry;
+				// Absent: carried from the same key.
+				const fromKey = entry.fromKey === undefined ? key : entry.fromKey;
 				if (
 					typeof key !== "string" ||
 					!CLUSTER_KEY.test(key) ||

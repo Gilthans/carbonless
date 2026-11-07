@@ -235,7 +235,7 @@ Initial event types:
 | meta | `compacted` | see "Compaction" |
 | progress | `patchset-started` | patch set number, snapshot id (`revision`), merge base, head; optional, from re-review on: `since` (the patch set it follows, a smaller number), `shape` (`S1`, `S3`, `S4a`, `S4b`, `S4c`, `S5`, `S6`, `S7`), `baseBranch` (GitHub's base branch name then), `interdiff` (`available` or `unavailable`) |
 | progress | `cluster-state` | snapshot id (`patchset`), cluster identity hash, file path, state (`unreviewed`, `reviewed`, `crossed-off`), optional reason for crossed off |
-| progress | `carried` | `from` and `to` (patch set numbers, `from < to`), `rule` (`exact` or `rename`), `states`: a list of `{ key, fromKey, state }`, one per cluster carried under that rule, `state` being `reviewed` or `crossed-off` |
+| progress | `carried` | `from` and `to` (patch set numbers, `from < to`), `rule` (`exact` or `rename`), `states`: a list of `{ key, fromKey, state }`, one per cluster carried under that rule, `state` being `reviewed` or `crossed-off`; `fromKey` is written only when it differs from `key` (absent means equal: the reader fills it in) |
 | progress | `thread-placed` | `thread` (the thread's id), `patchset` (number), `anchor` (`path`, `startSide`, `startLine`, `side`, `line`), `engine` (the tracer's version, a positive integer) |
 
 `carried` holds many clusters in one event, so a move costs one event per
@@ -255,8 +255,8 @@ a reader drops what breaks them:
 
 - `cluster-state` must have `by: "human"`.
 - `carried` must have `by: "auto"`; every entry's keys are cluster keys (64
-  hex characters, a repeat's `:2` suffix allowed) and its state `reviewed` or
-  `crossed-off`, never `unreviewed`.
+  hex characters, a repeat's `:2` suffix allowed; `fromKey` absent reads as
+  `key`) and its state `reviewed` or `crossed-off`, never `unreviewed`.
 - `thread-placed` must have `by: "human"` or `"ai"`, never `"auto"`.
 - `by: "ai"` events can never change a cluster's state; `by: "auto"` ones
   can only carry one that a human already set (the fold checks, see
@@ -504,12 +504,19 @@ A heavy review (3 reviewers × 600 events, 200 files, 6 revisions) took about
 **A patch set start with carries**, measured 2026-11-07 in
 `src/server/review/reviews.test.ts` ("storage: a start carrying 200
 clusters"): the commit holding `patchset-started` and one `carried` event of
-200 entries is 35,148 bytes raw (`git cat-file -s`) and 15,490 bytes
-deflated, as git stores it. Each entry is two 64-hex cluster keys and a
-state, about 170 bytes; the design doc's 7 KiB estimate assumed 32-hex keys.
-The test asserts under 40 KiB raw and 20 KiB deflated. A review's cost still
-depends only on its own size: one such commit per patch set start per
-reviewer, nothing per cluster.
+200 entries, raw (`git cat-file -s`) and deflated (as git stores it):
+
+| 200 entries | raw | deflated |
+|---|---|---|
+| every `fromKey` equal to `key` (omitted; the exact rule's usual case) | about 20 KB | about 8 KB |
+| every `fromKey` different (renames, moved context) | about 35 KB | about 15 KB |
+
+An entry is one or two 64-hex cluster keys and a state (about 90 or 170
+bytes); the design doc's 7 KiB estimate assumed 32-hex keys. The test
+asserts under 20 KiB raw and 10 KiB deflated for the first case and 40 KiB
+and 20 KiB for the second. A review's cost still depends only on its own
+size: one such commit per patch set start per reviewer, nothing per
+cluster.
 
 **Everyday git** (ms, median of 5) on a 3,000-commit, 2,000-file repo, with the
 review refs on the remote and the clone using the default refspec:
