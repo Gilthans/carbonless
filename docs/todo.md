@@ -45,6 +45,9 @@ Foundation for everything below.
     match GitHub's hunk (3 of 26 on the real-PR check as of its cutoff, 7 of
     105 overall; `pnpm compare-threads` lists them). Find out why the verdict
     says "different" there.
+  - Stacked PRs: let the patch set graph have more than one comparison base
+    (the parent PR's head besides the base branch), so a child PR can be read
+    since the parent landed (owner, 2026-11-07).
 - **Store review state in git refs** (`refs/crb/...`). Design:
   `docs/review-data-storage.md`. Carry-over after pushes is deferred to the
   re-review item above (ideas so far: Gerrit-style change kinds and
