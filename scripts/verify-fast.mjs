@@ -57,6 +57,8 @@ const specs = readdirSync("e2e")
 // not untested; an entry with no specs, covered by unit tests alone. Files
 // outside src/, e2e/ and test/ (docs, scripts) run none.
 const E2E_MAP = [
+	// Pure (hunks in, placements out); its unit tests are the coverage.
+	[/^src\/shared\/tracer\//, []],
 	[
 		/^src\/web\/(overview|threads)\/|^src\/server\/(overview|overviewRead|threadCode|timeline)\.ts$|^src\/web\/(GithubHtml|githubHtml)/,
 		["overview", "timeline", "mobile"],

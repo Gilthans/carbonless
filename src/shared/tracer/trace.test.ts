@@ -552,13 +552,20 @@ describe("tracePosition property", () => {
 								oldText,
 							);
 							break;
-						case "changed":
+						case "changed": {
 							expect(placement.oldText).toBe(oldText);
-							expect(placement.line).toBeGreaterThanOrEqual(1);
-							expect(placement.line).toBeLessThanOrEqual(
-								newFile(placement.side).length,
+							// A RIGHT line lands in the hunk that replaced it, i-th on
+							// i-th, clamped to the hunk's last line.
+							expect(placement.side).toBe("RIGHT");
+							const hunk = d.bd.hunkRemovingOld(pos.line);
+							expect(hunk).not.toBeNull();
+							const h = hunk as MapHunk;
+							expect(placement.line).toBe(
+								h.newStart + Math.min(pos.line - h.oldStart, h.newCount - 1),
 							);
+							expect(d.bd.hunkAddingNew(placement.line)).toStrictEqual(h);
 							break;
+						}
 						case "unplaced":
 							if (placement.reason === "outside") {
 								expect(oldText).toBeNull();

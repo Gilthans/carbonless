@@ -108,6 +108,54 @@ describe("createLineMapper", () => {
 		expect(shuffled.hunkAddingNew(10)).toEqual(ADD);
 	});
 
+	it("handles adjacent hunks: old ranges that touch, with no context between", () => {
+		// Old 3-4 became new 3-5; old 5 (right after) became new 6.
+		const first: MapHunk = {
+			oldStart: 3,
+			oldCount: 2,
+			newStart: 3,
+			newCount: 3,
+		};
+		const second: MapHunk = {
+			oldStart: 5,
+			oldCount: 1,
+			newStart: 6,
+			newCount: 1,
+		};
+		const adjacent = createLineMapper([first, second]);
+		expect(adjacent.oldToNew(2)).toBe(2);
+		expect(adjacent.oldToNew(3)).toBeNull();
+		expect(adjacent.oldToNew(4)).toBeNull();
+		expect(adjacent.oldToNew(5)).toBeNull();
+		expect(adjacent.oldToNew(6)).toBe(7);
+		expect(adjacent.newToOld(2)).toBe(2);
+		expect(adjacent.newToOld(5)).toBeNull();
+		expect(adjacent.newToOld(6)).toBeNull();
+		expect(adjacent.newToOld(7)).toBe(6);
+		expect(adjacent.hunkRemovingOld(4)).toEqual(first);
+		expect(adjacent.hunkRemovingOld(5)).toEqual(second);
+		expect(adjacent.hunkRemovingOld(6)).toBeNull();
+		expect(adjacent.hunkAddingNew(5)).toEqual(first);
+		expect(adjacent.hunkAddingNew(6)).toEqual(second);
+		// A pure deletion right after an addition that sits on the same old line.
+		const touching = createLineMapper([
+			{ oldStart: 4, oldCount: 0, newStart: 5, newCount: 2 },
+			{ oldStart: 5, oldCount: 1, newStart: 6, newCount: 0 },
+		]);
+		expect(touching.oldToNew(4)).toBe(4);
+		expect(touching.oldToNew(5)).toBeNull();
+		expect(touching.oldToNew(6)).toBe(7);
+		expect(touching.newToOld(5)).toBeNull();
+		expect(touching.newToOld(6)).toBeNull();
+		expect(touching.newToOld(7)).toBe(6);
+		expect(touching.hunkRemovingOld(5)).toEqual({
+			oldStart: 5,
+			oldCount: 1,
+			newStart: 6,
+			newCount: 0,
+		});
+	});
+
 	it("does not mutate the hunks it is given", () => {
 		const input = [CUT, REPLACE, ADD];
 		createLineMapper(input);
