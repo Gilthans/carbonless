@@ -19,7 +19,11 @@ import type {
 	ReviewView,
 } from "../../shared/types";
 import { reviewQuery } from "../api";
-import { resetShowInvisibles, setShowInvisibles } from "../code/Invisibles";
+import {
+	type FindMark,
+	resetShowInvisibles,
+	setShowInvisibles,
+} from "../code/Invisibles";
 import { ignoreWhitespace } from "../viewSettings";
 import { contextRanges } from "./contextRanges";
 import { FileDiff, UNDO_ARM_MS } from "./FileDiff";
@@ -108,12 +112,20 @@ const view = (f: FileView): ReviewView => ({
 });
 
 /** FileDiff of the review's only file, as useReviewView shows it. */
-function Shown({ unit }: { unit: Unit }) {
+function Shown({
+	unit,
+	pathFind,
+}: {
+	unit: Unit;
+	pathFind?: readonly FindMark[];
+}) {
 	const { data } = useReviewView();
 	const shown = data?.files[0];
 	return (
 		<>
-			{shown && <FileDiff file={shown} revision="r1" unit={unit} />}
+			{shown && (
+				<FileDiff file={shown} revision="r1" unit={unit} pathFind={pathFind} />
+			)}
 			<SyncNotices />
 		</>
 	);
@@ -130,6 +142,7 @@ function setup(
 	handler: Handler = () => ({ status: 404, body: {} }),
 	fileHunks: FileHunks | (() => Promise<Response>) = hunks,
 	unit: Unit = "clusters",
+	pathFind?: readonly FindMark[],
 ) {
 	const fetchMock = vi.fn(
 		async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -163,7 +176,7 @@ function setup(
 	queryClient.setQueryData(reviewQuery.queryKey, view(f));
 	const rendered = render(
 		<QueryClientProvider client={queryClient}>
-			<Shown unit={unit} />
+			<Shown unit={unit} pathFind={pathFind} />
 		</QueryClientProvider>,
 	);
 	/** Shows `next` as the server's file, like a reread does. */
@@ -204,6 +217,19 @@ describe("FileDiff", () => {
 		ignoreWhitespace.reset();
 		cleanup();
 		vi.unstubAllGlobals();
+	});
+
+	it("paints find marks on the header's path", () => {
+		setup(
+			file([cluster("k1")], { path: "src/save.ts" }),
+			undefined,
+			undefined,
+			"clusters",
+			[{ from: 4, to: 8, current: true }],
+		);
+		const path = screen.getByTestId("file-path");
+		expect(path.querySelector("[data-find-current]")).toHaveTextContent("save");
+		expect(path).toHaveTextContent("src/save.ts");
 	});
 
 	it("starts collapsed and fetches hunks only on expand", async () => {

@@ -7,6 +7,7 @@ import {
 } from "@primer/octicons-react";
 import { useId, useMemo } from "react";
 import type { FileView, ReviewThread } from "../../shared/types";
+import type { FindMark } from "../code/Invisibles";
 import { Spinner } from "../Spinner";
 import { Tooltip, TooltipPath } from "../Tooltip";
 import { ChangeKindIcon, changeKindLabel } from "./changeKind";
@@ -17,6 +18,8 @@ import {
 	folderPaths,
 	type Node,
 } from "./fileOrder";
+import { MarkedText } from "./find/MarkedText";
+import { displayPath } from "./find/pathMarks";
 import { type Folds, useFolds } from "./folderFold";
 import { Meter } from "./ProgressBar";
 import { ChangeCount, crossOffReasons, StatusIcon } from "./status";
@@ -30,6 +33,28 @@ import {
 } from "./unit";
 
 const NONE = () => [];
+
+/** The find's view of the tree: hits per file, and marks on names. Nothing is hidden or dimmed. */
+export interface TreeFind {
+	counts: ReadonlyMap<number, number>;
+	nameMarks: (index: number) => readonly FindMark[];
+	oldNameMarks: (index: number) => readonly FindMark[];
+}
+
+/** A row's hit count, painted like the hits it counts. */
+function FindCount({ count }: { count: number | undefined }) {
+	if (!count) return null;
+	return (
+		<span
+			role="img"
+			data-testid="tree-find"
+			aria-label={`${count} ${count === 1 ? "match" : "matches"}`}
+			className="ml-1 shrink-0 rounded px-1 font-sans text-xs text-ink find-mark"
+		>
+			{count}
+		</span>
+	);
+}
 
 /**
  * Which file a row marks: the one opened (picked, linked or expanded; it
@@ -90,6 +115,7 @@ function FileItem(props: {
 	mark: Mark;
 	onSelect: (index: number) => void;
 	threads: ReviewThread[];
+	find?: TreeFind;
 }) {
 	const { file, unit, threads, mark } = props;
 	// Its review threads, as the bubble says them: a yellow dot when one
@@ -102,9 +128,10 @@ function FileItem(props: {
 			? "bg-ok"
 			: "bg-muted";
 	const name = file.path.slice(file.path.lastIndexOf("/") + 1);
+	const marks = props.find?.nameMarks(file.index) ?? [];
 	const p = fileUnitProgress(file, unit);
 	const numbers = describeFileProgress(file, unit);
-	const path = file.oldPath ? `${file.oldPath} → ${file.path}` : file.path;
+	const path = displayPath(file);
 	return (
 		<li>
 			{/* The numbers are in the name already: the tooltip only shows them. */}
@@ -145,9 +172,11 @@ function FileItem(props: {
 							className="min-w-0 truncate font-mono text-[0.8125rem]"
 						>
 							{file.crossedOff ? (
-								<s className="text-muted decoration-done">{name}</s>
+								<s className="text-muted decoration-done">
+									<MarkedText text={name} marks={marks} />
+								</s>
 							) : (
-								name
+								<MarkedText text={name} marks={marks} />
 							)}
 							{file.crossedOff &&
 								crossOffReasons(file).map((reason) => (
@@ -158,6 +187,7 @@ function FileItem(props: {
 										{reason}
 									</span>
 								))}
+							<FindCount count={props.find?.counts.get(file.index)} />
 						</span>
 						<span className="flex min-w-0 flex-1 items-center">
 							<MarkDot mark={mark} />
@@ -207,6 +237,7 @@ interface Level {
 	/** The threads are still on their way: no folder says none wait. */
 	threadsLoading: boolean;
 	folds: Folds;
+	find?: TreeFind;
 }
 
 /**
@@ -222,6 +253,10 @@ function FolderItem(props: Level & { folder: Folder }) {
 	const ghost = files.length === 0;
 	const p = folderUnitProgress(files, unit);
 	const numbers = ghost ? "" : describeFolderProgress(p, unit);
+	const found = files.reduce(
+		(sum, f) => sum + (props.find?.counts.get(f.index) ?? 0),
+		0,
+	);
 	const folded = folds.folded.has(folder.path);
 	// A breadcrumb: the opened file, or the one in view, is inside.
 	const mark = markOf(folder.path, props.openedPath, props.currentPath);
@@ -284,6 +319,7 @@ function FolderItem(props: Level & { folder: Folder }) {
 							className="min-w-0 truncate font-mono text-[0.8125rem]"
 						>
 							{folder.name}
+							<FindCount count={found} />
 						</span>
 						<span className="flex min-w-0 flex-1 items-center">
 							<MarkDot mark={mark} />
@@ -345,6 +381,7 @@ function MovedItem(props: {
 	file: FileView;
 	depth: number;
 	onSelect: (index: number) => void;
+	find?: TreeFind;
 }) {
 	const { file } = props;
 	const old = file.oldPath ?? "";
@@ -380,7 +417,10 @@ function MovedItem(props: {
 							data-testid="tree-name"
 							className="min-w-0 flex-1 truncate font-mono text-[0.8125rem]"
 						>
-							{old.slice(old.lastIndexOf("/") + 1)}
+							<MarkedText
+								text={old.slice(old.lastIndexOf("/") + 1)}
+								marks={props.find?.oldNameMarks(file.index) ?? []}
+							/>
 						</span>
 						<span className="sr-only">, moved away</span>
 					</button>
@@ -409,6 +449,7 @@ function Children(props: Level & { nodes: Node[] }) {
 						mark={markOf(node.file.path, props.openedPath, props.currentPath)}
 						onSelect={props.onSelect}
 						threads={props.threadsOf(node.file)}
+						find={props.find}
 					/>
 				) : node.kind === "moved" ? (
 					<MovedItem
@@ -416,6 +457,7 @@ function Children(props: Level & { nodes: Node[] }) {
 						file={node.file}
 						depth={props.depth}
 						onSelect={props.onSelect}
+						find={props.find}
 					/>
 				) : (
 					<FolderItem
@@ -479,6 +521,8 @@ export function FileTree(props: {
 	 * opened file's folded folders unfold, even right after load.
 	 */
 	revealSeq?: number;
+	/** The find's counts and name marks (Find in PR); nothing is hidden by it. */
+	find?: TreeFind;
 }) {
 	const { files, current } = props;
 	const opened = props.opened ?? null;
@@ -535,6 +579,7 @@ export function FileTree(props: {
 					threadsOf={props.threadsOf ?? NONE}
 					threadsLoading={props.threadsLoading === true}
 					folds={folds}
+					find={props.find}
 				/>
 			</nav>
 		</div>
