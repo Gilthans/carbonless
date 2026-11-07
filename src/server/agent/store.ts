@@ -13,6 +13,7 @@ import {
 import {
 	type AgentEvent,
 	type CrbEvent,
+	isLowerUlid,
 	isSlug,
 	newEvent,
 } from "../review/events.js";
@@ -156,13 +157,17 @@ type MessageInput =
 /**
  * One reviewer's agent threads in one review. Writes run one at a time per
  * store, each a compare-and-swap commit stamped after the ref's newest event.
- * A human's opening or message carries a clientId: one already seen (in this
- * store, or stored in the ref) is not written again.
+ * A human's opening or message carries a clientId: an opening already seen,
+ * or a message already seen on the same thread (in this store, or stored in
+ * the ref), is not written again. Dedupe and stamping hold within one store:
+ * keep one per review and reviewer.
  */
 export class AgentThreadStore {
 	readonly #ref: string;
-	/** clientId → the thread it went to; seeded from the ref on read. */
-	readonly #seen = new Map<string, string>();
+	/** An opening's clientId → its thread; seeded from the ref on read. */
+	readonly #opened = new Map<string, string>();
+	/** `<thread> <clientId>` of every human message; seeded from the ref on read. */
+	readonly #messaged = new Set<string>();
 	#writes: Promise<unknown> = Promise.resolve();
 
 	constructor(
@@ -170,6 +175,9 @@ export class AgentThreadStore {
 		reviewId: string,
 		private readonly slug: string,
 	) {
+		// The id is a ref path segment: anything else could leave the review's refs.
+		if (!isLowerUlid(reviewId))
+			throw new Error(`Invalid review id: ${reviewId}`);
 		if (!isSlug(slug)) throw new Error(`Invalid reviewer slug: ${slug}`);
 		this.#ref = agentThreadsRef(reviewId, slug);
 	}
@@ -183,7 +191,7 @@ export class AgentThreadStore {
 		return this.#serial(async () => {
 			const events = await this.#events();
 			if (input.by === "human") {
-				const known = this.#seen.get(input.clientId);
+				const known = this.#opened.get(input.clientId);
 				if (known !== undefined) return this.#find(events, known);
 			}
 			const { text, truncated } = capText(input.text);
@@ -210,7 +218,12 @@ export class AgentThreadStore {
 		return this.#serial(async () => {
 			const events = await this.#events();
 			const current = this.#find(events, thread);
-			if (input.by === "human" && this.#seen.has(input.clientId)) {
+			// Only a resend to this thread is a no-op: a clientId seen on another
+			// thread is a new message here.
+			if (
+				input.by === "human" &&
+				this.#messaged.has(`${thread} ${input.clientId}`)
+			) {
 				return current;
 			}
 			const { text, truncated } = capText(input.text);
@@ -263,8 +276,11 @@ export class AgentThreadStore {
 		if (e.by !== "human") return;
 		if (e.type !== "agent-thread-opened" && e.type !== "agent-message") return;
 		const clientId = clientIdOf(e);
-		if (clientId !== undefined && !this.#seen.has(clientId)) {
-			this.#seen.set(clientId, e.thread);
+		if (clientId === undefined) return;
+		if (e.type === "agent-message") {
+			this.#messaged.add(`${e.thread} ${clientId}`);
+		} else if (!this.#opened.has(clientId)) {
+			this.#opened.set(clientId, e.thread);
 		}
 	}
 

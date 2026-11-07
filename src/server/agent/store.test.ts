@@ -37,7 +37,8 @@ const anchor: AgentAnchor = {
 	endCol: null,
 };
 const agent = { name: "fake-acp", version: "1.0.0" };
-const ref = agentThreadsRef("r1", "dan");
+const REVIEW = "01k9e6m2q8x4v7c3n5b0h1j2t6";
+const ref = agentThreadsRef(REVIEW, "dan");
 
 let repo: string;
 let cleanup: () => void;
@@ -54,7 +55,7 @@ const git = (...args: string[]) =>
 beforeEach(() => {
 	({ path: repo, cleanup } = createBareRepo());
 	refs = new RefStore(repo);
-	store = new AgentThreadStore(refs, "r1", "dan");
+	store = new AgentThreadStore(refs, REVIEW, "dan");
 });
 afterEach(() => cleanup());
 
@@ -85,7 +86,7 @@ describe("AgentThreadStore", () => {
 		// A fresh store reads it all back from git.
 		const [thread, ...rest] = await new AgentThreadStore(
 			new RefStore(repo),
-			"r1",
+			REVIEW,
 			"dan",
 		).read();
 		expect(rest).toEqual([]);
@@ -157,7 +158,7 @@ describe("AgentThreadStore", () => {
 		).toEqual(msg);
 
 		// A restarted server: a new store, seeded from the ref.
-		const fresh = new AgentThreadStore(new RefStore(repo), "r1", "dan");
+		const fresh = new AgentThreadStore(new RefStore(repo), REVIEW, "dan");
 		expect(
 			await fresh.open({ anchor, text: "Why?", by: "human", clientId: "c1" }),
 		).toEqual(msg);
@@ -172,6 +173,52 @@ describe("AgentThreadStore", () => {
 		expect(await store.read()).toHaveLength(2);
 	});
 
+	it("a clientId remembered for one thread is new for another", async () => {
+		const a = await ask("A?", "a1");
+		const b = await ask("B?", "b1");
+		await store.message(a.id, { by: "human", text: "more", clientId: "m1" });
+		const onB = await store.message(b.id, {
+			by: "human",
+			text: "more",
+			clientId: "m1",
+		});
+		expect(onB.messages.map((m) => m.text)).toEqual(["B?", "more"]);
+		// Also when the store learnt it from the ref, after a restart.
+		const fresh = new AgentThreadStore(new RefStore(repo), REVIEW, "dan");
+		const c = await fresh.open({
+			anchor,
+			text: "C?",
+			by: "human",
+			clientId: "c1",
+		});
+		const onC = await fresh.message(c.id, {
+			by: "human",
+			text: "more",
+			clientId: "m1",
+		});
+		expect(onC.messages.map((m) => m.text)).toEqual(["C?", "more"]);
+		// The same thread again: still one message.
+		expect(
+			(await fresh.message(c.id, { by: "human", text: "more", clientId: "m1" }))
+				.messages,
+		).toHaveLength(2);
+	});
+
+	it("refuses a review id that isn't one ref segment", () => {
+		for (const bad of [
+			"r1/../x",
+			"a/b",
+			"",
+			" ",
+			"..",
+			"r1",
+			"01K9E6M2Q8X4V7C3N5B0H1J2T6",
+		]) {
+			expect(() => new AgentThreadStore(refs, bad, "dan")).toThrow(/review id/);
+		}
+		expect(() => new AgentThreadStore(refs, REVIEW, "dan")).not.toThrow();
+	});
+
 	it("a 40 KiB reply is stored truncated with the flag", async () => {
 		const t = await ask("Explain everything", "c1");
 		const long = "é".repeat(20 * 1024); // 40 KiB of two-byte letters
@@ -181,7 +228,7 @@ describe("AgentThreadStore", () => {
 		expect(Buffer.byteLength(reply?.text ?? "")).toBe(MAX_AGENT_TEXT);
 		const [read] = await new AgentThreadStore(
 			new RefStore(repo),
-			"r1",
+			REVIEW,
 			"dan",
 		).read();
 		expect(read?.messages[1]).toEqual(reply);
@@ -281,7 +328,7 @@ describe("AgentThreadStore", () => {
 	});
 
 	it("the ref name passes RefStore's checkRef", async () => {
-		expect(ref).toBe("refs/crb/reviews/r1/reviewers/dan/agent/threads");
+		expect(ref).toBe(`refs/crb/reviews/${REVIEW}/reviewers/dan/agent/threads`);
 		await expect(refs.tip(ref)).resolves.toBeNull();
 		await ask("Why?", "c1");
 		expect(git("rev-parse", "--verify", ref)).toMatch(/^[0-9a-f]{40}$/);

@@ -214,6 +214,11 @@ export function isSlug(value: string): boolean {
 	return SLUG.test(value);
 }
 
+/** A lowercase ULID: event ids, review ids, agent thread ids. */
+export function isLowerUlid(value: string): boolean {
+	return LOWER_ULID.test(value);
+}
+
 const nextUlid = monotonicFactory();
 
 export function newEvent<T extends CrbEventType>(

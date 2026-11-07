@@ -14,6 +14,8 @@ import { RefStore } from "../src/server/review/refStore";
 import type { AgentAnchor } from "../src/shared/agent";
 import { createBareRepo, testGitEnv } from "../test/git-fixture";
 
+/** A review id as the server makes one (a lowercase ULID). */
+const REVIEW = "01k9e6m2q8x4v7c3n5b0h1j2t6";
 const THREADS = 50;
 const MESSAGES = 4;
 const TEXT_BYTES = 2048;
@@ -102,7 +104,7 @@ function sizeKiB(repo: string): { loose: number; packed: number } {
 
 const { path: repo, cleanup } = createBareRepo();
 try {
-	const store = new AgentThreadStore(new RefStore(repo), "r1", "dan");
+	const store = new AgentThreadStore(new RefStore(repo), REVIEW, "dan");
 	const ids: string[] = [];
 	for (let i = 0; i < THREADS; i++) {
 		const t = await store.open({
@@ -142,7 +144,7 @@ try {
 		}),
 	);
 	const coldLoose = await medianOf(() =>
-		new AgentThreadStore(new RefStore(repo), "r1", "dan").read(),
+		new AgentThreadStore(new RefStore(repo), REVIEW, "dan").read(),
 	);
 	execFileSync("git", ["gc", "--quiet", "--prune=now"], {
 		cwd: repo,
@@ -150,7 +152,7 @@ try {
 	});
 	const packed = sizeKiB(repo);
 	const coldPacked = await medianOf(() =>
-		new AgentThreadStore(new RefStore(repo), "r1", "dan").read(),
+		new AgentThreadStore(new RefStore(repo), REVIEW, "dan").read(),
 	);
 	const ms = (x: number) => `${x.toFixed(1)} ms`;
 	const rows = [
