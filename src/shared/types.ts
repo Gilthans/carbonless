@@ -7,6 +7,22 @@ export type FileStatus =
 
 export type ClusterState = "unreviewed" | "reviewed" | "crossed-off";
 
+/**
+ * How a patch set's snapshot relates to the one before it (the re-review
+ * design's shapes): S1 commits appended, S3 base merged in, S4a a trivial
+ * rebase, S4b a rebase with conflicts, S4c rework, S5 a squash, S6 a move
+ * backwards, S7 retargeted.
+ */
+export type ShapeCode =
+	| "S1"
+	| "S3"
+	| "S4a"
+	| "S4b"
+	| "S4c"
+	| "S5"
+	| "S6"
+	| "S7";
+
 export interface Cluster {
 	/** Identity, see Task 2. */
 	key: string;
@@ -859,4 +875,20 @@ export interface SessionInfo {
 	 * without one.
 	 */
 	pinnedHead: string | null;
+	/** The reviewer's patch sets, in start order (the patch set graph's dots). */
+	patchsets: {
+		number: number;
+		head: string;
+		mergeBase: string;
+		/** Ms since epoch. */
+		startedAt: number;
+		/** The patch set it follows; null for PS1. */
+		since: number | null;
+		shape: ShapeCode | null;
+	}[];
+	/**
+	 * The PR's head when this crb last opened the review, before this open
+	 * (the toast's "since you last looked"); null on the first open.
+	 */
+	lastSeen: { head: string; at: number } | null;
 }

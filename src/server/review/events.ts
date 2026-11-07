@@ -1,5 +1,7 @@
 import { monotonicFactory } from "ulid";
-import type { ClusterState, DiffSide } from "../../shared/types.js";
+import type { ClusterState, DiffSide, ShapeCode } from "../../shared/types.js";
+
+export type { ShapeCode };
 
 /**
  * crb events, stored one JSON object per line in crb commit messages.
@@ -8,17 +10,6 @@ import type { ClusterState, DiffSide } from "../../shared/types.js";
 
 /** Who wrote an event: the reviewer, an AI, or the deterministic engine. */
 export type By = "human" | "ai" | "auto";
-
-/** How a snapshot relates to the previous patch set (the design doc's S codes). */
-export type ShapeCode =
-	| "S1"
-	| "S3"
-	| "S4a"
-	| "S4b"
-	| "S4c"
-	| "S5"
-	| "S6"
-	| "S7";
 
 export interface EventBase {
 	v: 1;

@@ -21,6 +21,8 @@ const info: SessionInfo = {
 	patchset: 1,
 	asOf: null,
 	pinnedHead: null,
+	patchsets: [],
+	lastSeen: null,
 };
 
 describe("HeadBanner", () => {

@@ -15,9 +15,11 @@ import {
 import { GIT_TEST_TIMEOUTS, testGitEnv } from "../../test/git-fixture";
 import { createPrFixture, type PrFixture } from "../../test/pr-fixture";
 import { clonePath } from "./clone";
+import { buildSnapshot } from "./diff/snapshot";
 import { GhError } from "./errors";
 import { parseHead } from "./pinnedHead";
-import { StaleSnapshotError } from "./review/reviews";
+import { RefStore } from "./review/refStore";
+import { ReviewService, StaleSnapshotError } from "./review/reviews";
 import { refusal, Session, UnknownReadError } from "./session";
 import { ThreadCodeSource } from "./threadCode";
 
@@ -55,6 +57,8 @@ describe("Session", () => {
 			patchset: null,
 			asOf: null,
 			pinnedHead: null,
+			patchsets: [],
+			lastSeen: null,
 		});
 		expect(s.snapshot().base).toBe(pr.mergeBase);
 		expect(s.snapshot().files.map((f) => f.path)).toEqual(["a.txt", "new.txt"]);
@@ -1147,6 +1151,121 @@ describe("Session", () => {
 				reviewed: 1,
 				crossedOff: 0,
 			});
+		});
+	});
+
+	describe("patch sets", () => {
+		/** Starts PS2 for octo-cat on the PR's new head, as a later crb would. */
+		const startSecond = async (s: Session) => {
+			const newHead = pr.moveHead({ "later.txt": "later\n" });
+			// Fetches the new head into the clone; the session stays on PS1.
+			await s.refresh();
+			const clone = clonePath("acme", "widget");
+			const reviews = new ReviewService(new RefStore(clone));
+			const snap2 = await buildSnapshot(clone, pr.mergeBase, newHead);
+			const key = snap2.files.find((f) => f.path === "later.txt")?.clusters[0]
+				?.key;
+			if (!key) throw new Error("no cluster in later.txt");
+			await reviews.recordStates(
+				s.id,
+				"octo-cat",
+				snap2,
+				[{ key, state: "reviewed" }],
+				{
+					since: 1,
+					shape: "S1",
+					baseBranch: "main",
+					interdiff: "available",
+					carried: [],
+				},
+			);
+			return { newHead, snap2 };
+		};
+
+		it("remembers the head seen on the previous open", async () => {
+			const first = await Session.open(pr.arg, process.cwd());
+			expect(first.info().lastSeen).toBeNull();
+			const head1 = pr.head();
+			const head2 = pr.moveHead({ "later.txt": "later\n" });
+			const second = await Session.open(pr.arg, process.cwd());
+			expect(second.info().lastSeen?.head).toBe(head1);
+			expect(second.info().currentHead).toBe(head2);
+			const third = await Session.open(pr.arg, process.cwd());
+			expect(third.info().lastSeen?.head).toBe(head2);
+		});
+
+		it("lists every patch set and serves an earlier one as reviewed, read-only", async () => {
+			const s = await Session.open(pr.arg, process.cwd());
+			const ps1 = s.snapshot();
+			const key = firstKey(s);
+			await s.setStates(ps1.revision, [{ key, state: "reviewed" }]);
+			const { newHead, snap2 } = await startSecond(s);
+
+			const again = await Session.open(pr.arg, process.cwd());
+			const info = again.info();
+			expect(info.patchset).toBe(2);
+			expect(info.snapshotHead).toBe(newHead);
+			expect(info.patchsets).toMatchObject([
+				{ number: 1, head: ps1.head, mergeBase: ps1.base, since: null },
+				{
+					number: 2,
+					head: newHead,
+					mergeBase: pr.mergeBase,
+					since: 1,
+					shape: "S1",
+				},
+			]);
+			expect(info.patchsets.map((p) => typeof p.startedAt)).toEqual([
+				"number",
+				"number",
+			]);
+			expect((await again.review()).revision).toBe(snap2.revision);
+
+			const old = await again.reviewAt(1);
+			expect(old.patchset).toBe(1);
+			expect(old.revision).toBe(ps1.revision);
+			expect(old.files.map((f) => f.path)).toEqual(["a.txt", "new.txt"]);
+			expect(old.progress.clusters).toMatchObject({ total: 3, reviewed: 1 });
+			// Its hunks and context load by its revision, as the current one's do.
+			const hunks = await again.fileHunks(ps1.revision, 0);
+			expect(hunks.hunks.length).toBeGreaterThan(0);
+			expect(
+				(await again.context(ps1.revision, 0, 10, 12)).map((l) => l.text),
+			).toEqual(["line 10", "line 11", "line 12"]);
+			// And it takes no writes.
+			await expect(
+				again.setStates(ps1.revision, [{ key, state: "unreviewed" }]),
+			).rejects.toBeInstanceOf(StaleSnapshotError);
+			expect((await again.reviewAt(1)).progress.clusters.reviewed).toBe(1);
+			// The latest one is still the session's.
+			expect(again.snapshot().revision).toBe(snap2.revision);
+			await expect(again.reviewAt(9)).rejects.toBeInstanceOf(RangeError);
+			await expect(again.reviewAt(0)).rejects.toBeInstanceOf(RangeError);
+		});
+
+		it("rebuilds an earlier patch set from its pins, with the recorded merge base when -base is missing", async () => {
+			const s = await Session.open(pr.arg, process.cwd());
+			const ps1 = s.snapshot();
+			await s.setStates(ps1.revision, [
+				{ key: firstKey(s), state: "reviewed" },
+			]);
+			await startSecond(s);
+			const clone = clonePath("acme", "widget");
+			execFileSync(
+				"git",
+				[
+					"-C",
+					clone,
+					"update-ref",
+					"-d",
+					`refs/crb/reviews/${s.id}/reviewers/octo-cat/patchsets/1-base`,
+				],
+				{ env: testGitEnv() },
+			);
+			const again = await Session.open(pr.arg, process.cwd());
+			const old = await again.reviewAt(1);
+			expect(old).toMatchObject({ patchset: 1, revision: ps1.revision });
+			expect(old.progress.clusters.reviewed).toBe(1);
 		});
 	});
 });

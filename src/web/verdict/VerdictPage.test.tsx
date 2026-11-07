@@ -41,6 +41,8 @@ const info: SessionInfo = {
 	patchset: null,
 	asOf: null,
 	pinnedHead: null,
+	patchsets: [],
+	lastSeen: null,
 };
 
 const overview: PrOverview = {

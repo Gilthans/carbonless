@@ -44,9 +44,10 @@ import {
 import { OverviewRead } from "./overviewRead.js";
 import type { HeadSpec } from "./pinnedHead.js";
 import { buildReviewView } from "./review/coverage.js";
-import type { ProgressState } from "./review/fold.js";
+import type { PatchsetRecord, ProgressState } from "./review/fold.js";
 import { RefStore } from "./review/refStore.js";
 import { ReviewService, StaleSnapshotError } from "./review/reviews.js";
+import { readSeen, type Seen, writeSeen } from "./seen.js";
 import { slugify } from "./slug.js";
 import { ThreadCodeSource } from "./threadCode.js";
 import {
@@ -150,6 +151,16 @@ export class Session {
 	#meta: PrMeta;
 	#snapshot: Snapshot;
 	#patchset: number | null;
+	/** The reviewer's patch sets as last folded (info().patchsets). */
+	#patchsets: PatchsetRecord[];
+	/** The PR's head on the previous open of this review here; null on the first. */
+	readonly #lastSeen: Seen | null;
+	/**
+	 * Earlier patch sets' snapshots, rebuilt from their pins on request
+	 * (reviewAt), by snapshot id: their hunks and context serve like the
+	 * current one's. Few per reviewer, so never evicted.
+	 */
+	readonly #snapshots = new Map<string, Snapshot>();
 	/** Order of PR metadata requests, by start; see #setMeta. */
 	#metaSeq = 0;
 	#metaSeqApplied = 0;
@@ -194,14 +205,17 @@ export class Session {
 		private readonly reviews: ReviewService,
 		meta: PrMeta,
 		snapshot: Snapshot,
-		patchset: number | null,
+		progress: ProgressState,
+		lastSeen: Seen | null,
 		private readonly options: SessionOptions,
 		/** The commit `options.head` named; null without one. */
 		private readonly pinned: string | null,
 	) {
 		this.#meta = meta;
 		this.#snapshot = snapshot;
-		this.#patchset = patchset;
+		this.#patchset = progress.patchset?.number ?? null;
+		this.#patchsets = progress.patchsets;
+		this.#lastSeen = lastSeen;
 		this.#threadCode = new ThreadCodeSource(repo);
 		Session.#open.add(this);
 	}
@@ -299,6 +313,11 @@ export class Session {
 		if (reviewId === null || state === null || (over && !state.patchset)) {
 			throw new Error(refusal(meta));
 		}
+		// What the reviewer saw last time, then this time's head in its place.
+		// Losing the note (an unwritable state dir) costs the toast its
+		// "since you last looked", never the review.
+		const lastSeen = await readSeen(reviewId);
+		await writeSeen(reviewId, meta.headOid).catch(() => {});
 		const { mergeBase, head } = state.patchset ?? fetched;
 		const snapshot = await buildSnapshot(repo, mergeBase, head);
 		return new Session(
@@ -308,7 +327,8 @@ export class Session {
 			reviews,
 			meta,
 			snapshot,
-			state.patchset?.number ?? null,
+			state,
+			lastSeen,
 			options,
 			pinned,
 		);
@@ -336,6 +356,17 @@ export class Session {
 			patchset: this.#patchset,
 			asOf: this.options.asOf ?? null,
 			pinnedHead: this.pinned,
+			patchsets: this.#patchsets.map(
+				({ number, head, mergeBase, startedAt, since, shape }) => ({
+					number,
+					head,
+					mergeBase,
+					startedAt,
+					since,
+					shape,
+				}),
+			),
+			lastSeen: this.#lastSeen,
 		};
 	}
 
@@ -796,6 +827,41 @@ export class Session {
 		return view;
 	}
 
+	/**
+	 * The review of the reviewer's patch set `patchset` as they left it:
+	 * its snapshot rebuilt from the pin refs (the recorded merge base when
+	 * the -base pin is missing: a patch set older than that ref) with its
+	 * own states. A RangeError for a number that is none of theirs. The
+	 * snapshot is kept, so its hunks and context load by its revision.
+	 */
+	async reviewAt(patchset: number): Promise<ReviewView> {
+		const progress = await this.#progress();
+		const record = progress.patchsets.find((p) => p.number === patchset);
+		if (!record) throw new RangeError(`No patch set ${patchset}`);
+		return buildReviewView(await this.#snapshotOf(record), progress);
+	}
+
+	/** The patch set's snapshot: the current one, a kept one, or rebuilt. */
+	async #snapshotOf(record: PatchsetRecord): Promise<Snapshot> {
+		if (this.#snapshot.revision === record.revision) return this.#snapshot;
+		const kept = this.#snapshots.get(record.revision);
+		if (kept) return kept;
+		const pins = await this.reviews.patchsetPins(
+			this.reviewId,
+			this.viewer,
+			record.number,
+		);
+		const snapshot = await buildSnapshot(
+			this.repo,
+			pins.base ?? record.mergeBase,
+			pins.head ?? record.head,
+		);
+		// Keyed by what was built: a pin that doesn't match the record gives
+		// another snapshot id, and the record's states never apply to it.
+		this.#snapshots.set(snapshot.revision, snapshot);
+		return snapshot;
+	}
+
 	/** Display hunks of a file of the snapshot with this `revision`. */
 	async fileHunks(revision: string, index: number): Promise<FileHunks> {
 		return loadFileHunks(this.repo, this.#current(revision), index);
@@ -822,11 +888,13 @@ export class Session {
 		return this.#exclusive(async () => {
 			const snapshot = this.#current(revision);
 			try {
-				const progress = await this.reviews.recordStates(
-					this.reviewId,
-					this.viewer,
-					snapshot,
-					changes,
+				const progress = this.#noted(
+					await this.reviews.recordStates(
+						this.reviewId,
+						this.viewer,
+						snapshot,
+						changes,
+					),
 				);
 				const view = buildReviewView(snapshot, progress);
 				this.#patchset = view.patchset;
@@ -904,13 +972,13 @@ export class Session {
 		this.#meta = meta;
 	}
 
-	/** The snapshot, if it's the one the client is on. */
+	/** The snapshot the client is on: the current one, or a kept patch set's. */
 	#current(revision: string): Snapshot {
 		const snapshot = this.#snapshot;
-		if (revision !== snapshot.revision) {
-			throw new StaleSnapshotError("The review moved to another snapshot");
-		}
-		return snapshot;
+		if (revision === snapshot.revision) return snapshot;
+		const kept = this.#snapshots.get(revision);
+		if (kept) return kept;
+		throw new StaleSnapshotError("The review moved to another snapshot");
 	}
 
 	#ref(): PrRef {
@@ -918,15 +986,28 @@ export class Session {
 		return { owner, repo, number };
 	}
 
-	#progress(): Promise<ProgressState> {
-		return this.reviews.getProgress(this.reviewId, this.viewer);
+	async #progress(): Promise<ProgressState> {
+		return this.#noted(
+			await this.reviews.getProgress(this.reviewId, this.viewer),
+		);
 	}
 
-	/** Puts the session on the patch set if there is one, else on `fallback`. */
+	/** Keeps the fold's patch sets for info(). */
+	#noted(progress: ProgressState): ProgressState {
+		this.#patchsets = progress.patchsets;
+		return progress;
+	}
+
+	/** Puts the session on the latest patch set if there is one, else on `fallback`. */
 	async #moveTo(progress: ProgressState, fallback: Endpoints): Promise<void> {
+		this.#noted(progress);
 		const { mergeBase, head } = progress.patchset ?? fallback;
 		const current = this.#snapshot;
 		if (current.base !== mergeBase || current.head !== head) {
+			// A patch set left behind stays readable (an old one's tab).
+			if (progress.patchsets.some((p) => p.revision === current.revision)) {
+				this.#snapshots.set(current.revision, current);
+			}
 			this.#snapshot = await buildSnapshot(this.repo, mergeBase, head);
 		}
 		this.#patchset = progress.patchset?.number ?? null;
