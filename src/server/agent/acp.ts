@@ -314,6 +314,16 @@ export class AcpAgent {
 		return this.started.info;
 	}
 
+	/** Whether its process runs and the connection holds. */
+	get alive(): boolean {
+		const { child, conn } = this.started;
+		return (
+			!conn.signal.aborted &&
+			child.exitCode === null &&
+			child.signalCode === null
+		);
+	}
+
 	/** The last 2 KiB the agent wrote to stderr. */
 	stderrTail(): string {
 		return this.started.stderr();
