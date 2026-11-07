@@ -146,20 +146,15 @@ describe("the agent chip", () => {
 });
 
 describe("the status poll", () => {
-	it("is every 5 s, every second while starting or answering, never hidden or without an agent", () => {
+	it("is every 5 s, every second while starting or answering, never without an agent", () => {
 		const s = (state: AgentStatus["state"]) => status({ state });
-		expect(agentPollMs(s("ready"), null, true)).toBe(AGENT_POLL_MS);
-		expect(agentPollMs(s("off"), null, true)).toBe(AGENT_POLL_MS);
-		expect(agentPollMs(undefined, null, true)).toBe(AGENT_POLL_MS);
-		expect(agentPollMs(s("busy"), null, true)).toBe(AGENT_BUSY_POLL_MS);
-		expect(agentPollMs(s("starting"), null, true)).toBe(AGENT_BUSY_POLL_MS);
-		expect(agentPollMs(s("busy"), null, false)).toBe(false);
-		expect(agentPollMs(undefined, new ApiError(404, "no agent"), true)).toBe(
-			false,
-		);
+		expect(agentPollMs(s("ready"), null)).toBe(AGENT_POLL_MS);
+		expect(agentPollMs(s("off"), null)).toBe(AGENT_POLL_MS);
+		expect(agentPollMs(undefined, null)).toBe(AGENT_POLL_MS);
+		expect(agentPollMs(s("busy"), null)).toBe(AGENT_BUSY_POLL_MS);
+		expect(agentPollMs(s("starting"), null)).toBe(AGENT_BUSY_POLL_MS);
+		expect(agentPollMs(undefined, new ApiError(404, "no agent"))).toBe(false);
 		// Another failure (the server restarting) keeps polling.
-		expect(agentPollMs(undefined, new ApiError(0, "gone"), true)).toBe(
-			AGENT_POLL_MS,
-		);
+		expect(agentPollMs(undefined, new ApiError(0, "gone"))).toBe(AGENT_POLL_MS);
 	});
 });

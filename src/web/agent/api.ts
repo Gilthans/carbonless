@@ -41,37 +41,33 @@ export const fetchAgentStatus = () => review<AgentStatus>("agent");
 export const AGENT_BUSY_POLL_MS = 1000;
 
 /**
- * How often the status is read: every AGENT_POLL_MS while the page is
- * visible, every AGENT_BUSY_POLL_MS while the agent starts or answers (its
- * text streams through the status), never in the background, and not at
- * all on a review with no agent (404).
+ * How often the status is read: every AGENT_POLL_MS, every
+ * AGENT_BUSY_POLL_MS while the agent starts or answers (its text streams
+ * through the status), and not at all on a review with no agent (404).
+ * Hidden tabs skip the ticks (refetchIntervalInBackground), never the
+ * interval itself: an answer landing while hidden must not stop the poll.
  */
 export function agentPollMs(
 	status: AgentStatus | undefined,
 	error: unknown,
-	visible: boolean,
 ): number | false {
 	if (error instanceof ApiError && error.status === 404) return false;
-	if (!visible) return false;
 	return status?.state === "busy" || status?.state === "starting"
 		? AGENT_BUSY_POLL_MS
 		: AGENT_POLL_MS;
 }
 
 /**
- * The agent's status, polled (agentPollMs). A routine poll shows no spinner
- * anywhere: only a changed answer moves the chip's dot.
+ * The agent's status, polled (agentPollMs) while the page is visible and
+ * read again when it comes back. A routine poll shows no spinner anywhere:
+ * only a changed answer moves the chip's dot.
  */
 export const agentStatusQuery = queryOptions({
 	queryKey: ["agent"],
 	queryFn: fetchAgentStatus,
-	refetchInterval: (query) =>
-		agentPollMs(
-			query.state.data,
-			query.state.error,
-			typeof document === "undefined" || document.visibilityState === "visible",
-		),
+	refetchInterval: (query) => agentPollMs(query.state.data, query.state.error),
 	refetchIntervalInBackground: false,
+	refetchOnWindowFocus: true,
 	retry: false,
 	staleTime: AGENT_BUSY_POLL_MS,
 });
