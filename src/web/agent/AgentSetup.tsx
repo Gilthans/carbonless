@@ -178,6 +178,14 @@ export function AgentSetup(props: { open: boolean; onClose(): void }) {
 		mutationFn: (c: AgentConfig | null) => putAgentConfig(c),
 		onSuccess: done,
 	});
+	// Each opening starts clean: no Check result, error or Save from before.
+	const resetCheck = check.reset;
+	const resetSave = save.reset;
+	useEffect(() => {
+		if (!open) return;
+		resetCheck();
+		resetSave();
+	}, [open, resetCheck, resetSave]);
 	const chosen = harness(pick);
 	const editable = pick === "other";
 	const trap = (e: KeyboardEvent<HTMLDialogElement>) => {
@@ -434,7 +442,13 @@ export function AgentSetup(props: { open: boolean; onClose(): void }) {
 							onClick={() => save.mutate(null)}
 							className={`${BUTTON} mr-auto`}
 						>
-							Remove
+							{save.isPending && save.variables === null ? (
+								<Spinner label="Removing" size={14}>
+									Remove
+								</Spinner>
+							) : (
+								"Remove"
+							)}
 						</button>
 					)}
 					<button type="button" onClick={onClose} className={BUTTON}>

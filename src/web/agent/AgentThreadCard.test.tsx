@@ -227,6 +227,24 @@ describe("AgentThreadCard", () => {
 		);
 	});
 
+	it("Resolve is off while its write is out", async () => {
+		let release = () => {};
+		fetchMock.mockImplementationOnce(
+			() =>
+				new Promise<Response>((done) => {
+					release = () =>
+						done(new Response(JSON.stringify(answered({ resolved: true }))));
+				}),
+		);
+		show(answered(), status());
+		const button = screen.getByTestId("agent-resolve");
+		await userEvent.click(button);
+		expect(button).toBeDisabled();
+		expect(button).toHaveAttribute("aria-busy", "true");
+		release();
+		await waitFor(() => expect(button).toBeEnabled());
+	});
+
 	it("a stopped or truncated reply says so", () => {
 		const t = answered();
 		const last = t.messages[1];
@@ -235,7 +253,11 @@ describe("AgentThreadCard", () => {
 			last.truncated = true;
 		}
 		show(t, status());
-		expect(screen.getByTestId("agent-stop-chip").textContent).toBe("stopped");
+		const chip = screen.getByTestId("agent-stop-chip");
+		expect(chip.textContent).toBe("stopped");
+		// Its reason is a tooltip and its name, not a bare title.
+		expect(chip).not.toHaveAttribute("title");
+		expect(chip).toHaveAccessibleName("Stopped before it finished");
 		expect(screen.getByTestId("agent-truncated-chip")).toBeTruthy();
 	});
 });

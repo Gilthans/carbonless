@@ -319,6 +319,39 @@ describe("AgentSetup", () => {
 		});
 	});
 
+	it("Remove spins while it is written", async () => {
+		let release = () => {};
+		const { user } = show(true);
+		const dialog = await openIt(user);
+		fetchMock.mockImplementationOnce(
+			() =>
+				new Promise<Response>((done) => {
+					release = () => done(json(200, { agent: null }));
+				}),
+		);
+		await user.click(within(dialog).getByRole("button", { name: /Remove/ }));
+		expect(
+			within(dialog).getByRole("status", { name: "Removing" }),
+		).toBeTruthy();
+		release();
+		await waitFor(() =>
+			expect(screen.getByTestId("state")).toHaveTextContent("closed"),
+		);
+	});
+
+	it("opens clean: a Check that failed before is gone", async () => {
+		const { user } = show();
+		let dialog = await openIt(user);
+		fetchMock.mockImplementationOnce(async () =>
+			json(500, { error: "the server broke" }),
+		);
+		await user.click(within(dialog).getByRole("button", { name: "Check" }));
+		expect(await within(dialog).findByText("the server broke")).toBeTruthy();
+		await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
+		dialog = await openIt(user);
+		expect(within(dialog).queryByText("the server broke")).toBeNull();
+	});
+
 	it("Escape closes it and focus goes back", async () => {
 		const { user } = show();
 		await openIt(user);

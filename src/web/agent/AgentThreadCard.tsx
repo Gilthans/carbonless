@@ -26,6 +26,7 @@ import { sessionQuery } from "../api";
 import { Badge, LabeledIcon } from "../overview/parts";
 import { RelativeTime } from "../RelativeTime";
 import { Spinner } from "../Spinner";
+import { Tooltip } from "../Tooltip";
 import { commentSurface } from "../threads/Conversation";
 import { newClientId } from "../threads/newThreads";
 import { Avatar, usePerson } from "../threads/people";
@@ -199,9 +200,22 @@ function AiMessage(props: { message: AgentMessage; name: string }) {
 				</span>
 				<RelativeTime iso={message.at} />
 				{stop && (
-					<span data-testid="agent-stop-chip" title={stop.tip}>
-						<Badge tone={stop.tone}>{stop.label}</Badge>
-					</span>
+					<Tooltip content={stop.tip} describe={false}>
+						{(trigger) => (
+							<span
+								{...trigger}
+								data-testid="agent-stop-chip"
+								role="img"
+								aria-label={stop.tip}
+								// Focusable so keyboard and touch users get the tip.
+								// biome-ignore lint/a11y/noNoninteractiveTabindex: the tooltip opens on focus.
+								tabIndex={0}
+								className="inline-flex rounded-full focus-visible:outline-2 focus-visible:outline-accent"
+							>
+								<Badge tone={stop.tone}>{stop.label}</Badge>
+							</span>
+						)}
+					</Tooltip>
 				)}
 				{message.truncated && <TruncatedChip />}
 			</Who>
@@ -412,9 +426,11 @@ export function AgentThreadCard(props: {
 					<button
 						type="button"
 						data-testid="agent-resolve"
+						disabled={resolve.isPending}
+						aria-busy={resolve.isPending || undefined}
 						onClick={() => resolve.mutate(!resolved)}
 						onMouseDown={(e) => e.preventDefault()}
-						className={`ml-auto flex h-10 shrink-0 items-center justify-center gap-2 rounded-md border px-4 text-sm font-semibold focus-visible:outline-2 focus-visible:outline-accent ${
+						className={`ml-auto flex h-10 shrink-0 items-center justify-center gap-2 rounded-md border px-4 text-sm font-semibold focus-visible:outline-2 focus-visible:outline-accent disabled:opacity-60 ${
 							resolved
 								? "border-line-strong text-ink-soft hover:bg-overlay hover:text-ink"
 								: "border-ok/60 bg-ok/10 text-ok hover:bg-ok/20"
