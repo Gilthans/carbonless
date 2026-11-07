@@ -1515,6 +1515,27 @@ export function DiffBody(props: {
 }) {
 	const { file, revision } = props;
 	const hunks = useQuery(hunksQuery(revision, file.index, props.from));
+	// The since view: unreviewed clusters the engine lists as reworked or
+	// new whose lines these hunks don't show (gap 5: unreviewed on the
+	// compared patch set, unchanged since), and the carried count.
+	const unshownToRead = useMemo(() => {
+		if (props.from === undefined || !props.kinds || !hunks.data) return 0;
+		const shownKeys = new Set<string>();
+		for (const hunk of hunks.data.hunks) {
+			for (const line of hunk.lines) {
+				if (line.clusterKey !== undefined) shownKeys.add(line.clusterKey);
+			}
+		}
+		return file.clusters.filter((c) => {
+			const kind = props.kinds?.get(c.key)?.kind;
+			return (
+				(kind === "reworked" || kind === "new") &&
+				c.state === "unreviewed" &&
+				!shownKeys.has(c.key)
+			);
+		}).length;
+	}, [props.from, props.kinds, hunks.data, file.clusters]);
+	const carriedHere = file.clusters.filter((c) => c.carried).length;
 	const ignoreWs = ignoreWhitespace.use();
 	const view: View = sideBySide.use() ? "side-by-side" : "unified";
 	const wide = useMedia(NOT_PHONE);
@@ -2096,18 +2117,30 @@ export function DiffBody(props: {
 					{tailRows}
 				</table>
 			</div>
+			{props.from !== undefined && hunks.data && unshownToRead > 0 && (
+				// Clusters the engine says are to read (reworked or new) with no
+				// line in these hunks (unreviewed on the compared patch set and
+				// unchanged since): never "nothing to read"; the full diff has them.
+				<p
+					data-testid="since-unshown"
+					className="flex min-h-10 items-center gap-2 px-3 text-xs text-warn"
+				>
+					{unshownToRead} to read · only in the full diff ·{" "}
+					<span className="text-muted">{carriedHere} carried</span>
+				</p>
+			)}
 			{props.from !== undefined &&
 				hunks.data &&
 				hunks.data.hunks.length === 0 &&
-				fileClusters.length === 0 && (
+				fileClusters.length === 0 &&
+				unshownToRead === 0 && (
 					// The since view of a file the author left alone: say so (never
 					// an empty table that reads as "nothing changed" by mistake).
 					<p
 						data-testid="since-empty"
 						className="flex min-h-10 items-center gap-2 px-3 text-xs text-muted"
 					>
-						Nothing to read since PS{props.from} ·{" "}
-						{file.clusters.filter((c) => c.carried).length} carried
+						Nothing to read since PS{props.from} · {carriedHere} carried
 					</p>
 				)}
 			{hunks.isPending && (

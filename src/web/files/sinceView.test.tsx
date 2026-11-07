@@ -223,6 +223,38 @@ describe("DiffBody in the since view", () => {
 		expect(onToggle).not.toHaveBeenCalled();
 	});
 
+	it("a cluster the engine calls to read but the hunks don't show is counted, never 'nothing to read'", async () => {
+		// k3: unreviewed on PS1, unchanged since: "new" to the engine, with no
+		// lines in the interdiff (gap 5); k2 carried.
+		renderBody({
+			clusters: [
+				cluster("k2", "reviewed", { from: 1, rule: "exact" }),
+				cluster("k3", "unreviewed"),
+			],
+			hunks: { newLineCount: 5, hunks: [] },
+			from: 1,
+			kinds: new Map<string, KindEntry>([
+				[
+					"k2",
+					{
+						key: "k2",
+						kind: "carried",
+						from: 1,
+						state: "reviewed",
+						rule: "exact",
+					},
+				],
+				["k3", { key: "k3", kind: "new" }],
+			]),
+		});
+		const note = await screen.findByTestId("since-unshown");
+		expect(note).toHaveTextContent(
+			"1 to read · only in the full diff · 1 carried",
+		);
+		expect(screen.queryByTestId("since-empty")).toBeNull();
+		expect(screen.queryByText(/Nothing to read/)).toBeNull();
+	});
+
 	it("a file the author left alone says so, with its carried count (never an empty table)", async () => {
 		renderBody({
 			clusters: [
