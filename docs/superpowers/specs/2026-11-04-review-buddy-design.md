@@ -298,7 +298,8 @@ hole carbonless never sees.
   fold tolerates two answers to one question anyway (both show), since a
   claim is a lock, not a proof.
 - **The web polls** `GET /api/r/:id/agent` every 5 s while a review page
-  is open (call; the web has no push channel today, see
+  is open, every 1 s while the agent starts or answers, never while the
+  tab is hidden, and once on return (call; the web has no push channel today, see
   `docs/product-rules.md` "First open"), and refetches the thread list
   when the status changes or a thread is busy.
 - **Dev modes:** `--viewer` and `--as-of` reviews get no agent (the
