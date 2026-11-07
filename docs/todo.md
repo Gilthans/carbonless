@@ -96,6 +96,22 @@ you were looking at.
 - The answer comes back next to the line it was asked about.
 - Keep track of open and answered questions across the review.
 
+First slice (review buddy, 2026-11-07; spec
+`docs/superpowers/specs/2026-11-04-review-buddy-design.md`): Ask agent on a
+selected span opens a private thread in the reviewer's own
+`agent/threads` ref; carbonless spawns the reviewer's ACP agent (Claude
+Code through `claude-agent-acp`, or any harness speaking ACP) per open
+review, in a shared-clone checkout of the head without `refs/crb`, answers
+waiting threads one at a time with streamed text and an activity line, and
+leaves the gate to the reviewer's harness (leash `open`). The setup modal
+configures it. Left, per the spec's "Later": stricter leash levels (a
+read-only allowlist, Claude session options, a `pre-push` hook in the
+clone), agent-opened threads, the MCP door for agents carbonless can't
+launch, remote ACP agents, suggesting a review comment from an agent
+thread, pushing agent threads to another device, standing instructions, an
+agent per thread or several agents, `crb doctor` reporting the agent,
+agent threads on Home.
+
 ## Future plans
 
 Not scheduled yet; after everything above.

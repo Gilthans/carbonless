@@ -154,3 +154,53 @@ carbonless and the box shows it as you typed it; GitHub's own edit box
 shows the backslash. Code (in backticks or a code block), `a < b` and
 the tags GitHub keeps (`<b>`, `<details>`, `<kbd>`, ...) are left as they
 are.
+
+## Setting up an agent
+
+Ask agent sends your question about a span of the diff to your own coding
+agent, which answers in a private thread. carbonless installs and pays for
+nothing: it starts the agent you configured, speaking the Agent Client
+Protocol over stdio, with your own login. With no agent configured your
+questions wait, and the chip in the header opens the setup modal:
+
+1. **Pick a harness** (`src/shared/agentHarnesses.ts`):
+
+   | Harness | Command | Install |
+   |---|---|---|
+   | Claude Code | `claude-agent-acp` | `npm i -g @agentclientprotocol/claude-agent-acp` (with `CLAUDE_CODE_EXECUTABLE=$(which claude)` in env, so its bundled CLI isn't downloaded twice) |
+   | Gemini CLI | `gemini --acp` | |
+   | Goose | `goose acp` | |
+   | OpenCode | `opencode acp` | |
+   | Copilot CLI | `copilot --acp` | |
+   | Other | any command speaking ACP | |
+
+2. **Check** runs the command once through `initialize` and shows the
+   agent's name and version, or why not: not found on `PATH`, not logged in
+   (the agent's stderr), a protocol error.
+3. **Save** writes `"agent"` into `config.json`; the open review picks it
+   up within a poll and starts the agent. Remove writes `"agent": null`.
+
+The agent runs with the server's environment minus variables whose name
+contains `TOKEN`, `SECRET` or `PASSWORD` or ends in `KEY` (so `GH_TOKEN`
+and `ANTHROPIC_API_KEY` are not passed; Claude Code uses its own login
+under `HOME`), plus the config's `env`. Its stderr goes to
+`<cache>/agents/<review-id>/agent.stderr.log`.
+
+**What `open` allows.** Everything your harness lets the agent do: read,
+search, run code ("how does this behave on input X"), edit and commit in
+its own throwaway checkout of the PR's head, fetch, and whatever your
+harness's own connectors and plugins reach. carbonless answers every
+permission request with "allow once" and refuses only a switch into plan
+mode. A hostile PR can therefore make the agent do anything your harness
+lets it, in its own checkout, with your connectors and network; the
+activity line under each answer shows every tool call and decision. The
+expectation not to push or write to GitHub is in the prompt, not a lock.
+Your harness's own gate (allow and deny rules, hooks, sandbox) applies as
+it does in your terminal. Stricter levels are planned.
+
+**Why does the chip say "elsewhere"?** Another carbonless server on this
+machine (another port, e.g. a branch instance) has the same review open
+and holds its agent (`<cache>/agents/<review-id>/claim.json`). Your
+questions still go in; that server's agent answers them. This one takes
+over when the other closes the review, at its next status poll.
+

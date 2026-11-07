@@ -467,3 +467,32 @@ hunk is in the rows exactly once per side, left cells in old-file order,
 right cells in new-file order, a changed line never in a cell of the wrong
 side, and a blank cell only once the other side has run out. The sides
 never widen the page: code wraps in its cell, on a phone too.
+
+## Agent threads are the reviewer's own
+
+Questions to the reviewer's agent (Ask agent) and its answers are private:
+they live in the reviewer's `agent/threads` ref of carbonless's clone,
+written only by this server, never pushed, and AI text never reaches
+GitHub (a later "suggest a comment" would let the reviewer edit and post
+it as theirs). `--viewer` and `--as-of` reviews have no agent: the
+question would be on someone else's behalf, or about a past moment.
+
+- **The reviewer's harness is the gate; carbonless states and shows.** At
+  the only leash so far, `open`, carbonless allows every permission request
+  (`allow_once`), running and editing code in the agent's own checkout
+  included; only a switch into plan mode is refused, since nobody could
+  approve the plan. The preamble says what the reviewer expects (no push,
+  no GitHub, no change to the PR unless asked in the thread); every tool
+  call and decision shows in the thread's activity line and is stored with
+  the answer. Enforcement beyond that is the harness's own (its allow and
+  deny rules, hooks, sandbox), and stricter leash levels come later.
+- **The agent never touches review state or the reviewer's copies.** Its
+  checkout is a shared clone of carbonless's cache clone with only
+  `refs/heads` and `refs/tags`, under `<cache>/agents/<review>/tree`; the
+  session's cwd is its parent, so a PR's harness config isn't loaded.
+- **One agent per review per machine.** Another server with the review
+  open shows `elsewhere` and leaves the answering to the holder.
+- **A question never waits on the agent to be sent.** Ask agent writes
+  the thread at once; it waits (yellow) until an agent answers, whether
+  none is set up, it is starting, busy, crashed or elsewhere.
+
