@@ -375,6 +375,55 @@ describe("color tokens", () => {
 		}
 	});
 
+	it("the agent tint reads and stays clear of the review colours", () => {
+		// Text on an agent message's wash, as on a person's.
+		for (const text of ["ink", "ink-soft", "muted", "faint", "link"]) {
+			expect(
+				contrast(token(text), token("agent")),
+				`${text} on agent`,
+			).toBeGreaterThanOrEqual(4.5);
+		}
+		// The sparkle and the bubble's count, on the wash and off it.
+		for (const bg of ["agent", "surface", "raised", "band", "overlay"]) {
+			expect(
+				contrast(token("agent-ink"), token(bg)),
+				`agent-ink on ${bg}`,
+			).toBeGreaterThanOrEqual(4.5);
+		}
+		// A tint, not a new surface.
+		const step = contrast(token("agent"), token("raised"));
+		expect(step, "agent vs raised").toBeGreaterThan(1.1);
+		expect(step, "agent vs raised").toBeLessThan(1.5);
+		// Never read as deleted/failing, added/passing, pending or done. The
+		// add wash is the one exception (17°): its hue barely shows at that
+		// darkness, and the agent's own wash never sits on a diff row.
+		const conventions: [string, number][] = [
+			["del", 40],
+			["del-ink", 40],
+			["bad", 40],
+			["add-ink", 25],
+			["ok", 25],
+			["warn", 25],
+			["done", 25],
+			["violet", 25],
+		];
+		for (const c of ["agent", "agent-edge", "agent-ink"]) {
+			for (const [conv, floor] of conventions) {
+				expect(
+					hueGap(token(c), token(conv)),
+					`${c} hue vs ${conv}`,
+				).toBeGreaterThanOrEqual(floor);
+			}
+		}
+		// Not anyone's tint either.
+		for (const p of Object.keys(TOKENS).filter((n) =>
+			/^person-\d+(-edge)?$/.test(n),
+		)) {
+			expect(token(p), p).not.toBe(token("agent"));
+			expect(token(p), p).not.toBe(token("agent-edge"));
+		}
+	});
+
 	it("Home's rows, popovers and open box keep their text and icons readable", () => {
 		// The open box's list and the row popovers: overlay, the highlighted
 		// option pressed; marked title words (link), state icons, hints
