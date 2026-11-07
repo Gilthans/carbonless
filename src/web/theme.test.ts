@@ -395,8 +395,9 @@ describe("color tokens", () => {
 		expect(step, "agent vs raised").toBeGreaterThan(1.1);
 		expect(step, "agent vs raised").toBeLessThan(1.5);
 		// Never read as deleted/failing, added/passing, pending or done. The
-		// add wash is the one exception (17°): its hue barely shows at that
-		// darkness, and the agent's own wash never sits on a diff row.
+		// add wash is the one exception (17°): the agent bubble does sit on
+		// added rows, and is told apart from them by its agent-edge border,
+		// its agent-ink sparkle and count, not by its wash.
 		const conventions: [string, number][] = [
 			["del", 40],
 			["del-ink", 40],

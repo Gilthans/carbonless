@@ -1991,7 +1991,9 @@ export function DiffBody(props: {
 						className={`font-sans ${leadText(runLead, centred, (runThreads.length > 0 ? 1 : 0) + (runAgent.length > 0 ? 1 : 0))}`}
 					>
 						{runLead && centred && (
-							<FileBubbleSlot>{runLead.bubble}</FileBubbleSlot>
+							<FileBubbleSlot count={runLead.count}>
+								{runLead.bubble}
+							</FileBubbleSlot>
 						)}
 						{(runThreads.length > 0 ||
 							runAgent.length > 0 ||

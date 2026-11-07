@@ -23,7 +23,7 @@ uses is checked for WCAG AA in `src/web/theme.test.ts`; add new pairs there.
 | `ok-wash` | a finished file's header: an opaque green wash on `raised` (it sticks over the diff) |
 | `mark-tint` (utility) | `accent` at 8% as an inset shadow over every cell of a row: a thread's commented lines, and a line landed on from a thread link (it fades, instantly with reduced motion). Over add/del/context it keeps all code text at 4.5:1 and green/red apart |
 | `person-1`…`person-7`, `person-N-edge` | a person's comments in threads: an opaque wash in place of `raised` inside a border of the same hue (the edge is also their avatar fallback). Blues to violets and a stone grey: at least 40° of hue from the deleted/failing reds and 25° from the add/ok green and warn yellow (no warm hue clears both red and yellow, hence seven); all text at 4.5:1 |
-| `agent` `agent-edge` `agent-ink` | the reviewer's own agent (review buddy) and nothing else: the agent's messages (`agent` wash inside an `agent-edge` border), the agent card's border, its bubble, the sparkle and the tree's second dot. Teal: at least 40° of hue from the deleted/failing reds and 25° from the add/ok green ink, warn yellow, `done` and violet; text and the ink at 4.5:1 (theme.test.ts). The `add` wash is 17° away, which is why the agent's wash never sits on a diff row. Never a state colour: an agent thing that is waiting, failing or done takes `warn`, `bad` or `ok` like anything else |
+| `agent` `agent-edge` `agent-ink` | the reviewer's own agent (review buddy) and nothing else: the agent's messages (`agent` wash inside an `agent-edge` border), the agent card's border, its bubble, the sparkle and the tree's second dot. Teal: at least 40° of hue from the deleted/failing reds and 25° from the add/ok green ink, warn yellow, `done` and violet; text and the ink at 4.5:1 (theme.test.ts). The `add` wash is 17° away: the agent bubble, which sits on added rows too, is told apart by its `agent-edge` border and its `agent-ink` sparkle and count, not by its wash. Never a state colour: an agent thing that is waiting, failing or done takes `warn`, `bad` or `ok` like anything else |
 | `span` (`span-mark` utility) | a thread's exact characters (a span comment): an opaque navy of the accent's hue behind them and a 2px `accent` underline, on top of `thread-mark`'s lines. Opaque so every code and syntax color keeps 4.5:1 on any row kind (theme.test.ts) |
 | `line-picked` (utility) | lines picked by their numbers in Files changed: the numbers in `ink` on `accent` at 35%, the row under a 10% accent wash; Escape clears |
 | `shade`, `shadow-*` | the one shadow color and the shadows built from it |
@@ -470,7 +470,11 @@ states keep their convention colours.
   threads on line 16, 1 waiting"). The cell keeps 48px per bubble, so two
   never cover the code. Hidden runs, the file bubble and a closed file's
   header get one the same way; the file tree a second dot (`agent-ink`
-  inside `agent-edge`) after the comments' dot.
+  inside `agent-edge`) after the comments' dot. A thread asked on an
+  earlier head stays reachable: in its file's lead row (and counted in the
+  header and the tree), its card marked with the history icon, "Asked on
+  an earlier version (<short sha>)"; about a file no longer in the diff,
+  as a card under the Overview's Agent threads band.
 - **The card** (`AgentThreadCard`): an `agent-edge` card, a `band` header
   with the sparkle and the agent's name. The reviewer's messages on their
   person tint, the agent's on `agent` inside `agent-edge`, as GitHub-flavored
@@ -490,7 +494,12 @@ states keep their convention colours.
   config. Its tooltip says the detail ("No agent · set one up", "Claude
   Agent 0.100.0 · answering 1 thread", the error, "answered by the server
   on :4748"). It opens the setup in every state. 40px tall on a phone. Its
-  first read spins in the dot's place; a routine poll moves nothing.
+  first read spins in the dot's place; a routine poll moves nothing. The
+  status is read every 5 s while the page is visible, every second while
+  the agent starts or answers (its text streams through the status), again
+  when the page comes back, never while it is hidden; the threads are read
+  again whenever the status's state (or when it last changed), the thread
+  answered or the waiting count moves.
 - **The setup** (`AgentSetup`): a centred dialog on a desktop
   (`surface` inside `edge`, `shadow-float`), a bottom sheet on a
   phone. Three steps on one panel: the harnesses as 40px radio tiles
