@@ -3,6 +3,8 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentStatus } from "../../shared/agent";
+import type { PrOverview } from "../../shared/types";
+import { overviewQuery } from "../api";
 import { AgentChip, agentDot, agentTip } from "./AgentChip";
 import { agentStatusQuery, agentThreadsQuery } from "./api";
 
@@ -64,11 +66,30 @@ describe("the agent chip", () => {
 		expect(agentTip(status(more))).toBe(tip);
 	});
 
+	it("is not there without an agent (--viewer, --as-of), and asks nothing", () => {
+		const fetchMock = vi.fn();
+		vi.stubGlobal("fetch", fetchMock);
+		const client = new QueryClient();
+		client.setQueryData(overviewQuery.queryKey, {
+			writes: "viewer",
+		} as PrOverview);
+		render(
+			<QueryClientProvider client={client}>
+				<AgentChip />
+			</QueryClientProvider>,
+		);
+		expect(screen.queryByTestId("agent-chip")).toBeNull();
+		expect(fetchMock).not.toHaveBeenCalled();
+	});
+
 	it("reads the threads again when the status moves, not on a routine poll", async () => {
 		const client = new QueryClient({
 			defaultOptions: { queries: { retry: false, enabled: false } },
 		});
 		client.setQueryData(agentStatusQuery.queryKey, status());
+		client.setQueryData(overviewQuery.queryKey, {
+			writes: "on",
+		} as PrOverview);
 		const invalidate = vi.spyOn(client, "invalidateQueries");
 		vi.stubGlobal(
 			"fetch",

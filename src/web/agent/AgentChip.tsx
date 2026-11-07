@@ -10,7 +10,7 @@ import { ApiError } from "../api";
 import { plural } from "../overview/parts";
 import { SpinnerIcon } from "../Spinner";
 import { Tooltip } from "../Tooltip";
-import { agentStatusQuery, agentThreadsQuery } from "./api";
+import { agentStatusQuery, agentThreadsQuery, useAgentOn } from "./api";
 import { openAgentSetup } from "./setupStore";
 
 /** The status dot's colour: muted off or elsewhere, yellow on its way or busy, green ready, red failing. */
@@ -82,9 +82,13 @@ export function useAgentSync(
  */
 export function AgentChip() {
 	const client = useQueryClient();
-	const status = useQuery(agentStatusQuery);
+	const on = useAgentOn();
+	const status = useQuery({ ...agentStatusQuery, enabled: on });
 	useAgentSync(client, status.data);
-	if (status.error instanceof ApiError && status.error.status === 404) {
+	if (
+		!on ||
+		(status.error instanceof ApiError && status.error.status === 404)
+	) {
 		return null;
 	}
 	const data = status.data;

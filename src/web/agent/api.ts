@@ -3,7 +3,7 @@
  * visible), its threads, and the writes that ask, reply, resolve and stop.
  * The config routes are machine-wide, not the review's.
  */
-import { queryOptions } from "@tanstack/react-query";
+import { queryOptions, useQuery } from "@tanstack/react-query";
 import {
 	AGENT_POLL_MS,
 	type AgentCheck,
@@ -14,7 +14,7 @@ import {
 	type AgentThread,
 	type OpenAgentThreadRequest,
 } from "../../shared/agent";
-import { ApiError, fetchJson, reviewApiPath } from "../api";
+import { ApiError, fetchJson, overviewQuery, reviewApiPath } from "../api";
 
 const json = (method: string, body?: unknown): RequestInit => ({
 	method,
@@ -25,6 +25,15 @@ const json = (method: string, body?: unknown): RequestInit => ({
 /** A route of the bound review: `/api/r/<id>/agent…`. */
 const review = <T>(path: string, init?: RequestInit) =>
 	fetchJson<T>(reviewApiPath(`/api/${path}`), init);
+
+/**
+ * Whether this review has an agent: a session that writes (not --viewer,
+ * not --as-of), once the overview says so. The agent's routes aren't asked
+ * before, or at all without one (they would only answer 404).
+ */
+export function useAgentOn(): boolean {
+	return useQuery({ ...overviewQuery, enabled: false }).data?.writes === "on";
+}
 
 export const fetchAgentStatus = () => review<AgentStatus>("agent");
 

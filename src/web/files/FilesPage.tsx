@@ -13,7 +13,7 @@ import {
 } from "react";
 import type { AgentThread } from "../../shared/agent";
 import type { ReviewThread } from "../../shared/types";
-import { agentThreadsQuery } from "../agent/api";
+import { agentThreadsQuery, useAgentOn } from "../agent/api";
 import { hunksQuery, overviewQuery, sessionQuery } from "../api";
 import { LabeledIcon } from "../overview/parts";
 import { useForgetPageScroll, usePageActive } from "../pageActive";
@@ -574,7 +574,10 @@ export function FilesPage() {
 	// The reviewer's agent threads (their own read, beside GitHub's): the
 	// tree's second dot; the diffs read them from this query's cache.
 	const sessionHead = useQuery(sessionQuery).data?.snapshotHead;
-	const agentThreads = useQuery(agentThreadsQuery).data?.threads;
+	const agentThreads = useQuery({
+		...agentThreadsQuery,
+		enabled: useAgentOn(),
+	}).data?.threads;
 	const agentThreadsByPath = useMemo(() => {
 		const byPath = new Map<string, AgentThread[]>();
 		const head = threads?.snapshotHead ?? sessionHead;
