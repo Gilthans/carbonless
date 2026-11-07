@@ -1,4 +1,4 @@
-import type { Placement } from "./tracer/trace.js";
+import type { ThreadPlacement } from "./rereview/placement.js";
 
 export type FileStatus =
 	| "added"
@@ -169,6 +169,15 @@ export interface StateChange {
 
 /** A side of a diff: "LEFT" numbers the old file, "RIGHT" the new one. */
 export type DiffSide = "LEFT" | "RIGHT";
+
+/** Where a thread sits in a snapshot (a CodeAnchor's range). */
+export interface ThreadAnchorRef {
+	path: string;
+	startSide: DiffSide;
+	startLine: number;
+	side: DiffSide;
+	line: number;
+}
 
 /**
  * Where a comment points in the PR's code, whoever hosts the comment: a
@@ -910,7 +919,12 @@ export interface RereviewAnswer {
 	}[];
 	/** Files with a reworked or new cluster (or a conflict), and those clusters. */
 	toRead: { files: number; clusters: number };
-	threads: { id: string; placement: Placement }[];
+	/**
+	 * Every unresolved thread's place in the target snapshot
+	 * (src/shared/rereview/placement.ts), as of the read of GitHub the
+	 * engine's job saw; the page reads them by read (`GET /placements`).
+	 */
+	threads: { id: string; placement: ThreadPlacement }[];
 }
 
 export interface SessionInfo {

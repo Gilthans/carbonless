@@ -1,7 +1,12 @@
 import { monotonicFactory } from "ulid";
-import type { ClusterState, DiffSide, ShapeCode } from "../../shared/types.js";
+import type {
+	ClusterState,
+	DiffSide,
+	ShapeCode,
+	ThreadAnchorRef,
+} from "../../shared/types.js";
 
-export type { ShapeCode };
+export type { ShapeCode, ThreadAnchorRef };
 
 /**
  * crb events, stored one JSON object per line in crb commit messages.
@@ -91,15 +96,6 @@ export interface CarriedEvent extends EventBase {
 	to: number;
 	rule: "exact" | "rename";
 	states: CarriedEntry[];
-}
-
-/** Where a thread sits in a patch set's snapshot (a CodeAnchor's range). */
-export interface ThreadAnchorRef {
-	path: string;
-	startSide: DiffSide;
-	startLine: number;
-	side: DiffSide;
-	line: number;
 }
 
 /**
