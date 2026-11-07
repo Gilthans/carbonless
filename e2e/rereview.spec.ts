@@ -122,6 +122,15 @@ async function drag(page: Page, handle: Locator, target: Locator) {
 /** The card a dot or connector shows on hover (a tooltip, hidden from AT). */
 const card = (page: Page) => page.locator('[role="tooltip"]:not([hidden])');
 
+/**
+ * For a step that waits on git in crb's child processes: the head check's
+ * fetch of a new head, or the engine's answer (merge-tree, the interdiff,
+ * a diff per patch set). On a loaded machine these pass the expects'
+ * 10 s default (a flake-check under four busy loops did once); a missing
+ * answer still fails.
+ */
+const GIT_WAIT = { timeout: 30_000 };
+
 /** Push 2': only core.ts reworked, so util.ts carries whole. */
 const reworkCore = {
 	message: "rework core",
@@ -170,7 +179,7 @@ async function pushed(
 	expect(refs).toContain("/patchsets/1 ");
 	p.moveHead(push);
 	await page.reload();
-	await expect(tail(page)).toHaveAttribute("data-state", "head");
+	await expect(tail(page)).toHaveAttribute("data-state", "head", GIT_WAIT);
 	return refs;
 }
 
@@ -345,7 +354,7 @@ test("a gone cluster is a red block with its chip, not markable and not counted;
 	// Push 3 undoes util.ts's first cluster: gone since PS2.
 	p.moveHead(undo);
 	await page.reload();
-	await expect(tail(page)).toHaveAttribute("data-state", "head");
+	await expect(tail(page)).toHaveAttribute("data-state", "head", GIT_WAIT);
 	await toast(page).getByRole("button", { name: "View" }).click();
 	await expect(
 		node(page, "ps2").getByRole("button", { name: "comparison base" }),
@@ -495,6 +504,7 @@ test("an empty since view says so once the engine has answered, with a spinner u
 	});
 	await toast(page).getByRole("button", { name: "View" }).click();
 	await expectLoadingThen({
+		...GIT_WAIT,
 		loading: toRead(page).getByRole("status", {
 			name: "Counting what is to read",
 		}),
@@ -544,7 +554,7 @@ test("a newer head fills the rail's last slot and shows the toast; nothing below
 
 	p.moveHead(rework);
 	await poll(page);
-	await expect(tail(page)).toHaveAttribute("data-state", "head");
+	await expect(tail(page)).toHaveAttribute("data-state", "head", GIT_WAIT);
 	await expect(toast(page)).toContainText("1 new commit");
 	await expect(toast(page)).toHaveAttribute("role", "status");
 	await expect(node(page, "head")).toBeVisible();
@@ -577,11 +587,11 @@ test("a newer head fills the rail's last slot and shows the toast; nothing below
 	// toast counts the new head's commits, the card says the shape.
 	p.forceHead({ ...rework, message: "rework, force-pushed" });
 	await poll(page);
-	await expect(tail(page)).toHaveAttribute("data-state", "head");
+	await expect(tail(page)).toHaveAttribute("data-state", "head", GIT_WAIT);
 	await expect(toast(page)).toContainText("1 new commit");
 	expect((await slot.boundingBox())?.width).toBe(width);
 	await page.getByTestId("ps-conn-head").hover();
-	await expect(card(page)).toContainText(/Rebased/);
+	await expect(card(page)).toContainText(/Rebased/, GIT_WAIT);
 });
 
 test("the head connector's card spins in its to-read slot until the engine answers, then says the line", async ({
@@ -604,12 +614,13 @@ test("the head connector's card spins in its to-read slot until the engine answe
 		await route.continue();
 	});
 	await page.reload();
-	await expect(tail(page)).toHaveAttribute("data-state", "head");
+	await expect(tail(page)).toHaveAttribute("data-state", "head", GIT_WAIT);
 	const conn = page.getByTestId("ps-conn-head");
 	// The count comes from git at once.
 	await expect(conn).toContainText("1");
 	await conn.hover();
 	await expectLoadingThen({
+		...GIT_WAIT,
 		loading: page.getByTestId("rereview-pending"),
 		empty: [
 			card(page).getByText(/nothing new/),
@@ -682,7 +693,7 @@ test("the rail on a phone: 40px targets, no page overflow, a tap opens the sheet
 	await reviewAll(page);
 	p.moveHead(rework);
 	await page.reload();
-	await expect(tail(page)).toHaveAttribute("data-state", "head");
+	await expect(tail(page)).toHaveAttribute("data-state", "head", GIT_WAIT);
 	await expectNoPageOverflow(page);
 	for (const el of [
 		node(page, "head"),
@@ -729,7 +740,7 @@ test("the markers move by drag and by Ctrl+[ / Ctrl+]; nothing moves on a bare k
 	await reviewAll(page);
 	p.moveHead(rework);
 	await page.reload();
-	await expect(tail(page)).toHaveAttribute("data-state", "head");
+	await expect(tail(page)).toHaveAttribute("data-state", "head", GIT_WAIT);
 
 	await drag(page, marker(page, "viewing"), node(page, "head"));
 	await expect(
