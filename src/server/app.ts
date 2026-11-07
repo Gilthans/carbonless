@@ -274,12 +274,14 @@ export async function buildApp(
 			});
 			review.get("/review", (request) => sessionOf(request).review());
 			// Several files' hunks at once (the search's prefetch).
-			review.get<{ Querystring: { revision?: unknown; indexes?: string } }>(
+			review.get<{ Querystring: { revision?: unknown; indexes?: unknown } }>(
 				"/files/hunks",
 				(request) => {
 					const revision = revisionParam(request.query.revision);
 					const { indexes: raw } = request.query;
-					if (!raw) throw new BadRequestError("indexes is required");
+					if (typeof raw !== "string" || !raw) {
+						throw new BadRequestError("indexes is required");
+					}
 					const indexes = [...new Set(raw.split(",").map(fileIndex))];
 					if (indexes.length > HUNKS_BATCH) {
 						throw new BadRequestError(`At most ${HUNKS_BATCH} files a request`);

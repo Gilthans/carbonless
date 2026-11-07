@@ -172,7 +172,7 @@ describe("loadHunksBatch", () => {
 		expect(await result).toEqual({
 			files: [
 				{ index: 0, hunks: loaded },
-				{ index: 1, error: "boom" },
+				{ index: 1, error: "Couldn't read this file" },
 				{ index: 2, hunks: loaded },
 			],
 		});

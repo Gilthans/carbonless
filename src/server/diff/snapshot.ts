@@ -232,11 +232,9 @@ export async function loadHunksBatch(
 	for (const index of indexes) {
 		try {
 			files.push({ index, hunks: await load(repo, snapshot, index) });
-		} catch (error) {
-			files.push({
-				index,
-				error: error instanceof Error ? error.message : String(error),
-			});
+		} catch {
+			// Not git's message: it can carry the clone cache's path.
+			files.push({ index, error: "Couldn't read this file" });
 		}
 	}
 	return { files };

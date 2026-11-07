@@ -522,6 +522,11 @@ describe("API", () => {
 		["/api/files/hunks?revision=R&indexes=-1", 400, "Invalid file index"],
 		["/api/files/hunks?revision=R&indexes=,", 400, "Invalid file index"],
 		[
+			"/api/files/hunks?revision=R&indexes=1&indexes=2",
+			400,
+			"indexes is required",
+		],
+		[
 			`/api/files/hunks?revision=R&indexes=${Array.from({ length: 26 }, (_, i) => i).join(",")}`,
 			400,
 			"At most 25 files a request",
