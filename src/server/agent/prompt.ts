@@ -112,7 +112,7 @@ const IMG = /<img\b[^>]*>?/gi;
 const ZERO_WIDTH = /[\u200B\u200C\u200E\u200F\u2060-\u2064\uFEFF]/g;
 /** A zero-width joiner not inside an emoji sequence (an emoji ZWJ sequence keeps its own). */
 const LONE_ZWJ =
-	/‍(?!\p{Extended_Pictographic})|(?<!\p{Extended_Pictographic}|\p{Emoji_Modifier}|️)‍/gu;
+	/\u{200D}(?!\p{Extended_Pictographic})|(?<!\p{Extended_Pictographic}|\p{Emoji_Modifier}|\u{FE0F})\u{200D}/gu;
 const BIDI = /[\u202A-\u202E\u2066-\u2069]/g;
 // biome-ignore lint/suspicious/noControlCharactersInRegex: ANSI escapes are what it strips
 const ANSI_CSI = /\u001b\[[0-?]*[ -/]*[@-~]/g;
