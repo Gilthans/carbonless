@@ -20,7 +20,7 @@ export type ShapeCode =
 	| "S6"
 	| "S7";
 
-interface EventBase {
+export interface EventBase {
 	v: 1;
 	/** Lowercase ULID. */
 	id: string;

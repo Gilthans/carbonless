@@ -5,12 +5,16 @@ import { ulid } from "ulid";
 import type { Snapshot, StateChange } from "../../shared/types.js";
 import { runGit } from "../git.js";
 import {
+	type CarriedEvent,
 	type ClusterStateEvent,
 	type CrbEvent,
+	type EventBase,
 	isSlug,
 	newEvent,
 	parseEventLines,
 	type ReviewCreatedEvent,
+	type ShapeCode,
+	type ThreadAnchorRef,
 } from "./events.js";
 import { foldProgress, type ProgressState } from "./fold.js";
 import { RefConflictError, RefStore } from "./refStore.js";
@@ -53,10 +57,39 @@ export function refusedMessage(first: string, refused: number): string {
 }
 
 /**
- * The write targets a snapshot other than the reviewer's patch set (HTTP 409):
- * a stale tab, or another tab started a patch set on a different revision.
+ * The write targets a snapshot that is no patch set of the reviewer's and
+ * no start was given (HTTP 409): a stale tab, or another tab started a
+ * patch set on a different snapshot.
  */
 export class StaleSnapshotError extends Error {}
+
+/** The write targets an earlier patch set: those are read-only (HTTP 409). */
+export class ReadOnlyPatchsetError extends StaleSnapshotError {}
+
+/**
+ * What starting patch set n+1 records: the patch set it follows and how
+ * the snapshot relates to it (null when unknown, or for PS1), and the
+ * engine's carries into it (`to` is filled in; one event per rule).
+ */
+export interface PatchsetStart {
+	since: number | null;
+	shape: ShapeCode | null;
+	baseBranch: string | null;
+	interdiff: "available" | "unavailable" | null;
+	carried: Omit<CarriedEvent, keyof EventBase | "to">[];
+}
+
+/** PS1's start: nothing before it, nothing carried. */
+const FIRST_START: PatchsetStart = {
+	since: null,
+	shape: null,
+	baseBranch: null,
+	interdiff: null,
+	carried: [],
+};
+
+/** Lost races on the progress ref a start retries before giving up. */
+const START_TRIES = 8;
 
 const REVIEW_ID = /^[0-9a-hjkmnp-tv-z]{26}$/;
 const STATES = new Set(["unreviewed", "reviewed", "crossed-off"]);
@@ -87,6 +120,13 @@ const lookupRef = (key: string) =>
 const reviewRef = (id: string) => `refs/crb/reviews/${id}`;
 const reviewerRef = (id: string, slug: string) =>
 	`${reviewRef(id)}/reviewers/${slug}`;
+const progressRef = (id: string, slug: string) =>
+	`${reviewerRef(id, slug)}/progress`;
+/** The refs pinning patch set `n`'s head and merge base (storage doc, "Ref layout"). */
+export const patchsetRefs = (reviewer: string, n: number) => ({
+	head: `${reviewer}/patchsets/${n}`,
+	base: `${reviewer}/patchsets/${n}-base`,
+});
 
 /**
  * Reviews of GitHub pull requests and each reviewer's patch sets and cluster
@@ -157,21 +197,94 @@ export class ReviewService {
 		checkReviewId(reviewId);
 		checkSlug(slug);
 		return foldProgress(
-			await this.store.readEvents(`${reviewerRef(reviewId, slug)}/progress`),
+			await this.store.readEvents(progressRef(reviewId, slug)),
 		);
 	}
 
 	/**
+	 * The OIDs patch set `n`'s pin refs hold (null for a missing ref: a
+	 * patch set started before the -base ref existed has none).
+	 */
+	async patchsetPins(
+		reviewId: string,
+		slug: string,
+		n: number,
+	): Promise<{ head: string | null; base: string | null }> {
+		checkReviewId(reviewId);
+		checkSlug(slug);
+		checkPatchsetNumber(n);
+		const refs = patchsetRefs(reviewerRef(reviewId, slug), n);
+		const [head, base] = await Promise.all([
+			this.store.tip(refs.head),
+			this.store.tip(refs.base),
+		]);
+		return { head, base };
+	}
+
+	/**
+	 * Makes `snapshot` the reviewer's latest patch set, unless it already is
+	 * one of theirs (then nothing is written, whatever `start` says): one
+	 * commit holding `patchset-started` (n+1, since, shape) and the carried
+	 * events, and one transaction moving the progress ref and creating the
+	 * two pin refs (so a second start of the same number fails and reads
+	 * again). A lost race on the progress ref is retried.
+	 */
+	async ensurePatchset(
+		reviewId: string,
+		slug: string,
+		snapshot: Snapshot,
+		start: PatchsetStart,
+	): Promise<ProgressState> {
+		checkReviewId(reviewId);
+		checkSlug(slug);
+		const ref = progressRef(reviewId, slug);
+		let number: number | null = null;
+		for (let attempt = 1; ; attempt++) {
+			const existing = await this.store.readEvents(ref);
+			const progress = foldProgress(existing);
+			if (progress.patchsets.some((p) => p.revision === snapshot.revision)) {
+				return progress;
+			}
+			const next = (progress.patchset?.number ?? 0) + 1;
+			// `start` was computed against the latest patch set of the first
+			// try: if another tab started one since, the caller recomputes.
+			if (number !== null && next !== number) {
+				throw new StaleSnapshotError(
+					`Patch set ${next - 1} was started on another snapshot; reload the review`,
+				);
+			}
+			number = next;
+			try {
+				await this.#startPatchset(
+					reviewId,
+					slug,
+					snapshot,
+					start,
+					progress,
+					stamper(existing),
+				);
+				return this.getProgress(reviewId, slug);
+			} catch (error) {
+				if (!(error instanceof RefConflictError) || attempt >= START_TRIES) {
+					throw error;
+				}
+			}
+		}
+	}
+
+	/**
 	 * Records the reviewer's cluster state changes against `snapshot`. The
-	 * first change starts patch set 1 on the snapshot's revision and pins its
-	 * head; after that, only that revision's snapshot is accepted. Every
-	 * change is validated before anything is written.
+	 * first change ever starts patch set 1 on the snapshot; a change against
+	 * a snapshot that is no patch set yet starts the next one when `start`
+	 * says how (ensurePatchset), else is stale. An earlier patch set is
+	 * read-only. Every change is validated before anything is written.
 	 */
 	async recordStates(
 		reviewId: string,
 		slug: string,
 		snapshot: Snapshot,
 		changes: StateChange[],
+		start?: PatchsetStart,
 	): Promise<ProgressState> {
 		checkReviewId(reviewId);
 		checkSlug(slug);
@@ -215,23 +328,25 @@ export class ReviewService {
 			};
 		});
 
-		const ref = `${reviewerRef(reviewId, slug)}/progress`;
-		const existing = await this.store.readEvents(ref);
-		const progress = foldProgress(existing);
-		// The fold orders by (ts, id): stamp every new event after everything
-		// already stored, so a backward clock step can't put a reset before the
-		// state it undoes.
-		// A loop, not Math.max(...): spreading ~100k events overflows the stack.
-		let lastTs = -1;
-		for (const e of existing) if (e.ts > lastTs) lastTs = e.ts;
-		const stamp = () => {
-			lastTs = Math.max(Date.now(), lastTs + 1);
-			return lastTs;
-		};
-		if (progress.patchset) checkRevision(progress, snapshot);
+		const ref = progressRef(reviewId, slug);
+		let existing = await this.store.readEvents(ref);
+		let progress = foldProgress(existing);
+		const known = progress.patchsets.some(
+			(p) => p.revision === snapshot.revision,
+		);
+		if (known) checkWritable(progress, snapshot);
 		else if (payloads.length > 0) {
-			await this.#startPatchset(ref, slug, snapshot, stamp());
+			// PS1 needs no start; a later one does (else the tab is stale).
+			const how = start ?? (progress.patchset ? null : FIRST_START);
+			if (!how) checkWritable(progress, snapshot);
+			else {
+				await this.ensurePatchset(reviewId, slug, snapshot, how);
+				existing = await this.store.readEvents(ref);
+				progress = foldProgress(existing);
+				checkWritable(progress, snapshot);
+			}
 		}
+		const stamp = stamper(existing);
 
 		for (const payload of payloads) {
 			const event: ClusterStateEvent = newEvent(
@@ -251,47 +366,106 @@ export class ReviewService {
 		return this.getProgress(reviewId, slug);
 	}
 
-	/** Starts patch set 1 on the snapshot, unless another tab just did. */
+	/**
+	 * Appends the reviewer's placement of a thread in patch set `patchset`
+	 * (a thread-placed event by them; the anchor was checked against the
+	 * patch set's snapshot by the caller).
+	 */
+	async recordPlacement(
+		reviewId: string,
+		slug: string,
+		patchset: number,
+		thread: string,
+		anchor: ThreadAnchorRef,
+		engine: number,
+	): Promise<ProgressState> {
+		checkReviewId(reviewId);
+		checkSlug(slug);
+		checkPatchsetNumber(patchset);
+		const ref = progressRef(reviewId, slug);
+		const existing = await this.store.readEvents(ref);
+		const progress = foldProgress(existing);
+		if (!progress.patchsets.some((p) => p.number === patchset)) {
+			throw new StaleSnapshotError(
+				`No patch set ${patchset}; reload the review`,
+			);
+		}
+		const event = newEvent(
+			"thread-placed",
+			slug,
+			{ thread, patchset, anchor, engine },
+			"human",
+			stamper(existing)(),
+		);
+		await this.store.appendEvent(
+			ref,
+			`crb: placed thread in ${anchor.path} on PS${patchset}`,
+			event,
+			slug,
+		);
+		return this.getProgress(reviewId, slug);
+	}
+
+	/**
+	 * Writes patch set n+1 on the snapshot: the start and the carries in one
+	 * commit on the progress ref's tip, and the ref moves with the two pin
+	 * refs created in one transaction. A RefConflictError when the progress
+	 * ref moved or a pin ref of that number already exists (another tab).
+	 */
 	async #startPatchset(
-		ref: string,
+		reviewId: string,
 		slug: string,
 		snapshot: Snapshot,
-		ts: number,
+		start: PatchsetStart,
+		progress: ProgressState,
+		stamp: () => number,
 	): Promise<void> {
+		const ref = progressRef(reviewId, slug);
 		const tip = await this.store.tip(ref);
-		const event = newEvent(
+		const number = (progress.patchset?.number ?? 0) + 1;
+		const { since, shape, baseBranch, interdiff } = start;
+		const started = newEvent(
 			"patchset-started",
 			slug,
 			{
-				patchset: 1,
+				patchset: number,
 				revision: snapshot.revision,
 				mergeBase: snapshot.base,
 				head: snapshot.head,
+				...(since !== null ? { since } : {}),
+				...(shape !== null ? { shape } : {}),
+				...(baseBranch !== null ? { baseBranch } : {}),
+				...(interdiff !== null ? { interdiff } : {}),
 			},
 			"human",
-			ts,
+			stamp(),
 		);
+		const carried = start.carried.map(({ from, rule, states }) =>
+			newEvent(
+				"carried",
+				slug,
+				{ from, to: number, rule, states },
+				"auto",
+				stamp(),
+			),
+		);
+		const total = carried.reduce((n, e) => n + e.states.length, 0);
+		const summary =
+			total > 0
+				? `crb: started PS${number}, carried ${total} cluster${total === 1 ? "" : "s"} from PS${since ?? "?"}`
+				: `crb: started PS${number}`;
 		const commit = await this.store.commit(
 			tip,
-			"crb: started PS1",
-			[event],
+			summary,
+			[started, ...carried],
 			slug,
 		);
-		try {
-			await this.store.transaction([
-				{ ref, newOid: commit, oldOid: tip },
-				{
-					ref: ref.replace(/\/progress$/, "/patchsets/1"),
-					newOid: snapshot.head,
-					oldOid: null,
-				},
-			]);
-		} catch (error) {
-			if (!(error instanceof RefConflictError)) throw error;
-			const progress = foldProgress(await this.store.readEvents(ref));
-			if (!progress.patchset) throw error;
-			checkRevision(progress, snapshot);
-		}
+		const refs = patchsetRefs(reviewerRef(reviewId, slug), number);
+		await this.store.transaction([
+			{ ref, newOid: commit, oldOid: tip },
+			{ ref: refs.head, newOid: snapshot.head, oldOid: null },
+			{ ref: refs.base, newOid: snapshot.base, oldOid: null },
+		]);
 	}
 
 	async #readLookup(ref: string): Promise<string | null> {
@@ -307,12 +481,43 @@ export class ReviewService {
 	}
 }
 
-function checkRevision(progress: ProgressState, snapshot: Snapshot): void {
+/**
+ * The fold orders by (ts, id): a stamper gives every new event a time after
+ * everything already stored, so a backward clock step can't put a reset
+ * before the state it undoes.
+ */
+function stamper(existing: CrbEvent[]): () => number {
+	// A loop, not Math.max(...): spreading ~100k events overflows the stack.
+	let lastTs = -1;
+	for (const e of existing) if (e.ts > lastTs) lastTs = e.ts;
+	return () => {
+		lastTs = Math.max(Date.now(), lastTs + 1);
+		return lastTs;
+	};
+}
+
+/**
+ * Whether the snapshot takes writes: it must be the reviewer's latest
+ * patch set. An earlier one is read-only; a snapshot that is none of
+ * theirs is stale (another tab moved on, or no start was given).
+ */
+function checkWritable(progress: ProgressState, snapshot: Snapshot): void {
 	const { patchset } = progress;
-	if (patchset && patchset.revision !== snapshot.revision) {
-		throw new StaleSnapshotError(
-			`Patch set ${patchset.number} is on another revision; reload the review`,
+	if (!patchset || patchset.revision === snapshot.revision) return;
+	const old = progress.patchsets.find((p) => p.revision === snapshot.revision);
+	if (old) {
+		throw new ReadOnlyPatchsetError(
+			`Patch set ${old.number} is read-only; patch set ${patchset.number} is the latest`,
 		);
+	}
+	throw new StaleSnapshotError(
+		`Patch set ${patchset.number} is on another snapshot; reload the review`,
+	);
+}
+
+function checkPatchsetNumber(n: number): void {
+	if (!Number.isSafeInteger(n) || n < 1) {
+		throw new Error(`Invalid patch set number: ${n}`);
 	}
 }
 
@@ -320,7 +525,7 @@ function checkSlug(slug: string): void {
 	if (!isSlug(slug)) throw new Error(`Invalid reviewer slug: ${slug}`);
 }
 
-function checkReviewId(id: string): void {
+export function checkReviewId(id: string): void {
 	if (!REVIEW_ID.test(id)) throw new Error(`Invalid review id: ${id}`);
 }
 
