@@ -10,7 +10,7 @@ import {
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { AgentCheck, AgentStatus } from "../../shared/agent";
+import type { AgentCheck, AgentConfig, AgentStatus } from "../../shared/agent";
 import { AgentSetup } from "./AgentSetup";
 import { agentStatusQuery } from "./api";
 
@@ -22,10 +22,20 @@ const json = (status: number, body: unknown) =>
 
 let fetchMock: ReturnType<typeof vi.fn>;
 let check: AgentCheck;
+/** config.json's agent, as GET /api/config/agent reads it. */
+let stored: { agent: AgentConfig | null; problems: string[] };
+/** Holds the config read until called. */
+let holdRead: Promise<void> | null;
 beforeEach(() => {
 	check = { ok: true, agent: { name: "Claude Agent", version: "0.100.0" } };
+	stored = { agent: null, problems: [] };
+	holdRead = null;
 	fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
 		if (url === "/api/config/agent/check") return json(200, check);
+		if (url === "/api/config/agent" && !init?.method) {
+			await holdRead;
+			return json(200, stored);
+		}
 		if (url === "/api/config/agent") {
 			return json(200, { agent: JSON.parse(String(init?.body)) });
 		}
@@ -63,6 +73,12 @@ function show(configured = false) {
 		defaultOptions: { queries: { retry: false, enabled: false } },
 	});
 	client.setQueryData(agentStatusQuery.queryKey, status(configured));
+	if (configured) {
+		stored = {
+			agent: { command: "gemini", args: ["--acp"], env: {}, leash: "open" },
+			problems: [],
+		};
+	}
 	const invalidate = vi.spyOn(client, "invalidateQueries");
 	render(
 		<QueryClientProvider client={client}>
@@ -72,16 +88,23 @@ function show(configured = false) {
 	return { invalidate, user: userEvent.setup() };
 }
 
+/** The writes and checks sent (the config reads left out). */
 const calls = () =>
-	fetchMock.mock.calls.map(([url, init]) => ({
-		url,
-		method: (init as RequestInit | undefined)?.method,
-		body: JSON.parse(String((init as RequestInit | undefined)?.body ?? "null")),
-	}));
+	fetchMock.mock.calls
+		.filter(([, init]) => (init as RequestInit | undefined)?.method)
+		.map(([url, init]) => ({
+			url,
+			method: (init as RequestInit | undefined)?.method,
+			body: JSON.parse(
+				String((init as RequestInit | undefined)?.body ?? "null"),
+			),
+		}));
 
 async function openIt(user: ReturnType<typeof userEvent.setup>) {
 	await user.click(screen.getByRole("button", { name: "opener" }));
-	return screen.getByRole("dialog", { name: "Your agent" });
+	const dialog = screen.getByRole("dialog", { name: "Your agent" });
+	await within(dialog).findByRole("radiogroup", { name: "Harness" });
+	return dialog;
 }
 
 describe("AgentSetup", () => {
@@ -200,6 +223,44 @@ describe("AgentSetup", () => {
 			method: "PUT",
 			body: null,
 		});
+	});
+
+	it("shows what is set up once it is read, a spinner until then", async () => {
+		let release = () => {};
+		holdRead = new Promise((r) => {
+			release = r;
+		});
+		const { user } = show(true);
+		await user.click(screen.getByRole("button", { name: "opener" }));
+		const dialog = screen.getByRole("dialog", { name: "Your agent" });
+		expect(
+			within(dialog).getByRole("status", { name: "Loading your agent" }),
+		).toBeTruthy();
+		expect(within(dialog).queryByRole("radiogroup")).toBeNull();
+		release();
+		expect(
+			await within(dialog).findByRole("radio", { name: "Gemini CLI" }),
+		).toBeChecked();
+		expect(
+			within(dialog).getByRole("textbox", { name: "Command" }),
+		).toHaveValue("gemini");
+	});
+
+	it("a command no harness has shows as Other, with the config's problems", async () => {
+		stored = {
+			agent: { command: "my-acp", args: ["--x"], env: {}, leash: "open" },
+			problems: ['agent.leash: "strict" isn\'t a level; open'],
+		};
+		const { user } = show();
+		const dialog = await openIt(user);
+		expect(within(dialog).getByRole("radio", { name: "Other" })).toBeChecked();
+		expect(
+			within(dialog).getByRole("textbox", { name: "Command" }),
+		).toHaveValue("my-acp");
+		expect(
+			within(dialog).getByTestId("agent-config-problems"),
+		).toHaveTextContent("strict");
+		expect(within(dialog).getByRole("button", { name: "Remove" })).toBeTruthy();
 	});
 
 	it("Escape closes it and focus goes back", async () => {

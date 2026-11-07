@@ -86,6 +86,17 @@ export const postAgentCancel = async (): Promise<void> => {
 	await review<{ ok: true }>("agent/cancel", json("POST"));
 };
 
+/** The machine's agent as config.json has it, and what's wrong with it. */
+export const agentConfigQuery = queryOptions({
+	queryKey: ["agent-config"],
+	queryFn: () =>
+		fetchJson<{ agent: AgentConfig | null; problems: string[] }>(
+			"/api/config/agent",
+		),
+	staleTime: 0,
+	retry: false,
+});
+
 /** Writes (or, with null, removes) the machine's agent in config.json. */
 export const putAgentConfig = (agent: AgentConfig | null) =>
 	fetchJson<{ agent: AgentConfig | null }>(

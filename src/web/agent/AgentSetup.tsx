@@ -22,7 +22,12 @@ import {
 import { Spinner } from "../Spinner";
 import { Tooltip, TooltipLayer } from "../Tooltip";
 import { NOT_PHONE, useMedia } from "../useMedia";
-import { agentStatusQuery, checkAgentConfig, putAgentConfig } from "./api";
+import {
+	agentConfigQuery,
+	agentStatusQuery,
+	checkAgentConfig,
+	putAgentConfig,
+} from "./api";
 import { closeAgentSetup, useAgentSetupOpen } from "./setupStore";
 
 type HarnessId = AgentHarness["id"];
@@ -68,8 +73,8 @@ export function AgentSetup(props: { open: boolean; onClose(): void }) {
 	const { open, onClose } = props;
 	const client = useQueryClient();
 	const wide = useMedia(NOT_PHONE);
-	const configured =
-		useQuery({ ...agentStatusQuery, enabled: false }).data?.configured ?? false;
+	const stored = useQuery({ ...agentConfigQuery, enabled: open });
+	const configured = Boolean(stored.data?.agent);
 	const dialog = useRef<HTMLDialogElement | null>(null);
 	const [layer, setLayer] = useState<HTMLDialogElement | null>(null);
 	const setDialog = useCallback((el: HTMLDialogElement | null) => {
@@ -99,18 +104,34 @@ export function AgentSetup(props: { open: boolean; onClose(): void }) {
 		}
 		setCopied(false);
 	};
-	// Each opening starts afresh: Claude Code picked when none is set up
-	// (what's set up isn't readable here; a pick shows its command).
+	// Each opening starts from what config.json says, once it is read: the
+	// harness whose command and arguments it has (else Other with them),
+	// Claude Code when none is set up.
+	const shownFor = useRef<unknown>(null);
+	const read =
+		open && stored.isSuccess && !stored.isFetching ? stored.data : null;
 	useEffect(() => {
-		if (!open) return;
-		const first: HarnessId | null = configured ? null : "claude-code";
-		const h = harness(first);
-		setPick(first);
-		setCommand(h?.command ?? "");
-		setArgs(h?.args.join(" ") ?? "");
+		if (!open) {
+			shownFor.current = null;
+			return;
+		}
+		if (!read || shownFor.current === read) return;
+		shownFor.current = read;
+		const agent = read.agent;
+		const preset = agent
+			? AGENT_HARNESSES.find(
+					(h) =>
+						h.id !== "other" &&
+						h.command === agent.command &&
+						h.args.join(" ") === agent.args.join(" "),
+				)
+			: harness("claude-code");
+		setPick(preset?.id ?? "other");
+		setCommand(preset?.command ?? agent?.command ?? "");
+		setArgs((preset?.args ?? agent?.args ?? []).join(" "));
 		setChecked(null);
 		setCopied(false);
-	}, [open, configured]);
+	}, [open, read]);
 	useEffect(() => {
 		const d = dialog.current;
 		if (!d) return;
@@ -138,6 +159,7 @@ export function AgentSetup(props: { open: boolean; onClose(): void }) {
 	});
 	const done = () => {
 		void client.invalidateQueries({ queryKey: agentStatusQuery.queryKey });
+		void client.invalidateQueries({ queryKey: agentConfigQuery.queryKey });
 		onClose();
 	};
 	const save = useMutation({
@@ -215,8 +237,29 @@ export function AgentSetup(props: { open: boolean; onClose(): void }) {
 						)}
 					</Tooltip>
 				</div>
-				{open && (
+				{open && !read && (
+					<div aria-busy="true" className="px-4 py-6">
+						{stored.isError ? (
+							<p role="alert" className="text-sm text-bad">
+								{stored.error.message}
+							</p>
+						) : (
+							<Spinner label="Loading your agent" />
+						)}
+					</div>
+				)}
+				{open && read && (
 					<div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-4 py-3">
+						{read.problems.length > 0 && (
+							<ul
+								data-testid="agent-config-problems"
+								className="space-y-1 text-sm text-bad"
+							>
+								{read.problems.map((p) => (
+									<li key={p}>{p}</li>
+								))}
+							</ul>
+						)}
 						<fieldset className="min-w-0 space-y-2">
 							<legend className={STEP}>1 · harness</legend>
 							<div
