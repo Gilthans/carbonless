@@ -283,6 +283,22 @@ describe("ThreadPlacer", () => {
 		expect(of(ts.file)).toEqual({ kind: "file", path: "new.ts" });
 	});
 
+	it("an old-side thread dated before the base branch's history still traces from its merge base", async () => {
+		// The code pane can't vouch for its old side (no base commit by
+		// then); placement takes the merge base and follows the base's changes.
+		const early = thread("c.ts", {
+			line: 3,
+			side: "LEFT",
+			startSide: "LEFT",
+			at: "2000-01-01T00:00:00Z",
+		});
+		const got = await placeAll([early]);
+		expect(got.get(early.id)).toMatchObject({
+			kind: "unplaced",
+			fate: "base-changed",
+		});
+	});
+
 	it("skips resolved threads, deleted ones and those without an id", async () => {
 		const open = thread("a.ts", { line: 15 });
 		const resolved = thread("a.ts", { line: 15 }, { resolved: true });
