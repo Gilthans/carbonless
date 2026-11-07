@@ -474,6 +474,8 @@ export class AgentRunner {
 		// nothing half-written lands; the thread still waits for the next one.
 		const stoppedOnPurpose =
 			this.#closed ||
+			// The config changed under the turn: the new agent answers it.
+			(this.#proc?.agent === agent && this.#proc.key !== this.#key) ||
 			(this.#proc?.agent !== agent && !this.#crashedLast(agent));
 		if (stoppedOnPurpose) return false;
 		try {

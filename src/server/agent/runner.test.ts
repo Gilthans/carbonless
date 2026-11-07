@@ -489,4 +489,25 @@ describe("AgentRunner", () => {
 			execFileSync("test", ["-e", join(agentsDir(), REVIEW, "claim.json")]),
 		).toThrow();
 	});
+
+	it("a config change during a turn stores nothing; the new agent answers the thread", async () => {
+		scenario({
+			hold: ["prompt"],
+			answers: [{ text: "first second", chunks: 2 }],
+		});
+		await ask("why?");
+		makeRunner().poke();
+		await until((s) => s.state === "busy" && !!s.answering?.text);
+		config = { agent: { ...AGENT, args: ["--again"] }, problems: [] };
+		await runner.status();
+		releaseAcp(scenarioPath, "prompt");
+		await answered(1);
+		const [t] = await threads();
+		expect(t?.messages).toHaveLength(2);
+		expect(t?.messages[1]).toMatchObject({
+			text: "first second",
+			stop: "end_turn",
+		});
+		expect(spawns()).toHaveLength(2);
+	});
 });
