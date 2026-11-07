@@ -47,8 +47,9 @@ describe("takeClaim", () => {
 	});
 
 	it("racing takers on a dead claim: exactly one wins, and the file names it", async () => {
+		const dead = deadPid();
 		for (let round = 0; round < 20; round++) {
-			writeFileSync(file(), JSON.stringify({ pid: deadPid(), port: 4799 }));
+			writeFileSync(file(), JSON.stringify({ pid: dead, port: 4799 }));
 			const takes = await Promise.all(
 				Array.from({ length: 8 }, (_, i) =>
 					takeClaim(dir, { pid: process.pid, port: 4800 + i }),
