@@ -28,8 +28,10 @@ import {
 	BEFORE_REVIEW,
 	BEFORE_UPDATE,
 	createMethodologyRepo,
+	forcePushed,
 	METHODOLOGIES,
 	type MethodologyRepo,
+	mergesBase,
 	type Stage,
 	TIMES,
 	type Update,
@@ -57,20 +59,95 @@ export function methodologyMatrix(update: Update) {
 	);
 }
 
+/**
+ * What the engine must find moving from the opened head to the updated
+ * one, every cluster of PS1 marked: the shape, the author's commits, the
+ * conflicted files, and how many clusters carried, were reworked, are new
+ * or gone (docs/git-methodology.md).
+ */
+const RE_REVIEW: Record<
+	Update,
+	{
+		shape: string;
+		commits: number;
+		conflicts: string[];
+		carried: number;
+		reworked: number;
+		fresh: number;
+		gone: number;
+	}
+> = {
+	none: {
+		shape: "S1",
+		commits: 0,
+		conflicts: [],
+		carried: 3,
+		reworked: 0,
+		fresh: 0,
+		gone: 0,
+	},
+	rebase: {
+		shape: "S4a",
+		commits: 2,
+		conflicts: [],
+		carried: 3,
+		reworked: 0,
+		fresh: 0,
+		gone: 0,
+	},
+	"merge-base-in": {
+		shape: "S3",
+		commits: 1,
+		conflicts: [],
+		carried: 3,
+		reworked: 0,
+		fresh: 0,
+		gone: 0,
+	},
+	"rebase-amend": {
+		shape: "S4c",
+		commits: 2,
+		conflicts: [],
+		carried: 2,
+		reworked: 1,
+		fresh: 0,
+		gone: 0,
+	},
+	"merge-base-in-conflict": {
+		shape: "S3",
+		commits: 1,
+		conflicts: ["a.txt"],
+		carried: 1,
+		reworked: 0,
+		fresh: 2,
+		gone: 0,
+	},
+	"stacked-squash": {
+		shape: "S4a",
+		commits: 2,
+		conflicts: [],
+		carried: 3,
+		reworked: 0,
+		fresh: 0,
+		gone: 2,
+	},
+};
+
 function matrix(m: (typeof METHODOLOGIES)[number]) {
 	let repo: MethodologyRepo;
-	/** The PR's intended change set: what every comparison must show. */
-	let reference: Snapshot;
+	/** The PR's intended change set at each stage: what every comparison must show. */
+	let references: { opened: Snapshot; updated: Snapshot };
 	let tmp: string;
 	const saved: Record<string, string | undefined> = {};
 
 	beforeAll(async () => {
 		repo = createMethodologyRepo(m, NUMBER);
-		reference = await buildSnapshot(
-			repo.path,
-			repo.reference.base,
-			repo.reference.head,
-		);
+		const build = (r: { base: string; head: string }) =>
+			buildSnapshot(repo.path, r.base, r.head);
+		references = {
+			opened: await build(repo.references.opened),
+			updated: await build(repo.references.updated),
+		};
 	});
 	afterAll(() => repo.cleanup());
 
@@ -107,10 +184,15 @@ function matrix(m: (typeof METHODOLOGIES)[number]) {
 		}
 	});
 
-	/** The snapshot shows exactly the PR's own changes. */
-	const expectPrOwnChanges = (s: Session) => {
-		expect(s.snapshot().files.map((f) => f.path)).toEqual(repo.prPaths);
-		expect(s.snapshot().files).toEqual(reference.files);
+	/** The snapshot shows exactly the PR's own changes of that stage. */
+	const expectPrOwnChanges = (
+		s: Session,
+		stage: "opened" | "updated" = "opened",
+	) => {
+		expect(s.snapshot().files.map((f) => f.path)).toEqual(
+			repo.references[stage].paths,
+		);
+		expect(s.snapshot().files).toEqual(references[stage].files);
 	};
 	const open = (asOf?: string) =>
 		Session.open(ARG, process.cwd(), () => {}, asOf ? { asOf } : {});
@@ -125,10 +207,10 @@ function matrix(m: (typeof METHODOLOGIES)[number]) {
 			headMoved: false,
 			patchset: null,
 		});
-		expectPrOwnChanges(s);
+		expectPrOwnChanges(s, "updated");
 		const again = await open();
 		expect(again.info().snapshotHead).toBe(repo.heads.updated);
-		expectPrOwnChanges(again);
+		expectPrOwnChanges(again, "updated");
 	});
 
 	it(
@@ -145,9 +227,9 @@ function matrix(m: (typeof METHODOLOGIES)[number]) {
 				headMoved: false,
 				patchset: null,
 			});
-			expectPrOwnChanges(s);
+			expectPrOwnChanges(s, "updated");
 			if (m.landing === "open") {
-				expectPrOwnChanges(await open());
+				expectPrOwnChanges(await open(), "updated");
 			} else {
 				await expect(open()).rejects.toThrow(
 					`PR ${ARG} is already merged; nothing to review`,
@@ -285,6 +367,7 @@ function matrix(m: (typeof METHODOLOGIES)[number]) {
 				}),
 			);
 		const base15 = m.update === "none" ? "line 15" : "line 15 base";
+		// A stacked parent's line 10 is in the base too, past the window.
 		const want = [
 			{
 				source: "clone",
@@ -340,24 +423,23 @@ function matrix(m: (typeof METHODOLOGIES)[number]) {
 			commit: { oid: string };
 		}[];
 		const ownOids = own.map((c) => short(c.commit.oid)).join(",");
-		const updated =
-			m.update === "rebase"
+		const updated = forcePushed(m.update)
+			? [
+					// The rebased commits replace the first ones, after the review.
+					"review:rev1",
+					`commits:dev:${ownOids}`,
+					`force-push:${short(repo.heads.opened)}>${short(repo.heads.updated)}`,
+				]
+			: mergesBase(m.update)
 				? [
-						// The rebased commits replace the first ones, after the review.
+						`commits:dev:${own
+							.slice(0, 2)
+							.map((c) => short(c.commit.oid))
+							.join(",")}`,
 						"review:rev1",
-						`commits:dev:${ownOids}`,
-						`force-push:${short(repo.heads.opened)}>${short(repo.heads.updated)}`,
+						`commits:dev:${short(repo.heads.updated)}`,
 					]
-				: m.update === "merge-base-in"
-					? [
-							`commits:dev:${own
-								.slice(0, 2)
-								.map((c) => short(c.commit.oid))
-								.join(",")}`,
-							"review:rev1",
-							`commits:dev:${short(repo.heads.updated)}`,
-						]
-					: [`commits:dev:${ownOids}`, "review:rev1"];
+				: [`commits:dev:${ownOids}`, "review:rev1"];
 		stage("updated");
 		const s = await open();
 		expect(await shape(s)).toEqual(updated);
@@ -382,6 +464,105 @@ function matrix(m: (typeof METHODOLOGIES)[number]) {
 		expectPrOwnChanges(beforeUpdate);
 		const beforeLanding = await open(BEFORE_LANDING);
 		expect(beforeLanding.info().snapshotHead).toBe(repo.heads.updated);
-		expectPrOwnChanges(beforeLanding);
+		expectPrOwnChanges(beforeLanding, "updated");
+	});
+
+	it("re-review from the opened head to the updated one: the shape, the interdiff and the carry; the first action on the viewed head starts PS2 with them", async () => {
+		const want = RE_REVIEW[m.update];
+		const s = await open();
+		const ps1 = s.snapshot();
+		await s.setStates(
+			ps1.revision,
+			ps1.files.flatMap((f) =>
+				f.clusters.map((c) => ({ key: c.key, state: "reviewed" as const })),
+			),
+		);
+		stage("updated");
+		const info = await s.refresh();
+		expect(info).toMatchObject({
+			snapshotHead: repo.heads.opened,
+			patchset: 1,
+			head: { oid: repo.heads.updated, commits: want.commits },
+		});
+		let answer = await s.rereview(1, repo.heads.updated);
+		while ("pending" in answer) {
+			await new Promise((r) => setTimeout(r, 20));
+			answer = await s.rereview(1, repo.heads.updated);
+		}
+		expect(answer.shape).toMatchObject({
+			code: want.shape,
+			commits: want.commits,
+			conflicts: want.conflicts,
+		});
+		expect(answer.interdiff).toBe("available");
+		const clusters = answer.files.flatMap((f) => f.clusters);
+		const count = (kind: string) =>
+			clusters.filter((c) => c.kind === kind).length;
+		expect({
+			carried: count("carried"),
+			reworked: count("reworked"),
+			fresh: count("new"),
+			gone: count("gone"),
+		}).toEqual({
+			carried: want.carried,
+			reworked: want.reworked,
+			fresh: want.fresh,
+			gone: want.gone,
+		});
+		expect(answer.toRead).toEqual({
+			files: new Set(
+				answer.files
+					.filter(
+						(f) =>
+							f.conflict ||
+							f.clusters.some((c) => c.kind === "reworked" || c.kind === "new"),
+					)
+					.map((f) => f.path),
+			).size,
+			clusters: want.reworked + want.fresh,
+		});
+		// Nothing written by asking or viewing.
+		const view = await s.viewHead(repo.heads.updated);
+		expect(s.info().patchsets).toHaveLength(1);
+		if (m.update === "none") {
+			// The head is PS1's own snapshot: it shows PS1.
+			expect(view).toMatchObject({ patchset: 1, revision: ps1.revision });
+			return;
+		}
+		expect(view.patchset).toBeNull();
+		expect(view.progress.clusters.reviewed).toBe(want.carried);
+		const first = view.files[0]?.clusters[0];
+		if (!first) throw new Error("no cluster");
+		await s.setStates(view.revision, [
+			{ key: first.key, state: "crossed-off", reason: "matrix" },
+		]);
+		expect(s.info()).toMatchObject({
+			patchset: 2,
+			snapshotHead: repo.heads.updated,
+			headMoved: false,
+		});
+		const again = await open();
+		expect(again.info()).toMatchObject({
+			patchset: 2,
+			snapshotHead: repo.heads.updated,
+		});
+		expect(again.info().patchsets[1]).toMatchObject({
+			number: 2,
+			since: 1,
+			shape: want.shape,
+		});
+		expectPrOwnChanges(again, "updated");
+		const review = await again.review();
+		const carriedKeys = new Set(
+			clusters.filter((c) => c.kind === "carried").map((c) => c.key),
+		);
+		expect(review.progress.clusters).toEqual({
+			total: references.updated.files.flatMap((f) => f.clusters).length,
+			reviewed: carriedKeys.size - (carriedKeys.has(first.key) ? 1 : 0),
+			crossedOff: 1,
+		});
+		expect((await again.reviewAt(1)).progress.clusters.reviewed).toBe(
+			ps1.files.flatMap((f) => f.clusters).length,
+		);
 	});
 }

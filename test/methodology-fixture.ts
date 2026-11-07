@@ -18,8 +18,24 @@ import { testGitEnv } from "./git-fixture";
  */
 
 /** How the PR branch is kept current while the base moves on. */
-export const UPDATES = ["none", "rebase", "merge-base-in"] as const;
+export const UPDATES = [
+	"none",
+	"rebase",
+	"merge-base-in",
+	"rebase-amend",
+	"merge-base-in-conflict",
+	"stacked-squash",
+] as const;
 export type Update = (typeof UPDATES)[number];
+
+/** Updates that force-push the branch (GitHub's timeline shows the push). */
+export const forcePushed = (update: Update): boolean =>
+	update === "rebase" ||
+	update === "rebase-amend" ||
+	update === "stacked-squash";
+/** Updates that merge the base into the branch (a merge commit joins the PR's). */
+export const mergesBase = (update: Update): boolean =>
+	update === "merge-base-in" || update === "merge-base-in-conflict";
 
 /** How the PR is landed (or not). */
 export const LANDINGS = [
@@ -37,7 +53,7 @@ export interface Methodology {
 	name: string;
 }
 
-/** All 12 permutations. */
+/** All 24 permutations. */
 export const METHODOLOGIES: Methodology[] = UPDATES.flatMap((update) =>
 	LANDINGS.map((landing) => ({
 		update,
@@ -58,6 +74,8 @@ export const TIMES = {
 	/** The push of the update, just after its commits were made. */
 	pushed: "2026-01-04T00:00:30Z",
 	baseMoved: "2026-01-03T00:00:00Z",
+	/** A stacked parent lands (by squash) after the base moved, before the update. */
+	parentLanded: "2026-01-03T12:00:00Z",
 	updated: "2026-01-04T00:00:00Z",
 	baseMovedAgain: "2026-01-05T00:00:00Z",
 	landed: "2026-01-06T00:00:00Z",
@@ -79,6 +97,13 @@ export const BEFORE_LANDING = "2026-01-05T12:00:00Z";
  */
 export type Stage = "opened" | "updated" | "landed";
 
+/** The PR's intended change as one comparison in the repo, and its paths in diff order. */
+export interface Reference {
+	base: string;
+	head: string;
+	paths: string[];
+}
+
 export interface MethodologyRepo {
 	methodology: Methodology;
 	/** The GitHub-side repository (main and refs/pull/<n>/head only). */
@@ -86,11 +111,14 @@ export interface MethodologyRepo {
 	/** The PR's head at the opened and the updated stage. */
 	heads: { opened: string; updated: string };
 	/**
-	 * The PR's intended change as one comparison in `path`: base B0 → the PR's
-	 * first head. Every stage's comparison must show exactly these changes.
+	 * What every comparison at that stage must show exactly: the PR's own
+	 * change (B0 → the PR's first head; for an update that changes the
+	 * content or drops a stacked parent's, the content of then on B0).
 	 */
+	references: { opened: Reference; updated: Reference };
+	/** `references.opened`, the name the first tests used. */
 	reference: { base: string; head: string };
-	/** Paths the PR changes, in diff order. */
+	/** Paths the PR changes at the updated stage, in diff order. */
 	prPaths: string[];
 	/** Moves main and refs/pull/<n>/head to where GitHub had them at `stage`. */
 	setStage: (stage: Stage) => void;
@@ -108,7 +136,9 @@ const aTxt = (changes: Record<number, string>) =>
  * Builds the history for `m`. The PR changes a.txt lines 2 and 30 (in two
  * commits) and adds new.txt; the base's own commits change a.txt lines 15
  * and 22 and add base-x.txt and base-y.txt, so any base commit leaking into
- * the comparison shows up as an extra cluster or file.
+ * the comparison shows up as an extra cluster or file. A conflicting base
+ * also changes line 30; a stacked parent changes line 10 and adds
+ * parent.txt under the PR, and lands by squash before the update.
  */
 export function createMethodologyRepo(
 	m: Methodology,
@@ -126,15 +156,18 @@ export function createMethodologyRepo(
 			),
 		}).trim();
 	const git = (...args: string[]) => run(args);
+	const write = (files: Record<string, string>) => {
+		for (const [name, content] of Object.entries(files)) {
+			writeFileSync(join(path, name), content);
+		}
+	};
 	/** Commits `files` on top of the checked out commit at `at`. */
 	const commit = (
 		message: string,
 		files: Record<string, string>,
 		at: string,
 	) => {
-		for (const [name, content] of Object.entries(files)) {
-			writeFileSync(join(path, name), content);
-		}
+		write(files);
 		git("add", "--all");
 		run(["commit", "--quiet", "-m", message], at);
 		return git("rev-parse", "HEAD");
@@ -149,24 +182,65 @@ export function createMethodologyRepo(
 	// Like GitHub: a commit a force-push dropped can still be fetched by OID.
 	git("config", "uploadpack.allowAnySHA1InWant", "true");
 
+	const stacked = m.update === "stacked-squash";
+	const conflicting = m.update === "merge-base-in-conflict";
+	/** The parent PR's change, under the PR's own while it hasn't landed. */
+	const parentLines: Record<number, string> = stacked
+		? { 10: "line 10 parent" }
+		: {};
+	const conflictLines: Record<number, string> = conflicting
+		? { 30: "line 30 base" }
+		: {};
+
 	const b0 = commit("base", { "a.txt": aTxt({}) }, TIMES.base);
-	checkout(b0);
-	const p1a = commit(
-		"PR: line 2 and new.txt",
-		{ "a.txt": aTxt({ 2: "line 2 changed" }), "new.txt": "new\n" },
-		TIMES.pr,
-	);
-	const p1b = commit(
-		"PR: line 30",
-		{ "a.txt": aTxt({ 2: "line 2 changed", 30: "line 30 changed" }) },
-		TIMES.pr,
-	);
+	/** The PR's two commits on `on`, with `lines` under them. */
+	const prCommits = (on: string, lines: Record<number, string>) => {
+		checkout(on);
+		const a = commit(
+			"PR: line 2 and new.txt",
+			{ "a.txt": aTxt({ ...lines, 2: "line 2 changed" }), "new.txt": "new\n" },
+			TIMES.pr,
+		);
+		const b = commit(
+			"PR: line 30",
+			{
+				"a.txt": aTxt({ ...lines, 2: "line 2 changed", 30: "line 30 changed" }),
+			},
+			TIMES.pr,
+		);
+		return [a, b] as const;
+	};
+	// The plain PR on B0: the PR itself, or (stacked) the reference of its own change.
+	const [plainA, plainB] = prCommits(b0, {});
+	let parent = b0;
+	let p1a = plainA;
+	let p1b = plainB;
+	if (stacked) {
+		checkout(b0);
+		parent = commit(
+			"parent: line 10 and parent.txt",
+			{ "a.txt": aTxt(parentLines), "parent.txt": "parent\n" },
+			TIMES.pr,
+		);
+		[p1a, p1b] = prCommits(parent, parentLines);
+	}
 	checkout(b0);
 	const b1 = commit(
 		"base: line 15",
-		{ "a.txt": aTxt({ 15: "line 15 base" }), "base-x.txt": "x\n" },
+		{
+			"a.txt": aTxt({ 15: "line 15 base", ...conflictLines }),
+			"base-x.txt": "x\n",
+		},
 		TIMES.baseMoved,
 	);
+	// The stacked parent lands by squash onto the moved base.
+	let b1Plus = b1;
+	if (stacked) {
+		checkout(b1);
+		run(["merge", "--quiet", "--squash", parent], TIMES.parentLanded);
+		run(["commit", "--quiet", "-m", "parent (squashed)"], TIMES.parentLanded);
+		b1Plus = head();
+	}
 
 	// The PR update.
 	let updated = p1b;
@@ -174,14 +248,33 @@ export function createMethodologyRepo(
 		{ oid: p1a, at: TIMES.pr },
 		{ oid: p1b, at: TIMES.pr },
 	];
-	if (m.update === "rebase") {
+	if (m.update === "rebase" || m.update === "stacked-squash") {
 		// Both in one second, as a rebase usually makes them: as-of takes the
 		// later one in GitHub's list.
-		checkout(b1);
+		checkout(b1Plus);
 		run(["cherry-pick", p1a], TIMES.updated);
 		const p1aRebased = head();
 		run(["cherry-pick", p1b], TIMES.updated);
 		updated = head();
+		updatedCommits = [
+			{ oid: p1aRebased, at: TIMES.updated },
+			{ oid: updated, at: TIMES.updated },
+		];
+	} else if (m.update === "rebase-amend") {
+		checkout(b1);
+		run(["cherry-pick", p1a], TIMES.updated);
+		const p1aRebased = head();
+		updated = commit(
+			"PR: line 30 (amended)",
+			{
+				"a.txt": aTxt({
+					2: "line 2 changed",
+					15: "line 15 base",
+					30: "line 30 amended",
+				}),
+			},
+			TIMES.updated,
+		);
 		updatedCommits = [
 			{ oid: p1aRebased, at: TIMES.updated },
 			{ oid: updated, at: TIMES.updated },
@@ -191,13 +284,38 @@ export function createMethodologyRepo(
 		run(["merge", "--quiet", "--no-ff", "-m", "Merge main", b1], TIMES.updated);
 		updated = head();
 		updatedCommits = [...updatedCommits, { oid: updated, at: TIMES.updated }];
+	} else if (m.update === "merge-base-in-conflict") {
+		checkout(p1b);
+		// The merge stops on a.txt (line 30 both sides); the author resolves
+		// it with something that is neither.
+		try {
+			run(["merge", "--quiet", "--no-ff", "--no-commit", b1], TIMES.updated);
+		} catch {
+			// Expected: the conflict.
+		}
+		write({
+			"a.txt": aTxt({
+				2: "line 2 changed",
+				15: "line 15 base",
+				30: "line 30 resolved",
+			}),
+		});
+		git("add", "--all");
+		run(["commit", "--quiet", "-m", "Merge main"], TIMES.updated);
+		updated = head();
+		updatedCommits = [...updatedCommits, { oid: updated, at: TIMES.updated }];
 	}
 
-	checkout(b1);
+	checkout(b1Plus);
 	const b2 = commit(
 		"base: line 22",
 		{
-			"a.txt": aTxt({ 15: "line 15 base", 22: "line 22 base" }),
+			"a.txt": aTxt({
+				...parentLines,
+				15: "line 15 base",
+				22: "line 22 base",
+				...conflictLines,
+			}),
 			"base-y.txt": "y\n",
 		},
 		TIMES.baseMovedAgain,
@@ -218,13 +336,60 @@ export function createMethodologyRepo(
 		run(["commit", "--quiet", "-m", "PR (squashed)"], TIMES.landed);
 		landed = head();
 	} else if (m.landing === "rebase-merge") {
-		// GitHub replays the PR's own non-merge commits onto the base.
+		// GitHub replays the PR's own non-merge commits onto the base (a
+		// commit that conflicts with the base takes the PR's side, as the
+		// author's resolution would).
 		const own = git("rev-list", "--reverse", "--no-merges", `${b2}..${updated}`)
 			.split("\n")
 			.filter(Boolean);
 		checkout(b2);
-		run(["cherry-pick", "--allow-empty", ...own], TIMES.landed);
+		run(
+			["cherry-pick", "--allow-empty", "--strategy-option=theirs", ...own],
+			TIMES.landed,
+		);
 		landed = head();
+	}
+
+	// The references: what each stage's comparison must show.
+	const opened: Reference = {
+		base: b0,
+		head: p1b,
+		paths: stacked ? ["a.txt", "new.txt", "parent.txt"] : ["a.txt", "new.txt"],
+	};
+	let updatedRef: Reference = {
+		base: b0,
+		head: plainB,
+		paths: ["a.txt", "new.txt"],
+	};
+	if (m.update === "rebase-amend") {
+		checkout(b0);
+		commit(
+			"reference: line 2 and new.txt",
+			{ "a.txt": aTxt({ 2: "line 2 changed" }), "new.txt": "new\n" },
+			TIMES.pr,
+		);
+		const amendedRef = commit(
+			"reference: line 30 amended",
+			{ "a.txt": aTxt({ 2: "line 2 changed", 30: "line 30 amended" }) },
+			TIMES.pr,
+		);
+		updatedRef = { base: b0, head: amendedRef, paths: ["a.txt", "new.txt"] };
+	} else if (conflicting) {
+		checkout(b0);
+		const refBase = commit(
+			"reference base: line 30",
+			{ "a.txt": aTxt({ 30: "line 30 base" }) },
+			TIMES.base,
+		);
+		const refHead = commit(
+			"reference: resolved",
+			{
+				"a.txt": aTxt({ 2: "line 2 changed", 30: "line 30 resolved" }),
+				"new.txt": "new\n",
+			},
+			TIMES.pr,
+		);
+		updatedRef = { base: refBase, head: refHead, paths: ["a.txt", "new.txt"] };
 	}
 
 	const pullRef = `refs/pull/${number}/head`;
@@ -259,7 +424,7 @@ export function createMethodologyRepo(
 				timelineCommit({ login: "dev", at, oid }),
 			),
 			timelineReview({ login: "rev1", at: TIMES.review, text: "Looks fine" }),
-			...(stage !== "opened" && m.update === "rebase"
+			...(stage !== "opened" && forcePushed(m.update)
 				? [
 						timelineFact("HeadRefForcePushedEvent", {
 							login: "dev",
@@ -317,8 +482,9 @@ export function createMethodologyRepo(
 		methodology: m,
 		path,
 		heads: { opened: p1b, updated },
-		reference: { base: b0, head: p1b },
-		prPaths: ["a.txt", "new.txt"],
+		references: { opened, updated: updatedRef },
+		reference: { base: opened.base, head: opened.head },
+		prPaths: updatedRef.paths,
 		setStage,
 		prEntry,
 		cleanup: () => rmSync(path, { recursive: true, force: true }),

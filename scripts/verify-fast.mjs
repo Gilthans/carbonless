@@ -59,6 +59,9 @@ const specs = readdirSync("e2e")
 const E2E_MAP = [
 	// Pure (hunks in, placements out); its unit tests are the coverage.
 	[/^src\/shared\/tracer\//, []],
+	// The re-review engine (shape, interdiff, carry): no UI of its own yet;
+	// the methodology matrix drives it end to end.
+	[/^src\/(server|shared)\/rereview\//, ["methodology"]],
 	[
 		/^src\/web\/(overview|threads)\/|^src\/server\/(overview|overviewRead|threadCode|timeline)\.ts$|^src\/web\/(GithubHtml|githubHtml)/,
 		["overview", "timeline", "mobile"],
@@ -150,7 +153,7 @@ const reasons = [];
 for (const file of changed) {
 	// Unit-test-only files.
 	if (
-		/\.test\.tsx?$|^test\/(setup|diff-fixture|pr-fixture|methodology-matrix)\.ts$|^vitest\.config/.test(
+		/\.test\.tsx?$|^test\/(setup|diff-fixture|pr-fixture|methodology-matrix|rereview-fixture)\.ts$|^vitest\.config/.test(
 			file,
 		)
 	) {
