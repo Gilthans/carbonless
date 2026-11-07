@@ -137,7 +137,7 @@ describe("findInPr", () => {
 					oldStart: 1,
 					oldCount: 3,
 					newStart: 1,
-					newCount: 3,
+					newCount: 2,
 					lines: [
 						ctx(1, 1, "x"),
 						ctx(2, 2, "save"),
@@ -231,7 +231,7 @@ describe("caret", () => {
 		});
 		// Open 1 has no hit: the next in order is 2.
 		expect(caretAfterTyping(hits, order, 1)?.pos.index).toBe(2);
-		// Open 2 has hits; open a file with none after it wraps to 3.
+		// Open 2 has no hit (only 3 does): the search wraps from 2 to 3.
 		expect(caretAfterTyping([hit(3)], order, 2)?.pos.index).toBe(3);
 		expect(caretAfterTyping(hits, order, null)?.pos.index).toBe(3);
 		expect(caretAfterTyping(hits, order, 2)?.shown).toBe(false);
@@ -351,7 +351,57 @@ describe("integrity", () => {
 			// (a) the counts add up to the hits
 			let total = 0;
 			for (const n of countsByFile(hits).values()) total += n;
-			expect(hits.length).toBe(total);
+			expect(hits.length, `seed ${seed}`).toBe(total);
+
+			// (e) fileLines against an oracle built from the inputs alone: no
+			// line searched twice or missed, none inside a hunk from context
+			for (const f of files) {
+				const hunks = hunksOf(f);
+				const got = fileLines(f, hunks, contextOf(f)).map(
+					(l) => `${l.side}:${l.line}`,
+				);
+				expect(new Set(got).size, `seed ${seed} file ${f.index}`).toBe(
+					got.length,
+				);
+				let want: string[];
+				if (!hunks) {
+					want = f.clusters.flatMap((c) => [
+						...c.removed.map((_, i) => `LEFT:${c.oldStart + i}`),
+						...c.added.map((_, i) => `RIGHT:${c.newStart + i}`),
+					]);
+				} else {
+					const inHunk = (n: number) =>
+						hunks.hunks.some(
+							(h) => n >= h.newStart && n < h.newStart + h.newCount,
+						);
+					const outside = [
+						...new Set(
+							contextOf(f)
+								.map((l) => l.newNo as number)
+								.filter((n) => !inHunk(n)),
+						),
+					];
+					// each placed by number: before the first hunk starting after it
+					const gap = (n: number) =>
+						hunks.hunks.findIndex((h) => h.newStart > n);
+					want = [];
+					hunks.hunks.forEach((h, i) => {
+						for (const n of outside
+							.filter((n) => gap(n) === i)
+							.sort((a, b) => a - b))
+							want.push(`RIGHT:${n}`);
+						for (const l of h.lines)
+							want.push(
+								l.kind === "del" ? `LEFT:${l.oldNo}` : `RIGHT:${l.newNo}`,
+							);
+					});
+					for (const n of outside
+						.filter((n) => gap(n) < 0)
+						.sort((a, b) => a - b))
+						want.push(`RIGHT:${n}`);
+				}
+				expect(got, `seed ${seed} file ${f.index}`).toEqual(want);
+			}
 
 			const linesOf = (f: FileView) =>
 				f.binary || f.submodule ? [] : fileLines(f, hunksOf(f), contextOf(f));
@@ -367,7 +417,9 @@ describe("integrity", () => {
 							? (f.oldPath ?? "")
 							: (linesOf(f).find((l) => l.side === h.side && l.line === h.line)
 									?.text ?? "");
-				expect(norm(src.slice(h.col, h.col + h.len))).toBe(norm(term));
+				expect(norm(src.slice(h.col, h.col + h.len)), `seed ${seed}`).toBe(
+					norm(term),
+				);
 			}
 
 			// (c) the naive walk finds the same hits
@@ -381,7 +433,7 @@ describe("integrity", () => {
 					for (const o of occurrences(l.text, term, matchCase))
 						naive.push({ index: f.index, side: l.side, line: l.line, ...o });
 			}
-			expect(hits).toEqual(naive);
+			expect(hits, `seed ${seed}`).toEqual(naive);
 
 			// (d) reading order
 			const key = (h: Hit) => {
@@ -399,7 +451,10 @@ describe("integrity", () => {
 				const a = key(hits[i - 1] as Hit);
 				const b = key(hits[i] as Hit);
 				const cmp = a.findIndex((v, n) => v !== b[n]);
-				if (cmp >= 0) expect(a[cmp] as number).toBeLessThan(b[cmp] as number);
+				if (cmp >= 0)
+					expect(a[cmp] as number, `seed ${seed}`).toBeLessThan(
+						b[cmp] as number,
+					);
 			}
 		}
 	});
