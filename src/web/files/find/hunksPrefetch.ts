@@ -30,10 +30,13 @@ export class HunksPrefetcher {
 	readonly #revision: string;
 	readonly #fetchBatch: typeof fetchHunksBatch;
 	#queue: number[] = [];
+	/** The queue's files, for lookups. */
+	#queued = new Set<number>();
 	/** Files of the requests out. */
 	#inFlight = new Set<number>();
 	#out = 0;
 	#failed: number[] = [];
+	#failedSet = new Set<number>();
 	#stopped = false;
 	readonly #listeners = new Set<() => void>();
 	#snapshot: PrefetchSnapshot = { pending: 0, failed: [] };
@@ -51,29 +54,42 @@ export class HunksPrefetcher {
 	queue(indexes: readonly number[]): void {
 		if (this.#stopped) return;
 		for (const index of indexes) {
-			if (this.#queue.includes(index) || this.#inFlight.has(index)) continue;
-			const state = this.#client.getQueryState(
-				hunksQuery(this.#revision, index).queryKey,
-			);
-			if (state?.status === "success" || state?.fetchStatus === "fetching")
+			if (
+				this.#queued.has(index) ||
+				this.#inFlight.has(index) ||
+				this.#failedSet.has(index) ||
+				this.#cached(index)
+			)
 				continue;
 			this.#queue.push(index);
+			this.#queued.add(index);
 		}
 		this.#flush();
 		this.#changed();
 	}
 
-	/** Queues the failed files again (in their order) and clears `failed`. */
+	/** Only `retry` asks for a failed file again. */
 	retry(): void {
+		if (this.#stopped) return;
 		const again = this.#failed;
 		this.#failed = [];
+		this.#failedSet = new Set();
 		this.queue(again);
 		this.#changed();
+	}
+
+	/** The file's own entry is answered or being fetched. */
+	#cached(index: number): boolean {
+		const state = this.#client.getQueryState(
+			hunksQuery(this.#revision, index).queryKey,
+		);
+		return state?.status === "success" || state?.fetchStatus === "fetching";
 	}
 
 	stop(): void {
 		this.#stopped = true;
 		this.#queue = [];
+		this.#queued = new Set();
 		this.#inFlight = new Set();
 		this.#changed();
 	}
@@ -104,7 +120,14 @@ export class HunksPrefetcher {
 
 	#flush(): void {
 		while (this.#out < HUNKS_IN_FLIGHT && this.#queue.length > 0) {
-			const batch = this.#queue.splice(0, HUNKS_BATCH);
+			const batch: number[] = [];
+			while (batch.length < HUNKS_BATCH && this.#queue.length > 0) {
+				const index = this.#queue.shift() as number;
+				this.#queued.delete(index);
+				// Its own fetch may have started or ended while it waited.
+				if (!this.#cached(index)) batch.push(index);
+			}
+			if (batch.length === 0) continue;
 			for (const index of batch) this.#inFlight.add(index);
 			this.#out++;
 			void this.#send(batch);
@@ -120,10 +143,12 @@ export class HunksPrefetcher {
 				if (!batch.includes(file.index) || answered.has(file.index)) continue;
 				if (file.hunks && !file.error) {
 					answered.add(file.index);
-					this.#client.setQueryData(
-						hunksQuery(this.#revision, file.index).queryKey,
-						file.hunks,
+					// Built with the query's options, so its gcTime applies.
+					const options = this.#client.defaultQueryOptions(
+						hunksQuery(this.#revision, file.index),
 					);
+					this.#client.getQueryCache().build(this.#client, options);
+					this.#client.setQueryData(options.queryKey, file.hunks);
 				} else {
 					answered.add(file.index);
 					failed.push(file.index);
@@ -136,7 +161,11 @@ export class HunksPrefetcher {
 		this.#out--;
 		if (this.#stopped) return;
 		for (const index of batch) this.#inFlight.delete(index);
-		this.#failed.push(...failed);
+		for (const index of failed) {
+			if (this.#failedSet.has(index)) continue;
+			this.#failedSet.add(index);
+			this.#failed.push(index);
+		}
 		this.#flush();
 		this.#changed();
 	}

@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import type { QueryClient } from "@tanstack/react-query";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -6,7 +7,7 @@ import {
 	HUNKS_BATCH,
 	type HunksBatch,
 } from "../../../shared/types";
-import { ApiError, hunksQuery } from "../../api";
+import { ApiError, HUNKS_KEPT_MS, hunksQuery } from "../../api";
 import { newQueryClient } from "../../queryClient";
 import {
 	HUNKS_IN_FLIGHT,
@@ -152,5 +153,58 @@ describe("HunksPrefetcher", () => {
 		await flushAll();
 		expect(calls).toHaveLength(2);
 		expect(client.getQueryData(hunksQuery("r", 0).queryKey)).toBe(h);
+	});
+
+	it("an answer's entry is kept HUNKS_KEPT_MS, like a query's own", async () => {
+		const p = prefetcher();
+		p.queue([5]);
+		calls[0]?.resolve({ files: [{ index: 5, hunks: hunks("five") }] });
+		await flushAll();
+		expect(
+			client.getQueryCache().find({ queryKey: hunksQuery("r", 5).queryKey })
+				?.gcTime,
+		).toBe(HUNKS_KEPT_MS);
+	});
+
+	it("a failed file is not asked for again by queue, only by retry, and leaves failed once answered", async () => {
+		const p = prefetcher();
+		p.queue([1]);
+		calls[0]?.reject(new Error("down"));
+		await flushAll();
+		p.queue([1]);
+		expect(calls).toHaveLength(1);
+		expect(p.snapshot().failed).toEqual([1]);
+		p.retry();
+		expect(calls).toHaveLength(2);
+		calls[1]?.resolve({ files: [{ index: 1, hunks: hunks("one") }] });
+		await flushAll();
+		expect(p.snapshot().failed).toEqual([]);
+	});
+
+	it("a queued file whose own fetch started while it waited is dropped", async () => {
+		const p = prefetcher();
+		p.queue(nums(0, 51));
+		expect(calls).toHaveLength(2);
+		void client.fetchQuery({
+			...hunksQuery("r", 50),
+			queryFn: () => new Promise<FileHunks>(() => {}),
+		});
+		calls[0]?.resolve({ files: [] });
+		await flushAll();
+		expect(calls).toHaveLength(2);
+		expect(p.snapshot().pending).toBe(25);
+	});
+
+	it("retry after stop changes nothing", async () => {
+		const p = prefetcher();
+		p.queue([1]);
+		calls[0]?.reject(new Error("down"));
+		await flushAll();
+		p.stop();
+		const onChange = vi.fn();
+		p.subscribe(onChange);
+		p.retry();
+		expect(onChange).not.toHaveBeenCalled();
+		expect(p.snapshot().failed).toEqual([1]);
 	});
 });
