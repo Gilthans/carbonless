@@ -158,7 +158,7 @@ the test fixture (below).
   spaces, bidi controls) show as `\uXXXX` either way: no ⚠. `h` toggles
   the setting (desktop), beside `w` and `s`.
 - **An emoji's hidden change** (owner, 2026-11-04, gallery #14 case `65`):
-  the selectors, joiners and tags `invisibles.ts` keeps unescaped (VS15,
+  the selectors, joiners and tags `invisibleChars.ts` keeps unescaped (VS15,
   VS16 and other variation selectors after an emoji, a ZWJ or ZWNJ in an
   emoji sequence or a joining script, an RGI flag's tags) draw nothing,
   so a mark on one alone is 0 px wide. With Show hidden characters on,

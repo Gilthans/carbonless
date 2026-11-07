@@ -58,7 +58,7 @@ const specs = readdirSync("e2e")
 // outside src/, e2e/ and test/ (docs, scripts) run none.
 const E2E_MAP = [
 	[
-		/^src\/web\/(overview|threads)\/|^src\/server\/(overview|overviewRead|threadCode|timeline)\.ts$|^src\/web\/(GithubHtml|githubHtml)/,
+		/^src\/web\/(overview|threads)\/|^src\/server\/(overview|overviewRead|threadCode|timeline)\.ts$|^src\/web\/(GithubHtml|githubHtml|sanitizeGithubHtml)/,
 		["overview", "timeline", "mobile"],
 	],
 	[/^src\/web\/threads\//, ["files-threads", "thread-people"]],

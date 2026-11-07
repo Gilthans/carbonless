@@ -37,7 +37,7 @@ import {
 	useShowInvisibles,
 	type Words,
 } from "../code/Invisibles";
-import { DEFAULT_TAB_WIDTH } from "../code/invisibles";
+import { DEFAULT_TAB_WIDTH } from "../code/invisibleChars";
 import { Spinner } from "../Spinner";
 import { clickPointer, isTap, Tooltip } from "../Tooltip";
 import { canMove, spanTexts } from "../threads/draftMove";

@@ -5,7 +5,7 @@ import {
 	joinPieces,
 	type Piece,
 	renderInvisibles,
-} from "./invisibles";
+} from "./invisibleChars";
 import {
 	JOINING_SCRIPTS,
 	JOINING_TYPES,
