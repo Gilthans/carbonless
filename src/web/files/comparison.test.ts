@@ -4,6 +4,7 @@ import {
 	type ComparisonBase,
 	comparisonSearch,
 	defaultBase,
+	movedSearch,
 	nextBase,
 	parseComparison,
 	reviewTargetOf,
@@ -150,6 +151,53 @@ describe("parseComparison", () => {
 		expect(parseComparison({ ps: 2, from: 2 }, s).base).toEqual(from(1));
 		expect(parseComparison({ ps: 2, from: 3 }, s).base).toEqual(from(1));
 		expect(parseComparison({ ps: 2, from: 9 }, s).base).toEqual(from(1));
+	});
+});
+
+describe("movedSearch", () => {
+	const all = [1, 2, 3];
+	it("a base left at its default keeps being the previous dot", () => {
+		// PS1 over the branch (nothing else possible), then the head: since PS3.
+		expect(
+			movedSearch(
+				{ ps: 1 },
+				{ viewing: ps(1), base: branch },
+				head(oid("f")),
+				all,
+			),
+		).toEqual({ head: oid("f") });
+		expect(
+			movedSearch({ ps: 3 }, { viewing: ps(3), base: from(2) }, ps(2), all),
+		).toEqual({ ps: 2 });
+	});
+	it("a base the reviewer put on the branch stays there", () => {
+		expect(
+			movedSearch(
+				{ ps: 2, from: "branch" },
+				{ viewing: ps(2), base: branch },
+				head(oid("f")),
+				all,
+			),
+		).toEqual({ head: oid("f"), from: "branch" });
+	});
+	it("a base the reviewer put on an earlier patch set is remembered", () => {
+		expect(
+			movedSearch(
+				{ ps: 3, from: 1 },
+				{ viewing: ps(3), base: from(1) },
+				head(oid("f")),
+				all,
+			),
+		).toEqual({ head: oid("f"), from: 1 });
+		// Unless it would sit on or after the viewed dot.
+		expect(
+			movedSearch(
+				{ ps: 3, from: 1 },
+				{ viewing: ps(3), base: from(1) },
+				ps(1),
+				all,
+			),
+		).toEqual({ ps: 1 });
 	});
 });
 

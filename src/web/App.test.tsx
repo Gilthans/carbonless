@@ -455,25 +455,41 @@ describe("App", () => {
 		expect(screen.queryByRole("region", { name: "What it does" })).toBeNull();
 	});
 
-	it("shows the moved-head banner once the head check reports new commits", async () => {
-		renderApp({
+	it("shows the new-commits toast once the head check reports a newer head, and its View opens the Files page on it", async () => {
+		const user = userEvent.setup();
+		const oid = "c".repeat(40);
+		const { router } = renderApp({
 			"/api/head": ok({
 				...info,
-				currentHead: "c".repeat(40),
+				currentHead: oid,
 				headMoved: true,
+				head: {
+					oid,
+					mergeBase: "0".repeat(40),
+					baseBranch: "main",
+					commits: 2,
+				},
 			}),
 		});
-		const banner = await screen.findByText(/New commits were pushed/);
-		expect(banner.closest('[role="status"]')).not.toBeNull();
+		const toast = await screen.findByTestId("head-toast");
+		expect(toast).toHaveAttribute("role", "status");
+		expect(toast).toHaveTextContent("2 new commits · ccccccc");
+		// Never focused: the review in progress is not interrupted.
+		expect(toast.contains(document.activeElement)).toBe(false);
+		await user.click(within(toast).getByRole("button", { name: "View" }));
+		await waitFor(() =>
+			expect(router.state.location.pathname).toBe(`/r/${ID}/files`),
+		);
+		expect(router.state.location.search).toEqual({ head: oid });
 	});
 
-	it("shows no banner, and no error, when the head check fails", async () => {
+	it("shows no toast, and no error, when the head check fails", async () => {
 		renderApp({
 			"/api/head": { status: 502, body: { error: "gh is down" } },
 		});
 		await screen.findByRole("heading", { level: 1 });
 		await waitFor(() => expect(calls("/api/head")).toBe(1));
-		expect(screen.queryByText(/New commits were pushed/)).toBeNull();
+		expect(screen.queryByTestId("head-toast")).toBeNull();
 		expect(screen.queryByRole("alert")).toBeNull();
 	});
 

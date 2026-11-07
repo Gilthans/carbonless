@@ -121,6 +121,25 @@ export function parseComparison(
 	return { viewing, base };
 }
 
+/**
+ * The params after the viewing marker moves to `viewing`: the base by
+ * nextBase when the reviewer put it somewhere (`from` in the address),
+ * else the new default (a base left where it was by default was never
+ * "chosen": it keeps being the previous dot).
+ */
+export function movedSearch(
+	current: ComparisonSearch,
+	prev: { viewing: Viewing; base: ComparisonBase },
+	viewing: Viewing,
+	patchsets: readonly number[],
+): ComparisonSearch {
+	const base =
+		current.from === undefined
+			? defaultBase(viewing, patchsets)
+			: nextBase(prev, viewing, patchsets);
+	return comparisonSearch(viewing, base, patchsets);
+}
+
 /** The address's params for a comparison; `from` only when it isn't the default. */
 export function comparisonSearch(
 	viewing: Viewing,
@@ -215,13 +234,7 @@ export function useComparison(session: SessionInfo | undefined): Comparison {
 		patchsets,
 		setViewing: (v) => {
 			if (!viewing) return;
-			go(
-				comparisonSearch(
-					v,
-					nextBase({ viewing, base }, v, patchsets),
-					patchsets,
-				),
-			);
+			go(movedSearch(named, { viewing, base }, v, patchsets));
 		},
 		setBase: (b) => {
 			if (!viewing) return;

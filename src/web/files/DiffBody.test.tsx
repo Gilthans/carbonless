@@ -18,6 +18,7 @@ import type {
 	FileView,
 	ReviewThread,
 } from "../../shared/types";
+import { hunksQuery } from "../api";
 import { openComposer, resetComposers } from "../threads/newThreads";
 import { ignoreWhitespace, showInvisibles, sideBySide } from "../viewSettings";
 import {
@@ -1935,7 +1936,7 @@ describe("number columns: as wide as the file's largest line number needs", () =
 
 	it("sizes the cells from it; touch keeps 48px", async () => {
 		const client = new QueryClient();
-		client.setQueryData(["hunks", "r1", 0], {
+		client.setQueryData(hunksQuery("r1", 0).queryKey, {
 			hunks: [
 				{
 					oldStart: 1,

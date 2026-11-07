@@ -59,9 +59,15 @@ const specs = readdirSync("e2e")
 const E2E_MAP = [
 	// Pure (hunks in, placements out); its unit tests are the coverage.
 	[/^src\/shared\/tracer\//, []],
-	// The re-review engine (shape, interdiff, carry): no UI of its own yet;
-	// the methodology matrix drives it end to end.
-	[/^src\/(server|shared)\/rereview\//, ["methodology"]],
+	// The re-review engine (shape, interdiff, carry): the methodology
+	// matrix drives it end to end, the Files page's graph and since view
+	// read its answers.
+	[/^src\/(server|shared)\/rereview\//, ["methodology", "rereview"]],
+	// The patch set graph, the toast and the since view (the comparison).
+	[
+		/^src\/web\/files\/(PatchsetGraph|HeadToast|graphCards|comparison|FilesPage|FileDiff|DiffBody|FileTree|ProgressBar|useSetStates|landing)\.tsx?$|^src\/web\/(App|shortcuts)\.tsx$|^e2e\/pr-setup\.ts$/,
+		["rereview"],
+	],
 	[
 		/^src\/web\/(overview|threads)\/|^src\/server\/(overview|overviewRead|threadCode|timeline)\.ts$|^src\/web\/(GithubHtml|githubHtml)/,
 		["overview", "timeline", "mobile"],
@@ -126,7 +132,7 @@ const E2E_MAP = [
 	],
 	[/^src\/web\/sticky\.ts$/, ["sticky", "files"]],
 	[
-		/^src\/server\/asOf\.ts$|^src\/web\/(HeadBanner|RelativeTime)\.tsx$/,
+		/^src\/server\/asOf\.ts$|^src\/web\/RelativeTime\.tsx$/,
 		["asof", "overview", "pinned-head"],
 	],
 	[/^src\/server\/pinnedHead\.ts$/, ["pinned-head"]],

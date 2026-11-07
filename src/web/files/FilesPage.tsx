@@ -11,7 +11,7 @@ import {
 	useRef,
 	useState,
 } from "react";
-import type { ReviewThread } from "../../shared/types";
+import type { ReviewThread, SessionInfo } from "../../shared/types";
 import { hunksQuery, overviewQuery, sessionQuery } from "../api";
 import { LabeledIcon } from "../overview/parts";
 import { useForgetPageScroll, usePageActive } from "../pageActive";
@@ -26,6 +26,7 @@ import { ErrorMessage } from "../ui";
 import { useMedia, WIDE } from "../useMedia";
 import { FilesVerdict } from "../verdict/FilesVerdict";
 import { ignoreWhitespace, showInvisibles, sideBySide } from "../viewSettings";
+import { type Comparison, useComparison } from "./comparison";
 import type { DiffThreads } from "./DiffBody";
 import { FileDiff } from "./FileDiff";
 import { FileTree } from "./FileTree";
@@ -39,6 +40,7 @@ import {
 	landingFile,
 	parseFilesSearch,
 } from "./landing";
+import { PatchsetGraph } from "./PatchsetGraph";
 import { ProgressBar } from "./ProgressBar";
 import { SelectionBar } from "./SelectionBar";
 import {
@@ -177,7 +179,7 @@ export function useCurrentFile(
  * the previous read's stay until the new one's land (useThreads). Also when
  * Files changed is the first page. `failed`: no threads could be read.
  */
-function useDiffThreads(): {
+function useDiffThreads(viewedHead: string | undefined): {
 	threads: DiffThreads | undefined;
 	/** Every thread of the read, on this head or not (people's tints). */
 	all: ReviewThread[] | undefined;
@@ -188,7 +190,7 @@ function useDiffThreads(): {
 	const overview = useQuery(overviewQuery);
 	const session = useQuery(sessionQuery);
 	const { view, readId, error } = useThreads(overview.data?.readId);
-	const snapshotHead = session.data?.snapshotHead;
+	const snapshotHead = viewedHead ?? session.data?.snapshotHead;
 	// A thread whose last comment was deleted here: its bubble goes at once.
 	const { gone } = useThreadWrites();
 	const threads = useMemo(
@@ -277,9 +279,23 @@ const headerOf = (index: number) =>
 /** How long "<path> isn't in this diff" stays. */
 export const MISSING_HINT_MS = 8000;
 
+/** The commit the comparison views: a patch set's head, or the head itself. */
+function viewedHeadOf(
+	comparison: Comparison,
+	session: SessionInfo | undefined,
+): string | undefined {
+	const { viewing } = comparison;
+	if (!viewing || !session) return undefined;
+	if (viewing.kind === "head") return viewing.oid;
+	return session.patchsets.find((p) => p.number === viewing.number)?.head;
+}
+
 export function FilesPage() {
+	// The comparison (the graph's markers): which review to show.
+	const session = useQuery(sessionQuery).data;
+	const comparison = useComparison(session);
 	// The reviewer's intended states over the server's (useSetStates).
-	const { review, data } = useReviewView();
+	const { review, data } = useReviewView(comparison.target);
 	// Bumped on each opening of a file (a pick, a link, its header): the
 	// tree reveals it.
 	const [reveal, setReveal] = useState(0);
@@ -504,7 +520,11 @@ export function FilesPage() {
 		void navigate({
 			to: "/r/$id/files",
 			params: { id },
-			search: {},
+			// The comparison stays in the address; the landing goes.
+			search: (prev: FilesSearch) => {
+				const { ps, head, from } = prev;
+				return { ps, head, from };
+			},
 			replace: true,
 			resetScroll: false,
 		});
@@ -534,7 +554,7 @@ export function FilesPage() {
 		all: allThreads,
 		failed: threadsFailed,
 		loading: threadsLoading,
-	} = useDiffThreads();
+	} = useDiffThreads(viewedHeadOf(comparison, session));
 	// The first open's own reads are in (the files, their threads): only
 	// then may the verdict card read GitHub's merge facts.
 	const firstOpenSettled =
@@ -580,7 +600,7 @@ export function FilesPage() {
 	const filesButton = !writing && !refused;
 
 	// Folded folders are kept per PR, once it's known.
-	const pr = useQuery(sessionQuery).data?.pr;
+	const pr = session?.pr;
 	const tree = data && (
 		<FileTree
 			files={files}
@@ -602,6 +622,8 @@ export function FilesPage() {
 				style={{ "--files-bar": `${barHeight}px` } as CSSProperties}
 			>
 				<h2 className="sr-only">Files changed</h2>
+				{/* The graph needs the session alone: it never waits for the diff. */}
+				{session && <PatchsetGraph session={session} comparison={comparison} />}
 				{review.isPending && <FilesSkeleton />}
 				{review.isError && <ErrorMessage error={review.error} />}
 				{data && (
