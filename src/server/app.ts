@@ -7,6 +7,7 @@ import {
 	type ClusterState,
 	COMMENTS_BATCH,
 	type EditRequest,
+	HUNKS_BATCH,
 	type NewThreadRequest,
 	type ReplyRequest,
 	type StateChange,
@@ -272,6 +273,20 @@ export async function buildApp(
 				return sessionOf(request).timeline(read);
 			});
 			review.get("/review", (request) => sessionOf(request).review());
+			// Several files' hunks at once (the search's prefetch).
+			review.get<{ Querystring: { revision?: unknown; indexes?: string } }>(
+				"/files/hunks",
+				(request) => {
+					const revision = revisionParam(request.query.revision);
+					const { indexes: raw } = request.query;
+					if (!raw) throw new BadRequestError("indexes is required");
+					const indexes = [...new Set(raw.split(",").map(fileIndex))];
+					if (indexes.length > HUNKS_BATCH) {
+						throw new BadRequestError(`At most ${HUNKS_BATCH} files a request`);
+					}
+					return sessionOf(request).fileHunksBatch(revision, indexes);
+				},
+			);
 			review.get<{
 				Params: { index: string };
 				Querystring: { revision?: unknown };
