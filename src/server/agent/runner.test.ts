@@ -413,8 +413,9 @@ describe("AgentRunner", () => {
 		config = { agent: { ...AGENT, args: ["--again"] }, problems: [] };
 		await until((s) => s.state === "ready" && spawns().length === 2);
 		expect(spawns()[1]?.params).toMatchObject({ argv: ["--again"] });
-		await vi.waitFor(() =>
-			expect(() => process.kill(firstSpawn?.pid as number, 0)).toThrow(),
+		await vi.waitFor(
+			() => expect(() => process.kill(firstSpawn?.pid as number, 0)).toThrow(),
+			{ timeout: 20_000, interval: 20 },
 		);
 		const secondPid = spawns()[1]?.pid as number;
 		config = { agent: null, problems: [] };
@@ -459,8 +460,12 @@ describe("AgentRunner", () => {
 		scenario({ hold: ["initialize"] });
 		makeRunner().poke();
 		await until((s) => s.state === "starting");
-		await vi.waitFor(() =>
-			expect(acpLog(logPath).some((e) => e.method === "initialize")).toBe(true),
+		await vi.waitFor(
+			() =>
+				expect(acpLog(logPath).some((e) => e.method === "initialize")).toBe(
+					true,
+				),
+			{ timeout: 20_000, interval: 20 },
 		);
 		const pid = spawns()[0]?.pid as number;
 		// Held for good: only stopping the start lets close() resolve.

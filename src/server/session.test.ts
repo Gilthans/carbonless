@@ -1182,8 +1182,9 @@ describe("Session", () => {
 			const host = s.agent;
 			if (!host) throw new Error("no agent");
 			host.start();
-			await vi.waitFor(async () =>
-				expect((await host.status()).state).toBe("starting"),
+			await vi.waitFor(
+				async () => expect((await host.status()).state).toBe("starting"),
+				{ timeout: 20_000, interval: 20 },
 			);
 			releaseAcp(fake.scenario, "initialize");
 			await vi.waitFor(

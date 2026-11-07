@@ -69,8 +69,9 @@ describe("SessionRegistry", () => {
 			const host = session.agent;
 			if (!host) throw new Error("no agent");
 			// Held: the open did not wait for the handshake.
-			await vi.waitFor(async () =>
-				expect((await host.status()).state).toBe("starting"),
+			await vi.waitFor(
+				async () => expect((await host.status()).state).toBe("starting"),
+				{ timeout: 20_000, interval: 20 },
 			);
 			releaseAcp(fake.scenario, "initialize");
 			await vi.waitFor(

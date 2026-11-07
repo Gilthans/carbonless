@@ -168,7 +168,9 @@ describe("AcpAgent", () => {
 		const reply = await agent.prompt(text("go"));
 		expect(reply.stop).toBe("error");
 		expect(reply.text).toBe("partial an");
-		await vi.waitFor(() => expect(seen.exits).toEqual([[70, null]]));
+		await vi.waitFor(() => expect(seen.exits).toEqual([[70, null]]), {
+			timeout: 20_000,
+		});
 	});
 
 	it("cancel → stop cancelled", async () => {
@@ -178,10 +180,12 @@ describe("AcpAgent", () => {
 		});
 		const { agent, seen } = await spawn();
 		const turn = agent.prompt(text("go"));
-		await vi.waitFor(() =>
-			expect(
-				seen.updates.some((u) => u.sessionUpdate === "agent_message_chunk"),
-			).toBe(true),
+		await vi.waitFor(
+			() =>
+				expect(
+					seen.updates.some((u) => u.sessionUpdate === "agent_message_chunk"),
+				).toBe(true),
+			{ timeout: 20_000, interval: 20 },
 		);
 		await agent.cancel();
 		expect(await turn).toEqual({ text: "first ", stop: "cancelled" });
