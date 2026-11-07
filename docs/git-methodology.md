@@ -51,6 +51,10 @@ history.
   the carry (`src/shared/rereview/carry.ts`): a marked cluster carries when
   the exact same removed and added lines sit where the line mappers of
   `diff(H1, H2)` and `diff(B1, B2)` put them, whatever the commits did.
+  A marked cluster with no image is gone when the interdiff shows its
+  removal (reverted, deleted) and absorbed when it shows nothing of it
+  (its change is in the base now: a stacked parent landed, S8), which is
+  neither shown nor counted.
   The commit count on the connector is the new head's first-parent commits
   since the old head, or since the merge base after a force-push. When no
   virtual rebase can be built (unrelated histories, a shallow clone), the
@@ -124,7 +128,8 @@ Every permutation proves:
     S4c, line 30 reworked, the rest carried; `merge-base-in-conflict`: S3
     with `a.txt` conflicted, both its clusters new, `new.txt` carried;
     `stacked-squash`: S4a, the PR's three clusters carried, the parent's
-    two gone); viewing the updated head writes nothing; the first action on
+    two absorbed into the base, nothing gone); viewing the updated head
+    writes nothing; the first action on
     it starts PS2 with the carries, which a fresh open shows;
   - once landed: a running unstarted session keeps its snapshot on refresh;
     a new open refuses when merged, still shows the PR when open;

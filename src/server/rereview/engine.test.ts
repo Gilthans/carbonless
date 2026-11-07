@@ -473,6 +473,45 @@ describe("the engine", () => {
 		]);
 	});
 
+	it("S8: a stacked parent landed in the base: its clusters are absorbed, not gone; a reverted one stays gone", async () => {
+		const ps1 = await snap(h.b0, h.child);
+		const r = await snap(h.parentLanded, h.childRebased);
+		const result = await computeRereview(
+			h.path,
+			since(1, ps1, marked(ps1)),
+			[],
+			targetOf(r),
+		);
+		expect(kinds(result.answer)).toEqual({
+			"a.txt": ["carried:1", "carried:1"],
+			"new.txt": ["carried:1"],
+		});
+		expect(result.answer.shape.code).toBe("S4a");
+		expect(result.absorbed.map((a) => a.path).sort()).toEqual([
+			"a.txt",
+			"parent.txt",
+		]);
+		expect(result.answer.toRead).toEqual({ files: 0, clusters: 0 });
+		const revertedPs = await snap(h.b0, h.p3);
+		const reverted = await computeRereview(
+			h.path,
+			since(1, revertedPs, marked(revertedPs)),
+			[],
+			targetOf(await snap(h.b0, h.reverted)),
+		);
+		expect(reverted.absorbed).toEqual([]);
+		expect(kinds(reverted.answer)["extra.txt"]).toEqual(["gone:1"]);
+	});
+
+	it("the cache key names the since and earlier snapshots, not their numbers", () => {
+		const a = "a".repeat(64);
+		const b = "b".repeat(64);
+		const c = "c".repeat(64);
+		expect(rereviewKey(a, b)).not.toBe(rereviewKey(a, b, [c]));
+		expect(rereviewKey(a, b, [c])).toBe(rereviewKey(a, b, [c]));
+		expect(rereviewKey(a, b)).toContain(`${a}:${b}:`);
+	});
+
 	it("a path that looks like a glob is diffed literally", async () => {
 		const ps1 = await snap(h.g0, h.g1);
 		const r = await snap(h.g0, h.g2);

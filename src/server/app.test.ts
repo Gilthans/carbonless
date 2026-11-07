@@ -1536,7 +1536,7 @@ describe("API", () => {
 		};
 		const answered = async (from: number, to: string) => {
 			for (;;) {
-				const answer = await get(`/api/rereview?from=${from}&to=${to}`);
+				const answer = await get(`/api/rereview?from=${from}&head=${to}`);
 				if (!answer.pending) return answer;
 				await new Promise((r) => setTimeout(r, 20));
 			}
@@ -1544,7 +1544,7 @@ describe("API", () => {
 
 		it("GET /rereview: pending, then the answer; 400 for bad params, 404 for a patch set the reviewer hasn't", async () => {
 			const { newHead } = await setup();
-			const first = await get(`/api/rereview?from=1&to=${newHead}`);
+			const first = await get(`/api/rereview?from=1&head=${newHead}`);
 			expect(first).toEqual({ pending: true });
 			const answer = await answered(1, newHead);
 			expect(answer).toMatchObject({
@@ -1555,18 +1555,21 @@ describe("API", () => {
 				toRead: { files: 3, clusters: 3 },
 			});
 			for (const bad of [
-				`from=0&to=${newHead}`,
-				"from=1&to=main",
+				`from=0&head=${newHead}`,
+				"from=1&head=main",
+				"from=1&to=x",
 				"from=1",
-				`to=${newHead}`,
+				`head=${newHead}`,
+				`from=1&to=1&head=${newHead}`,
 			]) {
 				expect((await inject(`/api/rereview?${bad}`)).statusCode, bad).toBe(
 					400,
 				);
 			}
 			expect(
-				(await inject(`/api/rereview?from=9&to=${newHead}`)).statusCode,
+				(await inject(`/api/rereview?from=9&head=${newHead}`)).statusCode,
 			).toBe(404);
+			expect((await inject("/api/rereview?from=1&to=9")).statusCode).toBe(404);
 		});
 
 		it("GET /review?head= views the head; ?patchset= an earlier one read-only; hunks?from= the since view; writes against PS1 are 409 stale", async () => {
@@ -1637,6 +1640,16 @@ describe("API", () => {
 				(await inject(`/api/review?head=${newHead}&patchset=1`)).statusCode,
 			).toBe(400);
 			expect((await get("/api/review")).patchset).toBe(2);
+			// By patch set: PS2 against PS1.
+			for (;;) {
+				const answer = await get("/api/rereview?from=1&to=2");
+				if (answer.pending) {
+					await new Promise((r) => setTimeout(r, 20));
+					continue;
+				}
+				expect(answer).toMatchObject({ from: 1, toRevision: view.revision });
+				break;
+			}
 		});
 	});
 

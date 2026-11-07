@@ -297,18 +297,25 @@ export async function buildApp(
 					return sessionOf(request).review();
 				},
 			);
-			// The engine's answer for patch set `from` to the snapshot of
-			// head `to`: `{ pending: true }` until it is computed (Session.rereview).
-			review.get<{ Querystring: { from?: unknown; to?: unknown } }>(
-				"/rereview",
-				(request) => {
-					const { from, to } = request.query;
-					return sessionOf(request).rereview(
-						patchsetParam(from),
-						oidParam("to", to),
+			// The engine's answer for patch set `from` to patch set `to` (its
+			// pinned snapshot) or to `head` (its snapshot against the base
+			// tip): `{ pending: true }` until it is computed (Session.rereview).
+			review.get<{
+				Querystring: { from?: unknown; to?: unknown; head?: unknown };
+			}>("/rereview", (request) => {
+				const { from, to, head } = request.query;
+				if ((to === undefined) === (head === undefined)) {
+					throw new BadRequestError(
+						"to (a patch set) or head (a commit id), one of them",
 					);
-				},
-			);
+				}
+				return sessionOf(request).rereview(
+					patchsetParam(from),
+					to !== undefined
+						? { patchset: patchsetParam(to) }
+						: { head: oidParam("head", head) },
+				);
+			});
 			// A file's hunks; with `from=<n>`, the since view's: the interdiff
 			// from patch set n to the snapshot (Session.interdiffHunks).
 			review.get<{

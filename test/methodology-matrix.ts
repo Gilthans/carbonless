@@ -14,6 +14,9 @@ import {
 } from "vitest";
 import { clonePath } from "../src/server/clone";
 import { buildSnapshot } from "../src/server/diff/snapshot";
+import { computeRereview } from "../src/server/rereview/engine";
+import { RefStore } from "../src/server/review/refStore";
+import { ReviewService } from "../src/server/review/reviews";
 import { Session } from "../src/server/session";
 import type { Snapshot } from "../src/shared/types";
 import {
@@ -75,6 +78,7 @@ const RE_REVIEW: Record<
 		reworked: number;
 		fresh: number;
 		gone: number;
+		absorbed: number;
 	}
 > = {
 	none: {
@@ -85,6 +89,7 @@ const RE_REVIEW: Record<
 		reworked: 0,
 		fresh: 0,
 		gone: 0,
+		absorbed: 0,
 	},
 	rebase: {
 		shape: "S4a",
@@ -94,6 +99,7 @@ const RE_REVIEW: Record<
 		reworked: 0,
 		fresh: 0,
 		gone: 0,
+		absorbed: 0,
 	},
 	"merge-base-in": {
 		shape: "S3",
@@ -103,6 +109,7 @@ const RE_REVIEW: Record<
 		reworked: 0,
 		fresh: 0,
 		gone: 0,
+		absorbed: 0,
 	},
 	"rebase-amend": {
 		shape: "S4c",
@@ -112,6 +119,7 @@ const RE_REVIEW: Record<
 		reworked: 1,
 		fresh: 0,
 		gone: 0,
+		absorbed: 0,
 	},
 	"merge-base-in-conflict": {
 		shape: "S3",
@@ -121,6 +129,7 @@ const RE_REVIEW: Record<
 		reworked: 0,
 		fresh: 2,
 		gone: 0,
+		absorbed: 0,
 	},
 	"stacked-squash": {
 		shape: "S4a",
@@ -129,7 +138,8 @@ const RE_REVIEW: Record<
 		carried: 3,
 		reworked: 0,
 		fresh: 0,
-		gone: 2,
+		gone: 0,
+		absorbed: 2,
 	},
 };
 
@@ -484,10 +494,10 @@ function matrix(m: (typeof METHODOLOGIES)[number]) {
 			patchset: 1,
 			head: { oid: repo.heads.updated, commits: want.commits },
 		});
-		let answer = await s.rereview(1, repo.heads.updated);
+		let answer = await s.rereview(1, { head: repo.heads.updated });
 		while ("pending" in answer) {
 			await new Promise((r) => setTimeout(r, 20));
-			answer = await s.rereview(1, repo.heads.updated);
+			answer = await s.rereview(1, { head: repo.heads.updated });
 		}
 		expect(answer.shape).toMatchObject({
 			code: want.shape,
@@ -521,6 +531,33 @@ function matrix(m: (typeof METHODOLOGIES)[number]) {
 			).size,
 			clusters: want.reworked + want.fresh,
 		});
+		// Absorbed clusters (a landed stacked parent's) are neither shown nor
+		// counted: the engine's own result says so.
+		const clone = clonePath("acme", "widget");
+		const progress = await new ReviewService(new RefStore(clone)).getProgress(
+			s.id,
+			"octo-cat",
+		);
+		const head = info.head;
+		if (!head) throw new Error("no head");
+		const record = progress.patchsets[0];
+		if (!record) throw new Error("no PS1");
+		const direct = await computeRereview(
+			clone,
+			{
+				...record,
+				baseBranch: "main",
+				snapshot: ps1,
+				states: progress.statesByRevision.get(ps1.revision) ?? new Map(),
+			},
+			[],
+			{
+				...(await buildSnapshot(clone, head.mergeBase, head.oid)),
+				baseBranch: "main",
+			},
+		);
+		expect(direct.absorbed).toHaveLength(want.absorbed);
+		expect(direct.answer.files).toEqual(answer.files);
 		// Nothing written by asking or viewing.
 		const view = await s.viewHead(repo.heads.updated);
 		expect(s.info().patchsets).toHaveLength(1);

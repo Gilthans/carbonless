@@ -113,7 +113,13 @@ export async function buildInterdiff(
 	// the diff to the new head would show them. The author's resolution
 	// against the new base is what there is to read.
 	const conflicted = new Set(shape.conflicts);
-	const resolved = await diffFiles(repo, base, head, [...conflicted]);
+	// Each path as itself: a `[`, `*` or `?` in a name is not a glob.
+	const resolved = await diffFiles(
+		repo,
+		base,
+		head,
+		[...conflicted].map((path) => `:(literal)${path}`),
+	);
 	for (const f of resolved) {
 		f.conflict = true;
 		conflicted.add(f.path);

@@ -1,5 +1,6 @@
 import {
 	type CarriedState,
+	type CarryResult,
 	carryTraced,
 	type FileMappers,
 	type SourcePatchset,
@@ -73,8 +74,13 @@ export interface Traced {
 }
 
 /** The cache key of a comparison: the two snapshot ids and the versions. */
-export const rereviewKey = (fromRevision: string, toRevision: string) =>
-	`${fromRevision}:${toRevision}:${TRACER_VERSION}.${ENGINE_VERSION}`;
+export const rereviewKey = (
+	fromRevision: string,
+	toRevision: string,
+	/** The earlier patch sets' snapshot ids, latest first (their numbers are the review's own). */
+	earlierRevisions: readonly string[] = [],
+) =>
+	`${fromRevision}:${toRevision}:${earlierRevisions.join("+")}:${TRACER_VERSION}.${ENGINE_VERSION}`;
 
 /** A mapper under which no line survives (the file is not on that side). */
 const NONE: LineMapper = {
@@ -314,6 +320,34 @@ export async function traceRereview(
 			}
 		}
 	}
+	// A since cluster with no image whose lines the interdiff doesn't show
+	// either (no removal at its place in the virtual rebase, no restored
+	// line in the new head) went into the base: absorbed, not gone.
+	const shown = new Set<string>();
+	for (const f of interdiff.files) {
+		const old = lineKeys.old[f.oldPath ?? f.path] ?? {};
+		const fresh = lineKeys.new[f.path] ?? {};
+		for (const c of f.clusters) {
+			if (c.kind !== "lines") continue;
+			for (let i = 0; i < c.oldCount; i++) {
+				const key = old[c.oldStart + i];
+				if (key !== undefined) shown.add(key);
+			}
+			for (let i = 0; i < c.newCount; i++) {
+				const key = fresh[c.newStart + i];
+				if (key !== undefined) shown.add(key);
+			}
+		}
+	}
+	for (const t of traced) {
+		if (
+			t.from === ps.number &&
+			t.images.length === 0 &&
+			!shown.has(t.fromKey)
+		) {
+			t.absorbed = true;
+		}
+	}
 	return { shape, interdiff, traced, lineKeys };
 }
 
@@ -328,9 +362,13 @@ export function answerRereview(
 	ps: SincePatchset,
 	earlier: EarlierPatchset[],
 	target: TargetSnapshot,
-): { answer: RereviewAnswer; start: PatchsetStart } {
+): {
+	answer: RereviewAnswer;
+	start: PatchsetStart;
+	absorbed: CarryResult["absorbed"];
+} {
 	const { shape, interdiff } = traced;
-	const { carried, reworked, gone } = carryTraced(
+	const { carried, reworked, gone, absorbed } = carryTraced(
 		traced.traced,
 		[ps, ...earlier].map(sourceOf),
 	);
@@ -438,7 +476,7 @@ export function answerRereview(
 		interdiff: interdiff.status,
 		carried: [...events.values()],
 	};
-	return { answer, start };
+	return { answer, start, absorbed };
 }
 
 const entryOf = (c: CarriedState) => ({
@@ -458,10 +496,16 @@ export async function computeRereview(
 	answer: RereviewAnswer;
 	start: PatchsetStart;
 	interdiff: Interdiff;
+	absorbed: CarryResult["absorbed"];
 }> {
 	const traced = await traceRereview(repo, ps, earlier, target, signal);
-	const { answer, start } = answerRereview(traced, ps, earlier, target);
-	return { answer, start, interdiff: traced.interdiff };
+	const { answer, start, absorbed } = answerRereview(
+		traced,
+		ps,
+		earlier,
+		target,
+	);
+	return { answer, start, interdiff: traced.interdiff, absorbed };
 }
 
 /** The interdiff's file for the answer's file at `index` (RangeError for none). */

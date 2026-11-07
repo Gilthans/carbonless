@@ -79,6 +79,25 @@ export function createRereviewHistory() {
 	const g0 = commit("base: we[i]rd.txt", { "we[i]rd.txt": "w1\nw2\nw3\n" });
 	const g1 = commit("PR: we[i]rd.txt", { "we[i]rd.txt": "w1\nW2\nw3\n" });
 	const g2 = commit("PR: a.txt too", { "a.txt": aTxt({ 2: "two" }) });
+	// A conflict on the glob-looking path while its look-alike neighbour
+	// rebases cleanly: the PR changes both, the base changes only we[i]rd.txt.
+	checkout(b0);
+	const gw0 = commit("base: we[i]rd.txt and weird.txt", {
+		"we[i]rd.txt": "w1\nw2\nw3\n",
+		"weird.txt": "x1\nx2\nx3\n",
+	});
+	const gw1 = commit("PR: both", {
+		"we[i]rd.txt": "w1\nW2\nw3\n",
+		"weird.txt": "x1\nX2\nx3\n",
+	});
+	checkout(gw0);
+	const gwBase = commit("base: we[i]rd.txt line 2", {
+		"we[i]rd.txt": "w1\nw2 base\nw3\n",
+	});
+	const gwResolved = commit("PR: both (rebased, resolved)", {
+		"we[i]rd.txt": "w1\nW2 resolved\nw3\n",
+		"weird.txt": "x1\nX2\nx3\n",
+	});
 
 	checkout(b0);
 	const b1 = commit("base: line 15", { "a.txt": aTxt({ 15: "fifteen" }) });
@@ -179,6 +198,10 @@ export function createRereviewHistory() {
 		g0,
 		g1,
 		g2,
+		gw0,
+		gw1,
+		gwBase,
+		gwResolved,
 		b1,
 		b1c,
 		merged,

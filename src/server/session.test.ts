@@ -1291,9 +1291,13 @@ describe("Session", () => {
 			});
 		const now = () => new Date().toISOString();
 		/** The answer once the background job is done. */
-		const settled = async (s: Session, from: number, head: string) => {
+		const settled = async (
+			s: Session,
+			from: number,
+			to: { head: string } | { patchset: number },
+		) => {
 			for (;;) {
-				const answer = await s.rereview(from, head);
+				const answer = await s.rereview(from, to);
 				if (!("pending" in answer)) return answer;
 				await new Promise((r) => setTimeout(r, 20));
 			}
@@ -1329,11 +1333,11 @@ describe("Session", () => {
 			// Pending before any git could answer: the first ask settles
 			// ahead of an immediate, which no child process can.
 			const first = await Promise.race([
-				s.rereview(1, newHead),
+				s.rereview(1, { head: newHead }),
 				new Promise<"late">((r) => setImmediate(() => r("late"))),
 			]);
 			expect(first).toEqual({ pending: true });
-			const answer = await settled(s, 1, newHead);
+			const answer = await settled(s, 1, { head: newHead });
 			expect(answer).toMatchObject({
 				from: 1,
 				toHead: newHead,
@@ -1348,7 +1352,7 @@ describe("Session", () => {
 				"later.txt": ["new"],
 			});
 			// Served from memory now: the same answer, at once.
-			expect(await s.rereview(1, newHead)).toEqual(answer);
+			expect(await s.rereview(1, { head: newHead })).toEqual(answer);
 			// Nothing written yet.
 			expect(s.info().patchsets).toHaveLength(1);
 
@@ -1426,8 +1430,24 @@ describe("Session", () => {
 			expect(again.info().patchset).toBe(2);
 			expect((await again.review()).progress.clusters.reviewed).toBe(2);
 			expect((await again.reviewAt(1)).progress.clusters.reviewed).toBe(1);
-			await expect(s.rereview(9, newHead)).rejects.toBeInstanceOf(RangeError);
-			await expect(s.rereview(1, "main")).rejects.toThrow(/Not an object id/);
+			await expect(s.rereview(9, { head: newHead })).rejects.toBeInstanceOf(
+				RangeError,
+			);
+			await expect(s.rereview(1, { patchset: 9 })).rejects.toBeInstanceOf(
+				RangeError,
+			);
+			await expect(s.rereview(1, { head: "main" })).rejects.toThrow(
+				/Not an object id/,
+			);
+			// By patch set: PS2 against PS1, its pinned snapshot.
+			const toPs2 = await settled(again, 1, { patchset: 2 });
+			expect(toPs2).toMatchObject({
+				from: 1,
+				toHead: newHead,
+				toRevision: view.revision,
+				shape: { code: "S1" },
+			});
+			expect(kinds(toPs2)).toEqual(kinds(answer));
 		});
 
 		it("a new thread and a verdict start a patch set; a reply, a resolve and an unresolve never do", async () => {
@@ -1517,7 +1537,7 @@ describe("Session", () => {
 			expect(back).toMatchObject({ patchset: 1, revision: ps1.revision });
 			expect(back.progress.clusters.reviewed).toBe(1);
 			// The engine for PS2 → PS1's head: a move back, with what is gone.
-			const answer = await settled(s, 2, ps1.head);
+			const answer = await settled(s, 2, { head: ps1.head });
 			expect(answer.shape.code).toBe("S6");
 			expect(kinds(answer)).toEqual({
 				"a.txt": ["carried:1", "new"],
@@ -1529,6 +1549,87 @@ describe("Session", () => {
 				index: 2,
 				path: "later.txt",
 			});
+		});
+
+		it("M2: a retarget under the same head gives a fresh answer by snapshot id, and viewHead overlays it", async () => {
+			const s = await Session.open(pr.arg, process.cwd());
+			const ps1 = s.snapshot();
+			await s.setStates(ps1.revision, [
+				{ key: firstKey(s), state: "reviewed" },
+			]);
+			const newHead = pr.moveHead({ "later.txt": "later\n" });
+			await s.checkHead();
+			const before = await settled(s, 1, { head: newHead });
+			// The base branch becomes one that holds the new head itself: the
+			// merge base is the head, the comparison empty.
+			execFileSync("git", ["branch", "develop", newHead], {
+				cwd: pr.repo.path,
+				env: testGitEnv(),
+			});
+			pr.scenario({
+				prs: {
+					12: { view: prView({ headRefOid: newHead, baseRefName: "develop" }) },
+				},
+			});
+			const checked = await s.checkHead();
+			expect(checked.head).toMatchObject({ oid: newHead, mergeBase: newHead });
+			const after = await settled(s, 1, { head: newHead });
+			expect(after.toRevision).not.toBe(before.toRevision);
+			expect(after.files).toEqual([]);
+			const view = await s.viewHead(newHead);
+			expect(view.revision).toBe(after.toRevision);
+			expect(view.files).toEqual([]);
+		});
+
+		it("L2: a thread on a head two kept snapshots share goes to the patch set's: read-only", async () => {
+			withThreads();
+			const s = await Session.open(pr.arg, process.cwd());
+			await s.overview(0);
+			const ps1 = s.snapshot();
+			await s.setStates(ps1.revision, [
+				{ key: firstKey(s), state: "reviewed" },
+			]);
+			const newHead = pr.moveHead({ "later.txt": "later\n" });
+			await s.checkHead();
+			const view = await s.viewHead(newHead);
+			const laterKey = view.files.find((f) => f.path === "later.txt")
+				?.clusters[0]?.key;
+			if (!laterKey) throw new Error("no cluster in later.txt");
+			await s.setStates(view.revision, [{ key: laterKey, state: "reviewed" }]);
+			// Back on PS1's head with the base retargeted to it: another
+			// snapshot with that head, kept after the patch set's.
+			execFileSync("git", ["branch", "develop", ps1.head], {
+				cwd: pr.repo.path,
+				env: testGitEnv(),
+			});
+			pr.scenario({
+				prs: {
+					12: {
+						view: prView({ headRefOid: ps1.head, baseRefName: "develop" }),
+						graphql: { reviewThreads: [thread()], reviews: [] },
+					},
+				},
+			});
+			await s.checkHead();
+			const viewed = await s.viewHead(ps1.head);
+			expect(viewed.revision).not.toBe(ps1.revision);
+			expect(s.info().patchsets).toHaveLength(2);
+			const refused = await s
+				.startThread({
+					clientId: "n9",
+					body: "Late",
+					attemptedAt: now(),
+					retry: false,
+					path: "a.txt",
+					commit: ps1.head,
+					subject: "file",
+				})
+				.then(
+					() => null,
+					(e: unknown) => e,
+				);
+			expect(refused).toMatchObject({ code: "stale" });
+			expect(s.info().patchsets).toHaveLength(2);
 		});
 
 		it("checkHead compares the triple: the same head costs no fetch; a base branch change fetches once and reports the merge base", async () => {

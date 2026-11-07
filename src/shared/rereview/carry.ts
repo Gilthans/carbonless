@@ -85,8 +85,17 @@ export interface CarryResult {
 	carried: CarriedState[];
 	/** Target keys a marked source cluster traced to without being equal. */
 	reworked: Set<string>;
-	/** Marked clusters of the latest source patch set with no image at all. */
+	/**
+	 * Marked clusters of the latest source patch set with no image, whose
+	 * removal the interdiff shows (reverted, deleted).
+	 */
 	gone: { fromKey: string; from: number; path: string }[];
+	/**
+	 * Marked clusters of the latest source patch set with no image and
+	 * nothing of them in the interdiff either: their change is in the base
+	 * now (a stacked parent landed, S8). Nothing to show, nothing to count.
+	 */
+	absorbed: { fromKey: string; from: number; path: string }[];
 }
 
 /** Where one source cluster lands in the target, states aside. */
@@ -103,6 +112,12 @@ export interface TracedCluster {
 	/** One image at the traced ranges, with the same removed and added lines. */
 	equal: boolean;
 	rule: CarryRule;
+	/**
+	 * With no image: the interdiff shows no removal at its traced location
+	 * either, so its change went into the base (set by the caller, who has
+	 * the interdiff; `traceClusters` never sets it).
+	 */
+	absorbed?: true;
 }
 
 const sameLines = (a: readonly string[], b: readonly string[]) =>
@@ -275,8 +290,10 @@ export function traceClusters(
  * human and is skipped). A reviewed or crossed-off source with one equal
  * image carries it, unless a later patch set already did; one with images
  * but no equal one makes them reworked; one with none is gone when it is
- * the latest patch set's. Only the latest patch set's clusters count as
- * gone: an older one's absence was already shown at its own move.
+ * the latest patch set's (absorbed instead when the caller marked it so:
+ * the interdiff shows nothing of it). Only the latest patch set's
+ * clusters count as gone or absorbed: an older one's absence was already
+ * shown at its own move.
  */
 export function carryTraced(
 	traced: readonly TracedCluster[],
@@ -285,6 +302,7 @@ export function carryTraced(
 	const carried = new Map<string, CarriedState>();
 	const reworked = new Set<string>();
 	const gone: CarryResult["gone"] = [];
+	const absorbed: CarryResult["absorbed"] = [];
 	const blocked = new Set<string>();
 	sources.forEach((ps, i) => {
 		const states = new Map<string, SourceState>();
@@ -298,8 +316,13 @@ export function carryTraced(
 			blocked.add(t.fromKey);
 			if (state.state === "unreviewed") continue;
 			if (t.images.length === 0) {
-				if (i === 0)
-					gone.push({ fromKey: t.fromKey, from: t.from, path: t.path });
+				if (i === 0) {
+					(t.absorbed ? absorbed : gone).push({
+						fromKey: t.fromKey,
+						from: t.from,
+						path: t.path,
+					});
+				}
 				continue;
 			}
 			const [image] = t.images;
@@ -318,7 +341,7 @@ export function carryTraced(
 			}
 		}
 	});
-	return { carried: [...carried.values()], reworked, gone };
+	return { carried: [...carried.values()], reworked, gone, absorbed };
 }
 
 /** `carryTraced(traceClusters(input), input.sources)`. */

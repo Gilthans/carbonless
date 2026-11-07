@@ -473,22 +473,42 @@ export class Session {
 	}
 
 	/**
-	 * The engine's answer for patch set `from` to the snapshot of `toHead`:
-	 * `pending` at once while it is computed in the background (started on
-	 * the first ask, once per pair; nothing of git is waited for here), then
-	 * the answer under the marks as they stand. A RangeError for a patch
-	 * set that is none of the reviewer's; a failed computation is thrown
-	 * once and tried again on the next ask.
+	 * The engine's answer for patch set `from` to a target: another patch
+	 * set (its pinned snapshot) or a head (its snapshot against the base
+	 * branch's tip, as `GET /head` last found it). `pending` at once while
+	 * it is computed in the background (started on the first ask, once per
+	 * target snapshot; nothing of git is waited for here), then the answer
+	 * under the marks as they stand. Jobs are keyed by the target's
+	 * snapshot id, so a head whose merge base moved (a retarget, a base
+	 * move) gets a fresh answer. A RangeError for a patch set that is none
+	 * of the reviewer's; a failed computation is thrown once and tried
+	 * again on the next ask.
 	 */
 	async rereview(
 		from: number,
-		toHead: string,
+		to: { patchset: number } | { head: string },
 	): Promise<RereviewAnswer | { pending: true }> {
 		if (this.#closed) throw new SessionClosedError("The session is closed");
-		checkOid(toHead);
 		const since = this.#patchsets.find((p) => p.number === from);
 		if (!since) throw new RangeError(`No patch set ${from}`);
-		const key = `${from}:${toHead}`;
+		let key: string;
+		let snapshot: () => Promise<Snapshot>;
+		if ("patchset" in to) {
+			const record = this.#patchsets.find((p) => p.number === to.patchset);
+			if (!record) throw new RangeError(`No patch set ${to.patchset}`);
+			key = `${since.revision}:${record.revision}`;
+			snapshot = () => this.#snapshotOf(record);
+		} else {
+			const head = checkOid(to.head);
+			// The snapshot id when the head's merge base is known (the PR's
+			// head as last checked); the head alone until then, and the job
+			// is filed under its snapshot id once built.
+			key =
+				this.#head?.oid === head
+					? `${since.revision}:${snapshotId(this.#head.mergeBase, head)}`
+					: `${since.revision}:head:${head}`;
+			snapshot = () => this.#headSnapshot(head);
+		}
 		let job = this.#jobs.get(key);
 		if (!job) {
 			const started: RereviewJob = {
@@ -498,7 +518,8 @@ export class Session {
 			};
 			started.settled = (async () => {
 				try {
-					const target = await this.#headSnapshot(toHead);
+					const target = await snapshot();
+					this.#jobs.set(`${since.revision}:${target.revision}`, started);
 					const traced = await this.#traced(since, target);
 					started.done = { target, traced };
 				} catch (error) {
@@ -509,7 +530,7 @@ export class Session {
 			job = started;
 		}
 		if (job.error) {
-			this.#jobs.delete(key);
+			for (const [k, j] of this.#jobs) if (j === job) this.#jobs.delete(k);
 			throw job.error;
 		}
 		if (!job.done) return { pending: true };
@@ -532,7 +553,7 @@ export class Session {
 		const view = buildReviewView(snapshot, progress);
 		const since = progress.patchset;
 		if (view.patchset !== null || !since) return view;
-		const job = this.#jobs.get(`${since.number}:${oid}`);
+		const job = this.#jobs.get(`${since.revision}:${snapshot.revision}`);
 		if (!job?.done || job.done.target.revision !== snapshot.revision) {
 			return view;
 		}
@@ -600,7 +621,14 @@ export class Session {
 
 	/** The engine's state-free result for `since` → `target`: cached, or computed once. */
 	#traced(since: PatchsetRecord, target: Snapshot): Promise<Traced> {
-		const key = rereviewKey(since.revision, target.revision);
+		const key = rereviewKey(
+			since.revision,
+			target.revision,
+			this.#patchsets
+				.filter((p) => p.number < since.number)
+				.sort((a, b) => b.number - a.number)
+				.map((p) => p.revision),
+		);
 		let pending = this.#tracing.get(key);
 		if (!pending) {
 			pending = (async () => {
@@ -765,9 +793,21 @@ export class Session {
 	 */
 	#snapshotForWrite(commit: string): Snapshot {
 		if (this.#snapshot.head === commit) return this.#snapshot;
-		let found: Snapshot | undefined;
-		for (const s of this.#snapshots.values()) if (s.head === commit) found = s;
-		return found ?? this.#snapshot;
+		const kept = [...this.#snapshots.values()].filter((s) => s.head === commit);
+		// By snapshot id, never by head alone: a patch set's snapshot first
+		// (read-only once superseded), else the head as viewed against the
+		// base branch's tip.
+		const patchsets = new Set(this.#patchsets.map((p) => p.revision));
+		const record = kept.find((s) => patchsets.has(s.revision));
+		if (record) return record;
+		const viewed =
+			this.#head?.oid === commit
+				? kept.find(
+						(s) =>
+							s.revision === snapshotId(this.#head?.mergeBase ?? "", commit),
+					)
+				: undefined;
+		return viewed ?? kept.at(-1) ?? this.#snapshot;
 	}
 
 	/**

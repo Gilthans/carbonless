@@ -166,6 +166,18 @@ describe("buildInterdiff", () => {
 		]);
 	});
 
+	it("M1: a conflicted path that looks like a glob doesn't make its look-alike neighbour conflicted", async () => {
+		const d = await interdiff(ep(h.gw0, h.gw1), ep(h.gwBase, h.gwResolved));
+		expect(summary(d)).toEqual([
+			[
+				"we[i]rd.txt",
+				"modified",
+				true,
+				[["lines", 2, 1, 2, 1, ["w2 base"], ["W2 resolved"]]],
+			],
+		]);
+	});
+
 	it("refuses anything but object ids before running git", async () => {
 		const shape = await detectShape(h.path, ps(), ep(h.b0, h.h3));
 		await expect(

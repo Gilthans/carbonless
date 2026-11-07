@@ -124,6 +124,7 @@ describe("carryClusters", () => {
 			],
 			reworked: new Set(),
 			gone: [],
+			absorbed: [],
 		});
 	});
 
@@ -163,7 +164,12 @@ describe("carryClusters", () => {
 				],
 			),
 		);
-		expect(r).toEqual({ carried: [], reworked: new Set(["k2x"]), gone: [] });
+		expect(r).toEqual({
+			carried: [],
+			reworked: new Set(["k2x"]),
+			gone: [],
+			absorbed: [],
+		});
 	});
 
 	it("P4: a cluster split in two by the author is neither carried nor gone: both halves reworked", () => {
@@ -196,6 +202,7 @@ describe("carryClusters", () => {
 			carried: [],
 			reworked: new Set(["t10", "t12"]),
 			gone: [],
+			absorbed: [],
 		});
 		// Grown by a line in the middle: one target cluster, reworked.
 		const grown = carryClusters(
@@ -227,6 +234,7 @@ describe("carryClusters", () => {
 			carried: [],
 			reworked: new Set(["t10"]),
 			gone: [],
+			absorbed: [],
 		});
 	});
 
@@ -310,7 +318,12 @@ describe("carryClusters", () => {
 				],
 			),
 		);
-		expect(r).toEqual({ carried: [], reworked: new Set(["g2"]), gone: [] });
+		expect(r).toEqual({
+			carried: [],
+			reworked: new Set(["g2"]),
+			gone: [],
+			absorbed: [],
+		});
 		const same = carryClusters(
 			input(
 				[ps(1, [source("lock", [gen], { g: "crossed-off" })])],
@@ -359,6 +372,7 @@ describe("carryClusters", () => {
 			],
 			reworked: new Set(),
 			gone: [],
+			absorbed: [],
 		});
 	});
 
@@ -414,6 +428,7 @@ describe("carryClusters", () => {
 			],
 			reworked: new Set(),
 			gone: [{ fromKey: "k30", from: 1, path: "a.txt" }],
+			absorbed: [],
 		});
 	});
 
@@ -467,7 +482,12 @@ describe("carryClusters", () => {
 				],
 			),
 		);
-		expect(r).toEqual({ carried: [], reworked: new Set(["k30b"]), gone: [] });
+		expect(r).toEqual({
+			carried: [],
+			reworked: new Set(["k30b"]),
+			gone: [],
+			absorbed: [],
+		});
 	});
 
 	it("the untick guard: a human unreviewed in PS2 blocks PS1's mark; a carried state in PS2 doesn't", () => {
@@ -481,7 +501,12 @@ describe("carryClusters", () => {
 				[target("a.txt", [two], { earlier })],
 			),
 		);
-		expect(unticked).toEqual({ carried: [], reworked: new Set(), gone: [] });
+		expect(unticked).toEqual({
+			carried: [],
+			reworked: new Set(),
+			gone: [],
+			absorbed: [],
+		});
 		const carriedBefore = carryClusters(
 			input(
 				[
@@ -515,7 +540,12 @@ describe("carryClusters", () => {
 				],
 			),
 		);
-		expect(r).toEqual({ carried: [], reworked: new Set(), gone: [] });
+		expect(r).toEqual({
+			carried: [],
+			reworked: new Set(),
+			gone: [],
+			absorbed: [],
+		});
 	});
 
 	it("file-level clusters carry on an equal key, else are reworked", () => {
@@ -539,6 +569,7 @@ describe("carryClusters", () => {
 			carried: [],
 			reworked: new Set(["fb2"]),
 			gone: [],
+			absorbed: [],
 		});
 	});
 
@@ -564,6 +595,26 @@ describe("carryClusters", () => {
 			),
 		);
 		expect(r.carried).toHaveLength(1);
+	});
+
+	it("a traced cluster the caller marked absorbed is absorbed, not gone; never from an earlier patch set", () => {
+		const traced = traceClusters({
+			sources: [ps(1, [source("a.txt", [two, thirty], {})])],
+			target: [target("a.txt", [two])],
+		});
+		const k30 = traced.find((t) => t.fromKey === "k30");
+		if (!k30) throw new Error("no k30");
+		k30.absorbed = true;
+		const marks = ps(1, [source("a.txt", [two, thirty], { k30: "reviewed" })]);
+		expect(carryTraced(traced, [marks])).toEqual({
+			carried: [],
+			reworked: new Set(),
+			gone: [],
+			absorbed: [{ fromKey: "k30", from: 1, path: "a.txt" }],
+		});
+		const older = carryTraced(traced, [ps(2, []), marks]);
+		expect(older.absorbed).toEqual([]);
+		expect(older.gone).toEqual([]);
 	});
 
 	it("traceClusters is state-free and carryTraced applies the marks of the moment", () => {
@@ -598,6 +649,7 @@ describe("carryClusters", () => {
 			],
 			reworked: new Set(),
 			gone: [{ fromKey: "k30", from: 1, path: "a.txt" }],
+			absorbed: [],
 		});
 		// JSON-safe: what the server caches.
 		expect(JSON.parse(JSON.stringify(traced))).toEqual(traced);
