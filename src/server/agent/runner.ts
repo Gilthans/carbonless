@@ -80,6 +80,8 @@ const titleOf = (title: unknown): string =>
 /** One spawned process, as the runner tracks it. */
 interface Proc {
 	agent: AcpAgent | null;
+	/** Stops its start while under way. */
+	abort: AbortController;
 	/** The config it was spawned with (JSON). */
 	key: string;
 	/** Closed on purpose (config change, close): its exit isn't a crash. */
@@ -281,6 +283,9 @@ export class AgentRunner {
 		const config = this.#config;
 		if (this.#proc && this.#proc.key !== this.#key) await this.#stopProc();
 		if (!config) {
+			// Off: another server may take the review's agent.
+			await this.#release?.().catch(() => {});
+			this.#release = null;
 			this.#set("off");
 			return null;
 		}
@@ -302,6 +307,8 @@ export class AgentRunner {
 			}
 			this.#release = claim.release;
 		}
+		// The config moved while the claim was taken: the next round has it.
+		if (this.#config !== config) return null;
 		this.#set("starting");
 		try {
 			this.#checkout ??= await createCheckout(
@@ -316,7 +323,12 @@ export class AgentRunner {
 			return null;
 		}
 		const key = this.#key as string;
-		const proc: Proc = { agent: null, key, stopping: false };
+		const proc: Proc = {
+			agent: null,
+			abort: new AbortController(),
+			key,
+			stopping: false,
+		};
 		this.#proc = proc;
 		let agent: AcpAgent;
 		try {
@@ -329,6 +341,7 @@ export class AgentRunner {
 				onUpdate: (u) => this.#onUpdate(u),
 				onPermission: (req) => this.#onPermission(req),
 				onExit: (code, signal) => this.#onExit(proc, code, signal),
+				signal: proc.abort.signal,
 			});
 		} catch (error) {
 			if (this.#proc === proc) this.#proc = null;
@@ -336,7 +349,12 @@ export class AgentRunner {
 			return null;
 		}
 		proc.agent = agent;
-		if (proc.stopping || this.#closed || this.#proc !== proc) {
+		if (
+			proc.stopping ||
+			this.#closed ||
+			this.#proc !== proc ||
+			proc.key !== this.#key
+		) {
 			await agent.close();
 			return null;
 		}
@@ -351,6 +369,7 @@ export class AgentRunner {
 		if (!proc) return;
 		this.#proc = null;
 		proc.stopping = true;
+		proc.abort.abort();
 		await proc.agent?.close();
 	}
 
@@ -364,6 +383,15 @@ export class AgentRunner {
 		this.#set("error", {
 			error: `exited ${how}${tail ? `: ${tail.slice(-500)}` : ""}`,
 		});
+	}
+
+	/** Whether `agent` is the one that should run now (a status may have just turned it off). */
+	#current(agent: AcpAgent): boolean {
+		return (
+			!this.#closed &&
+			this.#proc?.agent === agent &&
+			this.#proc.key === this.#key
+		);
 	}
 
 	#dir(): string {
@@ -380,7 +408,7 @@ export class AgentRunner {
 				(t) => !t.resolved && (t.waiting || this.#owed.has(t.id)),
 			);
 			if (!next) {
-				this.#set("ready");
+				if (this.#current(agent)) this.#set("ready");
 				return;
 			}
 			if (!(await this.#turn(agent, next))) return;
@@ -437,7 +465,7 @@ export class AgentRunner {
 			calls: new Map(),
 		};
 		this.#answering = answering;
-		this.#set("busy");
+		if (this.#current(agent)) this.#set("busy");
 		const deadline = setTimeout(
 			() => void agent.cancel(),
 			this.#deps.turnMs ?? AGENT_TURN_MS,
@@ -474,7 +502,7 @@ export class AgentRunner {
 		// Gone (a crash): onExit says so; the next question respawns.
 		if (this.#proc?.agent !== agent || !agent.alive) return false;
 		if (reply.stop !== "error") this.#crashes = 0;
-		this.#set("ready");
+		if (this.#current(agent)) this.#set("ready");
 		return true;
 	}
 

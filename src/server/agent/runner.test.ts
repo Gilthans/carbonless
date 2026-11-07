@@ -454,4 +454,29 @@ describe("AgentRunner", () => {
 		expect((await threads())[0]?.waiting).toBe(true);
 		expect((await threads())[0]?.messages).toHaveLength(1);
 	});
+
+	it("close doesn't wait for a start that hangs (initialize held)", async () => {
+		scenario({ hold: ["initialize"] });
+		makeRunner().poke();
+		await until((s) => s.state === "starting");
+		await vi.waitFor(() =>
+			expect(acpLog(logPath).some((e) => e.method === "initialize")).toBe(true),
+		);
+		const pid = spawns()[0]?.pid as number;
+		// Held for good: only stopping the start lets close() resolve.
+		await runner.close();
+		expect(() => process.kill(pid, 0)).toThrow();
+		expect((await runner.status()).state).toBe("off");
+	});
+
+	it("an agent set to none releases the claim, so another server may take it", async () => {
+		makeRunner().poke();
+		await until((s) => s.state === "ready");
+		config = { agent: null, problems: [] };
+		await runner.status();
+		await runner.settled();
+		expect(() =>
+			execFileSync("test", ["-e", join(agentsDir(), REVIEW, "claim.json")]),
+		).toThrow();
+	});
 });

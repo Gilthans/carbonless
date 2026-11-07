@@ -74,6 +74,8 @@ export interface AcpSpawn {
 	onUpdate(update: SessionUpdate): void;
 	onPermission(req: RequestPermissionRequest): RequestPermissionResponse;
 	onExit(code: number | null, signal: string | null): void;
+	/** Stops a start under way (the session closing): killed, AgentStartError "exited". */
+	signal?: AbortSignal;
 }
 
 /** Live agents' process groups: killed when crb exits. */
@@ -189,6 +191,13 @@ async function start(
 	});
 	failed.catch(() => {});
 	let timer: NodeJS.Timeout | undefined;
+	const stopped = new Promise<never>((_, reject) => {
+		const stop = () =>
+			reject(new AgentStartError("Stopped while starting", "exited", stderr()));
+		if (opts.signal?.aborted) stop();
+		else opts.signal?.addEventListener("abort", stop, { once: true });
+	});
+	stopped.catch(() => {});
 	const timeout = new Promise<never>((_, reject) => {
 		timer = setTimeout(
 			() =>
@@ -238,10 +247,12 @@ async function start(
 			await then(started);
 			return started;
 		})();
-		return await Promise.race([handshake, failed, timeout]);
+		return await Promise.race([handshake, failed, timeout, stopped]);
 	} catch (error) {
 		conn.close();
 		signalGroup(child, "SIGKILL");
+		// Gone (reaped) before the caller goes on.
+		await Promise.race([exited, wait(KILL_AFTER_MS)]);
 		throw error;
 	} finally {
 		clearTimeout(timer);
