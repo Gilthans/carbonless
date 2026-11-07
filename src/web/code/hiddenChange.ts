@@ -1,5 +1,9 @@
 import type { Mark } from "./Invisibles";
-import { DEFAULT_TAB_WIDTH, type Piece, renderInvisibles } from "./invisibles";
+import {
+	DEFAULT_TAB_WIDTH,
+	type Piece,
+	renderInvisibles,
+} from "./invisibleChars";
 
 export interface HiddenChangeOptions {
 	tabWidth?: number;
