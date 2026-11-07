@@ -189,6 +189,8 @@ test("agent and comment bubbles side by side on one line, each with its own coun
 	agentCrb,
 	isMobile,
 }) => {
+	// A comment and two questions, then a reload: past 30 s on a loaded machine.
+	test.slow();
 	await pr(fixture);
 	const s = await agentCrb();
 	const section = await openFile(page, s.url, CALC);
@@ -199,7 +201,7 @@ test("agent and comment bubbles side by side on one line, each with its own coun
 	await composer.getByTestId("new-thread-post").click();
 	await expect(section.getByTestId("files-thread")).toBeVisible();
 	await ask(page, section, 3, "One question");
-	await ask(page, section, 3, "Another question", 6);
+	await ask(page, section, 3, "Another question", [0, 6]);
 	await page.reload();
 	const again = await openFile(page, s.url, CALC);
 	const line = row(again, 3);
@@ -286,6 +288,8 @@ test("elsewhere: a second server on the same machine leaves the agent to the fir
 	agentCrb,
 	acpLogPath,
 }) => {
+	// Two servers, each opening the review and spawning its agent.
+	test.slow();
 	await pr(fixture);
 	const first = await agentCrb();
 	await page.goto(first.url);
@@ -322,6 +326,8 @@ test("a restart keeps the thread, and the new agent answers it once", async ({
 	acpScenario,
 	acpLogPath,
 }) => {
+	// Two server starts, each opening the review and spawning its agent.
+	test.slow();
 	await pr(fixture);
 	const scenario = {
 		agent: { name: "Fake Agent", version: "9.9.9" },
@@ -463,7 +469,24 @@ test("the hostile PR: nothing of it runs, what the agent did shows, no review re
 	expect(crbRefs()).toEqual(before);
 });
 
-test("--viewer and --as-of: no agent, Ask agent off with why", async ({
+test("--viewer: no agent, Ask agent off with why", async ({
+	page,
+	pr,
+	agentCrb,
+}) => {
+	await pr(fixture);
+	const s = await agentCrb({ args: ["--viewer", "someone-else"] });
+	await openFile(page, s.url, CALC);
+	await selectText(page, CALC, 3, 0, 6);
+	const button = bar(page).getByRole("button", { name: "Ask agent" });
+	await expect(button).toHaveAttribute("aria-disabled", "true");
+	await expect(button).toHaveAccessibleDescription(
+		"Your agent is off when viewing as someone else",
+	);
+	await expect(chip(page)).toHaveCount(0);
+});
+
+test("--as-of: no agent, Ask agent off with why", async ({
 	page,
 	pr,
 	agentCrb,
@@ -476,7 +499,7 @@ test("--viewer and --as-of: no agent, Ask agent off with why", async ({
 			date: "2026-01-02T00:00:00Z",
 		})),
 	});
-	// As of a cutoff, the PR's one commit is from before it.
+	// The PR's one commit is from before the cutoff.
 	p.editScenario((sc) => {
 		const graph = sc.prs[7]?.graphql;
 		if (graph) {
@@ -491,18 +514,8 @@ test("--viewer and --as-of: no agent, Ask agent off with why", async ({
 		}
 		sc.commits = { [p.repo.shas.at(-1) ?? ""]: { contexts: null } };
 	});
-	const s = await agentCrb({ args: ["--viewer", "someone-else"] });
+	const s = await agentCrb({ args: ["--as-of", "2026-01-05T00:00:00Z"] });
 	await openFile(page, s.url, CALC);
-	await selectText(page, CALC, 3, 0, 6);
-	const button = bar(page).getByRole("button", { name: "Ask agent" });
-	await expect(button).toHaveAttribute("aria-disabled", "true");
-	await expect(button).toHaveAccessibleDescription(
-		"Your agent is off when viewing as someone else",
-	);
-	await expect(chip(page)).toHaveCount(0);
-	await s.stop();
-	const asOf = await agentCrb({ args: ["--as-of", "2026-01-05T00:00:00Z"] });
-	await openFile(page, asOf.url, CALC);
 	await selectText(page, CALC, 3, 0, 6);
 	const off = bar(page).getByRole("button", { name: "Ask agent" });
 	await expect(off).toHaveAttribute("aria-disabled", "true");

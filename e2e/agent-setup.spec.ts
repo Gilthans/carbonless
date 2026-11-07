@@ -28,6 +28,9 @@ test("ask with no agent: it waits; set one up from the thread, and the backlog i
 	workdir,
 	isMobile,
 }) => {
+	// Files, Overview and Files again, a Check, a Save and the agent's first
+	// spawn: past 30 s on a loaded machine.
+	test.slow();
 	await pr(fixture);
 	const s = await agentCrb({
 		configured: false,

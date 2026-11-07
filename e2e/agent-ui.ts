@@ -205,15 +205,27 @@ export async function selectText(
 	);
 }
 
-/** Selects line `n`'s first `len` characters and asks the agent `text`. */
+/**
+ * Asks the agent `text` about new line `n`: the line picked by its number
+ * (no wait for the highlighting), or characters `span` of it selected.
+ */
 export async function ask(
 	page: Page,
 	section: Locator,
 	n: number,
 	text: string,
-	len = 12,
+	span?: [number, number],
 ) {
-	await selectText(page, CALC, n, 0, len);
+	if (span) {
+		await selectText(page, CALC, n, span[0], span[1]);
+	} else {
+		const number = row(section, n).getByTestId("new");
+		// A phone picks by a tap, as a reviewer's finger would.
+		if (await page.evaluate(() => navigator.maxTouchPoints > 0)) {
+			await number.tap();
+		} else await number.click();
+		await expect(row(section, n)).toHaveAttribute("data-picked", "true");
+	}
 	await bar(page).getByRole("button", { name: "Ask agent" }).click();
 	const composer = section.getByTestId("agent-composer");
 	const box = composer.getByRole("textbox", { name: "Ask your agent" });
