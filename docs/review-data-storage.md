@@ -336,14 +336,18 @@ tree, slug identities, compare-and-swap). Written by
 - **Resends:** a human's question carries the page's `clientId` in
   `details` (informational: the fold ignores it). The store remembers the
   ones in the ref and the ones it wrote, so Ask pressed twice, or resent
-  after a server restart, writes one thread.
-- **Caps:** a text is cut at 32 KiB of UTF-8 (`MAX_AGENT_TEXT`, on a code
-  point) and flagged `truncated`; an activity list keeps its first 50
-  entries, fewer if its JSON passes 4 KiB. Readers skip a longer text or
-  list. The anchor's code is computed from the clone on read, never stored.
+  after a server restart, writes one thread; a message's `clientId` counts
+  only on its own thread. The dedupe and the timestamp order hold within
+  one store, so the server keeps one store per review and reviewer.
+- **Caps:** the writer cuts a text at 32 KiB of UTF-8 (`MAX_AGENT_TEXT`, on
+  a code point) and flags it `truncated`, and keeps an activity list's
+  first 50 entries, fewer if its JSON passes 4 KiB. Readers skip an event
+  whose text is over 32 KiB or whose activity has more than 50 entries; the
+  4 KiB byte cap is the writer's alone. The anchor's code is computed from the clone on read, never stored.
 - **Privacy:** the threads are the reviewer's own (not secret, only
   theirs). Never pushed; like the inbox, when sync arrives the ref stays
-  local unless the reviewer turns it on (GitDB 20).
+  local unless the reviewer turns it on (GitDB 20): a future push of
+  `reviewers/<reviewer>/*` must exclude `agent/`.
 - **Size**, measured 2026-11-07 (`pnpm tsx scripts/measure-agent-ref.ts`, a
   4-core machine under load ~9; CPU is carbonless's process plus its git
   children):
