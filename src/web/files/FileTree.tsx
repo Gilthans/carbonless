@@ -49,7 +49,7 @@ function FindCount({ count }: { count: number | undefined }) {
 			role="img"
 			data-testid="tree-find"
 			aria-label={`${count} ${count === 1 ? "match" : "matches"}`}
-			className="ml-1 shrink-0 rounded px-1 font-sans text-xs text-ink find-mark"
+			className="shrink-0 rounded px-1 font-sans text-xs text-ink find-mark"
 		>
 			{count}
 		</span>
@@ -187,8 +187,8 @@ function FileItem(props: {
 										{reason}
 									</span>
 								))}
-							<FindCount count={props.find?.counts.get(file.index)} />
 						</span>
+						<FindCount count={props.find?.counts.get(file.index)} />
 						<span className="flex min-w-0 flex-1 items-center">
 							<MarkDot mark={mark} />
 						</span>
@@ -319,8 +319,8 @@ function FolderItem(props: Level & { folder: Folder }) {
 							className="min-w-0 truncate font-mono text-[0.8125rem]"
 						>
 							{folder.name}
-							<FindCount count={found} />
 						</span>
+						<FindCount count={found} />
 						<span className="flex min-w-0 flex-1 items-center">
 							<MarkDot mark={mark} />
 						</span>

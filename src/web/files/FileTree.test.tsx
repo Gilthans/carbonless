@@ -129,6 +129,34 @@ describe("FileTree", () => {
 		);
 	});
 
+	it("keeps the find chip outside the truncating name, a direct child of the row", () => {
+		const found = [file(0, "src/a.ts", ["unreviewed"])];
+		render(
+			<FileTree
+				files={found}
+				unit="clusters"
+				current={null}
+				onSelect={() => {}}
+				find={{
+					counts: new Map([[0, 3]]),
+					nameMarks: () => [],
+					oldNameMarks: () => [],
+				}}
+			/>,
+		);
+		for (const [row, name] of [
+			[screen.getByRole("button", { name: /a\.ts/ }), "a.ts"],
+			[document.querySelector('[data-folder="src"]') as HTMLElement, "src"],
+		] as const) {
+			const chip = row.querySelector('[data-testid="tree-find"]');
+			const label = row.querySelector('[data-testid="tree-name"]');
+			expect(chip).not.toBeNull();
+			expect(chip?.parentElement).toBe(row);
+			expect(label?.contains(chip)).toBe(false);
+			expect(label?.textContent).toBe(name);
+		}
+	});
+
 	it("paints the find's marks on a file's name and a moved entry's old name", () => {
 		const moved = {
 			...file(0, "src/save.ts", ["unreviewed"]),
