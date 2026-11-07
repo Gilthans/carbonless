@@ -263,6 +263,62 @@ describe("AgentSetup", () => {
 		expect(within(dialog).getByRole("button", { name: "Remove" })).toBeTruthy();
 	});
 
+	it("Check and Save keep the env config.json has for that command", async () => {
+		stored = {
+			agent: {
+				command: "claude-agent-acp",
+				args: [],
+				env: { CLAUDE_CODE_EXECUTABLE: "/opt/claude/bin/claude" },
+				leash: "open",
+			},
+			problems: [],
+		};
+		const { user } = show();
+		const dialog = await openIt(user);
+		expect(
+			within(dialog).getByRole("radio", { name: "Claude Code" }),
+		).toBeChecked();
+		await user.click(within(dialog).getByRole("button", { name: "Check" }));
+		await within(dialog).findByTestId("agent-check-ok");
+		await user.click(within(dialog).getByRole("button", { name: "Save" }));
+		await waitFor(() =>
+			expect(screen.getByTestId("state")).toHaveTextContent("closed"),
+		);
+		const kept = {
+			command: "claude-agent-acp",
+			args: [],
+			env: { CLAUDE_CODE_EXECUTABLE: "/opt/claude/bin/claude" },
+			leash: "open",
+		};
+		expect(calls()).toEqual([
+			{ url: "/api/config/agent/check", method: "POST", body: kept },
+			{ url: "/api/config/agent", method: "PUT", body: kept },
+		]);
+	});
+
+	it("another command doesn't take that env", async () => {
+		stored = {
+			agent: {
+				command: "claude-agent-acp",
+				args: [],
+				env: { CLAUDE_CODE_EXECUTABLE: "/opt/claude/bin/claude" },
+				leash: "open",
+			},
+			problems: [],
+		};
+		const { user } = show();
+		const dialog = await openIt(user);
+		await user.click(within(dialog).getByRole("radio", { name: "Gemini CLI" }));
+		await user.click(within(dialog).getByRole("button", { name: "Check" }));
+		await within(dialog).findByTestId("agent-check-ok");
+		expect(calls()[0]?.body).toEqual({
+			command: "gemini",
+			args: ["--acp"],
+			env: {},
+			leash: "open",
+		});
+	});
+
 	it("Escape closes it and focus goes back", async () => {
 		const { user } = show();
 		await openIt(user);

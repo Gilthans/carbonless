@@ -35,15 +35,27 @@ type HarnessId = AgentHarness["id"];
 const harness = (id: HarnessId | null) =>
 	AGENT_HARNESSES.find((h) => h.id === id);
 
-/** The config the fields say. */
-const configOf = (command: string, args: string): AgentConfig => ({
-	command: command.trim(),
-	args: args.split(/\s+/).filter(Boolean),
-	env: {},
-	leash: "open",
-});
+/**
+ * The config the fields say. The env and leash config.json has for this
+ * command go along unchanged (a hand-written env must survive a Save);
+ * another command starts with none. Nothing is added to env by itself.
+ */
+const configOf = (
+	command: string,
+	args: string,
+	stored: AgentConfig | null | undefined,
+): AgentConfig => {
+	const same = stored && stored.command === command.trim() ? stored : null;
+	return {
+		command: command.trim(),
+		args: args.split(/\s+/).filter(Boolean),
+		env: same?.env ?? {},
+		leash: same?.leash ?? "open",
+	};
+};
 
-const keyOf = (c: AgentConfig) => JSON.stringify([c.command, c.args]);
+const keyOf = (c: AgentConfig) =>
+	JSON.stringify([c.command, c.args, c.env, c.leash]);
 
 const STEP = "text-xs font-semibold tracking-[0.1em] text-faint uppercase";
 const BUTTON =
@@ -150,7 +162,7 @@ export function AgentSetup(props: { open: boolean; onClose(): void }) {
 		else d.setAttribute("open", "");
 		closeButton.current?.focus();
 	}, [open]);
-	const config = configOf(command, args);
+	const config = configOf(command, args, read?.agent);
 	const current = checked?.key === keyOf(config) ? checked.result : null;
 	const check = useMutation({
 		mutationFn: (c: AgentConfig) =>
