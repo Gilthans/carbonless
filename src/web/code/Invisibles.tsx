@@ -3,7 +3,11 @@ import { type CSSProperties, type ReactNode, useEffect, useMemo } from "react";
 import { highlightLine } from "../files/highlight";
 import { Tooltip } from "../Tooltip";
 import { showInvisibles } from "../viewSettings";
-import { DEFAULT_TAB_WIDTH, type Piece, renderInvisibles } from "./invisibleChars";
+import {
+	DEFAULT_TAB_WIDTH,
+	type Piece,
+	renderInvisibles,
+} from "./invisibleChars";
 
 export const INVISIBLES_STORAGE_KEY = showInvisibles.key;
 
