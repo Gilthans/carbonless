@@ -1,5 +1,12 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
+import {
+	link,
+	mkdir,
+	readFile,
+	rename,
+	unlink,
+	writeFile,
+} from "node:fs/promises";
 import { join } from "node:path";
 
 /** Who holds a review's agent on this machine: a server's pid and port. */
@@ -28,23 +35,26 @@ interface ClaimFile extends Holder {
 	token: string;
 }
 
-/** The claim in `dir`, or null when the file isn't a claim. */
-export async function readClaim(dir: string): Promise<ClaimFile | null> {
+/** A claim file's text as a claim, or null when it isn't one. */
+function parseClaim(text: string): ClaimFile | null {
 	try {
-		const c = JSON.parse(await readFile(join(dir, "claim.json"), "utf8"));
-		if (
-			c &&
-			Number.isInteger(c.pid) &&
-			Number.isInteger(c.port) &&
-			typeof c.token === "string"
-		)
-			return c as ClaimFile;
-		if (c && Number.isInteger(c.pid) && Number.isInteger(c.port))
-			return { pid: c.pid, port: c.port, token: "" };
-		return null;
+		const c = JSON.parse(text);
+		if (!c || !Number.isInteger(c.pid) || !Number.isInteger(c.port))
+			return null;
+		return {
+			pid: c.pid,
+			port: c.port,
+			token: typeof c.token === "string" ? c.token : "",
+		};
 	} catch {
 		return null;
 	}
+}
+
+/** The claim in `dir`, or null when the file isn't a claim. */
+export async function readClaim(dir: string): Promise<ClaimFile | null> {
+	const text = await readText(join(dir, "claim.json"));
+	return text === null ? null : parseClaim(text);
 }
 
 /**
@@ -73,17 +83,47 @@ export async function takeClaim(
 		} catch (error) {
 			if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
 		}
-		const held = await readClaim(dir);
+		const stale = await readText(path);
+		if (stale === null) continue;
+		const held = parseClaim(stale);
 		if (held && pidAlive(held.pid)) {
 			return { ok: false, holder: { pid: held.pid, port: held.port } };
 		}
-		if (attempt >= 1) {
-			// Someone else freed and took it between our tries: theirs stands.
+		if (attempt >= 3) {
 			return {
 				ok: false,
 				holder: held ? { pid: held.pid, port: held.port } : { pid: 0, port: 0 },
 			};
 		}
-		await unlink(path).catch(() => {});
+		// Take the stale file away atomically: one taker's rename wins. A
+		// file that turns out not to be the stale one read (someone's fresh
+		// claim, moved in the meantime) goes back, and stands.
+		const aside = `${path}.${token}.stale`;
+		try {
+			await rename(path, aside);
+		} catch {
+			continue;
+		}
+		const moved = await readText(aside);
+		if (moved !== stale) {
+			await link(aside, path).catch(() => {});
+			await unlink(aside).catch(() => {});
+			const theirs = moved === null ? null : parseClaim(moved);
+			return {
+				ok: false,
+				holder: theirs
+					? { pid: theirs.pid, port: theirs.port }
+					: { pid: 0, port: 0 },
+			};
+		}
+		await unlink(aside).catch(() => {});
+	}
+}
+
+async function readText(path: string): Promise<string | null> {
+	try {
+		return await readFile(path, "utf8");
+	} catch {
+		return null;
 	}
 }

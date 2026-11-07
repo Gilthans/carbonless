@@ -46,6 +46,21 @@ describe("takeClaim", () => {
 		expect(JSON.parse(readFileSync(file(), "utf8")).port).toBe(4801);
 	});
 
+	it("racing takers on a dead claim: exactly one wins, and the file names it", async () => {
+		for (let round = 0; round < 20; round++) {
+			writeFileSync(file(), JSON.stringify({ pid: deadPid(), port: 4799 }));
+			const takes = await Promise.all(
+				Array.from({ length: 8 }, (_, i) =>
+					takeClaim(dir, { pid: process.pid, port: 4800 + i }),
+				),
+			);
+			const won = takes.flatMap((t, i) => (t.ok ? [4800 + i] : []));
+			expect(won, `round ${round}`).toHaveLength(1);
+			expect(JSON.parse(readFileSync(file(), "utf8")).port).toBe(won[0]);
+			rmSync(file());
+		}
+	});
+
 	it("a claim that isn't JSON is replaced", async () => {
 		writeFileSync(file(), "{half");
 		expect((await takeClaim(dir, { pid: process.pid, port: 4801 })).ok).toBe(
