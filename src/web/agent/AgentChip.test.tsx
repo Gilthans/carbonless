@@ -2,11 +2,16 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { AgentStatus } from "../../shared/agent";
+import { AGENT_POLL_MS, type AgentStatus } from "../../shared/agent";
 import type { PrOverview } from "../../shared/types";
-import { overviewQuery } from "../api";
+import { ApiError, overviewQuery } from "../api";
 import { AgentChip, agentDot, agentTip } from "./AgentChip";
-import { agentStatusQuery, agentThreadsQuery } from "./api";
+import {
+	AGENT_BUSY_POLL_MS,
+	agentPollMs,
+	agentStatusQuery,
+	agentThreadsQuery,
+} from "./api";
 
 const status = (more: Partial<AgentStatus> = {}): AgentStatus => ({
 	state: "ready",
@@ -134,5 +139,24 @@ describe("the agent chip", () => {
 			queryKey: agentThreadsQuery.queryKey,
 			exact: true,
 		});
+	});
+});
+
+describe("the status poll", () => {
+	it("is every 5 s, every second while starting or answering, never hidden or without an agent", () => {
+		const s = (state: AgentStatus["state"]) => status({ state });
+		expect(agentPollMs(s("ready"), null, true)).toBe(AGENT_POLL_MS);
+		expect(agentPollMs(s("off"), null, true)).toBe(AGENT_POLL_MS);
+		expect(agentPollMs(undefined, null, true)).toBe(AGENT_POLL_MS);
+		expect(agentPollMs(s("busy"), null, true)).toBe(AGENT_BUSY_POLL_MS);
+		expect(agentPollMs(s("starting"), null, true)).toBe(AGENT_BUSY_POLL_MS);
+		expect(agentPollMs(s("busy"), null, false)).toBe(false);
+		expect(agentPollMs(undefined, new ApiError(404, "no agent"), true)).toBe(
+			false,
+		);
+		// Another failure (the server restarting) keeps polling.
+		expect(agentPollMs(undefined, new ApiError(0, "gone"), true)).toBe(
+			AGENT_POLL_MS,
+		);
 	});
 });

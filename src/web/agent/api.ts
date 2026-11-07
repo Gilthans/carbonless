@@ -37,25 +37,43 @@ export function useAgentOn(): boolean {
 
 export const fetchAgentStatus = () => review<AgentStatus>("agent");
 
+/** While the agent starts or answers: often enough for its text to stream. */
+export const AGENT_BUSY_POLL_MS = 1000;
+
 /**
- * The agent's status, every AGENT_POLL_MS while the page is visible and
- * never in the background. A routine poll shows no spinner anywhere: only a
- * changed answer moves the chip's dot.
+ * How often the status is read: every AGENT_POLL_MS while the page is
+ * visible, every AGENT_BUSY_POLL_MS while the agent starts or answers (its
+ * text streams through the status), never in the background, and not at
+ * all on a review with no agent (404).
+ */
+export function agentPollMs(
+	status: AgentStatus | undefined,
+	error: unknown,
+	visible: boolean,
+): number | false {
+	if (error instanceof ApiError && error.status === 404) return false;
+	if (!visible) return false;
+	return status?.state === "busy" || status?.state === "starting"
+		? AGENT_BUSY_POLL_MS
+		: AGENT_POLL_MS;
+}
+
+/**
+ * The agent's status, polled (agentPollMs). A routine poll shows no spinner
+ * anywhere: only a changed answer moves the chip's dot.
  */
 export const agentStatusQuery = queryOptions({
 	queryKey: ["agent"],
 	queryFn: fetchAgentStatus,
 	refetchInterval: (query) =>
-		// No agent on this review (--viewer, --as-of): nothing to poll.
-		query.state.error instanceof ApiError && query.state.error.status === 404
-			? false
-			: typeof document === "undefined" ||
-					document.visibilityState === "visible"
-				? AGENT_POLL_MS
-				: false,
+		agentPollMs(
+			query.state.data,
+			query.state.error,
+			typeof document === "undefined" || document.visibilityState === "visible",
+		),
 	refetchIntervalInBackground: false,
 	retry: false,
-	staleTime: AGENT_POLL_MS,
+	staleTime: AGENT_BUSY_POLL_MS,
 });
 
 /** The review's agent threads; refetched when the status moves (useAgentSync). */
