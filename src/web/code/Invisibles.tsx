@@ -429,7 +429,7 @@ const NO_MARKS: readonly Mark[] = [];
 
 /**
  * One line of code, highlighted (plain until the highlighting arrives), with
- * its invisible characters shown (Notepad++ style, see invisibles.ts).
+ * its invisible characters shown (Notepad++ style, see invisibleChars.ts).
  * `newline`: a newline follows the line (false before git's "No newline at
  * end of file"). Copying the line copies the original text. `marks`: a
  * thread's exact characters, painted. `words`: a pair's changed tokens,
