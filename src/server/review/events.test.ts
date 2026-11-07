@@ -276,3 +276,159 @@ describe("inbox events", () => {
 		expect(parseEventLines(msg([me]))).toEqual([me]);
 	});
 });
+
+describe("re-review events", () => {
+	const K = "a".repeat(64);
+	const K2 = "b".repeat(64);
+	const K3 = "c".repeat(64);
+	const carried = newEvent(
+		"carried",
+		"dan",
+		{
+			from: 1,
+			to: 2,
+			rule: "exact",
+			states: [
+				{ key: K, fromKey: K2, state: "reviewed" },
+				{ key: `${K3}:2`, fromKey: `${K3}:3`, state: "crossed-off" },
+			],
+		},
+		"auto",
+	);
+	const anchor = {
+		path: "src/a.ts",
+		startSide: "RIGHT" as const,
+		startLine: 3,
+		side: "RIGHT" as const,
+		line: 5,
+	};
+	const placed = newEvent("thread-placed", "dan", {
+		thread: "PRRT_x",
+		patchset: 2,
+		anchor,
+		engine: 1,
+	});
+	const startedFull = newEvent("patchset-started", "dan", {
+		patchset: 2,
+		revision: "r".repeat(64),
+		mergeBase: "a".repeat(40),
+		head: "b".repeat(40),
+		since: 1,
+		shape: "S4b",
+		baseBranch: "main",
+		interdiff: "available",
+	});
+
+	it("round-trip through a commit message", () => {
+		const all = [carried, placed, startedFull];
+		expect(parseEventLines(serializeCommitMessage("crb: x", all))).toEqual(all);
+		for (const e of all) expect(() => validateForWrite(e)).not.toThrow();
+		expect(carried.by).toBe("auto");
+		expect(placed.by).toBe("human");
+	});
+
+	it("thread-placed may be by ai, never by auto", () => {
+		const ai = { ...placed, by: "ai" as const };
+		expect(parseEventLines(msg([ai]))).toEqual([ai]);
+		expect(() => validateForWrite(ai)).not.toThrow();
+		const auto = { ...placed, by: "auto" } as CrbEvent;
+		expect(parseEventLines(msg([auto]))).toEqual([]);
+		expect(() => validateForWrite(auto)).toThrow(/human or ai/);
+	});
+
+	it("carried must be by auto: human and ai ones are dropped and refused", () => {
+		for (const by of ["human", "ai"] as const) {
+			const e = { ...carried, by } as CrbEvent;
+			expect(parseEventLines(msg([e]))).toEqual([]);
+			expect(() => validateForWrite(e)).toThrow(/auto/);
+		}
+	});
+
+	it("cluster-state by auto is dropped and refused", () => {
+		const auto = { ...ev, by: "auto" } as CrbEvent;
+		expect(parseEventLines(msg([auto]))).toEqual([]);
+		expect(() => validateForWrite(auto)).toThrow(/human/);
+		expect(() =>
+			validateForWrite(newEvent("cluster-state", "dan", payload, "auto")),
+		).toThrow(/human/);
+	});
+
+	it("skips malformed carried events", () => {
+		const entry = { key: K, fromKey: K2, state: "reviewed" };
+		const bad: unknown[] = [
+			{ ...carried, states: [{ ...entry, state: "unreviewed" }] },
+			{ ...carried, states: [{ ...entry, state: "done" }] },
+			{ ...carried, states: [{ ...entry, key: "k1" }] },
+			{ ...carried, states: [{ ...entry, fromKey: `${K2}:x` }] },
+			{ ...carried, states: [{ ...entry, key: K.toUpperCase() }] },
+			{ ...carried, states: [entry, { key: K3 }] },
+			{ ...carried, states: entry },
+			{ ...carried, states: undefined },
+			{ ...carried, from: 2, to: 2 },
+			{ ...carried, from: 3, to: 2 },
+			{ ...carried, from: 0, to: 1 },
+			{ ...carried, from: "1" },
+			{ ...carried, to: 1.5 },
+			{ ...carried, rule: "fuzzy" },
+			{ ...carried, rule: undefined },
+		];
+		expect(parseEventLines(msg([...bad, carried]))).toEqual([carried]);
+		expect(() =>
+			validateForWrite({
+				...carried,
+				states: [{ ...entry, state: "unreviewed" }],
+			} as unknown as CrbEvent),
+		).toThrow();
+		// An empty list is valid: nothing carried under that rule.
+		const empty = { ...carried, states: [] };
+		expect(parseEventLines(msg([empty]))).toEqual([empty]);
+	});
+
+	it("skips malformed thread-placed events", () => {
+		const bad: unknown[] = [
+			{ ...placed, thread: "" },
+			{ ...placed, thread: 7 },
+			{ ...placed, patchset: 0 },
+			{ ...placed, patchset: "2" },
+			{ ...placed, engine: 0 },
+			{ ...placed, engine: 1.5 },
+			{ ...placed, engine: "1" },
+			{ ...placed, anchor: null },
+			{ ...placed, anchor: { ...anchor, path: "" } },
+			{ ...placed, anchor: { ...anchor, side: "left" } },
+			{ ...placed, anchor: { ...anchor, startSide: undefined } },
+			{ ...placed, anchor: { ...anchor, line: 0 } },
+			{ ...placed, anchor: { ...anchor, startLine: -1 } },
+			{ ...placed, anchor: { ...anchor, startLine: "3" } },
+		];
+		expect(parseEventLines(msg([...bad, placed]))).toEqual([placed]);
+		expect(() =>
+			validateForWrite({ ...placed, engine: 0 } as unknown as CrbEvent),
+		).toThrow();
+	});
+
+	it("patchset-started parses without the new fields, and drops ill-typed ones", () => {
+		const old = newEvent("patchset-started", "dan", {
+			patchset: 1,
+			revision: "r".repeat(64),
+			mergeBase: "a".repeat(40),
+			head: "b".repeat(40),
+		});
+		expect(parseEventLines(msg([old]))).toEqual([old]);
+		expect(parseEventLines(msg([old]))[0]).not.toHaveProperty("since");
+		const bad: unknown[] = [
+			{ ...startedFull, since: 0 },
+			{ ...startedFull, since: "1" },
+			{ ...startedFull, since: 2 },
+			{ ...startedFull, shape: "S2" },
+			{ ...startedFull, shape: 4 },
+			{ ...startedFull, baseBranch: "" },
+			{ ...startedFull, baseBranch: 1 },
+			{ ...startedFull, interdiff: "maybe" },
+		];
+		expect(parseEventLines(msg([...bad, startedFull]))).toEqual([startedFull]);
+		// A since of n-1 is the usual; any earlier patch set is allowed too.
+		const sinceEarlier = { ...startedFull, patchset: 3, since: 1 };
+		expect(parseEventLines(msg([sinceEarlier]))).toEqual([sinceEarlier]);
+	});
+});
