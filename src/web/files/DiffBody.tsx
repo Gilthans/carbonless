@@ -39,7 +39,12 @@ import {
 } from "../code/Invisibles";
 import { DEFAULT_TAB_WIDTH } from "../code/invisibles";
 import { Spinner } from "../Spinner";
-import { clickPointer, isTap, Tooltip } from "../Tooltip";
+import {
+	clickPointer,
+	isTap,
+	Tooltip,
+	type TooltipTriggerProps,
+} from "../Tooltip";
 import { canMove, spanTexts } from "../threads/draftMove";
 import { type LineTexts, useDrafts } from "../threads/drafts";
 import { NewThread, quoteOf } from "../threads/NewThread";
@@ -59,6 +64,7 @@ import { type CellLine, CODE_CELL, cellLine } from "./codeSpan";
 import { EXPAND_STEP, fileGaps, type Gap, gapState } from "./gaps";
 import { hiddenLines } from "./hiddenLines";
 import { languageFor } from "./highlight";
+import { KindChip } from "./KindChip";
 import type { Landing } from "./landing";
 import {
 	getPicks,
@@ -71,6 +77,7 @@ import {
 } from "./linePicks";
 import { describeSpan } from "./selectionActions";
 import { layoutRows, type SideRow } from "./sideBySide";
+import type { KindEntry } from "./since";
 import { CONTROLS, SLOT, useStickyControls } from "./stickyControls";
 import { BubbleSlot, ThreadBubble } from "./ThreadBubble";
 import { type CardPlace, TailRow, ThreadRow } from "./ThreadRow";
@@ -338,11 +345,23 @@ const SIGN: Record<RowLine["kind"], string> = {
 
 const NO_NEWLINE = "\\ No newline at end of file";
 
-/** The left rail: cluster state, the accent while the cluster has focus or the pointer. */
-function Rail({ state }: { state?: ClusterView["state"] }) {
-	const color = state
-		? `${RAIL[state]} group-hover:bg-accent group-hover:bg-none group-focus-within:bg-accent group-focus-within:bg-none`
-		: "";
+/**
+ * The left rail: cluster state, the accent while the cluster has focus or
+ * the pointer; red for a gone cluster (the compared patch set's, not in
+ * this snapshot).
+ */
+function Rail({
+	state,
+	gone,
+}: {
+	state?: ClusterView["state"];
+	gone?: boolean;
+}) {
+	const color = gone
+		? "bg-bad"
+		: state
+			? `${RAIL[state]} group-hover:bg-accent group-hover:bg-none group-focus-within:bg-accent group-focus-within:bg-none`
+			: "";
 	return <td aria-hidden className={`w-1 min-w-1 p-0 ${color}`} />;
 }
 
@@ -702,6 +721,8 @@ interface RowProps {
 	lang: string | null;
 	tabWidth?: number;
 	state?: ClusterView["state"];
+	/** The run is a gone cluster's lines (since view): red rail, no controls. */
+	gone?: boolean;
 	checkbox?: ReactNode;
 	landed: Landed | null;
 	threads?: RowThreads;
@@ -895,7 +916,7 @@ function LineRow(props: RowProps & { line: RowLine; order?: number }) {
 				data-picked={isPicked || undefined}
 				className={`${rowBg} ${landed ? LANDED_CLASS[landed] : ""} ${mark} ${isPicked ? "line-picked" : ""}`}
 			>
-				<Rail state={state} />
+				<Rail state={state} gone={props.gone} />
 				<ControlsCell>{props.checkbox}</ControlsCell>
 				<NumberCell
 					side="LEFT"
@@ -1186,7 +1207,7 @@ function PairRow(
 				data-picked={isPicked || undefined}
 				className={phase ? LANDED_ROW[phase] : ""}
 			>
-				<Rail state={state} />
+				<Rail state={state} gone={props.gone} />
 				<ControlsCell>{props.checkbox}</ControlsCell>
 				{cells("LEFT", left)}
 				{cells("RIGHT", right)}
@@ -1272,13 +1293,38 @@ function ClusterControls(props: {
 	noteId?: string;
 	onToggle: (cluster: ClusterView) => void;
 	onCrossOff: (cluster: ClusterView) => void;
+	/** An earlier patch set, as reviewed: the marks are locked. */
+	readOnly?: boolean;
 }) {
 	const crossedOff = props.cluster.state === "crossed-off";
+	const readOnly = props.readOnly === true;
 	// On touch each control gets its own 40×40 target, side by side so a
 	// mis-tap can't reach the other one; the negative margins keep the row
 	// height. With a mouse they stay compact.
 	const target =
 		"flex items-center justify-center pointer-coarse:-my-2.5 pointer-coarse:h-10 pointer-coarse:w-10";
+	const box = (trigger: Partial<TooltipTriggerProps> = {}) => (
+		<label
+			{...trigger}
+			data-testid="cluster-box-target"
+			className={`${target} ${readOnly ? "cursor-not-allowed" : "cursor-pointer"}`}
+		>
+			<input
+				type="checkbox"
+				aria-label={crossedOff ? "Undo cross-off" : "Mark cluster reviewed"}
+				aria-describedby={crossedOff ? props.noteId : undefined}
+				ref={(el) => {
+					if (el) el.indeterminate = crossedOff;
+				}}
+				checked={props.cluster.state === "reviewed"}
+				disabled={readOnly}
+				onChange={() => props.onToggle(props.cluster)}
+				className={`h-3.5 w-3.5 cursor-pointer disabled:cursor-not-allowed ${
+					crossedOff ? "accent-crossed" : "accent-ok-fill"
+				}`}
+			/>
+		</label>
+	);
 	return (
 		// The slot keeps its size while the controls float (stickyControls.ts).
 		<span {...{ [SLOT]: "" }} className="block">
@@ -1286,26 +1332,21 @@ function ClusterControls(props: {
 				{...{ [CONTROLS]: "" }}
 				className="z-[5] flex w-fit items-center gap-1 rounded-md pointer-coarse:gap-0 data-[stuck]:bg-raised data-[stuck]:shadow-control data-[stuck]:ring-1 data-[stuck]:ring-line-strong"
 			>
-				<label
-					data-testid="cluster-box-target"
-					className={`${target} cursor-pointer`}
-				>
-					<input
-						type="checkbox"
-						aria-label={crossedOff ? "Undo cross-off" : "Mark cluster reviewed"}
-						aria-describedby={crossedOff ? props.noteId : undefined}
-						ref={(box) => {
-							if (box) box.indeterminate = crossedOff;
-						}}
-						checked={props.cluster.state === "reviewed"}
-						onChange={() => props.onToggle(props.cluster)}
-						className={`h-3.5 w-3.5 cursor-pointer ${
-							crossedOff ? "accent-crossed" : "accent-ok-fill"
-						}`}
-					/>
-				</label>
+				{readOnly ? (
+					<Tooltip content={READ_ONLY_TIP} describe={false} lazy>
+						{(trigger) => box(trigger)}
+					</Tooltip>
+				) : (
+					box()
+				)}
 				<Tooltip
-					content={crossedOff ? "Undo cross-off" : "Cross off cluster"}
+					content={
+						readOnly
+							? READ_ONLY_TIP
+							: crossedOff
+								? "Undo cross-off"
+								: "Cross off cluster"
+					}
 					describe={false}
 				>
 					{(trigger) => (
@@ -1314,7 +1355,7 @@ function ClusterControls(props: {
 							{...trigger}
 							aria-label="Cross off cluster"
 							aria-pressed={crossedOff}
-							disabled={props.cluster.state === "reviewed"}
+							disabled={readOnly || props.cluster.state === "reviewed"}
 							onClick={() => props.onCrossOff(props.cluster)}
 							className={`${target} group/x rounded focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-30`}
 						>
@@ -1333,6 +1374,42 @@ function ClusterControls(props: {
 				</Tooltip>
 			</span>
 		</span>
+	);
+}
+
+/** Why a mark can't change on an earlier patch set. */
+export const READ_ONLY_TIP = "Read-only: an earlier patch set, as reviewed";
+
+/**
+ * A row above a cluster's lines saying what happened to it since the
+ * compared patch set (KindChip): reworked, new, gone, or carried.
+ */
+function KindRow(props: {
+	columns: number;
+	state?: ClusterView["state"];
+	gone?: boolean;
+	entry?: KindEntry;
+	carried?: ClusterView["carried"];
+}) {
+	const kind = props.gone
+		? "gone"
+		: props.entry?.kind === "reworked" || props.entry?.kind === "new"
+			? props.entry.kind
+			: props.carried
+				? "carried"
+				: null;
+	if (!kind) return null;
+	return (
+		<tr data-testid="cluster-kind" data-kind={kind} className="bg-band">
+			<Rail state={props.state} gone={props.gone} />
+			<td colSpan={props.columns - 1} className="px-2 py-0.5">
+				<KindChip
+					kind={kind}
+					from={kind === "carried" ? props.carried?.from : props.entry?.from}
+					rule={props.carried?.rule}
+				/>
+			</td>
+		</tr>
 	);
 }
 
@@ -1426,9 +1503,18 @@ export function DiffBody(props: {
 	headSure?: boolean;
 	/** The file's bubble and its threads' row (FileDiff). */
 	lead?: FileLead;
+	/**
+	 * The since view: the interdiff from patch set `from` (hunksQuery), with
+	 * `kinds` saying what happened to each cluster (a gone key is the
+	 * compared patch set's: red, not markable).
+	 */
+	from?: number;
+	kinds?: Map<string, KindEntry>;
+	/** An earlier patch set, as reviewed: the marks are locked. */
+	readOnly?: boolean;
 }) {
 	const { file, revision } = props;
-	const hunks = useQuery(hunksQuery(revision, file.index));
+	const hunks = useQuery(hunksQuery(revision, file.index, props.from));
 	const ignoreWs = ignoreWhitespace.use();
 	const view: View = sideBySide.use() ? "side-by-side" : "unified";
 	const wide = useMedia(NOT_PHONE);
@@ -1652,6 +1738,7 @@ export function DiffBody(props: {
 			noteId={noteId(cluster)}
 			onToggle={props.onToggle}
 			onCrossOff={props.onCrossOff}
+			readOnly={props.readOnly}
 		/>
 	);
 
@@ -1912,6 +1999,7 @@ export function DiffBody(props: {
 			<HunkRows
 				hunk={hunk}
 				clusters={clusters}
+				kinds={props.kinds}
 				lang={lang}
 				tabWidth={file.tabWidth}
 				checkbox={checkbox}
@@ -2008,6 +2096,20 @@ export function DiffBody(props: {
 					{tailRows}
 				</table>
 			</div>
+			{props.from !== undefined &&
+				hunks.data &&
+				hunks.data.hunks.length === 0 &&
+				fileClusters.length === 0 && (
+					// The since view of a file the author left alone: say so (never
+					// an empty table that reads as "nothing changed" by mistake).
+					<p
+						data-testid="since-empty"
+						className="flex min-h-10 items-center gap-2 px-3 text-xs text-muted"
+					>
+						Nothing to read since PS{props.from} ·{" "}
+						{file.clusters.filter((c) => c.carried).length} carried
+					</p>
+				)}
 			{hunks.isPending && (
 				// A screen tall while loading, so a file picked in the tree can
 				// scroll its header to the top before its lines arrive.
@@ -2334,6 +2436,8 @@ function LandingHint({ hint }: { hint: Hint }) {
 function HunkRows(props: {
 	hunk: DisplayHunk;
 	clusters: Map<string, ClusterView>;
+	/** The since view: what happened to each cluster (DiffBody `kinds`). */
+	kinds?: Map<string, KindEntry>;
 	lang: string | null;
 	tabWidth?: number;
 	checkbox: (cluster: ClusterView) => ReactNode;
@@ -2407,15 +2511,33 @@ function HunkRows(props: {
 				const runKey = `${run.key ?? ""}:${first?.oldNo}:${first?.newNo}`;
 				const cluster =
 					run.key === undefined ? undefined : props.clusters.get(run.key);
+				const entry =
+					run.key === undefined ? undefined : props.kinds?.get(run.key);
+				// A gone cluster (the compared patch set's) has no cluster of
+				// this snapshot: red, no controls, never counted.
+				const gone = entry?.kind === "gone";
 				// A cluster the review doesn't list still shows as unreviewed.
-				const state =
-					run.key === undefined ? undefined : (cluster?.state ?? "unreviewed");
+				const state = gone
+					? undefined
+					: run.key === undefined
+						? undefined
+						: (cluster?.state ?? "unreviewed");
+				const kindRow = (
+					<KindRow
+						columns={columns}
+						state={state}
+						gone={gone}
+						entry={entry}
+						carried={cluster?.carried}
+					/>
+				);
 				const { rows } = run;
 				const rowProps = {
 					shape,
 					lang: props.lang,
 					tabWidth: props.tabWidth,
 					state,
+					gone,
 					landed: props.landed,
 					threads,
 					hunk: props.hunkId,
@@ -2454,6 +2576,14 @@ function HunkRows(props: {
 									/>
 								);
 							});
+				if (gone) {
+					return (
+						<tbody key={runKey} className="group" data-gone="">
+							{kindRow}
+							{runRows()}
+						</tbody>
+					);
+				}
 				if (state && ignoreWhitespace && whitespaceOnly(rows)) {
 					// A bubble, a pick or a landed-on line must never be hidden by
 					// the setting: the cluster stays open while it has one. (Keys
@@ -2482,10 +2612,27 @@ function HunkRows(props: {
 							controls={cluster ? props.checkbox(cluster) : undefined}
 							note={
 								cluster && (
-									<CrossedOffNote
-										cluster={cluster}
-										id={props.noteId(cluster)}
-									/>
+									<>
+										{(entry?.kind === "reworked" ||
+											entry?.kind === "new" ||
+											cluster.carried) && (
+											<KindChip
+												kind={
+													cluster.carried &&
+													entry?.kind !== "reworked" &&
+													entry?.kind !== "new"
+														? "carried"
+														: (entry?.kind as "reworked" | "new")
+												}
+												from={cluster.carried?.from ?? entry?.from}
+												rule={cluster.carried?.rule}
+											/>
+										)}
+										<CrossedOffNote
+											cluster={cluster}
+											id={props.noteId(cluster)}
+										/>
+									</>
 								)
 							}
 						>
@@ -2495,6 +2642,7 @@ function HunkRows(props: {
 				}
 				return (
 					<tbody key={runKey} className={state ? "group" : undefined}>
+						{kindRow}
 						{runRows(cluster ? props.checkbox(cluster) : undefined)}
 						{cluster?.state === "crossed-off" && (
 							<tr>

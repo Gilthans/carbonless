@@ -1,5 +1,8 @@
+import { execFileSync } from "node:child_process";
+import { join } from "node:path";
 import type { Locator, Page } from "@playwright/test";
 import { reviewThread, threadComment } from "../test/fake-gh/scenario";
+import { type FixtureCommit, testGitEnv } from "../test/git-fixture";
 import {
 	expectNoPageOverflow,
 	fileSection,
@@ -7,8 +10,15 @@ import {
 	progress,
 	rowTop,
 	tapHeight,
+	withTree,
 } from "./files-ui";
-import { expect, expectLoadingThen, type PrOptions, test } from "./fixtures";
+import {
+	expect,
+	expectLoadingThen,
+	OWNER_REPO,
+	type PrOptions,
+	test,
+} from "./fixtures";
 
 /*
  * Re-review after new pushes (docs/superpowers/specs/2026-11-04-re-review-design.md):
@@ -111,6 +121,390 @@ async function drag(page: Page, handle: Locator, target: Locator) {
 
 /** The card a dot or connector shows on hover (a tooltip, hidden from AT). */
 const card = (page: Page) => page.locator('[role="tooltip"]:not([hidden])');
+
+/** Push 2': only core.ts reworked, so util.ts carries whole. */
+const reworkCore = {
+	message: "rework core",
+	files: {
+		"src/core.ts": edit(core, { 5: "core 5 reworked", 30: "core 30 changed" }),
+	},
+};
+
+/** The review's refs in crb's clone (the progress ref and the patch set pins), one per line. */
+const reviewRefs = (workdir: string) => {
+	const [owner, repo] = OWNER_REPO.split("/") as [string, string];
+	return execFileSync(
+		"git",
+		["for-each-ref", "--format=%(refname) %(objectname)", "refs/crb/reviews/"],
+		{
+			cwd: join(workdir, "cache", "carbonless", "repos", owner, `${repo}.git`),
+			encoding: "utf8",
+			env: testGitEnv(),
+		},
+	)
+		.split("\n")
+		.filter((l) => l.includes("/reviewers/"))
+		.sort()
+		.join("\n");
+};
+
+const chips = (section: Locator) =>
+	section.locator('[data-testid="since-chips"] [data-testid="kind-chip"]');
+const kindRows = (section: Locator) => section.getByTestId("cluster-kind");
+const toRead = (page: Page) => page.getByTestId("to-read");
+
+/**
+ * PS1 fully reviewed, then `push`, the page reloaded on PS1 with the head
+ * newer. Returns the refs as they stand (nothing may change them but a mark).
+ */
+async function pushed(
+	page: Page,
+	workdir: string,
+	s: { url: string },
+	p: { moveHead: (c: FixtureCommit) => string },
+	push: FixtureCommit = rework,
+) {
+	await openFiles(page, s.url);
+	await reviewAll(page);
+	const refs = reviewRefs(workdir);
+	expect(refs).toContain("/patchsets/1 ");
+	p.moveHead(push);
+	await page.reload();
+	await expect(tail(page)).toHaveAttribute("data-state", "head");
+	return refs;
+}
+
+test("View lands on the since view: the reworked and new clusters with their chips, carried ones absent here and marked in the full diff, nothing written; the first mark starts PS2 with the carries", async ({
+	page,
+	workdir,
+	pr,
+	startCrb,
+}) => {
+	const p = await pr(fixture);
+	const s = await startCrb();
+	const refs = await pushed(page, workdir, s, p);
+	await toast(page).getByRole("button", { name: "View" }).click();
+	await expect(page).toHaveURL(/head=[0-9a-f]{40}/);
+	await expect(
+		node(page, "head").getByRole("button", { name: "viewing" }),
+	).toBeVisible();
+	await expect(
+		node(page, "ps1").getByRole("button", { name: "comparison base" }),
+	).toBeVisible();
+
+	// The engine's answer: the header chips and the to-read count (spinners
+	// until then, never 0).
+	const coreS = fileSection(page, "src/core.ts");
+	const utilS = fileSection(page, "src/util.ts");
+	await expect(chips(coreS).filter({ hasText: "1 reworked" })).toBeVisible();
+	await expect(chips(coreS).filter({ hasText: "1 carried" })).toBeVisible();
+	await expect(chips(utilS).filter({ hasText: "1 new" })).toBeVisible();
+	await expect(chips(utilS).filter({ hasText: "1 carried" })).toBeVisible();
+	await expect(toRead(page)).toHaveText(/2 to read/);
+	// The progress bar counts the viewed snapshot with its provisional carries.
+	await expect(progress(page)).toContainText("2 / 4 clusters reviewed");
+	await expectNoPageOverflow(page);
+
+	// The since view: core.ts shows the reworked cluster alone, as a plain
+	// diff of what the author changed.
+	await coreS.getByRole("button", { name: "Expand file" }).click();
+	await expect(kindRows(coreS)).toHaveCount(1);
+	await expect(kindRows(coreS)).toHaveAttribute("data-kind", "reworked");
+	await expect(
+		coreS.getByTestId("diff-line").filter({ hasText: "core 5 changed" }),
+	).toHaveAttribute("data-kind", "del");
+	await expect(
+		coreS.getByTestId("diff-line").filter({ hasText: "core 5 reworked" }),
+	).toHaveAttribute("data-kind", "add");
+	await expect(
+		coreS.getByTestId("diff-line").filter({ hasText: "core 30" }),
+	).toHaveCount(0);
+	await expect(boxes(coreS)).toHaveCount(1);
+	await expect(boxes(coreS)).not.toBeChecked();
+	await coreS.getByRole("button", { name: "Collapse file" }).click();
+	await utilS.getByRole("button", { name: "Expand file" }).click();
+	await expect(kindRows(utilS)).toHaveAttribute("data-kind", "new");
+	await expect(
+		utilS.getByTestId("diff-line").filter({ hasText: "util 11 new" }),
+	).toHaveAttribute("data-kind", "add");
+	await expect(
+		utilS.getByTestId("diff-line").filter({ hasText: "util 3" }),
+	).toHaveCount(0);
+	await utilS.getByRole("button", { name: "Collapse file" }).click();
+	// Nothing written: viewing is not a lasting action.
+	expect(reviewRefs(workdir)).toBe(refs);
+
+	// The full diff (the base on the branch dot): the carried clusters
+	// green and marked, with their chip; the others unreviewed.
+	await page.keyboard.press("Control+Shift+[");
+	await expect(
+		node(page, "branch").getByRole("button", { name: "comparison base" }),
+	).toBeVisible();
+	await coreS.getByRole("button", { name: "Expand file" }).click();
+	await expect(boxes(coreS)).toHaveCount(2);
+	await expect(boxes(coreS).first()).not.toBeChecked();
+	await expect(boxes(coreS).last()).toBeChecked();
+	await expect(
+		kindRows(coreS).filter({ has: page.locator('[data-kind="carried"]') }),
+	).toHaveCount(1);
+	await expect(
+		coreS.getByTestId("diff-line").filter({ hasText: "core 30 changed" }),
+	).toHaveAttribute("data-reviewed", "true");
+	await expect(toRead(page)).toHaveText(/2 to read/);
+	expect(reviewRefs(workdir)).toBe(refs);
+
+	// The first mark starts PS2 with the carries: the rail gains PS2 (viewed,
+	// up to date), the refs a second patch set; the carried marks stay.
+	await boxes(coreS).first().click();
+	await expect(boxes(coreS).first()).toBeChecked();
+	await expect(
+		node(page, "ps2").getByRole("button", { name: "viewing" }),
+	).toBeVisible();
+	await expect(tail(page)).toHaveAttribute("data-state", "up-to-date");
+	await expect(page.getByTestId("sync-notices")).toHaveCount(0);
+	const after = reviewRefs(workdir);
+	expect(after).not.toBe(refs);
+	expect(after).toContain("/patchsets/2 ");
+	expect(after).toContain("/patchsets/2-base ");
+	await expect(progress(page)).toContainText("3 / 4 clusters reviewed");
+	// The base is on the branch: a plain full diff of PS2, no comparison
+	// to count what is to read. The address names PS2 now.
+	await expect(toRead(page)).toHaveCount(0);
+	await expect(page).toHaveURL(/ps=2/);
+	await expect(page).not.toHaveURL(/head=/);
+	await expect(toast(page)).toHaveCount(0);
+
+	// Unticking a carried cluster is the reviewer's own event; it survives a reload.
+	await boxes(coreS).last().click();
+	await expect(boxes(coreS).last()).not.toBeChecked();
+	await expect(progress(page)).toContainText("2 / 4 clusters reviewed");
+	await expect(page.getByTestId("sync-notices")).toHaveCount(0);
+	await page.reload();
+	await expect(progress(page)).toContainText("2 / 4 clusters reviewed");
+	await expect(
+		node(page, "ps2").getByRole("button", { name: "viewing" }),
+	).toBeVisible();
+	// The since view and the full diff share one state: PS1 → PS2 shows
+	// the reworked cluster marked, as it was in the full diff.
+	await page.keyboard.press("Control+Shift+]");
+	await expect(
+		node(page, "ps1").getByRole("button", { name: "comparison base" }),
+	).toBeVisible();
+	await expect(chips(coreS).filter({ hasText: "1 reworked" })).toBeVisible();
+	await expect(toRead(page)).toHaveText(/1 to read/);
+	await coreS.getByRole("button", { name: "Expand file" }).click();
+	await expect(boxes(coreS)).toHaveCount(1);
+	await expect(boxes(coreS)).toBeChecked();
+});
+
+test("a gone cluster is a red block with its chip, not markable and not counted; an old patch set opens read-only with its marks", async ({
+	page,
+	workdir,
+	pr,
+	startCrb,
+}) => {
+	const p = await pr(fixture);
+	const s = await startCrb();
+	await pushed(page, workdir, s, p);
+	await toast(page).getByRole("button", { name: "View" }).click();
+	const utilS = fileSection(page, "src/util.ts");
+	await expect(chips(utilS).filter({ hasText: "1 new" })).toBeVisible();
+	await utilS.getByRole("button", { name: "Expand file" }).click();
+	await boxes(utilS).click();
+	await expect(
+		node(page, "ps2").getByRole("button", { name: "viewing" }),
+	).toBeVisible();
+	await expect(page.getByTestId("sync-notices")).toHaveCount(0);
+	await expect(progress(page)).toContainText("3 / 4 clusters reviewed");
+	// util.ts's first cluster carried into PS2: mark it by hand too (untick,
+	// tick), so PS2 holds the reviewer's own state for it.
+	await page.keyboard.press("Control+Shift+[");
+	await expect(boxes(utilS)).toHaveCount(2);
+	await boxes(utilS).first().click();
+	await expect(boxes(utilS).first()).not.toBeChecked();
+	await boxes(utilS).first().click();
+	await expect(boxes(utilS).first()).toBeChecked();
+	await expect(page.getByTestId("sync-notices")).toHaveCount(0);
+	await expect(progress(page)).toContainText("3 / 4 clusters reviewed");
+	const refs = reviewRefs(workdir);
+
+	// Push 3 undoes util.ts's first cluster: gone since PS2.
+	p.moveHead(undo);
+	await page.reload();
+	await expect(tail(page)).toHaveAttribute("data-state", "head");
+	await toast(page).getByRole("button", { name: "View" }).click();
+	await expect(
+		node(page, "ps2").getByRole("button", { name: "comparison base" }),
+	).toBeVisible();
+	await expect(chips(utilS).filter({ hasText: "1 gone" })).toBeVisible();
+	await expect(chips(utilS).filter({ hasText: "1 carried" })).toBeVisible();
+	await utilS.getByRole("button", { name: "Expand file" }).click();
+	const goneBlock = utilS.locator("tbody[data-gone]");
+	await expect(goneBlock).toHaveCount(1);
+	await expect(goneBlock.getByTestId("cluster-kind")).toHaveAttribute(
+		"data-kind",
+		"gone",
+	);
+	await expect(
+		goneBlock.getByTestId("diff-line").filter({ hasText: "util 3 changed" }),
+	).toHaveAttribute("data-kind", "del");
+	await expect(goneBlock.getByRole("checkbox")).toHaveCount(0);
+	await expect(boxes(utilS)).toHaveCount(0);
+	// Not counted: the viewed snapshot has three clusters, two carried and
+	// the reworked one (never reviewed) still to read.
+	await expect(progress(page)).toContainText("2 / 3 clusters reviewed");
+	await expect(toRead(page)).toHaveText(/1 to read/);
+	expect(reviewRefs(workdir)).toBe(refs);
+	await expectNoPageOverflow(page);
+
+	// Back to PS1 (two steps left): as reviewed, read-only, every box
+	// checked and locked; Back to PS2 is the way back.
+	await page.keyboard.press("Control+[");
+	await page.keyboard.press("Control+[");
+	await expect(
+		node(page, "ps1").getByRole("button", { name: "viewing" }),
+	).toBeVisible();
+	await expect(page).toHaveURL(/ps=1/);
+	const note = page.getByTestId("read-only-note");
+	await expect(note).toContainText("PS1 · as reviewed · read-only");
+	await expect(progress(page)).toContainText("3 / 3 clusters reviewed");
+	const coreS = fileSection(page, "src/core.ts");
+	await coreS.getByRole("button", { name: "Expand file" }).click();
+	await expect(boxes(coreS)).toHaveCount(2);
+	for (const box of await boxes(coreS).all()) {
+		await expect(box).toBeChecked();
+		await expect(box).toBeDisabled();
+	}
+	await expect(
+		coreS.getByRole("button", { name: "Cross off cluster" }).first(),
+	).toBeDisabled();
+	await expect(
+		coreS.getByRole("button", { name: "Mark remaining reviewed" }),
+	).toBeDisabled();
+	await expect(
+		coreS.getByTestId("diff-line").filter({ hasText: "core 5 changed" }),
+	).toBeVisible();
+	await note.getByRole("button", { name: "Back to PS2" }).click();
+	await expect(
+		node(page, "ps2").getByRole("button", { name: "viewing" }),
+	).toBeVisible();
+	await expect(page.getByTestId("read-only-note")).toHaveCount(0);
+	expect(reviewRefs(workdir)).toBe(refs);
+});
+
+test("the tree's dots say which files need eyes; the needs-eyes filter hides fully carried files, never a cluster", async ({
+	page,
+	workdir,
+	pr,
+	startCrb,
+}) => {
+	const p = await pr(fixture);
+	const s = await startCrb();
+	await pushed(page, workdir, s, p, reworkCore);
+	await toast(page).getByRole("button", { name: "View" }).click();
+	const coreS = fileSection(page, "src/core.ts");
+	const utilS = fileSection(page, "src/util.ts");
+	await expect(chips(coreS).filter({ hasText: "1 reworked" })).toBeVisible();
+	await expect(chips(utilS).filter({ hasText: "1 carried" })).toBeVisible();
+	await expect(toRead(page)).toHaveText(/1 to read/);
+	await withTree(page, async (tree) => {
+		await expect(
+			tree.getByRole("button", { name: /core\.ts/ }).getByTestId("tree-eyes"),
+		).toHaveAttribute("data-eyes", "read");
+		await expect(
+			tree.getByRole("button", { name: /util\.ts/ }).getByTestId("tree-eyes"),
+		).toHaveAttribute("data-eyes", "carried");
+		await expect(
+			tree.getByRole("button", { name: /util\.ts/ }),
+		).toHaveAccessibleName(/carried/);
+		const filter = page.getByTestId("needs-eyes");
+		await expect(filter).toHaveAttribute("aria-pressed", "false");
+		await filter.click();
+		await expect(filter).toHaveAttribute("aria-pressed", "true");
+		await expect(tree.getByRole("button", { name: /util\.ts/ })).toHaveCount(0);
+		await expect(tree.getByRole("button", { name: /core\.ts/ })).toBeVisible();
+	});
+	await expect(utilS).toHaveCount(0);
+	await expect(coreS).toBeVisible();
+	// The hidden file hides no cluster: its only cluster is carried, counted
+	// as reviewed; the bar still counts everything.
+	await expect(progress(page)).toContainText("2 / 3 clusters reviewed");
+	// Unticking a carried mark makes the file need eyes again: marking
+	// starts PS2 first, then the file is back.
+	await withTree(page, async () => {
+		await page.getByTestId("needs-eyes").click();
+	});
+	await expect(utilS).toBeVisible();
+	await utilS.getByRole("button", { name: "Expand file" }).click();
+	await expect(utilS.getByTestId("since-empty")).toHaveText(
+		"Nothing to read since PS1 · 1 carried",
+	);
+	await page.keyboard.press("Control+Shift+[");
+	await expect(boxes(utilS)).toHaveCount(1);
+	await boxes(utilS).click();
+	await expect(boxes(utilS)).not.toBeChecked();
+	await expect(
+		node(page, "ps2").getByRole("button", { name: "viewing" }),
+	).toBeVisible();
+	// Back in the since view (PS1 → PS2): the unticked file needs eyes
+	// (the dot follows the reviewer's mark; "to read" counts what the
+	// author changed, still the reworked cluster alone).
+	await page.keyboard.press("Control+Shift+]");
+	await expect(
+		node(page, "ps1").getByRole("button", { name: "comparison base" }),
+	).toBeVisible();
+	await expect(toRead(page)).toHaveText(/1 to read/);
+	await withTree(page, async (tree) => {
+		await expect(
+			tree.getByRole("button", { name: /util\.ts/ }).getByTestId("tree-eyes"),
+		).toHaveAttribute("data-eyes", "read");
+	});
+});
+
+test("an empty since view says so once the engine has answered, with a spinner until then", async ({
+	page,
+	workdir,
+	pr,
+	startCrb,
+}) => {
+	const p = await pr(fixture);
+	const s = await startCrb();
+	// An empty commit: a new head with the same tree, everything carries.
+	await pushed(page, workdir, s, p, { message: "empty", files: {} });
+	let release = () => {};
+	const held = new Promise<void>((r) => {
+		release = r;
+	});
+	await page.route("**/api/rereview?*", async (route) => {
+		await held;
+		await route.continue();
+	});
+	await toast(page).getByRole("button", { name: "View" }).click();
+	await expectLoadingThen({
+		loading: toRead(page).getByRole("status", {
+			name: "Counting what is to read",
+		}),
+		empty: [
+			page.getByTestId("since-empty-all"),
+			toRead(page).getByText(/0 to read/),
+			fileSection(page, "src/core.ts").getByText(/carried/),
+		],
+		release: () => {
+			release();
+			return page.unroute("**/api/rereview?*");
+		},
+		result: page.getByTestId("since-empty-all"),
+	});
+	await expect(page.getByTestId("since-empty-all")).toHaveText(
+		"Nothing to read since PS1 · 3 carried",
+	);
+	await expect(toRead(page)).toHaveText(/0 to read/);
+	await expect(progress(page)).toContainText("3 / 3 clusters reviewed");
+	await expect(page.getByTestId("ps-conn-head")).toHaveAttribute(
+		"data-tone",
+		"ok",
+	);
+});
 
 test("a newer head fills the rail's last slot and shows the toast; nothing below the rail moves, nothing takes focus", async ({
 	page,

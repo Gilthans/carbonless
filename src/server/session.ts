@@ -1,4 +1,4 @@
-import { fileFlags, reviewProgress } from "../shared/progress.js";
+import { overlayCarries } from "../shared/rereview/overlay.js";
 import type {
 	CommentsView,
 	DeleteAnswer,
@@ -159,31 +159,6 @@ interface RereviewJob {
 	done: { target: Snapshot; traced: Traced } | null;
 	error: Error | null;
 	settled: Promise<void>;
-}
-
-/** The engine's provisional carries laid over a snapshot's unreviewed view. */
-function overlayCarries(view: ReviewView, answer: RereviewAnswer): ReviewView {
-	const carried = new Map(
-		answer.files
-			.flatMap((f) => f.clusters)
-			.filter((c) => c.kind === "carried")
-			.map((c) => [c.key, c]),
-	);
-	const files = view.files.map((file) => {
-		const clusters = file.clusters.map((c) => {
-			const carry = carried.get(c.key);
-			if (!carry || carry.from === undefined || !carry.state || !carry.rule) {
-				return c;
-			}
-			return {
-				...c,
-				state: carry.state,
-				carried: { from: carry.from, rule: carry.rule },
-			};
-		});
-		return { ...file, clusters, ...fileFlags(clusters) };
-	});
-	return { ...view, files, progress: reviewProgress(files) };
 }
 
 /**

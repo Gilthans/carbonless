@@ -227,6 +227,18 @@ export function useComparison(session: SessionInfo | undefined): Comparison {
 		go(kept);
 	}, [active, kept, go, inAddress]);
 	const { viewing, base } = parsed;
+	// A viewed head that became a patch set (the first mark started it):
+	// the address names the patch set from now on. Keyed by value, so the
+	// one navigation it makes doesn't run it again.
+	const started =
+		inAddress.head !== undefined && viewing?.kind === "patchset"
+			? comparisonSearch(viewing, base, patchsets)
+			: null;
+	const startedKey = started ? JSON.stringify(started) : null;
+	useEffect(() => {
+		if (!active || startedKey === null) return;
+		go(JSON.parse(startedKey) as ComparisonSearch);
+	}, [active, startedKey, go]);
 	return {
 		viewing,
 		base,

@@ -2,6 +2,7 @@ import {
 	ChevronDownIcon,
 	ChevronRightIcon,
 	DiffRenamedIcon,
+	EyeIcon,
 	FoldIcon,
 	UnfoldIcon,
 } from "@primer/octicons-react";
@@ -30,6 +31,7 @@ import {
 } from "./unit";
 
 const NONE = () => [];
+const NO_EYES = () => null;
 
 /**
  * Which file a row marks: the one opened (picked, linked or expanded; it
@@ -73,6 +75,9 @@ function MarkDot({ mark }: { mark: Mark }) {
 	);
 }
 
+/** What the comparison's dot says of a file. */
+const EYES = { read: "needs eyes", carried: "carried" } as const;
+
 const indent = (depth: number) => ({
 	paddingLeft: `${depth * 0.75 + 0.25}rem`,
 });
@@ -90,8 +95,10 @@ function FileItem(props: {
 	mark: Mark;
 	onSelect: (index: number) => void;
 	threads: ReviewThread[];
+	/** In a comparison: anything to read in it (yellow), or every mark carried (green). */
+	eyes: "read" | "carried" | null;
 }) {
-	const { file, unit, threads, mark } = props;
+	const { file, unit, threads, mark, eyes } = props;
 	// Its review threads, as the bubble says them: a yellow dot when one
 	// waits on the viewer, green when all are resolved, else grey.
 	const talk =
@@ -114,6 +121,7 @@ function FileItem(props: {
 						{file.status === "renamed" ? "Renamed" : changeKindLabel(file)} ·{" "}
 						<TooltipPath>{path}</TooltipPath> · {numbers}
 						{talk && ` · ${talk}`}
+						{eyes && ` · ${EYES[eyes]}`}
 					</>
 				}
 				describe={false}
@@ -135,6 +143,18 @@ function FileItem(props: {
 						}`}
 					>
 						<StatusIcon file={file} />
+						{eyes && (
+							<span
+								data-testid="tree-eyes"
+								data-eyes={eyes}
+								className="flex h-4 w-2 shrink-0 items-center"
+							>
+								<span
+									aria-hidden
+									className={`h-2 w-2 rounded-full ${eyes === "read" ? "bg-warn" : "bg-ok"}`}
+								/>
+							</span>
+						)}
 						{/* A rename's new path in green: where the file is now. */}
 						<ChangeKindIcon
 							file={file}
@@ -175,6 +195,7 @@ function FileItem(props: {
 						<span data-testid="tree-numbers" className="sr-only">
 							{numbers}
 						</span>
+						{eyes && <span className="sr-only">, {EYES[eyes]}</span>}
 						{mark && <span className="sr-only">, {markText(mark, false)}</span>}
 						<span
 							aria-hidden
@@ -207,6 +228,7 @@ interface Level {
 	/** The threads are still on their way: no folder says none wait. */
 	threadsLoading: boolean;
 	folds: Folds;
+	eyesOf: (file: FileView) => "read" | "carried" | null;
 }
 
 /**
@@ -409,6 +431,7 @@ function Children(props: Level & { nodes: Node[] }) {
 						mark={markOf(node.file.path, props.openedPath, props.currentPath)}
 						onSelect={props.onSelect}
 						threads={props.threadsOf(node.file)}
+						eyes={props.eyesOf(node.file)}
 					/>
 				) : node.kind === "moved" ? (
 					<MovedItem
@@ -479,8 +502,15 @@ export function FileTree(props: {
 	 * opened file's folded folders unfold, even right after load.
 	 */
 	revealSeq?: number;
+	/** In a comparison the engine answered: each file's dot (since.ts eyesOf). */
+	eyesOf?: (file: FileView) => "read" | "carried" | null;
+	/**
+	 * The "needs eyes" filter (hides fully carried files, never clusters):
+	 * its state and its toggle, shown only in such a comparison.
+	 */
+	filter?: { on: boolean; onChange: (on: boolean) => void };
 }) {
-	const { files, current } = props;
+	const { files, current, filter } = props;
 	const opened = props.opened ?? null;
 	const tree = useMemo(() => buildTree(files), [files]);
 	const allFolders = useMemo(() => folderPaths(tree), [tree]);
@@ -492,22 +522,48 @@ export function FileTree(props: {
 		index === null ? undefined : files.find((f) => f.index === index)?.path;
 	return (
 		<div>
-			{allFolders.length > 0 && (
+			{(allFolders.length > 0 || filter) && (
 				<div
 					role="toolbar"
 					aria-label="Folders"
-					className="mb-1 flex justify-end gap-1"
+					className="mb-1 flex items-center justify-end gap-1"
 				>
-					<TreeAction
-						label="Fold all"
-						icon={FoldIcon}
-						onClick={() => folds.setAll(allFolders)}
-					/>
-					<TreeAction
-						label="Open all"
-						icon={UnfoldIcon}
-						onClick={() => folds.setAll([])}
-					/>
+					{filter && (
+						<Tooltip content="Needs eyes: hide files whose every mark carried over">
+							{(trigger) => (
+								<button
+									type="button"
+									{...trigger}
+									aria-label="Needs eyes"
+									aria-pressed={filter.on}
+									data-testid="needs-eyes"
+									onClick={() => filter.onChange(!filter.on)}
+									className={`mr-auto flex h-7 items-center gap-1 rounded-md px-1.5 text-xs transition-colors hover:bg-overlay focus-visible:outline-2 focus-visible:outline-accent motion-reduce:transition-none pointer-coarse:h-10 ${
+										filter.on
+											? "bg-warn/15 text-warn"
+											: "text-muted hover:text-ink"
+									}`}
+								>
+									<EyeIcon size={16} aria-hidden />
+									needs eyes
+								</button>
+							)}
+						</Tooltip>
+					)}
+					{allFolders.length > 0 && (
+						<>
+							<TreeAction
+								label="Fold all"
+								icon={FoldIcon}
+								onClick={() => folds.setAll(allFolders)}
+							/>
+							<TreeAction
+								label="Open all"
+								icon={UnfoldIcon}
+								onClick={() => folds.setAll([])}
+							/>
+						</>
+					)}
 				</div>
 			)}
 			<nav
@@ -535,6 +591,7 @@ export function FileTree(props: {
 					threadsOf={props.threadsOf ?? NONE}
 					threadsLoading={props.threadsLoading === true}
 					folds={folds}
+					eyesOf={props.eyesOf ?? NO_EYES}
 				/>
 			</nav>
 		</div>

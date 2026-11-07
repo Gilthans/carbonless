@@ -18,6 +18,7 @@ import { useForgetPageScroll, usePageActive } from "../pageActive";
 import { useReviewId } from "../reviewId";
 import { SkeletonBar, Spinner } from "../Spinner";
 import { useAppHeaderHeight, useHeight } from "../sticky";
+import { Tooltip } from "../Tooltip";
 import { PeopleProvider } from "../threads/people";
 import { dropLosesText, useThreadWrites } from "../threads/threadWrites";
 import { usePrefetchComments } from "../threads/useThreadComments";
@@ -28,7 +29,7 @@ import { FilesVerdict } from "../verdict/FilesVerdict";
 import { ignoreWhitespace, showInvisibles, sideBySide } from "../viewSettings";
 import { type Comparison, useComparison } from "./comparison";
 import type { DiffThreads } from "./DiffBody";
-import { FileDiff } from "./FileDiff";
+import { FileDiff, GoneFile } from "./FileDiff";
 import { FileTree } from "./FileTree";
 import { treeOrder } from "./fileOrder";
 import { filesPrefetchOrder } from "./filesPrefetch";
@@ -48,8 +49,16 @@ import {
 	restoreAnchor,
 	type ScrollAnchor,
 } from "./scrollAnchor";
+import {
+	carriedCount,
+	eyesOf,
+	goneFiles,
+	nothingSince,
+	toReadCount,
+} from "./since";
 import { TreeColumn } from "./TreeResizer";
 import { threadsOnHead } from "./threadPlacement";
+import { useSince } from "./useSince";
 
 const NO_THREADS: ReviewThread[] = [];
 
@@ -295,15 +304,37 @@ export function FilesPage() {
 	const session = useQuery(sessionQuery).data;
 	const comparison = useComparison(session);
 	// The reviewer's intended states over the server's (useSetStates).
-	const { review, data } = useReviewView(comparison.target);
+	const { review, data: served } = useReviewView(comparison.target);
+	// The engine's answer for the comparison: the since view's chips and
+	// hunks, the provisional carries over a viewed head.
+	const sinceView = useSince(comparison, session, served);
+	const data = sinceView.shown;
+	const latest = session?.patchsets.at(-1)?.number ?? null;
+	// An earlier patch set opens as reviewed: its marks are locked.
+	const readOnlyOf =
+		comparison.viewing?.kind === "patchset" &&
+		latest !== null &&
+		comparison.viewing.number < latest
+			? comparison.viewing.number
+			: null;
+	const readOnly = readOnlyOf !== null;
+	// The tree's "needs eyes" filter: fully carried files hidden (never clusters).
+	const [eyesOnly, setEyesOnly] = useState(false);
 	// Bumped on each opening of a file (a pick, a link, its header): the
 	// tree reveals it.
 	const [reveal, setReveal] = useState(0);
 	// The file last opened, by snapshot and index: the tree marks it until
 	// another one is opened.
 	const [opened, setOpened] = useState<string | null>(null);
-	// The page's one order, the tree's (fileOrder): the diff list follows it.
-	const files = useMemo(() => (data ? treeOrder(data.files) : []), [data]);
+	// The page's one order, the tree's (fileOrder): the diff list follows
+	// it, minus the fully carried files while "needs eyes" is on.
+	const byFile = sinceView.byFile;
+	const files = useMemo(() => {
+		if (!data) return [];
+		const ordered = treeOrder(data.files);
+		if (!eyesOnly || !byFile) return ordered;
+		return ordered.filter((f) => eyesOf(f, byFile.get(f.index)) !== "carried");
+	}, [data, eyesOnly, byFile]);
 	const { stale } = useSyncState();
 	// False while another page shows (kept mounted, hidden): measuring and
 	// tracking pause, root styles are given back, the sheet closes.
@@ -612,8 +643,44 @@ export function FilesPage() {
 			foldKey={pr ? foldsKey(pr) : null}
 			revealSeq={reveal}
 			opened={openedIndex}
+			eyesOf={byFile ? (f) => eyesOf(f, byFile.get(f.index)) : undefined}
+			filter={byFile ? { on: eyesOnly, onChange: setEyesOnly } : undefined}
 		/>
 	);
+	// "5 to read": the comparison's unreviewed reworked and new clusters,
+	// in the unit; a spinner while the engine computes; nothing in a plain
+	// full diff (no comparison asked).
+	const toRead = !sinceView.asked
+		? undefined
+		: byFile && data
+			? toReadCount(byFile, data, unit)
+			: sinceView.error
+				? undefined
+				: null;
+	const since = sinceView.since;
+	/** The chips of a file: the engine's, or in a full diff its carried count alone. */
+	const sinceInfoOf = (index: number, carried: number) => {
+		const info = byFile?.get(index);
+		if (info) return info;
+		if (sinceView.asked || carried === 0) return undefined;
+		return {
+			kinds: new Map(),
+			conflict: false,
+			counts: { reworked: 0, new: 0, gone: 0, carried },
+		};
+	};
+	const gone =
+		since !== null && sinceView.answer && data
+			? goneFiles(sinceView.answer, data)
+			: [];
+	const emptySince =
+		since !== null &&
+		sinceView.answer &&
+		byFile &&
+		data &&
+		nothingSince(sinceView.answer, byFile)
+			? `Nothing to read since PS${since} · ${carriedCount(data)} carried`
+			: null;
 
 	return (
 		<PeopleProvider threads={allThreads}>
@@ -633,6 +700,41 @@ export function FilesPage() {
 							progress={data.progress}
 							unit={unit}
 							onUnitChange={setUnit}
+							toRead={toRead}
+							note={
+								readOnlyOf !== null && (
+									<p
+										data-testid="read-only-note"
+										className="mt-1 flex min-h-8 flex-wrap items-center gap-2 text-xs"
+									>
+										<Tooltip content="An earlier patch set, exactly as you reviewed it: marks are locked, replies still send">
+											{(trigger) => (
+												<span
+													{...trigger}
+													// biome-ignore lint/a11y/noNoninteractiveTabindex: the tooltip opens on focus.
+													tabIndex={0}
+													className="inline-flex h-5 items-center rounded-full border border-faint px-2 text-[11px] whitespace-nowrap text-faint focus-visible:outline-2 focus-visible:outline-accent"
+												>
+													PS{readOnlyOf} · as reviewed · read-only
+												</span>
+											)}
+										</Tooltip>
+										<button
+											type="button"
+											onClick={() =>
+												latest !== null &&
+												comparison.setViewing({
+													kind: "patchset",
+													number: latest,
+												})
+											}
+											className="inline-flex min-h-8 items-center rounded-md px-2 font-medium text-link underline hover:bg-overlay focus-visible:outline-2 focus-visible:outline-accent"
+										>
+											Back to PS{latest}
+										</button>
+									</p>
+								)
+							}
 						>
 							{/* Every count and bubble waits on them (principle 8). Its
 							    place is kept, so the bar moves nothing when it goes. */}
@@ -678,7 +780,28 @@ export function FilesPage() {
 								</span>
 							</p>
 						)}
-						{data.files.length === 0 ? (
+						{sinceView.error && (
+							<p
+								data-testid="since-failed"
+								className="mt-3 flex min-h-10 items-center gap-2 rounded-md border border-bad/30 bg-bad/10 px-3 text-sm text-ink"
+							>
+								<LabeledIcon
+									icon={AlertIcon}
+									label={`What changed couldn't be computed: ${sinceView.error.message}`}
+									className="text-bad"
+								/>
+								Changes since PS{sinceView.from} not computed
+							</p>
+						)}
+						{emptySince && (
+							<p
+								data-testid="since-empty-all"
+								className="mt-3 flex min-h-10 items-center gap-2 rounded-md border border-ok/30 bg-ok/10 px-3 text-sm text-ink"
+							>
+								{emptySince}
+							</p>
+						)}
+						{data.files.length === 0 && gone.length === 0 ? (
 							<>
 								<p className="mt-4 text-muted">This PR changes no files.</p>
 								<FilesVerdict threads={allThreads} settled={firstOpenSettled} />
@@ -716,6 +839,24 @@ export function FilesPage() {
 											threads={threads}
 											threadsLoading={threadsLoading}
 											headSure={headSure}
+											since={since ?? undefined}
+											sinceInfo={sinceInfoOf(
+												file.index,
+												file.clusters.filter((c) => c.carried).length,
+											)}
+											sincePending={sinceView.pending}
+											readOnly={readOnly}
+										/>
+									))}
+									{/* Files only the compared patch set had something reviewed in: their gone clusters. */}
+									{gone.map((file) => (
+										<GoneFile
+											key={`${data.revision}:gone:${file.index}`}
+											index={file.index}
+											path={file.path}
+											revision={data.revision}
+											since={since as number}
+											info={byFile?.get(file.index)}
 										/>
 									))}
 									{/* After the last file: the verdict (the padding above keeps it clear of the Files button). */}
@@ -727,7 +868,7 @@ export function FilesPage() {
 							</div>
 						)}
 						<SelectionBar files={data.files} />
-						{!wide && data.files.length > 0 && (
+						{!wide && (data.files.length > 0 || gone.length > 0) && (
 							<>
 								<button
 									hidden={!filesButton}

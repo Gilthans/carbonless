@@ -12,6 +12,7 @@ import {
 } from "react";
 import type { ClusterView, FileView, StateChange } from "../../shared/types";
 import { hunksQuery, overviewQuery, sessionQuery } from "../api";
+import { Spinner } from "../Spinner";
 import { Tooltip, TooltipPath, type TooltipTriggerProps } from "../Tooltip";
 import { newThreadKey, useDrafts } from "../threads/drafts";
 import { NewThread } from "../threads/NewThread";
@@ -24,10 +25,17 @@ import {
 import { OrphanDraft } from "../threads/OrphanDraft";
 import { useThreadWriter } from "../threads/threadWrites";
 import { ChangeKindIcon, changeKindLabel } from "./changeKind";
-import { DiffBody, type DiffThreads, type FileLead } from "./DiffBody";
+import {
+	DiffBody,
+	type DiffThreads,
+	type FileLead,
+	READ_ONLY_TIP,
+} from "./DiffBody";
+import { KindChip } from "./KindChip";
 import type { Landing } from "./landing";
 import { Meter } from "./ProgressBar";
 import { type CodeSpan, commentAvailable } from "./selectionActions";
+import type { FileSince } from "./since";
 import { isStale } from "./stateSync";
 import {
 	ChangeCount,
@@ -282,6 +290,33 @@ function PathScroller({
 }
 
 /**
+ * The header's chips for a comparison: "1 reworked · 1 new · 4 carried",
+ * "gone" and "conflict" when any (KindChip, each with its tooltip).
+ */
+function SinceChips(props: { info?: FileSince; since?: number }) {
+	const { info } = props;
+	if (!info) return null;
+	const { counts } = info;
+	return (
+		<>
+			{info.conflict && <KindChip kind="conflict" />}
+			{counts.reworked > 0 && (
+				<KindChip kind="reworked" count={counts.reworked} from={props.since} />
+			)}
+			{counts.new > 0 && (
+				<KindChip kind="new" count={counts.new} from={props.since} />
+			)}
+			{counts.gone > 0 && (
+				<KindChip kind="gone" count={counts.gone} from={props.since} />
+			)}
+			{counts.carried > 0 && (
+				<KindChip kind="carried" count={counts.carried} from={props.since} />
+			)}
+		</>
+	);
+}
+
+/**
  * The file's progress in the unit: fixed size, pinned right, so headers line
  * up. It is the header's one focusable summary (status, count and progress in
  * one tooltip sentence), so keyboard and tap users get it in a single stop.
@@ -375,8 +410,19 @@ export function FileDiff(props: {
 	threadsLoading?: boolean;
 	/** The diff shown is the viewed head's (useHeadSure). */
 	headSure?: boolean;
+	/**
+	 * A comparison the engine answers (since.ts): what happened to the
+	 * file's clusters, for the header's chips; with `since`, the since
+	 * view: the interdiff from that patch set is what the body shows.
+	 */
+	since?: number;
+	sinceInfo?: FileSince;
+	/** The engine is still computing: the chips' slot spins. */
+	sincePending?: boolean;
+	/** An earlier patch set, as reviewed: the marks are locked. */
+	readOnly?: boolean;
 }) {
-	const { file, revision } = props;
+	const { file, revision, readOnly } = props;
 	const [ownExpanded, setOwnExpanded] = useState(false);
 	const expanded = props.expanded ?? ownExpanded;
 	const setExpanded = (next: boolean, auto = false) => {
@@ -485,7 +531,7 @@ export function FileDiff(props: {
 	// light): a binary or submodule file's line threads are flagged from the
 	// file alone; a line past the end shows once the file is opened.
 	const hunks = useQuery({
-		...hunksQuery(revision, file.index),
+		...hunksQuery(revision, file.index, props.since),
 		enabled: expanded,
 	});
 	const header = props.threads
@@ -679,6 +725,22 @@ export function FileDiff(props: {
 								/>
 								{/* Beside the path, so a phone's second row keeps its room. */}
 								<ChangeCount file={file} hover={summaryTrigger} />
+								{/* What happened since the compared patch set; a spinner
+								    while the engine computes (never no chips that read as
+								    nothing changed). Wraps under the path on a phone. */}
+								{(props.sinceInfo || props.sincePending) && (
+									<span
+										data-testid="since-chips"
+										aria-busy={props.sincePending || undefined}
+										className="flex min-h-5 flex-wrap items-center gap-1"
+									>
+										{props.sincePending && !props.sinceInfo ? (
+											<Spinner label="Computing what changed" size={12} />
+										) : (
+											<SinceChips info={props.sinceInfo} since={props.since} />
+										)}
+									</span>
+								)}
 							</div>
 							<button
 								ref={toggleButton}
@@ -713,11 +775,15 @@ export function FileDiff(props: {
 									<HeaderIconButton
 										ignoreClicksUntil={undoArmedAt.current}
 										label="Undo cross-off"
-										tooltip="Set crossed-off clusters back to unreviewed"
+										tooltip={
+											readOnly
+												? READ_ONLY_TIP
+												: "Set crossed-off clusters back to unreviewed"
+										}
 										icon="⊘"
 										tone="purple"
 										pressed
-										disabled={false}
+										disabled={readOnly === true}
 										onClick={() => {
 											// Back to unreviewed, never reviewed (R21).
 											save(
@@ -732,14 +798,16 @@ export function FileDiff(props: {
 									<HeaderIconButton
 										label="Cross off file"
 										tooltip={
-											crossToggle.none
-												? idle
-												: "Mark all unreviewed clusters as not needing review"
+											readOnly
+												? READ_ONLY_TIP
+												: crossToggle.none
+													? idle
+													: "Mark all unreviewed clusters as not needing review"
 										}
 										icon="⊘"
 										tone="purple"
 										pressed={false}
-										disabled={crossToggle.none}
+										disabled={readOnly || crossToggle.none}
 										onClick={() => {
 											// What the reviewer already read stays reviewed (R21).
 											finishAll(
@@ -754,13 +822,15 @@ export function FileDiff(props: {
 								<HeaderIconButton
 									label="Mark remaining reviewed"
 									tooltip={
-										unreviewed.length === 0
-											? idle
-											: "Mark all unreviewed clusters as reviewed"
+										readOnly
+											? READ_ONLY_TIP
+											: unreviewed.length === 0
+												? idle
+												: "Mark all unreviewed clusters as reviewed"
 									}
 									icon="✓"
 									tone="green"
-									disabled={unreviewed.length === 0}
+									disabled={readOnly || unreviewed.length === 0}
 									onClick={() => {
 										finishAll(
 											unreviewed.map((c) => ({
@@ -795,6 +865,76 @@ export function FileDiff(props: {
 					landing={props.landing}
 					threads={props.threads}
 					headSure={props.headSure}
+					from={props.since}
+					kinds={props.sinceInfo?.kinds}
+					readOnly={readOnly}
+				/>
+			)}
+		</section>
+	);
+}
+
+/**
+ * A file of the since view that the viewed snapshot no longer changes:
+ * everything the reviewer saw of it on the compared patch set was undone,
+ * so its clusters are gone. Its header names it; its body is the interdiff
+ * (deletion blocks, red-railed, not markable).
+ */
+export function GoneFile(props: {
+	index: number;
+	path: string;
+	revision: string;
+	since: number;
+	info?: FileSince;
+}) {
+	const [expanded, setExpanded] = useState(false);
+	const file: FileView = {
+		index: props.index,
+		path: props.path,
+		status: "modified",
+		binary: false,
+		submodule: false,
+		additions: 0,
+		deletions: 0,
+		clusters: [],
+		done: false,
+		reviewed: false,
+		crossedOff: false,
+	};
+	return (
+		<section
+			data-gone-file={props.path}
+			aria-label={props.path}
+			className="overflow-clip rounded-lg border border-bad/40 bg-surface"
+		>
+			<header className="flex min-h-11 flex-wrap items-center gap-1.5 border-b border-line bg-raised px-1.5">
+				<button
+					type="button"
+					aria-expanded={expanded}
+					aria-label={expanded ? "Collapse file" : "Expand file"}
+					onClick={() => setExpanded(!expanded)}
+					className="flex h-10 w-10 shrink-0 items-center justify-center rounded text-muted hover:bg-overlay hover:text-ink focus-visible:outline-2 focus-visible:outline-accent"
+				>
+					{expanded ? "▾" : "▸"}
+				</button>
+				<PathScroller text={props.path} kind="Reviewed work gone" />
+				<span data-testid="since-chips" className="flex items-center gap-1">
+					<KindChip
+						kind="gone"
+						count={props.info?.counts.gone}
+						from={props.since}
+					/>
+				</span>
+			</header>
+			{expanded && (
+				<DiffBody
+					file={file}
+					revision={props.revision}
+					onToggle={() => {}}
+					onCrossOff={() => {}}
+					from={props.since}
+					kinds={props.info?.kinds}
+					readOnly
 				/>
 			)}
 		</section>

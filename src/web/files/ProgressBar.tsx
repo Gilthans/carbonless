@@ -1,5 +1,6 @@
 import { type ReactNode, type Ref, useId } from "react";
 import type { Counts, Progress } from "../../shared/types";
+import { Spinner } from "../Spinner";
 import {
 	clustersLeft,
 	nothingLeft,
@@ -114,8 +115,21 @@ export function ProgressBar(props: {
 	onUnitChange: (unit: Unit) => void;
 	/** At the row's end: what is still loading for the page (a Spinner). */
 	children?: ReactNode;
+	/**
+	 * In a comparison the engine answers: how much of the unit still needs
+	 * eyes ("5 to read"); null while it computes (a spinner in the slot).
+	 */
+	toRead?: number | null;
+	/** A second row under the counts (an earlier patch set's read-only note). */
+	note?: ReactNode;
 }) {
 	const { progress, unit } = props;
+	const toRead =
+		props.toRead === undefined
+			? null
+			: props.toRead === null
+				? "pending"
+				: `${props.toRead} to read`;
 	const counts = pageCounts(progress, unit);
 	const value = pagePercent(progress, unit);
 	const shown = counts.total - counts.crossedOff;
@@ -152,7 +166,11 @@ export function ProgressBar(props: {
 					aria-valuetext={
 						empty
 							? `Nothing left to review: ${summary}`
-							: `${value}%, ${summary}${hiddenLeft ? `, ${note}` : ""}`
+							: `${value}%, ${summary}${hiddenLeft ? `, ${note}` : ""}${
+									typeof toRead === "string" && toRead !== "pending"
+										? `, ${toRead}`
+										: ""
+								}`
 					}
 					// Beside the unit picker even on a phone: the bar stays compact.
 					className="flex min-w-0 flex-1 basis-0 flex-wrap items-center gap-x-3 gap-y-1 sm:flex-nowrap"
@@ -181,11 +199,25 @@ export function ProgressBar(props: {
 								<span className="hidden sm:inline"> {word} reviewed</span>
 							</>
 						)}
+						{toRead !== null && (
+							<span
+								data-testid="to-read"
+								className="ml-1 inline-flex items-center gap-1 text-warn"
+							>
+								{" · "}
+								{toRead === "pending" ? (
+									<Spinner label="Counting what is to read" size={12} />
+								) : (
+									toRead
+								)}
+							</span>
+						)}
 					</span>
 				</div>
 				{props.children}
 			</div>
 			{hiddenLeft && <p className="mt-1 text-xs text-warn">{note}</p>}
+			{props.note}
 		</div>
 	);
 }
