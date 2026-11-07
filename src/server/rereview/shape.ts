@@ -46,6 +46,26 @@ async function countBetween(
 }
 
 /**
+ * How many commits `to` has over `from` on its own line (the connector's
+ * count): since `from` when `to` descends from it, else since `mergeBase`
+ * (a force-push). 0 when they are the same commit.
+ */
+export async function commitsSince(
+	repo: string,
+	from: string,
+	to: string,
+	mergeBase: string,
+	signal?: AbortSignal,
+): Promise<number> {
+	if (from === to) return 0;
+	checkOid(from);
+	checkOid(to);
+	checkOid(mergeBase);
+	const behind = await countBetween(repo, to, from, signal);
+	return countBetween(repo, behind === 0 ? from : mergeBase, to, signal, true);
+}
+
+/**
  * The virtual rebase: `H1` merged onto `B2` without touching any branch.
  * Exit 0 gives the tree; exit 1 the tree with the conflicted paths; anything
  * else says why none could be built.

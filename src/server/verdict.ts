@@ -278,6 +278,12 @@ export interface VerdictTarget {
 	setPendingReview: (pending: { url: string } | null) => void;
 	/** A verdict landed: the next overview and verdict reads read GitHub again. */
 	landed: () => void;
+	/**
+	 * Run once a post is cleared, before it goes to GitHub: a verdict is a
+	 * lasting action on the snapshot, so the session starts the patch set
+	 * when the snapshot is none yet (and refuses an earlier one, 409 stale).
+	 */
+	startPatchset?: () => Promise<void>;
 }
 
 const EVENTS: readonly unknown[] = [
@@ -510,6 +516,9 @@ export async function submitVerdict(
 		target.setFirstAttempt(req.clientId, Date.now());
 	}
 	const body = verdictBody(req);
+	// The patch set first, in its own transaction: the verdict then lands
+	// on a started snapshot.
+	await target.startPatchset?.();
 	let posted: RestReview;
 	try {
 		posted = await postReview(

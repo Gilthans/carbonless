@@ -230,18 +230,38 @@ function traceFile(
  * Where every cluster of every source patch set lands in the target: for
  * each target file, each source patch set it has mappers for (the latest
  * through the file's own, earlier ones through `earlier`), each cluster of
- * the paired source file. No states: the same for any marks.
+ * the paired source file; and, with no image, every cluster of a file of
+ * the latest patch set no target file came from. No states: the same for
+ * any marks.
  */
 export function traceClusters(
 	input: Pick<CarryInput, "sources" | "target">,
 ): TracedCluster[] {
 	const traced: TracedCluster[] = [];
 	const [latest, ...earlier] = input.sources;
+	const paired = new Set<string>();
 	for (const target of input.target) {
+		paired.add(target.oldPath ?? target.path);
 		if (latest) traced.push(...traceFile(latest, target, target));
 		for (const ps of earlier) {
 			const mappers = target.earlier?.get(ps.number);
 			if (mappers) traced.push(...traceFile(ps, target, mappers));
+		}
+	}
+	// A file of the latest patch set that no target file came from: every
+	// cluster of it has no image (reverted, deleted, renamed away and
+	// rewritten).
+	for (const file of latest?.files ?? []) {
+		if (paired.has(file.path)) continue;
+		for (const c of file.clusters) {
+			traced.push({
+				from: latest?.number as number,
+				fromKey: c.key,
+				path: file.path,
+				images: [],
+				equal: false,
+				rule: "exact",
+			});
 		}
 	}
 	return traced;

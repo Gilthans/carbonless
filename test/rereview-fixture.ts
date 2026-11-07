@@ -57,11 +57,28 @@ export function createRereviewHistory() {
 	const reworked = commit("PR: line 30 again", {
 		"a.txt": aTxt({ 2: "two", 30: "thirty-two" }),
 	});
+	// ... and back to what PS1 had (P8: carried from the earlier patch set).
+	const reworkedBack = commit("PR: line 30 back", {
+		"a.txt": aTxt({ 2: "two", 30: "thirty" }),
+	});
 	// S9: a PR commit reverted (extra.txt added, then removed).
 	checkout(p2);
 	const p3 = commit("PR: extra.txt", { "extra.txt": "extra\n" });
 	git("revert", "--no-edit", p3);
 	const reverted = head();
+	// A deletion the PR made (line 20), then restored by the author.
+	checkout(p2);
+	const deletesLine = commit("PR: drop line 20", {
+		"a.txt": aTxt({ 2: "two", 30: "thirty" }).replace("line 20\n", ""),
+	});
+	const restoresLine = commit("PR: line 20 back", {
+		"a.txt": aTxt({ 2: "two", 30: "thirty" }),
+	});
+	// A path that looks like a glob, changed by the PR, then more appended.
+	checkout(b0);
+	const g0 = commit("base: we[i]rd.txt", { "we[i]rd.txt": "w1\nw2\nw3\n" });
+	const g1 = commit("PR: we[i]rd.txt", { "we[i]rd.txt": "w1\nW2\nw3\n" });
+	const g2 = commit("PR: a.txt too", { "a.txt": aTxt({ 2: "two" }) });
 
 	checkout(b0);
 	const b1 = commit("base: line 15", { "a.txt": aTxt({ 15: "fifteen" }) });
@@ -155,7 +172,13 @@ export function createRereviewHistory() {
 		p3,
 		h3,
 		reworked,
+		reworkedBack,
 		reverted,
+		deletesLine,
+		restoresLine,
+		g0,
+		g1,
+		g2,
 		b1,
 		b1c,
 		merged,

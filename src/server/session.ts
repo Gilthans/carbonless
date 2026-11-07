@@ -1,3 +1,4 @@
+import { fileFlags, reviewProgress } from "../shared/progress.js";
 import type {
 	CommentsView,
 	DeleteAnswer,
@@ -8,6 +9,7 @@ import type {
 	NewThreadRequest,
 	PrOverview,
 	ReplyRequest,
+	RereviewAnswer,
 	ReviewView,
 	SessionInfo,
 	Snapshot,
@@ -20,8 +22,14 @@ import type {
 	VerdictFacts,
 	VerdictRequest,
 } from "../shared/types.js";
-import { ensureClone, fetchPr } from "./clone.js";
-import { buildSnapshot, loadContext, loadFileHunks } from "./diff/snapshot.js";
+import { ensureClone, ensureCommit, fetchPr } from "./clone.js";
+import {
+	buildSnapshot,
+	loadContext,
+	loadFileHunks,
+	snapshotId,
+} from "./diff/snapshot.js";
+import { WriteRefusedError } from "./errors.js";
 import {
 	fetchHeadAsOf,
 	fetchMergeBase,
@@ -36,6 +44,7 @@ import {
 	runGh,
 	viewerSlug,
 } from "./gh.js";
+import { runGit } from "./git.js";
 import {
 	type NewThreadTarget,
 	type StartedRecord,
@@ -43,10 +52,27 @@ import {
 } from "./newThreads.js";
 import { OverviewRead } from "./overviewRead.js";
 import type { HeadSpec } from "./pinnedHead.js";
+import { RereviewCache } from "./rereview/cache.js";
+import {
+	answerRereview,
+	type EarlierPatchset,
+	interdiffFileHunks,
+	rereviewKey,
+	type SincePatchset,
+	type TargetSnapshot,
+	type Traced,
+	traceRereview,
+} from "./rereview/engine.js";
+import { checkOid, commitsSince } from "./rereview/shape.js";
 import { buildReviewView } from "./review/coverage.js";
 import type { PatchsetRecord, ProgressState } from "./review/fold.js";
 import { RefStore } from "./review/refStore.js";
-import { ReviewService, StaleSnapshotError } from "./review/reviews.js";
+import {
+	type PatchsetStart,
+	ReadOnlyPatchsetError,
+	ReviewService,
+	StaleSnapshotError,
+} from "./review/reviews.js";
 import { readSeen, type Seen, writeSeen } from "./seen.js";
 import { slugify } from "./slug.js";
 import { ThreadCodeSource } from "./threadCode.js";
@@ -125,6 +151,42 @@ interface Endpoints {
 }
 
 /**
+ * The engine's work for one comparison (`Session.rereview`), started on
+ * the first ask and never waited for: the answer says `pending` until
+ * `done`, and a failure is reported once and the job forgotten.
+ */
+interface RereviewJob {
+	done: { target: Snapshot; traced: Traced } | null;
+	error: Error | null;
+	settled: Promise<void>;
+}
+
+/** The engine's provisional carries laid over a snapshot's unreviewed view. */
+function overlayCarries(view: ReviewView, answer: RereviewAnswer): ReviewView {
+	const carried = new Map(
+		answer.files
+			.flatMap((f) => f.clusters)
+			.filter((c) => c.kind === "carried")
+			.map((c) => [c.key, c]),
+	);
+	const files = view.files.map((file) => {
+		const clusters = file.clusters.map((c) => {
+			const carry = carried.get(c.key);
+			if (!carry || carry.from === undefined || !carry.state || !carry.rule) {
+				return c;
+			}
+			return {
+				...c,
+				state: carry.state,
+				carried: { from: carry.from, rule: carry.rule },
+			};
+		});
+		return { ...file, clusters, ...fileFlags(clusters) };
+	});
+	return { ...view, files, progress: reviewProgress(files) };
+}
+
+/**
  * Why a PR has no review to open: merged, closed (reopening it on GitHub is
  * the way back), or, for an open PR, that its review couldn't be read.
  */
@@ -197,6 +259,20 @@ export class Session {
 	readonly #verdicts = new Map<string, VerdictRecord>();
 	/** When this server first tried to post each verdict, by client id (ms). */
 	readonly #verdictAttempts = new Map<string, number>();
+	/** The PR's head on GitHub as last checked (info().head). */
+	#head: SessionInfo["head"];
+	/** The base branch name the snapshot was compared against (the triple's third). */
+	#snapshotBase: string;
+	/** Fetches of a head that isn't the snapshot's, one per (head, base) pair (#noteHead). */
+	readonly #fetchedHeads = new Map<string, Promise<{ mergeBase: string }>>();
+	/** The engine's state-free results, in memory and on disk. */
+	readonly #cache = new RereviewCache<Traced>();
+	/** Comparisons being traced, by cache key (one computation per key). */
+	readonly #tracing = new Map<string, Promise<Traced>>();
+	/** Background engine jobs, by `${from}:${toHead}` (rereview). */
+	readonly #jobs = new Map<string, RereviewJob>();
+	/** Snapshots of viewed heads being built, by snapshot id. */
+	readonly #building = new Map<string, Promise<Snapshot>>();
 
 	private constructor(
 		private readonly repo: string,
@@ -210,12 +286,15 @@ export class Session {
 		private readonly options: SessionOptions,
 		/** The commit `options.head` named; null without one. */
 		private readonly pinned: string | null,
+		head: SessionInfo["head"],
 	) {
 		this.#meta = meta;
 		this.#snapshot = snapshot;
 		this.#patchset = progress.patchset?.number ?? null;
 		this.#patchsets = progress.patchsets;
 		this.#lastSeen = lastSeen;
+		this.#head = head;
+		this.#snapshotBase = progress.patchset?.baseBranch ?? meta.baseBranch;
 		this.#threadCode = new ThreadCodeSource(repo);
 		Session.#open.add(this);
 	}
@@ -239,6 +318,7 @@ export class Session {
 			this.#threadCode.close();
 			await Promise.all([
 				...[...this.#live].map((r) => r.settled),
+				...[...this.#jobs.values()].map((j) => j.settled),
 				this.#queue,
 			]);
 		})();
@@ -320,6 +400,22 @@ export class Session {
 		await writeSeen(reviewId, meta.headOid).catch(() => {});
 		const { mergeBase, head } = state.patchset ?? fetched;
 		const snapshot = await buildSnapshot(repo, mergeBase, head);
+		// The PR's head as fetched: the graph's head dot, with its commits
+		// over the patch set (none for a view that never moves on).
+		const headInfo =
+			over || asOf || pinned
+				? null
+				: {
+						oid: fetched.head,
+						mergeBase: fetched.mergeBase,
+						baseBranch: meta.baseBranch,
+						commits: await commitsSince(
+							repo,
+							head,
+							fetched.head,
+							fetched.mergeBase,
+						),
+					};
 		return new Session(
 			repo,
 			viewer,
@@ -331,6 +427,7 @@ export class Session {
 			lastSeen,
 			options,
 			pinned,
+			headInfo,
 		);
 	}
 
@@ -367,11 +464,310 @@ export class Session {
 				}),
 			),
 			lastSeen: this.#lastSeen,
+			head: this.#head,
 		};
 	}
 
 	snapshot(): Snapshot {
 		return this.#snapshot;
+	}
+
+	/**
+	 * The engine's answer for patch set `from` to the snapshot of `toHead`:
+	 * `pending` at once while it is computed in the background (started on
+	 * the first ask, once per pair; nothing of git is waited for here), then
+	 * the answer under the marks as they stand. A RangeError for a patch
+	 * set that is none of the reviewer's; a failed computation is thrown
+	 * once and tried again on the next ask.
+	 */
+	async rereview(
+		from: number,
+		toHead: string,
+	): Promise<RereviewAnswer | { pending: true }> {
+		if (this.#closed) throw new SessionClosedError("The session is closed");
+		checkOid(toHead);
+		const since = this.#patchsets.find((p) => p.number === from);
+		if (!since) throw new RangeError(`No patch set ${from}`);
+		const key = `${from}:${toHead}`;
+		let job = this.#jobs.get(key);
+		if (!job) {
+			const started: RereviewJob = {
+				done: null,
+				error: null,
+				settled: Promise.resolve(),
+			};
+			started.settled = (async () => {
+				try {
+					const target = await this.#headSnapshot(toHead);
+					const traced = await this.#traced(since, target);
+					started.done = { target, traced };
+				} catch (error) {
+					started.error = error as Error;
+				}
+			})();
+			this.#jobs.set(key, started);
+			job = started;
+		}
+		if (job.error) {
+			this.#jobs.delete(key);
+			throw job.error;
+		}
+		if (!job.done) return { pending: true };
+		const { target, traced } = job.done;
+		return (await this.#answerFor(since, target, traced)).answer;
+	}
+
+	/**
+	 * The review of the snapshot of `oid` against the base branch as it
+	 * stands: a patch set of the reviewer's when its snapshot is one (a
+	 * force-push back to an earlier head shows that patch set), else an
+	 * unreviewed view with the engine's provisional carries laid over it
+	 * when its answer is in (never waited for). The snapshot is kept, so
+	 * its hunks and context load by its revision and a first mark, thread
+	 * or verdict on it starts the patch set.
+	 */
+	async viewHead(oid: string): Promise<ReviewView> {
+		const snapshot = await this.#headSnapshot(oid);
+		const progress = await this.#progress();
+		const view = buildReviewView(snapshot, progress);
+		const since = progress.patchset;
+		if (view.patchset !== null || !since) return view;
+		const job = this.#jobs.get(`${since.number}:${oid}`);
+		if (!job?.done || job.done.target.revision !== snapshot.revision) {
+			return view;
+		}
+		const { answer } = await this.#answerFor(since, snapshot, job.done.traced);
+		return overlayCarries(view, answer);
+	}
+
+	/**
+	 * The since view's hunks of file `index` of the snapshot with this
+	 * `revision`: the interdiff from patch set `from` (engine.ts,
+	 * interdiffFileHunks). Waits for the engine (cached if the page asked
+	 * for the answer already).
+	 */
+	async interdiffHunks(
+		from: number,
+		revision: string,
+		index: number,
+	): Promise<FileHunks> {
+		const snapshot = this.#current(revision);
+		const since = (await this.#progress()).patchsets.find(
+			(p) => p.number === from,
+		);
+		if (!since) throw new RangeError(`No patch set ${from}`);
+		const traced = await this.#traced(since, snapshot);
+		const { answer } = await this.#answerFor(since, snapshot, traced);
+		return interdiffFileHunks(traced, snapshot, answer, index);
+	}
+
+	/**
+	 * The snapshot of `oid` against the base branch's tip: the current
+	 * one, a kept one, or built now and kept (by snapshot id, so two asks
+	 * build once). A commit the clone lacks is fetched by OID.
+	 */
+	async #headSnapshot(oid: string): Promise<Snapshot> {
+		checkOid(oid);
+		const signal = this.#stop.signal;
+		const baseRef = `refs/remotes/origin/${this.#meta.baseBranch}`;
+		const mergeBase = async () =>
+			(
+				await runGit(this.repo, ["merge-base", baseRef, oid], { signal })
+			).trim();
+		let base: string;
+		try {
+			base = await mergeBase();
+		} catch (error) {
+			if (!(await ensureCommit(this.repo, oid, signal))) throw error;
+			base = await mergeBase();
+		}
+		const revision = snapshotId(base, oid);
+		if (this.#snapshot.revision === revision) return this.#snapshot;
+		const kept = this.#snapshots.get(revision);
+		if (kept) return kept;
+		let building = this.#building.get(revision);
+		if (!building) {
+			building = buildSnapshot(this.repo, base, oid)
+				.then((snapshot) => {
+					this.#snapshots.set(snapshot.revision, snapshot);
+					return snapshot;
+				})
+				.finally(() => this.#building.delete(revision));
+			this.#building.set(revision, building);
+		}
+		return building;
+	}
+
+	/** The engine's state-free result for `since` → `target`: cached, or computed once. */
+	#traced(since: PatchsetRecord, target: Snapshot): Promise<Traced> {
+		const key = rereviewKey(since.revision, target.revision);
+		let pending = this.#tracing.get(key);
+		if (!pending) {
+			pending = (async () => {
+				const cached = await this.#cache.get(key);
+				if (cached) return cached;
+				const progress = await this.#progress();
+				const traced = await traceRereview(
+					this.repo,
+					await this.#sinceOf(since, progress),
+					await this.#earlierOf(since, progress),
+					this.#targetOf(target),
+					this.#stop.signal,
+				);
+				// A cache that can't be written costs the next restart a
+				// computation, never the answer.
+				await this.#cache.set(key, traced).catch(() => {});
+				return traced;
+			})();
+			this.#tracing.set(key, pending);
+			pending.catch(() => this.#tracing.delete(key));
+		}
+		return pending;
+	}
+
+	/** The answer and the start the traced result gives under the marks of now. */
+	async #answerFor(
+		since: PatchsetRecord,
+		target: Snapshot,
+		traced: Traced,
+	): Promise<ReturnType<typeof answerRereview>> {
+		const progress = await this.#progress();
+		return answerRereview(
+			traced,
+			await this.#sinceOf(since, progress),
+			await this.#earlierOf(since, progress),
+			this.#targetOf(target),
+		);
+	}
+
+	async #sinceOf(
+		record: PatchsetRecord,
+		progress: ProgressState,
+	): Promise<SincePatchset> {
+		return {
+			...record,
+			// A patch set started before the name was recorded: taken as
+			// the current one (a retarget before it can't be told).
+			baseBranch: record.baseBranch ?? this.#snapshotBase,
+			snapshot: await this.#snapshotOf(record),
+			states: progress.statesByRevision.get(record.revision) ?? new Map(),
+		};
+	}
+
+	/** The patch sets before `since`, latest first, for the carry's walk back. */
+	async #earlierOf(
+		since: PatchsetRecord,
+		progress: ProgressState,
+	): Promise<EarlierPatchset[]> {
+		const earlier = progress.patchsets
+			.filter((p) => p.number < since.number)
+			.sort((a, b) => b.number - a.number);
+		return Promise.all(
+			earlier.map(async (record) => ({
+				...record,
+				snapshot: await this.#snapshotOf(record),
+				states: progress.statesByRevision.get(record.revision) ?? new Map(),
+			})),
+		);
+	}
+
+	#targetOf(snapshot: Snapshot): TargetSnapshot {
+		return { ...snapshot, baseBranch: this.#meta.baseBranch };
+	}
+
+	/** PS1's start: nothing before it, nothing carried; the base branch's name. */
+	#firstStart(): PatchsetStart {
+		return {
+			since: null,
+			shape: null,
+			baseBranch: this.#meta.baseBranch,
+			interdiff: null,
+			carried: [],
+		};
+	}
+
+	/**
+	 * The start of the next patch set on `snapshot`: the engine's carries
+	 * from the latest patch set (awaited; cached if the page asked already).
+	 */
+	async #startFor(
+		snapshot: Snapshot,
+		progress: ProgressState,
+	): Promise<PatchsetStart> {
+		const since = progress.patchset;
+		if (!since) return this.#firstStart();
+		const traced = await this.#traced(since, snapshot);
+		return (await this.#answerFor(since, snapshot, traced)).start;
+	}
+
+	/**
+	 * Puts the session on `snapshot`, just started as the latest patch set:
+	 * the one left behind stays readable, and the head dot, if it is this
+	 * head, has nothing newer.
+	 */
+	#adopt(snapshot: Snapshot, progress: ProgressState): void {
+		this.#noted(progress);
+		if (this.#snapshot !== snapshot) {
+			this.#snapshots.set(this.#snapshot.revision, this.#snapshot);
+			this.#snapshot = snapshot;
+			this.#snapshotBase = this.#meta.baseBranch;
+			this.#commentLeft = null;
+			if (this.#head?.oid === snapshot.head) {
+				this.#head = { ...this.#head, mergeBase: snapshot.base, commits: 0 };
+			}
+		}
+		this.#patchset = progress.patchset?.number ?? null;
+	}
+
+	/**
+	 * What a new thread or a verdict on `snapshot` runs before its GitHub
+	 * write: the start of the patch set when the snapshot is none yet (a
+	 * lasting action), nothing when it is the latest, a refusal (409
+	 * "stale") when it is an earlier one, read-only.
+	 */
+	#startHook(snapshot: Snapshot): () => Promise<void> {
+		return () =>
+			this.#exclusive(async () => {
+				try {
+					const before = await this.#progress();
+					const record = before.patchsets.find(
+						(p) => p.revision === snapshot.revision,
+					);
+					if (record) {
+						if (before.patchset?.revision !== snapshot.revision) {
+							throw new ReadOnlyPatchsetError(
+								`Patch set ${record.number} is read-only; patch set ${before.patchset?.number} is the latest`,
+							);
+						}
+						return;
+					}
+					const start = await this.#startFor(snapshot, before);
+					const progress = await this.reviews.ensurePatchset(
+						this.reviewId,
+						this.viewer,
+						snapshot,
+						start,
+					);
+					this.#adopt(snapshot, progress);
+				} catch (error) {
+					if (error instanceof StaleSnapshotError) {
+						throw new WriteRefusedError(error.message, "stale");
+					}
+					throw error;
+				}
+			});
+	}
+
+	/**
+	 * The snapshot a write names by its head: the current one, else a kept
+	 * one with that head (a viewed head, an earlier patch set); the current
+	 * one when none has it (the write's own check refuses it as stale).
+	 */
+	#snapshotForWrite(commit: string): Snapshot {
+		if (this.#snapshot.head === commit) return this.#snapshot;
+		let found: Snapshot | undefined;
+		for (const s of this.#snapshots.values()) if (s.head === commit) found = s;
+		return found ?? this.#snapshot;
 	}
 
 	/**
@@ -507,7 +903,7 @@ export class Session {
 	 */
 	startThread(req: NewThreadRequest): Promise<NewThreadAnswer> {
 		return this.#threadExclusive(NEW_THREADS, () =>
-			startThread(this.#newThreadTarget(), req),
+			startThread(this.#newThreadTarget(req.commit), req),
 		);
 	}
 
@@ -582,20 +978,23 @@ export class Session {
 	 */
 	submitVerdict(req: VerdictRequest): Promise<VerdictAnswer> {
 		return this.#threadExclusive(VERDICTS, () =>
-			submitVerdict(this.#verdictTarget(), req),
+			submitVerdict(this.#verdictTarget(req.commit), req),
 		);
 	}
 
-	#verdictTarget(): VerdictTarget {
+	#verdictTarget(commit: string): VerdictTarget {
 		const write = this.#writeTarget();
+		// The snapshot the verdict is checked against (the one its head
+		// names: the session's, or a viewed head's), even if a Refresh moves
+		// the session's while it runs.
+		const snapshot = this.#snapshotForWrite(commit);
 		return {
 			ref: write.ref,
 			prUrl: write.prUrl,
 			viewer: write.viewer,
 			writes: write.writes,
-			// The snapshot the verdict is checked against, even if a Refresh
-			// moves the session's while it runs.
-			head: this.#snapshot.head,
+			head: snapshot.head,
+			startPatchset: this.#startHook(snapshot),
 			sent: (clientId) => this.#verdicts.get(clientId),
 			rememberSent: (clientId, record) => this.#verdicts.set(clientId, record),
 			firstAttempt: (clientId) => this.#verdictAttempts.get(clientId),
@@ -753,14 +1152,16 @@ export class Session {
 		};
 	}
 
-	#newThreadTarget(): NewThreadTarget {
-		// The snapshot the post is checked against, even if a Refresh moves
-		// the session's while it runs.
-		const snapshot = this.#snapshot;
+	#newThreadTarget(commit: string): NewThreadTarget {
+		// The snapshot the post is checked against (the one its head names:
+		// the session's, or a viewed head's), even if a Refresh moves the
+		// session's while it runs.
+		const snapshot = this.#snapshotForWrite(commit);
 		return {
 			...this.#writeTarget(),
 			head: snapshot.head,
 			commentLeft: () => this.commentLeft(snapshot),
+			startPatchset: this.#startHook(snapshot),
 			started: (clientId) => this.#started.get(clientId),
 			rememberStarted: (clientId, record) =>
 				this.#started.set(clientId, record),
@@ -773,7 +1174,7 @@ export class Session {
 				this.#threadCode.code(
 					anchor,
 					{
-						snapshot: this.#snapshot.base,
+						snapshot: snapshot.base,
 						ref: `refs/remotes/origin/${this.#meta.baseBranch}`,
 					},
 					async () => hunk,
@@ -888,16 +1289,28 @@ export class Session {
 		return this.#exclusive(async () => {
 			const snapshot = this.#current(revision);
 			try {
+				// A snapshot that is no patch set yet starts the next one (the
+				// first with nothing before it; a later one with the engine's
+				// carries from the latest, awaited), then takes the marks.
+				const before = await this.#progress();
+				const known = before.patchsets.some(
+					(p) => p.revision === snapshot.revision,
+				);
+				const start = known
+					? undefined
+					: await this.#startFor(snapshot, before);
 				const progress = this.#noted(
 					await this.reviews.recordStates(
 						this.reviewId,
 						this.viewer,
 						snapshot,
 						changes,
+						start,
 					),
 				);
+				if (!known) this.#adopt(snapshot, progress);
 				const view = buildReviewView(snapshot, progress);
-				this.#patchset = view.patchset;
+				if (snapshot === this.#snapshot) this.#patchset = view.patchset;
 				return view;
 			} catch (error) {
 				// Another crb started a patch set on another revision: move onto it
@@ -945,24 +1358,85 @@ export class Session {
 			// to an empty comparison.
 			if (!progress.patchset && meta.state !== "OPEN") {
 				this.#patchset = null;
+				this.#head = null;
 				return this.info();
 			}
 			await this.#moveTo(progress, fetched);
+			this.#head = await this.#headInfo(meta, fetched.mergeBase);
 			return this.info();
 		});
 		this.#rereadOverview(moved);
 		return moved;
 	}
 
-	/** Asks GitHub for the PR's head without fetching anything. */
+	/**
+	 * Asks GitHub for the PR's head, and compares the triple (head, base
+	 * branch, merge base) with the snapshot's: a head or base branch that
+	 * differs is fetched, once per distinct (head, base tip) pair, for its
+	 * merge base and commit count (info().head); the same head costs no
+	 * fetch.
+	 */
 	async checkHead(): Promise<SessionInfo> {
 		if (this.options.asOf) return this.info();
 		const seq = ++this.#metaSeq;
-		this.#setMeta(
-			seq,
-			await fetchPrMeta(this.#ref(), { signal: this.#stop.signal }),
-		);
+		const meta = await fetchPrMeta(this.#ref(), { signal: this.#stop.signal });
+		this.#setMeta(seq, meta);
+		if (this.#meta === meta) await this.#noteHead(meta);
 		return this.info();
+	}
+
+	/** info().head for `meta`'s head once its merge base is known. */
+	async #headInfo(
+		meta: PrMeta,
+		mergeBase: string,
+	): Promise<SessionInfo["head"]> {
+		if (this.pinned || this.options.asOf || meta.state !== "OPEN") return null;
+		return {
+			oid: meta.headOid,
+			mergeBase,
+			baseBranch: meta.baseBranch,
+			commits: await commitsSince(
+				this.repo,
+				this.#patchsets.at(-1)?.head ?? this.#snapshot.head,
+				meta.headOid,
+				mergeBase,
+				this.#stop.signal,
+			),
+		};
+	}
+
+	/** Sets info().head for `meta`, fetching the head when the triple differs. */
+	async #noteHead(meta: PrMeta): Promise<void> {
+		if (this.pinned || meta.state !== "OPEN") {
+			this.#head = null;
+			return;
+		}
+		const snapshot = this.#snapshot;
+		if (
+			meta.headOid === snapshot.head &&
+			meta.baseBranch === this.#snapshotBase
+		) {
+			this.#head = {
+				oid: meta.headOid,
+				mergeBase: snapshot.base,
+				baseBranch: meta.baseBranch,
+				commits: 0,
+			};
+			return;
+		}
+		const key = `${meta.headOid} ${meta.baseOid ?? ""} ${meta.baseBranch}`;
+		let pending = this.#fetchedHeads.get(key);
+		if (!pending) {
+			pending = fetchPr(this.repo, meta, { signal: this.#stop.signal }).then(
+				({ mergeBase }) => ({ mergeBase }),
+			);
+			this.#fetchedHeads.set(key, pending);
+			pending.catch(() => this.#fetchedHeads.delete(key));
+		}
+		const { mergeBase } = await pending;
+		const head = await this.#headInfo(meta, mergeBase);
+		// A newer check may have answered meanwhile.
+		if (this.#meta === meta) this.#head = head;
 	}
 
 	/** Keeps the newest answer: a slow check started earlier can't undo a refresh. */
@@ -1008,7 +1482,11 @@ export class Session {
 			if (progress.patchsets.some((p) => p.revision === current.revision)) {
 				this.#snapshots.set(current.revision, current);
 			}
-			this.#snapshot = await buildSnapshot(this.repo, mergeBase, head);
+			this.#snapshot =
+				this.#snapshots.get(snapshotId(mergeBase, head)) ??
+				(await buildSnapshot(this.repo, mergeBase, head));
+			this.#snapshotBase =
+				progress.patchset?.baseBranch ?? this.#meta.baseBranch;
 		}
 		this.#patchset = progress.patchset?.number ?? null;
 	}

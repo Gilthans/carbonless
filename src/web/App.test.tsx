@@ -44,6 +44,7 @@ const info: SessionInfo = {
 	pinnedHead: null,
 	patchsets: [],
 	lastSeen: null,
+	head: null,
 };
 
 /** An overview and its threads, as the page gets them from two routes. */

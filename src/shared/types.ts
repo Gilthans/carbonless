@@ -1,3 +1,5 @@
+import type { Placement } from "./tracer/trace.js";
+
 export type FileStatus =
 	| "added"
 	| "deleted"
@@ -866,6 +868,51 @@ export interface TimelineView {
 	gaps: string[];
 }
 
+/**
+ * What became of a cluster of the viewed snapshot since the patch set it
+ * is compared with: carried (the same change, its mark carried over),
+ * reworked (the reviewer's marked change, edited since), new (not in that
+ * patch set), gone (a marked cluster of that patch set with no image in
+ * the snapshot; its key is the old cluster's).
+ */
+export type ClusterKind = "carried" | "reworked" | "new" | "gone";
+
+/**
+ * The engine's answer for one comparison, patch set `from` to the snapshot
+ * of `toHead` (`GET /rereview?from=&to=`): the shape, whether the
+ * interdiff could be built, each file's clusters by kind, how much there is
+ * to read, and the thread placements (empty until PR 5). Clusters of a
+ * conflicted file are all new. `files` holds every file of the snapshot by
+ * its index, then any file only the interdiff has (everything the reviewer
+ * saw of it was undone) at an index past the snapshot's files, good for
+ * `GET /files/:index/hunks?from=` alone.
+ */
+export interface RereviewAnswer {
+	from: number;
+	toHead: string;
+	toRevision: string;
+	shape: Shape;
+	interdiff: "available" | "unavailable";
+	reason?: Shape["virtualRebase"];
+	files: {
+		index: number;
+		path: string;
+		conflict: boolean;
+		clusters: {
+			key: string;
+			kind: ClusterKind;
+			/** carried and gone: the patch set the cluster is from. */
+			from?: number;
+			/** carried: the state carried, and the rule it carried under. */
+			state?: "reviewed" | "crossed-off";
+			rule?: "exact" | "rename";
+		}[];
+	}[];
+	/** Files with a reworked or new cluster (or a conflict), and those clusters. */
+	toRead: { files: number; clusters: number };
+	threads: { id: string; placement: Placement }[];
+}
+
 export interface SessionInfo {
 	pr: {
 		owner: string;
@@ -909,4 +956,17 @@ export interface SessionInfo {
 	 * (the toast's "since you last looked"); null on the first open.
 	 */
 	lastSeen: { head: string; at: number } | null;
+	/**
+	 * The PR's head on GitHub as last checked (`GET /head`), with its merge
+	 * base and the commits it has over the latest patch set's head (over its
+	 * merge base after a force-push; 0 when it is the snapshot's head): the
+	 * graph's head dot and the toast. Null for a merged or closed PR, an
+	 * as-of view and a pinned head, which show neither.
+	 */
+	head: {
+		oid: string;
+		mergeBase: string;
+		baseBranch: string;
+		commits: number;
+	} | null;
 }

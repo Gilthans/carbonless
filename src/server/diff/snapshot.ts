@@ -160,10 +160,12 @@ export async function buildSnapshot(
 			clusters: clusters.map((c, i) => ({ ...c, key: keys[i] as string })),
 		};
 	});
-	const revision = createHash("sha256")
-		.update(`${base}\0${head}`)
-		.digest("hex");
-	return { base, head, revision, files };
+	return { base, head, revision: snapshotId(base, head), files };
+}
+
+/** The snapshot id of the comparison `base` → `head` (`Snapshot.revision`). */
+export function snapshotId(base: string, head: string): string {
+	return createHash("sha256").update(`${base}\0${head}`).digest("hex");
 }
 
 function fileAt(snapshot: Snapshot, index: number): FileSummary {

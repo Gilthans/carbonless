@@ -35,6 +35,7 @@ const info: SessionInfo = {
 	pinnedHead: null,
 	patchsets: [],
 	lastSeen: null,
+	head: null,
 };
 
 describe("KeptPages", () => {

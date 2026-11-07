@@ -1513,6 +1513,133 @@ describe("API", () => {
 		});
 	});
 
+	describe("re-review routes", () => {
+		const mark = async (rev: string, key: string) => {
+			const res = await post("/api/review/states", {
+				revision: rev,
+				changes: [{ key, state: "reviewed" }],
+			});
+			expect(res.statusCode, res.body).toBe(200);
+			return res.json() as ReviewView;
+		};
+		/** PS1 with one mark, then a newer head. */
+		const setup = async () => {
+			const ps1: ReviewView = await get("/api/review");
+			const [key = ""] = keys(ps1);
+			await mark(ps1.revision, key);
+			const newHead = pr.moveHead({ "later.txt": "later\n" });
+			expect((await get("/api/head")).head).toMatchObject({
+				oid: newHead,
+				commits: 1,
+			});
+			return { ps1, key, newHead };
+		};
+		const answered = async (from: number, to: string) => {
+			for (;;) {
+				const answer = await get(`/api/rereview?from=${from}&to=${to}`);
+				if (!answer.pending) return answer;
+				await new Promise((r) => setTimeout(r, 20));
+			}
+		};
+
+		it("GET /rereview: pending, then the answer; 400 for bad params, 404 for a patch set the reviewer hasn't", async () => {
+			const { newHead } = await setup();
+			const first = await get(`/api/rereview?from=1&to=${newHead}`);
+			expect(first).toEqual({ pending: true });
+			const answer = await answered(1, newHead);
+			expect(answer).toMatchObject({
+				from: 1,
+				toHead: newHead,
+				shape: { code: "S1", commits: 1 },
+				interdiff: "available",
+				toRead: { files: 3, clusters: 3 },
+			});
+			for (const bad of [
+				`from=0&to=${newHead}`,
+				"from=1&to=main",
+				"from=1",
+				`to=${newHead}`,
+			]) {
+				expect((await inject(`/api/rereview?${bad}`)).statusCode, bad).toBe(
+					400,
+				);
+			}
+			expect(
+				(await inject(`/api/rereview?from=9&to=${newHead}`)).statusCode,
+			).toBe(404);
+		});
+
+		it("GET /review?head= views the head; ?patchset= an earlier one read-only; hunks?from= the since view; writes against PS1 are 409 stale", async () => {
+			const { ps1, key, newHead } = await setup();
+			await answered(1, newHead);
+			const view: ReviewView = await get(`/api/review?head=${newHead}`);
+			expect(view.patchset).toBeNull();
+			expect(view.files.map((f) => f.path)).toEqual([
+				"a.txt",
+				"later.txt",
+				"new.txt",
+			]);
+			// The engine's provisional carry, laid over.
+			expect(view.files[0]?.clusters[0]).toMatchObject({
+				key,
+				state: "reviewed",
+				carried: { from: 1, rule: "exact" },
+			});
+			const later = view.files[1];
+			if (!later) throw new Error("no later.txt");
+			const since = await get(
+				`/api/files/${later.index}/hunks?revision=${view.revision}&from=1`,
+			);
+			expect(since.hunks[0]?.lines).toEqual([
+				{
+					kind: "add",
+					newNo: 1,
+					text: "later",
+					clusterKey: later.clusters[0]?.key,
+				},
+			]);
+			expect(
+				(await inject(`/api/files/0/hunks?revision=${view.revision}&from=x`))
+					.statusCode,
+			).toBe(400);
+			expect(
+				(await inject(`/api/files/0/hunks?revision=${view.revision}&from=9`))
+					.statusCode,
+			).toBe(404);
+			// Nothing written by viewing.
+			expect((await get("/api/session")).patchsets).toHaveLength(1);
+			// The first mark on the viewed head starts PS2 with the carry.
+			const started = await mark(view.revision, later.clusters[0]?.key ?? "");
+			expect(started.patchset).toBe(2);
+			expect(started.progress.clusters.reviewed).toBe(2);
+			expect(
+				(await get("/api/session")).patchsets.map(
+					(p: { number: number; since: number | null }) => [p.number, p.since],
+				),
+			).toEqual([
+				[1, null],
+				[2, 1],
+			]);
+			// PS1 as reviewed, read-only.
+			const old: ReviewView = await get("/api/review?patchset=1");
+			expect(old).toMatchObject({ patchset: 1, revision: ps1.revision });
+			expect(old.progress.clusters.reviewed).toBe(1);
+			const stale = await post("/api/review/states", {
+				revision: ps1.revision,
+				changes: [{ key, state: "unreviewed" }],
+			});
+			expect(stale.statusCode).toBe(409);
+			expect(stale.json()).toEqual({ error: "stale" });
+			expect((await inject("/api/review?patchset=9")).statusCode).toBe(404);
+			expect((await inject("/api/review?patchset=0")).statusCode).toBe(400);
+			expect((await inject("/api/review?head=main")).statusCode).toBe(400);
+			expect(
+				(await inject(`/api/review?head=${newHead}&patchset=1`)).statusCode,
+			).toBe(400);
+			expect((await get("/api/review")).patchset).toBe(2);
+		});
+	});
+
 	describe("with a web root and an access key", () => {
 		let web: string;
 		let keyed: FastifyInstance;

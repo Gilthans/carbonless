@@ -106,8 +106,12 @@ const STATES: readonly string[] = [
 ] satisfies ClusterState[];
 const POSITIVE = /^[1-9]\d{0,8}$/;
 const INDEX = /^(0|[1-9]\d{0,8})$/;
+/** A full object id (the only form a route passes on to git). */
+const OID = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/;
 /** loadFileHunks/loadContext's error for an index the snapshot doesn't have. */
 const NO_FILE = /^No file \d+ in this snapshot$/;
+/** Session.reviewAt/rereview's error for a patch set the reviewer hasn't. */
+const NO_PATCHSET = /^No patch set \d+$/;
 
 export async function buildApp(
 	registry: SessionRegistry,
@@ -162,7 +166,10 @@ export async function buildApp(
 			return reply.status(400).send({ error: error.message, keys: error.keys });
 		}
 		if (error instanceof BadRequestError) return send(400, error.message);
-		if (error instanceof RangeError && NO_FILE.test(error.message)) {
+		if (
+			error instanceof RangeError &&
+			(NO_FILE.test(error.message) || NO_PATCHSET.test(error.message))
+		) {
 			return send(404, error.message);
 		}
 		if (error instanceof WriteRefusedError) {
@@ -271,16 +278,55 @@ export async function buildApp(
 				if (!read) throw new BadRequestError("read is required");
 				return sessionOf(request).timeline(read);
 			});
-			review.get("/review", (request) => sessionOf(request).review());
+			// The current patch set's review; `patchset=<n>` an earlier one as
+			// reviewed (read-only); `head=<oid>` the snapshot of that head,
+			// viewed (its first lasting action starts the patch set).
+			review.get<{ Querystring: { patchset?: unknown; head?: unknown } }>(
+				"/review",
+				(request) => {
+					const { patchset, head } = request.query;
+					if (patchset !== undefined && head !== undefined) {
+						throw new BadRequestError("patchset and head can't be combined");
+					}
+					if (patchset !== undefined) {
+						return sessionOf(request).reviewAt(patchsetParam(patchset));
+					}
+					if (head !== undefined) {
+						return sessionOf(request).viewHead(oidParam("head", head));
+					}
+					return sessionOf(request).review();
+				},
+			);
+			// The engine's answer for patch set `from` to the snapshot of
+			// head `to`: `{ pending: true }` until it is computed (Session.rereview).
+			review.get<{ Querystring: { from?: unknown; to?: unknown } }>(
+				"/rereview",
+				(request) => {
+					const { from, to } = request.query;
+					return sessionOf(request).rereview(
+						patchsetParam(from),
+						oidParam("to", to),
+					);
+				},
+			);
+			// A file's hunks; with `from=<n>`, the since view's: the interdiff
+			// from patch set n to the snapshot (Session.interdiffHunks).
 			review.get<{
 				Params: { index: string };
-				Querystring: { revision?: unknown };
-			}>("/files/:index/hunks", (request) =>
-				sessionOf(request).fileHunks(
-					revisionParam(request.query.revision),
-					fileIndex(request.params.index),
-				),
-			);
+				Querystring: { revision?: unknown; from?: unknown };
+			}>("/files/:index/hunks", (request) => {
+				const revision = revisionParam(request.query.revision);
+				const index = fileIndex(request.params.index);
+				const { from } = request.query;
+				if (from !== undefined) {
+					return sessionOf(request).interdiffHunks(
+						patchsetParam(from),
+						revision,
+						index,
+					);
+				}
+				return sessionOf(request).fileHunks(revision, index);
+			});
 			review.get<{
 				Params: { index: string };
 				Querystring: { revision?: unknown; newFrom?: string; newTo?: string };
@@ -627,6 +673,20 @@ function fileIndex(raw: string): number {
 function revisionParam(raw: unknown): string {
 	if (typeof raw !== "string" || !raw) {
 		throw new BadRequestError("revision is required");
+	}
+	return raw;
+}
+
+function patchsetParam(raw: unknown): number {
+	if (typeof raw !== "string" || !POSITIVE.test(raw)) {
+		throw new BadRequestError("A patch set number is required");
+	}
+	return Number(raw);
+}
+
+function oidParam(name: string, raw: unknown): string {
+	if (typeof raw !== "string" || !OID.test(raw)) {
+		throw new BadRequestError(`${name} must be a commit id`);
 	}
 	return raw;
 }
