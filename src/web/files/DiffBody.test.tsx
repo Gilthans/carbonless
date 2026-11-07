@@ -2135,6 +2135,40 @@ describe("DiffBody find", () => {
 		expect(window.scrollTo).toHaveBeenCalledTimes(2);
 	});
 
+	it("a step it couldn't take never scrolls later, when the current hit moves without a step", async () => {
+		const { refind } = setup({ find: findAt(null, 1) });
+		await screen.findByText("line 12");
+		expect(window.scrollTo).not.toHaveBeenCalled();
+		// Typing moves the current hit; the step count stays.
+		refind(findAt({ old: false, line: 8 }, 1));
+		refind(findAt({ old: false, line: 5 }, 1));
+		expect(window.scrollTo).not.toHaveBeenCalled();
+		// A line with no row takes its step too.
+		refind(findAt({ old: false, line: 99 }, 2));
+		refind(findAt({ old: false, line: 8 }, 2));
+		expect(window.scrollTo).not.toHaveBeenCalled();
+	});
+
+	it("paints a hit on a context line a gap's expansion shows", async () => {
+		// Lines 13–20 are a gap after the hunk; 13–14 shown.
+		contextRanges.add("r1", 0, 13, 14);
+		setup({
+			hunks: { ...hunks, newLineCount: 20 },
+			find: findAt(null, 0, (side, line) =>
+				side === "RIGHT" && line === 13
+					? [{ from: 0, to: 4, current: false }]
+					: [],
+			),
+		});
+		// Line 13's text is split by its mark.
+		await screen.findByText("line 14");
+		const row = document.querySelector('tr[data-new-no="13"]') as HTMLElement;
+		expect(row.querySelector("[data-find-mark]")?.textContent).toBe("line");
+		expect(
+			document.querySelector('tr[data-new-no="14"] [data-find-mark]'),
+		).toBeNull();
+	});
+
 	it("a collapsed whitespace-only cluster holding the current hit opens", async () => {
 		ignoreWhitespace.set(true);
 		const { collapsed } = setup({ find: findAt({ old: false, line: 3 }) });

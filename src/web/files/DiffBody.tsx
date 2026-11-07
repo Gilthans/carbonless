@@ -91,7 +91,11 @@ export interface DiffThreads {
 
 /** The find's view of this file (FilesPage): marks per line, the current hit, and steps onto it. */
 export interface DiffFind {
-	/** The hits on the line a cell shows (codeCellOf's side and number). */
+	/**
+	 * The hits on the line a cell shows (codeCellOf's side and number).
+	 * Called for every cell on every render: an O(1) lookup (a Map keyed by
+	 * side and line), never a scan of the hits.
+	 */
 	marksOf: (side: DiffSide, line: number) => readonly FindMark[];
 	/** The current hit's line, when it is in this file (painted current, kept open). */
 	current: LineRef | null;
@@ -2160,8 +2164,10 @@ function scrollUnderStack(root: HTMLElement, target: Element, margin: number) {
 /**
  * Follows the find's steps onto a hit in this file once the hunks are in:
  * scrolls the current hit's row under the sticky stack with a few lines of
- * context above, as a landing does. Each step (`stepSeq`) runs once; the
- * row is there to find, as a collapsed cluster holding it is kept open.
+ * context above, as a landing does. Each step (`stepSeq`) is taken once,
+ * found or not: a step with no current hit or no row is spent, so the
+ * current hit moving later without a step (typing) never scrolls. The row
+ * is there to find, as a collapsed cluster holding it is kept open.
  */
 function useFindStep(
 	root: RefObject<HTMLDivElement | null>,
@@ -2174,14 +2180,13 @@ function useFindStep(
 	const line = find?.current?.line;
 	useEffect(() => {
 		const el = root.current;
-		if (!el || !ready || seq === 0 || line === undefined) return;
-		if (done.current === seq) return;
+		if (!el || !ready || seq === 0 || done.current === seq) return;
+		done.current = seq;
+		if (line === undefined) return;
 		const row = el.querySelector(
 			`tr[data-${old ? "old" : "new"}-no="${line}"]`,
 		);
-		if (!row) return;
-		done.current = seq;
-		scrollUnderStack(el, row, 60);
+		if (row) scrollUnderStack(el, row, 60);
 	}, [root, seq, ready, old, line]);
 }
 
