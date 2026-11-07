@@ -427,12 +427,16 @@ function ConnectorLine(props: {
 						c.dashed ? "border-dashed" : ""
 					} ${tone} ${props.className ?? ""}`}
 				>
-					<span
-						data-testid="ps-conn-label"
-						className="absolute top-1.5 left-1/2 inline-flex h-4 -translate-x-1/2 items-center bg-surface px-1 text-[10.5px] whitespace-nowrap text-faint"
-					>
-						{label}
-					</span>
+					{/* No slot at all without a count (the branch's connector): an
+					    empty one would notch the line. */}
+					{label !== null && (
+						<span
+							data-testid="ps-conn-label"
+							className="absolute top-1.5 left-1/2 inline-flex h-4 -translate-x-1/2 items-center bg-surface px-1 text-[10.5px] whitespace-nowrap text-faint"
+						>
+							{label}
+						</span>
+					)}
 				</span>
 			)}
 		</Tooltip>

@@ -69,6 +69,9 @@ describe("connectorLine", () => {
 		expect(connectorLine(shape({ code: "S6" }), toRead(0, 0, 1))).toBe(
 			"Head moved back: 1 reviewed cluster gone",
 		);
+		expect(connectorLine(shape({ code: "S6" }), toRead(0, 0, 0))).toBe(
+			"Head moved back, nothing gone",
+		);
 		expect(connectorLine(shape({ code: "S6" }), null)).toBe("Head moved back");
 	});
 	it("retargeted, to the new base branch when known", () => {

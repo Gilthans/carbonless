@@ -63,7 +63,10 @@ export function connectorLine(
 	const what = whatHappened(shape, baseBranch);
 	if (shape.code === "S6") {
 		if (!toRead) return what;
-		return `${what}: ${plural(toRead.gone ?? 0, "reviewed cluster")} gone`;
+		const gone = toRead.gone ?? 0;
+		return gone === 0
+			? `${what}, nothing gone`
+			: `${what}: ${plural(gone, "reviewed cluster")} gone`;
 	}
 	const head = noInterdiff(shape) ? `${what}, no interdiff` : what;
 	if (!toRead) return head;

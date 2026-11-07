@@ -184,6 +184,10 @@ describe("PatchsetGraph", () => {
 			"3 commits",
 		);
 		expect(conn).toHaveAccessibleName("PS2 to head: 3 commits");
+		// The branch's connector has no count: no label slot to notch the line.
+		expect(
+			within(screen.getByTestId("ps-conn-ps1")).queryByTestId("ps-conn-label"),
+		).toBeNull();
 	});
 
 	it("the connector's card spins in its to-read slot until the engine answers, then says the line", async () => {
