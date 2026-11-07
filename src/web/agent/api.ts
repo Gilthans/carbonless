@@ -14,7 +14,7 @@ import {
 	type AgentThread,
 	type OpenAgentThreadRequest,
 } from "../../shared/agent";
-import { fetchJson, reviewApiPath } from "../api";
+import { ApiError, fetchJson, reviewApiPath } from "../api";
 
 const json = (method: string, body?: unknown): RequestInit => ({
 	method,
@@ -36,10 +36,14 @@ export const fetchAgentStatus = () => review<AgentStatus>("agent");
 export const agentStatusQuery = queryOptions({
 	queryKey: ["agent"],
 	queryFn: fetchAgentStatus,
-	refetchInterval: () =>
-		typeof document === "undefined" || document.visibilityState === "visible"
-			? AGENT_POLL_MS
-			: false,
+	refetchInterval: (query) =>
+		// No agent on this review (--viewer, --as-of): nothing to poll.
+		query.state.error instanceof ApiError && query.state.error.status === 404
+			? false
+			: typeof document === "undefined" ||
+					document.visibilityState === "visible"
+				? AGENT_POLL_MS
+				: false,
 	refetchIntervalInBackground: false,
 	retry: false,
 	staleTime: AGENT_POLL_MS,
