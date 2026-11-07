@@ -815,6 +815,34 @@ describe("patch set n+1", () => {
 		).rejects.toBeInstanceOf(StaleSnapshotError);
 	});
 
+	it("refuses a patch set number that isn't one before touching git", async () => {
+		await svc.recordStates(id, "dan", snap, [{ key: k1, state: "reviewed" }]);
+		const anchor = {
+			path: "mod.ts",
+			startSide: "RIGHT" as const,
+			startLine: 2,
+			side: "RIGHT" as const,
+			line: 2,
+		};
+		for (const n of [0, -1, 1.5, Number.NaN, 2 ** 53]) {
+			await expect(svc.patchsetPins(id, "dan", n)).rejects.toThrow(
+				/patch set number/,
+			);
+			await expect(
+				svc.recordPlacement(id, "dan", n, "PRRT_1", anchor, 1),
+			).rejects.toThrow(/patch set number/);
+		}
+		expect((await store.readEvents(progressRef())).length).toBe(2);
+		expect(await svc.patchsetPins(id, "dan", 1)).toEqual({
+			head: snap.head,
+			base: snap.base,
+		});
+		expect(await svc.patchsetPins(id, "dan", 7)).toEqual({
+			head: null,
+			base: null,
+		});
+	});
+
 	it("two tabs starting PS2 at once end with one PS2 and one set of pins", async () => {
 		await svc.recordStates(id, "dan", snap, [{ key: k1, state: "reviewed" }]);
 		const [a, b] = await Promise.all([

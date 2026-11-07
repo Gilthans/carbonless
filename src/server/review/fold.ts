@@ -110,7 +110,8 @@ export function foldProgress(events: CrbEvent[]): ProgressState {
 				break;
 			}
 			case "carried": {
-				if (e.by !== "auto") break;
+				// Parse enforces both; the fold holds them on its own too.
+				if (e.by !== "auto" || e.from >= e.to) break;
 				const from = byNumber.get(e.from);
 				const to = byNumber.get(e.to);
 				if (!from || !to) break;

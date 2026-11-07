@@ -361,6 +361,22 @@ describe("foldProgress", () => {
 			expect(statesOf(evs, OTHER_REV)).toEqual({});
 		});
 
+		it("are ignored when from isn't before to, even past the parser", () => {
+			// newEvent doesn't validate: the fold must hold the rule on its own.
+			const evs = [
+				...twoSets(),
+				state(K4, "reviewed", { patchset: OTHER_REV }),
+				carried([entry(K1, K4, "reviewed")], { from: 2, to: 1 }),
+				carried([entry(K2, K2, "crossed-off")], { from: 1, to: 1 }),
+			];
+			expect(statesOf(evs, REV)[K1]).toEqual({ state: "reviewed" });
+			expect(statesOf(evs, REV)[K2]).toEqual({
+				state: "crossed-off",
+				reason: "generated",
+			});
+			expect(statesOf(evs, OTHER_REV)).toEqual({ [K4]: { state: "reviewed" } });
+		});
+
 		it("apply entry by entry: a bad entry doesn't take the good ones with it", () => {
 			const evs = [
 				...twoSets(),
