@@ -115,10 +115,10 @@ Not scheduled yet; after everything above.
   along the lines of git-appraise (owner, 2026-10-28). Until then a span rides
   in a hidden marker in the GitHub comment
   (`docs/superpowers/specs/2026-10-27-new-threads-design.md`).
-- **Search across the PR:** Files changed shows one file at a time, so the
-  browser's find can't reach the others; add a search over every changed
-  file (and threads) that jumps to each match (owner, 2026-11-01; not for
-  milestone 2).
+- **Search across the PR:** done 2026-11 as Find in PR (Cmd+F / Ctrl+F on
+  Files changed; paths, changed lines and shown context;
+  `docs/superpowers/specs/2026-11-05-find-in-pr-design.md`).
+  - **Follow-up:** search threads too (owner, 2026-11-01).
 - **Install as a web app:** a PWA (manifest, icons, a service worker that
   only caches the app shell) so carbonless can be added to the phone's home
   screen and the desktop's app list (owner, 2026-11-01).
