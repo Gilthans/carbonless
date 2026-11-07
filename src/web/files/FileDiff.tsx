@@ -725,23 +725,24 @@ export function FileDiff(props: {
 								/>
 								{/* Beside the path, so a phone's second row keeps its room. */}
 								<ChangeCount file={file} hover={summaryTrigger} />
-								{/* What happened since the compared patch set; a spinner
-								    while the engine computes (never no chips that read as
-								    nothing changed). Wraps under the path on a phone. */}
-								{(props.sinceInfo || props.sincePending) && (
-									<span
-										data-testid="since-chips"
-										aria-busy={props.sincePending || undefined}
-										className="flex min-h-5 flex-wrap items-center gap-1"
-									>
-										{props.sincePending && !props.sinceInfo ? (
-											<Spinner label="Computing what changed" size={12} />
-										) : (
-											<SinceChips info={props.sinceInfo} since={props.since} />
-										)}
-									</span>
-								)}
 							</div>
+							{/* What happened since the compared patch set; a spinner
+							    while the engine computes (never no chips that read as
+							    nothing changed). A row of its own below @lg, so the path
+							    keeps its width on a phone (principle 5). */}
+							{(props.sinceInfo || props.sincePending) && (
+								<span
+									data-testid="since-chips"
+									aria-busy={props.sincePending || undefined}
+									className="flex min-h-5 basis-full flex-wrap items-center gap-1 @lg:order-4 @lg:basis-auto"
+								>
+									{props.sincePending && !props.sinceInfo ? (
+										<Spinner label="Computing what changed" size={12} />
+									) : (
+										<SinceChips info={props.sinceInfo} since={props.since} />
+									)}
+								</span>
+							)}
 							<button
 								ref={toggleButton}
 								type="button"

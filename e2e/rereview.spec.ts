@@ -179,6 +179,7 @@ test("View lands on the since view: the reworked and new clusters with their chi
 	workdir,
 	pr,
 	startCrb,
+	isMobile,
 }) => {
 	const p = await pr(fixture);
 	const s = await startCrb();
@@ -203,6 +204,19 @@ test("View lands on the since view: the reworked and new clusters with their chi
 	await expect(toRead(page)).toHaveText(/2 to read/);
 	// The progress bar counts the viewed snapshot with its provisional carries.
 	await expect(progress(page)).toContainText("2 / 4 clusters reviewed");
+	await expectNoPageOverflow(page);
+	// On the narrowest phone the chips take a row of their own: the path
+	// keeps its width (principle 5).
+	if (isMobile) {
+		await page.setViewportSize({ width: 360, height: 740 });
+		const path = await coreS.getByTestId("file-path").boundingBox();
+		const chipRow = await coreS.getByTestId("since-chips").boundingBox();
+		if (!path || !chipRow) throw new Error("no geometry");
+		expect(path.width).toBeGreaterThan(60);
+		// A row of its own, under the path, however many chips there are.
+		expect(chipRow.y).toBeGreaterThanOrEqual(path.y + path.height - 1);
+	}
+	await expect(coreS.getByTestId("file-path")).toBeVisible();
 	await expectNoPageOverflow(page);
 
 	// The since view: core.ts shows the reworked cluster alone, as a plain
