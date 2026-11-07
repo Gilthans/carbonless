@@ -17,7 +17,7 @@ import {
 	headQuery,
 	overviewQuery,
 	postRefresh,
-	reviewQuery,
+	REVIEW_KEY,
 	sessionQuery,
 	verdictQuery,
 } from "./api";
@@ -191,7 +191,7 @@ export function App() {
 			queryClient.setQueryData(sessionQuery.queryKey, info);
 			return Promise.all([
 				queryClient.invalidateQueries({ queryKey: overviewQuery.queryKey }),
-				queryClient.invalidateQueries({ queryKey: reviewQuery.queryKey }),
+				queryClient.invalidateQueries({ queryKey: REVIEW_KEY }),
 				// Read only once the tab has shown (refetched only if so).
 				queryClient.invalidateQueries({ queryKey: verdictQuery.queryKey }),
 			]);

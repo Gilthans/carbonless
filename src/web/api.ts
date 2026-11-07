@@ -9,6 +9,7 @@ import {
 	type NewThreadRequest,
 	type PrOverview,
 	type ReplyRequest,
+	type RereviewAnswer,
 	type ResolveRequest,
 	type ReviewView,
 	type SessionInfo,
@@ -158,12 +159,49 @@ export const fetchOverview = (maxAge?: number, signal?: AbortSignal) =>
 			: `/api/overview?${new URLSearchParams({ maxAge: String(maxAge) })}`,
 		{ signal },
 	);
-export const fetchReview = () => request<ReviewView>("/api/review");
+/**
+ * Which review to read: the session's own (the latest patch set, or the
+ * snapshot before any), an earlier patch set's as reviewed (read-only), or
+ * the snapshot of a head viewed before it is a patch set (files/comparison.ts).
+ */
+export type ReviewTarget =
+	| { kind: "current" }
+	| { kind: "patchset"; number: number }
+	| { kind: "head"; oid: string };
 
-export const fetchHunks = (revision: string, index: number) =>
+export const CURRENT_REVIEW: ReviewTarget = { kind: "current" };
+
+const reviewPath = (target: ReviewTarget) =>
+	target.kind === "current"
+		? "/api/review"
+		: `/api/review?${new URLSearchParams(
+				target.kind === "patchset"
+					? { patchset: String(target.number) }
+					: { head: target.oid },
+			)}`;
+
+export const fetchReview = (target: ReviewTarget = CURRENT_REVIEW) =>
+	request<ReviewView>(reviewPath(target));
+
+/** With `from`, the since view's hunks: the interdiff from patch set `from`. */
+export const fetchHunks = (revision: string, index: number, from?: number) =>
 	request<FileHunks>(
-		`/api/files/${index}/hunks?${new URLSearchParams({ revision })}`,
+		`/api/files/${index}/hunks?${new URLSearchParams({
+			revision,
+			...(from === undefined ? {} : { from: String(from) }),
+		})}`,
 	);
+
+/** The engine's answer for patch set `from` to a patch set or a head (RereviewAnswer). */
+export const fetchRereview = (from: number, to: RereviewTo) =>
+	request<RereviewAnswer | { pending: true }>(
+		`/api/rereview?${new URLSearchParams({
+			from: String(from),
+			...("patchset" in to ? { to: String(to.patchset) } : { head: to.head }),
+		})}`,
+	);
+
+export type RereviewTo = { patchset: number } | { head: string };
 
 export const fetchContext = (
 	revision: string,
@@ -655,17 +693,53 @@ export const verdictQuery = queryOptions({
 	staleTime: Number.POSITIVE_INFINITY,
 });
 
-export const reviewQuery = queryOptions({
-	queryKey: ["review"],
-	queryFn: fetchReview,
-});
+/** Every review query's key starts with this (invalidate them all at once). */
+export const REVIEW_KEY = ["review"] as const;
 
-export const hunksQuery = (revision: string, index: number) =>
+/**
+ * The review to show: the session's own (key `["review"]`, which a stored
+ * write replaces at once), an earlier patch set's, or a viewed head's.
+ */
+export const reviewQuery = (target: ReviewTarget = CURRENT_REVIEW) =>
 	queryOptions({
-		queryKey: ["hunks", revision, index],
-		queryFn: () => fetchHunks(revision, index),
+		queryKey:
+			target.kind === "current"
+				? [...REVIEW_KEY]
+				: target.kind === "patchset"
+					? [...REVIEW_KEY, "ps", target.number]
+					: [...REVIEW_KEY, "head", target.oid],
+		queryFn: () => fetchReview(target),
+	});
+
+export const hunksQuery = (revision: string, index: number, from?: number) =>
+	queryOptions({
+		queryKey: ["hunks", revision, index, from ?? null],
+		queryFn: () => fetchHunks(revision, index, from),
 		// A revision's hunks never change.
 		staleTime: Number.POSITIVE_INFINITY,
+	});
+
+/** How often the page asks again while the engine is still computing. */
+export const REREVIEW_POLL_MS = 2000;
+
+/**
+ * The engine's answer for patch set `from` to `to`: polled every
+ * REREVIEW_POLL_MS while `pending`, then kept (a mark on the compared
+ * patch set invalidates it: the carries follow the marks).
+ */
+export const rereviewQuery = (from: number, to: RereviewTo) =>
+	queryOptions({
+		queryKey: [
+			"rereview",
+			from,
+			...("patchset" in to ? ["ps", to.patchset] : ["head", to.head]),
+		],
+		queryFn: () => fetchRereview(from, to),
+		staleTime: Number.POSITIVE_INFINITY,
+		refetchInterval: (query) =>
+			query.state.data && "pending" in query.state.data
+				? REREVIEW_POLL_MS
+				: false,
 	});
 
 export const contextQuery = (

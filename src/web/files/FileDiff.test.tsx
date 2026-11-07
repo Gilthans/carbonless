@@ -163,10 +163,10 @@ function setup(
 	});
 	// Like the page: the file as the reviewer intends it (useReviewView),
 	// read only when a test asks for it.
-	queryClient.setQueryDefaults(reviewQuery.queryKey, {
+	queryClient.setQueryDefaults(reviewQuery().queryKey, {
 		staleTime: Number.POSITIVE_INFINITY,
 	});
-	queryClient.setQueryData(reviewQuery.queryKey, view(f));
+	queryClient.setQueryData(reviewQuery().queryKey, view(f));
 	const rendered = render(
 		<QueryClientProvider client={queryClient}>
 			<Shown unit={unit} />
@@ -175,7 +175,7 @@ function setup(
 	/** Shows `next` as the server's file, like a reread does. */
 	const rerender = (next: FileView) =>
 		act(async () => {
-			queryClient.setQueryData(reviewQuery.queryKey, view(next));
+			queryClient.setQueryData(reviewQuery().queryKey, view(next));
 			// The query cache notifies on a timeout.
 			await new Promise((r) => setTimeout(r, 0));
 		});
@@ -246,7 +246,7 @@ describe("FileDiff", () => {
 			]),
 		);
 		await waitFor(() =>
-			expect(queryClient.getQueryData(reviewQuery.queryKey)).toEqual(
+			expect(queryClient.getQueryData(reviewQuery().queryKey)).toEqual(
 				view(reviewed),
 			),
 		);
@@ -1294,18 +1294,18 @@ describe("FileDiff", () => {
 			}
 			return { status: 200, body: after };
 		});
-		void queryClient.refetchQueries({ queryKey: reviewQuery.queryKey });
+		void queryClient.refetchQueries({ queryKey: reviewQuery().queryKey });
 		await waitFor(() => expect(answerRead).toBeDefined());
 		await user.click(screen.getByRole("button", { name: "Expand file" }));
 		await user.click(
 			await screen.findByRole("checkbox", { name: "Mark cluster reviewed" }),
 		);
 		await waitFor(() =>
-			expect(queryClient.getQueryData(reviewQuery.queryKey)).toEqual(after),
+			expect(queryClient.getQueryData(reviewQuery().queryKey)).toEqual(after),
 		);
 		answerRead?.();
 		await new Promise((resolve) => setTimeout(resolve, 20));
-		expect(queryClient.getQueryData(reviewQuery.queryKey)).toEqual(after);
+		expect(queryClient.getQueryData(reviewQuery().queryKey)).toEqual(after);
 	});
 
 	it("while a file's lines load: a spinner, never an empty diff", async () => {
