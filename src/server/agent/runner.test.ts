@@ -510,4 +510,57 @@ describe("AgentRunner", () => {
 		});
 		expect(spawns()).toHaveLength(2);
 	});
+
+	it("the claim holder answers a question asked on the server that shows elsewhere", async () => {
+		const holder = makeRunner({ port: 4800 });
+		holder.poke();
+		await until((s) => s.state === "ready");
+		const otherStore = new AgentThreadStore(
+			new RefStore(cache.path),
+			REVIEW,
+			"dan",
+		);
+		const other = new AgentRunner({
+			reviewId: REVIEW,
+			config: async () => config,
+			store: otherStore,
+			cacheClone: cache.path,
+			head: origin.shas[1] as string,
+			port: 4801,
+			facts: {
+				review: () => {
+					throw new Error("the elsewhere runner never prompts");
+				},
+				prFacts: async () => ({ title: "", body: "", files: [] }),
+				anchored: async () => null,
+				hunk: async () => null,
+				authorOf: () => "reviewer",
+			},
+		});
+		try {
+			other.poke();
+			await other.settled();
+			expect(await other.status()).toMatchObject({
+				state: "elsewhere",
+				elsewhere: 4800,
+			});
+			const t = await otherStore.open({
+				anchor: anchor(1),
+				text: "asked elsewhere",
+				by: "human",
+				clientId: "e1",
+			});
+			other.poke();
+			// The holder's page polls its status; that's where it notices.
+			await until((s) => s.waiting === 0);
+			const [answeredThread] = await threads();
+			expect(answeredThread?.id).toBe(t.id);
+			expect(answeredThread?.messages[1]).toMatchObject({
+				by: "ai",
+				text: "ok",
+			});
+		} finally {
+			await other.close();
+		}
+	});
 });

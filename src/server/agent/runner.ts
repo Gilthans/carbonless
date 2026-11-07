@@ -164,6 +164,9 @@ export class AgentRunner {
 		} catch {
 			// The count is a hint; the ref may be unreadable a moment.
 		}
+		// Questions asked elsewhere (another server showing `elsewhere`)
+		// reach the ref, not this runner: the holder answers them on its poll.
+		if (waiting > 0 && this.#state === "ready" && !this.#pump) this.poke();
 		const error =
 			this.#state === "error"
 				? this.#error
