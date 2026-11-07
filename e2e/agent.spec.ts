@@ -282,7 +282,7 @@ test("the chip turns red when the agent crashes mid-answer; the partial reply st
 	await expect(chip(page)).toHaveAccessibleName(/70/);
 });
 
-test("elsewhere: a second server on the same machine leaves the agent to the first", async ({
+test("elsewhere: a second server leaves the agent to the first, which answers what is asked there", async ({
 	page,
 	pr,
 	agentCrb,
@@ -302,14 +302,16 @@ test("elsewhere: a second server on the same machine leaves the agent to the fir
 	await expect(chip(other)).toHaveAccessibleName(
 		`Your agent: answered by the server on :${port}`,
 	);
-	// Ask agent still works there: the thread waits (for the holder).
+	// Asked there, the holder's agent answers it: the one agent process on
+	// the machine is the first server's.
 	const section = await openFile(other, second.url, CALC);
 	const card = await ask(other, section, 3, "Who answers?");
-	await expect(card).toHaveAttribute("aria-label", "Agent thread, waiting");
-	await expect(card.getByTestId("agent-waiting")).toContainText(
-		"waiting for an agent",
-	);
-	// One agent process on the machine: the first server's.
+	await expect(card).toHaveAttribute("aria-label", "Agent thread, answered", {
+		// The holder sees the question on its next status poll (5 s, the
+		// first page's), then this page on its own (5 s): two idle polls.
+		timeout: 20_000,
+	});
+	await expect(card.getByTestId("agent-message-ai")).toHaveText("ok");
 	const pids = new Set(
 		acpLog(acpLogPath)
 			.filter((e) => e.method === "spawn")
@@ -358,6 +360,55 @@ test("a restart keeps the thread, and the new agent answers it once", async ({
 	const perPid = new Map<number, number>();
 	for (const p of prompts) perPid.set(p.pid, (perPid.get(p.pid) ?? 0) + 1);
 	expect([...perPid.values()]).toEqual([1, 1]);
+});
+
+test("a thread asked on an earlier head stays reachable in its file's lead, marked outdated", async ({
+	page,
+	pr,
+	agentCrb,
+}) => {
+	// An answer, a push, a Refresh and the file again.
+	test.slow();
+	const p = await pr(fixture);
+	const s = await agentCrb();
+	const section = await openFile(page, s.url, CALC);
+	const card = await ask(page, section, 3, "Asked before the push");
+	await expect(card).toHaveAttribute("aria-label", "Agent thread, answered");
+	const before = p.repo.shas.at(-1) ?? "";
+	p.moveHead({
+		message: "later push",
+		files: {
+			[CALC]: `${Array.from({ length: 12 }, (_, i) =>
+				i === 2
+					? "export const total = v1 + v2;"
+					: i === 4
+						? "export const v5 = 50;"
+						: `export const v${i + 1} = ${i + 1};`,
+			).join("\n")}\n`,
+		},
+	});
+	const refreshed = page.waitForResponse(
+		(r) => r.url().endsWith("/refresh") && r.ok(),
+	);
+	await page.getByRole("button", { name: "Refresh" }).click();
+	await refreshed;
+	await expect(page.getByRole("button", { name: "Refresh" })).toBeEnabled();
+	const again = await openFile(page, s.url, CALC);
+	// Not on line 3 any more (that head is gone)...
+	await expect(row(again, 3).getByTestId("agent-bubble")).toHaveCount(0);
+	// ...but in the file's lead, outdated, with the head it was asked on.
+	await again
+		.getByRole("button", { name: /^1 agent thread on this file/ })
+		.click();
+	const old = again
+		.getByTestId("agent-thread")
+		.filter({ hasText: "Asked before the push" });
+	await expect(
+		old.getByRole("img", {
+			name: `Asked on an earlier version (${before.slice(0, 7)})`,
+		}),
+	).toBeAttached();
+	await expect(old.getByTestId("agent-message-ai")).toHaveText("ok");
 });
 
 /** A PR that tries to make whatever opens it run things. */
