@@ -311,7 +311,7 @@ export class AgentRunner {
 			this.#checkout ??= await createCheckout(
 				this.#deps.cacheClone,
 				this.#deps.reviewId,
-				this.#deps.head,
+				this.#deps.facts.review().head.commit || this.#deps.head,
 			);
 		} catch (error) {
 			this.#set("error", {
@@ -414,7 +414,20 @@ export class AgentRunner {
 	async #turn(agent: AcpAgent, thread: AgentThreadFold): Promise<boolean> {
 		const { facts } = this.#deps;
 		const review = facts.review();
-		const notice = this.#notices.get(thread.id);
+		const rejected = this.#notices.get(thread.id);
+		// The tree follows the PR's head (a Refresh moves it).
+		const stuck = await this.#checkout
+			?.moveTo(review.head.commit)
+			.catch((error: unknown) => (error as Error).message);
+		const notice =
+			[
+				rejected,
+				stuck
+					? `The PR's head is now ${review.head.commit}, but your checkout could not move there (${stuck.trim().slice(0, 300)}); it is still at the commit you were given before.`
+					: undefined,
+			]
+				.filter(Boolean)
+				.join("\n") || undefined;
 		const viewer = this.#deps.viewer;
 		let pr: PromptEnvelope["pr"];
 		if (!this.#prompted) {
@@ -470,7 +483,7 @@ export class AgentRunner {
 		clearTimeout(deadline);
 		this.#prompted = true;
 		if (this.#answering === answering) this.#answering = null;
-		if (notice !== undefined && this.#notices.get(thread.id) === notice) {
+		if (rejected !== undefined && this.#notices.get(thread.id) === rejected) {
 			this.#notices.delete(thread.id);
 		}
 		// A process stopped on purpose (the session closing, a new config):

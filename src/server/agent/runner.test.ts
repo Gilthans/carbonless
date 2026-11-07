@@ -47,6 +47,8 @@ let scenarioPath: string;
 let logPath: string;
 let config: { agent: AgentConfig | null; problems: string[] };
 let runner: AgentRunner;
+/** The PR's head as the review sees it (a Refresh moves it). */
+let prHead: string;
 const saved: Record<string, string | undefined> = {};
 
 const anchor = (line: number): AgentAnchor => ({
@@ -82,7 +84,7 @@ function makeRunner(over: Partial<RunnerDeps> = {}): AgentRunner {
 				pr: 12,
 				url: "https://github.com/acme/widget/pull/12",
 				base: { ref: "main", commit: origin.shas[0] as string },
-				head: { ref: "feature", commit: origin.shas[1] as string },
+				head: { ref: "feature", commit: prHead },
 				mergeBase: origin.shas[0] as string,
 				tree: join(agentsDir(), REVIEW, "tree"),
 			}),
@@ -122,6 +124,7 @@ beforeEach(() => {
 	);
 	store = new AgentThreadStore(new RefStore(cache.path), REVIEW, "dan");
 	config = { agent: AGENT, problems: [] };
+	prHead = origin.shas[1] as string;
 	for (const k of ["PATH", "CRB_FAKE_ACP", "CRB_FAKE_ACP_LOG"])
 		saved[k] = process.env[k];
 	process.env.PATH = `${FAKE_ACP_BIN}:${process.env.PATH}`;
@@ -562,5 +565,63 @@ describe("AgentRunner", () => {
 		} finally {
 			await other.close();
 		}
+	});
+
+	/** A new commit on the PR, fetched into the cache clone like a Refresh. */
+	const pushToPr = (files: Record<string, string>): string => {
+		const run = (cwd: string, ...args: string[]) =>
+			execFileSync("git", ["-C", cwd, ...args], {
+				encoding: "utf8",
+				env: testGitEnv(),
+			}).trim();
+		for (const [name, text] of Object.entries(files))
+			writeFileSync(join(origin.path, name), text);
+		run(origin.path, "commit", "--quiet", "-am", "more");
+		const sha = run(origin.path, "rev-parse", "HEAD");
+		run(
+			cache.path,
+			"fetch",
+			"--quiet",
+			origin.path,
+			`${sha}:refs/pull/12/head`,
+		);
+		return sha;
+	};
+	const treeHead = () =>
+		execFileSync(
+			"git",
+			["-C", join(agentsDir(), REVIEW, "tree"), "rev-parse", "HEAD"],
+			{
+				encoding: "utf8",
+				env: testGitEnv(),
+			},
+		).trim();
+
+	it("the agent's tree follows the PR's head before a turn", async () => {
+		await ask("one?", 1);
+		makeRunner().poke();
+		await answered(1);
+		expect(treeHead()).toBe(origin.shas[1]);
+		prHead = pushToPr({ "a.txt": "newer\n" });
+		await ask("two?", 2);
+		runner.poke();
+		await answered(2);
+		expect(treeHead()).toBe(prHead);
+		expect(prompts()[1]?.notice).toBeUndefined();
+	});
+
+	it("when the agent's own edits block the move, the envelope says so", async () => {
+		await ask("one?", 1);
+		makeRunner().poke();
+		await answered(1);
+		const old = treeHead();
+		// The agent's uncommitted edit to a file the new head changes.
+		writeFileSync(join(agentsDir(), REVIEW, "tree", "a.txt"), "agent's edit\n");
+		prHead = pushToPr({ "a.txt": "newer\n" });
+		await ask("two?", 2);
+		runner.poke();
+		await answered(2);
+		expect(treeHead()).toBe(old);
+		expect(prompts()[1]?.notice).toContain(`The PR's head is now ${prHead}`);
 	});
 });

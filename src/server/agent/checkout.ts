@@ -13,6 +13,11 @@ export interface Checkout {
 	dir: string;
 	tree: string;
 	remove(): Promise<void>;
+	/**
+	 * Moves the tree to `head` (detached) when it is elsewhere: null when
+	 * it is there, else why not (the agent's own changes in the way).
+	 */
+	moveTo(head: string): Promise<string | null>;
 }
 
 const OID = /^[0-9a-f]{40}([0-9a-f]{24})?$/;
@@ -65,6 +70,19 @@ export async function createCheckout(
 		dir,
 		tree,
 		remove: () => rm(tree, { recursive: true, force: true }),
+		moveTo: async (to) => {
+			if (!OID.test(to)) return `Invalid head: ${to}`;
+			const at = (
+				await runGit(tree, ["rev-parse", "HEAD"], { allowFailure: true })
+			).trim();
+			if (at === to) return null;
+			try {
+				await runGit(tree, ["checkout", "--quiet", "--detach", to]);
+				return null;
+			} catch (error) {
+				return (error as Error).message;
+			}
+		},
 	};
 }
 
