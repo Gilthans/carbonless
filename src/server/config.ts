@@ -211,8 +211,9 @@ let updates: Promise<unknown> = Promise.resolve();
 /**
  * Applies `change` to the config and writes it, atomically. Keys the file
  * has that carbonless doesn't know (top level, in `serve`, `refresh`,
- * `agent` and each view) are kept; a null agent is written as null; parts that were bad are written valid. Throws when
- * `change` returns an invalid config.
+ * `agent` and each view) are kept; parts that were bad are written valid;
+ * no agent is written as `"agent": null`. Throws when `change` returns an
+ * invalid config.
  */
 export function updateConfig(
 	change: (c: CrbConfig) => CrbConfig,
