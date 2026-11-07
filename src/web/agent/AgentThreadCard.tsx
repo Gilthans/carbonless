@@ -1,0 +1,527 @@
+import {
+	AlertIcon,
+	CheckCircleIcon,
+	IssueReopenedIcon,
+	SparkleFillIcon,
+	SquareFillIcon,
+} from "@primer/octicons-react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+	type KeyboardEvent,
+	useId,
+	useLayoutEffect,
+	useRef,
+	useState,
+} from "react";
+import {
+	type AgentActivity,
+	type AgentMessage,
+	type AgentStatus,
+	type AgentStop,
+	type AgentThread,
+	MAX_AGENT_TEXT,
+} from "../../shared/agent";
+import { sessionQuery } from "../api";
+import { Badge, LabeledIcon } from "../overview/parts";
+import { RelativeTime } from "../RelativeTime";
+import { Spinner } from "../Spinner";
+import { commentSurface } from "../threads/Conversation";
+import { newClientId } from "../threads/newThreads";
+import { Avatar, usePerson } from "../threads/people";
+import { AgentMarkdown } from "./AgentMarkdown";
+import {
+	dropAgentWrite,
+	replyAgent,
+	retryAgentWrite,
+	useAgentWrites,
+} from "./agentWrites";
+import {
+	agentStatusQuery,
+	agentThreadsQuery,
+	postAgentCancel,
+	postAgentResolved,
+	withThread,
+} from "./api";
+import { openAgentSetup } from "./setupStore";
+
+const plural = (n: number, one: string, many: string) =>
+	`${n} ${n === 1 ? one : many}`;
+
+/** "read 2 files · ran 1 command · edited 1 file · used 2 tools"; "" for none. */
+export function activitySummary(activity: readonly AgentActivity[]): string {
+	let read = 0;
+	let ran = 0;
+	let edited = 0;
+	let used = 0;
+	for (const a of activity) {
+		if (a.kind === "read") read++;
+		else if (a.kind === "execute") ran++;
+		else if (a.kind === "edit" || a.kind === "delete" || a.kind === "move") {
+			edited++;
+		} else used++;
+	}
+	return [
+		read && `read ${plural(read, "file", "files")}`,
+		ran && `ran ${plural(ran, "command", "commands")}`,
+		edited && `edited ${plural(edited, "file", "files")}`,
+		used && `used ${plural(used, "tool", "tools")}`,
+	]
+		.filter(Boolean)
+		.join(" · ");
+}
+
+/** What a turn that didn't end normally says, and its tone. */
+const STOPS: Partial<
+	Record<AgentStop, { label: string; tip: string; tone: "gray" | "red" }>
+> = {
+	max_tokens: {
+		label: "cut off",
+		tip: "The agent hit its length limit",
+		tone: "gray",
+	},
+	max_turn_requests: {
+		label: "cut off",
+		tip: "The agent hit its step limit",
+		tone: "gray",
+	},
+	refusal: { label: "refused", tip: "The agent refused", tone: "gray" },
+	cancelled: {
+		label: "stopped",
+		tip: "Stopped before it finished",
+		tone: "gray",
+	},
+	error: {
+		label: "failed",
+		tip: "The agent stopped with an error",
+		tone: "red",
+	},
+};
+
+/**
+ * What the agent did for a reply (or is doing): one collapsed line of
+ * counts, opened to every title, carbonless's decisions marked. Stays with
+ * the message, so what a PR made the agent do remains visible.
+ */
+function ActivityLine(props: { activity: readonly AgentActivity[] }) {
+	const summary = activitySummary(props.activity);
+	if (!summary) return null;
+	return (
+		<details
+			data-testid="agent-activity"
+			className="group/act min-w-0 text-xs text-muted"
+		>
+			<summary className="flex min-h-10 cursor-pointer list-none items-center gap-1.5 rounded-md px-1 hover:text-ink focus-visible:outline-2 focus-visible:outline-accent [&::-webkit-details-marker]:hidden">
+				<span
+					aria-hidden
+					className="transition-transform group-open/act:rotate-90"
+				>
+					›
+				</span>
+				<span className="min-w-0 truncate">{summary}</span>
+			</summary>
+			<ul className="space-y-0.5 pb-1 pl-5">
+				{props.activity.map((a, i) => (
+					<li
+						// The list is append-only.
+						// biome-ignore lint/suspicious/noArrayIndexKey: see above.
+						key={i}
+						className="flex min-w-0 items-baseline gap-2"
+					>
+						<span className="shrink-0 text-faint">{a.kind}</span>
+						<span className="min-w-0 font-mono break-words text-ink-soft">
+							{a.title}
+						</span>
+						{a.decision === "rejected" && (
+							<span className="shrink-0 text-bad">rejected</span>
+						)}
+						{a.decision === "allowed" && (
+							<span className="shrink-0 text-faint">allowed</span>
+						)}
+					</li>
+				))}
+			</ul>
+		</details>
+	);
+}
+
+/** The agent's box: its tint, the text as GitHub-flavored Markdown. */
+const AGENT_SURFACE =
+	"min-w-0 rounded-md border border-agent-edge bg-agent px-3 py-2";
+
+function Who(props: { children: React.ReactNode }) {
+	return (
+		<div className="flex min-h-5 min-w-0 flex-wrap items-center gap-x-1.5 px-0.5 text-xs text-muted">
+			{props.children}
+		</div>
+	);
+}
+
+function HumanMessage(props: { message: AgentMessage; viewer: string }) {
+	const me = usePerson(props.viewer);
+	return (
+		<div className="min-w-0 space-y-1">
+			<Who>
+				<Avatar login={props.viewer} url="" />
+				<span className="font-semibold text-ink-soft">{props.viewer}</span>
+				<RelativeTime iso={props.message.at} />
+			</Who>
+			<p
+				data-testid="agent-message-human"
+				className={`${commentSurface(me.tint)} text-sm whitespace-pre-wrap break-words`}
+			>
+				{props.message.text}
+			</p>
+			{props.message.truncated && <TruncatedChip />}
+		</div>
+	);
+}
+
+function TruncatedChip() {
+	return (
+		<span data-testid="agent-truncated-chip">
+			<Badge tone="gray" icon={AlertIcon}>
+				truncated
+			</Badge>
+		</span>
+	);
+}
+
+function AiMessage(props: { message: AgentMessage; name: string }) {
+	const { message } = props;
+	const stop = message.stop ? STOPS[message.stop] : undefined;
+	return (
+		<div className="min-w-0 space-y-1">
+			<Who>
+				<SparkleFillIcon size={14} aria-hidden className="text-agent-ink" />
+				<span className="font-semibold text-ink-soft">
+					{message.agent?.name ?? props.name}
+				</span>
+				<RelativeTime iso={message.at} />
+				{stop && (
+					<span data-testid="agent-stop-chip" title={stop.tip}>
+						<Badge tone={stop.tone}>{stop.label}</Badge>
+					</span>
+				)}
+				{message.truncated && <TruncatedChip />}
+			</Who>
+			<div
+				data-testid="agent-message-ai"
+				className={`${AGENT_SURFACE} text-sm`}
+			>
+				<AgentMarkdown text={message.text} />
+			</div>
+			{message.activity && <ActivityLine activity={message.activity} />}
+		</div>
+	);
+}
+
+/** A thread's state, as its name says it. */
+export function agentThreadState(
+	thread: AgentThread,
+	status: AgentStatus | undefined,
+): "waiting" | "answering" | "answered" | "resolved" {
+	if (thread.resolved) return "resolved";
+	if (status?.answering?.thread === thread.id) return "answering";
+	return thread.waiting ? "waiting" : "answered";
+}
+
+/** The agent's name for a thread: the live one, else the last that answered. */
+export function agentName(
+	thread: AgentThread,
+	status: AgentStatus | undefined,
+): string {
+	const last = [...thread.messages].reverse().find((m) => m.agent)?.agent;
+	return status?.agent?.name ?? last?.name ?? "Agent";
+}
+
+/**
+ * A private thread with the reviewer's own agent: the agent's sparkle and
+ * name at its head, the reviewer's messages in their tint and the agent's
+ * in the agent tint, rendered as Markdown. While the agent answers it, its
+ * text grows in place under a spinner with one collapsed activity line and
+ * Stop; while it waits for an agent, a yellow dot (with no agent set up,
+ * the row opens the setup). Then the reply box, and Resolve or Unresolve.
+ * Nothing here reaches GitHub.
+ */
+export function AgentThreadCard(props: {
+	thread: AgentThread;
+	status: AgentStatus | undefined;
+	/** Its line isn't in this diff: shown in the file's header instead. */
+	unplaced?: boolean;
+}) {
+	const { thread, status } = props;
+	const client = useQueryClient();
+	const viewer =
+		useQuery({ ...sessionQuery, enabled: false }).data?.viewer ?? "you";
+	const name = agentName(thread, status);
+	const [resolvedNow, setResolvedNow] = useState<boolean | null>(null);
+	const resolved = resolvedNow ?? thread.resolved;
+	const shown = { ...thread, resolved };
+	const state = agentThreadState(shown, status);
+	const answering = state === "answering" ? status?.answering : undefined;
+	const resolve = useMutation({
+		mutationFn: (next: boolean) => postAgentResolved(thread.id, next),
+		onMutate: (next) => setResolvedNow(next),
+		onSuccess: (saved) => {
+			client.setQueryData(agentThreadsQuery.queryKey, (list) =>
+				withThread(list, saved),
+			);
+			setResolvedNow(null);
+		},
+		onError: () => setResolvedNow(null),
+	});
+	const stop = useMutation({
+		mutationFn: postAgentCancel,
+		onSettled: () =>
+			client.invalidateQueries({ queryKey: agentStatusQuery.queryKey }),
+	});
+	const writes = useAgentWrites();
+	const replies = [...writes.pending.entries()].filter(
+		([, w]) => w.thread === thread.id,
+	);
+	return (
+		<article
+			data-testid="agent-thread"
+			data-thread={thread.id}
+			aria-label={`Agent thread, ${state}`}
+			className="min-w-0 overflow-hidden rounded-lg border border-agent-edge bg-surface"
+		>
+			<div className="flex min-h-10 flex-wrap items-center gap-x-2 gap-y-1 border-b border-line bg-band px-2.5 py-0.5 text-xs text-muted">
+				<SparkleFillIcon
+					size={14}
+					aria-hidden
+					className="shrink-0 text-agent-ink"
+				/>
+				<span className="font-semibold text-ink-soft">{name}</span>
+				{state === "resolved" && (
+					<LabeledIcon
+						icon={CheckCircleIcon}
+						label="Resolved"
+						className="text-ok"
+					/>
+				)}
+				{props.unplaced && (
+					<LabeledIcon
+						icon={AlertIcon}
+						label="Line not in this diff"
+						className="text-warn"
+					/>
+				)}
+				{answering && (
+					<button
+						type="button"
+						data-testid="agent-stop"
+						disabled={stop.isPending}
+						onClick={() => stop.mutate()}
+						className="ml-auto flex h-10 items-center gap-1.5 rounded-md border border-line-strong px-3 text-sm font-medium text-ink-soft hover:bg-overlay hover:text-ink focus-visible:outline-2 focus-visible:outline-accent disabled:text-faint"
+					>
+						<SquareFillIcon size={12} aria-hidden />
+						Stop
+					</button>
+				)}
+			</div>
+			<div className="space-y-2 p-2.5">
+				{thread.messages.map((m) =>
+					m.by === "human" ? (
+						<HumanMessage key={m.id} message={m} viewer={viewer} />
+					) : (
+						<AiMessage key={m.id} message={m} name={name} />
+					),
+				)}
+				{answering && (
+					<div
+						data-testid="agent-answering"
+						aria-busy="true"
+						className="min-w-0 space-y-1"
+					>
+						<Who>
+							<SparkleFillIcon
+								size={14}
+								aria-hidden
+								className="text-agent-ink"
+							/>
+							<span className="font-semibold text-ink-soft">{name}</span>
+							<Spinner label="Answering" size={12} />
+						</Who>
+						{answering.text && (
+							<div className={`${AGENT_SURFACE} text-sm`}>
+								<AgentMarkdown text={answering.text} />
+							</div>
+						)}
+						<ActivityLine activity={answering.activity} />
+					</div>
+				)}
+				{state === "waiting" &&
+					(status && !status.configured ? (
+						<button
+							type="button"
+							data-testid="agent-waiting"
+							onClick={openAgentSetup}
+							className="flex min-h-10 items-center gap-2 rounded-md px-1 text-sm text-muted hover:text-ink focus-visible:outline-2 focus-visible:outline-accent"
+						>
+							<span
+								aria-hidden
+								className="h-2 w-2 shrink-0 rounded-full bg-warn"
+							/>
+							Set up an agent
+						</button>
+					) : (
+						<p
+							data-testid="agent-waiting"
+							className="flex min-h-10 items-center gap-2 px-1 text-sm text-muted"
+						>
+							<span
+								aria-hidden
+								className="h-2 w-2 shrink-0 rounded-full bg-warn"
+							/>
+							waiting for an agent
+						</p>
+					))}
+				{replies.map(([clientId, w]) => (
+					<PendingReply
+						key={clientId}
+						clientId={clientId}
+						text={w.text}
+						error={w.error?.message}
+						viewer={viewer}
+					/>
+				))}
+				{resolve.error && (
+					<p
+						role="alert"
+						className="flex items-center gap-1.5 text-sm text-bad"
+					>
+						<AlertIcon size={14} aria-hidden />
+						{resolve.error.message}
+					</p>
+				)}
+				<div className="flex flex-wrap items-end gap-2">
+					{!resolved && <AgentReplyBox thread={thread.id} />}
+					<button
+						type="button"
+						data-testid="agent-resolve"
+						onClick={() => resolve.mutate(!resolved)}
+						onMouseDown={(e) => e.preventDefault()}
+						className={`ml-auto flex h-10 shrink-0 items-center justify-center gap-2 rounded-md border px-4 text-sm font-semibold focus-visible:outline-2 focus-visible:outline-accent ${
+							resolved
+								? "border-line-strong text-ink-soft hover:bg-overlay hover:text-ink"
+								: "border-ok/60 bg-ok/10 text-ok hover:bg-ok/20"
+						}`}
+					>
+						{resolved ? (
+							<IssueReopenedIcon size={16} aria-hidden />
+						) : (
+							<CheckCircleIcon size={16} aria-hidden />
+						)}
+						{resolved ? "Unresolve" : "Resolve"}
+					</button>
+				</div>
+			</div>
+		</article>
+	);
+}
+
+/** A reply on its way (a spinner), or refused (why, Retry, Discard). */
+function PendingReply(props: {
+	clientId: string;
+	text: string;
+	error?: string;
+	viewer: string;
+}) {
+	const client = useQueryClient();
+	const me = usePerson(props.viewer);
+	return (
+		<div
+			data-testid="agent-reply-pending"
+			aria-busy={props.error ? undefined : true}
+			className="min-w-0 space-y-1"
+		>
+			<Who>
+				<Avatar login={props.viewer} url="" />
+				<span className="font-semibold text-ink-soft">{props.viewer}</span>
+				{!props.error && <Spinner label="Sending" size={12} />}
+			</Who>
+			<p
+				className={`${commentSurface(me.tint)} text-sm whitespace-pre-wrap break-words`}
+			>
+				{props.text}
+			</p>
+			{props.error && (
+				<p
+					role="alert"
+					className="flex flex-wrap items-center gap-2 text-sm text-bad"
+				>
+					<AlertIcon size={14} aria-hidden />
+					{props.error}
+					<button
+						type="button"
+						onClick={() => retryAgentWrite(client, props.clientId)}
+						className="flex h-10 items-center rounded-md px-3 font-medium text-link hover:bg-overlay focus-visible:outline-2 focus-visible:outline-accent"
+					>
+						Retry
+					</button>
+					<button
+						type="button"
+						onClick={() => dropAgentWrite(props.clientId)}
+						className="flex h-10 items-center rounded-md px-3 font-medium text-ink-soft hover:bg-overlay focus-visible:outline-2 focus-visible:outline-accent"
+					>
+						Discard
+					</button>
+				</p>
+			)}
+		</div>
+	);
+}
+
+/** The box for a follow-up question; Ctrl/Cmd+Enter or Ask sends it. */
+function AgentReplyBox(props: { thread: string }) {
+	const client = useQueryClient();
+	const [text, setText] = useState("");
+	const box = useRef<HTMLTextAreaElement>(null);
+	const id = useId();
+	// biome-ignore lint/correctness/useExhaustiveDependencies: re-measured as the text changes.
+	useLayoutEffect(() => {
+		const el = box.current;
+		if (!el) return;
+		el.style.height = "auto";
+		el.style.height = `${el.scrollHeight + 2}px`;
+	}, [text]);
+	const tooLong = new TextEncoder().encode(text).length > MAX_AGENT_TEXT;
+	const send = () => {
+		if (!text.trim() || tooLong) return;
+		replyAgent(client, props.thread, text, newClientId());
+		setText("");
+	};
+	const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+		if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+			e.preventDefault();
+			send();
+		}
+	};
+	return (
+		<div className="flex min-w-0 flex-[1_1_14rem] items-end gap-2">
+			<textarea
+				ref={box}
+				id={id}
+				aria-label="Reply to your agent"
+				placeholder="Reply to your agent…"
+				rows={1}
+				value={text}
+				onChange={(e) => setText(e.target.value)}
+				onKeyDown={onKeyDown}
+				className="block max-h-96 min-h-10 w-full min-w-0 resize-none rounded-md border border-line-strong bg-raised px-3 py-2 text-sm leading-normal text-ink placeholder:text-faint focus-visible:border-accent focus-visible:outline-2 focus-visible:outline-accent"
+			/>
+			<button
+				type="button"
+				data-testid="agent-reply-ask"
+				disabled={!text.trim() || tooLong}
+				onClick={send}
+				onMouseDown={(e) => e.preventDefault()}
+				className="flex h-10 shrink-0 items-center gap-1.5 rounded-md border border-accent/60 bg-accent/15 px-4 text-sm font-semibold text-link hover:bg-accent/25 focus-visible:outline-2 focus-visible:outline-accent disabled:border-line disabled:bg-transparent disabled:text-faint"
+			>
+				<SparkleFillIcon size={16} aria-hidden />
+				Ask
+			</button>
+		</div>
+	);
+}

@@ -50,6 +50,8 @@ export const agentThreadsQuery = queryOptions({
 	queryKey: ["agent", "threads"],
 	queryFn: () => review<{ threads: AgentThread[] }>("agent/threads"),
 	staleTime: Number.POSITIVE_INFINITY,
+	// A review with no agent (--viewer, --as-of) answers 404: no threads.
+	retry: false,
 });
 
 export const postAgentThread = (req: OpenAgentThreadRequest) =>

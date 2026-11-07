@@ -41,6 +41,13 @@ let state: AgentWriteState = { pending: new Map() };
 const timers = new Map<string, ReturnType<typeof setTimeout>>();
 const attempts = new Map<string, number>();
 const listeners = new Set<() => void>();
+/** Threads opened by a question from this page, until their row opens them. */
+const justAsked = new Set<string>();
+
+/** Whether `thread` was just asked from this page (once: it is forgotten). */
+export function takeJustAsked(thread: string): boolean {
+	return justAsked.delete(thread);
+}
 
 function set(clientId: string, item: AgentWrite | null): void {
 	const next = new Map(state.pending);
@@ -91,7 +98,10 @@ function send(client: QueryClient, clientId: string): void {
 			);
 			void client.invalidateQueries({ queryKey: agentStatusQuery.queryKey });
 			if (state.pending.get(clientId) === item) set(clientId, null);
-			if (item.span) closeAgentComposer(clientId);
+			if (item.span) {
+				justAsked.add(thread.id);
+				closeAgentComposer(clientId);
+			}
 		},
 		(error: unknown) => {
 			if (state.pending.get(clientId) !== item) return;
@@ -174,6 +184,7 @@ export function resetAgentWrites(): void {
 	for (const t of timers.values()) clearTimeout(t);
 	timers.clear();
 	attempts.clear();
+	justAsked.clear();
 	state = { pending: new Map() };
 	for (const l of listeners) l();
 }

@@ -11,7 +11,9 @@ import {
 	useRef,
 	useState,
 } from "react";
+import type { AgentThread } from "../../shared/agent";
 import type { ReviewThread } from "../../shared/types";
+import { agentThreadsQuery } from "../agent/api";
 import { hunksQuery, overviewQuery, sessionQuery } from "../api";
 import { LabeledIcon } from "../overview/parts";
 import { useForgetPageScroll, usePageActive } from "../pageActive";
@@ -49,6 +51,7 @@ import {
 import { threadsOnHead } from "./threadPlacement";
 
 const NO_THREADS: ReviewThread[] = [];
+const NO_AGENT_THREADS: AgentThread[] = [];
 
 import { type Unit, useUnit } from "./unit";
 import { STALE_MESSAGE, useReviewView, useSyncState } from "./useSetStates";
@@ -568,6 +571,20 @@ export function FilesPage() {
 		return byPath;
 	}, [threads]);
 
+	// The reviewer's agent threads (their own read, beside GitHub's): the
+	// tree's second dot; the diffs read them from this query's cache.
+	const sessionHead = useQuery(sessionQuery).data?.snapshotHead;
+	const agentThreads = useQuery(agentThreadsQuery).data?.threads;
+	const agentThreadsByPath = useMemo(() => {
+		const byPath = new Map<string, AgentThread[]>();
+		const head = threads?.snapshotHead ?? sessionHead;
+		for (const t of agentThreads ?? []) {
+			if (!head || t.anchor.commit !== head) continue;
+			byPath.set(t.anchor.path, [...(byPath.get(t.anchor.path) ?? []), t]);
+		}
+		return byPath;
+	}, [agentThreads, threads?.snapshotHead, sessionHead]);
+
 	// The floating Files button makes way while a comment is being written
 	// (a box has focus) or one was refused: it would cover its buttons.
 	const writing = useWritingHere();
@@ -585,6 +602,7 @@ export function FilesPage() {
 			current={current}
 			onSelect={select}
 			threadsOf={(f) => threadsByPath.get(f.path) ?? NO_THREADS}
+			agentThreadsOf={(f) => agentThreadsByPath.get(f.path) ?? NO_AGENT_THREADS}
 			threadsLoading={threadsLoading}
 			foldKey={pr ? foldsKey(pr) : null}
 			revealSeq={reveal}
