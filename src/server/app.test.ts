@@ -1,9 +1,16 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { FastifyInstance } from "fastify";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { useFakeAcp, writeAcpScenario } from "../../test/fake-acp/scenario";
 import {
 	prView,
 	release,
@@ -13,6 +20,7 @@ import {
 } from "../../test/fake-gh/scenario";
 import { GIT_TEST_TIMEOUTS } from "../../test/git-fixture";
 import { createPrFixture, type PrFixture } from "../../test/pr-fixture";
+import type { AgentStatus, AgentThread } from "../shared/agent";
 import type {
 	CommentsView,
 	ReviewThread,
@@ -1053,6 +1061,253 @@ describe("API", () => {
 			await registry.closeAll();
 			expect((await patch("T12-0", "C12-0", edit)).statusCode).toBe(503);
 			expect((await del("T12-1", "C12-1")).statusCode).toBe(503);
+		});
+	});
+
+	describe("the agent", () => {
+		let fake: ReturnType<typeof useFakeAcp>;
+		beforeEach(() => {
+			fake = useFakeAcp(pr.repo.path, {
+				agent: { name: "fake-acp", version: "1.0.0" },
+				answers: [{ text: "Two writers race." }],
+			});
+		});
+		afterEach(async () => {
+			// The agent goes with its session, before the env it ran in.
+			await registry.closeAll();
+			fake.restore();
+		});
+		const span = () => ({
+			subject: "line",
+			path: "a.txt",
+			commit: pr.head(),
+			side: "RIGHT",
+			line: 2,
+			startSide: "RIGHT",
+			startLine: 2,
+		});
+		const ask = (over: Record<string, unknown> = {}) =>
+			post("/api/agent/threads", {
+				clientId: "q1",
+				text: "Why?",
+				span: span(),
+				...over,
+			});
+		const answeredThreads = async (n: number): Promise<AgentThread[]> => {
+			let threads: AgentThread[] = [];
+			await vi.waitFor(
+				async () => {
+					({ threads } = await get("/api/agent/threads"));
+					expect(threads.filter((t) => !t.waiting)).toHaveLength(n);
+				},
+				{ timeout: 20_000, interval: 20 },
+			);
+			return threads;
+		};
+
+		it("asks, streams nothing held, answers, follows up, resolves, cancels", async () => {
+			const res = await ask();
+			expect(res.statusCode, res.body).toBe(200);
+			const opened: AgentThread = res.json();
+			expect(opened).toMatchObject({
+				anchor: span(),
+				openedBy: "human",
+				waiting: true,
+				resolved: false,
+				messages: [{ by: "human", text: "Why?" }],
+			});
+			expect(opened).not.toHaveProperty("clientId");
+			const [t] = await answeredThreads(1);
+			expect(t?.messages[1]).toMatchObject({
+				by: "ai",
+				text: "Two writers race.",
+				stop: "end_turn",
+			});
+			expect(t?.code?.rows.length).toBeGreaterThan(0);
+			const status: AgentStatus = await get("/api/agent");
+			expect(status).toMatchObject({
+				state: "ready",
+				configured: true,
+				agent: { name: "fake-acp", version: "1.0.0" },
+				waiting: 0,
+			});
+			const more = await post(`/api/agent/threads/${t?.id}/messages`, {
+				clientId: "m1",
+				text: "Both?",
+			});
+			expect(more.statusCode, more.body).toBe(200);
+			expect(more.json().waiting).toBe(true);
+			await vi.waitFor(
+				async () => {
+					const { threads } = await get("/api/agent/threads");
+					expect(threads[0].messages).toHaveLength(4);
+				},
+				{ timeout: 20_000, interval: 20 },
+			);
+			const resolved = await post(`/api/agent/threads/${t?.id}/resolved`, {
+				resolved: true,
+			});
+			expect(resolved.statusCode).toBe(200);
+			expect(resolved.json().resolved).toBe(true);
+			const cancel = await post("/api/agent/cancel");
+			expect(cancel.statusCode).toBe(200);
+			expect(cancel.json()).toEqual({ ok: true });
+		});
+
+		it("POST agent/threads twice with one clientId → one thread", async () => {
+			const [a, b] = await Promise.all([ask(), ask()]);
+			expect(a.json().id).toBe(b.json().id);
+			expect((await get("/api/agent/threads")).threads).toHaveLength(1);
+		});
+
+		it("400 on a bad span, a blank or too long text, a bad clientId, an unsafe path", async () => {
+			for (const bad of [
+				{ span: { ...span(), side: undefined } },
+				{ span: { ...span(), commit: "nope" } },
+				{ span: { ...span(), path: "../x" } },
+				{ span: { ...span(), path: "/etc/passwd" } },
+				{ text: " " },
+				{ text: "x".repeat(32769) },
+				{ clientId: "no spaces" },
+			]) {
+				const res = await ask(bad);
+				expect(res.statusCode, JSON.stringify(bad)).toBe(400);
+				expect(res.json().error).toEqual(expect.any(String));
+			}
+			expect((await get("/api/agent/threads")).threads).toHaveLength(0);
+		});
+
+		it("404 for a thread that isn't there", async () => {
+			const res = await post(
+				"/api/agent/threads/01k9e6m2q8x4v7c3n5b0h1j2t6/messages",
+				{ clientId: "m1", text: "Hi" },
+			);
+			expect(res.statusCode).toBe(404);
+		});
+
+		it("a viewer session has no agent: 404 no-agent", async () => {
+			const viewer = await registry.open({
+				pr: pr.arg,
+				viewer: "someone-else",
+			});
+			for (const [method, url] of [
+				["GET", "/api/agent"],
+				["GET", "/api/agent/threads"],
+				["POST", "/api/agent/cancel"],
+			] as const) {
+				const res = await inject(r(url, viewer.id), { method });
+				expect(res.statusCode).toBe(404);
+				expect(res.json()).toMatchObject({ code: "no-agent" });
+			}
+		});
+
+		it("refuses agent writes from another origin like other writes", async () => {
+			for (const [method, url, payload] of [
+				[
+					"POST",
+					"/api/agent/threads",
+					{ clientId: "q", text: "x", span: span() },
+				],
+				["PUT", "/api/config/agent", null],
+				["POST", "/api/config/agent/check", { command: "x" }],
+			] as const) {
+				const res = await app.inject({
+					method,
+					url: url.startsWith("/api/config") ? url : r(url),
+					payload: JSON.stringify(payload),
+					headers: {
+						host,
+						origin: "http://evil.example",
+						"content-type": "application/json",
+					},
+				});
+				expect(res.statusCode, url).toBe(403);
+			}
+		});
+
+		/** A route outside the review scope (r() would move it in). */
+		const raw = (url: string, extra: Record<string, unknown> = {}) =>
+			app.inject({ method: "GET", url, headers: { host }, ...extra });
+
+		describe("/api/config/agent", () => {
+			const file = () =>
+				join(
+					process.env.XDG_CONFIG_HOME as string,
+					"carbonless",
+					"config.json",
+				);
+			const put = (payload: unknown) =>
+				raw("/api/config/agent", {
+					method: "PUT",
+					payload: JSON.stringify(payload),
+					headers: { host, "content-type": "application/json" },
+				});
+
+			it("writes the agent and keeps unknown keys", async () => {
+				writeFileSync(
+					file(),
+					JSON.stringify({ mine: 1, agent: { command: "old", note: "keep" } }),
+				);
+				const agent = {
+					command: "claude-agent-acp",
+					args: ["--x"],
+					env: { A: "b" },
+					leash: "open",
+				};
+				const res = await put(agent);
+				expect(res.statusCode, res.body).toBe(200);
+				expect(res.json()).toEqual({ agent });
+				expect(JSON.parse(readFileSync(file(), "utf8"))).toMatchObject({
+					mine: 1,
+					agent: { ...agent, note: "keep" },
+				});
+				const off = await put(null);
+				expect(off.json()).toEqual({ agent: null });
+				expect(JSON.parse(readFileSync(file(), "utf8")).agent).toBeNull();
+			});
+
+			it("400 with the problem for a bad body", async () => {
+				for (const [bad, problem] of [
+					[{ command: "" }, "agent.command must be a non-empty string"],
+					[
+						{ command: "x", args: [1] },
+						"agent.args must be an array of strings",
+					],
+					[
+						{ command: "x", leash: "strict" },
+						'agent.leash "strict" is not available yet',
+					],
+					["claude", "agent must be an object or null"],
+				] as const) {
+					const res = await put(bad);
+					expect(res.statusCode).toBe(400);
+					expect(res.json()).toEqual({ error: problem });
+				}
+			});
+
+			it("check names the agent, or says why not", async () => {
+				const check = (command: string) =>
+					raw("/api/config/agent/check", {
+						method: "POST",
+						payload: { command, args: [], env: {}, leash: "open" },
+					});
+				expect((await check("claude-agent-acp")).json()).toEqual({
+					ok: true,
+					agent: { name: "fake-acp", version: "1.0.0" },
+				});
+				writeAcpScenario(pr.repo.path, {
+					agent: { name: "fake-acp", version: "1.0.0" },
+					initializeError: "Not logged in",
+				});
+				const failed = (await check("claude-agent-acp")).json();
+				expect(failed).toMatchObject({ ok: false });
+				expect(failed.stderr).toContain("Not logged in");
+				expect((await check("crb-no-such-agent")).json()).toEqual({
+					ok: false,
+					error: "crb-no-such-agent was not found on PATH",
+					stderr: "",
+				});
+			});
 		});
 	});
 
