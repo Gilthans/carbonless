@@ -7,6 +7,7 @@ import {
 	type FileHunks,
 	type NewThreadAnswer,
 	type NewThreadRequest,
+	type PlacementsAnswer,
 	type PrOverview,
 	type ReplyRequest,
 	type RereviewAnswer,
@@ -14,6 +15,7 @@ import {
 	type ReviewView,
 	type SessionInfo,
 	type StateChange,
+	type ThreadAnchorRef,
 	type ThreadComment,
 	type ThreadComments,
 	type ThreadGone,
@@ -202,6 +204,26 @@ export const fetchRereview = (from: number, to: RereviewTo) =>
 	);
 
 export type RereviewTo = { patchset: number } | { head: string };
+
+/** Every unresolved thread of read `readId` placed into a patch set or a head. */
+export const fetchPlacements = (readId: string, to: RereviewTo) =>
+	request<PlacementsAnswer | { pending: true }>(
+		`/api/placements?${new URLSearchParams({
+			read: readId,
+			...("patchset" in to ? { ps: String(to.patchset) } : { head: to.head }),
+		})}`,
+	);
+
+/** The reviewer places a thread on lines of their latest patch set. */
+export const postPlacement = (
+	threadId: string,
+	patchset: number,
+	anchor: ThreadAnchorRef,
+) =>
+	post<PlacementsAnswer["threads"][number]>(
+		`/api/threads/${encodeURIComponent(threadId)}/placement`,
+		{ patchset, anchor },
+	);
 
 export const fetchContext = (
 	revision: string,
@@ -735,6 +757,26 @@ export const rereviewQuery = (from: number, to: RereviewTo) =>
 			...("patchset" in to ? ["ps", to.patchset] : ["head", to.head]),
 		],
 		queryFn: () => fetchRereview(from, to),
+		staleTime: Number.POSITIVE_INFINITY,
+		refetchInterval: (query) =>
+			query.state.data && "pending" in query.state.data
+				? REREVIEW_POLL_MS
+				: false,
+	});
+
+/**
+ * The threads' placements in a snapshot for one read: polled every
+ * REREVIEW_POLL_MS while `pending`, then kept (a placement write updates
+ * it; a new read is another key).
+ */
+export const placementsQuery = (readId: string, to: RereviewTo) =>
+	queryOptions({
+		queryKey: [
+			"placements",
+			readId,
+			...("patchset" in to ? ["ps", to.patchset] : ["head", to.head]),
+		],
+		queryFn: () => fetchPlacements(readId, to),
 		staleTime: Number.POSITIVE_INFINITY,
 		refetchInterval: (query) =>
 			query.state.data && "pending" in query.state.data

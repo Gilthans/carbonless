@@ -45,6 +45,7 @@ import {
 	StatusIcon,
 } from "./status";
 import { ThreadBubble } from "./ThreadBubble";
+import { UnplacedThreads } from "./ThreadFate";
 import { TailRow, ThreadBlock } from "./ThreadRow";
 import { fileThreads, placeThreads } from "./threadPlacement";
 import {
@@ -534,7 +535,7 @@ export function FileDiff(props: {
 		...hunksQuery(revision, file.index, props.since),
 		enabled: expanded,
 	});
-	const header = props.threads
+	const filePlacement = props.threads
 		? placeThreads({
 				threads: props.threads.threads,
 				path: file.path,
@@ -542,8 +543,12 @@ export function FileDiff(props: {
 				hunks: hunks.data ?? null,
 				loadedContext: [],
 				noLines: file.binary || file.submodule,
-			}).header
-		: [];
+				placements: props.threads.placements,
+			})
+		: null;
+	const header = filePlacement?.header ?? [];
+	// The threads the tracer couldn't place here: listed under the header.
+	const fates = filePlacement?.fates ?? [];
 	// The file bubble's row is open (its threads and Comment on file).
 	const [fileOpen, setFileOpen] = useState(false);
 	// The closed header's count was used: once the file's hunks are in (and
@@ -558,7 +563,10 @@ export function FileDiff(props: {
 		if (header.length > 0) setFileOpen(true);
 	}, [fromHeader, expanded, hunksSettled, header.length]);
 	const fileThreadsId = useId();
-	const unplaced = header.some((h) => h.reason === "unplaced");
+	// The file bubble flags a line it holds that the diff can't show; the
+	// closed header, any thread of the file that isn't on a line.
+	const headerFlag = header.some((h) => h.reason === "unplaced");
+	const unplaced = headerFlag || fates.length > 0;
 	// New comments on the whole file, open or closed: under the header,
 	// where file threads show; on another head (gone): kept as orphans.
 	const session = useQuery({ ...sessionQuery, enabled: false }).data;
@@ -627,7 +635,7 @@ export function FileDiff(props: {
 						? "Comment on file"
 						: `Comment on file — ${fileComment.ok}`
 				}
-				flagged={unplaced}
+				flagged={headerFlag}
 				focus={focusFile}
 				onFocused={() => setFocusFile(false)}
 				open={fileOpen}
@@ -855,6 +863,14 @@ export function FileDiff(props: {
 			{!expanded && fileItems.length > 0 && (
 				// Closed: a file comment being written stays in sight.
 				<div className="border-b border-line bg-canvas p-2">{newItems}</div>
+			)}
+			{expanded && props.threads && (
+				<UnplacedThreads
+					fates={fates}
+					readId={props.threads.readId}
+					path={file.path}
+					fileIndex={file.index}
+				/>
 			)}
 			{expanded && (
 				<DiffBody

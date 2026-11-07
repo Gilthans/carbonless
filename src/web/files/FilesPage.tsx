@@ -11,8 +11,15 @@ import {
 	useRef,
 	useState,
 } from "react";
+import { openedOn } from "../../shared/rereview/openedOn";
 import type { ReviewThread, SessionInfo } from "../../shared/types";
-import { hunksQuery, overviewQuery, sessionQuery } from "../api";
+import {
+	hunksQuery,
+	overviewQuery,
+	placementsQuery,
+	type RereviewTo,
+	sessionQuery,
+} from "../api";
 import { LabeledIcon } from "../overview/parts";
 import { useForgetPageScroll, usePageActive } from "../pageActive";
 import { useReviewId } from "../reviewId";
@@ -41,6 +48,7 @@ import {
 	landingFile,
 	parseFilesSearch,
 } from "./landing";
+import { NotInComparison } from "./NotInComparison";
 import { PatchsetGraph } from "./PatchsetGraph";
 import { ProgressBar } from "./ProgressBar";
 import { SelectionBar } from "./SelectionBar";
@@ -56,8 +64,13 @@ import {
 	nothingSince,
 	toReadCount,
 } from "./since";
+import {
+	type PlacementInfo,
+	PlacementProvider,
+	usePlacementMap,
+} from "./ThreadFate";
 import { TreeColumn } from "./TreeResizer";
-import { threadsOnHead } from "./threadPlacement";
+import { outsideThreads, shownThreads } from "./threadPlacement";
 import { useSince } from "./useSince";
 
 const NO_THREADS: ReviewThread[] = [];
@@ -191,17 +204,27 @@ export function useCurrentFile(
 /**
  * The PR's review threads for the diff: the furthest stage in (the summary
  * places them; later stages add the code suggestions are drawn against),
- * with the read they come from and the head being viewed. After a Refresh
- * the previous read's stay until the new one's land (useThreads). Also when
- * Files changed is the first page. `failed`: no threads could be read.
+ * with the read they come from and the head being viewed, each where the
+ * tracer placed it in the viewed snapshot (`to`; shownThreads), those
+ * outside the comparison apart. After a Refresh the previous read's stay
+ * until the new one's land (useThreads). Also when Files changed is the
+ * first page. `failed`: no threads could be read.
  */
-function useDiffThreads(viewedHead: string | undefined): {
+function useDiffThreads(
+	viewedHead: string | undefined,
+	to: RereviewTo | null,
+	latest: number | null,
+): {
 	threads: DiffThreads | undefined;
 	/** Every thread of the read, on this head or not (people's tints). */
 	all: ReviewThread[] | undefined;
 	failed: Error | null;
 	/** Still on their way: nothing failed and none are in yet. */
 	loading: boolean;
+	/** The threads whose file is not in the comparison (the trailing group). */
+	outside: ReturnType<typeof outsideThreads>;
+	/** What the cards and lists know of the placements (PlacementProvider). */
+	placement: PlacementInfo;
 } {
 	const overview = useQuery(overviewQuery);
 	const session = useQuery(sessionQuery);
@@ -209,21 +232,57 @@ function useDiffThreads(viewedHead: string | undefined): {
 	const snapshotHead = viewedHead ?? session.data?.snapshotHead;
 	// A thread whose last comment was deleted here: its bubble goes at once.
 	const { gone } = useThreadWrites();
+	const asked = readId !== undefined && to !== null;
+	const placed = useQuery({
+		...placementsQuery(readId ?? "", to ?? { patchset: 1 }),
+		enabled: asked,
+	});
+	const answer =
+		asked && placed.data && !("pending" in placed.data) ? placed.data : null;
+	const placements = usePlacementMap(answer);
+	const visible = useMemo(
+		() =>
+			view
+				? gone.size > 0
+					? view.threads.filter((t) => !gone.has(t.id))
+					: view.threads
+				: undefined,
+		[view, gone],
+	);
 	const threads = useMemo(
 		() =>
-			readId && view && snapshotHead
+			readId && visible && snapshotHead
 				? {
 						readId,
 						snapshotHead,
-						threads: threadsOnHead(
-							gone.size > 0
-								? view.threads.filter((t) => !gone.has(t.id))
-								: view.threads,
-							snapshotHead,
-						),
+						threads: shownThreads(visible, snapshotHead, placements),
+						placements,
 					}
 				: undefined,
-		[readId, view, snapshotHead, gone],
+		[readId, visible, snapshotHead, placements],
+	);
+	const outside = useMemo(
+		() => (visible ? outsideThreads(visible, placements) : []),
+		[visible, placements],
+	);
+	const patchsets = session.data?.patchsets;
+	const placement = useMemo<PlacementInfo>(
+		() => ({
+			placements,
+			pending: asked && answer === null && !placed.error,
+			readId: readId ?? null,
+			to,
+			// A drag stores into the latest patch set only (earlier ones are
+			// read-only; a head is no patch set yet).
+			placeOn:
+				answer?.patchset !== null &&
+				answer?.patchset !== undefined &&
+				answer.patchset === latest
+					? answer.patchset
+					: null,
+			openedOn: (t) => openedOn(t.createdAt, patchsets ?? []),
+		}),
+		[placements, asked, answer, placed.error, readId, to, latest, patchsets],
 	);
 	// No overview or session, no threads: that's their failure too. Only
 	// with nothing kept: a refetch failing over a kept one (a Refresh)
@@ -239,6 +298,8 @@ function useDiffThreads(viewedHead: string | undefined): {
 		all: view?.threads,
 		failed,
 		loading: !threads && !failed,
+		outside,
+		placement,
 	};
 }
 
@@ -294,6 +355,15 @@ const headerOf = (index: number) =>
 
 /** How long "<path> isn't in this diff" stays. */
 export const MISSING_HINT_MS = 8000;
+
+/** What the threads are placed into: the viewed patch set or head. */
+function placementsTo(comparison: Comparison): RereviewTo | null {
+	const { viewing } = comparison;
+	if (!viewing) return null;
+	return viewing.kind === "patchset"
+		? { patchset: viewing.number }
+		: { head: viewing.oid };
+}
 
 /** The commit the comparison views: a patch set's head, or the head itself. */
 function viewedHeadOf(
@@ -593,7 +663,13 @@ export function FilesPage() {
 		all: allThreads,
 		failed: threadsFailed,
 		loading: threadsLoading,
-	} = useDiffThreads(viewedHeadOf(comparison, session));
+		outside,
+		placement: placementInfo,
+	} = useDiffThreads(
+		viewedHeadOf(comparison, session),
+		placementsTo(comparison),
+		latest,
+	);
 	// The first open's own reads are in (the files, their threads): only
 	// then may the verdict card read GitHub's merge facts.
 	const firstOpenSettled =
@@ -690,216 +766,236 @@ export function FilesPage() {
 			? `Nothing to read since PS${since} · ${carriedCount(data)} carried`
 			: null;
 
+	const notInComparison = threads && (
+		<NotInComparison
+			threads={outside}
+			readId={threads.readId}
+			pending={placementInfo.pending}
+		/>
+	);
+
 	return (
 		<PeopleProvider threads={allThreads}>
-			<section
-				aria-label="Files changed"
-				style={{ "--files-bar": `${barHeight}px` } as CSSProperties}
-			>
-				<h2 className="sr-only">Files changed</h2>
-				{/* The graph needs the session alone: it never waits for the diff. */}
-				{session && <PatchsetGraph session={session} comparison={comparison} />}
-				{review.isPending && <FilesSkeleton />}
-				{review.isError && <ErrorMessage error={review.error} />}
-				{data && (
-					<>
-						<ProgressBar
-							ref={bar}
-							progress={data.progress}
-							unit={unit}
-							onUnitChange={setUnit}
-							toRead={toRead}
-							note={
-								readOnlyOf !== null && (
-									<p
-										data-testid="read-only-note"
-										className="mt-1 flex min-h-8 flex-wrap items-center gap-2 text-xs"
-									>
-										<Tooltip content="An earlier patch set, exactly as you reviewed it: marks are locked, replies still send">
-											{(trigger) => (
-												<span
-													{...trigger}
-													// biome-ignore lint/a11y/noNoninteractiveTabindex: the tooltip opens on focus.
-													tabIndex={0}
-													className="inline-flex h-5 items-center rounded-full border border-faint px-2 text-[11px] whitespace-nowrap text-faint focus-visible:outline-2 focus-visible:outline-accent"
-												>
-													PS{readOnlyOf} · as reviewed · read-only
-												</span>
-											)}
-										</Tooltip>
-										<button
-											type="button"
-											onClick={() =>
-												latest !== null &&
-												comparison.setViewing({
-													kind: "patchset",
-													number: latest,
-												})
-											}
-											className="inline-flex min-h-8 items-center rounded-md px-2 font-medium text-link underline hover:bg-overlay focus-visible:outline-2 focus-visible:outline-accent"
+			<PlacementProvider value={placementInfo}>
+				<section
+					aria-label="Files changed"
+					style={{ "--files-bar": `${barHeight}px` } as CSSProperties}
+				>
+					<h2 className="sr-only">Files changed</h2>
+					{/* The graph needs the session alone: it never waits for the diff. */}
+					{session && (
+						<PatchsetGraph session={session} comparison={comparison} />
+					)}
+					{review.isPending && <FilesSkeleton />}
+					{review.isError && <ErrorMessage error={review.error} />}
+					{data && (
+						<>
+							<ProgressBar
+								ref={bar}
+								progress={data.progress}
+								unit={unit}
+								onUnitChange={setUnit}
+								toRead={toRead}
+								note={
+									readOnlyOf !== null && (
+										<p
+											data-testid="read-only-note"
+											className="mt-1 flex min-h-8 flex-wrap items-center gap-2 text-xs"
 										>
-											Back to PS{latest}
-										</button>
-									</p>
-								)
-							}
-						>
-							{/* Every count and bubble waits on them (principle 8). Its
+											<Tooltip content="An earlier patch set, exactly as you reviewed it: marks are locked, replies still send">
+												{(trigger) => (
+													<span
+														{...trigger}
+														// biome-ignore lint/a11y/noNoninteractiveTabindex: the tooltip opens on focus.
+														tabIndex={0}
+														className="inline-flex h-5 items-center rounded-full border border-faint px-2 text-[11px] whitespace-nowrap text-faint focus-visible:outline-2 focus-visible:outline-accent"
+													>
+														PS{readOnlyOf} · as reviewed · read-only
+													</span>
+												)}
+											</Tooltip>
+											<button
+												type="button"
+												onClick={() =>
+													latest !== null &&
+													comparison.setViewing({
+														kind: "patchset",
+														number: latest,
+													})
+												}
+												className="inline-flex min-h-8 items-center rounded-md px-2 font-medium text-link underline hover:bg-overlay focus-visible:outline-2 focus-visible:outline-accent"
+											>
+												Back to PS{latest}
+											</button>
+										</p>
+									)
+								}
+							>
+								{/* Every count and bubble waits on them (principle 8). Its
 							    place is kept, so the bar moves nothing when it goes. */}
-							<span className="flex h-4 w-4 shrink-0 items-center">
-								{threadsLoading && <Spinner label="Loading comments" />}
-							</span>
-						</ProgressBar>
-						{stale && (
-							<p
-								role="status"
-								className="mt-3 rounded-md border border-warn/30 bg-warn/10 px-3 py-2 text-sm text-ink"
-							>
-								{STALE_MESSAGE}
-								{stale.dropped > 0 && " Unsaved changes dropped."}
-							</p>
-						)}
-						{threadsFailed && (
-							// Not "no threads": they couldn't be read (flag uncertainty).
-							<p
-								data-testid="threads-failed"
-								className="mt-3 flex min-h-10 items-center gap-2 rounded-md border border-warn/30 bg-warn/10 px-3 text-sm text-ink"
-							>
-								<LabeledIcon
-									icon={AlertIcon}
-									label={`Review threads couldn't be read: ${threadsFailed.message}`}
-									className="text-warn"
-								/>
-								Threads not shown
-							</p>
-						)}
-						{landing && landing.index === null && (
-							<p
-								role="status"
-								data-testid="landing-hint"
-								className="mt-3 flex items-center gap-2 rounded-md border border-line bg-band px-3 py-2 text-sm text-muted"
-							>
-								<InfoIcon aria-hidden className="shrink-0 text-accent" />
-								<span className="min-w-0 break-all">
-									<code className="font-mono text-ink-soft">
-										{landing.path}
-									</code>{" "}
-									isn't in this diff
+								<span className="flex h-4 w-4 shrink-0 items-center">
+									{threadsLoading && <Spinner label="Loading comments" />}
 								</span>
-							</p>
-						)}
-						{sinceView.error && (
-							<p
-								data-testid="since-failed"
-								className="mt-3 flex min-h-10 items-center gap-2 rounded-md border border-bad/30 bg-bad/10 px-3 text-sm text-ink"
-							>
-								<LabeledIcon
-									icon={AlertIcon}
-									label={`What changed couldn't be computed: ${sinceView.error.message}`}
-									className="text-bad"
-								/>
-								Changes since PS{sinceView.from} not computed
-							</p>
-						)}
-						{emptySince && (
-							<p
-								data-testid="since-empty-all"
-								className="mt-3 flex min-h-10 items-center gap-2 rounded-md border border-ok/30 bg-ok/10 px-3 text-sm text-ink"
-							>
-								{emptySince}
-							</p>
-						)}
-						{data.files.length === 0 && gone.length === 0 ? (
-							<>
-								<p className="mt-4 text-muted">This PR changes no files.</p>
-								<FilesVerdict threads={allThreads} settled={firstOpenSettled} />
-							</>
-						) : (
-							<div className="mt-4 flex">
-								{/* The handle's 1rem is the gap to the diffs. */}
-								{wide && <TreeColumn tree={tree} />}
-								<div
-									ref={diffs}
-									// Room for the floating Files button, and for the save notices
-									// (--sync-notices, SyncNotices): the last header can always
-									// scroll clear of them; and on touch for the selection bar
-									// under a selection in the last line (--selection-room).
-									style={{
-										paddingBottom: `max(${wide ? "0px" : "5rem"}, var(--sync-notices, 0px), var(--selection-room, 0px))`,
-									}}
-									className="min-w-0 flex-1 space-y-3"
+							</ProgressBar>
+							{stale && (
+								<p
+									role="status"
+									className="mt-3 rounded-md border border-warn/30 bg-warn/10 px-3 py-2 text-sm text-ink"
 								>
-									{files.map((file) => (
-										<FileDiff
-											// A new snapshot can reuse an index for another file.
-											key={`${data.revision}:${file.index}`}
-											file={file}
-											revision={data.revision}
-											unit={unit}
-											expanded={open === keyOf(file.index)}
-											onExpandedChange={(expanded, auto) =>
-												toggleFile(file.index, expanded, auto)
-											}
-											otherOpen={openIndex !== null && openIndex !== file.index}
-											landing={
-												landing?.index === file.index ? landing : undefined
-											}
-											threads={threads}
-											threadsLoading={threadsLoading}
-											headSure={headSure}
-											since={since ?? undefined}
-											sinceInfo={sinceInfoOf(
-												file.index,
-												file.clusters.filter((c) => c.carried).length,
-											)}
-											sincePending={sinceView.pending}
-											readOnly={readOnly}
-										/>
-									))}
-									{/* Files only the compared patch set had something reviewed in: their gone clusters. */}
-									{gone.map((file) => (
-										<GoneFile
-											key={`${data.revision}:gone:${file.index}`}
-											index={file.index}
-											path={file.path}
-											revision={data.revision}
-											since={since as number}
-											info={byFile?.get(file.index)}
-										/>
-									))}
-									{/* After the last file: the verdict (the padding above keeps it clear of the Files button). */}
+									{STALE_MESSAGE}
+									{stale.dropped > 0 && " Unsaved changes dropped."}
+								</p>
+							)}
+							{threadsFailed && (
+								// Not "no threads": they couldn't be read (flag uncertainty).
+								<p
+									data-testid="threads-failed"
+									className="mt-3 flex min-h-10 items-center gap-2 rounded-md border border-warn/30 bg-warn/10 px-3 text-sm text-ink"
+								>
+									<LabeledIcon
+										icon={AlertIcon}
+										label={`Review threads couldn't be read: ${threadsFailed.message}`}
+										className="text-warn"
+									/>
+									Threads not shown
+								</p>
+							)}
+							{landing && landing.index === null && (
+								<p
+									role="status"
+									data-testid="landing-hint"
+									className="mt-3 flex items-center gap-2 rounded-md border border-line bg-band px-3 py-2 text-sm text-muted"
+								>
+									<InfoIcon aria-hidden className="shrink-0 text-accent" />
+									<span className="min-w-0 break-all">
+										<code className="font-mono text-ink-soft">
+											{landing.path}
+										</code>{" "}
+										isn't in this diff
+									</span>
+								</p>
+							)}
+							{sinceView.error && (
+								<p
+									data-testid="since-failed"
+									className="mt-3 flex min-h-10 items-center gap-2 rounded-md border border-bad/30 bg-bad/10 px-3 text-sm text-ink"
+								>
+									<LabeledIcon
+										icon={AlertIcon}
+										label={`What changed couldn't be computed: ${sinceView.error.message}`}
+										className="text-bad"
+									/>
+									Changes since PS{sinceView.from} not computed
+								</p>
+							)}
+							{emptySince && (
+								<p
+									data-testid="since-empty-all"
+									className="mt-3 flex min-h-10 items-center gap-2 rounded-md border border-ok/30 bg-ok/10 px-3 text-sm text-ink"
+								>
+									{emptySince}
+								</p>
+							)}
+							{data.files.length === 0 && gone.length === 0 ? (
+								<>
+									<p className="mt-4 text-muted">This PR changes no files.</p>
+									{notInComparison}
 									<FilesVerdict
 										threads={allThreads}
 										settled={firstOpenSettled}
 									/>
+								</>
+							) : (
+								<div className="mt-4 flex">
+									{/* The handle's 1rem is the gap to the diffs. */}
+									{wide && <TreeColumn tree={tree} />}
+									<div
+										ref={diffs}
+										// Room for the floating Files button, and for the save notices
+										// (--sync-notices, SyncNotices): the last header can always
+										// scroll clear of them; and on touch for the selection bar
+										// under a selection in the last line (--selection-room).
+										style={{
+											paddingBottom: `max(${wide ? "0px" : "5rem"}, var(--sync-notices, 0px), var(--selection-room, 0px))`,
+										}}
+										className="min-w-0 flex-1 space-y-3"
+									>
+										{files.map((file) => (
+											<FileDiff
+												// A new snapshot can reuse an index for another file.
+												key={`${data.revision}:${file.index}`}
+												file={file}
+												revision={data.revision}
+												unit={unit}
+												expanded={open === keyOf(file.index)}
+												onExpandedChange={(expanded, auto) =>
+													toggleFile(file.index, expanded, auto)
+												}
+												otherOpen={
+													openIndex !== null && openIndex !== file.index
+												}
+												landing={
+													landing?.index === file.index ? landing : undefined
+												}
+												threads={threads}
+												threadsLoading={threadsLoading}
+												headSure={headSure}
+												since={since ?? undefined}
+												sinceInfo={sinceInfoOf(
+													file.index,
+													file.clusters.filter((c) => c.carried).length,
+												)}
+												sincePending={sinceView.pending}
+												readOnly={readOnly}
+											/>
+										))}
+										{/* Files only the compared patch set had something reviewed in: their gone clusters. */}
+										{gone.map((file) => (
+											<GoneFile
+												key={`${data.revision}:gone:${file.index}`}
+												index={file.index}
+												path={file.path}
+												revision={data.revision}
+												since={since as number}
+												info={byFile?.get(file.index)}
+											/>
+										))}
+										{/* Threads whose file isn't in this comparison at all. */}
+										{notInComparison}
+										{/* After the last file: the verdict (the padding above keeps it clear of the Files button). */}
+										<FilesVerdict
+											threads={allThreads}
+											settled={firstOpenSettled}
+										/>
+									</div>
 								</div>
-							</div>
-						)}
-						<SelectionBar files={data.files} />
-						{!wide && (data.files.length > 0 || gone.length > 0) && (
-							<>
-								<button
-									hidden={!filesButton}
-									type="button"
-									aria-label="Files"
-									aria-haspopup="dialog"
-									onClick={() => setSheetOpen(true)}
-									className="fixed right-4 bottom-4 z-30 flex h-12 items-center gap-2 cta rounded-full px-5 text-sm font-semibold text-ink hover:brightness-110 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
-								>
-									<span aria-hidden>☰</span>
-									Files
-								</button>
-								<FilesSheet
-									open={sheetOpen}
-									onClose={() => setSheetOpen(false)}
-								>
-									{tree}
-								</FilesSheet>
-							</>
-						)}
-					</>
-				)}
-			</section>
+							)}
+							<SelectionBar files={data.files} />
+							{!wide && (data.files.length > 0 || gone.length > 0) && (
+								<>
+									<button
+										hidden={!filesButton}
+										type="button"
+										aria-label="Files"
+										aria-haspopup="dialog"
+										onClick={() => setSheetOpen(true)}
+										className="fixed right-4 bottom-4 z-30 flex h-12 items-center gap-2 cta rounded-full px-5 text-sm font-semibold text-ink hover:brightness-110 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+									>
+										<span aria-hidden>☰</span>
+										Files
+									</button>
+									<FilesSheet
+										open={sheetOpen}
+										onClose={() => setSheetOpen(false)}
+									>
+										{tree}
+									</FilesSheet>
+								</>
+							)}
+						</>
+					)}
+				</section>
+			</PlacementProvider>
 		</PeopleProvider>
 	);
 }

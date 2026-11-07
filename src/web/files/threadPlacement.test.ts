@@ -11,9 +11,12 @@ import {
 	fileThreads,
 	type LineKey,
 	lineKey,
+	outsideThreads,
+	type Placements,
 	placeThreads,
+	shownThread,
+	shownThreads,
 	threadOrder,
-	threadsOnHead,
 } from "./threadPlacement";
 
 const HEAD = "h".repeat(40);
@@ -418,14 +421,137 @@ describe("placeThreads", () => {
 	});
 });
 
-describe("threadsOnHead", () => {
+describe("shownThreads (no placements: the head's own)", () => {
 	it("keeps the head's threads, in order, file comments too", () => {
 		const a = thread({ side: "RIGHT", line: 3 });
 		const b = thread(null);
 		const other = thread({ commit: "e".repeat(40) });
 		const none = thread(null, { commit: "" });
-		expect(threadsOnHead([a, other, b, none], HEAD)).toEqual([a, b]);
-		expect(threadsOnHead([none], "")).toEqual([]);
+		expect(shownThreads([a, other, b, none], HEAD, null)).toEqual([a, b]);
+		expect(shownThreads([none], "", null)).toEqual([]);
+	});
+});
+
+describe("placements", () => {
+	const OLD = "e".repeat(40);
+	const ref = (line: number, path = PATH) => ({
+		path,
+		startSide: "RIGHT" as const,
+		startLine: line,
+		side: "RIGHT" as const,
+		line,
+	});
+
+	it("placed: a thread from an earlier commit shows on its traced line, on the viewed head, its code its own", () => {
+		const t = thread(
+			{ side: "RIGHT", line: 3, commit: OLD, startCol: 1, endCol: 4 },
+			{ commit: OLD },
+		);
+		const placements: Placements = new Map([
+			[t.id, { kind: "placed", anchor: ref(11), changed: false }],
+		]);
+		const [shown] = shownThreads([t], HEAD, placements);
+		expect(shown).toMatchObject({
+			id: t.id,
+			path: PATH,
+			commit: HEAD,
+			anchor: { line: 11, startLine: 11, commit: HEAD, startCol: 1, endCol: 4 },
+			code: t.code,
+		});
+		// The same copy each time (stable identities for the page).
+		expect(shownThread(t, HEAD, placements)).toBe(shown);
+		const p = placeThreads({
+			threads: shownThreads([t], HEAD, placements),
+			path: PATH,
+			snapshotHead: HEAD,
+			hunks: HUNKS,
+			loadedContext: [],
+			placements,
+		});
+		expect(p.end.get("RIGHT:11")?.map((x) => x.id)).toEqual([t.id]);
+		expect(p.fates).toEqual([]);
+	});
+
+	it("changed: on the replacing line, whole lines (its columns no longer hold), in the new path", () => {
+		const t = thread(
+			{ side: "RIGHT", line: 3, commit: OLD, startCol: 1, endCol: 4 },
+			{ commit: OLD },
+		);
+		const placements: Placements = new Map([
+			[
+				t.id,
+				{
+					kind: "changed",
+					anchor: ref(10, "src/b.ts"),
+					old: { side: "RIGHT", startLine: 3, line: 3, text: ["x"] },
+					now: ["y"],
+				},
+			],
+		]);
+		expect(shownThread(t, HEAD, placements)).toMatchObject({
+			path: "src/b.ts",
+			anchor: { path: "src/b.ts", line: 10, startCol: null, endCol: null },
+		});
+	});
+
+	it("unplaced: listed under its file with its fate, never on a row nor in the header", () => {
+		const t = thread({ side: "RIGHT", line: 3, commit: OLD }, { commit: OLD });
+		const unplaced = {
+			kind: "unplaced" as const,
+			fate: "deleted" as const,
+			path: PATH,
+			nearest: { side: "RIGHT" as const, line: 2 },
+		};
+		const placements: Placements = new Map([[t.id, unplaced]]);
+		const p = placeThreads({
+			threads: shownThreads([t], HEAD, placements),
+			path: PATH,
+			snapshotHead: HEAD,
+			hunks: HUNKS,
+			loadedContext: [],
+			placements,
+		});
+		expect(p.fates.map((f) => [f.thread.id, f.placement])).toEqual([
+			[t.id, unplaced],
+		]);
+		expect(everywhere(p)).toEqual([]);
+		// Its file counts it.
+		expect(
+			fileThreads(shownThreads([t], HEAD, placements), PATH, HEAD),
+		).toHaveLength(1);
+	});
+
+	it("outside: in no file, only in the trailing group", () => {
+		const t = thread({ side: "RIGHT", line: 3, commit: OLD }, { commit: OLD });
+		const placements: Placements = new Map([
+			[t.id, { kind: "outside", path: "gone.ts", fate: "file-gone" }],
+		]);
+		expect(shownThreads([t], HEAD, placements)).toEqual([]);
+		expect(outsideThreads([t], placements)).toEqual([
+			{ thread: t, placement: placements.get(t.id) },
+		]);
+	});
+
+	it("a file comment follows its file's new path", () => {
+		const t = thread(null, { commit: OLD });
+		const placements: Placements = new Map([
+			[t.id, { kind: "file", path: "src/b.ts" }],
+		]);
+		expect(shownThread(t, HEAD, placements)).toMatchObject({
+			path: "src/b.ts",
+			commit: HEAD,
+			anchor: null,
+		});
+	});
+
+	it("a thread with no placement (resolved, or not in yet) shows only on its own head", () => {
+		const here = thread({ side: "RIGHT", line: 3 }, { resolved: true });
+		const old = thread(
+			{ side: "RIGHT", line: 3, commit: OLD },
+			{ commit: OLD },
+		);
+		expect(shownThreads([here, old], HEAD, new Map())).toEqual([here]);
+		expect(outsideThreads([here, old], null)).toEqual([]);
 	});
 });
 

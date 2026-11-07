@@ -811,3 +811,306 @@ test("the markers move by drag and by Ctrl+[ / Ctrl+]; nothing moves on a bare k
 		node(page, "branch").getByRole("button", { name: "comparison base" }),
 	).toBeVisible();
 });
+
+/*
+ * Threads (Task 5.3): placed, changed and unplaced threads with their
+ * fates, the trailing "Not in this comparison" group, a placement by
+ * drag, and the Overview's chips.
+ */
+
+/** A thread made on `commit` at `path:line` (RIGHT), by rev1. */
+const threadOn = (commit: string, path: string, line: number, text: string) =>
+	reviewThread({ path, line, subjectType: "LINE" }, [
+		threadComment({ login: "rev1", text, commit, diffHunk: "" }),
+	]);
+
+/** Push 2 for the threads: A rewritten, B's line deleted, util.ts untouched. */
+const rewriteAndDelete = {
+	message: "rewrite and delete",
+	files: {
+		"src/core.ts": edit(core, { 5: "core 5 reworked", 30: null }),
+	},
+};
+
+const unplacedRows = (section: Locator) =>
+	section.getByTestId("unplaced-thread");
+
+test("threads: a rewritten line is changed with its old lines, a deleted one unplaced under its file with its code, in both views; a drag places it and a reload keeps it; the Overview's chips", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	// A review, a push, both views, a patch set, a reload and the Overview:
+	// each step waits on git (GIT_WAIT), so the whole takes longer than 30 s.
+	test.setTimeout(120_000);
+	const threads: ReturnType<typeof reviewThread>[] = [];
+	const p = await pr({ ...fixture, threads });
+	const h1 = p.head();
+	threads.push(
+		threadOn(h1, "src/core.ts", 5, "Why change core 5?"),
+		threadOn(h1, "src/core.ts", 30, "Is core 30 needed?"),
+		threadOn(h1, "src/util.ts", 3, "util 3 looks fine"),
+	);
+	p.editScenario((sc) => {
+		const graph = sc.prs[7]?.graphql;
+		if (graph) graph.reviewThreads = threads;
+	});
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	await reviewAll(page);
+	p.moveHead(rewriteAndDelete);
+	await page.reload();
+	await expect(tail(page)).toHaveAttribute("data-state", "head", GIT_WAIT);
+	await toast(page).getByRole("button", { name: "View" }).click();
+	await expect(
+		node(page, "head").getByRole("button", { name: "viewing" }),
+	).toBeVisible();
+
+	// The since view (PS1 → the head): core.ts's rewritten line carries its
+	// thread, changed; the deleted line's thread is listed under the header.
+	const coreS = fileSection(page, "src/core.ts");
+	await coreS.getByRole("button", { name: "Expand file" }).click();
+	const checkCore = async () => {
+		const rewritten = coreS
+			.getByTestId("diff-line")
+			.filter({ hasText: "core 5 reworked" });
+		const bubble = rewritten.getByRole("button", { name: /1 comment/ });
+		await expect(bubble).toBeVisible(GIT_WAIT);
+		// Opened once, it stays open across the views (by its line).
+		if ((await bubble.getAttribute("aria-expanded")) !== "true") {
+			await bubble.click();
+		}
+		const card = coreS
+			.getByTestId("files-thread")
+			.filter({ hasText: "Why change core 5?" });
+		await expect(card.getByTestId("placement-changed")).toHaveText(
+			"changed since",
+		);
+		await expect(card.getByTestId("placement-changed-line")).toHaveText([
+			/core 5 changed/,
+			/core 5 reworked/,
+		]);
+		await expect(card.getByTestId("placement-fate-line")).toContainText(
+			"Line rewritten since PS1",
+		);
+		await expect(card.getByRole("link", { name: "See on PS1" })).toBeVisible();
+		const row = unplacedRows(coreS);
+		await expect(row).toHaveCount(1);
+		await expect(row).toHaveAttribute("data-fate", "deleted");
+		await expect(row).toContainText("Is core 30 needed?");
+		await expect(row.getByTestId("original-code-label")).toHaveText(
+			"PS1 · src/core.ts · line 30",
+		);
+		await expect(
+			row
+				.getByTestId("original-code-line")
+				.filter({ hasText: "core 30 changed" }),
+		).toHaveAttribute("data-marked", "true");
+		await expect(row.getByTestId("original-code-line")).toHaveCount(5);
+		await expect(row.getByTestId("near-line")).toHaveText("near 29");
+		// No handle on a head that is no patch set yet.
+		await expect(row.getByTestId("place-handle")).toHaveCount(0);
+	};
+	await checkCore();
+	await expectNoPageOverflow(page);
+	// The full diff shows them the same way.
+	await page.keyboard.press("Control+Shift+[");
+	await expect(
+		node(page, "branch").getByRole("button", { name: "comparison base" }),
+	).toBeVisible();
+	await checkCore();
+
+	// The first mark starts PS2; a drag puts the deleted line's thread on
+	// core 4, written, and a reload keeps it there.
+	await boxes(coreS).first().click();
+	await expect(
+		node(page, "ps2").getByRole("button", { name: "viewing" }),
+	).toBeVisible();
+	const row = unplacedRows(coreS);
+	const handle = row.getByTestId("place-handle");
+	await expect(handle).toBeVisible(GIT_WAIT);
+	if (isMobile) {
+		expect((await handle.boundingBox())?.height).toBeGreaterThanOrEqual(40);
+		expect((await row.boundingBox())?.height).toBeGreaterThanOrEqual(40);
+	}
+	const target = coreS
+		.getByTestId("diff-line")
+		.filter({ hasText: /^.*core 4$/ });
+	// The handle and the line both on screen (the first hunk sits right
+	// under the list).
+	await handle.scrollIntoViewIfNeeded();
+	await expect(target).toBeInViewport();
+	await drag(page, handle, target);
+	await expect(unplacedRows(coreS)).toHaveCount(0);
+	await expect(target.getByRole("button", { name: /1 comment/ })).toBeVisible();
+	await page.reload();
+	const reloaded = fileSection(page, "src/core.ts");
+	await reloaded.getByRole("button", { name: "Expand file" }).click();
+	await expect(
+		reloaded
+			.getByTestId("diff-line")
+			.filter({ hasText: /^.*core 4$/ })
+			.getByRole("button", { name: /1 comment/ }),
+	).toBeVisible(GIT_WAIT);
+	await expect(unplacedRows(reloaded)).toHaveCount(0);
+	await expectNoPageOverflow(page);
+
+	// The Overview: the opened-on chip, the changed chip and its fate line.
+	await page.getByRole("link", { name: "Overview" }).click();
+	const card = page
+		.getByTestId("thread")
+		.filter({ hasText: "Why change core 5?" });
+	await expect(card.getByTestId("opened-on")).toHaveText("PS1", GIT_WAIT);
+	await expect(card.getByTestId("placement-changed")).toHaveText(
+		"changed since",
+	);
+	await expect(card.getByTestId("placement-fate-line")).toContainText(
+		"Line rewritten since PS1",
+	);
+	const fine = page
+		.getByTestId("thread")
+		.filter({ hasText: "util 3 looks fine" });
+	await expect(fine.getByTestId("opened-on")).toHaveText("PS1");
+	await expect(fine.getByTestId("placement-changed")).toHaveCount(0);
+	await expectNoPageOverflow(page);
+});
+
+/** Moves the comparison base onto dot `id` (Ctrl+Shift+[ / ]), as many steps as it takes. */
+async function baseOn(page: Page, id: string, key: "[" | "]") {
+	const base = node(page, id).getByRole("button", { name: "comparison base" });
+	await expect(async () => {
+		if ((await base.count()) === 0) {
+			await page.keyboard.press(`Control+Shift+${key}`);
+		}
+		await expect(base).toBeVisible({ timeout: 1000 });
+	}).toPass();
+}
+
+/** Views the newer head from the toast and marks its first cluster: the next patch set. */
+async function startNext(page: Page, n: number, path: string) {
+	await page.reload();
+	await expect(tail(page)).toHaveAttribute("data-state", "head", GIT_WAIT);
+	await toast(page).getByRole("button", { name: "View" }).click();
+	// The comparison base onto the branch: the full diff.
+	await baseOn(page, "branch", "[");
+	const section = fileSection(page, path);
+	await section.getByRole("button", { name: "Expand file" }).click();
+	const box = boxes(section).first();
+	await box.click();
+	await expect(
+		node(page, `ps${n}`).getByRole("button", { name: "viewing" }),
+	).toBeVisible(GIT_WAIT);
+	await section.getByRole("button", { name: "Collapse file" }).click();
+}
+
+test("a thread of a file deleted two patch sets earlier is under Not in this comparison on PS3 and PS4, in both views; gone once resolved, back once unresolved", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	// Four patch sets, each a push the head check fetches and a first mark
+	// the engine answers (GIT_WAIT each), then two Refreshes.
+	test.setTimeout(180_000);
+	const threads: ReturnType<typeof reviewThread>[] = [];
+	const p = await pr({
+		...fixture,
+		files: [
+			{
+				message: "PR change",
+				files: {
+					"src/core.ts": edit(core, { 5: "core 5 changed" }),
+					"src/legacy.ts": text(["one", "two", "three", "four", "five"]),
+				},
+			},
+		],
+		threads,
+	});
+	threads.push(
+		threadOn(p.head(), "src/legacy.ts", 3, "Clear the timer here too"),
+	);
+	p.editScenario((sc) => {
+		const graph = sc.prs[7]?.graphql;
+		if (graph) graph.reviewThreads = threads;
+	});
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	// PS1: one mark starts it.
+	const coreS = await expand(page, "src/core.ts");
+	await boxes(coreS).first().click();
+	await expect(boxes(coreS).first()).toBeChecked();
+	await coreS.getByRole("button", { name: "Collapse file" }).click();
+	// PS2 deletes the file; PS3 and PS4 change core.ts again.
+	p.moveHead({
+		message: "drop legacy",
+		files: { "src/core.ts": edit(core, { 5: "core 5 changed", 7: "core 7" }) },
+		delete: ["src/legacy.ts"],
+	});
+	await startNext(page, 2, "src/core.ts");
+	p.moveHead({
+		message: "again",
+		files: {
+			"src/core.ts": edit(core, {
+				5: "core 5 changed",
+				7: "core 7",
+				9: "core 9",
+			}),
+		},
+	});
+	await startNext(page, 3, "src/core.ts");
+	const group = page.getByTestId("not-in-comparison");
+	const expectGroup = async () => {
+		await expect(group).toBeVisible(GIT_WAIT);
+		await expect(group).toContainText("Not in this comparison");
+		await expect(group).toContainText("1 thread");
+		const row = group.getByTestId("unplaced-thread");
+		await expect(row).toHaveAttribute("data-fate", "file-gone");
+		await expect(row).toContainText("src/legacy.ts");
+		await expect(row).toContainText("file deleted");
+		await expect(row).toContainText("Clear the timer here too");
+		await expect(row.getByTestId("original-code-label")).toHaveText(
+			"PS1 · src/legacy.ts · line 3",
+		);
+		await expectNoPageOverflow(page);
+	};
+	// PS3, full diff and since PS2.
+	await expectGroup();
+	await baseOn(page, "ps2", "]");
+	await expectGroup();
+	p.moveHead({
+		message: "and again",
+		files: {
+			"src/core.ts": edit(core, {
+				5: "core 5 changed",
+				7: "core 7",
+				9: "core 9",
+				11: "core 11",
+			}),
+		},
+	});
+	await startNext(page, 4, "src/core.ts");
+	await expectGroup();
+	await baseOn(page, "ps3", "]");
+	await expectGroup();
+	// Its card opens from the row.
+	await group
+		.getByTestId("unplaced-thread")
+		.getByRole("button", { expanded: false })
+		.click();
+	await expect(group.getByTestId("files-thread")).toBeVisible();
+
+	// Resolved on GitHub: no longer placed, the group goes; unresolved: back.
+	const setResolved = (resolved: boolean) =>
+		p.editScenario((sc) => {
+			const t = sc.prs[7]?.graphql?.reviewThreads?.[0] as
+				| { isResolved: boolean }
+				| undefined;
+			if (t) t.isResolved = resolved;
+		});
+	setResolved(true);
+	await page.getByRole("button", { name: "Refresh" }).first().click();
+	await expect(group).toHaveCount(0, GIT_WAIT);
+	setResolved(false);
+	await page.getByRole("button", { name: "Refresh" }).first().click();
+	await expectGroup();
+});

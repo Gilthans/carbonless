@@ -1,3 +1,4 @@
+import type { ThreadPlacement } from "../../shared/rereview/placement";
 import type {
 	DiffLine,
 	DiffSide,
@@ -42,18 +43,110 @@ export interface FilePlacement {
 	gapTargets: Map<ReviewThread, GapTarget>;
 	/** File comments ("file") and lines that couldn't be placed ("unplaced"). */
 	header: { thread: ReviewThread; reason: "file" | "unplaced" }[];
+	/**
+	 * Threads the tracer couldn't place in this file, with their fate: the
+	 * list under the file's header.
+	 */
+	fates: {
+		thread: ReviewThread;
+		placement: Extract<ThreadPlacement, { kind: "unplaced" }>;
+	}[];
+}
+
+/** Each unresolved thread's place in the viewed snapshot, by thread id (GET /placements). */
+export type Placements = ReadonlyMap<string, ThreadPlacement>;
+
+/** Re-anchored copies, one per thread and placement (stable identities). */
+const shownCopies = new WeakMap<
+	ReviewThread,
+	WeakMap<ThreadPlacement, ReviewThread>
+>();
+
+/**
+ * A thread as Files changed shows it in the viewed snapshot (its head
+ * `snapshotHead`): a placed or changed one on its new lines (and path), a
+ * file comment on its file's path now, an unplaced one under its file's
+ * path, each as if made on the viewed head; its code pane stays its own.
+ * One with no placement (resolved, id-less, or the placements not in yet)
+ * shows only where it was made, when that is the viewed head. Null: not
+ * in this snapshot's files (outside the comparison, or another head's).
+ */
+export function shownThread(
+	t: ReviewThread,
+	snapshotHead: string,
+	placements: Placements | null,
+): ReviewThread | null {
+	const p = placements?.get(t.id);
+	if (!p) return t.commit !== "" && t.commit === snapshotHead ? t : null;
+	if (p.kind === "outside") return null;
+	let copies = shownCopies.get(t);
+	if (!copies) {
+		copies = new WeakMap();
+		shownCopies.set(t, copies);
+	}
+	const known = copies.get(p);
+	if (known && known.commit === snapshotHead) return known;
+	let shown: ReviewThread;
+	if (p.kind === "placed" || p.kind === "changed") {
+		const a = p.anchor;
+		// A rewritten line's columns no longer hold: whole lines.
+		const cols =
+			p.kind === "placed" && t.anchor
+				? {
+						startCol: t.anchor.startCol ?? null,
+						endCol: t.anchor.endCol ?? null,
+					}
+				: { startCol: null, endCol: null };
+		shown = {
+			...t,
+			path: a.path,
+			commit: snapshotHead,
+			subject: "line",
+			anchor: {
+				path: a.path,
+				commit: snapshotHead,
+				side: a.side,
+				line: a.line,
+				startSide: a.startSide,
+				startLine: a.startLine,
+				at: t.anchor?.at ?? t.createdAt,
+				...cols,
+			},
+		};
+	} else {
+		shown = { ...t, path: p.path, commit: snapshotHead };
+	}
+	copies.set(p, shown);
+	return shown;
+}
+
+/** Every thread Files changed shows in the viewed snapshot's files (shownThread). */
+export function shownThreads(
+	threads: readonly ReviewThread[],
+	snapshotHead: string,
+	placements: Placements | null,
+): ReviewThread[] {
+	return threads.flatMap((t) => {
+		const shown = shownThread(t, snapshotHead, placements);
+		return shown ? [shown] : [];
+	});
 }
 
 /**
- * The threads Files changed shows for the viewed head, in their order:
- * those whose opening comment was made on it. One on no known commit ("")
- * is on no head.
+ * The threads whose file is not in the comparison at all (the trailing
+ * "Not in this comparison" group), in the order given.
  */
-export function threadsOnHead(
-	threads: ReviewThread[],
-	snapshotHead: string,
-): ReviewThread[] {
-	return threads.filter((t) => t.commit !== "" && t.commit === snapshotHead);
+export function outsideThreads(
+	threads: readonly ReviewThread[],
+	placements: Placements | null,
+): {
+	thread: ReviewThread;
+	placement: Extract<ThreadPlacement, { kind: "outside" }>;
+}[] {
+	return threads.flatMap((thread) => {
+		const placement = placements?.get(thread.id);
+		return placement?.kind === "outside" ? [{ thread, placement }] : [];
+	});
 }
 
 /**
@@ -65,7 +158,9 @@ export function fileThreads(
 	path: string,
 	snapshotHead: string,
 ): ReviewThread[] {
-	return threadsOnHead(threads, snapshotHead).filter((t) => t.path === path);
+	return threads.filter(
+		(t) => t.path === path && t.commit !== "" && t.commit === snapshotHead,
+	);
 }
 
 /**
@@ -146,12 +241,12 @@ function newNumberOf(side: DiffSide, n: number, hunks: DisplayHunk[]): number {
 }
 
 /**
- * Which threads belong to this file's viewed diff, and where. Threads on
- * other commits (or on none GitHub named) are left out. The one place that
- * decides where a thread shows in Files changed: threads from earlier
- * commits, and LEFT lines checked against the old side the commenter saw,
- * will change only this. Today LEFT lines are placed by their number alone,
- * like RIGHT ones.
+ * Which threads belong to this file's viewed diff, and where: the one
+ * place that decides where a thread shows in Files changed. `threads` are
+ * shownThreads' (each on the viewed head, the tracer's placement applied:
+ * threads from earlier commits on their traced lines, LEFT lines checked
+ * against the old side the commenter saw); threads on other commits are
+ * left out. Those the tracer couldn't place go to `fates`.
  *
  * Every thread it keeps lands somewhere: on its last line's row, on the gap
  * hiding that line, or in the file's header (a file comment, or a line it
@@ -169,6 +264,8 @@ export function placeThreads(args: {
 	noLines?: boolean;
 	/** More ranges to paint like a thread's (new threads being written). */
 	spans?: readonly SpanRange[];
+	/** Where the tracer put each thread (shownThreads applied them already). */
+	placements?: Placements | null;
 }): FilePlacement {
 	const placement: FilePlacement = {
 		end: new Map(),
@@ -178,6 +275,7 @@ export function placeThreads(args: {
 		gaps: new Map(),
 		gapTargets: new Map(),
 		header: [],
+		fates: [],
 	};
 	const mine = fileThreads(args.threads, args.path, args.snapshotHead);
 	const spans = args.spans ?? [];
@@ -236,6 +334,11 @@ export function placeThreads(args: {
 	}
 
 	for (const t of mine) {
+		const traced = args.placements?.get(t.id);
+		if (traced?.kind === "unplaced") {
+			placement.fates.push({ thread: t, placement: traced });
+			continue;
+		}
 		const anchor = t.anchor;
 		if (!anchor) {
 			if (t.subject === "file") {

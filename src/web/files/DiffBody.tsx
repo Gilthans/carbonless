@@ -85,6 +85,7 @@ import {
 	type FilePlacement,
 	type LineKey,
 	lineKey,
+	type Placements,
 	placeThreads,
 } from "./threadPlacement";
 import { VIEW_KEYS } from "./viewShortcuts";
@@ -95,8 +96,13 @@ import { hunkWordMarks } from "./wordBlocks";
 export interface DiffThreads {
 	readId: string;
 	snapshotHead: string;
-	/** The PR's threads; placeThreads picks this file's. */
+	/**
+	 * The threads shown in the viewed snapshot (shownThreads: each on the
+	 * viewed head, where the tracer put it); placeThreads picks this file's.
+	 */
 	threads: ReviewThread[];
+	/** The tracer's placements by thread id; null (or none) until they are in. */
+	placements?: Placements | null;
 }
 
 /**
@@ -1639,6 +1645,7 @@ export function DiffBody(props: {
 				loadedContext: [...loaded.values()],
 				noLines: file.binary || file.submodule,
 				spans: lineItems.map((i) => i.span as SpanRange),
+				placements: props.threads.placements,
 			})
 		: null;
 	// Written on a row that isn't shown (a gap): above the diff, never lost.

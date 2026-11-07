@@ -63,6 +63,12 @@ const E2E_MAP = [
 	// matrix drives it end to end, the Files page's graph and since view
 	// read its answers.
 	[/^src\/(server|shared)\/rereview\//, ["methodology", "rereview"]],
+	// Thread placement in the page: the changed card, the unplaced list,
+	// the trailing group; Files changed's threads at large.
+	[
+		/^src\/web\/files\/(ThreadFate|NotInComparison|threadPlacement|ThreadRow)\.tsx?$/,
+		["rereview", "files-threads"],
+	],
 	// The patch set graph, the toast and the since view (the comparison).
 	[
 		/^src\/web\/files\/(PatchsetGraph|HeadToast|graphCards|comparison|FilesPage|FileDiff|DiffBody|FileTree|ProgressBar|useSetStates|landing)\.tsx?$|^src\/web\/(App|shortcuts)\.tsx$|^e2e\/pr-setup\.ts$/,

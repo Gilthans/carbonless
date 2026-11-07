@@ -58,6 +58,14 @@ import {
 	sessionQuery,
 } from "../api";
 import { type FilesSearch, threadTarget } from "../files/landing";
+import {
+	ChangedSince,
+	OpenedOnChip,
+	PlacementChip,
+	PlacementProvider,
+	usePlacementInfo,
+	useSessionPlacements,
+} from "../files/ThreadFate";
 import { useReviewView } from "../files/useSetStates";
 import { GithubHtml, ImageErrorContext } from "../GithubHtml";
 import { usePageActive } from "../pageActive";
@@ -156,6 +164,9 @@ export function OverviewPage() {
 		enabled: stale,
 	});
 	const threads = useThreads(data?.readId);
+	// Where each unresolved thread sits in the session's snapshot: the
+	// cards' "changed since" and fate chips.
+	const placementInfo = useSessionPlacements(threads.readId);
 	// What each thread list shows, for the order comments are read in.
 	const [shown, setShown] = useState<Record<string, ShownThreads>>({});
 	const onShown = useCallback(
@@ -193,12 +204,14 @@ export function OverviewPage() {
 	return (
 		<ImageErrorContext value={onImageError}>
 			<PeopleProvider threads={threads.view?.threads}>
-				<OverviewContent
-					overview={overview}
-					threads={threads}
-					onShown={onShown}
-					updateError={revalidate.isError ? revalidate.error : null}
-				/>
+				<PlacementProvider value={placementInfo}>
+					<OverviewContent
+						overview={overview}
+						threads={threads}
+						onShown={onShown}
+						updateError={revalidate.isError ? revalidate.error : null}
+					/>
+				</PlacementProvider>
 			</PeopleProvider>
 		</ImageErrorContext>
 	);
@@ -1712,6 +1725,8 @@ function ThreadItem({
 							{gone ? "Deleted" : "Moving…"}
 						</span>
 					)}
+					<OpenedOnChip thread={thread} />
+					<PlacementChip thread={thread} />
 					<ThreadStatus thread={thread} mark={false} />
 					{!thread.hasReply && !thread.resolved && (
 						<Badge tone="yellow" icon={ReplyIcon}>
@@ -1728,6 +1743,7 @@ function ThreadItem({
 			</div>
 			<div className="space-y-2 px-3 pt-1 pb-3">
 				<ThreadPlace thread={thread} line={line} target={target} />
+				<ThreadFateLine thread={thread} />
 				{thread.code?.source === "pending" ? (
 					<div className="grid gap-3 md:grid-cols-2 md:items-start">
 						{/* The code is still being built: the pane's frame. */}
@@ -1794,6 +1810,13 @@ function ThreadItem({
 			</div>
 		</li>
 	);
+}
+
+/** A changed thread's fate line ("Line rewritten since PS1 · See on PS1"). */
+function ThreadFateLine({ thread }: { thread: Thread }) {
+	const placement = usePlacementInfo().placements?.get(thread.id);
+	if (placement?.kind !== "changed") return null;
+	return <ChangedSince thread={thread} placement={placement} lines={false} />;
 }
 
 /** No comment (the opener's not read yet): no writes to it. */

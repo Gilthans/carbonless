@@ -9,6 +9,7 @@ import type { DiffSide, ReviewThread } from "../../shared/types";
 import { Badge, LabeledIcon } from "../overview/parts";
 import { Conversation } from "../threads/Conversation";
 import { ThreadStatus } from "../threads/ThreadStatus";
+import { ChangedSince, PlacementChip, usePlacementInfo } from "./ThreadFate";
 
 /**
  * One thread opened in Files changed: a header with its state (resolved in
@@ -23,6 +24,7 @@ export function ThreadBlock(props: {
 	unplaced?: boolean;
 }) {
 	const { thread } = props;
+	const placement = usePlacementInfo().placements?.get(thread.id);
 	return (
 		<article
 			data-testid="files-thread"
@@ -52,6 +54,7 @@ export function ThreadBlock(props: {
 					/>
 				)}
 				<span className="ml-auto flex items-center gap-2">
+					<PlacementChip thread={thread} />
 					<ThreadStatus thread={thread} mark={false} />
 					{thread.outdated && (
 						<Badge tone="gray" icon={HistoryIcon}>
@@ -60,7 +63,10 @@ export function ThreadBlock(props: {
 					)}
 				</span>
 			</div>
-			<div className="p-2.5">
+			<div className="space-y-2 p-2.5">
+				{placement?.kind === "changed" && (
+					<ChangedSince thread={thread} placement={placement} />
+				)}
 				<Conversation readId={props.readId} thread={thread} />
 			</div>
 		</article>
