@@ -262,8 +262,9 @@ test("since view: a reworked cluster and a new one are markable on their own; an
 
 	// PS1, as reviewed: read-only, with its chip.
 	await page.keyboard.press("Control+[");
-	// Viewing PS1 reads its snapshot's view from git (GIT_WAIT's reason).
-	await expect(page.getByTestId("read-only-note")).toBeVisible(GIT_WAIT);
+	// 0.2-0.4 s on a single run: the default wait. (A loaded phone run
+	// once sat on "Loading the diff" past 10 s: reported, not waited out.)
+	await expect(page.getByTestId("read-only-note")).toBeVisible();
 	const ps1 = fileSection(page, "src/core.ts");
 	if ((await ps1.getByRole("button", { name: "Expand file" }).count()) > 0) {
 		await ps1.getByRole("button", { name: "Expand file" }).click();
