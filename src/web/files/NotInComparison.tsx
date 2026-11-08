@@ -3,7 +3,7 @@ import type { ThreadPlacement } from "../../shared/rereview/placement";
 import type { ReviewThread } from "../../shared/types";
 import { Badge } from "../overview/parts";
 import { Spinner } from "../Spinner";
-import { threadsLabel, UnplacedRow } from "./ThreadFate";
+import { resolvedLast, threadsLabel, UnplacedRow } from "./ThreadFate";
 
 /**
  * The trailing group of threads whose file is not in this comparison at
@@ -12,6 +12,7 @@ import { threadsLabel, UnplacedRow } from "./ThreadFate";
  * written on. It is there on every patch set until each thread is
  * resolved, so an unresolved thread never disappears with its file. A
  * spinner while the placements are on their way (never an empty group).
+ * A resolved thread stays listed as a quiet line after the rest (UnplacedRow).
  */
 export function NotInComparison(props: {
 	threads: {
@@ -95,6 +96,8 @@ export function NotInComparison(props: {
 			</section>
 		);
 	}
+	// Resolved ones are quiet lines after the rest, counted nowhere.
+	const open = props.threads.filter((t) => !t.thread.resolved).length;
 	return (
 		<section
 			aria-label="Not in this comparison"
@@ -103,12 +106,14 @@ export function NotInComparison(props: {
 		>
 			<h3 className="flex min-h-10 flex-wrap items-center gap-2 px-1 text-sm font-semibold text-ink">
 				Not in this comparison
-				<Badge tone="red" icon={CircleSlashIcon}>
-					{threadsLabel(props.threads.length)}
-				</Badge>
+				{open > 0 && (
+					<Badge tone="red" icon={CircleSlashIcon}>
+						{threadsLabel(open)}
+					</Badge>
+				)}
 			</h3>
 			<ul className="space-y-1.5">
-				{props.threads.map(({ thread, placement }) => (
+				{resolvedLast(props.threads).map(({ thread, placement }) => (
 					<UnplacedRow
 						key={thread.id}
 						thread={thread}

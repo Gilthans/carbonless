@@ -1708,7 +1708,7 @@ describe("API", () => {
 			return { h1, h2, readId: readId as string };
 		};
 
-		it("GET /placements: pending, then each unresolved thread placed; resolved ones skipped and placed again once unresolved; 400, 404, 410", async () => {
+		it("GET /placements: pending, then every thread placed, resolved ones too (a quiet line when unplaced); 400, 404, 410", async () => {
 			const { h1, h2, readId } = await setup();
 			const first = await get(`/api/placements?read=${readId}&head=${h2}`);
 			expect(first).toEqual({ pending: true });
@@ -1732,12 +1732,15 @@ describe("API", () => {
 					},
 					now: ["line 2 reworked"],
 				},
+				// Resolved: placed all the same.
+				"T12-1": expect.objectContaining({ kind: expect.any(String) }),
 			});
 			// On PS1 itself: placed, as made.
 			expect(byId(await placementsOf(`read=${readId}&ps=1`))).toEqual({
 				"T12-0": expect.objectContaining({ kind: "placed" }),
+				"T12-1": expect.objectContaining({ kind: "placed" }),
 			});
-			// Unresolved on GitHub: the next read places it.
+			// Unresolved on GitHub: the next read places it the same.
 			withThreads(threadsOn(h1, false));
 			const { readId: next } = await get("/api/overview?maxAge=0");
 			expect(
@@ -1776,6 +1779,7 @@ describe("API", () => {
 						id: "T12-0",
 						placement: expect.objectContaining({ kind: "changed" }),
 					},
+					{ id: "T12-1", placement: expect.any(Object) },
 				]);
 				break;
 			}

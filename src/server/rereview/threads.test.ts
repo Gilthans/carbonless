@@ -299,14 +299,18 @@ describe("ThreadPlacer", () => {
 		});
 	});
 
-	it("skips resolved threads, deleted ones and those without an id", async () => {
+	it("places resolved threads too; skips deleted ones and those without an id", async () => {
 		const open = thread("a.ts", { line: 15 });
-		const resolved = thread("a.ts", { line: 15 }, { resolved: true });
+		const resolved = thread("a.ts", { line: 15 }, { id: "R", resolved: true });
 		const deleted = thread("a.ts", { line: 15 }, { unavailable: "deleted" });
 		const noId = thread("a.ts", { line: 15 }, { id: "" });
-		expect(placeable([open, resolved, deleted, noId])).toEqual([open]);
+		expect(placeable([open, resolved, deleted, noId])).toEqual([
+			open,
+			resolved,
+		]);
 		const got = await placeAll([open, resolved]);
-		expect([...got.keys()]).toEqual([open.id]);
+		expect([...got.keys()].sort()).toEqual([open.id, "R"].sort());
+		expect(got.get("R")?.kind).toBe(got.get(open.id)?.kind);
 	});
 
 	it("a thread on the target's own head and base is placed where it is", async () => {

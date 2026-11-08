@@ -403,3 +403,88 @@ describe("UnplacedRow", () => {
 		);
 	});
 });
+
+describe("a resolved unplaced thread", () => {
+	it("is one quiet line, after the unresolved ones; a click expands the full row, and Collapse folds it", async () => {
+		const user = userEvent.setup();
+		const open = thread({ id: "T1", author: "octo" });
+		const done = thread({
+			id: "T2",
+			author: "rev1",
+			resolved: true,
+			html: "<p>Old remark</p>",
+		});
+		render(
+			wrap(
+				info(),
+				<NotInComparison
+					threads={[
+						{
+							thread: done,
+							placement: { kind: "outside", path: "a.ts", fate: "file-gone" },
+						},
+						{
+							thread: open,
+							placement: { kind: "outside", path: "b.ts", fate: "file-gone" },
+						},
+					]}
+					readId="r1"
+					pending={false}
+				/>,
+			),
+		);
+		const group = screen.getByTestId("not-in-comparison");
+		// Counted nowhere: the badge says the unresolved one only.
+		expect(group.textContent).toContain("1 thread");
+		const rows = screen.getAllByTestId("unplaced-thread");
+		expect(rows.map((r) => r.dataset.thread)).toEqual(["T1", "T2"]);
+		const quiet = rows[1] as HTMLElement;
+		expect(quiet).toHaveAttribute("data-resolved", "true");
+		const line = within(quiet).getByTestId("unplaced-collapsed");
+		expect(line.textContent).toBe("File deleted · a.ts · rev1");
+		expect(line).toHaveAttribute("aria-expanded", "false");
+		expect(line.className).toContain("text-muted");
+		// No code, no comment while collapsed.
+		expect(within(quiet).queryByTestId("original-code")).toBeNull();
+		expect(within(quiet).queryByTestId("unplaced-opener")).toBeNull();
+		await user.click(line);
+		const full = screen.getAllByTestId("unplaced-thread")[1] as HTMLElement;
+		expect(within(full).getByTestId("original-code")).toBeTruthy();
+		expect(within(full).getByText("Old remark")).toBeTruthy();
+		await user.click(within(full).getByRole("button", { name: "Collapse" }));
+		expect(
+			within(
+				screen.getAllByTestId("unplaced-thread")[1] as HTMLElement,
+			).getByTestId("unplaced-collapsed"),
+		).toBeTruthy();
+	});
+
+	it("unresolving restores the full row at once; resolving collapses it", () => {
+		const t = thread({ id: "T3" });
+		const { rerender } = render(
+			wrap(info(), <UnplacedRow thread={t} readId="r1" fate="deleted" />),
+		);
+		expect(screen.getByTestId("original-code")).toBeTruthy();
+		rerender(
+			wrap(
+				info(),
+				<UnplacedRow
+					thread={{ ...t, resolved: true }}
+					readId="r1"
+					fate="deleted"
+				/>,
+			),
+		);
+		expect(screen.getByTestId("unplaced-collapsed").textContent).toContain(
+			"Line deleted",
+		);
+		expect(screen.queryByTestId("original-code")).toBeNull();
+		rerender(
+			wrap(info(), <UnplacedRow thread={t} readId="r1" fate="deleted" />),
+		);
+		expect(screen.queryByTestId("unplaced-collapsed")).toBeNull();
+		expect(screen.getByTestId("unplaced-fate").textContent).toBe(
+			"Commented line has been deleted since the review",
+		);
+	});
+});

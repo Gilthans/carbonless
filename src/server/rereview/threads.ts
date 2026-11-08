@@ -39,11 +39,14 @@ export interface PlacedThread {
 	placement: ThreadPlacement;
 }
 
-/** The threads placement covers: unresolved, still on GitHub, with an id. */
+/**
+ * The threads placement covers: those still on GitHub, with an id.
+ * Resolved ones too (owner, 2026-11-08): an unplaced resolved thread
+ * shows as one quiet line, never vanishing, and one resolved on the page
+ * keeps its place.
+ */
 export const placeable = (threads: readonly ReviewThread[]) =>
-	threads.filter(
-		(t) => !t.resolved && t.id !== "" && t.unavailable !== "deleted",
-	);
+	threads.filter((t) => t.id !== "" && t.unavailable !== "deleted");
 
 const EMPTY = Buffer.alloc(0);
 

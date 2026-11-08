@@ -1216,7 +1216,7 @@ async function startNext(page: Page, n: number, path: string) {
 	await section.getByRole("button", { name: "Collapse file" }).click();
 }
 
-test("a thread of a file deleted two patch sets earlier is under Not in this comparison on PS3 and PS4, in both views; gone once resolved, back once unresolved", async ({
+test("a thread of a file deleted two patch sets earlier is under Not in this comparison on PS3 and PS4, in both views; a quiet line once resolved, back once unresolved", async ({
 	page,
 	pr,
 	startCrb,
@@ -1314,7 +1314,8 @@ test("a thread of a file deleted two patch sets earlier is under Not in this com
 	await legacy.getByRole("button", { name: /^Show more/ }).click();
 	await expect(legacy.getByRole("button", { name: "Show less" })).toBeVisible();
 
-	// Resolved on GitHub: no longer placed, the group goes; unresolved: back.
+	// Resolved on GitHub: a quiet line in the group, counted nowhere;
+	// unresolved: the full row again.
 	const setResolved = (resolved: boolean) =>
 		p.editScenario((sc) => {
 			const t = sc.prs[7]?.graphql?.reviewThreads?.[0] as
@@ -1324,7 +1325,12 @@ test("a thread of a file deleted two patch sets earlier is under Not in this com
 		});
 	setResolved(true);
 	await page.getByRole("button", { name: "Refresh" }).first().click();
-	await expect(group).toHaveCount(0, GIT_WAIT);
+	await expect(group.getByTestId("unplaced-collapsed")).toBeVisible(GIT_WAIT);
+	await expect(group.getByTestId("unplaced-collapsed")).toHaveText(
+		"File deleted · src/legacy.ts · rev1",
+	);
+	await expect(group).not.toContainText("1 thread");
+	await expect(group.getByTestId("original-code")).toHaveCount(0);
 	setResolved(false);
 	await page.getByRole("button", { name: "Refresh" }).first().click();
 	await expectGroup();
@@ -1364,6 +1370,73 @@ async function threadsPushed(
 	await expect(tail(page)).toHaveAttribute("data-state", "head", GIT_WAIT);
 	return p;
 }
+
+test("resolving an unplaced thread from its row folds it into one quiet line, kept after a reload; expanded and unresolved, it is the full row again", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	// A review, a push, the engine, two writes and three reloads.
+	test.setTimeout(150_000);
+	const p = await threadsPushed(page, pr, startCrb);
+	// On GitHub before a reload reads it back.
+	const stored = () => {
+		const sc = JSON.parse(readFileSync(p.scenarioPath, "utf8")) as {
+			prs: Record<string, { graphql?: { reviewThreads?: unknown[] } }>;
+		};
+		const t = (sc.prs[7]?.graphql?.reviewThreads ?? []).find((x) =>
+			JSON.stringify(x).includes("Is core 30 needed?"),
+		) as { isResolved?: boolean } | undefined;
+		return t?.isResolved;
+	};
+	await toast(page).getByRole("button", { name: "View" }).click();
+	await baseOn(page, "branch", "[");
+	const open = async () => {
+		const coreS = fileSection(page, "src/core.ts");
+		const toggle = coreS
+			.getByRole("button", { name: /^(Expand|Collapse) file$/ })
+			.first();
+		await expect(toggle).toBeVisible(GIT_WAIT);
+		if ((await toggle.getAttribute("aria-label")) === "Expand file")
+			await toggle.click();
+		const row = unplacedRows(coreS).filter({ hasText: /core 30|Line deleted/ });
+		await expect(row).toHaveCount(1, GIT_WAIT);
+		return row;
+	};
+	let row = await open();
+	await expect(row.getByTestId("unplaced-fate")).toBeVisible();
+	await row.getByRole("button", { name: /^Show more/ }).click();
+	await row.getByRole("button", { name: "Resolve", exact: true }).click();
+	// One quiet line: no code, no comment.
+	const quiet = row.getByTestId("unplaced-collapsed");
+	await expect(quiet).toBeVisible();
+	await expect(quiet).toHaveText("Line deleted · rev1");
+	await expect(row.getByTestId("original-code")).toHaveCount(0);
+	await expect(row.getByTestId("unplaced-opener")).toHaveCount(0);
+	await expectNoPageOverflow(page);
+	// Kept after a reload (GitHub has it resolved now).
+	await expect.poll(stored).toBe(true);
+	await page.reload();
+	row = await open();
+	await expect(row.getByTestId("unplaced-collapsed")).toBeVisible();
+	// Expanded: the full row, and its Unresolve.
+	await row.getByTestId("unplaced-collapsed").click();
+	await expect(row.getByTestId("original-code-title")).toBeVisible();
+	await expect(row.getByTestId("thread-body")).toContainText(
+		"Is core 30 needed?",
+	);
+	await row.getByRole("button", { name: /^Show more/ }).click();
+	await row.getByRole("button", { name: "Unresolve", exact: true }).click();
+	await expect(row.getByTestId("unplaced-fate")).toHaveText(
+		"Commented line has been deleted since the review",
+	);
+	await expect(row.getByTestId("unplaced-collapse")).toHaveCount(0);
+	await expect.poll(stored).toBe(false);
+	await page.reload();
+	row = await open();
+	await expect(row.getByTestId("unplaced-fate")).toBeVisible();
+	await expect(row.getByTestId("unplaced-collapsed")).toHaveCount(0);
+});
 
 test("until the placements arrive a card spins in its chip slot and no thread reads as unplaced or outside; then they land", async ({
 	page,

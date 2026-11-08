@@ -1,6 +1,8 @@
 import {
 	AlertIcon,
 	ArrowSwitchIcon,
+	CheckCircleIcon,
+	ChevronUpIcon,
 	CircleSlashIcon,
 	DiffRemovedIcon,
 	FileRemovedIcon,
@@ -104,6 +106,8 @@ export const FATES: Record<
 		tip: string;
 		/** An unplaced row's top line (owner, 2026-11-08). */
 		sentence: string;
+		/** A resolved row's quiet line: the sentence shortened. */
+		short: string;
 	}
 > = {
 	deleted: {
@@ -112,6 +116,7 @@ export const FATES: Record<
 		tone: "red",
 		tip: "Its lines were deleted",
 		sentence: "Commented line has been deleted since the review",
+		short: "Line deleted",
 	},
 	rewritten: {
 		label: "rewritten",
@@ -119,6 +124,7 @@ export const FATES: Record<
 		tone: "yellow",
 		tip: "Rewritten beyond tracing: its lines can't be followed here",
 		sentence: "Commented line has been rewritten since the review",
+		short: "Line rewritten",
 	},
 	"file-gone": {
 		label: "file deleted",
@@ -126,6 +132,7 @@ export const FATES: Record<
 		tone: "red",
 		tip: "Its file was deleted",
 		sentence: "Commented file has been deleted since the review",
+		short: "File deleted",
 	},
 	moved: {
 		label: "moved?",
@@ -133,6 +140,7 @@ export const FATES: Record<
 		tone: "yellow",
 		tip: "Its file was renamed and its lines didn't follow: maybe moved",
 		sentence: "Commented line may have moved",
+		short: "Line may have moved",
 	},
 	reverted: {
 		label: "reverted",
@@ -140,6 +148,7 @@ export const FATES: Record<
 		tone: "yellow",
 		tip: "The PR no longer changes this place",
 		sentence: "The commented change has been reverted since the review",
+		short: "Change reverted",
 	},
 	"base-changed": {
 		label: "base changed",
@@ -147,6 +156,7 @@ export const FATES: Record<
 		tone: "yellow",
 		tip: "The base branch changed this line since",
 		sentence: "The base changed under the commented line since the review",
+		short: "Base changed",
 	},
 };
 
@@ -157,6 +167,7 @@ const UNKNOWN_FATE = {
 	tone: "red" as const,
 	tip: "Where this thread sits now couldn't be computed",
 	sentence: "Couldn't work out where this thread is now",
+	short: "Place unknown",
 };
 
 /** "PS2", or nothing without a patch set. */
@@ -389,6 +400,17 @@ export function UnplacedRow(props: {
 }) {
 	const { thread } = props;
 	const [open, setOpen] = useState(false);
+	// A resolved thread is one quiet line until expanded; resolving one
+	// collapses it again (owner, 2026-11-08).
+	const [expanded, setExpanded] = useState(false);
+	const [wasResolved, setWasResolved] = useState(thread.resolved);
+	if (wasResolved !== thread.resolved) {
+		setWasResolved(thread.resolved);
+		if (thread.resolved) {
+			setExpanded(false);
+			setOpen(false);
+		}
+	}
 	const repliesId = useId();
 	const fate = props.fate ? FATES[props.fate] : UNKNOWN_FATE;
 	const sentence =
@@ -398,11 +420,45 @@ export function UnplacedRow(props: {
 	const replies = useReplyCount(thread, props.readId);
 	const canAct = useCanAct(thread);
 	const readable = thread.unavailable === undefined && thread.id !== "";
+	if (thread.resolved && !expanded) {
+		return (
+			<li
+				data-testid="unplaced-thread"
+				data-fate={props.fate ?? "unknown"}
+				data-thread={thread.id}
+				data-resolved="true"
+				className="min-w-0"
+			>
+				<button
+					type="button"
+					aria-expanded={false}
+					aria-label={`Resolved thread by ${thread.author}: ${fate.short}. Expand`}
+					data-testid="unplaced-collapsed"
+					onClick={() => setExpanded(true)}
+					className="flex min-h-10 w-full min-w-0 items-center gap-1.5 rounded-md px-2 text-left text-xs text-muted hover:bg-overlay focus-visible:outline-2 focus-visible:outline-accent"
+				>
+					<CheckCircleIcon size={14} aria-hidden className="shrink-0" />
+					<span className="truncate">
+						{fate.short}
+						{props.path && (
+							<>
+								{" · "}
+								<code className="font-mono">{props.path}</code>
+							</>
+						)}
+						{" · "}
+						{thread.author}
+					</span>
+				</button>
+			</li>
+		);
+	}
 	return (
 		<li
 			data-testid="unplaced-thread"
 			data-fate={props.fate ?? "unknown"}
 			data-thread={thread.id}
+			data-resolved={thread.resolved || undefined}
 			className="min-w-0 space-y-1.5 rounded-md border border-line bg-surface p-2"
 		>
 			<div className="flex min-h-10 min-w-0 items-center gap-2">
@@ -431,6 +487,23 @@ export function UnplacedRow(props: {
 					)}
 				</span>
 				{props.link}
+				{thread.resolved && (
+					<Tooltip content="Collapse" describe={false}>
+						{(trigger) => (
+							<button
+								{...trigger}
+								type="button"
+								aria-label="Collapse"
+								aria-expanded
+								data-testid="unplaced-collapse"
+								onClick={() => setExpanded(false)}
+								className="flex min-h-10 min-w-10 shrink-0 items-center justify-center rounded-md text-muted hover:bg-overlay focus-visible:outline-2 focus-visible:outline-accent"
+							>
+								<ChevronUpIcon size={16} aria-hidden />
+							</button>
+						)}
+					</Tooltip>
+				)}
 			</div>
 			<OriginalCode thread={thread} />
 			<Opener thread={thread} />
@@ -655,16 +728,21 @@ export function UnplacedThreads(props: {
 	const place = usePlaceThread();
 	const sectionId = `file-${props.fileIndex}`;
 	if (props.fates.length === 0) return null;
+	// Resolved ones last, quiet, and counted nowhere.
+	const fates = resolvedLast(props.fates);
+	const open = fates.filter((f) => !f.thread.resolved).length;
 	return (
 		<div
 			data-testid="unplaced-threads"
 			className="space-y-1.5 border-b border-line bg-canvas p-2"
 		>
-			<p className="flex items-center gap-2 text-xs text-muted">
-				<Badge tone="red" icon={CircleSlashIcon}>
-					{props.fates.length} unplaced
-				</Badge>
-			</p>
+			{open > 0 && (
+				<p className="flex items-center gap-2 text-xs text-muted">
+					<Badge tone="red" icon={CircleSlashIcon}>
+						{open} unplaced
+					</Badge>
+				</p>
+			)}
 			{place.isError && (
 				<p role="alert" className="text-xs text-bad">
 					Couldn't place it:{" "}
@@ -674,7 +752,7 @@ export function UnplacedThreads(props: {
 				</p>
 			)}
 			<ul className="space-y-1.5">
-				{props.fates.map(({ thread, placement }) => (
+				{fates.map(({ thread, placement }) => (
 					<UnplacedRow
 						key={thread.id}
 						thread={thread}
@@ -707,6 +785,16 @@ export function UnplacedThreads(props: {
 			</ul>
 		</div>
 	);
+}
+
+/** Unresolved threads first, resolved ones after, each in the order given. */
+export function resolvedLast<T extends { thread: ReviewThread }>(
+	rows: readonly T[],
+): T[] {
+	return [
+		...rows.filter((r) => !r.thread.resolved),
+		...rows.filter((r) => r.thread.resolved),
+	];
 }
 
 /** "near 88": lands on the closest surviving line, the comparison kept. */
