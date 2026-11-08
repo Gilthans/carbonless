@@ -428,7 +428,8 @@ describe("FilesPage", () => {
 
 	describe("finishing the open file", () => {
 		/** Files a, b, c in that order, each with one cluster; b is reviewed. */
-		function threeFiles() {
+		/** `held`: file 2's first read of its lines answers when released. */
+		function threeFiles(held?: Promise<Response>) {
 			const file = (
 				index: number,
 				path: string,
@@ -470,7 +471,11 @@ describe("FilesPage", () => {
 				"/api/review": () => ({ status: 200, body: { ...emptyReview, files } }),
 				"/api/files/0/hunks": hunks(0),
 				"/api/files/1/hunks": hunks(1),
-				"/api/files/2/hunks": hunks(2),
+				"/api/files/2/hunks": () => {
+					const first = held;
+					held = undefined;
+					return first ?? hunks(2)();
+				},
 				"/api/review/states": (init) => {
 					const { changes } = JSON.parse(String(init?.body)) as {
 						changes: { key: string; state: "reviewed" }[];
@@ -578,6 +583,62 @@ describe("FilesPage", () => {
 			);
 			await vi.waitFor(() =>
 				expect(animate.mock.contexts.at(-1)).toBe(verdict),
+			);
+		});
+
+		it("a file a move-on opened, closed and opened again later takes marks at once", async () => {
+			vi.stubGlobal("scrollTo", vi.fn());
+			stubAnimate();
+			const lines = heldJson();
+			threeFiles(lines.response);
+			const user = userEvent.setup();
+			await user.click(
+				await within(
+					await screen.findByRole("region", { name: "a.txt" }),
+				).findByRole("button", { name: "Expand file" }),
+			);
+			// a finishes: c opens (b is reviewed), its lines still on the way.
+			await markLast("a.txt");
+			const toggle = () =>
+				within(region("c.txt")).getByRole("button", {
+					name: /^(Collapse|Expand) file$/,
+				});
+			await vi.waitFor(() => expect(toggle()).toHaveFocus());
+			// Right away its toggle doesn't close it (a double click's second
+			// click); a moment later the reviewer closes it before the lines came.
+			await user.click(toggle());
+			expect(toggle()).toHaveAccessibleName("Collapse file");
+			clock += 10_001;
+			await user.click(toggle());
+			expect(toggle()).toHaveAccessibleName("Expand file");
+			lines.release({
+				newLineCount: 1,
+				hunks: [
+					{
+						oldStart: 1,
+						oldCount: 1,
+						newStart: 1,
+						newCount: 1,
+						lines: [
+							{ kind: "del", oldNo: 1, text: "a", clusterKey: "k2" },
+							{ kind: "add", newNo: 1, text: "b", clusterKey: "k2" },
+						],
+					},
+				],
+			});
+			clock += 60_000;
+			// Opened again by the reviewer: its box marks at once.
+			await user.click(toggle());
+			const box = await within(region("c.txt")).findByRole("checkbox", {
+				name: "Mark cluster reviewed",
+			});
+			await user.click(box);
+			await vi.waitFor(() =>
+				expect(
+					within(region("c.txt")).getByRole("button", {
+						name: "Expand file",
+					}),
+				).toBeInTheDocument(),
 			);
 		});
 

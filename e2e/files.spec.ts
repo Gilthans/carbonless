@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import type { Locator, Page } from "@playwright/test";
 import {
 	barBottom,
@@ -1164,7 +1165,7 @@ test("marking a file's last cluster opens the next file with something left", as
 		two.getByRole("button", { name: "Collapse file" }),
 	).toBeFocused();
 	await expectAtTop(page, two);
-	expect(await arrivals(page)).toEqual(["a/two.ts"]);
+	await expect.poll(() => arrivals(page)).toEqual(["a/two.ts"]);
 	await withTree(page, (tree) =>
 		expect(tree.getByRole("button", { name: /two\.ts/ })).toHaveAttribute(
 			"aria-current",
@@ -1209,13 +1210,15 @@ test("marking a file's last cluster opens the next file with something left", as
 	);
 	await expect(page.getByTestId("verdict-card-files")).toBeInViewport();
 	await expect(progress(page)).toContainText(/\b(\d+) \/ \1 clusters reviewed/);
-	expect(await arrivals(page)).toEqual([
-		"a/two.ts",
-		"b/long.ts",
-		"a/one.ts",
-		"b/long.ts",
-		"files-verdict",
-	]);
+	await expect
+		.poll(() => arrivals(page))
+		.toEqual([
+			"a/two.ts",
+			"b/long.ts",
+			"a/one.ts",
+			"b/long.ts",
+			"files-verdict",
+		]);
 });
 
 test("with reduced motion, a move-on is instant", async ({
@@ -1247,18 +1250,21 @@ test("with reduced motion, a move-on is instant", async ({
  * A double click (on a phone, a double tap) on `target`, whose click
  * finishes its file: the first is a real click or tap; the second lands at
  * the same point the moment the same kind of control (`control`, a
- * selector) of the next file (`nextPath`) shows under it, as a person's
- * second click would. The page clicks it itself, in the frame it sees that:
- * from the test, a loaded machine could take longer than the guard
- * (UNDO_ARM_MS). Says what the second click hit and how long after the
- * first, or what it waited for in vain.
+ * selector) inside what the move-on brought (`next`, a selector: the next
+ * file, or the verdict) shows under it, as a person's second click would.
+ * `anywhere`: wherever that control shows instead (its center), the worst
+ * case of a pointer that happens to be there. The page clicks it itself,
+ * in the frame it sees that: from the test, a loaded machine could take
+ * longer than the guard (UNDO_ARM_MS). Says what the second click hit and
+ * how long after the first, or what it waited for in vain.
  */
 async function doubleAcrossMoveOn(
 	page: Page,
 	target: Locator,
 	control: string,
-	nextPath: string,
+	next: string,
 	isMobile: boolean,
+	anywhere = false,
 ) {
 	const box = await target.boundingBox();
 	if (!box) throw new Error("target not rendered");
@@ -1270,7 +1276,7 @@ async function doubleAcrossMoveOn(
 	// miss it and wait for a click that already happened (then the test
 	// times out, and its teardown's navigation is all it reports).
 	await page.evaluate(
-		({ x, y, control, nextPath, w }) => {
+		({ x, y, control, next: nextSel, anywhere, w }) => {
 			(window as unknown as Record<string, Promise<Second>>)[w] = new Promise(
 				(done) => {
 					let at = 0;
@@ -1283,10 +1289,14 @@ async function doubleAcrossMoveOn(
 					);
 					const start = performance.now();
 					const poll = () => {
-						const next = document.querySelector<HTMLElement>(
-							`section[data-path="${CSS.escape(nextPath)}"]`,
-						);
-						const hit = document.elementFromPoint(x, y) as HTMLElement | null;
+						const next = document.querySelector<HTMLElement>(nextSel);
+						const there = anywhere
+							? next?.querySelector(control)?.getBoundingClientRect()
+							: undefined;
+						const [px, py] = there
+							? [there.x + there.width / 2, there.y + there.height / 2]
+							: [x, y];
+						const hit = document.elementFromPoint(px, py) as HTMLElement | null;
 						// A box's point is its label's (cluster-box-target).
 						const under = hit?.closest("label, button");
 						const isControl =
@@ -1295,7 +1305,9 @@ async function doubleAcrossMoveOn(
 						const seen = `${hit?.closest("section")?.getAttribute("data-path")} ${under?.outerHTML.slice(0, 120)}`;
 						if (at && isControl && next?.contains(hit)) {
 							const after = performance.now() - at;
-							hit?.click();
+							// The control itself (a hit on its icon may be an SVG,
+							// which has no click()).
+							(under as HTMLElement).click();
 							done({ hit: true, after, seen });
 						} else if (performance.now() - start > 15_000) {
 							// Said here rather than as the test's timeout.
@@ -1306,7 +1318,7 @@ async function doubleAcrossMoveOn(
 				},
 			);
 		},
-		{ x, y, control, nextPath, w },
+		{ x, y, control, next, anywhere, w },
 	);
 	if (isMobile) await page.touchscreen.tap(x, y);
 	else await page.mouse.click(x, y);
@@ -1407,7 +1419,7 @@ for (const [where, control] of [
 			page,
 			target,
 			selector,
-			nextPath,
+			`section[data-path="${nextPath}"]`,
 			isMobile,
 		);
 		// The second click landed on the next file's control (`after`: how
@@ -1423,6 +1435,57 @@ for (const [where, control] of [
 		await expect(progress(page)).toContainText(/\b1 \/ \d+ clusters reviewed/);
 	});
 }
+
+test("a double click that finishes the last file doesn't send a verdict", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	const p = await pr({
+		base: { "a/one.ts": text(util) },
+		files: [
+			{
+				message: "PR change",
+				files: { "a/one.ts": text(util.map((l) => `${l} x`)) },
+			},
+		],
+	});
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	const section = await expand(page, "a/one.ts");
+	const card = page.getByTestId("verdict-card-files");
+	await expect(card.getByTestId("verdict-approve")).toBeAttached();
+	const target = fileActionButton(section, "Mark remaining reviewed");
+	await expect(target).toBeInViewport();
+	// Nothing left after it: the verdict rises into view. The second click
+	// lands on Approve wherever it shows (a phone's narrow card can put it
+	// under the pointer; Approve posts on one click).
+	const second = await doubleAcrossMoveOn(
+		page,
+		target,
+		'[data-testid="verdict-approve"]',
+		"#files-verdict",
+		isMobile,
+		true,
+	);
+	expect(second.hit, `${second.seen} after ${second.after} ms`).toBe(true);
+	await expect(fileProgress(section)).toContainText("1 / 1 cluster");
+	// A press shows at once as sending ("your-verdict"); none did, and the
+	// fake gh has no review.
+	await clicksReady(page, card);
+	await expect(card.getByTestId("your-verdict")).toHaveCount(0);
+	const scenario = JSON.parse(readFileSync(p.scenarioPath, "utf8")) as {
+		prs: Record<string, { graphql?: { reviews?: { state: string }[] } }>;
+	};
+	const reviews = Object.values(scenario.prs).flatMap(
+		(x) => x.graphql?.reviews ?? [],
+	);
+	expect(reviews.filter((r) => r.state !== "PENDING")).toEqual([]);
+	// A moment later, Approve works.
+	await card.getByTestId("verdict-approve").click();
+	await expect(card.getByTestId("your-verdict")).toContainText("approved");
+});
 
 test("tree rows and headers keep change counts in every unit; progress follows it", async ({
 	page,

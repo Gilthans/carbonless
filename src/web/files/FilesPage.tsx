@@ -444,10 +444,18 @@ export function FilesPage() {
 		settingAnchor.current = null;
 		if (a && diffs.current) restoreAnchor(a, diffs.current);
 	}, [split, ignoreWs, invisibles]);
+	/** The file just opened by a move-on, ignoring marks until `until`. */
+	const [movedOn, setMovedOn] = useState<{
+		key: string;
+		until: number;
+	} | null>(null);
 	/** The header to keep where it was on screen as files open and close. */
 	const anchor = useRef<{ index: number; top: number } | null>(null);
 	const sectionOf = (index: number) => document.getElementById(`file-${index}`);
 	const toggleFile = (index: number, expanded: boolean, auto = false) => {
+		// A file opened or closed here is no move-on's any more: its lines
+		// arriving later are the reviewer's own open, not unseen.
+		setMovedOn(null);
 		// Where the reader sees the header, stuck or not.
 		const header = headerOf(index);
 		anchor.current = header
@@ -513,17 +521,15 @@ export function FilesPage() {
 	};
 	/** A file picked in the tree: open it alone and bring its header to the top. */
 	const select = (index: number) => {
+		setMovedOn(null);
 		const fromSheet = sheetOpen;
 		if (fromSheet) setSheetOpen(false);
 		// After a sheet (once it has handed focus back to its button), the
 		// header takes the focus.
 		openAlone(index, fromSheet);
 	};
-	/** The file just opened by a move-on, ignoring marks until `until`. */
-	const [movedOn, setMovedOn] = useState<{
-		key: string;
-		until: number;
-	} | null>(null);
+	/** The verdict a move-on brought into view ignores clicks until then. */
+	const [verdictGuard, setVerdictGuard] = useState<number | undefined>();
 	/**
 	 * The reviewer's mark finished the open file: it closes and the next file
 	 * with something unreviewed (in the page's order, wrapping) opens at the
@@ -533,13 +539,26 @@ export function FilesPage() {
 	const finished = (index: number) => {
 		const next = nextFile(files, index);
 		if (!next) {
+			// The verdict rises where the click landed: a double click's
+			// second click must not send a verdict (Approve posts at once).
+			const from = performance.now();
+			setVerdictGuard(from + MOVE_ON_MAX_MS);
+			const settle = () => {
+				const until = Math.min(
+					performance.now() + UNDO_ARM_MS,
+					from + MOVE_ON_MAX_MS,
+				);
+				setVerdictGuard((g) => (g === from + MOVE_ON_MAX_MS ? until : g));
+			};
 			toggleFile(index, false);
-			requestAnimationFrame(() => {
+			requestAnimationFrame(async () => {
 				const verdict = document.getElementById("files-verdict");
-				if (!verdict) return;
-				const top = verdict.getBoundingClientRect().top + window.scrollY;
-				window.scrollTo({ top: top - appHeader - barHeight - VERDICT_GAP });
-				void arrive(verdict);
+				if (verdict) {
+					const top = verdict.getBoundingClientRect().top + window.scrollY;
+					window.scrollTo({ top: top - appHeader - barHeight - VERDICT_GAP });
+					await arrive(verdict);
+				}
+				settle();
 			});
 			return;
 		}
@@ -783,6 +802,7 @@ export function FilesPage() {
 									<FilesVerdict
 										threads={allThreads}
 										settled={firstOpenSettled}
+										ignoreClicksUntil={verdictGuard}
 									/>
 								</div>
 							</div>

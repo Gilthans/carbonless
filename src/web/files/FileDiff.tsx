@@ -490,9 +490,9 @@ export function FileDiff(props: {
 	});
 	// Opened by a move-on, its lines (or what shows instead) arrive under the
 	// pointer once read: just as unseen, so they restart the wait for marks.
-	const guarded = props.ignoreMarksUntil !== undefined;
 	const bodyIn = expanded && !hunks.isPending;
 	const [bodyInAt, setBodyInAt] = useState<number | null>(null);
+	const guarded = props.ignoreMarksUntil !== undefined;
 	useLayoutEffect(() => {
 		if (!guarded) setBodyInAt(null);
 		else if (bodyIn) setBodyInAt((at) => at ?? performance.now());
@@ -805,7 +805,12 @@ export function FileDiff(props: {
 								type="button"
 								aria-expanded={expanded}
 								aria-label={expanded ? "Collapse file" : "Expand file"}
-								onClick={() => setExpanded(!expanded)}
+								onClick={() => {
+									// Just opened by a move-on under the pointer: a double
+									// click's second click mustn't close it unseen.
+									if (expanded && marksIgnored()) return;
+									setExpanded(!expanded);
+								}}
 								className="flex h-10 w-10 shrink-0 items-center justify-center rounded text-muted hover:bg-overlay hover:text-ink focus-visible:outline-2 focus-visible:outline-accent @lg:order-1"
 							>
 								{expanded ? "▾" : "▸"}

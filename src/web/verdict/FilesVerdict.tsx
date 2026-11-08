@@ -16,6 +16,8 @@ import { VerdictCard } from "./VerdictCard";
 export function FilesVerdict(props: {
 	threads: readonly ReviewThread[] | undefined;
 	settled: boolean;
+	/** VerdictCard's: clicks before this `performance.now()` are ignored. */
+	ignoreClicksUntil?: number;
 }) {
 	const session = useQuery({ ...sessionQuery, enabled: false }).data;
 	const overview = useQuery({ ...overviewQuery, enabled: false }).data;
@@ -55,6 +57,7 @@ export function FilesVerdict(props: {
 					session={session}
 					threads={props.threads}
 					blockers={overview.state === "OPEN" ? count : 0}
+					ignoreClicksUntil={props.ignoreClicksUntil}
 				/>
 			)}
 		</div>
