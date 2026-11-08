@@ -213,17 +213,25 @@ export function useFind(opts: {
 	filesRef.current = files;
 	const openRef = useRef(openIndex);
 	openRef.current = openIndex;
-	const [prefetcher, setPrefetcher] = useState<HunksPrefetcher | null>(null);
+	// Kept with its revision: on the render where the revision changes, the
+	// old one (done) is still in state until the effect runs, and must count
+	// as not started yet, never as a final answer.
+	const [started, setStarted] = useState<{
+		p: HunksPrefetcher;
+		revision: string;
+	} | null>(null);
+	const prefetcher =
+		started && started.revision === revision ? started.p : null;
 	useEffect(() => {
 		if (!open || revision === undefined || !active) return;
 		const p = new HunksPrefetcher(client, revision, undefined, () =>
 			onStale.current?.(),
 		);
-		setPrefetcher(p);
+		setStarted({ p, revision });
 		p.queue(prefetchOrder(filesRef.current, openRef.current));
 		return () => {
 			p.stop();
-			setPrefetcher(null);
+			setStarted(null);
 		};
 	}, [open, revision, active, client]);
 	const subscribe = useMemo(

@@ -298,6 +298,41 @@ describe("useFind", () => {
 		expect(result.current.failed).toBe(0);
 	});
 
+	it("searching from the first render of a new revision (the old prefetch, done, never counts)", async () => {
+		const files = [file(0, [], ["save"])];
+		const seen: { revision: string; searching: boolean }[] = [];
+		const { result, rerender } = renderHook(
+			(p: { revision: string }) => {
+				const f = useFind({
+					revision: p.revision,
+					files,
+					openIndex: null,
+					active: true,
+				});
+				seen.push({ revision: p.revision, searching: f.searching });
+				return f;
+			},
+			{
+				wrapper: ({ children }: { children: ReactNode }) => (
+					<QueryClientProvider client={client}>{children}</QueryClientProvider>
+				),
+				initialProps: { revision: "r1" },
+			},
+		);
+		search("save");
+		await waitFor(() => expect(batches).toHaveLength(1));
+		await act(async () => {
+			batches[0]?.held.release({
+				files: [{ index: 0, hunks: hunksOf(files[0] as FileView, "z") }],
+			});
+		});
+		await waitFor(() => expect(result.current.searching).toBe(false));
+		seen.length = 0;
+		rerender({ revision: "r2" });
+		expect(seen.length).toBeGreaterThan(0);
+		expect(seen.every((r) => r.searching)).toBe(true);
+	});
+
 	it("reports failed batches and asks again on retry", async () => {
 		const files = [file(0, [], ["save"]), file(1, [], ["y"])];
 		const { result } = renderFind({ revision: "r1", files, openIndex: null });
