@@ -22,6 +22,7 @@ import type {
 import { buildApp, prTitle, withPrTitle } from "./app";
 import type { HomeService } from "./home/homeService";
 import { SessionRegistry } from "./registry";
+import { ThreadPlacer } from "./rereview/threads";
 import { BUILD, VERSION_HEADER } from "./version";
 
 // Real git and fake-gh processes: see GIT_TEST_TIMEOUTS.
@@ -1680,10 +1681,11 @@ describe("API", () => {
 				[threadComment({ login: "rev", text: "Hm", commit, diffHunk: "" })],
 			),
 		];
-		const placementsOf = async (query: string) => {
+		/** The placements once in (`whole`: the resolved threads' too). */
+		const placementsOf = async (query: string, whole = true) => {
 			for (;;) {
 				const answer = await get(`/api/placements?${query}`);
-				if (!answer.pending) return answer;
+				if (!answer.pending && (!whole || answer.complete)) return answer;
 				await new Promise((r) => setTimeout(r, 20));
 			}
 		};
@@ -1763,6 +1765,41 @@ describe("API", () => {
 			expect(
 				(await inject(`/api/placements?read=nope&head=${h2}`)).statusCode,
 			).toBe(410);
+		});
+
+		it("unresolved threads are answered while the resolved ones are still being placed", async () => {
+			let release: () => void = () => {};
+			const gate = new Promise<void>((r) => {
+				release = r;
+			});
+			const inputs = ThreadPlacer.prototype.inputs;
+			const held = vi
+				.spyOn(ThreadPlacer.prototype, "inputs")
+				.mockImplementation(async function (this: ThreadPlacer, ...args) {
+					const [, threads] = args;
+					if (threads.length > 0 && threads.every((t) => t.resolved)) {
+						await gate;
+					}
+					return inputs.apply(this, args);
+				});
+			try {
+				const { h2, readId } = await setup();
+				const first = await placementsOf(`read=${readId}&head=${h2}`, false);
+				expect(first.complete).toBe(false);
+				expect(Object.keys(byId(first))).toEqual(["T12-0"]);
+				release();
+				for (;;) {
+					const next = await placementsOf(`read=${readId}&head=${h2}`, false);
+					if (next.complete) {
+						expect(Object.keys(byId(next))).toEqual(["T12-0", "T12-1"]);
+						break;
+					}
+					await new Promise((r) => setTimeout(r, 20));
+				}
+			} finally {
+				release();
+				held.mockRestore();
+			}
 		});
 
 		it("the engine's answer carries the placements of the newest read once they are in", async () => {

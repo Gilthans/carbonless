@@ -566,8 +566,11 @@ export function FileDiff(props: {
 	// The file bubble flags a line it holds that the diff can't show; the
 	// closed header, any thread of the file that isn't on a line.
 	const headerFlag = header.some((h) => h.reason === "unplaced");
-	// A resolved unplaced thread asks for nothing (a quiet line).
-	const unplaced = headerFlag || fates.some((f) => !f.thread.resolved);
+	// A resolved thread asks for nothing (a quiet line): the closed header
+	// flags unresolved ones only, wherever they ended up.
+	const unplaced =
+		header.some((h) => h.reason === "unplaced" && !h.thread.resolved) ||
+		fates.some((f) => !f.thread.resolved);
 	// New comments on the whole file, open or closed: under the header,
 	// where file threads show; on another head (gone): kept as orphans.
 	const session = useQuery({ ...sessionQuery, enabled: false }).data;

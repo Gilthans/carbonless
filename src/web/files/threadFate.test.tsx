@@ -18,6 +18,7 @@ import {
 	type PlacementInfo,
 	PlacementProvider,
 	UnplacedRow,
+	UnplacedThreads,
 } from "./ThreadFate";
 
 vi.mock("./highlight", () => ({
@@ -486,5 +487,104 @@ describe("a resolved unplaced thread", () => {
 		expect(screen.getByTestId("unplaced-fate").textContent).toBe(
 			"Commented line has been deleted since the review",
 		);
+	});
+});
+
+describe("a resolved thread's placement chip", () => {
+	it("is muted, never red or yellow: placed so it never vanishes, not to ask for attention", () => {
+		const anchor = {
+			path: "a.ts",
+			startSide: "RIGHT" as const,
+			startLine: 3,
+			side: "RIGHT" as const,
+			line: 3,
+		};
+		const t = thread({ resolved: true });
+		const { rerender } = render(
+			wrap(
+				info({
+					placements: new Map([
+						[
+							t.id,
+							{
+								kind: "changed",
+								anchor,
+								old: { side: "RIGHT", startLine: 3, line: 3, text: ["x"] },
+								now: ["y"],
+							},
+						],
+					]),
+				}),
+				<PlacementChip thread={t} />,
+			),
+		);
+		const tone = (id: string) =>
+			(screen.getByTestId(id).querySelector("span") as HTMLElement).className;
+		expect(tone("placement-changed")).toContain("text-ink-soft");
+		expect(tone("placement-changed")).not.toMatch(/text-(warn|bad)/);
+		rerender(
+			wrap(
+				info({
+					placements: new Map([
+						[
+							t.id,
+							{
+								kind: "unplaced",
+								fate: "deleted",
+								path: "a.ts",
+								nearest: null,
+							},
+						],
+					]),
+				}),
+				<PlacementChip thread={t} />,
+			),
+		);
+		expect(tone("placement-fate")).toContain("text-ink-soft");
+		expect(tone("placement-fate")).not.toMatch(/text-(warn|bad)/);
+	});
+});
+
+describe("the per-file unplaced list", () => {
+	it("its badge counts unresolved threads only, and is gone when all are resolved", () => {
+		const fate = (t: ReviewThread) => ({
+			thread: t,
+			placement: {
+				kind: "unplaced" as const,
+				fate: "deleted" as const,
+				path: "a.ts",
+				nearest: null,
+			},
+		});
+		const open = thread({ id: "U1" });
+		const done = thread({ id: "U2", resolved: true });
+		const { rerender } = render(
+			wrap(
+				info(),
+				<UnplacedThreads
+					fates={[fate(done), fate(open)]}
+					readId="r1"
+					path="a.ts"
+					fileIndex={0}
+				/>,
+			),
+		);
+		const list = screen.getByTestId("unplaced-threads");
+		expect(list.textContent).toContain("1 unplaced");
+		rerender(
+			wrap(
+				info(),
+				<UnplacedThreads
+					fates={[fate(done)]}
+					readId="r1"
+					path="a.ts"
+					fileIndex={0}
+				/>,
+			),
+		);
+		expect(screen.getByTestId("unplaced-threads").textContent).not.toMatch(
+			/unplaced/,
+		);
+		expect(screen.getByTestId("unplaced-collapsed")).toBeTruthy();
 	});
 });

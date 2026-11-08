@@ -201,11 +201,14 @@ export function PlacementChip({ thread }: { thread: ReviewThread }) {
 			</span>
 		) : null;
 	}
+	// A resolved thread is placed so it never vanishes, never to ask for
+	// attention: its chip is muted.
+	const quiet = thread.resolved;
 	if (placement.kind === "changed") {
 		const ps = psLabel(info.openedOn(thread));
 		return (
 			<Chip
-				tone="yellow"
+				tone={quiet ? "gray" : "yellow"}
 				icon={GitCompareIcon}
 				tip={`The line changed since ${ps || "the thread was made"}`}
 				testId="placement-changed"
@@ -218,7 +221,7 @@ export function PlacementChip({ thread }: { thread: ReviewThread }) {
 		const fate = FATES[placement.fate];
 		return (
 			<Chip
-				tone={fate.tone}
+				tone={quiet ? "gray" : fate.tone}
 				icon={fate.icon}
 				tip={fate.tip}
 				testId="placement-fate"

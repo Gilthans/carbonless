@@ -990,6 +990,11 @@ export interface PlacementsAnswer {
 	/** Its patch set (where a drag stores one); null for a head that is none yet. */
 	patchset: number | null;
 	threads: { id: string; placement: ThreadPlacement }[];
+	/**
+	 * Every thread is in: unresolved threads are placed first and answered
+	 * at once, resolved ones join later (false until then; ask again).
+	 */
+	complete?: boolean;
 }
 
 export interface SessionInfo {

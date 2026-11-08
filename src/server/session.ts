@@ -181,7 +181,11 @@ interface RereviewJob {
  * git's part, started on the first ask and never waited for.
  */
 interface PlacingJob {
-	done: { target: Snapshot; inputs: ThreadInput[] } | null;
+	/**
+	 * The unresolved threads' inputs as soon as they are in; the resolved
+	 * ones' joined after (`complete`), so they never hold the others up.
+	 */
+	done: { target: Snapshot; inputs: ThreadInput[]; complete: boolean } | null;
 	error: Error | null;
 	settled: Promise<void>;
 }
@@ -615,7 +619,11 @@ export class Session {
 			throw job.error;
 		}
 		if (!job.done) return { pending: true };
-		return this.#placedFor(job.done.target, job.done.inputs, readId);
+		const { complete } = job.done;
+		return {
+			...(await this.#placedFor(job.done.target, job.done.inputs, readId)),
+			complete,
+		};
 	}
 
 	#placingJob(
@@ -641,12 +649,18 @@ export class Session {
 				]);
 				// Filed under its snapshot id too: a head and its patch set share it.
 				this.#placing.set(`${target.revision}|${readId}`, job);
-				const inputs = await this.#placer.inputs(
+				const open = await this.#placer.inputs(
 					target,
-					view.threads,
+					view.threads.filter((t) => !t.resolved),
 					this.#diffBase(),
 				);
-				job.done = { target, inputs };
+				job.done = { target, inputs: open, complete: false };
+				const resolved = await this.#placer.inputs(
+					target,
+					view.threads.filter((t) => t.resolved),
+					this.#diffBase(),
+				);
+				job.done = { target, inputs: [...open, ...resolved], complete: true };
 			} catch (error) {
 				job.error = error as Error;
 			}

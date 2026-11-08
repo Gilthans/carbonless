@@ -811,8 +811,11 @@ export const placementsQuery = (readId: string, to: RereviewTo) =>
 		],
 		queryFn: () => fetchPlacements(readId, to),
 		staleTime: Number.POSITIVE_INFINITY,
+		// Asked again while pending, and while the resolved threads are
+		// still joining (the unresolved ones are in already).
 		refetchInterval: (query) =>
-			query.state.data && "pending" in query.state.data
+			query.state.data &&
+			("pending" in query.state.data || query.state.data.complete === false)
 				? REREVIEW_POLL_MS
 				: false,
 	});

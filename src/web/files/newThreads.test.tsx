@@ -1352,6 +1352,7 @@ describe("Comment on file", () => {
 			hunks?: FileHunks;
 			threads?: ReviewThread[];
 			overview?: Partial<PrOverview>;
+			placements?: DiffThreads["placements"];
 		} = {},
 	) => {
 		vi.stubGlobal(
@@ -1383,6 +1384,7 @@ describe("Comment on file", () => {
 			readId: "r",
 			snapshotHead: HEAD,
 			threads: opts.threads ?? [],
+			placements: opts.placements ?? null,
 		};
 		const ui = (expanded: boolean) => (
 			<QueryClientProvider client={client}>
@@ -1651,6 +1653,84 @@ describe("Comment on file", () => {
 			expect(bubble).toHaveAttribute("aria-expanded", "true"),
 		);
 		expect(bubble).toHaveFocus();
+	});
+
+	it("closed, an unplaced thread flags the header; a resolved one doesn't (unplaced, or past the end)", async () => {
+		const unplaced = (t: ReviewThread) =>
+			new Map([
+				[
+					t.id,
+					{
+						kind: "unplaced" as const,
+						fate: "deleted" as const,
+						path: PATH,
+						nearest: null,
+					},
+				],
+			]);
+		const flagged = "1 comment in this file, line not in this diff";
+		const open = thread({ line: 3 });
+		renderFile(
+			{},
+			{
+				expanded: false,
+				hunks: HUNKS,
+				threads: [open],
+				placements: unplaced(open),
+			},
+		);
+		expect(screen.getByRole("button", { name: flagged })).toBeInTheDocument();
+		cleanup();
+		const done = { ...thread({ line: 3 }), resolved: true };
+		renderFile(
+			{},
+			{
+				expanded: false,
+				hunks: HUNKS,
+				threads: [done],
+				placements: unplaced(done),
+			},
+		);
+		expect(
+			screen.getByRole("button", { name: "1 comment in this file, resolved" }),
+		).toBeInTheDocument();
+		cleanup();
+		// Placed, but past the rows the diff shows (known once the file has
+		// been open): the header's own list.
+		const past = { ...thread({ line: 50 }), resolved: true };
+		const { user } = renderFile(
+			{},
+			{
+				expanded: true,
+				hunks: HUNKS,
+				threads: [past],
+				placements: new Map([
+					[
+						past.id,
+						{
+							kind: "placed" as const,
+							anchor: {
+								path: PATH,
+								startSide: "RIGHT" as const,
+								startLine: 50,
+								side: "RIGHT" as const,
+								line: 50,
+							},
+							changed: false as const,
+						},
+					],
+				]),
+			},
+		);
+		expect(
+			await screen.findByRole("button", {
+				name: "1 comment on this file, resolved, line not in this diff",
+			}),
+		).toBeInTheDocument();
+		await user.click(screen.getByRole("button", { name: "Collapse file" }));
+		expect(
+			screen.getByRole("button", { name: "1 comment in this file, resolved" }),
+		).toBeInTheDocument();
 	});
 
 	it("closed, the header counts the file's threads; it opens the file and the file bubble", async () => {
