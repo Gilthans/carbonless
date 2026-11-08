@@ -364,11 +364,11 @@ html {
 }
 
 /*
- * Typing reveals the caret, and that ignores the scroll margin above: a text
- * box in the sticky stack (the Find in PR box) would take the page to the
- * top on every key. While one has focus, no padding: it is on screen.
+ * Typing reveals the caret, and that ignores the scroll margin above: the
+ * Find in PR box, in the sticky stack, would take the page to the top on
+ * every key. While it has focus, no padding: it is on screen.
  */
-html:has([data-app-header] input:focus, [data-page-bar] input:focus) {
+html:has([data-find-box]:focus) {
 	scroll-padding-top: 0;
 }
 

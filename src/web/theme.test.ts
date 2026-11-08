@@ -720,9 +720,9 @@ describe("literal colors that mirror tokens", () => {
 });
 
 describe("sticky stack", () => {
-	it("drops the page's scroll padding while a box in the sticky stack has focus (typing would scroll to the top)", () => {
+	it("drops the page's scroll padding while the find box has focus (typing would scroll to the top), and for no other box", () => {
 		const rule = css.match(/html:has\(([^)]*)\)\s*\{([^}]*)\}/);
-		expect(rule?.[1]).toContain("[data-page-bar] input:focus");
+		expect(rule?.[1]?.trim()).toBe("[data-find-box]:focus");
 		expect(rule?.[2]).toMatch(/scroll-padding-top:\s*0;/);
 	});
 });

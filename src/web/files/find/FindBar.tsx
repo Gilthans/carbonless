@@ -92,6 +92,7 @@ export function FindBar(props: {
 					ref={box}
 					type="search"
 					data-testid="find-box"
+					data-find-box
 					aria-label="Find in PR"
 					placeholder="Find in PR"
 					autoComplete="off"

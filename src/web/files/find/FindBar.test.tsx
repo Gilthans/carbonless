@@ -81,6 +81,11 @@ describe("FindBar", () => {
 		expect(screen.getByRole("search", { name: "Find in PR" })).toBeTruthy();
 	});
 
+	it("marks its box for the sticky stack's focus rule (index.css)", () => {
+		render(bar(props()));
+		expect(box()).toHaveAttribute("data-find-box");
+	});
+
 	it("ignores Enter that confirms an IME composition", () => {
 		const p = props();
 		render(bar(p));
