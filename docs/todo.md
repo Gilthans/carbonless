@@ -54,6 +54,15 @@ Foundation for everything below.
     (the parent PR's head besides the base branch), so a child PR can be read
     since the parent landed (owner, 2026-11-07). The gallery's `rr-stacked`
     shows today's behaviour.
+  - The patch set card's "85% of clusters reviewed" and "X files with Y
+    line changes" (owner, 2026-11-08; the threads line is built). Both
+    need the patch set's snapshot: for any but the viewed or latest one
+    that is a whole snapshot rebuild and its full review sent to the page
+    per patch set hovered (`GET /review?patchset=`), too much on a big PR.
+    Cheap way: the session keeps per patch set its cluster total, files
+    and lines (from the snapshot once built, or stored when the patch set
+    starts) and its reviewed count from the fold, and `SessionInfo.patchsets`
+    carries them.
   - Per-line review states (parked in the design: first measure how often
     clusters split between patch sets).
   - Which commit changed what (owner, 2026-11-07: deferred everywhere): a

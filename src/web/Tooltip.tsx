@@ -90,6 +90,26 @@ const GAP = 6;
 const MARGIN = 8;
 
 /**
+ * Where a floating box goes beside its trigger: centred under it, flipped
+ * above when it would overflow the bottom, clamped inside the viewport.
+ */
+export function placeNear(
+	t: { left: number; width: number; top: number; bottom: number },
+	box: { width: number; height: number },
+): { left: number; top: number } {
+	const vw = document.documentElement.clientWidth || window.innerWidth;
+	const vh = window.innerHeight;
+	const left = Math.max(
+		MARGIN,
+		Math.min(t.left + t.width / 2 - box.width / 2, vw - box.width - MARGIN),
+	);
+	const below = t.bottom + GAP;
+	const top =
+		below + box.height > vh - MARGIN ? t.top - GAP - box.height : below;
+	return { left, top: Math.max(MARGIN, top) };
+}
+
+/**
  * A text tooltip that opens on hover and on keyboard focus (or a tap, which
  * focuses), closes on Escape, blur, mouse leave and a scroll that moves its
  * trigger, and is the
@@ -131,16 +151,7 @@ export function Tooltip(props: {
 		const t = trigger.current?.getBoundingClientRect();
 		const box = tip.current?.getBoundingClientRect();
 		if (!t || !box) return;
-		const vw = document.documentElement.clientWidth || window.innerWidth;
-		const vh = window.innerHeight;
-		const left = Math.max(
-			MARGIN,
-			Math.min(t.left + t.width / 2 - box.width / 2, vw - box.width - MARGIN),
-		);
-		const below = t.bottom + GAP;
-		const top =
-			below + box.height > vh - MARGIN ? t.top - GAP - box.height : below;
-		setPos({ left, top: Math.max(MARGIN, top) });
+		setPos(placeNear(t, box));
 	}, [open]);
 
 	useEffect(() => {

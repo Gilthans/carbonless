@@ -26,6 +26,7 @@ const patchset = (number: number) => ({
 	startedAt: Date.now() - number * 86_400_000,
 	since: number === 1 ? null : number - 1,
 	shape: number === 1 ? null : ("S1" as const),
+	commits: number * 2,
 });
 
 function session(
@@ -79,9 +80,19 @@ function renderGraph(
 		status: 200,
 		body: answer(),
 	}),
+	threads: () => Promise<unknown> = async () => ({
+		threads: [],
+		complete: true,
+	}),
 ) {
 	const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
 		const url = new URL(String(input), "http://test");
+		if (url.pathname === "/api/overview") {
+			return new Response(JSON.stringify({ readId: "r1" }), { status: 200 });
+		}
+		if (url.pathname === "/api/threads") {
+			return new Response(JSON.stringify(await threads()), { status: 200 });
+		}
 		if (url.pathname === "/api/rereview") {
 			const result = rereview(url);
 			if (result instanceof Promise) return result;
@@ -105,14 +116,21 @@ function renderGraph(
 	const client = new QueryClient({
 		defaultOptions: { queries: { retry: false } },
 	});
-	render(
+	const tree = (next: SessionInfo) => (
 		<QueryClientProvider client={client}>
 			<ShortcutsProvider>
-				<PatchsetGraph session={s} comparison={c} onViewHead={onViewHead} />
+				<PatchsetGraph session={next} comparison={c} onViewHead={onViewHead} />
 			</ShortcutsProvider>
-		</QueryClientProvider>,
+		</QueryClientProvider>
 	);
-	return { fetchMock, setViewing, setBase, onViewHead };
+	const { rerender } = render(tree(s));
+	return {
+		fetchMock,
+		setViewing,
+		setBase,
+		onViewHead,
+		rerender: (next: SessionInfo) => rerender(tree(next)),
+	};
 }
 
 const tail = () => screen.getByTestId("ps-tail");
@@ -184,10 +202,10 @@ describe("PatchsetGraph", () => {
 			"3 commits",
 		);
 		expect(conn).toHaveAccessibleName("PS2 to head: 3 commits");
-		// The branch's connector has no count: no label slot to notch the line.
+		// The branch's connector counts the first patch set's commits.
 		expect(
-			within(screen.getByTestId("ps-conn-ps1")).queryByTestId("ps-conn-label"),
-		).toBeNull();
+			within(screen.getByTestId("ps-conn-ps1")).getByTestId("ps-conn-label"),
+		).toHaveTextContent("2 commits");
 	});
 
 	it("the connector's card spins in its to-read slot until the engine answers, then says the line", async () => {
@@ -288,27 +306,193 @@ describe("PatchsetGraph", () => {
 		expect(markerIn("ps2", "viewing")).toBeNull();
 	});
 
-	it("clicking a dot views it; the branch dot makes it the comparison base", async () => {
+	it("a click moves nothing: it makes the dot's card sticky, whose buttons set the roles", async () => {
 		const user = userEvent.setup();
 		const { setViewing, setBase, onViewHead } = renderGraph(
 			session([1, 2], oid("f")),
 			{ viewing: ps(2), base: ps(1) as ComparisonBase },
 		);
-		await user.click(screen.getByRole("button", { name: "head fffffff" }));
+		const dot = (name: string) => screen.getByRole("button", { name });
+		const card = (name: string) =>
+			screen.queryByRole("dialog", { name: `${name} details` });
+		const action = (name: "Comparison Base" | "Comparison Target") =>
+			within(screen.getByRole("dialog")).getByRole("button", { name });
+
+		// PS1 (the comparison base): the card, no move; Target views it.
+		expect(dot("PS1")).toHaveAttribute("aria-expanded", "false");
+		await user.click(dot("PS1"));
+		expect(setViewing).not.toHaveBeenCalled();
+		expect(setBase).not.toHaveBeenCalled();
+		expect(card("PS1")).toBeInTheDocument();
+		expect(dot("PS1")).toHaveAttribute("aria-expanded", "true");
+		expect(action("Comparison Base")).toBeDisabled();
+		expect(action("Comparison Target")).toBeEnabled();
+		// Focus moved into it, on the first button it can press.
+		expect(action("Comparison Target")).toHaveFocus();
+		await user.click(action("Comparison Target"));
+		expect(setViewing).toHaveBeenLastCalledWith({
+			kind: "patchset",
+			number: 1,
+		});
+		expect(card("PS1")).toBeNull();
+		expect(dot("PS1")).toHaveFocus();
+
+		// The viewed dot: neither role is free (the base can't be on or past it).
+		await user.click(dot("PS2"));
+		expect(action("Comparison Target")).toBeDisabled();
+		expect(action("Comparison Base")).toBeDisabled();
+		await user.click(dot("PS2"));
+		expect(card("PS2")).toBeNull();
+
+		// The branch: a base only.
+		await user.click(dot("main (base branch)"));
+		expect(action("Comparison Target")).toBeDisabled();
+		await user.click(action("Comparison Base"));
+		expect(setBase).toHaveBeenLastCalledWith({ kind: "branch" });
+
+		// The head: the only way to view it by click is its Target.
+		await user.click(dot("head fffffff"));
+		expect(setViewing).toHaveBeenCalledTimes(1);
+		expect(onViewHead).not.toHaveBeenCalled();
+		expect(action("Comparison Base")).toBeDisabled();
+		await user.click(action("Comparison Target"));
 		expect(setViewing).toHaveBeenLastCalledWith({
 			kind: "head",
 			oid: oid("f"),
 		});
 		expect(onViewHead).toHaveBeenCalledTimes(1);
-		await user.click(screen.getByRole("button", { name: "PS1" }));
-		expect(setViewing).toHaveBeenLastCalledWith({
-			kind: "patchset",
-			number: 1,
+	});
+
+	it("the sticky card closes on Escape (focus back on the dot), a click outside or the dot again; Enter opens it", async () => {
+		const user = userEvent.setup();
+		const { setViewing } = renderGraph(session([1, 2], oid("f")), {
+			viewing: ps(2),
+			base: ps(1) as ComparisonBase,
 		});
-		await user.click(
-			screen.getByRole("button", { name: "main (base branch)" }),
+		const ps1 = screen.getByRole("button", { name: "PS1" });
+		await user.click(ps1);
+		expect(screen.getByRole("dialog")).toBeInTheDocument();
+		await user.keyboard("{Escape}");
+		expect(screen.queryByRole("dialog")).toBeNull();
+		expect(ps1).toHaveFocus();
+		expect(ps1).toHaveAttribute("aria-expanded", "false");
+		// Enter on the focused dot: the card again, nothing moved.
+		await user.keyboard("{Enter}");
+		expect(screen.getByRole("dialog")).toBeInTheDocument();
+		await user.click(document.body);
+		expect(screen.queryByRole("dialog")).toBeNull();
+		await user.click(ps1);
+		await user.click(ps1);
+		expect(screen.queryByRole("dialog")).toBeNull();
+		await user.keyboard(" ");
+		expect(setViewing).not.toHaveBeenCalled();
+	});
+
+	it("the label and the dot are one element: one button, one card", async () => {
+		const user = userEvent.setup();
+		renderGraph(session([1, 2], oid("f")), {
+			viewing: ps(2),
+			base: ps(1) as ComparisonBase,
+		});
+		const ps1 = screen.getByRole("button", { name: "PS1" });
+		const label = within(node("ps1")).getByTestId("ps-dot-label");
+		expect(label).toHaveTextContent("PS1");
+		expect(label.closest("button")).toBe(ps1);
+		const hoverCard = () =>
+			screen
+				.queryAllByRole("tooltip", { hidden: true })
+				.find((t) => !t.hidden && t.textContent?.includes("Patch Set 1")) ??
+			null;
+		// Hovering the label is hovering the dot: its card.
+		await user.hover(label);
+		await waitFor(() => expect(hoverCard()).not.toBeNull());
+		await user.click(label);
+		expect(
+			screen.getByRole("dialog", { name: "PS1 details" }),
+		).toBeInTheDocument();
+		// The hover card gives way to the sticky one.
+		expect(hoverCard()).toBeNull();
+	});
+
+	it("a patch set's card says what it is: title, start, commit, base, then its threads after a spinner", async () => {
+		const user = userEvent.setup();
+		let release: () => void = () => {};
+		const gate = new Promise<void>((r) => {
+			release = r;
+		});
+		const s = session([1, 2], oid("f"));
+		const at = (ms: number) => new Date(ms).toISOString();
+		const t = (createdAt: number, resolved: boolean) => ({
+			createdAt: at(createdAt),
+			resolved,
+		});
+		const ps1Start = s.patchsets[0]?.startedAt as number;
+		const ps2Start = s.patchsets[1]?.startedAt as number;
+		renderGraph(
+			s,
+			{ viewing: ps(2), base: ps(1) as ComparisonBase },
+			undefined,
+			async () => {
+				await gate;
+				return {
+					threads: [
+						t(ps1Start + 1000, true),
+						t(ps1Start + 2000, false),
+						t(ps2Start + 1000, false),
+					],
+					complete: true,
+				};
+			},
 		);
-		expect(setBase).toHaveBeenLastCalledWith({ kind: "branch" });
+		await user.click(screen.getByRole("button", { name: "PS1" }));
+		const card = screen.getByRole("dialog", { name: "PS1 details" });
+		expect(card).toHaveTextContent("Patch Set 1");
+		expect(card).toHaveTextContent(/Reviewed starting \S/);
+		expect(within(card).getByText(/ago$/).tagName).toBe("TIME");
+		expect(card).toHaveTextContent("Commit 1111111");
+		expect(card).toHaveTextContent("Against main at 0000000");
+		await expectLoadingThen({
+			loading: () => within(card).queryByTestId("threads-pending"),
+			empty: [() => within(card).queryByText(/No threads|0 threads/)],
+			release,
+			result: () => within(card).queryByText("2 threads created (1 resolved)"),
+		});
+	});
+
+	it("the head's card: Head, not reviewed yet, its commit, its base, the commits since the newest patch set", async () => {
+		const user = userEvent.setup();
+		renderGraph(session([1, 2], oid("f")), {
+			viewing: ps(2),
+			base: ps(1) as ComparisonBase,
+		});
+		await user.click(screen.getByRole("button", { name: "head fffffff" }));
+		const card = screen.getByRole("dialog", { name: "head details" });
+		expect(card).toHaveTextContent("Head");
+		expect(card).toHaveTextContent("Not reviewed yet");
+		expect(card).toHaveTextContent("Commit fffffff");
+		expect(card).toHaveTextContent("Against main at 0000000");
+		expect(card).toHaveTextContent("3 commits since PS2");
+	});
+
+	it("the branch → PS1 connector spins until the session counts PS1's commits, then shows them", () => {
+		const s = session([1, 2], oid("f"));
+		const counting: SessionInfo = {
+			...s,
+			patchsets: s.patchsets.map((p) => ({ ...p, commits: null })),
+		};
+		const { rerender } = renderGraph(counting, {
+			viewing: ps(2),
+			base: ps(1) as ComparisonBase,
+		});
+		const conn = () => screen.getByTestId("ps-conn-ps1");
+		expect(within(conn()).getByTestId("ps-conn-counting")).toBeInTheDocument();
+		expect(within(conn()).queryByText(/commit/)).toBeNull();
+		rerender(s);
+		expect(within(conn()).queryByTestId("ps-conn-counting")).toBeNull();
+		expect(within(conn()).getByTestId("ps-conn-label")).toHaveTextContent(
+			"2 commits",
+		);
+		expect(conn()).toHaveAccessibleName("main to PS1: 2 commits");
 	});
 
 	it("Ctrl+] and Ctrl+[ move the viewing marker; with Shift the base; bare brackets move nothing", () => {

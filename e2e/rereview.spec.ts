@@ -708,13 +708,171 @@ test("a pinned head shows neither the head dot nor the toast", async ({
 	await expect(node(page, "head")).toHaveCount(0);
 });
 
-test("the rail on a phone: 40px targets, no page overflow, a tap opens the sheet with View and Compare from here", async ({
+/** A dot of the rail: its label and its dot, one button. */
+const dot = (page: Page, id: string) => page.getByTestId(`ps-dot-${id}`);
+const sticky = (page: Page, name: string) =>
+	page.getByRole("dialog", { name: `${name} details` });
+
+test("a click on a dot moves nothing: its card goes sticky, and its Comparison Base and Comparison Target move the markers", async ({
 	page,
 	pr,
 	startCrb,
 	isMobile,
 }) => {
-	test.skip(!isMobile, "the sheet is the phone's way");
+	const p = await pr(fixture);
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	await reviewAll(page);
+	p.moveHead(rework);
+	await page.reload();
+	await expect(tail(page)).toHaveAttribute("data-state", "head", GIT_WAIT);
+	const url = page.url();
+	const sections = page.getByRole("region", { name: /^src\// });
+	const rows = await sections.allTextContents();
+
+	// A click on PS1's label (one element with its dot): its card, sticky.
+	await node(page, "ps1").getByTestId("ps-dot-label").click();
+	const ps1 = sticky(page, "PS1");
+	await expect(ps1).toBeVisible();
+	await expect(dot(page, "ps1")).toHaveAttribute("aria-expanded", "true");
+	await expect(ps1).toContainText("Patch Set 1");
+	await expect(ps1).toContainText("Reviewed starting");
+	await expect(ps1).toContainText("Against main at");
+	// Nothing moved: the address, the markers, the rows.
+	expect(page.url()).toBe(url);
+	await expect(
+		node(page, "ps1").getByRole("button", { name: "viewing" }),
+	).toBeVisible();
+	expect(await sections.allTextContents()).toEqual(rows);
+	// PS1 is viewed: it can't be the target again, nor its own base.
+	await expect(
+		ps1.getByRole("button", { name: "Comparison Target" }),
+	).toBeDisabled();
+	await expect(
+		ps1.getByRole("button", { name: "Comparison Base" }),
+	).toBeDisabled();
+	await page.keyboard.press("Escape");
+	await expect(ps1).toBeHidden();
+	await expect(dot(page, "ps1")).toBeFocused();
+
+	// The head: a click shows its card, only its Target views it.
+	await dot(page, "head").click();
+	const head = sticky(page, "head");
+	await expect(head).toContainText("Head");
+	await expect(head).toContainText("Not reviewed yet");
+	await expect(head).toContainText("1 commit since PS1");
+	expect(page.url()).toBe(url);
+	if (isMobile) {
+		// Inside the viewport, its buttons 40px, nothing overflows.
+		const box = await head.boundingBox();
+		const width = page.viewportSize()?.width ?? 0;
+		expect(box?.x ?? -1).toBeGreaterThanOrEqual(0);
+		expect((box?.x ?? 0) + (box?.width ?? 0)).toBeLessThanOrEqual(width);
+		for (const name of ["Comparison Base", "Comparison Target"]) {
+			const b = await head.getByRole("button", { name }).boundingBox();
+			expect(b?.height ?? 0).toBeGreaterThanOrEqual(40);
+		}
+		await expectNoPageOverflow(page);
+	}
+	await expect(
+		head.getByRole("button", { name: "Comparison Base" }),
+	).toBeDisabled();
+	await head.getByRole("button", { name: "Comparison Target" }).click();
+	await expect(head).toBeHidden();
+	await expect(
+		node(page, "head").getByRole("button", { name: "viewing" }),
+	).toBeVisible();
+	await expect(page).toHaveURL(/head=[0-9a-f]{40}/);
+
+	// The branch: Comparison Base puts the base there (the full diff).
+	await dot(page, "branch").click();
+	const branch = sticky(page, "main");
+	await expect(
+		branch.getByRole("button", { name: "Comparison Target" }),
+	).toBeDisabled();
+	await branch.getByRole("button", { name: "Comparison Base" }).click();
+	await expect(
+		node(page, "branch").getByRole("button", { name: "comparison base" }),
+	).toBeVisible();
+	await expect(page).toHaveURL(/from=branch/);
+
+	// A click outside closes a sticky card; so does its dot again.
+	await dot(page, "ps1").click();
+	await expect(sticky(page, "PS1")).toBeVisible();
+	await page.getByRole("heading", { level: 1 }).first().click();
+	await expect(sticky(page, "PS1")).toBeHidden();
+	await dot(page, "ps1").click();
+	await dot(page, "ps1").click();
+	await expect(sticky(page, "PS1")).toBeHidden();
+});
+
+test("the label and the dot open the same card on hover", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	test.skip(isMobile, "hover is the mouse's");
+	await pr(fixture);
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	await reviewAll(page);
+	await node(page, "ps1").getByTestId("ps-dot-label").hover();
+	await expect(card(page)).toContainText("Patch Set 1");
+	await expect(card(page)).toHaveCount(1);
+	await page.mouse.move(0, 0);
+	await expect(card(page)).toHaveCount(0);
+	await dot(page, "ps1").locator("span").last().hover();
+	await expect(card(page)).toContainText("Patch Set 1");
+	await expect(card(page)).toHaveCount(1);
+});
+
+test("the branch → PS1 connector counts PS1's commits after a spinner", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	await pr(fixture);
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	await reviewAll(page);
+	// The session's count is held unknown at the page's door until released.
+	let hold = true;
+	await page.route(/\/api\/r\/[^/]+\/(session|head)$/, async (route) => {
+		const response = await route.fetch();
+		const body = await response.json();
+		if (hold) {
+			body.patchsets = body.patchsets.map((ps: object) => ({
+				...ps,
+				commits: null,
+			}));
+		}
+		await route.fulfill({ response, json: body });
+	});
+	await page.reload();
+	const conn = page.getByTestId("ps-conn-ps1");
+	await expectLoadingThen({
+		loading: conn.getByTestId("ps-conn-counting"),
+		empty: [conn.getByText(/^0/)],
+		release: () => {
+			hold = false;
+		},
+		result: conn
+			.getByTestId("ps-conn-label")
+			.getByText(isMobile ? /^1$/ : "1 commit", { exact: true }),
+	});
+	await expect(conn).toHaveAccessibleName("main to PS1: 1 commit");
+});
+
+test("the rail on a phone: 40px targets, no page overflow at 360px", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	test.skip(!isMobile, "the phone's sizes");
+	await page.setViewportSize({ width: 360, height: 740 });
 	const p = await pr(fixture);
 	const s = await startCrb();
 	await openFiles(page, s.url);
@@ -724,8 +882,8 @@ test("the rail on a phone: 40px targets, no page overflow, a tap opens the sheet
 	await expect(tail(page)).toHaveAttribute("data-state", "head", GIT_WAIT);
 	await expectNoPageOverflow(page);
 	for (const el of [
-		node(page, "head"),
-		node(page, "ps1"),
+		dot(page, "head"),
+		dot(page, "ps1"),
 		marker(page, "viewing"),
 		marker(page, "comparison base"),
 	]) {
@@ -734,27 +892,19 @@ test("the rail on a phone: 40px targets, no page overflow, a tap opens the sheet
 	// A phone connector shows the bare count.
 	await expect(page.getByTestId("ps-conn-head")).toHaveText("1");
 	await expect(marker(page, "comparison base")).toHaveText("comp. base");
-
-	await node(page, "ps1").click();
-	const sheet = page.getByTestId("dot-sheet");
-	await expect(sheet).toBeVisible();
-	await expect(sheet).toContainText("PS1");
-	// PS1 is viewed: it can't be its own comparison base.
-	await expect(
-		sheet.getByRole("button", { name: "Compare from here" }),
-	).toBeDisabled();
-	await sheet.getByRole("button", { name: "View" }).click();
-	await expect(sheet).toBeHidden();
-
-	await node(page, "head").click();
-	await expect(sheet).toContainText("head");
-	await sheet.getByRole("button", { name: "View" }).click();
-	await expect(sheet).toBeHidden();
+	// A tap: the sticky card, inside the viewport.
+	await dot(page, "head").tap();
+	const head = sticky(page, "head");
+	await expect(head).toBeVisible();
+	const box = await head.boundingBox();
+	expect(box?.x ?? -1).toBeGreaterThanOrEqual(0);
+	expect((box?.x ?? 0) + (box?.width ?? 0)).toBeLessThanOrEqual(360);
+	await expectNoPageOverflow(page);
+	await head.getByRole("button", { name: "Comparison Target" }).tap();
 	await expect(
 		node(page, "head").getByRole("button", { name: "viewing" }),
 	).toBeVisible();
 	await expect(page).toHaveURL(/head=[0-9a-f]{40}/);
-	await expectNoPageOverflow(page);
 });
 
 test("the markers move by drag and by Ctrl+[ / Ctrl+]; nothing moves on a bare key", async ({
