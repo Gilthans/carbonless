@@ -136,7 +136,8 @@ describe("HunksPrefetcher", () => {
 	});
 
 	it("a 409 keeps its files pending, asks for nothing more and tells onStale once", async () => {
-		const onStale = vi.fn();
+		// The page's read of the review, still out.
+		const onStale = vi.fn(() => new Promise<boolean>(() => {}));
 		const p = new HunksPrefetcher(client, "r", fetchBatch, onStale);
 		// Three batches: two out, one waiting its turn.
 		p.queue(nums(0, HUNKS_BATCH * 3));
@@ -155,6 +156,45 @@ describe("HunksPrefetcher", () => {
 		expect(p.snapshot().pending).toBe(HUNKS_BATCH * 3);
 		expect(calls).toHaveLength(2);
 	});
+
+	it.each([
+		["the review can't be read again", () => Promise.reject(new Error("down"))],
+		[
+			"the review comes back on the same revision",
+			() => Promise.resolve(false),
+		],
+	])(
+		"after a 409, when %s, its files and the queue fail (no endless spinner), and Retry sends again",
+		async (_, answer) => {
+			const onStale = vi.fn(answer);
+			const p = new HunksPrefetcher(client, "r", fetchBatch, onStale);
+			p.queue(nums(0, HUNKS_BATCH * 3));
+			calls[0]?.reject(new ApiError(409, "stale"));
+			await flushAll();
+			expect(onStale).toHaveBeenCalledTimes(1);
+			expect(p.snapshot().failed).toEqual(
+				nums(0, HUNKS_BATCH).concat(nums(HUNKS_BATCH * 2, HUNKS_BATCH)),
+			);
+			// The batch still out answers in its own time.
+			expect(p.snapshot().pending).toBe(HUNKS_BATCH);
+			calls[1]?.resolve({
+				files: nums(HUNKS_BATCH, HUNKS_BATCH).map((index) => ({
+					index,
+					hunks: hunks(String(index)),
+				})),
+			});
+			await flushAll();
+			expect(p.snapshot().pending).toBe(0);
+			expect(p.snapshot().failed).toHaveLength(HUNKS_BATCH * 2);
+			p.retry();
+			expect(calls).toHaveLength(4);
+			expect(p.snapshot()).toEqual({ pending: HUNKS_BATCH * 2, failed: [] });
+			// Stale again: the page is asked again.
+			calls[2]?.reject(new ApiError(409, "stale"));
+			await flushAll();
+			expect(onStale).toHaveBeenCalledTimes(2);
+		},
+	);
 
 	it("subscribers are told on each change; stop drops the queue but keeps an answer in flight", async () => {
 		const p = prefetcher();

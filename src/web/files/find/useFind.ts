@@ -103,9 +103,11 @@ export function useFind(opts: {
 	/**
 	 * A hunks request answered 409 (the revision is gone: another tab or
 	 * device refreshed): read the review again, so the page moves to the new
-	 * revision and the prefetch starts over for it.
+	 * revision and the prefetch starts over for it. Resolves with the
+	 * revision read; a failed read or the same revision fails the files
+	 * held (Retry asks again).
 	 */
-	onStale?: () => void;
+	onStale?: () => Promise<string | undefined>;
 }): Find {
 	const { revision, files, openIndex, active } = opts;
 	const onStale = useRef(opts.onStale);
@@ -235,9 +237,10 @@ export function useFind(opts: {
 		started && started.revision === revision ? started.p : null;
 	useEffect(() => {
 		if (!open || revision === undefined || !active) return;
-		const p = new HunksPrefetcher(client, revision, undefined, () =>
-			onStale.current?.(),
-		);
+		const p = new HunksPrefetcher(client, revision, undefined, async () => {
+			const read = await onStale.current?.();
+			return read !== undefined && read !== revision;
+		});
 		setStarted({ p, revision });
 		p.queue(prefetchOrder(filesRef.current, openRef.current));
 		return () => {

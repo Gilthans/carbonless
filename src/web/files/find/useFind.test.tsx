@@ -140,7 +140,7 @@ function renderFind(props: {
 	revision: string;
 	files: FileView[];
 	openIndex: number | null;
-	onStale?: () => void;
+	onStale?: () => Promise<string | undefined>;
 }) {
 	const wrapper = ({ children }: { children: ReactNode }) => (
 		<QueryClientProvider client={client}>{children}</QueryClientProvider>
@@ -290,7 +290,8 @@ describe("useFind", () => {
 
 	it("a 409 keeps searching, counts nothing failed and asks the page to read the review again", async () => {
 		const files = [file(0, [], ["save"]), file(1, [], ["y"])];
-		const onStale = vi.fn();
+		// The page's read of the review, still out.
+		const onStale = vi.fn(() => new Promise<string | undefined>(() => {}));
 		const { result } = renderFind({
 			revision: "r1",
 			files,
@@ -306,6 +307,34 @@ describe("useFind", () => {
 		expect(result.current.searching).toBe(true);
 		expect(result.current.failed).toBe(0);
 	});
+
+	it.each([
+		["comes back on the same revision", () => Promise.resolve("r1")],
+		["fails", () => Promise.reject(new Error("down"))],
+	])(
+		"after a 409, when the review read %s, the files count as failed and Retry asks again",
+		async (_, answer) => {
+			const files = [file(0, [], ["save"]), file(1, [], ["y"])];
+			const onStale = vi.fn(answer);
+			const { result } = renderFind({
+				revision: "r1",
+				files,
+				openIndex: null,
+				onStale,
+			});
+			search("save");
+			await waitFor(() => expect(batches).toHaveLength(1));
+			await act(async () => {
+				batches[0]?.held.release({ error: "stale" }, 409);
+			});
+			await waitFor(() => expect(result.current.failed).toBe(2));
+			expect(result.current.searching).toBe(false);
+			act(() => result.current.retry());
+			await waitFor(() => expect(batches).toHaveLength(2));
+			expect(batches[1]?.indexes).toEqual([0, 1]);
+			expect(result.current.searching).toBe(true);
+		},
+	);
 
 	it("searching from the first render of a new revision (the old prefetch, done, never counts)", async () => {
 		const files = [file(0, [], ["save"])];

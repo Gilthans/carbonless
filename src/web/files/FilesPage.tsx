@@ -316,7 +316,12 @@ export function FilesPage() {
 	// tab or device) show. Unchanged data keeps its identity: nothing moves.
 	const wasActive = useRef(active);
 	const { refetch } = review;
-	const refetchReview = useCallback(() => void refetch(), [refetch]);
+	// Find in PR's stale answer: the revision read again (a failed read throws).
+	const refetchReview = useCallback(async () => {
+		const read = await refetch();
+		if (read.isError) throw read.error;
+		return read.data?.revision;
+	}, [refetch]);
 	useEffect(() => {
 		if (active && !wasActive.current) void refetch();
 		wasActive.current = active;

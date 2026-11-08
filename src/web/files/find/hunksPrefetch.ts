@@ -24,7 +24,10 @@ export interface PrefetchSnapshot {
  * refreshed the review) marks nothing failed and leaves its files pending,
  * sends nothing more, and calls `onStale` once: the page reads the review
  * again, moves to the new revision and starts a new prefetcher (stopping
- * this one), so the search never looks final with files unsearched. Any
+ * this one), so the search never looks final with files unsearched. When
+ * that read fails or finds the same revision (`onStale` rejects or resolves
+ * false), the held files and the queue fail instead (Retry sends them, and
+ * a 409 again asks the page again), so the spinner never stays. Any
  * other failure marks every file of the request failed; so does a file the
  * answer leaves out.
  */
@@ -32,9 +35,11 @@ export class HunksPrefetcher {
 	readonly #client: QueryClient;
 	readonly #revision: string;
 	readonly #fetchBatch: typeof fetchHunksBatch;
-	readonly #onStale: () => void;
-	/** A request answered 409: the revision is gone. */
+	readonly #onStale: () => Promise<boolean>;
+	/** A request answered 409 and the page is reading the review again. */
 	#stale = false;
+	/** Files of the requests answered 409, held pending meanwhile. */
+	#held = new Set<number>();
 	#queue: number[] = [];
 	/** The queue's files, for lookups. */
 	#queued = new Set<number>();
@@ -51,7 +56,8 @@ export class HunksPrefetcher {
 		client: QueryClient,
 		revision: string,
 		fetchBatch: typeof fetchHunksBatch = fetchHunksBatch,
-		onStale: () => void = () => {},
+		/** Reads the review again; true when it moved to a new revision. */
+		onStale: () => Promise<boolean> = async () => false,
 	) {
 		this.#client = client;
 		this.#revision = revision;
@@ -146,6 +152,24 @@ export class HunksPrefetcher {
 		}
 	}
 
+	/** The page stayed on this revision: what the 409 held, and the queue, fail. */
+	#notMoved(): void {
+		if (this.#stopped) return;
+		this.#stale = false;
+		const failed = [...this.#held, ...this.#queue];
+		this.#held = new Set();
+		this.#queue = [];
+		this.#queued = new Set();
+		for (const index of failed) {
+			this.#inFlight.delete(index);
+			if (this.#failedSet.has(index)) continue;
+			this.#failedSet.add(index);
+			this.#failed.push(index);
+		}
+		this.#flush();
+		this.#changed();
+	}
+
 	async #send(batch: number[]): Promise<void> {
 		let failed: number[] = [];
 		try {
@@ -170,10 +194,17 @@ export class HunksPrefetcher {
 		} catch (error) {
 			if (error instanceof ApiError && error.status === 409) {
 				this.#out--;
-				if (this.#stopped || this.#stale) return;
-				// Its files stay in flight (pending) until this prefetcher stops.
+				if (this.#stopped) return;
+				// Its files stay in flight (pending) while the page reads again.
+				for (const index of batch) this.#held.add(index);
+				if (this.#stale) return;
 				this.#stale = true;
-				this.#onStale();
+				void this.#onStale().then(
+					(moved) => {
+						if (!moved) this.#notMoved();
+					},
+					() => this.#notMoved(),
+				);
 				return;
 			}
 			failed = batch;
