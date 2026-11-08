@@ -398,7 +398,7 @@ export function App() {
 							</nav>
 						</div>
 						{/*
-						 * The title again, small, centered between the tabs and Refresh
+						 * The title again, small, centered between the tabs and Find in PR
 						 * on a light pill, fading in over the last stretch before the
 						 * header sticks (--compact, scroll-linked). The title takes you
 						 * back to the top, to the full title; the number beside it goes
