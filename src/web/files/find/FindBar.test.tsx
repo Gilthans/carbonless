@@ -174,6 +174,17 @@ describe("FindBar", () => {
 		expect(box().selectionEnd).toBe(5);
 	});
 
+	it("takes focus without scrolling the page (the box is always in the sticky bar)", () => {
+		const focus = vi.spyOn(HTMLInputElement.prototype, "focus");
+		try {
+			const { rerender } = render(bar(props()));
+			rerender(bar(props({ focusSeq: 1 })));
+			expect(focus).toHaveBeenCalledWith({ preventScroll: true });
+		} finally {
+			focus.mockRestore();
+		}
+	});
+
 	it("lists its keys in the shortcuts help under Files changed", async () => {
 		render(bar(props()));
 		await userEvent.keyboard("?");

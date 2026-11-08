@@ -69,7 +69,9 @@ export function FindBar(props: {
 	]);
 	useEffect(() => {
 		if (props.focusSeq === 0) return;
-		box.current?.focus();
+		// The box is always on screen in the sticky bar: focusing it never
+		// scrolls (it took the page to the top as the bar mounted).
+		box.current?.focus({ preventScroll: true });
 		box.current?.select();
 	}, [props.focusSeq]);
 

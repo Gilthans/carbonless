@@ -718,3 +718,11 @@ describe("literal colors that mirror tokens", () => {
 		expect(syntaxTheme.colors?.["editor.background"]).toBe(token("code"));
 	});
 });
+
+describe("sticky stack", () => {
+	it("drops the page's scroll padding while a box in the sticky stack has focus (typing would scroll to the top)", () => {
+		const rule = css.match(/html:has\(([^)]*)\)\s*\{([^}]*)\}/);
+		expect(rule?.[1]).toContain("[data-page-bar] input:focus");
+		expect(rule?.[2]).toMatch(/scroll-padding-top:\s*0;/);
+	});
+});

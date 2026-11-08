@@ -364,6 +364,15 @@ html {
 }
 
 /*
+ * Typing reveals the caret, and that ignores the scroll margin above: a text
+ * box in the sticky stack (the Find in PR box) would take the page to the
+ * top on every key. While one has focus, no padding: it is on screen.
+ */
+html:has([data-app-header] input:focus, [data-page-bar] input:focus) {
+	scroll-padding-top: 0;
+}
+
+/*
  * While the file tree is being dragged wider or narrower (TreeResizer): the
  * resize cursor wherever the captured pointer goes, over elements with a
  * cursor of their own too (unlayered, so it beats every utility), and
