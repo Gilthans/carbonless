@@ -56,6 +56,10 @@ export interface PlacementInfo {
 	placements: Placements | null;
 	/** Asked and not in yet: a spinner in each card's chip slot. */
 	pending: boolean;
+	/** They couldn't be computed (each card says so; the page offers a retry). */
+	error: Error | null;
+	/** Asks for them again. */
+	retry: () => void;
 	/** The read and target they are for (a placement write updates them). */
 	readId: string | null;
 	to: RereviewTo | null;
@@ -68,6 +72,8 @@ export interface PlacementInfo {
 const PlacementContext = createContext<PlacementInfo>({
 	placements: null,
 	pending: false,
+	error: null,
+	retry: () => {},
 	readId: null,
 	to: null,
 	placeOn: null,
@@ -120,6 +126,14 @@ export const FATES: Record<
 	},
 };
 
+/** No fate known: the placements couldn't be computed. */
+const UNKNOWN_FATE = {
+	label: "not placed",
+	icon: AlertIcon,
+	tone: "red" as const,
+	tip: "Where this thread sits now couldn't be computed",
+};
+
 /** "PS2", or nothing without a patch set. */
 const psLabel = (n: number | null) => (n === null ? "" : `PS${n}`);
 
@@ -132,6 +146,18 @@ const psLabel = (n: number | null) => (n === null ? "" : `PS${n}`);
 export function PlacementChip({ thread }: { thread: ReviewThread }) {
 	const info = usePlacementInfo();
 	const placement = info.placements?.get(thread.id);
+	if (!placement && info.error && !thread.resolved) {
+		return (
+			<Chip
+				tone="red"
+				icon={AlertIcon}
+				tip={`Where this thread sits now couldn't be computed: ${info.error.message}`}
+				testId="placement-error"
+			>
+				place unknown
+			</Chip>
+		);
+	}
 	if (!placement) {
 		return info.pending && !thread.resolved ? (
 			<span className="flex h-4 w-4 items-center" data-testid="placement-slot">
@@ -313,7 +339,8 @@ export function OriginalCode({ thread }: { thread: ReviewThread }) {
 export function UnplacedRow(props: {
 	thread: ReviewThread;
 	readId: string;
-	fate: Fate;
+	/** Its fate; null: unknown (the placements couldn't be computed). */
+	fate: Fate | null;
 	/** Before the fate: the original path (the trailing group). */
 	path?: string;
 	movedTo?: string;
@@ -325,11 +352,11 @@ export function UnplacedRow(props: {
 	const { thread } = props;
 	const [open, setOpen] = useState(false);
 	const bodyId = useId();
-	const fate = FATES[props.fate];
+	const fate = props.fate ? FATES[props.fate] : UNKNOWN_FATE;
 	return (
 		<li
 			data-testid="unplaced-thread"
-			data-fate={props.fate}
+			data-fate={props.fate ?? "unknown"}
 			data-thread={thread.id}
 			className="min-w-0 space-y-1.5 rounded-md border border-line bg-surface p-2"
 		>
@@ -650,12 +677,14 @@ export function useSessionPlacements(
 		() => ({
 			placements,
 			pending: asked && answer === null && !query.error,
+			error: asked && answer === null ? query.error : null,
+			retry: () => void query.refetch(),
 			readId: readId ?? null,
 			to,
 			placeOn: null,
 			openedOn: (t: ReviewThread) => openedOn(t.createdAt, patchsets ?? []),
 		}),
-		[placements, asked, answer, query.error, readId, toKey, patchsets],
+		[placements, asked, answer, query, readId, toKey, patchsets],
 	);
 }
 

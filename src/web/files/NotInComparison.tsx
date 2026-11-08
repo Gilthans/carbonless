@@ -1,4 +1,4 @@
-import { CircleSlashIcon } from "@primer/octicons-react";
+import { AlertIcon, CircleSlashIcon } from "@primer/octicons-react";
 import type { ThreadPlacement } from "../../shared/rereview/placement";
 import type { ReviewThread } from "../../shared/types";
 import { Badge } from "../overview/parts";
@@ -20,7 +20,58 @@ export function NotInComparison(props: {
 	}[];
 	readId: string;
 	pending: boolean;
+	/**
+	 * The placements couldn't be computed: the threads not shown where they
+	 * were made, listed here with the error and a retry (never dropped).
+	 */
+	failed?: {
+		threads: ReviewThread[];
+		error: Error | null;
+		retry: () => void;
+	} | null;
 }) {
+	if (props.failed) {
+		return (
+			<section
+				aria-label="Thread places couldn't be computed"
+				data-testid="placements-failed"
+				className="space-y-2 rounded-lg border border-bad/40 bg-surface p-2"
+			>
+				<h3 className="flex min-h-10 flex-wrap items-center gap-2 px-1 text-sm font-semibold text-ink">
+					<AlertIcon size={16} aria-hidden className="text-bad" />
+					Thread places couldn't be computed
+					{props.failed.threads.length > 0 && (
+						<Badge tone="red" icon={CircleSlashIcon}>
+							{threadsLabel(props.failed.threads.length)}
+						</Badge>
+					)}
+					<button
+						type="button"
+						onClick={props.failed.retry}
+						className="ml-auto inline-flex min-h-10 items-center rounded-md px-3 font-medium text-link hover:bg-overlay focus-visible:outline-2 focus-visible:outline-accent"
+					>
+						Retry
+					</button>
+				</h3>
+				{props.failed.error && (
+					<p className="px-1 text-xs break-words text-muted">
+						{props.failed.error.message}
+					</p>
+				)}
+				<ul className="space-y-1.5">
+					{props.failed.threads.map((thread) => (
+						<UnplacedRow
+							key={thread.id}
+							thread={thread}
+							readId={props.readId}
+							fate={null}
+							path={thread.path}
+						/>
+					))}
+				</ul>
+			</section>
+		);
+	}
 	if (props.threads.length === 0 && !props.pending) return null;
 	if (props.threads.length === 0) {
 		return (

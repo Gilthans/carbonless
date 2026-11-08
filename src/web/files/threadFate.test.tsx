@@ -71,6 +71,8 @@ const thread = (extra: Partial<ReviewThread> = {}): ReviewThread => ({
 const info = (over: Partial<PlacementInfo> = {}): PlacementInfo => ({
 	placements: null,
 	pending: false,
+	error: null,
+	retry: () => {},
 	readId: "r1",
 	to: { patchset: 2 },
 	placeOn: null,
@@ -141,6 +143,48 @@ describe("Not in this comparison", () => {
 			),
 		);
 		expect(container.textContent).toBe("");
+	});
+});
+
+describe("when the placements fail", () => {
+	it("lists every thread not shown where it was made, says why, and retries; never an empty group", async () => {
+		const t = thread();
+		const retry = vi.fn();
+		render(
+			wrap(
+				info({ error: new Error("git failed") }),
+				<NotInComparison
+					threads={[]}
+					readId="r1"
+					pending={false}
+					failed={{ threads: [t], error: new Error("git failed"), retry }}
+				/>,
+			),
+		);
+		const group = screen.getByTestId("placements-failed");
+		expect(group.textContent).toContain("Thread places couldn't be computed");
+		expect(group.textContent).toContain("git failed");
+		expect(group.textContent).toContain("1 thread");
+		const row = screen.getByTestId("unplaced-thread");
+		expect(row.getAttribute("data-fate")).toBe("unknown");
+		expect(row.textContent).toContain("not placed");
+		expect(row.textContent).toContain(`src/${HOSTILE}.ts`);
+		screen.getByRole("button", { name: "Retry" }).click();
+		expect(retry).toHaveBeenCalledOnce();
+		expect(screen.queryByTestId("not-in-comparison")).toBeNull();
+	});
+
+	it("a card's chip says its place is unknown, not loading and not placed", () => {
+		render(
+			wrap(
+				info({ error: new Error("git failed") }),
+				<PlacementChip thread={thread()} />,
+			),
+		);
+		expect(screen.getByTestId("placement-error").textContent).toContain(
+			"place unknown",
+		);
+		expect(screen.queryByRole("status")).toBeNull();
 	});
 });
 

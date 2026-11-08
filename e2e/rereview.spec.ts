@@ -16,6 +16,7 @@ import {
 	expect,
 	expectLoadingThen,
 	OWNER_REPO,
+	type Pr,
 	type PrOptions,
 	test,
 } from "./fixtures";
@@ -930,6 +931,14 @@ test("threads: a rewritten line is changed with its old lines, a deleted one unp
 	const row = unplacedRows(coreS);
 	const handle = row.getByTestId("place-handle");
 	await expect(handle).toBeVisible(GIT_WAIT);
+	// The since view numbers its old side by the interdiff, no file's: no
+	// drag there (the row stays, its handle goes); back in the full diff.
+	await baseOn(page, "ps1", "]");
+	await expect(row).toHaveCount(1);
+	await expect(row).toContainText("Is core 30 needed?");
+	await expect(row.getByTestId("place-handle")).toHaveCount(0);
+	await baseOn(page, "branch", "[");
+	await expect(handle).toBeVisible();
 	if (isMobile) {
 		expect((await handle.boundingBox())?.height).toBeGreaterThanOrEqual(40);
 		expect((await row.boundingBox())?.height).toBeGreaterThanOrEqual(40);
@@ -1113,4 +1122,139 @@ test("a thread of a file deleted two patch sets earlier is under Not in this com
 	setResolved(false);
 	await page.getByRole("button", { name: "Refresh" }).first().click();
 	await expectGroup();
+});
+
+/** PS1 reviewed with threads on it, then pushed: viewing the head in the full diff. */
+async function threadsPushed(
+	page: Page,
+	pr: (o: PrOptions) => Promise<Pr>,
+	startCrb: () => Promise<{ url: string }>,
+) {
+	const threads: ReturnType<typeof reviewThread>[] = [];
+	const p = await pr({ ...fixture, threads });
+	const h1 = p.head();
+	threads.push(
+		threadOn(h1, "src/core.ts", 5, "Why change core 5?"),
+		threadOn(h1, "src/core.ts", 30, "Is core 30 needed?"),
+	);
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	await reviewAll(page);
+	const h2 = p.moveHead(rewriteAndDelete);
+	// One thread made on the new head itself: it shows at once.
+	threads.push(threadOn(h2, "src/util.ts", 3, "On the head"));
+	p.editScenario((sc) => {
+		const graph = sc.prs[7]?.graphql;
+		if (graph) graph.reviewThreads = threads;
+	});
+	// A fresh read of GitHub (the page reuses a recent one): the new thread in.
+	const url = new URL(s.url);
+	const id = url.pathname.split("/r/")[1]?.replace(/\/.*/, "") ?? "";
+	const fresh = await page.request.get(
+		`${url.origin}/api/r/${id}/overview?maxAge=0${url.search.replace("?", "&")}`,
+	);
+	expect(fresh.ok()).toBe(true);
+	await page.reload();
+	await expect(tail(page)).toHaveAttribute("data-state", "head", GIT_WAIT);
+	return p;
+}
+
+test("until the placements arrive a card spins in its chip slot and no thread reads as unplaced or outside; then they land", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	// A review, a push, the engine and the held placements: longer than 30 s.
+	test.setTimeout(120_000);
+	await threadsPushed(page, pr, startCrb);
+	let release = () => {};
+	const held = new Promise<void>((r) => {
+		release = r;
+	});
+	await page.route("**/api/r/*/placements?*", async (route) => {
+		await held;
+		await route.continue();
+	});
+	await toast(page).getByRole("button", { name: "View" }).click();
+	await baseOn(page, "branch", "[");
+	const coreS = fileSection(page, "src/core.ts");
+	const utilS = fileSection(page, "src/util.ts");
+	await coreS.getByRole("button", { name: "Expand file" }).click();
+	await expectLoadingThen({
+		loading: page.getByTestId("not-in-comparison-loading"),
+		empty: [
+			page.getByTestId("unplaced-thread"),
+			page.getByTestId("not-in-comparison"),
+			coreS.getByTestId("placement-changed"),
+		],
+		release: async () => {
+			// The head's own thread shows where it was made, its chip slot spinning.
+			await utilS.getByRole("button", { name: "Expand file" }).click();
+			await utilS
+				.getByTestId("diff-line")
+				.filter({ hasText: "util 3 changed" })
+				.getByRole("button", { name: /1 comment/ })
+				.click();
+			const card = utilS
+				.getByTestId("files-thread")
+				.filter({ hasText: "On the head" });
+			await expect(
+				card.getByRole("status", { name: "Placing threads" }),
+			).toBeVisible();
+			// core.ts again (one file is open at a time), still with no list.
+			await coreS.getByRole("button", { name: "Expand file" }).click();
+			await expect(coreS.getByTestId("diff-line").first()).toBeVisible();
+			await expect(unplacedRows(coreS)).toHaveCount(0);
+			// Held no longer: this and every later ask goes through.
+			release();
+		},
+		result: unplacedRows(coreS).filter({ hasText: "Is core 30 needed?" }),
+		...GIT_WAIT,
+	});
+	await expect(
+		page.getByRole("status", { name: "Placing threads" }),
+	).toHaveCount(0, GIT_WAIT);
+	await expect(page.getByTestId("not-in-comparison")).toHaveCount(0);
+});
+
+test("when the placements fail every unresolved thread stays listed with the error and a retry, never gone", async ({
+	page,
+	pr,
+	startCrb,
+	expectConsoleError,
+}) => {
+	test.setTimeout(120_000);
+	expectConsoleError(/500/);
+	await threadsPushed(page, pr, startCrb);
+	await page.route("**/api/r/*/placements?*", (route) =>
+		route.fulfill({
+			status: 500,
+			contentType: "application/json",
+			body: JSON.stringify({ error: "git failed" }),
+		}),
+	);
+	await toast(page).getByRole("button", { name: "View" }).click();
+	await baseOn(page, "branch", "[");
+	const failed = page.getByTestId("placements-failed");
+	await expect(failed).toBeVisible(GIT_WAIT);
+	await expect(failed).toContainText("Thread places couldn't be computed");
+	// The two PS1 threads, by their file; not the head's own (it shows on its line).
+	const rows = failed.getByTestId("unplaced-thread");
+	await expect(rows).toHaveCount(2);
+	await expect(rows.filter({ hasText: "Why change core 5?" })).toHaveAttribute(
+		"data-fate",
+		"unknown",
+	);
+	await expect(rows.filter({ hasText: "Is core 30 needed?" })).toContainText(
+		"src/core.ts",
+	);
+	await expect(page.getByTestId("not-in-comparison")).toHaveCount(0);
+	await expectNoPageOverflow(page);
+	// Retry once it works: the threads land where they belong.
+	await page.unroute("**/api/r/*/placements?*");
+	await failed.getByRole("button", { name: "Retry" }).click();
+	await expect(failed).toHaveCount(0, GIT_WAIT);
+	const coreS = fileSection(page, "src/core.ts");
+	await coreS.getByRole("button", { name: "Expand file" }).click();
+	await expect(unplacedRows(coreS)).toContainText("Is core 30 needed?");
 });

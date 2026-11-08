@@ -70,7 +70,7 @@ import {
 	usePlacementMap,
 } from "./ThreadFate";
 import { TreeColumn } from "./TreeResizer";
-import { outsideThreads, shownThreads } from "./threadPlacement";
+import { outsideThreads, shownThread, shownThreads } from "./threadPlacement";
 import { useSince } from "./useSince";
 
 const NO_THREADS: ReviewThread[] = [];
@@ -216,6 +216,8 @@ function useDiffThreads(
 	latest: number | null,
 	/** Threads published from then on (ms) are left out (an earlier patch set). */
 	until: number | null,
+	/** The full diff (the base on the branch): the only view a drag places in. */
+	fullDiff: boolean,
 ): {
 	threads: DiffThreads | undefined;
 	/** Every thread of the read, on this head or not (people's tints). */
@@ -225,6 +227,11 @@ function useDiffThreads(
 	loading: boolean;
 	/** The threads whose file is not in the comparison (the trailing group). */
 	outside: ReturnType<typeof outsideThreads>;
+	/**
+	 * The placements couldn't be computed: the unresolved threads not shown
+	 * where they were made, listed so none goes missing; null otherwise.
+	 */
+	unplacedOnError: ReviewThread[] | null;
 	/** What the cards and lists know of the placements (PlacementProvider). */
 	placement: PlacementInfo;
 } {
@@ -271,16 +278,34 @@ function useDiffThreads(
 		() => (visible ? outsideThreads(visible, placements) : []),
 		[visible, placements],
 	);
+	const failedPlacing = asked && answer === null ? placed.error : null;
+	const unplacedOnError = useMemo(
+		() =>
+			failedPlacing && visible && snapshotHead
+				? visible.filter(
+						(t) =>
+							!t.resolved &&
+							t.unavailable !== "deleted" &&
+							shownThread(t, snapshotHead, null) === null,
+					)
+				: null,
+		[failedPlacing, visible, snapshotHead],
+	);
+	const { refetch: refetchPlacements } = placed;
 	const patchsets = session.data?.patchsets;
 	const placement = useMemo<PlacementInfo>(
 		() => ({
 			placements,
 			pending: asked && answer === null && !placed.error,
+			error: failedPlacing,
+			retry: () => void refetchPlacements(),
 			readId: readId ?? null,
 			to,
 			// A drag stores into the latest patch set only (earlier ones are
-			// read-only; a head is no patch set yet).
+			// read-only; a head is no patch set yet), from the full diff only:
+			// the since view's old-side numbers are the interdiff's, no file's.
 			placeOn:
+				fullDiff &&
 				answer?.patchset !== null &&
 				answer?.patchset !== undefined &&
 				answer.patchset === latest
@@ -288,7 +313,19 @@ function useDiffThreads(
 					: null,
 			openedOn: (t) => openedOn(t.createdAt, patchsets ?? []),
 		}),
-		[placements, asked, answer, placed.error, readId, to, latest, patchsets],
+		[
+			placements,
+			asked,
+			answer,
+			placed.error,
+			failedPlacing,
+			refetchPlacements,
+			readId,
+			to,
+			latest,
+			patchsets,
+			fullDiff,
+		],
 	);
 	// No overview or session, no threads: that's their failure too. Only
 	// with nothing kept: a refetch failing over a kept one (a Refresh)
@@ -305,6 +342,7 @@ function useDiffThreads(
 		failed,
 		loading: !threads && !failed,
 		outside,
+		unplacedOnError,
 		placement,
 	};
 }
@@ -689,12 +727,14 @@ export function FilesPage() {
 		failed: threadsFailed,
 		loading: threadsLoading,
 		outside,
+		unplacedOnError,
 		placement: placementInfo,
 	} = useDiffThreads(
 		viewedHeadOf(comparison, session),
 		placementsTo(comparison, session),
 		latest,
 		threadsUntil(comparison, session),
+		comparison.base.kind === "branch",
 	);
 	// The first open's own reads are in (the files, their threads): only
 	// then may the verdict card read GitHub's merge facts.
@@ -797,6 +837,13 @@ export function FilesPage() {
 			threads={outside}
 			readId={threads.readId}
 			pending={placementInfo.pending}
+			failed={
+				unplacedOnError && {
+					threads: unplacedOnError,
+					error: placementInfo.error,
+					retry: placementInfo.retry,
+				}
+			}
 		/>
 	);
 
