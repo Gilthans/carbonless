@@ -713,6 +713,12 @@ export const verdictQuery = queryOptions({
 	queryKey: ["verdict"],
 	queryFn: fetchVerdict,
 	staleTime: Number.POSITIVE_INFINITY,
+	// What changed since the reviewer's verdict comes from the engine:
+	// asked again while it computes (the server keeps its GitHub read).
+	refetchInterval: (query) =>
+		query.state.data?.since?.changes.status === "pending"
+			? REREVIEW_POLL_MS
+			: false,
 });
 
 /** Every review query's key starts with this (invalidate them all at once). */

@@ -1,5 +1,6 @@
 import {
 	AlertIcon,
+	CheckCircleIcon,
 	CheckIcon,
 	ClockIcon,
 	CommentIcon,
@@ -25,14 +26,19 @@ import type {
 	SessionInfo,
 	VerdictEvent,
 	VerdictFacts,
+	VerdictSince,
 } from "../../shared/types";
+import { verdictQuery } from "../api";
+import { Meter } from "../files/ProgressBar";
 import { useReviewView } from "../files/useSetStates";
 import { LabeledIcon } from "../overview/parts";
 import { WriteWarnings } from "../overview/WriteWarnings";
 import { RelativeTime } from "../RelativeTime";
 import { useReviewId } from "../reviewId";
+import { Spinner } from "../Spinner";
 import { Tooltip } from "../Tooltip";
 import { useThreadWriter, useThreadWrites } from "../threads/threadWrites";
+import { safeHref } from "../ui";
 import { isViewer } from "./blockers";
 import { useVerdictDraft, verdictDraftFor } from "./verdictDraft";
 
@@ -146,6 +152,43 @@ function CurrentVerdict(props: {
 			</p>
 		);
 	}
+	const since = props.facts?.since;
+	if (since) {
+		const shown = YOUR[since.state];
+		const sha = since.head.slice(0, 7);
+		const href = safeHref(since.url);
+		return (
+			<p
+				data-testid="your-verdict"
+				className={`flex flex-wrap items-center gap-x-1.5 text-sm ${shown.tone}`}
+			>
+				<shown.icon size={16} aria-hidden />
+				<span className="min-w-0">
+					{shown.text}{" "}
+					{href ? (
+						<a
+							href={href}
+							target="_blank"
+							rel="noreferrer"
+							data-testid="verdict-since-commit"
+							className="font-mono text-xs text-link hover:underline focus-visible:outline-2 focus-visible:outline-accent"
+						>
+							{sha}
+						</a>
+					) : (
+						<span
+							data-testid="verdict-since-commit"
+							className="font-mono text-xs"
+						>
+							{sha}
+						</span>
+					)}{" "}
+					<span className="text-muted">(PS{since.patchset}),</span>{" "}
+					<RelativeTime iso={since.at} className="text-muted" />
+				</span>
+			</p>
+		);
+	}
 	const fromFacts = props.facts?.reviews.find((r) => r.you);
 	const mine = fromFacts ?? props.overview.reviews.find((r) => r.you);
 	if (!mine) return null;
@@ -163,6 +206,169 @@ function CurrentVerdict(props: {
 			{earlier && <span className="text-muted">· on an earlier push</span>}
 		</p>
 	);
+}
+
+const plural = (n: number, word: string) =>
+	`${n} ${n === 1 ? word : `${word}s`}`;
+
+/** What happened to reach the head, for "Rebased, same diff". */
+const SAME_DIFF: Record<string, string> = {
+	S1: "New commits",
+	S3: "Base merged in",
+	S4a: "Rebased",
+	S4b: "Rebased",
+	S4c: "Rebased",
+	S5: "Squashed",
+	S6: "Head moved back",
+	S7: "Retargeted",
+};
+
+type SinceDone = Extract<VerdictSince["changes"], { status: "done" }>;
+
+/**
+ * Nothing to re-read since the verdict: only an identical diff with no
+ * reworked, new or gone cluster in the engine's answer (principle 2: an
+ * unreviewed cluster the engine calls new still needs eyes).
+ */
+export function nothingToReread(changes: VerdictSince["changes"]): boolean {
+	return (
+		changes.status === "done" &&
+		changes.identical &&
+		changes.reworked === 0 &&
+		changes.new === 0 &&
+		changes.gone === 0
+	);
+}
+
+/** "3 commits · 2 files · 1 reworked, 1 new cluster" (and "· 1 gone"). */
+export function sinceLine(c: SinceDone): string {
+	const parts = [plural(c.commits, "commit")];
+	if (c.files > 0) parts.push(plural(c.files, "file"));
+	const kinds = [
+		c.reworked > 0 ? `${c.reworked} reworked` : "",
+		c.new > 0 ? `${c.new} new` : "",
+	].filter(Boolean);
+	if (kinds.length > 0) {
+		// The noun agrees with the count next to it: "1 reworked, 1 new cluster".
+		const n = c.new > 0 ? c.new : c.reworked;
+		parts.push(`${kinds.join(", ")} ${n === 1 ? "cluster" : "clusters"}`);
+	}
+	if (c.gone > 0) parts.push(`${c.gone} gone`);
+	return parts.join(" · ");
+}
+
+/**
+ * Under the reviewer's verdict, what changed since it (VerdictFacts.since):
+ * a spinner while the engine computes, the counts with the target patch
+ * set's meter, or "Rebased, same diff · nothing to re-read".
+ */
+function SinceVerdict(props: {
+	since: VerdictSince;
+	review: ReturnType<typeof useReviewView>["data"];
+}) {
+	const { since, review } = props;
+	const { changes } = since;
+	if (changes.status === "pending") {
+		return (
+			<p
+				data-testid="verdict-since"
+				data-state="pending"
+				aria-busy="true"
+				className="flex min-h-6 items-center gap-1.5 text-sm text-muted"
+			>
+				<b className="font-semibold text-ink-soft">Since then:</b>
+				<Spinner label="Comparing with your verdict" size={14} />
+			</p>
+		);
+	}
+	if (changes.status === "failed") {
+		return (
+			<p
+				data-testid="verdict-since"
+				data-state="failed"
+				className="flex min-h-6 items-start gap-1.5 text-sm text-bad"
+			>
+				<AlertIcon size={16} aria-hidden className="mt-0.5 shrink-0" />
+				<span className="min-w-0 break-words">
+					<b className="font-semibold">Since then:</b> couldn't be compared ·{" "}
+					{changes.message}
+				</span>
+			</p>
+		);
+	}
+	if (nothingToReread(changes)) {
+		return (
+			<p
+				data-testid="verdict-since"
+				data-state="same"
+				className="flex min-h-6 flex-wrap items-center gap-1.5 text-sm text-ok"
+			>
+				<CheckCircleIcon size={16} aria-hidden />
+				<span>
+					<b className="font-semibold">
+						{SAME_DIFF[changes.shape] ?? "Rebased"}, same diff
+					</b>{" "}
+					· nothing to re-read
+				</span>
+			</p>
+		);
+	}
+	const target = since.to.patchset;
+	const counts =
+		target !== null && review?.patchset === target
+			? review.progress.clusters
+			: null;
+	const left = counts ? counts.total - counts.crossedOff : 0;
+	return (
+		<div
+			data-testid="verdict-since"
+			data-state="changed"
+			className="flex min-h-6 flex-wrap items-center gap-x-2 gap-y-1 text-sm text-warn"
+		>
+			<span className="min-w-0">
+				<b className="font-semibold">Since then:</b>{" "}
+				<span className="text-ink-soft">{sinceLine(changes)}</span>
+			</span>
+			{counts && (
+				<Tooltip
+					content={`${counts.reviewed} of ${left} reviewed on PS${target}`}
+				>
+					{(trigger) => (
+						<span
+							{...trigger}
+							data-testid="verdict-since-meter"
+							className="flex items-center gap-1.5"
+						>
+							<Meter
+								counts={counts}
+								incomplete={counts.reviewed < left}
+								className="h-1.5 w-24 sm:w-40"
+							/>
+							<span className="font-mono text-xs text-muted">
+								{counts.reviewed} / {left} on PS{target}
+							</span>
+						</span>
+					)}
+				</Tooltip>
+			)}
+		</div>
+	);
+}
+
+/**
+ * Asks for the verdict facts again when the head a verdict goes on moves
+ * (the head check found a new one, a patch set started): the server works
+ * out `since` when served, from its kept read of GitHub.
+ */
+function useSinceFollowsHead(session: SessionInfo) {
+	const client = useQueryClient();
+	const key = `${session.head?.oid ?? ""}:${session.patchset ?? ""}`;
+	const first = useRef(key);
+	useEffect(() => {
+		if (first.current === key) return;
+		first.current = key;
+		void client.invalidateQueries({ queryKey: verdictQuery.queryKey });
+	}, [client, key]);
 }
 
 /**
@@ -232,8 +438,19 @@ export function VerdictCard(props: {
 			VERDICT_TIPS[event]
 		);
 	const stillStands = writes.verdictStillStands;
+	useSinceFollowsHead(session);
+	const since = props.facts?.since ?? null;
+	// With a verdict to compare, every verdict goes on the head it is
+	// compared with (the latest patch set's, or the PR's head past it,
+	// which the verdict then starts); else on the snapshot's, as before.
+	const commit = since ? since.to.head : session.snapshotHead;
+	const again =
+		since !== null &&
+		since.state === "APPROVED" &&
+		nothingToReread(since.changes);
 	const older =
 		!off &&
+		!since &&
 		session.snapshotHead !== "" &&
 		session.snapshotHead !== session.currentHead;
 	const press = (event: VerdictEvent) => {
@@ -241,7 +458,7 @@ export function VerdictCard(props: {
 		const text = store.text();
 		if (event === "APPROVE") {
 			const body = checked && text.trim() ? text : undefined;
-			if (writer.submitVerdict(event, body, session.snapshotHead) && body) {
+			if (writer.submitVerdict(event, body, commit) && body) {
 				setChecked(false);
 			}
 			return;
@@ -252,7 +469,7 @@ export function VerdictCard(props: {
 			setFocusAsk((n) => n + 1);
 			return;
 		}
-		if (writer.submitVerdict(event, text, session.snapshotHead)) {
+		if (writer.submitVerdict(event, text, commit)) {
 			setChecked(false);
 		}
 	};
@@ -304,6 +521,9 @@ export function VerdictCard(props: {
 					</Link>
 				)}
 			</div>
+			{since && !writes.verdict && (
+				<SinceVerdict since={since} review={review} />
+			)}
 			{info.length > 0 && (
 				<p data-testid="verdict-info" className="text-xs text-muted">
 					{info.join(" · ")}
@@ -364,6 +584,14 @@ export function VerdictCard(props: {
 			<div className="grid grid-cols-3 gap-2 sm:flex sm:flex-wrap">
 				{BUTTONS.map((b) => {
 					const reason = reasonOf(b.event);
+					// "Approve again on 0c1d2e3": the same diff, approved before.
+					const reapprove = again && b.event === "APPROVE";
+					const sha = commit.slice(0, 7);
+					const label = reapprove
+						? `Approve again on ${sha}`
+						: since && b.event === "APPROVE"
+							? `${b.label} ${sha}`
+							: b.label;
 					return (
 						<Tooltip key={b.event} content={reason ?? tipOf(b.event)}>
 							{(trigger) => (
@@ -371,15 +599,29 @@ export function VerdictCard(props: {
 									type="button"
 									{...trigger}
 									data-testid={`verdict-${b.event.toLowerCase()}`}
-									aria-label={b.label}
+									aria-label={label}
 									// Focusable still, so its tip says why.
 									aria-disabled={reason ? true : undefined}
 									onClick={() => press(b.event)}
-									className={`flex min-h-14 flex-col items-center justify-center gap-0.5 rounded-lg border px-2 text-sm font-semibold transition-colors focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent motion-reduce:transition-none sm:min-h-11 sm:flex-row sm:gap-2 sm:px-4 ${b.className} aria-disabled:cursor-not-allowed aria-disabled:opacity-50`}
+									className={`flex min-h-14 flex-col items-center justify-center gap-0.5 rounded-lg border px-2 text-sm font-semibold transition-colors focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent motion-reduce:transition-none sm:min-h-11 sm:flex-row sm:gap-2 sm:px-4 ${reapprove ? "col-span-3 min-h-11 flex-row gap-2 sm:col-auto" : ""} ${b.className} aria-disabled:cursor-not-allowed aria-disabled:opacity-50`}
 								>
 									<b.icon size={16} aria-hidden />
-									<span className="sm:hidden">{b.short}</span>
-									<span className="hidden sm:inline">{b.label}</span>
+									{reapprove ? (
+										<span>
+											Approve again on{" "}
+											<span className="font-mono text-xs">{sha}</span>
+										</span>
+									) : (
+										<>
+											<span className="sm:hidden">{b.short}</span>
+											<span className="hidden sm:inline">{b.label}</span>
+											{since && b.event === "APPROVE" && (
+												<span className="font-mono text-xs font-normal">
+													{sha}
+												</span>
+											)}
+										</>
+									)}
 								</button>
 							)}
 						</Tooltip>

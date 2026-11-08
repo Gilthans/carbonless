@@ -673,6 +673,48 @@ export interface VerdictFacts {
 	head: string;
 	/** When the server finished reading this from GitHub (its clock). */
 	fetchedAt: string;
+	/**
+	 * What changed since the reviewer's own verdict (the `you` review):
+	 * null with no verdict, one on a head that is none of the reviewer's
+	 * patch sets, or one on the head a verdict now goes on. Worked out
+	 * when served (the engine's answer moves on), never kept with the
+	 * GitHub read.
+	 */
+	since: VerdictSince | null;
+}
+
+/**
+ * The reviewer's verdict, the patch set it was given on, and the engine's
+ * answer from that patch set to the head a verdict now goes on (the
+ * latest patch set's, or the PR's head past it). Counts only from the
+ * engine's answer: "nothing to re-read" needs `identical` with no
+ * reworked, new or gone cluster (principle 2); pending and failed say so.
+ */
+export interface VerdictSince {
+	state: ReviewVerdict;
+	/** The verdict's commit and when it was given. */
+	head: string;
+	at: string;
+	/** The review on GitHub (as `reviews[].url`); absent when GitHub gave none. */
+	url?: string;
+	/** The patch set whose head it was given on. */
+	patchset: number;
+	/** Where a verdict goes now: the latest patch set's head, or the PR's head past it (patchset null). */
+	to: { head: string; patchset: number | null };
+	changes:
+		| { status: "pending" }
+		| { status: "failed"; message: string }
+		| {
+				status: "done";
+				shape: ShapeCode;
+				commits: number;
+				/** Files with a reworked or new cluster, or a conflict. */
+				files: number;
+				reworked: number;
+				new: number;
+				gone: number;
+				identical: boolean;
+		  };
 }
 
 /** `POST /api/verdict`: submit a review with an event. */

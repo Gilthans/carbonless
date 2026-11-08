@@ -30,6 +30,7 @@ import {
 	postResolved,
 	postThread,
 	postVerdict,
+	REVIEW_KEY,
 	sessionQuery,
 	verdictQuery,
 } from "../api";
@@ -1738,6 +1739,12 @@ export function applyVerdict(client: QueryClient, answer: VerdictAnswer): void {
 		if (answer.stillStands) return facts;
 		return {
 			...facts,
+			// A verdict on the head a verdict goes on: nothing since it
+			// (the re-read says what the server works out).
+			since:
+				facts.since && review.commitId === facts.since.to.head
+					? null
+					: facts.since,
 			reviews: [
 				{
 					author: viewer,
@@ -1781,6 +1788,10 @@ export function applyVerdict(client: QueryClient, answer: VerdictAnswer): void {
 	void client.invalidateQueries({ queryKey: overviewQuery.queryKey });
 	void client.invalidateQueries({ queryKey: verdictQuery.queryKey });
 	void client.invalidateQueries({ queryKey: ["timeline"] });
+	// A verdict on a head that was no patch set yet started one (the
+	// graph's new dot, its carried marks).
+	void client.invalidateQueries({ queryKey: sessionQuery.queryKey });
+	void client.invalidateQueries({ queryKey: REVIEW_KEY });
 }
 
 /** The page's one ThreadWrites (and its drafts), per query client. */

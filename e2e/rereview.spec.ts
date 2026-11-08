@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Locator, Page } from "@playwright/test";
 import { reviewThread, threadComment } from "../test/fake-gh/scenario";
@@ -1276,4 +1277,163 @@ test("when the placements fail every unresolved thread stays listed with the err
 		...GIT_WAIT,
 	});
 	await expect(failed).toHaveCount(0);
+});
+
+/** The PR's reviews as the fake gh keeps them (a verdict appends one). */
+const storedReviews = (p: Pr) =>
+	(
+		JSON.parse(readFileSync(p.scenarioPath, "utf8")) as {
+			prs: Record<
+				string,
+				{ graphql?: { reviews?: { state: string; commit: { oid: string } }[] } }
+			>;
+		}
+	).prs[7]?.graphql?.reviews ?? [];
+
+const verdictCard = (page: Page) => page.getByTestId("verdict-card-tab");
+
+/**
+ * PS1 fully reviewed and approved in carbonless, then `push` (a commit,
+ * or a force-push when `force`); the page reloaded on the Final Verdict
+ * tab with the head newer. `kept` is the fixture's review list: the
+ * approval goes into it, so the fake gh keeps serving it after the push.
+ */
+async function approvedThenPushed(
+	page: Page,
+	s: { url: string },
+	p: Pr,
+	kept: unknown[],
+	push: () => string,
+) {
+	await openFiles(page, s.url);
+	await reviewAll(page);
+	const ps1 = p.head();
+	await page.getByRole("link", { name: "Final Verdict" }).click();
+	const card = verdictCard(page);
+	await card.getByRole("button", { name: "Approve", exact: true }).click();
+	await expect(card.getByTestId("your-verdict")).toContainText("You approved");
+	await expect.poll(() => storedReviews(p).length).toBe(1);
+	kept.push(...storedReviews(p));
+	const head = push();
+	await page.reload();
+	// The head check finds the push (git), then the engine's answer.
+	await expect(card.getByTestId("verdict-since")).toBeVisible(GIT_WAIT);
+	return { ps1, head };
+}
+
+test("the verdict tab says what changed since your approval, with the patch set's meter; Approve goes on the new head", async ({
+	page,
+	workdir,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	const kept: unknown[] = [];
+	const p = await pr({ ...fixture, reviews: kept });
+	const s = await startCrb();
+	const { ps1, head } = await approvedThenPushed(page, s, p, kept, () =>
+		p.moveHead(rework),
+	);
+	const card = verdictCard(page);
+	await expect(card.getByTestId("your-verdict")).toHaveText(
+		new RegExp(`^You approved ${ps1.slice(0, 7)} \\(PS1\\), `),
+	);
+	await expect(card.getByTestId("verdict-since")).toHaveAttribute(
+		"data-state",
+		"changed",
+		GIT_WAIT,
+	);
+	await expect(card.getByTestId("verdict-since")).toHaveText(
+		"Since then: 1 commit · 2 files · 1 reworked, 1 new cluster",
+	);
+	// No patch set on the head yet: no meter; the verdict would start it.
+	await expect(card.getByTestId("verdict-since-meter")).toHaveCount(0);
+	await expect(card.getByTestId("verdict-older")).toHaveCount(0);
+	await expectNoPageOverflow(page);
+	const approve = card.getByRole("button", {
+		name: `Approve ${head.slice(0, 7)}`,
+	});
+	expect((await approve.boundingBox())?.height ?? 0).toBeGreaterThanOrEqual(40);
+	if (isMobile) {
+		await page.setViewportSize({ width: 360, height: 740 });
+		await expectNoPageOverflow(page);
+	}
+
+	// Reading on the head starts PS2: the since names it, with its meter.
+	await page.getByRole("link", { name: "Files changed" }).click();
+	await expect(progress(page)).toBeVisible();
+	// Ctrl+] past the newest patch set views the head.
+	await page.keyboard.press("Control+]");
+	await expect(page).toHaveURL(/head=[0-9a-f]{40}/);
+	const utilS = fileSection(page, "src/util.ts");
+	await utilS.getByRole("button", { name: "Expand file" }).click();
+	await boxes(utilS).first().click();
+	await expect(
+		node(page, "ps2").getByRole("button", { name: "viewing" }),
+	).toBeVisible();
+	await expect(page.getByTestId("sync-notices")).toHaveCount(0);
+	expect(reviewRefs(workdir)).toContain("/patchsets/2 ");
+	await page.getByRole("link", { name: "Final Verdict" }).click();
+	await expect(card.getByTestId("verdict-since-meter")).toHaveText(
+		/\d+ \/ \d+ on PS2/,
+		GIT_WAIT,
+	);
+	await expect(card.getByTestId("verdict-since")).toContainText(
+		"1 reworked, 1 new cluster",
+	);
+
+	await approve.click();
+	await expect.poll(() => storedReviews(p).length).toBe(2);
+	expect(storedReviews(p).map((r) => r.commit.oid)).toEqual([ps1, head]);
+	// A verdict on the head the PR is on: nothing since.
+	await expect(card.getByTestId("verdict-since")).toHaveCount(0);
+	await expect(card.getByTestId("your-verdict")).toContainText("You approved");
+});
+
+test("an identical diff force-pushed (a squash on the same base): same diff · nothing to re-read; Approve again posts on the new head and starts PS2", async ({
+	page,
+	workdir,
+	pr,
+	startCrb,
+}) => {
+	const kept: unknown[] = [];
+	const p = await pr({ ...fixture, reviews: kept });
+	const s = await startCrb();
+	const first = fixture.files?.[0];
+	if (!first) throw new Error("no PR commit");
+	const { ps1, head } = await approvedThenPushed(page, s, p, kept, () =>
+		p.forceHead({ ...first, message: "PR change, squashed" }),
+	);
+	const card = verdictCard(page);
+	// The same merge base, other commits: the engine calls it a squash (S5).
+	await expect(card.getByTestId("verdict-since")).toHaveText(
+		"Squashed, same diff · nothing to re-read",
+		GIT_WAIT,
+	);
+	await expect(card.getByTestId("your-verdict")).toContainText(
+		`You approved ${ps1.slice(0, 7)} (PS1)`,
+	);
+	const again = card.getByRole("button", {
+		name: `Approve again on ${head.slice(0, 7)}`,
+	});
+	await expect(again).toBeVisible();
+	expect((await again.boundingBox())?.height ?? 0).toBeGreaterThanOrEqual(40);
+	await expectNoPageOverflow(page);
+	const before = reviewRefs(workdir);
+	expect(before).not.toContain("/patchsets/2 ");
+
+	await again.click();
+	await expect.poll(() => storedReviews(p).length).toBe(2);
+	const posted = storedReviews(p).at(-1);
+	expect(posted?.state).toBe("APPROVED");
+	expect(posted?.commit.oid).toBe(head);
+	// The verdict started PS2 on the new head, every mark carried.
+	expect(reviewRefs(workdir)).toContain("/patchsets/2 ");
+	await expect(card.getByTestId("verdict-since")).toHaveCount(0);
+	await page.getByRole("link", { name: "Files changed" }).click();
+	await expect(
+		node(page, "ps2").getByRole("button", { name: "viewing" }),
+	).toBeVisible();
+	await expect(tail(page)).toHaveAttribute("data-state", "up-to-date");
+	await expect(progress(page)).toContainText("3 / 3 clusters reviewed");
 });

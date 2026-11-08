@@ -1,10 +1,15 @@
+import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { writeFileAtomic } from "../../test/fake-gh/atomic.mjs";
 import { prView, release, type Scenario } from "../../test/fake-gh/scenario";
-import { GIT_TEST_TIMEOUTS } from "../../test/git-fixture";
+import { GIT_TEST_TIMEOUTS, testGitEnv } from "../../test/git-fixture";
 import { createPrFixture, type PrFixture } from "../../test/pr-fixture";
-import type { VerdictFacts, VerdictRequest } from "../shared/types";
+import type {
+	RereviewAnswer,
+	VerdictFacts,
+	VerdictRequest,
+} from "../shared/types";
 import { GhError, WriteRefusedError } from "./errors";
 import {
 	dismissReview,
@@ -22,6 +27,8 @@ import {
 	findLanded,
 	mapVerdict,
 	ruleOf,
+	sinceOf,
+	sinceTarget,
 	standingOpinion,
 	verdictBody,
 	verdictProblem,
@@ -828,6 +835,165 @@ describe("standingOpinion", () => {
 	});
 });
 
+describe("sinceTarget and sinceOf (VerdictFacts.since)", () => {
+	const PS1 = "1".repeat(40);
+	const PS2 = "2".repeat(40);
+	const NEW = "3".repeat(40);
+	const review = (
+		commitId: string,
+		more: Partial<VerdictFacts["reviews"][number]> = {},
+	): VerdictFacts["reviews"][number] => ({
+		author: "Octo_Cat",
+		state: "APPROVED",
+		submittedAt: "2026-11-05T10:00:00Z",
+		commitId,
+		you: true,
+		bot: false,
+		...more,
+	});
+	const patchsets = [
+		{ number: 1, head: PS1 },
+		{ number: 2, head: PS2 },
+	];
+
+	it("a verdict on PS1 with PS2 the latest: compared with PS2", () => {
+		expect(
+			sinceTarget({ reviews: [review(PS1)], patchsets, head: PS2 }),
+		).toEqual({
+			state: "APPROVED",
+			head: PS1,
+			at: "2026-11-05T10:00:00Z",
+			patchset: 1,
+			to: { head: PS2, patchset: 2 },
+		});
+		// No head shown (pinned, as-of, merged): the latest patch set too.
+		expect(
+			sinceTarget({ reviews: [review(PS1)], patchsets, head: null })?.to,
+		).toEqual({ head: PS2, patchset: 2 });
+	});
+
+	it("the PR's head past the latest patch set is where a verdict goes now", () => {
+		expect(
+			sinceTarget({ reviews: [review(PS2)], patchsets, head: NEW })?.to,
+		).toEqual({ head: NEW, patchset: null });
+		// Moved back onto PS1's head: that patch set.
+		expect(
+			sinceTarget({ reviews: [review(PS2)], patchsets, head: PS1 })?.to,
+		).toEqual({ head: PS1, patchset: 1 });
+	});
+
+	it("null without a verdict of the reviewer's, on the head a verdict goes on now, or on a head that is no patch set", () => {
+		const theirs = review(PS1, { author: "ravi", you: false });
+		expect(sinceTarget({ reviews: [theirs], patchsets, head: NEW })).toBeNull();
+		expect(sinceTarget({ reviews: [], patchsets, head: NEW })).toBeNull();
+		expect(
+			sinceTarget({ reviews: [review(PS2)], patchsets, head: PS2 }),
+		).toBeNull();
+		expect(
+			sinceTarget({ reviews: [review(NEW)], patchsets, head: NEW }),
+		).toBeNull();
+		// Given before any patch set (on GitHub, say): nothing to compare from.
+		expect(
+			sinceTarget({ reviews: [review("4".repeat(40))], patchsets, head: NEW }),
+		).toBeNull();
+		expect(
+			sinceTarget({ reviews: [review(PS1)], patchsets: [], head: NEW }),
+		).toBeNull();
+		expect(
+			sinceTarget({ reviews: [review("")], patchsets, head: NEW }),
+		).toBeNull();
+	});
+
+	it("the latest patch set with the verdict's head names it", () => {
+		const twice = [...patchsets, { number: 3, head: PS1 }];
+		expect(
+			sinceTarget({ reviews: [review(PS1)], patchsets: twice, head: NEW })
+				?.patchset,
+		).toBe(3);
+	});
+
+	const target = {
+		state: "APPROVED" as const,
+		head: PS1,
+		at: "2026-11-05T10:00:00Z",
+		patchset: 1,
+		to: { head: NEW, patchset: null },
+	};
+	const answer = (
+		kinds: ("carried" | "reworked" | "new" | "gone")[],
+		shape: Partial<RereviewAnswer["shape"]> = {},
+	): RereviewAnswer => ({
+		from: 1,
+		toHead: NEW,
+		toRevision: "r",
+		shape: {
+			code: "S1",
+			commits: 3,
+			identical: false,
+			conflicts: [],
+			virtualRebase: "ok",
+			virtualHead: null,
+			...shape,
+		},
+		interdiff: "available",
+		files: [
+			{
+				index: 0,
+				path: "a.ts",
+				conflict: false,
+				clusters: kinds.map((kind, i) => ({ key: `k${i}`, kind })),
+			},
+		],
+		toRead: { files: 2, clusters: 2 },
+		threads: [],
+	});
+
+	it("counts every kind from the engine's answer", () => {
+		expect(
+			sinceOf(target, answer(["carried", "reworked", "new", "new", "gone"]))
+				.changes,
+		).toEqual({
+			status: "done",
+			shape: "S1",
+			commits: 3,
+			files: 2,
+			reworked: 1,
+			new: 2,
+			gone: 1,
+			identical: false,
+		});
+	});
+
+	it("an identical rebase says so with nothing counted; an unreviewed cluster still counts as new", () => {
+		const same = sinceOf(
+			target,
+			answer(["carried"], { code: "S4a", commits: 2, identical: true }),
+		);
+		expect(same.changes).toMatchObject({
+			status: "done",
+			shape: "S4a",
+			identical: true,
+			reworked: 0,
+			new: 0,
+			gone: 0,
+		});
+		expect(
+			sinceOf(target, answer(["new"], { identical: true })).changes,
+		).toMatchObject({ identical: true, new: 1 });
+	});
+
+	it("pending and failed say so, never counts", () => {
+		expect(sinceOf(target, { pending: true })).toEqual({
+			...target,
+			changes: { status: "pending" },
+		});
+		expect(sinceOf(target, { error: "merge-tree failed" }).changes).toEqual({
+			status: "failed",
+			message: "merge-tree failed",
+		});
+	});
+});
+
 describe("the verdict, through the session and the fake gh", () => {
 	let pr: PrFixture;
 	let session: Session;
@@ -872,6 +1038,7 @@ describe("the verdict, through the session and the fake gh", () => {
 		).prs[12]?.graphql?.reviews as {
 			state: string;
 			body: string;
+			submittedAt: string;
 			commit: { oid: string };
 		}[];
 	const posts = () =>
@@ -1217,6 +1384,8 @@ describe("the verdict, through the session and the fake gh", () => {
 				],
 				head: then,
 				fetchedAt: expect.any(String),
+				// No patch set: nothing to compare the verdict with.
+				since: null,
 			});
 			expect(pr.ghLog()).not.toMatch(
 				/mergeStateStatus|isRequired|protection|rules\/branches/,
@@ -1542,6 +1711,154 @@ describe("the verdict, through the session and the fake gh", () => {
 				.catch((e: unknown) => e);
 			expect(transient).toBeInstanceOf(GhError);
 			expect(transient).not.toBeInstanceOf(WriteRefusedError);
+		});
+	});
+
+	describe("since your verdict (VerdictFacts.since)", () => {
+		const lines = Array.from({ length: 30 }, (_, i) => `line ${i + 1}`);
+		/** a.txt as the PR has it, with line 2 as given. */
+		const aTxt = (line2: string) =>
+			`${lines.map((l, i) => (i === 1 ? line2 : i === 25 ? "line 26 changed" : l)).join("\n")}\n`;
+		/** Every cluster of the session's snapshot reviewed: PS1 starts. */
+		const reviewAll = async () => {
+			const snap = session.snapshot();
+			await session.setStates(
+				snap.revision,
+				snap.files.flatMap((f) =>
+					f.clusters.map((c) => ({ key: c.key, state: "reviewed" as const })),
+				),
+			);
+		};
+		/** Approves `commit` through the session; the reviews as the fake gh keeps them. */
+		const approve = async (commit: string) => {
+			await session.submitVerdict(request({ commit }));
+			return stored();
+		};
+		/** The facts' since once the engine has answered. */
+		const settled = async () => {
+			for (;;) {
+				const { since } = await session.verdict();
+				if (since?.changes.status !== "pending") return since;
+				await new Promise((r) => setTimeout(r, 20));
+			}
+		};
+		/** A head with PS1's tree on the merge base: a rebase with the same diff. */
+		const rebaseSame = () => {
+			const git = (...args: string[]) =>
+				execFileSync("git", args, {
+					cwd: pr.repo.path,
+					encoding: "utf8",
+					env: testGitEnv(),
+				}).trim();
+			const sha = git(
+				"commit-tree",
+				`${pr.head()}^{tree}`,
+				"-p",
+				pr.mergeBase,
+				"-m",
+				"PR change, rebased",
+			);
+			git("update-ref", "refs/pull/12/head", sha);
+			return sha;
+		};
+
+		it("a verdict on PS1 with PS2 differing: pending, then the engine's counts; PS2 started keeps them; a verdict on the head ends it", async () => {
+			await reviewAll();
+			const ps1 = session.snapshot().head;
+			const kept = await approve(ps1);
+			const head = pr.moveHead({
+				"a.txt": aTxt("line 2 reworked"),
+				"later.txt": "later\n",
+			});
+			scenario({}, {}, kept);
+			await session.checkHead();
+			const first = await session.verdict();
+			expect(first.since).toMatchObject({
+				state: "APPROVED",
+				head: ps1,
+				at: kept[0]?.submittedAt,
+				patchset: 1,
+				to: { head, patchset: null },
+				changes: { status: "pending" },
+			});
+			const done = await settled();
+			expect(done?.changes).toEqual({
+				status: "done",
+				shape: "S1",
+				commits: 1,
+				files: 2,
+				reworked: 1,
+				new: 1,
+				gone: 0,
+				identical: false,
+			});
+			// The reviewer reads on the head: PS2 starts, the since goes to it.
+			const view = await session.viewHead(head);
+			const later = view.files.find((f) => f.path === "later.txt");
+			const key = later?.clusters[0]?.key ?? "";
+			await session.setStates(view.revision, [{ key, state: "reviewed" }]);
+			expect(session.info().patchset).toBe(2);
+			const onPs2 = await settled();
+			expect(onPs2?.to).toEqual({ head, patchset: 2 });
+			expect(onPs2?.changes).toMatchObject({ reworked: 1, new: 1 });
+			// A verdict on the head the PR is on: nothing since.
+			await approve(head);
+			expect(stored().at(-1)?.commit.oid).toBe(head);
+			expect((await session.verdict()).since).toBeNull();
+		});
+
+		it("an identical rebase: nothing counted; Approve again posts on the new head and starts PS2 with every mark carried", async () => {
+			await reviewAll();
+			const ps1 = session.snapshot().head;
+			const kept = await approve(ps1);
+			const head = rebaseSame();
+			scenario({}, { headRefOid: head }, kept);
+			await session.checkHead();
+			const done = await settled();
+			expect(done).toMatchObject({
+				head: ps1,
+				patchset: 1,
+				to: { head, patchset: null },
+			});
+			expect(done?.changes).toMatchObject({
+				status: "done",
+				identical: true,
+				reworked: 0,
+				new: 0,
+				gone: 0,
+			});
+			await approve(head);
+			expect(stored().map((r) => r.commit.oid)).toEqual([ps1, head]);
+			expect(session.info().patchsets.map((p) => p.head)).toEqual([ps1, head]);
+			const { clusters } = (await session.review()).progress;
+			expect(clusters.reviewed).toBe(clusters.total);
+			expect((await session.verdict()).since).toBeNull();
+		});
+
+		it("a verdict on the PR's new head needs no answer first: its snapshot is built", async () => {
+			await reviewAll();
+			const kept = await approve(session.snapshot().head);
+			const head = pr.moveHead({ "later.txt": "later\n" });
+			scenario({}, {}, kept);
+			await session.checkHead();
+			await approve(head);
+			expect(stored().at(-1)?.commit.oid).toBe(head);
+			expect(session.info().patchset).toBe(2);
+		});
+
+		it("no verdict, or one on the current head: no since", async () => {
+			await reviewAll();
+			expect((await session.verdict()).since).toBeNull();
+			await approve(session.snapshot().head);
+			expect((await session.verdict()).since).toBeNull();
+		});
+
+		it("no verdict of the reviewer's while the PR moved on: no since", async () => {
+			await reviewAll();
+			pr.moveHead({ "later.txt": "later\n" });
+			scenario();
+			await session.checkHead();
+			expect((await session.verdict()).since).toBeNull();
 		});
 	});
 

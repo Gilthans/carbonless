@@ -96,6 +96,8 @@ import {
 import {
 	mapVerdict,
 	ruleOf,
+	sinceOf,
+	sinceTarget,
 	submitVerdict,
 	type VerdictRecord,
 	type VerdictTarget,
@@ -1145,6 +1147,44 @@ export class Session {
 		if (this.#closed) {
 			return Promise.reject(new SessionClosedError("The session is closed"));
 		}
+		return this.#verdictFacts(maxAgeMs).then((facts) => this.#withSince(facts));
+	}
+
+	/**
+	 * `facts` with what changed since the reviewer's verdict (sinceTarget,
+	 * sinceOf): the engine's answer from the verdict's patch set to the
+	 * head a verdict goes on now, asked now (pending while it computes,
+	 * never waited for; a failure says so).
+	 */
+	async #withSince(facts: VerdictFacts): Promise<VerdictFacts> {
+		const target = sinceTarget({
+			reviews: facts.reviews,
+			patchsets: this.#patchsets,
+			head: this.#head?.oid ?? null,
+		});
+		if (!target) return { ...facts, since: null };
+		let answer: Parameters<typeof sinceOf>[1];
+		try {
+			answer = await this.rereview(
+				target.patchset,
+				target.to.patchset === null
+					? { head: target.to.head }
+					: { patchset: target.to.patchset },
+			);
+		} catch (error) {
+			if (error instanceof SessionClosedError) throw error;
+			answer = {
+				error:
+					error instanceof Error && error.message
+						? error.message
+						: "The comparison failed",
+			};
+		}
+		return { ...facts, since: sinceOf(target, answer) };
+	}
+
+	/** The kept read of GitHub's verdict facts, or a new one (see verdict). */
+	#verdictFacts(maxAgeMs: number): Promise<VerdictFacts> {
 		const now = Date.now();
 		const last = this.#verdictRead;
 		if (
@@ -1202,9 +1242,17 @@ export class Session {
 	 * finds it sent.
 	 */
 	submitVerdict(req: VerdictRequest): Promise<VerdictAnswer> {
-		return this.#threadExclusive(VERDICTS, () =>
-			submitVerdict(this.#verdictTarget(req.commit), req),
-		);
+		return this.#threadExclusive(VERDICTS, async () => {
+			// A verdict on the PR's head past the latest patch set (Approve
+			// again on it): its snapshot, built if no view or answer has yet,
+			// so the verdict starts its patch set.
+			// Null as of a cutoff or pinned. A failed build leaves the
+			// verdict's own check to refuse it (stale).
+			if (this.#head?.oid === req.commit) {
+				await this.#headSnapshot(req.commit).catch(() => {});
+			}
+			return submitVerdict(this.#verdictTarget(req.commit), req);
+		});
 	}
 
 	#verdictTarget(commit: string): VerdictTarget {

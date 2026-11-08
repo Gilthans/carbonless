@@ -1,11 +1,13 @@
 import {
 	MAX_REPLY,
 	type PrOverview,
+	type RereviewAnswer,
 	type ReviewVerdict,
 	type VerdictAnswer,
 	type VerdictEvent,
 	type VerdictFacts,
 	type VerdictRequest,
+	type VerdictSince,
 } from "../shared/types.js";
 import { atOrBefore } from "./asOf.js";
 import { WriteRefusedError } from "./errors.js";
@@ -240,6 +242,87 @@ export function mapVerdict(input: {
 		reviews: latestReviews(read.reviews, viewer, asOf),
 		head: read.head,
 		fetchedAt: input.fetchedAt,
+		// Worked out when served (Session.verdict, sinceTarget), never kept.
+		since: null,
+	};
+}
+
+/** What VerdictFacts.since compares: the verdict, its patch set, the head a verdict goes on now. */
+export type SinceTarget = Omit<VerdictSince, "changes">;
+
+/**
+ * The reviewer's own verdict (the `you` review: their standing one), the
+ * patch set it was given on (the latest whose head is the verdict's
+ * commit), and where a verdict goes now: the PR's head when it is past
+ * the latest patch set's (`head`, as the head check last found it; null
+ * when none is shown: pinned, as-of, merged or closed), else the latest
+ * patch set's head. Null when there is no verdict, its commit is none of
+ * the reviewer's patch sets' heads (given elsewhere, before any patch
+ * set), or it is on the head a verdict goes on now (nothing since).
+ */
+export function sinceTarget(input: {
+	reviews: VerdictFacts["reviews"];
+	patchsets: readonly { number: number; head: string }[];
+	head: string | null;
+}): SinceTarget | null {
+	const mine = input.reviews.find((r) => r.you);
+	if (!mine || mine.commitId === "") return null;
+	const byNumber = [...input.patchsets].sort((a, b) => b.number - a.number);
+	const given = byNumber.find((p) => p.head === mine.commitId);
+	const latest = byNumber[0];
+	if (!given || !latest) return null;
+	const to =
+		input.head && input.head !== latest.head
+			? {
+					head: input.head,
+					// A head moved back onto an earlier patch set's: that one.
+					patchset: byNumber.find((p) => p.head === input.head)?.number ?? null,
+				}
+			: { head: latest.head, patchset: latest.number };
+	if (to.head === mine.commitId) return null;
+	return {
+		state: mine.state,
+		head: mine.commitId,
+		at: mine.submittedAt,
+		...(mine.url ? { url: mine.url } : {}),
+		patchset: given.number,
+		to,
+	};
+}
+
+/**
+ * VerdictFacts.since from its target and the engine's answer from the
+ * verdict's patch set to `to` (Session.rereview): pending while it is
+ * computed, failed with the error's message, else the counts, every one
+ * from the answer (the clusters' kinds, its files to read, its shape).
+ */
+export function sinceOf(
+	target: SinceTarget,
+	answer: RereviewAnswer | { pending: true } | { error: string },
+): VerdictSince {
+	if ("pending" in answer) return { ...target, changes: { status: "pending" } };
+	if ("error" in answer) {
+		return {
+			...target,
+			changes: { status: "failed", message: answer.error },
+		};
+	}
+	const count = { reworked: 0, new: 0, gone: 0 };
+	for (const file of answer.files) {
+		for (const c of file.clusters) {
+			if (c.kind !== "carried") count[c.kind] += 1;
+		}
+	}
+	return {
+		...target,
+		changes: {
+			status: "done",
+			shape: answer.shape.code,
+			commits: answer.shape.commits,
+			files: answer.toRead.files,
+			...count,
+			identical: answer.shape.identical,
+		},
 	};
 }
 
