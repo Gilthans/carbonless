@@ -342,6 +342,69 @@ describe("useFind", () => {
 		expect(seen.every((r) => r.searching)).toBe(true);
 	});
 
+	it("searches the typed term deferred, and keeps searching while the results trail it", async () => {
+		const files = [file(0, [], ["ab", "abc"], "zz.txt")];
+		const seen: { typed: string; of: number; searching: boolean }[] = [];
+		renderHook(
+			() => {
+				const f = useFind({
+					revision: "r1",
+					files,
+					openIndex: null,
+					active: true,
+				});
+				seen.push({
+					typed: f.state.term,
+					of: f.count?.of ?? -1,
+					searching: f.searching,
+				});
+				return f;
+			},
+			{
+				wrapper: ({ children }: { children: ReactNode }) => (
+					<QueryClientProvider client={client}>{children}</QueryClientProvider>
+				),
+			},
+		);
+		search("ab");
+		await waitFor(() => expect(batches).toHaveLength(1));
+		await act(async () => {
+			batches[0]?.held.release({
+				files: [{ index: 0, hunks: hunksOf(files[0] as FileView, "z") }],
+			});
+		});
+		await waitFor(() => expect(seen.at(-1)?.searching).toBe(false));
+		expect(seen.at(-1)?.of).toBe(2);
+		seen.length = 0;
+		act(() => findState.setTerm("abc"));
+		expect(seen.at(-1)).toEqual({ typed: "abc", of: 1, searching: false });
+		// A render for the new term with the old term's results came first
+		// (typing stays responsive), and it showed the spinner.
+		const trailing = seen.filter((r) => r.typed === "abc" && r.of === 2);
+		expect(trailing.length).toBeGreaterThan(0);
+		expect(trailing.every((r) => r.searching)).toBe(true);
+	});
+
+	it("keeps a file's DiffFind the same object while its hits and caret don't change", async () => {
+		const files = [file(0, [], ["save"]), file(1, [], ["y"])];
+		const { result } = renderFind({ revision: "r1", files, openIndex: 0 });
+		search("save");
+		const before = result.current.diffOf(0);
+		expect(before?.current).toEqual({ old: false, line: 2 });
+		await waitFor(() => expect(batches).toHaveLength(1));
+		await act(async () => {
+			batches[0]?.held.release({
+				files: [
+					{ index: 0, hunks: hunksOf(files[0] as FileView, "z") },
+					{ index: 1, hunks: hunksOf(files[1] as FileView, "save") },
+				],
+			});
+		});
+		await waitFor(() => expect(result.current.count?.of).toBe(2));
+		expect(result.current.diffOf(0)).toBe(before);
+		expect(result.current.diffOf(1)?.marksOf("RIGHT", 1)).toHaveLength(1);
+	});
+
 	it("reports failed batches and asks again on retry", async () => {
 		const files = [file(0, [], ["save"]), file(1, [], ["y"])];
 		const { result } = renderFind({ revision: "r1", files, openIndex: null });

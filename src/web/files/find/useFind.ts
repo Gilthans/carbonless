@@ -5,6 +5,7 @@ import {
 } from "@tanstack/react-query";
 import {
 	useCallback,
+	useDeferredValue,
 	useEffect,
 	useMemo,
 	useRef,
@@ -112,7 +113,10 @@ export function useFind(opts: {
 	const state = findState.use();
 	const matchCase = matchCaseSetting.use();
 	const client = useQueryClient();
-	const { open, term } = state;
+	const { open, term: typedTerm } = state;
+	// The search runs on the term deferred: a keystroke paints at once, the
+	// (possibly long) search after it; `searching` holds while it trails.
+	const term = useDeferredValue(typedTerm);
 	const searchOn = open && revision !== undefined;
 
 	// Every file's hunks and expanded context, observed while the bar is open.
@@ -292,13 +296,14 @@ export function useFind(opts: {
 		});
 	}, [prefetcher, files, hunks.failed, revision, ranges, context, client]);
 
-	const marking = searchOn && term !== "";
+	const marking = searchOn && typedTerm !== "";
 	// Not final while the prefetch has files out, a file's own request is out,
 	// an expanded range isn't loaded yet, or (the first render of an open bar
 	// on a page that shows, or of a new revision) the prefetch hasn't started.
 	const searching =
 		marking &&
-		(snapshot.pending > 0 ||
+		(term !== typedTerm ||
+			snapshot.pending > 0 ||
 			hunks.fetching ||
 			context.waiting.some(Boolean) ||
 			(active && prefetcher === null));
@@ -364,6 +369,9 @@ export function useFind(opts: {
 		return { tree, pathOf, linesOf, pos };
 	}, [hits, files, caret]);
 
+	// A file's DiffFind keeps its identity while its marks, current line and
+	// step don't change (hits landing in other files don't touch it).
+	const keptDiffs = useRef(new Map<number, { sig: string; diff: DiffFind }>());
 	const diffs = useMemo(() => {
 		const built = new Map<number, DiffFind>();
 		return (index: number): DiffFind | undefined => {
@@ -372,17 +380,28 @@ export function useFind(opts: {
 			if (!diff) {
 				const byLine = views.linesOf(index);
 				const pos = views.pos;
-				diff = {
-					marksOf: (side: DiffSide, line: number) =>
-						byLine.get(`${side}:${line}`) ?? NO_MARKS,
-					current:
-						pos &&
-						pos.index === index &&
-						(pos.side === "LEFT" || pos.side === "RIGHT")
-							? { old: pos.side === "LEFT", line: pos.line }
-							: null,
-					stepSeq: lastStep?.index === index ? lastStep.seq : 0,
-				};
+				const current =
+					pos &&
+					pos.index === index &&
+					(pos.side === "LEFT" || pos.side === "RIGHT")
+						? { old: pos.side === "LEFT", line: pos.line }
+						: null;
+				const stepSeq = lastStep?.index === index ? lastStep.seq : 0;
+				let sig = `${stepSeq}|${current ? `${current.old}:${current.line}` : ""}`;
+				for (const [key, marks] of byLine)
+					for (const m of marks)
+						sig += `|${key}:${m.from}-${m.to}${m.current ? "*" : ""}`;
+				const kept = keptDiffs.current.get(index);
+				if (kept?.sig === sig) diff = kept.diff;
+				else {
+					diff = {
+						marksOf: (side: DiffSide, line: number) =>
+							byLine.get(`${side}:${line}`) ?? NO_MARKS,
+						current,
+						stepSeq,
+					};
+					keptDiffs.current.set(index, { sig, diff });
+				}
 				built.set(index, diff);
 			}
 			return diff;

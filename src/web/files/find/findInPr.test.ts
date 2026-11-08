@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { buildDisplayHunks } from "../../../server/diff/hunks";
 import type {
 	Cluster,
@@ -213,6 +213,25 @@ describe("findInPr", () => {
 	});
 });
 
+describe("findInPr's cost", () => {
+	it("builds its pattern once per search, not once per line", () => {
+		const lines = Array.from({ length: 50 }, (_, i) => `save ${i}`);
+		const f = file(0, { clusters: [cluster({ removed: lines, added: lines })] });
+		const Real = RegExp;
+		const built = vi.fn(function (this: unknown, ...args: [string, string]) {
+			return new Real(...args);
+		});
+		vi.stubGlobal("RegExp", built);
+		try {
+			const hits = findInPr("save", [f], none, noContext, false);
+			expect(hits).toHaveLength(100);
+		} finally {
+			vi.unstubAllGlobals();
+		}
+		expect(built).toHaveBeenCalledTimes(1);
+	});
+});
+
 describe("caret", () => {
 	const hit = (index: number, line = 1): Hit => ({
 		index,
@@ -220,6 +239,18 @@ describe("caret", () => {
 		line,
 		col: 0,
 		len: 1,
+	});
+
+	it("after typing, finds the caret in one pass over the hits (not one per file)", () => {
+		// Every hit in the first file, the open one has none: each file
+		// after it looked for its first hit over all of them.
+		const n = 20_000;
+		const order = Array.from({ length: n }, (_, i) => i);
+		const hits = Array.from({ length: n }, (_, i) => hit(0, i + 1));
+		const t = process.threadCpuUsage();
+		const caret = caretAfterTyping(hits, order, 1);
+		expect(process.threadCpuUsage(t).user).toBeLessThan(150_000);
+		expect(caret?.pos).toMatchObject({ index: 0, line: 1 });
 	});
 
 	it("after typing, the caret is the open file's first hit, else the next file's, wrapping, else the PR's first", () => {

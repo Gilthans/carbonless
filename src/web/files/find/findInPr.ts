@@ -32,17 +32,24 @@ export function occurrences(
 	term: string,
 	matchCase: boolean,
 ): { col: number; len: number }[] {
-	if (!term) return [];
-	const re = new RegExp(
-		term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
-		matchCase ? "g" : "gi",
-	);
+	const re = pattern(term, matchCase);
 	const found: { col: number; len: number }[] = [];
+	if (!re) return found;
+	re.lastIndex = 0;
 	for (let m = re.exec(text); m; m = re.exec(text)) {
 		found.push({ col: m.index, len: m[0].length });
 		re.lastIndex = m.index + m[0].length;
 	}
 	return found;
+}
+
+/** occurrences' pattern: built once per search, not once per line. Null for an empty term. */
+function pattern(term: string, matchCase: boolean): RegExp | null {
+	if (!term) return null;
+	return new RegExp(
+		term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
+		matchCase ? "g" : "gi",
+	);
 }
 
 /** One searchable line of a file: its side, number and raw text. */
@@ -127,11 +134,18 @@ export function findInPr(
 	matchCase: boolean,
 ): Hit[] {
 	const hits: Hit[] = [];
+	const re = pattern(term, matchCase);
+	if (!re) return hits;
 	for (const file of files) {
 		const index = file.index;
+		// occurrences' loop, inline: no array or closure per line.
 		const push = (side: HitSide, line: number, text: string) => {
-			for (const o of occurrences(text, term, matchCase))
-				hits.push({ index, side, line, ...o });
+			re.lastIndex = 0;
+			for (let m = re.exec(text); m; m = re.exec(text)) {
+				const len = m[0].length;
+				hits.push({ index, side, line, col: m.index, len });
+				re.lastIndex = m.index + len;
+			}
 		};
 		push("path", 0, file.path);
 		if (file.oldPath) push("oldPath", 0, file.oldPath);
@@ -187,10 +201,12 @@ export function caretAfterTyping(
 ): Caret | null {
 	const first = hits[0];
 	if (!first) return null;
+	// Each file's first hit, in one pass.
+	const firstOf = new Map<number, Hit>();
+	for (const h of hits) if (!firstOf.has(h.index)) firstOf.set(h.index, h);
 	const start = openIndex === null ? 0 : Math.max(order.indexOf(openIndex), 0);
 	for (let i = 0; i < order.length; i++) {
-		const index = order[(start + i) % order.length];
-		const hit = hits.find((h) => h.index === index);
+		const hit = firstOf.get(order[(start + i) % order.length] as number);
 		if (hit) return { pos: posOf(hit), shown: false };
 	}
 	return { pos: posOf(first), shown: false };
