@@ -322,13 +322,17 @@ export const patchsetCommitsQuery = (missing: string[]) =>
 			const info = await fetchSession();
 			return Object.fromEntries(
 				info.patchsets.map((p) => [`${p.number} ${p.head}`, p.commits]),
-			) as Record<string, number | null>;
+			) as Record<string, SessionInfo["patchsets"][number]["commits"]>;
 		},
 		staleTime: Number.POSITIVE_INFINITY,
-		refetchInterval: (query) =>
-			missing.some((k) => (query.state.data?.[k] ?? null) === null)
+		refetchInterval: (query) => {
+			const data = query.state.data;
+			// Asked again only while a count is still being made: one that
+			// failed for good, or a patch set no longer there, stops it.
+			return !data || missing.some((k) => data[k] === null)
 				? REREVIEW_POLL_MS
-				: false,
+				: false;
+		},
 	});
 
 /**

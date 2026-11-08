@@ -1031,9 +1031,10 @@ export interface SessionInfo {
 		shape: ShapeCode | null;
 		/**
 		 * Its commits over its merge base (`rev-list --count`); null while
-		 * the server counts them in the background.
+		 * the server counts them in the background; why not, once the
+		 * count has failed for good.
 		 */
-		commits: number | null;
+		commits: number | null | { error: string };
 	}[];
 	/**
 	 * The PR's head when this crb last opened the review, before this open

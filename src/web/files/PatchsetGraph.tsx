@@ -1,4 +1,4 @@
-import { CheckIcon } from "@primer/octicons-react";
+import { AlertIcon, CheckIcon } from "@primer/octicons-react";
 import { useQueries, useQuery } from "@tanstack/react-query";
 import {
 	type ReactNode,
@@ -386,6 +386,8 @@ interface Connector {
 	commits: number | null;
 	/** The session's count is still being counted (a spinner in its slot). */
 	counting: boolean;
+	/** Why the session's count couldn't be made (an error in its slot). */
+	countError: string | null;
 	/** The shape code known from the session (a patch set's record). */
 	shape: Shape["code"] | null;
 	dashed: boolean;
@@ -446,6 +448,10 @@ function ConnectorCard(props: { c: Connector; baseBranch?: string }) {
 				body={
 					c.commits !== null ? (
 						commitsLabel(c.commits, false)
+					) : c.countError !== null ? (
+						<span className="text-bad">
+							Couldn't count the commits: {c.countError}
+						</span>
 					) : c.counting ? (
 						<Spinner label="Counting commits" size={12} />
 					) : undefined
@@ -501,6 +507,14 @@ function ConnectorLine(props: {
 	const label =
 		count !== null ? (
 			commitsLabel(count, props.phone)
+		) : c.countError !== null ? (
+			// Failed for good: not loading, not 0 (its card says why).
+			<AlertIcon
+				size={10}
+				aria-hidden
+				data-testid="ps-conn-count-error"
+				className="text-bad"
+			/>
 		) : c.answer || c.counting ? (
 			<Spinner label="Counting commits" size={10} testId="ps-conn-counting" />
 		) : null;
@@ -514,7 +528,7 @@ function ConnectorLine(props: {
 				<span
 					{...trigger}
 					role="img"
-					aria-label={`${c.from.label} to ${c.to.label}${count !== null ? `: ${commitsLabel(count, false)}` : ""}`}
+					aria-label={`${c.from.label} to ${c.to.label}${count !== null ? `: ${commitsLabel(count, false)}` : c.countError !== null ? ": couldn't count the commits" : ""}`}
 					data-testid={`ps-conn-${c.to.id}`}
 					data-tone={c.dashed ? tone.replace("border-", "") : undefined}
 					// biome-ignore lint/a11y/noNoninteractiveTabindex: the card opens on focus.
@@ -729,13 +743,19 @@ export function PatchsetGraph(props: {
 			commits:
 				to.kind === "head" && session.head
 					? session.head.commits
-					: from.kind === "branch"
-						? (to.patchset?.commits ?? null)
+					: from.kind === "branch" && typeof to.patchset?.commits === "number"
+						? to.patchset.commits
 						: null,
 			counting:
 				from.kind === "branch" &&
 				to.patchset !== undefined &&
 				to.patchset.commits === null,
+			countError:
+				from.kind === "branch" &&
+				to.patchset?.commits !== null &&
+				typeof to.patchset?.commits === "object"
+					? to.patchset.commits.error
+					: null,
 			shape: to.patchset?.shape ?? null,
 			dashed: to.kind === "head",
 		};

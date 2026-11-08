@@ -13,6 +13,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { expectLoadingThen, heldJson } from "../../../test/loading";
 import type { RereviewAnswer, SessionInfo } from "../../shared/types";
+import { patchsetCommitsQuery, REREVIEW_POLL_MS } from "../api";
 import { ShortcutsProvider } from "../shortcuts";
 import type { Comparison, ComparisonBase, Viewing } from "./comparison";
 import { headIsNewer, PatchsetGraph, railDots } from "./PatchsetGraph";
@@ -507,6 +508,45 @@ describe("PatchsetGraph", () => {
 			release,
 			result: () => within(conn()).queryByText("2 commits"),
 		});
+	});
+
+	it("the count poll runs only while a count is being made: a failed or vanished one stops it", () => {
+		const q = patchsetCommitsQuery(["1 aaa"]);
+		const every = q.refetchInterval as (q: unknown) => number | false;
+		const at = (data: unknown) => every({ state: { data } });
+		expect(at(undefined)).toBe(REREVIEW_POLL_MS);
+		expect(at({ "1 aaa": null })).toBe(REREVIEW_POLL_MS);
+		expect(at({ "1 aaa": 3 })).toBe(false);
+		expect(at({ "1 aaa": { error: "Not an object id: x" } })).toBe(false);
+		expect(at({})).toBe(false);
+	});
+
+	it("a count that failed for good shows an error in its slot, never a spinner or 0; its card says why", async () => {
+		const s = session([1, 2], oid("f"));
+		renderGraph(
+			{
+				...s,
+				patchsets: s.patchsets.map((p) =>
+					p.number === 1
+						? { ...p, commits: { error: "Not an object id: x" } }
+						: p,
+				),
+			},
+			{ viewing: ps(2), base: ps(1) as ComparisonBase },
+		);
+		const conn = screen.getByTestId("ps-conn-ps1");
+		expect(within(conn).getByTestId("ps-conn-count-error")).toBeTruthy();
+		expect(within(conn).queryByTestId("ps-conn-counting")).toBeNull();
+		expect(within(conn).queryByText(/^0/)).toBeNull();
+		expect(conn).toHaveAccessibleName(
+			"main to PS1: couldn't count the commits",
+		);
+		act(() => conn.focus());
+		await waitFor(() =>
+			expect(
+				screen.getByText(/Couldn't count the commits: Not an object id: x/),
+			).toBeTruthy(),
+		);
 	});
 
 	it("the branch → PS1 connector spins until the session counts PS1's commits, then shows them", () => {

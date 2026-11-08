@@ -56,6 +56,10 @@ import {
 } from "./newThreads.js";
 import { OverviewRead } from "./overviewRead.js";
 import type { HeadSpec } from "./pinnedHead.js";
+import {
+	BackgroundCounts,
+	type CountAnswer,
+} from "./rereview/backgroundCounts.js";
 import { RereviewCache } from "./rereview/cache.js";
 import {
 	answerRereview,
@@ -222,9 +226,13 @@ export class Session {
 	/**
 	 * Each patch set's commits over its merge base (info().patchsets'
 	 * `commits`), by "<merge base> <head>": counted in the background on
-	 * the first ask, null until known; a failed count is asked again.
+	 * the first ask, null until known, retried with a backoff, and a
+	 * failure for good after a few tries (BackgroundCounts).
 	 */
-	readonly #commitCounts = new Map<string, number | null>();
+	readonly #commitCounts = new BackgroundCounts((key) => {
+		const [mergeBase = "", head = ""] = key.split(" ");
+		return commitsOver(this.repo, mergeBase, head, this.#stop.signal);
+	});
 	/** Order of PR metadata requests, by start; see #setMeta. */
 	#metaSeq = 0;
 	#metaSeqApplied = 0;
@@ -484,17 +492,11 @@ export class Session {
 
 	/**
 	 * `git rev-list --count <mergeBase>..<head>` once known; null while it
-	 * runs (started here, never waited for: info() stays instant).
+	 * runs (started here, never waited for: info() stays instant); why it
+	 * failed once it has failed for good.
 	 */
-	#commitsOf(mergeBase: string, head: string): number | null {
-		const key = `${mergeBase} ${head}`;
-		if (this.#commitCounts.has(key)) return this.#commitCounts.get(key) ?? null;
-		this.#commitCounts.set(key, null);
-		commitsOver(this.repo, mergeBase, head, this.#stop.signal).then(
-			(n) => this.#commitCounts.set(key, n),
-			() => this.#commitCounts.delete(key),
-		);
-		return null;
+	#commitsOf(mergeBase: string, head: string): CountAnswer {
+		return this.#commitCounts.get(`${mergeBase} ${head}`);
 	}
 
 	/**
