@@ -131,6 +131,7 @@ function renderFind(props: {
 	revision: string;
 	files: FileView[];
 	openIndex: number | null;
+	onStale?: () => void;
 }) {
 	const wrapper = ({ children }: { children: ReactNode }) => (
 		<QueryClientProvider client={client}>{children}</QueryClientProvider>
@@ -276,6 +277,25 @@ describe("useFind", () => {
 		await act(() => new Promise((r) => setTimeout(r, 20)));
 		expect(batches).toHaveLength(4);
 		expect(result.current.searching).toBe(false);
+	});
+
+	it("a 409 keeps searching, counts nothing failed and asks the page to read the review again", async () => {
+		const files = [file(0, [], ["save"]), file(1, [], ["y"])];
+		const onStale = vi.fn();
+		const { result } = renderFind({
+			revision: "r1",
+			files,
+			openIndex: null,
+			onStale,
+		});
+		search("save");
+		await waitFor(() => expect(batches).toHaveLength(1));
+		await act(async () => {
+			batches[0]?.held.release({ error: "stale" }, 409);
+		});
+		await waitFor(() => expect(onStale).toHaveBeenCalledTimes(1));
+		expect(result.current.searching).toBe(true);
+		expect(result.current.failed).toBe(0);
 	});
 
 	it("reports failed batches and asks again on retry", async () => {

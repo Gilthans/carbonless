@@ -127,16 +127,33 @@ describe("HunksPrefetcher", () => {
 		expect(p.snapshot().pending).toBe(3);
 	});
 
-	it("a file the answer leaves out is failed, and a 409 marks nothing", async () => {
+	it("a file the answer leaves out is failed", async () => {
 		const p = prefetcher();
 		p.queue([1, 2]);
 		calls[0]?.resolve({ files: [{ index: 1, hunks: hunks("one") }] });
 		await flushAll();
-		expect(p.snapshot().failed).toEqual([2]);
-		p.queue([3]);
+		expect(p.snapshot()).toEqual({ pending: 0, failed: [2] });
+	});
+
+	it("a 409 keeps its files pending, asks for nothing more and tells onStale once", async () => {
+		const onStale = vi.fn();
+		const p = new HunksPrefetcher(client, "r", fetchBatch, onStale);
+		// Three batches: two out, one waiting its turn.
+		p.queue(nums(0, HUNKS_BATCH * 3));
+		expect(calls).toHaveLength(2);
+		calls[0]?.reject(new ApiError(409, "stale"));
+		await flushAll();
+		expect(onStale).toHaveBeenCalledTimes(1);
+		// The stale revision's files are neither searched nor failed: pending.
+		expect(p.snapshot().failed).toEqual([]);
+		expect(p.snapshot().pending).toBe(HUNKS_BATCH * 3);
+		// The waiting batch isn't sent to a revision known to be stale.
+		expect(calls).toHaveLength(2);
 		calls[1]?.reject(new ApiError(409, "stale"));
 		await flushAll();
-		expect(p.snapshot()).toEqual({ pending: 0, failed: [2] });
+		expect(onStale).toHaveBeenCalledTimes(1);
+		expect(p.snapshot().pending).toBe(HUNKS_BATCH * 3);
+		expect(calls).toHaveLength(2);
 	});
 
 	it("subscribers are told on each change; stop drops the queue but keeps an answer in flight", async () => {

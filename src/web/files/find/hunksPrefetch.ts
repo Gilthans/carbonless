@@ -20,15 +20,21 @@ export interface PrefetchSnapshot {
  * already queued. `stop()` drops the queue; answers of requests out still
  * land in the cache.
  *
- * A request that fails with 409 (stale revision) marks nothing failed: the
- * page moves to a new revision and starts a new prefetcher. Any other
- * failure marks every file of the request failed; so does a file the
+ * A request that fails with 409 (stale revision: another tab or device
+ * refreshed the review) marks nothing failed and leaves its files pending,
+ * sends nothing more, and calls `onStale` once: the page reads the review
+ * again, moves to the new revision and starts a new prefetcher (stopping
+ * this one), so the search never looks final with files unsearched. Any
+ * other failure marks every file of the request failed; so does a file the
  * answer leaves out.
  */
 export class HunksPrefetcher {
 	readonly #client: QueryClient;
 	readonly #revision: string;
 	readonly #fetchBatch: typeof fetchHunksBatch;
+	readonly #onStale: () => void;
+	/** A request answered 409: the revision is gone. */
+	#stale = false;
 	#queue: number[] = [];
 	/** The queue's files, for lookups. */
 	#queued = new Set<number>();
@@ -45,10 +51,12 @@ export class HunksPrefetcher {
 		client: QueryClient,
 		revision: string,
 		fetchBatch: typeof fetchHunksBatch = fetchHunksBatch,
+		onStale: () => void = () => {},
 	) {
 		this.#client = client;
 		this.#revision = revision;
 		this.#fetchBatch = fetchBatch;
+		this.#onStale = onStale;
 	}
 
 	queue(indexes: readonly number[]): void {
@@ -119,7 +127,11 @@ export class HunksPrefetcher {
 	}
 
 	#flush(): void {
-		while (this.#out < HUNKS_IN_FLIGHT && this.#queue.length > 0) {
+		while (
+			!this.#stale &&
+			this.#out < HUNKS_IN_FLIGHT &&
+			this.#queue.length > 0
+		) {
 			const batch: number[] = [];
 			while (batch.length < HUNKS_BATCH && this.#queue.length > 0) {
 				const index = this.#queue.shift() as number;
@@ -156,7 +168,15 @@ export class HunksPrefetcher {
 			}
 			for (const index of batch) if (!answered.has(index)) failed.push(index);
 		} catch (error) {
-			failed = error instanceof ApiError && error.status === 409 ? [] : batch;
+			if (error instanceof ApiError && error.status === 409) {
+				this.#out--;
+				if (this.#stopped || this.#stale) return;
+				// Its files stay in flight (pending) until this prefetcher stops.
+				this.#stale = true;
+				this.#onStale();
+				return;
+			}
+			failed = batch;
 		}
 		this.#out--;
 		if (this.#stopped) return;

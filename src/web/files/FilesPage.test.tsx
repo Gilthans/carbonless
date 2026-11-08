@@ -684,6 +684,54 @@ describe("FilesPage", () => {
 				?.getAttribute("aria-label") ?? null;
 		const count = () => screen.getByTestId("find-count");
 
+		it("a hunks 409 (another device refreshed) reads the review again and searches the new revision", async () => {
+			const files = twoFiles();
+			let reads = 0;
+			const asked: string[] = [];
+			renderPage(
+				{
+					"/api/review": () => {
+						reads++;
+						return {
+							status: 200,
+							body: { ...emptyReview, revision: `r${reads}`, files },
+						};
+					},
+					"/api/files/hunks": () => {
+						asked.push(String(reads));
+						return reads === 1
+							? { status: 409, body: { error: "stale" } }
+							: {
+									status: 200,
+									body: {
+										files: files.map((f) => ({
+											index: f.index,
+											hunks: hunksFor(f),
+										})),
+									},
+								};
+					},
+				},
+				0,
+				"/files",
+				true,
+			);
+			const user = userEvent.setup();
+			await screen.findByRole("region", { name: "a.txt" });
+			await user.keyboard("{Control>}f{/Control}");
+			// "x" is in both paths and on both files' context lines: the
+			// lines count only once the hunks came.
+			await user.type(await screen.findByTestId("find-box"), "x");
+			await vi.waitFor(() => expect(reads).toBe(2));
+			await waitFor(() => expect(count()).toHaveTextContent("1 of 4"));
+			expect(
+				within(screen.getByTestId("find-bar")).queryByRole("status", {
+					name: "Searching files…",
+				}),
+			).toBeNull();
+			expect(asked).toEqual(["1", "2"]);
+		});
+
 		it("Mod+f opens the find bar focused; typing marks and counts without opening another file", async () => {
 			const scrolled = findPage(twoFiles());
 			const user = userEvent.setup();

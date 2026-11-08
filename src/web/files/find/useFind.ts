@@ -94,8 +94,16 @@ export function useFind(opts: {
 	openIndex: number | null;
 	/** The page shows (a hidden page runs no prefetch). */
 	active: boolean;
+	/**
+	 * A hunks request answered 409 (the revision is gone: another tab or
+	 * device refreshed): read the review again, so the page moves to the new
+	 * revision and the prefetch starts over for it.
+	 */
+	onStale?: () => void;
 }): Find {
 	const { revision, files, openIndex, active } = opts;
+	const onStale = useRef(opts.onStale);
+	onStale.current = opts.onStale;
 	const state = findState.use();
 	const matchCase = matchCaseSetting.use();
 	const client = useQueryClient();
@@ -208,7 +216,9 @@ export function useFind(opts: {
 	const [prefetcher, setPrefetcher] = useState<HunksPrefetcher | null>(null);
 	useEffect(() => {
 		if (!open || revision === undefined || !active) return;
-		const p = new HunksPrefetcher(client, revision);
+		const p = new HunksPrefetcher(client, revision, undefined, () =>
+			onStale.current?.(),
+		);
 		setPrefetcher(p);
 		p.queue(prefetchOrder(filesRef.current, openRef.current));
 		return () => {

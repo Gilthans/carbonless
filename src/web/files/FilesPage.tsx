@@ -5,6 +5,7 @@ import {
 	type CSSProperties,
 	type ReactNode,
 	type RefObject,
+	useCallback,
 	useEffect,
 	useLayoutEffect,
 	useMemo,
@@ -315,6 +316,7 @@ export function FilesPage() {
 	// tab or device) show. Unchanged data keeps its identity: nothing moves.
 	const wasActive = useRef(active);
 	const { refetch } = review;
+	const refetchReview = useCallback(() => void refetch(), [refetch]);
 	useEffect(() => {
 		if (active && !wasActive.current) void refetch();
 		wasActive.current = active;
@@ -539,7 +541,13 @@ export function FilesPage() {
 
 	// Find in PR: the bar, its search, and stepping through the hits. Typing
 	// only marks and counts; a step opens a closed file and scrolls.
-	const find = useFind({ revision: data?.revision, files, openIndex, active });
+	const find = useFind({
+		revision: data?.revision,
+		files,
+		openIndex,
+		active,
+		onStale: refetchReview,
+	});
 	const stepFind = (dir: 1 | -1) => {
 		const hit = find.step(dir);
 		if (!hit) return;
