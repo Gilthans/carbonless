@@ -306,13 +306,30 @@ export const sessionQuery = queryOptions({
 	queryKey: ["session"],
 	queryFn: fetchSession,
 	staleTime: Number.POSITIVE_INFINITY,
-	// A patch set's commit count is counted in the background (the graph's
-	// branch connector): asked again until every one is in.
-	refetchInterval: (query) =>
-		query.state.data?.patchsets?.some((p) => p.commits === null)
-			? REREVIEW_POLL_MS
-			: false,
 });
+
+/**
+ * The patch sets' commit counts (`SessionInfo.patchsets[].commits`), which
+ * the server counts in the background: the session read again every
+ * REREVIEW_POLL_MS until every count is in, under its own key, so the
+ * polls never touch the session the page runs on (the graph merges them).
+ */
+export const patchsetCommitsQuery = (missing: string[]) =>
+	queryOptions({
+		// By the counts still missing: a newly started patch set asks anew.
+		queryKey: ["patchset-commits", ...missing],
+		queryFn: async () => {
+			const info = await fetchSession();
+			return Object.fromEntries(
+				info.patchsets.map((p) => [`${p.number} ${p.head}`, p.commits]),
+			) as Record<string, number | null>;
+		},
+		staleTime: Number.POSITIVE_INFINITY,
+		refetchInterval: (query) =>
+			missing.some((k) => (query.state.data?.[k] ?? null) === null)
+				? REREVIEW_POLL_MS
+				: false,
+	});
 
 /**
  * The head check: polled every 5 minutes and on window focus, and each answer

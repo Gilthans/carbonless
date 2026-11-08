@@ -13,7 +13,7 @@ import {
 import { createPortal } from "react-dom";
 import { openedOn } from "../../shared/rereview/openedOn";
 import type { RereviewAnswer, SessionInfo, Shape } from "../../shared/types";
-import { overviewQuery, rereviewQuery } from "../api";
+import { overviewQuery, patchsetCommitsQuery, rereviewQuery } from "../api";
 import { RelativeTime } from "../RelativeTime";
 import { Spinner } from "../Spinner";
 import { useShortcut } from "../shortcuts";
@@ -648,6 +648,29 @@ function DotPopover(props: {
 }
 
 /**
+ * The session with each patch set's commit count filled in once the
+ * server has counted it (patchsetCommitsQuery, polled only while one is
+ * missing).
+ */
+function useWithCommits(session: SessionInfo): SessionInfo {
+	const missing = session.patchsets
+		.filter((p) => p.commits === null)
+		.map((p) => `${p.number} ${p.head}`);
+	const counted = useQuery({
+		...patchsetCommitsQuery(missing),
+		enabled: missing.length > 0,
+	}).data;
+	if (missing.length === 0 || !counted) return session;
+	return {
+		...session,
+		patchsets: session.patchsets.map((p) => ({
+			...p,
+			commits: p.commits ?? counted[`${p.number} ${p.head}`] ?? null,
+		})),
+	};
+}
+
+/**
  * The patch set graph (design doc, "Patch set graph"): one rail with the
  * base branch dot, one dot per patch set of the reviewer, and a last slot
  * that is always rendered at one width (TAIL_WIDTH): "up to date" when the
@@ -669,7 +692,8 @@ export function PatchsetGraph(props: {
 	rereview?: RereviewAnswer | { pending: true } | undefined;
 	onViewHead?: () => void;
 }) {
-	const { session, comparison } = props;
+	const { comparison } = props;
+	const session = useWithCommits(props.session);
 	const phone = !useMedia(NOT_PHONE);
 	const { dots, head } = railDots(session, comparison.viewing);
 	const all = head ? [...dots, head] : dots;

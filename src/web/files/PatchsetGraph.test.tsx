@@ -84,11 +84,17 @@ function renderGraph(
 		threads: [],
 		complete: true,
 	}),
+	sessionAnswer?: () => Promise<SessionInfo>,
 ) {
 	const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
 		const url = new URL(String(input), "http://test");
 		if (url.pathname === "/api/overview") {
 			return new Response(JSON.stringify({ readId: "r1" }), { status: 200 });
+		}
+		if (url.pathname === "/api/session" && sessionAnswer) {
+			return new Response(JSON.stringify(await sessionAnswer()), {
+				status: 200,
+			});
 		}
 		if (url.pathname === "/api/threads") {
 			return new Response(JSON.stringify(await threads()), { status: 200 });
@@ -472,6 +478,35 @@ describe("PatchsetGraph", () => {
 		expect(card).toHaveTextContent("Commit fffffff");
 		expect(card).toHaveTextContent("Against main at 0000000");
 		expect(card).toHaveTextContent("3 commits since PS2");
+	});
+
+	it("the counts the server is still making are asked for again until they are in, then shown", async () => {
+		const s = session([1, 2], oid("f"));
+		const counting: SessionInfo = {
+			...s,
+			patchsets: s.patchsets.map((p) => ({ ...p, commits: null })),
+		};
+		let release: () => void = () => {};
+		const gate = new Promise<void>((r) => {
+			release = r;
+		});
+		renderGraph(
+			counting,
+			{ viewing: ps(2), base: ps(1) as ComparisonBase },
+			undefined,
+			undefined,
+			async () => {
+				await gate;
+				return s;
+			},
+		);
+		const conn = () => screen.getByTestId("ps-conn-ps1");
+		await expectLoadingThen({
+			loading: () => within(conn()).queryByTestId("ps-conn-counting"),
+			empty: [() => within(conn()).queryByText(/^0/)],
+			release,
+			result: () => within(conn()).queryByText("2 commits"),
+		});
 	});
 
 	it("the branch → PS1 connector spins until the session counts PS1's commits, then shows them", () => {
