@@ -118,7 +118,7 @@ a code line, a file header's path or a tree name. Two utilities
 (`src/web/index.css`), only while the bar is open:
 
 - `find-mark`: every hit. An opaque `find` tone (`#101c8e`, the accent's
-  hue, deeper than `span`), apart from `span` and every row wash. Every
+  hue, more saturated than `span`'s `#182a62`), apart from `span` and every row wash. Every
   syntax color and `code-ink`, `faint`, `add-ink` and `del-ink` keep 4.5:1
   on it (`theme.test.ts`). Over a thread's `span-mark` the find shows: it is
   the thing in hand.

@@ -198,6 +198,9 @@ Not scheduled yet; after everything above.
 - Phone: the floating Files button can cover a reply box, and stays aside
   while refusals are listed.
 - On a merged PR, a LEFT thread's code shows GitHub's hunk.
+- File tree: a crossed-off file's reason chips sit inside the name's
+  truncating span, so a long name cuts them off (seen in the Find in PR
+  review, pre-existing).
 
 ## Housekeeping
 

@@ -250,7 +250,8 @@ Scroll-linked motion respects reduced motion as the rest of the page does.
 - Hits in closed files aren't rendered; the tree says where they are (below).
 - Colors **(call)**: `find-mark` is an opaque fill of the accent's hue, the
   way `span-mark` is, and `find-current` an opaque fill of the brand orange
-  with `ink` text: the browser's own convention for "the match you're on",
+  with `canvas` text (`ink` on the orange is only 2.42:1, `canvas` 7.11:1):
+  the browser's own convention for "the match you're on",
   the one place a brand hue carries meaning, and only while the bar is open.
   Both opaque so every syntax color keeps 4.5:1 on any row kind, checked in
   `theme.test.ts` like `span-mark`. Must stay apart from `span-mark` (a
