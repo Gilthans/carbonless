@@ -1,4 +1,4 @@
-import { useSyncExternalStore } from "react";
+import { useEffect, useSyncExternalStore } from "react";
 
 export interface FindState {
 	open: boolean;
@@ -30,7 +30,8 @@ function open() {
 
 /**
  * The bar's state, one for the page: the header's button and Files changed
- * read it. Closing keeps the term.
+ * read it. The term lives only while the bar is open: closing clears it
+ * (useFindScope closes the bar when the reviewer leaves the page).
  */
 export const findState = {
 	get: () => state,
@@ -39,7 +40,8 @@ export const findState = {
 	/** Opens (or, open already, asks the box to take focus again). */
 	open,
 	close() {
-		if (state.open) set({ ...state, open: false });
+		if (state.open || state.term !== "")
+			set({ ...state, open: false, term: "" });
 	},
 	toggle() {
 		if (state.open) findState.close();
@@ -52,3 +54,20 @@ export const findState = {
 		set(initial);
 	},
 };
+
+/**
+ * Keeps the find on the Files changed page of one review: leaving the page
+ * (another tab, another review, Home: the header unmounts) closes the bar
+ * and clears the term. Opening it from elsewhere (the header's button opens,
+ * then navigates here) isn't leaving. A new revision of the same review
+ * keeps it.
+ */
+export function useFindScope(onFiles: boolean, reviewId: string): void {
+	useEffect(() => {
+		if (!onFiles) findState.close();
+	}, [onFiles]);
+	// biome-ignore lint/correctness/useExhaustiveDependencies: closes on each review change.
+	useEffect(() => {
+		return () => findState.close();
+	}, [reviewId]);
+}

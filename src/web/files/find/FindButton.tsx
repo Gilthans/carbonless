@@ -6,7 +6,7 @@ import { useReviewId } from "../../reviewId";
 import { Keys } from "../../shortcuts";
 import { Tooltip } from "../../Tooltip";
 import { NOT_PHONE, useMedia } from "../../useMedia";
-import { findState } from "./findState";
+import { findState, useFindScope } from "./findState";
 
 const LABEL = "Find in PR";
 
@@ -21,6 +21,7 @@ export function FindButton(): ReactNode {
 	const navigate = useNavigate();
 	const id = useReviewId();
 	const desktop = useMedia(NOT_PHONE);
+	useFindScope(onFiles, id);
 	return (
 		<Tooltip
 			content={

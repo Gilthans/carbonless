@@ -19,11 +19,20 @@ describe("findState", () => {
 		expect(findState.get().focusSeq).toBe(2);
 	});
 
-	it("closes but keeps the term", () => {
+	it("closes and clears the term: reopening starts empty", () => {
 		findState.open();
 		findState.setTerm("foo");
 		findState.close();
-		expect(findState.get()).toMatchObject({ open: false, term: "foo" });
+		expect(findState.get()).toMatchObject({ open: false, term: "" });
+		findState.open();
+		expect(findState.get()).toMatchObject({ open: true, term: "" });
+	});
+
+	it("a toggle that closes clears the term too", () => {
+		findState.toggle();
+		findState.setTerm("foo");
+		findState.toggle();
+		expect(findState.get()).toMatchObject({ open: false, term: "" });
 	});
 
 	it("toggles", () => {

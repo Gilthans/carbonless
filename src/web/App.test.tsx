@@ -500,6 +500,39 @@ describe("App", () => {
 		findState.reset();
 	});
 
+	it("leaving Files changed closes Find in PR and clears its term; coming back starts closed", async () => {
+		findState.reset();
+		const user = userEvent.setup();
+		const { router } = renderApp({}, "/files");
+		const button = await screen.findByRole("button", { name: "Find in PR" });
+		await user.click(button);
+		const box = await screen.findByTestId("find-box");
+		await user.type(box, "save");
+		expect(findState.get().term).toBe("save");
+		await router.navigate({ to: `/r/${ID}` as "/" });
+		await screen.findByRole("region", { name: "What it does" });
+		await waitFor(() => expect(findState.get().open).toBe(false));
+		expect(findState.get().term).toBe("");
+		await router.navigate({ to: `/r/${ID}/files` as "/" });
+		await waitFor(() =>
+			expect(button).toHaveAttribute("aria-expanded", "false"),
+		);
+		expect(screen.queryByTestId("find-bar")).toBeNull();
+		await user.click(button);
+		expect(await screen.findByTestId("find-box")).toHaveValue("");
+		findState.reset();
+	});
+
+	it("leaving the review (Home) closes Find in PR and clears its term", async () => {
+		findState.reset();
+		const user = userEvent.setup();
+		const { unmount } = renderApp({}, "/files");
+		await user.click(await screen.findByRole("button", { name: "Find in PR" }));
+		await user.type(await screen.findByTestId("find-box"), "save");
+		unmount();
+		expect(findState.get()).toMatchObject({ open: false, term: "" });
+	});
+
 	it("has a Settings gear in the app bar whose switch shows hidden characters", async () => {
 		const user = userEvent.setup();
 		renderApp();
