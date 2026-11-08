@@ -495,6 +495,9 @@ question would be on someone else's behalf, or about a past moment.
   `objects/info/alternates` names the cache clone, so a prompt-injected
   agent could `git update-ref` review refs there: principle 2 rests on the
   reviewer's harness and the prompt, not on code, until a stricter leash.
+  The user configured their harness; the prompt asks the agent to keep out
+  of carbonless's data (a request, not a protection); a sandbox is planned
+  (todo).
 - **Setting the agent is running a command.** `PUT /api/config/agent` and
   its Check run any command as the server's user, for whoever holds the
   access key (on a loopback bind with no key, any local process).

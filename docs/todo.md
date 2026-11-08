@@ -112,6 +112,15 @@ thread, pushing agent threads to another device, standing instructions, an
 agent per thread or several agents, `crb doctor` reporting the agent,
 agent threads on Home.
 
+- Sandbox the agent. Run the adapter in an OS sandbox (bubblewrap on
+  Linux, sandbox-exec on macOS) that hides or makes read-only carbonless's
+  cache clone, config and state. Drop the checkout's `alternates` link to
+  the cache clone, so it becomes a standalone clone. If the sandbox can't
+  start, the agent doesn't start, and the status chip says why. Test that
+  a `git update-ref` from the agent fails. On the devbox `bwrap` is
+  installed, but `kernel.apparmor_restrict_unprivileged_userns = 1` may
+  block it; test that first.
+
 Follow-ups from the first slice's final review (2026-11-07):
 
 - A follow-up on a thread asked on an earlier head uses the current

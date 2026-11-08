@@ -200,12 +200,15 @@ carbonless's code stops that at `open`; the prompt asks it not to, and the
 activity line under each answer shows every tool call and decision. The
 expectation not to push or write to GitHub is in the prompt, not a lock.
 Your harness's own gate (allow and deny rules, hooks, sandbox) applies as
-it does in your terminal. Stricter levels are planned.
+it does in your terminal. Stricter levels are planned. Decided
+(2026-11-08): at `open` your harness setup is trusted, and the prompt asks
+the agent to keep out of carbonless's data (`refs/crb`, the cache clone,
+config and state), a request, not a protection. An OS sandbox is planned.
 
 **Who can set the agent's command?** Whoever can save the setup modal:
 Save and Check run the command as the server's user, so that is command
 execution. On a bind beyond loopback that is whoever holds the access key
-(treat it as a shell login); on loopback with no key, any process on the
+(the owner treats it like an SSH key: a shell login); on loopback with no key, any process on the
 machine. Other web sites are refused (the Origin and Host checks).
 
 **Claude Code says "not logged in" though `claude` works in my shell.**

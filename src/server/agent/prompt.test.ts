@@ -48,6 +48,17 @@ const envelope = (anchor: AgentAnchor): PromptEnvelope => ({
 });
 
 describe("buildPrompt", () => {
+	it("the preamble tells the agent to keep out of carbonless's data", () => {
+		for (const part of [
+			"refs/crb/*",
+			"~/.cache/carbonless",
+			"$XDG_CACHE_HOME/carbonless",
+			"config and state directories",
+			"only through what this prompt gives you",
+		])
+			expect(PREAMBLE).toContain(part);
+	});
+
 	it("starts with the preamble, byte-identical but for the tree", () => {
 		const [first] = buildPrompt(envelope(right), null, null);
 		if (first?.type !== "text") throw new Error("no text block");

@@ -70,7 +70,7 @@ Tailscale):
 2. Bind it, in `~/.config/carbonless/config.json`:
    `{ "serve": { "host": "<the machine's Tailscale IP>", "port": 4747 } }`.
    Off loopback, pages need the access key (`~/.local/state/carbonless/key`);
-   the printed link carries it as `?key=`. The key is a shell login: whoever
+   the printed link carries it as `?key=`. The key is like an SSH key: whoever
    holds it can set (and Check) the agent's command, which the server runs
    as your user. On loopback with no key, so can any local process.
 3. Run it as a systemd user service, `~/.config/systemd/user/crb.service`
