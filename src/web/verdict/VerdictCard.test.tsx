@@ -408,7 +408,7 @@ describe("the verdict card since your verdict", () => {
 		).toBeNull();
 	});
 
-	it("the head moved back onto PS1's (S6): the buttons post on it, with the older-commit note", async () => {
+	it("the head moved back onto PS1's (S6): the buttons post on it, the card says the head moved back to PS1", async () => {
 		const info = session({
 			currentHead: PS1,
 			headMoved: true,
@@ -431,9 +431,11 @@ describe("the verdict card since your verdict", () => {
 			info,
 		);
 		const c = await card();
-		expect(await within(c).findByTestId("verdict-older")).toHaveTextContent(
-			"On a1b2c3d, an older commit",
-		);
+		// The PR's head now, which is an earlier patch set's commit: said so,
+		// never "an older commit".
+		const back = await within(c).findByTestId("verdict-moved-back");
+		expect(back).toHaveTextContent(/^Head moved back to PS1$/);
+		expect(within(c).queryByTestId("verdict-older")).toBeNull();
 		// PS1 is no longer the session's: no meter of another patch set.
 		expect(within(c).queryByTestId("verdict-since-meter")).toBeNull();
 		await userEvent.click(

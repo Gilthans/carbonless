@@ -450,16 +450,22 @@ export function VerdictCard(props: {
 		since !== null &&
 		since.state === "APPROVED" &&
 		nothingToReread(since.changes);
-	// The commit a verdict goes on is an older one: the snapshot's behind
-	// the PR's head, or (with a since line) the head moved back onto an
-	// earlier patch set's (S6).
+	// The verdict goes on an older commit than the PR's head (no since
+	// line: the snapshot's); or, with one, the PR's head moved back onto an
+	// earlier patch set's (S6): that is still the head, said as such.
 	const latest = Math.max(0, ...session.patchsets.map((p) => p.number));
+	const movedBack =
+		!off &&
+		since !== null &&
+		since.to.patchset !== null &&
+		since.to.patchset < latest
+			? since.to.patchset
+			: null;
 	const older =
 		!off &&
-		commit !== "" &&
-		(since
-			? since.to.patchset !== null && since.to.patchset < latest
-			: session.snapshotHead !== session.currentHead);
+		!since &&
+		session.snapshotHead !== "" &&
+		session.snapshotHead !== session.currentHead;
 	const press = (event: VerdictEvent) => {
 		if (reasonOf(event)) return;
 		const text = store.text();
@@ -559,6 +565,15 @@ export function VerdictCard(props: {
 				>
 					<InfoIcon size={16} aria-hidden />
 					On {commit.slice(0, 7)}, an older commit
+				</p>
+			)}
+			{movedBack !== null && (
+				<p
+					data-testid="verdict-moved-back"
+					className="flex items-center gap-1.5 text-sm text-warn"
+				>
+					<InfoIcon size={16} aria-hidden />
+					Head moved back to PS{movedBack}
 				</p>
 			)}
 			{/* Tick, type, press: the message comes before the buttons. */}
