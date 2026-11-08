@@ -45,6 +45,9 @@ Cases:
   squash-merged and its branch deleted (GitHub retargets the child, S7),
   then the child rebased (S4a); a verdict on PS1, so the Final Verdict tab
   says "same diff · nothing to re-read".
+- `rr-pieces.sh`: marks per piece in the since view: a cluster in three
+  pieces, a removal-only piece inside a cluster (two reviewed clusters
+  merged), a reverted piece.
 - `rr-showcase.sh`: the demo: one PR through an append (S1), a rebase (S4a)
   and a merge-in with a conflict (S3), marks and comments at each step, a
   verdict on PS1; its body is the guided tour.
