@@ -77,8 +77,13 @@ const hunksData = (results: QueryObserverResult<FileHunks>[]) => ({
 	/** Per file: its request failed and nothing came. */
 	failed: results.map((r) => r.status === "error" && r.data === undefined),
 });
-const contextData = (results: QueryObserverResult<DiffLine[]>[]) =>
-	results.map((r) => r.data);
+const contextData = (results: QueryObserverResult<DiffLine[]>[]) => ({
+	data: results.map((r) => r.data),
+	/** Per range: not answered yet (never asked, dropped, or on its way). */
+	waiting: results.map((r) => r.status === "pending"),
+	/** Per range: its request failed and nothing came. */
+	failed: results.map((r) => r.status === "error" && r.data === undefined),
+});
 
 /**
  * The Find in PR search over Files changed: the hits (paths and changed
@@ -110,8 +115,10 @@ export function useFind(opts: {
 	const { open, term } = state;
 	const searchOn = open && revision !== undefined;
 
-	// Every file's hunks and loaded context, observed (never fetched here:
-	// the prefetch and the open file's diff fetch them) while the bar is open.
+	// Every file's hunks and expanded context, observed while the bar is open.
+	// Hunks are fetched by the prefetch and the open file's diff; an expanded
+	// range that isn't loaded (dropped while the bar was closed) is fetched
+	// below.
 	const hunks = useQueries({
 		queries: searchOn
 			? files.map((f) => ({ ...hunksQuery(revision, f.index), enabled: false }))
@@ -148,7 +155,7 @@ export function useFind(opts: {
 		});
 		const contextBy = new Map<number, DiffLine[]>();
 		ranges.forEach((r, i) => {
-			const lines = context[i];
+			const lines = context.data[i];
 			if (!lines) return;
 			contextBy.set(r.index, [...(contextBy.get(r.index) ?? []), ...lines]);
 		});
@@ -251,8 +258,24 @@ export function useFind(opts: {
 			if (hunks.failed[i]) all.add(f.index);
 			if (hunks.data[i] !== undefined) all.delete(f.index);
 		});
+		// And a file with an expanded range that couldn't be read.
+		ranges.forEach((r, i) => {
+			if (context.failed[i]) all.add(r.index);
+		});
 		return [...all];
-	}, [snapshot.failed, files, hunks.failed, hunks.data]);
+	}, [snapshot.failed, files, hunks.failed, hunks.data, ranges, context]);
+	// Expanded ranges not loaded: fetched while the bar is open on a page
+	// that shows (a failed one waits for Retry).
+	useEffect(() => {
+		if (!active || revision === undefined) return;
+		ranges.forEach((r, i) => {
+			if (!context.waiting[i]) return;
+			const query = contextQuery(revision, r.index, r.from, r.to);
+			if (client.getQueryState(query.queryKey)?.fetchStatus === "fetching")
+				return;
+			void client.prefetchQuery(query);
+		});
+	}, [active, revision, ranges, context, client]);
 	const retry = useCallback(() => {
 		if (!prefetcher) return;
 		prefetcher.retry();
@@ -260,15 +283,25 @@ export function useFind(opts: {
 		prefetcher.queue(
 			files.filter((_, i) => hunks.failed[i]).map((f) => f.index),
 		);
-	}, [prefetcher, files, hunks.failed]);
+		if (revision === undefined) return;
+		ranges.forEach((r, i) => {
+			if (context.failed[i])
+				void client.prefetchQuery(
+					contextQuery(revision, r.index, r.from, r.to),
+				);
+		});
+	}, [prefetcher, files, hunks.failed, revision, ranges, context, client]);
 
 	const marking = searchOn && term !== "";
 	// Not final while the prefetch has files out, a file's own request is out,
-	// or (the first render of an open bar on a page that shows) the prefetch
-	// hasn't started yet.
+	// an expanded range isn't loaded yet, or (the first render of an open bar
+	// on a page that shows, or of a new revision) the prefetch hasn't started.
 	const searching =
 		marking &&
-		(snapshot.pending > 0 || hunks.fetching || (active && prefetcher === null));
+		(snapshot.pending > 0 ||
+			hunks.fetching ||
+			context.waiting.some(Boolean) ||
+			(active && prefetcher === null));
 	const count = marking
 		? { at: caret ? hitIndex(hits, caret.pos) + 1 : 0, of: hits.length }
 		: null;

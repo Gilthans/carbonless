@@ -90,6 +90,8 @@ let client: QueryClient;
 let batches: Batch[];
 /** Held per-file hunks requests, in order (`/api/files/<n>/hunks`). */
 let singles: { index: number; held: ReturnType<typeof heldJson> }[];
+/** Held expanded-context requests, in order (`/api/files/<n>/context`). */
+let contexts: { index: number; held: ReturnType<typeof heldJson> }[];
 
 beforeEach(() => {
 	findState.reset();
@@ -97,6 +99,7 @@ beforeEach(() => {
 	client = newQueryClient();
 	batches = [];
 	singles = [];
+	contexts = [];
 	vi.stubGlobal(
 		"fetch",
 		vi.fn(async (input: RequestInfo | URL) => {
@@ -116,6 +119,12 @@ beforeEach(() => {
 			if (single) {
 				const held = heldJson();
 				singles.push({ index: Number(single[1]), held });
+				return held.response;
+			}
+			const ctx = /^\/api\/files\/(\d+)\/context$/.exec(url.pathname);
+			if (ctx) {
+				const held = heldJson();
+				contexts.push({ index: Number(ctx[1]), held });
 				return held.response;
 			}
 			return new Response("{}", { status: 404 });
@@ -367,6 +376,60 @@ describe("useFind", () => {
 		});
 		await waitFor(() => expect(result.current.count?.of).toBe(2));
 		expect(result.current.failed).toBe(1);
+	});
+
+	it("fetches an expanded range that isn't loaded (dropped while the bar was closed), searching until it lands", async () => {
+		const files = [file(0, [], ["y"])];
+		// The file was expanded earlier; its lines have since been dropped.
+		contextRanges.add("r1", 0, 10, 12);
+		const { result } = renderFind({ revision: "r1", files, openIndex: null });
+		search("save");
+		await waitFor(() => expect(contexts).toHaveLength(1));
+		await waitFor(() => expect(batches).toHaveLength(1));
+		await act(async () => {
+			batches[0]?.held.release({
+				files: [{ index: 0, hunks: hunksOf(files[0] as FileView, "z") }],
+			});
+		});
+		// Give the prefetch's answer every chance to land.
+		await act(() => new Promise((r) => setTimeout(r, 20)));
+		expect(result.current.searching).toBe(true);
+		await act(async () => {
+			contexts[0]?.held.release([
+				{ kind: "context", oldNo: 10, newNo: 10, text: "save here" },
+			]);
+		});
+		await waitFor(() => expect(result.current.searching).toBe(false));
+		expect(result.current.count?.of).toBe(1);
+		expect(result.current.failed).toBe(0);
+	});
+
+	it("counts a file whose expanded range failed, and asks again on retry", async () => {
+		const files = [file(0, [], ["y"])];
+		contextRanges.add("r1", 0, 10, 12);
+		const { result } = renderFind({ revision: "r1", files, openIndex: null });
+		search("save");
+		await waitFor(() => expect(contexts).toHaveLength(1));
+		await waitFor(() => expect(batches).toHaveLength(1));
+		await act(async () => {
+			batches[0]?.held.release({
+				files: [{ index: 0, hunks: hunksOf(files[0] as FileView, "z") }],
+			});
+			contexts[0]?.held.release({ error: "boom" }, 500);
+		});
+		await waitFor(() => expect(result.current.failed).toBe(1));
+		expect(result.current.searching).toBe(false);
+		act(() => result.current.retry());
+		await waitFor(() => expect(contexts).toHaveLength(2));
+		expect(result.current.searching).toBe(true);
+		await act(async () => {
+			contexts[1]?.held.release([
+				{ kind: "context", oldNo: 10, newNo: 10, text: "save here" },
+			]);
+		});
+		await waitFor(() => expect(result.current.failed).toBe(0));
+		expect(result.current.searching).toBe(false);
+		expect(result.current.count?.of).toBe(1);
 	});
 
 	it("keeps searching while the open file's own hunks are still on their way", async () => {
