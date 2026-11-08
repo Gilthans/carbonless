@@ -81,6 +81,25 @@ export async function fileAction(section: Locator, name: string) {
 export const fileActionButton = (section: Locator, name: string) =>
 	section.getByRole("button", { name, exact: true });
 
+/**
+ * A finished file's reset (Undo cross-off, Unmark reviewed): the first
+ * click asks, the second (once it takes clicks again, UNDO_ARM_MS in
+ * FileDiff.tsx) does it.
+ */
+export async function resetFile(page: Page, section: Locator, name: string) {
+	const button = fileActionButton(section, name);
+	await expect(button).toBeEnabled();
+	// It may have just swapped in under the pointer.
+	await page.waitForTimeout(600);
+	await button.click();
+	const armed = section.locator("button[data-armed]");
+	await expect(armed).toHaveAccessibleName(
+		/^Remove all .* markings from this file\?$/,
+	);
+	await page.waitForTimeout(600);
+	await armed.click();
+}
+
 export const fileProgress = (section: Locator) =>
 	section.getByRole("progressbar", { name: "File progress" });
 

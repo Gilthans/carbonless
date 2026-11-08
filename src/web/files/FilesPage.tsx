@@ -29,6 +29,7 @@ import { ignoreWhitespace, showInvisibles, sideBySide } from "../viewSettings";
 import type { DiffThreads } from "./DiffBody";
 import { FileDiff } from "./FileDiff";
 import { FileTree } from "./FileTree";
+import { nextFile } from "./fileFinish";
 import { treeOrder } from "./fileOrder";
 import { filesPrefetchOrder } from "./filesPrefetch";
 import { foldsKey } from "./folderFold";
@@ -459,24 +460,41 @@ export function FilesPage() {
 		const top = section.getBoundingClientRect().top + window.scrollY;
 		window.scrollTo({ top: top - appHeader - barHeight + 1 });
 	};
-	/** A file picked in the tree: open it alone and bring its header to the top. */
-	const select = (index: number) => {
+	/**
+	 * Opens the file alone and brings its header to the top, once the other
+	 * files have closed; `focus`: its toggle takes the focus.
+	 */
+	const openAlone = (index: number, focus: boolean) => {
 		setCurrent(index);
 		openInTree(index);
 		anchor.current = null;
 		setOpen(keyOf(index));
-		const fromSheet = sheetOpen;
-		if (fromSheet) setSheetOpen(false);
-		// Once the other files have closed (and the sheet has handed focus
-		// back to its button), scroll there, focusing the header after a sheet.
 		requestAnimationFrame(() => {
-			if (fromSheet) {
+			if (focus) {
 				headerOf(index)
-					?.querySelector("button")
+					?.querySelector<HTMLElement>("button[aria-expanded]")
 					?.focus({ preventScroll: true });
 			}
 			scrollTo(index);
 		});
+	};
+	/** A file picked in the tree: open it alone and bring its header to the top. */
+	const select = (index: number) => {
+		const fromSheet = sheetOpen;
+		if (fromSheet) setSheetOpen(false);
+		// After a sheet (once it has handed focus back to its button), the
+		// header takes the focus.
+		openAlone(index, fromSheet);
+	};
+	/**
+	 * The reviewer's mark finished the open file: it closes and the next file
+	 * in the page's order opens, at the top, with the focus (the control used
+	 * is gone). After the last file it just closes.
+	 */
+	const finished = (index: number) => {
+		const next = nextFile(files, index);
+		if (next) openAlone(next.index, true);
+		else toggleFile(index, false);
 	};
 
 	// A thread's file:line link (landing.ts): open that file alone; its diff
@@ -687,6 +705,7 @@ export function FilesPage() {
 											onExpandedChange={(expanded, auto) =>
 												toggleFile(file.index, expanded, auto)
 											}
+											onFinished={() => finished(file.index)}
 											otherOpen={openIndex !== null && openIndex !== file.index}
 											landing={
 												landing?.index === file.index ? landing : undefined

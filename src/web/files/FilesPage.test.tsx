@@ -280,8 +280,12 @@ describe("FilesPage", () => {
 		).toBeInTheDocument();
 		await vi.waitFor(() => expect(reads).toBe(2));
 		expect(fetchMock).toHaveBeenCalled();
-		// The next stored write clears the notice.
-		const box = screen.getByRole("checkbox", { name: "Mark cluster reviewed" });
+		// The next stored write clears the notice. Marking the file's one
+		// cluster finished it, so it closed: open it again.
+		await user.click(screen.getByRole("button", { name: "Expand file" }));
+		const box = await screen.findByRole("checkbox", {
+			name: "Mark cluster reviewed",
+		});
 		await vi.waitFor(() => expect(box).toBeEnabled());
 		await user.click(box);
 		await vi.waitFor(() =>

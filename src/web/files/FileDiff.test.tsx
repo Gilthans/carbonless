@@ -114,12 +114,19 @@ const view = (f: FileView): ReviewView => ({
 });
 
 /** FileDiff of the review's only file, as useReviewView shows it. */
-function Shown({ unit }: { unit: Unit }) {
+function Shown({ unit, onFinished }: { unit: Unit; onFinished?: () => void }) {
 	const { data } = useReviewView();
 	const shown = data?.files[0];
 	return (
 		<>
-			{shown && <FileDiff file={shown} revision="r1" unit={unit} />}
+			{shown && (
+				<FileDiff
+					file={shown}
+					revision="r1"
+					unit={unit}
+					onFinished={onFinished}
+				/>
+			)}
 			<SyncNotices />
 		</>
 	);
@@ -136,6 +143,7 @@ function setup(
 	handler: Handler = () => ({ status: 404, body: {} }),
 	fileHunks: FileHunks | (() => Promise<Response>) = hunks,
 	unit: Unit = "clusters",
+	onFinished?: () => void,
 ) {
 	const fetchMock = vi.fn(
 		async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -169,7 +177,7 @@ function setup(
 	queryClient.setQueryData(reviewQuery.queryKey, view(f));
 	const rendered = render(
 		<QueryClientProvider client={queryClient}>
-			<Shown unit={unit} />
+			<Shown unit={unit} onFinished={onFinished} />
 		</QueryClientProvider>,
 	);
 	/** Shows `next` as the server's file, like a reread does. */
@@ -198,6 +206,23 @@ function setup(
 		rerender,
 		user: userEvent.setup(),
 	};
+}
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * A reset's two clicks: the first asks (the button's name becomes the
+ * question), the second, once it takes clicks again, does it.
+ */
+async function confirmClick(
+	user: ReturnType<typeof userEvent.setup>,
+	button: HTMLElement,
+	question: RegExp = /^Remove all .* markings from this file\?$/,
+) {
+	await user.click(button);
+	expect(button).toHaveAccessibleName(question);
+	await sleep(UNDO_ARM_MS);
+	await user.click(button);
 }
 
 describe("FileDiff", () => {
@@ -308,15 +333,18 @@ describe("FileDiff", () => {
 	});
 
 	it("reports a stale snapshot and drops the change", async () => {
-		const { user, sync } = setup(file([cluster("k1")]), (url) =>
+		const two = file([cluster("k1"), cluster("k2", { newStart: 30 })]);
+		const { user, sync } = setup(two, (url) =>
 			url.pathname === "/api/review"
-				? { status: 200, body: view(file([cluster("k1")])) }
+				? { status: 200, body: view(two) }
 				: { status: 409, body: { error: "stale" } },
 		);
 		await user.click(screen.getByRole("button", { name: "Expand file" }));
-		const box = await screen.findByRole("checkbox", {
-			name: "Mark cluster reviewed",
-		});
+		const box = (
+			await screen.findAllByRole("checkbox", {
+				name: "Mark cluster reviewed",
+			})
+		)[0] as HTMLElement;
 		await user.click(box);
 		await waitFor(() => expect(sync().stale).toEqual({ dropped: 1 }));
 		expect(box).not.toBeChecked();
@@ -380,7 +408,10 @@ describe("FileDiff", () => {
 				? { status: 400, body: { error: "Unknown cluster key: k1234" } }
 				: { status: 200, body: view(f) };
 		});
-		await user.click(screen.getByRole("button", { name: "Undo cross-off" }));
+		await confirmClick(
+			user,
+			screen.getByRole("button", { name: "Undo cross-off" }),
+		);
 		const alert = await screen.findByRole("alert");
 		await waitFor(() =>
 			expect(alert).toHaveTextContent("Unreviewed · src/a.ts"),
@@ -426,7 +457,10 @@ describe("FileDiff", () => {
 					}
 				: { status: 200, body: view(f) };
 		});
-		await user.click(screen.getByRole("button", { name: "Undo cross-off" }));
+		await confirmClick(
+			user,
+			screen.getByRole("button", { name: "Undo cross-off" }),
+		);
 		await waitFor(() => expect([...sync().pending.keys()]).toEqual(["k1234"]));
 		// 1000 (ok), 500 with k1234 (refused), then its other 499 in one.
 		expect(posts().map((p) => p.body.changes.length)).toEqual([1000, 500, 499]);
@@ -626,7 +660,11 @@ describe("FileDiff", () => {
 		expect(undo).toHaveAccessibleDescription(
 			"Set crossed-off clusters back to unreviewed",
 		);
-		await user.click(undo);
+		await confirmClick(
+			user,
+			undo,
+			/^Remove all crossed-off markings from this file\?$/,
+		);
 		await waitFor(() =>
 			expect(posts()[0]?.body.changes).toEqual([
 				{ key: "k2", state: "unreviewed" },
@@ -686,8 +724,8 @@ describe("FileDiff", () => {
 		await user.click(undo);
 		await new Promise((r) => setTimeout(r, 50));
 		expect(posts()).toHaveLength(1);
-		await new Promise((r) => setTimeout(r, UNDO_ARM_MS));
-		await user.click(undo);
+		await sleep(UNDO_ARM_MS);
+		await confirmClick(user, undo);
 		await waitFor(() =>
 			expect(posts()[1]?.body.changes).toEqual([
 				{ key: "k2", state: "unreviewed" },
@@ -701,7 +739,7 @@ describe("FileDiff", () => {
 		expect(screen.queryByRole("button", { name: "Undo cross-off" })).toBeNull();
 	});
 
-	it("disables the file actions when there's nothing to do", () => {
+	it("disables cross off once all is reviewed; mark flips to unmark", () => {
 		setup(
 			file([
 				cluster("k1", { state: "reviewed" }),
@@ -712,8 +750,14 @@ describe("FileDiff", () => {
 		expect(cross).toBeDisabled();
 		expect(cross).toHaveAttribute("aria-pressed", "false");
 		expect(
-			screen.getByRole("button", { name: "Mark remaining reviewed" }),
-		).toBeDisabled();
+			screen.queryByRole("button", { name: "Mark remaining reviewed" }),
+		).toBeNull();
+		const unmark = screen.getByRole("button", { name: "Unmark reviewed" });
+		expect(unmark).toBeEnabled();
+		expect(unmark).toHaveAttribute("aria-pressed", "true");
+		expect(unmark).toHaveAccessibleDescription(
+			"Set reviewed clusters back to unreviewed",
+		);
 		expect(screen.queryByRole("button", { name: "Undo cross-off" })).toBeNull();
 	});
 
@@ -1026,22 +1070,176 @@ describe("FileDiff", () => {
 		).toBeInTheDocument();
 	});
 
-	it("keeps the file open after marking its last cluster by hand", async () => {
+	it.each([
+		["Mark cluster reviewed", "checkbox"],
+		["Cross off cluster", "button"],
+	] as const)("closes the file when %s finishes it", async (name, role) => {
 		const f = file([cluster("k1")]);
 		const { posts, user } = setup(f, () => ({ status: 200, body: view(f) }));
 		await user.click(screen.getByRole("button", { name: "Expand file" }));
+		await user.click(await screen.findByRole(role, { name }));
+		// At once, before the save answers; focus on its toggle.
+		const toggle = screen.getByRole("button", { name: "Expand file" });
+		expect(toggle).toHaveFocus();
+		await waitFor(() => expect(posts()).toHaveLength(1));
+	});
+
+	it("moves on (onFinished) when the reviewer's mark finishes the file", async () => {
+		// k2 lies outside the diff's hunk: k1 alone has a box.
+		const other = cluster("k2", { newStart: 40, oldStart: 40 });
+		const f = file([cluster("k1"), other]);
+		const onFinished = vi.fn();
+		const { posts, rerender, user } = setup(
+			f,
+			() => ({ status: 200, body: view(f) }),
+			hunks,
+			"clusters",
+			onFinished,
+		);
+		await user.click(screen.getByRole("button", { name: "Expand file" }));
+		const box = await screen.findByRole("checkbox", {
+			name: "Mark cluster reviewed",
+		});
+		// One of two unreviewed: not finished yet.
+		await user.click(box);
+		await waitFor(() => expect(posts()).toHaveLength(1));
+		// Unmarking never moves on.
+		await user.click(box);
+		await waitFor(() => expect(posts()).toHaveLength(2));
+		expect(onFinished).not.toHaveBeenCalled();
+		// k2 reviewed (elsewhere): marking k1 finishes the file.
+		await rerender(file([cluster("k1"), { ...other, state: "reviewed" }]));
+		await user.click(box);
+		expect(onFinished).toHaveBeenCalledTimes(1);
+	});
+
+	it("doesn't move on when a closed file is finished from its header", async () => {
+		const f = file([cluster("k1")]);
+		const onFinished = vi.fn();
+		const { posts, user } = setup(
+			f,
+			() => ({ status: 200, body: view(f) }),
+			hunks,
+			"clusters",
+			onFinished,
+		);
 		await user.click(
-			await screen.findByRole("checkbox", { name: "Mark cluster reviewed" }),
+			screen.getByRole("button", { name: "Mark remaining reviewed" }),
 		);
 		await waitFor(() => expect(posts()).toHaveLength(1));
-		await waitFor(() =>
-			expect(
-				screen.getByRole("checkbox", { name: "Mark cluster reviewed" }),
-			).toBeEnabled(),
+		expect(onFinished).not.toHaveBeenCalled();
+	});
+
+	it("doesn't move on when a write from elsewhere finishes the file", async () => {
+		const f = file([cluster("k1")]);
+		const onFinished = vi.fn();
+		const { rerender, user } = setup(
+			f,
+			() => ({ status: 200, body: view(f) }),
+			hunks,
+			"clusters",
+			onFinished,
 		);
+		await user.click(screen.getByRole("button", { name: "Expand file" }));
+		await screen.findAllByText(codeLine("new five"));
+		await rerender(file([cluster("k1", { state: "reviewed" })]));
+		expect(onFinished).not.toHaveBeenCalled();
 		expect(
 			screen.getByRole("button", { name: "Collapse file" }),
 		).toBeInTheDocument();
+	});
+
+	it.each([
+		["Undo cross-off", "crossed-off", "crossed-off"],
+		["Unmark reviewed", "reviewed", "reviewed"],
+	] as const)(
+		"%s asks first, then resets the file",
+		async (name, state, word) => {
+			const f = file([cluster("k1", { state }), cluster("k2", { state })]);
+			const onFinished = vi.fn();
+			const { posts, user } = setup(
+				f,
+				() => ({ status: 200, body: view(f) }),
+				hunks,
+				"clusters",
+				onFinished,
+			);
+			const button = screen.getByRole("button", { name });
+			await user.click(button);
+			// Asked: named and shown as the question; nothing written.
+			const question = `Remove all ${word} markings from this file?`;
+			expect(button).toHaveAccessibleName(question);
+			expect(button).toHaveAttribute("data-armed");
+			const tip = screen.getByText(question, { selector: "[role=tooltip]" });
+			expect(tip).toBeVisible();
+			expect(posts()).toHaveLength(0);
+			// A double click's second click doesn't answer it.
+			await user.click(button);
+			expect(posts()).toHaveLength(0);
+			expect(button).toHaveAccessibleName(question);
+			await sleep(UNDO_ARM_MS);
+			await user.click(button);
+			await waitFor(() =>
+				expect(posts()[0]?.body.changes).toEqual([
+					{ key: "k1", state: "unreviewed" },
+					{ key: "k2", state: "unreviewed" },
+				]),
+			);
+			expect(posts()).toHaveLength(1);
+			expect(onFinished).not.toHaveBeenCalled();
+		},
+	);
+
+	it("drops the question on Escape, blur or a press elsewhere", async () => {
+		const f = file([cluster("k1", { state: "reviewed" })]);
+		const { posts, user } = setup(f, () => ({ status: 200, body: view(f) }));
+		const button = screen.getByRole("button", { name: "Unmark reviewed" });
+		const ask = async () => {
+			await user.click(button);
+			expect(button).toHaveAttribute("data-armed");
+		};
+		await ask();
+		await user.keyboard("{Escape}");
+		expect(button).toHaveAccessibleName("Unmark reviewed");
+		await sleep(UNDO_ARM_MS);
+		await ask();
+		await user.tab();
+		expect(button).toHaveAccessibleName("Unmark reviewed");
+		await sleep(UNDO_ARM_MS);
+		await ask();
+		await user.click(document.body);
+		expect(button).toHaveAccessibleName("Unmark reviewed");
+		// Asked again from scratch: the old question doesn't carry over.
+		await sleep(UNDO_ARM_MS);
+		await user.click(button);
+		expect(posts()).toHaveLength(0);
+	});
+
+	it("a file finished by both kinds resets each kind from its own button", async () => {
+		const f = file([
+			cluster("k1", { state: "reviewed" }),
+			cluster("k2", { state: "crossed-off" }),
+		]);
+		const { posts, user } = setup(f, () => ({ status: 200, body: view(f) }));
+		await confirmClick(
+			user,
+			screen.getByRole("button", { name: "Unmark reviewed" }),
+		);
+		await waitFor(() =>
+			expect(posts()[0]?.body.changes).toEqual([
+				{ key: "k1", state: "unreviewed" },
+			]),
+		);
+	});
+
+	it("can't reset a file that isn't finished: it marks the rest", () => {
+		setup(file([cluster("k1", { state: "reviewed" }), cluster("k2")]));
+		expect(
+			screen.queryByRole("button", { name: "Unmark reviewed" }),
+		).toBeNull();
+		expect(
+			screen.getByRole("button", { name: "Mark remaining reviewed" }),
+		).toBeEnabled();
 	});
 
 	it("keeps the file open after undoing a cross-off", async () => {
@@ -1050,13 +1248,11 @@ describe("FileDiff", () => {
 		]);
 		const { posts, user } = setup(f, () => ({ status: 200, body: view(f) }));
 		await user.click(screen.getByRole("button", { name: "Expand file" }));
-		await user.click(screen.getByRole("button", { name: "Undo cross-off" }));
-		await waitFor(() => expect(posts()).toHaveLength(1));
-		await waitFor(() =>
-			expect(
-				screen.getByRole("button", { name: "Undo cross-off" }),
-			).toBeEnabled(),
+		await confirmClick(
+			user,
+			screen.getByRole("button", { name: "Undo cross-off" }),
 		);
+		await waitFor(() => expect(posts()).toHaveLength(1));
 		expect(
 			screen.getByRole("button", { name: "Collapse file" }),
 		).toBeInTheDocument();
@@ -1224,12 +1420,12 @@ describe("FileDiff", () => {
 		expect(document.querySelector("section > header")).toHaveAttribute(
 			"data-finished",
 		);
-		// A double click's second click doesn't undo it.
+		// A double click's second click doesn't undo it, or even ask.
 		await user.click(cross);
 		expect(cross).toHaveAccessibleName("Undo cross-off");
-		await new Promise((r) => setTimeout(r, UNDO_ARM_MS));
+		await sleep(UNDO_ARM_MS);
 		// Undone while the first write is still out: queued behind it.
-		await user.click(cross);
+		await confirmClick(user, cross);
 		expect(cross).toHaveAccessibleName("Cross off file");
 		expect(posts()).toHaveLength(1);
 		await act(async () => answer?.());
@@ -1451,14 +1647,16 @@ describe("FileDiff", () => {
 
 	it("marks a whitespace-only cluster reviewed from its collapsed row, and only on a click", async () => {
 		ignoreWhitespace.set(true);
-		const reviewed = file([cluster("k1", { state: "reviewed" })]);
+		// A second cluster keeps the file open once k1 is marked.
+		const other = cluster("k2", { newStart: 40, oldStart: 40 });
+		const reviewed = file([cluster("k1", { state: "reviewed" }), other]);
 		const [first] = hunks.hunks;
 		if (!first) throw new Error("fixture has a hunk");
 		const lines = first.lines.map((l) =>
 			l.kind === "add" ? { ...l, text: "  old five" } : l,
 		);
 		const { posts, paths, user } = setup(
-			file([cluster("k1")]),
+			file([cluster("k1"), other]),
 			() => ({ status: 200, body: view(reviewed) }),
 			{ ...hunks, hunks: [{ ...first, lines }] },
 		);
@@ -1485,6 +1683,6 @@ describe("FileDiff", () => {
 		expect(screen.getByTestId("ws-cluster")).toHaveAttribute("data-reviewed");
 		expect(
 			screen.getByRole("progressbar", { name: "File progress" }),
-		).toHaveTextContent("1 / 1 cluster");
+		).toHaveTextContent("1 / 2 clusters");
 	});
 });
