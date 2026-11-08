@@ -721,6 +721,8 @@ interface RowProps {
 const marksOf = (keys: LineKey[], threads: RowThreads | undefined): Mark[] =>
 	threads ? keys.flatMap((k) => threads.placement.marks.get(k) ?? []) : [];
 
+const NO_MARKS: readonly Mark[] = [];
+
 /**
  * A line's word marks and their tint: its kind's, faded on a reviewed
  * cluster (as REVIEWED_ROW_BG fades the row). A whitespace-only row has none.
@@ -732,11 +734,13 @@ function wordsOf(
 ): Words | undefined {
 	if (line.kind !== "add" && line.kind !== "del") return undefined;
 	const marks = props.words?.get(line);
-	if (!marks) return undefined;
+	// A BOM may be hidden on a line without marks (hiddenLines).
+	const hidden = props.hidden?.has(line) || undefined;
+	if (!marks && !hidden) return undefined;
 	return {
-		marks,
+		marks: marks ?? NO_MARKS,
 		tone: reviewed ? `${line.kind}-done` : line.kind,
-		hidden: props.hidden?.has(line) || undefined,
+		hidden,
 	};
 }
 

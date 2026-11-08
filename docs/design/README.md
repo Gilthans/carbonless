@@ -70,8 +70,10 @@ all in `faint`. Characters that would print as nothing or as a lookalike
 blank (controls, zero widths, BOM, soft hyphen, tags, unusual spaces,
 separators, stray variation selectors) show as `\uXXXX`, named in a
 tooltip (hover or tap); bidi controls also get a `warn` tint. Settings' "Show
-hidden characters" switch hides only spaces, tabs and line endings: escapes
-always show (principle 2). Only a short list of invisibles doing their job stays
+hidden characters" switch hides only spaces, tabs, line endings and a
+file's byte order mark (a U+FEFF that starts its first line: encoding, not
+content; owner, 2026-11-08): other escapes always show (principle 2), and
+a changed first line that starts with a BOM warns while they are off. Only a short list of invisibles doing their job stays
 unescaped, and anything unsure is escaped: ZWJ/ZWNJ after a virama on a
 letter of its own script, ZWNJ between joining letters of one
 script (IDNA CONTEXTJ, Joining_Type generated from Unicode data by
