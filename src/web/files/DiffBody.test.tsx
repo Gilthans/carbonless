@@ -2183,6 +2183,22 @@ describe("DiffBody find", () => {
 		);
 	});
 
+	it("a cluster a step opened stays open when typing makes the caret unshown or moves it", async () => {
+		ignoreWhitespace.set(true);
+		const { collapsed, refind } = setup({
+			find: findAt({ old: false, line: 3 }, 1),
+		});
+		await screen.findByText("Whitespace only · 6 lines");
+		expect(collapsed()[0]).toHaveAttribute("data-expanded");
+		// Typing another character: the caret starts over, unshown, elsewhere or nowhere.
+		refind(findAt({ old: false, line: 3 }, 1, () => [], false));
+		refind(findAt({ old: false, line: 99 }, 1, () => [], false));
+		refind(findAt(null, 1, () => [], false));
+		// Give a collapse that shouldn't come every chance to.
+		await act(() => new Promise((r) => setTimeout(r, 20)));
+		expect(collapsed()[0]).toHaveAttribute("data-expanded");
+	});
+
 	it("a collapsed whitespace-only cluster holding the current hit opens", async () => {
 		ignoreWhitespace.set(true);
 		const { collapsed } = setup({ find: findAt({ old: false, line: 3 }) });
