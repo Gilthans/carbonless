@@ -77,15 +77,11 @@ describe("pieces of a cluster", () => {
 		]);
 	});
 
-	it("gives a removed line to the piece that shows it, by text when its number is another side's", () => {
+	it("gives a removed line to the piece that shows it, by its place in the base (the since view numbers it in the compared head)", () => {
 		const ranges = pieceRanges(
 			cluster,
-			[
-				[add(22)],
-				// The since view numbers a removed line in the compared head.
-				[del(57, "old b"), add(27)],
-			],
-			vouched,
+			[[add(22)], [del(57, "old b"), add(27)]],
+			{ ...vouched, baseNo: (l) => (l.oldNo === 57 ? 11 : undefined) },
 		);
 		expect(ranges).toEqual([
 			[
@@ -123,10 +119,35 @@ describe("pieces of a cluster", () => {
 		).toEqual([[[3, 4]], [[7, 9]], [[10, 11]]]);
 	});
 
-	it("a removed line the compared patch set added is never one of the cluster's", () => {
+	it("a removed line the engine can't place in the base (the compared patch set added it) is never one of the cluster's", () => {
 		expect(
-			pieceRanges(cluster, [[del(57, "old b")]], { baseLine: () => false }),
+			pieceRanges(cluster, [[del(57, "old b")]], { baseNo: () => undefined }),
 		).toEqual([null]);
+	});
+
+	it("never by text: a shown blank line owns its own place, not an unshown twin (principle 2)", () => {
+		const twins: Cluster = {
+			...cluster,
+			oldStart: 10,
+			oldCount: 4,
+			newCount: 1,
+			removed: ["x", "", "y", ""],
+			added: ["n0"],
+			lines: 5,
+		};
+		// Base line 11 (index 1), numbered 13 in the compared head (two lines added above).
+		const shown = [del(13, "")];
+		expect(
+			pieceRanges(twins, [shown], {
+				baseNo: (l) => (l.oldNo === 13 ? 11 : undefined),
+			}),
+		).toEqual([[[1, 2]]]);
+		// Unmapped: nothing, never the twin at index 3.
+		expect(pieceRanges(twins, [shown], { baseNo: () => undefined })).toEqual([
+			null,
+		]);
+		// A place whose text differs owns nothing either.
+		expect(pieceRanges(twins, [shown], { baseNo: () => 10 })).toEqual([null]);
 	});
 
 	it("a piece is reviewed when its cluster is, or every line it owns is", () => {

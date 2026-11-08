@@ -58,17 +58,23 @@ export interface PieceFacts {
 	 * removed there too). Only such a line no piece shows may join a piece.
 	 */
 	vouched?: (index: number) => boolean;
-	/** A shown removed line may be one of the cluster's removed lines (a base line, not one the compared patch set added). */
-	baseLine?: (line: DiffLine) => boolean;
+	/**
+	 * A shown removed line's line in the new merge base, by position (the
+	 * since view numbers it in the compared head); undefined for a line the
+	 * compared patch set added, or one the engine can't map. Without it a
+	 * shown removed line is taken as numbered in the base (the full diff).
+	 */
+	baseNo?: (line: DiffLine) => number | undefined;
 }
 
 /**
  * Which of the cluster's lines each piece owns, given the lines each one
  * shows (`pieces`, in file order; the since view's runs keyed to the
  * cluster). A shown added line is the cluster's line at its new number; a
- * shown removed line that is a base line is a removed line of the cluster
- * with its text (at its own number when that one matches, else the first
- * unclaimed one). A line no piece shows is unchanged since the compared
+ * shown removed line is the cluster's removed line at its place in the
+ * base (`baseNo`), and only when its text is that line's: never matched by
+ * text alone (principle 2: a twin elsewhere is another line). A line no
+ * piece shows is unchanged since the compared
  * patch set: it joins a piece only when `vouched` (unchanged since a line
  * the reviewer reviewed there), an added one the piece shown before it
  * (the first for those before any), a removed one the first piece; any
@@ -85,24 +91,21 @@ export function pieceRanges(
 		return pieces.map(() => null);
 	}
 	const vouched = facts.vouched ?? (() => false);
-	const baseLine = facts.baseLine ?? (() => true);
+	const baseNo = facts.baseNo ?? ((line: DiffLine) => line.oldNo);
 	const owner = new Array<number | undefined>(cluster.lines).fill(undefined);
 	const removed = cluster.removed;
-	const owned = (i: number) => owner[i] !== undefined;
 	pieces.forEach((lines, p) => {
 		for (const line of lines) {
 			let i: number | undefined;
 			if (line.kind === "add") i = lineIndex(cluster, line);
-			else if (line.kind === "del" && baseLine(line)) {
-				const at = lineIndex(cluster, line);
-				if (at !== undefined && removed[at] === line.text && !owned(at)) {
-					i = at;
-				} else {
-					const found = removed.findIndex(
-						(text, j) => text === line.text && !owned(j),
-					);
-					i = found >= 0 ? found : undefined;
-				}
+			else if (line.kind === "del") {
+				const b = baseNo(line);
+				const at =
+					b === undefined
+						? undefined
+						: lineIndex(cluster, { kind: "del", oldNo: b });
+				// The text is a guard: a line at that place reads the same.
+				if (at !== undefined && removed[at] === line.text) i = at;
 			}
 			if (i !== undefined && owner[i] === undefined) owner[i] = p;
 		}

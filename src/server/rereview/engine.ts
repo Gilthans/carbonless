@@ -37,7 +37,7 @@ import {
 import { detectShape, type Shape } from "./shape.js";
 
 /** Bumped when the engine's cached, state-free result could change for the same inputs. */
-export const ENGINE_VERSION = 2;
+export const ENGINE_VERSION = 3;
 
 /** The patch set a comparison is from, with its snapshot and folded states. */
 export type SincePatchset = PatchsetRecord & {
@@ -76,6 +76,15 @@ export interface Traced {
 		 * cluster that removed it (its image through the bases' diff).
 		 */
 		base?: Record<string, Record<number, string>>;
+		/**
+		 * By the virtual rebase's path, for each file of the since patch set:
+		 * an interdiff removed line (its old-side number) → the line of the
+		 * new merge base it is, by position (through the virtual rebase, the
+		 * patch set's own diff and the bases' diff); absent for a line the
+		 * patch set added or one that can't be mapped. A file the since
+		 * patch set didn't touch has no entry: its old side is the new base.
+		 */
+		baseLine?: Record<string, Record<number, number>>;
 	};
 }
 
@@ -232,7 +241,12 @@ export async function traceRereview(
 	};
 	const shape = await detectShape(repo, from, to, signal);
 	const interdiff = await buildInterdiff(repo, shape, from, to, signal);
-	const lineKeys: Traced["lineKeys"] = { old: {}, new: {}, base: {} };
+	const lineKeys: Traced["lineKeys"] = {
+		old: {},
+		new: {},
+		base: {},
+		baseLine: {},
+	};
 	// No carry across an unavailable interdiff: nothing is traced.
 	if (interdiff.status !== "available") {
 		return { shape, interdiff, traced: [], lineKeys };
@@ -299,12 +313,31 @@ export async function traceRereview(
 	}
 	const targetByOld = new Map<string, TargetFile>();
 	for (const t of targetFiles) targetByOld.set(t.oldPath ?? t.path, t);
+	const interdiffByOld = new Map(
+		interdiff.files.map((f) => [f.oldPath ?? f.path, f]),
+	);
 	for (const file of ps.snapshot.files) {
 		const toPrime = primeByOld.get(file.path);
 		const primePath = toPrime?.path ?? file.path;
 		const primeMapper = toPrime?.mapper ?? IDENTITY;
 		const t = targetByOld.get(file.path);
 		const cd = t ? linesMapper(t.clusters) : null;
+		// Each removed line the since view shows, as the new base's line.
+		const baseLines: Record<number, number> = {};
+		const shownFile = interdiffByOld.get(primePath);
+		if (t && shownFile && !shownFile.conflict) {
+			const own = linesMapper(file.clusters);
+			for (const ic of shownFile.clusters) {
+				if (ic.kind !== "lines") continue;
+				for (let i = 0; i < ic.oldCount; i++) {
+					const h1 = primeMapper.newToOld(ic.oldStart + i);
+					const b1 = h1 === null ? null : own.newToOld(h1);
+					const b2 = b1 === null ? null : t.ac.oldToNew(b1);
+					if (b2 !== null) baseLines[ic.oldStart + i] = b2;
+				}
+			}
+		}
+		(lineKeys.baseLine ??= {})[primePath] = baseLines;
 		for (const c of file.clusters) {
 			if (c.kind !== "lines") continue;
 			for (let i = 0; i < c.newCount; i++) {
@@ -637,23 +670,27 @@ export function interdiffFileHunks(
 	};
 	const targetClusters = targetFile?.clusters ?? [];
 	const addedThen = traced.lineKeys.old[file.oldPath ?? file.path] ?? {};
-	/**
-	 * The target cluster a removed base line is one of: one at the place of
-	 * its interdiff cluster that removes a line with its text (a line the
-	 * since patch set added is never one).
-	 */
-	const removedBy = (line: DiffLine, temp: string): string | undefined => {
-		if (addedThen[line.oldNo as number] !== undefined) return undefined;
-		const at = clusters[Number(temp.slice(TEMP.length))];
-		if (!at) return undefined;
-		const from = at.newStart - 1;
-		const to = at.newStart + at.newCount;
+	// A removed line's line in the new base, by position: a conflicted
+	// file's old side is the new base; a file the since patch set didn't
+	// touch is the new base on its old side too; else the engine's map
+	// (none for a line the patch set added, or one it can't map).
+	const mapped = traced.lineKeys.baseLine?.[file.oldPath ?? file.path];
+	const baseNo = (line: DiffLine): number | undefined =>
+		line.kind !== "del" || line.oldNo === undefined
+			? undefined
+			: file.conflict || mapped === undefined
+				? line.oldNo
+				: mapped[line.oldNo];
+	/** The target cluster that removes a removed base line (by its place in the new base). */
+	const removedBy = (line: DiffLine): string | undefined => {
+		const b = baseNo(line);
+		if (b === undefined) return undefined;
 		return targetClusters.find(
 			(c) =>
 				c.kind === "lines" &&
-				c.newStart <= to &&
-				from <= c.newStart + c.newCount &&
-				c.removed.includes(line.text),
+				c.oldCount > 0 &&
+				c.oldStart <= b &&
+				b < c.oldStart + c.oldCount,
 		)?.key;
 	};
 	for (const hunk of hunks) {
@@ -677,7 +714,7 @@ export function interdiffFileHunks(
 					: file.conflict
 						? byOld.get(line.oldNo as number)
 						: (gone(goneOld[line.oldNo as number]) ??
-							removedBy(line, temp) ??
+							removedBy(line) ??
 							firstAdd.get(temp));
 			if (key === undefined) delete line.clusterKey;
 			else line.clusterKey = key;
@@ -707,8 +744,7 @@ export function interdiffFileHunks(
 		file.clusters.filter((c) => c.kind === "lines"),
 	);
 	const pieces = sincePieces(hunks, targetClusters, (c) => ({
-		baseLine: (line) =>
-			file.conflict || addedThen[line.oldNo as number] === undefined,
+		baseNo,
 		vouched: (i) => {
 			if (file.conflict) return false;
 			if (i < c.removed.length) return reviewed(removedThen[c.oldStart + i]);

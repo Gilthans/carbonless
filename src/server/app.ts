@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import fastifyStatic from "@fastify/static";
 import Fastify, { type FastifyInstance, type FastifyRequest } from "fastify";
-import { parseRanges } from "../shared/lineRanges.js";
+import { type LineRanges, parseRanges } from "../shared/lineRanges.js";
 import {
 	type ClusterState,
 	COMMENTS_BATCH,
@@ -34,7 +34,6 @@ import {
 } from "./registry.js";
 import { parsePlacementBody } from "./rereview/placementBody.js";
 import { InvalidPlacementError } from "./rereview/threads.js";
-import { parseSides } from "./review/events.js";
 import {
 	InvalidChangeError,
 	RefusedChangeError,
@@ -741,25 +740,6 @@ function oidParam(name: string, raw: unknown): string {
 	return raw;
 }
 
-/** A since mark's fields, or null (the store checks the rest: sinceMarkOk). */
-function parseSinceMark(value: unknown): SinceMark | null {
-	if (typeof value !== "object" || value === null) return null;
-	const { since, path, reviewed, crossed } = value as Record<string, unknown>;
-	const r = parseSides(reviewed);
-	const x = parseSides(crossed);
-	if (
-		typeof since !== "number" ||
-		!Number.isSafeInteger(since) ||
-		since < 1 ||
-		typeof path !== "string" ||
-		!r ||
-		!x
-	) {
-		return null;
-	}
-	return { since, path, reviewed: r, crossed: x };
-}
-
 function parseStatesBody(body: unknown): {
 	revision: string;
 	changes: StateChange[];
@@ -789,16 +769,21 @@ function parseStatesBody(body: unknown): {
 			return undefined;
 		}
 		if (sinceMark !== undefined) {
-			// Since-only pieces: a mark of its own (checked again with the store).
-			const mark = parseSinceMark(sinceMark);
-			if (!mark || reviewedLines !== undefined || crossedLines !== undefined) {
-				refused.push({
-					key,
-					message: "sinceMark must be { since, path, reviewed, crossed }",
-				});
-				return undefined;
-			}
-			return { key, state: state as ClusterState, sinceMark: mark };
+			// Since-only pieces: a mark of its own, checked whole (shape,
+			// path, key, patch set, no lines with it) by the store against the
+			// review (sinceMarkOk), which refuses it by key.
+			return {
+				key,
+				state: state as ClusterState,
+				sinceMark: sinceMark as SinceMark,
+				// Lines with it are refused there too.
+				...(reviewedLines === undefined
+					? {}
+					: { reviewedLines: reviewedLines as LineRanges }),
+				...(crossedLines === undefined
+					? {}
+					: { crossedLines: crossedLines as LineRanges }),
+			};
 		}
 		if (reviewedLines !== undefined || crossedLines !== undefined) {
 			// Part of a cluster: ranges of its lines, with unreviewed only;

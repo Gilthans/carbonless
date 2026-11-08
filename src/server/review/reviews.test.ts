@@ -527,18 +527,10 @@ describe("recordStates", () => {
 			]);
 		});
 
-		it("refuses a mark naming no earlier patch set, its own, a bad path or a key not its own", async () => {
+		it("refuses a mark naming no earlier patch set, or its own", async () => {
 			await svc.recordStates(id, "dan", snap, [{ key: k1, state: "reviewed" }]);
 			const tip = await store.tip(progressRef());
-			const bad: StateChange[] = [
-				change(1),
-				change(7),
-				change(1, "a\nb.ts"),
-				change(1, ""),
-				{ ...change(1, "x.ts"), key: sinceMarkKey(1, "y.ts") },
-				{ ...change(1), reviewedLines: [[0, 1]] },
-			];
-			for (const c of bad) {
+			for (const c of [change(1), change(7)]) {
 				await expect(
 					svc.recordStates(id, "dan", snap, [c]),
 				).rejects.toMatchObject({
@@ -546,6 +538,47 @@ describe("recordStates", () => {
 					keys: [c.key],
 				});
 			}
+			expect(await store.tip(progressRef())).toBe(tip);
+		});
+
+		// Each against PS2 with since 1, so the one thing wrong is the one named.
+		it.each([
+			["a control character in the path", change(1, "a\nb.ts")],
+			["a DEL character in the path", change(1, "a\u007fb.ts")],
+			["an empty path", change(1, "")],
+			[
+				"a key not its own",
+				{ ...change(1, "x.ts"), key: sinceMarkKey(1, "y.ts") },
+			],
+			[
+				"lines of a cluster too",
+				{ ...change(1), reviewedLines: [[0, 1]] as [number, number][] },
+			],
+			[
+				"a side that isn't ranges",
+				{
+					...change(1),
+					sinceMark: { ...mark(1), reviewed: { old: [[2, 1]], new: [] } },
+				} as StateChange,
+			],
+		])("refuses a mark with %s, writing nothing", async (_, bad) => {
+			await svc.recordStates(id, "dan", snap, [{ key: k1, state: "reviewed" }]);
+			const start: PatchsetStart = {
+				since: 1,
+				shape: "S1",
+				baseBranch: "main",
+				interdiff: "available",
+				carried: [],
+			};
+			// PS2 started, and a good mark takes: only `bad` is wrong.
+			await svc.recordStates(id, "dan", otherSnap, [change(1, "ok.ts")], start);
+			const tip = await store.tip(progressRef());
+			await expect(
+				svc.recordStates(id, "dan", otherSnap, [bad]),
+			).rejects.toMatchObject({
+				constructor: InvalidChangeError,
+				keys: [bad.key],
+			});
 			expect(await store.tip(progressRef())).toBe(tip);
 		});
 	});
@@ -1422,6 +1455,6 @@ describe("patch set n+1", () => {
 		console.log(
 			`heavy review (${all.length} events, squashed): ${heavy.raw} bytes raw, ${heavy.deflated} deflated`,
 		);
-		expect(heavy.deflated).toBeLessThan(600 * 1024);
+		expect(heavy.deflated).toBeLessThan(100 * 1024);
 	});
 });

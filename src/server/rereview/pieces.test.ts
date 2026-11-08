@@ -221,3 +221,82 @@ describe("a base line removed next to a reverted line", () => {
 		expect([...all].sort()).toEqual([0, 1, 2, 3]);
 	});
 });
+
+describe("identical text: a shown removed line is placed in the base by position", () => {
+	// Base "", c, "" around d; PS1 adds two lines above and removes c and
+	// the blank after it (unreviewed); PS2 removes the blank before c too.
+	const base = ["l1", "l2", "", "c", "", "d", "e", "f", "g", "h", "i", "j"];
+	const ps1 = [
+		"l1",
+		"top1",
+		"top2",
+		"l2",
+		"",
+		"d",
+		"e",
+		"f",
+		"g",
+		"h",
+		"i",
+		"j",
+	];
+	const ps2 = ["l1", "top1", "top2", "l2", "d", "e", "f", "g", "h", "i", "j"];
+	let r: GitFixture;
+	let a: Snapshot;
+	let b: Snapshot;
+	beforeAll(async () => {
+		r = createGitFixture([
+			{ message: "base", files: { "a.txt": text(base) } },
+			{ message: "ps1", files: { "a.txt": text(ps1) } },
+			{ message: "ps2", files: { "a.txt": text(ps2) } },
+		]);
+		const [b0, h1, h2] = r.shas as [string, string, string];
+		a = await buildSnapshot(r.path, b0, h1);
+		b = await buildSnapshot(r.path, b0, h2);
+	});
+	afterAll(() => r.cleanup());
+
+	const piecesFor = async (states: Map<string, StateEntry>) => {
+		const since: SincePatchset = {
+			number: 1,
+			revision: a.revision,
+			mergeBase: a.base,
+			head: a.head,
+			startedAt: 0,
+			since: null,
+			shape: null,
+			baseBranch: "main",
+			interdiff: null,
+			snapshot: a,
+			states,
+		};
+		const target = { ...b, baseBranch: "main" };
+		const traced = await traceRereview(r.path, since, [], target);
+		const { answer } = answerRereview(traced, since, [], target);
+		return interdiffFileHunks(traced, b, answer, 0, states).pieces ?? [];
+	};
+
+	it("the shown blank owns its own place, never the unshown, unvouched twin", async () => {
+		const merged = b.files[0]?.clusters.find((c) => c.removed.length === 3);
+		expect(merged?.removed).toEqual(["", "c", ""]);
+		const pieces = await piecesFor(new Map());
+		const own = pieces.find((p) => p.key === merged?.key);
+		// Base line 3 (index 0) is what the since view shows; base 5 (index 2)
+		// is unshown, unchanged since an unreviewed PS1 removal.
+		expect(own?.owns).toEqual([[0, 1]]);
+	});
+
+	it("with PS1's removal crossed off, nothing it removed is vouched either", async () => {
+		const states = new Map<string, StateEntry>(
+			a.files[0]?.clusters.map((c) => [c.key, { state: "crossed-off" }]) ?? [],
+		);
+		const merged = b.files[0]?.clusters.find((c) => c.removed.length === 3);
+		const own = (await piecesFor(states)).find((p) => p.key === merged?.key);
+		expect(own?.owns).toEqual([[0, 1]]);
+		const reviewed = new Map<string, StateEntry>(
+			a.files[0]?.clusters.map((c) => [c.key, { state: "reviewed" }]) ?? [],
+		);
+		const all = (await piecesFor(reviewed)).find((p) => p.key === merged?.key);
+		expect(all?.owns).toEqual([[0, 3]]);
+	});
+});

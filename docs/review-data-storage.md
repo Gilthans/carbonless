@@ -328,8 +328,13 @@ A set of them is a list of half-open ranges `[start, end)`, normalized
 engine computes it for the since view's hunks, `interdiffFileHunks`):
 
 - A shown added line is the cluster's line at its new number. A shown
-  removed line is one of the cluster's removed lines only when it is a base
-  line (not a line the earlier patch set added) with the same text.
+  removed line is the cluster's removed line at its place in the new base,
+  found by position: the since view numbers it in the earlier head (or its
+  virtual rebase), and the engine maps it back through that patch set's
+  own diff and the bases' diff (`lineKeys.baseLine`); its text must match
+  as a guard. Never by text alone: a twin elsewhere (a blank line, a `}`)
+  is another line. A line the earlier patch set added, or one that can't
+  be mapped, is none of the cluster's.
 - A cluster line no piece shows is unchanged since the earlier patch set.
   It joins a piece only when it is unchanged since a line the reviewer
   **reviewed** there: an added line that is the same line as one a reviewed
@@ -339,14 +344,18 @@ engine computes it for the since view's hunks, `interdiffFileHunks`):
   piece for those before any), a removed one to the first piece. Marking the
   piece may cover it because it reads the same as a line the reviewer
   marked reviewed on the earlier patch set, and nothing about it changed.
+  Only a whole `reviewed` mark vouches: a crossed-off or partly marked
+  earlier cluster vouches for nothing.
 - **Fails closed.** A line unchanged since a line that was *not* reviewed
   (or one the engine can't map) joins no piece. Ticking every piece then
   leaves the cluster partly reviewed (mixed in the full diff), and the
   since view counts it under "only in the full diff". Tested in
   `src/server/rereview/pieces.test.ts` and `src/shared/pieces.test.ts`.
-- A removal with no key of its own is keyed to the snapshot's cluster at
-  its place (`clusterAt`): the author changed that place again, so its lines
-  are that cluster's piece (the gallery's `rr-pieces`, second section).
+- A removed base line is keyed to the snapshot's cluster that removes that
+  base line (by position); a removal with no key of its own otherwise to the
+  snapshot's cluster at its place (`clusterAt`): the author changed that
+  place again, so its lines are that cluster's piece (the gallery's
+  `rr-pieces`, second section).
 
 **`lines-state`.** A piece's mark is written as one commit: a
 `cluster-state` `unreviewed` for the whole cluster, then a `lines-state`
@@ -363,8 +372,11 @@ a cluster with no whole mark; the coverage join (`buildReviewView`,
 past its lines or it is a file-level cluster. A cluster whose lines are all
 marked, some crossed off, counts as reviewed (as a file does) and shows its
 crossed lines; one partly marked is unreviewed, with its marked lines in
-the line counts (`ClusterView.reviewedLines`, `crossedLines`). A partly
-marked cluster never carries: the carry takes whole human states only.
+the line counts (`ClusterView.reviewedLines`, `crossedLines`). A cluster
+marked piece by piece never carries and never vouches, even once every
+line is marked (its stored entry stays line marks; the carry takes whole
+human states only), so a later push asks for it again even when its change
+is identical; a `cluster-state` written by the full diff's box ends that.
 
 **Since-only pieces and `since-lines-state`.** A piece that owns no line
 of the snapshot (lines the earlier patch set had that are gone, or base
@@ -379,9 +391,12 @@ cluster key and the piece's old-side range"): no cluster key, because a
 piece can hold lines of no earlier cluster (a base line the earlier patch
 set kept); path and range name the lines without one. Both sides are fixed
 for a started patch set (its own and the earlier one's heads are pinned),
-so the numbers stay put. A mark counts for a piece only when it holds all
-of the piece's lines; a range that is no since-only piece of this
-comparison covers nothing (fails closed). These marks never change a
+so the numbers stay put, as long as the virtual rebase comes out the same
+(git's merge-tree: a change in it can shift a stale mark; it never marks a
+cluster, see below). A mark counts for a piece only when it holds all of
+the piece's lines: a range that holds no since-only piece of this
+comparison marks nothing, and a range that holds more than the marked
+pieces marks every since-only piece inside it, in the since view only. These marks never change a
 cluster's state, never carry, and never count in the snapshot's progress;
 the since view counts an unmarked since-only piece in "to read", and the
 engine's answer lists them per file (`sinceOnly`) and in `toRead`.
