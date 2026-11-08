@@ -155,5 +155,8 @@ main().catch((error: unknown) => {
 	console.error(
 		`crb: ${error instanceof Error ? error.message : String(error)}`,
 	);
-	process.exit(1);
+	// Not process.exit(1): on Windows, exiting at once after a fetch with an
+	// AbortSignal.timeout and a second one on the same connection aborts
+	// Node (libuv assertion in src\win\async.c, exit 0xC0000409).
+	process.exitCode = 1;
 });
