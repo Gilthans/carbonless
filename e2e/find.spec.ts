@@ -681,19 +681,10 @@ test("the bar stays put: opening, stepping three times and across files never mo
 	await stepUntil(page, B, 12, next);
 	await expect(currentRow(page)).toBeInViewport();
 	expect(await barBox(page)).toEqual(opened);
-	// Pinned to the top: right under the app header's row, or a phone's top.
+	// Pinned: on desktop right under the sticky stack (the header's row and
+	// the progress bar, stuck now), over the diff; a phone's at the top.
 	if (isMobile) expect(opened.y).toBe(0);
-	else
-		expect(opened.y).toBeCloseTo(
-			await page.evaluate(() =>
-				Number.parseFloat(
-					getComputedStyle(document.documentElement).getPropertyValue(
-						"--app-header",
-					),
-				),
-			),
-			0,
-		);
+	else expect(Math.abs(opened.y - (await barBottom(page)))).toBeLessThan(1.5);
 });
 
 test("on a phone the open bar replaces the app header; ✕ brings it back", async ({
@@ -730,6 +721,74 @@ test("on a phone the open bar replaces the app header; ✕ brings it back", asyn
 	await expect(bar(page)).toHaveCount(0);
 	await expect(appHeader(page)).toBeVisible();
 	await expect(findButton(page)).toBeFocused();
+});
+
+test("on a phone the bar covers the hidden header's box: no gap at the top of the page or once scrolled, controls never moving", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	test.skip(!isMobile, "the phone layout");
+	await phone(page, isMobile);
+	await pr(fixture);
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	/** The page's own room between the header's box and the progress bar. */
+	const room = await page.evaluate(() => {
+		const header = document.querySelector("[data-app-header]");
+		const stack = document
+			.querySelector('[role="progressbar"][aria-label="Review progress"]')
+			?.closest(".sticky");
+		return (
+			(stack?.getBoundingClientRect().top ?? 0) -
+			(header?.getBoundingClientRect().bottom ?? 0)
+		);
+	});
+	await openBar(page, isMobile);
+	const float = page.locator("[data-find-float]");
+	const gap = async () =>
+		(await page.evaluate(
+			() =>
+				document
+					.querySelector('[role="progressbar"][aria-label="Review progress"]')
+					?.closest(".sticky")
+					?.getBoundingClientRect().top ?? Number.NaN,
+		)) -
+		((await float.boundingBox())?.y ?? 0) -
+		((await float.boundingBox())?.height ?? 0);
+	// At the top of the page: the bar ends where the header's box did.
+	await expect.poll(gap).toBeLessThanOrEqual(room + 1);
+	await expect.poll(gap).toBeGreaterThanOrEqual(-1);
+	const controls = async () => ({
+		box: await box(page).boundingBox(),
+		next: await bar(page).getByRole("button", { name: /^Next/ }).boundingBox(),
+	});
+	const before = await controls();
+	// The box takes the first row, full width; the buttons the second.
+	expect(before.box?.width ?? 0).toBeGreaterThan(300);
+	expect(before.next?.y ?? 0).toBeGreaterThan(before.box?.y ?? 0);
+	// Scrolled: the progress bar sticks right under the bar.
+	await page.evaluate(() => window.scrollTo(0, 400));
+	await expect.poll(gap).toBeLessThanOrEqual(1);
+	await expect.poll(gap).toBeGreaterThanOrEqual(-1);
+	expect(await controls()).toEqual(before);
+	await search(page, "saveDraft");
+	for (let i = 0; i < 3; i++)
+		await bar(page).getByRole("button", { name: /^Next/ }).click();
+	await expect(count(page)).toHaveText(counted(3, ALL), VISIBLE);
+	expect(await controls()).toEqual(before);
+	await expectNoPageOverflow(page);
+	for (const target of [
+		box(page),
+		bar(page).getByRole("button", { name: "Match case" }),
+		bar(page).getByRole("button", { name: /^Previous/ }),
+		bar(page).getByRole("button", { name: /^Next/ }),
+		bar(page).getByRole("button", { name: "Close (Esc)" }),
+	])
+		expect((await target.boundingBox())?.height ?? 0).toBeGreaterThanOrEqual(
+			40,
+		);
 });
 
 test("the first step goes to a caret that isn't in view (under the sticky stack), and moves on from one that is", async ({
@@ -772,6 +831,48 @@ test("the first step goes to a caret that isn't in view (under the sticky stack)
 	await box(page).press("Shift+Enter");
 	// In view: Shift+Enter goes to the hit before it.
 	await expect(count(page)).toHaveText(counted(DOC_HIT, ALL), VISIBLE);
+});
+
+test("Settings stay reachable over the open bar: a switch flips", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	test.skip(
+		isMobile,
+		"a phone's header (and Settings) is hidden while the bar is open",
+	);
+	await pr(fixture);
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	await openBar(page, isMobile);
+	await search(page, "saveDraft");
+	// Scrolled by the steps: the header stuck, the bar right under the stack.
+	for (let i = 0; i < 4; i++) await box(page).press("Enter");
+	await expect
+		.poll(() => page.evaluate(() => window.scrollY))
+		.toBeGreaterThan(0);
+	await page.getByRole("button", { name: "Settings", exact: true }).click();
+	const toggle = page.getByRole("switch", { name: "Show hidden characters" });
+	// Nothing lies over it: the topmost element at its centre is the switch.
+	expect(
+		await toggle.evaluate((el) => {
+			const r = el.getBoundingClientRect();
+			const top = document.elementFromPoint(
+				r.left + r.width / 2,
+				r.top + r.height / 2,
+			);
+			return top !== null && el.contains(top);
+		}),
+	).toBe(true);
+	const was = await toggle.getAttribute("aria-checked");
+	await toggle.click();
+	await expect(toggle).toHaveAttribute(
+		"aria-checked",
+		was === "true" ? "false" : "true",
+	);
+	await expect(bar(page)).toBeVisible();
 });
 
 test("the shortcuts help lists Find in PR, Next match and Previous match under Files changed", async ({
@@ -886,8 +987,9 @@ test("the bar fits 360px with 40px controls and no page overflow", async ({
 				true,
 			);
 		}
+		// Two rows (the box, then the count and buttons), never a third.
 		const height = (await bar(page).boundingBox())?.height ?? 0;
-		expect(height).toBeLessThan(60);
+		expect(height).toBeLessThan(100);
 	} finally {
 		await held.release();
 	}

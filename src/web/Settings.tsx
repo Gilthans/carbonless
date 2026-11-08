@@ -100,6 +100,11 @@ function SettingsList({ phone }: { phone: boolean }) {
  * header): a popover under it, a bottom sheet on a phone. Closed by the gear,
  * Escape from anywhere, a click or focus outside (the backdrop on a phone).
  */
+/** The popover API (the top layer for a non-modal popup); jsdom has none. */
+const popoverSupported = () =>
+	typeof HTMLElement !== "undefined" &&
+	typeof HTMLElement.prototype.showPopover === "function";
+
 export function Settings() {
 	const [open, setOpen] = useState(false);
 	const phone = !useMedia(NOT_PHONE);
@@ -109,19 +114,45 @@ export function Settings() {
 	const titleId = useId();
 	const dialogId = useId();
 	const openHelp = useOpenShortcutsHelp();
+	// The popover is in the top layer (over the header's own stacking, so
+	// over anything floating on the page, like the find bar), placed under
+	// the gear and following it while the header scrolls.
+	const layered = !phone && popoverSupported();
 	useEffect(() => {
 		const d = dialog.current;
 		if (!d) return;
+		if (layered && d.matches(":popover-open")) d.hidePopover();
 		if (d.open) {
 			if (typeof d.close === "function") d.close();
 			else d.removeAttribute("open");
 		}
 		if (!open) return;
+		let frame = 0;
+		const place = () => {
+			frame = 0;
+			const gear = button.current?.getBoundingClientRect();
+			if (!gear) return;
+			d.style.top = `${gear.bottom + 4}px`;
+			d.style.right = `${document.documentElement.clientWidth - gear.right}px`;
+		};
+		const schedule = () => {
+			if (!frame) frame = requestAnimationFrame(place);
+		};
 		if (phone && typeof d.showModal === "function") d.showModal();
-		else if (typeof d.show === "function") d.show();
+		else if (layered) {
+			place();
+			d.showPopover();
+			window.addEventListener("scroll", schedule, { passive: true });
+			window.addEventListener("resize", schedule);
+		} else if (typeof d.show === "function") d.show();
 		else d.setAttribute("open", "");
 		d.querySelector<HTMLElement>("[role=switch]")?.focus();
-	}, [open, phone]);
+		return () => {
+			cancelAnimationFrame(frame);
+			window.removeEventListener("scroll", schedule);
+			window.removeEventListener("resize", schedule);
+		};
+	}, [open, phone, layered]);
 	// A popover closes on a click or focus anywhere else, and on Escape
 	// wherever focus is (back to the gear). The sheet is modal: its own
 	// Escape, backdrop and Close do it.
@@ -174,6 +205,7 @@ export function Settings() {
 			<dialog
 				ref={dialog}
 				id={dialogId}
+				popover={layered ? "manual" : undefined}
 				aria-labelledby={titleId}
 				data-testid="settings"
 				onClose={() => setOpen(false)}
@@ -195,7 +227,9 @@ export function Settings() {
 				className={
 					phone
 						? "m-0 mt-auto max-h-[85dvh] w-full max-w-none rounded-t-2xl border-t border-edge bg-surface p-0 text-ink shadow-sheet backdrop:bg-canvas/70 backdrop:backdrop-blur-[2px]"
-						: "absolute top-full right-0 left-auto z-40 m-0 mt-1 w-72 rounded-lg border border-edge bg-surface p-0 text-ink shadow-float"
+						: layered
+							? "fixed bottom-auto left-auto m-0 w-72 rounded-lg border border-edge bg-surface p-0 text-ink shadow-float"
+							: "absolute top-full right-0 left-auto z-40 m-0 mt-1 w-72 rounded-lg border border-edge bg-surface p-0 text-ink shadow-float"
 				}
 			>
 				<div className="flex items-center justify-between border-b border-line py-1 pr-1 pl-4">
