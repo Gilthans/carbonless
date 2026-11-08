@@ -163,8 +163,10 @@ loading never looking empty, checking against a real PR):
   timing, concurrency, a spinner or a gate, and on a test you saw fail once.
 - If `nvm use` fails (e.g. in a sandbox), put `~/.nvm/versions/node/v24*/bin`
   first on `PATH`.
-- `pnpm compare-threads <pr> [--as-of <iso>] [--out <dir>]` checks every
-  thread's code pane against GitHub's REST comments (read-only); exits 1 on a mismatch.
+- `pnpm compare-threads <pr> [--as-of <iso>] [--placed-from <iso>] [--out <dir>]`
+  checks every thread's code pane against GitHub's REST comments (read-only);
+  exits 1 on a mismatch. `--placed-from` adds where re-review places each
+  thread of a first round against GitHub's `line` (listed, never failed).
 - Planned work and milestones live in `docs/todo.md`.
 - Core design docs, kept current (update them in the same change that alters
   what they describe):

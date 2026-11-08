@@ -13,7 +13,7 @@ In priority order.
   (done); view at the commit you last reviewed (`--head reviewed`); instant
   saves; actions from the UI that write to GitHub (comment, reply, resolve,
   approve / request changes: done 2026-11-02, Final Verdict); then carrying threads and progress over from
-  earlier snapshots.
+  earlier snapshots (done 2026-11-08: re-review, below).
 
 ## 0. Parity with the GitHub review workflow
 
@@ -35,7 +35,12 @@ Foundation for everything below.
   viewed head. Place the others too, mapping their lines onto the viewed
   diff in `placeThreads` (`src/web/files/threadPlacement.ts`), the one
   function that decides where a thread goes.
-- **Re-review after new pushes:** one of GitHub's weakest spots.
+- **Re-review after new pushes (done 2026-11-08):** one of GitHub's
+  weakest spots. Patch sets, the patch set graph and the toast, the since
+  view with carried marks, thread placement with fates, "since your
+  verdict" on the Final Verdict tab. Design:
+  `docs/superpowers/specs/2026-11-04-re-review-design.md`; demo: the
+  gallery's re-review showcase. Still open:
   - Show a thread's code as the commenter saw it: diff its commit against
     the base of the view the comment was made in ("changes since your last
     review", a single commit), not the PR's merge base, then drop the
@@ -47,7 +52,14 @@ Foundation for everything below.
     says "different" there.
   - Stacked PRs: let the patch set graph have more than one comparison base
     (the parent PR's head besides the base branch), so a child PR can be read
-    since the parent landed (owner, 2026-11-07).
+    since the parent landed (owner, 2026-11-07). The gallery's `rr-stacked`
+    shows today's behaviour.
+  - Per-line review states (parked in the design: first measure how often
+    clusters split between patch sets).
+  - Which commit changed what (owner, 2026-11-07: deferred everywhere): a
+    fate's commit ("rewritten in `c0ffee1`"), the patch set that deleted a
+    file in "Not in this comparison", landmarks (heads others commented or
+    gave a verdict on) as since points.
 - **Store review state in git refs** (`refs/crb/...`). Design:
   `docs/review-data-storage.md`. Carry-over after pushes is deferred to the
   re-review item above (ideas so far: Gerrit-style change kinds and

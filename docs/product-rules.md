@@ -84,6 +84,31 @@ L, 2026-11-02: Add took two clicks while the list was open). Tested by
 comparing the buttons' bounding boxes with the list open and closed, then
 one click (a tap) with it open.
 
+## Marks carry only exact changes
+
+After a push, a reviewer's mark moves to the new patch set only when the
+cluster it was on traces into the new head with the same removed and added
+lines, byte for byte (through a rebase, a merged-in base or a rename), and
+only a mark the reviewer made by hand: never one carried before by itself,
+never across a cluster the reviewer unticked. Everything else the author
+touched is reworked or new, and unreviewed. A carry is stored as a
+`carried` event when the reviewer first acts on the new patch set, and a
+carried event that doesn't check out (an unknown patch set, a source that
+isn't reviewed) is ignored, leaving the cluster unreviewed (principle 2).
+
+## Re-review never hides a change
+
+The since view, the "needs eyes" filter, carried marks, thread placement
+and the verdict's since line organise what changed; none of them removes
+anything. Every unreviewed cluster stays countable and in the full diff,
+one drag of the comparison base away; a reviewed cluster the author
+removed shows as `gone`; a thread that can't be placed is listed under its
+file or under "Not in this comparison" until it is resolved; a failure
+says so where the answer would be. "Nothing to read" and "nothing to
+re-read" show only when the engine's answer says so: an identical diff
+with no reworked, new or gone cluster. Approving again on an identical
+diff posts a review only on the reviewer's press.
+
 ## Verify against a real PR, not only fixtures
 
 Synthetic fixtures prove behaviour; a real PR proves the assumptions about the
