@@ -115,19 +115,21 @@ export function compactProgress(dist: number, reduced: boolean): number {
  * row's top inside the header (the header sticks at `-offset`, leaving that
  * row and the border below it); `stick`: what's left on screen once stuck,
  * the top of the page's sticky stack. While scrolling it sets `--compact`
- * (compactProgress) on the header and `--header-bottom` (its box's bottom on
- * screen) on the root, once per frame, without re-rendering.
+ * (compactProgress) on the header, once per frame, without re-rendering.
+ * While `hidden` (out of the layout) it keeps its last measures, and follows
+ * the scroll again from where it is once shown.
  */
 function useStickyHeader(
 	header: RefObject<HTMLElement | null>,
 	row: RefObject<HTMLElement | null>,
+	hidden: boolean,
 ) {
 	const [size, setSize] = useState({ offset: 0, stick: 0 });
 	const [stuck, setStuck] = useState(false);
 	useLayoutEffect(() => {
 		const h = header.current;
 		const r = row.current;
-		if (!h || !r) return;
+		if (!h || !r || hidden) return;
 		const measure = () => {
 			const offset = r.offsetTop;
 			const stick = h.offsetHeight - offset;
@@ -141,21 +143,18 @@ function useStickyHeader(
 		observer.observe(h);
 		observer.observe(r);
 		return () => observer.disconnect();
-	}, [header, row]);
+	}, [header, row, hidden]);
 	useEffect(() => {
 		const h = header.current;
-		if (!h) return;
+		if (!h || hidden) return;
 		const reduced =
 			typeof window.matchMedia === "function"
 				? window.matchMedia("(prefers-reduced-motion: reduce)")
 				: null;
 		let frame = 0;
-		const root = document.documentElement;
 		const update = () => {
 			frame = 0;
 			const box = h.getBoundingClientRect();
-			// Where the header's box ends on screen (a phone's find bar covers it).
-			root.style.setProperty("--header-bottom", `${box.bottom}px`);
 			// Stuck when its top reaches -offset.
 			const dist = box.top + size.offset;
 			const progress =
@@ -171,12 +170,58 @@ function useStickyHeader(
 		window.addEventListener("resize", schedule);
 		return () => {
 			cancelAnimationFrame(frame);
-			root.style.removeProperty("--header-bottom");
 			window.removeEventListener("scroll", schedule);
 			window.removeEventListener("resize", schedule);
 		};
-	}, [header, size]);
+	}, [header, size, hidden]);
 	return { ...size, stuck };
+}
+
+/** The line being read: the element mid-window and its top, unless at the page's top. */
+function readingPlace(): { el: Element; top: number } | null {
+	if (window.scrollY <= 0) return null;
+	const el = document.elementFromPoint(
+		window.innerWidth / 2,
+		window.innerHeight / 2,
+	);
+	if (!el || el.closest("[data-app-header], [data-find-float]")) return null;
+	return { el, top: el.getBoundingClientRect().top };
+}
+
+/**
+ * On a phone the open find bar takes the app header's place: the header
+ * leaves the layout and the bar, at the top of Files changed, pushes the page
+ * down by its own height. Scrolled down, opening and closing keep the line
+ * being read where it was on screen (the page scrolls by however far the
+ * swap moved it); at the top of the page the swap shows.
+ */
+function useYieldToFind(phone: boolean, wide: boolean): boolean {
+	const findOpen = findState.use().open;
+	const yielded = phone && wide && findOpen;
+	const place = useRef<{ el: Element; top: number } | null>(null);
+	const state = useRef({ phone, wide, yielded });
+	state.current = { phone, wide, yielded };
+	// Noted when the bar opens or closes, before the page renders the swap.
+	useEffect(
+		() =>
+			findState.subscribe(() => {
+				const { phone, wide, yielded } = state.current;
+				if (phone && wide && findState.get().open !== yielded)
+					place.current = readingPlace();
+			}),
+		[],
+	);
+	// biome-ignore lint/correctness/useExhaustiveDependencies: runs on each swap.
+	useLayoutEffect(() => {
+		const was = place.current;
+		place.current = null;
+		if (!was?.el.isConnected) return;
+		const box = was.el.getBoundingClientRect();
+		if (box.width === 0 && box.height === 0) return;
+		const by = box.top - was.top;
+		if (Math.abs(by) >= 0.5) window.scrollBy(0, by);
+	}, [yielded]);
+	return yielded;
 }
 
 /**
@@ -214,11 +259,9 @@ export function App() {
 	const refreshing = refresh.isPending || revalidating;
 	// Follows the page showing, which switches only once it can render.
 	const wide = useActivePage() === "/r/$id/files";
-	// On a phone the open find bar takes the header's place: the header
-	// keeps its room (nothing moves) but isn't seen or reached.
-	const findOpen = findState.use().open;
+	// On a phone the open find bar takes the header's place (useYieldToFind).
 	const phone = !useMedia(NOT_PHONE);
-	const yieldToFind = phone && wide && findOpen;
+	const yieldToFind = useYieldToFind(phone, wide);
 	const id = useReviewId();
 	const pr = session.data?.pr;
 	const prUrl = safeHref(pr?.url);
@@ -234,7 +277,11 @@ export function App() {
 	const header = useRef<HTMLElement>(null);
 	const row = useRef<HTMLDivElement>(null);
 	const h1 = useRef<HTMLHeadingElement>(null);
-	const { offset, stick: compact, stuck } = useStickyHeader(header, row);
+	const {
+		offset,
+		stick: compact,
+		stuck,
+	} = useStickyHeader(header, row, yieldToFind);
 	useLayoutEffect(() => {
 		const root = document.documentElement;
 		root.style.setProperty("--app-header", `${compact}px`);
@@ -258,11 +305,9 @@ export function App() {
 					ref={header}
 					data-app-header
 					// Sticks once only the last row (and the border) is left on screen.
-					style={{
-						top: `${-offset}px`,
-						visibility: yieldToFind ? "hidden" : undefined,
-					}}
-					inert={yieldToFind || undefined}
+					style={{ top: `${-offset}px` }}
+					// Out of the layout while a phone's find bar takes its place.
+					hidden={yieldToFind}
 					className={`sticky z-30 border-b border-line bg-surface header-glow transition-shadow duration-200 motion-reduce:transition-none ${
 						stuck ? "shadow-header" : ""
 					}`}

@@ -95,16 +95,16 @@ function SettingsList({ phone }: { phone: boolean }) {
 	);
 }
 
-/**
- * The gear in the app bar's last row (so it stays in the compact sticky
- * header): a popover under it, a bottom sheet on a phone. Closed by the gear,
- * Escape from anywhere, a click or focus outside (the backdrop on a phone).
- */
 /** The popover API (the top layer for a non-modal popup); jsdom has none. */
 const popoverSupported = () =>
 	typeof HTMLElement !== "undefined" &&
 	typeof HTMLElement.prototype.showPopover === "function";
 
+/**
+ * The gear in the app bar's last row (so it stays in the compact sticky
+ * header): a popover under it, a bottom sheet on a phone. Closed by the gear,
+ * Escape from anywhere, a click or focus outside (the backdrop on a phone).
+ */
 export function Settings() {
 	const [open, setOpen] = useState(false);
 	const phone = !useMedia(NOT_PHONE);

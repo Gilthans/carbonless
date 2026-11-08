@@ -544,7 +544,7 @@ describe("App", () => {
 		expect(findState.get()).toMatchObject({ open: false, term: "" });
 	});
 
-	it("on a phone the open find bar replaces the app header; closing it brings the header back, focus on its Find button", async () => {
+	it("on a phone the open find bar takes the app header out of the layout; closing it brings the header back, focus on its Find button", async () => {
 		findState.reset();
 		await filesPageLoaded();
 		vi.stubGlobal(
@@ -566,11 +566,11 @@ describe("App", () => {
 			await user.click(button);
 			await screen.findByTestId("find-bar");
 			expect(header).not.toBeVisible();
-			expect(header).toHaveAttribute("inert");
+			expect(header).toHaveAttribute("hidden");
 			await user.click(screen.getByRole("button", { name: "Close (Esc)" }));
 			expect(screen.queryByTestId("find-bar")).toBeNull();
 			expect(header).toBeVisible();
-			expect(header).not.toHaveAttribute("inert");
+			expect(header).not.toHaveAttribute("hidden");
 			expect(button).toHaveFocus();
 		} finally {
 			findState.reset();
@@ -587,7 +587,7 @@ describe("App", () => {
 		await screen.findByTestId("find-bar");
 		const header = document.querySelector("[data-app-header]") as HTMLElement;
 		expect(header).toBeVisible();
-		expect(header).not.toHaveAttribute("inert");
+		expect(header).not.toHaveAttribute("hidden");
 		findState.reset();
 	});
 

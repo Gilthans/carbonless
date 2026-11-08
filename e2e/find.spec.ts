@@ -687,7 +687,7 @@ test("the bar stays put: opening, stepping three times and across files never mo
 	else expect(Math.abs(opened.y - (await barBottom(page)))).toBeLessThan(1.5);
 });
 
-test("on a phone the open bar replaces the app header; ✕ brings it back", async ({
+test("on a phone the open bar hides the app header; ✕ brings it back", async ({
 	page,
 	pr,
 	startCrb,
@@ -723,7 +723,23 @@ test("on a phone the open bar replaces the app header; ✕ brings it back", asyn
 	await expect(findButton(page)).toBeFocused();
 });
 
-test("on a phone the bar covers the hidden header's box: no gap at the top of the page or once scrolled, controls never moving", async ({
+/** The progress bar's sticky box on screen (the files bar). */
+const filesBarBox = (page: Page) =>
+	page.evaluate(() => {
+		const r = document
+			.querySelector('[role="progressbar"][aria-label="Review progress"]')
+			?.closest(".sticky")
+			?.getBoundingClientRect();
+		return r ? { y: r.y, bottom: r.bottom } : null;
+	});
+/** The find float's box on screen. */
+const floatBox = (page: Page) =>
+	page.locator("[data-find-float]").evaluate((el) => {
+		const r = el.getBoundingClientRect();
+		return { x: r.x, y: r.y, width: r.width, height: r.height };
+	});
+
+test("on a phone the open bar takes the header's place in the page, pushing it down: nothing covered, no blank band; closing restores the header", async ({
 	page,
 	pr,
 	startCrb,
@@ -734,50 +750,93 @@ test("on a phone the bar covers the hidden header's box: no gap at the top of th
 	await pr(fixture);
 	const s = await startCrb();
 	await openFiles(page, s.url);
-	/** The page's own room between the header's box and the progress bar. */
-	const room = await page.evaluate(() => {
-		const header = document.querySelector("[data-app-header]");
-		const stack = document
-			.querySelector('[role="progressbar"][aria-label="Review progress"]')
-			?.closest(".sticky");
-		return (
-			(stack?.getBoundingClientRect().top ?? 0) -
-			(header?.getBoundingClientRect().bottom ?? 0)
-		);
-	});
+	expect(await page.evaluate(() => window.scrollY)).toBe(0);
+	const header = await appHeader(page).boundingBox();
+	const files = await filesBarBox(page);
 	await openBar(page, isMobile);
-	const float = page.locator("[data-find-float]");
-	const gap = async () =>
-		(await page.evaluate(
-			() =>
-				document
-					.querySelector('[role="progressbar"][aria-label="Review progress"]')
-					?.closest(".sticky")
-					?.getBoundingClientRect().top ?? Number.NaN,
-		)) -
-		((await float.boundingBox())?.y ?? 0) -
-		((await float.boundingBox())?.height ?? 0);
-	// At the top of the page: the bar ends where the header's box did.
-	await expect.poll(gap).toBeLessThanOrEqual(room + 1);
-	await expect.poll(gap).toBeGreaterThanOrEqual(-1);
-	const controls = async () => ({
-		box: await box(page).boundingBox(),
-		next: await bar(page).getByRole("button", { name: /^Next/ }).boundingBox(),
-	});
-	const before = await controls();
+	// The header leaves the layout (not just unseen).
+	await expect(appHeader(page)).toBeHidden();
+	expect(
+		await appHeader(page).evaluate((el) => getComputedStyle(el).display),
+	).toBe("none");
+	// The bar starts the page, full width, just as tall as its two rows.
+	const opened = await floatBox(page);
+	expect(opened.y).toBe(0);
+	expect(opened.x).toBe(0);
+	expect(opened.width).toBe(360);
+	expect(
+		await page
+			.locator("[data-find-float]")
+			.evaluate((el) => getComputedStyle(el).minHeight),
+	).toMatch(/^(0px|auto)$/);
+	expect(opened.height).toBeLessThan(120);
+	// The files bar follows right under it: no gap, no overlap.
+	await expect
+		.poll(async () => ((await filesBarBox(page))?.y ?? 0) - opened.height)
+		.toBeGreaterThanOrEqual(-0.5);
+	expect(((await filesBarBox(page))?.y ?? 0) - opened.height).toBeLessThan(1);
 	// The box takes the first row, full width; the buttons the second.
-	expect(before.box?.width ?? 0).toBeGreaterThan(300);
-	expect(before.next?.y ?? 0).toBeGreaterThan(before.box?.y ?? 0);
-	// Scrolled: the progress bar sticks right under the bar.
+	const boxAt = await box(page).boundingBox();
+	const nextAt = await bar(page)
+		.getByRole("button", { name: /^Next/ })
+		.boundingBox();
+	expect(boxAt?.width ?? 0).toBeGreaterThan(300);
+	expect(nextAt?.y ?? 0).toBeGreaterThan(boxAt?.y ?? 0);
+	await expectNoPageOverflow(page);
+	// ✕: the header is back where it was, the files bar too.
+	await bar(page).getByRole("button", { name: "Close (Esc)" }).click();
+	await expect(bar(page)).toHaveCount(0);
+	await expect(appHeader(page)).toBeVisible();
+	expect(await appHeader(page).boundingBox()).toEqual(header);
+	expect(await filesBarBox(page)).toEqual(files);
+	// Reopened: the same layout.
+	await openBar(page, isMobile);
+	await expect(appHeader(page)).toBeHidden();
+	expect(await floatBox(page)).toEqual(opened);
+});
+
+test("on a phone the bar stays at the top while scrolling and stepping, the files bar stuck right under it and each hit below both", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	test.skip(!isMobile, "the phone layout");
+	await phone(page, isMobile);
+	await pr(fixture);
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	await openBar(page, isMobile);
+	const opened = await floatBox(page);
 	await page.evaluate(() => window.scrollTo(0, 400));
-	await expect.poll(gap).toBeLessThanOrEqual(1);
-	await expect.poll(gap).toBeGreaterThanOrEqual(-1);
-	expect(await controls()).toEqual(before);
+	await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(400);
+	expect(await floatBox(page)).toEqual(opened);
+	const stuckUnder = async () =>
+		((await filesBarBox(page))?.y ?? Number.NaN) - opened.height;
+	await expect.poll(stuckUnder).toBeGreaterThanOrEqual(-0.5);
+	expect(await stuckUnder()).toBeLessThan(1);
 	await search(page, "saveDraft");
-	for (let i = 0; i < 3; i++)
-		await bar(page).getByRole("button", { name: /^Next/ }).click();
-	await expect(count(page)).toHaveText(counted(3, ALL), VISIBLE);
-	expect(await controls()).toEqual(before);
+	const next = () => bar(page).getByRole("button", { name: /^Next/ }).click();
+	/** The current row's top less the stack's bottom (files bar, the file's stuck header). */
+	const belowStack = async () => {
+		const files = (await filesBarBox(page))?.bottom ?? Number.NaN;
+		const { row, header } = await currentRow(page).evaluate((el) => ({
+			row: el.getBoundingClientRect().top,
+			header: el.closest("section")?.querySelector("header")?.offsetHeight ?? 0,
+		}));
+		return row - Math.max(files + header, opened.y + opened.height);
+	};
+	// Into src/a.ts, then src/b.ts: another file each time.
+	for (const path of [A, B]) {
+		await stepUntil(page, path, 12, next);
+		await expect(currentRow(page)).toBeInViewport();
+		await expect.poll(belowStack).toBeGreaterThanOrEqual(0);
+		expect(await floatBox(page)).toEqual(opened);
+		await expect.poll(stuckUnder).toBeGreaterThanOrEqual(-0.5);
+		expect(await stuckUnder()).toBeLessThan(1);
+	}
+	await next();
+	expect(await floatBox(page)).toEqual(opened);
 	await expectNoPageOverflow(page);
 	for (const target of [
 		box(page),
@@ -789,6 +848,71 @@ test("on a phone the bar covers the hidden header's box: no gap at the top of th
 		expect((await target.boundingBox())?.height ?? 0).toBeGreaterThanOrEqual(
 			40,
 		);
+});
+
+test("on a phone opening and closing the bar while scrolled keeps the diff line in view where it was", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	test.skip(!isMobile, "the phone layout");
+	await phone(page, isMobile);
+	await pr(fixture);
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	// Without the browser's own scroll anchoring (Safari has none): the
+	// page keeps the place itself.
+	await page.addStyleTag({
+		content: "* { overflow-anchor: none !important; }",
+	});
+	await expand(page, A);
+	await expand(page, B);
+	const row = fileSection(page, B).getByTestId("diff-line").nth(4);
+	// That line mid-screen, the header stuck above.
+	await row.evaluate((el) => {
+		const top = el.getBoundingClientRect().top + window.scrollY;
+		window.scrollTo(0, top - window.innerHeight / 2);
+	});
+	await expect
+		.poll(() => page.evaluate(() => window.scrollY))
+		.toBeGreaterThan(200);
+	const at = async () => (await row.boundingBox())?.y ?? Number.NaN;
+	const before = await at();
+	await openBar(page, isMobile);
+	await expect(appHeader(page)).toBeHidden();
+	await expect
+		.poll(async () => Math.abs((await at()) - before))
+		.toBeLessThan(1);
+	await bar(page).getByRole("button", { name: "Close (Esc)" }).click();
+	await expect(appHeader(page)).toBeVisible();
+	await expect
+		.poll(async () => Math.abs((await at()) - before))
+		.toBeLessThan(1);
+});
+
+test("at the top of the page the Settings gear is on top where it shows (bar closed)", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	test.skip(isMobile, "the desktop layout");
+	await pr(fixture);
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	expect(await page.evaluate(() => window.scrollY)).toBe(0);
+	const gear = page.getByRole("button", { name: "Settings", exact: true });
+	expect(
+		await gear.evaluate((el) => {
+			const r = el.getBoundingClientRect();
+			const top = document.elementFromPoint(
+				r.left + r.width / 2,
+				r.top + r.height / 2,
+			);
+			return top !== null && el.contains(top);
+		}),
+	).toBe(true);
 });
 
 test("the first step goes to a caret that isn't in view (under the sticky stack), and moves on from one that is", async ({

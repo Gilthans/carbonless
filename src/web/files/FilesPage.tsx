@@ -305,20 +305,18 @@ export function FilesPage() {
 	const bar = useRef<HTMLDivElement>(null);
 	// The sticky stack, top down: the app header's compact row, the progress
 	// bar, then the open file's header.
-	// On a phone the open find bar is the stack's top, in the header's place:
-	// taller than the header's stuck row, it moves the stack's top down.
+	// On a phone the open find bar is the stack's top: the app header is out
+	// of the layout (App) and the bar, stuck at the top, takes its place.
 	const headerHeight = useAppHeaderHeight();
 	const phone = !useMedia(NOT_PHONE);
 	const findOpen = findState.use().open;
 	const findHeight = useHeight(
-		() => document.querySelector<HTMLElement>('[data-testid="find-bar"]'),
-		findOpen && phone,
+		() => document.querySelector<HTMLElement>("[data-find-float]"),
+		findOpen && phone && data !== undefined,
 		!active || !findOpen || !phone,
 	);
 	const phoneFind = phone && findOpen && findHeight > 0;
-	const appHeader = phoneFind
-		? Math.max(headerHeight, findHeight)
-		: headerHeight;
+	const appHeader = phoneFind ? findHeight : headerHeight;
 	const barHeight = useHeight(() => bar.current, data !== undefined, !active);
 	const [current, setCurrent] = useCurrentFile(
 		diffs,
@@ -708,15 +706,16 @@ export function FilesPage() {
 				{data && (
 					<>
 						{find.state.open && (
-							// Floats over the page, out of its flow and sticky stack:
-							// opening, typing and stepping never move it or the page.
-							// Desktop: right under the sticky stack, over the diff. A
-							// phone's covers the hidden app header's box (App:
-							// --header-bottom), its controls pinned to the top. Before
-							// the progress bar in the DOM, as on screen.
+							// Typing and stepping never move it. Desktop: it floats over
+							// the page, out of its flow, right under the sticky stack,
+							// over the diff. A phone's starts the page in the hidden app
+							// header's place (out of main's padding), pushing the page
+							// down by its own height, and sticks at the top, the
+							// stack's top (--app-header above). Before the progress bar
+							// in the DOM, as on screen.
 							<div
 								data-find-float
-								className="fixed inset-x-0 top-0 z-[35] min-h-[var(--header-bottom,0px)] border-b border-line bg-surface shadow-header sm:inset-x-auto sm:top-[calc(var(--app-header,0px)+var(--files-bar,0px))] sm:right-4 sm:min-h-0 sm:w-[28rem] sm:max-w-[calc(100vw-2rem)] sm:rounded-b-lg sm:border-x"
+								className="sticky top-0 z-[35] -mx-3 -mt-4 border-b border-line bg-surface shadow-header sm:fixed sm:inset-x-auto sm:top-[calc(var(--app-header,0px)+var(--files-bar,0px))] sm:right-4 sm:mx-0 sm:mt-0 sm:w-[28rem] sm:max-w-[calc(100vw-2rem)] sm:rounded-b-lg sm:border-x"
 							>
 								<FindBar
 									term={find.state.term}

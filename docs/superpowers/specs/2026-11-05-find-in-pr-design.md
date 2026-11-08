@@ -87,32 +87,39 @@ everything you said sounds correct".
 
 ## Where it lives
 
-- **Files changed only.** The bar floats over the page, like the browser's
-  find (owner's QA, 2026-11-07: "The search bar should 'hover' on top of the
+- **Files changed only.** The bar stays put, like the browser's find
+  (owner's QA, 2026-11-07: "The search bar should 'hover' on top of the
   page, like the browser find. It should stick to the top always, so if I
-  click the 'next' button its position should never change"). It is
-  `position: fixed`, out of the page's flow and its sticky stack: opening,
-  closing, typing and stepping never move it on screen and never shift the
-  page (no layout shift, so no scroll anchoring). Desktop: top-right,
-  28rem wide, its top at the sticky stack's bottom (`--app-header` +
-  `--files-bar`: the header's stuck row and the progress bar), over the
-  diff like the browser's find; the progress bar's count and spinner stay
-  in view. Settings' popover is in the top layer, so it opens over the bar.
-  Phone: across the top, in the app header's place (below). In the DOM it
-  comes before the progress bar, as on screen.
-- **Phone: the bar replaces the app header** (owner's QA: "While the search
-  box is open on the phone, it should hide the top bar entirely. Closing it
-  restores"). While it is open, the header is hidden and inert
-  (`visibility: hidden`: it keeps its room, so nothing moves) and the bar
-  covers the header's box: from the top down to the box's bottom on screen
-  (`--header-bottom`, kept by App's scroll tracking), taller at the top of
-  the page and the stuck row's height once scrolled, but never less than
-  its own two rows (the box at full width; the count, ↑, ↓ and ✕). Its
-  controls are pinned to its top, so they never move as the header's box
-  shrinks; while it is open the stack's top (`--app-header` on the page)
-  is the bar's height, so the progress bar sticks right under it. Closing
-  (✕, Escape) shows the header again and puts focus on its Find in PR
-  button.
+  click the 'next' button its position should never change"): typing and
+  stepping never move it on screen. Desktop: `position: fixed`, out of the
+  page's flow and its sticky stack, so opening and closing never shift the
+  page either; top-right, 28rem wide, its top at the sticky stack's bottom
+  (`--app-header` + `--files-bar`: the header's stuck row and the progress
+  bar), over the diff like the browser's find; the progress bar's count
+  and spinner stay in view. Settings' popover is in the top layer, so it
+  opens over the bar. Phone: at the top, in the app header's place
+  (below). In the DOM it comes before the progress bar, as on screen.
+- **Phone: the bar takes the app header's place, pushing the page down**
+  (owner's QA, 2026-11-07: "While the search box is open on the phone, it
+  should hide the top bar entirely. Closing it restores"; 2026-11-08: "I
+  didnt mean it should replace the top bar. just that it should hide it
+  ... perhaps the search should push the rest of the page down? so it
+  should appear at the very top, but without hiding anything - just pushing
+  it down?"). While it is open the header is out of the layout (`hidden`,
+  so it takes no room; its tabs, Refresh and Settings go with it) and the
+  bar is in the page's flow at the very top of Files changed (out of
+  main's padding), `position: sticky; top: 0`: the files bar, tree and
+  diffs follow right under it, nothing covered and no blank band. It is
+  just as tall as its two rows (the box at full width; the count, ↑, ↓
+  and ✕) and sticks at the top at any scroll, so stepping never moves it.
+  The stack's top (`--app-header` on Files changed's section) is the bar's
+  height, so the progress bar and a file's header stick right under it
+  and a step lands its hit below both. Scrolled down, opening and closing
+  keep the line being read where it was on screen: App notes the element
+  mid-window before the swap and scrolls by however far it moved; at the
+  top of the page the swap shows (the bar replaces the header there).
+  Closing (✕, Escape) shows the header again and puts focus on its Find in
+  PR button.
 - **The term lives only while the bar is open on this page** (owner's QA:
   "Don't store the search term. Leaving the page or doing almost anything
   should clear the search box"). Closing clears it. Leaving Files changed

@@ -852,9 +852,10 @@ describe("FilesPage", () => {
 			expect(bar.closest("[data-page-bar]")).toBeNull();
 			const float = bar.closest("[data-find-float]");
 			expect(float).not.toBeNull();
-			expect(float).toHaveClass("fixed");
-			// Desktop: pinned right under the sticky stack (the app header's
-			// row and the progress bar), over the diff.
+			// Desktop: fixed right under the sticky stack (the app header's
+			// row and the progress bar), over the diff; a phone's sticks at
+			// the top, in the page's flow.
+			expect(float).toHaveClass("sm:fixed", "sticky", "top-0");
 			expect(float).toHaveClass(
 				"sm:top-[calc(var(--app-header,0px)+var(--files-bar,0px))]",
 			);
