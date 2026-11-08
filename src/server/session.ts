@@ -937,10 +937,15 @@ export class Session {
 	/**
 	 * What a new thread or a verdict on `snapshot` runs before its GitHub
 	 * write: the start of the patch set when the snapshot is none yet (a
-	 * lasting action), nothing when it is the latest, a refusal (409
-	 * "stale") when it is an earlier one, read-only.
+	 * lasting action), nothing when it is the latest. On an earlier one
+	 * (read-only: the head moved back onto it, S6) a new thread is refused
+	 * (409 "stale"); a verdict writes no patch set and goes on: it is
+	 * GitHub's, about a commit, not a write into the patch set (`verdict`).
 	 */
-	#startHook(snapshot: Snapshot): () => Promise<void> {
+	#startHook(
+		snapshot: Snapshot,
+		{ verdict = false }: { verdict?: boolean } = {},
+	): () => Promise<void> {
 		return () =>
 			this.#exclusive(async () => {
 				try {
@@ -949,7 +954,7 @@ export class Session {
 						(p) => p.revision === snapshot.revision,
 					);
 					if (record) {
-						if (before.patchset?.revision !== snapshot.revision) {
+						if (before.patchset?.revision !== snapshot.revision && !verdict) {
 							throw new ReadOnlyPatchsetError(
 								`Patch set ${record.number} is read-only; patch set ${before.patchset?.number} is the latest`,
 							);
@@ -1160,7 +1165,9 @@ export class Session {
 		const target = sinceTarget({
 			verdict: facts.yourVerdict,
 			patchsets: this.#patchsets,
-			head: this.#head?.oid ?? null,
+			head: this.#head
+				? { oid: this.#head.oid, mergeBase: this.#head.mergeBase }
+				: null,
 		});
 		if (!target) return { ...facts, since: null };
 		let answer: Parameters<typeof sinceOf>[1];
@@ -1267,7 +1274,7 @@ export class Session {
 			viewer: write.viewer,
 			writes: write.writes,
 			head: snapshot.head,
-			startPatchset: this.#startHook(snapshot),
+			startPatchset: this.#startHook(snapshot, { verdict: true }),
 			sent: (clientId) => this.#verdicts.get(clientId),
 			rememberSent: (clientId, record) => this.#verdicts.set(clientId, record),
 			firstAttempt: (clientId) => this.#verdictAttempts.get(clientId),

@@ -272,8 +272,9 @@ export type SinceTarget = Omit<VerdictSince, "changes">;
  * patch set it was given on (among those whose head is the verdict's
  * commit, the latest started by the verdict's time: a retarget keeps the
  * head and starts another; the earliest when none was, a clock apart),
- * and where a verdict goes now: the PR's head when it is past
- * the latest patch set's (`head`, as the head check last found it; null
+ * and where a verdict goes now: the PR's head when it isn't the latest
+ * patch set's snapshot (`head` and its merge base, as the head check last
+ * found them; null
  * when none is shown: pinned, as-of, merged or closed), else the latest
  * patch set's head. Null when there is no verdict, its commit is none of
  * the reviewer's patch sets' heads (given elsewhere, before any patch
@@ -281,8 +282,13 @@ export type SinceTarget = Omit<VerdictSince, "changes">;
  */
 export function sinceTarget(input: {
 	verdict: VerdictFacts["yourVerdict"];
-	patchsets: readonly { number: number; head: string; startedAt: number }[];
-	head: string | null;
+	patchsets: readonly {
+		number: number;
+		head: string;
+		mergeBase: string;
+		startedAt: number;
+	}[];
+	head: { oid: string; mergeBase: string } | null;
 }): SinceTarget | null {
 	const mine = input.verdict;
 	if (!mine || mine.commitId === "") return null;
@@ -293,12 +299,18 @@ export function sinceTarget(input: {
 	const given = onIt.find((p) => p.startedAt <= at) ?? onIt.at(-1);
 	const latest = byNumber[0];
 	if (!given || !latest) return null;
+	const head = input.head;
 	const to =
-		input.head && input.head !== latest.head
+		head && (head.oid !== latest.head || head.mergeBase !== latest.mergeBase)
 			? {
-					head: input.head,
-					// A head moved back onto an earlier patch set's: that one.
-					patchset: byNumber.find((p) => p.head === input.head)?.number ?? null,
+					head: head.oid,
+					// Moved back onto an earlier patch set's snapshot (S6): that
+					// one. The same head on another merge base is another
+					// snapshot, none of the reviewer's.
+					patchset:
+						byNumber.find(
+							(p) => p.head === head.oid && p.mergeBase === head.mergeBase,
+						)?.number ?? null,
 				}
 			: { head: latest.head, patchset: latest.number };
 	if (to.head === mine.commitId) return null;

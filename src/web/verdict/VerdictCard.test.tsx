@@ -404,6 +404,41 @@ describe("the verdict card since your verdict", () => {
 		).toBeNull();
 	});
 
+	it("the head moved back onto PS1's (S6): the buttons post on it, with the older-commit note", async () => {
+		const info = session({
+			currentHead: PS1,
+			headMoved: true,
+			head: {
+				oid: PS1,
+				mergeBase: "e".repeat(40),
+				baseBranch: "main",
+				commits: 0,
+			},
+		});
+		renderTab(
+			() =>
+				facts(
+					given({
+						head: PS2,
+						patchset: 2,
+						to: { head: PS1, patchset: 1 },
+					}),
+				),
+			info,
+		);
+		const c = await card();
+		expect(await within(c).findByTestId("verdict-older")).toHaveTextContent(
+			"On a1b2c3d, an older commit",
+		);
+		// PS1 is no longer the session's: no meter of another patch set.
+		expect(within(c).queryByTestId("verdict-since-meter")).toBeNull();
+		await userEvent.click(
+			within(c).getByRole("button", { name: "Approve a1b2c3d" }),
+		);
+		await waitFor(() => expect(posted).toHaveLength(1));
+		expect(posted[0]).toMatchObject({ commit: PS1 });
+	});
+
 	it("a failed comparison says so, distinct from empty", async () => {
 		renderTab(() =>
 			facts(

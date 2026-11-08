@@ -915,22 +915,25 @@ describe("sinceTarget and sinceOf (VerdictFacts.since)", () => {
 		bot: false,
 		...more,
 	});
+	const BASE = "e".repeat(40);
+	/** The PR's head as last checked, on the patch sets' merge base. */
+	const at = (oid: string, mergeBase = BASE) => ({ oid, mergeBase });
 	const T = Date.parse("2026-11-05T09:00:00Z");
 	const patchsets = [
-		{ number: 1, head: PS1, startedAt: T },
-		{ number: 2, head: PS2, startedAt: T + 3_600_000 },
+		{ number: 1, head: PS1, mergeBase: BASE, startedAt: T },
+		{ number: 2, head: PS2, mergeBase: BASE, startedAt: T + 3_600_000 },
 	];
 
 	it("a verdict on PS1 with PS2 the latest: compared with PS2", () => {
-		expect(sinceTarget({ verdict: review(PS1), patchsets, head: PS2 })).toEqual(
-			{
-				state: "APPROVED",
-				head: PS1,
-				at: "2026-11-05T10:00:00Z",
-				patchset: 1,
-				to: { head: PS2, patchset: 2 },
-			},
-		);
+		expect(
+			sinceTarget({ verdict: review(PS1), patchsets, head: at(PS2) }),
+		).toEqual({
+			state: "APPROVED",
+			head: PS1,
+			at: "2026-11-05T10:00:00Z",
+			patchset: 1,
+			to: { head: PS2, patchset: 2 },
+		});
 		// No head shown (pinned, as-of, merged): the latest patch set too.
 		expect(
 			sinceTarget({ verdict: review(PS1), patchsets, head: null })?.to,
@@ -939,31 +942,43 @@ describe("sinceTarget and sinceOf (VerdictFacts.since)", () => {
 
 	it("the PR's head past the latest patch set is where a verdict goes now", () => {
 		expect(
-			sinceTarget({ verdict: review(PS2), patchsets, head: NEW })?.to,
+			sinceTarget({ verdict: review(PS2), patchsets, head: at(NEW) })?.to,
 		).toEqual({ head: NEW, patchset: null });
-		// Moved back onto PS1's head: that patch set.
+		// Moved back onto PS1's head (S6): that patch set.
 		expect(
-			sinceTarget({ verdict: review(PS2), patchsets, head: PS1 })?.to,
+			sinceTarget({ verdict: review(PS2), patchsets, head: at(PS1) })?.to,
 		).toEqual({ head: PS1, patchset: 1 });
+		// The same head on another merge base is another snapshot: none.
+		expect(
+			sinceTarget({
+				verdict: review(PS2),
+				patchsets,
+				head: at(PS1, "f".repeat(40)),
+			})?.to,
+		).toEqual({ head: PS1, patchset: null });
 	});
 
 	it("null without a verdict of the reviewer's (yourVerdict), on the head a verdict goes on now, or on a head that is no patch set", () => {
-		expect(sinceTarget({ verdict: null, patchsets, head: NEW })).toBeNull();
+		expect(sinceTarget({ verdict: null, patchsets, head: at(NEW) })).toBeNull();
 		expect(
-			sinceTarget({ verdict: review(PS2), patchsets, head: PS2 }),
+			sinceTarget({ verdict: review(PS2), patchsets, head: at(PS2) }),
 		).toBeNull();
 		expect(
-			sinceTarget({ verdict: review(NEW), patchsets, head: NEW }),
+			sinceTarget({ verdict: review(NEW), patchsets, head: at(NEW) }),
 		).toBeNull();
 		// Given before any patch set (on GitHub, say): nothing to compare from.
 		expect(
-			sinceTarget({ verdict: review("4".repeat(40)), patchsets, head: NEW }),
+			sinceTarget({
+				verdict: review("4".repeat(40)),
+				patchsets,
+				head: at(NEW),
+			}),
 		).toBeNull();
 		expect(
-			sinceTarget({ verdict: review(PS1), patchsets: [], head: NEW }),
+			sinceTarget({ verdict: review(PS1), patchsets: [], head: at(NEW) }),
 		).toBeNull();
 		expect(
-			sinceTarget({ verdict: review(""), patchsets, head: NEW }),
+			sinceTarget({ verdict: review(""), patchsets, head: at(NEW) }),
 		).toBeNull();
 	});
 
@@ -971,16 +986,24 @@ describe("sinceTarget and sinceOf (VerdictFacts.since)", () => {
 		// A retarget keeps the head and starts PS3 on it, after the verdict.
 		const retargeted = [
 			...patchsets,
-			{ number: 3, head: PS1, startedAt: Date.parse("2026-11-06T00:00:00Z") },
+			{
+				number: 3,
+				head: PS1,
+				mergeBase: BASE,
+				startedAt: Date.parse("2026-11-06T00:00:00Z"),
+			},
 		];
 		expect(
-			sinceTarget({ verdict: review(PS1), patchsets: retargeted, head: NEW })
-				?.patchset,
+			sinceTarget({
+				verdict: review(PS1),
+				patchsets: retargeted,
+				head: at(NEW),
+			})?.patchset,
 		).toBe(1);
 		// Given after PS3 started: PS3.
 		const later = review(PS1, { submittedAt: "2026-11-07T00:00:00Z" });
 		expect(
-			sinceTarget({ verdict: later, patchsets: retargeted, head: NEW })
+			sinceTarget({ verdict: later, patchsets: retargeted, head: at(NEW) })
 				?.patchset,
 		).toBe(3);
 		// The verdict started PS3 and GitHub's whole second reads before
@@ -991,14 +1014,14 @@ describe("sinceTarget and sinceOf (VerdictFacts.since)", () => {
 				.replace(/\.\d+Z$/, "Z"),
 		});
 		const startedMidSecond = [
-			{ number: 1, head: PS1, startedAt: T },
-			{ number: 3, head: PS1, startedAt: T + 3_600_400 },
+			{ number: 1, head: PS1, mergeBase: BASE, startedAt: T },
+			{ number: 3, head: PS1, mergeBase: BASE, startedAt: T + 3_600_400 },
 		];
 		expect(
 			sinceTarget({
 				verdict: sameSecond,
 				patchsets: startedMidSecond,
-				head: NEW,
+				head: at(NEW),
 			})?.patchset,
 		).toBe(3);
 	});
@@ -1945,6 +1968,60 @@ describe("the verdict, through the session and the fake gh", () => {
 			expect(stored().at(-1)?.commit.oid).toBe(head);
 			expect(session.info().patchset).toBe(2);
 		});
+
+		/** `git` in the PR's GitHub-side repository. */
+		const ghGit = (...args: string[]) =>
+			execFileSync("git", args, {
+				cwd: pr.repo.path,
+				encoding: "utf8",
+				env: testGitEnv(),
+			}).trim();
+
+		for (const baseMoved of [false, true]) {
+			it(`the head moved back onto PS1's head${baseMoved ? " after the base moved" : ""} (S6): a verdict there lands, writing no patch set`, async () => {
+				await reviewAll();
+				const ps1 = session.snapshot().head;
+				const head = pr.moveHead({ "later.txt": "later\n" });
+				scenario();
+				await session.checkHead();
+				const view = await session.viewHead(head);
+				const key = view.files.find((f) => f.path === "later.txt")?.clusters[0]
+					?.key;
+				await session.setStates(view.revision, [
+					{ key: key ?? "", state: "reviewed" },
+				]);
+				expect(session.info().patchset).toBe(2);
+				const kept = await approve(head);
+				if (baseMoved) {
+					// The base gains a commit of its own.
+					pr.moveMain(
+						ghGit(
+							"commit-tree",
+							`${pr.mergeBase}^{tree}`,
+							"-p",
+							pr.mergeBase,
+							"-m",
+							"base moves on",
+						),
+					);
+				}
+				// The author force-pushes back to PS1's head.
+				ghGit("update-ref", "refs/pull/12/head", ps1);
+				scenario({}, { headRefOid: ps1 }, kept);
+				await session.checkHead();
+				const { since } = await session.verdict();
+				expect(since).toMatchObject({
+					head,
+					patchset: 2,
+					to: { head: ps1, patchset: 1 },
+				});
+				// The card posts on `since.to.head`: PS1's head, read-only for
+				// marks, but a verdict is GitHub's, about a commit.
+				await approve(ps1);
+				expect(stored().at(-1)?.commit.oid).toBe(ps1);
+				expect(session.info().patchsets.map((p) => p.number)).toEqual([1, 2]);
+			});
+		}
 
 		it("no verdict, or one on the current head: no since", async () => {
 			await reviewAll();
