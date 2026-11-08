@@ -486,3 +486,97 @@ export function viewOfLines(
 		...(x.length > 0 ? { crossedLines: x } : {}),
 	};
 }
+
+/**
+ * One unit of the since view, what its counts count (owner, 2026-11-08:
+ * "all the counts should be related to the interdiff, not the base diff"):
+ * a piece (its shown lines), or the rest of a reworked or new cluster no
+ * piece owns (lines unchanged since a line not reviewed then, or a cluster
+ * the interdiff doesn't show at all): that rest is only in the full diff,
+ * and stays to read until marked there.
+ */
+export interface SinceUnit {
+	/** The file's index in the answer. */
+	index: number;
+	path: string;
+	kind: "reworked" | "new" | "gone" | "reverted" | "removed";
+	lines: number;
+	state: ClusterState;
+	/** Its lines not marked yet (all of an unmarked piece's). */
+	open: number;
+}
+
+/** What sinceUnits reads of one file of the engine's answer. */
+export interface UnitFile {
+	index: number;
+	path: string;
+	clusters: { key: string; kind: string }[];
+	pieces?: SincePiece[];
+}
+
+/**
+ * The since view's units, file by file, under the marks as they stand:
+ * `clustersOf` gives a file's clusters of the viewed snapshot with their
+ * states (none for a file only the interdiff has); `marks` the patch set's
+ * marks on pieces that own no line of it.
+ */
+export function sinceUnits(
+	files: readonly UnitFile[],
+	since: number,
+	clustersOf: (index: number) => readonly ClusterView[],
+	marks: readonly SinceMark[] | undefined,
+): SinceUnit[] {
+	const out: SinceUnit[] = [];
+	for (const file of files) {
+		const kinds = new Map(file.clusters.map((c) => [c.key, c.kind]));
+		const clusters = new Map(clustersOf(file.index).map((c) => [c.key, c]));
+		const owned = new Map<string, LineRanges>();
+		const base = { index: file.index, path: file.path };
+		for (const p of file.pieces ?? []) {
+			const lines = size(p.old) + size(p.new);
+			const cluster = p.key === undefined ? undefined : clusters.get(p.key);
+			if (p.owns && cluster && p.key !== undefined) {
+				owned.set(p.key, union(owned.get(p.key) ?? [], p.owns));
+				const kind = kinds.get(p.key) === "new" ? "new" : "reworked";
+				const state = pieceState(cluster, p.owns);
+				const open = state === "unreviewed" ? lines : 0;
+				out.push({ ...base, kind, lines, state, open });
+				continue;
+			}
+			const kind =
+				p.key !== undefined && kinds.get(p.key) === "gone"
+					? "gone"
+					: (p.kind ?? "removed");
+			const state = sinceOnlyState(marks, since, file.path, p);
+			out.push({
+				...base,
+				kind,
+				lines,
+				state,
+				open: state === "unreviewed" ? lines : 0,
+			});
+		}
+		// What no piece owns of a reworked or new cluster: one unit.
+		for (const c of clusters.values()) {
+			const kind = kinds.get(c.key);
+			if (kind !== "reworked" && kind !== "new") continue;
+			const rest = subtract(all(c.lines), owned.get(c.key) ?? []);
+			if (c.lines > 0 && rest.length === 0) continue;
+			const { reviewed, crossed } = marksOf(c);
+			const state: ClusterState =
+				c.lines === 0
+					? c.state
+					: contains(reviewed, rest)
+						? "reviewed"
+						: contains(crossed, rest)
+							? "crossed-off"
+							: "unreviewed";
+			const open =
+				state === "unreviewed"
+					? size(subtract(rest, union(reviewed, crossed)))
+					: 0;
+			out.push({ ...base, kind, lines: size(rest), state, open });
+		}
+	}
+	return out;
+}

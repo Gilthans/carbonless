@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import type { SincePiece } from "../../shared/pieces";
 import type {
 	ClusterState,
 	FileView,
@@ -10,10 +11,14 @@ import {
 	carriedCount,
 	eyesOf,
 	goneFiles,
+	liveToRead,
 	nothingSince,
 	shownView,
 	sinceByFile,
+	sinceProgress,
+	toReadClusters,
 	toReadCount,
+	unitsOf,
 } from "./since";
 
 const cluster = (
@@ -128,12 +133,17 @@ describe("sinceByFile", () => {
 			new: 0,
 			gone: 0,
 			carried: 1,
+			reverted: 0,
+			removed: 0,
 		});
+		// A gone cluster counts by its pieces (none in this answer: no hunks).
 		expect(since.get(1)?.counts).toEqual({
 			reworked: 0,
 			new: 1,
-			gone: 1,
+			gone: 0,
 			carried: 1,
+			reverted: 0,
+			removed: 0,
 		});
 		expect(since.get(1)?.kinds.get("old")).toEqual({
 			key: "old",
@@ -199,6 +209,12 @@ describe("toReadCount, a partly reviewed cluster", () => {
 });
 
 describe("since-only pieces", () => {
+	const only = (
+		line: number,
+		old: [number, number][],
+		fresh: [number, number][],
+		kind: "reverted" | "removed",
+	): SincePiece => ({ hunk: 0, line, owns: null, old, new: fresh, kind });
 	const withRevert = answer(
 		[
 			{
@@ -206,9 +222,9 @@ describe("since-only pieces", () => {
 				path: "core.ts",
 				conflict: false,
 				clusters: [{ key: "a", kind: "reworked" }],
-				sinceOnly: [
-					{ old: [[10, 16]], new: [], kind: "removed" },
-					{ old: [[30, 31]], new: [[40, 42]], kind: "reverted" },
+				pieces: [
+					only(0, [[10, 16]], [], "removed"),
+					only(9, [[30, 31]], [[40, 42]], "reverted"),
 				],
 			},
 			{
@@ -216,7 +232,7 @@ describe("since-only pieces", () => {
 				path: "reverted.ts",
 				conflict: false,
 				clusters: [],
-				sinceOnly: [{ old: [[1, 4]], new: [], kind: "reverted" }],
+				pieces: [only(0, [[1, 4]], [], "reverted")],
 			},
 		],
 		{ files: 2, clusters: 4 },
@@ -230,6 +246,7 @@ describe("since-only pieces", () => {
 		expect(toReadCount(since, plain, "clusters")).toBe(3);
 		expect(toReadCount(since, plain, "lines")).toBe(6 + 3 + 3);
 		expect(toReadCount(since, plain, "files")).toBe(2);
+		expect(since.get(0)?.counts).toMatchObject({ removed: 1, reverted: 1 });
 		expect(goneFiles(withRevert, plain).map((f) => f.path)).toEqual([
 			"reverted.ts",
 		]);
@@ -246,7 +263,8 @@ describe("since-only pieces", () => {
 		};
 		const after = sinceByFile(withRevert, marked);
 		expect(toReadCount(after, marked, "clusters")).toBe(1);
-		expect(after.get(0)?.sinceOnlyLeft).toEqual({ pieces: 0, lines: 0 });
+		expect(after.get(0)?.left).toEqual({ units: 0, lines: 0 });
+		expect(after.get(0)?.counts).toMatchObject({ removed: 0, reverted: 0 });
 		// A mark that holds part of a piece's lines leaves it to read.
 		const part: ReviewView = {
 			...plain,
@@ -259,13 +277,138 @@ describe("since-only pieces", () => {
 				},
 			],
 		};
-		expect(sinceByFile(withRevert, part).get(0)?.sinceOnlyLeft.pieces).toBe(2);
+		expect(sinceByFile(withRevert, part).get(0)?.left.units).toBe(2);
 		// Another comparison's mark is not this one's.
 		const other: ReviewView = {
 			...plain,
 			sinceMarks: [{ ...(marked.sinceMarks?.[0] as SinceMark), since: 2 }],
 		};
-		expect(sinceByFile(withRevert, other).get(0)?.sinceOnlyLeft.pieces).toBe(2);
+		expect(sinceByFile(withRevert, other).get(0)?.left.units).toBe(2);
+	});
+});
+
+describe("counts follow the since view (its pieces)", () => {
+	// Cluster k (10 lines) in three pieces; a reverted piece; cluster n,
+	// new, with lines no piece owns (only the full diff shows them).
+	const ten = (over: Partial<FileView["clusters"][number]> = {}) => ({
+		...cluster("k", "unreviewed", false, 10),
+		oldCount: 0,
+		newCount: 10,
+		removed: [],
+		added: Array.from({ length: 10 }, (_, i) => `l${i}`),
+		...over,
+	});
+	const piece = (
+		line: number,
+		owns: [number, number][] | null,
+		fresh: [number, number][],
+		extra: Partial<SincePiece> = {},
+	): SincePiece => ({
+		hunk: 0,
+		line,
+		owns,
+		old: [],
+		new: fresh,
+		...(owns ? { key: "k" } : {}),
+		...extra,
+	});
+	const pieces = [
+		piece(0, [[0, 5]], [[3, 4]]),
+		piece(4, [[5, 8]], [[7, 9]]),
+		piece(9, [[8, 10]], [[10, 11]]),
+		piece(12, null, [], { old: [[20, 23]], kind: "reverted" }),
+	];
+	const ans = answer(
+		[
+			{
+				index: 0,
+				path: "core.ts",
+				conflict: false,
+				clusters: [
+					{ key: "k", kind: "reworked" },
+					{ key: "n", kind: "new" },
+				],
+				pieces: [...pieces, piece(20, [[0, 1]], [[30, 31]], { key: "n" })],
+			},
+		],
+		{ files: 1, clusters: 6 },
+	);
+	const at = (k = ten(), marks?: SinceMark[]) =>
+		({
+			...view([
+				file(0, "core.ts", [
+					k,
+					{ ...cluster("n", "unreviewed", false, 3), newCount: 3 },
+				]),
+			]),
+			...(marks ? { sinceMarks: marks } : {}),
+		}) as ReviewView;
+
+	it("progress counts units: pieces, and the rest only the full diff shows", () => {
+		const fresh = sinceProgress(unitsOf(ans, at()));
+		// 4 pieces of the file + n's piece + n's rest (2 lines no piece owns).
+		expect(fresh.clusters).toEqual({ total: 6, reviewed: 0, crossedOff: 0 });
+		expect(fresh.lines.total).toBe(1 + 2 + 1 + 3 + 1 + 2);
+		expect(fresh.files).toEqual({
+			total: 1,
+			reviewed: 0,
+			crossedOff: 0,
+			done: 0,
+		});
+	});
+
+	it("marking a piece moves progress, to read, the chips and the connector by one piece", () => {
+		const before = sinceByFile(ans, at());
+		const one = at(ten({ reviewedLines: [[5, 8]] }));
+		const after = sinceByFile(ans, one);
+		expect(sinceProgress(unitsOf(ans, one)).clusters.reviewed).toBe(1);
+		expect(toReadCount(after, one, "clusters")).toBe(
+			toReadCount(before, at(), "clusters") - 1,
+		);
+		expect(after.get(0)?.counts.reworked).toBe(
+			(before.get(0)?.counts.reworked ?? 0) - 1,
+		);
+		expect(liveToRead(after).clusters).toBe(liveToRead(before).clusters - 1);
+		// The reverted piece: by its mark, the same.
+		const reverted = at(ten(), [
+			{
+				since: 1,
+				path: "core.ts",
+				reviewed: { old: [[20, 23]], new: [] },
+				crossed: { old: [], new: [] },
+			},
+		]);
+		const r = sinceByFile(ans, reverted);
+		expect(r.get(0)?.counts.reverted).toBe(0);
+		expect(liveToRead(r).clusters).toBe(liveToRead(before).clusters - 1);
+		expect(sinceProgress(unitsOf(ans, reverted)).clusters.reviewed).toBe(1);
+	});
+
+	it("the rest of a cluster no piece owns stays to read until the full diff marks it", () => {
+		const nPiece = at(ten(), undefined);
+		nPiece.files[0]?.clusters.splice(1, 1, {
+			...cluster("n", "unreviewed", false, 3),
+			newCount: 3,
+			reviewedLines: [[0, 1]],
+		});
+		const after = sinceProgress(unitsOf(ans, nPiece));
+		expect(after.clusters.reviewed).toBe(1);
+		const all = at(ten(), undefined);
+		all.files[0]?.clusters.splice(1, 1, {
+			...cluster("n", "reviewed", false, 3),
+			newCount: 3,
+		});
+		expect(sinceProgress(unitsOf(ans, all)).clusters.reviewed).toBe(2);
+	});
+
+	it("the full diff's to-read counts the snapshot's clusters", () => {
+		expect(toReadClusters(ans, at(), "clusters")).toBe(2);
+		expect(
+			toReadClusters(ans, at(ten({ reviewedLines: [[0, 5]] })), "clusters"),
+		).toBe(2);
+		expect(
+			toReadClusters(ans, at(ten({ state: "reviewed" })), "clusters"),
+		).toBe(1);
 	});
 });
 
@@ -278,8 +421,15 @@ describe("eyesOf", () => {
 			eyesOf(carried, {
 				kinds: new Map(),
 				conflict: false,
-				counts: { reworked: 0, new: 0, gone: 0, carried: 1 },
-				sinceOnlyLeft: { pieces: 0, lines: 0 },
+				counts: {
+					reworked: 0,
+					new: 0,
+					gone: 0,
+					carried: 1,
+					reverted: 0,
+					removed: 0,
+				},
+				left: { units: 0, lines: 0 },
 			}),
 		).toBe("carried");
 		// A carried file whose mark the reviewer unticked needs eyes again.
@@ -287,8 +437,15 @@ describe("eyesOf", () => {
 			eyesOf(file(0, "core.ts", [cluster("b", "unreviewed")]), {
 				kinds: new Map(),
 				conflict: false,
-				counts: { reworked: 0, new: 0, gone: 0, carried: 0 },
-				sinceOnlyLeft: { pieces: 0, lines: 0 },
+				counts: {
+					reworked: 0,
+					new: 0,
+					gone: 0,
+					carried: 0,
+					reverted: 0,
+					removed: 0,
+				},
+				left: { units: 0, lines: 0 },
 			}),
 		).toBe("read");
 		// A piece owning no line of the snapshot, not marked: to read.
@@ -296,16 +453,30 @@ describe("eyesOf", () => {
 			eyesOf(carried, {
 				kinds: new Map(),
 				conflict: false,
-				counts: { reworked: 0, new: 0, gone: 0, carried: 1 },
-				sinceOnlyLeft: { pieces: 1, lines: 6 },
+				counts: {
+					reworked: 0,
+					new: 0,
+					gone: 0,
+					carried: 1,
+					reverted: 0,
+					removed: 0,
+				},
+				left: { units: 1, lines: 6 },
 			}),
 		).toBe("read");
 		expect(
 			eyesOf(carried, {
 				kinds: new Map(),
 				conflict: true,
-				counts: { reworked: 0, new: 0, gone: 0, carried: 1 },
-				sinceOnlyLeft: { pieces: 0, lines: 0 },
+				counts: {
+					reworked: 0,
+					new: 0,
+					gone: 0,
+					carried: 1,
+					reverted: 0,
+					removed: 0,
+				},
+				left: { units: 0, lines: 0 },
 			}),
 		).toBe("read");
 		expect(eyesOf(carried, undefined)).toBeNull();

@@ -1,4 +1,4 @@
-import { clusterAt, sincePieces } from "../../shared/pieces.js";
+import { clusterAt, sincePieces, sinceUnits } from "../../shared/pieces.js";
 import {
 	type CarriedState,
 	type CarryResult,
@@ -18,6 +18,7 @@ import {
 } from "../../shared/tracer/index.js";
 import type {
 	Cluster,
+	ClusterView,
 	DiffLine,
 	FileHunks,
 	FileStatus,
@@ -516,8 +517,9 @@ export function answerRereview(
 		toRead: { files: toReadFiles, clusters: toReadClusters },
 		threads: [],
 	};
-	// The pieces of the since view that own no line of the target (gone or
-	// reverted since): markable on their own, and to read like a cluster.
+	// The since view's pieces, every one of them (its counts count them:
+	// sinceUnits), with the since patch set's states for what they own; to
+	// read is every unit, as nothing of the target is marked yet.
 	if (interdiff.status === "available") {
 		for (const f of files) {
 			const { pieces = [] } = interdiffFileHunks(
@@ -525,20 +527,18 @@ export function answerRereview(
 				target,
 				answer,
 				f.index,
+				ps.states,
 			);
-			const only = pieces.filter((p) => p.owns === null);
-			if (only.length === 0) continue;
-			f.sinceOnly = only.map((p) => ({
-				old: p.old,
-				new: p.new,
-				kind: p.kind ?? "removed",
-			}));
-			const hadSome = f.clusters.some(
-				(c) => c.kind === "reworked" || c.kind === "new",
-			);
-			answer.toRead.clusters += only.length;
-			if (!hadSome && !f.conflict) answer.toRead.files++;
+			if (pieces.length > 0) f.pieces = pieces;
 		}
+		const unmarked = (index: number): ClusterView[] =>
+			(target.files.find((t) => t.index === index)?.clusters ?? []).map(
+				(c) => ({ ...c, state: "unreviewed" as const }),
+			);
+		const units = sinceUnits(files, ps.number, unmarked, undefined);
+		const byFile = new Set(units.map((u) => u.index));
+		for (const f of files) if (f.conflict) byFile.add(f.index);
+		answer.toRead = { files: byFile.size, clusters: units.length };
 	}
 	// One carried event per (source patch set, rule).
 	const events = new Map<string, PatchsetStart["carried"][number]>();

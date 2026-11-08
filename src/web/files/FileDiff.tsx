@@ -322,6 +322,12 @@ function SinceChips(props: { info?: FileSince; since?: number }) {
 			{counts.gone > 0 && (
 				<KindChip kind="gone" count={counts.gone} from={props.since} />
 			)}
+			{counts.reverted > 0 && (
+				<KindChip kind="reverted" count={counts.reverted} from={props.since} />
+			)}
+			{counts.removed > 0 && (
+				<KindChip kind="removed" count={counts.removed} from={props.since} />
+			)}
 			{counts.carried > 0 && (
 				<KindChip kind="carried" count={counts.carried} from={props.since} />
 			)}

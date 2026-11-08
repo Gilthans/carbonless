@@ -1012,15 +1012,10 @@ export interface RereviewAnswer {
 			rule?: "exact" | "rename";
 		}[];
 		/**
-		 * The file's since-view pieces that own no line of the target
-		 * (SincePiece with `owns` null): markable on their own, to read
-		 * until marked (the page counts them against `sinceMarks`).
+		 * The file's since-view pieces (pieces.ts SincePiece), what the since
+		 * view marks and counts (sinceUnits); absent without an interdiff.
 		 */
-		sinceOnly?: {
-			old: LineRanges;
-			new: LineRanges;
-			kind: "reverted" | "removed";
-		}[];
+		pieces?: SincePiece[];
 	}[];
 	/** Files with a reworked or new cluster (or a conflict), and those clusters. */
 	toRead: { files: number; clusters: number };

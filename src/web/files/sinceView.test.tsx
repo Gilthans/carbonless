@@ -651,8 +651,15 @@ describe("GoneFile: a whole file undone since the compared patch set", () => {
 					info={{
 						kinds: new Map([["g1", { key: "g1", kind: "gone", from: 1 }]]),
 						conflict: false,
-						counts: { reworked: 0, new: 0, gone: 1, carried: 0 },
-						sinceOnlyLeft: { pieces: 1, lines: 2 },
+						counts: {
+							reworked: 0,
+							new: 0,
+							gone: 1,
+							carried: 0,
+							reverted: 0,
+							removed: 0,
+						},
+						left: { units: 1, lines: 2 },
 					}}
 				/>
 			</QueryClientProvider>,

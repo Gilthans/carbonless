@@ -38,6 +38,30 @@ describe("ProgressBar", () => {
 		expect(bar).toHaveTextContent("2 / 9 files reviewed");
 	});
 
+	it("while its counts wait on the engine, spins where the numbers go: never 0 or a percent (principle 8)", () => {
+		const zero: Progress = {
+			clusters: { total: 0, reviewed: 0, crossedOff: 0 },
+			lines: { total: 0, reviewed: 0, crossedOff: 0 },
+			files: { total: 0, reviewed: 0, crossedOff: 0, done: 0 },
+		};
+		render(
+			<ProgressBar
+				progress={zero}
+				unit="clusters"
+				onUnitChange={() => {}}
+				pending
+				toRead={null}
+			/>,
+		);
+		const bar = screen.getByRole("progressbar", { name: "Review progress" });
+		expect(bar).toHaveAttribute("aria-busy", "true");
+		expect(bar).not.toHaveAttribute("aria-valuenow");
+		expect(bar).not.toHaveTextContent(/\d/);
+		expect(
+			screen.getByRole("status", { name: "Counting the comparison" }),
+		).toBeInTheDocument();
+	});
+
 	it("names the unit in the singular for one", () => {
 		const one: Progress = {
 			clusters: { total: 1, reviewed: 0, crossedOff: 0 },

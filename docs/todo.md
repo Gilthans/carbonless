@@ -84,6 +84,9 @@ Foundation for everything below.
   commits. Triggered when the PR is merged or closed. No event may be lost;
   clients that see a compacted ref replace their copy instead of merging it.
   See "Compaction" in `docs/review-data-storage.md`.
+  Also (owner, 2026-11-08): once every line of a cluster is marked, its
+  `lines-state` events compact to one whole `cluster-state`, and the
+  `since-lines-state` events of a (since, path) to the last one.
 
 ## 1. Split a change into review groups
 

@@ -140,11 +140,10 @@ describe("the since view's pieces (engine)", () => {
 		const revert = pieces.find((p) => p.owns === null);
 		expect(revert && lines(revert)).toEqual(["-added 1", "-added 2"]);
 		expect(revert).toMatchObject({ kind: "reverted", new: [] });
-		expect(answer.files[0]?.sinceOnly).toEqual([
-			{ old: revert?.old, new: [], kind: "reverted" },
-		]);
-		// Counted to read like a cluster.
-		expect(answer.toRead.clusters).toBe(2 + 1);
+		// The answer lists every piece; to read counts pieces, not clusters:
+		// the block's three, the merged cluster's removal, the revert.
+		expect(answer.files[0]?.pieces).toEqual(pieces);
+		expect(answer.toRead).toEqual({ files: 1, clusters: 5 });
 	});
 
 	it("a block edited in three places is one cluster in three pieces, splitting it whole", async () => {

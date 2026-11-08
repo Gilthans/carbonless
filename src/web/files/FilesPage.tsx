@@ -61,8 +61,12 @@ import {
 	carriedCount,
 	eyesOf,
 	goneFiles,
+	liveToRead,
 	nothingSince,
+	sinceProgress,
+	toReadClusters,
 	toReadCount,
+	unitsOf,
 } from "./since";
 import {
 	type PlacementInfo,
@@ -840,8 +844,10 @@ export function FilesPage() {
 	// full diff (no comparison asked).
 	const toRead = !sinceView.asked
 		? undefined
-		: byFile && data
-			? toReadCount(byFile, data, unit)
+		: byFile && data && sinceView.answer
+			? sinceView.since !== null
+				? toReadCount(byFile, data, unit)
+				: toReadClusters(sinceView.answer, data, unit)
 			: sinceView.error
 				? undefined
 				: null;
@@ -854,10 +860,31 @@ export function FilesPage() {
 		return {
 			kinds: new Map(),
 			conflict: false,
-			counts: { reworked: 0, new: 0, gone: 0, carried },
-			sinceOnlyLeft: { pieces: 0, lines: 0 },
+			counts: {
+				reworked: 0,
+				new: 0,
+				gone: 0,
+				carried,
+				reverted: 0,
+				removed: 0,
+			},
+			left: { units: 0, lines: 0 },
 		};
 	};
+	// The since view counts its own units (pieces), the full diff the
+	// snapshot's clusters; a spinner while the engine computes (never 0).
+	const sinceAnswer = since !== null ? sinceView.answer : null;
+	// Nothing to count there (nothing changed since): the snapshot's own.
+	const viewProgress = useMemo(() => {
+		const units = sinceAnswer && data ? unitsOf(sinceAnswer, data) : [];
+		return units.length > 0 ? sinceProgress(units) : (data?.progress ?? null);
+	}, [sinceAnswer, data]);
+	const progressPending = since !== null && sinceView.pending;
+	// The connector of the comparison on screen counts what is left here.
+	const live =
+		since !== null && byFile && comparison.viewing
+			? { from: since, to: comparison.viewing, toRead: liveToRead(byFile) }
+			: undefined;
 	const gone =
 		since !== null && sinceView.answer && data
 			? goneFiles(sinceView.answer, data)
@@ -897,7 +924,11 @@ export function FilesPage() {
 					<h2 className="sr-only">Files changed</h2>
 					{/* The graph needs the session alone: it never waits for the diff. */}
 					{session && (
-						<PatchsetGraph session={session} comparison={comparison} />
+						<PatchsetGraph
+							session={session}
+							comparison={comparison}
+							live={live}
+						/>
 					)}
 					{review.isPending && <FilesSkeleton />}
 					{review.isError && <ErrorMessage error={review.error} />}
@@ -905,7 +936,8 @@ export function FilesPage() {
 						<>
 							<ProgressBar
 								ref={bar}
-								progress={data.progress}
+								progress={viewProgress ?? data.progress}
+								pending={progressPending}
 								unit={unit}
 								onUnitChange={setUnit}
 								toRead={toRead}

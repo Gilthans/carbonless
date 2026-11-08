@@ -401,6 +401,17 @@ cluster's state, never carry, and never count in the snapshot's progress;
 the since view counts an unmarked since-only piece in "to read", and the
 engine's answer lists them per file (`sinceOnly`) and in `toRead`.
 
+**Counts follow the view** (owner, 2026-11-08: "all the counts should be
+related to the interdiff, not the base diff"). In the since view every
+count is over its **units** (`sinceUnits`, `src/shared/pieces.ts`): each
+piece, and the rest of a reworked or new cluster no piece owns (only the
+full diff shows it), marked as the folded marks say. The progress bar
+(units, their shown lines, files with any), "to read", the file header
+chips, the tree's dots and "needs eyes", and the connector of the
+comparison on screen all count them and drop as pieces are marked; the
+engine's `toRead` counts every unit, for any other connector. The full
+diff counts the snapshot's clusters. None of this is stored.
+
 **Writes** (`ReviewService.recordStates`, `POST /review/states`): a change
 with `reviewedLines`/`crossedLines` (state `unreviewed`, no reason) whose
 ranges fit the cluster; a change with `sinceMark` (key

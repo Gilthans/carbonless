@@ -253,7 +253,17 @@ describe("the engine", () => {
 				conflict: false,
 				clusters: [{ key: extraKey, kind: "gone", from: 1 }],
 				// Its removal is a piece of its own, back to the base: to read.
-				sinceOnly: [{ old: [[1, 2]], new: [], kind: "reverted" }],
+				pieces: [
+					{
+						hunk: 0,
+						line: 0,
+						key: extraKey,
+						owns: null,
+						old: [[1, 2]],
+						new: [],
+						kind: "reverted",
+					},
+				],
 			},
 		]);
 		expect(answer.toRead).toEqual({ files: 1, clusters: 1 });

@@ -391,6 +391,8 @@ interface Connector {
 	/** The shape code known from the session (a patch set's record). */
 	shape: Shape["code"] | null;
 	dashed: boolean;
+	/** The comparison on screen: what is left there (live), over the engine's count. */
+	live?: ToRead;
 }
 
 /** The answer once it is in; null while pending, failed or never asked. */
@@ -426,7 +428,11 @@ function ConnectorCard(props: { c: Connector; baseBranch?: string }) {
 		return (
 			<Card
 				head={head}
-				body={connectorLine(answer.shape, toReadOf(answer), props.baseBranch)}
+				body={connectorLine(
+					answer.shape,
+					c.live ?? toReadOf(answer),
+					props.baseBranch,
+				)}
 			/>
 		);
 	}
@@ -501,7 +507,7 @@ function ConnectorLine(props: {
 					warn: "border-warn",
 					ok: "border-ok",
 					bad: "border-bad",
-				}[connectorTone(answer.shape, toReadOf(answer))]
+				}[connectorTone(answer.shape, c.live ?? toReadOf(answer))]
 			: "border-warn";
 	// The count's slot keeps its height while it loads (nothing moves).
 	const label =
@@ -726,6 +732,11 @@ export function PatchsetGraph(props: {
 	comparison: Comparison;
 	/** The comparison's own answer (the connectors read theirs, cached alike). */
 	rereview?: RereviewAnswer | { pending: true } | undefined;
+	/**
+	 * What is left to read in the comparison on screen (the since view's
+	 * units, as marked): its connector says that, not the engine's count.
+	 */
+	live?: { from: number; to: Viewing; toRead: ToRead };
 	onViewHead?: () => void;
 }) {
 	const { comparison } = props;
@@ -780,6 +791,12 @@ export function PatchsetGraph(props: {
 					: null,
 			shape: to.patchset?.shape ?? null,
 			dashed: to.kind === "head",
+			...(props.live &&
+			from.base?.kind === "patchset" &&
+			from.base.number === props.live.from &&
+			sameViewing(to.viewing, props.live.to)
+				? { live: props.live.toRead }
+				: {}),
 		};
 	});
 	const headConnector = connectors.find((c) => c.to.kind === "head") ?? null;
