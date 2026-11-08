@@ -153,8 +153,10 @@ export function useFind(opts: {
 		combine: contextData,
 	});
 
-	const hits = useMemo(() => {
-		if (!searchOn || term === "") return NO_HITS;
+	// The search over what is loaded, for a term (the deferred one, or the
+	// typed one when a step comes before the deferred search caught up).
+	const searchFor = useMemo(() => {
+		if (!searchOn) return (_: string) => NO_HITS;
 		const hunksBy = new Map<number, FileHunks | undefined>();
 		files.forEach((f, i) => {
 			hunksBy.set(f.index, hunks.data[i]);
@@ -165,14 +167,18 @@ export function useFind(opts: {
 			if (!lines) return;
 			contextBy.set(r.index, [...(contextBy.get(r.index) ?? []), ...lines]);
 		});
-		return findInPr(
-			term,
-			files,
-			(f) => hunksBy.get(f.index),
-			(f) => contextBy.get(f.index) ?? NO_LINES,
-			matchCase,
-		);
-	}, [searchOn, term, matchCase, files, hunks, ranges, context]);
+		return (t: string) =>
+			t === ""
+				? NO_HITS
+				: findInPr(
+						t,
+						files,
+						(f) => hunksBy.get(f.index),
+						(f) => contextBy.get(f.index) ?? NO_LINES,
+						matchCase,
+					);
+	}, [searchOn, matchCase, files, hunks, ranges, context]);
+	const hits = useMemo(() => searchFor(term), [searchFor, term]);
 
 	// The caret. Typing (a new term, match case, a reopen, a new revision)
 	// starts over from the file open at that moment: a pick in the tree
@@ -195,11 +201,30 @@ export function useFind(opts: {
 			return stepped.caret;
 		return caretAfterTyping(hits, order, typedOpen);
 	}, [stepped, typingKey, hits, order, typedOpen]);
-	// Steps read the latest, also two in one frame.
+	// Steps read the latest, also two in one frame. While the deferred
+	// search trails the typed term, a step searches the typed term itself
+	// (Enter right after typing goes to the typed term's hit).
+	const typedKey = `${open}\0${typedTerm}\0${matchCase}\0${revision}`;
 	const latest = useRef({ hits, caret, typingKey });
 	latest.current = { hits, caret, typingKey };
+	const typedNow = useRef({ typedKey, typedTerm, searchFor, order, stepped });
+	typedNow.current = { typedKey, typedTerm, searchFor, order, stepped };
+	const openNow = useRef(openIndex);
+	openNow.current = openIndex;
 	const step = useCallback((dir: 1 | -1): Hit | null => {
-		const now = latest.current;
+		let now = latest.current;
+		const t = typedNow.current;
+		if (now.typingKey !== t.typedKey) {
+			const hits = t.searchFor(t.typedTerm);
+			const kept = t.stepped;
+			const caret =
+				kept?.key === t.typedKey &&
+				kept.caret &&
+				hitIndex(hits, kept.caret.pos) >= 0
+					? kept.caret
+					: caretAfterTyping(hits, t.order, openNow.current);
+			now = { hits, caret, typingKey: t.typedKey };
+		}
 		const next = stepCaret(now.hits, now.caret, dir);
 		if (!next) return null;
 		latest.current = { ...now, caret: next };

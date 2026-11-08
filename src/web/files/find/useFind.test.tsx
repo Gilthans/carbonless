@@ -2,13 +2,14 @@
 import type { QueryClient } from "@tanstack/react-query";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
-import type { ReactNode } from "react";
+import { type ReactNode, useEffect, useRef } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { heldJson } from "../../../../test/loading";
 import type { DiffLine, FileHunks, FileView } from "../../../shared/types";
 import { hunksQuery } from "../../api";
 import { newQueryClient } from "../../queryClient";
 import { contextRanges } from "../contextRanges";
+import type { Hit } from "./findInPr";
 import { findState } from "./findState";
 import { useFind } from "./useFind";
 
@@ -412,6 +413,60 @@ describe("useFind", () => {
 		const trailing = seen.filter((r) => r.typed === "abc" && r.of === 2);
 		expect(trailing.length).toBeGreaterThan(0);
 		expect(trailing.every((r) => r.searching)).toBe(true);
+	});
+
+	it("a step while the results trail the typed term steps through the typed term's hits", async () => {
+		const files = [
+			file(0, [], ["ab"], "zz.txt"),
+			file(1, [], ["abc"], "yy.txt"),
+		];
+		const steps: (Hit | null)[] = [];
+		const { result } = renderHook(
+			() => {
+				const f = useFind({
+					revision: "r1",
+					files,
+					openIndex: null,
+					active: true,
+				});
+				const fired = useRef(false);
+				// Enter right after typing: between the keystroke's render and
+				// the deferred search's.
+				useEffect(() => {
+					if (f.state.term !== "abc" || !f.searching || fired.current) return;
+					fired.current = true;
+					steps.push(f.step(1));
+				});
+				return f;
+			},
+			{
+				wrapper: ({ children }: { children: ReactNode }) => (
+					<QueryClientProvider client={client}>{children}</QueryClientProvider>
+				),
+			},
+		);
+		search("ab");
+		await waitFor(() => expect(batches).toHaveLength(1));
+		await act(async () => {
+			batches[0]?.held.release({
+				files: files.map((f) => ({ index: f.index, hunks: hunksOf(f, "z") })),
+			});
+		});
+		await waitFor(() => expect(result.current.searching).toBe(false));
+		act(() => findState.setTerm("abc"));
+		expect(steps).toHaveLength(1);
+		expect(steps[0]).toMatchObject({
+			index: 1,
+			side: "RIGHT",
+			line: 2,
+			col: 0,
+		});
+		await waitFor(() => expect(result.current.searching).toBe(false));
+		expect(result.current.caret).toEqual({
+			pos: { index: 1, side: "RIGHT", line: 2, col: 0 },
+			shown: true,
+		});
+		expect(result.current.count).toEqual({ at: 1, of: 1 });
 	});
 
 	it("keeps a file's DiffFind the same object while its hits and caret don't change", async () => {
