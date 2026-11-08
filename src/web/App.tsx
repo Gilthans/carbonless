@@ -205,7 +205,7 @@ export function App() {
 	const wide = useActivePage() === "/r/$id/files";
 	const id = useReviewId();
 	const navigate = useNavigate();
-	/** The toast's View: the Files page with the viewing marker on the head. */
+	/** The toast's View: the Files page with the comparison target on the head. */
 	const viewHead = (oid: string) =>
 		navigate({
 			to: "/r/$id/files",

@@ -135,7 +135,7 @@ function renderGraph(
 
 const tail = () => screen.getByTestId("ps-tail");
 const node = (id: string) => screen.getByTestId(`ps-node-${id}`);
-const markerIn = (id: string, name: "viewing" | "comparison base") =>
+const markerIn = (id: string, name: "comparison target" | "comparison base") =>
 	within(node(id)).queryByRole("button", { name });
 
 const ps = (number: number): Viewing => ({ kind: "patchset", number });
@@ -180,9 +180,9 @@ describe("PatchsetGraph", () => {
 		expect(screen.getByRole("img", { name: "up to date" })).toBeInTheDocument();
 		expect(screen.queryByRole("button", { name: /^head/ })).toBeNull();
 		// The markers sit where the comparison says.
-		expect(markerIn("ps2", "viewing")).not.toBeNull();
+		expect(markerIn("ps2", "comparison target")).not.toBeNull();
 		expect(markerIn("ps1", "comparison base")).not.toBeNull();
-		expect(markerIn("ps1", "viewing")).toBeNull();
+		expect(markerIn("ps1", "comparison target")).toBeNull();
 	});
 
 	it("a newer head: the same slot holds the dashed connector with its count and the head dot", async () => {
@@ -286,24 +286,24 @@ describe("PatchsetGraph", () => {
 		);
 	});
 
-	it("viewing the head: the viewing marker sits on the head dot, the base on the newest patch set", () => {
+	it("viewing the head: the comparison target sits on the head dot, the base on the newest patch set", () => {
 		renderGraph(session([1, 2], oid("f")), {
 			viewing: { kind: "head", oid: oid("f") },
 			base: ps(2) as ComparisonBase,
 		});
-		expect(markerIn("head", "viewing")).not.toBeNull();
+		expect(markerIn("head", "comparison target")).not.toBeNull();
 		expect(markerIn("ps2", "comparison base")).not.toBeNull();
-		expect(markerIn("ps2", "viewing")).toBeNull();
+		expect(markerIn("ps2", "comparison target")).toBeNull();
 	});
 
-	it("an old patch set: the viewing marker on it, the base on the branch", () => {
+	it("an old patch set: the comparison target on it, the base on the branch", () => {
 		renderGraph(session([1, 2], oid("2")), {
 			viewing: ps(1),
 			base: { kind: "branch" },
 		});
-		expect(markerIn("ps1", "viewing")).not.toBeNull();
+		expect(markerIn("ps1", "comparison target")).not.toBeNull();
 		expect(markerIn("branch", "comparison base")).not.toBeNull();
-		expect(markerIn("ps2", "viewing")).toBeNull();
+		expect(markerIn("ps2", "comparison target")).toBeNull();
 	});
 
 	it("a click moves nothing: it makes the dot's card sticky, whose buttons set the roles", async () => {
@@ -495,7 +495,7 @@ describe("PatchsetGraph", () => {
 		expect(conn()).toHaveAccessibleName("main to PS1: 2 commits");
 	});
 
-	it("Ctrl+] and Ctrl+[ move the viewing marker; with Shift the base; bare brackets move nothing", () => {
+	it("Ctrl+] and Ctrl+[ move the comparison target; with Shift the base; bare brackets move nothing", () => {
 		const { setViewing, setBase } = renderGraph(session([1, 2], oid("f")), {
 			viewing: ps(2),
 			base: ps(1) as ComparisonBase,
@@ -524,7 +524,7 @@ describe("PatchsetGraph", () => {
 		expect(setBase).toHaveBeenCalledTimes(1);
 	});
 
-	it("dragging the viewing marker onto the head dot views it; onto the branch does nothing", () => {
+	it("dragging the comparison target onto the head dot views it; onto the branch does nothing", () => {
 		const { setViewing, setBase } = renderGraph(session([1, 2], oid("f")), {
 			viewing: ps(2),
 			base: ps(1) as ComparisonBase,
@@ -546,7 +546,7 @@ describe("PatchsetGraph", () => {
 		centre(screen.getByTestId("ps-dot-ps1"), 110);
 		centre(screen.getByTestId("ps-dot-ps2"), 210);
 		centre(screen.getByTestId("ps-dot-head"), 310);
-		const marker = screen.getByRole("button", { name: "viewing" });
+		const marker = screen.getByRole("button", { name: "comparison target" });
 		marker.setPointerCapture = () => {};
 		fireEvent.pointerDown(marker, { pointerId: 1, clientX: 210 });
 		fireEvent.pointerMove(marker, { pointerId: 1, clientX: 300 });

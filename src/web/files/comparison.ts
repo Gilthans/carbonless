@@ -66,7 +66,7 @@ const sameBase = (a: ComparisonBase, b: ComparisonBase) =>
 		: b.kind === "patchset" && a.number === b.number;
 
 /**
- * Where the comparison base goes when the viewing marker moves (the owner's
+ * Where the comparison base goes when the comparison target moves (the owner's
  * rule, 2026-11-04): on the branch dot it stays; on the previous patch set
  * it follows by one (it stays "the previous"); anywhere else it is
  * remembered, unless that would put it on or after the viewed dot, when
@@ -122,7 +122,7 @@ export function parseComparison(
 }
 
 /**
- * The params after the viewing marker moves to `viewing`: the base by
+ * The params after the comparison target moves to `viewing`: the base by
  * nextBase when the reviewer put it somewhere (`from` in the address),
  * else the new default (a base left where it was by default was never
  * "chosen": it keeps being the previous dot).

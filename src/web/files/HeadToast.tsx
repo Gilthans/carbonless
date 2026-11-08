@@ -30,7 +30,7 @@ export function toastHead(session: SessionInfo): SessionInfo["head"] {
 
 /**
  * New commits arrived (design doc, "New commits arriving"): "3 new commits ·
- * f9e8d7c" with View (the viewing marker onto the head dot) and a dismiss,
+ * f9e8d7c" with View (the comparison target onto the head dot) and a dismiss,
  * at the bottom of the window. A status, never focused: the review in
  * progress is not interrupted. Goes by itself after TOAST_MS; a head
  * dismissed stays dismissed, a newer one shows again.

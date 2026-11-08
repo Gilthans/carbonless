@@ -167,7 +167,7 @@ function DotGlyph(props: { dot: Dot; viewing: boolean; base: boolean }) {
 	);
 }
 
-/** A marker on the rail: viewing (accent) or comparison base (violet). */
+/** A marker on the rail: comparison target (accent) or comparison base (violet). */
 function Marker(props: {
 	kind: "viewing" | "base";
 	phone: boolean;
@@ -175,13 +175,13 @@ function Marker(props: {
 	dragging: boolean;
 }) {
 	const base = props.kind === "base";
-	const label = base ? "comparison base" : "viewing";
+	const label = base ? "comparison base" : "comparison target";
 	return (
 		<Tooltip
 			content={
 				base
 					? "Comparison base: the diff shown starts here. Drag to move it."
-					: "Viewing: the diff shown ends here. Drag to move it."
+					: "Comparison target: the diff shown ends here. Drag to move it."
 			}
 			describe={false}
 		>
@@ -201,7 +201,7 @@ function Marker(props: {
 							: "border-[1.5px] border-accent text-accent"
 					} ${props.dragging ? "opacity-60" : ""}`}
 				>
-					{base && props.phone ? "comp. base" : label}
+					{props.phone ? (base ? "comp. base" : "comp. target") : label}
 				</button>
 			)}
 		</Tooltip>
@@ -800,13 +800,13 @@ export function PatchsetGraph(props: {
 	const group = "Files changed";
 	useShortcut({
 		keys: "Ctrl+]",
-		label: "View the next patch set (the head past the newest)",
+		label: "Move the comparison target right (the head past the newest)",
 		group,
 		run: () => step("viewing", 1),
 	});
 	useShortcut({
 		keys: "Ctrl+[",
-		label: "View the previous patch set",
+		label: "Move the comparison target left",
 		group,
 		run: () => step("viewing", -1),
 	});
