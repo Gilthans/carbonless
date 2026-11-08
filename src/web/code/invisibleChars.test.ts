@@ -166,6 +166,23 @@ describe("renderInvisibles", () => {
 		}
 	});
 
+	it("shows a file's byte order mark only while hidden characters show", () => {
+		const BOM = "\uFEFF";
+		const first = (text: string, show: boolean) =>
+			renderInvisibles(text, 4, { newline: false, show, fileStart: true });
+		expect(look(first(`${BOM}import x;`, true))).toBe("\\uFEFFimport x;");
+		const pieces = first(`${BOM}import x;`, false);
+		expect(pieces.some((p) => p.kind === "escape")).toBe(false);
+		expect(joinPieces(pieces)).toBe(`${BOM}import x;`);
+		// Tab stops count it as nothing.
+		expect(look(first(`${BOM}\tx`, false))).toBe(`${BOM}____x`);
+		// Anywhere else it is content (files joined by cat, a zero width
+		// no-break space): escaped either way.
+		expect(look(first(`a${BOM}b`, false))).toBe("a\\uFEFFb");
+		expect(look(first(`${BOM}${BOM}b`, false))).toBe(`${BOM}\\uFEFFb`);
+		expect(hidden(`${BOM}import x;`, 4, false)).toBe("\\uFEFFimport x;");
+	});
+
 	it("escapes unusual spaces and line separators", () => {
 		const spaces = [
 			0xa0, 0x2000, 0x2001, 0x2005, 0x200a, 0x202f, 0x205f, 0x3000, 0x2028,

@@ -37,7 +37,7 @@ import {
 	useShowInvisibles,
 	type Words,
 } from "../code/Invisibles";
-import { DEFAULT_TAB_WIDTH } from "../code/invisibleChars";
+import { DEFAULT_TAB_WIDTH, startsFile } from "../code/invisibleChars";
 import { Spinner } from "../Spinner";
 import { clickPointer, isTap, Tooltip } from "../Tooltip";
 import { canMove, spanTexts } from "../threads/draftMove";
@@ -673,6 +673,7 @@ function CodeCell(props: {
 				lang={props.lang}
 				tabWidth={props.tabWidth}
 				newline={!line.noNewline}
+				fileStart={startsFile(line)}
 				marks={props.marks}
 				words={props.words}
 			/>
@@ -721,6 +722,8 @@ interface RowProps {
 const marksOf = (keys: LineKey[], threads: RowThreads | undefined): Mark[] =>
 	threads ? keys.flatMap((k) => threads.placement.marks.get(k) ?? []) : [];
 
+const NO_MARKS: readonly Mark[] = [];
+
 /**
  * A line's word marks and their tint: its kind's, faded on a reviewed
  * cluster (as REVIEWED_ROW_BG fades the row). A whitespace-only row has none.
@@ -732,11 +735,13 @@ function wordsOf(
 ): Words | undefined {
 	if (line.kind !== "add" && line.kind !== "del") return undefined;
 	const marks = props.words?.get(line);
-	if (!marks) return undefined;
+	// A file's byte order mark may be hidden on a line without marks.
+	const hidden = props.hidden?.has(line) || undefined;
+	if (!marks && !hidden) return undefined;
 	return {
-		marks,
+		marks: marks ?? NO_MARKS,
 		tone: reviewed ? `${line.kind}-done` : line.kind,
-		hidden: props.hidden?.has(line) || undefined,
+		hidden,
 	};
 }
 

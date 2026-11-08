@@ -1,5 +1,6 @@
 import type { Mark } from "./Invisibles";
 import {
+	BOM,
 	DEFAULT_TAB_WIDTH,
 	type Piece,
 	renderInvisibles,
@@ -9,6 +10,8 @@ export interface HiddenChangeOptions {
 	tabWidth?: number;
 	/** A newline follows the line (false for the last line without one). */
 	newline?: boolean;
+	/** The file's first line: a BOM that starts it draws nothing while off. */
+	fileStart?: boolean;
 	/** The line it pairs with (its word marks are its own business). */
 	partner?: { text: string; newline?: boolean };
 }
@@ -69,7 +72,9 @@ const look = (pieces: Piece[]) =>
  * exactly like its partner; an indent swapped for one as wide (a tab for
  * spaces of the same width), even beside a visible change; or a selector,
  * joiner or tag kept unescaped inside an emoji (or a joining script), which
- * shows as `\uXXXX` only while hidden characters are on. Escaped
+ * shows as `\uXXXX` only while hidden characters are on; or the
+ * file's byte order mark (`fileStart`), which shows only while they are
+ * on. Other escaped
  * characters (zero widths, no-break spaces, bidi controls) show as
  * `\uXXXX` either way, so they never count.
  */
@@ -79,11 +84,25 @@ export function hiddenChange(
 	options: HiddenChangeOptions = {},
 ): boolean {
 	if (marks.length === 0) return false;
-	const { tabWidth = DEFAULT_TAB_WIDTH, newline = true, partner } = options;
+	const {
+		tabWidth = DEFAULT_TAB_WIDTH,
+		newline = true,
+		fileStart = false,
+		partner,
+	} = options;
 	// A selector, joiner or tag kept inside an emoji (or a script that needs
 	// it) draws nothing until hidden characters show it (owner, 2026-11-04).
 	const shown = renderInvisibles(text, tabWidth, { newline, marks });
 	if (shown.some((p) => p.kind === "escape" && p.kept)) {
+		return true;
+	}
+	// The file's byte order mark draws nothing while hidden characters are
+	// off: a mark on it holds a change that doesn't show.
+	if (
+		fileStart &&
+		text.startsWith(BOM) &&
+		marks.some(([from, to]) => from === 0 && to > 0)
+	) {
 		return true;
 	}
 	const pieces = piecesOff(text, tabWidth, newline);

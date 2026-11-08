@@ -5,6 +5,7 @@ import {
 	useRef,
 	useState,
 } from "react";
+import { useFitViewport } from "../sticky";
 import { Tooltip } from "../Tooltip";
 import {
 	TREE_WIDTH,
@@ -21,6 +22,9 @@ import {
 export function TreeColumn(props: { tree: ReactNode }) {
 	const column = useRef<HTMLDivElement>(null);
 	const treeWidth = useTreeWidth(useTreeRoom(column));
+	// Its bottom stays in view before the page scrolls it up to its stuck
+	// top, so the tree scrolls on its own scrollbar alone.
+	useFitViewport(column);
 	return (
 		<div
 			ref={column}

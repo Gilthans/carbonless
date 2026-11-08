@@ -45,6 +45,31 @@ describe("hiddenLines", () => {
 		expect(hidden.size).toBe(3);
 	});
 
+	it("names a file's first line that starts with its BOM, paired or not", () => {
+		const BOM = "\uFEFF";
+		const d = { ...del("export const a = 1;"), oldNo: 1 };
+		const a1 = { ...add(`${BOM}export const a = 1;`), newNo: 1 };
+		const a2 = { ...add("const b = 2;"), newNo: 2 };
+		// One removed, two added: no pair, so no marks.
+		const r = rows(d, a1, a2);
+		expect(hunkWordMarks(r).size).toBe(0);
+		expect([...hiddenLines(r, hunkWordMarks(r), 4)]).toEqual([a1]);
+		// Paired: its mark on the BOM.
+		const p = rows(d, a1);
+		expect([...hiddenLines(p, hunkWordMarks(p), 4)]).toEqual([a1]);
+		// The BOM removed: the old side warns.
+		const old = { ...del(`${BOM}x`), oldNo: 1 };
+		const now = { ...add("x"), newNo: 1 };
+		const q = rows(old, now);
+		expect([...hiddenLines(q, hunkWordMarks(q), 4)]).toEqual([old]);
+		// A later line that starts with one shows it either way.
+		const later = { ...add(`${BOM}x`), newNo: 7 };
+		expect(hiddenLines(rows(later), new Map(), 4).size).toBe(0);
+		// An unchanged first line is no change.
+		const same = { ...ctx(`${BOM}x`), oldNo: 1, newNo: 1 };
+		expect(hiddenLines(rows(same), new Map(), 4).size).toBe(0);
+	});
+
 	it("compares a pair's lines at the file's tab width", () => {
 		const d = del("\tx");
 		const a = add("        x");

@@ -155,7 +155,10 @@ the test fixture (below).
   Settings" text, so a screen reader there says where the switch is. An
   indent swapped for one as wide warns even beside a visible change. Nothing is computed while
   hidden characters show. Escaped characters (zero widths, no-break
-  spaces, bidi controls) show as `\uXXXX` either way: no ⚠. `h` toggles
+  spaces, bidi controls) show as `\uXXXX` either way: no ⚠. A file's
+  byte order mark (U+FEFF starting its first line) hides with the
+  switch (owner, 2026-11-08), so a changed first line that starts with
+  one warns, paired or not (an unpaired one has no marks to check). `h` toggles
   the setting (desktop), beside `w` and `s`.
 - **An emoji's hidden change** (owner, 2026-11-04, gallery #14 case `65`):
   the selectors, joiners and tags `invisibleChars.ts` keeps unescaped (VS15,

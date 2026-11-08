@@ -196,6 +196,35 @@ describe("hiddenChange", () => {
 		expect(hiddenChange("😀\uFE0F x", [[4, 5]])).toBe(false);
 	});
 
+	it("is the file's byte order mark: drawn as nothing while hidden characters are off", () => {
+		expect(
+			hiddenChange("\uFEFFimport x;", [[0, 1]], {
+				fileStart: true,
+				partner: { text: "import x;" },
+			}),
+		).toBe(true);
+		// Starting a later line it is content, escaped either way.
+		expect(
+			hiddenChange("\uFEFFimport x;", [[0, 1]], {
+				partner: { text: "import x;" },
+			}),
+		).toBe(false);
+		// A BOM inside the line is escaped either way.
+		expect(
+			hiddenChange("a\uFEFFb", [[1, 2]], {
+				fileStart: true,
+				partner: { text: "ab" },
+			}),
+		).toBe(false);
+		// An unchanged BOM: the visible change is the change.
+		expect(
+			hiddenChange("\uFEFFlet a = 2;", [[9, 10]], {
+				fileStart: true,
+				partner: { text: "\uFEFFlet a = 1;" },
+			}),
+		).toBe(false);
+	});
+
 	it("is nothing without marks", () => {
 		expect(hiddenChange("x\r", [], { partner: { text: "x" } })).toBe(false);
 	});
