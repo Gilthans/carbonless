@@ -192,11 +192,34 @@ its own throwaway checkout of the PR's head, fetch, and whatever your
 harness's own connectors and plugins reach. carbonless answers every
 permission request with "allow once" and refuses only a switch into plan
 mode. A hostile PR can therefore make the agent do anything your harness
-lets it, in its own checkout, with your connectors and network; the
+lets it, as your user, with your connectors and network. That is not
+confined to its checkout: its shell reaches the rest of your machine, and
+the checkout's `objects/info/alternates` names carbonless's cache clone,
+so it could even move review refs (`git update-ref`). Nothing in
+carbonless's code stops that at `open`; the prompt asks it not to, and the
 activity line under each answer shows every tool call and decision. The
 expectation not to push or write to GitHub is in the prompt, not a lock.
 Your harness's own gate (allow and deny rules, hooks, sandbox) applies as
 it does in your terminal. Stricter levels are planned.
+
+**Who can set the agent's command?** Whoever can save the setup modal:
+Save and Check run the command as the server's user, so that is command
+execution. On a bind beyond loopback that is whoever holds the access key
+(treat it as a shell login); on loopback with no key, any process on the
+machine. Other web sites are refused (the Origin and Host checks).
+
+**Claude Code says "not logged in" though `claude` works in my shell.**
+A login made with `claude setup-token` lives in `CLAUDE_CODE_OAUTH_TOKEN`,
+and carbonless strips every `…TOKEN` variable from the agent's
+environment. Put it in the agent's own `env` in `config.json`
+(`"env": { "CLAUDE_CODE_OAUTH_TOKEN": "…" }`), which is passed as written,
+or log in with `claude` interactively (the login under `HOME` is used).
+
+**The agent is "not found on PATH" under the service.** A systemd service
+gets the `PATH` of its unit, which may lack nvm's global bin where
+`npm i -g` put the adapter. Give the command as an absolute path (Other:
+`/home/you/.nvm/versions/node/v24…/bin/claude-agent-acp`), or add that
+directory to the unit's `PATH`.
 
 **Why does the chip say "elsewhere"?** Another carbonless server on this
 machine (another port, e.g. a branch instance) has the same review open

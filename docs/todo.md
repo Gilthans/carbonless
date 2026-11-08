@@ -112,6 +112,24 @@ thread, pushing agent threads to another device, standing instructions, an
 agent per thread or several agents, `crb doctor` reporting the agent,
 agent threads on Home.
 
+Follow-ups from the first slice's final review (2026-11-07):
+
+- A follow-up on a thread asked on an earlier head uses the current
+  snapshot's line numbers and today's merge base (M1/11b).
+- Stop cancels whatever turn runs, not the thread it was pressed on (M2).
+- When a permission request offers no `allow_once`, the fallback is
+  `allow_always` (M3).
+- A tab hidden 30 min or more mid-turn idles the session out, and the
+  question is asked again (M7).
+- The hunk's fence in the prompt isn't escaped (M8).
+- An agent that ignores a cancel blocks the queue: SIGTERM it after a
+  grace period (11a).
+- `authorOf` never returns `pr_author` (11c).
+- GET `/api/config/agent` returns the env's values (11d).
+- An empty `claim.lock` races (13).
+- A leash value from a later version is rewritten to `open` on Save.
+- `snapshotHead` is read cache-only in `AgentOverviewRow`.
+
 ## Future plans
 
 Not scheduled yet; after everything above.

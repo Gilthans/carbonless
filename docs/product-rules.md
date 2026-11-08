@@ -486,10 +486,18 @@ question would be on someone else's behalf, or about a past moment.
   call and decision shows in the thread's activity line and is stored with
   the answer. Enforcement beyond that is the harness's own (its allow and
   deny rules, hooks, sandbox), and stricter leash levels come later.
-- **The agent never touches review state or the reviewer's copies.** Its
-  checkout is a shared clone of carbonless's cache clone with only
-  `refs/heads` and `refs/tags`, under `<cache>/agents/<review>/tree`; the
-  session's cwd is its parent, so a PR's harness config isn't loaded.
+- **The agent is given no way to review state or the reviewer's copies;
+  at `open`, nothing in code stops it taking one.** Its checkout is a
+  shared clone of carbonless's cache clone with only `refs/heads` and
+  `refs/tags`, under `<cache>/agents/<review>/tree`; the session's cwd is
+  its parent, so a PR's harness config isn't loaded. carbonless offers it
+  no tool or API for review state. But it has a shell, and its checkout's
+  `objects/info/alternates` names the cache clone, so a prompt-injected
+  agent could `git update-ref` review refs there: principle 2 rests on the
+  reviewer's harness and the prompt, not on code, until a stricter leash.
+- **Setting the agent is running a command.** `PUT /api/config/agent` and
+  its Check run any command as the server's user, for whoever holds the
+  access key (on a loopback bind with no key, any local process).
 - **One agent per review per machine.** Another server with the review
   open shows `elsewhere` and leaves the answering to the holder.
 - **A question never waits on the agent to be sent.** Ask agent writes
