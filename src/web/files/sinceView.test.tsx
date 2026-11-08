@@ -12,6 +12,7 @@ import type {
 	SinceMark,
 } from "../../shared/types";
 import { DiffBody } from "./DiffBody";
+import { GoneFile } from "./FileDiff";
 import { FileTree } from "./FileTree";
 import { ProgressBar } from "./ProgressBar";
 import type { KindEntry } from "./since";
@@ -593,5 +594,96 @@ describe("FileTree in a comparison", () => {
 		expect(toggle).toHaveAttribute("aria-pressed", "false");
 		await userEvent.setup().click(toggle);
 		expect(onChange).toHaveBeenCalledWith(true);
+	});
+});
+
+describe("GoneFile: a whole file undone since the compared patch set", () => {
+	it("each of its pieces is markable on its own, with its cross-off and a reverted chip; a tick sends that piece's mark", async () => {
+		const posts: unknown[] = [];
+		const goneHunks: FileHunks = {
+			newLineCount: 0,
+			hunks: [
+				{
+					oldStart: 1,
+					oldCount: 2,
+					newStart: 0,
+					newCount: 0,
+					lines: [
+						line("del", 1, undefined, "only then", "g1"),
+						line("del", 2, undefined, "also then", "g1"),
+					],
+				},
+			],
+			pieces: [
+				{
+					hunk: 0,
+					line: 0,
+					key: "g1",
+					owns: null,
+					old: [[1, 3]],
+					new: [],
+					kind: "reverted",
+				},
+			],
+		};
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+				const url = new URL(String(input), "http://test");
+				if (init?.method === "POST") {
+					posts.push(JSON.parse(String(init.body)));
+					return new Response(JSON.stringify({}), { status: 500 });
+				}
+				const body = url.pathname === "/api/files/3/hunks" ? goneHunks : {};
+				return new Response(JSON.stringify(body), { status: 200 });
+			}),
+		);
+		const client = new QueryClient({
+			defaultOptions: { queries: { retry: false } },
+		});
+		render(
+			<QueryClientProvider client={client}>
+				<GoneFile
+					index={3}
+					path="src/undone.ts"
+					revision="r2"
+					since={1}
+					info={{
+						kinds: new Map([["g1", { key: "g1", kind: "gone", from: 1 }]]),
+						conflict: false,
+						counts: { reworked: 0, new: 0, gone: 1, carried: 0 },
+						sinceOnlyLeft: { pieces: 1, lines: 2 },
+					}}
+				/>
+			</QueryClientProvider>,
+		);
+		const user = userEvent.setup();
+		await user.click(screen.getByRole("button", { name: "Expand file" }));
+		const box = await screen.findByRole("checkbox", {
+			name: "Mark cluster reviewed",
+		});
+		expect(box).toBeEnabled();
+		expect(
+			screen.getByRole("button", { name: "Cross off cluster" }),
+		).toBeEnabled();
+		const chips = screen.getAllByTestId("kind-chip").map((c) => c.dataset.kind);
+		expect(chips).toContain("reverted");
+		await user.click(box);
+		await vi.waitFor(() => expect(posts).toHaveLength(1));
+		expect(posts[0]).toMatchObject({
+			revision: "r2",
+			changes: [
+				{
+					key: "since:1:src/undone.ts",
+					state: "reviewed",
+					sinceMark: {
+						since: 1,
+						path: "src/undone.ts",
+						reviewed: { old: [[1, 3]], new: [] },
+						crossed: { old: [], new: [] },
+					},
+				},
+			],
+		});
 	});
 });
