@@ -581,8 +581,10 @@ function interdiffFileAt(
  * `clusterKey` is what the page chips and marks by: an added line's is
  * the target cluster it is in (reworked or new), else the gone since
  * cluster whose removed line the author restored; a removed line's is the
- * gone since cluster it was an added line of, else its interdiff
- * cluster's first added line's. A conflicted file's keys are its target
+ * gone since cluster it was an added line of, else the target cluster
+ * that removes it (a base line at that place with its text), else its
+ * interdiff cluster's first added line's, else the target cluster at its
+ * place. Each run of changed lines is a piece (`pieces`). A conflicted file's keys are its target
  * clusters' on both sides (its interdiff is the target's own diff). A
  * file the interdiff doesn't touch has no hunks.
  */
@@ -634,6 +636,26 @@ export function interdiffFileHunks(
 		);
 	};
 	const targetClusters = targetFile?.clusters ?? [];
+	const addedThen = traced.lineKeys.old[file.oldPath ?? file.path] ?? {};
+	/**
+	 * The target cluster a removed base line is one of: one at the place of
+	 * its interdiff cluster that removes a line with its text (a line the
+	 * since patch set added is never one).
+	 */
+	const removedBy = (line: DiffLine, temp: string): string | undefined => {
+		if (addedThen[line.oldNo as number] !== undefined) return undefined;
+		const at = clusters[Number(temp.slice(TEMP.length))];
+		if (!at) return undefined;
+		const from = at.newStart - 1;
+		const to = at.newStart + at.newCount;
+		return targetClusters.find(
+			(c) =>
+				c.kind === "lines" &&
+				c.newStart <= to &&
+				from <= c.newStart + c.newCount &&
+				c.removed.includes(line.text),
+		)?.key;
+	};
 	for (const hunk of hunks) {
 		// The first added line's key of each interdiff cluster, for its removed lines.
 		const firstAdd = new Map<string, string | undefined>();
@@ -654,7 +676,9 @@ export function interdiffFileHunks(
 					? addKey(line)
 					: file.conflict
 						? byOld.get(line.oldNo as number)
-						: (gone(goneOld[line.oldNo as number]) ?? firstAdd.get(temp));
+						: (gone(goneOld[line.oldNo as number]) ??
+							removedBy(line, temp) ??
+							firstAdd.get(temp));
 			if (key === undefined) delete line.clusterKey;
 			else line.clusterKey = key;
 		}
@@ -678,7 +702,6 @@ export function interdiffFileHunks(
 	// of the cluster's only when it isn't a line the patch set added.
 	const reviewed = (key: string | undefined) =>
 		key !== undefined && states.get(key)?.state === "reviewed";
-	const addedThen = traced.lineKeys.old[file.oldPath ?? file.path] ?? {};
 	const removedThen = traced.lineKeys.base?.[entry.path] ?? {};
 	const interdiff = createLineMapper(
 		file.clusters.filter((c) => c.kind === "lines"),

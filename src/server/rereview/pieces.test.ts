@@ -155,3 +155,69 @@ describe("the since view's pieces (engine)", () => {
 		expect(own.map((p) => p.owns)).toEqual([[[0, 5]], [[5, 8]], [[8, 10]]]);
 	});
 });
+
+describe("a base line removed next to a reverted line", () => {
+	// PS1 edits lines 3 and 5; PS2 reverts 3 and edits 4 (keeping 5's edit):
+	// PS2's one cluster removes base 4 and 5. Base 4 shows removed in the
+	// since view next to the reverted line 3: it is PS2's cluster's.
+	const lines = Array.from({ length: 10 }, (_, i) => `base ${i + 1}`);
+	const at = (over: Record<number, string>) =>
+		text(lines.map((l, i) => over[i + 1] ?? l));
+	let r: GitFixture;
+	let ps1: Snapshot;
+	let ps2: Snapshot;
+	beforeAll(async () => {
+		r = createGitFixture([
+			{ message: "base", files: { "b.txt": at({}) } },
+			{ message: "ps1", files: { "b.txt": at({ 3: "edit 3", 5: "edit 5" }) } },
+			{ message: "ps2", files: { "b.txt": at({ 4: "edit 4", 5: "edit 5" }) } },
+		]);
+		const [b0, h1, h2] = r.shas as [string, string, string];
+		ps1 = await buildSnapshot(r.path, b0, h1);
+		ps2 = await buildSnapshot(r.path, b0, h2);
+	});
+	afterAll(() => r.cleanup());
+
+	it("is keyed to that cluster, so its pieces cover it and it can be completed", async () => {
+		const states = new Map<string, StateEntry>(
+			ps1.files[0]?.clusters.map((c) => [c.key, { state: "reviewed" }]) ?? [],
+		);
+		const since: SincePatchset = {
+			number: 1,
+			revision: ps1.revision,
+			mergeBase: ps1.base,
+			head: ps1.head,
+			startedAt: 0,
+			since: null,
+			shape: null,
+			baseBranch: "main",
+			interdiff: null,
+			snapshot: ps1,
+			states,
+		};
+		const target = { ...ps2, baseBranch: "main" };
+		const traced = await traceRereview(r.path, since, [], target);
+		const { answer } = answerRereview(traced, since, [], target);
+		const hunks = interdiffFileHunks(traced, ps2, answer, 0, states);
+		const k = ps2.files[0]?.clusters[0];
+		expect(k).toMatchObject({
+			removed: ["base 4", "base 5"],
+			added: ["edit 4", "edit 5"],
+		});
+		const keyOf = (t: string, kind: string) =>
+			hunks.hunks
+				.flatMap((h) => h.lines)
+				.find((l) => l.text === t && l.kind === kind)?.clusterKey;
+		expect(keyOf("base 4", "del")).toBe(k?.key);
+		expect(keyOf("edit 4", "add")).toBe(k?.key);
+		// The reverted line's piece is the gone PS1 cluster's, on its own.
+		expect(keyOf("edit 3", "del")).not.toBe(k?.key);
+		// K's pieces own all of it (base 5 / edit 5 unchanged since a reviewed line).
+		const owned = (hunks.pieces ?? [])
+			.filter((p) => p.key === k?.key)
+			.flatMap((p) => p.owns ?? []);
+		const all = new Set<number>();
+		for (const [s, e] of owned) for (let i = s; i < e; i++) all.add(i);
+		expect([...all].sort()).toEqual([0, 1, 2, 3]);
+	});
+});
