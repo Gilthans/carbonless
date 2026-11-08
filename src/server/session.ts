@@ -1266,8 +1266,19 @@ export class Session {
 		const write = this.#writeTarget();
 		// The snapshot the verdict is checked against (the one its head
 		// names: the session's, or a viewed head's), even if a Refresh moves
-		// the session's while it runs.
-		const snapshot = this.#snapshotForWrite(commit);
+		// the session's while it runs. On the PR's head, the head as it is
+		// against the base now (what the since line compared with): a patch
+		// set's snapshot only when it is that one, so a head moved back onto
+		// a patch set's after the base moved (or retargeted, S7) starts its
+		// own patch set.
+		const viewed =
+			this.#head?.oid === commit
+				? (this.#snapshots.get(snapshotId(this.#head.mergeBase, commit)) ??
+					(this.#snapshot.revision === snapshotId(this.#head.mergeBase, commit)
+						? this.#snapshot
+						: undefined))
+				: undefined;
+		const snapshot = viewed ?? this.#snapshotForWrite(commit);
 		return {
 			ref: write.ref,
 			prUrl: write.prUrl,

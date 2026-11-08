@@ -1977,51 +1977,104 @@ describe("the verdict, through the session and the fake gh", () => {
 				env: testGitEnv(),
 			}).trim();
 
-		for (const baseMoved of [false, true]) {
-			it(`the head moved back onto PS1's head${baseMoved ? " after the base moved" : ""} (S6): a verdict there lands, writing no patch set`, async () => {
-				await reviewAll();
-				const ps1 = session.snapshot().head;
-				const head = pr.moveHead({ "later.txt": "later\n" });
-				scenario();
-				await session.checkHead();
-				const view = await session.viewHead(head);
-				const key = view.files.find((f) => f.path === "later.txt")?.clusters[0]
-					?.key;
-				await session.setStates(view.revision, [
-					{ key: key ?? "", state: "reviewed" },
-				]);
-				expect(session.info().patchset).toBe(2);
-				const kept = await approve(head);
-				if (baseMoved) {
-					// The base gains a commit of its own.
-					pr.moveMain(
-						ghGit(
-							"commit-tree",
-							`${pr.mergeBase}^{tree}`,
-							"-p",
-							pr.mergeBase,
-							"-m",
-							"base moves on",
-						),
-					);
-				}
-				// The author force-pushes back to PS1's head.
-				ghGit("update-ref", "refs/pull/12/head", ps1);
-				scenario({}, { headRefOid: ps1 }, kept);
-				await session.checkHead();
-				const { since } = await session.verdict();
-				expect(since).toMatchObject({
-					head,
-					patchset: 2,
-					to: { head: ps1, patchset: 1 },
-				});
-				// The card posts on `since.to.head`: PS1's head, read-only for
-				// marks, but a verdict is GitHub's, about a commit.
-				await approve(ps1);
-				expect(stored().at(-1)?.commit.oid).toBe(ps1);
-				expect(session.info().patchsets.map((p) => p.number)).toEqual([1, 2]);
+		/** Views `head` and marks its `path`'s first cluster: the next patch set. */
+		const markOnHead = async (head: string, path: string) => {
+			await session.checkHead();
+			const view = await session.viewHead(head);
+			const key = view.files.find((f) => f.path === path)?.clusters[0]?.key;
+			await session.setStates(view.revision, [
+				{ key: key ?? "", state: "reviewed" },
+			]);
+		};
+
+		it("the head moved back onto PS1's head (S6): a verdict there lands on it, writing no patch set", async () => {
+			await reviewAll();
+			const ps1 = session.snapshot().head;
+			const head = pr.moveHead({ "later.txt": "later\n" });
+			scenario();
+			await markOnHead(head, "later.txt");
+			expect(session.info().patchset).toBe(2);
+			const kept = await approve(head);
+			// The author force-pushes back to PS1's head.
+			ghGit("update-ref", "refs/pull/12/head", ps1);
+			scenario({}, { headRefOid: ps1 }, kept);
+			await session.checkHead();
+			const { since } = await session.verdict();
+			expect(since).toMatchObject({
+				head,
+				patchset: 2,
+				to: { head: ps1, patchset: 1 },
 			});
-		}
+			// The card posts on `since.to.head`: PS1's head, read-only for
+			// marks, but a verdict is GitHub's, about a commit.
+			await approve(ps1);
+			expect(stored().at(-1)?.commit.oid).toBe(ps1);
+			expect(session.info().patchsets.map((p) => p.number)).toEqual([1, 2]);
+		});
+
+		it("the head moved back onto PS2's head after the base took in PS1's commit: another snapshot, so the verdict starts its patch set", async () => {
+			await reviewAll();
+			const ps1 = session.snapshot().head;
+			const ps2 = pr.moveHead({ "later.txt": "later\n" });
+			scenario();
+			await markOnHead(ps2, "later.txt");
+			const ps3 = pr.moveHead({ "last.txt": "last\n" });
+			scenario();
+			await markOnHead(ps3, "last.txt");
+			expect(session.info().patchset).toBe(3);
+			const kept = await approve(ps3);
+			// The base takes in the PR's first commit (PS1's head), and the
+			// author force-pushes back to PS2's head: its merge base is now
+			// PS1's head, not PS2's, so the snapshot is none of the patch sets.
+			pr.moveMain(ps1);
+			ghGit("update-ref", "refs/pull/12/head", ps2);
+			// GitHub reports the base tip with the head (`baseRefOid`).
+			scenario({}, { headRefOid: ps2, baseRefOid: ps1 }, kept);
+			await session.checkHead();
+			expect(session.info().head).toMatchObject({ oid: ps2, mergeBase: ps1 });
+			const since = await settled();
+			expect(since).toMatchObject({
+				head: ps3,
+				patchset: 3,
+				to: { head: ps2, patchset: null },
+			});
+			await approve(ps2);
+			expect(stored().at(-1)?.commit.oid).toBe(ps2);
+			// A lasting action on that snapshot: PS4, on PS2's head and the
+			// moved merge base.
+			expect(
+				session.info().patchsets.map((p) => [p.number, p.head, p.mergeBase]),
+			).toEqual([
+				[1, ps1, pr.mergeBase],
+				[2, ps2, pr.mergeBase],
+				[3, ps3, pr.mergeBase],
+				[4, ps2, ps1],
+			]);
+		});
+
+		it("a retarget that keeps the head (S7): a verdict on it starts the retargeted snapshot's patch set", async () => {
+			await reviewAll();
+			const ps1 = session.snapshot().head;
+			const ps2 = pr.moveHead({ "later.txt": "later\n" });
+			scenario();
+			await markOnHead(ps2, "later.txt");
+			expect(session.info().patchset).toBe(2);
+			// Retargeted to a branch that has PS1's commit; the head stays:
+			// its merge base is PS1's head now, another snapshot of it.
+			ghGit("update-ref", "refs/heads/next", ps1);
+			scenario({}, { headRefOid: ps2, baseRefName: "next", baseRefOid: ps1 });
+			await session.checkHead();
+			expect(session.info().head).toMatchObject({ oid: ps2, mergeBase: ps1 });
+			await approve(ps2);
+			expect(stored().at(-1)?.commit.oid).toBe(ps2);
+			expect(
+				session.info().patchsets.map((p) => [p.number, p.head, p.mergeBase]),
+			).toEqual([
+				[1, ps1, pr.mergeBase],
+				[2, ps2, pr.mergeBase],
+				[3, ps2, ps1],
+			]);
+		});
 
 		it("no verdict, or one on the current head: no since", async () => {
 			await reviewAll();
