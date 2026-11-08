@@ -23,6 +23,7 @@ import { resetShowInvisibles, setShowInvisibles } from "../code/Invisibles";
 import { ignoreWhitespace } from "../viewSettings";
 import { FileDiff, UNDO_ARM_MS } from "./FileDiff";
 import { SyncNotices } from "./SyncNotices";
+import { unitsFile } from "./since";
 import type { Unit } from "./unit";
 import { stateSyncFor, useReviewView } from "./useSetStates";
 
@@ -114,12 +115,14 @@ const view = (f: FileView): ReviewView => ({
 });
 
 /** FileDiff of the review's only file, as useReviewView shows it. */
-function Shown({ unit }: { unit: Unit }) {
+function Shown({ unit, counted }: { unit: Unit; counted?: FileView }) {
 	const { data } = useReviewView();
 	const shown = data?.files[0];
 	return (
 		<>
-			{shown && <FileDiff file={shown} revision="r1" unit={unit} />}
+			{shown && (
+				<FileDiff file={shown} revision="r1" unit={unit} counted={counted} />
+			)}
 			<SyncNotices />
 		</>
 	);
@@ -136,6 +139,7 @@ function setup(
 	handler: Handler = () => ({ status: 404, body: {} }),
 	fileHunks: FileHunks | (() => Promise<Response>) = hunks,
 	unit: Unit = "clusters",
+	counted?: FileView,
 ) {
 	const fetchMock = vi.fn(
 		async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -169,7 +173,7 @@ function setup(
 	queryClient.setQueryData(reviewQuery().queryKey, view(f));
 	const rendered = render(
 		<QueryClientProvider client={queryClient}>
-			<Shown unit={unit} />
+			<Shown unit={unit} counted={counted} />
 		</QueryClientProvider>,
 	);
 	/** Shows `next` as the server's file, like a reread does. */
@@ -509,6 +513,59 @@ describe("FileDiff", () => {
 		);
 		cleanup();
 		setup(f, undefined, hunks, "files");
+		expect(
+			screen.getByRole("progressbar", { name: "File progress" }),
+		).toHaveTextContent("0 / 1");
+	});
+
+	it("in the since view the meter counts the file's units (its pieces), not its clusters", () => {
+		const f = file([cluster("k1", { lines: 10 })]);
+		// Three pieces of k1, one reviewed; and a reverted piece.
+		const units = unitsFile(f, [
+			{
+				index: 0,
+				path: "src/a.ts",
+				kind: "reworked",
+				lines: 2,
+				state: "reviewed",
+				open: 0,
+			},
+			{
+				index: 0,
+				path: "src/a.ts",
+				kind: "reworked",
+				lines: 2,
+				state: "unreviewed",
+				open: 2,
+			},
+			{
+				index: 0,
+				path: "src/a.ts",
+				kind: "reworked",
+				lines: 1,
+				state: "unreviewed",
+				open: 1,
+			},
+			{
+				index: 0,
+				path: "src/a.ts",
+				kind: "reverted",
+				lines: 3,
+				state: "unreviewed",
+				open: 3,
+			},
+		]);
+		setup(f, undefined, hunks, "clusters", units);
+		const progress = screen.getByRole("progressbar", { name: "File progress" });
+		expect(progress).toHaveTextContent("1 / 4");
+		cleanup();
+		setup(f, undefined, hunks, "lines", units);
+		expect(
+			screen.getByRole("progressbar", { name: "File progress" }),
+		).toHaveTextContent("2 / 8 lines");
+		cleanup();
+		// The full diff: its one cluster.
+		setup(f, undefined, hunks, "clusters");
 		expect(
 			screen.getByRole("progressbar", { name: "File progress" }),
 		).toHaveTextContent("0 / 1");

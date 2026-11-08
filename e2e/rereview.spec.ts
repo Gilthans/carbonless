@@ -2044,6 +2044,11 @@ test("the since view counts its pieces: marking a reverted piece, then a piece o
 	// Five pieces: the block's three, the merged cluster's removal, the revert.
 	await expect(progress(page)).toContainText("0 / 5 clusters reviewed");
 	await expect(toRead(page)).toHaveText(/5 to read/);
+	const fileMeter = since.getByRole("progressbar", { name: "File progress" });
+	await expect(fileMeter).toHaveAttribute(
+		"aria-valuetext",
+		/0 of 5 clusters reviewed/,
+	);
 	const connectorSays = async (text: string) => {
 		const conn = page.getByTestId("ps-conn-ps2");
 		await conn.hover();
@@ -2057,6 +2062,10 @@ test("the since view counts its pieces: marking a reverted piece, then a piece o
 	await expect(page.getByTestId("sync-notices")).toHaveCount(0, GIT_WAIT);
 	await expect(progress(page)).toContainText("1 / 5 clusters reviewed");
 	await expect(toRead(page)).toHaveText(/4 to read/);
+	await expect(fileMeter).toHaveAttribute(
+		"aria-valuetext",
+		/1 of 5 clusters reviewed/,
+	);
 	await connectorSays("1 file, 4 clusters to read");
 
 	// One piece of the three-piece cluster.

@@ -4,8 +4,10 @@ import {
 	type SinceUnit,
 	sinceUnits,
 } from "../../shared/pieces";
+import { fileFlags } from "../../shared/progress";
 import { overlayCarries } from "../../shared/rereview/overlay";
 import type {
+	ClusterView,
 	FileView,
 	Progress,
 	RereviewAnswer,
@@ -205,6 +207,29 @@ export function sinceProgress(units: readonly SinceUnit[]): Progress {
 		else if (done) files.reviewed++;
 	}
 	return { clusters, lines, files };
+}
+
+/**
+ * The file as the since view counts it (its header meter and sentence):
+ * one cluster per unit, with the unit's lines and state.
+ */
+export function unitsFile(
+	file: FileView,
+	units: readonly SinceUnit[],
+): FileView {
+	const clusters: ClusterView[] = units.map((u, i) => ({
+		key: `unit:${i}`,
+		kind: "lines",
+		oldStart: 0,
+		oldCount: 0,
+		newStart: 0,
+		newCount: 0,
+		removed: [],
+		added: [],
+		lines: u.lines,
+		state: u.state,
+	}));
+	return { ...file, clusters, ...fileFlags(clusters) };
 }
 
 /** The connector's "to read" for the comparison on screen: its units not marked yet. */

@@ -66,6 +66,7 @@ import {
 	sinceProgress,
 	toReadClusters,
 	toReadCount,
+	unitsFile,
 	unitsOf,
 } from "./since";
 import {
@@ -875,10 +876,20 @@ export function FilesPage() {
 	// snapshot's clusters; a spinner while the engine computes (never 0).
 	const sinceAnswer = since !== null ? sinceView.answer : null;
 	// Nothing to count there (nothing changed since): the snapshot's own.
-	const viewProgress = useMemo(() => {
-		const units = sinceAnswer && data ? unitsOf(sinceAnswer, data) : [];
-		return units.length > 0 ? sinceProgress(units) : (data?.progress ?? null);
-	}, [sinceAnswer, data]);
+	const units = useMemo(
+		() => (sinceAnswer && data ? unitsOf(sinceAnswer, data) : []),
+		[sinceAnswer, data],
+	);
+	const viewProgress = useMemo(
+		() => (units.length > 0 ? sinceProgress(units) : (data?.progress ?? null)),
+		[units, data],
+	);
+	// Each file's header meter in the since view: its own units.
+	const unitsByFile = useMemo(() => {
+		const out = new Map<number, typeof units>();
+		for (const u of units) out.set(u.index, [...(out.get(u.index) ?? []), u]);
+		return out;
+	}, [units]);
 	const progressPending = since !== null && sinceView.pending;
 	// The connector of the comparison on screen counts what is left here.
 	const live =
@@ -1092,6 +1103,11 @@ export function FilesPage() {
 												)}
 												sincePending={sinceView.pending}
 												sinceMarks={data.sinceMarks}
+												counted={
+													unitsByFile.has(file.index)
+														? unitsFile(file, unitsByFile.get(file.index) ?? [])
+														: undefined
+												}
 												readOnly={readOnly}
 											/>
 										))}

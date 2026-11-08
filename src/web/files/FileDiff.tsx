@@ -438,6 +438,11 @@ export function FileDiff(props: {
 	sinceInfo?: FileSince;
 	/** The patch set's marks on since-only pieces (ReviewView.sinceMarks). */
 	sinceMarks?: SinceMark[];
+	/**
+	 * The since view: the file as its units count it (since.ts unitsFile),
+	 * for the header's meter and sentence; the full diff counts clusters.
+	 */
+	counted?: FileView;
 	/** The engine is still computing: the chips' slot spins. */
 	sincePending?: boolean;
 	/** An earlier patch set, as reviewed: the marks are locked. */
@@ -528,7 +533,7 @@ export function FileDiff(props: {
 	// One sentence for the header's status, counts and progress. The counts
 	// are the same in every unit; only the progress follows it.
 	const status = fileStatus(file);
-	const sentence = describeFileProgress(file, props.unit);
+	const sentence = describeFileProgress(props.counted ?? file, props.unit);
 	const summary = [
 		sentence.startsWith(status) ? null : status,
 		lineCount(file),
@@ -875,7 +880,7 @@ export function FileDiff(props: {
 								/>
 							</div>
 							<FileProgress
-								file={file}
+								file={props.counted ?? file}
 								unit={props.unit}
 								summary={summary}
 								trigger={summaryTrigger}
