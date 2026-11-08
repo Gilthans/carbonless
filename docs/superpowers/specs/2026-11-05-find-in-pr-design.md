@@ -87,10 +87,31 @@ everything you said sounds correct".
 
 ## Where it lives
 
-- **Files changed only.** The bar is part of that page's sticky stack, right
-  under the app header's compact row and above the progress bar, so it stays
-  on screen while stepping. Hidden pages keep their state as they do today:
-  switching to Overview and back finds the bar as it was left.
+- **Files changed only.** The bar floats over the page, like the browser's
+  find (owner's QA, 2026-11-07: "The search bar should 'hover' on top of the
+  page, like the browser find. It should stick to the top always, so if I
+  click the 'next' button its position should never change"). It is
+  `position: fixed`, out of the page's flow and its sticky stack: opening,
+  closing, typing and stepping never move it on screen and never shift the
+  page (no layout shift, so no scroll anchoring). Desktop: top-right, its
+  top at the app header's stuck row's bottom (`--app-header`), 28rem wide,
+  over the progress bar's right end; at the very top of the page, before
+  the header has stuck, it lies over the header's lower right. Phone: across
+  the top, in the app header's place (below).
+- **Phone: the bar replaces the app header** (owner's QA: "While the search
+  box is open on the phone, it should hide the top bar entirely. Closing it
+  restores"). While it is open, the header is hidden and inert
+  (`visibility: hidden`: it keeps its room, so nothing moves) and the bar
+  sits at the top, at least the header's stuck height, so the sticky stack
+  stays where it is. Closing (✕, Escape) shows the header again and puts
+  focus on its Find in PR button.
+- **The term lives only while the bar is open on this page** (owner's QA:
+  "Don't store the search term. Leaving the page or doing almost anything
+  should clear the search box"). Closing clears it. Leaving Files changed
+  (another tab, another review, Home) closes the bar and clears it, and a
+  reload starts closed. A Refresh to a new revision while the bar is open
+  keeps it (the same page, the reviewer mid-search). Match case stays
+  remembered.
 - **The search button** is in the app header row, beside Refresh and
   Settings: a magnifying glass (`SearchIcon`), 40px tap target, tooltip "Find
   in PR" with the key, `aria-label="Find in PR"`, `aria-expanded` while the
@@ -109,16 +130,15 @@ everything you said sounds correct".
     previous **(call)**: the browser's own find-next keys, so the hands don't
     have to go back to the box after reading.
 - **Closing** (Escape in the box, the ✕, the header button) clears every
-  highlight and the tree's counts, keeps the term, and puts focus on the
-  header button. Reopening restores the term and searches again.
+  highlight, the tree's counts and the term, and puts focus on the header
+  button. Reopening starts empty.
 
 ## The bar
 
 ```
 ┌ app header: Overview · Files changed · Verdict        🔍 ↻ ⚙ ┐
-│ [🔍 saveDraft_______________ Aa ] 3 of 41 ◌   ↑  ↓   ✕    │
-│ ■■■■■■■■□□□□□ 61% · 12/20 files                              │  ← progress bar
-│ src/web/files/FileDiff.tsx                     + 12 − 3  ☐  │  ← open file's header
+│ ■■■■■■■■□□□□□ 61% ·  ┌[saveDraft______ Aa] 3 of 41 ◌ ↑ ↓ ✕┐│  ← floats over
+│ src/web/files/FileD… └─────────────────────────────────────┘│     the progress bar
 ```
 
 - The box: `<input type="search">` (a typing target, so single-key shortcuts
@@ -143,8 +163,8 @@ everything you said sounds correct".
 - Empty box: no hits, no count, no marks, no spinner (nothing is being
   searched). The hunk prefetch still runs once the bar is open.
 
-Phone (≤ 640px): the bar takes the full width, the box shrinks, the count
-collapses to "3/41", the arrows and ✕ stay 40px.
+Phone (≤ 640px): the bar takes the full width in the header's place, the
+box shrinks, the count collapses to "3/41", the arrows and ✕ stay 40px.
 
 ```
 │ [🔍 saveDraft____ Aa] 3/41 ◌ ↑ ↓ ✕ │
@@ -215,7 +235,12 @@ order (wrapping), shown only by the count ("1 of 41") and the tree's chip,
 its file not yet opened. A caret placed by typing is **not yet shown**: the
 first step (Enter, ↓, Mod+g, and also Shift+Enter, ↑) shows it, scrolling to
 it and opening its file if needed; the steps after that move to the next or
-previous hit. Next and previous wrap around at both ends, as the browser's
+previous hit. **Unless it is already in view** (owner's QA, 2026-11-07:
+"The first time I click enter keeps me on the match I already saw. It
+should move on to the next"): when the caret's characters are in the open
+file, on screen, below the sticky stack and clear of the bar, the first
+step moves on to the next (Shift+Enter: previous) hit. A caret in a closed
+file, off screen or under the stack is gone to first, as before. Next and previous wrap around at both ends, as the browser's
 do. Deleting the term and typing it again starts over by the same rule. With
 no file open, the caret is the first hit in the PR, unshown until a step.
 
@@ -353,15 +378,17 @@ Unit (Vitest):
   binary files (path hits only), order across files (tree order), expanded
   context in line order, the caret rule (first hit in the open file, else
   the first after it in reading order, else the PR's first; the first step
-  shows it, later steps move; wrap).
+  shows it unless it is already seen, later steps move; wrap).
 - **Integrity** (the principle-2 habit): for random files and terms, the
   count equals the hits painted in the open file plus the tree's counts of
   the closed files; every painted mark is a real occurrence; no line of the
   hunks is searched twice or not at all (property test, like
   `whitespace.test.ts`).
 - The bar: count and spinner while a hunks query is held, "couldn't be
-  searched" on a failed batch, Retry, "0 of 0", closing keeps the term,
-  the header button on another page navigates.
+  searched" on a failed batch, Retry, "0 of 0", closing clears the term,
+  leaving the page closes the bar, the header button on another page
+  navigates, the bar floats out of the sticky stack, a phone's header is
+  hidden while it is open.
 - Server: the batched route (limits, bad index, stale revision, binary files
   come back empty, the answer equals the single-file route's).
 - `theme.test.ts`: `find-mark` and `find-current` under every syntax color
@@ -371,8 +398,9 @@ Playwright (desktop and phone projects):
 
 - Cmd+F / Ctrl+F opens the bar focused; typing a term shows "n of m" and
   the marks, and the page does not scroll (the scroll position is the same
-  after typing); the first Enter scrolls to the open file's first hit; the
-  next Enter steps into another file, which opens, with the row in view
+  after typing); the first Enter moves on from the open file's first hit
+  when it is in view, or goes to it when it isn't; the next Enter steps
+  into another file, which opens, with the row in view
   below the sticky stack and the current mark on the matched characters;
   Shift+Enter goes back; stepping past the end wraps. A term with no hit in
   the open file: the count says "1 of m", no file opens until Enter.
@@ -386,7 +414,11 @@ Playwright (desktop and phone projects):
   hit after switching.
 - Match case: the count changes when toggled; the setting survives a
   reload.
-- Escape closes and clears marks; reopening restores the term.
+- Escape closes and clears marks; reopening starts empty. Leaving Files
+  changed (another tab, a reload) clears the search.
+- The bar stays put: its box is the same after opening, three steps and
+  steps across files. Phone: the app header is hidden while the bar is
+  open and back after ✕, rows stepped to land below the bar.
 - Shortcuts help lists the new keys under Files changed.
 - `pnpm flake-check` on every new spec (spinners and gates are involved).
 

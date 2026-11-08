@@ -558,9 +558,13 @@ export function FilesPage() {
 		onStale: refetchReview,
 	});
 	// The first step after typing passes over a hit the reviewer already
-	// sees (it is painted current where they look): on to the next.
+	// sees (painted current where they look, in the open file): on to the
+	// next. One in a closed file is gone to: its step opens the file.
 	const stepFind = (dir: 1 | -1) => {
-		const hit = find.step(dir, (h) => hitSeen(h, appHeader + barHeight));
+		const hit = find.step(
+			dir,
+			(h) => h.index === openIndex && hitSeen(h, appHeader + barHeight),
+		);
 		if (!hit) return;
 		const isOpen = openIndex === hit.index;
 		if (hit.side === "path" || hit.side === "oldPath") {

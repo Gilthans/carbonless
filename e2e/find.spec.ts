@@ -89,6 +89,16 @@ const box = (page: Page) => page.getByTestId("find-box");
 const count = (page: Page) => page.getByTestId("find-count");
 const spinner = (page: Page) =>
 	page.getByRole("status", { name: "Searching files…" });
+/** The find bar's bottom edge on screen. */
+const findBottom = (page: Page) =>
+	bar(page).evaluate((el) => el.getBoundingClientRect().bottom);
+/** The find bar's box on screen. */
+const barBox = (page: Page) =>
+	bar(page).evaluate((el) => {
+		const r = el.getBoundingClientRect();
+		return { x: r.x, y: r.y, width: r.width, height: r.height };
+	});
+const appHeader = (page: Page) => page.locator("[data-app-header]");
 const findButton = (page: Page) =>
 	page.getByRole("button", { name: "Find in PR", exact: true });
 /** The count as shown: one of its two forms is hidden by width. */
@@ -195,10 +205,9 @@ test("Cmd+F opens the bar focused; typing counts and marks without scrolling or 
 	await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(120);
 
 	await openBar(page, isMobile);
-	// Opening keeps the place (the inserted bar may shift it by its own
-	// height, never to the top); typing doesn't move it at all.
+	// The bar floats over the page: opening and typing move nothing.
 	const y = await page.evaluate(() => window.scrollY);
-	expect(y).toBeGreaterThanOrEqual(120);
+	expect(y).toBe(120);
 	await page.keyboard.type("saveDraft");
 	await expect(count(page)).toHaveText(/^\d+ of \d+$/, VISIBLE);
 	await expect(count(page)).toHaveText(counted(A_FIRST, "\\d+"), VISIBLE);
@@ -213,7 +222,7 @@ test("Cmd+F opens the bar focused; typing counts and marks without scrolling or 
 	await expect(page.locator(".find-mark").first()).toBeVisible();
 });
 
-test("Next (Enter, or ↓ on a phone) scrolls to the open file's first hit, then steps into another file, which opens with the row below the sticky stack; Previous goes back; the end wraps", async ({
+test("Next (Enter, or ↓ on a phone) moves on from a caret already in view, then steps into another file, which opens with the row below the sticky stack; Previous goes back; the end wraps", async ({
 	page,
 	pr,
 	startCrb,
@@ -242,19 +251,23 @@ test("Next (Enter, or ↓ on a phone) scrolls to the open file's first hit, then
 	await search(page, "saveDraft");
 	await expect(count(page)).toHaveText(counted(A_FIRST, ALL), VISIBLE);
 
-	/** The current row sits below the bar and the file's stuck header. */
+	/** The current row sits below the sticky stack (with the file's stuck header) and the find bar. */
 	const belowStack = async () => {
 		const top = await barBottom(page);
+		const find = await findBottom(page);
 		const { row, header } = await currentRow(page).evaluate((el) => ({
 			row: el.getBoundingClientRect().top,
 			header: el.closest("section")?.querySelector("header")?.offsetHeight ?? 0,
 		}));
-		return row - (top + header);
+		return Math.min(row - (top + header), row - find);
 	};
 
-	await next();
-	await expect(count(page)).toHaveText(counted(A_FIRST, ALL), VISIBLE);
+	// The caret, line 5, is already in view: the first step moves on.
 	await expect(currentRow(page)).toHaveAttribute("data-new-no", "5");
+	await expect(currentRow(page)).toBeInViewport();
+	await next();
+	await expect(count(page)).toHaveText(counted(A_FIRST + 1, ALL), VISIBLE);
+	await expect(currentRow(page)).toHaveAttribute("data-new-no", "6");
 	await expect.poll(belowStack).toBeGreaterThanOrEqual(0);
 	await expect(currentRow(page)).toBeInViewport();
 
@@ -333,15 +346,24 @@ test("the header button opens and closes the bar", async ({
 	await expect(page).toHaveURL(/\/files/);
 	await expect(bar(page)).toBeVisible();
 	await expect(box(page)).toBeFocused();
-	await expect(findButton(page)).toHaveAttribute("aria-expanded", "true");
+	// A phone's header (and its button) is hidden while the bar is open.
+	if (isMobile) await expect(findButton(page)).toBeHidden();
+	else await expect(findButton(page)).toHaveAttribute("aria-expanded", "true");
 
-	await findButton(page).click();
+	// A phone's header is hidden while the bar is open: its ✕ closes it.
+	if (isMobile)
+		await bar(page).getByRole("button", { name: "Close (Esc)" }).click();
+	else await findButton(page).click();
 	await expect(bar(page)).toHaveCount(0);
 	await expect(findButton(page)).toHaveAttribute("aria-expanded", "false");
+	await expect(findButton(page)).toBeFocused();
 	await findButton(page).click();
 	await expect(bar(page)).toBeVisible();
 	await expect(box(page)).toBeFocused();
-	await expect(findButton(page)).toHaveAttribute("aria-expanded", "true");
+	if (!isMobile)
+		await expect(findButton(page)).toHaveAttribute("aria-expanded", "true");
+	if (isMobile)
+		await bar(page).getByRole("button", { name: "Close (Esc)" }).click();
 	const size = await findButton(page).boundingBox();
 	expect(size?.width).toBeGreaterThanOrEqual(40);
 	expect(size?.height).toBeGreaterThanOrEqual(40);
@@ -482,7 +504,7 @@ test("a line the diff doesn't show is found once its context is expanded", async
 	await expect(count(page)).toHaveText(counted(1, 1), VISIBLE);
 });
 
-test("side by side and ignore whitespace keep the count and the current hit", async ({
+test("side by side and ignore whitespace keep the count and the current hit (a phone: ignore whitespace)", async ({
 	page,
 	pr,
 	startCrb,
@@ -515,6 +537,8 @@ test("side by side and ignore whitespace keep the count and the current hit", as
 	await expect(ws.locator(".find-current")).toHaveText("saveDraft");
 	const before = await count(page).innerText();
 	expect(before).toMatch(counted("\\d+", "\\d+"));
+	// A phone's Settings are in the header, hidden while the bar is open.
+	if (isMobile) return;
 
 	await setSwitch(page, "Side by side", true);
 	await expect(ws.locator('table[data-view="side-by-side"]')).toBeVisible();
@@ -553,7 +577,7 @@ test("Match case changes the count and survives a reload", async ({
 	await expect(count(page)).toHaveText(counted(1, ALL - 1), VISIBLE);
 });
 
-test("Escape closes and clears the marks; reopening restores the term", async ({
+test("Escape closes and clears the marks; reopening starts empty", async ({
 	page,
 	pr,
 	startCrb,
@@ -576,11 +600,167 @@ test("Escape closes and clears the marks; reopening restores the term", async ({
 	await expect(findButton(page)).toBeFocused();
 
 	await openBar(page, isMobile);
-	await expect(box(page)).toHaveValue("saveDraft");
-	await expect(count(page)).toHaveText(counted(A_FIRST, ALL), VISIBLE);
-	await expect(fileSection(page, A).locator(".find-current")).toHaveText(
-		"saveDraft",
+	await expect(box(page)).toHaveValue("");
+	await expect(count(page)).toBeEmpty();
+	await expect(page.locator(".find-mark, .find-current")).toHaveCount(0);
+});
+
+test("leaving Files changed clears the search: back there the bar is closed, and reopens empty", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	await phone(page, isMobile);
+	await pr(fixture);
+	const s = await startCrb();
+	// From the Overview, so the browser's back goes there.
+	await page.goto(s.url);
+	await page.getByRole("link", { name: "Files changed" }).click();
+	await expect(progress(page)).toBeVisible();
+	await openBar(page, isMobile);
+	await search(page, "saveDraft");
+	// Another tab: a phone's header (its tabs) is hidden while the bar is
+	// open, so the browser's back.
+	if (isMobile) await page.goBack();
+	else await page.getByRole("link", { name: "Overview" }).click();
+	await expect(page).not.toHaveURL(/\/files/);
+	await expect(bar(page)).toHaveCount(0);
+	await page.getByRole("link", { name: "Files changed" }).click();
+	await expect(progress(page)).toBeVisible();
+	await expect(bar(page)).toHaveCount(0);
+	await expect(page.locator(".find-mark, .find-current")).toHaveCount(0);
+	await expect(findButton(page)).toHaveAttribute("aria-expanded", "false");
+	await openBar(page, isMobile);
+	await expect(box(page)).toHaveValue("");
+
+	// A reload starts closed too.
+	await search(page, "saveDraft");
+	await page.reload();
+	await expect(progress(page)).toBeVisible();
+	await expect(bar(page)).toHaveCount(0);
+	await openBar(page, isMobile);
+	await expect(box(page)).toHaveValue("");
+});
+
+test("the bar stays put: opening, stepping three times and across files never move it", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	await phone(page, isMobile);
+	const next = () =>
+		isMobile
+			? bar(page).getByRole("button", { name: /^Next/ }).click()
+			: box(page).press("Enter");
+	await pr(fixture);
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	await openBar(page, isMobile);
+	const opened = await barBox(page);
+	await search(page, "saveDraft");
+	expect(await barBox(page)).toEqual(opened);
+	for (let i = 0; i < 3; i++) {
+		await next();
+		await expect(count(page)).toHaveText(counted(i + 1, ALL), VISIBLE);
+		expect(await barBox(page)).toEqual(opened);
+	}
+	// Into src/a.ts (another file, opened by the step) and on to src/b.ts.
+	await stepUntil(page, B, 12, next);
+	await expect(currentRow(page)).toBeInViewport();
+	expect(await barBox(page)).toEqual(opened);
+	// Pinned to the top: right under the app header's row, or a phone's top.
+	if (isMobile) expect(opened.y).toBe(0);
+	else
+		expect(opened.y).toBeCloseTo(
+			await page.evaluate(() =>
+				Number.parseFloat(
+					getComputedStyle(document.documentElement).getPropertyValue(
+						"--app-header",
+					),
+				),
+			),
+			0,
+		);
+});
+
+test("on a phone the open bar replaces the app header; ✕ brings it back", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	test.skip(!isMobile, "the phone layout");
+	await phone(page, isMobile);
+	await pr(fixture);
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	await expect(appHeader(page)).toBeVisible();
+	await openBar(page, isMobile);
+	await expect(appHeader(page)).toBeHidden();
+	await expect(findButton(page)).toBeHidden();
+	await search(page, "saveDraft");
+	// Stepped rows land below the bar.
+	await bar(page).getByRole("button", { name: /^Next/ }).click();
+	await bar(page).getByRole("button", { name: /^Next/ }).click();
+	await expect(currentSection(page)).toHaveAttribute("aria-label", DOC);
+	await stepUntil(page, A, 6, () =>
+		bar(page).getByRole("button", { name: /^Next/ }).click(),
 	);
+	await expect
+		.poll(async () => {
+			const row = await currentRow(page).boundingBox();
+			return (row?.y ?? 0) - (await findBottom(page));
+		})
+		.toBeGreaterThanOrEqual(0);
+	await expectNoPageOverflow(page);
+	await bar(page).getByRole("button", { name: "Close (Esc)" }).click();
+	await expect(bar(page)).toHaveCount(0);
+	await expect(appHeader(page)).toBeVisible();
+	await expect(findButton(page)).toBeFocused();
+});
+
+test("the first step goes to a caret that isn't in view (under the sticky stack), and moves on from one that is", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	test.skip(
+		isMobile,
+		"Enter needs a keyboard: the phone's ↓ runs the same step",
+	);
+	// A short window, so line 5 can scroll up under the sticky stack.
+	await page.setViewportSize({ width: 1280, height: 360 });
+	await pr(fixture);
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	await pickInTree(page, /\sa\.ts\s/);
+	const a = fileSection(page, A);
+	await expect(a.getByTestId("diff-line").first()).toBeVisible();
+	await openBar(page, isMobile);
+	await search(page, "saveDraft");
+	await expect(currentRow(page)).toHaveAttribute("data-new-no", "5");
+	// Line 5 scrolled up under the sticky stack: not in view.
+	const under = async () => {
+		const row = await currentRow(page).evaluate(
+			(el) => el.getBoundingClientRect().top,
+		);
+		return row - (await barBottom(page));
+	};
+	await page.evaluate((by) => window.scrollBy(0, by), (await under()) + 10);
+	await expect.poll(under).toBeLessThan(0);
+	await box(page).press("Enter");
+	await expect(count(page)).toHaveText(counted(A_FIRST, ALL), VISIBLE);
+	await expect(currentRow(page)).toHaveAttribute("data-new-no", "5");
+	await expect.poll(under).toBeGreaterThan(0);
+	// Typing again puts the caret back, unshown, on line 5, in view now.
+	await box(page).fill("saveDraf");
+	await expect(count(page)).toHaveText(counted(A_FIRST, ALL), VISIBLE);
+	await box(page).press("Shift+Enter");
+	// In view: Shift+Enter goes to the hit before it.
+	await expect(count(page)).toHaveText(counted(DOC_HIT, ALL), VISIBLE);
 });
 
 test("the shortcuts help lists Find in PR, Next match and Previous match under Files changed", async ({
@@ -667,7 +847,7 @@ test("the bar fits 360px with 40px controls and no page overflow", async ({
 
 	// The spinner and a Retry at once still fit: src/a.ts's own request
 	// fails while the batch is held.
-	await findButton(page).click();
+	await bar(page).getByRole("button", { name: "Close (Esc)" }).click();
 	await expect(bar(page)).toHaveCount(0);
 	const held = holdBatches(page);
 	await held.ready;
