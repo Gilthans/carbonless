@@ -76,7 +76,7 @@ const undo = {
 
 const tail = (page: Page) => page.getByTestId("ps-tail");
 const toast = (page: Page) => page.getByTestId("head-toast");
-const marker = (page: Page, name: "viewing" | "comparison base") =>
+const marker = (page: Page, name: "comparison target" | "comparison base") =>
 	page.getByRole("button", { name, exact: true });
 const node = (page: Page, id: string) => page.getByTestId(`ps-node-${id}`);
 const boxes = (section: Locator) =>
@@ -200,7 +200,7 @@ test("View lands on the since view: the reworked and new clusters with their chi
 	await toast(page).getByRole("button", { name: "View" }).click();
 	await expect(page).toHaveURL(/head=[0-9a-f]{40}/);
 	await expect(
-		node(page, "head").getByRole("button", { name: "viewing" }),
+		node(page, "head").getByRole("button", { name: "comparison target" }),
 	).toBeVisible();
 	await expect(
 		node(page, "ps1").getByRole("button", { name: "comparison base" }),
@@ -285,7 +285,7 @@ test("View lands on the since view: the reworked and new clusters with their chi
 	await boxes(coreS).first().click();
 	await expect(boxes(coreS).first()).toBeChecked();
 	await expect(
-		node(page, "ps2").getByRole("button", { name: "viewing" }),
+		node(page, "ps2").getByRole("button", { name: "comparison target" }),
 	).toBeVisible();
 	await expect(tail(page)).toHaveAttribute("data-state", "up-to-date");
 	await expect(page.getByTestId("sync-notices")).toHaveCount(0);
@@ -309,7 +309,7 @@ test("View lands on the since view: the reworked and new clusters with their chi
 	await page.reload();
 	await expect(progress(page)).toContainText("2 / 4 clusters reviewed");
 	await expect(
-		node(page, "ps2").getByRole("button", { name: "viewing" }),
+		node(page, "ps2").getByRole("button", { name: "comparison target" }),
 	).toBeVisible();
 	// The since view and the full diff share one state: PS1 → PS2 shows
 	// the reworked cluster marked, as it was in the full diff.
@@ -339,7 +339,7 @@ test("a gone cluster is a red block with its chip, not markable and not counted;
 	await utilS.getByRole("button", { name: "Expand file" }).click();
 	await boxes(utilS).click();
 	await expect(
-		node(page, "ps2").getByRole("button", { name: "viewing" }),
+		node(page, "ps2").getByRole("button", { name: "comparison target" }),
 	).toBeVisible();
 	await expect(page.getByTestId("sync-notices")).toHaveCount(0);
 	await expect(progress(page)).toContainText("3 / 4 clusters reviewed");
@@ -389,7 +389,7 @@ test("a gone cluster is a red block with its chip, not markable and not counted;
 	await page.keyboard.press("Control+[");
 	await page.keyboard.press("Control+[");
 	await expect(
-		node(page, "ps1").getByRole("button", { name: "viewing" }),
+		node(page, "ps1").getByRole("button", { name: "comparison target" }),
 	).toBeVisible();
 	await expect(page).toHaveURL(/ps=1/);
 	const note = page.getByTestId("read-only-note");
@@ -413,7 +413,7 @@ test("a gone cluster is a red block with its chip, not markable and not counted;
 	).toBeVisible();
 	await note.getByRole("button", { name: "Back to PS2" }).click();
 	await expect(
-		node(page, "ps2").getByRole("button", { name: "viewing" }),
+		node(page, "ps2").getByRole("button", { name: "comparison target" }),
 	).toBeVisible();
 	await expect(page.getByTestId("read-only-note")).toHaveCount(0);
 	expect(reviewRefs(workdir)).toBe(refs);
@@ -471,7 +471,7 @@ test("the tree's dots say which files need eyes; the needs-eyes filter hides ful
 	await boxes(utilS).click();
 	await expect(boxes(utilS)).not.toBeChecked();
 	await expect(
-		node(page, "ps2").getByRole("button", { name: "viewing" }),
+		node(page, "ps2").getByRole("button", { name: "comparison target" }),
 	).toBeVisible();
 	// Back in the since view (PS1 → PS2): the unticked file needs eyes
 	// (the dot follows the reviewer's mark; "to read" counts what the
@@ -580,9 +580,9 @@ test("a newer head fills the rail's last slot and shows the toast; nothing below
 	expect(await rowTop(header)).toBe(before);
 	expect(await focused()).toBe(focusBefore);
 	await expect(toast(page).getByRole("button", { name: "View" })).toBeVisible();
-	await expect(marker(page, "viewing")).toBeVisible();
+	await expect(marker(page, "comparison target")).toBeVisible();
 	await expect(
-		node(page, "ps1").getByRole("button", { name: "viewing" }),
+		node(page, "ps1").getByRole("button", { name: "comparison target" }),
 	).toBeVisible();
 
 	// Dismissed, it stays dismissed for that head.
@@ -741,7 +741,7 @@ test("a click on a dot moves nothing: its card goes sticky, and its Comparison B
 	// Nothing moved: the address, the markers, the rows.
 	expect(page.url()).toBe(url);
 	await expect(
-		node(page, "ps1").getByRole("button", { name: "viewing" }),
+		node(page, "ps1").getByRole("button", { name: "comparison target" }),
 	).toBeVisible();
 	expect(await sections.allTextContents()).toEqual(rows);
 	// PS1 is viewed: it can't be the target again, nor its own base.
@@ -780,7 +780,7 @@ test("a click on a dot moves nothing: its card goes sticky, and its Comparison B
 	await head.getByRole("button", { name: "Comparison Target" }).click();
 	await expect(head).toBeHidden();
 	await expect(
-		node(page, "head").getByRole("button", { name: "viewing" }),
+		node(page, "head").getByRole("button", { name: "comparison target" }),
 	).toBeVisible();
 	await expect(page).toHaveURL(/head=[0-9a-f]{40}/);
 
@@ -884,7 +884,7 @@ test("the rail on a phone: 40px targets, no page overflow at 360px", async ({
 	for (const el of [
 		dot(page, "head"),
 		dot(page, "ps1"),
-		marker(page, "viewing"),
+		marker(page, "comparison target"),
 		marker(page, "comparison base"),
 	]) {
 		expect(await tapHeight(el)).toBeGreaterThanOrEqual(40);
@@ -892,6 +892,7 @@ test("the rail on a phone: 40px targets, no page overflow at 360px", async ({
 	// A phone connector shows the bare count.
 	await expect(page.getByTestId("ps-conn-head")).toHaveText("1");
 	await expect(marker(page, "comparison base")).toHaveText("comp. base");
+	await expect(marker(page, "comparison target")).toHaveText("comp. target");
 	// A tap: the sticky card, inside the viewport.
 	await dot(page, "head").tap();
 	const head = sticky(page, "head");
@@ -902,7 +903,7 @@ test("the rail on a phone: 40px targets, no page overflow at 360px", async ({
 	await expectNoPageOverflow(page);
 	await head.getByRole("button", { name: "Comparison Target" }).tap();
 	await expect(
-		node(page, "head").getByRole("button", { name: "viewing" }),
+		node(page, "head").getByRole("button", { name: "comparison target" }),
 	).toBeVisible();
 	await expect(page).toHaveURL(/head=[0-9a-f]{40}/);
 });
@@ -920,9 +921,9 @@ test("the markers move by drag and by Ctrl+[ / Ctrl+]; nothing moves on a bare k
 	await page.reload();
 	await expect(tail(page)).toHaveAttribute("data-state", "head", GIT_WAIT);
 
-	await drag(page, marker(page, "viewing"), node(page, "head"));
+	await drag(page, marker(page, "comparison target"), node(page, "head"));
 	await expect(
-		node(page, "head").getByRole("button", { name: "viewing" }),
+		node(page, "head").getByRole("button", { name: "comparison target" }),
 	).toBeVisible();
 	await expect(
 		node(page, "ps1").getByRole("button", { name: "comparison base" }),
@@ -932,11 +933,11 @@ test("the markers move by drag and by Ctrl+[ / Ctrl+]; nothing moves on a bare k
 	// A bare bracket is nothing; Ctrl+[ goes back to PS1.
 	await page.keyboard.press("[");
 	await expect(
-		node(page, "head").getByRole("button", { name: "viewing" }),
+		node(page, "head").getByRole("button", { name: "comparison target" }),
 	).toBeVisible();
 	await page.keyboard.press("Control+[");
 	await expect(
-		node(page, "ps1").getByRole("button", { name: "viewing" }),
+		node(page, "ps1").getByRole("button", { name: "comparison target" }),
 	).toBeVisible();
 	await expect(page).toHaveURL(/ps=1/);
 	// The base followed back to the branch (it was "the previous").
@@ -946,7 +947,7 @@ test("the markers move by drag and by Ctrl+[ / Ctrl+]; nothing moves on a bare k
 	// Ctrl+] past the newest patch set views the head; the base follows to PS1.
 	await page.keyboard.press("Control+]");
 	await expect(
-		node(page, "head").getByRole("button", { name: "viewing" }),
+		node(page, "head").getByRole("button", { name: "comparison target" }),
 	).toBeVisible();
 	await expect(
 		node(page, "ps1").getByRole("button", { name: "comparison base" }),
@@ -999,9 +1000,27 @@ test("threads: a rewritten line is changed with its old lines, a deleted one unp
 	const threads: ReturnType<typeof reviewThread>[] = [];
 	const p = await pr({ ...fixture, threads });
 	const h1 = p.head();
+	// A reply on it: behind Show more on its unplaced row.
+	const core30 = reviewThread(
+		{ path: "src/core.ts", line: 30, subjectType: "LINE" },
+		[
+			threadComment({
+				login: "rev1",
+				text: "Is core 30 needed?",
+				commit: h1,
+				diffHunk: "",
+			}),
+			threadComment({
+				login: "Octo_Cat",
+				text: "Yes, for the cache",
+				commit: h1,
+				diffHunk: "",
+			}),
+		],
+	);
 	threads.push(
 		threadOn(h1, "src/core.ts", 5, "Why change core 5?"),
-		threadOn(h1, "src/core.ts", 30, "Is core 30 needed?"),
+		core30,
 		threadOn(h1, "src/util.ts", 3, "util 3 looks fine"),
 	);
 	p.editScenario((sc) => {
@@ -1016,7 +1035,7 @@ test("threads: a rewritten line is changed with its old lines, a deleted one unp
 	await expect(tail(page)).toHaveAttribute("data-state", "head", GIT_WAIT);
 	await toast(page).getByRole("button", { name: "View" }).click();
 	await expect(
-		node(page, "head").getByRole("button", { name: "viewing" }),
+		node(page, "head").getByRole("button", { name: "comparison target" }),
 	).toBeVisible();
 
 	// The since view (PS1 → the head): core.ts's rewritten line carries its
@@ -1050,7 +1069,25 @@ test("threads: a rewritten line is changed with its old lines, a deleted one unp
 		const row = unplacedRows(coreS);
 		await expect(row).toHaveCount(1);
 		await expect(row).toHaveAttribute("data-fate", "deleted");
-		await expect(row).toContainText("Is core 30 needed?");
+		// The fate in a sentence on the top row.
+		await expect(row.getByTestId("unplaced-fate")).toHaveText(
+			"Commented line has been deleted since the review",
+		);
+		// The first comment at once, the reply behind Show more.
+		await expect(row.getByTestId("thread-body")).toContainText(
+			"Is core 30 needed?",
+		);
+		await expect(row.getByText("Yes, for the cache")).toHaveCount(0);
+		const more = row.getByRole("button", { name: /^Show more/ });
+		await expect(more).toContainText("1 reply");
+		await more.click();
+		await expect(row.getByText("Yes, for the cache")).toBeVisible();
+		await row.getByRole("button", { name: "Show less" }).click();
+		await expect(row.getByText("Yes, for the cache")).toHaveCount(0);
+		// The code in its titled box.
+		await expect(row.getByTestId("original-code-title")).toHaveText(
+			"Original Reviewed Change",
+		);
 		await expect(row.getByTestId("original-code-label")).toHaveText(
 			"PS1 · src/core.ts · line 30",
 		);
@@ -1066,6 +1103,15 @@ test("threads: a rewritten line is changed with its old lines, a deleted one unp
 	};
 	await checkCore();
 	await expectNoPageOverflow(page);
+	if (isMobile) {
+		// At 360px: no page overflow, the sentence on one line.
+		const size = page.viewportSize();
+		await page.setViewportSize({ width: 360, height: size?.height ?? 740 });
+		await expectNoPageOverflow(page);
+		const fate = unplacedRows(coreS).getByTestId("unplaced-fate");
+		expect((await fate.boundingBox())?.height ?? 99).toBeLessThan(24);
+		if (size) await page.setViewportSize(size);
+	}
 	// The full diff shows them the same way.
 	await page.keyboard.press("Control+Shift+[");
 	await expect(
@@ -1077,7 +1123,7 @@ test("threads: a rewritten line is changed with its old lines, a deleted one unp
 	// core 4, written, and a reload keeps it there.
 	await boxes(coreS).first().click();
 	await expect(
-		node(page, "ps2").getByRole("button", { name: "viewing" }),
+		node(page, "ps2").getByRole("button", { name: "comparison target" }),
 	).toBeVisible();
 	const row = unplacedRows(coreS);
 	const handle = row.getByTestId("place-handle");
@@ -1098,12 +1144,18 @@ test("threads: a rewritten line is changed with its old lines, a deleted one unp
 		.getByTestId("diff-line")
 		.filter({ hasText: /^.*core 4$/ });
 	// The handle and the line both on screen (the first hunk sits right
-	// under the list).
-	await handle.scrollIntoViewIfNeeded();
+	// under the list, below the row's code and first comment): the handle
+	// a third of the way down, clear of the sticky headers.
+	await handle.evaluate((el) => {
+		const top = el.getBoundingClientRect().top;
+		window.scrollBy(0, top - window.innerHeight * 0.3);
+	});
 	await expect(target).toBeInViewport();
 	await drag(page, handle, target);
 	await expect(unplacedRows(coreS)).toHaveCount(0);
-	await expect(target.getByRole("button", { name: /1 comment/ })).toBeVisible();
+	await expect(
+		target.getByRole("button", { name: /2 comments/ }),
+	).toBeVisible();
 	await page.reload();
 	const reloaded = fileSection(page, "src/core.ts");
 	await reloaded.getByRole("button", { name: "Expand file" }).click();
@@ -1111,7 +1163,7 @@ test("threads: a rewritten line is changed with its old lines, a deleted one unp
 		reloaded
 			.getByTestId("diff-line")
 			.filter({ hasText: /^.*core 4$/ })
-			.getByRole("button", { name: /1 comment/ }),
+			.getByRole("button", { name: /2 comments/ }),
 	).toBeVisible(GIT_WAIT);
 	await expect(unplacedRows(reloaded)).toHaveCount(0);
 	await expectNoPageOverflow(page);
@@ -1159,7 +1211,7 @@ async function startNext(page: Page, n: number, path: string) {
 	const box = boxes(section).first();
 	await box.click();
 	await expect(
-		node(page, `ps${n}`).getByRole("button", { name: "viewing" }),
+		node(page, `ps${n}`).getByRole("button", { name: "comparison target" }),
 	).toBeVisible(GIT_WAIT);
 	await section.getByRole("button", { name: "Collapse file" }).click();
 }
@@ -1226,7 +1278,9 @@ test("a thread of a file deleted two patch sets earlier is under Not in this com
 		const row = group.getByTestId("unplaced-thread");
 		await expect(row).toHaveAttribute("data-fate", "file-gone");
 		await expect(row).toContainText("src/legacy.ts");
-		await expect(row).toContainText("file deleted");
+		await expect(row.getByTestId("unplaced-fate")).toHaveText(
+			"Commented file has been deleted since the review",
+		);
 		await expect(row).toContainText("Clear the timer here too");
 		await expect(row.getByTestId("original-code-label")).toHaveText(
 			"PS1 · src/legacy.ts · line 3",
@@ -1252,12 +1306,13 @@ test("a thread of a file deleted two patch sets earlier is under Not in this com
 	await expectGroup();
 	await baseOn(page, "ps3", "]");
 	await expectGroup();
-	// Its card opens from the row.
-	await group
-		.getByTestId("unplaced-thread")
-		.getByRole("button", { expanded: false })
-		.click();
-	await expect(group.getByTestId("files-thread")).toBeVisible();
+	// Its first comment shows at once; Show more opens the rest.
+	const legacy = group.getByTestId("unplaced-thread");
+	await expect(legacy.getByTestId("thread-body")).toContainText(
+		"Clear the timer here too",
+	);
+	await legacy.getByRole("button", { name: /^Show more/ }).click();
+	await expect(legacy.getByRole("button", { name: "Show less" })).toBeVisible();
 
 	// Resolved on GitHub: no longer placed, the group goes; unresolved: back.
 	const setResolved = (resolved: boolean) =>
@@ -1533,7 +1588,7 @@ test("the verdict tab says what changed since your approval, with the patch set'
 	await utilS.getByRole("button", { name: "Expand file" }).click();
 	await boxes(utilS).first().click();
 	await expect(
-		node(page, "ps2").getByRole("button", { name: "viewing" }),
+		node(page, "ps2").getByRole("button", { name: "comparison target" }),
 	).toBeVisible();
 	await expect(page.getByTestId("sync-notices")).toHaveCount(0);
 	expect(reviewRefs(workdir)).toContain("/patchsets/2 ");
@@ -1596,7 +1651,7 @@ test("an identical diff force-pushed (a squash on the same base): same diff · n
 	await expect(card.getByTestId("verdict-since")).toHaveCount(0);
 	await page.getByRole("link", { name: "Files changed" }).click();
 	await expect(
-		node(page, "ps2").getByRole("button", { name: "viewing" }),
+		node(page, "ps2").getByRole("button", { name: "comparison target" }),
 	).toBeVisible();
 	await expect(tail(page)).toHaveAttribute("data-state", "up-to-date");
 	await expect(progress(page)).toContainText("3 / 3 clusters reviewed");
@@ -1624,7 +1679,7 @@ test("a new thread on the viewed head starts PS2 and the page follows: the PS2 d
 	await expect.poll(() => reviewRefs(workdir)).toContain("/patchsets/2 ");
 	// No reload: the thread's answer brings the session and the review in.
 	await expect(
-		node(page, "ps2").getByRole("button", { name: "viewing" }),
+		node(page, "ps2").getByRole("button", { name: "comparison target" }),
 	).toBeVisible();
 	await expect(tail(page)).toHaveAttribute("data-state", "up-to-date");
 	await expect(page).toHaveURL(/ps=2/);

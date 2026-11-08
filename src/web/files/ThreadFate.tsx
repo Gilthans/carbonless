@@ -38,13 +38,22 @@ import {
 	type RereviewTo,
 	sessionQuery,
 } from "../api";
-import { Badge, Chip, SkeletonBar } from "../overview/parts";
+import { Badge, BotIcon, Chip, SkeletonBar } from "../overview/parts";
+import { RelativeTime } from "../RelativeTime";
 import { useReviewId } from "../reviewId";
 import { Spinner } from "../Spinner";
 import { Tooltip } from "../Tooltip";
-import { CodeRows } from "../threads/CommentBody";
-import { Avatar } from "../threads/people";
-import { ThreadBlock } from "./ThreadRow";
+import { CodeRows, CommentBody } from "../threads/CommentBody";
+import {
+	COMMENT_SURFACE,
+	commentSurface,
+	ThreadActions,
+	ThreadComments,
+	UnavailableText,
+	useCanAct,
+} from "../threads/Conversation";
+import { MoreToggle, useReplyCount } from "../threads/MoreToggle";
+import { Avatar, usePerson } from "../threads/people";
 import type { Placements } from "./threadPlacement";
 
 /**
@@ -88,43 +97,56 @@ export const usePlacementInfo = () => useContext(PlacementContext);
 /** A fate's word, icon, tone and tooltip. */
 export const FATES: Record<
 	Fate,
-	{ label: string; icon: Icon; tone: "red" | "yellow"; tip: string }
+	{
+		label: string;
+		icon: Icon;
+		tone: "red" | "yellow";
+		tip: string;
+		/** An unplaced row's top line (owner, 2026-11-08). */
+		sentence: string;
+	}
 > = {
 	deleted: {
 		label: "deleted",
 		icon: DiffRemovedIcon,
 		tone: "red",
 		tip: "Its lines were deleted",
+		sentence: "Commented line has been deleted since the review",
 	},
 	rewritten: {
 		label: "rewritten",
 		icon: AlertIcon,
 		tone: "yellow",
 		tip: "Rewritten beyond tracing: its lines can't be followed here",
+		sentence: "Commented line has been rewritten since the review",
 	},
 	"file-gone": {
 		label: "file deleted",
 		icon: FileRemovedIcon,
 		tone: "red",
 		tip: "Its file was deleted",
+		sentence: "Commented file has been deleted since the review",
 	},
 	moved: {
 		label: "moved?",
 		icon: ArrowSwitchIcon,
 		tone: "yellow",
 		tip: "Its file was renamed and its lines didn't follow: maybe moved",
+		sentence: "Commented line may have moved",
 	},
 	reverted: {
 		label: "reverted",
 		icon: HistoryIcon,
 		tone: "yellow",
 		tip: "The PR no longer changes this place",
+		sentence: "The commented change has been reverted since the review",
 	},
 	"base-changed": {
 		label: "base changed",
 		icon: GitCompareIcon,
 		tone: "yellow",
 		tip: "The base branch changed this line since",
+		sentence: "The base changed under the commented line since the review",
 	},
 };
 
@@ -134,6 +156,7 @@ const UNKNOWN_FATE = {
 	icon: AlertIcon,
 	tone: "red" as const,
 	tip: "Where this thread sits now couldn't be computed",
+	sentence: "Couldn't work out where this thread is now",
 };
 
 /** "PS2", or nothing without a patch set. */
@@ -314,14 +337,22 @@ export function OriginalCode({ thread }: { thread: ReviewThread }) {
 	return (
 		<figure
 			data-testid="original-code"
-			aria-label={label}
-			className="min-w-0 overflow-hidden rounded-md border border-line bg-code"
+			aria-label={`Original Reviewed Change: ${label}`}
+			className="min-w-0 overflow-hidden rounded-md border-2 border-line-strong bg-code"
 		>
-			<figcaption
-				data-testid="original-code-label"
-				className="truncate border-b border-line px-2 py-0.5 font-mono text-[11px] text-muted"
-			>
-				{label}
+			<figcaption className="border-b border-line-strong bg-band px-2 py-1">
+				<span
+					data-testid="original-code-title"
+					className="block text-xs font-semibold text-ink"
+				>
+					Original Reviewed Change
+				</span>
+				<span
+					data-testid="original-code-label"
+					className="block truncate font-mono text-[11px] text-muted"
+				>
+					{label}
+				</span>
 			</figcaption>
 			<div className="overflow-x-auto font-mono text-xs leading-5 text-code-ink [scrollbar-width:thin]">
 				<table className="w-full border-collapse">
@@ -337,13 +368,18 @@ export function OriginalCode({ thread }: { thread: ReviewThread }) {
 	);
 }
 
-/** One unplaced thread's row: who, its fate, its text, its code; opens to the thread. */
+/**
+ * One unplaced thread's row: its fate in a sentence on the top line, the
+ * code it was written on in a titled box, its first comment at once (as
+ * the Overview's card shows it), and Show more for the replies and the
+ * reply box.
+ */
 export function UnplacedRow(props: {
 	thread: ReviewThread;
 	readId: string;
 	/** Its fate; null: unknown (the placements couldn't be computed). */
 	fate: Fate | null;
-	/** Before the fate: the original path (the trailing group). */
+	/** Under the fate: the original path (the trailing group). */
 	path?: string;
 	movedTo?: string;
 	/** A link beside the row ("near 88"). */
@@ -353,8 +389,15 @@ export function UnplacedRow(props: {
 }) {
 	const { thread } = props;
 	const [open, setOpen] = useState(false);
-	const bodyId = useId();
+	const repliesId = useId();
 	const fate = props.fate ? FATES[props.fate] : UNKNOWN_FATE;
+	const sentence =
+		props.fate === "moved" && props.movedTo
+			? `${fate.sentence} to ${props.movedTo}`
+			: fate.sentence;
+	const replies = useReplyCount(thread, props.readId);
+	const canAct = useCanAct(thread);
+	const readable = thread.unavailable === undefined && thread.id !== "";
 	return (
 		<li
 			data-testid="unplaced-thread"
@@ -364,50 +407,112 @@ export function UnplacedRow(props: {
 		>
 			<div className="flex min-h-10 min-w-0 items-center gap-2">
 				{props.handle}
-				<Avatar login={thread.author} url={thread.avatarUrl} />
-				<button
-					type="button"
-					aria-expanded={open}
-					aria-controls={bodyId}
-					onClick={() => setOpen(!open)}
-					className="flex min-h-10 min-w-0 flex-1 flex-col items-start justify-center rounded-sm text-left text-sm focus-visible:outline-2 focus-visible:outline-accent"
-				>
-					<span className="flex min-w-0 max-w-full flex-wrap items-center gap-x-1.5">
-						{props.path && (
-							<code className="min-w-0 font-mono text-xs break-all text-ink-soft">
-								{props.path}
-							</code>
-						)}
-						<span className="inline-flex items-center gap-1 font-semibold text-ink">
-							<fate.icon
-								size={12}
-								aria-hidden
-								className={fate.tone === "red" ? "text-bad" : "text-warn"}
-							/>
-							{fate.label}
-						</span>
-						{props.movedTo && (
-							<span className="text-muted">
-								to{" "}
-								<code className="font-mono text-xs break-all">
-									{props.movedTo}
-								</code>
+				<fate.icon
+					size={16}
+					aria-hidden
+					className={`shrink-0 ${fate.tone === "red" ? "text-bad" : "text-warn"}`}
+				/>
+				<span className="flex min-w-0 flex-1 flex-col">
+					<Tooltip content={sentence} describe={false}>
+						{(trigger) => (
+							<span
+								{...trigger}
+								data-testid="unplaced-fate"
+								className="truncate text-sm font-semibold text-ink"
+							>
+								{sentence}
 							</span>
 						)}
-					</span>
-					<span className="line-clamp-2 max-w-full text-xs break-words text-muted">
-						{thread.excerpt}
-					</span>
-				</button>
+					</Tooltip>
+					{props.path && (
+						<code className="truncate font-mono text-xs text-ink-soft">
+							{props.path}
+						</code>
+					)}
+				</span>
 				{props.link}
 			</div>
 			<OriginalCode thread={thread} />
-			{open && (
-				<div id={bodyId}>
-					<ThreadBlock readId={props.readId} thread={thread} />
+			<Opener thread={thread} />
+			{open && readable && (
+				<div id={repliesId} className="space-y-2">
+					{replies.n > 0 && (
+						<div
+							data-testid="thread-replies"
+							className="ml-2 border-l-2 border-line pl-3"
+						>
+							<ThreadComments readId={props.readId} thread={thread} skipFirst />
+						</div>
+					)}
+					<ThreadActions thread={thread} />
+				</div>
+			)}
+			{readable && (replies.n > 0 || canAct) && (
+				<div className="flex justify-center">
+					<MoreToggle
+						open={open}
+						onClick={() => setOpen((o) => !o)}
+						controls={open ? repliesId : ""}
+						replies={replies}
+						kind="more"
+					/>
 				</div>
 			)}
 		</li>
+	);
+}
+
+/**
+ * A thread's first comment as the Overview's card shows it: its author,
+ * when, and its text as GitHub renders it (sanitized), on the author's
+ * tint; its frame while the text is on its way.
+ */
+function Opener({ thread }: { thread: ReviewThread }) {
+	const opener = usePerson(thread.author, thread.avatarUrl);
+	if (thread.unavailable !== undefined || (thread.id === "" && thread.loaded))
+		return <UnavailableText reason={thread.unavailable ?? "unreadable"} />;
+	return (
+		<div data-testid="unplaced-opener" className="min-w-0 space-y-1">
+			<p className="flex min-w-0 items-center gap-1.5 text-xs text-muted">
+				<Avatar login={thread.author} url={thread.avatarUrl} size={16} />
+				<span className="truncate font-medium text-ink-soft">
+					{thread.author}
+				</span>
+				{thread.bot && <BotIcon />}
+				<RelativeTime iso={thread.createdAt} className="shrink-0" />
+			</p>
+			{!thread.loaded ? (
+				<div
+					aria-busy="true"
+					data-testid="thread-body-loading"
+					className={`${COMMENT_SURFACE} space-y-2.5 py-3`}
+				>
+					<span className="sr-only">Loading…</span>
+					<SkeletonBar className="w-full" />
+					<SkeletonBar className="w-4/5" />
+				</div>
+			) : thread.html.trim() ? (
+				<div
+					data-testid="thread-body"
+					className={`${commentSurface(opener.tint)} break-words`}
+				>
+					<CommentBody
+						html={thread.html}
+						body={thread.body}
+						code={thread.code}
+						path={thread.path}
+						open={false}
+					/>
+				</div>
+			) : (
+				<p
+					data-testid="thread-body"
+					className={`${commentSurface(opener.tint)} text-sm break-words`}
+				>
+					{thread.excerpt}
+				</p>
+			)}
+		</div>
 	);
 }
 

@@ -1,14 +1,23 @@
 // @vitest-environment jsdom
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render, screen } from "@testing-library/react";
+import {
+	cleanup,
+	render,
+	screen,
+	waitFor,
+	within,
+} from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { Fate } from "../../shared/rereview/placement";
 import type { ReviewThread } from "../../shared/types";
 import { NotInComparison } from "./NotInComparison";
 import {
 	PlacementChip,
 	type PlacementInfo,
 	PlacementProvider,
+	UnplacedRow,
 } from "./ThreadFate";
 
 vi.mock("./highlight", () => ({
@@ -109,7 +118,9 @@ describe("Not in this comparison", () => {
 		const group = screen.getByTestId("not-in-comparison");
 		expect(group.textContent).toContain("Not in this comparison");
 		expect(group.textContent).toContain("1 thread");
-		expect(group.textContent).toContain("file deleted");
+		expect(group.textContent).toContain(
+			"Commented file has been deleted since the review",
+		);
 		expect(group.textContent).toContain(`src/${HOSTILE}.ts`);
 		expect(group.textContent).toContain(HOSTILE);
 		expect(screen.getByTestId("original-code-label").textContent).toBe(
@@ -167,7 +178,9 @@ describe("when the placements fail", () => {
 		expect(group.textContent).toContain("1 thread");
 		const row = screen.getByTestId("unplaced-thread");
 		expect(row.getAttribute("data-fate")).toBe("unknown");
-		expect(row.textContent).toContain("not placed");
+		expect(row.textContent).toContain(
+			"Couldn't work out where this thread is now",
+		);
 		expect(row.textContent).toContain(`src/${HOSTILE}.ts`);
 		screen.getByRole("button", { name: "Retry" }).click();
 		expect(retry).toHaveBeenCalledOnce();
@@ -254,5 +267,139 @@ describe("PlacementChip", () => {
 		expect(screen.queryByTestId("placement-fate")).toBeNull();
 		expect(screen.queryByTestId("placement-changed")).toBeNull();
 		expect(screen.queryByRole("status")).toBeNull();
+	});
+});
+
+describe("UnplacedRow", () => {
+	afterEach(() => vi.unstubAllGlobals());
+
+	it.each<[Fate | null, string]>([
+		["deleted", "Commented line has been deleted since the review"],
+		["rewritten", "Commented line has been rewritten since the review"],
+		["reverted", "The commented change has been reverted since the review"],
+		[
+			"base-changed",
+			"The base changed under the commented line since the review",
+		],
+		["file-gone", "Commented file has been deleted since the review"],
+		[null, "Couldn't work out where this thread is now"],
+	])("its top row says the fate %s in a sentence", (fate, sentence) => {
+		render(
+			wrap(info(), <UnplacedRow thread={thread()} readId="r1" fate={fate} />),
+		);
+		const top = screen.getByTestId("unplaced-fate");
+		expect(top.textContent).toBe(sentence);
+		// One line on a phone: truncated, never wrapped.
+		expect(top.className).toContain("truncate");
+	});
+
+	it("moved? names where the line may have gone, as text", () => {
+		render(
+			wrap(
+				info(),
+				<UnplacedRow
+					thread={thread()}
+					readId="r1"
+					fate="moved"
+					movedTo={`lib/${HOSTILE}.ts`}
+				/>,
+			),
+		);
+		const top = screen.getByTestId("unplaced-fate");
+		expect(top.textContent).toBe(
+			`Commented line may have moved to lib/${HOSTILE}.ts`,
+		);
+		expect(top.querySelector("img")).toBeNull();
+	});
+
+	it("the original code sits in a titled box: Original Reviewed Change, then where it was", () => {
+		render(
+			wrap(
+				info(),
+				<UnplacedRow thread={thread()} readId="r1" fate="deleted" />,
+			),
+		);
+		const box = screen.getByTestId("original-code");
+		expect(within(box).getByTestId("original-code-title").textContent).toBe(
+			"Original Reviewed Change",
+		);
+		expect(within(box).getByTestId("original-code-label").textContent).toBe(
+			`PS1 · src/${HOSTILE}.ts · line 3`,
+		);
+		expect(box.className).toContain("border");
+	});
+
+	it("the first comment shows at once, sanitized; Show more reveals the replies", async () => {
+		const user = userEvent.setup();
+		const comment = (id: string, author: string, html: string) => ({
+			id,
+			author,
+			bot: false,
+			avatarUrl: "",
+			publishedAt: "2026-01-01T00:00:00Z",
+			pending: false,
+			html,
+			body: "",
+			text: "",
+			editedAt: null,
+			viewerCan: { update: false, delete: false },
+			deleted: false,
+		});
+		const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+			const url = new URL(String(input), "http://test");
+			const body =
+				url.pathname === "/api/comments"
+					? {
+							threads: [
+								{
+									threadId: "T1",
+									comments: [
+										comment("c1", "octo", "<p>Look here</p>"),
+										comment("c2", "rev1", "<p>A reply</p>"),
+									],
+								},
+							],
+						}
+					: null;
+			return new Response(JSON.stringify(body ?? {}), {
+				status: body ? 200 : 404,
+			});
+		});
+		vi.stubGlobal("fetch", fetchMock);
+		render(
+			wrap(
+				info(),
+				<UnplacedRow
+					thread={thread({
+						author: "octo",
+						html: `<p>Look <b>here</b></p>${HOSTILE}`,
+						commentCount: 2,
+						hasReply: true,
+					})}
+					readId="r1"
+					fate="deleted"
+				/>,
+			),
+		);
+		const first = screen.getByTestId("unplaced-opener");
+		expect(first.textContent).toContain("octo");
+		expect(first.querySelector("time")).not.toBeNull();
+		expect(within(first).getByText("here").tagName).toBe("B");
+		// GitHub's HTML is sanitized: the handler is gone.
+		expect(first.querySelector("img[onerror]")).toBeNull();
+		expect((window as { pwned?: number }).pwned).toBeUndefined();
+		// The replies wait behind Show more.
+		expect(screen.queryByText("A reply")).toBeNull();
+		const more = screen.getByRole("button", { name: /^Show more/ });
+		expect(more).toHaveAttribute("aria-expanded", "false");
+		expect(more.textContent).toContain("1 reply");
+		await user.click(more);
+		await waitFor(() => expect(screen.getByText("A reply")).toBeTruthy());
+		// The opener isn't repeated among them.
+		expect(screen.getAllByText("Look")).toHaveLength(1);
+		expect(screen.getByRole("button", { name: "Show less" })).toHaveAttribute(
+			"aria-expanded",
+			"true",
+		);
 	});
 });

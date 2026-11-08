@@ -349,13 +349,10 @@ test("file comment opens from the file header into the file bubble; a line not i
 		.getByTestId("unplaced-thread")
 		.filter({ hasText: "Past the end" });
 	await expect(past).toHaveAttribute("data-fate", "rewritten");
-	await past.getByRole("button", { expanded: false }).click();
-	await expect(past.getByTestId("thread-comment")).toContainText(
-		"Past the end",
+	await expect(past.getByTestId("unplaced-fate")).toHaveText(
+		"Commented line has been rewritten since the review",
 	);
-	await expect(past.getByTestId("placement-fate").first()).toHaveText(
-		"rewritten",
-	);
+	await expect(past.getByTestId("thread-body")).toContainText("Past the end");
 	const shots = process.env.DESIGN_SHOTS;
 	if (shots) {
 		await core.locator("header").scrollIntoViewIfNeeded();
