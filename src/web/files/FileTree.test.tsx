@@ -104,6 +104,7 @@ describe("FileTree", () => {
 				current={null}
 				onSelect={() => {}}
 				find={{
+					term: "save",
 					counts: new Map([
 						[0, 3],
 						[2, 2],
@@ -129,6 +130,62 @@ describe("FileTree", () => {
 		);
 	});
 
+	it("says what a find count is in the row's tooltip, the term as text", async () => {
+		const user = userEvent.setup();
+		const found = [
+			file(0, "src/a.ts", ["unreviewed"]),
+			file(1, "src/b.ts", ["unreviewed"]),
+			file(2, "src/c.ts", ["unreviewed"]),
+		];
+		render(
+			<FileTree
+				files={found}
+				unit="clusters"
+				current={null}
+				onSelect={() => {}}
+				find={{
+					term: "<b>save</b>",
+					counts: new Map([
+						[0, 3],
+						[1, 1],
+					]),
+					nameMarks: () => [],
+					oldNameMarks: () => [],
+				}}
+			/>,
+		);
+		const shown = () =>
+			[...document.querySelectorAll('[role="tooltip"]')].filter(
+				(t) => !t.hasAttribute("hidden"),
+			);
+		await user.hover(screen.getByRole("button", { name: /a\.ts/ }));
+		await waitFor(() => expect(shown()).toHaveLength(1));
+		expect(shown()[0]).toHaveTextContent("3 matches for “<b>save</b>”");
+		expect(shown()[0]?.querySelector("b")).toBeNull();
+		await user.hover(screen.getByRole("button", { name: /b\.ts/ }));
+		await waitFor(() =>
+			expect(shown()[0]).toHaveTextContent("1 match for “<b>save</b>”"),
+		);
+		// No hit, nothing said.
+		await user.hover(screen.getByRole("button", { name: /c\.ts/ }));
+		await waitFor(() => expect(shown()[0]).toHaveTextContent("c.ts"));
+		expect(shown()[0]).not.toHaveTextContent("match");
+		await user.hover(
+			document.querySelector('[data-folder="src"]') as HTMLElement,
+		);
+		await waitFor(() =>
+			expect(shown()[0]).toHaveTextContent(
+				"4 matches for “<b>save</b>” in this folder",
+			),
+		);
+		// The chip's own name stays short.
+		expect(
+			screen
+				.getByRole("button", { name: /a\.ts/ })
+				.querySelector('[data-testid="tree-find"]'),
+		).toHaveAttribute("aria-label", "3 matches");
+	});
+
 	it("keeps the find chip outside the truncating name, a direct child of the row", () => {
 		const found = [file(0, "src/a.ts", ["unreviewed"])];
 		render(
@@ -138,6 +195,7 @@ describe("FileTree", () => {
 				current={null}
 				onSelect={() => {}}
 				find={{
+					term: "save",
 					counts: new Map([[0, 3]]),
 					nameMarks: () => [],
 					oldNameMarks: () => [],
@@ -170,6 +228,7 @@ describe("FileTree", () => {
 				current={null}
 				onSelect={() => {}}
 				find={{
+					term: "save",
 					counts: new Map([[0, 2]]),
 					nameMarks: () => [{ from: 0, to: 4, current: true }],
 					oldNameMarks: () => [{ from: 0, to: 4, current: false }],

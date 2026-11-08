@@ -36,9 +36,21 @@ const NONE = () => [];
 
 /** The find's view of the tree: hits per file, and marks on names. Nothing is hidden or dimmed. */
 export interface TreeFind {
+	/** The term searched (the tooltips name it). */
+	term: string;
 	counts: ReadonlyMap<number, number>;
 	nameMarks: (index: number) => readonly FindMark[];
 	oldNameMarks: (index: number) => readonly FindMark[];
+}
+
+/** What a row's count is, for its tooltip ("" without one); the term stays text. */
+function findSaid(
+	count: number | undefined,
+	find: TreeFind | undefined,
+	where = "",
+): string {
+	if (!count || !find) return "";
+	return `${count} ${count === 1 ? "match" : "matches"} for “${find.term}”${where}`;
 }
 
 /** A row's hit count, painted like the hits it counts. */
@@ -132,6 +144,7 @@ function FileItem(props: {
 	const p = fileUnitProgress(file, unit);
 	const numbers = describeFileProgress(file, unit);
 	const path = displayPath(file);
+	const found = findSaid(props.find?.counts.get(file.index), props.find);
 	return (
 		<li>
 			{/* The numbers are in the name already: the tooltip only shows them. */}
@@ -141,6 +154,7 @@ function FileItem(props: {
 						{file.status === "renamed" ? "Renamed" : changeKindLabel(file)} ·{" "}
 						<TooltipPath>{path}</TooltipPath> · {numbers}
 						{talk && ` · ${talk}`}
+						{found && ` · ${found}`}
 					</>
 				}
 				describe={false}
@@ -285,6 +299,8 @@ function FolderItem(props: Level & { folder: Folder }) {
 						{ghost ? " · moved away" : ` · ${numbers}`}
 						{waiting && ` · ${waiting}`}
 						{said && ` · ${said}`}
+						{found > 0 &&
+							` · ${findSaid(found, props.find, " in this folder")}`}
 					</>
 				}
 				describe={false}

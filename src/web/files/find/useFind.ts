@@ -376,6 +376,7 @@ export function useFind(opts: {
 			return f && h.length > 0 ? mark(f, h, pos) : NO_MARKS;
 		};
 		const tree: TreeFind = {
+			term,
 			counts: countsByFile(hits),
 			nameMarks: (index) => marksBy(index, nameMarks),
 			oldNameMarks: (index) => marksBy(index, oldNameMarks),
@@ -412,7 +413,7 @@ export function useFind(opts: {
 			return byLine;
 		};
 		return { tree, pathOf, linesOf, pos, shown: caret?.shown === true };
-	}, [hits, files, caret]);
+	}, [hits, files, caret, term]);
 
 	// A file's DiffFind keeps its identity while its marks, current line and
 	// step don't change (hits landing in other files don't touch it).
