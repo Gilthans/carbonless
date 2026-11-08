@@ -686,7 +686,7 @@ describe("FilesPage", () => {
 				?.getAttribute("aria-label") ?? null;
 		const count = () => screen.getByTestId("find-count");
 
-		it("a hunks 409 (another device refreshed) reads the review again and searches the new revision", async () => {
+		it("a hunks 409 (another device refreshed) reads the review again and searches the new revision, keeping the term", async () => {
 			const files = twoFiles();
 			let reads = 0;
 			const asked: string[] = [];
@@ -726,6 +726,9 @@ describe("FilesPage", () => {
 			await user.type(await screen.findByTestId("find-box"), "x");
 			await vi.waitFor(() => expect(reads).toBe(2));
 			await waitFor(() => expect(count()).toHaveTextContent("1 of 4"));
+			// The new revision keeps the bar and its term (the same page).
+			expect(screen.getByTestId("find-box")).toHaveValue("x");
+			expect(findState.get()).toMatchObject({ open: true, term: "x" });
 			expect(
 				within(screen.getByTestId("find-bar")).queryByRole("status", {
 					name: "Searching files…",

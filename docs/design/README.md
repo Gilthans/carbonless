@@ -130,9 +130,10 @@ A hidden-character marker inside a hit is wrapped the same way. Inside a
 pair's word tint the hit is its own element, so its paint is on top.
 
 The bar itself floats (`fixed`) over the page, opaque `surface` with a
-`line` border and `shadow-header`: on desktop top-right, under the app
-header's stuck row; on a phone across the top, in the header's place (the
-header is hidden while it is open). It never moves while open.
+`line` border and `shadow-header`: on desktop top-right, right under the
+sticky stack (header row and progress bar), over the diff; on a phone
+across the top, covering the hidden header's box, in two rows. Its
+controls never move while it is open.
 
 ## File change kinds
 

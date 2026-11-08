@@ -93,18 +93,26 @@ everything you said sounds correct".
   click the 'next' button its position should never change"). It is
   `position: fixed`, out of the page's flow and its sticky stack: opening,
   closing, typing and stepping never move it on screen and never shift the
-  page (no layout shift, so no scroll anchoring). Desktop: top-right, its
-  top at the app header's stuck row's bottom (`--app-header`), 28rem wide,
-  over the progress bar's right end; at the very top of the page, before
-  the header has stuck, it lies over the header's lower right. Phone: across
-  the top, in the app header's place (below).
+  page (no layout shift, so no scroll anchoring). Desktop: top-right,
+  28rem wide, its top at the sticky stack's bottom (`--app-header` +
+  `--files-bar`: the header's stuck row and the progress bar), over the
+  diff like the browser's find; the progress bar's count and spinner stay
+  in view. Settings' popover is in the top layer, so it opens over the bar.
+  Phone: across the top, in the app header's place (below). In the DOM it
+  comes before the progress bar, as on screen.
 - **Phone: the bar replaces the app header** (owner's QA: "While the search
   box is open on the phone, it should hide the top bar entirely. Closing it
   restores"). While it is open, the header is hidden and inert
   (`visibility: hidden`: it keeps its room, so nothing moves) and the bar
-  sits at the top, at least the header's stuck height, so the sticky stack
-  stays where it is. Closing (✕, Escape) shows the header again and puts
-  focus on its Find in PR button.
+  covers the header's box: from the top down to the box's bottom on screen
+  (`--header-bottom`, kept by App's scroll tracking), taller at the top of
+  the page and the stuck row's height once scrolled, but never less than
+  its own two rows (the box at full width; the count, ↑, ↓ and ✕). Its
+  controls are pinned to its top, so they never move as the header's box
+  shrinks; while it is open the stack's top (`--app-header` on the page)
+  is the bar's height, so the progress bar sticks right under it. Closing
+  (✕, Escape) shows the header again and puts focus on its Find in PR
+  button.
 - **The term lives only while the bar is open on this page** (owner's QA:
   "Don't store the search term. Leaving the page or doing almost anything
   should clear the search box"). Closing clears it. Leaving Files changed
@@ -137,8 +145,9 @@ everything you said sounds correct".
 
 ```
 ┌ app header: Overview · Files changed · Verdict        🔍 ↻ ⚙ ┐
-│ ■■■■■■■■□□□□□ 61% ·  ┌[saveDraft______ Aa] 3 of 41 ◌ ↑ ↓ ✕┐│  ← floats over
-│ src/web/files/FileD… └─────────────────────────────────────┘│     the progress bar
+│ ■■■■■■■■□□□□□ 61% · 12/20 files                              │  ← progress bar
+│ src/web/files/FileD… ┌[saveDraft______ Aa] 3 of 41 ◌ ↑ ↓ ✕┐│  ← floats over
+│   12 + const x = …   └─────────────────────────────────────┘│     the diff
 ```
 
 - The box: `<input type="search">` (a typing target, so single-key shortcuts
@@ -167,7 +176,8 @@ Phone (≤ 640px): the bar takes the full width in the header's place, the
 box shrinks, the count collapses to "3/41", the arrows and ✕ stay 40px.
 
 ```
-│ [🔍 saveDraft____ Aa] 3/41 ◌ ↑ ↓ ✕ │
+│ [🔍 saveDraft________________ Aa] │
+│ 3/41 ◌                   ↑  ↓  ✕  │
 ```
 
 ## What is searched, and in what order

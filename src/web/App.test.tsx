@@ -309,6 +309,14 @@ function renderApp(routes: Partial<Routes> = {}, path = "/") {
 const calls = (path: string) =>
 	fetchMock.mock.calls.filter(([input]) => local(input) === path).length;
 
+/**
+ * Files changed's code, loaded: the router waits for it (a lazy route) before
+ * it shows the page. Run alone, a test is the first to import it, which can
+ * take longer than a findBy waits on a loaded machine; awaiting it first
+ * makes the test wait for the code itself, not race it.
+ */
+const filesPageLoaded = () => import("./files/FilesPage");
+
 describe("App", () => {
 	afterEach(() => {
 		cleanup();
@@ -477,6 +485,7 @@ describe("App", () => {
 
 	it("has a Find in PR button that opens the bar on Files changed and goes there from the overview", async () => {
 		findState.reset();
+		await filesPageLoaded();
 		const user = userEvent.setup();
 		const { router } = renderApp();
 		await screen.findByRole("region", { name: "What it does" });
@@ -502,6 +511,7 @@ describe("App", () => {
 
 	it("leaving Files changed closes Find in PR and clears its term; coming back starts closed", async () => {
 		findState.reset();
+		await filesPageLoaded();
 		const user = userEvent.setup();
 		const { router } = renderApp({}, "/files");
 		const button = await screen.findByRole("button", { name: "Find in PR" });
@@ -525,6 +535,7 @@ describe("App", () => {
 
 	it("leaving the review (Home) closes Find in PR and clears its term", async () => {
 		findState.reset();
+		await filesPageLoaded();
 		const user = userEvent.setup();
 		const { unmount } = renderApp({}, "/files");
 		await user.click(await screen.findByRole("button", { name: "Find in PR" }));
@@ -535,6 +546,7 @@ describe("App", () => {
 
 	it("on a phone the open find bar replaces the app header; closing it brings the header back, focus on its Find button", async () => {
 		findState.reset();
+		await filesPageLoaded();
 		vi.stubGlobal(
 			"matchMedia",
 			(query: string) =>
@@ -567,6 +579,7 @@ describe("App", () => {
 
 	it("on a wide screen the open find bar leaves the app header as it is", async () => {
 		findState.reset();
+		await filesPageLoaded();
 		const user = userEvent.setup();
 		renderApp({}, "/files");
 		const button = await screen.findByRole("button", { name: "Find in PR" });
