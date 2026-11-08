@@ -31,11 +31,20 @@ export function resetChanges(
 		.map((c) => ({ key: c.key, state: "unreviewed" }));
 }
 
-/** The file after `index` in the page's order (`treeOrder`), if any. */
-export function nextFile<T extends { index: number }>(
-	files: readonly T[],
-	index: number,
-): T | undefined {
+/**
+ * The file to open after `index` finishes: the next one in the page's order
+ * (`treeOrder`) that still has something unreviewed, wrapping past the end
+ * to the files before it. None when no other file has anything left (or
+ * `index` isn't one of `files`).
+ */
+export function nextFile<
+	T extends { index: number; clusters: readonly Cluster[] },
+>(files: readonly T[], index: number): T | undefined {
 	const at = files.findIndex((f) => f.index === index);
-	return at === -1 ? undefined : files[at + 1];
+	if (at === -1) return undefined;
+	for (let step = 1; step < files.length; step++) {
+		const file = files[(at + step) % files.length];
+		if (file?.clusters.some((c) => c.state === "unreviewed")) return file;
+	}
+	return undefined;
 }

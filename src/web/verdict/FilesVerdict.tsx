@@ -46,7 +46,7 @@ export function FilesVerdict(props: {
 				)
 			: null;
 	return (
-		<div ref={box}>
+		<div ref={box} id="files-verdict">
 			{overview && session && (
 				<VerdictCard
 					place="files"

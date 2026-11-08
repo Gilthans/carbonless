@@ -82,21 +82,43 @@ export const fileActionButton = (section: Locator, name: string) =>
 	section.getByRole("button", { name, exact: true });
 
 /**
+ * Waits until a file action takes clicks: right after it swaps in, after a
+ * move-on, or right after it asked, it ignores them a moment (UNDO_ARM_MS,
+ * FileDiff.tsx; its `data-clicks-from` says until when, and may move).
+ */
+export async function clicksReady(page: Page, button: Locator) {
+	await readyBy(page, button, "data-clicks-from");
+}
+
+/**
+ * Waits until a file a move-on opened takes marks (its boxes, cross-offs
+ * and file actions): its section's `data-marks-from` (FileDiff.tsx).
+ */
+export async function marksReady(page: Page, section: Locator) {
+	await readyBy(page, section, "data-marks-from");
+}
+
+async function readyBy(page: Page, el: Locator, attribute: string) {
+	await page.waitForFunction(
+		([node, name]) => performance.now() > Number(node?.getAttribute(name) ?? 0),
+		[await el.elementHandle(), attribute] as const,
+	);
+}
+
+/**
  * A finished file's reset (Undo cross-off, Unmark reviewed): the first
- * click asks, the second (once it takes clicks again, UNDO_ARM_MS in
- * FileDiff.tsx) does it.
+ * click asks, the second (once it takes clicks again) does it.
  */
 export async function resetFile(page: Page, section: Locator, name: string) {
 	const button = fileActionButton(section, name);
 	await expect(button).toBeEnabled();
-	// It may have just swapped in under the pointer.
-	await page.waitForTimeout(600);
+	await clicksReady(page, button);
 	await button.click();
 	const armed = section.locator("button[data-armed]");
 	await expect(armed).toHaveAccessibleName(
 		/^Remove all .* markings from this file\?$/,
 	);
-	await page.waitForTimeout(600);
+	await clicksReady(page, armed);
 	await armed.click();
 }
 

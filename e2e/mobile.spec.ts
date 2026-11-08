@@ -2,6 +2,7 @@ import type { Page } from "@playwright/test";
 import { reviewThread, threadComment } from "../test/fake-gh/scenario";
 import {
 	barBottom,
+	clicksReady,
 	expectNoPageOverflow,
 	fileAction,
 	fileSection,
@@ -491,7 +492,7 @@ test("a finished file's reset asks by tap, within the screen", async ({
 	const box = await unmark.boundingBox();
 	expect(box?.width).toBeGreaterThanOrEqual(40);
 	expect(box?.height).toBeGreaterThanOrEqual(40);
-	await page.waitForTimeout(600);
+	await clicksReady(page, unmark);
 	await unmark.tap();
 	const question = "Remove all reviewed markings from this file?";
 	const armed = section.locator("button[data-armed]");
@@ -503,10 +504,10 @@ test("a finished file's reset asks by tap, within the screen", async ({
 	// A tap elsewhere drops it; asked again, the second tap resets.
 	await page.getByRole("progressbar", { name: "Review progress" }).tap();
 	await expect(armed).toHaveCount(0);
-	await page.waitForTimeout(600);
+	await clicksReady(page, unmark);
 	await unmark.tap();
 	await expect(armed).toHaveCount(1);
-	await page.waitForTimeout(600);
+	await clicksReady(page, armed);
 	await armed.tap();
 	await expect(
 		section.getByRole("progressbar", { name: "File progress" }),

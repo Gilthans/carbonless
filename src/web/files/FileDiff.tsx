@@ -95,6 +95,8 @@ function HeaderIconButton(props: {
 	disabled: boolean;
 	onClick: () => void;
 	confirm?: string;
+	/** Clicks before this `performance.now()` time are ignored. */
+	ignoreClicksUntil?: number;
 }) {
 	const tone = tones[props.tone];
 	const button = useRef<HTMLButtonElement | null>(null);
@@ -106,12 +108,23 @@ function HeaderIconButton(props: {
 		lastLabel.current = props.label;
 		if (props.pressed) swappedUntil.current = performance.now() + UNDO_ARM_MS;
 	}
-	// The question asked, for this action: another action, or none, drops it.
+	// The question asked, for this action. Another action in its place, or
+	// none to ask (the file isn't finished, e.g. after another tab's write),
+	// drops it: coming back, it asks afresh.
 	const [askedFor, setAskedFor] = useState<string | null>(null);
 	const askedAt = useRef(0);
 	const question =
 		props.confirm !== undefined && !props.disabled ? props.confirm : null;
-	const armed = question !== null && askedFor === `${props.label}\n${question}`;
+	const asking = question === null ? null : `${props.label}\n${question}`;
+	if (askedFor !== null && askedFor !== asking) setAskedFor(null);
+	const armed = asking !== null && askedFor === asking;
+	const shown = armed && question !== null ? question : null;
+	// When it takes clicks again (`performance.now()`), for tests to wait on.
+	const clicksFrom = Math.max(
+		swappedUntil.current,
+		props.ignoreClicksUntil ?? 0,
+		armed ? askedAt.current + UNDO_ARM_MS : 0,
+	);
 	useEffect(() => {
 		if (!armed) return;
 		const outside = (event: Event) => {
@@ -122,14 +135,16 @@ function HeaderIconButton(props: {
 	}, [armed]);
 	const onClick = () => {
 		const now = performance.now();
-		if (now < swappedUntil.current) return;
+		if (now < swappedUntil.current || now < (props.ignoreClicksUntil ?? 0)) {
+			return;
+		}
 		if (question === null) {
 			props.onClick();
 			return;
 		}
 		if (!armed) {
 			askedAt.current = now;
-			setAskedFor(`${props.label}\n${question}`);
+			setAskedFor(asking);
 			return;
 		}
 		if (now < askedAt.current + UNDO_ARM_MS) return;
@@ -138,7 +153,7 @@ function HeaderIconButton(props: {
 	};
 	return (
 		<Tooltip
-			content={armed ? question : props.tooltip}
+			content={shown ?? props.tooltip}
 			describe={!armed}
 			forceOpen={armed}
 			onDismiss={() => setAskedFor(null)}
@@ -165,10 +180,13 @@ function HeaderIconButton(props: {
 							if (event.key === "Escape") setAskedFor(null);
 							onKeyDown(event);
 						}}
-						aria-label={armed ? question : props.label}
+						aria-label={shown ?? props.label}
 						aria-pressed={props.pressed}
 						disabled={props.disabled}
 						data-armed={armed || undefined}
+						data-clicks-from={
+							clicksFrom > 0 ? Math.ceil(clicksFrom) : undefined
+						}
 						onClick={onClick}
 						className="group flex h-10 w-10 shrink-0 items-center justify-center rounded-md focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-not-allowed @lg:h-8 @lg:w-8 pointer-coarse:@lg:h-10 pointer-coarse:@lg:w-10"
 					>
@@ -442,6 +460,14 @@ export function FileDiff(props: {
 	 * next file). Without it, the file just closes.
 	 */
 	onFinished?: () => void;
+	/**
+	 * Marks (the header's actions, the clusters' boxes and cross-offs) are
+	 * ignored before this `performance.now()` time: the file just opened
+	 * under the pointer as the one before it finished, so a double click's
+	 * second click was meant for that one (principle 2). Its lines arriving
+	 * later restart the wait (UNDO_ARM_MS from then).
+	 */
+	ignoreMarksUntil?: number;
 }) {
 	const { file, revision } = props;
 	const [ownExpanded, setOwnExpanded] = useState(false);
@@ -458,6 +484,26 @@ export function FileDiff(props: {
 	const toggleButton = useRef<HTMLButtonElement>(null);
 	const otherOpenNow = useRef(props.otherOpen ?? false);
 	otherOpenNow.current = props.otherOpen ?? false;
+	const hunks = useQuery({
+		...hunksQuery(revision, file.index),
+		enabled: expanded,
+	});
+	// Opened by a move-on, its lines (or what shows instead) arrive under the
+	// pointer once read: just as unseen, so they restart the wait for marks.
+	const guarded = props.ignoreMarksUntil !== undefined;
+	const bodyIn = expanded && !hunks.isPending;
+	const [bodyInAt, setBodyInAt] = useState<number | null>(null);
+	useLayoutEffect(() => {
+		if (!guarded) setBodyInAt(null);
+		else if (bodyIn) setBodyInAt((at) => at ?? performance.now());
+	}, [guarded, bodyIn]);
+	const ignoreMarksUntil =
+		props.ignoreMarksUntil === undefined
+			? undefined
+			: Math.max(
+					props.ignoreMarksUntil,
+					bodyInAt === null ? 0 : bodyInAt + UNDO_ARM_MS,
+				);
 	const { save: saveStates } = useSetStates();
 	const save = (changes: StateChange[]) =>
 		saveStates(revision, file.path, changes);
@@ -471,7 +517,9 @@ export function FileDiff(props: {
 	 * moved on (another file open, or its header scrolled off screen). A
 	 * stale refusal doesn't reopen it: the page is reloading a new snapshot.
 	 */
+	const marksIgnored = () => performance.now() < (ignoreMarksUntil ?? 0);
 	const mark = (changes: StateChange[]) => {
+		if (marksIgnored()) return;
 		const closing = expanded && finishes(file.clusters, changes);
 		if (closing) {
 			// The clicked control is gone or swaps; keep focus in the header.
@@ -556,10 +604,6 @@ export function FileDiff(props: {
 	// never dropped. A closed file's hunks aren't read (first open stays
 	// light): a binary or submodule file's line threads are flagged from the
 	// file alone; a line past the end shows once the file is opened.
-	const hunks = useQuery({
-		...hunksQuery(revision, file.index),
-		enabled: expanded,
-	});
 	const header = props.threads
 		? placeThreads({
 				threads: props.threads.threads,
@@ -703,6 +747,10 @@ export function FileDiff(props: {
 			data-file-index={file.index}
 			data-path={file.path}
 			aria-label={file.path}
+			// When it takes marks again (`performance.now()`), for tests to wait on.
+			data-marks-from={
+				ignoreMarksUntil === undefined ? undefined : Math.ceil(ignoreMarksUntil)
+			}
 			className={`overflow-clip rounded-lg border bg-surface ${
 				file.done ? "border-ok-fill/50" : "border-line"
 			}`}
@@ -783,6 +831,7 @@ export function FileDiff(props: {
 								)}
 								{crossToggle.undo ? (
 									<HeaderIconButton
+										ignoreClicksUntil={ignoreMarksUntil}
 										label="Undo cross-off"
 										tooltip="Set crossed-off clusters back to unreviewed"
 										confirm="Remove all crossed-off markings from this file?"
@@ -795,6 +844,7 @@ export function FileDiff(props: {
 									/>
 								) : (
 									<HeaderIconButton
+										ignoreClicksUntil={ignoreMarksUntil}
 										label="Cross off file"
 										tooltip={
 											crossToggle.none
@@ -818,6 +868,7 @@ export function FileDiff(props: {
 								)}
 								{reviewToggle.undo ? (
 									<HeaderIconButton
+										ignoreClicksUntil={ignoreMarksUntil}
 										label="Unmark reviewed"
 										tooltip="Set reviewed clusters back to unreviewed"
 										confirm="Remove all reviewed markings from this file?"
@@ -829,6 +880,7 @@ export function FileDiff(props: {
 									/>
 								) : (
 									<HeaderIconButton
+										ignoreClicksUntil={ignoreMarksUntil}
 										label="Mark remaining reviewed"
 										tooltip={
 											reviewToggle.none

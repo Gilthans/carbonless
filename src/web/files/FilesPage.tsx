@@ -27,7 +27,7 @@ import { useMedia, WIDE } from "../useMedia";
 import { FilesVerdict } from "../verdict/FilesVerdict";
 import { ignoreWhitespace, showInvisibles, sideBySide } from "../viewSettings";
 import type { DiffThreads } from "./DiffBody";
-import { FileDiff } from "./FileDiff";
+import { FileDiff, UNDO_ARM_MS } from "./FileDiff";
 import { FileTree } from "./FileTree";
 import { nextFile } from "./fileFinish";
 import { treeOrder } from "./fileOrder";
@@ -275,6 +275,38 @@ function FilesSkeleton() {
 const headerOf = (index: number) =>
 	document.querySelector<HTMLElement>(`#file-${index} > header`);
 
+/** At most this long after a move-on, the file it opened takes marks again. */
+const MOVE_ON_MAX_MS = 10_000;
+
+/** The gap kept above the verdict a finished review scrolls to. */
+const VERDICT_GAP = 12;
+
+/**
+ * What a move-on shows (`FilesPage`'s `finished`): the file it opened (or
+ * the verdict) rises into place, quickly; none with reduced motion.
+ * Resolves once it is in place.
+ */
+export const ARRIVE_MS = 200;
+async function arrive(el: HTMLElement): Promise<void> {
+	if (
+		typeof el.animate !== "function" ||
+		(typeof window.matchMedia === "function" &&
+			window.matchMedia("(prefers-reduced-motion: reduce)").matches)
+	) {
+		return;
+	}
+	el.dataset.arriving = "";
+	const animation = el.animate(
+		[
+			{ opacity: 0.3, transform: "translateY(2.5rem)" },
+			{ opacity: 1, transform: "none" },
+		],
+		{ duration: ARRIVE_MS, easing: "ease-out" },
+	);
+	await animation.finished.catch(() => {});
+	delete el.dataset.arriving;
+}
+
 /** How long "<path> isn't in this diff" stays. */
 export const MISSING_HINT_MS = 8000;
 
@@ -464,7 +496,7 @@ export function FilesPage() {
 	 * Opens the file alone and brings its header to the top, once the other
 	 * files have closed; `focus`: its toggle takes the focus.
 	 */
-	const openAlone = (index: number, focus: boolean) => {
+	const openAlone = (index: number, focus: boolean, shown?: () => void) => {
 		setCurrent(index);
 		openInTree(index);
 		anchor.current = null;
@@ -476,6 +508,7 @@ export function FilesPage() {
 					?.focus({ preventScroll: true });
 			}
 			scrollTo(index);
+			shown?.();
 		});
 	};
 	/** A file picked in the tree: open it alone and bring its header to the top. */
@@ -486,15 +519,41 @@ export function FilesPage() {
 		// header takes the focus.
 		openAlone(index, fromSheet);
 	};
+	/** The file just opened by a move-on, ignoring marks until `until`. */
+	const [movedOn, setMovedOn] = useState<{
+		key: string;
+		until: number;
+	} | null>(null);
 	/**
 	 * The reviewer's mark finished the open file: it closes and the next file
-	 * in the page's order opens, at the top, with the focus (the control used
-	 * is gone). After the last file it just closes.
+	 * with something unreviewed (in the page's order, wrapping) opens at the
+	 * top, with the focus (the control used is gone), rising into place.
+	 * With none left it closes and the verdict at the end rises into view.
 	 */
 	const finished = (index: number) => {
 		const next = nextFile(files, index);
-		if (next) openAlone(next.index, true);
-		else toggleFile(index, false);
+		if (!next) {
+			toggleFile(index, false);
+			requestAnimationFrame(() => {
+				const verdict = document.getElementById("files-verdict");
+				if (!verdict) return;
+				const top = verdict.getBoundingClientRect().top + window.scrollY;
+				window.scrollTo({ top: top - appHeader - barHeight - VERDICT_GAP });
+				void arrive(verdict);
+			});
+			return;
+		}
+		// It opens where the click landed: a double click's second click must
+		// not mark it unseen. Its marks wait until a moment after it is in
+		// place, risen (a long file can take a while to close).
+		const key = keyOf(next.index);
+		setMovedOn({ key, until: performance.now() + MOVE_ON_MAX_MS });
+		openAlone(next.index, true, async () => {
+			const section = sectionOf(next.index);
+			if (section) await arrive(section);
+			const until = performance.now() + UNDO_ARM_MS;
+			setMovedOn((m) => (m?.key === key ? { key, until } : m));
+		});
 	};
 
 	// A thread's file:line link (landing.ts): open that file alone; its diff
@@ -706,6 +765,11 @@ export function FilesPage() {
 												toggleFile(file.index, expanded, auto)
 											}
 											onFinished={() => finished(file.index)}
+											ignoreMarksUntil={
+												movedOn?.key === keyOf(file.index)
+													? movedOn.until
+													: undefined
+											}
 											otherOpen={openIndex !== null && openIndex !== file.index}
 											landing={
 												landing?.index === file.index ? landing : undefined

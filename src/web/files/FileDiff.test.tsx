@@ -114,7 +114,9 @@ const view = (f: FileView): ReviewView => ({
 });
 
 /** FileDiff of the review's only file, as useReviewView shows it. */
-function Shown({ unit, onFinished }: { unit: Unit; onFinished?: () => void }) {
+type Extra = { onFinished?: () => void; ignoreMarksUntil?: number };
+
+function Shown({ unit, ...extra }: { unit: Unit } & Extra) {
 	const { data } = useReviewView();
 	const shown = data?.files[0];
 	return (
@@ -124,7 +126,8 @@ function Shown({ unit, onFinished }: { unit: Unit; onFinished?: () => void }) {
 					file={shown}
 					revision="r1"
 					unit={unit}
-					onFinished={onFinished}
+					onFinished={extra.onFinished}
+					ignoreMarksUntil={extra.ignoreMarksUntil}
 				/>
 			)}
 			<SyncNotices />
@@ -143,7 +146,7 @@ function setup(
 	handler: Handler = () => ({ status: 404, body: {} }),
 	fileHunks: FileHunks | (() => Promise<Response>) = hunks,
 	unit: Unit = "clusters",
-	onFinished?: () => void,
+	extra: Extra = {},
 ) {
 	const fetchMock = vi.fn(
 		async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -177,7 +180,7 @@ function setup(
 	queryClient.setQueryData(reviewQuery.queryKey, view(f));
 	const rendered = render(
 		<QueryClientProvider client={queryClient}>
-			<Shown unit={unit} onFinished={onFinished} />
+			<Shown unit={unit} {...extra} />
 		</QueryClientProvider>,
 	);
 	/** Shows `next` as the server's file, like a reread does. */
@@ -208,7 +211,14 @@ function setup(
 	};
 }
 
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+/**
+ * The file actions' click guards read `performance.now()`: the tests step
+ * it by hand (`tick`), so a stalled machine can't flip them.
+ */
+let clock = 1000;
+const tick = (ms = UNDO_ARM_MS) => {
+	clock += ms;
+};
 
 /**
  * A reset's two clicks: the first asks (the button's name becomes the
@@ -221,14 +231,19 @@ async function confirmClick(
 ) {
 	await user.click(button);
 	expect(button).toHaveAccessibleName(question);
-	await sleep(UNDO_ARM_MS);
+	tick();
 	await user.click(button);
 }
 
 describe("FileDiff", () => {
 	// Code reads as plain text here; invisibles get their own test below.
-	beforeEach(() => setShowInvisibles(false));
+	beforeEach(() => {
+		setShowInvisibles(false);
+		clock = 1000;
+		vi.spyOn(performance, "now").mockImplementation(() => clock);
+	});
 	afterEach(() => {
+		vi.restoreAllMocks();
 		localStorage.clear();
 		resetShowInvisibles();
 		ignoreWhitespace.reset();
@@ -724,7 +739,7 @@ describe("FileDiff", () => {
 		await user.click(undo);
 		await new Promise((r) => setTimeout(r, 50));
 		expect(posts()).toHaveLength(1);
-		await sleep(UNDO_ARM_MS);
+		tick();
 		await confirmClick(user, undo);
 		await waitFor(() =>
 			expect(posts()[1]?.body.changes).toEqual([
@@ -1094,7 +1109,7 @@ describe("FileDiff", () => {
 			() => ({ status: 200, body: view(f) }),
 			hunks,
 			"clusters",
-			onFinished,
+			{ onFinished },
 		);
 		await user.click(screen.getByRole("button", { name: "Expand file" }));
 		const box = await screen.findByRole("checkbox", {
@@ -1121,7 +1136,7 @@ describe("FileDiff", () => {
 			() => ({ status: 200, body: view(f) }),
 			hunks,
 			"clusters",
-			onFinished,
+			{ onFinished },
 		);
 		await user.click(
 			screen.getByRole("button", { name: "Mark remaining reviewed" }),
@@ -1138,7 +1153,7 @@ describe("FileDiff", () => {
 			() => ({ status: 200, body: view(f) }),
 			hunks,
 			"clusters",
-			onFinished,
+			{ onFinished },
 		);
 		await user.click(screen.getByRole("button", { name: "Expand file" }));
 		await screen.findAllByText(codeLine("new five"));
@@ -1162,7 +1177,7 @@ describe("FileDiff", () => {
 				() => ({ status: 200, body: view(f) }),
 				hunks,
 				"clusters",
-				onFinished,
+				{ onFinished },
 			);
 			const button = screen.getByRole("button", { name });
 			await user.click(button);
@@ -1177,7 +1192,7 @@ describe("FileDiff", () => {
 			await user.click(button);
 			expect(posts()).toHaveLength(0);
 			expect(button).toHaveAccessibleName(question);
-			await sleep(UNDO_ARM_MS);
+			tick();
 			await user.click(button);
 			await waitFor(() =>
 				expect(posts()[0]?.body.changes).toEqual([
@@ -1201,16 +1216,16 @@ describe("FileDiff", () => {
 		await ask();
 		await user.keyboard("{Escape}");
 		expect(button).toHaveAccessibleName("Unmark reviewed");
-		await sleep(UNDO_ARM_MS);
+		tick();
 		await ask();
 		await user.tab();
 		expect(button).toHaveAccessibleName("Unmark reviewed");
-		await sleep(UNDO_ARM_MS);
+		tick();
 		await ask();
 		await user.click(document.body);
 		expect(button).toHaveAccessibleName("Unmark reviewed");
 		// Asked again from scratch: the old question doesn't carry over.
-		await sleep(UNDO_ARM_MS);
+		tick();
 		await user.click(button);
 		expect(posts()).toHaveLength(0);
 	});
@@ -1230,6 +1245,98 @@ describe("FileDiff", () => {
 				{ key: "k1", state: "unreviewed" },
 			]),
 		);
+	});
+
+	it("a question asked before the file was unfinished elsewhere doesn't come back armed", async () => {
+		const finished = file([cluster("k1", { state: "reviewed" })]);
+		const { posts, rerender, user } = setup(finished, () => ({
+			status: 200,
+			body: view(finished),
+		}));
+		const button = screen.getByRole("button", { name: "Unmark reviewed" });
+		await user.click(button);
+		expect(button).toHaveAttribute("data-armed");
+		// Another tab's write: unfinished, then finished again.
+		await rerender(file([cluster("k1")]));
+		expect(button).toHaveAccessibleName("Mark remaining reviewed");
+		await rerender(finished);
+		expect(button).toHaveAccessibleName("Unmark reviewed");
+		expect(button).not.toHaveAttribute("data-armed");
+		expect(
+			screen.queryByText("Remove all reviewed markings from this file?", {
+				selector: "[role=tooltip]:not([hidden])",
+			}),
+		).toBeNull();
+		// One click only asks again.
+		tick();
+		await user.click(button);
+		expect(button).toHaveAttribute("data-armed");
+		expect(posts()).toHaveLength(0);
+	});
+
+	it("ignores marks while a move-on just opened it (ignoreMarksUntil)", async () => {
+		const other = cluster("k2", { newStart: 40, oldStart: 40 });
+		const f = file([cluster("k1"), other]);
+		const { posts, user } = setup(
+			f,
+			() => ({ status: 200, body: view(f) }),
+			hunks,
+			"clusters",
+			{ ignoreMarksUntil: 1000 + UNDO_ARM_MS },
+		);
+		await user.click(screen.getByRole("button", { name: "Expand file" }));
+		const box = await screen.findByRole("checkbox", {
+			name: "Mark cluster reviewed",
+		});
+		// A double click's second click, landing on this file: nothing marked.
+		await user.click(box);
+		expect(box).not.toBeChecked();
+		await user.click(screen.getByRole("button", { name: "Cross off cluster" }));
+		await user.click(
+			screen.getByRole("button", { name: "Mark remaining reviewed" }),
+		);
+		await user.click(screen.getByRole("button", { name: "Cross off file" }));
+		expect(posts()).toHaveLength(0);
+		expect(
+			screen.getByRole("progressbar", { name: "File progress" }),
+		).toHaveTextContent("0 / 2 clusters");
+		// Once it's over, a click marks.
+		tick();
+		await user.click(box);
+		await waitFor(() => expect(posts()).toHaveLength(1));
+		expect(posts()[0]?.body.changes).toEqual([
+			{ key: "k1", state: "reviewed" },
+		]);
+	});
+
+	it("ignores marks a moment after a move-on's lines arrive late", async () => {
+		const other = cluster("k2", { newStart: 40, oldStart: 40 });
+		const f = file([cluster("k1"), other]);
+		const lines = heldJson();
+		const { posts, user } = setup(
+			f,
+			() => ({ status: 200, body: view(f) }),
+			() => lines.response,
+			"clusters",
+			{ ignoreMarksUntil: 1000 + UNDO_ARM_MS },
+		);
+		await user.click(screen.getByRole("button", { name: "Expand file" }));
+		// The page's wait is over before the lines are in.
+		tick(2 * UNDO_ARM_MS);
+		lines.release(hunks);
+		const box = await screen.findByRole("checkbox", {
+			name: "Mark cluster reviewed",
+		});
+		// They showed up under the pointer just now: not marked.
+		await user.click(box);
+		await user.click(
+			screen.getByRole("button", { name: "Mark remaining reviewed" }),
+		);
+		expect(posts()).toHaveLength(0);
+		expect(box).not.toBeChecked();
+		tick();
+		await user.click(box);
+		await waitFor(() => expect(posts()).toHaveLength(1));
 	});
 
 	it("can't reset a file that isn't finished: it marks the rest", () => {
@@ -1423,7 +1530,7 @@ describe("FileDiff", () => {
 		// A double click's second click doesn't undo it, or even ask.
 		await user.click(cross);
 		expect(cross).toHaveAccessibleName("Undo cross-off");
-		await sleep(UNDO_ARM_MS);
+		tick();
 		// Undone while the first write is still out: queued behind it.
 		await confirmClick(user, cross);
 		expect(cross).toHaveAccessibleName("Cross off file");
