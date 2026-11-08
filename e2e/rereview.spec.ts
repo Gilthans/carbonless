@@ -1304,6 +1304,8 @@ async function approvedThenPushed(
 	p: Pr,
 	kept: unknown[],
 	push: () => string,
+	/** Before the reload, e.g. a route that holds the engine's answer. */
+	beforeReload: () => Promise<void> = async () => {},
 ) {
 	await openFiles(page, s.url);
 	await reviewAll(page);
@@ -1315,6 +1317,7 @@ async function approvedThenPushed(
 	await expect.poll(() => storedReviews(p).length).toBe(1);
 	kept.push(...storedReviews(p));
 	const head = push();
+	await beforeReload();
 	await page.reload();
 	// The head check finds the push (git), then the engine's answer.
 	await expect(card.getByTestId("verdict-since")).toBeVisible(GIT_WAIT);
@@ -1487,4 +1490,59 @@ test("a new thread on the viewed head starts PS2 and the page follows: the PS2 d
 	await expect(
 		coreS.getByTestId("diff-line").filter({ hasText: "core 5 reworked" }),
 	).toHaveCount(0);
+});
+
+test("the since line spins while the engine computes, never says nothing or 0, then the counts", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	const kept: unknown[] = [];
+	const p = await pr({ ...fixture, reviews: kept });
+	const s = await startCrb();
+	// The engine runs in crb: its pending answers pass, any finished one
+	// waits here until released (then read afresh), so the pending state
+	// stays on screen for as long as the test looks.
+	let released = false;
+	let release = () => {};
+	const held = new Promise<void>((r) => {
+		release = r;
+	});
+	const route = "**/api/r/*/verdict*";
+	const hold = async () => {
+		await page.route(route, async (r) => {
+			if (r.request().method() !== "GET") return r.continue();
+			const res = await r.fetch();
+			const body = (await res.json()) as {
+				since: { changes: { status: string } } | null;
+			};
+			if (released || !body.since || body.since.changes.status === "pending") {
+				return r.fulfill({ response: res, json: body });
+			}
+			await held;
+			return r.fulfill({ response: await r.fetch() });
+		});
+	};
+	await approvedThenPushed(page, s, p, kept, () => p.moveHead(rework), hold);
+	const card = verdictCard(page);
+	await expectLoadingThen({
+		...GIT_WAIT,
+		loading: card
+			.getByTestId("verdict-since")
+			.getByRole("status", { name: "Comparing with your verdict" }),
+		empty: [
+			card.getByText(/nothing to re-read/),
+			card.getByTestId("verdict-since").getByText(/\b0 /),
+			card.locator('[data-testid="verdict-since"][data-state="same"]'),
+		],
+		release: () => {
+			released = true;
+			release();
+			return page.unroute(route);
+		},
+		result: card.locator('[data-testid="verdict-since"][data-state="changed"]'),
+	});
+	await expect(card.getByTestId("verdict-since")).toHaveText(
+		"Since then: 1 commit · 2 files · 1 reworked, 1 new cluster",
+	);
 });
