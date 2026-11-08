@@ -117,6 +117,12 @@ const E2E_MAP = [
 		/^src\/web\/verdict\/|^src\/server\/verdict\.ts$|^src\/web\/(App|pages|router)\.tsx?$|^src\/web\/files\/(FilesPage|RefusedWrites)\.tsx$|^src\/web\/threads\/(threadWrites|refusals)\.ts$/,
 		["verdict"],
 	],
+	// The markable invariant: whatever renders units, keys their lines or
+	// saves their states (docs/product-rules.md).
+	[
+		/^src\/web\/files\/(DiffBody|FileDiff|FilesPage|whitespace|sideBySide|since|useSince|useSetStates|stateSync)\.tsx?$|^src\/server\/(rereview\/engine|diff\/hunks)\.ts$|^test\/markable\.ts$/,
+		["markable"],
+	],
 	[/^src\/server\/review\//, ["files", "persistence"]],
 	// Unit-test data (wordBlocks.fixture.test.ts); inlineDiff.spec.ts reads
 	// a few of its cases.

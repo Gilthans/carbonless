@@ -26,6 +26,7 @@ import type {
 } from "../../shared/types";
 import { ignoreWhitespace, showInvisibles, sideBySide } from "../viewSettings";
 import { DiffBody, READ_ONLY_TIP, UNTICK_TO_CROSS } from "./DiffBody";
+import { GoneFile } from "./FileDiff";
 import type { KindEntry } from "./since";
 
 vi.mock("./highlight", () => ({
@@ -640,6 +641,49 @@ describe("a disabled control says why", () => {
 		mount(FULL[0] as Case, new Map(), true);
 		await loaded(FULL[0] as Case);
 		expect(crossOf(0)).toHaveAccessibleDescription(READ_ONLY_TIP);
+	});
+});
+
+describe("a file the viewed snapshot no longer changes (GoneFile)", () => {
+	beforeEach(() => {
+		window.scrollTo = vi.fn();
+	});
+	// Its body is the interdiff's removal-only pieces: none markable yet,
+	// and locked without the read-only chip. Brief 8's addendum makes every
+	// since-view piece markable; GoneFile renders apart from FileDiff, so
+	// it needs the same (red once it does: then make this `it`).
+	it.fails(`every gone piece is markable on its own [${BRIEF_8}, GoneFile included]`, async () => {
+		const hunks = hunkOf([
+			["del", "reviewed on PS1", "g1"],
+			["del", "and undone since", "g1"],
+		]);
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => new Response(JSON.stringify(hunks), { status: 200 })),
+		);
+		const client = new QueryClient({
+			defaultOptions: { queries: { retry: false } },
+		});
+		render(
+			<QueryClientProvider client={client}>
+				<GoneFile
+					index={1}
+					path="src/gone.ts"
+					revision="r"
+					since={1}
+					info={{
+						kinds: kindsOf([["g1", "gone"]]),
+						conflict: false,
+						counts: { reworked: 0, new: 0, gone: 1, carried: 0 },
+					}}
+				/>
+			</QueryClientProvider>,
+		);
+		await userEvent
+			.setup()
+			.click(screen.getByRole("button", { name: "Expand file" }));
+		await screen.findAllByTestId("diff-line");
+		expect(unitProblems(collectUnits(document.body))).toEqual([]);
 	});
 });
 

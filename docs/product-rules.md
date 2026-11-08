@@ -109,6 +109,23 @@ re-read" show only when the engine's answer says so: an identical diff
 with no reworked, new or gone cluster. Approving again on an identical
 diff posts a review only on the reviewer's press.
 
+## Every visible cluster is individually markable
+
+The owner: "every cluster visible in the UI in any view should be
+individually markable (mark=either reviewed or crossed off)". In the full
+diff and the since view, unified or side by side, whitespace shown or
+ignored, on a phone too, every unit the reviewer reads as a change (a
+cluster's lines, a since-view piece, a collapsed whitespace-only cluster,
+a file-level change) has its own reviewed checkbox and cross-off; using
+them changes that unit and nothing else on screen, and the state is there
+again after a reload. A disabled control says why (a reviewed cluster is
+unticked before it is crossed off). The one exception is an earlier patch
+set, read-only by design, with its "read-only" chip and "Back to PS<n>".
+Tests read the units the same way in jsdom and on a live page
+(`test/markable.ts`, `src/web/files/markable*.test.tsx`,
+`expectEveryUnitMarkable` in `e2e/fixtures.ts`, `e2e/markable.spec.ts`);
+add every new kind of diff row to them.
+
 ## Verify against a real PR, not only fixtures
 
 Synthetic fixtures prove behaviour; a real PR proves the assumptions about the

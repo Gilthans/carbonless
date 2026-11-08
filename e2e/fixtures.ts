@@ -11,6 +11,13 @@ import {
 } from "@playwright/test";
 import type { GitFixture } from "../test/git-fixture";
 import {
+	collectUnits,
+	isolationProblems,
+	statesOf,
+	type UnitState,
+	unitProblems,
+} from "../test/markable";
+import {
 	CLI,
 	crbEnv,
 	createPr,
@@ -356,6 +363,80 @@ export async function expectLoadingThen(opts: {
 		timeout: opts.timeout ?? 15_000,
 	});
 	await expect(opts.loading).toHaveCount(0);
+}
+
+/**
+ * The "every visible cluster is individually markable" invariant on a live
+ * page (docs/product-rules.md; the units as test/markable.ts reads them):
+ * every unit in `scope` (a file's section) has its own enabled reviewed
+ * checkbox and cross-off; ticking, unticking, crossing off and undoing each
+ * one changes that unit alone; the states left are there again after a
+ * reload (`reopen` opens the file again). `cycle: "tick"` only ticks and
+ * unticks each unit (fewer writes, for the repeat runs of a file).
+ * `readOnly`: an earlier patch set: every control is locked and the
+ * read-only chip shows.
+ */
+export async function expectEveryUnitMarkable(
+	scope: Locator,
+	opts: {
+		readOnly?: boolean;
+		cycle?: "full" | "tick";
+		reopen?: () => Promise<void>;
+	} = {},
+): Promise<void> {
+	const page = scope.page();
+	const units = await scope.evaluate(collectUnits);
+	expect(units.length, "the file shows no unit").toBeGreaterThan(0);
+	expect(unitProblems(units, opts)).toEqual([]);
+	if (opts.readOnly) {
+		await expect(page.getByTestId("read-only-note")).toBeVisible();
+		return;
+	}
+	const states = async () => statesOf(await scope.evaluate(collectUnits));
+	const use = async (i: number, control: "box" | "cross", want: UnitState) => {
+		const before = await states();
+		await scope
+			.locator(
+				`[data-markable-unit="${i}"] ${
+					control === "box"
+						? 'input[type="checkbox"]'
+						: 'button[aria-label="Cross off cluster"]'
+				}`,
+			)
+			.click();
+		await expect
+			.poll(async () => isolationProblems(i, before, await states(), want))
+			.toEqual([]);
+	};
+	for (const u of units) {
+		const now = (await states())[u.index];
+		if (now === "reviewed") {
+			await use(u.index, "box", "unreviewed");
+			await use(u.index, "box", "reviewed");
+		} else if (now === "crossed-off") {
+			await use(u.index, "box", "unreviewed");
+			await use(u.index, "cross", "crossed-off");
+		} else {
+			await use(u.index, "box", "reviewed");
+			await use(u.index, "box", "unreviewed");
+			if (opts.cycle !== "tick") {
+				await use(u.index, "cross", "crossed-off");
+				await use(u.index, "box", "unreviewed");
+			}
+		}
+	}
+	if (!opts.reopen) return;
+	// Every other unit ticked, then a reload: each keeps its own state.
+	for (const u of units) {
+		if (u.index % 2 === 0 && (await states())[u.index] === "unreviewed") {
+			await use(u.index, "box", "reviewed");
+		}
+	}
+	await expect(page.getByTestId("sync-notices")).toHaveCount(0);
+	const left = await states();
+	await page.reload();
+	await opts.reopen();
+	await expect.poll(states).toEqual(left);
 }
 
 export { expect };
