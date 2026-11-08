@@ -136,7 +136,7 @@ export async function buildApp(
 		loopback: options.loopback ?? options.accessKey === null,
 		publicUrl: options.publicUrl,
 	});
-	await registerAccessKey(app, options.accessKey);
+	await registerAccessKey(app, options.accessKey, options.publicUrl);
 	// A crb of another build must not drive this server (the browser sends
 	// no header and isn't checked: its page comes from this server).
 	app.addHook("onRequest", async (request, reply) => {

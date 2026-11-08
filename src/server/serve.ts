@@ -49,6 +49,11 @@ export async function startServer(opts: {
 	const port = opts.port ?? config.serve.port;
 	const loopback = LOOPBACK.has(host);
 	const publicUrl = config.serve.publicUrl ?? null;
+	if (publicUrl && port !== config.serve.port) {
+		log(
+			`serve.publicUrl is for port ${config.serve.port}; links from this server (port ${port}) may open another`,
+		);
+	}
 	// A new key is kept only once this server listens: a failed start must
 	// not change the key a running server checks.
 	const fresh = opts.newKey ? newKey() : null;

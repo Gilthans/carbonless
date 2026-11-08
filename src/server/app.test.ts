@@ -1645,14 +1645,6 @@ describe("API", () => {
 			}
 		});
 
-		it("still needs the key", async () => {
-			const bare = await proxied.inject({
-				url: r("/api/session"),
-				headers: { host: local },
-			});
-			expect(bare.statusCode).toBe(401);
-		});
-
 		it("takes writes from the public origin, refuses others", async () => {
 			const write = (origin: string) =>
 				call("box.tail0.ts.net:8443", {

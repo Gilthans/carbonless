@@ -94,9 +94,14 @@ describe("startServer", () => {
 		const { updateConfig } = await import("./config");
 		const publicUrl = "https://box.tail0.ts.net:8443";
 		await updateConfig((c) => ({ ...c, serve: { ...c.serve, publicUrl } }));
-		const s = await start();
+		const logged: string[] = [];
+		const s = await start({ log: (m) => logged.push(m) });
 		expect(s.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
 		expect(s.publicUrl).toBe(publicUrl);
+		// Its links lead to the proxy, which serves config's port, not this one.
+		expect(logged).toEqual([
+			"serve.publicUrl is for port 4747; links from this server (port 0) may open another",
+		]);
 		expect(s.key).toBe(await accessKey());
 		expect(await readLiveServerState()).toMatchObject({
 			url: s.url,

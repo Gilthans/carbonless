@@ -24,8 +24,15 @@ const digest = (value: string) => createHash("sha256").update(value).digest();
 export async function registerAccessKey(
 	app: FastifyInstance,
 	key: string | null,
+	publicUrl?: string,
 ): Promise<void> {
 	if (key === null) return;
+	// Cookies ignore ports: over an HTTPS public URL, keep the key off plain
+	// HTTP services on the same name.
+	const secureHost =
+		publicUrl && new URL(publicUrl).protocol === "https:"
+			? new URL(publicUrl).host
+			: null;
 	const expected = digest(key);
 	// Hashing first makes the comparison constant-time whatever the length.
 	const matches = (value: unknown) =>
@@ -40,6 +47,7 @@ export async function registerAccessKey(
 				httpOnly: true,
 				sameSite: "strict",
 				path: "/",
+				secure: (request.headers.host ?? "").toLowerCase() === secureHost,
 			});
 			return;
 		}
