@@ -1383,6 +1383,7 @@ function ClusterControls(props: {
 	// Marked one piece at a time, not all of it: a dash; a click reviews
 	// the whole cluster.
 	const partly = partlyMarked(props.cluster);
+	const reviewed = props.cluster.state === "reviewed";
 	const readOnly = props.readOnly === true;
 	// On touch each control gets its own 40×40 target, side by side so a
 	// mis-tap can't reach the other one; the negative margins keep the row
@@ -1437,31 +1438,44 @@ function ClusterControls(props: {
 							? READ_ONLY_TIP
 							: crossedOff
 								? "Undo cross-off"
-								: "Cross off cluster"
+								: reviewed
+									? UNTICK_TO_CROSS
+									: "Cross off cluster"
 					}
-					describe={false}
+					// Disabled, its reason is its description (its name says what it does).
+					describe={readOnly || reviewed}
 				>
-					{(trigger) => (
-						<button
-							type="button"
-							{...trigger}
-							aria-label="Cross off cluster"
-							aria-pressed={crossedOff}
-							disabled={readOnly || props.cluster.state === "reviewed"}
-							onClick={() => props.onCrossOff(props.cluster)}
-							className={`${target} group/x rounded focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-30`}
+					{({ ref, onMouseEnter, onMouseLeave, ...trigger }) => (
+						// The wrapper takes the hover, so a disabled button still
+						// explains itself; focus (and so tap) goes to the button.
+						// biome-ignore lint/a11y/noStaticElementInteractions: hover only; the button inside is the control.
+						<span
+							ref={ref}
+							onMouseEnter={onMouseEnter}
+							onMouseLeave={onMouseLeave}
+							className="flex [&>button:disabled]:pointer-events-none"
 						>
-							<span
-								aria-hidden
-								className={`flex h-4 w-4 items-center justify-center rounded font-sans text-xs leading-none ${
-									crossedOff
-										? "bg-crossed-strong text-ink"
-										: "text-done group-hover/x:bg-crossed/25"
-								}`}
+							<button
+								type="button"
+								{...trigger}
+								aria-label="Cross off cluster"
+								aria-pressed={crossedOff}
+								disabled={readOnly || reviewed}
+								onClick={() => props.onCrossOff(props.cluster)}
+								className={`${target} group/x rounded focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-30`}
 							>
-								⊘
-							</span>
-						</button>
+								<span
+									aria-hidden
+									className={`flex h-4 w-4 items-center justify-center rounded font-sans text-xs leading-none ${
+										crossedOff
+											? "bg-crossed-strong text-ink"
+											: "text-done group-hover/x:bg-crossed/25"
+									}`}
+								>
+									⊘
+								</span>
+							</button>
+						</span>
 					)}
 				</Tooltip>
 			</span>
@@ -1476,6 +1490,9 @@ function partlyTip(cluster: ClusterView): string {
 		crossed > 0 ? `, ${crossed} crossed off` : ""
 	}`;
 }
+
+/** Why a reviewed cluster's cross-off is off (R21: untick it first). */
+export const UNTICK_TO_CROSS = "Reviewed: untick to cross off";
 
 /** Why a mark can't change on an earlier patch set. */
 export const READ_ONLY_TIP = "Read-only: an earlier patch set, as reviewed";
