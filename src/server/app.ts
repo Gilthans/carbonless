@@ -56,10 +56,16 @@ export interface AppOptions {
 	webRoot?: string;
 	/**
 	 * Required on every request when set (see access.ts). Without a key the
-	 * server must be bound to loopback, and only loopback Host headers for the
-	 * listening port are accepted.
+	 * server must be bound to loopback (`loopback`).
 	 */
 	accessKey: string | null;
+	/**
+	 * Bound to loopback, so only loopback Host headers (and `publicUrl`'s)
+	 * are accepted. Default: when there is no key.
+	 */
+	loopback?: boolean;
+	/** The origin a proxy in front serves it at (config `serve.publicUrl`). */
+	publicUrl?: string;
 	/**
 	 * The server's own address (`http://<host>:<port>`, no key), for the
 	 * review URLs it hands out. Default: the request's Host.
@@ -126,8 +132,11 @@ export async function buildApp(
 	app.addHook("onRequest", async (_request, reply) => {
 		reply.headers(SECURITY_HEADERS);
 	});
-	registerHostCheck(app, options.accessKey === null);
-	await registerAccessKey(app, options.accessKey);
+	registerHostCheck(app, {
+		loopback: options.loopback ?? options.accessKey === null,
+		publicUrl: options.publicUrl,
+	});
+	await registerAccessKey(app, options.accessKey, options.publicUrl);
 	// A crb of another build must not drive this server (the browser sends
 	// no header and isn't checked: its page comes from this server).
 	app.addHook("onRequest", async (request, reply) => {

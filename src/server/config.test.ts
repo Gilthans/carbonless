@@ -103,6 +103,34 @@ describe("config", () => {
 		]);
 	});
 
+	it("serve.publicUrl: an http(s) origin, kept as one; anything else ignored", async () => {
+		write(
+			JSON.stringify({
+				serve: { publicUrl: " HTTPS://Box.tail0.ts.net:8443/ " },
+			}),
+		);
+		expect((await readConfig()).config.serve).toEqual({
+			host: "127.0.0.1",
+			port: 4747,
+			publicUrl: "https://box.tail0.ts.net:8443",
+		});
+		for (const bad of [
+			"box.ts.net:8443",
+			"ftp://box.ts.net",
+			"https://box.ts.net/crb",
+			"https://box.ts.net/?key=k",
+			"https://me:pw@box.ts.net",
+			7,
+		]) {
+			write(JSON.stringify({ serve: { publicUrl: bad } }));
+			const { config, problems } = await readConfig();
+			expect(config.serve.publicUrl, String(bad)).toBeUndefined();
+			expect(problems).toEqual([
+				"serve.publicUrl must be an http(s) URL with no path; ignored",
+			]);
+		}
+	});
+
 	it("a view without a name is My PRs; one without repos is empty", async () => {
 		write(JSON.stringify({ views: [{}] }));
 		const { config, problems } = await readConfig();

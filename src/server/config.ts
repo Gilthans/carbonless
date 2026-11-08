@@ -12,7 +12,12 @@ export interface ViewConfig {
 
 /** The machine's config.json; see docs/superpowers/specs (Home, "Views and repos"). */
 export interface CrbConfig {
-	serve: { host: string; port: number };
+	/**
+	 * `publicUrl`: the origin people open crb at when a proxy (e.g. `tailscale
+	 * serve` for HTTPS) sits in front of it; links use it, and the key is
+	 * required even on a loopback bind.
+	 */
+	serve: { host: string; port: number; publicUrl?: string };
 	views: ViewConfig[];
 	refresh: { minutes: number };
 }
@@ -37,6 +42,25 @@ const configFile = () => join(configDir(), "config.json");
 type Json = Record<string, unknown>;
 const isObject = (v: unknown): v is Json =>
 	typeof v === "object" && v !== null && !Array.isArray(v);
+
+/** An http(s) origin as written (no path, query or credentials), else null. */
+export function parsePublicUrl(value: unknown): string | null {
+	if (typeof value !== "string") return null;
+	let url: URL;
+	try {
+		url = new URL(value.trim());
+	} catch {
+		return null;
+	}
+	const bare =
+		(url.protocol === "http:" || url.protocol === "https:") &&
+		url.pathname === "/" &&
+		!url.search &&
+		!url.hash &&
+		!url.username &&
+		!url.password;
+	return bare ? url.origin : null;
+}
 
 /** A view's name as read: trimmed, "My PRs" when it has none. */
 const viewName = (view: Json): string =>
@@ -78,7 +102,7 @@ function validate(raw: Json | null): ConfigRead {
 		if (!isObject(raw.serve)) {
 			problems.push("serve must be an object; using the defaults");
 		} else {
-			const { host, port } = raw.serve;
+			const { host, port, publicUrl } = raw.serve;
 			if (host !== undefined) {
 				if (typeof host === "string" && host.trim()) serve.host = host.trim();
 				else {
@@ -97,6 +121,15 @@ function validate(raw: Json | null): ConfigRead {
 				} else {
 					problems.push(
 						`serve.port must be a port number; using ${d.serve.port}`,
+					);
+				}
+			}
+			if (publicUrl !== undefined) {
+				const origin = parsePublicUrl(publicUrl);
+				if (origin) serve.publicUrl = origin;
+				else {
+					problems.push(
+						"serve.publicUrl must be an http(s) URL with no path; ignored",
 					);
 				}
 			}
