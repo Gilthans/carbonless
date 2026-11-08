@@ -23,6 +23,7 @@ import {
 } from "./api";
 import { Logo, Mark, Wordmark } from "./brand/Brand";
 import { FindButton } from "./files/find/FindButton";
+import { findState } from "./files/find/findState";
 import { SyncNotices } from "./files/SyncNotices";
 import { HeadBanner } from "./HeadBanner";
 import { KeptPages, useActivePage } from "./pages";
@@ -36,6 +37,7 @@ import { Tooltip } from "./Tooltip";
 import { EDITOR_KEYS } from "./threads/ReplyBox";
 import { useThreadWritesSetup } from "./threads/threadWrites";
 import { ErrorMessage, safeHref } from "./ui";
+import { NOT_PHONE, useMedia } from "./useMedia";
 
 // Tight on a phone (px-1.5, and no gap in the row): at 360px the compact row
 // holds the mark, three tabs, the title, Find in PR, Refresh and Settings.
@@ -206,6 +208,11 @@ export function App() {
 	const refreshing = refresh.isPending || revalidating;
 	// Follows the page showing, which switches only once it can render.
 	const wide = useActivePage() === "/r/$id/files";
+	// On a phone the open find bar takes the header's place: the header
+	// keeps its room (nothing moves) but isn't seen or reached.
+	const findOpen = findState.use().open;
+	const phone = !useMedia(NOT_PHONE);
+	const yieldToFind = phone && wide && findOpen;
 	const id = useReviewId();
 	const pr = session.data?.pr;
 	const prUrl = safeHref(pr?.url);
@@ -245,7 +252,11 @@ export function App() {
 					ref={header}
 					data-app-header
 					// Sticks once only the last row (and the border) is left on screen.
-					style={{ top: `${-offset}px` }}
+					style={{
+						top: `${-offset}px`,
+						visibility: yieldToFind ? "hidden" : undefined,
+					}}
+					inert={yieldToFind || undefined}
 					className={`sticky z-30 border-b border-line bg-surface header-glow transition-shadow duration-200 motion-reduce:transition-none ${
 						stuck ? "shadow-header" : ""
 					}`}

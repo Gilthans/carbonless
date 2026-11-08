@@ -2159,6 +2159,32 @@ describe("DiffBody find", () => {
 		expect(window.scrollTo).toHaveBeenCalledTimes(2);
 	});
 
+	it("a step lands the row below the floating find bar when it reaches lower than the sticky stack", async () => {
+		const { root } = setup({ find: findAt({ old: false, line: 8 }, 1) });
+		root.style.setProperty("--app-header", "48px");
+		root.style.setProperty("--files-bar", "40px");
+		const bar = document.createElement("div");
+		bar.dataset.testid = "find-bar";
+		bar.getBoundingClientRect = () => ({ bottom: 130 }) as DOMRect;
+		document.body.append(bar);
+		vi.spyOn(
+			HTMLTableRowElement.prototype,
+			"getBoundingClientRect",
+		).mockImplementation(function (this: HTMLTableRowElement) {
+			return {
+				top: this.dataset.newNo === "8" && !this.dataset.oldNo ? 500 : 0,
+			} as DOMRect;
+		});
+		try {
+			await screen.findByText("line 12");
+			await waitFor(() => expect(window.scrollTo).toHaveBeenCalledTimes(1));
+			// The bar's bottom (130) is below the stack (48 + 40).
+			expect(window.scrollTo).toHaveBeenCalledWith({ top: 500 - 130 - 60 });
+		} finally {
+			bar.remove();
+		}
+	});
+
 	it("a step it couldn't take never scrolls later, when the current hit moves without a step", async () => {
 		const { refind } = setup({ find: findAt(null, 1) });
 		await screen.findByText("line 12");

@@ -12,6 +12,7 @@ import {
 	useRef,
 	useState,
 } from "react";
+import { flushSync } from "react-dom";
 import type { ReviewThread } from "../../shared/types";
 import { hunksQuery, overviewQuery, sessionQuery } from "../api";
 import { LabeledIcon } from "../overview/parts";
@@ -35,6 +36,7 @@ import { treeOrder } from "./fileOrder";
 import { filesPrefetchOrder } from "./filesPrefetch";
 import { FindBar } from "./find/FindBar";
 import { findState } from "./find/findState";
+import { hitSeen } from "./find/hitSeen";
 import { useFind } from "./find/useFind";
 import { foldsKey } from "./folderFold";
 import { useHeadSure } from "./headSure";
@@ -555,8 +557,10 @@ export function FilesPage() {
 		active,
 		onStale: refetchReview,
 	});
+	// The first step after typing passes over a hit the reviewer already
+	// sees (it is painted current where they look): on to the next.
 	const stepFind = (dir: 1 | -1) => {
-		const hit = find.step(dir);
+		const hit = find.step(dir, (h) => hitSeen(h, appHeader + barHeight));
 		if (!hit) return;
 		const isOpen = openIndex === hit.index;
 		if (hit.side === "path" || hit.side === "oldPath") {
@@ -567,8 +571,10 @@ export function FilesPage() {
 		if (!isOpen) openAlone(hit.index);
 		find.stepInto(hit.index);
 	};
+	// On a phone the header is hidden while the bar is open: it shows
+	// again in this commit, so its button can take focus.
 	const closeFind = () => {
-		findState.close();
+		flushSync(() => findState.close());
 		document.querySelector<HTMLElement>("[data-find-button]")?.focus();
 	};
 	useShortcut({
@@ -684,24 +690,6 @@ export function FilesPage() {
 							progress={data.progress}
 							unit={unit}
 							onUnitChange={setUnit}
-							above={
-								find.state.open && (
-									<FindBar
-										term={find.state.term}
-										onTerm={findState.setTerm}
-										count={find.count}
-										searching={find.searching}
-										failed={find.failed}
-										onRetry={find.retry}
-										onNext={() => stepFind(1)}
-										onPrevious={() => stepFind(-1)}
-										onClose={closeFind}
-										focusSeq={focusSeq}
-										matchCase={find.matchCase}
-										onMatchCase={find.setMatchCase}
-									/>
-								)
-							}
 						>
 							{/* Every count and bubble waits on them (principle 8). Its
 							    place is kept, so the bar moves nothing when it goes. */}
@@ -709,6 +697,30 @@ export function FilesPage() {
 								{threadsLoading && <Spinner label="Loading comments" />}
 							</span>
 						</ProgressBar>
+						{find.state.open && (
+							// Floats over the page, out of its flow and sticky stack:
+							// opening, typing and stepping never move it or the page.
+							// A phone's takes the app header's place (App hides it).
+							<div
+								data-find-float
+								className="fixed inset-x-0 top-0 z-[35] flex min-h-[var(--app-header,0px)] border-b border-line bg-surface shadow-header sm:inset-x-auto sm:top-[var(--app-header,0px)] sm:right-4 sm:min-h-0 sm:w-[28rem] sm:max-w-[calc(100vw-2rem)] sm:rounded-b-lg sm:border-x flex-col justify-center"
+							>
+								<FindBar
+									term={find.state.term}
+									onTerm={findState.setTerm}
+									count={find.count}
+									searching={find.searching}
+									failed={find.failed}
+									onRetry={find.retry}
+									onNext={() => stepFind(1)}
+									onPrevious={() => stepFind(-1)}
+									onClose={closeFind}
+									focusSeq={focusSeq}
+									matchCase={find.matchCase}
+									onMatchCase={find.setMatchCase}
+								/>
+							</div>
+						)}
 						{stale && (
 							<p
 								role="status"

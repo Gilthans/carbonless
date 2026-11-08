@@ -85,7 +85,7 @@ export function FindBar(props: {
 			role="search"
 			aria-label="Find in PR"
 			data-testid="find-bar"
-			className="flex items-center gap-1 border-b border-line bg-surface px-2 py-1"
+			className="flex items-center gap-1 bg-surface px-2 py-1"
 		>
 			<div className="relative min-w-0 flex-1 sm:max-w-sm">
 				<input

@@ -533,6 +533,51 @@ describe("App", () => {
 		expect(findState.get()).toMatchObject({ open: false, term: "" });
 	});
 
+	it("on a phone the open find bar replaces the app header; closing it brings the header back, focus on its Find button", async () => {
+		findState.reset();
+		vi.stubGlobal(
+			"matchMedia",
+			(query: string) =>
+				({
+					matches: false,
+					media: query,
+					addEventListener: () => {},
+					removeEventListener: () => {},
+				}) as unknown as MediaQueryList,
+		);
+		try {
+			const user = userEvent.setup();
+			renderApp({}, "/files");
+			const button = await screen.findByRole("button", { name: "Find in PR" });
+			const header = document.querySelector("[data-app-header]") as HTMLElement;
+			expect(header).toBeVisible();
+			await user.click(button);
+			await screen.findByTestId("find-bar");
+			expect(header).not.toBeVisible();
+			expect(header).toHaveAttribute("inert");
+			await user.click(screen.getByRole("button", { name: "Close (Esc)" }));
+			expect(screen.queryByTestId("find-bar")).toBeNull();
+			expect(header).toBeVisible();
+			expect(header).not.toHaveAttribute("inert");
+			expect(button).toHaveFocus();
+		} finally {
+			findState.reset();
+		}
+	});
+
+	it("on a wide screen the open find bar leaves the app header as it is", async () => {
+		findState.reset();
+		const user = userEvent.setup();
+		renderApp({}, "/files");
+		const button = await screen.findByRole("button", { name: "Find in PR" });
+		await user.click(button);
+		await screen.findByTestId("find-bar");
+		const header = document.querySelector("[data-app-header]") as HTMLElement;
+		expect(header).toBeVisible();
+		expect(header).not.toHaveAttribute("inert");
+		findState.reset();
+	});
+
 	it("has a Settings gear in the app bar whose switch shows hidden characters", async () => {
 		const user = userEvent.setup();
 		renderApp();

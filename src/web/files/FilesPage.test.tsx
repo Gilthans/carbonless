@@ -813,7 +813,7 @@ describe("FilesPage", () => {
 			expect(scrolled).toHaveBeenCalledTimes(1);
 		});
 
-		it("Escape closes, clears the marks and keeps the term; the header button reopens with it", async () => {
+		it("Escape closes, clears the marks and the term; reopening starts empty", async () => {
 			findPage(twoFiles());
 			const user = userEvent.setup();
 			await screen.findByRole("region", { name: "a.txt" });
@@ -829,15 +829,29 @@ describe("FilesPage", () => {
 			expect(
 				document.querySelector("[data-find-mark], [data-find-current]"),
 			).toBeNull();
-			expect(findState.get().term).toBe("save");
+			expect(findState.get().term).toBe("");
 			act(() => findState.open());
-			expect(await screen.findByTestId("find-box")).toHaveValue("save");
-			await waitFor(() =>
-				expect(
-					document.querySelector("span[data-find-current]"),
-				).not.toBeNull(),
-			);
-			expect(count()).toHaveTextContent("1 of 2");
+			expect(await screen.findByTestId("find-box")).toHaveValue("");
+			expect(count()).toBeEmptyDOMElement();
+			expect(
+				document.querySelector("[data-find-mark], [data-find-current]"),
+			).toBeNull();
+		});
+
+		it("the bar floats over the page, out of the progress bar's sticky stack: opening it moves nothing", async () => {
+			findPage(twoFiles());
+			const user = userEvent.setup();
+			await screen.findByRole("region", { name: "a.txt" });
+			const stack = document.querySelector("[data-page-bar]") as HTMLElement;
+			const before = stack.innerHTML;
+			await user.keyboard("{Control>}f{/Control}");
+			const bar = await screen.findByTestId("find-bar");
+			expect(bar.closest("[data-page-bar]")).toBeNull();
+			const float = bar.closest("[data-find-float]");
+			expect(float).not.toBeNull();
+			expect(float).toHaveClass("fixed");
+			// The sticky stack is as it was.
+			expect(stack.innerHTML).toBe(before);
 		});
 
 		it("a path hit opens the file at its header with the path marked", async () => {

@@ -58,6 +58,7 @@ import { NOT_PHONE, useMedia } from "../useMedia";
 import { ignoreWhitespace, showInvisibles, sideBySide } from "../viewSettings";
 import { type CellLine, CODE_CELL, cellLine } from "./codeSpan";
 import { contextRanges } from "./contextRanges";
+import { findBarElement } from "./find/hitSeen";
 import { EXPAND_STEP, fileGaps, type Gap, gapState } from "./gaps";
 import { hiddenLines } from "./hiddenLines";
 import { languageFor } from "./highlight";
@@ -2278,16 +2279,21 @@ interface Hint {
 
 /**
  * Scrolls the page so `target` sits `margin` px below the sticky stack over
- * the diff in `root`: the app header, the files bar and the file's section
- * header.
+ * the diff in `root` (the app header, the files bar and the file's section
+ * header) and below the find bar floating over the page, when it is open
+ * and reaches lower.
  */
 function scrollUnderStack(root: HTMLElement, target: Element, margin: number) {
 	const header = root.closest("section")?.querySelector("header");
 	const vars = getComputedStyle(root);
-	const sticky =
+	const stack =
 		(Number.parseFloat(vars.getPropertyValue("--app-header")) || 0) +
 		(Number.parseFloat(vars.getPropertyValue("--files-bar")) || 0) +
 		(header?.offsetHeight ?? 0);
+	const sticky = Math.max(
+		stack,
+		findBarElement()?.getBoundingClientRect().bottom ?? 0,
+	);
 	window.scrollTo({
 		top: target.getBoundingClientRect().top + window.scrollY - sticky - margin,
 	});
