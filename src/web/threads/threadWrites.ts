@@ -1650,7 +1650,8 @@ export function applyThreadUpdate(
 
 /**
  * A new thread GitHub took, into the page: listed first in every read's
- * thread lists (no one else has it twice), its comments in.
+ * thread lists (no one else has it twice), its comments in; then the
+ * session and the review read again (it may have started a patch set).
  */
 export function addThread(client: QueryClient, answer: NewThreadAnswer): void {
 	const { thread } = answer;
@@ -1664,6 +1665,13 @@ export function addThread(client: QueryClient, answer: NewThreadAnswer): void {
 	if (readId) {
 		client.setQueryData(commentsQuery(readId, thread.id).queryKey, comments);
 	}
+	// A new thread on a head that was no patch set yet started one (as a
+	// first mark or a verdict does): the graph's new dot, its carries, and
+	// the comparisons and since line that follow it.
+	void client.invalidateQueries({ queryKey: sessionQuery.queryKey });
+	void client.invalidateQueries({ queryKey: REVIEW_KEY });
+	void client.invalidateQueries({ queryKey: ["rereview"] });
+	void client.invalidateQueries({ queryKey: verdictQuery.queryKey });
 }
 
 /** A thread's opener text fields, from its first comment. */

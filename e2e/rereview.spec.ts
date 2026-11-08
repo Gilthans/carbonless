@@ -1437,3 +1437,43 @@ test("an identical diff force-pushed (a squash on the same base): same diff · n
 	await expect(tail(page)).toHaveAttribute("data-state", "up-to-date");
 	await expect(progress(page)).toContainText("3 / 3 clusters reviewed");
 });
+
+test("a new thread on the viewed head starts PS2 and the page follows: the PS2 dot, up to date, PS1 read-only", async ({
+	page,
+	workdir,
+	pr,
+	startCrb,
+}) => {
+	const p = await pr(fixture);
+	const s = await startCrb();
+	await pushed(page, workdir, s, p);
+	await page.keyboard.press("Control+]");
+	await expect(page).toHaveURL(/head=[0-9a-f]{40}/, GIT_WAIT);
+	expect(reviewRefs(workdir)).not.toContain("/patchsets/2 ");
+	const section = fileSection(page, "src/util.ts");
+	await section.getByRole("button", { name: "Expand file" }).click();
+	await section.getByRole("button", { name: "Comment on file" }).click();
+	const composer = section.getByTestId("new-thread");
+	await composer.getByRole("textbox", { name: "Comment" }).fill("On the head");
+	await composer.getByRole("button", { name: "Comment" }).click();
+	await expect(section.getByTestId("new-thread")).toHaveCount(0);
+	await expect.poll(() => reviewRefs(workdir)).toContain("/patchsets/2 ");
+	// No reload: the thread's answer brings the session and the review in.
+	await expect(
+		node(page, "ps2").getByRole("button", { name: "viewing" }),
+	).toBeVisible();
+	await expect(tail(page)).toHaveAttribute("data-state", "up-to-date");
+	await expect(page).toHaveURL(/ps=2/);
+	// PS1 is an earlier patch set now: read-only, its boxes locked.
+	await page.keyboard.press("Control+[");
+	await expect(page).toHaveURL(/ps=1/);
+	await expect(page.getByTestId("read-only-note")).toContainText(
+		"PS1 · as reviewed · read-only",
+	);
+	const coreS = fileSection(page, "src/core.ts");
+	await coreS.getByRole("button", { name: "Expand file" }).click();
+	await expect(boxes(coreS).first()).toBeDisabled();
+	await expect(
+		coreS.getByTestId("diff-line").filter({ hasText: "core 5 reworked" }),
+	).toHaveCount(0);
+});
