@@ -851,9 +851,10 @@ describe("sinceTarget and sinceOf (VerdictFacts.since)", () => {
 		bot: false,
 		...more,
 	});
+	const T = Date.parse("2026-11-05T09:00:00Z");
 	const patchsets = [
-		{ number: 1, head: PS1 },
-		{ number: 2, head: PS2 },
+		{ number: 1, head: PS1, startedAt: T },
+		{ number: 2, head: PS2, startedAt: T + 3_600_000 },
 	];
 
 	it("a verdict on PS1 with PS2 the latest: compared with PS2", () => {
@@ -904,11 +905,39 @@ describe("sinceTarget and sinceOf (VerdictFacts.since)", () => {
 		).toBeNull();
 	});
 
-	it("the latest patch set with the verdict's head names it", () => {
-		const twice = [...patchsets, { number: 3, head: PS1 }];
+	it("of the patch sets on the verdict's head, the one started by the verdict's time names it", () => {
+		// A retarget keeps the head and starts PS3 on it, after the verdict.
+		const retargeted = [
+			...patchsets,
+			{ number: 3, head: PS1, startedAt: Date.parse("2026-11-06T00:00:00Z") },
+		];
 		expect(
-			sinceTarget({ reviews: [review(PS1)], patchsets: twice, head: NEW })
+			sinceTarget({ reviews: [review(PS1)], patchsets: retargeted, head: NEW })
 				?.patchset,
+		).toBe(1);
+		// Given after PS3 started: PS3.
+		const later = review(PS1, { submittedAt: "2026-11-07T00:00:00Z" });
+		expect(
+			sinceTarget({ reviews: [later], patchsets: retargeted, head: NEW })
+				?.patchset,
+		).toBe(3);
+		// The verdict started PS3 and GitHub's whole second reads before
+		// PS3's start: still PS3.
+		const sameSecond = review(PS1, {
+			submittedAt: new Date(T + 3_600_000)
+				.toISOString()
+				.replace(/\.\d+Z$/, "Z"),
+		});
+		const startedMidSecond = [
+			{ number: 1, head: PS1, startedAt: T },
+			{ number: 3, head: PS1, startedAt: T + 3_600_400 },
+		];
+		expect(
+			sinceTarget({
+				reviews: [sameSecond],
+				patchsets: startedMidSecond,
+				head: NEW,
+			})?.patchset,
 		).toBe(3);
 	});
 

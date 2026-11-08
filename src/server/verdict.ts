@@ -252,8 +252,10 @@ export type SinceTarget = Omit<VerdictSince, "changes">;
 
 /**
  * The reviewer's own verdict (the `you` review: their standing one), the
- * patch set it was given on (the latest whose head is the verdict's
- * commit), and where a verdict goes now: the PR's head when it is past
+ * patch set it was given on (among those whose head is the verdict's
+ * commit, the latest started by the verdict's time: a retarget keeps the
+ * head and starts another; the earliest when none was, a clock apart),
+ * and where a verdict goes now: the PR's head when it is past
  * the latest patch set's (`head`, as the head check last found it; null
  * when none is shown: pinned, as-of, merged or closed), else the latest
  * patch set's head. Null when there is no verdict, its commit is none of
@@ -262,13 +264,16 @@ export type SinceTarget = Omit<VerdictSince, "changes">;
  */
 export function sinceTarget(input: {
 	reviews: VerdictFacts["reviews"];
-	patchsets: readonly { number: number; head: string }[];
+	patchsets: readonly { number: number; head: string; startedAt: number }[];
 	head: string | null;
 }): SinceTarget | null {
 	const mine = input.reviews.find((r) => r.you);
 	if (!mine || mine.commitId === "") return null;
 	const byNumber = [...input.patchsets].sort((a, b) => b.number - a.number);
-	const given = byNumber.find((p) => p.head === mine.commitId);
+	const onIt = byNumber.filter((p) => p.head === mine.commitId);
+	// GitHub's times are whole seconds; the patch set starts before the post.
+	const at = Date.parse(mine.submittedAt) + 1000;
+	const given = onIt.find((p) => p.startedAt <= at) ?? onIt.at(-1);
 	const latest = byNumber[0];
 	if (!given || !latest) return null;
 	const to =
