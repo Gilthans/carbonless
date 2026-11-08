@@ -242,12 +242,22 @@ function useDiffThreads(
 	// A thread whose last comment was deleted here: its bubble goes at once.
 	const { gone } = useThreadWrites();
 	const asked = readId !== undefined && to !== null;
+	// Only an answer, an error, or (after a failure) a retry under way
+	// re-render the page: a "still pending" reply and the polls behind it
+	// change nothing it shows (the spinners come from `asked` alone), and a
+	// render of every file at those moments, under load, can hold the main
+	// thread for a landing's whole highlight.
+	const failedBefore = useRef(false);
 	const placed = useQuery({
 		...placementsQuery(readId ?? "", to ?? { patchset: 1 }),
 		enabled: asked,
+		select: (d) => ("pending" in d ? undefined : d),
+		notifyOnChangeProps: () =>
+			failedBefore.current
+				? ["data", "error", "isFetching"]
+				: ["data", "error"],
 	});
-	const answer =
-		asked && placed.data && !("pending" in placed.data) ? placed.data : null;
+	const answer = asked && placed.data ? placed.data : null;
 	const placements = usePlacementMap(answer);
 	const visible = useMemo(
 		() =>
@@ -295,6 +305,7 @@ function useDiffThreads(
 			? (placed.error ??
 				(lastFailure?.key === placingKey ? lastFailure.error : null))
 			: null;
+	failedBefore.current = failedPlacing !== null;
 	const retryingPlacing =
 		failedPlacing !== null && (placed.isFetching || placed.error === null);
 	const unplacedOnError = useMemo(
@@ -419,6 +430,13 @@ const headerOf = (index: number) =>
 
 /** How long "<path> isn't in this diff" stays. */
 export const MISSING_HINT_MS = 8000;
+
+/** The same target object while its value is the same (memos keyed on it hold). */
+function useStableTo(to: RereviewTo | null): RereviewTo | null {
+	const key = to ? JSON.stringify(to) : "";
+	// biome-ignore lint/correctness/useExhaustiveDependencies: by value.
+	return useMemo(() => to, [key]);
+}
 
 /**
  * An earlier patch set shows the threads published before the next one
@@ -751,7 +769,7 @@ export function FilesPage() {
 		placement: placementInfo,
 	} = useDiffThreads(
 		viewedHeadOf(comparison, session),
-		placementsTo(comparison, session),
+		useStableTo(placementsTo(comparison, session)),
 		latest,
 		threadsUntil(comparison, session),
 		comparison.base.kind === "branch",

@@ -2438,18 +2438,41 @@ function useLanding(
 		scrollTo(row, 60);
 		const line = landing.line as number;
 		setLanded({ old, line, phase: "on" });
-		const fade = window.setTimeout(
-			() => setLanded({ old, line, phase: "fading" }),
-			LANDED_MS,
-		);
-		const end = window.setTimeout(() => setLanded(null), LANDED_MS + FADE_MS);
+		// The highlight's time counts from when the page is next idle: the
+		// line's first paint often comes with heavy work (the highlighter's
+		// first load), and a highlight that faded while the page was busy
+		// would never have been looked at.
+		let fade: number | undefined;
+		let end: number | undefined;
+		const start = () => {
+			fade = window.setTimeout(
+				() => setLanded({ old, line, phase: "fading" }),
+				LANDED_MS,
+			);
+			end = window.setTimeout(() => setLanded(null), LANDED_MS + FADE_MS);
+		};
+		const idle = whenIdle(start);
 		return () => {
+			idle();
 			window.clearTimeout(fade);
 			window.clearTimeout(end);
 			setLanded(null);
 		};
 	}, [root, landing, ready]);
 	return { hint, landed, pending };
+}
+
+/**
+ * Runs `fn` when the main thread is next idle (a timeout where the browser
+ * has no idle callbacks); returns its cancel.
+ */
+function whenIdle(fn: () => void): () => void {
+	if (typeof window.requestIdleCallback === "function") {
+		const id = window.requestIdleCallback(fn, { timeout: 5000 });
+		return () => window.cancelIdleCallback(id);
+	}
+	const id = window.setTimeout(fn, 0);
+	return () => window.clearTimeout(id);
 }
 
 function LandingHint({ hint }: { hint: Hint }) {
