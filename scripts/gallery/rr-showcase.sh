@@ -203,7 +203,7 @@ Open the **Final Verdict** tab. Under "Your verdict":
 - "Since then: 3 commits · 3 files · 1 reworked, 3 new clusters" (the engine's counts, PS1 to the head: `coupon.ts` reworked, `coupon.test.ts` and `cart.ts`'s two clusters new), and once PS4 exists its meter, "x / y on PS4". A spinner holds the line while the comparison runs. The same card closes Files changed, after the last file.
 - The buttons go on the head. Approve is off here only because the gallery's PRs are your own on GitHub; Comment works (it lands on GitHub and ends the since line).
 
-For the identical-diff copy ("Rebased, same diff · nothing to re-read" with "Approve again on …"), see `rr-stacked`.
+For the identical-diff copy, see `rr-stacked`: "Retargeted, same diff · nothing to re-read". "Approve again on …" shows only after an approval, which GitHub refuses on the gallery's own PRs: it needs someone else's PR.
 
 *Proves:* the verdict tab says what you approved (or said) and what changed since, from the same engine, never "nothing" while it computes.
 
