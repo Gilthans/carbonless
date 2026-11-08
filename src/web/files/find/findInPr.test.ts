@@ -216,7 +216,9 @@ describe("findInPr", () => {
 describe("findInPr's cost", () => {
 	it("builds its pattern once per search, not once per line", () => {
 		const lines = Array.from({ length: 50 }, (_, i) => `save ${i}`);
-		const f = file(0, { clusters: [cluster({ removed: lines, added: lines })] });
+		const f = file(0, {
+			clusters: [cluster({ removed: lines, added: lines })],
+		});
 		const Real = RegExp;
 		const built = vi.fn(function (this: unknown, ...args: [string, string]) {
 			return new Real(...args);

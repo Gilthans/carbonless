@@ -227,7 +227,9 @@ test("Next (Enter, or ↓ on a phone) scrolls to the open file's first hit, then
 			: box(page).press("Enter");
 	const previous = () =>
 		isMobile
-			? bar(page).getByRole("button", { name: /^Previous/ }).click()
+			? bar(page)
+					.getByRole("button", { name: /^Previous/ })
+					.click()
 			: box(page).press("Shift+Enter");
 	await pr(fixture);
 	const s = await startCrb();
