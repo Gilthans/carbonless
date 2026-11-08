@@ -287,6 +287,27 @@ function cutRanges(
 	return parts;
 }
 
+/** `text` (starting at offset `start`) cut at the `edges` inside it. */
+function cutAt(
+	text: string,
+	start: number,
+	edges: readonly number[],
+): { text: string }[] {
+	const end = start + text.length;
+	const points = [
+		...new Set([start, end, ...edges.filter((e) => e > start && e < end)]),
+	].sort((a, b) => a - b);
+	const parts: { text: string }[] = [];
+	for (let n = 0; n + 1 < points.length; n++)
+		parts.push({
+			text: text.slice(
+				(points[n] as number) - start,
+				(points[n + 1] as number) - start,
+			),
+		});
+	return parts;
+}
+
 /**
  * The parts of `text` (starting at offset `start`) inside and outside the
  * marks, cut at the finds' edges too; a part a find covers carries `find`.
@@ -488,13 +509,13 @@ const NO_FINDS: readonly FindMark[] = [];
  * its invisible characters shown (Notepad++ style, see invisibleChars.ts).
  * `newline`: a newline follows the line (false before git's "No newline at
  * end of file"). Copying the line copies the original text. `marks`: a
- * thread's exact characters, painted; `finds`: search hits, painted over
- * them (the current one apart) and over the word tint. `words`: a pair's changed tokens,
- * tinted (background only, under the syntax colors; invisibles inside a
- * mark are tinted with it, a kept emoji selector or joiner there escaped
- * while they show), painted with the first render. The line's text
- * is in one `[data-code]` element holding only its characters (codeSpan.ts
- * reads columns from it).
+ * thread's exact characters, painted. `finds`: search hits, painted over the
+ * thread's marks (the current one apart) and inside the word tint. `words`:
+ * a pair's changed tokens, tinted (background only, under the syntax colors;
+ * invisibles inside a mark are tinted with it, a kept emoji selector or
+ * joiner there escaped while they show), painted with the first render. The
+ * line's text is in one `[data-code]` element holding only its characters
+ * (codeSpan.ts reads columns from it).
  */
 export function CodeLine(props: {
 	text: string;
@@ -549,10 +570,15 @@ export function CodeLine(props: {
 				words,
 				leaves,
 			);
-		} else if (piece.kind === "space" && words.length) {
-			// A run of spaces cut at the word marks' edges (a changed indent).
+		} else if (piece.kind === "space" && (words.length || finds.length)) {
+			// A run of spaces cut at the word marks' edges (a changed indent)
+			// and the finds' (a hit over some of its spaces paints only those).
+			const edges = [
+				...words.flat(),
+				...finds.flatMap(({ from, to }) => [from, to]),
+			];
 			let at = piece.start;
-			for (const part of cutRanges(piece.raw, piece.start, words)) {
+			for (const part of cutAt(piece.raw, piece.start, edges)) {
 				leaves.push(
 					markerLeaf(
 						{ kind: "space", raw: part.text, start: at },
