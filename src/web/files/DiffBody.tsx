@@ -1656,8 +1656,10 @@ export function DiffBody(props: {
 			}
 		}
 		return file.clusters.filter((c) => {
+			// As the counts do (sinceUnits): a reworked or new cluster, or one
+			// whose carried mark the reviewer replaced.
 			const kind = props.kinds?.get(c.key)?.kind;
-			if (kind !== "reworked" && kind !== "new") return false;
+			if (kind !== "reworked" && kind !== "new" && c.carried) return false;
 			if (c.state !== "unreviewed") return false;
 			if (!shownKeys.has(c.key)) return true;
 			// Its pieces all marked, it still has lines no piece owns (not

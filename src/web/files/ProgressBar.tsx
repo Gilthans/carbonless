@@ -127,6 +127,11 @@ export function ProgressBar(props: {
 	 * spinner where the numbers go, never 0 (principle 8).
 	 */
 	pending?: boolean;
+	/**
+	 * Instead of counts, a state of its own (the since view): nothing to
+	 * count there, or its count failed. Never another view's numbers.
+	 */
+	instead?: "empty" | "failed";
 }) {
 	const { progress, unit } = props;
 	const toRead =
@@ -162,7 +167,23 @@ export function ProgressBar(props: {
 				<div className="flex shrink-0 items-center gap-2">
 					<UnitPicker unit={unit} onChange={props.onUnitChange} />
 				</div>
-				{props.pending ? (
+				{props.instead ? (
+					<div
+						role="progressbar"
+						aria-label="Review progress"
+						aria-valuetext={
+							props.instead === "empty" ? "Nothing to read" : "Not counted"
+						}
+						data-state={props.instead}
+						className="flex min-w-0 flex-1 basis-0 items-center gap-x-3"
+					>
+						<span
+							className={`font-display text-base font-semibold ${props.instead === "failed" ? "text-bad" : ""}`}
+						>
+							{props.instead === "empty" ? "Nothing to read" : "Not counted"}
+						</span>
+					</div>
+				) : props.pending ? (
 					<div
 						role="progressbar"
 						aria-label="Review progress"

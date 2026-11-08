@@ -125,6 +125,11 @@ describe("pieces of a cluster", () => {
 		).toEqual([null]);
 	});
 
+	it("without the engine's placement, a shown removed line is none of the cluster's (never read in the full diff's numbering)", () => {
+		// del(10, "old a") would be index 0 in the full diff's numbering.
+		expect(pieceRanges(cluster, [[del(10, "old a")]])).toEqual([null]);
+	});
+
 	it("never by text: a shown blank line owns its own place, not an unshown twin (principle 2)", () => {
 		const twins: Cluster = {
 			...cluster,

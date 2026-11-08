@@ -61,8 +61,8 @@ export interface PieceFacts {
 	/**
 	 * A shown removed line's line in the new merge base, by position (the
 	 * since view numbers it in the compared head); undefined for a line the
-	 * compared patch set added, or one the engine can't map. Without it a
-	 * shown removed line is taken as numbered in the base (the full diff).
+	 * compared patch set added, or one the engine can't map. Without it no
+	 * shown removed line is one of the cluster's (fails closed).
 	 */
 	baseNo?: (line: DiffLine) => number | undefined;
 }
@@ -91,7 +91,8 @@ export function pieceRanges(
 		return pieces.map(() => null);
 	}
 	const vouched = facts.vouched ?? (() => false);
-	const baseNo = facts.baseNo ?? ((line: DiffLine) => line.oldNo);
+	// Without the engine's placement a removed line is none of the cluster's.
+	const baseNo = facts.baseNo ?? (() => undefined);
 	const owner = new Array<number | undefined>(cluster.lines).fill(undefined);
 	const removed = cluster.removed;
 	pieces.forEach((lines, p) => {
@@ -499,11 +500,14 @@ export interface SinceUnit {
 	/** The file's index in the answer. */
 	index: number;
 	path: string;
-	kind: "reworked" | "new" | "gone" | "reverted" | "removed";
+	/** `unticked`: a cluster the engine carried that the reviewer's own mark replaced. */
+	kind: "reworked" | "new" | "gone" | "reverted" | "removed" | "unticked";
 	lines: number;
 	state: ClusterState;
 	/** Its lines not marked yet (all of an unmarked piece's). */
 	open: number;
+	/** The rest of a cluster no piece owns: only the full diff shows those lines. */
+	rest?: true;
 }
 
 /** What sinceUnits reads of one file of the engine's answer. */
@@ -556,10 +560,19 @@ export function sinceUnits(
 				open: state === "unreviewed" ? lines : 0,
 			});
 		}
-		// What no piece owns of a reworked or new cluster: one unit.
+		// What no piece owns of a cluster: one unit, for a reworked or new
+		// one, and for any other whose mark is not the engine's carry (the
+		// reviewer unticked or re-marked it): principle 2, nothing unmarked
+		// is left out of the count.
 		for (const c of clusters.values()) {
-			const kind = kinds.get(c.key);
-			if (kind !== "reworked" && kind !== "new") continue;
+			const engine = kinds.get(c.key);
+			const kind =
+				engine === "reworked" || engine === "new"
+					? engine
+					: c.carried === undefined
+						? "unticked"
+						: null;
+			if (!kind) continue;
 			const rest = subtract(all(c.lines), owned.get(c.key) ?? []);
 			if (c.lines > 0 && rest.length === 0) continue;
 			const { reviewed, crossed } = marksOf(c);
@@ -575,7 +588,7 @@ export function sinceUnits(
 				state === "unreviewed"
 					? size(subtract(rest, union(reviewed, crossed)))
 					: 0;
-			out.push({ ...base, kind, lines: size(rest), state, open });
+			out.push({ ...base, kind, lines: size(rest), state, open, rest: true });
 		}
 	}
 	return out;

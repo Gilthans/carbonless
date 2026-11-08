@@ -404,13 +404,19 @@ engine's answer lists them per file (`sinceOnly`) and in `toRead`.
 **Counts follow the view** (owner, 2026-11-08: "all the counts should be
 related to the interdiff, not the base diff"). In the since view every
 count is over its **units** (`sinceUnits`, `src/shared/pieces.ts`): each
-piece, and the rest of a reworked or new cluster no piece owns (only the
-full diff shows it), marked as the folded marks say. The progress bar
+piece, and the rest of a cluster no piece owns (only the full diff shows
+it: lines unchanged since a line not reviewed then, or a cluster the
+interdiff doesn't show) for a reworked or new cluster and for any whose
+mark is not the engine's carry (one the reviewer unticked), marked as the
+folded marks say: no unmarked line is left out (principle 2). A since view
+with no units says "Nothing to read", and one the engine failed "Not
+counted": never the full diff's numbers. The progress bar
 (units, their shown lines, files with any), "to read", the file header
 chips, the tree's dots and "needs eyes", and the connector of the
 comparison on screen all count them and drop as pieces are marked; the
-engine's `toRead` counts every unit, for any other connector. The full
-diff counts the snapshot's clusters. None of this is stored.
+engine's `toRead` counts every unit, for any other connector. Each file's
+header meter counts its own units too. The full diff counts the
+snapshot's clusters. None of this is stored.
 
 **Writes** (`ReviewService.recordStates`, `POST /review/states`): a change
 with `reviewedLines`/`crossedLines` (state `unreviewed`, no reason) whose

@@ -868,6 +868,7 @@ export function FilesPage() {
 				carried,
 				reverted: 0,
 				removed: 0,
+				unticked: 0,
 			},
 			left: { units: 0, lines: 0 },
 		};
@@ -875,15 +876,24 @@ export function FilesPage() {
 	// The since view counts its own units (pieces), the full diff the
 	// snapshot's clusters; a spinner while the engine computes (never 0).
 	const sinceAnswer = since !== null ? sinceView.answer : null;
-	// Nothing to count there (nothing changed since): the snapshot's own.
 	const units = useMemo(
 		() => (sinceAnswer && data ? unitsOf(sinceAnswer, data) : []),
 		[sinceAnswer, data],
 	);
 	const viewProgress = useMemo(
-		() => (units.length > 0 ? sinceProgress(units) : (data?.progress ?? null)),
-		[units, data],
+		() => (sinceAnswer ? sinceProgress(units) : (data?.progress ?? null)),
+		[sinceAnswer, units, data],
 	);
+	// The since view never shows the full diff's numbers: its own empty
+	// state, or its failure.
+	const progressInstead =
+		since === null
+			? undefined
+			: sinceAnswer && units.length === 0
+				? ("empty" as const)
+				: sinceView.error
+					? ("failed" as const)
+					: undefined;
 	// Each file's header meter in the since view: its own units.
 	const unitsByFile = useMemo(() => {
 		const out = new Map<number, typeof units>();
@@ -949,6 +959,7 @@ export function FilesPage() {
 								ref={bar}
 								progress={viewProgress ?? data.progress}
 								pending={progressPending}
+								instead={progressInstead}
 								unit={unit}
 								onUnitChange={setUnit}
 								toRead={toRead}

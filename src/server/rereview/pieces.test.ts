@@ -285,6 +285,33 @@ describe("identical text: a shown removed line is placed in the base by position
 		expect(own?.owns).toEqual([[0, 1]]);
 	});
 
+	it("a file the engine has no placement map for: its removed lines are none of a cluster's (never read as base numbers)", async () => {
+		const since: SincePatchset = {
+			number: 1,
+			revision: a.revision,
+			mergeBase: a.base,
+			head: a.head,
+			startedAt: 0,
+			since: null,
+			shape: null,
+			baseBranch: "main",
+			interdiff: null,
+			snapshot: a,
+			states: new Map(),
+		};
+		const target = { ...b, baseBranch: "main" };
+		const traced = await traceRereview(r.path, since, [], target);
+		const { answer } = answerRereview(traced, since, [], target);
+		// As an old cache entry would be: no baseLine at all.
+		const { baseLine: _, ...keys } = traced.lineKeys;
+		const stale = { ...traced, lineKeys: keys };
+		const merged = b.files[0]?.clusters.find((c) => c.removed.length === 3);
+		const own = (interdiffFileHunks(stale, b, answer, 0).pieces ?? []).filter(
+			(p) => p.key === merged?.key && p.owns,
+		);
+		expect(own).toEqual([]);
+	});
+
 	it("with PS1's removal crossed off, nothing it removed is vouched either", async () => {
 		const states = new Map<string, StateEntry>(
 			a.files[0]?.clusters.map((c) => [c.key, { state: "crossed-off" }]) ?? [],

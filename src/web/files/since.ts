@@ -65,6 +65,8 @@ export interface FileSince {
 		carried: number;
 		reverted: number;
 		removed: number;
+		/** Clusters whose carried mark the reviewer replaced (no chip). */
+		unticked: number;
 	};
 	/** Its units not marked yet: how many, and their lines. */
 	left: { units: number; lines: number };
@@ -98,6 +100,7 @@ export function sinceByFile(
 				gone: 0,
 				reverted: 0,
 				removed: 0,
+				unticked: 0,
 				carried:
 					viewFiles.get(file.index)?.clusters.filter((c) => c.carried).length ??
 					0,
@@ -249,8 +252,8 @@ export function liveToRead(
 
 /**
  * The tree's dot for a file in a comparison the engine has answered:
- * "read" when anything in it needs eyes (a unit not marked, a conflict, or
- * any unreviewed cluster), "carried" when every mark carried over; null
+ * "read" when anything in it needs eyes (a unit not marked: sinceUnits
+ * leaves no unmarked line out; or a conflict), "carried" when every mark carried over; null
  * without an answer for it.
  */
 export function eyesOf(
@@ -258,11 +261,7 @@ export function eyesOf(
 	since: FileSince | undefined,
 ): "read" | "carried" | null {
 	if (!since) return null;
-	if (
-		since.conflict ||
-		since.left.units > 0 ||
-		file.clusters.some((c) => c.state === "unreviewed")
-	) {
+	if (since.conflict || since.left.units > 0) {
 		return "read";
 	}
 	return "carried";

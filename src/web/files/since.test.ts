@@ -135,6 +135,7 @@ describe("sinceByFile", () => {
 			carried: 1,
 			reverted: 0,
 			removed: 0,
+			unticked: 0,
 		});
 		// A gone cluster counts by its pieces (none in this answer: no hunks).
 		expect(since.get(1)?.counts).toEqual({
@@ -144,6 +145,7 @@ describe("sinceByFile", () => {
 			carried: 1,
 			reverted: 0,
 			removed: 0,
+			unticked: 0,
 		});
 		expect(since.get(1)?.kinds.get("old")).toEqual({
 			key: "old",
@@ -173,7 +175,7 @@ describe("toReadCount", () => {
 		expect(toReadCount(since, v, "lines")).toBe(3);
 		expect(toReadCount(since, v, "files")).toBe(2);
 	});
-	it("a cluster marked meanwhile is read; a carried one unticked is to read only if the engine lists it", () => {
+	it("a cluster marked meanwhile is read; a carried one the reviewer unticked is to read again", () => {
 		const marked = view([
 			file(0, "core.ts", [
 				cluster("a", "reviewed"),
@@ -185,10 +187,10 @@ describe("toReadCount", () => {
 			]),
 		]);
 		const since = sinceByFile(a, marked);
-		// b is carried per the engine, not reworked or new: unticking it
-		// leaves it unreviewed (the bar counts that), not "to read".
-		expect(toReadCount(since, marked, "clusters")).toBe(1);
-		expect(toReadCount(since, marked, "files")).toBe(1);
+		// b is carried per the engine, but the reviewer unticked it: to read
+		// (principle 2), beside d, new.
+		expect(toReadCount(since, marked, "clusters")).toBe(2);
+		expect(toReadCount(since, marked, "files")).toBe(2);
 	});
 });
 
@@ -428,11 +430,13 @@ describe("eyesOf", () => {
 					carried: 1,
 					reverted: 0,
 					removed: 0,
+					unticked: 0,
 				},
 				left: { units: 0, lines: 0 },
 			}),
 		).toBe("carried");
-		// A carried file whose mark the reviewer unticked needs eyes again.
+		// A carried file whose mark the reviewer unticked needs eyes again
+		// (its unit is left: sinceUnits).
 		expect(
 			eyesOf(file(0, "core.ts", [cluster("b", "unreviewed")]), {
 				kinds: new Map(),
@@ -444,8 +448,9 @@ describe("eyesOf", () => {
 					carried: 0,
 					reverted: 0,
 					removed: 0,
+					unticked: 1,
 				},
-				left: { units: 0, lines: 0 },
+				left: { units: 1, lines: 2 },
 			}),
 		).toBe("read");
 		// A piece owning no line of the snapshot, not marked: to read.
@@ -460,6 +465,7 @@ describe("eyesOf", () => {
 					carried: 1,
 					reverted: 0,
 					removed: 0,
+					unticked: 0,
 				},
 				left: { units: 1, lines: 6 },
 			}),
@@ -475,6 +481,7 @@ describe("eyesOf", () => {
 					carried: 1,
 					reverted: 0,
 					removed: 0,
+					unticked: 0,
 				},
 				left: { units: 0, lines: 0 },
 			}),
@@ -592,5 +599,62 @@ describe("shownView", () => {
 			pending("a", "reviewed"),
 		);
 		expect(out.files[0]?.clusters[0]?.state).toBe("reviewed");
+	});
+});
+
+describe("an unticked carried cluster in the since view (principle 2)", () => {
+	const carriedAnswer = answer(
+		[
+			{
+				index: 0,
+				path: "core.ts",
+				conflict: false,
+				clusters: [
+					{
+						key: "c",
+						kind: "carried",
+						from: 1,
+						state: "reviewed",
+						rule: "exact",
+					},
+				],
+			},
+		],
+		{ files: 0, clusters: 0 },
+	);
+
+	it("a carried mark is not counted; once the reviewer unticks it, it is to read, and its file needs eyes", () => {
+		const carried = view([
+			file(0, "core.ts", [cluster("c", "reviewed", true, 4)]),
+		]);
+		const before = sinceByFile(carriedAnswer, carried);
+		expect(toReadCount(before, carried, "clusters")).toBe(0);
+		expect(sinceProgress(unitsOf(carriedAnswer, carried)).clusters.total).toBe(
+			0,
+		);
+		expect(eyesOf(carried.files[0] as FileView, before.get(0))).toBe("carried");
+
+		const unticked = view([
+			file(0, "core.ts", [cluster("c", "unreviewed", false, 4)]),
+		]);
+		const after = sinceByFile(carriedAnswer, unticked);
+		expect(toReadCount(after, unticked, "clusters")).toBe(1);
+		expect(toReadCount(after, unticked, "lines")).toBe(4);
+		expect(sinceProgress(unitsOf(carriedAnswer, unticked)).clusters).toEqual({
+			total: 1,
+			reviewed: 0,
+			crossedOff: 0,
+		});
+		expect(eyesOf(unticked.files[0] as FileView, after.get(0))).toBe("read");
+		expect(liveToRead(after).clusters).toBe(1);
+		// Ticked again by the reviewer: counted, and reviewed.
+		const again = view([
+			file(0, "core.ts", [cluster("c", "reviewed", false, 4)]),
+		]);
+		expect(sinceProgress(unitsOf(carriedAnswer, again)).clusters).toEqual({
+			total: 1,
+			reviewed: 1,
+			crossedOff: 0,
+		});
 	});
 });

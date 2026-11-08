@@ -658,6 +658,7 @@ describe("GoneFile: a whole file undone since the compared patch set", () => {
 							carried: 0,
 							reverted: 0,
 							removed: 0,
+							unticked: 0,
 						},
 						left: { units: 1, lines: 2 },
 					}}

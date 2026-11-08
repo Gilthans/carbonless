@@ -317,8 +317,9 @@ test("View lands on the since view: the reworked and new clusters with their chi
 	await expect(
 		node(page, "ps1").getByRole("button", { name: "comparison base" }),
 	).toBeVisible();
-	// The chips count what is left to read: the marked reworked one is not.
-	await expect(toRead(page)).toHaveText(/1 to read/);
+	// The chips count what is left to read: the marked reworked one is not;
+	// the carried cluster unticked above is (principle 2), with util.ts's new one.
+	await expect(toRead(page)).toHaveText(/2 to read/);
 	await expect(chips(coreS).filter({ hasText: "reworked" })).toHaveCount(0);
 	await coreS.getByRole("button", { name: "Expand file" }).click();
 	await expect(boxes(coreS)).toHaveCount(1);
@@ -481,19 +482,47 @@ test("the tree's dots say which files need eyes; the needs-eyes filter hides ful
 	await expect(
 		node(page, "ps2").getByRole("button", { name: "comparison target" }),
 	).toBeVisible();
-	// Back in the since view (PS1 → PS2): the unticked file needs eyes
-	// (the dot follows the reviewer's mark; "to read" counts what the
-	// author changed, still the reworked cluster alone).
+	// Back in the since view (PS1 → PS2): the unticked cluster counts again
+	// (principle 2): the bar and "to read" go up by one, the dot says read.
 	await page.keyboard.press("Control+Shift+]");
 	await expect(
 		node(page, "ps1").getByRole("button", { name: "comparison base" }),
 	).toBeVisible();
-	await expect(toRead(page)).toHaveText(/1 to read/);
+	await expect(toRead(page)).toHaveText(/2 to read/);
+	await expect(progress(page)).toContainText("0 / 2 clusters reviewed");
+	await expect(utilS.getByTestId("since-unshown")).toContainText(
+		"1 to read · only in the full diff",
+	);
 	await withTree(page, async (tree) => {
 		await expect(
 			tree.getByRole("button", { name: /util\.ts/ }).getByTestId("tree-eyes"),
 		).toHaveAttribute("data-eyes", "read");
 	});
+});
+
+test("a since view the engine can't count says so in the bar, never the full diff's numbers", async ({
+	page,
+	workdir,
+	pr,
+	startCrb,
+	expectConsoleError,
+}) => {
+	expectConsoleError(/500/);
+	const p = await pr(fixture);
+	const s = await startCrb();
+	// Every engine answer fails, the head connector's (read on the reload) too.
+	await page.route("**/rereview?*", (route) =>
+		route.fulfill({ status: 500, body: JSON.stringify({ error: "boom" }) }),
+	);
+	await pushed(page, workdir, s, p);
+	await toast(page).getByRole("button", { name: "View" }).click();
+	await expect(progress(page)).toHaveAttribute(
+		"data-state",
+		"failed",
+		GIT_WAIT,
+	);
+	await expect(progress(page)).toHaveText("Not counted");
+	await page.unroute("**/rereview?*");
 });
 
 test("an empty since view says so once the engine has answered, with a spinner until then", async ({
@@ -546,8 +575,9 @@ test("an empty since view says so once the engine has answered, with a spinner u
 	await expect(page.getByTestId("since-empty-all")).toHaveText(
 		"Nothing to read since PS1 · 3 carried",
 	);
-	await expect(toRead(page)).toHaveText(/0 to read/);
-	await expect(progress(page)).toContainText("3 / 3 clusters reviewed");
+	// The since view's own empty state, never the full diff's numbers.
+	await expect(progress(page)).toHaveText("Nothing to read");
+	await expect(progress(page)).toHaveAttribute("data-state", "empty");
 	await expect(page.getByTestId("ps-conn-head")).toHaveAttribute(
 		"data-tone",
 		"ok",
@@ -1735,7 +1765,8 @@ test("an identical diff force-pushed (a squash on the same base): same diff · n
 		node(page, "ps2").getByRole("button", { name: "comparison target" }),
 	).toBeVisible();
 	await expect(tail(page)).toHaveAttribute("data-state", "up-to-date");
-	await expect(progress(page)).toContainText("3 / 3 clusters reviewed");
+	// The since view (PS1 → PS2): the same diff, nothing of its own to count.
+	await expect(progress(page)).toHaveText("Nothing to read");
 });
 
 test("a new thread on the viewed head starts PS2 and the page follows: the PS2 dot, up to date, PS1 read-only", async ({

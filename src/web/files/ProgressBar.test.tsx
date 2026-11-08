@@ -62,6 +62,27 @@ describe("ProgressBar", () => {
 		).toBeInTheDocument();
 	});
 
+	it("in place of counts, its own empty or failed state: never digits from another view", () => {
+		for (const [instead, text] of [
+			["empty", "Nothing to read"],
+			["failed", "Not counted"],
+		] as const) {
+			render(
+				<ProgressBar
+					progress={sample}
+					unit="clusters"
+					onUnitChange={() => {}}
+					instead={instead}
+				/>,
+			);
+			const bar = screen.getByRole("progressbar", { name: "Review progress" });
+			expect(bar).toHaveTextContent(text);
+			expect(bar).not.toHaveTextContent(/\d/);
+			expect(bar).not.toHaveAttribute("aria-valuenow");
+			cleanup();
+		}
+	});
+
 	it("names the unit in the singular for one", () => {
 		const one: Progress = {
 			clusters: { total: 1, reviewed: 0, crossedOff: 0 },
