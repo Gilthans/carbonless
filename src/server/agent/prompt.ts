@@ -177,6 +177,19 @@ export function sanitizeEnvelope(env: PromptEnvelope): PromptEnvelope {
 }
 
 /**
+ * Third-party text in a code fence, by the CommonMark rule: the fence is one
+ * backtick longer than the longest run of backticks in the text (at least 3),
+ * so nothing inside can close it early. The text itself is unchanged.
+ */
+export function fenced(text: string, info = ""): string {
+	let longest = 0;
+	for (const run of text.match(/`+/g) ?? [])
+		longest = Math.max(longest, run.length);
+	const fence = "`".repeat(Math.max(3, longest + 1));
+	return `${fence}${info}\n${text}\n${fence}`;
+}
+
+/**
  * The prompt's blocks: the preamble with the tree's path and the envelope
  * as JSON; the anchored file as a resource; the diff hunk around the anchor.
  */
@@ -193,7 +206,7 @@ export function buildPrompt(
 	if (hunk !== null) {
 		blocks.push({
 			type: "text",
-			text: `Diff hunk around the anchor:\n\`\`\`diff\n${hunk}\n\`\`\``,
+			text: `Diff hunk around the anchor:\n${fenced(hunk, "diff")}`,
 		});
 	}
 	return blocks;
