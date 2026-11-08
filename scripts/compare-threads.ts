@@ -109,7 +109,22 @@ export interface PlacementRow {
 	/** carbonless's on GitHub's head now, when that isn't the as-of head; else "". */
 	oursNow: string;
 	kind: PlacementKind;
+	/** For an "agree": how strongly (placementAgreement). */
+	agreement?: PlacementAgreement;
 }
+
+/**
+ * How much an "agree" says: `line-exact` and `file` are both tools on the
+ * same place; the `outdated↔…` ones are GitHub's outdated against a
+ * carbonless outcome other than placed, which agrees by the rule only
+ * (GitHub outdates per hunk, carbonless decides per line).
+ */
+export type PlacementAgreement =
+	| "line-exact"
+	| "file"
+	| "outdated↔changed"
+	| "outdated↔unplaced"
+	| "outdated↔outside";
 
 export interface Placements {
 	placedFrom: string;
@@ -121,6 +136,8 @@ export interface Placements {
 	/** Unresolved threads opened by --placed-from that GitHub lists no REST comment for. */
 	unlisted: number;
 	counts: { total: number; agree: number; disagree: number };
+	/** The agreements by strength, only those that occur. */
+	agreements: Partial<Record<PlacementAgreement, number>>;
 }
 
 export interface Comparison {
@@ -369,6 +386,27 @@ export function placementKind(
 	return a.line === rest.line ? "agree" : "line";
 }
 
+/** An agreement's strength (PlacementAgreement); null for a disagreement. */
+export function placementAgreement(
+	ours: ThreadPlacement,
+	rest: RestComment,
+): PlacementAgreement | null {
+	if (placementKind(ours, rest) !== "agree") return null;
+	if (rest.subject_type === "file") return "file";
+	if (rest.line !== null) return "line-exact";
+	switch (ours.kind) {
+		case "changed":
+			return "outdated↔changed";
+		case "unplaced":
+			return "outdated↔unplaced";
+		case "outside":
+			return "outdated↔outside";
+		default:
+			// A file comment's placement against a line comment's outdated.
+			return "outdated↔outside";
+	}
+}
+
 /** Placements into `head`, once the session's background job has them. */
 async function placedInto(
 	session: Session,
@@ -450,9 +488,16 @@ async function comparePlacements(
 			ours: placementCell(mine),
 			oursNow: now === ours ? "" : placementCell(mineNow),
 			kind: placementKind(mineNow, r),
+			...((a) => (a ? { agreement: a } : {}))(placementAgreement(mineNow, r)),
 		});
 	}
 	const agree = rows.filter((r) => r.kind === "agree").length;
+	const agreements: Placements["agreements"] = {};
+	for (const r of rows) {
+		if (r.agreement) {
+			agreements[r.agreement] = (agreements[r.agreement] ?? 0) + 1;
+		}
+	}
 	return {
 		placedFrom,
 		fromHead,
@@ -461,6 +506,7 @@ async function comparePlacements(
 		rows,
 		unlisted,
 		counts: { total: rows.length, agree, disagree: rows.length - agree },
+		agreements,
 	};
 }
 
@@ -617,19 +663,37 @@ ${c.placements ? renderPlacements(c.placements) : ""}`;
 
 const short = (oid: string) => oid.slice(0, 7);
 
+const STRENGTH_ORDER: PlacementAgreement[] = [
+	"line-exact",
+	"file",
+	"outdated↔changed",
+	"outdated↔unplaced",
+	"outdated↔outside",
+];
+
+/** " (2 line-exact, 11 outdated↔changed)", or "" with nothing agreeing. */
+function strengths(p: Placements): string {
+	const parts = STRENGTH_ORDER.flatMap((k) =>
+		p.agreements[k] ? [`${p.agreements[k]} ${k}`] : [],
+	);
+	return parts.length ? ` (${parts.join(", ")})` : "";
+}
+
 /** compare.md's Placements section (--placed-from). */
 export function renderPlacements(p: Placements): string {
 	const moved = p.githubHead !== p.toHead;
 	const rows = p.rows.map(
 		(r, i) =>
-			`| ${i + 1} | ${cell(r.path)} | ${r.opened} | ${cell(r.github)} | ${cell(r.ours)} |${moved ? ` ${cell(r.oursNow)} |` : ""} ${r.kind} |`,
+			`| ${i + 1} | ${cell(r.path)} | ${r.opened} | ${cell(r.github)} | ${cell(r.ours)} |${moved ? ` ${cell(r.oursNow)} |` : ""} ${r.kind}${r.agreement ? ` (${r.agreement})` : ""} |`,
 	);
 	return `
 ## Placements
 
-Unresolved threads opened by ${p.placedFrom} (head ${short(p.fromHead)}), placed by carbonless into ${short(p.toHead)}${moved ? ` and into GitHub's head now, ${short(p.githubHead)}` : ""}, against GitHub's REST \`line\` on ${short(p.githubHead)}: ${p.counts.agree}/${p.counts.total} agree, ${p.counts.disagree} disagree${p.unlisted ? `, ${p.unlisted} not listed by GitHub's REST` : ""}.
+Unresolved threads opened by ${p.placedFrom} (head ${short(p.fromHead)}), placed by carbonless into ${short(p.toHead)}${moved ? ` and into GitHub's head now, ${short(p.githubHead)}` : ""}, against GitHub's REST \`line\` on ${short(p.githubHead)}: ${p.counts.agree}/${p.counts.total} agree${strengths(p)}, ${p.counts.disagree} disagree${p.unlisted ? `, ${p.unlisted} not listed by GitHub's REST` : ""}.
 
 Kinds: agree; line, side, path (both place it, elsewhere); we-unplace (GitHub places it, carbonless lists it unplaced or outside); we-place-outdated (GitHub calls it outdated, carbonless places it on the same text).
+
+GitHub's outdated agrees with every carbonless outcome except placed: GitHub outdates a comment when anything in its hunk changed, carbonless decides per line. So only line-exact and file agreements say both tools put the thread in the same place; an outdated↔changed, outdated↔unplaced or outdated↔outside agreement only says neither keeps it on its old line.
 
 | # | path | opened | GitHub | ours on ${short(p.toHead)} |${moved ? ` ours on ${short(p.githubHead)} |` : ""} kind |
 |---|---|---|---|---|${moved ? "---|" : ""}---|

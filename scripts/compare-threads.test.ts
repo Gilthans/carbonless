@@ -15,6 +15,7 @@ import {
 	compareThreads,
 	githubCell,
 	main,
+	placementAgreement,
 	placementCell,
 	placementKind,
 } from "./compare-threads";
@@ -368,6 +369,22 @@ describe("compare-threads --placed-from (placements across rounds)", () => {
 			"T12-6": ["RIGHT 29", "placed RIGHT 29", "", "agree"],
 		});
 		expect(p.counts).toEqual({ total: 6, agree: 4, disagree: 2 });
+		// Strong agreements apart from the weak ones (GitHub's outdated).
+		expect(p.agreements).toEqual({
+			"line-exact": 2,
+			file: 1,
+			"outdated↔changed": 1,
+		});
+		expect(
+			Object.fromEntries(p.rows.map((r) => [r.id, r.agreement ?? null])),
+		).toEqual({
+			"T12-0": "line-exact",
+			"T12-1": "outdated↔changed",
+			"T12-2": null,
+			"T12-3": null,
+			"T12-4": "file",
+			"T12-6": "line-exact",
+		});
 
 		const log = vi.spyOn(console, "log").mockImplementation(() => {});
 		const err = vi.spyOn(console, "error").mockImplementation(() => {});
@@ -396,7 +413,12 @@ describe("compare-threads --placed-from (placements across rounds)", () => {
 		}
 		const md = readFileSync(join(out, "compare.md"), "utf8");
 		expect(md).toContain("## Placements");
-		expect(md).toContain("4/6 agree, 2 disagree");
+		expect(md).toContain(
+			"4/6 agree (2 line-exact, 1 file, 1 outdated↔changed), 2 disagree",
+		);
+		expect(md).toContain(
+			"GitHub's outdated agrees with every carbonless outcome except placed",
+		);
 		expect(md).toMatch(
 			/\| a\.txt \| 2099-01-02T09:00:00Z \| RIGHT 30 \| placed RIGHT 29 \| line \|/,
 		);
@@ -490,6 +512,45 @@ describe("placement cells and kinds", () => {
 				rest({ subject_type: "file", line: null }),
 			),
 		).toBe("agree");
+	});
+
+	it("labels each agreement strong (line-exact, file) or weak (GitHub outdated against a fate)", () => {
+		const gone = {
+			kind: "unplaced" as const,
+			fate: "deleted" as const,
+			path: "a.ts",
+			nearest: null,
+		};
+		expect(placementAgreement(placed(10), rest())).toBe("line-exact");
+		expect(
+			placementAgreement(
+				{ kind: "file", path: "a.ts" },
+				rest({ subject_type: "file", line: null }),
+			),
+		).toBe("file");
+		expect(
+			placementAgreement(
+				{
+					kind: "changed",
+					anchor: anchor(10),
+					old: { side: "RIGHT", startLine: 8, line: 8, text: [] },
+					now: [],
+				},
+				rest({ line: null }),
+			),
+		).toBe("outdated↔changed");
+		expect(placementAgreement(gone, rest({ line: null }))).toBe(
+			"outdated↔unplaced",
+		);
+		expect(
+			placementAgreement(
+				{ kind: "outside", path: "a.ts", fate: "reverted" },
+				rest({ line: null }),
+			),
+		).toBe("outdated↔outside");
+		// A disagreement has no label.
+		expect(placementAgreement(placed(11), rest())).toBeNull();
+		expect(placementAgreement(placed(10), rest({ line: null }))).toBeNull();
 	});
 
 	it("names each placement and GitHub's place in one cell", () => {
