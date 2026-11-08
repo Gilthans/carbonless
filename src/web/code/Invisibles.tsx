@@ -3,7 +3,11 @@ import { type CSSProperties, type ReactNode, useEffect, useMemo } from "react";
 import { highlightLine } from "../files/highlight";
 import { Tooltip } from "../Tooltip";
 import { showInvisibles } from "../viewSettings";
-import { DEFAULT_TAB_WIDTH, type Piece, renderInvisibles } from "./invisibles";
+import {
+	DEFAULT_TAB_WIDTH,
+	type Piece,
+	renderInvisibles,
+} from "./invisibleChars";
 
 export const INVISIBLES_STORAGE_KEY = showInvisibles.key;
 
@@ -232,6 +236,34 @@ export function colorPieces(pieces: Piece[], tokens: Token[]): Segment[][] {
 /** A span's characters in a line: UTF-16 offsets, `to` exclusive. */
 export type Mark = readonly [from: number, to: number];
 
+/**
+ * The parts of `text` (starting at offset `start`) cut at the ranges'
+ * edges, each with the index of the range holding it (-1: none). The
+ * ranges are sorted and don't overlap.
+ */
+function cutRanges(
+	text: string,
+	start: number,
+	ranges: readonly Mark[],
+): { text: string; at: number }[] {
+	const end = start + text.length;
+	const parts: { text: string; at: number }[] = [];
+	let from = start;
+	for (let i = 0; i < ranges.length && from < end; i++) {
+		const [f, t] = ranges[i] as Mark;
+		if (t <= from) continue;
+		if (f >= end) break;
+		if (f > from)
+			parts.push({ text: text.slice(from - start, f - start), at: -1 });
+		const to = Math.min(t, end);
+		const at = Math.max(f, from);
+		parts.push({ text: text.slice(at - start, to - start), at: i });
+		from = to;
+	}
+	if (from < end) parts.push({ text: text.slice(from - start), at: -1 });
+	return parts;
+}
+
 /** The parts of `text` (starting at offset `start`) inside and outside the marks. */
 export function splitMarks(
 	text: string,
@@ -260,54 +292,152 @@ export function splitMarks(
 /** A thread's exact span over its characters (`span-mark`, index.css). */
 const MARKED = "span-mark";
 
-/** A run of ordinary text, colored by the highlighting tokens it overlaps. */
-function TextRun(props: {
-	start: number;
-	segments: Segment[];
+/**
+ * A pair's word marks on a line (wordBlocks.ts): the changed tokens, and the
+ * tint they take, by the line's kind and whether its cluster is reviewed.
+ */
+export interface Words {
 	marks: readonly Mark[];
-}) {
-	let at = props.start;
-	return (
-		<>
-			{props.segments.flatMap((segment) => {
-				const from = at;
-				at += segment.text.length;
-				const parts = props.marks.length
-					? splitMarks(segment.text, from, props.marks)
-					: [{ text: segment.text, marked: false }];
-				let offset = from;
-				return parts.map((part) => {
-					const key = offset;
-					offset += part.text.length;
-					const style = segment.token ? tokenStyle(segment.token) : undefined;
-					return part.marked || style ? (
-						<span
-							key={key}
-							style={style}
-							data-span-mark={part.marked || undefined}
-							className={part.marked ? MARKED : undefined}
-						>
-							{part.text}
-						</span>
-					) : (
-						part.text
-					);
+	tone: "add" | "del" | "add-done" | "del-done";
+	/**
+	 * The change doesn't show while hidden characters are off
+	 * (hiddenChange.ts): its code cell warns in the sign's place.
+	 */
+	hidden?: boolean;
+}
+
+/** Each tone's tint (index.css; written out whole, for Tailwind). */
+const WORD_BG: Record<Words["tone"], string> = {
+	add: "bg-add-word",
+	del: "bg-del-word",
+	"add-done": "bg-add-word-done",
+	"del-done": "bg-del-word-done",
+};
+
+/** One rendered run of a line, and the word mark it sits in (-1: none). */
+interface Leaf {
+	key: string;
+	node: ReactNode;
+	word: number;
+}
+
+const overlaps = (marks: readonly Mark[], from: number, to: number) =>
+	marks.some(([f, t]) => f < to && t > from);
+
+/** The word mark (index) a piece of `from`–`to` sits in, else -1. */
+const wordAt = (marks: readonly Mark[], from: number, to: number) =>
+	marks.findIndex(([f, t]) => f < to && t > from);
+
+/**
+ * A text piece's runs: cut by the highlighting tokens (`segments`), a
+ * thread's spans and the word marks. A thread's span wins over a word mark
+ * where they overlap: that part is the span's alone.
+ */
+function textLeaves(
+	start: number,
+	segments: Segment[],
+	marks: readonly Mark[],
+	words: readonly Mark[],
+	out: Leaf[],
+): void {
+	let at = start;
+	for (const segment of segments) {
+		const from = at;
+		at += segment.text.length;
+		const style = segment.token ? tokenStyle(segment.token) : undefined;
+		let offset = from;
+		for (const part of marks.length
+			? cutRanges(segment.text, from, marks)
+			: [{ text: segment.text, at: -1 }]) {
+			const spanned = part.at >= 0;
+			for (const piece of spanned || !words.length
+				? [{ text: part.text, at: -1 }]
+				: cutRanges(part.text, offset, words)) {
+				const key = `t${offset}`;
+				offset += piece.text.length;
+				out.push({
+					key,
+					word: piece.at,
+					node:
+						spanned || style ? (
+							<span
+								key={key}
+								style={style}
+								data-span-mark={spanned || undefined}
+								className={spanned ? MARKED : undefined}
+							>
+								{piece.text}
+							</span>
+						) : (
+							piece.text
+						),
 				});
-			})}
-		</>
-	);
+			}
+		}
+	}
+}
+
+/** A marker, painted as a thread's span when one covers it. */
+function markerLeaf(
+	piece: Exclude<Piece, { kind: "text" }>,
+	marks: readonly Mark[],
+	words: readonly Mark[],
+): Leaf {
+	const key = `${piece.kind}${piece.start}`;
+	const end = piece.start + piece.raw.length;
+	const spanned = overlaps(marks, piece.start, end);
+	return {
+		key,
+		word: spanned || !piece.raw ? -1 : wordAt(words, piece.start, end),
+		node: spanned ? (
+			<span key={key} data-span-mark className={MARKED}>
+				<Marker piece={piece} />
+			</span>
+		) : (
+			<Marker key={key} piece={piece} />
+		),
+	};
+}
+
+/** Groups each word mark's runs into one tinted element. */
+function paintWords(leaves: Leaf[], tone: Words["tone"]): ReactNode[] {
+	const out: ReactNode[] = [];
+	for (let i = 0; i < leaves.length; ) {
+		const leaf = leaves[i] as Leaf;
+		if (leaf.word < 0) {
+			out.push(leaf.node);
+			i++;
+			continue;
+		}
+		const group: ReactNode[] = [];
+		let j = i;
+		while (j < leaves.length && (leaves[j] as Leaf).word === leaf.word) {
+			group.push((leaves[j] as Leaf).node);
+			j++;
+		}
+		out.push(
+			<span key={`w${leaf.key}`} data-word="" className={WORD_BG[tone]}>
+				{group}
+			</span>,
+		);
+		i = j;
+	}
+	return out;
 }
 
 const NO_MARKS: readonly Mark[] = [];
 
 /**
  * One line of code, highlighted (plain until the highlighting arrives), with
- * its invisible characters shown (Notepad++ style, see invisibles.ts).
+ * its invisible characters shown (Notepad++ style, see invisibleChars.ts).
  * `newline`: a newline follows the line (false before git's "No newline at
  * end of file"). Copying the line copies the original text. `marks`: a
- * thread's exact characters, painted. The line's text is in one
- * `[data-code]` element holding only its characters (codeSpan.ts reads
- * columns from it).
+ * thread's exact characters, painted. `words`: a pair's changed tokens,
+ * tinted (background only, under the syntax colors; invisibles inside a
+ * mark are tinted with it, a kept emoji selector or joiner there escaped
+ * while they show), painted with the first render. The line's text
+ * is in one `[data-code]` element holding only its characters (codeSpan.ts
+ * reads columns from it).
  */
 export function CodeLine(props: {
 	text: string;
@@ -315,6 +445,7 @@ export function CodeLine(props: {
 	tabWidth?: number;
 	newline?: boolean;
 	marks?: readonly Mark[];
+	words?: Words;
 }) {
 	const { text, lang, newline = true } = props;
 	const show = useShowInvisibles();
@@ -332,48 +463,54 @@ export function CodeLine(props: {
 		staleTime: Number.POSITIVE_INFINITY,
 	});
 	const tabWidth = props.tabWidth ?? DEFAULT_TAB_WIDTH;
+	const words = props.words?.marks ?? NO_MARKS;
+	// A kept emoji selector or joiner inside a word mark shows as its escape.
 	const pieces = useMemo(
-		() => renderInvisibles(text, tabWidth, { newline, show }),
-		[text, tabWidth, newline, show],
+		() => renderInvisibles(text, tabWidth, { newline, show, marks: words }),
+		[text, tabWidth, newline, show, words],
 	);
 	const segments = useMemo(
 		() => colorPieces(pieces, tokens.data ?? []),
 		[pieces, tokens.data],
 	);
 	const marks = props.marks ?? NO_MARKS;
+	const highlighted = Boolean(tokens.data?.length);
+	const leaves: Leaf[] = [];
+	pieces.forEach((piece, i) => {
+		if (piece.kind === "text") {
+			if (!highlighted && !marks.length && !words.length) {
+				leaves.push({ key: `t${piece.start}`, node: piece.raw, word: -1 });
+				return;
+			}
+			textLeaves(
+				piece.start,
+				highlighted ? (segments[i] ?? []) : [{ text: piece.raw }],
+				marks,
+				words,
+				leaves,
+			);
+		} else if (piece.kind === "space" && words.length) {
+			// A run of spaces cut at the word marks' edges (a changed indent).
+			let at = piece.start;
+			for (const part of cutRanges(piece.raw, piece.start, words)) {
+				leaves.push(
+					markerLeaf(
+						{ kind: "space", raw: part.text, start: at },
+						marks,
+						words,
+					),
+				);
+				at += part.text.length;
+			}
+		} else {
+			leaves.push(markerLeaf(piece, marks, words));
+		}
+	});
 	return (
 		<span data-code="">
-			{pieces.map((piece, i) =>
-				piece.kind === "text" ? (
-					tokens.data?.length || marks.length ? (
-						<TextRun
-							key={piece.start}
-							start={piece.start}
-							segments={
-								tokens.data?.length
-									? (segments[i] ?? [])
-									: [{ text: piece.raw }]
-							}
-							marks={marks}
-						/>
-					) : (
-						piece.raw
-					)
-				) : marks.some(
-						([from, to]) =>
-							from < piece.start + piece.raw.length && to > piece.start,
-					) ? (
-					<span
-						key={`${piece.kind}${piece.start}`}
-						data-span-mark
-						className={MARKED}
-					>
-						<Marker piece={piece} />
-					</span>
-				) : (
-					<Marker key={`${piece.kind}${piece.start}`} piece={piece} />
-				),
-			)}
+			{props.words && words.length
+				? paintWords(leaves, props.words.tone)
+				: leaves.map((leaf) => leaf.node)}
 		</span>
 	);
 }

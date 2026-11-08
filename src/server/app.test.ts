@@ -1907,6 +1907,66 @@ describe("API", () => {
 			expect(own.statusCode).toBe(200);
 		});
 	});
+
+	describe("on loopback behind a public URL", () => {
+		const publicUrl = "https://box.tail0.ts.net:8443";
+		let proxied: FastifyInstance;
+		let local: string;
+
+		beforeEach(async () => {
+			proxied = await buildApp(registry, {
+				accessKey: "k3y",
+				loopback: true,
+				publicUrl,
+			});
+			await proxied.listen({ port: 0, host: "127.0.0.1" });
+			const address = proxied.server.address();
+			if (!address || typeof address === "string") throw new Error("no port");
+			local = `127.0.0.1:${address.port}`;
+		});
+		afterEach(async () => {
+			await proxied.close();
+		});
+
+		const call = (host: string, extra: Record<string, unknown> = {}) => {
+			const port = local.split(":")[1];
+			return proxied.inject({
+				url: r("/api/session"),
+				cookies: { [`crb_key_${port}`]: "k3y" },
+				headers: { host },
+				...extra,
+			});
+		};
+
+		it("accepts its loopback and public Hosts only", async () => {
+			expect((await call(local)).statusCode).toBe(200);
+			expect((await call("box.tail0.ts.net:8443")).statusCode).toBe(200);
+			for (const host of [
+				"evil.example",
+				"box.tail0.ts.net",
+				"100.1.2.3:4747",
+			]) {
+				expect((await call(host)).statusCode, host).toBe(403);
+			}
+		});
+
+		it("takes writes from the public origin, refuses others", async () => {
+			const write = (origin: string) =>
+				call("box.tail0.ts.net:8443", {
+					method: "POST",
+					url: r("/api/refresh"),
+					headers: { host: "box.tail0.ts.net:8443", origin },
+				});
+			expect((await write(publicUrl)).statusCode).toBe(200);
+			for (const origin of [
+				"http://box.tail0.ts.net:8443",
+				"https://box.tail0.ts.net",
+				"https://evil.example",
+			]) {
+				expect((await write(origin)).statusCode, origin).toBe(403);
+			}
+		});
+	});
 });
 
 describe("the opening page's title", () => {

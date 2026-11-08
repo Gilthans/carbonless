@@ -1,4 +1,5 @@
 import {
+	AlertIcon,
 	ChevronDownIcon,
 	ChevronRightIcon,
 	InfoIcon,
@@ -40,9 +41,15 @@ import {
 } from "../agent/askAgentAction";
 import { type AgentPlaceable, agentPlaceable } from "../agent/placeable";
 import { contextQuery, hunksQuery, overviewQuery, sessionQuery } from "../api";
-import { CodeLine, type Mark } from "../code/Invisibles";
+import {
+	CodeLine,
+	type Mark,
+	useShowInvisibles,
+	type Words,
+} from "../code/Invisibles";
+import { DEFAULT_TAB_WIDTH } from "../code/invisibleChars";
 import { Spinner } from "../Spinner";
-import { Tooltip } from "../Tooltip";
+import { clickPointer, isTap, Tooltip } from "../Tooltip";
 import { canMove, spanTexts } from "../threads/draftMove";
 import { type LineTexts, useDrafts } from "../threads/drafts";
 import { NewThread, quoteOf } from "../threads/NewThread";
@@ -57,9 +64,10 @@ import type { SpanRange } from "../threads/spanMarks";
 import { useThreadWriter } from "../threads/threadWrites";
 import { ErrorMessage } from "../ui";
 import { NOT_PHONE, useMedia } from "../useMedia";
-import { ignoreWhitespace, sideBySide } from "../viewSettings";
+import { ignoreWhitespace, showInvisibles, sideBySide } from "../viewSettings";
 import { type CellLine, CODE_CELL, cellLine } from "./codeSpan";
 import { EXPAND_STEP, fileGaps, type Gap, gapState } from "./gaps";
+import { hiddenLines } from "./hiddenLines";
 import { languageFor } from "./highlight";
 import type { Landing } from "./landing";
 import {
@@ -87,13 +95,9 @@ import {
 	lineKey,
 	placeThreads,
 } from "./threadPlacement";
-import {
-	type DiffRow,
-	matchHunk,
-	pairRun,
-	runs,
-	whitespaceOnly,
-} from "./whitespace";
+import { VIEW_KEYS } from "./viewShortcuts";
+import { type DiffRow, viewRuns, whitespaceOnly } from "./whitespace";
+import { hunkWordMarks } from "./wordBlocks";
 
 /** Review threads to show in a file's diff (FilesPage), and the read they come from. */
 export interface DiffThreads {
@@ -549,6 +553,90 @@ function Sign({ kind }: { kind: RowLine["kind"] }) {
 }
 
 /**
+ * Before a warning goes, moves focus it holds to its line: the line's number
+ * button (its own side's first), else the code cell itself.
+ */
+function keepFocusOnLine(warning: HTMLElement) {
+	if (document.activeElement !== warning) return;
+	const cell = warning.closest("td");
+	const row = cell?.closest("tr");
+	const target =
+		cell?.previousElementSibling?.querySelector<HTMLElement>("button") ??
+		row?.querySelector<HTMLElement>(
+			'td[data-testid="old"] button, td[data-testid="new"] button',
+		) ??
+		cell;
+	if (!target) return;
+	if (target === cell) cell.tabIndex = -1;
+	target.focus({ preventScroll: true });
+}
+
+/**
+ * The ⚠'s touch target: 40px square (`::before`), reaching into the rows
+ * above and below, and over it its own line's 20px band (`::after`), so
+ * where two warned rows' squares overlap the tap goes to the row it's on.
+ * The button makes no stacking context: the two layers order across rows.
+ */
+const WARNING_TARGET =
+	"pointer-coarse:before:absolute pointer-coarse:before:top-1/2 pointer-coarse:before:-left-2 pointer-coarse:before:z-[1] pointer-coarse:before:size-10 pointer-coarse:before:-translate-y-1/2 pointer-coarse:before:content-[''] pointer-coarse:after:absolute pointer-coarse:after:top-1/2 pointer-coarse:after:-left-2 pointer-coarse:after:z-[2] pointer-coarse:after:h-5 pointer-coarse:after:w-10 pointer-coarse:after:-translate-y-1/2 pointer-coarse:after:content-['']";
+
+/**
+ * In the sign's place, on a line whose change doesn't show while hidden
+ * characters are off (hiddenChange.ts): a warning that turns them on. As
+ * wide as the sign, so the code doesn't move; a finger gets 40px from the
+ * cell's edge rightwards (never over the number). The sign comes back once
+ * they show. Not a tab stop (a changed line ending can put one on every
+ * line): the keyboard has `h`. A touch or pen tap only opens its tooltip,
+ * which says where the switch is (owner, 2026-11-04: a tap shouldn't change
+ * a setting the reader may not know); decided by the click's own pointer
+ * (clickPointer), not the screen width, so a phone in landscape behaves the
+ * same. On a screen without hover its name says where the switch is too (a
+ * screen reader's activation there is a tap).
+ */
+function HiddenWarning({ kind }: { kind: RowLine["kind"] }) {
+	const show = useShowInvisibles();
+	const wide = useMedia(NOT_PHONE);
+	const hover = useMedia("(hover: hover)");
+	// The tooltip after a tap says where the switch is, until focus leaves.
+	const [tapped, setTapped] = useState(false);
+	if (show) return <Sign kind={kind} />;
+	const turnOn = `Hidden characters changed. Turn on Show hidden characters${wide ? ` (${VIEW_KEYS.showInvisibles})` : ""}`;
+	const inSettings =
+		"Hidden characters changed. Turn on Show hidden characters in Settings";
+	const label = hover ? turnOn : inSettings;
+	return (
+		<Tooltip content={tapped ? inSettings : label} describe={false} lazy>
+			{(trigger) => (
+				<button
+					{...trigger}
+					onBlur={() => {
+						setTapped(false);
+						trigger.onBlur();
+					}}
+					type="button"
+					aria-label={label}
+					tabIndex={-1}
+					data-hidden-change=""
+					onClick={(e) => {
+						if (isTap(clickPointer(e))) {
+							setTapped(true);
+							// Focus opens the tooltip (and a tap elsewhere closes it).
+							e.currentTarget.focus({ preventScroll: true });
+							return;
+						}
+						keepFocusOnLine(e.currentTarget);
+						showInvisibles.set(true);
+					}}
+					className={`relative mr-2 inline-flex w-[1ch] cursor-pointer select-none justify-center align-[-1px] text-warn focus-visible:outline-2 focus-visible:outline-accent ${WARNING_TARGET}`}
+				>
+					<AlertIcon size={12} aria-hidden />
+				</button>
+			)}
+		</Tooltip>
+	);
+}
+
+/**
  * A line's number on one side (`old`/`new`), as wide as the file's numbers
  * need. With a picker, the pointer picks its row's line from it (the
  * number's own cell side by side, the code cell's line in unified), and the
@@ -620,6 +708,8 @@ function CodeCell(props: {
 	/** In a hunk: its line's index in GitHub's order of it. */
 	order?: number;
 	marks: readonly Mark[];
+	/** A pair's changed tokens on the line, tinted (wordBlocks.ts). */
+	words?: Words;
 	/** Side by side only: the cell's own paint, kind, landing, mark and pick. */
 	cell?: {
 		paint: string;
@@ -655,13 +745,18 @@ function CodeCell(props: {
 					{agentBubble}
 				</BubbleSlot>
 			)}
-			<Sign kind={line.kind} />
+			{props.words?.hidden ? (
+				<HiddenWarning kind={line.kind} />
+			) : (
+				<Sign kind={line.kind} />
+			)}
 			<CodeLine
 				text={line.text}
 				lang={props.lang}
 				tabWidth={props.tabWidth}
 				newline={!line.noNewline}
 				marks={props.marks}
+				words={props.words}
 			/>
 		</td>
 	);
@@ -681,6 +776,8 @@ function BlankCells({ side }: { side: DiffSide }) {
 	);
 }
 
+const NO_LINES: ReadonlySet<DiffLine> = new Set();
+
 /** What every row of a line takes from its hunk and file. */
 interface RowProps {
 	shape: Shape;
@@ -697,11 +794,38 @@ interface RowProps {
 	picker?: Picker;
 	composers?: RowComposers;
 	agent?: AgentRows;
+	/** The hunk's paired lines' word marks (hunkWordMarks), by line. */
+	words?: ReadonlyMap<DiffLine, readonly Mark[]>;
+	/** The marked lines whose change doesn't show with hidden characters off (hiddenLines). */
+	hidden?: ReadonlySet<DiffLine>;
 }
 
 /** The spans painted over a cell's characters: those of the threads on its keys. */
 const marksOf = (keys: LineKey[], threads: RowThreads | undefined): Mark[] =>
 	threads ? keys.flatMap((k) => threads.placement.marks.get(k) ?? []) : [];
+
+const NO_MARKS: readonly Mark[] = [];
+
+/**
+ * A line's word marks and their tint: its kind's, faded on a reviewed
+ * cluster (as REVIEWED_ROW_BG fades the row). A whitespace-only row has none.
+ */
+function wordsOf(
+	line: RowLine,
+	props: Pick<RowProps, "words" | "hidden">,
+	reviewed: boolean,
+): Words | undefined {
+	if (line.kind !== "add" && line.kind !== "del") return undefined;
+	const marks = props.words?.get(line);
+	// A BOM may be hidden on a line without marks (hiddenLines).
+	const hidden = props.hidden?.has(line) || undefined;
+	if (!marks && !hidden) return undefined;
+	return {
+		marks: marks ?? NO_MARKS,
+		tone: reviewed ? `${line.kind}-done` : line.kind,
+		hidden,
+	};
+}
 
 /**
  * What follows a row of lines: the opened rows of the threads ending on it
@@ -928,6 +1052,7 @@ function LineRow(props: RowProps & { line: RowLine; order?: number }) {
 					hunk={props.hunk}
 					order={props.order}
 					marks={marksOf(keys, threads)}
+					words={wordsOf(line, props, reviewed)}
 					bubble={
 						endKey &&
 						threads && (
@@ -988,6 +1113,7 @@ interface Cell {
 	landed?: Landed["phase"];
 	where: string;
 	marks: Mark[];
+	words?: Words;
 	order?: number;
 	pick: NumberPick;
 	/** Its agent threads (a context line's: in the right cell only). */
@@ -1037,6 +1163,7 @@ function PairRow(
 			landed: landedPhase(props.landed, line),
 			where,
 			marks: marksOf(keys, threads),
+			words: wordsOf(line, props, reviewed),
 			order: props.orderOf?.(source),
 			pick: pickOf(codeCellOf(line), true, picker),
 			agentKeys: agent ? rowKeys(line) : [],
@@ -1187,6 +1314,7 @@ function PairRow(
 					hunk={props.hunk}
 					order={cell.order}
 					marks={cell.marks}
+					words={cell.words}
 					lead={bubbles.lead}
 					leadCount={lead?.count}
 					agentBubble={bubbles.agent}
@@ -2389,7 +2517,9 @@ const FADE_MS = 1000;
 const LANDED_ROW = {
 	on: "[&>td:first-child]:bg-accent!",
 	fading:
-		"[&>td]:transition-shadow [&>td]:duration-1000 motion-reduce:[&>td]:transition-none",
+		// The wash fades on the cells and, through --wash, on their word marks
+		// (Tailwind's easing, as transition-shadow had).
+		"[&>td]:[transition-property:box-shadow,--wash] [&>td]:ease-(--default-transition-timing-function) [&>td]:duration-1000 motion-reduce:[&>td]:transition-none",
 } as const;
 /** A landed unified row: the tint over every cell, and the rail. */
 const LANDED_CLASS = {
@@ -2553,22 +2683,33 @@ function HunkRows(props: {
 	// over the whole hunk): not again on a toggle, a landing, a thread
 	// opening or a context load. Side by side, the rows laid out as pairs
 	// (sideBySide.ts): the whitespace rows are its input, so the two settings
-	// compose.
-	const hunkRuns = useMemo(() => {
-		const twins = ignoreWhitespace ? matchHunk(hunk.lines) : null;
-		return runs(hunk.lines).map((run) => {
-			const rows = (
-				twins && run.key !== undefined
-					? pairRun(run.lines, twins)
-					: run.lines.map((line) => ({ kind: "line", line }))
-			) as DiffRow[];
-			return {
-				...run,
-				rows,
-				side: view === "side-by-side" ? layoutRows(rows) : null,
-			};
-		});
+	// compose. The word marks of the hunk's pairs with them, over all its
+	// runs' rows (a block may span two clusters), computed here, with the
+	// rows: a pair is never shown plain while its marks are pending.
+	const { hunkRuns, words } = useMemo(() => {
+		const runs = viewRuns(hunk.lines, ignoreWhitespace).map((run) => ({
+			...run,
+			side: view === "side-by-side" ? layoutRows(run.rows) : null,
+		}));
+		return {
+			hunkRuns: runs,
+			words: hunkWordMarks(runs.flatMap((run) => run.rows)),
+		};
 	}, [hunk, ignoreWhitespace, view]);
+	// The lines whose change doesn't show with hidden characters off (none
+	// to look for while they show).
+	const showHidden = useShowInvisibles();
+	const hidden = useMemo(
+		() =>
+			showHidden
+				? NO_LINES
+				: hiddenLines(
+						hunkRuns.flatMap((run) => run.rows),
+						words,
+						props.tabWidth ?? DEFAULT_TAB_WIDTH,
+					),
+		[showHidden, hunkRuns, words, props.tabWidth],
+	);
 	const columns = columnsOf(view);
 	// Unified, the file bubble is centred on rows that aren't code (FileBubbleSlot).
 	const centred = view === "unified";
@@ -2604,6 +2745,8 @@ function HunkRows(props: {
 					picker: props.picker,
 					composers: props.composers,
 					agent: props.agent,
+					words,
+					hidden,
 				};
 				/** The run's rows, the cluster's controls on the first when given. */
 				const runRows = (controls?: ReactNode) =>

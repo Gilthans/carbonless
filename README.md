@@ -42,7 +42,8 @@ root is Home; `/pr/<owner>/<repo>/<n>` opens any PR's review.
 
 `crb serve` runs the server in the foreground. Host and port come from
 `$XDG_CONFIG_HOME/carbonless/config.json` (`{ "serve": { "host": "…", "port": 4747 } }`),
-default `127.0.0.1:4747`.
+default `127.0.0.1:4747`. Behind a proxy, `serve.publicUrl` is the address it
+serves crb at ("Remote machine").
 
 | `crb serve` option | |
 |---|---|
@@ -72,7 +73,16 @@ Tailscale):
    Off loopback, pages need the access key (`~/.local/state/carbonless/key`);
    the printed link carries it as `?key=`. The key is like an SSH key: whoever
    holds it can set (and Check) the agent's command, which the server runs
-   as your user. On loopback with no key, so can any local process.
+   as your user. On loopback with no key (and no `publicUrl`, below), so can
+   any local process.
+
+   To open it by the machine's Tailscale name instead: `*.ts.net` names
+   are HTTPS-only in browsers (HSTS preload), so put `tailscale serve` in
+   front (`tailscale serve --bg --https=8443 http://127.0.0.1:4747`), keep
+   `host` on `127.0.0.1` and add `"publicUrl":
+   "https://<machine>.<tailnet>.ts.net:8443"` to `serve`. Links then use the
+   public URL; the key is required on loopback too, and writes are accepted
+   from that origin.
 3. Run it as a systemd user service, `~/.config/systemd/user/crb.service`
    (`PATH` must reach Node 24, the global `crb`, `git` and `gh`; don't set
    `XDG_CONFIG_HOME`, so it sees your `gh` login and config):

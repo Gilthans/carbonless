@@ -192,7 +192,9 @@ Not scheduled yet; after everything above.
 
 ## Invisible characters: parked
 
-- ZWJ between emoji that aren't a known emoji sequence, and a redundant VS16, stay unescaped.
+- ZWJ between emoji that aren't a known emoji sequence, and a redundant VS16, stay unescaped
+  outside word marks (inside one they show as `\u200D` / `\uFE0F` labels, or warn with
+  hidden characters off): on a context line, an added file, or a line without a pair.
 - `rangeText` (copy) adds no line breaks at `<p>`, `<div>` or `<br>`, only between table rows.
 - Some UAX #11 wide ranges are missing from the tab-stop width table.
 - No keyboard path reaches the escape markers (their tooltips open on hover and tap only).
@@ -242,6 +244,15 @@ Not scheduled yet; after everything above.
   while refusals are listed.
 - On a merged PR, a LEFT thread's code shows GitHub's hunk.
 
+- Big changed files are slow (measured 2026-11-02 on master, not caused by
+  word marks): a 2,000-line changed file takes 3–7 s to open and 8–30 s of
+  main-thread CPU to switch unified/side by side. Virtualize the rows
+  (TanStack Virtual; the owner: "interesting", later).
+- Inline diff step 2 (owner, 2026-10-31): pair removed and added lines by
+  similarity, moving the rows ("github line matching is no good"), so
+  unequal blocks, shifted pairs, splits/joins get word marks
+  (`docs/superpowers/specs/2026-11-01-inline-diff-design.md`, non-goals).
+
 ## Housekeeping
 
 - `scripts/queue.mjs`: a SIGKILL to the queue's process group kills both
@@ -249,6 +260,13 @@ Not scheduled yet; after everything above.
   outside the queue with nobody reading it (measured; TERM, INT and HUP are
   handled). Run the child in its own group and kill it when the waiter dies,
   or hold the lock in the child.
+- `e2e/keepalive.spec.ts:367` ("a diff scrolled sideways…") failed once in a
+  full verify (2026-11-02, chromium): it sets `scrollLeft` right after
+  expanding and read back 0. Passed 20/20 in flake-check; find the race.
+- Two unit tests failed once each under heavy load (2026-11-04, load ~19 on
+  4 cores) and passed flake-check after: `highlight.test.ts` "colors code in
+  a known language" (10/10), and `wordDiff.test.ts`'s 100 ms CPU budget for
+  similar pairs (5/5; isolated runs take 51–89 ms, so little headroom).
 - Old agent worktrees under `.worktrees/` and stray processes (e.g. old
   `threads-c` instances on test-automation#99) pile up; prune them.
 

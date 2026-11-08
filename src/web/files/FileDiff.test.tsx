@@ -29,6 +29,13 @@ import { SyncNotices } from "./SyncNotices";
 import type { Unit } from "./unit";
 import { stateSyncFor, useReviewView } from "./useSetStates";
 
+/**
+ * A diff line's code by its whole text: a pair's word marks split its text
+ * into elements, which the default text match doesn't join.
+ */
+const codeLine = (text: string) => (_: string, el: Element | null) =>
+	el?.hasAttribute("data-code") === true && el.textContent === text;
+
 vi.mock("./highlight", () => ({
 	languageFor: () => null,
 	highlightLine: async () => [],
@@ -216,7 +223,7 @@ describe("FileDiff", () => {
 		expect(screen.queryByRole("checkbox")).toBeNull();
 		expect(paths()).toEqual([]);
 		await user.click(screen.getByRole("button", { name: "Expand file" }));
-		expect(await screen.findByText("new five")).toBeInTheDocument();
+		expect(await screen.findByText(codeLine("new five"))).toBeInTheDocument();
 		expect(paths()).toEqual(["/api/files/0/hunks?revision=r1"]);
 		expect(screen.getByText("@@ -2,7 +2,7 @@")).toBeInTheDocument();
 	});
@@ -914,7 +921,7 @@ describe("FileDiff", () => {
 		// Still closed until the owner opens it.
 		expect(screen.queryByRole("checkbox")).toBeNull();
 		await rerender(shown(true));
-		expect(await screen.findByText("new five")).toBeInTheDocument();
+		expect(await screen.findByText(codeLine("new five"))).toBeInTheDocument();
 		await userEvent.click(
 			screen.getByRole("button", { name: "Collapse file" }),
 		);
@@ -958,12 +965,14 @@ describe("FileDiff", () => {
 			const f = file([cluster("k1"), cluster("k2")]);
 			const { posts, user, answer } = heldSave(f, 200);
 			await user.click(screen.getByRole("button", { name: "Expand file" }));
-			expect(await screen.findAllByText("new five")).not.toHaveLength(0);
+			expect(await screen.findAllByText(codeLine("new five"))).not.toHaveLength(
+				0,
+			);
 			await user.click(screen.getByRole("button", { name }));
 			// Closed before the save answers, focus on its toggle.
 			const toggle = screen.getByRole("button", { name: "Expand file" });
 			expect(toggle).toHaveFocus();
-			expect(screen.queryByText("new five")).toBeNull();
+			expect(screen.queryByText(codeLine("new five"))).toBeNull();
 			await answer();
 			await waitFor(() => expect(posts()).toHaveLength(1));
 			expect(
@@ -987,7 +996,9 @@ describe("FileDiff", () => {
 			expect(
 				screen.getByRole("button", { name: "Collapse file" }),
 			).toBeInTheDocument();
-			expect(await screen.findAllByText("new five")).not.toHaveLength(0);
+			expect(await screen.findAllByText(codeLine("new five"))).not.toHaveLength(
+				0,
+			);
 		},
 	);
 
@@ -1317,7 +1328,7 @@ describe("FileDiff", () => {
 				() => screen.queryByText("Loading diff…"),
 			],
 			release: () => lines.release(hunks),
-			result: () => screen.queryByText("new five"),
+			result: () => screen.queryByText(codeLine("new five")),
 		});
 	});
 

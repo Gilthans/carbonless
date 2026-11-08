@@ -27,7 +27,9 @@ Options:
 
 crb serve runs the server in the foreground, for every review. Host and
 port default to config.json's serve (~/.config/carbonless; else
-127.0.0.1:4747).
+127.0.0.1:4747). Behind a proxy (e.g. tailscale serve for HTTPS), set
+serve.publicUrl to the address it serves: links use it, and the access
+key is required.
 
 Serve options:
   --host <h>   Host to bind. Any other than 127.0.0.1, ::1 or localhost
@@ -143,9 +145,10 @@ async function serve(values: {
 	process.on("SIGINT", shutdown);
 	process.on("SIGTERM", shutdown);
 	// Tests and agents parse this line to find the server.
-	console.error(
-		`carbonless listening on ${server.url}/${server.key ? `?key=${server.key}` : ""}`,
-	);
+	const key = server.key ? `?key=${server.key}` : "";
+	console.error(`carbonless listening on ${server.url}/${key}`);
+	if (server.publicUrl)
+		console.error(`carbonless open at ${server.publicUrl}/${key}`);
 }
 
 main().catch((error: unknown) => {

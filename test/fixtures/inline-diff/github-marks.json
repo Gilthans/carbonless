@@ -1,0 +1,3803 @@
+{
+ "_meta": {
+  "source": "GitHub PR Files page (signed in), Gilthans/carbonless-gallery#14, head edae85f39004646a156b5e859acde2ff31f84b03, captured 2026-11-01 from page_data/diff_entries (w=0) and checked against the rendered unified and split views",
+  "offsets": "[start, end) in UTF-16 code units (JavaScript string indices) of the line text, without the +/- sign; a CRLF line's text keeps its trailing \\r, which is never marked",
+  "blocks": "a run of removed lines followed by added lines between context lines; 'pairs' is filled only for equal blocks (GitHub pairs i-th with i-th); unequal blocks list their lines, all unmarked",
+  "ignoreWhitespace": "with Hide whitespace (w=1) the files flagged hiddenWithIgnoreWhitespace have no diff; every other file's marks are identical"
+ },
+ "files": {
+  "inline/01-rename-identifier.ts": {
+   "blocks": [
+    {
+     "shape": "1/1",
+     "pairs": [
+      {
+       "old": "const userCount = getUsers(db).length + offset;",
+       "new": "const memberCount = getUsers(db).length + offset;",
+       "oldMarks": [
+        [
+         6,
+         15
+        ]
+       ],
+       "newMarks": [
+        [
+         6,
+         17
+        ]
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  "inline/02-number-literal.ts": {
+   "blocks": [
+    {
+     "shape": "1/1",
+     "pairs": [
+      {
+       "old": "const timeoutMs = 3000; // wait for the server",
+       "new": "const timeoutMs = 4500; // wait for the server",
+       "oldMarks": [
+        [
+         18,
+         22
+        ]
+       ],
+       "newMarks": [
+        [
+         18,
+         22
+        ]
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  "inline/03-string-literal.ts": {
+   "blocks": [
+    {
+     "shape": "1/1",
+     "pairs": [
+      {
+       "old": "log.info(\"Connecting to the primary database now\");",
+       "new": "log.info(\"Connecting to the replica database now\");",
+       "oldMarks": [
+        [
+         28,
+         35
+        ]
+       ],
+       "newMarks": [
+        [
+         28,
+         35
+        ]
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  "inline/04-reindent-and-change.ts": {
+   "blocks": [
+    {
+     "shape": "1/1",
+     "pairs": [
+      {
+       "old": "    if (count > limit) return clamp(count, limit);",
+       "new": "        if (count >= limit) return clamp(count, limit);",
+       "oldMarks": [],
+       "newMarks": [
+        [
+         4,
+         8
+        ],
+        [
+         19,
+         20
+        ]
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  "inline/05-whitespace-indent-only.ts": {
+   "blocks": [
+    {
+     "shape": "1/1",
+     "pairs": [
+      {
+       "old": "  return computeTotal(items, taxRate, discount);",
+       "new": "      return computeTotal(items, taxRate, discount);",
+       "oldMarks": [],
+       "newMarks": [
+        [
+         2,
+         6
+        ]
+       ]
+      }
+     ]
+    }
+   ],
+   "hiddenWithIgnoreWhitespace": true
+  },
+  "inline/06-whitespace-inner-only.ts": {
+   "blocks": [
+    {
+     "shape": "1/1",
+     "pairs": [
+      {
+       "old": "const area = width * height + margin;",
+       "new": "const area  =  width*height + margin;",
+       "oldMarks": [
+        [
+         11,
+         21
+        ]
+       ],
+       "newMarks": [
+        [
+         11,
+         21
+        ]
+       ]
+      }
+     ]
+    }
+   ],
+   "hiddenWithIgnoreWhitespace": true
+  },
+  "inline/07-trailing-space-only.ts": {
+   "blocks": [
+    {
+     "shape": "1/1",
+     "pairs": [
+      {
+       "old": "const ready = isReady(service);",
+       "new": "const ready = isReady(service);   ",
+       "oldMarks": [],
+       "newMarks": [
+        [
+         31,
+         34
+        ]
+       ]
+      }
+     ]
+    }
+   ],
+   "hiddenWithIgnoreWhitespace": true
+  },
+  "inline/08-tabs-to-spaces.ts": {
+   "blocks": [
+    {
+     "shape": "1/1",
+     "pairs": [
+      {
+       "old": "\t\tresult.push(normalize(value));",
+       "new": "        result.push(normalize(value));",
+       "oldMarks": [
+        [
+         0,
+         2
+        ]
+       ],
+       "newMarks": [
+        [
+         0,
+         8
+        ]
+       ]
+      }
+     ]
+    }
+   ],
+   "hiddenWithIgnoreWhitespace": true
+  },
+  "inline/09-tabs-and-change.ts": {
+   "blocks": [
+    {
+     "shape": "1/1",
+     "pairs": [
+      {
+       "old": "\t\tresult.push(normalize(value));",
+       "new": "        result.push(sanitize(value));",
+       "oldMarks": [
+        [
+         0,
+         2
+        ],
+        [
+         14,
+         23
+        ]
+       ],
+       "newMarks": [
+        [
+         0,
+         8
+        ],
+        [
+         20,
+         28
+        ]
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  "inline/10-trailing-part-changed.ts": {
+   "blocks": [
+    {
+     "shape": "1/1",
+     "pairs": [
+      {
+       "old": "const message = formatGreeting(user.firstName, user.lastName, locale);",
+       "new": "const message = formatGreeting(user.firstName, user.lastName, fallbackLocale, options);",
+       "oldMarks": [
+        [
+         62,
+         68
+        ]
+       ],
+       "newMarks": [
+        [
+         62,
+         85
+        ]
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  "inline/11-leading-part-changed.ts": {
+   "blocks": [
+    {
+     "shape": "1/1",
+     "pairs": [
+      {
+       "old": "let message = formatGreeting(user.firstName, user.lastName, locale);",
+       "new": "export const greetingText = formatGreeting(user.firstName, user.lastName, locale);",
+       "oldMarks": [
+        [
+         0,
+         11
+        ]
+       ],
+       "newMarks": [
+        [
+         0,
+         25
+        ]
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  "inline/12-reordered-arguments.ts": {
+   "blocks": [
+    {
+     "shape": "1/1",
+     "pairs": [
+      {
+       "old": "const box = makeBox(width, height, depth, color);",
+       "new": "const box = makeBox(color, width, height, depth);",
+       "oldMarks": [
+        [
+         40,
+         47
+        ]
+       ],
+       "newMarks": [
+        [
+         20,
+         27
+        ]
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  "inline/13-punctuation-only.ts": {
+   "blocks": [
+    {
+     "shape": "1/1",
+     "pairs": [
+      {
+       "old": "const items = ['alpha', 'beta', 'gamma'];",
+       "new": "const items = [\"alpha\", \"beta\", \"gamma\"],",
+       "oldMarks": [
+        [
+         15,
+         16
+        ],
+        [
+         21,
+         25
+        ],
+        [
+         29,
+         33
+        ],
+        [
+         38,
+         41
+        ]
+       ],
+       "newMarks": [
+        [
+         15,
+         16
+        ],
+        [
+         21,
+         25
+        ],
+        [
+         29,
+         33
+        ],
+        [
+         38,
+         41
+        ]
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  "inline/14-one-char-typo.ts": {
+   "blocks": [
+    {
+     "shape": "1/1",
+     "pairs": [
+      {
+       "old": "// We recieve the payload and validate it before storing",
+       "new": "// We receive the payload and validate it before storing",
+       "oldMarks": [
+        [
+         6,
+         13
+        ]
+       ],
+       "newMarks": [
+        [
+         6,
+         13
+        ]
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  "inline/15-camelcase-part.ts": {
+   "blocks": [
+    {
+     "shape": "1/1",
+     "pairs": [
+      {
+       "old": "const name = account.getUserName(session);",
+       "new": "const name = account.getUserId(session);",
+       "oldMarks": [
+        [
+         21,
+         32
+        ]
+       ],
+       "newMarks": [
+        [
+         21,
+         30
+        ]
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  "inline/16-case-change-only.ts": {
+   "blocks": [
+    {
+     "shape": "1/1",
+     "pairs": [
+      {
+       "old": "const result = parseJson(input);",
+       "new": "const result = parseJSON(input);",
+       "oldMarks": [
+        [
+         15,
+         24
+        ]
+       ],
+       "newMarks": [
+        [
+         15,
+         24
+        ]
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  "inline/17-many-small-changes.ts": {
+   "blocks": [
+    {
+     "shape": "1/1",
+     "pairs": [
+      {
+       "old": "const grid = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];",
+       "new": "const grid = [1, 20, 3, 40, 5, 60, 7, 80, 9, 100, 11, 120];",
+       "oldMarks": [
+        [
+         17,
+         18
+        ],
+        [
+         23,
+         24
+        ],
+        [
+         29,
+         30
+        ],
+        [
+         35,
+         36
+        ],
+        [
+         41,
+         43
+        ],
+        [
+         49,
+         51
+        ]
+       ],
+       "newMarks": [
+        [
+         17,
+         19
+        ],
+        [
+         24,
+         26
+        ],
+        [
+         31,
+         33
+        ],
+        [
+         38,
+         40
+        ],
+        [
+         45,
+         48
+        ],
+        [
+         54,
+         57
+        ]
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  "inline/18-unicode.ts": {
+   "blocks": [
+    {
+     "shape": "1/1",
+     "pairs": [
+      {
+       "old": "const banner = \"Ship it 🚀 — done ✅ — café — 日本語のテキスト\";",
+       "new": "const banner = \"Ship it 🎉 — done ✅ — cafe — 日本語のテスト\";",
+       "oldMarks": [
+        [
+         24,
+         26
+        ],
+        [
+         38,
+         42
+        ],
+        [
+         45,
+         53
+        ]
+       ],
+       "newMarks": [
+        [
+         24,
+         26
+        ],
+        [
+         38,
+         42
+        ],
+        [
+         45,
+         52
+        ]
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  "inline/19-emoji-only.ts": {
+   "blocks": [
+    {
+     "shape": "1/1",
+     "pairs": [
+      {
+       "old": "const icon = \"👍\";",
+       "new": "const icon = \"👎\";",
+       "oldMarks": [
+        [
+         14,
+         16
+        ]
+       ],
+       "newMarks": [
+        [
+         14,
+         16
+        ]
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  "inline/20-cjk-only.ts": {
+   "blocks": [
+    {
+     "shape": "1/1",
+     "pairs": [
+      {
+       "old": "const title = \"東京の天気は晴れです\";",
+       "new": "const title = \"大阪の天気は雨です\";",
+       "oldMarks": [
+        [
+         15,
+         25
+        ]
+       ],
+       "newMarks": [
+        [
+         15,
+         24
+        ]
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  "inline/21-completely-different.ts": {
+   "blocks": [
+    {
+     "shape": "1/1",
+     "pairs": [
+      {
+       "old": "const total = items.reduce((a, b) => a + b, 0);",
+       "new": "throw new Error('not implemented yet, see issue 42');",
+       "oldMarks": [
+        [
+         0,
+         45
+        ]
+       ],
+       "newMarks": [
+        [
+         0,
+         51
+        ]
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  "inline/22-crlf-only.ts": {
+   "blocks": [
+    {
+     "shape": "1/1",
+     "pairs": [
+      {
+       "old": "const eol = detectLineEnding(text);",
+       "new": "const eol = detectLineEnding(text);\r",
+       "oldMarks": [],
+       "newMarks": []
+      }
+     ]
+    }
+   ],
+   "hiddenWithIgnoreWhitespace": true
+  },
+  "inline/23-crlf-and-change.ts": {
+   "blocks": [
+    {
+     "shape": "1/1",
+     "pairs": [
+      {
+       "old": "const eol = detectLineEnding(text);",
+       "new": "const eol = detectLineEnding(input);\r",
+       "oldMarks": [
+        [
+         29,
+         33
+        ]
+       ],
+       "newMarks": [
+        [
+         29,
+         34
+        ]
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  "inline/24-long-220.ts": {
+   "blocks": [
+    {
+     "shape": "1/1",
+     "pairs": [
+      {
+       "old": "const text = \"kilo echo mike uniform bravo charlie romeo delta lima sierra bravo quebec golf bravo charlie november november charlie hotel charlie romeo november bravo sierra delta hotel uniform uniform sierra bravo sierra\";",
+       "new": "const text = \"kilo echo mike uniform bravo charlie romeo delta lima sierra bravo quebec golf bravo charlie november CHANGED charlie hotel charlie romeo november bravo sierra delta hotel uniform uniform sierra bravo sierra\";",
+       "oldMarks": [
+        [
+         116,
+         124
+        ]
+       ],
+       "newMarks": [
+        [
+         116,
+         123
+        ]
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  "inline/25-long-500.ts": {
+   "blocks": [
+    {
+     "shape": "1/1",
+     "pairs": [
+      {
+       "old": "const text = \"sierra mike bravo hotel bravo romeo echo juliet november echo romeo delta sierra juliet romeo victor foxtrot delta sierra sierra uniform golf lima delta romeo whiskey charlie sierra bravo tango golf papa victor romeo november yankee kilo oscar sierra oscar lima juliet hotel zulu foxtrot whiskey yankee hotel charlie sierra juliet quebec papa kilo xray oscar juliet tango charlie delta quebec november foxtrot yankee kilo echo papa november bravo victor charlie yankee romeo sierra zulu\";",
+       "new": "const text = \"sierra mike bravo hotel bravo romeo echo juliet november echo romeo delta sierra juliet romeo victor foxtrot delta sierra sierra uniform golf lima delta romeo whiskey charlie sierra bravo tango golf papa victor romeo november yankee kilo CHANGED sierra oscar lima juliet hotel zulu foxtrot whiskey yankee hotel charlie sierra juliet quebec papa kilo xray oscar juliet tango charlie delta quebec november foxtrot yankee kilo echo papa november bravo victor charlie yankee romeo sierra zulu\";",
+       "oldMarks": [
+        [
+         252,
+         257
+        ]
+       ],
+       "newMarks": [
+        [
+         252,
+         259
+        ]
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  "inline/26-long-1000.ts": {
+   "blocks": [
+    {
+     "shape": "1/1",
+     "pairs": [
+      {
+       "old": "const text = \"kilo kilo whiskey lima tango papa sierra zulu oscar charlie charlie india papa whiskey victor charlie bravo xray whiskey juliet uniform sierra victor oscar juliet whiskey mike victor lima alpha oscar lima foxtrot tango delta papa bravo golf yankee juliet echo xray hotel mike mike papa charlie foxtrot oscar mike romeo india echo november romeo india whiskey november lima victor mike hotel echo charlie foxtrot echo hotel victor hotel alpha papa sierra foxtrot india juliet alpha echo november romeo lima tango sierra kilo echo whiskey quebec tango uniform victor xray bravo oscar yankee victor zulu romeo mike mike mike mike delta papa uniform mike bravo golf charlie golf oscar foxtrot delta kilo tango bravo delta alpha sierra echo romeo delta lima tango alpha charlie golf tango mike echo uniform india lima tango lima papa delta delta papa oscar papa papa juliet charlie echo delta xray kilo xray india papa whiskey foxtrot quebec alpha golf quebec lima echo whiskey romeo alpha\";",
+       "new": "const text = \"kilo kilo whiskey lima tango papa sierra zulu oscar charlie charlie india papa whiskey victor charlie bravo xray whiskey juliet uniform sierra victor oscar juliet whiskey mike victor lima alpha oscar lima foxtrot tango delta papa bravo golf yankee juliet echo xray hotel mike mike papa charlie foxtrot oscar mike romeo india echo november romeo india whiskey november lima victor mike hotel echo charlie foxtrot echo hotel victor hotel alpha papa sierra foxtrot india juliet alpha echo november CHANGED lima tango sierra kilo echo whiskey quebec tango uniform victor xray bravo oscar yankee victor zulu romeo mike mike mike mike delta papa uniform mike bravo golf charlie golf oscar foxtrot delta kilo tango bravo delta alpha sierra echo romeo delta lima tango alpha charlie golf tango mike echo uniform india lima tango lima papa delta delta papa oscar papa papa juliet charlie echo delta xray kilo xray india papa whiskey foxtrot quebec alpha golf quebec lima echo whiskey romeo alpha\";",
+       "oldMarks": [
+        [
+         509,
+         514
+        ]
+       ],
+       "newMarks": [
+        [
+         509,
+         516
+        ]
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  "inline/27-long-2000.ts": {
+   "blocks": [
+    {
+     "shape": "1/1",
+     "pairs": [
+      {
+       "old": "const text = \"yankee quebec juliet uniform charlie whiskey india quebec lima foxtrot lima yankee hotel romeo romeo yankee quebec kilo uniform hotel tango zulu zulu yankee golf zulu hotel mike xray zulu hotel golf quebec papa lima xray alpha alpha zulu india papa india golf whiskey tango lima oscar zulu xray lima lima charlie hotel delta hotel papa golf kilo golf papa tango tango alpha papa uniform lima zulu uniform charlie victor delta mike zulu whiskey yankee golf papa foxtrot november zulu uniform kilo charlie zulu xray mike oscar mike xray charlie xray foxtrot foxtrot echo alpha echo sierra oscar zulu uniform echo tango tango papa victor lima echo romeo romeo echo alpha alpha zulu xray uniform delta quebec xray echo november golf golf alpha india golf juliet quebec hotel yankee sierra kilo india romeo november echo bravo xray lima oscar victor sierra quebec november quebec echo romeo echo quebec quebec alpha oscar yankee foxtrot tango alpha yankee zulu echo foxtrot echo papa tango xray delta romeo bravo kilo victor quebec quebec romeo papa zulu yankee delta romeo bravo hotel golf india bravo yankee delta quebec oscar romeo alpha yankee charlie oscar kilo tango quebec tango quebec golf whiskey india oscar quebec romeo zulu papa quebec hotel whiskey quebec india romeo golf oscar echo november delta mike oscar kilo charlie victor hotel november charlie golf victor juliet zulu delta yankee echo whiskey uniform victor lima echo india echo oscar hotel xray delta mike papa foxtrot victor hotel foxtrot whiskey november quebec mike kilo november golf lima kilo charlie xray lima alpha kilo romeo oscar oscar whiskey alpha mike kilo quebec tango juliet quebec charlie delta zulu hotel delta charlie india india bravo yankee foxtrot india yankee echo november victor india mike echo romeo quebec sierra papa whiskey kilo charlie india bravo zulu whiskey foxtrot november charlie india alpha uniform charlie zulu india charlie tango hotel charlie india delta oscar alpha kilo romeo\";",
+       "new": "const text = \"yankee quebec juliet uniform charlie whiskey india quebec lima foxtrot lima yankee hotel romeo romeo yankee quebec kilo uniform hotel tango zulu zulu yankee golf zulu hotel mike xray zulu hotel golf quebec papa lima xray alpha alpha zulu india papa india golf whiskey tango lima oscar zulu xray lima lima charlie hotel delta hotel papa golf kilo golf papa tango tango alpha papa uniform lima zulu uniform charlie victor delta mike zulu whiskey yankee golf papa foxtrot november zulu uniform kilo charlie zulu xray mike oscar mike xray charlie xray foxtrot foxtrot echo alpha echo sierra oscar zulu uniform echo tango tango papa victor lima echo romeo romeo echo alpha alpha zulu xray uniform delta quebec xray echo november golf golf alpha india golf juliet quebec hotel yankee sierra kilo india romeo november echo bravo xray lima oscar victor sierra quebec november quebec echo romeo echo quebec quebec alpha oscar yankee foxtrot tango alpha yankee zulu echo foxtrot echo papa tango xray CHANGED romeo bravo kilo victor quebec quebec romeo papa zulu yankee delta romeo bravo hotel golf india bravo yankee delta quebec oscar romeo alpha yankee charlie oscar kilo tango quebec tango quebec golf whiskey india oscar quebec romeo zulu papa quebec hotel whiskey quebec india romeo golf oscar echo november delta mike oscar kilo charlie victor hotel november charlie golf victor juliet zulu delta yankee echo whiskey uniform victor lima echo india echo oscar hotel xray delta mike papa foxtrot victor hotel foxtrot whiskey november quebec mike kilo november golf lima kilo charlie xray lima alpha kilo romeo oscar oscar whiskey alpha mike kilo quebec tango juliet quebec charlie delta zulu hotel delta charlie india india bravo yankee foxtrot india yankee echo november victor india mike echo romeo quebec sierra papa whiskey kilo charlie india bravo zulu whiskey foxtrot november charlie india alpha uniform charlie zulu india charlie tango hotel charlie india delta oscar alpha kilo romeo\";",
+       "oldMarks": [],
+       "newMarks": []
+      }
+     ]
+    }
+   ]
+  },
+  "inline/28-long-5000.ts": {
+   "blocks": [
+    {
+     "shape": "1/1",
+     "pairs": [
+      {
+       "old": "const text = \"november india tango echo bravo quebec whiskey hotel delta foxtrot india bravo foxtrot golf juliet uniform juliet quebec yankee golf juliet oscar quebec victor foxtrot india lima zulu alpha india bravo alpha alpha xray quebec romeo golf quebec papa hotel oscar delta victor uniform november victor papa romeo mike quebec juliet whiskey golf hotel kilo golf whiskey xray uniform echo mike lima bravo echo alpha charlie uniform xray india november foxtrot bravo charlie victor mike quebec victor juliet tango hotel whiskey juliet bravo oscar foxtrot foxtrot india oscar alpha india lima kilo romeo kilo hotel bravo juliet golf lima foxtrot alpha kilo mike charlie papa india quebec uniform golf hotel quebec yankee alpha charlie india charlie echo mike sierra bravo mike alpha juliet juliet uniform hotel charlie sierra quebec yankee echo victor whiskey zulu tango mike yankee kilo xray papa echo juliet xray tango uniform echo bravo whiskey quebec uniform november xray whiskey zulu quebec echo quebec yankee quebec sierra zulu alpha victor sierra zulu whiskey victor whiskey uniform hotel charlie alpha bravo echo uniform lima delta mike oscar romeo bravo uniform alpha uniform romeo victor hotel papa india alpha oscar zulu charlie xray quebec romeo charlie victor quebec charlie xray xray papa india zulu charlie india hotel xray yankee golf hotel xray uniform oscar papa mike charlie papa victor juliet yankee bravo tango uniform uniform golf charlie tango echo kilo india uniform xray whiskey juliet tango sierra echo alpha papa bravo papa india victor delta whiskey golf victor papa juliet whiskey quebec juliet oscar oscar oscar yankee delta romeo golf juliet charlie papa alpha juliet oscar charlie quebec oscar india mike golf golf charlie sierra charlie echo xray quebec india lima echo tango uniform quebec india delta whiskey lima hotel papa papa mike alpha foxtrot alpha papa victor oscar mike juliet xray echo november lima mike kilo delta kilo alpha kilo yankee kilo mike delta golf whiskey alpha xray juliet india lima charlie mike mike sierra charlie lima november yankee india bravo india delta bravo victor juliet uniform echo hotel india november quebec kilo golf yankee lima zulu november alpha zulu yankee uniform mike romeo romeo golf xray charlie bravo xray november oscar tango yankee echo uniform juliet papa bravo romeo echo foxtrot papa november kilo juliet juliet india xray xray uniform india mike uniform hotel juliet papa romeo victor mike delta foxtrot uniform foxtrot charlie golf quebec zulu papa romeo hotel oscar kilo yankee oscar november echo romeo golf hotel charlie foxtrot kilo romeo charlie kilo hotel lima india zulu sierra golf alpha xray november mike november xray quebec golf mike india kilo yankee bravo papa india sierra lima echo victor quebec quebec uniform zulu golf charlie india hotel mike mike uniform oscar november juliet alpha echo bravo november whiskey yankee zulu papa sierra papa alpha charlie mike quebec oscar oscar hotel zulu delta hotel echo echo quebec victor delta xray whiskey uniform yankee oscar charlie romeo yankee bravo alpha zulu echo hotel sierra bravo uniform whiskey juliet echo uniform india quebec uniform november whiskey yankee delta delta charlie juliet quebec sierra golf mike india hotel zulu tango alpha alpha romeo juliet oscar india kilo uniform hotel papa quebec hotel romeo hotel alpha november whiskey uniform juliet bravo alpha golf papa victor uniform november charlie india hotel victor november lima hotel papa bravo whiskey kilo whiskey november lima victor mike golf alpha zulu juliet xray quebec charlie golf papa golf juliet yankee golf hotel oscar hotel india yankee juliet delta tango papa tango foxtrot hotel papa november victor bravo tango echo mike bravo golf alpha tango echo november bravo whiskey bravo foxtrot mike oscar whiskey kilo xray delta charlie foxtrot kilo golf foxtrot uniform quebec xray oscar bravo juliet victor xray mike lima kilo oscar foxtrot delta alpha charlie india charlie lima november delta romeo yankee golf mike lima yankee juliet zulu november charlie bravo whiskey papa golf lima romeo oscar golf kilo lima xray papa alpha uniform november hotel zulu uniform yankee mike bravo mike bravo oscar charlie zulu bravo india golf xray charlie tango kilo lima india kilo tango bravo india xray whiskey whiskey kilo india juliet alpha xray yankee tango zulu uniform charlie alpha hotel delta papa whiskey oscar yankee mike zulu india november papa echo papa foxtrot alpha zulu xray juliet whiskey yankee echo tango hotel kilo kilo oscar lima zulu zulu tango charlie quebec golf mike yankee foxtrot hotel november charlie uniform bravo papa romeo romeo kilo foxtrot november delta charlie india tango charlie golf delta november papa whiskey oscar foxtrot hotel echo november oscar tango victor hotel xray romeo yankee victor yankee delta yankee juliet juliet india sierra india lima india xray india golf oscar hotel foxtrot hotel hotel echo juliet sierra golf\";",
+       "new": "const text = \"november india tango echo bravo quebec whiskey hotel delta foxtrot india bravo foxtrot golf juliet uniform juliet quebec yankee golf juliet oscar quebec victor foxtrot india lima zulu alpha india bravo alpha alpha xray quebec romeo golf quebec papa hotel oscar delta victor uniform november victor papa romeo mike quebec juliet whiskey golf hotel kilo golf whiskey xray uniform echo mike lima bravo echo alpha charlie uniform xray india november foxtrot bravo charlie victor mike quebec victor juliet tango hotel whiskey juliet bravo oscar foxtrot foxtrot india oscar alpha india lima kilo romeo kilo hotel bravo juliet golf lima foxtrot alpha kilo mike charlie papa india quebec uniform golf hotel quebec yankee alpha charlie india charlie echo mike sierra bravo mike alpha juliet juliet uniform hotel charlie sierra quebec yankee echo victor whiskey zulu tango mike yankee kilo xray papa echo juliet xray tango uniform echo bravo whiskey quebec uniform november xray whiskey zulu quebec echo quebec yankee quebec sierra zulu alpha victor sierra zulu whiskey victor whiskey uniform hotel charlie alpha bravo echo uniform lima delta mike oscar romeo bravo uniform alpha uniform romeo victor hotel papa india alpha oscar zulu charlie xray quebec romeo charlie victor quebec charlie xray xray papa india zulu charlie india hotel xray yankee golf hotel xray uniform oscar papa mike charlie papa victor juliet yankee bravo tango uniform uniform golf charlie tango echo kilo india uniform xray whiskey juliet tango sierra echo alpha papa bravo papa india victor delta whiskey golf victor papa juliet whiskey quebec juliet oscar oscar oscar yankee delta romeo golf juliet charlie papa alpha juliet oscar charlie quebec oscar india mike golf golf charlie sierra charlie echo xray quebec india lima echo tango uniform quebec india delta whiskey lima hotel papa papa mike alpha foxtrot alpha papa victor oscar mike juliet xray echo november lima mike kilo delta kilo alpha kilo yankee kilo mike delta golf whiskey alpha xray juliet india lima charlie mike mike sierra charlie lima november yankee india bravo india delta bravo victor juliet uniform echo hotel india november quebec kilo golf yankee lima zulu november alpha zulu yankee uniform mike romeo romeo golf xray charlie bravo xray november oscar tango yankee echo uniform juliet papa bravo romeo echo foxtrot papa november kilo juliet juliet india xray xray uniform india mike uniform hotel juliet papa romeo victor mike delta foxtrot uniform CHANGED charlie golf quebec zulu papa romeo hotel oscar kilo yankee oscar november echo romeo golf hotel charlie foxtrot kilo romeo charlie kilo hotel lima india zulu sierra golf alpha xray november mike november xray quebec golf mike india kilo yankee bravo papa india sierra lima echo victor quebec quebec uniform zulu golf charlie india hotel mike mike uniform oscar november juliet alpha echo bravo november whiskey yankee zulu papa sierra papa alpha charlie mike quebec oscar oscar hotel zulu delta hotel echo echo quebec victor delta xray whiskey uniform yankee oscar charlie romeo yankee bravo alpha zulu echo hotel sierra bravo uniform whiskey juliet echo uniform india quebec uniform november whiskey yankee delta delta charlie juliet quebec sierra golf mike india hotel zulu tango alpha alpha romeo juliet oscar india kilo uniform hotel papa quebec hotel romeo hotel alpha november whiskey uniform juliet bravo alpha golf papa victor uniform november charlie india hotel victor november lima hotel papa bravo whiskey kilo whiskey november lima victor mike golf alpha zulu juliet xray quebec charlie golf papa golf juliet yankee golf hotel oscar hotel india yankee juliet delta tango papa tango foxtrot hotel papa november victor bravo tango echo mike bravo golf alpha tango echo november bravo whiskey bravo foxtrot mike oscar whiskey kilo xray delta charlie foxtrot kilo golf foxtrot uniform quebec xray oscar bravo juliet victor xray mike lima kilo oscar foxtrot delta alpha charlie india charlie lima november delta romeo yankee golf mike lima yankee juliet zulu november charlie bravo whiskey papa golf lima romeo oscar golf kilo lima xray papa alpha uniform november hotel zulu uniform yankee mike bravo mike bravo oscar charlie zulu bravo india golf xray charlie tango kilo lima india kilo tango bravo india xray whiskey whiskey kilo india juliet alpha xray yankee tango zulu uniform charlie alpha hotel delta papa whiskey oscar yankee mike zulu india november papa echo papa foxtrot alpha zulu xray juliet whiskey yankee echo tango hotel kilo kilo oscar lima zulu zulu tango charlie quebec golf mike yankee foxtrot hotel november charlie uniform bravo papa romeo romeo kilo foxtrot november delta charlie india tango charlie golf delta november papa whiskey oscar foxtrot hotel echo november oscar tango victor hotel xray romeo yankee victor yankee delta yankee juliet juliet india sierra india lima india xray india golf oscar hotel foxtrot hotel hotel echo juliet sierra golf\";",
+       "oldMarks": [],
+       "newMarks": []
+      }
+     ]
+    }
+   ]
+  },
+  "inline/29-long-10000.ts": {
+   "blocks": [
+    {
+     "shape": "1/1",
+     "pairs": [
+      {
+       "old": "const text = \"kilo charlie mike india hotel quebec quebec hotel uniform zulu delta uniform oscar bravo delta alpha papa hotel oscar lima bravo juliet hotel delta bravo golf tango sierra golf charlie lima quebec foxtrot oscar tango india yankee yankee victor alpha delta uniform tango whiskey tango lima golf bravo lima kilo echo bravo golf india bravo tango xray uniform golf alpha kilo november victor lima foxtrot tango juliet charlie golf bravo zulu papa romeo papa charlie november delta zulu mike victor romeo echo uniform romeo charlie uniform foxtrot mike whiskey india november juliet victor juliet november bravo juliet xray sierra lima november november alpha yankee zulu lima uniform golf mike xray mike golf alpha november foxtrot november delta charlie mike sierra lima oscar yankee foxtrot echo alpha bravo romeo echo uniform zulu mike charlie sierra tango lima xray quebec foxtrot echo lima juliet foxtrot quebec foxtrot charlie delta mike papa yankee zulu zulu zulu golf juliet echo bravo papa kilo bravo tango uniform mike charlie whiskey tango whiskey foxtrot uniform zulu hotel tango mike tango golf papa foxtrot sierra golf bravo mike quebec foxtrot mike lima delta echo hotel xray golf bravo romeo yankee victor bravo victor kilo delta mike tango oscar romeo uniform yankee juliet uniform november juliet sierra hotel november mike victor lima oscar quebec oscar foxtrot alpha alpha tango papa oscar hotel oscar yankee tango yankee oscar foxtrot zulu papa mike delta charlie echo lima november lima charlie zulu oscar quebec quebec victor bravo bravo uniform echo charlie xray kilo yankee xray quebec charlie bravo yankee quebec mike uniform zulu echo alpha charlie tango xray whiskey delta golf echo papa juliet zulu zulu foxtrot victor zulu xray hotel charlie lima tango yankee india foxtrot kilo tango india oscar echo india quebec papa golf sierra india tango quebec hotel kilo lima bravo golf foxtrot mike foxtrot uniform india victor kilo mike foxtrot zulu zulu india delta yankee quebec bravo uniform lima oscar romeo quebec sierra whiskey delta india romeo uniform mike xray zulu lima india mike lima sierra echo lima kilo yankee charlie oscar hotel foxtrot tango xray bravo juliet quebec india juliet uniform sierra victor kilo xray alpha xray bravo hotel echo juliet tango uniform november november quebec lima bravo echo papa hotel tango uniform bravo alpha bravo alpha sierra lima juliet delta quebec lima romeo hotel november sierra juliet sierra echo golf lima tango papa foxtrot echo alpha zulu hotel whiskey echo oscar delta charlie uniform echo victor zulu india mike zulu india alpha bravo uniform romeo lima tango uniform sierra oscar tango quebec xray papa hotel foxtrot alpha bravo bravo romeo alpha mike foxtrot hotel foxtrot bravo yankee delta alpha tango romeo victor golf echo november golf quebec tango uniform quebec uniform uniform november tango foxtrot quebec juliet charlie juliet uniform bravo xray zulu papa whiskey romeo alpha mike november xray oscar charlie xray uniform oscar foxtrot hotel delta india hotel uniform bravo delta kilo xray whiskey india whiskey bravo india uniform romeo victor november victor zulu quebec india juliet uniform golf charlie quebec alpha foxtrot india hotel xray golf foxtrot xray kilo golf mike kilo tango hotel mike uniform whiskey victor romeo papa papa quebec whiskey alpha alpha november xray hotel sierra juliet zulu golf mike tango sierra charlie sierra foxtrot echo bravo alpha delta delta tango foxtrot lima echo whiskey alpha alpha bravo echo whiskey uniform uniform bravo whiskey charlie xray bravo charlie sierra yankee lima golf romeo victor charlie yankee whiskey mike delta hotel golf golf delta bravo bravo zulu yankee uniform charlie yankee uniform uniform juliet papa delta echo delta zulu yankee uniform golf juliet kilo kilo november india alpha lima india juliet bravo whiskey yankee lima kilo yankee tango quebec papa juliet tango xray alpha zulu november alpha november quebec yankee delta lima papa whiskey bravo romeo sierra golf whiskey charlie sierra juliet foxtrot november alpha quebec golf juliet yankee yankee bravo alpha lima papa delta papa whiskey zulu foxtrot papa sierra lima quebec india sierra foxtrot juliet golf whiskey hotel papa foxtrot delta uniform yankee charlie papa zulu whiskey romeo zulu delta uniform kilo lima delta mike mike xray charlie november uniform alpha lima golf juliet india november romeo quebec foxtrot mike uniform hotel oscar echo romeo tango yankee whiskey yankee tango uniform bravo lima sierra kilo quebec echo oscar victor romeo xray kilo foxtrot oscar oscar whiskey yankee india sierra hotel echo kilo oscar uniform whiskey hotel quebec golf india juliet yankee whiskey tango echo xray echo hotel xray kilo tango quebec lima foxtrot hotel kilo golf india xray delta foxtrot victor delta golf mike echo echo zulu juliet xray juliet november india golf delta uniform delta india golf mike oscar bravo alpha mike zulu november whiskey hotel quebec uniform juliet oscar alpha echo india tango xray mike alpha xray hotel november whiskey sierra sierra xray uniform november hotel victor xray uniform yankee uniform whiskey sierra hotel victor foxtrot uniform delta oscar november kilo india uniform whiskey delta november hotel zulu mike whiskey whiskey uniform foxtrot india november papa oscar alpha tango november quebec victor victor foxtrot uniform kilo yankee alpha mike papa delta bravo india romeo golf foxtrot whiskey zulu golf quebec lima delta sierra oscar romeo golf whiskey papa quebec alpha uniform zulu lima quebec kilo november xray oscar golf victor foxtrot mike quebec yankee delta xray tango lima uniform bravo india india mike mike bravo alpha charlie november november uniform whiskey victor lima sierra india delta hotel juliet xray mike quebec hotel zulu mike oscar golf foxtrot echo yankee charlie zulu zulu uniform golf papa uniform romeo xray hotel echo lima victor uniform zulu november oscar juliet yankee romeo uniform echo yankee papa lima zulu hotel india whiskey mike victor india november victor foxtrot papa alpha zulu xray zulu india lima hotel uniform juliet kilo papa papa november tango uniform charlie victor lima echo juliet mike bravo charlie sierra kilo zulu echo quebec lima uniform sierra alpha victor alpha golf charlie uniform juliet india tango delta sierra echo hotel foxtrot yankee oscar lima zulu echo golf mike zulu romeo foxtrot tango whiskey tango zulu charlie victor romeo zulu uniform juliet golf papa whiskey golf quebec charlie xray oscar victor delta romeo delta india november hotel echo papa papa romeo bravo papa oscar echo whiskey papa hotel papa foxtrot romeo tango xray alpha foxtrot kilo oscar whiskey sierra papa victor juliet oscar lima november november victor charlie foxtrot uniform lima uniform uniform alpha alpha tango bravo victor xray kilo zulu delta quebec papa papa yankee echo bravo golf whiskey november uniform echo kilo delta victor lima kilo papa yankee quebec romeo yankee golf juliet november kilo november india romeo bravo juliet juliet lima papa mike kilo quebec india quebec lima golf uniform papa zulu delta kilo golf kilo whiskey juliet echo sierra uniform charlie zulu bravo mike xray romeo mike romeo sierra bravo mike juliet delta alpha bravo golf papa tango yankee victor bravo zulu quebec romeo tango mike tango echo uniform victor whiskey whiskey tango victor charlie golf bravo victor uniform oscar uniform yankee foxtrot delta victor foxtrot bravo november yankee delta uniform alpha lima echo zulu juliet romeo whiskey india juliet foxtrot november bravo kilo alpha november sierra uniform sierra bravo papa sierra quebec bravo delta yankee zulu november sierra whiskey mike oscar charlie alpha victor mike tango sierra victor echo papa yankee november romeo delta charlie uniform papa golf echo uniform alpha november alpha alpha victor victor delta charlie golf delta echo papa alpha india xray sierra hotel oscar xray xray foxtrot bravo lima yankee xray whiskey whiskey echo xray yankee charlie juliet uniform romeo whiskey papa oscar victor india bravo whiskey bravo alpha bravo alpha uniform victor tango charlie mike juliet juliet xray tango foxtrot papa tango bravo kilo lima sierra xray oscar papa victor foxtrot echo zulu delta lima uniform foxtrot uniform zulu november papa mike yankee zulu oscar india zulu yankee sierra kilo juliet india bravo tango uniform whiskey zulu tango kilo tango xray alpha echo tango juliet sierra november hotel mike mike victor mike tango yankee hotel zulu oscar juliet whiskey alpha kilo india india november foxtrot sierra yankee zulu bravo juliet echo zulu sierra echo india zulu zulu romeo victor yankee papa lima romeo charlie romeo romeo papa zulu mike golf zulu yankee xray hotel juliet tango bravo victor mike oscar whiskey golf india sierra yankee alpha zulu mike oscar romeo charlie romeo zulu lima yankee charlie hotel mike sierra quebec india quebec kilo papa quebec sierra golf golf golf golf charlie foxtrot zulu whiskey juliet lima sierra sierra lima mike yankee quebec echo hotel bravo papa lima delta lima uniform oscar zulu charlie echo kilo tango alpha lima india quebec tango alpha delta bravo golf sierra papa sierra sierra golf india yankee india november delta oscar yankee sierra tango echo india bravo kilo golf foxtrot mike charlie alpha bravo bravo romeo lima whiskey oscar papa charlie tango uniform mike delta whiskey charlie india kilo sierra hotel uniform charlie victor quebec mike foxtrot oscar foxtrot lima hotel xray hotel foxtrot bravo india lima bravo romeo alpha bravo india zulu quebec whiskey xray uniform yankee papa bravo delta echo kilo yankee alpha golf victor xray juliet sierra sierra oscar yankee uniform delta papa kilo lima india mike delta lima papa mike foxtrot oscar hotel zulu echo victor alpha oscar whiskey golf zulu bravo foxtrot hotel charlie tango lima xray echo yankee oscar delta mike alpha uniform charlie oscar kilo kilo hotel papa delta uniform\";",
+       "new": "const text = \"kilo charlie mike india hotel quebec quebec hotel uniform zulu delta uniform oscar bravo delta alpha papa hotel oscar lima bravo juliet hotel delta bravo golf tango sierra golf charlie lima quebec foxtrot oscar tango india yankee yankee victor alpha delta uniform tango whiskey tango lima golf bravo lima kilo echo bravo golf india bravo tango xray uniform golf alpha kilo november victor lima foxtrot tango juliet charlie golf bravo zulu papa romeo papa charlie november delta zulu mike victor romeo echo uniform romeo charlie uniform foxtrot mike whiskey india november juliet victor juliet november bravo juliet xray sierra lima november november alpha yankee zulu lima uniform golf mike xray mike golf alpha november foxtrot november delta charlie mike sierra lima oscar yankee foxtrot echo alpha bravo romeo echo uniform zulu mike charlie sierra tango lima xray quebec foxtrot echo lima juliet foxtrot quebec foxtrot charlie delta mike papa yankee zulu zulu zulu golf juliet echo bravo papa kilo bravo tango uniform mike charlie whiskey tango whiskey foxtrot uniform zulu hotel tango mike tango golf papa foxtrot sierra golf bravo mike quebec foxtrot mike lima delta echo hotel xray golf bravo romeo yankee victor bravo victor kilo delta mike tango oscar romeo uniform yankee juliet uniform november juliet sierra hotel november mike victor lima oscar quebec oscar foxtrot alpha alpha tango papa oscar hotel oscar yankee tango yankee oscar foxtrot zulu papa mike delta charlie echo lima november lima charlie zulu oscar quebec quebec victor bravo bravo uniform echo charlie xray kilo yankee xray quebec charlie bravo yankee quebec mike uniform zulu echo alpha charlie tango xray whiskey delta golf echo papa juliet zulu zulu foxtrot victor zulu xray hotel charlie lima tango yankee india foxtrot kilo tango india oscar echo india quebec papa golf sierra india tango quebec hotel kilo lima bravo golf foxtrot mike foxtrot uniform india victor kilo mike foxtrot zulu zulu india delta yankee quebec bravo uniform lima oscar romeo quebec sierra whiskey delta india romeo uniform mike xray zulu lima india mike lima sierra echo lima kilo yankee charlie oscar hotel foxtrot tango xray bravo juliet quebec india juliet uniform sierra victor kilo xray alpha xray bravo hotel echo juliet tango uniform november november quebec lima bravo echo papa hotel tango uniform bravo alpha bravo alpha sierra lima juliet delta quebec lima romeo hotel november sierra juliet sierra echo golf lima tango papa foxtrot echo alpha zulu hotel whiskey echo oscar delta charlie uniform echo victor zulu india mike zulu india alpha bravo uniform romeo lima tango uniform sierra oscar tango quebec xray papa hotel foxtrot alpha bravo bravo romeo alpha mike foxtrot hotel foxtrot bravo yankee delta alpha tango romeo victor golf echo november golf quebec tango uniform quebec uniform uniform november tango foxtrot quebec juliet charlie juliet uniform bravo xray zulu papa whiskey romeo alpha mike november xray oscar charlie xray uniform oscar foxtrot hotel delta india hotel uniform bravo delta kilo xray whiskey india whiskey bravo india uniform romeo victor november victor zulu quebec india juliet uniform golf charlie quebec alpha foxtrot india hotel xray golf foxtrot xray kilo golf mike kilo tango hotel mike uniform whiskey victor romeo papa papa quebec whiskey alpha alpha november xray hotel sierra juliet zulu golf mike tango sierra charlie sierra foxtrot echo bravo alpha delta delta tango foxtrot lima echo whiskey alpha alpha bravo echo whiskey uniform uniform bravo whiskey charlie xray bravo charlie sierra yankee lima golf romeo victor charlie yankee whiskey mike delta hotel golf golf delta bravo bravo zulu yankee uniform charlie yankee uniform uniform juliet papa delta echo delta zulu yankee uniform golf juliet kilo kilo november india alpha lima india juliet bravo whiskey yankee lima kilo yankee tango quebec papa juliet tango xray alpha zulu november alpha november quebec yankee delta lima papa whiskey bravo romeo sierra golf whiskey charlie sierra juliet foxtrot november alpha quebec golf juliet yankee yankee bravo alpha lima papa delta papa whiskey zulu foxtrot papa sierra lima quebec india sierra foxtrot juliet golf whiskey hotel papa foxtrot delta uniform yankee charlie papa zulu whiskey romeo zulu delta uniform kilo lima delta mike mike xray charlie november uniform alpha lima golf juliet india november romeo quebec foxtrot mike uniform hotel oscar echo romeo tango yankee whiskey yankee tango uniform bravo lima sierra kilo quebec echo oscar victor romeo xray kilo foxtrot oscar oscar whiskey yankee india sierra hotel echo kilo oscar uniform whiskey hotel quebec golf india juliet yankee whiskey tango echo xray echo hotel xray kilo tango quebec lima foxtrot hotel kilo golf india xray delta foxtrot victor delta golf mike echo echo zulu juliet xray juliet november india golf delta uniform delta india golf mike oscar bravo alpha mike zulu november whiskey hotel quebec CHANGED juliet oscar alpha echo india tango xray mike alpha xray hotel november whiskey sierra sierra xray uniform november hotel victor xray uniform yankee uniform whiskey sierra hotel victor foxtrot uniform delta oscar november kilo india uniform whiskey delta november hotel zulu mike whiskey whiskey uniform foxtrot india november papa oscar alpha tango november quebec victor victor foxtrot uniform kilo yankee alpha mike papa delta bravo india romeo golf foxtrot whiskey zulu golf quebec lima delta sierra oscar romeo golf whiskey papa quebec alpha uniform zulu lima quebec kilo november xray oscar golf victor foxtrot mike quebec yankee delta xray tango lima uniform bravo india india mike mike bravo alpha charlie november november uniform whiskey victor lima sierra india delta hotel juliet xray mike quebec hotel zulu mike oscar golf foxtrot echo yankee charlie zulu zulu uniform golf papa uniform romeo xray hotel echo lima victor uniform zulu november oscar juliet yankee romeo uniform echo yankee papa lima zulu hotel india whiskey mike victor india november victor foxtrot papa alpha zulu xray zulu india lima hotel uniform juliet kilo papa papa november tango uniform charlie victor lima echo juliet mike bravo charlie sierra kilo zulu echo quebec lima uniform sierra alpha victor alpha golf charlie uniform juliet india tango delta sierra echo hotel foxtrot yankee oscar lima zulu echo golf mike zulu romeo foxtrot tango whiskey tango zulu charlie victor romeo zulu uniform juliet golf papa whiskey golf quebec charlie xray oscar victor delta romeo delta india november hotel echo papa papa romeo bravo papa oscar echo whiskey papa hotel papa foxtrot romeo tango xray alpha foxtrot kilo oscar whiskey sierra papa victor juliet oscar lima november november victor charlie foxtrot uniform lima uniform uniform alpha alpha tango bravo victor xray kilo zulu delta quebec papa papa yankee echo bravo golf whiskey november uniform echo kilo delta victor lima kilo papa yankee quebec romeo yankee golf juliet november kilo november india romeo bravo juliet juliet lima papa mike kilo quebec india quebec lima golf uniform papa zulu delta kilo golf kilo whiskey juliet echo sierra uniform charlie zulu bravo mike xray romeo mike romeo sierra bravo mike juliet delta alpha bravo golf papa tango yankee victor bravo zulu quebec romeo tango mike tango echo uniform victor whiskey whiskey tango victor charlie golf bravo victor uniform oscar uniform yankee foxtrot delta victor foxtrot bravo november yankee delta uniform alpha lima echo zulu juliet romeo whiskey india juliet foxtrot november bravo kilo alpha november sierra uniform sierra bravo papa sierra quebec bravo delta yankee zulu november sierra whiskey mike oscar charlie alpha victor mike tango sierra victor echo papa yankee november romeo delta charlie uniform papa golf echo uniform alpha november alpha alpha victor victor delta charlie golf delta echo papa alpha india xray sierra hotel oscar xray xray foxtrot bravo lima yankee xray whiskey whiskey echo xray yankee charlie juliet uniform romeo whiskey papa oscar victor india bravo whiskey bravo alpha bravo alpha uniform victor tango charlie mike juliet juliet xray tango foxtrot papa tango bravo kilo lima sierra xray oscar papa victor foxtrot echo zulu delta lima uniform foxtrot uniform zulu november papa mike yankee zulu oscar india zulu yankee sierra kilo juliet india bravo tango uniform whiskey zulu tango kilo tango xray alpha echo tango juliet sierra november hotel mike mike victor mike tango yankee hotel zulu oscar juliet whiskey alpha kilo india india november foxtrot sierra yankee zulu bravo juliet echo zulu sierra echo india zulu zulu romeo victor yankee papa lima romeo charlie romeo romeo papa zulu mike golf zulu yankee xray hotel juliet tango bravo victor mike oscar whiskey golf india sierra yankee alpha zulu mike oscar romeo charlie romeo zulu lima yankee charlie hotel mike sierra quebec india quebec kilo papa quebec sierra golf golf golf golf charlie foxtrot zulu whiskey juliet lima sierra sierra lima mike yankee quebec echo hotel bravo papa lima delta lima uniform oscar zulu charlie echo kilo tango alpha lima india quebec tango alpha delta bravo golf sierra papa sierra sierra golf india yankee india november delta oscar yankee sierra tango echo india bravo kilo golf foxtrot mike charlie alpha bravo bravo romeo lima whiskey oscar papa charlie tango uniform mike delta whiskey charlie india kilo sierra hotel uniform charlie victor quebec mike foxtrot oscar foxtrot lima hotel xray hotel foxtrot bravo india lima bravo romeo alpha bravo india zulu quebec whiskey xray uniform yankee papa bravo delta echo kilo yankee alpha golf victor xray juliet sierra sierra oscar yankee uniform delta papa kilo lima india mike delta lima papa mike foxtrot oscar hotel zulu echo victor alpha oscar whiskey golf zulu bravo foxtrot hotel charlie tango lima xray echo yankee oscar delta mike alpha uniform charlie oscar kilo kilo hotel papa delta uniform\";",
+       "oldMarks": [],
+       "newMarks": []
+      }
+     ]
+    }
+   ],
+   "tooBigLoadedSeparately": true
+  },
+  "inline/30-words-08-scattered.txt": {
+   "blocks": [
+    {
+     "shape": "1/1",
+     "pairs": [
+      {
+       "old": "maple thunder stone ember cloud silver copper violet lemon piano garnet river",
+       "new": "maple biscuit zebra turnip vortex parrot dynamo mosaic gizmo fennel bishop nickel",
+       "oldMarks": [
+        [
+         6,
+         77
+        ]
+       ],
+       "newMarks": [
+        [
+         6,
+         81
+        ]
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  "inline/30-words-17-scattered.txt": {
+   "blocks": [
+    {
+     "shape": "1/1",
+     "pairs": [
+      {
+       "old": "maple thunder stone ember cloud silver copper violet lemon piano garnet river",
+       "new": "maple biscuit zebra turnip vortex parrot copper dynamo mosaic gizmo fennel bishop",
+       "oldMarks": [
+        [
+         6,
+         38
+        ],
+        [
+         46,
+         77
+        ]
+       ],
+       "newMarks": [
+        [
+         6,
+         40
+        ],
+        [
+         48,
+         81
+        ]
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  "inline/30-words-25-scattered.txt": {
+   "blocks": [
+    {
+     "shape": "1/1",
+     "pairs": [
+      {
+       "old": "maple thunder stone ember cloud silver copper violet lemon piano garnet river",
+       "new": "maple biscuit zebra turnip cloud vortex parrot dynamo lemon mosaic gizmo fennel",
+       "oldMarks": [
+        [
+         6,
+         25
+        ],
+        [
+         32,
+         52
+        ],
+        [
+         59,
+         77
+        ]
+       ],
+       "newMarks": [
+        [
+         6,
+         26
+        ],
+        [
+         33,
+         53
+        ],
+        [
+         60,
+         79
+        ]
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  "inline/30-words-33-scattered.txt": {
+   "blocks": [
+    {
+     "shape": "1/1",
+     "pairs": [
+      {
+       "old": "maple thunder stone ember cloud silver copper violet lemon piano garnet river",
+       "new": "maple biscuit zebra ember turnip vortex copper parrot dynamo piano mosaic gizmo",
+       "oldMarks": [
+        [
+         6,
+         19
+        ],
+        [
+         26,
+         38
+        ],
+        [
+         46,
+         58
+        ],
+        [
+         65,
+         77
+        ]
+       ],
+       "newMarks": [
+        [
+         6,
+         19
+        ],
+        [
+         26,
+         39
+        ],
+        [
+         47,
+         60
+        ],
+        [
+         67,
+         79
+        ]
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  "inline/30-words-42-scattered.txt": {
+   "blocks": [
+    {
+     "shape": "1/1",
+     "pairs": [
+      {
+       "old": "maple thunder stone ember cloud silver copper violet lemon piano garnet river",
+       "new": "maple biscuit stone zebra turnip silver vortex violet parrot dynamo garnet mosaic",
+       "oldMarks": [
+        [
+         6,
+         13
+        ],
+        [
+         20,
+         31
+        ],
+        [
+         39,
+         45
+        ],
+        [
+         53,
+         64
+        ],
+        [
+         72,
+         77
+        ]
+       ],
+       "newMarks": [
+        [
+         6,
+         13
+        ],
+        [
+         20,
+         32
+        ],
+        [
+         40,
+         46
+        ],
+        [
+         54,
+         67
+        ],
+        [
+         75,
+         81
+        ]
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  "inline/30-words-50-scattered.txt": {
+   "blocks": [
+    {
+     "shape": "1/1",
+     "pairs": [
+      {
+       "old": "maple thunder stone ember cloud silver copper violet lemon piano garnet river",
+       "new": "maple biscuit stone zebra cloud turnip copper vortex lemon parrot garnet dynamo",
+       "oldMarks": [
+        [
+         6,
+         13
+        ],
+        [
+         20,
+         25
+        ],
+        [
+         32,
+         38
+        ],
+        [
+         46,
+         52
+        ],
+        [
+         59,
+         64
+        ],
+        [
+         72,
+         77
+        ]
+       ],
+       "newMarks": [
+        [
+         6,
+         13
+        ],
+        [
+         20,
+         25
+        ],
+        [
+         32,
+         38
+        ],
+        [
+         46,
+         52
+        ],
+        [
+         59,
+         65
+        ],
+        [
+         73,
+         79
+        ]
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  "inline/30-words-58-scattered.txt": {
+   "blocks": [
+    {
+     "shape": "1/1",
+     "pairs": [
+      {
+       "old": "maple thunder stone ember cloud silver copper violet lemon piano garnet river",
+       "new": "maple biscuit stone ember zebra silver turnip violet vortex piano garnet parrot",
+       "oldMarks": [
+        [
+         6,
+         13
+        ],
+        [
+         26,
+         31
+        ],
+        [
+         39,
+         45
+        ],
+        [
+         53,
+         58
+        ],
+        [
+         72,
+         77
+        ]
+       ],
+       "newMarks": [
+        [
+         6,
+         13
+        ],
+        [
+         26,
+         31
+        ],
+        [
+         39,
+         45
+        ],
+        [
+         53,
+         59
+        ],
+        [
+         73,
+         79
+        ]
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  "inline/30-words-75-scattered.txt": {
+   "blocks": [
+    {
+     "shape": "1/1",
+     "pairs": [
+      {
+       "old": "maple thunder stone ember cloud silver copper violet lemon piano garnet river",
+       "new": "maple thunder biscuit ember cloud silver zebra violet lemon piano turnip river",
+       "oldMarks": [
+        [
+         14,
+         19
+        ],
+        [
+         39,
+         45
+        ],
+        [
+         65,
+         71
+        ]
+       ],
+       "newMarks": [
+        [
+         14,
+         21
+        ],
+        [
+         41,
+         46
+        ],
+        [
+         66,
+         72
+        ]
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  "inline/30-words-92-scattered.txt": {
+   "blocks": [
+    {
+     "shape": "1/1",
+     "pairs": [
+      {
+       "old": "maple thunder stone ember cloud silver copper violet lemon piano garnet river",
+       "new": "maple thunder stone ember cloud silver biscuit violet lemon piano garnet river",
+       "oldMarks": [
+        [
+         39,
+         45
+        ]
+       ],
+       "newMarks": [
+        [
+         39,
+         46
+        ]
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  "inline/31-words-08-prefix.txt": {
+   "blocks": [
+    {
+     "shape": "1/1",
+     "pairs": [
+      {
+       "old": "maple thunder stone ember cloud silver copper violet lemon piano garnet river",
+       "new": "maple biscuit zebra turnip vortex parrot dynamo mosaic gizmo fennel bishop nickel",
+       "oldMarks": [
+        [
+         6,
+         77
+        ]
+       ],
+       "newMarks": [
+        [
+         6,
+         81
+        ]
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  "inline/31-words-17-prefix.txt": {
+   "blocks": [
+    {
+     "shape": "1/1",
+     "pairs": [
+      {
+       "old": "maple thunder stone ember cloud silver copper violet lemon piano garnet river",
+       "new": "maple thunder biscuit zebra turnip vortex parrot dynamo mosaic gizmo fennel bishop",
+       "oldMarks": [
+        [
+         14,
+         77
+        ]
+       ],
+       "newMarks": [
+        [
+         14,
+         82
+        ]
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  "inline/31-words-25-prefix.txt": {
+   "blocks": [
+    {
+     "shape": "1/1",
+     "pairs": [
+      {
+       "old": "maple thunder stone ember cloud silver copper violet lemon piano garnet river",
+       "new": "maple thunder stone biscuit zebra turnip vortex parrot dynamo mosaic gizmo fennel",
+       "oldMarks": [
+        [
+         20,
+         77
+        ]
+       ],
+       "newMarks": [
+        [
+         20,
+         81
+        ]
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  "inline/31-words-33-prefix.txt": {
+   "blocks": [
+    {
+     "shape": "1/1",
+     "pairs": [
+      {
+       "old": "maple thunder stone ember cloud silver copper violet lemon piano garnet river",
+       "new": "maple thunder stone ember biscuit zebra turnip vortex parrot dynamo mosaic gizmo",
+       "oldMarks": [
+        [
+         26,
+         77
+        ]
+       ],
+       "newMarks": [
+        [
+         26,
+         80
+        ]
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  "inline/31-words-42-prefix.txt": {
+   "blocks": [
+    {
+     "shape": "1/1",
+     "pairs": [
+      {
+       "old": "maple thunder stone ember cloud silver copper violet lemon piano garnet river",
+       "new": "maple thunder stone ember cloud biscuit zebra turnip vortex parrot dynamo mosaic",
+       "oldMarks": [
+        [
+         32,
+         77
+        ]
+       ],
+       "newMarks": [
+        [
+         32,
+         80
+        ]
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  "inline/31-words-50-prefix.txt": {
+   "blocks": [
+    {
+     "shape": "1/1",
+     "pairs": [
+      {
+       "old": "maple thunder stone ember cloud silver copper violet lemon piano garnet river",
+       "new": "maple thunder stone ember cloud silver biscuit zebra turnip vortex parrot dynamo",
+       "oldMarks": [
+        [
+         39,
+         77
+        ]
+       ],
+       "newMarks": [
+        [
+         39,
+         80
+        ]
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  "inline/31-words-58-prefix.txt": {
+   "blocks": [
+    {
+     "shape": "1/1",
+     "pairs": [
+      {
+       "old": "maple thunder stone ember cloud silver copper violet lemon piano garnet river",
+       "new": "maple thunder stone ember cloud silver copper biscuit zebra turnip vortex parrot",
+       "oldMarks": [
+        [
+         46,
+         77
+        ]
+       ],
+       "newMarks": [
+        [
+         46,
+         80
+        ]
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  "inline/31-words-75-prefix.txt": {
+   "blocks": [
+    {
+     "shape": "1/1",
+     "pairs": [
+      {
+       "old": "maple thunder stone ember cloud silver copper violet lemon piano garnet river",
+       "new": "maple thunder stone ember cloud silver copper violet lemon biscuit zebra turnip",
+       "oldMarks": [
+        [
+         59,
+         77
+        ]
+       ],
+       "newMarks": [
+        [
+         59,
+         79
+        ]
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  "inline/31-words-92-prefix.txt": {
+   "blocks": [
+    {
+     "shape": "1/1",
+     "pairs": [
+      {
+       "old": "maple thunder stone ember cloud silver copper violet lemon piano garnet river",
+       "new": "maple thunder stone ember cloud silver copper violet lemon piano garnet biscuit",
+       "oldMarks": [
+        [
+         72,
+         77
+        ]
+       ],
+       "newMarks": [
+        [
+         72,
+         79
+        ]
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  "inline/32-chars-25-token.ts": {
+   "blocks": [
+    {
+     "shape": "1/1",
+     "pairs": [
+      {
+       "old": "const token = \"RokJZpgroEpA6gSmQNwgk6mgbr8KQrK8jayAt2EL\";",
+       "new": "const token = \"RvQoWHtrP7pmTs9xQBvX86mwTuGqor8LgayVnoEE\";",
+       "oldMarks": [
+        [
+         15,
+         55
+        ]
+       ],
+       "newMarks": [
+        [
+         15,
+         55
+        ]
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  "inline/32-chars-40-token.ts": {
+   "blocks": [
+    {
+     "shape": "1/1",
+     "pairs": [
+      {
+       "old": "const token = \"RokJZpgroEpA6gSmQNwgk6mgbr8KQrK8jayAt2EL\";",
+       "new": "const token = \"Rn7q8pwr9mpU6WBLQZuak6mQpovdormXjayAuiEL\";",
+       "oldMarks": [
+        [
+         15,
+         55
+        ]
+       ],
+       "newMarks": [
+        [
+         15,
+         55
+        ]
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  "inline/32-chars-50-token.ts": {
+   "blocks": [
+    {
+     "shape": "1/1",
+     "pairs": [
+      {
+       "old": "const token = \"RokJZpgroEpA6gSmQNwgk6mgbr8KQrK8jayAt2EL\";",
+       "new": "const token = \"R3vdmpvroEpp6gZXQsndk6m7ViQdQr8ajayAoSEL\";",
+       "oldMarks": [
+        [
+         15,
+         55
+        ]
+       ],
+       "newMarks": [
+        [
+         15,
+         55
+        ]
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  "inline/32-chars-60-token.ts": {
+   "blocks": [
+    {
+     "shape": "1/1",
+     "pairs": [
+      {
+       "old": "const token = \"RokJZpgroEpA6gSmQNwgk6mgbr8KQrK8jayAt2EL\";",
+       "new": "const token = \"RPJo7pgroEpb6gjmQTcik6m8es83QrvVjayAtCEL\";",
+       "oldMarks": [
+        [
+         15,
+         55
+        ]
+       ],
+       "newMarks": [
+        [
+         15,
+         55
+        ]
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  "inline/32-chars-75-token.ts": {
+   "blocks": [
+    {
+     "shape": "1/1",
+     "pairs": [
+      {
+       "old": "const token = \"RokJZpgroEpA6gSmQNwgk6mgbr8KQrK8jayAt2EL\";",
+       "new": "const token = \"RJoJZpgroEpA6gSmQawek6mPCh8JQrG8jayAt5EL\";",
+       "oldMarks": [
+        [
+         15,
+         55
+        ]
+       ],
+       "newMarks": [
+        [
+         15,
+         55
+        ]
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  "inline/32-chars-90-token.ts": {
+   "blocks": [
+    {
+     "shape": "1/1",
+     "pairs": [
+      {
+       "old": "const token = \"RokJZpgroEpA6gSmQNwgk6mgbr8KQrK8jayAt2EL\";",
+       "new": "const token = \"Rg9JZpgroEpA6gSmQNwTk6mgbr8KQrK8jayAt6EL\";",
+       "oldMarks": [
+        [
+         15,
+         55
+        ]
+       ],
+       "newMarks": [
+        [
+         15,
+         55
+        ]
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  "inline/40-block-2x2-both-similar.ts": {
+   "blocks": [
+    {
+     "shape": "2/2",
+     "pairs": [
+      {
+       "old": "const width = readWidth(config);",
+       "new": "const width = readWidth(settings);",
+       "oldMarks": [
+        [
+         24,
+         30
+        ]
+       ],
+       "newMarks": [
+        [
+         24,
+         32
+        ]
+       ]
+      },
+      {
+       "old": "const height = readHeight(config);",
+       "new": "const height = readHeight(settings);",
+       "oldMarks": [
+        [
+         26,
+         32
+        ]
+       ],
+       "newMarks": [
+        [
+         26,
+         34
+        ]
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  "inline/41-block-2x2-second-different.ts": {
+   "blocks": [
+    {
+     "shape": "2/2",
+     "pairs": [
+      {
+       "old": "const width = readWidth(config);",
+       "new": "const width = readWidth(settings);",
+       "oldMarks": [
+        [
+         24,
+         30
+        ]
+       ],
+       "newMarks": [
+        [
+         24,
+         32
+        ]
+       ]
+      },
+      {
+       "old": "const height = readHeight(config);",
+       "new": "throw new Error('height is gone');",
+       "oldMarks": [
+        [
+         0,
+         6
+        ],
+        [
+         13,
+         32
+        ]
+       ],
+       "newMarks": [
+        [
+         0,
+         17
+        ],
+        [
+         24,
+         32
+        ]
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  "inline/42-block-3x1-match-second.ts": {
+   "blocks": [
+    {
+     "shape": "3/1",
+     "pairs": [],
+     "removed": [
+      {
+       "text": "import { a } from './a';",
+       "marks": []
+      },
+      {
+       "text": "const port = Number(env.PORT ?? 8080);",
+       "marks": []
+      },
+      {
+       "text": "import { b } from './b';",
+       "marks": []
+      }
+     ],
+     "added": [
+      {
+       "text": "const port = Number(env.PORT ?? 9090);",
+       "marks": []
+      }
+     ]
+    }
+   ]
+  },
+  "inline/43-block-3x1-match-first.ts": {
+   "blocks": [
+    {
+     "shape": "3/1",
+     "pairs": [],
+     "removed": [
+      {
+       "text": "const port = Number(env.PORT ?? 8080);",
+       "marks": []
+      },
+      {
+       "text": "import { a } from './a';",
+       "marks": []
+      },
+      {
+       "text": "import { b } from './b';",
+       "marks": []
+      }
+     ],
+     "added": [
+      {
+       "text": "const port = Number(env.PORT ?? 9090);",
+       "marks": []
+      }
+     ]
+    }
+   ]
+  },
+  "inline/44-block-1x3-match-third.ts": {
+   "blocks": [
+    {
+     "shape": "1/3",
+     "pairs": [],
+     "removed": [
+      {
+       "text": "const port = Number(env.PORT ?? 8080);",
+       "marks": []
+      }
+     ],
+     "added": [
+      {
+       "text": "import { a } from './a';",
+       "marks": []
+      },
+      {
+       "text": "import { b } from './b';",
+       "marks": []
+      },
+      {
+       "text": "const port = Number(env.PORT ?? 9090);",
+       "marks": []
+      }
+     ]
+    }
+   ]
+  },
+  "inline/45-block-1x3-match-first.ts": {
+   "blocks": [
+    {
+     "shape": "1/3",
+     "pairs": [],
+     "removed": [
+      {
+       "text": "const port = Number(env.PORT ?? 8080);",
+       "marks": []
+      }
+     ],
+     "added": [
+      {
+       "text": "const port = Number(env.PORT ?? 9090);",
+       "marks": []
+      },
+      {
+       "text": "import { a } from './a';",
+       "marks": []
+      },
+      {
+       "text": "import { b } from './b';",
+       "marks": []
+      }
+     ]
+    }
+   ]
+  },
+  "inline/46-block-5x5-odd-similar.ts": {
+   "blocks": [
+    {
+     "shape": "5/5",
+     "pairs": [
+      {
+       "old": "const a1 = load('alpha', 1);",
+       "new": "const a1 = load('alpha', 10);",
+       "oldMarks": [
+        [
+         25,
+         26
+        ]
+       ],
+       "newMarks": [
+        [
+         25,
+         27
+        ]
+       ]
+      },
+      {
+       "old": "renderHeader(page);",
+       "new": "await notifyAll(subscribers);",
+       "oldMarks": [
+        [
+         0,
+         17
+        ]
+       ],
+       "newMarks": [
+        [
+         0,
+         27
+        ]
+       ]
+      },
+      {
+       "old": "const a3 = load('gamma', 3);",
+       "new": "const a3 = load('gamma', 30);",
+       "oldMarks": [
+        [
+         25,
+         26
+        ]
+       ],
+       "newMarks": [
+        [
+         25,
+         27
+        ]
+       ]
+      },
+      {
+       "old": "flushCache(store);",
+       "new": "if (!ok) return null;",
+       "oldMarks": [
+        [
+         0,
+         17
+        ]
+       ],
+       "newMarks": [
+        [
+         0,
+         20
+        ]
+       ]
+      },
+      {
+       "old": "const a5 = load('epsilon', 5);",
+       "new": "const a5 = load('epsilon', 50);",
+       "oldMarks": [
+        [
+         27,
+         28
+        ]
+       ],
+       "newMarks": [
+        [
+         27,
+         29
+        ]
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  "inline/47-block-5x5-shifted.ts": {
+   "blocks": [
+    {
+     "shape": "5/5",
+     "pairs": [
+      {
+       "old": "const b1 = load('alpha', 1);",
+       "new": "// header added on top",
+       "oldMarks": [
+        [
+         0,
+         28
+        ]
+       ],
+       "newMarks": [
+        [
+         0,
+         22
+        ]
+       ]
+      },
+      {
+       "old": "const b2 = load('beta', 2);",
+       "new": "const b1 = load('alpha', 10);",
+       "oldMarks": [
+        [
+         6,
+         8
+        ],
+        [
+         17,
+         21
+        ],
+        [
+         24,
+         25
+        ]
+       ],
+       "newMarks": [
+        [
+         6,
+         8
+        ],
+        [
+         17,
+         22
+        ],
+        [
+         25,
+         27
+        ]
+       ]
+      },
+      {
+       "old": "const b3 = load('gamma', 3);",
+       "new": "const b2 = load('beta', 20);",
+       "oldMarks": [
+        [
+         6,
+         8
+        ],
+        [
+         17,
+         22
+        ],
+        [
+         25,
+         26
+        ]
+       ],
+       "newMarks": [
+        [
+         6,
+         8
+        ],
+        [
+         17,
+         21
+        ],
+        [
+         24,
+         26
+        ]
+       ]
+      },
+      {
+       "old": "const b4 = load('delta', 4);",
+       "new": "const b3 = load('gamma', 30);",
+       "oldMarks": [
+        [
+         6,
+         8
+        ],
+        [
+         17,
+         22
+        ],
+        [
+         25,
+         26
+        ]
+       ],
+       "newMarks": [
+        [
+         6,
+         8
+        ],
+        [
+         17,
+         22
+        ],
+        [
+         25,
+         27
+        ]
+       ]
+      },
+      {
+       "old": "const b5 = load('epsilon', 5);",
+       "new": "const b4 = load('delta', 40);",
+       "oldMarks": [
+        [
+         6,
+         8
+        ],
+        [
+         17,
+         24
+        ],
+        [
+         27,
+         28
+        ]
+       ],
+       "newMarks": [
+        [
+         6,
+         8
+        ],
+        [
+         17,
+         22
+        ],
+        [
+         25,
+         27
+        ]
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  "inline/48-block-2x3-insert-middle.ts": {
+   "blocks": [
+    {
+     "shape": "2/3",
+     "pairs": [],
+     "removed": [
+      {
+       "text": "const first = compute(alpha, beta);",
+       "marks": []
+      },
+      {
+       "text": "const second = compute(gamma, delta);",
+       "marks": []
+      }
+     ],
+     "added": [
+      {
+       "text": "const first = compute(alpha, beta, 1);",
+       "marks": []
+      },
+      {
+       "text": "const inserted = somethingElse();",
+       "marks": []
+      },
+      {
+       "text": "const second = compute(gamma, delta, 2);",
+       "marks": []
+      }
+     ]
+    }
+   ]
+  },
+  "inline/49-split-line.ts": {
+   "blocks": [
+    {
+     "shape": "1/2",
+     "pairs": [],
+     "removed": [
+      {
+       "text": "const result = await fetchUser(id).then((user) => normalize(user, options));",
+       "marks": []
+      }
+     ],
+     "added": [
+      {
+       "text": "const user = await fetchUser(id);",
+       "marks": []
+      },
+      {
+       "text": "const result = normalize(user, options);",
+       "marks": []
+      }
+     ]
+    }
+   ]
+  },
+  "inline/50-join-lines.ts": {
+   "blocks": [
+    {
+     "shape": "2/1",
+     "pairs": [],
+     "removed": [
+      {
+       "text": "const user = await fetchUser(id);",
+       "marks": []
+      },
+      {
+       "text": "const result = normalize(user, options);",
+       "marks": []
+      }
+     ],
+     "added": [
+      {
+       "text": "const result = await fetchUser(id).then((user) => normalize(user, options));",
+       "marks": []
+      }
+     ]
+    }
+   ]
+  },
+  "inline/51-block-3x3-all-similar.ts": {
+   "blocks": [
+    {
+     "shape": "3/3",
+     "pairs": [
+      {
+       "old": "setColor('red', 1);",
+       "new": "setColour('red', 1);",
+       "oldMarks": [
+        [
+         0,
+         8
+        ]
+       ],
+       "newMarks": [
+        [
+         0,
+         9
+        ]
+       ]
+      },
+      {
+       "old": "setColor('green', 2);",
+       "new": "setColour('green', 2);",
+       "oldMarks": [
+        [
+         0,
+         8
+        ]
+       ],
+       "newMarks": [
+        [
+         0,
+         9
+        ]
+       ]
+      },
+      {
+       "old": "setColor('blue', 3);",
+       "new": "setColour('blue', 3);",
+       "oldMarks": [
+        [
+         0,
+         8
+        ]
+       ],
+       "newMarks": [
+        [
+         0,
+         9
+        ]
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  "inline/52-block-10x10-similar.ts": {
+   "blocks": [
+    {
+     "shape": "10/10",
+     "pairs": [
+      {
+       "old": "register('handler0', handle0, 0);",
+       "new": "register('handler0', handle0, 5);",
+       "oldMarks": [
+        [
+         30,
+         31
+        ]
+       ],
+       "newMarks": [
+        [
+         30,
+         31
+        ]
+       ]
+      },
+      {
+       "old": "register('handler1', handle1, 1);",
+       "new": "register('handler1', handle1, 15);",
+       "oldMarks": [
+        [
+         30,
+         31
+        ]
+       ],
+       "newMarks": [
+        [
+         30,
+         32
+        ]
+       ]
+      },
+      {
+       "old": "register('handler2', handle2, 2);",
+       "new": "register('handler2', handle2, 25);",
+       "oldMarks": [
+        [
+         30,
+         31
+        ]
+       ],
+       "newMarks": [
+        [
+         30,
+         32
+        ]
+       ]
+      },
+      {
+       "old": "register('handler3', handle3, 3);",
+       "new": "register('handler3', handle3, 35);",
+       "oldMarks": [
+        [
+         30,
+         31
+        ]
+       ],
+       "newMarks": [
+        [
+         30,
+         32
+        ]
+       ]
+      },
+      {
+       "old": "register('handler4', handle4, 4);",
+       "new": "register('handler4', handle4, 45);",
+       "oldMarks": [
+        [
+         30,
+         31
+        ]
+       ],
+       "newMarks": [
+        [
+         30,
+         32
+        ]
+       ]
+      },
+      {
+       "old": "register('handler5', handle5, 5);",
+       "new": "register('handler5', handle5, 55);",
+       "oldMarks": [
+        [
+         30,
+         31
+        ]
+       ],
+       "newMarks": [
+        [
+         30,
+         32
+        ]
+       ]
+      },
+      {
+       "old": "register('handler6', handle6, 6);",
+       "new": "register('handler6', handle6, 65);",
+       "oldMarks": [
+        [
+         30,
+         31
+        ]
+       ],
+       "newMarks": [
+        [
+         30,
+         32
+        ]
+       ]
+      },
+      {
+       "old": "register('handler7', handle7, 7);",
+       "new": "register('handler7', handle7, 75);",
+       "oldMarks": [
+        [
+         30,
+         31
+        ]
+       ],
+       "newMarks": [
+        [
+         30,
+         32
+        ]
+       ]
+      },
+      {
+       "old": "register('handler8', handle8, 8);",
+       "new": "register('handler8', handle8, 85);",
+       "oldMarks": [
+        [
+         30,
+         31
+        ]
+       ],
+       "newMarks": [
+        [
+         30,
+         32
+        ]
+       ]
+      },
+      {
+       "old": "register('handler9', handle9, 9);",
+       "new": "register('handler9', handle9, 95);",
+       "oldMarks": [
+        [
+         30,
+         31
+        ]
+       ],
+       "newMarks": [
+        [
+         30,
+         32
+        ]
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  "inline/53-block-25x25-similar.ts": {
+   "blocks": [
+    {
+     "shape": "25/25",
+     "pairs": [
+      {
+       "old": "register('route0', route0, 0);",
+       "new": "register('route0', route0, 5);",
+       "oldMarks": [
+        [
+         27,
+         28
+        ]
+       ],
+       "newMarks": [
+        [
+         27,
+         28
+        ]
+       ]
+      },
+      {
+       "old": "register('route1', route1, 1);",
+       "new": "register('route1', route1, 15);",
+       "oldMarks": [
+        [
+         27,
+         28
+        ]
+       ],
+       "newMarks": [
+        [
+         27,
+         29
+        ]
+       ]
+      },
+      {
+       "old": "register('route2', route2, 2);",
+       "new": "register('route2', route2, 25);",
+       "oldMarks": [
+        [
+         27,
+         28
+        ]
+       ],
+       "newMarks": [
+        [
+         27,
+         29
+        ]
+       ]
+      },
+      {
+       "old": "register('route3', route3, 3);",
+       "new": "register('route3', route3, 35);",
+       "oldMarks": [
+        [
+         27,
+         28
+        ]
+       ],
+       "newMarks": [
+        [
+         27,
+         29
+        ]
+       ]
+      },
+      {
+       "old": "register('route4', route4, 4);",
+       "new": "register('route4', route4, 45);",
+       "oldMarks": [
+        [
+         27,
+         28
+        ]
+       ],
+       "newMarks": [
+        [
+         27,
+         29
+        ]
+       ]
+      },
+      {
+       "old": "register('route5', route5, 5);",
+       "new": "register('route5', route5, 55);",
+       "oldMarks": [
+        [
+         27,
+         28
+        ]
+       ],
+       "newMarks": [
+        [
+         27,
+         29
+        ]
+       ]
+      },
+      {
+       "old": "register('route6', route6, 6);",
+       "new": "register('route6', route6, 65);",
+       "oldMarks": [
+        [
+         27,
+         28
+        ]
+       ],
+       "newMarks": [
+        [
+         27,
+         29
+        ]
+       ]
+      },
+      {
+       "old": "register('route7', route7, 7);",
+       "new": "register('route7', route7, 75);",
+       "oldMarks": [
+        [
+         27,
+         28
+        ]
+       ],
+       "newMarks": [
+        [
+         27,
+         29
+        ]
+       ]
+      },
+      {
+       "old": "register('route8', route8, 8);",
+       "new": "register('route8', route8, 85);",
+       "oldMarks": [
+        [
+         27,
+         28
+        ]
+       ],
+       "newMarks": [
+        [
+         27,
+         29
+        ]
+       ]
+      },
+      {
+       "old": "register('route9', route9, 9);",
+       "new": "register('route9', route9, 95);",
+       "oldMarks": [
+        [
+         27,
+         28
+        ]
+       ],
+       "newMarks": [
+        [
+         27,
+         29
+        ]
+       ]
+      },
+      {
+       "old": "register('route10', route10, 10);",
+       "new": "register('route10', route10, 105);",
+       "oldMarks": [
+        [
+         29,
+         31
+        ]
+       ],
+       "newMarks": [
+        [
+         29,
+         32
+        ]
+       ]
+      },
+      {
+       "old": "register('route11', route11, 11);",
+       "new": "register('route11', route11, 115);",
+       "oldMarks": [
+        [
+         29,
+         31
+        ]
+       ],
+       "newMarks": [
+        [
+         29,
+         32
+        ]
+       ]
+      },
+      {
+       "old": "register('route12', route12, 12);",
+       "new": "register('route12', route12, 125);",
+       "oldMarks": [
+        [
+         29,
+         31
+        ]
+       ],
+       "newMarks": [
+        [
+         29,
+         32
+        ]
+       ]
+      },
+      {
+       "old": "register('route13', route13, 13);",
+       "new": "register('route13', route13, 135);",
+       "oldMarks": [
+        [
+         29,
+         31
+        ]
+       ],
+       "newMarks": [
+        [
+         29,
+         32
+        ]
+       ]
+      },
+      {
+       "old": "register('route14', route14, 14);",
+       "new": "register('route14', route14, 145);",
+       "oldMarks": [
+        [
+         29,
+         31
+        ]
+       ],
+       "newMarks": [
+        [
+         29,
+         32
+        ]
+       ]
+      },
+      {
+       "old": "register('route15', route15, 15);",
+       "new": "register('route15', route15, 155);",
+       "oldMarks": [
+        [
+         29,
+         31
+        ]
+       ],
+       "newMarks": [
+        [
+         29,
+         32
+        ]
+       ]
+      },
+      {
+       "old": "register('route16', route16, 16);",
+       "new": "register('route16', route16, 165);",
+       "oldMarks": [
+        [
+         29,
+         31
+        ]
+       ],
+       "newMarks": [
+        [
+         29,
+         32
+        ]
+       ]
+      },
+      {
+       "old": "register('route17', route17, 17);",
+       "new": "register('route17', route17, 175);",
+       "oldMarks": [
+        [
+         29,
+         31
+        ]
+       ],
+       "newMarks": [
+        [
+         29,
+         32
+        ]
+       ]
+      },
+      {
+       "old": "register('route18', route18, 18);",
+       "new": "register('route18', route18, 185);",
+       "oldMarks": [
+        [
+         29,
+         31
+        ]
+       ],
+       "newMarks": [
+        [
+         29,
+         32
+        ]
+       ]
+      },
+      {
+       "old": "register('route19', route19, 19);",
+       "new": "register('route19', route19, 195);",
+       "oldMarks": [
+        [
+         29,
+         31
+        ]
+       ],
+       "newMarks": [
+        [
+         29,
+         32
+        ]
+       ]
+      },
+      {
+       "old": "register('route20', route20, 20);",
+       "new": "register('route20', route20, 205);",
+       "oldMarks": [
+        [
+         29,
+         31
+        ]
+       ],
+       "newMarks": [
+        [
+         29,
+         32
+        ]
+       ]
+      },
+      {
+       "old": "register('route21', route21, 21);",
+       "new": "register('route21', route21, 215);",
+       "oldMarks": [
+        [
+         29,
+         31
+        ]
+       ],
+       "newMarks": [
+        [
+         29,
+         32
+        ]
+       ]
+      },
+      {
+       "old": "register('route22', route22, 22);",
+       "new": "register('route22', route22, 225);",
+       "oldMarks": [
+        [
+         29,
+         31
+        ]
+       ],
+       "newMarks": [
+        [
+         29,
+         32
+        ]
+       ]
+      },
+      {
+       "old": "register('route23', route23, 23);",
+       "new": "register('route23', route23, 235);",
+       "oldMarks": [
+        [
+         29,
+         31
+        ]
+       ],
+       "newMarks": [
+        [
+         29,
+         32
+        ]
+       ]
+      },
+      {
+       "old": "register('route24', route24, 24);",
+       "new": "register('route24', route24, 245);",
+       "oldMarks": [
+        [
+         29,
+         31
+        ]
+       ],
+       "newMarks": [
+        [
+         29,
+         32
+        ]
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  "inline/54-moved-line-edited.ts": {
+   "blocks": [
+    {
+     "shape": "1/0",
+     "pairs": [],
+     "removed": [
+      {
+       "text": "const limit = clampLimit(request.limit, 100);",
+       "marks": []
+      }
+     ],
+     "added": []
+    },
+    {
+     "shape": "0/1",
+     "pairs": [],
+     "removed": [],
+     "added": [
+      {
+       "text": "const limit = clampLimit(request.limit, 250);",
+       "marks": []
+      }
+     ]
+    }
+   ]
+  },
+  "inline/55-block-50x50-similar.ts": {
+   "blocks": [
+    {
+     "shape": "50/50",
+     "pairs": [
+      {
+       "old": "register('item0', item0, 0);",
+       "new": "register('item0', item0, 5);",
+       "oldMarks": [
+        [
+         25,
+         26
+        ]
+       ],
+       "newMarks": [
+        [
+         25,
+         26
+        ]
+       ]
+      },
+      {
+       "old": "register('item1', item1, 1);",
+       "new": "register('item1', item1, 15);",
+       "oldMarks": [
+        [
+         25,
+         26
+        ]
+       ],
+       "newMarks": [
+        [
+         25,
+         27
+        ]
+       ]
+      },
+      {
+       "old": "register('item2', item2, 2);",
+       "new": "register('item2', item2, 25);",
+       "oldMarks": [
+        [
+         25,
+         26
+        ]
+       ],
+       "newMarks": [
+        [
+         25,
+         27
+        ]
+       ]
+      },
+      {
+       "old": "register('item3', item3, 3);",
+       "new": "register('item3', item3, 35);",
+       "oldMarks": [
+        [
+         25,
+         26
+        ]
+       ],
+       "newMarks": [
+        [
+         25,
+         27
+        ]
+       ]
+      },
+      {
+       "old": "register('item4', item4, 4);",
+       "new": "register('item4', item4, 45);",
+       "oldMarks": [
+        [
+         25,
+         26
+        ]
+       ],
+       "newMarks": [
+        [
+         25,
+         27
+        ]
+       ]
+      },
+      {
+       "old": "register('item5', item5, 5);",
+       "new": "register('item5', item5, 55);",
+       "oldMarks": [
+        [
+         25,
+         26
+        ]
+       ],
+       "newMarks": [
+        [
+         25,
+         27
+        ]
+       ]
+      },
+      {
+       "old": "register('item6', item6, 6);",
+       "new": "register('item6', item6, 65);",
+       "oldMarks": [
+        [
+         25,
+         26
+        ]
+       ],
+       "newMarks": [
+        [
+         25,
+         27
+        ]
+       ]
+      },
+      {
+       "old": "register('item7', item7, 7);",
+       "new": "register('item7', item7, 75);",
+       "oldMarks": [
+        [
+         25,
+         26
+        ]
+       ],
+       "newMarks": [
+        [
+         25,
+         27
+        ]
+       ]
+      },
+      {
+       "old": "register('item8', item8, 8);",
+       "new": "register('item8', item8, 85);",
+       "oldMarks": [
+        [
+         25,
+         26
+        ]
+       ],
+       "newMarks": [
+        [
+         25,
+         27
+        ]
+       ]
+      },
+      {
+       "old": "register('item9', item9, 9);",
+       "new": "register('item9', item9, 95);",
+       "oldMarks": [
+        [
+         25,
+         26
+        ]
+       ],
+       "newMarks": [
+        [
+         25,
+         27
+        ]
+       ]
+      },
+      {
+       "old": "register('item10', item10, 10);",
+       "new": "register('item10', item10, 105);",
+       "oldMarks": [
+        [
+         27,
+         29
+        ]
+       ],
+       "newMarks": [
+        [
+         27,
+         30
+        ]
+       ]
+      },
+      {
+       "old": "register('item11', item11, 11);",
+       "new": "register('item11', item11, 115);",
+       "oldMarks": [
+        [
+         27,
+         29
+        ]
+       ],
+       "newMarks": [
+        [
+         27,
+         30
+        ]
+       ]
+      },
+      {
+       "old": "register('item12', item12, 12);",
+       "new": "register('item12', item12, 125);",
+       "oldMarks": [
+        [
+         27,
+         29
+        ]
+       ],
+       "newMarks": [
+        [
+         27,
+         30
+        ]
+       ]
+      },
+      {
+       "old": "register('item13', item13, 13);",
+       "new": "register('item13', item13, 135);",
+       "oldMarks": [
+        [
+         27,
+         29
+        ]
+       ],
+       "newMarks": [
+        [
+         27,
+         30
+        ]
+       ]
+      },
+      {
+       "old": "register('item14', item14, 14);",
+       "new": "register('item14', item14, 145);",
+       "oldMarks": [
+        [
+         27,
+         29
+        ]
+       ],
+       "newMarks": [
+        [
+         27,
+         30
+        ]
+       ]
+      },
+      {
+       "old": "register('item15', item15, 15);",
+       "new": "register('item15', item15, 155);",
+       "oldMarks": [
+        [
+         27,
+         29
+        ]
+       ],
+       "newMarks": [
+        [
+         27,
+         30
+        ]
+       ]
+      },
+      {
+       "old": "register('item16', item16, 16);",
+       "new": "register('item16', item16, 165);",
+       "oldMarks": [
+        [
+         27,
+         29
+        ]
+       ],
+       "newMarks": [
+        [
+         27,
+         30
+        ]
+       ]
+      },
+      {
+       "old": "register('item17', item17, 17);",
+       "new": "register('item17', item17, 175);",
+       "oldMarks": [
+        [
+         27,
+         29
+        ]
+       ],
+       "newMarks": [
+        [
+         27,
+         30
+        ]
+       ]
+      },
+      {
+       "old": "register('item18', item18, 18);",
+       "new": "register('item18', item18, 185);",
+       "oldMarks": [
+        [
+         27,
+         29
+        ]
+       ],
+       "newMarks": [
+        [
+         27,
+         30
+        ]
+       ]
+      },
+      {
+       "old": "register('item19', item19, 19);",
+       "new": "register('item19', item19, 195);",
+       "oldMarks": [
+        [
+         27,
+         29
+        ]
+       ],
+       "newMarks": [
+        [
+         27,
+         30
+        ]
+       ]
+      },
+      {
+       "old": "register('item20', item20, 20);",
+       "new": "register('item20', item20, 205);",
+       "oldMarks": [
+        [
+         27,
+         29
+        ]
+       ],
+       "newMarks": [
+        [
+         27,
+         30
+        ]
+       ]
+      },
+      {
+       "old": "register('item21', item21, 21);",
+       "new": "register('item21', item21, 215);",
+       "oldMarks": [
+        [
+         27,
+         29
+        ]
+       ],
+       "newMarks": [
+        [
+         27,
+         30
+        ]
+       ]
+      },
+      {
+       "old": "register('item22', item22, 22);",
+       "new": "register('item22', item22, 225);",
+       "oldMarks": [
+        [
+         27,
+         29
+        ]
+       ],
+       "newMarks": [
+        [
+         27,
+         30
+        ]
+       ]
+      },
+      {
+       "old": "register('item23', item23, 23);",
+       "new": "register('item23', item23, 235);",
+       "oldMarks": [
+        [
+         27,
+         29
+        ]
+       ],
+       "newMarks": [
+        [
+         27,
+         30
+        ]
+       ]
+      },
+      {
+       "old": "register('item24', item24, 24);",
+       "new": "register('item24', item24, 245);",
+       "oldMarks": [
+        [
+         27,
+         29
+        ]
+       ],
+       "newMarks": [
+        [
+         27,
+         30
+        ]
+       ]
+      },
+      {
+       "old": "register('item25', item25, 25);",
+       "new": "register('item25', item25, 255);",
+       "oldMarks": [
+        [
+         27,
+         29
+        ]
+       ],
+       "newMarks": [
+        [
+         27,
+         30
+        ]
+       ]
+      },
+      {
+       "old": "register('item26', item26, 26);",
+       "new": "register('item26', item26, 265);",
+       "oldMarks": [
+        [
+         27,
+         29
+        ]
+       ],
+       "newMarks": [
+        [
+         27,
+         30
+        ]
+       ]
+      },
+      {
+       "old": "register('item27', item27, 27);",
+       "new": "register('item27', item27, 275);",
+       "oldMarks": [
+        [
+         27,
+         29
+        ]
+       ],
+       "newMarks": [
+        [
+         27,
+         30
+        ]
+       ]
+      },
+      {
+       "old": "register('item28', item28, 28);",
+       "new": "register('item28', item28, 285);",
+       "oldMarks": [
+        [
+         27,
+         29
+        ]
+       ],
+       "newMarks": [
+        [
+         27,
+         30
+        ]
+       ]
+      },
+      {
+       "old": "register('item29', item29, 29);",
+       "new": "register('item29', item29, 295);",
+       "oldMarks": [
+        [
+         27,
+         29
+        ]
+       ],
+       "newMarks": [
+        [
+         27,
+         30
+        ]
+       ]
+      },
+      {
+       "old": "register('item30', item30, 30);",
+       "new": "register('item30', item30, 305);",
+       "oldMarks": [
+        [
+         27,
+         29
+        ]
+       ],
+       "newMarks": [
+        [
+         27,
+         30
+        ]
+       ]
+      },
+      {
+       "old": "register('item31', item31, 31);",
+       "new": "register('item31', item31, 315);",
+       "oldMarks": [
+        [
+         27,
+         29
+        ]
+       ],
+       "newMarks": [
+        [
+         27,
+         30
+        ]
+       ]
+      },
+      {
+       "old": "register('item32', item32, 32);",
+       "new": "register('item32', item32, 325);",
+       "oldMarks": [
+        [
+         27,
+         29
+        ]
+       ],
+       "newMarks": [
+        [
+         27,
+         30
+        ]
+       ]
+      },
+      {
+       "old": "register('item33', item33, 33);",
+       "new": "register('item33', item33, 335);",
+       "oldMarks": [
+        [
+         27,
+         29
+        ]
+       ],
+       "newMarks": [
+        [
+         27,
+         30
+        ]
+       ]
+      },
+      {
+       "old": "register('item34', item34, 34);",
+       "new": "register('item34', item34, 345);",
+       "oldMarks": [
+        [
+         27,
+         29
+        ]
+       ],
+       "newMarks": [
+        [
+         27,
+         30
+        ]
+       ]
+      },
+      {
+       "old": "register('item35', item35, 35);",
+       "new": "register('item35', item35, 355);",
+       "oldMarks": [
+        [
+         27,
+         29
+        ]
+       ],
+       "newMarks": [
+        [
+         27,
+         30
+        ]
+       ]
+      },
+      {
+       "old": "register('item36', item36, 36);",
+       "new": "register('item36', item36, 365);",
+       "oldMarks": [
+        [
+         27,
+         29
+        ]
+       ],
+       "newMarks": [
+        [
+         27,
+         30
+        ]
+       ]
+      },
+      {
+       "old": "register('item37', item37, 37);",
+       "new": "register('item37', item37, 375);",
+       "oldMarks": [
+        [
+         27,
+         29
+        ]
+       ],
+       "newMarks": [
+        [
+         27,
+         30
+        ]
+       ]
+      },
+      {
+       "old": "register('item38', item38, 38);",
+       "new": "register('item38', item38, 385);",
+       "oldMarks": [
+        [
+         27,
+         29
+        ]
+       ],
+       "newMarks": [
+        [
+         27,
+         30
+        ]
+       ]
+      },
+      {
+       "old": "register('item39', item39, 39);",
+       "new": "register('item39', item39, 395);",
+       "oldMarks": [
+        [
+         27,
+         29
+        ]
+       ],
+       "newMarks": [
+        [
+         27,
+         30
+        ]
+       ]
+      },
+      {
+       "old": "register('item40', item40, 40);",
+       "new": "register('item40', item40, 405);",
+       "oldMarks": [
+        [
+         27,
+         29
+        ]
+       ],
+       "newMarks": [
+        [
+         27,
+         30
+        ]
+       ]
+      },
+      {
+       "old": "register('item41', item41, 41);",
+       "new": "register('item41', item41, 415);",
+       "oldMarks": [
+        [
+         27,
+         29
+        ]
+       ],
+       "newMarks": [
+        [
+         27,
+         30
+        ]
+       ]
+      },
+      {
+       "old": "register('item42', item42, 42);",
+       "new": "register('item42', item42, 425);",
+       "oldMarks": [
+        [
+         27,
+         29
+        ]
+       ],
+       "newMarks": [
+        [
+         27,
+         30
+        ]
+       ]
+      },
+      {
+       "old": "register('item43', item43, 43);",
+       "new": "register('item43', item43, 435);",
+       "oldMarks": [
+        [
+         27,
+         29
+        ]
+       ],
+       "newMarks": [
+        [
+         27,
+         30
+        ]
+       ]
+      },
+      {
+       "old": "register('item44', item44, 44);",
+       "new": "register('item44', item44, 445);",
+       "oldMarks": [
+        [
+         27,
+         29
+        ]
+       ],
+       "newMarks": [
+        [
+         27,
+         30
+        ]
+       ]
+      },
+      {
+       "old": "register('item45', item45, 45);",
+       "new": "register('item45', item45, 455);",
+       "oldMarks": [
+        [
+         27,
+         29
+        ]
+       ],
+       "newMarks": [
+        [
+         27,
+         30
+        ]
+       ]
+      },
+      {
+       "old": "register('item46', item46, 46);",
+       "new": "register('item46', item46, 465);",
+       "oldMarks": [
+        [
+         27,
+         29
+        ]
+       ],
+       "newMarks": [
+        [
+         27,
+         30
+        ]
+       ]
+      },
+      {
+       "old": "register('item47', item47, 47);",
+       "new": "register('item47', item47, 475);",
+       "oldMarks": [
+        [
+         27,
+         29
+        ]
+       ],
+       "newMarks": [
+        [
+         27,
+         30
+        ]
+       ]
+      },
+      {
+       "old": "register('item48', item48, 48);",
+       "new": "register('item48', item48, 485);",
+       "oldMarks": [
+        [
+         27,
+         29
+        ]
+       ],
+       "newMarks": [
+        [
+         27,
+         30
+        ]
+       ]
+      },
+      {
+       "old": "register('item49', item49, 49);",
+       "new": "register('item49', item49, 495);",
+       "oldMarks": [
+        [
+         27,
+         29
+        ]
+       ],
+       "newMarks": [
+        [
+         27,
+         30
+        ]
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  "inline/60-len-1010.ts": {
+   "blocks": [
+    {
+     "shape": "1/1",
+     "pairs": [
+      {
+       "old": "const s = \"lima echo kilo hotel xray bravo foxtrot whiskey oscar romeo echo oscar echo india november november hotel echo alpha india sierra juliet kilo zulu foxtrot india papa delta kilo oscar papa delta echo quebec bravo uniform zulu victor golf romeo papa juliet delta india yankee golf lima november india hotel hotel delta mike juliet november foxtrot bravo xray juliet echo uniform alpha oscar zulu quebec kilo quebec echo oscar alpha zulu quebec juliet foxtrot lima november bravo november golf india sierra foxtrot echo foxtrot quebec yankee hotel whiskey foxtrot golf tango charlie charlie tango xray papa yankee india foxtrot golf echo tango victor whiskey uniform zulu golf sierra juliet golf alpha charlie whiskey xray quebec november xray bravo quebec zulu lima kilo juliet uniform papa charlie alpha november yankee papa echo victor india hotel foxtrot sierra lima bravo foxtrot whiskey lima sierra tango alpha lima quebec oscar quebec charlie delta lima whiskey hotel kilo yankee whiske\"; // end",
+       "new": "const t = \"lima echo kilo hotel xray bravo foxtrot whiskey oscar romeo echo oscar echo india november november hotel echo alpha india sierra juliet kilo zulu foxtrot india papa delta kilo oscar papa delta echo quebec bravo uniform zulu victor golf romeo papa juliet delta india yankee golf lima november india hotel hotel delta mike juliet november foxtrot bravo xray juliet echo uniform alpha oscar zulu quebec kilo quebec echo oscar alpha zulu quebec juliet foxtrot lima november bravo november golf india sierra foxtrot echo foxtrot quebec yankee hotel whiskey foxtrot golf tango charlie charlie tango xray papa yankee india foxtrot golf echo tango victor whiskey uniform zulu golf sierra juliet golf alpha charlie whiskey xray quebec november xray bravo quebec zulu lima kilo juliet uniform papa charlie alpha november yankee papa echo victor india hotel foxtrot sierra lima bravo foxtrot whiskey lima sierra tango alpha lima quebec oscar quebec charlie delta lima whiskey hotel kilo yankee whiske\"; // end",
+       "oldMarks": [
+        [
+         6,
+         7
+        ]
+       ],
+       "newMarks": [
+        [
+         6,
+         7
+        ]
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  "inline/60-len-1016.ts": {
+   "blocks": [
+    {
+     "shape": "1/1",
+     "pairs": [
+      {
+       "old": "const s = \"mike sierra yankee bravo juliet delta xray papa oscar quebec alpha quebec zulu romeo echo alpha hotel charlie hotel tango foxtrot foxtrot delta juliet india romeo alpha alpha delta whiskey xray golf india alpha tango uniform sierra oscar quebec hotel whiskey oscar delta lima delta whiskey foxtrot bravo india delta oscar papa sierra quebec yankee india delta delta delta mike echo romeo sierra hotel hotel echo victor sierra oscar xray mike foxtrot alpha uniform mike whiskey november tango tango quebec bravo mike bravo yankee lima kilo mike hotel kilo whiskey november sierra zulu kilo mike romeo bravo kilo quebec echo victor lima hotel november victor uniform alpha lima delta quebec foxtrot charlie kilo november golf quebec victor alpha hotel echo november mike yankee oscar uniform bravo zulu bravo bravo uniform tango india victor tango india uniform romeo zulu bravo tango delta india delta quebec alpha november hotel bravo juliet delta juliet lima uniform foxtrot delta bravo tango qu\"; // end",
+       "new": "const t = \"mike sierra yankee bravo juliet delta xray papa oscar quebec alpha quebec zulu romeo echo alpha hotel charlie hotel tango foxtrot foxtrot delta juliet india romeo alpha alpha delta whiskey xray golf india alpha tango uniform sierra oscar quebec hotel whiskey oscar delta lima delta whiskey foxtrot bravo india delta oscar papa sierra quebec yankee india delta delta delta mike echo romeo sierra hotel hotel echo victor sierra oscar xray mike foxtrot alpha uniform mike whiskey november tango tango quebec bravo mike bravo yankee lima kilo mike hotel kilo whiskey november sierra zulu kilo mike romeo bravo kilo quebec echo victor lima hotel november victor uniform alpha lima delta quebec foxtrot charlie kilo november golf quebec victor alpha hotel echo november mike yankee oscar uniform bravo zulu bravo bravo uniform tango india victor tango india uniform romeo zulu bravo tango delta india delta quebec alpha november hotel bravo juliet delta juliet lima uniform foxtrot delta bravo tango qu\"; // end",
+       "oldMarks": [
+        [
+         6,
+         7
+        ]
+       ],
+       "newMarks": [
+        [
+         6,
+         7
+        ]
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  "inline/60-len-1020.ts": {
+   "blocks": [
+    {
+     "shape": "1/1",
+     "pairs": [
+      {
+       "old": "const s = \"india charlie oscar sierra romeo echo oscar delta quebec echo juliet november sierra juliet india hotel xray charlie xray romeo juliet oscar tango whiskey sierra hotel uniform mike golf romeo whiskey lima oscar romeo juliet tango papa papa juliet alpha hotel kilo hotel golf quebec romeo mike sierra mike alpha lima foxtrot hotel kilo romeo kilo papa india juliet golf juliet bravo yankee alpha foxtrot romeo charlie tango lima oscar victor bravo quebec mike oscar lima xray yankee delta quebec hotel victor xray echo november kilo victor lima echo victor golf tango tango india quebec delta xray xray yankee papa india zulu uniform whiskey uniform whiskey echo november delta alpha november yankee romeo sierra delta papa mike sierra echo november zulu india tango tango delta mike oscar whiskey oscar juliet xray lima juliet lima mike quebec romeo tango mike uniform kilo alpha zulu xray papa mike oscar juliet foxtrot romeo juliet zulu echo november sierra mike sierra hotel charlie kilo kilo tang\"; // end",
+       "new": "const t = \"india charlie oscar sierra romeo echo oscar delta quebec echo juliet november sierra juliet india hotel xray charlie xray romeo juliet oscar tango whiskey sierra hotel uniform mike golf romeo whiskey lima oscar romeo juliet tango papa papa juliet alpha hotel kilo hotel golf quebec romeo mike sierra mike alpha lima foxtrot hotel kilo romeo kilo papa india juliet golf juliet bravo yankee alpha foxtrot romeo charlie tango lima oscar victor bravo quebec mike oscar lima xray yankee delta quebec hotel victor xray echo november kilo victor lima echo victor golf tango tango india quebec delta xray xray yankee papa india zulu uniform whiskey uniform whiskey echo november delta alpha november yankee romeo sierra delta papa mike sierra echo november zulu india tango tango delta mike oscar whiskey oscar juliet xray lima juliet lima mike quebec romeo tango mike uniform kilo alpha zulu xray papa mike oscar juliet foxtrot romeo juliet zulu echo november sierra mike sierra hotel charlie kilo kilo tang\"; // end",
+       "oldMarks": [
+        [
+         6,
+         7
+        ]
+       ],
+       "newMarks": [
+        [
+         6,
+         7
+        ]
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  "inline/60-len-1023.ts": {
+   "blocks": [
+    {
+     "shape": "1/1",
+     "pairs": [
+      {
+       "old": "const s = \"hotel kilo golf november alpha alpha bravo india sierra papa juliet romeo yankee juliet romeo tango november quebec quebec xray victor november mike oscar lima bravo tango victor lima oscar alpha victor charlie quebec hotel delta november lima quebec mike uniform romeo sierra echo golf november papa mike oscar yankee tango sierra kilo whiskey quebec xray charlie foxtrot lima kilo lima charlie juliet quebec foxtrot delta uniform juliet whiskey kilo quebec november uniform foxtrot quebec juliet quebec golf quebec golf november foxtrot bravo uniform sierra tango delta lima sierra uniform uniform xray bravo whiskey november alpha zulu alpha juliet whiskey whiskey romeo alpha juliet mike delta sierra alpha victor alpha golf foxtrot papa yankee romeo sierra india uniform romeo quebec echo sierra golf november tango delta echo foxtrot quebec yankee quebec delta alpha delta charlie foxtrot quebec papa oscar tango november zulu zulu bravo uniform alpha victor yankee sierra kilo echo whiskey hotel \"; // end",
+       "new": "const t = \"hotel kilo golf november alpha alpha bravo india sierra papa juliet romeo yankee juliet romeo tango november quebec quebec xray victor november mike oscar lima bravo tango victor lima oscar alpha victor charlie quebec hotel delta november lima quebec mike uniform romeo sierra echo golf november papa mike oscar yankee tango sierra kilo whiskey quebec xray charlie foxtrot lima kilo lima charlie juliet quebec foxtrot delta uniform juliet whiskey kilo quebec november uniform foxtrot quebec juliet quebec golf quebec golf november foxtrot bravo uniform sierra tango delta lima sierra uniform uniform xray bravo whiskey november alpha zulu alpha juliet whiskey whiskey romeo alpha juliet mike delta sierra alpha victor alpha golf foxtrot papa yankee romeo sierra india uniform romeo quebec echo sierra golf november tango delta echo foxtrot quebec yankee quebec delta alpha delta charlie foxtrot quebec papa oscar tango november zulu zulu bravo uniform alpha victor yankee sierra kilo echo whiskey hotel \"; // end",
+       "oldMarks": [
+        [
+         6,
+         7
+        ]
+       ],
+       "newMarks": [
+        [
+         6,
+         7
+        ]
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  "inline/60-len-1024.ts": {
+   "blocks": [
+    {
+     "shape": "1/1",
+     "pairs": [
+      {
+       "old": "const s = \"india foxtrot bravo india uniform delta sierra charlie lima golf oscar tango mike alpha bravo hotel mike sierra yankee bravo oscar bravo tango hotel hotel hotel bravo foxtrot sierra foxtrot kilo alpha oscar juliet november tango india papa charlie hotel victor mike victor whiskey sierra hotel november juliet mike whiskey papa alpha zulu hotel charlie foxtrot foxtrot lima mike foxtrot alpha juliet mike romeo lima delta kilo romeo mike kilo mike uniform charlie delta november lima romeo hotel mike golf oscar juliet lima hotel november bravo india victor alpha kilo zulu echo hotel whiskey echo charlie golf india romeo zulu echo romeo oscar oscar zulu zulu hotel foxtrot lima lima golf xray mike mike uniform sierra golf juliet papa quebec golf hotel oscar victor echo whiskey india tango oscar sierra lima romeo hotel mike tango quebec golf echo yankee delta victor quebec charlie romeo india xray yankee yankee mike alpha victor whiskey sierra echo juliet alpha mike whiskey charlie whiskey foxtrot\"; // end",
+       "new": "const t = \"india foxtrot bravo india uniform delta sierra charlie lima golf oscar tango mike alpha bravo hotel mike sierra yankee bravo oscar bravo tango hotel hotel hotel bravo foxtrot sierra foxtrot kilo alpha oscar juliet november tango india papa charlie hotel victor mike victor whiskey sierra hotel november juliet mike whiskey papa alpha zulu hotel charlie foxtrot foxtrot lima mike foxtrot alpha juliet mike romeo lima delta kilo romeo mike kilo mike uniform charlie delta november lima romeo hotel mike golf oscar juliet lima hotel november bravo india victor alpha kilo zulu echo hotel whiskey echo charlie golf india romeo zulu echo romeo oscar oscar zulu zulu hotel foxtrot lima lima golf xray mike mike uniform sierra golf juliet papa quebec golf hotel oscar victor echo whiskey india tango oscar sierra lima romeo hotel mike tango quebec golf echo yankee delta victor quebec charlie romeo india xray yankee yankee mike alpha victor whiskey sierra echo juliet alpha mike whiskey charlie whiskey foxtrot\"; // end",
+       "oldMarks": [],
+       "newMarks": []
+      }
+     ]
+    }
+   ]
+  },
+  "inline/60-len-1025.ts": {
+   "blocks": [
+    {
+     "shape": "1/1",
+     "pairs": [
+      {
+       "old": "const s = \"hotel kilo golf victor delta charlie romeo lima zulu quebec yankee juliet golf charlie whiskey juliet charlie hotel juliet echo whiskey mike juliet lima mike oscar yankee uniform uniform echo india foxtrot alpha lima victor zulu victor whiskey lima november alpha victor whiskey whiskey oscar hotel mike lima uniform delta foxtrot juliet delta india tango xray hotel whiskey victor bravo mike bravo tango foxtrot november golf yankee juliet echo mike xray bravo romeo juliet uniform uniform foxtrot sierra hotel sierra papa whiskey quebec india november victor victor sierra lima alpha delta yankee yankee uniform juliet bravo sierra tango whiskey bravo hotel victor delta bravo zulu kilo golf yankee lima xray charlie november whiskey xray mike xray tango hotel india quebec charlie lima november oscar kilo whiskey quebec xray whiskey uniform uniform oscar quebec bravo victor whiskey golf november victor quebec yankee echo papa yankee golf bravo whiskey zulu romeo india foxtrot romeo foxtrot yankee u\"; // end",
+       "new": "const t = \"hotel kilo golf victor delta charlie romeo lima zulu quebec yankee juliet golf charlie whiskey juliet charlie hotel juliet echo whiskey mike juliet lima mike oscar yankee uniform uniform echo india foxtrot alpha lima victor zulu victor whiskey lima november alpha victor whiskey whiskey oscar hotel mike lima uniform delta foxtrot juliet delta india tango xray hotel whiskey victor bravo mike bravo tango foxtrot november golf yankee juliet echo mike xray bravo romeo juliet uniform uniform foxtrot sierra hotel sierra papa whiskey quebec india november victor victor sierra lima alpha delta yankee yankee uniform juliet bravo sierra tango whiskey bravo hotel victor delta bravo zulu kilo golf yankee lima xray charlie november whiskey xray mike xray tango hotel india quebec charlie lima november oscar kilo whiskey quebec xray whiskey uniform uniform oscar quebec bravo victor whiskey golf november victor quebec yankee echo papa yankee golf bravo whiskey zulu romeo india foxtrot romeo foxtrot yankee u\"; // end",
+       "oldMarks": [],
+       "newMarks": []
+      }
+     ]
+    }
+   ]
+  },
+  "inline/60-len-1030.ts": {
+   "blocks": [
+    {
+     "shape": "1/1",
+     "pairs": [
+      {
+       "old": "const s = \"hotel romeo india hotel bravo foxtrot lima lima november charlie golf uniform juliet echo echo victor whiskey papa victor papa hotel whiskey hotel alpha quebec whiskey oscar echo uniform lima whiskey juliet echo whiskey echo sierra sierra hotel kilo uniform delta romeo november yankee foxtrot victor victor echo tango oscar yankee mike golf delta whiskey juliet alpha lima papa golf bravo bravo india juliet golf delta whiskey juliet oscar delta foxtrot kilo oscar oscar sierra lima juliet foxtrot romeo charlie bravo alpha oscar yankee papa charlie xray whiskey kilo xray sierra india delta uniform papa november papa golf zulu romeo kilo alpha lima charlie uniform juliet uniform tango xray uniform whiskey india uniform hotel charlie echo xray alpha alpha yankee mike echo juliet lima foxtrot uniform quebec victor foxtrot delta zulu xray juliet xray tango kilo mike foxtrot uniform lima kilo hotel lima echo romeo lima india hotel bravo bravo delta sierra zulu uniform whiskey mike bravo golf papa novembe\"; // end",
+       "new": "const t = \"hotel romeo india hotel bravo foxtrot lima lima november charlie golf uniform juliet echo echo victor whiskey papa victor papa hotel whiskey hotel alpha quebec whiskey oscar echo uniform lima whiskey juliet echo whiskey echo sierra sierra hotel kilo uniform delta romeo november yankee foxtrot victor victor echo tango oscar yankee mike golf delta whiskey juliet alpha lima papa golf bravo bravo india juliet golf delta whiskey juliet oscar delta foxtrot kilo oscar oscar sierra lima juliet foxtrot romeo charlie bravo alpha oscar yankee papa charlie xray whiskey kilo xray sierra india delta uniform papa november papa golf zulu romeo kilo alpha lima charlie uniform juliet uniform tango xray uniform whiskey india uniform hotel charlie echo xray alpha alpha yankee mike echo juliet lima foxtrot uniform quebec victor foxtrot delta zulu xray juliet xray tango kilo mike foxtrot uniform lima kilo hotel lima echo romeo lima india hotel bravo bravo delta sierra zulu uniform whiskey mike bravo golf papa novembe\"; // end",
+       "oldMarks": [],
+       "newMarks": []
+      }
+     ]
+    }
+   ]
+  },
+  "inline/61-len-900-to-1100.ts": {
+   "blocks": [
+    {
+     "shape": "1/1",
+     "pairs": [
+      {
+       "old": "const s = \"papa xray foxtrot juliet tango sierra uniform charlie echo whiskey hotel foxtrot echo oscar uniform mike charlie bravo oscar papa golf golf xray lima alpha bravo tango zulu quebec november echo juliet charlie victor bravo quebec whiskey november kilo charlie oscar alpha victor foxtrot xray foxtrot mike juliet alpha oscar zulu sierra victor lima sierra golf papa charlie romeo kilo quebec oscar november romeo uniform echo mike tango tango charlie zulu zulu bravo xray victor kilo tango victor juliet sierra sierra november lima papa victor uniform echo juliet kilo quebec uniform alpha golf hotel victor xray oscar whiskey charlie echo victor sierra lima romeo sierra november lima quebec hotel sierra oscar mike india delta hotel foxtrot golf romeo xray delta hotel india uniform delta golf quebec victor india whiskey papa hotel romeo oscar hotel romeo sierra whiskey delta xr\"; // end",
+       "new": "const s = \"papa xray foxtrot juliet tango sierra uniform charlie echo whiskey hotel foxtrot echo oscar uniform mike charlie bravo oscar papa golf golf xray lima alpha bravo tango zulu quebec november echo juliet charlie victor bravo quebec whiskey november kilo charlie oscar alpha victor foxtrot xray foxtrot mike juliet alpha oscar zulu sierra victor lima sierra golf papa charlie romeo kilo quebec oscar november romeo uniform echo mike tango tango charlie zulu zulu bravo xray victor kilo tango victor juliet sierra sierra november lima papa victor uniform echo juliet kilo quebec uniform alpha golf hotel victor xray oscar whiskey charlie echo victor sierra lima romeo sierra november lima quebec hotel sierra oscar mike india delta hotel foxtrot golf romeo xray delta hotel india uniform delta golf quebec victor india whiskey papa hotel romeo oscar hotel romeo sierra whiskey delta xr zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\"; // end",
+       "oldMarks": [],
+       "newMarks": []
+      }
+     ]
+    }
+   ]
+  },
+  "inline/62-len-1000-chars-2000-bytes.ts": {
+   "blocks": [
+    {
+     "shape": "1/1",
+     "pairs": [
+      {
+       "old": "const s = \"éééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé\"; // end",
+       "new": "const t = \"éééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé\"; // end",
+       "oldMarks": [
+        [
+         6,
+         7
+        ]
+       ],
+       "newMarks": [
+        [
+         6,
+         7
+        ]
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  "inline/63-len-mixed-block.ts": {
+   "blocks": [
+    {
+     "shape": "2/2",
+     "pairs": [
+      {
+       "old": "const port = Number(env.PORT ?? 8080);",
+       "new": "const port = Number(env.PORT ?? 9090);",
+       "oldMarks": [
+        [
+         32,
+         36
+        ]
+       ],
+       "newMarks": [
+        [
+         32,
+         36
+        ]
+       ]
+      },
+      {
+       "old": "const s = \"quebec sierra sierra charlie november victor charlie zulu oscar echo quebec romeo quebec whiskey yankee delta uniform xray quebec delta oscar victor mike romeo foxtrot golf sierra papa yankee charlie echo lima yankee tango bravo mike hotel bravo lima bravo alpha whiskey tango golf oscar juliet delta whiskey echo november charlie tango golf sierra delta xray lima foxtrot lima xray kilo zulu yankee xray victor alpha india delta hotel lima quebec xray quebec lima xray papa bravo tango lima delta lima romeo kilo zulu tango delta bravo victor hotel india lima golf whiskey oscar alpha sierra oscar delta zulu alpha papa delta charlie zulu india foxtrot echo romeo juliet victor victor mike echo sierra india romeo whiskey yankee zulu india oscar alpha alpha kilo echo papa quebec papa bravo zulu bravo charlie foxtrot tango uniform victor tango mike papa foxtrot whiskey oscar mike hotel tango quebec charlie lima kilo quebec golf juliet echo sierra tango bravo golf foxtrot lima xray oscar kilo sierra oscar mike lima kilo alpha kilo sierra papa kilo hotel alpha hotel oscar tan\"; // end",
+       "new": "const t = \"quebec sierra sierra charlie november victor charlie zulu oscar echo quebec romeo quebec whiskey yankee delta uniform xray quebec delta oscar victor mike romeo foxtrot golf sierra papa yankee charlie echo lima yankee tango bravo mike hotel bravo lima bravo alpha whiskey tango golf oscar juliet delta whiskey echo november charlie tango golf sierra delta xray lima foxtrot lima xray kilo zulu yankee xray victor alpha india delta hotel lima quebec xray quebec lima xray papa bravo tango lima delta lima romeo kilo zulu tango delta bravo victor hotel india lima golf whiskey oscar alpha sierra oscar delta zulu alpha papa delta charlie zulu india foxtrot echo romeo juliet victor victor mike echo sierra india romeo whiskey yankee zulu india oscar alpha alpha kilo echo papa quebec papa bravo zulu bravo charlie foxtrot tango uniform victor tango mike papa foxtrot whiskey oscar mike hotel tango quebec charlie lima kilo quebec golf juliet echo sierra tango bravo golf foxtrot lima xray oscar kilo sierra oscar mike lima kilo alpha kilo sierra papa kilo hotel alpha hotel oscar tan\"; // end",
+       "oldMarks": [],
+       "newMarks": []
+      }
+     ]
+    }
+   ]
+  },
+  "inline/64-hidden-unicode.ts": {
+   "blocks": [
+    {
+     "shape": "1/1",
+     "pairs": [
+      {
+       "old": "const userName = session.user;",
+       "new": "const user\u200bName = session.user;",
+       "oldMarks": [
+        [
+         6,
+         14
+        ]
+       ],
+       "newMarks": [
+        [
+         6,
+         15
+        ]
+       ]
+      }
+     ]
+    },
+    {
+     "shape": "1/1",
+     "pairs": [
+      {
+       "old": "const greeting = \"Hello, world\";",
+       "new": "const greeting = \"Hello,\u00a0world\";",
+       "oldMarks": [
+        [
+         24,
+         25
+        ]
+       ],
+       "newMarks": [
+        [
+         24,
+         25
+        ]
+       ]
+      }
+     ]
+    }
+   ],
+   "observed": "page_data/diff_entries at head fd85851 (w=0 and w=1 identical), signed in, 2026-11-04"
+  }
+ }
+}

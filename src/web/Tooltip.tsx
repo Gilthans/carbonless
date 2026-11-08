@@ -33,7 +33,11 @@ export const TooltipLayer = createContext<Element | null>(null);
 /** How long the pointer rests on a trigger before its tooltip shows. */
 export const HOVER_DELAY_MS = 150;
 
-// Whether the last input was the keyboard or a touch (focus-visible's own
+/** Whether a `pointerType` is a tap (a finger or a pen), not a mouse. */
+export const isTap = (pointerType: string) =>
+	pointerType === "touch" || pointerType === "pen";
+
+// Whether the last input was the keyboard or a tap (focus-visible's own
 // heuristic, tracked here so it also holds where :focus-visible is missing).
 // Their focus keeps a tooltip open until blur; a mouse click's focus does not.
 let lastInputKeepsOpen = false;
@@ -42,6 +46,8 @@ if (typeof window !== "undefined") {
 	window.addEventListener(
 		"keydown",
 		(e) => {
+			// A key's click is the keyboard's, whatever pointer went before.
+			lastPointerType = "";
 			if (e.key !== "Escape") lastInputKeepsOpen = true;
 		},
 		true,
@@ -50,19 +56,29 @@ if (typeof window !== "undefined") {
 		"pointerdown",
 		(e) => {
 			lastPointerType = e.pointerType;
-			lastInputKeepsOpen = e.pointerType === "touch";
+			lastInputKeepsOpen = isTap(e.pointerType);
 		},
 		true,
 	);
-	// A mouse event after a touch is emulated; one with no pointer event
+	// A mouse event after a tap is emulated; one with no pointer event
 	// before it (old engines, test tools) is a plain click.
 	window.addEventListener(
 		"mousedown",
 		() => {
-			lastInputKeepsOpen = lastPointerType === "touch";
+			lastInputKeepsOpen = isTap(lastPointerType);
 		},
 		true,
 	);
+}
+
+/**
+ * The pointer behind a click: its own `pointerType` where the engine gives
+ * one, else the page's last pointerdown (anywhere: touch adjustment can move
+ * a tap's click off where it went down); "" after a key.
+ */
+export function clickPointer(e: { nativeEvent: Event }): string {
+	const own = (e.nativeEvent as Partial<PointerEvent>).pointerType;
+	return own || lastPointerType;
 }
 
 /** Whether the element has focus that should hold its tooltip open. */

@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import type { Locator, Page } from "@playwright/test";
 import {
 	barBottom,
@@ -6,8 +7,15 @@ import {
 	openFiles,
 	progress,
 	sideBySide,
+	tapHeight,
 } from "./files-ui";
-import { expect, type PrOptions, test } from "./fixtures";
+import {
+	expect,
+	OWNER_REPO,
+	PR_NUMBER,
+	type PrOptions,
+	test,
+} from "./fixtures";
 
 const text = (lines: string[]) => `${lines.join("\n")}\n`;
 const short = Array.from({ length: 12 }, (_, i) => `short ${i + 1}`);
@@ -40,12 +48,14 @@ const fixture: PrOptions = {
 const box = async (locator: Locator) => {
 	const b = await locator.boundingBox();
 	if (!b) throw new Error("not rendered");
-	return { top: b.y, bottom: b.y + b.height, height: b.height };
+	return { top: b.y, bottom: b.y + b.height, height: b.height, width: b.width };
 };
 
 const appHeader = (page: Page) => page.locator("body header").first();
 const appRow = (page: Page) => page.getByTestId("app-header-row");
 const compactTitle = (page: Page) => page.getByTestId("compact-title");
+/** The pill around the compact title: what fades in as the header sticks. */
+const compactPill = (page: Page) => page.getByTestId("compact-title-pill");
 
 /** Scrolls deep into the long cluster of b/long.ts, opened. */
 async function deepInLongCluster(page: Page, open = true) {
@@ -70,7 +80,7 @@ test("the app header compacts after scrolling and its tabs work from deep down",
 	await openFiles(page, s.url);
 	// At the top: the full header, no small title.
 	await expect(page.getByRole("heading", { level: 1 })).toBeInViewport();
-	await expect(compactTitle(page)).toHaveCSS("opacity", "0");
+	await expect(compactPill(page)).toHaveCSS("opacity", "0");
 	const full = await box(appHeader(page));
 
 	await deepInLongCluster(page);
@@ -84,8 +94,8 @@ test("the app header compacts after scrolling and its tabs work from deep down",
 	expect(header.bottom).toBeLessThan(full.bottom);
 	expect(header.bottom).toBeLessThanOrEqual(isMobile ? 48 : 56);
 	await expect(page.getByRole("heading", { level: 1 })).not.toBeInViewport();
-	await expect(compactTitle(page)).toHaveCSS("opacity", "1");
-	await expect(compactTitle(page)).toContainText("#7");
+	await expect(compactPill(page)).toHaveCSS("opacity", "1");
+	await expect(compactPill(page)).toContainText("#7");
 	await expectNoPageOverflow(page);
 
 	// The stack lines up, no gaps or overlaps: header, bar, file header.
@@ -110,12 +120,12 @@ test("the app header compacts after scrolling and its tabs work from deep down",
 	await compactTitle(page).focus();
 	// (Not its description: the name already says it.)
 	await expect(page.locator("[role=tooltip]:not([hidden])")).toHaveText(
-		"Make the review header sticky #7",
+		"Make the review header sticky",
 	);
 	await compactTitle(page).click();
 	await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(0);
 	await expect(page.getByRole("heading", { level: 1 })).toBeFocused();
-	await expect(compactTitle(page)).toHaveCSS("opacity", "0");
+	await expect(compactPill(page)).toHaveCSS("opacity", "0");
 	await deepInLongCluster(page, false);
 
 	// One tap back to the overview, and back to the files.
@@ -125,6 +135,166 @@ test("the app header compacts after scrolling and its tabs work from deep down",
 	).toBeVisible();
 	await page.getByRole("link", { name: "Files changed" }).click();
 	await expect(progress(page)).toBeVisible();
+});
+
+/**
+ * The open overview scrolled to its end: the header stuck, cheaply (no
+ * diff to expand), for the compact row's own tests.
+ */
+async function stuckOnOverview(page: Page) {
+	await expect(
+		page.getByRole("region", { name: "What it does" }),
+	).toBeVisible();
+	await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+	await expect(compactPill(page)).toHaveCSS("opacity", "1");
+	await expect(compactTitle(page)).not.toHaveAttribute("inert");
+}
+
+test("once stuck, the compact mark goes Home and the number to the PR on GitHub", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	if (isMobile) await page.setViewportSize({ width: 360, height: 780 });
+	await pr(fixture);
+	const s = await startCrb();
+	await page.goto(s.url);
+	const home = page.getByTestId("compact-home-link");
+	const number = page.getByTestId("compact-pr-link");
+	// At the top, out of reach like the title: neither focusable nor clickable.
+	await expect(compactTitle(page)).toHaveAttribute("inert");
+	await expect(home).toHaveAttribute("inert");
+	await expect(number).toHaveAttribute("inert");
+
+	await stuckOnOverview(page);
+	await expect(home).not.toHaveAttribute("inert");
+	if (isMobile) {
+		// At 360px the pill's column holds the clamped title alone: the
+		// number goes rather than squeeze the title out, nothing overflows,
+		// and the title is still a tap target.
+		await expect(compactTitle(page)).toBeVisible();
+		await expect(number).toBeHidden();
+		await expectNoPageOverflow(page);
+		expect(await tapHeight(compactTitle(page))).toBeGreaterThanOrEqual(40);
+		await page.setViewportSize({ width: 412, height: 780 });
+	}
+	await expect(number).toBeVisible();
+	await expect(number).not.toHaveAttribute("inert");
+	await expect(home).toHaveAccessibleName("Home");
+	await expect(home).toHaveAttribute("href", "/");
+	await expect(number).toHaveAccessibleName("#7 on GitHub");
+	await expect(number).toHaveAttribute(
+		"href",
+		"https://github.com/acme/widget/pull/7",
+	);
+	await expect(number).toHaveAttribute("target", "_blank");
+	await expect(number).toHaveAttribute("rel", "noreferrer");
+	// Title and number share the pill: one title to the eye.
+	const pill = compactPill(page);
+	await expect(pill.getByTestId("compact-title")).toHaveText(
+		"Make the review header sticky",
+	);
+	await expect(pill.getByTestId("compact-pr-link")).toHaveText("#7");
+	await expect(compactTitle(page)).toHaveAccessibleName(
+		"Back to top: Make the review header sticky",
+	);
+	for (const el of [home, compactTitle(page), number]) {
+		expect(await tapHeight(el)).toBeGreaterThanOrEqual(40);
+	}
+	// Beside the number the title keeps a tap's width.
+	expect((await box(compactTitle(page))).width).toBeGreaterThanOrEqual(40);
+	await expectNoPageOverflow(page);
+
+	// The mark goes Home.
+	await home.click();
+	await expect(page).toHaveURL(`${new URL(s.url).origin}/`);
+});
+
+test("the compact row's keyboard order: mark, tabs, title, number, Refresh", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	// Wide enough for the number (the 360px floor is the test above's).
+	if (isMobile) await page.setViewportSize({ width: 412, height: 780 });
+	await pr(fixture);
+	const s = await startCrb();
+	await page.goto(s.url);
+	await stuckOnOverview(page);
+	const home = page.getByTestId("compact-home-link");
+	const number = page.getByTestId("compact-pr-link");
+	// Keyboard focus (a key press first marks the input as the keyboard).
+	await page.keyboard.press("Shift");
+	await home.focus();
+	await expect(home).toBeFocused();
+	await expect(page.locator("[role=tooltip]:not([hidden])")).toHaveText("Home");
+	for (const name of ["Overview", "Files changed", "Final Verdict"]) {
+		await page.keyboard.press("Tab");
+		await expect(page.getByRole("link", { name })).toBeFocused();
+	}
+	await page.keyboard.press("Tab");
+	await expect(compactTitle(page)).toBeFocused();
+	await page.keyboard.press("Tab");
+	await expect(number).toBeFocused();
+	await expect(page.locator("[role=tooltip]:not([hidden])")).toHaveText(
+		"Open on GitHub",
+	);
+	await page.keyboard.press("Tab");
+	await expect(page.getByRole("button", { name: "Refresh" })).toBeFocused();
+	// None of that moved the page: the row is stuck.
+	expect(await page.evaluate(() => window.scrollY)).toBeGreaterThan(0);
+	await expect(compactPill(page)).toHaveCSS("opacity", "1");
+});
+
+test("a five-digit PR number never crushes the compact title: it shows beside a tap-wide title or not at all", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	if (isMobile) await page.setViewportSize({ width: 412, height: 780 });
+	const p = await pr(fixture);
+	// The same PR under a five-digit number: its ref, and gh's answers.
+	const big = 12345;
+	execFileSync(
+		"git",
+		["update-ref", `refs/pull/${big}/head`, `refs/pull/${PR_NUMBER}/head`],
+		{ cwd: p.repo.path },
+	);
+	p.editScenario((sc) => {
+		const seven = sc.prs[String(PR_NUMBER)];
+		if (!seven) throw new Error("fixture PR missing");
+		sc.prs[String(big)] = {
+			...seven,
+			view: {
+				...seven.view,
+				number: big,
+				url: `https://github.com/${OWNER_REPO}/pull/${big}`,
+			},
+		};
+	});
+	const s = await startCrb(`${OWNER_REPO}#${big}`);
+	await page.goto(s.url);
+	await stuckOnOverview(page);
+	const number = page.getByTestId("compact-pr-link");
+	await expect(number).toHaveAttribute(
+		"href",
+		`https://github.com/${OWNER_REPO}/pull/${big}`,
+	);
+	const title = await box(compactTitle(page));
+	if (await number.isVisible()) {
+		await expect(number).toHaveText("#12345");
+		expect(title.width).toBeGreaterThanOrEqual(40);
+		expect(await tapHeight(number)).toBeGreaterThanOrEqual(40);
+	} else {
+		await expect(number).toBeHidden();
+	}
+	expect(title.width).toBeGreaterThanOrEqual(40);
+	// Wide, it always shows.
+	if (!isMobile) await expect(number).toBeVisible();
+	await expectNoPageOverflow(page);
 });
 
 test("the overview's header compacts too", async ({
@@ -141,7 +311,7 @@ test("the overview's header compacts too", async ({
 		page.getByRole("region", { name: "What it does" }),
 	).toBeVisible();
 	await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
-	await expect(compactTitle(page)).toHaveCSS("opacity", "1");
+	await expect(compactPill(page)).toHaveCSS("opacity", "1");
 	const header = await box(appHeader(page));
 	expect(header.top).toBeLessThan(0);
 	expect(header.bottom).toBeGreaterThan(0);

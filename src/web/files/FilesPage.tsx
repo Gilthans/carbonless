@@ -27,7 +27,7 @@ import { useThreads } from "../threads/useThreads";
 import { ErrorMessage } from "../ui";
 import { useMedia, WIDE } from "../useMedia";
 import { FilesVerdict } from "../verdict/FilesVerdict";
-import { ignoreWhitespace, sideBySide } from "../viewSettings";
+import { ignoreWhitespace, showInvisibles, sideBySide } from "../viewSettings";
 import type { DiffThreads } from "./DiffBody";
 import { FileDiff } from "./FileDiff";
 import { FileTree } from "./FileTree";
@@ -48,6 +48,7 @@ import {
 	restoreAnchor,
 	type ScrollAnchor,
 } from "./scrollAnchor";
+import { TreeColumn } from "./TreeResizer";
 import { threadsOnHead } from "./threadPlacement";
 
 const NO_THREADS: ReviewThread[] = [];
@@ -118,7 +119,7 @@ function FilesSheet(props: {
 						Close
 					</button>
 				</div>
-				<div className="min-h-0 flex-1 overflow-y-auto px-2 py-2">
+				<div className="min-h-0 flex-1 overflow-y-auto px-2 pb-2 [--tree-bg:var(--color-surface)]">
 					{props.children}
 				</div>
 			</div>
@@ -384,7 +385,7 @@ export function FilesPage() {
 		if (a && diffs.current) restoreAnchor(a, diffs.current);
 	}, [unit]);
 	// So does switching a view setting that lays the rows out again (side
-	// by side, ignore whitespace): the anchor is taken as the setting
+	// by side, ignore whitespace, hidden characters): the anchor is taken as the setting
 	// changes, before React re-renders, and the row found again by its
 	// numbers once the new rows are in.
 	const settingAnchor = useRef<ScrollAnchor | null>(null);
@@ -398,6 +399,7 @@ export function FilesPage() {
 		const unsubscribe = [
 			sideBySide.subscribe(capture),
 			ignoreWhitespace.subscribe(capture),
+			showInvisibles.subscribe(capture),
 		];
 		return () => {
 			for (const off of unsubscribe) off();
@@ -405,12 +407,13 @@ export function FilesPage() {
 	}, [appHeader, pageSticky]);
 	const split = sideBySide.use();
 	const ignoreWs = ignoreWhitespace.use();
+	const invisibles = showInvisibles.use();
 	// biome-ignore lint/correctness/useExhaustiveDependencies: runs after each setting switch.
 	useLayoutEffect(() => {
 		const a = settingAnchor.current;
 		settingAnchor.current = null;
 		if (a && diffs.current) restoreAnchor(a, diffs.current);
-	}, [split, ignoreWs]);
+	}, [split, ignoreWs, invisibles]);
 	/** The header to keep where it was on screen as files open and close. */
 	const anchor = useRef<{ index: number; top: number } | null>(null);
 	const sectionOf = (index: number) => document.getElementById(`file-${index}`);
@@ -678,12 +681,9 @@ export function FilesPage() {
 								<FilesVerdict threads={allThreads} settled={firstOpenSettled} />
 							</>
 						) : (
-							<div className="mt-4 flex gap-4">
-								{wide && (
-									<aside className="sticky top-[calc(var(--app-header,0px)+var(--files-bar,0px)+1rem)] max-h-[calc(100dvh-var(--app-header,0px)-var(--files-bar,0px)-2rem)] w-72 shrink-0 self-start overflow-y-auto">
-										{tree}
-									</aside>
-								)}
+							<div className="mt-4 flex">
+								{/* The handle's 1rem is the gap to the diffs. */}
+								{wide && <TreeColumn tree={tree} />}
 								<div
 									ref={diffs}
 									// Room for the floating Files button, and for the save notices

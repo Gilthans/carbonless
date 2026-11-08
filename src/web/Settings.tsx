@@ -75,6 +75,7 @@ function SettingsList({ phone }: { phone: boolean }) {
 		<div className="space-y-1">
 			<SwitchRow
 				label="Show hidden characters"
+				keys={phone ? undefined : VIEW_KEYS.showInvisibles}
 				checked={invisibles}
 				onChange={showInvisibles.set}
 			/>

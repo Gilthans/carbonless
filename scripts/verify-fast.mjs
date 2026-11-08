@@ -54,11 +54,12 @@ const specs = readdirSync("e2e")
 
 // Path patterns to the e2e specs (names under e2e/) that cover them. A source
 // file matching none of these runs the whole e2e suite: unmapped means unknown,
-// not untested. Files outside src/, e2e/ and test/ (docs, scripts) run none.
+// not untested; an entry with no specs, covered by unit tests alone. Files
+// outside src/, e2e/ and test/ (docs, scripts) run none.
 const E2E_MAP = [
 	[/^src\/web\/agent\//, ["agent", "agent-setup"]],
 	[
-		/^src\/web\/(overview|threads)\/|^src\/server\/(overview|overviewRead|threadCode|timeline)\.ts$|^src\/web\/(GithubHtml|githubHtml)/,
+		/^src\/web\/(overview|threads)\/|^src\/server\/(overview|overviewRead|threadCode|timeline)\.ts$|^src\/web\/(GithubHtml|githubHtml|sanitizeGithubHtml)/,
 		["overview", "timeline", "mobile"],
 	],
 	[/^src\/web\/threads\//, ["files-threads", "thread-people"]],
@@ -81,7 +82,12 @@ const E2E_MAP = [
 			"sideBySide",
 			"mobile",
 			"saves",
+			"tree-resize",
 		],
+	],
+	[
+		/^src\/web\/(viewSettings|useMedia)\.ts$|^src\/web\/Tooltip\.tsx$/,
+		["tree-resize"],
 	],
 	[
 		/^src\/web\/files\/(codeSpan|linePicks|selectionActions|SelectionBar|DiffBody|FileDiff|SyncNotices)\.tsx?$|^src\/web\/threads\/(NewThread|newThreads|drafts|threadWrites|spanMarks)\.tsx?$|^src\/web\/code\/Invisibles\.tsx$|^src\/server\/(newThreads|marker)\.ts$/,
@@ -96,6 +102,13 @@ const E2E_MAP = [
 		["verdict"],
 	],
 	[/^src\/server\/review\//, ["files", "persistence"]],
+	// Unit-test data (wordBlocks.fixture.test.ts); inlineDiff.spec.ts reads
+	// a few of its cases.
+	[/^test\/fixtures\/inline-diff\//, ["inlineDiff"]],
+	[
+		/^src\/web\/files\/(wordDiff|wordBlocks|whitespace)\.ts$|^src\/web\/code\/Invisibles\.tsx$|^src\/web\/files\/DiffBody\.tsx$/,
+		["inlineDiff"],
+	],
 	[
 		/^src\/server\/home\/|^src\/shared\/home(Sections)?\.ts$/,
 		["home-api", "home"],
@@ -153,9 +166,9 @@ for (const file of changed) {
 		reasons.push(`${file} -> all`);
 		continue;
 	}
-	const hits = E2E_MAP.filter(([re]) => re.test(file)).flatMap(([, s]) => s);
-	if (hits.length) {
-		for (const s of hits) e2e.add(s);
+	const matched = E2E_MAP.filter(([re]) => re.test(file));
+	if (matched.length) {
+		for (const s of matched.flatMap(([, s]) => s)) e2e.add(s);
 	} else if (/^(src|e2e|test)\//.test(file)) {
 		allE2e = true;
 		reasons.push(`${file} -> all (unmapped)`);

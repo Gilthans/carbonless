@@ -126,7 +126,7 @@ export const rowTop = async (row: Locator) =>
 
 /** Sets a Settings switch (by its label) and closes Settings again. */
 export async function setSwitch(page: Page, label: string, on: boolean) {
-	const gear = page.getByRole("button", { name: "Settings" });
+	const gear = page.getByRole("button", { name: "Settings", exact: true });
 	if ((await gear.getAttribute("aria-expanded")) !== "true") await gear.click();
 	const toggle = page.getByRole("switch", { name: label });
 	if ((await toggle.getAttribute("aria-checked")) !== String(on)) {
@@ -153,3 +153,23 @@ export async function expectNoPageOverflow(page: Page) {
 	}));
 	expect(scrollWidth).toBeLessThanOrEqual(clientWidth);
 }
+
+/**
+ * How tall the element's tap target is: the run of points through its
+ * centre that hit it (a hit area a pseudo-element extends counts, a box
+ * does not say). Principle 5 wants 40px.
+ */
+export const tapHeight = (el: Locator) =>
+	el.evaluate((node) => {
+		const r = node.getBoundingClientRect();
+		const x = r.left + r.width / 2;
+		const mid = r.top + r.height / 2;
+		const hits = (y: number) => node.contains(document.elementFromPoint(x, y));
+		let top = mid;
+		let bottom = mid;
+		if (!hits(mid)) return 0;
+		while (top > 0 && hits(top - 1)) top -= 1;
+		while (bottom < window.innerHeight && hits(bottom + 1)) bottom += 1;
+		// Both ends hit: the run is one longer than their distance.
+		return bottom - top + 1;
+	});

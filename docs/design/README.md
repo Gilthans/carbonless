@@ -15,7 +15,7 @@ uses is checked for WCAG AA in `src/web/theme.test.ts`; add new pairs there.
 | --- | --- |
 | `canvas` `surface` `raised` `overlay` `pressed` | page, cards/header, section and file headers, tooltips/hover, pressed |
 | `band` | subsection bands (Human/Bot reviews) and thread card headers: between `surface` and `raised` |
-| `line` / `line-strong` / `edge` | decorative dividers / outlines of controls (3:1) / floating layers, scrollbars |
+| `line` / `line-strong` / `edge` | decorative dividers / outlines of controls (3:1) / floating layers, scrollbars. The file tree's resize handle is a `line` rule, `line-strong` under the pointer and `accent` (2px) while focused or dragged |
 | `ink` `ink-soft` `muted` `faint` | text, strongest to weakest (all 4.5:1 on every surface) |
 | `label` | letter-spaced violet capitals for section labels |
 | `accent` `link` | focus rings, the pointed-at cluster rail, selected segment, current file; links |
@@ -71,8 +71,10 @@ all in `faint`. Characters that would print as nothing or as a lookalike
 blank (controls, zero widths, BOM, soft hyphen, tags, unusual spaces,
 separators, stray variation selectors) show as `\uXXXX`, named in a
 tooltip (hover or tap); bidi controls also get a `warn` tint. Settings' "Show
-hidden characters" switch hides only spaces, tabs and line endings: escapes
-always show (principle 2). Only a short list of invisibles doing their job stays
+hidden characters" switch hides only spaces, tabs, line endings and a
+file's byte order mark (a U+FEFF that starts its first line: encoding, not
+content; owner, 2026-11-08): other escapes always show (principle 2), and
+a changed first line that starts with a BOM warns while they are off. Only a short list of invisibles doing their job stays
 unescaped, and anything unsure is escaped: ZWJ/ZWNJ after a virama on a
 letter of its own script, ZWNJ between joining letters of one
 script (IDNA CONTEXTJ, Joining_Type generated from Unicode data by

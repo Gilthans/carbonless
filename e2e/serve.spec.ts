@@ -179,8 +179,10 @@ test("the logo goes Home", async ({ page, pr, startCrb }) => {
 	await pr();
 	const s = await startCrb();
 	await page.goto(s.url);
-	const home = page.getByRole("link", { name: "Home" });
+	// The full header's logo (the compact row's mark, inert here, links too).
+	const home = page.getByTestId("home-link");
 	await expect(home).toBeVisible();
+	await expect(home).toHaveAccessibleName("Home");
 	await home.click();
 	await expect(page).toHaveURL(`${new URL(s.url).origin}/`);
 	// And back: the review as it was.
