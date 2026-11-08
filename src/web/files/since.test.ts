@@ -4,6 +4,7 @@ import type {
 	FileView,
 	RereviewAnswer,
 	ReviewView,
+	SinceMark,
 } from "../../shared/types";
 import {
 	carriedCount,
@@ -181,6 +182,93 @@ describe("toReadCount", () => {
 	});
 });
 
+describe("toReadCount, a partly reviewed cluster", () => {
+	it("is still to read: in lines, only its unreviewed lines", () => {
+		const partly = view([
+			file(0, "core.ts", [
+				{ ...cluster("a", "unreviewed", false, 2), reviewedLines: [[0, 1]] },
+			]),
+			file(1, "util.ts", [cluster("d", "unreviewed", false, 1)]),
+		]);
+		const since = sinceByFile(a, partly);
+		expect(toReadCount(since, partly, "clusters")).toBe(2);
+		expect(toReadCount(since, partly, "lines")).toBe(2);
+		expect(toReadCount(since, partly, "files")).toBe(2);
+		expect(eyesOf(partly.files[0] as FileView, since.get(0))).toBe("read");
+	});
+});
+
+describe("since-only pieces", () => {
+	const withRevert = answer(
+		[
+			{
+				index: 0,
+				path: "core.ts",
+				conflict: false,
+				clusters: [{ key: "a", kind: "reworked" }],
+				sinceOnly: [
+					{ old: [[10, 16]], new: [], kind: "removed" },
+					{ old: [[30, 31]], new: [[40, 42]], kind: "reverted" },
+				],
+			},
+			{
+				index: 3,
+				path: "reverted.ts",
+				conflict: false,
+				clusters: [],
+				sinceOnly: [{ old: [[1, 4]], new: [], kind: "reverted" }],
+			},
+		],
+		{ files: 2, clusters: 4 },
+	);
+	const plain = view([
+		file(0, "core.ts", [cluster("a", "reviewed", false, 2)]),
+	]);
+
+	it("count in to-read until marked, in each unit; a file only they hold is listed as gone", () => {
+		const since = sinceByFile(withRevert, plain);
+		expect(toReadCount(since, plain, "clusters")).toBe(3);
+		expect(toReadCount(since, plain, "lines")).toBe(6 + 3 + 3);
+		expect(toReadCount(since, plain, "files")).toBe(2);
+		expect(goneFiles(withRevert, plain).map((f) => f.path)).toEqual([
+			"reverted.ts",
+		]);
+		const marked: ReviewView = {
+			...plain,
+			sinceMarks: [
+				{
+					since: 1,
+					path: "core.ts",
+					reviewed: { old: [[10, 16]], new: [] },
+					crossed: { old: [[30, 31]], new: [[40, 42]] },
+				},
+			],
+		};
+		const after = sinceByFile(withRevert, marked);
+		expect(toReadCount(after, marked, "clusters")).toBe(1);
+		expect(after.get(0)?.sinceOnlyLeft).toEqual({ pieces: 0, lines: 0 });
+		// A mark that holds part of a piece's lines leaves it to read.
+		const part: ReviewView = {
+			...plain,
+			sinceMarks: [
+				{
+					since: 1,
+					path: "core.ts",
+					reviewed: { old: [[10, 12]], new: [] },
+					crossed: { old: [], new: [] },
+				},
+			],
+		};
+		expect(sinceByFile(withRevert, part).get(0)?.sinceOnlyLeft.pieces).toBe(2);
+		// Another comparison's mark is not this one's.
+		const other: ReviewView = {
+			...plain,
+			sinceMarks: [{ ...(marked.sinceMarks?.[0] as SinceMark), since: 2 }],
+		};
+		expect(sinceByFile(withRevert, other).get(0)?.sinceOnlyLeft.pieces).toBe(2);
+	});
+});
+
 describe("eyesOf", () => {
 	it("read for anything to look at, carried when every mark carried, null without an answer", () => {
 		const since = sinceByFile(a, v);
@@ -191,6 +279,7 @@ describe("eyesOf", () => {
 				kinds: new Map(),
 				conflict: false,
 				counts: { reworked: 0, new: 0, gone: 0, carried: 1 },
+				sinceOnlyLeft: { pieces: 0, lines: 0 },
 			}),
 		).toBe("carried");
 		// A carried file whose mark the reviewer unticked needs eyes again.
@@ -199,6 +288,16 @@ describe("eyesOf", () => {
 				kinds: new Map(),
 				conflict: false,
 				counts: { reworked: 0, new: 0, gone: 0, carried: 0 },
+				sinceOnlyLeft: { pieces: 0, lines: 0 },
+			}),
+		).toBe("read");
+		// A piece owning no line of the snapshot, not marked: to read.
+		expect(
+			eyesOf(carried, {
+				kinds: new Map(),
+				conflict: false,
+				counts: { reworked: 0, new: 0, gone: 0, carried: 1 },
+				sinceOnlyLeft: { pieces: 1, lines: 6 },
 			}),
 		).toBe("read");
 		expect(
@@ -206,6 +305,7 @@ describe("eyesOf", () => {
 				kinds: new Map(),
 				conflict: true,
 				counts: { reworked: 0, new: 0, gone: 0, carried: 1 },
+				sinceOnlyLeft: { pieces: 0, lines: 0 },
 			}),
 		).toBe("read");
 		expect(eyesOf(carried, undefined)).toBeNull();

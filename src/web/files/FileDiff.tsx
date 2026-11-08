@@ -10,7 +10,19 @@ import {
 	useRef,
 	useState,
 } from "react";
-import type { ClusterView, FileView, StateChange } from "../../shared/types";
+import type { LineRanges } from "../../shared/lineRanges";
+import {
+	crossOffChange,
+	type SincePiece,
+	sinceToggleChange,
+	toggleChange,
+} from "../../shared/pieces";
+import type {
+	ClusterView,
+	FileView,
+	SinceMark,
+	StateChange,
+} from "../../shared/types";
 import { hunksQuery, overviewQuery, sessionQuery } from "../api";
 import { Spinner } from "../Spinner";
 import { Tooltip, TooltipPath, type TooltipTriggerProps } from "../Tooltip";
@@ -418,6 +430,8 @@ export function FileDiff(props: {
 	 */
 	since?: number;
 	sinceInfo?: FileSince;
+	/** The patch set's marks on since-only pieces (ReviewView.sinceMarks). */
+	sinceMarks?: SinceMark[];
 	/** The engine is still computing: the chips' slot spins. */
 	sincePending?: boolean;
 	/** An earlier patch set, as reviewed: the marks are locked. */
@@ -470,21 +484,21 @@ export function FileDiff(props: {
 	};
 	// Only an unreviewed cluster's box marks it reviewed: unchecking a reviewed
 	// one or undoing a cross-off makes it unreviewed (R21).
-	const toggle = (cluster: ClusterView) => {
-		save([
-			{
-				key: cluster.key,
-				state: cluster.state === "unreviewed" ? "reviewed" : "unreviewed",
-			},
-		]).catch(() => {});
+	// The whole cluster (mixed or unreviewed → reviewed, reviewed →
+	// unreviewed), or in the since view one piece of it (pieces.ts).
+	const toggle = (cluster: ClusterView, piece?: LineRanges) => {
+		save([toggleChange(cluster, piece)]).catch(() => {});
 	};
-	// Crossing off a cluster, or undoing it to unreviewed (never reviewed).
-	const crossOff = (cluster: ClusterView) => {
+	// Crossing off a cluster (or a piece of it), or undoing it to
+	// unreviewed (never reviewed).
+	const crossOff = (cluster: ClusterView, piece?: LineRanges) => {
+		save([crossOffChange(cluster, piece)]).catch(() => {});
+	};
+	// A since-view piece that owns no line of this snapshot: its own mark.
+	const sinceMark = (piece: SincePiece, cross: boolean) => {
+		if (props.since === undefined) return;
 		save([
-			{
-				key: cluster.key,
-				state: cluster.state === "crossed-off" ? "unreviewed" : "crossed-off",
-			},
+			sinceToggleChange(props.sinceMarks, props.since, file.path, piece, cross),
 		]).catch(() => {});
 	};
 	const unreviewed = file.clusters.filter((c) => c.state === "unreviewed");
@@ -888,6 +902,8 @@ export function FileDiff(props: {
 					headSure={props.headSure}
 					from={props.since}
 					kinds={props.sinceInfo?.kinds}
+					onSinceMark={sinceMark}
+					sinceMarks={props.sinceMarks}
 					readOnly={readOnly}
 				/>
 			)}
@@ -898,8 +914,8 @@ export function FileDiff(props: {
 /**
  * A file of the since view that the viewed snapshot no longer changes:
  * everything the reviewer saw of it on the compared patch set was undone,
- * so its clusters are gone. Its header names it; its body is the interdiff
- * (deletion blocks, red-railed, not markable).
+ * so its clusters are gone. Its header names it; its body is the interdiff,
+ * each piece marked on its own (since marks: pieces.ts).
  */
 export function GoneFile(props: {
 	index: number;
@@ -907,8 +923,23 @@ export function GoneFile(props: {
 	revision: string;
 	since: number;
 	info?: FileSince;
+	sinceMarks?: SinceMark[];
+	/** An earlier patch set, as reviewed: the marks are locked. */
+	readOnly?: boolean;
 }) {
 	const [expanded, setExpanded] = useState(false);
+	const { save } = useSetStates();
+	const sinceMark = (piece: SincePiece, cross: boolean) => {
+		save(props.revision, props.path, [
+			sinceToggleChange(
+				props.sinceMarks,
+				props.since,
+				props.path,
+				piece,
+				cross,
+			),
+		]).catch(() => {});
+	};
 	const file: FileView = {
 		index: props.index,
 		path: props.path,
@@ -955,7 +986,9 @@ export function GoneFile(props: {
 					onCrossOff={() => {}}
 					from={props.since}
 					kinds={props.info?.kinds}
-					readOnly
+					onSinceMark={sinceMark}
+					sinceMarks={props.sinceMarks}
+					readOnly={props.readOnly}
 				/>
 			)}
 		</section>

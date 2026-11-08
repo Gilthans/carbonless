@@ -1420,6 +1420,17 @@ describe("Session", () => {
 					},
 				],
 				newLineCount: 1,
+				// One piece, all of later.txt's cluster.
+				pieces: [
+					{
+						hunk: 0,
+						line: 0,
+						key: laterKey,
+						owns: [[0, 1]],
+						old: [],
+						new: [[1, 2]],
+					},
+				],
 			});
 			expect(await s.interdiffHunks(1, view.revision, 0)).toEqual({
 				hunks: [],

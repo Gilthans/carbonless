@@ -3,12 +3,14 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import fastifyStatic from "@fastify/static";
 import Fastify, { type FastifyInstance, type FastifyRequest } from "fastify";
+import { parseRanges } from "../shared/lineRanges.js";
 import {
 	type ClusterState,
 	COMMENTS_BATCH,
 	type EditRequest,
 	type NewThreadRequest,
 	type ReplyRequest,
+	type SinceMark,
 	type StateChange,
 	type ThreadsStage,
 	type VerdictRequest,
@@ -32,6 +34,7 @@ import {
 } from "./registry.js";
 import { parsePlacementBody } from "./rereview/placementBody.js";
 import { InvalidPlacementError } from "./rereview/threads.js";
+import { parseSides } from "./review/events.js";
 import {
 	InvalidChangeError,
 	RefusedChangeError,
@@ -738,6 +741,25 @@ function oidParam(name: string, raw: unknown): string {
 	return raw;
 }
 
+/** A since mark's fields, or null (the store checks the rest: sinceMarkOk). */
+function parseSinceMark(value: unknown): SinceMark | null {
+	if (typeof value !== "object" || value === null) return null;
+	const { since, path, reviewed, crossed } = value as Record<string, unknown>;
+	const r = parseSides(reviewed);
+	const x = parseSides(crossed);
+	if (
+		typeof since !== "number" ||
+		!Number.isSafeInteger(since) ||
+		since < 1 ||
+		typeof path !== "string" ||
+		!r ||
+		!x
+	) {
+		return null;
+	}
+	return { since, path, reviewed: r, crossed: x };
+}
+
 function parseStatesBody(body: unknown): {
 	revision: string;
 	changes: StateChange[];
@@ -759,11 +781,44 @@ function parseStatesBody(body: unknown): {
 		if (typeof change !== "object" || change === null) {
 			throw fail("Each change must be an object");
 		}
-		const { key, state, reason } = change as Record<string, unknown>;
+		const { key, state, reason, reviewedLines, crossedLines, sinceMark } =
+			change as Record<string, unknown>;
 		if (typeof key !== "string") throw fail("A change's key must be a string");
 		if (typeof state !== "string" || !STATES.includes(state)) {
 			refused.push({ key, message: `Unknown cluster state: ${String(state)}` });
 			return undefined;
+		}
+		if (sinceMark !== undefined) {
+			// Since-only pieces: a mark of its own (checked again with the store).
+			const mark = parseSinceMark(sinceMark);
+			if (!mark || reviewedLines !== undefined || crossedLines !== undefined) {
+				refused.push({
+					key,
+					message: "sinceMark must be { since, path, reviewed, crossed }",
+				});
+				return undefined;
+			}
+			return { key, state: state as ClusterState, sinceMark: mark };
+		}
+		if (reviewedLines !== undefined || crossedLines !== undefined) {
+			// Part of a cluster: ranges of its lines, with unreviewed only;
+			// whether they fit the cluster is checked against the snapshot.
+			const r = reviewedLines === undefined ? [] : parseRanges(reviewedLines);
+			const x = crossedLines === undefined ? [] : parseRanges(crossedLines);
+			if (!r || !x || state !== "unreviewed" || reason !== undefined) {
+				refused.push({
+					key,
+					message:
+						"reviewedLines and crossedLines must be [start, end) pairs of line indexes, with unreviewed",
+				});
+				return undefined;
+			}
+			return {
+				key,
+				state: "unreviewed",
+				...(reviewedLines === undefined ? {} : { reviewedLines: r }),
+				...(crossedLines === undefined ? {} : { crossedLines: x }),
+			};
 		}
 		if (reason === undefined) return { key, state: state as ClusterState };
 		if (typeof reason !== "string" || reason.length > MAX_REASON) {

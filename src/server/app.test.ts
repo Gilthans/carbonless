@@ -385,6 +385,117 @@ describe("API", () => {
 		expect(view.progress.clusters.reviewed).toBe(0);
 	});
 
+	it("records part of a cluster reviewed: the cluster stays unreviewed with those lines", async () => {
+		const view: ReviewView = await get("/api/review");
+		const cluster = view.files
+			.flatMap((f) => f.clusters)
+			.find((c) => c.kind === "lines" && c.lines >= 2);
+		if (!cluster) throw new Error("the fixture has no cluster of 2 lines");
+		const res = await post("/api/review/states", {
+			revision: view.revision,
+			changes: [
+				{ key: cluster.key, state: "unreviewed", reviewedLines: [[0, 1]] },
+			],
+		});
+		expect(res.statusCode, res.body).toBe(200);
+		const after: ReviewView = await get("/api/review");
+		expect(
+			after.files.flatMap((f) => f.clusters).find((c) => c.key === cluster.key),
+		).toMatchObject({ state: "unreviewed", reviewedLines: [[0, 1]] });
+		expect(after.progress.clusters.reviewed).toBe(0);
+		expect(after.progress.lines.reviewed).toBe(1);
+	});
+
+	it.each([
+		["not a list", "0-1"],
+		["not pairs", [[0]]],
+		["an empty range", [[1, 1]]],
+		["a backward range", [[2, 1]]],
+		["a negative line", [[-1, 1]]],
+		["a fraction", [[0, 0.5]]],
+		["past the cluster's lines", [[0, 10_000]]],
+	])(
+		"refuses a partial mark with %s, naming its key, storing nothing",
+		async (_, lines) => {
+			const view: ReviewView = await get("/api/review");
+			const [key = ""] = keys(view);
+			const res = await post("/api/review/states", {
+				revision: view.revision,
+				changes: [{ key, state: "unreviewed", reviewedLines: lines }],
+			});
+			expect(res.statusCode).toBe(400);
+			expect(res.json().keys).toEqual([key]);
+			expect((await get("/api/review")).patchset).toBeNull();
+		},
+	);
+
+	it.each([
+		["crossed lines not ranges", { crossedLines: [[1, 0]] }],
+		[
+			"a since mark without its sides",
+			{ sinceMark: { since: 1, path: "a.ts" } },
+		],
+		[
+			"a since mark with bad ranges",
+			{
+				sinceMark: {
+					since: 1,
+					path: "a.ts",
+					reviewed: { old: [[-1, 2]], new: [] },
+					crossed: { old: [], new: [] },
+				},
+			},
+		],
+		[
+			"a since mark with lines too",
+			{
+				reviewedLines: [[0, 1]],
+				sinceMark: {
+					since: 1,
+					path: "a.ts",
+					reviewed: { old: [], new: [] },
+					crossed: { old: [], new: [] },
+				},
+			},
+		],
+		[
+			"a since mark naming no earlier patch set",
+			{
+				sinceMark: {
+					since: 1,
+					path: "a.ts",
+					reviewed: { old: [[1, 2]], new: [] },
+					crossed: { old: [], new: [] },
+				},
+			},
+		],
+	])("refuses %s, naming its key, storing nothing", async (_, extra) => {
+		const view: ReviewView = await get("/api/review");
+		const [cluster = ""] = keys(view);
+		const key = "sinceMark" in extra ? "since:1:a.ts" : cluster;
+		const res = await post("/api/review/states", {
+			revision: view.revision,
+			changes: [{ key, state: "unreviewed", ...extra }],
+		});
+		expect(res.statusCode).toBe(400);
+		expect(res.json().keys).toEqual([key]);
+		expect((await get("/api/review")).patchset).toBeNull();
+	});
+
+	it("refuses reviewed lines with a state other than unreviewed", async () => {
+		const view: ReviewView = await get("/api/review");
+		const [key = ""] = keys(view);
+		for (const state of ["reviewed", "crossed-off"]) {
+			const res = await post("/api/review/states", {
+				revision: view.revision,
+				changes: [{ key, state, reviewedLines: [[0, 1]] }],
+			});
+			expect(res.statusCode).toBe(400);
+			expect(res.json().keys).toEqual([key]);
+		}
+		expect((await get("/api/review")).patchset).toBeNull();
+	});
+
 	it("crosses off without a reason", async () => {
 		const [key = ""] = keys(await get("/api/review"));
 		const res = await post("/api/review/states", {

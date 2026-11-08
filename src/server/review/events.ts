@@ -1,4 +1,5 @@
 import { monotonicFactory } from "ulid";
+import { type LineRanges, parseRanges } from "../../shared/lineRanges.js";
 import type {
 	ClusterState,
 	DiffSide,
@@ -68,6 +69,43 @@ export interface ClusterStateEvent extends EventBase {
 	path: string;
 	state: ClusterState;
 	reason?: string;
+}
+
+/**
+ * The reviewer marked part of a cluster: `lines` of it (lineRanges.ts: its
+ * removed lines, then its added ones) reviewed or crossed off, one piece
+ * of it in the since view. A new type, not a `cluster-state` field, so a
+ * reader that predates it skips it and sees the cluster unreviewed (GitDB
+ * 8: fails closed). The writer always puts a `cluster-state` unreviewed
+ * for the whole cluster first, then these, in one commit: the cluster's
+ * marks, whole. Only `by: "human"`. See docs/review-data-storage.md.
+ */
+export interface LinesStateEvent extends EventBase {
+	type: "lines-state";
+	/** The patch set's snapshot id. */
+	patchset: string;
+	cluster: string;
+	path: string;
+	state: "reviewed" | "crossed-off";
+	/** Normalized, non-empty. */
+	lines: LineRanges;
+}
+
+/**
+ * The reviewer's marks on the since view's pieces that own no line of the
+ * patch set's snapshot (lines gone or reverted since patch set `since`),
+ * in file `path`: every such line marked, by number on the since view's
+ * sides (`old`: the compared head, or its rebase on the new base; `new`:
+ * this head). The whole set for (since, path): the last one wins. They
+ * never change a cluster's state, never carry. Only `by: "human"`.
+ */
+export interface SinceLinesStateEvent extends EventBase {
+	type: "since-lines-state";
+	patchset: string;
+	since: number;
+	path: string;
+	reviewed: { old: LineRanges; new: LineRanges };
+	crossed: { old: LineRanges; new: LineRanges };
 }
 
 /** One cluster state carried from one patch set to the next. */
@@ -164,6 +202,8 @@ export type CrbEvent =
 	| ReviewCreatedEvent
 	| PatchsetStartedEvent
 	| ClusterStateEvent
+	| LinesStateEvent
+	| SinceLinesStateEvent
 	| CarriedEvent
 	| ThreadPlacedEvent
 	| ReviewClosedEvent
@@ -242,6 +282,12 @@ export function validateForWrite(e: CrbEvent): void {
 	if (e.type === "cluster-state" && e.by !== "human") {
 		throw new Error("cluster-state events must be written by a human");
 	}
+	if (
+		(e.type === "lines-state" || e.type === "since-lines-state") &&
+		e.by !== "human"
+	) {
+		throw new Error(`${e.type} events must be written by a human`);
+	}
 	if (INBOX_TYPES.includes(e.type) && e.by !== "human") {
 		throw new Error(`${e.type} events must be written by a human`);
 	}
@@ -298,6 +344,16 @@ const isPosInt = (value: unknown): value is number =>
 	Number.isSafeInteger(value) && (value as number) > 0;
 const isSide = (value: unknown): value is DiffSide =>
 	value === "LEFT" || value === "RIGHT";
+
+/** `{ old, new }` line ranges, or null. */
+export function parseSides(
+	value: unknown,
+): { old: LineRanges; new: LineRanges } | null {
+	if (!isObj(value)) return null;
+	const old = parseRanges(value.old);
+	const fresh = parseRanges(value.new);
+	return old && fresh ? { old, new: fresh } : null;
+}
 
 /** Returns a clean copy holding only known fields, or null to skip it. */
 function parseEvent(raw: unknown): CrbEvent | null {
@@ -462,6 +518,55 @@ function parseEvent(raw: unknown): CrbEvent | null {
 				path,
 				state: state as ClusterState,
 				...(reason !== undefined ? { reason } : {}),
+			};
+		}
+		case "lines-state": {
+			// Fail safe: only a human marks lines.
+			if (base.by !== "human") return null;
+			const { patchset, cluster, path, state } = raw;
+			const lines = parseRanges(raw.lines);
+			if (
+				!isStr(patchset) ||
+				!isStr(cluster) ||
+				!isStr(path) ||
+				(state !== "reviewed" && state !== "crossed-off") ||
+				!lines ||
+				lines.length === 0
+			) {
+				return null;
+			}
+			return {
+				...base,
+				type: "lines-state",
+				patchset,
+				cluster,
+				path,
+				state,
+				lines,
+			};
+		}
+		case "since-lines-state": {
+			if (base.by !== "human") return null;
+			const { patchset, since, path } = raw;
+			const reviewed = parseSides(raw.reviewed);
+			const crossed = parseSides(raw.crossed);
+			if (
+				!isStr(patchset) ||
+				!isPosInt(since) ||
+				!isStr(path) ||
+				!reviewed ||
+				!crossed
+			) {
+				return null;
+			}
+			return {
+				...base,
+				type: "since-lines-state",
+				patchset,
+				since,
+				path,
+				reviewed,
+				crossed,
 			};
 		}
 		case "review-closed": {

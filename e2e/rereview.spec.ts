@@ -324,7 +324,7 @@ test("View lands on the since view: the reworked and new clusters with their chi
 	await expect(boxes(coreS)).toBeChecked();
 });
 
-test("a gone cluster is a red block with its chip, not markable and not counted; an old patch set opens read-only with its marks", async ({
+test("a gone cluster is a red block with its chip, markable on its own (reverted) and to read until marked; an old patch set opens read-only with its marks", async ({
 	page,
 	workdir,
 	pr,
@@ -375,12 +375,18 @@ test("a gone cluster is a red block with its chip, not markable and not counted;
 	await expect(
 		goneBlock.getByTestId("diff-line").filter({ hasText: "util 3 changed" }),
 	).toHaveAttribute("data-kind", "del");
-	await expect(goneBlock.getByRole("checkbox")).toHaveCount(0);
-	await expect(boxes(utilS)).toHaveCount(0);
-	// Not counted: the viewed snapshot has three clusters, two carried and
-	// the reworked one (never reviewed) still to read.
+	// Markable on its own, with its cross-off; chipped reverted (back to the base).
+	await expect(goneBlock.getByRole("checkbox")).toHaveCount(1);
+	await expect(
+		goneBlock.getByRole("button", { name: "Cross off cluster" }),
+	).toHaveCount(1);
+	await expect(
+		goneBlock.getByTestId("kind-chip").filter({ hasText: "reverted" }),
+	).toBeVisible();
+	// Not in the snapshot's progress: three clusters, two carried and the
+	// reworked one (never reviewed) to read; the gone piece is to read too.
 	await expect(progress(page)).toContainText("2 / 3 clusters reviewed");
-	await expect(toRead(page)).toHaveText(/1 to read/);
+	await expect(toRead(page)).toHaveText(/2 to read/);
 	expect(reviewRefs(workdir)).toBe(refs);
 	await expectNoPageOverflow(page);
 
@@ -1823,4 +1829,203 @@ test("the since line spins while the engine computes, never says nothing or 0, t
 	await expect(card.getByTestId("verdict-since")).toHaveText(
 		"Since then: 1 commit · 2 files · 1 reworked, 1 new cluster",
 	);
+});
+
+/*
+ * Pieces (marks per piece, brief 8): one file whose PS1 adds a block, two
+ * changes next to each other and two lines; PS2 edits the block in three
+ * places (one cluster, three pieces), merges the two changes into one
+ * cluster that deletes more base lines and keeps one line the same as a
+ * reviewed PS1 line (a removal-only piece inside a PS2 cluster), and takes
+ * the two added lines out again (reverted).
+ */
+const piecesBase = Array.from({ length: 40 }, (_, i) => `line ${i + 1}`);
+const piecesBlock = Array.from({ length: 10 }, (_, i) => `block ${i + 1}`);
+const splice = (lines: string[], at: number, remove: number, add: string[]) => {
+	const copy = [...lines];
+	copy.splice(at, remove, ...add);
+	return copy;
+};
+const piecesPs1 = splice(
+	splice(
+		splice(splice(piecesBase, 30, 0, ["added 1", "added 2"]), 14, 1, ["b new"]),
+		9,
+		4,
+		["a 1", "a 2", "a 3", "a 4", "a 5"],
+	),
+	5,
+	0,
+	piecesBlock,
+);
+const piecesPs2 = splice(
+	splice(piecesBase, 9, 6, ["b new"]),
+	5,
+	0,
+	piecesBlock.map((l, i) => ([1, 5, 8].includes(i) ? `${l}!` : l)),
+);
+const PIECES = "src/pieces.ts";
+const piecesFixture: PrOptions = {
+	base: { [PIECES]: text(piecesBase) },
+	files: [{ message: "PS1", files: { [PIECES]: text(piecesPs1) } }],
+};
+const piecesPush = { message: "PS2", files: { [PIECES]: text(piecesPs2) } };
+
+/** PS1 fully reviewed, PS2 pushed, the since view open on the file. */
+async function piecesSince(
+	page: Page,
+	s: { url: string },
+	p: { moveHead: (c: FixtureCommit) => string },
+) {
+	await openFiles(page, s.url);
+	const section = await expand(page, PIECES);
+	const all = boxes(section);
+	await expect(all).toHaveCount(4);
+	for (let i = 0; i < 4; i++) {
+		await all.nth(i).click();
+		await expect(all.nth(i)).toBeChecked();
+	}
+	await expect(progress(page)).toHaveAttribute("aria-valuenow", "100");
+	await expect(page.getByTestId("sync-notices")).toHaveCount(0);
+	p.moveHead(piecesPush);
+	await page.reload();
+	await expect(tail(page)).toHaveAttribute("data-state", "head", GIT_WAIT);
+	await toast(page).getByRole("button", { name: "View" }).click();
+	await expect(
+		node(page, "ps1").getByRole("button", { name: "comparison base" }),
+	).toBeVisible();
+	const since = fileSection(page, PIECES);
+	await expect(toRead(page)).toHaveText(/3 to read/, GIT_WAIT);
+	await since.getByRole("button", { name: "Expand file" }).click();
+	// Three pieces of the block, the removal inside the merged cluster, the revert.
+	await expect(boxes(since)).toHaveCount(5, GIT_WAIT);
+	return since;
+}
+
+const toFullDiff = async (page: Page) => {
+	await page.keyboard.press("Control+Shift+[");
+	await expect(
+		node(page, "branch").getByRole("button", { name: "comparison base" }),
+	).toBeVisible();
+};
+const toSince = async (page: Page) => {
+	await page.keyboard.press("Control+Shift+]");
+	await expect(
+		node(page, "ps1").getByRole("button", { name: "comparison base" }),
+	).toBeVisible();
+};
+
+test("a cluster in three pieces: each piece marks only itself; the full diff shows it mixed until all are marked; an untick is mixed again; a reload keeps it", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	const p = await pr(piecesFixture);
+	const s = await startCrb();
+	const since = await piecesSince(page, s, p);
+	const all = boxes(since);
+	await all.nth(0).click();
+	await expect(all.nth(0)).toBeChecked();
+	await expect(all.nth(1)).not.toBeChecked();
+	await expect(all.nth(2)).not.toBeChecked();
+	await expect(page.getByTestId("sync-notices")).toHaveCount(0, GIT_WAIT);
+
+	// The full diff: the block's cluster mixed, its first piece's lines green.
+	await toFullDiff(page);
+	const full = fileSection(page, PIECES);
+	const blockBox = boxes(full).first();
+	await expect(blockBox).toHaveAttribute("aria-checked", "mixed");
+	await expect(blockBox).not.toBeChecked();
+	const row = (t: string) =>
+		full.getByTestId("diff-line").filter({ hasText: new RegExp(`^.*${t}$`) });
+	await expect(row("block 1")).toHaveAttribute("data-reviewed", "true");
+	await expect(row("block 6!")).not.toHaveAttribute("data-reviewed");
+	await expect(progress(page)).not.toHaveAttribute("aria-valuenow", "100");
+
+	// The other two pieces: the cluster reviewed.
+	await toSince(page);
+	await all.nth(1).click();
+	await all.nth(2).click();
+	await expect(all.nth(2)).toBeChecked();
+	await expect(page.getByTestId("sync-notices")).toHaveCount(0, GIT_WAIT);
+	await toFullDiff(page);
+	await expect(blockBox).toBeChecked();
+	await expect(blockBox).not.toHaveAttribute("aria-checked", "mixed");
+
+	// An untick of one piece: mixed again, and a reload keeps it.
+	await toSince(page);
+	await all.nth(1).click();
+	await expect(all.nth(1)).not.toBeChecked();
+	await expect(all.nth(0)).toBeChecked();
+	await expect(page.getByTestId("sync-notices")).toHaveCount(0, GIT_WAIT);
+	await page.reload();
+	await expect(toRead(page)).toBeVisible(GIT_WAIT);
+	await since.getByRole("button", { name: "Expand file" }).click();
+	await expect(boxes(since)).toHaveCount(5, GIT_WAIT);
+	await expect(boxes(since).nth(0)).toBeChecked();
+	await expect(boxes(since).nth(1)).not.toBeChecked();
+	await expect(boxes(since).nth(2)).toBeChecked();
+	await toFullDiff(page);
+	await expect(boxes(full).first()).toHaveAttribute("aria-checked", "mixed");
+	await expectNoPageOverflow(page);
+});
+
+test("a removal-only piece inside a cluster is markable, chipped removed, and marks its cluster; a reverted piece is markable, stays marked after a reload, and leaves to-read", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	const p = await pr(piecesFixture);
+	const s = await startCrb();
+	const since = await piecesSince(page, s, p);
+	const all = boxes(since);
+	const pieceWith = (t: string) =>
+		since.locator("tbody").filter({
+			has: page.getByTestId("diff-line").filter({ hasText: t }),
+		});
+	// The merged cluster's piece: only removals, chipped removed.
+	const removal = pieceWith("a 1");
+	await expect(
+		removal.getByTestId("diff-line").filter({ hasText: "a 1" }),
+	).toHaveAttribute("data-kind", "del");
+	await expect(removal.getByRole("checkbox")).toHaveCount(1);
+
+	await expect(
+		removal.getByTestId("kind-chip").filter({ hasText: "removed" }),
+	).toBeVisible();
+	await expect(
+		removal.getByRole("button", { name: "Cross off cluster" }),
+	).toHaveCount(1);
+	const revert = pieceWith("added 1");
+	await expect(
+		revert.getByTestId("kind-chip").filter({ hasText: "reverted" }),
+	).toBeVisible();
+	await expect(
+		revert.getByRole("button", { name: "Cross off cluster" }),
+	).toHaveCount(1);
+
+	// Ticking the removal piece marks the merged cluster: reviewed in the full diff.
+	await all.nth(3).click();
+	await expect(all.nth(3)).toBeChecked();
+	await expect(toRead(page)).toHaveText(/2 to read/);
+	await expect(page.getByTestId("sync-notices")).toHaveCount(0, GIT_WAIT);
+	await toFullDiff(page);
+	const full = fileSection(page, PIECES);
+	const merged = full.locator("tbody").filter({
+		has: page.getByTestId("diff-line").filter({ hasText: "b new" }),
+	});
+	await expect(merged.getByRole("checkbox")).toBeChecked();
+
+	// The reverted piece: ticked, kept over a reload, out of to-read.
+	await toSince(page);
+	await all.nth(4).click();
+	await expect(all.nth(4)).toBeChecked();
+	await expect(toRead(page)).toHaveText(/1 to read/);
+	await expect(page.getByTestId("sync-notices")).toHaveCount(0, GIT_WAIT);
+	await page.reload();
+	await expect(toRead(page)).toHaveText(/1 to read/, GIT_WAIT);
+	await since.getByRole("button", { name: "Expand file" }).click();
+	await expect(boxes(since)).toHaveCount(5, GIT_WAIT);
+	await expect(boxes(since).nth(4)).toBeChecked();
+	await expect(boxes(since).nth(3)).toBeChecked();
+	await expectNoPageOverflow(page);
 });

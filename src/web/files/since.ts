@@ -1,3 +1,9 @@
+import { size } from "../../shared/lineRanges";
+import {
+	crossedCount,
+	reviewedCount,
+	sinceOnlyState,
+} from "../../shared/pieces";
 import { overlayCarries } from "../../shared/rereview/overlay";
 import type {
 	ClusterKind,
@@ -47,6 +53,8 @@ export interface FileSince {
 	conflict: boolean;
 	/** `carried` counts the view's clusters that carry a mark (the view decides, not the answer alone). */
 	counts: { reworked: number; new: number; gone: number; carried: number };
+	/** Its pieces that own no line of the view's snapshot, not marked yet: how many, and their lines. */
+	sinceOnlyLeft: { pieces: number; lines: number };
 }
 
 /** What the engine says, by file index, over the view's files. */
@@ -66,7 +74,21 @@ export function sinceByFile(
 		}
 		counts.carried =
 			viewFiles.get(file.index)?.clusters.filter((c) => c.carried).length ?? 0;
-		out.set(file.index, { kinds, conflict: file.conflict, counts });
+		const left = (file.sinceOnly ?? []).filter(
+			(p) =>
+				sinceOnlyState(view.sinceMarks, answer.from, file.path, p) ===
+				"unreviewed",
+		);
+		const sinceOnlyLeft = {
+			pieces: left.length,
+			lines: left.reduce((n, p) => n + size(p.old) + size(p.new), 0),
+		};
+		out.set(file.index, {
+			kinds,
+			conflict: file.conflict,
+			counts,
+			sinceOnlyLeft,
+		});
 	}
 	return out;
 }
@@ -78,7 +100,10 @@ export function goneFiles(
 ): RereviewAnswer["files"] {
 	const indexes = new Set(view.files.map((f) => f.index));
 	return answer.files.filter(
-		(f) => !indexes.has(f.index) && f.clusters.some((c) => c.kind === "gone"),
+		(f) =>
+			!indexes.has(f.index) &&
+			(f.clusters.some((c) => c.kind === "gone") ||
+				(f.sinceOnly?.length ?? 0) > 0),
 	);
 }
 
@@ -95,15 +120,18 @@ export function toReadCount(
 	unit: Unit,
 ): number {
 	let n = 0;
-	for (const file of view.files) {
-		const kinds = since.get(file.index)?.kinds;
-		if (!kinds) continue;
+	const viewFiles = new Map(view.files.map((f) => [f.index, f]));
+	for (const [index, info] of since) {
 		let inFile = 0;
-		for (const c of file.clusters) {
-			const kind = kinds.get(c.key)?.kind;
+		for (const c of viewFiles.get(index)?.clusters ?? []) {
+			const kind = info.kinds.get(c.key)?.kind;
 			if (!kind || !needsEyes(kind) || c.state !== "unreviewed") continue;
-			inFile += unit === "lines" ? c.lines : 1;
+			inFile +=
+				unit === "lines" ? c.lines - reviewedCount(c) - crossedCount(c) : 1;
 		}
+		// A piece owning no line of the snapshot reads like a cluster.
+		inFile +=
+			unit === "lines" ? info.sinceOnlyLeft.lines : info.sinceOnlyLeft.pieces;
 		n += unit === "files" ? (inFile > 0 ? 1 : 0) : inFile;
 	}
 	return n;
@@ -126,6 +154,7 @@ export function eyesOf(
 		counts.reworked > 0 ||
 		counts.new > 0 ||
 		counts.gone > 0 ||
+		since.sinceOnlyLeft.pieces > 0 ||
 		file.clusters.some((c) => c.state === "unreviewed")
 	) {
 		return "read";

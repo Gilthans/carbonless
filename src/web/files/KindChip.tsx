@@ -2,17 +2,21 @@ import type { ClusterKind } from "../../shared/types";
 import { Tooltip } from "../Tooltip";
 
 /** A chip's colors by what happened to the cluster (the design tokens). */
-const TONE: Record<ClusterKind | "conflict", string> = {
+type ChipKind = ClusterKind | "conflict" | "reverted" | "removed";
+
+const TONE: Record<ChipKind, string> = {
 	reworked: "border-warn text-warn",
 	new: "border-warn text-warn",
 	carried: "border-ok text-ok",
 	gone: "border-bad text-bad",
 	conflict: "border-bad text-bad",
+	reverted: "border-bad text-bad",
+	removed: "border-bad text-bad",
 };
 
 /** What each chip means, in its tooltip. */
 export function kindTip(
-	kind: ClusterKind | "conflict",
+	kind: ChipKind,
 	from?: number,
 	rule?: "exact" | "rename",
 ): string {
@@ -27,9 +31,13 @@ export function kindTip(
 				rule === "rename" ? " (the file was renamed)" : ""
 			}`;
 		case "gone":
-			return `Reviewed on ${ps}; no longer in this snapshot (not counted, not markable)`;
+			return `Reviewed on ${ps}; no longer in this snapshot`;
 		case "conflict":
 			return "git could not rebase this file, so all of it is new to read";
+		case "reverted":
+			return `Back to the base's version since ${ps}`;
+		case "removed":
+			return `Removed since ${ps}`;
 	}
 }
 
@@ -40,7 +48,7 @@ export function kindTip(
  * tooltip explains it.
  */
 export function KindChip(props: {
-	kind: ClusterKind | "conflict";
+	kind: ChipKind;
 	count?: number;
 	from?: number;
 	rule?: "exact" | "rename";

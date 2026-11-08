@@ -855,6 +855,7 @@ export function FilesPage() {
 			kinds: new Map(),
 			conflict: false,
 			counts: { reworked: 0, new: 0, gone: 0, carried },
+			sinceOnlyLeft: { pieces: 0, lines: 0 },
 		};
 	};
 	const gone =
@@ -1058,6 +1059,7 @@ export function FilesPage() {
 													file.clusters.filter((c) => c.carried).length,
 												)}
 												sincePending={sinceView.pending}
+												sinceMarks={data.sinceMarks}
 												readOnly={readOnly}
 											/>
 										))}
@@ -1070,6 +1072,8 @@ export function FilesPage() {
 												revision={data.revision}
 												since={since as number}
 												info={byFile?.get(file.index)}
+												sinceMarks={data.sinceMarks}
+												readOnly={readOnly}
 											/>
 										))}
 										{/* Threads whose file isn't in this comparison at all. */}

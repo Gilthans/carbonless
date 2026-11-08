@@ -808,7 +808,11 @@ export class Session {
 		if (!since) throw new RangeError(`No patch set ${from}`);
 		const traced = await this.#traced(since, snapshot);
 		const { answer } = await this.#answerFor(since, snapshot, traced);
-		return interdiffFileHunks(traced, snapshot, answer, index);
+		// Its states say which unshown lines a piece may take (vouched).
+		const states =
+			(await this.#progress()).statesByRevision.get(since.revision) ??
+			new Map();
+		return interdiffFileHunks(traced, snapshot, answer, index, states);
 	}
 
 	/**

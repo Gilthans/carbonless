@@ -367,3 +367,33 @@ describe("folderUnitProgress", () => {
 		expect(describeFolderProgress(x, "clusters")).toBe("crossed off");
 	});
 });
+
+describe("a partly reviewed cluster", () => {
+	const partly = (
+		lines: number,
+		reviewed: [number, number][],
+	): ClusterView => ({
+		...cluster("unreviewed", lines),
+		reviewedLines: reviewed,
+	});
+
+	it("is a cluster left; in lines, its reviewed lines count", () => {
+		const f = file([cluster("reviewed", 2), partly(10, [[0, 4]])]);
+		expect(f.done).toBe(false);
+		const lines = fileUnitProgress(f, "lines");
+		expect(lines.counts).toEqual({ total: 12, reviewed: 6, crossedOff: 0 });
+		expect(lines.clustersLeft).toBe(1);
+		expect(fileUnitProgress(f, "clusters").counts).toEqual({
+			total: 2,
+			reviewed: 1,
+			crossedOff: 0,
+		});
+		expect(fileUnitProgress(f, "files").counts.reviewed).toBe(0);
+		expect(folderUnitProgress([f], "lines").counts).toEqual({
+			total: 12,
+			reviewed: 6,
+			crossedOff: 0,
+		});
+		expect(folderUnitProgress([f], "lines").done).toBe(false);
+	});
+});

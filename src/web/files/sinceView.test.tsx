@@ -9,6 +9,7 @@ import type {
 	FileHunks,
 	FileView,
 	Progress,
+	SinceMark,
 } from "../../shared/types";
 import { DiffBody } from "./DiffBody";
 import { FileTree } from "./FileTree";
@@ -77,6 +78,25 @@ const sinceHunks: FileHunks = {
 			],
 		},
 	],
+	pieces: [
+		{
+			hunk: 0,
+			line: 1,
+			key: "k1",
+			owns: [[0, 2]],
+			old: [[2, 3]],
+			new: [[2, 3]],
+		},
+		{
+			hunk: 0,
+			line: 4,
+			key: "g1",
+			owns: null,
+			old: [[4, 5]],
+			new: [],
+			kind: "reverted",
+		},
+	],
 };
 
 const fileOf = (clusters: ClusterView[]): FileView => ({
@@ -99,6 +119,7 @@ function renderBody(opts: {
 	from?: number;
 	kinds?: Map<string, KindEntry>;
 	readOnly?: boolean;
+	sinceMarks?: SinceMark[];
 }) {
 	vi.stubGlobal(
 		"fetch",
@@ -113,6 +134,7 @@ function renderBody(opts: {
 	});
 	const onToggle = vi.fn();
 	const onCrossOff = vi.fn();
+	const onSinceMark = vi.fn();
 	render(
 		<QueryClientProvider client={client}>
 			<DiffBody
@@ -123,10 +145,12 @@ function renderBody(opts: {
 				from={opts.from}
 				kinds={opts.kinds}
 				readOnly={opts.readOnly}
+				onSinceMark={onSinceMark}
+				sinceMarks={opts.sinceMarks}
 			/>
 		</QueryClientProvider>,
 	);
-	return { onToggle, onCrossOff };
+	return { onToggle, onCrossOff, onSinceMark };
 }
 
 const kinds = new Map<string, KindEntry>([
@@ -144,8 +168,8 @@ afterEach(() => {
 });
 
 describe("DiffBody in the since view", () => {
-	it("chips each cluster's kind; a gone cluster is a red block with no controls, never counted", async () => {
-		renderBody({
+	it("chips each cluster's kind; a gone cluster's lines are a red block, markable on their own, chipped reverted", async () => {
+		const { onSinceMark } = renderBody({
 			clusters: [
 				cluster("k1", "unreviewed"),
 				cluster("k2", "reviewed", { from: 1, rule: "exact" }),
@@ -158,14 +182,23 @@ describe("DiffBody in the since view", () => {
 		expect(rows.map((r) => r.dataset.kind)).toEqual(["reworked", "gone"]);
 		const chip = within(rows[0] as HTMLElement).getByTestId("kind-chip");
 		expect(chip).toHaveTextContent("reworked");
-		// The reworked cluster is this snapshot's: markable.
+		// Every piece is markable, with a box and a cross-off.
 		expect(
 			screen.getAllByRole("checkbox", { name: "Mark cluster reviewed" }),
-		).toHaveLength(1);
+		).toHaveLength(2);
+		expect(
+			screen.getAllByRole("button", { name: "Cross off cluster" }),
+		).toHaveLength(2);
 		const gone = document.querySelector("tbody[data-gone]") as HTMLElement;
 		expect(gone).not.toBeNull();
-		expect(within(gone).queryByRole("checkbox")).toBeNull();
+		const goneChips = within(gone).getAllByTestId("kind-chip");
+		expect(goneChips.map((c) => c.dataset.kind)).toEqual(["gone", "reverted"]);
+		expect(goneChips[1]).toHaveAccessibleDescription(
+			"Back to the base's version since PS1",
+		);
 		expect(within(gone).getByText("gone line")).toBeInTheDocument();
+		await userEvent.setup().click(within(gone).getByRole("checkbox"));
+		expect(onSinceMark).toHaveBeenLastCalledWith(sinceHunks.pieces?.[1], false);
 		// Its rail is red on the chip row and on every line.
 		for (const rail of gone.querySelectorAll("td[aria-hidden]")) {
 			expect(rail.className).toContain("bg-bad");
@@ -269,6 +302,185 @@ describe("DiffBody in the since view", () => {
 			"Nothing to read since PS1 · 2 carried",
 		);
 		expect(screen.queryAllByTestId("diff-line")).toHaveLength(0);
+	});
+});
+
+describe("a cluster in pieces", () => {
+	/** k: ten lines added at new 2–11 in this snapshot; the since view shows three runs of it. */
+	const ten = (over: Partial<ClusterView> = {}): ClusterView => ({
+		key: "k",
+		kind: "lines",
+		oldStart: 1,
+		oldCount: 0,
+		newStart: 2,
+		newCount: 10,
+		removed: [],
+		added: Array.from({ length: 10 }, (_, i) => `n${i + 2}`),
+		lines: 10,
+		state: "unreviewed",
+		...over,
+	});
+	/** New lines 3, 7 and 10 changed since PS1; the rest carried, as context. */
+	const pieceHunks: FileHunks = {
+		newLineCount: 12,
+		hunks: [
+			{
+				oldStart: 1,
+				oldCount: 11,
+				newStart: 1,
+				newCount: 12,
+				lines: [
+					line("context", 2, 2, "n2"),
+					line("del", 3, undefined, "was 3", "k"),
+					line("add", undefined, 3, "n3", "k"),
+					line("context", 4, 4, "n4"),
+					line("context", 6, 6, "n6"),
+					line("del", 7, undefined, "was 7", "k"),
+					line("add", undefined, 7, "n7", "k"),
+					line("context", 8, 8, "n8"),
+					line("context", 9, 9, "n9"),
+					line("add", undefined, 10, "n10", "k"),
+					line("context", 10, 11, "n11"),
+					// Only a line that left: none of k's lines.
+					line("del", 11, undefined, "gone for good", "k"),
+					line("context", 12, 12, "end"),
+				],
+			},
+		],
+		pieces: [
+			{
+				hunk: 0,
+				line: 1,
+				key: "k",
+				owns: [[0, 5]],
+				old: [[3, 4]],
+				new: [[3, 4]],
+			},
+			{
+				hunk: 0,
+				line: 5,
+				key: "k",
+				owns: [[5, 8]],
+				old: [[7, 8]],
+				new: [[7, 8]],
+			},
+			{ hunk: 0, line: 9, key: "k", owns: [[8, 10]], old: [], new: [[10, 11]] },
+			{
+				hunk: 0,
+				line: 11,
+				key: "k",
+				owns: null,
+				old: [[11, 12]],
+				new: [],
+				kind: "removed",
+			},
+		],
+	};
+	const kindsOfK = new Map<string, KindEntry>([
+		["k", { key: "k", kind: "reworked" }],
+	]);
+	const boxes = () =>
+		screen.findAllByRole("checkbox", { name: "Mark cluster reviewed" });
+
+	it("each piece has its own checkbox, cross-off and state; one with none of the cluster's lines too, chipped removed", async () => {
+		renderBody({
+			// The second piece owns new lines 7–9 (indexes 5–7), the third is crossed off.
+			clusters: [ten({ reviewedLines: [[5, 8]], crossedLines: [[8, 10]] })],
+			hunks: pieceHunks,
+			from: 1,
+			kinds: kindsOfK,
+			sinceMarks: [
+				{
+					since: 1,
+					path: "src/a.ts",
+					reviewed: { old: [[11, 12]], new: [] },
+					crossed: { old: [], new: [] },
+				},
+			],
+		});
+		const all = await boxes();
+		expect(all).toHaveLength(3);
+		expect(all.map((b) => (b as HTMLInputElement).checked)).toEqual([
+			false,
+			true,
+			true,
+		]);
+		const crossed = screen.getByRole("checkbox", { name: "Undo cross-off" });
+		expect(crossed.closest("tbody")).toHaveTextContent("n10");
+		expect(
+			screen.getAllByRole("button", { name: "Cross off cluster" }),
+		).toHaveLength(4);
+		// No piece shows as mixed.
+		for (const b of all) expect(b).not.toHaveAttribute("aria-checked");
+		const removed = screen.getByText("gone for good").closest("tbody");
+		expect(removed?.querySelector("input")).toBeChecked();
+		expect(
+			within(removed as HTMLElement).getByTestId("kind-chip"),
+		).toHaveTextContent("removed");
+	});
+
+	it("ticking or crossing off a piece sends the cluster and the lines it owns, nothing else; a piece of its own sends itself", async () => {
+		const whole = ten();
+		const rendered = renderBody({
+			clusters: [whole],
+			hunks: pieceHunks,
+			from: 1,
+			kinds: kindsOfK,
+		});
+		const { onToggle } = rendered;
+		const { onCrossOff, onSinceMark } = rendered;
+		const all = await boxes();
+		const user = userEvent.setup();
+		await user.click(all[0] as HTMLElement);
+		expect(onToggle).toHaveBeenLastCalledWith(whole, [[0, 5]]);
+		await user.click(all[2] as HTMLElement);
+		expect(onToggle).toHaveBeenLastCalledWith(whole, [[8, 10]]);
+		const crosses = screen.getAllByRole("button", {
+			name: "Cross off cluster",
+		});
+		await user.click(crosses[1] as HTMLElement);
+		expect(onCrossOff).toHaveBeenLastCalledWith(whole, [[5, 8]]);
+		await user.click(all[3] as HTMLElement);
+		expect(onSinceMark).toHaveBeenLastCalledWith(pieceHunks.pieces?.[3], false);
+		await user.click(crosses[3] as HTMLElement);
+		expect(onSinceMark).toHaveBeenLastCalledWith(pieceHunks.pieces?.[3], true);
+	});
+
+	it("the full diff shows a partly reviewed cluster mixed, its reviewed lines railed green, and a click is the whole cluster's", async () => {
+		const whole = ten({ reviewedLines: [[5, 8]] });
+		const { onToggle } = renderBody({
+			clusters: [whole],
+			hunks: {
+				newLineCount: 12,
+				hunks: [
+					{
+						oldStart: 1,
+						oldCount: 2,
+						newStart: 1,
+						newCount: 12,
+						lines: [
+							line("context", 1, 1, "a"),
+							...whole.added.map((t, i) =>
+								line("add", undefined, i + 2, t, "k"),
+							),
+							line("context", 2, 12, "end"),
+						],
+					},
+				],
+			},
+		});
+		const [box] = await boxes();
+		expect(box).toHaveAttribute("aria-checked", "mixed");
+		expect((box as HTMLInputElement).indeterminate).toBe(true);
+		expect(box).not.toBeChecked();
+		const reviewed = [
+			...document.querySelectorAll('tr[data-testid="diff-line"]'),
+		]
+			.filter((r) => r.hasAttribute("data-reviewed"))
+			.map((r) => r.getAttribute("data-new-no"));
+		expect(reviewed).toEqual(["7", "8", "9"]);
+		await userEvent.setup().click(box as HTMLElement);
+		expect(onToggle).toHaveBeenLastCalledWith(whole);
 	});
 });
 

@@ -63,8 +63,10 @@ Foundation for everything below.
     and lines (from the snapshot once built, or stored when the patch set
     starts) and its reviewed count from the fold, and `SessionInfo.patchsets`
     carries them.
-  - Per-line review states (parked in the design: first measure how often
-    clusters split between patch sets).
+  - Per-line review states in the full diff: marking any range of a
+    cluster by hand. The storage supports ranges since 2026-11-08
+    (`lines-state`, `docs/review-data-storage.md`, "Marks on part of a
+    cluster"); only the since view's pieces write them so far.
   - Which commit changed what (owner, 2026-11-07: deferred everywhere): a
     fate's commit ("rewritten in `c0ffee1`"), the patch set that deleted a
     file in "Not in this comparison", landmarks (heads others commented or

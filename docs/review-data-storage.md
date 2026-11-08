@@ -236,6 +236,8 @@ Initial event types:
 | progress | `patchset-started` | patch set number, snapshot id (`revision`), merge base, head; optional, from re-review on: `since` (the patch set it follows, a smaller number), `shape` (`S1`, `S3`, `S4a`, `S4b`, `S4c`, `S5`, `S6`, `S7`), `baseBranch` (GitHub's base branch name then), `interdiff` (`available` or `unavailable`) |
 | progress | `cluster-state` | snapshot id (`patchset`), cluster identity hash, file path, state (`unreviewed`, `reviewed`, `crossed-off`), optional reason for crossed off |
 | progress | `carried` | `from` and `to` (patch set numbers, `from < to`), `rule` (`exact` or `rename`), `states`: a list of `{ key, fromKey, state }`, one per cluster carried under that rule, `state` being `reviewed` or `crossed-off`; `fromKey` is written only when it differs from `key` (absent means equal: the reader fills it in) |
+| progress | `lines-state` | snapshot id (`patchset`), cluster identity hash, file path, `state` (`reviewed` or `crossed-off`), `lines`: line ranges of the cluster (see "Marks on part of a cluster") |
+| progress | `since-lines-state` | snapshot id (`patchset`), `since` (an earlier patch set's number), file `path`, `reviewed` and `crossed`: each `{ old, new }` line ranges on the since view's sides; the whole set for that (since, path) |
 | progress | `thread-placed` | `thread` (the thread's id), `patchset` (number), `anchor` (`path`, `startSide`, `startLine`, `side`, `line`), `engine` (the tracer's version, a positive integer) |
 
 `carried` holds many clusters in one event, so a move costs one event per
@@ -258,6 +260,8 @@ a reader drops what breaks them:
   hex characters, a repeat's `:2` suffix allowed; `fromKey` absent reads as
   `key`) and its state `reviewed` or `crossed-off`, never `unreviewed`.
 - `thread-placed` must have `by: "human"` or `"ai"`, never `"auto"`.
+- `lines-state` and `since-lines-state` must have `by: "human"`; their
+  ranges must parse (pairs of integers, `0 <= start < end`).
 - `by: "ai"` events can never change a cluster's state; `by: "auto"` ones
   can only carry one that a human already set (the fold checks, see
   "Reading").
@@ -301,6 +305,103 @@ a reader drops what breaks them:
   start. A write against an earlier patch set is refused as read-only
   (`ReadOnlyPatchsetError`, also 409). New threads and verdicts take the
   same path before their GitHub write (re-review design, "Server").
+
+## Marks on part of a cluster
+
+Added 2026-11-08 (owner: "Marking a cluster as reviewed should affect only
+that cluster regardless of the original reworked cluster"; "Breaking the
+illusion of a regular review when reviewing an interdiff is a steep price
+to pay"). The since view shows the interdiff from an earlier patch set. One
+cluster of the patch set's snapshot can show there as several **pieces**:
+runs of its changed lines with lines unchanged since the earlier patch set
+between them as context. Every piece is reviewed, and crossed off, on its
+own, exactly as a cluster is in an ordinary review. A mark still belongs to
+the snapshot's clusters (principle 2: coverage comes only from them), so a
+piece's mark is a mark on part of its cluster.
+
+**Line ranges.** A cluster's lines are indexed in its own diff, its removed
+lines first (`0 … removed - 1`), then its added ones (`removed … lines - 1`).
+A set of them is a list of half-open ranges `[start, end)`, normalized
+(sorted, merged, none empty): `src/shared/lineRanges.ts`.
+
+**Which lines a piece owns** (`pieceRanges`, `src/shared/pieces.ts`; the
+engine computes it for the since view's hunks, `interdiffFileHunks`):
+
+- A shown added line is the cluster's line at its new number. A shown
+  removed line is one of the cluster's removed lines only when it is a base
+  line (not a line the earlier patch set added) with the same text.
+- A cluster line no piece shows is unchanged since the earlier patch set.
+  It joins a piece only when it is unchanged since a line the reviewer
+  **reviewed** there: an added line that is the same line as one a reviewed
+  earlier cluster added (through the interdiff's line map), or a removed
+  base line a reviewed earlier cluster removed too (through the bases' line
+  map). Such an added line goes to the piece shown before it (the first
+  piece for those before any), a removed one to the first piece. Marking the
+  piece may cover it because it reads the same as a line the reviewer
+  marked reviewed on the earlier patch set, and nothing about it changed.
+- **Fails closed.** A line unchanged since a line that was *not* reviewed
+  (or one the engine can't map) joins no piece. Ticking every piece then
+  leaves the cluster partly reviewed (mixed in the full diff), and the
+  since view counts it under "only in the full diff". Tested in
+  `src/server/rereview/pieces.test.ts` and `src/shared/pieces.test.ts`.
+- A removal with no key of its own is keyed to the snapshot's cluster at
+  its place (`clusterAt`): the author changed that place again, so its lines
+  are that cluster's piece (the gallery's `rr-pieces`, second section).
+
+**`lines-state`.** A piece's mark is written as one commit: a
+`cluster-state` `unreviewed` for the whole cluster, then a `lines-state`
+`reviewed` for its reviewed lines and one `crossed-off` for its crossed
+lines (each only when non-empty). The whole cluster's marks, every time:
+no merging with earlier ones. When the marks cover every line one way, the
+writer writes the whole mark (`cluster-state` `reviewed` or `crossed-off`)
+instead. It is a new event type, not a field of `cluster-state`: a reader
+that predates it skips it, and with the reset in front it sees the cluster
+**unreviewed**, never more reviewed than the reviewer marked (GitDB 8:
+fails closed, so no version bump). The fold applies a `lines-state` only to
+a cluster with no whole mark; the coverage join (`buildReviewView`,
+`viewOfLines`) drops a cluster's line marks entirely when any range lies
+past its lines or it is a file-level cluster. A cluster whose lines are all
+marked, some crossed off, counts as reviewed (as a file does) and shows its
+crossed lines; one partly marked is unreviewed, with its marked lines in
+the line counts (`ClusterView.reviewedLines`, `crossedLines`). A partly
+marked cluster never carries: the carry takes whole human states only.
+
+**Since-only pieces and `since-lines-state`.** A piece that owns no line
+of the snapshot (lines the earlier patch set had that are gone, or base
+lines restored: "reverted" when the snapshot's diff doesn't touch its
+place, else "removed") has nothing in the snapshot to mark. Its mark is
+kept against the comparison: the earlier patch set's number, the file's
+path, and its lines by number on the since view's two sides (`old`: the
+earlier head, or its virtual rebase on the new base; `new`: this head).
+One event holds the whole set for a (since, path), reviewed and crossed;
+the last wins. **Departure** (owner's brief: "the earlier patch set's
+cluster key and the piece's old-side range"): no cluster key, because a
+piece can hold lines of no earlier cluster (a base line the earlier patch
+set kept); path and range name the lines without one. Both sides are fixed
+for a started patch set (its own and the earlier one's heads are pinned),
+so the numbers stay put. A mark counts for a piece only when it holds all
+of the piece's lines; a range that is no since-only piece of this
+comparison covers nothing (fails closed). These marks never change a
+cluster's state, never carry, and never count in the snapshot's progress;
+the since view counts an unmarked since-only piece in "to read", and the
+engine's answer lists them per file (`sinceOnly`) and in `toRead`.
+
+**Writes** (`ReviewService.recordStates`, `POST /review/states`): a change
+with `reviewedLines`/`crossedLines` (state `unreviewed`, no reason) whose
+ranges fit the cluster; a change with `sinceMark` (key
+`since:<since>:<path>`, a path of printable characters, `since` an earlier
+patch set of the reviewer's). Anything else is refused by key (400) before
+anything is written.
+
+**Sizes**, measured 2026-11-08 (`reviews.test.ts`, "storage: marks per
+piece"): one piece's commit (reset + `lines-state`) 821 bytes raw, about
+380 deflated; one `since-lines-state` commit about 470 bytes raw (325
+deflated), 909 raw (524 deflated) with 25 pieces of one file marked. A
+heavy review, 200 files and 600 clusters each split into 5 pieces ticked
+one at a time (4 piece commits, then the whole mark) plus a since-only
+piece per file: 5,600 events, 1.8 MB raw, **67 KiB deflated** as one
+squashed commit (what a push would carry). Unsquashed, locally, it is
+about 3,000 loose commits of under 1 KB each until a squash and `git gc`.
 
 ## Inbox ref
 
@@ -361,7 +462,11 @@ compare-and-swap). Written by `src/server/home/inbox.ts`.
    set, in start order (a repeated number or snapshot id is ignored), each
    with its own state map keyed by its snapshot id; then, replaying the rest
    in order, a human `cluster-state` sets its cluster's entry in the patch
-   set on its snapshot id (none: ignored), a `carried` entry sets the `to`
+   set on its snapshot id (none: ignored), a human `lines-state` marks its
+   lines of a cluster that holds no whole mark (reviewed lines and crossed
+   lines, each taking its lines from the other), a human `since-lines-state`
+   replaces the patch set's mark on since-only pieces of its (since, path),
+   a `carried` entry sets the `to`
    patch set's entry as `{ state, carried: { from, rule } }`, and a
    `thread-placed` replaces the thread's placement in its patch set. For
    each `(patch set, cluster)`, the last event wins, so a human mark after a
