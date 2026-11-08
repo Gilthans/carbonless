@@ -850,6 +850,11 @@ describe("FilesPage", () => {
 			const float = bar.closest("[data-find-float]");
 			expect(float).not.toBeNull();
 			expect(float).toHaveClass("fixed");
+			// Desktop: pinned right under the sticky stack (the app header's
+			// row and the progress bar), over the diff.
+			expect(float).toHaveClass(
+				"sm:top-[calc(var(--app-header,0px)+var(--files-bar,0px))]",
+			);
 			// The sticky stack is as it was.
 			expect(stack.innerHTML).toBe(before);
 		});

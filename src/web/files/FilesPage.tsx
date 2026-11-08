@@ -26,7 +26,7 @@ import { dropLosesText, useThreadWrites } from "../threads/threadWrites";
 import { usePrefetchComments } from "../threads/useThreadComments";
 import { useThreads } from "../threads/useThreads";
 import { ErrorMessage } from "../ui";
-import { useMedia, WIDE } from "../useMedia";
+import { NOT_PHONE, useMedia, WIDE } from "../useMedia";
 import { FilesVerdict } from "../verdict/FilesVerdict";
 import { ignoreWhitespace, showInvisibles, sideBySide } from "../viewSettings";
 import type { DiffThreads } from "./DiffBody";
@@ -305,7 +305,20 @@ export function FilesPage() {
 	const bar = useRef<HTMLDivElement>(null);
 	// The sticky stack, top down: the app header's compact row, the progress
 	// bar, then the open file's header.
-	const appHeader = useAppHeaderHeight();
+	// On a phone the open find bar is the stack's top, in the header's place:
+	// taller than the header's stuck row, it moves the stack's top down.
+	const headerHeight = useAppHeaderHeight();
+	const phone = !useMedia(NOT_PHONE);
+	const findOpen = findState.use().open;
+	const findHeight = useHeight(
+		() => document.querySelector<HTMLElement>('[data-testid="find-bar"]'),
+		findOpen && phone,
+		!active || !findOpen || !phone,
+	);
+	const phoneFind = phone && findOpen && findHeight > 0;
+	const appHeader = phoneFind
+		? Math.max(headerHeight, findHeight)
+		: headerHeight;
 	const barHeight = useHeight(() => bar.current, data !== undefined, !active);
 	const [current, setCurrent] = useCurrentFile(
 		diffs,
@@ -682,32 +695,28 @@ export function FilesPage() {
 		<PeopleProvider threads={allThreads}>
 			<section
 				aria-label="Files changed"
-				style={{ "--files-bar": `${barHeight}px` } as CSSProperties}
+				style={
+					{
+						"--files-bar": `${barHeight}px`,
+						...(phoneFind ? { "--app-header": `${appHeader}px` } : {}),
+					} as CSSProperties
+				}
 			>
 				<h2 className="sr-only">Files changed</h2>
 				{review.isPending && <FilesSkeleton />}
 				{review.isError && <ErrorMessage error={review.error} />}
 				{data && (
 					<>
-						<ProgressBar
-							ref={bar}
-							progress={data.progress}
-							unit={unit}
-							onUnitChange={setUnit}
-						>
-							{/* Every count and bubble waits on them (principle 8). Its
-							    place is kept, so the bar moves nothing when it goes. */}
-							<span className="flex h-4 w-4 shrink-0 items-center">
-								{threadsLoading && <Spinner label="Loading comments" />}
-							</span>
-						</ProgressBar>
 						{find.state.open && (
 							// Floats over the page, out of its flow and sticky stack:
 							// opening, typing and stepping never move it or the page.
-							// A phone's takes the app header's place (App hides it).
+							// Desktop: right under the sticky stack, over the diff. A
+							// phone's covers the hidden app header's box (App:
+							// --header-bottom), its controls pinned to the top. Before
+							// the progress bar in the DOM, as on screen.
 							<div
 								data-find-float
-								className="fixed inset-x-0 top-0 z-[35] flex min-h-[var(--app-header,0px)] border-b border-line bg-surface shadow-header sm:inset-x-auto sm:top-[var(--app-header,0px)] sm:right-4 sm:min-h-0 sm:w-[28rem] sm:max-w-[calc(100vw-2rem)] sm:rounded-b-lg sm:border-x flex-col justify-center"
+								className="fixed inset-x-0 top-0 z-[35] min-h-[var(--header-bottom,0px)] border-b border-line bg-surface shadow-header sm:inset-x-auto sm:top-[calc(var(--app-header,0px)+var(--files-bar,0px))] sm:right-4 sm:min-h-0 sm:w-[28rem] sm:max-w-[calc(100vw-2rem)] sm:rounded-b-lg sm:border-x"
 							>
 								<FindBar
 									term={find.state.term}
@@ -725,6 +734,18 @@ export function FilesPage() {
 								/>
 							</div>
 						)}
+						<ProgressBar
+							ref={bar}
+							progress={data.progress}
+							unit={unit}
+							onUnitChange={setUnit}
+						>
+							{/* Every count and bubble waits on them (principle 8). Its
+							    place is kept, so the bar moves nothing when it goes. */}
+							<span className="flex h-4 w-4 shrink-0 items-center">
+								{threadsLoading && <Spinner label="Loading comments" />}
+							</span>
+						</ProgressBar>
 						{stale && (
 							<p
 								role="status"

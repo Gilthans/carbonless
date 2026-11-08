@@ -85,9 +85,9 @@ export function FindBar(props: {
 			role="search"
 			aria-label="Find in PR"
 			data-testid="find-bar"
-			className="flex items-center gap-1 bg-surface px-2 py-1"
+			className="flex flex-wrap items-center gap-1 bg-surface px-2 py-1 sm:flex-nowrap"
 		>
-			<div className="relative min-w-0 flex-1 sm:max-w-sm">
+			<div className="relative min-w-0 basis-full sm:flex-1 sm:basis-auto">
 				<input
 					ref={box}
 					type="search"
@@ -136,7 +136,7 @@ export function FindBar(props: {
 			<span
 				data-testid="find-count"
 				aria-live="polite"
-				className="min-w-[7ch] shrink-0 text-right text-sm text-muted tabular-nums sm:min-w-[10ch]"
+				className="mr-auto min-w-[7ch] shrink-0 pl-1 text-sm text-muted tabular-nums sm:mr-0 sm:min-w-[10ch] sm:pl-0 sm:text-right"
 			>
 				{props.count && (
 					<>

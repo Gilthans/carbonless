@@ -115,7 +115,8 @@ export function compactProgress(dist: number, reduced: boolean): number {
  * row's top inside the header (the header sticks at `-offset`, leaving that
  * row and the border below it); `stick`: what's left on screen once stuck,
  * the top of the page's sticky stack. While scrolling it sets `--compact`
- * (compactProgress) on the header, once per frame, without re-rendering.
+ * (compactProgress) on the header and `--header-bottom` (its box's bottom on
+ * screen) on the root, once per frame, without re-rendering.
  */
 function useStickyHeader(
 	header: RefObject<HTMLElement | null>,
@@ -149,10 +150,14 @@ function useStickyHeader(
 				? window.matchMedia("(prefers-reduced-motion: reduce)")
 				: null;
 		let frame = 0;
+		const root = document.documentElement;
 		const update = () => {
 			frame = 0;
+			const box = h.getBoundingClientRect();
+			// Where the header's box ends on screen (a phone's find bar covers it).
+			root.style.setProperty("--header-bottom", `${box.bottom}px`);
 			// Stuck when its top reaches -offset.
-			const dist = h.getBoundingClientRect().top + size.offset;
+			const dist = box.top + size.offset;
 			const progress =
 				size.stick > 0 ? compactProgress(dist, reduced?.matches ?? false) : 0;
 			h.style.setProperty("--compact", String(progress));
@@ -166,6 +171,7 @@ function useStickyHeader(
 		window.addEventListener("resize", schedule);
 		return () => {
 			cancelAnimationFrame(frame);
+			root.style.removeProperty("--header-bottom");
 			window.removeEventListener("scroll", schedule);
 			window.removeEventListener("resize", schedule);
 		};
