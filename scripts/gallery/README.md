@@ -35,6 +35,12 @@ Cases:
   reworked, grown, duplicate, regenerated and new clusters.
 - `rr-rebase.sh`: the base moves on; a rebase (S4a), a squash (S5), a
   fixup (S1) and a force-push back (S6), one patch set each.
+- `rr-merge-in.sh`: the base merged in with conflicts (S3): conflict chips,
+  a thread on a rewritten line (changed), a LEFT thread whose base changed
+  (X6).
+- `rr-moves.sh`: a rename, a deleted file (the trailing "Not in this
+  comparison" group on PS2 and PS3), an extracted function (a `moved?`
+  candidate), a formatter sweep (changed) and a reverted commit.
 
 After a run, add the case's row to the gallery's README on `main` (the
 script prints the PR number).
