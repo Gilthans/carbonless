@@ -41,6 +41,24 @@ const harness = (id: HarnessId | null) =>
  * command go along unchanged (a hand-written env must survive a Save);
  * another command starts with none. Nothing is added to env by itself.
  */
+/** A command's last path part: `/srv/x/node_modules/.bin/claude-agent-acp` → `claude-agent-acp`. */
+export const basename = (command: string): string =>
+	command.trim().split(/[\\/]/).pop() ?? "";
+
+/**
+ * The harness a stored config is: the one whose command is the config's
+ * command or its basename (an absolute path, as under a service), with the
+ * same arguments.
+ */
+export function presetOf(agent: AgentConfig): AgentHarness | undefined {
+	return AGENT_HARNESSES.find(
+		(h) =>
+			h.id !== "other" &&
+			(h.command === agent.command || h.command === basename(agent.command)) &&
+			JSON.stringify(h.args) === JSON.stringify(agent.args),
+	);
+}
+
 const configOf = (
 	command: string,
 	args: string,
@@ -109,7 +127,13 @@ export function AgentSetup(props: { open: boolean; onClose(): void }) {
 		const h = harness(id);
 		setPick(id);
 		if (h && id !== "other") {
-			setCommand(h.command);
+			// The stored command when it is this harness's (an absolute path
+			// stays one), else the harness's own.
+			const mine =
+				read?.agent && presetOf(read.agent)?.id === id
+					? read.agent.command
+					: h.command;
+			setCommand(mine);
 			setArgs(formatArgs(h.args));
 		} else if (id === "other" && pick !== "other") {
 			setCommand("");
@@ -131,16 +155,10 @@ export function AgentSetup(props: { open: boolean; onClose(): void }) {
 		if (!read || shownFor.current === read) return;
 		shownFor.current = read;
 		const agent = read.agent;
-		const preset = agent
-			? AGENT_HARNESSES.find(
-					(h) =>
-						h.id !== "other" &&
-						h.command === agent.command &&
-						JSON.stringify(h.args) === JSON.stringify(agent.args),
-				)
-			: harness("claude-code");
+		const preset = agent ? presetOf(agent) : harness("claude-code");
 		setPick(preset?.id ?? "other");
-		setCommand(preset?.command ?? agent?.command ?? "");
+		// A stored command is kept as written (an absolute path included).
+		setCommand(agent?.command ?? preset?.command ?? "");
 		setArgs(formatArgs(preset?.args ?? agent?.args ?? []));
 		setChecked(null);
 		setCopied(false);

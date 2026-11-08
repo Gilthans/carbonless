@@ -378,6 +378,66 @@ describe("AgentSetup", () => {
 		expect(within(dialog).queryByText("the server broke")).toBeNull();
 	});
 
+	it("a preset's command at an absolute path is that preset, and the path is kept", async () => {
+		const abs = "/srv/crb/node_modules/.bin/claude-agent-acp";
+		stored = {
+			agent: {
+				command: abs,
+				args: [],
+				env: { CLAUDE_CODE_EXECUTABLE: "/opt/claude" },
+				leash: "open",
+			},
+			problems: [],
+		};
+		const { user } = show();
+		const dialog = await openIt(user);
+		expect(
+			within(dialog).getByRole("radio", { name: "Claude Code" }),
+		).toBeChecked();
+		expect(
+			within(dialog).getByRole("textbox", { name: "Command" }),
+		).toHaveValue(abs);
+		// Away and back: still the stored path.
+		await user.click(within(dialog).getByRole("radio", { name: "Gemini CLI" }));
+		await user.click(
+			within(dialog).getByRole("radio", { name: "Claude Code" }),
+		);
+		expect(
+			within(dialog).getByRole("textbox", { name: "Command" }),
+		).toHaveValue(abs);
+		await user.click(within(dialog).getByRole("button", { name: "Check" }));
+		await within(dialog).findByTestId("agent-check-ok");
+		await user.click(within(dialog).getByRole("button", { name: "Save" }));
+		await waitFor(() =>
+			expect(screen.getByTestId("state")).toHaveTextContent("closed"),
+		);
+		const kept = {
+			command: abs,
+			args: [],
+			env: { CLAUDE_CODE_EXECUTABLE: "/opt/claude" },
+			leash: "open",
+		};
+		expect(calls().slice(-2)).toEqual([
+			{ url: "/api/config/agent/check", method: "POST", body: kept },
+			{ url: "/api/config/agent", method: "PUT", body: kept },
+		]);
+	});
+
+	it("a path whose basename is a preset's but with other arguments is Other", async () => {
+		stored = {
+			agent: {
+				command: "/usr/local/bin/gemini",
+				args: ["--verbose"],
+				env: {},
+				leash: "open",
+			},
+			problems: [],
+		};
+		const { user } = show();
+		const dialog = await openIt(user);
+		expect(within(dialog).getByRole("radio", { name: "Other" })).toBeChecked();
+	});
+
 	it("Escape closes it and focus goes back", async () => {
 		const { user } = show();
 		await openIt(user);
