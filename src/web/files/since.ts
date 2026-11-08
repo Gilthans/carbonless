@@ -257,7 +257,7 @@ export function liveToRead(
  * without an answer for it.
  */
 export function eyesOf(
-	file: FileView,
+	_file: FileView,
 	since: FileSince | undefined,
 ): "read" | "carried" | null {
 	if (!since) return null;
