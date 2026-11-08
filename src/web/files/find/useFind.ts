@@ -70,8 +70,13 @@ const IDLE: PrefetchSnapshot = { pending: 0, failed: [] };
 const noSubscribe = () => () => {};
 
 /** Stable across renders while the results are (useQueries runs a stable combine only on change). */
-const hunksData = (results: QueryObserverResult<FileHunks>[]) =>
-	results.map((r) => r.data);
+const hunksData = (results: QueryObserverResult<FileHunks>[]) => ({
+	data: results.map((r) => r.data),
+	/** Some file's own request is out (the open file's diff asked): the prefetch skips it. */
+	fetching: results.some((r) => r.fetchStatus === "fetching"),
+	/** Per file: its request failed and nothing came. */
+	failed: results.map((r) => r.status === "error" && r.data === undefined),
+});
 const contextData = (results: QueryObserverResult<DiffLine[]>[]) =>
 	results.map((r) => r.data);
 
@@ -131,7 +136,7 @@ export function useFind(opts: {
 		if (!searchOn || term === "") return NO_HITS;
 		const hunksBy = new Map<number, FileHunks | undefined>();
 		files.forEach((f, i) => {
-			hunksBy.set(f.index, hunks[i]);
+			hunksBy.set(f.index, hunks.data[i]);
 		});
 		const contextBy = new Map<number, DiffLine[]>();
 		ranges.forEach((r, i) => {
@@ -219,9 +224,31 @@ export function useFind(opts: {
 	const snapshot = useSyncExternalStore(subscribe, () =>
 		prefetcher ? prefetcher.snapshot() : IDLE,
 	);
-	const retry = useCallback(() => prefetcher?.retry(), [prefetcher]);
+	// Files that couldn't be searched: the prefetch's, and those whose own
+	// request (the open file's diff) failed while the prefetch left them to it.
+	const failedFiles = useMemo(() => {
+		const all = new Set(snapshot.failed);
+		files.forEach((f, i) => {
+			if (hunks.failed[i]) all.add(f.index);
+		});
+		return [...all];
+	}, [snapshot.failed, files, hunks.failed]);
+	const retry = useCallback(() => {
+		if (!prefetcher) return;
+		prefetcher.retry();
+		// A file whose own request failed isn't the prefetch's yet: ask for it.
+		prefetcher.queue(
+			files.filter((_, i) => hunks.failed[i]).map((f) => f.index),
+		);
+	}, [prefetcher, files, hunks.failed]);
 
 	const marking = searchOn && term !== "";
+	// Not final while the prefetch has files out, a file's own request is out,
+	// or (the first render of an open bar on a page that shows) the prefetch
+	// hasn't started yet.
+	const searching =
+		marking &&
+		(snapshot.pending > 0 || hunks.fetching || (active && prefetcher === null));
 	const count = marking
 		? { at: caret ? hitIndex(hits, caret.pos) + 1 : 0, of: hits.length }
 		: null;
@@ -319,8 +346,8 @@ export function useFind(opts: {
 		hits,
 		caret,
 		count,
-		searching: snapshot.pending > 0 && term !== "" && open,
-		failed: open ? snapshot.failed.length : 0,
+		searching,
+		failed: marking ? failedFiles.length : 0,
 		retry,
 		step,
 		matchCase,

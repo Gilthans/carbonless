@@ -6,6 +6,7 @@ import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { heldJson } from "../../../../test/loading";
 import type { DiffLine, FileHunks, FileView } from "../../../shared/types";
+import { hunksQuery } from "../../api";
 import { newQueryClient } from "../../queryClient";
 import { contextRanges } from "../contextRanges";
 import { findState } from "./findState";
@@ -87,12 +88,15 @@ interface Batch {
 
 let client: QueryClient;
 let batches: Batch[];
+/** Held per-file hunks requests, in order (`/api/files/<n>/hunks`). */
+let singles: { index: number; held: ReturnType<typeof heldJson> }[];
 
 beforeEach(() => {
 	findState.reset();
 	contextRanges.reset();
 	client = newQueryClient();
 	batches = [];
+	singles = [];
 	vi.stubGlobal(
 		"fetch",
 		vi.fn(async (input: RequestInfo | URL) => {
@@ -106,6 +110,12 @@ beforeEach(() => {
 						.map(Number),
 					held,
 				});
+				return held.response;
+			}
+			const single = /^\/api\/files\/(\d+)\/hunks$/.exec(url.pathname);
+			if (single) {
+				const held = heldJson();
+				singles.push({ index: Number(single[1]), held });
 				return held.response;
 			}
 			return new Response("{}", { status: 404 });
@@ -284,5 +294,95 @@ describe("useFind", () => {
 		expect(batches[1]?.indexes).toEqual([0, 1]);
 		expect(result.current.failed).toBe(0);
 		expect(result.current.searching).toBe(true);
+	});
+	it("keeps searching while the open file's own hunks are still on their way", async () => {
+		const files = [file(0, [], ["save"]), file(1, [], ["y"])];
+		// The open file's diff asked for its hunks before the bar opened.
+		void client.prefetchQuery(hunksQuery("r1", 0));
+		await waitFor(() => expect(singles).toHaveLength(1));
+		const { result } = renderFind({ revision: "r1", files, openIndex: 0 });
+		search("save");
+		await waitFor(() => expect(batches).toHaveLength(1));
+		// The prefetch leaves the file being fetched to its own request.
+		expect(batches[0]?.indexes).toEqual([1]);
+		expect(result.current.searching).toBe(true);
+		await act(async () => {
+			batches[0]?.held.release({
+				files: [{ index: 1, hunks: hunksOf(files[1] as FileView, "z") }],
+			});
+		});
+		// Give the prefetch's answer every chance to land.
+		await act(() => new Promise((r) => setTimeout(r, 20)));
+		expect(result.current.searching).toBe(true);
+		await act(async () => {
+			singles[0]?.held.release(hunksOf(files[0] as FileView, "save too"));
+		});
+		await waitFor(() => expect(result.current.searching).toBe(false));
+		expect(result.current.count?.of).toBe(2);
+	});
+
+	it("counts the open file whose own hunks request failed, and asks again on retry", async () => {
+		const files = [file(0, [], ["save"]), file(1, [], ["y"])];
+		void client.prefetchQuery(hunksQuery("r1", 0));
+		await waitFor(() => expect(singles).toHaveLength(1));
+		const { result } = renderFind({ revision: "r1", files, openIndex: 0 });
+		search("save");
+		await waitFor(() => expect(batches).toHaveLength(1));
+		await act(async () => {
+			batches[0]?.held.release({
+				files: [{ index: 1, hunks: hunksOf(files[1] as FileView, "z") }],
+			});
+			singles[0]?.held.release({ error: "boom" }, 500);
+		});
+		await waitFor(() => expect(result.current.failed).toBe(1));
+		expect(result.current.searching).toBe(false);
+		// Only while there's a term.
+		act(() => findState.setTerm(""));
+		expect(result.current.failed).toBe(0);
+		act(() => findState.setTerm("save"));
+		expect(result.current.failed).toBe(1);
+		act(() => result.current.retry());
+		await waitFor(() => expect(batches).toHaveLength(2));
+		expect(batches[1]?.indexes).toEqual([0]);
+		expect(result.current.searching).toBe(true);
+		await act(async () => {
+			batches[1]?.held.release({
+				files: [{ index: 0, hunks: hunksOf(files[0] as FileView, "save") }],
+			});
+		});
+		await waitFor(() => expect(result.current.failed).toBe(0));
+		expect(result.current.searching).toBe(false);
+		expect(result.current.count?.of).toBe(2);
+	});
+
+	it("shows searching from the first render of a reopened bar with a kept term", () => {
+		const files = [file(0, [], ["save"])];
+		const { result } = renderFind({ revision: "r1", files, openIndex: null });
+		act(() => findState.setTerm("save"));
+		const seen: { counted: boolean; searching: boolean }[] = [];
+		const { result: again } = renderHook(
+			() => {
+				const f = useFind({
+					revision: "r1",
+					files,
+					openIndex: null,
+					active: true,
+				});
+				seen.push({ counted: f.count !== null, searching: f.searching });
+				return f;
+			},
+			{
+				wrapper: ({ children }: { children: ReactNode }) => (
+					<QueryClientProvider client={client}>{children}</QueryClientProvider>
+				),
+			},
+		);
+		expect(result.current.count).toBeNull();
+		act(() => findState.open());
+		expect(again.current.count?.of).toBe(1);
+		// No render with a count and no spinner while the prefetch starts.
+		const counted = seen.filter((r) => r.counted);
+		expect(counted.length).toBeGreaterThan(0);
+		expect(counted.every((r) => r.searching)).toBe(true);
 	});
 });

@@ -40,7 +40,8 @@ export function FindButton(): ReactNode {
 					type="button"
 					{...trigger}
 					aria-label={LABEL}
-					aria-expanded={onFiles && open}
+					// Elsewhere it navigates: nothing expands there.
+					aria-expanded={onFiles ? open : undefined}
 					data-find-button
 					onClick={() => {
 						if (onFiles) {

@@ -481,7 +481,8 @@ describe("App", () => {
 		const { router } = renderApp();
 		await screen.findByRole("region", { name: "What it does" });
 		const button = screen.getByRole("button", { name: "Find in PR" });
-		expect(button).toHaveAttribute("aria-expanded", "false");
+		// Here it goes to Files changed: nothing expands.
+		expect(button).not.toHaveAttribute("aria-expanded");
 		await user.click(button);
 		await waitFor(() =>
 			expect(router.state.location.pathname).toBe(`/r/${ID}/files`),
