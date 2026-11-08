@@ -212,7 +212,7 @@ export interface PrOverview {
 	body: string;
 	/**
 	 * The description as GitHub renders it. Untrusted: sanitize before
-	 * rendering (src/web/githubHtml.ts). "" when GitHub returned none.
+	 * rendering (src/web/sanitizeGithubHtml.ts). "" when GitHub returned none.
 	 */
 	bodyHtml: string;
 	isDraft: boolean;
