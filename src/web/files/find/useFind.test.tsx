@@ -215,6 +215,46 @@ describe("useFind", () => {
 		});
 	});
 
+	it("the first step after typing moves on when the caret's hit is already seen, and goes to it when not", () => {
+		const files = [file(0, [], ["save"]), file(1, [], ["a save b save"])];
+		const { result } = renderFind({ revision: "r1", files, openIndex: 1 });
+		search("save");
+		const caret = result.current.caret;
+		expect(caret?.pos).toMatchObject({ index: 1, col: 2 });
+		const asked: unknown[] = [];
+		let hit: ReturnType<typeof result.current.step> = null;
+		act(() => {
+			hit = result.current.step(1, (h) => {
+				asked.push(h);
+				return true;
+			});
+		});
+		// Asked about the caret's own hit, which is seen: on to the next.
+		expect(asked).toEqual([expect.objectContaining({ index: 1, col: 2 })]);
+		expect(hit).toMatchObject({ index: 1, col: 9 });
+		expect(result.current.count).toEqual({ at: 3, of: 3 });
+
+		// Typing again: unseen, the first Shift+Enter goes to the caret itself.
+		act(() => findState.setTerm("sav"));
+		act(() => {
+			hit = result.current.step(-1, () => false);
+		});
+		expect(hit).toMatchObject({ index: 1, col: 2 });
+		// Seen and stepping back: the hit before it.
+		act(() => findState.setTerm("save"));
+		act(() => {
+			hit = result.current.step(-1, () => true);
+		});
+		expect(hit).toMatchObject({ index: 0, col: 0 });
+		// A shown caret isn't asked about.
+		const again = vi.fn(() => true);
+		act(() => {
+			hit = result.current.step(1, again);
+		});
+		expect(again).not.toHaveBeenCalled();
+		expect(hit).toMatchObject({ index: 1, col: 2 });
+	});
+
 	it("a file opened after typing doesn't move the caret; typing again starts from it", () => {
 		const files = [file(0, [], ["save"]), file(1, [], ["save"])];
 		const { result, rerender } = renderFind({

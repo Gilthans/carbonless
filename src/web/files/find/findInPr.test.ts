@@ -292,6 +292,31 @@ describe("caret", () => {
 		expect(stepCaret(hits, null, 1)).toBeNull();
 		expect(stepCaret([], shown(first), 1)).toBeNull();
 	});
+
+	it("an unshown caret the reviewer already sees moves on: next goes forward, previous back", () => {
+		const hits = [hit(0, 1), hit(0, 2), hit(0, 3)];
+		const at0 = (h: Hit): HitPos => ({
+			index: h.index,
+			side: h.side,
+			line: h.line,
+			col: h.col,
+		});
+		const unshown = (h: Hit): Caret => ({ pos: at0(h), shown: false });
+		const middle = hits[1] as Hit;
+		expect(stepCaret(hits, unshown(middle), 1, true)).toEqual({
+			pos: at0(hits[2] as Hit),
+			shown: true,
+		});
+		expect(stepCaret(hits, unshown(middle), -1, true)).toEqual({
+			pos: at0(hits[0] as Hit),
+			shown: true,
+		});
+		// Not seen: the step shows it where it is.
+		expect(stepCaret(hits, unshown(middle), 1, false)).toEqual({
+			pos: at0(middle),
+			shown: true,
+		});
+	});
 });
 
 describe("integrity", () => {

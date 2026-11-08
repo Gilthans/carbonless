@@ -52,8 +52,12 @@ export interface Find {
 	searching: boolean;
 	failed: number;
 	retry: () => void;
-	/** Moves the caret (stepCaret) and returns the hit stepped to, or null. */
-	step: (dir: 1 | -1) => Hit | null;
+	/**
+	 * Moves the caret (stepCaret) and returns the hit stepped to, or null.
+	 * `seen`: whether the reviewer already sees a hit (asked only about an
+	 * unshown caret's): a seen one is passed over, as if a step showed it.
+	 */
+	step: (dir: 1 | -1, seen?: (hit: Hit) => boolean) => Hit | null;
 	matchCase: boolean;
 	setMatchCase: (on: boolean) => void;
 	/** Per-file views, built once per hits/caret change. */
@@ -211,26 +215,39 @@ export function useFind(opts: {
 	typedNow.current = { typedKey, typedTerm, searchFor, order, stepped };
 	const openNow = useRef(openIndex);
 	openNow.current = openIndex;
-	const step = useCallback((dir: 1 | -1): Hit | null => {
-		let now = latest.current;
-		const t = typedNow.current;
-		if (now.typingKey !== t.typedKey) {
-			const hits = t.searchFor(t.typedTerm);
-			const kept = t.stepped;
-			const caret =
-				kept?.key === t.typedKey &&
-				kept.caret &&
-				hitIndex(hits, kept.caret.pos) >= 0
-					? kept.caret
-					: caretAfterTyping(hits, t.order, openNow.current);
-			now = { hits, caret, typingKey: t.typedKey };
-		}
-		const next = stepCaret(now.hits, now.caret, dir);
-		if (!next) return null;
-		latest.current = { ...now, caret: next };
-		setStepped({ key: now.typingKey, caret: next });
-		return now.hits.find((h) => samePos(h, next.pos)) ?? null;
-	}, []);
+	const step = useCallback(
+		(dir: 1 | -1, seen?: (hit: Hit) => boolean): Hit | null => {
+			let now = latest.current;
+			const t = typedNow.current;
+			if (now.typingKey !== t.typedKey) {
+				const hits = t.searchFor(t.typedTerm);
+				const kept = t.stepped;
+				const caret =
+					kept?.key === t.typedKey &&
+					kept.caret &&
+					hitIndex(hits, kept.caret.pos) >= 0
+						? kept.caret
+						: caretAfterTyping(hits, t.order, openNow.current);
+				now = { hits, caret, typingKey: t.typedKey };
+			}
+			const caret = now.caret;
+			const at =
+				caret && !caret.shown && seen
+					? now.hits.find((h) => samePos(h, caret.pos))
+					: undefined;
+			const next = stepCaret(
+				now.hits,
+				caret,
+				dir,
+				at !== undefined && seen?.(at) === true,
+			);
+			if (!next) return null;
+			latest.current = { ...now, caret: next };
+			setStepped({ key: now.typingKey, caret: next });
+			return now.hits.find((h) => samePos(h, next.pos)) ?? null;
+		},
+		[],
+	);
 
 	// The step into a file's lines: a value never used before, and only for
 	// the file it was taken in while that file stays open, so a file opened

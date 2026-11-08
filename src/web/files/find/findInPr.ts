@@ -213,17 +213,18 @@ export function caretAfterTyping(
 }
 
 /**
- * A step: an unshown caret becomes shown where it is; a shown one moves
- * to the next (`1`) or previous (`-1`) hit, wrapping at both ends. Null
- * without hits.
+ * A step: an unshown caret becomes shown where it is, unless the reviewer
+ * already sees its hit (`seen`); a shown (or seen) one moves to the next
+ * (`1`) or previous (`-1`) hit, wrapping at both ends. Null without hits.
  */
 export function stepCaret(
 	hits: readonly Hit[],
 	caret: Caret | null,
 	dir: 1 | -1,
+	seen = false,
 ): Caret | null {
 	if (!caret || hits.length === 0) return null;
-	if (!caret.shown) return { pos: caret.pos, shown: true };
+	if (!caret.shown && !seen) return { pos: caret.pos, shown: true };
 	const at = hitIndex(hits, caret.pos);
 	const next =
 		at < 0
