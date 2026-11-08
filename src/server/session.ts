@@ -1158,7 +1158,7 @@ export class Session {
 	 */
 	async #withSince(facts: VerdictFacts): Promise<VerdictFacts> {
 		const target = sinceTarget({
-			reviews: facts.reviews,
+			verdict: facts.yourVerdict,
 			patchsets: this.#patchsets,
 			head: this.#head?.oid ?? null,
 		});

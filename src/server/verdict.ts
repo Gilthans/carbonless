@@ -127,10 +127,12 @@ function latestReviews(
 	nodes: unknown[],
 	viewer: string,
 	asOf: string | undefined,
-): Review[] {
+): { reviews: Review[]; yours: Review | null } {
 	/** Each reviewer's latest opinionated review, and latest of any kind. */
 	const opinionated = new Map<string, Review>();
 	const any = new Map<string, Review>();
+	/** The viewer's latest verdict-like review: an opinion, or a Comment with a message. */
+	let verdictLike: Review | undefined;
 	const later = (map: Map<string, Review>, key: string, review: Review) => {
 		const prev = map.get(key);
 		if (!prev || prev.submittedAt <= review.submittedAt) map.set(key, review);
@@ -155,10 +157,23 @@ function latestReviews(
 		};
 		later(any, key, review);
 		if (state !== "COMMENTED") later(opinionated, key, review);
+		if (
+			review.you &&
+			(state !== "COMMENTED" || str(r.body).trim() !== "") &&
+			(!verdictLike || verdictLike.submittedAt <= review.submittedAt)
+		) {
+			verdictLike = review;
+		}
 	}
-	return [...any.keys()]
+	const reviews = [...any.keys()]
 		.map((key) => standingOf(opinionated.get(key), any.get(key) as Review))
 		.sort((a, b) => b.submittedAt.localeCompare(a.submittedAt));
+	const mine = reviews.find((r) => r.you);
+	const opinion = mine ? opinionated.get(mine.author.toLowerCase()) : undefined;
+	return {
+		reviews,
+		yours: verdictLike ? standingOf(opinion, verdictLike) : null,
+	};
 }
 
 /**
@@ -214,6 +229,7 @@ export function mapVerdict(input: {
 			];
 		})
 		.sort((a, b) => CHECK_ORDER[a.status] - CHECK_ORDER[b.status]);
+	const latest = latestReviews(read.reviews, viewer, asOf);
 	const codeOwnerRequests: VerdictFacts["codeOwnerRequests"] = [];
 	// Who GitHub asks now: not known as of a cutoff.
 	for (const raw of asOf ? [] : arr(obj(pr.reviewRequests).nodes)) {
@@ -239,7 +255,8 @@ export function mapVerdict(input: {
 		checks,
 		rule: open ? input.rule : null,
 		codeOwnerRequests,
-		reviews: latestReviews(read.reviews, viewer, asOf),
+		reviews: latest.reviews,
+		yourVerdict: latest.yours,
 		head: read.head,
 		fetchedAt: input.fetchedAt,
 		// Worked out when served (Session.verdict, sinceTarget), never kept.
@@ -251,7 +268,7 @@ export function mapVerdict(input: {
 export type SinceTarget = Omit<VerdictSince, "changes">;
 
 /**
- * The reviewer's own verdict (the `you` review: their standing one), the
+ * The reviewer's own verdict (VerdictFacts.yourVerdict), the
  * patch set it was given on (among those whose head is the verdict's
  * commit, the latest started by the verdict's time: a retarget keeps the
  * head and starts another; the earliest when none was, a clock apart),
@@ -263,11 +280,11 @@ export type SinceTarget = Omit<VerdictSince, "changes">;
  * set), or it is on the head a verdict goes on now (nothing since).
  */
 export function sinceTarget(input: {
-	reviews: VerdictFacts["reviews"];
+	verdict: VerdictFacts["yourVerdict"];
 	patchsets: readonly { number: number; head: string; startedAt: number }[];
 	head: string | null;
 }): SinceTarget | null {
-	const mine = input.reviews.find((r) => r.you);
+	const mine = input.verdict;
 	if (!mine || mine.commitId === "") return null;
 	const byNumber = [...input.patchsets].sort((a, b) => b.number - a.number);
 	const onIt = byNumber.filter((p) => p.head === mine.commitId);

@@ -674,6 +674,14 @@ export interface VerdictFacts {
 	/** When the server finished reading this from GitHub (its clock). */
 	fetchedAt: string;
 	/**
+	 * The reviewer's own latest verdict, which `since` compares from: their
+	 * standing approval or change request (or its dismissal), else their
+	 * latest Comment with a message. A review comment posted on its own is
+	 * a COMMENTED review with no message on GitHub: not a verdict. As
+	 * `reviews`' rows; null when they gave none.
+	 */
+	yourVerdict: VerdictFacts["reviews"][number] | null;
+	/**
 	 * What changed since the reviewer's own verdict (the `you` review):
 	 * null with no verdict, one on a head that is none of the reviewer's
 	 * patch sets, or one on the head a verdict now goes on. Worked out

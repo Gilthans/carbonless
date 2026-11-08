@@ -596,7 +596,7 @@ const verdictQuery = (
       }
       reviews(first: 100) {
         pageInfo { hasNextPage endCursor }
-        nodes { ${AUTHOR} state submittedAt url commit { oid } }
+        nodes { ${AUTHOR} state submittedAt url body commit { oid } }
       }
       commits(last: 1) {
         nodes {

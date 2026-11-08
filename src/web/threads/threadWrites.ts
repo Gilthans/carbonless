@@ -1745,6 +1745,16 @@ export function applyVerdict(client: QueryClient, answer: VerdictAnswer): void {
 				facts.since && review.commitId === facts.since.to.head
 					? null
 					: facts.since,
+			// A Comment always has a message: every verdict sent here is one.
+			yourVerdict: {
+				author: viewer,
+				state: review.state,
+				submittedAt: review.submittedAt,
+				commitId: review.commitId,
+				...(review.url ? { url: review.url } : {}),
+				you: true,
+				bot: false,
+			},
 			reviews: [
 				{
 					author: viewer,

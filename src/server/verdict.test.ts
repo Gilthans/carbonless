@@ -327,6 +327,70 @@ describe("mapVerdict", () => {
 		]);
 	});
 
+	it("yourVerdict: the viewer's opinion, else their latest Comment with a message; a review comment posted alone is no verdict", () => {
+		const mine = (
+			state: string,
+			submittedAt: string,
+			body: string,
+			oid = HEAD,
+		) => ({
+			author: user("Octo_Cat"),
+			state,
+			submittedAt,
+			body,
+			commit: { oid },
+		});
+		// A Comment verdict on OLD, then a review comment on HEAD (a
+		// COMMENTED review with no message): the verdict stays OLD's.
+		const commented = map({
+			...read(),
+			reviews: [
+				mine("COMMENTED", "2026-01-01T00:00:00Z", "Two questions", OLD),
+				mine("COMMENTED", "2026-01-02T00:00:00Z", ""),
+			],
+		});
+		expect(commented.reviews[0]).toMatchObject({ commitId: HEAD });
+		expect(commented.yourVerdict).toMatchObject({
+			state: "COMMENTED",
+			commitId: OLD,
+			submittedAt: "2026-01-01T00:00:00Z",
+		});
+		// An approval stands through later comments of either kind.
+		const approved = map({
+			...read(),
+			reviews: [
+				mine("APPROVED", "2026-01-01T00:00:00Z", "", OLD),
+				mine("COMMENTED", "2026-01-02T00:00:00Z", "A nit"),
+			],
+		});
+		expect(approved.yourVerdict).toMatchObject({
+			state: "APPROVED",
+			commitId: OLD,
+		});
+		// Withdrawn by a Comment (dismissed, then the comment): the comment.
+		const withdrawn = map({
+			...read(),
+			reviews: [
+				mine("DISMISSED", "2026-01-01T00:00:00Z", "", OLD),
+				mine("COMMENTED", "2026-01-02T00:00:00Z", "Not yet"),
+			],
+		});
+		expect(withdrawn.yourVerdict).toMatchObject({ state: "COMMENTED" });
+		// Only review comments, or nothing of the viewer's: no verdict.
+		expect(
+			map({
+				...read(),
+				reviews: [
+					mine("COMMENTED", "2026-01-02T00:00:00Z", " "),
+					{
+						...mine("APPROVED", "2026-01-03T00:00:00Z", ""),
+						author: user("ravi"),
+					},
+				],
+			}).yourVerdict,
+		).toBeNull();
+	});
+
 	it("a request for changes withdrawn by a comment in the same second reads as the comment", () => {
 		const facts = map({
 			...read(),
@@ -858,50 +922,48 @@ describe("sinceTarget and sinceOf (VerdictFacts.since)", () => {
 	];
 
 	it("a verdict on PS1 with PS2 the latest: compared with PS2", () => {
-		expect(
-			sinceTarget({ reviews: [review(PS1)], patchsets, head: PS2 }),
-		).toEqual({
-			state: "APPROVED",
-			head: PS1,
-			at: "2026-11-05T10:00:00Z",
-			patchset: 1,
-			to: { head: PS2, patchset: 2 },
-		});
+		expect(sinceTarget({ verdict: review(PS1), patchsets, head: PS2 })).toEqual(
+			{
+				state: "APPROVED",
+				head: PS1,
+				at: "2026-11-05T10:00:00Z",
+				patchset: 1,
+				to: { head: PS2, patchset: 2 },
+			},
+		);
 		// No head shown (pinned, as-of, merged): the latest patch set too.
 		expect(
-			sinceTarget({ reviews: [review(PS1)], patchsets, head: null })?.to,
+			sinceTarget({ verdict: review(PS1), patchsets, head: null })?.to,
 		).toEqual({ head: PS2, patchset: 2 });
 	});
 
 	it("the PR's head past the latest patch set is where a verdict goes now", () => {
 		expect(
-			sinceTarget({ reviews: [review(PS2)], patchsets, head: NEW })?.to,
+			sinceTarget({ verdict: review(PS2), patchsets, head: NEW })?.to,
 		).toEqual({ head: NEW, patchset: null });
 		// Moved back onto PS1's head: that patch set.
 		expect(
-			sinceTarget({ reviews: [review(PS2)], patchsets, head: PS1 })?.to,
+			sinceTarget({ verdict: review(PS2), patchsets, head: PS1 })?.to,
 		).toEqual({ head: PS1, patchset: 1 });
 	});
 
-	it("null without a verdict of the reviewer's, on the head a verdict goes on now, or on a head that is no patch set", () => {
-		const theirs = review(PS1, { author: "ravi", you: false });
-		expect(sinceTarget({ reviews: [theirs], patchsets, head: NEW })).toBeNull();
-		expect(sinceTarget({ reviews: [], patchsets, head: NEW })).toBeNull();
+	it("null without a verdict of the reviewer's (yourVerdict), on the head a verdict goes on now, or on a head that is no patch set", () => {
+		expect(sinceTarget({ verdict: null, patchsets, head: NEW })).toBeNull();
 		expect(
-			sinceTarget({ reviews: [review(PS2)], patchsets, head: PS2 }),
+			sinceTarget({ verdict: review(PS2), patchsets, head: PS2 }),
 		).toBeNull();
 		expect(
-			sinceTarget({ reviews: [review(NEW)], patchsets, head: NEW }),
+			sinceTarget({ verdict: review(NEW), patchsets, head: NEW }),
 		).toBeNull();
 		// Given before any patch set (on GitHub, say): nothing to compare from.
 		expect(
-			sinceTarget({ reviews: [review("4".repeat(40))], patchsets, head: NEW }),
+			sinceTarget({ verdict: review("4".repeat(40)), patchsets, head: NEW }),
 		).toBeNull();
 		expect(
-			sinceTarget({ reviews: [review(PS1)], patchsets: [], head: NEW }),
+			sinceTarget({ verdict: review(PS1), patchsets: [], head: NEW }),
 		).toBeNull();
 		expect(
-			sinceTarget({ reviews: [review("")], patchsets, head: NEW }),
+			sinceTarget({ verdict: review(""), patchsets, head: NEW }),
 		).toBeNull();
 	});
 
@@ -912,13 +974,13 @@ describe("sinceTarget and sinceOf (VerdictFacts.since)", () => {
 			{ number: 3, head: PS1, startedAt: Date.parse("2026-11-06T00:00:00Z") },
 		];
 		expect(
-			sinceTarget({ reviews: [review(PS1)], patchsets: retargeted, head: NEW })
+			sinceTarget({ verdict: review(PS1), patchsets: retargeted, head: NEW })
 				?.patchset,
 		).toBe(1);
 		// Given after PS3 started: PS3.
 		const later = review(PS1, { submittedAt: "2026-11-07T00:00:00Z" });
 		expect(
-			sinceTarget({ reviews: [later], patchsets: retargeted, head: NEW })
+			sinceTarget({ verdict: later, patchsets: retargeted, head: NEW })
 				?.patchset,
 		).toBe(3);
 		// The verdict started PS3 and GitHub's whole second reads before
@@ -934,7 +996,7 @@ describe("sinceTarget and sinceOf (VerdictFacts.since)", () => {
 		];
 		expect(
 			sinceTarget({
-				reviews: [sameSecond],
+				verdict: sameSecond,
 				patchsets: startedMidSecond,
 				head: NEW,
 			})?.patchset,
@@ -1411,6 +1473,15 @@ describe("the verdict, through the session and the fake gh", () => {
 						bot: false,
 					},
 				],
+				yourVerdict: {
+					author: "Octo_Cat",
+					state: "CHANGES_REQUESTED",
+					submittedAt: "2026-01-03T00:00:00Z",
+					commitId: then,
+					url: "https://github.com/acme/widget/pull/12#pullrequestreview-9000",
+					you: true,
+					bot: false,
+				},
 				head: then,
 				fetchedAt: expect.any(String),
 				// No patch set: nothing to compare the verdict with.

@@ -139,28 +139,28 @@ const SAME: VerdictSince["changes"] = {
 	identical: true,
 };
 
-const facts = (since: VerdictSince | null): VerdictFacts => ({
-	mergeStateStatus: "CLEAN",
-	reviewDecision: null,
-	checks: [],
-	rule: null,
-	codeOwnerRequests: [],
-	reviews: since
-		? [
-				{
-					author: "octo",
-					state: since.state,
-					submittedAt: since.at,
-					commitId: since.head,
-					you: true,
-					bot: false,
-				},
-			]
-		: [],
-	head: PS2,
-	fetchedAt: "2026-01-05T12:00:00Z",
-	since,
-});
+const facts = (since: VerdictSince | null): VerdictFacts => {
+	const yours = since && {
+		author: "octo",
+		state: since.state,
+		submittedAt: since.at,
+		commitId: since.head,
+		you: true,
+		bot: false,
+	};
+	return {
+		mergeStateStatus: "CLEAN",
+		reviewDecision: null,
+		checks: [],
+		rule: null,
+		codeOwnerRequests: [],
+		reviews: yours ? [yours] : [],
+		yourVerdict: yours,
+		head: PS2,
+		fetchedAt: "2026-01-05T12:00:00Z",
+		since,
+	};
+};
 
 let posted: VerdictRequest[];
 
