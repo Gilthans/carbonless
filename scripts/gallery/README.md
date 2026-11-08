@@ -41,6 +41,16 @@ Cases:
 - `rr-moves.sh`: a rename, a deleted file (the trailing "Not in this
   comparison" group on PS2 and PS3), an extracted function (a `moved?`
   candidate), a formatter sweep (changed) and a reverted commit.
+- `rr-stacked.sh`: a child PR on a parent PR's branch; the parent
+  squash-merged and its branch deleted (GitHub retargets the child, S7),
+  then the child rebased (S4a); a verdict on PS1, so the Final Verdict tab
+  says "same diff · nothing to re-read".
+- `rr-showcase.sh`: the demo: one PR through an append (S1), a rebase (S4a)
+  and a merge-in with a conflict (S3), marks and comments at each step, a
+  verdict on PS1; its body is the guided tour.
+
+`verdict` gives a verdict through carbonless; the gallery's PRs are the gh
+login's own, so GitHub takes only Comment from it.
 
 After a run, add the case's row to the gallery's README on `main` (the
 script prints the PR number).
