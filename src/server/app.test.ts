@@ -27,6 +27,7 @@ import type {
 	ReviewView,
 	SessionInfo,
 } from "../shared/types";
+import { agentConfigSaveCount } from "./agent/host";
 import { buildApp, prTitle, withPrTitle } from "./app";
 import type { HomeService } from "./home/homeService";
 import { SessionRegistry } from "./registry";
@@ -1298,6 +1299,21 @@ describe("API", () => {
 				const off = await put(null);
 				expect(off.json()).toEqual({ agent: null });
 				expect(JSON.parse(readFileSync(file(), "utf8")).agent).toBeNull();
+			});
+
+			it("each Save counts, the same config too (a crashed agent may start again); a bad one doesn't", async () => {
+				const agent = {
+					command: "claude-agent-acp",
+					args: [],
+					env: {},
+					leash: "open",
+				};
+				const before = agentConfigSaveCount();
+				expect((await put(agent)).statusCode).toBe(200);
+				expect((await put(agent)).statusCode).toBe(200);
+				expect(agentConfigSaveCount()).toBe(before + 2);
+				expect((await put({ command: "" })).statusCode).toBe(400);
+				expect(agentConfigSaveCount()).toBe(before + 2);
 			});
 
 			it("400 with the problem for a bad body", async () => {

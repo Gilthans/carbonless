@@ -128,6 +128,8 @@ let agentConfigSaves = 0;
 export const noteAgentConfigSaved = (): void => {
 	agentConfigSaves++;
 };
+/** How many Saves this server has seen (each review's runner compares). */
+export const agentConfigSaveCount = (): number => agentConfigSaves;
 
 /** The agent config from config.json, with the problems that concern it. */
 export async function agentConfig(): Promise<{
@@ -175,7 +177,7 @@ export function reviewAgentHost(src: ReviewAgentSource): AgentHost {
 		reviewId: src.reviewId,
 		config: async () => ({
 			...(await agentConfig()),
-			saves: agentConfigSaves,
+			saves: agentConfigSaveCount(),
 		}),
 		store,
 		cacheClone: src.repo,
