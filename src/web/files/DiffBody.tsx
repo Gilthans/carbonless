@@ -37,7 +37,7 @@ import {
 	useShowInvisibles,
 	type Words,
 } from "../code/Invisibles";
-import { DEFAULT_TAB_WIDTH, startsFile } from "../code/invisibleChars";
+import { DEFAULT_TAB_WIDTH } from "../code/invisibleChars";
 import { Spinner } from "../Spinner";
 import { clickPointer, isTap, Tooltip } from "../Tooltip";
 import { canMove, spanTexts } from "../threads/draftMove";
@@ -673,7 +673,6 @@ function CodeCell(props: {
 				lang={props.lang}
 				tabWidth={props.tabWidth}
 				newline={!line.noNewline}
-				fileStart={startsFile(line)}
 				marks={props.marks}
 				words={props.words}
 			/>
@@ -735,7 +734,7 @@ function wordsOf(
 ): Words | undefined {
 	if (line.kind !== "add" && line.kind !== "del") return undefined;
 	const marks = props.words?.get(line);
-	// A file's byte order mark may be hidden on a line without marks.
+	// A BOM may be hidden on a line without marks (hiddenLines).
 	const hidden = props.hidden?.has(line) || undefined;
 	if (!marks && !hidden) return undefined;
 	return {

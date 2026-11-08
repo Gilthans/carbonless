@@ -444,12 +444,10 @@ export function CodeLine(props: {
 	lang: string | null;
 	tabWidth?: number;
 	newline?: boolean;
-	/** The file's first line: its byte order mark hides with the rest. */
-	fileStart?: boolean;
 	marks?: readonly Mark[];
 	words?: Words;
 }) {
-	const { text, lang, newline = true, fileStart = false } = props;
+	const { text, lang, newline = true } = props;
 	const show = useShowInvisibles();
 	useEffect(() => {
 		if (copyFixInstalled) return;
@@ -468,14 +466,8 @@ export function CodeLine(props: {
 	const words = props.words?.marks ?? NO_MARKS;
 	// A kept emoji selector or joiner inside a word mark shows as its escape.
 	const pieces = useMemo(
-		() =>
-			renderInvisibles(text, tabWidth, {
-				newline,
-				show,
-				fileStart,
-				marks: words,
-			}),
-		[text, tabWidth, newline, show, fileStart, words],
+		() => renderInvisibles(text, tabWidth, { newline, show, marks: words }),
+		[text, tabWidth, newline, show, words],
 	);
 	const segments = useMemo(
 		() => colorPieces(pieces, tokens.data ?? []),

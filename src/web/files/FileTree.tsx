@@ -493,10 +493,12 @@ export function FileTree(props: {
 	return (
 		<div>
 			{allFolders.length > 0 && (
+				// Stays on top while the tree scrolls under it, on the
+				// background of what holds the tree (--tree-bg).
 				<div
 					role="toolbar"
 					aria-label="Folders"
-					className="mb-1 flex justify-end gap-1"
+					className="sticky top-0 z-10 mb-1 flex justify-end gap-1 pt-1 bg-(--tree-bg,var(--color-canvas))"
 				>
 					<TreeAction
 						label="Fold all"

@@ -55,19 +55,13 @@ export interface RenderOptions {
 	/** A newline follows the line (false for the last line without one). */
 	newline?: boolean;
 	/**
-	 * Spaces, tab markers, line endings and the byte order mark that
-	 * starts a file (`fileStart`) (Settings: "Show hidden characters").
-	 * Other escapes show either way: hiding them would hide content. A
-	 * file's BOM is its encoding, not content (owner, 2026-11-08);
-	 * hiddenChange and hiddenLines flag a change made of it.
+	 * Spaces, tab markers, line endings and U+FEFF (Settings: "Show hidden
+	 * characters"): off, code looks as it does in an editor, and an editor
+	 * draws a BOM as nothing wherever it is (owner, 2026-11-08);
+	 * hiddenChange and hiddenLines flag a change made of one. Other escapes
+	 * show either way: hiding them would hide content.
 	 */
 	show?: boolean;
-	/**
-	 * The line is the file's first: a U+FEFF that starts it is the file's
-	 * byte order mark. Anywhere else (files joined by `cat`, a mid-line
-	 * zero width no-break space) it is content, escaped either way.
-	 */
-	fileStart?: boolean;
 	/**
 	 * A pair's word marks (UTF-16 `[from, to)`). While invisibles show, a
 	 * selector, joiner or tag kept unescaped (it draws nothing inside an
@@ -85,13 +79,6 @@ const BLACK_FLAG = 0x1f3f4;
 const ZWJ = "\u200D";
 const ZWNJ = "\u200C";
 export const BOM = "\uFEFF";
-
-/** The file's first line, on the line's own side (a context line's new one). */
-export const startsFile = (line: {
-	kind: string;
-	oldNo?: number | null;
-	newNo?: number | null;
-}): boolean => (line.kind === "del" ? line.oldNo : line.newNo) === 1;
 
 /**
  * Prints as nothing, as a blank that isn't a plain space, or not as itself:
@@ -435,7 +422,7 @@ export function renderInvisibles(
 	tabWidth: number = DEFAULT_TAB_WIDTH,
 	options: RenderOptions = {},
 ): Piece[] {
-	const { newline = true, show = true, fileStart = false } = options;
+	const { newline = true, show = true } = options;
 	const marks = show ? (options.marks ?? []) : [];
 	const marked = (from: number, to: number) =>
 		marks.some(([f, t]) => f <= from && to <= t);
@@ -512,9 +499,9 @@ export function renderInvisibles(
 				column += 1;
 			}
 			last = 1;
-		} else if (ch === BOM && i === 0 && fileStart && !show) {
-			// The file's byte order mark: encoding, drawn only while hidden
-			// characters show.
+		} else if (ch === BOM && !show) {
+			// A byte order mark (or zero width no-break space): drawn as
+			// nothing, as an editor does, until hidden characters show.
 			pushText(ch, 0);
 		} else if (ch === "\r" || INVISIBLE.test(ch)) {
 			// Attached to what it modifies (an emoji, a joining script), it

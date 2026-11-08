@@ -30,7 +30,10 @@ export function TreeColumn(props: { tree: ReactNode }) {
 			ref={column}
 			className="sticky top-[calc(var(--app-header,0px)+var(--files-bar,0px)+1rem)] flex max-h-[calc(100dvh-var(--app-header,0px)-var(--files-bar,0px)-2rem)] shrink-0 self-start"
 		>
-			<aside style={{ width: treeWidth.width }} className="overflow-y-auto">
+			<aside
+				style={{ width: treeWidth.width }}
+				className="overflow-y-auto rounded-md border border-line px-1 pb-1 [--tree-bg:var(--color-canvas)]"
+			>
 				{props.tree}
 			</aside>
 			<TreeResizer {...treeWidth} onWidth={treeWidth.set} />

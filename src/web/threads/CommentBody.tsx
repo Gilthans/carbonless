@@ -9,7 +9,6 @@ import { type HunkLine, numberOn } from "../../shared/diffHunk";
 import type { ReviewThread } from "../../shared/types";
 import { reviewQuery } from "../api";
 import { CodeLine, type Mark } from "../code/Invisibles";
-import { startsFile } from "../code/invisibleChars";
 import { languageFor } from "../files/highlight";
 import { GithubHtml } from "../GithubHtml";
 import { splitSuggestions } from "../overview/suggestions";
@@ -96,7 +95,6 @@ export function CodeRows(props: {
 							lang={lang}
 							tabWidth={tabWidth}
 							newline={!line.noNewline}
-							fileStart={startsFile(line)}
 							marks={line.marks}
 						/>
 					</td>

@@ -166,21 +166,19 @@ describe("renderInvisibles", () => {
 		}
 	});
 
-	it("shows a file's byte order mark only while hidden characters show", () => {
+	it("shows a BOM (U+FEFF) only while hidden characters show, wherever it is", () => {
 		const BOM = "\uFEFF";
-		const first = (text: string, show: boolean) =>
-			renderInvisibles(text, 4, { newline: false, show, fileStart: true });
-		expect(look(first(`${BOM}import x;`, true))).toBe("\\uFEFFimport x;");
-		const pieces = first(`${BOM}import x;`, false);
-		expect(pieces.some((p) => p.kind === "escape")).toBe(false);
-		expect(joinPieces(pieces)).toBe(`${BOM}import x;`);
+		expect(shown(`${BOM}import x;`, 4, false)).toBe("\\uFEFFimport x;");
+		expect(shown(`a${BOM}b`, 4, false)).toBe("a\\uFEFFb");
+		for (const text of [`${BOM}import x;`, `a${BOM}b`, `${BOM}${BOM}b`]) {
+			const pieces = renderInvisibles(text, 4, { newline: false, show: false });
+			expect(pieces.some((p) => p.kind === "escape")).toBe(false);
+			expect(joinPieces(pieces)).toBe(text);
+		}
 		// Tab stops count it as nothing.
-		expect(look(first(`${BOM}\tx`, false))).toBe(`${BOM}____x`);
-		// Anywhere else it is content (files joined by cat, a zero width
-		// no-break space): escaped either way.
-		expect(look(first(`a${BOM}b`, false))).toBe("a\\uFEFFb");
-		expect(look(first(`${BOM}${BOM}b`, false))).toBe(`${BOM}\\uFEFFb`);
-		expect(hidden(`${BOM}import x;`, 4, false)).toBe("\\uFEFFimport x;");
+		expect(hidden(`${BOM}\tx`, 4, false)).toBe(`${BOM}____x`);
+		// Other zero widths still show while hidden characters are off.
+		expect(hidden("a\u200Bb", 4, false)).toBe("a\\u200Bb");
 	});
 
 	it("escapes unusual spaces and line separators", () => {

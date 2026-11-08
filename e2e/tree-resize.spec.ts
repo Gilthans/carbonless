@@ -128,6 +128,13 @@ test.describe("desktop", () => {
 			el.scrollTop = el.scrollHeight;
 		});
 		await expect(last).toBeInViewport({ ratio: 1 });
+		// Fold all / Open all stay on top, at the column's top edge.
+		const toolbar = page.getByRole("toolbar", { name: "Folders" });
+		await expect(toolbar).toBeInViewport({ ratio: 1 });
+		const top = async (l: typeof toolbar) => (await l.boundingBox())?.y ?? -1;
+		expect(
+			Math.abs((await top(toolbar)) - (await top(sidebar(page)))),
+		).toBeLessThanOrEqual(1.5);
 		// Stuck, after the page scrolls, it still ends in view.
 		await page.evaluate(() => window.scrollBy(0, 2000));
 		await inView();
