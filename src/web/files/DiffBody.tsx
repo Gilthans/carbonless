@@ -97,8 +97,13 @@ export interface DiffFind {
 	 * side and line), never a scan of the hits.
 	 */
 	marksOf: (side: DiffSide, line: number) => readonly FindMark[];
-	/** The current hit's line, when it is in this file (painted current, kept open). */
+	/** The current hit's line, when it is in this file (painted current). */
 	current: LineRef | null;
+	/**
+	 * A step has shown the current hit (Caret.shown): only then does it keep
+	 * a collapsed whitespace-only cluster open (typing never moves the layout).
+	 */
+	shown: boolean;
 	/** Bumped by each step onto a hit in this file: its row scrolls under the sticky stack. */
 	stepSeq: number;
 }
@@ -2393,6 +2398,7 @@ function HunkRows(props: {
 							});
 				if (state && ignoreWhitespace && whitespaceOnly(rows)) {
 					// A bubble, a pick, a landed-on line or the find's current hit
+					// (once a step showed it: typing never changes the layout)
 					// must never be hidden by the setting: the cluster stays open
 					// while it has one. (Keys are pick keys too: side by side,
 					// either side's cell picks.)
@@ -2408,7 +2414,8 @@ function HunkRows(props: {
 							) ||
 							landedPhase(props.landed, line) !== undefined ||
 							landingOn(props.landingLine, line) ||
-							landingOn(props.find?.current ?? null, line)
+							(props.find?.shown === true &&
+								landingOn(props.find.current, line))
 						);
 					});
 					return (

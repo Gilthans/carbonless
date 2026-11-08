@@ -2048,7 +2048,8 @@ describe("DiffBody find", () => {
 		current: DiffFind["current"],
 		stepSeq = 0,
 		marksOf: DiffFind["marksOf"] = () => [],
-	): DiffFind => ({ marksOf, current, stepSeq });
+		shown = true,
+	): DiffFind => ({ marksOf, current, stepSeq, shown });
 
 	it("paints the find's marks on each line's cell and the current hit's row", async () => {
 		setup({
@@ -2167,6 +2168,19 @@ describe("DiffBody find", () => {
 		expect(
 			document.querySelector('tr[data-new-no="14"] [data-find-mark]'),
 		).toBeNull();
+	});
+
+	it("typing never opens a collapsed whitespace-only cluster: only a step onto its hit does", async () => {
+		ignoreWhitespace.set(true);
+		const { collapsed, refind } = setup({
+			find: findAt({ old: false, line: 3 }, 0, () => [], false),
+		});
+		await screen.findByText("Whitespace only · 6 lines");
+		expect(collapsed()[0]).not.toHaveAttribute("data-expanded");
+		refind(findAt({ old: false, line: 3 }, 1, () => [], true));
+		await waitFor(() =>
+			expect(collapsed()[0]).toHaveAttribute("data-expanded"),
+		);
 	});
 
 	it("a collapsed whitespace-only cluster holding the current hit opens", async () => {

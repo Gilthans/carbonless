@@ -366,7 +366,7 @@ export function useFind(opts: {
 			}
 			return byLine;
 		};
-		return { tree, pathOf, linesOf, pos };
+		return { tree, pathOf, linesOf, pos, shown: caret?.shown === true };
 	}, [hits, files, caret]);
 
 	// A file's DiffFind keeps its identity while its marks, current line and
@@ -387,7 +387,8 @@ export function useFind(opts: {
 						? { old: pos.side === "LEFT", line: pos.line }
 						: null;
 				const stepSeq = lastStep?.index === index ? lastStep.seq : 0;
-				let sig = `${stepSeq}|${current ? `${current.old}:${current.line}` : ""}`;
+				const shown = current !== null && views.shown;
+				let sig = `${stepSeq}|${shown}|${current ? `${current.old}:${current.line}` : ""}`;
 				for (const [key, marks] of byLine)
 					for (const m of marks)
 						sig += `|${key}:${m.from}-${m.to}${m.current ? "*" : ""}`;
@@ -399,6 +400,7 @@ export function useFind(opts: {
 							byLine.get(`${side}:${line}`) ?? NO_MARKS,
 						current,
 						stepSeq,
+						shown,
 					};
 					keptDiffs.current.set(index, { sig, diff });
 				}
