@@ -509,6 +509,59 @@ describe("useFind", () => {
 		expect(result.current.count).toEqual({ at: 1, of: 1 });
 	});
 
+	it("Enter right after typing asks about the typed term's caret, not the trailing one in view", async () => {
+		// "sav": its first hit (the line with "sav") is in view; "save": its
+		// first hit is on the next line, off screen.
+		const files = [file(0, [], ["sav", "x save"], "zz.txt")];
+		const asked: Hit[] = [];
+		const steps: (Hit | null)[] = [];
+		let svLine = -1;
+		const { result } = renderHook(
+			() => {
+				const f = useFind({
+					revision: "r1",
+					files,
+					openIndex: 0,
+					active: true,
+				});
+				const fired = useRef(false);
+				useEffect(() => {
+					if (f.state.term !== "save" || !f.searching || fired.current) return;
+					fired.current = true;
+					steps.push(
+						f.step(1, (h) => {
+							asked.push(h);
+							return h.line === svLine;
+						}),
+					);
+				});
+				return f;
+			},
+			{
+				wrapper: ({ children }: { children: ReactNode }) => (
+					<QueryClientProvider client={client}>{children}</QueryClientProvider>
+				),
+			},
+		);
+		search("sav");
+		await waitFor(() => expect(batches).toHaveLength(1));
+		await act(async () => {
+			batches[0]?.held.release({
+				files: files.map((f) => ({ index: f.index, hunks: hunksOf(f, "z") })),
+			});
+		});
+		await waitFor(() => expect(result.current.searching).toBe(false));
+		svLine = result.current.caret?.pos.line ?? -1;
+		expect(result.current.caret?.pos.col).toBe(0);
+		act(() => findState.setTerm("save"));
+		expect(steps).toHaveLength(1);
+		// Asked about "save"'s caret (off screen): gone to, not passed over.
+		expect(asked).toEqual([
+			expect.objectContaining({ line: svLine + 1, col: 2 }),
+		]);
+		expect(steps[0]).toMatchObject({ index: 0, line: svLine + 1, col: 2 });
+	});
+
 	it("keeps a file's DiffFind the same object while its hits and caret don't change", async () => {
 		const files = [file(0, [], ["save"]), file(1, [], ["y"])];
 		const { result } = renderFind({ revision: "r1", files, openIndex: 0 });
