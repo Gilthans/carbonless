@@ -435,7 +435,7 @@ export function UnplacedRow(props: {
 				<button
 					type="button"
 					aria-expanded={false}
-					aria-label={`Resolved thread by ${thread.author}: ${fate.short}. Expand`}
+					aria-label={`Resolved thread by ${thread.author}: ${fate.short}${props.path ? ` · ${props.path}` : ""}. Expand`}
 					data-testid="unplaced-collapsed"
 					onClick={() => setExpanded(true)}
 					className="flex min-h-10 w-full min-w-0 items-center gap-1.5 rounded-md px-2 text-left text-xs text-muted hover:bg-overlay focus-visible:outline-2 focus-visible:outline-accent"

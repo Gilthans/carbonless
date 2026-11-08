@@ -1835,7 +1835,6 @@ const NO_COMMENT: ThreadComment = {
 	deleted: false,
 };
 
-/** "1 reply", "2 replies". */
 /**
  * What a card's toggle opens to: "more" when there's something to read
  * (clipped code or text, a reply, the viewer's pending or sending ones);
@@ -1855,7 +1854,6 @@ export function toggleKind(p: {
 	return "more";
 }
 
-/** The toggle's words, closed and open, by what it opens to. */
 /**
  * Why the code pane may not be what the commenter saw, in one sentence:
  * the comment's commit and when, then the doubt.

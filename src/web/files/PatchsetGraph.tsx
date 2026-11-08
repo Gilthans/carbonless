@@ -584,9 +584,14 @@ function DotPopover(props: {
 		place();
 		window.addEventListener("scroll", place, true);
 		window.addEventListener("resize", place);
+		// Its content can change size (the threads line after its spinner).
+		const resized =
+			typeof ResizeObserver === "undefined" ? null : new ResizeObserver(place);
+		if (box.current) resized?.observe(box.current);
 		return () => {
 			window.removeEventListener("scroll", place, true);
 			window.removeEventListener("resize", place);
+			resized?.disconnect();
 		};
 	}, [anchor]);
 	useEffect(() => {
@@ -623,6 +628,23 @@ function DotPopover(props: {
 			data-testid="dot-popover"
 			// Clicks on its text keep focus inside (a blur to nowhere would close it).
 			tabIndex={-1}
+			onKeyDown={(e) => {
+				// Tab or Shift+Tab out of it closes it, focus back on the dot
+				// (it sits at the end of the page, far from the dot otherwise).
+				if (e.key !== "Tab" || !box.current) return;
+				const stops = [
+					...box.current.querySelectorAll<HTMLElement>(
+						'button:not(:disabled), a[href], [tabindex="0"]',
+					),
+				];
+				const at = document.activeElement;
+				const leaving = e.shiftKey
+					? at === box.current || at === stops[0]
+					: stops.length === 0 || at === stops.at(-1);
+				if (!leaving) return;
+				e.preventDefault();
+				onClose(true);
+			}}
 			onBlur={(e) => {
 				const next = e.relatedTarget as Node | null;
 				if (next && (box.current?.contains(next) || anchor?.contains(next)))

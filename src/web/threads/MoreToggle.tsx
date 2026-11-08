@@ -16,6 +16,7 @@ import { useThreadWrites } from "./threadWrites";
  * Overview's thread cards and Files changed's unplaced threads.
  */
 
+/** "1 reply", "2 replies". */
 export const repliesText = (n: number) =>
 	`${n} ${n === 1 ? "reply" : "replies"}`;
 
@@ -40,6 +41,7 @@ export function useReplyCount(
 	};
 }
 
+/** The toggle's words, closed and open, by what it opens to. */
 const TOGGLE_TEXT = {
 	more: { closed: "Show more", open: "Show less" },
 	reply: { closed: "Reply", open: "Hide" },

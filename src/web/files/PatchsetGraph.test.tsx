@@ -395,6 +395,70 @@ describe("PatchsetGraph", () => {
 		expect(setViewing).not.toHaveBeenCalled();
 	});
 
+	it("Tab past the sticky card's last stop, or Shift+Tab before its first, closes it with focus on the dot", async () => {
+		const user = userEvent.setup();
+		renderGraph(session([1, 2], oid("f")), {
+			viewing: ps(2),
+			base: ps(1) as ComparisonBase,
+		});
+		const head = screen.getByRole("button", { name: "head fffffff" });
+		await user.click(head);
+		// The head: Comparison Base is disabled, Target is the only button.
+		const target = within(screen.getByRole("dialog")).getByRole("button", {
+			name: "Comparison Target",
+		});
+		expect(target).toHaveFocus();
+		await user.tab();
+		expect(screen.queryByRole("dialog")).toBeNull();
+		expect(head).toHaveFocus();
+		await user.keyboard("{Enter}");
+		expect(screen.getByRole("dialog")).toBeInTheDocument();
+		await user.tab({ shift: true });
+		expect(screen.queryByRole("dialog")).toBeNull();
+		expect(head).toHaveFocus();
+	});
+
+	it("the sticky card is placed again when its content changes size", async () => {
+		const observers: (() => void)[] = [];
+		vi.stubGlobal(
+			"ResizeObserver",
+			class {
+				constructor(private cb: () => void) {
+					observers.push(() => this.cb());
+				}
+				observe() {}
+				disconnect() {}
+			},
+		);
+		const user = userEvent.setup();
+		renderGraph(session([1, 2], oid("f")), {
+			viewing: ps(2),
+			base: ps(1) as ComparisonBase,
+		});
+		const dot = screen.getByRole("button", { name: "PS1" });
+		const rect = (left: number, width: number, height: number) => ({
+			left,
+			top: 100,
+			width,
+			height,
+			right: left + width,
+			bottom: 100 + height,
+			x: left,
+			y: 100,
+			toJSON: () => ({}),
+		});
+		vi.spyOn(dot, "getBoundingClientRect").mockReturnValue(rect(500, 40, 40));
+		await user.click(dot);
+		const card = screen.getByRole("dialog");
+		expect(card.style.left).toBe("520px");
+		// Its content grew: centred under the dot again.
+		vi.spyOn(card, "getBoundingClientRect").mockReturnValue(rect(0, 200, 120));
+		act(() => {
+			for (const o of observers) o();
+		});
+		expect(card.style.left).toBe("420px");
+	});
+
 	it("the label and the dot are one element: one button, one card", async () => {
 		const user = userEvent.setup();
 		renderGraph(session([1, 2], oid("f")), {

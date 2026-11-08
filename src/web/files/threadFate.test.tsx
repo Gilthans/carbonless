@@ -443,6 +443,10 @@ describe("a resolved unplaced thread", () => {
 		expect(quiet).toHaveAttribute("data-resolved", "true");
 		const line = within(quiet).getByTestId("unplaced-collapsed");
 		expect(line.textContent).toBe("File deleted · a.ts · rev1");
+		// Its name says what it shows, the path too.
+		expect(line).toHaveAccessibleName(
+			"Resolved thread by rev1: File deleted · a.ts. Expand",
+		);
 		expect(line).toHaveAttribute("aria-expanded", "false");
 		expect(line.className).toContain("text-muted");
 		// No code, no comment while collapsed.
