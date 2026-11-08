@@ -11,7 +11,13 @@ import {
 } from "../test/fake-gh/scenario";
 import { GIT_TEST_TIMEOUTS } from "../test/git-fixture";
 import { createPrFixture, type PrFixture } from "../test/pr-fixture";
-import { compareThreads, main } from "./compare-threads";
+import {
+	compareThreads,
+	githubCell,
+	main,
+	placementCell,
+	placementKind,
+} from "./compare-threads";
 
 // Real git and fake-gh processes: see GIT_TEST_TIMEOUTS.
 vi.setConfig(GIT_TEST_TIMEOUTS);
@@ -228,5 +234,280 @@ describe("compare-threads", () => {
 			["T12-1", true],
 			["T12-0", true],
 		]);
+	});
+});
+
+describe("compare-threads --placed-from (placements across rounds)", () => {
+	let pr: PrFixture;
+	let out: string;
+	const lines = Array.from({ length: 30 }, (_, i) => `line ${i + 1}`);
+
+	beforeEach(() => {
+		pr = createPrFixture();
+		out = mkdtempSync(join(tmpdir(), "crb-compare-"));
+	});
+	afterEach(async () => {
+		await pr.cleanup();
+		rmSync(out, { recursive: true, force: true });
+	});
+
+	/**
+	 * Round 1 on head 1 (threads opened 2099-01-02), round 2 on head 2
+	 * (pushed 2099-01-06): three lines on top of a.txt, line 2 rewritten,
+	 * line 26 as it was (now 29). GitHub's REST `line` per thread on head 2.
+	 */
+	const twoRounds = (opts: { pushedAfter?: boolean } = {}) => {
+		const first = pr.head();
+		const next = [...lines];
+		next[1] = "line 2 reworked";
+		next[25] = "line 26 changed";
+		const second = pr.moveHead({
+			"a.txt": `top 1\ntop 2\ntop 3\n${next.join("\n")}\n`,
+			"new.txt": "new\nmore\n",
+		});
+		// A third push after the second round's cutoff: GitHub's head now.
+		const third = opts.pushedAfter
+			? pr.moveHead({ "later.txt": "later\n" })
+			: second;
+		const opener = (i: number, at = "2099-01-02T09:00:00Z") => [
+			threadComment({
+				login: "rev1",
+				text: `Thread ${i}`,
+				commit: first,
+				createdAt: at,
+			}),
+		];
+		const on = (line: number, now: number | null) => ({
+			path: "a.txt",
+			originalLine: line,
+			line: now,
+		});
+		pr.scenario({
+			prs: {
+				12: {
+					view: prView({ headRefOid: third, baseRefName: "main" }),
+					graphql: {
+						commits: [
+							{
+								commit: { oid: first, committedDate: "2099-01-01T00:00:00Z" },
+							},
+							{
+								commit: { oid: second, committedDate: "2099-01-06T00:00:00Z" },
+							},
+							...(third === second
+								? []
+								: [
+										{
+											commit: {
+												oid: third,
+												committedDate: "2099-02-01T00:00:00Z",
+											},
+										},
+									]),
+						],
+						reviewThreads: [
+							// Line 26 moved down by three: both say 29.
+							reviewThread(on(26, 29), opener(0)),
+							// Line 2 rewritten: GitHub outdated, carbonless changed.
+							reviewThread(on(2, null), opener(1)),
+							// GitHub one off: a line disagreement.
+							reviewThread(on(26, 30), opener(2)),
+							// GitHub outdated, carbonless on the same text.
+							reviewThread(on(26, null), opener(3)),
+							reviewThread(
+								{
+									path: "new.txt",
+									subjectType: "FILE",
+									line: null,
+									originalLine: null,
+								},
+								opener(4),
+							),
+							// Opened in round 2: not in the table.
+							reviewThread(on(26, 29), opener(5, "2099-01-07T09:00:00Z")),
+							// Resolved since: as of a cutoff nothing reads resolved
+							// (GitHub doesn't say when), so it is placed.
+							reviewThread({ ...on(26, 29), isResolved: true }, opener(6)),
+						],
+					},
+				},
+			},
+			commits: {
+				[first]: { contexts: [] },
+				[second]: { contexts: [] },
+				[third]: { contexts: [] },
+			},
+		});
+		return { first, second, third };
+	};
+
+	it("places each first-round thread into the later head and compares it with GitHub's line", async () => {
+		const { first, second } = twoRounds();
+		const c = await compareThreads(pr.arg, {
+			asOf: "2099-01-20T00:00:00Z",
+			placedFrom: "2099-01-05T00:00:00Z",
+		});
+		const p = c.placements;
+		if (!p) throw new Error("no placements");
+		expect(p).toMatchObject({
+			placedFrom: "2099-01-05T00:00:00Z",
+			fromHead: first,
+			toHead: second,
+			githubHead: second,
+			unlisted: 0,
+		});
+		const byId = Object.fromEntries(
+			p.rows.map((r) => [r.id, [r.github, r.ours, r.oursNow, r.kind]]),
+		);
+		expect(byId).toEqual({
+			"T12-0": ["RIGHT 29", "placed RIGHT 29", "", "agree"],
+			"T12-1": ["outdated", "changed RIGHT 5", "", "agree"],
+			"T12-2": ["RIGHT 30", "placed RIGHT 29", "", "line"],
+			"T12-3": ["outdated", "placed RIGHT 29", "", "we-place-outdated"],
+			"T12-4": ["file", "file", "", "agree"],
+			"T12-6": ["RIGHT 29", "placed RIGHT 29", "", "agree"],
+		});
+		expect(p.counts).toEqual({ total: 6, agree: 4, disagree: 2 });
+
+		const log = vi.spyOn(console, "log").mockImplementation(() => {});
+		const err = vi.spyOn(console, "error").mockImplementation(() => {});
+		try {
+			await main([
+				pr.arg,
+				"--as-of",
+				"2099-01-20T00:00:00Z",
+				"--placed-from",
+				"2099-01-05T00:00:00Z",
+				"--out",
+				out,
+			]);
+			expect(
+				await main([
+					pr.arg,
+					"--as-of",
+					"2099-01-04T00:00:00Z",
+					"--placed-from",
+					"2099-01-05T00:00:00Z",
+				]),
+			).toBe(2);
+		} finally {
+			log.mockRestore();
+			err.mockRestore();
+		}
+		const md = readFileSync(join(out, "compare.md"), "utf8");
+		expect(md).toContain("## Placements");
+		expect(md).toContain("4/6 agree, 2 disagree");
+		expect(md).toMatch(
+			/\| a\.txt \| 2099-01-02T09:00:00Z \| RIGHT 30 \| placed RIGHT 29 \| line \|/,
+		);
+		// Read-only on GitHub.
+		expect(pr.ghLog()).not.toMatch(/\s(-X|--method)\s|\bmutation\b/);
+	});
+
+	it("places into GitHub's head now too when the PR moved on after --as-of", async () => {
+		const { second, third } = twoRounds({ pushedAfter: true });
+		const c = await compareThreads(pr.arg, {
+			asOf: "2099-01-20T00:00:00Z",
+			placedFrom: "2099-01-05T00:00:00Z",
+		});
+		expect(c.placements).toMatchObject({ toHead: second, githubHead: third });
+		const row = c.placements?.rows.find((r) => r.id === "T12-0");
+		expect(row).toMatchObject({
+			ours: "placed RIGHT 29",
+			oursNow: "placed RIGHT 29",
+			kind: "agree",
+		});
+	});
+});
+
+describe("placement cells and kinds", () => {
+	const rest = (
+		more: Partial<Parameters<typeof placementKind>[1]> = {},
+	): Parameters<typeof placementKind>[1] => ({
+		node_id: "C1",
+		path: "a.ts",
+		line: 10,
+		original_line: 8,
+		start_line: null,
+		original_start_line: null,
+		side: "RIGHT",
+		start_side: null,
+		original_commit_id: null,
+		diff_hunk: "",
+		...more,
+	});
+	const anchor = (line: number, path = "a.ts", side = "RIGHT" as const) => ({
+		path,
+		startSide: side,
+		startLine: line,
+		side,
+		line,
+	});
+	const placed = (line: number, path?: string) => ({
+		kind: "placed" as const,
+		anchor: anchor(line, path),
+		changed: false as const,
+	});
+
+	it("agrees on the same path, side and end line; says which differs", () => {
+		expect(placementKind(placed(10), rest())).toBe("agree");
+		expect(placementKind(placed(11), rest())).toBe("line");
+		expect(placementKind(placed(10, "b.ts"), rest())).toBe("path");
+		expect(
+			placementKind(
+				{
+					kind: "changed",
+					anchor: { ...anchor(10), side: "LEFT", startSide: "LEFT" },
+					old: { side: "RIGHT", startLine: 8, line: 8, text: [] },
+					now: [],
+				},
+				rest(),
+			),
+		).toBe("side");
+	});
+
+	it("an outdated GitHub line agrees with anything but placed; a fate where GitHub places is we-unplace", () => {
+		const gone = {
+			kind: "unplaced" as const,
+			fate: "deleted" as const,
+			path: "a.ts",
+			nearest: null,
+		};
+		expect(placementKind(placed(10), rest({ line: null }))).toBe(
+			"we-place-outdated",
+		);
+		expect(placementKind(gone, rest({ line: null }))).toBe("agree");
+		expect(placementKind(gone, rest())).toBe("we-unplace");
+		expect(
+			placementKind(
+				{ kind: "outside", path: "a.ts", fate: "file-gone" },
+				rest({ subject_type: "file", line: null }),
+			),
+		).toBe("we-unplace");
+		expect(
+			placementKind(
+				{ kind: "file", path: "a.ts" },
+				rest({ subject_type: "file", line: null }),
+			),
+		).toBe("agree");
+	});
+
+	it("names each placement and GitHub's place in one cell", () => {
+		expect(placementCell(placed(10))).toBe("placed RIGHT 10");
+		expect(
+			placementCell({
+				kind: "unplaced",
+				fate: "moved",
+				path: "a.ts",
+				nearest: null,
+				movedTo: "b.ts",
+			}),
+		).toBe("unplaced moved → b.ts");
+		expect(
+			placementCell({ kind: "outside", path: "x", fate: "reverted" }),
+		).toBe("outside reverted");
+		expect(githubCell(rest({ start_line: 8 }))).toBe("RIGHT 8-10");
+		expect(githubCell(rest({ line: null }))).toBe("outdated");
+		expect(githubCell(rest({ subject_type: "file" }))).toBe("file");
 	});
 });
