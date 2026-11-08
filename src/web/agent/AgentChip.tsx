@@ -127,7 +127,9 @@ export function AgentChip() {
 							</span>
 						)}
 						{status.isPending ? (
-							<SpinnerIcon size={10} className="text-muted" />
+							<span data-testid="agent-chip-loading" className="flex">
+								<SpinnerIcon size={10} className="text-muted" />
+							</span>
 						) : (
 							<span
 								aria-hidden

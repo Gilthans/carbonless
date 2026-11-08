@@ -1,4 +1,4 @@
-import { SparkleFillIcon } from "@primer/octicons-react";
+import { AlertIcon, SparkleFillIcon } from "@primer/octicons-react";
 import { useQuery } from "@tanstack/react-query";
 import { ApiError, reviewQuery, sessionQuery } from "../api";
 import { SkeletonBar, Spinner } from "../Spinner";
@@ -57,7 +57,15 @@ export function AgentOverviewRow() {
 							{threads.error.message}
 						</span>
 					) : (
-						<SkeletonBar className="w-32" />
+						<span
+							data-testid="agent-overview-loading"
+							aria-busy="true"
+							aria-label="Loading agent threads"
+							role="status"
+							className="flex"
+						>
+							<SkeletonBar className="w-32" />
+						</span>
 					)
 				) : (
 					<span
@@ -99,6 +107,17 @@ export function AgentOverviewRow() {
 				<div aria-busy="true">
 					<Spinner label="Loading files" />
 				</div>
+			)}
+			{earlier.length > 0 && review.isError && (
+				// Not "none gone": which threads sit on a gone file is unknown.
+				<p
+					role="alert"
+					data-testid="agent-overview-gone-error"
+					className="flex min-w-0 items-center gap-1.5 break-words text-sm text-bad"
+				>
+					<AlertIcon size={14} aria-hidden className="shrink-0" />
+					{review.error.message}
+				</p>
 			)}
 			{gone.length > 0 && (
 				<ul

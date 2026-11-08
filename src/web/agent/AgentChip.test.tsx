@@ -2,6 +2,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { expectLoadingThen, heldJson } from "../../../test/loading";
 import { AGENT_POLL_MS, type AgentStatus } from "../../shared/agent";
 import type { PrOverview } from "../../shared/types";
 import { ApiError, overviewQuery } from "../api";
@@ -85,6 +86,36 @@ describe("the agent chip", () => {
 		);
 		expect(screen.queryByTestId("agent-chip")).toBeNull();
 		expect(fetchMock).not.toHaveBeenCalled();
+	});
+
+	it("its first read shows a spinner, never a dot; then the status's dot", async () => {
+		const held = heldJson();
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (url: string) => {
+				if (url.endsWith("/agent")) return held.response;
+				throw new Error(`unexpected ${url}`);
+			}),
+		);
+		const client = new QueryClient({
+			defaultOptions: { queries: { retry: false } },
+		});
+		client.setQueryData(overviewQuery.queryKey, {
+			writes: "on",
+		} as PrOverview);
+		render(
+			<QueryClientProvider client={client}>
+				<AgentChip />
+			</QueryClientProvider>,
+		);
+		await expectLoadingThen({
+			loading: () => screen.queryByTestId("agent-chip-loading"),
+			empty: [() => screen.queryByTestId("agent-chip-dot")],
+			release: () => held.release(status()),
+			result: () => screen.queryByTestId("agent-chip-dot"),
+		});
+		expect(screen.getByTestId("agent-chip-dot").className).toContain("bg-ok");
+		expect(screen.getByTestId("agent-chip")).not.toHaveAttribute("aria-busy");
 	});
 
 	it("reads the threads again when the status moves, not on a routine poll", async () => {

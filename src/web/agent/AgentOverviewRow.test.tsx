@@ -2,6 +2,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { expectLoadingThen, heldJson } from "../../../test/loading";
 import type { AgentStatus, AgentThread } from "../../shared/agent";
 import type { ReviewView, SessionInfo } from "../../shared/types";
 import { reviewQuery, sessionQuery } from "../api";
@@ -75,5 +76,93 @@ describe("AgentOverviewRow", () => {
 				name: "Asked on an earlier version (eeeeeee)",
 			}),
 		).toBeTruthy();
+	});
+
+	const client = () => {
+		const c = new QueryClient({
+			defaultOptions: { queries: { retry: false, staleTime: Infinity } },
+		});
+		c.setQueryData(agentStatusQuery.queryKey, {
+			state: "ready",
+			configured: true,
+			since: "2026-11-07T10:00:00Z",
+			waiting: 1,
+		} satisfies AgentStatus);
+		c.setQueryData(sessionQuery.queryKey, {
+			snapshotHead: HEAD,
+		} as SessionInfo);
+		return c;
+	};
+	const mount = (c: QueryClient) =>
+		render(
+			<QueryClientProvider client={c}>
+				<AgentOverviewRow />
+			</QueryClientProvider>,
+		);
+
+	it("a skeleton while the threads load, never a 0; then the counts", async () => {
+		const held = heldJson();
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (url: string) => {
+				if (url.endsWith("/agent/threads")) return held.response;
+				throw new Error(`unexpected ${url}`);
+			}),
+		);
+		mount(client());
+		await expectLoadingThen({
+			loading: () => screen.queryByTestId("agent-overview-loading"),
+			empty: [() => screen.queryByTestId("agent-overview-counts")],
+			release: () =>
+				held.release({ threads: [thread("A1", "src/kept.ts", HEAD)] }),
+			result: () => screen.queryByTestId("agent-overview-counts"),
+		});
+		expect(screen.getByTestId("agent-overview-counts")).toHaveTextContent(
+			"1 open · 1 waiting",
+		);
+	});
+
+	it("a spinner while the files load for a thread on an earlier head; then its card", async () => {
+		const held = heldJson();
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (url: string) => {
+				if (url.endsWith("/review")) return held.response;
+				throw new Error(`unexpected ${url}`);
+			}),
+		);
+		const c = client();
+		c.setQueryData(agentThreadsQuery.queryKey, {
+			threads: [thread("A3", "src/gone.ts", OLD)],
+		});
+		mount(c);
+		await expectLoadingThen({
+			loading: () => screen.queryByRole("status", { name: "Loading files" }),
+			release: () => held.release({ files: [{ path: "src/kept.ts" }] }),
+			result: () => screen.queryByTestId("agent-overview-gone"),
+		});
+	});
+
+	it("files that fail to load say so, never as if no thread were on a gone file", async () => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(
+				async () =>
+					new Response(JSON.stringify({ error: "git broke" }), { status: 500 }),
+			),
+		);
+		const c = client();
+		c.setQueryData(agentThreadsQuery.queryKey, {
+			threads: [thread("A3", "src/gone.ts", OLD)],
+		});
+		mount(c);
+		const alert = await screen.findByTestId("agent-overview-gone-error");
+		expect(alert).toHaveAttribute("role", "alert");
+		expect(alert).toHaveTextContent("git broke");
+		expect(screen.queryByTestId("agent-overview-gone")).toBeNull();
+		expect(screen.queryByRole("status", { name: "Loading files" })).toBeNull();
+		expect(screen.getByTestId("agent-overview-counts")).toHaveTextContent(
+			"1 open · 1 waiting",
+		);
 	});
 });
