@@ -15,7 +15,8 @@
  * it): Playwright serialises it into the page.
  */
 
-export type UnitState = "reviewed" | "crossed-off" | "unreviewed";
+/** "mixed": partly reviewed (an indeterminate box that isn't a cross-off). */
+export type UnitState = "reviewed" | "crossed-off" | "mixed" | "unreviewed";
 
 export interface UnitReport {
 	/** Its place among the units, top down (also its `data-markable-unit`). */
@@ -28,6 +29,9 @@ export interface UnitReport {
 	crosses: number;
 	boxDisabled: boolean;
 	crossDisabled: boolean;
+	/** The controls' accessible descriptions (a disabled one's reason). */
+	boxReason: string;
+	crossReason: string;
 	/** The state its checkbox shows; null without one. */
 	state: UnitState | null;
 	/** A gone block (the compared patch set's). */
@@ -47,12 +51,25 @@ export function collectUnits(root: Element): UnitReport[] {
 		const boxes = Array.from(body.querySelectorAll<HTMLInputElement>(BOX));
 		const crosses = Array.from(body.querySelectorAll<HTMLButtonElement>(CROSS));
 		if (!changed && boxes.length === 0 && crosses.length === 0) {
-			body.removeAttribute("data-markable-unit");
+			// Only a real change: a waitFor callback that writes the DOM on
+			// every call wakes its own MutationObserver, forever.
+			if (body.hasAttribute("data-markable-unit")) {
+				body.removeAttribute("data-markable-unit");
+			}
 			continue;
 		}
 		const index = units.length;
-		body.setAttribute("data-markable-unit", String(index));
+		if (body.getAttribute("data-markable-unit") !== String(index)) {
+			body.setAttribute("data-markable-unit", String(index));
+		}
 		const box = boxes[0];
+		const cross = crosses[0];
+		const reason = (el: Element | undefined) =>
+			(el?.getAttribute("aria-describedby") ?? "")
+				.split(/\s+/)
+				.map((id) => (id ? document.getElementById(id)?.textContent : ""))
+				.join(" ")
+				.trim();
 		const code = changed
 			? Array.from(changed.querySelectorAll('[data-testid="code"]'))
 					.map((c) => c.textContent ?? "")
@@ -65,13 +82,18 @@ export function collectUnits(root: Element): UnitReport[] {
 			boxes: boxes.length,
 			crosses: crosses.length,
 			boxDisabled: box?.disabled ?? false,
-			crossDisabled: crosses[0]?.disabled ?? false,
+			crossDisabled: cross?.disabled ?? false,
+			boxReason: reason(box),
+			crossReason: reason(cross),
+			// Crossed off by its own name; indeterminate alone is "mixed".
 			state: box
-				? box.checked
-					? "reviewed"
-					: box.indeterminate
-						? "crossed-off"
-						: "unreviewed"
+				? box.getAttribute("aria-label") === "Undo cross-off"
+					? "crossed-off"
+					: box.checked
+						? "reviewed"
+						: box.indeterminate || box.getAttribute("aria-checked") === "mixed"
+							? "mixed"
+							: "unreviewed"
 				: null,
 			gone: body.hasAttribute("data-gone"),
 		});
@@ -103,6 +125,9 @@ export function unitProblems(
 			if (u.crossDisabled && u.state !== "reviewed") {
 				problems.push(`${name}: cross-off disabled`);
 			}
+		}
+		if (u.crossDisabled && !u.crossReason) {
+			problems.push(`${name}: cross-off disabled with no reason`);
 		}
 	}
 	return problems;

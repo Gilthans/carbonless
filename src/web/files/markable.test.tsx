@@ -489,11 +489,16 @@ async function use(
 	act(() => {
 		fireEvent.click(el);
 	});
-	await waitFor(() =>
-		expect(
-			isolationProblems(i, before, statesOf(collectUnits(document.body)), want),
-		).toEqual([]),
-	);
+	// Its own message, so a failure says which unit moved, in full.
+	await waitFor(() => {
+		const problems = isolationProblems(
+			i,
+			before,
+			statesOf(collectUnits(document.body)),
+			want,
+		);
+		if (problems.length > 0) throw new Error(problems.join("\n"));
+	});
 }
 
 /**
@@ -511,6 +516,9 @@ async function expectEveryUnitMarkable(c: Case) {
 		if (now === "reviewed") {
 			await use(u.index, "box", "unreviewed");
 			await use(u.index, "box", "reviewed");
+		} else if (now === "mixed") {
+			await use(u.index, "box", "reviewed");
+			await use(u.index, "box", "unreviewed");
 		} else if (now === "crossed-off") {
 			await use(u.index, "box", "unreviewed");
 			await use(u.index, "cross", "crossed-off");
@@ -684,6 +692,80 @@ describe("a file the viewed snapshot no longer changes (GoneFile)", () => {
 			.click(screen.getByRole("button", { name: "Expand file" }));
 		await screen.findAllByTestId("diff-line");
 		expect(unitProblems(collectUnits(document.body))).toEqual([]);
+	});
+});
+
+/** Two units whose boxes share one state: what the isolation check exists to catch. */
+function SharedBox() {
+	const [on, setOn] = useState(false);
+	const row = (text: string) => (
+		<tbody>
+			<tr data-testid="diff-line" data-kind="add">
+				<td>
+					<input
+						type="checkbox"
+						aria-label="Mark cluster reviewed"
+						checked={on}
+						onChange={() => setOn(!on)}
+					/>
+					<button type="button" aria-label="Cross off cluster" />
+				</td>
+				<td data-testid="code">{text}</td>
+			</tr>
+		</tbody>
+	);
+	return (
+		<table>
+			{row("a")}
+			{row("b")}
+		</table>
+	);
+}
+
+describe("the helper itself", () => {
+	it("fails fast, saying which unit moved, when two units share one control", async () => {
+		render(<SharedBox />);
+		const started = Date.now();
+		await expect(use(0, "box", "reviewed")).rejects.toThrow(
+			/marking unit 0 reviewed left unit 1 reviewed, not unreviewed/,
+		);
+		// The helper's own wait (4 s), not a hang.
+		expect(Date.now() - started).toBeLessThan(15_000);
+	});
+
+	it("reads a crossed-off box by its name and a mixed box as mixed, not crossed off", () => {
+		document.body.innerHTML = `<table>
+			<tbody><tr data-testid="diff-line" data-kind="add"><td>
+				<input type="checkbox" aria-label="Undo cross-off">
+				<button aria-label="Cross off cluster"></button></td></tr></tbody>
+			<tbody><tr data-testid="diff-line" data-kind="add"><td>
+				<input type="checkbox" aria-label="Mark cluster reviewed" aria-checked="mixed">
+				<button aria-label="Cross off cluster"></button></td></tr></tbody>
+		</table>`;
+		for (const box of document.querySelectorAll("input")) {
+			box.indeterminate = true;
+		}
+		expect(statesOf(collectUnits(document.body))).toEqual([
+			"crossed-off",
+			"mixed",
+		]);
+		document.body.innerHTML = "";
+	});
+
+	it("flags a disabled control that gives no reason (no description)", () => {
+		document.body.innerHTML = `<table>
+			<tbody><tr data-testid="diff-line" data-kind="add"><td>
+				<input type="checkbox" aria-label="Mark cluster reviewed" checked>
+				<button aria-label="Cross off cluster" disabled></button></td></tr></tbody>
+			<tbody><tr data-testid="diff-line" data-kind="add"><td>
+				<input type="checkbox" aria-label="Mark cluster reviewed" checked>
+				<button aria-label="Cross off cluster" disabled aria-describedby="why"></button>
+				<span id="why">Reviewed: untick to cross off</span></td></tr></tbody>
+		</table>`;
+		expect(unitProblems(collectUnits(document.body))).toEqual([
+			'unit 0 ("a"): cross-off disabled with no reason'.replace('"a"', '""'),
+		]);
+		document.body.innerHTML = "";
 	});
 });
 

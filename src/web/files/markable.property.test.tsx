@@ -295,6 +295,24 @@ async function check(
 	}
 }
 
+/**
+ * The same PRs every run (FC_SEED=<n> to try others): a rare shape can't
+ * flake the suite. A failure names the seed, to run it again.
+ */
+const SEED = Number(process.env.FC_SEED ?? 20261108);
+async function assertSeeded<T>(
+	property: fc.IAsyncPropertyWithHooks<T>,
+	params: fc.Parameters<T>,
+): Promise<void> {
+	try {
+		await fc.assert(property, { ...params, seed: SEED });
+	} catch (error) {
+		throw new Error(
+			`FC_SEED=${SEED}: ${error instanceof Error ? error.message : error}`,
+		);
+	}
+}
+
 const scripts = fc.tuple(
 	fc.array(opArb, { minLength: 14, maxLength: 14 }),
 	fc.array(opArb, { minLength: 20, maxLength: 20 }),
@@ -304,7 +322,7 @@ describe("every unit is markable on its own, over random PS1 → PS2 edits", () 
 	window.scrollTo = vi.fn();
 
 	it("the full diff of PS2", async () => {
-		await fc.assert(
+		await assertSeeded(
 			fc.asyncProperty(scripts, async ([ops1, ops2]) => {
 				const v = await views(ops1, ops2);
 				fc.pre(v !== null);
@@ -319,7 +337,7 @@ describe("every unit is markable on its own, over random PS1 → PS2 edits", () 
 	// cluster in several pieces shares one box; a removal-only piece and
 	// a gone block have none.
 	it.fails("the since view from PS1 [Brief 8 (rr-mark-scope): every since-view piece is markable on its own]", async () => {
-		await fc.assert(
+		await assertSeeded(
 			fc.asyncProperty(scripts, async ([ops1, ops2]) => {
 				const v = await views(ops1, ops2);
 				fc.pre(v !== null && v.since !== null);

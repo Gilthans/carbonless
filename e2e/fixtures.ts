@@ -388,6 +388,7 @@ export async function expectEveryUnitMarkable(
 	const units = await scope.evaluate(collectUnits);
 	expect(units.length, "the file shows no unit").toBeGreaterThan(0);
 	expect(unitProblems(units, opts)).toEqual([]);
+	await expectDisabledSayWhy(scope);
 	if (opts.readOnly) {
 		await expect(page.getByTestId("read-only-note")).toBeVisible();
 		return;
@@ -405,14 +406,23 @@ export async function expectEveryUnitMarkable(
 			)
 			.click();
 		await expect
-			.poll(async () => isolationProblems(i, before, await states(), want))
-			.toEqual([]);
+			.poll(async () =>
+				isolationProblems(i, before, await states(), want).join("\n"),
+			)
+			.toBe("");
+		// In its new state too, every control is there, live or saying why.
+		expect(unitProblems(await scope.evaluate(collectUnits))).toEqual([]);
+		await expectDisabledSayWhy(scope, i);
 	};
 	for (const u of units) {
 		const now = (await states())[u.index];
 		if (now === "reviewed") {
 			await use(u.index, "box", "unreviewed");
 			await use(u.index, "box", "reviewed");
+		} else if (now === "mixed") {
+			// Partly reviewed: the box marks the whole unit, then unmarks it.
+			await use(u.index, "box", "reviewed");
+			await use(u.index, "box", "unreviewed");
 		} else if (now === "crossed-off") {
 			await use(u.index, "box", "unreviewed");
 			await use(u.index, "cross", "crossed-off");
@@ -437,6 +447,35 @@ export async function expectEveryUnitMarkable(
 	await page.reload();
 	await opts.reopen();
 	await expect.poll(states).toEqual(left);
+}
+
+/**
+ * Every disabled cluster control in `scope` (or in its unit `only`) gives
+ * its reason: an accessible description, else a tooltip on hover (its
+ * wrapper takes the hover: a disabled control gets none).
+ */
+async function expectDisabledSayWhy(scope: Locator, only?: number) {
+	const unit =
+		only === undefined
+			? "[data-markable-unit]"
+			: `[data-markable-unit="${only}"]`;
+	const disabled = scope.locator(
+		`${unit} input[type="checkbox"]:disabled, ${unit} button[aria-label="Cross off cluster"]:disabled`,
+	);
+	for (const control of await disabled.all()) {
+		const described = await control.evaluate((el) =>
+			(el.getAttribute("aria-describedby") ?? "")
+				.split(/\s+/)
+				.some((id) => id && document.getElementById(id)?.textContent?.trim()),
+		);
+		if (described) continue;
+		await control.locator("xpath=..").hover();
+		await expect(
+			scope.page().locator('[role="tooltip"]:not([hidden])'),
+			"a disabled control with no reason",
+		).toHaveText(/\S/);
+		await scope.page().mouse.move(0, 0);
+	}
 }
 
 export { expect };
