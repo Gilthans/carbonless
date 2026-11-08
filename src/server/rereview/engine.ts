@@ -338,7 +338,9 @@ export async function traceRereview(
 				}
 			}
 		}
-		(lineKeys.baseLine ??= {})[primePath] = baseLines;
+		const placed = lineKeys.baseLine ?? {};
+		placed[primePath] = baseLines;
+		lineKeys.baseLine = placed;
 		for (const c of file.clusters) {
 			if (c.kind !== "lines") continue;
 			for (let i = 0; i < c.newCount; i++) {
