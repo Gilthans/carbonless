@@ -263,6 +263,32 @@ describe("AgentSetup", () => {
 		expect(within(dialog).getByRole("button", { name: "Remove" })).toBeTruthy();
 	});
 
+	it("arguments with a space stay whole through the field, unedited or typed in quotes", async () => {
+		stored = {
+			agent: {
+				command: "my-acp",
+				args: ["--config", "/a path/x.json"],
+				env: {},
+				leash: "open",
+			},
+			problems: [],
+		};
+		const { user } = show();
+		const dialog = await openIt(user);
+		const field = within(dialog).getByRole("textbox", { name: "Arguments" });
+		expect(field).toHaveValue('--config "/a path/x.json"');
+		await user.click(within(dialog).getByRole("button", { name: "Check" }));
+		await within(dialog).findByTestId("agent-check-ok");
+		expect(calls()[0]?.body).toMatchObject({
+			args: ["--config", "/a path/x.json"],
+		});
+		await user.clear(field);
+		await user.type(field, '--name "two words"');
+		await user.click(within(dialog).getByRole("button", { name: "Check" }));
+		await waitFor(() => expect(calls()).toHaveLength(2));
+		expect(calls()[1]?.body).toMatchObject({ args: ["--name", "two words"] });
+	});
+
 	it("Check and Save keep the env config.json has for that command", async () => {
 		stored = {
 			agent: {

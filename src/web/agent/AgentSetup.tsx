@@ -28,6 +28,7 @@ import {
 	checkAgentConfig,
 	putAgentConfig,
 } from "./api";
+import { formatArgs, parseArgs } from "./args";
 import { closeAgentSetup, useAgentSetupOpen } from "./setupStore";
 
 type HarnessId = AgentHarness["id"];
@@ -48,7 +49,7 @@ const configOf = (
 	const same = stored && stored.command === command.trim() ? stored : null;
 	return {
 		command: command.trim(),
-		args: args.split(/\s+/).filter(Boolean),
+		args: parseArgs(args),
 		env: same?.env ?? {},
 		leash: same?.leash ?? "open",
 	};
@@ -109,7 +110,7 @@ export function AgentSetup(props: { open: boolean; onClose(): void }) {
 		setPick(id);
 		if (h && id !== "other") {
 			setCommand(h.command);
-			setArgs(h.args.join(" "));
+			setArgs(formatArgs(h.args));
 		} else if (id === "other" && pick !== "other") {
 			setCommand("");
 			setArgs("");
@@ -135,12 +136,12 @@ export function AgentSetup(props: { open: boolean; onClose(): void }) {
 					(h) =>
 						h.id !== "other" &&
 						h.command === agent.command &&
-						h.args.join(" ") === agent.args.join(" "),
+						JSON.stringify(h.args) === JSON.stringify(agent.args),
 				)
 			: harness("claude-code");
 		setPick(preset?.id ?? "other");
 		setCommand(preset?.command ?? agent?.command ?? "");
-		setArgs((preset?.args ?? agent?.args ?? []).join(" "));
+		setArgs(formatArgs(preset?.args ?? agent?.args ?? []));
 		setChecked(null);
 		setCopied(false);
 	}, [open, read]);
