@@ -1581,6 +1581,71 @@ describe("Session", () => {
 			expect(view.files).toEqual([]);
 		});
 
+		it("the base taking in the PR's first commit under the same head moves the merge base; a mark starts PS2 on it", async () => {
+			const first = pr.head();
+			const view = (baseRefOid: string) =>
+				pr.scenario({
+					prs: {
+						12: {
+							view: prView({
+								headRefOid: pr.head(),
+								baseRefName: "main",
+								baseRefOid,
+							}),
+						},
+					},
+				});
+			const h2 = pr.moveHead({ "later.txt": "later\n" });
+			view(pr.mergeBase);
+			const s = await Session.open(pr.arg, process.cwd());
+			const ps1 = s.snapshot();
+			expect(ps1.base).toBe(pr.mergeBase);
+			await s.setStates(ps1.revision, [
+				{ key: firstKey(s), state: "reviewed" },
+			]);
+			// main takes in the PR's first commit (same sha); the head stays.
+			pr.moveMain(first);
+			view(first);
+			const checked = await s.checkHead();
+			expect(checked).toMatchObject({
+				headMoved: false,
+				snapshotHead: h2,
+				head: { oid: h2, mergeBase: first, baseBranch: "main", commits: 0 },
+			});
+			const clone = clonePath("acme", "widget");
+			const tracking = () =>
+				execFileSync(
+					"git",
+					["-C", clone, "rev-parse", "refs/remotes/origin/main"],
+					{ env: testGitEnv(), encoding: "utf8" },
+				).trim();
+			expect(tracking()).toBe(first);
+			// Once per triple: main moves on the origin only (GitHub still
+			// reports the same base oid), and nothing is fetched again.
+			pr.moveMain(h2);
+			await s.checkHead();
+			expect(tracking()).toBe(first);
+			expect(s.info().head).toMatchObject({ mergeBase: first });
+			const answer = await settled(s, 1, { head: h2 });
+			// PS1's first commit is in the base now: only later.txt is the PR's.
+			expect(kinds(answer)).toEqual({ "later.txt": ["new"] });
+			expect(answer.toRead).toEqual({ files: 1, clusters: 1 });
+			const viewed = await s.viewHead(h2);
+			expect(viewed.revision).toBe(answer.toRevision);
+			expect(viewed.revision).not.toBe(ps1.revision);
+			const later = viewed.files.find((f) => f.path === "later.txt");
+			const laterKey = later?.clusters[0]?.key;
+			if (!laterKey) throw new Error("no cluster in later.txt");
+			const after = await s.setStates(viewed.revision, [
+				{ key: laterKey, state: "reviewed" },
+			]);
+			expect(after.patchset).toBe(2);
+			expect(s.info().patchsets.map((p) => [p.number, p.mergeBase])).toEqual([
+				[1, pr.mergeBase],
+				[2, first],
+			]);
+		});
+
 		it("L2: a thread on a head two kept snapshots share goes to the patch set's: read-only", async () => {
 			withThreads();
 			const s = await Session.open(pr.arg, process.cwd());

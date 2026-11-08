@@ -263,7 +263,7 @@ export class Session {
 	#head: SessionInfo["head"];
 	/** The base branch name the snapshot was compared against (the triple's third). */
 	#snapshotBase: string;
-	/** Fetches of a head that isn't the snapshot's, one per (head, base) pair (#noteHead). */
+	/** Merge bases by (head, base oid, base branch): one fetch per triple (#noteHead). */
 	readonly #fetchedHeads = new Map<string, Promise<{ mergeBase: string }>>();
 	/** The engine's state-free results, in memory and on disk. */
 	readonly #cache = new RereviewCache<Traced>();
@@ -295,6 +295,7 @@ export class Session {
 		this.#lastSeen = lastSeen;
 		this.#head = head;
 		this.#snapshotBase = progress.patchset?.baseBranch ?? meta.baseBranch;
+		if (head) this.#fetched(meta, head.mergeBase);
 		this.#threadCode = new ThreadCodeSource(repo);
 		Session.#open.add(this);
 	}
@@ -1402,6 +1403,7 @@ export class Session {
 				return this.info();
 			}
 			await this.#moveTo(progress, fetched);
+			this.#fetched(meta, fetched.mergeBase);
 			this.#head = await this.#headInfo(meta, fetched.mergeBase);
 			return this.info();
 		});
@@ -1410,11 +1412,11 @@ export class Session {
 	}
 
 	/**
-	 * Asks GitHub for the PR's head, and compares the triple (head, base
-	 * branch, merge base) with the snapshot's: a head or base branch that
-	 * differs is fetched, once per distinct (head, base tip) pair, for its
-	 * merge base and commit count (info().head); the same head costs no
-	 * fetch.
+	 * Asks GitHub for the PR's head and base, and fetches once per triple
+	 * (head, base oid, base branch) for its merge base and commit count
+	 * (info().head): a triple the open or a Refresh already fetched costs
+	 * no fetch; the same head under a moved base oid does (its merge base
+	 * may have moved).
 	 */
 	async checkHead(): Promise<SessionInfo> {
 		if (this.options.asOf) return this.info();
@@ -1445,26 +1447,22 @@ export class Session {
 		};
 	}
 
-	/** Sets info().head for `meta`, fetching the head when the triple differs. */
+	/** The (head, base oid, base branch) triple #fetchedHeads files a fetch under. */
+	static #headKey(meta: PrMeta): string {
+		return `${meta.headOid} ${meta.baseOid ?? ""} ${meta.baseBranch}`;
+	}
+
+	/**
+	 * Sets info().head for `meta`, fetching the head when the triple
+	 * differs: the same head against another base oid (the base took in
+	 * some of the PR's commits) has another merge base.
+	 */
 	async #noteHead(meta: PrMeta): Promise<void> {
 		if (this.pinned || meta.state !== "OPEN") {
 			this.#head = null;
 			return;
 		}
-		const snapshot = this.#snapshot;
-		if (
-			meta.headOid === snapshot.head &&
-			meta.baseBranch === this.#snapshotBase
-		) {
-			this.#head = {
-				oid: meta.headOid,
-				mergeBase: snapshot.base,
-				baseBranch: meta.baseBranch,
-				commits: 0,
-			};
-			return;
-		}
-		const key = `${meta.headOid} ${meta.baseOid ?? ""} ${meta.baseBranch}`;
+		const key = Session.#headKey(meta);
 		let pending = this.#fetchedHeads.get(key);
 		if (!pending) {
 			pending = fetchPr(this.repo, meta, { signal: this.#stop.signal }).then(
@@ -1474,9 +1472,28 @@ export class Session {
 			pending.catch(() => this.#fetchedHeads.delete(key));
 		}
 		const { mergeBase } = await pending;
-		const head = await this.#headInfo(meta, mergeBase);
+		const snapshot = this.#snapshot;
+		const head =
+			meta.headOid === snapshot.head &&
+			meta.baseBranch === this.#snapshotBase &&
+			mergeBase === snapshot.base
+				? {
+						oid: meta.headOid,
+						mergeBase,
+						baseBranch: meta.baseBranch,
+						commits: 0,
+					}
+				: await this.#headInfo(meta, mergeBase);
 		// A newer check may have answered meanwhile.
 		if (this.#meta === meta) this.#head = head;
+	}
+
+	/** Notes a fetch the session made anyway (open, refresh) under its triple. */
+	#fetched(meta: PrMeta, mergeBase: string): void {
+		this.#fetchedHeads.set(
+			Session.#headKey(meta),
+			Promise.resolve({ mergeBase }),
+		);
 	}
 
 	/** Keeps the newest answer: a slow check started earlier can't undo a refresh. */

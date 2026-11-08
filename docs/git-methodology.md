@@ -58,9 +58,12 @@ history.
   The commit count on the connector is the new head's first-parent commits
   since the old head, or since the merge base after a force-push. When no
   virtual rebase can be built (unrelated histories, a shallow clone), the
-  interdiff is unavailable and nothing carries. `GET /head` compares the
-  triple (head, base branch name, merge base) and fetches only a head or
-  base branch that differs from the snapshot's, once per pair.
+  interdiff is unavailable and nothing carries. `GET /head` fetches once
+  per triple (head, base oid, base branch name), as GitHub reports them, and
+  reports that fetch's merge base: the same head under a base that took in
+  some of the PR's own commits gets the new merge base, so those commits
+  stop showing as the PR's (as on GitHub). An open or a Refresh counts as
+  that triple's fetch.
 - **Thread code** (`src/server/threadCode.ts`). A line comment's code pane is
   the PR's diff of its file at the commit the comment was made on, from the
   clone (a commit a force-push dropped is fetched by OID): its old side is
@@ -94,8 +97,9 @@ history.
 | `rebase-amend`: rebased, with line 30 amended on the way | `rebase-merge`: the PR's own commits replayed onto the base |
 | `merge-base-in-conflict`: the base also changed line 30; merged in, the conflict resolved by hand | |
 | `stacked-squash`: the PR sat on a parent PR (line 10, `parent.txt`); the parent landed by squash, the PR rebased onto that | |
+| `base-absorbs`: the base merged in the PR's first commit (line 2, `new.txt`; same sha), the head unchanged | |
 
-6 × 4 = 24 permutations. History: base B0; the PR (two commits) on B0 (on
+7 × 4 = 28 permutations. History: base B0; the PR (two commits) on B0 (on
 the parent's commit for `stacked-squash`); the base moves (X); the PR is
 updated; the base moves again (Y); the PR lands. The PR changes `a.txt`
 lines 2 and 30 and adds `new.txt`; X and Y change `a.txt` lines 15 and 22
@@ -112,23 +116,28 @@ first head for all; for `rebase-amend` the amended content, for
 `merge-base-in-conflict` the resolved content over a base holding the
 base's line 30, for `stacked-squash` the parent's changes at the opened
 stage (the comparison to `main` still shows them) and the PR's own change
-alone at the updated stage.
+alone at the updated stage, for `base-absorbs` the first commit → the head
+(line 30 alone) at the updated stage. The fake gh reports the base oid
+(`baseRefOid`) of each stage.
 
 Every permutation proves:
 
-- `test/methodology-matrix.ts`, run by `src/server/methodology-<update>.test.ts` (unit, 9 tests × 24):
+- `test/methodology-matrix.ts`, run by `src/server/methodology-<update>.test.ts` (unit, 9 tests × 28):
   - the snapshot equals the stage's reference (same files, same clusters
     and keys) at the opened and the updated stage, through a refresh and a
     fresh open;
   - re-review from the opened head to the updated one, with every cluster
-    of PS1 marked: the shape, the interdiff, the carried, reworked, new and
+    of PS1 marked: the head check (`checkHead`, no Refresh) reports the
+    new head with `merge-base(main, head)`; the shape, the interdiff, the carried, reworked, new and
     gone clusters and the commit count are the update's
     (`none`: S1, nothing new, all carried; `rebase`: S4a, 2 commits, all
     carried; `merge-base-in`: S3, 1 commit, all carried; `rebase-amend`:
     S4c, line 30 reworked, the rest carried; `merge-base-in-conflict`: S3
     with `a.txt` conflicted, both its clusters new, `new.txt` carried;
     `stacked-squash`: S4a, the PR's three clusters carried, the parent's
-    two absorbed into the base, nothing gone); viewing the updated head
+    two absorbed into the base, nothing gone; `base-absorbs`: S3, 0
+    commits, line 30 carried, the first commit's two clusters absorbed,
+    nothing gone); viewing the updated head
     writes nothing; the first action on
     it starts PS2 with the carries, which a fresh open shows;
   - once landed: a running unstarted session keeps its snapshot on refresh;
@@ -140,12 +149,14 @@ Every permutation proves:
     comparison of then;
   - pinned on rev1's reviewed head (`--head reviewed`), opened first at the
     updated stage (after a rebase the head is fetched by OID): the
-    reference, through a refresh after the landing, `gc --prune=now` and a
+    reference against today's base (the updated one for `base-absorbs`), through a refresh after the landing, `gc --prune=now` and a
     fresh open, with its progress in its own review;
   - thread code comes from the clone at the updated stage and after the
     landing: a comment on the first head (force-pushed away by a rebase)
-    shows that head's diff, and one on the updated head next to the base's
-    own change shows that change as context on both sides;
+    shows that head's diff (for `base-absorbs`, GitHub's own hunk: the
+    head's merge base moved since the comment), and one on the updated head
+    next to the base's own change shows that change as context on both
+    sides;
   - the Overview's timeline follows GitHub's facts: after a force-push
     (`rebase`, `rebase-amend`, `stacked-squash`), the rebased commits
     (GitHub lists only those) sort by their new commit times, after the
@@ -153,7 +164,7 @@ Every permutation proves:
     the base (`merge-base-in`, `merge-base-in-conflict`) adds its merge
     commit as a later commit run; a landing shows the merge alone (GitHub's
     close at the same moment is left out), whatever the landing method.
-- `e2e/methodology.spec.ts` (Playwright, desktop and phone, 24 each): the
+- `e2e/methodology.spec.ts` (Playwright, desktop and phone, 28 each): the
   updated PR's Files page lists only the PR's files; once landed `crb`
   refuses exactly when merged.
 

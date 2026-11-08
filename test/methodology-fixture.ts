@@ -25,6 +25,7 @@ export const UPDATES = [
 	"rebase-amend",
 	"merge-base-in-conflict",
 	"stacked-squash",
+	"base-absorbs",
 ] as const;
 export type Update = (typeof UPDATES)[number];
 
@@ -33,6 +34,9 @@ export const forcePushed = (update: Update): boolean =>
 	update === "rebase" ||
 	update === "rebase-amend" ||
 	update === "stacked-squash";
+/** Updates whose head moves (all but the base moving under the same head). */
+export const headMoves = (update: Update): boolean =>
+	update !== "none" && update !== "base-absorbs";
 /** Updates that merge the base into the branch (a merge commit joins the PR's). */
 export const mergesBase = (update: Update): boolean =>
 	update === "merge-base-in" || update === "merge-base-in-conflict";
@@ -138,7 +142,9 @@ const aTxt = (changes: Record<number, string>) =>
  * and 22 and add base-x.txt and base-y.txt, so any base commit leaking into
  * the comparison shows up as an extra cluster or file. A conflicting base
  * also changes line 30; a stacked parent changes line 10 and adds
- * parent.txt under the PR, and lands by squash before the update.
+ * parent.txt under the PR, and lands by squash before the update. An
+ * absorbing base merges the PR's first commit in at the update, under the
+ * same head.
  */
 export function createMethodologyRepo(
 	m: Methodology,
@@ -184,12 +190,17 @@ export function createMethodologyRepo(
 
 	const stacked = m.update === "stacked-squash";
 	const conflicting = m.update === "merge-base-in-conflict";
+	const absorbing = m.update === "base-absorbs";
 	/** The parent PR's change, under the PR's own while it hasn't landed. */
 	const parentLines: Record<number, string> = stacked
 		? { 10: "line 10 parent" }
 		: {};
 	const conflictLines: Record<number, string> = conflicting
 		? { 30: "line 30 base" }
+		: {};
+	/** The PR's first commit, once the base has taken it in. */
+	const absorbedLines: Record<number, string> = absorbing
+		? { 2: "line 2 changed" }
 		: {};
 
 	const b0 = commit("base", { "a.txt": aTxt({}) }, TIMES.base);
@@ -239,6 +250,15 @@ export function createMethodologyRepo(
 		checkout(b1);
 		run(["merge", "--quiet", "--squash", parent], TIMES.parentLanded);
 		run(["commit", "--quiet", "-m", "parent (squashed)"], TIMES.parentLanded);
+		b1Plus = head();
+	}
+	// The base takes in the PR's first commit (same sha); the head stays.
+	if (absorbing) {
+		checkout(b1);
+		run(
+			["merge", "--quiet", "--no-ff", "-m", "Merge PR's first commit", p1a],
+			TIMES.updated,
+		);
 		b1Plus = head();
 	}
 
@@ -312,6 +332,7 @@ export function createMethodologyRepo(
 		{
 			"a.txt": aTxt({
 				...parentLines,
+				...absorbedLines,
 				15: "line 15 base",
 				22: "line 22 base",
 				...conflictLines,
@@ -390,16 +411,16 @@ export function createMethodologyRepo(
 			TIMES.pr,
 		);
 		updatedRef = { base: refBase, head: refHead, paths: ["a.txt", "new.txt"] };
+	} else if (absorbing) {
+		// The base holds the first commit: the PR is line 30 alone.
+		updatedRef = { base: p1a, head: p1b, paths: ["a.txt"] };
 	}
 
 	const pullRef = `refs/pull/${number}/head`;
+	const mainAt = (stage: Stage) =>
+		stage === "opened" ? b1 : stage === "updated" ? b2 : landed;
 	const setStage = (stage: Stage) => {
-		const [main, pr] =
-			stage === "opened"
-				? [b1, p1b]
-				: stage === "updated"
-					? [b2, updated]
-					: [landed, updated];
+		const [main, pr] = [mainAt(stage), stage === "opened" ? p1b : updated];
 		git("update-ref", "refs/heads/main", main);
 		git("update-ref", pullRef, pr);
 	};
@@ -453,6 +474,8 @@ export function createMethodologyRepo(
 				number,
 				url: `https://github.com/acme/widget/pull/${number}`,
 				baseRefName: "main",
+				// GitHub's base oid: the branch's tip (frozen once merged).
+				baseRefOid: mainAt(stage),
 				headRefOid: stage === "opened" ? p1b : updated,
 				state: merged ? "MERGED" : "OPEN",
 				mergeable: merged ? "UNKNOWN" : "MERGEABLE",
