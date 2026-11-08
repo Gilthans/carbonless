@@ -134,12 +134,17 @@ async function expand(page: Page, path: string) {
 	return section;
 }
 
-/** Presses Enter until the current hit is in `path` (at most `max` steps). */
-async function stepUntil(page: Page, path: string, max = 12) {
+/** Steps until the current hit is in `path` (at most `max` steps): Enter, or `step`. */
+async function stepUntil(
+	page: Page,
+	path: string,
+	max = 12,
+	step = () => box(page).press("Enter"),
+) {
 	for (let i = 0; i < max; i++) {
 		if ((await currentSection(page).getAttribute("aria-label")) === path)
 			return;
-		await box(page).press("Enter");
+		await step();
 	}
 	await expect(currentSection(page)).toHaveAttribute("aria-label", path);
 }
@@ -208,13 +213,22 @@ test("Cmd+F opens the bar focused; typing counts and marks without scrolling or 
 	await expect(page.locator(".find-mark").first()).toBeVisible();
 });
 
-test("Enter scrolls to the open file's first hit, then steps into another file, which opens with the row below the sticky stack; Shift+Enter goes back; the end wraps", async ({
+test("Next (Enter, or ↓ on a phone) scrolls to the open file's first hit, then steps into another file, which opens with the row below the sticky stack; Previous goes back; the end wraps", async ({
 	page,
 	pr,
 	startCrb,
 	isMobile,
 }) => {
-	test.skip(isMobile, "Enter in the box is the keyboard path: ↑/↓ on a phone");
+	await phone(page, isMobile);
+	// Enter / Shift+Enter in the box on desktop; the bar's ↓/↑ on a phone.
+	const next = () =>
+		isMobile
+			? bar(page).getByRole("button", { name: /^Next/ }).click()
+			: box(page).press("Enter");
+	const previous = () =>
+		isMobile
+			? bar(page).getByRole("button", { name: /^Previous/ }).click()
+			: box(page).press("Shift+Enter");
 	await pr(fixture);
 	const s = await startCrb();
 	await openFiles(page, s.url);
@@ -236,13 +250,13 @@ test("Enter scrolls to the open file's first hit, then steps into another file, 
 		return row - (top + header);
 	};
 
-	await box(page).press("Enter");
+	await next();
 	await expect(count(page)).toHaveText(counted(A_FIRST, ALL), VISIBLE);
 	await expect(currentRow(page)).toHaveAttribute("data-new-no", "5");
 	await expect.poll(belowStack).toBeGreaterThanOrEqual(0);
 	await expect(currentRow(page)).toBeInViewport();
 
-	await stepUntil(page, B);
+	await stepUntil(page, B, 12, next);
 	await expect(count(page)).toHaveText(counted(A_FIRST + 3, ALL), VISIBLE);
 	await expect(expandToggle(fileSection(page, B))).toHaveAttribute(
 		"aria-expanded",
@@ -257,7 +271,7 @@ test("Enter scrolls to the open file's first hit, then steps into another file, 
 	await expect(currentRow(page)).toBeInViewport();
 
 	// Back into src/a.ts: its last hit, line 8's "SaveDraft".
-	await box(page).press("Shift+Enter");
+	await previous();
 	await expect(currentSection(page)).toHaveAttribute("aria-label", A);
 	await expect(count(page)).toHaveText(counted(A_FIRST + 2, ALL), VISIBLE);
 	await expect(currentRow(page)).toHaveAttribute("data-new-no", "8");
@@ -269,10 +283,10 @@ test("Enter scrolls to the open file's first hit, then steps into another file, 
 
 	// On to the end, then round to the first.
 	for (let at = A_FIRST + 3; at <= ALL; at++) {
-		await box(page).press("Enter");
+		await next();
 		await expect(count(page)).toHaveText(counted(at, ALL), VISIBLE);
 	}
-	await box(page).press("Enter");
+	await next();
 	await expect(count(page)).toHaveText(counted(1, ALL), VISIBLE);
 	await expect(currentSection(page)).toHaveAttribute("aria-label", PNG);
 });
