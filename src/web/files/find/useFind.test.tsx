@@ -350,6 +350,25 @@ describe("useFind", () => {
 		expect(result.current.failed).toBe(0);
 		expect(result.current.searching).toBe(true);
 	});
+	it("a file the prefetch failed that its own request then answered (opened) no longer counts as failed", async () => {
+		const files = [file(0, [], ["save"]), file(1, [], ["y"])];
+		const { result } = renderFind({ revision: "r1", files, openIndex: null });
+		search("save");
+		await waitFor(() => expect(batches).toHaveLength(1));
+		await act(async () => {
+			batches[0]?.held.release({ error: "boom" }, 500);
+		});
+		await waitFor(() => expect(result.current.failed).toBe(2));
+		// The reviewer opens file 0: its diff asks for its hunks.
+		void client.prefetchQuery(hunksQuery("r1", 0));
+		await waitFor(() => expect(singles).toHaveLength(1));
+		await act(async () => {
+			singles[0]?.held.release(hunksOf(files[0] as FileView, "save it"));
+		});
+		await waitFor(() => expect(result.current.count?.of).toBe(2));
+		expect(result.current.failed).toBe(1);
+	});
+
 	it("keeps searching while the open file's own hunks are still on their way", async () => {
 		const files = [file(0, [], ["save"]), file(1, [], ["y"])];
 		// The open file's diff asked for its hunks before the bar opened.

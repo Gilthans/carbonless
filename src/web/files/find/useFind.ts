@@ -243,14 +243,16 @@ export function useFind(opts: {
 		prefetcher ? prefetcher.snapshot() : IDLE,
 	);
 	// Files that couldn't be searched: the prefetch's, and those whose own
-	// request (the open file's diff) failed while the prefetch left them to it.
+	// request (the open file's diff) failed while the prefetch left them to it;
+	// never a file whose hunks came since (opened: its diff asked again).
 	const failedFiles = useMemo(() => {
 		const all = new Set(snapshot.failed);
 		files.forEach((f, i) => {
 			if (hunks.failed[i]) all.add(f.index);
+			if (hunks.data[i] !== undefined) all.delete(f.index);
 		});
 		return [...all];
-	}, [snapshot.failed, files, hunks.failed]);
+	}, [snapshot.failed, files, hunks.failed, hunks.data]);
 	const retry = useCallback(() => {
 		if (!prefetcher) return;
 		prefetcher.retry();
