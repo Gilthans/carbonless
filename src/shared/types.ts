@@ -1029,6 +1029,11 @@ export interface SessionInfo {
 		/** The patch set it follows; null for PS1. */
 		since: number | null;
 		shape: ShapeCode | null;
+		/**
+		 * Its commits over its merge base (`rev-list --count`); null while
+		 * the server counts them in the background.
+		 */
+		commits: number | null;
 	}[];
 	/**
 	 * The PR's head when this crb last opened the review, before this open

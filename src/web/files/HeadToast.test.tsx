@@ -32,6 +32,7 @@ const info: SessionInfo = {
 			startedAt: 1,
 			since: null,
 			shape: null,
+			commits: 2,
 		},
 	],
 	lastSeen: { head: oid("1"), at: 1 },

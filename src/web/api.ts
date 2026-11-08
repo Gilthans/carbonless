@@ -306,6 +306,12 @@ export const sessionQuery = queryOptions({
 	queryKey: ["session"],
 	queryFn: fetchSession,
 	staleTime: Number.POSITIVE_INFINITY,
+	// A patch set's commit count is counted in the background (the graph's
+	// branch connector): asked again until every one is in.
+	refetchInterval: (query) =>
+		query.state.data?.patchsets?.some((p) => p.commits === null)
+			? REREVIEW_POLL_MS
+			: false,
 });
 
 /**
