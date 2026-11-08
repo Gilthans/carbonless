@@ -22,6 +22,7 @@ import {
 	verdictQuery,
 } from "./api";
 import { Logo, Mark, Wordmark } from "./brand/Brand";
+import { FindButton } from "./files/find/FindButton";
 import { SyncNotices } from "./files/SyncNotices";
 import { HeadBanner } from "./HeadBanner";
 import { KeptPages, useActivePage } from "./pages";
@@ -36,8 +37,10 @@ import { EDITOR_KEYS } from "./threads/ReplyBox";
 import { useThreadWritesSetup } from "./threads/threadWrites";
 import { ErrorMessage, safeHref } from "./ui";
 
+// Tight on a phone (px-1.5, and no gap in the row): at 360px the compact row
+// holds the mark, three tabs, the title, Find in PR, Refresh and Settings.
 const tabClass =
-	"relative flex min-h-11 shrink-0 items-center rounded-t-md px-2.5 text-sm font-medium whitespace-nowrap text-muted transition-colors hover:text-ink focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent motion-reduce:transition-none sm:px-3";
+	"relative flex min-h-11 shrink-0 items-center rounded-t-md px-1.5 text-sm font-medium whitespace-nowrap text-muted transition-colors hover:text-ink focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent motion-reduce:transition-none sm:px-3";
 // The active tab's underline is the brand gradient, over the header's border.
 const activeTabClass =
 	"font-semibold text-ink after:absolute after:inset-x-1.5 after:-bottom-px after:h-0.5 after:rounded-full after:brand-rule";
@@ -325,7 +328,7 @@ export function App() {
 					<div
 						ref={row}
 						data-testid="app-header-row"
-						className="mx-auto flex max-w-5xl items-center gap-1 px-2 sm:gap-2 sm:px-6"
+						className="mx-auto flex max-w-5xl items-center gap-0 px-2 sm:gap-2 sm:px-6"
 					>
 						{/*
 						 * The mark fades into the compact row as the header sticks
@@ -457,6 +460,7 @@ export function App() {
 								</span>
 							)}
 						</div>
+						<FindButton />
 						<Tooltip content="Reload the PR from GitHub" describe={false}>
 							{(trigger) => (
 								<button

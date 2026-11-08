@@ -17,6 +17,7 @@ import { LabeledIcon } from "../overview/parts";
 import { useForgetPageScroll, usePageActive } from "../pageActive";
 import { useReviewId } from "../reviewId";
 import { SkeletonBar, Spinner } from "../Spinner";
+import { useShortcut } from "../shortcuts";
 import { useAppHeaderHeight, useHeight } from "../sticky";
 import { PeopleProvider } from "../threads/people";
 import { dropLosesText, useThreadWrites } from "../threads/threadWrites";
@@ -31,6 +32,9 @@ import { FileDiff } from "./FileDiff";
 import { FileTree } from "./FileTree";
 import { treeOrder } from "./fileOrder";
 import { filesPrefetchOrder } from "./filesPrefetch";
+import { FindBar } from "./find/FindBar";
+import { findState } from "./find/findState";
+import { useFind } from "./find/useFind";
 import { foldsKey } from "./folderFold";
 import { useHeadSure } from "./headSure";
 import {
@@ -457,14 +461,22 @@ export function FilesPage() {
 		const top = section.getBoundingClientRect().top + window.scrollY;
 		window.scrollTo({ top: top - appHeader - barHeight + 1 });
 	};
-	/** A file picked in the tree: open it alone and bring its header to the top. */
-	const select = (index: number) => {
+	/**
+	 * Opens the file alone, as a pick does, without scrolling: the tree marks
+	 * and reveals it, the phone's sheet closes. True when the sheet was open.
+	 */
+	const openAlone = (index: number): boolean => {
 		setCurrent(index);
 		openInTree(index);
 		anchor.current = null;
 		setOpen(keyOf(index));
 		const fromSheet = sheetOpen;
 		if (fromSheet) setSheetOpen(false);
+		return fromSheet;
+	};
+	/** A file picked in the tree: open it alone and bring its header to the top. */
+	const select = (index: number) => {
+		const fromSheet = openAlone(index);
 		// Once the other files have closed (and the sheet has handed focus
 		// back to its button), scroll there, focusing the header after a sheet.
 		requestAnimationFrame(() => {
@@ -524,6 +536,53 @@ export function FilesPage() {
 		const timer = window.setTimeout(() => setLanding(null), MISSING_HINT_MS);
 		return () => window.clearTimeout(timer);
 	}, [landing, active]);
+
+	// Find in PR: the bar, its search, and stepping through the hits. Typing
+	// only marks and counts; a step opens a closed file and scrolls.
+	const find = useFind({ revision: data?.revision, files, openIndex, active });
+	const stepFind = (dir: 1 | -1) => {
+		const hit = find.step(dir);
+		if (!hit) return;
+		const isOpen = openIndex === hit.index;
+		if (hit.side === "path" || hit.side === "oldPath") {
+			if (isOpen) scrollTo(hit.index);
+			else select(hit.index);
+			return;
+		}
+		if (!isOpen) openAlone(hit.index);
+		find.stepInto(hit.index);
+	};
+	const closeFind = () => {
+		findState.close();
+		document.querySelector<HTMLElement>("[data-find-button]")?.focus();
+	};
+	useShortcut({
+		keys: "Mod+f",
+		label: "Find in PR",
+		group: "Files changed",
+		run: () => findState.open(),
+	});
+	useShortcut({
+		keys: "Mod+g",
+		label: "Next match",
+		group: "Files changed",
+		when: () => findState.get().open,
+		run: () => stepFind(1),
+	});
+	useShortcut({
+		keys: "Shift+Mod+g",
+		label: "Previous match",
+		group: "Files changed",
+		when: () => findState.get().open,
+		run: () => stepFind(-1),
+	});
+	// The box takes focus for an open request made while the page shows, or
+	// once it shows (the header's button opens the bar before navigating
+	// here). Showing the page again with the bar open doesn't take focus.
+	const [focusSeq, setFocusSeq] = useState(0);
+	if (active && find.state.focusSeq !== focusSeq)
+		setFocusSeq(find.state.focusSeq);
+	const findMarks = find.state.open && find.state.term !== "";
 
 	// Comments are read in the background, the open file's threads first,
 	// then the other files' in the page's order (one prefetch for the page).
@@ -590,6 +649,7 @@ export function FilesPage() {
 			foldKey={pr ? foldsKey(pr) : null}
 			revealSeq={reveal}
 			opened={openedIndex}
+			find={findMarks ? find.tree : undefined}
 		/>
 	);
 
@@ -609,6 +669,24 @@ export function FilesPage() {
 							progress={data.progress}
 							unit={unit}
 							onUnitChange={setUnit}
+							above={
+								find.state.open && (
+									<FindBar
+										term={find.state.term}
+										onTerm={findState.setTerm}
+										count={find.count}
+										searching={find.searching}
+										failed={find.failed}
+										onRetry={find.retry}
+										onNext={() => stepFind(1)}
+										onPrevious={() => stepFind(-1)}
+										onClose={closeFind}
+										focusSeq={focusSeq}
+										matchCase={find.matchCase}
+										onMatchCase={find.setMatchCase}
+									/>
+								)
+							}
 						>
 							{/* Every count and bubble waits on them (principle 8). Its
 							    place is kept, so the bar moves nothing when it goes. */}
@@ -692,6 +770,8 @@ export function FilesPage() {
 											threads={threads}
 											threadsLoading={threadsLoading}
 											headSure={headSure}
+											pathFind={find.pathOf(file.index)}
+											find={find.diffOf(file.index)}
 										/>
 									))}
 									{/* After the last file: the verdict (the padding above keeps it clear of the Files button). */}

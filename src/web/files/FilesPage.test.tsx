@@ -22,9 +22,11 @@ import { expectLoadingThen, heldJson } from "../../../test/loading";
 import type { FileView, ReviewView } from "../../shared/types";
 import { overviewQuery } from "../api";
 import { parseSearch, stringifySearch } from "../search";
+import { ShortcutsProvider } from "../shortcuts";
 import { AppHeaderHeight } from "../sticky";
 import { LANDED_MS } from "./DiffBody";
 import { FilesPage, MISSING_HINT_MS } from "./FilesPage";
+import { findState } from "./find/findState";
 import { parseFilesSearch } from "./landing";
 
 vi.mock("./highlight", () => ({
@@ -92,6 +94,8 @@ function renderPage(
 	/** The app header's compact height, as App provides it. */
 	appHeader = 0,
 	initialPath = "/files",
+	/** Under the app's ShortcutsProvider (pages' keys work). */
+	shortcuts = false,
 ) {
 	const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
 		const path = new URL(String(input), "http://test").pathname;
@@ -126,11 +130,14 @@ function renderPage(
 		parseSearch,
 		stringifySearch,
 	});
+	const page = (
+		<AppHeaderHeight.Provider value={appHeader}>
+			<RouterProvider router={router} />
+		</AppHeaderHeight.Provider>
+	);
 	render(
 		<QueryClientProvider client={queryClient}>
-			<AppHeaderHeight.Provider value={appHeader}>
-				<RouterProvider router={router} />
-			</AppHeaderHeight.Provider>
+			{shortcuts ? <ShortcutsProvider>{page}</ShortcutsProvider> : page}
 		</QueryClientProvider>,
 	);
 	return fetchMock;
@@ -138,6 +145,7 @@ function renderPage(
 
 describe("FilesPage", () => {
 	beforeEach(() => {
+		findState.reset();
 		// jsdom has no layout: every element is 40px tall.
 		vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockReturnValue(40);
 	});
@@ -593,6 +601,256 @@ describe("FilesPage", () => {
 			} finally {
 				vi.useRealTimers();
 			}
+		});
+	});
+	describe("Find in PR", () => {
+		/** A file whose one cluster adds `added` (removing "old"), its hunk with context lines x and y. */
+		const findFile = (
+			index: number,
+			path: string,
+			added: string,
+		): FileView => ({
+			...oneFile,
+			index,
+			path,
+			clusters: [
+				{
+					...(oneFile.clusters[0] as FileView["clusters"][number]),
+					key: `k${index}`,
+					removed: ["old"],
+					added: [added],
+				},
+			],
+		});
+		const hunksFor = (f: FileView) => ({
+			newLineCount: 3,
+			hunks: [
+				{
+					oldStart: 1,
+					oldCount: 3,
+					newStart: 1,
+					newCount: 3,
+					lines: [
+						{ kind: "context", oldNo: 1, newNo: 1, text: "x" },
+						{ kind: "del", oldNo: 2, text: "old", clusterKey: `k${f.index}` },
+						{
+							kind: "add",
+							newNo: 2,
+							text: f.clusters[0]?.added[0],
+							clusterKey: `k${f.index}`,
+						},
+						{ kind: "context", oldNo: 3, newNo: 3, text: "y" },
+					],
+				},
+			],
+		});
+		const findPage = (files: FileView[]) => {
+			const scrolled = vi.fn();
+			vi.stubGlobal("scrollTo", scrolled);
+			const routes: Parameters<typeof renderPage>[0] = {
+				"/api/review": () => ({
+					status: 200,
+					body: { ...emptyReview, files },
+				}),
+				"/api/files/hunks": () => ({
+					status: 200,
+					body: {
+						files: files.map((f) => ({ index: f.index, hunks: hunksFor(f) })),
+					},
+				}),
+			};
+			for (const f of files) {
+				routes[`/api/files/${f.index}/hunks`] = () => ({
+					status: 200,
+					body: hunksFor(f),
+				});
+			}
+			renderPage(routes, 0, "/files", true);
+			return scrolled;
+		};
+		const twoFiles = () => [
+			findFile(0, "a.txt", "save one"),
+			findFile(1, "b.txt", "to save"),
+		];
+		const region = (name: string) => screen.getByRole("region", { name });
+		const expanded = (name: string) =>
+			within(region(name)).queryByRole("button", { name: "Collapse file" }) !==
+			null;
+		/** The region holding the current hit's characters, by name. */
+		const currentIn = () =>
+			document
+				.querySelector("span[data-find-current]")
+				?.closest("section")
+				?.getAttribute("aria-label") ?? null;
+		const count = () => screen.getByTestId("find-count");
+
+		it("Mod+f opens the find bar focused; typing marks and counts without opening another file", async () => {
+			const scrolled = findPage(twoFiles());
+			const user = userEvent.setup();
+			await screen.findByRole("region", { name: "a.txt" });
+			expect(screen.queryByTestId("find-bar")).toBeNull();
+			await user.keyboard("{Control>}f{/Control}");
+			const box = await screen.findByTestId("find-box");
+			expect(box).toHaveFocus();
+			await user.type(box, "save");
+			await waitFor(() => expect(count()).toHaveTextContent("1 of 2"));
+			expect(scrolled).not.toHaveBeenCalled();
+			expect(expanded("a.txt")).toBe(false);
+			expect(expanded("b.txt")).toBe(false);
+			// Mod+f again from outside the box asks it to take focus again.
+			box.blur();
+			await user.keyboard("{Control>}f{/Control}");
+			expect(box).toHaveFocus();
+		});
+
+		it("Enter shows the caret, then steps into the other file, which opens; Shift+Enter goes back; the end wraps", async () => {
+			findPage(twoFiles());
+			const user = userEvent.setup();
+			await screen.findByRole("region", { name: "a.txt" });
+			await user.keyboard("{Control>}f{/Control}");
+			await user.type(await screen.findByTestId("find-box"), "save");
+			await waitFor(() => expect(count()).toHaveTextContent("1 of 2"));
+			await user.keyboard("{Enter}");
+			await waitFor(() => expect(currentIn()).toBe("a.txt"));
+			expect(expanded("a.txt")).toBe(true);
+			expect(expanded("b.txt")).toBe(false);
+			expect(
+				document.querySelector("span[data-find-current]"),
+			).toHaveTextContent("save");
+			expect(count()).toHaveTextContent("1 of 2");
+			await user.keyboard("{Enter}");
+			await waitFor(() => expect(currentIn()).toBe("b.txt"));
+			expect(expanded("b.txt")).toBe(true);
+			expect(expanded("a.txt")).toBe(false);
+			expect(count()).toHaveTextContent("2 of 2");
+			await user.keyboard("{Shift>}{Enter}{/Shift}");
+			await waitFor(() => expect(currentIn()).toBe("a.txt"));
+			expect(expanded("a.txt")).toBe(true);
+			expect(expanded("b.txt")).toBe(false);
+			expect(count()).toHaveTextContent("1 of 2");
+			// Back past the first: the last.
+			await user.keyboard("{Shift>}{Enter}{/Shift}");
+			await waitFor(() => expect(currentIn()).toBe("b.txt"));
+			// On past the last: the first.
+			await user.keyboard("{Enter}");
+			await waitFor(() => expect(currentIn()).toBe("a.txt"));
+			expect(count()).toHaveTextContent("1 of 2");
+			// Mod+g from outside the box steps too.
+			(screen.getByTestId("find-box") as HTMLInputElement).blur();
+			await user.keyboard("{Control>}g{/Control}");
+			await waitFor(() => expect(currentIn()).toBe("b.txt"));
+			await user.keyboard("{Shift>}{Control>}g{/Control}{/Shift}");
+			await waitFor(() => expect(currentIn()).toBe("a.txt"));
+		});
+
+		it("a step scrolls to its line once; reopening the file by its header doesn't scroll again", async () => {
+			const scrolled = findPage(twoFiles());
+			const user = userEvent.setup();
+			await screen.findByRole("region", { name: "a.txt" });
+			await user.keyboard("{Control>}f{/Control}");
+			await user.type(await screen.findByTestId("find-box"), "save");
+			await user.keyboard("{Enter}");
+			await waitFor(() => expect(currentIn()).toBe("a.txt"));
+			await vi.waitFor(() => expect(scrolled).toHaveBeenCalledTimes(1));
+			const a = region("a.txt");
+			await user.click(
+				within(a).getByRole("button", { name: "Collapse file" }),
+			);
+			await user.click(within(a).getByRole("button", { name: "Expand file" }));
+			await waitFor(() => expect(currentIn()).toBe("a.txt"));
+			// Give a scroll that shouldn't come every chance to.
+			await act(() => new Promise((r) => setTimeout(r, 50)));
+			expect(scrolled).toHaveBeenCalledTimes(1);
+		});
+
+		it("Escape closes, clears the marks and keeps the term; the header button reopens with it", async () => {
+			findPage(twoFiles());
+			const user = userEvent.setup();
+			await screen.findByRole("region", { name: "a.txt" });
+			await user.keyboard("{Control>}f{/Control}");
+			await user.type(await screen.findByTestId("find-box"), "save");
+			await user.keyboard("{Enter}");
+			await waitFor(() => expect(currentIn()).toBe("a.txt"));
+			expect(
+				document.querySelector("[data-find-mark], [data-find-current]"),
+			).not.toBeNull();
+			await user.keyboard("{Escape}");
+			expect(screen.queryByTestId("find-bar")).toBeNull();
+			expect(
+				document.querySelector("[data-find-mark], [data-find-current]"),
+			).toBeNull();
+			expect(findState.get().term).toBe("save");
+			act(() => findState.open());
+			expect(await screen.findByTestId("find-box")).toHaveValue("save");
+			await waitFor(() =>
+				expect(
+					document.querySelector("span[data-find-current]"),
+				).not.toBeNull(),
+			);
+			expect(count()).toHaveTextContent("1 of 2");
+		});
+
+		it("a path hit opens the file at its header with the path marked", async () => {
+			const scrolled = findPage([
+				findFile(0, "a.txt", "nothing"),
+				findFile(1, "src/saver.ts", "nor here"),
+			]);
+			const user = userEvent.setup();
+			const b = await screen.findByRole("region", { name: "src/saver.ts" });
+			b.getBoundingClientRect = () => ({ top: 300 }) as DOMRect;
+			await user.keyboard("{Control>}f{/Control}");
+			await user.type(await screen.findByTestId("find-box"), "save");
+			await waitFor(() => expect(count()).toHaveTextContent("1 of 1"));
+			expect(expanded("src/saver.ts")).toBe(false);
+			await user.keyboard("{Enter}");
+			await waitFor(() => expect(expanded("src/saver.ts")).toBe(true));
+			await vi.waitFor(() => expect(scrolled).toHaveBeenCalled());
+			// The header comes to the top, under the sticky bar.
+			expect(scrolled.mock.calls.at(-1)?.[0]).toEqual({ top: 300 - 40 + 1 });
+			const header = b.querySelector("header") as HTMLElement;
+			const mark = header.querySelector("[data-find-current]");
+			expect(mark).toHaveTextContent("save");
+			// The tree marks the name too.
+			const tree = screen.getByTestId("file-tree");
+			expect(tree.querySelector("[data-find-current]")).toHaveTextContent(
+				"save",
+			);
+		});
+
+		it("the tree shows counts per file and folder while the bar has a term", async () => {
+			findPage([
+				findFile(0, "d/a.txt", "save, save"),
+				findFile(1, "d/b.txt", "save"),
+				findFile(2, "c.txt", "nothing"),
+			]);
+			const user = userEvent.setup();
+			const tree = await screen.findByTestId("file-tree");
+			await user.keyboard("{Control>}f{/Control}");
+			const box = await screen.findByTestId("find-box");
+			expect(within(tree).queryAllByTestId("tree-find")).toHaveLength(0);
+			await user.type(box, "save");
+			await waitFor(() =>
+				expect(
+					within(tree).getByRole("img", { name: "2 matches" }),
+				).toBeInTheDocument(),
+			);
+			expect(
+				within(tree).getByRole("img", { name: "1 match" }),
+			).toBeInTheDocument();
+			// The folder sums its files'; c.txt has none and no chip.
+			expect(
+				within(tree).getByRole("img", { name: "3 matches" }),
+			).toBeInTheDocument();
+			expect(within(tree).queryAllByTestId("tree-find")).toHaveLength(3);
+			// Folded, it still does.
+			await user.click(tree.querySelector('[data-folder="d"]') as HTMLElement);
+			expect(
+				within(tree).getByRole("img", { name: "3 matches" }),
+			).toBeInTheDocument();
+			expect(within(tree).queryAllByTestId("tree-find")).toHaveLength(1);
+			// Closed: no counts.
+			await user.click(screen.getByRole("button", { name: "Close (Esc)" }));
+			expect(within(tree).queryAllByTestId("tree-find")).toHaveLength(0);
 		});
 	});
 });

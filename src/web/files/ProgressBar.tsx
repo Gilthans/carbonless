@@ -114,6 +114,8 @@ export function ProgressBar(props: {
 	onUnitChange: (unit: Unit) => void;
 	/** At the row's end: what is still loading for the page (a Spinner). */
 	children?: ReactNode;
+	/** A row stuck above the bar, inside its sticky stack (the find bar). */
+	above?: ReactNode;
 }) {
 	const { progress, unit } = props;
 	const counts = pageCounts(progress, unit);
@@ -139,6 +141,7 @@ export function ProgressBar(props: {
 			data-page-bar
 			className="sticky top-[var(--app-header,0px)] z-20 border-b border-line bg-canvas py-2"
 		>
+			{props.above && <div className="-mt-2 mb-2">{props.above}</div>}
 			<div className="flex flex-wrap items-center gap-x-3 gap-y-2">
 				<div className="flex shrink-0 items-center gap-2">
 					<UnitPicker unit={unit} onChange={props.onUnitChange} />

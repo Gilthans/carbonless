@@ -24,6 +24,7 @@ import type {
 } from "../shared/types";
 import { COMPACT_RAMP, compactNumberHideClass, compactProgress } from "./App";
 import { resetShowInvisibles, setShowInvisibles } from "./code/Invisibles";
+import { findState } from "./files/find/findState";
 import { createAppRouter } from "./router";
 import { draftsFor } from "./threads/drafts";
 
@@ -472,6 +473,30 @@ describe("App", () => {
 		await waitFor(() => expect(calls("/api/head")).toBe(1));
 		expect(screen.queryByText(/New commits were pushed/)).toBeNull();
 		expect(screen.queryByRole("alert")).toBeNull();
+	});
+
+	it("has a Find in PR button that opens the bar on Files changed and goes there from the overview", async () => {
+		findState.reset();
+		const user = userEvent.setup();
+		const { router } = renderApp();
+		await screen.findByRole("region", { name: "What it does" });
+		const button = screen.getByRole("button", { name: "Find in PR" });
+		expect(button).toHaveAttribute("aria-expanded", "false");
+		await user.click(button);
+		await waitFor(() =>
+			expect(router.state.location.pathname).toBe(`/r/${ID}/files`),
+		);
+		expect(findState.get().open).toBe(true);
+		expect(await screen.findByTestId("find-bar")).toBeInTheDocument();
+		await waitFor(() =>
+			expect(button).toHaveAttribute("aria-expanded", "true"),
+		);
+		// On Files changed, a second click closes it.
+		await user.click(button);
+		expect(findState.get().open).toBe(false);
+		expect(button).toHaveAttribute("aria-expanded", "false");
+		expect(screen.queryByTestId("find-bar")).toBeNull();
+		findState.reset();
 	});
 
 	it("has a Settings gear in the app bar whose switch shows hidden characters", async () => {
