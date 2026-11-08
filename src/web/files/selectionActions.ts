@@ -37,6 +37,8 @@ export interface SelectionAction {
 	id: string;
 	icon: Icon;
 	label: string;
+	/** Its icon's colour when available (a token class), else the bar's ink. */
+	iconClassName?: string;
 	/** Its key in the shortcuts help (desktop only). */
 	shortcut?: string;
 	/** True, or why not (the disabled button's tooltip). */

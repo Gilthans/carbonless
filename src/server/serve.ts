@@ -1,3 +1,5 @@
+import { sweepStaleCheckouts } from "./agent/checkout.js";
+import { setServerPort } from "./agent/host.js";
 import { buildApp } from "./app.js";
 import { readConfig, updateConfig } from "./config.js";
 import { configAccess, HomeService } from "./home/homeService.js";
@@ -60,6 +62,8 @@ export async function startServer(opts: {
 	// A proxy reaches a loopback bind for anyone it serves: keyed too.
 	const key = loopback && !publicUrl ? null : (fresh ?? (await accessKey()));
 
+	// Agent checkouts left by servers that stopped (none is open here yet).
+	await sweepStaleCheckouts(new Set()).catch(() => {});
 	const registry = new SessionRegistry();
 	// Home reads GitHub only when its page asks (no timer to stop).
 	const home = new HomeService({
@@ -88,6 +92,7 @@ export async function startServer(opts: {
 	const address = app.server.address();
 	const actualPort =
 		typeof address === "object" && address ? address.port : port;
+	setServerPort(actualPort);
 	const urlHost = host.includes(":") ? `[${host}]` : host;
 	url = `http://${urlHost}:${actualPort}`;
 	await writeServerState({

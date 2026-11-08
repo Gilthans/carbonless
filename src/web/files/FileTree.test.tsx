@@ -1124,3 +1124,37 @@ describe("renamed files", () => {
 		expect(localStorage.getItem(key)).toBeNull();
 	});
 });
+
+describe("a file's agent threads", () => {
+	afterEach(cleanup);
+
+	it("get a second, agent-tinted dot named by their count", () => {
+		const asked = {
+			id: "A1",
+			anchor: {
+				subject: "file" as const,
+				path: "src/a/deep/one.ts",
+				commit: "h",
+			},
+			openedBy: "human" as const,
+			at: "2026-11-07T10:00:00Z",
+			messages: [],
+			resolved: false,
+			waiting: true,
+		};
+		render(
+			<FileTree
+				files={files}
+				unit="clusters"
+				current={null}
+				onSelect={() => {}}
+				agentThreadsOf={(f) => (f.path === asked.anchor.path ? [asked] : [])}
+			/>,
+		);
+		const dots = screen.getAllByTestId("tree-agent-threads");
+		expect(dots).toHaveLength(1);
+		expect(dots[0]?.textContent).toBe("1 agent thread in this file, 1 waiting");
+		expect(dots[0]?.querySelector(".bg-agent-ink")).not.toBeNull();
+		expect(screen.queryByTestId("tree-threads")).toBeNull();
+	});
+});

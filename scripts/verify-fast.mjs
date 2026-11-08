@@ -57,6 +57,7 @@ const specs = readdirSync("e2e")
 // not untested; an entry with no specs, covered by unit tests alone. Files
 // outside src/, e2e/ and test/ (docs, scripts) run none.
 const E2E_MAP = [
+	[/^src\/web\/agent\//, ["agent", "agent-setup"]],
 	[
 		/^src\/web\/(overview|threads)\/|^src\/server\/(overview|overviewRead|threadCode|timeline)\.ts$|^src\/web\/(GithubHtml|githubHtml|sanitizeGithubHtml)/,
 		["overview", "timeline", "mobile"],
@@ -125,6 +126,7 @@ const E2E_MAP = [
 		["asof", "overview", "pinned-head"],
 	],
 	[/^src\/server\/pinnedHead\.ts$/, ["pinned-head"]],
+	[/^src\/server\/agent\/|^test\/fake-acp\//, ["agent"]],
 	[
 		/^src\/web\/(brand\/|Tooltip\.tsx$|theme)|^src\/web\/index\.css$/,
 		["design", "mobile"],

@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+import type { AgentConfig } from "../shared/agent.js";
 import { writeFileAtomic } from "./atomicFile.js";
 import { configDir } from "./paths.js";
 
@@ -20,6 +21,8 @@ export interface CrbConfig {
 	serve: { host: string; port: number; publicUrl?: string };
 	views: ViewConfig[];
 	refresh: { minutes: number };
+	/** The reviewer's own ACP agent (review buddy); null: off. */
+	agent: AgentConfig | null;
 }
 
 /** The config as read, and what was bad in the file and replaced by a default. */
@@ -32,6 +35,7 @@ export const DEFAULT_CONFIG: CrbConfig = Object.freeze({
 	serve: Object.freeze({ host: "127.0.0.1", port: 4747 }),
 	views: Object.freeze([]) as unknown as ViewConfig[],
 	refresh: Object.freeze({ minutes: 2 }),
+	agent: null,
 }) as CrbConfig;
 
 const DEFAULT_VIEW = "My PRs";
@@ -179,7 +183,47 @@ function validate(raw: Json | null): ConfigRead {
 			}
 		}
 	}
-	return { config: { serve, views, refresh }, problems };
+	const agent = validateAgent(raw?.agent, problems);
+	return { config: { serve, views, refresh, agent }, problems };
+}
+
+/** The agent section: null when absent, null, or without a usable command. */
+function validateAgent(raw: unknown, problems: string[]): AgentConfig | null {
+	if (raw === undefined || raw === null) return null;
+	if (!isObject(raw)) {
+		problems.push("agent must be an object or null; agent disabled");
+		return null;
+	}
+	const { command, args, env, leash } = raw;
+	if (typeof command !== "string" || !command.trim()) {
+		problems.push("agent.command must be a non-empty string; agent disabled");
+		return null;
+	}
+	const agent: AgentConfig = {
+		command: command.trim(),
+		args: [],
+		env: {},
+		leash: "open",
+	};
+	if (args !== undefined) {
+		if (Array.isArray(args) && args.every((a) => typeof a === "string")) {
+			agent.args = [...args];
+		} else problems.push("agent.args must be an array of strings; using []");
+	}
+	if (env !== undefined) {
+		if (
+			isObject(env) &&
+			Object.values(env).every((v) => typeof v === "string")
+		) {
+			agent.env = { ...(env as Record<string, string>) };
+		} else problems.push("agent.env must be an object of strings; using {}");
+	}
+	if (leash !== undefined && leash !== "open") {
+		problems.push(
+			`agent.leash "${String(leash)}" is not available yet; using "open"`,
+		);
+	}
+	return agent;
 }
 
 /**
@@ -199,9 +243,10 @@ let updates: Promise<unknown> = Promise.resolve();
 
 /**
  * Applies `change` to the config and writes it, atomically. Keys the file
- * has that carbonless doesn't know (top level, in `serve`, `refresh` and
- * each view) are kept; parts that were bad are written valid. Throws when
- * `change` returns an invalid config.
+ * has that carbonless doesn't know (top level, in `serve`, `refresh`,
+ * `agent` and each view) are kept; parts that were bad are written valid;
+ * no agent is written as `"agent": null`. Throws when `change` returns an
+ * invalid config.
  */
 export function updateConfig(
 	change: (c: CrbConfig) => CrbConfig,
@@ -230,6 +275,7 @@ export function updateConfig(
 			serve: { ...keep(raw?.serve), ...c.serve },
 			views: c.views.map((v) => ({ ...rawOf(v.name), ...v })),
 			refresh: { ...keep(raw?.refresh), ...c.refresh },
+			agent: c.agent === null ? null : { ...keep(raw?.agent), ...c.agent },
 		};
 		await writeFileAtomic(configFile(), `${JSON.stringify(out, null, "\t")}\n`);
 		return c;
