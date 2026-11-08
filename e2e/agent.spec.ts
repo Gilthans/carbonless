@@ -115,10 +115,11 @@ test("Stop keeps the partial reply with a stopped chip", async ({
 	);
 });
 
-test("Resolve, then Unresolve, kept across a reload", async ({
+test("Resolve closes the card, still the agent's; it opens to Unresolve, kept across a reload", async ({
 	page,
 	pr,
 	agentCrb,
+	isMobile,
 }) => {
 	await pr(fixture);
 	const s = await agentCrb();
@@ -126,10 +127,13 @@ test("Resolve, then Unresolve, kept across a reload", async ({
 	const card = await ask(page, section, 3, "Why?");
 	await expect(card).toHaveAttribute("aria-label", "Agent thread, answered");
 	await card.getByTestId("agent-resolve").click();
+	// Closed to one row: the agent's sparkle and tint, the check, the way in.
+	await expect(card).toHaveAttribute("data-closed", "true");
 	await expect(card).toHaveAttribute("aria-label", "Agent thread, resolved");
-	await expect(
-		card.getByRole("textbox", { name: "Reply to your agent" }),
-	).toHaveCount(0);
+	await expect(card.getByTestId("agent-message-ai")).toHaveCount(0);
+	await expect(card.getByRole("img", { name: "Resolved" })).toBeVisible();
+	await expect(card.getByRole("button", { name: "Show thread" })).toBeVisible();
+	await shot(page, "agent-resolved", isMobile);
 	await page.reload();
 	const again = await openFile(page, s.url, CALC);
 	const bubble = row(again, 3).getByTestId("agent-bubble");
@@ -138,10 +142,11 @@ test("Resolve, then Unresolve, kept across a reload", async ({
 	);
 	await bubble.click();
 	const reopened = again.getByTestId("agent-thread");
-	await expect(reopened).toHaveAttribute(
-		"aria-label",
-		"Agent thread, resolved",
-	);
+	// Still closed after the reload: resolved threads start closed.
+	await expect(reopened).toHaveAttribute("data-closed", "true");
+	await reopened.getByRole("button", { name: "Show thread" }).click();
+	await expect(reopened).not.toHaveAttribute("data-closed");
+	await expect(reopened.getByTestId("agent-message-ai")).toHaveText("ok");
 	await reopened.getByTestId("agent-resolve").click();
 	await expect(reopened).toHaveAttribute(
 		"aria-label",

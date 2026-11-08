@@ -1,6 +1,8 @@
 import {
 	AlertIcon,
 	CheckCircleIcon,
+	ChevronDownIcon,
+	ChevronUpIcon,
 	HistoryIcon,
 	IssueReopenedIcon,
 	SparkleFillIcon,
@@ -9,6 +11,7 @@ import {
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
 	type KeyboardEvent,
+	useEffect,
 	useId,
 	useLayoutEffect,
 	useRef,
@@ -318,7 +321,9 @@ export function agentName(
  * text grows in place under a spinner with one collapsed activity line and
  * Stop; while it waits for an agent, a yellow dot (with no agent set up,
  * the row opens the setup). Then the reply box, and Resolve or Unresolve.
- * Nothing here reaches GitHub.
+ * Resolving closes it to one row, still the agent's (its tint, edge and
+ * sparkle, with the resolved check), that opens again; a resolved thread
+ * starts closed, and Unresolve opens it. Nothing here reaches GitHub.
  */
 export function AgentThreadCard(props: {
 	thread: AgentThread;
@@ -335,21 +340,38 @@ export function AgentThreadCard(props: {
 	const name = agentName(thread, status);
 	const [resolvedNow, setResolvedNow] = useState<boolean | null>(null);
 	const resolved = resolvedNow ?? thread.resolved;
+
+	// Open unless resolved; resolving closes it, unresolving opens it.
+	const [expanded, setExpanded] = useState(!thread.resolved);
+	const bodyId = useId();
 	const shown = { ...thread, resolved };
 	const turn = useAnswering(thread, status);
 	const state = agentThreadState(shown, turn);
 	const answering = state === "answering" ? turn : undefined;
 	const resolve = useMutation({
 		mutationFn: (next: boolean) => postAgentResolved(thread.id, next),
-		onMutate: (next) => setResolvedNow(next),
+		onMutate: (next) => {
+			setResolvedNow(next);
+			setExpanded(!next);
+		},
 		onSuccess: (saved) => {
 			client.setQueryData(agentThreadsQuery.queryKey, (list) =>
 				withThread(list, saved),
 			);
-			setResolvedNow(null);
+			// Kept until the thread shown says so too (no flash back).
+			setResolvedNow(saved.resolved);
 		},
-		onError: () => setResolvedNow(null),
+		onError: () => {
+			// Not saved: back as it was, open so the error shows.
+			setResolvedNow(null);
+			setExpanded(true);
+		},
 	});
+	// The thread shown caught up with what was saved: it speaks for itself.
+	const settled = !resolve.isPending && thread.resolved === resolvedNow;
+	useEffect(() => {
+		if (settled) setResolvedNow(null);
+	}, [settled]);
 	const stop = useMutation({
 		mutationFn: postAgentCancel,
 		onSettled: () =>
@@ -359,6 +381,68 @@ export function AgentThreadCard(props: {
 	const replies = [...writes.pending.entries()].filter(
 		([, w]) => w.thread === thread.id,
 	);
+	const closed = resolved && !expanded;
+	const first = thread.messages.find((m) => m.by === "human")?.text ?? "";
+	const toggle = (
+		<Tooltip content={closed ? "Show thread" : "Hide thread"} describe={false}>
+			{(trigger) => (
+				<button
+					type="button"
+					{...trigger}
+					data-testid="agent-thread-toggle"
+					aria-label={closed ? "Show thread" : "Hide thread"}
+					aria-expanded={!closed}
+					aria-controls={closed ? undefined : bodyId}
+					onClick={() => setExpanded(closed)}
+					className="ml-auto flex h-10 w-10 shrink-0 items-center justify-center rounded-md text-ink-soft hover:bg-overlay hover:text-ink focus-visible:outline-2 focus-visible:outline-accent"
+				>
+					{closed ? (
+						<ChevronDownIcon size={16} aria-hidden />
+					) : (
+						<ChevronUpIcon size={16} aria-hidden />
+					)}
+				</button>
+			)}
+		</Tooltip>
+	);
+	if (closed) {
+		// Closed, still the agent's: its tint and edge, the sparkle, the
+		// resolved check, the question, and the way back in.
+		return (
+			<article
+				data-testid="agent-thread"
+				data-thread={thread.id}
+				data-closed="true"
+				aria-label={`Agent thread, ${state}`}
+				className="min-w-0 overflow-hidden rounded-lg border border-agent-edge bg-agent"
+			>
+				<div className="flex min-h-10 min-w-0 items-center gap-x-2 px-2.5 text-xs text-muted">
+					<SparkleFillIcon
+						size={14}
+						aria-hidden
+						className="shrink-0 text-agent-ink"
+					/>
+					<span className="shrink-0 font-semibold text-ink-soft">{name}</span>
+					<LabeledIcon
+						icon={CheckCircleIcon}
+						label="Resolved"
+						className="text-ok"
+					/>
+					{props.outdated && (
+						<span data-testid="agent-outdated" className="flex">
+							<LabeledIcon
+								icon={HistoryIcon}
+								label={`Asked on an earlier version (${props.outdated.slice(0, 7)})`}
+								className="text-muted"
+							/>
+						</span>
+					)}
+					<span className="min-w-0 truncate text-ink-soft">{first}</span>
+					{toggle}
+				</div>
+			</article>
+		);
+	}
 	return (
 		<article
 			data-testid="agent-thread"
@@ -408,8 +492,9 @@ export function AgentThreadCard(props: {
 						Stop
 					</button>
 				)}
+				{resolved && toggle}
 			</div>
-			<div className="space-y-2 p-2.5">
+			<div id={bodyId} className="space-y-2 p-2.5">
 				{thread.messages.map((m) =>
 					m.by === "human" ? (
 						<HumanMessage key={m.id} message={m} viewer={viewer} />

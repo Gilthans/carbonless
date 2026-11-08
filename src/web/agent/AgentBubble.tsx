@@ -54,20 +54,19 @@ export function AgentBubble(props: {
 				>
 					<span
 						aria-hidden
+						data-resolved={resolved || undefined}
 						className={`flex h-5 items-center gap-1 rounded-full border px-1.5 text-xs leading-none tabular-nums shadow-control transition-colors motion-reduce:transition-none ${
 							props.open
 								? "border-accent bg-pressed text-agent-ink"
 								: resolved
-									? "border-agent-edge bg-raised text-muted group-hover/bubble:text-ink"
+									? "border-agent-edge bg-agent text-muted group-hover/bubble:text-ink"
 									: "border-agent-edge bg-agent text-agent-ink group-hover/bubble:text-ink"
 						}`}
 					>
-						{resolved ? (
-							<CheckIcon size={12} className="text-ok" />
-						) : (
-							<SparkleFillIcon size={12} />
-						)}
+						{/* The sparkle always: resolved, it is still the agent's. */}
+						<SparkleFillIcon size={12} className="text-agent-ink" />
 						{threads.length}
+						{resolved && <CheckIcon size={12} className="text-ok" />}
 						{waiting && (
 							<span
 								data-testid="agent-waiting-dot"

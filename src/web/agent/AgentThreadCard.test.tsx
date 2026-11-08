@@ -206,38 +206,84 @@ describe("AgentThreadCard", () => {
 		expect(screen.queryByTestId("agent-stop-chip")).toBeNull();
 	});
 
-	it("resolved: Unresolve, and no reply box", async () => {
+	it("a resolved thread starts closed: one agent row that opens to Unresolve", async () => {
 		show(answered({ resolved: true }), status());
 		const card = screen.getByTestId("agent-thread");
 		expect(card.getAttribute("aria-label")).toBe("Agent thread, resolved");
+		expect(card).toHaveAttribute("data-closed", "true");
+		// Still the agent's: its tint and edge, the sparkle, the check.
+		expect(card.className).toContain("bg-agent");
+		expect(card.className).toContain("border-agent-edge");
+		expect(card.querySelector(".octicon-sparkle-fill")).not.toBeNull();
+		expect(within(card).getByRole("img", { name: "Resolved" })).toBeTruthy();
+		expect(card).toHaveTextContent("Is the loop bound right?");
+		expect(screen.queryByTestId("agent-message-ai")).toBeNull();
+		expect(screen.queryByTestId("agent-resolve")).toBeNull();
+		const open = within(card).getByRole("button", { name: "Show thread" });
+		expect(open).toHaveAttribute("aria-expanded", "false");
+		await userEvent.click(open);
+		const opened = screen.getByTestId("agent-thread");
+		expect(opened).not.toHaveAttribute("data-closed");
 		expect(
-			within(card).queryByRole("textbox", { name: "Reply to your agent" }),
+			within(opened).queryByRole("textbox", { name: "Reply to your agent" }),
 		).toBeNull();
+		expect(within(opened).getByTestId("agent-message-ai")).toBeTruthy();
 		fetchMock.mockResolvedValueOnce(
 			new Response(JSON.stringify(answered()), { status: 200 }),
 		);
-		await userEvent.click(within(card).getByTestId("agent-resolve"));
-		expect(within(card).getByTestId("agent-resolve").textContent).toBe(
-			"Unresolve",
-		);
+		const unresolve = within(opened).getByTestId("agent-resolve");
+		expect(unresolve).toHaveTextContent("Unresolve");
+		await userEvent.click(unresolve);
 		await waitFor(() =>
 			expect(fetchMock).toHaveBeenCalledWith(
 				"/api/agent/threads/T1/resolved",
 				expect.objectContaining({ body: JSON.stringify({ resolved: false }) }),
 			),
 		);
+		// Unresolved: open, with the reply box back.
+		expect(
+			within(screen.getByTestId("agent-thread")).getByRole("textbox", {
+				name: "Reply to your agent",
+			}),
+		).toBeTruthy();
 	});
 
-	it("Resolve is off while its write is out", async () => {
+	it("Resolve closes the card; Hide and Show close and open it", async () => {
+		fetchMock.mockResolvedValueOnce(
+			new Response(JSON.stringify(answered({ resolved: true })), {
+				status: 200,
+			}),
+		);
+		show(answered(), status());
+		await userEvent.click(screen.getByTestId("agent-resolve"));
+		const card = screen.getByTestId("agent-thread");
+		expect(card).toHaveAttribute("data-closed", "true");
+		expect(card.getAttribute("aria-label")).toBe("Agent thread, resolved");
+		await userEvent.click(
+			within(card).getByRole("button", { name: "Show thread" }),
+		);
+		const hide = within(screen.getByTestId("agent-thread")).getByRole(
+			"button",
+			{ name: "Hide thread" },
+		);
+		expect(hide).toHaveAttribute("aria-expanded", "true");
+		await userEvent.click(hide);
+		expect(screen.getByTestId("agent-thread")).toHaveAttribute(
+			"data-closed",
+			"true",
+		);
+	});
+
+	it("Unresolve is off while its write is out", async () => {
 		let release = () => {};
 		fetchMock.mockImplementationOnce(
 			() =>
 				new Promise<Response>((done) => {
-					release = () =>
-						done(new Response(JSON.stringify(answered({ resolved: true }))));
+					release = () => done(new Response(JSON.stringify(answered())));
 				}),
 		);
-		show(answered(), status());
+		show(answered({ resolved: true }), status());
+		await userEvent.click(screen.getByRole("button", { name: "Show thread" }));
 		const button = screen.getByTestId("agent-resolve");
 		await userEvent.click(button);
 		expect(button).toBeDisabled();

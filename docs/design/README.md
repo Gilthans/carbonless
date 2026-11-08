@@ -465,8 +465,9 @@ states keep their convention colours.
   opens where it lands.
 - **The agent bubble** (`AgentBubble`) sits beside the comment bubble in
   the same slot, each with its own count and its own open state: the
-  sparkle and the thread count on `agent` inside `agent-edge`, a green
-  check once all are resolved, a `warn` dot while one waits ("2 agent
+  sparkle and the thread count on `agent` inside `agent-edge`, and after
+  the count a green check once all are resolved (the sparkle and tint
+  stay, so it never reads as a resolved comment bubble), a `warn` dot while one waits ("2 agent
   threads on line 16, 1 waiting"). The cell keeps 48px per bubble, so two
   never cover the code. Hidden runs, the file bubble and a closed file's
   header get one the same way; the file tree a second dot (`agent-ink`
@@ -486,7 +487,12 @@ states keep their convention colours.
   tool", opened to every title, a rejected decision in `bad`) and Stop in
   the header. A turn that didn't end normally carries a chip (stopped, cut
   off, refused in grey; failed in `bad`); an over-long text "truncated".
-  Then the reply box and Resolve / Unresolve.
+  Then the reply box and Resolve / Unresolve. Resolving closes the card to
+  one row that is still plainly the agent's, unlike a resolved comment
+  thread: the `agent` wash inside `agent-edge`, the sparkle, the name, a
+  green check (tooltip "Resolved") and the question, with a 40px chevron
+  ("Show thread") that opens it to Unresolve. A resolved thread starts
+  closed; Unresolve opens it. A resolved comment thread keeps its look.
 - **The chip** (`AgentChip`) sits in the header's meta line after
   `owner/repo`: the sparkle (at half strength when off or elsewhere), the
   agent's name on a desktop only, and a dot: `unreviewed` grey off or
