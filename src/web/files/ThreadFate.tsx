@@ -60,6 +60,8 @@ export interface PlacementInfo {
 	error: Error | null;
 	/** Asks for them again. */
 	retry: () => void;
+	/** A retry after an error is under way. */
+	retrying?: boolean;
 	/** The read and target they are for (a placement write updates them). */
 	readId: string | null;
 	to: RereviewTo | null;

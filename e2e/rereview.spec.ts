@@ -1250,11 +1250,30 @@ test("when the placements fail every unresolved thread stays listed with the err
 	);
 	await expect(page.getByTestId("not-in-comparison")).toHaveCount(0);
 	await expectNoPageOverflow(page);
-	// Retry once it works: the threads land where they belong.
+	// Retry once it works, held at first: a spinner in the Retry's slot, the
+	// list kept, then the threads land where they belong.
 	await page.unroute("**/api/r/*/placements?*");
-	await failed.getByRole("button", { name: "Retry" }).click();
-	await expect(failed).toHaveCount(0, GIT_WAIT);
+	let release = () => {};
+	const held = new Promise<void>((r) => {
+		release = r;
+	});
+	await page.route("**/api/r/*/placements?*", async (route) => {
+		await held;
+		await route.continue();
+	});
 	const coreS = fileSection(page, "src/core.ts");
-	await coreS.getByRole("button", { name: "Expand file" }).click();
-	await expect(unplacedRows(coreS)).toContainText("Is core 30 needed?");
+	await failed.getByRole("button", { name: "Retry" }).click();
+	await expectLoadingThen({
+		loading: failed.getByRole("status", { name: "Retrying" }),
+		empty: [failed.getByRole("button", { name: "Retry" })],
+		release: async () => {
+			await expect(failed).toHaveAttribute("aria-busy", "true");
+			await expect(rows).toHaveCount(2);
+			await coreS.getByRole("button", { name: "Expand file" }).click();
+			release();
+		},
+		result: unplacedRows(coreS).filter({ hasText: "Is core 30 needed?" }),
+		...GIT_WAIT,
+	});
+	await expect(failed).toHaveCount(0);
 });

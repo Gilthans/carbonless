@@ -28,12 +28,15 @@ export function NotInComparison(props: {
 		threads: ReviewThread[];
 		error: Error | null;
 		retry: () => void;
+		/** A retry is under way: a spinner in its slot, the list kept. */
+		retrying?: boolean;
 	} | null;
 }) {
 	if (props.failed) {
 		return (
 			<section
 				aria-label="Thread places couldn't be computed"
+				aria-busy={props.failed.retrying || undefined}
 				data-testid="placements-failed"
 				className="space-y-2 rounded-lg border border-bad/40 bg-surface p-2"
 			>
@@ -45,13 +48,20 @@ export function NotInComparison(props: {
 							{threadsLabel(props.failed.threads.length)}
 						</Badge>
 					)}
-					<button
-						type="button"
-						onClick={props.failed.retry}
-						className="ml-auto inline-flex min-h-10 items-center rounded-md px-3 font-medium text-link hover:bg-overlay focus-visible:outline-2 focus-visible:outline-accent"
-					>
-						Retry
-					</button>
+					{/* One slot for the button and its spinner: nothing moves. */}
+					<span className="ml-auto inline-flex min-h-10 min-w-20 items-center justify-center">
+						{props.failed.retrying ? (
+							<Spinner label="Retrying" />
+						) : (
+							<button
+								type="button"
+								onClick={props.failed.retry}
+								className="inline-flex min-h-10 min-w-20 items-center justify-center rounded-md px-3 font-medium text-link hover:bg-overlay focus-visible:outline-2 focus-visible:outline-accent"
+							>
+								Retry
+							</button>
+						)}
+					</span>
 				</h3>
 				{props.failed.error && (
 					<p className="px-1 text-xs break-words text-muted">

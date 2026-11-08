@@ -278,7 +278,25 @@ function useDiffThreads(
 		() => (visible ? outsideThreads(visible, placements) : []),
 		[visible, placements],
 	);
-	const failedPlacing = asked && answer === null ? placed.error : null;
+	// A failure stays until an answer lands: a Retry (whose refetch clears
+	// the query's error, then may poll a pending job) keeps the list, with a
+	// spinner in its slot, rather than dropping it for a plain pending state.
+	const placingKey = asked ? JSON.stringify([readId, to]) : "";
+	const [lastFailure, setLastFailure] = useState<{
+		key: string;
+		error: Error;
+	} | null>(null);
+	useEffect(() => {
+		if (placed.error) setLastFailure({ key: placingKey, error: placed.error });
+		else if (answer !== null) setLastFailure(null);
+	}, [placed.error, answer, placingKey]);
+	const failedPlacing =
+		asked && answer === null
+			? (placed.error ??
+				(lastFailure?.key === placingKey ? lastFailure.error : null))
+			: null;
+	const retryingPlacing =
+		failedPlacing !== null && (placed.isFetching || placed.error === null);
 	const unplacedOnError = useMemo(
 		() =>
 			failedPlacing && visible && snapshotHead
@@ -299,6 +317,7 @@ function useDiffThreads(
 			pending: asked && answer === null && !placed.error,
 			error: failedPlacing,
 			retry: () => void refetchPlacements(),
+			retrying: retryingPlacing,
 			readId: readId ?? null,
 			to,
 			// A drag stores into the latest patch set only (earlier ones are
@@ -318,6 +337,7 @@ function useDiffThreads(
 			asked,
 			answer,
 			placed.error,
+			retryingPlacing,
 			failedPlacing,
 			refetchPlacements,
 			readId,
@@ -842,6 +862,7 @@ export function FilesPage() {
 					threads: unplacedOnError,
 					error: placementInfo.error,
 					retry: placementInfo.retry,
+					retrying: placementInfo.retrying,
 				}
 			}
 		/>
