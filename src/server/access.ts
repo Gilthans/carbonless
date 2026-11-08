@@ -55,11 +55,15 @@ export async function registerAccessKey(
  * API. In every mode, a write that carries an Origin must come from this
  * server's own origin, and neither a write nor an open of a review
  * (`/pr/...`) may come from another site's page (Sec-Fetch-Site).
+ * `publicUrl` (an origin, e.g. a `tailscale serve` HTTPS proxy in front)
+ * counts as the server's own: its Host and its Origin are accepted too.
  */
 export function registerHostCheck(
 	app: FastifyInstance,
-	loopback: boolean,
+	opts: { loopback: boolean; publicUrl?: string },
 ): void {
+	const { loopback } = opts;
+	const publicUrl = opts.publicUrl ? new URL(opts.publicUrl) : null;
 	const allowedHosts = (): Set<string> => {
 		const address = app.server.address();
 		if (!address || typeof address === "string") return new Set();
@@ -72,12 +76,15 @@ export function registerHostCheck(
 	app.addHook("onRequest", async (request, reply) => {
 		const host = (request.headers.host ?? "").toLowerCase();
 		const allowed = loopback ? allowedHosts() : new Set(host ? [host] : []);
-		if (loopback && !allowed.has(host)) return reply.code(403).send(forbidden);
+		if (loopback && !allowed.has(host) && host !== publicUrl?.host) {
+			return reply.code(403).send(forbidden);
+		}
 		const origin = request.headers.origin?.toLowerCase();
 		const write = request.method !== "GET" && request.method !== "HEAD";
 		if (
 			write &&
 			origin !== undefined &&
+			origin !== publicUrl?.origin &&
 			![...allowed].some((h) => origin === `http://${h}`)
 		) {
 			return reply.code(403).send(forbidden);
