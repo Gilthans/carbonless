@@ -282,6 +282,104 @@ test("the chip turns red when the agent crashes mid-answer; the partial reply st
 	await expect(chip(page)).toHaveAccessibleName(/70/);
 });
 
+test("a turn the agent fails says why: on the reply and in the chip", async ({
+	page,
+	pr,
+	agentCrb,
+}) => {
+	await pr(fixture);
+	const s = await agentCrb({
+		scenario: {
+			agent: { name: "Fake Agent", version: "9.9.9" },
+			answers: [
+				{ text: "", stop: "error", error: "Rate limited; retry later" },
+			],
+		},
+	});
+	const section = await openFile(page, s.url, CALC);
+	const card = await ask(page, section, 3, "Rate?");
+	await expect(card.getByTestId("agent-stop-chip")).toHaveText("failed");
+	await expect(card.getByTestId("agent-message-error")).toContainText(
+		"Rate limited; retry later",
+	);
+	await expect(chip(page)).toHaveAttribute("data-state", "error");
+	await expect(chip(page)).toHaveAccessibleName(/Rate limited; retry later/);
+});
+
+test("from the stream to the stored reply, the text never goes and waiting never shows", async ({
+	page,
+	pr,
+	agentCrb,
+	acpScenario,
+}) => {
+	await pr(fixture);
+	const s = await agentCrb({
+		scenario: {
+			agent: { name: "Fake Agent", version: "9.9.9" },
+			answers: [{ text: "Streamed first. Then the rest.", chunks: 2 }],
+			hold: ["prompt"],
+		},
+	});
+	const section = await openFile(page, s.url, CALC);
+	const card = await ask(page, section, 3, "Stream?");
+	await expect(card.getByTestId("agent-answering")).toContainText(
+		"Streamed first.",
+	);
+	// From here on, every change to the card is checked: it shows the
+	// stream or the reply, never neither, and never "waiting".
+	await page.evaluate(() => {
+		const w = window as unknown as { crbSeen: string[] };
+		w.crbSeen = [];
+		const check = () => {
+			const c = [
+				...document.querySelectorAll('[data-testid="agent-thread"]'),
+			].find((e) => e.textContent?.includes("Stream?"));
+			if (!c) return w.crbSeen.push("no card");
+			if (c.querySelector('[data-testid="agent-waiting"]'))
+				w.crbSeen.push("waiting");
+			const text =
+				c.querySelector('[data-testid="agent-answering"]')?.textContent ??
+				c.querySelector('[data-testid="agent-message-ai"]')?.textContent ??
+				"";
+			if (!text.includes("Streamed first.")) w.crbSeen.push("lost");
+		};
+		new MutationObserver(check).observe(document.body, {
+			subtree: true,
+			childList: true,
+			characterData: true,
+		});
+	});
+	// The threads read the end of the turn prompts is held.
+	const held: Array<() => Promise<void>> = [];
+	let holding = true;
+	await page.route("**/agent/threads", (route) => {
+		if (!holding || route.request().method() !== "GET") {
+			return route.continue();
+		}
+		held.push(() => route.continue());
+	});
+	releaseAcp(acpScenario, "prompt");
+	await expect(chip(page)).toHaveAttribute("data-state", "ready");
+	await expect.poll(() => held.length).toBeGreaterThan(0);
+	// The turn is over and stored; the read that brings it is held.
+	await expect(card.getByTestId("agent-answering")).toContainText(
+		"Streamed first.",
+	);
+	await expect(card.getByTestId("agent-waiting")).toHaveCount(0);
+	holding = false;
+	for (const go of held.splice(0)) await go();
+	await expect(card.getByTestId("agent-message-ai")).toContainText(
+		"Then the rest.",
+	);
+	await expect(card.getByTestId("agent-answering")).toHaveCount(0);
+	await expect(card).toHaveAttribute("aria-label", "Agent thread, answered");
+	expect(
+		await page.evaluate(
+			() => (window as unknown as { crbSeen: string[] }).crbSeen,
+		),
+	).toEqual([]);
+});
+
 test("elsewhere: a second server leaves the agent to the first, which answers what is asked there", async ({
 	page,
 	pr,

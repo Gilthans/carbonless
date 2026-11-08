@@ -273,6 +273,7 @@ describe("AgentRunner", () => {
 			thread: t.id,
 			text: "Two write",
 			activity: [],
+			asked: t.messages[0]?.id,
 		});
 		expect(busy.waiting).toBe(1);
 		releaseAcp(scenarioPath, "prompt");
@@ -374,6 +375,150 @@ describe("AgentRunner", () => {
 		expect(spawns()).toHaveLength(2);
 		expect((await runner.status()).state).toBe("error");
 		expect((await threads())[2]?.waiting).toBe(true);
+	});
+
+	/** Two crashes in a row (the gate shut), the third question left waiting. */
+	const crashTwice = async (over: Partial<RunnerDeps> = {}) => {
+		scenario({
+			crashOnPrompt: true,
+			answers: [{ text: "half and the rest", chunks: 2 }],
+		});
+		await ask("one?", 1);
+		makeRunner(over).poke();
+		await answered(1);
+		await until((s) => s.state === "error");
+		await runner.settled();
+		await ask("two?", 2);
+		runner.poke();
+		await answered(2);
+		await until((s) => s.state === "error");
+		await runner.settled();
+		expect(spawns()).toHaveLength(2);
+		await ask("three?", 3);
+		// A poll or a poke alone doesn't respawn: never a loop.
+		runner.poke();
+		await runner.settled();
+		await runner.status();
+		await runner.settled();
+		expect(spawns()).toHaveLength(2);
+		expect((await threads())[2]?.waiting).toBe(true);
+		scenario({ answers: [{ text: "fine now" }] });
+	};
+
+	it("after two crashes, a new question spawns again and is answered", async () => {
+		await crashTwice();
+		await ask("four?", 4);
+		runner.asked();
+		await answered(4);
+		expect(spawns()).toHaveLength(3);
+		expect((await threads())[3]?.messages[1]).toMatchObject({
+			text: "fine now",
+			stop: "end_turn",
+		});
+		await until((s) => s.state === "ready");
+	});
+
+	it("after two crashes, a Save of the same config spawns again and answers the backlog", async () => {
+		let saves = 0;
+		await crashTwice({ config: async () => ({ ...config, saves }) });
+		saves++;
+		await runner.status();
+		await answered(3);
+		expect(spawns()).toHaveLength(3);
+		expect((await threads())[2]?.messages[1]?.text).toBe("fine now");
+		await until((s) => s.state === "ready");
+	});
+
+	it("a turn the agent fails keeps its reason: on the stored reply and in the status", async () => {
+		scenario({
+			answers: [
+				{ match: "why", text: "", stop: "error", error: "Rate limited" },
+				{ text: "fine" },
+			],
+		});
+		await ask("why?");
+		makeRunner().poke();
+		await answered(1);
+		expect((await threads())[0]?.messages[1]).toMatchObject({
+			text: "",
+			stop: "error",
+			error: "Internal error: Rate limited",
+		});
+		const failed = await until((s) => s.state === "error");
+		expect(failed.error).toBe("Internal error: Rate limited");
+		// The process lives on: the next question is answered by it.
+		await ask("and now?", 2);
+		runner.asked();
+		await answered(2);
+		await until((s) => s.state === "ready");
+		expect(spawns()).toHaveLength(1);
+	});
+
+	it("the streamed answer stays in the status until the reply is stored", async () => {
+		scenario({ answers: [{ text: "Two writers race.", chunks: 2 }] });
+		let land: () => void = () => {};
+		const landed = new Promise<void>((r) => {
+			land = r;
+		});
+		let writing = false;
+		const gated = new Proxy(store, {
+			get(target, prop, receiver) {
+				if (prop === "message") {
+					return async (...args: Parameters<AgentThreadStore["message"]>) => {
+						if (args[1].by === "ai") {
+							writing = true;
+							await landed;
+						}
+						return target.message(...args);
+					};
+				}
+				const value = Reflect.get(target, prop, receiver);
+				return typeof value === "function" ? value.bind(target) : value;
+			},
+		});
+		const t = await ask("why?");
+		makeRunner({ store: gated }).poke();
+		await vi.waitFor(() => expect(writing).toBe(true), {
+			timeout: 20_000,
+			interval: 20,
+		});
+		const during = await runner.status();
+		expect(during.answering).toMatchObject({
+			thread: t.id,
+			text: "Two writers race.",
+		});
+		expect(during.state).toBe("busy");
+		land();
+		const done = await until((s) => s.state === "ready");
+		expect(done.answering).toBeUndefined();
+		expect((await threads())[0]?.messages[1]?.text).toBe("Two writers race.");
+	});
+
+	it("an agent whose connection closes but whose process lingers is killed and replaced", async () => {
+		scenario({
+			lingerOnPrompt: true,
+			answers: [{ text: "half and the rest", chunks: 2 }],
+		});
+		await ask("one?", 1);
+		makeRunner().poke();
+		await answered(1);
+		expect((await threads())[0]?.messages[1]).toMatchObject({
+			text: "half and ",
+			stop: "error",
+		});
+		const lost = await until((s) => s.state === "error");
+		expect(lost.error).toMatch(/connection closed/);
+		const lingering = spawns()[0]?.pid as number;
+		await vi.waitFor(() => expect(() => process.kill(lingering, 0)).toThrow(), {
+			timeout: 20_000,
+			interval: 20,
+		});
+		scenario({ answers: [{ text: "fine" }] });
+		await ask("two?", 2);
+		runner.asked();
+		await answered(2);
+		expect(spawns()).toHaveLength(2);
+		await until((s) => s.state === "ready");
 	});
 
 	it("bad config is an error status, not a crash", async () => {

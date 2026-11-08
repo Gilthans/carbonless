@@ -71,6 +71,8 @@ export interface AgentMessage {
 	activity?: AgentActivity[];
 	/** ai only: the id of the last human message its prompt included. */
 	replyTo?: string;
+	/** ai only, with stop "error": why the agent failed the turn (its own words, one line). */
+	error?: string;
 }
 
 export interface AgentThread {
@@ -93,7 +95,13 @@ export interface AgentStatus {
 	configured: boolean;
 	agent?: AgentIdentity;
 	since: string;
-	answering?: { thread: string; text: string; activity: AgentActivity[] };
+	answering?: {
+		thread: string;
+		text: string;
+		activity: AgentActivity[];
+		/** The last human message the turn answers: its reply names it in `replyTo`. */
+		asked?: string;
+	};
 	error?: string;
 	elsewhere?: number;
 	/** threads whose last message is a human's */
@@ -125,6 +133,9 @@ export interface AgentConfig {
 export type AgentCheck =
 	| { ok: true; agent: AgentIdentity }
 	| { ok: false; error: string; stderr: string };
+
+/** A failed turn's stored reason, in characters (the server cuts it shorter). */
+export const MAX_AGENT_ERROR = 1000;
 
 /** A message's text, in UTF-8 bytes; past it a text is truncated and flagged. */
 export const MAX_AGENT_TEXT = 32768;

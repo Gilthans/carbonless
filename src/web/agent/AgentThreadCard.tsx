@@ -190,7 +190,13 @@ function TruncatedChip() {
 
 function AiMessage(props: { message: AgentMessage; name: string }) {
 	const { message } = props;
-	const stop = message.stop ? STOPS[message.stop] : undefined;
+	const known = message.stop ? STOPS[message.stop] : undefined;
+	// A failed turn names the agent's reason (rate limit, expired login…).
+	const stop =
+		known && message.stop === "error" && message.error
+			? { ...known, tip: `${known.tip}: ${message.error}` }
+			: known;
+	const reason = message.stop === "error" ? message.error : undefined;
 	return (
 		<div className="min-w-0 space-y-1">
 			<Who>
@@ -223,21 +229,77 @@ function AiMessage(props: { message: AgentMessage; name: string }) {
 				data-testid="agent-message-ai"
 				className={`${AGENT_SURFACE} text-sm`}
 			>
-				<AgentMarkdown text={message.text} />
+				{message.text || !reason ? (
+					<AgentMarkdown text={message.text} />
+				) : (
+					<p
+						data-testid="agent-message-error"
+						className="flex items-start gap-1.5 break-words text-bad"
+					>
+						<AlertIcon size={14} aria-hidden className="mt-0.5 shrink-0" />
+						{reason}
+					</p>
+				)}
 			</div>
 			{message.activity && <ActivityLine activity={message.activity} />}
 		</div>
 	);
 }
 
-/** A thread's state, as its name says it. */
+type Answering = NonNullable<AgentStatus["answering"]>;
+
+/** A thread's state, as its name says it; `answering` is what useAnswering shows. */
 export function agentThreadState(
 	thread: AgentThread,
-	status: AgentStatus | undefined,
+	answering: Answering | undefined,
 ): "waiting" | "answering" | "answered" | "resolved" {
 	if (thread.resolved) return "resolved";
-	if (status?.answering?.thread === thread.id) return "answering";
+	if (answering) return "answering";
 	return thread.waiting ? "waiting" : "answered";
+}
+
+/** Whether the thread holds the reply to the turn `a` (its replyTo names a.asked). */
+const holdsReply = (thread: AgentThread, a: Answering): boolean =>
+	a.asked !== undefined &&
+	thread.messages.some((m) => m.by === "ai" && m.replyTo === a.asked);
+
+/**
+ * The turn the card shows as under way: the status's, until the thread
+ * holds its reply. The status drops a turn once its reply is stored, and
+ * the threads are read again only then (useAgentSync): in between, the
+ * last streamed text stays, so it never vanishes and "waiting" never
+ * flashes. It goes once the reply is in, once a threads read that began
+ * after the turn ended lands without it (stopped on purpose, a failed
+ * write), or when the agent restarts or goes.
+ */
+export function useAnswering(
+	thread: AgentThread,
+	status: AgentStatus | undefined,
+): Answering | undefined {
+	const client = useQueryClient();
+	// Subscribed only so a threads read re-renders the card.
+	useQuery({ ...agentThreadsQuery, enabled: false });
+	const reads =
+		client.getQueryState(agentThreadsQuery.queryKey)?.dataUpdateCount ?? 0;
+	const held = useRef<{ answering: Answering; reads?: number } | null>(null);
+	const live =
+		status?.answering?.thread === thread.id ? status.answering : undefined;
+	if (live) {
+		held.current = { answering: live };
+		return holdsReply(thread, live) ? undefined : live;
+	}
+	const h = held.current;
+	if (!h) return undefined;
+	const restarted =
+		status?.state === "starting" ||
+		status?.state === "off" ||
+		status?.state === "elsewhere";
+	h.reads ??= reads;
+	if (restarted || holdsReply(thread, h.answering) || reads > h.reads) {
+		held.current = null;
+		return undefined;
+	}
+	return h.answering;
 }
 
 /** The agent's name for a thread: the live one, else the last that answered. */
@@ -274,8 +336,9 @@ export function AgentThreadCard(props: {
 	const [resolvedNow, setResolvedNow] = useState<boolean | null>(null);
 	const resolved = resolvedNow ?? thread.resolved;
 	const shown = { ...thread, resolved };
-	const state = agentThreadState(shown, status);
-	const answering = state === "answering" ? status?.answering : undefined;
+	const turn = useAnswering(thread, status);
+	const state = agentThreadState(shown, turn);
+	const answering = state === "answering" ? turn : undefined;
 	const resolve = useMutation({
 		mutationFn: (next: boolean) => postAgentResolved(thread.id, next),
 		onMutate: (next) => setResolvedNow(next),

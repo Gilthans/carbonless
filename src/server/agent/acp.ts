@@ -1,6 +1,6 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { createWriteStream, mkdirSync, type WriteStream } from "node:fs";
-import { dirname } from "node:path";
+import { basename, dirname } from "node:path";
 import { Readable, Writable } from "node:stream";
 import {
 	type ActiveSession,
@@ -30,6 +30,8 @@ const KILL_AFTER_MS = 5_000;
 const SESSION_CLOSE_MS = 1_000;
 /** The stderr tail an error carries. */
 const STDERR_TAIL = 2048;
+/** A failed turn's reason, as stored on its reply and shown in the status. */
+export const MAX_TURN_ERROR = 300;
 
 /**
  * Names never passed to the agent: secrets of the server's environment
@@ -242,12 +244,16 @@ async function start(
 					},
 				})
 				.catch((error: unknown) => afterBreak(conn, error, stderr));
-			const info: AgentIdentity = init.agentInfo
-				? {
-						name: String(init.agentInfo.name),
-						version: String(init.agentInfo.version ?? ""),
-					}
-				: { name: opts.command, version: "" };
+			// A nameless agent goes by its command's name (a stored reply
+			// must name its agent).
+			const named = init.agentInfo?.name;
+			const info: AgentIdentity = {
+				name:
+					typeof named === "string" && named.trim()
+						? named
+						: basename(opts.command) || opts.command,
+				version: String(init.agentInfo?.version ?? ""),
+			};
 			const started: Started = { child, conn, info, exited, stderr };
 			await then(started);
 			return started;
@@ -348,11 +354,13 @@ export class AcpAgent {
 	/**
 	 * One turn: the agent_message_chunk text until the stop; every update
 	 * goes to onUpdate. A broken connection or an exit mid-turn resolves
-	 * with stop "error" and the text so far: it never rejects.
+	 * with stop "error" and the text so far: it never rejects. A turn the
+	 * agent fails (rate limit, overload, expired login) also carries its
+	 * reason (`error`, one line, at most MAX_TURN_ERROR characters).
 	 */
 	async prompt(
 		blocks: ContentBlock[],
-	): Promise<{ text: string; stop: AgentStop }> {
+	): Promise<{ text: string; stop: AgentStop; error?: string }> {
 		let text = "";
 		try {
 			void this.session.prompt(blocks).catch(() => {});
@@ -377,8 +385,13 @@ export class AcpAgent {
 					// The listener's trouble is not the turn's.
 				}
 			}
-		} catch {
-			return { text, stop: "error" };
+		} catch (error) {
+			// The connection broke (an exit): the exit says why.
+			if (this.started.conn.signal.aborted) return { text, stop: "error" };
+			const reason = turnError(error);
+			return reason
+				? { text, stop: "error", error: reason }
+				: { text, stop: "error" };
 		}
 	}
 
@@ -416,6 +429,34 @@ export class AcpAgent {
 		})();
 		return this.#closing;
 	}
+}
+
+/**
+ * A JSON-RPC error's message (with its `data.details` or `data.message`)
+ * on one line: control characters out, whitespace collapsed, cut at
+ * MAX_TURN_ERROR. The agent's text, never trusted: shown as plain text.
+ */
+export function turnError(error: unknown): string | undefined {
+	if (!(error instanceof Error)) return undefined;
+	const data = (error as { data?: unknown }).data;
+	const extra =
+		data && typeof data === "object"
+			? [
+					(data as Record<string, unknown>).details,
+					(data as Record<string, unknown>).message,
+				].find((v): v is string => typeof v === "string" && v.trim() !== "")
+			: typeof data === "string"
+				? data
+				: undefined;
+	const raw = [error.message, extra].filter(Boolean).join(": ");
+	const line = raw
+		.replace(/\p{Cc}+/gu, " ")
+		.replace(/\s+/g, " ")
+		.trim();
+	if (!line) return undefined;
+	return line.length > MAX_TURN_ERROR
+		? `${line.slice(0, MAX_TURN_ERROR - 1)}…`
+		: line;
 }
 
 const wait = (ms: number) =>

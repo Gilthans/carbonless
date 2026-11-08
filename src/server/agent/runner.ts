@@ -14,6 +14,7 @@ import {
 	type AgentIdentity,
 	type AgentState,
 	type AgentStatus,
+	type AgentStop,
 } from "../../shared/agent.js";
 import { AcpAgent, AgentStartError, agentEnv } from "./acp.js";
 import { agentsDir, type Checkout, createCheckout } from "./checkout.js";
@@ -42,7 +43,15 @@ export interface RunnerFacts {
 
 export interface RunnerDeps {
 	reviewId: string;
-	config(): Promise<{ agent: AgentConfig | null; problems: string[] }>;
+	/**
+	 * The machine's agent config; `saves` counts the setup modal's Saves
+	 * (each one, even of the same config, lets a crashed agent start again).
+	 */
+	config(): Promise<{
+		agent: AgentConfig | null;
+		problems: string[];
+		saves?: number;
+	}>;
 	store: AgentThreadStore;
 	cacheClone: string;
 	head: string;
@@ -91,6 +100,8 @@ interface Proc {
 
 interface Answering {
 	thread: string;
+	/** The last human message the turn answers. */
+	asked: string | undefined;
 	text: string;
 	activity: AgentActivity[];
 	/** toolCallId → its entry in `activity`. */
@@ -119,8 +130,13 @@ export class AgentRunner {
 	#release: (() => Promise<void>) | null = null;
 	#checkout: Checkout | null = null;
 	#answering: Answering | null = null;
-	/** Crashes since the last turn that ended without one. */
+	/**
+	 * Crashes since the last turn that ended without one: at two, no
+	 * respawn until a human asks again or the config is saved.
+	 */
 	#crashes = 0;
+	/** The config saves last seen (RunnerDeps.config). */
+	#saves: number | undefined;
 	/** Whether the process has had a prompt (the first carries `pr`). */
 	#prompted = false;
 	/** A rejected permission's reason, for the thread's next envelope. */
@@ -142,7 +158,10 @@ export class AgentRunner {
 		if (!this.#closed) {
 			const read = await this.#readConfig();
 			if (!this.#closed) {
-				if (read.changed && this.#config) {
+				if (read.saved && !read.changed && this.#config) {
+					// A Save (the same config): a stopped agent starts again.
+					if (this.#state === "error" || this.#state === "off") this.poke();
+				} else if (read.changed && this.#config) {
 					if (this.#state !== "elsewhere") this.#set("starting");
 					this.poke();
 				} else if (read.changed) {
@@ -186,6 +205,7 @@ export class AgentRunner {
 							thread: answering.thread,
 							text: answering.text,
 							activity: answering.activity.map((a) => ({ ...a })),
+							...(answering.asked ? { asked: answering.asked } : {}),
 						},
 					}
 				: {}),
@@ -210,6 +230,15 @@ export class AgentRunner {
 				this.#pump = null;
 				if (this.#again && !this.#closed) this.poke();
 			});
+	}
+
+	/**
+	 * A human asked (a new thread or a message): like poke, and an agent
+	 * that crashed twice may start again. One question, one try: never a loop.
+	 */
+	asked(): void {
+		this.#crashes = 0;
+		this.poke();
 	}
 
 	/** Resolves once nothing is running (tests). */
@@ -249,13 +278,19 @@ export class AgentRunner {
 		this.#elsewhere = extra.elsewhere;
 	}
 
-	/** Reads the config; on a change, a turn under way is cancelled (the pump applies it). */
-	async #readConfig(): Promise<{ changed: boolean }> {
-		const { agent, problems } = await this.#deps.config();
+	/**
+	 * Reads the config; on a change, a turn under way is cancelled (the pump
+	 * applies it). A new Save, changed or not, opens the crash gate.
+	 */
+	async #readConfig(): Promise<{ changed: boolean; saved: boolean }> {
+		const { agent, problems, saves } = await this.#deps.config();
 		this.#problems = problems;
 		this.#configured = agent !== null;
+		const saved = this.#saves !== undefined && saves !== this.#saves;
+		this.#saves = saves;
+		if (saved) this.#crashes = 0;
 		const key = agent ? JSON.stringify(agent) : null;
-		if (key === this.#key) return { changed: false };
+		if (key === this.#key) return { changed: false, saved };
 		const first = this.#key === undefined;
 		this.#key = key;
 		this.#config = agent;
@@ -263,7 +298,7 @@ export class AgentRunner {
 		if (this.#proc && this.#proc.key !== key && this.#answering) {
 			await this.#proc.agent?.cancel();
 		}
-		return { changed: !first };
+		return { changed: !first, saved };
 	}
 
 	async #run(): Promise<void> {
@@ -290,8 +325,13 @@ export class AgentRunner {
 			this.#set("off");
 			return null;
 		}
-		if (this.#proc?.agent) return this.#proc.agent;
-		// Twice crashed without a good turn between: stays error until the config changes.
+		if (this.#proc?.agent) {
+			if (this.#proc.agent.alive) return this.#proc.agent;
+			// Its connection closed but the process lingers: killed, replaced.
+			await this.#lost(this.#proc);
+		}
+		// Twice crashed without a good turn between: stays error until a
+		// human asks again or the config is saved.
 		if (this.#crashes >= 2) return null;
 		if (!this.#release) {
 			const claim = await takeClaim(this.#dir(), {
@@ -378,6 +418,23 @@ export class AgentRunner {
 		await proc.agent?.close();
 	}
 
+	/**
+	 * A process whose connection closed while it still runs: a crash (it
+	 * counts, its last turn is stored), then killed.
+	 */
+	async #lost(proc: Proc): Promise<void> {
+		if (proc.stopping) return;
+		if (this.#proc === proc) this.#proc = null;
+		proc.stopping = true;
+		if (proc.agent) this.#crashedAgents.add(proc.agent);
+		this.#crashes++;
+		const tail = proc.agent?.stderrTail().trim() ?? "";
+		this.#set("error", {
+			error: `The agent's connection closed${tail ? `: ${tail.slice(-500)}` : ""}`,
+		});
+		await proc.agent?.close();
+	}
+
 	#onExit(proc: Proc, code: number | null, signal: string | null): void {
 		if (proc.stopping || this.#closed) return;
 		if (this.#proc === proc) this.#proc = null;
@@ -411,7 +468,10 @@ export class AgentRunner {
 			const threads = await this.#deps.store.read();
 			const next = threads.find((t) => !t.resolved && t.waiting);
 			if (!next) {
-				if (this.#current(agent)) this.#set("ready");
+				// A failed last turn keeps its reason up until the next one.
+				if (this.#current(agent) && this.#state !== "error") {
+					this.#set("ready");
+				}
 				return;
 			}
 			if (!(await this.#turn(agent, next))) return;
@@ -473,6 +533,7 @@ export class AgentRunner {
 		const asked = thread.messages.findLast((m) => m.by === "human")?.id;
 		const answering: Answering = {
 			thread: thread.id,
+			asked,
 			text: "",
 			activity: [],
 			calls: new Map(),
@@ -486,7 +547,23 @@ export class AgentRunner {
 		const reply = await agent.prompt(buildPrompt(env, anchored, hunk));
 		clearTimeout(deadline);
 		this.#prompted = true;
-		if (this.#answering === answering) this.#answering = null;
+		try {
+			return await this.#store(agent, thread, reply, answering, rejected);
+		} finally {
+			// Only once the reply is stored (or never will be): the status
+			// keeps the streamed text until the thread holds it.
+			if (this.#answering === answering) this.#answering = null;
+		}
+	}
+
+	/** Stores a turn's reply; false when draining should stop. */
+	async #store(
+		agent: AcpAgent,
+		thread: AgentThreadFold,
+		reply: { text: string; stop: AgentStop; error?: string },
+		answering: Answering,
+		rejected: string | undefined,
+	): Promise<boolean> {
 		if (rejected !== undefined && this.#notices.get(thread.id) === rejected) {
 			this.#notices.delete(thread.id);
 		}
@@ -505,7 +582,8 @@ export class AgentRunner {
 				agent: agent.info,
 				stop: reply.stop,
 				activity: answering.activity,
-				...(asked ? { replyTo: asked } : {}),
+				...(answering.asked ? { replyTo: answering.asked } : {}),
+				...(reply.error ? { error: reply.error } : {}),
 			});
 		} catch (error) {
 			this.#set("error", {
@@ -513,10 +591,19 @@ export class AgentRunner {
 			});
 			return false;
 		}
+		// Its connection closed while the process lingers: a crash.
+		if (this.#proc?.agent === agent && !agent.alive) {
+			await this.#lost(this.#proc);
+			return false;
+		}
 		// Gone (a crash): onExit says so; the next question respawns.
 		if (this.#proc?.agent !== agent || !agent.alive) return false;
 		if (reply.stop !== "error") this.#crashes = 0;
-		if (this.#current(agent)) this.#set("ready");
+		if (this.#current(agent)) {
+			// The agent's reason for a failed turn, until the next turn.
+			if (reply.error) this.#set("error", { error: reply.error });
+			else this.#set("ready");
+		}
 		return true;
 	}
 

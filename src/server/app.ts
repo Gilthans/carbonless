@@ -23,7 +23,11 @@ import {
 import { registerAccessKey, registerHostCheck } from "./access.js";
 import { checkAgent } from "./agent/acp.js";
 import { agentsDir } from "./agent/checkout.js";
-import { type AgentHost, agentConfig } from "./agent/host.js";
+import {
+	type AgentHost,
+	agentConfig,
+	noteAgentConfigSaved,
+} from "./agent/host.js";
 import { isSafePath } from "./agent/prompt.js";
 import { UnknownAgentThreadError } from "./agent/store.js";
 import { parseAsOf } from "./asOf.js";
@@ -489,6 +493,7 @@ export async function buildApp(
 		const agent = parseAgentConfig(request.body, true);
 		try {
 			const c = await updateConfig((config) => ({ ...config, agent }));
+			noteAgentConfigSaved();
 			return { agent: c.agent };
 		} catch (error) {
 			throw new BadRequestError((error as Error).message);

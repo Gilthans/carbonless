@@ -26,12 +26,16 @@ export interface AcpScenario {
 		match?: string;
 		text: string;
 		stop?: AgentStop;
+		/** With stop "error": the message the prompt fails with (a JSON-RPC internal error). */
+		error?: string;
 		chunks?: number;
 	}>;
 	/** Permission requests made before answering, each also a tool_call update. */
 	requests?: Array<{ kind: ActivityKind; title: string; rawInput?: unknown }>;
 	/** Exit 70 right after the first chunk. */
 	crashOnPrompt?: boolean;
+	/** Close stdout right after the first chunk and live on until killed. */
+	lingerOnPrompt?: boolean;
 	/**
 	 * Gates on the test's cue, never the clock: `prompt` holds a turn after
 	 * its first chunk (a cancel ends the wait, stop `cancelled`);

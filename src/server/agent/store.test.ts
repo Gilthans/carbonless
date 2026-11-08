@@ -311,6 +311,30 @@ describe("AgentThreadStore", () => {
 		expect(stored.messages[1]?.activity).toEqual(many.slice(0, 50));
 	});
 
+	it("a failed reply keeps the agent's reason, capped; a good one carries none", async () => {
+		const t = await store.open({
+			anchor,
+			text: "q",
+			by: "human",
+			clientId: "c",
+		});
+		const ai = {
+			by: "ai" as const,
+			text: "",
+			agent: { name: "fake-acp", version: "1" },
+			activity: [],
+		};
+		await store.message(t.id, {
+			...ai,
+			stop: "error",
+			error: "x".repeat(2000),
+		});
+		await store.message(t.id, { ...ai, stop: "end_turn", error: "ignored" });
+		const [, failed, fine] = (await store.read())[0]?.messages ?? [];
+		expect(failed?.error).toBe("x".repeat(1000));
+		expect(fine?.error).toBeUndefined();
+	});
+
 	it("events of unknown thread ids are dropped by the fold", async () => {
 		const t = await ask("Why?", "c1");
 		const ghost = "0".repeat(26);

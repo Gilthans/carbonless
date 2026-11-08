@@ -6,6 +6,7 @@ import {
 	type AgentIdentity,
 	type AgentStop,
 	MAX_ACTIVITY_ENTRIES,
+	MAX_AGENT_ERROR,
 	MAX_AGENT_TEXT,
 } from "../../shared/agent.js";
 import type { ClusterState, DiffSide } from "../../shared/types.js";
@@ -144,6 +145,8 @@ export interface AgentMessageEvent extends EventBase {
 	 * A human message after it still waits for an answer.
 	 */
 	replyTo?: string;
+	/** ai only, with stop "error": why the agent failed the turn (one line, ≤ MAX_AGENT_ERROR). */
+	error?: string;
 }
 
 export interface AgentThreadResolvedEvent extends EventBase {
@@ -592,6 +595,16 @@ function parseAgentEvent(
 			) {
 				return null;
 			}
+			const { error } = raw;
+			if (
+				error !== undefined &&
+				(base.by !== "ai" ||
+					stop !== "error" ||
+					typeof error !== "string" ||
+					error.length > MAX_AGENT_ERROR)
+			) {
+				return null;
+			}
 			return {
 				...base,
 				type: "agent-message",
@@ -601,6 +614,7 @@ function parseAgentEvent(
 				...(stop !== undefined ? { stop: stop as AgentStop } : {}),
 				...(activity ? { activity } : {}),
 				...(replyTo !== undefined ? { replyTo } : {}),
+				...(error !== undefined ? { error } : {}),
 			};
 		}
 		case "agent-thread-resolved": {

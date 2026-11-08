@@ -63,7 +63,7 @@ export class AgentHost {
 			by: "human",
 			clientId: req.clientId,
 		});
-		this.runner.poke();
+		this.runner.asked();
 		return this.#view(t);
 	}
 
@@ -76,7 +76,7 @@ export class AgentHost {
 			text: req.text,
 			clientId: req.clientId,
 		});
-		this.runner.poke();
+		this.runner.asked();
 		return this.#view(t);
 	}
 
@@ -122,6 +122,13 @@ export interface ReviewAgentSource {
 	code(anchor: CodeAnchor): Promise<CodeWindow | null>;
 }
 
+/** The setup modal's Saves since the server started (PUT /api/config/agent). */
+let agentConfigSaves = 0;
+/** A Save, even of the same config: every review's crashed agent may start again. */
+export const noteAgentConfigSaved = (): void => {
+	agentConfigSaves++;
+};
+
 /** The agent config from config.json, with the problems that concern it. */
 export async function agentConfig(): Promise<{
 	agent: AgentConfig | null;
@@ -166,7 +173,10 @@ export function reviewAgentHost(src: ReviewAgentSource): AgentHost {
 	};
 	const runner = new AgentRunner({
 		reviewId: src.reviewId,
-		config: agentConfig,
+		config: async () => ({
+			...(await agentConfig()),
+			saves: agentConfigSaves,
+		}),
 		store,
 		cacheClone: src.repo,
 		head: src.snapshot().head,

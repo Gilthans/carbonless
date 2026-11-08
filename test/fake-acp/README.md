@@ -13,7 +13,9 @@ The scenario (`scenario.ts`, `AcpScenario`) names the agent, picks answers by
 a substring of the latest message (`answers`, split into `chunks`), makes
 permission requests before answering (`requests`, one `tool_call` each),
 fails `initialize` (`initializeError`: stderr, exit 1) or crashes after the
-first chunk (`crashOnPrompt`: exit 70). `hold: ["prompt"]` keeps a turn
+first chunk (`crashOnPrompt`: exit 70), or closes its stdout there and
+lingers (`lingerOnPrompt`). An answer with `stop: "error"` fails the prompt
+with its `error` message. `hold: ["prompt"]` keeps a turn
 after its first chunk and `hold: ["initialize"]` keeps the handshake, until
 `releaseAcp(path, op)`; the fake polls the file every 20 ms, like the fake
 gh, so a test gates on its own cue and never on the clock. A

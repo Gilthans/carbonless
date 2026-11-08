@@ -16,6 +16,7 @@ import type {
 } from "../../shared/agent";
 import { AgentThreadCard, activitySummary } from "./AgentThreadCard";
 import { resetAgentWrites } from "./agentWrites";
+import { agentThreadsQuery } from "./api";
 import { closeAgentSetup, useAgentSetupOpen } from "./setupStore";
 
 const status = (more: Partial<AgentStatus> = {}): AgentStatus => ({
@@ -243,6 +244,109 @@ describe("AgentThreadCard", () => {
 		expect(button).toHaveAttribute("aria-busy", "true");
 		release();
 		await waitFor(() => expect(button).toBeEnabled());
+	});
+
+	it("a failed reply names the agent's reason: in its chip, and in place of an empty text", () => {
+		const t = answered();
+		const last = t.messages[1];
+		if (last) {
+			last.text = "";
+			last.stop = "error";
+			last.error = "Internal error: Rate limited";
+		}
+		show(t, status());
+		const chip = screen.getByTestId("agent-stop-chip");
+		expect(chip.textContent).toBe("failed");
+		expect(chip).toHaveAccessibleName(
+			"The agent stopped with an error: Internal error: Rate limited",
+		);
+		expect(screen.getByTestId("agent-message-error")).toHaveTextContent(
+			"Internal error: Rate limited",
+		);
+	});
+
+	describe("from the turn's end until its reply is read", () => {
+		const turn = {
+			thread: "T1",
+			text: "No. It **skips**",
+			activity: [],
+			asked: "m1",
+		};
+		const busy = status({ state: "busy", answering: turn });
+		const ready = status();
+		const reply = answered({
+			messages: [
+				...thread().messages,
+				{
+					id: "m2",
+					by: "ai",
+					at: "2026-11-07T10:01:00Z",
+					text: "No. It **skips** the first element.",
+					agent: { name: "Claude Agent", version: "0.100.0" },
+					stop: "end_turn",
+					replyTo: "m1",
+				},
+			],
+		});
+		function mount() {
+			const client = new QueryClient({
+				defaultOptions: { queries: { retry: false, enabled: false } },
+			});
+			const view = (t: AgentThread, s: AgentStatus) => (
+				<QueryClientProvider client={client}>
+					<AgentThreadCard thread={t} status={s} />
+				</QueryClientProvider>
+			);
+			const r = render(view(thread(), busy));
+			return {
+				client,
+				rerender: (t: AgentThread, s: AgentStatus) => r.rerender(view(t, s)),
+			};
+		}
+		const streamed = () =>
+			screen.queryByTestId("agent-answering")?.textContent ?? "";
+
+		it("the streamed text stays and waiting never shows; then the reply, once", () => {
+			const { client, rerender } = mount();
+			expect(streamed()).toContain("No. It skips");
+			// The status has dropped the turn; the threads aren't read yet.
+			rerender(thread(), ready);
+			expect(streamed()).toContain("No. It skips");
+			expect(screen.queryByTestId("agent-waiting")).toBeNull();
+			expect(screen.getByTestId("agent-thread")).toHaveAttribute(
+				"aria-label",
+				"Agent thread, answering",
+			);
+			// The read lands with the reply: shown once, the stream gone.
+			client.setQueryData(agentThreadsQuery.queryKey, { threads: [reply] });
+			rerender(reply, ready);
+			expect(screen.queryByTestId("agent-answering")).toBeNull();
+			expect(screen.getAllByTestId("agent-message-ai")).toHaveLength(1);
+			expect(screen.queryByTestId("agent-waiting")).toBeNull();
+		});
+
+		it("a status that still has the turn while the thread holds its reply shows it once", () => {
+			const { rerender } = mount();
+			rerender(reply, busy);
+			expect(screen.queryByTestId("agent-answering")).toBeNull();
+			expect(screen.getAllByTestId("agent-message-ai")).toHaveLength(1);
+		});
+
+		it("a turn that lands nothing lets go at the next threads read, or a restart", () => {
+			const { client, rerender } = mount();
+			rerender(thread(), ready);
+			expect(streamed()).toContain("No. It skips");
+			client.setQueryData(agentThreadsQuery.queryKey, { threads: [thread()] });
+			rerender(thread(), ready);
+			expect(screen.queryByTestId("agent-answering")).toBeNull();
+			expect(screen.getByTestId("agent-waiting")).toBeTruthy();
+
+			cleanup();
+			const again = mount();
+			again.rerender(thread(), status({ state: "starting" }));
+			expect(screen.queryByTestId("agent-answering")).toBeNull();
+			expect(screen.getByTestId("agent-waiting")).toBeTruthy();
+		});
 	});
 
 	it("a stopped or truncated reply says so", () => {

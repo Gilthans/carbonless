@@ -175,9 +175,40 @@ describe("AcpAgent", () => {
 		const reply = await agent.prompt(text("go"));
 		expect(reply.stop).toBe("error");
 		expect(reply.text).toBe("partial an");
+		// The exit says why (the runner's error), not the broken connection.
+		expect(reply.error).toBeUndefined();
 		await vi.waitFor(() => expect(seen.exits).toEqual([[70, null]]), {
 			timeout: 20_000,
 		});
+	});
+
+	it("a prompt that fails carries the agent's reason, sanitised and capped", async () => {
+		scenario({
+			answers: [
+				{
+					text: "half",
+					stop: "error",
+					error: `Rate limited\u0000\n\tby the API ${"x".repeat(600)}`,
+				},
+			],
+		});
+		const { agent } = await spawn();
+		const reply = await agent.prompt(text("go"));
+		expect(reply.stop).toBe("error");
+		expect(reply.text).toBe("half");
+		expect(reply.error).toMatch(
+			/^Internal error: Rate limited by the API x+…$/,
+		);
+		expect(reply.error?.length).toBeLessThanOrEqual(300);
+		expect(agent.alive).toBe(true);
+	});
+
+	it('an agent that names itself "" is known by its command\'s name', async () => {
+		scenario({ agent: { name: "", version: "2.0.0" } });
+		const { agent } = await spawn({
+			command: join(FAKE_ACP_BIN, "claude-agent-acp"),
+		});
+		expect(agent.info).toEqual({ name: "claude-agent-acp", version: "2.0.0" });
 	});
 
 	it("cancel → stop cancelled", async () => {

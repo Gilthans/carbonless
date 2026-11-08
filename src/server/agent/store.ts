@@ -8,6 +8,7 @@ import {
 	type AgentThread,
 	MAX_ACTIVITY_BYTES,
 	MAX_ACTIVITY_ENTRIES,
+	MAX_AGENT_ERROR,
 	MAX_AGENT_TEXT,
 } from "../../shared/agent.js";
 import {
@@ -69,6 +70,9 @@ function messageOf(
 			: {}),
 		...(e.type === "agent-message" && e.replyTo !== undefined
 			? { replyTo: e.replyTo }
+			: {}),
+		...(e.type === "agent-message" && e.error !== undefined
+			? { error: e.error }
 			: {}),
 	};
 }
@@ -180,6 +184,8 @@ type MessageInput =
 			activity: AgentActivity[];
 			/** The id of the last human message the prompt included. */
 			replyTo?: string;
+			/** With stop "error": the agent's reason. */
+			error?: string;
 	  };
 
 /**
@@ -268,6 +274,9 @@ export class AgentThreadStore {
 								stop: input.stop,
 								activity: capActivity(input.activity),
 								...(input.replyTo ? { replyTo: input.replyTo } : {}),
+								...(input.stop === "error" && input.error
+									? { error: input.error.slice(0, MAX_AGENT_ERROR) }
+									: {}),
 							}
 						: { details: { clientId: input.clientId } }),
 				},

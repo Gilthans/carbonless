@@ -364,6 +364,26 @@ describe("agent events", () => {
 		).toEqual([]);
 	});
 
+	it("keeps a failed ai message's error; drops one on a human's, a non-error stop or past the cap", () => {
+		const failed = {
+			...reply,
+			stop: "error",
+			error: "Internal error: Rate limited",
+		};
+		expect(parseEventLines(msg([failed]))).toEqual([failed]);
+		expect(() => validateForWrite(failed as typeof reply)).not.toThrow();
+		expect(
+			parseEventLines(
+				msg([
+					{ ...failed, by: "human" },
+					{ ...failed, stop: "end_turn" },
+					{ ...failed, error: 7 },
+					{ ...failed, error: "x".repeat(1001) },
+				]),
+			),
+		).toEqual([]);
+	});
+
 	it("drops agent-thread-resolved by ai and an ai opened thread without agent", () => {
 		const aiResolved = { ...resolved, by: "ai" };
 		const aiOpened = { ...opened, by: "ai" };

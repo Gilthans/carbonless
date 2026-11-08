@@ -2,7 +2,7 @@
 // with the SDK's agent(). It answers from the scenario JSON at
 // $CRB_FAKE_ACP (see scenario.ts) and appends every request it gets, and
 // every permission answer it is given, to $CRB_FAKE_ACP_LOG (JSONL).
-import { appendFileSync, readFileSync } from "node:fs";
+import { appendFileSync, closeSync, readFileSync } from "node:fs";
 import { Readable, Writable } from "node:stream";
 import { agent, methods, ndJsonStream } from "@agentclientprotocol/sdk";
 
@@ -147,6 +147,15 @@ agent({ name })
 			sessionUpdate: "agent_message_chunk",
 			content: { type: "text", text: first },
 		});
+		if (s.lingerOnPrompt) {
+			// Its stdout closes, the process lives on (until killed).
+			process.stdout.write("", () => {
+				process.stdout.on("error", () => {});
+				closeSync(1);
+				setInterval(() => {}, 1000);
+			});
+			return new Promise(() => {});
+		}
 		if (s.crashOnPrompt) {
 			// Flushed first: the client sees the chunk, then the exit.
 			process.stdout.write("", () => process.exit(70));
@@ -161,7 +170,9 @@ agent({ name })
 			});
 		}
 		if (stopped()) return { stopReason: "cancelled" };
-		if (answer.stop === "error") throw new Error("fake agent: error");
+		if (answer.stop === "error") {
+			throw new Error(answer.error ?? "fake agent: error");
+		}
 		return { stopReason: answer.stop ?? "end_turn" };
 	})
 	.onNotification(methods.agent.session.cancel, async (cx) => {
