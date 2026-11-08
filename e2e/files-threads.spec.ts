@@ -140,13 +140,13 @@ async function setup(
 	return p;
 }
 
-async function expand(page: Page, path: string) {
+async function expand(page: Page, path: string, placed = true) {
 	const section = fileSection(page, path);
 	await section.getByRole("button", { name: "Expand file" }).click();
 	// core.ts's thread past its end is listed under the header once the
 	// placements are in: wait for them, so nothing moves under a test's
 	// measurements afterwards.
-	if (path === CORE) {
+	if (path === CORE && placed) {
 		await expect(section.getByTestId("unplaced-threads")).toBeVisible();
 	}
 	return section;
@@ -470,7 +470,7 @@ test("threads loading: spinners in the bar and on the file, never no comments", 
 	const s = await startCrb();
 	await openFiles(page, s.url);
 	const bar = page.locator("[data-page-bar]");
-	const core = await expand(page, CORE);
+	const core = await expand(page, CORE, false);
 	const util = fileSection(page, UTIL);
 	// The open file's bubble spins rather than offering a first comment.
 	await expectLoadingThen({

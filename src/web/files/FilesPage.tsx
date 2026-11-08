@@ -214,6 +214,8 @@ function useDiffThreads(
 	viewedHead: string | undefined,
 	to: RereviewTo | null,
 	latest: number | null,
+	/** Threads published from then on (ms) are left out (an earlier patch set). */
+	until: number | null,
 ): {
 	threads: DiffThreads | undefined;
 	/** Every thread of the read, on this head or not (people's tints). */
@@ -243,11 +245,15 @@ function useDiffThreads(
 	const visible = useMemo(
 		() =>
 			view
-				? gone.size > 0
-					? view.threads.filter((t) => !gone.has(t.id))
+				? gone.size > 0 || until !== null
+					? view.threads.filter(
+							(t) =>
+								!gone.has(t.id) &&
+								(until === null || Date.parse(t.createdAt) < until),
+						)
 					: view.threads
 				: undefined,
-		[view, gone],
+		[view, gone, until],
 	);
 	const threads = useMemo(
 		() =>
@@ -356,10 +362,29 @@ const headerOf = (index: number) =>
 /** How long "<path> isn't in this diff" stays. */
 export const MISSING_HINT_MS = 8000;
 
-/** What the threads are placed into: the viewed patch set or head. */
-function placementsTo(comparison: Comparison): RereviewTo | null {
+/**
+ * An earlier patch set shows the threads published before the next one
+ * started (ms); null: every thread.
+ */
+function threadsUntil(
+	comparison: Comparison,
+	session: SessionInfo | undefined,
+): number | null {
 	const { viewing } = comparison;
-	if (!viewing) return null;
+	if (viewing?.kind !== "patchset" || !session) return null;
+	return (
+		session.patchsets.find((p) => p.number > viewing.number)?.startedAt ?? null
+	);
+}
+
+/** What the threads are placed into: the viewed patch set or head. */
+function placementsTo(
+	comparison: Comparison,
+	session: SessionInfo | undefined,
+): RereviewTo | null {
+	const { viewing } = comparison;
+	// A pinned head is the PR as of that commit: its own threads only.
+	if (!viewing || !session || session.pinnedHead) return null;
 	return viewing.kind === "patchset"
 		? { patchset: viewing.number }
 		: { head: viewing.oid };
@@ -667,8 +692,9 @@ export function FilesPage() {
 		placement: placementInfo,
 	} = useDiffThreads(
 		viewedHeadOf(comparison, session),
-		placementsTo(comparison),
+		placementsTo(comparison, session),
 		latest,
+		threadsUntil(comparison, session),
 	);
 	// The first open's own reads are in (the files, their threads): only
 	// then may the verdict card read GitHub's merge facts.
