@@ -1722,11 +1722,20 @@ describe("Comment on file", () => {
 				]),
 			},
 		);
-		expect(
-			await screen.findByRole("button", {
-				name: "1 comment on this file, resolved, line not in this diff",
-			}),
-		).toBeInTheDocument();
+		const bubble = await screen.findByRole("button", {
+			name: "1 comment on this file, resolved, line not in this diff",
+		});
+		// Said, but muted: a resolved thread asks for nothing.
+		const alert = bubble.querySelector(".octicon-alert");
+		expect(alert?.getAttribute("class")).toContain("text-muted");
+		expect(alert?.getAttribute("class")).not.toContain("text-warn");
+		await user.click(bubble);
+		const warning = within(await screen.findByTestId("files-thread")).getByRole(
+			"img",
+			{ name: "Line not in this diff" },
+		);
+		expect(warning.getAttribute("class")).toContain("text-muted");
+		expect(warning.getAttribute("class")).not.toContain("text-warn");
 		await user.click(screen.getByRole("button", { name: "Collapse file" }));
 		expect(
 			screen.getByRole("button", { name: "1 comment in this file, resolved" }),

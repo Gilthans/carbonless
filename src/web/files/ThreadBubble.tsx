@@ -141,7 +141,12 @@ export function ThreadBubble(props: {
 							<CommentIcon size={12} />
 						)}
 						{!empty && !loading && count}
-						{props.flagged && <AlertIcon size={12} className="text-warn" />}
+						{props.flagged && (
+							<AlertIcon
+								size={12}
+								className={resolved ? "text-muted" : "text-warn"}
+							/>
+						)}
 						{yourTurn && (
 							<span
 								data-testid="your-turn-dot"

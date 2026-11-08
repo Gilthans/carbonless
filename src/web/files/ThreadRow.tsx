@@ -50,7 +50,8 @@ export function ThreadBlock(props: {
 					<LabeledIcon
 						icon={AlertIcon}
 						label="Line not in this diff"
-						className="text-warn"
+						// A resolved thread asks for nothing: the fact, muted.
+						className={thread.resolved ? "text-muted" : "text-warn"}
 					/>
 				)}
 				<span className="ml-auto flex items-center gap-2">

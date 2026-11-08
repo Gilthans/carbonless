@@ -655,11 +655,15 @@ export class Session {
 					this.#diffBase(),
 				);
 				job.done = { target, inputs: open, complete: false };
-				const resolved = await this.#placer.inputs(
-					target,
-					view.threads.filter((t) => t.resolved),
-					this.#diffBase(),
-				);
+				// The resolved threads join after; their failure never takes
+				// the unresolved placements back (they then show where made).
+				const resolved = await this.#placer
+					.inputs(
+						target,
+						view.threads.filter((t) => t.resolved),
+						this.#diffBase(),
+					)
+					.catch(() => []);
 				job.done = { target, inputs: [...open, ...resolved], complete: true };
 			} catch (error) {
 				job.error = error as Error;

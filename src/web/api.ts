@@ -329,6 +329,7 @@ export const patchsetCommitsQuery = (missing: string[]) =>
 			const data = query.state.data;
 			// Asked again only while a count is still being made: one that
 			// failed for good, or a patch set no longer there, stops it.
+			if (query.state.status === "error") return false;
 			return !data || missing.some((k) => data[k] === null)
 				? REREVIEW_POLL_MS
 				: false;
@@ -809,11 +810,24 @@ export const placementsQuery = (readId: string, to: RereviewTo) =>
 			readId,
 			...("patchset" in to ? ["ps", to.patchset] : ["head", to.head]),
 		],
-		queryFn: () => fetchPlacements(readId, to),
+		queryFn: async ({ client, queryKey }) => {
+			const next = await fetchPlacements(readId, to);
+			// Placements once shown never go back to spinners (a job the
+			// server started again answers pending for a while).
+			if ("pending" in next) {
+				const shown = client.getQueryData<PlacementsAnswer | { pending: true }>(
+					queryKey,
+				);
+				if (shown && !("pending" in shown)) return shown;
+			}
+			return next;
+		},
 		staleTime: Number.POSITIVE_INFINITY,
 		// Asked again while pending, and while the resolved threads are
 		// still joining (the unresolved ones are in already).
+		// Never after an error: the last data would keep it going.
 		refetchInterval: (query) =>
+			query.state.status !== "error" &&
 			query.state.data &&
 			("pending" in query.state.data || query.state.data.complete === false)
 				? REREVIEW_POLL_MS

@@ -1802,6 +1802,31 @@ describe("API", () => {
 			}
 		});
 
+		it("a failure placing the resolved threads leaves the unresolved ones answered, complete", async () => {
+			const inputs = ThreadPlacer.prototype.inputs;
+			const failing = vi
+				.spyOn(ThreadPlacer.prototype, "inputs")
+				.mockImplementation(async function (this: ThreadPlacer, ...args) {
+					const [, threads] = args;
+					if (threads.length > 0 && threads.every((t) => t.resolved)) {
+						throw new Error("diff failed on an old commit");
+					}
+					return inputs.apply(this, args);
+				});
+			try {
+				const { h2, readId } = await setup();
+				const answer = await placementsOf(`read=${readId}&head=${h2}`);
+				expect(answer.complete).toBe(true);
+				expect(Object.keys(byId(answer))).toEqual(["T12-0"]);
+				// Asked again: the same answer, never pending again.
+				const again = await get(`/api/placements?read=${readId}&head=${h2}`);
+				expect(again.pending).toBeUndefined();
+				expect(Object.keys(byId(again))).toEqual(["T12-0"]);
+			} finally {
+				failing.mockRestore();
+			}
+		});
+
 		it("the engine's answer carries the placements of the newest read once they are in", async () => {
 			const { h2, readId } = await setup();
 			await placementsOf(`read=${readId}&head=${h2}`);
