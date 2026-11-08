@@ -41,6 +41,7 @@ import {
 	STALL_ATTEMPTS,
 } from "../files/stateSync";
 import { useReviewId } from "../reviewId";
+import { verdictCommitOf } from "../verdict/verdictCommit";
 import {
 	dropPrWideVerdict,
 	type VerdictSending,
@@ -284,7 +285,7 @@ export interface ThreadWritesDeps {
 	verdictLanded?: (answer: VerdictAnswer, event: VerdictEvent) => void;
 	/** The verdict's message and the verdict on its way, kept across reloads. */
 	verdictDraft?: VerdictStore;
-	/** The head a verdict goes on now (the session's snapshot head). */
+	/** The head a verdict goes on now (verdictCommitOf: what the buttons name). */
 	verdictCommit?: () => string;
 }
 
@@ -1831,7 +1832,10 @@ export function threadWritesFor(client: QueryClient): ThreadWrites {
 			verdict: postVerdict,
 			verdictDraft: verdictDraftFor(client),
 			verdictCommit: () =>
-				client.getQueryData(sessionQuery.queryKey)?.snapshotHead ?? "",
+				verdictCommitOf(
+					client.getQueryData(verdictQuery.queryKey),
+					client.getQueryData(sessionQuery.queryKey),
+				),
 			verdictLanded: (answer) => applyVerdict(client, answer),
 			confirmedResolved: (threadId) => {
 				const lists = client.getQueriesData<ThreadsView>({

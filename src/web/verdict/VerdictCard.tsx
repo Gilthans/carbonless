@@ -40,6 +40,7 @@ import { Tooltip } from "../Tooltip";
 import { useThreadWriter, useThreadWrites } from "../threads/threadWrites";
 import { safeHref } from "../ui";
 import { isViewer } from "./blockers";
+import { verdictCommitOf } from "./verdictCommit";
 import { useVerdictDraft, verdictDraftFor } from "./verdictDraft";
 
 /** The owner's words for each verdict (verbatim): each button's tooltip. */
@@ -171,7 +172,8 @@ function CurrentVerdict(props: {
 							target="_blank"
 							rel="noreferrer"
 							data-testid="verdict-since-commit"
-							className="font-mono text-xs text-link hover:underline focus-visible:outline-2 focus-visible:outline-accent"
+							// A 40px tap target on a phone, inline text from sm up.
+							className="inline-flex min-h-10 items-center font-mono text-xs text-link hover:underline focus-visible:outline-2 focus-visible:outline-accent sm:min-h-0"
 						>
 							{sha}
 						</a>
@@ -443,7 +445,7 @@ export function VerdictCard(props: {
 	// With a verdict to compare, every verdict goes on the head it is
 	// compared with (the latest patch set's, or the PR's head past it,
 	// which the verdict then starts); else on the snapshot's, as before.
-	const commit = since ? since.to.head : session.snapshotHead;
+	const commit = verdictCommitOf(props.facts, session);
 	const again =
 		since !== null &&
 		since.state === "APPROVED" &&

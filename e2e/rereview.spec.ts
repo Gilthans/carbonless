@@ -1354,9 +1354,20 @@ test("the verdict tab says what changed since your approval, with the patch set'
 		name: `Approve ${head.slice(0, 7)}`,
 	});
 	expect((await approve.boundingBox())?.height ?? 0).toBeGreaterThanOrEqual(40);
+	const link = card
+		.getByTestId("your-verdict")
+		.getByRole("link", { name: ps1.slice(0, 7) });
+	await expect(link).toHaveAttribute(
+		"href",
+		/^https:\/\/github\.com\/acme\/widget\/pull\/7#pullrequestreview-\d+$/,
+	);
 	if (isMobile) {
 		await page.setViewportSize({ width: 360, height: 740 });
 		await expectNoPageOverflow(page);
+		// A tap target, though it sits in a line of text (principle 5);
+		// mid-window, clear of the toast fixed at the bottom.
+		await link.evaluate((n) => n.scrollIntoView({ block: "center" }));
+		expect(await tapHeight(link)).toBeGreaterThanOrEqual(40);
 	}
 
 	// Reading on the head starts PS2: the since names it, with its meter.

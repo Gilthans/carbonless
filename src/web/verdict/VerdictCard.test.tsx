@@ -174,6 +174,8 @@ const local = (input: RequestInfo | URL) =>
 function renderTab(
 	verdict: () => VerdictFacts | Promise<Response>,
 	info: SessionInfo = session(),
+	/** A POST's answer before the default (a landed review); null: the default. */
+	refuse: (req: VerdictRequest) => Response | null = () => null,
 ) {
 	posted = [];
 	const fetchMock = vi.fn(
@@ -195,6 +197,8 @@ function renderTab(
 					if (init?.method === "POST") {
 						const req = JSON.parse(String(init.body)) as VerdictRequest;
 						posted.push(req);
+						const refused = refuse(req);
+						if (refused) return refused;
 						return json({
 							review: {
 								id: "R9",
@@ -437,6 +441,44 @@ describe("the verdict card since your verdict", () => {
 		);
 		await waitFor(() => expect(posted).toHaveLength(1));
 		expect(posted[0]).toMatchObject({ commit: PS1 });
+	});
+
+	it("Retry of a refused verdict posts on the commit the button names, not the snapshot's head", async () => {
+		const info = session({
+			snapshotHead: PS1,
+			currentHead: NEW,
+			headMoved: true,
+			patchset: 1,
+			patchsets: [patchset(1, PS1)],
+			head: {
+				oid: NEW,
+				mergeBase: "e".repeat(40),
+				baseBranch: "main",
+				commits: 2,
+			},
+		});
+		let refusals = 1;
+		renderTab(
+			() => facts(given({ to: { head: NEW, patchset: null } })),
+			info,
+			() =>
+				refusals-- > 0
+					? new Response(
+							JSON.stringify({ error: "GitHub said no", code: "invalid" }),
+							{ status: 422 },
+						)
+					: null,
+		);
+		const c = await card();
+		await userEvent.click(
+			await within(c).findByRole("button", { name: "Approve 0c1d2e3" }),
+		);
+		const item = await screen.findByTestId("refused-write");
+		await userEvent.click(
+			within(item).getByRole("button", { name: /^Retry / }),
+		);
+		await waitFor(() => expect(posted).toHaveLength(2));
+		expect(posted.map((r) => r.commit)).toEqual([NEW, NEW]);
 	});
 
 	it("a failed comparison says so, distinct from empty", async () => {
