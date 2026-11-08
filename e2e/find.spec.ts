@@ -430,6 +430,17 @@ test("a path hit opens the file at its header with the path marked, and the tree
 		await expect(
 			row("saveDraft.md").getByTestId("tree-name").locator(".find-current"),
 		).toHaveText("saveDraft");
+		// A row's tooltip says what its count is.
+		if (!isMobile) {
+			await row("a.ts").hover();
+			await expect(
+				page.locator('[role="tooltip"]:not([hidden])'),
+			).toContainText("3 matches for “saveDraft”");
+			await tree.locator('button[data-folder="src"]').hover();
+			await expect(
+				page.locator('[role="tooltip"]:not([hidden])'),
+			).toContainText("7 matches for “saveDraft” in this folder");
+		}
 	});
 });
 
