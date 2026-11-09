@@ -27,7 +27,7 @@ import { AgentBubble } from "../agent/AgentBubble";
 import { AgentComposer } from "../agent/AgentComposer";
 import { agentThreadsQuery } from "../agent/api";
 import { useAgentComposers } from "../agent/askAgentAction";
-import { tracedAgentPlaceables, useAgentPlacements } from "../agent/placeable";
+import { shownAgentPlaceables, useAgentPlacing } from "../agent/placeable";
 import { hunksQuery, overviewQuery, sessionQuery } from "../api";
 import { Spinner } from "../Spinner";
 import { Tooltip, TooltipPath, type TooltipTriggerProps } from "../Tooltip";
@@ -776,15 +776,21 @@ export function FileDiff(props: {
 		?.threads;
 	// Each where the tracer put it in the viewed head (as GitHub's threads
 	// are), else where it was asked.
-	const agentPlacements = useAgentPlacements();
+	const agentPlacing = useAgentPlacing();
+	const agentPlacements = agentPlacing.placements;
 	const agentPlaceables = useMemo(
-		() => tracedAgentPlaceables(agentAll ?? [], snapshotHead, agentPlacements),
-		[agentAll, snapshotHead, agentPlacements],
+		() => shownAgentPlaceables(agentAll ?? [], snapshotHead, agentPlacing),
+		[agentAll, snapshotHead, agentPlacing],
 	);
 	// Every agent thread on the file: those the tracer couldn't place in
 	// it listed with their fate; those it has no place for (not in yet,
 	// failed) and asked on an earlier head in the lead row, outdated.
-	const agentMineP = agentPlaceables.filter((p) => p.path === file.path);
+	// One the tracer put outside the comparison is listed after the files
+	// (AgentNotInComparison), never here.
+	const agentMineP = agentPlaceables.filter(
+		(p) =>
+			p.path === file.path && agentPlacements?.get(p.id)?.kind !== "outside",
+	);
 	const agentMine = agentMineP.map((p) => p.thread);
 	const agentOutdated = snapshotHead
 		? agentMineP.filter((p) => p.commit !== snapshotHead).map((p) => p.thread)
@@ -801,12 +807,11 @@ export function FileDiff(props: {
 			})
 		: null;
 	const agentHeader = agentPlaced?.header ?? [];
-	// Resolved ones after the rest (muted, counted nowhere).
+	// Resolved ones after the rest (shownAgentPlaceables' order), muted.
 	const agentFates = new Map(
-		[
-			...(agentPlaced?.fates ?? []).filter((f) => !f.thread.thread.resolved),
-			...(agentPlaced?.fates ?? []).filter((f) => f.thread.thread.resolved),
-		].map((f) => [f.thread.thread, f.placement] as const),
+		(agentPlaced?.fates ?? []).map(
+			(f) => [f.thread.thread, f.placement] as const,
+		),
 	);
 	const agentGroups = [
 		{ reason: "fate" as const, threads: [...agentFates.keys()] },

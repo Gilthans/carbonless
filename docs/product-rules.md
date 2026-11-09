@@ -552,9 +552,15 @@ question would be on someone else's behalf, or about a past moment.
   its file with its fate sentence and the "Original Reviewed Change" box;
   resolved ones after the rest, muted, counted nowhere. It keeps its agent
   bubble and card, and never counts as a GitHub thread. No placement for it
-  (not in yet, its tracing failed, or its file is outside the comparison)
-  leaves it where it was asked: in its file's lead, outdated, never gone.
-  Placements are computed, never stored: no drag, no storage change.
+  (not in yet, or its tracing failed) leaves it where it was asked: in its
+  file's lead, outdated. One the tracer puts outside the comparison, or on
+  a path the diff doesn't have (a file renamed since, still tracing or
+  failed), is listed after the files in its own "Not in this comparison"
+  group as its agent card (with its fate when known): never gone. An
+  earlier patch set shows only those asked before the next one started,
+  as review threads. Placements are for the viewed snapshot (a moved base
+  asks again), retried on failure, computed and never stored: no drag, no
+  storage change. Bubbles count unresolved agent threads only.
 - **A question never waits on the agent to be sent.** Ask agent writes
   the thread at once; it waits (yellow) until an agent answers, whether
   none is set up, it is starting, busy, crashed or elsewhere.

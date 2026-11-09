@@ -85,7 +85,57 @@ export function tracedAgentPlaceables(
 	});
 }
 
-/** The agent threads' placements in the viewed snapshot (FilesPage reads them). */
-const AgentPlacementsContext = createContext<Placements | null>(null);
-export const AgentPlacementsProvider = AgentPlacementsContext.Provider;
-export const useAgentPlacements = () => useContext(AgentPlacementsContext);
+/**
+ * What the page knows to show the agent threads by (FilesPage): the
+ * tracer's placements in the viewed snapshot, and on an earlier patch set
+ * the moment the next one started (ms; null: no cutoff).
+ */
+export interface AgentPlacing {
+	placements: Placements | null;
+	until: number | null;
+}
+
+const AgentPlacingContext = createContext<AgentPlacing>({
+	placements: null,
+	until: null,
+});
+export const AgentPlacingProvider = AgentPlacingContext.Provider;
+export const useAgentPlacing = () => useContext(AgentPlacingContext);
+
+/**
+ * The agent threads Files changed shows in the viewed head: on an earlier
+ * patch set only those asked before the next one started (as review
+ * threads, threadsUntil: never traced backwards), each placed
+ * (tracedAgentPlaceables), resolved ones after the rest so every group
+ * built from them lists them last.
+ */
+export function shownAgentPlaceables(
+	threads: readonly AgentThread[],
+	snapshotHead: string,
+	placing: AgentPlacing,
+): AgentPlaceable[] {
+	const { until } = placing;
+	const kept =
+		until === null ? threads : threads.filter((t) => Date.parse(t.at) < until);
+	const shown = tracedAgentPlaceables(kept, snapshotHead, placing.placements);
+	return [
+		...shown.filter((p) => !p.thread.resolved),
+		...shown.filter((p) => p.thread.resolved),
+	];
+}
+
+/**
+ * The agent threads no file of the comparison shows (principle 2: they go
+ * to AgentNotInComparison): those the tracer put outside it, and those on
+ * a path the diff doesn't have (`paths`): a file renamed since whose trace
+ * is pending or failed.
+ */
+export function agentOutside(
+	shown: readonly AgentPlaceable[],
+	paths: ReadonlySet<string>,
+	placements: Placements | null,
+): AgentPlaceable[] {
+	return shown.filter(
+		(p) => placements?.get(p.id)?.kind === "outside" || !paths.has(p.path),
+	);
+}

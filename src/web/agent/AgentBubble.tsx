@@ -3,12 +3,21 @@ import type { AgentThread } from "../../shared/agent";
 import { plural } from "../overview/parts";
 import { Tooltip } from "../Tooltip";
 
+/**
+ * The threads a bubble counts: the unresolved ones (a resolved one is
+ * counted nowhere); all resolved, all of them, beside the check.
+ */
+export function agentBubbleCount(threads: readonly AgentThread[]): number {
+	const open = threads.filter((t) => !t.resolved).length;
+	return open > 0 ? open : threads.length;
+}
+
 /** "2 agent threads on line 16, 1 waiting". */
 export function agentBubbleLabel(
 	threads: AgentThread[],
 	where?: string,
 ): string {
-	const n = threads.length;
+	const n = agentBubbleCount(threads);
 	const head = `${plural(n, "agent thread")}${where ? ` ${where}` : ""}`;
 	const waiting = threads.filter((t) => t.waiting && !t.resolved).length;
 	const parts = [head];
@@ -65,7 +74,7 @@ export function AgentBubble(props: {
 					>
 						{/* The sparkle always: resolved, it is still the agent's. */}
 						<SparkleFillIcon size={12} className="text-agent-ink" />
-						{threads.length}
+						{agentBubbleCount(threads)}
 						{resolved && <CheckIcon size={12} className="text-ok" />}
 						{waiting && (
 							<span

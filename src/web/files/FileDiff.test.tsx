@@ -21,7 +21,7 @@ import type {
 	SessionInfo,
 } from "../../shared/types";
 import { agentThreadsQuery } from "../agent/api";
-import { AgentPlacementsProvider } from "../agent/placeable";
+import { AgentPlacingProvider } from "../agent/placeable";
 import { reviewQuery, sessionQuery } from "../api";
 import { resetShowInvisibles, setShowInvisibles } from "../code/Invisibles";
 import { ignoreWhitespace } from "../viewSettings";
@@ -135,7 +135,9 @@ function Shown({ unit, ...extra }: { unit: Unit } & Extra) {
 	return (
 		<>
 			{shown && (
-				<AgentPlacementsProvider value={extra.agentPlacements ?? null}>
+				<AgentPlacingProvider
+					value={{ placements: extra.agentPlacements ?? null, until: null }}
+				>
 					<FileDiff
 						file={shown}
 						revision="r1"
@@ -144,7 +146,7 @@ function Shown({ unit, ...extra }: { unit: Unit } & Extra) {
 						ignoreMarksUntil={extra.ignoreMarksUntil}
 						counted={extra.counted}
 					/>
-				</AgentPlacementsProvider>
+				</AgentPlacingProvider>
 			)}
 			<SyncNotices />
 		</>
@@ -2012,10 +2014,11 @@ describe("FileDiff: agent threads traced into the viewed head", () => {
 				["R", deleted],
 			]),
 		);
-		// The closed header counts both; it opens the file and its lead.
+		// The closed header counts the unresolved one; it opens the file
+		// and its lead.
 		await user.click(
 			await screen.findByRole("button", {
-				name: /^2 agent threads in this file/,
+				name: /^1 agent thread in this file/,
 			}),
 		);
 		const rows = await screen.findAllByTestId("agent-unplaced");

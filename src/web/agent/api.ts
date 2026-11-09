@@ -4,6 +4,7 @@
  * The config routes are machine-wide, not the review's.
  */
 import { queryOptions, useQuery } from "@tanstack/react-query";
+import { useMemo } from "react";
 import {
 	AGENT_POLL_MS,
 	type AgentCheck,
@@ -22,6 +23,7 @@ import {
 	type RereviewTo,
 	reviewApiPath,
 } from "../api";
+import type { Placements } from "../files/threadPlacement";
 
 const json = (method: string, body?: unknown): RequestInit => ({
 	method,
@@ -90,17 +92,21 @@ export const agentThreadsQuery = queryOptions({
 
 /**
  * The agent threads `ids` placed into a patch set or a head (GET
- * /agent/placements): its own key, outside ["agent"], so a status
- * refetch never retraces them; a new thread asks again, the last answer
- * kept meanwhile (the new one is on the viewed head, placed as asked).
+ * /agent/placements), for the snapshot `revision` being viewed: a new
+ * snapshot of the same head (the base moved) asks again. Its own key,
+ * outside ["agent"], so a status refetch never retraces them; a new
+ * thread asks again with the last answer for this snapshot kept meanwhile
+ * (the new one is on the viewed head, placed as asked). A failure is
+ * retried (useAgentPlacementsFor drops an answer for another snapshot).
  */
 export const agentPlacementsQuery = (
 	to: RereviewTo,
+	revision: string,
 	ids: readonly string[],
 ) => {
 	const target = "patchset" in to ? `ps:${to.patchset}` : `head:${to.head}`;
 	return queryOptions({
-		queryKey: ["agent-placements", target, [...ids].sort().join(",")],
+		queryKey: ["agent-placements", target, revision, [...ids].sort().join(",")],
 		queryFn: () =>
 			review<AgentPlacementsAnswer>(
 				`agent/placements?${new URLSearchParams(
@@ -108,12 +114,42 @@ export const agentPlacementsQuery = (
 				)}`,
 			),
 		staleTime: Number.POSITIVE_INFINITY,
-		// Another target's placements never stand in: their lines are its own.
+		// Another snapshot's placements never stand in: their lines are its own.
 		placeholderData: (previous, query) =>
-			query?.queryKey[1] === target ? previous : undefined,
-		retry: false,
+			query?.queryKey[1] === target && query.queryKey[2] === revision
+				? previous
+				: undefined,
+		retry: 3,
+		retryDelay: (attempt) => Math.min(500 * 2 ** attempt, 4000),
 	});
 };
+
+/**
+ * The agent threads' placements in the viewed snapshot (`revision`), by
+ * thread id; null until they are in, when off, or when the answer is
+ * another snapshot's (then each shows where it was asked).
+ */
+export function useAgentPlacementsFor(args: {
+	to: RereviewTo | null;
+	revision: string | undefined;
+	ids: readonly string[];
+	enabled: boolean;
+}): Placements | null {
+	const { to, revision, ids } = args;
+	const on =
+		args.enabled && to !== null && revision !== undefined && ids.length > 0;
+	const { data } = useQuery({
+		...agentPlacementsQuery(to ?? { patchset: 1 }, revision ?? "", ids),
+		enabled: on,
+	});
+	return useMemo(
+		() =>
+			on && data && data.revision === revision
+				? new Map(data.threads.map((t) => [t.id, t.placement]))
+				: null,
+		[on, data, revision],
+	);
+}
 
 export const postAgentThread = (req: OpenAgentThreadRequest) =>
 	review<AgentThread>("agent/threads", json("POST", req));

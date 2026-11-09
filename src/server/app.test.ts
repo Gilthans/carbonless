@@ -1298,6 +1298,46 @@ describe("API", () => {
 			expect(res.statusCode).toBe(404);
 		});
 
+		it("GET agent/placements: by head or patch set; 400 for both, neither or a bad oid; 404 for an unknown patch set", async () => {
+			expect((await ask()).statusCode).toBe(200);
+			const h1 = pr.head();
+			const byHead = await get(`/api/agent/placements?head=${h1}`);
+			expect(byHead).toMatchObject({
+				revision: await revision(),
+				threads: [
+					{
+						placement: {
+							kind: "placed",
+							anchor: { path: "a.txt", line: 2 },
+						},
+					},
+				],
+			});
+			const ps1: ReviewView = await get("/api/review");
+			const [key = ""] = keys(ps1);
+			await post("/api/review/states", {
+				revision: ps1.revision,
+				changes: [{ key, state: "reviewed" }],
+			});
+			expect(await get("/api/agent/placements?ps=1")).toMatchObject({
+				revision: ps1.revision,
+				threads: [{ placement: { kind: "placed" } }],
+			});
+			for (const bad of [
+				"",
+				`ps=1&head=${h1}`,
+				"head=main",
+				"head=abc",
+				"ps=0",
+			]) {
+				expect(
+					(await inject(`/api/agent/placements?${bad}`)).statusCode,
+					bad,
+				).toBe(400);
+			}
+			expect((await inject("/api/agent/placements?ps=9")).statusCode).toBe(404);
+		});
+
 		it("a viewer session has no agent: 404 no-agent", async () => {
 			const viewer = await registry.open({
 				pr: pr.arg,
@@ -1306,6 +1346,7 @@ describe("API", () => {
 			for (const [method, url] of [
 				["GET", "/api/agent"],
 				["GET", "/api/agent/threads"],
+				["GET", `/api/agent/placements?head=${pr.head()}`],
 				["POST", "/api/agent/cancel"],
 			] as const) {
 				const res = await inject(r(url, viewer.id), { method });

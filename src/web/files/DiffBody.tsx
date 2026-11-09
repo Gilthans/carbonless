@@ -61,8 +61,8 @@ import {
 } from "../agent/askAgentAction";
 import {
 	type AgentPlaceable,
-	tracedAgentPlaceables,
-	useAgentPlacements,
+	shownAgentPlaceables,
+	useAgentPlacing,
 } from "../agent/placeable";
 import { contextQuery, hunksQuery, overviewQuery, sessionQuery } from "../api";
 import {
@@ -2018,15 +2018,15 @@ export function DiffBody(props: {
 	const agentComposerList = useAgentComposers();
 	const agentHeadNow = snapshotHead ?? sessionHead;
 	// Each where the tracer put it in the viewed head (or where it was asked).
-	const agentPlacements = useAgentPlacements();
+	const agentPlacing = useAgentPlacing();
 	const agentPlaceables = useMemo(
 		() =>
-			tracedAgentPlaceables(
+			shownAgentPlaceables(
 				agentThreads ?? [],
 				agentHeadNow ?? "",
-				agentPlacements,
+				agentPlacing,
 			),
-		[agentThreads, agentHeadNow, agentPlacements],
+		[agentThreads, agentHeadNow, agentPlacing],
 	);
 	const agentMine = agentComposerList.filter(
 		(c) => c.span.path === file.path && c.span.subject === "line",

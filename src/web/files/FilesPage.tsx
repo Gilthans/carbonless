@@ -14,12 +14,17 @@ import {
 import type { AgentThread } from "../../shared/agent";
 import { openedOn } from "../../shared/rereview/openedOn";
 import type { ReviewThread, SessionInfo } from "../../shared/types";
+import { AgentNotInComparison } from "../agent/AgentNotInComparison";
 import {
-	agentPlacementsQuery,
 	agentThreadsQuery,
 	useAgentOn,
+	useAgentPlacementsFor,
 } from "../agent/api";
-import { AgentPlacementsProvider } from "../agent/placeable";
+import {
+	AgentPlacingProvider,
+	agentOutside,
+	shownAgentPlaceables,
+} from "../agent/placeable";
 import {
 	hunksQuery,
 	overviewQuery,
@@ -868,6 +873,8 @@ export function FilesPage() {
 
 	// What the threads (GitHub's and the agent's) are placed into.
 	const placingTo = useStableTo(placementsTo(comparison, session));
+	// On an earlier patch set: threads published before the next one started.
+	const threadsCutoff = threadsUntil(comparison, session);
 	// Comments are read in the background, the open file's threads first,
 	// then the other files' in the page's order (one prefetch for the page).
 	const {
@@ -882,7 +889,7 @@ export function FilesPage() {
 		viewedHeadOf(comparison, session),
 		placingTo,
 		latest,
-		threadsUntil(comparison, session),
+		threadsCutoff,
 		comparison.base.kind === "branch",
 	);
 	// The first open's own reads are in (the files, their threads): only
@@ -934,25 +941,46 @@ export function FilesPage() {
 		() => (agentThreads ?? []).map((t) => t.id),
 		[agentThreads],
 	);
-	const agentPlaced = useQuery({
-		...agentPlacementsQuery(placingTo ?? { patchset: 1 }, agentIds),
-		enabled: agentOn && placingTo !== null && agentIds.length > 0,
-	}).data;
-	const agentPlacements = useMemo(
-		() =>
-			agentPlaced
-				? new Map(agentPlaced.threads.map((t) => [t.id, t.placement]))
-				: null,
-		[agentPlaced],
+	const agentPlacements = useAgentPlacementsFor({
+		to: placingTo,
+		revision: data?.revision,
+		ids: agentIds,
+		enabled: agentOn,
+	});
+	const agentPlacing = useMemo(
+		() => ({ placements: agentPlacements, until: threadsCutoff }),
+		[agentPlacements, threadsCutoff],
 	);
+	const agentHead =
+		threads?.snapshotHead ??
+		viewedHeadOf(comparison, session) ??
+		session?.snapshotHead ??
+		"";
+	const agentShown = useMemo(
+		() => shownAgentPlaceables(agentThreads ?? [], agentHead, agentPlacing),
+		[agentThreads, agentHead, agentPlacing],
+	);
+	// The tree's dot: each on the path it shows under now.
 	const agentThreadsByPath = useMemo(() => {
 		const byPath = new Map<string, AgentThread[]>();
-		// On any head: one asked on an earlier head shows in its file's lead.
-		for (const t of agentThreads ?? []) {
-			byPath.set(t.anchor.path, [...(byPath.get(t.anchor.path) ?? []), t]);
+		for (const p of agentShown) {
+			byPath.set(p.path, [...(byPath.get(p.path) ?? []), p.thread]);
 		}
 		return byPath;
-	}, [agentThreads]);
+	}, [agentShown]);
+	// Those no file of the diff shows: listed after the review threads'
+	// "Not in this comparison" (never hidden).
+	const agentOutsideShown = useMemo(
+		() =>
+			data
+				? agentOutside(
+						agentShown,
+						new Set(data.files.map((f) => f.path)),
+						agentPlacements,
+					)
+				: [],
+		[agentShown, data, agentPlacements],
+	);
 
 	// The floating Files button makes way while a comment is being written
 	// (a box has focus) or one was refused: it would cover its buttons.
@@ -1059,26 +1087,35 @@ export function FilesPage() {
 			? `Nothing to read since PS${since} · ${carriedCount(data)} carried`
 			: null;
 
-	const notInComparison = threads && (
-		<NotInComparison
-			threads={outside}
-			readId={threads.readId}
-			pending={placementInfo.pending}
-			failed={
-				unplacedOnError && {
-					threads: unplacedOnError,
-					error: placementInfo.error,
-					retry: placementInfo.retry,
-					retrying: placementInfo.retrying,
-				}
-			}
-		/>
+	const notInComparison = (
+		<>
+			{threads && (
+				<NotInComparison
+					threads={outside}
+					readId={threads.readId}
+					pending={placementInfo.pending}
+					failed={
+						unplacedOnError && {
+							threads: unplacedOnError,
+							error: placementInfo.error,
+							retry: placementInfo.retry,
+							retrying: placementInfo.retrying,
+						}
+					}
+				/>
+			)}
+			<AgentNotInComparison
+				threads={agentOutsideShown}
+				snapshotHead={agentHead}
+				placements={agentPlacements}
+			/>
+		</>
 	);
 
 	return (
 		<PeopleProvider threads={allThreads}>
 			<PlacementProvider value={placementInfo}>
-				<AgentPlacementsProvider value={agentPlacements}>
+				<AgentPlacingProvider value={agentPlacing}>
 					<section
 						aria-label="Files changed"
 						style={{ "--files-bar": `${barHeight}px` } as CSSProperties}
@@ -1324,7 +1361,7 @@ export function FilesPage() {
 							</>
 						)}
 					</section>
-				</AgentPlacementsProvider>
+				</AgentPlacingProvider>
 			</PlacementProvider>
 		</PeopleProvider>
 	);

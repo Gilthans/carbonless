@@ -16,7 +16,7 @@ import {
 	selectText,
 	test,
 } from "./agent-ui";
-import { expectNoPageOverflow } from "./files-ui";
+import { expectNoPageOverflow, fileSection, marksReady } from "./files-ui";
 import { OWNER_REPO } from "./fixtures";
 
 /**
@@ -465,41 +465,85 @@ test("a restart keeps the thread, and the new agent answers it once", async ({
 	expect([...perPid.values()]).toEqual([1, 1]);
 });
 
-test("a thread asked on an earlier head is traced onto its line's new place; until the tracer answers it waits in its file's lead, outdated", async ({
-	page,
-	pr,
-	agentCrb,
-}) => {
-	// An answer, a push, a Refresh and the file again.
-	test.slow();
-	const p = await pr(fixture);
-	const s = await agentCrb();
-	const section = await openFile(page, s.url, CALC);
-	const card = await ask(page, section, 3, "Asked before the push");
-	await expect(card).toHaveAttribute("aria-label", "Agent thread, answered");
-	const before = p.repo.shas.at(-1) ?? "";
-	// Two lines on top: the asked line (3) is line 5 now.
-	p.moveHead({
-		message: "later push",
-		files: {
-			[CALC]: `// one\n// two\n${Array.from({ length: 12 }, (_, i) =>
-				i === 2
-					? "export const total = v1 + v2;"
-					: `export const v${i + 1} = ${i + 1};`,
-			).join("\n")}\n`,
-		},
-	});
-	// The tracer's answer, held: the review-bound route.
-	let asked = 0;
+/** The tracer's answer (GET /agent/placements), held: the review-bound route. */
+async function holdPlacements(page: Page) {
+	const hits: string[] = [];
 	let release: () => void = () => {};
 	const released = new Promise<void>((r) => {
 		release = r;
 	});
 	await page.route("**/api/r/*/agent/placements?*", async (route) => {
-		asked++;
+		hits.push(new URL(route.request().url()).search);
 		await released;
 		await route.continue();
 	});
+	return { hits, release };
+}
+
+const calcLines = (top: string[], total = "export const total = v1 + v2;") =>
+	`${[
+		...top,
+		...Array.from({ length: 12 }, (_, i) =>
+			i === 2 ? total : `export const v${i + 1} = ${i + 1};`,
+		),
+	].join("\n")}\n`;
+const OTHER = "src/other.ts";
+const REN = "src/ren.ts";
+const REN2 = "src/ren2.ts";
+const five = (p: string) =>
+	Array.from({ length: 5 }, (_, i) => `${p} ${i + 1}`);
+const withLine2 = (lines: string[], text: string) =>
+	`${lines.map((l, i) => (i === 1 ? text : l)).join("\n")}\n`;
+
+test("agent threads follow a push: on the moved line; a reverted file's and a renamed file's after the files until traced, the reverted one with its fate", async ({
+	page,
+	pr,
+	agentCrb,
+}) => {
+	// Three asks, an answer each, a push, a Refresh and the files again.
+	test.slow();
+	const p = await pr({
+		base: {
+			...fixture.base,
+			[OTHER]: `${five("other").join("\n")}\n`,
+			[REN]: `${five("ren").join("\n")}\n`,
+		},
+		files: [
+			{
+				message: "calc and more",
+				files: {
+					[CALC]: calcLines([]),
+					[OTHER]: withLine2(five("other"), "other 2 changed"),
+					[REN]: withLine2(five("ren"), "ren 2 changed"),
+				},
+			},
+		],
+	});
+	const s = await agentCrb();
+	const asks = [
+		[CALC, 3, "About calc"],
+		[OTHER, 2, "About other"],
+		[REN, 2, "About ren"],
+	] as const;
+	for (const [path, line, text] of asks) {
+		const section = await openFile(page, s.url, path);
+		const card = await ask(page, section, line, text);
+		await expect(card).toHaveAttribute("aria-label", "Agent thread, answered");
+	}
+	const before = p.repo.shas.at(-1) ?? "";
+	// Two lines on top of calc (its line 3 is line 5 now), other.ts back to
+	// the base, ren.ts renamed whole.
+	p.moveHead({
+		message: "later push",
+		// A rename: moveHead deletes and adds (git pairs them).
+		delete: [REN],
+		files: {
+			[CALC]: calcLines(["// one", "// two"]),
+			[OTHER]: `${five("other").join("\n")}\n`,
+			[REN2]: withLine2(five("ren"), "ren 2 changed"),
+		},
+	});
+	const held = await holdPlacements(page);
 	const refreshed = page.waitForResponse(
 		(r) => r.url().endsWith("/refresh") && r.ok(),
 	);
@@ -507,33 +551,123 @@ test("a thread asked on an earlier head is traced onto its line's new place; unt
 	await refreshed;
 	await expect(page.getByRole("button", { name: "Refresh" })).toBeEnabled();
 	const again = await openFile(page, s.url, CALC);
-	await expect.poll(() => asked).toBeGreaterThan(0);
-	// Held: never gone, in the file's lead with the head it was asked on.
+	await expect.poll(() => held.hits.length).toBeGreaterThan(0);
+	expect(held.hits.every((q) => q.includes("head="))).toBe(true);
+	// Held: never gone. Calc's in its file's lead, with the head it was
+	// asked on; other's and ren's after the files (their paths aren't in it).
 	const lead = again.getByRole("button", {
 		name: /^1 agent thread on this file/,
 	});
 	await lead.click();
-	const old = again
-		.getByTestId("agent-thread")
-		.filter({ hasText: "Asked before the push" });
 	await expect(
-		old.getByRole("img", {
-			name: `Asked on an earlier version (${before.slice(0, 7)})`,
-		}),
+		again
+			.getByTestId("agent-thread")
+			.filter({ hasText: "About calc" })
+			.getByRole("img", {
+				name: `Asked on an earlier version (${before.slice(0, 7)})`,
+			}),
 	).toBeAttached();
-	release();
-	// Answered: on line 5, the agent's bubble, and gone from the lead.
+	const outside = page.getByTestId("agent-not-in-comparison");
+	const outsideRow = (text: string) =>
+		outside.getByTestId("agent-outside").filter({ hasText: text });
+	await expect(outsideRow("About other")).toBeVisible();
+	await expect(outsideRow("About ren")).toBeVisible();
+	held.release();
+	// Answered: calc's on line 5 with the agent's bubble, gone from the lead.
 	const bubble = row(again, 5).getByTestId("agent-bubble");
 	await expect(bubble).toHaveAccessibleName("1 agent thread on line 5");
 	await expect(lead).toHaveCount(0);
-	await expect(row(again, 3).getByTestId("agent-bubble")).toHaveCount(0);
 	await bubble.click();
 	const moved = again
 		.getByTestId("agent-thread")
-		.filter({ hasText: "Asked before the push" });
+		.filter({ hasText: "About calc" });
 	await expect(moved.getByTestId("agent-message-ai")).toHaveText("ok");
 	await expect(moved.getByTestId("agent-outdated")).toHaveCount(0);
-	expect(asked).toBeGreaterThan(0);
+	// Ren's followed its file; other's stays after the files, with its fate.
+	await expect(outsideRow("About ren")).toHaveCount(0);
+	await expect(
+		fileSection(page, REN2).getByRole("button", {
+			name: /^1 agent thread in this file/,
+		}),
+	).toBeVisible();
+	await expect(outsideRow("About other")).toHaveAttribute(
+		"data-fate",
+		"reverted",
+	);
+});
+
+test("on a patch set and in the since view: traced from PS1 into the head, then into PS2", async ({
+	page,
+	pr,
+	agentCrb,
+}) => {
+	// An answer, a mark, a push, the since view and a second mark.
+	test.slow();
+	const p = await pr(fixture);
+	const s = await agentCrb();
+	const section = await openFile(page, s.url, CALC);
+	const card = await ask(page, section, 3, "Asked on PS1");
+	await expect(card).toHaveAttribute("aria-label", "Agent thread, answered");
+	// The mark starts PS1 (the file's only cluster: it closes).
+	await marksReady(page, section);
+	await section
+		.getByRole("checkbox", { name: "Mark cluster reviewed" })
+		.first()
+		.click();
+	await expect(
+		section.getByRole("button", { name: "Expand file" }),
+	).toBeVisible();
+	// Two lines on top, and the asked line (now 5) reworked.
+	p.moveHead({
+		message: "rework",
+		files: {
+			[CALC]: calcLines(
+				["// one", "// two"],
+				"export const total = v1 + v2 + v3;",
+			),
+		},
+	});
+	const held = await holdPlacements(page);
+	await page.reload();
+	await expect(page.getByTestId("ps-tail")).toHaveAttribute(
+		"data-state",
+		"head",
+		// The head check's fetch on a loaded machine (rereview.spec's GIT_WAIT).
+		{ timeout: 30_000 },
+	);
+	await page
+		.getByTestId("head-toast")
+		.getByRole("button", { name: "View" })
+		.click();
+	// The since view, PS1 → the head.
+	const since = fileSection(page, CALC);
+	await since.getByRole("button", { name: "Expand file" }).click();
+	await expect(row(since, 5)).toBeVisible({ timeout: 30_000 });
+	await expect.poll(() => held.hits.length).toBeGreaterThan(0);
+	expect(held.hits.some((q) => q.includes("head="))).toBe(true);
+	held.release();
+	const bubble = row(since, 5).getByTestId("agent-bubble");
+	await expect(bubble).toHaveAccessibleName("1 agent thread on line 5");
+	// A mark on the head starts PS2: the page views it, placed into it.
+	const before = held.hits.length;
+	await marksReady(page, since);
+	await since
+		.getByRole("checkbox", { name: "Mark cluster reviewed" })
+		.first()
+		.click();
+	await expect(page.getByTestId("ps-node-ps2")).toBeVisible({
+		timeout: 30_000,
+	});
+	await expect
+		.poll(() => held.hits.slice(before).some((q) => q.includes("ps=2")))
+		.toBe(true);
+	const ps2 = fileSection(page, CALC);
+	if (await ps2.getByRole("button", { name: "Expand file" }).isVisible()) {
+		await ps2.getByRole("button", { name: "Expand file" }).click();
+	}
+	await expect(row(ps2, 5).getByTestId("agent-bubble")).toHaveAccessibleName(
+		"1 agent thread on line 5",
+	);
 });
 
 /** A PR that tries to make whatever opens it run things. */

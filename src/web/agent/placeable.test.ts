@@ -2,7 +2,12 @@ import { describe, expect, it } from "vitest";
 import type { AgentThread } from "../../shared/agent";
 import type { ThreadPlacement } from "../../shared/rereview/placement";
 import { placeThreads } from "../files/threadPlacement";
-import { agentPlaceable, tracedAgentPlaceables } from "./placeable";
+import {
+	agentOutside,
+	agentPlaceable,
+	shownAgentPlaceables,
+	tracedAgentPlaceables,
+} from "./placeable";
 
 const H1 = "1".repeat(40);
 const H2 = "2".repeat(40);
@@ -139,5 +144,64 @@ describe("tracedAgentPlaceables", () => {
 		expect(tracedAgentPlaceables([t], H2, new Map([["A1", moved]]))).toEqual([
 			agentPlaceable(t),
 		]);
+	});
+});
+
+describe("shownAgentPlaceables", () => {
+	it("an earlier patch set shows the threads asked before the next one started, as review threads (never traced backwards)", () => {
+		const before = { ...asked("B", 3), at: "2026-11-07T10:00:00Z" };
+		const after = { ...asked("L", 4), at: "2026-11-08T10:00:00Z" };
+		const until = Date.parse("2026-11-08T00:00:00Z");
+		expect(
+			shownAgentPlaceables([before, after], H2, {
+				placements: null,
+				until,
+			}).map((p) => p.id),
+		).toEqual(["B"]);
+		expect(
+			shownAgentPlaceables([before, after], H2, {
+				placements: null,
+				until: null,
+			}).map((p) => p.id),
+		).toEqual(["B", "L"]);
+	});
+
+	it("resolved ones after the rest, each in its order: every group built from them follows", () => {
+		const r1 = { ...asked("R1", 1), resolved: true };
+		const a = asked("A", 2);
+		const r2 = { ...asked("R2", 3), resolved: true };
+		const b = asked("B", 4);
+		expect(
+			shownAgentPlaceables([r1, a, r2, b], H2, {
+				placements: null,
+				until: null,
+			}).map((p) => p.id),
+		).toEqual(["A", "B", "R1", "R2"]);
+	});
+});
+
+describe("agentOutside", () => {
+	it("lists those the tracer put outside the comparison, and those on a path it doesn't have (a rename still tracing, or whose trace failed); never one on a file of the diff", () => {
+		const reverted = asked("REV", 3, { path: "reverted.ts" });
+		const renamed = asked("REN", 3, { path: "old.ts" });
+		const here = asked("HERE", 3);
+		const outside = new Map<string, ThreadPlacement>([
+			["REV", { kind: "outside", path: "reverted.ts", fate: "reverted" }],
+		]);
+		const placing = { placements: outside, until: null };
+		const shown = shownAgentPlaceables([reverted, renamed, here], H2, placing);
+		expect(
+			agentOutside(shown, new Set(["a.ts", "new.ts"]), outside).map(
+				(p) => p.id,
+			),
+		).toEqual(["REV", "REN"]);
+		// Outside even when a file of the diff has its old path.
+		expect(
+			agentOutside(
+				shown,
+				new Set(["a.ts", "reverted.ts", "old.ts"]),
+				outside,
+			).map((p) => p.id),
+		).toEqual(["REV"]);
 	});
 });

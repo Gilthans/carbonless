@@ -25,7 +25,7 @@ import {
 	openAgentComposer,
 	resetAgentComposers,
 } from "../agent/askAgentAction";
-import { AgentPlacementsProvider } from "../agent/placeable";
+import { AgentPlacingProvider } from "../agent/placeable";
 import { hunksQuery, sessionQuery } from "../api";
 import { openComposer, resetComposers } from "../threads/newThreads";
 import { ignoreWhitespace, showInvisibles, sideBySide } from "../viewSettings";
@@ -270,10 +270,12 @@ function setup(
 	);
 	const tree = (cs: ClusterView[]) => (
 		<QueryClientProvider client={queryClient}>
-			<AgentPlacementsProvider value={opts.agentPlacements ?? null}>
+			<AgentPlacingProvider
+				value={{ placements: opts.agentPlacements ?? null, until: null }}
+			>
 				{bodyOf(cs)}
 				{opts.twice && bodyOf(cs)}
-			</AgentPlacementsProvider>
+			</AgentPlacingProvider>
 		</QueryClientProvider>
 	);
 	const { rerender } = render(tree(opts.clusters ?? clusters));
