@@ -797,6 +797,8 @@ test("a click on a dot moves nothing: its card goes sticky, and its Comparison B
 	startCrb,
 	isMobile,
 }) => {
+	// A review, a push and seven card presses: past the default under load.
+	test.setTimeout(120_000);
 	const p = await pr(fixture);
 	const s = await startCrb();
 	await openFiles(page, s.url);
@@ -878,7 +880,9 @@ test("a click on a dot moves nothing: its card goes sticky, and its Comparison B
 	// A click outside closes a sticky card; so does its dot again.
 	await dot(page, "ps1").click();
 	await expect(sticky(page, "PS1")).toBeVisible();
-	await page.getByRole("heading", { level: 1 }).first().click();
+	// Outside it: the rail's own corner (the page's heading re-renders
+	// under load, and a click on it waited for a detached element).
+	await page.getByTestId("psrail").click({ position: { x: 2, y: 2 } });
 	await expect(sticky(page, "PS1")).toBeHidden();
 	await dot(page, "ps1").click();
 	await dot(page, "ps1").click();
