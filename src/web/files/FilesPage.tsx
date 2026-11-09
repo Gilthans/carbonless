@@ -11,8 +11,10 @@ import {
 	useRef,
 	useState,
 } from "react";
+import type { AgentThread } from "../../shared/agent";
 import { openedOn } from "../../shared/rereview/openedOn";
 import type { ReviewThread, SessionInfo } from "../../shared/types";
+import { agentThreadsQuery, useAgentOn } from "../agent/api";
 import {
 	hunksQuery,
 	overviewQuery,
@@ -74,6 +76,7 @@ import { outsideThreads, shownThread, shownThreads } from "./threadPlacement";
 import { useSince } from "./useSince";
 
 const NO_THREADS: ReviewThread[] = [];
+const NO_AGENT_THREADS: AgentThread[] = [];
 
 import { type Unit, useUnit } from "./unit";
 import { STALE_MESSAGE, useReviewView, useSyncState } from "./useSetStates";
@@ -140,7 +143,7 @@ function FilesSheet(props: {
 						Close
 					</button>
 				</div>
-				<div className="min-h-0 flex-1 overflow-y-auto px-2 py-2">
+				<div className="min-h-0 flex-1 overflow-y-auto px-2 pb-2 [--tree-bg:var(--color-surface)]">
 					{props.children}
 				</div>
 			</div>
@@ -810,6 +813,21 @@ export function FilesPage() {
 		return byPath;
 	}, [threads]);
 
+	// The reviewer's agent threads (their own read, beside GitHub's): the
+	// tree's second dot; the diffs read them from this query's cache.
+	const agentThreads = useQuery({
+		...agentThreadsQuery,
+		enabled: useAgentOn(),
+	}).data?.threads;
+	const agentThreadsByPath = useMemo(() => {
+		const byPath = new Map<string, AgentThread[]>();
+		// On any head: one asked on an earlier head shows in its file's lead.
+		for (const t of agentThreads ?? []) {
+			byPath.set(t.anchor.path, [...(byPath.get(t.anchor.path) ?? []), t]);
+		}
+		return byPath;
+	}, [agentThreads]);
+
 	// The floating Files button makes way while a comment is being written
 	// (a box has focus) or one was refused: it would cover its buttons.
 	const writing = useWritingHere();
@@ -827,6 +845,7 @@ export function FilesPage() {
 			current={current}
 			onSelect={select}
 			threadsOf={(f) => threadsByPath.get(f.path) ?? NO_THREADS}
+			agentThreadsOf={(f) => agentThreadsByPath.get(f.path) ?? NO_AGENT_THREADS}
 			threadsLoading={threadsLoading}
 			foldKey={pr ? foldsKey(pr) : null}
 			revealSeq={reveal}

@@ -1,7 +1,7 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { extname, join, relative } from "node:path";
 import { describe, expect, it } from "vitest";
-import { escapeLabel, INVISIBLE } from "./invisibles";
+import { escapeLabel, INVISIBLE } from "./invisibleChars";
 
 /**
  * Sources spell invisible characters as `\u` escapes. A formatter (Biome's

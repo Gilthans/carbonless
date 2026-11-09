@@ -8,7 +8,7 @@ import {
 	openFiles,
 	sideBySide,
 } from "./files-ui";
-import { expect, type PrOptions, test } from "./fixtures";
+import { type Crb, expect, type PrOptions, test } from "./fixtures";
 
 const LONG_DIR = "src/server/review/storage/adapters/git/refs/internal/legacy";
 const lines = (n: number, tag: string) =>
@@ -58,64 +58,75 @@ async function settled(page: Page) {
 	);
 }
 
-test("no horizontal page scroll on the overview and files pages", async ({
-	page,
-	pr,
-	startCrb,
-}, testInfo) => {
-	await pr(fixture);
-	const s = await startCrb();
-	const widths =
-		testInfo.project.name === "phone"
-			? [360, 412]
-			: [page.viewportSize()?.width ?? 1280];
-	for (const width of widths) {
-		await page.setViewportSize({ width, height: 800 });
-		await page.goto(s.url);
-		await expect(
-			page.getByRole("region", { name: "What it does" }),
-		).toBeVisible();
-		await expectNoPageOverflow(page);
-		// Five-digit counts must fit too.
-		await page.route("**/api/r/*/review", async (route) => {
-			const response = await route.fetch();
-			const view = await response.json();
-			for (const file of view.files) {
-				for (const c of file.clusters) c.lines *= 12345;
-			}
-			view.progress.lines = { total: 98765, reviewed: 12345, crossedOff: 4321 };
-			view.progress.clusters = { total: 54321, reviewed: 1234, crossedOff: 0 };
-			await route.fulfill({ response, json: view });
-		});
-		await openFiles(page, s.url, "Lines");
-		await expect(page.getByText("12345 / 94444 lines reviewed")).toBeVisible();
-		await expectNoPageOverflow(page);
-		const header = fileSection(page, "src/f0.ts").getByRole("progressbar", {
-			name: "File progress",
-		});
-		await expect(header).toHaveText(/^0 \/ 24690/);
-		const fits = await header
-			.locator("span")
-			.first()
-			.evaluate((el) => el.scrollWidth <= el.clientWidth);
-		expect(fits).toBe(true);
-		await page.unroute("**/api/r/*/review");
-		await openFiles(page, s.url);
-		const section = fileSection(page, "src/f0.ts");
-		await section.getByRole("button", { name: "Expand file" }).click();
-		await expect(section.getByTestId("diff-line").first()).toBeVisible();
-		await expectNoPageOverflow(page);
-		// Side by side wraps instead of widening anything.
-		await sideBySide(page, true);
-		await expect(
-			section.locator('table[data-view="side-by-side"]'),
-		).toBeVisible();
-		await expect(section.getByTestId("diff-line").first()).toBeVisible();
-		await expectNoPageOverflow(page);
-		await sideBySide(page, false);
-		await expect(section.locator('table[data-view="unified"]')).toBeVisible();
-	}
-});
+async function noPageScrollOverviewAndFiles(
+	page: Page,
+	s: Crb,
+	phoneWidth: number | undefined,
+) {
+	const width = phoneWidth ?? page.viewportSize()?.width ?? 1280;
+	await page.setViewportSize({ width, height: 800 });
+	await page.goto(s.url);
+	await expect(
+		page.getByRole("region", { name: "What it does" }),
+	).toBeVisible();
+	await expectNoPageOverflow(page);
+	// Five-digit counts must fit too.
+	await page.route("**/api/r/*/review", async (route) => {
+		const response = await route.fetch();
+		const view = await response.json();
+		for (const file of view.files) {
+			for (const c of file.clusters) c.lines *= 12345;
+		}
+		view.progress.lines = { total: 98765, reviewed: 12345, crossedOff: 4321 };
+		view.progress.clusters = { total: 54321, reviewed: 1234, crossedOff: 0 };
+		await route.fulfill({ response, json: view });
+	});
+	await openFiles(page, s.url, "Lines");
+	await expect(page.getByText("12345 / 94444 lines reviewed")).toBeVisible();
+	await expectNoPageOverflow(page);
+	const header = fileSection(page, "src/f0.ts").getByRole("progressbar", {
+		name: "File progress",
+	});
+	await expect(header).toHaveText(/^0 \/ 24690/);
+	const fits = await header
+		.locator("span")
+		.first()
+		.evaluate((el) => el.scrollWidth <= el.clientWidth);
+	expect(fits).toBe(true);
+	await page.unroute("**/api/r/*/review");
+	await openFiles(page, s.url);
+	const section = fileSection(page, "src/f0.ts");
+	await section.getByRole("button", { name: "Expand file" }).click();
+	await expect(section.getByTestId("diff-line").first()).toBeVisible();
+	await expectNoPageOverflow(page);
+	// Side by side wraps instead of widening anything.
+	await sideBySide(page, true);
+	await expect(
+		section.locator('table[data-view="side-by-side"]'),
+	).toBeVisible();
+	await expect(section.getByTestId("diff-line").first()).toBeVisible();
+	await expectNoPageOverflow(page);
+	await sideBySide(page, false);
+	await expect(section.locator('table[data-view="unified"]')).toBeVisible();
+}
+
+// One test per width, so each does its share of the work within the timeout.
+for (const { width, project } of [
+	{ width: 360, project: "phone" },
+	{ width: 412, project: "phone" },
+	{ width: undefined, project: "chromium" },
+]) {
+	test(`no horizontal page scroll on the overview and files pages (${width ? `${width}px` : "desktop"})`, async ({
+		page,
+		pr,
+		startCrb,
+	}, testInfo) => {
+		test.skip(testInfo.project.name !== project);
+		await pr(fixture);
+		const s = await startCrb();
+		await noPageScrollOverviewAndFiles(page, s, width);
+	});
+}
 
 const WIDE = "w".repeat(300);
 /** GitHub HTML that is wider than a phone in every way it can be. */

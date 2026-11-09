@@ -21,9 +21,23 @@ export interface GapTarget {
 	key: LineKey;
 }
 
-export interface FilePlacement {
+/**
+ * What placeThreads places: a review thread, or an agent thread seen the
+ * same way (its path, the commit it was asked on, file or line, the range).
+ * `id` is a review thread's: the key of its traced placement (agent
+ * threads have none and are placed on the commit they were asked on).
+ */
+export interface Placeable {
+	id?: string;
+	path: string;
+	commit: string;
+	subject: "line" | "file";
+	anchor: SpanRange | null;
+}
+
+export interface FilePlacement<T extends Placeable = ReviewThread> {
 	/** Threads whose range ends on a shown line, by that line. */
-	end: Map<LineKey, ReviewThread[]>;
+	end: Map<LineKey, T[]>;
 	/** Every line a placed thread's range covers (the highlight). */
 	covered: Set<LineKey>;
 	/**
@@ -34,21 +48,21 @@ export interface FilePlacement {
 	/** `spans` that end on a shown row (painted), by their index. */
 	spansShown: Set<number>;
 	/** Threads whose end line sits in gap `index` (collapsed context). */
-	gaps: Map<number, ReviewThread[]>;
+	gaps: Map<number, T[]>;
 	/**
 	 * For each thread in `gaps`: the new-side lines its range spans (what
 	 * to load to show it) and the key of the row it will end on once they
 	 * are loaded (what to open).
 	 */
-	gapTargets: Map<ReviewThread, GapTarget>;
+	gapTargets: Map<T, GapTarget>;
 	/** File comments ("file") and lines that couldn't be placed ("unplaced"). */
-	header: { thread: ReviewThread; reason: "file" | "unplaced" }[];
+	header: { thread: T; reason: "file" | "unplaced" }[];
 	/**
 	 * Threads the tracer couldn't place in this file, with their fate: the
 	 * list under the file's header.
 	 */
 	fates: {
-		thread: ReviewThread;
+		thread: T;
 		placement: Extract<ThreadPlacement, { kind: "unplaced" }>;
 	}[];
 }
@@ -150,17 +164,26 @@ export function outsideThreads(
 }
 
 /**
+ * The threads made on the viewed head, in their order. One on no known
+ * commit ("") is on no head. Agent threads, never traced, show this way.
+ */
+export function threadsOnHead<T extends Placeable>(
+	threads: T[],
+	snapshotHead: string,
+): T[] {
+	return threads.filter((t) => t.commit !== "" && t.commit === snapshotHead);
+}
+
+/**
  * This file's threads on the viewed head, whether or not its diff is in:
  * what a closed file's header and the file tree count.
  */
-export function fileThreads(
-	threads: ReviewThread[],
+export function fileThreads<T extends Placeable>(
+	threads: T[],
 	path: string,
 	snapshotHead: string,
-): ReviewThread[] {
-	return threads.filter(
-		(t) => t.path === path && t.commit !== "" && t.commit === snapshotHead,
-	);
+): T[] {
+	return threadsOnHead(threads, snapshotHead).filter((t) => t.path === path);
 }
 
 /**
@@ -254,8 +277,8 @@ function newNumberOf(side: DiffSide, n: number, hunks: DisplayHunk[]): number {
  * comments are placed, and the line threads of a file that has no lines to
  * show (`noLines`: binary, a submodule) go to the header unplaced.
  */
-export function placeThreads(args: {
-	threads: ReviewThread[];
+export function placeThreads<T extends Placeable = ReviewThread>(args: {
+	threads: T[];
 	path: string;
 	snapshotHead: string;
 	hunks: FileHunks | null;
@@ -266,8 +289,8 @@ export function placeThreads(args: {
 	spans?: readonly SpanRange[];
 	/** Where the tracer put each thread (shownThreads applied them already). */
 	placements?: Placements | null;
-}): FilePlacement {
-	const placement: FilePlacement = {
+}): FilePlacement<T> {
+	const placement: FilePlacement<T> = {
 		end: new Map(),
 		covered: new Set(),
 		marks: new Map(),
@@ -287,7 +310,7 @@ export function placeThreads(args: {
 		for (const key of keysOf(row)) rowAt.set(key, i);
 	});
 	const gaps = hunks ? fileGaps(hunks.hunks, hunks.newLineCount) : [];
-	const push = <K>(map: Map<K, ReviewThread[]>, key: K, t: ReviewThread) => {
+	const push = <K>(map: Map<K, T[]>, key: K, t: T) => {
 		const list = map.get(key);
 		if (list) list.push(t);
 		else map.set(key, [t]);
@@ -334,7 +357,7 @@ export function placeThreads(args: {
 	}
 
 	for (const t of mine) {
-		const traced = args.placements?.get(t.id);
+		const traced = t.id === undefined ? undefined : args.placements?.get(t.id);
 		if (traced?.kind === "unplaced") {
 			placement.fates.push({ thread: t, placement: traced });
 			continue;

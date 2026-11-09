@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { acpLog, releaseAcp, useFakeAcp } from "../../test/fake-acp/scenario";
 import { writeFileAtomic } from "../../test/fake-gh/atomic.mjs";
 import {
 	letThrough,
@@ -14,6 +15,7 @@ import {
 } from "../../test/fake-gh/scenario";
 import { GIT_TEST_TIMEOUTS, testGitEnv } from "../../test/git-fixture";
 import { createPrFixture, type PrFixture } from "../../test/pr-fixture";
+import { agentsDir } from "./agent/checkout";
 import { clonePath } from "./clone";
 import { buildSnapshot } from "./diff/snapshot";
 import { GhError } from "./errors";
@@ -25,6 +27,12 @@ import { ThreadCodeSource } from "./threadCode";
 
 // Real git and fake-gh processes: see GIT_TEST_TIMEOUTS.
 vi.setConfig(GIT_TEST_TIMEOUTS);
+
+const git = (cwd: string, ...args: string[]) =>
+	execFileSync("git", ["-C", cwd, ...args], {
+		encoding: "utf8",
+		env: testGitEnv(),
+	}).trim();
 
 describe("Session", () => {
 	let pr: PrFixture;
@@ -1789,6 +1797,49 @@ describe("Session", () => {
 				},
 			});
 			expect((await s.checkHead()).head).toBeNull();
+		});
+	});
+
+	describe("agent", () => {
+		let fake: ReturnType<typeof useFakeAcp>;
+		beforeEach(() => {
+			fake = useFakeAcp(pr.repo.path, {
+				agent: { name: "fake-acp", version: "1.0.0" },
+				hold: ["initialize"],
+			});
+		});
+		afterEach(() => fake.restore());
+
+		it("a --viewer session has no agent host; an as-of one neither", async () => {
+			const theirs = await Session.open(pr.arg, process.cwd(), () => {}, {
+				viewer: "someone-else",
+			});
+			expect(theirs.agent).toBeNull();
+			const mine = await Session.open(pr.arg, process.cwd());
+			expect(mine.agent).not.toBeNull();
+		});
+
+		it("close() closes the host (checkout removed)", async () => {
+			const s = await Session.open(pr.arg, process.cwd());
+			const host = s.agent;
+			if (!host) throw new Error("no agent");
+			host.start();
+			await vi.waitFor(
+				async () => expect((await host.status()).state).toBe("starting"),
+				{ timeout: 20_000, interval: 20 },
+			);
+			releaseAcp(fake.scenario, "initialize");
+			await vi.waitFor(
+				async () => expect((await host.status()).state).toBe("ready"),
+				{ timeout: 20_000, interval: 20 },
+			);
+			const tree = join(agentsDir(), s.id, "tree");
+			expect(git(tree, "rev-parse", "HEAD")).toBe(pr.head());
+			const pid = acpLog(fake.log)[0]?.pid as number;
+			await s.close();
+			expect(() => readFileSync(join(tree, "a.txt"))).toThrow();
+			expect(() => process.kill(pid, 0)).toThrow();
+			expect((await host.status()).state).toBe("off");
 		});
 	});
 });
