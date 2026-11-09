@@ -412,6 +412,9 @@ test("since view: the rr-pieces shape (a cluster in three pieces, a removal-only
 	pr,
 	startCrb,
 }) => {
+	// Every unit ticked, unticked, crossed off and undone, then a reload:
+	// a write per step, past the default on a loaded machine.
+	test.setTimeout(90_000);
 	const p = await pr({
 		base: { "src/money.ts": money.base },
 		files: [{ message: "PS1", files: { "src/money.ts": money.ps1 } }],
