@@ -66,6 +66,48 @@ describe("the funcname attributes file", () => {
 	});
 });
 
+/** Puts a `git` before the real one on PATH for the block's tests. */
+function wrapGit(script: (real: string, dir: string) => string[]) {
+	const state = { dir: "" };
+	let path: string | undefined;
+	beforeAll(() => {
+		state.dir = mkdtempSync(join(tmpdir(), "carbonless-wrap-git-"));
+		const real = execFileSync("which", ["git"], { encoding: "utf8" }).trim();
+		writeFileSync(
+			join(state.dir, "git"),
+			["#!/bin/sh", ...script(real, state.dir), ""].join("\n"),
+		);
+		chmodSync(join(state.dir, "git"), 0o755);
+		path = process.env.PATH;
+		process.env.PATH = `${state.dir}:${path}`;
+	});
+	afterAll(() => {
+		process.env.PATH = path;
+		rmSync(state.dir, { recursive: true, force: true });
+	});
+	return state;
+}
+
+// Before the old-git block: once that learns, the option is off for the file.
+describe("a newer git's other --attr-source failure", () => {
+	// Fails once as git 2.40+ does on a bad source, then works.
+	const git = wrapGit((real, dir) => [
+		'for a in "$@"; do case "$a" in --attr-source=*)',
+		`  echo x >> '${dir}/seen'`,
+		`  if [ ! -e '${dir}/failed' ]; then touch '${dir}/failed'; echo "fatal: bad --attr-source or GIT_ATTR_SOURCE" >&2; exit 128; fi;;`,
+		"esac; done",
+		`exec '${real}' "$@"`,
+	]);
+
+	it("fails that run but keeps --attr-source for the next", async () => {
+		await expect(headings()).rejects.toThrow(/bad --attr-source/);
+		const [hunks] = await headings();
+		expect(hunks?.[0]?.heading).toBe("def work(self):");
+		const seen = readFileSync(join(git.dir, "seen"), "utf8");
+		expect(seen.trim().split("\n")).toHaveLength(2);
+	});
+});
+
 describe("git without --attr-source (before 2.40)", () => {
 	let bin: string;
 	let path: string | undefined;

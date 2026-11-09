@@ -250,7 +250,7 @@ test("on a phone a cut heading scrolls sideways in place, and only a tap loads",
 		// A finger dragging the heading to the left.
 		const x = Math.round(box.x + box.width - 10);
 		const y = Math.round(box.y + box.height / 2);
-		const touch = (type: string, at: number) =>
+		const touch = (type: "touchStart" | "touchMove" | "touchEnd", at: number) =>
 			cdp.send("Input.dispatchTouchEvent", {
 				type,
 				touchPoints: type === "touchEnd" ? [] : [{ x: at, y }],
@@ -261,6 +261,13 @@ test("on a phone a cut heading scrolls sideways in place, and only a tap loads",
 		await expect
 			.poll(() => heading.evaluate((el) => el.scrollLeft))
 			.toBeGreaterThan(0);
+		expect(await lines.count()).toBe(before);
+		// A load would come later: the hidden rows still count their lines,
+		// none loading.
+		await expect(gapRow(section, "49 hidden lines")).toHaveCount(1);
+		await expect(
+			section.getByRole("status", { name: "Loading lines" }),
+		).toHaveCount(0);
 		expect(await lines.count()).toBe(before);
 		await expectNoPageOverflow(page);
 	}

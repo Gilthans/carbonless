@@ -178,7 +178,11 @@ export async function buildAllHeadings(
 	} catch (error) {
 		// Older git: headings by carbonless's list alone (a bare clone has no
 		// worktree .gitattributes to read).
-		if (!attrSource || !/attr-source/.test(String(error))) throw error;
+		// Only an older git's refusal of the option itself (a newer git's
+		// "bad --attr-source" is another failure, and keeps the option).
+		if (!attrSource || !/unknown option.*attr-source/.test(String(error))) {
+			throw error;
+		}
 		attrSource = false;
 		patch = await run(false);
 	}

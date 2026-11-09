@@ -1610,8 +1610,8 @@ type Glyph = keyof typeof HOT;
  * A hidden-lines row that is its arrows' pointer target (gapRowTarget): a
  * click anywhere presses the arrow under the pointer, which is lit while
  * the pointer is there (`data-hot`, set on the element: no re-render per
- * move). When the arrows change under a still pointer (a click turned ↓ ↑
- * into ↕), the light follows at once. A pointer convenience only: the
+ * move). When the arrows change under a still pointer (↑ turned ↓ ↑ into
+ * ↕), the light follows at once. A pointer convenience only: the
  * keyboard has the buttons, and the row is never focusable.
  */
 function GapRowTr(props: {
@@ -2207,10 +2207,7 @@ export function DiffBody(props: {
 				(runThreads.length > 0 ? 1 : 0) + (runAgent.length > 0 ? 1 : 0);
 			rows.push(
 				<GapRowTr
-					// By the run's place, not its first line: loading ↓ moves that,
-					// and the row (and the arrow lit under the pointer) stays.
-					// biome-ignore lint/suspicious/noArrayIndexKey: the run's place is its identity here (above).
-					key={`gap${gap.index}:#${i}`}
+					key={`gap${gap.index}:${run.from}`}
 					glyphs={buttons.map((b) => b.glyph)}
 					onPress={(at) => {
 						const b = buttons[at];

@@ -47,6 +47,9 @@ const freshRepo = () => {
 const snapshotAt = (repo: string) =>
 	buildSnapshot(repo, fixture.shas[0] as string, fixture.shas[1] as string);
 
+/** For loads that expect a heading: never cut short by the cap on a busy machine. */
+const WAIT = { headingWaitMs: 60_000 };
+
 /** A run that waits for `release()`, then answers as git would. */
 function held() {
 	let release = () => {};
@@ -89,7 +92,8 @@ describe("the snapshot's heading run", () => {
 		});
 		expect(first.hunks[0]).not.toHaveProperty("heading");
 		gate.release();
-		const later = await loadFileHunks(repo, snapshot, 0);
+		// Answers count, not time: wait for the released run as long as it takes.
+		const later = await loadFileHunks(repo, snapshot, 0, WAIT);
 		expect(later.hunks[0]?.heading).toBe("def work():");
 		expect(run).toHaveBeenCalledTimes(1);
 	});
@@ -123,6 +127,7 @@ describe("the snapshot's heading run", () => {
 			repos[0] as string,
 			snapshots[0] as never,
 			0,
+			WAIT,
 		);
 		expect(hunks[0]?.heading).toBe("def work():");
 		await loadFileHunks(repos[0] as string, snapshots[0] as never, 0);
