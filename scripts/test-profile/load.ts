@@ -4,6 +4,8 @@ import {
 	readFileSync,
 	renameSync,
 	rmSync,
+	statSync,
+	utimesSync,
 	writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
@@ -62,9 +64,18 @@ const attrsOf = (list: OtlpAttr[] | undefined) =>
 export const nanosToMs = (n: string) =>
 	Number(n.slice(0, -6) || "0") + Number(n.slice(-6)) / 1e6;
 
-/** A trace file's lines (gzip or not); a torn last line is skipped. */
+/**
+ * A trace file's lines (gzip or not); a torn last line is skipped, and a
+ * file a packer took meanwhile (compactRun) reads as empty.
+ */
 export function fileLines(path: string): string[] {
-	let raw = readFileSync(path);
+	let raw: Buffer;
+	try {
+		raw = readFileSync(path);
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+		throw error;
+	}
 	if (path.endsWith(".gz")) raw = gunzipSync(raw);
 	return raw.toString("utf8").split("\n").filter(Boolean);
 }
@@ -135,32 +146,65 @@ function alive(pid: number): boolean {
 /**
  * Packs the plain files of processes that have exited (`<name>-<pid>-<id>.jsonl`)
  * into one gzipped file: a run leaves thousands of one-span fake-gh files.
- * Files of live processes are left alone, and so is everything when it
- * fails. Returns how many files it packed.
+ * Files of live processes are left alone. Each file is claimed by renaming
+ * it first, so two packers (a run's end and `pnpm test-profile`) never pack
+ * the same one; on failure the claimed files go back. The run directory
+ * keeps its mtime, so viewing a run doesn't extend its retention. Returns
+ * how many files it packed.
  */
 export function compactRun(
 	dir: string,
 	isAlive: (pid: number) => boolean = alive,
+	/** Tests: runs after the claimed files are read, before the pack is written. */
+	beforeWrite: () => void = () => {},
 ): number {
+	const id = randomBytes(4).toString("hex");
+	const claimed: [from: string, to: string][] = [];
+	const tmp = join(dir, `packed-${id}.jsonl.gz.tmp`);
+	let mtime: Date | null = null;
 	try {
-		const done = readdirSync(dir).filter((f) => {
+		mtime = statSync(dir).mtime;
+		for (const f of readdirSync(dir)) {
 			const m = /-(\d+)-[0-9a-f]+\.jsonl$/.exec(f);
-			return m && !isAlive(Number(m[1]));
-		});
-		if (done.length === 0) return 0;
-		const text = done
-			.map((f) => readFileSync(join(dir, f), "utf8"))
-			.join("")
-			.split("\n")
+			if (!m || isAlive(Number(m[1]))) continue;
+			const from = join(dir, f);
+			const to = `${from}.packing-${id}`;
+			try {
+				renameSync(from, to);
+				claimed.push([from, to]);
+			} catch {
+				// Another packer claimed it first.
+			}
+		}
+		if (claimed.length === 0) return 0;
+		// Per file: a killed process's torn last line stays its own line.
+		const text = claimed
+			.flatMap(([, to]) => readFileSync(to, "utf8").split("\n"))
 			.filter(Boolean)
 			.map((l) => `${l}\n`)
 			.join("");
-		const name = `packed-${randomBytes(4).toString("hex")}.jsonl.gz`;
-		writeFileSync(join(dir, `${name}.tmp`), gzipSync(text));
-		renameSync(join(dir, `${name}.tmp`), join(dir, name));
-		for (const f of done) rmSync(join(dir, f), { force: true });
-		return done.length;
+		beforeWrite();
+		writeFileSync(tmp, gzipSync(text));
+		renameSync(tmp, join(dir, `packed-${id}.jsonl.gz`));
+		for (const [, to] of claimed) rmSync(to, { force: true });
+		return claimed.length;
 	} catch {
+		rmSync(tmp, { force: true });
+		for (const [from, to] of claimed) {
+			try {
+				renameSync(to, from);
+			} catch {
+				// Gone already.
+			}
+		}
 		return 0;
+	} finally {
+		if (mtime) {
+			try {
+				utimesSync(dir, mtime, mtime);
+			} catch {
+				// Pruned meanwhile.
+			}
+		}
 	}
 }

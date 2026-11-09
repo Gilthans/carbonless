@@ -2,7 +2,10 @@ import {
 	mkdirSync,
 	mkdtempSync,
 	readdirSync,
+	readFileSync,
 	rmSync,
+	statSync,
+	symlinkSync,
 	utimesSync,
 	writeFileSync,
 } from "node:fs";
@@ -19,6 +22,10 @@ import {
 import { compactRun, readRequests, type Span, spansOf } from "./load";
 import { type StepLike, testSpans } from "./spans";
 import { fmt, formatCompare, formatSummary, summarize } from "./summary";
+
+/** This worker's own trace run, which no test may change. */
+const RUN_BEFORE = process.env.CRB_TRACE_RUN;
+const DIR_BEFORE = process.env.CRB_TRACE_DIR;
 
 const dirs: string[] = [];
 function tempDir(): string {
@@ -350,6 +357,8 @@ describe("the run directory", () => {
 		const cache = tempDir();
 		vi.stubEnv("XDG_CACHE_HOME", cache);
 		vi.stubEnv("CRB_TRACE_DIR", "");
+		// startTraceRun sets both; stubbed, they are restored after.
+		vi.stubEnv("CRB_TRACE_RUN", "");
 		vi.stubEnv("CRB_TEST_TRACES", "0");
 		expect(startTraceRun("unit")).toBeNull();
 		vi.stubEnv("CRB_TEST_TRACES", "");
@@ -361,6 +370,11 @@ describe("the run directory", () => {
 		expect(readdirSync(dir as string)).toEqual(["run.json"]);
 		// A worker re-reading the config keeps it.
 		expect(startTraceRun("e2e")).toBe(dir);
+	});
+
+	it("leaves this worker's own run as it was (after the test above)", () => {
+		expect(process.env.CRB_TRACE_RUN).toBe(RUN_BEFORE);
+		expect(process.env.CRB_TRACE_DIR).toBe(DIR_BEFORE);
 	});
 
 	it("packs the files of exited processes, leaves live ones, and reads both", () => {
@@ -397,5 +411,103 @@ describe("the run directory", () => {
 				.map((s) => s.name)
 				.sort(),
 		).toEqual(["live", "one", "three", "two"]);
+	});
+
+	/** A run dir with an exited process's file of span `names`, per file. */
+	function exited(dir: string, files: Record<string, string[]>): void {
+		for (const [file, names] of Object.entries(files)) {
+			writeFileSync(
+				join(dir, file),
+				names
+					.map(
+						(name) =>
+							`${otlpLine("crb", {}, [
+								{
+									name,
+									context: { traceId: "a".repeat(32), spanId: "b".repeat(16) },
+									parent: null,
+									startMs: T0,
+									endMs: T0 + 1,
+								},
+							])}\n`,
+					)
+					.join(""),
+			);
+		}
+	}
+	const names = (dir: string) =>
+		spansOf(readRequests(dir))
+			.map((s) => s.name)
+			.sort();
+
+	it("two packers never pack a file twice: a claimed file is the claimer's", () => {
+		const dir = tempDir();
+		exited(dir, {
+			"crb-101-aaaaaa.jsonl": ["one"],
+			"fake-gh-102-bbbbbb.jsonl": ["two"],
+		});
+		let inner = -1;
+		// A second packer (pnpm test-profile) runs while the first has read its files.
+		const outer = compactRun(
+			dir,
+			() => false,
+			() => {
+				inner = compactRun(dir, () => false);
+			},
+		);
+		expect([outer, inner]).toEqual([2, 0]);
+		expect(names(dir)).toEqual(["one", "two"]);
+		expect(readdirSync(dir)).toEqual([
+			expect.stringMatching(/^packed-[0-9a-f]{8}\.jsonl\.gz$/),
+		]);
+	});
+
+	it("a failed pack puts its claimed files back and leaves no temp file", () => {
+		const dir = tempDir();
+		exited(dir, { "crb-101-aaaaaa.jsonl": ["one"] });
+		const n = compactRun(
+			dir,
+			() => false,
+			() => {
+				throw new Error("disk full");
+			},
+		);
+		expect(n).toBe(0);
+		expect(readdirSync(dir)).toEqual(["crb-101-aaaaaa.jsonl"]);
+		expect(names(dir)).toEqual(["one"]);
+	});
+
+	it("keeps a killed process's torn last line from swallowing the next file's first", () => {
+		const dir = tempDir();
+		exited(dir, {
+			"crb-101-aaaaaa.jsonl": ["one"],
+			"crb-102-bbbbbb.jsonl": ["two"],
+		});
+		// SIGKILLed mid-write: a last line with no end.
+		writeFileSync(
+			join(dir, "crb-101-aaaaaa.jsonl"),
+			`${readFileSync(join(dir, "crb-101-aaaaaa.jsonl"), "utf8")}{"resourceSpans":[{"reso`,
+		);
+		expect(compactRun(dir, () => false)).toBe(2);
+		expect(names(dir)).toEqual(["one", "two"]);
+	});
+
+	it("doesn't extend a run's retention when it packs it", () => {
+		const dir = tempDir();
+		exited(dir, { "crb-101-aaaaaa.jsonl": ["one"] });
+		const old = new Date(Date.now() - 3 * 24 * 60 * 60_000);
+		utimesSync(dir, old, old);
+		expect(compactRun(dir, () => false)).toBe(1);
+		expect(Math.round(statSync(dir).mtimeMs / 1000)).toBe(
+			Math.round(old.getTime() / 1000),
+		);
+	});
+
+	it("reads past a file that vanished between listing and reading", () => {
+		const dir = tempDir();
+		exited(dir, { "crb-101-aaaaaa.jsonl": ["one"] });
+		// Listed, but gone when read (a packer took it).
+		symlinkSync(join(dir, "nowhere"), join(dir, "crb-102-bbbbbb.jsonl"));
+		expect(names(dir)).toEqual(["one"]);
 	});
 });
