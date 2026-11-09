@@ -60,8 +60,13 @@ function e2eSteps(): StepLike[] {
 				step("Launch browser", "pw:api", 0, 600),
 			]),
 			step('Fixture "context"', "fixture", 600, 100),
-			step('Fixture "page"', "fixture", 700, 300),
-			step('Fixture "workdir"', "fixture", 1000, 200),
+			// A spec's beforeEach: the fixtures it needs nest in it.
+			step("beforeEach hook", "hook", 700, 500, [
+				step('Fixture "page"', "fixture", 700, 300),
+				// Not crb's page: before the review opens.
+				step("Navigate", "pw:api", 1000, 50),
+			]),
+			step('Fixture "workdir"', "fixture", 1050, 150),
 		]),
 		step("setup: fixture repo", "test.step", 1200, 500),
 		step("setup: crb serve", "test.step", 1700, 2000),
@@ -195,7 +200,9 @@ describe("testSpans (the Playwright reporter's)", () => {
 			["Before Hooks", "setup.other"],
 			['Fixture "browser"', "setup.browser"],
 			['Fixture "context"', "setup.browser"],
+			["beforeEach hook", undefined],
 			['Fixture "page"', "setup.browser"],
+			["Navigate", undefined],
 			['Fixture "workdir"', undefined],
 			["setup: fixture repo", "setup.fixture"],
 			["setup: crb serve", "setup.crb_serve"],

@@ -48,6 +48,8 @@ const BROWSER_FIXTURES = new Set([
 	'Fixture "page"',
 ]);
 
+const TOP_HOOKS = new Set(["Before Hooks", "After Hooks"]);
+
 function kept(step: StepLike): boolean {
 	return (
 		step.category === "hook" ||
@@ -85,19 +87,23 @@ export function testSpans(
 			error: test.error,
 		},
 	];
+	// The first navigation once crb has opened the review is its first load.
+	let opened = false;
 	let firstLoad = true;
 	const walk = (steps: StepLike[], parent: SpanContext, hook: string) => {
 		for (const step of steps) {
 			if (!kept(step)) continue;
-			const inHook = step.category === "hook" ? step.title : hook;
+			// Before/After Hooks; a beforeEach and its fixtures run inside them.
+			const inHook = TOP_HOOKS.has(step.title) ? step.title : hook;
 			let phase: string | undefined = STEP_PHASES[step.title];
+			if (step.title === "setup: crb open") opened = true;
 			if (step.title === "Before Hooks") phase = "setup.other";
 			else if (step.title === "After Hooks") phase = "teardown.other";
 			else if (inHook === "Before Hooks" && BROWSER_FIXTURES.has(step.title)) {
 				phase = "setup.browser";
 			} else if (
 				step.category === "pw:api" &&
-				!inHook &&
+				opened &&
 				firstLoad &&
 				step.title.startsWith("Navigate")
 			) {
