@@ -1115,7 +1115,9 @@ export function FilesPage() {
 												sincePending={sinceView.pending}
 												sinceMarks={data.sinceMarks}
 												counted={
-													unitsByFile.has(file.index)
+													// The since view counts its units: none here is
+													// nothing to read, never the snapshot's numbers.
+													sinceAnswer
 														? unitsFile(file, unitsByFile.get(file.index) ?? [])
 														: undefined
 												}

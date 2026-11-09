@@ -130,6 +130,7 @@ export function ProgressBar(props: {
 	/**
 	 * Instead of counts, a state of its own (the since view): nothing to
 	 * count there, or its count failed. Never another view's numbers.
+	 * `pending` comes first: a refetch over an earlier empty answer spins.
 	 */
 	instead?: "empty" | "failed";
 }) {
@@ -167,23 +168,7 @@ export function ProgressBar(props: {
 				<div className="flex shrink-0 items-center gap-2">
 					<UnitPicker unit={unit} onChange={props.onUnitChange} />
 				</div>
-				{props.instead ? (
-					<div
-						role="progressbar"
-						aria-label="Review progress"
-						aria-valuetext={
-							props.instead === "empty" ? "Nothing to read" : "Not counted"
-						}
-						data-state={props.instead}
-						className="flex min-w-0 flex-1 basis-0 items-center gap-x-3"
-					>
-						<span
-							className={`font-display text-base font-semibold ${props.instead === "failed" ? "text-bad" : ""}`}
-						>
-							{props.instead === "empty" ? "Nothing to read" : "Not counted"}
-						</span>
-					</div>
-				) : props.pending ? (
+				{props.pending ? (
 					<div
 						role="progressbar"
 						aria-label="Review progress"
@@ -207,6 +192,22 @@ export function ProgressBar(props: {
 								)}
 							</span>
 						)}
+					</div>
+				) : props.instead ? (
+					<div
+						role="progressbar"
+						aria-label="Review progress"
+						aria-valuetext={
+							props.instead === "empty" ? "Nothing to read" : "Not counted"
+						}
+						data-state={props.instead}
+						className="flex min-w-0 flex-1 basis-0 items-center gap-x-3"
+					>
+						<span
+							className={`font-display text-base font-semibold ${props.instead === "failed" ? "text-bad" : ""}`}
+						>
+							{props.instead === "empty" ? "Nothing to read" : "Not counted"}
+						</span>
 					</div>
 				) : (
 					<div

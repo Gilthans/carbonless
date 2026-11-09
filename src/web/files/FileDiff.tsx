@@ -349,6 +349,24 @@ function FileProgress(props: {
 	const { file, unit, summary, trigger } = props;
 	const p = fileUnitProgress(file, unit);
 	const { counts } = p;
+	// The since view's count of a file it has nothing of (all carried):
+	// its own state, never the snapshot's numbers.
+	if (file.clusters.length === 0) {
+		return (
+			<div
+				{...trigger}
+				role="progressbar"
+				aria-label="File progress"
+				aria-valuetext="Nothing to read"
+				data-state="empty"
+				// biome-ignore lint/a11y/noNoninteractiveTabindex: the tooltip opens on focus.
+				tabIndex={0}
+				className="flex h-9 w-28 shrink-0 items-center justify-end rounded-sm text-xs text-muted focus-visible:outline-2 focus-visible:outline-accent @lg:order-6 @2xl:w-48"
+			>
+				Nothing to read
+			</div>
+		);
+	}
 	return (
 		<div
 			{...trigger}

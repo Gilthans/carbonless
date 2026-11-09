@@ -564,6 +564,12 @@ describe("FileDiff", () => {
 			screen.getByRole("progressbar", { name: "File progress" }),
 		).toHaveTextContent("2 / 8 lines");
 		cleanup();
+		// A fully carried file in the since view: nothing to read, no numbers.
+		setup(f, undefined, hunks, "clusters", unitsFile(f, []));
+		const empty = screen.getByRole("progressbar", { name: "File progress" });
+		expect(empty).toHaveTextContent("Nothing to read");
+		expect(empty).not.toHaveTextContent(/\d/);
+		cleanup();
 		// The full diff: its one cluster.
 		setup(f, undefined, hunks, "clusters");
 		expect(

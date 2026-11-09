@@ -62,6 +62,24 @@ describe("ProgressBar", () => {
 		).toBeInTheDocument();
 	});
 
+	it("pending wins over an earlier empty or failed state: a refetch spins (principle 8)", () => {
+		for (const instead of ["empty", "failed"] as const) {
+			render(
+				<ProgressBar
+					progress={sample}
+					unit="clusters"
+					onUnitChange={() => {}}
+					pending
+					instead={instead}
+				/>,
+			);
+			const bar = screen.getByRole("progressbar", { name: "Review progress" });
+			expect(bar).toHaveAttribute("aria-busy", "true");
+			expect(bar).not.toHaveTextContent(/Nothing to read|Not counted/);
+			cleanup();
+		}
+	});
+
 	it("in place of counts, its own empty or failed state: never digits from another view", () => {
 		for (const [instead, text] of [
 			["empty", "Nothing to read"],

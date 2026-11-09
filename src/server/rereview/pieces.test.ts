@@ -326,3 +326,50 @@ describe("identical text: a shown removed line is placed in the base by position
 		expect(all?.owns).toEqual([[0, 3]]);
 	});
 });
+
+describe("a file the since patch set didn't touch", () => {
+	const lines = Array.from({ length: 8 }, (_, i) => `b ${i + 1}`);
+	let r: GitFixture;
+	let a: Snapshot;
+	let b: Snapshot;
+	beforeAll(async () => {
+		r = createGitFixture([
+			{ message: "base", files: { "a.txt": "one\n", "b.txt": text(lines) } },
+			{ message: "ps1", files: { "a.txt": "one!\n" } },
+			{
+				message: "ps2",
+				files: {
+					"b.txt": text(lines.map((l, i) => (i === 3 ? "b four" : l))),
+				},
+			},
+		]);
+		const [b0, h1, h2] = r.shas as [string, string, string];
+		a = await buildSnapshot(r.path, b0, h1);
+		b = await buildSnapshot(r.path, b0, h2);
+	});
+	afterAll(() => r.cleanup());
+
+	it("its old side is the base: a shown removed line is the cluster's own (the identity map)", async () => {
+		const since: SincePatchset = {
+			number: 1,
+			revision: a.revision,
+			mergeBase: a.base,
+			head: a.head,
+			startedAt: 0,
+			since: null,
+			shape: null,
+			baseBranch: "main",
+			interdiff: null,
+			snapshot: a,
+			states: new Map(),
+		};
+		const target = { ...b, baseBranch: "main" };
+		const traced = await traceRereview(r.path, since, [], target);
+		const { answer } = answerRereview(traced, since, [], target);
+		const index = b.files.findIndex((f) => f.path === "b.txt");
+		const k = b.files[index]?.clusters[0];
+		expect(k).toMatchObject({ removed: ["b 4"], added: ["b four"] });
+		const pieces = interdiffFileHunks(traced, b, answer, index).pieces ?? [];
+		expect(pieces.find((p) => p.key === k?.key)?.owns).toEqual([[0, 2]]);
+	});
+});
