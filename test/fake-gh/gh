@@ -6,8 +6,10 @@ import { execFileSync } from "node:child_process";
 import { appendFileSync, existsSync, readFileSync } from "node:fs";
 import { KEPT_TAGS as GITHUB_KEPT_TAGS } from "./keptTags.mjs";
 import { writeFileAtomic } from "./atomic.mjs";
+import { traceCall } from "./trace.mjs";
 
 const args = process.argv.slice(2);
+traceCall(args);
 const s = JSON.parse(readFileSync(process.env.CRB_FAKE_GH, "utf8"));
 // Logged after reading the scenario: once a call shows in the log, a test may
 // rewrite the scenario without affecting that call.

@@ -22,6 +22,7 @@ import {
 	type GitFixture,
 	testGitEnv,
 } from "../test/git-fixture";
+import { fixtureGit } from "../test/trace-run";
 
 /*
  * A throwaway PR for the built CLI to review against the fake gh, without
@@ -116,11 +117,13 @@ export function createPr(workdir: string, opts: PrOptions = {}): Pr {
 		...(opts.files ?? DEFAULT_COMMITS),
 	]);
 	const git = (...args: string[]) =>
-		execFileSync("git", args, {
-			cwd: repo.path,
-			encoding: "utf8",
-			env: testGitEnv(),
-		}).trim();
+		fixtureGit(args, () =>
+			execFileSync("git", args, {
+				cwd: repo.path,
+				encoding: "utf8",
+				env: testGitEnv(),
+			}).trim(),
+		);
 	const mergeBase = repo.shas[0] ?? "";
 	let head = repo.shas.at(-1) ?? "";
 	// The PR head lives only under refs/pull/<n>/head, like on GitHub.
@@ -188,11 +191,13 @@ export function createPr(workdir: string, opts: PrOptions = {}): Pr {
  */
 function commitInWorktree(dir: string, commit: FixtureCommit): string {
 	const git = (...args: string[]) =>
-		execFileSync("git", args, {
-			cwd: dir,
-			encoding: "utf8",
-			env: testGitEnv(),
-		}).trim();
+		fixtureGit(args, () =>
+			execFileSync("git", args, {
+				cwd: dir,
+				encoding: "utf8",
+				env: testGitEnv(),
+			}).trim(),
+		);
 	for (const name of commit.delete ?? []) {
 		rmSync(join(dir, name), { force: true });
 	}

@@ -35,6 +35,7 @@
 		"flake-check": "node scripts/flake-check.mjs",
 		"icons": "tsx scripts/render-icons.ts",
 		"compare-threads": "tsx scripts/compare-threads.ts",
+		"test-profile": "tsx scripts/test-profile/main.ts",
 		"release": "tsx scripts/release.ts",
 		"prepack": "pnpm build"
 	},

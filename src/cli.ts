@@ -4,6 +4,7 @@ import { parseArgs } from "node:util";
 import { runClient } from "./client.js";
 import { killDetachedGits } from "./server/git.js";
 import { startServer } from "./server/serve.js";
+import { tracer } from "./server/trace.js";
 import { BUILD, formatVersion } from "./server/version.js";
 
 const USAGE = `Usage: crb <pr> [options]
@@ -70,6 +71,9 @@ async function main(): Promise<void> {
 		return;
 	}
 	const [first, ...extra] = positionals;
+	// Opt-in ($CRB_TRACE_DIR): this process's span, from its start to its exit.
+	const traced = tracer(first === "serve" ? "crb" : "crb-client");
+	traced.root(first === "serve" ? "crb serve" : "crb <pr>");
 	if (first === "serve") {
 		if (extra.length > 0) throw new Error("crb serve takes no arguments");
 		for (const option of CLIENT_ONLY) {
@@ -146,6 +150,11 @@ async function serve(values: {
 	process.on("SIGTERM", shutdown);
 	// Tests and agents parse this line to find the server.
 	const key = server.key ? `?key=${server.key}` : "";
+	tracer()
+		.start("crb serve: listening", undefined, {
+			startMs: performance.timeOrigin,
+		})
+		.end();
 	console.error(`carbonless listening on ${server.url}/${key}`);
 	if (server.publicUrl)
 		console.error(`carbonless open at ${server.publicUrl}/${key}`);

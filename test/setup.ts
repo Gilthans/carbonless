@@ -1,8 +1,9 @@
 import "@testing-library/jest-dom/vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { afterAll, beforeEach, expect, vi } from "vitest";
+import { traceparent, tracer } from "../src/server/trace";
 
 // No test may touch the reviewer's real clone cache (~/.cache/carbonless),
 // config or running server's state, and parallel runs (e.g. in two
@@ -20,6 +21,42 @@ process.env.CRB_TEST_FILE = expect.getState().testPath ?? "?";
 beforeEach((ctx) => {
 	process.env.CRB_TEST_NAME = ctx.task.name;
 });
+
+// Test traces (docs/test-profiling.md): a trace per file, a span per test,
+// and what a test runs in this process (crb's git and gh, fixture gits)
+// under its test's span.
+const traced = tracer("vitest");
+if (traced.enabled) {
+	const path = relative(process.cwd(), expect.getState().testPath ?? "?");
+	const file = traced.start(
+		`file: ${path}`,
+		{ "crb.kind": "file", "test.file": path },
+		{ parent: null },
+	);
+	traced.setDefaultParent(file.context);
+	beforeEach((ctx) => {
+		const span = traced.start(
+			`test: ${ctx.task.name}`,
+			{
+				"crb.kind": "test",
+				"test.file": path,
+				"test.title": ctx.task.fullName ?? ctx.task.name,
+			},
+			{ parent: file.context },
+		);
+		traced.setDefaultParent(span.context);
+		if (span.context) process.env.TRACEPARENT = traceparent(span.context);
+		ctx.onTestFinished(({ task }) => {
+			span.end({ "test.status": task.result?.state ?? "unknown" });
+			traced.setDefaultParent(file.context);
+			delete process.env.TRACEPARENT;
+		});
+	});
+	afterAll(() => {
+		file.end();
+		traced.flush();
+	});
+}
 
 // Component tests render whole pages in jsdom and drive them with
 // user-event: CPU-bound work that, on a machine running several suites at

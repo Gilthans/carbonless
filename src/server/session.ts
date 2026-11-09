@@ -58,6 +58,7 @@ import {
 	setResolved,
 	type ThreadWriteTarget,
 } from "./threadWrites.js";
+import { type Tracer, tracer } from "./trace.js";
 import {
 	mapVerdict,
 	ruleOf,
@@ -283,6 +284,33 @@ export class Session {
 		if (options.asOf && options.head) {
 			throw new Error("--head can't be combined with --as-of");
 		}
+		// Opt-in ($CRB_TRACE_DIR): the open, with its slow steps under it.
+		const traced = tracer();
+		const span = traced.start("crb: open review");
+		try {
+			return await traced.run(span, () =>
+				Session.#openReview(arg, cwd, progress, options, traced),
+			);
+		} catch (error) {
+			span.end(undefined, (error as Error).message);
+			throw error;
+		} finally {
+			span.end();
+		}
+	}
+
+	static async #openReview(
+		arg: string,
+		cwd: string,
+		progress: (message: string) => void,
+		options: SessionOptions,
+		traced: Tracer,
+	): Promise<Session> {
+		const step = <T>(name: string, run: () => Promise<T>): Promise<T> => {
+			if (!traced.enabled) return run();
+			const span = traced.start(name);
+			return traced.run(span, run).finally(() => span.end());
+		};
 		await runGh(["auth", "status"]);
 		const ref = await resolvePrRef(arg, cwd);
 		// Independent reads: at once (each gh call is a few hundred ms).
@@ -298,8 +326,10 @@ export class Session {
 			meta = { ...meta, headOid, state: "OPEN" };
 		}
 		const [repo, pinned] = await Promise.all([
-			ensureClone(meta.owner, meta.repo, () =>
-				progress(`cloning ${meta.owner}/${meta.repo}…`),
+			step("crb: clone", () =>
+				ensureClone(meta.owner, meta.repo, () =>
+					progress(`cloning ${meta.owner}/${meta.repo}…`),
+				),
 			),
 			// The head is resolved once: the session keeps it for its life.
 			options.head
@@ -311,10 +341,12 @@ export class Session {
 				: null,
 		]);
 		progress(`fetching PR #${meta.number}…`);
-		const fetched = await fetchPr(repo, meta, {
-			asOf,
-			pinned: pinned ?? undefined,
-		});
+		const fetched = await step("crb: fetch pr", () =>
+			fetchPr(repo, meta, {
+				asOf,
+				pinned: pinned ?? undefined,
+			}),
+		);
 		// Whether the PR is over comes from GitHub's PR state, never from
 		// history shape: squash and rebase merges leave the head outside the
 		// base (docs/git-methodology.md). As of a cutoff, meta says OPEN.
@@ -334,7 +366,9 @@ export class Session {
 			throw new Error(refusal(meta));
 		}
 		const { mergeBase, head } = state.patchset ?? fetched;
-		const snapshot = await buildSnapshot(repo, mergeBase, head);
+		const snapshot = await step("crb: snapshot", () =>
+			buildSnapshot(repo, mergeBase, head),
+		);
 		return new Session(
 			repo,
 			viewer,
@@ -790,6 +824,20 @@ export class Session {
 	 */
 	#read(ready?: Promise<unknown>): OverviewRead {
 		if (this.#closed) throw new SessionClosedError("The session is closed");
+		// Opt-in ($CRB_TRACE_DIR): the read until its overview is in.
+		const traced = tracer();
+		const span = traced.start("crb: overview read", {
+			first: this.#reads.length === 0,
+		});
+		const read = traced.run(span, () => this.#newRead(ready));
+		read.overview.then(
+			() => span.end(),
+			(error: unknown) => span.end(undefined, (error as Error)?.message),
+		);
+		return read;
+	}
+
+	#newRead(ready?: Promise<unknown>): OverviewRead {
 		const { asOf, viewer } = this.options;
 		const read = new OverviewRead({
 			ref: this.#ref(),
