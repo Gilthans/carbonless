@@ -21,6 +21,9 @@ import {
 	sessionQuery,
 	verdictQuery,
 } from "./api";
+import "./agent";
+import { AgentChip } from "./agent/AgentChip";
+import { AgentSetupHost } from "./agent/AgentSetup";
 import { Logo, Mark, Wordmark } from "./brand/Brand";
 import { HeadToast } from "./files/HeadToast";
 import { SyncNotices } from "./files/SyncNotices";
@@ -320,6 +323,7 @@ export function App() {
 								<span className="break-all">
 									{pr.owner}/{pr.repo}
 								</span>
+								<AgentChip />
 								{session.data?.asOf && <AsOf iso={session.data.asOf} />}
 							</p>
 						)}
@@ -520,6 +524,7 @@ export function App() {
 						}}
 					/>
 				)}
+				<AgentSetupHost />
 			</div>
 		</AppHeaderHeight.Provider>
 	);

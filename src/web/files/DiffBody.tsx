@@ -21,6 +21,7 @@ import {
 	useRef,
 	useState,
 } from "react";
+import type { AgentThread } from "../../shared/agent";
 import {
 	contains,
 	covers,
@@ -50,14 +51,23 @@ import type {
 	ReviewThread,
 	SinceMark,
 } from "../../shared/types";
-import { contextQuery, hunksQuery, overviewQuery } from "../api";
+import { AgentBubble } from "../agent/AgentBubble";
+import { AgentComposer } from "../agent/AgentComposer";
+import { takeJustAsked } from "../agent/agentWrites";
+import { agentThreadsQuery } from "../agent/api";
+import {
+	type AgentComposerItem,
+	useAgentComposers,
+} from "../agent/askAgentAction";
+import { type AgentPlaceable, agentPlaceable } from "../agent/placeable";
+import { contextQuery, hunksQuery, overviewQuery, sessionQuery } from "../api";
 import {
 	CodeLine,
 	type Mark,
 	useShowInvisibles,
 	type Words,
 } from "../code/Invisibles";
-import { DEFAULT_TAB_WIDTH } from "../code/invisibles";
+import { DEFAULT_TAB_WIDTH } from "../code/invisibleChars";
 import { Spinner } from "../Spinner";
 import {
 	clickPointer,
@@ -95,12 +105,17 @@ import {
 	setPicks,
 	usePicks,
 } from "./linePicks";
-import { describeSpan } from "./selectionActions";
+import { type CodeSpan, describeSpan } from "./selectionActions";
 import { layoutRows, type SideRow } from "./sideBySide";
 import type { KindEntry } from "./since";
 import { CONTROLS, SLOT, useStickyControls } from "./stickyControls";
 import { BubbleSlot, ThreadBubble } from "./ThreadBubble";
-import { type CardPlace, TailRow, ThreadRow } from "./ThreadRow";
+import {
+	AgentThreadRow,
+	type CardPlace,
+	TailRow,
+	ThreadRow,
+} from "./ThreadRow";
 import {
 	type FilePlacement,
 	type LineKey,
@@ -132,6 +147,8 @@ export interface DiffThreads {
  */
 export interface FileLead {
 	bubble: ReactNode;
+	/** How many bubbles `bubble` holds (the comment and agent ones): 1 if unset. */
+	count?: number;
 	/** The row of its threads, with the rail of the cluster it sits in. */
 	row: (columns: number, rail?: string) => ReactNode;
 }
@@ -145,11 +162,15 @@ export interface FileLead {
  * Side by side it sits at the right with the line bubbles, in the first
  * row's right cell when that is code (PairRow).
  */
-export function FileBubbleSlot(props: { children: ReactNode }) {
+export function FileBubbleSlot(props: { children: ReactNode; count?: number }) {
 	return (
 		<span
 			data-testid="file-bubble-slot"
-			className="sticky left-[calc(50%-1.25rem)] z-[4] float-left -mr-10 flex w-10 justify-center"
+			className={`sticky z-[4] float-left flex justify-center ${
+				(props.count ?? 1) > 1
+					? "left-[calc(50%-2.5rem)] -mr-20 w-20"
+					: "left-[calc(50%-1.25rem)] -mr-10 w-10"
+			}`}
 		>
 			{props.children}
 		</span>
@@ -174,7 +195,7 @@ function LeadRow(props: { lead: FileLead; columns: number; centred: boolean }) {
 			<tr>
 				<td
 					colSpan={columns}
-					className={`${centred ? "px-2" : bubblePad(1)} h-5`}
+					className={`${centred ? "px-2" : bubblePad(lead.count ?? 1)} h-5`}
 				>
 					<LeadSlot lead={lead} centred={centred} />
 				</td>
@@ -187,7 +208,9 @@ function LeadRow(props: { lead: FileLead; columns: number; centred: boolean }) {
 /** The file bubble on a row that isn't code: centred unified, at the right side by side. */
 function LeadSlot(props: { lead: FileLead; centred: boolean }) {
 	return props.centred ? (
-		<FileBubbleSlot>{props.lead.bubble}</FileBubbleSlot>
+		<FileBubbleSlot count={props.lead.count}>
+			{props.lead.bubble}
+		</FileBubbleSlot>
 	) : (
 		<BubbleSlot>{props.lead.bubble}</BubbleSlot>
 	);
@@ -195,11 +218,17 @@ function LeadSlot(props: { lead: FileLead; centred: boolean }) {
 
 /** A non-code row's text cell beside the file bubble: its padding and line. */
 const leadText = (lead: FileLead | undefined, centred: boolean, others = 0) =>
-	`${bubblePad(others + (lead && !centred ? 1 : 0))} ${lead && centred ? LEAD_LINE : ""}`;
+	`${bubblePad(others + (lead && !centred ? (lead.count ?? 1) : 0))} ${lead && centred ? LEAD_LINE : ""}`;
 
 /** The cell padding that keeps `n` bubbles clear of the code. */
 const bubblePad = (n: number) =>
-	n === 0 ? "px-2" : n === 1 ? "pr-12 pl-2" : "pr-24 pl-2";
+	n === 0
+		? "px-2"
+		: n === 1
+			? "pr-12 pl-2"
+			: n === 2
+				? "pr-24 pl-2"
+				: "pr-36 pl-2";
 
 /** What a row needs of the file's threads: the placement and which bubbles are open. */
 interface RowThreads {
@@ -212,6 +241,51 @@ interface RowThreads {
 	/** A row whose bubble takes focus once it shows (a gap thread opened). */
 	focus: LineKey | null;
 	onFocused: () => void;
+}
+
+/**
+ * What a row needs of the file's agent threads (their own bubble, beside
+ * the comment bubble, and their own open set) and of the Ask agent
+ * composers ending on it.
+ */
+interface AgentRows {
+	placement: FilePlacement<AgentPlaceable>;
+	open: ReadonlySet<LineKey>;
+	toggle: (key: LineKey, keys: LineKey[]) => void;
+	idOf: (key: LineKey) => string;
+	composersAt: (keys: LineKey[]) => AgentComposerItem[];
+	quote: (span: CodeSpan) => string;
+}
+
+/** A cell's agent threads: those ending on its keys, the key, whether open. */
+function cellAgent(keys: LineKey[], agent: AgentRows | undefined) {
+	const endKey = keys.find((k) => agent?.placement.end.has(k));
+	const ending = keys.flatMap(
+		(k) => agent?.placement.end.get(k)?.map((p) => p.thread) ?? [],
+	);
+	const open = keys.some((k) => agent?.open.has(k));
+	return { endKey, ending, open };
+}
+
+/** An agent bubble for a cell's threads, when it has any. */
+function agentBubbleOf(
+	cell: ReturnType<typeof cellAgent>,
+	keys: LineKey[],
+	agent: AgentRows | undefined,
+	where: string,
+): ReactNode {
+	const { endKey } = cell;
+	if (!agent || !endKey) return undefined;
+	return (
+		<AgentBubble
+			inline
+			threads={cell.ending}
+			where={where}
+			open={cell.open}
+			controls={cell.open ? agent.idOf(endKey) : undefined}
+			onToggle={() => agent.toggle(endKey, keys)}
+		/>
+	);
 }
 
 /**
@@ -726,7 +800,11 @@ function CodeCell(props: {
 	lang: string | null;
 	tabWidth?: number;
 	bubble?: ReactNode;
+	/** Its agent threads' bubble, after the comment bubble. */
+	agentBubble?: ReactNode;
 	lead?: ReactNode;
+	/** The file bubble's slot holds this many bubbles (FileLead.count). */
+	leadCount?: number;
 	/** The hunk (`h<i>`) or gap (`g<i>`) the cell is in (codeSpan.ts). */
 	hunk: string;
 	/** In a hunk: its line's index in GitHub's order of it. */
@@ -742,8 +820,11 @@ function CodeCell(props: {
 		picked: boolean;
 	};
 }) {
-	const { line, cell, bubble, lead } = props;
-	const bubbles = (bubble ? 1 : 0) + (lead ? 1 : 0);
+	const { line, cell, bubble, lead, agentBubble } = props;
+	const bubbles =
+		(bubble ? 1 : 0) +
+		(lead ? (props.leadCount ?? 1) : 0) +
+		(agentBubble ? 1 : 0);
 	return (
 		<td
 			data-testid="code"
@@ -763,6 +844,7 @@ function CodeCell(props: {
 				<BubbleSlot>
 					{lead}
 					{bubble}
+					{agentBubble}
 				</BubbleSlot>
 			)}
 			{props.words?.hidden ? (
@@ -815,6 +897,7 @@ interface RowProps {
 	orderOf?: (line: DiffLine) => number | undefined;
 	picker?: Picker;
 	composers?: RowComposers;
+	agent?: AgentRows;
 	/** The hunk's paired lines' word marks (hunkWordMarks), by line. */
 	words?: ReadonlyMap<DiffLine, readonly Mark[]>;
 	/** The marked lines whose change doesn't show with hidden characters off (hiddenLines). */
@@ -824,6 +907,8 @@ interface RowProps {
 /** The spans painted over a cell's characters: those of the threads on its keys. */
 const marksOf = (keys: LineKey[], threads: RowThreads | undefined): Mark[] =>
 	threads ? keys.flatMap((k) => threads.placement.marks.get(k) ?? []) : [];
+
+const NO_MARKS: readonly Mark[] = [];
 
 /**
  * A line's word marks and their tint: its kind's, faded on a reviewed
@@ -836,11 +921,13 @@ function wordsOf(
 ): Words | undefined {
 	if (line.kind !== "add" && line.kind !== "del") return undefined;
 	const marks = props.words?.get(line);
-	if (!marks) return undefined;
+	// A BOM may be hidden on a line without marks (hiddenLines).
+	const hidden = props.hidden?.has(line) || undefined;
+	if (!marks && !hidden) return undefined;
 	return {
-		marks,
+		marks: marks ?? NO_MARKS,
 		tone: reviewed ? `${line.kind}-done` : line.kind,
-		hidden: props.hidden?.has(line) || undefined,
+		hidden,
 	};
 }
 
@@ -857,10 +944,14 @@ function RowTail(props: {
 	composing: { side: DiffSide; items: NewThreadItem[] }[];
 	threads?: RowThreads;
 	composers?: RowComposers;
+	/** Opened agent threads ending on the row, and Ask agent composers. */
+	agentOpened?: { endKey: LineKey; ending: AgentThread[]; side: DiffSide }[];
+	agentComposing?: { side: DiffSide; items: AgentComposerItem[] }[];
+	agent?: AgentRows;
 	shape: Shape;
 	state?: ClusterView["state"];
 }) {
-	const { threads, shape, composers } = props;
+	const { threads, shape, composers, agent } = props;
 	const rail = props.state ? RAIL[props.state] : undefined;
 	const place = (side: DiffSide): CardPlace =>
 		shape.split ? { side } : { columns: columnsOf(shape.view) };
@@ -871,6 +962,14 @@ function RowTail(props: {
 				{
 					side: "RIGHT" as const,
 					items: props.composing.flatMap(({ items }) => items),
+				},
+			];
+	const asking = shape.split
+		? (props.agentComposing ?? [])
+		: [
+				{
+					side: "RIGHT" as const,
+					items: (props.agentComposing ?? []).flatMap(({ items }) => items),
 				},
 			];
 	return (
@@ -897,6 +996,36 @@ function RowTail(props: {
 							place={place(side)}
 							rail={rail}
 						/>
+					))}
+			{agent &&
+				(props.agentOpened ?? []).map((cell) => (
+					<AgentThreadRow
+						key={`agent:${cell.endKey}`}
+						id={agent.idOf(cell.endKey)}
+						threads={cell.ending}
+						place={place(cell.side)}
+						rail={rail}
+					/>
+				))}
+			{agent &&
+				asking
+					.filter(({ items }) => items.length > 0)
+					.map(({ side, items }) => (
+						<TailRow
+							key={`agent:${side}`}
+							testId="agent-composer-row"
+							place={place(side)}
+							rail={rail}
+						>
+							{items.map((item) => (
+								<AgentComposer
+									key={item.clientId}
+									clientId={item.clientId}
+									span={item.span}
+									quote={agent.quote(item.span)}
+								/>
+							))}
+						</TailRow>
 					))}
 		</>
 	);
@@ -982,6 +1111,10 @@ function LineRow(props: RowProps & { line: RowLine; order?: number }) {
 	// unlike a landed line's tint and rail; not while it is landed on.
 	const mark = commented && landed !== "on" ? "thread-mark" : "";
 	const composing = props.composers?.at(keys) ?? [];
+	// The agent's threads and composers, whether or not comments are in.
+	const agentKeys = props.agent ? rowKeys(line) : [];
+	const asked = cellAgent(agentKeys, props.agent);
+	const asking = props.agent?.composersAt(agentKeys) ?? [];
 	// The number GitHub knows the row by takes the pick's button (and its
 	// tab stop); the other number picks the row too, by pointer.
 	const pick = (side: DiffSide) => pickOf(cell, side === cell.side, picker);
@@ -1039,6 +1172,7 @@ function LineRow(props: RowProps & { line: RowLine; order?: number }) {
 							/>
 						)
 					}
+					agentBubble={agentBubbleOf(asked, agentKeys, props.agent, where)}
 				/>
 			</tr>
 			{line.noNewline && <NoNewlineRow shape={shape} state={state} />}
@@ -1047,6 +1181,13 @@ function LineRow(props: RowProps & { line: RowLine; order?: number }) {
 				composing={[{ side: cell.side, items: composing }]}
 				threads={threads}
 				composers={props.composers}
+				agentOpened={
+					asked.open && asked.endKey
+						? [{ endKey: asked.endKey, ending: asked.ending, side: cell.side }]
+						: []
+				}
+				agentComposing={[{ side: cell.side, items: asking }]}
+				agent={props.agent}
 				shape={shape}
 				state={state}
 			/>
@@ -1058,6 +1199,7 @@ function LineRow(props: RowProps & { line: RowLine; order?: number }) {
 interface Bubbles {
 	lead?: ReactNode;
 	bubble?: ReactNode;
+	agent?: ReactNode;
 }
 
 /**
@@ -1078,6 +1220,8 @@ interface Cell {
 	words?: Words;
 	order?: number;
 	pick: NumberPick;
+	/** Its agent threads (a context line's: in the right cell only). */
+	agentKeys: LineKey[];
 	/**
 	 * A context line's bubble, shown in both cells: the row's keys (what
 	 * closes it), whether its threads are open under either cell, and
@@ -1108,7 +1252,7 @@ function PairRow(
 		lead?: FileLead;
 	},
 ) {
-	const { row, state, threads, shape, picker, lead } = props;
+	const { row, state, threads, shape, picker, lead, agent } = props;
 	const reviewed = state === "reviewed";
 	const cellOf = (
 		line: RowLine,
@@ -1126,6 +1270,7 @@ function PairRow(
 			words: wordsOf(line, props, reviewed),
 			order: props.orderOf?.(source),
 			pick: pickOf(codeCellOf(line), true, picker),
+			agentKeys: agent ? rowKeys(line) : [],
 		};
 	};
 	let left: Cell | undefined;
@@ -1170,6 +1315,7 @@ function PairRow(
 			where: `on old line ${line.oldNo}`,
 			pick: { ...both.pick, label: `Old line ${line.oldNo}` },
 			shared: shared(openLeft),
+			agentKeys: [],
 		};
 	} else {
 		if (row.del) {
@@ -1225,7 +1371,19 @@ function PairRow(
 				onFocused={threads.onFocused}
 			/>
 		);
-		return { lead: fileBubble, bubble: lineBubble || undefined };
+		const agentKeys = cell?.agentKeys ?? [];
+		return {
+			lead: fileBubble,
+			bubble: lineBubble || undefined,
+			agent: cell
+				? agentBubbleOf(
+						cellAgent(agentKeys, agent),
+						agentKeys,
+						agent,
+						cell.where,
+					)
+				: undefined,
+		};
 	};
 	const own = !shape.split;
 	const cells = (side: DiffSide, cell: Cell | undefined) => {
@@ -1262,6 +1420,8 @@ function PairRow(
 					marks={cell.marks}
 					words={cell.words}
 					lead={bubbles.lead}
+					leadCount={lead?.count}
+					agentBubble={bubbles.agent}
 					cell={{
 						paint: `${bg} ${mark}`,
 						landed: cell.landed === "on",
@@ -1319,6 +1479,17 @@ function PairRow(
 				}))}
 				threads={threads}
 				composers={props.composers}
+				agentOpened={sides.flatMap(([side, cell]) => {
+					const asked = cellAgent(cell?.agentKeys ?? [], agent);
+					return asked.open && asked.endKey
+						? [{ endKey: asked.endKey, ending: asked.ending, side }]
+						: [];
+				})}
+				agentComposing={sides.map(([side, cell]) => ({
+					side,
+					items: agent?.composersAt(cell?.agentKeys ?? []) ?? [],
+				}))}
+				agent={agent}
 				shape={shape}
 				state={state}
 			/>
@@ -1340,7 +1511,7 @@ function BubbleRow(props: {
 	state?: ClusterView["state"];
 }) {
 	const { left, right } = props;
-	const has = (b: Bubbles) => Boolean(b.lead || b.bubble);
+	const has = (b: Bubbles) => Boolean(b.lead || b.bubble || b.agent);
 	if (!has(left) && !has(right)) return null;
 	const group = (side: DiffSide, b: Bubbles) => (
 		<div
@@ -1349,6 +1520,7 @@ function BubbleRow(props: {
 		>
 			{b.lead}
 			{b.bubble}
+			{b.agent}
 		</div>
 	);
 	return (
@@ -1816,6 +1988,28 @@ export function DiffBody(props: {
 		: [];
 	const writer = useThreadWriter();
 
+	// The agent's side: its threads (their own read) and open composers.
+	const sessionHead = useQuery({ ...sessionQuery, enabled: false }).data
+		?.snapshotHead;
+	// FilesPage reads them (and the tree counts them); here, from the cache.
+	const agentThreads = useQuery({ ...agentThreadsQuery, enabled: false }).data
+		?.threads;
+	const agentPlaceables = useMemo(
+		() => (agentThreads ?? []).map(agentPlaceable),
+		[agentThreads],
+	);
+	const agentComposerList = useAgentComposers();
+	const agentHeadNow = snapshotHead ?? sessionHead;
+	const agentMine = agentComposerList.filter(
+		(c) => c.span.path === file.path && c.span.subject === "line",
+	);
+	const agentLineItems = agentMine.filter(
+		(c) => c.span.commit === agentHeadNow,
+	);
+	const agentOrphans = agentHeadNow
+		? agentMine.filter((c) => c.span.commit !== agentHeadNow)
+		: [];
+
 	// Where the file's threads sit (all start closed). Opening one only
 	// shows it: no review state changes.
 	const placement = props.threads
@@ -1942,6 +2136,75 @@ export function DiffBody(props: {
 				}
 			: undefined;
 
+	// The reviewer's agent threads on this file, with their own bubbles and
+	// open set; the Ask agent composers under their span's last row. Apart
+	// from GitHub's threads: they show while those are still on their way.
+	const agentHead = snapshotHead ?? sessionHead;
+	const agentPlacement = agentHead
+		? placeThreads<AgentPlaceable>({
+				threads: agentPlaceables,
+				path: file.path,
+				snapshotHead: agentHead,
+				hunks: hunks.data ?? null,
+				loadedContext: [...loaded.values()],
+				noLines: file.binary || file.submodule,
+				spans: agentLineItems.map((c) => c.span as SpanRange),
+			})
+		: null;
+	const [openAgent, setOpenAgent] = useState<ReadonlySet<LineKey>>(
+		() => new Set(),
+	);
+	const toggleAgent = (key: LineKey, keys: LineKey[]) =>
+		setOpenAgent((open) => {
+			const next = new Set(open);
+			if (keys.some((k) => next.has(k))) for (const k of keys) next.delete(k);
+			else next.add(key);
+			return next;
+		});
+	const quoteSpan = (span: CodeSpan) => {
+		const start = textAt.get(`${span.startSide}:${span.startLine}` as LineKey);
+		const end = textAt.get(`${span.side}:${span.line}` as LineKey);
+		const same = span.startSide === span.side && span.startLine === span.line;
+		return quoteOf(span, same ? [end ?? ""] : [start ?? "", end ?? ""]);
+	};
+	const agentRows: AgentRows | undefined = agentPlacement
+		? {
+				placement: agentPlacement,
+				open: openAgent,
+				toggle: toggleAgent,
+				idOf: (key) => `${idBase}-agent-${key}`,
+				composersAt: (keys) =>
+					agentLineItems.filter((c) =>
+						keys.includes(`${c.span.side}:${c.span.line}` as LineKey),
+					),
+				quote: quoteSpan,
+			}
+		: undefined;
+	// Asked on a row that isn't shown (a gap), or on an earlier head: above
+	// the diff, never lost.
+	const agentUnshown = [
+		...(hunks.data
+			? agentLineItems.filter((_, i) => !agentPlacement?.spansShown.has(i))
+			: []),
+		...agentOrphans,
+	];
+	// A thread just asked from this page opens where it lands.
+	const agentEnded = agentPlacement?.end;
+	useEffect(() => {
+		if (!agentEnded) return;
+		const fresh: LineKey[] = [];
+		for (const [key, list] of agentEnded) {
+			if (list.some((p) => takeJustAsked(p.thread.id))) fresh.push(key);
+		}
+		if (fresh.length) {
+			setOpenAgent((open) => {
+				const next = new Set(open);
+				for (const k of fresh) next.add(k);
+				return next;
+			});
+		}
+	}, [agentEnded]);
+
 	const checkbox = (cluster: ClusterView, marker?: Marker) => (
 		<ClusterControls
 			cluster={cluster}
@@ -1985,6 +2248,7 @@ export function DiffBody(props: {
 					hunk: hunkOf(n),
 					picker,
 					composers,
+					agent: agentRows,
 				};
 				rows.push(
 					view === "side-by-side" ? (
@@ -2035,6 +2299,20 @@ export function DiffBody(props: {
 			}
 			threadsOf.set(at, [...(threadsOf.get(at) ?? []), t]);
 		}
+		// The agent's threads in the gap, on runs the same way.
+		const agentTargetOf = (p: AgentPlaceable) =>
+			agentPlacement?.gapTargets.get(p);
+		const agentOf = new Map<number, AgentPlaceable[]>();
+		for (const p of agentPlacement?.gaps.get(gap.index) ?? []) {
+			const n = agentTargetOf(p)?.show[1] ?? gap.from;
+			let at = runs.findIndex((r) => r.from <= n && n <= r.to);
+			if (at < 0 && runs.length === 0) {
+				runs.push({ from: gap.to + 1, to: gap.to });
+				at = 0;
+			}
+			if (at < 0) at = 0;
+			agentOf.set(at, [...(agentOf.get(at) ?? []), p]);
+		}
 		const rows: ReactNode[] = [];
 		let next = gap.from;
 		runs.forEach((run, i) => {
@@ -2058,11 +2336,13 @@ export function DiffBody(props: {
 			const buttons =
 				remaining > 0 ? expansions(part, top, bottom, remaining) : [];
 			const runThreads = threadsOf.get(i) ?? [];
+			const runAgent = agentOf.get(i) ?? [];
 			if (
 				remaining === 0 &&
 				!pending &&
 				failed.length === 0 &&
-				runThreads.length === 0
+				runThreads.length === 0 &&
+				runAgent.length === 0
 			) {
 				return;
 			}
@@ -2073,18 +2353,30 @@ export function DiffBody(props: {
 			 * the nearer edge when it's close, else just around them) and opens
 			 * each on its row, its bubble focused.
 			 */
+			const loadAround = (target: { show: [number, number] }) => {
+				const [from, to] = target.show;
+				const window: [number, number] =
+					from - start <= FAR && from - start <= end - to
+						? [start, Math.min(end, to + 3)]
+						: end - to <= FAR
+							? [Math.max(start, from - 3), end]
+							: [Math.max(start, from - 10), Math.min(end, to + 3)];
+				if (window[0] <= window[1]) addRange(window[0], window[1]);
+			};
+			/** Opens the run's agent threads where they are, like its comments. */
+			const openRunAgent = () => {
+				for (const p of runAgent) {
+					const target = agentTargetOf(p);
+					if (!target) continue;
+					loadAround(target);
+					setOpenAgent((open) => new Set(open).add(target.key));
+				}
+			};
 			const openRunThreads = () => {
 				for (const t of runThreads) {
 					const target = targetOf(t);
 					if (!target) continue;
-					const [from, to] = target.show;
-					const window: [number, number] =
-						from - start <= FAR && from - start <= end - to
-							? [start, Math.min(end, to + 3)]
-							: end - to <= FAR
-								? [Math.max(start, from - 3), end]
-								: [Math.max(start, from - 10), Math.min(end, to + 3)];
-					if (window[0] <= window[1]) addRange(window[0], window[1]);
+					loadAround(target);
 					setOpenThreads((open) => new Set(open).add(target.key));
 					setFocusThread(target.key);
 				}
@@ -2121,12 +2413,16 @@ export function DiffBody(props: {
 					</td>
 					<td
 						colSpan={columns - 2}
-						className={`font-sans ${leadText(runLead, centred, runThreads.length > 0 ? 1 : 0)}`}
+						className={`font-sans ${leadText(runLead, centred, (runThreads.length > 0 ? 1 : 0) + (runAgent.length > 0 ? 1 : 0))}`}
 					>
 						{runLead && centred && (
-							<FileBubbleSlot>{runLead.bubble}</FileBubbleSlot>
+							<FileBubbleSlot count={runLead.count}>
+								{runLead.bubble}
+							</FileBubbleSlot>
 						)}
-						{(runThreads.length > 0 || (runLead && !centred)) && (
+						{(runThreads.length > 0 ||
+							runAgent.length > 0 ||
+							(runLead && !centred)) && (
 							<BubbleSlot>
 								{!centred && runLead?.bubble}
 								{runThreads.length > 0 && (
@@ -2136,6 +2432,15 @@ export function DiffBody(props: {
 										where={where}
 										open={false}
 										onToggle={openRunThreads}
+									/>
+								)}
+								{runAgent.length > 0 && (
+									<AgentBubble
+										inline
+										threads={runAgent.map((p) => p.thread)}
+										where={where}
+										open={false}
+										onToggle={openRunAgent}
 									/>
 								)}
 							</BubbleSlot>
@@ -2225,6 +2530,7 @@ export function DiffBody(props: {
 				hunkId={`h${index}`}
 				picker={picker}
 				composers={composers}
+				agent={agentRows}
 				lead={takeLead()}
 			/>
 		</Fragment>
@@ -2237,6 +2543,21 @@ export function DiffBody(props: {
 	return (
 		<div ref={root}>
 			{hint && <LandingHint hint={hint} />}
+			{agentUnshown.length > 0 && (
+				<div
+					data-testid="agent-composers-unshown"
+					className="space-y-2 border-b border-line bg-canvas p-2"
+				>
+					{agentUnshown.map((c) => (
+						<AgentComposer
+							key={c.clientId}
+							clientId={c.clientId}
+							span={c.span}
+							quote={quoteSpan(c.span)}
+						/>
+					))}
+				</div>
+			)}
 			{(unshown.length > 0 || orphanItems.length > 0) && (
 				<div
 					data-testid="new-threads-unshown"
@@ -2706,6 +3027,7 @@ function HunkRows(props: {
 	hunkId: string;
 	picker?: Picker;
 	composers?: RowComposers;
+	agent?: AgentRows;
 	/** The file's bubble, on the hunk's header row (the diff's first row). */
 	lead?: FileLead;
 }) {
@@ -2823,6 +3145,7 @@ function HunkRows(props: {
 					orderOf,
 					picker: props.picker,
 					composers: props.composers,
+					agent: props.agent,
 					words,
 					hidden,
 				};
@@ -2877,6 +3200,8 @@ function HunkRows(props: {
 								(k) =>
 									threads?.placement.covered.has(k) ||
 									threads?.placement.end.has(k) ||
+									props.agent?.placement.end.has(k) ||
+									(props.agent?.composersAt([k]).length ?? 0) > 0 ||
 									props.picker?.keys.has(k),
 							) ||
 							landedPhase(props.landed, line) !== undefined ||
