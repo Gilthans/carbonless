@@ -322,7 +322,7 @@ const SINCE: Case[] = [
 	{
 		name: "one cluster reworked in three pieces",
 		// PS1 added a block; PS2 edits three of its lines (the owner's
-		// feature_flag.go case): one PS2 cluster, three pieces.
+		// case): one PS2 cluster, three pieces.
 		clusters: [
 			lines("k1", {
 				oldStart: 1,
@@ -608,7 +608,7 @@ for (const shape of SHAPES) {
 	});
 }
 
-describe("pieces: the owner's feature_flag.go case", () => {
+describe("pieces: one reworked cluster in three pieces", () => {
 	beforeEach(() => {
 		window.scrollTo = vi.fn();
 	});
