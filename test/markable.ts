@@ -26,10 +26,14 @@ export interface UnitReport {
 	index: number;
 	/**
 	 * Its `<tbody>`, to find its controls by. Only in the same document:
-	 * through Playwright's `evaluate` it arrives as a placeholder string
-	 * (e2e/fixtures.ts takes a handle instead).
+	 * through Playwright's `evaluate` it arrives as a placeholder string.
 	 */
 	el: Element;
+	/**
+	 * Its `<tbody>`'s place among every `<tbody>` under the root, for a
+	 * page: `root.locator("tbody").nth(body)` (e2e/fixtures.ts).
+	 */
+	body: number;
 	/** What it shows: its first changed line's code, else its text. */
 	label: string;
 	/** Reviewed checkboxes ("Mark cluster reviewed" / "Undo cross-off"). */
@@ -55,7 +59,8 @@ export function collectUnits(root: Element): UnitReport[] {
 	const CHANGED =
 		'tr[data-testid="diff-line"]:not([data-kind="context"]), tr[data-testid="ws-cluster"]';
 	const units: UnitReport[] = [];
-	for (const body of Array.from(root.querySelectorAll("tbody"))) {
+	const bodies = Array.from(root.querySelectorAll("tbody"));
+	for (const [at, body] of bodies.entries()) {
 		const changed = body.querySelector(CHANGED);
 		const boxes = Array.from(body.querySelectorAll<HTMLInputElement>(BOX));
 		const crosses = Array.from(body.querySelectorAll<HTMLButtonElement>(CROSS));
@@ -78,6 +83,7 @@ export function collectUnits(root: Element): UnitReport[] {
 		units.push({
 			index,
 			el: body,
+			body: at,
 			label,
 			boxes: boxes.length,
 			crosses: crosses.length,
