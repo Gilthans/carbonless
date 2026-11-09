@@ -31,7 +31,7 @@ export default defineConfig({
 	// don't touch layout (CLAUDE.md, "Development").
 	projects: [
 		{ name: "chromium", use: { ...devices["Desktop Chrome"] } },
-		...(process.env.CRB_NO_PHONE
+		...(process.env.CRB_NO_PHONE === "1"
 			? []
 			: [{ name: "phone", use: { ...devices["Pixel 7"] } }]),
 	],

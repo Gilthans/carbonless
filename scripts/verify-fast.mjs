@@ -181,7 +181,9 @@ console.log(`verify:fast against ${base}: ${changed.length} changed file(s)`);
 for (const r of reasons) console.log(`  ${r}`);
 console.log(
 	`  e2e: ${allE2e ? "all specs" : e2e.size ? [...e2e].join(", ") : "none"}${
-		(allE2e || e2e.size) && process.env.CRB_NO_PHONE ? " (no phone)" : ""
+		(allE2e || e2e.size) && process.env.CRB_NO_PHONE === "1"
+			? " (no phone)"
+			: ""
 	}`,
 );
 

@@ -18,7 +18,7 @@ describe("parseFlakeArgs", () => {
 	it("takes each option as --x=v or --x v", () => {
 		const both = {
 			runs: 3,
-			load: 0,
+			load: 2,
 			grep: "a title",
 			projects: ["chromium"],
 			units: ["src/a.test.tsx"],
@@ -28,7 +28,7 @@ describe("parseFlakeArgs", () => {
 			parse(
 				"src/a.test.tsx",
 				"--runs=3",
-				"--load=0",
+				"--load=2",
 				"-g",
 				"a title",
 				"--project=chromium",
@@ -40,7 +40,7 @@ describe("parseFlakeArgs", () => {
 				"--runs",
 				"3",
 				"--load",
-				"0",
+				"2",
 				"--grep=a title",
 				"--project",
 				"chromium",

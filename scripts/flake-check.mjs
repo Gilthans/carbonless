@@ -10,8 +10,7 @@
 // Playwright projects (or the --project ones; CRB_NO_PHONE=1 drops the
 // phone). --load L adds L busy loops alongside (default none: the devbox is
 // loaded by other agents already, and loops slow their runs too). Defaults:
-// N=5. Waits its turn in the
-// machine-wide queue (scripts/queue.mjs). A signal stops the current run,
+// N=5. Waits its turn in the machine-wide queue (scripts/queue.mjs). A signal stops the current run,
 // the loops and the check.
 import { spawn } from "node:child_process";
 import { loadavg } from "node:os";

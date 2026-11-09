@@ -108,9 +108,10 @@ loading never looking empty, checking against a real PR):
   (`scripts/queue.mjs`, `flock` on `~/.cache/carbonless-verify.lock`),
   printing whose run they wait for, so they never overload the machine (or
   share a tree's `dist`) together. Waiting can take longer than a foreground
-  command may: run `pnpm verify` in the background (`run_in_background`);
-  a signal ends the wait. A queued run takes turns with the other full runs,
-  so Playwright takes a worker per core. `CRB_NO_QUEUE=1` skips the queue.
+  command may: run `pnpm verify` and an all-specs `verify:fast` in the
+  background (`run_in_background`); a signal ends the wait. A queued run
+  takes turns with the other full runs, so Playwright takes a worker per
+  core. `CRB_NO_QUEUE=1` skips the queue.
 - While iterating, run only what a change touches:
   - `pnpm verify:fast [base]`: lint, typecheck, the unit tests related to files
     changed since `base`, and the e2e specs mapped to them (`E2E_MAP` in
