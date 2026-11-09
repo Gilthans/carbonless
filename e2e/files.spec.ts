@@ -1503,9 +1503,12 @@ test("tree rows and headers keep change counts in every unit; progress follows i
 		// The row's name ends with the numbers, and focus shows them.
 		await expect(core).toHaveAccessibleName(/core\.ts.*0 of 5 lines reviewed$/);
 		await core.focus();
-		await expect(
-			page.getByText("src/core.ts · 0 of 5 lines reviewed"),
-		).toBeVisible();
+		const tip = page.locator('[role="tooltip"]:not([hidden])');
+		await expect(tip.locator("[data-tooltip-title]")).toHaveText("core.ts");
+		await expect(tip).toContainText("src/core.ts");
+		await expect(tip.locator('[data-tooltip-line="progress"]')).toHaveText(
+			"0 of 5 lines reviewed",
+		);
 		await expect(treeNumbers(tree, /util\.ts/)).toHaveText(
 			"2 of 2 lines reviewed",
 		);
