@@ -90,13 +90,17 @@ neutral punctuation next to it without any override.
 
 ## Hunk headers and hidden-lines rows
 
-A hunk's header shows `@@ -a,b +c,d @@` and, after it, the hunk's heading:
-the function or class git's funcname rules find above it, as GitHub shows
-it (`src/server/diff/headings.ts`), in `muted` monospace, cut with an
-ellipsis at the diff's visible width (the whole text in a tooltip when
-cut; on touch, it scrolls sideways inside itself, with no scrollbar: a
-drag shows the rest and loads nothing, a tap is a tap on its row). The hidden-lines row right above that hunk repeats it after "N hidden
-lines". A heading is plain text.
+A hunk's heading is the function or class git's funcname rules find above
+it, as GitHub shows it (`src/server/diff/headings.ts`), in `muted`
+monospace, cut with an ellipsis at the diff's visible width (the whole text
+in a tooltip when cut; on touch, it scrolls sideways inside itself, with no
+scrollbar: a drag shows the rest and loads nothing, a tap is a tap on its
+row). It shows once per hunk, on the row right above the hunk's lines: the
+hidden-lines row when one sits directly above the hunk (after "N hidden
+lines", or after its spinner while they load), else after the hunk's own
+`@@ -a,b +c,d @@` (a hunk at the top of the file, a gap fully loaded, or
+loaded lines between the last hidden run and the hunk). A heading is plain
+text.
 
 A hidden-lines row's arrows sit on its left: ↑, ↓ or ↕ alone, or ↓ above ↑
 (like GitHub's) when both apply. The whole row is their pointer target:

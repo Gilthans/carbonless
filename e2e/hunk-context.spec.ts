@@ -70,7 +70,7 @@ const line = (section: Locator, n: number) =>
 const gapRow = (section: Locator, hidden: string) =>
 	section.getByTestId("gap-row").filter({ hasText: hidden });
 
-test("a hunk's function shows on its header and on the hidden row above it", async ({
+test("a hunk's function shows once: on the hidden row right above it, else on its @@", async ({
 	page,
 	pr,
 	startCrb,
@@ -80,21 +80,35 @@ test("a hunk's function shows on its header and on the hidden row above it", asy
 	const s = await startCrb();
 	const section = await open(page, s.url);
 	const headers = section.getByTestId("hunk-header");
-	await expect(headers.nth(0)).toContainText("def greet(self, who):");
-	await expect(headers.nth(1)).toContainText(FAREWELL);
-	await expect(headers.nth(2)).toContainText(FAREWELL);
+	const headings = section.getByTestId("hunk-heading");
+	// Each hunk has hidden lines right above it: the heading is there.
+	await expect(headings).toHaveCount(3);
+	await expect(headers.getByTestId("hunk-heading")).toHaveCount(0);
 	await expect(
 		gapRow(section, "6 hidden lines").getByTestId("hunk-heading"),
 	).toHaveText("def greet(self, who):");
 	await expect(
 		gapRow(section, "49 hidden lines").getByTestId("hunk-heading"),
 	).toHaveText(FAREWELL);
+	await expect(
+		gapRow(section, "13 hidden lines").getByTestId("hunk-heading"),
+	).toHaveText(FAREWELL);
 	// The file's tail has no hunk below it.
 	await expect(
 		gapRow(section, "7 hidden lines").getByTestId("hunk-heading"),
 	).toHaveCount(0);
+	// The whole 13-line gap loaded: its row goes, the heading moves to @@.
+	await gapRow(section, "13 hidden lines")
+		.getByRole("button", { name: "Load all 13 lines" })
+		.click();
+	await expect(line(section, 82)).toBeVisible();
+	await expect(headings).toHaveCount(3);
+	await expect(headers.nth(2).getByTestId("hunk-heading")).toHaveText(FAREWELL);
+	await expect(headers.getByTestId("hunk-heading")).toHaveCount(1);
 	// Muted code, on screen.
-	const heading = headers.nth(1).getByTestId("hunk-heading");
+	const heading = gapRow(section, "49 hidden lines").getByTestId(
+		"hunk-heading",
+	);
 	await expect(heading).toHaveCSS("font-family", /mono/i);
 	const box = await heading.boundingBox();
 	const width = page.viewportSize()?.width ?? 0;
@@ -231,12 +245,18 @@ test("on a phone a cut heading scrolls sideways in place, and only a tap loads",
 	const section = await open(page, s.url);
 	const lines = section.getByTestId("diff-line");
 	const cdp = await page.context().newCDPSession(page);
+	// The 13-line gap loaded: the third hunk's heading is on its @@ row.
+	await gapRow(section, "13 hidden lines")
+		.getByRole("button", { name: "Load all 13 lines" })
+		.click();
+	await expect(line(section, 82)).toBeVisible();
 	const headings = [
-		section.getByTestId("hunk-header").nth(1).getByTestId("hunk-heading"),
+		section.getByTestId("hunk-header").nth(2).getByTestId("hunk-heading"),
 		gapRow(section, "49 hidden lines").getByTestId("hunk-heading"),
 	];
 	for (const heading of headings) {
-		await heading.scrollIntoViewIfNeeded();
+		// Mid-screen: clear of the floating Files button at the bottom.
+		await heading.evaluate((el) => el.scrollIntoView({ block: "center" }));
 		const before = await lines.count();
 		const size = await heading.evaluate((el) => ({
 			scroll: el.scrollWidth,
@@ -271,10 +291,15 @@ test("on a phone a cut heading scrolls sideways in place, and only a tap loads",
 		expect(await lines.count()).toBe(before);
 		await expectNoPageOverflow(page);
 	}
-	// A tap on a heading is a tap on its row: the 13-line ↕ gap loads.
-	const both = gapRow(section, "13 hidden lines");
-	await both.getByTestId("hunk-heading").tap();
-	await expect(line(section, 70)).toBeVisible();
-	await expect(line(section, 82)).toBeVisible();
+	// A tap on a heading is a tap on its row: on the 49-line gap's heading
+	// (mid-row), just above the middle is the top half, ↓: lines 14–33.
+	const gapHeading = gapRow(section, "49 hidden lines").getByTestId(
+		"hunk-heading",
+	);
+	await gapHeading.evaluate((el) => el.scrollIntoView({ block: "center" }));
+	await gapHeading.tap({ position: { x: 20, y: 2 } });
+	await expect(line(section, 14)).toBeVisible();
+	await expect(line(section, 33)).toBeVisible();
+	await expect(line(section, 34)).toHaveCount(0);
 	await expectNoPageOverflow(page);
 });

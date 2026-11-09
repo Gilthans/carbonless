@@ -2086,6 +2086,8 @@ export function DiffBody(props: {
 	 * for the threads whose line is in it).
 	 */
 	const hunkAt = (index: number) => hunks.data?.hunks[index];
+	/** Hunks whose heading went on the hidden-lines row above them, this render. */
+	const headedOnGap = new Set<number>();
 	const gapRows = (gap: Gap | undefined, lead?: () => FileLead | undefined) => {
 		if (!gap) return null;
 		const gapThreads = placement?.gaps.get(gap.index) ?? [];
@@ -2200,9 +2202,15 @@ export function DiffBody(props: {
 				run.from === run.to
 					? `on hidden line ${run.from}`
 					: `on hidden lines ${run.from}–${run.to}`;
-			// The heading of the hunk below, on the hidden run right above it.
+			// The heading of the hunk below, once per hunk: here when this row
+			// sits right above the hunk (its run ends at the gap's end, so no
+			// loaded line comes between) and shows its count or its loading;
+			// else on the hunk's @@ row (headedOnGap).
 			const heading =
-				i === runs.length - 1 ? hunkAt(gap.index)?.heading : undefined;
+				run.to === gap.to && failed.length === 0 && (pending || remaining > 0)
+					? hunkAt(gap.index)?.heading
+					: undefined;
+			if (heading) headedOnGap.add(gap.index);
 			const bubbles =
 				(runThreads.length > 0 ? 1 : 0) + (runAgent.length > 0 ? 1 : 0);
 			rows.push(
@@ -2289,11 +2297,15 @@ export function DiffBody(props: {
 									Retry
 								</button>
 							</span>
-						) : pending ? (
-							<Spinner label="Loading lines" size={14} />
-						) : remaining > 0 ? (
+						) : pending || remaining > 0 ? (
 							<Labelled
-								label={`${remaining} hidden ${remaining === 1 ? "line" : "lines"}`}
+								label={
+									pending ? (
+										<Spinner label="Loading lines" size={14} />
+									) : (
+										`${remaining} hidden ${remaining === 1 ? "line" : "lines"}`
+									)
+								}
 								heading={heading}
 								reserve={labelReserve(
 									"var(--ctl-w) + 0.5rem",
@@ -2354,6 +2366,8 @@ export function DiffBody(props: {
 			{gapRows(gapAt(index), takeLead)}
 			<HunkRows
 				hunk={hunk}
+				// Once per hunk: not here when its hidden-lines row has it.
+				heading={headedOnGap.has(index) ? undefined : hunk.heading}
 				clusters={clusters}
 				lang={lang}
 				tabWidth={file.tabWidth}
@@ -2792,6 +2806,8 @@ function LandingHint({ hint }: { hint: Hint }) {
 /** A hunk's header and lines: context runs, and each cluster's run with its rail. */
 function HunkRows(props: {
 	hunk: DisplayHunk;
+	/** The heading on its @@ row (none when the row above has it). */
+	heading?: string;
 	clusters: Map<string, ClusterView>;
 	lang: string | null;
 	tabWidth?: number;
@@ -2863,7 +2879,7 @@ function HunkRows(props: {
 						{lead && <LeadSlot lead={lead} centred={centred} />}
 						<Labelled
 							label={hunkHeader(hunk)}
-							heading={hunk.heading}
+							heading={props.heading}
 							reserve={labelReserve(
 								"0.5rem",
 								lead && !centred ? (lead.count ?? 1) : 0,
