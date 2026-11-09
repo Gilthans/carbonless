@@ -26,7 +26,7 @@ import {
 	closeResolved,
 	forBubble,
 	hiddenIn,
-	pinTarget,
+	pruneHidden,
 	settleWatch,
 } from "./resolveCollapse";
 
@@ -152,6 +152,33 @@ describe("settleWatch", () => {
 		expect([...settled.watch]).toEqual([["B", "b"]]);
 	});
 
+	it("reopens on any write of the thread refused, keeps watching one on its way", () => {
+		const watch = new Map([
+			["A", "a"],
+			["B", "b"],
+		]);
+		const threads = new Map([
+			[
+				"A",
+				view({
+					refused: [
+						{ key: "reply", action: "Reply", error: new Error("no"), at: "" },
+					],
+				}),
+			],
+			[
+				"B",
+				view({
+					threadId: "B",
+					replies: [{ text: "x", attemptedAt: "" }],
+				}),
+			],
+		]);
+		const settled = settleWatch(watch, { threads } as never);
+		expect(settled.reopen).toEqual([{ id: "A", key: "a" }]);
+		expect([...settled.watch]).toEqual([["B", "b"]]);
+	});
+
 	it("keeps watching a refused resolve that is being retried", () => {
 		const watch = new Map([["A", "a"]]);
 		const threads = new Map([
@@ -178,15 +205,19 @@ describe("settleWatch", () => {
 	});
 });
 
-describe("pinTarget", () => {
-	it("keeps a bubble in view where it was", () => {
-		expect(pinTarget({ top: 300, press: 600, closed: true }, 100)).toBe(300);
-	});
-	it("brings a bubble above the view to where Resolve was pressed, once closed", () => {
-		expect(pinTarget({ top: -400, press: 600, closed: true }, 100)).toBe(600);
-		expect(pinTarget({ top: -400, press: 20, closed: true }, 100)).toBe(100);
-		// Still open for its other threads: left as it is.
-		expect(pinTarget({ top: -400, press: 600, closed: false }, 100)).toBe(-400);
+describe("pruneHidden", () => {
+	it("drops a thread once seen unresolved, so a later resolve hides nothing", () => {
+		const hidden = new Map([
+			["A", "k"],
+			["B", "k"],
+		]);
+		const kept = pruneHidden(hidden, [
+			thread("A", 1),
+			thread("B", 1, { resolved: true }),
+		]);
+		expect([...kept]).toEqual([["B", "k"]]);
+		expect(hiddenIn(kept, thread("A", 1, { resolved: true }))).toBe(false);
+		expect(pruneHidden(kept, [thread("B", 1, { resolved: true })])).toBe(kept);
 	});
 });
 
@@ -281,6 +312,9 @@ function Overlaid(props: { threads: ReviewThread[]; whole?: boolean }) {
 
 let resolveAnswer: () => Promise<Response>;
 let resolveCalls: unknown[];
+let replyAnswer: () => Promise<Response> = () => new Promise(() => {});
+/** Renders the threads anew, as a refresh does. */
+let reread: (threads: ReviewThread[]) => void = () => {};
 
 function setup(threads: ReviewThread[], whole = false) {
 	vi.stubGlobal(
@@ -291,11 +325,34 @@ function setup(threads: ReviewThread[], whole = false) {
 				resolveCalls.push(JSON.parse(String(init?.body)));
 				return resolveAnswer();
 			}
+			if (url.pathname.endsWith("/replies")) return replyAnswer();
 			const body =
 				url.pathname === "/api/files/0/hunks"
 					? hunks
 					: url.pathname === "/api/comments"
-						? { threads: [] }
+						? {
+								threads: (url.searchParams.get("ids") ?? "")
+									.split(",")
+									.map((threadId) => ({
+										threadId,
+										comments: [
+											{
+												id: `${threadId}-1`,
+												author: `rev-${threadId}`,
+												bot: false,
+												avatarUrl: "",
+												publishedAt: "2026-01-01T00:00:00Z",
+												pending: false,
+												html: "<p>a comment</p>",
+												body: "a comment",
+												text: "a comment",
+												editedAt: null,
+												viewerCan: { update: false, delete: false },
+												deleted: false,
+											},
+										],
+									})),
+							}
 						: {};
 			return new Response(JSON.stringify(body), { status: 200 });
 		}),
@@ -312,11 +369,13 @@ function setup(threads: ReviewThread[], whole = false) {
 		viewer: "octo",
 		snapshotHead: HEAD,
 	} as SessionInfo);
-	render(
+	const tree = (t: ReviewThread[]) => (
 		<QueryClientProvider client={client}>
-			<Overlaid threads={threads} whole={whole} />
-		</QueryClientProvider>,
+			<Overlaid threads={t} whole={whole} />
+		</QueryClientProvider>
 	);
+	const { rerender } = render(tree(threads));
+	reread = (t) => rerender(tree(t));
 	return userEvent.setup();
 }
 
@@ -344,6 +403,7 @@ describe.each([
 		resolveCalls = [];
 		// On its way until the test says.
 		resolveAnswer = () => new Promise(() => {});
+		replyAnswer = () => new Promise(() => {});
 	});
 	afterEach(() => {
 		cleanup();
@@ -363,9 +423,13 @@ describe.each([
 		const [first] = screen.getAllByRole("button", { name: "Resolve" });
 		await user.click(first as HTMLElement);
 		expect(resolveCalls).toEqual([{ resolved: true }]);
-		// The other stays open; focus is on the bubble.
+		// The other stays open and takes the focus (where the reader is).
 		expect(opened()).toEqual(["Unresolved thread by rev-B"]);
-		await waitFor(() => expect(bubbleOn(4)).toHaveFocus());
+		await waitFor(() =>
+			expect(
+				screen.getByTestId("files-thread").contains(document.activeElement),
+			).toBe(true),
+		);
 		await user.click(screen.getByRole("button", { name: "Resolve" }));
 		expect(screen.queryByTestId("thread-row")).toBeNull();
 		const bubble = bubbleOn(4);
@@ -377,6 +441,93 @@ describe.each([
 			"Resolved thread by rev-A",
 			"Resolved thread by rev-B",
 		]);
+	});
+
+	it("shows a thread hidden by Resolve again once it reads unresolved, and keeps it when resolved again elsewhere", async () => {
+		const a = thread("A", 4);
+		const b = thread("B", 4);
+		// GitHub has it once the test says: nothing intended is left over
+		// the threads read.
+		let confirm: (() => void) | null = null;
+		resolveAnswer = () =>
+			new Promise((done) => {
+				confirm = () =>
+					done(
+						new Response(
+							JSON.stringify({
+								threadId: "A",
+								resolved: true,
+								commentCount: 1,
+								lastActivityAt: a.lastActivityAt,
+								attention: [],
+								yourTurn: false,
+								viewerCan: a.viewerCan,
+								comments: { threadId: "A", comments: [] },
+							}),
+							{ status: 200 },
+						),
+					);
+			});
+		const user = setup([a, b]);
+		await screen.findByText("added");
+		await user.click(bubbleOn(4));
+		const [first] = screen.getAllByRole("button", { name: "Resolve" });
+		await user.click(first as HTMLElement);
+		expect(opened()).toEqual(["Unresolved thread by rev-B"]);
+		// The page's read has it resolved, as GitHub's answer says.
+		reread([{ ...a, resolved: true }, b]);
+		await waitFor(() => expect(confirm).not.toBeNull());
+		(confirm as unknown as () => void)();
+		await waitFor(() => expect(resolveCalls).toHaveLength(1));
+		expect(opened()).toEqual(["Unresolved thread by rev-B"]);
+		// Someone unresolves it on GitHub (a refresh), then resolves it again.
+		reread([{ ...a, resolved: false }, b]);
+		await waitFor(() =>
+			expect(opened()).toEqual([
+				"Unresolved thread by rev-A",
+				"Unresolved thread by rev-B",
+			]),
+		);
+		reread([{ ...a, resolved: true }, b]);
+		expect(opened()).toEqual([
+			"Resolved thread by rev-A",
+			"Unresolved thread by rev-B",
+		]);
+	});
+
+	it("keeps a thread open while its reply is on its way, and a refused reply in sight", async () => {
+		let refuse: (() => void) | null = null;
+		replyAnswer = () =>
+			new Promise((done) => {
+				refuse = () =>
+					done(
+						new Response(JSON.stringify({ error: "Not allowed" }), {
+							status: 403,
+						}),
+					);
+			});
+		const user = setup([thread("A", 4)]);
+		await screen.findByText("added");
+		await user.click(bubbleOn(4));
+		const box = screen.getByRole("textbox", { name: "Reply" });
+		await user.type(box, "Done");
+		await user.click(
+			within(screen.getByTestId("reply-box")).getByRole("button", {
+				name: "Reply",
+			}),
+		);
+		await waitFor(() => expect(box).toHaveValue(""));
+		await user.click(screen.getByRole("button", { name: "Resolve" }));
+		expect(opened()).toEqual(["Resolved thread by rev-A"]);
+		await waitFor(() => expect(refuse).not.toBeNull());
+		(refuse as unknown as () => void)();
+		// Back in its box, in sight.
+		await waitFor(() =>
+			expect(screen.getByRole("textbox", { name: "Reply" })).toHaveValue(
+				"Done",
+			),
+		);
+		expect(opened()).toEqual(["Resolved thread by rev-A"]);
 	});
 
 	it("leaves a thread open on Unresolve", async () => {

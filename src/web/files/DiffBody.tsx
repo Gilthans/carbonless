@@ -80,7 +80,8 @@ import {
 	setPicks,
 	usePicks,
 } from "./linePicks";
-import { useResolveCollapse } from "./resolveCollapse";
+import { type ResolveCollapse, useResolveCollapse } from "./resolveCollapse";
+import { stickyBottom } from "./scrollAnchor";
 import { type CodeSpan, describeSpan } from "./selectionActions";
 import { layoutRows, type SideRow } from "./sideBySide";
 import { CONTROLS, SLOT, useStickyControls } from "./stickyControls";
@@ -211,19 +212,7 @@ interface RowThreads {
 	focus: LineKey | null;
 	onFocused: () => void;
 	/** Resolve closes a thread to its bubble (resolveCollapse.ts). */
-	collapse: RowCollapse;
-}
-
-/** Resolve closing a row's thread: its bubble's key and row keys (what closes it). */
-interface RowCollapse {
-	shows: (thread: ReviewThread) => boolean;
-	resolved: (
-		endKey: LineKey,
-		keys: LineKey[],
-		thread: ReviewThread,
-		shown: readonly ReviewThread[],
-		from: Element,
-	) => void;
+	collapse: ResolveCollapse<LineKey>;
 }
 
 /**
@@ -904,13 +893,13 @@ function RowTail(props: {
 							place={place(cell.side)}
 							rail={rail}
 							onResolved={(t, from) =>
-								threads.collapse.resolved(
-									cell.endKey,
-									cell.keys,
-									t,
+								threads.collapse.resolved({
+									key: cell.endKey,
+									keys: cell.keys,
+									thread: t,
 									shown,
 									from,
-								)
+								})
 							}
 						/>
 					);
@@ -1891,13 +1880,12 @@ export function DiffBody(props: {
 	// Resolve closes the thread to its bubble (resolveCollapse.ts): under
 	// every key of its row, as the bubble closes it (a context line's is
 	// open under either side's).
-	const closing = useRef<LineKey[]>([]);
-	const collapse = useResolveCollapse<LineKey>({
+	const collapse = useResolveCollapse<LineKey>(props.threads?.threads, {
 		open: (key) => setOpenThreads((open) => new Set(open).add(key)),
-		close: (key) =>
+		close: (key, keys) =>
 			setOpenThreads((open) => {
 				const next = new Set(open);
-				for (const k of [key, ...closing.current]) next.delete(k);
+				for (const k of [key, ...keys]) next.delete(k);
 				return next;
 			}),
 		focus: setFocusThread,
@@ -2009,13 +1997,7 @@ export function DiffBody(props: {
 					idOf: (key) => `${idBase}-thread-${key}`,
 					focus: focusThread,
 					onFocused: () => setFocusThread(null),
-					collapse: {
-						shows: collapse.shows,
-						resolved: (endKey, keys, t, shown, from) => {
-							closing.current = keys;
-							collapse.resolved(endKey, t, shown, from);
-						},
-					},
+					collapse,
 				}
 			: undefined;
 
@@ -2797,12 +2779,7 @@ function useLanding(
 		if (!landing || !ready || !el || done.current === landing.seq) return;
 		done.current = landing.seq;
 		const section = el.closest("section");
-		const header = section?.querySelector("header");
-		const vars = getComputedStyle(el);
-		const sticky =
-			(Number.parseFloat(vars.getPropertyValue("--app-header")) || 0) +
-			(Number.parseFloat(vars.getPropertyValue("--files-bar")) || 0) +
-			(header?.offsetHeight ?? 0);
+		const sticky = stickyBottom(el);
 		const scrollTo = (target: Element, margin: number) =>
 			window.scrollTo({
 				top:

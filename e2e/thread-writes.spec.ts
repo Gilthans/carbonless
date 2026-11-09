@@ -307,7 +307,7 @@ for (const view of ["unified", "side-by-side"] as const) {
 		isMobile,
 	}) => {
 		if (isMobile) await page.setViewportSize({ width: 360, height: 780 });
-		// The resolve's read-back waits: the thread closes on the press.
+		// The resolve's read-back waits: closed before GitHub's answer is in.
 		const p = await setup(pr, { hold: ["thread"] });
 		const s = await startCrb();
 		await openFiles(page, s.url);
@@ -321,8 +321,14 @@ for (const view of ["unified", "side-by-side"] as const) {
 		await bubble.click();
 		const thread = section.getByTestId("files-thread");
 		await expect(thread).toHaveAttribute("aria-label", /^Unresolved thread/);
-		const top = (await bubble.boundingBox())?.y;
-		await thread.getByRole("button", { name: "Resolve", exact: true }).click();
+		const resolve = thread.getByRole("button", {
+			name: "Resolve",
+			exact: true,
+		});
+		// Measured once the click's own scroll (into view) is done.
+		await resolve.scrollIntoViewIfNeeded();
+		const top = (await bubble.boundingBox())?.y ?? Number.NaN;
+		await resolve.click();
 		await expect(thread).toHaveCount(0);
 		const closed = section
 			.getByRole("button", { name: /^1 comment on line 2, resolved/ })
@@ -330,7 +336,7 @@ for (const view of ["unified", "side-by-side"] as const) {
 		await expect(closed).toHaveAttribute("aria-expanded", "false");
 		await expect(closed).toBeFocused();
 		// The bubble stays where it was: the page didn't jump.
-		expect((await closed.boundingBox())?.y).toBe(top);
+		expect((await closed.boundingBox())?.y).toBeCloseTo(top, 0);
 		await expectNoPageOverflow(page);
 		await expect.poll(() => storedResolved(p, "a.txt")).toBe(true);
 		release(p.scenarioPath, "thread");

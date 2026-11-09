@@ -107,3 +107,17 @@ export function restoreAnchor(anchor: ScrollAnchor, root: ParentNode): void {
 	const delta = boxOf(el).top - anchor.top;
 	if (Math.abs(delta) >= 1) window.scrollBy(0, delta);
 }
+
+/**
+ * How far down the viewport the sticky stack over `el` reaches: the app
+ * header, the Files bar and its file's header.
+ */
+export function stickyBottom(el: Element): number {
+	const header = el.closest("section")?.querySelector("header");
+	const vars = getComputedStyle(el);
+	return (
+		(Number.parseFloat(vars.getPropertyValue("--app-header")) || 0) +
+		(Number.parseFloat(vars.getPropertyValue("--files-bar")) || 0) +
+		((header as HTMLElement | null | undefined)?.offsetHeight ?? 0)
+	);
+}

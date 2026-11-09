@@ -635,7 +635,7 @@ export function FileDiff(props: {
 	}, [fromHeader, expanded, hunksSettled, header.length]);
 	const fileThreadsId = useId();
 	// Resolve closes a file thread to the file bubble (resolveCollapse.ts).
-	const collapse = useResolveCollapse<"file">({
+	const collapse = useResolveCollapse<"file">(props.threads?.threads, {
 		open: () => setFileOpen(true),
 		close: () => setFileOpen(false),
 		focus: () => setFocusFile(true),
@@ -813,12 +813,12 @@ export function FileDiff(props: {
 											thread={h.thread}
 											unplaced={h.reason === "unplaced"}
 											onResolved={(t, from) =>
-												collapse.resolved(
-													"file",
-													t,
-													fileShown.map((s) => s.thread),
+												collapse.resolved({
+													key: "file",
+													thread: t,
+													shown: fileShown.map((s) => s.thread),
 													from,
-												)
+												})
 											}
 										/>
 									))
