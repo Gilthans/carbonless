@@ -198,6 +198,8 @@ function Marker(props: {
 	phone: boolean;
 	onPointerDown: (e: ReactPointerEvent<HTMLButtonElement>) => void;
 	dragging: boolean;
+	/** While dragged: how far it follows the pointer, kept inside the rail. */
+	dx?: number;
 }) {
 	const base = props.kind === "base";
 	const label = base ? "comparison base" : "comparison target";
@@ -219,12 +221,17 @@ function Marker(props: {
 					data-dragging={props.dragging || undefined}
 					onPointerDown={props.onPointerDown}
 					// The rail scrolls sideways on a phone; a drag on a marker must not.
-					style={{ touchAction: "none" }}
+					style={{
+						touchAction: "none",
+						...(props.dragging && props.dx !== undefined
+							? { transform: `translateX(${props.dx}px)`, zIndex: 10 }
+							: {}),
+					}}
 					className={`relative inline-flex min-h-10 cursor-grab items-center rounded-full px-1.5 text-[10.5px] tracking-[0.04em] uppercase select-none focus-visible:outline-2 focus-visible:outline-accent active:cursor-grabbing sm:min-h-[18px] ${
 						base
 							? "border-[1.5px] border-done text-done"
 							: "border-[1.5px] border-accent text-accent"
-					} ${props.dragging ? "opacity-60" : ""}`}
+					} ${props.dragging ? "cursor-grabbing opacity-80 shadow-float" : ""}`}
 				>
 					{props.phone ? (base ? "comp. base" : "comp. target") : label}
 				</button>
@@ -855,6 +862,8 @@ export function PatchsetGraph(props: {
 	const [drag, setDrag] = useState<{
 		kind: "viewing" | "base";
 		over: string | null;
+		/** The label's shift with the pointer (inside the rail). */
+		dx: number;
 	} | null>(null);
 	const rail = useRef<HTMLDivElement>(null);
 	const canView = (dot: Dot) => dot.viewing !== undefined;
@@ -881,7 +890,18 @@ export function PatchsetGraph(props: {
 			e.preventDefault();
 			const target = e.currentTarget;
 			target.setPointerCapture(e.pointerId);
-			setDrag({ kind, over: null });
+			// The label follows the pointer, its box never leaving the rail.
+			const startX = e.clientX;
+			const box = target.getBoundingClientRect();
+			const bounds = rail.current?.getBoundingClientRect();
+			const shift = (x: number) =>
+				bounds
+					? Math.min(
+							bounds.right - box.right,
+							Math.max(bounds.left - box.left, x - startX),
+						)
+					: 0;
+			setDrag({ kind, over: null, dx: 0 });
 			// The base goes where moveMarker lets it, pushing the target past it.
 			const allowed = (dot: Dot | null) =>
 				dot &&
@@ -891,24 +911,36 @@ export function PatchsetGraph(props: {
 					? dot
 					: null;
 			const move = (ev: PointerEvent) => {
-				setDrag({ kind, over: allowed(dotAt(ev.clientX))?.id ?? null });
+				setDrag({
+					kind,
+					over: allowed(dotAt(ev.clientX))?.id ?? null,
+					dx: shift(ev.clientX),
+				});
 			};
-			const up = (ev: PointerEvent) => {
+			const done = () => {
 				target.removeEventListener("pointermove", move);
 				target.removeEventListener("pointerup", up);
 				target.removeEventListener("pointercancel", cancel);
+				window.removeEventListener("keydown", onEscape, true);
 				setDrag(null);
+			};
+			const up = (ev: PointerEvent) => {
+				done();
 				const dot = allowed(dotAt(ev.clientX));
 				if (!dot) return;
 				if (kind === "viewing") view(dot);
 				else press("base", dot);
 			};
-			const cancel = () => {
-				target.removeEventListener("pointermove", move);
-				target.removeEventListener("pointerup", up);
-				target.removeEventListener("pointercancel", cancel);
-				setDrag(null);
+			const cancel = () => done();
+			// Escape drops it back on its dot, nothing moved.
+			const onEscape = (ev: KeyboardEvent) => {
+				if (ev.key !== "Escape") return;
+				ev.stopPropagation();
+				if (target.hasPointerCapture?.(e.pointerId))
+					target.releasePointerCapture(e.pointerId);
+				done();
 			};
+			window.addEventListener("keydown", onEscape, true);
 			target.addEventListener("pointermove", move);
 			target.addEventListener("pointerup", up);
 			target.addEventListener("pointercancel", cancel);
@@ -1070,6 +1102,7 @@ export function PatchsetGraph(props: {
 							kind="base"
 							phone={phone}
 							dragging={drag?.kind === "base"}
+							dx={drag?.kind === "base" ? drag.dx : undefined}
 							onPointerDown={startDrag("base")}
 						/>
 					)}
@@ -1078,6 +1111,7 @@ export function PatchsetGraph(props: {
 							kind="viewing"
 							phone={phone}
 							dragging={drag?.kind === "viewing"}
+							dx={drag?.kind === "viewing" ? drag.dx : undefined}
 							onPointerDown={startDrag("viewing")}
 						/>
 					)}

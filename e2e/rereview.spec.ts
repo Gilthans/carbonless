@@ -1125,13 +1125,38 @@ test("the markers move by drag and by Ctrl+[ / Ctrl+]; the base dragged or keyed
 		node(page, "branch").getByRole("button", { name: "comparison base" }),
 	).toBeVisible();
 	await expect(page).toHaveURL(/from=branch/);
+	const on = (id: string, role: "comparison target" | "comparison base") =>
+		node(page, id).getByRole("button", { name: role, exact: true });
+	// While dragged, the base's label follows the mouse along the rail.
+	const baseMarker = marker(page, "comparison base");
+	const start = await baseMarker.boundingBox();
+	const ps1Box = await node(page, "ps1").boundingBox();
+	if (!start || !ps1Box) throw new Error("no marker");
+	await page.mouse.move(start.x + start.width / 2, start.y + start.height / 2);
+	await page.mouse.down();
+	const dx = (ps1Box.x + ps1Box.width / 2 - (start.x + start.width / 2)) / 2;
+	await page.mouse.move(
+		start.x + start.width / 2 + dx,
+		start.y + start.height / 2,
+		{
+			steps: 4,
+		},
+	);
+	await expect
+		.poll(async () => ((await baseMarker.boundingBox())?.x ?? 0) - start.x)
+		.toBeGreaterThan(dx - 4);
+	// Escape: back on its dot, nothing moved.
+	await page.keyboard.press("Escape");
+	await page.mouse.up();
+	await expect
+		.poll(async () => Math.round((await baseMarker.boundingBox())?.x ?? 0))
+		.toBe(Math.round(start.x));
+	await expect(on("branch", "comparison base")).toBeVisible();
 	// The head is the rightmost dot: dragging the base there is refused.
 	await drag(page, marker(page, "comparison base"), node(page, "head"));
 	await expect(
 		node(page, "branch").getByRole("button", { name: "comparison base" }),
 	).toBeVisible();
-	const on = (id: string, role: "comparison target" | "comparison base") =>
-		node(page, id).getByRole("button", { name: role, exact: true });
 	// The base dragged onto the target pushes the target just right of it.
 	await page.keyboard.press("Control+[");
 	await expect(on("ps1", "comparison target")).toBeVisible();

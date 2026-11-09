@@ -996,6 +996,75 @@ describe("PatchsetGraph", () => {
 		expect(setBase).not.toHaveBeenCalled();
 	});
 
+	it("a dragged marker's label follows the pointer inside the rail, and snaps back on drop or Escape", () => {
+		const { set } = renderGraph(session([1, 2], oid("f")), {
+			viewing: ps(2),
+			base: ps(1) as ComparisonBase,
+		});
+		const rect = (left: number, width: number) =>
+			({
+				left,
+				width,
+				right: left + width,
+				top: 0,
+				bottom: 40,
+				height: 40,
+				x: left,
+				y: 0,
+				toJSON: () => ({}),
+			}) as DOMRect;
+		vi.spyOn(
+			screen.getByTestId("psrail"),
+			"getBoundingClientRect",
+		).mockReturnValue(rect(0, 400));
+		for (const [id, x] of [
+			["branch", 10],
+			["ps1", 110],
+			["ps2", 210],
+			["head", 310],
+		] as const) {
+			vi.spyOn(
+				screen.getByTestId(`ps-dot-${id}`),
+				"getBoundingClientRect",
+			).mockReturnValue(rect(x - 20, 40));
+		}
+		for (const name of ["comparison base", "comparison target"]) {
+			const marker = screen.getByRole("button", { name });
+			vi.spyOn(marker, "getBoundingClientRect").mockReturnValue(rect(80, 60));
+			marker.setPointerCapture = () => {};
+			expect(marker.className).toContain("cursor-grab");
+			fireEvent.pointerDown(marker, { pointerId: 1, clientX: 110 });
+			fireEvent.pointerMove(marker, { pointerId: 1, clientX: 150 });
+			const moved = screen.getByRole("button", { name });
+			expect(moved.style.transform).toBe("translateX(40px)");
+			expect(moved.className).toContain("cursor-grabbing");
+			// Never out of the rail: its right edge stops at the rail's.
+			fireEvent.pointerMove(marker, { pointerId: 1, clientX: 900 });
+			expect(screen.getByRole("button", { name }).style.transform).toBe(
+				"translateX(260px)",
+			);
+			fireEvent.pointerMove(marker, { pointerId: 1, clientX: -900 });
+			expect(screen.getByRole("button", { name }).style.transform).toBe(
+				"translateX(-80px)",
+			);
+			// Escape cancels: back on its dot, nothing moved.
+			fireEvent.keyDown(document.body, { key: "Escape" });
+			expect(screen.getByRole("button", { name }).style.transform).toBe("");
+			fireEvent.pointerUp(marker, { pointerId: 1, clientX: 10 });
+			expect(set).not.toHaveBeenCalled();
+		}
+		// A drop snaps it to where it lands (here: the branch).
+		const base = screen.getByRole("button", { name: "comparison base" });
+		fireEvent.pointerDown(base, { pointerId: 2, clientX: 110 });
+		fireEvent.pointerMove(base, { pointerId: 2, clientX: 20 });
+		expect(base.style.transform).toBe("translateX(-80px)");
+		fireEvent.pointerUp(base, { pointerId: 2, clientX: 12 });
+		expect(
+			screen.getByRole("button", { name: "comparison base" }).style.transform,
+		).toBe("");
+		expect(set).toHaveBeenLastCalledWith(ps(2), { kind: "branch" });
+	});
+
 	it("a pinned head, a merged PR or an as-of view: neither the head dot nor up to date", () => {
 		renderGraph(session([1], null, { pinnedHead: oid("1") }), {
 			viewing: ps(1),
