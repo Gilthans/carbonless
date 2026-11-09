@@ -12,7 +12,6 @@ import {
 	waitFor,
 } from "@testing-library/react";
 import fc from "fast-check";
-import { useState } from "react";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { GIT_TEST_TIMEOUTS, testGitEnv } from "../../../test/git-fixture";
 import {
@@ -21,19 +20,14 @@ import {
 	statesOf,
 	unitProblems,
 } from "../../../test/markable";
+import { MarkableDiff } from "../../../test/markable-harness";
 import { buildSnapshot, loadFileHunks } from "../../server/diff/snapshot";
 import {
 	answerRereview,
 	interdiffFileHunks,
 	traceRereview,
 } from "../../server/rereview/engine";
-import type {
-	ClusterView,
-	FileHunks,
-	FileView,
-	Snapshot,
-} from "../../shared/types";
-import { DiffBody } from "./DiffBody";
+import type { FileHunks, FileView, Snapshot } from "../../shared/types";
 import { type KindEntry, sinceByFile } from "./since";
 
 vi.mock("./highlight", () => ({
@@ -216,38 +210,6 @@ async function views(ps1Ops: Op[], ps2Ops: Op[]): Promise<Views | null> {
 	return { file, full, since: { hunks, kinds } };
 }
 
-function Stateful(props: {
-	file: FileView;
-	from?: number;
-	kinds?: Map<string, KindEntry>;
-}) {
-	const [states, setStates] = useState(new Map<string, ClusterView["state"]>());
-	const file = {
-		...props.file,
-		clusters: props.file.clusters.map((c) => ({
-			...c,
-			state: states.get(c.key) ?? c.state,
-		})),
-	};
-	return (
-		<DiffBody
-			file={file}
-			revision="r"
-			from={props.from}
-			kinds={props.kinds}
-			onToggle={(c) =>
-				setStates((s) =>
-					new Map(s).set(
-						c.key,
-						c.state === "unreviewed" ? "reviewed" : "unreviewed",
-					),
-				)
-			}
-			onCrossOff={() => {}}
-		/>
-	);
-}
-
 /** Renders one view and checks the invariant: own controls, a tick ticks its unit alone. */
 async function check(
 	file: FileView,
@@ -264,7 +226,13 @@ async function check(
 	try {
 		render(
 			<QueryClientProvider client={client}>
-				<Stateful file={file} from={since ? 1 : undefined} kinds={since} />
+				<MarkableDiff
+					path={file.path}
+					clusters={file.clusters}
+					store={new Map()}
+					from={since ? 1 : undefined}
+					kinds={since}
+				/>
 			</QueryClientProvider>,
 		);
 		await waitFor(() =>
@@ -333,10 +301,9 @@ describe("every unit is markable on its own, over random PS1 → PS2 edits", () 
 		);
 	});
 
-	// A known violation, red once fixed (then make it `it`): one PS2
-	// cluster in several pieces shares one box; a removal-only piece and
-	// a gone block have none.
-	it.fails("the since view from PS1 [Brief 8 (rr-mark-scope): every since-view piece is markable on its own]", async () => {
+	// Every piece its own unit: a cluster in several pieces, a removal-only
+	// piece, a gone block (Brief 8).
+	it("the since view from PS1", async () => {
 		await assertSeeded(
 			fc.asyncProperty(scripts, async ([ops1, ops2]) => {
 				const v = await views(ops1, ops2);

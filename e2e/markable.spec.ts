@@ -207,12 +207,13 @@ async function sinceView(
 	url: string,
 	moveHead: (c: { message: string; files: Record<string, string> }) => string,
 	ps2: string,
+	path = "src/core.ts",
 ) {
 	await openFiles(page, url);
-	const section = fileSection(page, "src/core.ts");
+	const section = fileSection(page, path);
 	await fileAction(section, "Mark remaining reviewed");
 	await expect(page.getByTestId("sync-notices")).toHaveCount(0);
-	moveHead({ message: "PS2", files: { "src/core.ts": ps2 } });
+	moveHead({ message: "PS2", files: { [path]: ps2 } });
 	await page.reload();
 	await expect(page.getByTestId("ps-tail")).toHaveAttribute(
 		"data-state",
@@ -280,9 +281,6 @@ test("since view: one cluster reworked in three pieces, each markable on its own
 	pr,
 	startCrb,
 }) => {
-	// Brief 8 (rr-mark-scope) makes each piece markable on its own: until
-	// then the three pieces share one box. Drop this line once it lands.
-	test.fail();
 	const p = await pr({
 		base: { "src/core.ts": text(core) },
 		files: [
@@ -312,9 +310,6 @@ test("since view: a reverted piece and a gone block are markable on their own", 
 	pr,
 	startCrb,
 }) => {
-	// Brief 8's addendum (rr-mark-scope): a removal-only piece gets a box.
-	// Until then it has none. Drop this line once it lands.
-	test.fail();
 	const p = await pr({
 		base: { "src/core.ts": text(core) },
 		files: [
@@ -339,4 +334,106 @@ test("since view: a reverted piece and a gone block are markable on their own", 
 		edit(core, { 5: "core 5 v2" }),
 	);
 	await expectEveryUnitMarkable(section, { cycle: "tick" });
+});
+
+/*
+ * The rr-pieces gallery case's shape (#33), synthetic: PS1 adds a function
+ * and a guard and reworks another function's body in two changes; PS2
+ * edits the added function at three lines, takes the guard out again,
+ * and cuts the reworked body down to the line PS1 added.
+ */
+const money = {
+	base: text([
+		"export function parse(s: string): number {",
+		'  const [a, b] = s.split("=");',
+		"  return Number(b ?? a);",
+		"}",
+		"",
+		"export function show(n: number): string {",
+		"  const fixed = n.toFixed(4);",
+		"  const padded = fixed.padStart(10);",
+		'  const sep = " | ";',
+		"  const out = sep + padded;",
+		"  return out;",
+		"}",
+	]),
+	ps1: text([
+		"export function parse(s: string): number {",
+		'  const [a, b] = s.split("=");',
+		"  if (a === undefined) throw new Error(s);",
+		"  if (Number.isNaN(Number(b))) throw new Error(s);",
+		"  return Number(b ?? a);",
+		"}",
+		"",
+		"export function amount(n: number, c: string): string {",
+		'  const digits = c === "JPY" ? 0 : 2;',
+		'  const sign = n < 0 ? "-" : "";',
+		"  const abs = Math.abs(n);",
+		"  const whole = Math.floor(abs).toString();",
+		'  const grouped = whole.replace(/\\B(?=(\\d{3})+(?!\\d))/g, ",");',
+		"  const cents = (abs % 1).toFixed(digits).slice(1);",
+		"  return sign + grouped + cents;",
+		"}",
+		"",
+		"export function show(n: number): string {",
+		"  const fixed = n.toFixed(2);",
+		"  const padded = fixed.padStart(12);",
+		'  console.debug("show");',
+		'  const sep = " | ";',
+		'  const out = amount(n, "EUR");',
+		"  return out;",
+		"}",
+	]),
+	ps2: text([
+		"export function parse(s: string): number {",
+		'  const [a, b] = s.split("=");',
+		"  return Number(b ?? a);",
+		"}",
+		"",
+		"export function amount(n: number, c: string): string {",
+		'  const digits = c === "JPY" || c === "KRW" ? 0 : 2;',
+		'  const sign = n < 0 ? "-" : "";',
+		"  const abs = Math.abs(n);",
+		"  const whole = Math.floor(abs).toString();",
+		'  const grouped = whole.replace(/\\B(?=(\\d{3})+(?!\\d))/g, " ");',
+		"  const cents = (abs % 1).toFixed(digits).slice(1);",
+		'  return (sign + grouped + cents + " " + c).trim();',
+		"}",
+		"",
+		"export function show(n: number): string {",
+		'  const out = amount(n, "EUR");',
+		"  return out;",
+		"}",
+	]),
+};
+
+test("since view: the rr-pieces shape (a cluster in three pieces, a removal-only piece inside a cluster, a reverted piece), each markable on its own", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	const p = await pr({
+		base: { "src/money.ts": money.base },
+		files: [{ message: "PS1", files: { "src/money.ts": money.ps1 } }],
+	});
+	const s = await startCrb();
+	const section = await sinceView(
+		page,
+		s.url,
+		p.moveHead,
+		money.ps2,
+		"src/money.ts",
+	);
+	// The guard taken out again is chipped "reverted" (beside its "gone").
+	await expect(
+		section.locator(
+			'[data-testid="cluster-kind"] [data-testid="kind-chip"][data-kind="reverted"]',
+		),
+	).not.toHaveCount(0);
+	await expectEveryUnitMarkable(section, {
+		reopen: async () => {
+			await section.getByRole("button", { name: "Expand file" }).click();
+			await expect(section.getByTestId("diff-line").first()).toBeVisible();
+		},
+	});
 });

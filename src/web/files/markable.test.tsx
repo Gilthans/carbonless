@@ -18,14 +18,11 @@ import {
 	type UnitState,
 	unitProblems,
 } from "../../../test/markable";
-import type {
-	ClusterView,
-	DiffLine,
-	FileHunks,
-	FileView,
-} from "../../shared/types";
+import { MarkableDiff, type MarkStore } from "../../../test/markable-harness";
+import { sincePieces } from "../../shared/pieces";
+import type { ClusterView, DiffLine, FileHunks } from "../../shared/types";
 import { ignoreWhitespace, showInvisibles, sideBySide } from "../viewSettings";
-import { DiffBody, READ_ONLY_TIP, UNTICK_TO_CROSS } from "./DiffBody";
+import { READ_ONLY_TIP, UNTICK_TO_CROSS } from "./DiffBody";
 import { GoneFile } from "./FileDiff";
 import type { KindEntry } from "./since";
 
@@ -113,13 +110,8 @@ interface Case {
 	name: string;
 	clusters: ClusterView[];
 	hunks: FileHunks;
-	/** The since view: from PS1, with these kinds. */
+	/** The since view: from PS1, with these kinds (its pieces: sincePieces). */
 	kinds?: Map<string, KindEntry>;
-	/**
-	 * A known violation, and the brief that fixes it: the case runs as
-	 * `it.fails`, so it turns red once the fix lands (then drop this).
-	 */
-	fixedBy?: string;
 }
 
 const kindsOf = (entries: [string, KindEntry["kind"]][]) =>
@@ -132,10 +124,18 @@ const kindsOf = (entries: [string, KindEntry["kind"]][]) =>
 		]),
 	);
 
-const BRIEF_8 =
-	"Brief 8 (rr-mark-scope): every since-view piece is markable on its own";
-
 const FULL: Case[] = [
+	{
+		name: "a partly reviewed cluster (mixed: one piece ticked in the since view)",
+		clusters: [lines("k1", { reviewedLines: [[1, 2]] }), lines("k2")],
+		hunks: hunkOf([
+			["ctx", "a"],
+			["del", "b", "k1"],
+			["add", "B", "k1"],
+			["ctx", "c"],
+			["add", "d", "k2"],
+		]),
+	},
 	{
 		name: "two modified clusters in one hunk",
 		clusters: [lines("k1"), lines("k2")],
@@ -266,6 +266,15 @@ const FULL: Case[] = [
 
 const SINCE: Case[] = [
 	{
+		name: "a whole file undone (GoneFile's body: no cluster of this snapshot)",
+		clusters: [],
+		kinds: kindsOf([["g1", "gone"]]),
+		hunks: hunkOf([
+			["del", "reviewed on PS1", "g1"],
+			["del", "and undone since", "g1"],
+		]),
+	},
+	{
 		name: "a reworked cluster and a new one",
 		clusters: [lines("k1"), lines("k2"), lines("k3")],
 		kinds: kindsOf([
@@ -312,24 +321,34 @@ const SINCE: Case[] = [
 	},
 	{
 		name: "one cluster reworked in three pieces",
-		clusters: [lines("k1", { newCount: 10, lines: 10 })],
+		// PS1 added a block; PS2 edits three of its lines (the owner's
+		// feature_flag.go case): one PS2 cluster, three pieces.
+		clusters: [
+			lines("k1", {
+				oldStart: 1,
+				oldCount: 0,
+				newStart: 2,
+				newCount: 8,
+				added: ["2 v2", "3", "4", "5", "6 v2", "7", "8", "9 v2"],
+				lines: 8,
+			}),
+		],
 		kinds: kindsOf([["k1", "reworked"]]),
 		hunks: hunkOf([
 			["ctx", "1"],
-			["del", "2 v1"],
+			["del", "2 v1", "k1"],
 			["add", "2 v2", "k1"],
 			["ctx", "3"],
 			["ctx", "4"],
 			["ctx", "5"],
-			["del", "6 v1"],
+			["del", "6 v1", "k1"],
 			["add", "6 v2", "k1"],
 			["ctx", "7"],
 			["ctx", "8"],
-			["del", "9 v1"],
+			["del", "9 v1", "k1"],
 			["add", "9 v2", "k1"],
 			["ctx", "10"],
 		]),
-		fixedBy: BRIEF_8,
 	},
 	{
 		name: "a removal-only piece (lines PS1 added, reverted since)",
@@ -344,7 +363,6 @@ const SINCE: Case[] = [
 			["del", "and reverted"],
 			["ctx", "d"],
 		]),
-		fixedBy: BRIEF_8,
 	},
 	{
 		name: "a gone block",
@@ -361,7 +379,6 @@ const SINCE: Case[] = [
 			["del", "reviewed on PS1, gone", "g1"],
 			["ctx", "d"],
 		]),
-		fixedBy: BRIEF_8,
 	},
 	{
 		name: "a cluster whose removed lines interleave with a gone one's",
@@ -378,66 +395,55 @@ const SINCE: Case[] = [
 			["add", "k new", "k1"],
 			["ctx", "b"],
 		]),
-		fixedBy: BRIEF_8,
 	},
 ];
 
-const fileOf = (clusters: ClusterView[]): FileView => ({
-	index: 0,
-	path: "src/a.ts",
-	status: "modified",
-	binary: false,
-	submodule: false,
-	additions: 1,
-	deletions: 1,
-	clusters,
-	done: clusters.every((c) => c.state !== "unreviewed"),
-	reviewed: clusters.every((c) => c.state === "reviewed"),
-	crossedOff: false,
-});
-
-type Saved = Map<string, { state: ClusterView["state"]; reason?: string }>;
-
 /**
- * DiffBody with the review's states kept the way FileDiff saves them:
- * the box ticks an unreviewed cluster and unticks anything else, the
- * cross-off crosses off or undoes. `saved` is the store a remount reads.
+ * A placeholder line cluster (no lines given) takes its lines from the
+ * hunks' lines of its key, numbered as there: what the server's clusters
+ * say of the same diff.
  */
-function Stateful(props: { c: Case; saved: Saved; readOnly?: boolean }) {
-	const [, bump] = useState(0);
-	const clusters = props.c.clusters.map((cl) => {
-		const s = props.saved.get(cl.key);
-		if (!s) return cl;
-		const { reason: _, ...rest } = cl;
-		return s.reason ? { ...rest, ...s } : { ...rest, state: s.state };
+function derived(c: Case): ClusterView[] {
+	const all = c.hunks.hunks.flatMap((h) => h.lines);
+	return c.clusters.map((cl) => {
+		if (cl.kind !== "lines" || cl.added.length + cl.removed.length > 0) {
+			return cl;
+		}
+		const dels = all.filter((l) => l.kind === "del" && l.clusterKey === cl.key);
+		const adds = all.filter((l) => l.kind === "add" && l.clusterKey === cl.key);
+		return {
+			...cl,
+			oldStart: dels[0]?.oldNo ?? 0,
+			oldCount: dels.length,
+			newStart: adds[0]?.newNo ?? 0,
+			newCount: adds.length,
+			removed: dels.map((l) => l.text),
+			added: adds.map((l) => l.text),
+			lines: dels.length + adds.length,
+		};
 	});
-	const set = (key: string, state: ClusterView["state"]) => {
-		props.saved.set(key, { state });
-		bump((n) => n + 1);
-	};
-	return (
-		<DiffBody
-			file={fileOf(clusters)}
-			revision="r"
-			from={props.c.kinds ? 1 : undefined}
-			kinds={props.c.kinds}
-			readOnly={props.readOnly}
-			onToggle={(cl) =>
-				set(cl.key, cl.state === "unreviewed" ? "reviewed" : "unreviewed")
-			}
-			onCrossOff={(cl) =>
-				set(cl.key, cl.state === "crossed-off" ? "unreviewed" : "crossed-off")
-			}
-		/>
-	);
 }
 
-function mount(c: Case, saved: Saved = new Map(), readOnly = false) {
+/** The since view's hunks as the server sends them: with their pieces. */
+function served(c: Case, clusters: ClusterView[]): FileHunks {
+	if (!c.kinds) return c.hunks;
+	return {
+		...c.hunks,
+		// A shown removed line sits in the base where the since view numbers it.
+		pieces: sincePieces(c.hunks.hunks, clusters, () => ({
+			baseNo: (l) => l.oldNo,
+		})),
+	};
+}
+
+function mount(c: Case, store: MarkStore = new Map(), readOnly = false) {
+	const clusters = derived(c);
+	const hunks = served(c, clusters);
 	vi.stubGlobal(
 		"fetch",
 		vi.fn(async (input: RequestInfo | URL) => {
 			const url = new URL(String(input), "http://test");
-			const body = url.pathname.endsWith("/hunks") ? c.hunks : {};
+			const body = url.pathname.endsWith("/hunks") ? hunks : {};
 			return new Response(JSON.stringify(body), { status: 200 });
 		}),
 	);
@@ -446,10 +452,17 @@ function mount(c: Case, saved: Saved = new Map(), readOnly = false) {
 	});
 	const view = render(
 		<QueryClientProvider client={client}>
-			<Stateful c={c} saved={saved} readOnly={readOnly} />
+			<MarkableDiff
+				path="src/a.ts"
+				clusters={clusters}
+				store={store}
+				from={c.kinds ? 1 : undefined}
+				kinds={c.kinds}
+				readOnly={readOnly}
+			/>
 		</QueryClientProvider>,
 	);
-	return { ...view, saved };
+	return { ...view, store };
 }
 
 /** The diff has rendered (its hunks, or its file-level rows). */
@@ -507,7 +520,7 @@ async function use(
  * the states as left after a remount.
  */
 async function expectEveryUnitMarkable(c: Case) {
-	const { saved, unmount } = mount(c);
+	const { store, unmount } = mount(c);
 	await loaded(c);
 	const units = collectUnits(document.body);
 	expect(unitProblems(units)).toEqual([]);
@@ -538,7 +551,7 @@ async function expectEveryUnitMarkable(c: Case) {
 	}
 	const left = statesOf(collectUnits(document.body));
 	unmount();
-	mount(c, saved);
+	mount(c, store);
 	await loaded(c);
 	expect(statesOf(collectUnits(document.body))).toEqual(left);
 }
@@ -589,14 +602,60 @@ for (const shape of SHAPES) {
 			["since view", SINCE],
 		] as const) {
 			for (const c of cases) {
-				// A known violation: red once its fix lands (then drop `fixedBy`).
-				const test = c.fixedBy ? it.fails : it;
-				test(`${view}: ${c.name}${c.fixedBy ? ` [${c.fixedBy}]` : ""}`, () =>
-					expectEveryUnitMarkable(c));
+				it(`${view}: ${c.name}`, () => expectEveryUnitMarkable(c));
 			}
 		}
 	});
 }
+
+describe("pieces: the owner's feature_flag.go case", () => {
+	beforeEach(() => {
+		window.scrollTo = vi.fn();
+	});
+	it("ticking one piece of a three-piece cluster ticks it alone; the full diff shows the cluster mixed, then reviewed once every line is", async () => {
+		const c = SINCE.find(
+			(x) => x.name === "one cluster reworked in three pieces",
+		) as Case;
+		const { store, unmount } = mount(c);
+		await loaded(c);
+		expect(collectUnits(document.body)).toHaveLength(3);
+		await use(1, "box", "reviewed");
+		expect(statesOf(collectUnits(document.body))).toEqual([
+			"unreviewed",
+			"reviewed",
+			"unreviewed",
+		]);
+		unmount();
+		// The full diff of the same cluster, under the same marks.
+		const full: Case = {
+			name: "its full diff",
+			clusters: c.clusters,
+			hunks: hunkOf([
+				["ctx", "1"],
+				...(c.clusters[0] as ClusterView).added.map(
+					(t): Spec => ["add", t, "k1"],
+				),
+				["ctx", "10"],
+			]),
+		};
+		const second = mount(full, store);
+		await loaded(full);
+		expect(statesOf(collectUnits(document.body))).toEqual(["mixed"]);
+		// Ticking the rest of its pieces leaves lines no piece shows (3, 4, 5,
+		// 7, 8: unchanged since a line never reviewed): still mixed.
+		second.unmount();
+		mount(c, store);
+		await loaded(c);
+		await use(0, "box", "reviewed");
+		await use(2, "box", "reviewed");
+		cleanup();
+		mount(full, store);
+		await loaded(full);
+		expect(statesOf(collectUnits(document.body))).toEqual(["mixed"]);
+		await use(0, "box", "reviewed");
+		expect(statesOf(collectUnits(document.body))).toEqual(["reviewed"]);
+	});
+});
 
 describe("the designed exception: an earlier patch set, read-only", () => {
 	beforeEach(() => {
@@ -656,15 +715,21 @@ describe("a file the viewed snapshot no longer changes (GoneFile)", () => {
 	beforeEach(() => {
 		window.scrollTo = vi.fn();
 	});
-	// Its body is the interdiff's removal-only pieces: none markable yet,
-	// and locked without the read-only chip. Brief 8's addendum makes every
-	// since-view piece markable; GoneFile renders apart from FileDiff, so
-	// it needs the same (red once it does: then make this `it`).
-	it.fails(`every gone piece is markable on its own [${BRIEF_8}, GoneFile included]`, async () => {
-		const hunks = hunkOf([
-			["del", "reviewed on PS1", "g1"],
-			["del", "and undone since", "g1"],
-		]);
+	// Its body is the interdiff's gone pieces, each markable on its own (the
+	// same DiffBody as the table's "whole file undone" case, which checks
+	// that ticking one ticks it alone).
+	it("every gone piece has its own controls", async () => {
+		const c: Case = {
+			name: "gone file",
+			clusters: [],
+			kinds: kindsOf([["g1", "gone"]]),
+			hunks: hunkOf([
+				["del", "reviewed on PS1", "g1"],
+				["ctx", "kept"],
+				["del", "and undone since", "g1"],
+			]),
+		};
+		const hunks = served(c, []);
 		vi.stubGlobal(
 			"fetch",
 			vi.fn(async () => new Response(JSON.stringify(hunks), { status: 200 })),
@@ -680,9 +745,18 @@ describe("a file the viewed snapshot no longer changes (GoneFile)", () => {
 					revision="r"
 					since={1}
 					info={{
-						kinds: kindsOf([["g1", "gone"]]),
+						kinds: c.kinds as Map<string, KindEntry>,
 						conflict: false,
-						counts: { reworked: 0, new: 0, gone: 1, carried: 0 },
+						counts: {
+							reworked: 0,
+							new: 0,
+							gone: 2,
+							carried: 0,
+							reverted: 0,
+							removed: 0,
+							unticked: 0,
+						},
+						left: { units: 2, lines: 2 },
 					}}
 				/>
 			</QueryClientProvider>,
@@ -691,7 +765,9 @@ describe("a file the viewed snapshot no longer changes (GoneFile)", () => {
 			.setup()
 			.click(screen.getByRole("button", { name: "Expand file" }));
 		await screen.findAllByTestId("diff-line");
-		expect(unitProblems(collectUnits(document.body))).toEqual([]);
+		const units = collectUnits(document.body);
+		expect(units).toHaveLength(2);
+		expect(unitProblems(units)).toEqual([]);
 	});
 });
 
