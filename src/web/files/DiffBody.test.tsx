@@ -11,13 +11,21 @@ import {
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { AgentThread } from "../../shared/agent";
 import type {
 	ClusterView,
 	DiffLine,
 	FileHunks,
 	FileView,
 	ReviewThread,
+	SessionInfo,
 } from "../../shared/types";
+import { agentThreadsQuery } from "../agent/api";
+import {
+	openAgentComposer,
+	resetAgentComposers,
+} from "../agent/askAgentAction";
+import { sessionQuery } from "../api";
 import { openComposer, resetComposers } from "../threads/newThreads";
 import { ignoreWhitespace, showInvisibles, sideBySide } from "../viewSettings";
 import {
@@ -197,6 +205,10 @@ function setup(
 		lead?: FileLead;
 		/** Two files' tables in one tree (the same file twice). */
 		twice?: boolean;
+		/** The reviewer's agent threads, as FilesPage's read left them. */
+		agentThreads?: AgentThread[];
+		/** The session's head is known (before GitHub's threads are in). */
+		sessionHead?: string;
 	} = {},
 ) {
 	const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
@@ -226,6 +238,16 @@ function setup(
 	const queryClient = new QueryClient({
 		defaultOptions: { queries: { retry: false } },
 	});
+	if (opts.sessionHead) {
+		queryClient.setQueryData(sessionQuery.queryKey, {
+			snapshotHead: opts.sessionHead,
+		} as SessionInfo);
+	}
+	if (opts.agentThreads) {
+		queryClient.setQueryData(agentThreadsQuery.queryKey, {
+			threads: opts.agentThreads,
+		});
+	}
 	const onToggle = vi.fn();
 	const onCrossOff = vi.fn();
 	const threads: DiffThreads | undefined = opts.threads
@@ -1982,6 +2004,134 @@ describe("number columns: as wide as the file's largest line number needs", () =
 		expect(number.className).toContain(
 			"pointer-coarse:w-[max(3rem,var(--num-w,3rem))]",
 		);
+	});
+});
+
+const agentThread = (
+	line: number,
+	more: Partial<AgentThread> = {},
+): AgentThread => ({
+	id: `A${line}`,
+	anchor: {
+		subject: "line",
+		path: PATH,
+		commit: HEAD,
+		side: "RIGHT",
+		line,
+		startSide: "RIGHT",
+		startLine: line,
+	},
+	openedBy: "human",
+	at: "2026-11-07T10:00:00Z",
+	messages: [
+		{ id: "m1", by: "human", at: "2026-11-07T10:00:00Z", text: "why?" },
+	],
+	resolved: false,
+	waiting: true,
+	...more,
+});
+
+describe("DiffBody: the agent's threads", () => {
+	beforeEach(() => {
+		// The describe above leaves its last table mounted.
+		cleanup();
+		showInvisibles.set(false);
+		window.scrollTo = vi.fn();
+	});
+	afterEach(() => {
+		cleanup();
+		resetAgentComposers();
+		vi.unstubAllGlobals();
+		localStorage.clear();
+		showInvisibles.reset();
+		sideBySide.reset();
+	});
+
+	it("puts an agent bubble beside the comment bubble, each with its own count and rows", async () => {
+		const { user } = setup({
+			threads: [thread("RIGHT", 10)],
+			agentThreads: [
+				agentThread(10),
+				agentThread(10, { id: "A10b", waiting: false }),
+			],
+		});
+		await screen.findByText("line 10");
+		const row = document.querySelector<HTMLElement>(
+			'[data-testid="diff-line"][data-new-no="10"]',
+		) as HTMLElement;
+		const cell = within(row).getByTestId("code");
+		// Room for both bubbles: never over the code.
+		expect(cell).toHaveClass("pr-24");
+		const comment = within(row).getByTestId("thread-bubble");
+		const agent = within(row).getByTestId("agent-bubble");
+		expect(comment).toHaveAccessibleName("1 comment on line 10");
+		expect(agent).toHaveAccessibleName("2 agent threads on line 10, 1 waiting");
+		expect(within(agent).getByTestId("agent-waiting-dot")).toBeTruthy();
+		await user.click(agent);
+		const opened = screen.getByTestId("agent-thread-row");
+		expect(row.nextElementSibling).toBe(opened);
+		expect(within(opened).getAllByTestId("agent-thread")).toHaveLength(2);
+		expect(screen.queryByTestId("thread-row")).toBeNull();
+		expect(agent).toHaveAttribute("aria-expanded", "true");
+		// Both open: the comments first, then the agent's.
+		await user.click(comment);
+		expect(row.nextElementSibling).toBe(screen.getByTestId("thread-row"));
+		expect(screen.getByTestId("thread-row").nextElementSibling).toBe(opened);
+		await user.click(agent);
+		expect(screen.queryByTestId("agent-thread-row")).toBeNull();
+	});
+
+	it("shows agent threads before GitHub's threads are in", async () => {
+		setup({ agentThreads: [agentThread(10)], sessionHead: HEAD });
+		// No DiffThreads: the agent's head comes from the session.
+		await screen.findByText("line 10");
+		expect(screen.getByTestId("agent-bubble")).toHaveAccessibleName(
+			"1 agent thread on line 10, 1 waiting",
+		);
+		expect(screen.queryByTestId("thread-bubble")).toBeNull();
+	});
+
+	it("opens an Ask agent composer under its span's last row, after the comment composers", async () => {
+		setup({ threads: [] });
+		await screen.findByText("line 10");
+		const span: CodeSpan = {
+			path: PATH,
+			commit: HEAD,
+			subject: "line",
+			startSide: "RIGHT",
+			startLine: 10,
+			side: "RIGHT",
+			line: 10,
+		};
+		act(() => {
+			openComposer(span);
+			openAgentComposer(span);
+		});
+		const row = document.querySelector<HTMLElement>(
+			'[data-testid="diff-line"][data-new-no="10"]',
+		) as HTMLElement;
+		const comments = row.nextElementSibling as HTMLElement;
+		expect(comments).toHaveAttribute("data-testid", "new-thread-row");
+		const asking = comments.nextElementSibling as HTMLElement;
+		expect(asking).toHaveAttribute("data-testid", "agent-composer-row");
+		expect(
+			within(asking).getByRole("textbox", { name: "Ask your agent" }),
+		).toHaveFocus();
+		expect(within(asking).getByTestId("agent-composer-ask")).toBeDisabled();
+		resetComposers();
+	});
+
+	it("side by side: the agent bubble sits in its side's cell", async () => {
+		sideBySide.set(true);
+		setup({ threads: [], agentThreads: [agentThread(8)] });
+		await screen.findAllByText("line 10");
+		const row = document.querySelector<HTMLElement>(
+			'[data-testid="diff-line"][data-new-no="8"]',
+		) as HTMLElement;
+		const right = row.querySelector('[data-testid="code"][data-side="RIGHT"]');
+		expect(
+			within(right as HTMLElement).getByTestId("agent-bubble"),
+		).toBeTruthy();
 	});
 });
 

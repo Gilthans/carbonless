@@ -68,7 +68,7 @@ const serveLog = () => join(stateDir(), "serve.log");
 
 /** The cookie that carries the key to a server beyond loopback (access.ts). */
 async function authHeaders(s: ServerState): Promise<Record<string, string>> {
-	if (LOOPBACK.has(s.host)) return {};
+	if (LOOPBACK.has(s.host) && !s.keyed) return {};
 	return { cookie: `crb_key_${s.port}=${await accessKey()}` };
 }
 

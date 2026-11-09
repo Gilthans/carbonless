@@ -72,6 +72,76 @@ async function drag(page: Page, dx: number) {
 test.describe("desktop", () => {
 	test.skip(({ isMobile }) => isMobile, "the tree is a sheet on a phone");
 
+	test("a tree taller than the window ends in view: before the page scrolls, and stuck", async ({
+		page,
+		pr,
+		startCrb,
+	}) => {
+		// More files than the window holds rows, each long enough to scroll.
+		const names = Array.from(
+			{ length: 60 },
+			(_, i) => `src/f${String(i).padStart(2, "0")}.ts`,
+		);
+		await pr({
+			base: Object.fromEntries(names.map((n) => [n, lines(20, n)])),
+			files: [
+				{
+					message: "PR change",
+					files: Object.fromEntries(
+						names.map((n) => [n, lines(20, n).replace(" 3\n", " 3 x\n")]),
+					),
+				},
+			],
+		});
+		const s = await startCrb();
+		await openFiles(page, s.url);
+		await expect(handle(page)).toBeVisible();
+		const column = handle(page).locator("..");
+		const bottom = () =>
+			column.evaluate((el) => ({
+				bottom: el.getBoundingClientRect().bottom,
+				window: window.innerHeight,
+				scrolls: el.querySelector("aside")
+					? (el.querySelector("aside") as HTMLElement).scrollHeight >
+						(el.querySelector("aside") as HTMLElement).clientHeight
+					: false,
+			}));
+		const inView = async () => {
+			await expect
+				.poll(async () => {
+					const b = await bottom();
+					return b.bottom <= b.window;
+				})
+				.toBe(true);
+		};
+		const last = page
+			.getByTestId("file-tree")
+			.getByRole("button", { name: /f59\.ts/ });
+		await expect(last).toBeAttached();
+		// At the top of the page the column sits below the bars: its bottom
+		// still ends in the window, and the tree scrolls inside it.
+		expect(await page.evaluate(() => window.scrollY)).toBe(0);
+		await inView();
+		expect((await bottom()).scrolls).toBe(true);
+		// The last file's row can be reached by scrolling the tree alone.
+		await sidebar(page).evaluate((el) => {
+			el.scrollTop = el.scrollHeight;
+		});
+		await expect(last).toBeInViewport({ ratio: 1 });
+		// Fold all / Open all stay on top, at the column's top edge.
+		const toolbar = page.getByRole("toolbar", { name: "Folders" });
+		await expect(toolbar).toBeInViewport({ ratio: 1 });
+		const top = async (l: typeof toolbar) => (await l.boundingBox())?.y ?? -1;
+		expect(
+			Math.abs((await top(toolbar)) - (await top(sidebar(page)))),
+		).toBeLessThanOrEqual(1.5);
+		// Stuck, after the page scrolls, it still ends in view.
+		await page.evaluate(() => window.scrollBy(0, 2000));
+		await inView();
+		await page.evaluate(() => window.scrollBy(0, 40));
+		await inView();
+	});
+
 	test("dragging the handle resizes the tree, and the width survives a reload", async ({
 		page,
 		pr,

@@ -117,6 +117,8 @@ export class SessionRegistry {
 				throw asRefusal(error);
 			});
 			const kept = this.#keep(session, req.viewer);
+			// The agent spawns after the open, never in its way (first open).
+			kept.agent?.start();
 			this.#idOf.set(key, kept.id);
 			return { id: kept.id, session: kept };
 		})();

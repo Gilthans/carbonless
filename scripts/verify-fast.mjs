@@ -59,8 +59,9 @@ const specs = readdirSync("e2e")
 const E2E_MAP = [
 	// Pure (hunks in, placements out); its unit tests are the coverage.
 	[/^src\/shared\/tracer\//, []],
+	[/^src\/web\/agent\//, ["agent", "agent-setup"]],
 	[
-		/^src\/web\/(overview|threads)\/|^src\/server\/(overview|overviewRead|threadCode|timeline)\.ts$|^src\/web\/(GithubHtml|githubHtml)/,
+		/^src\/web\/(overview|threads)\/|^src\/server\/(overview|overviewRead|threadCode|timeline)\.ts$|^src\/web\/(GithubHtml|githubHtml|sanitizeGithubHtml)/,
 		["overview", "timeline", "mobile"],
 	],
 	[/^src\/web\/threads\//, ["files-threads", "thread-people"]],
@@ -127,6 +128,7 @@ const E2E_MAP = [
 		["asof", "overview", "pinned-head"],
 	],
 	[/^src\/server\/pinnedHead\.ts$/, ["pinned-head"]],
+	[/^src\/server\/agent\/|^test\/fake-acp\//, ["agent"]],
 	[
 		/^src\/web\/(brand\/|Tooltip\.tsx$|theme)|^src\/web\/index\.css$/,
 		["design", "mobile"],

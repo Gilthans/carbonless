@@ -8,10 +8,13 @@ afterEach(async () => {
 });
 
 /** A listening app: the cookie is named after the listening port. */
-async function app(key: string | null): Promise<FastifyInstance> {
+async function app(
+	key: string | null,
+	publicUrl?: string,
+): Promise<FastifyInstance> {
 	const app = Fastify();
 	apps.push(app);
-	await registerAccessKey(app, key);
+	await registerAccessKey(app, key, publicUrl);
 	app.get("/api/x", async () => ({ ok: true }));
 	await app.listen({ port: 0, host: "127.0.0.1" });
 	return app;
@@ -48,6 +51,23 @@ describe("registerAccessKey", () => {
 			cookies: { [cookieName(a)]: "s3cret" },
 		});
 		expect(withCookie.statusCode).toBe(200);
+	});
+
+	it("marks the cookie Secure when it comes over an HTTPS public URL", async () => {
+		const a = await app("s3cret", "https://box.tail0.ts.net:8443");
+		const set = async (host: string) =>
+			String(
+				(await a.inject({ url: "/api/x?key=s3cret", headers: { host } }))
+					.headers["set-cookie"],
+			);
+		expect(await set("box.tail0.ts.net:8443")).toContain("Secure");
+		expect(await set("127.0.0.1:4747")).not.toContain("Secure");
+		const plain = await app("s3cret", "http://box.local:8080");
+		const res = await plain.inject({
+			url: "/api/x?key=s3cret",
+			headers: { host: "box.local:8080" },
+		});
+		expect(String(res.headers["set-cookie"])).not.toContain("Secure");
 	});
 
 	it("refuses a wrong key", async () => {
