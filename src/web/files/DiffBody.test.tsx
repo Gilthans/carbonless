@@ -26,6 +26,7 @@ import {
 	resetAgentComposers,
 } from "../agent/askAgentAction";
 import { sessionQuery } from "../api";
+import { rangeText } from "../code/Invisibles";
 import { openComposer, resetComposers } from "../threads/newThreads";
 import { ignoreWhitespace, showInvisibles, sideBySide } from "../viewSettings";
 import {
@@ -1171,6 +1172,68 @@ describe("DiffBody side by side", () => {
 		expect(tail(row)).toEqual({ spans: [6], card: 0, blank: -1 });
 		expect(within(row).getAllByTestId("new-thread")).toHaveLength(2);
 	});
+
+	it.each([
+		["a desktop", false],
+		["a phone", true],
+	])(
+		"on %s, a selection over the table leaves every bubble's count out",
+		async (_, onPhone) => {
+			if (onPhone)
+				vi.stubGlobal(
+					"matchMedia",
+					(query: string) =>
+						({
+							matches: false,
+							media: query,
+							addEventListener: () => {},
+							removeEventListener: () => {},
+						}) as unknown as MediaQueryList,
+				);
+			const resolved = {
+				...thread("RIGHT", 5),
+				resolved: true,
+				commentCount: 2,
+			};
+			const many = { ...thread("RIGHT", 6), commentCount: 3 };
+			setup({
+				hunks: pairHunks(),
+				clusters: [pairCluster()],
+				threads: [resolved, many, thread("RIGHT", 6), thread("LEFT", 5)],
+				lead: {
+					bubble: (
+						<ThreadBubble
+							file
+							threads={[thread("RIGHT", 1)]}
+							open={false}
+							onToggle={() => {}}
+						/>
+					),
+					row: () => null,
+				},
+			});
+			await screen.findByText("new seven");
+			const bubbles = screen.getAllByTestId("thread-bubble");
+			expect(bubbles.length).toBeGreaterThanOrEqual(3);
+			for (const bubble of bubbles) expect(bubble).toHaveClass("select-none");
+			// From the table's start (the gap and the hunk header, with the
+			// file's bubble)
+			// over the pair rows (and, on a phone, the bubble rows under them).
+			const row = (n: number) =>
+				document.querySelector(
+					`[data-testid="diff-line"][data-new-no="${n}"]`,
+				) as HTMLElement;
+			const range = document.createRange();
+			range.setStartBefore(
+				row(5).closest("table")?.firstElementChild ?? row(5),
+			);
+			range.setEndAfter(row(7).nextElementSibling ?? row(7));
+			// No count, line number, sign, gap or header: the code only.
+			expect(rangeText(range)).toBe(
+				"line 4\tline 4\nold five\tnew five\nold six\tnew six\nnew seven",
+			);
+		},
+	);
 
 	describe("bubbles on a phone", () => {
 		const phone = () =>

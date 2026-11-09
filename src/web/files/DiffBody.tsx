@@ -133,7 +133,7 @@ export function FileBubbleSlot(props: { children: ReactNode; count?: number }) {
 	return (
 		<span
 			data-testid="file-bubble-slot"
-			className={`sticky z-[4] float-left flex justify-center ${
+			className={`sticky z-[4] float-left flex justify-center select-none ${
 				(props.count ?? 1) > 1
 					? "left-[calc(50%-2.5rem)] -mr-20 w-20"
 					: "left-[calc(50%-1.25rem)] -mr-10 w-10"
@@ -952,7 +952,8 @@ function NewThreadRow(props: {
 /**
  * git's "No newline at end of file" under a line: unified, one note across
  * the row; side by side, the note in the cell of each side whose line lacks
- * it (a context line lacking it shows it on both).
+ * it (a context line lacking it shows it on both). Not code, so not part of
+ * a text selection.
  */
 function NoNewlineRow(props: {
 	shape: Shape;
@@ -963,7 +964,7 @@ function NoNewlineRow(props: {
 	const columns = columnsOf(props.shape.view);
 	if (props.shape.view === "unified") {
 		return (
-			<tr data-testid="no-newline">
+			<tr data-testid="no-newline" className="select-none">
 				<Rail state={props.state} />
 				<td colSpan={columns - 1} className="px-2 text-muted italic">
 					{NO_NEWLINE}
@@ -972,7 +973,7 @@ function NoNewlineRow(props: {
 		);
 	}
 	return (
-		<tr data-testid="no-newline" className="text-muted italic">
+		<tr data-testid="no-newline" className="text-muted italic select-none">
 			<Rail state={props.state} />
 			<ControlsCell />
 			<td />
@@ -1399,7 +1400,8 @@ function PairRow(
  * bubbles sit at the left, a right cell's at the right; the cluster's rail
  * carries on beside them. Not a line (no `diff-line`, numbers or code
  * cells) and not a thread row: the scroll anchor, the line picks and the
- * floating cluster controls pass it by. None when neither cell has any.
+ * floating cluster controls pass it by, and so does a text selection
+ * (select-none). None when neither cell has any.
  */
 function BubbleRow(props: {
 	left: Bubbles;
@@ -1420,7 +1422,7 @@ function BubbleRow(props: {
 		</div>
 	);
 	return (
-		<tr data-testid="bubble-row">
+		<tr data-testid="bubble-row" className="select-none">
 			<Rail state={props.state} />
 			<td colSpan={columnsOf("side-by-side") - 1} className="px-2 py-0">
 				<div className="grid grid-cols-2">
@@ -2093,7 +2095,8 @@ export function DiffBody(props: {
 				<tr
 					key={`gap${gap.index}:${run.from}`}
 					data-testid="gap-row"
-					className="bg-hunk text-hunk-ink"
+					// Not code: a selection across it leaves it out.
+					className="bg-hunk text-hunk-ink select-none"
 				>
 					<td colSpan={2} className="px-1">
 						<div className="flex">
@@ -2716,7 +2719,8 @@ function HunkRows(props: {
 	return (
 		<>
 			<tbody>
-				<tr className="bg-hunk text-hunk-ink">
+				{/* Not code: a selection across hunks leaves the header out. */}
+				<tr className="bg-hunk text-hunk-ink select-none">
 					<td colSpan={columns} className={`${leadText(lead, centred)} py-0.5`}>
 						{lead && <LeadSlot lead={lead} centred={centred} />}
 						{hunkHeader(hunk)}
