@@ -202,6 +202,20 @@ for them.
   project and labels, and open it only after a yes. Updating existing tickets
   needs no ask and is encouraged: sharpen the scope as it becomes clearer,
   move the status as work progresses, comment what was found or decided.
+- **Keep every ticket's status true.** Whoever moves the work moves the
+  ticket in the same step, so the owner can read where everything stands
+  from Linear alone:
+  - Backlog: not scheduled. Todo: scheduled next, not started.
+  - Design: brainstorming, spec, mockups or owner decisions under way.
+  - Implementation: a brief is out or a branch exists; code is being written.
+  - Awaiting merge: a PR is open (review, fix rounds, or waiting for the
+    owner to merge).
+  - Done: merged to master. Canceled or Duplicate (say why in a comment).
+  The GitHub integration moves a linked ticket on PR events, but check it
+  landed where the list above says. Before a report to the owner, check that
+  the statuses of the tickets it covers match.
+- Closed tickets (Done, Canceled, Duplicate) are archived 2 days after
+  closing. To find past work, search with archived issues included.
 - Search before proposing (`list_issues` with a query, then by label or
   project); extend an existing ticket rather than propose a near-duplicate.
 - Titles state the problem or outcome. Descriptions start with the human
