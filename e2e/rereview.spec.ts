@@ -1077,6 +1077,9 @@ test("the markers move by drag and by Ctrl+[ / Ctrl+]; the base dragged or keyed
 	pr,
 	startCrb,
 }) => {
+	// A review, a push and nine moves, each a navigation: past the default
+	// under four busy loops (a flake-check timed out at ~50 s).
+	test.setTimeout(120_000);
 	const p = await pr(fixture);
 	const s = await startCrb();
 	await openFiles(page, s.url);
