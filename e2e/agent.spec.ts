@@ -701,6 +701,63 @@ test("on a patch set and in the since view: traced from PS1 into the head, then 
 	);
 });
 
+test("right after a Refresh, until the new head's diff shows, Comment and Ask agent wait: nothing names the old lines on the new head", async ({
+	page,
+	pr,
+	agentCrb,
+}) => {
+	const p = await pr(fixture);
+	const s = await agentCrb();
+	const section = await openFile(page, s.url, CALC);
+	p.moveHead({
+		message: "later push",
+		files: { [CALC]: calcLines(["// one", "// two"]) },
+	});
+	// The new head's review, held: the old diff stays under the new head.
+	let held = 0;
+	let release: () => void = () => {};
+	const released = new Promise<void>((r) => {
+		release = r;
+	});
+	await page.route("**/api/r/*/review", async (route) => {
+		held++;
+		await released;
+		await route.continue();
+	});
+	const refreshed = page.waitForResponse(
+		(r) => r.url().endsWith("/refresh") && r.ok(),
+	);
+	await page.getByRole("button", { name: "Refresh" }).click();
+	await refreshed;
+	await expect.poll(() => held).toBeGreaterThan(0);
+	// The old diff's line 3 (the head's line 5 now).
+	await expect(row(section, 3)).toContainText("total");
+	const number = row(section, 3).getByTestId("new");
+	if (await page.evaluate(() => navigator.maxTouchPoints > 0)) {
+		await number.tap();
+	} else await number.click();
+	for (const name of ["Comment", "Ask agent"]) {
+		const button = bar(page).getByRole("button", { name });
+		await expect(button, name).toHaveAttribute("aria-disabled", "true");
+		await expect(button, name).toHaveAccessibleDescription(
+			"The new head's diff is loading",
+		);
+	}
+	release();
+	await expect.poll(() => storedThreads(p)).toEqual([]);
+	// The new head's diff: line 5 is that line, and Comment is on again.
+	await page.unroute("**/api/r/*/review");
+	const again = await openFile(page, s.url, CALC);
+	await expect(row(again, 5)).toContainText("total");
+	const five = row(again, 5).getByTestId("new");
+	if (await page.evaluate(() => navigator.maxTouchPoints > 0)) {
+		await five.tap();
+	} else await five.click();
+	await expect(
+		bar(page).getByRole("button", { name: "Comment" }),
+	).not.toHaveAttribute("aria-disabled");
+});
+
 /** The review threads the fake gh holds, with each one's first comment's commit. */
 function storedThreads(p: { scenarioPath: string }) {
 	const s = JSON.parse(readFileSync(p.scenarioPath, "utf8")) as {

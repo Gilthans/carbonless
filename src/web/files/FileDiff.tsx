@@ -235,7 +235,7 @@ function HeaderIconButton(props: {
  * Whether this session can start a comment on the whole file: true, or why
  * not.
  */
-function useFileComment(file: FileView, commit: string) {
+function useFileComment(file: FileView, commit: string, readOnly = false) {
 	const overview = useQuery({ ...overviewQuery, enabled: false }).data;
 	const span: CodeSpan = { path: file.path, commit, subject: "file" };
 	const ok = overview
@@ -243,6 +243,7 @@ function useFileComment(file: FileView, commit: string) {
 				writes: overview.writes,
 				commentLeft: overview.commentLeft !== false,
 				file,
+				readOnly,
 			})
 		: "Comment on file";
 	return { span, ok };
@@ -253,8 +254,12 @@ function useFileComment(file: FileView, commit: string) {
  * file), in the composer of the file bubble's row; disabled with the
  * reason when this session can't comment.
  */
-function FileCommentButton(props: { file: FileView; commit: string }) {
-	const { span, ok } = useFileComment(props.file, props.commit);
+function FileCommentButton(props: {
+	file: FileView;
+	commit: string;
+	readOnly?: boolean;
+}) {
+	const { span, ok } = useFileComment(props.file, props.commit, props.readOnly);
 	return (
 		<Tooltip content={ok === true ? "Comment on file" : ok}>
 			{(trigger) => (
@@ -767,7 +772,7 @@ export function FileDiff(props: {
 		}
 	}, [fileItems, snapshotHead, writer]);
 
-	const fileComment = useFileComment(file, snapshotHead);
+	const fileComment = useFileComment(file, snapshotHead, readOnly);
 
 	// The reviewer's agent threads on the file (FilesPage reads them): those
 	// on the whole file, and lines the diff can't show, beside the file's
@@ -932,7 +937,11 @@ export function FileDiff(props: {
 						composers={fileItems.length > 0 ? newItems : null}
 						comment={
 							fileOpen && fileItems.length === 0 ? (
-								<FileCommentButton file={file} commit={snapshotHead} />
+								<FileCommentButton
+									file={file}
+									commit={snapshotHead}
+									readOnly={readOnly}
+								/>
 							) : null
 						}
 					/>

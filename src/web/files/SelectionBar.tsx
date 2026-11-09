@@ -337,6 +337,13 @@ export function SelectionBar(props: {
 	 * The session's snapshot head when not given.
 	 */
 	commit?: string;
+	/**
+	 * The diff on screen is the viewed head's (useHeadSure; default yes):
+	 * until it is, a span's lines are the old head's, so line actions wait.
+	 */
+	headSure?: boolean;
+	/** An earlier patch set: Comment off (Ask agent stays). */
+	readOnly?: boolean;
 }) {
 	const sessionHead =
 		useQuery({ ...sessionQuery, enabled: false }).data?.snapshotHead ?? "";
@@ -555,6 +562,8 @@ export function SelectionBar(props: {
 						submodule: file?.submodule ?? false,
 					},
 					inDiff: target.inDiff,
+					headUnsure: props.headSure === false,
+					readOnly: props.readOnly === true,
 				}
 			: null;
 	const run = (action: SelectionAction) => {
