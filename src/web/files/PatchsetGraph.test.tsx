@@ -452,6 +452,100 @@ describe("PatchsetGraph", () => {
 		);
 	});
 
+	/** The tooltips on screen (hidden ones and aria-hidden ones too). */
+	const shownTips = () =>
+		[...document.querySelectorAll('[role="tooltip"]:not([hidden])')].map(
+			(t) => t.textContent,
+		);
+
+	it("a card opens with no tooltip showing: an enabled button needs none", async () => {
+		const user = userEvent.setup();
+		renderGraph(session([1, 2], oid("f")), {
+			viewing: ps(2),
+			base: ps(1) as ComparisonBase,
+		});
+		// By a click, and by Enter (keyboard focus keeps a tooltip open).
+		await user.click(screen.getByRole("button", { name: "PS1" }));
+		expect(
+			within(screen.getByRole("dialog")).getByRole("button", {
+				name: "Comparison Target",
+			}),
+		).toHaveFocus();
+		expect(shownTips()).toEqual([]);
+		await user.keyboard("{Escape}");
+		await user.keyboard("{Enter}");
+		expect(screen.getByRole("dialog")).toBeInTheDocument();
+		expect(shownTips()).toEqual([]);
+	});
+
+	it("only a disabled button has a tooltip: its reason", async () => {
+		const user = userEvent.setup();
+		renderGraph(session([1, 2], oid("f")), {
+			viewing: ps(2),
+			base: ps(1) as ComparisonBase,
+		});
+		await user.click(screen.getByRole("button", { name: "PS1" }));
+		const card = screen.getByRole("dialog");
+		const target = within(card).getByRole("button", {
+			name: "Comparison Target",
+		});
+		const base = within(card).getByRole("button", { name: "Comparison Base" });
+		await user.hover(target);
+		await act(() => new Promise((r) => setTimeout(r, 300)));
+		expect(shownTips()).toEqual([]);
+		expect(target).not.toHaveAccessibleDescription();
+		await user.hover(base);
+		await waitFor(() =>
+			expect(shownTips()).toEqual(["Already the comparison base"]),
+		);
+		expect(base).toHaveAccessibleDescription("Already the comparison base");
+	});
+
+	it("the snapshot dot's card names the newest patch set's base branch", async () => {
+		const user = userEvent.setup();
+		const s = session([1, 2], oid("f"));
+		renderGraph(
+			{
+				...s,
+				patchsets: s.patchsets.map((p) =>
+					p.number === 2 ? { ...p, baseBranch: "release" } : p,
+				),
+				head: {
+					oid: oid("f"),
+					mergeBase: oid("9"),
+					baseBranch: "develop",
+					commits: 3,
+				},
+			},
+			{
+				viewing: { kind: "head", oid: oid("e") },
+				base: ps(2) as ComparisonBase,
+			},
+		);
+		await user.click(screen.getByRole("button", { name: "snapshot eeeeeee" }));
+		const card = screen.getByRole("dialog", { name: "eeeeeee details" });
+		expect(card).toHaveTextContent("Against release at 0000000");
+	});
+
+	it("a hostile base branch name is text on the card, never markup", async () => {
+		const user = userEvent.setup();
+		const hostile = '<img src=x onerror="window.pwned=1">';
+		const s = session([1, 2], oid("f"));
+		renderGraph(
+			{
+				...s,
+				patchsets: s.patchsets.map((p) =>
+					p.number === 1 ? { ...p, baseBranch: hostile } : p,
+				),
+			},
+			{ viewing: ps(2), base: ps(1) as ComparisonBase },
+		);
+		await user.click(screen.getByRole("button", { name: "PS1" }));
+		const card = screen.getByRole("dialog", { name: "PS1 details" });
+		expect(card).toHaveTextContent(`Against ${hostile} at 0000000`);
+		expect(card.querySelector("img")).toBeNull();
+	});
+
 	it("the sticky card closes on Escape (focus back on the dot), a click outside or the dot again; Enter opens it", async () => {
 		const user = userEvent.setup();
 		const { setViewing } = renderGraph(session([1, 2], oid("f")), {

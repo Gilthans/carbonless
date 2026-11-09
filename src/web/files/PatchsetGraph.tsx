@@ -637,24 +637,22 @@ function DotPopover(props: {
 	}, [anchor, onClose]);
 	const button =
 		"flex min-h-10 flex-1 items-center justify-center rounded-md border border-line-strong px-2 text-xs font-semibold whitespace-nowrap text-ink hover:bg-surface focus-visible:outline-2 focus-visible:outline-accent aria-disabled:cursor-not-allowed aria-disabled:opacity-40 aria-disabled:hover:bg-transparent sm:min-h-8";
-	// A disabled one stays focusable, its reason its tooltip and description.
-	const action = (label: string, why: string | null, onPress: () => void) => (
-		<Tooltip content={why ?? label} describe={why !== null}>
-			{(trigger) => (
-				<button
-					type="button"
-					{...trigger}
-					className={button}
-					aria-disabled={why !== null || undefined}
-					onClick={() => {
-						if (why === null) onPress();
-					}}
-				>
-					{label}
-				</button>
-			)}
-		</Tooltip>
-	);
+	// An enabled one is its label alone (a tooltip would only repeat it);
+	// a disabled one stays focusable, its reason its tooltip and description.
+	const action = (label: string, why: string | null, onPress: () => void) =>
+		why === null ? (
+			<button type="button" className={button} onClick={onPress}>
+				{label}
+			</button>
+		) : (
+			<Tooltip content={why}>
+				{(trigger) => (
+					<button type="button" {...trigger} className={button} aria-disabled>
+						{label}
+					</button>
+				)}
+			</Tooltip>
+		);
 	return createPortal(
 		<div
 			ref={box}

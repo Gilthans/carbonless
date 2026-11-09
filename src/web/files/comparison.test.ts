@@ -219,7 +219,7 @@ describe("moveMarker", () => {
 			v.kind === "branch"
 				? s.base?.kind === "branch"
 				: v.kind === "head"
-					? s.viewing?.kind === "head"
+					? s.viewing?.kind === "head" && s.viewing.oid === v.oid
 					: s.viewing?.kind === "patchset" && s.viewing.number === v.number,
 		);
 	const cur = (viewing: Viewing, base: ComparisonBase, baseChosen = true) => ({
@@ -291,8 +291,13 @@ describe("moveMarker", () => {
 	});
 
 	it("never crosses or stacks the markers, from any comparison, for either role on any dot", () => {
-		for (const withHead of [true, false]) {
-			const r = rail(withHead);
+		// With the head, up to date, and with a snapshot dot before the head.
+		const snapshot: RailStop[] = [
+			...rail(false),
+			{ viewing: head(oid("e")) },
+			{ viewing: head(H) },
+		];
+		for (const r of [rail(true), rail(false), snapshot]) {
 			for (let t = 1; t < r.length; t++) {
 				for (let b = 0; b < t; b++) {
 					const viewing = r[t]?.viewing as Viewing;
