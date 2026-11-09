@@ -9,6 +9,12 @@ import { GitError, runGit, runGitBuffer } from "../git.js";
 import { buildAllClusters } from "./clusters.js";
 import { readTabWidths } from "./editorconfig.js";
 import { type ChangedFile, listChangedFiles } from "./files.js";
+import {
+	buildAllHeadings,
+	type GitHunkHeading,
+	type HeadingFile,
+	withHeadings,
+} from "./headings.js";
 import { buildDisplayHunks, contextLines } from "./hunks.js";
 import { clusterKeys } from "./identity.js";
 import { chooseEncoding, decodeLines, type TextEncoding } from "./text.js";
@@ -25,6 +31,38 @@ function remember(oid: string, bytes: Buffer): void {
 		const oldest = blobCache.keys().next().value as string;
 		blobCache.delete(oldest);
 	}
+}
+
+const MAX_CACHED_HEADINGS = 8;
+
+/**
+ * Every file's `-U3` hunk headings, per snapshot (`repo`, base, head), least
+ * recently used first: one git run per snapshot, never per file. A failed
+ * run means no headings (they are a reading aid), and is tried again next
+ * time.
+ */
+const headingRuns = new Map<string, Promise<GitHunkHeading[][] | null>>();
+
+function snapshotHeadings(
+	repo: string,
+	base: string,
+	head: string,
+	files: HeadingFile[],
+): Promise<GitHunkHeading[][] | null> {
+	const key = `${repo}\0${base}\0${head}`;
+	const known = headingRuns.get(key);
+	headingRuns.delete(key);
+	const run =
+		known ??
+		buildAllHeadings(repo, base, head, files).catch(() => {
+			if (headingRuns.get(key) === run) headingRuns.delete(key);
+			return null;
+		});
+	headingRuns.set(key, run);
+	while (headingRuns.size > MAX_CACHED_HEADINGS) {
+		headingRuns.delete(headingRuns.keys().next().value as string);
+	}
+	return run;
 }
 
 const isZeroOid = (oid: string) => /^0+$/.test(oid);
@@ -113,6 +151,8 @@ export async function buildSnapshot(
 	head: string,
 ): Promise<Snapshot> {
 	const changed = await listChangedFiles(repo, base, head);
+	// Started now, beside the clusters' run: ready by the first file's hunks.
+	void snapshotHeadings(repo, base, head, changed);
 	const isText = (f: ChangedFile) => !f.binary && !f.submodule;
 	const blobs = await readBlobs(
 		repo,
@@ -201,15 +241,19 @@ export async function loadFileHunks(
 ): Promise<FileHunks> {
 	const file = fileAt(snapshot, index);
 	if (file.binary || file.submodule) return { hunks: [], newLineCount: 0 };
-	const text = await loadText(repo, snapshot, file);
+	const [text, headings] = await Promise.all([
+		loadText(repo, snapshot, file),
+		snapshotHeadings(repo, snapshot.base, snapshot.head, snapshot.files),
+	]);
+	const hunks = buildDisplayHunks(
+		text.oldLines,
+		text.newLines,
+		file.clusters,
+		3,
+		text.noNewlineAtEnd,
+	);
 	return {
-		hunks: buildDisplayHunks(
-			text.oldLines,
-			text.newLines,
-			file.clusters,
-			3,
-			text.noNewlineAtEnd,
-		),
+		hunks: withHeadings(hunks, headings?.[index] ?? [], text.encoding),
 		newLineCount: text.newLines.length,
 	};
 }
