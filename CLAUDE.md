@@ -45,7 +45,8 @@ These guide every feature. If a change conflicts with one of them, stop and rais
 5. **Mobile is supported.** The reviewer also reads PRs on a phone. Every page
    works down to ~360px wide with no horizontal page scroll (diff lines may
    scroll inside their own container), tap targets are at least 40px, and the
-   Playwright suite runs in a phone project as well as desktop.
+   Playwright suite has a phone project next to desktop, run on every change
+   that touches layout ("Development").
 
 6. **Concise, icon-first UI.** Keep text short. Icons (each with a tooltip and
    an accessible name) and color carry meaning; no disclaimers, legends or
@@ -89,8 +90,18 @@ loading never looking empty, checking against a real PR):
   React + Vite + TanStack Query + Tailwind (`src/web`), shared types (`src/shared`).
 - `pnpm verify` runs lint (Biome), typecheck, unit tests (Vitest), Playwright
   tests and the package smoke test (`pnpm test:pack`: packs, installs the
-  tarball into a temp dir, runs its `crb`). Run it right before committing
-  and before saying work is done; use `pnpm verify:fast` (below) until then.
+  tarball into a temp dir, runs its `crb`). It takes the machine for ~20
+  minutes after a queue, so it is rare: once, right before finalizing a PR
+  (the coordinator, on the combined branch, before opening or updating the
+  PR). Everything before that uses `pnpm verify:fast` (below): implementing,
+  committing, fix rounds, reviews, and an implementer's "done".
+- The phone project (Playwright's `phone`) doubles an e2e run. Run it only
+  when a change touches layout: CSS or Tailwind classes that size, place or
+  wrap things, breakpoints and `useMedia`/`isMobile` code, sticky or
+  scrolling behaviour, touch targets, or anything in `e2e/mobile.spec.ts`'s
+  ground. Otherwise set `CRB_NO_PHONE=1`, which drops the phone project from
+  every Playwright run (`verify`, `verify:fast`, `test:e2e`, `flake-check`).
+  When unsure, include the phone.
 - Full test runs take turns: `pnpm verify`'s unit and e2e stages, `pnpm
   test:e2e` without spec files, `-g` or `--last-failed`, an all-specs
   `verify:fast` and `pnpm flake-check` wait for a machine-wide lock
@@ -307,6 +318,9 @@ co-workers get a tarball or run `pnpm release local` in a checkout.
   (`git log --stat` + `git diff -U10` of the range, saved to a file). Findings
   go back to the same implementer as fix rounds, then a scoped re-review; small
   fixes with tests that fail without them may skip the re-review.
+  Implementers, fix rounds and reviewers check with `pnpm verify:fast` and
+  targeted specs, never a full `pnpm verify`: that runs once, at the end
+  (below).
 - Review checklist (every reviewer brief carries it, on top of the brief's own):
   - **Input sanitization.** Text from the reviewer, a PR, GitHub or git
     (bodies, titles, names, paths, refs) is escaped or sanitized wherever it
