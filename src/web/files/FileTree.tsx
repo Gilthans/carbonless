@@ -6,7 +6,9 @@ import {
 	UnfoldIcon,
 } from "@primer/octicons-react";
 import { useId, useMemo } from "react";
+import type { AgentThread } from "../../shared/agent";
 import type { FileView, ReviewThread } from "../../shared/types";
+import { agentBubbleLabel } from "../agent/AgentBubble";
 import type { FindMark } from "../code/Invisibles";
 import { Spinner } from "../Spinner";
 import { Tooltip, TooltipPath } from "../Tooltip";
@@ -33,6 +35,7 @@ import {
 } from "./unit";
 
 const NONE = () => [];
+const NO_AGENT = (): AgentThread[] => [];
 
 /** The find's view of the tree: hits per file, and marks on names. Nothing is hidden or dimmed. */
 export interface TreeFind {
@@ -128,8 +131,15 @@ function FileItem(props: {
 	onSelect: (index: number) => void;
 	threads: ReviewThread[];
 	find?: TreeFind;
+	/** The reviewer's agent threads in the file: a second, agent-tinted dot. */
+	agentThreads?: AgentThread[];
 }) {
 	const { file, unit, threads, mark } = props;
+	const agentThreads = props.agentThreads ?? [];
+	const asked =
+		agentThreads.length > 0
+			? agentBubbleLabel(agentThreads, "in this file")
+			: "";
 	// Its review threads, as the bubble says them: a yellow dot when one
 	// waits on the viewer, green when all are resolved, else grey.
 	const talk =
@@ -155,6 +165,7 @@ function FileItem(props: {
 						<TooltipPath>{path}</TooltipPath> · {numbers}
 						{talk && ` · ${talk}`}
 						{found && ` · ${found}`}
+						{asked && ` · ${asked}`}
 					</>
 				}
 				describe={false}
@@ -215,6 +226,18 @@ function FileItem(props: {
 								<span className="sr-only">{talk}</span>
 							</span>
 						)}
+						{asked && (
+							<span
+								data-testid="tree-agent-threads"
+								className="flex h-4 w-2 shrink-0 items-center"
+							>
+								<span
+									aria-hidden
+									className="h-2 w-2 rounded-full border border-agent-edge bg-agent-ink"
+								/>
+								<span className="sr-only">{asked}</span>
+							</span>
+						)}
 						<ChangeCount file={file} />
 						<span data-testid="tree-numbers" className="sr-only">
 							{numbers}
@@ -248,6 +271,7 @@ interface Level {
 	openedPath: string | undefined;
 	onSelect: (index: number) => void;
 	threadsOf: (file: FileView) => ReviewThread[];
+	agentThreadsOf: (file: FileView) => AgentThread[];
 	/** The threads are still on their way: no folder says none wait. */
 	threadsLoading: boolean;
 	folds: Folds;
@@ -466,6 +490,7 @@ function Children(props: Level & { nodes: Node[] }) {
 						onSelect={props.onSelect}
 						threads={props.threadsOf(node.file)}
 						find={props.find}
+						agentThreads={props.agentThreadsOf(node.file)}
 					/>
 				) : node.kind === "moved" ? (
 					<MovedItem
@@ -528,6 +553,8 @@ export function FileTree(props: {
 	onSelect: (index: number) => void;
 	/** Each file's review threads on the viewed head (fileThreads). */
 	threadsOf?: (file: FileView) => ReviewThread[];
+	/** Each file's agent threads (a second, agent-tinted dot). */
+	agentThreadsOf?: (file: FileView) => AgentThread[];
 	/** The threads are still on their way: no file's dot means none yet. */
 	threadsLoading?: boolean;
 	/** Where this PR's fold state is kept (foldsKey); null: in memory only. */
@@ -553,10 +580,12 @@ export function FileTree(props: {
 	return (
 		<div>
 			{allFolders.length > 0 && (
+				// Stays on top while the tree scrolls under it, on the
+				// background of what holds the tree (--tree-bg).
 				<div
 					role="toolbar"
 					aria-label="Folders"
-					className="mb-1 flex justify-end gap-1"
+					className="sticky top-0 z-10 mb-1 flex justify-end gap-1 pt-1 bg-(--tree-bg,var(--color-canvas))"
 				>
 					<TreeAction
 						label="Fold all"
@@ -593,6 +622,7 @@ export function FileTree(props: {
 					openedPath={pathOf(opened)}
 					onSelect={props.onSelect}
 					threadsOf={props.threadsOf ?? NONE}
+					agentThreadsOf={props.agentThreadsOf ?? NO_AGENT}
 					threadsLoading={props.threadsLoading === true}
 					folds={folds}
 					find={props.find}

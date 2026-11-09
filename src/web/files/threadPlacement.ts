@@ -20,9 +20,20 @@ export interface GapTarget {
 	key: LineKey;
 }
 
-export interface FilePlacement {
+/**
+ * What placeThreads places: a review thread, or an agent thread seen the
+ * same way (its path, the commit it was asked on, file or line, the range).
+ */
+export interface Placeable {
+	path: string;
+	commit: string;
+	subject: "line" | "file";
+	anchor: SpanRange | null;
+}
+
+export interface FilePlacement<T extends Placeable = ReviewThread> {
 	/** Threads whose range ends on a shown line, by that line. */
-	end: Map<LineKey, ReviewThread[]>;
+	end: Map<LineKey, T[]>;
 	/** Every line a placed thread's range covers (the highlight). */
 	covered: Set<LineKey>;
 	/**
@@ -33,15 +44,15 @@ export interface FilePlacement {
 	/** `spans` that end on a shown row (painted), by their index. */
 	spansShown: Set<number>;
 	/** Threads whose end line sits in gap `index` (collapsed context). */
-	gaps: Map<number, ReviewThread[]>;
+	gaps: Map<number, T[]>;
 	/**
 	 * For each thread in `gaps`: the new-side lines its range spans (what
 	 * to load to show it) and the key of the row it will end on once they
 	 * are loaded (what to open).
 	 */
-	gapTargets: Map<ReviewThread, GapTarget>;
+	gapTargets: Map<T, GapTarget>;
 	/** File comments ("file") and lines that couldn't be placed ("unplaced"). */
-	header: { thread: ReviewThread; reason: "file" | "unplaced" }[];
+	header: { thread: T; reason: "file" | "unplaced" }[];
 }
 
 /**
@@ -49,10 +60,10 @@ export interface FilePlacement {
  * those whose opening comment was made on it. One on no known commit ("")
  * is on no head.
  */
-export function threadsOnHead(
-	threads: ReviewThread[],
+export function threadsOnHead<T extends Placeable>(
+	threads: T[],
 	snapshotHead: string,
-): ReviewThread[] {
+): T[] {
 	return threads.filter((t) => t.commit !== "" && t.commit === snapshotHead);
 }
 
@@ -60,11 +71,11 @@ export function threadsOnHead(
  * This file's threads on the viewed head, whether or not its diff is in:
  * what a closed file's header and the file tree count.
  */
-export function fileThreads(
-	threads: ReviewThread[],
+export function fileThreads<T extends Placeable>(
+	threads: T[],
 	path: string,
 	snapshotHead: string,
-): ReviewThread[] {
+): T[] {
 	return threadsOnHead(threads, snapshotHead).filter((t) => t.path === path);
 }
 
@@ -159,8 +170,8 @@ function newNumberOf(side: DiffSide, n: number, hunks: DisplayHunk[]): number {
  * comments are placed, and the line threads of a file that has no lines to
  * show (`noLines`: binary, a submodule) go to the header unplaced.
  */
-export function placeThreads(args: {
-	threads: ReviewThread[];
+export function placeThreads<T extends Placeable = ReviewThread>(args: {
+	threads: T[];
 	path: string;
 	snapshotHead: string;
 	hunks: FileHunks | null;
@@ -169,8 +180,8 @@ export function placeThreads(args: {
 	noLines?: boolean;
 	/** More ranges to paint like a thread's (new threads being written). */
 	spans?: readonly SpanRange[];
-}): FilePlacement {
-	const placement: FilePlacement = {
+}): FilePlacement<T> {
+	const placement: FilePlacement<T> = {
 		end: new Map(),
 		covered: new Set(),
 		marks: new Map(),
@@ -189,7 +200,7 @@ export function placeThreads(args: {
 		for (const key of keysOf(row)) rowAt.set(key, i);
 	});
 	const gaps = hunks ? fileGaps(hunks.hunks, hunks.newLineCount) : [];
-	const push = <K>(map: Map<K, ReviewThread[]>, key: K, t: ReviewThread) => {
+	const push = <K>(map: Map<K, T[]>, key: K, t: T) => {
 		const list = map.get(key);
 		if (list) list.push(t);
 		else map.set(key, [t]);

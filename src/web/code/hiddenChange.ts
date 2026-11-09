@@ -1,5 +1,6 @@
 import type { Mark } from "./Invisibles";
 import {
+	BOM,
 	DEFAULT_TAB_WIDTH,
 	type Piece,
 	renderInvisibles,
@@ -69,7 +70,8 @@ const look = (pieces: Piece[]) =>
  * exactly like its partner; an indent swapped for one as wide (a tab for
  * spaces of the same width), even beside a visible change; or a selector,
  * joiner or tag kept unescaped inside an emoji (or a joining script), which
- * shows as `\uXXXX` only while hidden characters are on. Escaped
+ * shows as `\uXXXX` only while hidden characters are on; or a BOM
+ * (U+FEFF), which shows only while they are on. Other escaped
  * characters (zero widths, no-break spaces, bidi controls) show as
  * `\uXXXX` either way, so they never count.
  */
@@ -84,6 +86,11 @@ export function hiddenChange(
 	// it) draws nothing until hidden characters show it (owner, 2026-11-04).
 	const shown = renderInvisibles(text, tabWidth, { newline, marks });
 	if (shown.some((p) => p.kind === "escape" && p.kept)) {
+		return true;
+	}
+	// A BOM draws nothing while hidden characters are off: a mark holding
+	// one holds a change that doesn't show.
+	if (marks.some(([from, to]) => text.slice(from, to).includes(BOM))) {
 		return true;
 	}
 	const pieces = piecesOff(text, tabWidth, newline);

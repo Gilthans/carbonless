@@ -1,14 +1,18 @@
+import { readFileSync } from "node:fs";
 import type { Locator, Page } from "@playwright/test";
 import {
 	barBottom,
 	chooseUnit,
+	clicksReady,
 	fileAction,
 	fileActionButton,
 	fileProgress,
 	fileSection,
+	marksReady,
 	openFiles,
 	pickInTree,
 	progress,
+	resetFile,
 	treeNumbers,
 	withTree,
 } from "./files-ui";
@@ -52,15 +56,9 @@ const fixture: PrOptions = {
 	],
 };
 
-/**
- * Clicks "Undo cross-off" once it takes clicks: right after it replaces
- * "Cross off file" it ignores them (UNDO_ARM_MS, FileDiff.tsx).
- */
-async function undoFileCrossOff(page: Page, section: Locator) {
-	await expect(fileActionButton(section, "Undo cross-off")).toBeEnabled();
-	await page.waitForTimeout(600);
-	await fileAction(section, "Undo cross-off");
-}
+/** "Undo cross-off" for the whole file, asked and answered. */
+const undoFileCrossOff = (page: Page, section: Locator) =>
+	resetFile(page, section, "Undo cross-off");
 
 async function expand(page: Page, path: string) {
 	const section = fileSection(page, path);
@@ -204,9 +202,11 @@ test("crossing off keeps reviewed clusters, and undoing leaves clusters unreview
 	const undo = fileActionButton(section, "Undo cross-off");
 	await expect(undo).toHaveAttribute("aria-pressed", "true");
 	await expect(fileActionButton(section, "Cross off file")).toHaveCount(0);
-	await expect(
-		fileActionButton(section, "Mark remaining reviewed"),
-	).toBeDisabled();
+	// Finished: the reviewed mark is a reset too.
+	await expect(fileActionButton(section, "Unmark reviewed")).toHaveAttribute(
+		"aria-pressed",
+		"true",
+	);
 	await undoFileCrossOff(page, section);
 	// Only the crossed-off cluster went back to unreviewed.
 	await expect(bar).toContainText("1 / 4 clusters reviewed");
@@ -261,12 +261,10 @@ test("mark remaining reviewed", async ({ page, pr, startCrb }) => {
 	const section = fileSection(page, "src/core.ts");
 	await fileAction(section, "Mark remaining reviewed");
 	await expect(fileProgress(section)).toContainText("2 / 2 clusters");
-	// All reviewed: nothing to cross off, undo or mark.
+	// All reviewed: nothing to cross off or undo; the mark resets instead.
 	await expect(fileActionButton(section, "Cross off file")).toBeDisabled();
 	await expect(fileActionButton(section, "Undo cross-off")).toHaveCount(0);
-	await expect(
-		fileActionButton(section, "Mark remaining reviewed"),
-	).toBeDisabled();
+	await expect(fileActionButton(section, "Unmark reviewed")).toBeEnabled();
 	await withTree(page, async (tree) => {
 		const entry = tree.getByRole("button", { name: /core\.ts/ });
 		await expect(treeNumbers(tree, /core\.ts/)).toHaveText(
@@ -366,8 +364,12 @@ test("marking the rest reviewed or crossing it off closes the file", async ({
 		["src/core.ts", "Mark remaining reviewed", "2 / 2 clusters"],
 		["src/util.ts", "Cross off file", "crossed off"],
 	] as const) {
-		const section = await expand(page, path);
+		// util.ts opens by itself: core.ts finished just above it.
+		const section = fileSection(page, path);
+		if (path === "src/core.ts") await expand(page, path);
 		await expect(section.getByTestId("diff-line").first()).toBeVisible();
+		// Opened by a move-on, it takes marks a moment later.
+		await clicksReady(page, fileActionButton(section, action));
 		await fileAction(section, action);
 		await expect(fileProgress(section)).toContainText(done);
 		await expect(
@@ -382,13 +384,12 @@ test("marking the rest reviewed or crossing it off closes the file", async ({
 	await undoFileCrossOff(page, util);
 	await expect(fileActionButton(util, "Cross off file")).toBeEnabled();
 	await expect(util.getByTestId("diff-line").first()).toBeVisible();
-	// So does marking its clusters one by one, even the last one.
+	// Marking its last cluster by hand finishes it too: it closes (the last
+	// file: nothing opens after it).
 	await util.getByRole("checkbox", { name: "Mark cluster reviewed" }).click();
 	await expect(fileProgress(util)).toContainText("1 / 1 cluster");
-	await expect(
-		util.getByRole("button", { name: "Collapse file" }),
-	).toBeVisible();
-	await expect(util.getByTestId("diff-line").first()).toBeVisible();
+	await expect(util.getByRole("button", { name: "Expand file" })).toBeVisible();
+	await expect(util.getByTestId("diff-line")).toHaveCount(0);
 });
 
 test("a file closes at once on marking it all, and reopens if the save fails", async ({
@@ -401,6 +402,14 @@ test("a file closes at once on marking it all, and reopens if the save fails", a
 	await pr(fixture);
 	const s = await startCrb();
 	await openFiles(page, s.url);
+	// The other files finished first, from their closed headers (which
+	// doesn't move on): util.ts is all that's left.
+	for (const path of ["docs/new.md", "src/core.ts"]) {
+		const other = fileSection(page, path);
+		await fileAction(other, "Mark remaining reviewed");
+		await expect(fileActionButton(other, "Unmark reviewed")).toBeVisible();
+	}
+	await expect(progress(page)).toContainText("3 / 4 clusters reviewed");
 	// Saves fail for good (not a transient error), once the test lets them.
 	const held: (() => void)[] = [];
 	// Only the first write waits; the parts it's split into answer at once.
@@ -419,27 +428,34 @@ test("a file closes at once on marking it all, and reopens if the save fails", a
 		});
 	});
 	const failed = page.getByRole("alert").filter({ hasText: "disk full" });
-	const section = await expand(page, "src/core.ts");
+	// The last file with anything left: finished, it closes and nothing
+	// opens after it (the verdict comes into view).
+	const section = await expand(page, "src/util.ts");
 	await fileAction(section, "Mark remaining reviewed");
 	// Closed and reviewed without waiting for the save.
 	await expect(section.getByTestId("diff-line")).toHaveCount(0);
 	await expect(
 		section.getByRole("button", { name: "Expand file" }),
 	).toBeVisible();
-	await expect(progress(page)).toContainText("2 / 4 clusters reviewed");
+	await expect(progress(page)).toContainText("4 / 4 clusters reviewed");
 	await expect.poll(() => held.length).toBe(1);
 	held.shift()?.();
 	// The failure reopens it, the error in view, the change kept.
 	await expect(failed).toBeVisible();
-	await expect(failed).toContainText("2 changes · src/core.ts");
+	await expect(failed).toContainText("src/util.ts");
 	await expect(
 		section.getByRole("button", { name: "Collapse file" }),
 	).toBeVisible();
 	await expect(section.getByTestId("diff-line").first()).toBeVisible();
-	await expect(progress(page)).toContainText("2 / 4 clusters reviewed");
+	await expect(progress(page)).toContainText("4 / 4 clusters reviewed");
 	await page.unroute("**/api/r/*/review/states");
 	await failed.getByRole("button", { name: "Retry saving" }).click();
 	await expect(failed).toBeHidden();
+	// Both left to do again, for the move-on below.
+	await resetFile(page, section, "Unmark reviewed");
+	const core = fileSection(page, "src/core.ts");
+	await resetFile(page, core, "Unmark reviewed");
+	await expect(progress(page)).toContainText("1 / 4 clusters reviewed");
 
 	// Opening another file before the failure: that file stays open, and
 	// this one stays closed.
@@ -457,16 +473,17 @@ test("a file closes at once on marking it all, and reopens if the save fails", a
 			body: JSON.stringify({ error: "disk full" }),
 		});
 	});
-	const util = await expand(page, "src/util.ts");
-	await fileAction(util, "Cross off file");
-	await expect(util.getByTestId("diff-line")).toHaveCount(0);
+	// Finishing a file with another one left moves on (util.ts opens), so
+	// its failure doesn't reopen it either.
 	await expand(page, "src/core.ts");
+	await fileAction(core, "Cross off file");
+	await expect(core.getByTestId("diff-line")).toHaveCount(0);
 	await expect(section.getByTestId("diff-line").first()).toBeVisible();
 	await expect.poll(() => held.length).toBe(1);
 	held.shift()?.();
 	await expect(failed).toBeVisible();
-	await expect(util.getByRole("button", { name: "Expand file" })).toBeVisible();
-	await expect(util.getByTestId("diff-line")).toHaveCount(0);
+	await expect(core.getByRole("button", { name: "Expand file" })).toBeVisible();
+	await expect(core.getByTestId("diff-line")).toHaveCount(0);
 	await expect(section.getByTestId("diff-line").first()).toBeVisible();
 });
 
@@ -513,9 +530,14 @@ test("a click right as Undo cross-off swaps in doesn't undo", async ({
 	await page.waitForTimeout(100);
 	await expect(undo).toBeVisible();
 	await expect(bar).toContainText("0 / 3 clusters reviewed");
-	// Once the guard is over, a click undoes.
+	// Once the guard is over, a click asks and a second one undoes.
 	await page.waitForFunction((t) => performance.now() > t + 500, clickedAt);
 	await undo.click();
+	const armed = section.locator("button[data-armed]");
+	await expect(armed).toBeVisible();
+	await expect(bar).toContainText("0 / 3 clusters reviewed");
+	await clicksReady(page, armed);
+	await armed.click();
 	await expect(fileActionButton(section, "Cross off file")).toBeEnabled();
 	await expect(bar).toContainText("0 / 4 clusters reviewed");
 });
@@ -885,7 +907,7 @@ const longThenMoreFixture: PrOptions = {
 	],
 };
 
-test("marking a long file reviewed from its stuck header closes it in place", async ({
+test("marking a long file reviewed from its stuck header moves on to the next", async ({
 	page,
 	pr,
 	startCrb,
@@ -905,15 +927,14 @@ test("marking a long file reviewed from its stuck header closes it in place", as
 
 	await fileAction(section, "Mark remaining reviewed");
 	await expect(section.getByTestId("diff-line")).toHaveCount(0);
-	// The header stays where it was, the next file right below it.
-	await expect(header).toBeInViewport();
+	// The next file opens where the header was stuck, the closed one right
+	// above it.
+	const more = fileSection(page, "c/more0.ts");
+	await expect(more.getByTestId("diff-line").first()).toBeVisible();
+	const next = more.locator("header");
 	await expect
-		.poll(async () =>
-			Math.abs(((await header.boundingBox())?.y ?? 1e9) - stuck),
-		)
+		.poll(async () => Math.abs(((await next.boundingBox())?.y ?? 1e9) - stuck))
 		.toBeLessThanOrEqual(2);
-	const next = fileSection(page, "c/more0.ts").locator("header");
-	await expect(next).toBeInViewport();
 	const headerBox = await header.boundingBox();
 	const nextBox = await next.boundingBox();
 	expect(
@@ -1049,6 +1070,447 @@ test("picking a file in the tree opens it alone, its header at the top", async (
 			return Math.round(top - (await barBottom(page)));
 		})
 		.toBe(0);
+});
+
+test("a finished file resets after asking, each button its own kind", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	await pr(fixture);
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	const bar = progress(page);
+	const section = fileSection(page, "src/core.ts");
+	await fileAction(section, "Mark remaining reviewed");
+	await expect(bar).toContainText("2 / 4 clusters reviewed");
+	const unmark = fileActionButton(section, "Unmark reviewed");
+	await expect(unmark).toHaveAttribute("aria-pressed", "true");
+	await expect(fileActionButton(section, "Cross off file")).toBeDisabled();
+
+	// The first click asks, in the button's name and a tooltip; Escape
+	// drops the question and nothing changes.
+	await clicksReady(page, unmark);
+	await unmark.click();
+	const question = "Remove all reviewed markings from this file?";
+	const armed = section.locator("button[data-armed]");
+	await expect(armed).toHaveAccessibleName(question);
+	// Its text is the button's name now, so it is hidden from the a11y tree.
+	await expect(
+		page.locator("[role=tooltip]:not([hidden])").filter({ hasText: question }),
+	).toBeVisible();
+	await page.keyboard.press("Escape");
+	await expect(armed).toHaveCount(0);
+	await expect(unmark).toBeVisible();
+	await expect(bar).toContainText("2 / 4 clusters reviewed");
+	// A press elsewhere drops it too.
+	await clicksReady(page, unmark);
+	await unmark.click();
+	await expect(armed).toHaveCount(1);
+	await progress(page).click();
+	await expect(armed).toHaveCount(0);
+
+	// Asked and answered: every reviewed cluster back to unreviewed, saved.
+	await resetFile(page, section, "Unmark reviewed");
+	await expect(bar).toContainText("0 / 4 clusters reviewed");
+	await expect(
+		fileActionButton(section, "Mark remaining reviewed"),
+	).toBeEnabled();
+	await page.reload();
+	await expect(progress(page)).toContainText("0 / 4 clusters reviewed");
+
+	// Finished by both kinds: each button resets only its own.
+	const core = await expand(page, "src/core.ts");
+	await core
+		.getByRole("checkbox", { name: "Mark cluster reviewed" })
+		.first()
+		.click();
+	await core.getByRole("button", { name: "Cross off cluster" }).last().click();
+	await expect(progress(page)).toContainText("1 / 3 clusters reviewed");
+	await resetFile(page, core, "Undo cross-off");
+	await expect(progress(page)).toContainText("1 / 4 clusters reviewed");
+	await expect(fileProgress(core)).toContainText("1 / 2 clusters");
+});
+
+/**
+ * Records, in the page, each file section (or the verdict) a move-on
+ * raised into place (`data-arriving`, FilesPage's `arrive`): it lasts
+ * ~200 ms, too short to poll for.
+ */
+async function recordArrivals(page: Page) {
+	await page.evaluate(() => {
+		const seen: string[] = [];
+		(window as unknown as { __arrived: string[] }).__arrived = seen;
+		new MutationObserver((records) => {
+			for (const r of records) {
+				const el = r.target as HTMLElement;
+				if (el.hasAttribute("data-arriving")) {
+					seen.push(el.getAttribute("data-path") ?? el.id);
+				}
+			}
+		}).observe(document.body, {
+			subtree: true,
+			attributes: true,
+			attributeFilter: ["data-arriving"],
+		});
+	});
+}
+const arrivals = (page: Page) =>
+	page.evaluate(() => (window as unknown as { __arrived: string[] }).__arrived);
+
+/** The header of `section` is right under the sticky bar. */
+async function expectAtTop(page: Page, section: Locator) {
+	await expect
+		.poll(async () => {
+			const top = (await section.locator("header").boundingBox())?.y ?? 0;
+			return Math.round(top - (await barBottom(page)));
+		})
+		.toBe(0);
+}
+
+test("marking a file's last cluster opens the next file with something left", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	await pr(longFixture);
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	await recordArrivals(page);
+	const one = await expand(page, "a/one.ts");
+	const box = one.getByRole("checkbox", { name: "Mark cluster reviewed" });
+	await expect(box).toHaveCount(1);
+	// The cluster's mark finishes the file: it closes, the next one rises
+	// into place with its header at the top and the focus on its toggle.
+	await box.click();
+	await expect(one.getByTestId("diff-line")).toHaveCount(0);
+	await expect(fileProgress(one)).toContainText("1 / 1 cluster");
+	const two = fileSection(page, "a/two.ts");
+	await expect(two.getByTestId("diff-line").first()).toBeVisible();
+	await expect(
+		two.getByRole("button", { name: "Collapse file" }),
+	).toBeFocused();
+	await expectAtTop(page, two);
+	await expect.poll(() => arrivals(page)).toEqual(["a/two.ts"]);
+	await withTree(page, (tree) =>
+		expect(tree.getByRole("button", { name: /two\.ts/ })).toHaveAttribute(
+			"aria-current",
+			/.+/,
+		),
+	);
+
+	// Undoing it from the file's header doesn't move anything.
+	await resetFile(page, one, "Unmark reviewed");
+	await expect(two.getByTestId("diff-line").first()).toBeVisible();
+	await expect(one.getByTestId("diff-line")).toHaveCount(0);
+
+	// The whole-file action on an open file moves on as well.
+	await marksReady(page, two);
+	await fileAction(two, "Cross off file");
+	await expect(two.getByTestId("diff-line")).toHaveCount(0);
+	const long = fileSection(page, "b/long.ts");
+	await expect(long.getByTestId("diff-line").first()).toBeVisible();
+
+	// After the last file it wraps round to the first with something left.
+	const last = await expand(page, "c/last.ts");
+	await expect(long.getByTestId("diff-line")).toHaveCount(0);
+	await last.getByRole("button", { name: "Cross off cluster" }).click();
+	await expect(last.getByTestId("diff-line")).toHaveCount(0);
+	await expect(one.getByTestId("diff-line").first()).toBeVisible();
+	await expectAtTop(page, one);
+
+	// Files with nothing left are skipped: two (crossed off) for long.
+	await marksReady(page, one);
+	await one.getByRole("checkbox", { name: "Mark cluster reviewed" }).click();
+	await expect(one.getByTestId("diff-line")).toHaveCount(0);
+	await expect(two.getByTestId("diff-line")).toHaveCount(0);
+	await expect(long.getByTestId("diff-line").first()).toBeVisible();
+	await expectAtTop(page, long);
+
+	// Nothing left anywhere: it closes and the verdict rises into view.
+	await marksReady(page, long);
+	await fileAction(long, "Mark remaining reviewed");
+	await expect(long.getByTestId("diff-line")).toHaveCount(0);
+	await expect(page.getByRole("button", { name: "Collapse file" })).toHaveCount(
+		0,
+	);
+	await expect(page.getByTestId("verdict-card-files")).toBeInViewport();
+	await expect(progress(page)).toContainText(/\b(\d+) \/ \1 clusters reviewed/);
+	await expect
+		.poll(() => arrivals(page))
+		.toEqual([
+			"a/two.ts",
+			"b/long.ts",
+			"a/one.ts",
+			"b/long.ts",
+			"files-verdict",
+		]);
+});
+
+test("with reduced motion, a move-on is instant", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	await page.emulateMedia({ reducedMotion: "reduce" });
+	await pr(longFixture);
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	await recordArrivals(page);
+	const one = await expand(page, "a/one.ts");
+	await one.getByRole("checkbox", { name: "Mark cluster reviewed" }).click();
+	const two = fileSection(page, "a/two.ts");
+	await expect(two.getByTestId("diff-line").first()).toBeVisible();
+	await expectAtTop(page, two);
+	// No animation ran; once in place, it waits the usual moment for marks.
+	expect(await two.evaluate((el) => el.getAnimations().length)).toBe(0);
+	await marksReady(page, two);
+	await fileAction(two, "Mark remaining reviewed");
+	await expect(
+		fileSection(page, "b/long.ts").getByTestId("diff-line").first(),
+	).toBeVisible();
+	expect(await arrivals(page)).toEqual([]);
+});
+
+/**
+ * A double click (on a phone, a double tap) on `target`, whose click
+ * finishes its file: the first is a real click or tap; the second lands at
+ * the same point the moment the same kind of control (`control`, a
+ * selector) inside what the move-on brought (`next`, a selector: the next
+ * file, or the verdict) shows under it, as a person's second click would.
+ * `anywhere`: wherever that control shows instead (its center), the worst
+ * case of a pointer that happens to be there. The page clicks it itself,
+ * in the frame it sees that: from the test, a loaded machine could take
+ * longer than the guard (UNDO_ARM_MS). Says what the second click hit and
+ * how long after the first, or what it waited for in vain.
+ */
+async function doubleAcrossMoveOn(
+	page: Page,
+	target: Locator,
+	control: string,
+	next: string,
+	isMobile: boolean,
+	anywhere = false,
+) {
+	const box = await target.boundingBox();
+	if (!box) throw new Error("target not rendered");
+	const x = box.x + box.width / 2;
+	const y = box.y + box.height / 2;
+	type Second = { hit: boolean; after: number; seen: string };
+	const w = "__secondClick";
+	// Awaited before the first click: an evaluate still on its way could
+	// miss it and wait for a click that already happened (then the test
+	// times out, and its teardown's navigation is all it reports).
+	await page.evaluate(
+		({ x, y, control, next: nextSel, anywhere, w }) => {
+			(window as unknown as Record<string, Promise<Second>>)[w] = new Promise(
+				(done) => {
+					let at = 0;
+					addEventListener(
+						"click",
+						() => {
+							at ||= performance.now();
+						},
+						{ capture: true, once: true },
+					);
+					const start = performance.now();
+					const poll = () => {
+						const next = document.querySelector<HTMLElement>(nextSel);
+						const there = anywhere
+							? next?.querySelector(control)?.getBoundingClientRect()
+							: undefined;
+						const [px, py] = there
+							? [there.x + there.width / 2, there.y + there.height / 2]
+							: [x, y];
+						const hit = document.elementFromPoint(px, py) as HTMLElement | null;
+						// A box's point is its label's (cluster-box-target).
+						const under = hit?.closest("label, button");
+						const isControl =
+							!!under &&
+							(under.matches(control) || !!under.querySelector(control));
+						const seen = `${hit?.closest("section")?.getAttribute("data-path")} ${under?.outerHTML.slice(0, 120)}`;
+						if (at && isControl && next?.contains(hit)) {
+							const after = performance.now() - at;
+							// The control itself (a hit on its icon may be an SVG,
+							// which has no click()).
+							(under as HTMLElement).click();
+							done({ hit: true, after, seen });
+						} else if (performance.now() - start > 15_000) {
+							// Said here rather than as the test's timeout.
+							done({ hit: false, after: -1, seen: `clicked ${!!at}; ${seen}` });
+						} else requestAnimationFrame(poll);
+					};
+					requestAnimationFrame(poll);
+				},
+			);
+		},
+		{ x, y, control, next, anywhere, w },
+	);
+	if (isMobile) await page.touchscreen.tap(x, y);
+	else await page.mouse.click(x, y);
+	return page.evaluate(
+		(w) =>
+			(window as unknown as Record<string, Promise<Second>>)[
+				w
+			] as Promise<Second>,
+		w,
+	);
+}
+
+/**
+ * A long file to finish deep inside (its header stuck, its cluster's box
+ * floating right under it), then a rename with no edits: its cluster's box
+ * sits in its first row, right under its header. A next file with lines
+ * starts with its "@@" row there instead, which a second click can't mark.
+ * Then enough files for its header to reach the top on a phone.
+ */
+const stuckFixture: PrOptions = {
+	base: {
+		"b/long.ts": text(long),
+		"c/old.md": "# Notes\n",
+		...Object.fromEntries(
+			Array.from({ length: 14 }, (_, i) => [`d/f${i}.ts`, text(util)]),
+		),
+	},
+	files: [
+		{
+			message: "PR change",
+			rename: { "c/old.md": "c/new.md" },
+			files: {
+				"b/long.ts": text(long.map((l) => `${l} changed`)),
+				...Object.fromEntries(
+					Array.from({ length: 14 }, (_, i) => [
+						`d/f${i}.ts`,
+						text(util.map((l) => `${l} z`)),
+					]),
+				),
+			},
+		},
+	],
+};
+
+for (const [where, control] of [
+	["picked", "file action"],
+	["picked", "cluster box"],
+	["stuck", "file action"],
+	["stuck", "cluster box"],
+] as const) {
+	test(`a double click on a ${control} that finishes a ${where} file doesn't mark the next one`, async ({
+		page,
+		pr,
+		startCrb,
+		isMobile,
+	}) => {
+		await pr(where === "picked" ? longFixture : stuckFixture);
+		const s = await startCrb();
+		await openFiles(page, s.url);
+		// Its header at the top (picked), or stuck deep in a long file.
+		const [path, nextPath] =
+			where === "picked" ? ["a/one.ts", "a/two.ts"] : ["b/long.ts", "c/new.md"];
+		let section: Locator;
+		if (where === "picked") {
+			await pickInTree(page, /one\.ts/);
+			section = fileSection(page, path);
+			await expect
+				.poll(async () => {
+					const top = (await section.locator("header").boundingBox())?.y ?? 0;
+					return Math.round(top - (await barBottom(page)));
+				})
+				.toBe(0);
+		} else {
+			section = await expand(page, path);
+			await section
+				.getByTestId("diff-line")
+				.filter({ hasText: /long 250 changed$/ })
+				.scrollIntoViewIfNeeded();
+			await expect
+				.poll(async () => {
+					const top = (await section.locator("header").boundingBox())?.y ?? 0;
+					return Math.round(top - (await barBottom(page)));
+				})
+				.toBe(0);
+		}
+		const [target, selector] =
+			control === "file action"
+				? [
+						fileActionButton(section, "Mark remaining reviewed"),
+						'button[aria-label="Mark remaining reviewed"]',
+					]
+				: [
+						section.getByRole("checkbox", { name: "Mark cluster reviewed" }),
+						'input[aria-label="Mark cluster reviewed"]',
+					];
+		await expect(target).toBeInViewport();
+		const second = await doubleAcrossMoveOn(
+			page,
+			target,
+			selector,
+			`section[data-path="${nextPath}"]`,
+			isMobile,
+		);
+		// The second click landed on the next file's control (`after`: how
+		// long the move-on took, which the guard doesn't count).
+		expect(second.hit, `${second.seen} after ${second.after} ms`).toBe(true);
+		// This file is reviewed and closed; the next one is open, untouched.
+		await expect(fileProgress(section)).toContainText("1 / 1 cluster");
+		const next = fileSection(page, nextPath);
+		await expect(fileProgress(next)).toContainText("0 / 1 cluster");
+		await expect(
+			next.getByRole("button", { name: "Collapse file" }),
+		).toBeVisible();
+		await expect(progress(page)).toContainText(/\b1 \/ \d+ clusters reviewed/);
+	});
+}
+
+test("a double click that finishes the last file doesn't send a verdict", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	const p = await pr({
+		base: { "a/one.ts": text(util) },
+		files: [
+			{
+				message: "PR change",
+				files: { "a/one.ts": text(util.map((l) => `${l} x`)) },
+			},
+		],
+	});
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	const section = await expand(page, "a/one.ts");
+	const card = page.getByTestId("verdict-card-files");
+	await expect(card.getByTestId("verdict-approve")).toBeAttached();
+	const target = fileActionButton(section, "Mark remaining reviewed");
+	await expect(target).toBeInViewport();
+	// Nothing left after it: the verdict rises into view. The second click
+	// lands on Approve wherever it shows (a phone's narrow card can put it
+	// under the pointer; Approve posts on one click).
+	const second = await doubleAcrossMoveOn(
+		page,
+		target,
+		'[data-testid="verdict-approve"]',
+		"#files-verdict",
+		isMobile,
+		true,
+	);
+	expect(second.hit, `${second.seen} after ${second.after} ms`).toBe(true);
+	await expect(fileProgress(section)).toContainText("1 / 1 cluster");
+	// A press shows at once as sending ("your-verdict"); none did, and the
+	// fake gh has no review.
+	await clicksReady(page, card);
+	await expect(card.getByTestId("your-verdict")).toHaveCount(0);
+	const scenario = JSON.parse(readFileSync(p.scenarioPath, "utf8")) as {
+		prs: Record<string, { graphql?: { reviews?: { state: string }[] } }>;
+	};
+	const reviews = Object.values(scenario.prs).flatMap(
+		(x) => x.graphql?.reviews ?? [],
+	);
+	expect(reviews.filter((r) => r.state !== "PENDING")).toEqual([]);
+	// A moment later, Approve works.
+	await card.getByTestId("verdict-approve").click();
+	await expect(card.getByTestId("your-verdict")).toContainText("approved");
 });
 
 test("tree rows and headers keep change counts in every unit; progress follows it", async ({

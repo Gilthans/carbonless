@@ -94,6 +94,7 @@ anyone who can read the refs.
 refs/crb/reviews/<review-id>/meta                            shared review metadata
 refs/crb/reviews/<review-id>/reviewers/<reviewer>/progress        one per reviewer
 refs/crb/reviews/<review-id>/reviewers/<reviewer>/patchsets/<n>   head of patch set n
+refs/crb/reviews/<review-id>/reviewers/<reviewer>/agent/threads   the reviewer's private agent threads
 refs/crb/lookup/<source>/<key-hash>                               lookup: source key → review id
 refs/crb/inbox/<reviewer>                                         one per reviewer per repo: Home's annotations
 ```
@@ -223,6 +224,7 @@ Write rules, enforced in code and tested:
 
 - `cluster-state` must have `by: "human"`.
 - `by: "ai"` events can never change a cluster's state.
+- `agent-thread-resolved` must have `by: "human"` (see "Agent threads ref").
 
 ## Writing
 
@@ -296,6 +298,77 @@ compare-and-swap). Written by `src/server/home/inbox.ts`.
 - **Size**, measured 2026-10-29: 100 commits (125 events: snoozes, waits,
   notes, wakes over 30 PRs) took 404 KiB loose and 18 KiB packed after
   `git gc`; an append took 14 ms and a cold read of the fold 5 ms. No
+  compaction, as for review refs.
+
+## Agent threads ref
+
+Review buddy's threads (spec
+`docs/superpowers/specs/2026-11-04-review-buddy-design.md`): the reviewer
+asks their own agent about a span of the diff and it answers in a thread
+only that reviewer sees. One ref per reviewer per review, beside progress:
+
+```
+refs/crb/reviews/<review-id>/reviewers/<reviewer>/agent/threads
+```
+
+`agent/` leaves room for other channels of agent data beside `threads`
+(owner, 2026-11-04). Written only by this server on the reviewer's behalf
+(GitDB 3, 16), events only (GitDB 5), in the commit format above (empty
+tree, slug identities, compare-and-swap). Written by
+`src/server/agent/store.ts`.
+
+| Type | By | Payload |
+|---|---|---|
+| `agent-thread-opened` | human or ai | `thread` (lowercase ULID), `anchor` (`subject` `line`: path, commit, side, line, startSide, startLine, optional columns; or `file`: path, commit), `text`, optional `truncated`; `agent` `{name, version}` (required by ai); a human's carries `details.clientId` |
+| `agent-message` | human or ai | `thread`, `text`, optional `truncated`; ai: `agent`, `stop` (the ACP stop reason or `error`), `activity` (`{kind, title, decision?}`, titles only), `replyTo` (the event id of the last human message the prompt included; a lower ULID, ai only), `error` (with `stop: "error"` only: the agent's reason for the failed turn, one line, at most 1000 characters; an event with it anywhere else is dropped); a human's carries `details.clientId` |
+| `agent-thread-resolved` | human | `thread`, `resolved` (`false` reopens) |
+
+- **Write rule**, enforced on write and on read: the agent may open a
+  thread and answer in one, never resolve one; an `agent-thread-resolved`
+  by ai is skipped by readers, and so is an ai-opened thread without its
+  `agent`.
+- **Fold:** deduplicate by `id`, sort by `(ts, id)`. Threads in the order
+  they were opened; the opening text is the first message. A thread waits
+  while a human message has no answer: one comes after the last ai
+  message's `replyTo` (the last human message its prompt included), or,
+  for an ai message without `replyTo`, after that ai message; with no ai
+  message, any human message waits (an agent-opened one doesn't until the
+  reviewer replies). A reply sent while its thread's turn runs is stamped
+  before the answer, so `replyTo` is what keeps it waiting, across
+  restarts; resolved is the last `agent-thread-resolved`'s
+  word, false before any. Messages and resolves of a thread never opened
+  are dropped. New events are stamped after the ref's newest.
+- **Resends:** a human's question carries the page's `clientId` in
+  `details` (informational: the fold ignores it). The store remembers the
+  ones in the ref and the ones it wrote, so Ask pressed twice, or resent
+  after a server restart, writes one thread; a message's `clientId` counts
+  only on its own thread. The dedupe and the timestamp order hold within
+  one store, so the server keeps one store per review and reviewer.
+- **Caps:** the writer cuts a text at 32 KiB of UTF-8 (`MAX_AGENT_TEXT`, on
+  a code point) and flags it `truncated`, and keeps an activity list's
+  first 50 entries, fewer if its JSON passes 4 KiB. Readers skip an event
+  whose text is over 32 KiB or whose activity has more than 50 entries; the
+  4 KiB byte cap is the writer's alone. The anchor's code is computed from the clone on read, never stored.
+- **Privacy:** the threads are the reviewer's own (not secret, only
+  theirs). Never pushed; like the inbox, when sync arrives the ref stays
+  local unless the reviewer turns it on (GitDB 20): a future push of
+  `reviewers/<reviewer>/*` must exclude `agent/`.
+- **Size**, measured 2026-11-07 (`pnpm tsx scripts/measure-agent-ref.ts`, a
+  4-core machine under load ~9; CPU is carbonless's process plus its git
+  children):
+
+  | Measure | Value |
+  |---|---|
+  | Events | 50 threads × 4 messages of 2 KiB of prose (200 commits, 400 KiB of text) |
+  | Loose size | 804 KiB |
+  | Packed size (`git gc`) | 139 KiB |
+  | One append to the full ref (median of 9) | 73 ms wall; CPU 16 ms + 20 ms git |
+  | Cold `read()`, loose (median of 9) | 28 ms wall; CPU 9 ms + 10 ms git |
+  | Cold `read()`, packed (median of 9) | 27 ms wall; CPU 9 ms + 10 ms git |
+
+  Well inside the bounds set for it (an append under 100 ms of CPU, a cold
+  fold under 200 ms, under 300 KiB packed), so texts stay in commit
+  messages; moving long ones to tree blobs (GitDB 6) is the fallback. No
   compaction, as for review refs.
 
 ## Reading

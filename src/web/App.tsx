@@ -21,6 +21,9 @@ import {
 	sessionQuery,
 	verdictQuery,
 } from "./api";
+import "./agent";
+import { AgentChip } from "./agent/AgentChip";
+import { AgentSetupHost } from "./agent/AgentSetup";
 import { Logo, Mark, Wordmark } from "./brand/Brand";
 import { FindButton } from "./files/find/FindButton";
 import { findFloat, findState } from "./files/find/findState";
@@ -444,6 +447,7 @@ export function App() {
 								<span className="break-all">
 									{pr.owner}/{pr.repo}
 								</span>
+								<AgentChip />
 								{session.data?.asOf && <AsOf iso={session.data.asOf} />}
 							</p>
 						)}
@@ -639,6 +643,7 @@ export function App() {
 					<Wordmark className="text-sm" />
 				</footer>
 				<SyncNotices />
+				<AgentSetupHost />
 			</div>
 		</AppHeaderHeight.Provider>
 	);

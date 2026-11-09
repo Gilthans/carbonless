@@ -467,10 +467,13 @@ describe("colorPieces", () => {
 		for (let at = 0; at < text.length; at += 3) {
 			tokens.push({ content: text.slice(at, at + 3), offset: at });
 		}
-		const start = performance.now();
+		// CPU time of this thread, not the wall clock: other processes on a
+		// loaded machine don't count, a quadratic pass still does.
+		const start = process.threadCpuUsage();
 		const pieces = renderInvisibles(text, 4);
 		const out = colorPieces(pieces, tokens);
-		expect(performance.now() - start).toBeLessThan(200);
+		const { user, system } = process.threadCpuUsage(start);
+		expect((user + system) / 1000).toBeLessThan(200);
 		const joined = pieces
 			.map((p, i) =>
 				p.kind === "text" ? (out[i] ?? []).map((s) => s.text).join("") : p.raw,
