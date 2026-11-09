@@ -5,6 +5,7 @@ import {
 	useRef,
 	useState,
 } from "react";
+import { useFitViewport } from "../sticky";
 import { Tooltip } from "../Tooltip";
 import {
 	TREE_WIDTH,
@@ -21,12 +22,18 @@ import {
 export function TreeColumn(props: { tree: ReactNode }) {
 	const column = useRef<HTMLDivElement>(null);
 	const treeWidth = useTreeWidth(useTreeRoom(column));
+	// Its bottom stays in view before the page scrolls it up to its stuck
+	// top, so the tree scrolls on its own scrollbar alone.
+	useFitViewport(column);
 	return (
 		<div
 			ref={column}
 			className="sticky top-[calc(var(--app-header,0px)+var(--files-bar,0px)+1rem)] flex max-h-[calc(100dvh-var(--app-header,0px)-var(--files-bar,0px)-2rem)] shrink-0 self-start"
 		>
-			<aside style={{ width: treeWidth.width }} className="overflow-y-auto">
+			<aside
+				style={{ width: treeWidth.width }}
+				className="overflow-y-auto rounded-md border border-line px-1 pb-1 [--tree-bg:var(--color-canvas)]"
+			>
 				{props.tree}
 			</aside>
 			<TreeResizer {...treeWidth} onWidth={treeWidth.set} />

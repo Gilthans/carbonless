@@ -90,6 +90,29 @@ describe("startServer", () => {
 		expect(keyed.status).toBe(200);
 	});
 
+	it("behind a public URL: keyed on loopback too, and records it", async () => {
+		const { updateConfig } = await import("./config");
+		const publicUrl = "https://box.tail0.ts.net:8443";
+		await updateConfig((c) => ({ ...c, serve: { ...c.serve, publicUrl } }));
+		const logged: string[] = [];
+		const s = await start({ log: (m) => logged.push(m) });
+		expect(s.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
+		expect(s.publicUrl).toBe(publicUrl);
+		// Its links lead to the proxy, which serves config's port, not this one.
+		expect(logged).toEqual([
+			"serve.publicUrl is for port 4747; links from this server (port 0) may open another",
+		]);
+		expect(s.key).toBe(await accessKey());
+		expect(await readLiveServerState()).toMatchObject({
+			url: s.url,
+			keyed: true,
+			publicUrl,
+		});
+		expect((await fetch(`${s.url}/api/version`)).status).toBe(401);
+		const keyed = await fetch(`${s.url}/api/version?key=${s.key}`);
+		expect(keyed.status).toBe(200);
+	});
+
 	it("takes host and port from config.json", async () => {
 		// A free port, then let go of it.
 		const port = await new Promise<number>((done) => {

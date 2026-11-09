@@ -1,7 +1,7 @@
 import "github-markdown-css/github-markdown-dark.css";
 import "./githubHtml.css";
 import { createContext, useContext, useEffect, useMemo, useRef } from "react";
-import { sanitizeGithubHtml } from "./githubHtml";
+import { sanitizeGithubHtml } from "./sanitizeGithubHtml";
 
 /**
  * Called when an image inside GitHub HTML fails to load. Private-repo images
@@ -15,7 +15,7 @@ export const ImageErrorContext = createContext<(() => void) | undefined>(
 /**
  * GitHub-rendered HTML styled like on GitHub. github-markdown-css scopes every
  * rule to `.markdown-body`, so it stays inside this container. The HTML is
- * always sanitized first (see githubHtml.ts).
+ * always sanitized first (see sanitizeGithubHtml.ts).
  */
 export function GithubHtml(props: { html: string; className?: string }) {
 	const safe = useMemo(() => sanitizeGithubHtml(props.html), [props.html]);

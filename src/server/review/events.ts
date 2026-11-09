@@ -1,5 +1,15 @@
 import { monotonicFactory } from "ulid";
-import type { ClusterState } from "../../shared/types.js";
+import {
+	type ActivityKind,
+	type AgentActivity,
+	type AgentAnchor,
+	type AgentIdentity,
+	type AgentStop,
+	MAX_ACTIVITY_ENTRIES,
+	MAX_AGENT_ERROR,
+	MAX_AGENT_TEXT,
+} from "../../shared/agent.js";
+import type { ClusterState, DiffSide } from "../../shared/types.js";
 
 /**
  * crb events, stored one JSON object per line in crb commit messages.
@@ -103,12 +113,60 @@ export type InboxEvent =
 	| PrNoteEvent
 	| PrClearedEvent;
 
+/**
+ * Agent thread events (`refs/crb/reviews/<id>/reviewers/<reviewer>/agent/threads`):
+ * the reviewer's private threads with their own agent. The agent may open a
+ * thread and answer in one, never resolve one. A human's opened and message
+ * events carry `details: { clientId }` (the store's dedupe; the fold ignores
+ * it). See docs/review-data-storage.md ("Agent threads ref").
+ */
+export interface AgentThreadOpenedEvent extends EventBase {
+	type: "agent-thread-opened";
+	/** Lowercase ULID. */
+	thread: string;
+	anchor: AgentAnchor;
+	text: string;
+	/** The text was cut at MAX_AGENT_TEXT. */
+	truncated?: boolean;
+	/** Required when by === "ai". */
+	agent?: AgentIdentity;
+}
+
+export interface AgentMessageEvent extends EventBase {
+	type: "agent-message";
+	thread: string;
+	text: string;
+	truncated?: boolean;
+	agent?: AgentIdentity;
+	stop?: AgentStop;
+	activity?: AgentActivity[];
+	/**
+	 * ai only: the event id of the last human message the prompt included.
+	 * A human message after it still waits for an answer.
+	 */
+	replyTo?: string;
+	/** ai only, with stop "error": why the agent failed the turn (one line, ≤ MAX_AGENT_ERROR). */
+	error?: string;
+}
+
+export interface AgentThreadResolvedEvent extends EventBase {
+	type: "agent-thread-resolved";
+	thread: string;
+	resolved: boolean;
+}
+
+export type AgentEvent =
+	| AgentThreadOpenedEvent
+	| AgentMessageEvent
+	| AgentThreadResolvedEvent;
+
 export type CrbEvent =
 	| ReviewCreatedEvent
 	| PatchsetStartedEvent
 	| ClusterStateEvent
 	| ReviewClosedEvent
-	| InboxEvent;
+	| InboxEvent
+	| AgentEvent;
 
 export type CrbEventType = CrbEvent["type"];
 export type EventOf<T extends CrbEventType> = Extract<CrbEvent, { type: T }>;
@@ -136,9 +194,37 @@ const CLUSTER_STATES: readonly string[] = [
 	"reviewed",
 	"crossed-off",
 ] satisfies ClusterState[];
+const SIDES: readonly string[] = ["LEFT", "RIGHT"];
+/** A full commit ID (SHA-1 or SHA-256). */
+const COMMIT = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
+const ACTIVITY_KINDS: readonly string[] = [
+	"read",
+	"edit",
+	"delete",
+	"move",
+	"search",
+	"execute",
+	"think",
+	"fetch",
+	"switch_mode",
+	"other",
+] satisfies ActivityKind[];
+const AGENT_STOPS: readonly string[] = [
+	"end_turn",
+	"max_tokens",
+	"max_turn_requests",
+	"refusal",
+	"cancelled",
+	"error",
+] satisfies AgentStop[];
 
 export function isSlug(value: string): boolean {
 	return SLUG.test(value);
+}
+
+/** A lowercase ULID: event ids, review ids, agent thread ids. */
+export function isLowerUlid(value: string): boolean {
+	return LOWER_ULID.test(value);
 }
 
 const nextUlid = monotonicFactory();
@@ -169,6 +255,9 @@ export function validateForWrite(e: CrbEvent): void {
 	}
 	if (INBOX_TYPES.includes(e.type) && e.by !== "human") {
 		throw new Error(`${e.type} events must be written by a human`);
+	}
+	if (e.type === "agent-thread-resolved" && e.by !== "human") {
+		throw new Error("agent-thread-resolved events must be written by a human");
 	}
 	if (parseEvent(JSON.parse(JSON.stringify(e))) === null) {
 		throw new Error(`Refusing to write an invalid ${e.type} event`);
@@ -317,6 +406,10 @@ function parseEvent(raw: unknown): CrbEvent | null {
 		case "pr-cleared":
 			// Fail safe: only a human annotates a PR (nothing automatic hides one).
 			return base.by === "human" ? parseInboxEvent(raw, base) : null;
+		case "agent-thread-opened":
+		case "agent-message":
+		case "agent-thread-resolved":
+			return parseAgentEvent(raw, base);
 		default:
 			return null;
 	}
@@ -361,6 +454,175 @@ function parseInboxEvent(
 			const { kind } = raw;
 			if (kind !== "snooze" && kind !== "waiting") return null;
 			return { ...base, type: "pr-cleared", pr, kind };
+		}
+		default:
+			return null;
+	}
+}
+
+const isText = (value: unknown): value is string =>
+	typeof value === "string" && Buffer.byteLength(value) <= MAX_AGENT_TEXT;
+const isLine = (value: unknown): value is number =>
+	Number.isSafeInteger(value) && (value as number) >= 1;
+const isCol = (value: unknown): boolean =>
+	value === undefined ||
+	value === null ||
+	(Number.isSafeInteger(value) && (value as number) >= 0);
+
+function parseAnchor(raw: unknown): AgentAnchor | null {
+	if (!isObj(raw)) return null;
+	const { subject, path, commit } = raw;
+	if (!isStr(path) || typeof commit !== "string") return null;
+	if (commit !== "" && !COMMIT.test(commit)) return null;
+	if (subject === "file") return { subject, path, commit };
+	if (subject !== "line") return null;
+	const { side, line, startSide, startLine, startCol, endCol } = raw;
+	if (
+		typeof side !== "string" ||
+		!SIDES.includes(side) ||
+		typeof startSide !== "string" ||
+		!SIDES.includes(startSide) ||
+		!isLine(line) ||
+		!isLine(startLine) ||
+		(side === startSide && startLine > line) ||
+		!isCol(startCol) ||
+		!isCol(endCol)
+	) {
+		return null;
+	}
+	return {
+		subject,
+		path,
+		commit,
+		side: side as DiffSide,
+		line,
+		startSide: startSide as DiffSide,
+		startLine,
+		...(startCol !== undefined ? { startCol: startCol as number | null } : {}),
+		...(endCol !== undefined ? { endCol: endCol as number | null } : {}),
+	};
+}
+
+function parseIdentity(raw: unknown): AgentIdentity | null {
+	if (!isObj(raw)) return null;
+	const { name, version } = raw;
+	if (!isStr(name) || typeof version !== "string") return null;
+	return { name, version };
+}
+
+function parseActivity(raw: unknown): AgentActivity[] | null {
+	if (!Array.isArray(raw) || raw.length > MAX_ACTIVITY_ENTRIES) return null;
+	const out: AgentActivity[] = [];
+	for (const item of raw) {
+		if (!isObj(item)) return null;
+		const { kind, title, decision } = item;
+		if (typeof kind !== "string" || !ACTIVITY_KINDS.includes(kind)) {
+			return null;
+		}
+		if (typeof title !== "string") return null;
+		if (
+			decision !== undefined &&
+			decision !== "allowed" &&
+			decision !== "rejected"
+		) {
+			return null;
+		}
+		out.push({
+			kind: kind as ActivityKind,
+			title,
+			...(decision !== undefined ? { decision } : {}),
+		});
+	}
+	return out;
+}
+
+/** The optional fields an opened thread and a message share, or null if one is bad. */
+function parseExtras(raw: Obj): {
+	truncated?: boolean;
+	agent?: AgentIdentity;
+} | null {
+	const { truncated, agent } = raw;
+	if (truncated !== undefined && typeof truncated !== "boolean") return null;
+	const identity = agent === undefined ? undefined : parseIdentity(agent);
+	if (identity === null) return null;
+	return {
+		...(truncated !== undefined ? { truncated } : {}),
+		...(identity ? { agent: identity } : {}),
+	};
+}
+
+function parseAgentEvent(
+	raw: Obj,
+	base: Omit<AgentEvent, "type" | "thread">,
+): AgentEvent | null {
+	const { thread } = raw;
+	if (typeof thread !== "string" || !LOWER_ULID.test(thread)) return null;
+	switch (raw.type) {
+		case "agent-thread-opened": {
+			const anchor = parseAnchor(raw.anchor);
+			const extras = parseExtras(raw);
+			if (!anchor || !extras || !isText(raw.text)) return null;
+			// An agent-opened thread names its agent.
+			if (base.by === "ai" && !extras.agent) return null;
+			return {
+				...base,
+				type: "agent-thread-opened",
+				thread,
+				anchor,
+				text: raw.text,
+				...extras,
+			};
+		}
+		case "agent-message": {
+			const extras = parseExtras(raw);
+			if (!extras || !isText(raw.text)) return null;
+			const { stop } = raw;
+			if (
+				stop !== undefined &&
+				(typeof stop !== "string" || !AGENT_STOPS.includes(stop))
+			) {
+				return null;
+			}
+			const activity =
+				raw.activity === undefined ? undefined : parseActivity(raw.activity);
+			if (activity === null) return null;
+			const { replyTo } = raw;
+			if (
+				replyTo !== undefined &&
+				(base.by !== "ai" ||
+					typeof replyTo !== "string" ||
+					!LOWER_ULID.test(replyTo))
+			) {
+				return null;
+			}
+			const { error } = raw;
+			if (
+				error !== undefined &&
+				(base.by !== "ai" ||
+					stop !== "error" ||
+					typeof error !== "string" ||
+					error.length > MAX_AGENT_ERROR)
+			) {
+				return null;
+			}
+			return {
+				...base,
+				type: "agent-message",
+				thread,
+				text: raw.text,
+				...extras,
+				...(stop !== undefined ? { stop: stop as AgentStop } : {}),
+				...(activity ? { activity } : {}),
+				...(replyTo !== undefined ? { replyTo } : {}),
+				...(error !== undefined ? { error } : {}),
+			};
+		}
+		case "agent-thread-resolved": {
+			// Fail safe: only the reviewer resolves or reopens a thread.
+			if (base.by !== "human") return null;
+			const { resolved } = raw;
+			if (typeof resolved !== "boolean") return null;
+			return { ...base, type: "agent-thread-resolved", thread, resolved };
 		}
 		default:
 			return null;

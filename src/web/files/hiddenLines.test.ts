@@ -45,6 +45,29 @@ describe("hiddenLines", () => {
 		expect(hidden.size).toBe(3);
 	});
 
+	it("names a changed line holding a BOM, paired or not", () => {
+		const BOM = "\uFEFF";
+		const d = del("export const a = 1;");
+		const a1 = add(`${BOM}export const a = 1;`);
+		const a2 = add("const b = 2;");
+		// One removed, two added: no pair, so no marks.
+		const r = rows(d, a1, a2);
+		expect(hunkWordMarks(r).size).toBe(0);
+		expect([...hiddenLines(r, hunkWordMarks(r), 4)]).toEqual([a1]);
+		// Paired: its mark on the BOM.
+		const p = rows(d, a1);
+		expect([...hiddenLines(p, hunkWordMarks(p), 4)]).toEqual([a1]);
+		// The BOM removed: the old side warns.
+		const old = del(`${BOM}x`);
+		const q = rows(old, add("x"));
+		expect([...hiddenLines(q, hunkWordMarks(q), 4)]).toEqual([old]);
+		// Mid-file (files joined by cat), unpaired.
+		const joined = add(`${BOM}echo two`);
+		expect([...hiddenLines(rows(joined), new Map(), 4)]).toEqual([joined]);
+		// An unchanged line is no change.
+		expect(hiddenLines(rows(ctx(`${BOM}x`)), new Map(), 4).size).toBe(0);
+	});
+
 	it("compares a pair's lines at the file's tab width", () => {
 		const d = del("\tx");
 		const a = add("        x");

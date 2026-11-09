@@ -55,8 +55,11 @@ export interface RenderOptions {
 	/** A newline follows the line (false for the last line without one). */
 	newline?: boolean;
 	/**
-	 * Spaces, tab markers and line endings (Settings: "Show hidden characters"). Escapes show
-	 * either way: hiding them would hide content.
+	 * Spaces, tab markers, line endings and U+FEFF (Settings: "Show hidden
+	 * characters"): off, code looks as it does in an editor, and an editor
+	 * draws a BOM as nothing wherever it is (owner, 2026-11-08);
+	 * hiddenChange and hiddenLines flag a change made of one. Other escapes
+	 * show either way: hiding them would hide content.
 	 */
 	show?: boolean;
 	/**
@@ -75,6 +78,7 @@ const TAG = /^[\u{E0020}-\u{E007F}]$/u;
 const BLACK_FLAG = 0x1f3f4;
 const ZWJ = "\u200D";
 const ZWNJ = "\u200C";
+export const BOM = "\uFEFF";
 
 /**
  * Prints as nothing, as a blank that isn't a plain space, or not as itself:
@@ -495,6 +499,10 @@ export function renderInvisibles(
 				column += 1;
 			}
 			last = 1;
+		} else if (ch === BOM && !show) {
+			// A byte order mark (or zero width no-break space): drawn as
+			// nothing, as an editor does, until hidden characters show.
+			pushText(ch, 0);
 		} else if (ch === "\r" || INVISIBLE.test(ch)) {
 			// Attached to what it modifies (an emoji, a joining script), it
 			// draws nothing and is kept, unless it lies inside a mark while
