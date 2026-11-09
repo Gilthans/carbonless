@@ -125,6 +125,49 @@ you were looking at.
 - The answer comes back next to the line it was asked about.
 - Keep track of open and answered questions across the review.
 
+First slice (review buddy, 2026-11-07; spec
+`docs/superpowers/specs/2026-11-04-review-buddy-design.md`): Ask agent on a
+selected span opens a private thread in the reviewer's own
+`agent/threads` ref; carbonless spawns the reviewer's ACP agent (Claude
+Code through `claude-agent-acp`, or any harness speaking ACP) per open
+review, in a shared-clone checkout of the head without `refs/crb`, answers
+waiting threads one at a time with streamed text and an activity line, and
+leaves the gate to the reviewer's harness (leash `open`). The setup modal
+configures it. Left, per the spec's "Later": stricter leash levels (a
+read-only allowlist, Claude session options, a `pre-push` hook in the
+clone), agent-opened threads, the MCP door for agents carbonless can't
+launch, remote ACP agents, suggesting a review comment from an agent
+thread, pushing agent threads to another device, standing instructions, an
+agent per thread or several agents, `crb doctor` reporting the agent,
+agent threads on Home.
+
+- Sandbox the agent. Run the adapter in an OS sandbox (bubblewrap on
+  Linux, sandbox-exec on macOS) that hides or makes read-only carbonless's
+  cache clone, config and state. Drop the checkout's `alternates` link to
+  the cache clone, so it becomes a standalone clone. If the sandbox can't
+  start, the agent doesn't start, and the status chip says why. Test that
+  a `git update-ref` from the agent fails. On the devbox `bwrap` is
+  installed, but `kernel.apparmor_restrict_unprivileged_userns = 1` may
+  block it; test that first.
+
+Follow-ups from the first slice's final review (2026-11-07):
+
+- A follow-up on a thread asked on an earlier head uses the current
+  snapshot's line numbers and today's merge base (M1/11b).
+- Stop cancels whatever turn runs, not the thread it was pressed on (M2).
+- When a permission request offers no `allow_once`, the fallback is
+  `allow_always` (M3).
+- A tab hidden 30 min or more mid-turn idles the session out, and the
+  question is asked again (M7).
+- The hunk's fence in the prompt isn't escaped (M8).
+- An agent that ignores a cancel blocks the queue: SIGTERM it after a
+  grace period (11a).
+- `authorOf` never returns `pr_author` (11c).
+- GET `/api/config/agent` returns the env's values (11d).
+- An empty `claim.lock` races (13).
+- A leash value from a later version is rewritten to `open` on Save.
+- `snapshotHead` is read cache-only in `AgentOverviewRow`.
+
 ## Future plans
 
 Not scheduled yet; after everything above.
