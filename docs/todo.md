@@ -170,10 +170,6 @@ Not scheduled yet; after everything above.
   browser's find can't reach the others; add a search over every changed
   file (and threads) that jumps to each match (owner, 2026-11-01; not for
   milestone 2).
-- **Syntax-aware hunk headings:** headings come from git's funcname rules,
-  as on GitHub (JS/TS have no driver: a method shows its unindented class
-  line). A syntax tree (e.g. tree-sitter) would name the real enclosing
-  function, and might pay off elsewhere too.
 - **Install as a web app:** a PWA (manifest, icons, a service worker that
   only caches the app shell) so carbonless can be added to the phone's home
   screen and the desktop's app list (owner, 2026-11-01).
