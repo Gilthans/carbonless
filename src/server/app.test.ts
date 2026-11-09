@@ -23,6 +23,7 @@ import { createPrFixture, type PrFixture } from "../../test/pr-fixture";
 import type { AgentStatus, AgentThread } from "../shared/agent";
 import type {
 	CommentsView,
+	DiffLine,
 	ReviewThread,
 	ReviewView,
 	SessionInfo,
@@ -2066,6 +2067,30 @@ describe("API", () => {
 			expect(
 				(await inject(`/api/files/0/hunks?revision=${view.revision}&from=9`))
 					.statusCode,
+			).toBe(404);
+			// context?from= is the since view's: a.txt is untouched since PS1,
+			// so line 2 (the PR's own, unchanged) loads; the full diff skips it.
+			const context = (from: string) =>
+				get(
+					`/api/files/0/context?revision=${view.revision}&newFrom=1&newTo=3${from}`,
+				);
+			expect((await context("&from=1")).map((l: DiffLine) => l.newNo)).toEqual([
+				1, 2, 3,
+			]);
+			expect((await context("")).map((l: DiffLine) => l.newNo)).toEqual([1, 3]);
+			expect(
+				(
+					await inject(
+						`/api/files/0/context?revision=${view.revision}&newFrom=1&newTo=3&from=x`,
+					)
+				).statusCode,
+			).toBe(400);
+			expect(
+				(
+					await inject(
+						`/api/files/0/context?revision=${view.revision}&newFrom=1&newTo=3&from=9`,
+					)
+				).statusCode,
 			).toBe(404);
 			// Nothing written by viewing.
 			expect((await get("/api/session")).patchsets).toHaveLength(1);

@@ -65,7 +65,7 @@ import {
 import { ThreadBubble } from "./ThreadBubble";
 import { UnplacedThreads } from "./ThreadFate";
 import { AgentThreadRow, TailRow, ThreadBlock } from "./ThreadRow";
-import { fileThreads, placeThreads } from "./threadPlacement";
+import { fileThreads, placeThreads, sinceLeftToNew } from "./threadPlacement";
 import {
 	describeFileProgress,
 	fileUnitProgress,
@@ -718,6 +718,11 @@ export function FileDiff(props: {
 				loadedContext: [],
 				noLines: file.binary || file.submodule,
 				placements: props.threads.placements,
+				// The since view: as its DiffBody places them (LEFT through
+				// the full diff), so the header holds what no row can.
+				...(props.since === undefined
+					? {}
+					: { leftToNew: sinceLeftToNew(file.clusters) }),
 			})
 		: null;
 	const header = filePlacement?.header ?? [];
@@ -809,6 +814,9 @@ export function FileDiff(props: {
 				loadedContext: [],
 				noLines: file.binary || file.submodule,
 				placements: agentPlacements,
+				...(props.since === undefined
+					? {}
+					: { leftToNew: sinceLeftToNew(file.clusters) }),
 			})
 		: null;
 	const agentHeader = agentPlaced?.header ?? [];

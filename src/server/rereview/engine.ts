@@ -27,7 +27,7 @@ import type {
 } from "../../shared/types.js";
 import { buildAllClusters } from "../diff/clusters.js";
 import { listChangedFiles } from "../diff/files.js";
-import { buildDisplayHunks } from "../diff/hunks.js";
+import { buildDisplayHunks, contextLines } from "../diff/hunks.js";
 import type { PatchsetRecord, StateEntry } from "../review/fold.js";
 import type { PatchsetStart } from "../review/reviews.js";
 import {
@@ -640,6 +640,37 @@ function interdiffFileAt(
 }
 
 /**
+ * The since view's unchanged lines `newFrom..newTo` of one file, for its
+ * gaps: the interdiff's context, the old side numbered as its hunks' are
+ * (interdiffFileHunks), so lines the patch set added and left unchanged
+ * since load too. `untouched`: the interdiff doesn't change the file, so
+ * both sides are the new head's lines (the caller reads them); `none`:
+ * no interdiff to read (unavailable).
+ */
+export function interdiffFileContext(
+	traced: Traced,
+	answer: RereviewAnswer,
+	index: number,
+	newFrom: number,
+	newTo: number,
+): DiffLine[] | "untouched" | "none" {
+	const { file } = interdiffFileAt(traced, answer, index);
+	if (traced.interdiff.status !== "available") return "none";
+	if (!file) return "untouched";
+	const clusters: Cluster[] = file.clusters
+		.filter((c) => c.kind === "lines")
+		.map((c, i) => ({ ...c, key: String(i) }));
+	return contextLines(
+		file.oldLines,
+		file.newLines,
+		clusters,
+		newFrom,
+		newTo,
+		file.noNewlineAtEnd,
+	);
+}
+
+/**
  * The since view's hunks of one file: the interdiff's clusters of it over
  * its lines, the old side numbered in the virtual rebase (the new base for
  * a conflicted file), the new side in the new head. Each line's
@@ -651,7 +682,8 @@ function interdiffFileAt(
  * interdiff cluster's first added line's, else the target cluster at its
  * place. Each run of changed lines is a piece (`pieces`). A conflicted file's keys are its target
  * clusters' on both sides (its interdiff is the target's own diff). A
- * file the interdiff doesn't touch has no hunks.
+ * file the interdiff doesn't touch has no hunks (the caller makes it one
+ * whole-file gap, Session.interdiffHunks).
  */
 export function interdiffFileHunks(
 	traced: Traced,

@@ -242,8 +242,8 @@ async function check(
 		expect(unitProblems(units)).toEqual([]);
 		for (const u of units) {
 			const before = statesOf(collectUnits(document.body));
-			const box = document.querySelector(
-				`[data-markable-unit="${u.index}"] input[type="checkbox"]`,
+			const box = collectUnits(document.body)[u.index]?.el.querySelector(
+				'input[type="checkbox"]',
 			) as HTMLInputElement;
 			act(() => {
 				fireEvent.click(box);

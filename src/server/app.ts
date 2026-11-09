@@ -400,7 +400,12 @@ export async function buildApp(
 			});
 			review.get<{
 				Params: { index: string };
-				Querystring: { revision?: unknown; newFrom?: string; newTo?: string };
+				Querystring: {
+					revision?: unknown;
+					newFrom?: string;
+					newTo?: string;
+					from?: unknown;
+				};
 			}>("/files/:index/context", (request) => {
 				const index = fileIndex(request.params.index);
 				const revision = revisionParam(request.query.revision);
@@ -412,6 +417,18 @@ export async function buildApp(
 				) {
 					throw new BadRequestError(
 						"newFrom and newTo must be line numbers with newFrom <= newTo",
+					);
+				}
+				// With `from=<n>`, the since view's: the interdiff's context
+				// (Session.interdiffContext), numbered as its hunks are.
+				const { from } = request.query;
+				if (from !== undefined) {
+					return sessionOf(request).interdiffContext(
+						patchsetParam(from),
+						revision,
+						index,
+						Number(newFrom),
+						Number(newTo),
 					);
 				}
 				return sessionOf(request).context(

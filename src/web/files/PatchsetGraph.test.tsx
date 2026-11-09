@@ -134,7 +134,7 @@ function renderGraph(
 			</ShortcutsProvider>
 		</QueryClientProvider>
 	);
-	const { rerender } = render(tree(s));
+	const { rerender, unmount } = render(tree(s));
 	return {
 		fetchMock,
 		setViewing,
@@ -142,6 +142,7 @@ function renderGraph(
 		set,
 		onViewHead,
 		rerender: (next: SessionInfo) => rerender(tree(next)),
+		unmount,
 	};
 }
 
@@ -527,6 +528,49 @@ describe("PatchsetGraph", () => {
 		expect(card).toHaveTextContent("Against release at 0000000");
 	});
 
+	it("the branch dot follows the comparison target: its base branch and merge base (a virtual pointer)", async () => {
+		const user = userEvent.setup();
+		const s = session([1, 2], oid("f"));
+		const retargeted: SessionInfo = {
+			...s,
+			patchsets: s.patchsets.map((p) =>
+				p.number === 1
+					? { ...p, baseBranch: "release", mergeBase: oid("8") }
+					: p,
+			),
+			head: {
+				oid: oid("f"),
+				mergeBase: oid("9"),
+				baseBranch: "develop",
+				commits: 3,
+			},
+		};
+		const branchCard = async (viewing: Viewing, name: string) => {
+			renderGraph(retargeted, { viewing, base: { kind: "branch" } });
+			await user.click(
+				screen.getByRole("button", { name: `${name} (base branch)` }),
+			);
+			const text = screen.getByRole("dialog", {
+				name: `${name} details`,
+			}).textContent;
+			cleanup();
+			return text;
+		};
+		expect(await branchCard(ps(1), "release")).toContain("Merge base 8888888");
+		expect(
+			await branchCard({ kind: "head", oid: oid("f") }, "develop"),
+		).toContain("Merge base 9999999");
+		expect(await branchCard(ps(2), "main")).toContain("Merge base 0000000");
+		// When the target moves, the dot does: railDots by the target.
+		expect(railDots(retargeted, ps(1)).dots[0]).toMatchObject({
+			label: "release",
+			oid: oid("8"),
+		});
+		expect(
+			railDots(retargeted, { kind: "head", oid: oid("f") }).dots[0],
+		).toMatchObject({ label: "develop", oid: oid("9") });
+	});
+
 	it("a hostile base branch name is text on the card, never markup", async () => {
 		const user = userEvent.setup();
 		const hostile = '<img src=x onerror="window.pwned=1">';
@@ -847,10 +891,13 @@ describe("PatchsetGraph", () => {
 	});
 
 	it("Ctrl+] and Ctrl+[ move the comparison target; with Shift the base; bare brackets move nothing", () => {
-		const { setViewing, setBase } = renderGraph(session([1, 2], oid("f")), {
-			viewing: ps(2),
-			base: ps(1) as ComparisonBase,
-		});
+		const { setViewing, setBase, set, onViewHead } = renderGraph(
+			session([1, 2], oid("f")),
+			{
+				viewing: ps(2),
+				base: ps(1) as ComparisonBase,
+			},
+		);
 		const press = (key: string, init: KeyboardEventInit) =>
 			fireEvent.keyDown(document.body, { key, ...init });
 		press("]", { code: "BracketRight" });
@@ -869,17 +916,27 @@ describe("PatchsetGraph", () => {
 			number: 1,
 		});
 		press("{", { ctrlKey: true, shiftKey: true, code: "BracketLeft" });
-		expect(setBase).toHaveBeenLastCalledWith({ kind: "branch" });
-		// Right of the base is the viewed dot itself: the base can't go there.
+		expect(set).toHaveBeenLastCalledWith(ps(2), { kind: "branch" });
+		// Right of the base is the target: the base goes there and pushes the
+		// target just right of it, onto the head (an explicit action).
 		press("}", { ctrlKey: true, shiftKey: true, code: "BracketRight" });
-		expect(setBase).toHaveBeenCalledTimes(1);
+		expect(set).toHaveBeenLastCalledWith(
+			{ kind: "head", oid: oid("f") },
+			{ kind: "patchset", number: 2 },
+		);
+		// (Ctrl+] onto the head was the first.)
+		expect(onViewHead).toHaveBeenCalledTimes(2);
+		expect(setBase).not.toHaveBeenCalled();
 	});
 
-	it("dragging the comparison target onto the head dot views it; onto the branch does nothing", () => {
-		const { setViewing, setBase } = renderGraph(session([1, 2], oid("f")), {
-			viewing: ps(2),
-			base: ps(1) as ComparisonBase,
-		});
+	it("dragging the comparison target onto the head dot views it; onto the branch does nothing; the base dragged onto the target pushes it", () => {
+		const { setViewing, setBase, set, onViewHead } = renderGraph(
+			session([1, 2], oid("f")),
+			{
+				viewing: ps(2),
+				base: ps(1) as ComparisonBase,
+			},
+		);
 		const centre = (el: HTMLElement, x: number) => {
 			vi.spyOn(el, "getBoundingClientRect").mockReturnValue({
 				left: x - 20,
@@ -913,15 +970,234 @@ describe("PatchsetGraph", () => {
 		fireEvent.pointerDown(marker, { pointerId: 2, clientX: 210 });
 		fireEvent.pointerUp(marker, { pointerId: 2, clientX: 12 });
 		expect(setViewing).toHaveBeenCalledTimes(1);
-		// The base marker: left of the viewed dot only.
+		// The base marker: never on the head (the rightmost dot).
 		const base = screen.getByRole("button", { name: "comparison base" });
 		base.setPointerCapture = () => {};
 		fireEvent.pointerDown(base, { pointerId: 3, clientX: 110 });
+		fireEvent.pointerMove(base, { pointerId: 3, clientX: 300 });
+		expect(screen.getByTestId("ps-dot-head")).not.toHaveAttribute("data-drop");
 		fireEvent.pointerUp(base, { pointerId: 3, clientX: 300 });
-		expect(setBase).not.toHaveBeenCalled();
+		expect(set).not.toHaveBeenCalled();
 		fireEvent.pointerDown(base, { pointerId: 4, clientX: 110 });
 		fireEvent.pointerUp(base, { pointerId: 4, clientX: 12 });
-		expect(setBase).toHaveBeenLastCalledWith({ kind: "branch" });
+		expect(set).toHaveBeenLastCalledWith(ps(2), { kind: "branch" });
+		// Onto the target: the target is pushed just right of it, the head.
+		fireEvent.pointerDown(base, { pointerId: 5, clientX: 110 });
+		fireEvent.pointerMove(base, { pointerId: 5, clientX: 205 });
+		expect(screen.getByTestId("ps-dot-ps2")).toHaveAttribute(
+			"data-drop",
+			"true",
+		);
+		fireEvent.pointerUp(base, { pointerId: 5, clientX: 205 });
+		expect(set).toHaveBeenLastCalledWith(
+			{ kind: "head", oid: oid("f") },
+			{ kind: "patchset", number: 2 },
+		);
+		expect(onViewHead).toHaveBeenCalledTimes(2);
+		expect(setBase).not.toHaveBeenCalled();
+	});
+
+	/** Gives the rail, the dots and a marker boxes (jsdom has none). */
+	const boxes = (marker: HTMLElement, dots: [string, number][]) => {
+		const rect = (left: number, width: number) =>
+			({
+				left,
+				width,
+				right: left + width,
+				top: 0,
+				bottom: 40,
+				height: 40,
+				x: left,
+				y: 0,
+				toJSON: () => ({}),
+			}) as DOMRect;
+		vi.spyOn(
+			screen.getByTestId("psrail"),
+			"getBoundingClientRect",
+		).mockReturnValue(rect(0, 400));
+		for (const [id, x] of dots) {
+			vi.spyOn(
+				screen.getByTestId(`ps-dot-${id}`),
+				"getBoundingClientRect",
+			).mockReturnValue(rect(x - 20, 40));
+		}
+		vi.spyOn(marker, "getBoundingClientRect").mockReturnValue(rect(80, 60));
+		marker.setPointerCapture = () => {};
+	};
+
+	it("a drag ends when the pointer is cancelled: back on its dot, nothing moved, Escape does nothing after", () => {
+		const { set, setViewing } = renderGraph(session([1, 2], oid("f")), {
+			viewing: ps(2),
+			base: ps(1) as ComparisonBase,
+		});
+		const marker = screen.getByRole("button", { name: "comparison base" });
+		boxes(marker, [
+			["branch", 10],
+			["ps1", 110],
+			["ps2", 210],
+			["head", 310],
+		]);
+		fireEvent.pointerDown(marker, { pointerId: 1, clientX: 110 });
+		fireEvent.pointerMove(marker, { pointerId: 1, clientX: 20 });
+		expect(marker.style.transform).toBe("translateX(-80px)");
+		fireEvent.pointerCancel(marker, { pointerId: 1 });
+		expect(
+			screen.getByRole("button", { name: "comparison base" }).style.transform,
+		).toBe("");
+		const esc = new KeyboardEvent("keydown", {
+			key: "Escape",
+			bubbles: true,
+		});
+		const stop = vi.spyOn(esc, "stopPropagation");
+		document.body.dispatchEvent(esc);
+		expect(stop).not.toHaveBeenCalled();
+		fireEvent.pointerUp(marker, { pointerId: 1, clientX: 12 });
+		expect(set).not.toHaveBeenCalled();
+		expect(setViewing).not.toHaveBeenCalled();
+	});
+
+	it("a drag ends when the marker loses pointer capture, and unmounting mid-drag leaves no listener behind", () => {
+		const added = vi.spyOn(window, "addEventListener");
+		const removed = vi.spyOn(window, "removeEventListener");
+		const { set, unmount } = renderGraph(session([1, 2], oid("f")), {
+			viewing: ps(2),
+			base: ps(1) as ComparisonBase,
+		});
+		const marker = screen.getByRole("button", { name: "comparison base" });
+		boxes(marker, [
+			["branch", 10],
+			["ps1", 110],
+			["ps2", 210],
+			["head", 310],
+		]);
+		fireEvent.pointerDown(marker, { pointerId: 1, clientX: 110 });
+		fireEvent.pointerMove(marker, { pointerId: 1, clientX: 20 });
+		fireEvent(marker, new Event("lostpointercapture"));
+		expect(
+			screen.getByRole("button", { name: "comparison base" }).style.transform,
+		).toBe("");
+		fireEvent.pointerUp(marker, { pointerId: 1, clientX: 12 });
+		expect(set).not.toHaveBeenCalled();
+		// A drag the graph unmounts in the middle of.
+		fireEvent.pointerDown(
+			screen.getByRole("button", { name: "comparison base" }),
+			{
+				pointerId: 2,
+				clientX: 110,
+			},
+		);
+		const keydowns = () =>
+			added.mock.calls.filter(
+				([type, , opts]) => type === "keydown" && opts === true,
+			);
+		const listener = keydowns().at(-1)?.[1];
+		expect(listener).toBeDefined();
+		unmount();
+		expect(
+			removed.mock.calls.some(
+				([type, fn, opts]) =>
+					type === "keydown" && fn === listener && opts === true,
+			),
+		).toBe(true);
+	});
+
+	it("a drop reads the graph as it is then: a head that arrived mid-drag can be dropped on", () => {
+		const s = session([1, 2], oid("2"));
+		const { setViewing, onViewHead, rerender } = renderGraph(s, {
+			viewing: ps(1),
+			base: { kind: "branch" },
+		});
+		const marker = screen.getByRole("button", { name: "comparison target" });
+		boxes(marker, [
+			["branch", 10],
+			["ps1", 110],
+			["ps2", 210],
+		]);
+		fireEvent.pointerDown(marker, { pointerId: 1, clientX: 110 });
+		// A push lands while the marker is held: the head dot appears.
+		rerender(session([1, 2], oid("f")));
+		boxes(marker, [
+			["branch", 10],
+			["ps1", 110],
+			["ps2", 210],
+			["head", 310],
+		]);
+		fireEvent.pointerMove(marker, { pointerId: 1, clientX: 305 });
+		fireEvent.pointerUp(marker, { pointerId: 1, clientX: 305 });
+		expect(setViewing).toHaveBeenLastCalledWith({
+			kind: "head",
+			oid: oid("f"),
+		});
+		expect(onViewHead).toHaveBeenCalledTimes(1);
+	});
+
+	it("a dragged marker's label follows the pointer inside the rail, and snaps back on drop or Escape", () => {
+		const { set } = renderGraph(session([1, 2], oid("f")), {
+			viewing: ps(2),
+			base: ps(1) as ComparisonBase,
+		});
+		const rect = (left: number, width: number) =>
+			({
+				left,
+				width,
+				right: left + width,
+				top: 0,
+				bottom: 40,
+				height: 40,
+				x: left,
+				y: 0,
+				toJSON: () => ({}),
+			}) as DOMRect;
+		vi.spyOn(
+			screen.getByTestId("psrail"),
+			"getBoundingClientRect",
+		).mockReturnValue(rect(0, 400));
+		for (const [id, x] of [
+			["branch", 10],
+			["ps1", 110],
+			["ps2", 210],
+			["head", 310],
+		] as const) {
+			vi.spyOn(
+				screen.getByTestId(`ps-dot-${id}`),
+				"getBoundingClientRect",
+			).mockReturnValue(rect(x - 20, 40));
+		}
+		for (const name of ["comparison base", "comparison target"]) {
+			const marker = screen.getByRole("button", { name });
+			vi.spyOn(marker, "getBoundingClientRect").mockReturnValue(rect(80, 60));
+			marker.setPointerCapture = () => {};
+			expect(marker.className).toContain("cursor-grab");
+			fireEvent.pointerDown(marker, { pointerId: 1, clientX: 110 });
+			fireEvent.pointerMove(marker, { pointerId: 1, clientX: 150 });
+			const moved = screen.getByRole("button", { name });
+			expect(moved.style.transform).toBe("translateX(40px)");
+			expect(moved.className).toContain("cursor-grabbing");
+			// Never out of the rail: its right edge stops at the rail's.
+			fireEvent.pointerMove(marker, { pointerId: 1, clientX: 900 });
+			expect(screen.getByRole("button", { name }).style.transform).toBe(
+				"translateX(260px)",
+			);
+			fireEvent.pointerMove(marker, { pointerId: 1, clientX: -900 });
+			expect(screen.getByRole("button", { name }).style.transform).toBe(
+				"translateX(-80px)",
+			);
+			// Escape cancels: back on its dot, nothing moved.
+			fireEvent.keyDown(document.body, { key: "Escape" });
+			expect(screen.getByRole("button", { name }).style.transform).toBe("");
+			fireEvent.pointerUp(marker, { pointerId: 1, clientX: 10 });
+			expect(set).not.toHaveBeenCalled();
+		}
+		// A drop snaps it to where it lands (here: the branch).
+		const base = screen.getByRole("button", { name: "comparison base" });
+		fireEvent.pointerDown(base, { pointerId: 2, clientX: 110 });
+		fireEvent.pointerMove(base, { pointerId: 2, clientX: 20 });
+		expect(base.style.transform).toBe("translateX(-80px)");
+		fireEvent.pointerUp(base, { pointerId: 2, clientX: 12 });
+		expect(
+			screen.getByRole("button", { name: "comparison base" }).style.transform,
+		).toBe("");
+		expect(set).toHaveBeenLastCalledWith(ps(2), { kind: "branch" });
 	});
 
 	it("a pinned head, a merged PR or an as-of view: neither the head dot nor up to date", () => {
