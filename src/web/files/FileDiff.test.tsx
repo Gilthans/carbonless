@@ -21,12 +21,14 @@ import type {
 	SessionInfo,
 } from "../../shared/types";
 import { agentThreadsQuery } from "../agent/api";
+import { AgentPlacementsProvider } from "../agent/placeable";
 import { reviewQuery, sessionQuery } from "../api";
 import { resetShowInvisibles, setShowInvisibles } from "../code/Invisibles";
 import { ignoreWhitespace } from "../viewSettings";
 import { FileDiff, UNDO_ARM_MS } from "./FileDiff";
 import { SyncNotices } from "./SyncNotices";
 import { unitsFile } from "./since";
+import type { Placements } from "./threadPlacement";
 import type { Unit } from "./unit";
 import { stateSyncFor, useReviewView } from "./useSetStates";
 
@@ -123,6 +125,8 @@ type Extra = {
 	ignoreMarksUntil?: number;
 	/** The since view's units, counted by the meter. */
 	counted?: FileView;
+	/** The tracer's placements of the agent threads (FilesPage's read). */
+	agentPlacements?: Placements;
 };
 
 function Shown({ unit, ...extra }: { unit: Unit } & Extra) {
@@ -131,14 +135,16 @@ function Shown({ unit, ...extra }: { unit: Unit } & Extra) {
 	return (
 		<>
 			{shown && (
-				<FileDiff
-					file={shown}
-					revision="r1"
-					unit={unit}
-					onFinished={extra.onFinished}
-					ignoreMarksUntil={extra.ignoreMarksUntil}
-					counted={extra.counted}
-				/>
+				<AgentPlacementsProvider value={extra.agentPlacements ?? null}>
+					<FileDiff
+						file={shown}
+						revision="r1"
+						unit={unit}
+						onFinished={extra.onFinished}
+						ignoreMarksUntil={extra.ignoreMarksUntil}
+						counted={extra.counted}
+					/>
+				</AgentPlacementsProvider>
 			)}
 			<SyncNotices />
 		</>
@@ -1918,5 +1924,157 @@ describe("FileDiff: agent threads asked on an earlier head", () => {
 				.getAllByTestId("agent-bubble")
 				.some((b) => b.getAttribute("aria-label")?.includes("on this file")),
 		).toBe(true);
+	});
+});
+
+describe("FileDiff: agent threads traced into the viewed head", () => {
+	afterEach(() => {
+		cleanup();
+		vi.unstubAllGlobals();
+	});
+
+	const OLD = "e".repeat(40);
+	const NOW = "f".repeat(40);
+	const asked = (
+		id: string,
+		line: number,
+		more: Partial<AgentThread> = {},
+	): AgentThread => ({
+		id,
+		anchor: {
+			subject: "line",
+			path: "src/a.ts",
+			commit: OLD,
+			side: "RIGHT",
+			line,
+			startSide: "RIGHT",
+			startLine: line,
+		},
+		openedBy: "human",
+		at: "2026-11-07T10:00:00Z",
+		messages: [
+			{
+				id: "m1",
+				by: "human",
+				at: "2026-11-07T10:00:00Z",
+				text: `About ${line}?`,
+			},
+		],
+		resolved: false,
+		waiting: false,
+		...more,
+	});
+	const deleted = {
+		kind: "unplaced",
+		fate: "deleted",
+		path: "src/a.ts",
+		nearest: { side: "RIGHT", line: 4 },
+	} as const;
+	async function show(threads: AgentThread[], agentPlacements: Placements) {
+		const { queryClient } = setup(
+			file([cluster("k1")]),
+			undefined,
+			hunks,
+			"clusters",
+			{ agentPlacements },
+		);
+		await act(async () => {
+			queryClient.setQueryData(sessionQuery.queryKey, {
+				snapshotHead: NOW,
+			} as SessionInfo);
+			queryClient.setQueryData(agentThreadsQuery.queryKey, { threads });
+			await new Promise((r) => setTimeout(r, 0));
+		});
+	}
+
+	it("one whose line was deleted is an unplaced row in the lead: the fate sentence, the Original Reviewed Change, its agent card; resolved ones after, muted", async () => {
+		const user = userEvent.setup();
+		const code: AgentThread["code"] = {
+			anchor: {
+				path: "src/a.ts",
+				commit: OLD,
+				side: "RIGHT",
+				line: 5,
+				startSide: "RIGHT",
+				startLine: 5,
+				at: "2026-11-07T10:00:00Z",
+			},
+			source: "clone",
+			rows: [
+				{ kind: "context", oldNo: 4, newNo: 4, text: "four", marked: false },
+				{ kind: "add", oldNo: null, newNo: 5, text: "five", marked: true },
+			],
+		};
+		await show(
+			[asked("R", 6, { resolved: true }), asked("A", 5, { code })],
+			new Map([
+				["A", deleted],
+				["R", deleted],
+			]),
+		);
+		// The closed header counts both; it opens the file and its lead.
+		await user.click(
+			await screen.findByRole("button", {
+				name: /^2 agent threads in this file/,
+			}),
+		);
+		const rows = await screen.findAllByTestId("agent-unplaced");
+		expect(rows.map((r) => r.dataset.thread)).toEqual(["A", "R"]);
+		const [open, quiet] = rows as [HTMLElement, HTMLElement];
+		expect(open).toHaveAttribute("data-fate", "deleted");
+		expect(within(open).getByTestId("unplaced-fate")).toHaveTextContent(
+			"Commented line has been deleted since the review",
+		);
+		expect(within(open).getByTestId("original-code-title")).toHaveTextContent(
+			"Original Reviewed Change",
+		);
+		expect(within(open).getByTestId("original-code-label")).toHaveTextContent(
+			"src/a.ts · line 5",
+		);
+		const card = within(open).getByTestId("agent-thread");
+		expect(card).toHaveClass("border-agent-edge");
+		expect(within(card).queryByTestId("agent-outdated")).toBeNull();
+		// Resolved: after the rest, its fate shortened, no code box.
+		expect(quiet).toHaveAttribute("data-resolved", "true");
+		expect(within(quiet).getByTestId("unplaced-fate")).toHaveTextContent(
+			"Line deleted",
+		);
+		expect(within(quiet).queryByTestId("original-code")).toBeNull();
+		expect(screen.queryByTestId("agent-outdated")).toBeNull();
+	});
+
+	it("one traced onto a line is not in the lead; one the tracer has no place for (failed, not in yet) stays there, outdated", async () => {
+		const user = userEvent.setup();
+		await show(
+			[asked("ON", 5), asked("LOST", 6)],
+			new Map([
+				[
+					"ON",
+					{
+						kind: "placed",
+						anchor: {
+							path: "src/a.ts",
+							startSide: "RIGHT",
+							startLine: 6,
+							side: "RIGHT",
+							line: 6,
+						},
+						changed: false,
+					},
+				],
+			]),
+		);
+		await user.click(
+			await screen.findByRole("button", {
+				name: /^2 agent threads in this file/,
+			}),
+		);
+		const lead = await screen.findAllByTestId("agent-thread");
+		expect(lead.map((c) => c.dataset.thread)).toEqual(["LOST"]);
+		expect(
+			within(lead[0] as HTMLElement).getByRole("img", {
+				name: "Asked on an earlier version (eeeeeee)",
+			}),
+		).toBeTruthy();
 	});
 });

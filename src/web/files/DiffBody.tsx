@@ -59,7 +59,11 @@ import {
 	type AgentComposerItem,
 	useAgentComposers,
 } from "../agent/askAgentAction";
-import { type AgentPlaceable, agentPlaceable } from "../agent/placeable";
+import {
+	type AgentPlaceable,
+	tracedAgentPlaceables,
+	useAgentPlacements,
+} from "../agent/placeable";
 import { contextQuery, hunksQuery, overviewQuery, sessionQuery } from "../api";
 import {
 	CodeLine,
@@ -2011,12 +2015,19 @@ export function DiffBody(props: {
 	// FilesPage reads them (and the tree counts them); here, from the cache.
 	const agentThreads = useQuery({ ...agentThreadsQuery, enabled: false }).data
 		?.threads;
-	const agentPlaceables = useMemo(
-		() => (agentThreads ?? []).map(agentPlaceable),
-		[agentThreads],
-	);
 	const agentComposerList = useAgentComposers();
 	const agentHeadNow = snapshotHead ?? sessionHead;
+	// Each where the tracer put it in the viewed head (or where it was asked).
+	const agentPlacements = useAgentPlacements();
+	const agentPlaceables = useMemo(
+		() =>
+			tracedAgentPlaceables(
+				agentThreads ?? [],
+				agentHeadNow ?? "",
+				agentPlacements,
+			),
+		[agentThreads, agentHeadNow, agentPlacements],
+	);
 	const agentMine = agentComposerList.filter(
 		(c) => c.span.path === file.path && c.span.subject === "line",
 	);

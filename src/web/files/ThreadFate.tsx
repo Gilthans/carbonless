@@ -79,7 +79,7 @@ export interface PlacementInfo {
 	/** The patch set a drag stores into; null: none (a head, an earlier patch set). */
 	placeOn: number | null;
 	/** The patch set a thread was opened on (openedOn); null without patch sets. */
-	openedOn: (t: ReviewThread) => number | null;
+	openedOn: (t: Pick<ReviewThread, "createdAt">) => number | null;
 }
 
 const PlacementContext = createContext<PlacementInfo>({
@@ -313,7 +313,12 @@ export function ChangedSince({
  * patch set, path and line numbers. A frame while the code is still on
  * its way; nothing when there is none.
  */
-export function OriginalCode({ thread }: { thread: ReviewThread }) {
+export function OriginalCode({
+	thread,
+}: {
+	/** A review thread, or an agent thread seen the same way. */
+	thread: Pick<ReviewThread, "code" | "path" | "createdAt">;
+}) {
 	const info = usePlacementInfo();
 	const code = thread.code;
 	const path = code?.anchor.path ?? thread.path;
@@ -880,7 +885,8 @@ export function useSessionPlacements(
 			readId: readId ?? null,
 			to,
 			placeOn: null,
-			openedOn: (t: ReviewThread) => openedOn(t.createdAt, patchsets ?? []),
+			openedOn: (t: Pick<ReviewThread, "createdAt">) =>
+				openedOn(t.createdAt, patchsets ?? []),
 		}),
 		[placements, asked, answer, query, readId, toKey, patchsets],
 	);

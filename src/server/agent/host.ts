@@ -56,6 +56,15 @@ export class AgentHost {
 		return Promise.all(folds.map((t) => this.#view(t)));
 	}
 
+	/** Each thread's id, anchor and when it was asked (what placement reads). */
+	async asked(): Promise<{ id: string; anchor: AgentAnchor; at: string }[]> {
+		return (await this.store.read()).map(({ id, anchor, at }) => ({
+			id,
+			anchor,
+			at,
+		}));
+	}
+
 	async open(req: OpenAgentThreadRequest): Promise<AgentThread> {
 		const t = await this.store.open({
 			anchor: req.span,

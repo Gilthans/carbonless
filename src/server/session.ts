@@ -1,3 +1,4 @@
+import type { AgentPlacementsAnswer } from "../shared/agent.js";
 import { overlayCarries } from "../shared/rereview/overlay.js";
 import { type ThreadInput, validAnchor } from "../shared/rereview/placement.js";
 import { TRACER_VERSION } from "../shared/tracer/index.js";
@@ -76,6 +77,7 @@ import { checkOid, commitsOver, commitsSince } from "./rereview/shape.js";
 import {
 	InvalidPlacementError,
 	type PlacedThread,
+	placeAgentThreads,
 	ThreadPlacer,
 } from "./rereview/threads.js";
 import { buildReviewView } from "./review/coverage.js";
@@ -660,6 +662,36 @@ export class Session {
 		return {
 			...(await this.#placedFor(job.done.target, job.done.inputs, readId)),
 			complete,
+		};
+	}
+
+	/**
+	 * The reviewer's agent threads placed into a target (a patch set or a
+	 * head) by the same tracer as review threads: what the page shows them
+	 * by. A thread whose tracing fails is left out (the page shows it where
+	 * it was asked). A RangeError for a patch set that is none of the
+	 * reviewer's.
+	 */
+	async agentPlacements(
+		agent: AgentHost,
+		to: { patchset: number } | { head: string },
+	): Promise<AgentPlacementsAnswer> {
+		if (this.#closed) throw new SessionClosedError("The session is closed");
+		let target: Snapshot;
+		if ("patchset" in to) {
+			const record = this.#patchsets.find((p) => p.number === to.patchset);
+			if (!record) throw new RangeError(`No patch set ${to.patchset}`);
+			target = await this.#snapshotOf(record);
+		} else target = await this.#headSnapshot(checkOid(to.head));
+		const threads = await agent.asked();
+		return {
+			revision: target.revision,
+			threads: await placeAgentThreads(
+				this.#placer,
+				target,
+				threads,
+				this.#diffBase(),
+			),
 		};
 	}
 

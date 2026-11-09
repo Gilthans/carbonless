@@ -9,12 +9,19 @@ import {
 	type AgentCheck,
 	type AgentConfig,
 	type AgentMessageRequest,
+	type AgentPlacementsAnswer,
 	type AgentResolvedRequest,
 	type AgentStatus,
 	type AgentThread,
 	type OpenAgentThreadRequest,
 } from "../../shared/agent";
-import { ApiError, fetchJson, overviewQuery, reviewApiPath } from "../api";
+import {
+	ApiError,
+	fetchJson,
+	overviewQuery,
+	type RereviewTo,
+	reviewApiPath,
+} from "../api";
 
 const json = (method: string, body?: unknown): RequestInit => ({
 	method,
@@ -80,6 +87,33 @@ export const agentThreadsQuery = queryOptions({
 	// A review with no agent (--viewer, --as-of) answers 404: no threads.
 	retry: false,
 });
+
+/**
+ * The agent threads `ids` placed into a patch set or a head (GET
+ * /agent/placements): its own key, outside ["agent"], so a status
+ * refetch never retraces them; a new thread asks again, the last answer
+ * kept meanwhile (the new one is on the viewed head, placed as asked).
+ */
+export const agentPlacementsQuery = (
+	to: RereviewTo,
+	ids: readonly string[],
+) => {
+	const target = "patchset" in to ? `ps:${to.patchset}` : `head:${to.head}`;
+	return queryOptions({
+		queryKey: ["agent-placements", target, [...ids].sort().join(",")],
+		queryFn: () =>
+			review<AgentPlacementsAnswer>(
+				`agent/placements?${new URLSearchParams(
+					"patchset" in to ? { ps: String(to.patchset) } : { head: to.head },
+				)}`,
+			),
+		staleTime: Number.POSITIVE_INFINITY,
+		// Another target's placements never stand in: their lines are its own.
+		placeholderData: (previous, query) =>
+			query?.queryKey[1] === target ? previous : undefined,
+		retry: false,
+	});
+};
 
 export const postAgentThread = (req: OpenAgentThreadRequest) =>
 	review<AgentThread>("agent/threads", json("POST", req));

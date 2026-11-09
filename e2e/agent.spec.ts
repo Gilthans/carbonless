@@ -465,7 +465,7 @@ test("a restart keeps the thread, and the new agent answers it once", async ({
 	expect([...perPid.values()]).toEqual([1, 1]);
 });
 
-test("a thread asked on an earlier head stays reachable in its file's lead, marked outdated", async ({
+test("a thread asked on an earlier head is traced onto its line's new place; until the tracer answers it waits in its file's lead, outdated", async ({
 	page,
 	pr,
 	agentCrb,
@@ -478,17 +478,27 @@ test("a thread asked on an earlier head stays reachable in its file's lead, mark
 	const card = await ask(page, section, 3, "Asked before the push");
 	await expect(card).toHaveAttribute("aria-label", "Agent thread, answered");
 	const before = p.repo.shas.at(-1) ?? "";
+	// Two lines on top: the asked line (3) is line 5 now.
 	p.moveHead({
 		message: "later push",
 		files: {
-			[CALC]: `${Array.from({ length: 12 }, (_, i) =>
+			[CALC]: `// one\n// two\n${Array.from({ length: 12 }, (_, i) =>
 				i === 2
 					? "export const total = v1 + v2;"
-					: i === 4
-						? "export const v5 = 50;"
-						: `export const v${i + 1} = ${i + 1};`,
+					: `export const v${i + 1} = ${i + 1};`,
 			).join("\n")}\n`,
 		},
+	});
+	// The tracer's answer, held: the review-bound route.
+	let asked = 0;
+	let release: () => void = () => {};
+	const released = new Promise<void>((r) => {
+		release = r;
+	});
+	await page.route("**/api/r/*/agent/placements?*", async (route) => {
+		asked++;
+		await released;
+		await route.continue();
 	});
 	const refreshed = page.waitForResponse(
 		(r) => r.url().endsWith("/refresh") && r.ok(),
@@ -497,12 +507,12 @@ test("a thread asked on an earlier head stays reachable in its file's lead, mark
 	await refreshed;
 	await expect(page.getByRole("button", { name: "Refresh" })).toBeEnabled();
 	const again = await openFile(page, s.url, CALC);
-	// Not on line 3 any more (that head is gone)...
-	await expect(row(again, 3).getByTestId("agent-bubble")).toHaveCount(0);
-	// ...but in the file's lead, outdated, with the head it was asked on.
-	await again
-		.getByRole("button", { name: /^1 agent thread on this file/ })
-		.click();
+	await expect.poll(() => asked).toBeGreaterThan(0);
+	// Held: never gone, in the file's lead with the head it was asked on.
+	const lead = again.getByRole("button", {
+		name: /^1 agent thread on this file/,
+	});
+	await lead.click();
 	const old = again
 		.getByTestId("agent-thread")
 		.filter({ hasText: "Asked before the push" });
@@ -511,7 +521,19 @@ test("a thread asked on an earlier head stays reachable in its file's lead, mark
 			name: `Asked on an earlier version (${before.slice(0, 7)})`,
 		}),
 	).toBeAttached();
-	await expect(old.getByTestId("agent-message-ai")).toHaveText("ok");
+	release();
+	// Answered: on line 5, the agent's bubble, and gone from the lead.
+	const bubble = row(again, 5).getByTestId("agent-bubble");
+	await expect(bubble).toHaveAccessibleName("1 agent thread on line 5");
+	await expect(lead).toHaveCount(0);
+	await expect(row(again, 3).getByTestId("agent-bubble")).toHaveCount(0);
+	await bubble.click();
+	const moved = again
+		.getByTestId("agent-thread")
+		.filter({ hasText: "Asked before the push" });
+	await expect(moved.getByTestId("agent-message-ai")).toHaveText("ok");
+	await expect(moved.getByTestId("agent-outdated")).toHaveCount(0);
+	expect(asked).toBeGreaterThan(0);
 });
 
 /** A PR that tries to make whatever opens it run things. */

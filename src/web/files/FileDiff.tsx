@@ -27,7 +27,7 @@ import { AgentBubble } from "../agent/AgentBubble";
 import { AgentComposer } from "../agent/AgentComposer";
 import { agentThreadsQuery } from "../agent/api";
 import { useAgentComposers } from "../agent/askAgentAction";
-import { agentPlaceable } from "../agent/placeable";
+import { tracedAgentPlaceables, useAgentPlacements } from "../agent/placeable";
 import { hunksQuery, overviewQuery, sessionQuery } from "../api";
 import { Spinner } from "../Spinner";
 import { Tooltip, TooltipPath, type TooltipTriggerProps } from "../Tooltip";
@@ -774,19 +774,22 @@ export function FileDiff(props: {
 	// comment threads with their own bubble; and Ask agent on the file.
 	const agentAll = useQuery({ ...agentThreadsQuery, enabled: false }).data
 		?.threads;
+	// Each where the tracer put it in the viewed head (as GitHub's threads
+	// are), else where it was asked.
+	const agentPlacements = useAgentPlacements();
 	const agentPlaceables = useMemo(
-		() => (agentAll ?? []).map(agentPlaceable),
-		[agentAll],
+		() => tracedAgentPlaceables(agentAll ?? [], snapshotHead, agentPlacements),
+		[agentAll, snapshotHead, agentPlacements],
 	);
-	// Every agent thread on the file, on this head or an earlier one: those
-	// asked on an earlier head show in the lead row, marked outdated.
-	const agentMine = agentPlaceables
-		.filter((p) => p.path === file.path)
-		.map((p) => p.thread);
+	// Every agent thread on the file: those the tracer couldn't place in
+	// it listed with their fate; those it has no place for (not in yet,
+	// failed) and asked on an earlier head in the lead row, outdated.
+	const agentMineP = agentPlaceables.filter((p) => p.path === file.path);
+	const agentMine = agentMineP.map((p) => p.thread);
 	const agentOutdated = snapshotHead
-		? agentMine.filter((t) => t.anchor.commit !== snapshotHead)
+		? agentMineP.filter((p) => p.commit !== snapshotHead).map((p) => p.thread)
 		: [];
-	const agentHeader = snapshotHead
+	const agentPlaced = snapshotHead
 		? placeThreads({
 				threads: agentPlaceables,
 				path: file.path,
@@ -794,9 +797,19 @@ export function FileDiff(props: {
 				hunks: hunks.data ?? null,
 				loadedContext: [],
 				noLines: file.binary || file.submodule,
-			}).header
-		: [];
+				placements: agentPlacements,
+			})
+		: null;
+	const agentHeader = agentPlaced?.header ?? [];
+	// Resolved ones after the rest (muted, counted nowhere).
+	const agentFates = new Map(
+		[
+			...(agentPlaced?.fates ?? []).filter((f) => !f.thread.thread.resolved),
+			...(agentPlaced?.fates ?? []).filter((f) => f.thread.thread.resolved),
+		].map((f) => [f.thread.thread, f.placement] as const),
+	);
 	const agentGroups = [
+		{ reason: "fate" as const, threads: [...agentFates.keys()] },
 		...(["file", "unplaced"] as const).map((reason) => ({
 			reason,
 			threads: agentHeader
@@ -929,6 +942,7 @@ export function FileDiff(props: {
 							rail={rail}
 							unplaced={g.reason === "unplaced"}
 							outdated={g.reason === "outdated"}
+							fates={g.reason === "fate" ? agentFates : undefined}
 						/>
 					))}
 				{agentComposers && (

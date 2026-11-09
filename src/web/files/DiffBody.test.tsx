@@ -25,6 +25,7 @@ import {
 	openAgentComposer,
 	resetAgentComposers,
 } from "../agent/askAgentAction";
+import { AgentPlacementsProvider } from "../agent/placeable";
 import { hunksQuery, sessionQuery } from "../api";
 import { openComposer, resetComposers } from "../threads/newThreads";
 import { ignoreWhitespace, showInvisibles, sideBySide } from "../viewSettings";
@@ -40,6 +41,7 @@ import type { Landing } from "./landing";
 import { setPicks } from "./linePicks";
 import type { CodeSpan } from "./selectionActions";
 import { ThreadBubble } from "./ThreadBubble";
+import type { Placements } from "./threadPlacement";
 
 vi.mock("./hiddenLines", async (original) => {
 	const real = await original<typeof import("./hiddenLines")>();
@@ -209,6 +211,8 @@ function setup(
 		agentThreads?: AgentThread[];
 		/** The session's head is known (before GitHub's threads are in). */
 		sessionHead?: string;
+		/** The tracer's placements of the agent threads (FilesPage's read). */
+		agentPlacements?: Placements;
 	} = {},
 ) {
 	const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
@@ -266,8 +270,10 @@ function setup(
 	);
 	const tree = (cs: ClusterView[]) => (
 		<QueryClientProvider client={queryClient}>
-			{bodyOf(cs)}
-			{opts.twice && bodyOf(cs)}
+			<AgentPlacementsProvider value={opts.agentPlacements ?? null}>
+				{bodyOf(cs)}
+				{opts.twice && bodyOf(cs)}
+			</AgentPlacementsProvider>
 		</QueryClientProvider>
 	);
 	const { rerender } = render(tree(opts.clusters ?? clusters));
@@ -2079,6 +2085,60 @@ describe("DiffBody: the agent's threads", () => {
 		expect(screen.getByTestId("thread-row").nextElementSibling).toBe(opened);
 		await user.click(agent);
 		expect(screen.queryByTestId("agent-thread-row")).toBeNull();
+	});
+
+	it("an agent thread asked on an earlier head shows on its traced line, as the agent's", async () => {
+		const { user } = setup({
+			threads: [],
+			agentThreads: [
+				agentThread(5, {
+					anchor: {
+						subject: "line",
+						path: PATH,
+						commit: "e".repeat(40),
+						side: "RIGHT",
+						line: 5,
+						startSide: "RIGHT",
+						startLine: 5,
+					},
+				}),
+			],
+			agentPlacements: new Map([
+				[
+					"A5",
+					{
+						kind: "placed",
+						anchor: {
+							path: PATH,
+							startSide: "RIGHT",
+							startLine: 11,
+							side: "RIGHT",
+							line: 11,
+						},
+						changed: false,
+					},
+				],
+			]),
+		});
+		await screen.findByText("line 11");
+		const rowOf = (n: number) =>
+			document.querySelector<HTMLElement>(
+				`[data-testid="diff-line"][data-new-no="${n}"]`,
+			) as HTMLElement;
+		expect(within(rowOf(5)).queryByTestId("agent-bubble")).toBeNull();
+		const bubble = within(rowOf(11)).getByTestId("agent-bubble");
+		expect(bubble).toHaveAccessibleName("1 agent thread on line 11, 1 waiting");
+		// Its own bubble in the agent's tint, the sparkle on it.
+		expect(bubble.firstElementChild).toHaveClass("bg-agent", "text-agent-ink");
+		expect(within(rowOf(11)).queryByTestId("thread-bubble")).toBeNull();
+		await user.click(bubble);
+		const opened = screen.getByTestId("agent-thread-row");
+		expect(rowOf(11).nextElementSibling).toBe(opened);
+		const card = within(opened).getByTestId("agent-thread");
+		expect(card).toHaveClass("border-agent-edge");
+		expect(card).toHaveAttribute("data-thread", "A5");
+		// On the viewed head now: not marked as from an earlier version.
+		expect(within(card).queryByTestId("agent-outdated")).toBeNull();
 	});
 
 	it("shows agent threads before GitHub's threads are in", async () => {

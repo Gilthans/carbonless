@@ -556,6 +556,25 @@ export async function buildApp(
 			review.get("/agent/threads", async (request) => ({
 				threads: await agentOf(request).threads(),
 			}));
+			// The agent threads placed into a patch set (`ps`) or a head's
+			// snapshot (`head`), by the review threads' tracer.
+			review.get<{ Querystring: { ps?: unknown; head?: unknown } }>(
+				"/agent/placements",
+				(request) => {
+					const { ps, head } = request.query;
+					if ((ps === undefined) === (head === undefined)) {
+						throw new BadRequestError(
+							"ps (a patch set) or head (a commit id), one of them",
+						);
+					}
+					return sessionOf(request).agentPlacements(
+						agentOf(request),
+						ps !== undefined
+							? { patchset: patchsetParam(ps) }
+							: { head: oidParam("head", head) },
+					);
+				},
+			);
 			review.post("/agent/threads", (request) =>
 				agentOf(request).open(parseAgentOpen(request.body)),
 			);

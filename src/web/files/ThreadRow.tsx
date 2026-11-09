@@ -7,13 +7,21 @@ import {
 import { useQuery } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import type { AgentThread } from "../../shared/agent";
+import type { ThreadPlacement } from "../../shared/rereview/placement";
 import type { DiffSide, ReviewThread } from "../../shared/types";
 import { AgentThreadCard } from "../agent/AgentThreadCard";
 import { agentStatusQuery } from "../agent/api";
 import { Badge, LabeledIcon } from "../overview/parts";
+import { Tooltip } from "../Tooltip";
 import { Conversation } from "../threads/Conversation";
 import { ThreadStatus } from "../threads/ThreadStatus";
-import { ChangedSince, PlacementChip, usePlacementInfo } from "./ThreadFate";
+import {
+	ChangedSince,
+	FATES,
+	OriginalCode,
+	PlacementChip,
+	usePlacementInfo,
+} from "./ThreadFate";
 
 /**
  * One thread opened in Files changed: a header with its state (resolved in
@@ -181,6 +189,8 @@ export function AgentThreadRow(props: {
 	unplaced?: boolean;
 	/** Asked on an earlier head (the file's header): each card says on which. */
 	outdated?: boolean;
+	/** Traced and not placed in this file: each with its fate. */
+	fates?: ReadonlyMap<AgentThread, UnplacedPlacement>;
 }) {
 	const status = useQuery({ ...agentStatusQuery, enabled: false }).data;
 	return (
@@ -190,15 +200,93 @@ export function AgentThreadRow(props: {
 			place={props.place}
 			rail={props.rail}
 		>
-			{props.threads.map((t) => (
-				<AgentThreadCard
-					key={t.id}
-					thread={t}
-					status={status}
-					unplaced={props.unplaced}
-					outdated={props.outdated ? t.anchor.commit : undefined}
-				/>
-			))}
+			{props.threads.map((t) => {
+				const card = (
+					<AgentThreadCard
+						key={t.id}
+						thread={t}
+						status={status}
+						unplaced={props.unplaced}
+						outdated={props.outdated ? t.anchor.commit : undefined}
+					/>
+				);
+				const fate = props.fates?.get(t);
+				return fate ? (
+					<AgentUnplaced key={t.id} thread={t} placement={fate}>
+						{card}
+					</AgentUnplaced>
+				) : (
+					card
+				);
+			})}
 		</TailRow>
+	);
+}
+
+type UnplacedPlacement = Extract<ThreadPlacement, { kind: "unplaced" }>;
+
+/**
+ * An agent thread the tracer couldn't place in this file, as a review
+ * thread's unplaced row has it: its fate in a sentence on top, the code it
+ * was asked on in the "Original Reviewed Change" box, then its own card.
+ * Resolved: the fate shortened and muted, no code (its card is closed).
+ */
+function AgentUnplaced(props: {
+	thread: AgentThread;
+	placement: UnplacedPlacement;
+	children: ReactNode;
+}) {
+	const { thread, placement } = props;
+	const fate = FATES[placement.fate];
+	const sentence = thread.resolved
+		? fate.short
+		: placement.fate === "moved" && placement.movedTo
+			? `${fate.sentence} to ${placement.movedTo}`
+			: fate.sentence;
+	return (
+		<div
+			data-testid="agent-unplaced"
+			data-thread={thread.id}
+			data-fate={placement.fate}
+			data-resolved={thread.resolved || undefined}
+			className="min-w-0 space-y-1.5"
+		>
+			<p className="flex min-h-10 min-w-0 items-center gap-2">
+				<fate.icon
+					size={16}
+					aria-hidden
+					className={`shrink-0 ${
+						thread.resolved
+							? "text-muted"
+							: fate.tone === "red"
+								? "text-bad"
+								: "text-warn"
+					}`}
+				/>
+				<Tooltip content={sentence} describe={false}>
+					{(trigger) => (
+						<span
+							{...trigger}
+							data-testid="unplaced-fate"
+							className={`truncate text-sm ${
+								thread.resolved ? "text-muted" : "font-semibold text-ink"
+							}`}
+						>
+							{sentence}
+						</span>
+					)}
+				</Tooltip>
+			</p>
+			{!thread.resolved && thread.code && (
+				<OriginalCode
+					thread={{
+						code: thread.code,
+						path: thread.anchor.path,
+						createdAt: thread.at,
+					}}
+				/>
+			)}
+			{props.children}
+		</div>
 	);
 }

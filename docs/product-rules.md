@@ -545,6 +545,16 @@ question would be on someone else's behalf, or about a past moment.
   access key (on a loopback bind with no key, any local process).
 - **One agent per review per machine.** Another server with the review
   open shows `elsewhere` and leaves the answering to the holder.
+- **Agent threads are traced like comments (owner, 2026-11-09).** One
+  asked on an earlier head is placed in the viewed patch set or head by
+  the same tracer as review threads (`GET /agent/placements`,
+  `placeAgentThreads`): on its traced line when it survives, else under
+  its file with its fate sentence and the "Original Reviewed Change" box;
+  resolved ones after the rest, muted, counted nowhere. It keeps its agent
+  bubble and card, and never counts as a GitHub thread. No placement for it
+  (not in yet, its tracing failed, or its file is outside the comparison)
+  leaves it where it was asked: in its file's lead, outdated, never gone.
+  Placements are computed, never stored: no drag, no storage change.
 - **A question never waits on the agent to be sent.** Ask agent writes
   the thread at once; it waits (yellow) until an agent answers, whether
   none is set up, it is starting, busy, crashed or elsewhere.
