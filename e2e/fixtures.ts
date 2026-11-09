@@ -14,6 +14,7 @@ import {
 	collectUnits,
 	isolationProblems,
 	statesOf,
+	type UnitReport,
 	type UnitState,
 	unitProblems,
 } from "../test/markable";
@@ -395,21 +396,23 @@ export async function expectEveryUnitMarkable(
 	}
 	const states = async () => statesOf(await scope.evaluate(collectUnits));
 	const use = async (i: number, control: "box" | "cross", want: UnitState) => {
-		const before = await states();
-		await scope
+		const now = await scope.evaluate(collectUnits);
+		const before = statesOf(now);
+		const unit = now[i];
+		if (!unit) throw new Error(`no unit ${i}`);
+		await unitBody(scope, unit)
 			.locator(
-				`[data-markable-unit="${i}"] ${
-					control === "box"
-						? 'input[type="checkbox"]'
-						: 'button[aria-label="Cross off cluster"]'
-				}`,
+				control === "box"
+					? 'input[type="checkbox"]'
+					: 'button[aria-label="Cross off cluster"]',
 			)
+			.first()
 			.click();
 		// A mark that finished the file closed it (the page moved on): open
 		// it again to read its units.
 		const expandFile = scope.getByRole("button", { name: "Expand file" });
 		if (await expandFile.isVisible()) {
-			// Its rows are new: collectUnits numbers them again (states()).
+			// Its rows are new: collectUnits finds them again (states()).
 			// The move-on may still be landing: open it until it stays open.
 			await expect(async () => {
 				if (await expandFile.isVisible()) await expandFile.click();
@@ -463,31 +466,41 @@ export async function expectEveryUnitMarkable(
 }
 
 /**
+ * A unit's `<tbody>` as a locator, by its place among `scope`'s tbodies
+ * (collectUnits only reads the page: there is no attribute to select it
+ * by, since a write per poll wakes every MutationObserver). A locator,
+ * not a handle: it finds the tbody again when React remounts it.
+ */
+const unitBody = (scope: Locator, unit: UnitReport): Locator =>
+	scope.locator("tbody").nth(unit.body);
+
+/**
  * Every disabled cluster control in `scope` (or in its unit `only`) gives
  * its reason: an accessible description, else a tooltip on hover (its
  * wrapper takes the hover: a disabled control gets none).
  */
 async function expectDisabledSayWhy(scope: Locator, only?: number) {
-	const unit =
-		only === undefined
-			? "[data-markable-unit]"
-			: `[data-markable-unit="${only}"]`;
-	const disabled = scope.locator(
-		`${unit} input[type="checkbox"]:disabled, ${unit} button[aria-label="Cross off cluster"]:disabled`,
+	const units = (await scope.evaluate(collectUnits)).filter(
+		(u) => only === undefined || u.index === only,
 	);
-	for (const control of await disabled.all()) {
-		const described = await control.evaluate((el) =>
-			(el.getAttribute("aria-describedby") ?? "")
-				.split(/\s+/)
-				.some((id) => id && document.getElementById(id)?.textContent?.trim()),
+	for (const unit of units) {
+		const disabled = unitBody(scope, unit).locator(
+			'input[type="checkbox"]:disabled, button[aria-label="Cross off cluster"]:disabled',
 		);
-		if (described) continue;
-		await control.locator("xpath=..").hover();
-		await expect(
-			scope.page().locator('[role="tooltip"]:not([hidden])'),
-			"a disabled control with no reason",
-		).toHaveText(/\S/);
-		await scope.page().mouse.move(0, 0);
+		for (const control of await disabled.all()) {
+			const described = await control.evaluate((el) =>
+				(el.getAttribute("aria-describedby") ?? "")
+					.split(/\s+/)
+					.some((id) => id && document.getElementById(id)?.textContent?.trim()),
+			);
+			if (described) continue;
+			await control.locator("xpath=..").hover();
+			await expect(
+				scope.page().locator('[role="tooltip"]:not([hidden])'),
+				"a disabled control with no reason",
+			).toHaveText(/\S/);
+			await scope.page().mouse.move(0, 0);
+		}
 	}
 }
 

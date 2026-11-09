@@ -26,7 +26,7 @@ concurrency:
 jobs:
   checks:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -39,7 +39,12 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm lint
       - run: pnpm typecheck
+      # A wall-clock limit per test step, the net for a hung test: no Vitest
+      # timeout can end a microtask loop (e.g. a waitFor callback that writes
+      # the DOM wakes its own MutationObserver, so timers never fire). The
+      # step takes 9-13 min (Nov 2026) and grows: keep headroom.
       - run: pnpm test
+        timeout-minutes: 25
       - run: pnpm test:pack
 
   e2e:
@@ -60,6 +65,7 @@ jobs:
       # Queued (scripts/queue.mjs): the lock is free on a runner, and a run
       # holding it gets a Playwright worker per core.
       - run: pnpm test:e2e
+        timeout-minutes: 40
       - if: failure()
         uses: actions/upload-artifact@v4
         with:
