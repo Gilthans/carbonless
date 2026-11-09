@@ -7,6 +7,7 @@ import { type FixtureCommit, testGitEnv } from "../test/git-fixture";
 import {
 	expectNoPageOverflow,
 	fileSection,
+	marksReady,
 	openFiles,
 	progress,
 	rowTop,
@@ -89,17 +90,29 @@ async function expand(page: Page, path: string) {
 	return section;
 }
 
-/** Marks every cluster of both files reviewed: PS1, fully reviewed. */
+/**
+ * Marks every cluster of both files reviewed: PS1, fully reviewed. The last
+ * mark of a file closes it and opens the next one with something left
+ * (FilesPage's move-on), whose marks wait a moment.
+ */
 async function reviewAll(page: Page) {
 	for (const path of ["src/core.ts", "src/util.ts"]) {
-		const section = await expand(page, path);
+		const section = fileSection(page, path);
+		const expandButton = section.getByRole("button", { name: "Expand file" });
+		if (await expandButton.isVisible()) await expand(page, path);
+		else {
+			await expect(section.getByTestId("diff-line").first()).toBeVisible();
+			await marksReady(page, section);
+		}
 		const all = boxes(section);
 		const n = await all.count();
-		for (let i = 0; i < n; i++) {
+		for (let i = 0; i < n - 1; i++) {
 			await all.nth(i).click();
 			await expect(all.nth(i)).toBeChecked();
 		}
-		await section.getByRole("button", { name: "Collapse file" }).click();
+		await all.nth(n - 1).click();
+		// Finished: it closes.
+		await expect(expandButton).toBeVisible();
 	}
 	await expect(progress(page)).toHaveAttribute("aria-valuenow", "100");
 	await expect(page.getByTestId("sync-notices")).toHaveCount(0);
@@ -282,8 +295,11 @@ test("View lands on the since view: the reworked and new clusters with their chi
 
 	// The first mark starts PS2 with the carries: the rail gains PS2 (viewed,
 	// up to date), the refs a second patch set; the carried marks stay.
+	// It finishes core.ts, which closes (the page moves on to util.ts).
 	await boxes(coreS).first().click();
-	await expect(boxes(coreS).first()).toBeChecked();
+	await expect(
+		coreS.getByRole("button", { name: "Expand file" }),
+	).toBeVisible();
 	await expect(
 		node(page, "ps2").getByRole("button", { name: "comparison target" }),
 	).toBeVisible();
@@ -302,6 +318,8 @@ test("View lands on the since view: the reworked and new clusters with their chi
 	await expect(toast(page)).toHaveCount(0);
 
 	// Unticking a carried cluster is the reviewer's own event; it survives a reload.
+	await coreS.getByRole("button", { name: "Expand file" }).click();
+	await expect(boxes(coreS).first()).toBeChecked();
 	await boxes(coreS).last().click();
 	await expect(boxes(coreS).last()).not.toBeChecked();
 	await expect(progress(page)).toContainText("2 / 4 clusters reviewed");
@@ -339,7 +357,11 @@ test("a gone cluster is a red block with its chip, markable on its own (reverted
 	const utilS = fileSection(page, "src/util.ts");
 	await expect(chips(utilS).filter({ hasText: "1 new" })).toBeVisible();
 	await utilS.getByRole("button", { name: "Expand file" }).click();
+	// Nothing left to read in util.ts: it closes (the page moves on).
 	await boxes(utilS).click();
+	await expect(
+		utilS.getByRole("button", { name: "Expand file" }),
+	).toBeVisible();
 	await expect(
 		node(page, "ps2").getByRole("button", { name: "comparison target" }),
 	).toBeVisible();
@@ -349,11 +371,15 @@ test("a gone cluster is a red block with its chip, markable on its own (reverted
 	// util.ts's first cluster carried into PS2: mark it by hand too (untick,
 	// tick), so PS2 holds the reviewer's own state for it.
 	await page.keyboard.press("Control+Shift+[");
+	await utilS.getByRole("button", { name: "Expand file" }).click();
 	await expect(boxes(utilS)).toHaveCount(2);
 	await boxes(utilS).first().click();
 	await expect(boxes(utilS).first()).not.toBeChecked();
+	// Ticked again it finishes util.ts again, which closes.
 	await boxes(utilS).first().click();
-	await expect(boxes(utilS).first()).toBeChecked();
+	await expect(
+		utilS.getByRole("button", { name: "Expand file" }),
+	).toBeVisible();
 	await expect(page.getByTestId("sync-notices")).toHaveCount(0);
 	await expect(progress(page)).toContainText("3 / 4 clusters reviewed");
 	const refs = reviewRefs(workdir);
@@ -414,8 +440,9 @@ test("a gone cluster is a red block with its chip, markable on its own (reverted
 	await expect(
 		coreS.getByRole("button", { name: "Cross off cluster" }).first(),
 	).toBeDisabled();
+	// Finished, so its ✓ is the reset: locked too.
 	await expect(
-		coreS.getByRole("button", { name: "Mark remaining reviewed" }),
+		coreS.getByRole("button", { name: "Unmark reviewed" }),
 	).toBeDisabled();
 	await expect(
 		coreS.getByTestId("diff-line").filter({ hasText: "core 5 changed" }),
@@ -601,6 +628,12 @@ test("a newer head fills the rail's last slot and shows the toast; nothing below
 	await page.clock.install();
 	await openFiles(page, s.url);
 	await reviewAll(page);
+	// The move-on to the verdict (a frame on the installed clock, then its
+	// scroll and rise) settles; then back to the top, where the toast's
+	// arrival is measured.
+	await page.clock.runFor(1_000);
+	await page.waitForFunction(() => document.getAnimations().length === 0);
+	await page.evaluate(() => window.scrollTo(0, 0));
 	await expect(tail(page)).toHaveAttribute("data-state", "up-to-date");
 	await expect(tail(page)).toContainText("up to date");
 	await expect(toast(page)).toHaveCount(0);
@@ -1258,7 +1291,9 @@ async function startNext(page: Page, n: number, path: string) {
 	await expect(
 		node(page, `ps${n}`).getByRole("button", { name: "comparison target" }),
 	).toBeVisible(GIT_WAIT);
-	await section.getByRole("button", { name: "Collapse file" }).click();
+	// A mark that finished the file closed it already (the page moved on).
+	const collapse = section.getByRole("button", { name: "Collapse file" });
+	if (await collapse.isVisible()) await collapse.click();
 }
 
 test("a thread of a file deleted two patch sets earlier is under Not in this comparison on PS3 and PS4, in both views; a quiet line once resolved, back once unresolved", async ({
@@ -1294,9 +1329,11 @@ test("a thread of a file deleted two patch sets earlier is under Not in this com
 	await openFiles(page, s.url);
 	// PS1: one mark starts it.
 	const coreS = await expand(page, "src/core.ts");
+	// Its one cluster: the mark finishes the file, which closes.
 	await boxes(coreS).first().click();
-	await expect(boxes(coreS).first()).toBeChecked();
-	await coreS.getByRole("button", { name: "Collapse file" }).click();
+	await expect(
+		coreS.getByRole("button", { name: "Expand file" }),
+	).toBeVisible();
 	// PS2 deletes the file; PS3 and PS4 change core.ts again.
 	p.moveHead({
 		message: "drop legacy",
@@ -1920,10 +1957,15 @@ async function piecesSince(
 	const section = await expand(page, PIECES);
 	const all = boxes(section);
 	await expect(all).toHaveCount(4);
-	for (let i = 0; i < 4; i++) {
+	for (let i = 0; i < 3; i++) {
 		await all.nth(i).click();
 		await expect(all.nth(i)).toBeChecked();
 	}
+	// The last mark finishes the file, which closes.
+	await all.nth(3).click();
+	await expect(
+		section.getByRole("button", { name: "Expand file" }),
+	).toBeVisible();
 	await expect(progress(page)).toHaveAttribute("aria-valuenow", "100");
 	await expect(page.getByTestId("sync-notices")).toHaveCount(0);
 	p.moveHead(piecesPush);
