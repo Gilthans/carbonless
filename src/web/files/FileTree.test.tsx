@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import {
+	act,
 	cleanup,
 	render,
 	screen,
@@ -364,7 +365,7 @@ describe("FileTree", () => {
 		await user.click(document.body);
 		await user.hover(screen.getByRole("button", { name: /api\.g\.cs/ }));
 		await waitFor(() => expect(shown()).toHaveLength(1));
-		expect(shown()[0]).toHaveTextContent("crossed off");
+		expect(shown()[0]).toHaveTextContent(/crossed off/i);
 	});
 
 	it("never shows a file's bar full while anything in it is unreviewed", () => {
@@ -476,23 +477,313 @@ describe("FileTree", () => {
 describe("tooltip paths", () => {
 	afterEach(cleanup);
 
-	it("shows file and folder paths in tooltips in monospace", () => {
+	it("shows file and folder paths in tooltips in monospace, and none that repeats the title", async () => {
 		render(
 			<FileTree
-				files={[file(0, "src/a/x.ts", ["unreviewed"]), file(1, "y.ts", [])]}
+				files={[
+					file(0, "src/a/x.ts", ["unreviewed"]),
+					file(1, "src/b/y.ts", []),
+					file(2, "z.ts", ["unreviewed"]),
+				]}
 				unit="lines"
 				current={null}
 				onSelect={() => {}}
 			/>,
 		);
-		const paths = [
-			...document.querySelectorAll('[role="tooltip"] [data-tooltip-path]'),
-		].map((el) => [el.textContent, el.tagName, el.className]);
-		expect(paths).toEqual([
-			["src/a", "CODE", expect.stringContaining("font-mono")],
-			["src/a/x.ts", "CODE", expect.stringContaining("font-mono")],
-			["y.ts", "CODE", expect.stringContaining("font-mono")],
+		const paths = async (row: HTMLElement) =>
+			[...(await tipOf(row)).querySelectorAll("[data-tooltip-path]")].map(
+				(el) => [el.textContent, el.tagName, el.className],
+			);
+		const mono = expect.stringContaining("font-mono");
+		const folder = (path: string) =>
+			document.querySelector(`[data-folder="${path}"]`) as HTMLElement;
+		expect(await paths(folder("src/a"))).toEqual([["src/a", "CODE", mono]]);
+		expect(await paths(screen.getByRole("button", { name: /x\.ts/ }))).toEqual([
+			["src/a/x.ts", "CODE", mono],
 		]);
+		// A top-level folder and a root file: the path is the title.
+		expect(await paths(folder("src"))).toEqual([]);
+		expect(await paths(screen.getByRole("button", { name: /z\.ts/ }))).toEqual(
+			[],
+		);
+	});
+});
+
+/** Focuses a row and returns its open tooltip (decorative: found by the DOM). */
+async function tipOf(row: HTMLElement): Promise<HTMLElement> {
+	act(() => row.focus());
+	let tip: HTMLElement | null = null;
+	await waitFor(() => {
+		tip = document.querySelector<HTMLElement>('[role="tooltip"]:not([hidden])');
+		expect(tip).not.toBeNull();
+	});
+	return tip as unknown as HTMLElement;
+}
+
+/** A tooltip's title, path and legend lines (kind and text, in order). */
+function legendOf(tip: HTMLElement) {
+	return {
+		title: tip.querySelector("[data-tooltip-title]")?.textContent,
+		lines: [...tip.querySelectorAll<HTMLElement>("[data-tooltip-line]")].map(
+			(l) => [l.dataset.tooltipLine, l.textContent],
+		),
+	};
+}
+
+describe("tooltip legend", () => {
+	afterEach(cleanup);
+
+	const asked = {
+		id: "A1",
+		anchor: { subject: "file" as const, path: "src/busy.ts", commit: "h" },
+		openedBy: "human" as const,
+		at: "2026-11-07T10:00:00Z",
+		messages: [],
+		resolved: false,
+		waiting: true,
+	};
+
+	it("titles a busy file by its name and gives each indicator a line, in the row's order", async () => {
+		render(
+			<FileTree
+				files={[
+					file(0, "src/busy.ts", ["reviewed", "unreviewed"]),
+					file(1, "src/plain.ts", ["unreviewed"]),
+				]}
+				unit="clusters"
+				current={0}
+				onSelect={() => {}}
+				threadsOf={threadsBy([thread("src/busy.ts", { yourTurn: true })])}
+				agentThreadsOf={(f) => (f.path === asked.anchor.path ? [asked] : [])}
+			/>,
+		);
+		const row = screen.getByRole("button", { name: /busy\.ts/ });
+		const tip = await tipOf(row);
+		const title = tip.querySelector("[data-tooltip-title]");
+		expect(title?.className).toContain("font-semibold");
+		expect(title?.className).toContain("font-mono");
+		// The full path right under it.
+		expect(title?.nextElementSibling?.textContent).toBe("src/busy.ts");
+		expect(legendOf(tip)).toEqual({
+			title: "busy.ts",
+			lines: [
+				["status", "Partly reviewed"],
+				["change-kind", "Modified"],
+				["mark", "In view"],
+				["threads", "1 comment in this file, your turn"],
+				["agent-threads", "1 agent thread in this file, 1 waiting"],
+				["changes", "3 lines added, 1 deleted · 2 clusters"],
+				["progress", "1 of 2 clusters reviewed"],
+			],
+		});
+		// Each line's icon is the row's own: the status glyph, the yellow
+		// dot, the agent dot, the counts and the meter.
+		const icon = (kind: string) =>
+			tip.querySelector(`[data-tooltip-icon="${kind}"]`) as HTMLElement;
+		expect(icon("status").textContent).toBe("◐");
+		expect(icon("status").innerHTML).toContain("text-warn");
+		expect(icon("threads").innerHTML).toContain("bg-warn");
+		expect(icon("agent-threads").innerHTML).toContain("bg-agent-ink");
+		expect(icon("changes").textContent).toContain("+3 −1");
+		expect(
+			icon("progress").querySelector('[data-part="reviewed"]'),
+		).not.toBeNull();
+		expect(icon("mark").innerHTML).toContain("border-accent");
+		// The legend's copies take no test ids from the row.
+		expect(tip.querySelector("[data-testid=tree-dot]")).toBeNull();
+		expect(tip.querySelector("[data-testid=tree-threads]")).toBeNull();
+		// The row's accessible name is unchanged: the tooltip adds nothing to it.
+		expect(row).toHaveAccessibleName(
+			"partly doneModifiedbusy.ts1 comment in this file, your turn1 agent thread in this file, 1 waiting3 lines added, 1 deleted2 clusters1 of 2 clusters reviewed, in view",
+		);
+	});
+
+	it("gives a plain file only the lines its row shows", async () => {
+		render(
+			<FileTree
+				files={[file(0, "plain.ts", ["unreviewed"])]}
+				unit="lines"
+				current={null}
+				onSelect={() => {}}
+			/>,
+		);
+		const tip = await tipOf(screen.getByRole("button", { name: /plain\.ts/ }));
+		expect(legendOf(tip)).toEqual({
+			title: "plain.ts",
+			lines: [
+				["status", "Unreviewed"],
+				["change-kind", "Modified"],
+				["changes", "3 lines added, 1 deleted · 1 cluster"],
+				["progress", "0 of 2 lines reviewed"],
+			],
+		});
+	});
+
+	it("says a crossed-off file's reasons and a rename's old path", async () => {
+		render(
+			<FileTree
+				files={[
+					file(0, "gen/api.g.cs", ["crossed-off"], "generated"),
+					{
+						...file(1, "new/x.ts", ["reviewed"]),
+						status: "renamed",
+						oldPath: "old/x.ts",
+					},
+				]}
+				unit="clusters"
+				current={null}
+				onSelect={() => {}}
+			/>,
+		);
+		const gen = legendOf(
+			await tipOf(screen.getByRole("button", { name: /api\.g\.cs/ })),
+		);
+		// No meter line repeating "crossed off".
+		expect(gen.lines).toEqual([
+			["status", "Crossed off: generated"],
+			["change-kind", "Modified"],
+			["changes", "3 lines added, 1 deleted · 1 cluster"],
+		]);
+		const moved = await tipOf(
+			screen
+				.getAllByRole("button", { name: /x\.ts/ })
+				.find((b) => !b.hasAttribute("data-moved")) as HTMLElement,
+		);
+		expect(legendOf(moved).title).toBe("x.ts");
+		expect(
+			moved.querySelector("[data-tooltip-title]")?.nextElementSibling
+				?.textContent,
+		).toBe("old/x.ts → new/x.ts");
+		expect(legendOf(moved).lines.slice(0, 2)).toEqual([
+			["status", "Reviewed"],
+			// The path line says where from: not repeated.
+			["change-kind", "Renamed"],
+		]);
+	});
+
+	it("titles a folder by its name with its path, marks, waiting threads and progress", async () => {
+		const user = userEvent.setup();
+		render(
+			<FileTree
+				files={[
+					file(0, "src/a/x.ts", ["reviewed", "unreviewed"]),
+					file(1, "src/a/y.ts", ["unreviewed"]),
+				]}
+				unit="clusters"
+				current={null}
+				opened={0}
+				onSelect={() => {}}
+				threadsOf={threadsBy([thread("src/a/y.ts", { yourTurn: true })])}
+			/>,
+		);
+		const folder = document.querySelector(
+			'[data-folder="src/a"]',
+		) as HTMLElement;
+		// Folded: its waiting dot shows, so its line does too.
+		await user.click(folder);
+		const tip = await tipOf(folder);
+		// A one-child chain shows as one folder, named by the chain.
+		expect(legendOf(tip)).toEqual({
+			title: "src/a",
+			lines: [
+				["mark", "Holds the opened file"],
+				["threads", "1 thread waits on you"],
+				["changes", "6 lines added, 2 deleted · 3 clusters"],
+				["progress", "1 / 3 clusters · 2 files left"],
+			],
+		});
+		// Its path is its title: no path line.
+		expect(tip.querySelector("[data-tooltip-path]")).toBeNull();
+	});
+
+	it("titles a moved-away entry by its old name and says where it went", async () => {
+		render(
+			<FileTree
+				files={[
+					{
+						...file(0, "new/x.ts", ["unreviewed"]),
+						status: "renamed",
+						oldPath: "old/x.ts",
+					},
+				]}
+				unit="clusters"
+				current={null}
+				onSelect={() => {}}
+			/>,
+		);
+		const entry = document.querySelector(
+			'[data-moved="old/x.ts"]',
+		) as HTMLElement;
+		const tip = await tipOf(entry);
+		expect(legendOf(tip)).toEqual({
+			title: "x.ts",
+			lines: [["moved", "Moved to new/x.ts"]],
+		});
+		expect(
+			tip
+				.querySelector('[data-tooltip-icon="moved"] svg')
+				?.getAttribute("class"),
+		).toContain("text-bad");
+		// The old folder, only old paths inside: moved away.
+		const ghost = await tipOf(
+			document.querySelector('[data-folder="old"]') as HTMLElement,
+		);
+		expect(legendOf(ghost).lines).toEqual([["moved", "Moved away"]]);
+	});
+
+	it("says only what a done file's status doesn't: how much was crossed off", async () => {
+		// In files its progress is "done · 2 crossed off": "done" is the status line's.
+		render(
+			<FileTree
+				files={[
+					file(0, "a/part.ts", ["reviewed", "crossed-off", "crossed-off"], "x"),
+				]}
+				unit="files"
+				current={null}
+				onSelect={() => {}}
+			/>,
+		);
+		const tip = await tipOf(screen.getByRole("button", { name: /part\.ts/ }));
+		const lines = legendOf(tip).lines;
+		expect(lines[0]).toEqual(["status", "Reviewed"]);
+		expect(lines.at(-1)).toEqual(["progress", "2 crossed off"]);
+	});
+
+	it("renders names and paths with markup as text", async () => {
+		const evil = "src/<img src=x onerror=alert(1)>.ts";
+		const dir = "<img src=x onerror=alert(2)>";
+		render(
+			<FileTree
+				files={[
+					file(0, evil, ["unreviewed"]),
+					{
+						...file(1, `${dir}/b.ts`, ["unreviewed"]),
+						status: "renamed",
+						oldPath: "old/b.ts",
+					},
+				]}
+				unit="clusters"
+				current={null}
+				onSelect={() => {}}
+			/>,
+		);
+		const tip = await tipOf(screen.getByRole("button", { name: /alert\(1\)/ }));
+		expect(tip.querySelector("img")).toBeNull();
+		expect(legendOf(tip).title).toBe("<img src=x onerror=alert(1)>.ts");
+		expect(tip.querySelector("[data-tooltip-path]")?.textContent).toBe(evil);
+		// A folder named with markup.
+		const folder = await tipOf(
+			document.querySelector(`[data-folder="${dir}"]`) as HTMLElement,
+		);
+		expect(folder.querySelector("img")).toBeNull();
+		expect(legendOf(folder).title).toBe(dir);
+		// The moved-away entry's "Moved to" line.
+		const moved = await tipOf(
+			document.querySelector('[data-moved="old/b.ts"]') as HTMLElement,
+		);
+		expect(moved.querySelector("img")).toBeNull();
+		expect(legendOf(moved).lines).toEqual([["moved", `Moved to ${dir}/b.ts`]]);
+		expect(document.querySelector("img")).toBeNull();
 	});
 });
 
@@ -1182,10 +1473,9 @@ describe("renamed files", () => {
 			now.querySelector('[data-testid="change-kind"]')?.getAttribute("class"),
 		).toContain("text-ok");
 		// Its tooltip says where it went.
-		const tips = [...document.querySelectorAll('[role="tooltip"]')].map(
-			(t) => t.textContent,
+		expect(await tipOf(moved("old/x.ts"))).toHaveTextContent(
+			"Moved to new/x.ts",
 		);
-		expect(tips).toContain("old/x.ts → new/x.ts");
 	});
 
 	it("counts each file once, at its new path; a folder of old paths is a ghost", () => {

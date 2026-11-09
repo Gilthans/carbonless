@@ -70,6 +70,7 @@ import { type CellLine, CODE_CELL, cellLine } from "./codeSpan";
 import { contextRanges } from "./contextRanges";
 import { findBarElement } from "./find/hitSeen";
 import { EXPAND_STEP, fileGaps, type Gap, gapState } from "./gaps";
+import { Labelled, labelReserve } from "./HunkHeading";
 import { hiddenLines } from "./hiddenLines";
 import { languageFor } from "./highlight";
 import type { Landing } from "./landing";
@@ -1597,7 +1598,7 @@ function expansions(gap: Gap, top: number, bottom: number, remaining: number) {
 	if (gap.above && gap.below && remaining <= EXPAND_STEP) {
 		return [
 			{
-				glyph: "↕",
+				glyph: "↕" as const,
 				label: `Load all ${plural(remaining)}`,
 				from: start,
 				to: end,
@@ -1608,7 +1609,7 @@ function expansions(gap: Gap, top: number, bottom: number, remaining: number) {
 	const result = [];
 	if (gap.above) {
 		result.push({
-			glyph: "↓",
+			glyph: "↓" as const,
 			label: `Load ${plural(step)} below`,
 			from: start,
 			to: start + step - 1,
@@ -1616,13 +1617,120 @@ function expansions(gap: Gap, top: number, bottom: number, remaining: number) {
 	}
 	if (gap.below) {
 		result.push({
-			glyph: "↑",
+			glyph: "↑" as const,
 			label: `Load ${plural(step)} above`,
 			from: end - step + 1,
 			to: end,
 		});
 	}
 	return result;
+}
+
+/**
+ * Each arrow's name on its gap row while the pointer is where a click would
+ * press it (`data-hot`), and how the arrow lights up then: as when hovered.
+ */
+const HOT = {
+	"↓": {
+		name: "down",
+		lit: "group-data-[hot=down]/gap:bg-pressed group-data-[hot=down]/gap:text-ink",
+	},
+	"↑": {
+		name: "up",
+		lit: "group-data-[hot=up]/gap:bg-pressed group-data-[hot=up]/gap:text-ink",
+	},
+	"↕": {
+		name: "all",
+		lit: "group-data-[hot=all]/gap:bg-pressed group-data-[hot=all]/gap:text-ink",
+	},
+} as const;
+
+type Glyph = keyof typeof HOT;
+
+/**
+ * A hidden-lines row that is its arrows' pointer target (gapRowTarget): a
+ * click anywhere presses the arrow under the pointer, which is lit while
+ * the pointer is there (`data-hot`, set on the element: no re-render per
+ * move). When the arrows change under a still pointer (↑ turned ↓ ↑ into
+ * ↕), the light follows at once. A pointer convenience only: the
+ * keyboard has the buttons, and the row is never focusable.
+ */
+function GapRowTr(props: {
+	glyphs: Glyph[];
+	onPress: (index: number) => void;
+	className: string;
+	children: ReactNode;
+}) {
+	const row = useRef<HTMLTableRowElement>(null);
+	const pointer = useRef<{ target: EventTarget | null; clientY: number }>(null);
+	const glyphs = props.glyphs.join("");
+	// biome-ignore lint/correctness/useExhaustiveDependencies: the arrows, by their glyphs.
+	const light = useCallback(() => {
+		const el = row.current;
+		if (!el) return;
+		const at = pointer.current;
+		if (!at || props.glyphs.length === 0) {
+			delete el.dataset.hot;
+			return;
+		}
+		const index = gapRowTarget(
+			{ ...at, currentTarget: el },
+			props.glyphs.length,
+		);
+		const glyph = index === null ? undefined : props.glyphs[index];
+		el.dataset.hot = glyph ? HOT[glyph].name : "";
+	}, [glyphs]);
+	useLayoutEffect(light, [light]);
+	const reactive = props.glyphs.length > 0;
+	return (
+		<tr
+			ref={row}
+			data-testid="gap-row"
+			onPointerMove={(e) => {
+				pointer.current = { target: e.target, clientY: e.clientY };
+				light();
+			}}
+			onPointerLeave={() => {
+				pointer.current = null;
+				light();
+			}}
+			onClick={
+				reactive
+					? (e) => {
+							const index = gapRowTarget(e, props.glyphs.length);
+							if (index !== null) props.onPress(index);
+						}
+					: undefined
+			}
+			className={`${props.className} ${reactive ? "cursor-pointer" : ""}`}
+		>
+			{props.children}
+		</tr>
+	);
+}
+
+/** What a pointer on a gap row can't press through: its own controls. */
+const OWN_CONTROLS = "button, a, input, textarea, select, [role=button]";
+
+/**
+ * Which of a gap row's `count` arrows a pointer event at this point presses:
+ * the one arrow anywhere on the row; with two (↓ above ↑, like GitHub's), ↓
+ * on the row's top half and ↑ on its bottom half. None over the row's other
+ * controls (a bubble, Retry), which keep their own clicks.
+ */
+export function gapRowTarget(
+	e: { target: EventTarget | null; currentTarget: Element; clientY: number },
+	count: number,
+): number | null {
+	if (count === 0) return null;
+	const own =
+		e.target instanceof Element ? e.target.closest(OWN_CONTROLS) : null;
+	if (own && e.currentTarget.contains(own) && !own.hasAttribute("data-glyph")) {
+		return null;
+	}
+	if (count === 1) return 0;
+	const box = e.currentTarget.getBoundingClientRect();
+	return e.clientY < box.top + box.height / 2 ? 0 : 1;
 }
 
 const hunkHeader = (h: DisplayHunk) =>
@@ -2020,6 +2128,9 @@ export function DiffBody(props: {
 	 * them (its ↑/↓ buttons, "N hidden lines", loading or Retry, and a bubble
 	 * for the threads whose line is in it).
 	 */
+	const hunkAt = (index: number) => hunks.data?.hunks[index];
+	/** Hunks whose heading went on the hidden-lines row above them, this render. */
+	const headedOnGap = new Set<number>();
 	const gapRows = (gap: Gap | undefined, lead?: () => FileLead | undefined) => {
 		if (!gap) return null;
 		const gapThreads = placement?.gaps.get(gap.index) ?? [];
@@ -2134,15 +2245,32 @@ export function DiffBody(props: {
 				run.from === run.to
 					? `on hidden line ${run.from}`
 					: `on hidden lines ${run.from}–${run.to}`;
+			// The heading of the hunk below, once per hunk: here when this row
+			// sits right above the hunk (its run ends at the gap's end, so no
+			// loaded line comes between) and shows its count or its loading;
+			// else on the hunk's @@ row (headedOnGap).
+			const heading =
+				run.to === gap.to && failed.length === 0 && (pending || remaining > 0)
+					? hunkAt(gap.index)?.heading
+					: undefined;
+			if (heading) headedOnGap.add(gap.index);
+			const bubbles =
+				(runThreads.length > 0 ? 1 : 0) + (runAgent.length > 0 ? 1 : 0);
 			rows.push(
-				<tr
+				<GapRowTr
 					key={`gap${gap.index}:${run.from}`}
-					data-testid="gap-row"
+					glyphs={buttons.map((b) => b.glyph)}
+					onPress={(at) => {
+						const b = buttons[at];
+						if (b) addRange(b.from, b.to);
+					}}
 					// Not code: a selection across it leaves it out.
-					className="bg-hunk text-hunk-ink select-none"
+					className="group/gap bg-hunk text-hunk-ink select-none [--ctl-w:3rem] pointer-coarse:[--ctl-w:5.25rem]"
 				>
 					<td colSpan={2} className="px-1">
-						<div className="flex">
+						<div
+							className={`flex ${buttons.length > 1 ? "flex-col items-start" : ""}`}
+						>
 							{buttons.map((b) => (
 								<Tooltip key={b.glyph} content={b.label} describe={false}>
 									{(trigger) => (
@@ -2150,8 +2278,13 @@ export function DiffBody(props: {
 											type="button"
 											{...trigger}
 											aria-label={b.label}
-											onClick={() => addRange(b.from, b.to)}
-											className="rounded px-1 hover:bg-pressed hover:text-ink focus-visible:outline-2 focus-visible:outline-accent"
+											data-glyph={b.glyph}
+											onClick={(e) => {
+												// The row's own click would load it again.
+												e.stopPropagation();
+												addRange(b.from, b.to);
+											}}
+											className={`rounded px-1 hover:bg-pressed hover:text-ink focus-visible:outline-2 focus-visible:outline-accent pointer-coarse:min-h-10 pointer-coarse:min-w-10 ${HOT[b.glyph].lit}`}
 										>
 											{b.glyph}
 										</button>
@@ -2162,7 +2295,7 @@ export function DiffBody(props: {
 					</td>
 					<td
 						colSpan={columns - 2}
-						className={`font-sans ${leadText(runLead, centred, (runThreads.length > 0 ? 1 : 0) + (runAgent.length > 0 ? 1 : 0))}`}
+						className={`font-sans ${leadText(runLead, centred, bubbles)}`}
 					>
 						{runLead && centred && (
 							<FileBubbleSlot count={runLead.count}>
@@ -2207,13 +2340,27 @@ export function DiffBody(props: {
 									Retry
 								</button>
 							</span>
-						) : pending ? (
-							<Spinner label="Loading lines" size={14} />
-						) : remaining > 0 ? (
-							`${remaining} hidden ${remaining === 1 ? "line" : "lines"}`
+						) : pending || remaining > 0 ? (
+							<Labelled
+								label={
+									pending ? (
+										<Spinner label="Loading lines" size={14} />
+									) : (
+										`${remaining} hidden ${remaining === 1 ? "line" : "lines"}`
+									)
+								}
+								heading={heading}
+								reserve={labelReserve(
+									"var(--ctl-w) + 0.5rem",
+									bubbles + (runLead && !centred ? (runLead.count ?? 1) : 0),
+									runLead && centred
+										? { count: runLead.count ?? 1 }
+										: undefined,
+								)}
+							/>
 						) : null}
 					</td>
-				</tr>,
+				</GapRowTr>,
 			);
 			if (runLead) {
 				rows.push(
@@ -2262,6 +2409,8 @@ export function DiffBody(props: {
 			{gapRows(gapAt(index), takeLead)}
 			<HunkRows
 				hunk={hunk}
+				// Once per hunk: not here when its hidden-lines row has it.
+				heading={headedOnGap.has(index) ? undefined : hunk.heading}
 				clusters={clusters}
 				lang={lang}
 				tabWidth={file.tabWidth}
@@ -2743,6 +2892,8 @@ function LandingHint({ hint }: { hint: Hint }) {
 /** A hunk's header and lines: context runs, and each cluster's run with its rail. */
 function HunkRows(props: {
 	hunk: DisplayHunk;
+	/** The heading on its @@ row (none when the row above has it). */
+	heading?: string;
 	clusters: Map<string, ClusterView>;
 	lang: string | null;
 	tabWidth?: number;
@@ -2807,10 +2958,21 @@ function HunkRows(props: {
 		<>
 			<tbody>
 				{/* Not code: a selection across hunks leaves the header out. */}
-				<tr className="bg-hunk text-hunk-ink select-none">
+				<tr
+					data-testid="hunk-header"
+					className="bg-hunk text-hunk-ink select-none"
+				>
 					<td colSpan={columns} className={`${leadText(lead, centred)} py-0.5`}>
 						{lead && <LeadSlot lead={lead} centred={centred} />}
-						{hunkHeader(hunk)}
+						<Labelled
+							label={hunkHeader(hunk)}
+							heading={props.heading}
+							reserve={labelReserve(
+								"0.5rem",
+								lead && !centred ? (lead.count ?? 1) : 0,
+								lead && centred ? { count: lead.count ?? 1 } : undefined,
+							)}
+						/>
 					</td>
 				</tr>
 				{lead?.row(columns)}

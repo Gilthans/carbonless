@@ -128,6 +128,13 @@ describe("the file tree", () => {
 		// The row's tooltip says it too (touch and keyboard).
 		await userEvent.hover(screen.getByRole("button", { name: /gone\.ts/ }));
 		await waitFor(() => expect(shown()).toHaveLength(1));
-		expect(shown()[0]).toHaveTextContent(/^Deleted · a\/gone\.ts/);
+		const tip = shown()[0] as HTMLElement;
+		expect(tip.querySelector("[data-tooltip-title]")).toHaveTextContent(
+			"gone.ts",
+		);
+		expect(tip).toHaveTextContent("a/gone.ts");
+		expect(
+			tip.querySelector('[data-tooltip-line="change-kind"]'),
+		).toHaveTextContent(/^Deleted$/);
 	});
 });
