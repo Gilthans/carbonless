@@ -1336,7 +1336,7 @@ export function FilesPage() {
 										</div>
 									</div>
 								)}
-								<SelectionBar files={data.files} />
+								<SelectionBar files={data.files} commit={agentHead} />
 								{!wide && (data.files.length > 0 || gone.length > 0) && (
 									<>
 										<button

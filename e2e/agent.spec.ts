@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Page } from "@playwright/test";
 import { acpLog, releaseAcp } from "../test/fake-acp/scenario";
@@ -17,7 +17,7 @@ import {
 	test,
 } from "./agent-ui";
 import { expectNoPageOverflow, fileSection, marksReady } from "./files-ui";
-import { OWNER_REPO } from "./fixtures";
+import { OWNER_REPO, reviewPage } from "./fixtures";
 
 /**
  * The reviewer's own agent (review buddy) against the fake ACP agent: ask
@@ -596,7 +596,7 @@ test("agent threads follow a push: on the moved line; a reverted file's and a re
 	);
 });
 
-test("on a patch set and in the since view: traced from PS1 into the head, then into PS2", async ({
+test("on a patch set and in the since view: traced from PS1 into the head, then into PS2; a comment and a question name the head they were written on", async ({
 	page,
 	pr,
 	agentCrb,
@@ -618,7 +618,7 @@ test("on a patch set and in the since view: traced from PS1 into the head, then 
 		section.getByRole("button", { name: "Expand file" }),
 	).toBeVisible();
 	// Two lines on top, and the asked line (now 5) reworked.
-	p.moveHead({
+	const head = p.moveHead({
 		message: "rework",
 		files: {
 			[CALC]: calcLines(
@@ -648,27 +648,83 @@ test("on a patch set and in the since view: traced from PS1 into the head, then 
 	held.release();
 	const bubble = row(since, 5).getByTestId("agent-bubble");
 	await expect(bubble).toHaveAccessibleName("1 agent thread on line 5");
-	// A mark on the head starts PS2: the page views it, placed into it.
+	// A comment on the head's line 5 starts PS2 (the page views it): it
+	// names the head it was written on, with that head's line.
 	const before = held.hits.length;
-	await marksReady(page, since);
-	await since
-		.getByRole("checkbox", { name: "Mark cluster reviewed" })
-		.first()
-		.click();
+	const number = row(since, 5).getByTestId("new");
+	if (await page.evaluate(() => navigator.maxTouchPoints > 0)) {
+		await number.tap();
+	} else await number.click();
+	await bar(page).getByRole("button", { name: "Comment" }).click();
+	const composer = since.getByTestId("new-thread");
+	await composer.getByRole("textbox", { name: "Comment" }).fill("On the head");
+	await composer.getByRole("button", { name: "Comment" }).click();
 	await expect(page.getByTestId("ps-node-ps2")).toBeVisible({
 		timeout: 30_000,
 	});
+	expect(storedThreads(p)).toMatchObject([
+		{ path: CALC, line: 5, originalCommit: head },
+	]);
 	await expect
 		.poll(() => held.hits.slice(before).some((q) => q.includes("ps=2")))
 		.toBe(true);
 	const ps2 = fileSection(page, CALC);
-	if (await ps2.getByRole("button", { name: "Expand file" }).isVisible()) {
-		await ps2.getByRole("button", { name: "Expand file" }).click();
-	}
+	const expand = async (section: typeof ps2) => {
+		if (
+			await section.getByRole("button", { name: "Expand file" }).isVisible()
+		) {
+			await section.getByRole("button", { name: "Expand file" }).click();
+		}
+	};
+	await expand(ps2);
 	await expect(row(ps2, 5).getByTestId("agent-bubble")).toHaveAccessibleName(
 		"1 agent thread on line 5",
 	);
+	// Back on PS1 (PS2 started since): a question asked there is on PS1's
+	// head and line, shown there, and traced into PS2 like the first.
+	await page.goto(reviewPage(s.url, "files", "ps=1"));
+	await expect(page.getByTestId("read-only-note")).toContainText("PS1");
+	const ps1 = fileSection(page, CALC);
+	await ps1.getByRole("button", { name: "Expand file" }).click();
+	await expect(row(ps1, 3)).toBeVisible();
+	const late = await ask(page, ps1, 3, "Asked on PS1 after PS2");
+	await expect(late).toHaveAttribute("aria-label", "Agent thread, answered");
+	await expect(row(ps1, 3).getByTestId("agent-bubble")).toHaveAccessibleName(
+		"2 agent threads on line 3",
+	);
+	await page.goto(reviewPage(s.url, "files", "ps=2"));
+	const back = fileSection(page, CALC);
+	// Freshly opened: the file starts closed.
+	await back.getByRole("button", { name: "Expand file" }).click();
+	await expect(row(back, 5).getByTestId("agent-bubble")).toHaveAccessibleName(
+		"2 agent threads on line 5",
+	);
 });
+
+/** The review threads the fake gh holds, with each one's first comment's commit. */
+function storedThreads(p: { scenarioPath: string }) {
+	const s = JSON.parse(readFileSync(p.scenarioPath, "utf8")) as {
+		prs: Record<
+			string,
+			{
+				graphql?: {
+					reviewThreads?: {
+						path: string;
+						line: number;
+						first?: { nodes: { originalCommit?: { oid: string } }[] };
+					}[];
+				};
+			}
+		>;
+	};
+	return Object.values(s.prs).flatMap((pr) =>
+		(pr.graphql?.reviewThreads ?? []).map((t) => ({
+			path: t.path,
+			line: t.line,
+			originalCommit: t.first?.nodes[0]?.originalCommit?.oid,
+		})),
+	);
+}
 
 /** A PR that tries to make whatever opens it run things. */
 const hostile = (workdir: string) => ({
