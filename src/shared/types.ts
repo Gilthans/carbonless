@@ -69,6 +69,12 @@ export interface DisplayHunk {
 	oldCount: number;
 	newStart: number;
 	newCount: number;
+	/**
+	 * The section heading git prints after `@@ … @@` for this hunk (its
+	 * "function context", e.g. `def foo(self):`), as GitHub shows it.
+	 * Plain text, never markup.
+	 */
+	heading?: string;
 	lines: DiffLine[];
 }
 
