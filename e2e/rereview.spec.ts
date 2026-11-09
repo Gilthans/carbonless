@@ -1957,10 +1957,15 @@ async function piecesSince(
 	const section = await expand(page, PIECES);
 	const all = boxes(section);
 	await expect(all).toHaveCount(4);
-	for (let i = 0; i < 4; i++) {
+	for (let i = 0; i < 3; i++) {
 		await all.nth(i).click();
 		await expect(all.nth(i)).toBeChecked();
 	}
+	// The last mark finishes the file, which closes.
+	await all.nth(3).click();
+	await expect(
+		section.getByRole("button", { name: "Expand file" }),
+	).toBeVisible();
 	await expect(progress(page)).toHaveAttribute("aria-valuenow", "100");
 	await expect(page.getByTestId("sync-notices")).toHaveCount(0);
 	p.moveHead(piecesPush);
