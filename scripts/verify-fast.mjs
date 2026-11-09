@@ -68,8 +68,9 @@ const E2E_MAP = [
 		/^src\/web\/files\/(PatchsetGraph|HeadToast|graphCards|comparison|FilesPage|FileDiff|DiffBody|FileTree|ProgressBar|useSetStates|landing)\.tsx?$|^src\/web\/(App|shortcuts)\.tsx$|^e2e\/pr-setup\.ts$/,
 		["rereview"],
 	],
+	[/^src\/web\/agent\//, ["agent", "agent-setup"]],
 	[
-		/^src\/web\/(overview|threads)\/|^src\/server\/(overview|overviewRead|threadCode|timeline)\.ts$|^src\/web\/(GithubHtml|githubHtml)/,
+		/^src\/web\/(overview|threads)\/|^src\/server\/(overview|overviewRead|threadCode|timeline)\.ts$|^src\/web\/(GithubHtml|githubHtml|sanitizeGithubHtml)/,
 		["overview", "timeline", "mobile"],
 	],
 	[/^src\/web\/threads\//, ["files-threads", "thread-people"]],
@@ -136,6 +137,7 @@ const E2E_MAP = [
 		["asof", "overview", "pinned-head"],
 	],
 	[/^src\/server\/pinnedHead\.ts$/, ["pinned-head"]],
+	[/^src\/server\/agent\/|^test\/fake-acp\//, ["agent"]],
 	[
 		/^src\/web\/(brand\/|Tooltip\.tsx$|theme)|^src\/web\/index\.css$/,
 		["design", "mobile"],

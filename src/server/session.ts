@@ -22,6 +22,7 @@ import type {
 	VerdictFacts,
 	VerdictRequest,
 } from "../shared/types.js";
+import { type AgentHost, reviewAgentHost } from "./agent/host.js";
 import { ensureClone, ensureCommit, fetchPr } from "./clone.js";
 import {
 	buildSnapshot,
@@ -272,7 +273,38 @@ export class Session {
 		this.#snapshotBase = progress.patchset?.baseBranch ?? meta.baseBranch;
 		if (head) this.#fetched(meta, head.mergeBase);
 		this.#threadCode = new ThreadCodeSource(repo);
+		this.#agent = this.writes() === "on" ? this.#makeAgent() : null;
 		Session.#open.add(this);
+	}
+
+	/** The reviewer's agent; none as of a cutoff or as --viewer someone else. */
+	readonly #agent: AgentHost | null;
+
+	get agent(): AgentHost | null {
+		return this.#agent;
+	}
+
+	#makeAgent(): AgentHost {
+		return reviewAgentHost({
+			repo: this.repo,
+			reviewId: this.reviewId,
+			viewer: this.viewer,
+			meta: () => this.#meta,
+			snapshot: () => this.#snapshot,
+			prFacts: async () => {
+				const o = await this.overview();
+				return { title: o.title, body: o.body };
+			},
+			code: (anchor) =>
+				this.#threadCode.code(
+					anchor,
+					{
+						snapshot: this.#snapshot.base,
+						ref: `refs/remotes/origin/${this.#meta.baseBranch}`,
+					},
+					async () => "",
+				),
+		});
 	}
 
 	/** Sessions not closed yet (closeAll). */
@@ -296,6 +328,8 @@ export class Session {
 				...[...this.#live].map((r) => r.settled),
 				...[...this.#jobs.values()].map((j) => j.settled),
 				this.#queue,
+				// Its process, checkout and claim.
+				this.#agent?.close(),
 			]);
 		})();
 		return this.#closed;

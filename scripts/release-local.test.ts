@@ -59,6 +59,7 @@ describe("releaseLocal, over a fake runner", () => {
 	let calls: string[];
 	let packed: { version: string; commit: string } | null;
 	let failing: string | null;
+	let tarCwd: string | undefined;
 	let io: LocalIo;
 
 	beforeEach(() => {
@@ -72,9 +73,11 @@ describe("releaseLocal, over a fake runner", () => {
 		calls = [];
 		packed = { version: "0.1.0", commit: SHA };
 		failing = null;
+		tarCwd = undefined;
 		const run = async (
 			cmd: string,
 			args: readonly string[],
+			runOpts?: { cwd?: string },
 		): Promise<RunResult> => {
 			const line = `${cmd} ${args.join(" ")}`;
 			calls.push(line);
@@ -88,6 +91,7 @@ describe("releaseLocal, over a fake runner", () => {
 				);
 			}
 			if (cmd === "tar") {
+				tarCwd = runOpts?.cwd;
 				return { code: 0, stdout: JSON.stringify(packed), stderr: "" };
 			}
 			return { code: 0, stdout: "", stderr: "" };
@@ -109,9 +113,11 @@ describe("releaseLocal, over a fake runner", () => {
 		expect(readFileSync(tarball, "utf8")).toBe("tgz");
 		expect(calls).toEqual([
 			`pnpm pack --pack-destination ${join(dir, "scratch")}`,
-			`tar -xzOf ${join(dir, "scratch/carbonless-review-0.1.0.tgz")} package/dist/build-info.json`,
+			"tar -xzOf carbonless-review-0.1.0.tgz package/dist/build-info.json",
 			`pnpm add -g ${tarball} ${NO_DELAY}`,
 		]);
+		// No drive in tar's args: GNU tar reads E:\... as a remote host.
+		expect(tarCwd).toBe(join(dir, "scratch"));
 		expect(readdirSync(join(dir, "scratch"))).toEqual([]);
 	});
 

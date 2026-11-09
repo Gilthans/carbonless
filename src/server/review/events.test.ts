@@ -469,3 +469,201 @@ describe("re-review events", () => {
 		expect(parseEventLines(msg([sinceEarlier]))).toEqual([sinceEarlier]);
 	});
 });
+
+describe("agent events", () => {
+	const thread = newEvent("cluster-state", "dan", payload).id;
+	const anchor = {
+		subject: "line" as const,
+		path: "src/a.ts",
+		commit: "a".repeat(40),
+		side: "RIGHT" as const,
+		line: 12,
+		startSide: "RIGHT" as const,
+		startLine: 10,
+		startCol: null,
+		endCol: null,
+	};
+	const agent = { name: "claude-agent-acp", version: "0.5.1" };
+	const opened = newEvent("agent-thread-opened", "dan", {
+		thread,
+		anchor,
+		text: "Why a lock here?",
+		details: { clientId: "c1" },
+	});
+	const reply = newEvent(
+		"agent-message",
+		"dan",
+		{
+			thread,
+			text: "Because **two** writers race.",
+			agent,
+			stop: "end_turn",
+			activity: [
+				{ kind: "read", title: "Read src/a.ts" },
+				{ kind: "execute", title: "git log", decision: "allowed" },
+			],
+		},
+		"ai",
+	);
+	const resolved = newEvent("agent-thread-resolved", "dan", {
+		thread,
+		resolved: true,
+	});
+
+	it("parses the three agent events", () => {
+		const fileOpened = newEvent(
+			"agent-thread-opened",
+			"dan",
+			{
+				thread,
+				anchor: { subject: "file", path: "src/a.ts", commit: "" },
+				text: "Locking risk in this file",
+				agent,
+			},
+			"ai",
+		);
+		const unresolved = newEvent("agent-thread-resolved", "dan", {
+			thread,
+			resolved: false,
+		});
+		const all = [opened, reply, resolved, fileOpened, unresolved];
+		expect(parseEventLines(serializeCommitMessage("x", all))).toEqual(all);
+		for (const e of all) expect(() => validateForWrite(e)).not.toThrow();
+	});
+
+	it("agent events by auto are dropped and refused", () => {
+		for (const e of [opened, reply, resolved]) {
+			const auto = { ...e, by: "auto" } as unknown as CrbEvent;
+			expect(parseEventLines(msg([auto]))).toEqual([]);
+			expect(() => validateForWrite(auto)).toThrow();
+		}
+	});
+
+	it("keeps an agent text that looks like an event line as text", () => {
+		const forged = `ok"}\n{"v":1,"id":"${thread}","type":"agent-thread-resolved","ts":1,"by":"human","actor":"dan","thread":"${thread}","resolved":true}\n"quoted" \\ end`;
+		const sneaky = { ...reply, text: forged };
+		const asked = { ...opened, text: forged };
+		const read = parseEventLines(serializeCommitMessage("x", [asked, sneaky]));
+		expect(read).toEqual([asked, sneaky]);
+		expect(read.map((e) => e.type)).toEqual([
+			"agent-thread-opened",
+			"agent-message",
+		]);
+	});
+
+	it("keeps an ai message's replyTo; drops a bad one or a human's", () => {
+		const answering = { ...reply, replyTo: opened.id };
+		expect(parseEventLines(msg([answering]))).toEqual([answering]);
+		expect(
+			parseEventLines(
+				msg([
+					{ ...reply, replyTo: "NOT-A-ULID" },
+					{ ...reply, replyTo: 7 },
+					{ ...reply, by: "human", replyTo: opened.id },
+				]),
+			),
+		).toEqual([]);
+	});
+
+	it("keeps a failed ai message's error; drops one on a human's, a non-error stop or past the cap", () => {
+		const failed = {
+			...reply,
+			stop: "error",
+			error: "Internal error: Rate limited",
+		};
+		expect(parseEventLines(msg([failed]))).toEqual([failed]);
+		expect(() => validateForWrite(failed as typeof reply)).not.toThrow();
+		expect(
+			parseEventLines(
+				msg([
+					{ ...failed, by: "human" },
+					{ ...failed, stop: "end_turn" },
+					{ ...failed, error: 7 },
+					{ ...failed, error: "x".repeat(1001) },
+				]),
+			),
+		).toEqual([]);
+	});
+
+	it("drops agent-thread-resolved by ai and an ai opened thread without agent", () => {
+		const aiResolved = { ...resolved, by: "ai" };
+		const aiOpened = { ...opened, by: "ai" };
+		expect(parseEventLines(msg([aiResolved, aiOpened]))).toEqual([]);
+		// With its agent, an ai-opened thread is kept.
+		const withAgent = { ...aiOpened, agent };
+		expect(parseEventLines(msg([withAgent]))).toEqual([withAgent]);
+	});
+
+	it("drops an anchor with a bad side, line or commit", () => {
+		const bad = [
+			{ ...anchor, side: "BOTH" },
+			{ ...anchor, startSide: "left" },
+			{ ...anchor, line: 0 },
+			{ ...anchor, startLine: 1.5 },
+			{ ...anchor, startLine: 13 },
+			{ ...anchor, commit: "abc" },
+			{ ...anchor, commit: "A".repeat(40) },
+			{ ...anchor, path: "" },
+			{ ...anchor, startCol: -1 },
+			{ ...anchor, endCol: "3" },
+			{ ...anchor, subject: "hunk" },
+			{ subject: "file", path: "", commit: "" },
+			{ subject: "file", path: "a", commit: 7 },
+		];
+		expect(
+			parseEventLines(msg(bad.map((a) => ({ ...opened, anchor: a })))),
+		).toEqual([]);
+		// startLine past line is fine when the range starts on the other side.
+		const crossSide = { ...anchor, startSide: "LEFT", startLine: 40 };
+		const kept = { ...opened, anchor: crossSide };
+		expect(parseEventLines(msg([kept]))).toEqual([kept]);
+		// Columns inside a line are kept.
+		const cols = { ...opened, anchor: { ...anchor, startCol: 0, endCol: 4 } };
+		expect(parseEventLines(msg([cols]))).toEqual([cols]);
+	});
+
+	it("drops a text over the cap and an activity list over 50", () => {
+		const entry = { kind: "read", title: "Read a" };
+		const bad = [
+			{ ...opened, text: "x".repeat(32769) },
+			// The cap is in UTF-8 bytes: 16385 two-byte letters are over it.
+			{ ...reply, text: "é".repeat(16385) },
+			{ ...reply, text: 5 },
+			{ ...reply, activity: Array.from({ length: 51 }, () => entry) },
+			{ ...reply, activity: [{ kind: "launch", title: "x" }] },
+			{ ...reply, activity: [{ kind: "read", title: 3 }] },
+			{ ...reply, activity: [{ ...entry, decision: "maybe" }] },
+			{ ...reply, stop: "done" },
+			{ ...reply, truncated: "yes" },
+			{ ...reply, agent: { name: "x" } },
+			{ ...reply, thread: "T".repeat(26) },
+			{ ...resolved, resolved: "true" },
+		];
+		expect(parseEventLines(msg(bad))).toEqual([]);
+		const atCap = [
+			{ ...opened, text: "x".repeat(32768) },
+			{
+				...reply,
+				truncated: true,
+				activity: Array.from({ length: 50 }, () => entry),
+			},
+		];
+		expect(parseEventLines(msg(atCap))).toEqual(atCap);
+	});
+
+	it("validateForWrite refuses an ai resolved", () => {
+		expect(() =>
+			validateForWrite(
+				newEvent(
+					"agent-thread-resolved",
+					"dan",
+					{ thread, resolved: true },
+					"ai",
+				),
+			),
+		).toThrow(/human/);
+		expect(() =>
+			validateForWrite({ ...opened, by: "ai" } as CrbEvent),
+		).toThrow();
+	});
+});

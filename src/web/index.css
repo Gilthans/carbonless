@@ -114,6 +114,16 @@
 	--color-person-7: #332145;
 	--color-person-7-edge: #5c3285;
 
+	/*
+	 * The reviewer's own agent (src/web/agent): its messages' wash, the
+	 * border and bubble edge, and its icon and count ink. Teal, clear of the
+	 * review colours' hues: red 40°, the green, yellow and violet 25°
+	 * (theme.test.ts). Only on agent things: never as a state colour.
+	 */
+	--color-agent: #0f3534;
+	--color-agent-edge: #1f7a76;
+	--color-agent-ink: #5fd6cf;
+
 	/* The primary action's gradient ends (white text on both). */
 	--color-cta-from: #6a3fe0;
 	--color-cta-to: #c0177a;

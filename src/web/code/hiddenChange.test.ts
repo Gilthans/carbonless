@@ -196,6 +196,26 @@ describe("hiddenChange", () => {
 		expect(hiddenChange("😀\uFE0F x", [[4, 5]])).toBe(false);
 	});
 
+	it("is a BOM (U+FEFF): drawn as nothing while hidden characters are off, wherever it is", () => {
+		expect(
+			hiddenChange("\uFEFFimport x;", [[0, 1]], {
+				partner: { text: "import x;" },
+			}),
+		).toBe(true);
+		// Inside a line too (files joined by cat, a zero width no-break space).
+		expect(
+			hiddenChange("a\uFEFFb", [[1, 2]], { partner: { text: "ab" } }),
+		).toBe(true);
+		// A mark that also holds something drawn still holds the BOM.
+		expect(hiddenChange("\uFEFFx = 2;", [[0, 2]])).toBe(true);
+		// An unchanged BOM: the visible change is the change.
+		expect(
+			hiddenChange("\uFEFFlet a = 2;", [[9, 10]], {
+				partner: { text: "\uFEFFlet a = 1;" },
+			}),
+		).toBe(false);
+	});
+
 	it("is nothing without marks", () => {
 		expect(hiddenChange("x\r", [], { partner: { text: "x" } })).toBe(false);
 	});
