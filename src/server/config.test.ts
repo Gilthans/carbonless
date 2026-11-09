@@ -8,6 +8,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import type { AgentConfig } from "../shared/agent.js";
 import { DEFAULT_CONFIG, readConfig, updateConfig } from "./config";
 
 describe("config", () => {
@@ -37,6 +38,7 @@ describe("config", () => {
 				serve: { host: "127.0.0.1", port: 4747 },
 				views: [],
 				refresh: { minutes: 2 },
+				agent: null,
 			},
 			problems: [],
 		});
@@ -56,6 +58,7 @@ describe("config", () => {
 				serve: { host: "100.78.32.127", port: 4800 },
 				views: [{ name: "My PRs", repos: ["acme/api", "acme/console"] }],
 				refresh: { minutes: 5 },
+				agent: null,
 			},
 			problems: [],
 		});
@@ -92,6 +95,7 @@ describe("config", () => {
 			serve: { host: "127.0.0.1", port: 4747 },
 			views: [{ name: "Mine", repos: ["acme/api"] }],
 			refresh: { minutes: 2 },
+			agent: null,
 		});
 		expect(problems).toEqual([
 			"serve.host must be a non-empty string; using 127.0.0.1",
@@ -101,6 +105,34 @@ describe("config", () => {
 			"views[1] is not an object; dropped",
 			"refresh.minutes must be a positive number; using 2",
 		]);
+	});
+
+	it("serve.publicUrl: an http(s) origin, kept as one; anything else ignored", async () => {
+		write(
+			JSON.stringify({
+				serve: { publicUrl: " HTTPS://Box.tail0.ts.net:8443/ " },
+			}),
+		);
+		expect((await readConfig()).config.serve).toEqual({
+			host: "127.0.0.1",
+			port: 4747,
+			publicUrl: "https://box.tail0.ts.net:8443",
+		});
+		for (const bad of [
+			"box.ts.net:8443",
+			"ftp://box.ts.net",
+			"https://box.ts.net/crb",
+			"https://box.ts.net/?key=k",
+			"https://me:pw@box.ts.net",
+			7,
+		]) {
+			write(JSON.stringify({ serve: { publicUrl: bad } }));
+			const { config, problems } = await readConfig();
+			expect(config.serve.publicUrl, String(bad)).toBeUndefined();
+			expect(problems).toEqual([
+				"serve.publicUrl must be an http(s) URL with no path; ignored",
+			]);
+		}
 	});
 
 	it("a view without a name is My PRs; one without repos is empty", async () => {
@@ -135,6 +167,7 @@ describe("config", () => {
 				{ name: "My PRs", repos: ["acme/api", "acme/web"], color: "red" },
 			],
 			refresh: { minutes: 3, jitter: true },
+			agent: null,
 		});
 	});
 
@@ -184,6 +217,7 @@ describe("config", () => {
 			serve: { host: "127.0.0.1", port: 4747 },
 			views: [{ name: "My PRs", repos: ["acme/api"] }],
 			refresh: { minutes: 2 },
+			agent: null,
 		});
 		expect(await readConfig()).toMatchObject({ problems: [] });
 
@@ -211,6 +245,122 @@ describe("config", () => {
 			"acme/b",
 			"acme/c",
 		]);
+	});
+
+	describe("agent", () => {
+		const agent: AgentConfig = {
+			command: "claude-agent-acp",
+			args: ["--verbose"],
+			env: { CLAUDE_CODE_EXECUTABLE: "/usr/bin/claude" },
+			leash: "open",
+		};
+
+		it("agent defaults to null", async () => {
+			expect((await readConfig()).config.agent).toBeNull();
+			write(JSON.stringify({ agent: null }));
+			expect(await readConfig()).toMatchObject({
+				config: { agent: null },
+				problems: [],
+			});
+			expect(DEFAULT_CONFIG.agent).toBeNull();
+		});
+
+		it("a valid agent section reads back", async () => {
+			write(JSON.stringify({ agent }));
+			expect(await readConfig()).toMatchObject({
+				config: { agent },
+				problems: [],
+			});
+			// Only the command is required.
+			write(JSON.stringify({ agent: { command: "gemini" } }));
+			expect(await readConfig()).toMatchObject({
+				config: {
+					agent: { command: "gemini", args: [], env: {}, leash: "open" },
+				},
+				problems: [],
+			});
+		});
+
+		it.each([
+			["claude", null, "agent must be an object or null; agent disabled"],
+			[[], null, "agent must be an object or null; agent disabled"],
+			[
+				{ args: [] },
+				null,
+				"agent.command must be a non-empty string; agent disabled",
+			],
+			[
+				{ command: "  " },
+				null,
+				"agent.command must be a non-empty string; agent disabled",
+			],
+			[
+				{ command: "goose", args: "acp" },
+				{ command: "goose", args: [], env: {}, leash: "open" },
+				"agent.args must be an array of strings; using []",
+			],
+			[
+				{ command: "goose", args: ["acp", 1] },
+				{ command: "goose", args: [], env: {}, leash: "open" },
+				"agent.args must be an array of strings; using []",
+			],
+			[
+				{ command: "goose", env: { A: 1 } },
+				{ command: "goose", args: [], env: {}, leash: "open" },
+				"agent.env must be an object of strings; using {}",
+			],
+			[
+				{ command: "goose", env: ["A=1"] },
+				{ command: "goose", args: [], env: {}, leash: "open" },
+				"agent.env must be an object of strings; using {}",
+			],
+			[
+				{ command: "goose", leash: "strict" },
+				{ command: "goose", args: [], env: {}, leash: "open" },
+				'agent.leash "strict" is not available yet; using "open"',
+			],
+		])(
+			"agent %j reads as %j with the problem %s",
+			async (raw, read, problem) => {
+				write(JSON.stringify({ agent: raw }));
+				expect(await readConfig()).toMatchObject({
+					config: { agent: read },
+					problems: [problem],
+				});
+			},
+		);
+
+		it("updateConfig writes agent and keeps its unknown keys", async () => {
+			write(
+				JSON.stringify({
+					views: [],
+					agent: { command: "old", model: "opus", leash: "strict" },
+				}),
+			);
+			const next = await updateConfig((c) => ({ ...c, agent }));
+			expect(next.agent).toEqual(agent);
+			expect(onDisk().agent).toEqual({ ...agent, model: "opus" });
+			expect(await readConfig()).toMatchObject({
+				config: { agent },
+				problems: [],
+			});
+			// A bad agent is refused, with the problem.
+			await expect(
+				updateConfig((c) => ({
+					...c,
+					agent: { ...agent, command: "" },
+				})),
+			).rejects.toThrow(/agent\.command must be a non-empty string/);
+		});
+
+		it("updateConfig(null) removes it", async () => {
+			write(JSON.stringify({ agent: { ...agent, model: "opus" } }));
+			const next = await updateConfig((c) => ({ ...c, agent: null }));
+			expect(next.agent).toBeNull();
+			// Written as null: off, said so in the file.
+			expect(onDisk().agent).toBeNull();
+			expect((await readConfig()).config.agent).toBeNull();
+		});
 	});
 
 	it("updateConfig validates what it's given", async () => {

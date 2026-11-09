@@ -71,7 +71,11 @@ try {
 		readdirSync(tmp).includes(`${name}-${version}.tgz`),
 		`pnpm pack made ${name}-${version}.tgz`,
 	);
-	const files = sh("tar", ["tzf", tarball]).trim().split("\n");
+	// By its bare name, in tmp: GNU tar reads a drive's colon (E:\...) as a
+	// remote host.
+	const files = sh("tar", ["tzf", `${name}-${version}.tgz`])
+		.trim()
+		.split("\n");
 	check(
 		!files.some((f) => f.endsWith(".map") || /\.test\.|\.d\.ts$/.test(f)),
 		`${files.length} files, no maps, tests or typings`,

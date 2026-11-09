@@ -62,8 +62,9 @@ const E2E_MAP = [
 	// The re-review engine (shape, interdiff, carry): no UI of its own yet;
 	// the methodology matrix drives it end to end.
 	[/^src\/(server|shared)\/rereview\//, ["methodology"]],
+	[/^src\/web\/agent\//, ["agent", "agent-setup"]],
 	[
-		/^src\/web\/(overview|threads)\/|^src\/server\/(overview|overviewRead|threadCode|timeline)\.ts$|^src\/web\/(GithubHtml|githubHtml)/,
+		/^src\/web\/(overview|threads)\/|^src\/server\/(overview|overviewRead|threadCode|timeline)\.ts$|^src\/web\/(GithubHtml|githubHtml|sanitizeGithubHtml)/,
 		["overview", "timeline", "mobile"],
 	],
 	[/^src\/web\/threads\//, ["files-threads", "thread-people"]],
@@ -130,6 +131,7 @@ const E2E_MAP = [
 		["asof", "overview", "pinned-head"],
 	],
 	[/^src\/server\/pinnedHead\.ts$/, ["pinned-head"]],
+	[/^src\/server\/agent\/|^test\/fake-acp\//, ["agent"]],
 	[
 		/^src\/web\/(brand\/|Tooltip\.tsx$|theme)|^src\/web\/index\.css$/,
 		["design", "mobile"],

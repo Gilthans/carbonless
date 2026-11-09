@@ -16,7 +16,7 @@ import {
 	splitMarks,
 	type Token,
 } from "./Invisibles";
-import { renderInvisibles } from "./invisibles";
+import { renderInvisibles } from "./invisibleChars";
 
 function renderLine(props: Parameters<typeof CodeLine>[0]) {
 	const client = new QueryClient();

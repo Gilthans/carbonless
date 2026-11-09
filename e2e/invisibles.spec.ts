@@ -241,3 +241,40 @@ test("h flips Show hidden characters from the keyboard; the switch reads it and 
 	expect(await glyphs(section, "eol")).toContain('"\\\\r\\\\n" / ""');
 	await expect(await hiddenChars(page)).toHaveAttribute("aria-checked", "true");
 });
+
+test("a file's byte order mark shows only with hidden characters, and a change to it warns", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	const BOM = String.fromCharCode(0xfeff);
+	const text = "export const a = 1;\nconst b = 2;\n";
+	await pr({
+		base: { "src/bom.ts": text },
+		files: [{ message: "BOM", files: { "src/bom.ts": `${BOM}${text}` } }],
+	});
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	const section = fileSection(page, "src/bom.ts");
+	await section.getByRole("button", { name: "Expand file" }).click();
+	const added = section.locator('[data-testid="diff-line"][data-kind="add"]');
+	await expect(added).toHaveCount(1);
+	await expect(section.locator('[data-inv="escape"]')).toHaveCount(1);
+	expect(await glyphs(section, "escape")).toEqual(['"\\\\uFEFF" / ""']);
+	await expect(section.locator("[data-hidden-change]")).toHaveCount(0);
+
+	const toggle = await hiddenChars(page);
+	await toggle.click();
+	await expect(toggle).toHaveAttribute("aria-checked", "false");
+	await page.keyboard.press("Escape");
+	await expect(section.locator('[data-inv="escape"]')).toHaveCount(0);
+	// The two lines now look alike: the added one warns.
+	await expect(added.locator("[data-hidden-change]")).toHaveCount(1);
+	// Still in the code, drawn as nothing.
+	expect(
+		await added
+			.locator("td")
+			.last()
+			.evaluate((td, bom) => td.textContent?.includes(bom), BOM),
+	).toBe(true);
+});

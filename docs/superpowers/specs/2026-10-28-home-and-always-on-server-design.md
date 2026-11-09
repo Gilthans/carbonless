@@ -137,6 +137,9 @@ Owner's decisions on this part (2026-10-28):
 - Ad-hoc sources, several reviews per change, local comments (parts 2–4).
 - Sync of annotations or progress between devices.
 - An MCP server. The CLI is the integration.
+  (Superseded for agents by the review buddy, 2026-11-04: carbonless spawns
+  the reviewer's agent over ACP; an MCP door for agents it can't launch is
+  "Later" in `2026-11-04-review-buddy-design.md`.)
 - Snooze, waiting-on or notes from inside the review page.
 - Notifications of any kind.
 
