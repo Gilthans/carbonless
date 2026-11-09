@@ -135,6 +135,8 @@ const E2E_MAP = [
 	[/^src\/web\/pageActive\.ts$/, ["keepalive"]],
 	[/^src\/server\/access\.ts$|^src\/web\/accessKey\.ts$/, ["cli", "keepalive"]],
 	[/^test\/methodology-fixture\.ts$/, ["methodology"]],
+	// Only src/cli.test.ts preloads it.
+	[/^test\/module-log\.mjs$/, []],
 	[/^e2e\/files-ui\.ts$/, ["files", "sticky", "mobile"]],
 	[
 		/^src\/(cli|client)\.ts$|^src\/server\/(serve|registry|serverState|config|paths|version|app)\.ts$|^src\/web\/(router\.tsx|reviewId\.ts|api\.ts|App\.tsx|pages\.tsx)$|^scripts\/build-info\.mjs$/,
