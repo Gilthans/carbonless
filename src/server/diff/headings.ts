@@ -22,39 +22,31 @@ import type { TextEncoding } from "./text.js";
  */
 
 /**
- * Built-in userdiff drivers by file name, as GitHub picks them by language.
- * Read with the lowest precedence (`core.attributesFile`), so the repo's own
- * `.gitattributes` (read from the head commit) wins, as on GitHub. JS/TS
- * and others git has no driver for keep git's default rule, and so does
- * Markdown: GitHub doesn't use git's markdown driver (checked on a real PR,
- * 2026-11-09).
+ * Built-in userdiff drivers by file name, where GitHub uses them. Measured
+ * on carbonless-gallery#34 (2026-11-09), a case per driver where it and
+ * git's default rule disagree: GitHub uses bibtex, cpp, csharp, fortran,
+ * html, java, objc, pascal, php, python, ruby and tex, and keeps the default
+ * rule (any line starting with a letter, `_` or `$`) for ada, bash, css,
+ * dts, elixir, golang, kotlin, markdown, perl, rust and scheme, and for
+ * JS/TS, which git has no driver for. Read with the lowest precedence
+ * (`core.attributesFile`), so the repo's own `.gitattributes` (read from
+ * the head commit) wins, as on GitHub.
  */
 export const FUNCNAME_ATTRIBUTES = `${[
-	["ada", "*.ada *.adb *.ads"],
-	["bash", "*.sh *.bash"],
 	["bibtex", "*.bib"],
 	[
 		"cpp",
 		"*.c *.h *.cc *.cpp *.cxx *.c++ *.hh *.hpp *.hxx *.h++ *.inl *.ino *.cu *.cuh",
 	],
 	["csharp", "*.cs"],
-	["css", "*.css *.scss *.less"],
-	["dts", "*.dts *.dtsi"],
-	["elixir", "*.ex *.exs"],
 	["fortran", "*.f *.for *.f90 *.f95 *.f03 *.f08"],
-	["fountain", "*.fountain"],
-	["golang", "*.go"],
 	["html", "*.html *.htm *.xhtml"],
 	["java", "*.java"],
-	["kotlin", "*.kt *.kts"],
 	["objc", "*.m *.mm"],
 	["pascal", "*.pas *.pp *.dpr"],
-	["perl", "*.pl *.pm *.t"],
 	["php", "*.php *.phtml"],
 	["python", "*.py *.pyi *.pyw"],
 	["ruby", "*.rb *.rake *.gemspec Rakefile Gemfile"],
-	["rust", "*.rs"],
-	["scheme", "*.scm *.ss *.sld"],
 	["tex", "*.tex *.sty *.cls"],
 ]
 	.flatMap(([driver, patterns]) =>

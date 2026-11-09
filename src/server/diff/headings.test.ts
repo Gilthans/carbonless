@@ -72,6 +72,16 @@ const go = (body: string) =>
 		lines(10, "\t// after "),
 		"}",
 	);
+// Rust: GitHub keeps the default rule, so a method shows its impl.
+const rust = (body: string) =>
+	text(
+		"impl Lexer {",
+		"    fn advance(&mut self) {",
+		lines(10, "        // s"),
+		`        ${body}`,
+		"    }",
+		"}",
+	);
 // Nothing git's default rule matches: every line starts with a space.
 const plain = (body: string) =>
 	text(lines(15, " - item "), ` ${body}`, lines(5, " - more "));
@@ -124,6 +134,7 @@ beforeAll(async () => {
 				"two.py": two("old_a", "old_b"),
 				"wide.py": wide("old"),
 				"README.md": md("- old"),
+				"lex.rs": rust("old();"),
 			},
 		},
 		{
@@ -140,6 +151,7 @@ beforeAll(async () => {
 				"two.py": two("new_a", "new_b"),
 				"wide.py": wide("new"),
 				"README.md": md("- new"),
+				"lex.rs": rust("new();"),
 			},
 		},
 	]);
@@ -180,7 +192,7 @@ describe("hunk headings from git", () => {
 		expect(await headingsOf("box.ts")).toEqual(["export class Box {"]);
 	});
 
-	it("a Go method: its func (git's golang driver)", async () => {
+	it("a Go method: its func (the default rule: GitHub uses no golang driver)", async () => {
 		expect(await headingsOf("main.go")).toEqual([
 			"func (s *Server) Handle(w Writer) error {",
 		]);
@@ -192,6 +204,10 @@ describe("hunk headings from git", () => {
 
 	it("a hunk at the top of the file: nothing above it, no heading", async () => {
 		expect(await headingsOf("top.py")).toEqual([undefined]);
+	});
+
+	it("Rust: the default rule, as GitHub (not git's rust driver)", async () => {
+		expect(await headingsOf("lex.rs")).toEqual(["impl Lexer {"]);
 	});
 
 	it("Markdown: the default rule, as GitHub (not git's markdown driver)", async () => {
