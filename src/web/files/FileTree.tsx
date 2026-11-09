@@ -91,8 +91,11 @@ function MarkDot({ mark, legend }: { mark: Mark; legend?: boolean }) {
 	);
 }
 
-/** A tooltip's title: the row's name, prominent, its full path below. */
-function TipTitle(props: { name: string; path: ReactNode }) {
+/**
+ * A tooltip's title: the row's name, prominent, its full path below (unless
+ * the path is the name: a top-level folder or a root file).
+ */
+function TipTitle(props: { name: string; path: ReactNode; pathText: string }) {
 	return (
 		<>
 			<span
@@ -101,7 +104,9 @@ function TipTitle(props: { name: string; path: ReactNode }) {
 			>
 				{props.name}
 			</span>
-			<span className="block text-muted">{props.path}</span>
+			{props.pathText !== props.name && (
+				<span className="block text-muted">{props.path}</span>
+			)}
 		</>
 	);
 }
@@ -111,24 +116,28 @@ function TipLines({ children }: { children: ReactNode }) {
 	return (
 		<span
 			data-tooltip-lines
-			className="mt-1 grid grid-cols-[auto_minmax(0,1fr)] items-center gap-x-2 gap-y-0.5 border-t border-line pt-1"
+			className="mt-1 flex flex-col gap-0.5 border-t border-line pt-1"
 		>
 			{children}
 		</span>
 	);
 }
 
-/** One legend line: the row's own indicator, then what it means. */
+/**
+ * One legend line: the row's own indicator, then what it means. Small icons
+ * share a 1rem slot so their texts line up; a wide one (the counts, the
+ * meter) takes its own width without pushing the other lines' text.
+ */
 function TipLine(props: {
 	kind: string;
 	icon: ReactNode;
 	children: ReactNode;
 }) {
 	return (
-		<>
+		<span className="flex items-center gap-2">
 			<span
 				data-tooltip-icon={props.kind}
-				className="flex items-center justify-center"
+				className="flex min-w-4 shrink-0 items-center justify-center"
 			>
 				{props.icon}
 			</span>
@@ -138,7 +147,7 @@ function TipLine(props: {
 			>
 				{props.children}
 			</span>
-		</>
+		</span>
 	);
 }
 
@@ -160,6 +169,9 @@ const STATE_TEXT = {
 	done: "Reviewed",
 	"crossed off": "Crossed off",
 } as const;
+
+/** File progress that says no more than the status line. */
+const STATUS_ONLY = new Set(["done", "crossed off"]);
 
 const capital = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 
@@ -226,6 +238,7 @@ function FileItem(props: {
 						<TipTitle
 							name={name}
 							path={<TipPath path={file.path} oldPath={file.oldPath} />}
+							pathText={file.oldPath ? "" : file.path}
 						/>
 						<TipLines>
 							<TipLine kind="status" icon={<StatusIcon file={file} />}>
@@ -266,14 +279,20 @@ function FileItem(props: {
 							<TipLine kind="changes" icon={<ChangeCount file={file} />}>
 								{capital(lineCount(file))} · {clusterCount(file)}
 							</TipLine>
-							<TipLine
-								kind="progress"
-								icon={
-									<TipMeter counts={p.counts} incomplete={p.clustersLeft > 0} />
-								}
-							>
-								{capital(numbers)}
-							</TipLine>
+							{/* Not when it would only repeat the status ("done", "crossed off"). */}
+							{!STATUS_ONLY.has(numbers) && (
+								<TipLine
+									kind="progress"
+									icon={
+										<TipMeter
+											counts={p.counts}
+											incomplete={p.clustersLeft > 0}
+										/>
+									}
+								>
+									{capital(numbers)}
+								</TipLine>
+							)}
 						</TipLines>
 					</>
 				}
@@ -421,6 +440,7 @@ function FolderItem(props: Level & { folder: Folder }) {
 						<TipTitle
 							name={folder.name}
 							path={<TooltipPath>{folder.path}</TooltipPath>}
+							pathText={folder.path}
 						/>
 						<TipLines>
 							{said && (
@@ -569,7 +589,11 @@ function MovedItem(props: {
 			<Tooltip
 				content={
 					<>
-						<TipTitle name={oldName} path={<TooltipPath>{old}</TooltipPath>} />
+						<TipTitle
+							name={oldName}
+							path={<TooltipPath>{old}</TooltipPath>}
+							pathText={old}
+						/>
 						<TipLines>
 							<TipLine kind="moved" icon={MOVED_ICON}>
 								Moved to <TooltipPath>{file.path}</TooltipPath>

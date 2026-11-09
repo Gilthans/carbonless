@@ -321,10 +321,14 @@ describe("FileTree", () => {
 describe("tooltip paths", () => {
 	afterEach(cleanup);
 
-	it("shows file and folder paths in tooltips in monospace", async () => {
+	it("shows file and folder paths in tooltips in monospace, and none that repeats the title", async () => {
 		render(
 			<FileTree
-				files={[file(0, "src/a/x.ts", ["unreviewed"]), file(1, "y.ts", [])]}
+				files={[
+					file(0, "src/a/x.ts", ["unreviewed"]),
+					file(1, "src/b/y.ts", []),
+					file(2, "z.ts", ["unreviewed"]),
+				]}
 				unit="lines"
 				current={null}
 				onSelect={() => {}}
@@ -335,17 +339,17 @@ describe("tooltip paths", () => {
 				(el) => [el.textContent, el.tagName, el.className],
 			);
 		const mono = expect.stringContaining("font-mono");
-		expect(
-			await paths(
-				document.querySelector('[data-folder="src/a"]') as HTMLElement,
-			),
-		).toEqual([["src/a", "CODE", mono]]);
+		const folder = (path: string) =>
+			document.querySelector(`[data-folder="${path}"]`) as HTMLElement;
+		expect(await paths(folder("src/a"))).toEqual([["src/a", "CODE", mono]]);
 		expect(await paths(screen.getByRole("button", { name: /x\.ts/ }))).toEqual([
 			["src/a/x.ts", "CODE", mono],
 		]);
-		expect(await paths(screen.getByRole("button", { name: /y\.ts/ }))).toEqual([
-			["y.ts", "CODE", mono],
-		]);
+		// A top-level folder and a root file: the path is the title.
+		expect(await paths(folder("src"))).toEqual([]);
+		expect(await paths(screen.getByRole("button", { name: /z\.ts/ }))).toEqual(
+			[],
+		);
 	});
 });
 
@@ -478,7 +482,12 @@ describe("tooltip legend", () => {
 		const gen = legendOf(
 			await tipOf(screen.getByRole("button", { name: /api\.g\.cs/ })),
 		);
-		expect(gen.lines[0]).toEqual(["status", "Crossed off: generated"]);
+		// No meter line repeating "crossed off".
+		expect(gen.lines).toEqual([
+			["status", "Crossed off: generated"],
+			["change-kind", "Modified"],
+			["changes", "3 lines added, 1 deleted · 1 cluster"],
+		]);
 		const moved = await tipOf(
 			screen
 				.getAllByRole("button", { name: /x\.ts/ })
@@ -526,10 +535,8 @@ describe("tooltip legend", () => {
 				["progress", "1 / 3 clusters · 2 files left"],
 			],
 		});
-		expect(
-			tip.querySelector("[data-tooltip-title]")?.nextElementSibling
-				?.textContent,
-		).toBe("src/a");
+		// Its path is its title: no path line.
+		expect(tip.querySelector("[data-tooltip-path]")).toBeNull();
 	});
 
 	it("titles a moved-away entry by its old name and says where it went", async () => {
