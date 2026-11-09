@@ -137,6 +137,15 @@ Follow-ups from the first slice's final review (2026-11-07):
 - An empty `claim.lock` races (13).
 - A leash value from a later version is rewritten to `open` on Save.
 - `snapshotHead` is read cache-only in `AgentOverviewRow`.
+- Edit the agent's env in the setup modal (owner, 2026-11-09). The Env box
+  is a read-only hint: `agent.env` can be set only by editing
+  `config.json` by hand, and the hint's `$(which claude)` is shell syntax
+  that is never expanded. Make it an editable `NAME=value` per line field
+  that shows what `config.json` has. A preset's `envHint` pre-fills it,
+  with the path resolved where the server can find it (e.g.
+  `CLAUDE_CODE_EXECUTABLE=/home/you/.local/bin/claude`). Check and Save
+  use the edited env. A `…TOKEN` value is masked when shown, since GET
+  `/api/config/agent` returning env values is follow-up 11d above.
 
 ## Future plans
 
