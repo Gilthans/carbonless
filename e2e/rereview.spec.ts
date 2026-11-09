@@ -1468,10 +1468,57 @@ test("a thread of a file deleted two patch sets earlier is under Not in this com
 });
 
 /** PS1 reviewed with threads on it, then pushed: viewing the head in the full diff. */
+test("a resolved thread keeps carrying: on a later head it shows on its traced line, muted", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	// A review, a push and the placements: each waits on git.
+	test.setTimeout(120_000);
+	const threads: ReturnType<typeof reviewThread>[] = [];
+	const p = await pr({ ...fixture, threads });
+	const settled = threadOn(p.head(), "src/util.ts", 3, "Settled already");
+	settled.isResolved = true;
+	p.editScenario((sc) => {
+		const graph = sc.prs[7]?.graphql;
+		if (graph) graph.reviewThreads = [settled];
+	});
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	await reviewAll(page);
+	// util 3 untouched by the push: the thread's line is traced to the head.
+	p.moveHead(rework);
+	await page.reload();
+	await expect(tail(page)).toHaveAttribute("data-state", "head", GIT_WAIT);
+	await toast(page).getByRole("button", { name: "View" }).click();
+	await baseOn(page, "branch", "[");
+	const utilS = fileSection(page, "src/util.ts");
+	await utilS.getByRole("button", { name: "Expand file" }).click();
+	const bubble = utilS
+		.getByTestId("diff-line")
+		.filter({ hasText: "util 3 changed" })
+		.getByTestId("thread-bubble");
+	await expect(bubble).toHaveAccessibleName(
+		/^1 comment.*, resolved$/,
+		GIT_WAIT,
+	);
+	// Muted: the resolved look, no attention colour.
+	await expect(bubble.locator("span").first()).toHaveClass(/text-muted/);
+	await bubble.click();
+	await expect(
+		utilS.getByTestId("files-thread").filter({ hasText: "Settled already" }),
+	).toContainText("Resolved");
+	// Nowhere else: not unplaced, not out of the comparison.
+	await expect(unplacedRows(utilS)).toHaveCount(0);
+	await expect(page.getByTestId("not-in-comparison")).toHaveCount(0);
+});
+
 async function threadsPushed(
 	page: Page,
 	pr: (o: PrOptions) => Promise<Pr>,
 	startCrb: () => Promise<{ url: string }>,
+	/** The opening texts of the PS1 threads resolved on GitHub. */
+	resolved: string[] = [],
 ) {
 	const threads: ReturnType<typeof reviewThread>[] = [];
 	const p = await pr({ ...fixture, threads });
@@ -1486,6 +1533,10 @@ async function threadsPushed(
 	const h2 = p.moveHead(rewriteAndDelete);
 	// One thread made on the new head itself: it shows at once.
 	threads.push(threadOn(h2, "src/util.ts", 3, "On the head"));
+	for (const t of threads) {
+		if (resolved.some((text) => JSON.stringify(t).includes(text)))
+			t.isResolved = true;
+	}
 	p.editScenario((sc) => {
 		const graph = sc.prs[7]?.graphql;
 		if (graph) graph.reviewThreads = threads;
@@ -1627,7 +1678,7 @@ test("until the placements arrive a card spins in its chip slot and no thread re
 	await expect(page.getByTestId("not-in-comparison")).toHaveCount(0);
 });
 
-test("when the placements fail every unresolved thread stays listed with the error and a retry, never gone", async ({
+test("when the placements fail every thread stays listed with the error and a retry, never gone; a resolved one as a quiet line after the rest, counted nowhere", async ({
 	page,
 	pr,
 	startCrb,
@@ -1635,7 +1686,7 @@ test("when the placements fail every unresolved thread stays listed with the err
 }) => {
 	test.setTimeout(120_000);
 	expectConsoleError(/500/);
-	await threadsPushed(page, pr, startCrb);
+	await threadsPushed(page, pr, startCrb, ["Why change core 5?"]);
 	await page.route("**/api/r/*/placements?*", (route) =>
 		route.fulfill({
 			status: 500,
@@ -1651,12 +1702,21 @@ test("when the placements fail every unresolved thread stays listed with the err
 	// The two PS1 threads, by their file; not the head's own (it shows on its line).
 	const rows = failed.getByTestId("unplaced-thread");
 	await expect(rows).toHaveCount(2);
-	await expect(rows.filter({ hasText: "Why change core 5?" })).toHaveAttribute(
-		"data-fate",
-		"unknown",
-	);
-	await expect(rows.filter({ hasText: "Is core 30 needed?" })).toContainText(
-		"src/core.ts",
+	const open = rows.first();
+	await expect(open).toContainText("Is core 30 needed?");
+	await expect(open).toHaveAttribute("data-fate", "unknown");
+	await expect(open).toContainText("src/core.ts");
+	// The resolved one: listed too, a quiet line after it, counted nowhere.
+	const quiet = rows.nth(1);
+	await expect(quiet).toHaveAttribute("data-resolved", "true");
+	const line = quiet.getByTestId("unplaced-collapsed");
+	await expect(line).toHaveText("Place unknown · src/core.ts · rev1");
+	await expect(line).toHaveClass(/text-muted/);
+	await expect(failed).toContainText("1 thread");
+	await expect(failed).not.toContainText("2 threads");
+	await line.click();
+	await expect(quiet.getByTestId("thread-body")).toContainText(
+		"Why change core 5?",
 	);
 	await expect(page.getByTestId("not-in-comparison")).toHaveCount(0);
 	await expectNoPageOverflow(page);

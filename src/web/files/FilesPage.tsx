@@ -233,8 +233,9 @@ function useDiffThreads(
 	/** The threads whose file is not in the comparison (the trailing group). */
 	outside: ReturnType<typeof outsideThreads>;
 	/**
-	 * The placements couldn't be computed: the unresolved threads not shown
-	 * where they were made, listed so none goes missing; null otherwise.
+	 * The placements couldn't be computed: the threads not shown where they
+	 * were made (resolved ones too), listed so none goes missing; null
+	 * otherwise.
 	 */
 	unplacedOnError: ReviewThread[] | null;
 	/** What the cards and lists know of the placements (PlacementProvider). */
@@ -318,7 +319,6 @@ function useDiffThreads(
 			failedPlacing && visible && snapshotHead
 				? visible.filter(
 						(t) =>
-							!t.resolved &&
 							t.unavailable !== "deleted" &&
 							shownThread(t, snapshotHead, null) === null,
 					)

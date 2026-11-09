@@ -188,6 +188,68 @@ describe("when the placements fail", () => {
 		expect(screen.queryByTestId("not-in-comparison")).toBeNull();
 	});
 
+	it("lists resolved threads too, as quiet lines after the unresolved ones, counted nowhere; one expands", async () => {
+		const user = userEvent.setup();
+		const open = thread({ id: "T1", author: "octo" });
+		const done = thread({
+			id: "T2",
+			author: "rev1",
+			resolved: true,
+			html: "<p>Old remark</p>",
+		});
+		const { rerender } = render(
+			wrap(
+				info({ error: new Error("git failed") }),
+				<NotInComparison
+					threads={[]}
+					readId="r1"
+					pending={false}
+					failed={{
+						threads: [done, open],
+						error: new Error("git failed"),
+						retry: () => {},
+					}}
+				/>,
+			),
+		);
+		const group = screen.getByTestId("placements-failed");
+		expect(group.textContent).toContain("1 thread");
+		expect(group.textContent).not.toContain("2 threads");
+		const rows = screen.getAllByTestId("unplaced-thread");
+		expect(rows.map((r) => r.dataset.thread)).toEqual(["T1", "T2"]);
+		const quiet = rows[1] as HTMLElement;
+		expect(quiet).toHaveAttribute("data-resolved", "true");
+		const line = within(quiet).getByTestId("unplaced-collapsed");
+		expect(line.className).toContain("text-muted");
+		expect(within(quiet).queryByTestId("unplaced-opener")).toBeNull();
+		await user.click(line);
+		expect(
+			within(
+				screen.getAllByTestId("unplaced-thread")[1] as HTMLElement,
+			).getByText("Old remark"),
+		).toBeTruthy();
+		// All resolved: listed, and no badge at all.
+		rerender(
+			wrap(
+				info({ error: new Error("git failed") }),
+				<NotInComparison
+					threads={[]}
+					readId="r1"
+					pending={false}
+					failed={{
+						threads: [done],
+						error: new Error("git failed"),
+						retry: () => {},
+					}}
+				/>,
+			),
+		);
+		expect(screen.getAllByTestId("unplaced-thread")).toHaveLength(1);
+		expect(screen.getByTestId("placements-failed").textContent).not.toMatch(
+			/\d thread/,
+		);
+	});
+
 	it("a card's chip says its place is unknown, not loading and not placed", () => {
 		render(
 			wrap(

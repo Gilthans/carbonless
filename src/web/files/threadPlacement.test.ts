@@ -472,6 +472,29 @@ describe("placements", () => {
 		expect(p.fates).toEqual([]);
 	});
 
+	it("placed and resolved: it keeps carrying to its traced line on a later head (owner, 2026-11-09)", () => {
+		const t = thread(
+			{ side: "RIGHT", line: 3, commit: OLD },
+			{ commit: OLD, resolved: true },
+		);
+		const placements: Placements = new Map([
+			[t.id, { kind: "placed", anchor: ref(11), changed: false }],
+		]);
+		const p = placeThreads({
+			threads: shownThreads([t], HEAD, placements),
+			path: PATH,
+			snapshotHead: HEAD,
+			hunks: HUNKS,
+			loadedContext: [],
+			placements,
+		});
+		expect(p.end.get("RIGHT:11")?.map((x) => [x.id, x.resolved])).toEqual([
+			[t.id, true],
+		]);
+		expect(p.fates).toEqual([]);
+		expect(p.header).toEqual([]);
+	});
+
 	it("changed: on the replacing line, whole lines (its columns no longer hold), in the new path", () => {
 		const t = thread(
 			{ side: "RIGHT", line: 3, commit: OLD, startCol: 1, endCol: 4 },
