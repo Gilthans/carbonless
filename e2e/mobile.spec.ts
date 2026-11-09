@@ -2,6 +2,7 @@ import type { Page } from "@playwright/test";
 import { reviewThread, threadComment } from "../test/fake-gh/scenario";
 import {
 	barBottom,
+	clicksReady,
 	expectNoPageOverflow,
 	fileAction,
 	fileSection,
@@ -286,11 +287,12 @@ test.describe("phone", () => {
 			box.y < toggle.y + toggle.height &&
 			toggle.y < box.y + box.height;
 		expect(overlap).toBe(false);
-		// Tapping the box's target checks the box, not the toggle.
+		// Tapping the box's target checks the box, not the toggle (the file's
+		// one cluster: reviewed, not crossed off; the finished file closes).
 		await page.touchscreen.tap(box.x + 4, box.y + box.height / 2);
 		await expect(
-			section.getByRole("checkbox", { name: "Mark cluster reviewed" }),
-		).toBeChecked();
+			section.getByRole("progressbar", { name: "File progress" }),
+		).toHaveAttribute("aria-valuetext", /1 of 1 cluster reviewed$/);
 	});
 
 	test("a long path starts scrolled to the file name", async ({
@@ -478,6 +480,49 @@ test("desktop keeps the file tree in a sidebar", async ({
 	expect(
 		Math.abs(path.y + path.height / 2 - (mark.y + mark.height / 2)),
 	).toBeLessThanOrEqual(2);
+});
+
+test("a finished file's reset asks by tap, within the screen", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	test.skip(!isMobile, "phone layout only");
+	await page.setViewportSize({ width: 360, height: 740 });
+	await pr(fixture);
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	const section = fileSection(page, `${LONG_DIR}/compatibility.ts`);
+	await fileAction(section, "Mark remaining reviewed");
+	const unmark = section.getByRole("button", {
+		name: "Unmark reviewed",
+		exact: true,
+	});
+	await expect(unmark).toBeEnabled();
+	const box = await unmark.boundingBox();
+	expect(box?.width).toBeGreaterThanOrEqual(40);
+	expect(box?.height).toBeGreaterThanOrEqual(40);
+	await clicksReady(page, unmark);
+	await unmark.tap();
+	const question = "Remove all reviewed markings from this file?";
+	const armed = section.locator("button[data-armed]");
+	await expect(armed).toHaveAccessibleName(question);
+	await expect(
+		page.locator("[role=tooltip]:not([hidden])").filter({ hasText: question }),
+	).toBeVisible();
+	await expectNoPageOverflow(page);
+	// A tap elsewhere drops it; asked again, the second tap resets.
+	await page.getByRole("progressbar", { name: "Review progress" }).tap();
+	await expect(armed).toHaveCount(0);
+	await clicksReady(page, unmark);
+	await unmark.tap();
+	await expect(armed).toHaveCount(1);
+	await clicksReady(page, armed);
+	await armed.tap();
+	await expect(
+		section.getByRole("progressbar", { name: "File progress" }),
+	).toHaveAttribute("aria-valuenow", "0");
 });
 
 test("an open tooltip causes no horizontal page overflow", async ({

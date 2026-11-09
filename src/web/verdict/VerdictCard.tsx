@@ -392,6 +392,13 @@ export function VerdictCard(props: {
 	threads: readonly ReviewThread[] | undefined;
 	/** The Files end card: how many blockers (null while unknown). */
 	blockers?: number | null;
+	/**
+	 * Clicks (the verdicts, "Include a message") before this
+	 * `performance.now()` time are ignored: the card just rose under the
+	 * pointer as the last file finished, so a double click's second click
+	 * was meant for that file (FilesPage's move-on).
+	 */
+	ignoreClicksUntil?: number;
 }) {
 	const { overview, session, place } = props;
 	const reviewId = useReviewId();
@@ -466,8 +473,9 @@ export function VerdictCard(props: {
 		!since &&
 		session.snapshotHead !== "" &&
 		session.snapshotHead !== session.currentHead;
+	const early = () => performance.now() < (props.ignoreClicksUntil ?? 0);
 	const press = (event: VerdictEvent) => {
-		if (reasonOf(event)) return;
+		if (early() || reasonOf(event)) return;
 		const text = store.text();
 		if (event === "APPROVE") {
 			const body = checked && text.trim() ? text : undefined;
@@ -514,6 +522,12 @@ export function VerdictCard(props: {
 		<section
 			aria-labelledby={headingId}
 			data-testid={`verdict-card-${place}`}
+			// When it takes clicks again (`performance.now()`), for tests to wait on.
+			data-clicks-from={
+				props.ignoreClicksUntil === undefined
+					? undefined
+					: Math.ceil(props.ignoreClicksUntil)
+			}
 			className={`space-y-3 rounded-xl border border-line-strong bg-surface p-4 ${place === "files" ? "mx-auto mt-6 max-w-3xl" : ""}`}
 		>
 			<div className="flex flex-wrap items-center gap-x-3 gap-y-1">
@@ -583,7 +597,9 @@ export function VerdictCard(props: {
 					data-testid="verdict-include"
 					checked={checked}
 					aria-controls={checked ? boxId : undefined}
-					onChange={(e) => setChecked(e.target.checked)}
+					onChange={(e) => {
+						if (!early()) setChecked(e.target.checked);
+					}}
 					className="h-4.5 w-4.5 accent-accent"
 				/>
 				Include a message

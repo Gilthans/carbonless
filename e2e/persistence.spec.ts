@@ -49,7 +49,8 @@ async function checkFirstCluster(page: Page) {
 		.getByRole("region", { name: "src/util.ts" })
 		.getByRole("checkbox", { name: "Mark cluster reviewed" });
 	await box.click();
-	await expect(box).toBeChecked();
+	// The file's one cluster: marking it finishes the file, which closes.
+	await expect(box).toHaveCount(0);
 	await expect(clusters(page)).toHaveAttribute("aria-valuenow", "25");
 	// Shown at once; stored once nothing is left unsaved.
 	await expect(page.getByTestId("sync-notices")).toHaveCount(0);
@@ -107,10 +108,11 @@ test("a started review stays on its snapshot after a push", async ({
 		page.getByRole("region", { name: "src/util.ts" }),
 	).not.toContainText("pushed");
 	await expect(clusters(page)).toHaveAttribute("aria-valuenow", "25");
+	// A finished file shows closed: open it to see its mark.
+	const utilFile = page.getByRole("region", { name: "src/util.ts" });
+	await utilFile.getByRole("button", { name: "Expand file" }).click();
 	await expect(
-		page
-			.getByRole("region", { name: "src/util.ts" })
-			.getByRole("checkbox", { name: "Mark cluster reviewed" }),
+		utilFile.getByRole("checkbox", { name: "Mark cluster reviewed" }),
 	).toBeChecked();
 });
 
