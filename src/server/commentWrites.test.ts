@@ -227,6 +227,8 @@ describe("editing and deleting comments", () => {
 				},
 			},
 		});
+		// GitHub's truth, not the kept read of the scenario it opened on.
+		await session.refresh();
 		expect((await comments("T12-0"))?.comments[0]?.viewerCan).toEqual({
 			update: false,
 			delete: false,
@@ -413,6 +415,9 @@ describe("editing and deleting comments", () => {
 				},
 			},
 		});
+		// The session's kept read is of the scenario it opened on (published
+		// replies, which would have the opener blanked): GitHub's truth now.
+		await session.refresh();
 		await expect(edit("C12-0-1", "x", { from: "Draft" })).rejects.toMatchObject(
 			{ code: "forbidden" },
 		);

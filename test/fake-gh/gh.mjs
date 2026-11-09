@@ -144,7 +144,10 @@ async function call(io) {
 	/** The REST id of a thread's comment: (index + 1) * 1000 + its position. */
 	const restId = (i, j) => (i + 1) * 1000 + j;
 	/** Whether a write's change (an edit, a delete) still waits to show in GraphQL. */
-	const lagging = (c) => c.changedAt !== undefined && c.changedAt + (s.writeUnlistedMs ?? 0) > Date.now();
+	// Without writeUnlistedMs never: a read in the very millisecond of the
+	// write (no process start between calls in the server) shows it too.
+	const lagging = (c) =>
+		c.changedAt !== undefined && s.writeUnlistedMs > 0 && c.changedAt + s.writeUnlistedMs > Date.now();
 	/**
 	 * A comment as GraphQL shows it now: within writeUnlistedMs of an edit,
 	 * its text before it.
