@@ -65,8 +65,8 @@ export function pruneHidden<K>(
 
 /**
  * The thread has something not yet on GitHub that closing would hide:
- * text in its reply box, an edit in progress, or a reply, edit or delete
- * on its way.
+ * text in its reply box, an edit in progress, a reply, edit or delete
+ * on its way, or a refused write still listed (closing would only reopen).
  */
 export function unsettled(
 	threadId: string,
@@ -82,7 +82,8 @@ export function unsettled(
 	const view = writes.threads.get(threadId);
 	return Boolean(
 		view &&
-			(view.replies.length > 0 ||
+			(view.refused.length > 0 ||
+				view.replies.length > 0 ||
 				view.edits.length > 0 ||
 				view.deletes.length > 0),
 	);

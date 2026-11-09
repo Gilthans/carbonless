@@ -28,6 +28,7 @@ import {
 	hiddenIn,
 	pruneHidden,
 	settleWatch,
+	unsettled,
 } from "./resolveCollapse";
 
 vi.mock("./highlight", () => ({
@@ -202,6 +203,29 @@ describe("settleWatch", () => {
 		const settled = settleWatch(watch, { threads } as never);
 		expect(settled.reopen).toEqual([]);
 		expect(settled.watch).toBe(watch);
+	});
+});
+
+describe("unsettled", () => {
+	const drafts = { text: () => "", get: () => [] };
+	const view = (over: object) => ({
+		threads: new Map([
+			["A", { replies: [], edits: [], deletes: [], refused: [], ...over }],
+		]),
+	});
+	it("holds a thread with a refusal still listed open (no close then reopen)", () => {
+		expect(unsettled("A", drafts, view({}) as never)).toBe(false);
+		expect(
+			unsettled(
+				"A",
+				drafts,
+				view({
+					refused: [
+						{ key: "reply", action: "Reply", error: new Error("no"), at: "" },
+					],
+				}) as never,
+			),
+		).toBe(true);
 	});
 });
 
