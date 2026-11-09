@@ -205,17 +205,23 @@ for them.
 - **Keep every ticket's status true.** Whoever moves the work moves the
   ticket in the same step, so the owner can read where everything stands
   from Linear alone:
-  - Backlog: not scheduled. Todo: scheduled next, not started.
+  - Backlog: not being worked on. (There's no queue: once the owner decides
+    to do something, it goes to an agent at once.)
   - Design: brainstorming, spec, mockups or owner decisions under way.
-  - Implementation: a brief is out or a branch exists; code is being written.
-  - Awaiting merge: a PR is open (review, fix rounds, or waiting for the
-    owner to merge).
+  - Implementation: the work is with an agent (a brief, a branch, a PR in
+    review or fix rounds, owner QA), until the owner approves it.
+  - Awaiting merge: approved by the owner; only final fixes, CI or the merge
+    are left.
   - Done: merged to master. Canceled or Duplicate (say why in a comment).
-  The GitHub integration moves a linked ticket on PR events, but check it
-  landed where the list above says. Before a report to the owner, check that
-  the statuses of the tickets it covers match.
-- Closed tickets (Done, Canceled, Duplicate) are archived 2 days after
-  closing. To find past work, search with archived issues included.
+  The GitHub integration moves a linked ticket on PR events (a branch or PR
+  → Implementation, an approved PR → Awaiting merge, merged → Done), but
+  check it landed where the list above says. Before a report to the owner,
+  check that the statuses of the tickets it covers match.
+- Closed tickets (Done, Canceled, Duplicate) are archived a month after
+  closing; to find past work, search with archived issues included. The free
+  plan caps open (unarchived) issues at 250: if creating a ticket fails on
+  that limit, archive every ticket closed more than 2 days ago with
+  `~/.local/bin/linear-archive-done` (`--dry-run` lists them first).
 - Search before proposing (`list_issues` with a query, then by label or
   project); extend an existing ticket rather than propose a near-duplicate.
 - Titles state the problem or outcome. Descriptions start with the human
