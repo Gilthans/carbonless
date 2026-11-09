@@ -130,6 +130,8 @@ const card = (page: Page) => page.locator('[role="tooltip"]:not([hidden])');
  * answer still fails.
  */
 const GIT_WAIT = { timeout: 30_000 };
+/** The engine's answer, as a page bound to a review asks it (reviewApiPath). */
+const REREVIEW = "**/api/r/*/rereview?*";
 
 /** Push 2': only core.ts reworked, so util.ts carries whole. */
 const reworkCore = {
@@ -498,9 +500,13 @@ test("an empty since view says so once the engine has answered, with a spinner u
 	const held = new Promise<void>((r) => {
 		release = r;
 	});
-	await page.route("**/api/rereview?*", async (route) => {
+	let asked = 0;
+	let passed = 0;
+	await page.route(REREVIEW, async (route) => {
+		asked++;
 		await held;
 		await route.continue();
+		passed++;
 	});
 	await toast(page).getByRole("button", { name: "View" }).click();
 	await expectLoadingThen({
@@ -513,9 +519,17 @@ test("an empty since view says so once the engine has answered, with a spinner u
 			toRead(page).getByText(/0 to read/),
 			fileSection(page, "src/core.ts").getByText(/carried/),
 		],
-		release: () => {
+		release: async () => {
+			// The hold really held the engine's answer: a path that no
+			// longer matches fails here instead of passing vacuously.
+			await expect
+				.poll(() => asked, { message: "the hold saw the rereview call" })
+				.toBeGreaterThan(0);
 			release();
-			return page.unroute("**/api/rereview?*");
+			// Unrouted mid-flight, the call would be let through by unroute and
+			// continue() would throw: let the held calls go first.
+			await expect.poll(() => passed).toBe(asked);
+			await page.unroute(REREVIEW);
 		},
 		result: page.getByTestId("since-empty-all"),
 	});
@@ -609,9 +623,13 @@ test("the head connector's card spins in its to-read slot until the engine answe
 	const held = new Promise<void>((r) => {
 		release = r;
 	});
-	await page.route("**/api/rereview?*", async (route) => {
+	let asked = 0;
+	let passed = 0;
+	await page.route(REREVIEW, async (route) => {
+		asked++;
 		await held;
 		await route.continue();
+		passed++;
 	});
 	await page.reload();
 	await expect(tail(page)).toHaveAttribute("data-state", "head", GIT_WAIT);
@@ -626,9 +644,17 @@ test("the head connector's card spins in its to-read slot until the engine answe
 			card(page).getByText(/nothing new/),
 			card(page).getByText(/0 files/),
 		],
-		release: () => {
+		release: async () => {
+			// The hold really held the engine's answer: a path that no
+			// longer matches fails here instead of passing vacuously.
+			await expect
+				.poll(() => asked, { message: "the hold saw the rereview call" })
+				.toBeGreaterThan(0);
 			release();
-			return page.unroute("**/api/rereview?*");
+			// Unrouted mid-flight, the call would be let through by unroute and
+			// continue() would throw: let the held calls go first.
+			await expect.poll(() => passed).toBe(asked);
+			await page.unroute(REREVIEW);
 		},
 		result: card(page).getByText("1 new commit · 2 files, 2 clusters to read"),
 	});
