@@ -75,7 +75,7 @@ const answer = (over: Partial<RereviewAnswer> = {}): RereviewAnswer => ({
 
 function renderGraph(
 	s: SessionInfo,
-	comparison: { viewing: Viewing; base: ComparisonBase },
+	comparison: { viewing: Viewing; base: ComparisonBase; baseChosen?: boolean },
 	rereview: (
 		url: URL,
 	) => { status: number; body: unknown } | Promise<Response> = () => ({
@@ -113,13 +113,16 @@ function renderGraph(
 	vi.stubGlobal("fetch", fetchMock);
 	const setViewing = vi.fn();
 	const setBase = vi.fn();
+	const set = vi.fn();
 	const onViewHead = vi.fn();
 	const c: Comparison = {
+		baseChosen: true,
 		...comparison,
 		target: { kind: "current" },
 		patchsets: s.patchsets.map((p) => p.number),
 		setViewing,
 		setBase,
+		set,
 	};
 	const client = new QueryClient({
 		defaultOptions: { queries: { retry: false } },
@@ -136,6 +139,7 @@ function renderGraph(
 		fetchMock,
 		setViewing,
 		setBase,
+		set,
 		onViewHead,
 		rerender: (next: SessionInfo) => rerender(tree(next)),
 	};
@@ -316,7 +320,7 @@ describe("PatchsetGraph", () => {
 
 	it("a click moves nothing: it makes the dot's card sticky, whose buttons set the roles", async () => {
 		const user = userEvent.setup();
-		const { setViewing, setBase, onViewHead } = renderGraph(
+		const { set, setViewing, setBase, onViewHead } = renderGraph(
 			session([1, 2], oid("f")),
 			{ viewing: ps(2), base: ps(1) as ComparisonBase },
 		);
@@ -325,50 +329,127 @@ describe("PatchsetGraph", () => {
 			screen.queryByRole("dialog", { name: `${name} details` });
 		const action = (name: "Comparison Base" | "Comparison Target") =>
 			within(screen.getByRole("dialog")).getByRole("button", { name });
+		const disabled = (name: "Comparison Base" | "Comparison Target") =>
+			expect(action(name)).toHaveAttribute("aria-disabled", "true");
+		const enabled = (name: "Comparison Base" | "Comparison Target") =>
+			expect(action(name)).not.toHaveAttribute("aria-disabled");
 
-		// PS1 (the comparison base): the card, no move; Target views it.
+		// PS1 (the comparison base): the card, no move; Target views it, the
+		// base just left of it.
 		expect(dot("PS1")).toHaveAttribute("aria-expanded", "false");
 		await user.click(dot("PS1"));
-		expect(setViewing).not.toHaveBeenCalled();
-		expect(setBase).not.toHaveBeenCalled();
+		expect(set).not.toHaveBeenCalled();
 		expect(card("PS1")).toBeInTheDocument();
 		expect(dot("PS1")).toHaveAttribute("aria-expanded", "true");
-		expect(action("Comparison Base")).toBeDisabled();
-		expect(action("Comparison Target")).toBeEnabled();
+		disabled("Comparison Base");
+		enabled("Comparison Target");
 		// Focus moved into it, on the first button it can press.
 		expect(action("Comparison Target")).toHaveFocus();
 		await user.click(action("Comparison Target"));
-		expect(setViewing).toHaveBeenLastCalledWith({
-			kind: "patchset",
-			number: 1,
-		});
+		expect(set).toHaveBeenLastCalledWith(ps(1), { kind: "branch" });
 		expect(card("PS1")).toBeNull();
 		expect(dot("PS1")).toHaveFocus();
 
-		// The viewed dot: neither role is free (the base can't be on or past it).
+		// The viewed dot: Target is taken; Base pushes the target right.
 		await user.click(dot("PS2"));
-		expect(action("Comparison Target")).toBeDisabled();
-		expect(action("Comparison Base")).toBeDisabled();
+		disabled("Comparison Target");
+		enabled("Comparison Base");
 		await user.click(dot("PS2"));
 		expect(card("PS2")).toBeNull();
 
 		// The branch: a base only.
 		await user.click(dot("main (base branch)"));
-		expect(action("Comparison Target")).toBeDisabled();
+		disabled("Comparison Target");
 		await user.click(action("Comparison Base"));
-		expect(setBase).toHaveBeenLastCalledWith({ kind: "branch" });
+		expect(set).toHaveBeenLastCalledWith(ps(2), { kind: "branch" });
 
-		// The head: the only way to view it by click is its Target.
+		// The head: the only way to view it by click is a button.
 		await user.click(dot("head fffffff"));
-		expect(setViewing).toHaveBeenCalledTimes(1);
+		expect(set).toHaveBeenCalledTimes(2);
 		expect(onViewHead).not.toHaveBeenCalled();
-		expect(action("Comparison Base")).toBeDisabled();
+		disabled("Comparison Base");
 		await user.click(action("Comparison Target"));
-		expect(setViewing).toHaveBeenLastCalledWith({
-			kind: "head",
-			oid: oid("f"),
-		});
+		expect(set).toHaveBeenLastCalledWith(
+			{ kind: "head", oid: oid("f") },
+			{ kind: "patchset", number: 2 },
+		);
 		expect(onViewHead).toHaveBeenCalledTimes(1);
+		expect(setViewing).not.toHaveBeenCalled();
+		expect(setBase).not.toHaveBeenCalled();
+	});
+
+	it("Comparison Base on or right of the target moves both, side by side; each disabled button says why", async () => {
+		const user = userEvent.setup();
+		const { set, setViewing, setBase, onViewHead } = renderGraph(
+			session([1, 2, 3], oid("f")),
+			{ viewing: ps(2), base: ps(1) as ComparisonBase },
+		);
+		const action = (name: "Comparison Base" | "Comparison Target") =>
+			within(screen.getByRole("dialog")).getByRole("button", { name });
+		const open = (name: string) =>
+			user.click(screen.getByRole("button", { name }));
+		const disabledWith = (
+			name: "Comparison Base" | "Comparison Target",
+			why: string,
+		) => {
+			expect(action(name)).toHaveAttribute("aria-disabled", "true");
+			expect(action(name)).toHaveAccessibleDescription(why);
+		};
+
+		// On the target: the base goes there, the target just right of it.
+		await open("PS2");
+		await user.click(action("Comparison Base"));
+		expect(set).toHaveBeenLastCalledWith(ps(3), {
+			kind: "patchset",
+			number: 2,
+		});
+		// Right of it, next to the head: the head is viewed (an explicit press).
+		await open("PS3");
+		await user.click(action("Comparison Base"));
+		expect(set).toHaveBeenLastCalledWith(
+			{ kind: "head", oid: oid("f") },
+			{ kind: "patchset", number: 3 },
+		);
+		expect(onViewHead).toHaveBeenCalledTimes(1);
+
+		// The ends, and a dot that has the role already: disabled, with why.
+		await open("head fffffff");
+		disabledWith(
+			"Comparison Base",
+			"Nothing right of it for the comparison target",
+		);
+		await user.click(action("Comparison Base"));
+		await user.keyboard("{Escape}");
+		await open("main (base branch)");
+		disabledWith(
+			"Comparison Target",
+			"Nothing left of it for the comparison base",
+		);
+		await user.click(action("Comparison Target"));
+		await user.keyboard("{Escape}");
+		await open("PS1");
+		disabledWith("Comparison Base", "Already the comparison base");
+		await user.click(action("Comparison Base"));
+		await user.keyboard("{Escape}");
+		expect(set).toHaveBeenCalledTimes(2);
+		expect(setViewing).not.toHaveBeenCalled();
+		expect(setBase).not.toHaveBeenCalled();
+	});
+
+	it("up to date, the newest patch set's Comparison Base is disabled: nothing right of it", async () => {
+		const user = userEvent.setup();
+		renderGraph(session([1, 2], oid("2")), {
+			viewing: ps(2),
+			base: ps(1) as ComparisonBase,
+		});
+		await user.click(screen.getByRole("button", { name: "PS2" }));
+		const base = within(screen.getByRole("dialog")).getByRole("button", {
+			name: "Comparison Base",
+		});
+		expect(base).toHaveAttribute("aria-disabled", "true");
+		expect(base).toHaveAccessibleDescription(
+			"Nothing right of it for the comparison target",
+		);
 	});
 
 	it("the sticky card closes on Escape (focus back on the dot), a click outside or the dot again; Enter opens it", async () => {
@@ -404,16 +485,21 @@ describe("PatchsetGraph", () => {
 		});
 		const head = screen.getByRole("button", { name: "head fffffff" });
 		await user.click(head);
-		// The head: Comparison Base is disabled, Target is the only button.
-		const target = within(screen.getByRole("dialog")).getByRole("button", {
-			name: "Comparison Target",
-		});
-		expect(target).toHaveFocus();
+		// The head: Comparison Base is disabled (still a stop, for its
+		// reason), focus starts on Target, the one it can press.
+		const button = (name: string) =>
+			within(screen.getByRole("dialog")).getByRole("button", { name });
+		expect(button("Comparison Target")).toHaveFocus();
 		await user.tab();
 		expect(screen.queryByRole("dialog")).toBeNull();
 		expect(head).toHaveFocus();
 		await user.keyboard("{Enter}");
 		expect(screen.getByRole("dialog")).toBeInTheDocument();
+		await user.tab({ shift: true });
+		expect(button("Comparison Base")).toHaveFocus();
+		expect(button("Comparison Base")).toHaveAccessibleDescription(
+			"Nothing right of it for the comparison target",
+		);
 		await user.tab({ shift: true });
 		expect(screen.queryByRole("dialog")).toBeNull();
 		expect(head).toHaveFocus();

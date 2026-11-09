@@ -789,13 +789,14 @@ test("a click on a dot moves nothing: its card goes sticky, and its Comparison B
 		node(page, "ps1").getByRole("button", { name: "comparison target" }),
 	).toBeVisible();
 	expect(await sections.allTextContents()).toEqual(rows);
-	// PS1 is viewed: it can't be the target again, nor its own base.
+	// PS1 is viewed: it can't be the target again; its Base would push the
+	// target onto the head.
 	await expect(
 		ps1.getByRole("button", { name: "Comparison Target" }),
-	).toBeDisabled();
+	).toHaveAttribute("aria-disabled", "true");
 	await expect(
 		ps1.getByRole("button", { name: "Comparison Base" }),
-	).toBeDisabled();
+	).not.toHaveAttribute("aria-disabled");
 	await page.keyboard.press("Escape");
 	await expect(ps1).toBeHidden();
 	await expect(dot(page, "ps1")).toBeFocused();
@@ -821,7 +822,7 @@ test("a click on a dot moves nothing: its card goes sticky, and its Comparison B
 	}
 	await expect(
 		head.getByRole("button", { name: "Comparison Base" }),
-	).toBeDisabled();
+	).toHaveAttribute("aria-disabled", "true");
 	await head.getByRole("button", { name: "Comparison Target" }).click();
 	await expect(head).toBeHidden();
 	await expect(
@@ -834,7 +835,7 @@ test("a click on a dot moves nothing: its card goes sticky, and its Comparison B
 	const branch = sticky(page, "main");
 	await expect(
 		branch.getByRole("button", { name: "Comparison Target" }),
-	).toBeDisabled();
+	).toHaveAttribute("aria-disabled", "true");
 	await branch.getByRole("button", { name: "Comparison Base" }).click();
 	await expect(
 		node(page, "branch").getByRole("button", { name: "comparison base" }),
@@ -849,6 +850,91 @@ test("a click on a dot moves nothing: its card goes sticky, and its Comparison B
 	await dot(page, "ps1").click();
 	await dot(page, "ps1").click();
 	await expect(sticky(page, "PS1")).toBeHidden();
+});
+
+test("Comparison Base on a dot right of the target moves both markers side by side, and the address follows; the ends are disabled with why", async ({
+	page,
+	workdir,
+	pr,
+	startCrb,
+}) => {
+	// A review, two pushes and a second patch set: each waits on git.
+	test.setTimeout(120_000);
+	const p = await pr(fixture);
+	const s = await startCrb();
+	await pushed(page, workdir, s, p);
+	// The first mark on the head starts PS2.
+	await toast(page).getByRole("button", { name: "View" }).click();
+	const utilS = fileSection(page, "src/util.ts");
+	await utilS.getByRole("button", { name: "Expand file" }).click();
+	await boxes(utilS).first().click();
+	await expect(
+		node(page, "ps2").getByRole("button", { name: "comparison target" }),
+	).toBeVisible(GIT_WAIT);
+	p.moveHead(undo);
+	await page.reload();
+	await expect(tail(page)).toHaveAttribute("data-state", "head", GIT_WAIT);
+	const on = (id: string, role: "comparison target" | "comparison base") =>
+		node(page, id).getByRole("button", { name: role, exact: true });
+	const press = async (
+		id: string,
+		name: string,
+		button: "Comparison Base" | "Comparison Target",
+	) => {
+		await dot(page, id).click();
+		await sticky(page, name).getByRole("button", { name: button }).click();
+		await expect(sticky(page, name)).toBeHidden();
+	};
+
+	// The target back on PS1: the base just left of it, on the branch.
+	await press("ps1", "PS1", "Comparison Target");
+	await expect(on("ps1", "comparison target")).toBeVisible();
+	await expect(on("branch", "comparison base")).toBeVisible();
+	await expect(page).toHaveURL(/[?&]ps=1(&|$)/);
+
+	// Comparison Base on PS2, right of the target: the base goes there, the
+	// target just right of it, on the head.
+	await press("ps2", "PS2", "Comparison Base");
+	await expect(on("ps2", "comparison base")).toBeVisible();
+	await expect(on("head", "comparison target")).toBeVisible();
+	await expect(on("ps1", "comparison target")).toHaveCount(0);
+	await expect(page).toHaveURL(/[?&]head=[0-9a-f]{40}/);
+	expect(new URL(page.url()).searchParams.has("ps")).toBe(false);
+	// Next to each other: the base is the default, no `from`.
+	expect(new URL(page.url()).searchParams.has("from")).toBe(false);
+
+	// The rightmost dot can't be the base: disabled, with why.
+	await dot(page, "head").click();
+	const headBase = sticky(page, "head").getByRole("button", {
+		name: "Comparison Base",
+	});
+	await expect(headBase).toHaveAttribute("aria-disabled", "true");
+	await expect(headBase).toHaveAccessibleDescription(
+		"Nothing right of it for the comparison target",
+	);
+	await page.keyboard.press("Escape");
+
+	// Comparison Base on PS1 (left of the target): only the base moves.
+	await press("ps1", "PS1", "Comparison Base");
+	await expect(on("ps1", "comparison base")).toBeVisible();
+	await expect(on("head", "comparison target")).toBeVisible();
+	await expect(page).toHaveURL(/[?&]from=1(&|$)/);
+
+	// Comparison Target on PS1 (on the base): the base just left of it.
+	await press("ps1", "PS1", "Comparison Target");
+	await expect(on("ps1", "comparison target")).toBeVisible();
+	await expect(on("branch", "comparison base")).toBeVisible();
+	await expect(page).toHaveURL(/[?&]ps=1(&|$)/);
+	// The leftmost dot can't be the target: disabled, with why.
+	await dot(page, "branch").click();
+	const branchTarget = sticky(page, "main").getByRole("button", {
+		name: "Comparison Target",
+	});
+	await expect(branchTarget).toHaveAttribute("aria-disabled", "true");
+	await expect(branchTarget).toHaveAccessibleDescription(
+		"Nothing left of it for the comparison base",
+	);
+	await expectNoPageOverflow(page);
 });
 
 test("the label and the dot open the same card on hover", async ({

@@ -23,6 +23,7 @@ import { NOT_PHONE, useMedia } from "../useMedia";
 import {
 	type Comparison,
 	type ComparisonBase,
+	moveMarker,
 	positionOf,
 	type Viewing,
 } from "./comparison";
@@ -57,6 +58,9 @@ interface Dot {
 }
 
 const short = (oid: string) => oid.slice(0, 7);
+
+const why = (move: { disabled: string } | object): string | null =>
+	"disabled" in move ? move.disabled : null;
 
 const sameViewing = (a: Viewing | undefined, b: Viewing | null) =>
 	!!a &&
@@ -578,8 +582,9 @@ function DotPopover(props: {
 	dot: Dot;
 	session: SessionInfo;
 	anchor: HTMLElement | null;
-	canBase: boolean;
-	canTarget: boolean;
+	/** Why each button is disabled (moveMarker), or null. */
+	base: string | null;
+	target: string | null;
 	onBase: () => void;
 	onTarget: () => void;
 	/** `refocus`: give focus back to the dot. */
@@ -609,7 +614,7 @@ function DotPopover(props: {
 	}, [anchor]);
 	useEffect(() => {
 		const first = box.current?.querySelector<HTMLButtonElement>(
-			"button:not(:disabled)",
+			"button:not([aria-disabled])",
 		);
 		(first ?? box.current)?.focus();
 	}, []);
@@ -631,7 +636,25 @@ function DotPopover(props: {
 		};
 	}, [anchor, onClose]);
 	const button =
-		"flex min-h-10 flex-1 items-center justify-center rounded-md border border-line-strong px-2 text-xs font-semibold whitespace-nowrap text-ink hover:bg-surface focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-40 sm:min-h-8";
+		"flex min-h-10 flex-1 items-center justify-center rounded-md border border-line-strong px-2 text-xs font-semibold whitespace-nowrap text-ink hover:bg-surface focus-visible:outline-2 focus-visible:outline-accent aria-disabled:cursor-not-allowed aria-disabled:opacity-40 aria-disabled:hover:bg-transparent sm:min-h-8";
+	// A disabled one stays focusable, its reason its tooltip and description.
+	const action = (label: string, why: string | null, onPress: () => void) => (
+		<Tooltip content={why ?? label} describe={why !== null}>
+			{(trigger) => (
+				<button
+					type="button"
+					{...trigger}
+					className={button}
+					aria-disabled={why !== null || undefined}
+					onClick={() => {
+						if (why === null) onPress();
+					}}
+				>
+					{label}
+				</button>
+			)}
+		</Tooltip>
+	);
 	return createPortal(
 		<div
 			ref={box}
@@ -647,7 +670,8 @@ function DotPopover(props: {
 				if (e.key !== "Tab" || !box.current) return;
 				const stops = [
 					...box.current.querySelectorAll<HTMLElement>(
-						'button:not(:disabled), a[href], [tabindex="0"]',
+						// Disabled ones too: their reason is read on focus.
+						'button, a[href], [tabindex="0"]',
 					),
 				];
 				const at = document.activeElement;
@@ -674,22 +698,8 @@ function DotPopover(props: {
 		>
 			<DotCard dot={props.dot} session={props.session} />
 			<div className="mt-2 flex gap-2">
-				<button
-					type="button"
-					className={button}
-					disabled={!props.canBase}
-					onClick={props.onBase}
-				>
-					Comparison Base
-				</button>
-				<button
-					type="button"
-					className={button}
-					disabled={!props.canTarget}
-					onClick={props.onTarget}
-				>
-					Comparison Target
-				</button>
+				{action("Comparison Base", props.base, props.onBase)}
+				{action("Comparison Target", props.target, props.onTarget)}
 			</div>
 		</div>,
 		document.body,
@@ -807,6 +817,22 @@ export function PatchsetGraph(props: {
 		};
 	});
 	const headConnector = connectors.find((c) => c.to.kind === "head") ?? null;
+	/** A dot's Comparison Base or Target: the move, or why not (moveMarker). */
+	const pressed = (role: "base" | "target", dot: Dot) =>
+		comparison.viewing
+			? moveMarker(role, all.indexOf(dot), all, {
+					viewing: comparison.viewing,
+					base: comparison.base,
+					baseChosen: comparison.baseChosen,
+				})
+			: { disabled: "Loading" };
+	const press = (role: "base" | "target", dot: Dot) => {
+		const move = pressed(role, dot);
+		if ("disabled" in move) return;
+		comparison.set(move.viewing, move.base);
+		if (move.viewing.kind === "head" && move.viewing.oid === head?.oid)
+			props.onViewHead?.();
+	};
 	const viewingPos = comparison.viewing
 		? positionOf(comparison.viewing, comparison.patchsets)
 		: -1;
@@ -1009,14 +1035,14 @@ export function PatchsetGraph(props: {
 						dot={dot}
 						session={session}
 						anchor={dotEls.current.get(dot.id) ?? null}
-						canBase={canBase(dot) && !isBase}
-						canTarget={canView(dot) && !isViewing}
+						base={why(pressed("base", dot))}
+						target={why(pressed("target", dot))}
 						onBase={() => {
-							baseOn(dot);
+							press("base", dot);
 							closeSticky(true);
 						}}
 						onTarget={() => {
-							view(dot);
+							press("target", dot);
 							closeSticky(true);
 						}}
 						onClose={closeSticky}

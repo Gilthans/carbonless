@@ -4,9 +4,12 @@ import {
 	type ComparisonBase,
 	comparisonSearch,
 	defaultBase,
+	MOVE_REASONS,
 	movedSearch,
+	moveMarker,
 	nextBase,
 	parseComparison,
+	type RailStop,
 	reviewTargetOf,
 	type Viewing,
 } from "./comparison";
@@ -200,6 +203,119 @@ describe("movedSearch", () => {
 				all,
 			),
 		).toEqual({ ps: 1 });
+	});
+});
+
+describe("moveMarker", () => {
+	const H = oid("f");
+	/** branch, PS1, PS2, PS3, then the head when `withHead`. */
+	const rail = (withHead = true): RailStop[] => [
+		{ base: branch },
+		...[1, 2, 3].map((n) => ({ viewing: ps(n), base: from(n) })),
+		...(withHead ? [{ viewing: head(H) }] : []),
+	];
+	const at = (r: RailStop[], v: Viewing | ComparisonBase) =>
+		r.findIndex((s) =>
+			v.kind === "branch"
+				? s.base?.kind === "branch"
+				: v.kind === "head"
+					? s.viewing?.kind === "head"
+					: s.viewing?.kind === "patchset" && s.viewing.number === v.number,
+		);
+	const cur = (viewing: Viewing, base: ComparisonBase, baseChosen = true) => ({
+		viewing,
+		base,
+		baseChosen,
+	});
+
+	describe("Comparison Base (the comparison target on PS2, the base on PS1)", () => {
+		const now = cur(ps(2), from(1));
+		const on = (dot: Viewing | ComparisonBase, r = rail()) =>
+			moveMarker("base", at(r, dot), r, now);
+		it("left of the target, at the left end: the base moves, the target stays", () => {
+			expect(on(branch)).toEqual({ viewing: ps(2), base: branch });
+		});
+		it("on its own dot: disabled", () => {
+			expect(on(ps(1))).toEqual({ disabled: MOVE_REASONS.alreadyBase });
+		});
+		it("on the target: the target moves to the dot just right of it", () => {
+			expect(on(ps(2))).toEqual({ viewing: ps(3), base: from(2) });
+		});
+		it("right of the target: the target sits just right of it, the head too (an explicit press)", () => {
+			expect(on(ps(3))).toEqual({ viewing: head(H), base: from(3) });
+		});
+		it("at the right end (the head, or the newest patch set when up to date): disabled", () => {
+			expect(on(head(H))).toEqual({ disabled: MOVE_REASONS.rightmost });
+			expect(on(ps(3), rail(false))).toEqual({
+				disabled: MOVE_REASONS.rightmost,
+			});
+		});
+		it("a snapshot dot that isn't the right end can't be a base", () => {
+			const S = oid("e");
+			const r: RailStop[] = [
+				...rail(false),
+				{ viewing: head(S) },
+				{ viewing: head(H) },
+			];
+			expect(moveMarker("base", 4, r, cur(head(S), from(3), false))).toEqual({
+				disabled: MOVE_REASONS.notBase,
+			});
+		});
+	});
+
+	describe("Comparison Target (the target on PS3, the base on PS2)", () => {
+		const on = (dot: Viewing | ComparisonBase, chosen = true, r = rail()) =>
+			moveMarker("target", at(r, dot), r, cur(ps(3), from(2), chosen));
+		it("at the left end (the branch): disabled", () => {
+			expect(on(branch)).toEqual({ disabled: MOVE_REASONS.leftmost });
+		});
+		it("left of the base: the base sits just left of it", () => {
+			expect(on(ps(1))).toEqual({ viewing: ps(1), base: branch });
+		});
+		it("on the base: the base moves to the dot just left of it", () => {
+			expect(on(ps(2))).toEqual({ viewing: ps(2), base: from(1) });
+			expect(on(ps(2), false)).toEqual({ viewing: ps(2), base: from(1) });
+		});
+		it("on its own dot: disabled", () => {
+			expect(on(ps(3))).toEqual({ disabled: MOVE_REASONS.alreadyTarget });
+		});
+		it("right of the base, at the right end: the base stays where it was put (nextBase)", () => {
+			// A base left at its default (the previous dot) keeps being that.
+			expect(on(head(H), false)).toEqual({ viewing: head(H), base: from(3) });
+			// One put further back is remembered.
+			const r = rail();
+			expect(
+				moveMarker("target", r.length - 1, r, cur(ps(3), from(1))),
+			).toEqual({ viewing: head(H), base: from(1) });
+		});
+	});
+
+	it("never crosses or stacks the markers, from any comparison, for either role on any dot", () => {
+		for (const withHead of [true, false]) {
+			const r = rail(withHead);
+			for (let t = 1; t < r.length; t++) {
+				for (let b = 0; b < t; b++) {
+					const viewing = r[t]?.viewing as Viewing;
+					const base = r[b]?.base;
+					if (!base) continue;
+					for (const chosen of [true, false]) {
+						for (const role of ["base", "target"] as const) {
+							for (let i = 0; i < r.length; i++) {
+								const got = moveMarker(role, i, r, {
+									viewing,
+									base,
+									baseChosen: chosen,
+								});
+								if ("disabled" in got) continue;
+								expect(at(r, got.base)).toBeLessThan(at(r, got.viewing));
+								// The pressed dot has the role it was given.
+								expect(at(r, role === "base" ? got.base : got.viewing)).toBe(i);
+							}
+						}
+					}
+				}
+			}
+		}
 	});
 });
 
