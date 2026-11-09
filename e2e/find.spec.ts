@@ -1204,7 +1204,41 @@ test("the bar fits 360px with 40px controls and no page overflow", async ({
 	await expect(spinner(page)).toHaveCount(0);
 });
 
-test("on a phone the bar stays on screen however far the page scrolls, the soft keyboard up too", async ({
+/**
+ * Stands in for the browser's visualViewport: `window.__vv(top, scale)` pans
+ * it (or zooms it) and tells its listeners, as the soft keyboard (or a
+ * pinch) does.
+ */
+const fakeVisualViewport = (page: Page) =>
+	page.addInitScript(() => {
+		const target = new EventTarget();
+		const state = { top: 0, scale: 1 };
+		const props: Record<string, () => number> = {
+			offsetTop: () => state.top,
+			offsetLeft: () => 0,
+			scale: () => state.scale,
+			width: () => window.innerWidth,
+			height: () => window.innerHeight - state.top,
+			pageTop: () => window.scrollY + state.top,
+			pageLeft: () => window.scrollX,
+		};
+		for (const [key, get] of Object.entries(props))
+			Object.defineProperty(target, key, { get });
+		Object.defineProperty(window, "visualViewport", {
+			configurable: true,
+			get: () => target,
+		});
+		(window as unknown as Record<string, unknown>).__vv = (
+			top: number,
+			scale: number,
+		) => {
+			state.top = top;
+			state.scale = scale;
+			target.dispatchEvent(new Event("scroll"));
+		};
+	});
+
+test("on a phone the bar stays at the top at any scroll, and keeps to the visual viewport's top as the keyboard pans it (not a pinch zoom)", async ({
 	page,
 	pr,
 	startCrb,
@@ -1212,9 +1246,14 @@ test("on a phone the bar stays on screen however far the page scrolls, the soft 
 }) => {
 	test.skip(!isMobile, "the phone layout");
 	await phone(page, isMobile);
+	await fakeVisualViewport(page);
 	await pr(fixture);
 	const s = await startCrb();
 	await openFiles(page, s.url);
+	// Android's keyboard shrinks the layout viewport: native sticky holds.
+	expect(
+		await page.locator('meta[name="viewport"]').getAttribute("content"),
+	).toContain("interactive-widget=resizes-content");
 	await expand(page, A);
 	await expand(page, B);
 	await openBar(page, isMobile);
@@ -1230,17 +1269,9 @@ test("on a phone the bar stays on screen however far the page scrolls, the soft 
 	);
 	expect(await floatBox(page)).toEqual(opened);
 	await expect(bar(page)).toBeInViewport({ ratio: 1 });
-	// The soft keyboard (the box has focus) leaves a visual viewport shorter
-	// than the page's: a scroll pans it first. The bar keeps to its top,
-	// the files bar right under it.
-	await page.evaluate(() => window.scrollTo(0, 0));
-	const cdp = await page.context().newCDPSession(page);
-	await cdp.send("Emulation.setPageScaleFactor", { pageScaleFactor: 1.5 });
-	await page.mouse.move(180, 300);
-	/** The bar's top less the visual viewport's, the files bar's less the bar's bottom. */
-	const onTop = () =>
+	/** The bar's top, and the files bar's top less the bar's bottom. */
+	const tops = () =>
 		page.evaluate(() => {
-			const vv = window.visualViewport;
 			const float = document
 				.querySelector("[data-find-float]")
 				?.getBoundingClientRect();
@@ -1248,18 +1279,77 @@ test("on a phone the bar stays on screen however far the page scrolls, the soft 
 				.querySelector('[role="progressbar"][aria-label="Review progress"]')
 				?.closest(".sticky")
 				?.getBoundingClientRect();
-			const top = vv?.offsetTop ?? 0;
 			return {
-				panned: top > 0,
-				bar: Math.round((float?.top ?? Number.NaN) - top),
+				bar: Math.round(float?.top ?? Number.NaN),
 				files: Math.round((files?.top ?? Number.NaN) - (float?.bottom ?? 0)),
 			};
 		});
-	for (let i = 0; i < 3; i++) {
-		await page.mouse.wheel(0, 100);
-		await expect.poll(onTop).toEqual({ panned: true, bar: 0, files: 0 });
-	}
-	await cdp.send("Emulation.setPageScaleFactor", { pageScaleFactor: 1 });
+	const pan = (top: number, scale: number) =>
+		page.evaluate(
+			([t, z]) =>
+				(window as unknown as { __vv: (t: number, z: number) => void }).__vv(
+					t,
+					z,
+				),
+			[top, scale] as const,
+		);
+	// iOS's keyboard leaves the layout viewport as it is and pans the visual
+	// one down a scroll: the bar and the files bar keep to its top.
+	await page.evaluate(() => window.scrollTo(0, 300));
+	await pan(150, 1);
+	await expect.poll(tops).toEqual({ bar: 150, files: 0 });
+	await pan(40, 1);
+	await expect.poll(tops).toEqual({ bar: 40, files: 0 });
+	// A pinch zoom isn't followed: the bar stays at the page's top.
+	await pan(150, 2);
+	await expect.poll(tops).toEqual({ bar: 0, files: 0 });
+	await pan(0, 1);
+	await expect.poll(tops).toEqual({ bar: 0, files: 0 });
+});
+
+test("the bar never shows on another page: opened from Overview, it shows only once Files changed does", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	await phone(page, isMobile);
+	await pr(fixture);
+	const s = await startCrb();
+	// Files changed visited, so it is kept mounted (hidden) on Overview.
+	await openFiles(page, s.url);
+	await page.getByRole("link", { name: "Overview" }).click();
+	await expect(page).not.toHaveURL(/\/files/);
+	await expect(findButton(page)).toBeVisible();
+	// Every strip put in the slot: was Files changed showing then?
+	await page.evaluate(() => {
+		const seen: boolean[] = [];
+		(window as unknown as { __strips: boolean[] }).__strips = seen;
+		const slot = document.querySelector("[data-find-slot]");
+		if (!slot) throw new Error("no slot");
+		new MutationObserver((records) => {
+			for (const r of records)
+				for (const node of r.addedNodes) {
+					if (!(node instanceof Element)) continue;
+					const files = document
+						.querySelector('section[aria-label="Files changed"]')
+						?.closest("[data-page]");
+					seen.push(
+						files !== null &&
+							files !== undefined &&
+							!files.hasAttribute("hidden"),
+					);
+				}
+		}).observe(slot, { childList: true });
+	});
+	await findButton(page).click();
+	await expect(page).toHaveURL(/\/files/);
+	await expect(bar(page)).toBeVisible();
+	const strips = await page.evaluate(
+		() => (window as unknown as { __strips: boolean[] }).__strips,
+	);
+	expect(strips.length).toBeGreaterThan(0);
+	expect(strips.every(Boolean)).toBe(true);
 });
 
 test("on desktop the open bar pushes the app header down: nothing covered at the top, the header stuck under it once scrolled, back at the top on close", async ({

@@ -8,7 +8,6 @@ import {
 import { Link, Outlet } from "@tanstack/react-router";
 import {
 	type RefObject,
-	useCallback,
 	useEffect,
 	useLayoutEffect,
 	useRef,
@@ -38,7 +37,7 @@ import { useReviewId } from "./reviewId";
 import { Settings } from "./Settings";
 import { SkeletonBar, Spinner } from "./Spinner";
 import { useShortcutHelp } from "./shortcuts";
-import { AppHeaderHeight, FindSlot, useHeight } from "./sticky";
+import { AppHeaderHeight, FindSlot, useHeight, visualTop } from "./sticky";
 import { Tooltip } from "./Tooltip";
 import { EDITOR_KEYS } from "./threads/ReplyBox";
 import { useThreadWritesSetup } from "./threads/threadWrites";
@@ -233,29 +232,52 @@ function useFindSwap(
 }
 
 /**
+ * How far the visual viewport is panned down the page: iOS's soft keyboard
+ * leaves it shorter than the layout viewport and a scroll pans it first
+ * (Android's resizes the layout viewport: `interactive-widget` in
+ * index.html). A pinch zoom isn't followed (0).
+ */
+function visualPan(vv: VisualViewport): number {
+	return vv.scale > 1.01 ? 0 : Math.max(0, Math.round(vv.offsetTop));
+}
+
+/**
  * The page's sticky stack top on the root (`--app-header`): `stack` plus,
- * while the find bar shows, how far the visual viewport is panned down the
- * page (`--vv-top`: the soft keyboard leaves it shorter than the page's, and
- * a scroll pans it first), so the bar and the stack under it keep to the
- * top of what's seen.
+ * while the find bar shows (`follow`), the visual viewport's pan
+ * (`--vv-top`, `visualTop`), so the bar and the stack under it keep to the
+ * top of what's seen. Viewport events are read once a frame, and only a
+ * changed pan is written.
  */
 function useStackTop(stack: number, follow: boolean) {
 	useLayoutEffect(() => {
 		const root = document.documentElement;
 		const vv = follow ? window.visualViewport : null;
-		const apply = () => {
-			const top = vv ? Math.max(0, vv.offsetTop) : 0;
+		let written = -1;
+		const write = (top: number) => {
+			if (top === written) return;
+			written = top;
 			root.style.setProperty("--vv-top", `${top}px`);
 			root.style.setProperty("--app-header", `${stack + top}px`);
+			visualTop.set(top);
 		};
-		apply();
-		vv?.addEventListener("scroll", apply);
-		vv?.addEventListener("resize", apply);
+		write(vv ? visualPan(vv) : 0);
+		let frame = 0;
+		const schedule = () => {
+			if (frame || !vv) return;
+			frame = requestAnimationFrame(() => {
+				frame = 0;
+				write(visualPan(vv));
+			});
+		};
+		vv?.addEventListener("scroll", schedule);
+		vv?.addEventListener("resize", schedule);
 		return () => {
-			vv?.removeEventListener("scroll", apply);
-			vv?.removeEventListener("resize", apply);
+			cancelAnimationFrame(frame);
+			vv?.removeEventListener("scroll", schedule);
+			vv?.removeEventListener("resize", schedule);
 			root.style.removeProperty("--vv-top");
 			root.style.removeProperty("--app-header");
+			visualTop.set(0);
 		};
 	}, [stack, follow]);
 }
@@ -298,13 +320,9 @@ export function App() {
 	// The open find bar goes above the header; a phone's takes its place.
 	const phone = !useMedia(NOT_PHONE);
 	const { swapped, yielded: yieldToFind } = useFindSwap(phone, wide);
-	const slot = useRef<HTMLDivElement | null>(null);
-	const [slotEl, setSlotEl] = useState<HTMLDivElement | null>(null);
-	const slotRef = useCallback((el: HTMLDivElement | null) => {
-		slot.current = el;
-		setSlotEl(el);
-	}, []);
-	const findBar = useHeight(() => slot.current, swapped, !swapped);
+	// The find bar's slot, above the header (FindSlot).
+	const [slot, setSlot] = useState<HTMLDivElement | null>(null);
+	const findBar = useHeight(() => slot, swapped && slot !== null, !swapped);
 	const above = swapped ? findBar : 0;
 	const id = useReviewId();
 	const pr = session.data?.pr;
@@ -343,7 +361,7 @@ export function App() {
 			<div className="min-h-screen bg-canvas font-sans text-ink">
 				{/* Files changed's open find bar, at the very top (FindSlot). */}
 				<div
-					ref={slotRef}
+					ref={setSlot}
 					data-find-slot
 					className="sticky z-[35]"
 					style={{ top: "var(--vv-top, 0px)" }}
@@ -605,7 +623,7 @@ export function App() {
 					// A phone's find bar, in the header's place, meets the page.
 					className={`mx-auto px-3 sm:px-6 sm:py-6 ${yieldToFind ? "pt-0 pb-4" : "py-4"} ${wide ? "max-w-screen-2xl" : "max-w-5xl"}`}
 				>
-					<FindSlot.Provider value={slotEl}>
+					<FindSlot.Provider value={slot}>
 						<KeptPages />
 					</FindSlot.Provider>
 					{/* Only what isn't a kept page: not found. */}

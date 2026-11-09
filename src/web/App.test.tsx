@@ -24,7 +24,7 @@ import type {
 } from "../shared/types";
 import { COMPACT_RAMP, compactNumberHideClass, compactProgress } from "./App";
 import { resetShowInvisibles, setShowInvisibles } from "./code/Invisibles";
-import { findState } from "./files/find/findState";
+import { findFloat, findState } from "./files/find/findState";
 import { createAppRouter } from "./router";
 import { draftsFor } from "./threads/drafts";
 
@@ -575,6 +575,24 @@ describe("App", () => {
 		} finally {
 			findState.reset();
 		}
+	});
+
+	it("the find bar stays out of the slot while Files changed is kept but hidden (find open on another page)", async () => {
+		findState.reset();
+		await filesPageLoaded();
+		const { router } = renderApp({}, "/files");
+		await screen.findByRole("progressbar", { name: "Review progress" });
+		await router.navigate({ to: `/r/${ID}` as "/" });
+		await screen.findByRole("region", { name: "What it does" });
+		// Opened here (the header's button opens, then goes to Files changed).
+		act(() => findState.open());
+		const slot = document.querySelector("[data-find-slot]") as HTMLElement;
+		expect(slot.childElementCount).toBe(0);
+		expect(findFloat.get()).toBe(false);
+		await router.navigate({ to: `/r/${ID}/files` as "/" });
+		await waitFor(() => expect(slot.childElementCount).toBe(1));
+		expect(findFloat.get()).toBe(true);
+		findState.reset();
 	});
 
 	it("on a wide screen the open find bar goes in the slot above the app header, which stays", async () => {

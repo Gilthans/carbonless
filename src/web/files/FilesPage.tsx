@@ -21,7 +21,7 @@ import { useForgetPageScroll, usePageActive } from "../pageActive";
 import { useReviewId } from "../reviewId";
 import { SkeletonBar, Spinner } from "../Spinner";
 import { useShortcut } from "../shortcuts";
-import { FindSlot, useAppHeaderHeight, useHeight } from "../sticky";
+import { FindSlot, useAppHeaderHeight, useHeight, visualTop } from "../sticky";
 import { PeopleProvider } from "../threads/people";
 import { dropLosesText, useThreadWrites } from "../threads/threadWrites";
 import { usePrefetchComments } from "../threads/useThreadComments";
@@ -307,7 +307,9 @@ export function FilesPage() {
 	// The sticky stack, top down: the open find bar and the app header's
 	// compact row (App: AppHeaderHeight, a phone's header out of the layout
 	// while the bar shows), the progress bar, then the open file's header.
-	const appHeader = useAppHeaderHeight();
+	// Plus the visual viewport's pan (iOS's keyboard, the bar open): the
+	// stack sits that much lower on the page's top, as `--app-header` does.
+	const appHeader = useAppHeaderHeight() + visualTop.use();
 	const barHeight = useHeight(() => bar.current, data !== undefined, !active);
 	const [current, setCurrent] = useCurrentFile(
 		diffs,
@@ -695,7 +697,9 @@ export function FilesPage() {
 				{review.isError && <ErrorMessage error={review.error} />}
 				{data && (
 					<>
-						{find.state.open && (
+						{/* Only while this page shows: kept but hidden, it must not
+						    put the bar in App's slot over another page. */}
+						{find.state.open && active && (
 							// At the very top of the page, above the app header (App's
 							// FindSlot), pushing it down by its own height; sticks there
 							// (typing and stepping never move it), the stack under it.

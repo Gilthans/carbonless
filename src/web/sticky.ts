@@ -1,4 +1,10 @@
-import { createContext, useContext, useLayoutEffect, useState } from "react";
+import {
+	createContext,
+	useContext,
+	useLayoutEffect,
+	useState,
+	useSyncExternalStore,
+} from "react";
 
 /**
  * The rendered height in px of the element `find` returns, kept current as it
@@ -31,8 +37,11 @@ export function useHeight(
 }
 
 /**
- * The app header's stuck (compact) height in px: the top of the page's own
- * sticky stack. Also on the root element as `--app-header`, for CSS.
+ * The top of the page's own sticky stack in px: the open find bar's height
+ * (App's slot) plus the app header's stuck (compact) row, which a phone's
+ * header leaves out while the bar shows. On the root element as
+ * `--app-header`, for CSS, plus the visual viewport's pan (`--vv-top`,
+ * `visualTop`).
  */
 export const AppHeaderHeight = createContext(0);
 
@@ -43,3 +52,26 @@ export const useAppHeaderHeight = () => useContext(AppHeaderHeight);
  * app header (null outside App: the bar renders in place).
  */
 export const FindSlot = createContext<HTMLElement | null>(null);
+
+let vvTop = 0;
+const vvListeners = new Set<() => void>();
+const subscribeVv = (onChange: () => void) => {
+	vvListeners.add(onChange);
+	return () => {
+		vvListeners.delete(onChange);
+	};
+};
+/**
+ * How far the visual viewport is panned down the page while the find bar
+ * shows (App: iOS's soft keyboard; never a pinch zoom), in px; 0 otherwise.
+ * Also `--vv-top` on the root: the sticky stack sits that much lower.
+ */
+export const visualTop = {
+	get: () => vvTop,
+	use: () => useSyncExternalStore(subscribeVv, () => vvTop),
+	set(top: number) {
+		if (top === vvTop) return;
+		vvTop = top;
+		for (const listener of vvListeners) listener();
+	},
+};

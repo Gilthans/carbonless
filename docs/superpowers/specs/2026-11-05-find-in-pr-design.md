@@ -128,13 +128,19 @@ everything you said sounds correct".
 - **The soft keyboard doesn't take the bar away** (owner's QA, 2026-11-09:
   "on phone, if I open search and scroll down a little it disappears. I'd
   rather it stay until I close it"). Opening the bar focuses its box, so
-  the phone's keyboard comes up and the visual viewport is shorter than
-  the page's layout viewport; a scroll then pans the visual viewport down
-  first, and anything stuck at the layout viewport's top (`top: 0`) is
-  left above what's seen. While the bar shows, App follows
-  `visualViewport.offsetTop` (`--vv-top`): the slot sticks at that top and
-  the stack's top (`--app-header`) adds it, so the bar and the stack under
-  it stay at the top of what's seen.
+  the phone's keyboard comes up. By default it shortens only the visual
+  viewport; a scroll then pans the visual viewport down first, and
+  anything stuck at the layout viewport's top (`top: 0`) is left above
+  what's seen. Android: the viewport meta's
+  `interactive-widget=resizes-content` makes the keyboard shrink the layout
+  viewport instead, so native sticky holds. iOS ignores it: while the bar
+  shows, App follows `visualViewport.offsetTop` (read once a frame, written
+  only when changed) as `--vv-top` (`visualTop`): the slot sticks at that
+  top and the stack's top (`--app-header`, Files changed's in-view
+  tracking) adds it. A known limit on iOS: the pan is followed from the
+  main thread, so the bar can lag a frame behind a fast scroll. A pinch
+  zoom (`visualViewport.scale` over 1.01) isn't followed: the bar stays at
+  the page's top, like the rest of the page.
 - **Opening and closing keep the reading place.** Scrolled down, App notes
   the element mid-window before the swap and scrolls by however far it
   moved (`readingPlace.ts`), on desktop and phone; at the top of the page
@@ -171,10 +177,19 @@ everything you said sounds correct".
 ## The bar
 
 ```
-┌ app header: Overview · Files changed · Verdict        🔍 ↻ ⚙ ┐
-│ ■■■■■■■■□□□□□ 61% · 12/20 files                              │  ← progress bar
-│ src/web/files/FileD… ┌[saveDraft______ Aa] 3 of 41 ◌ ↑ ↓ ✕┐│  ← floats over
-│   12 + const x = …   └─────────────────────────────────────┘│     the diff
+┌──────────────── [saveDraft______ Aa] 3 of 41 ◌ ↑ ↓ ✕ ┐  ← the bar, sticky at
+├ app header: Overview · Files changed · Verdict  🔍 ↻ ⚙ ┤     the top, pushing
+│ ■■■■■■■■□□□□□ 61% · 12/20 files                       │     the header down
+│ src/web/files/FileDiff.tsx                            │  ← progress bar,
+│   12 + const x = …                                    │     file header
+```
+
+Phone (360px): two rows, in the header's place (hidden while it shows):
+
+```
+┌[saveDraft____________________ Aa]┐
+│ 3/41 ◌                  ↑  ↓  ✕  │
+├ ■■■■■□□□ 61% · 12/20 files ───────┤
 ```
 
 - The box: `<input type="search">` (a typing target, so single-key shortcuts
