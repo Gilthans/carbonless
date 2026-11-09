@@ -45,8 +45,8 @@ These guide every feature. If a change conflicts with one of them, stop and rais
 5. **Mobile is supported.** The reviewer also reads PRs on a phone. Every page
    works down to ~360px wide with no horizontal page scroll (diff lines may
    scroll inside their own container), tap targets are at least 40px, and the
-   Playwright suite has a phone project next to desktop, run on every change
-   that touches layout ("Development").
+   Playwright suite has a phone project next to desktop, run before every PR
+   and while iterating on layout ("Development").
 
 6. **Concise, icon-first UI.** Keep text short. Icons (each with a tooltip and
    an accessible name) and color carry meaning; no disclaimers, legends or
@@ -95,13 +95,14 @@ loading never looking empty, checking against a real PR):
   (the coordinator, on the combined branch, before opening or updating the
   PR). Everything before that uses `pnpm verify:fast` (below): implementing,
   committing, fix rounds, reviews, and an implementer's "done".
-- The phone project (Playwright's `phone`) doubles an e2e run. Run it only
-  when a change touches layout: CSS or Tailwind classes that size, place or
-  wrap things, breakpoints and `useMedia`/`isMobile` code, sticky or
-  scrolling behaviour, touch targets, or anything in `e2e/mobile.spec.ts`'s
-  ground. Otherwise set `CRB_NO_PHONE=1`, which drops the phone project from
-  every Playwright run (`verify`, `verify:fast`, `test:e2e`, `flake-check`).
-  When unsure, include the phone.
+- The phone project (Playwright's `phone`) doubles an e2e run. The final
+  pre-PR `pnpm verify` always includes it. Before that, run it only when a
+  change touches layout: CSS or Tailwind classes that size, place or wrap
+  things, breakpoints and `useMedia`/`isMobile` code, sticky or scrolling
+  behaviour, touch targets, or anything in `e2e/mobile.spec.ts`'s ground.
+  Otherwise set `CRB_NO_PHONE=1`, which drops the phone project from any
+  Playwright run (`verify:fast`, `test:e2e`, `flake-check`). When unsure,
+  include the phone.
 - Full test runs take turns: `pnpm verify`'s unit and e2e stages, `pnpm
   test:e2e` without spec files, `-g` or `--last-failed`, an all-specs
   `verify:fast` and `pnpm flake-check` wait for a machine-wide lock

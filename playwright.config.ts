@@ -27,8 +27,9 @@ export default defineConfig({
 	},
 	// The whole suite runs on desktop and on a phone. Pixel 7 is Chromium, so
 	// no other browser needs installing; layout-specific tests skip on `isMobile`.
-	// CRB_NO_PHONE=1 leaves the phone out (half the run): for changes that
-	// don't touch layout (CLAUDE.md, "Development").
+	// CRB_NO_PHONE=1 leaves the phone out (half the run): while iterating on
+	// changes that don't touch layout, never in the final pre-PR verify
+	// (CLAUDE.md, "Development").
 	projects: [
 		{ name: "chromium", use: { ...devices["Desktop Chrome"] } },
 		...(process.env.CRB_NO_PHONE === "1"
