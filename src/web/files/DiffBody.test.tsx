@@ -2542,3 +2542,199 @@ describe("DiffBody word marks", () => {
 		});
 	}
 });
+
+describe("DiffBody: hunk headings and the clickable gap row", () => {
+	beforeEach(() => {
+		window.scrollTo = vi.fn();
+	});
+	afterEach(() => {
+		cleanup();
+		vi.unstubAllGlobals();
+		localStorage.clear();
+	});
+
+	/** Lines 1–70: a change on line 8 and on line 63, 48 unchanged lines between. */
+	const hunkAround = (n: number, key: string, heading?: string) => ({
+		oldStart: n - 3,
+		oldCount: 7,
+		newStart: n - 3,
+		newCount: 7,
+		...(heading === undefined ? {} : { heading }),
+		lines: [
+			ctx(n - 3, n - 3),
+			ctx(n - 2, n - 2),
+			ctx(n - 1, n - 1),
+			del(n, `old ${n}`, key),
+			add(n, `new ${n}`, key),
+			ctx(n + 1, n + 1),
+			ctx(n + 2, n + 2),
+			ctx(n + 3, n + 3),
+		],
+	});
+	const twoHunks = (heading = "def second(self):"): FileHunks => ({
+		newLineCount: 70,
+		hunks: [hunkAround(8, "a", "class First:"), hunkAround(63, "b", heading)],
+	});
+	const twoClusters = [
+		cluster("a", { oldStart: 8, newStart: 8 }),
+		cluster("b", { oldStart: 63, newStart: 63 }),
+	];
+	const gapRows = () => screen.getAllByTestId("gap-row");
+	const contextCalls = (calls: () => string[]) =>
+		calls().filter((c) => c.includes("/context"));
+
+	it("shows each hunk's heading after its @@ and on the hidden row right above it", async () => {
+		setup({ hunks: twoHunks(), clusters: twoClusters });
+		await screen.findAllByTestId("hunk-header");
+		const headers = screen.getAllByTestId("hunk-header");
+		expect(headers[0]).toHaveTextContent("@@ -5,7 +5,7 @@class First:");
+		expect(headers[1]).toHaveTextContent("@@ -60,7 +60,7 @@def second(self):");
+		// Gap 0 (lines 1–4) sits above the first hunk; gap 1 between them;
+		// the file's tail has no hunk below it.
+		const [above, between, tail] = gapRows();
+		expect(
+			within(above as HTMLElement).getByTestId("hunk-heading"),
+		).toHaveTextContent("class First:");
+		expect(
+			within(between as HTMLElement).getByTestId("hunk-heading"),
+		).toHaveTextContent("def second(self):");
+		expect(
+			within(tail as HTMLElement).queryByTestId("hunk-heading"),
+		).toBeNull();
+		expect(screen.getAllByTestId("hunk-heading")[0]).toHaveClass(
+			"truncate",
+			"font-mono",
+			"text-muted",
+		);
+	});
+
+	it("a hunk without a heading shows its @@ alone", async () => {
+		setup();
+		await screen.findAllByText(/^line 1$/);
+		expect(screen.getByTestId("hunk-header")).toHaveTextContent(
+			/^@@ -1,12 \+1,12 @@$/,
+		);
+		expect(screen.queryByTestId("hunk-heading")).toBeNull();
+	});
+
+	it("shows a heading as text, never markup", async () => {
+		const evil = '<img src=x onerror="window.pwned=1"><b>bold</b>';
+		setup({ hunks: twoHunks(evil), clusters: twoClusters });
+		await screen.findAllByTestId("hunk-header");
+		const [, heading] = screen.getAllByTestId("hunk-header");
+		expect(
+			within(heading as HTMLElement).getByTestId("hunk-heading").textContent,
+		).toBe(evil);
+		expect(document.querySelector("img")).toBeNull();
+		expect(document.querySelector("b")).toBeNull();
+	});
+
+	it("a click on the row's blank area presses its one arrow", async () => {
+		const { calls, user } = setup({ hunks: twoHunks(), clusters: twoClusters });
+		await screen.findAllByTestId("hunk-header");
+		const tail = gapRows()[2] as HTMLElement;
+		expect(tail).toHaveClass("cursor-pointer");
+		await user.click(within(tail).getByText("4 hidden lines"));
+		await screen.findByText("line 67");
+		expect(contextCalls(calls)).toEqual([
+			expect.stringContaining("newFrom=67&newTo=70"),
+		]);
+	});
+
+	it("with two arrows stacked, the top half presses ↓ and the bottom half ↑", async () => {
+		const { calls } = setup({ hunks: twoHunks(), clusters: twoClusters });
+		await screen.findAllByTestId("hunk-header");
+		const between = gapRows()[1] as HTMLElement;
+		const [down, up] = within(between).getAllByRole("button");
+		expect(down).toHaveAccessibleName("Load 20 lines below");
+		expect(up).toHaveAccessibleName("Load 20 lines above");
+		expect(down?.parentElement).toHaveClass("flex-col");
+		between.getBoundingClientRect = () =>
+			({
+				top: 100,
+				height: 40,
+				bottom: 140,
+				left: 0,
+				right: 300,
+				width: 300,
+			}) as DOMRect;
+		const cell = between.lastElementChild as HTMLElement;
+		// Hovering a half lights its arrow.
+		fireEvent.pointerMove(cell, { clientY: 110 });
+		expect(between.dataset.hot).toBe("down");
+		expect(down).toHaveClass("group-data-[hot=down]/gap:bg-pressed");
+		fireEvent.pointerMove(cell, { clientY: 130 });
+		expect(between.dataset.hot).toBe("up");
+		fireEvent.pointerLeave(between);
+		expect(between.dataset.hot).toBeUndefined();
+
+		fireEvent.click(cell, { clientY: 110 });
+		await screen.findByText("line 31");
+		expect(contextCalls(calls)).toEqual([
+			expect.stringContaining("newFrom=12&newTo=31"),
+		]);
+		const rest = gapRows()[1] as HTMLElement;
+		rest.getBoundingClientRect = between.getBoundingClientRect;
+		fireEvent.click(rest.lastElementChild as HTMLElement, { clientY: 130 });
+		await screen.findByText("line 40");
+		expect(contextCalls(calls)).toEqual([
+			expect.stringContaining("newFrom=12&newTo=31"),
+			expect.stringContaining("newFrom=40&newTo=59"),
+		]);
+	});
+
+	it("an arrow's own click loads once, and the keyboard keeps one stop per arrow", async () => {
+		const { calls, user } = setup({ hunks: twoHunks(), clusters: twoClusters });
+		await screen.findAllByTestId("hunk-header");
+		const between = gapRows()[1] as HTMLElement;
+		const buttons = within(between).getAllByRole("button");
+		expect(between).not.toHaveAttribute("tabindex");
+		expect(buttons).toHaveLength(2);
+		await user.click(buttons[1] as HTMLElement);
+		await screen.findByText("line 59");
+		expect(contextCalls(calls)).toHaveLength(1);
+	});
+
+	it("a thread bubble on the row opens its thread and loads only around it, never the arrow's lines", async () => {
+		const { calls, user } = setup({
+			hunks: twoHunks(),
+			clusters: twoClusters,
+			threads: [thread("RIGHT", 35)],
+		});
+		await screen.findAllByTestId("hunk-header");
+		const between = gapRows()[1] as HTMLElement;
+		const bubble = within(between).getByRole("button", {
+			name: /comment on hidden lines/,
+		});
+		fireEvent.pointerMove(bubble);
+		expect(between.dataset.hot).toBe("");
+		await user.click(bubble);
+		await screen.findByText("line 35");
+		// Only the thread's window: not lines 12–31 (↓) nor 40–59 (↑) whole.
+		const loads = contextCalls(calls);
+		expect(loads).toHaveLength(1);
+		expect(loads[0]).not.toContain("newFrom=12&newTo=31");
+		expect(loads[0]).not.toContain("newFrom=40&newTo=59");
+	});
+
+	it("a row with no arrow (its lines loading) doesn't react", async () => {
+		setup({ hunks: twoHunks(), clusters: twoClusters });
+		await screen.findAllByTestId("hunk-header");
+		// The lines' answer never comes: the row keeps its spinner, no arrow.
+		const held = vi.fn(() => new Promise<Response>(() => {}));
+		vi.stubGlobal("fetch", held);
+		const above = gapRows()[0] as HTMLElement;
+		fireEvent.click(
+			within(above).getByRole("button", { name: "Load 4 lines above" }),
+		);
+		const row = gapRows()[0] as HTMLElement;
+		await within(row).findByRole("status");
+		expect(within(row).queryAllByRole("button")).toHaveLength(0);
+		expect(held).toHaveBeenCalledTimes(1);
+		expect(row).not.toHaveClass("cursor-pointer");
+		fireEvent.pointerMove(row.lastElementChild as HTMLElement);
+		expect(row.dataset.hot).toBeUndefined();
+		fireEvent.click(row.lastElementChild as HTMLElement);
+		expect(held).toHaveBeenCalledTimes(1);
+	});
+});

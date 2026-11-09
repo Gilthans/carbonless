@@ -88,6 +88,25 @@ Out of scope: homoglyphs (a Cyrillic `а` for a Latin `a` shows as itself),
 and the ordinary bidi of natural right-to-left text, which can reorder
 neutral punctuation next to it without any override.
 
+## Hunk headers and hidden-lines rows
+
+A hunk's header shows `@@ -a,b +c,d @@` and, after it, the hunk's heading:
+the function or class git's funcname rules find above it, as GitHub shows
+it (`src/server/diff/headings.ts`), in `muted` monospace, cut with an
+ellipsis at the diff's visible width (the whole text in a tooltip when
+cut). The hidden-lines row right above that hunk repeats it after "N hidden
+lines". A heading is plain text.
+
+A hidden-lines row's arrows sit on its left: ↑, ↓ or ↕ alone, or ↓ above ↑
+(like GitHub's) when both apply. The whole row is their pointer target:
+with one arrow, a click anywhere on the row presses it; with two, the top half
+presses ↓ and the bottom half ↑. The arrow a click would press lights up
+(`pressed`, `ink`) as the pointer moves, and the row has the pointer
+cursor. The row's own controls (a thread bubble, the file bubble, Retry)
+keep their clicks; a row with no arrow (its lines loading, nothing left)
+doesn't react. The keyboard has the arrows themselves, one stop each. On
+touch each arrow is 40px, so each half of a two-arrow row is too.
+
 ## Whitespace-only rows
 
 Settings' "Ignore whitespace" matches a hunk's removed and added lines with
