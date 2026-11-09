@@ -164,7 +164,8 @@ loading never looking empty, checking against a real PR):
 - Every test run traces itself (spans per test, setup phase, crb request,
   git and gh call) into `~/.cache/carbonless/test-traces/<run>/`, kept 7
   days. `pnpm test-profile [run|latest] [--compare <run>] [--jaeger]`
-  says where the time goes; `docs/test-profiling.md`.
+  says where the time goes (CI uploads its runs as `test-traces-*`
+  artifacts; `docs/test-profiling.md`).
 - If `nvm use` fails (e.g. in a sandbox), put `~/.nvm/versions/node/v24*/bin`
   first on `PATH`.
 - `pnpm compare-threads <pr> [--as-of <iso>] [--out <dir>]` checks every

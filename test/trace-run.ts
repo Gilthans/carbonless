@@ -18,8 +18,12 @@ import { argsSummary, type SpanContext, tracer } from "../src/server/trace";
  * there. CRB_TEST_TRACES=0 turns it off.
  */
 
-/** Where every run's traces go: ~/.cache/carbonless/test-traces. */
+/**
+ * Where every run's traces go: ~/.cache/carbonless/test-traces, or
+ * $CRB_TEST_TRACE_ROOT (CI: a directory it uploads as an artifact).
+ */
 export function traceRoot(env: NodeJS.ProcessEnv = process.env): string {
+	if (env.CRB_TEST_TRACE_ROOT) return env.CRB_TEST_TRACE_ROOT;
 	const cache = env.XDG_CACHE_HOME || join(homedir(), ".cache");
 	return join(cache, "carbonless", "test-traces");
 }

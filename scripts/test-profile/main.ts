@@ -1,17 +1,19 @@
-// pnpm test-profile [run|latest] [--compare <run>] [--top N] [--jaeger]
+// pnpm test-profile [run|latest|<path>] [--compare <run|path>] [--top N] [--jaeger]
 //
 // Summarizes a test run's traces (docs/test-profiling.md). A run is named
 // by its directory under ~/.cache/carbonless/test-traces, "latest", or any
-// part of a name (the newest match: "e2e", "unit"). --jaeger loads it into
+// part of a name (the newest match: "e2e", "unit"), or by a path: a run
+// directory or a directory of runs, such as a CI artifact downloaded with
+// `gh run download <id> -n test-traces-e2e -D <dir>`. --jaeger loads it into
 // a local Jaeger (docker) and prints the link.
 import { execFileSync } from "node:child_process";
 import { traceRoot } from "../../test/trace-run";
 import { readRequests, spansOf, viewRun } from "./load";
-import { findRun } from "./runs";
+import { resolveRun } from "./runs";
 import { formatCompare, formatSummary, summarize } from "./summary";
 
 const USAGE =
-	"usage: pnpm test-profile [run|latest] [--compare <run>] [--top N] [--jaeger]";
+	"usage: pnpm test-profile [run|latest|<path>] [--compare <run|path>] [--top N] [--jaeger]";
 
 const load = (dir: string) => viewRun(dir);
 
@@ -131,7 +133,7 @@ async function main(argv: string[]): Promise<void> {
 		else run = a;
 	}
 	const root = traceRoot();
-	const found = findRun(root, run);
+	const found = resolveRun(root, run);
 	const { dir } = found;
 	if (toJaeger) {
 		viewRun(dir); // Packs a finished run first.
@@ -141,7 +143,7 @@ async function main(argv: string[]): Promise<void> {
 	const summary = summarize(load(dir), top);
 	const label = (r: typeof found) => (r.cwd ? `${r.name} · ${r.cwd}` : r.name);
 	if (compare) {
-		const other = findRun(root, compare);
+		const other = resolveRun(root, compare);
 		const before = summarize(load(other.dir), top);
 		console.log(formatCompare(label(other), before, label(found), summary));
 		return;

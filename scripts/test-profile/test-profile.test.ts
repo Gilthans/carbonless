@@ -19,9 +19,10 @@ import {
 	pruneRuns,
 	startTraceRun,
 	testSpanContext,
+	traceRoot,
 } from "../../test/trace-run";
 import { compactRun, readRequests, type Span, spansOf, viewRun } from "./load";
-import { findRun } from "./runs";
+import { findRun, resolveRun } from "./runs";
 import { type StepLike, testSpans } from "./spans";
 import { fmt, formatCompare, formatSummary, summarize } from "./summary";
 
@@ -383,6 +384,8 @@ describe("the run directory", () => {
 	it("is made once in the main process and passed down; CRB_TEST_TRACES=0 turns it off", () => {
 		const cache = tempDir();
 		vi.stubEnv("XDG_CACHE_HOME", cache);
+		// CI sets it (.github/workflows/ci.yml); this test is about the default.
+		vi.stubEnv("CRB_TEST_TRACE_ROOT", "");
 		vi.stubEnv("CRB_TRACE_DIR", "");
 		// startTraceRun sets both; stubbed, they are restored after.
 		vi.stubEnv("CRB_TRACE_RUN", "");
@@ -616,5 +619,37 @@ describe("the run directory", () => {
 			rmSync(join(root, "2026-11-02-e2e-2"), { recursive: true }),
 		);
 		expect(run.name).toBe("2026-11-01-e2e-1");
+	});
+
+	it("puts runs under $CRB_TEST_TRACE_ROOT when set (CI uploads it)", () => {
+		expect(
+			traceRoot({ CRB_TEST_TRACE_ROOT: "/ci/traces", XDG_CACHE_HOME: "/x" }),
+		).toBe("/ci/traces");
+		expect(traceRoot({ XDG_CACHE_HOME: "/x" })).toBe(
+			"/x/carbonless/test-traces",
+		);
+	});
+
+	it("reads a downloaded CI artifact by path: a run, or a directory of runs", () => {
+		const artifact = tempDir();
+		const name = "2026-11-09T10-00-00-000Z-e2e-4242";
+		mkdirSync(join(artifact, name));
+		writeFileSync(
+			join(artifact, name, "run.json"),
+			JSON.stringify({ cwd: "/home/runner/work/carbonless" }),
+		);
+		exited(join(artifact, name), { "crb-1-aaaaaa.jsonl": ["x"] });
+		const local = tempDir();
+		const fromDir = resolveRun(local, artifact, "/here");
+		expect(fromDir).toEqual({
+			dir: join(artifact, name),
+			name,
+			cwd: "/home/runner/work/carbonless",
+		});
+		expect(resolveRun(local, join(artifact, name), "/here")).toEqual(fromDir);
+		// A name is still looked up under the traces root.
+		expect(() => resolveRun(local, "e2e", "/here")).toThrow(
+			/no test traces match/,
+		);
 	});
 });

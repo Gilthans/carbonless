@@ -25,6 +25,19 @@ The ids of an e2e test's span derive from the run and test id
 (`testSpanContext`), so the worker passes them to crb as `TRACEPARENT`
 before the reporter writes the span.
 
+## CI
+
+CI traces its unit run (`checks`) and its e2e run into
+`$CRB_TEST_TRACE_ROOT` and always uploads it, kept 14 days: artifacts
+`test-traces-unit` and `test-traces-e2e`. To read one:
+
+```sh
+gh run download <run-id> -R Gilthans/carbonless -n test-traces-e2e -D /tmp/ci-traces
+pnpm test-profile /tmp/ci-traces            # or --compare it with a local run
+```
+
+A path names a run directory or a directory of runs (its newest).
+
 ## crb outside tests
 
 `CRB_TRACE_DIR=<dir> crb serve` traces a real server the same way (no
@@ -37,7 +50,7 @@ is off and costs a property check per git or gh call.
   this tree's first): wall and test time, setup phases
   (exclusive time; `body` is the rest of the test, `file` a unit file's time
   outside its tests), top files and tests, gh/git calls, crb's hot spots.
-- `pnpm test-profile <run> --compare <older run>`: the deltas.
+- `pnpm test-profile <run> --compare <older run>`: the deltas (either may be a path).
 - `pnpm test-profile <run> --jaeger`: starts (or reuses) the `crb-jaeger`
   docker container (`jaegertracing/all-in-one`, UI on the Tailscale IP port
   16686, OTLP on loopback 4318), loads the run and prints the link.

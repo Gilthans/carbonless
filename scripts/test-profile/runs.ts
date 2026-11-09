@@ -1,5 +1,5 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { traceFiles } from "./load";
 
 export interface Run {
@@ -62,4 +62,24 @@ export function findRun(
 	const found = match.filter((r) => r.cwd === cwd).at(-1) ?? match.at(-1);
 	if (!found) throw new Error(`no test traces match "${name}" in ${root}`);
 	return found;
+}
+
+/**
+ * A run named on the command line: a path (a downloaded CI artifact: a run
+ * directory, or a directory of runs, whose newest run matching nothing
+ * else is taken) or a name under `root` (findRun).
+ */
+export function resolveRun(
+	root: string,
+	arg: string | undefined,
+	cwd = process.cwd(),
+): Run {
+	if (arg && (arg.includes("/") || arg.startsWith(".")) && existsSync(arg)) {
+		const dir = resolve(arg);
+		const isRun =
+			existsSync(join(dir, "run.json")) || traceFiles(dir).length > 0;
+		if (isRun) return { dir, name: basename(dir), cwd: runCwd(dir) };
+		return findRun(dir, "latest", cwd);
+	}
+	return findRun(root, arg, cwd);
 }
