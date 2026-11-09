@@ -1,11 +1,18 @@
-import { execFileSync, spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, statSync } from "node:fs";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
+import {
+	existsSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	statSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { KEPT_TAGS } from "../../test/fake-gh/keptTags.mjs";
 import {
 	FAKE_GH_DIR,
+	fakeGhEnv,
 	prView,
 	release,
 	reviewThread,
@@ -14,6 +21,7 @@ import {
 	timelineCommit,
 	writeScenario,
 } from "../../test/fake-gh/scenario";
+import { fakeGhServerCalls } from "../../test/fake-gh/server.mjs";
 import { GIT_TEST_TIMEOUTS, testGitEnv } from "../../test/git-fixture";
 import { settleGh } from "../../test/settle-gh";
 import { GITHUB_KEPT_TAGS } from "../shared/markdownEscape";
@@ -61,7 +69,7 @@ describe("fake gh", () => {
 
 	beforeEach(() => {
 		tmp = mkdtempSync(join(tmpdir(), "crb-fake-gh-"));
-		setEnv({ PATH: `${FAKE_GH_DIR}:${process.env.PATH ?? ""}` });
+		setEnv(fakeGhEnv());
 		scenario();
 	});
 
@@ -755,6 +763,107 @@ describe("fake gh", () => {
 				three({ failNext: { op: "delete", status: 500 } });
 				await expect(deleteComment(ref, 1002)).rejects.toBeInstanceOf(GhError);
 				expect((await content())?.comments.totalCount).toBe(3);
+			});
+		});
+
+		/**
+		 * test/fake-gh/gh forwards each call to this process's fake gh
+		 * server (server.mjs), which must keep a gh process's semantics.
+		 */
+		describe("its server", () => {
+			const replyArgs = (opener: number) => [
+				"api",
+				"-X",
+				"POST",
+				`repos/acme/widget/pulls/12/comments/${opener}/replies`,
+				"-H",
+				"Accept: application/vnd.github.full+json",
+				"--input",
+				"-",
+			];
+			const until = async (done: () => boolean) => {
+				while (!done()) await new Promise((r) => setTimeout(r, 20));
+			};
+
+			it("answers the calls, and without a server a process of its own does", async () => {
+				writable();
+				const before = fakeGhServerCalls().served;
+				await expect(viewerSlug()).resolves.toBe("octo-cat");
+				expect(fakeGhServerCalls().served).toBe(before + 1);
+				setEnv({ CRB_FAKE_GH_SERVER: "" });
+				await expect(viewerSlug()).resolves.toBe("octo-cat");
+				const raw = spawnSync("gh", ["pr", "merge", "12"], {
+					env: process.env,
+					encoding: "utf8",
+				});
+				expect(raw.status).toBe(2);
+				expect(raw.stderr).toBe("fake gh: unsupported: pr merge 12\n");
+				expect(fakeGhServerCalls().served).toBe(before + 1);
+			});
+
+			it("a held call doesn't hold the others", async () => {
+				writable({ hold: ["prView"] });
+				let answered = false;
+				const view = fetchPrMeta(ref).then(() => {
+					answered = true;
+				});
+				await expect(viewerSlug()).resolves.toBe("octo-cat");
+				await expect(thread0()).resolves.toMatchObject({ isResolved: false });
+				expect(answered).toBe(false);
+				release(process.env.CRB_FAKE_GH ?? "", "prView");
+				await view;
+			});
+
+			it("passes stdin, stdout and stderr byte for byte, however long and whatever the script", async () => {
+				// stderr comes before stdout: counted in characters, not
+				// bytes (a UTF-8 locale), it would take some of stdout.
+				writable({
+					failNext: { op: "resolve", graphql: { message: "Nö ✓", type: "X" } },
+				});
+				const { LC_ALL: _, ...env } = process.env;
+				const gql = spawnSync(
+					"gh",
+					[
+						"api",
+						"graphql",
+						"-f",
+						"query=mutation($id: ID!) { resolveReviewThread(input: { threadId: $id }) { thread { id } } }",
+						"-f",
+						"id=T12-0",
+					],
+					{ env: { ...env, LANG: "C.UTF-8" }, encoding: "utf8" },
+				);
+				expect(gql.stderr).toBe("gh: Nö ✓\n");
+				expect(JSON.parse(gql.stdout).errors[0].message).toBe("Nö ✓");
+				writable();
+				const opener = (await thread0()).first.nodes[0]?.databaseId ?? 0;
+				const body = `שלום ✓ "quoted" \\ $HOME \`x\`\n\n${"é—🙂".repeat(30_000)}\n`;
+				const posted = await postReply(ref, opener, body, PR_URL);
+				expect(posted.body).toBe(body);
+				const { id } = await thread0();
+				const content = (await fetchThreadContents([id])).get(id) as {
+					comments: { nodes: { body: string }[] };
+				};
+				expect(content.comments.nodes.at(-1)?.body).toBe(body);
+			});
+
+			it("a killed call stops at its gate and saves nothing, like a killed process", async () => {
+				const log = join(tmp, "gh.log");
+				setEnv({ CRB_FAKE_GH_LOG: log });
+				writable({ hold: ["reply"] });
+				const opener = (await thread0()).first.nodes[0]?.databaseId ?? 0;
+				const gh = spawn("gh", replyArgs(opener), { env: process.env });
+				gh.stdin.end(JSON.stringify({ body: "Never" }));
+				const exited = new Promise((r) => gh.on("exit", r));
+				await until(
+					() =>
+						existsSync(log) && readFileSync(log, "utf8").includes("replies"),
+				);
+				gh.kill("SIGKILL");
+				await exited;
+				release(process.env.CRB_FAKE_GH ?? "", "reply");
+				await until(() => fakeGhServerCalls().running === 0);
+				expect((await thread0()).comments.totalCount).toBe(1);
 			});
 		});
 	});

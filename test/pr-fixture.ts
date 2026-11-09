@@ -11,7 +11,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { Session } from "../src/server/session";
 import {
-	FAKE_GH_DIR,
+	fakeGhEnv,
 	prView,
 	type Scenario,
 	writeScenario,
@@ -98,7 +98,7 @@ export function createPrFixture(): PrFixture {
 		setEnv({ CRB_FAKE_GH: path });
 	};
 	setEnv({
-		PATH: `${FAKE_GH_DIR}:${process.env.PATH ?? ""}`,
+		...fakeGhEnv(),
 		XDG_CACHE_HOME: join(tmp, "cache"),
 		CRB_FAKE_GH_LOG: join(tmp, "gh.log"),
 	});

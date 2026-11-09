@@ -9,8 +9,8 @@ import {
 import { dirname, join, resolve } from "node:path";
 import { writeFileAtomic } from "../test/fake-gh/atomic.mjs";
 import {
-	FAKE_GH_DIR,
 	FIXTURE_BODY_HTML,
+	fakeGhEnv,
 	prView,
 	type reviewThread,
 	type Scenario,
@@ -92,7 +92,7 @@ export const CLI = resolve(import.meta.dirname, "../dist/cli.js");
  */
 export function crbEnv(workdir: string): NodeJS.ProcessEnv {
 	return testGitEnv({
-		PATH: `${FAKE_GH_DIR}:${process.env.PATH ?? ""}`,
+		...fakeGhEnv(),
 		CRB_FAKE_GH: join(workdir, "fake-gh-scenario.json"),
 		CRB_FAKE_GH_LOG: join(workdir, "fake-gh.log"),
 		XDG_CACHE_HOME: join(workdir, "cache"),
