@@ -217,3 +217,57 @@ test("a thread bubble on a hidden-lines row opens its thread and loads nothing e
 	await expect(line(section, 50)).toHaveCount(0);
 	await expect(gapRow(section, "43 hidden lines")).toHaveCount(1);
 });
+
+test("on a phone a cut heading scrolls sideways in place, and only a tap loads", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	test.skip(!isMobile, "touch only: the desktop has the tooltip");
+	await setup(pr);
+	const s = await startCrb();
+	await page.setViewportSize({ width: 360, height: 780 });
+	const section = await open(page, s.url);
+	const lines = section.getByTestId("diff-line");
+	const cdp = await page.context().newCDPSession(page);
+	const headings = [
+		section.getByTestId("hunk-header").nth(1).getByTestId("hunk-heading"),
+		gapRow(section, "49 hidden lines").getByTestId("hunk-heading"),
+	];
+	for (const heading of headings) {
+		await heading.scrollIntoViewIfNeeded();
+		const before = await lines.count();
+		const size = await heading.evaluate((el) => ({
+			scroll: el.scrollWidth,
+			client: el.clientWidth,
+			left: el.scrollLeft,
+		}));
+		expect(size.scroll).toBeGreaterThan(size.client);
+		expect(size.left).toBe(0);
+		const box = await heading.boundingBox();
+		if (!box) throw new Error("no heading");
+		// A finger dragging the heading to the left.
+		const x = Math.round(box.x + box.width - 10);
+		const y = Math.round(box.y + box.height / 2);
+		const touch = (type: string, at: number) =>
+			cdp.send("Input.dispatchTouchEvent", {
+				type,
+				touchPoints: type === "touchEnd" ? [] : [{ x: at, y }],
+			});
+		await touch("touchStart", x);
+		for (let dx = 10; dx <= 150; dx += 10) await touch("touchMove", x - dx);
+		await touch("touchEnd", x - 150);
+		await expect
+			.poll(() => heading.evaluate((el) => el.scrollLeft))
+			.toBeGreaterThan(0);
+		expect(await lines.count()).toBe(before);
+		await expectNoPageOverflow(page);
+	}
+	// A tap on a heading is a tap on its row: the 13-line ↕ gap loads.
+	const both = gapRow(section, "13 hidden lines");
+	await both.getByTestId("hunk-heading").tap();
+	await expect(line(section, 70)).toBeVisible();
+	await expect(line(section, 82)).toBeVisible();
+	await expectNoPageOverflow(page);
+});

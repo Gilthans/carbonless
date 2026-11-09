@@ -1,13 +1,22 @@
 import type { CSSProperties, ReactNode } from "react";
 import { Tooltip } from "../Tooltip";
 
+/**
+ * On touch, where there's no hover for the tooltip, a cut heading scrolls
+ * sideways inside itself (no scrollbar): a drag shows the rest and is no
+ * tap, so it loads nothing; a tap still reaches the row.
+ */
+const SWIPE =
+	"pointer-coarse:overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden";
+
 /** Whether an element's text is cut by its ellipsis. */
 const isCut = (el: HTMLElement) => el.scrollWidth > el.clientWidth;
 
 /**
  * A hunk's heading (git's function context, e.g. `def foo(self):`): muted
  * code after its row's label, cut with an ellipsis where the row runs out
- * of visible width, the whole text in a tooltip on hover when cut. Plain
+ * of visible width, the whole text in a tooltip on hover when cut (on
+ * touch: by dragging it sideways, SWIPE). Plain
  * text: React escapes it, it is never markup.
  */
 export function HunkHeading(props: { text: string }) {
@@ -26,7 +35,7 @@ export function HunkHeading(props: { text: string }) {
 					}}
 					onMouseLeave={trigger.onMouseLeave}
 					data-testid="hunk-heading"
-					className="ml-2 min-w-0 truncate font-mono text-muted"
+					className={`ml-2 min-w-0 truncate font-mono text-muted ${SWIPE}`}
 				>
 					{props.text}
 				</span>
