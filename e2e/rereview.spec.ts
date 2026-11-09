@@ -11,6 +11,7 @@ import {
 	openFiles,
 	progress,
 	rowTop,
+	sideBySide,
 	tapHeight,
 	withTree,
 } from "./files-ui";
@@ -2359,4 +2360,146 @@ test("the since view counts its pieces: marking a reverted piece, then a piece o
 	const full = fileSection(page, PIECES);
 	await expect(boxes(full).first()).toHaveAttribute("aria-checked", "mixed");
 	await expectNoPageOverflow(page);
+});
+
+/**
+ * PS1 fully reviewed with threads on core 30 (the PR's line), util 3
+ * (RIGHT) and util's base line 3 (LEFT, a line the PR changed), then only
+ * core 5 reworked: the since view (PS1 → the head), its files closed.
+ */
+async function sinceGaps(
+	page: Page,
+	pr: (o: PrOptions) => Promise<Pr>,
+	startCrb: () => Promise<{ url: string }>,
+) {
+	const threads: ReturnType<typeof reviewThread>[] = [];
+	const p = await pr({ ...fixture, threads });
+	const h1 = p.head();
+	threads.push(
+		threadOn(h1, "src/core.ts", 30, "Is core 30 needed?"),
+		threadOn(h1, "src/util.ts", 3, "util 3 looks fine"),
+		reviewThread({ path: "src/util.ts", line: 3, diffSide: "LEFT" }, [
+			threadComment({
+				login: "rev1",
+				text: "Why drop the old util 3?",
+				commit: h1,
+				diffHunk: "",
+			}),
+		]),
+	);
+	p.editScenario((sc) => {
+		const graph = sc.prs[7]?.graphql;
+		if (graph) graph.reviewThreads = threads;
+	});
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	await reviewAll(page);
+	// Only core 5 reworked: core 30 (the PR's since PS1) and util.ts unchanged.
+	p.moveHead(reworkCore);
+	await page.reload();
+	await expect(tail(page)).toHaveAttribute("data-state", "head", GIT_WAIT);
+	await toast(page).getByRole("button", { name: "View" }).click();
+	await expect(
+		node(page, "ps1").getByRole("button", { name: "comparison base" }),
+	).toBeVisible();
+	return {
+		coreS: fileSection(page, "src/core.ts"),
+		utilS: fileSection(page, "src/util.ts"),
+	};
+}
+
+/** Opens core.ts's gap by core 30's thread: the PR's line, unchanged since PS1, with the thread open. */
+async function openCore30(coreS: Locator) {
+	await coreS.getByRole("button", { name: "Expand file" }).click();
+	await coreS
+		.getByTestId("gap-row")
+		.filter({ hasText: "32 hidden lines" })
+		.getByRole("button", { name: "1 comment on hidden lines 9–40" })
+		.click(GIT_WAIT);
+	await expect(
+		coreS.locator("tr").filter({ hasText: "core 30 changed" }).first(),
+	).toBeVisible();
+	await expect(
+		coreS.getByTestId("files-thread").filter({ hasText: "Is core 30 needed?" }),
+	).toBeVisible();
+}
+
+test("the since view's gaps load the interdiff's lines: a line the PR added at PS1 and left alone, a thread on it, a file untouched since; a LEFT thread on a line the PR changed stays off its rows", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	// A review, a push, the engine's answer: each step waits on git
+	// (GIT_WAIT), so the whole takes longer than 30 s.
+	test.setTimeout(180_000);
+	const { coreS, utilS } = await sinceGaps(page, pr, startCrb);
+
+	// core.ts: the gap below the reworked line holds core 30's thread;
+	// opening it loads that line (the PR's, unchanged since PS1).
+	await openCore30(coreS);
+	const core30 = coreS
+		.getByTestId("diff-line")
+		.filter({ hasText: "core 30 changed" });
+	await expect(core30).toHaveAttribute("data-old-no", "30");
+	await expect(core30).toHaveAttribute("data-new-no", "30");
+	await expect(
+		core30.getByRole("button", { name: "1 comment on line 30" }),
+	).toHaveAttribute("aria-expanded", "true");
+	// The rest of the gap opens by its buttons, every line of it.
+	// (The thread loaded 27–40, near the gap's end; 9–26 and line 1 are left.)
+	await coreS.getByRole("button", { name: "Load all 18 lines" }).click();
+	await coreS.getByRole("button", { name: "Load 1 line above" }).click();
+	await expect(coreS.getByTestId("gap-row")).toHaveCount(0);
+	for (const n of [9, 29, 31, 40]) {
+		await expect(
+			coreS
+				.getByTestId("diff-line")
+				.filter({ hasText: `core ${n}` })
+				.first(),
+		).toBeVisible();
+	}
+	await expect(coreS.getByRole("alert")).toHaveCount(0);
+
+	// util.ts, untouched since PS1: one whole-file gap holding its RIGHT
+	// thread. The LEFT one is on base util 3, which the PR changed: no
+	// row of this view is that line, so it stays in the file's lead.
+	await utilS.getByRole("button", { name: "Expand file" }).click();
+	const whole = utilS.getByTestId("gap-row");
+	await expect(whole).toHaveText(/10 hidden lines/, GIT_WAIT);
+	await expect(
+		utilS.getByRole("button", {
+			name: "1 comment on this file, line not in this diff",
+		}),
+	).toBeVisible();
+	await whole
+		.getByRole("button", { name: "1 comment on hidden lines 1–10" })
+		.click();
+	const util3 = utilS
+		.getByTestId("diff-line")
+		.filter({ hasText: "util 3 changed" });
+	await expect(util3).toBeVisible();
+	await expect(
+		util3.getByRole("button", { name: "1 comment on line 3" }),
+	).toBeVisible();
+	await expect(
+		utilS.getByTestId("files-thread").filter({ hasText: "util 3 looks fine" }),
+	).toBeVisible();
+	await expect(
+		utilS
+			.getByTestId("files-thread")
+			.filter({ hasText: "Why drop the old util 3?" }),
+	).toHaveCount(0);
+});
+
+test("the since view's gaps side by side: core 30's thread opens its gap onto its line", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	// A review, a push, the engine's answer: each step waits on git.
+	test.setTimeout(180_000);
+	const { coreS } = await sinceGaps(page, pr, startCrb);
+	await sideBySide(page, true);
+	await openCore30(coreS);
+	await sideBySide(page, false);
 });

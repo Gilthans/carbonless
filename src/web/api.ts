@@ -225,17 +225,23 @@ export const postPlacement = (
 		{ patchset, anchor },
 	);
 
+/**
+ * Unchanged lines `from..to` of a file; with `since`, the since view's (the
+ * interdiff's from that patch set, numbered as its hunks are).
+ */
 export const fetchContext = (
 	revision: string,
 	index: number,
 	from: number,
 	to: number,
+	since?: number,
 ) =>
 	request<DiffLine[]>(
 		`/api/files/${index}/context?${new URLSearchParams({
 			revision,
 			newFrom: String(from),
 			newTo: String(to),
+			...(since === undefined ? {} : { from: String(since) }),
 		})}`,
 	);
 
@@ -839,9 +845,11 @@ export const contextQuery = (
 	index: number,
 	from: number,
 	to: number,
+	/** The since view's patch set (hunksQuery's `from`): its own lines. */
+	since?: number,
 ) =>
 	queryOptions({
-		queryKey: ["context", revision, index, from, to],
-		queryFn: () => fetchContext(revision, index, from, to),
+		queryKey: ["context", revision, index, from, to, since ?? null],
+		queryFn: () => fetchContext(revision, index, from, to, since),
 		staleTime: Number.POSITIVE_INFINITY,
 	});

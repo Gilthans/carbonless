@@ -115,6 +115,11 @@ export interface FileHunks {
 	newLineCount: number;
 	/** The since view's only: its pieces, each markable (pieces.ts). */
 	pieces?: SincePiece[];
+	/**
+	 * The since view's only: the interdiff doesn't change the file's
+	 * lines, so all `newLineCount` of them are one gap (gaps.ts).
+	 */
+	wholeGap?: true;
 }
 
 /**
