@@ -1743,13 +1743,14 @@ test("a tree row's tooltip: the name as a title, then one line per indicator", a
 				path: `${shots}/tree-tooltip-plain-desktop.png`,
 			});
 		}
-		// A rename says where it came from.
+		// A rename: old → new under its name.
 		await close();
 		await open(tree.getByRole("button", { name: /new\.md/ }));
 		await expect(tip.locator("[data-tooltip-title]")).toHaveText("new.md");
 		await expect(tip).toContainText("docs/old.md → docs/new.md");
+		// The path line says where from: the kind line doesn't repeat it.
 		await expect(tip.locator('[data-tooltip-line="change-kind"]')).toHaveText(
-			"Renamed from docs/old.md",
+			"Renamed",
 		);
 		// A folder: its name, its path, its progress.
 		await close();

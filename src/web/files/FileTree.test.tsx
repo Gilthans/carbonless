@@ -500,7 +500,8 @@ describe("tooltip legend", () => {
 		).toBe("old/x.ts → new/x.ts");
 		expect(legendOf(moved).lines.slice(0, 2)).toEqual([
 			["status", "Reviewed"],
-			["change-kind", "Renamed from old/x.ts"],
+			// The path line says where from: not repeated.
+			["change-kind", "Renamed"],
 		]);
 	});
 
@@ -574,20 +575,58 @@ describe("tooltip legend", () => {
 		expect(legendOf(ghost).lines).toEqual([["moved", "Moved away"]]);
 	});
 
-	it("renders a file name with markup as text", async () => {
-		const evil = "src/<img src=x onerror=alert(1)>.ts";
+	it("says only what a done file's status doesn't: how much was crossed off", async () => {
+		// In files its progress is "done · 2 crossed off": "done" is the status line's.
 		render(
 			<FileTree
-				files={[file(0, evil, ["unreviewed"])]}
+				files={[
+					file(0, "a/part.ts", ["reviewed", "crossed-off", "crossed-off"], "x"),
+				]}
+				unit="files"
+				current={null}
+				onSelect={() => {}}
+			/>,
+		);
+		const tip = await tipOf(screen.getByRole("button", { name: /part\.ts/ }));
+		const lines = legendOf(tip).lines;
+		expect(lines[0]).toEqual(["status", "Reviewed"]);
+		expect(lines.at(-1)).toEqual(["progress", "2 crossed off"]);
+	});
+
+	it("renders names and paths with markup as text", async () => {
+		const evil = "src/<img src=x onerror=alert(1)>.ts";
+		const dir = "<img src=x onerror=alert(2)>";
+		render(
+			<FileTree
+				files={[
+					file(0, evil, ["unreviewed"]),
+					{
+						...file(1, `${dir}/b.ts`, ["unreviewed"]),
+						status: "renamed",
+						oldPath: "old/b.ts",
+					},
+				]}
 				unit="clusters"
 				current={null}
 				onSelect={() => {}}
 			/>,
 		);
-		const tip = await tipOf(screen.getByRole("button", { name: /onerror/ }));
+		const tip = await tipOf(screen.getByRole("button", { name: /alert\(1\)/ }));
 		expect(tip.querySelector("img")).toBeNull();
 		expect(legendOf(tip).title).toBe("<img src=x onerror=alert(1)>.ts");
 		expect(tip.querySelector("[data-tooltip-path]")?.textContent).toBe(evil);
+		// A folder named with markup.
+		const folder = await tipOf(
+			document.querySelector(`[data-folder="${dir}"]`) as HTMLElement,
+		);
+		expect(folder.querySelector("img")).toBeNull();
+		expect(legendOf(folder).title).toBe(dir);
+		// The moved-away entry's "Moved to" line.
+		const moved = await tipOf(
+			document.querySelector('[data-moved="old/b.ts"]') as HTMLElement,
+		);
+		expect(moved.querySelector("img")).toBeNull();
+		expect(legendOf(moved).lines).toEqual([["moved", `Moved to ${dir}/b.ts`]]);
 		expect(document.querySelector("img")).toBeNull();
 	});
 });

@@ -23,6 +23,7 @@ import { type Folds, useFolds } from "./folderFold";
 import { Meter } from "./ProgressBar";
 import {
 	ChangeCount,
+	type Changes,
 	clusterCount,
 	crossOffReasons,
 	fileProgress,
@@ -111,7 +112,12 @@ function TipTitle(props: { name: string; path: ReactNode; pathText: string }) {
 	);
 }
 
-/** A tooltip's legend: one line per indicator the row shows. */
+/**
+ * A tooltip's legend: one line per indicator the row shows. The tree's
+ * tooltips are lazy (mounted only while open), but `ChangeCount` and
+ * `ChangeKindIcon` keep their test ids here: scope lookups of those ids to
+ * a row, a header or a section.
+ */
 function TipLines({ children }: { children: ReactNode }) {
 	return (
 		<span
@@ -130,7 +136,8 @@ function TipLines({ children }: { children: ReactNode }) {
  */
 function TipLine(props: {
 	kind: string;
-	icon: ReactNode;
+	/** None when the row draws none for it (an empty slot keeps the text aligned). */
+	icon?: ReactNode;
 	children: ReactNode;
 }) {
 	return (
@@ -170,24 +177,81 @@ const STATE_TEXT = {
 	"crossed off": "Crossed off",
 } as const;
 
-/** File progress that says no more than the status line. */
-const STATUS_ONLY = new Set(["done", "crossed off"]);
+/**
+ * A file's progress for its legend, without what its status line says:
+ * none for "done" or "crossed off", "2 crossed off" for a done file with
+ * some crossed off.
+ */
+function legendProgress(
+	p: ReturnType<typeof fileUnitProgress>,
+	numbers: string,
+): string | null {
+	if (p.status === "done" && p.partlyCrossedOff > 0)
+		return `${p.partlyCrossedOff} crossed off`;
+	return numbers === "done" || numbers === "crossed off" ? null : numbers;
+}
 
 const capital = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 
-/** The legend's meter: the row's, ringed so its empty track shows on the tooltip. */
-function TipMeter(props: {
+/**
+ * A row's mini meter. In a tooltip's legend it is ringed, so its empty
+ * track shows on the tooltip's own background; the row's has a test id.
+ */
+function TreeMeter(props: {
 	counts: Parameters<typeof Meter>[0]["counts"];
 	incomplete: boolean;
+	legend?: boolean;
 }) {
 	return (
-		<span className="flex h-4 w-10 shrink-0 items-center">
+		<span
+			aria-hidden
+			data-testid={props.legend ? undefined : "tree-meter"}
+			className="flex h-4 w-10 shrink-0 items-center"
+		>
 			<Meter
 				counts={props.counts}
 				incomplete={props.incomplete}
-				className="h-1.5 w-full ring-1 ring-edge"
+				className={`h-1.5 w-full ${props.legend ? "ring-1 ring-edge" : ""}`}
 			/>
 		</span>
+	);
+}
+
+/** A row's review-threads dot: yellow waits on you, green all resolved, else grey. */
+function ThreadDot({ tone }: { tone: string }) {
+	return <span aria-hidden className={`h-2 w-2 rounded-full ${tone}`} />;
+}
+
+/**
+ * A legend's last lines: the change counts, then the meter with its
+ * progress in words (none when that would only repeat the status line).
+ */
+function TipProgressLines(props: {
+	changes: Changes;
+	counts: Parameters<typeof Meter>[0]["counts"];
+	incomplete: boolean;
+	progress: string | null;
+}) {
+	return (
+		<>
+			<TipLine kind="changes" icon={<ChangeCount file={props.changes} />}>
+				{capital(lineCount(props.changes))} · {clusterCount(props.changes)}
+			</TipLine>
+			{props.progress !== null && (
+				<TipLine
+					kind="progress"
+					icon={
+						<TreeMeter
+							counts={props.counts}
+							incomplete={props.incomplete}
+							legend
+						/>
+					}
+				>
+					{capital(props.progress)}
+				</TipLine>
+			)}
+		</>
 	);
 }
 
@@ -256,7 +320,8 @@ function FileItem(props: {
 									/>
 								}
 							>
-								{changeKindLabel(file)}
+								{/* The path line says where a rename came from. */}
+								{file.status === "renamed" ? "Renamed" : changeKindLabel(file)}
 							</TipLine>
 							{mark && (
 								<TipLine kind="mark" icon={<MarkDot mark={mark} legend />}>
@@ -264,10 +329,7 @@ function FileItem(props: {
 								</TipLine>
 							)}
 							{talk && (
-								<TipLine
-									kind="threads"
-									icon={<span className={`h-2 w-2 rounded-full ${dot}`} />}
-								>
+								<TipLine kind="threads" icon={<ThreadDot tone={dot} />}>
 									{capital(talk)}
 								</TipLine>
 							)}
@@ -276,23 +338,12 @@ function FileItem(props: {
 									{capital(asked)}
 								</TipLine>
 							)}
-							<TipLine kind="changes" icon={<ChangeCount file={file} />}>
-								{capital(lineCount(file))} · {clusterCount(file)}
-							</TipLine>
-							{/* Not when it would only repeat the status ("done", "crossed off"). */}
-							{!STATUS_ONLY.has(numbers) && (
-								<TipLine
-									kind="progress"
-									icon={
-										<TipMeter
-											counts={p.counts}
-											incomplete={p.clustersLeft > 0}
-										/>
-									}
-								>
-									{capital(numbers)}
-								</TipLine>
-							)}
+							<TipProgressLines
+								changes={file}
+								counts={p.counts}
+								incomplete={p.clustersLeft > 0}
+								progress={legendProgress(p, numbers)}
+							/>
 						</TipLines>
 					</>
 				}
@@ -348,7 +399,7 @@ function FileItem(props: {
 								data-testid="tree-threads"
 								className="flex h-4 w-2 shrink-0 items-center"
 							>
-								<span aria-hidden className={`h-2 w-2 rounded-full ${dot}`} />
+								<ThreadDot tone={dot} />
 								<span className="sr-only">{talk}</span>
 							</span>
 						)}
@@ -366,17 +417,7 @@ function FileItem(props: {
 							{numbers}
 						</span>
 						{mark && <span className="sr-only">, {markText(mark, false)}</span>}
-						<span
-							aria-hidden
-							data-testid="tree-meter"
-							className="flex h-4 w-10 shrink-0 items-center"
-						>
-							<Meter
-								counts={p.counts}
-								incomplete={p.clustersLeft > 0}
-								className="h-1.5 w-full"
-							/>
-						</span>
+						<TreeMeter counts={p.counts} incomplete={p.clustersLeft > 0} />
 					</button>
 				)}
 			</Tooltip>
@@ -449,29 +490,20 @@ function FolderItem(props: Level & { folder: Folder }) {
 								</TipLine>
 							)}
 							{waiting && (
-								<TipLine
-									kind="threads"
-									icon={<span className="h-2 w-2 rounded-full bg-warn" />}
-								>
+								<TipLine kind="threads" icon={<ThreadDot tone="bg-warn" />}>
 									{capital(waiting)}
 								</TipLine>
 							)}
 							{ghost ? (
-								<TipLine kind="moved" icon={MOVED_ICON}>
-									Moved away
-								</TipLine>
+								// Its row has no icon for it: nor does the line.
+								<TipLine kind="moved">Moved away</TipLine>
 							) : (
-								<>
-									<TipLine kind="changes" icon={<ChangeCount file={p} />}>
-										{capital(lineCount(p))} · {clusterCount(p)}
-									</TipLine>
-									<TipLine
-										kind="progress"
-										icon={<TipMeter counts={p.counts} incomplete={!p.done} />}
-									>
-										{capital(numbers)}
-									</TipLine>
-								</>
+								<TipProgressLines
+									changes={p}
+									counts={p.counts}
+									incomplete={!p.done}
+									progress={numbers}
+								/>
 							)}
 						</TipLines>
 					</>
@@ -520,7 +552,7 @@ function FolderItem(props: Level & { folder: Folder }) {
 								data-testid="tree-threads"
 								className="flex h-4 w-2 shrink-0 items-center"
 							>
-								<span className="h-2 w-2 rounded-full bg-warn" />
+								<ThreadDot tone="bg-warn" />
 							</span>
 						)}
 						{!ghost && (
@@ -539,19 +571,9 @@ function FolderItem(props: Level & { folder: Folder }) {
 						{ghost && <span className="sr-only">, moved away</span>}
 						{said && <span className="sr-only">, {said}</span>}
 						{!ghost && (
-							<span
-								aria-hidden
-								data-testid="tree-meter"
-								className="flex h-4 w-10 shrink-0 items-center"
-							>
-								<Meter
-									counts={p.counts}
-									// Never full while any file is left (one with no
-									// clusters counts nothing but isn't done either).
-									incomplete={!p.done}
-									className="h-1.5 w-full"
-								/>
-							</span>
+							// Never full while any file is left (one with no clusters
+							// counts nothing but isn't done either).
+							<TreeMeter counts={p.counts} incomplete={!p.done} />
 						)}
 					</button>
 				)}
