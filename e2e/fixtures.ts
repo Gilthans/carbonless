@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
 	test as base,
+	type ElementHandle,
 	expect,
 	type Locator,
 	type Page,
@@ -396,20 +397,20 @@ export async function expectEveryUnitMarkable(
 	const states = async () => statesOf(await scope.evaluate(collectUnits));
 	const use = async (i: number, control: "box" | "cross", want: UnitState) => {
 		const before = await states();
-		await scope
-			.locator(
-				`[data-markable-unit="${i}"] ${
-					control === "box"
-						? 'input[type="checkbox"]'
-						: 'button[aria-label="Cross off cluster"]'
-				}`,
-			)
-			.click();
+		const [target] = await unitControls(
+			scope,
+			i,
+			control === "box"
+				? 'input[type="checkbox"]'
+				: 'button[aria-label="Cross off cluster"]',
+		);
+		if (!target) throw new Error(`unit ${i} has no ${control}`);
+		await target.click();
 		// A mark that finished the file closed it (the page moved on): open
 		// it again to read its units.
 		const expandFile = scope.getByRole("button", { name: "Expand file" });
 		if (await expandFile.isVisible()) {
-			// Its rows are new: collectUnits numbers them again (states()).
+			// Its rows are new: collectUnits finds them again (states()).
 			// The move-on may still be landing: open it until it stays open.
 			await expect(async () => {
 				if (await expandFile.isVisible()) await expandFile.click();
@@ -463,26 +464,56 @@ export async function expectEveryUnitMarkable(
 }
 
 /**
+ * The elements matching `selector` in unit `only` of `scope` (every unit's
+ * when undefined), as collectUnits finds the units now. Handles, not
+ * locators: collectUnits only reads the page, so there is no attribute
+ * to select a unit by (a write per poll wakes every MutationObserver).
+ */
+async function unitControls(
+	scope: Locator,
+	only: number | undefined,
+	selector: string,
+): Promise<ElementHandle<Element>[]> {
+	const units = await scope.evaluateHandle(collectUnits);
+	const found = await units.evaluateHandle(
+		(list, a) =>
+			list
+				.filter((u) => a.only === null || u.index === a.only)
+				.flatMap((u) => Array.from(u.el.querySelectorAll(a.selector))),
+		{ only: only ?? null, selector },
+	);
+	const out: ElementHandle<Element>[] = [];
+	for (const h of (await found.getProperties()).values()) {
+		const el = h.asElement();
+		if (el) out.push(el as ElementHandle<Element>);
+	}
+	await units.dispose();
+	return out;
+}
+
+/**
  * Every disabled cluster control in `scope` (or in its unit `only`) gives
  * its reason: an accessible description, else a tooltip on hover (its
  * wrapper takes the hover: a disabled control gets none).
  */
 async function expectDisabledSayWhy(scope: Locator, only?: number) {
-	const unit =
-		only === undefined
-			? "[data-markable-unit]"
-			: `[data-markable-unit="${only}"]`;
-	const disabled = scope.locator(
-		`${unit} input[type="checkbox"]:disabled, ${unit} button[aria-label="Cross off cluster"]:disabled`,
+	const disabled = await unitControls(
+		scope,
+		only,
+		'input[type="checkbox"]:disabled, button[aria-label="Cross off cluster"]:disabled',
 	);
-	for (const control of await disabled.all()) {
+	for (const control of disabled) {
 		const described = await control.evaluate((el) =>
 			(el.getAttribute("aria-describedby") ?? "")
 				.split(/\s+/)
 				.some((id) => id && document.getElementById(id)?.textContent?.trim()),
 		);
 		if (described) continue;
-		await control.locator("xpath=..").hover();
+		const wrapper = (
+			await control.evaluateHandle((el) => el.parentElement)
+		).asElement();
+		if (!wrapper) throw new Error("a disabled control with no wrapper");
+		await wrapper.hover();
 		await expect(
 			scope.page().locator('[role="tooltip"]:not([hidden])'),
 			"a disabled control with no reason",

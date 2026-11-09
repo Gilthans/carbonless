@@ -12,15 +12,24 @@
  * no other's (checked by the callers, which can click).
  *
  * `collectUnits` must stay self-contained (no imports, no helpers outside
- * it): Playwright serialises it into the page.
+ * it): Playwright serialises it into the page. It only reads: callers poll
+ * it inside waitFor, whose MutationObserver watches the whole body, and a
+ * DOM write (even of an unchanged attribute) wakes that observer again, a
+ * microtask loop no timeout can end.
  */
 
 /** "mixed": partly reviewed (an indeterminate box that isn't a cross-off). */
 export type UnitState = "reviewed" | "crossed-off" | "mixed" | "unreviewed";
 
 export interface UnitReport {
-	/** Its place among the units, top down (also its `data-markable-unit`). */
+	/** Its place among the units, top down. */
 	index: number;
+	/**
+	 * Its `<tbody>`, to find its controls by. Only in the same document:
+	 * through Playwright's `evaluate` it arrives as a placeholder string
+	 * (e2e/fixtures.ts takes a handle instead).
+	 */
+	el: Element;
 	/** What it shows: its first changed line's code, else its text. */
 	label: string;
 	/** Reviewed checkboxes ("Mark cluster reviewed" / "Undo cross-off"). */
@@ -38,7 +47,7 @@ export interface UnitReport {
 	gone: boolean;
 }
 
-/** The diff's units under `root`, each tagged `data-markable-unit="<index>"`. */
+/** The diff's units under `root`, top down. Reads the DOM, never writes it. */
 export function collectUnits(root: Element): UnitReport[] {
 	const BOX =
 		'input[type="checkbox"][aria-label="Mark cluster reviewed"], input[type="checkbox"][aria-label="Undo cross-off"]';
@@ -50,18 +59,8 @@ export function collectUnits(root: Element): UnitReport[] {
 		const changed = body.querySelector(CHANGED);
 		const boxes = Array.from(body.querySelectorAll<HTMLInputElement>(BOX));
 		const crosses = Array.from(body.querySelectorAll<HTMLButtonElement>(CROSS));
-		if (!changed && boxes.length === 0 && crosses.length === 0) {
-			// Only a real change: a waitFor callback that writes the DOM on
-			// every call wakes its own MutationObserver, forever.
-			if (body.hasAttribute("data-markable-unit")) {
-				body.removeAttribute("data-markable-unit");
-			}
-			continue;
-		}
+		if (!changed && boxes.length === 0 && crosses.length === 0) continue;
 		const index = units.length;
-		if (body.getAttribute("data-markable-unit") !== String(index)) {
-			body.setAttribute("data-markable-unit", String(index));
-		}
 		const box = boxes[0];
 		const cross = crosses[0];
 		const reason = (el: Element | undefined) =>
@@ -78,6 +77,7 @@ export function collectUnits(root: Element): UnitReport[] {
 		const label = (code || body.textContent || "").trim().slice(0, 80);
 		units.push({
 			index,
+			el: body,
 			label,
 			boxes: boxes.length,
 			crosses: crosses.length,

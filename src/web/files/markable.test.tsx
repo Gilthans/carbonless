@@ -478,8 +478,7 @@ async function loaded(c: Case) {
 const openTip = () => document.querySelector('[role="tooltip"]:not([hidden])');
 
 const unitEl = (i: number) => {
-	collectUnits(document.body);
-	const el = document.querySelector(`[data-markable-unit="${i}"]`);
+	const el = collectUnits(document.body)[i]?.el;
 	if (!el) throw new Error(`no unit ${i}`);
 	return el;
 };
@@ -799,6 +798,38 @@ function SharedBox() {
 }
 
 describe("the helper itself", () => {
+	it("reads the DOM without writing to it (a waitFor callback that writes wakes its own observer, forever)", async () => {
+		window.scrollTo = vi.fn();
+		const c = SINCE.find(
+			(x) => x.name === "one cluster reworked in three pieces",
+		) as Case;
+		mount(c);
+		await screen.findAllByTestId("diff-line");
+		await waitFor(() =>
+			expect(document.querySelector('[aria-busy="true"]')).toBeNull(),
+		);
+		const records: MutationRecord[] = [];
+		const observer = new MutationObserver((r) => records.push(...r));
+		observer.observe(document.body, {
+			subtree: true,
+			childList: true,
+			attributes: true,
+			characterData: true,
+		});
+		const units = collectUnits(document.body);
+		collectUnits(document.body);
+		records.push(...observer.takeRecords());
+		observer.disconnect();
+		expect(units.length).toBeGreaterThan(0);
+		expect(
+			records.map(
+				(r) =>
+					`${r.type} ${r.attributeName ?? ""} on <${(r.target as Element).tagName?.toLowerCase()}>`,
+			),
+			"collectUnits wrote to the DOM",
+		).toEqual([]);
+	});
+
 	it("fails fast, saying which unit moved, when two units share one control", async () => {
 		render(<SharedBox />);
 		const started = Date.now();
