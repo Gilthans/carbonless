@@ -56,11 +56,10 @@ into side-bars without changing the format.
 ## Non-goals (this slice)
 
 - The global agent conversation, meaning one request answered across many
-  threads (owner: a follow-up). Ticket to be opened.
+  threads (owner: a follow-up): CAR-92.
 - The agent drafting a comment, reply or new thread: CAR-83 (the owner's
   2026-11-09 words were added to it).
-- Fixing an answer that streams in and pushes the page (new ticket
-  proposed).
+- Fixing an answer that streams in and pushes the page: CAR-91.
 - Unread markers on span (code) agent threads. The data supports them. Only
   thread side-bars show them in this slice (my call: keeps the slice small).
 - Pushing conversations to GitHub or to another device: they stay in the
