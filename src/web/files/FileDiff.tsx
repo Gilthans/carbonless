@@ -23,6 +23,11 @@ import type {
 	SinceMark,
 	StateChange,
 } from "../../shared/types";
+import { AgentBubble } from "../agent/AgentBubble";
+import { AgentComposer } from "../agent/AgentComposer";
+import { agentThreadsQuery } from "../agent/api";
+import { useAgentComposers } from "../agent/askAgentAction";
+import { agentPlaceable } from "../agent/placeable";
 import { hunksQuery, overviewQuery, sessionQuery } from "../api";
 import { Spinner } from "../Spinner";
 import { Tooltip, TooltipPath, type TooltipTriggerProps } from "../Tooltip";
@@ -43,6 +48,7 @@ import {
 	type FileLead,
 	READ_ONLY_TIP,
 } from "./DiffBody";
+import { finishes, resetChanges } from "./fileFinish";
 import { KindChip } from "./KindChip";
 import type { Landing } from "./landing";
 import { Meter } from "./ProgressBar";
@@ -58,7 +64,7 @@ import {
 } from "./status";
 import { ThreadBubble } from "./ThreadBubble";
 import { UnplacedThreads } from "./ThreadFate";
-import { TailRow, ThreadBlock } from "./ThreadRow";
+import { AgentThreadRow, TailRow, ThreadBlock } from "./ThreadRow";
 import { fileThreads, placeThreads } from "./threadPlacement";
 import {
 	describeFileProgress,
@@ -76,16 +82,18 @@ const tones = {
 	},
 	green: {
 		idle: "border-ok-fill text-ok group-[:enabled:hover]:bg-ok/15",
-		pressed: "",
+		pressed:
+			"border-ok-fill bg-ok-fill/35 text-ink group-[:enabled:hover]:bg-ok-fill/50",
 	},
 };
+/** Asking "remove all …?": pending the second click. */
+const ARMED_TONE = "border-warn bg-warn/20 text-warn";
 
 /**
- * A file-wide action shown as an outlined icon, named by `label` and
- * explained by `tooltip` (a tooltip, also its accessible description).
- * 40×40 on touch and in a narrow header.
+ * How long a file action ignores clicks after it changes under the pointer
+ * (another action swapped in, or its question just showed): a double
+ * click's second click was meant for what was there before.
  */
-/** How long "Undo cross-off" ignores clicks after replacing "Cross off file". */
 export const UNDO_ARM_MS = 500;
 
 /** Whether any of `el` lies within the viewport. */
@@ -95,6 +103,15 @@ function onScreen(el: Element | null): boolean {
 	return r.bottom >= 0 && r.top <= window.innerHeight;
 }
 
+/**
+ * A file-wide action shown as an outlined icon, named by `label` and
+ * explained by `tooltip` (a tooltip, also its accessible description).
+ * 40×40 on touch and in a narrow header.
+ *
+ * With `confirm` it asks first: the first click shows the question (as its
+ * name and an open tooltip), a second click acts. Escape, leaving it
+ * (blur) or a press anywhere else drops the question.
+ */
 function HeaderIconButton(props: {
 	label: string;
 	tooltip: string;
@@ -103,17 +120,71 @@ function HeaderIconButton(props: {
 	pressed?: boolean;
 	disabled: boolean;
 	onClick: () => void;
+	confirm?: string;
 	/** Clicks before this `performance.now()` time are ignored. */
 	ignoreClicksUntil?: number;
 }) {
 	const tone = tones[props.tone];
+	const button = useRef<HTMLButtonElement | null>(null);
+	// A reset swapped in (under the pointer, on the mark's own click: the UI
+	// doesn't wait for the save): ignore clicks a moment.
+	const lastLabel = useRef(props.label);
+	const swappedUntil = useRef(0);
+	if (lastLabel.current !== props.label) {
+		lastLabel.current = props.label;
+		if (props.pressed) swappedUntil.current = performance.now() + UNDO_ARM_MS;
+	}
+	// The question asked, for this action. Another action in its place, or
+	// none to ask (the file isn't finished, e.g. after another tab's write),
+	// drops it: coming back, it asks afresh.
+	const [askedFor, setAskedFor] = useState<string | null>(null);
+	const askedAt = useRef(0);
+	const question =
+		props.confirm !== undefined && !props.disabled ? props.confirm : null;
+	const asking = question === null ? null : `${props.label}\n${question}`;
+	if (askedFor !== null && askedFor !== asking) setAskedFor(null);
+	const armed = asking !== null && askedFor === asking;
+	const shown = armed && question !== null ? question : null;
+	// When it takes clicks again (`performance.now()`), for tests to wait on.
+	const clicksFrom = Math.max(
+		swappedUntil.current,
+		props.ignoreClicksUntil ?? 0,
+		armed ? askedAt.current + UNDO_ARM_MS : 0,
+	);
+	useEffect(() => {
+		if (!armed) return;
+		const outside = (event: Event) => {
+			if (!button.current?.contains(event.target as Node)) setAskedFor(null);
+		};
+		document.addEventListener("pointerdown", outside, true);
+		return () => document.removeEventListener("pointerdown", outside, true);
+	}, [armed]);
 	const onClick = () => {
-		if (performance.now() < (props.ignoreClicksUntil ?? 0)) return;
+		const now = performance.now();
+		if (now < swappedUntil.current || now < (props.ignoreClicksUntil ?? 0)) {
+			return;
+		}
+		if (question === null) {
+			props.onClick();
+			return;
+		}
+		if (!armed) {
+			askedAt.current = now;
+			setAskedFor(asking);
+			return;
+		}
+		if (now < askedAt.current + UNDO_ARM_MS) return;
+		setAskedFor(null);
 		props.onClick();
 	};
 	return (
-		<Tooltip content={props.tooltip}>
-			{({ ref, onMouseEnter, onMouseLeave, ...rest }) => (
+		<Tooltip
+			content={shown ?? props.tooltip}
+			describe={!armed}
+			forceOpen={armed}
+			onDismiss={() => setAskedFor(null)}
+		>
+			{({ ref, onMouseEnter, onMouseLeave, onBlur, onKeyDown, ...rest }) => (
 				// The wrapper takes the hover so a disabled button still explains
 				// itself; focus (and so tap) goes to the button.
 				// biome-ignore lint/a11y/noStaticElementInteractions: hover only; the button inside is the control.
@@ -124,18 +195,31 @@ function HeaderIconButton(props: {
 					className="flex shrink-0 [&>button:disabled]:pointer-events-none"
 				>
 					<button
+						ref={button}
 						type="button"
 						{...rest}
-						aria-label={props.label}
+						onBlur={() => {
+							setAskedFor(null);
+							onBlur();
+						}}
+						onKeyDown={(event) => {
+							if (event.key === "Escape") setAskedFor(null);
+							onKeyDown(event);
+						}}
+						aria-label={shown ?? props.label}
 						aria-pressed={props.pressed}
 						disabled={props.disabled}
+						data-armed={armed || undefined}
+						data-clicks-from={
+							clicksFrom > 0 ? Math.ceil(clicksFrom) : undefined
+						}
 						onClick={onClick}
 						className="group flex h-10 w-10 shrink-0 items-center justify-center rounded-md focus-visible:outline-2 focus-visible:outline-accent disabled:cursor-not-allowed @lg:h-8 @lg:w-8 pointer-coarse:@lg:h-10 pointer-coarse:@lg:w-10"
 					>
 						<span
 							aria-hidden
 							className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-md border-2 font-sans text-base leading-none transition-colors group-disabled:border-line group-disabled:bg-transparent group-disabled:text-faint motion-reduce:transition-none ${
-								props.pressed ? tone.pressed : tone.idle
+								armed ? ARMED_TONE : props.pressed ? tone.pressed : tone.idle
 							}`}
 						>
 							{props.icon}
@@ -465,6 +549,20 @@ export function FileDiff(props: {
 	sincePending?: boolean;
 	/** An earlier patch set, as reviewed: the marks are locked. */
 	readOnly?: boolean;
+	/**
+	 * The reviewer's own mark just finished this open file (nothing left
+	 * unreviewed): the owner closes it and moves on (FilesPage opens the
+	 * next file). Without it, the file just closes.
+	 */
+	onFinished?: () => void;
+	/**
+	 * Marks (the header's actions, the clusters' boxes and cross-offs) are
+	 * ignored before this `performance.now()` time: the file just opened
+	 * under the pointer as the one before it finished, so a double click's
+	 * second click was meant for that one (principle 2). Its lines arriving
+	 * later restart the wait (UNDO_ARM_MS from then).
+	 */
+	ignoreMarksUntil?: number;
 }) {
 	const { file, revision, readOnly } = props;
 	const [ownExpanded, setOwnExpanded] = useState(false);
@@ -481,23 +579,49 @@ export function FileDiff(props: {
 	const toggleButton = useRef<HTMLButtonElement>(null);
 	const otherOpenNow = useRef(props.otherOpen ?? false);
 	otherOpenNow.current = props.otherOpen ?? false;
+	const hunks = useQuery({
+		...hunksQuery(revision, file.index, props.since),
+		enabled: expanded,
+	});
+	// Opened by a move-on, its lines (or what shows instead) arrive under the
+	// pointer once read: just as unseen, so they restart the wait for marks.
+	const bodyIn = expanded && !hunks.isPending;
+	const [bodyInAt, setBodyInAt] = useState<number | null>(null);
+	const guarded = props.ignoreMarksUntil !== undefined;
+	useLayoutEffect(() => {
+		if (!guarded) setBodyInAt(null);
+		else if (bodyIn) setBodyInAt((at) => at ?? performance.now());
+	}, [guarded, bodyIn]);
+	const ignoreMarksUntil =
+		props.ignoreMarksUntil === undefined
+			? undefined
+			: Math.max(
+					props.ignoreMarksUntil,
+					bodyInAt === null ? 0 : bodyInAt + UNDO_ARM_MS,
+				);
 	const { save: saveStates } = useSetStates();
 	const save = (changes: StateChange[]) =>
 		saveStates(revision, file.path, changes);
 	/**
-	 * Marking the rest reviewed or crossing it off finishes the file: it closes
-	 * at once, like "Collapse file" does (its header stays where it is, the
-	 * next file below). A save that fails for good (the error notice, not a
-	 * transient retry) reopens it, unless the reviewer has moved on (opened
-	 * another file, or scrolled its header off screen). A stale refusal
-	 * doesn't reopen it: the page is reloading a new snapshot.
+	 * A mark that leaves nothing unreviewed (a cluster's, or the rest of the
+	 * file's) finishes the file: an open one closes at once and the page
+	 * moves on (`onFinished`), or it just closes, like "Collapse file" does
+	 * (its header stays where it is, the next file below). Only a finished
+	 * file closes (principle 2). A save that fails for good (the error
+	 * notice, not a transient retry) reopens it, unless the reviewer has
+	 * moved on (another file open, or its header scrolled off screen). A
+	 * stale refusal doesn't reopen it: the page is reloading a new snapshot.
 	 */
-	const finishAll = (changes: StateChange[]) => {
-		const closing = expanded;
+	const marksIgnored = () => performance.now() < (ignoreMarksUntil ?? 0);
+	const mark = (changes: StateChange[]) => {
+		// An earlier patch set, as reviewed, takes no marks.
+		if (readOnly || marksIgnored()) return;
+		const closing = expanded && finishes(file.clusters, changes);
 		if (closing) {
-			setExpanded(false);
-			// The clicked button disables (nothing left to do); keep focus in the header.
+			// The clicked control is gone or swaps; keep focus in the header.
 			toggleButton.current?.focus({ preventScroll: true });
+			if (props.onFinished) props.onFinished();
+			else setExpanded(false);
 		}
 		save(changes).catch((error: unknown) => {
 			if (
@@ -514,39 +638,45 @@ export function FileDiff(props: {
 	// Only an unreviewed cluster's box marks it reviewed: unchecking a reviewed
 	// one or undoing a cross-off makes it unreviewed (R21).
 	// The whole cluster (mixed or unreviewed → reviewed, reviewed →
-	// unreviewed), or in the since view one piece of it (pieces.ts).
+	// unreviewed), or in the since view one piece of it (pieces.ts). A
+	// piece's change keeps the cluster unreviewed until every line is
+	// marked, so only the last piece finishes the file (fileFinish.ts).
 	const toggle = (cluster: ClusterView, piece?: LineRanges) => {
-		save([toggleChange(cluster, piece)]).catch(() => {});
+		mark([toggleChange(cluster, piece)]);
 	};
 	// Crossing off a cluster (or a piece of it), or undoing it to
 	// unreviewed (never reviewed).
 	const crossOff = (cluster: ClusterView, piece?: LineRanges) => {
-		save([crossOffChange(cluster, piece)]).catch(() => {});
+		mark([crossOffChange(cluster, piece)]);
 	};
-	// A since-view piece that owns no line of this snapshot: its own mark.
+	// A since-view piece that owns no line of this snapshot: its own mark,
+	// never a cluster's, so it never finishes the file; guarded like one.
 	const sinceMark = (piece: SincePiece, cross: boolean) => {
-		if (props.since === undefined) return;
+		if (props.since === undefined || readOnly || marksIgnored()) return;
 		save([
 			sinceToggleChange(props.sinceMarks, props.since, file.path, piece, cross),
 		]).catch(() => {});
 	};
 	const unreviewed = file.clusters.filter((c) => c.state === "unreviewed");
-	const crossed = file.clusters.filter((c) => c.state === "crossed-off");
-	// One toggle: cross off what's unreviewed; once nothing is, undo the
-	// cross-offs; with neither (all reviewed) there is nothing to do.
+	// Each action is a toggle: it marks what's unreviewed; once nothing is
+	// (the file is finished), it resets its own kind of mark, asking first;
+	// with none of its kind there is nothing to do. A file finished by both
+	// kinds resets each kind from its own button.
+	const unCross = resetChanges(file.clusters, "crossed-off");
+	const unReview = resetChanges(file.clusters, "reviewed");
 	const crossToggle = {
-		undo: unreviewed.length === 0 && crossed.length > 0,
-		none: unreviewed.length === 0 && crossed.length === 0,
+		undo: unCross.length > 0,
+		none: unreviewed.length === 0 && unCross.length === 0,
 	};
-	// "Undo cross-off" swaps in under the pointer on the cross-off's click
-	// itself (the UI doesn't wait for the save): a double click's second click
-	// was meant for the cross-off, not undo.
-	const undoArmedAt = useRef(0);
-	const wasUndo = useRef(crossToggle.undo);
-	if (crossToggle.undo && !wasUndo.current) {
-		undoArmedAt.current = performance.now() + UNDO_ARM_MS;
-	}
-	wasUndo.current = crossToggle.undo;
+	const reviewToggle = {
+		undo: unReview.length > 0,
+		none: unreviewed.length === 0 && unReview.length === 0,
+	};
+	// A reset is never a finish: it only adds unreviewed clusters.
+	const reset = (changes: StateChange[]) => {
+		if (readOnly) return;
+		save(changes).catch(() => {});
+	};
 	const path = file.oldPath ? `${file.oldPath} → ${file.path}` : file.path;
 	// One sentence for the header's status, counts and progress. The counts
 	// are the same in every unit; only the progress follows it.
@@ -574,10 +704,6 @@ export function FileDiff(props: {
 	// never dropped. A closed file's hunks aren't read (first open stays
 	// light): a binary or submodule file's line threads are flagged from the
 	// file alone; a line past the end shows once the file is opened.
-	const hunks = useQuery({
-		...hunksQuery(revision, file.index, props.since),
-		enabled: expanded,
-	});
 	const filePlacement = props.threads
 		? placeThreads({
 				threads: props.threads.threads,
@@ -642,6 +768,61 @@ export function FileDiff(props: {
 	}, [fileItems, snapshotHead, writer]);
 
 	const fileComment = useFileComment(file, snapshotHead);
+
+	// The reviewer's agent threads on the file (FilesPage reads them): those
+	// on the whole file, and lines the diff can't show, beside the file's
+	// comment threads with their own bubble; and Ask agent on the file.
+	const agentAll = useQuery({ ...agentThreadsQuery, enabled: false }).data
+		?.threads;
+	const agentPlaceables = useMemo(
+		() => (agentAll ?? []).map(agentPlaceable),
+		[agentAll],
+	);
+	// Every agent thread on the file, on this head or an earlier one: those
+	// asked on an earlier head show in the lead row, marked outdated.
+	const agentMine = agentPlaceables
+		.filter((p) => p.path === file.path)
+		.map((p) => p.thread);
+	const agentOutdated = snapshotHead
+		? agentMine.filter((t) => t.anchor.commit !== snapshotHead)
+		: [];
+	const agentHeader = snapshotHead
+		? placeThreads({
+				threads: agentPlaceables,
+				path: file.path,
+				snapshotHead,
+				hunks: hunks.data ?? null,
+				loadedContext: [],
+				noLines: file.binary || file.submodule,
+			}).header
+		: [];
+	const agentGroups = [
+		...(["file", "unplaced"] as const).map((reason) => ({
+			reason,
+			threads: agentHeader
+				.filter((h) => h.reason === reason)
+				.map((h) => h.thread.thread),
+		})),
+		{ reason: "outdated" as const, threads: agentOutdated },
+	].filter((g) => g.threads.length > 0);
+	const agentLead = agentGroups.flatMap((g) => g.threads);
+	const [agentOpen, setAgentOpen] = useState(false);
+	const agentThreadsId = useId();
+	const agentFileItems = useAgentComposers().filter(
+		(c) => c.span.subject === "file" && c.span.path === file.path,
+	);
+	const agentComposers = agentFileItems.length > 0 && (
+		<div data-testid="file-agent-composers" className="space-y-2">
+			{agentFileItems.map((c) => (
+				<AgentComposer
+					key={c.clientId}
+					clientId={c.clientId}
+					span={c.span}
+					quote={file.path}
+				/>
+			))}
+		</div>
+	);
 	// File comments being written, and drafts from an earlier head.
 	const newItems = (
 		<div data-testid="file-new-threads" className="space-y-2">
@@ -670,60 +851,93 @@ export function FileDiff(props: {
 	 * file; with none it is an outline that starts a comment at once.
 	 */
 	const lead: FileLead = {
+		count: agentLead.length > 0 ? 2 : 1,
 		bubble: (
-			<ThreadBubble
-				inline
-				file
-				threads={header.map((h) => h.thread)}
-				loading={props.threadsLoading && !props.threads}
-				where="on this file"
-				label={
-					fileComment.ok === true
-						? "Comment on file"
-						: `Comment on file — ${fileComment.ok}`
-				}
-				flagged={headerFlag}
-				focus={focusFile}
-				onFocused={() => setFocusFile(false)}
-				open={fileOpen}
-				controls={fileOpen ? fileThreadsId : undefined}
-				onToggle={() => {
-					if (!fileOpen && header.length === 0 && fileComment.ok === true) {
-						openComposer(fileComment.span);
+			<>
+				<ThreadBubble
+					inline
+					file
+					threads={header.map((h) => h.thread)}
+					loading={props.threadsLoading && !props.threads}
+					where="on this file"
+					label={
+						fileComment.ok === true
+							? "Comment on file"
+							: `Comment on file — ${fileComment.ok}`
 					}
-					setFileOpen(!fileOpen);
-				}}
-			/>
+					flagged={headerFlag}
+					focus={focusFile}
+					onFocused={() => setFocusFile(false)}
+					open={fileOpen}
+					controls={fileOpen ? fileThreadsId : undefined}
+					onToggle={() => {
+						if (!fileOpen && header.length === 0 && fileComment.ok === true) {
+							openComposer(fileComment.span);
+						}
+						setFileOpen(!fileOpen);
+					}}
+				/>
+				{agentLead.length > 0 && (
+					<AgentBubble
+						inline
+						threads={agentLead}
+						where="on this file"
+						open={agentOpen}
+						controls={agentOpen ? agentThreadsId : undefined}
+						onToggle={() => setAgentOpen(!agentOpen)}
+					/>
+				)}
+			</>
 		),
 		// With no threads the bubble itself is the composer entry: the row's
 		// button shows only beside threads, or to say why commenting is off.
-		row: (columns, rail) =>
-			(fileOpen && (header.length > 0 || fileComment.ok !== true)) ||
-			fileItems.length > 0 ? (
-				<FileThreadsRow
-					id={fileThreadsId}
-					columns={columns}
-					rail={rail}
-					threads={
-						fileOpen && props.threads
-							? header.map((h, i) => (
-									<ThreadBlock
-										key={h.thread.id || `#${i}`}
-										readId={props.threads?.readId ?? ""}
-										thread={h.thread}
-										unplaced={h.reason === "unplaced"}
-									/>
-								))
-							: null
-					}
-					composers={fileItems.length > 0 ? newItems : null}
-					comment={
-						fileOpen && fileItems.length === 0 ? (
-							<FileCommentButton file={file} commit={snapshotHead} />
-						) : null
-					}
-				/>
-			) : null,
+		row: (columns, rail) => (
+			<>
+				{(fileOpen && (header.length > 0 || fileComment.ok !== true)) ||
+				fileItems.length > 0 ? (
+					<FileThreadsRow
+						id={fileThreadsId}
+						columns={columns}
+						rail={rail}
+						threads={
+							fileOpen && props.threads
+								? header.map((h, i) => (
+										<ThreadBlock
+											key={h.thread.id || `#${i}`}
+											readId={props.threads?.readId ?? ""}
+											thread={h.thread}
+											unplaced={h.reason === "unplaced"}
+										/>
+									))
+								: null
+						}
+						composers={fileItems.length > 0 ? newItems : null}
+						comment={
+							fileOpen && fileItems.length === 0 ? (
+								<FileCommentButton file={file} commit={snapshotHead} />
+							) : null
+						}
+					/>
+				) : null}
+				{agentOpen &&
+					agentGroups.map((g, i) => (
+						<AgentThreadRow
+							key={g.reason}
+							id={i === 0 ? agentThreadsId : undefined}
+							threads={g.threads}
+							place={{ columns }}
+							rail={rail}
+							unplaced={g.reason === "unplaced"}
+							outdated={g.reason === "outdated"}
+						/>
+					))}
+				{agentComposers && (
+					<TailRow testId="agent-composer-row" place={{ columns }} rail={rail}>
+						{agentComposers}
+					</TailRow>
+				)}
+			</>
+		),
 	};
 
 	return (
@@ -732,6 +946,10 @@ export function FileDiff(props: {
 			data-file-index={file.index}
 			data-path={file.path}
 			aria-label={file.path}
+			// When it takes marks again (`performance.now()`), for tests to wait on.
+			data-marks-from={
+				ignoreMarksUntil === undefined ? undefined : Math.ceil(ignoreMarksUntil)
+			}
 			className={`overflow-clip rounded-lg border bg-surface ${
 				file.done ? "border-ok-fill/50" : "border-line"
 			}`}
@@ -803,7 +1021,12 @@ export function FileDiff(props: {
 								type="button"
 								aria-expanded={expanded}
 								aria-label={expanded ? "Collapse file" : "Expand file"}
-								onClick={() => setExpanded(!expanded)}
+								onClick={() => {
+									// Just opened by a move-on under the pointer: a double
+									// click's second click mustn't close it unseen.
+									if (expanded && marksIgnored()) return;
+									setExpanded(!expanded);
+								}}
 								className="flex h-10 w-10 shrink-0 items-center justify-center rounded text-muted hover:bg-overlay hover:text-ink focus-visible:outline-2 focus-visible:outline-accent @lg:order-1"
 							>
 								{expanded ? "▾" : "▸"}
@@ -812,6 +1035,17 @@ export function FileDiff(props: {
 								<StatusIcon file={file} hover={summaryTrigger} />
 							</span>
 							<div className="ml-auto flex shrink-0 items-center gap-1.5 @lg:order-5">
+								{!expanded && agentMine.length > 0 && (
+									<AgentBubble
+										threads={agentMine}
+										where="in this file"
+										open={false}
+										onToggle={() => {
+											if (agentLead.length > 0) setAgentOpen(true);
+											setExpanded(true);
+										}}
+									/>
+								)}
 								{!expanded && mine.length > 0 && (
 									// Closed: every thread in the file; opening it shows
 									// them (the file bubble's opened when it has some).
@@ -829,29 +1063,24 @@ export function FileDiff(props: {
 								)}
 								{crossToggle.undo ? (
 									<HeaderIconButton
-										ignoreClicksUntil={undoArmedAt.current}
+										ignoreClicksUntil={ignoreMarksUntil}
 										label="Undo cross-off"
 										tooltip={
 											readOnly
 												? READ_ONLY_TIP
 												: "Set crossed-off clusters back to unreviewed"
 										}
+										confirm="Remove all crossed-off markings from this file?"
 										icon="⊘"
 										tone="purple"
 										pressed
 										disabled={readOnly === true}
-										onClick={() => {
-											// Back to unreviewed, never reviewed (R21).
-											save(
-												crossed.map((c) => ({
-													key: c.key,
-													state: "unreviewed",
-												})),
-											).catch(() => {});
-										}}
+										// Back to unreviewed, never reviewed (R21).
+										onClick={() => reset(unCross)}
 									/>
 								) : (
 									<HeaderIconButton
+										ignoreClicksUntil={ignoreMarksUntil}
 										label="Cross off file"
 										tooltip={
 											readOnly
@@ -866,7 +1095,7 @@ export function FileDiff(props: {
 										disabled={readOnly || crossToggle.none}
 										onClick={() => {
 											// What the reviewer already read stays reviewed (R21).
-											finishAll(
+											mark(
 												unreviewed.map((c) => ({
 													key: c.key,
 													state: "crossed-off",
@@ -875,27 +1104,47 @@ export function FileDiff(props: {
 										}}
 									/>
 								)}
-								<HeaderIconButton
-									label="Mark remaining reviewed"
-									tooltip={
-										readOnly
-											? READ_ONLY_TIP
-											: unreviewed.length === 0
-												? idle
-												: "Mark all unreviewed clusters as reviewed"
-									}
-									icon="✓"
-									tone="green"
-									disabled={readOnly || unreviewed.length === 0}
-									onClick={() => {
-										finishAll(
-											unreviewed.map((c) => ({
-												key: c.key,
-												state: "reviewed",
-											})),
-										);
-									}}
-								/>
+								{reviewToggle.undo ? (
+									<HeaderIconButton
+										ignoreClicksUntil={ignoreMarksUntil}
+										label="Unmark reviewed"
+										tooltip={
+											readOnly
+												? READ_ONLY_TIP
+												: "Set reviewed clusters back to unreviewed"
+										}
+										confirm="Remove all reviewed markings from this file?"
+										icon="✓"
+										tone="green"
+										pressed
+										disabled={readOnly === true}
+										onClick={() => reset(unReview)}
+									/>
+								) : (
+									<HeaderIconButton
+										ignoreClicksUntil={ignoreMarksUntil}
+										label="Mark remaining reviewed"
+										tooltip={
+											readOnly
+												? READ_ONLY_TIP
+												: reviewToggle.none
+													? idle
+													: "Mark all unreviewed clusters as reviewed"
+										}
+										icon="✓"
+										tone="green"
+										pressed={false}
+										disabled={readOnly || reviewToggle.none}
+										onClick={() => {
+											mark(
+												unreviewed.map((c) => ({
+													key: c.key,
+													state: "reviewed",
+												})),
+											);
+										}}
+									/>
+								)}
 							</div>
 							<FileProgress
 								file={props.counted ?? file}
@@ -918,6 +1167,11 @@ export function FileDiff(props: {
 					path={file.path}
 					fileIndex={file.index}
 				/>
+			)}
+			{!expanded && agentComposers && (
+				<div className="border-b border-line bg-canvas p-2">
+					{agentComposers}
+				</div>
 			)}
 			{expanded && (
 				<DiffBody
