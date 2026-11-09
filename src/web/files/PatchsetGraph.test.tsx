@@ -24,6 +24,7 @@ const patchset = (number: number) => ({
 	number,
 	head: oid(String(number)),
 	mergeBase: oid("0"),
+	baseBranch: "main",
 	startedAt: Date.now() - number * 86_400_000,
 	since: number === 1 ? null : number - 1,
 	shape: number === 1 ? null : ("S1" as const),
@@ -543,6 +544,37 @@ describe("PatchsetGraph", () => {
 		expect(card).toHaveTextContent("Commit fffffff");
 		expect(card).toHaveTextContent("Against main at 0000000");
 		expect(card).toHaveTextContent("3 commits since PS2");
+	});
+
+	it("after a retarget each patch set's card names its own base branch and merge base; the head's the PR's current base", async () => {
+		const user = userEvent.setup();
+		const s = session([1, 2], oid("f"));
+		const retargeted: SessionInfo = {
+			...s,
+			patchsets: s.patchsets.map((p) =>
+				p.number === 1 ? { ...p, baseBranch: "release" } : p,
+			),
+			head: {
+				oid: oid("f"),
+				mergeBase: oid("9"),
+				baseBranch: "develop",
+				commits: 3,
+			},
+		};
+		// Whatever the comparison: the card is the dot's own.
+		renderGraph(retargeted, { viewing: ps(2), base: { kind: "branch" } });
+		const cardOf = async (dot: string, name: string) => {
+			await user.click(screen.getByRole("button", { name: dot }));
+			const card = screen.getByRole("dialog", { name: `${name} details` });
+			const text = card.textContent;
+			await user.keyboard("{Escape}");
+			return text;
+		};
+		expect(await cardOf("PS1", "PS1")).toContain("Against release at 0000000");
+		expect(await cardOf("PS2", "PS2")).toContain("Against main at 0000000");
+		expect(await cardOf("head fffffff", "head")).toContain(
+			"Against develop at 9999999",
+		);
 	});
 
 	it("the counts the server is still making are asked for again until they are in, then shown", async () => {

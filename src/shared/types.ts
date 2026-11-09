@@ -1079,6 +1079,11 @@ export interface SessionInfo {
 		number: number;
 		head: string;
 		mergeBase: string;
+		/**
+		 * The base branch it was reviewed against (its own, kept after a
+		 * retarget: its card's "Against").
+		 */
+		baseBranch: string;
 		/** Ms since epoch. */
 		startedAt: number;
 		/** The patch set it follows; null for PS1. */

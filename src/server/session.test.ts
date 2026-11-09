@@ -1740,6 +1740,44 @@ describe("Session", () => {
 			expect(s.info().patchsets).toHaveLength(2);
 		});
 
+		it("S7: each patch set keeps its own base branch; after a retarget PS1 still says main, PS2 the new base", async () => {
+			const s = await Session.open(pr.arg, process.cwd());
+			await s.overview(0);
+			const ps1 = s.snapshot();
+			await s.setStates(ps1.revision, [
+				{ key: firstKey(s), state: "reviewed" },
+			]);
+			// Retargeted to develop (at main's tip), then a push.
+			execFileSync("git", ["branch", "develop", pr.mergeBase], {
+				cwd: pr.repo.path,
+				env: testGitEnv(),
+			});
+			const newHead = pr.moveHead({ "later.txt": "later\n" });
+			pr.scenario({
+				prs: {
+					12: {
+						view: prView({ headRefOid: newHead, baseRefName: "develop" }),
+						graphql: { reviewThreads: [], reviews: [] },
+					},
+				},
+			});
+			await s.checkHead();
+			const view = await s.viewHead(newHead);
+			const laterKey = view.files.find((f) => f.path === "later.txt")
+				?.clusters[0]?.key;
+			if (!laterKey) throw new Error("no cluster in later.txt");
+			await s.setStates(view.revision, [{ key: laterKey, state: "reviewed" }]);
+			expect(s.info().patchsets.map((p) => [p.number, p.baseBranch])).toEqual([
+				[1, "main"],
+				[2, "develop"],
+			]);
+			const again = await Session.open(pr.arg, process.cwd());
+			expect(again.info().patchsets.map((p) => p.baseBranch)).toEqual([
+				"main",
+				"develop",
+			]);
+		});
+
 		it("checkHead compares the triple: the same head costs no fetch; a base branch change fetches once and reports the merge base", async () => {
 			const s = await Session.open(pr.arg, process.cwd());
 			const clone = clonePath("acme", "widget");

@@ -50,8 +50,9 @@ interface Dot {
 	base?: ComparisonBase;
 	/** The commit it is at (a patch set's head; the branch's merge base). */
 	oid: string;
-	/** The merge base it was against (its card's "Against"). */
+	/** The merge base it was against (its card's "Against"), and its branch. */
 	mergeBase?: string;
+	baseBranch?: string;
 	patchset?: SessionInfo["patchsets"][number];
 }
 
@@ -126,6 +127,7 @@ export function railDots(
 			viewing: { kind: "head", oid: snapshotOid },
 			oid: snapshotOid,
 			mergeBase,
+			...(latest ? { baseBranch: latest.baseBranch } : {}),
 		});
 	}
 	const head =
@@ -300,6 +302,7 @@ const Commit = ({ oid }: { oid: string }) => (
 /** A dot's details, for a reader who doesn't know the data model. */
 function DotCard(props: { dot: Dot; session: SessionInfo }) {
 	const { dot, session } = props;
+	// The PR's current base: the head's (each patch set has its own).
 	const branch = session.head?.baseBranch;
 	switch (dot.kind) {
 		case "branch":
@@ -327,7 +330,7 @@ function DotCard(props: { dot: Dot; session: SessionInfo }) {
 					}
 					rows={[
 						<Commit key="c" oid={p.head} />,
-						<Against key="a" branch={branch} oid={p.mergeBase} />,
+						<Against key="a" branch={p.baseBranch} oid={p.mergeBase} />,
 						<ThreadsRow key="t" number={p.number} session={session} />,
 					]}
 				/>
@@ -340,7 +343,11 @@ function DotCard(props: { dot: Dot; session: SessionInfo }) {
 					subtitle="Not reviewed yet"
 					rows={[
 						<Commit key="c" oid={dot.oid} />,
-						<Against key="a" branch={branch} oid={dot.mergeBase ?? dot.oid} />,
+						<Against
+							key="a"
+							branch={dot.baseBranch ?? branch}
+							oid={dot.mergeBase ?? dot.oid}
+						/>,
 					]}
 				/>
 			);

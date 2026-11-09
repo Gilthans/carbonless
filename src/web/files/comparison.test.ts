@@ -17,6 +17,7 @@ const patchset = (number: number, head: string) => ({
 	number,
 	head,
 	mergeBase: oid("0"),
+	baseBranch: "main",
 	startedAt: 1,
 	since: number === 1 ? null : number - 1,
 	shape: null,

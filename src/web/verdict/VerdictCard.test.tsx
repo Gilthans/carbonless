@@ -38,6 +38,7 @@ const patchset = (number: number, head: string) => ({
 	number,
 	head,
 	mergeBase: "e".repeat(40),
+	baseBranch: "main",
 	startedAt: Date.parse("2026-11-05T10:00:00Z"),
 	since: number === 1 ? null : number - 1,
 	shape: number === 1 ? null : ("S1" as const),
