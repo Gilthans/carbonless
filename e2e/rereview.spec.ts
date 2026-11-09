@@ -1072,7 +1072,7 @@ test("the rail on a phone: 40px targets, no page overflow at 360px", async ({
 	await expect(page).toHaveURL(/head=[0-9a-f]{40}/);
 });
 
-test("the markers move by drag and by Ctrl+[ / Ctrl+]; nothing moves on a bare key", async ({
+test("the markers move by drag and by Ctrl+[ / Ctrl+]; the base dragged or keyed onto the target pushes it; nothing moves on a bare key", async ({
 	page,
 	pr,
 	startCrb,
@@ -1122,11 +1122,29 @@ test("the markers move by drag and by Ctrl+[ / Ctrl+]; nothing moves on a bare k
 		node(page, "branch").getByRole("button", { name: "comparison base" }),
 	).toBeVisible();
 	await expect(page).toHaveURL(/from=branch/);
-	// Dragging the base onto the viewed dot is refused.
+	// The head is the rightmost dot: dragging the base there is refused.
 	await drag(page, marker(page, "comparison base"), node(page, "head"));
 	await expect(
 		node(page, "branch").getByRole("button", { name: "comparison base" }),
 	).toBeVisible();
+	const on = (id: string, role: "comparison target" | "comparison base") =>
+		node(page, id).getByRole("button", { name: role, exact: true });
+	// The base dragged onto the target pushes the target just right of it.
+	await page.keyboard.press("Control+[");
+	await expect(on("ps1", "comparison target")).toBeVisible();
+	await expect(on("branch", "comparison base")).toBeVisible();
+	await drag(page, marker(page, "comparison base"), node(page, "ps1"));
+	await expect(on("ps1", "comparison base")).toBeVisible();
+	await expect(on("head", "comparison target")).toBeVisible();
+	await expect(page).toHaveURL(/head=[0-9a-f]{40}/);
+	// So does Ctrl+Shift+] onto the target.
+	await page.keyboard.press("Control+[");
+	await expect(on("ps1", "comparison target")).toBeVisible();
+	await expect(on("branch", "comparison base")).toBeVisible();
+	await page.keyboard.press("Control+Shift+]");
+	await expect(on("ps1", "comparison base")).toBeVisible();
+	await expect(on("head", "comparison target")).toBeVisible();
+	await expect(page).toHaveURL(/head=[0-9a-f]{40}/);
 });
 
 /*

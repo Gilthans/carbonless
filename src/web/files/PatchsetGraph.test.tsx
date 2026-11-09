@@ -527,6 +527,49 @@ describe("PatchsetGraph", () => {
 		expect(card).toHaveTextContent("Against release at 0000000");
 	});
 
+	it("the branch dot follows the comparison target: its base branch and merge base (a virtual pointer)", async () => {
+		const user = userEvent.setup();
+		const s = session([1, 2], oid("f"));
+		const retargeted: SessionInfo = {
+			...s,
+			patchsets: s.patchsets.map((p) =>
+				p.number === 1
+					? { ...p, baseBranch: "release", mergeBase: oid("8") }
+					: p,
+			),
+			head: {
+				oid: oid("f"),
+				mergeBase: oid("9"),
+				baseBranch: "develop",
+				commits: 3,
+			},
+		};
+		const branchCard = async (viewing: Viewing, name: string) => {
+			renderGraph(retargeted, { viewing, base: { kind: "branch" } });
+			await user.click(
+				screen.getByRole("button", { name: `${name} (base branch)` }),
+			);
+			const text = screen.getByRole("dialog", {
+				name: `${name} details`,
+			}).textContent;
+			cleanup();
+			return text;
+		};
+		expect(await branchCard(ps(1), "release")).toContain("Merge base 8888888");
+		expect(
+			await branchCard({ kind: "head", oid: oid("f") }, "develop"),
+		).toContain("Merge base 9999999");
+		expect(await branchCard(ps(2), "main")).toContain("Merge base 0000000");
+		// When the target moves, the dot does: railDots by the target.
+		expect(railDots(retargeted, ps(1)).dots[0]).toMatchObject({
+			label: "release",
+			oid: oid("8"),
+		});
+		expect(
+			railDots(retargeted, { kind: "head", oid: oid("f") }).dots[0],
+		).toMatchObject({ label: "develop", oid: oid("9") });
+	});
+
 	it("a hostile base branch name is text on the card, never markup", async () => {
 		const user = userEvent.setup();
 		const hostile = '<img src=x onerror="window.pwned=1">';
@@ -847,10 +890,13 @@ describe("PatchsetGraph", () => {
 	});
 
 	it("Ctrl+] and Ctrl+[ move the comparison target; with Shift the base; bare brackets move nothing", () => {
-		const { setViewing, setBase } = renderGraph(session([1, 2], oid("f")), {
-			viewing: ps(2),
-			base: ps(1) as ComparisonBase,
-		});
+		const { setViewing, setBase, set, onViewHead } = renderGraph(
+			session([1, 2], oid("f")),
+			{
+				viewing: ps(2),
+				base: ps(1) as ComparisonBase,
+			},
+		);
 		const press = (key: string, init: KeyboardEventInit) =>
 			fireEvent.keyDown(document.body, { key, ...init });
 		press("]", { code: "BracketRight" });
@@ -869,17 +915,27 @@ describe("PatchsetGraph", () => {
 			number: 1,
 		});
 		press("{", { ctrlKey: true, shiftKey: true, code: "BracketLeft" });
-		expect(setBase).toHaveBeenLastCalledWith({ kind: "branch" });
-		// Right of the base is the viewed dot itself: the base can't go there.
+		expect(set).toHaveBeenLastCalledWith(ps(2), { kind: "branch" });
+		// Right of the base is the target: the base goes there and pushes the
+		// target just right of it, onto the head (an explicit action).
 		press("}", { ctrlKey: true, shiftKey: true, code: "BracketRight" });
-		expect(setBase).toHaveBeenCalledTimes(1);
+		expect(set).toHaveBeenLastCalledWith(
+			{ kind: "head", oid: oid("f") },
+			{ kind: "patchset", number: 2 },
+		);
+		// (Ctrl+] onto the head was the first.)
+		expect(onViewHead).toHaveBeenCalledTimes(2);
+		expect(setBase).not.toHaveBeenCalled();
 	});
 
-	it("dragging the comparison target onto the head dot views it; onto the branch does nothing", () => {
-		const { setViewing, setBase } = renderGraph(session([1, 2], oid("f")), {
-			viewing: ps(2),
-			base: ps(1) as ComparisonBase,
-		});
+	it("dragging the comparison target onto the head dot views it; onto the branch does nothing; the base dragged onto the target pushes it", () => {
+		const { setViewing, setBase, set, onViewHead } = renderGraph(
+			session([1, 2], oid("f")),
+			{
+				viewing: ps(2),
+				base: ps(1) as ComparisonBase,
+			},
+		);
 		const centre = (el: HTMLElement, x: number) => {
 			vi.spyOn(el, "getBoundingClientRect").mockReturnValue({
 				left: x - 20,
@@ -913,15 +969,31 @@ describe("PatchsetGraph", () => {
 		fireEvent.pointerDown(marker, { pointerId: 2, clientX: 210 });
 		fireEvent.pointerUp(marker, { pointerId: 2, clientX: 12 });
 		expect(setViewing).toHaveBeenCalledTimes(1);
-		// The base marker: left of the viewed dot only.
+		// The base marker: never on the head (the rightmost dot).
 		const base = screen.getByRole("button", { name: "comparison base" });
 		base.setPointerCapture = () => {};
 		fireEvent.pointerDown(base, { pointerId: 3, clientX: 110 });
+		fireEvent.pointerMove(base, { pointerId: 3, clientX: 300 });
+		expect(screen.getByTestId("ps-dot-head")).not.toHaveAttribute("data-drop");
 		fireEvent.pointerUp(base, { pointerId: 3, clientX: 300 });
-		expect(setBase).not.toHaveBeenCalled();
+		expect(set).not.toHaveBeenCalled();
 		fireEvent.pointerDown(base, { pointerId: 4, clientX: 110 });
 		fireEvent.pointerUp(base, { pointerId: 4, clientX: 12 });
-		expect(setBase).toHaveBeenLastCalledWith({ kind: "branch" });
+		expect(set).toHaveBeenLastCalledWith(ps(2), { kind: "branch" });
+		// Onto the target: the target is pushed just right of it, the head.
+		fireEvent.pointerDown(base, { pointerId: 5, clientX: 110 });
+		fireEvent.pointerMove(base, { pointerId: 5, clientX: 205 });
+		expect(screen.getByTestId("ps-dot-ps2")).toHaveAttribute(
+			"data-drop",
+			"true",
+		);
+		fireEvent.pointerUp(base, { pointerId: 5, clientX: 205 });
+		expect(set).toHaveBeenLastCalledWith(
+			{ kind: "head", oid: oid("f") },
+			{ kind: "patchset", number: 2 },
+		);
+		expect(onViewHead).toHaveBeenCalledTimes(2);
+		expect(setBase).not.toHaveBeenCalled();
 	});
 
 	it("a pinned head, a merged PR or an as-of view: neither the head dot nor up to date", () => {

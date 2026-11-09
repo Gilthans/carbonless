@@ -91,14 +91,33 @@ export function railDots(
 	const latest = session.patchsets.at(-1);
 	const mergeBase =
 		latest?.mergeBase ?? session.head?.mergeBase ?? session.snapshotHead;
+	// The branch dot is a virtual pointer (owner, 2026-11-09): the comparison
+	// target's base branch at the target's merge base, so it follows the
+	// target (a retarget, a rebase or a merge-in moves it).
+	const target =
+		viewing?.kind === "patchset"
+			? session.patchsets.find((p) => p.number === viewing.number)
+			: undefined;
+	const onHead =
+		viewing?.kind === "head" &&
+		session.head &&
+		viewing.oid === session.head.oid;
+	const branchOf = target
+		? { label: target.baseBranch, oid: target.mergeBase }
+		: onHead && session.head
+			? { label: session.head.baseBranch, oid: session.head.mergeBase }
+			: {
+					label: latest?.baseBranch ?? session.head?.baseBranch ?? "base",
+					oid: mergeBase,
+				};
 	const dots: Dot[] = [
 		{
 			id: "branch",
 			kind: "branch",
-			label: session.head?.baseBranch ?? "base",
+			label: branchOf.label,
 			position: 0,
 			base: { kind: "branch" },
-			oid: mergeBase,
+			oid: branchOf.oid,
 		},
 		...session.patchsets.map(
 			(p): Dot => ({
@@ -831,9 +850,6 @@ export function PatchsetGraph(props: {
 		if (move.viewing.kind === "head" && move.viewing.oid === head?.oid)
 			props.onViewHead?.();
 	};
-	const viewingPos = comparison.viewing
-		? positionOf(comparison.viewing, comparison.patchsets)
-		: -1;
 
 	// Dragging a marker: which one, and the dot under the pointer.
 	const [drag, setDrag] = useState<{
@@ -842,15 +858,10 @@ export function PatchsetGraph(props: {
 	} | null>(null);
 	const rail = useRef<HTMLDivElement>(null);
 	const canView = (dot: Dot) => dot.viewing !== undefined;
-	const canBase = (dot: Dot) =>
-		dot.base !== undefined && dot.position < viewingPos;
 	const view = (dot: Dot) => {
 		if (!dot.viewing) return;
 		comparison.setViewing(dot.viewing);
 		if (dot.kind === "head") props.onViewHead?.();
-	};
-	const baseOn = (dot: Dot) => {
-		if (dot.base && canBase(dot)) comparison.setBase(dot.base);
 	};
 	/** The dot nearest to `x` among the rail's dots. */
 	const dotAt = (x: number): Dot | null => {
@@ -871,8 +882,14 @@ export function PatchsetGraph(props: {
 			const target = e.currentTarget;
 			target.setPointerCapture(e.pointerId);
 			setDrag({ kind, over: null });
+			// The base goes where moveMarker lets it, pushing the target past it.
 			const allowed = (dot: Dot | null) =>
-				dot && (kind === "viewing" ? canView(dot) : canBase(dot)) ? dot : null;
+				dot &&
+				(kind === "viewing"
+					? canView(dot)
+					: !("disabled" in pressed("base", dot)))
+					? dot
+					: null;
 			const move = (ev: PointerEvent) => {
 				setDrag({ kind, over: allowed(dotAt(ev.clientX))?.id ?? null });
 			};
@@ -884,7 +901,7 @@ export function PatchsetGraph(props: {
 				const dot = allowed(dotAt(ev.clientX));
 				if (!dot) return;
 				if (kind === "viewing") view(dot);
-				else baseOn(dot);
+				else press("base", dot);
 			};
 			const cancel = () => {
 				target.removeEventListener("pointermove", move);
@@ -909,7 +926,7 @@ export function PatchsetGraph(props: {
 		if (!next) return;
 		if (kind === "viewing") {
 			if (canView(next)) view(next);
-		} else if (canBase(next)) baseOn(next);
+		} else press("base", next);
 	};
 	const group = "Files changed";
 	useShortcut({
