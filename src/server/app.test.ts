@@ -1590,6 +1590,28 @@ describe("API", () => {
 			}
 		});
 
+		it("GET /manifest.webmanifest starts a home-screen install with the key", async () => {
+			const keyed = await buildApp(registry, { accessKey: "k3y" });
+			try {
+				expect((await keyed.inject("/manifest.webmanifest")).statusCode).toBe(
+					401,
+				);
+				const res = await keyed.inject({
+					url: "/manifest.webmanifest",
+					cookies: { crb_key: "k3y" },
+				});
+				expect(res.headers["content-type"]).toContain(
+					"application/manifest+json",
+				);
+				expect(res.headers["cache-control"]).toBe("no-store");
+				expect(res.json().start_url).toBe("/?key=k3y");
+			} finally {
+				await keyed.close();
+			}
+			const open = await inject("/manifest.webmanifest");
+			expect(open.json().start_url).toBe("/");
+		});
+
 		it("POST /api/reviews refuses a bad body (400) and an unreviewable PR (409)", async () => {
 			for (const body of [
 				undefined,
