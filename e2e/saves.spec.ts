@@ -70,7 +70,7 @@ test("a click shows at once while its write is held, and a reload shows what was
 	// Reviewed before the server answers.
 	await expect(fileProgress(a)).toContainText("1 / 1 cluster");
 	await expect(progress(page)).toContainText("1 / 2 clusters reviewed");
-	await expect(fileActionButton(a, "Mark remaining reviewed")).toBeDisabled();
+	await expect(fileActionButton(a, "Unmark reviewed")).toBeEnabled();
 	await expect.poll(writes.count).toBe(1);
 	// The delayed notice after 5 s, naming what waits; gone once stored.
 	const delayed = page.getByTestId("save-delayed");
