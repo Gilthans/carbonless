@@ -6,6 +6,7 @@ import {
 	rmSync,
 	statSync,
 } from "node:fs";
+import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -863,6 +864,45 @@ describe("fake gh", () => {
 				await exited;
 				release(process.env.CRB_FAKE_GH ?? "", "reply");
 				await until(() => fakeGhServerCalls().running === 0);
+				expect((await thread0()).comments.totalCount).toBe(1);
+			});
+
+			it("a gh killed before it logs its call goes no further: no log line, no write", async () => {
+				// A shim of the test's own, killed when the server asks it to
+				// log the call: as a gh process killed before its first line.
+				setEnv({ CRB_FAKE_GH_LOG: join(tmp, "gh.log") });
+				writable();
+				const opener = (await thread0()).first.nodes[0]?.databaseId ?? 0;
+				const before = fakeGhServerCalls().served;
+				const [host, port] = (process.env.CRB_FAKE_GH_SERVER ?? "").split(":");
+				const args = replyArgs(opener);
+				const env = Object.entries(process.env).map(([k, v]) => `${k}=${v}`);
+				const socket = connect(Number(port), host);
+				socket.write(
+					`${[
+						"1",
+						tmp,
+						"1",
+						String(args.length),
+						...args,
+						...env,
+						"",
+						JSON.stringify({ body: "Never" }),
+					].join("\0")}\0`,
+				);
+				let said = "";
+				await new Promise<void>((resolve) =>
+					socket.on("data", (d) => {
+						said += d;
+						if (said === "log\n") resolve();
+					}),
+				);
+				socket.destroy();
+				await until(() => fakeGhServerCalls().running === 0);
+				expect(fakeGhServerCalls().served).toBe(before + 1);
+				expect(readFileSync(join(tmp, "gh.log"), "utf8")).not.toContain(
+					"replies",
+				);
 				expect((await thread0()).comments.totalCount).toBe(1);
 			});
 		});

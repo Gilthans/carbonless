@@ -25,9 +25,19 @@ if [[ $CRB_FAKE_GH_SERVER =~ ^127\.0\.0\.1:([0-9]+)$ ]] &&
 	} >&3
 	# Byte counts: read -N counts characters, bytes in the C locale.
 	LC_ALL=C
-	if ! read -r code errn outn <&3; then
-		echo "fake gh: its server closed the call" >&2
-		exit 1
+	answer() {
+		if ! read -r code errn outn <&3; then
+			echo "fake gh: its server closed the call" >&2
+			exit 1
+		fi
+	}
+	answer
+	# The server read the scenario: the call goes in the log, written by
+	# this gh while alive, as a gh process does.
+	if [[ $code == log ]]; then
+		printf '%s\n' "$*" >>"$CRB_FAKE_GH_LOG"
+		printf k >&3
+		answer
 	fi
 	IFS= read -r -N "$errn" e <&3
 	IFS= read -r -N "$outn" o <&3

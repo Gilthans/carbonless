@@ -8,7 +8,7 @@
 // in the fake gh server (server.mjs: test/fake-gh/gh, a shell shim, forwards
 // each call there) or, without one, in a process of its own (cli.mjs).
 import { execFileSync } from "node:child_process";
-import { appendFileSync, existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { writeFileAtomic } from "./atomic.mjs";
 import { KEPT_TAGS as GITHUB_KEPT_TAGS } from "./keptTags.mjs";
 
@@ -23,7 +23,9 @@ export class FakeGhExit extends Error {
 /**
  * Runs one gh call; resolves to its exit code. `io`: `args`, `env`, `cwd`,
  * `stdin()` (the body of `--input -`), `out`/`err` (text written to stdout
- * and stderr), and optionally `killed()`, true once the caller killed gh.
+ * and stderr), `log(path, line)` (appends the call to $CRB_FAKE_GH_LOG;
+ * resolves false when gh was killed instead), and optionally `killed()`,
+ * true once the caller killed gh.
  */
 export async function fakeGh(io) {
 	try {
@@ -47,8 +49,10 @@ async function call(io) {
 	const s = JSON.parse(readFileSync(env.CRB_FAKE_GH, "utf8"));
 	// Logged after reading the scenario: once a call shows in the log, a test may
 	// rewrite the scenario without affecting that call.
-	if (env.CRB_FAKE_GH_LOG) {
-		appendFileSync(env.CRB_FAKE_GH_LOG, `${args.join(" ")}\n`);
+	// io.log writes it (the shim, in the server: only a gh still alive logs,
+	// as a process does), or says the gh was killed meanwhile.
+	if (env.CRB_FAKE_GH_LOG && !(await io.log(env.CRB_FAKE_GH_LOG, `${args.join(" ")}\n`))) {
+		exit(137);
 	}
 
 	function fail(message, code = 1) {
