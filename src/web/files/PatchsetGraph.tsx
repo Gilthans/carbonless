@@ -872,8 +872,9 @@ export function PatchsetGraph(props: {
 		comparison.setViewing(dot.viewing);
 		if (dot.kind === "head") props.onViewHead?.();
 	};
-	/** The dot nearest to `x` among the rail's dots. */
+	/** The dot nearest to `x` among the rail's dots (as they are now). */
 	const dotAt = (x: number): Dot | null => {
+		const all = now.current.all;
 		const root = rail.current;
 		if (!root) return null;
 		let best: { dot: Dot; d: number } | null = null;
@@ -885,9 +886,18 @@ export function PatchsetGraph(props: {
 		}
 		return best?.dot ?? null;
 	};
+	// What a drag in progress reads at each event (this render's graph).
+	const now = useRef({ all, canView, pressed, press, view, dotAt });
+	now.current = { all, canView, pressed, press, view, dotAt };
+	// The drag in progress' end: unmounting mid-drag removes its listeners.
+	const endDrag = useRef<(() => void) | null>(null);
+	useEffect(() => () => endDrag.current?.(), []);
 	const startDrag =
 		(kind: "viewing" | "base") => (e: ReactPointerEvent<HTMLButtonElement>) => {
 			e.preventDefault();
+			// A drag runs across renders: it reads the graph as it is at each
+			// event (a key move or a new head mid-drag), never as it was here.
+			const at = () => now.current;
 			const target = e.currentTarget;
 			target.setPointerCapture(e.pointerId);
 			// The label follows the pointer, its box never leaving the rail.
@@ -906,14 +916,14 @@ export function PatchsetGraph(props: {
 			const allowed = (dot: Dot | null) =>
 				dot &&
 				(kind === "viewing"
-					? canView(dot)
-					: !("disabled" in pressed("base", dot)))
+					? at().canView(dot)
+					: !("disabled" in at().pressed("base", dot)))
 					? dot
 					: null;
 			const move = (ev: PointerEvent) => {
 				setDrag({
 					kind,
-					over: allowed(dotAt(ev.clientX))?.id ?? null,
+					over: allowed(at().dotAt(ev.clientX))?.id ?? null,
 					dx: shift(ev.clientX),
 				});
 			};
@@ -921,16 +931,19 @@ export function PatchsetGraph(props: {
 				target.removeEventListener("pointermove", move);
 				target.removeEventListener("pointerup", up);
 				target.removeEventListener("pointercancel", cancel);
+				target.removeEventListener("lostpointercapture", cancel);
 				window.removeEventListener("keydown", onEscape, true);
+				if (endDrag.current === done) endDrag.current = null;
 				setDrag(null);
 			};
 			const up = (ev: PointerEvent) => {
 				done();
-				const dot = allowed(dotAt(ev.clientX));
+				const dot = allowed(at().dotAt(ev.clientX));
 				if (!dot) return;
-				if (kind === "viewing") view(dot);
-				else press("base", dot);
+				if (kind === "viewing") at().view(dot);
+				else at().press("base", dot);
 			};
+			// A cancelled pointer, or capture lost (the browser took it): no drop.
 			const cancel = () => done();
 			// Escape drops it back on its dot, nothing moved.
 			const onEscape = (ev: KeyboardEvent) => {
@@ -940,10 +953,13 @@ export function PatchsetGraph(props: {
 					target.releasePointerCapture(e.pointerId);
 				done();
 			};
+			endDrag.current?.();
+			endDrag.current = done;
 			window.addEventListener("keydown", onEscape, true);
 			target.addEventListener("pointermove", move);
 			target.addEventListener("pointerup", up);
 			target.addEventListener("pointercancel", cancel);
+			target.addEventListener("lostpointercapture", cancel);
 		};
 
 	// Qualified keys only (owner, 2026-11-07): nothing moves by accident.

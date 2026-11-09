@@ -134,7 +134,7 @@ function renderGraph(
 			</ShortcutsProvider>
 		</QueryClientProvider>
 	);
-	const { rerender } = render(tree(s));
+	const { rerender, unmount } = render(tree(s));
 	return {
 		fetchMock,
 		setViewing,
@@ -142,6 +142,7 @@ function renderGraph(
 		set,
 		onViewHead,
 		rerender: (next: SessionInfo) => rerender(tree(next)),
+		unmount,
 	};
 }
 
@@ -994,6 +995,140 @@ describe("PatchsetGraph", () => {
 		);
 		expect(onViewHead).toHaveBeenCalledTimes(2);
 		expect(setBase).not.toHaveBeenCalled();
+	});
+
+	/** Gives the rail, the dots and a marker boxes (jsdom has none). */
+	const boxes = (marker: HTMLElement, dots: [string, number][]) => {
+		const rect = (left: number, width: number) =>
+			({
+				left,
+				width,
+				right: left + width,
+				top: 0,
+				bottom: 40,
+				height: 40,
+				x: left,
+				y: 0,
+				toJSON: () => ({}),
+			}) as DOMRect;
+		vi.spyOn(
+			screen.getByTestId("psrail"),
+			"getBoundingClientRect",
+		).mockReturnValue(rect(0, 400));
+		for (const [id, x] of dots) {
+			vi.spyOn(
+				screen.getByTestId(`ps-dot-${id}`),
+				"getBoundingClientRect",
+			).mockReturnValue(rect(x - 20, 40));
+		}
+		vi.spyOn(marker, "getBoundingClientRect").mockReturnValue(rect(80, 60));
+		marker.setPointerCapture = () => {};
+	};
+
+	it("a drag ends when the pointer is cancelled: back on its dot, nothing moved, Escape does nothing after", () => {
+		const { set, setViewing } = renderGraph(session([1, 2], oid("f")), {
+			viewing: ps(2),
+			base: ps(1) as ComparisonBase,
+		});
+		const marker = screen.getByRole("button", { name: "comparison base" });
+		boxes(marker, [
+			["branch", 10],
+			["ps1", 110],
+			["ps2", 210],
+			["head", 310],
+		]);
+		fireEvent.pointerDown(marker, { pointerId: 1, clientX: 110 });
+		fireEvent.pointerMove(marker, { pointerId: 1, clientX: 20 });
+		expect(marker.style.transform).toBe("translateX(-80px)");
+		fireEvent.pointerCancel(marker, { pointerId: 1 });
+		expect(
+			screen.getByRole("button", { name: "comparison base" }).style.transform,
+		).toBe("");
+		const esc = new KeyboardEvent("keydown", {
+			key: "Escape",
+			bubbles: true,
+		});
+		const stop = vi.spyOn(esc, "stopPropagation");
+		document.body.dispatchEvent(esc);
+		expect(stop).not.toHaveBeenCalled();
+		fireEvent.pointerUp(marker, { pointerId: 1, clientX: 12 });
+		expect(set).not.toHaveBeenCalled();
+		expect(setViewing).not.toHaveBeenCalled();
+	});
+
+	it("a drag ends when the marker loses pointer capture, and unmounting mid-drag leaves no listener behind", () => {
+		const added = vi.spyOn(window, "addEventListener");
+		const removed = vi.spyOn(window, "removeEventListener");
+		const { set, unmount } = renderGraph(session([1, 2], oid("f")), {
+			viewing: ps(2),
+			base: ps(1) as ComparisonBase,
+		});
+		const marker = screen.getByRole("button", { name: "comparison base" });
+		boxes(marker, [
+			["branch", 10],
+			["ps1", 110],
+			["ps2", 210],
+			["head", 310],
+		]);
+		fireEvent.pointerDown(marker, { pointerId: 1, clientX: 110 });
+		fireEvent.pointerMove(marker, { pointerId: 1, clientX: 20 });
+		fireEvent(marker, new Event("lostpointercapture"));
+		expect(
+			screen.getByRole("button", { name: "comparison base" }).style.transform,
+		).toBe("");
+		fireEvent.pointerUp(marker, { pointerId: 1, clientX: 12 });
+		expect(set).not.toHaveBeenCalled();
+		// A drag the graph unmounts in the middle of.
+		fireEvent.pointerDown(
+			screen.getByRole("button", { name: "comparison base" }),
+			{
+				pointerId: 2,
+				clientX: 110,
+			},
+		);
+		const keydowns = () =>
+			added.mock.calls.filter(
+				([type, , opts]) => type === "keydown" && opts === true,
+			);
+		const listener = keydowns().at(-1)?.[1];
+		expect(listener).toBeDefined();
+		unmount();
+		expect(
+			removed.mock.calls.some(
+				([type, fn, opts]) =>
+					type === "keydown" && fn === listener && opts === true,
+			),
+		).toBe(true);
+	});
+
+	it("a drop reads the graph as it is then: a head that arrived mid-drag can be dropped on", () => {
+		const s = session([1, 2], oid("2"));
+		const { setViewing, onViewHead, rerender } = renderGraph(s, {
+			viewing: ps(1),
+			base: { kind: "branch" },
+		});
+		const marker = screen.getByRole("button", { name: "comparison target" });
+		boxes(marker, [
+			["branch", 10],
+			["ps1", 110],
+			["ps2", 210],
+		]);
+		fireEvent.pointerDown(marker, { pointerId: 1, clientX: 110 });
+		// A push lands while the marker is held: the head dot appears.
+		rerender(session([1, 2], oid("f")));
+		boxes(marker, [
+			["branch", 10],
+			["ps1", 110],
+			["ps2", 210],
+			["head", 310],
+		]);
+		fireEvent.pointerMove(marker, { pointerId: 1, clientX: 305 });
+		fireEvent.pointerUp(marker, { pointerId: 1, clientX: 305 });
+		expect(setViewing).toHaveBeenLastCalledWith({
+			kind: "head",
+			oid: oid("f"),
+		});
+		expect(onViewHead).toHaveBeenCalledTimes(1);
 	});
 
 	it("a dragged marker's label follows the pointer inside the rail, and snaps back on drop or Escape", () => {
