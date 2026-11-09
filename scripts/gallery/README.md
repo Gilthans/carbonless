@@ -56,7 +56,7 @@ Cases:
   whitespace only and mixed, a thread inside a cluster, a lost newline,
   file-level rows), one seeded reviewed and one crossed off: each marked
   on its own.
-- `rr-markable.sh`: the since view's units: a gone piece holding the
+- `rr-markable.sh`: the since view's units: a gone piece beside the
   reworked cluster's removed line, a gone file, a whitespace-only rework,
   a new mode change; the head left unstarted.
 

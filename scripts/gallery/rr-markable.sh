@@ -2,8 +2,8 @@
 # Gallery case `rr-markable`: the since view's edges of "every visible
 # cluster is individually markable" (docs/product-rules.md). PS1 is
 # reviewed in full; push 2 reverts one reviewed line and edits the base line
-# under it (one interdiff block: a gone piece holding the reworked
-# cluster's removed line), undoes a whole file (a
+# under it (one interdiff block in pieces: a gone piece beside the
+# reworked cluster's), undoes a whole file (a
 # gone file), re-indents a reviewed line (whitespace-only rework) and adds
 # a mode change. The head is left unstarted (a provisional view). See
 # README.md here.
@@ -149,10 +149,10 @@ The since view's edge cases for "every cluster visible in the UI in any view sho
 
 | Where | Since PS1 | What to look at |
 | --- | --- | --- |
-| `table.ts` `render()` | the name cluster is `gone`; `cents` + `price` are one `reworked` cluster | one interdiff block, keyed in two: the red `gone` block holds the reverted name line **and the base's `cents` line**, which is the reworked cluster's removed line; the reworked piece shows only its added line. Today the gone block has no box (Brief 8 gives every piece one); the `cents` line's place is a question for the engine |
+| `table.ts` `render()` | the name cluster is `gone`; `cents` + `price` are one `reworked` cluster | one interdiff block in pieces: the reverted name line is a `gone` piece with its own box; the base's `cents` line removed belongs to the reworked cluster (keyed to it since the per-piece marks), and each piece ticks alone |
 | `table.ts` `formatPrice()` | `new` | its own box |
 | `table.ts` `total()` | carried | not in the since view; green and `carried` in the full diff |
-| `legacy.ts` | the whole file undone: listed after the files, red, its PS1 change as a gone block | today it has no box and no `read-only` chip; it should be markable like any piece |
+| `legacy.ts` | the whole file undone: listed after the files, red, its PS1 change as a gone block | each gone piece has its own box and ⊘ |
 | `fmt.ts` | the reviewed line re-indented: `reworked`, whitespace only | with Ignore whitespace on, a collapsed row with its own box |
 | `bin/table.sh` | a mode change, new | a file-level row with its own box |
 
