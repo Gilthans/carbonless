@@ -10,7 +10,8 @@ time without anyone remembering to profile.
 Each process writes its own OTLP JSON Lines file (`<service>-<pid>-<id>.jsonl`;
 each line an OTLP `ExportTraceServiceRequest`, like the collector's file
 exporter); at the end of a run, files of finished processes are packed into
-`packed-<id>.jsonl.gz`. `CRB_TEST_TRACES=0` turns it off.
+`packed-<id>.jsonl.gz`. Tests run crb with tracing on; `CRB_TEST_TRACES=0`
+turns it off, running crb as it ships.
 
 | service | what | spans |
 | --- | --- | --- |
@@ -32,7 +33,8 @@ is off and costs a property check per git or gh call.
 
 ## Reading them
 
-- `pnpm test-profile [run|latest|e2e|unit]`: wall and test time, setup phases
+- `pnpm test-profile [run|latest|e2e|unit]` (the newest match with traces,
+  this tree's first): wall and test time, setup phases
   (exclusive time; `body` is the rest of the test, `file` a unit file's time
   outside its tests), top files and tests, gh/git calls, crb's hot spots.
 - `pnpm test-profile <run> --compare <older run>`: the deltas.

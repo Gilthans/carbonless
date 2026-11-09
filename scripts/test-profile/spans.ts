@@ -28,6 +28,8 @@ export interface TestLike {
 	worker: number;
 	status: string;
 	retry: number;
+	/** --repeat-each's index. */
+	repeat: number;
 	startTime: Date;
 	duration: number;
 	steps: StepLike[];
@@ -83,6 +85,7 @@ export function testSpans(
 				"test.worker": test.worker,
 				"test.status": test.status,
 				"test.retry": test.retry,
+				"test.repeat": test.repeat,
 			},
 			error: test.error,
 		},

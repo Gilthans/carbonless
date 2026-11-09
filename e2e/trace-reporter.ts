@@ -42,6 +42,7 @@ export default class TraceReporter implements Reporter {
 				worker: result.workerIndex,
 				status: result.status,
 				retry: result.retry,
+				repeat: test.repeatEachIndex,
 				startTime: result.startTime,
 				duration: result.duration,
 				steps: result.steps,

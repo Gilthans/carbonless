@@ -286,6 +286,9 @@ export class Session {
 		}
 		// Opt-in ($CRB_TRACE_DIR): the open, with its slow steps under it.
 		const traced = tracer();
+		if (!traced.enabled) {
+			return Session.#openReview(arg, cwd, progress, options, traced);
+		}
 		const span = traced.start("crb: open review");
 		try {
 			return await traced.run(span, () =>
@@ -826,6 +829,7 @@ export class Session {
 		if (this.#closed) throw new SessionClosedError("The session is closed");
 		// Opt-in ($CRB_TRACE_DIR): the read until its overview is in.
 		const traced = tracer();
+		if (!traced.enabled) return this.#newRead(ready);
 		const span = traced.start("crb: overview read", {
 			first: this.#reads.length === 0,
 		});

@@ -120,6 +120,8 @@ export function summarize(spans: Span[], top = 8): Summary {
 	};
 
 	// Phases: each tagged span's time minus its nearest tagged descendants'.
+	// Assumes sibling steps don't overlap (Playwright runs a test's steps one
+	// at a time); overlapping ones would be counted twice.
 	const phases: Record<string, number> = {};
 	const add = (k: string, ms: number) => {
 		phases[k] = (phases[k] ?? 0) + ms;
@@ -177,7 +179,8 @@ export function summarize(spans: Span[], top = 8): Summary {
 		const project = String(t.attrs["test.project"] ?? "");
 		const title = String(t.attrs["test.title"] ?? t.name);
 		return {
-			key: `${project}|${file}|${title}`,
+			// Repeats (--repeat-each) and retries of a test are rows of their own.
+			key: `${project}|${file}|${title}|${t.attrs["test.repeat"] ?? 0}|${t.attrs["test.retry"] ?? 0}`,
 			title,
 			file,
 			project,

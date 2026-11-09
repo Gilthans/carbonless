@@ -150,11 +150,14 @@ async function serve(values: {
 	process.on("SIGTERM", shutdown);
 	// Tests and agents parse this line to find the server.
 	const key = server.key ? `?key=${server.key}` : "";
-	tracer()
-		.start("crb serve: listening", undefined, {
-			startMs: performance.timeOrigin,
-		})
-		.end();
+	const traced = tracer();
+	if (traced.enabled) {
+		traced
+			.start("crb serve: listening", undefined, {
+				startMs: performance.timeOrigin,
+			})
+			.end();
+	}
 	console.error(`carbonless listening on ${server.url}/${key}`);
 	if (server.publicUrl)
 		console.error(`carbonless open at ${server.publicUrl}/${key}`);

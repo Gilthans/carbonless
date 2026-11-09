@@ -20,6 +20,7 @@ import {
 	testSpanContext,
 } from "../../test/trace-run";
 import { compactRun, readRequests, type Span, spansOf } from "./load";
+import { findRun } from "./runs";
 import { type StepLike, testSpans } from "./spans";
 import { fmt, formatCompare, formatSummary, summarize } from "./summary";
 
@@ -90,8 +91,13 @@ function e2eSteps(): StepLike[] {
 }
 
 /** One e2e test's spans plus crb's and the fake gh's under it. */
-function e2eRun(run: string, testId: string, extraGh = 0): RecordedSpan[] {
-	const ctx = testSpanContext(run, testId, 0, 0);
+function e2eRun(
+	run: string,
+	testId: string,
+	extraGh = 0,
+	repeat = 0,
+): RecordedSpan[] {
+	const ctx = testSpanContext(run, testId, 0, repeat);
 	let n = 0;
 	const id = () => (n++).toString(16).padStart(16, "0");
 	const spans = testSpans(
@@ -102,6 +108,7 @@ function e2eRun(run: string, testId: string, extraGh = 0): RecordedSpan[] {
 			worker: 0,
 			status: "passed",
 			retry: 0,
+			repeat,
 			startTime: new Date(T0),
 			duration: 10_000,
 			steps: e2eSteps(),
@@ -183,6 +190,7 @@ describe("testSpans (the Playwright reporter's)", () => {
 				worker: 1,
 				status: "failed",
 				retry: 0,
+				repeat: 0,
 				startTime: new Date(T0),
 				duration: 10_000,
 				steps: e2eSteps(),
@@ -323,6 +331,24 @@ describe("summarize", () => {
 			/gh\s+2 → 6 {2}\+4 \(\+200%\); 600ms → 1\.8s {2}\+1\.2s \(\+200%\)/,
 		);
 		expect(text).toMatch(/test time {2}10\.0s → 10\.0s {2}\+0ms \(\+0%\)/);
+	});
+
+	it("keeps --repeat-each repeats of a test apart", () => {
+		const before = summarize(
+			asRead([...e2eRun("r", "a", 0, 0), ...e2eRun("r", "a", 0, 1)]),
+		);
+		const after = summarize(
+			asRead([...e2eRun("r", "a", 0, 0), ...e2eRun("r", "a", 0, 1)]),
+		);
+		expect(new Set(before.slowest.map((t) => t.key)).size).toBe(2);
+		// Each repeat is compared with its own: nothing moved.
+		const moved = formatCompare("A", before, "B", after).split(
+			"tests that moved most\n",
+		)[1];
+		expect(moved?.split("\n")).toEqual([
+			expect.stringMatching(/^ +\+0ms {2}files\.spec\.ts › test a$/),
+			expect.stringMatching(/^ +\+0ms {2}files\.spec\.ts › test a$/),
+		]);
 	});
 
 	it("formats durations short", () => {
@@ -509,5 +535,26 @@ describe("the run directory", () => {
 		// Listed, but gone when read (a packer took it).
 		symlinkSync(join(dir, "nowhere"), join(dir, "crb-102-bbbbbb.jsonl"));
 		expect(names(dir)).toEqual(["one"]);
+	});
+
+	it("finds the newest run of this tree that has traces", () => {
+		const root = tempDir();
+		const run = (name: string, cwd: string, traces: boolean) => {
+			mkdirSync(join(root, name));
+			writeFileSync(join(root, name, "run.json"), JSON.stringify({ cwd }));
+			if (traces) exited(join(root, name), { "crb-1-aaaaaa.jsonl": ["x"] });
+		};
+		run("2026-11-01-e2e-1", "/here", true);
+		run("2026-11-02-unit-2", "/here", true);
+		run("2026-11-03-e2e-3", "/elsewhere", true);
+		run("2026-11-04-e2e-4", "/here", false);
+		const pick = (name?: string, cwd = "/here") =>
+			findRun(root, name, cwd).name;
+		expect(pick()).toBe("2026-11-02-unit-2");
+		expect(pick("e2e")).toBe("2026-11-01-e2e-1");
+		expect(pick("latest", "/other")).toBe("2026-11-03-e2e-3");
+		expect(pick("2026-11-04-e2e-4")).toBe("2026-11-04-e2e-4");
+		expect(findRun(root, "unit", "/here").cwd).toBe("/here");
+		expect(() => findRun(root, "nothing")).toThrow(/no test traces match/);
 	});
 });

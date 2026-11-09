@@ -20,9 +20,11 @@ export function traceCall(args) {
 	const m = /^00-([0-9a-f]{32})-([0-9a-f]{16})-/.exec(
 		process.env.TRACEPARENT ?? "",
 	);
-	const start = performance.timeOrigin;
+	// Not `performance`: its first touch costs ~1.5 ms of CPU a call, and
+	// milliseconds are enough for a process's span.
+	const start = Date.now() - process.uptime() * 1000;
 	process.on("exit", (code) => {
-		const end = performance.timeOrigin + performance.now();
+		const end = Date.now();
 		const nanos = (ms) =>
 			`${Math.floor(ms)}${String(Math.min(999999, Math.round((ms % 1) * 1e6))).padStart(6, "0")}`;
 		const short = args
