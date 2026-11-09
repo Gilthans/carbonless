@@ -122,6 +122,7 @@ import {
 	lineKey,
 	type Placements,
 	placeThreads,
+	sinceLeftToNew,
 } from "./threadPlacement";
 import { VIEW_KEYS } from "./viewShortcuts";
 import { type DiffRow, viewRuns, whitespaceOnly } from "./whitespace";
@@ -2027,6 +2028,14 @@ export function DiffBody(props: {
 		? agentMine.filter((c) => c.span.commit !== agentHeadNow)
 		: [];
 
+	// The since view numbers its old side in the compared patch set; a
+	// LEFT anchor counts in the base, so it goes through the full diff
+	// (its clusters) to the head line it became (threadPlacement.ts).
+	const leftToNew = useMemo(
+		() =>
+			props.from === undefined ? undefined : sinceLeftToNew(file.clusters),
+		[props.from, file.clusters],
+	);
 	// Where the file's threads sit (all start closed). Opening one only
 	// shows it: no review state changes.
 	const placement = props.threads
@@ -2039,6 +2048,7 @@ export function DiffBody(props: {
 				noLines: file.binary || file.submodule,
 				spans: lineItems.map((i) => i.span as SpanRange),
 				placements: props.threads.placements,
+				leftToNew,
 			})
 		: null;
 	// Written on a row that isn't shown (a gap): above the diff, never lost.
@@ -2166,6 +2176,7 @@ export function DiffBody(props: {
 				loadedContext: [...loaded.values()],
 				noLines: file.binary || file.submodule,
 				spans: agentLineItems.map((c) => c.span as SpanRange),
+				leftToNew,
 			})
 		: null;
 	const [openAgent, setOpenAgent] = useState<ReadonlySet<LineKey>>(

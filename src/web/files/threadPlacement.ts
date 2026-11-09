@@ -1,5 +1,7 @@
 import type { ThreadPlacement } from "../../shared/rereview/placement";
+import { createLineMapper } from "../../shared/tracer/lineMapper";
 import type {
+	Cluster,
 	DiffLine,
 	DiffSide,
 	DisplayHunk,
@@ -264,6 +266,46 @@ function newNumberOf(side: DiffSide, n: number, hunks: DisplayHunk[]): number {
 }
 
 /**
+ * The since view's `leftToNew` for placeThreads: through the full diff's
+ * line clusters (base → head), the head line a base line became; null
+ * when the full diff deleted it.
+ */
+export function sinceLeftToNew(
+	clusters: readonly Pick<
+		Cluster,
+		"kind" | "oldStart" | "oldCount" | "newStart" | "newCount"
+	>[],
+): (n: number) => number | null {
+	const full = createLineMapper(clusters.filter((c) => c.kind === "lines"));
+	return (n) => full.oldToNew(n);
+}
+
+/**
+ * An anchor with its LEFT lines moved to the new side through `leftToNew`
+ * (the since view, placeThreads); null when its end line was deleted. A
+ * deleted start line starts the range at its end.
+ */
+function onNewSide<A extends SpanRange>(
+	anchor: A | null | undefined,
+	leftToNew: (n: number) => number | null,
+): A | null | undefined {
+	if (!anchor) return anchor;
+	const line = anchor.side === "LEFT" ? leftToNew(anchor.line) : anchor.line;
+	if (line === null) return null;
+	const start =
+		anchor.startSide === "LEFT"
+			? leftToNew(anchor.startLine)
+			: anchor.startLine;
+	return {
+		...anchor,
+		side: "RIGHT",
+		line,
+		startSide: "RIGHT",
+		startLine: start === null || start > line ? line : start,
+	};
+}
+
+/**
  * Which threads belong to this file's viewed diff, and where: the one
  * place that decides where a thread shows in Files changed. `threads` are
  * shownThreads' (each on the viewed head, the tracer's placement applied:
@@ -289,6 +331,14 @@ export function placeThreads<T extends Placeable = ReviewThread>(args: {
 	spans?: readonly SpanRange[];
 	/** Where the tracer put each thread (shownThreads applied them already). */
 	placements?: Placements | null;
+	/**
+	 * The since view: its old side is the compared patch set's, not the
+	 * base a LEFT anchor counts in. The head line base line `n` became in
+	 * the full diff (null: the full diff deleted it); a LEFT anchor is
+	 * placed there, on the new side, and one on a deleted line goes to the
+	 * header, never onto a row that merely shares its number.
+	 */
+	leftToNew?: (n: number) => number | null;
 }): FilePlacement<T> {
 	const placement: FilePlacement<T> = {
 		end: new Map(),
@@ -364,7 +414,14 @@ export function placeThreads<T extends Placeable = ReviewThread>(args: {
 			placement.fates.push({ thread: t, placement: traced });
 			continue;
 		}
-		const anchor = t.anchor;
+		const anchor = args.leftToNew
+			? onNewSide(t.anchor, args.leftToNew)
+			: t.anchor;
+		if (anchor === null && t.anchor) {
+			// A LEFT line the full diff deleted: no row of the since view is it.
+			placement.header.push({ thread: t, reason: "unplaced" });
+			continue;
+		}
 		if (!anchor) {
 			if (t.subject === "file") {
 				placement.header.push({ thread: t, reason: "file" });

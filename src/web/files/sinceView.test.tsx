@@ -433,6 +433,31 @@ describe("the since view's gaps", () => {
 		expect(screen.getAllByTestId("gap-row")).toHaveLength(1);
 	});
 
+	it("a held context answer spins in its gap row (never 'N hidden lines'), then the lines", async () => {
+		const fetchMock = renderGaps(oneHunk);
+		let release: () => void = () => {};
+		const held = new Promise<void>((r) => {
+			release = r;
+		});
+		const answer = fetchMock.getMockImplementation();
+		fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+			if (String(input).includes("/context")) await held;
+			return (answer as typeof fetch)(input);
+		});
+		const user = userEvent.setup();
+		const gap = (await screen.findAllByTestId("gap-row"))[0] as HTMLElement;
+		await user.click(
+			within(gap).getByRole("button", { name: /Load 5 lines above/ }),
+		);
+		expect(
+			await within(gap).findByRole("status", { name: "Loading lines" }),
+		).toBeInTheDocument();
+		expect(gap).not.toHaveTextContent(/hidden line/);
+		release();
+		expect(await screen.findByText("pr line 2")).toBeInTheDocument();
+		expect(screen.queryByRole("status", { name: "Loading lines" })).toBeNull();
+	});
+
 	it("a gap whose lines don't come back says so, with Retry (never 'N hidden lines' forever)", async () => {
 		const fetchMock = renderGaps(oneHunk);
 		// The server answers empty for this view's context.
