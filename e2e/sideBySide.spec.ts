@@ -218,6 +218,9 @@ test("Side by side lays clusters out as pairs in place, wraps long lines, and ke
 
 	// Reviewed from the pair row: both sides fade, progress moves by one.
 	await checkbox.click();
+	// The file's one cluster: marking it finished the file, which closed
+	// (the next file opened); open it again.
+	await section.getByRole("button", { name: "Expand file" }).click();
 	await expect(checkbox).toBeChecked();
 	await expect(progress(page)).toContainText("1 / 4 clusters reviewed");
 	await expect(pairRows.nth(0)).toHaveAttribute("data-reviewed", "true");
