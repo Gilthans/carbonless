@@ -1604,6 +1604,70 @@ const HOT = {
 	},
 } as const;
 
+type Glyph = keyof typeof HOT;
+
+/**
+ * A hidden-lines row that is its arrows' pointer target (gapRowTarget): a
+ * click anywhere presses the arrow under the pointer, which is lit while
+ * the pointer is there (`data-hot`, set on the element: no re-render per
+ * move). When the arrows change under a still pointer (a click turned ↓ ↑
+ * into ↕), the light follows at once. A pointer convenience only: the
+ * keyboard has the buttons, and the row is never focusable.
+ */
+function GapRowTr(props: {
+	glyphs: Glyph[];
+	onPress: (index: number) => void;
+	className: string;
+	children: ReactNode;
+}) {
+	const row = useRef<HTMLTableRowElement>(null);
+	const pointer = useRef<{ target: EventTarget | null; clientY: number }>(null);
+	const glyphs = props.glyphs.join("");
+	// biome-ignore lint/correctness/useExhaustiveDependencies: the arrows, by their glyphs.
+	const light = useCallback(() => {
+		const el = row.current;
+		if (!el) return;
+		const at = pointer.current;
+		if (!at || props.glyphs.length === 0) {
+			delete el.dataset.hot;
+			return;
+		}
+		const index = gapRowTarget(
+			{ ...at, currentTarget: el },
+			props.glyphs.length,
+		);
+		const glyph = index === null ? undefined : props.glyphs[index];
+		el.dataset.hot = glyph ? HOT[glyph].name : "";
+	}, [glyphs]);
+	useLayoutEffect(light, [light]);
+	const reactive = props.glyphs.length > 0;
+	return (
+		<tr
+			ref={row}
+			data-testid="gap-row"
+			onPointerMove={(e) => {
+				pointer.current = { target: e.target, clientY: e.clientY };
+				light();
+			}}
+			onPointerLeave={() => {
+				pointer.current = null;
+				light();
+			}}
+			onClick={
+				reactive
+					? (e) => {
+							const index = gapRowTarget(e, props.glyphs.length);
+							if (index !== null) props.onPress(index);
+						}
+					: undefined
+			}
+			className={`${props.className} ${reactive ? "cursor-pointer" : ""}`}
+		>
+			{props.children}
+		</tr>
+	);
+}
+
 /** What a pointer on a gap row can't press through: its own controls. */
 const OWN_CONTROLS = "button, a, input, textarea, select, [role=button]";
 
@@ -2141,40 +2205,19 @@ export function DiffBody(props: {
 				i === runs.length - 1 ? hunkAt(gap.index)?.heading : undefined;
 			const bubbles =
 				(runThreads.length > 0 ? 1 : 0) + (runAgent.length > 0 ? 1 : 0);
-			const reactive = buttons.length > 0;
 			rows.push(
-				<tr
-					key={`gap${gap.index}:${run.from}`}
-					data-testid="gap-row"
-					// The whole row is the arrows' pointer target (gapRowTarget):
-					// a pointer convenience, the keyboard has the buttons.
-					onPointerMove={
-						reactive
-							? (e) => {
-									const target = gapRowTarget(e, buttons.length);
-									const glyph =
-										target === null ? undefined : buttons[target]?.glyph;
-									const hot = glyph ? HOT[glyph].name : "";
-									if (e.currentTarget.dataset.hot !== hot) {
-										e.currentTarget.dataset.hot = hot;
-									}
-								}
-							: undefined
-					}
-					onPointerLeave={(e) => {
-						delete e.currentTarget.dataset.hot;
+				<GapRowTr
+					// By the run's place, not its first line: loading ↓ moves that,
+					// and the row (and the arrow lit under the pointer) stays.
+					// biome-ignore lint/suspicious/noArrayIndexKey: the run's place is its identity here (above).
+					key={`gap${gap.index}:#${i}`}
+					glyphs={buttons.map((b) => b.glyph)}
+					onPress={(at) => {
+						const b = buttons[at];
+						if (b) addRange(b.from, b.to);
 					}}
-					onClick={
-						reactive
-							? (e) => {
-									const target = gapRowTarget(e, buttons.length);
-									const b = target === null ? undefined : buttons[target];
-									if (b) addRange(b.from, b.to);
-								}
-							: undefined
-					}
 					// Not code: a selection across it leaves it out.
-					className={`group/gap bg-hunk text-hunk-ink select-none [--ctl-w:3rem] pointer-coarse:[--ctl-w:5.25rem] ${reactive ? "cursor-pointer" : ""}`}
+					className="group/gap bg-hunk text-hunk-ink select-none [--ctl-w:3rem] pointer-coarse:[--ctl-w:5.25rem]"
 				>
 					<td colSpan={2} className="px-1">
 						<div
@@ -2265,7 +2308,7 @@ export function DiffBody(props: {
 							/>
 						) : null}
 					</td>
-				</tr>,
+				</GapRowTr>,
 			);
 			if (runLead) {
 				rows.push(

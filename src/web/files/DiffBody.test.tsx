@@ -2683,6 +2683,43 @@ describe("DiffBody: hunk headings and the clickable gap row", () => {
 		]);
 	});
 
+	it("when a click turns ↓ ↑ into ↕, the light follows without a pointer move", async () => {
+		// Hunks around 8 and 45: lines 12–41 hidden (30: ↓ and ↑).
+		setup({
+			hunks: {
+				newLineCount: 60,
+				hunks: [hunkAround(8, "a"), hunkAround(45, "b")],
+			},
+			clusters: [
+				cluster("a", { oldStart: 8, newStart: 8 }),
+				cluster("b", { oldStart: 45, newStart: 45 }),
+			],
+		});
+		await screen.findAllByTestId("hunk-header");
+		const between = gapRows()[1] as HTMLElement;
+		between.getBoundingClientRect = () =>
+			({
+				top: 100,
+				height: 40,
+				bottom: 140,
+				left: 0,
+				right: 300,
+				width: 300,
+			}) as DOMRect;
+		const cell = between.lastElementChild as HTMLElement;
+		fireEvent.pointerMove(cell, { clientY: 130 });
+		expect(between.dataset.hot).toBe("up");
+		// ↑ loads 22–41: 10 left, one ↕, the pointer still on the row.
+		fireEvent.click(cell, { clientY: 130 });
+		await screen.findByText("line 22");
+		const row = gapRows()[1] as HTMLElement;
+		expect(row).toBe(between);
+		expect(within(row).getAllByRole("button")).toHaveLength(1);
+		expect(row.dataset.hot).toBe("all");
+		fireEvent.pointerLeave(row);
+		expect(row.dataset.hot).toBeUndefined();
+	});
+
 	it("an arrow's own click loads once, and the keyboard keeps one stop per arrow", async () => {
 		const { calls, user } = setup({ hunks: twoHunks(), clusters: twoClusters });
 		await screen.findAllByTestId("hunk-header");
