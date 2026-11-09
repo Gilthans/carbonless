@@ -912,6 +912,100 @@ describe("fake gh", () => {
 					);
 				});
 
+			it("a gh killed while its git runs ends there: nothing saved", async () => {
+				// A PR with a real diff, for a new thread's REST create (git
+				// merge-base and diff, then the save).
+				const env = testGitEnv({
+					GIT_AUTHOR_NAME: "t",
+					GIT_AUTHOR_EMAIL: "t@example.com",
+					GIT_COMMITTER_NAME: "t",
+					GIT_COMMITTER_EMAIL: "t@example.com",
+				});
+				const repo = join(tmp, "src");
+				const g = (...a: string[]) =>
+					execFileSync("git", ["-C", repo, ...a], {
+						env,
+						encoding: "utf8",
+					}).trim();
+				execFileSync("git", ["init", "--quiet", "-b", "main", repo], { env });
+				writeFileSync(join(repo, "a.txt"), "one\n");
+				g("add", "a.txt");
+				g("commit", "--quiet", "-m", "base");
+				g("checkout", "--quiet", "-b", "feature");
+				writeFileSync(join(repo, "a.txt"), "one\ntwo\n");
+				g("commit", "--quiet", "-am", "head");
+				const head = g("rev-parse", "HEAD");
+				scenario({
+					repoPath: repo,
+					nameWithOwner: "acme/widget",
+					prs: {
+						"12": {
+							view: prView({ headRefOid: head, baseRefName: "main" }),
+							graphql: { reviewThreads: [] },
+						},
+					},
+				});
+				// A git that waits for the test's word before it runs.
+				const bin = join(tmp, "bin");
+				mkdirSync(bin);
+				const started = join(tmp, "git-started");
+				const go = join(tmp, "git-go");
+				const realGit = execFileSync("sh", ["-c", "command -v git"], {
+					encoding: "utf8",
+				}).trim();
+				writeFileSync(
+					join(bin, "git"),
+					`#!/bin/sh\ntouch '${started}'\nwhile [ ! -e '${go}' ]; do sleep 0.02; done\nexec '${realGit}' "$@"\n`,
+					{ mode: 0o755 },
+				);
+				const create = () =>
+					spawn(
+						join(FAKE_GH_DIR, "gh"),
+						[
+							"api",
+							"-X",
+							"POST",
+							"repos/acme/widget/pulls/12/comments",
+							"-H",
+							"Accept: application/vnd.github.full+json",
+							"--input",
+							"-",
+						],
+						{
+							env: {
+								...process.env,
+								...env,
+								PATH: `${bin}:${process.env.PATH}`,
+							},
+						},
+					);
+				const body = JSON.stringify({
+					body: "Hm",
+					commit_id: head,
+					path: "a.txt",
+					line: 2,
+					side: "RIGHT",
+				});
+				const threadsSaved = () =>
+					JSON.parse(readFileSync(process.env.CRB_FAKE_GH ?? "", "utf8"))
+						.prs[12].graphql.reviewThreads.length;
+				// Killed while its git waits: then git answers, and nothing is saved.
+				const killed = create();
+				killed.stdin.end(body);
+				const exited = new Promise((r) => killed.on("exit", r));
+				await until(() => existsSync(started));
+				killed.kill("SIGKILL");
+				await exited;
+				writeFileSync(go, "");
+				await until(() => fakeGhServerCalls().running === 0);
+				expect(threadsSaved()).toBe(0);
+				// The same call left alone saves the thread.
+				const kept = create();
+				kept.stdin.end(body);
+				await expect(new Promise((r) => kept.on("exit", r))).resolves.toBe(0);
+				expect(threadsSaved()).toBe(1);
+			});
+
 			it("a gh killed before it logs its call goes no further: no log line, no write", async () => {
 				// A shim of the test's own, killed when the server asks it to
 				// log the call: as a gh process killed before its first line.

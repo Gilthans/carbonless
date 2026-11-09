@@ -496,6 +496,8 @@ async function call(io) {
 	 */
 	async function git(a, cwd) {
 		const { stdout } = await run("git", a, { cwd, env, encoding: "utf8" });
+		// As sleep(): news of a kill that came meanwhile is taken in first.
+		await new Promise((resolve) => setImmediate(resolve));
 		if (io.killed?.()) exit(137);
 		return stdout;
 	}
@@ -1225,6 +1227,7 @@ async function call(io) {
 			try {
 				await git(["clone", "--quiet", "--bare", at(s.repoPath), path], io.cwd);
 			} catch (error) {
+				if (error instanceof FakeGhExit) throw error;
 				fail(String(error.stderr).trim() || "git clone failed");
 			}
 			exit(0);
