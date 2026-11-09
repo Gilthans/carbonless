@@ -84,7 +84,17 @@ const E2E_MAP = [
 			"mobile",
 			"saves",
 			"tree-resize",
+			"find",
 		],
+	],
+	[
+		/^src\/web\/files\/find\/|^src\/web\/code\/Invisibles\.tsx$|^src\/web\/App\.tsx$|^src\/server\/diff\/snapshot\.ts$/,
+		["find"],
+	],
+	// The app header's row (tabs, compact title, Find in PR, Refresh).
+	[
+		/^src\/web\/App\.tsx$|^src\/web\/files\/find\/FindButton\.tsx$/,
+		["keepalive", "sticky"],
 	],
 	[
 		/^src\/web\/(viewSettings|useMedia)\.ts$|^src\/web\/Tooltip\.tsx$/,

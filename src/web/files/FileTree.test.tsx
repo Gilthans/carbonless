@@ -92,6 +92,162 @@ describe("FileTree", () => {
 		expect(row("api\\.g\\.cs").querySelector("s")).not.toBeNull();
 	});
 
+	it("shows each file's find count and a folder's sum, hiding nothing", () => {
+		const found = [
+			file(0, "src/a.ts", ["unreviewed"]),
+			file(1, "src/b.ts", ["unreviewed"]),
+			file(2, "docs/c.md", ["unreviewed"]),
+		];
+		render(
+			<FileTree
+				files={found}
+				unit="clusters"
+				current={null}
+				onSelect={() => {}}
+				find={{
+					term: "save",
+					counts: new Map([
+						[0, 3],
+						[2, 2],
+					]),
+					nameMarks: () => [],
+					oldNameMarks: () => [],
+				}}
+			/>,
+		);
+		const row = (name: RegExp) => screen.getByRole("button", { name });
+		expect(
+			row(/a\.ts/).querySelector('[aria-label="3 matches"]'),
+		).not.toBeNull();
+		expect(row(/b\.ts/).querySelector('[data-testid="tree-find"]')).toBeNull();
+		const chip = (folder: string) =>
+			document
+				.querySelector(`[data-folder="${folder}"]`)
+				?.querySelector('[data-testid="tree-find"]');
+		expect(chip("src")).toHaveTextContent("3");
+		expect(chip("docs")).toHaveTextContent("2");
+		expect(screen.getAllByRole("button", { name: /\.(ts|md)/ })).toHaveLength(
+			3,
+		);
+	});
+
+	it("says what a find count is in the row's tooltip, the term as text", async () => {
+		const user = userEvent.setup();
+		const found = [
+			file(0, "src/a.ts", ["unreviewed"]),
+			file(1, "src/b.ts", ["unreviewed"]),
+			file(2, "src/c.ts", ["unreviewed"]),
+		];
+		render(
+			<FileTree
+				files={found}
+				unit="clusters"
+				current={null}
+				onSelect={() => {}}
+				find={{
+					term: "<b>save</b>",
+					counts: new Map([
+						[0, 3],
+						[1, 1],
+					]),
+					nameMarks: () => [],
+					oldNameMarks: () => [],
+				}}
+			/>,
+		);
+		const shown = () =>
+			[...document.querySelectorAll('[role="tooltip"]')].filter(
+				(t) => !t.hasAttribute("hidden"),
+			);
+		await user.hover(screen.getByRole("button", { name: /a\.ts/ }));
+		await waitFor(() => expect(shown()).toHaveLength(1));
+		expect(shown()[0]).toHaveTextContent("3 matches for “<b>save</b>”");
+		expect(shown()[0]?.querySelector("b")).toBeNull();
+		await user.hover(screen.getByRole("button", { name: /b\.ts/ }));
+		await waitFor(() =>
+			expect(shown()[0]).toHaveTextContent("1 match for “<b>save</b>”"),
+		);
+		// No hit, nothing said.
+		await user.hover(screen.getByRole("button", { name: /c\.ts/ }));
+		await waitFor(() => expect(shown()[0]).toHaveTextContent("c.ts"));
+		expect(shown()[0]).not.toHaveTextContent("match");
+		await user.hover(
+			document.querySelector('[data-folder="src"]') as HTMLElement,
+		);
+		await waitFor(() =>
+			expect(shown()[0]).toHaveTextContent(
+				"4 matches for “<b>save</b>” in this folder",
+			),
+		);
+		// The chip's own name stays short.
+		expect(
+			screen
+				.getByRole("button", { name: /a\.ts/ })
+				.querySelector('[data-testid="tree-find"]'),
+		).toHaveAttribute("aria-label", "3 matches");
+	});
+
+	it("keeps the find chip outside the truncating name, a direct child of the row", () => {
+		const found = [file(0, "src/a.ts", ["unreviewed"])];
+		render(
+			<FileTree
+				files={found}
+				unit="clusters"
+				current={null}
+				onSelect={() => {}}
+				find={{
+					term: "save",
+					counts: new Map([[0, 3]]),
+					nameMarks: () => [],
+					oldNameMarks: () => [],
+				}}
+			/>,
+		);
+		for (const [row, name] of [
+			[screen.getByRole("button", { name: /a\.ts/ }), "a.ts"],
+			[document.querySelector('[data-folder="src"]') as HTMLElement, "src"],
+		] as const) {
+			const chip = row.querySelector('[data-testid="tree-find"]');
+			const label = row.querySelector('[data-testid="tree-name"]');
+			expect(chip).not.toBeNull();
+			expect(chip?.parentElement).toBe(row);
+			expect(label?.contains(chip)).toBe(false);
+			expect(label?.textContent).toBe(name);
+		}
+	});
+
+	it("paints the find's marks on a file's name and a moved entry's old name", () => {
+		const moved = {
+			...file(0, "src/save.ts", ["unreviewed"]),
+			status: "renamed" as const,
+			oldPath: "old/keep.ts",
+		};
+		render(
+			<FileTree
+				files={[moved]}
+				unit="clusters"
+				current={null}
+				onSelect={() => {}}
+				find={{
+					term: "save",
+					counts: new Map([[0, 2]]),
+					nameMarks: () => [{ from: 0, to: 4, current: true }],
+					oldNameMarks: () => [{ from: 0, to: 4, current: false }],
+				}}
+			/>,
+		);
+		const inRow = (row: Element | null) =>
+			row?.querySelector('[data-testid="tree-name"]');
+		const fileRow = screen.getByRole("button", { name: /save\.ts/ });
+		expect(
+			inRow(fileRow)?.querySelector("[data-find-current]"),
+		).toHaveTextContent("save");
+		const movedRow = document.querySelector('[data-moved="old/keep.ts"]');
+		expect(
+			inRow(movedRow)?.querySelector("[data-find-mark]"),
+		).toHaveTextContent("keep");
+	});
+
 	it("nests files under folders, folders first, by name, with their status", () => {
 		render(
 			<FileTree

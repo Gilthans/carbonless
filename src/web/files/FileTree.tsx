@@ -9,6 +9,7 @@ import { type ReactNode, useId, useMemo } from "react";
 import type { AgentThread } from "../../shared/agent";
 import type { FileView, ReviewThread } from "../../shared/types";
 import { agentBubbleLabel } from "../agent/AgentBubble";
+import type { FindMark } from "../code/Invisibles";
 import { Spinner } from "../Spinner";
 import { Tooltip, TooltipPath } from "../Tooltip";
 import { ChangeKindIcon, changeKindLabel } from "./changeKind";
@@ -19,6 +20,7 @@ import {
 	folderPaths,
 	type Node,
 } from "./fileOrder";
+import { MarkedText } from "./find/MarkedText";
 import { type Folds, useFolds } from "./folderFold";
 import { Meter } from "./ProgressBar";
 import {
@@ -41,6 +43,45 @@ import {
 
 const NONE = () => [];
 const NO_AGENT = (): AgentThread[] => [];
+
+/** The find's view of the tree: hits per file, and marks on names. Nothing is hidden or dimmed. */
+export interface TreeFind {
+	/** The term searched (the tooltips name it). */
+	term: string;
+	counts: ReadonlyMap<number, number>;
+	nameMarks: (index: number) => readonly FindMark[];
+	oldNameMarks: (index: number) => readonly FindMark[];
+}
+
+/** What a row's count is, for its tooltip ("" without one); the term stays text. */
+function findSaid(
+	count: number | undefined,
+	find: TreeFind | undefined,
+	where = "",
+): string {
+	if (!count || !find) return "";
+	return `${count} ${count === 1 ? "match" : "matches"} for “${find.term}”${where}`;
+}
+
+/** A row's hit count, painted like the hits it counts. */
+function FindCount({ count }: { count: number | undefined }) {
+	if (!count) return null;
+	return (
+		<span
+			role="img"
+			data-testid="tree-find"
+			aria-label={`${count} ${count === 1 ? "match" : "matches"}`}
+			className="shrink-0 rounded px-1 font-sans text-xs text-ink find-mark"
+		>
+			{count}
+		</span>
+	);
+}
+
+/** The find's line in a row's tooltip: a swatch painted like the hits. */
+const FIND_SWATCH = (
+	<span aria-hidden className="h-2 w-2 rounded-sm find-mark" />
+);
 
 /** The agent threads' dot: agent-tinted. */
 const AGENT_DOT = (
@@ -272,6 +313,7 @@ function FileItem(props: {
 	mark: Mark;
 	onSelect: (index: number) => void;
 	threads: ReviewThread[];
+	find?: TreeFind;
 	/** The reviewer's agent threads in the file: a second, agent-tinted dot. */
 	agentThreads?: AgentThread[];
 }) {
@@ -291,8 +333,10 @@ function FileItem(props: {
 			? "bg-ok"
 			: "bg-muted";
 	const name = file.path.slice(file.path.lastIndexOf("/") + 1);
+	const marks = props.find?.nameMarks(file.index) ?? [];
 	const p = fileUnitProgress(file, unit);
 	const numbers = describeFileProgress(file, unit);
+	const found = findSaid(props.find?.counts.get(file.index), props.find);
 	return (
 		<li>
 			{/* The numbers are in the name already: the tooltip only shows them. */}
@@ -338,6 +382,11 @@ function FileItem(props: {
 									{capital(asked)}
 								</TipLine>
 							)}
+							{found && (
+								<TipLine kind="find" icon={FIND_SWATCH}>
+									{capital(found)}
+								</TipLine>
+							)}
 							<TipProgressLines
 								changes={file}
 								counts={p.counts}
@@ -377,9 +426,11 @@ function FileItem(props: {
 							className="min-w-0 truncate font-mono text-[0.8125rem]"
 						>
 							{file.crossedOff ? (
-								<s className="text-muted decoration-done">{name}</s>
+								<s className="text-muted decoration-done">
+									<MarkedText text={name} marks={marks} />
+								</s>
 							) : (
-								name
+								<MarkedText text={name} marks={marks} />
 							)}
 							{file.crossedOff &&
 								crossOffReasons(file).map((reason) => (
@@ -391,6 +442,7 @@ function FileItem(props: {
 									</span>
 								))}
 						</span>
+						<FindCount count={props.find?.counts.get(file.index)} />
 						<span className="flex min-w-0 flex-1 items-center">
 							<MarkDot mark={mark} />
 						</span>
@@ -439,6 +491,7 @@ interface Level {
 	/** The threads are still on their way: no folder says none wait. */
 	threadsLoading: boolean;
 	folds: Folds;
+	find?: TreeFind;
 }
 
 /**
@@ -454,6 +507,10 @@ function FolderItem(props: Level & { folder: Folder }) {
 	const ghost = files.length === 0;
 	const p = folderUnitProgress(files, unit);
 	const numbers = ghost ? "" : describeFolderProgress(p, unit);
+	const found = files.reduce(
+		(sum, f) => sum + (props.find?.counts.get(f.index) ?? 0),
+		0,
+	);
 	const folded = folds.folded.has(folder.path);
 	// A breadcrumb: the opened file, or the one in view, is inside.
 	const mark = markOf(folder.path, props.openedPath, props.currentPath);
@@ -492,6 +549,11 @@ function FolderItem(props: Level & { folder: Folder }) {
 							{waiting && (
 								<TipLine kind="threads" icon={<ThreadDot tone="bg-warn" />}>
 									{capital(waiting)}
+								</TipLine>
+							)}
+							{found > 0 && (
+								<TipLine kind="find" icon={FIND_SWATCH}>
+									{capital(findSaid(found, props.find, " in this folder"))}
 								</TipLine>
 							)}
 							{ghost ? (
@@ -542,6 +604,7 @@ function FolderItem(props: Level & { folder: Folder }) {
 						>
 							{folder.name}
 						</span>
+						<FindCount count={found} />
 						<span className="flex min-w-0 flex-1 items-center">
 							<MarkDot mark={mark} />
 						</span>
@@ -601,6 +664,7 @@ function MovedItem(props: {
 	file: FileView;
 	depth: number;
 	onSelect: (index: number) => void;
+	find?: TreeFind;
 }) {
 	const { file } = props;
 	const old = file.oldPath ?? "";
@@ -642,7 +706,10 @@ function MovedItem(props: {
 							data-testid="tree-name"
 							className="min-w-0 flex-1 truncate font-mono text-[0.8125rem]"
 						>
-							{oldName}
+							<MarkedText
+								text={oldName}
+								marks={props.find?.oldNameMarks(file.index) ?? []}
+							/>
 						</span>
 						<span className="sr-only">, moved away</span>
 					</button>
@@ -671,6 +738,7 @@ function Children(props: Level & { nodes: Node[] }) {
 						mark={markOf(node.file.path, props.openedPath, props.currentPath)}
 						onSelect={props.onSelect}
 						threads={props.threadsOf(node.file)}
+						find={props.find}
 						agentThreads={props.agentThreadsOf(node.file)}
 					/>
 				) : node.kind === "moved" ? (
@@ -679,6 +747,7 @@ function Children(props: Level & { nodes: Node[] }) {
 						file={node.file}
 						depth={props.depth}
 						onSelect={props.onSelect}
+						find={props.find}
 					/>
 				) : (
 					<FolderItem
@@ -744,6 +813,8 @@ export function FileTree(props: {
 	 * opened file's folded folders unfold, even right after load.
 	 */
 	revealSeq?: number;
+	/** The find's counts and name marks (Find in PR); nothing is hidden by it. */
+	find?: TreeFind;
 }) {
 	const { files, current } = props;
 	const opened = props.opened ?? null;
@@ -803,6 +874,7 @@ export function FileTree(props: {
 					agentThreadsOf={props.agentThreadsOf ?? NO_AGENT}
 					threadsLoading={props.threadsLoading === true}
 					folds={folds}
+					find={props.find}
 				/>
 			</nav>
 		</div>

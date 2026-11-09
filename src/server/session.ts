@@ -4,6 +4,7 @@ import type {
 	DiffLine,
 	EditRequest,
 	FileHunks,
+	HunksBatch,
 	NewThreadAnswer,
 	NewThreadRequest,
 	PrOverview,
@@ -22,7 +23,12 @@ import type {
 } from "../shared/types.js";
 import { type AgentHost, reviewAgentHost } from "./agent/host.js";
 import { ensureClone, fetchPr } from "./clone.js";
-import { buildSnapshot, loadContext, loadFileHunks } from "./diff/snapshot.js";
+import {
+	buildSnapshot,
+	loadContext,
+	loadFileHunks,
+	loadHunksBatch,
+} from "./diff/snapshot.js";
 import {
 	fetchHeadAsOf,
 	fetchMergeBase,
@@ -833,6 +839,14 @@ export class Session {
 	/** Display hunks of a file of the snapshot with this `revision`. */
 	async fileHunks(revision: string, index: number): Promise<FileHunks> {
 		return loadFileHunks(this.repo, this.#current(revision), index);
+	}
+
+	/** Display hunks of several files of the snapshot with this `revision`. */
+	async fileHunksBatch(
+		revision: string,
+		indexes: readonly number[],
+	): Promise<HunksBatch> {
+		return loadHunksBatch(this.repo, this.#current(revision), indexes);
 	}
 
 	/** Unchanged lines of a file of the snapshot with this `revision`. */

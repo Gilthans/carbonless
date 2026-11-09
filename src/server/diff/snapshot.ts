@@ -3,6 +3,7 @@ import type {
 	DiffLine,
 	FileHunks,
 	FileSummary,
+	HunksBatch,
 	Snapshot,
 } from "../../shared/types.js";
 import { GitError, runGit, runGitBuffer } from "../git.js";
@@ -281,6 +282,31 @@ export async function loadFileHunks(
 			: hunks,
 		newLineCount: text.newLines.length,
 	};
+}
+
+/**
+ * Display hunks of several files of the snapshot, one git read at a time
+ * (the server is shared with the open file's own reads). A file whose
+ * hunks fail answers with `error`; an index not in the snapshot throws
+ * (RangeError, "No file N in this snapshot", as loadFileHunks does).
+ */
+export async function loadHunksBatch(
+	repo: string,
+	snapshot: Snapshot,
+	indexes: readonly number[],
+	load: typeof loadFileHunks = loadFileHunks,
+): Promise<HunksBatch> {
+	for (const index of indexes) fileAt(snapshot, index);
+	const files: HunksBatch["files"] = [];
+	for (const index of indexes) {
+		try {
+			files.push({ index, hunks: await load(repo, snapshot, index) });
+		} catch {
+			// Not git's message: it can carry the clone cache's path.
+			files.push({ index, error: "Couldn't read this file" });
+		}
+	}
+	return { files };
 }
 
 /** Unchanged lines `newFrom..newTo` of one file, for expanding context. */
