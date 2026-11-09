@@ -39,7 +39,10 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm lint
       - run: pnpm typecheck
+      # A wall-clock limit per test step: a hung test (e.g. a microtask
+      # loop, which no Vitest timeout can end) fails here, not hours later.
       - run: pnpm test
+        timeout-minutes: 15
       - run: pnpm test:pack
 
   e2e:
@@ -60,6 +63,7 @@ jobs:
       # Queued (scripts/queue.mjs): the lock is free on a runner, and a run
       # holding it gets a Playwright worker per core.
       - run: pnpm test:e2e
+        timeout-minutes: 40
       - if: failure()
         uses: actions/upload-artifact@v4
         with:
