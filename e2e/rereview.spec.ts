@@ -511,9 +511,14 @@ test("a since view the engine can't count says so in the bar, never the full dif
 	const p = await pr(fixture);
 	const s = await startCrb();
 	// Every engine answer fails, the head connector's (read on the reload) too.
-	await page.route("**/rereview?*", (route) =>
-		route.fulfill({ status: 500, body: JSON.stringify({ error: "boom" }) }),
-	);
+	let asked = 0;
+	await page.route(REREVIEW, (route) => {
+		asked++;
+		return route.fulfill({
+			status: 500,
+			body: JSON.stringify({ error: "boom" }),
+		});
+	});
 	await pushed(page, workdir, s, p);
 	await toast(page).getByRole("button", { name: "View" }).click();
 	await expect(progress(page)).toHaveAttribute(
@@ -522,7 +527,9 @@ test("a since view the engine can't count says so in the bar, never the full dif
 		GIT_WAIT,
 	);
 	await expect(progress(page)).toHaveText("Not counted");
-	await page.unroute("**/rereview?*");
+	// The failure really was the engine's answer, not a path that missed.
+	expect(asked).toBeGreaterThan(0);
+	await page.unroute(REREVIEW);
 });
 
 test("an empty since view says so once the engine has answered, with a spinner until then", async ({
