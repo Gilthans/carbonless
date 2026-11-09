@@ -40,7 +40,11 @@ if (traced.enabled) {
 			{
 				"crb.kind": "test",
 				"test.file": path,
-				"test.title": ctx.task.fullName ?? ctx.task.name,
+				// fullName starts with the file's path: dropped.
+				"test.title": (ctx.task.fullName ?? ctx.task.name).replace(
+					`${path} > `,
+					"",
+				),
 			},
 			{ parent: file.context },
 		);
