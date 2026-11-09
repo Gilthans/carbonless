@@ -138,7 +138,8 @@ function FilesSheet(props: {
 
 /**
  * Tracks the file in view: the first file section (in page order) crossing the band just
- * below the sticky app header and progress bar (`top` px tall together).
+ * below the sticky app header and progress bar (`top` px tall together),
+ * lower by the visual viewport's pan (visualTop).
  * Not while the page is hidden (`active` false): nothing is in view then,
  * and the file in view when it shows again is the one it was left on.
  */
@@ -149,6 +150,8 @@ export function useCurrentFile(
 	active: boolean,
 ) {
 	const [current, setCurrent] = useState<number | null>(null);
+	// The visual viewport's pan (iOS's keyboard): the stack sits that lower.
+	const band = top + visualTop.use();
 	// `sections` changes when the rendered file sections do: observe the new ones.
 	// biome-ignore lint/correctness/useExhaustiveDependencies: see above.
 	useEffect(() => {
@@ -172,13 +175,13 @@ export function useCurrentFile(
 					.find((index) => visible.has(index));
 				if (first !== undefined) setCurrent(first);
 			},
-			{ rootMargin: `-${Math.round(top) + 1}px 0px -60% 0px` },
+			{ rootMargin: `-${Math.round(band) + 1}px 0px -60% 0px` },
 		);
 		for (const section of root.querySelectorAll("[data-file-index]")) {
 			observer.observe(section);
 		}
 		return () => observer.disconnect();
-	}, [container, sections, top, active]);
+	}, [container, sections, band, active]);
 	return [current, setCurrent] as const;
 }
 
@@ -344,13 +347,15 @@ export function FilesPage() {
 	// compact row (App: AppHeaderHeight, a phone's header out of the layout
 	// while the bar shows), the progress bar, then the open file's header.
 	// Plus the visual viewport's pan (iOS's keyboard, the bar open): the
-	// stack sits that much lower on the page's top, as `--app-header` does.
-	const appHeader = useAppHeaderHeight() + visualTop.use();
+	// stack sits that much lower on the page's top, as `--app-header` does
+	// (useCurrentFile adds it itself).
+	const stackTop = useAppHeaderHeight();
+	const appHeader = stackTop + visualTop.use();
 	const barHeight = useHeight(() => bar.current, data !== undefined, !active);
 	const [current, setCurrent] = useCurrentFile(
 		diffs,
 		data ? `${data.revision}:${data.files.length}` : "",
-		appHeader + barHeight,
+		stackTop + barHeight,
 		active,
 	);
 
