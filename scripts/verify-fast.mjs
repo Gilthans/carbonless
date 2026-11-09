@@ -120,7 +120,7 @@ const E2E_MAP = [
 	// The markable invariant: whatever renders units, keys their lines or
 	// saves their states (docs/product-rules.md).
 	[
-		/^src\/web\/files\/(DiffBody|FileDiff|FilesPage|whitespace|sideBySide|since|useSince|useSetStates|stateSync)\.tsx?$|^src\/server\/(rereview\/engine|diff\/hunks)\.ts$|^test\/markable\.ts$/,
+		/^src\/web\/files\/(DiffBody|FileDiff|FilesPage|whitespace|sideBySide|since|useSince|useSetStates|stateSync)\.tsx?$|^src\/server\/(rereview\/engine|diff\/hunks)\.ts$|^test\/markable(-harness)?\.tsx?$|^src\/shared\/pieces\.ts$/,
 		["markable"],
 	],
 	[/^src\/server\/review\//, ["files", "persistence"]],
