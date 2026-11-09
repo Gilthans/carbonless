@@ -236,6 +236,28 @@ export async function buildApp(
 	});
 
 	app.get("/api/version", async () => BUILD);
+	// The page strips ?key= from its address, so a home-screen install would
+	// save a keyless URL and a shortcut with its own cookie jar would get 401.
+	app.get("/manifest.webmanifest", async (_request, reply) => {
+		const key = options.accessKey
+			? `?${new URLSearchParams({ key: options.accessKey })}`
+			: "";
+		return reply
+			.type("application/manifest+json")
+			.header("cache-control", "no-store")
+			.send({
+				name: "carbonless",
+				short_name: "carbonless",
+				start_url: `/${key}`,
+				scope: "/",
+				display: "standalone",
+				background_color: "#12141f",
+				theme_color: "#12141f",
+				icons: [
+					{ src: "/apple-touch-icon.png", sizes: "180x180", type: "image/png" },
+				],
+			});
+	});
 	// Opens (or finds) the review of a PR: crb <pr>.
 	app.post("/api/reviews", async (request) => {
 		const req = parseOpenBody(request.body);
