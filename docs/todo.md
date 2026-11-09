@@ -130,7 +130,6 @@ Follow-ups from the first slice's final review (2026-11-07):
   `allow_always` (M3).
 - A tab hidden 30 min or more mid-turn idles the session out, and the
   question is asked again (M7).
-- The hunk's fence in the prompt isn't escaped (M8).
 - An agent that ignores a cancel blocks the queue: SIGTERM it after a
   grace period (11a).
 - `authorOf` never returns `pr_author` (11c).
