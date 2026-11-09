@@ -80,6 +80,7 @@ import {
 	setPicks,
 	usePicks,
 } from "./linePicks";
+import { useResolveCollapse } from "./resolveCollapse";
 import { type CodeSpan, describeSpan } from "./selectionActions";
 import { layoutRows, type SideRow } from "./sideBySide";
 import { CONTROLS, SLOT, useStickyControls } from "./stickyControls";
@@ -209,6 +210,20 @@ interface RowThreads {
 	/** A row whose bubble takes focus once it shows (a gap thread opened). */
 	focus: LineKey | null;
 	onFocused: () => void;
+	/** Resolve closes a thread to its bubble (resolveCollapse.ts). */
+	collapse: RowCollapse;
+}
+
+/** Resolve closing a row's thread: its bubble's key and row keys (what closes it). */
+interface RowCollapse {
+	shows: (thread: ReviewThread) => boolean;
+	resolved: (
+		endKey: LineKey,
+		keys: LineKey[],
+		thread: ReviewThread,
+		shown: readonly ReviewThread[],
+		from: Element,
+	) => void;
 }
 
 /**
@@ -837,7 +852,13 @@ function wordsOf(
  * both sides' composers share one.
  */
 function RowTail(props: {
-	opened: { endKey: LineKey; ending: ReviewThread[]; side: DiffSide }[];
+	opened: {
+		endKey: LineKey;
+		/** The bubble's keys: what closes it. */
+		keys: LineKey[];
+		ending: ReviewThread[];
+		side: DiffSide;
+	}[];
 	composing: { side: DiffSide; items: NewThreadItem[] }[];
 	threads?: RowThreads;
 	composers?: RowComposers;
@@ -872,16 +893,28 @@ function RowTail(props: {
 	return (
 		<>
 			{threads &&
-				props.opened.map((cell) => (
-					<ThreadRow
-						key={cell.endKey}
-						id={threads.idOf(cell.endKey)}
-						readId={threads.readId}
-						threads={cell.ending}
-						place={place(cell.side)}
-						rail={rail}
-					/>
-				))}
+				props.opened.map((cell) => {
+					const shown = cell.ending.filter(threads.collapse.shows);
+					return (
+						<ThreadRow
+							key={cell.endKey}
+							id={threads.idOf(cell.endKey)}
+							readId={threads.readId}
+							threads={shown}
+							place={place(cell.side)}
+							rail={rail}
+							onResolved={(t, from) =>
+								threads.collapse.resolved(
+									cell.endKey,
+									cell.keys,
+									t,
+									shown,
+									from,
+								)
+							}
+						/>
+					);
+				})}
 			{composers &&
 				composing
 					.filter(({ items }) => items.length > 0)
@@ -1075,7 +1108,9 @@ function LineRow(props: RowProps & { line: RowLine; order?: number }) {
 			</tr>
 			{line.noNewline && <NoNewlineRow shape={shape} state={state} />}
 			<RowTail
-				opened={open && endKey ? [{ endKey, ending, side: cell.side }] : []}
+				opened={
+					open && endKey ? [{ endKey, keys, ending, side: cell.side }] : []
+				}
 				composing={[{ side: cell.side, items: composing }]}
 				threads={threads}
 				composers={props.composers}
@@ -1368,7 +1403,14 @@ function PairRow(
 			<RowTail
 				opened={sides.flatMap(([side, cell]) =>
 					cell?.open && cell.endKey
-						? [{ endKey: cell.endKey, ending: cell.ending, side }]
+						? [
+								{
+									endKey: cell.endKey,
+									keys: cell.shared?.keys ?? cell.keys,
+									ending: cell.ending,
+									side,
+								},
+							]
 						: [],
 				)}
 				composing={sides.map(([side, cell]) => ({
@@ -1846,6 +1888,24 @@ export function DiffBody(props: {
 		() => new Set(),
 	);
 	const [focusThread, setFocusThread] = useState<LineKey | null>(null);
+	// Resolve closes the thread to its bubble (resolveCollapse.ts): under
+	// every key of its row, as the bubble closes it (a context line's is
+	// open under either side's).
+	const closing = useRef<LineKey[]>([]);
+	const collapse = useResolveCollapse<LineKey>({
+		open: (key) => setOpenThreads((open) => new Set(open).add(key)),
+		close: (key) =>
+			setOpenThreads((open) => {
+				const next = new Set(open);
+				for (const k of [key, ...closing.current]) next.delete(k);
+				return next;
+			}),
+		focus: setFocusThread,
+		element: (key) =>
+			scroller.current?.querySelector(
+				`[aria-controls="${CSS.escape(`${idBase}-thread-${key}`)}"]`,
+			) ?? null,
+	});
 	// A gap's window that failed drops its focus target, so a later Retry
 	// doesn't take focus from wherever the reader is by then.
 	const windowFailed = contexts.some((c) => c.isError);
@@ -1854,6 +1914,8 @@ export function DiffBody(props: {
 	}, [windowFailed]);
 	const toggleThreads = (key: LineKey, keys: LineKey[]) => {
 		setFocusThread(null);
+		for (const k of keys) collapse.toggled(k);
+		collapse.toggled(key);
 		setOpenThreads((open) => {
 			const next = new Set(open);
 			if (keys.some((k) => next.has(k))) for (const k of keys) next.delete(k);
@@ -1947,6 +2009,13 @@ export function DiffBody(props: {
 					idOf: (key) => `${idBase}-thread-${key}`,
 					focus: focusThread,
 					onFocused: () => setFocusThread(null),
+					collapse: {
+						shows: collapse.shows,
+						resolved: (endKey, keys, t, shown, from) => {
+							closing.current = keys;
+							collapse.resolved(endKey, t, shown, from);
+						},
+					},
 				}
 			: undefined;
 
