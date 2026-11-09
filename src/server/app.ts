@@ -4,6 +4,12 @@ import { join } from "node:path";
 import fastifyStatic from "@fastify/static";
 import Fastify, { type FastifyInstance, type FastifyRequest } from "fastify";
 import {
+	type AgentConfig,
+	type AgentMessageRequest,
+	MAX_AGENT_TEXT,
+	type OpenAgentThreadRequest,
+} from "../shared/agent.js";
+import {
 	type ClusterState,
 	COMMENTS_BATCH,
 	type EditRequest,
@@ -15,13 +21,24 @@ import {
 	type WriteError,
 } from "../shared/types.js";
 import { registerAccessKey, registerHostCheck } from "./access.js";
+import { checkAgent } from "./agent/acp.js";
+import { agentsDir } from "./agent/checkout.js";
+import {
+	type AgentHost,
+	agentConfig,
+	noteAgentConfigSaved,
+} from "./agent/host.js";
+import { isSafePath } from "./agent/prompt.js";
+import { UnknownAgentThreadError } from "./agent/store.js";
 import { parseAsOf } from "./asOf.js";
+import { updateConfig } from "./config.js";
 import { GhError, WriteRefusedError } from "./errors.js";
 import { NODE_ID, parsePrArg } from "./gh.js";
 import { GitError } from "./git.js";
 import type { HomeService } from "./home/homeService.js";
 import { registerHomeRoutes } from "./home/routes.js";
 import { HomeSearch } from "./home/search.js";
+import { MARKER_ID } from "./marker.js";
 import { newThreadProblem } from "./newThreads.js";
 import { type HeadSpec, parseHead } from "./pinnedHead.js";
 import {
@@ -58,10 +75,16 @@ export interface AppOptions {
 	webRoot?: string;
 	/**
 	 * Required on every request when set (see access.ts). Without a key the
-	 * server must be bound to loopback, and only loopback Host headers for the
-	 * listening port are accepted.
+	 * server must be bound to loopback (`loopback`).
 	 */
 	accessKey: string | null;
+	/**
+	 * Bound to loopback, so only loopback Host headers (and `publicUrl`'s)
+	 * are accepted. Default: when there is no key.
+	 */
+	loopback?: boolean;
+	/** The origin a proxy in front serves it at (config `serve.publicUrl`). */
+	publicUrl?: string;
 	/**
 	 * The server's own address (`http://<host>:<port>`, no key), for the
 	 * review URLs it hands out. Default: the request's Host.
@@ -75,6 +98,9 @@ export interface AppOptions {
 
 /** A malformed request (HTTP 400). */
 class BadRequestError extends Error {}
+
+/** A review with no agent: --viewer, --as-of (HTTP 404, code "no-agent"). */
+class NoAgentError extends Error {}
 
 /** The review a `/api/r/:id/...` request is for (set by its preHandler). */
 const sessions = new WeakMap<FastifyRequest, Session>();
@@ -132,8 +158,11 @@ export async function buildApp(
 	app.addHook("onRequest", async (_request, reply) => {
 		reply.headers(SECURITY_HEADERS);
 	});
-	registerHostCheck(app, options.accessKey === null);
-	await registerAccessKey(app, options.accessKey);
+	registerHostCheck(app, {
+		loopback: options.loopback ?? options.accessKey === null,
+		publicUrl: options.publicUrl,
+	});
+	await registerAccessKey(app, options.accessKey, options.publicUrl);
 	// A crb of another build must not drive this server (the browser sends
 	// no header and isn't checked: its page comes from this server).
 	app.addHook("onRequest", async (request, reply) => {
@@ -170,6 +199,12 @@ export async function buildApp(
 		if (error instanceof BadRequestError) return send(400, error.message);
 		if (error instanceof InvalidPlacementError) {
 			return send(400, error.message);
+		}
+		if (error instanceof NoAgentError) {
+			return reply.status(404).send({ error: error.message, code: "no-agent" });
+		}
+		if (error instanceof UnknownAgentThreadError) {
+			return send(404, error.message);
 		}
 		if (
 			error instanceof RangeError &&
@@ -514,11 +549,63 @@ export async function buildApp(
 					retry: r.retry,
 				});
 			});
+			// The reviewer's own agent (review buddy): status, private threads.
+			review.get("/agent", (request) => agentOf(request).status());
+			review.get("/agent/threads", async (request) => ({
+				threads: await agentOf(request).threads(),
+			}));
+			review.post("/agent/threads", (request) =>
+				agentOf(request).open(parseAgentOpen(request.body)),
+			);
+			review.post<{ Params: { tid: string } }>(
+				"/agent/threads/:tid/messages",
+				(request) =>
+					agentOf(request).message(
+						agentThreadParam(request.params.tid),
+						parseAgentMessage(request.body),
+					),
+			);
+			review.post<{ Params: { tid: string } }>(
+				"/agent/threads/:tid/resolved",
+				(request) => {
+					const resolved = (request.body as { resolved?: unknown } | null)
+						?.resolved;
+					if (typeof resolved !== "boolean") {
+						throw new BadRequestError("resolved must be true or false");
+					}
+					return agentOf(request).setResolved(
+						agentThreadParam(request.params.tid),
+						resolved,
+					);
+				},
+			);
+			review.post("/agent/cancel", async (request) => {
+				await agentOf(request).cancel();
+				return { ok: true };
+			});
 			review.post("/refresh", (request) => sessionOf(request).refresh());
 			review.get("/head", (request) => sessionOf(request).checkHead());
 		},
 		{ prefix: "/api/r/:id" },
 	);
+
+	// The setup modal: what is configured, save the agent, or try it once.
+	app.get("/api/config/agent", () => agentConfig());
+	app.put("/api/config/agent", async (request) => {
+		const agent = parseAgentConfig(request.body, true);
+		try {
+			const c = await updateConfig((config) => ({ ...config, agent }));
+			noteAgentConfigSaved();
+			return { agent: c.agent };
+		} catch (error) {
+			throw new BadRequestError((error as Error).message);
+		}
+	});
+	app.post("/api/config/agent/check", (request) => {
+		const agent = parseAgentConfig(request.body, false);
+		if (!agent) throw new BadRequestError("Expected an agent");
+		return checkAgent(agent, agentsDir());
+	});
 
 	// A typed, pasted or clicked address: the PR's review, opened if need
 	// be. With the web UI the page answers at once and opens the review
@@ -697,6 +784,146 @@ const isThreadWrite = (method: string, url: string) =>
 		url,
 	) ||
 	(method === "POST" && /^\/api\/(threads|verdict)(\?|$)/.test(url));
+
+/** The review's agent; a NoAgentError for one that has none. */
+function agentOf(request: FastifyRequest): AgentHost {
+	const agent = sessionOf(request).agent;
+	if (!agent) {
+		throw new NoAgentError(
+			"No agent here: this review is as of a past moment or as someone else",
+		);
+	}
+	return agent;
+}
+
+const AGENT_THREAD_ID = /^[0-9a-hjkmnp-tv-z]{26}$/;
+
+function agentThreadParam(raw: string): string {
+	if (!AGENT_THREAD_ID.test(raw)) {
+		throw new BadRequestError(`Not an agent thread id: ${raw}`);
+	}
+	return raw;
+}
+
+/** A question's or reply's text: not blank, at most MAX_AGENT_TEXT bytes. */
+function agentTextProblem(text: unknown): string | null {
+	if (typeof text !== "string" || !text.trim())
+		return "A question can't be blank";
+	if (Buffer.byteLength(text) > MAX_AGENT_TEXT) {
+		return `A question is at most ${MAX_AGENT_TEXT} bytes`;
+	}
+	return null;
+}
+
+function clientIdProblem(clientId: unknown): string | null {
+	return typeof clientId === "string" && MARKER_ID.test(clientId)
+		? null
+		: "clientId must be 1 to 100 letters, digits or _.:-";
+}
+
+/** POST agent/threads' body; the span checked like a new comment's. */
+function parseAgentOpen(body: unknown): OpenAgentThreadRequest {
+	const b = (typeof body === "object" && body !== null ? body : {}) as Record<
+		string,
+		unknown
+	>;
+	const problem = clientIdProblem(b.clientId) ?? agentTextProblem(b.text);
+	if (problem) throw new BadRequestError(problem);
+	const span = (
+		typeof b.span === "object" && b.span !== null ? b.span : {}
+	) as Record<string, unknown>;
+	const spanProblem = newThreadProblem({
+		...span,
+		clientId: b.clientId,
+		body: b.text,
+		attemptedAt: "",
+		retry: false,
+	});
+	if (spanProblem) throw new BadRequestError(spanProblem);
+	if (!isSafePath(span.path as string)) {
+		throw new BadRequestError("path must be a file's path in the repository");
+	}
+	const line =
+		span.subject === "line"
+			? {
+					subject: "line" as const,
+					side: span.side,
+					line: span.line,
+					startSide: span.startSide ?? span.side,
+					startLine: span.startLine ?? span.line,
+					...(span.startCol !== undefined && span.startCol !== null
+						? { startCol: span.startCol, endCol: span.endCol }
+						: {}),
+				}
+			: { subject: "file" as const };
+	return {
+		clientId: b.clientId as string,
+		text: b.text as string,
+		span: {
+			...line,
+			path: span.path,
+			commit: span.commit,
+		} as OpenAgentThreadRequest["span"],
+	};
+}
+
+function parseAgentMessage(body: unknown): AgentMessageRequest {
+	const b = (typeof body === "object" && body !== null ? body : {}) as Record<
+		string,
+		unknown
+	>;
+	const problem = clientIdProblem(b.clientId) ?? agentTextProblem(b.text);
+	if (problem) throw new BadRequestError(problem);
+	return { clientId: b.clientId as string, text: b.text as string };
+}
+
+/**
+ * The setup modal's agent: `{command, args, env, leash}` (null when
+ * `nullable`, to remove it), checked as config.json's agent section is.
+ */
+function parseAgentConfig(
+	body: unknown,
+	nullable: boolean,
+): AgentConfig | null {
+	if (body === null && nullable) return null;
+	const fail = (m: string) => new BadRequestError(m);
+	if (typeof body !== "object" || body === null || Array.isArray(body)) {
+		throw fail("agent must be an object or null");
+	}
+	const {
+		command,
+		args = [],
+		env = {},
+		leash = "open",
+	} = body as Record<string, unknown>;
+	if (
+		typeof command !== "string" ||
+		!command.trim() ||
+		command.includes("\0")
+	) {
+		throw fail("agent.command must be a non-empty string");
+	}
+	if (!Array.isArray(args) || !args.every((a) => typeof a === "string")) {
+		throw fail("agent.args must be an array of strings");
+	}
+	if (
+		typeof env !== "object" ||
+		env === null ||
+		Array.isArray(env) ||
+		!Object.values(env).every((v) => typeof v === "string")
+	) {
+		throw fail("agent.env must be an object of strings");
+	}
+	if (leash !== "open") {
+		throw fail(`agent.leash "${String(leash)}" is not available yet`);
+	}
+	return {
+		command: command.trim(),
+		args: args as string[],
+		env: env as Record<string, string>,
+		leash: "open",
+	};
+}
 
 function threadIdParam(raw: string): string {
 	if (!NODE_ID.test(raw)) {

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from "vitest";
-import { sanitizeGithubHtml } from "./githubHtml";
+import { sanitizeGithubHtml } from "./sanitizeGithubHtml";
 
 const dom = (html: string) => {
 	const div = document.createElement("div");

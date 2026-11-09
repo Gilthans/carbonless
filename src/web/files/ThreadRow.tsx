@@ -4,8 +4,12 @@ import {
 	CommentDiscussionIcon,
 	HistoryIcon,
 } from "@primer/octicons-react";
+import { useQuery } from "@tanstack/react-query";
 import type { ReactNode } from "react";
+import type { AgentThread } from "../../shared/agent";
 import type { DiffSide, ReviewThread } from "../../shared/types";
+import { AgentThreadCard } from "../agent/AgentThreadCard";
+import { agentStatusQuery } from "../agent/api";
 import { Badge, LabeledIcon } from "../overview/parts";
 import { Conversation } from "../threads/Conversation";
 import { ThreadStatus } from "../threads/ThreadStatus";
@@ -158,6 +162,41 @@ export function ThreadRow(props: {
 		>
 			{props.threads.map((t, i) => (
 				<ThreadBlock key={t.id || `#${i}`} readId={props.readId} thread={t} />
+			))}
+		</TailRow>
+	);
+}
+
+/**
+ * The agent threads of an agent bubble, opened under their line, after the
+ * line's comment threads. The status comes from the chip's poll.
+ */
+export function AgentThreadRow(props: {
+	threads: AgentThread[];
+	id?: string;
+	place: CardPlace;
+	rail?: string;
+	/** Their line isn't in this diff (the file's header). */
+	unplaced?: boolean;
+	/** Asked on an earlier head (the file's header): each card says on which. */
+	outdated?: boolean;
+}) {
+	const status = useQuery({ ...agentStatusQuery, enabled: false }).data;
+	return (
+		<TailRow
+			testId="agent-thread-row"
+			id={props.id}
+			place={props.place}
+			rail={props.rail}
+		>
+			{props.threads.map((t) => (
+				<AgentThreadCard
+					key={t.id}
+					thread={t}
+					status={status}
+					unplaced={props.unplaced}
+					outdated={props.outdated ? t.anchor.commit : undefined}
+				/>
 			))}
 		</TailRow>
 	);
