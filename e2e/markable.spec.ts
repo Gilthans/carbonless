@@ -144,6 +144,9 @@ test("full diff: file-level clusters (binary, rename only, mode change, empty fi
 	pr,
 	startCrb,
 }) => {
+	// Four files, a write per tick, and each finishing tick closes the file
+	// (the page moves on) to be opened again: past the default.
+	test.setTimeout(120_000);
 	await pr({
 		base: {
 			"docs/old.md": "# Notes\n\nNothing changes here.\n",

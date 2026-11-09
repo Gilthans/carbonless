@@ -405,6 +405,19 @@ export async function expectEveryUnitMarkable(
 				}`,
 			)
 			.click();
+		// A mark that finished the file closed it (the page moved on): open
+		// it again to read its units.
+		const expandFile = scope.getByRole("button", { name: "Expand file" });
+		if (await expandFile.isVisible()) {
+			// Its rows are new: collectUnits numbers them again (states()).
+			// The move-on may still be landing: open it until it stays open.
+			await expect(async () => {
+				if (await expandFile.isVisible()) await expandFile.click();
+				await expect(
+					scope.locator('input[type="checkbox"]').first(),
+				).toBeVisible({ timeout: 1_000 });
+			}).toPass();
+		}
 		await expect
 			.poll(async () =>
 				isolationProblems(i, before, await states(), want).join("\n"),
