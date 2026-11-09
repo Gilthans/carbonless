@@ -2279,9 +2279,9 @@ interface Hint {
 
 /**
  * Scrolls the page so `target` sits `margin` px below the sticky stack over
- * the diff in `root` (the app header, the files bar and the file's section
- * header) and below the find bar floating over the page, when it is open
- * and reaches lower.
+ * the diff in `root` (the find bar and the app header's row: `--app-header`;
+ * the files bar and the file's section header), and below the find bar
+ * itself should it reach lower.
  */
 function scrollUnderStack(root: HTMLElement, target: Element, margin: number) {
 	const header = root.closest("section")?.querySelector("header");

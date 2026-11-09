@@ -6,13 +6,14 @@ import {
 	type ReactNode,
 	type RefObject,
 	useCallback,
+	useContext,
 	useEffect,
 	useLayoutEffect,
 	useMemo,
 	useRef,
 	useState,
 } from "react";
-import { flushSync } from "react-dom";
+import { createPortal, flushSync } from "react-dom";
 import type { ReviewThread } from "../../shared/types";
 import { hunksQuery, overviewQuery, sessionQuery } from "../api";
 import { LabeledIcon } from "../overview/parts";
@@ -20,13 +21,13 @@ import { useForgetPageScroll, usePageActive } from "../pageActive";
 import { useReviewId } from "../reviewId";
 import { SkeletonBar, Spinner } from "../Spinner";
 import { useShortcut } from "../shortcuts";
-import { useAppHeaderHeight, useHeight } from "../sticky";
+import { FindSlot, useAppHeaderHeight, useHeight } from "../sticky";
 import { PeopleProvider } from "../threads/people";
 import { dropLosesText, useThreadWrites } from "../threads/threadWrites";
 import { usePrefetchComments } from "../threads/useThreadComments";
 import { useThreads } from "../threads/useThreads";
 import { ErrorMessage } from "../ui";
-import { NOT_PHONE, useMedia, WIDE } from "../useMedia";
+import { useMedia, WIDE } from "../useMedia";
 import { FilesVerdict } from "../verdict/FilesVerdict";
 import { ignoreWhitespace, showInvisibles, sideBySide } from "../viewSettings";
 import type { DiffThreads } from "./DiffBody";
@@ -303,20 +304,10 @@ export function FilesPage() {
 	useViewShortcuts();
 	const diffs = useRef<HTMLDivElement>(null);
 	const bar = useRef<HTMLDivElement>(null);
-	// The sticky stack, top down: the app header's compact row, the progress
-	// bar, then the open file's header.
-	// On a phone the open find bar is the stack's top: the app header is out
-	// of the layout (App) and the bar, stuck at the top, takes its place.
-	const headerHeight = useAppHeaderHeight();
-	const phone = !useMedia(NOT_PHONE);
-	const findOpen = findState.use().open;
-	const findHeight = useHeight(
-		() => document.querySelector<HTMLElement>("[data-find-float]"),
-		findOpen && phone && data !== undefined,
-		!active || !findOpen || !phone,
-	);
-	const phoneFind = phone && findOpen && findHeight > 0;
-	const appHeader = phoneFind ? findHeight : headerHeight;
+	// The sticky stack, top down: the open find bar and the app header's
+	// compact row (App: AppHeaderHeight, a phone's header out of the layout
+	// while the bar shows), the progress bar, then the open file's header.
+	const appHeader = useAppHeaderHeight();
 	const barHeight = useHeight(() => bar.current, data !== undefined, !active);
 	const [current, setCurrent] = useCurrentFile(
 		diffs,
@@ -379,9 +370,7 @@ export function FilesPage() {
 	// Keyboard focus scrolling keeps focused controls clear of the sticky
 	// stack (WCAG 2.4.11): the page's scroll-padding-top adds this to the app
 	// header's height (index.css).
-	// A phone's open find bar is the stack's top instead of the header's row.
-	const pageSticky =
-		barHeight + openHeader + (phoneFind ? appHeader - headerHeight : 0);
+	const pageSticky = barHeight + openHeader;
 	useLayoutEffect(() => {
 		if (!active) return;
 		const root = document.documentElement;
@@ -698,7 +687,6 @@ export function FilesPage() {
 				style={
 					{
 						"--files-bar": `${barHeight}px`,
-						...(phoneFind ? { "--app-header": `${appHeader}px` } : {}),
 					} as CSSProperties
 				}
 			>
@@ -708,14 +696,11 @@ export function FilesPage() {
 				{data && (
 					<>
 						{find.state.open && (
-							// Typing and stepping never move it. Desktop: it floats over
-							// the page, out of its flow, right under the sticky stack,
-							// over the diff. A phone's starts the page in the hidden app
-							// header's place (out of main's padding), pushing the page
-							// down by its own height, and sticks at the top, the
-							// stack's top (--app-header above). Before the progress bar
-							// in the DOM, as on screen.
-							<FindFloat className="sticky top-0 z-[35] -mx-3 -mt-4 border-b border-line bg-surface shadow-header sm:fixed sm:inset-x-auto sm:top-[calc(var(--app-header,0px)+var(--files-bar,0px))] sm:right-4 sm:mx-0 sm:mt-0 sm:w-[28rem] sm:max-w-[calc(100vw-2rem)] sm:rounded-b-lg sm:border-x">
+							// At the very top of the page, above the app header (App's
+							// FindSlot), pushing it down by its own height; sticks there
+							// (typing and stepping never move it), the stack under it.
+							// A phone's takes the header's place.
+							<FindFloat>
 								<FindBar
 									term={find.state.term}
 									onTerm={findState.setTerm}
@@ -862,20 +847,23 @@ export function FilesPage() {
 }
 
 /**
- * The find bar's frame (`data-find-float`): while it is mounted, a phone's
- * app header leaves the layout for it (findFloat).
+ * The find bar's frame (`data-find-float`): a strip across the top of the
+ * page, in App's slot (FindSlot; in place without one), the controls at its
+ * right on a wide screen. While it is mounted, a phone's app header leaves
+ * the layout for it (findFloat).
  */
-function FindFloat({
-	className,
-	children,
-}: {
-	className: string;
-	children: ReactNode;
-}) {
+function FindFloat({ children }: { children: ReactNode }) {
 	useFindFloatShown();
-	return (
-		<div data-find-float className={className}>
-			{children}
+	const slot = useContext(FindSlot);
+	const strip = (
+		<div
+			data-find-float
+			className="border-b border-line bg-surface shadow-header"
+		>
+			<div className="mx-auto flex max-w-screen-2xl justify-end sm:px-6">
+				<div className="w-full sm:w-[28rem] sm:max-w-full">{children}</div>
+			</div>
 		</div>
 	);
+	return slot ? createPortal(strip, slot) : strip;
 }

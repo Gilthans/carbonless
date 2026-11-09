@@ -203,11 +203,15 @@ test("Cmd+F opens the bar focused; typing counts and marks without scrolling or 
 	await expect(a.getByTestId("diff-line").first()).toBeVisible();
 	await page.evaluate(() => window.scrollTo(0, 120));
 	await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(120);
+	const line = a.getByTestId("diff-line").first();
+	const at = async () => (await line.boundingBox())?.y ?? Number.NaN;
+	const was = await at();
 
 	await openBar(page, isMobile);
-	// The bar floats over the page: opening and typing move nothing.
+	// Opening pushes the page down by the bar, and scrolls by as much: the
+	// line read stays where it was; typing moves nothing.
+	await expect.poll(async () => Math.abs((await at()) - was)).toBeLessThan(1);
 	const y = await page.evaluate(() => window.scrollY);
-	expect(y).toBe(120);
 	await page.keyboard.type("saveDraft");
 	await expect(count(page)).toHaveText(/^\d+ of \d+$/, VISIBLE);
 	await expect(count(page)).toHaveText(counted(A_FIRST, "\\d+"), VISIBLE);
@@ -681,10 +685,9 @@ test("the bar stays put: opening, stepping three times and across files never mo
 	await stepUntil(page, B, 12, next);
 	await expect(currentRow(page)).toBeInViewport();
 	expect(await barBox(page)).toEqual(opened);
-	// Pinned: on desktop right under the sticky stack (the header's row and
-	// the progress bar, stuck now), over the diff; a phone's at the top.
-	if (isMobile) expect(opened.y).toBe(0);
-	else expect(Math.abs(opened.y - (await barBottom(page)))).toBeLessThan(1.5);
+	// Pinned at the top of the page, the sticky stack under it.
+	expect(opened.y).toBe(0);
+	expect(await barBottom(page)).toBeGreaterThan(opened.height);
 });
 
 test("on a phone the open bar hides the app header; ✕ brings it back", async ({
@@ -931,13 +934,12 @@ test("on a phone the bar stays at the top while scrolling and stepping, the file
 		);
 });
 
-test("on a phone opening and closing the bar while scrolled keeps the diff line in view where it was", async ({
+test("opening and closing the bar while scrolled keeps the diff line in view where it was", async ({
 	page,
 	pr,
 	startCrb,
 	isMobile,
 }) => {
-	test.skip(!isMobile, "the phone layout");
 	await phone(page, isMobile);
 	await pr(fixture);
 	const s = await startCrb();
@@ -961,11 +963,12 @@ test("on a phone opening and closing the bar while scrolled keeps the diff line 
 	const at = async () => (await row.boundingBox())?.y ?? Number.NaN;
 	const before = await at();
 	await openBar(page, isMobile);
-	await expect(appHeader(page)).toBeHidden();
+	if (isMobile) await expect(appHeader(page)).toBeHidden();
 	await expect
 		.poll(async () => Math.abs((await at()) - before))
 		.toBeLessThan(1);
 	await bar(page).getByRole("button", { name: "Close (Esc)" }).click();
+	await expect(bar(page)).toHaveCount(0);
 	await expect(appHeader(page)).toBeVisible();
 	await expect
 		.poll(async () => Math.abs((await at()) - before))
@@ -1199,4 +1202,150 @@ test("the bar fits 360px with 40px controls and no page overflow", async ({
 		await held.release();
 	}
 	await expect(spinner(page)).toHaveCount(0);
+});
+
+test("on a phone the bar stays on screen however far the page scrolls, the soft keyboard up too", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	test.skip(!isMobile, "the phone layout");
+	await phone(page, isMobile);
+	await pr(fixture);
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	await expand(page, A);
+	await expand(page, B);
+	await openBar(page, isMobile);
+	const opened = await floatBox(page);
+	expect(opened.y).toBe(0);
+	for (const by of [50, 300]) {
+		await page.evaluate((b) => window.scrollBy(0, b), by);
+		expect(await floatBox(page)).toEqual(opened);
+		await expect(bar(page)).toBeInViewport({ ratio: 1 });
+	}
+	await page.evaluate(() =>
+		window.scrollTo(0, document.documentElement.scrollHeight),
+	);
+	expect(await floatBox(page)).toEqual(opened);
+	await expect(bar(page)).toBeInViewport({ ratio: 1 });
+	// The soft keyboard (the box has focus) leaves a visual viewport shorter
+	// than the page's: a scroll pans it first. The bar keeps to its top,
+	// the files bar right under it.
+	await page.evaluate(() => window.scrollTo(0, 0));
+	const cdp = await page.context().newCDPSession(page);
+	await cdp.send("Emulation.setPageScaleFactor", { pageScaleFactor: 1.5 });
+	await page.mouse.move(180, 300);
+	/** The bar's top less the visual viewport's, the files bar's less the bar's bottom. */
+	const onTop = () =>
+		page.evaluate(() => {
+			const vv = window.visualViewport;
+			const float = document
+				.querySelector("[data-find-float]")
+				?.getBoundingClientRect();
+			const files = document
+				.querySelector('[role="progressbar"][aria-label="Review progress"]')
+				?.closest(".sticky")
+				?.getBoundingClientRect();
+			const top = vv?.offsetTop ?? 0;
+			return {
+				panned: top > 0,
+				bar: Math.round((float?.top ?? Number.NaN) - top),
+				files: Math.round((files?.top ?? Number.NaN) - (float?.bottom ?? 0)),
+			};
+		});
+	for (let i = 0; i < 3; i++) {
+		await page.mouse.wheel(0, 100);
+		await expect.poll(onTop).toEqual({ panned: true, bar: 0, files: 0 });
+	}
+	await cdp.send("Emulation.setPageScaleFactor", { pageScaleFactor: 1 });
+});
+
+test("on desktop the open bar pushes the app header down: nothing covered at the top, the header stuck under it once scrolled, back at the top on close", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	test.skip(isMobile, "the desktop layout");
+	await pr(fixture);
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	expect((await appHeader(page).boundingBox())?.y).toBe(0);
+	await openBar(page, isMobile);
+	const opened = await floatBox(page);
+	expect(opened.y).toBe(0);
+	expect(opened.x).toBe(0);
+	expect(opened.height).toBeLessThan(80);
+	// The header, buttons and all, right under the bar.
+	await expect
+		.poll(async () => (await appHeader(page).boundingBox())?.y)
+		.toBe(opened.height);
+	const gear = page.getByRole("button", { name: "Settings", exact: true });
+	expect((await gear.boundingBox())?.y ?? 0).toBeGreaterThanOrEqual(
+		opened.height,
+	);
+	expect(
+		await gear.evaluate((el) => {
+			const r = el.getBoundingClientRect();
+			const top = document.elementFromPoint(
+				r.left + r.width / 2,
+				r.top + r.height / 2,
+			);
+			return top !== null && el.contains(top);
+		}),
+	).toBe(true);
+	await expect(findButton(page)).toHaveAttribute("aria-expanded", "true");
+	// Stepping scrolls: the bar stays, the header's row sticks under it, the
+	// files bar under that, each hit below them all.
+	await search(page, "saveDraft");
+	const row = page.getByTestId("app-header-row");
+	const headerBottom = async () => {
+		const h = await appHeader(page).boundingBox();
+		return (h?.y ?? 0) + (h?.height ?? 0);
+	};
+	for (const path of [A, B]) {
+		await stepUntil(page, path);
+		expect(await floatBox(page)).toEqual(opened);
+		await expect
+			.poll(async () => (await row.boundingBox())?.y ?? 0)
+			.toBeGreaterThanOrEqual(opened.height - 0.5);
+		await expect
+			.poll(async () =>
+				Math.round(
+					(await headerBottom()) - ((await filesBarBox(page))?.y ?? 0),
+				),
+			)
+			.toBe(0);
+		await expect
+			.poll(async () => {
+				const r = await currentRow(page).evaluate((el) => ({
+					row: el.getBoundingClientRect().top,
+					header:
+						el.closest("section")?.querySelector("header")?.offsetHeight ?? 0,
+				}));
+				return r.row - ((await barBottom(page)) + r.header);
+			})
+			.toBeGreaterThanOrEqual(0);
+	}
+	// Scrolled: the stuck header's row right under the bar.
+	expect((await row.boundingBox())?.y ?? 0).toBeLessThanOrEqual(
+		opened.height + 1,
+	);
+	// Focus scrolling clears the bar and the stack.
+	await box(page).evaluate((el) => (el as HTMLElement).blur());
+	expect(
+		await page.evaluate(() =>
+			Number.parseFloat(
+				getComputedStyle(document.documentElement).scrollPaddingTop,
+			),
+		),
+	).toBeGreaterThanOrEqual(((await filesBarBox(page))?.bottom ?? 0) - 1);
+	await page.evaluate(() => window.scrollTo(0, 0));
+	await findButton(page).click();
+	await expect(bar(page)).toHaveCount(0);
+	await expect
+		.poll(async () => (await appHeader(page).boundingBox())?.y)
+		.toBe(0);
 });

@@ -37,3 +37,9 @@ export function useHeight(
 export const AppHeaderHeight = createContext(0);
 
 export const useAppHeaderHeight = () => useContext(AppHeaderHeight);
+
+/**
+ * Where the find bar goes: App's slot at the very top of the page, above the
+ * app header (null outside App: the bar renders in place).
+ */
+export const FindSlot = createContext<HTMLElement | null>(null);

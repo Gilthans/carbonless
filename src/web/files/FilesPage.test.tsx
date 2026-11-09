@@ -841,7 +841,7 @@ describe("FilesPage", () => {
 			).toBeNull();
 		});
 
-		it("the bar floats over the page, out of the progress bar's sticky stack: opening it moves nothing", async () => {
+		it("the bar is out of the progress bar's sticky stack, a strip of its own: opening it leaves the stack as it was", async () => {
 			findPage(twoFiles());
 			const user = userEvent.setup();
 			await screen.findByRole("region", { name: "a.txt" });
@@ -850,16 +850,8 @@ describe("FilesPage", () => {
 			await user.keyboard("{Control>}f{/Control}");
 			const bar = await screen.findByTestId("find-bar");
 			expect(bar.closest("[data-page-bar]")).toBeNull();
-			const float = bar.closest("[data-find-float]");
-			expect(float).not.toBeNull();
-			// Desktop: fixed right under the sticky stack (the app header's
-			// row and the progress bar), over the diff; a phone's sticks at
-			// the top, in the page's flow.
-			expect(float).toHaveClass("sm:fixed", "sticky", "top-0");
-			expect(float).toHaveClass(
-				"sm:top-[calc(var(--app-header,0px)+var(--files-bar,0px))]",
-			);
-			// The sticky stack is as it was.
+			// Without App's slot it renders in place, a strip across the page.
+			expect(bar.closest("[data-find-float]")).not.toBeNull();
 			expect(stack.innerHTML).toBe(before);
 		});
 

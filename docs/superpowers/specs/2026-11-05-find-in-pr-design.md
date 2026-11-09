@@ -91,14 +91,24 @@ everything you said sounds correct".
   (owner's QA, 2026-11-07: "The search bar should 'hover' on top of the
   page, like the browser find. It should stick to the top always, so if I
   click the 'next' button its position should never change"): typing and
-  stepping never move it on screen. Desktop: `position: fixed`, out of the
-  page's flow and its sticky stack, so opening and closing never shift the
-  page either; top-right, 28rem wide, its top at the sticky stack's bottom
-  (`--app-header` + `--files-bar`: the header's stuck row and the progress
-  bar), over the diff like the browser's find; the progress bar's count
-  and spinner stay in view. Settings' popover is in the top layer, so it
-  opens over the bar. Phone: at the top, in the app header's place
-  (below). In the DOM it comes before the progress bar, as on screen.
+  stepping never move it on screen. It is a strip across the very top of
+  the page, above the app header, in the page's flow (App's slot,
+  `data-find-slot`, which Files changed's bar portals into: `FindSlot`),
+  `position: sticky; top: 0`. It pushes the page down by its own height,
+  so nothing is covered at the top; once scrolled it stays at the top and
+  the sticky stack sticks right under it: the stack's top
+  (`--app-header` on the root, `AppHeaderHeight`) is the bar's height
+  plus, on desktop, the header's stuck row. A step lands its hit below the
+  bar and the stack (`scrollUnderStack`), and focus scrolling clears them
+  (`scroll-padding-top`). Settings' popover is in the top layer.
+- **Desktop: the bar pushes the header down** (owner's QA, 2026-11-09: "on
+  desktop it shouldn't hide the the top bar buttons, it should push them
+  down"). The header, with Find in PR, Refresh and Settings, starts right
+  under the bar and sticks under it (`top` is the bar's height less its
+  last row's offset). The strip is full width, `surface` with a `line`
+  border, one row; its controls (28rem) sit at its right, within the
+  page's width, under where the header's buttons are. Closing puts the
+  header back at the top.
 - **Phone: the bar takes the app header's place, pushing the page down**
   (owner's QA, 2026-11-07: "While the search box is open on the phone, it
   should hide the top bar entirely. Closing it restores"; 2026-11-08: "I
@@ -106,25 +116,30 @@ everything you said sounds correct".
   ... perhaps the search should push the rest of the page down? so it
   should appear at the very top, but without hiding anything - just pushing
   it down?"). While it is open the header is out of the layout (`hidden`,
-  so it takes no room; its tabs, Refresh and Settings go with it) and the
-  bar is in the page's flow at the very top of Files changed (out of
-  main's padding), `position: sticky; top: 0`: the files bar, tree and
-  diffs follow right under it, nothing covered and no blank band. It is
-  just as tall as its two rows (the box at full width; the count, ↑, ↓
-  and ✕) and sticks at the top at any scroll, so stepping never moves it.
-  The stack's top (`--app-header` on Files changed's section) is the bar's
-  height, so the progress bar and a file's header stick right under it
-  and a step lands its hit below both. Scrolled down, opening and closing
-  keep the line being read where it was on screen: App notes the element
-  mid-window before the swap and scrolls by however far it moved; at the
-  top of the page the swap shows (the bar replaces the header there).
+  so it takes no room; its tabs, Refresh and Settings go with it) and
+  main's top padding goes, so the files bar, tree and diffs follow right
+  under the bar, nothing covered and no blank band. The bar is just as
+  tall as its two rows (the box at full width; the count, ↑, ↓ and ✕).
   The header leaves only once the bar is on screen (`findFloat`): while
   Files changed's review is still read, or if the read failed, the header,
   its tabs and its Find in PR button stay, so there is always a way out.
-  Focus scrolling clears the bar too (`--page-sticky` adds the bar's height
-  over the header's row). Resizing between phone and desktop widths with
-  the bar open doesn't keep the reading place (accepted). Closing (✕,
-  Escape) shows the header again and puts focus on its Find in PR button.
+  Closing (✕, Escape) shows the header again and puts focus on its Find in
+  PR button.
+- **The soft keyboard doesn't take the bar away** (owner's QA, 2026-11-09:
+  "on phone, if I open search and scroll down a little it disappears. I'd
+  rather it stay until I close it"). Opening the bar focuses its box, so
+  the phone's keyboard comes up and the visual viewport is shorter than
+  the page's layout viewport; a scroll then pans the visual viewport down
+  first, and anything stuck at the layout viewport's top (`top: 0`) is
+  left above what's seen. While the bar shows, App follows
+  `visualViewport.offsetTop` (`--vv-top`): the slot sticks at that top and
+  the stack's top (`--app-header`) adds it, so the bar and the stack under
+  it stay at the top of what's seen.
+- **Opening and closing keep the reading place.** Scrolled down, App notes
+  the element mid-window before the swap and scrolls by however far it
+  moved (`readingPlace.ts`), on desktop and phone; at the top of the page
+  the swap shows. Resizing between phone and desktop widths with the bar
+  open doesn't keep the reading place (accepted).
 - **The term lives only while the bar is open on this page** (owner's QA:
   "Don't store the search term. Leaving the page or doing almost anything
   should clear the search box"). Closing clears it. Leaving Files changed
@@ -409,8 +424,8 @@ Unit (Vitest):
 - The bar: count and spinner while a hunks query is held, "couldn't be
   searched" on a failed batch, Retry, "0 of 0", closing clears the term,
   leaving the page closes the bar, the header button on another page
-  navigates, the bar floats out of the sticky stack, a phone's header is
-  hidden while it is open.
+  navigates, the bar sits in App's slot above the header, out of the
+  progress bar's sticky stack, a phone's header is hidden while it is open.
 - Server: the batched route (limits, bad index, stale revision, binary files
   come back empty, the answer equals the single-file route's).
 - `theme.test.ts`: `find-mark` and `find-current` under every syntax color
@@ -419,8 +434,8 @@ Unit (Vitest):
 Playwright (desktop and phone projects):
 
 - Cmd+F / Ctrl+F opens the bar focused; typing a term shows "n of m" and
-  the marks, and the page does not scroll (the scroll position is the same
-  after typing); the first Enter moves on from the open file's first hit
+  the marks; opening keeps the line read in place and typing doesn't
+  scroll; the first Enter moves on from the open file's first hit
   when it is in view, or goes to it when it isn't; the next Enter steps
   into another file, which opens, with the row in view
   below the sticky stack and the current mark on the matched characters;

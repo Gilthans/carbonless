@@ -129,11 +129,13 @@ a code line, a file header's path or a tree name. Two utilities
 A hidden-character marker inside a hit is wrapped the same way. Inside a
 pair's word tint the hit is its own element, so its paint is on top.
 
-The bar itself floats (`fixed`) over the page, opaque `surface` with a
-`line` border and `shadow-header`: on desktop top-right, right under the
-sticky stack (header row and progress bar), over the diff; on a phone
-across the top, covering the hidden header's box, in two rows. Its
-controls never move while it is open.
+The bar itself is a strip across the very top of the page, above the app
+header, opaque `surface` with a `line` border and `shadow-header`, sticky
+at the top: it pushes the page down by its height and the sticky stack
+sticks under it. On desktop one row, its controls at the right, the header
+(its buttons too) right under it; on a phone two rows, in the header's
+place (the header is hidden while it shows). Its controls never move while
+it is open.
 
 ## File change kinds
 

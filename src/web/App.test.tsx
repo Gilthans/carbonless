@@ -577,17 +577,22 @@ describe("App", () => {
 		}
 	});
 
-	it("on a wide screen the open find bar leaves the app header as it is", async () => {
+	it("on a wide screen the open find bar goes in the slot above the app header, which stays", async () => {
 		findState.reset();
 		await filesPageLoaded();
 		const user = userEvent.setup();
 		renderApp({}, "/files");
 		const button = await screen.findByRole("button", { name: "Find in PR" });
 		await user.click(button);
-		await screen.findByTestId("find-bar");
+		const bar = await screen.findByTestId("find-bar");
 		const header = document.querySelector("[data-app-header]") as HTMLElement;
 		expect(header).toBeVisible();
 		expect(header).not.toHaveAttribute("hidden");
+		const slot = bar.closest("[data-find-slot]") as HTMLElement;
+		expect(slot).not.toBeNull();
+		expect(
+			slot.compareDocumentPosition(header) & Node.DOCUMENT_POSITION_FOLLOWING,
+		).toBeTruthy();
 		findState.reset();
 	});
 
