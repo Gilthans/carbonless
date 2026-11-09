@@ -558,7 +558,7 @@ question would be on someone else's behalf, or about a past moment.
   failed), is listed after the files in its own "Not in this comparison"
   group as its agent card (with its fate when known): never gone. An
   earlier patch set shows only those asked before the next one started,
-  as review threads. Placements are for the viewed snapshot (a moved base
+  as review threads, except those asked on its own commit (asked there). Placements are for the viewed snapshot (a moved base
   asks again), retried on failure, computed and never stored: no drag, no
   storage change. Bubbles count unresolved agent threads only.
 - **A question never waits on the agent to be sent.** Ask agent writes

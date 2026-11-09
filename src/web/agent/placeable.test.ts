@@ -166,6 +166,20 @@ describe("shownAgentPlaceables", () => {
 		).toEqual(["B", "L"]);
 	});
 
+	it("one asked on the viewed earlier patch set's own head after the cutoff stays (asked right there)", () => {
+		const here = {
+			...asked("HERE", 3, { commit: H2 }),
+			at: "2026-11-09T10:00:00Z",
+		};
+		const later = { ...asked("L", 4), at: "2026-11-09T10:00:00Z" };
+		const until = Date.parse("2026-11-08T00:00:00Z");
+		expect(
+			shownAgentPlaceables([here, later], H2, { placements: null, until }).map(
+				(p) => p.id,
+			),
+		).toEqual(["HERE"]);
+	});
+
 	it("resolved ones after the rest, each in its order: every group built from them follows", () => {
 		const r1 = { ...asked("R1", 1), resolved: true };
 		const a = asked("A", 2);

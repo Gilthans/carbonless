@@ -105,7 +105,7 @@ export const useAgentPlacing = () => useContext(AgentPlacingContext);
 /**
  * The agent threads Files changed shows in the viewed head: on an earlier
  * patch set only those asked before the next one started (as review
- * threads, threadsUntil: never traced backwards), each placed
+ * threads, threadsUntil: never traced backwards) or on its own head, each placed
  * (tracedAgentPlaceables), resolved ones after the rest so every group
  * built from them lists them last.
  */
@@ -116,7 +116,12 @@ export function shownAgentPlaceables(
 ): AgentPlaceable[] {
 	const { until } = placing;
 	const kept =
-		until === null ? threads : threads.filter((t) => Date.parse(t.at) < until);
+		until === null
+			? threads
+			: threads.filter(
+					// One asked on this very head stays where it was asked.
+					(t) => t.anchor.commit === snapshotHead || Date.parse(t.at) < until,
+				);
 	const shown = tracedAgentPlaceables(kept, snapshotHead, placing.placements);
 	return [
 		...shown.filter((p) => !p.thread.resolved),
