@@ -1,0 +1,9 @@
+// 42-block-3x1-match-second.ts before context line 1
+// 42-block-3x1-match-second.ts before context line 2
+// 42-block-3x1-match-second.ts before context line 3
+import { a } from './a';
+const port = Number(env.PORT ?? 8080);
+import { b } from './b';
+// 42-block-3x1-match-second.ts after context line 1
+// 42-block-3x1-match-second.ts after context line 2
+// 42-block-3x1-match-second.ts after context line 3

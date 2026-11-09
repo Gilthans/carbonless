@@ -33,7 +33,11 @@ export const TooltipLayer = createContext<Element | null>(null);
 /** How long the pointer rests on a trigger before its tooltip shows. */
 export const HOVER_DELAY_MS = 150;
 
-// Whether the last input was the keyboard or a touch (focus-visible's own
+/** Whether a `pointerType` is a tap (a finger or a pen), not a mouse. */
+export const isTap = (pointerType: string) =>
+	pointerType === "touch" || pointerType === "pen";
+
+// Whether the last input was the keyboard or a tap (focus-visible's own
 // heuristic, tracked here so it also holds where :focus-visible is missing).
 // Their focus keeps a tooltip open until blur; a mouse click's focus does not.
 let lastInputKeepsOpen = false;
@@ -42,6 +46,8 @@ if (typeof window !== "undefined") {
 	window.addEventListener(
 		"keydown",
 		(e) => {
+			// A key's click is the keyboard's, whatever pointer went before.
+			lastPointerType = "";
 			if (e.key !== "Escape") lastInputKeepsOpen = true;
 		},
 		true,
@@ -50,19 +56,29 @@ if (typeof window !== "undefined") {
 		"pointerdown",
 		(e) => {
 			lastPointerType = e.pointerType;
-			lastInputKeepsOpen = e.pointerType === "touch";
+			lastInputKeepsOpen = isTap(e.pointerType);
 		},
 		true,
 	);
-	// A mouse event after a touch is emulated; one with no pointer event
+	// A mouse event after a tap is emulated; one with no pointer event
 	// before it (old engines, test tools) is a plain click.
 	window.addEventListener(
 		"mousedown",
 		() => {
-			lastInputKeepsOpen = lastPointerType === "touch";
+			lastInputKeepsOpen = isTap(lastPointerType);
 		},
 		true,
 	);
+}
+
+/**
+ * The pointer behind a click: its own `pointerType` where the engine gives
+ * one, else the page's last pointerdown (anywhere: touch adjustment can move
+ * a tap's click off where it went down); "" after a key.
+ */
+export function clickPointer(e: { nativeEvent: Event }): string {
+	const own = (e.nativeEvent as Partial<PointerEvent>).pointerType;
+	return own || lastPointerType;
 }
 
 /** Whether the element has focus that should hold its tooltip open. */
@@ -97,6 +113,13 @@ export function Tooltip(props: {
 	lazy?: boolean;
 	/** Closes the tip whenever this changes (a toggle that just switched). */
 	dismissKey?: unknown;
+	/**
+	 * Shown whatever the pointer and focus do (a question waiting on its
+	 * answer). What would close it (Escape, a scroll that moves its trigger,
+	 * a resize) calls `onDismiss` instead.
+	 */
+	forceOpen?: boolean;
+	onDismiss?: () => void;
 	children: (trigger: TooltipTriggerProps) => ReactNode;
 }) {
 	const id = useId();
@@ -106,9 +129,14 @@ export function Tooltip(props: {
 	const tip = useRef<HTMLSpanElement>(null);
 	const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 	const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
+	const forced = props.forceOpen === true;
+	const shown = open || forced;
+	const dismiss = useRef(props.onDismiss);
+	dismiss.current = props.onDismiss;
 
+	// biome-ignore lint/correctness/useExhaustiveDependencies: placed again when forced open (its text changes then).
 	useLayoutEffect(() => {
-		if (!open) {
+		if (!shown) {
 			setPos(null);
 			return;
 		}
@@ -125,11 +153,14 @@ export function Tooltip(props: {
 		const top =
 			below + box.height > vh - MARGIN ? t.top - GAP - box.height : below;
 		setPos({ left, top: Math.max(MARGIN, top) });
-	}, [open]);
+	}, [shown, forced]);
 
 	useEffect(() => {
-		if (!open) return;
-		const close = () => setOpen(false);
+		if (!shown) return;
+		const close = () => {
+			setOpen(false);
+			if (forced) dismiss.current?.();
+		};
 		// A scroll closes it only once its trigger has moved: one on a sticky
 		// header stays put (focusing it can fire a scroll that moves nothing).
 		const at = trigger.current?.getBoundingClientRect();
@@ -167,7 +198,7 @@ export function Tooltip(props: {
 			window.removeEventListener("keydown", onKey);
 			observer.disconnect();
 		};
-	}, [open]);
+	}, [shown, forced]);
 
 	useEffect(() => () => clearTimeout(timer.current), []);
 
@@ -221,14 +252,14 @@ export function Tooltip(props: {
 				},
 			})}
 			{/* A lazy tooltip has no element while closed. */}
-			{(open || !props.lazy) &&
+			{(shown || !props.lazy) &&
 				createPortal(
 					<span
 						ref={tip}
 						id={id}
 						role="tooltip"
 						aria-hidden={props.describe === false ? true : undefined}
-						hidden={!open}
+						hidden={!shown}
 						style={{
 							left: pos?.left ?? 0,
 							top: pos?.top ?? 0,

@@ -5,7 +5,7 @@ import {
 	joinPieces,
 	type Piece,
 	renderInvisibles,
-} from "./invisibles";
+} from "./invisibleChars";
 import {
 	JOINING_SCRIPTS,
 	JOINING_TYPES,
@@ -166,6 +166,21 @@ describe("renderInvisibles", () => {
 		}
 	});
 
+	it("shows a BOM (U+FEFF) only while hidden characters show, wherever it is", () => {
+		const BOM = "\uFEFF";
+		expect(shown(`${BOM}import x;`, 4, false)).toBe("\\uFEFFimport x;");
+		expect(shown(`a${BOM}b`, 4, false)).toBe("a\\uFEFFb");
+		for (const text of [`${BOM}import x;`, `a${BOM}b`, `${BOM}${BOM}b`]) {
+			const pieces = renderInvisibles(text, 4, { newline: false, show: false });
+			expect(pieces.some((p) => p.kind === "escape")).toBe(false);
+			expect(joinPieces(pieces)).toBe(text);
+		}
+		// Tab stops count it as nothing.
+		expect(hidden(`${BOM}\tx`, 4, false)).toBe(`${BOM}____x`);
+		// Other zero widths still show while hidden characters are off.
+		expect(hidden("a\u200Bb", 4, false)).toBe("a\\u200Bb");
+	});
+
 	it("escapes unusual spaces and line separators", () => {
 		const spaces = [
 			0xa0, 0x2000, 0x2001, 0x2005, 0x200a, 0x202f, 0x205f, 0x3000, 0x2028,
@@ -218,6 +233,72 @@ describe("renderInvisibles", () => {
 		]) {
 			expect(shown(emoji, 4, false)).toBe(emoji);
 		}
+	});
+
+	describe("inside word marks (owner, 2026-11-04)", () => {
+		const inMarks = (
+			text: string,
+			marks: [number, number][],
+			show = true,
+			tabWidth = 4,
+		) =>
+			look(renderInvisibles(text, tabWidth, { newline: false, show, marks }));
+
+		it("escapes a kept selector or joiner that lies inside a mark", () => {
+			// Case 65's smile: a redundant VS16 after an emoji.
+			expect(inMarks('s = "😀\uFE0F";', [[7, 8]])).toBe('s = "😀\\uFE0F";');
+			// pets: a ZWJ that makes no known sequence.
+			expect(inMarks("🐶\u200D🐱", [[2, 3]])).toBe("🐶\\u200D🐱");
+			// The controls too: a family's joiners, a text heart's VS16.
+			expect(inMarks("👨\u200D👩\u200D👧", [[0, 8]])).toBe(
+				"👨\\u200D👩\\u200D👧",
+			);
+			expect(inMarks("❤\uFE0F", [[1, 2]])).toBe("❤\\uFE0F");
+			// A flag's tags.
+			const flag = "🏴\u{E0067}\u{E0062}\u{E0065}\u{E006E}\u{E0067}\u{E007F}";
+			expect(inMarks(flag, [[0, flag.length]])).toBe(
+				"🏴\\u{E0067}\\u{E0062}\\u{E0065}\\u{E006E}\\u{E0067}\\u{E007F}",
+			);
+		});
+
+		it("leaves emoji whole outside the marks, on the same line too", () => {
+			const text = "🐶\u200D🐱 😀\uFE0F";
+			// The mark is on the second emoji's VS16 only.
+			expect(inMarks(text, [[8, 9]])).toBe("🐶\u200D🐱 😀\\uFE0F");
+			expect(inMarks(text, [])).toBe(text);
+			// A mark next to (not on) the joiner.
+			expect(inMarks("🐶\u200D🐱", [[0, 2]])).toBe("🐶\u200D🐱");
+		});
+
+		it("keeps them whole with hidden characters off", () => {
+			expect(inMarks("🐶\u200D🐱", [[2, 3]], false)).toBe("🐶\u200D🐱");
+		});
+
+		it("names the escape and keeps the raw character", () => {
+			const pieces = renderInvisibles("😀\uFE0F", 4, {
+				newline: false,
+				marks: [[2, 3]],
+			});
+			expect(pieces[1]).toMatchObject({
+				kind: "escape",
+				raw: "\uFE0F",
+				start: 2,
+				label: "\\uFE0F",
+				name: "U+FE0F variation selector",
+				bidi: false,
+			});
+			expect(joinPieces(pieces)).toBe("😀\uFE0F");
+		});
+
+		it("puts a tab after the label on the next stop of what is on screen", () => {
+			// 😀 (2) + \uFE0F (6) = 8 columns: the tab takes 4 at width 4
+			// (at least 2 for its marker).
+			expect(inMarks("😀\uFE0F\tx", [[2, 3]])).toBe("😀\\uFE0F\\t__x");
+			// 🐶 (2) + \u200D (6) + 🐱 (2) = 10: the tab takes 2.
+			expect(inMarks("🐶\u200D🐱\tx", [[2, 3]])).toBe("🐶\\u200D🐱\\tx");
+			// Without the mark: the pair is one 2-column glyph, the tab takes 2.
+			expect(inMarks("🐶\u200D🐱\tx", [])).toBe("🐶\u200D🐱\\tx");
+		});
 	});
 
 	it("escapes selectors and joiners that aren't attached", () => {

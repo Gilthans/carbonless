@@ -3,6 +3,7 @@ import { act, renderHook } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 import {
 	ignoreWhitespace,
+	numberSetting,
 	showInvisibles,
 	sideBySide,
 	viewSetting,
@@ -119,5 +120,82 @@ describe("viewSetting", () => {
 		act(() => sideBySide.set(false));
 		expect(result.current).toBe(false);
 		expect(localStorage.getItem("crb.diff.sideBySide")).toBe("off");
+	});
+});
+
+describe("numberSetting", () => {
+	afterEach(() => localStorage.clear());
+
+	it("reads the default until set, then remembers the number", () => {
+		const s = numberSetting("crb.test.n", 288);
+		expect(s.key).toBe("crb.test.n");
+		expect(s.read()).toBe(288);
+		const { result } = renderHook(() => s.use());
+		expect(result.current).toBe(288);
+		act(() => s.set(320));
+		expect(result.current).toBe(320);
+		expect(localStorage.getItem("crb.test.n")).toBe("320");
+		// A fresh store (a reload) reads what was stored.
+		expect(numberSetting("crb.test.n", 288).read()).toBe(320);
+	});
+
+	it("reads junk as the default", () => {
+		for (const junk of ["", " ", "abc", "Infinity", "NaN", "12px", "null"]) {
+			localStorage.setItem("crb.test.junk", junk);
+			expect(numberSetting("crb.test.junk", 288).read(), junk).toBe(288);
+		}
+		localStorage.setItem("crb.test.junk", " 300 ");
+		expect(numberSetting("crb.test.junk", 288).read()).toBe(300);
+	});
+
+	it("clamps what it reads and what it stores", () => {
+		const clamp = (n: number) => Math.max(160, Math.round(n));
+		localStorage.setItem("crb.test.clamped", "12");
+		const s = numberSetting("crb.test.clamped", 288, clamp);
+		expect(s.read()).toBe(160);
+		const { result } = renderHook(() => s.use());
+		expect(result.current).toBe(160);
+		act(() => s.set(200.4));
+		expect(result.current).toBe(200);
+		expect(localStorage.getItem("crb.test.clamped")).toBe("200");
+		act(() => s.set(10));
+		expect(result.current).toBe(160);
+		expect(localStorage.getItem("crb.test.clamped")).toBe("160");
+	});
+
+	it("falls back to the default when storage is unavailable", () => {
+		const getItem = Storage.prototype.getItem;
+		const setItem = Storage.prototype.setItem;
+		Storage.prototype.getItem = () => {
+			throw new Error("blocked");
+		};
+		Storage.prototype.setItem = () => {
+			throw new Error("blocked");
+		};
+		try {
+			const s = numberSetting("crb.test.blocked", 288);
+			expect(s.read()).toBe(288);
+			const { result } = renderHook(() => s.use());
+			expect(() => act(() => s.set(300))).not.toThrow();
+			// The choice holds in memory for this page.
+			expect(result.current).toBe(300);
+		} finally {
+			Storage.prototype.getItem = getItem;
+			Storage.prototype.setItem = setItem;
+		}
+	});
+
+	it("tells subscribers inside set when the value changes", () => {
+		const s = numberSetting("crb.test.nsub", 288);
+		const seen: number[] = [];
+		const off = s.subscribe(() => seen.push(s.read()));
+		s.set(300);
+		s.set(300);
+		expect(seen).toEqual([300]);
+		off();
+		s.set(310);
+		expect(seen).toEqual([300]);
+		s.reset();
+		expect(s.read()).toBe(310);
 	});
 });

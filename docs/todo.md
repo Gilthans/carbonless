@@ -96,6 +96,57 @@ you were looking at.
 - The answer comes back next to the line it was asked about.
 - Keep track of open and answered questions across the review.
 
+First slice (review buddy, 2026-11-07; spec
+`docs/superpowers/specs/2026-11-04-review-buddy-design.md`): Ask agent on a
+selected span opens a private thread in the reviewer's own
+`agent/threads` ref; carbonless spawns the reviewer's ACP agent (Claude
+Code through `claude-agent-acp`, or any harness speaking ACP) per open
+review, in a shared-clone checkout of the head without `refs/crb`, answers
+waiting threads one at a time with streamed text and an activity line, and
+leaves the gate to the reviewer's harness (leash `open`). The setup modal
+configures it. Left, per the spec's "Later": stricter leash levels (a
+read-only allowlist, Claude session options, a `pre-push` hook in the
+clone), agent-opened threads, the MCP door for agents carbonless can't
+launch, remote ACP agents, suggesting a review comment from an agent
+thread, pushing agent threads to another device, standing instructions, an
+agent per thread or several agents, `crb doctor` reporting the agent,
+agent threads on Home.
+
+- Sandbox the agent. Run the adapter in an OS sandbox (bubblewrap on
+  Linux, sandbox-exec on macOS) that hides or makes read-only carbonless's
+  cache clone, config and state. Drop the checkout's `alternates` link to
+  the cache clone, so it becomes a standalone clone. If the sandbox can't
+  start, the agent doesn't start, and the status chip says why. Test that
+  a `git update-ref` from the agent fails. On the devbox `bwrap` is
+  installed, but `kernel.apparmor_restrict_unprivileged_userns = 1` may
+  block it; test that first.
+
+Follow-ups from the first slice's final review (2026-11-07):
+
+- A follow-up on a thread asked on an earlier head uses the current
+  snapshot's line numbers and today's merge base (M1/11b).
+- Stop cancels whatever turn runs, not the thread it was pressed on (M2).
+- When a permission request offers no `allow_once`, the fallback is
+  `allow_always` (M3).
+- A tab hidden 30 min or more mid-turn idles the session out, and the
+  question is asked again (M7).
+- An agent that ignores a cancel blocks the queue: SIGTERM it after a
+  grace period (11a).
+- `authorOf` never returns `pr_author` (11c).
+- GET `/api/config/agent` returns the env's values (11d).
+- An empty `claim.lock` races (13).
+- A leash value from a later version is rewritten to `open` on Save.
+- `snapshotHead` is read cache-only in `AgentOverviewRow`.
+- Edit the agent's env in the setup modal (owner, 2026-11-09). The Env box
+  is a read-only hint: `agent.env` can be set only by editing
+  `config.json` by hand, and the hint's `$(which claude)` is shell syntax
+  that is never expanded. Make it an editable `NAME=value` per line field
+  that shows what `config.json` has. A preset's `envHint` pre-fills it,
+  with the path resolved where the server can find it (e.g.
+  `CLAUDE_CODE_EXECUTABLE=/home/you/.local/bin/claude`). Check and Save
+  use the edited env. A `…TOKEN` value is masked when shown, since GET
+  `/api/config/agent` returning env values is follow-up 11d above.
+
 ## Future plans
 
 Not scheduled yet; after everything above.
@@ -149,7 +200,9 @@ Not scheduled yet; after everything above.
 
 ## Invisible characters: parked
 
-- ZWJ between emoji that aren't a known emoji sequence, and a redundant VS16, stay unescaped.
+- ZWJ between emoji that aren't a known emoji sequence, and a redundant VS16, stay unescaped
+  outside word marks (inside one they show as `\u200D` / `\uFE0F` labels, or warn with
+  hidden characters off): on a context line, an added file, or a line without a pair.
 - `rangeText` (copy) adds no line breaks at `<p>`, `<div>` or `<br>`, only between table rows.
 - Some UAX #11 wide ranges are missing from the tab-stop width table.
 - No keyboard path reaches the escape markers (their tooltips open on hover and tap only).
@@ -199,6 +252,15 @@ Not scheduled yet; after everything above.
   while refusals are listed.
 - On a merged PR, a LEFT thread's code shows GitHub's hunk.
 
+- Big changed files are slow (measured 2026-11-02 on master, not caused by
+  word marks): a 2,000-line changed file takes 3–7 s to open and 8–30 s of
+  main-thread CPU to switch unified/side by side. Virtualize the rows
+  (TanStack Virtual; the owner: "interesting", later).
+- Inline diff step 2 (owner, 2026-10-31): pair removed and added lines by
+  similarity, moving the rows ("github line matching is no good"), so
+  unequal blocks, shifted pairs, splits/joins get word marks
+  (`docs/superpowers/specs/2026-11-01-inline-diff-design.md`, non-goals).
+
 ## Housekeeping
 
 - `scripts/queue.mjs`: a SIGKILL to the queue's process group kills both
@@ -206,6 +268,13 @@ Not scheduled yet; after everything above.
   outside the queue with nobody reading it (measured; TERM, INT and HUP are
   handled). Run the child in its own group and kill it when the waiter dies,
   or hold the lock in the child.
+- `e2e/keepalive.spec.ts:367` ("a diff scrolled sideways…") failed once in a
+  full verify (2026-11-02, chromium): it sets `scrollLeft` right after
+  expanding and read back 0. Passed 20/20 in flake-check; find the race.
+- Two unit tests failed once each under heavy load (2026-11-04, load ~19 on
+  4 cores) and passed flake-check after: `highlight.test.ts` "colors code in
+  a known language" (10/10), and `wordDiff.test.ts`'s 100 ms CPU budget for
+  similar pairs (5/5; isolated runs take 51–89 ms, so little headroom).
 - Old agent worktrees under `.worktrees/` and stray processes (e.g. old
   `threads-c` instances on test-automation#99) pile up; prune them.
 

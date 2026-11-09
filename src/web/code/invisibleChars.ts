@@ -42,6 +42,11 @@ export type Piece =
 			label: string;
 			name: string;
 			bidi: boolean;
+			/**
+			 * Kept unescaped elsewhere (part of an emoji or a joining
+			 * script), escaped here because it lies inside a mark.
+			 */
+			kept?: true;
 	  }
 	/** The line ending: `label` is "" when invisibles are hidden. */
 	| { kind: "eol"; raw: "" | "\r"; start: number; label: string };
@@ -50,10 +55,21 @@ export interface RenderOptions {
 	/** A newline follows the line (false for the last line without one). */
 	newline?: boolean;
 	/**
-	 * Spaces, tab markers and line endings (Settings: "Show hidden characters"). Escapes show
-	 * either way: hiding them would hide content.
+	 * Spaces, tab markers, line endings and U+FEFF (Settings: "Show hidden
+	 * characters"): off, code looks as it does in an editor, and an editor
+	 * draws a BOM as nothing wherever it is (owner, 2026-11-08);
+	 * hiddenChange and hiddenLines flag a change made of one. Other escapes
+	 * show either way: hiding them would hide content.
 	 */
 	show?: boolean;
+	/**
+	 * A pair's word marks (UTF-16 `[from, to)`). While invisibles show, a
+	 * selector, joiner or tag kept unescaped (it draws nothing inside an
+	 * emoji or a script that needs it) that lies inside one is escaped
+	 * like any other invisible, so a change made of it shows (owner,
+	 * 2026-11-04). Outside the marks, emoji stay whole.
+	 */
+	marks?: readonly (readonly [from: number, to: number])[];
 }
 
 const BIDI = /^[\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]$/u;
@@ -62,6 +78,7 @@ const TAG = /^[\u{E0020}-\u{E007F}]$/u;
 const BLACK_FLAG = 0x1f3f4;
 const ZWJ = "\u200D";
 const ZWNJ = "\u200C";
+export const BOM = "\uFEFF";
 
 /**
  * Prints as nothing, as a blank that isn't a plain space, or not as itself:
@@ -406,6 +423,9 @@ export function renderInvisibles(
 	options: RenderOptions = {},
 ): Piece[] {
 	const { newline = true, show = true } = options;
+	const marks = show ? (options.marks ?? []) : [];
+	const marked = (from: number, to: number) =>
+		marks.some(([f, t]) => f <= from && to <= t);
 	const width = Number.isFinite(tabWidth)
 		? Math.min(32, Math.max(1, Math.round(tabWidth)))
 		: DEFAULT_TAB_WIDTH;
@@ -479,28 +499,35 @@ export function renderInvisibles(
 				column += 1;
 			}
 			last = 1;
-		} else if (
-			ch === "\r" ||
-			(INVISIBLE.test(ch) && !attached(chars, i, i <= flagEnd))
-		) {
-			const label = ch === "\r" ? "\\r" : escapeLabel(codePoint);
-			push({
-				kind: "escape",
-				raw: ch,
-				start: offset,
-				label,
-				name: describeCodePoint(codePoint),
-				bidi: BIDI.test(ch),
-			});
-			column += label.length;
-			last = label.length;
-		} else if (INVISIBLE.test(ch)) {
-			// A kept joiner, selector or tag draws nothing, but VS16 turns a
-			// one-column symbol into a two-column emoji.
-			if (ch === VS16 && last === 1) pushText(ch, 1);
-			else pushText(ch, 0);
-			if (ch === VS16) last = 2;
-			joined = ch === ZWJ;
+		} else if (ch === BOM && !show) {
+			// A byte order mark (or zero width no-break space): drawn as
+			// nothing, as an editor does, until hidden characters show.
+			pushText(ch, 0);
+		} else if (ch === "\r" || INVISIBLE.test(ch)) {
+			// Attached to what it modifies (an emoji, a joining script), it
+			// draws nothing and is kept, unless it lies inside a mark while
+			// invisibles show.
+			const glued = ch !== "\r" && attached(chars, i, i <= flagEnd);
+			if (glued && !marked(offset, offset + ch.length)) {
+				// VS16 turns a one-column symbol into a two-column emoji.
+				if (ch === VS16 && last === 1) pushText(ch, 1);
+				else pushText(ch, 0);
+				if (ch === VS16) last = 2;
+				joined = ch === ZWJ;
+			} else {
+				const label = ch === "\r" ? "\\r" : escapeLabel(codePoint);
+				push({
+					kind: "escape",
+					raw: ch,
+					start: offset,
+					label,
+					name: describeCodePoint(codePoint),
+					bidi: BIDI.test(ch),
+					...(glued ? { kept: true as const } : {}),
+				});
+				column += label.length;
+				last = label.length;
+			}
 		} else if (
 			is(MARK, ch) ||
 			(wasJoined && is(PICTOGRAPHIC, ch)) ||

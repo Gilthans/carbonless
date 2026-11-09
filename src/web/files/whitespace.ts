@@ -234,12 +234,34 @@ export function pairRun(
 	return rows;
 }
 
+/** A hunk's run and the rows the view shows for it. */
+export interface ViewRun {
+	key?: string;
+	lines: DiffLine[];
+	rows: DiffRow[];
+}
+
+/**
+ * A hunk's runs and each run's rows as the view shows them (HunkRows, and
+ * the word-marks fixture test, so the two can't drift): with "Ignore
+ * whitespace" on, a cluster's run is paired (pairRun, by the whole hunk's
+ * twins); otherwise, and for context runs, every line as it is.
+ */
+export function viewRuns(
+	lines: DiffLine[],
+	ignoreWhitespace: boolean,
+): ViewRun[] {
+	const twins = ignoreWhitespace ? matchHunk(lines) : null;
+	return runs(lines).map((run) => ({
+		...run,
+		rows:
+			twins && run.key !== undefined
+				? pairRun(run.lines, twins)
+				: run.lines.map((line): DiffRow => ({ kind: "line", line })),
+	}));
+}
+
 /** A whole hunk's rows, run by run (what the view shows, flattened). */
 export function pairHunk(lines: DiffLine[]): DiffRow[] {
-	const twins = matchHunk(lines);
-	return runs(lines).flatMap((run) =>
-		run.key === undefined
-			? run.lines.map((line): DiffRow => ({ kind: "line", line }))
-			: pairRun(run.lines, twins),
-	);
+	return viewRuns(lines, true).flatMap((run) => run.rows);
 }

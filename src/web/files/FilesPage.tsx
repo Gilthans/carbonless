@@ -11,7 +11,9 @@ import {
 	useRef,
 	useState,
 } from "react";
+import type { AgentThread } from "../../shared/agent";
 import type { ReviewThread } from "../../shared/types";
+import { agentThreadsQuery, useAgentOn } from "../agent/api";
 import { hunksQuery, overviewQuery, sessionQuery } from "../api";
 import { LabeledIcon } from "../overview/parts";
 import { useForgetPageScroll, usePageActive } from "../pageActive";
@@ -25,10 +27,11 @@ import { useThreads } from "../threads/useThreads";
 import { ErrorMessage } from "../ui";
 import { useMedia, WIDE } from "../useMedia";
 import { FilesVerdict } from "../verdict/FilesVerdict";
-import { ignoreWhitespace, sideBySide } from "../viewSettings";
+import { ignoreWhitespace, showInvisibles, sideBySide } from "../viewSettings";
 import type { DiffThreads } from "./DiffBody";
-import { FileDiff } from "./FileDiff";
+import { FileDiff, UNDO_ARM_MS } from "./FileDiff";
 import { FileTree } from "./FileTree";
+import { nextFile } from "./fileFinish";
 import { treeOrder } from "./fileOrder";
 import { filesPrefetchOrder } from "./filesPrefetch";
 import { foldsKey } from "./folderFold";
@@ -46,9 +49,11 @@ import {
 	restoreAnchor,
 	type ScrollAnchor,
 } from "./scrollAnchor";
+import { TreeColumn } from "./TreeResizer";
 import { threadsOnHead } from "./threadPlacement";
 
 const NO_THREADS: ReviewThread[] = [];
+const NO_AGENT_THREADS: AgentThread[] = [];
 
 import { type Unit, useUnit } from "./unit";
 import { STALE_MESSAGE, useReviewView, useSyncState } from "./useSetStates";
@@ -115,7 +120,7 @@ function FilesSheet(props: {
 						Close
 					</button>
 				</div>
-				<div className="min-h-0 flex-1 overflow-y-auto px-2 py-2">
+				<div className="min-h-0 flex-1 overflow-y-auto px-2 pb-2 [--tree-bg:var(--color-surface)]">
 					{props.children}
 				</div>
 			</div>
@@ -273,6 +278,38 @@ function FilesSkeleton() {
 const headerOf = (index: number) =>
 	document.querySelector<HTMLElement>(`#file-${index} > header`);
 
+/** At most this long after a move-on, the file it opened takes marks again. */
+const MOVE_ON_MAX_MS = 10_000;
+
+/** The gap kept above the verdict a finished review scrolls to. */
+const VERDICT_GAP = 12;
+
+/**
+ * What a move-on shows (`FilesPage`'s `finished`): the file it opened (or
+ * the verdict) rises into place, quickly; none with reduced motion.
+ * Resolves once it is in place.
+ */
+export const ARRIVE_MS = 200;
+async function arrive(el: HTMLElement): Promise<void> {
+	if (
+		typeof el.animate !== "function" ||
+		(typeof window.matchMedia === "function" &&
+			window.matchMedia("(prefers-reduced-motion: reduce)").matches)
+	) {
+		return;
+	}
+	el.dataset.arriving = "";
+	const animation = el.animate(
+		[
+			{ opacity: 0.3, transform: "translateY(2.5rem)" },
+			{ opacity: 1, transform: "none" },
+		],
+		{ duration: ARRIVE_MS, easing: "ease-out" },
+	);
+	await animation.finished.catch(() => {});
+	delete el.dataset.arriving;
+}
+
 /** How long "<path> isn't in this diff" stays. */
 export const MISSING_HINT_MS = 8000;
 
@@ -381,7 +418,7 @@ export function FilesPage() {
 		if (a && diffs.current) restoreAnchor(a, diffs.current);
 	}, [unit]);
 	// So does switching a view setting that lays the rows out again (side
-	// by side, ignore whitespace): the anchor is taken as the setting
+	// by side, ignore whitespace, hidden characters): the anchor is taken as the setting
 	// changes, before React re-renders, and the row found again by its
 	// numbers once the new rows are in.
 	const settingAnchor = useRef<ScrollAnchor | null>(null);
@@ -395,6 +432,7 @@ export function FilesPage() {
 		const unsubscribe = [
 			sideBySide.subscribe(capture),
 			ignoreWhitespace.subscribe(capture),
+			showInvisibles.subscribe(capture),
 		];
 		return () => {
 			for (const off of unsubscribe) off();
@@ -402,16 +440,25 @@ export function FilesPage() {
 	}, [appHeader, pageSticky]);
 	const split = sideBySide.use();
 	const ignoreWs = ignoreWhitespace.use();
+	const invisibles = showInvisibles.use();
 	// biome-ignore lint/correctness/useExhaustiveDependencies: runs after each setting switch.
 	useLayoutEffect(() => {
 		const a = settingAnchor.current;
 		settingAnchor.current = null;
 		if (a && diffs.current) restoreAnchor(a, diffs.current);
-	}, [split, ignoreWs]);
+	}, [split, ignoreWs, invisibles]);
+	/** The file just opened by a move-on, ignoring marks until `until`. */
+	const [movedOn, setMovedOn] = useState<{
+		key: string;
+		until: number;
+	} | null>(null);
 	/** The header to keep where it was on screen as files open and close. */
 	const anchor = useRef<{ index: number; top: number } | null>(null);
 	const sectionOf = (index: number) => document.getElementById(`file-${index}`);
 	const toggleFile = (index: number, expanded: boolean, auto = false) => {
+		// A file opened or closed here is no move-on's any more: its lines
+		// arriving later are the reviewer's own open, not unseen.
+		setMovedOn(null);
 		// Where the reader sees the header, stuck or not.
 		const header = headerOf(index);
 		anchor.current = header
@@ -456,23 +503,78 @@ export function FilesPage() {
 		const top = section.getBoundingClientRect().top + window.scrollY;
 		window.scrollTo({ top: top - appHeader - barHeight + 1 });
 	};
-	/** A file picked in the tree: open it alone and bring its header to the top. */
-	const select = (index: number) => {
+	/**
+	 * Opens the file alone and brings its header to the top, once the other
+	 * files have closed; `focus`: its toggle takes the focus.
+	 */
+	const openAlone = (index: number, focus: boolean, shown?: () => void) => {
 		setCurrent(index);
 		openInTree(index);
 		anchor.current = null;
 		setOpen(keyOf(index));
-		const fromSheet = sheetOpen;
-		if (fromSheet) setSheetOpen(false);
-		// Once the other files have closed (and the sheet has handed focus
-		// back to its button), scroll there, focusing the header after a sheet.
 		requestAnimationFrame(() => {
-			if (fromSheet) {
+			if (focus) {
 				headerOf(index)
-					?.querySelector("button")
+					?.querySelector<HTMLElement>("button[aria-expanded]")
 					?.focus({ preventScroll: true });
 			}
 			scrollTo(index);
+			shown?.();
+		});
+	};
+	/** A file picked in the tree: open it alone and bring its header to the top. */
+	const select = (index: number) => {
+		setMovedOn(null);
+		const fromSheet = sheetOpen;
+		if (fromSheet) setSheetOpen(false);
+		// After a sheet (once it has handed focus back to its button), the
+		// header takes the focus.
+		openAlone(index, fromSheet);
+	};
+	/** The verdict a move-on brought into view ignores clicks until then. */
+	const [verdictGuard, setVerdictGuard] = useState<number | undefined>();
+	/**
+	 * The reviewer's mark finished the open file: it closes and the next file
+	 * with something unreviewed (in the page's order, wrapping) opens at the
+	 * top, with the focus (the control used is gone), rising into place.
+	 * With none left it closes and the verdict at the end rises into view.
+	 */
+	const finished = (index: number) => {
+		const next = nextFile(files, index);
+		if (!next) {
+			// The verdict rises where the click landed: a double click's
+			// second click must not send a verdict (Approve posts at once).
+			const from = performance.now();
+			setVerdictGuard(from + MOVE_ON_MAX_MS);
+			const settle = () => {
+				const until = Math.min(
+					performance.now() + UNDO_ARM_MS,
+					from + MOVE_ON_MAX_MS,
+				);
+				setVerdictGuard((g) => (g === from + MOVE_ON_MAX_MS ? until : g));
+			};
+			toggleFile(index, false);
+			requestAnimationFrame(async () => {
+				const verdict = document.getElementById("files-verdict");
+				if (verdict) {
+					const top = verdict.getBoundingClientRect().top + window.scrollY;
+					window.scrollTo({ top: top - appHeader - barHeight - VERDICT_GAP });
+					await arrive(verdict);
+				}
+				settle();
+			});
+			return;
+		}
+		// It opens where the click landed: a double click's second click must
+		// not mark it unseen. Its marks wait until a moment after it is in
+		// place, risen (a long file can take a while to close).
+		const key = keyOf(next.index);
+		setMovedOn({ key, until: performance.now() + MOVE_ON_MAX_MS });
+		openAlone(next.index, true, async () => {
+			const section = sectionOf(next.index);
+			if (section) await arrive(section);
+			const until = performance.now() + UNDO_ARM_MS;
+			setMovedOn((m) => (m?.key === key ? { key, until } : m));
 		});
 	};
 
@@ -568,6 +670,21 @@ export function FilesPage() {
 		return byPath;
 	}, [threads]);
 
+	// The reviewer's agent threads (their own read, beside GitHub's): the
+	// tree's second dot; the diffs read them from this query's cache.
+	const agentThreads = useQuery({
+		...agentThreadsQuery,
+		enabled: useAgentOn(),
+	}).data?.threads;
+	const agentThreadsByPath = useMemo(() => {
+		const byPath = new Map<string, AgentThread[]>();
+		// On any head: one asked on an earlier head shows in its file's lead.
+		for (const t of agentThreads ?? []) {
+			byPath.set(t.anchor.path, [...(byPath.get(t.anchor.path) ?? []), t]);
+		}
+		return byPath;
+	}, [agentThreads]);
+
 	// The floating Files button makes way while a comment is being written
 	// (a box has focus) or one was refused: it would cover its buttons.
 	const writing = useWritingHere();
@@ -585,6 +702,7 @@ export function FilesPage() {
 			current={current}
 			onSelect={select}
 			threadsOf={(f) => threadsByPath.get(f.path) ?? NO_THREADS}
+			agentThreadsOf={(f) => agentThreadsByPath.get(f.path) ?? NO_AGENT_THREADS}
 			threadsLoading={threadsLoading}
 			foldKey={pr ? foldsKey(pr) : null}
 			revealSeq={reveal}
@@ -659,12 +777,9 @@ export function FilesPage() {
 								<FilesVerdict threads={allThreads} settled={firstOpenSettled} />
 							</>
 						) : (
-							<div className="mt-4 flex gap-4">
-								{wide && (
-									<aside className="sticky top-[calc(var(--app-header,0px)+var(--files-bar,0px)+1rem)] max-h-[calc(100dvh-var(--app-header,0px)-var(--files-bar,0px)-2rem)] w-72 shrink-0 self-start overflow-y-auto">
-										{tree}
-									</aside>
-								)}
+							<div className="mt-4 flex">
+								{/* The handle's 1rem is the gap to the diffs. */}
+								{wide && <TreeColumn tree={tree} />}
 								<div
 									ref={diffs}
 									// Room for the floating Files button, and for the save notices
@@ -687,6 +802,12 @@ export function FilesPage() {
 											onExpandedChange={(expanded, auto) =>
 												toggleFile(file.index, expanded, auto)
 											}
+											onFinished={() => finished(file.index)}
+											ignoreMarksUntil={
+												movedOn?.key === keyOf(file.index)
+													? movedOn.until
+													: undefined
+											}
 											otherOpen={openIndex !== null && openIndex !== file.index}
 											landing={
 												landing?.index === file.index ? landing : undefined
@@ -700,6 +821,7 @@ export function FilesPage() {
 									<FilesVerdict
 										threads={allThreads}
 										settled={firstOpenSettled}
+										ignoreClicksUntil={verdictGuard}
 									/>
 								</div>
 							</div>

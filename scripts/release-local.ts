@@ -116,8 +116,17 @@ export async function releaseLocal(
 		);
 	}
 	const from = join(opts.scratch, packed[0]);
+	// By its bare name, in its own dir: GNU tar (Git for Windows' comes first
+	// on PATH there) reads the colon of a drive (E:\...) as a remote host.
 	const build = parseBuild(
-		await must(io, "tar", ["-xzOf", from, "package/dist/build-info.json"]),
+		await must(
+			io,
+			"tar",
+			["-xzOf", packed[0], "package/dist/build-info.json"],
+			{
+				cwd: opts.scratch,
+			},
+		),
 	);
 	const out = resolve(opts.out);
 	mkdirSync(out, { recursive: true });

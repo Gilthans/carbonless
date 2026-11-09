@@ -2,7 +2,7 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ShortcutsProvider } from "../shortcuts";
-import { ignoreWhitespace, sideBySide } from "../viewSettings";
+import { ignoreWhitespace, showInvisibles, sideBySide } from "../viewSettings";
 import { useViewShortcuts, VIEW_KEYS } from "./viewShortcuts";
 
 function Uses() {
@@ -32,6 +32,7 @@ afterEach(() => {
 	localStorage.clear();
 	ignoreWhitespace.reset();
 	sideBySide.reset();
+	showInvisibles.reset();
 	window.history.replaceState(null, "", "/");
 });
 
@@ -42,7 +43,11 @@ describe("useViewShortcuts", () => {
 				<Uses />
 			</ShortcutsProvider>,
 		);
-		expect(VIEW_KEYS).toEqual({ ignoreWhitespace: "w", sideBySide: "s" });
+		expect(VIEW_KEYS).toEqual({
+			showInvisibles: "h",
+			ignoreWhitespace: "w",
+			sideBySide: "s",
+		});
 		press("w");
 		expect(ignoreWhitespace.read()).toBe(true);
 		press("w");
@@ -53,6 +58,19 @@ describe("useViewShortcuts", () => {
 		expect(sideBySide.read()).toBe(false);
 	});
 
+	it("h toggles Show hidden characters", () => {
+		render(
+			<ShortcutsProvider>
+				<Uses />
+			</ShortcutsProvider>,
+		);
+		expect(showInvisibles.read()).toBe(true);
+		press("h");
+		expect(showInvisibles.read()).toBe(false);
+		press("h");
+		expect(showInvisibles.read()).toBe(true);
+	});
+
 	it("does nothing while typing in a field", () => {
 		render(
 			<ShortcutsProvider>
@@ -61,8 +79,10 @@ describe("useViewShortcuts", () => {
 		);
 		press("w", screen.getByLabelText("field"));
 		press("s", screen.getByLabelText("field"));
+		press("h", screen.getByLabelText("field"));
 		expect(ignoreWhitespace.read()).toBe(false);
 		expect(sideBySide.read()).toBe(false);
+		expect(showInvisibles.read()).toBe(true);
 	});
 
 	it("does nothing on a phone", () => {
@@ -74,8 +94,10 @@ describe("useViewShortcuts", () => {
 		);
 		press("w");
 		press("s");
+		press("h");
 		expect(ignoreWhitespace.read()).toBe(false);
 		expect(sideBySide.read()).toBe(false);
+		expect(showInvisibles.read()).toBe(true);
 	});
 
 	it("is listed in the help under Files changed", () => {
@@ -92,6 +114,7 @@ describe("useViewShortcuts", () => {
 			li.querySelector("kbd")?.textContent,
 		]);
 		expect(rows).toEqual([
+			["Show hidden characters", "h"],
 			["Ignore whitespace", "w"],
 			["Side by side", "s"],
 		]);

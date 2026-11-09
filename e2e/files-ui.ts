@@ -81,6 +81,47 @@ export async function fileAction(section: Locator, name: string) {
 export const fileActionButton = (section: Locator, name: string) =>
 	section.getByRole("button", { name, exact: true });
 
+/**
+ * Waits until a file action takes clicks: right after it swaps in, after a
+ * move-on, or right after it asked, it ignores them a moment (UNDO_ARM_MS,
+ * FileDiff.tsx; its `data-clicks-from` says until when, and may move).
+ */
+export async function clicksReady(page: Page, button: Locator) {
+	await readyBy(page, button, "data-clicks-from");
+}
+
+/**
+ * Waits until a file a move-on opened takes marks (its boxes, cross-offs
+ * and file actions): its section's `data-marks-from` (FileDiff.tsx).
+ */
+export async function marksReady(page: Page, section: Locator) {
+	await readyBy(page, section, "data-marks-from");
+}
+
+async function readyBy(page: Page, el: Locator, attribute: string) {
+	await page.waitForFunction(
+		([node, name]) => performance.now() > Number(node?.getAttribute(name) ?? 0),
+		[await el.elementHandle(), attribute] as const,
+	);
+}
+
+/**
+ * A finished file's reset (Undo cross-off, Unmark reviewed): the first
+ * click asks, the second (once it takes clicks again) does it.
+ */
+export async function resetFile(page: Page, section: Locator, name: string) {
+	const button = fileActionButton(section, name);
+	await expect(button).toBeEnabled();
+	await clicksReady(page, button);
+	await button.click();
+	const armed = section.locator("button[data-armed]");
+	await expect(armed).toHaveAccessibleName(
+		/^Remove all .* markings from this file\?$/,
+	);
+	await clicksReady(page, armed);
+	await armed.click();
+}
+
 export const fileProgress = (section: Locator) =>
 	section.getByRole("progressbar", { name: "File progress" });
 
@@ -126,7 +167,7 @@ export const rowTop = async (row: Locator) =>
 
 /** Sets a Settings switch (by its label) and closes Settings again. */
 export async function setSwitch(page: Page, label: string, on: boolean) {
-	const gear = page.getByRole("button", { name: "Settings" });
+	const gear = page.getByRole("button", { name: "Settings", exact: true });
 	if ((await gear.getAttribute("aria-expanded")) !== "true") await gear.click();
 	const toggle = page.getByRole("switch", { name: label });
 	if ((await toggle.getAttribute("aria-checked")) !== String(on)) {
@@ -153,3 +194,23 @@ export async function expectNoPageOverflow(page: Page) {
 	}));
 	expect(scrollWidth).toBeLessThanOrEqual(clientWidth);
 }
+
+/**
+ * How tall the element's tap target is: the run of points through its
+ * centre that hit it (a hit area a pseudo-element extends counts, a box
+ * does not say). Principle 5 wants 40px.
+ */
+export const tapHeight = (el: Locator) =>
+	el.evaluate((node) => {
+		const r = node.getBoundingClientRect();
+		const x = r.left + r.width / 2;
+		const mid = r.top + r.height / 2;
+		const hits = (y: number) => node.contains(document.elementFromPoint(x, y));
+		let top = mid;
+		let bottom = mid;
+		if (!hits(mid)) return 0;
+		while (top > 0 && hits(top - 1)) top -= 1;
+		while (bottom < window.innerHeight && hits(bottom + 1)) bottom += 1;
+		// Both ends hit: the run is one longer than their distance.
+		return bottom - top + 1;
+	});

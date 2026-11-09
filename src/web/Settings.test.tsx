@@ -3,7 +3,7 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Settings } from "./Settings";
 import { ShortcutsProvider } from "./shortcuts";
-import { ignoreWhitespace, sideBySide } from "./viewSettings";
+import { ignoreWhitespace, showInvisibles, sideBySide } from "./viewSettings";
 
 /** A phone: no media query matches. */
 const phone = () =>
@@ -38,12 +38,13 @@ afterEach(() => {
 	localStorage.clear();
 	ignoreWhitespace.reset();
 	sideBySide.reset();
+	showInvisibles.reset();
 });
 
 describe("Settings", () => {
 	it("shows the shortcut key on the rows that have one, on a desktop", () => {
 		open();
-		expect(caps("Show hidden characters")).toEqual([]);
+		expect(caps("Show hidden characters")).toEqual(["h"]);
 		expect(caps("Ignore whitespace")).toEqual(["w"]);
 		expect(caps("Side by side")).toEqual(["s"]);
 		// The switch is still named by its label alone.
@@ -55,6 +56,7 @@ describe("Settings", () => {
 	it("shows no keys on a phone: there are no shortcuts there", () => {
 		phone();
 		open();
+		expect(caps("Show hidden characters")).toEqual([]);
 		expect(caps("Ignore whitespace")).toEqual([]);
 		expect(caps("Side by side")).toEqual([]);
 	});

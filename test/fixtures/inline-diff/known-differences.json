@@ -1,0 +1,76 @@
+[
+	{
+		"file": "inline/06-whitespace-inner-only.ts",
+		"pair": 0,
+		"ignoreWhitespace": false,
+		"ours": {
+			"old": [[18, 19], [20, 21]],
+			"new": [[11, 12], [14, 15]]
+		},
+		"reason": "Owner, 2026-11-04 (case 06): \"highlights the \\\"width\\\" token despite it not being changed (only whitespace changed)\". Shared words are aligned first, so only the changed spaces are marked; GitHub folds the unchanged `width` and spaces between the changed spaces into one mark. With Ignore whitespace on the pair is a `~` row on both."
+	},
+	{
+		"file": "inline/13-punctuation-only.ts",
+		"pair": 0,
+		"ours": {
+			"old": [[15, 16], [21, 22], [24, 25], [29, 30], [32, 33], [38, 39], [40, 41]],
+			"new": [[15, 16], [21, 22], [24, 25], [29, 30], [32, 33], [38, 39], [40, 41]]
+		},
+		"reason": "Owner, 2026-11-04 (case 13): \"I'd rather for the punctuation to be marked separately, instead of the entire token\". Each changed quote and the `;`/`,` is its own mark; GitHub folds each `', '` (quote, comma, space, quote) into one mark."
+	},
+	{
+		"file": "inline/21-completely-different.ts",
+		"pair": 0,
+		"ours": {
+			"old": [[0, 27], [28, 42], [44, 45]],
+			"new": [[0, 15], [16, 36], [38, 51]]
+		},
+		"reason": "Only the spaces between two changes are bridged (owner, 2026-11-04: \"Merge the spaces between two changes into one. That makes sense.\"); unchanged punctuation still keeps changes apart (owner, 2026-11-04, case 13: \"I'd rather for the punctuation to be marked separately, instead of the entire token\"): the unchanged `(` and `, ` split each line into three marks; GitHub folds the whole changed run into one mark."
+	},
+	{
+		"file": "inline/22-crlf-only.ts",
+		"pair": 0,
+		"ignoreWhitespace": false,
+		"ours": {
+			"old": [],
+			"new": [[35, 36]]
+		},
+		"reason": "Owner, 2026-11-04 (case 22): \"it's very confusing to see there's a diff despite having nothing visibly change. Also, when hidden characters are shown, the \\r is not highlighted - it should be.\" A trailing `\\r` only one line has is a changed token; GitHub shows the pair plain. With Ignore whitespace on the pair is a `~` row on both."
+	},
+	{
+		"file": "inline/23-crlf-and-change.ts",
+		"pair": 0,
+		"ours": {
+			"old": [[29, 33]],
+			"new": [[29, 34], [36, 37]]
+		},
+		"reason": "Owner, 2026-11-04 (case 22): a trailing `\\r` only one line has is a changed token and is marked; GitHub leaves it unmarked. The `text`/`input` mark is the same."
+	},
+	{
+		"file": "inline/41-block-2x2-second-different.ts",
+		"pair": 1,
+		"ours": {
+			"old": [[0, 5], [13, 32]],
+			"new": [[0, 17], [24, 32]]
+		},
+		"reason": "`height` stays unmarked (words first), and the space after `const` sits next to one change only, so it is not bridged (owner, 2026-11-04: \"Merge the spaces between two changes into one. That makes sense.\"); GitHub folds that space into its `const ` mark. The added line matches GitHub."
+	},
+	{
+		"file": "inline/46-block-5x5-odd-similar.ts",
+		"pair": 1,
+		"ours": {
+			"old": [[0, 12], [13, 17]],
+			"new": [[0, 15], [16, 27]]
+		},
+		"reason": "Nothing folds (owner, 2026-11-04, case 13: \"I'd rather for the punctuation to be marked separately, instead of the entire token\"): the unchanged spaces and punctuation (the shared `(`) between changed tokens stay unmarked, so a changed run is several marks; GitHub folds them into one mark."
+	},
+	{
+		"file": "inline/46-block-5x5-odd-similar.ts",
+		"pair": 3,
+		"ours": {
+			"old": [[0, 10], [11, 16]],
+			"new": [[0, 3], [4, 7], [8, 20]]
+		},
+		"reason": "Nothing folds (owner, 2026-11-04, case 13: \"I'd rather for the punctuation to be marked separately, instead of the entire token\"): the unchanged spaces and punctuation (the shared `(` and `)`) between changed tokens stay unmarked, so a changed run is several marks; GitHub folds them into one mark."
+	}
+]

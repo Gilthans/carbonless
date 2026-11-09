@@ -375,6 +375,56 @@ describe("color tokens", () => {
 		}
 	});
 
+	it("the agent tint reads and stays clear of the review colours", () => {
+		// Text on an agent message's wash, as on a person's.
+		for (const text of ["ink", "ink-soft", "muted", "faint", "link"]) {
+			expect(
+				contrast(token(text), token("agent")),
+				`${text} on agent`,
+			).toBeGreaterThanOrEqual(4.5);
+		}
+		// The sparkle and the bubble's count, on the wash and off it.
+		for (const bg of ["agent", "surface", "raised", "band", "overlay"]) {
+			expect(
+				contrast(token("agent-ink"), token(bg)),
+				`agent-ink on ${bg}`,
+			).toBeGreaterThanOrEqual(4.5);
+		}
+		// A tint, not a new surface.
+		const step = contrast(token("agent"), token("raised"));
+		expect(step, "agent vs raised").toBeGreaterThan(1.1);
+		expect(step, "agent vs raised").toBeLessThan(1.5);
+		// Never read as deleted/failing, added/passing, pending or done. The
+		// add wash is the one exception (17°): the agent bubble does sit on
+		// added rows, and is told apart from them by its agent-edge border,
+		// its agent-ink sparkle and count, not by its wash.
+		const conventions: [string, number][] = [
+			["del", 40],
+			["del-ink", 40],
+			["bad", 40],
+			["add-ink", 25],
+			["ok", 25],
+			["warn", 25],
+			["done", 25],
+			["violet", 25],
+		];
+		for (const c of ["agent", "agent-edge", "agent-ink"]) {
+			for (const [conv, floor] of conventions) {
+				expect(
+					hueGap(token(c), token(conv)),
+					`${c} hue vs ${conv}`,
+				).toBeGreaterThanOrEqual(floor);
+			}
+		}
+		// Not anyone's tint either.
+		for (const p of Object.keys(TOKENS).filter((n) =>
+			/^person-\d+(-edge)?$/.test(n),
+		)) {
+			expect(token(p), p).not.toBe(token("agent"));
+			expect(token(p), p).not.toBe(token("agent-edge"));
+		}
+	});
+
 	it("Home's rows, popovers and open box keep their text and icons readable", () => {
 		// The open box's list and the row popovers: overlay, the highlighted
 		// option pressed; marked title words (link), state icons, hints
@@ -650,6 +700,180 @@ describe("diff colors", () => {
 		expect(ag).toBeGreaterThan(ar);
 		expect(dr).toBeGreaterThan(dg);
 		expect(hueGap(tinted("add"), tinted("del"))).toBeGreaterThan(90);
+	});
+
+	/** Every color code is drawn in: the code, markers and signs, then each syntax color. */
+	const CODE_COLORS = [
+		["code-ink", token("code-ink")],
+		["faint", token("faint")],
+		["add-ink", token("add-ink")],
+		["del-ink", token("del-ink")],
+		...Object.entries(SYNTAX),
+	] as const;
+	/** No wash, a thread's or a landing's (mark-tint, accent/8), a pick's (line-picked, accent/10). */
+	const WASHES = [0, 0.08, 0.1] as const;
+	const washed = (bg: string, wash: number) =>
+		wash ? over(token("accent"), wash, bg) : bg;
+
+	it("word marks are the owner's brighter tints, never less readable than when chosen, and stay add/del", () => {
+		// The owner chose GitHub-like bright marks over 4.5:1 for every color
+		// (2026-11-02, after comparing four options): "(d) seems much less
+		// visible than (c). Let's go with (c) please". Some code colors fall
+		// below 4.5:1 on them (the faint dots and comments most). Each color's
+		// contrast on each mark, under each wash, is pinned at what it was
+		// then (rounded down): a change may raise it, never lower it.
+		// Order: CODE_COLORS.
+		const FLOORS: Record<string, Record<(typeof WASHES)[number], number[]>> = {
+			"add-word": {
+				0: [
+					6.4, 2.81, 5.34, 3.87, 6.4, 2.85, 3.87, 5.75, 4.13, 4.65, 4.01, 5.47,
+					4.03, 4.58,
+				],
+				0.08: [
+					5.77, 2.53, 4.81, 3.49, 5.77, 2.57, 3.49, 5.18, 3.73, 4.19, 3.62,
+					4.93, 3.64, 4.13,
+				],
+				0.1: [
+					5.59, 2.45, 4.66, 3.38, 5.59, 2.49, 3.38, 5.02, 3.61, 4.06, 3.51,
+					4.78, 3.52, 4,
+				],
+			},
+			"del-word": {
+				0: [
+					9.32, 4.09, 7.78, 5.64, 9.32, 4.16, 5.63, 8.37, 6.02, 6.77, 5.85,
+					7.97, 5.88, 6.67,
+				],
+				0.08: [
+					8.3, 3.64, 6.92, 5.02, 8.3, 3.7, 5.01, 7.45, 5.36, 6.03, 5.21, 7.1,
+					5.23, 5.94,
+				],
+				0.1: [
+					8.01, 3.51, 6.68, 4.85, 8.01, 3.57, 4.84, 7.2, 5.18, 5.82, 5.03, 6.85,
+					5.05, 5.73,
+				],
+			},
+			"add-word-done": {
+				0: [
+					7.94, 3.48, 6.62, 4.8, 7.94, 3.54, 4.8, 7.13, 5.13, 5.77, 4.98, 6.79,
+					5.01, 5.68,
+				],
+				0.08: [
+					7.04, 3.09, 5.88, 4.26, 7.04, 3.14, 4.26, 6.33, 4.55, 5.12, 4.42,
+					6.02, 4.44, 5.04,
+				],
+				0.1: [
+					6.8, 2.98, 5.67, 4.11, 6.8, 3.03, 4.11, 6.11, 4.39, 4.94, 4.27, 5.81,
+					4.29, 4.86,
+				],
+			},
+			"del-word-done": {
+				0: [
+					10.01, 4.39, 8.35, 6.06, 10.01, 4.46, 6.05, 8.99, 6.47, 7.28, 6.28,
+					8.56, 6.32, 7.17,
+				],
+				0.08: [
+					8.74, 3.84, 7.29, 5.29, 8.74, 3.9, 5.28, 7.85, 5.65, 6.35, 5.49, 7.48,
+					5.52, 6.26,
+				],
+				0.1: [
+					8.42, 3.69, 7.02, 5.09, 8.42, 3.75, 5.09, 7.56, 5.44, 6.12, 5.28, 7.2,
+					5.31, 6.02,
+				],
+			},
+		};
+		// A pair's changed tokens (CodeLine `words`): a stronger tint of the
+		// line's own color, on live and reviewed rows; a thread's, a
+		// landing's or a pick's wash shows over them (--wash).
+		const WORDS = [
+			["add-word", "add", "del"],
+			["del-word", "del", "add"],
+			["add-word-done", "add-done", "del-done"],
+			["del-word-done", "del-done", "add-done"],
+		] as const;
+		const dist = (a: string, b: string) =>
+			Math.hypot(...rgb(a).map((v, i) => v - (rgb(b)[i] ?? 0)));
+		for (const [word, own, other] of WORDS) {
+			for (const wash of WASHES) {
+				const back = washed(token(word), wash);
+				CODE_COLORS.forEach(([name, color], i) => {
+					expect(
+						contrast(color, back),
+						`${name} on ${word} under accent/${wash * 100}`,
+					).toBeGreaterThanOrEqual(FLOORS[word]?.[wash]?.[i] ?? 4.5);
+				});
+			}
+			// Its own kind's hue, and it stands out from its row.
+			expect(
+				dist(token(word), token(own)),
+				`${word} nearer ${own} than ${other}`,
+			).toBeLessThan(dist(token(word), token(other)));
+			expect(
+				dist(token(word), token(own)),
+				`${word} on ${own}`,
+			).toBeGreaterThan(12);
+			expect(
+				chroma(token(word)),
+				`${word} stronger than ${own}`,
+			).toBeGreaterThan(chroma(token(own)));
+		}
+	});
+
+	it("rows keep every code color at 4.5:1 under no wash, a thread's and a pick's", () => {
+		// Known gap, from before word marks: a pick's wash (accent/10) on an
+		// added row leaves the faint dots and comments just under 4.5:1.
+		// Pinned so it can't get worse.
+		const GAPS: Record<string, number> = {
+			"add 0.1 faint": 4.41,
+			"add 0.1 comment": 4.48,
+		};
+		for (const bg of CODE_BGS) {
+			for (const wash of WASHES) {
+				const back = washed(token(bg), wash);
+				for (const [name, color] of CODE_COLORS) {
+					expect(
+						contrast(color, back),
+						`${name} on ${bg} under accent/${wash * 100}`,
+					).toBeGreaterThanOrEqual(GAPS[`${bg} ${wash} ${name}`] ?? 4.5);
+				}
+			}
+		}
+	});
+
+	it("a thread's or a pick's wash shows over word marks", () => {
+		// The washes are inset shadows on the cells, painted under the cell's
+		// content: a word mark's background would hide them. Each wash names
+		// its color --wash (on the cells it washes) and paints with it, and a
+		// word mark layers --wash over its own tint.
+		const utility = (name: string) => {
+			const at = css.indexOf(`@utility ${name} {`);
+			expect(at, `@utility ${name}`).toBeGreaterThanOrEqual(0);
+			let depth = 0;
+			for (let i = css.indexOf("{", at); i < css.length; i++) {
+				if (css[i] === "{") depth++;
+				else if (css[i] === "}" && --depth === 0) return css.slice(at, i + 1);
+			}
+			throw new Error(`unclosed @utility ${name}`);
+		};
+		for (const name of [
+			"mark-tint",
+			"mark-tint-cell",
+			"thread-mark",
+			"thread-mark-cell",
+			"line-picked",
+			"line-picked-cell",
+		]) {
+			const body = utility(name);
+			// Every 100vmax wash shadow is var(--wash), and --wash is set.
+			expect(body, name).toMatch(/--wash:\s*color-mix\(/);
+			const washes = [...body.matchAll(/inset 0 0 0 100vmax\s+([^;,]+)/g)];
+			expect(washes.length, name).toBeGreaterThan(0);
+			for (const [, color] of washes)
+				expect(color?.trim(), name).toBe("var(--wash)");
+		}
+		expect(css).toMatch(/@property --wash \{[^}]*inherits: true/);
+		expect(css).toMatch(
+			/\[data-word\] \{[^}]*background-image: linear-gradient\(\s*var\(--wash\),\s*var\(--wash\)\s*\)/,
+		);
 	});
 
 	it("keeps added green and deleted red apart from each other", () => {

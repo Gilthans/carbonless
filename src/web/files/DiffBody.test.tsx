@@ -11,13 +11,22 @@ import {
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { AgentThread } from "../../shared/agent";
 import type {
 	ClusterView,
 	DiffLine,
 	FileHunks,
 	FileView,
 	ReviewThread,
+	SessionInfo,
 } from "../../shared/types";
+import { agentThreadsQuery } from "../agent/api";
+import {
+	openAgentComposer,
+	resetAgentComposers,
+} from "../agent/askAgentAction";
+import { sessionQuery } from "../api";
+import { rangeText } from "../code/Invisibles";
 import { openComposer, resetComposers } from "../threads/newThreads";
 import { ignoreWhitespace, showInvisibles, sideBySide } from "../viewSettings";
 import {
@@ -27,10 +36,16 @@ import {
 	LANDED_MS,
 	numberDigits,
 } from "./DiffBody";
+import { hiddenLines } from "./hiddenLines";
 import type { Landing } from "./landing";
 import { setPicks } from "./linePicks";
 import type { CodeSpan } from "./selectionActions";
 import { ThreadBubble } from "./ThreadBubble";
+
+vi.mock("./hiddenLines", async (original) => {
+	const real = await original<typeof import("./hiddenLines")>();
+	return { hiddenLines: vi.fn(real.hiddenLines) };
+});
 
 vi.mock("./highlight", () => ({
 	languageFor: () => null,
@@ -191,6 +206,10 @@ function setup(
 		lead?: FileLead;
 		/** Two files' tables in one tree (the same file twice). */
 		twice?: boolean;
+		/** The reviewer's agent threads, as FilesPage's read left them. */
+		agentThreads?: AgentThread[];
+		/** The session's head is known (before GitHub's threads are in). */
+		sessionHead?: string;
 	} = {},
 ) {
 	const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
@@ -220,14 +239,24 @@ function setup(
 	const queryClient = new QueryClient({
 		defaultOptions: { queries: { retry: false } },
 	});
+	if (opts.sessionHead) {
+		queryClient.setQueryData(sessionQuery.queryKey, {
+			snapshotHead: opts.sessionHead,
+		} as SessionInfo);
+	}
+	if (opts.agentThreads) {
+		queryClient.setQueryData(agentThreadsQuery.queryKey, {
+			threads: opts.agentThreads,
+		});
+	}
 	const onToggle = vi.fn();
 	const onCrossOff = vi.fn();
 	const threads: DiffThreads | undefined = opts.threads
 		? { readId: "r", snapshotHead: HEAD, threads: opts.threads }
 		: undefined;
-	const body = (
+	const bodyOf = (cs: ClusterView[]) => (
 		<DiffBody
-			file={file(opts.clusters ?? clusters)}
+			file={file(cs)}
 			revision="r1"
 			onToggle={onToggle}
 			onCrossOff={onCrossOff}
@@ -236,12 +265,15 @@ function setup(
 			lead={opts.lead}
 		/>
 	);
-	render(
+	const tree = (cs: ClusterView[]) => (
 		<QueryClientProvider client={queryClient}>
-			{body}
-			{opts.twice && body}
-		</QueryClientProvider>,
+			{bodyOf(cs)}
+			{opts.twice && bodyOf(cs)}
+		</QueryClientProvider>
 	);
+	const { rerender } = render(tree(opts.clusters ?? clusters));
+	/** The same tree with the clusters' new states (no remount). */
+	const restate = (cs: ClusterView[]) => rerender(tree(cs));
 	const rows = () =>
 		Array.from(
 			document.querySelectorAll<HTMLElement>('[data-testid="diff-line"]'),
@@ -265,6 +297,7 @@ function setup(
 		rows,
 		collapsed,
 		calls,
+		restate,
 		user: userEvent.setup(),
 	};
 }
@@ -1140,6 +1173,68 @@ describe("DiffBody side by side", () => {
 		expect(within(row).getAllByTestId("new-thread")).toHaveLength(2);
 	});
 
+	it.each([
+		["a desktop", false],
+		["a phone", true],
+	])(
+		"on %s, a selection over the table leaves every bubble's count out",
+		async (_, onPhone) => {
+			if (onPhone)
+				vi.stubGlobal(
+					"matchMedia",
+					(query: string) =>
+						({
+							matches: false,
+							media: query,
+							addEventListener: () => {},
+							removeEventListener: () => {},
+						}) as unknown as MediaQueryList,
+				);
+			const resolved = {
+				...thread("RIGHT", 5),
+				resolved: true,
+				commentCount: 2,
+			};
+			const many = { ...thread("RIGHT", 6), commentCount: 3 };
+			setup({
+				hunks: pairHunks(),
+				clusters: [pairCluster()],
+				threads: [resolved, many, thread("RIGHT", 6), thread("LEFT", 5)],
+				lead: {
+					bubble: (
+						<ThreadBubble
+							file
+							threads={[thread("RIGHT", 1)]}
+							open={false}
+							onToggle={() => {}}
+						/>
+					),
+					row: () => null,
+				},
+			});
+			await screen.findByText("new seven");
+			const bubbles = screen.getAllByTestId("thread-bubble");
+			expect(bubbles.length).toBeGreaterThanOrEqual(3);
+			for (const bubble of bubbles) expect(bubble).toHaveClass("select-none");
+			// From the table's start (the gap and the hunk header, with the
+			// file's bubble)
+			// over the pair rows (and, on a phone, the bubble rows under them).
+			const row = (n: number) =>
+				document.querySelector(
+					`[data-testid="diff-line"][data-new-no="${n}"]`,
+				) as HTMLElement;
+			const range = document.createRange();
+			range.setStartBefore(
+				row(5).closest("table")?.firstElementChild ?? row(5),
+			);
+			range.setEndAfter(row(7).nextElementSibling ?? row(7));
+			// No count, line number, sign, gap or header: the code only.
+			expect(rangeText(range)).toBe(
+				"line 4\tline 4\nold five\tnew five\nold six\tnew six\nnew seven",
+			);
+		},
+	);
+
 	describe("bubbles on a phone", () => {
 		const phone = () =>
 			vi.stubGlobal(
@@ -1973,4 +2068,477 @@ describe("number columns: as wide as the file's largest line number needs", () =
 			"pointer-coarse:w-[max(3rem,var(--num-w,3rem))]",
 		);
 	});
+});
+
+const agentThread = (
+	line: number,
+	more: Partial<AgentThread> = {},
+): AgentThread => ({
+	id: `A${line}`,
+	anchor: {
+		subject: "line",
+		path: PATH,
+		commit: HEAD,
+		side: "RIGHT",
+		line,
+		startSide: "RIGHT",
+		startLine: line,
+	},
+	openedBy: "human",
+	at: "2026-11-07T10:00:00Z",
+	messages: [
+		{ id: "m1", by: "human", at: "2026-11-07T10:00:00Z", text: "why?" },
+	],
+	resolved: false,
+	waiting: true,
+	...more,
+});
+
+describe("DiffBody: the agent's threads", () => {
+	beforeEach(() => {
+		// The describe above leaves its last table mounted.
+		cleanup();
+		showInvisibles.set(false);
+		window.scrollTo = vi.fn();
+	});
+	afterEach(() => {
+		cleanup();
+		resetAgentComposers();
+		vi.unstubAllGlobals();
+		localStorage.clear();
+		showInvisibles.reset();
+		sideBySide.reset();
+	});
+
+	it("puts an agent bubble beside the comment bubble, each with its own count and rows", async () => {
+		const { user } = setup({
+			threads: [thread("RIGHT", 10)],
+			agentThreads: [
+				agentThread(10),
+				agentThread(10, { id: "A10b", waiting: false }),
+			],
+		});
+		await screen.findByText("line 10");
+		const row = document.querySelector<HTMLElement>(
+			'[data-testid="diff-line"][data-new-no="10"]',
+		) as HTMLElement;
+		const cell = within(row).getByTestId("code");
+		// Room for both bubbles: never over the code.
+		expect(cell).toHaveClass("pr-24");
+		const comment = within(row).getByTestId("thread-bubble");
+		const agent = within(row).getByTestId("agent-bubble");
+		expect(comment).toHaveAccessibleName("1 comment on line 10");
+		expect(agent).toHaveAccessibleName("2 agent threads on line 10, 1 waiting");
+		expect(within(agent).getByTestId("agent-waiting-dot")).toBeTruthy();
+		await user.click(agent);
+		const opened = screen.getByTestId("agent-thread-row");
+		expect(row.nextElementSibling).toBe(opened);
+		expect(within(opened).getAllByTestId("agent-thread")).toHaveLength(2);
+		expect(screen.queryByTestId("thread-row")).toBeNull();
+		expect(agent).toHaveAttribute("aria-expanded", "true");
+		// Both open: the comments first, then the agent's.
+		await user.click(comment);
+		expect(row.nextElementSibling).toBe(screen.getByTestId("thread-row"));
+		expect(screen.getByTestId("thread-row").nextElementSibling).toBe(opened);
+		await user.click(agent);
+		expect(screen.queryByTestId("agent-thread-row")).toBeNull();
+	});
+
+	it("shows agent threads before GitHub's threads are in", async () => {
+		setup({ agentThreads: [agentThread(10)], sessionHead: HEAD });
+		// No DiffThreads: the agent's head comes from the session.
+		await screen.findByText("line 10");
+		expect(screen.getByTestId("agent-bubble")).toHaveAccessibleName(
+			"1 agent thread on line 10, 1 waiting",
+		);
+		expect(screen.queryByTestId("thread-bubble")).toBeNull();
+	});
+
+	it("opens an Ask agent composer under its span's last row, after the comment composers", async () => {
+		setup({ threads: [] });
+		await screen.findByText("line 10");
+		const span: CodeSpan = {
+			path: PATH,
+			commit: HEAD,
+			subject: "line",
+			startSide: "RIGHT",
+			startLine: 10,
+			side: "RIGHT",
+			line: 10,
+		};
+		act(() => {
+			openComposer(span);
+			openAgentComposer(span);
+		});
+		const row = document.querySelector<HTMLElement>(
+			'[data-testid="diff-line"][data-new-no="10"]',
+		) as HTMLElement;
+		const comments = row.nextElementSibling as HTMLElement;
+		expect(comments).toHaveAttribute("data-testid", "new-thread-row");
+		const asking = comments.nextElementSibling as HTMLElement;
+		expect(asking).toHaveAttribute("data-testid", "agent-composer-row");
+		expect(
+			within(asking).getByRole("textbox", { name: "Ask your agent" }),
+		).toHaveFocus();
+		expect(within(asking).getByTestId("agent-composer-ask")).toBeDisabled();
+		resetComposers();
+	});
+
+	it("side by side: the agent bubble sits in its side's cell", async () => {
+		sideBySide.set(true);
+		setup({ threads: [], agentThreads: [agentThread(8)] });
+		await screen.findAllByText("line 10");
+		const row = document.querySelector<HTMLElement>(
+			'[data-testid="diff-line"][data-new-no="8"]',
+		) as HTMLElement;
+		const right = row.querySelector('[data-testid="code"][data-side="RIGHT"]');
+		expect(
+			within(right as HTMLElement).getByTestId("agent-bubble"),
+		).toBeTruthy();
+	});
+});
+
+describe("DiffBody word marks", () => {
+	beforeEach(() => {
+		// The describe above leaves its last table mounted.
+		cleanup();
+		showInvisibles.set(false);
+		window.scrollTo = vi.fn();
+	});
+	afterEach(() => {
+		cleanup();
+		vi.unstubAllGlobals();
+		localStorage.clear();
+		showInvisibles.reset();
+		ignoreWhitespace.reset();
+		sideBySide.reset();
+	});
+
+	/** One hunk: context, then `dels` removed and `adds` added lines, then context. */
+	const block = (
+		dels: string[],
+		adds: string[],
+		keys: [string, string] = ["c", "c"],
+	): FileHunks => ({
+		newLineCount: 12,
+		hunks: [
+			{
+				oldStart: 1,
+				oldCount: dels.length + 2,
+				newStart: 1,
+				newCount: adds.length + 2,
+				lines: [
+					ctx(1, 1),
+					...dels.map((t, i) => del(2 + i, t, keys[0])),
+					...adds.map((t, i) => add(2 + i, t, keys[1])),
+					ctx(2 + dels.length, 2 + adds.length),
+				],
+			},
+		],
+	});
+	const words = (root: ParentNode = document) =>
+		Array.from(root.querySelectorAll<HTMLElement>("[data-word]"));
+	const marked = (root: ParentNode = document) =>
+		words(root).map((w) => [w.textContent, w.className]);
+	const cellOf = (side: "LEFT" | "RIGHT") =>
+		document.querySelector<HTMLElement>(
+			`[data-kind="pair"] td[data-testid="code"][data-side="${side}"]`,
+		) as HTMLElement;
+	/** Waits for a line's text in the diff (marks split it into elements). */
+	const shown = (text: string) =>
+		waitFor(() =>
+			expect(
+				Array.from(
+					document.querySelectorAll('td[data-testid="code"]'),
+					(td) => td.textContent ?? "",
+				).some((t) => t.includes(text)),
+			).toBe(true),
+		);
+	const rowOf = (kind: string) =>
+		document.querySelector<HTMLElement>(
+			`[data-testid="diff-line"][data-kind="${kind}"]`,
+		) as HTMLElement;
+	const RENAME = block(["const userCount = 1;"], ["const memberCount = 1;"]);
+
+	it("marks a renamed word on both lines of a pair, unified", async () => {
+		sideBySide.set(false);
+		setup({ hunks: RENAME, clusters: [cluster("c")] });
+		await shown("memberCount");
+		expect(marked(rowOf("del"))).toEqual([["userCount", "bg-del-word"]]);
+		expect(marked(rowOf("add"))).toEqual([["memberCount", "bg-add-word"]]);
+	});
+
+	it("marks each half of a side-by-side pair row with its own line's marks", async () => {
+		sideBySide.set(true);
+		setup({ hunks: RENAME, clusters: [cluster("c")] });
+		await shown("memberCount");
+		expect(marked(cellOf("LEFT"))).toEqual([["userCount", "bg-del-word"]]);
+		expect(marked(cellOf("RIGHT"))).toEqual([["memberCount", "bg-add-word"]]);
+	});
+
+	it("pairs a block whose removed and added lines are in two clusters", async () => {
+		sideBySide.set(false);
+		setup({
+			hunks: block(["a = 1"], ["a = 2"], ["x", "y"]),
+			clusters: [cluster("x"), cluster("y")],
+		});
+		await shown("a = 2");
+		expect(marked()).toEqual([
+			["1", "bg-del-word"],
+			["2", "bg-add-word"],
+		]);
+	});
+
+	for (const view of ["unified", "side-by-side"] as const) {
+		it(`leaves an unequal block plain (${view})`, async () => {
+			sideBySide.set(view === "side-by-side");
+			setup({
+				hunks: block(["a = 1"], ["a = 2", "b = 3"]),
+				clusters: [cluster("c")],
+			});
+			await shown("b = 3");
+			expect(words()).toEqual([]);
+		});
+
+		it(`uses the reviewed tints on a reviewed pair, following its state in place (${view})`, async () => {
+			sideBySide.set(view === "side-by-side");
+			const { restate } = setup({
+				hunks: RENAME,
+				clusters: [cluster("c", { state: "reviewed" })],
+			});
+			await shown("memberCount");
+			expect(marked()).toEqual([
+				["userCount", "bg-del-word-done"],
+				["memberCount", "bg-add-word-done"],
+			]);
+			const before = words();
+			restate([cluster("c")]);
+			expect(marked()).toEqual([
+				["userCount", "bg-del-word"],
+				["memberCount", "bg-add-word"],
+			]);
+			// The same elements: no remount.
+			const same = () => {
+				const now = words();
+				expect(now).toHaveLength(before.length);
+				for (const [i, w] of now.entries()) expect(w).toBe(before[i]);
+			};
+			same();
+			restate([cluster("c", { state: "reviewed" })]);
+			same();
+			expect(marked().map(([, c]) => c)).toEqual([
+				"bg-del-word-done",
+				"bg-add-word-done",
+			]);
+		});
+
+		it(`warns on a line whose change doesn't show with hidden characters off; activating it turns them on (${view})`, async () => {
+			sideBySide.set(view === "side-by-side");
+			setup({
+				hunks: block(["let s = 1;"], ["let s = 1;   "]),
+				clusters: [cluster("c")],
+			});
+			await shown("let s = 1;");
+			const cell =
+				view === "unified"
+					? (rowOf("add").querySelector(
+							'td[data-testid="code"]',
+						) as HTMLElement)
+					: cellOf("RIGHT");
+			const warning = within(cell).getByRole("button", {
+				name: "Hidden characters changed. Turn on Show hidden characters (h)",
+			});
+			expect(
+				screen.getAllByRole("button", { name: /Hidden characters/ }),
+			).toHaveLength(1);
+			// In the sign's place: before the code, kept out of a copy.
+			expect(warning.nextElementSibling).toHaveAttribute("data-code");
+			expect(warning).toHaveClass("select-none");
+			// Not a tab stop: the keyboard has h.
+			expect(warning).toHaveAttribute("tabindex", "-1");
+			expect(cell.querySelector("[data-code]")?.textContent).toBe(
+				"let s = 1;   ",
+			);
+			warning.focus();
+			fireEvent.click(warning);
+			expect(showInvisibles.read()).toBe(true);
+			// Focus stays on the line, not lost to the page.
+			expect(document.activeElement).not.toBe(document.body);
+			expect(cell.closest("tr")?.contains(document.activeElement)).toBe(true);
+			expect(
+				screen.queryByRole("button", { name: /Hidden characters/ }),
+			).toBeNull();
+			// The trailing spaces show now, tinted as the change.
+			expect(
+				words(cell)[0]?.querySelector('[data-inv="space"]'),
+			).toHaveAttribute("data-glyph", "···");
+		});
+
+		it(`a touch or pen tap on the warning only explains where the switch is; a mouse click turns it on (${view})`, async () => {
+			sideBySide.set(view === "side-by-side");
+			setup({
+				hunks: block(["let s = 1;"], ["let s = 1;   "]),
+				clusters: [cluster("c")],
+			});
+			await shown("let s = 1;");
+			const warning = () =>
+				screen.getByRole("button", { name: /^Hidden characters changed/ });
+			for (const pointerType of ["touch", "pen"]) {
+				fireEvent.pointerDown(warning(), { pointerType });
+				fireEvent.click(warning());
+				expect(showInvisibles.read()).toBe(false);
+				expect(document.activeElement).toBe(warning());
+				const tip = () =>
+					screen
+						.queryAllByRole("tooltip", { hidden: true })
+						.filter((t) => t.textContent?.startsWith("Hidden") && !t.hidden);
+				expect(tip().map((t) => t.textContent)).toEqual([
+					"Hidden characters changed. Turn on Show hidden characters in Settings",
+				]);
+				act(() => warning().blur());
+				expect(tip()).toEqual([]);
+			}
+			fireEvent.pointerDown(warning(), { pointerType: "mouse" });
+			fireEvent.click(warning());
+			expect(showInvisibles.read()).toBe(true);
+		});
+
+		it(`decides by the click's own input: a touch that went down elsewhere still only explains (${view})`, async () => {
+			sideBySide.set(view === "side-by-side");
+			setup({
+				hunks: block(["\tx = 1;"], ["    x = 1;"]),
+				clusters: [cluster("c")],
+			});
+			await shown("x = 1;");
+			const both = () =>
+				screen.getAllByRole("button", { name: /^Hidden characters changed/ });
+			expect(both()).toHaveLength(2);
+			const [a, b] = both() as [HTMLElement, HTMLElement];
+			// Down on the line's code (touch adjustment moves the click onto the ⚠).
+			const code = a.closest("td") as HTMLElement;
+			fireEvent.pointerDown(code, { pointerType: "touch" });
+			fireEvent.click(a);
+			expect(showInvisibles.read()).toBe(false);
+			// Down on one ⚠, the click on its neighbour.
+			fireEvent.pointerDown(a, { pointerType: "touch" });
+			fireEvent.click(b);
+			expect(showInvisibles.read()).toBe(false);
+			expect(document.activeElement).toBe(b);
+			// A key after the tap: Enter acts as itself (turns them on).
+			fireEvent.keyDown(b, { key: "Enter" });
+			fireEvent.click(b);
+			expect(showInvisibles.read()).toBe(true);
+		});
+
+		it(`after a tap, a mouse click turns them on (${view})`, async () => {
+			sideBySide.set(view === "side-by-side");
+			setup({
+				hunks: block(["let s = 1;"], ["let s = 1;   "]),
+				clusters: [cluster("c")],
+			});
+			await shown("let s = 1;");
+			const warning = () =>
+				screen.getByRole("button", { name: /^Hidden characters changed/ });
+			fireEvent.pointerDown(warning(), { pointerType: "touch" });
+			fireEvent.click(warning());
+			expect(showInvisibles.read()).toBe(false);
+			fireEvent.pointerDown(warning(), { pointerType: "mouse" });
+			fireEvent.click(warning());
+			expect(showInvisibles.read()).toBe(true);
+		});
+
+		it(`on a screen without hover its name says where the switch is (${view})`, async () => {
+			vi.stubGlobal(
+				"matchMedia",
+				(query: string) =>
+					({
+						matches: false,
+						media: query,
+						addEventListener: () => {},
+						removeEventListener: () => {},
+					}) as unknown as MediaQueryList,
+			);
+			sideBySide.set(view === "side-by-side");
+			setup({
+				hunks: block(["let s = 1;"], ["let s = 1;   "]),
+				clusters: [cluster("c")],
+			});
+			await shown("let s = 1;");
+			expect(
+				screen.getByRole("button", { name: /^Hidden characters changed/ }),
+			).toHaveAccessibleName(
+				"Hidden characters changed. Turn on Show hidden characters in Settings",
+			);
+		});
+
+		it(`doesn't look for hidden changes while hidden characters show (${view})`, async () => {
+			sideBySide.set(view === "side-by-side");
+			showInvisibles.set(true);
+			const spy = vi.mocked(hiddenLines);
+			spy.mockClear();
+			setup({
+				hunks: block(["let s = 1;"], ["let s = 1;   "]),
+				clusters: [cluster("c")],
+			});
+			await shown("let s = 1;");
+			expect(spy).not.toHaveBeenCalled();
+			act(() => showInvisibles.set(false));
+			expect(spy).toHaveBeenCalled();
+			expect(
+				screen.getAllByRole("button", { name: /Hidden characters/ }),
+			).toHaveLength(1);
+		});
+
+		it(`warns on both lines of a tab swapped for spaces of the same width, not on a visible change (${view})`, async () => {
+			sideBySide.set(view === "side-by-side");
+			setup({
+				hunks: block(
+					["\tx = 1;", "const userCount = 1;"],
+					["    x = 1;", "const memberCount = 1;"],
+				),
+				clusters: [cluster("c")],
+			});
+			await shown("memberCount");
+			const warnings = screen.getAllByRole("button", {
+				name: /Hidden characters changed/,
+			});
+			expect(warnings.map((w) => w.closest("td")?.textContent)).toEqual(
+				view === "unified"
+					? [
+							expect.stringContaining("\tx = 1;"),
+							expect.stringContaining("    x = 1;"),
+						]
+					: [
+							expect.stringContaining("\tx = 1;"),
+							expect.stringContaining("    x = 1;"),
+						],
+			);
+			// Hidden characters on: no warnings.
+			act(() => showInvisibles.set(true));
+			expect(
+				screen.queryByRole("button", { name: /Hidden characters/ }),
+			).toBeNull();
+		});
+
+		it(`gives a whitespace-only row no marks with Ignore whitespace on, other pairs keep theirs (${view})`, async () => {
+			sideBySide.set(view === "side-by-side");
+			ignoreWhitespace.set(true);
+			setup();
+			await shown("const x = 2;");
+			// "mixed": x = 1 → 2 stays a pair; the re-indented y is a ~ row.
+			expect(marked()).toEqual([
+				["1", "bg-del-word"],
+				["2", "bg-add-word"],
+			]);
+			for (const row of document.querySelectorAll(
+				'[data-testid="diff-line"][data-kind="ws"], td[data-kind="ws"]',
+			)) {
+				expect(words(row)).toEqual([]);
+			}
+			act(() => ignoreWhitespace.set(false));
+			// Off: the re-indented pairs are marked too (tabs vs spaces): the
+			// "ws" cluster's three and y, plus line 3's lone trailing \r.
+			await waitFor(() => expect(words()).toHaveLength(11));
+		});
+	}
 });
