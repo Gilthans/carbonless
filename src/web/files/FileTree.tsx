@@ -5,7 +5,7 @@ import {
 	FoldIcon,
 	UnfoldIcon,
 } from "@primer/octicons-react";
-import { useId, useMemo } from "react";
+import { type ReactNode, useId, useMemo } from "react";
 import type { AgentThread } from "../../shared/agent";
 import type { FileView, ReviewThread } from "../../shared/types";
 import { agentBubbleLabel } from "../agent/AgentBubble";
@@ -21,7 +21,14 @@ import {
 } from "./fileOrder";
 import { type Folds, useFolds } from "./folderFold";
 import { Meter } from "./ProgressBar";
-import { ChangeCount, crossOffReasons, StatusIcon } from "./status";
+import {
+	ChangeCount,
+	clusterCount,
+	crossOffReasons,
+	fileProgress,
+	lineCount,
+	StatusIcon,
+} from "./status";
 import { bubbleLabel, waitingLabel, waitsOnYou } from "./ThreadBubble";
 import {
 	describeFileProgress,
@@ -33,6 +40,14 @@ import {
 
 const NONE = () => [];
 const NO_AGENT = (): AgentThread[] => [];
+
+/** The agent threads' dot: agent-tinted. */
+const AGENT_DOT = (
+	<span
+		aria-hidden
+		className="h-2 w-2 rounded-full border border-agent-edge bg-agent-ink"
+	/>
+);
 
 /**
  * Which file a row marks: the one opened (picked, linked or expanded; it
@@ -62,17 +77,105 @@ const markText = (mark: Mark, folder: boolean) =>
 		: mark);
 
 /** The row's dot, in accent: filled for the opened file, a ring for the one in view. */
-function MarkDot({ mark }: { mark: Mark }) {
+function MarkDot({ mark, legend }: { mark: Mark; legend?: boolean }) {
 	if (!mark) return null;
 	return (
 		<span
 			aria-hidden
-			data-testid="tree-dot"
+			data-testid={legend ? undefined : "tree-dot"}
 			data-mark={mark}
 			className={`h-1.5 w-1.5 shrink-0 rounded-full ${
 				mark === "opened" ? "bg-accent" : "border border-accent"
 			}`}
 		/>
+	);
+}
+
+/** A tooltip's title: the row's name, prominent, its full path below. */
+function TipTitle(props: { name: string; path: ReactNode }) {
+	return (
+		<>
+			<span
+				data-tooltip-title
+				className="block font-mono text-[0.8125rem] font-semibold text-ink [overflow-wrap:anywhere]"
+			>
+				{props.name}
+			</span>
+			<span className="block text-muted">{props.path}</span>
+		</>
+	);
+}
+
+/** A tooltip's legend: one line per indicator the row shows. */
+function TipLines({ children }: { children: ReactNode }) {
+	return (
+		<span
+			data-tooltip-lines
+			className="mt-1 grid grid-cols-[auto_minmax(0,1fr)] items-center gap-x-2 gap-y-0.5 border-t border-line pt-1"
+		>
+			{children}
+		</span>
+	);
+}
+
+/** One legend line: the row's own indicator, then what it means. */
+function TipLine(props: {
+	kind: string;
+	icon: ReactNode;
+	children: ReactNode;
+}) {
+	return (
+		<>
+			<span
+				data-tooltip-icon={props.kind}
+				className="flex items-center justify-center"
+			>
+				{props.icon}
+			</span>
+			<span
+				data-tooltip-line={props.kind}
+				className="min-w-0 [overflow-wrap:anywhere]"
+			>
+				{props.children}
+			</span>
+		</>
+	);
+}
+
+/** "src/a.ts", or a rename's "old → new". */
+function TipPath(props: { path: string; oldPath?: string }) {
+	return props.oldPath ? (
+		<>
+			<TooltipPath>{props.oldPath}</TooltipPath> →{" "}
+			<TooltipPath>{props.path}</TooltipPath>
+		</>
+	) : (
+		<TooltipPath>{props.path}</TooltipPath>
+	);
+}
+
+const STATE_TEXT = {
+	"not started": "Unreviewed",
+	"partly done": "Partly reviewed",
+	done: "Reviewed",
+	"crossed off": "Crossed off",
+} as const;
+
+const capital = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
+
+/** The legend's meter: the row's, ringed so its empty track shows on the tooltip. */
+function TipMeter(props: {
+	counts: Parameters<typeof Meter>[0]["counts"];
+	incomplete: boolean;
+}) {
+	return (
+		<span className="flex h-4 w-10 shrink-0 items-center">
+			<Meter
+				counts={props.counts}
+				incomplete={props.incomplete}
+				className="h-1.5 w-full ring-1 ring-edge"
+			/>
+		</span>
 	);
 }
 
@@ -114,19 +217,67 @@ function FileItem(props: {
 	const name = file.path.slice(file.path.lastIndexOf("/") + 1);
 	const p = fileUnitProgress(file, unit);
 	const numbers = describeFileProgress(file, unit);
-	const path = file.oldPath ? `${file.oldPath} → ${file.path}` : file.path;
 	return (
 		<li>
 			{/* The numbers are in the name already: the tooltip only shows them. */}
 			<Tooltip
 				content={
 					<>
-						{file.status === "renamed" ? "Renamed" : changeKindLabel(file)} ·{" "}
-						<TooltipPath>{path}</TooltipPath> · {numbers}
-						{talk && ` · ${talk}`}
-						{asked && ` · ${asked}`}
+						<TipTitle
+							name={name}
+							path={<TipPath path={file.path} oldPath={file.oldPath} />}
+						/>
+						<TipLines>
+							<TipLine kind="status" icon={<StatusIcon file={file} />}>
+								{STATE_TEXT[fileProgress(file)]}
+								{file.crossedOff &&
+									crossOffReasons(file).length > 0 &&
+									`: ${crossOffReasons(file).join(", ")}`}
+							</TipLine>
+							<TipLine
+								kind="change-kind"
+								icon={
+									<ChangeKindIcon
+										file={file}
+										tone={file.status === "renamed" ? "text-ok" : undefined}
+									/>
+								}
+							>
+								{changeKindLabel(file)}
+							</TipLine>
+							{mark && (
+								<TipLine kind="mark" icon={<MarkDot mark={mark} legend />}>
+									{capital(mark)}
+								</TipLine>
+							)}
+							{talk && (
+								<TipLine
+									kind="threads"
+									icon={<span className={`h-2 w-2 rounded-full ${dot}`} />}
+								>
+									{capital(talk)}
+								</TipLine>
+							)}
+							{asked && (
+								<TipLine kind="agent-threads" icon={AGENT_DOT}>
+									{capital(asked)}
+								</TipLine>
+							)}
+							<TipLine kind="changes" icon={<ChangeCount file={file} />}>
+								{capital(lineCount(file))} · {clusterCount(file)}
+							</TipLine>
+							<TipLine
+								kind="progress"
+								icon={
+									<TipMeter counts={p.counts} incomplete={p.clustersLeft > 0} />
+								}
+							>
+								{capital(numbers)}
+							</TipLine>
+						</TipLines>
 					</>
 				}
+				lazy
 				describe={false}
 			>
 				{(trigger) => (
@@ -187,10 +338,7 @@ function FileItem(props: {
 								data-testid="tree-agent-threads"
 								className="flex h-4 w-2 shrink-0 items-center"
 							>
-								<span
-									aria-hidden
-									className="h-2 w-2 rounded-full border border-agent-edge bg-agent-ink"
-								/>
+								{AGENT_DOT}
 								<span className="sr-only">{asked}</span>
 							</span>
 						)}
@@ -270,12 +418,45 @@ function FolderItem(props: Level & { folder: Folder }) {
 			<Tooltip
 				content={
 					<>
-						<TooltipPath>{folder.path}</TooltipPath>
-						{ghost ? " · moved away" : ` · ${numbers}`}
-						{waiting && ` · ${waiting}`}
-						{said && ` · ${said}`}
+						<TipTitle
+							name={folder.name}
+							path={<TooltipPath>{folder.path}</TooltipPath>}
+						/>
+						<TipLines>
+							{said && (
+								<TipLine kind="mark" icon={<MarkDot mark={mark} legend />}>
+									{capital(said)}
+								</TipLine>
+							)}
+							{waiting && (
+								<TipLine
+									kind="threads"
+									icon={<span className="h-2 w-2 rounded-full bg-warn" />}
+								>
+									{capital(waiting)}
+								</TipLine>
+							)}
+							{ghost ? (
+								<TipLine kind="moved" icon={MOVED_ICON}>
+									Moved away
+								</TipLine>
+							) : (
+								<>
+									<TipLine kind="changes" icon={<ChangeCount file={p} />}>
+										{capital(lineCount(p))} · {clusterCount(p)}
+									</TipLine>
+									<TipLine
+										kind="progress"
+										icon={<TipMeter counts={p.counts} incomplete={!p.done} />}
+									>
+										{capital(numbers)}
+									</TipLine>
+								</>
+							)}
+						</TipLines>
 					</>
 				}
+				lazy
 				describe={false}
 			>
 				{(trigger) => (
@@ -360,6 +541,15 @@ function FolderItem(props: Level & { folder: Folder }) {
 	);
 }
 
+/** A moved-away path's icon: the rename icon reversed, in red. */
+const MOVED_ICON = (
+	<DiffRenamedIcon
+		size={12}
+		aria-hidden
+		className="shrink-0 -scale-x-100 text-bad"
+	/>
+);
+
 /**
  * A renamed file's old path: where it was. Faded, the rename icon reversed
  * in red (like a deletion), no counts: it adds nothing to any progress.
@@ -372,16 +562,22 @@ function MovedItem(props: {
 }) {
 	const { file } = props;
 	const old = file.oldPath ?? "";
+	const oldName = old.slice(old.lastIndexOf("/") + 1);
 	const where = useId();
 	return (
 		<li>
 			<Tooltip
 				content={
 					<>
-						<TooltipPath>{old}</TooltipPath> →{" "}
-						<TooltipPath>{file.path}</TooltipPath>
+						<TipTitle name={oldName} path={<TooltipPath>{old}</TooltipPath>} />
+						<TipLines>
+							<TipLine kind="moved" icon={MOVED_ICON}>
+								Moved to <TooltipPath>{file.path}</TooltipPath>
+							</TipLine>
+						</TipLines>
 					</>
 				}
+				lazy
 				describe={false}
 			>
 				{(trigger) => (
@@ -395,16 +591,12 @@ function MovedItem(props: {
 						className="flex w-full items-center gap-1.5 rounded-md py-0.5 pr-1 pointer-coarse:min-h-10 text-left text-sm text-muted opacity-60 transition-colors hover:bg-overlay hover:opacity-100 focus-visible:outline-2 focus-visible:outline-accent motion-reduce:transition-none"
 					>
 						<span aria-hidden className="w-4 shrink-0" />
-						<DiffRenamedIcon
-							size={12}
-							aria-hidden
-							className="shrink-0 -scale-x-100 text-bad"
-						/>
+						{MOVED_ICON}
 						<span
 							data-testid="tree-name"
 							className="min-w-0 flex-1 truncate font-mono text-[0.8125rem]"
 						>
-							{old.slice(old.lastIndexOf("/") + 1)}
+							{oldName}
 						</span>
 						<span className="sr-only">, moved away</span>
 					</button>
