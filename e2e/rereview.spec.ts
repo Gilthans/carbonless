@@ -1044,7 +1044,9 @@ async function startNext(page: Page, n: number, path: string) {
 	await expect(
 		node(page, `ps${n}`).getByRole("button", { name: "viewing" }),
 	).toBeVisible(GIT_WAIT);
-	await section.getByRole("button", { name: "Collapse file" }).click();
+	// A mark that finished the file closed it already (the page moved on).
+	const collapse = section.getByRole("button", { name: "Collapse file" });
+	if (await collapse.isVisible()) await collapse.click();
 }
 
 test("a thread of a file deleted two patch sets earlier is under Not in this comparison on PS3 and PS4, in both views; gone once resolved, back once unresolved", async ({
@@ -1080,9 +1082,11 @@ test("a thread of a file deleted two patch sets earlier is under Not in this com
 	await openFiles(page, s.url);
 	// PS1: one mark starts it.
 	const coreS = await expand(page, "src/core.ts");
+	// Its one cluster: the mark finishes the file, which closes.
 	await boxes(coreS).first().click();
-	await expect(boxes(coreS).first()).toBeChecked();
-	await coreS.getByRole("button", { name: "Collapse file" }).click();
+	await expect(
+		coreS.getByRole("button", { name: "Expand file" }),
+	).toBeVisible();
 	// PS2 deletes the file; PS3 and PS4 change core.ts again.
 	p.moveHead({
 		message: "drop legacy",
