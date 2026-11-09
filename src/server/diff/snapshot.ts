@@ -36,10 +36,18 @@ function remember(oid: string, bytes: Buffer): void {
 const MAX_CACHED_HEADINGS = 8;
 
 /**
+ * How long a file's hunks wait for the snapshot's headings once their own
+ * text is in. The heading run starts with the snapshot, so it's normally
+ * done long before; a slow or stuck one never holds the hunks up for more
+ * (they come without headings).
+ */
+export const HEADING_WAIT_MS = 500;
+
+/**
  * Every file's `-U3` hunk headings, per snapshot (`repo`, base, head), least
  * recently used first: one git run per snapshot, never per file. A failed
- * run means no headings (they are a reading aid), and is tried again next
- * time.
+ * run resolves to null and stays cached: no headings for that snapshot
+ * (they are a reading aid), never a run per file open.
  */
 const headingRuns = new Map<string, Promise<GitHunkHeading[][] | null>>();
 
@@ -50,19 +58,24 @@ function snapshotHeadings(
 	files: HeadingFile[],
 ): Promise<GitHunkHeading[][] | null> {
 	const key = `${repo}\0${base}\0${head}`;
-	const known = headingRuns.get(key);
-	headingRuns.delete(key);
 	const run =
-		known ??
-		buildAllHeadings(repo, base, head, files).catch(() => {
-			if (headingRuns.get(key) === run) headingRuns.delete(key);
-			return null;
-		});
+		headingRuns.get(key) ??
+		buildAllHeadings(repo, base, head, files).catch(() => null);
+	headingRuns.delete(key);
 	headingRuns.set(key, run);
 	while (headingRuns.size > MAX_CACHED_HEADINGS) {
 		headingRuns.delete(headingRuns.keys().next().value as string);
 	}
 	return run;
+}
+
+/** `run`'s answer if it comes within `ms`, else null (it keeps going). */
+function within<T>(run: Promise<T | null>, ms: number): Promise<T | null> {
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	const late = new Promise<null>((resolve) => {
+		timer = setTimeout(() => resolve(null), ms);
+	});
+	return Promise.race([run, late]).finally(() => clearTimeout(timer));
 }
 
 const isZeroOid = (oid: string) => /^0+$/.test(oid);
@@ -238,13 +251,20 @@ export async function loadFileHunks(
 	repo: string,
 	snapshot: Snapshot,
 	index: number,
+	options: {
+		/** Without headings (callers that don't show them): never waits for them. */
+		headings?: boolean;
+		/** The longest wait for headings after the text is in. */
+		headingWaitMs?: number;
+	} = {},
 ): Promise<FileHunks> {
 	const file = fileAt(snapshot, index);
 	if (file.binary || file.submodule) return { hunks: [], newLineCount: 0 };
-	const [text, headings] = await Promise.all([
-		loadText(repo, snapshot, file),
-		snapshotHeadings(repo, snapshot.base, snapshot.head, snapshot.files),
-	]);
+	const wanted = options.headings !== false;
+	const headingRun = wanted
+		? snapshotHeadings(repo, snapshot.base, snapshot.head, snapshot.files)
+		: null;
+	const text = await loadText(repo, snapshot, file);
 	const hunks = buildDisplayHunks(
 		text.oldLines,
 		text.newLines,
@@ -252,8 +272,13 @@ export async function loadFileHunks(
 		3,
 		text.noNewlineAtEnd,
 	);
+	const headings = headingRun
+		? await within(headingRun, options.headingWaitMs ?? HEADING_WAIT_MS)
+		: null;
 	return {
-		hunks: withHeadings(hunks, headings?.[index] ?? [], text.encoding),
+		hunks: headings
+			? withHeadings(hunks, headings[index] ?? [], text.encoding)
+			: hunks,
 		newLineCount: text.newLines.length,
 	};
 }

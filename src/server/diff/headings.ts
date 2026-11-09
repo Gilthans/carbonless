@@ -1,5 +1,5 @@
-import { randomUUID } from "node:crypto";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import { access, mkdir, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { DisplayHunk } from "../../shared/types.js";
 import { runGitBuffer } from "../git.js";
@@ -19,6 +19,11 @@ import type { TextEncoding } from "./text.js";
  * old file and the hunk's old start line. carbonless takes them from git
  * itself: one `git diff -U3` per snapshot with the same options as the
  * clusters' `-U0` run, its hunks keyed by old start.
+ *
+ * Like any git run carbonless makes, it keeps the reviewer's own git config:
+ * a `diff.<driver>.xfuncname` there overrides the built-in rule (and so may
+ * differ from GitHub). A repo `.gitattributes` that marks a file `-diff` or
+ * `binary` makes git print it as binary here: that file gets no headings.
  */
 
 /**
@@ -54,30 +59,38 @@ export const FUNCNAME_ATTRIBUTES = `${[
 	)
 	.join("\n")}\n`;
 
-let attributesFile: Promise<string> | undefined;
-
 /**
- * FUNCNAME_ATTRIBUTES as a file (in carbonless's cache: never in a
- * reviewer's repository), written once per process, atomically.
+ * FUNCNAME_ATTRIBUTES as a file in carbonless's cache (never in a reviewer's
+ * repository), named by its content: another carbonless version on this
+ * machine with another list writes its own file, never this one. Checked
+ * before every run (one stat) and written again, atomically, when missing
+ * (a cleared cache).
  */
-function funcnameAttributesFile(): Promise<string> {
-	attributesFile ??= (async () => {
-		const dir = cacheDir();
-		const path = join(dir, "funcname.gitattributes");
-		const current = await readFile(path, "utf8").catch(() => null);
-		if (current !== FUNCNAME_ATTRIBUTES) {
-			await mkdir(dir, { recursive: true });
-			const tmp = `${path}.${randomUUID()}`;
-			await writeFile(tmp, FUNCNAME_ATTRIBUTES);
-			await rename(tmp, path);
-		}
-		return path;
-	})().catch((error) => {
-		attributesFile = undefined;
-		throw error;
-	});
-	return attributesFile;
+export async function funcnameAttributesFile(): Promise<string> {
+	const hash = createHash("sha256")
+		.update(FUNCNAME_ATTRIBUTES)
+		.digest("hex")
+		.slice(0, 12);
+	const dir = cacheDir();
+	const path = join(dir, `funcname-${hash}.gitattributes`);
+	const there = await access(path).then(
+		() => true,
+		() => false,
+	);
+	if (!there) {
+		await mkdir(dir, { recursive: true });
+		const tmp = `${path}.${randomUUID()}`;
+		await writeFile(tmp, FUNCNAME_ATTRIBUTES);
+		await rename(tmp, path);
+	}
+	return path;
 }
+
+/** git before 2.40 has no `--attr-source`: learned from its refusal, once. */
+let attrSource = true;
+
+/** A heading run longer than this is given up (no headings). */
+const HEADING_RUN_TIMEOUT_MS = 120_000;
 
 /** A `-U3` hunk's old start (as git prints it) and its heading's bytes. */
 export interface GitHunkHeading {
@@ -134,7 +147,7 @@ export interface HeadingFile {
 /**
  * The `-U3` hunks and headings of every file in `files` (by index), from ONE
  * whole-diff run with the clusters' options. Attributes: the repo's own
- * `.gitattributes` at `head`, over FUNCNAME_ATTRIBUTES. A file git prints
+ * `.gitattributes` at `head` (git 2.40+), over FUNCNAME_ATTRIBUTES. A file git prints
  * no section for (or only a binary one) has none.
  */
 export async function buildAllHeadings(
@@ -144,16 +157,31 @@ export async function buildAllHeadings(
 	files: HeadingFile[],
 ): Promise<GitHunkHeading[][]> {
 	const attributes = await funcnameAttributesFile();
-	const patch = await runGitBuffer(repo, [
-		`--attr-source=${head}`,
-		"-c",
-		`core.attributesFile=${attributes}`,
-		...DIFF_ARGS,
-		"-U3",
-		base,
-		head,
-		"--",
-	]);
+	const run = (withAttrSource: boolean) =>
+		runGitBuffer(
+			repo,
+			[
+				...(withAttrSource ? [`--attr-source=${head}`] : []),
+				"-c",
+				`core.attributesFile=${attributes}`,
+				...DIFF_ARGS,
+				"-U3",
+				base,
+				head,
+				"--",
+			],
+			{ timeoutMs: HEADING_RUN_TIMEOUT_MS },
+		);
+	let patch: Buffer;
+	try {
+		patch = await run(attrSource);
+	} catch (error) {
+		// Older git: headings by carbonless's list alone (a bare clone has no
+		// worktree .gitattributes to read).
+		if (!attrSource || !/attr-source/.test(String(error))) throw error;
+		attrSource = false;
+		patch = await run(false);
+	}
 	const sections = splitPatch(patch);
 	return files.map((file) => {
 		if (file.binary || file.submodule) return [];
