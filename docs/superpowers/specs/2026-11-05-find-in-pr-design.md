@@ -118,8 +118,13 @@ everything you said sounds correct".
   keep the line being read where it was on screen: App notes the element
   mid-window before the swap and scrolls by however far it moved; at the
   top of the page the swap shows (the bar replaces the header there).
-  Closing (✕, Escape) shows the header again and puts focus on its Find in
-  PR button.
+  The header leaves only once the bar is on screen (`findFloat`): while
+  Files changed's review is still read, or if the read failed, the header,
+  its tabs and its Find in PR button stay, so there is always a way out.
+  Focus scrolling clears the bar too (`--page-sticky` adds the bar's height
+  over the header's row). Resizing between phone and desktop widths with
+  the bar open doesn't keep the reading place (accepted). Closing (✕,
+  Escape) shows the header again and puts focus on its Find in PR button.
 - **The term lives only while the bar is open on this page** (owner's QA:
   "Don't store the search term. Leaving the page or doing almost anything
   should clear the search box"). Closing clears it. Leaving Files changed

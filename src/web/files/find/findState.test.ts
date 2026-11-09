@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { act, renderHook } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { findState } from "./findState";
+import { findFloat, findState, useFindFloatShown } from "./findState";
 
 describe("findState", () => {
 	afterEach(() => findState.reset());
@@ -66,5 +66,19 @@ describe("findState", () => {
 		findState.setTerm("foo");
 		findState.reset();
 		expect(findState.get()).toEqual({ open: false, term: "", focusSeq: 0 });
+	});
+});
+
+describe("findFloat", () => {
+	it("is shown while a component marking it is mounted, and tells its listeners", () => {
+		const seen = vi.fn();
+		const stop = findFloat.subscribe(seen);
+		expect(findFloat.get()).toBe(false);
+		const { unmount } = renderHook(() => useFindFloatShown());
+		expect(findFloat.get()).toBe(true);
+		unmount();
+		expect(findFloat.get()).toBe(false);
+		expect(seen).toHaveBeenCalledTimes(2);
+		stop();
 	});
 });

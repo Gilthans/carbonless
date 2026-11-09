@@ -35,7 +35,7 @@ import { FileTree } from "./FileTree";
 import { treeOrder } from "./fileOrder";
 import { filesPrefetchOrder } from "./filesPrefetch";
 import { FindBar } from "./find/FindBar";
-import { findState } from "./find/findState";
+import { findState, useFindFloatShown } from "./find/findState";
 import { hitSeen } from "./find/hitSeen";
 import { useFind } from "./find/useFind";
 import { foldsKey } from "./folderFold";
@@ -379,7 +379,9 @@ export function FilesPage() {
 	// Keyboard focus scrolling keeps focused controls clear of the sticky
 	// stack (WCAG 2.4.11): the page's scroll-padding-top adds this to the app
 	// header's height (index.css).
-	const pageSticky = barHeight + openHeader;
+	// A phone's open find bar is the stack's top instead of the header's row.
+	const pageSticky =
+		barHeight + openHeader + (phoneFind ? appHeader - headerHeight : 0);
 	useLayoutEffect(() => {
 		if (!active) return;
 		const root = document.documentElement;
@@ -713,10 +715,7 @@ export function FilesPage() {
 							// down by its own height, and sticks at the top, the
 							// stack's top (--app-header above). Before the progress bar
 							// in the DOM, as on screen.
-							<div
-								data-find-float
-								className="sticky top-0 z-[35] -mx-3 -mt-4 border-b border-line bg-surface shadow-header sm:fixed sm:inset-x-auto sm:top-[calc(var(--app-header,0px)+var(--files-bar,0px))] sm:right-4 sm:mx-0 sm:mt-0 sm:w-[28rem] sm:max-w-[calc(100vw-2rem)] sm:rounded-b-lg sm:border-x"
-							>
+							<FindFloat className="sticky top-0 z-[35] -mx-3 -mt-4 border-b border-line bg-surface shadow-header sm:fixed sm:inset-x-auto sm:top-[calc(var(--app-header,0px)+var(--files-bar,0px))] sm:right-4 sm:mx-0 sm:mt-0 sm:w-[28rem] sm:max-w-[calc(100vw-2rem)] sm:rounded-b-lg sm:border-x">
 								<FindBar
 									term={find.state.term}
 									onTerm={findState.setTerm}
@@ -731,7 +730,7 @@ export function FilesPage() {
 									matchCase={find.matchCase}
 									onMatchCase={find.setMatchCase}
 								/>
-							</div>
+							</FindFloat>
 						)}
 						<ProgressBar
 							ref={bar}
@@ -859,5 +858,24 @@ export function FilesPage() {
 				)}
 			</section>
 		</PeopleProvider>
+	);
+}
+
+/**
+ * The find bar's frame (`data-find-float`): while it is mounted, a phone's
+ * app header leaves the layout for it (findFloat).
+ */
+function FindFloat({
+	className,
+	children,
+}: {
+	className: string;
+	children: ReactNode;
+}) {
+	useFindFloatShown();
+	return (
+		<div data-find-float className={className}>
+			{children}
+		</div>
 	);
 }

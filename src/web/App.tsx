@@ -23,11 +23,16 @@ import {
 } from "./api";
 import { Logo, Mark, Wordmark } from "./brand/Brand";
 import { FindButton } from "./files/find/FindButton";
-import { findState } from "./files/find/findState";
+import { findFloat, findState } from "./files/find/findState";
 import { SyncNotices } from "./files/SyncNotices";
 import { HeadBanner } from "./HeadBanner";
 import { KeptPages, useActivePage } from "./pages";
 import { fullDate } from "./RelativeTime";
+import {
+	keepReadingPlace,
+	type ReadingPlace,
+	readingPlace,
+} from "./readingPlace";
 import { useReviewId } from "./reviewId";
 import { Settings } from "./Settings";
 import { SkeletonBar, Spinner } from "./Spinner";
@@ -177,19 +182,10 @@ function useStickyHeader(
 	return { ...size, stuck };
 }
 
-/** The line being read: the element mid-window and its top, unless at the page's top. */
-function readingPlace(): { el: Element; top: number } | null {
-	if (window.scrollY <= 0) return null;
-	const el = document.elementFromPoint(
-		window.innerWidth / 2,
-		window.innerHeight / 2,
-	);
-	if (!el || el.closest("[data-app-header], [data-find-float]")) return null;
-	return { el, top: el.getBoundingClientRect().top };
-}
-
 /**
- * On a phone the open find bar takes the app header's place: the header
+ * On a phone the open find bar takes the app header's place: once the bar
+ * shows (findFloat: Files changed renders it when its data is in, so while
+ * the review is read or failed the header and its button stay), the header
  * leaves the layout and the bar, at the top of Files changed, pushes the page
  * down by its own height. Scrolled down, opening and closing keep the line
  * being read where it was on screen (the page scrolls by however far the
@@ -197,17 +193,27 @@ function readingPlace(): { el: Element; top: number } | null {
  */
 function useYieldToFind(phone: boolean, wide: boolean): boolean {
 	const findOpen = findState.use().open;
-	const yielded = phone && wide && findOpen;
-	const place = useRef<{ el: Element; top: number } | null>(null);
+	const shown = findFloat.use();
+	const yielded = phone && wide && findOpen && shown;
+	const place = useRef<ReadingPlace | null>(null);
 	const state = useRef({ phone, wide, yielded });
 	state.current = { phone, wide, yielded };
-	// Noted when the bar opens or closes, before the page renders the swap.
+	// Noted when the bar opens or closes, before the page renders the swap;
+	// dropped by the next frame if no swap came (the bar waits for its data).
 	useEffect(
 		() =>
 			findState.subscribe(() => {
 				const { phone, wide, yielded } = state.current;
-				if (phone && wide && findState.get().open !== yielded)
-					place.current = readingPlace();
+				if (!phone || !wide || findState.get().open === yielded) {
+					place.current = null;
+					return;
+				}
+				const noted = readingPlace();
+				place.current = noted;
+				if (noted)
+					requestAnimationFrame(() => {
+						if (place.current === noted) place.current = null;
+					});
 			}),
 		[],
 	);
@@ -215,11 +221,7 @@ function useYieldToFind(phone: boolean, wide: boolean): boolean {
 	useLayoutEffect(() => {
 		const was = place.current;
 		place.current = null;
-		if (!was?.el.isConnected) return;
-		const box = was.el.getBoundingClientRect();
-		if (box.width === 0 && box.height === 0) return;
-		const by = box.top - was.top;
-		if (Math.abs(by) >= 0.5) window.scrollBy(0, by);
+		keepReadingPlace(was);
 	}, [yielded]);
 	return yielded;
 }

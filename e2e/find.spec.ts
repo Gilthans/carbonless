@@ -775,6 +775,19 @@ test("on a phone the open bar takes the header's place in the page, pushing it d
 		.poll(async () => ((await filesBarBox(page))?.y ?? 0) - opened.height)
 		.toBeGreaterThanOrEqual(-0.5);
 	expect(((await filesBarBox(page))?.y ?? 0) - opened.height).toBeLessThan(1);
+	// Focus scrolling clears the bar and the files bar under it (the box,
+	// focused, has none: index.css).
+	await box(page).evaluate((el) => (el as HTMLElement).blur());
+	const files2 = await filesBarBox(page);
+	await expect
+		.poll(() =>
+			page.evaluate(() =>
+				Number.parseFloat(
+					getComputedStyle(document.documentElement).scrollPaddingTop,
+				),
+			),
+		)
+		.toBeGreaterThanOrEqual((files2?.bottom ?? 0) - 1);
 	// The box takes the first row, full width; the buttons the second.
 	const boxAt = await box(page).boundingBox();
 	const nextAt = await bar(page)
@@ -793,6 +806,74 @@ test("on a phone the open bar takes the header's place in the page, pushing it d
 	await openBar(page, isMobile);
 	await expect(appHeader(page)).toBeHidden();
 	expect(await floatBox(page)).toEqual(opened);
+});
+
+/** The review read (Files changed's data): `/api/r/<id>/review`. */
+const reviewRead = (url: URL) => url.pathname.endsWith("/review");
+
+test("on a phone the header stays, tabs and all, until the bar shows: while the review is read, then swapped", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	test.skip(!isMobile, "the phone layout");
+	await phone(page, isMobile);
+	await pr(fixture);
+	const s = await startCrb();
+	const held: Route[] = [];
+	let holding = true;
+	await page.route(reviewRead, async (route) => {
+		if (holding) held.push(route);
+		else await route.continue();
+	});
+	await page.goto(s.url);
+	// From Overview: the button opens the bar and goes to Files changed.
+	await findButton(page).click();
+	await expect(page).toHaveURL(/\/files/);
+	await expect.poll(() => held.length).toBeGreaterThan(0);
+	await expect(bar(page)).toHaveCount(0);
+	await expect(appHeader(page)).toBeVisible();
+	await expect(
+		page.getByRole("navigation", { name: "PR pages" }),
+	).toBeVisible();
+	await expect(findButton(page)).toBeVisible();
+	holding = false;
+	for (const route of held.splice(0)) await route.continue();
+	await expect(bar(page)).toBeVisible();
+	await expect(appHeader(page)).toBeHidden();
+	expect((await floatBox(page)).y).toBe(0);
+});
+
+test("on a phone a failed review read keeps the header, and its button closes the find", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+	expectConsoleError,
+}) => {
+	test.skip(!isMobile, "the phone layout");
+	expectConsoleError(/500/);
+	await phone(page, isMobile);
+	await pr(fixture);
+	const s = await startCrb();
+	await page.route(reviewRead, (route) =>
+		route.fulfill({ status: 500, body: "the review read failed" }),
+	);
+	await page.goto(s.url);
+	await findButton(page).click();
+	await expect(page).toHaveURL(/\/files/);
+	await expect(
+		page.getByRole("region", { name: "Files changed" }).getByRole("alert"),
+	).toBeVisible();
+	await expect(bar(page)).toHaveCount(0);
+	await expect(appHeader(page)).toBeVisible();
+	await expect(
+		page.getByRole("navigation", { name: "PR pages" }),
+	).toBeVisible();
+	await expect(findButton(page)).toHaveAttribute("aria-expanded", "true");
+	await findButton(page).click();
+	await expect(findButton(page)).toHaveAttribute("aria-expanded", "false");
 });
 
 test("on a phone the bar stays at the top while scrolling and stepping, the files bar stuck right under it and each hit below both", async ({

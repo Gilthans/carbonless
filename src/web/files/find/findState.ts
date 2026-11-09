@@ -1,4 +1,4 @@
-import { useEffect, useSyncExternalStore } from "react";
+import { useEffect, useLayoutEffect, useSyncExternalStore } from "react";
 
 export interface FindState {
 	open: boolean;
@@ -70,4 +70,36 @@ export function useFindScope(onFiles: boolean, reviewId: string): void {
 	useEffect(() => {
 		return () => findState.close();
 	}, [reviewId]);
+}
+
+/**
+ * Whether the find bar is on screen (Files changed renders it once its data
+ * is in): a phone's app header leaves the layout only while it is, so a
+ * way out (the header's button, the bar's ✕) is always there.
+ */
+let floatShown = false;
+const floatListeners = new Set<() => void>();
+const subscribeFloat = (onChange: () => void) => {
+	floatListeners.add(onChange);
+	return () => {
+		floatListeners.delete(onChange);
+	};
+};
+export const findFloat = {
+	get: () => floatShown,
+	use: () => useSyncExternalStore(subscribeFloat, () => floatShown),
+	subscribe: subscribeFloat,
+	set(shown: boolean) {
+		if (shown === floatShown) return;
+		floatShown = shown;
+		for (const listener of floatListeners) listener();
+	},
+};
+
+/** Marks the find bar shown while the calling component is mounted. */
+export function useFindFloatShown(): void {
+	useLayoutEffect(() => {
+		findFloat.set(true);
+		return () => findFloat.set(false);
+	}, []);
 }
