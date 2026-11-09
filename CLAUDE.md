@@ -165,7 +165,9 @@ loading never looking empty, checking against a real PR):
   first on `PATH`.
 - `pnpm compare-threads <pr> [--as-of <iso>] [--out <dir>]` checks every
   thread's code pane against GitHub's REST comments (read-only); exits 1 on a mismatch.
-- Planned work and milestones live in `docs/todo.md`.
+- Planned work and milestones live in Linear (see "Tickets" below).
+  `docs/todo.md` is being retired: everything in it is already in Linear,
+  so add nothing new there.
 - Core design docs, kept current (update them in the same change that alters
   what they describe):
   - `docs/review-data-storage.md`: how review data is stored in git.
@@ -174,6 +176,45 @@ loading never looking empty, checking against a real PR):
   - `docs/git-methodology.md`: git-methodology independence, merged handling
     and the methodology test matrix.
   - `docs/product-rules.md`: product rules beyond the design principles.
+
+## Tickets (Linear)
+
+Work is tracked in the owner's Linear workspace `carbonless`, team `CAR`
+(issues `CAR-123`). The owner doesn't use Linear's UI: bots read and write it
+for them.
+
+- Use the `linear` MCP server only (an API key, set up for every session on
+  this machine). Never the claude.ai Linear connector, which is the owner's
+  other account. Scripts can use the same key (`~/.config/linear/api-key`)
+  against Linear's GraphQL API.
+- Structure: initiatives are themes (Improved Diff, Review Prioritization,
+  AI Conversation, Review Tools). Projects are releases (M2 now, M3 next,
+  scope set with the owner), and M2's project milestones are its ordered
+  steps. A parent issue is an epic. An issue is one change: one brief, one
+  branch, one PR. Issues not yet scheduled have no project.
+- Labels: every issue has exactly one label from the `Initiative` group
+  (tooling has none), at most one from `Area`, a type (Bug, Feature,
+  Improvement), and flags: `minor fix` (a small, low-risk change: one short PR,
+  no design call, nothing that could break the UI), `owner-decision`,
+  `edge-case` (needs a gallery PR), `flaky-test`, `from-review`, `mobile`,
+  `perf`.
+- **Ask the owner before opening a ticket.** Propose its title, initiative,
+  project and labels, and open it only after a yes. Updating existing tickets
+  needs no ask and is encouraged: sharpen the scope as it becomes clearer,
+  move the status as work progresses, comment what was found or decided.
+- Search before proposing (`list_issues` with a query, then by label or
+  project); extend an existing ticket rather than propose a near-duplicate.
+- Titles state the problem or outcome. Descriptions start with the human
+  part (the owner's words quoted and dated, then what's wanted). File paths,
+  line refs and logs go in a collapsible `+++ Agent notes` section.
+- Name branches after the issue (`car-123-short-name`) and write
+  `Fixes CAR-123` in the PR description (`Part of CAR-123` for one piece of
+  a stack): the GitHub integration then links the PR and moves the issue.
+- A review finding fixed in the same fix round is not a ticket. Only
+  leftovers are proposed, labelled `from-review`.
+- When a release finishes, the coordinator posts a project update (what
+  shipped, what's left, what was decided).
+- Specs stay in the repo or as artifacts; tickets link to them, not copy them.
 
 ## Versions and instances
 
