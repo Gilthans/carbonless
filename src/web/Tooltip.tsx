@@ -133,6 +133,13 @@ export function Tooltip(props: {
 	lazy?: boolean;
 	/** Closes the tip whenever this changes (a toggle that just switched). */
 	dismissKey?: unknown;
+	/**
+	 * Shown whatever the pointer and focus do (a question waiting on its
+	 * answer). What would close it (Escape, a scroll that moves its trigger,
+	 * a resize) calls `onDismiss` instead.
+	 */
+	forceOpen?: boolean;
+	onDismiss?: () => void;
 	children: (trigger: TooltipTriggerProps) => ReactNode;
 }) {
 	const id = useId();
@@ -142,9 +149,14 @@ export function Tooltip(props: {
 	const tip = useRef<HTMLSpanElement>(null);
 	const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 	const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
+	const forced = props.forceOpen === true;
+	const shown = open || forced;
+	const dismiss = useRef(props.onDismiss);
+	dismiss.current = props.onDismiss;
 
+	// biome-ignore lint/correctness/useExhaustiveDependencies: placed again when forced open (its text changes then).
 	useLayoutEffect(() => {
-		if (!open) {
+		if (!shown) {
 			setPos(null);
 			return;
 		}
@@ -152,11 +164,14 @@ export function Tooltip(props: {
 		const box = tip.current?.getBoundingClientRect();
 		if (!t || !box) return;
 		setPos(placeNear(t, box));
-	}, [open]);
+	}, [shown, forced]);
 
 	useEffect(() => {
-		if (!open) return;
-		const close = () => setOpen(false);
+		if (!shown) return;
+		const close = () => {
+			setOpen(false);
+			if (forced) dismiss.current?.();
+		};
 		// A scroll closes it only once its trigger has moved: one on a sticky
 		// header stays put (focusing it can fire a scroll that moves nothing).
 		const at = trigger.current?.getBoundingClientRect();
@@ -194,7 +209,7 @@ export function Tooltip(props: {
 			window.removeEventListener("keydown", onKey);
 			observer.disconnect();
 		};
-	}, [open]);
+	}, [shown, forced]);
 
 	useEffect(() => () => clearTimeout(timer.current), []);
 
@@ -248,14 +263,14 @@ export function Tooltip(props: {
 				},
 			})}
 			{/* A lazy tooltip has no element while closed. */}
-			{(open || !props.lazy) &&
+			{(shown || !props.lazy) &&
 				createPortal(
 					<span
 						ref={tip}
 						id={id}
 						role="tooltip"
 						aria-hidden={props.describe === false ? true : undefined}
-						hidden={!open}
+						hidden={!shown}
 						style={{
 							left: pos?.left ?? 0,
 							top: pos?.top ?? 0,
