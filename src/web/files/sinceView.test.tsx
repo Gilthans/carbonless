@@ -9,9 +9,10 @@ import type {
 	FileHunks,
 	FileView,
 	Progress,
+	ReviewThread,
 	SinceMark,
 } from "../../shared/types";
-import { DiffBody } from "./DiffBody";
+import { DiffBody, type DiffThreads } from "./DiffBody";
 import { GoneFile } from "./FileDiff";
 import { FileTree } from "./FileTree";
 import { ProgressBar } from "./ProgressBar";
@@ -303,6 +304,177 @@ describe("DiffBody in the since view", () => {
 			"Nothing to read since PS1 · 2 carried",
 		);
 		expect(screen.queryAllByTestId("diff-line")).toHaveLength(0);
+	});
+});
+
+describe("the since view's gaps", () => {
+	const HEAD = "h".repeat(40);
+	const threadOn = (line: number): ReviewThread => ({
+		id: `T${line}`,
+		loaded: true,
+		path: "src/a.ts",
+		line,
+		currentLine: line,
+		excerpt: "hidden remark",
+		html: "<p>hidden remark</p>",
+		body: "hidden remark",
+		createdAt: "2026-01-01T00:00:00Z",
+		lastActivityAt: "2026-01-01T00:00:00Z",
+		author: "rev",
+		avatarUrl: "",
+		participants: [],
+		bot: false,
+		commentCount: 1,
+		hasReply: false,
+		outdated: false,
+		resolved: false,
+		code: null,
+		anchor: {
+			path: "src/a.ts",
+			commit: HEAD,
+			side: "RIGHT",
+			line,
+			startSide: "RIGHT",
+			startLine: line,
+			at: "2026-01-01T00:00:00Z",
+		},
+		commit: HEAD,
+		subject: "line",
+		attention: [],
+		yourTurn: false,
+		viewerCan: { reply: false, resolve: false, unresolve: false },
+	});
+	/**
+	 * The server: the since view's context (`from=1`) has every line, PS1's
+	 * numbering on the old side (one behind); the full diff's skips them all
+	 * (they are the PR's own lines there), so a gap that asks it loads none.
+	 */
+	function renderGaps(hunks: FileHunks, threads?: ReviewThread[]) {
+		const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+			const url = new URL(String(input), "http://test");
+			const q = (k: string) => Number(url.searchParams.get(k));
+			const body =
+				url.pathname === "/api/files/0/hunks"
+					? hunks
+					: url.pathname === "/api/comments"
+						? { threads: [] }
+						: url.pathname === "/api/files/0/context"
+							? url.searchParams.get("from") === "1"
+								? Array.from(
+										{ length: q("newTo") - q("newFrom") + 1 },
+										(_, i) =>
+											line(
+												"context",
+												q("newFrom") + i - 1,
+												q("newFrom") + i,
+												`pr line ${q("newFrom") + i}`,
+											),
+									)
+								: []
+							: {};
+			return new Response(JSON.stringify(body), { status: 200 });
+		});
+		vi.stubGlobal("fetch", fetchMock);
+		const client = new QueryClient({
+			defaultOptions: { queries: { retry: false } },
+		});
+		const diffThreads: DiffThreads | undefined = threads
+			? { readId: "r", snapshotHead: HEAD, threads }
+			: undefined;
+		render(
+			<QueryClientProvider client={client}>
+				<DiffBody
+					file={fileOf([])}
+					revision="r2"
+					onToggle={vi.fn()}
+					onCrossOff={vi.fn()}
+					from={1}
+					kinds={new Map()}
+					threads={diffThreads}
+				/>
+			</QueryClientProvider>,
+		);
+		return fetchMock;
+	}
+	const oneHunk: FileHunks = {
+		newLineCount: 12,
+		hunks: [
+			{
+				oldStart: 5,
+				oldCount: 1,
+				newStart: 6,
+				newCount: 2,
+				lines: [
+					line("context", 5, 6, "six"),
+					line("add", undefined, 7, "seven", "k1"),
+				],
+			},
+		],
+		pieces: [],
+	};
+
+	it("a gap loads the interdiff's lines, numbered on both sides as the hunks are", async () => {
+		const fetchMock = renderGaps(oneHunk);
+		const user = userEvent.setup();
+		const gap = (await screen.findAllByTestId("gap-row"))[0] as HTMLElement;
+		expect(gap).toHaveTextContent("5 hidden lines");
+		await user.click(
+			within(gap).getByRole("button", { name: /Load 5 lines above/ }),
+		);
+		expect(await screen.findByText("pr line 2")).toBeInTheDocument();
+		const row = screen.getByText("pr line 2").closest("tr") as HTMLElement;
+		expect(row.dataset).toMatchObject({ oldNo: "1", newNo: "2" });
+		const asked = fetchMock.mock.calls
+			.map(([u]) => String(u))
+			.filter((u) => u.includes("/context"));
+		expect(asked).toEqual([
+			"/api/files/0/context?revision=r2&newFrom=1&newTo=5&from=1",
+		]);
+		expect(screen.getAllByTestId("gap-row")).toHaveLength(1);
+	});
+
+	it("a gap whose lines don't come back says so, with Retry (never 'N hidden lines' forever)", async () => {
+		const fetchMock = renderGaps(oneHunk);
+		// The server answers empty for this view's context.
+		fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+			const url = new URL(String(input), "http://test");
+			const body = url.pathname === "/api/files/0/hunks" ? oneHunk : [];
+			return new Response(JSON.stringify(body), { status: 200 });
+		});
+		const user = userEvent.setup();
+		const gap = (await screen.findAllByTestId("gap-row"))[0] as HTMLElement;
+		await user.click(
+			within(gap).getByRole("button", { name: /Load 5 lines above/ }),
+		);
+		const alert = await within(gap).findByRole("alert");
+		expect(alert).toHaveTextContent("Lines didn't load");
+		const before = fetchMock.mock.calls.length;
+		await user.click(within(alert).getByRole("button", { name: "Retry" }));
+		await vi.waitFor(() =>
+			expect(fetchMock.mock.calls.length).toBe(before + 1),
+		);
+		expect(await within(gap).findByRole("alert")).toBeInTheDocument();
+	});
+
+	it("a file the interdiff doesn't touch is one gap; a thread on a hidden line shows once it opens", async () => {
+		renderGaps({ hunks: [], newLineCount: 30, wholeGap: true }, [threadOn(25)]);
+		const user = userEvent.setup();
+		const gap = await screen.findByTestId("gap-row");
+		expect(gap).toHaveTextContent("30 hidden lines");
+		// Not "line not in this diff": its gap holds it.
+		expect(screen.queryByText(/line not in this diff/)).toBeNull();
+		await user.click(
+			within(gap).getByRole("button", {
+				name: "1 comment on hidden lines 1–30",
+			}),
+		);
+		expect(await screen.findByText("pr line 25")).toBeInTheDocument();
+		// The thread opens on its line.
+		const bubble = await screen.findByRole("button", {
+			name: "1 comment on line 25",
+		});
+		expect(bubble).toHaveAttribute("aria-expanded", "true");
+		expect(bubble.closest("tr")).toHaveTextContent("pr line 25");
 	});
 });
 

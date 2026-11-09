@@ -28,10 +28,12 @@ import type {
 } from "../shared/types.js";
 import { type AgentHost, reviewAgentHost } from "./agent/host.js";
 import { ensureClone, ensureCommit, fetchPr } from "./clone.js";
+import { contextLines } from "./diff/hunks.js";
 import {
 	buildSnapshot,
 	loadContext,
 	loadFileHunks,
+	loadNewText,
 	snapshotId,
 } from "./diff/snapshot.js";
 import { WriteRefusedError } from "./errors.js";
@@ -65,6 +67,7 @@ import { RereviewCache } from "./rereview/cache.js";
 import {
 	answerRereview,
 	type EarlierPatchset,
+	interdiffFileContext,
 	interdiffFileHunks,
 	rereviewKey,
 	type SincePatchset,
@@ -846,7 +849,52 @@ export class Session {
 		const states =
 			(await this.#progress()).statesByRevision.get(since.revision) ??
 			new Map();
-		return interdiffFileHunks(traced, snapshot, answer, index, states);
+		const hunks = interdiffFileHunks(traced, snapshot, answer, index, states);
+		if (hunks.hunks.length > 0) return hunks;
+		// A file the interdiff doesn't change (or only renames): its lines
+		// are one gap, so they and the threads on them can be opened.
+		const context = interdiffFileContext(traced, answer, index, 1, 1);
+		if (context === "none") return hunks;
+		const newLineCount =
+			context === "untouched"
+				? (await loadNewText(this.repo, snapshot, index)).newLines.length
+				: hunks.newLineCount;
+		return newLineCount > 0
+			? { hunks: [], newLineCount, wholeGap: true }
+			: { ...hunks, newLineCount };
+	}
+
+	/**
+	 * The since view's unchanged lines `newFrom..newTo` of file `index` of
+	 * the snapshot with this `revision`: the interdiff's from patch set
+	 * `from` (engine.ts, interdiffFileContext), numbered as its hunks are.
+	 */
+	async interdiffContext(
+		from: number,
+		revision: string,
+		index: number,
+		newFrom: number,
+		newTo: number,
+	): Promise<DiffLine[]> {
+		const snapshot = this.#current(revision);
+		const since = (await this.#progress()).patchsets.find(
+			(p) => p.number === from,
+		);
+		if (!since) throw new RangeError(`No patch set ${from}`);
+		const traced = await this.#traced(since, snapshot);
+		const { answer } = await this.#answerFor(since, snapshot, traced);
+		const context = interdiffFileContext(traced, answer, index, newFrom, newTo);
+		if (context === "none") return [];
+		if (context !== "untouched") return context;
+		const text = await loadNewText(this.repo, snapshot, index);
+		return contextLines(
+			text.newLines,
+			text.newLines,
+			[],
+			newFrom,
+			newTo,
+			text.noNewlineAtEnd,
+		);
 	}
 
 	/**

@@ -309,7 +309,9 @@ export function placeThreads<T extends Placeable = ReviewThread>(args: {
 	rows.forEach((row, i) => {
 		for (const key of keysOf(row)) rowAt.set(key, i);
 	});
-	const gaps = hunks ? fileGaps(hunks.hunks, hunks.newLineCount) : [];
+	const gaps = hunks
+		? fileGaps(hunks.hunks, hunks.newLineCount, hunks.wholeGap)
+		: [];
 	const push = <K>(map: Map<K, T[]>, key: K, t: T) => {
 		const list = map.get(key);
 		if (list) list.push(t);
