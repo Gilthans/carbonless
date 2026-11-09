@@ -1,5 +1,9 @@
 # To do
 
+Moved to Linear on 2026-11-09 (workspace `carbonless`, team `CAR`; see
+"Tickets" in `CLAUDE.md`). Add nothing here: this file is kept only until
+the owner retires it.
+
 In priority order.
 
 ## Milestones

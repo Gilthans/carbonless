@@ -75,6 +75,7 @@ const E2E_MAP = [
 		/^src\/web\/files\/|^src\/server\/diff\//,
 		[
 			"files",
+			"hunk-context",
 			"files-threads",
 			"sticky",
 			"invisibles",

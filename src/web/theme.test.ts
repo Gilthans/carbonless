@@ -585,6 +585,14 @@ describe("color tokens", () => {
 		}
 	});
 
+	it("a hunk's heading (muted) reads on its hunk and hidden-lines rows", () => {
+		expect(contrast(token("muted"), token("hunk"))).toBeGreaterThanOrEqual(4.5);
+		// A gap row's arrow lit where a click would press it.
+		expect(contrast(token("ink"), token("pressed"))).toBeGreaterThanOrEqual(
+			4.5,
+		);
+	});
+
 	it("errors read on the hunk rows they can appear in", () => {
 		expect(contrast(token("bad"), token("hunk"))).toBeGreaterThanOrEqual(4.5);
 	});
