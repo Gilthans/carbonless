@@ -4,12 +4,12 @@ import { describe, expect, it } from "vitest";
 import { parseFlakeArgs } from "./flake-check-args.mjs";
 
 describe("parseFlakeArgs", () => {
-	const parse = (...a: string[]) => parseFlakeArgs(a, 4);
+	const parse = (...a: string[]) => parseFlakeArgs(a);
 
-	it("defaults: five runs, one busy loop per core", () => {
+	it("defaults: five runs, no busy loops", () => {
 		expect(parse("src/a.test.ts")).toMatchObject({
 			runs: 5,
-			load: 4,
+			load: 0,
 			units: ["src/a.test.ts"],
 			specs: [],
 		});
@@ -63,7 +63,7 @@ describe("parseFlakeArgs", () => {
 			["--runs=3"],
 			[],
 		]) {
-			expect(parseFlakeArgs(bad, 4), bad.join(" ")).toHaveProperty("error");
+			expect(parseFlakeArgs(bad), bad.join(" ")).toHaveProperty("error");
 		}
 	});
 });

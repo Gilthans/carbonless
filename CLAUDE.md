@@ -168,10 +168,11 @@ loading never looking empty, checking against a real PR):
   and gets fixed. Playwright's expects wait 10 s (a reload's chained reads);
   a test that needs longer says why.
 - `pnpm flake-check <files…> [--runs N] [--load L] [-g title] [--project p]`
-  runs unit files or e2e specs N times (default 5) next to L busy loops
-  (default one per core), which load the whole machine, other agents'
-  unqueued runs too. Run it on every test you add or change that involves
-  timing, concurrency, a spinner or a gate, and on a test you saw fail once.
+  runs unit files or e2e specs N times (default 5), in the queue. `--load L`
+  adds L busy loops (default none: the devbox is loaded enough by other
+  agents, and the loops slow their runs too). Run it on every test you add
+  or change that involves timing, concurrency, a spinner or a gate, and on
+  a test you saw fail once.
 - If `nvm use` fails (e.g. in a sandbox), put `~/.nvm/versions/node/v24*/bin`
   first on `PATH`.
 - `pnpm compare-threads <pr> [--as-of <iso>] [--out <dir>]` checks every
