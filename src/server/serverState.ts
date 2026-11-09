@@ -15,6 +15,10 @@ export interface ServerState {
 	pid: number;
 	startedAt: string;
 	version: BuildInfo;
+	/** Its pages need the access key (a bind beyond loopback or a public URL). */
+	keyed?: boolean;
+	/** Where people open it, when a proxy serves it (`serve.publicUrl`). */
+	publicUrl?: string;
 	/**
 	 * The machine it runs on (os.hostname()): a state dir shared between
 	 * machines must not make one trust another's pid.

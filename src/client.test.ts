@@ -72,6 +72,23 @@ describe("the client", () => {
 		).toBe(url);
 	});
 
+	it("behind a public URL: reaches the keyed loopback server, prints the public link", async () => {
+		const { updateConfig } = await import("./server/config");
+		const publicUrl = "https://box.tail0.ts.net:8443";
+		await updateConfig((c) => ({ ...c, serve: { ...c.serve, publicUrl } }));
+		const server = await startServer({ port: 0 });
+		servers.push(server);
+		const spawnServer = spawner();
+		const url = await runClient(
+			{ pr: pr.arg, cwd: process.cwd() },
+			{ out: () => {}, spawnServer },
+		);
+		expect(spawnServer).not.toHaveBeenCalled();
+		expect(url).toMatch(
+			new RegExp(`^${publicUrl}/r/[0-9a-hjkmnp-tv-z]{26}\\?key=${server.key}$`),
+		);
+	});
+
 	it("--open opens the review's URL", async () => {
 		servers.push(await startServer({ port: 0 }));
 		const openUrl = vi.fn(async () => {});

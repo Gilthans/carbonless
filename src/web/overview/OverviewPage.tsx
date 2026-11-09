@@ -49,6 +49,7 @@ import {
 	type ThreadComment,
 	type ThreadsView,
 } from "../../shared/types";
+import { AgentOverviewRow } from "../agent/AgentOverviewRow";
 import {
 	commentsQuery,
 	OVERVIEW_FRESH_MS,
@@ -819,6 +820,7 @@ function IsItReady({
 				asOf={Boolean(pr.asOf)}
 				focus={focus}
 			/>
+			{pr.writes === "on" && <AgentOverviewRow />}
 		</Section>
 	);
 }

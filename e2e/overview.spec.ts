@@ -328,12 +328,13 @@ test("human and bot reviews sit inside Is it ready, count resolved threads and l
 	await expect(humans.getByTestId("thread")).toHaveCount(1);
 	await expect(bots.getByTestId("thread")).toHaveCount(1);
 	await expect(page.getByText("src/a.ts")).toHaveCount(0);
-	// Inside "Is it ready", below the checks, humans first.
+	// Inside "Is it ready", below the checks, humans first; the reviewer's
+	// own agent threads last.
 	const ready = page.getByRole("region", { name: "Is it ready" });
 	const order = await ready
 		.getByRole("region")
 		.evaluateAll((els) => els.map((el) => el.querySelector("h3")?.textContent));
-	expect(order).toEqual(["Human reviews", "Bot reviews"]);
+	expect(order).toEqual(["Human reviews", "Bot reviews", "Agent threads"]);
 	const checks = await ready
 		.getByRole("list", { name: "Readiness" })
 		.boundingBox();
