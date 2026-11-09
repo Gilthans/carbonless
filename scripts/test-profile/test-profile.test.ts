@@ -3,6 +3,7 @@ import {
 	mkdtempSync,
 	readdirSync,
 	readFileSync,
+	renameSync,
 	rmSync,
 	statSync,
 	symlinkSync,
@@ -19,7 +20,7 @@ import {
 	startTraceRun,
 	testSpanContext,
 } from "../../test/trace-run";
-import { compactRun, readRequests, type Span, spansOf } from "./load";
+import { compactRun, readRequests, type Span, spansOf, viewRun } from "./load";
 import { findRun } from "./runs";
 import { type StepLike, testSpans } from "./spans";
 import { fmt, formatCompare, formatSummary, summarize } from "./summary";
@@ -428,7 +429,7 @@ describe("the run directory", () => {
 		expect(compactRun(dir, (pid) => pid === 200)).toBe(2);
 		const files = readdirSync(dir).sort();
 		expect(files).toEqual([
-			expect.stringMatching(/^packed-[0-9a-f]{8}\.jsonl\.gz$/),
+			expect.stringMatching(/^packed-\d+-[0-9a-f]{8}\.jsonl\.gz$/),
 			"run.json",
 			"vitest-200-cccccc.jsonl",
 		]);
@@ -473,18 +474,16 @@ describe("the run directory", () => {
 			"fake-gh-102-bbbbbb.jsonl": ["two"],
 		});
 		let inner = -1;
+		// The processes are done; the packers (this process) run.
+		const alive = (pid: number) => pid === process.pid;
 		// A second packer (pnpm test-profile) runs while the first has read its files.
-		const outer = compactRun(
-			dir,
-			() => false,
-			() => {
-				inner = compactRun(dir, () => false);
-			},
-		);
+		const outer = compactRun(dir, alive, () => {
+			inner = compactRun(dir, alive);
+		});
 		expect([outer, inner]).toEqual([2, 0]);
 		expect(names(dir)).toEqual(["one", "two"]);
 		expect(readdirSync(dir)).toEqual([
-			expect.stringMatching(/^packed-[0-9a-f]{8}\.jsonl\.gz$/),
+			expect.stringMatching(/^packed-\d+-[0-9a-f]{8}\.jsonl\.gz$/),
 		]);
 	});
 
@@ -556,5 +555,66 @@ describe("the run directory", () => {
 		expect(pick("2026-11-04-e2e-4")).toBe("2026-11-04-e2e-4");
 		expect(findRun(root, "unit", "/here").cwd).toBe("/here");
 		expect(() => findRun(root, "nothing")).toThrow(/no test traces match/);
+	});
+
+	it("takes over the claims of a packer that died, and packs each once", () => {
+		const dir = tempDir();
+		exited(dir, {
+			"crb-101-aaaaaa.jsonl": ["one"],
+			"crb-102-bbbbbb.jsonl": ["two"],
+		});
+		// Packer 900 died after claiming one file; packer 901 still works on the other.
+		renameSync(
+			join(dir, "crb-101-aaaaaa.jsonl"),
+			join(dir, "crb-101-aaaaaa.jsonl.packing-900-deadbeef"),
+		);
+		renameSync(
+			join(dir, "crb-102-bbbbbb.jsonl"),
+			join(dir, "crb-102-bbbbbb.jsonl.packing-901-cafecafe"),
+		);
+		writeFileSync(join(dir, "packed-900-deadbeef.jsonl.gz.tmp"), "half");
+		const alive = (pid: number) => pid === 901;
+		expect(compactRun(dir, alive)).toBe(1);
+		expect(names(dir)).toEqual(["one"]);
+		expect(readdirSync(dir).sort()).toEqual([
+			"crb-102-bbbbbb.jsonl.packing-901-cafecafe",
+			expect.stringMatching(/^packed-\d+-[0-9a-f]{8}\.jsonl\.gz$/),
+		]);
+		// Packed once: a second pass finds nothing more to take.
+		expect(compactRun(dir, alive)).toBe(0);
+		expect(names(dir)).toEqual(["one"]);
+	});
+
+	it("a reader doesn't pack a run whose runner still runs", () => {
+		const root = tempDir();
+		const live = join(root, `2026-11-09T00-00-00-000Z-e2e-${process.pid}`);
+		const done = join(root, "2026-11-09T00-00-00-000Z-e2e-999999");
+		for (const dir of [live, done]) {
+			mkdirSync(dir);
+			exited(dir, { "crb-101-aaaaaa.jsonl": ["one"] });
+		}
+		const alive = (pid: number) => pid === process.pid;
+		expect(viewRun(live, alive).map((s) => s.name)).toEqual(["one"]);
+		expect(readdirSync(live)).toEqual(["crb-101-aaaaaa.jsonl"]);
+		expect(viewRun(done, alive).map((s) => s.name)).toEqual(["one"]);
+		expect(readdirSync(done)).toEqual([
+			expect.stringMatching(/^packed-.*\.jsonl\.gz$/),
+		]);
+	});
+
+	it("skips a run pruned between listing the runs and looking at it", () => {
+		const root = tempDir();
+		for (const name of ["2026-11-01-e2e-1", "2026-11-02-e2e-2"]) {
+			mkdirSync(join(root, name));
+			writeFileSync(
+				join(root, name, "run.json"),
+				JSON.stringify({ cwd: "/here" }),
+			);
+			exited(join(root, name), { "crb-1-aaaaaa.jsonl": ["x"] });
+		}
+		const run = findRun(root, "latest", "/here", () =>
+			rmSync(join(root, "2026-11-02-e2e-2"), { recursive: true }),
+		);
+		expect(run.name).toBe("2026-11-01-e2e-1");
 	});
 });

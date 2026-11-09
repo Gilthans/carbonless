@@ -6,17 +6,14 @@
 // a local Jaeger (docker) and prints the link.
 import { execFileSync } from "node:child_process";
 import { traceRoot } from "../../test/trace-run";
-import { compactRun, readRequests, spansOf } from "./load";
+import { readRequests, spansOf, viewRun } from "./load";
 import { findRun } from "./runs";
 import { formatCompare, formatSummary, summarize } from "./summary";
 
 const USAGE =
 	"usage: pnpm test-profile [run|latest] [--compare <run>] [--top N] [--jaeger]";
 
-function load(dir: string) {
-	compactRun(dir);
-	return spansOf(readRequests(dir));
-}
+const load = (dir: string) => viewRun(dir);
 
 const JAEGER = {
 	name: "crb-jaeger",
@@ -137,7 +134,7 @@ async function main(argv: string[]): Promise<void> {
 	const found = findRun(root, run);
 	const { dir } = found;
 	if (toJaeger) {
-		compactRun(dir);
+		viewRun(dir); // Packs a finished run first.
 		await jaeger(dir);
 		return;
 	}

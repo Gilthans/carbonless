@@ -27,12 +27,28 @@ export function findRun(
 	root: string,
 	name = "latest",
 	cwd = process.cwd(),
+	/** Tests: runs between listing the runs and looking at each. */
+	afterList: () => void = () => {},
 ): Run {
-	const runs = existsSync(root)
-		? readdirSync(root)
-				.filter((d) => statSync(join(root, d)).isDirectory())
-				.sort()
-		: [];
+	// A run pruned (by another run starting) between the listing and a
+	// look at it is skipped.
+	const isDir = (d: string) => {
+		try {
+			return statSync(join(root, d)).isDirectory();
+		} catch {
+			return false;
+		}
+	};
+	const hasTraces = (r: Run) => {
+		try {
+			return traceFiles(r.dir).length > 0;
+		} catch {
+			return false;
+		}
+	};
+	const listed = existsSync(root) ? readdirSync(root) : [];
+	afterList();
+	const runs = listed.filter(isDir).sort();
 	const at = (d: string): Run => ({
 		dir: join(root, d),
 		name: d,
@@ -42,7 +58,7 @@ export function findRun(
 	const match = runs
 		.filter((d) => name === "latest" || d.includes(name))
 		.map(at)
-		.filter((r) => traceFiles(r.dir).length > 0);
+		.filter(hasTraces);
 	const found = match.filter((r) => r.cwd === cwd).at(-1) ?? match.at(-1);
 	if (!found) throw new Error(`no test traces match "${name}" in ${root}`);
 	return found;

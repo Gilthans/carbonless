@@ -147,10 +147,12 @@ function alive(pid: number): boolean {
  * Packs the plain files of processes that have exited (`<name>-<pid>-<id>.jsonl`)
  * into one gzipped file: a run leaves thousands of one-span fake-gh files.
  * Files of live processes are left alone. Each file is claimed by renaming
- * it first, so two packers (a run's end and `pnpm test-profile`) never pack
- * the same one; on failure the claimed files go back. The run directory
- * keeps its mtime, so viewing a run doesn't extend its retention. Returns
- * how many files it packed.
+ * it to `<file>.packing-<packer pid>-<id>` first, so two packers (a run's end
+ * and `pnpm test-profile`) never pack the same one; on failure the claimed
+ * files go back. A claim whose packer died is taken over the same way (the
+ * rename decides between two takers). The run directory keeps its mtime,
+ * so viewing a run doesn't extend its retention. Returns how many files it
+ * packed.
  */
 export function compactRun(
 	dir: string,
@@ -158,22 +160,36 @@ export function compactRun(
 	/** Tests: runs after the claimed files are read, before the pack is written. */
 	beforeWrite: () => void = () => {},
 ): number {
-	const id = randomBytes(4).toString("hex");
-	const claimed: [from: string, to: string][] = [];
+	const id = `${process.pid}-${randomBytes(4).toString("hex")}`;
+	const claimed: [original: string, claim: string][] = [];
 	const tmp = join(dir, `packed-${id}.jsonl.gz.tmp`);
 	let mtime: Date | null = null;
+	const claim = (current: string, original: string) => {
+		const to = `${original}.packing-${id}`;
+		try {
+			renameSync(join(dir, current), join(dir, to));
+			claimed.push([join(dir, original), join(dir, to)]);
+		} catch {
+			// Another packer claimed it first.
+		}
+	};
 	try {
 		mtime = statSync(dir).mtime;
 		for (const f of readdirSync(dir)) {
-			const m = /-(\d+)-[0-9a-f]+\.jsonl$/.exec(f);
-			if (!m || isAlive(Number(m[1]))) continue;
-			const from = join(dir, f);
-			const to = `${from}.packing-${id}`;
-			try {
-				renameSync(from, to);
-				claimed.push([from, to]);
-			} catch {
-				// Another packer claimed it first.
+			const plain = /-(\d+)-[0-9a-f]+\.jsonl$/.exec(f);
+			if (plain) {
+				if (!isAlive(Number(plain[1]))) claim(f, f);
+				continue;
+			}
+			// A dead packer's claim, or its half-written pack.
+			const orphan = /^(.+\.jsonl)\.packing-(\d+)-[0-9a-f]+$/.exec(f);
+			if (orphan && !isAlive(Number(orphan[2]))) {
+				claim(f, orphan[1] as string);
+				continue;
+			}
+			const tmpOf = /^packed-(\d+)-[0-9a-f]+\.jsonl\.gz\.tmp$/.exec(f);
+			if (tmpOf && !isAlive(Number(tmpOf[1]))) {
+				rmSync(join(dir, f), { force: true });
 			}
 		}
 		if (claimed.length === 0) return 0;
@@ -207,4 +223,26 @@ export function compactRun(
 			}
 		}
 	}
+}
+
+/** Whether the run's runner (the pid that ends its directory name) still runs. */
+export function runnerAlive(
+	dir: string,
+	isAlive: (pid: number) => boolean = alive,
+): boolean {
+	const m = /-(\d+)$/.exec(dir.replace(/\/+$/, ""));
+	return m ? isAlive(Number(m[1])) : false;
+}
+
+/**
+ * A run's spans for viewing. Packs it first only once its runner has
+ * exited: a live run is packed by its own end (Playwright onEnd, Vitest
+ * teardown), never under it by a reader.
+ */
+export function viewRun(
+	dir: string,
+	isAlive: (pid: number) => boolean = alive,
+): Span[] {
+	if (!runnerAlive(dir, isAlive)) compactRun(dir, isAlive);
+	return spansOf(readRequests(dir));
 }
