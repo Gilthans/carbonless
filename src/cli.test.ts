@@ -1,10 +1,18 @@
 import { spawn } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { fileURLToPath } from "node:url";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { writeServerState } from "./server/serverState";
 import { BUILD } from "./server/version";
 
@@ -17,15 +25,23 @@ import { BUILD } from "./server/version";
 describe("crb <pr>", () => {
 	let dir: string;
 	let stub: Server;
-	const saved = process.env.XDG_STATE_HOME;
+	const root = fileURLToPath(new URL("..", import.meta.url));
 
 	beforeEach(() => {
 		dir = mkdtempSync(join(tmpdir(), "crb-cli-"));
-		process.env.XDG_STATE_HOME = join(dir, "state");
+		vi.stubEnv("XDG_STATE_HOME", join(dir, "state"));
+		vi.stubEnv("XDG_CONFIG_HOME", join(dir, "config"));
+		// Should the stub's probe ever fail, the client would start a real
+		// server: on any free port, never the owner's 4747.
+		mkdirSync(join(dir, "config", "carbonless"), { recursive: true });
+		writeFileSync(
+			join(dir, "config", "carbonless", "config.json"),
+			JSON.stringify({ serve: { port: 0 } }),
+		);
 	});
 	afterEach(async () => {
 		await new Promise((done) => stub.close(done));
-		process.env.XDG_STATE_HOME = saved;
+		vi.unstubAllEnvs();
 		rmSync(dir, { recursive: true, force: true });
 	});
 
@@ -61,6 +77,7 @@ describe("crb <pr>", () => {
 				"octo/repo#1",
 			],
 			{
+				cwd: root,
 				env: { ...process.env, CRB_MODULE_LOG: log },
 				stdio: ["ignore", "pipe", "pipe"],
 			},
@@ -82,11 +99,12 @@ describe("crb <pr>", () => {
 		const loaded = readFileSync(log, "utf8").trim().split("\n");
 		// The log works: it saw the client.
 		expect(loaded.some((url) => url.endsWith("/src/client.ts"))).toBe(true);
-		const server = loaded.filter((url) =>
-			/\/node_modules\/(\.pnpm\/)?@?fastify|\/src\/server\/(serve|app|session|registry)\.ts$/.test(
-				url,
-			),
+		// No npm package at all (tsx loads before the log starts; `open` only
+		// with --open): Fastify, the agent SDK, ulid... are the server's.
+		expect(loaded.filter((url) => url.includes("/node_modules/"))).toEqual([]);
+		// And no server started behind the stub's back.
+		expect(existsSync(join(dir, "state", "carbonless", "serve.log"))).toBe(
+			false,
 		);
-		expect(server).toEqual([]);
 	}, 60_000);
 });

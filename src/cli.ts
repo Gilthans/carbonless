@@ -2,6 +2,7 @@
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { runClient } from "./client.js";
+import { killDetachedGits } from "./server/git.js";
 import { tracer } from "./server/trace.js";
 import { BUILD, formatVersion } from "./server/version.js";
 
@@ -121,10 +122,7 @@ async function serve(values: {
 	}
 	// Loaded here, not at the top: crb <pr> is only a client, and the server
 	// (Fastify and all under it) costs it ~0.4 s of CPU to load.
-	const [{ startServer }, { killDetachedGits }] = await Promise.all([
-		import("./server/serve.js"),
-		import("./server/git.js"),
-	]);
+	const { startServer } = await import("./server/serve.js");
 	const server = await startServer({
 		host: values.host,
 		port,
