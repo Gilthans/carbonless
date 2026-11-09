@@ -1748,7 +1748,7 @@ describe("FileDiff", () => {
 		expect(screen.queryByRole("alert")).toBeNull();
 	});
 
-	it("keeps lines the server didn't return loadable", async () => {
+	it("keeps lines the server didn't return loadable, and says they didn't load", async () => {
 		const { user } = setup(file([cluster("k1")]), () => ({
 			status: 200,
 			body: [9, 10, 11, 12, 13, 14, 15, 16, 17, 18].map((n) => ctx(n, n)),
@@ -1759,7 +1759,12 @@ describe("FileDiff", () => {
 		);
 		expect(await screen.findByText("line 18")).toBeInTheDocument();
 		expect(screen.queryByText("Loading…")).toBeNull();
-		expect(screen.getByText("32 hidden lines")).toBeInTheDocument();
+		// Never a silent "32 hidden lines": the row says so, with Retry.
+		const alert = screen.getByRole("alert");
+		expect(alert).toHaveTextContent("Lines didn't load");
+		expect(
+			within(alert).getByRole("button", { name: "Retry" }),
+		).toBeInTheDocument();
 		expect(
 			screen.getByRole("button", { name: "Load 20 lines below" }),
 		).toBeInTheDocument();

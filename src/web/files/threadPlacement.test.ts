@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { createLineMapper } from "../../shared/tracer/lineMapper";
 import type {
 	CodeAnchor,
 	DiffLine,
@@ -418,6 +419,77 @@ describe("placeThreads", () => {
 		const t = thread({ side: "LEFT", line: 10 });
 		const [placed] = place([t]).end.get("LEFT:10") ?? [];
 		expect(placed?.anchor).toBe(t.anchor);
+	});
+});
+
+describe("the since view: LEFT anchors go through the full diff", () => {
+	/**
+	 * The full diff (base → head): PS1 inserted 10 lines at the top and
+	 * deleted base line 30. Base 20 is head 30; base 30 is gone.
+	 */
+	const full = createLineMapper([
+		{ oldStart: 0, oldCount: 0, newStart: 1, newCount: 10 },
+		{ oldStart: 30, oldCount: 1, newStart: 39, newCount: 0 },
+	]);
+	const sincePlace = (
+		threads: ReviewThread[],
+		hunks: FileHunks,
+		loadedContext: DiffLine[] = [],
+	) =>
+		placeThreads({
+			threads,
+			path: PATH,
+			snapshotHead: HEAD,
+			hunks,
+			loadedContext,
+			leftToNew: (n) => full.oldToNew(n),
+		});
+	const whole: FileHunks = { hunks: [], newLineCount: 49, wholeGap: true };
+
+	it("a whole-file gap: a LEFT line the full diff deleted goes to the header, never onto the row with its number", () => {
+		const gone = thread({ side: "LEFT", line: 30 });
+		const p = sincePlace([gone], whole, [ctx(30, 30), ctx(31, 31)]);
+		expect(p.header).toEqual([{ thread: gone, reason: "unplaced" }]);
+		expect(p.end.size).toBe(0);
+		expect(p.gaps.size).toBe(0);
+		expect(p.covered.size).toBe(0);
+	});
+
+	it("a whole-file gap: a LEFT line that survives lands on the head line it became", () => {
+		const kept = thread({ side: "LEFT", startLine: 19, line: 20 });
+		const hidden = sincePlace([kept], whole);
+		expect([...hidden.gaps]).toEqual([[0, [kept]]]);
+		expect(hidden.gapTargets.get(kept)).toEqual({
+			show: [29, 30],
+			key: "RIGHT:30",
+		});
+		// Loaded, it is head line 30's row (base 20), never old-number 20's.
+		const shown = sincePlace([kept], whole, [
+			ctx(20, 20),
+			ctx(29, 29),
+			ctx(30, 30),
+		]);
+		expect([...shown.end]).toEqual([["RIGHT:30", [kept]]]);
+		expect([...shown.covered].sort()).toEqual(["RIGHT:29", "RIGHT:30"]);
+	});
+
+	it("with since hunks: a LEFT line never matches a row by the since view's old numbers", () => {
+		// The since view's hunk: H1' 5 (base nothing like it) became head 15.
+		const since: FileHunks = {
+			hunks: [hunk([ctx(4, 14), del(5), add(15), ctx(6, 16)])],
+			newLineCount: 49,
+		};
+		const t = thread({ side: "LEFT", line: 5 });
+		const p = sincePlace([t], since, [ctx(1, 11), ctx(2, 12), ctx(3, 13)]);
+		// Base 5 is head 15: the added row, by its new number.
+		expect([...p.end]).toEqual([["RIGHT:15", [t]]]);
+		expect(p.end.has("LEFT:5")).toBe(false);
+	});
+
+	it("outside the since view (no mapper) LEFT stays by number", () => {
+		const t = thread({ side: "LEFT", line: 30 });
+		const p = place([t], { hunks: whole });
+		expect([...p.gaps]).toEqual([[0, [t]]]);
 	});
 });
 

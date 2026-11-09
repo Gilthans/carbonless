@@ -122,6 +122,7 @@ import {
 	lineKey,
 	type Placements,
 	placeThreads,
+	sinceLeftToNew,
 } from "./threadPlacement";
 import { VIEW_KEYS } from "./viewShortcuts";
 import { type DiffRow, viewRuns, whitespaceOnly } from "./whitespace";
@@ -1877,7 +1878,7 @@ export function DiffBody(props: {
 	const [ranges, setRanges] = useState<[number, number][]>([]);
 	const contexts = useQueries({
 		queries: ranges.map(([from, to]) =>
-			contextQuery(revision, file.index, from, to),
+			contextQuery(revision, file.index, from, to, props.from),
 		),
 	});
 	const lang = languageFor(file.path);
@@ -1980,7 +1981,7 @@ export function DiffBody(props: {
 		}
 	}
 	const gaps = hunks.data
-		? fileGaps(hunks.data.hunks, hunks.data.newLineCount)
+		? fileGaps(hunks.data.hunks, hunks.data.newLineCount, hunks.data.wholeGap)
 		: [];
 	const addRange = (from: number, to: number) =>
 		setRanges((r) =>
@@ -2027,6 +2028,14 @@ export function DiffBody(props: {
 		? agentMine.filter((c) => c.span.commit !== agentHeadNow)
 		: [];
 
+	// The since view numbers its old side in the compared patch set; a
+	// LEFT anchor counts in the base, so it goes through the full diff
+	// (its clusters) to the head line it became (threadPlacement.ts).
+	const leftToNew = useMemo(
+		() =>
+			props.from === undefined ? undefined : sinceLeftToNew(file.clusters),
+		[props.from, file.clusters],
+	);
 	// Where the file's threads sit (all start closed). Opening one only
 	// shows it: no review state changes.
 	const placement = props.threads
@@ -2039,6 +2048,7 @@ export function DiffBody(props: {
 				noLines: file.binary || file.submodule,
 				spans: lineItems.map((i) => i.span as SpanRange),
 				placements: props.threads.placements,
+				leftToNew,
 			})
 		: null;
 	// Written on a row that isn't shown (a gap): above the diff, never lost.
@@ -2166,6 +2176,7 @@ export function DiffBody(props: {
 				loadedContext: [...loaded.values()],
 				noLines: file.binary || file.submodule,
 				spans: agentLineItems.map((c) => c.span as SpanRange),
+				leftToNew,
 			})
 		: null;
 	const [openAgent, setOpenAgent] = useState<ReadonlySet<LineKey>>(
@@ -2349,7 +2360,15 @@ export function DiffBody(props: {
 			const failed = inRun.flatMap((r) =>
 				r.result?.isError ? [r.result] : [],
 			);
-			const pending = inRun.some((r) => r.result?.isPending);
+			// Answered, yet lines it asked for are still in this run (a run's
+			// lines are the unloaded ones): a failure too, never "N hidden
+			// lines" forever.
+			const short = inRun.flatMap((r) =>
+				r.result?.isSuccess && !r.result.isFetching ? [r.result] : [],
+			);
+			const pending = inRun.some(
+				(r) => r.result?.isPending || r.result?.isFetching,
+			);
 			const buttons =
 				remaining > 0 ? expansions(part, top, bottom, remaining) : [];
 			const runThreads = threadsOf.get(i) ?? [];
@@ -2358,6 +2377,7 @@ export function DiffBody(props: {
 				remaining === 0 &&
 				!pending &&
 				failed.length === 0 &&
+				short.length === 0 &&
 				runThreads.length === 0 &&
 				runAgent.length === 0
 			) {
@@ -2462,13 +2482,13 @@ export function DiffBody(props: {
 								)}
 							</BubbleSlot>
 						)}
-						{failed.length > 0 ? (
+						{failed.length > 0 || short.length > 0 ? (
 							<span role="alert" className="text-bad">
-								{failed[0]?.error?.message}{" "}
+								{failed[0]?.error?.message ?? "Lines didn't load"}{" "}
 								<button
 									type="button"
 									onClick={() => {
-										for (const f of failed) void f.refetch();
+										for (const f of [...failed, ...short]) void f.refetch();
 									}}
 									className="rounded border border-bad/60 px-1.5 text-xs hover:bg-bad/15 focus-visible:outline-2 focus-visible:outline-accent"
 								>

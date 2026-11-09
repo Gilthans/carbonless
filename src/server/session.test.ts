@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
-import { readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { acpLog, releaseAcp, useFakeAcp } from "../../test/fake-acp/scenario";
@@ -1440,9 +1441,11 @@ describe("Session", () => {
 					},
 				],
 			});
+			// a.txt is untouched since PS1: one whole-file gap.
 			expect(await s.interdiffHunks(1, view.revision, 0)).toEqual({
 				hunks: [],
-				newLineCount: 0,
+				newLineCount: 30,
+				wholeGap: true,
 			});
 
 			// The first mark starts PS2, carrying PS1's mark.
@@ -1499,6 +1502,227 @@ describe("Session", () => {
 				shape: { code: "S1" },
 			});
 			expect(kinds(toPs2)).toEqual(kinds(answer));
+		});
+
+		it("the since view's context comes from the interdiff (PS1 numbering on the old side); a file it doesn't touch is one whole-file gap", async () => {
+			const s = await Session.open(pr.arg, process.cwd());
+			const ps1 = s.snapshot();
+			await s.setStates(ps1.revision, [
+				{ key: firstKey(s), state: "reviewed" },
+			]);
+			// PS2 changes a.txt's line 15 and adds a line after it (the new
+			// side shifts by one below it); new.txt is untouched since PS1.
+			const lines = Array.from({ length: 30 }, (_, i) => `line ${i + 1}`);
+			lines[1] = "line 2 changed";
+			lines[25] = "line 26 changed";
+			const ps2Lines = [...lines];
+			ps2Lines[14] = "line 15 again";
+			ps2Lines.splice(15, 0, "inserted");
+			const newHead = pr.moveHead({
+				"a.txt": `${ps2Lines.join("\n")}\n`,
+				"new.txt": "new\n",
+			});
+			await s.checkHead();
+			const answer = await settled(s, 1, { head: newHead });
+			const view = await s.viewHead(newHead);
+			expect(view.revision).toBe(answer.toRevision);
+			const a = view.files.find((f) => f.path === "a.txt");
+			const added = view.files.find((f) => f.path === "new.txt");
+			if (!a || !added) throw new Error("no a.txt or new.txt");
+
+			const since = await s.interdiffHunks(1, view.revision, a.index);
+			expect(
+				since.hunks.map((h) => [h.oldStart, h.newStart, h.newCount]),
+			).toEqual([[12, 12, 8]]);
+			// Lines 1–3 hold line 2, which the PR added at PS1 and left
+			// unchanged since: the interdiff's context, PS1 and PS2 numbering.
+			expect(await s.interdiffContext(1, view.revision, a.index, 1, 3)).toEqual(
+				[
+					{ kind: "context", oldNo: 1, newNo: 1, text: "line 1" },
+					{ kind: "context", oldNo: 2, newNo: 2, text: "line 2 changed" },
+					{ kind: "context", oldNo: 3, newNo: 3, text: "line 3" },
+				],
+			);
+			// Below the change, the old side is PS1's (one line behind).
+			expect(
+				await s.interdiffContext(1, view.revision, a.index, 26, 27),
+			).toEqual([
+				{ kind: "context", oldNo: 25, newNo: 26, text: "line 25" },
+				{ kind: "context", oldNo: 26, newNo: 27, text: "line 26 changed" },
+			]);
+			// The full diff's context for the same lines is unchanged: line 2
+			// is its own change there.
+			expect(await s.context(view.revision, a.index, 1, 3)).toEqual([
+				{ kind: "context", oldNo: 1, newNo: 1, text: "line 1" },
+				{ kind: "context", oldNo: 3, newNo: 3, text: "line 3" },
+			]);
+
+			// new.txt is untouched since PS1: no hunks, one whole-file gap.
+			expect(await s.interdiffHunks(1, view.revision, added.index)).toEqual({
+				hunks: [],
+				newLineCount: 1,
+				wholeGap: true,
+			});
+			expect(
+				await s.interdiffContext(1, view.revision, added.index, 1, 1),
+			).toEqual([{ kind: "context", oldNo: 1, newNo: 1, text: "new" }]);
+		});
+
+		/**
+		 * A push made by hand on `from` (git commands in a worktree of the
+		 * GitHub-side repo), the fake gh pointed at it (base `baseRefOid`).
+		 */
+		const pushByHand = (
+			from: string,
+			steps: (git: (...args: string[]) => string, dir: string) => void,
+			baseRefOid?: string,
+		) => {
+			const dir = mkdtempSync(join(tmpdir(), "crb-push-"));
+			const repoGit = (...args: string[]) =>
+				execFileSync("git", args, {
+					cwd: pr.repo.path,
+					encoding: "utf8",
+					env: testGitEnv(),
+				}).trim();
+			repoGit("worktree", "add", "--quiet", "--detach", dir, from);
+			const w = (...args: string[]) =>
+				execFileSync("git", args, {
+					cwd: dir,
+					encoding: "utf8",
+					env: testGitEnv(),
+				}).trim();
+			steps(w, dir);
+			const head = w("rev-parse", "HEAD");
+			repoGit("worktree", "remove", "--force", dir);
+			rmSync(dir, { recursive: true, force: true });
+			repoGit("update-ref", "refs/pull/12/head", head);
+			pr.scenario({
+				prs: {
+					12: {
+						view: prView({
+							headRefOid: head,
+							baseRefName: "main",
+							...(baseRefOid ? { baseRefOid } : {}),
+						}),
+					},
+				},
+			});
+			return head;
+		};
+		/** PS1 marked, then `push()`: the since view of the new head. */
+		const sinceAfter = async (push: () => string) => {
+			const s = await Session.open(pr.arg, process.cwd());
+			const ps1 = s.snapshot();
+			await s.setStates(ps1.revision, [
+				{ key: firstKey(s), state: "reviewed" },
+			]);
+			const newHead = push();
+			await s.checkHead();
+			const answer = await settled(s, 1, { head: newHead });
+			expect(answer.interdiff).toBe("available");
+			const view = await s.viewHead(newHead);
+			const index = (path: string) => {
+				const f = view.files.find((x) => x.path === path);
+				if (!f) throw new Error(`no ${path}`);
+				return f.index;
+			};
+			return { s, view, index };
+		};
+		const lines30 = () => {
+			const lines = Array.from({ length: 30 }, (_, i) => `line ${i + 1}`);
+			lines[1] = "line 2 changed";
+			lines[25] = "line 26 changed";
+			return lines;
+		};
+
+		it("since view, a file the interdiff only renames: one whole-file gap of its lines", async () => {
+			const { s, view, index } = await sinceAfter(() =>
+				pushByHand(pr.head(), (git) => {
+					git("mv", "new.txt", "renamed.txt");
+					git("commit", "--quiet", "-m", "rename");
+				}),
+			);
+			const renamed = index("renamed.txt");
+			expect(await s.interdiffHunks(1, view.revision, renamed)).toEqual({
+				hunks: [],
+				newLineCount: 1,
+				wholeGap: true,
+			});
+			expect(await s.interdiffContext(1, view.revision, renamed, 1, 1)).toEqual(
+				[{ kind: "context", oldNo: 1, newNo: 1, text: "new" }],
+			);
+		});
+
+		it("since view, an untouched file without a newline at its end: its last line says so", async () => {
+			pr.moveHead({ "nonl.txt": "x\ny" });
+			const { s, view, index } = await sinceAfter(() =>
+				pr.moveHead({ "later.txt": "later\n" }),
+			);
+			const nonl = index("nonl.txt");
+			expect(await s.interdiffHunks(1, view.revision, nonl)).toEqual({
+				hunks: [],
+				newLineCount: 2,
+				wholeGap: true,
+			});
+			expect(await s.interdiffContext(1, view.revision, nonl, 1, 2)).toEqual([
+				{ kind: "context", oldNo: 1, newNo: 1, text: "x" },
+				{ kind: "context", oldNo: 2, newNo: 2, text: "y", noNewline: true },
+			]);
+		});
+
+		it("since view after the base moved: gap lines are the head's on the new side, the rebased PS1's on the old", async () => {
+			// main inserts 5 lines after base line 14; PS2 merges it and
+			// changes line 10.
+			const base = Array.from({ length: 30 }, (_, i) => `line ${i + 1}`);
+			const mid = ["mid 1", "mid 2", "mid 3", "mid 4", "mid 5"];
+			const insert = (lines: string[]) => [
+				...lines.slice(0, 14),
+				...mid,
+				...lines.slice(14),
+			];
+			writeFileSync(
+				join(pr.repo.path, "a.txt"),
+				`${insert(base).join("\n")}\n`,
+			);
+			const main = (...args: string[]) =>
+				execFileSync("git", args, {
+					cwd: pr.repo.path,
+					encoding: "utf8",
+					env: testGitEnv(),
+				}).trim();
+			main("commit", "--quiet", "-am", "main inserts mid lines");
+			const b2 = main("rev-parse", "HEAD");
+			const ps2 = insert(lines30());
+			ps2[9] = "line 10 again";
+			const { s, view, index } = await sinceAfter(() =>
+				pushByHand(
+					pr.head(),
+					(git, dir) => {
+						git("merge", "--quiet", "--no-edit", b2);
+						writeFileSync(join(dir, "a.txt"), `${ps2.join("\n")}\n`);
+						git("commit", "--quiet", "-am", "line 10 again");
+					},
+					b2,
+				),
+			);
+			const a = index("a.txt");
+			const since = await s.interdiffHunks(1, view.revision, a);
+			expect(since.hunks.map((h) => [h.oldStart, h.newStart])).toEqual([
+				[7, 7],
+			]);
+			// Below base's insertion: head 30–32 are base 25–27, line 26 the
+			// PR's own (unchanged since PS1). The rebased PS1 has the mid
+			// lines too, so its numbers are the head's.
+			expect(await s.interdiffContext(1, view.revision, a, 30, 32)).toEqual([
+				{ kind: "context", oldNo: 30, newNo: 30, text: "line 25" },
+				{ kind: "context", oldNo: 31, newNo: 31, text: "line 26 changed" },
+				{ kind: "context", oldNo: 32, newNo: 32, text: "line 27" },
+			]);
+			// The new side is the head's numbering, as a RIGHT anchor's is:
+			// the full diff (base B2 → head) agrees on the line at 30.
+			expect(await s.context(view.revision, a, 30, 30)).toEqual([
+				{ kind: "context", oldNo: 30, newNo: 30, text: "line 25" },
+			]);
 		});
 
 		it("a new thread and a verdict start a patch set; a reply, a resolve and an unresolve never do", async () => {
