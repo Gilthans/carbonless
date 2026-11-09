@@ -7,10 +7,14 @@
 // hazards in scenario.ts), and exit() ends the call wherever it is. It runs
 // in the fake gh server (server.mjs: test/fake-gh/gh, a shell shim, forwards
 // each call there) or, without one, in a process of its own (cli.mjs).
-import { execFileSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { promisify } from "node:util";
 import { writeFileAtomic } from "./atomic.mjs";
 import { KEPT_TAGS as GITHUB_KEPT_TAGS } from "./keptTags.mjs";
+
+const run = promisify(execFile);
 
 /** Thrown by exit(): ends a call with its exit code. */
 export class FakeGhExit extends Error {
@@ -46,7 +50,10 @@ async function call(io) {
 	const exit = (code) => {
 		throw new FakeGhExit(code);
 	};
-	const s = JSON.parse(readFileSync(env.CRB_FAKE_GH, "utf8"));
+	// Relative paths against the call's cwd, as a process of its own would.
+	const at = (path) => resolve(io.cwd, path);
+	const scenarioPath = at(env.CRB_FAKE_GH);
+	const s = JSON.parse(readFileSync(scenarioPath, "utf8"));
 	// Logged after reading the scenario: once a call shows in the log, a test may
 	// rewrite the scenario without affecting that call.
 	// io.log writes it (the shim, in the server: only a gh still alive logs,
@@ -86,7 +93,7 @@ async function call(io) {
 		if (ms) await sleep(ms);
 		if (!s.hold?.includes(op) || s.letThrough?.includes(op)) return;
 		for (;;) {
-			const hold = JSON.parse(readFileSync(env.CRB_FAKE_GH, "utf8")).hold;
+			const hold = JSON.parse(readFileSync(scenarioPath, "utf8")).hold;
 			if (!hold?.includes(op)) {
 				s.hold = hold;
 				return;
@@ -99,7 +106,7 @@ async function call(io) {
 	 * Atomically, as other gh processes and the test read the file meanwhile.
 	 */
 	const save = () =>
-		writeFileAtomic(env.CRB_FAKE_GH, JSON.stringify(s, null, "\t"));
+		writeFileAtomic(scenarioPath, JSON.stringify(s, null, "\t"));
 	/** The scenario's failNext when it is for `op`, used up. */
 	function failNextFor(op) {
 		const f = s.failNext;
@@ -144,10 +151,7 @@ async function call(io) {
 	/** The REST id of a thread's comment: (index + 1) * 1000 + its position. */
 	const restId = (i, j) => (i + 1) * 1000 + j;
 	/** Whether a write's change (an edit, a delete) still waits to show in GraphQL. */
-	// Without writeUnlistedMs never: a read in the very millisecond of the
-	// write (no process start between calls in the server) shows it too.
-	const lagging = (c) =>
-		c.changedAt !== undefined && s.writeUnlistedMs > 0 && c.changedAt + s.writeUnlistedMs > Date.now();
+	const lagging = (c) => c.changedAt !== undefined && c.changedAt + (s.writeUnlistedMs ?? 0) > Date.now();
 	/**
 	 * A comment as GraphQL shows it now: within writeUnlistedMs of an edit,
 	 * its text before it.
@@ -486,21 +490,29 @@ async function call(io) {
 		args[0] === "api" && args[1] !== "-X"
 			? /^repos\/[^/]+\/[^/]+\/compare\/(.+)\.\.\.([0-9a-f]{7,64})\?per_page=1&page=2$/.exec(args[1] ?? "")
 			: null;
+	/**
+	 * Runs git; its stdout. Async: the server's other calls go on meanwhile.
+	 * A gh killed while it ran ends here, as a killed process would.
+	 */
+	async function git(a, cwd) {
+		const { stdout } = await run("git", a, { cwd, env, encoding: "utf8" });
+		if (io.killed?.()) exit(137);
+		return stdout;
+	}
 	/** Runs git in the GitHub-side repository; its stdout. */
-	const repoGit = (...a) =>
-		execFileSync("git", a, { cwd: s.repoPath, env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+	const repoGit = (...a) => git(a, at(s.repoPath));
 	/**
 	 * GitHub's merge base of a base branch (PR `n`'s, or `base`) and
 	 * `commit`: the scenario's (mergeBases, by commit), else git's in the
 	 * repository.
 	 */
-	function mergeBaseOf(n, commit, base) {
+	async function mergeBaseOf(n, commit, base) {
 		const given = s.mergeBases?.[commit];
 		if (given) return given;
 		const branch = base ?? s.prs[n]?.view?.baseRefName ?? "main";
 		// A commit (the PR's baseRefOid) or a branch.
 		const ref = /^[0-9a-f]{40}$/.test(branch) ? branch : `refs/heads/${branch}`;
-		return repoGit("merge-base", ref, commit).trim();
+		return (await repoGit("merge-base", ref, commit)).trim();
 	}
 	/**
 	 * PR `n`'s diff at `commit` as GitHub resolves a comment's lines against
@@ -508,9 +520,9 @@ async function call(io) {
 	 * when the diff hasn't it) and its hunks' rows, with their old and new
 	 * line numbers.
 	 */
-	function diffAt(n, commit, path) {
-		const mb = mergeBaseOf(n, commit);
-		const status = repoGit("-c", "core.quotePath=false", "diff", "-M", "--name-status", "-z", mb, commit).split("\0");
+	async function diffAt(n, commit, path) {
+		const mb = await mergeBaseOf(n, commit);
+		const status = (await repoGit("-c", "core.quotePath=false", "diff", "-M", "--name-status", "-z", mb, commit)).split("\0");
 		const files = [];
 		for (let k = 0; k < status.length - 1; ) {
 			const code = status[k] ?? "";
@@ -524,7 +536,7 @@ async function call(io) {
 		}
 		const file = files.find((f) => f.new === path || f.old === path);
 		if (!file) return { file: null, hunks: [] };
-		const text = repoGit("-c", "core.quotePath=false", "diff", "-M", "-U3", mb, commit, "--", ...new Set([file.old, file.new]));
+		const text = await repoGit("-c", "core.quotePath=false", "diff", "-M", "-U3", mb, commit, "--", ...new Set([file.old, file.new]));
 		const hunks = [];
 		let hunk = null;
 		let oldNo = 0;
@@ -638,7 +650,7 @@ async function call(io) {
 			httpFail(422, "Unprocessable Entity", [`pull_request_review_thread.${field} could not be resolved`]);
 		let diff;
 		try {
-			diff = diffAt(n, req.commit_id, req.path);
+			diff = await diffAt(n, req.commit_id, req.path);
 		} catch (error) {
 			if (error instanceof FakeGhExit) throw error;
 			httpFail(422, "Unprocessable Entity", ["commit_id is not part of the pull request"]);
@@ -724,7 +736,7 @@ async function call(io) {
 		const [, base, head] = restCompare;
 		let mb;
 		try {
-			mb = mergeBaseOf(null, head, decodeURIComponent(base));
+			mb = await mergeBaseOf(null, head, decodeURIComponent(base));
 		} catch (error) {
 			if (error instanceof FakeGhExit) throw error;
 			httpFail(404, "Not Found");
@@ -1211,11 +1223,7 @@ async function call(io) {
 				fail(`Cloning into bare repository '${path}'...\n${s.cloneError}`, 128);
 			}
 			try {
-				execFileSync("git", ["clone", "--quiet", "--bare", s.repoPath, path], {
-					cwd: io.cwd,
-					env,
-					stdio: ["ignore", "ignore", "pipe"],
-				});
+				await git(["clone", "--quiet", "--bare", at(s.repoPath), path], io.cwd);
 			} catch (error) {
 				fail(String(error.stderr).trim() || "git clone failed");
 			}
@@ -1414,7 +1422,7 @@ async function call(io) {
 			if (/^query\(\$cursor: String\) \{ viewer \{ repositories\(/.test(f.query ?? "")) {
 				if (s.viewerReposDelayMs) await sleep(s.viewerReposDelayMs);
 				// Held until the test lets it through (at most a minute).
-				for (let i = 0; s.viewerReposHold && !existsSync(s.viewerReposHold) && i < 1200; i++) await sleep(50);
+				for (let i = 0; s.viewerReposHold && !existsSync(at(s.viewerReposHold)) && i < 1200; i++) await sleep(50);
 				const listed = (name) =>
 					(new RegExp(`${name}: \\[([A-Z_, ]*)\\]`).exec(f.query)?.[1] ?? "")
 						.split(",")

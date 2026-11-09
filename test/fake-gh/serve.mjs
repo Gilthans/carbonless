@@ -3,7 +3,8 @@
 // with a gh process's semantics. Calls run side by side: a held one waits
 // in an async sleep, never blocking the others.
 //
-// Request (the shim's), NUL-terminated fields: its pid, cwd, "1" when stdin
+// Request (the shim's), NUL-terminated fields: the server's token (from
+// $CRB_FAKE_GH_SERVER; any other closes the connection), its pid, cwd, "1" when stdin
 // follows, argc, the args, NAME=value per environment variable, an empty
 // field, then stdin when it follows. Answer: "<code> <stderr bytes> <stdout
 // bytes>\n", stderr, stdout; before it, with $CRB_FAKE_GH_LOG set, "log\n",
@@ -11,11 +12,12 @@
 // shim closing first means it was killed: the call ends at its next wait
 // (sleep, log) and nothing is answered.
 import { createServer } from "node:net";
+import { resolve } from "node:path";
 import { workerData } from "node:worker_threads";
 import { fakeGh } from "./gh.mjs";
 import { writeSpan } from "./trace.mjs";
 
-/** The request in `fields` once complete, else null. */
+/** The request in `fields` (after the token) once complete, else null. */
 function request(fields) {
 	if (fields.length < 4) return null;
 	const argc = Number(fields[3]);
@@ -94,7 +96,9 @@ async function answer(conn, req, start) {
 	// A killed gh process writes no span either.
 	if (conn.gone) return;
 	writeSpan({
-		env: req.env,
+		env: req.env.CRB_TRACE_DIR
+			? { ...req.env, CRB_TRACE_DIR: resolve(req.cwd, req.env.CRB_TRACE_DIR) }
+			: req.env,
 		args: req.args,
 		pid: req.pid,
 		start,
@@ -114,6 +118,7 @@ const server = createServer((socket) => {
 	const fields = [];
 	let rest = Buffer.alloc(0);
 	let started = false;
+	let received = 0;
 	socket.on("end", () => conn.die());
 	socket.on("close", () => conn.die());
 	socket.on("error", () => {});
@@ -123,12 +128,25 @@ const server = createServer((socket) => {
 			for (const byte of chunk) if (byte === 0x6b) conn.acks.shift()?.(true);
 			return;
 		}
+		received += chunk.length;
 		rest = rest.length ? Buffer.concat([rest, chunk]) : chunk;
 		for (let i = rest.indexOf(0); i !== -1; i = rest.indexOf(0)) {
 			fields.push(rest.subarray(0, i).toString("utf8"));
 			rest = rest.subarray(i + 1);
 		}
-		const req = request(fields);
+		// Only a shim of this test process (it has the token from
+		// $CRB_FAKE_GH_SERVER) may run a call: its input picks files to read
+		// and write and git's environment. Nor may a request grow forever.
+		const stranger =
+			fields.length > 0
+				? fields[0] !== workerData.token
+				: rest.length > workerData.token.length;
+		if (stranger || received > workerData.maxRequest) {
+			started = true;
+			socket.destroy();
+			return;
+		}
+		const req = request(fields.slice(1));
 		if (!req) return;
 		started = true;
 		serve(conn, req, start).catch((error) => {

@@ -1,14 +1,18 @@
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import {
 	existsSync,
+	mkdirSync,
 	mkdtempSync,
+	readdirSync,
 	readFileSync,
 	rmSync,
 	statSync,
+	writeFileSync,
 } from "node:fs";
-import { connect } from "node:net";
+import { type AddressInfo, connect, createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { KEPT_TAGS } from "../../test/fake-gh/keptTags.mjs";
 import {
@@ -22,7 +26,11 @@ import {
 	timelineCommit,
 	writeScenario,
 } from "../../test/fake-gh/scenario";
-import { fakeGhServerCalls } from "../../test/fake-gh/server.mjs";
+import {
+	fakeGhServerCalls,
+	MAX_REQUEST,
+	startFakeGhServer,
+} from "../../test/fake-gh/server.mjs";
 import { GIT_TEST_TIMEOUTS, testGitEnv } from "../../test/git-fixture";
 import { settleGh } from "../../test/settle-gh";
 import { GITHUB_KEPT_TAGS } from "../shared/markdownEscape";
@@ -867,6 +875,43 @@ describe("fake gh", () => {
 				expect((await thread0()).comments.totalCount).toBe(1);
 			});
 
+			/** The server's port and token, from $CRB_FAKE_GH_SERVER. */
+			const server = () => {
+				const [host = "", port = "", token = ""] = (
+					process.env.CRB_FAKE_GH_SERVER ?? ""
+				).split(":");
+				return { host, port: Number(port), token };
+			};
+			/** A raw request as the shim sends it, without the token. */
+			const request = (args: string[], stdin?: string) => {
+				const env = Object.entries(process.env).map(([k, v]) => `${k}=${v}`);
+				return [
+					"1",
+					tmp,
+					stdin === undefined ? "0" : "1",
+					String(args.length),
+					...args,
+					...env,
+					"",
+					...(stdin === undefined ? [] : [stdin]),
+				];
+			};
+			/** Sends `fields` raw; what the server said, once it closed. */
+			const raw = (fields: string[] | Buffer) =>
+				new Promise<string>((resolve) => {
+					const { host, port } = server();
+					const socket = connect(port, host);
+					let said = "";
+					socket.on("data", (d) => {
+						said += d;
+					});
+					socket.on("error", () => {});
+					socket.on("close", () => resolve(said));
+					socket.write(
+						Buffer.isBuffer(fields) ? fields : `${fields.join("\0")}\0`,
+					);
+				});
+
 			it("a gh killed before it logs its call goes no further: no log line, no write", async () => {
 				// A shim of the test's own, killed when the server asks it to
 				// log the call: as a gh process killed before its first line.
@@ -874,21 +919,10 @@ describe("fake gh", () => {
 				writable();
 				const opener = (await thread0()).first.nodes[0]?.databaseId ?? 0;
 				const before = fakeGhServerCalls().served;
-				const [host, port] = (process.env.CRB_FAKE_GH_SERVER ?? "").split(":");
-				const args = replyArgs(opener);
-				const env = Object.entries(process.env).map(([k, v]) => `${k}=${v}`);
-				const socket = connect(Number(port), host);
+				const { host, port, token } = server();
+				const socket = connect(port, host);
 				socket.write(
-					`${[
-						"1",
-						tmp,
-						"1",
-						String(args.length),
-						...args,
-						...env,
-						"",
-						JSON.stringify({ body: "Never" }),
-					].join("\0")}\0`,
+					`${[token, ...request(replyArgs(opener), JSON.stringify({ body: "Never" }))].join("\0")}\0`,
 				);
 				let said = "";
 				await new Promise<void>((resolve) =>
@@ -904,6 +938,154 @@ describe("fake gh", () => {
 					"replies",
 				);
 				expect((await thread0()).comments.totalCount).toBe(1);
+			});
+
+			it("runs nothing for a client without its token, or one sending too much", async () => {
+				setEnv({ CRB_FAKE_GH_LOG: join(tmp, "gh.log") });
+				writable();
+				const opener = (await thread0()).first.nodes[0]?.databaseId ?? 0;
+				const before = fakeGhServerCalls().served;
+				const scenarioBefore = readFileSync(
+					process.env.CRB_FAKE_GH ?? "",
+					"utf8",
+				);
+				const reply = request(
+					replyArgs(opener),
+					JSON.stringify({ body: "Hi" }),
+				);
+				// A wrong token, a missing one (the request's first field instead),
+				// and one too long to be a token.
+				await expect(raw(["0".repeat(32), ...reply])).resolves.toBe("");
+				await expect(raw(reply)).resolves.toBe("");
+				await expect(raw(Buffer.alloc(1024, "a"))).resolves.toBe("");
+				// The token, then more than a request may hold, never complete.
+				const big = Buffer.alloc(MAX_REQUEST + 1, "x");
+				await expect(
+					raw(Buffer.concat([Buffer.from(`${server().token}\0`), big])),
+				).resolves.toBe("");
+				expect(fakeGhServerCalls().served).toBe(before);
+				expect(readFileSync(process.env.CRB_FAKE_GH ?? "", "utf8")).toBe(
+					scenarioBefore,
+				);
+				expect(readFileSync(join(tmp, "gh.log"), "utf8")).not.toContain(
+					"replies",
+				);
+			});
+
+			it("a server that can't be reached: a process of its own answers", async () => {
+				writable();
+				const before = fakeGhServerCalls().served;
+				// A port nothing listens on any more.
+				const closed = await new Promise<number>((resolve) => {
+					const s = createServer().listen(0, "127.0.0.1", () => {
+						const { port } = s.address() as AddressInfo;
+						s.close(() => resolve(port));
+					});
+				});
+				setEnv({
+					CRB_FAKE_GH_SERVER: `127.0.0.1:${closed}:${server().token}`,
+				});
+				await expect(viewerSlug()).resolves.toBe("octo-cat");
+				expect(fakeGhServerCalls().served).toBe(before);
+			});
+
+			it("fails at once with its error when its code doesn't load", () => {
+				const broken = join(tmp, "broken.mjs");
+				writeFileSync(broken, "export const x = ;\n");
+				expect(() => startFakeGhServer(pathToFileURL(broken).href)).toThrow(
+					/fake gh server failed to load: SyntaxError/,
+				);
+			});
+
+			it("writes a span per call under crb's, with the gh's pid", () => {
+				writable();
+				const dir = join(tmp, "traces");
+				mkdirSync(dir);
+				const parent =
+					"00-0123456789abcdef0123456789abcdef-0011223344556677-01";
+				const r = spawnSync("gh", ["api", "user"], {
+					env: { ...process.env, CRB_TRACE_DIR: dir, TRACEPARENT: parent },
+					encoding: "utf8",
+				});
+				expect(r.status).toBe(0);
+				const files = readdirSync(dir);
+				expect(files).toEqual([
+					`fake-gh-${r.pid}-${files[0]?.slice(-12, -6)}.jsonl`,
+				]);
+				const line = JSON.parse(
+					readFileSync(join(dir, files[0] ?? ""), "utf8"),
+				);
+				const resource = line.resourceSpans[0];
+				const span = resource.scopeSpans[0].spans[0];
+				expect(resource.resource.attributes).toContainEqual({
+					key: "process.pid",
+					value: { intValue: r.pid },
+				});
+				expect(span).toMatchObject({
+					traceId: "0123456789abcdef0123456789abcdef",
+					parentSpanId: "0011223344556677",
+					name: "fake gh api user",
+				});
+				expect(span.attributes).toContainEqual({
+					key: "exit",
+					value: { intValue: 0 },
+				});
+			});
+
+			it("a log it can't write fails the call, which goes no further", async () => {
+				writable();
+				const opener = (await thread0()).first.nodes[0]?.databaseId ?? 0;
+				const r = spawnSync("gh", replyArgs(opener), {
+					env: { ...process.env, CRB_FAKE_GH_LOG: join(tmp, "gone", "gh.log") },
+					input: JSON.stringify({ body: "Never" }),
+					encoding: "utf8",
+				});
+				expect(r.status).toBe(1);
+				await until(() => fakeGhServerCalls().running === 0);
+				expect((await thread0()).comments.totalCount).toBe(1);
+			});
+
+			it("a short answer from its server fails the call, saying so", async () => {
+				// A server of the test's own that promises more than it sends.
+				const liar = createServer((socket) => {
+					socket.once("data", () => socket.end('0 0 100\n{"short"'));
+				});
+				const port = await new Promise<number>((resolve) =>
+					liar.listen(0, "127.0.0.1", () =>
+						resolve((liar.address() as AddressInfo).port),
+					),
+				);
+				try {
+					const r = await new Promise<{
+						code: number | null;
+						out: string;
+						err: string;
+					}>((resolve) => {
+						const gh = spawn("gh", ["api", "user"], {
+							env: {
+								...process.env,
+								CRB_FAKE_GH_SERVER: `127.0.0.1:${port}:${"a".repeat(32)}`,
+							},
+						});
+						let out = "";
+						let err = "";
+						gh.stdout.on("data", (d) => {
+							out += d;
+						});
+						gh.stderr.on("data", (d) => {
+							err += d;
+						});
+						gh.stdin.end();
+						gh.on("close", (code) => resolve({ code, out, err }));
+					});
+					expect(r).toEqual({
+						code: 1,
+						out: "",
+						err: "fake gh: a short answer from its server\n",
+					});
+				} finally {
+					liar.close();
+				}
 			});
 		});
 	});

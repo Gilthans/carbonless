@@ -2,12 +2,16 @@
 # The fake `gh` for tests (gh.mjs). A Node process per call costs ~45 ms of
 # CPU, most of it Node starting, so this shim forwards the call (argv, cwd,
 # environment, and stdin for `--input -`) to the fake gh server of the test
-# process at $CRB_FAKE_GH_SERVER (server.mjs) and gives back its stdout,
-# stderr and exit code. Without a server it runs the call in a Node process
-# of its own (cli.mjs). Killing the shim ends the call (an unheld write
-# that already saved stays saved, as with a killed process).
-if [[ $CRB_FAKE_GH_SERVER =~ ^127\.0\.0\.1:([0-9]+)$ ]] &&
+# process at $CRB_FAKE_GH_SERVER (127.0.0.1:<port>:<token>, server.mjs) and
+# gives back its stdout, stderr and exit code. Without a server it runs the
+# call in a Node process of its own (cli.mjs). Killing the shim ends the
+# call (an unheld write that already saved stays saved, as with a killed
+# process). The environment goes as bash sees it: exported names that
+# aren't bash identifiers are left out, and bash's own SHLVL, _ and PWD
+# are in (gh.mjs reads none of them).
+if [[ $CRB_FAKE_GH_SERVER =~ ^127\.0\.0\.1:([0-9]+):([0-9a-f]{32})$ ]] &&
 	{ exec 3<>"/dev/tcp/127.0.0.1/${BASH_REMATCH[1]}"; } 2>/dev/null; then
+	token=${BASH_REMATCH[2]}
 	input=0
 	prev=
 	for a in "$@"; do
@@ -15,7 +19,8 @@ if [[ $CRB_FAKE_GH_SERVER =~ ^127\.0\.0\.1:([0-9]+)$ ]] &&
 		prev=$a
 	done
 	{
-		printf '%s\0' "$$" "$PWD" "$input" "$#" "$@"
+		# The token first: the server drops a connection without it.
+		printf '%s\0' "$token" "$$" "$PWD" "$input" "$#" "$@"
 		for n in $(compgen -e); do printf '%s=%s\0' "$n" "${!n}"; done
 		printf '\0'
 		if ((input)); then
@@ -25,22 +30,26 @@ if [[ $CRB_FAKE_GH_SERVER =~ ^127\.0\.0\.1:([0-9]+)$ ]] &&
 	} >&3
 	# Byte counts: read -N counts characters, bytes in the C locale.
 	LC_ALL=C
+	broken() {
+		echo "fake gh: $1 from its server" >&2
+		exit 1
+	}
 	answer() {
-		if ! read -r code errn outn <&3; then
-			echo "fake gh: its server closed the call" >&2
-			exit 1
-		fi
+		read -r code errn outn <&3 || broken "no answer"
 	}
 	answer
 	# The server read the scenario: the call goes in the log, written by
-	# this gh while alive, as a gh process does.
+	# this gh while alive, as a gh process does. A log that can't be
+	# written fails the call (and the server sees this gh gone).
 	if [[ $code == log ]]; then
-		printf '%s\n' "$*" >>"$CRB_FAKE_GH_LOG"
+		printf '%s\n' "$*" >>"$CRB_FAKE_GH_LOG" || exit 1
 		printf k >&3
 		answer
 	fi
-	IFS= read -r -N "$errn" e <&3
-	IFS= read -r -N "$outn" o <&3
+	[[ $code =~ ^[0-9]+$ && $errn =~ ^[0-9]+$ && $outn =~ ^[0-9]+$ ]] ||
+		broken "a bad answer"
+	IFS= read -r -N "$errn" e <&3 && ((${#e} == errn)) || broken "a short answer"
+	IFS= read -r -N "$outn" o <&3 && ((${#o} == outn)) || broken "a short answer"
 	printf '%s' "$o"
 	printf '%s' "$e" >&2
 	exit "$code"
