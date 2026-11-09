@@ -153,6 +153,9 @@ test("Ignore whitespace pairs whitespace-only lines and collapses whitespace-onl
 	});
 	await expect(box).not.toBeChecked();
 	await box.click();
+	// The file's one cluster: marking it finished the file, which closed
+	// (the next file opened); open it again.
+	await section.getByRole("button", { name: "Expand file" }).click();
 	await expect(box).toBeChecked();
 	await expect(collapsed).toHaveAttribute("data-reviewed", "true");
 	await expect(bar).toContainText("1 / 10 clusters reviewed");
@@ -312,7 +315,8 @@ test("an expanded whitespace-only cluster's controls float below the file header
 	if (isMobile) expect(target?.height).toBeGreaterThanOrEqual(40);
 	// Still operable there.
 	await checkbox.click();
-	await expect(checkbox).toBeChecked();
+	// The file's one cluster: marked, the file is finished and closes.
+	await expect(checkbox).toHaveCount(0);
 	await expect(progress(page)).toContainText("1 / 1 cluster reviewed");
 	expect(await overflow(page)).toBeLessThanOrEqual(0);
 });

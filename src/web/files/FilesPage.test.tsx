@@ -87,20 +87,26 @@ let lastClient: QueryClient;
 function renderPage(
 	responses: Record<
 		string,
-		() => { status: number; body: unknown } | Promise<Response>
+		(
+			init?: RequestInit,
+		) => { status: number; body: unknown } | Promise<Response>
 	>,
 	/** The app header's compact height, as App provides it. */
 	appHeader = 0,
 	initialPath = "/files",
 ) {
-	const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
-		const path = new URL(String(input), "http://test").pathname;
-		const respond = responses[path];
-		const result = respond ? respond() : { status: 404, body: {} };
-		// Held (test/loading.ts): answered when the test lets it go.
-		if (result instanceof Promise) return result;
-		return new Response(JSON.stringify(result.body), { status: result.status });
-	});
+	const fetchMock = vi.fn(
+		async (input: RequestInfo | URL, init?: RequestInit) => {
+			const path = new URL(String(input), "http://test").pathname;
+			const respond = responses[path];
+			const result = respond ? respond(init) : { status: 404, body: {} };
+			// Held (test/loading.ts): answered when the test lets it go.
+			if (result instanceof Promise) return result;
+			return new Response(JSON.stringify(result.body), {
+				status: result.status,
+			});
+		},
+	);
 	vi.stubGlobal("fetch", fetchMock);
 	const queryClient = new QueryClient({
 		defaultOptions: { queries: { retry: false } },
@@ -280,8 +286,12 @@ describe("FilesPage", () => {
 		).toBeInTheDocument();
 		await vi.waitFor(() => expect(reads).toBe(2));
 		expect(fetchMock).toHaveBeenCalled();
-		// The next stored write clears the notice.
-		const box = screen.getByRole("checkbox", { name: "Mark cluster reviewed" });
+		// The next stored write clears the notice. Marking the file's one
+		// cluster finished it, so it closed: open it again.
+		await user.click(screen.getByRole("button", { name: "Expand file" }));
+		const box = await screen.findByRole("checkbox", {
+			name: "Mark cluster reviewed",
+		});
 		await vi.waitFor(() => expect(box).toBeEnabled());
 		await user.click(box);
 		await vi.waitFor(() =>
@@ -414,6 +424,258 @@ describe("FilesPage", () => {
 		expect(
 			within(b).getByRole("button", { name: "Collapse file" }),
 		).toBeInTheDocument();
+	});
+
+	describe("finishing the open file", () => {
+		/** Files a, b, c in that order, each with one cluster; b is reviewed. */
+		/** `held`: file 2's first read of its lines answers when released. */
+		function threeFiles(held?: Promise<Response>) {
+			const file = (
+				index: number,
+				path: string,
+				state: "unreviewed" | "reviewed",
+			): FileView => ({
+				...oneFile,
+				index,
+				path,
+				clusters: oneFile.clusters.map((c) => ({
+					...c,
+					key: `k${index}`,
+					state,
+				})),
+			});
+			let files = [
+				file(0, "a.txt", "unreviewed"),
+				file(1, "b.txt", "reviewed"),
+				file(2, "c.txt", "unreviewed"),
+			];
+			const hunks = (index: number) => () => ({
+				status: 200,
+				body: {
+					newLineCount: 1,
+					hunks: [
+						{
+							oldStart: 1,
+							oldCount: 1,
+							newStart: 1,
+							newCount: 1,
+							lines: [
+								{ kind: "del", oldNo: 1, text: "a", clusterKey: `k${index}` },
+								{ kind: "add", newNo: 1, text: "b", clusterKey: `k${index}` },
+							],
+						},
+					],
+				},
+			});
+			renderPage({
+				"/api/review": () => ({ status: 200, body: { ...emptyReview, files } }),
+				"/api/files/0/hunks": hunks(0),
+				"/api/files/1/hunks": hunks(1),
+				"/api/files/2/hunks": () => {
+					const first = held;
+					held = undefined;
+					return first ?? hunks(2)();
+				},
+				"/api/review/states": (init) => {
+					const { changes } = JSON.parse(String(init?.body)) as {
+						changes: { key: string; state: "reviewed" }[];
+					};
+					files = files.map((f) => ({
+						...f,
+						clusters: f.clusters.map((c) => ({
+							...c,
+							state: changes.find((x) => x.key === c.key)?.state ?? c.state,
+						})),
+					}));
+					return { status: 200, body: { ...emptyReview, files } };
+				},
+			});
+		}
+		const region = (name: string) => screen.getByRole("region", { name });
+		/** jsdom has no Web Animations: a stand-in that finishes at once. */
+		const stubAnimate = () => {
+			const animate = vi.fn(
+				() => ({ finished: Promise.resolve() }) as unknown as Animation,
+			);
+			Object.defineProperty(Element.prototype, "animate", {
+				value: animate,
+				configurable: true,
+				writable: true,
+			});
+			return animate;
+		};
+		afterEach(() => {
+			Reflect.deleteProperty(Element.prototype, "animate");
+		});
+		// The guard on a file a move-on opened reads `performance.now()`:
+		// stepped by hand, so a stalled machine can't flip it.
+		let clock = 1000;
+		beforeEach(() => {
+			clock = 1000;
+			vi.spyOn(performance, "now").mockImplementation(() => clock);
+		});
+		const markLast = async (name: string) => {
+			const box = await within(region(name)).findByRole("checkbox", {
+				name: "Mark cluster reviewed",
+			});
+			await vi.waitFor(() => expect(box).toBeEnabled());
+			await userEvent.setup().click(box);
+			return box;
+		};
+
+		it("opens the next file with something unreviewed, wrapping; then the verdict", async () => {
+			const scrolled = vi.fn();
+			vi.stubGlobal("scrollTo", scrolled);
+			const animate = stubAnimate();
+			threeFiles();
+			const user = userEvent.setup();
+			await user.click(
+				await within(
+					await screen.findByRole("region", { name: "c.txt" }),
+				).findByRole("button", { name: "Expand file" }),
+			);
+			// c is last, b is reviewed: it wraps round to a.
+			await markLast("c.txt");
+			await vi.waitFor(() =>
+				expect(
+					within(region("a.txt")).getByRole("button", {
+						name: "Collapse file",
+					}),
+				).toHaveFocus(),
+			);
+			expect(
+				within(region("c.txt")).getByRole("button", { name: "Expand file" }),
+			).toBeInTheDocument();
+			// It rose into place.
+			await vi.waitFor(() =>
+				expect(animate.mock.contexts.at(-1)).toBe(
+					document.getElementById("file-0"),
+				),
+			);
+			// Nothing left anywhere else: a closes and the verdict comes into view.
+			const verdict = document.getElementById("files-verdict");
+			if (!verdict) throw new Error("no verdict");
+			verdict.getBoundingClientRect = () => ({ top: 900 }) as DOMRect;
+			// Right after it opened under the pointer, a's box takes no mark
+			// (a double click's second click); a moment later it does.
+			const early = await markLast("a.txt");
+			expect(early).not.toBeChecked();
+			expect(
+				within(region("a.txt")).getByRole("button", { name: "Collapse file" }),
+			).toBeInTheDocument();
+			clock += 10_001;
+			await markLast("a.txt");
+			await vi.waitFor(() =>
+				expect(
+					within(region("a.txt")).getByRole("button", { name: "Expand file" }),
+				).toBeInTheDocument(),
+			);
+			for (const name of ["a.txt", "b.txt", "c.txt"]) {
+				expect(
+					within(region(name)).getByRole("button", { name: "Expand file" }),
+				).toBeInTheDocument();
+			}
+			// Below the sticky bar (40px, mocked), a gap above it.
+			await vi.waitFor(() =>
+				expect(scrolled.mock.calls.at(-1)?.[0]).toEqual({
+					top: 900 - 40 - 12,
+				}),
+			);
+			await vi.waitFor(() =>
+				expect(animate.mock.contexts.at(-1)).toBe(verdict),
+			);
+		});
+
+		it("a file a move-on opened, closed and opened again later takes marks at once", async () => {
+			vi.stubGlobal("scrollTo", vi.fn());
+			stubAnimate();
+			const lines = heldJson();
+			threeFiles(lines.response);
+			const user = userEvent.setup();
+			await user.click(
+				await within(
+					await screen.findByRole("region", { name: "a.txt" }),
+				).findByRole("button", { name: "Expand file" }),
+			);
+			// a finishes: c opens (b is reviewed), its lines still on the way.
+			await markLast("a.txt");
+			const toggle = () =>
+				within(region("c.txt")).getByRole("button", {
+					name: /^(Collapse|Expand) file$/,
+				});
+			await vi.waitFor(() => expect(toggle()).toHaveFocus());
+			// Right away its toggle doesn't close it (a double click's second
+			// click); a moment later the reviewer closes it before the lines came.
+			await user.click(toggle());
+			expect(toggle()).toHaveAccessibleName("Collapse file");
+			clock += 10_001;
+			await user.click(toggle());
+			expect(toggle()).toHaveAccessibleName("Expand file");
+			lines.release({
+				newLineCount: 1,
+				hunks: [
+					{
+						oldStart: 1,
+						oldCount: 1,
+						newStart: 1,
+						newCount: 1,
+						lines: [
+							{ kind: "del", oldNo: 1, text: "a", clusterKey: "k2" },
+							{ kind: "add", newNo: 1, text: "b", clusterKey: "k2" },
+						],
+					},
+				],
+			});
+			clock += 60_000;
+			// Opened again by the reviewer: its box marks at once.
+			await user.click(toggle());
+			const box = await within(region("c.txt")).findByRole("checkbox", {
+				name: "Mark cluster reviewed",
+			});
+			await user.click(box);
+			await vi.waitFor(() =>
+				expect(
+					within(region("c.txt")).getByRole("button", {
+						name: "Expand file",
+					}),
+				).toBeInTheDocument(),
+			);
+		});
+
+		it("doesn't animate with reduced motion", async () => {
+			vi.stubGlobal("scrollTo", vi.fn());
+			vi.stubGlobal(
+				"matchMedia",
+				(query: string) =>
+					({
+						matches: query.includes("reduce") || query.includes("min-width"),
+						media: query,
+						addEventListener: () => {},
+						removeEventListener: () => {},
+					}) as unknown as MediaQueryList,
+			);
+			const animate = stubAnimate();
+			threeFiles();
+			const user = userEvent.setup();
+			await user.click(
+				await within(
+					await screen.findByRole("region", { name: "a.txt" }),
+				).findByRole("button", { name: "Expand file" }),
+			);
+			// b is reviewed: a skips it for c.
+			await markLast("a.txt");
+			await vi.waitFor(() =>
+				expect(
+					within(region("c.txt")).getByRole("button", {
+						name: "Collapse file",
+					}),
+				).toHaveFocus(),
+			);
+			expect(
+				within(region("b.txt")).getByRole("button", { name: "Expand file" }),
+			).toBeInTheDocument();
+			expect(animate).not.toHaveBeenCalled();
+		});
 	});
 
 	it("expanding a file from its header opens it in the tree: its folders unfold and it's marked opened", async () => {
