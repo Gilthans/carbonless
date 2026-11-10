@@ -120,7 +120,7 @@ const NEWLINE = Buffer.from("\n");
 const DIFF_HEADER = Buffer.from("diff --git ");
 
 /** The `diff --git` header lines git can print for this file. */
-function headersFor(file: ChangedFile): string[] {
+export function headersFor(file: { path: string; oldPath?: string }): string[] {
 	const oldPath = file.oldPath ?? file.path;
 	return [
 		`diff --git a/${oldPath} b/${file.path}`,

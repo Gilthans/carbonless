@@ -279,7 +279,7 @@ test("leaving the files page with the tree sheet open closes it", async ({
 	).resolves.toBe("");
 });
 
-test("the compact title is centered between the tabs and Refresh, on a pill", async ({
+test("the compact title is centered between the tabs and the header's next button (Find in PR, before Refresh), on a pill", async ({
 	page,
 	pr,
 	startCrb,
@@ -305,12 +305,17 @@ test("the compact title is centered between the tabs and Refresh, on a pill", as
 		return b;
 	};
 	const nav = await box(page.getByRole("navigation", { name: "PR pages" }));
+	// The title's gap ends at the first button after it: Find in PR, then Refresh.
+	const find = await box(
+		page.getByRole("button", { name: "Find in PR", exact: true }),
+	);
 	const refresh = await box(page.getByRole("button", { name: "Refresh" }));
+	expect(find.x + find.width).toBeLessThanOrEqual(refresh.x);
 	const pill = await box(page.getByTestId("compact-title-pill"));
-	const gapCenter = (nav.x + nav.width + refresh.x) / 2;
+	const gapCenter = (nav.x + nav.width + find.x) / 2;
 	expect(Math.abs(pill.x + pill.width / 2 - gapCenter)).toBeLessThanOrEqual(4);
 	expect(pill.x).toBeGreaterThanOrEqual(nav.x + nav.width);
-	expect(pill.x + pill.width).toBeLessThanOrEqual(refresh.x);
+	expect(pill.x + pill.width).toBeLessThanOrEqual(find.x);
 	expect(await tapHeight(title)).toBeGreaterThanOrEqual(40);
 	const bg = await page
 		.getByTestId("compact-title-pill")

@@ -45,7 +45,8 @@ These guide every feature. If a change conflicts with one of them, stop and rais
 5. **Mobile is supported.** The reviewer also reads PRs on a phone. Every page
    works down to ~360px wide with no horizontal page scroll (diff lines may
    scroll inside their own container), tap targets are at least 40px, and the
-   Playwright suite runs in a phone project as well as desktop.
+   Playwright suite has a phone project next to desktop, run before every PR
+   and while iterating on layout ("Development").
 
 6. **Concise, icon-first UI.** Keep text short. Icons (each with a tooltip and
    an accessible name) and color carry meaning; no disclaimers, legends or
@@ -89,17 +90,29 @@ loading never looking empty, checking against a real PR):
   React + Vite + TanStack Query + Tailwind (`src/web`), shared types (`src/shared`).
 - `pnpm verify` runs lint (Biome), typecheck, unit tests (Vitest), Playwright
   tests and the package smoke test (`pnpm test:pack`: packs, installs the
-  tarball into a temp dir, runs its `crb`). Run it right before committing
-  and before saying work is done; use `pnpm verify:fast` (below) until then.
+  tarball into a temp dir, runs its `crb`). It takes the machine for ~20
+  minutes after a queue, so it is rare: once, right before finalizing a PR
+  (the coordinator, on the combined branch, before opening or updating the
+  PR). Everything before that uses `pnpm verify:fast` (below): implementing,
+  committing, fix rounds, reviews, and an implementer's "done".
+- The phone project (Playwright's `phone`) doubles an e2e run. The final
+  pre-PR `pnpm verify` always includes it. Before that, run it only when a
+  change touches layout: CSS or Tailwind classes that size, place or wrap
+  things, breakpoints and `useMedia`/`isMobile` code, sticky or scrolling
+  behaviour, touch targets, or anything in `e2e/mobile.spec.ts`'s ground.
+  Otherwise set `CRB_NO_PHONE=1`, which drops the phone project from any
+  Playwright run (`verify:fast`, `test:e2e`, `flake-check`). When unsure,
+  include the phone.
 - Full test runs take turns: `pnpm verify`'s unit and e2e stages, `pnpm
   test:e2e` without spec files, `-g` or `--last-failed`, an all-specs
   `verify:fast` and `pnpm flake-check` wait for a machine-wide lock
   (`scripts/queue.mjs`, `flock` on `~/.cache/carbonless-verify.lock`),
   printing whose run they wait for, so they never overload the machine (or
   share a tree's `dist`) together. Waiting can take longer than a foreground
-  command may: run `pnpm verify` in the background (`run_in_background`);
-  a signal ends the wait. A queued run takes turns with the other full runs,
-  so Playwright takes a worker per core. `CRB_NO_QUEUE=1` skips the queue.
+  command may: run `pnpm verify` and an all-specs `verify:fast` in the
+  background (`run_in_background`); a signal ends the wait. A queued run
+  takes turns with the other full runs, so Playwright takes a worker per
+  core. `CRB_NO_QUEUE=1` skips the queue.
 - While iterating, run only what a change touches:
   - `pnpm verify:fast [base]`: lint, typecheck, the unit tests related to files
     changed since `base`, and the e2e specs mapped to them (`E2E_MAP` in
@@ -137,7 +150,10 @@ loading never looking empty, checking against a real PR):
   `docs/product-rules.md`, "Writing to GitHub".
 - Main on the devbox and branch instances: "Versions and instances" below.
 - Tests never call the real `gh`: `test/fake-gh/gh` serves a scenario
-  (`test/fake-gh/scenario.ts`) via `$CRB_FAKE_GH`. The e2e harness
+  (`test/fake-gh/scenario.ts`) via `$CRB_FAKE_GH`. It is a bash shim that
+  forwards each call to the test process's fake gh server (`fakeGhEnv()`
+  puts both on the env; a Node process per call without one), with a gh
+  process's semantics. The e2e harness
   (`e2e/fixtures.ts`) wires it onto `PATH` and drives the built CLI. In
   unit tests a trap `gh` sits on `PATH` behind the fake
   (`test/real-gh-trap.ts`) and fails the run, naming the test, when a call
@@ -157,15 +173,23 @@ loading never looking empty, checking against a real PR):
   and gets fixed. Playwright's expects wait 10 s (a reload's chained reads);
   a test that needs longer says why.
 - `pnpm flake-check <files…> [--runs N] [--load L] [-g title] [--project p]`
-  runs unit files or e2e specs N times (default 5) next to L busy loops
-  (default one per core), which load the whole machine, other agents'
-  unqueued runs too. Run it on every test you add or change that involves
-  timing, concurrency, a spinner or a gate, and on a test you saw fail once.
+  runs unit files or e2e specs N times (default 5), in the queue. `--load L`
+  adds L busy loops (default none: the devbox is loaded enough by other
+  agents, and the loops slow their runs too). Run it on every test you add
+  or change that involves timing, concurrency, a spinner or a gate, and on
+  a test you saw fail once.
+- Every test run traces itself (spans per test, setup phase, crb request,
+  git and gh call) into `~/.cache/carbonless/test-traces/<run>/`, kept 7
+  days. `pnpm test-profile [run|latest] [--compare <run>] [--jaeger]`
+  says where the time goes (CI uploads its runs as `test-traces-*`
+  artifacts; `docs/test-profiling.md`).
 - If `nvm use` fails (e.g. in a sandbox), put `~/.nvm/versions/node/v24*/bin`
   first on `PATH`.
 - `pnpm compare-threads <pr> [--as-of <iso>] [--out <dir>]` checks every
   thread's code pane against GitHub's REST comments (read-only); exits 1 on a mismatch.
-- Planned work and milestones live in `docs/todo.md`.
+- Planned work and milestones live in Linear (see "Tickets" below).
+  `docs/todo.md` is being retired: everything in it is already in Linear,
+  so add nothing new there.
 - Core design docs, kept current (update them in the same change that alters
   what they describe):
   - `docs/review-data-storage.md`: how review data is stored in git.
@@ -174,6 +198,65 @@ loading never looking empty, checking against a real PR):
   - `docs/git-methodology.md`: git-methodology independence, merged handling
     and the methodology test matrix.
   - `docs/product-rules.md`: product rules beyond the design principles.
+
+## Tickets (Linear)
+
+Work is tracked in the owner's Linear workspace `carbonless`, team `CAR`
+(issues `CAR-123`). The owner doesn't use Linear's UI: bots read and write it
+for them.
+
+- Use the `linear` MCP server only (an API key, set up for every session on
+  this machine). Never the claude.ai Linear connector, which is the owner's
+  other account. Scripts can use the same key (`~/.config/linear/api-key`)
+  against Linear's GraphQL API.
+- Structure: initiatives are themes (Improved Diff, Review Prioritization,
+  AI Conversation, Review Tools). Projects are releases (M2 now, M3 next,
+  scope set with the owner), and M2's project milestones are its ordered
+  steps. A parent issue is an epic. An issue is one change: one brief, one
+  branch, one PR. Issues not yet scheduled have no project.
+- Labels: every issue has exactly one label from the `Initiative` group
+  (tooling has none), at most one from `Area`, a type (Bug, Feature,
+  Improvement), and flags: `minor fix` (a small, low-risk change: one short PR,
+  no design call, nothing that could break the UI), `owner-decision`,
+  `edge-case` (needs a gallery PR), `flaky-test`, `from-review`, `mobile`,
+  `perf`.
+- **Ask the owner before opening a ticket.** Propose its title, initiative,
+  project and labels, and open it only after a yes. Updating existing tickets
+  needs no ask and is encouraged: sharpen the scope as it becomes clearer,
+  move the status as work progresses, comment what was found or decided.
+- **Keep every ticket's status true.** Whoever moves the work moves the
+  ticket in the same step, so the owner can read where everything stands
+  from Linear alone:
+  - Backlog: not being worked on. (There's no queue: once the owner decides
+    to do something, it goes to an agent at once.)
+  - Design: brainstorming, spec, mockups or owner decisions under way.
+  - Implementation: the work is with an agent (a brief, a branch, a PR in
+    review or fix rounds, owner QA), until the owner approves it.
+  - Awaiting merge: approved by the owner; only final fixes, CI or the merge
+    are left.
+  - Done: merged to master. Canceled or Duplicate (say why in a comment).
+  The GitHub integration moves a linked ticket on PR events (a branch or PR
+  → Implementation, an approved PR → Awaiting merge, merged → Done), but
+  check it landed where the list above says. Before a report to the owner,
+  check that the statuses of the tickets it covers match.
+- Closed tickets (Done, Canceled, Duplicate) are archived a month after
+  closing; to find past work, search with archived issues included. The free
+  plan caps open (unarchived) issues at 250: if creating a ticket fails on
+  that limit, archive every ticket closed more than 2 days ago with
+  `~/.local/bin/linear-archive-done` (`--dry-run` lists them first).
+- Search before proposing (`list_issues` with a query, then by label or
+  project); extend an existing ticket rather than propose a near-duplicate.
+- Titles state the problem or outcome. Descriptions start with the human
+  part (the owner's words quoted and dated, then what's wanted). File paths,
+  line refs and logs go in a collapsible `+++ Agent notes` section.
+- Name branches after the issue (`car-123-short-name`) and write
+  `Fixes CAR-123` in the PR description (`Part of CAR-123` for one piece of
+  a stack): the GitHub integration then links the PR and moves the issue.
+- A review finding fixed in the same fix round is not a ticket. Only
+  leftovers are proposed, labelled `from-review`.
+- When a release finishes, the coordinator posts a project update (what
+  shipped, what's left, what was decided).
+- Specs stay in the repo or as artifacts; tickets link to them, not copy them.
 
 ## Versions and instances
 
@@ -246,6 +329,9 @@ co-workers get a tarball or run `pnpm release local` in a checkout.
   (`git log --stat` + `git diff -U10` of the range, saved to a file). Findings
   go back to the same implementer as fix rounds, then a scoped re-review; small
   fixes with tests that fail without them may skip the re-review.
+  Implementers, fix rounds and reviewers check with `pnpm verify:fast` and
+  targeted specs, never a full `pnpm verify`: that runs once, at the end
+  (below).
 - Review checklist (every reviewer brief carries it, on top of the brief's own):
   - **Input sanitization.** Text from the reviewer, a PR, GitHub or git
     (bodies, titles, names, paths, refs) is escaped or sanitized wherever it

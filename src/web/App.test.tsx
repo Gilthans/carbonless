@@ -24,6 +24,7 @@ import type {
 } from "../shared/types";
 import { COMPACT_RAMP, compactNumberHideClass, compactProgress } from "./App";
 import { resetShowInvisibles, setShowInvisibles } from "./code/Invisibles";
+import { findFloat, findState } from "./files/find/findState";
 import { createAppRouter } from "./router";
 import { draftsFor } from "./threads/drafts";
 
@@ -310,6 +311,14 @@ function renderApp(routes: Partial<Routes> = {}, path = "/") {
 const calls = (path: string) =>
 	fetchMock.mock.calls.filter(([input]) => local(input) === path).length;
 
+/**
+ * Files changed's code, loaded: the router waits for it (a lazy route) before
+ * it shows the page. Run alone, a test is the first to import it, which can
+ * take longer than a findBy waits on a loaded machine; awaiting it first
+ * makes the test wait for the code itself, not race it.
+ */
+const filesPageLoaded = () => import("./files/FilesPage");
+
 describe("App", () => {
 	afterEach(() => {
 		cleanup();
@@ -474,6 +483,137 @@ describe("App", () => {
 		await waitFor(() => expect(calls("/api/head")).toBe(1));
 		expect(screen.queryByText(/New commits were pushed/)).toBeNull();
 		expect(screen.queryByRole("alert")).toBeNull();
+	});
+
+	it("has a Find in PR button that opens the bar on Files changed and goes there from the overview", async () => {
+		findState.reset();
+		await filesPageLoaded();
+		const user = userEvent.setup();
+		const { router } = renderApp();
+		await screen.findByRole("region", { name: "What it does" });
+		const button = screen.getByRole("button", { name: "Find in PR" });
+		// Here it goes to Files changed: nothing expands.
+		expect(button).not.toHaveAttribute("aria-expanded");
+		await user.click(button);
+		await waitFor(() =>
+			expect(router.state.location.pathname).toBe(`/r/${ID}/files`),
+		);
+		expect(findState.get().open).toBe(true);
+		expect(await screen.findByTestId("find-bar")).toBeInTheDocument();
+		await waitFor(() =>
+			expect(button).toHaveAttribute("aria-expanded", "true"),
+		);
+		// On Files changed, a second click closes it.
+		await user.click(button);
+		expect(findState.get().open).toBe(false);
+		expect(button).toHaveAttribute("aria-expanded", "false");
+		expect(screen.queryByTestId("find-bar")).toBeNull();
+		findState.reset();
+	});
+
+	it("leaving Files changed closes Find in PR and clears its term; coming back starts closed", async () => {
+		findState.reset();
+		await filesPageLoaded();
+		const user = userEvent.setup();
+		const { router } = renderApp({}, "/files");
+		const button = await screen.findByRole("button", { name: "Find in PR" });
+		await user.click(button);
+		const box = await screen.findByTestId("find-box");
+		await user.type(box, "save");
+		expect(findState.get().term).toBe("save");
+		await router.navigate({ to: `/r/${ID}` as "/" });
+		await screen.findByRole("region", { name: "What it does" });
+		await waitFor(() => expect(findState.get().open).toBe(false));
+		expect(findState.get().term).toBe("");
+		await router.navigate({ to: `/r/${ID}/files` as "/" });
+		await waitFor(() =>
+			expect(button).toHaveAttribute("aria-expanded", "false"),
+		);
+		expect(screen.queryByTestId("find-bar")).toBeNull();
+		await user.click(button);
+		expect(await screen.findByTestId("find-box")).toHaveValue("");
+		findState.reset();
+	});
+
+	it("leaving the review (Home) closes Find in PR and clears its term", async () => {
+		findState.reset();
+		await filesPageLoaded();
+		const user = userEvent.setup();
+		const { unmount } = renderApp({}, "/files");
+		await user.click(await screen.findByRole("button", { name: "Find in PR" }));
+		await user.type(await screen.findByTestId("find-box"), "save");
+		unmount();
+		expect(findState.get()).toMatchObject({ open: false, term: "" });
+	});
+
+	it("on a phone the open find bar takes the app header out of the layout; closing it brings the header back, focus on its Find button", async () => {
+		findState.reset();
+		await filesPageLoaded();
+		vi.stubGlobal(
+			"matchMedia",
+			(query: string) =>
+				({
+					matches: false,
+					media: query,
+					addEventListener: () => {},
+					removeEventListener: () => {},
+				}) as unknown as MediaQueryList,
+		);
+		try {
+			const user = userEvent.setup();
+			renderApp({}, "/files");
+			const button = await screen.findByRole("button", { name: "Find in PR" });
+			const header = document.querySelector("[data-app-header]") as HTMLElement;
+			expect(header).toBeVisible();
+			await user.click(button);
+			await screen.findByTestId("find-bar");
+			expect(header).not.toBeVisible();
+			expect(header).toHaveAttribute("hidden");
+			await user.click(screen.getByRole("button", { name: "Close (Esc)" }));
+			expect(screen.queryByTestId("find-bar")).toBeNull();
+			expect(header).toBeVisible();
+			expect(header).not.toHaveAttribute("hidden");
+			expect(button).toHaveFocus();
+		} finally {
+			findState.reset();
+		}
+	});
+
+	it("the find bar stays out of the slot while Files changed is kept but hidden (find open on another page)", async () => {
+		findState.reset();
+		await filesPageLoaded();
+		const { router } = renderApp({}, "/files");
+		await screen.findByRole("progressbar", { name: "Review progress" });
+		await router.navigate({ to: `/r/${ID}` as "/" });
+		await screen.findByRole("region", { name: "What it does" });
+		// Opened here (the header's button opens, then goes to Files changed).
+		act(() => findState.open());
+		const slot = document.querySelector("[data-find-slot]") as HTMLElement;
+		expect(slot.childElementCount).toBe(0);
+		expect(findFloat.get()).toBe(false);
+		await router.navigate({ to: `/r/${ID}/files` as "/" });
+		await waitFor(() => expect(slot.childElementCount).toBe(1));
+		expect(findFloat.get()).toBe(true);
+		findState.reset();
+	});
+
+	it("on a wide screen the open find bar goes in the slot above the app header, which stays", async () => {
+		findState.reset();
+		await filesPageLoaded();
+		const user = userEvent.setup();
+		renderApp({}, "/files");
+		const button = await screen.findByRole("button", { name: "Find in PR" });
+		await user.click(button);
+		const bar = await screen.findByTestId("find-bar");
+		const header = document.querySelector("[data-app-header]") as HTMLElement;
+		expect(header).toBeVisible();
+		expect(header).not.toHaveAttribute("hidden");
+		const slot = bar.closest("[data-find-slot]") as HTMLElement;
+		expect(slot).not.toBeNull();
+		expect(
+			slot.compareDocumentPosition(header) & Node.DOCUMENT_POSITION_FOLLOWING,
+		).toBeTruthy();
+		findState.reset();
 	});
 
 	it("has a Settings gear in the app bar whose switch shows hidden characters", async () => {

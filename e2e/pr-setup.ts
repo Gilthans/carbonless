@@ -9,8 +9,8 @@ import {
 import { dirname, join, resolve } from "node:path";
 import { writeFileAtomic } from "../test/fake-gh/atomic.mjs";
 import {
-	FAKE_GH_DIR,
 	FIXTURE_BODY_HTML,
+	fakeGhEnv,
 	prView,
 	type reviewThread,
 	type Scenario,
@@ -22,6 +22,7 @@ import {
 	type GitFixture,
 	testGitEnv,
 } from "../test/git-fixture";
+import { fixtureGit } from "../test/trace-run";
 
 /*
  * A throwaway PR for the built CLI to review against the fake gh, without
@@ -91,7 +92,7 @@ export const CLI = resolve(import.meta.dirname, "../dist/cli.js");
  */
 export function crbEnv(workdir: string): NodeJS.ProcessEnv {
 	return testGitEnv({
-		PATH: `${FAKE_GH_DIR}:${process.env.PATH ?? ""}`,
+		...fakeGhEnv(),
 		CRB_FAKE_GH: join(workdir, "fake-gh-scenario.json"),
 		CRB_FAKE_GH_LOG: join(workdir, "fake-gh.log"),
 		XDG_CACHE_HOME: join(workdir, "cache"),
@@ -116,11 +117,13 @@ export function createPr(workdir: string, opts: PrOptions = {}): Pr {
 		...(opts.files ?? DEFAULT_COMMITS),
 	]);
 	const git = (...args: string[]) =>
-		execFileSync("git", args, {
-			cwd: repo.path,
-			encoding: "utf8",
-			env: testGitEnv(),
-		}).trim();
+		fixtureGit(args, () =>
+			execFileSync("git", args, {
+				cwd: repo.path,
+				encoding: "utf8",
+				env: testGitEnv(),
+			}).trim(),
+		);
 	const mergeBase = repo.shas[0] ?? "";
 	let head = repo.shas.at(-1) ?? "";
 	// The PR head lives only under refs/pull/<n>/head, like on GitHub.
@@ -188,11 +191,13 @@ export function createPr(workdir: string, opts: PrOptions = {}): Pr {
  */
 function commitInWorktree(dir: string, commit: FixtureCommit): string {
 	const git = (...args: string[]) =>
-		execFileSync("git", args, {
-			cwd: dir,
-			encoding: "utf8",
-			env: testGitEnv(),
-		}).trim();
+		fixtureGit(args, () =>
+			execFileSync("git", args, {
+				cwd: dir,
+				encoding: "utf8",
+				env: testGitEnv(),
+			}).trim(),
+		);
 	for (const name of commit.delete ?? []) {
 		rmSync(join(dir, name), { force: true });
 	}
