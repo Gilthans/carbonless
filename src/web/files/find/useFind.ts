@@ -20,7 +20,11 @@ import type {
 } from "../../../shared/types";
 import { contextQuery, hunksQuery } from "../../api";
 import type { FindMark } from "../../code/Invisibles";
-import { matchCase as matchCaseSetting } from "../../viewSettings";
+import {
+	ignoreWhitespace as ignoreWhitespaceSetting,
+	matchCase as matchCaseSetting,
+	sideBySide as sideBySideSetting,
+} from "../../viewSettings";
 import { contextRanges } from "../contextRanges";
 import type { DiffFind } from "../DiffBody";
 import type { TreeFind } from "../FileTree";
@@ -31,7 +35,9 @@ import {
 	findInPr,
 	type Hit,
 	hitIndex,
+	keptCaret,
 	samePos,
+	shownHits,
 	stepCaret,
 } from "./findInPr";
 import { type FindState, findState } from "./findState";
@@ -45,8 +51,9 @@ import { headerPathMarks, nameMarks, oldNameMarks } from "./pathMarks";
 /** What Files changed needs from the search, for the files of `revision` in tree order. */
 export interface Find {
 	state: FindState;
+	/** The hits the view shows (shownHits): what "n of N" counts and steps through. */
 	hits: Hit[];
-	/** The caret: a step's, while its hit still exists, else caretAfterTyping's (unshown). Null with no hits. */
+	/** The caret: a step's, while its hit still exists (keptCaret: moved when only hidden), else caretAfterTyping's (unshown). Null with no hits. */
 	caret: Caret | null;
 	count: { at: number; of: number } | null;
 	searching: boolean;
@@ -69,6 +76,7 @@ export interface Find {
 }
 
 const NO_HITS: Hit[] = [];
+const NO_SEARCH = { all: NO_HITS, hits: NO_HITS };
 const NO_MARKS: readonly FindMark[] = [];
 const NO_LINES: readonly DiffLine[] = [];
 const IDLE: PrefetchSnapshot = { pending: 0, failed: [] };
@@ -118,6 +126,10 @@ export function useFind(opts: {
 	onStale.current = opts.onStale;
 	const state = findState.use();
 	const matchCase = matchCaseSetting.use();
+	// Unified with Ignore whitespace, a whitespace-only pair is one `~` row
+	// showing its new text: its old side's hits aren't counted (shownHits).
+	const ignoreWs = ignoreWhitespaceSetting.use();
+	const unified = !sideBySideSetting.use();
 	const client = useQueryClient();
 	const { open, term: typedTerm } = state;
 	// The search runs on the term deferred: a keystroke paints at once, the
@@ -158,9 +170,10 @@ export function useFind(opts: {
 	});
 
 	// The search over what is loaded, for a term (the deferred one, or the
-	// typed one when a step comes before the deferred search caught up).
+	// typed one when a step comes before the deferred search caught up):
+	// every hit of both sides, and the ones the view shows.
 	const searchFor = useMemo(() => {
-		if (!searchOn) return (_: string) => NO_HITS;
+		if (!searchOn) return (_: string) => NO_SEARCH;
 		const hunksBy = new Map<number, FileHunks | undefined>();
 		files.forEach((f, i) => {
 			hunksBy.set(f.index, hunks.data[i]);
@@ -171,18 +184,20 @@ export function useFind(opts: {
 			if (!lines) return;
 			contextBy.set(r.index, [...(contextBy.get(r.index) ?? []), ...lines]);
 		});
-		return (t: string) =>
-			t === ""
-				? NO_HITS
-				: findInPr(
-						t,
-						files,
-						(f) => hunksBy.get(f.index),
-						(f) => contextBy.get(f.index) ?? NO_LINES,
-						matchCase,
-					);
-	}, [searchOn, matchCase, files, hunks, ranges, context]);
-	const hits = useMemo(() => searchFor(term), [searchFor, term]);
+		return (t: string) => {
+			if (t === "") return NO_SEARCH;
+			const all = findInPr(
+				t,
+				files,
+				(f) => hunksBy.get(f.index),
+				(f) => contextBy.get(f.index) ?? NO_LINES,
+				matchCase,
+				ignoreWs,
+			);
+			return { all, hits: shownHits(all, unified) };
+		};
+	}, [searchOn, matchCase, ignoreWs, unified, files, hunks, ranges, context]);
+	const { all, hits } = useMemo(() => searchFor(term), [searchFor, term]);
 
 	// The caret. Typing (a new term, match case, a reopen, a new revision)
 	// starts over from the file open at that moment: a pick in the tree
@@ -196,15 +211,16 @@ export function useFind(opts: {
 		caret: Caret | null;
 	} | null>(null);
 	const order = useMemo(() => files.map((f) => f.index), [files]);
+	// A step's caret whose hit the view stopped showing (a switch to unified
+	// with Ignore whitespace on) moves to the same row's shown hit, never back
+	// to the top (keptCaret).
 	const caret = useMemo(() => {
-		if (
-			stepped?.key === typingKey &&
-			stepped.caret &&
-			hitIndex(hits, stepped.caret.pos) >= 0
-		)
-			return stepped.caret;
-		return caretAfterTyping(hits, order, typedOpen);
-	}, [stepped, typingKey, hits, order, typedOpen]);
+		const kept =
+			stepped?.key === typingKey && stepped.caret
+				? keptCaret(all, hits, stepped.caret)
+				: null;
+		return kept ?? caretAfterTyping(hits, order, typedOpen);
+	}, [stepped, typingKey, all, hits, order, typedOpen]);
 	// Steps read the latest, also two in one frame. While the deferred
 	// search trails the typed term, a step searches the typed term itself
 	// (Enter right after typing goes to the typed term's hit).
@@ -220,14 +236,12 @@ export function useFind(opts: {
 			let now = latest.current;
 			const t = typedNow.current;
 			if (now.typingKey !== t.typedKey) {
-				const hits = t.searchFor(t.typedTerm);
+				const { all, hits } = t.searchFor(t.typedTerm);
 				const kept = t.stepped;
 				const caret =
-					kept?.key === t.typedKey &&
-					kept.caret &&
-					hitIndex(hits, kept.caret.pos) >= 0
-						? kept.caret
-						: caretAfterTyping(hits, t.order, openNow.current);
+					(kept?.key === t.typedKey && kept.caret
+						? keptCaret(all, hits, kept.caret)
+						: null) ?? caretAfterTyping(hits, t.order, openNow.current);
 				now = { hits, caret, typingKey: t.typedKey };
 			}
 			const caret = now.caret;

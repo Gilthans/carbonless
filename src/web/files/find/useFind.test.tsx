@@ -8,6 +8,7 @@ import { heldJson } from "../../../../test/loading";
 import type { DiffLine, FileHunks, FileView } from "../../../shared/types";
 import { hunksQuery } from "../../api";
 import { newQueryClient } from "../../queryClient";
+import { ignoreWhitespace, sideBySide } from "../../viewSettings";
 import { contextRanges } from "../contextRanges";
 import type { Hit } from "./findInPr";
 import { findState } from "./findState";
@@ -135,6 +136,8 @@ beforeEach(() => {
 afterEach(() => {
 	cleanup();
 	vi.unstubAllGlobals();
+	ignoreWhitespace.reset();
+	sideBySide.reset();
 });
 
 function renderFind(props: {
@@ -291,6 +294,62 @@ describe("useFind", () => {
 		});
 		await waitFor(() => expect(result.current.count).toEqual({ at: 2, of: 2 }));
 		expect(result.current.caret).toEqual({ pos, shown: true });
+	});
+
+	it("unified with Ignore whitespace counts a whitespace-only pair once; a view switch keeps the current hit", async () => {
+		act(() => {
+			ignoreWhitespace.set(true);
+			sideBySide.set(true);
+		});
+		const files = [file(0, ["save(a) save"], ["  save(a)  save"])];
+		const { result } = renderFind({ revision: "r1", files, openIndex: 0 });
+		search("save");
+		await waitFor(() => expect(batches).toHaveLength(1));
+		await act(async () => {
+			batches[0]?.held.release({
+				files: [{ index: 0, hunks: hunksOf(files[0] as FileView, "ctx") }],
+			});
+		});
+		await waitFor(() => expect(result.current.searching).toBe(false));
+		// Side by side: both texts show, both count.
+		expect(result.current.count).toEqual({ at: 1, of: 4 });
+		act(() => {
+			result.current.step(1);
+			result.current.step(1);
+		});
+		expect(result.current.caret).toEqual({
+			pos: { index: 0, side: "LEFT", line: 2, col: 8 },
+			shown: true,
+		});
+		// Unified: the `~` row shows the new text only; the old side's second
+		// hit becomes the row's second shown one, not the top.
+		act(() => sideBySide.set(false));
+		expect(result.current.count).toEqual({ at: 2, of: 2 });
+		expect(result.current.caret).toEqual({
+			pos: { index: 0, side: "RIGHT", line: 2, col: 11 },
+			shown: true,
+		});
+		expect(result.current.tree.counts.get(0)).toBe(2);
+		expect(result.current.diffOf(0)?.marksOf("LEFT", 2)).toEqual([]);
+		act(() => {
+			result.current.step(-1);
+		});
+		expect(result.current.count).toEqual({ at: 1, of: 2 });
+		// Back to side by side: N grows, the current hit stays.
+		act(() => sideBySide.set(true));
+		expect(result.current.count).toEqual({ at: 3, of: 4 });
+		expect(result.current.caret?.pos).toEqual({
+			index: 0,
+			side: "RIGHT",
+			line: 2,
+			col: 2,
+		});
+		// Ignore whitespace off: both count in unified too.
+		act(() => {
+			sideBySide.set(false);
+			ignoreWhitespace.set(false);
+		});
+		expect(result.current.count).toEqual({ at: 3, of: 4 });
 	});
 
 	it("restarts the prefetch for a new revision and stops it on close", async () => {

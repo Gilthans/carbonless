@@ -15,8 +15,11 @@ import {
 	findInPr,
 	type Hit,
 	type HitPos,
+	hiddenHitMoved,
 	hitIndex,
+	keptCaret,
 	occurrences,
+	shownHits,
 	stepCaret,
 } from "./findInPr";
 
@@ -406,6 +409,19 @@ describe("integrity", () => {
 
 			const hits = findInPr(term, order, hunksOf, contextOf, matchCase);
 
+			// (f) Ignore whitespace only marks old-side hits of pairs: side by
+			// side counts what it did without it; unified leaves out exactly those.
+			const paired = findInPr(term, order, hunksOf, contextOf, matchCase, true);
+			expect(
+				paired.map(({ twin: _, ...h }) => h),
+				`seed ${seed}`,
+			).toEqual(hits);
+			for (const h of paired)
+				if (h.twin !== undefined) expect(h.side, `seed ${seed}`).toBe("LEFT");
+			expect(shownHits(paired, true).length, `seed ${seed}`).toBe(
+				paired.filter((h) => h.twin === undefined).length,
+			);
+
 			// (a) the counts add up to the hits
 			let total = 0;
 			for (const n of countsByFile(hits).values()) total += n;
@@ -515,5 +531,151 @@ describe("integrity", () => {
 					);
 			}
 		}
+	});
+});
+
+describe("whitespace-only pairs (Ignore whitespace)", () => {
+	/**
+	 * A hunk: a context line, then one cluster whose removed line 2 and added
+	 * line 2 differ only in whitespace (one `~` row in unified view), and an
+	 * added line 3 that pairs with nothing.
+	 */
+	const pairFile = (oldText: string, newText: string) => {
+		const f = file(0, {
+			path: "a.txt",
+			clusters: [
+				cluster({
+					removed: [oldText],
+					added: [newText, "save other"],
+					oldStart: 2,
+					newStart: 2,
+				}),
+			],
+		});
+		const hunks: FileHunks = {
+			newLineCount: 3,
+			hunks: [
+				{
+					oldStart: 1,
+					oldCount: 2,
+					newStart: 1,
+					newCount: 3,
+					lines: [
+						ctx(1, 1, "x"),
+						{ kind: "del", oldNo: 2, text: oldText, clusterKey: "k" },
+						{ kind: "add", newNo: 2, text: newText, clusterKey: "k" },
+						{ kind: "add", newNo: 3, text: "save other", clusterKey: "k" },
+					],
+				},
+			],
+		};
+		return { f, hunks };
+	};
+	const search = (
+		term: string,
+		oldText: string,
+		newText: string,
+		ws: boolean,
+	) => {
+		const { f, hunks } = pairFile(oldText, newText);
+		return findInPr(term, [f], () => hunks, noContext, false, ws);
+	};
+	const where = (h: Hit) => `${h.side}:${h.line}:${h.col}`;
+
+	it("unified counts a pair once, from the new text it shows; side by side counts both", () => {
+		const all = search("save", "save(a) save", "  save(a)  save", true);
+		expect(all.map(where)).toEqual([
+			"LEFT:2:0",
+			"LEFT:2:8",
+			"RIGHT:2:2",
+			"RIGHT:2:11",
+			"RIGHT:3:0",
+		]);
+		expect(all.filter((h) => h.twin !== undefined).map(where)).toEqual([
+			"LEFT:2:0",
+			"LEFT:2:8",
+		]);
+		expect(all[0]?.twin).toBe(2);
+		expect(shownHits(all, true).map(where)).toEqual([
+			"RIGHT:2:2",
+			"RIGHT:2:11",
+			"RIGHT:3:0",
+		]);
+		expect(shownHits(all, false)).toBe(all);
+		// The tree's per-file count follows the shown hits too.
+		expect(countsByFile(shownHits(all, true)).get(0)).toBe(3);
+	});
+
+	it("with Ignore whitespace off both sides count in either view", () => {
+		const all = search("save", "save(a) save", "  save(a)  save", false);
+		expect(all.some((h) => h.twin !== undefined)).toBe(false);
+		expect(shownHits(all, true)).toBe(all);
+		expect(all).toHaveLength(5);
+	});
+
+	it("a line that isn't a whitespace-only pair keeps its old side", () => {
+		const all = search("save", "save(a)", "save(b)", true);
+		expect(shownHits(all, true).map(where)).toEqual([
+			"LEFT:2:0",
+			"RIGHT:2:0",
+			"RIGHT:3:0",
+		]);
+	});
+
+	it("without hunks yet (clusters only), nothing is paired", () => {
+		const { f } = pairFile("save", "  save");
+		const all = findInPr("save", [f], none, noContext, false, true);
+		expect(shownHits(all, true)).toHaveLength(3);
+	});
+
+	it("a hidden old-side hit moves to the same row's hit of the same order", () => {
+		const all = search("save", "save(a) save", "  save(a)  save", true);
+		const shown = shownHits(all, true);
+		const second = { index: 0, side: "LEFT" as const, line: 2, col: 8 };
+		expect(hiddenHitMoved(all, shown, second)).toEqual({
+			index: 0,
+			side: "RIGHT",
+			line: 2,
+			col: 11,
+		});
+		expect(keptCaret(all, shown, { pos: second, shown: true })).toEqual({
+			pos: { index: 0, side: "RIGHT", line: 2, col: 11 },
+			shown: true,
+		});
+		// A hit still shown stays as it is.
+		const caret: Caret = {
+			pos: { ...second, side: "RIGHT", col: 2 },
+			shown: false,
+		};
+		expect(keptCaret(all, shown, caret)).toBe(caret);
+		// A hit gone altogether isn't moved.
+		expect(
+			keptCaret(all, shown, { pos: { ...second, line: 9 }, shown: true }),
+		).toBeNull();
+	});
+
+	it("when the row shows fewer hits, the row's first; with none, the next hit after it", () => {
+		// "a b" twice on the old side, once on the new ("ab" doesn't match).
+		const fewer = search("a b", "a b a b", "a b ab", true);
+		const shownFewer = shownHits(fewer, true);
+		expect(
+			hiddenHitMoved(fewer, shownFewer, {
+				index: 0,
+				side: "LEFT",
+				line: 2,
+				col: 4,
+			}),
+		).toEqual({ index: 0, side: "RIGHT", line: 2, col: 0 });
+		// None on the new side ("saveother"): the next shown hit, line 3's.
+		const spaced = search("e o", "save other", "saveother", true);
+		expect(spaced.map(where)).toEqual(["LEFT:2:3", "RIGHT:3:3"]);
+		expect(
+			hiddenHitMoved(spaced, shownHits(spaced, true), {
+				index: 0,
+				side: "LEFT",
+				line: 2,
+				col: 3,
+			}),
+		).toEqual({ index: 0, side: "RIGHT", line: 3, col: 3 });
 	});
 });

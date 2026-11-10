@@ -245,9 +245,14 @@ The PR's hits, in **reading order**, are, for each file in the tree's order
    server lays them out), with any **expanded context** the reviewer loaded
    (the file's `contextQuery` ranges) in its place by line number. A line's
    hits are in column order. A removed line and an added line are two lines
-   with their own hits, whatever row pairs them (side by side, ignore
-   whitespace): the search is over the hunks' lines, never over the rendered
-   rows, so the views can't change the count.
+   with their own hits, whatever row pairs them: the search is over the
+   hunks' lines, never over the rendered rows. One exception (CAR-103, owner
+   2026-11-10, "count once"): in unified view with Ignore whitespace on, a
+   whitespace-only pair is one `~` row showing its new text, so its removed
+   line's hits aren't counted or stepped through. Side by side shows both
+   texts and counts both, so the count may change with the view; the
+   current hit stays on the same row (its old-side hit becomes the row's
+   new-side hit of the same order).
 
 **Two line sources, one order.** Changed lines come from the review view
 and are searched at once; a file's context lines join when its hunks are in,
