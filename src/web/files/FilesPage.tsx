@@ -72,6 +72,7 @@ import {
 	carriedCount,
 	eyesOf,
 	goneFiles,
+	goneFileView,
 	liveToRead,
 	nothingSince,
 	sinceProgress,
@@ -892,9 +893,22 @@ export function FilesPage() {
 
 	// Find in PR: the bar, its search, and stepping through the hits. Typing
 	// only marks and counts; a step opens a closed file and scrolls.
+	// The since view's gone files (their reviewed work, gone since): shown
+	// after the tree's files, and searched there too.
+	const gone = useMemo(
+		() =>
+			sinceView.since !== null && sinceView.answer && data
+				? goneFiles(sinceView.answer, data)
+				: [],
+		[sinceView.since, sinceView.answer, data],
+	);
+	const findFiles = useMemo(
+		() => (gone.length > 0 ? [...files, ...gone.map(goneFileView)] : files),
+		[files, gone],
+	);
 	const find = useFind({
 		revision: data?.revision,
-		files,
+		files: findFiles,
 		openIndex,
 		active,
 		onStale: refetchReview,
@@ -1119,10 +1133,6 @@ export function FilesPage() {
 		since !== null && byFile && comparison.viewing
 			? { from: since, to: comparison.viewing, toRead: liveToRead(byFile) }
 			: undefined;
-	const gone =
-		since !== null && sinceView.answer && data
-			? goneFiles(sinceView.answer, data)
-			: [];
 	const emptySince =
 		since !== null &&
 		sinceView.answer &&
@@ -1381,6 +1391,12 @@ export function FilesPage() {
 												info={byFile?.get(file.index)}
 												sinceMarks={data.sinceMarks}
 												readOnly={readOnly}
+												expanded={open === keyOf(file.index)}
+												onExpandedChange={(expanded) =>
+													toggleFile(file.index, expanded)
+												}
+												pathFind={find.pathOf(file.index)}
+												find={find.diffOf(file.index)}
 											/>
 										))}
 										{/* Threads whose file isn't in this comparison at all. */}

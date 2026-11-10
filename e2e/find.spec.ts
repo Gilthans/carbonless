@@ -1464,6 +1464,7 @@ test("on desktop the open bar pushes the app header down: nothing covered at the
 const GIT_WAIT = { timeout: 30_000 };
 const core = numbered("core", 40);
 const util = numbered("util", 10);
+const goneBase = numbered("gone", 10);
 /** PS1: five lines on top of core.ts, line 20 "earlyTerm"; util.ts line 3. */
 const ps1Core = [
 	...numbered("top", 5),
@@ -1477,12 +1478,19 @@ test("the since view searches the interdiff: nothing changed only before it, its
 	isMobile,
 }) => {
 	const p = await pr({
-		base: { "src/core.ts": text(core), "src/util.ts": text(util) },
+		base: {
+			"src/core.ts": text(core),
+			"src/gone.ts": text(goneBase),
+			"src/util.ts": text(util),
+		},
 		files: [
 			{
 				message: "PS1",
 				files: {
 					"src/core.ts": text(ps1Core),
+					"src/gone.ts": text(
+						goneBase.map((l, i) => (i === 3 ? "goneTerm 4" : l)),
+					),
 					"src/util.ts": text(util.map((l, i) => (i === 2 ? "util 3 v1" : l))),
 				},
 			},
@@ -1492,14 +1500,16 @@ test("the since view searches the interdiff: nothing changed only before it, its
 	await openFiles(page, s.url);
 	await phone(page, isMobile);
 	// PS1, fully reviewed.
-	for (const path of ["src/core.ts", "src/util.ts"]) {
+	for (const path of ["src/core.ts", "src/gone.ts", "src/util.ts"]) {
 		await fileAction(fileSection(page, path), "Mark remaining reviewed");
 		await expect(page.getByTestId("sync-notices")).toHaveCount(0);
 	}
-	// PS2: core.ts's line 30 (PS1's 35) rewritten, util.ts's line 8.
+	// PS2: core.ts's line 30 (PS1's 35) rewritten, gone.ts back to the
+	// base (gone from the PR: its reviewed work shown as gone), util.ts's line 8.
 	p.moveHead({
 		message: "PS2",
 		files: {
+			"src/gone.ts": text(goneBase),
 			"src/core.ts": text(
 				ps1Core.map((l) => (l === "core 30" ? "laterTerm 30" : l)),
 			),
@@ -1561,6 +1571,27 @@ test("the since view searches the interdiff: nothing changed only before it, its
 	await box(page).press("Enter");
 	await expect(currentRow(page)).toHaveAttribute("data-new-no", "35");
 	await expect(currentRow(page)).toHaveAttribute("data-kind", "add");
+	await expect(currentRow(page)).toBeInViewport();
+	// Context the since view loads is searched: core.ts's gap above.
+	await search(page, "core 25");
+	await expect(count(page)).toHaveText(counted(0, 0), VISIBLE);
+	await coreS
+		.getByRole("button", { name: /^Load \d+ lines? above$/ })
+		.first()
+		.click();
+	await expect(count(page)).toHaveText(counted(1, 1), VISIBLE);
+	await expect(currentRow(page)).toHaveAttribute("data-new-no", "30");
+	// A gone file's removed lines are searched: Enter opens it on the row.
+	const goneS = page.locator('[data-gone-file="src/gone.ts"]');
+	await expect(goneS).toBeVisible();
+	await search(page, "goneTerm");
+	await expect(count(page)).toHaveText(counted(1, 1), VISIBLE);
+	await box(page).press("Enter");
+	await expect(
+		goneS.getByRole("button", { name: "Collapse file" }),
+	).toBeVisible();
+	await expect(currentRow(page)).toHaveAttribute("data-old-no", "4");
+	await expect(currentRow(page)).toHaveAttribute("data-kind", "del");
 	await expect(currentRow(page)).toBeInViewport();
 	await expectNoPageOverflow(page);
 

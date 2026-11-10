@@ -18,11 +18,14 @@ lines() { for i in $(seq 1 "$2"); do printf '%s %s\n' "$1" "$i"; done; }
 write_base() {
 	mkdir -p src
 	lines core 40 >src/core.ts
+	lines gone 10 >src/gone.ts
 	lines util 10 >src/util.ts
 }
 
-# PS1: five lines on top of core.ts, its line 20 "earlyTerm"; util.ts line 3.
+# PS1: five lines on top of core.ts, its line 20 "earlyTerm"; gone.ts line 4
+# "goneTerm"; util.ts line 3.
 write_push1() {
+	lines gone 10 | sed 's/^gone 4$/goneTerm 4/' >src/gone.ts
 	{
 		lines top 5
 		lines core 40 | sed 's/^core 20$/earlyTerm 20/'
@@ -30,8 +33,10 @@ write_push1() {
 	lines util 10 | sed 's/^util 3$/util 3 v1/' >src/util.ts
 }
 
-# Push 2: core.ts's line 30 (PS1's 35) rewritten; util.ts line 8.
+# Push 2: core.ts's line 30 (PS1's 35) rewritten; gone.ts back to the base
+# (its reviewed work gone); util.ts line 8.
 write_push2() {
+	lines gone 10 >src/gone.ts
 	{
 		lines top 5
 		lines core 40 | sed -e 's/^core 20$/earlyTerm 20/' -e 's/^core 30$/laterTerm 30/'
@@ -59,6 +64,7 @@ Find in PR searches the comparison on screen. In the since view (base PS1, targe
 | `earlyTerm` (changed in PS1 only) | no hit (the spinner while files load, never `0 of 0` before) |
 | `core 30` (removed in PS2) | one hit; Enter opens `src/core.ts` and scrolls to the removed row, old line **35** (PS1's number; the base's is 30) |
 | `laterTerm` (added in PS2) | one hit at new line 35 |
+| `goneTerm` (PS1's change to `src/gone.ts`, taken back in PS2) | one hit in the gone file at the end; Enter opens it on the removed row, old line 4 |
 | `earlyTerm` with the base on the branch | one hit at new line 25 |
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
@@ -69,7 +75,7 @@ EOF
 
 crb_open "$PR"
 view="$(review_view)"
-[ "$(jq -r '.files | length' <<<"$view")" = 2 ] || die "expected 2 files on PS1"
+[ "$(jq -r '.files | length' <<<"$view")" = 3 ] || die "expected 3 files on PS1"
 mark_view "$view" reviewed
 log "PS1 reviewed: $(review_view | jq -c .progress.clusters)"
 

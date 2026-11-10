@@ -57,7 +57,7 @@ import { KindChip } from "./KindChip";
 import type { Landing } from "./landing";
 import { Meter } from "./ProgressBar";
 import { type CodeSpan, commentAvailable } from "./selectionActions";
-import type { FileSince } from "./since";
+import { type FileSince, goneFileView } from "./since";
 import { isStale } from "./stateSync";
 import {
 	ChangeCount,
@@ -1230,8 +1230,19 @@ export function GoneFile(props: {
 	sinceMarks?: SinceMark[];
 	/** An earlier patch set, as reviewed: the marks are locked. */
 	readOnly?: boolean;
+	/** Controlled open state (the page's open file: a find's step opens it). */
+	expanded?: boolean;
+	onExpandedChange?: (expanded: boolean) => void;
+	/** The find's hits on the path, and in the lines (FilesPage). */
+	pathFind?: readonly FindMark[];
+	find?: DiffFind;
 }) {
-	const [expanded, setExpanded] = useState(false);
+	const [ownExpanded, setOwnExpanded] = useState(false);
+	const expanded = props.expanded ?? ownExpanded;
+	const setExpanded = (next: boolean) => {
+		if (props.expanded === undefined) setOwnExpanded(next);
+		props.onExpandedChange?.(next);
+	};
 	const { save } = useSetStates();
 	const sinceMark = (piece: SincePiece, cross: boolean) => {
 		save(props.revision, props.path, [
@@ -1244,21 +1255,10 @@ export function GoneFile(props: {
 			),
 		]).catch(() => {});
 	};
-	const file: FileView = {
-		index: props.index,
-		path: props.path,
-		status: "modified",
-		binary: false,
-		submodule: false,
-		additions: 0,
-		deletions: 0,
-		clusters: [],
-		done: false,
-		reviewed: false,
-		crossedOff: false,
-	};
+	const file = goneFileView(props);
 	return (
 		<section
+			id={`file-${props.index}`}
 			data-gone-file={props.path}
 			aria-label={props.path}
 			className="overflow-clip rounded-lg border border-bad/40 bg-surface"
@@ -1273,7 +1273,11 @@ export function GoneFile(props: {
 				>
 					{expanded ? "▾" : "▸"}
 				</button>
-				<PathScroller text={props.path} kind="Reviewed work gone" />
+				<PathScroller
+					text={props.path}
+					marks={props.pathFind}
+					kind="Reviewed work gone"
+				/>
 				<span data-testid="since-chips" className="flex items-center gap-1">
 					<KindChip
 						kind="gone"
@@ -1293,6 +1297,7 @@ export function GoneFile(props: {
 					onSinceMark={sinceMark}
 					sinceMarks={props.sinceMarks}
 					readOnly={props.readOnly}
+					find={props.find}
 				/>
 			)}
 		</section>
