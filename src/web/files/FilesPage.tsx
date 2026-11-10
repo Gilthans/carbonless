@@ -142,6 +142,11 @@ function FilesSheet(props: {
  * lower by the visual viewport's pan (visualTop).
  * Not while the page is hidden (`active` false): nothing is in view then,
  * and the file in view when it shows again is the one it was left on.
+ * A new `top` alone (the sticky stack growing or shrinking: the find bar
+ * opening or closing, a phone's header leaving or rejoining the layout)
+ * moves no file: the page keeps the line being read in place
+ * (readingPlace), so the file in view stays the same until the page or the
+ * visual viewport actually moves.
  */
 export function useCurrentFile(
 	container: RefObject<HTMLElement | null>,
@@ -151,14 +156,26 @@ export function useCurrentFile(
 ) {
 	const [current, setCurrent] = useState<number | null>(null);
 	// The visual viewport's pan (iOS's keyboard): the stack sits that lower.
-	const band = top + visualTop.use();
+	const pan = visualTop.use();
+	const band = top + pan;
+	// What the observer was last made for: a new one made for a new `top`
+	// only takes its first report as the files in the band, not as a move.
+	const last = useRef({ sections, top, pan, active });
 	// `sections` changes when the rendered file sections do: observe the new ones.
 	// biome-ignore lint/correctness/useExhaustiveDependencies: see above.
 	useEffect(() => {
+		const was = last.current;
+		last.current = { sections, top, pan, active };
 		const root = container.current;
 		if (!active || !root || typeof IntersectionObserver === "undefined") {
 			return;
 		}
+		// Only the stack's height changed: a layout change, not a move.
+		let settle =
+			was.active &&
+			was.sections === sections &&
+			was.pan === pan &&
+			was.top !== top;
 		const visible = new Set<number>();
 		const observer = new IntersectionObserver(
 			(entries) => {
@@ -173,7 +190,13 @@ export function useCurrentFile(
 				]
 					.map((el) => Number(el.dataset.fileIndex))
 					.find((index) => visible.has(index));
-				if (first !== undefined) setCurrent(first);
+				// The first report (every file, as observing starts) after a
+				// layout change keeps the file in view; later ones follow moves.
+				const settling = settle;
+				settle = false;
+				if (first === undefined) return;
+				if (settling) setCurrent((now) => now ?? first);
+				else setCurrent(first);
 			},
 			{ rootMargin: `-${Math.round(band) + 1}px 0px -60% 0px` },
 		);

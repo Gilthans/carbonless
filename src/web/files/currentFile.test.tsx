@@ -58,9 +58,9 @@ class FakeObserver {
 const live = () => FakeObserver.all.filter((o) => o.connected);
 
 let shown: number | null = null;
-function Files({ active }: { active: boolean }) {
+function Files({ active, top = 100 }: { active: boolean; top?: number }) {
 	const box = useRef<HTMLDivElement>(null);
-	const [current] = useCurrentFile(box, "r1:3", 100, active);
+	const [current] = useCurrentFile(box, "r1:3", top, active);
 	shown = current;
 	return (
 		<div ref={box}>
@@ -122,5 +122,49 @@ describe("useCurrentFile", () => {
 		live()[0]?.measure();
 		expect(shown).toBe(1);
 		act(() => visualTop.set(0));
+	});
+
+	it("keeps the file in view as the stack's height changes (the find bar opening or closing), and follows moves after", () => {
+		const { rerender } = render(<Files active />);
+		// File 0 ends 150px down, file 1 starts there.
+		const boxes = [
+			{ top: -500, bottom: 150 },
+			{ top: 150, bottom: 900 },
+			{ top: 900, bottom: 1500 },
+		];
+		for (const i of boxes.keys()) {
+			const el = document.querySelector(`[data-file-index="${i}"]`);
+			if (el) el.getBoundingClientRect = () => boxes[i] as DOMRect;
+		}
+		live()[0]?.measure();
+		expect(shown).toBe(0);
+		// The bar opens: the stack grows 60px, over file 0's end, while the
+		// page keeps the line being read in place (the boxes stay). A new
+		// observer reports file 0 out of the band, and it stays current.
+		rerender(<Files active top={160} />);
+		expect(live()).toHaveLength(1);
+		live()[0]?.measure();
+		expect(shown).toBe(0);
+		// The bar closes: back to 100px, file 0 still current.
+		rerender(<Files active top={100} />);
+		live()[0]?.measure();
+		expect(shown).toBe(0);
+
+		// With the bar open, the page is scrolled until file 1 is in view.
+		rerender(<Files active top={160} />);
+		live()[0]?.measure();
+		expect(shown).toBe(0);
+		boxes[0] = { top: -540, bottom: 110 };
+		boxes[1] = { top: 110, bottom: 860 };
+		live()[0]?.measure();
+		expect(shown).toBe(1);
+		// Closing uncovers file 0's end: file 1 stays current.
+		rerender(<Files active top={100} />);
+		live()[0]?.measure();
+		expect(shown).toBe(1);
+		// A scroll after it follows the band again.
+		boxes[0] = { top: -520, bottom: 130 };
+		live()[0]?.measure();
+		expect(shown).toBe(0);
 	});
 });
