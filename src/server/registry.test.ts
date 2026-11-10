@@ -259,33 +259,38 @@ describe("SessionRegistry", () => {
 		expect(session.closed).toBe(true);
 	});
 
-	it("a reopen of a review waits for its old session's close (the agent claim goes first)", async () => {
-		let now = 1_000_000;
-		const r = registry({ idleMs: 60_000, now: () => now });
-		const { id, session } = await r.open({ pr: pr.arg });
-		let release: () => void = () => {};
-		const held = new Promise<void>((done) => {
-			release = done;
-		});
-		const close = session.close.bind(session);
-		vi.spyOn(session, "close").mockImplementation(async () => {
-			await held;
-			await close();
-		});
-		now += 61_000;
-		const sweeping = r.sweep();
-		lookups.length = 0;
-		const reopen = r.get(id);
-		// The close is held: the reopen hasn't even looked the review up.
-		for (let i = 0; i < 50; i++) await Promise.resolve();
-		expect(lookups).toEqual([]);
-		release();
-		await sweeping;
-		const reopened = await reopen;
-		expect(lookups).toEqual([id]);
-		expect(reopened).not.toBe(session);
-		expect(reopened.closed).toBe(false);
-	});
+	it(
+		"a reopen of a review waits for its old session's close (the agent claim goes first)",
+		async () => {
+			let now = 1_000_000;
+			const r = registry({ idleMs: 60_000, now: () => now });
+			const { id, session } = await r.open({ pr: pr.arg });
+			let release: () => void = () => {};
+			const held = new Promise<void>((done) => {
+				release = done;
+			});
+			const close = session.close.bind(session);
+			vi.spyOn(session, "close").mockImplementation(async () => {
+				await held;
+				await close();
+			});
+			now += 61_000;
+			const sweeping = r.sweep();
+			lookups.length = 0;
+			const reopen = r.get(id);
+			// The close is held: the reopen hasn't even looked the review up.
+			for (let i = 0; i < 50; i++) await Promise.resolve();
+			expect(lookups).toEqual([]);
+			release();
+			await sweeping;
+			const reopened = await reopen;
+			expect(lookups).toEqual([id]);
+			expect(reopened).not.toBe(session);
+			expect(reopened.closed).toBe(false);
+			// Real git: an open, then a reopen by id (clone, snapshot twice).
+		},
+		GIT_TEST_TIMEOUTS.testTimeout,
+	);
 
 	it("closeAll closes every session", async () => {
 		const r = registry();
