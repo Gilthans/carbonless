@@ -65,32 +65,48 @@ export interface SourceLine {
 	line: number;
 	text: string;
 	/**
-	 * With `pairs` (fileLines), a hunk's removed line: the hunk's lines and
-	 * the line itself, so a hit on it can ask for its pair (pairsOf) lazily.
+	 * With `pairs` (fileLines), a hunk's line: the hunk's lines and the line
+	 * itself, so findInPr can put the hunk's hits in row order (pairedHunk).
 	 */
 	hunk?: DiffLine[];
 	source?: DiffLine;
 }
 
+/** A hunk as unified view with Ignore whitespace renders it (pairedHunk). */
+interface PairedHunk {
+	/**
+	 * The hunk's lines in the order of the rows shown (viewRuns): a
+	 * two-sided `~` row's removed line right before its added line, at the
+	 * row's place.
+	 */
+	order: DiffLine[];
+	/** A two-sided `~` row's removed line → its added line's number. */
+	twins: ReadonlyMap<DiffLine, number>;
+}
+
 /**
- * Each hunk's whitespace-only pairs, by the view's own pairing (viewRuns,
- * what HunkRows shows, whose O(n·m) matching is cached per hunk and shared
- * with it): a two-sided `~` row's removed line → its added line's number.
- * Kept per hunk: a search per keystroke never pairs a hunk again.
+ * A hunk's rows as the view renders them (viewRuns, what HunkRows shows,
+ * whose O(n·m) matching is cached per hunk and shared with it), as Find
+ * needs them. Kept per hunk: a search per keystroke never pairs it again.
  */
-const pairsByHunk = new WeakMap<DiffLine[], ReadonlyMap<DiffLine, number>>();
-function pairsOf(lines: DiffLine[]): ReadonlyMap<DiffLine, number> {
-	let pairs = pairsByHunk.get(lines);
-	if (!pairs) {
-		const found = new Map<DiffLine, number>();
+const pairedByHunk = new WeakMap<DiffLine[], PairedHunk>();
+function pairedHunk(lines: DiffLine[]): PairedHunk {
+	let paired = pairedByHunk.get(lines);
+	if (!paired) {
+		const order: DiffLine[] = [];
+		const twins = new Map<DiffLine, number>();
 		for (const run of viewRuns(lines, true))
-			for (const row of run.rows)
-				if (row.kind === "ws" && row.del && row.add)
-					found.set(row.del, row.add.newNo as number);
-		pairs = found;
-		pairsByHunk.set(lines, pairs);
+			for (const row of run.rows) {
+				if (row.kind === "line") order.push(row.line);
+				else if (row.del && row.add) {
+					order.push(row.del, row.add);
+					twins.set(row.del, row.add.newNo as number);
+				} else order.push((row.del ?? row.add) as DiffLine);
+			}
+		paired = { order, twins };
+		pairedByHunk.set(lines, paired);
 	}
-	return pairs;
+	return paired;
 }
 
 /**
@@ -101,7 +117,7 @@ function pairsOf(lines: DiffLine[]): ReadonlyMap<DiffLine, number> {
  * lies before it and after the previous hunk (sorted by newNo, first of a
  * duplicate newNo wins, one inside a hunk's new range ignored), then the
  * hunk's lines (del → LEFT:oldNo, add and context → RIGHT:newNo); then the
- * expanded lines after the last hunk. With `pairs` (and hunks), a removed
+ * expanded lines after the last hunk. With `pairs` (and hunks), a hunk's
  * line carries its hunk and itself (SourceLine.hunk, .source).
  */
 export function fileLines(
@@ -149,19 +165,15 @@ export function fileLines(
 	hunks.hunks.forEach((h, i) => {
 		lines.push(...(gaps[i] as SourceLine[]));
 		for (const l of h.lines) {
-			if (l.kind === "del")
-				lines.push(
-					pairs
-						? {
-								side: "LEFT",
-								line: l.oldNo as number,
-								text: l.text,
-								hunk: h.lines,
-								source: l,
-							}
-						: { side: "LEFT", line: l.oldNo as number, text: l.text },
-				);
-			else lines.push({ side: "RIGHT", line: l.newNo as number, text: l.text });
+			const at: SourceLine =
+				l.kind === "del"
+					? { side: "LEFT", line: l.oldNo as number, text: l.text }
+					: { side: "RIGHT", line: l.newNo as number, text: l.text };
+			if (pairs) {
+				at.hunk = h.lines;
+				at.source = l;
+			}
+			lines.push(at);
 		}
 	});
 	return [...lines, ...after];
@@ -173,8 +185,12 @@ export function fileLines(
  * in column order. Binary files and submodules have path hits only. Every
  * line of both sides is searched. With `pairs` (the view is unified with
  * Ignore whitespace on: only then is a pair one row), a whitespace-only
- * pair's old-side hits carry `twin` (shownHits leaves them out). A hunk is
- * paired (O(n·m), cached) only once one of its removed lines has a hit.
+ * pair's old-side hits carry `twin` (shownHits leaves them out), and a
+ * hunk's hits are in the order of the rows shown (a `~` row's where it sits
+ * on screen; its removed line's hidden hits right before its added
+ * line's). A hunk is paired (O(n·m), cached) only once one of its removed
+ * lines has a hit: without one, the row order of its hits is the hunk's
+ * own (pairRun keeps the added lines in order, and context runs in place).
  */
 export function findInPr(
 	term: string,
@@ -194,26 +210,60 @@ export function findInPr(
 			side: HitSide,
 			line: number,
 			text: string,
-			from?: SourceLine,
+			into: Hit[] = hits,
 		) => {
 			re.lastIndex = 0;
-			// The line's pair, asked on its first hit (-1: none).
-			let twin: number | undefined;
 			for (let m = re.exec(text); m; m = re.exec(text)) {
 				const len = m[0].length;
-				const hit: Hit = { index, side, line, col: m.index, len };
-				if (from?.hunk && twin === undefined)
-					twin = pairsOf(from.hunk).get(from.source as DiffLine) ?? -1;
-				if (twin !== undefined && twin >= 0) hit.twin = twin;
-				hits.push(hit);
+				into.push({ index, side, line, col: m.index, len });
 				re.lastIndex = m.index + len;
 			}
 		};
 		push("path", 0, file.path);
 		if (file.oldPath) push("oldPath", 0, file.oldPath);
 		if (file.binary || file.submodule) continue;
-		for (const l of fileLines(file, hunksOf(file), contextOf(file), pairs))
-			push(l.side, l.line, l.text, l);
+		// With `pairs`, a hunk's hits wait for its end: each line's, and
+		// whether a removed line has any (then the hunk is paired).
+		let hunk: DiffLine[] | undefined;
+		let byLine: Map<DiffLine, Hit[]> | null = null;
+		let seen: DiffLine[] = [];
+		let delHit = false;
+		const flush = () => {
+			if (!byLine || !hunk) return;
+			const paired = delHit ? pairedHunk(hunk) : null;
+			for (const l of paired ? paired.order : seen) {
+				const found = byLine.get(l);
+				if (!found) continue;
+				const twin = paired?.twins.get(l);
+				for (const h of found) {
+					if (twin !== undefined) h.twin = twin;
+					hits.push(h);
+				}
+			}
+			byLine = null;
+		};
+		for (const l of fileLines(file, hunksOf(file), contextOf(file), pairs)) {
+			if (l.hunk !== hunk) {
+				flush();
+				hunk = l.hunk;
+				if (hunk) {
+					byLine = new Map();
+					seen = [];
+					delHit = false;
+				}
+			}
+			if (!hunk || !byLine || !l.source) {
+				push(l.side, l.line, l.text);
+				continue;
+			}
+			const found: Hit[] = [];
+			push(l.side, l.line, l.text, found);
+			if (found.length === 0) continue;
+			byLine.set(l.source, found);
+			seen.push(l.source);
+			if (l.source.kind === "del") delHit = true;
+		}
+		flush();
 	}
 	return hits;
 }

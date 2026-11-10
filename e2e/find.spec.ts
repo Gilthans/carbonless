@@ -584,6 +584,57 @@ test("unified with ignore whitespace counts a whitespace-only pair once, every s
 	await expect(ws.locator(".find-current")).toHaveText("saveDraft");
 });
 
+test("unified with ignore whitespace steps down the screen across a `~` row between two removed lines' hits", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	await phone(page, isMobile);
+	const ORDER = "src/order.ts";
+	// Removed A, B, C; added B' (B re-indented), D: unified shows A, B~B', C, D.
+	await pr({
+		base: {
+			[ORDER]: text([
+				"x 1",
+				"saveDraft(a)",
+				"  saveDraft(b)",
+				"saveDraft(c)",
+				"x 5",
+			]),
+		},
+		files: [
+			{
+				message: "Order",
+				files: {
+					[ORDER]: text(["x 1", "saveDraft(b)", "saveDraft(d)", "x 5"]),
+				},
+			},
+		],
+	});
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	await ignoreWhitespace(page, true);
+	await openBar(page, isMobile);
+	await search(page, "saveDraft");
+	await expect(count(page)).toHaveText(counted(1, 4), VISIBLE);
+	const next = bar(page).getByRole("button", { name: /^Next/ });
+	const rows = [
+		{ kind: "del", attr: "data-old-no", no: "2" },
+		{ kind: "ws", attr: "data-new-no", no: "2" },
+		{ kind: "del", attr: "data-old-no", no: "4" },
+		{ kind: "add", attr: "data-new-no", no: "3" },
+	];
+	for (const [i, row] of rows.entries()) {
+		await next.click();
+		await expect(count(page)).toHaveText(counted(i + 1, 4), VISIBLE);
+		await expect(currentRow(page)).toHaveAttribute("data-kind", row.kind);
+		await expect(currentRow(page)).toHaveAttribute(row.attr, row.no);
+		await expect(page.locator(".find-current:visible")).toHaveCount(1);
+		await expect(page.locator(".find-current:visible")).toHaveText("saveDraft");
+	}
+});
+
 test("Match case changes the count and survives a reload", async ({
 	page,
 	pr,

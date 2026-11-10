@@ -338,6 +338,8 @@ describe("integrity", () => {
 		// Old-side hits that unified + Ignore whitespace leaves out, over all
 		// seeds: (f) must have met some.
 		let hidden = 0;
+		// Seeds whose unified order differs from the hunks' own: some must.
+		let reordered = 0;
 		for (let seed = 1; seed <= 300; seed++) {
 			const r = rng(seed);
 			const int = (n: number) => Math.floor(r() * n);
@@ -415,37 +417,6 @@ describe("integrity", () => {
 			const contextOf = (f: FileView) => contextByIndex.get(f.index) ?? [];
 
 			const hits = findInPr(term, order, hunksOf, contextOf, matchCase);
-
-			// (f) Pairing (unified + Ignore whitespace) only marks hits: the
-			// hits are the plain search's. Unified shows exactly the hits not
-			// on the old line of a two-sided `~` row of the view's own rows
-			// (viewRuns, the oracle: what HunkRows renders).
-			const paired = findInPr(term, order, hunksOf, contextOf, matchCase, true);
-			expect(
-				paired.map(({ twin: _, ...h }) => h),
-				`seed ${seed}`,
-			).toEqual(hits);
-			const offScreen = new Set<string>();
-			for (const f of files) {
-				for (const h of hunksOf(f)?.hunks ?? [])
-					for (const run of viewRuns(h.lines, true))
-						for (const row of run.rows)
-							if (row.kind === "ws" && row.del && row.add)
-								offScreen.add(`${f.index}:${row.del.oldNo}`);
-			}
-			const onScreen = hits.filter(
-				(h) =>
-					h.side !== "LEFT" ||
-					files.find((x) => x.index === h.index)?.binary ||
-					!offScreen.has(`${h.index}:${h.line}`),
-			);
-			hidden += hits.length - onScreen.length;
-			expect(
-				shownHits(paired, true).map(({ twin: _, ...h }) => h),
-				`seed ${seed}`,
-			).toEqual(onScreen);
-			for (const h of paired)
-				if (h.twin !== undefined) expect(h.side, `seed ${seed}`).toBe("LEFT");
 
 			// (a) the counts add up to the hits
 			let total = 0;
@@ -555,8 +526,86 @@ describe("integrity", () => {
 						b[cmp] as number,
 					);
 			}
+
+			// (f) Pairing (unified + Ignore whitespace) finds the plain
+			// search's hits. Unified shows exactly those not on the old line of
+			// a two-sided `~` row, in the order of the rows as rendered: the
+			// oracle is viewRuns, what HunkRows renders, with each hunk's rows
+			// in the hunk's place.
+			const paired = findInPr(term, order, hunksOf, contextOf, matchCase, true);
+			const posKey = (h: {
+				index: number;
+				side: string;
+				line: number;
+				col: number;
+			}) => `${h.index}:${h.side}:${h.line}:${h.col}`;
+			expect(paired.map(posKey).sort(), `seed ${seed}`).toEqual(
+				hits.map(posKey).sort(),
+			);
+			for (const h of paired)
+				if (h.twin !== undefined) expect(h.side, `seed ${seed}`).toBe("LEFT");
+			const offScreen = new Set<string>();
+			// Each shown line's place: fileLines' index, a hunk's lines by
+			// their row's place from the hunk's first line.
+			const placeOf = new Map<string, number>();
+			const lineKey = (index: number, side: string, line: number) =>
+				`${index}:${side}:${line}`;
+			for (const f of files) {
+				const plain = linesOf(f);
+				plain.forEach((l, i) => {
+					placeOf.set(lineKey(f.index, l.side, l.line), i);
+				});
+				if (f.binary || f.submodule) continue;
+				for (const h of hunksOf(f)?.hunks ?? []) {
+					const first = h.lines[0] as DiffLine;
+					const start = placeOf.get(
+						first.kind === "del"
+							? lineKey(f.index, "LEFT", first.oldNo as number)
+							: lineKey(f.index, "RIGHT", first.newNo as number),
+					) as number;
+					let row = 0;
+					for (const run of viewRuns(h.lines, true))
+						for (const r of run.rows) {
+							if (r.kind === "ws" && r.del && r.add)
+								offScreen.add(lineKey(f.index, "LEFT", r.del.oldNo as number));
+							const shown =
+								r.kind === "line" ? r.line : ((r.add ?? r.del) as DiffLine);
+							placeOf.set(
+								shown.kind === "del"
+									? lineKey(f.index, "LEFT", shown.oldNo as number)
+									: lineKey(f.index, "RIGHT", shown.newNo as number),
+								start + row++,
+							);
+						}
+				}
+			}
+			const onScreen = hits.filter(
+				(h) => !offScreen.has(lineKey(h.index, h.side, h.line)),
+			);
+			hidden += hits.length - onScreen.length;
+			const screenKey = (h: Hit) => {
+				const f = files.find((x) => x.index === h.index) as FileView;
+				const rank = h.side === "path" ? 0 : h.side === "oldPath" ? 1 : 2;
+				const at =
+					rank < 2
+						? 0
+						: (placeOf.get(lineKey(h.index, h.side, h.line)) as number);
+				return [order.indexOf(f), rank, at, h.col];
+			};
+			const cmp = (x: Hit, y: Hit) => {
+				const a = screenKey(x);
+				const b = screenKey(y);
+				const i = a.findIndex((v, n) => v !== b[n]);
+				return i < 0 ? 0 : (a[i] as number) - (b[i] as number);
+			};
+			const inRows = [...onScreen].sort(cmp);
+			if (inRows.some((h, i) => h !== onScreen[i])) reordered++;
+			expect(shownHits(paired, true).map(posKey), `seed ${seed}`).toEqual(
+				inRows.map(posKey),
+			);
 		}
 		expect(hidden).toBeGreaterThan(0);
+		expect(reordered).toBeGreaterThan(0);
 	});
 });
 
@@ -646,6 +695,69 @@ describe("whitespace-only pairs (Ignore whitespace)", () => {
 			"RIGHT:2:0",
 			"RIGHT:3:0",
 		]);
+	});
+
+	it("unified steps through a cluster in the order of its rows: a `~` row where it sits", () => {
+		// Removed A, B, C; added B' (B re-indented), D. Unified shows
+		// A, B~B', C, D: the pair's row between A and C.
+		const del = (n: number, text: string): DiffLine => ({
+			kind: "del",
+			oldNo: n,
+			text,
+			clusterKey: "k",
+		});
+		const add = (n: number, text: string): DiffLine => ({
+			kind: "add",
+			newNo: n,
+			text,
+			clusterKey: "k",
+		});
+		const lines = [
+			ctx(1, 1, "x"),
+			del(2, "save(a)"),
+			del(3, "  save(b)"),
+			del(4, "save(c)"),
+			add(2, "save(b)"),
+			add(3, "save(d)"),
+			ctx(5, 4, "x"),
+		];
+		const f = file(0, { path: "a.txt" });
+		const hunks: FileHunks = {
+			newLineCount: 4,
+			hunks: [{ oldStart: 1, oldCount: 5, newStart: 1, newCount: 4, lines }],
+		};
+		const unified = findInPr("save", [f], () => hunks, noContext, false, true);
+		expect(shownHits(unified, true).map(where)).toEqual([
+			"LEFT:2:0",
+			"RIGHT:2:0",
+			"LEFT:4:0",
+			"RIGHT:3:0",
+		]);
+		// The pair's hidden old side sits right before its row's shown hit.
+		expect(unified.map(where)).toEqual([
+			"LEFT:2:0",
+			"LEFT:3:2",
+			"RIGHT:2:0",
+			"LEFT:4:0",
+			"RIGHT:3:0",
+		]);
+		// Side by side, or Ignore whitespace off: the hunk's own order.
+		const plain = findInPr("save", [f], () => hunks, noContext, false);
+		expect(plain.map(where)).toEqual([
+			"LEFT:2:0",
+			"LEFT:3:2",
+			"LEFT:4:0",
+			"RIGHT:2:0",
+			"RIGHT:3:0",
+		]);
+		// Stepping goes down the screen: from A to the `~` row, then C.
+		const shown = shownHits(unified, true);
+		const caret = stepCaret(
+			shown,
+			{ pos: { index: 0, side: "LEFT", line: 2, col: 0 }, shown: true },
+			1,
+		);
+		expect(caret?.pos).toEqual({ index: 0, side: "RIGHT", line: 2, col: 0 });
 	});
 
 	it("without hunks yet (clusters only), nothing is paired", () => {
