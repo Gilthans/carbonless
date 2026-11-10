@@ -121,8 +121,8 @@ agent threads on Home.
   cache clone, config and state. Drop the checkout's `alternates` link to
   the cache clone, so it becomes a standalone clone. If the sandbox can't
   start, the agent doesn't start, and the status chip says why. Test that
-  a `git update-ref` from the agent fails. On the devbox `bwrap` is
-  installed, but `kernel.apparmor_restrict_unprivileged_userns = 1` may
+  a `git update-ref` from the agent fails. Where `bwrap` is
+  installed, `kernel.apparmor_restrict_unprivileged_userns = 1` may still
   block it; test that first.
 
 Follow-ups from the first slice's final review (2026-11-07):

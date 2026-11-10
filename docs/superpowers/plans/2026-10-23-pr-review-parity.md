@@ -615,7 +615,7 @@ test("opening without checking anything off creates no snapshot", async ({ page,
 **Files:**
 - Modify: `README.md`, `CLAUDE.md` (Development section: `crb`, fake gh), `docs/review-data-storage.md` (only if the implementation departed from it), `docs/todo.md` (mark "PR review view" done)
 
-- [ ] **Step 1:** `pnpm build && node dist/cli.js https://github.com/gytpol/active-directory-domain-agent/pull/27 --host 100.78.32.127 --no-open` and open the printed URL.
+- [ ] **Step 1:** `pnpm build && node dist/cli.js https://github.com/gytpol/active-directory-domain-agent/pull/27 --host "$(tailscale ip -4)" --no-open` and open the printed URL.
 - [ ] **Step 2:** Confirm in the UI and via `curl -s '<url-with-key>' ...api/review | jq '.progress'`: **24 files, 39 clusters, 1,588 lines**; the overview shows 6 checks and the unresolved bot threads. Check one cluster, restart, confirm it's still checked. Confirm the reviewer's working copy at `~/active-directory-domain-agent` is untouched (`git -C ~/active-directory-domain-agent status` and its refs unchanged). Report any mismatch instead of adjusting counts.
 - [ ] **Step 3:** Update the docs listed above; describe `crb` usage and `pnpm dev` with `CRB_PR=<pr>` in the README.
 - [ ] **Step 4:** `pnpm verify` — PASS.
