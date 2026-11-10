@@ -1,7 +1,17 @@
+import { mkdirSync, readdirSync } from "node:fs";
+import { join } from "node:path";
 import { readRequests, type Span, spansOf } from "../scripts/test-profile/load";
 import { tracer } from "../src/server/trace";
 import { testSpanContext } from "../test/trace-run";
-import { expect, test, watchConsoleErrors } from "./fixtures";
+import {
+	CrbStartTimeout,
+	expect,
+	startServe,
+	stopChild,
+	test,
+	watchConsoleErrors,
+} from "./fixtures";
+import { crbEnv } from "./pr-setup";
 
 // The harness itself: console errors fail a test unless declared.
 
@@ -85,4 +95,68 @@ test("a test's crb, fake gh and fixture gits trace under its span", async ({
 	);
 	expect(fixtureGits.map((s) => s.name)).toContain("git init");
 	for (const git of fixtureGits) expect(git.parent).toBe(ctx.spanId);
+});
+
+const alive = (pid: number) => {
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch {
+		return false;
+	}
+};
+
+test("a crb serve that prints no URL in time is killed, not left running", async ({
+	workdir,
+}) => {
+	// 1 ms: no crb listens that soon, so the start timer fires.
+	const error = await startServe(workdir, [], crbEnv(workdir), 1).catch(
+		(e: unknown) => e,
+	);
+	expect(error).toBeInstanceOf(CrbStartTimeout);
+	const pid = (error as CrbStartTimeout).pid as number;
+	try {
+		await expect.poll(() => alive(pid)).toBe(false);
+	} finally {
+		if (alive(pid)) process.kill(pid, "SIGKILL");
+	}
+});
+
+/** Files under `dir`, 0 when it doesn't exist. */
+const filesIn = (dir: string) => {
+	try {
+		return readdirSync(dir, { recursive: true }).length;
+	} catch {
+		return 0;
+	}
+};
+
+test("crb's compile cache: the run's shared one (global-setup.ts), else its own under XDG_CACHE_HOME", async ({
+	workdir,
+}) => {
+	const shared = process.env.NODE_COMPILE_CACHE;
+	expect(shared).toBeTruthy();
+	const own = (dir: string) =>
+		join(dir, "cache", "carbonless", "compile-cache");
+	const start = async (dir: string, env: NodeJS.ProcessEnv) => {
+		mkdirSync(dir);
+		const served = await startServe(dir, [], env);
+		return served;
+	};
+	// The harness's crb: the shared cache, none of its own.
+	const a = join(workdir, "a");
+	const first = await start(a, crbEnv(a));
+	await stopChild(first.child);
+	expect(filesIn(own(a))).toBe(0);
+	expect(filesIn(shared as string)).toBeGreaterThan(0);
+	// Without the variable (as it ships): crb's own default path fills.
+	const b = join(workdir, "b");
+	const env = crbEnv(b);
+	delete env.NODE_COMPILE_CACHE;
+	const second = await start(b, env);
+	try {
+		await expect.poll(() => filesIn(own(b))).toBeGreaterThan(0);
+	} finally {
+		await stopChild(second.child);
+	}
 });

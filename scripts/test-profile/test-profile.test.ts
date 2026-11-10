@@ -385,6 +385,34 @@ describe("summarize", () => {
 		expect(compared).toMatch(/listen {5}8\.0s → 2\.0s {2}-6\.0s \(-75%\)/);
 	});
 
+	it("a run without a warm-up, rest tests or listen spans shows – there, never 0", () => {
+		// Both start at once: all first wave. No `crb serve: listening` spans.
+		const s = summarize(asRead([...e2eRun("r", "a"), ...e2eRun("r", "b")]));
+		expect(s.warmupMs).toBeUndefined();
+		expect(s.firstWave).toEqual({
+			first: { tests: 2, testMs: 10_000, listenMs: null },
+			rest: { tests: 0, testMs: null, listenMs: null },
+		});
+		const text = formatSummary("r", s);
+		expect(text).not.toContain("warm-up");
+		expect(text).toMatch(/first wave\s+2\s+10\.0s\s+–\n/);
+		expect(text).toMatch(/rest\s+0\s+–\s+–\n/);
+		// Compared with a run that has no first wave: no -100% lines.
+		const { firstWave: _, ...without } = s;
+		expect(formatCompare("A", without, "B", s)).not.toContain("first wave");
+		// Missing listen on one side: both shown as they are.
+		const listened = {
+			...s,
+			firstWave: {
+				first: { tests: 2, testMs: 10_000, listenMs: 900 },
+				rest: s.firstWave?.rest ?? { tests: 0, testMs: null, listenMs: null },
+			},
+		};
+		expect(formatCompare("A", s, "B", listened)).toMatch(
+			/listen {5}– → 900ms\n/,
+		);
+	});
+
 	it("compares two runs: totals, phases, calls and the tests that moved", () => {
 		const a = summarize(asRead(e2eRun("r", "a")));
 		const b = summarize(asRead(e2eRun("r", "a", 4)));

@@ -33,6 +33,16 @@ export interface CrbExit {
 	ms: number;
 }
 
+/** startServe's rejection when crb serve prints no URL in time (it is killed). */
+export class CrbStartTimeout extends Error {
+	constructor(
+		readonly pid: number | undefined,
+		message: string,
+	) {
+		super(message);
+	}
+}
+
 /** A running `crb serve` of a test. */
 export interface Served {
 	child: ChildProcess;
@@ -47,6 +57,7 @@ export function startServe(
 	workdir: string,
 	args: string[] = [],
 	env: NodeJS.ProcessEnv = crbEnv(workdir),
+	timeoutMs = START_TIMEOUT_MS,
 ): Promise<Served> {
 	const child = spawn(
 		process.execPath,
@@ -59,10 +70,17 @@ export function startServe(
 	);
 	let output = "";
 	return new Promise<Served>((done, fail) => {
-		const timer = setTimeout(
-			() => fail(new Error(`crb serve printed no URL in time:\n${output}`)),
-			START_TIMEOUT_MS,
-		);
+		// A start that missed its time is killed: no one else holds it to
+		// stop it (the caller never got a Served), and it would outlive the run.
+		const timer = setTimeout(() => {
+			child.kill("SIGKILL");
+			fail(
+				new CrbStartTimeout(
+					child.pid,
+					`crb serve printed no URL in time:\n${output}`,
+				),
+			);
+		}, timeoutMs);
 		const onData = (chunk: Buffer) => {
 			output += chunk.toString();
 			const match = output.match(/carbonless listening on (http:\/\/\S+)/);

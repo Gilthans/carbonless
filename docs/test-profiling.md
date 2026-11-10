@@ -69,4 +69,13 @@ browser launch (skipped with one worker). Its span, `e2e: warm-up`
 so no test's time includes it. `pnpm test-profile` prints it under
 "cold start", with the first wave (the tests that started before any test
 ended: every worker's first) against the rest, as median test time and
-median `crb serve: listening`.
+median `crb serve: listening` ("–": nothing to measure). The first wave is
+approximate: a worker that boots after the fastest first test ends counts
+its cold first test in "rest".
+
+Global setup also points `NODE_COMPILE_CACHE` at one temp directory per
+run (removed at its end), so every crb of the run shares one compile
+cache, which the warm-up fills. Without it each test's own
+`XDG_CACHE_HOME` would leave crb's default cache
+(`$XDG_CACHE_HOME/carbonless/compile-cache`) empty at every start;
+`e2e/fixtures.spec.ts` checks both paths.

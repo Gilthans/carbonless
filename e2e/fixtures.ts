@@ -30,6 +30,7 @@ import {
 export {
 	type CrbExit,
 	CrbExitError,
+	CrbStartTimeout,
 	runCli,
 	type Served,
 	startServe,
@@ -67,8 +68,8 @@ export function reviewPage(url: string, page: string, search = ""): string {
 /**
  * Runs a test's setup step (a fixture repo, starting crb) and gives the test
  * back the time it took: on a loaded machine these take seconds, and the
- * test's own timeout is for its own steps. START_TIMEOUT_MS still bounds a
- * start that hangs.
+ * test's own timeout is for its own steps. START_TIMEOUT_MS
+ * (crb-process.ts) still bounds a start that hangs.
  */
 export async function untimed<T>(info: TestInfo, step: () => T | Promise<T>) {
 	const started = Date.now();

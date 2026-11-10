@@ -60,13 +60,13 @@ export interface Summary {
 	firstWave?: { first: Wave; rest: Wave };
 }
 
-/** Medians over a set of e2e tests. */
+/** Medians over a set of e2e tests; null when there is nothing to take one of. */
 export interface Wave {
 	tests: number;
 	/** The test's duration. */
-	testMs: number;
+	testMs: number | null;
 	/** Its first `crb serve: listening` (crb's start until it listens). */
-	listenMs: number;
+	listenMs: number | null;
 }
 
 const dur = (s: Span) => Math.max(0, s.endMs - s.startMs);
@@ -79,6 +79,10 @@ function median(values: number[]): number {
 		? (sorted[mid] as number)
 		: ((sorted[mid - 1] as number) + (sorted[mid] as number)) / 2;
 }
+
+/** The median, or null for no values. */
+const orNull = (values: number[]): number | null =>
+	values.length ? median(values) : null;
 
 /** Which call bucket a span counts in, if any. */
 function callKind(s: Span): string | null {
@@ -258,8 +262,8 @@ export function summarize(spans: Span[], top = 8): Summary {
 		const firstEnd = Math.min(...ran.map((t) => t.endMs));
 		const wave = (list: Span[]): Wave => ({
 			tests: list.length,
-			testMs: median(list.map(dur)),
-			listenMs: median(list.flatMap((t) => listen.get(key(t)) ?? [])),
+			testMs: orNull(list.map(dur)),
+			listenMs: orNull(list.flatMap((t) => listen.get(key(t)) ?? [])),
 		});
 		const first = ran.filter((t) => t.startMs < firstEnd);
 		const rest = ran.filter((t) => t.startMs >= firstEnd);
@@ -406,8 +410,15 @@ export function formatSummary(run: string, s: Summary, top = 8): string {
 	return out.join("\n");
 }
 
+/** A duration, or "–" for none (not 0: nothing was measured). */
+const fmtOr = (ms: number | null | undefined) => (ms == null ? "–" : fmt(ms));
+
 const waveRow = (w: Wave) =>
-	`${lpad(String(w.tests), 5)} ${lpad(fmt(w.testMs), 7)} ${lpad(fmt(w.listenMs), 7)}`;
+	`${lpad(String(w.tests), 5)} ${lpad(fmtOr(w.testMs), 7)} ${lpad(fmtOr(w.listenMs), 7)}`;
+
+/** delta(), or both sides as they are when either is missing. */
+const deltaOr = (a: number | null | undefined, b: number | null | undefined) =>
+	a == null || b == null ? `${fmtOr(a)} → ${fmtOr(b)}` : delta(a, b);
 
 function delta(a: number, b: number, time = true): string {
 	const d = b - a;
@@ -442,17 +453,18 @@ export function formatCompare(
 			out.push(`  ${pad(p, 18)} ${delta(a.phases[p] ?? 0, b.phases[p] ?? 0)}`);
 		}
 	}
-	if (a.firstWave || b.firstWave) {
-		const fa = a.firstWave?.first;
-		const fb = b.firstWave?.first;
+	// Only when both runs have one: a missing side isn't a 0 (-100%).
+	if (a.firstWave && b.firstWave) {
+		const fa = a.firstWave.first;
+		const fb = b.firstWave.first;
 		out.push(
 			"",
 			"🌊 first wave (medians)",
-			`  test       ${delta(fa?.testMs ?? 0, fb?.testMs ?? 0)}`,
-			`  listen     ${delta(fa?.listenMs ?? 0, fb?.listenMs ?? 0)}`,
+			`  test       ${deltaOr(fa.testMs, fb.testMs)}`,
+			`  listen     ${deltaOr(fa.listenMs, fb.listenMs)}`,
 		);
 		if (a.warmupMs !== undefined || b.warmupMs !== undefined) {
-			out.push(`  warm-up    ${delta(a.warmupMs ?? 0, b.warmupMs ?? 0)}`);
+			out.push(`  warm-up    ${deltaOr(a.warmupMs, b.warmupMs)}`);
 		}
 	}
 	const kinds = [

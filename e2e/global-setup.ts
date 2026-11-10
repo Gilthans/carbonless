@@ -31,6 +31,8 @@ export default async function globalSetup(
 	const compileCache = mkdtempSync(join(tmpdir(), "crb-e2e-compile-cache-"));
 	process.env.NODE_COMPILE_CACHE = compileCache;
 	const teardown = () => rmSync(compileCache, { recursive: true, force: true });
+	// Also when the run is stopped (Ctrl-C) before teardown could run.
+	process.once("exit", teardown);
 	// One worker never starts cold next to another.
 	if (config.workers <= 1) return teardown;
 	const traced = createTracer({
@@ -46,18 +48,24 @@ export default async function globalSetup(
 		{ "crb.kind": "warmup", workers: config.workers },
 		{ parent: null },
 	);
-	let error: string | undefined;
-	try {
-		await Promise.all([warmCrb(span.context), warmBrowser()]);
-	} catch (e) {
-		// A warm-up that fails is the first test's failure to report, with
-		// its own context; the run goes on.
-		error = (e as Error).message;
-		process.stderr.write(`e2e warm-up failed: ${error}\n`);
-	} finally {
-		span.end(undefined, error);
-		traced.flush();
-	}
+	// Both halves finish before any worker starts, even when one fails:
+	// a crb warm-up left running would load the first wave it is for.
+	const results = await Promise.allSettled([
+		warmCrb(span.context),
+		warmBrowser(),
+	]);
+	// A warm-up that fails is the first test's failure to report, with its
+	// own context; the run goes on.
+	const errors = results.flatMap((r, i) =>
+		r.status === "rejected"
+			? [
+					`${i === 0 ? "crb" : "browser"}: ${(r.reason as Error)?.message ?? r.reason}`,
+				]
+			: [],
+	);
+	for (const e of errors) process.stderr.write(`e2e warm-up failed: ${e}\n`);
+	span.end(undefined, errors.length ? errors.join("; ") : undefined);
+	traced.flush();
 	return teardown;
 }
 
@@ -66,10 +74,18 @@ async function warmCrb(
 	parent: { traceId: string; spanId: string } | null,
 ): Promise<void> {
 	const workdir = mkdtempSync(join(tmpdir(), "crb-e2e-warmup-"));
-	const pr = createPr(workdir);
-	const env = crbEnv(workdir);
-	if (parent) env.TRACEPARENT = traceparent(parent);
+	const repos: { cleanup: () => void }[] = [];
+	const cleanup = () => {
+		for (const repo of repos) repo.cleanup();
+		rmSync(workdir, { recursive: true, force: true });
+	};
+	// A run stopped (Ctrl-C) during the warm-up leaves nothing behind either.
+	process.once("exit", cleanup);
 	try {
+		const pr = createPr(workdir);
+		repos.push(pr.repo);
+		const env = crbEnv(workdir);
+		if (parent) env.TRACEPARENT = traceparent(parent);
 		const served = await startServe(workdir, [], env);
 		try {
 			const run = await runCli(workdir, [`${OWNER_REPO}#${PR_NUMBER}`], env);
@@ -80,8 +96,8 @@ async function warmCrb(
 			await stopChild(served.child);
 		}
 	} finally {
-		pr.repo.cleanup();
-		rmSync(workdir, { recursive: true, force: true });
+		process.off("exit", cleanup);
+		cleanup();
 	}
 }
 
