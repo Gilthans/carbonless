@@ -13,6 +13,7 @@ import {
 	useRef,
 	useState,
 } from "react";
+import { createPortal } from "react-dom";
 import {
 	headQuery,
 	overviewQuery,
@@ -60,9 +61,8 @@ const activeTabClass =
 const compactTapClass =
 	"relative before:absolute before:inset-x-0 before:top-1/2 before:h-10 before:-translate-y-1/2 before:content-['']";
 // The number keeps its width beside the clamped title, and goes when the
-// pill's column (a phone's narrowest) has no room for both. The whole pill
-// goes below 3.75rem (its padding and a tap-wide title): at 360px, beside
-// the agent chip, it has no room at all.
+// pill's column (a phone's narrowest) has no room for both. (Beside the
+// agent chip the whole pill may go: compactPillYieldClass.)
 const compactNumberClass = "shrink-0 rounded-full font-medium text-muted";
 // Below which column width the number hides, by its digits: the pill's
 // padding and gap (1.5rem), the number (~0.45rem a character at text-xs)
@@ -194,18 +194,43 @@ function useStickyHeader(
  * Where the agent chip shows: beside the full logo at the top, and in the
  * sticky row beside the compact mark (`docked`) once its place by the logo
  * starts to leave the screen (under `above`, the find bar), so it never
- * scrolls out of sight. One chip at a time; the other place keeps its
- * size (`size`), so neither the title nor the tabs move when it does (nor
- * the place by the logo, which says when to move). A chip that had focus
- * keeps it across the move.
+ * scrolls out of sight. One chip, rendered once into `host` (`chip`) and
+ * moved between the two places: it never remounts (no refetch, and what
+ * holds on to it, like the agent setup giving focus back, still finds it).
+ * The other place keeps its size (`size`), so neither the title nor the
+ * tabs move when it does (nor the place by the logo, which says when to
+ * move).
  */
 function useChipDock(hidden: boolean, above: number) {
 	const [title, setTitle] = useState<HTMLElement | null>(null);
 	const [row, setRow] = useState<HTMLElement | null>(null);
 	const [docked, setDocked] = useState(false);
 	const [size, setSize] = useState({ width: 0, height: 0 });
+	const [host] = useState(() => {
+		const el = document.createElement("span");
+		el.style.display = "contents";
+		return el;
+	});
 	const dockedNow = useRef(docked);
-	const refocus = useRef(false);
+	// The chip into its place, keeping focus if it had it.
+	useLayoutEffect(() => {
+		const place = docked ? row : title;
+		if (!place || host.parentNode === place) return;
+		const focused = host.contains(document.activeElement)
+			? (document.activeElement as HTMLElement)
+			: null;
+		const move = (place as { moveBefore?: (n: Node, c: Node | null) => void })
+			.moveBefore;
+		if (move && host.isConnected) {
+			try {
+				move.call(place, host, null);
+			} catch {
+				place.appendChild(host);
+			}
+		} else place.appendChild(host);
+		if (focused && document.activeElement !== focused)
+			focused.focus({ preventScroll: true });
+	}, [docked, row, title, host]);
 	// The chip's size, read from the place that holds it (0 with none).
 	useLayoutEffect(() => {
 		const holder = docked ? row : title;
@@ -231,8 +256,6 @@ function useChipDock(hidden: boolean, above: number) {
 			const next = box.width > 0 && box.top < above;
 			if (next === dockedNow.current) return;
 			dockedNow.current = next;
-			refocus.current =
-				document.activeElement?.closest("[data-agent-chip-slot]") != null;
 			setDocked(next);
 		};
 		const schedule = () => {
@@ -247,22 +270,40 @@ function useChipDock(hidden: boolean, above: number) {
 			window.removeEventListener("resize", schedule);
 		};
 	}, [title, hidden, above]);
-	useLayoutEffect(() => {
-		if (!refocus.current) return;
-		refocus.current = false;
-		(docked ? row : title)
-			?.querySelector<HTMLElement>('[data-testid="agent-chip"]')
-			?.focus({ preventScroll: true });
-	}, [docked, row, title]);
-	return { setTitle, setRow, docked, size };
+	return {
+		setTitle,
+		setRow,
+		docked,
+		size,
+		/** Whether there is a chip to show (none without an agent). */
+		shown: size.width > 0,
+		chip: createPortal(<AgentChip />, host),
+	};
 }
 
 /** The chip's size where it isn't, so nothing beside it moves. */
 function ChipSpace({ size }: { size: { width: number; height: number } }) {
 	return size.width > 0 ? (
-		<span aria-hidden className="block" style={size} />
+		<span aria-hidden data-chip-space className="block" style={size} />
 	) : null;
 }
+
+/**
+ * A chip place: out of the layout (and its gap) when it holds neither the
+ * chip nor its kept space, as without an agent.
+ */
+const chipSlotClass =
+	"flex shrink-0 items-center [&:not(:has(button,[data-chip-space]))]:hidden";
+
+/**
+ * Whether the compact title's pill gives way to the agent chip: beside it,
+ * a phone's narrowest row (360px) has no room for the pill, which then goes
+ * below 3.75rem (its padding and a tap-wide title) rather than cover the
+ * buttons. Without a chip the pill shows at any width, as it always did.
+ * (Owner's call pending: the pill instead of the chip, or tighter tabs.)
+ */
+const compactPillYieldClass = (chipShown: boolean) =>
+	chipShown ? "@max-[3.75rem]:hidden" : "";
 
 /**
  * The open find bar takes the top of Files changed, above the app header,
@@ -443,11 +484,10 @@ export function App() {
 								{/* The agent chip by the logo, until it docks in the row below. */}
 								<span
 									ref={chip.setTitle}
-									data-agent-chip-slot
 									data-testid="agent-chip-slot"
-									className="flex shrink-0 empty:hidden"
+									className={chipSlotClass}
 								>
-									{chip.docked ? <ChipSpace size={chip.size} /> : <AgentChip />}
+									{chip.docked && <ChipSpace size={chip.size} />}
 								</span>
 								<div
 									data-testid="header-title"
@@ -478,6 +518,8 @@ export function App() {
 								</div>
 							</div>
 						)}
+						{/* The one agent chip, placed by useChipDock. */}
+						{chip.chip}
 						{pr && (
 							<p className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-muted">
 								<span className="break-all">
@@ -535,11 +577,10 @@ export function App() {
 							 */}
 							<span
 								ref={chip.setRow}
-								data-agent-chip-slot
 								data-testid="agent-chip-row-slot"
-								className="relative flex shrink-0 items-center empty:hidden"
+								className={`relative ${chipSlotClass}`}
 							>
-								{chip.docked ? <AgentChip /> : <ChipSpace size={chip.size} />}
+								{!chip.docked && <ChipSpace size={chip.size} />}
 							</span>
 							<nav aria-label="PR pages" className="flex shrink-0 self-stretch">
 								<Link
@@ -594,7 +635,7 @@ export function App() {
 										transform:
 											"translateY(calc((1 - var(--compact, 0)) * 0.375rem))",
 									}}
-									className="flex max-w-full min-w-0 items-center gap-x-1 rounded-full bg-raised @max-[3.75rem]:hidden px-2.5 py-0.5 text-center text-xs leading-4 font-semibold text-ink ring-1 ring-line hover:bg-overlay hover:ring-line-strong sm:px-3 sm:text-sm sm:leading-5"
+									className={`flex max-w-full min-w-0 items-center gap-x-1 rounded-full bg-raised px-2.5 py-0.5 text-center text-xs leading-4 font-semibold text-ink ring-1 ring-line hover:bg-overlay hover:ring-line-strong sm:px-3 sm:text-sm sm:leading-5 ${compactPillYieldClass(chip.shown)}`}
 								>
 									<Tooltip content={pr.title} describe={false}>
 										{(trigger) => (

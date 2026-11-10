@@ -2259,15 +2259,78 @@ describe("App header", () => {
 		expect(row.querySelector("button, [aria-label]")).toBeNull();
 	});
 
-	it("leaves no chip and no slot by the logo without an agent", async () => {
+	it("leaves no chip and no kept space without an agent (the layout itself: e2e/sticky.spec.ts)", async () => {
 		renderApp({ "/api/overview": ok({ ...overview, writes: "viewer" }) });
 		await screen.findByRole("heading", { level: 1 });
 		await screen.findByRole("region", { name: "Bot reviews" });
 		expect(screen.queryByTestId("agent-chip")).toBeNull();
-		// Empty, so `empty:hidden` takes it (and its gap) out of the row.
-		expect(screen.getByTestId("agent-chip-slot")).toBeEmptyDOMElement();
-		expect(screen.getByTestId("agent-chip-slot")).toHaveClass("empty:hidden");
-		expect(screen.getByTestId("agent-chip-row-slot")).toBeEmptyDOMElement();
+		for (const id of ["agent-chip-slot", "agent-chip-row-slot"]) {
+			const slot = screen.getByTestId(id);
+			expect(slot.querySelector("button, [data-chip-space]")).toBeNull();
+		}
+	});
+
+	it("moves the one chip into the sticky row as its place by the logo leaves the screen: never remounted, so never read again", async () => {
+		vi.useFakeTimers({ toFake: ["Date"] });
+		const rect = vi
+			.spyOn(HTMLElement.prototype, "getBoundingClientRect")
+			.mockImplementation(function (this: HTMLElement) {
+				const by = this.dataset.testid === "agent-chip-slot";
+				const top = by && window.scrollY > 0 ? -10 : 20;
+				return {
+					top,
+					bottom: top + 24,
+					left: 0,
+					right: by ? 46 : 0,
+					width: by ? 46 : 0,
+					height: by ? 24 : 0,
+					x: 0,
+					y: top,
+					toJSON: () => ({}),
+				} as DOMRect;
+			});
+		try {
+			renderApp({
+				"/api/agent": ok({
+					state: "ready",
+					configured: true,
+					agent: { name: "Claude Agent", version: "0.100.0" },
+					since: "2026-11-07T10:00:00Z",
+					waiting: 0,
+				}),
+			});
+			const chip = await screen.findByRole("button", {
+				name: "Your agent: Claude Agent 0.100.0",
+			});
+			expect(screen.getByTestId("agent-chip-slot")).toContainElement(chip);
+			const reads = calls("/api/agent");
+			expect(reads).toBe(1);
+			// Long after its read (stale: a remount would read it again).
+			vi.setSystemTime(Date.now() + 60_000);
+			for (const y of [100, 0, 100]) {
+				act(() => {
+					Object.defineProperty(window, "scrollY", {
+						value: y,
+						configurable: true,
+					});
+					window.dispatchEvent(new Event("scroll"));
+				});
+				const place = y > 0 ? "agent-chip-row-slot" : "agent-chip-slot";
+				await waitFor(() =>
+					expect(screen.getByTestId(place)).toContainElement(chip),
+				);
+				// The same node, the only one.
+				expect(screen.getAllByTestId("agent-chip")).toEqual([chip]);
+			}
+			expect(calls("/api/agent")).toBe(reads);
+		} finally {
+			rect.mockRestore();
+			Object.defineProperty(window, "scrollY", {
+				value: 0,
+				configurable: true,
+			});
+			vi.useRealTimers();
+		}
 	});
 
 	it("offers the title again as a back-to-top button, inert until stuck", async () => {

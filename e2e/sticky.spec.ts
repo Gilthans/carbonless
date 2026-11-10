@@ -222,6 +222,141 @@ test("once stuck, the compact mark goes Home and the number to the PR on GitHub"
 
 const shots = process.env.DESIGN_SHOTS;
 
+/**
+ * Scrolls from the top in 6px steps until the header sticks: at each step
+ * exactly one agent chip, wholly on screen below `below` (the find bar's
+ * bottom, if open), and the Overview tab at `tabX`.
+ */
+async function scrollToStick(page: Page, tabX: number | undefined, below = 0) {
+	const overview = page.getByRole("link", { name: "Overview" });
+	const stuckAt = await appRow(page).evaluate(
+		(r) => (r as HTMLElement).offsetTop,
+	);
+	const top = await page.evaluate(() => window.scrollY);
+	for (let y = top; y <= top + stuckAt + 8; y += 6) {
+		await page.evaluate((y) => window.scrollTo(0, y), y);
+		await expect
+			.poll(() =>
+				page.evaluate((below) => {
+					const all = document.querySelectorAll('[data-testid="agent-chip"]');
+					if (all.length !== 1) return `${all.length} chips`;
+					const r = all[0]?.getBoundingClientRect();
+					if (!r) return "no chip";
+					return r.top >= below - 0.5 && r.bottom <= window.innerHeight
+						? "in sight"
+						: `at ${r.top}`;
+				}, below),
+			)
+			.toBe("in sight");
+		expect((await overview.boundingBox())?.x).toBe(tabX);
+	}
+}
+
+test("a long title wrapping over several lines: the chip stays by the logo, then in sight as the header sticks", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	if (isMobile) await page.setViewportSize({ width: 360, height: 780 });
+	await pr({
+		...fixture,
+		overview: {
+			title:
+				"Make the review header sticky, keep the agent chip in sight beside the logo, and never let the tabs jump while it moves",
+		},
+	});
+	const s = await startCrb();
+	await page.goto(s.url);
+	await expect(
+		page.getByRole("region", { name: "What it does" }),
+	).toBeVisible();
+	const h1 = await box(page.getByRole("heading", { level: 1 }));
+	// Two lines on desktop, more on a phone.
+	expect(h1.height).toBeGreaterThan(40);
+	const chip = page.getByTestId("agent-chip");
+	await expect(page.getByTestId("agent-chip-slot").locator(chip)).toBeVisible();
+	const tabX = (
+		await page.getByRole("link", { name: "Overview" }).boundingBox()
+	)?.x;
+	await scrollToStick(page, tabX);
+	await expect(appRow(page).locator(chip)).toBeVisible();
+	await expectNoPageOverflow(page);
+});
+
+test("with Find in PR open above the header, the chip docks under the bar, and the tabs don't move", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	test.skip(isMobile, "a phone's find bar takes the header's place");
+	await pr(fixture);
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	await page.getByRole("button", { name: "Find in PR", exact: true }).click();
+	const bar = page.getByRole("search", { name: "Find in PR" });
+	await expect(bar).toBeVisible();
+	// Back to the top with the bar open, the header under it.
+	await page.evaluate(() => window.scrollTo(0, 0));
+	const chip = page.getByTestId("agent-chip");
+	await expect(page.getByTestId("agent-chip-slot").locator(chip)).toBeVisible();
+	// The header sits under the bar's slot (the bar and its own rows).
+	const below = (await box(page.locator("[data-find-slot]"))).bottom;
+	expect(below).toBeGreaterThanOrEqual((await box(bar)).bottom);
+	expect((await box(chip)).top).toBeGreaterThanOrEqual(below);
+	const tabX = (
+		await page.getByRole("link", { name: "Overview" }).boundingBox()
+	)?.x;
+	await scrollToStick(page, tabX, below);
+	await expect(appRow(page).locator(chip)).toBeVisible();
+	// Deeper down, stuck under the bar, the chip in it below the bar.
+	await page.evaluate(() => window.scrollBy(0, 600));
+	await expect
+		.poll(async () => (await box(appRow(page))).top)
+		.toBeGreaterThanOrEqual(below - 0.5);
+	expect((await box(chip)).top).toBeGreaterThanOrEqual(below - 0.5);
+	await expect(appRow(page).locator(chip)).toBeInViewport();
+});
+
+test("with no agent (--viewer): no chip and no space for it, by the logo or in the row; the compact title as before", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	if (isMobile) await page.setViewportSize({ width: 360, height: 780 });
+	await pr(fixture);
+	const s = await startCrb(undefined, ["--viewer", "someone-else"]);
+	await page.goto(s.url);
+	await expect(
+		page.getByRole("region", { name: "What it does" }),
+	).toBeVisible();
+	await expect(page.getByTestId("agent-chip")).toHaveCount(0);
+	await expect(page.getByTestId("agent-chip-slot")).toBeHidden();
+	await expect(page.getByTestId("agent-chip-row-slot")).toBeHidden();
+	// The title right after the logo, one gap between them.
+	const logo = await page.getByTestId("home-link").boundingBox();
+	const title = await page.getByTestId("header-title").boundingBox();
+	if (!logo || !title) throw new Error("not rendered");
+	expect(title.x - (logo.x + logo.width)).toBe(isMobile ? 8 : 12);
+	// The tabs right after the mark's slot.
+	const row = await box(appRow(page));
+	const rowX = (await appRow(page).boundingBox())?.x ?? 0;
+	const overviewX =
+		(await page.getByRole("link", { name: "Overview" }).boundingBox())?.x ?? 0;
+	expect(overviewX - rowX).toBe((isMobile ? 8 : 24) + 28);
+	expect(row.height).toBeGreaterThan(0);
+	// Stuck at 360px, the compact title shows: no chip to give way to.
+	await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+	await expect(page.getByTestId("compact-home-link")).not.toHaveAttribute(
+		"inert",
+	);
+	await expect(compactPill(page)).toBeVisible();
+	await expect(compactTitle(page)).toBeVisible();
+	await expectNoPageOverflow(page);
+});
+
 test("the agent chip sits by the logo, and stays in sight and in reach as the header sticks", async ({
 	page,
 	pr,
@@ -256,32 +391,15 @@ test("the agent chip sits by the logo, and stays in sight and in reach as the he
 			path: `${shots}/chip-top-${isMobile ? "phone" : "desktop"}.png`,
 		});
 
-	// Scrolled bit by bit until the header sticks: one chip, never off screen.
-	const stuckAt = await appRow(page).evaluate(
-		(r) => (r as HTMLElement).offsetTop,
-	);
-	for (let y = 0; y <= stuckAt + 8; y += 6) {
-		await page.evaluate((y) => window.scrollTo(0, y), y);
-		await expect
-			.poll(() =>
-				page.evaluate(() => {
-					const all = document.querySelectorAll('[data-testid="agent-chip"]');
-					if (all.length !== 1) return `${all.length} chips`;
-					const r = all[0]?.getBoundingClientRect();
-					if (!r) return "no chip";
-					return r.top >= 0 && r.bottom <= window.innerHeight
-						? "in sight"
-						: `at ${r.top}`;
-				}),
-			)
-			.toBe("in sight");
-		// The tabs never move.
-		expect((await overview.boundingBox())?.x).toBe(tabX);
-	}
+	// Scrolled bit by bit until the header sticks: one chip, never off
+	// screen, the tabs never moving.
+	await scrollToStick(page, tabX);
 
 	// Stuck: beside the compact mark, in the row at the top.
 	await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
-	await expect(compactPill(page)).toHaveCSS("opacity", "1");
+	await expect(page.getByTestId("compact-home-link")).not.toHaveAttribute(
+		"inert",
+	);
 	await expect(appRow(page).locator(chip)).toBeVisible();
 	expect((await box(appRow(page))).top).toBe(0);
 	const mark = await page.getByTestId("compact-home-link").boundingBox();
@@ -315,7 +433,24 @@ test("the agent chip sits by the logo, and stays in sight and in reach as the he
 	await expect(setup).toHaveCount(0);
 	await expect(chip).toBeFocused();
 
-	// Back at the top, it is by the logo again; still one, still focused.
+	// The setup open from the docked chip, the page behind it scrolled to
+	// the top (the chip back by the logo): closing it still gives the chip
+	// its focus back.
+	await chip.click();
+	await expect(setup).toBeVisible();
+	await page.evaluate(() => window.scrollTo(0, 0));
+	await expect(page.getByTestId("agent-chip-slot").locator(chip)).toHaveCount(
+		1,
+	);
+	await page.keyboard.press("Escape");
+	await expect(setup).toHaveCount(0);
+	await expect(chip).toBeFocused();
+
+	// Docked again with focus on it, then back at the top: by the logo
+	// again; still one, still focused.
+	await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+	await expect(appRow(page).locator(chip)).toBeVisible();
+	await expect(chip).toBeFocused();
 	await page.evaluate(() => window.scrollTo(0, 0));
 	await expect(page.getByTestId("agent-chip-slot").locator(chip)).toBeVisible();
 	await expect(chip).toHaveCount(1);
