@@ -92,6 +92,7 @@ const E2E_MAP = [
 		/^src\/web\/files\/|^src\/server\/diff\//,
 		[
 			"files",
+			"hunk-context",
 			"files-threads",
 			"sticky",
 			"invisibles",
@@ -100,7 +101,17 @@ const E2E_MAP = [
 			"mobile",
 			"saves",
 			"tree-resize",
+			"find",
 		],
+	],
+	[
+		/^src\/web\/files\/find\/|^src\/web\/code\/Invisibles\.tsx$|^src\/web\/App\.tsx$|^src\/server\/diff\/snapshot\.ts$/,
+		["find"],
+	],
+	// The app header's row (tabs, compact title, Find in PR, Refresh).
+	[
+		/^src\/web\/App\.tsx$|^src\/web\/files\/find\/FindButton\.tsx$/,
+		["keepalive", "sticky"],
 	],
 	[
 		/^src\/web\/(viewSettings|useMedia)\.ts$|^src\/web\/Tooltip\.tsx$/,
@@ -157,6 +168,8 @@ const E2E_MAP = [
 	[/^src\/web\/pageActive\.ts$/, ["keepalive"]],
 	[/^src\/server\/access\.ts$|^src\/web\/accessKey\.ts$/, ["cli", "keepalive"]],
 	[/^test\/methodology-fixture\.ts$/, ["methodology"]],
+	// Only src/cli.test.ts preloads it.
+	[/^test\/module-log\.mjs$/, []],
 	[/^e2e\/files-ui\.ts$/, ["files", "sticky", "mobile"]],
 	[
 		/^src\/(cli|client)\.ts$|^src\/server\/(serve|registry|serverState|config|paths|version|app)\.ts$|^src\/web\/(router\.tsx|reviewId\.ts|api\.ts|App\.tsx|pages\.tsx)$|^scripts\/build-info\.mjs$/,
@@ -202,7 +215,11 @@ for (const s of e2e) if (!specs.includes(s)) e2e.delete(s);
 console.log(`verify:fast against ${base}: ${changed.length} changed file(s)`);
 for (const r of reasons) console.log(`  ${r}`);
 console.log(
-	`  e2e: ${allE2e ? "all specs" : e2e.size ? [...e2e].join(", ") : "none"}`,
+	`  e2e: ${allE2e ? "all specs" : e2e.size ? [...e2e].join(", ") : "none"}${
+		(allE2e || e2e.size) && process.env.CRB_NO_PHONE === "1"
+			? " (no phone)"
+			: ""
+	}`,
 );
 
 const steps = [
@@ -210,6 +227,15 @@ const steps = [
 	["pnpm", ["typecheck"]],
 	["pnpm", ["exec", "vitest", "run", "--changed", base, "--passWithNoTests"]],
 ];
+// src/cli.test.ts only spawns the CLI, so --changed never finds it through
+// imports: it runs whenever the CLI's module graph may have changed.
+const cliGraph = changed.filter((f) =>
+	/^src\/(cli|client)\.ts$|^src\/server\/|^test\/module-log\.mjs$/.test(f),
+);
+if (cliGraph.length && !changed.includes("src/cli.test.ts")) {
+	console.log(`  unit: src/cli.test.ts (${cliGraph[0]} changed)`);
+	steps.push(["pnpm", ["exec", "vitest", "run", "src/cli.test.ts"]]);
+}
 if (allE2e || e2e.size) {
 	steps.push(["pnpm", ["build"]]);
 	const files = allE2e ? [] : [...e2e].map((s) => `e2e/${s}.spec.ts`);

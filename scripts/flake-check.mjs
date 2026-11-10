@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Runs the given tests many times on a deliberately loaded machine, to catch
+// Runs the given tests many times, optionally on a loaded machine, to catch
 // a flaky test before it reaches everyone's `pnpm verify`.
 //
 //   pnpm flake-check <test or spec files...> [--runs N] [--load L]
@@ -7,16 +7,16 @@
 //
 // Unit files (*.test.ts[x]) run N times in fresh Vitest processes; e2e specs
 // (e2e/*.spec.ts) are built once and run with --repeat-each=N on both
-// Playwright projects (or the --project ones). L busy loops (default: one
-// per core) load the whole machine alongside, other agents' unqueued runs
-// too; --load 0 checks a quiet machine. Defaults: N=5. Waits its turn in the
-// machine-wide queue (scripts/queue.mjs). A signal stops the current run,
+// Playwright projects (or the --project ones; CRB_NO_PHONE=1 drops the
+// phone). --load L adds L busy loops alongside (default none: the devbox is
+// loaded by other agents already, and loops slow their runs too). Defaults:
+// N=5. Waits its turn in the machine-wide queue (scripts/queue.mjs). A signal stops the current run,
 // the loops and the check.
 import { spawn } from "node:child_process";
-import { availableParallelism, loadavg } from "node:os";
+import { loadavg } from "node:os";
 import { parseFlakeArgs } from "./flake-check-args.mjs";
 
-const parsed = parseFlakeArgs(process.argv.slice(2), availableParallelism());
+const parsed = parseFlakeArgs(process.argv.slice(2));
 if ("error" in parsed) {
 	console.error(`flake-check: ${parsed.error}`);
 	console.error(

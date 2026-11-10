@@ -9,6 +9,7 @@ import {
 	type Page,
 	type TestInfo,
 } from "@playwright/test";
+import { traceparent, tracer } from "../src/server/trace";
 import type { GitFixture } from "../test/git-fixture";
 import {
 	collectUnits,
@@ -18,6 +19,7 @@ import {
 	type UnitState,
 	unitProblems,
 } from "../test/markable";
+import { testSpanContext } from "../test/trace-run";
 import {
 	CLI,
 	crbEnv,
@@ -237,6 +239,7 @@ export function stopChild(child: ChildProcess): Promise<CrbExit | null> {
 }
 
 export const test = base.extend<{
+	_trace: undefined;
 	workdir: string;
 	pr: (opts?: PrOptions) => Promise<Pr>;
 	startCrb: (arg?: string, extraArgs?: string[]) => Promise<Crb>;
@@ -255,10 +258,38 @@ export const test = base.extend<{
 		rmSync(dir, { recursive: true, force: true });
 	},
 
+	_trace: [
+		// biome-ignore lint/correctness/noEmptyPattern: Playwright requires a destructuring pattern.
+		async ({}, use, info) => {
+			// The test's span (e2e/trace-reporter.ts writes it, with these ids)
+			// parents what it runs: fixture gits here, crb and the fake gh below.
+			const traced = tracer("playwright-worker");
+			const run = process.env.CRB_TRACE_RUN;
+			if (!traced.enabled || !run) return use(undefined);
+			const context = testSpanContext(
+				run,
+				info.testId,
+				info.retry,
+				info.repeatEachIndex,
+			);
+			traced.setDefaultParent(context);
+			process.env.TRACEPARENT = traceparent(context);
+			await use(undefined);
+			delete process.env.TRACEPARENT;
+			traced.setDefaultParent(null);
+			traced.flush();
+		},
+		{ auto: true, box: true },
+	],
+
 	pr: async ({ workdir }, use, info) => {
 		const repos: GitFixture[] = [];
 		await use(async (opts = {}) => {
-			const pr = await untimed(info, () => createPr(workdir, opts));
+			const pr = await untimed(info, () =>
+				base.step("setup: fixture repo", () => createPr(workdir, opts), {
+					box: true,
+				}),
+			);
 			repos.push(pr.repo);
 			return pr;
 		});
@@ -279,7 +310,11 @@ export const test = base.extend<{
 					current.child.exitCode === null &&
 					current.child.signalCode === null;
 				if (!current || !live) {
-					current = await startServe(workdir, serve);
+					current = await base.step(
+						"setup: crb serve",
+						() => startServe(workdir, serve),
+						{ box: true },
+					);
 					currentFlags = serve.join(" ");
 					servers.push(current);
 				} else if (serve.length > 0 && serve.join(" ") !== currentFlags) {
@@ -289,7 +324,11 @@ export const test = base.extend<{
 				}
 				const server = current;
 				const from = server.output().length;
-				const run = await runCli(workdir, [arg, ...client]);
+				const run = await base.step(
+					"setup: crb open",
+					() => runCli(workdir, [arg, ...client]),
+					{ box: true },
+				);
 				const output = () => `${server.output().slice(from)}${run.output}`;
 				const url = run.stdout.trim().split("\n").at(-1) ?? "";
 				if (run.code !== 0 || !/^http:\/\//.test(url)) {
@@ -302,7 +341,11 @@ export const test = base.extend<{
 		await Promise.all(
 			context.pages().map((p) => p.goto("about:blank").catch(() => {})),
 		);
-		await Promise.all(servers.map((s) => stopChild(s.child)));
+		await base.step(
+			"teardown: crb stop",
+			() => Promise.all(servers.map((s) => stopChild(s.child))),
+			{ box: true },
+		);
 	},
 
 	expectConsoleError: [

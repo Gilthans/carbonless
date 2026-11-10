@@ -12,6 +12,7 @@ import type {
 	ReviewThread,
 	SinceMark,
 } from "../../shared/types";
+import { contextRanges } from "./contextRanges";
 import { DiffBody, type DiffThreads } from "./DiffBody";
 import { GoneFile } from "./FileDiff";
 import { FileTree } from "./FileTree";
@@ -167,6 +168,8 @@ const kinds = new Map<string, KindEntry>([
 afterEach(() => {
 	cleanup();
 	vi.unstubAllGlobals();
+	// Expanded context is kept for the page (contextRanges): each test starts with none.
+	contextRanges.reset();
 });
 
 describe("DiffBody in the since view", () => {

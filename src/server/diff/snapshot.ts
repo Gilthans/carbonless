@@ -3,12 +3,19 @@ import type {
 	DiffLine,
 	FileHunks,
 	FileSummary,
+	HunksBatch,
 	Snapshot,
 } from "../../shared/types.js";
 import { GitError, runGit, runGitBuffer } from "../git.js";
 import { buildAllClusters } from "./clusters.js";
 import { readTabWidths } from "./editorconfig.js";
 import { type ChangedFile, listChangedFiles } from "./files.js";
+import {
+	buildAllHeadings,
+	type GitHunkHeading,
+	type HeadingFile,
+	withHeadings,
+} from "./headings.js";
 import { buildDisplayHunks, contextLines } from "./hunks.js";
 import { clusterKeys } from "./identity.js";
 import { chooseEncoding, decodeLines, type TextEncoding } from "./text.js";
@@ -25,6 +32,51 @@ function remember(oid: string, bytes: Buffer): void {
 		const oldest = blobCache.keys().next().value as string;
 		blobCache.delete(oldest);
 	}
+}
+
+const MAX_CACHED_HEADINGS = 8;
+
+/**
+ * How long a file's hunks wait for the snapshot's headings once their own
+ * text is in. The heading run starts with the snapshot, so it's normally
+ * done long before; a slow or stuck one never holds the hunks up for more
+ * (they come without headings).
+ */
+export const HEADING_WAIT_MS = 500;
+
+/**
+ * Every file's `-U3` hunk headings, per snapshot (`repo`, base, head), least
+ * recently used first: one git run per snapshot, never per file. A failed
+ * run resolves to null and stays cached: no headings for that snapshot
+ * (they are a reading aid), never a run per file open.
+ */
+const headingRuns = new Map<string, Promise<GitHunkHeading[][] | null>>();
+
+function snapshotHeadings(
+	repo: string,
+	base: string,
+	head: string,
+	files: HeadingFile[],
+): Promise<GitHunkHeading[][] | null> {
+	const key = `${repo}\0${base}\0${head}`;
+	const run =
+		headingRuns.get(key) ??
+		buildAllHeadings(repo, base, head, files).catch(() => null);
+	headingRuns.delete(key);
+	headingRuns.set(key, run);
+	while (headingRuns.size > MAX_CACHED_HEADINGS) {
+		headingRuns.delete(headingRuns.keys().next().value as string);
+	}
+	return run;
+}
+
+/** `run`'s answer if it comes within `ms`, else null (it keeps going). */
+function within<T>(run: Promise<T | null>, ms: number): Promise<T | null> {
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	const late = new Promise<null>((resolve) => {
+		timer = setTimeout(() => resolve(null), ms);
+	});
+	return Promise.race([run, late]).finally(() => clearTimeout(timer));
 }
 
 const isZeroOid = (oid: string) => /^0+$/.test(oid);
@@ -113,6 +165,8 @@ export async function buildSnapshot(
 	head: string,
 ): Promise<Snapshot> {
 	const changed = await listChangedFiles(repo, base, head);
+	// Started now, beside the clusters' run: ready by the first file's hunks.
+	void snapshotHeadings(repo, base, head, changed);
 	const isText = (f: ChangedFile) => !f.binary && !f.submodule;
 	const blobs = await readBlobs(
 		repo,
@@ -200,18 +254,34 @@ export async function loadFileHunks(
 	repo: string,
 	snapshot: Snapshot,
 	index: number,
+	options: {
+		/** Without headings (callers that don't show them): never waits for them. */
+		headings?: boolean;
+		/** The longest wait for headings after the text is in. */
+		headingWaitMs?: number;
+	} = {},
 ): Promise<FileHunks> {
 	const file = fileAt(snapshot, index);
 	if (file.binary || file.submodule) return { hunks: [], newLineCount: 0 };
+	const wanted = options.headings !== false;
+	const headingRun = wanted
+		? snapshotHeadings(repo, snapshot.base, snapshot.head, snapshot.files)
+		: null;
 	const text = await loadText(repo, snapshot, file);
+	const hunks = buildDisplayHunks(
+		text.oldLines,
+		text.newLines,
+		file.clusters,
+		3,
+		text.noNewlineAtEnd,
+	);
+	const headings = headingRun
+		? await within(headingRun, options.headingWaitMs ?? HEADING_WAIT_MS)
+		: null;
 	return {
-		hunks: buildDisplayHunks(
-			text.oldLines,
-			text.newLines,
-			file.clusters,
-			3,
-			text.noNewlineAtEnd,
-		),
+		hunks: headings
+			? withHeadings(hunks, headings[index] ?? [], text.encoding)
+			: hunks,
 		newLineCount: text.newLines.length,
 	};
 }
@@ -233,6 +303,31 @@ export async function loadNewText(
 	const [oid] = await resolveBlobs(repo, [`${snapshot.head}:${file.path}`]);
 	const blobs = await readBlobs(repo, oid ? [oid] : []);
 	return fileText(EMPTY, (oid && blobs.get(oid)) || EMPTY);
+}
+
+/**
+ * Display hunks of several files of the snapshot, one git read at a time
+ * (the server is shared with the open file's own reads). A file whose
+ * hunks fail answers with `error`; an index not in the snapshot throws
+ * (RangeError, "No file N in this snapshot", as loadFileHunks does).
+ */
+export async function loadHunksBatch(
+	repo: string,
+	snapshot: Snapshot,
+	indexes: readonly number[],
+	load: typeof loadFileHunks = loadFileHunks,
+): Promise<HunksBatch> {
+	for (const index of indexes) fileAt(snapshot, index);
+	const files: HunksBatch["files"] = [];
+	for (const index of indexes) {
+		try {
+			files.push({ index, hunks: await load(repo, snapshot, index) });
+		} catch {
+			// Not git's message: it can carry the clone cache's path.
+			files.push({ index, error: "Couldn't read this file" });
+		}
+	}
+	return { files };
 }
 
 /** Unchanged lines `newFrom..newTo` of one file, for expanding context. */
