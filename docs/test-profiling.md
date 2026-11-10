@@ -29,7 +29,10 @@ before the reporter writes the span.
 
 CI traces its unit run (`checks`) and its e2e run into
 `$CRB_TEST_TRACE_ROOT` and always uploads it, kept 14 days: artifacts
-`test-traces-unit` and `test-traces-e2e`. To read one:
+`test-traces-unit` and `test-traces-e2e`. The e2e run is four Playwright
+shards (`e2e-shard`, each uploading `test-traces-e2e-<n>`); the `e2e` job
+merges their files into one run, `test-traces-e2e` (its wall time is the
+slowest shard's). To read one:
 
 ```sh
 gh run download <run-id> -R Gilthans/carbonless -n test-traces-e2e -D /tmp/ci-traces

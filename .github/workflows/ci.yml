@@ -51,10 +51,19 @@ jobs:
           path: ${{ runner.temp }}/test-traces/
           retention-days: 14
 
-  e2e:
+  # Playwright in parallel shards (about 15 min each at ~830 tests on a
+  # 2-core runner; one runner took 35+ min and hit its limit). Each uploads
+  # its own artifacts; `e2e` below merges the traces and is the one result.
+  e2e-shard:
+    name: e2e (${{ matrix.shard }}/4)
     if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # Hang safety nets, sized for one shard.
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -68,20 +77,58 @@ jobs:
       - run: pnpm exec playwright install --with-deps chromium
       # Queued (scripts/queue.mjs): the lock is free on a runner, and a run
       # holding it gets a Playwright worker per core.
-      - run: pnpm test:e2e
+      - run: pnpm test:e2e --shard=${{ matrix.shard }}/4
+        timeout-minutes: 20
         env:
           CRB_TEST_TRACE_ROOT: ${{ runner.temp }}/test-traces
       - if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: test-traces-e2e
+          name: test-traces-e2e-${{ matrix.shard }}
           path: ${{ runner.temp }}/test-traces/
           retention-days: 14
+      # A shard's HTML report covers its own tests, failures included, so
+      # the reports aren't merged.
       - if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: playwright-report
+          name: playwright-report-${{ matrix.shard }}
           path: |
             playwright-report/
             test-results/
           retention-days: 14
+
+  # One result for the whole e2e run, and the shards' traces as one run
+  # (artifact `test-traces-e2e`, docs/test-profiling.md).
+  e2e:
+    needs: e2e-shard
+    if: always() && (github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: test-traces-e2e-*
+          path: ${{ runner.temp }}/shards
+      # Every shard's trace files in one run directory, each name prefixed
+      # with its shard so none collide.
+      - run: |
+          run="$RUNNER_TEMP/test-traces/e2e-ci-$GITHUB_RUN_ID"
+          mkdir -p "$run"
+          printf '{"id":"e2e-ci-%s","kind":"e2e","shards":4}\n' "$GITHUB_RUN_ID" > "$run/run.json"
+          for shard in "$RUNNER_TEMP"/shards/test-traces-e2e-*; do
+            [ -d "$shard" ] || continue
+            n="${shard##*-}"
+            find "$shard" -type f \( -name '*.jsonl' -o -name '*.jsonl.gz' \) |
+              while read -r f; do cp "$f" "$run/s$n-$(basename "$f")"; done
+          done
+          ls "$run" | wc -l
+      - uses: actions/upload-artifact@v4
+        with:
+          name: test-traces-e2e
+          path: ${{ runner.temp }}/test-traces/
+          retention-days: 14
+      - if: needs.e2e-shard.result != 'success'
+        run: |
+          echo "e2e shards: ${{ needs.e2e-shard.result }}"
+          exit 1
