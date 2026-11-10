@@ -194,12 +194,19 @@ export class SessionRegistry {
 		return run;
 	}
 
-	/** Review `id` if it is open now (counts as a use); never opens one. */
+	/**
+	 * Review `id` if it is open now; never opens one, and isn't a use
+	 * (touch() once the caller knows the request is good).
+	 */
 	peek(id: string): Session | undefined {
 		const entry = this.#open.get(id);
-		if (!entry || entry.session.closed) return undefined;
-		entry.lastUsed = this.#now();
-		return entry.session;
+		return entry && !entry.session.closed ? entry.session : undefined;
+	}
+
+	/** Counts as a use of open review `id` (it isn't closed as idle); no-op otherwise. */
+	touch(id: string): void {
+		const entry = this.#open.get(id);
+		if (entry) entry.lastUsed = this.#now();
 	}
 
 	/** The reviews open now, with when each was last used (ms); none is touched. */

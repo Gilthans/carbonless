@@ -560,6 +560,8 @@ describe("/mcp", () => {
 		it("a review that can't open right now drops the connection (curl retries), no HTTP status (S1)", async () => {
 			const client = await connect();
 			const a = await join(client);
+			// As after a crb restart: not open yet, its join on disk.
+			vi.spyOn(registry, "peek").mockReturnValueOnce(undefined);
 			vi.spyOn(registry, "get").mockRejectedValueOnce(new Error("gh is down"));
 			await expect(watcher(a.token)).rejects.toThrow();
 			// The next try gets through.

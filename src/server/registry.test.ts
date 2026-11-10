@@ -244,6 +244,30 @@ describe("SessionRegistry", () => {
 		expect(reopened.closed).toBe(false);
 	});
 
+	it("peek never opens a review and isn't a use; touch is", async () => {
+		let now = 1_000_000;
+		const r = registry({ idleMs: 60_000, now: () => now });
+		const id = "01k9e6m2q8x4v7c3n5b0h1j2t6";
+		lookups.length = 0;
+		expect(r.peek(id)).toBeUndefined();
+		expect(lookups).toEqual([]);
+		const opened = await r.open({ pr: pr.arg });
+		now += 59_000;
+		expect(r.peek(opened.id)).toBe(opened.session);
+		now += 2_000;
+		await r.sweep();
+		// Peeked 2 s ago, opened 61 s ago: idle all the same.
+		expect(opened.session.closed).toBe(true);
+		expect(r.peek(opened.id)).toBeUndefined();
+		const again = await r.get(opened.id);
+		now += 59_000;
+		r.touch(opened.id);
+		now += 2_000;
+		await r.sweep();
+		expect(again.closed).toBe(false);
+		r.touch("01k9e6m2q8x4v7c3n5b0h1j2t7");
+	});
+
 	it("a review a session asks to join (or is joined to) isn't closed when idle", async () => {
 		let now = 1_000_000;
 		const r = registry({ idleMs: 60_000, now: () => now });

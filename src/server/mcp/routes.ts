@@ -123,14 +123,15 @@ export function registerMcp(app: FastifyInstance, deps: McpRouteDeps): void {
 			}
 			// Only attach opens a review: a token opens one only when a
 			// session is joined to it on disk (a crb restart since the join).
-			if (!deps.registry.peek(id) && !deps.joinedOnDisk(id)) {
+			const open = deps.registry.peek(id);
+			if (!open && !deps.joinedOnDisk(id)) {
 				return reply
 					.code(410)
 					.send({ error: "Not joined to this review: call attach again" });
 			}
 			let session: Session;
 			try {
-				session = await deps.registry.get(id);
+				session = open ?? (await deps.registry.get(id));
 			} catch (error) {
 				if (error instanceof UnknownReviewError) {
 					return reply.code(410).send({ error: "No such review" });
@@ -149,6 +150,8 @@ export function registerMcp(app: FastifyInstance, deps: McpRouteDeps): void {
 					.code(410)
 					.send({ error: "Not joined to this review: call attach again" });
 			}
+			// A use of the review only once the token checks out.
+			deps.registry.touch(id);
 			const m = session.prMeta();
 			const pr = `${m.owner}/${m.repo}#${m.number}`;
 			reply.hijack();

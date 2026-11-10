@@ -43,7 +43,7 @@ export interface McpRequestContext {
 }
 
 export interface McpDeps {
-	registry: Pick<SessionRegistry, "get" | "peek">;
+	registry: Pick<SessionRegistry, "get" | "peek" | "touch">;
 	/**
 	 * Whether review `id` may have a joined session (its joined.json): a
 	 * token for a review that isn't open opens it only then.
@@ -152,18 +152,24 @@ export function createMcpServer(
 		if (!parsed) throw new SessionTokenError();
 		// Only attach opens a review: a token opens one only if a session
 		// is joined to it on disk (a crb restart since the join).
-		if (!deps.registry.peek(parsed.id) && !deps.joinedOnDisk(parsed.id)) {
+		const open = deps.registry.peek(parsed.id);
+		if (!open && !deps.joinedOnDisk(parsed.id)) {
 			throw new SessionTokenError();
 		}
 		let host: AgentHost;
 		try {
-			host = await hostOf(parsed.id);
+			host = open?.agent ?? (await hostOf(parsed.id));
 		} catch (error) {
 			if (error instanceof UnknownReviewError || error instanceof ToolError) {
 				throw new SessionTokenError();
 			}
 			throw error;
 		}
+		// A use of the review only once the token checks out.
+		if (!(await host.sessionAllowed(parsed.secret))) {
+			throw new SessionTokenError();
+		}
+		deps.registry.touch(parsed.id);
 		return { host, secret: parsed.secret, id: parsed.id };
 	};
 	const TOKEN = {
