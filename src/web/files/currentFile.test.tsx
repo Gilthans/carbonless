@@ -16,21 +16,33 @@ class FakeObserver {
 	) {
 		FakeObserver.all.push(this);
 	}
+	/** Each target's last reported state: like a real observer, only changes are reported. */
+	reported = new Map<Element, boolean>();
+	/** Calls back with the targets whose state changed (all on the first report). */
+	deliver(entries: { target: Element; isIntersecting: boolean }[]) {
+		const changed = entries.filter(
+			(e) => this.reported.get(e.target) !== e.isIntersecting,
+		);
+		for (const e of changed) this.reported.set(e.target, e.isIntersecting);
+		if (changed.length === 0) return;
+		act(() =>
+			this.callback(
+				changed as unknown as IntersectionObserverEntry[],
+				this as unknown as IntersectionObserver,
+			),
+		);
+	}
 	/**
 	 * Reports what crosses the band its rootMargin's top sets (down to 300px),
 	 * from the targets' boxes.
 	 */
 	measure() {
 		const top = -Number.parseFloat(this.options.rootMargin ?? "0");
-		const entries = this.targets.map((target) => {
-			const r = target.getBoundingClientRect();
-			return { target, isIntersecting: r.bottom > top && r.top < 300 };
-		});
-		act(() =>
-			this.callback(
-				entries as unknown as IntersectionObserverEntry[],
-				this as unknown as IntersectionObserver,
-			),
+		this.deliver(
+			this.targets.map((target) => {
+				const r = target.getBoundingClientRect();
+				return { target, isIntersecting: r.bottom > top && r.top < 300 };
+			}),
 		);
 	}
 	observe(el: Element) {
@@ -41,17 +53,13 @@ class FakeObserver {
 	}
 	/** Reports which file indexes cross the band now. */
 	report(indexes: number[]) {
-		const entries = this.targets.map((target) => ({
-			target,
-			isIntersecting: indexes.includes(
-				Number((target as HTMLElement).dataset.fileIndex),
-			),
-		}));
-		act(() =>
-			this.callback(
-				entries as unknown as IntersectionObserverEntry[],
-				this as unknown as IntersectionObserver,
-			),
+		this.deliver(
+			this.targets.map((target) => ({
+				target,
+				isIntersecting: indexes.includes(
+					Number((target as HTMLElement).dataset.fileIndex),
+				),
+			})),
 		);
 	}
 }
@@ -79,6 +87,7 @@ describe("useCurrentFile", () => {
 	afterEach(() => {
 		cleanup();
 		vi.unstubAllGlobals();
+		vi.restoreAllMocks();
 	});
 
 	it("pauses while the page is hidden and follows the files again once shown", () => {
@@ -124,13 +133,27 @@ describe("useCurrentFile", () => {
 		act(() => visualTop.set(0));
 	});
 
-	it("keeps the file in view as the stack's height changes (the find bar opening or closing), and follows moves after", () => {
+	it("holds the file in view as the stack's height changes (the find bar opening or closing), and the next scroll picks it afresh, crossing or not", () => {
+		let scrollY = 0;
+		vi.spyOn(window, "scrollY", "get").mockImplementation(() => scrollY);
+		/** A scroll by `by` px: the boxes move up, then the page's scroll event. */
+		const scroll = (by: number) => {
+			scrollY += by;
+			for (const box of boxes) {
+				box.top -= by;
+				box.bottom -= by;
+			}
+			live()[0]?.measure();
+			act(() => {
+				window.dispatchEvent(new Event("scroll"));
+			});
+		};
 		const { rerender } = render(<Files active />);
-		// File 0 ends 150px down, file 1 starts there.
+		// File 0 ends 150px down, file 1 runs on far below the band.
 		const boxes = [
 			{ top: -500, bottom: 150 },
-			{ top: 150, bottom: 900 },
-			{ top: 900, bottom: 1500 },
+			{ top: 150, bottom: 2900 },
+			{ top: 2900, bottom: 3500 },
 		];
 		for (const i of boxes.keys()) {
 			const el = document.querySelector(`[data-file-index="${i}"]`);
@@ -138,33 +161,37 @@ describe("useCurrentFile", () => {
 		}
 		live()[0]?.measure();
 		expect(shown).toBe(0);
+
 		// The bar opens: the stack grows 60px, over file 0's end, while the
-		// page keeps the line being read in place (the boxes stay). A new
-		// observer reports file 0 out of the band, and it stays current.
+		// page keeps the line being read in place (the boxes stay). The new
+		// observer reports file 0 out of the band; it stays current.
 		rerender(<Files active top={160} />);
 		expect(live()).toHaveLength(1);
 		live()[0]?.measure();
 		expect(shown).toBe(0);
-		// The bar closes: back to 100px, file 0 still current.
-		rerender(<Files active top={100} />);
-		live()[0]?.measure();
+		// A scroll event at the same scroll (the compensation's) holds it.
+		act(() => {
+			window.dispatchEvent(new Event("scroll"));
+		});
 		expect(shown).toBe(0);
+		// A real scroll that crosses nothing (file 1 stays in the band, file 0
+		// out of it) picks file 1.
+		scroll(10);
+		expect(shown).toBe(1);
 
-		// With the bar open, the page is scrolled until file 1 is in view.
-		rerender(<Files active top={160} />);
-		live()[0]?.measure();
+		// Scrolled back up until file 0's end shows under the open bar again.
+		scroll(-40);
 		expect(shown).toBe(0);
-		boxes[0] = { top: -540, bottom: 110 };
-		boxes[1] = { top: 110, bottom: 860 };
-		live()[0]?.measure();
+		scroll(25);
 		expect(shown).toBe(1);
-		// Closing uncovers file 0's end: file 1 stays current.
+		// The bar closes: the stack shrinks back to 100px, uncovering file
+		// 0's end (at 125px); file 1 stays current.
 		rerender(<Files active top={100} />);
 		live()[0]?.measure();
 		expect(shown).toBe(1);
-		// A scroll after it follows the band again.
-		boxes[0] = { top: -520, bottom: 130 };
-		live()[0]?.measure();
+		// A small scroll up, crossing nothing (file 0 stays in the band),
+		// picks file 0.
+		scroll(-5);
 		expect(shown).toBe(0);
 	});
 });

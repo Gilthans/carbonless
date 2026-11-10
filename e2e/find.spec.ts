@@ -425,35 +425,42 @@ const bottomBelowStack = (page: Page, section: Locator, by: number) =>
 		})
 		.toBeLessThan(1);
 
-test("opening and closing the bar never changes the current file, though the sticky stack's height does", async ({
+test("opening and closing the bar never changes the current file, though the sticky stack's height does; the next scroll picks it afresh", async ({
 	page,
 	pr,
 	startCrb,
 	isMobile,
 }) => {
 	await phone(page, isMobile);
-	// A long first file, then enough short ones to scroll its end to the top.
-	const rest = Array.from({ length: 20 }, (_, i) => `src/z${i}.ts`);
+	// A short first file, closed, then a long one, open: scrolling a little
+	// within it moves no file's edge across the band.
 	await pr({
-		base: {
-			[A]: text(numbered("a", 60)),
-			...Object.fromEntries(rest.map((f) => [f, text(["x"])])),
-		},
+		base: { [A]: text(numbered("a", 3)), [B]: text(numbered("b", 200)) },
 		files: [
 			{
-				message: "Long and short",
+				message: "Short and long",
 				files: {
-					[A]: text(numbered("a", 60).map((l) => `${l}!`)),
-					...Object.fromEntries(rest.map((f) => [f, text(["y"])])),
+					[A]: text(numbered("a", 3).map((l) => `${l}!`)),
+					[B]: text(numbered("b", 200).map((l) => `${l}!`)),
 				},
 			},
 		],
 	});
 	const s = await startCrb();
 	await openFiles(page, s.url);
-	const a = await expand(page, A);
+	await expand(page, B);
+	const a = fileSection(page, A);
 	const close = () =>
 		bar(page).getByRole("button", { name: "Close (Esc)" }).click();
+	const frames = () =>
+		page.evaluate(
+			() =>
+				new Promise((r) =>
+					requestAnimationFrame(() => requestAnimationFrame(r)),
+				),
+		);
+	const scrollBy = (by: number) =>
+		page.evaluate((by) => window.scrollBy(0, by), by);
 
 	// src/a.ts ends just under the stack: the file in view. The open bar
 	// makes the stack taller (on a phone, taller than the header it
@@ -465,39 +472,28 @@ test("opening and closing the bar never changes the current file, though the sti
 	const stackBefore = await barBottom(page);
 	await openBar(page, isMobile);
 	expect(await barBottom(page)).toBeGreaterThan(stackBefore + 4);
-	await page.evaluate(
-		() =>
-			new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))),
-	);
+	await frames();
 	expect(await seenCurrent(page)).toEqual(["a.ts"]);
-	await close();
-	await expect(bar(page)).toHaveCount(0);
-	await page.evaluate(
-		() =>
-			new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))),
-	);
-	expect(await seenCurrent(page)).toEqual(["a.ts"]);
+	// A small scroll within src/b.ts, crossing nothing, picks it.
+	await scrollBy(10);
+	await expect.poll(() => currentFile(page)).toBe("b.ts");
 
 	// The other way: with the bar open, src/a.ts ends just above the stack,
-	// so the next file is current; closing shortens the stack, which
-	// uncovers src/a.ts's end, and the next file stays current.
-	await openBar(page, isMobile);
+	// so src/b.ts is current; closing shortens the stack, which uncovers
+	// src/a.ts's end, and src/b.ts stays current.
 	await bottomBelowStack(page, a, -4);
-	await expect.poll(() => currentFile(page)).toBe("z0.ts");
+	await expect.poll(() => currentFile(page)).toBe("b.ts");
 	await watchCurrent(page);
 	await close();
 	await expect(bar(page)).toHaveCount(0);
 	expect(await barBottom(page)).toBeLessThan(
 		(await a.evaluate((el) => el.getBoundingClientRect().bottom)) - 4,
 	);
-	await page.evaluate(
-		() =>
-			new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))),
-	);
-	expect(await seenCurrent(page)).toEqual(["z0.ts"]);
-
-	// Scrolling still moves it on: src/a.ts's end back into the band.
-	await bottomBelowStack(page, a, 4);
+	await frames();
+	expect(await seenCurrent(page)).toEqual(["b.ts"]);
+	// A small scroll up, crossing nothing (src/a.ts's end stays in the
+	// band), picks src/a.ts.
+	await scrollBy(-10);
 	await expect.poll(() => currentFile(page)).toBe("a.ts");
 });
 

@@ -143,10 +143,8 @@ function FilesSheet(props: {
  * Not while the page is hidden (`active` false): nothing is in view then,
  * and the file in view when it shows again is the one it was left on.
  * A new `top` alone (the sticky stack growing or shrinking: the find bar
- * opening or closing, a phone's header leaving or rejoining the layout)
- * moves no file: the page keeps the line being read in place
- * (readingPlace), so the file in view stays the same until the page or the
- * visual viewport actually moves.
+ * opening or closing, a bar wrapping) holds the file in view until the page
+ * next scrolls, which picks it afresh.
  */
 export function useCurrentFile(
 	container: RefObject<HTMLElement | null>,
@@ -177,6 +175,21 @@ export function useCurrentFile(
 			was.pan === pan &&
 			was.top !== top;
 		const visible = new Set<number>();
+		// The first in the page's order (fileOrder), not the lowest index.
+		const firstVisible = () =>
+			[...root.querySelectorAll<HTMLElement>("[data-file-index]")]
+				.map((el) => Number(el.dataset.fileIndex))
+				.find((index) => visible.has(index));
+		// Held since the settling report, at this scroll: the next scroll
+		// (another scrollY) picks the file afresh, crossing or not.
+		let heldAt: number | null = null;
+		const onScroll = () => {
+			if (heldAt === null || window.scrollY === heldAt) return;
+			heldAt = null;
+			const first = firstVisible();
+			if (first !== undefined) setCurrent(first);
+		};
+		window.addEventListener("scroll", onScroll, { passive: true });
 		const observer = new IntersectionObserver(
 			(entries) => {
 				for (const entry of entries) {
@@ -184,16 +197,12 @@ export function useCurrentFile(
 					if (entry.isIntersecting) visible.add(index);
 					else visible.delete(index);
 				}
-				// The first in the page's order (fileOrder), not the lowest index.
-				const first = [
-					...root.querySelectorAll<HTMLElement>("[data-file-index]"),
-				]
-					.map((el) => Number(el.dataset.fileIndex))
-					.find((index) => visible.has(index));
+				const first = firstVisible();
 				// The first report (every file, as observing starts) after a
 				// layout change keeps the file in view; later ones follow moves.
 				const settling = settle;
 				settle = false;
+				heldAt = settling ? window.scrollY : null;
 				if (first === undefined) return;
 				if (settling) setCurrent((now) => now ?? first);
 				else setCurrent(first);
@@ -203,7 +212,10 @@ export function useCurrentFile(
 		for (const section of root.querySelectorAll("[data-file-index]")) {
 			observer.observe(section);
 		}
-		return () => observer.disconnect();
+		return () => {
+			observer.disconnect();
+			window.removeEventListener("scroll", onScroll);
+		};
 	}, [container, sections, band, active]);
 	return [current, setCurrent] as const;
 }
