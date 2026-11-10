@@ -2223,6 +2223,53 @@ describe("App header", () => {
 		vi.unstubAllGlobals();
 	});
 
+	it("puts the agent chip right by the logo, before the title: one chip in the header", async () => {
+		renderApp({
+			"/api/agent": ok({
+				state: "ready",
+				configured: true,
+				agent: { name: "Claude Agent", version: "0.100.0" },
+				since: "2026-11-07T10:00:00Z",
+				waiting: 0,
+			}),
+		});
+		await screen.findByRole("heading", { level: 1 });
+		const chip = await screen.findByRole("button", {
+			name: "Your agent: Claude Agent 0.100.0",
+		});
+		expect(screen.getAllByTestId("agent-chip")).toEqual([chip]);
+		const slot = screen.getByTestId("agent-chip-slot");
+		expect(slot).toContainElement(chip);
+		// Logo, chip, title: side by side in the title row.
+		const logo = screen.getByTestId("home-link");
+		const title = screen.getByTestId("header-title");
+		expect(slot.parentElement).toBe(title.parentElement);
+		expect(logo.parentElement).toBe(slot.parentElement);
+		expect(
+			logo.compareDocumentPosition(slot) & Node.DOCUMENT_POSITION_FOLLOWING,
+		).toBeTruthy();
+		expect(slot.nextElementSibling).toBe(title);
+		// Not in the meta line under the title any more.
+		expect(screen.getByText("acme/widget").parentElement).not.toContainElement(
+			chip,
+		);
+		// The sticky row's place for it holds nothing to focus or name
+		// until it docks there.
+		const row = screen.getByTestId("agent-chip-row-slot");
+		expect(row.querySelector("button, [aria-label]")).toBeNull();
+	});
+
+	it("leaves no chip and no slot by the logo without an agent", async () => {
+		renderApp({ "/api/overview": ok({ ...overview, writes: "viewer" }) });
+		await screen.findByRole("heading", { level: 1 });
+		await screen.findByRole("region", { name: "Bot reviews" });
+		expect(screen.queryByTestId("agent-chip")).toBeNull();
+		// Empty, so `empty:hidden` takes it (and its gap) out of the row.
+		expect(screen.getByTestId("agent-chip-slot")).toBeEmptyDOMElement();
+		expect(screen.getByTestId("agent-chip-slot")).toHaveClass("empty:hidden");
+		expect(screen.getByTestId("agent-chip-row-slot")).toBeEmptyDOMElement();
+	});
+
 	it("offers the title again as a back-to-top button, inert until stuck", async () => {
 		renderApp();
 		await screen.findByRole("heading", { level: 1 });

@@ -60,7 +60,9 @@ const activeTabClass =
 const compactTapClass =
 	"relative before:absolute before:inset-x-0 before:top-1/2 before:h-10 before:-translate-y-1/2 before:content-['']";
 // The number keeps its width beside the clamped title, and goes when the
-// pill's column (a phone's narrowest) has no room for both.
+// pill's column (a phone's narrowest) has no room for both. The whole pill
+// goes below 3.75rem (its padding and a tap-wide title): at 360px, beside
+// the agent chip, it has no room at all.
 const compactNumberClass = "shrink-0 rounded-full font-medium text-muted";
 // Below which column width the number hides, by its digits: the pill's
 // padding and gap (1.5rem), the number (~0.45rem a character at text-xs)
@@ -189,6 +191,80 @@ function useStickyHeader(
 }
 
 /**
+ * Where the agent chip shows: beside the full logo at the top, and in the
+ * sticky row beside the compact mark (`docked`) once its place by the logo
+ * starts to leave the screen (under `above`, the find bar), so it never
+ * scrolls out of sight. One chip at a time; the other place keeps its
+ * size (`size`), so neither the title nor the tabs move when it does (nor
+ * the place by the logo, which says when to move). A chip that had focus
+ * keeps it across the move.
+ */
+function useChipDock(hidden: boolean, above: number) {
+	const [title, setTitle] = useState<HTMLElement | null>(null);
+	const [row, setRow] = useState<HTMLElement | null>(null);
+	const [docked, setDocked] = useState(false);
+	const [size, setSize] = useState({ width: 0, height: 0 });
+	const dockedNow = useRef(docked);
+	const refocus = useRef(false);
+	// The chip's size, read from the place that holds it (0 with none).
+	useLayoutEffect(() => {
+		const holder = docked ? row : title;
+		if (!holder) return;
+		const measure = () => {
+			const { width, height } = holder.getBoundingClientRect();
+			setSize((old) =>
+				old.width === width && old.height === height ? old : { width, height },
+			);
+		};
+		measure();
+		if (typeof ResizeObserver === "undefined") return;
+		const observer = new ResizeObserver(measure);
+		observer.observe(holder);
+		return () => observer.disconnect();
+	}, [docked, row, title]);
+	useEffect(() => {
+		if (!title || hidden) return;
+		let frame = 0;
+		const update = () => {
+			frame = 0;
+			const box = title.getBoundingClientRect();
+			const next = box.width > 0 && box.top < above;
+			if (next === dockedNow.current) return;
+			dockedNow.current = next;
+			refocus.current =
+				document.activeElement?.closest("[data-agent-chip-slot]") != null;
+			setDocked(next);
+		};
+		const schedule = () => {
+			if (!frame) frame = requestAnimationFrame(update);
+		};
+		update();
+		window.addEventListener("scroll", schedule, { passive: true });
+		window.addEventListener("resize", schedule);
+		return () => {
+			cancelAnimationFrame(frame);
+			window.removeEventListener("scroll", schedule);
+			window.removeEventListener("resize", schedule);
+		};
+	}, [title, hidden, above]);
+	useLayoutEffect(() => {
+		if (!refocus.current) return;
+		refocus.current = false;
+		(docked ? row : title)
+			?.querySelector<HTMLElement>('[data-testid="agent-chip"]')
+			?.focus({ preventScroll: true });
+	}, [docked, row, title]);
+	return { setTitle, setRow, docked, size };
+}
+
+/** The chip's size where it isn't, so nothing beside it moves. */
+function ChipSpace({ size }: { size: { width: number; height: number } }) {
+	return size.width > 0 ? (
+		<span aria-hidden className="block" style={size} />
+	) : null;
+}
+
+/**
  * The open find bar takes the top of Files changed, above the app header,
  * once it shows (findFloat: Files changed renders it when its data is in,
  * so while the review is read or failed the header and its button stay):
@@ -297,6 +373,7 @@ export function App() {
 		stick: compact,
 		stuck,
 	} = useStickyHeader(header, row, yieldToFind, above);
+	const chip = useChipDock(yieldToFind, above);
 	// The sticky stack's top: the find bar, then the header's stuck row.
 	const stackTop = above + (yieldToFind ? 0 : compact);
 	useStackTop(stackTop, swapped);
@@ -363,6 +440,15 @@ export function App() {
 										</Link>
 									)}
 								</Tooltip>
+								{/* The agent chip by the logo, until it docks in the row below. */}
+								<span
+									ref={chip.setTitle}
+									data-agent-chip-slot
+									data-testid="agent-chip-slot"
+									className="flex shrink-0 empty:hidden"
+								>
+									{chip.docked ? <ChipSpace size={chip.size} /> : <AgentChip />}
+								</span>
 								<div
 									data-testid="header-title"
 									className="flex min-w-0 flex-wrap items-baseline gap-x-2"
@@ -397,7 +483,6 @@ export function App() {
 								<span className="break-all">
 									{pr.owner}/{pr.repo}
 								</span>
-								<AgentChip />
 								{session.data?.asOf && <AsOf iso={session.data.asOf} />}
 							</p>
 						)}
@@ -442,6 +527,19 @@ export function App() {
 										</Link>
 									)}
 								</Tooltip>
+							</span>
+							{/*
+							 * The agent chip once its place by the logo has scrolled
+							 * away; until then its size, so the tabs never move.
+							 * Positioned, over the mark's overflowing tap target.
+							 */}
+							<span
+								ref={chip.setRow}
+								data-agent-chip-slot
+								data-testid="agent-chip-row-slot"
+								className="relative flex shrink-0 items-center empty:hidden"
+							>
+								{chip.docked ? <AgentChip /> : <ChipSpace size={chip.size} />}
 							</span>
 							<nav aria-label="PR pages" className="flex shrink-0 self-stretch">
 								<Link
@@ -496,7 +594,7 @@ export function App() {
 										transform:
 											"translateY(calc((1 - var(--compact, 0)) * 0.375rem))",
 									}}
-									className="flex max-w-full min-w-0 items-center gap-x-1 rounded-full bg-raised px-2.5 py-0.5 text-center text-xs leading-4 font-semibold text-ink ring-1 ring-line hover:bg-overlay hover:ring-line-strong sm:px-3 sm:text-sm sm:leading-5"
+									className="flex max-w-full min-w-0 items-center gap-x-1 rounded-full bg-raised @max-[3.75rem]:hidden px-2.5 py-0.5 text-center text-xs leading-4 font-semibold text-ink ring-1 ring-line hover:bg-overlay hover:ring-line-strong sm:px-3 sm:text-sm sm:leading-5"
 								>
 									<Tooltip content={pr.title} describe={false}>
 										{(trigger) => (

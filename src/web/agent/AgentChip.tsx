@@ -77,8 +77,10 @@ export function useAgentSync(
 }
 
 /**
- * The reviewer's agent in the header's meta line: the sparkle, its name
- * (the dot alone on a phone) and a status dot, the detail in the tooltip.
+ * The reviewer's agent in the header, by the logo (in the sticky row,
+ * beside the compact mark, once scrolled): the sparkle, its name and a
+ * status dot (on a phone the sparkle alone, the dot a badge on it), the
+ * detail in the tooltip.
  * Pressing it opens the agent setup in every state. Its first read shows a
  * spinner in the dot's place; a routine poll changes nothing unless the
  * answer does. None where the review has no agent (--viewer, --as-of).
@@ -115,7 +117,8 @@ export function AgentChip() {
 					onClick={openAgentSetup}
 					className="inline-flex min-h-10 items-center rounded-full focus-visible:outline-2 focus-visible:outline-accent sm:min-h-0"
 				>
-					<span className="inline-flex min-h-6 items-center gap-1.5 rounded-full border border-line bg-raised px-2 text-xs text-ink-soft hover:text-ink">
+					{/* A phone's is the sparkle alone, its dot a badge on the corner. */}
+					<span className="relative inline-flex min-h-6 w-7 items-center justify-center rounded-full border border-line bg-raised text-xs text-ink-soft hover:text-ink sm:w-auto sm:gap-1.5 sm:px-2">
 						<SparkleFillIcon
 							size={14}
 							aria-hidden
@@ -127,14 +130,17 @@ export function AgentChip() {
 							</span>
 						)}
 						{status.isPending ? (
-							<span data-testid="agent-chip-loading" className="flex">
+							<span
+								data-testid="agent-chip-loading"
+								className="absolute -top-1 -right-1 flex rounded-full bg-raised sm:static sm:bg-transparent"
+							>
 								<SpinnerIcon size={10} className="text-muted" />
 							</span>
 						) : (
 							<span
 								aria-hidden
 								data-testid="agent-chip-dot"
-								className={`h-2 w-2 shrink-0 rounded-full ${
+								className={`absolute -top-0.5 -right-0.5 h-2 w-2 shrink-0 rounded-full ring-2 ring-raised sm:static sm:ring-0 ${
 									data ? agentDot(data) : "bg-bad"
 								}`}
 							/>
