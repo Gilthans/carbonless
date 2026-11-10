@@ -10,7 +10,12 @@ import {
 } from "../../../test/git-fixture.js";
 import type { Snapshot } from "../../shared/types.js";
 import { listChangedFiles } from "./files.js";
-import { buildSnapshot, loadContext, loadFileHunks } from "./snapshot.js";
+import {
+	buildSnapshot,
+	loadContext,
+	loadFileHunks,
+	loadHunksBatch,
+} from "./snapshot.js";
 
 // Real git and fake-gh processes: see GIT_TEST_TIMEOUTS.
 vi.setConfig(GIT_TEST_TIMEOUTS);
@@ -140,6 +145,47 @@ describe("loadFileHunks", () => {
 
 	it("rejects an unknown file index", async () => {
 		await expect(loadFileHunks(fixture.path, snapshot, 999)).rejects.toThrow();
+	});
+});
+
+describe("loadHunksBatch", () => {
+	const loaded = { hunks: [], newLineCount: 7 };
+
+	it("answers each file on its own: a failed read is that file's error", async () => {
+		const events: string[] = [];
+		let releaseFirst: () => void = () => {};
+		const first = new Promise<void>((resolve) => {
+			releaseFirst = resolve;
+		});
+		const load = vi.fn(
+			async (_repo: string, _snapshot: Snapshot, i: number) => {
+				events.push(`start ${i}`);
+				if (i === 0) await first;
+				if (i === 1) throw new Error("boom");
+				events.push(`end ${i}`);
+				return loaded;
+			},
+		);
+		const result = loadHunksBatch(fixture.path, snapshot, [0, 1, 2], load);
+		await vi.waitFor(() => expect(events).toEqual(["start 0"]));
+		releaseFirst();
+		expect(await result).toEqual({
+			files: [
+				{ index: 0, hunks: loaded },
+				{ index: 1, error: "Couldn't read this file" },
+				{ index: 2, hunks: loaded },
+			],
+		});
+		expect(events).toEqual(["start 0", "end 0", "start 1", "start 2", "end 2"]);
+	});
+
+	it("rejects an index not in the snapshot before reading any file", async () => {
+		const load = vi.fn();
+		const missing = snapshot.files.length;
+		await expect(
+			loadHunksBatch(fixture.path, snapshot, [0, missing], load),
+		).rejects.toThrow(`No file ${missing} in this snapshot`);
+		expect(load).not.toHaveBeenCalled();
 	});
 });
 

@@ -3,6 +3,7 @@ import { act, renderHook } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 import {
 	ignoreWhitespace,
+	matchCase,
 	numberSetting,
 	showInvisibles,
 	sideBySide,
@@ -15,6 +16,7 @@ describe("viewSetting", () => {
 		showInvisibles.reset();
 		ignoreWhitespace.reset();
 		sideBySide.reset();
+		matchCase.reset();
 	});
 
 	it("reads the default until set, then remembers the choice", () => {
@@ -120,6 +122,20 @@ describe("viewSetting", () => {
 		act(() => sideBySide.set(false));
 		expect(result.current).toBe(false);
 		expect(localStorage.getItem("crb.diff.sideBySide")).toBe("off");
+	});
+
+	it("has match case off by default, remembered once turned on", () => {
+		expect(matchCase.key).toBe("crb.find.matchCase");
+		expect(matchCase.read()).toBe(false);
+		const { result } = renderHook(() => matchCase.use());
+		expect(result.current).toBe(false);
+		act(() => matchCase.set(true));
+		expect(result.current).toBe(true);
+		expect(localStorage.getItem("crb.find.matchCase")).toBe("on");
+		expect(viewSetting("crb.find.matchCase", false).read()).toBe(true);
+		act(() => matchCase.set(false));
+		expect(result.current).toBe(false);
+		expect(localStorage.getItem("crb.find.matchCase")).toBe("off");
 	});
 });
 

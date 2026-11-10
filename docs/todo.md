@@ -1,5 +1,9 @@
 # To do
 
+Moved to Linear on 2026-11-09 (workspace `carbonless`, team `CAR`; see
+"Tickets" in `CLAUDE.md`). Add nothing here: this file is kept only until
+the owner retires it.
+
 In priority order.
 
 ## Milestones
@@ -145,7 +149,6 @@ Follow-ups from the first slice's final review (2026-11-07):
   `allow_always` (M3).
 - A tab hidden 30 min or more mid-turn idles the session out, and the
   question is asked again (M7).
-- The hunk's fence in the prompt isn't escaped (M8).
 - An agent that ignores a cancel blocks the queue: SIGTERM it after a
   grace period (11a).
 - `authorOf` never returns `pr_author` (11c).
@@ -153,6 +156,15 @@ Follow-ups from the first slice's final review (2026-11-07):
 - An empty `claim.lock` races (13).
 - A leash value from a later version is rewritten to `open` on Save.
 - `snapshotHead` is read cache-only in `AgentOverviewRow`.
+- Edit the agent's env in the setup modal (owner, 2026-11-09). The Env box
+  is a read-only hint: `agent.env` can be set only by editing
+  `config.json` by hand, and the hint's `$(which claude)` is shell syntax
+  that is never expanded. Make it an editable `NAME=value` per line field
+  that shows what `config.json` has. A preset's `envHint` pre-fills it,
+  with the path resolved where the server can find it (e.g.
+  `CLAUDE_CODE_EXECUTABLE=/home/you/.local/bin/claude`). Check and Save
+  use the edited env. A `…TOKEN` value is masked when shown, since GET
+  `/api/config/agent` returning env values is follow-up 11d above.
 
 ## Future plans
 
@@ -173,10 +185,10 @@ Not scheduled yet; after everything above.
   along the lines of git-appraise (owner, 2026-10-28). Until then a span rides
   in a hidden marker in the GitHub comment
   (`docs/superpowers/specs/2026-10-27-new-threads-design.md`).
-- **Search across the PR:** Files changed shows one file at a time, so the
-  browser's find can't reach the others; add a search over every changed
-  file (and threads) that jumps to each match (owner, 2026-11-01; not for
-  milestone 2).
+- **Search across the PR:** done 2026-11 as Find in PR (Cmd+F / Ctrl+F on
+  Files changed; paths, changed lines and shown context;
+  `docs/superpowers/specs/2026-11-05-find-in-pr-design.md`).
+  - **Follow-up:** search threads too (owner, 2026-11-01).
 - **Install as a web app:** a PWA (manifest, icons, a service worker that
   only caches the app shell) so carbonless can be added to the phone's home
   screen and the desktop's app list (owner, 2026-11-01).
@@ -258,6 +270,9 @@ Not scheduled yet; after everything above.
 - Phone: the floating Files button can cover a reply box, and stays aside
   while refusals are listed.
 - On a merged PR, a LEFT thread's code shows GitHub's hunk.
+- File tree: a crossed-off file's reason chips sit inside the name's
+  truncating span, so a long name cuts them off (seen in the Find in PR
+  review, pre-existing).
 
 - Big changed files are slow (measured 2026-11-02 on master, not caused by
   word marks): a 2,000-line changed file takes 3–7 s to open and 8–30 s of
