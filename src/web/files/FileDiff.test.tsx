@@ -22,8 +22,13 @@ import type {
 } from "../../shared/types";
 import { agentThreadsQuery } from "../agent/api";
 import { reviewQuery, sessionQuery } from "../api";
-import { resetShowInvisibles, setShowInvisibles } from "../code/Invisibles";
+import {
+	type FindMark,
+	resetShowInvisibles,
+	setShowInvisibles,
+} from "../code/Invisibles";
 import { ignoreWhitespace } from "../viewSettings";
+import { contextRanges } from "./contextRanges";
 import { FileDiff, UNDO_ARM_MS } from "./FileDiff";
 import { SyncNotices } from "./SyncNotices";
 import type { Unit } from "./unit";
@@ -117,7 +122,12 @@ const view = (f: FileView): ReviewView => ({
 });
 
 /** FileDiff of the review's only file, as useReviewView shows it. */
-type Extra = { onFinished?: () => void; ignoreMarksUntil?: number };
+type Extra = {
+	onFinished?: () => void;
+	ignoreMarksUntil?: number;
+	/** The find's hits on the header's path. */
+	pathFind?: readonly FindMark[];
+};
 
 function Shown({ unit, ...extra }: { unit: Unit } & Extra) {
 	const { data } = useReviewView();
@@ -131,6 +141,7 @@ function Shown({ unit, ...extra }: { unit: Unit } & Extra) {
 					unit={unit}
 					onFinished={extra.onFinished}
 					ignoreMarksUntil={extra.ignoreMarksUntil}
+					pathFind={extra.pathFind}
 				/>
 			)}
 			<SyncNotices />
@@ -249,9 +260,23 @@ describe("FileDiff", () => {
 		vi.restoreAllMocks();
 		localStorage.clear();
 		resetShowInvisibles();
+		contextRanges.reset();
 		ignoreWhitespace.reset();
 		cleanup();
 		vi.unstubAllGlobals();
+	});
+
+	it("paints find marks on the header's path", () => {
+		setup(
+			file([cluster("k1")], { path: "src/save.ts" }),
+			undefined,
+			undefined,
+			"clusters",
+			{ pathFind: [{ from: 4, to: 8, current: true }] },
+		);
+		const path = screen.getByTestId("file-path");
+		expect(path.querySelector("[data-find-current]")).toHaveTextContent("save");
+		expect(path).toHaveTextContent("src/save.ts");
 	});
 
 	it("starts collapsed and fetches hunks only on expand", async () => {

@@ -116,7 +116,9 @@ export function ThreadBubble(props: {
 					onClick={props.onToggle}
 					// In a row: as tall as the row for a mouse, 40px on touch (the
 					// row grows to it, so neighbouring bubbles never overlap).
-					className={`group/bubble z-[4] flex min-w-10 shrink-0 items-center justify-center rounded-md font-sans focus-visible:outline-2 focus-visible:outline-accent ${
+					// Never part of a text selection: selecting code (and its Copy)
+					// gives the code, not the count beside it.
+					className={`group/bubble z-[4] flex select-none min-w-10 shrink-0 items-center justify-center rounded-md font-sans focus-visible:outline-2 focus-visible:outline-accent ${
 						props.inline ? "h-5 pointer-coarse:h-10" : "h-10"
 					}`}
 				>
@@ -163,11 +165,12 @@ export function ThreadBubble(props: {
 /**
  * Where a diff row's bubbles sit: at the right edge of the visible code,
  * sticky so they stay there as long lines scroll (the cell keeps 48px free
- * at its end per bubble), side by side when a row has two.
+ * at its end per bubble), side by side when a row has two. Not part of a
+ * text selection, so selecting the code gives the code only.
  */
 export function BubbleSlot(props: { children: ReactNode }) {
 	return (
-		<span className="sticky right-2 z-[4] float-right -mr-2 flex">
+		<span className="sticky right-2 z-[4] float-right -mr-2 flex select-none">
 			{props.children}
 		</span>
 	);

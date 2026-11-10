@@ -23,6 +23,7 @@ import { createPrFixture, type PrFixture } from "../../test/pr-fixture";
 import type { AgentStatus, AgentThread } from "../shared/agent";
 import type {
 	CommentsView,
+	HunksBatch,
 	ReviewThread,
 	ReviewView,
 	SessionInfo,
@@ -479,6 +480,73 @@ describe("API", () => {
 			{ kind: "context", oldNo: 10, newNo: 10, text: "line 10" },
 			{ kind: "context", oldNo: 11, newNo: 11, text: "line 11" },
 		]);
+	});
+
+	it("serves several files' hunks in one request, each equal to the single-file route's", async () => {
+		pr.moveHead({ "bin.dat": "a\0b\n" });
+		await post("/api/refresh");
+		const view: ReviewView = await get("/api/review");
+		const rev = view.revision;
+		const indexes = ["new.txt", "bin.dat", "a.txt"].map((path) => {
+			const file = view.files.find((f) => f.path === path);
+			if (!file) throw new Error(`no ${path}`);
+			return file.index;
+		});
+		const batch: HunksBatch = await get(
+			`/api/files/hunks?revision=${rev}&indexes=${indexes.join(",")}`,
+		);
+		expect(batch.files.map((f) => f.index)).toEqual(indexes);
+		for (const file of batch.files) {
+			expect(file.hunks).toEqual(
+				await get(`/api/files/${file.index}/hunks?revision=${rev}`),
+			);
+		}
+		const binary = view.files.find((f) => f.path === "bin.dat")?.index;
+		expect(batch.files.find((f) => f.index === binary)?.hunks).toEqual({
+			hunks: [],
+			newLineCount: 0,
+		});
+	});
+
+	it("answers a duplicate index once", async () => {
+		const batch: HunksBatch = await get(
+			`/api/files/hunks?revision=${await revision()}&indexes=0,0`,
+		);
+		expect(batch.files.map((f) => f.index)).toEqual([0]);
+	});
+
+	it("answers a batch of another revision with 409", async () => {
+		const old = await revision();
+		pr.moveHead({ "later.txt": "later\n" });
+		await post("/api/refresh");
+		const res = await inject(`/api/files/hunks?revision=${old}&indexes=0`);
+		expect(res.statusCode).toBe(409);
+		expect(res.json()).toEqual({ error: "stale" });
+	});
+
+	it.each([
+		["/api/files/hunks?revision=R", 400, "indexes is required"],
+		["/api/files/hunks?revision=R&indexes=", 400, "indexes is required"],
+		["/api/files/hunks?revision=R&indexes=1,x", 400, "Invalid file index"],
+		["/api/files/hunks?revision=R&indexes=1.5", 400, "Invalid file index"],
+		["/api/files/hunks?revision=R&indexes=-1", 400, "Invalid file index"],
+		["/api/files/hunks?revision=R&indexes=,", 400, "Invalid file index"],
+		[
+			"/api/files/hunks?revision=R&indexes=1&indexes=2",
+			400,
+			"indexes is required",
+		],
+		[
+			`/api/files/hunks?revision=R&indexes=${Array.from({ length: 26 }, (_, i) => i).join(",")}`,
+			400,
+			"At most 25 files a request",
+		],
+		["/api/files/hunks?indexes=0", 400, "revision is required"],
+		["/api/files/hunks?revision=R&indexes=0,99", 404, "No file 99"],
+	])("answers a batch %s with %i", async (url, status, message) => {
+		const res = await inject(url.replace("R", await revision()));
+		expect(res.statusCode).toBe(status);
+		expect(res.json().error).toContain(message);
 	});
 
 	it("answers hunks and context of another revision with 409", async () => {
@@ -1589,6 +1657,28 @@ describe("API", () => {
 			} finally {
 				await keyed.close();
 			}
+		});
+
+		it("GET /manifest.webmanifest starts a home-screen install with the key", async () => {
+			const keyed = await buildApp(registry, { accessKey: "k3y" });
+			try {
+				expect((await keyed.inject("/manifest.webmanifest")).statusCode).toBe(
+					401,
+				);
+				const res = await keyed.inject({
+					url: "/manifest.webmanifest",
+					cookies: { crb_key: "k3y" },
+				});
+				expect(res.headers["content-type"]).toContain(
+					"application/manifest+json",
+				);
+				expect(res.headers["cache-control"]).toBe("no-store");
+				expect(res.json().start_url).toBe("/?key=k3y");
+			} finally {
+				await keyed.close();
+			}
+			const open = await inject("/manifest.webmanifest");
+			expect(open.json().start_url).toBe("/");
 		});
 
 		it("POST /api/reviews refuses a bad body (400) and an unreviewable PR (409)", async () => {
