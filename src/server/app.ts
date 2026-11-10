@@ -60,6 +60,7 @@ import {
 	UnknownReadError,
 } from "./session.js";
 import { editProblem, replyProblem } from "./threadWrites.js";
+import { type Span, tracer } from "./trace.js";
 import { verdictProblem } from "./verdict.js";
 import {
 	BUILD,
@@ -136,6 +137,35 @@ const INDEX = /^(0|[1-9]\d{0,8})$/;
 /** loadFileHunks/loadContext's error for an index the snapshot doesn't have. */
 const NO_FILE = /^No file \d+ in this snapshot$/;
 
+/**
+ * A span per request when tracing ($CRB_TRACE_DIR), current for its handler
+ * so the git and gh it runs nest under it. A callback hook, first: what
+ * follows runs in the context it enters.
+ */
+function traceRequests(app: FastifyInstance): void {
+	const traced = tracer();
+	if (!traced.enabled) return;
+	const spans = new WeakMap<object, Span>();
+	app.addHook("onRequest", (request, _reply, done) => {
+		const span = traced.start(
+			`${request.method} ${request.routeOptions.url ?? "(no route)"}`,
+			undefined,
+			{ kind: "server" },
+		);
+		spans.set(request, span);
+		traced.enter(span);
+		done();
+	});
+	app.addHook("onResponse", (request, reply, done) => {
+		spans.get(request)?.end({ status: reply.statusCode });
+		done();
+	});
+	app.addHook("onRequestAbort", (request, done) => {
+		spans.get(request)?.end({ status: "aborted" });
+		done();
+	});
+}
+
 export async function buildApp(
 	registry: SessionRegistry,
 	options: AppOptions,
@@ -149,6 +179,7 @@ export async function buildApp(
 		// so there's nothing to drain.
 		forceCloseConnections: true,
 	});
+	traceRequests(app);
 	// First hook, so even the access checks' 401/403 replies carry them.
 	app.addHook("onRequest", async (_request, reply) => {
 		reply.headers(SECURITY_HEADERS);

@@ -18,6 +18,7 @@ import {
 } from "./fake-gh/scenario";
 import { createGitFixture, type GitFixture, testGitEnv } from "./git-fixture";
 import { settleGh } from "./settle-gh";
+import { fixtureGit } from "./trace-run";
 
 export interface PrFixture {
 	/** What to pass to Session.open / crb. */
@@ -62,11 +63,13 @@ export function createPrFixture(): PrFixture {
 		},
 	]);
 	const git = (...args: string[]) =>
-		execFileSync("git", args, {
-			cwd: repo.path,
-			encoding: "utf8",
-			env: testGitEnv(),
-		}).trim();
+		fixtureGit(args, () =>
+			execFileSync("git", args, {
+				cwd: repo.path,
+				encoding: "utf8",
+				env: testGitEnv(),
+			}).trim(),
+		);
 	const [mergeBase = "", first = ""] = repo.shas;
 	// The PR head lives only under refs/pull/<n>/head, like on GitHub.
 	git("update-ref", `refs/pull/${NUMBER}/head`, first);

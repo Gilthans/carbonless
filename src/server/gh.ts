@@ -5,6 +5,7 @@ import { GhError, WriteRefusedError } from "./errors.js";
 import { mapOverview } from "./overview.js";
 import { type HeadSpec, needsCommentPages, pickHead } from "./pinnedHead.js";
 import { slugify } from "./slug.js";
+import { argsSummary, traceparent, tracer } from "./trace.js";
 
 export { GhError, slugify };
 
@@ -85,6 +86,24 @@ interface GhRun {
 /** The error an aborted gh call fails with. */
 export class GhAbortedError extends GhError {}
 
+/** Spans of each gh run, when $CRB_TRACE_DIR is set (trace.ts). */
+const traced = tracer();
+
+/** A gh call's name for its span: `pr view`, `api graphql`, `api repos/…`. */
+function ghCommand(args: readonly string[]): string {
+	const [a, b] = args;
+	if (a !== "api") return b && !b.startsWith("-") ? `${a} ${b}` : (a ?? "?");
+	const methods = new Set(["GET", "POST", "PATCH", "PUT", "DELETE"]);
+	const path =
+		args.slice(1).find((x) => !x.startsWith("-") && !methods.has(x)) ?? "";
+	if (path === "graphql") return "api graphql";
+	const shape = path
+		.replace(/^repos\/[^/]+\/[^/]+/, "repos")
+		.replace(/\/compare\/.*/, "/compare")
+		.replace(/\/\d+/g, "/N");
+	return `api ${shape}`;
+}
+
 function spawnGh(args: string[], run: GhRun = {}): Promise<GhResult> {
 	const { signal } = run;
 	const timeoutMs = run.timeoutMs ?? 0;
@@ -94,9 +113,21 @@ function spawnGh(args: string[], run: GhRun = {}): Promise<GhResult> {
 			reject(new GhAbortedError(`Stopped reading ${what}`));
 			return;
 		}
+		const span = traced.enabled
+			? traced.start(
+					`gh ${ghCommand(args)}`,
+					{ args: argsSummary(args) },
+					{
+						kind: "client",
+					},
+				)
+			: null;
+		const env = ghEnv(run.env);
+		// The fake gh's own span (tests) goes under this one.
+		if (span?.context) env.TRACEPARENT = traceparent(span.context);
 		const child = spawn("gh", args, {
 			cwd: run.cwd,
-			env: ghEnv(run.env),
+			env,
 			stdio: ["pipe", "pipe", "pipe"],
 		});
 		// Nothing to read but a write's body: gh sees its end at once.
@@ -105,6 +136,7 @@ function spawnGh(args: string[], run: GhRun = {}): Promise<GhResult> {
 		const out: Buffer[] = [];
 		const err: Buffer[] = [];
 		const stop = (error: GhError) => {
+			span?.end({ exit: "killed" }, error.message);
 			child.kill("SIGKILL");
 			child.stdout.destroy();
 			child.stderr.destroy();
@@ -132,12 +164,14 @@ function spawnGh(args: string[], run: GhRun = {}): Promise<GhResult> {
 		child.stdout.on("data", (c: Buffer) => out.push(c));
 		child.stderr.on("data", (c: Buffer) => err.push(c));
 		child.on("error", (error: NodeJS.ErrnoException) => {
+			span?.end(undefined, error.message);
 			done();
 			reject(
 				new GhError(error.code === "ENOENT" ? NOT_INSTALLED : error.message),
 			);
 		});
 		child.on("close", (code) => {
+			span?.end({ exit: code ?? -1 });
 			done();
 			resolve({
 				code,
