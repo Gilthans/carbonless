@@ -54,6 +54,19 @@ export interface Summary {
 	slowest: TestRow[];
 	calls: Record<string, Calls>;
 	hot: HotSpot[];
+	/** e2e: the warm-up before the workers (e2e/global-setup.ts), if any. */
+	warmupMs?: number;
+	/** e2e: the first wave (tests that start before any test ends) against the rest. */
+	firstWave?: { first: Wave; rest: Wave };
+}
+
+/** Medians over a set of e2e tests. */
+export interface Wave {
+	tests: number;
+	/** The test's duration. */
+	testMs: number;
+	/** Its first `crb serve: listening` (crb's start until it listens). */
+	listenMs: number;
 }
 
 const dur = (s: Span) => Math.max(0, s.endMs - s.startMs);
@@ -232,6 +245,28 @@ export function summarize(spans: Span[], top = 8): Summary {
 		calls[kind] = { ...tot, medianN: median(ns), medianMs: median(ms) };
 	}
 
+	// e2e only: each worker's first test starts cold, all at once (CAR-102).
+	let firstWave: Summary["firstWave"];
+	if (fileSpans.length === 0 && tests.length > 0) {
+		const listen = new Map<string, number>();
+		for (const s of spans) {
+			if (s.name !== "crb serve: listening") continue;
+			const t = owner(s);
+			if (t && !listen.has(key(t))) listen.set(key(t), dur(s));
+		}
+		const ran = tests.filter((t) => t.attrs["test.status"] !== "skipped");
+		const firstEnd = Math.min(...ran.map((t) => t.endMs));
+		const wave = (list: Span[]): Wave => ({
+			tests: list.length,
+			testMs: median(list.map(dur)),
+			listenMs: median(list.flatMap((t) => listen.get(key(t)) ?? [])),
+		});
+		const first = ran.filter((t) => t.startMs < firstEnd);
+		const rest = ran.filter((t) => t.startMs >= firstEnd);
+		if (first.length > 0) firstWave = { first: wave(first), rest: wave(rest) };
+	}
+	const warmups = spans.filter((s) => s.attrs["crb.kind"] === "warmup");
+
 	const starts = spans.map((s) => s.startMs);
 	const ends = spans.map((s) => s.endMs);
 	return {
@@ -258,6 +293,10 @@ export function summarize(spans: Span[], top = 8): Summary {
 			}))
 			.sort((a, b) => b.ms - a.ms)
 			.slice(0, 12),
+		...(warmups.length
+			? { warmupMs: warmups.reduce((a, w) => a + dur(w), 0) }
+			: {}),
+		...(firstWave ? { firstWave } : {}),
 	};
 }
 
@@ -310,6 +349,21 @@ export function formatSummary(run: string, s: Summary, top = 8): string {
 			);
 		}
 	}
+	if (s.warmupMs !== undefined || s.firstWave) {
+		out.push("", "🌊 cold start");
+		if (s.warmupMs !== undefined) {
+			out.push(`  warm-up (before the workers) ${fmt(s.warmupMs)}`);
+		}
+		const w = s.firstWave;
+		if (w) {
+			out.push(
+				`  ${pad("", 14)} ${lpad("tests", 5)} ${lpad("test", 7)} ${lpad("listen", 7)}`,
+				`  ${pad("first wave", 14)} ${waveRow(w.first)}`,
+				`  ${pad("rest", 14)} ${waveRow(w.rest)}`,
+				"  (medians; listen: crb serve's start until it listens)",
+			);
+		}
+	}
 	out.push("", "📄 top files");
 	for (const f of s.files.slice(0, top)) {
 		out.push(`  ${lpad(fmt(f.ms), 7)} ${lpad(String(f.tests), 4)}t  ${f.file}`);
@@ -352,6 +406,9 @@ export function formatSummary(run: string, s: Summary, top = 8): string {
 	return out.join("\n");
 }
 
+const waveRow = (w: Wave) =>
+	`${lpad(String(w.tests), 5)} ${lpad(fmt(w.testMs), 7)} ${lpad(fmt(w.listenMs), 7)}`;
+
 function delta(a: number, b: number, time = true): string {
 	const d = b - a;
 	const show = time ? fmt : (n: number) => String(Math.round(n));
@@ -383,6 +440,19 @@ export function formatCompare(
 			) as never[],
 		)) {
 			out.push(`  ${pad(p, 18)} ${delta(a.phases[p] ?? 0, b.phases[p] ?? 0)}`);
+		}
+	}
+	if (a.firstWave || b.firstWave) {
+		const fa = a.firstWave?.first;
+		const fb = b.firstWave?.first;
+		out.push(
+			"",
+			"🌊 first wave (medians)",
+			`  test       ${delta(fa?.testMs ?? 0, fb?.testMs ?? 0)}`,
+			`  listen     ${delta(fa?.listenMs ?? 0, fb?.listenMs ?? 0)}`,
+		);
+		if (a.warmupMs !== undefined || b.warmupMs !== undefined) {
+			out.push(`  warm-up    ${delta(a.warmupMs ?? 0, b.warmupMs ?? 0)}`);
 		}
 	}
 	const kinds = [

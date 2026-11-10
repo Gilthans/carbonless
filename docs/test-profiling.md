@@ -61,3 +61,12 @@ Phases of an e2e test: `setup.fixture` (the fixture repo), `setup.crb_serve`
 `setup.browser` (browser, context, page fixtures), `setup.first_load` (the
 first navigation), `setup.other` (other before-hooks), `body`,
 `teardown.crb_stop`, `teardown.other`.
+
+Cold start (CAR-102): before the workers start, `e2e/global-setup.ts`
+warms up once, alone: a `crb serve`, a `crb <pr>` on a fixture PR and a
+browser launch (skipped with one worker). Its span, `e2e: warm-up`
+(`crb.kind` `warmup`, the crb processes under it), runs before any test,
+so no test's time includes it. `pnpm test-profile` prints it under
+"cold start", with the first wave (the tests that started before any test
+ended: every worker's first) against the rest, as median test time and
+median `crb serve: listening`.

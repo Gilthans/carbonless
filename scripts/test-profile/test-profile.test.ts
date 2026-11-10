@@ -324,6 +324,67 @@ describe("summarize", () => {
 		]);
 	});
 
+	it("sets the first wave (tests started before any ended) against the rest, and the warm-up", () => {
+		/** Test `id` started `at` ms late, its crb listening after `listen` ms. */
+		const shifted = (id: string, at: number, listen: number) => {
+			const spans = e2eRun("r", id).map((sp) => ({
+				...sp,
+				startMs: sp.startMs + at,
+				endMs: sp.endMs + at,
+			}));
+			const root = spans.find((sp) => sp.name === "crb serve");
+			spans.push({
+				name: "crb serve: listening",
+				context: {
+					traceId: root?.context.traceId ?? "",
+					spanId: `l${id}`.padEnd(16, "0"),
+				},
+				parent: root?.context ?? null,
+				startMs: T0 + at + 1700,
+				endMs: T0 + at + 1700 + listen,
+			});
+			return spans;
+		};
+		const warmup: RecordedSpan = {
+			name: "e2e: warm-up",
+			context: { traceId: "w".repeat(32), spanId: "w".repeat(16) },
+			parent: null,
+			startMs: T0 - 3000,
+			endMs: T0 - 500,
+			attrs: { "crb.kind": "warmup" },
+		};
+		const s = summarize(
+			asRead([
+				warmup,
+				...shifted("a", 0, 9000),
+				...shifted("b", 500, 7000),
+				// Starts once a has ended (10 s): the rest.
+				...shifted("c", 10_000, 1000),
+				...shifted("d", 12_000, 1400),
+				...shifted("e", 14_000, 1200),
+			]),
+		);
+		expect(s.warmupMs).toBe(2500);
+		expect(s.firstWave).toEqual({
+			first: { tests: 2, testMs: 10_000, listenMs: 8000 },
+			rest: { tests: 3, testMs: 10_000, listenMs: 1200 },
+		});
+		// Not a test: the warm-up counts in no phase or file.
+		expect(s.tests).toBe(5);
+		const text = formatSummary("r", s);
+		expect(text).toContain("warm-up (before the workers) 2.5s");
+		expect(text).toMatch(/first wave\s+2\s+10\.0s\s+8\.0s/);
+		expect(text).toMatch(/rest\s+3\s+10\.0s\s+1\.2s/);
+		const compared = formatCompare("A", s, "B", {
+			...s,
+			firstWave: {
+				first: { tests: 2, testMs: 10_000, listenMs: 2000 },
+				rest: { tests: 3, testMs: 10_000, listenMs: 1200 },
+			},
+		});
+		expect(compared).toMatch(/listen {5}8\.0s → 2\.0s {2}-6\.0s \(-75%\)/);
+	});
+
 	it("compares two runs: totals, phases, calls and the tests that moved", () => {
 		const a = summarize(asRead(e2eRun("r", "a")));
 		const b = summarize(asRead(e2eRun("r", "a", 4)));
