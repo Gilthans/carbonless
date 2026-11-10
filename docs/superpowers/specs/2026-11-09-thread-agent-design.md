@@ -5,7 +5,7 @@ Status: draft, 2026-11-09. Branches from the re-review stack (tip
 and uses its patch sets, comparisons and thread placement. Builds on review buddy
 (`docs/superpowers/specs/2026-11-04-review-buddy-design.md`, merged as PR
 #30). Mockups (desktop Overview, desktop Files changed, phone):
-https://claude.ai/artifact/LqHZqTLVfFC1E7u1mkPYj1
+https://claude.ai/artifact/CPYrFstrisfLeh5CE6vg74
 
 ## Why
 
