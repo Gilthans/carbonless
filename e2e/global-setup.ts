@@ -13,16 +13,26 @@ import { CLI, crbEnv, createPr, OWNER_REPO, PR_NUMBER } from "./pr-setup";
  * their browsers launching: on a loaded machine `crb serve` took 10-12 s to
  * listen there, against 1.3 s later in the run, and those first tests timed
  * out. Here one crb serve, one `crb <pr>` (a clone, the fake gh) and one
- * browser run once, alone, so the first wave finds them loaded. It runs
+ * browser run once, alone, so the first wave finds them loaded (and the
+ * run's compile cache filled). It runs
  * before any test, so no test's timeout pays for it; its span
  * (`e2e: warm-up`, crb.kind "warmup") shows it in `pnpm test-profile`.
  */
-export default async function globalSetup(config: FullConfig): Promise<void> {
+export default async function globalSetup(
+	config: FullConfig,
+): Promise<() => void> {
 	if (!existsSync(CLI)) {
 		throw new Error(`${CLI} is missing: build first (pnpm test:e2e builds)`);
 	}
+	// One compile cache for the run's every crb (Node's NODE_COMPILE_CACHE):
+	// each test has its own XDG_CACHE_HOME, so a cache there would start
+	// empty for every crb serve. Set here, the workers and every crb they
+	// start (crbEnv passes process.env on) inherit it; the warm-up fills it.
+	const compileCache = mkdtempSync(join(tmpdir(), "crb-e2e-compile-cache-"));
+	process.env.NODE_COMPILE_CACHE = compileCache;
+	const teardown = () => rmSync(compileCache, { recursive: true, force: true });
 	// One worker never starts cold next to another.
-	if (config.workers <= 1) return;
+	if (config.workers <= 1) return teardown;
 	const traced = createTracer({
 		dir: process.env.CRB_TRACE_DIR,
 		service: "e2e",
@@ -48,6 +58,7 @@ export default async function globalSetup(config: FullConfig): Promise<void> {
 		span.end(undefined, error);
 		traced.flush();
 	}
+	return teardown;
 }
 
 /** crb serve and `crb <pr>` on a fixture PR, as a test runs them. */
