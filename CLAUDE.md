@@ -150,7 +150,10 @@ loading never looking empty, checking against a real PR):
   `docs/product-rules.md`, "Writing to GitHub".
 - Main on the devbox and branch instances: "Versions and instances" below.
 - Tests never call the real `gh`: `test/fake-gh/gh` serves a scenario
-  (`test/fake-gh/scenario.ts`) via `$CRB_FAKE_GH`. The e2e harness
+  (`test/fake-gh/scenario.ts`) via `$CRB_FAKE_GH`. It is a bash shim that
+  forwards each call to the test process's fake gh server (`fakeGhEnv()`
+  puts both on the env; a Node process per call without one), with a gh
+  process's semantics. The e2e harness
   (`e2e/fixtures.ts`) wires it onto `PATH` and drives the built CLI. In
   unit tests a trap `gh` sits on `PATH` behind the fake
   (`test/real-gh-trap.ts`) and fails the run, naming the test, when a call

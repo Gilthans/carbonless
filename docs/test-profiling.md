@@ -18,7 +18,7 @@ turns it off, running crb as it ships.
 | `e2e` | Playwright reporter (`e2e/trace-reporter.ts`) | one trace per test: the test, hooks, fixtures, `test.step`s, navigations, with `crb.phase` on setup ones |
 | `playwright-worker` | e2e worker | fixture gits (`crb.fixture`) |
 | `crb`, `crb-client` | `crb serve`, `crb <pr>` under test | the process, HTTP requests, git and gh calls, opening a review (clone, fetch, snapshot), overview reads |
-| `fake-gh` | `test/fake-gh/gh` | one per call, process start to exit, under crb's `gh` span |
+| `fake-gh` | `test/fake-gh/gh` (its server, `serve.mjs`, in the test process) | one per call, from the server taking it to its answer (`process.pid`: the shim's), under crb's `gh` span |
 | `vitest` | unit worker (`test/setup.ts`) | one trace per file: the file, its tests, and crb's git and gh calls and fixture gits under the test |
 
 The ids of an e2e test's span derive from the run and test id
