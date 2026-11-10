@@ -10,6 +10,7 @@ import {
 	MAX_AGENT_TEXT,
 } from "../../shared/agent.js";
 import type { ClusterState, DiffSide } from "../../shared/types.js";
+import { oneLine } from "../agent/prompt.js";
 
 /**
  * crb events, stored one JSON object per line in crb commit messages.
@@ -503,6 +504,9 @@ function parseAnchor(raw: unknown): AgentAnchor | null {
 	};
 }
 
+/** A joined session's machine as read back from a ref: one line, capped (join.ts writes it so). */
+const MAX_MACHINE = 80;
+
 function parseIdentity(raw: unknown): AgentIdentity | null {
 	if (!isObj(raw)) return null;
 	const { name, version, via, machine } = raw;
@@ -512,7 +516,9 @@ function parseIdentity(raw: unknown): AgentIdentity | null {
 		name,
 		version,
 		...(via === "acp" || via === "mcp" ? { via } : {}),
-		...(typeof machine === "string" && machine ? { machine } : {}),
+		...(typeof machine === "string" && oneLine(machine, MAX_MACHINE)
+			? { machine: oneLine(machine, MAX_MACHINE) }
+			: {}),
 	};
 }
 

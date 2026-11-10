@@ -187,11 +187,15 @@ export class SessionRegistry {
 		return run;
 	}
 
-	/** Closes the sessions idle for longer than idleMs. */
+	/** Closes the sessions idle for longer than idleMs (not one a session is joined to). */
 	async sweep(): Promise<void> {
 		const now = this.#now();
 		const idle = [...this.#open].filter(
-			([, e]) => now - e.lastUsed > this.#idleMs || e.session.closed,
+			([, e]) =>
+				// A joined session (or a request to join) is use: its watcher
+				// and tools may be all that reaches the review.
+				(now - e.lastUsed > this.#idleMs && !e.session.agent?.active()) ||
+				e.session.closed,
 		);
 		for (const [id] of idle) this.#open.delete(id);
 		await Promise.all(idle.map(([, e]) => e.session.close()));

@@ -32,6 +32,23 @@ import { AgentThreadStore } from "./store.js";
 // Real git and fake agent processes: see GIT_TEST_TIMEOUTS.
 vi.setConfig(GIT_TEST_TIMEOUTS);
 
+// A gate on the agent's checkout: a test holds it to act while it is made.
+const checkoutGate = vi.hoisted(() => ({
+	hold: null as Promise<void> | null,
+	entered: 0,
+}));
+vi.mock("./checkout.js", async (importOriginal) => {
+	const real = await importOriginal<typeof import("./checkout.js")>();
+	return {
+		...real,
+		createCheckout: async (...args: Parameters<typeof real.createCheckout>) => {
+			checkoutGate.entered++;
+			if (checkoutGate.hold) await checkoutGate.hold;
+			return real.createCheckout(...args);
+		},
+	};
+});
+
 const REVIEW = "01k9e6m2q8x4v7c3n5b0h1j2t6";
 const AGENT: AgentConfig = {
 	command: "claude-agent-acp",
@@ -862,6 +879,78 @@ describe("AgentRunner", () => {
 			expect(status.agent).toBeUndefined();
 			await r.settled();
 			expect(spawns()).toHaveLength(1);
+		});
+
+		it("stop() while the agent is being started (its checkout under way): nothing spawns, it stays off", async () => {
+			let open: () => void = () => {};
+			checkoutGate.hold = new Promise<void>((r) => {
+				open = r;
+			});
+			checkoutGate.entered = 0;
+			let off = false;
+			await ask("why?");
+			const r = makeRunner({ acpOff: () => off });
+			try {
+				r.poke();
+				await vi.waitFor(() => expect(checkoutGate.entered).toBe(1), {
+					timeout: 20_000,
+					interval: 20,
+				});
+				off = true;
+				const stop = r.stop(60 * 60_000);
+				open();
+				await stop;
+				await r.settled();
+			} finally {
+				checkoutGate.hold = null;
+				open();
+			}
+			expect(spawns()).toHaveLength(0);
+			expect((await r.status()).state).toBe("off");
+			expect((await threads())[0]?.waiting).toBe(true);
+		});
+
+		it("stop() while the agent's initialize is held: the process is closed", async () => {
+			scenario({ hold: ["initialize"] });
+			let off = false;
+			await ask("why?");
+			const r = makeRunner({ acpOff: () => off });
+			r.poke();
+			await vi.waitFor(() => expect(spawns()).toHaveLength(1), {
+				timeout: 20_000,
+				interval: 20,
+			});
+			const pid = spawns()[0]?.pid as number;
+			off = true;
+			const stop = r.stop(60 * 60_000);
+			releaseAcp(scenarioPath, "initialize");
+			await stop;
+			await r.settled();
+			await vi.waitFor(() => expect(() => process.kill(pid, 0)).toThrow(), {
+				timeout: 20_000,
+				interval: 20,
+			});
+			expect((await r.status()).state).toBe("off");
+		});
+
+		it("Start pressed while stop() waits for the turn: the agent stays and answers the next thread", async () => {
+			scenario({ hold: ["prompt"], answers: [{ text: "a b", chunks: 2 }] });
+			let off = false;
+			await ask("why?");
+			await ask("second?", 2);
+			const r = makeRunner({ acpOff: () => off });
+			r.poke();
+			await until((s) => s.state === "busy");
+			off = true;
+			const stop = r.stop(60 * 60_000);
+			// Start: on again before the turn ends.
+			off = false;
+			r.asked();
+			releaseAcp(scenarioPath, "prompt");
+			await stop;
+			await answered(2);
+			expect(spawns()).toHaveLength(1);
+			expect((await r.status()).state).not.toBe("off");
 		});
 
 		it("stop() cancels a turn that runs past its time", async () => {

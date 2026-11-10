@@ -3,9 +3,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { JOIN, type JoinLeave } from "../../shared/agent.js";
+import { ReviewClaim } from "./claim.js";
 import {
 	type AttachOutcome,
 	JoinBroker,
+	type JoinBrokerDeps,
+	JoinElsewhereError,
 	StaleJoinRequestError,
 	type WatchLease,
 } from "./join.js";
@@ -18,7 +21,7 @@ let approved: number;
 let waiting: boolean;
 const brokers: JoinBroker[] = [];
 
-const make = (): JoinBroker => {
+const make = (over: Partial<JoinBrokerDeps> = {}): JoinBroker => {
 	const b = new JoinBroker({
 		dir,
 		onApproved: async () => {
@@ -26,6 +29,7 @@ const make = (): JoinBroker => {
 		},
 		onLeft: (why) => left.push(why),
 		waiting: async () => waiting,
+		...over,
 	});
 	brokers.push(b);
 	return b;
@@ -158,6 +162,90 @@ describe("JoinBroker: requests", () => {
 		expect(r?.name).toBe(`ab${"n".repeat(78)}`);
 		expect(r?.machine).toBe("devbox");
 		expect(r).not.toHaveProperty("harness");
+	});
+
+	it("identity strings are one line: newlines, tabs, line separators, NEL and C1 become one space or go", () => {
+		const b = make();
+		b.request({
+			name: "dev\nbox\t\r\nmain",
+			machine: "a\u2028b\u2029c x\u0085y\u009bz",
+			harness: "cc 2.1\n\nApproved by your admin",
+		});
+		expect(b.view().joinRequest).toMatchObject({
+			name: "dev box main",
+			machine: "a b c x yz",
+			harness: "cc 2.1 Approved by your admin",
+		});
+	});
+
+	it("the cap counts code points and never splits a surrogate pair; an empty name falls back to the machine", () => {
+		const b = make();
+		b.request({ name: "😀".repeat(100), machine: "devbox" });
+		const name = b.view().joinRequest?.name ?? "";
+		expect(Array.from(name)).toHaveLength(80);
+		expect(name).toBe("😀".repeat(80));
+		b.request({ name: " \n<!-- -->", machine: "devbox" });
+		expect(b.view().joinRequest?.name).toBe("devbox");
+		b.request({ name: "", machine: "" });
+		expect(b.view().joinRequest?.name).toBe("session");
+	});
+
+	it("outcome during an Approve still being installed is pending, then approved", async () => {
+		let release: () => void = () => {};
+		const b = make({
+			onApproved: () =>
+				new Promise<void>((r) => {
+					release = r;
+				}),
+		});
+		const { request } = b.request(WHO);
+		const answering = b.answer(request, true);
+		await settled(answering);
+		expect(await b.outcome(request, 0)).toEqual({ state: "pending", request });
+		const waited = b.outcome(request, JOIN.attachWaitMs);
+		expect(await settled(waited)).toBe(false);
+		release();
+		await answering;
+		expect((await waited).state).toBe("approved");
+	});
+
+	it("an onApproved that throws doesn't fail the Approve: the join took effect", async () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		const b = make({
+			onApproved: async () => {
+				throw new Error("disk full");
+			},
+		});
+		const { request } = b.request(WHO);
+		await expect(b.answer(request, true)).resolves.toBeUndefined();
+		expect((await b.outcome(request, 0)).state).toBe("approved");
+		warn.mockRestore();
+	});
+
+	it("an Approve sets acp-off itself, before joined.json and onApproved", async () => {
+		const order: string[] = [];
+		const b = make({
+			onApproved: async () => {
+				order.push(existsSync(join(dir, "acp-off")) ? "acp-off" : "no acp-off");
+			},
+		});
+		expect(b.acpOff()).toBe(false);
+		await joined(b);
+		expect(order).toEqual(["acp-off"]);
+		expect(b.acpOff()).toBe(true);
+	});
+
+	it("active while asked, joined or watched", async () => {
+		const b = make();
+		expect(b.active()).toBe(false);
+		const { request } = b.request(WHO);
+		expect(b.active()).toBe(true);
+		await b.answer(request, false);
+		expect(b.active()).toBe(false);
+		await joined(b);
+		expect(b.active()).toBe(true);
+		b.leave("detached");
+		expect(b.active()).toBe(false);
 	});
 
 	it("an unknown request id is stale", async () => {
@@ -334,15 +422,76 @@ describe("JoinBroker: leaving", () => {
 	it("a new join approved replaces the joined session", async () => {
 		const b = make();
 		const old = await joined(b);
+		b.handOut("t1", "m1");
 		const other = { name: "other", machine: "laptop" };
 		const { request } = b.request(other);
 		await b.answer(request, true);
 		expect(left).toEqual(["replaced"]);
 		expect(b.view().left).toMatchObject({ ...WHO, why: "replaced" });
 		expect(b.check(old)).toBe(false);
+		expect(b.handedOut()).toBeNull();
 		const o = await b.outcome(request, 0);
 		expect(b.check((o as { token: string }).token)).toBe(true);
 		expect(b.view().joined).toMatchObject(other);
+	});
+});
+
+describe("JoinBroker: disconnect", () => {
+	it("leave(disconnected) clears the hand-out (the thread waits again)", async () => {
+		const b = make();
+		const token = await joined(b);
+		b.handOut("t1", "m1");
+		b.leave("disconnected");
+		expect(b.handedOut()).toBeNull();
+		expect(b.check(token)).toBe(false);
+		expect(b.view().left?.why).toBe("disconnected");
+	});
+});
+
+describe("JoinBroker: the review's claim (several servers, one agents dir)", () => {
+	const claimOf = (port: number) =>
+		new ReviewClaim(dir, () => ({ pid: process.pid, port }));
+
+	it("only the holder restores; another server's broker leaves joined.json alone and reports elsewhere", async () => {
+		const holder = make({ claim: claimOf(4747) });
+		const token = await joined(holder);
+		holder.watcher(token);
+		const other = make({ claim: claimOf(4748) });
+		await other.restore();
+		expect(other.view().joined).toBeUndefined();
+		expect(other.check(token)).toBe(false);
+		expect(other.watcher(token)).toBeNull();
+		expect(await other.claimCheck()).toEqual({
+			ok: false,
+			holder: { pid: process.pid, port: 4747 },
+		});
+		const { request } = other.request(WHO);
+		await expect(other.answer(request, true)).rejects.toBeInstanceOf(
+			JoinElsewhereError,
+		);
+		await vi.advanceTimersByTimeAsync(JOIN.graceMs * 2);
+		expect(existsSync(join(dir, "joined.json"))).toBe(true);
+		expect(holder.view().presence).toBe("listening");
+		expect(left).toEqual([]);
+	});
+
+	it("once the holder closes, the next server takes the claim and restores", async () => {
+		const holder = make({ claim: claimOf(4747) });
+		const token = await joined(holder);
+		holder.close();
+		await vi.waitFor(() =>
+			expect(existsSync(join(dir, "claim.json"))).toBe(false),
+		);
+		const next = make({ claim: claimOf(4748) });
+		await next.restore();
+		expect(next.view().presence).toBe("reconnecting");
+		expect(next.check(token)).toBe(true);
+	});
+
+	it("claimCheck takes nothing for good when nothing is joined", async () => {
+		const b = make({ claim: claimOf(4747) });
+		expect(await b.claimCheck()).toEqual({ ok: true });
+		expect(existsSync(join(dir, "claim.json"))).toBe(false);
 	});
 });
 
@@ -391,12 +540,14 @@ describe("JoinBroker: restart", () => {
 		expect(c.view().joined).toBeUndefined();
 	});
 
-	it("acp-off survives a new broker on the same dir", async () => {
+	it("acp-off survives a new broker on the same dir, and one made before sees it", async () => {
 		const b = make();
+		const earlier = make();
 		expect(b.acpOff()).toBe(false);
 		await b.setAcpOff(true);
 		expect(existsSync(join(dir, "acp-off"))).toBe(true);
 		expect(make().acpOff()).toBe(true);
+		expect(earlier.acpOff()).toBe(true);
 		await b.setAcpOff(false);
 		expect(make().acpOff()).toBe(false);
 	});

@@ -30,7 +30,7 @@ import {
 	agentConfig,
 	noteAgentConfigSaved,
 } from "./agent/host.js";
-import { StaleJoinRequestError } from "./agent/join.js";
+import { JoinElsewhereError, StaleJoinRequestError } from "./agent/join.js";
 import { isSafePath } from "./agent/prompt.js";
 import { UnknownAgentThreadError } from "./agent/store.js";
 import { parseAsOf } from "./asOf.js";
@@ -227,6 +227,13 @@ export async function buildApp(
 		if (error instanceof BadRequestError) return send(400, error.message);
 		if (error instanceof NoAgentError) {
 			return reply.status(404).send({ error: error.message, code: "no-agent" });
+		}
+		if (error instanceof JoinElsewhereError) {
+			return reply.status(409).send({
+				error: error.message,
+				code: "elsewhere",
+				port: error.holder.port,
+			});
 		}
 		if (error instanceof StaleJoinRequestError) {
 			return reply

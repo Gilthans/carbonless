@@ -151,6 +151,8 @@ describe("AgentHost with a session joined through MCP", () => {
 	};
 	let acpOff: () => boolean;
 	let host: AgentHost;
+	/** The thread the stub ACP runner is answering. */
+	let busy: string | null;
 
 	const make = () =>
 		buildAgentHost({
@@ -169,6 +171,9 @@ describe("AgentHost with a session joined through MCP", () => {
 		store = new AgentThreadStore(new RefStore(bare.path), REVIEW, "dan");
 		runner = {
 			status: async (): Promise<AgentStatus> => ({
+				...(busy
+					? { answering: { thread: busy, text: "so far", activity: [] } }
+					: {}),
 				state: acpOff() ? "off" : "ready",
 				configured: true,
 				...(acpOff() ? {} : { agent: { name: "fake-acp", version: "1.0.0" } }),
@@ -180,7 +185,9 @@ describe("AgentHost with a session joined through MCP", () => {
 			stop: vi.fn(async (_ms: number) => {}),
 			cancel: async () => {},
 			close: async () => {},
+			inFlight: () => busy,
 		};
+		busy = null;
 		host = make();
 	});
 	afterEach(async () => {
@@ -219,6 +226,47 @@ describe("AgentHost with a session joined through MCP", () => {
 				machine: WHO.machine,
 			},
 		});
+	});
+
+	it("the ACP turn still running after Approve stays in the status, and the session's watcher isn't woken for it", async () => {
+		const x = await host.open({ clientId: "c1", text: "Why?", span });
+		busy = x.id;
+		const token = await approve();
+		expect(host.busyThread()).toBe(x.id);
+		expect((await host.status()).answering).toMatchObject({
+			thread: x.id,
+			text: "so far",
+		});
+		const reads = vi.spyOn(store, "read");
+		const lease = host.join.watcher(token);
+		let woken = false;
+		void lease?.deliver.then(() => {
+			woken = true;
+		});
+		// The lease's "is a question waiting?" read, then its answer.
+		await vi.waitFor(() => expect(reads).toHaveBeenCalled());
+		await reads.mock.results.at(-1)?.value;
+		for (let i = 0; i < 20; i++) await Promise.resolve();
+		expect(woken).toBe(false);
+		reads.mockRestore();
+		// The turn ended: the thread is the session's.
+		busy = null;
+		const again = host.join.watcher(token);
+		await expect(again?.deliver).resolves.toBeUndefined();
+	});
+
+	it("while joined the ACP gate holds even without the acp-off file", async () => {
+		await approve();
+		rmSync(join(dir, "acp-off"));
+		expect(acpOff()).toBe(true);
+		await host.disconnect();
+		expect(acpOff()).toBe(false);
+	});
+
+	it("active while a session asks to join or is joined (no idle eviction)", async () => {
+		expect(host.active()).toBe(false);
+		host.join.request(WHO);
+		expect(host.active()).toBe(true);
 	});
 
 	it("no watcher: reconnecting; a thread handed out: busy, answering it", async () => {

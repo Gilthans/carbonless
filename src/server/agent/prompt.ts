@@ -142,6 +142,20 @@ export function sanitizeThirdParty(text: string): string {
 }
 
 /**
+ * A one-line label from a third party (a joined session's name, machine,
+ * harness): sanitised, every run of whitespace, line separators and NEL
+ * one space, C1 controls gone, trimmed, at most `max` code points (a
+ * surrogate pair is never split).
+ */
+export function oneLine(text: string, max: number): string {
+	const flat = sanitizeThirdParty(text)
+		.replace(/[\s\u0085]+/g, " ")
+		.replace(/[\u0080-\u009f]/g, "")
+		.trim();
+	return Array.from(flat).slice(0, max).join("").trim();
+}
+
+/**
  * `env` with every text from the PR sanitised (sanitizeThirdParty): the
  * base and head ref names, the anchor's path (and so its file), the PR's
  * title, body and file paths. The reviewer's and the agent's messages stay.

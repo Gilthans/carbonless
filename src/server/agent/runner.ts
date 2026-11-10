@@ -18,7 +18,7 @@ import {
 } from "../../shared/agent.js";
 import { AcpAgent, AgentStartError, agentEnv } from "./acp.js";
 import { agentsDir, type Checkout, createCheckout } from "./checkout.js";
-import { takeClaim } from "./claim.js";
+import { type ReviewClaim, takeClaim } from "./claim.js";
 import { decidePermission } from "./policy.js";
 import {
 	anchorFor,
@@ -66,6 +66,8 @@ export interface RunnerDeps {
 	 * the reviewer's Start clears it): nothing spawns, no turn starts.
 	 */
 	acpOff?: () => boolean;
+	/** The review's claim, shared with a joined session (else the runner takes its own). */
+	claim?: ReviewClaim;
 }
 
 /** A live title is cut here; the stored list is capped again (capActivity). */
@@ -265,11 +267,21 @@ export class AgentRunner {
 				clearTimeout(timer);
 			}
 		}
+		// Start pressed while the turn finished: the agent stays.
+		if (!this.#off()) return;
 		await this.#stopProc();
 		await this.#pump;
+		// A spawn that finished meanwhile (its checks saw ACP off) is closed too.
+		await this.#stopProc();
+		if (!this.#off()) return;
 		this.#identity = undefined;
 		this.#answering = null;
 		if (!this.#closed) this.#set("off");
+	}
+
+	/** The thread the ACP buddy is answering now, if any (a joined session skips it). */
+	inFlight(): string | null {
+		return this.#answering?.thread ?? null;
 	}
 
 	#off(): boolean {
@@ -375,10 +387,12 @@ export class AgentRunner {
 		// human asks again or the config is saved.
 		if (this.#crashes >= 2) return null;
 		if (!this.#release) {
-			const claim = await takeClaim(this.#dir(), {
-				pid: process.pid,
-				port: this.#deps.port,
-			});
+			const claim = this.#deps.claim
+				? await this.#deps.claim.hold("acp")
+				: await takeClaim(this.#dir(), {
+						pid: process.pid,
+						port: this.#deps.port,
+					});
 			if (!claim.ok) {
 				this.#set("elsewhere", { elsewhere: claim.holder.port });
 				return null;
@@ -389,6 +403,8 @@ export class AgentRunner {
 			}
 			this.#release = claim.release;
 		}
+		// ACP went off while the claim was taken.
+		if (this.#off()) return null;
 		// The config moved while the claim was taken: the next round has it.
 		if (this.#config !== config) return null;
 		this.#set("starting");
@@ -406,6 +422,11 @@ export class AgentRunner {
 			this.#set("error", {
 				error: `Could not make the agent's checkout: ${(error as Error).message}`,
 			});
+			return null;
+		}
+		// ACP went off while the checkout was made: nothing spawns.
+		if (this.#off()) {
+			this.#set("off");
 			return null;
 		}
 		const key = this.#key as string;
@@ -438,9 +459,12 @@ export class AgentRunner {
 		if (
 			proc.stopping ||
 			this.#closed ||
+			this.#off() ||
 			this.#proc !== proc ||
 			proc.key !== this.#key
 		) {
+			if (this.#proc === proc) this.#proc = null;
+			proc.stopping = true;
 			await agent.close();
 			return null;
 		}

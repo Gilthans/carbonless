@@ -21,6 +21,7 @@ import type { PrMeta } from "../gh.js";
 import { runGitBuffer } from "../git.js";
 import { RefStore } from "../review/refStore.js";
 import { agentsDir } from "./checkout.js";
+import { ReviewClaim } from "./claim.js";
 import { JoinBroker } from "./join.js";
 import { isSafePath, mimeTypeOf } from "./prompt.js";
 import { AgentRunner, type RunnerFacts } from "./runner.js";
@@ -36,7 +37,7 @@ export const serverPort = (): number => listeningPort;
 /** What the host asks of its ACP runner (an AgentRunner; a stub in tests). */
 export type HostRunner = Pick<
 	AgentRunner,
-	"status" | "asked" | "poke" | "stop" | "cancel" | "close"
+	"status" | "asked" | "poke" | "stop" | "cancel" | "close" | "inFlight"
 >;
 
 /**
@@ -73,7 +74,9 @@ export class AgentHost {
 		const joined = view.joined;
 		if (!joined) return out;
 		const handed = this.join.handedOut();
-		const { answering: _, error: __, elsewhere: ___, ...rest } = out;
+		// The ACP buddy's last turn (it finishes after an Approve) stays
+		// visible until it ends, unless the session holds a thread.
+		const { answering: acpTurn, error: __, elsewhere: ___, ...rest } = out;
 		return {
 			...rest,
 			state:
@@ -98,8 +101,20 @@ export class AgentHost {
 							...(handed.asked ? { asked: handed.asked } : {}),
 						},
 					}
-				: {}),
+				: acpTurn
+					? { answering: acpTurn }
+					: {}),
 		};
+	}
+
+	/** The thread the ACP buddy still answers (after an Approve, for up to JOIN.acpStopMs): `next` skips it. */
+	busyThread(): string | null {
+		return this.runner.inFlight();
+	}
+
+	/** In use by a joined session (or a request to join): the registry doesn't evict it. */
+	active(): boolean {
+		return this.join.active();
 	}
 
 	/** The threads in opened order; a line anchor's carries its code window. */
@@ -190,22 +205,31 @@ export function buildAgentHost(o: {
 	dir: string;
 	store: AgentThreadStore;
 	code: (anchor: AgentAnchor, at: string) => Promise<CodeWindow | undefined>;
-	runner: (acpOff: () => boolean) => HostRunner;
+	runner: (acpOff: () => boolean, claim?: ReviewClaim) => HostRunner;
+	/** The review's agent claim, shared by the runner and the joined session. */
+	claim?: ReviewClaim;
 	now?: () => number;
 }): AgentHost {
 	let runner: HostRunner | undefined;
 	const join: JoinBroker = new JoinBroker({
 		dir: o.dir,
 		...(o.now ? { now: o.now } : {}),
+		...(o.claim ? { claim: o.claim } : {}),
+		// The broker already set ACP off (before joined.json).
 		onApproved: async () => {
-			await join.setAcpOff(true);
 			void runner?.stop(JOIN.acpStopMs).catch(() => {});
 		},
 		onLeft: () => {},
-		waiting: async () =>
-			(await o.store.read()).some((t) => t.waiting && !t.resolved),
+		// The thread the ACP buddy still answers isn't the session's.
+		waiting: async () => {
+			const busy = runner?.inFlight() ?? null;
+			return (await o.store.read()).some(
+				(t) => t.waiting && !t.resolved && t.id !== busy,
+			);
+		},
 	});
-	runner = o.runner(() => join.acpOff());
+	// A joined session keeps the ACP buddy off even without the file.
+	runner = o.runner(() => join.acpOff() || join.isJoined(), o.claim);
 	return new AgentHost(runner, o.store, o.code, join);
 }
 
@@ -292,11 +316,16 @@ export function reviewAgentHost(src: ReviewAgentSource): AgentHost {
 		});
 		return window ?? undefined;
 	};
+	const dir = join(agentsDir(), src.reviewId);
 	return buildAgentHost({
-		dir: join(agentsDir(), src.reviewId),
+		dir,
 		store,
 		code,
-		runner: (acpOff) =>
+		claim: new ReviewClaim(dir, () => ({
+			pid: process.pid,
+			port: serverPort(),
+		})),
+		runner: (acpOff, claim) =>
 			new AgentRunner({
 				reviewId: src.reviewId,
 				config: async () => ({
@@ -310,6 +339,7 @@ export function reviewAgentHost(src: ReviewAgentSource): AgentHost {
 				viewer: src.viewer,
 				facts,
 				acpOff,
+				...(claim ? { claim } : {}),
 			}),
 	});
 }

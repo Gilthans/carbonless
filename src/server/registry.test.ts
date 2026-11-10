@@ -231,6 +231,21 @@ describe("SessionRegistry", () => {
 		expect(reopened.closed).toBe(false);
 	});
 
+	it("a review a session asks to join (or is joined to) isn't closed when idle", async () => {
+		let now = 1_000_000;
+		const r = registry({ idleMs: 60_000, now: () => now });
+		const { session } = await r.open({ pr: pr.arg });
+		const join = session.agent?.join;
+		if (!join) throw new Error("no agent");
+		const { request } = join.request({ name: "s", machine: "m" });
+		now += 61_000;
+		await r.sweep();
+		expect(session.closed).toBe(false);
+		await join.answer(request, false);
+		await r.sweep();
+		expect(session.closed).toBe(true);
+	});
+
 	it("closeAll closes every session", async () => {
 		const r = registry();
 		const a = await r.open({ pr: pr.arg });

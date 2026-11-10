@@ -14,7 +14,8 @@ import {
 	type JoinIdentity,
 	type JoinLeave,
 } from "../../shared/agent.js";
-import { sanitizeThirdParty } from "./prompt.js";
+import type { Holder, ReviewClaim } from "./claim.js";
+import { oneLine } from "./prompt.js";
 
 /**
  * A session carbonless didn't launch, joined to one review through MCP:
@@ -29,6 +30,15 @@ export type AttachOutcome =
 	| { state: "pending"; request: string }
 	| { state: "denied" | "expired" }
 	| { state: "approved"; token: string };
+
+/** An Approve on a server that doesn't hold the review's agent claim (HTTP 409, code elsewhere). */
+export class JoinElsewhereError extends Error {
+	constructor(readonly holder: Holder) {
+		super(
+			`Another carbonless server (port ${holder.port}) holds this review's agent`,
+		);
+	}
+}
 
 /** An Approve or Deny of a request that isn't the pending one (HTTP 409). */
 export class StaleJoinRequestError extends Error {
@@ -59,6 +69,12 @@ export interface JoinBrokerDeps {
 	onLeft: (why: JoinLeave) => void;
 	/** Whether a question waits: a watcher that connects then is answered at once. */
 	waiting?: () => Promise<boolean>;
+	/**
+	 * The review's agent claim, shared with the ACP runner: only its holder
+	 * restores, serves or deletes `joined.json`. None: this broker acts as
+	 * the holder (tests).
+	 */
+	claim?: ReviewClaim;
 }
 
 type Presence = "listening" | "busy" | "reconnecting";
@@ -95,15 +111,18 @@ const nextUlid = monotonicFactory();
 
 const hashOf = (token: string): Buffer =>
 	createHash("sha256").update(token).digest();
-const clean = (s: string): string =>
-	sanitizeThirdParty(s).trim().slice(0, MAX_IDENTITY);
+const clean = (s: string): string => oneLine(s, MAX_IDENTITY);
 
-/** `who` sanitised and capped, as every view shows it. */
+/**
+ * `who` as every view shows it: one line each, sanitised, at most 80 code
+ * points; an empty name falls back to the machine, then "session".
+ */
 export function cleanIdentity(who: JoinIdentity): JoinIdentity {
 	const harness = who.harness === undefined ? "" : clean(who.harness);
+	const machine = clean(who.machine);
 	return {
-		name: clean(who.name),
-		machine: clean(who.machine),
+		name: clean(who.name) || machine || "session",
+		machine,
 		...(harness ? { harness } : {}),
 	};
 }
@@ -112,6 +131,8 @@ export class JoinBroker {
 	readonly #deps: JoinBrokerDeps;
 	readonly #now: () => number;
 	#pending: Pending | null = null;
+	/** Approved, its join still being installed: `outcome` waits for it. */
+	#approving: Pending | null = null;
 	/** Answered, replaced or expired requests → what `outcome` says. */
 	readonly #finished = new Map<string, AttachOutcome>();
 	#joined: Joined | null = null;
@@ -122,24 +143,35 @@ export class JoinBroker {
 	/** No watcher: leaves as `lost` when it fires. */
 	#absence: ReturnType<typeof setTimeout> | null = null;
 	#left: (JoinIdentity & { why: JoinLeave; at: number }) | null = null;
-	#acpOff: boolean;
 	#closed = false;
 
 	constructor(deps: JoinBrokerDeps) {
 		this.#deps = deps;
 		this.#now = deps.now ?? Date.now;
-		this.#acpOff = existsSync(join(deps.dir, ACP_OFF_FILE));
 	}
 
-	/** A `joined.json` left by the last server: joined again, reconnecting, the grace window running. */
+	/**
+	 * A `joined.json` left by the last server: joined again, reconnecting,
+	 * the grace window running. Only on the server that takes the claim.
+	 */
 	async restore(): Promise<void> {
 		if (this.#joined || this.#closed) return;
 		const path = join(this.#deps.dir, JOINED_FILE);
+		if (!existsSync(path)) return;
+		if (!(await this.#hold())) return;
+		const fail = () => {
+			rmSync(path, { force: true });
+			void this.#drop();
+		};
+		if (this.#joined || this.#closed) {
+			if (!this.#joined) void this.#drop();
+			return;
+		}
 		let raw: unknown;
 		try {
 			raw = JSON.parse(readFileSync(path, "utf8"));
 		} catch {
-			if (existsSync(path)) rmSync(path, { force: true });
+			fail();
 			return;
 		}
 		const r = raw as {
@@ -156,7 +188,7 @@ export class JoinBroker {
 			typeof r.since === "string" &&
 			!Number.isNaN(Date.parse(r.since));
 		if (!ok || !r.who) {
-			rmSync(path, { force: true });
+			fail();
 			return;
 		}
 		this.#joined = {
@@ -192,8 +224,13 @@ export class JoinBroker {
 	 * token is handed out once: a later call says `expired`.
 	 */
 	outcome(request: string, waitMs: number): Promise<AttachOutcome> {
-		const pending = this.#pending;
-		if (pending?.id === request && waitMs > 0) {
+		const pending =
+			this.#pending?.id === request
+				? this.#pending
+				: this.#approving?.id === request
+					? this.#approving
+					: null;
+		if (pending && waitMs > 0) {
 			return new Promise((resolve) => {
 				const done = () => {
 					clearTimeout(timer);
@@ -220,7 +257,21 @@ export class JoinBroker {
 			this.#finish(pending, { state: "denied" });
 			return;
 		}
-		this.leave("replaced");
+		this.#approving = pending;
+		const claim = await this.#take();
+		if (!claim.ok) {
+			this.#finish(pending, { state: "expired" });
+			throw new JoinElsewhereError(claim.holder);
+		}
+		if (this.#closed) {
+			this.#finish(pending, { state: "expired" });
+			if (!this.#joined) void this.#drop();
+			throw new StaleJoinRequestError(request);
+		}
+		this.#end("replaced", { keepClaim: true });
+		// ACP off first: a crash between the two files never leaves a
+		// restored join beside a running ACP buddy.
+		await this.setAcpOff(true);
 		const token = randomBytes(32).toString("base64url");
 		const joined: Joined = {
 			who: pending.who,
@@ -242,9 +293,36 @@ export class JoinBroker {
 		this.#arm();
 		try {
 			await this.#deps.onApproved();
-		} finally {
-			this.#finish(pending, { state: "approved", token });
+		} catch (error) {
+			// The join took effect: the reviewer's Approve isn't an error.
+			console.warn(`crb: after a join: ${(error as Error).message}`);
 		}
+		this.#finish(pending, { state: "approved", token });
+	}
+
+	/**
+	 * Whether this server may take a join for the review (holds or can take
+	 * the claim); `attach` answers `elsewhere` with the holder otherwise.
+	 */
+	async claimCheck(): Promise<{ ok: true } | { ok: false; holder: Holder }> {
+		const taken = await this.#take();
+		if (!taken.ok) return taken;
+		if (!this.#joined && !this.#approving) await this.#drop();
+		return { ok: true };
+	}
+
+	/** Joined, asked to join or watched: the review is in use (no idle eviction). */
+	active(): boolean {
+		return (
+			this.#joined !== null ||
+			this.#pending !== null ||
+			this.#approving !== null ||
+			this.#lease !== null
+		);
+	}
+
+	isJoined(): boolean {
+		return this.#joined !== null;
 	}
 
 	/** Whether `token` is the joined session's (constant time). */
@@ -327,6 +405,10 @@ export class JoinBroker {
 
 	/** Ends the attachment: token revoked, watcher ended, hand-out cleared, joined.json gone, `left` recorded. */
 	leave(why: JoinLeave): void {
+		this.#end(why, { keepClaim: false });
+	}
+
+	#end(why: JoinLeave, opts: { keepClaim: boolean }): void {
 		const j = this.#joined;
 		if (!j) return;
 		this.#joined = null;
@@ -336,6 +418,7 @@ export class JoinBroker {
 		this.#lease?.end("left");
 		rmSync(join(this.#deps.dir, JOINED_FILE), { force: true });
 		this.#left = { ...j.who, why, at: this.#now() };
+		if (!opts.keepClaim) void this.#drop();
 		this.#deps.onLeft(why);
 	}
 
@@ -359,8 +442,9 @@ export class JoinBroker {
 		};
 	}
 
+	/** Read from the file each time: another server may have set or cleared it. */
 	acpOff(): boolean {
-		return this.#acpOff;
+		return existsSync(join(this.#deps.dir, ACP_OFF_FILE));
 	}
 
 	async setAcpOff(off: boolean): Promise<void> {
@@ -371,7 +455,6 @@ export class JoinBroker {
 		} else {
 			rmSync(path, { force: true });
 		}
-		this.#acpOff = off;
 	}
 
 	/**
@@ -384,6 +467,23 @@ export class JoinBroker {
 		this.#lease?.end("closed");
 		const p = this.#pending;
 		if (p) this.#finish(p, { state: "expired" });
+		// joined.json stays; the next holder restores it.
+		void this.#drop();
+	}
+
+	async #take(): Promise<{ ok: true } | { ok: false; holder: Holder }> {
+		const claim = this.#deps.claim;
+		if (!claim) return { ok: true };
+		const r = await claim.hold("join");
+		return r.ok ? { ok: true } : { ok: false, holder: r.holder };
+	}
+
+	async #hold(): Promise<boolean> {
+		return (await this.#take()).ok;
+	}
+
+	async #drop(): Promise<void> {
+		await this.#deps.claim?.drop("join").catch(() => {});
 	}
 
 	#presence(): Presence {
@@ -416,6 +516,7 @@ export class JoinBroker {
 	#finish(pending: Pending, outcome: AttachOutcome): void {
 		clearTimeout(pending.expiry);
 		if (this.#pending === pending) this.#pending = null;
+		if (this.#approving === pending) this.#approving = null;
 		this.#finished.set(pending.id, outcome);
 		while (this.#finished.size > MAX_FINISHED) {
 			const oldest = this.#finished.keys().next().value as string;
@@ -426,7 +527,9 @@ export class JoinBroker {
 
 	/** The outcome now; an approved one's token goes out once. */
 	#collect(request: string): AttachOutcome {
-		if (this.#pending?.id === request) return { state: "pending", request };
+		if (this.#pending?.id === request || this.#approving?.id === request) {
+			return { state: "pending", request };
+		}
 		const o = this.#finished.get(request);
 		if (!o) return { state: "expired" };
 		if (o.state === "approved") {

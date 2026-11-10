@@ -133,3 +133,51 @@ async function readText(path: string): Promise<string | null> {
 		return null;
 	}
 }
+
+/** Who in one server holds a review's claim: its ACP runner, its joined session. */
+export type ClaimUser = "acp" | "join";
+
+/**
+ * A review's claim as one server shares it between its ACP runner and its
+ * joined session (the spec: "the existing claim also covers a joined
+ * session"): taken on the first hold, released when the last user drops.
+ */
+export class ReviewClaim {
+	readonly #users = new Set<ClaimUser>();
+	#release: (() => Promise<void>) | null = null;
+	/** One take at a time (two users holding at once take once). */
+	#taking: Promise<ClaimResult> | null = null;
+
+	constructor(
+		private readonly dir: string,
+		private readonly self: () => Holder,
+	) {}
+
+	/** Whether this server holds the claim (for any user). */
+	held(): boolean {
+		return this.#release !== null;
+	}
+
+	/** Holds the claim for `user`; `{ ok: false, holder }` when another server has it. */
+	async hold(user: ClaimUser): Promise<ClaimResult> {
+		if (!this.#release) {
+			this.#taking ??= takeClaim(this.dir, this.self()).finally(() => {
+				this.#taking = null;
+			});
+			const taken = await this.#taking;
+			if (!taken.ok) return taken;
+			this.#release ??= taken.release;
+		}
+		this.#users.add(user);
+		return { ok: true, release: () => this.drop(user) };
+	}
+
+	/** `user` lets go; the claim is released once nobody holds it. */
+	async drop(user: ClaimUser): Promise<void> {
+		this.#users.delete(user);
+		if (this.#users.size > 0 || !this.#release) return;
+		const release = this.#release;
+		this.#release = null;
+		await release();
+	}
+}
