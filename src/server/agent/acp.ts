@@ -151,6 +151,10 @@ async function start(
 ): Promise<Started> {
 	checkCommand(opts.command, opts.args);
 	const { client, methods, ndJsonStream } = await loadSdk();
+	// Stopped (the session closing, crb exiting) while the SDK loaded: no
+	// process to start, and none to kill.
+	if (opts.signal?.aborted)
+		throw new AgentStartError("Stopped while starting", "exited", "");
 	let file: WriteStream | null = null;
 	if (opts.stderrFile) {
 		mkdirSync(dirname(opts.stderrFile), { recursive: true });

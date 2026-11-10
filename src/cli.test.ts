@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { type ChildProcess, spawn } from "node:child_process";
 import {
 	existsSync,
 	mkdirSync,
@@ -116,18 +116,27 @@ describe("crb <pr>", () => {
  */
 describe("crb serve", () => {
 	let dir: string;
+	let child: ChildProcess | undefined;
 	const root = fileURLToPath(new URL("..", import.meta.url));
 
 	beforeEach(() => {
 		dir = mkdtempSync(join(tmpdir(), "crb-cli-serve-"));
 	});
-	afterEach(() => {
+	afterEach(async () => {
+		// A test that failed before stopping it leaves no server behind.
+		const running = child;
+		child = undefined;
+		if (running && running.exitCode === null && running.signalCode === null) {
+			const closed = new Promise((done) => running.once("close", done));
+			running.kill("SIGKILL");
+			await closed;
+		}
 		rmSync(dir, { recursive: true, force: true });
 	});
 
 	it("starts without loading the agent SDK", async () => {
 		const log = join(dir, "modules.txt");
-		const child = spawn(
+		const server = spawn(
 			process.execPath,
 			[
 				"--import",
@@ -154,23 +163,24 @@ describe("crb serve", () => {
 				stdio: ["ignore", "pipe", "pipe"],
 			},
 		);
+		child = server;
 		let output = "";
-		const closed = new Promise((done) => child.once("close", done));
+		const closed = new Promise((done) => server.once("close", done));
 		const listening = await new Promise<string | null>((done) => {
 			const scan = (chunk: Buffer) => {
 				output += chunk;
 				const url = output.match(/carbonless listening on (http:\/\/\S+?)\//);
 				if (url?.[1]) done(url[1]);
 			};
-			child.stdout.on("data", scan);
-			child.stderr.on("data", scan);
+			server.stdout.on("data", scan);
+			server.stderr.on("data", scan);
 			void closed.then(() => done(null));
 		});
 		expect(listening, output).not.toBeNull();
 		// A route that needs nothing loaded lazily; the server answers.
 		const version = await fetch(`${listening}/api/version`);
 		expect(version.ok).toBe(true);
-		child.kill("SIGTERM");
+		server.kill("SIGTERM");
 		const code = await closed;
 		expect(code, output).toBe(0);
 
@@ -192,6 +202,9 @@ describe("crb serve", () => {
 });
 
 describe("the compile cache", () => {
+	// Node reports a cache it can't turn on (status FAILED) rather than
+	// throwing, so this passes without src/cli.ts's try/catch too: it guards
+	// the behaviour (crb runs anyway), and the try/catch stays for any throw.
 	it("is only a speed-up: a crb that can't keep it still runs", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "crb-cli-cache-"));
 		try {
