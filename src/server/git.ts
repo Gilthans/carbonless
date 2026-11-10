@@ -1,4 +1,5 @@
 import { type ChildProcess, spawn } from "node:child_process";
+import { argsSummary, tracer } from "./trace.js";
 
 export class GitError extends Error {}
 
@@ -98,6 +99,19 @@ function trackDetached(child: ChildProcess): void {
 	}
 }
 
+/** Spans of each git run, when $CRB_TRACE_DIR is set (trace.ts). */
+const traced = tracer();
+
+/** git's subcommand in `args` (after `-c k=v` options). */
+function gitCommand(args: readonly string[]): string {
+	for (let i = 0; i < args.length; i++) {
+		const a = args[i] as string;
+		if (a === "-c" || a === "-C") i++;
+		else if (!a.startsWith("-")) return a;
+	}
+	return "?";
+}
+
 export async function runGit(
 	repoPath: string,
 	args: string[],
@@ -121,6 +135,15 @@ export function runGitBuffer(
 			fail("git was stopped");
 			return;
 		}
+		const span = traced.enabled
+			? traced.start(
+					`git ${gitCommand(args)}`,
+					{ args: argsSummary(args) },
+					{
+						kind: "client",
+					},
+				)
+			: null;
 		const child = spawn("git", ["-C", repoPath, ...args], {
 			env: { ...inheritedEnv(), ...opts.env },
 			stdio: ["pipe", "pipe", "pipe"],
@@ -138,6 +161,7 @@ export function runGitBuffer(
 		let timedOut = false;
 		const stop = (message: string) => {
 			timedOut = true;
+			span?.end({ exit: "killed" }, message);
 			if (opts.timeoutMs !== undefined) killGroup(child);
 			else child.kill("SIGKILL");
 			child.stdout.destroy();
@@ -157,12 +181,14 @@ export function runGitBuffer(
 		child.stderr.on("data", (chunk: Buffer) => err.push(chunk));
 		child.stdin.on("error", () => {});
 		child.on("error", (error) => {
+			span?.end(undefined, error.message);
 			clearTimeout(timer);
 			opts.signal?.removeEventListener("abort", onAbort);
 			if (opts.allowFailure) resolve(Buffer.alloc(0));
 			else reject(new GitError(error.message));
 		});
 		child.on("close", (code) => {
+			span?.end({ exit: code ?? -1 });
 			clearTimeout(timer);
 			opts.signal?.removeEventListener("abort", onAbort);
 			if (timedOut) {
