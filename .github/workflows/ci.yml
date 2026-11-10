@@ -43,9 +43,18 @@ jobs:
       # timeout can end a microtask loop (e.g. a waitFor callback that writes
       # the DOM wakes its own MutationObserver, so timers never fire). The
       # step takes 9-13 min (Nov 2026) and grows: keep headroom.
+      # Test traces (docs/test-profiling.md) go to a directory uploaded below.
       - run: pnpm test
         timeout-minutes: 25
+        env:
+          CRB_TEST_TRACE_ROOT: ${{ runner.temp }}/test-traces
       - run: pnpm test:pack
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-traces-unit
+          path: ${{ runner.temp }}/test-traces/
+          retention-days: 14
 
   e2e:
     if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
@@ -66,6 +75,14 @@ jobs:
       # holding it gets a Playwright worker per core.
       - run: pnpm test:e2e
         timeout-minutes: 40
+        env:
+          CRB_TEST_TRACE_ROOT: ${{ runner.temp }}/test-traces
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-traces-e2e
+          path: ${{ runner.temp }}/test-traces/
+          retention-days: 14
       - if: failure()
         uses: actions/upload-artifact@v4
         with:

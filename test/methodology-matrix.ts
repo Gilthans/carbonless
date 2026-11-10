@@ -20,7 +20,7 @@ import { ReviewService } from "../src/server/review/reviews";
 import { Session } from "../src/server/session";
 import type { Snapshot } from "../src/shared/types";
 import {
-	FAKE_GH_DIR,
+	fakeGhEnv,
 	reviewThread,
 	threadComment,
 	writeScenario,
@@ -184,10 +184,15 @@ function matrix(m: (typeof METHODOLOGIES)[number]) {
 
 	beforeEach(() => {
 		tmp = mkdtempSync(join(tmpdir(), "crb-matrix-"));
-		for (const k of ["PATH", "XDG_CACHE_HOME", "CRB_FAKE_GH"]) {
+		for (const k of [
+			"PATH",
+			"CRB_FAKE_GH_SERVER",
+			"XDG_CACHE_HOME",
+			"CRB_FAKE_GH",
+		]) {
 			saved[k] = process.env[k];
 		}
-		process.env.PATH = `${FAKE_GH_DIR}:${process.env.PATH ?? ""}`;
+		Object.assign(process.env, fakeGhEnv());
 		process.env.XDG_CACHE_HOME = join(tmp, "cache");
 		stage("opened");
 	});

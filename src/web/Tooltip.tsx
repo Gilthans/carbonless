@@ -160,10 +160,23 @@ export function Tooltip(props: {
 			setPos(null);
 			return;
 		}
-		const t = trigger.current?.getBoundingClientRect();
-		const box = tip.current?.getBoundingClientRect();
-		if (!t || !box) return;
-		setPos(placeNear(t, box));
+		const place = () => {
+			const t = trigger.current?.getBoundingClientRect();
+			const box = tip.current?.getBoundingClientRect();
+			if (!t || !box) return;
+			const { left, top } = placeNear(t, box);
+			setPos((at) =>
+				at && at.left === left && at.top === top ? at : { left, top },
+			);
+		};
+		place();
+		// Placed again when its size changes while open (a line that arrives
+		// mid-hover): it never grows over its trigger or past the viewport.
+		const el = tip.current;
+		if (!el || typeof ResizeObserver === "undefined") return;
+		const observer = new ResizeObserver(place);
+		observer.observe(el);
+		return () => observer.disconnect();
 	}, [shown, forced]);
 
 	useEffect(() => {
