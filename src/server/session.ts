@@ -904,6 +904,26 @@ export class Session {
 	}
 
 	/**
+	 * The since view's hunks of several files (interdiffHunks each), for
+	 * the search's prefetch: as fileHunksBatch (loadHunksBatch), a file
+	 * that fails answers with `error`; an index not in the snapshot or an
+	 * unknown patch set throws (404).
+	 */
+	async interdiffHunksBatch(
+		from: number,
+		revision: string,
+		indexes: readonly number[],
+	): Promise<HunksBatch> {
+		const snapshot = this.#current(revision);
+		if (!(await this.#progress()).patchsets.some((p) => p.number === from)) {
+			throw new RangeError(`No patch set ${from}`);
+		}
+		return loadHunksBatch(this.repo, snapshot, indexes, (_r, _s, index) =>
+			this.interdiffHunks(from, revision, index),
+		);
+	}
+
+	/**
 	 * The since view's unchanged lines `newFrom..newTo` of file `index` of
 	 * the snapshot with this `revision`: the interdiff's from patch set
 	 * `from` (engine.ts, interdiffFileContext), numbered as its hunks are.

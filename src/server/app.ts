@@ -434,22 +434,29 @@ export async function buildApp(
 					read,
 				);
 			});
-			// Several files' hunks at once (the search's prefetch).
-			review.get<{ Querystring: { revision?: unknown; indexes?: unknown } }>(
-				"/files/hunks",
-				(request) => {
-					const revision = revisionParam(request.query.revision);
-					const { indexes: raw } = request.query;
-					if (typeof raw !== "string" || !raw) {
-						throw new BadRequestError("indexes is required");
-					}
-					const indexes = [...new Set(raw.split(",").map(fileIndex))];
-					if (indexes.length > HUNKS_BATCH) {
-						throw new BadRequestError(`At most ${HUNKS_BATCH} files a request`);
-					}
-					return sessionOf(request).fileHunksBatch(revision, indexes);
-				},
-			);
+			// Several files' hunks at once (the search's prefetch); with
+			// `from=<n>`, the since view's (Session.interdiffHunksBatch).
+			review.get<{
+				Querystring: { revision?: unknown; indexes?: unknown; from?: unknown };
+			}>("/files/hunks", (request) => {
+				const revision = revisionParam(request.query.revision);
+				const { indexes: raw, from } = request.query;
+				if (typeof raw !== "string" || !raw) {
+					throw new BadRequestError("indexes is required");
+				}
+				const indexes = [...new Set(raw.split(",").map(fileIndex))];
+				if (indexes.length > HUNKS_BATCH) {
+					throw new BadRequestError(`At most ${HUNKS_BATCH} files a request`);
+				}
+				if (from !== undefined) {
+					return sessionOf(request).interdiffHunksBatch(
+						patchsetParam(from),
+						revision,
+						indexes,
+					);
+				}
+				return sessionOf(request).fileHunksBatch(revision, indexes);
+			});
 			// A file's hunks; with `from=<n>`, the since view's: the interdiff
 			// from patch set n to the snapshot (Session.interdiffHunks).
 			review.get<{

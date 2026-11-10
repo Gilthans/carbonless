@@ -898,6 +898,8 @@ export function FilesPage() {
 		openIndex,
 		active,
 		onStale: refetchReview,
+		// The since view searches what it shows: the interdiff.
+		from: sinceView.since ?? undefined,
 	});
 	// The first step after typing passes over a hit the reviewer already
 	// sees (painted current where they look, in the open file): on to the
