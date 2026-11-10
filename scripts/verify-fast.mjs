@@ -149,7 +149,7 @@ const E2E_MAP = [
 	[/^test\/module-log\.mjs$/, []],
 	[/^e2e\/files-ui\.ts$/, ["files", "sticky", "mobile"]],
 	[
-		/^src\/(cli|client)\.ts$|^src\/server\/(serve|registry|serverState|config|paths|version|app)\.ts$|^src\/web\/(router\.tsx|reviewId\.ts|api\.ts|App\.tsx|pages\.tsx)$|^scripts\/build-info\.mjs$/,
+		/^src\/(cli|main|client)\.ts$|^src\/server\/(serve|registry|serverState|config|paths|version|app)\.ts$|^src\/web\/(router\.tsx|reviewId\.ts|api\.ts|App\.tsx|pages\.tsx)$|^scripts\/build-info\.mjs$/,
 		["serve", "cli"],
 	],
 ];
@@ -207,7 +207,7 @@ const steps = [
 // src/cli.test.ts only spawns the CLI, so --changed never finds it through
 // imports: it runs whenever the CLI's module graph may have changed.
 const cliGraph = changed.filter((f) =>
-	/^src\/(cli|client)\.ts$|^src\/server\/|^test\/module-log\.mjs$/.test(f),
+	/^src\/(cli|main|client)\.ts$|^src\/server\/|^test\/module-log\.mjs$/.test(f),
 );
 if (cliGraph.length && !changed.includes("src/cli.test.ts")) {
 	console.log(`  unit: src/cli.test.ts (${cliGraph[0]} changed)`);
