@@ -219,3 +219,28 @@ describe("agentOutside", () => {
 		).toEqual(["REV"]);
 	});
 });
+
+describe("shownAgentPlaceables while the placements load", () => {
+	it("one asked on an earlier head waits (a spinner shows it), never outdated meanwhile; one on the viewed head shows", () => {
+		const earlier = asked("E", 3);
+		const here = asked("H", 4, { commit: H2 });
+		expect(
+			shownAgentPlaceables([earlier, here], H2, {
+				placements: null,
+				until: null,
+				pending: true,
+			}).map((p) => p.id),
+		).toEqual(["H"]);
+		// Failed (not pending): where it was asked, outdated.
+		expect(
+			shownAgentPlaceables([earlier, here], H2, {
+				placements: null,
+				until: null,
+				pending: false,
+			}).map((p) => [p.id, p.commit]),
+		).toEqual([
+			["E", H1],
+			["H", H2],
+		]);
+	});
+});

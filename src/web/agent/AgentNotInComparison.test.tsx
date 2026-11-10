@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, render, screen, within } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import userEvent from "@testing-library/user-event";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentThread } from "../../shared/agent";
 import type { ThreadPlacement } from "../../shared/rereview/placement";
 import { AgentNotInComparison } from "./AgentNotInComparison";
@@ -67,5 +68,48 @@ describe("AgentNotInComparison", () => {
 				name: "Asked on an earlier version (1111111)",
 			}),
 		).toBeTruthy();
+	});
+});
+
+describe("AgentNotInComparison while the agent placements load or fail", () => {
+	const mount = (props: Partial<Parameters<typeof AgentNotInComparison>[0]>) =>
+		render(
+			<QueryClientProvider client={new QueryClient()}>
+				<AgentNotInComparison
+					threads={[]}
+					snapshotHead={H2}
+					placements={null}
+					{...props}
+				/>
+			</QueryClientProvider>,
+		);
+
+	it("a spinner while threads wait for their place, never an empty or outdated list", () => {
+		mount({ pending: true, waiting: 2 });
+		const loading = screen.getByTestId("agent-placements-loading");
+		expect(loading).toHaveAttribute("aria-busy", "true");
+		expect(
+			within(loading).getByRole("status", { name: "Placing agent threads" }),
+		).toBeTruthy();
+		expect(screen.queryByTestId("agent-outside")).toBeNull();
+	});
+
+	it("nothing while none waits", () => {
+		mount({ pending: true, waiting: 0 });
+		expect(screen.queryByTestId("agent-placements-loading")).toBeNull();
+	});
+
+	it("a failure says so, with a retry (the threads show where asked meanwhile)", async () => {
+		const retry = vi.fn();
+		mount({ failed: { error: new Error("boom"), retry } });
+		const failed = screen.getByTestId("agent-placements-failed");
+		expect(failed).toHaveTextContent(
+			"Agent thread places couldn't be computed",
+		);
+		expect(failed).toHaveTextContent("boom");
+		await userEvent.click(
+			within(failed).getByRole("button", { name: "Retry" }),
+		);
+		expect(retry).toHaveBeenCalled();
 	});
 });

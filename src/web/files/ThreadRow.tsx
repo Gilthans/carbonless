@@ -11,13 +11,16 @@ import type { ThreadPlacement } from "../../shared/rereview/placement";
 import type { DiffSide, ReviewThread } from "../../shared/types";
 import { AgentThreadCard } from "../agent/AgentThreadCard";
 import { agentStatusQuery } from "../agent/api";
+import { useAgentPlacing } from "../agent/placeable";
 import { Badge, LabeledIcon } from "../overview/parts";
 import { Tooltip } from "../Tooltip";
 import { Conversation } from "../threads/Conversation";
 import { ThreadStatus } from "../threads/ThreadStatus";
 import {
+	ChangedChip,
 	ChangedSince,
 	FATES,
+	NearLink,
 	OriginalCode,
 	PlacementChip,
 	usePlacementInfo,
@@ -193,6 +196,7 @@ export function AgentThreadRow(props: {
 	fates?: ReadonlyMap<AgentThread, UnplacedPlacement>;
 }) {
 	const status = useQuery({ ...agentStatusQuery, enabled: false }).data;
+	const { placements } = useAgentPlacing();
 	return (
 		<TailRow
 			testId="agent-thread-row"
@@ -211,10 +215,18 @@ export function AgentThreadRow(props: {
 					/>
 				);
 				const fate = props.fates?.get(t);
-				return fate ? (
-					<AgentUnplaced key={t.id} thread={t} placement={fate}>
+				if (fate) {
+					return (
+						<AgentUnplaced key={t.id} thread={t} placement={fate}>
+							{card}
+						</AgentUnplaced>
+					);
+				}
+				const traced = placements?.get(t.id);
+				return traced?.kind === "changed" ? (
+					<AgentChanged key={t.id} thread={t} placement={traced}>
 						{card}
-					</AgentUnplaced>
+					</AgentChanged>
 				) : (
 					card
 				);
@@ -224,6 +236,40 @@ export function AgentThreadRow(props: {
 }
 
 type UnplacedPlacement = Extract<ThreadPlacement, { kind: "unplaced" }>;
+
+/** An agent thread as the placement pieces read it (a review thread's fields). */
+const asThread = (t: AgentThread) => ({
+	createdAt: t.at,
+	path: t.anchor.path,
+	code: t.code ?? null,
+	resolved: t.resolved,
+});
+
+/**
+ * An agent thread on the lines that replaced the ones it was asked on, as
+ * a review thread's card has it: the "changed since" chip, its old lines
+ * above the new ones and the fate line; then its own card.
+ */
+function AgentChanged(props: {
+	thread: AgentThread;
+	placement: Extract<ThreadPlacement, { kind: "changed" }>;
+	children: ReactNode;
+}) {
+	const thread = asThread(props.thread);
+	return (
+		<div
+			data-testid="agent-changed"
+			data-thread={props.thread.id}
+			className="min-w-0 space-y-1.5"
+		>
+			<p className="flex min-h-10 items-center">
+				<ChangedChip thread={thread} />
+			</p>
+			<ChangedSince thread={thread} placement={props.placement} />
+			{props.children}
+		</div>
+	);
+}
 
 /**
  * An agent thread the tracer couldn't place in this file, as a review
@@ -276,6 +322,15 @@ function AgentUnplaced(props: {
 						</span>
 					)}
 				</Tooltip>
+				{placement.nearest && (
+					<span className="ml-auto">
+						<NearLink
+							path={placement.path}
+							line={placement.nearest.line}
+							side={placement.nearest.side}
+						/>
+					</span>
+				)}
 			</p>
 			{!thread.resolved && thread.code && (
 				<OriginalCode

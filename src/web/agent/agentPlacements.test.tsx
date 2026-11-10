@@ -72,15 +72,15 @@ describe("useAgentPlacementsFor", () => {
 			{ revision: "r1" },
 		);
 		await waitFor(() =>
-			expect(hook.result.current?.get("A1")).toEqual(placed(5)),
+			expect(hook.result.current.placements?.get("A1")).toEqual(placed(5)),
 		);
 		hook.rerender({ revision: "r2" });
 		await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
 		// Held: r1's placements are not r2's.
-		expect(hook.result.current).toBeNull();
+		expect(hook.result.current.placements).toBeNull();
 		release(json(answer("r2", 7)));
 		await waitFor(() =>
-			expect(hook.result.current?.get("A1")).toEqual(placed(7)),
+			expect(hook.result.current.placements?.get("A1")).toEqual(placed(7)),
 		);
 	});
 
@@ -90,7 +90,7 @@ describe("useAgentPlacementsFor", () => {
 		});
 		await waitFor(() => expect(fetchMock).toHaveBeenCalled());
 		await new Promise((r) => setTimeout(r, 50));
-		expect(hook.result.current).toBeNull();
+		expect(hook.result.current.placements).toBeNull();
 	});
 
 	it("a transient failure is retried, not left outdated until a reload", async () => {
@@ -99,9 +99,49 @@ describe("useAgentPlacementsFor", () => {
 			{ revision: "r1" },
 		);
 		await waitFor(
-			() => expect(hook.result.current?.get("A1")).toEqual(placed(5)),
+			() =>
+				expect(hook.result.current.placements?.get("A1")).toEqual(placed(5)),
 			{ timeout: 5000 },
 		);
 		expect(fetchMock).toHaveBeenCalledTimes(2);
 	});
+});
+
+describe("useAgentPlacementsFor's state", () => {
+	it("pending while the answer is on its way (never a result), then the placements", async () => {
+		let release: (r: Response) => void = () => {};
+		const { hook } = mount(
+			() =>
+				new Promise<Response>((r) => {
+					release = r;
+				}),
+			{ revision: "r1" },
+		);
+		await waitFor(() => expect(hook.result.current.pending).toBe(true));
+		expect(hook.result.current.placements).toBeNull();
+		expect(hook.result.current.error).toBeNull();
+		release(json(answer("r1", 5)));
+		await waitFor(() => expect(hook.result.current.pending).toBe(false));
+		expect(hook.result.current.placements?.get("A1")).toEqual(placed(5));
+	});
+
+	it("a failure that outlasts the retries is an error (not pending), with a retry that asks again", async () => {
+		let fail = true;
+		const { hook, fetchMock } = mount(
+			() => (fail ? json({ error: "boom" }, 500) : json(answer("r1", 5))),
+			{ revision: "r1" },
+		);
+		await waitFor(() => expect(hook.result.current.error).not.toBeNull(), {
+			timeout: 10_000,
+		});
+		expect(hook.result.current.pending).toBe(false);
+		expect(hook.result.current.placements).toBeNull();
+		const asked = fetchMock.mock.calls.length;
+		fail = false;
+		hook.result.current.retry();
+		await waitFor(() =>
+			expect(hook.result.current.placements?.get("A1")).toEqual(placed(5)),
+		);
+		expect(fetchMock.mock.calls.length).toBeGreaterThan(asked);
+	}, 20_000);
 });

@@ -205,17 +205,7 @@ export function PlacementChip({ thread }: { thread: ReviewThread }) {
 	// attention: its chip is muted.
 	const quiet = thread.resolved;
 	if (placement.kind === "changed") {
-		const ps = psLabel(info.openedOn(thread));
-		return (
-			<Chip
-				tone={quiet ? "gray" : "yellow"}
-				icon={GitCompareIcon}
-				tip={`The line changed since ${ps || "the thread was made"}`}
-				testId="placement-changed"
-			>
-				changed since
-			</Chip>
-		);
+		return <ChangedChip thread={thread} />;
 	}
 	if (placement.kind === "unplaced" || placement.kind === "outside") {
 		const fate = FATES[placement.fate];
@@ -233,6 +223,26 @@ export function PlacementChip({ thread }: { thread: ReviewThread }) {
 	return null;
 }
 
+/** "changed since": a thread's line was rewritten since it was made (muted once resolved). */
+export function ChangedChip({
+	thread,
+}: {
+	thread: Pick<ReviewThread, "createdAt" | "resolved">;
+}) {
+	const info = usePlacementInfo();
+	const ps = psLabel(info.openedOn(thread));
+	return (
+		<Chip
+			tone={thread.resolved ? "gray" : "yellow"}
+			icon={GitCompareIcon}
+			tip={`The line changed since ${ps || "the thread was made"}`}
+			testId="placement-changed"
+		>
+			changed since
+		</Chip>
+	);
+}
+
 /**
  * A changed thread's old lines (from its own patch set) above the lines
  * that replaced them, and the fate line with a way to its patch set.
@@ -242,7 +252,8 @@ export function ChangedSince({
 	placement,
 	lines = true,
 }: {
-	thread: ReviewThread;
+	/** A review thread, or an agent thread seen the same way. */
+	thread: Pick<ReviewThread, "createdAt" | "path" | "code">;
 	placement: Extract<ThreadPlacement, { kind: "changed" }>;
 	/** The old and new lines too (the Overview's card shows its own code). */
 	lines?: boolean;
@@ -806,7 +817,7 @@ export function resolvedLast<T extends { thread: ReviewThread }>(
 }
 
 /** "near 88": lands on the closest surviving line, the comparison kept. */
-function NearLink(props: {
+export function NearLink(props: {
 	path: string;
 	line: number;
 	side: "LEFT" | "RIGHT";

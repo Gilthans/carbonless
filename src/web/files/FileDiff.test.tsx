@@ -10,6 +10,7 @@ import {
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { inRouter } from "../../../test/in-router";
 import { expectLoadingThen, heldJson } from "../../../test/loading";
 import type { AgentThread } from "../../shared/agent";
 import type {
@@ -127,6 +128,8 @@ type Extra = {
 	counted?: FileView;
 	/** The tracer's placements of the agent threads (FilesPage's read). */
 	agentPlacements?: Placements;
+	/** In a router (pieces that link: an unplaced row's "near N"). */
+	router?: boolean;
 };
 
 function Shown({ unit, ...extra }: { unit: Unit } & Extra) {
@@ -196,11 +199,12 @@ function setup(
 		staleTime: Number.POSITIVE_INFINITY,
 	});
 	queryClient.setQueryData(reviewQuery().queryKey, view(f));
-	const rendered = render(
+	const shown = () => (
 		<QueryClientProvider client={queryClient}>
 			<Shown unit={unit} {...extra} />
-		</QueryClientProvider>,
+		</QueryClientProvider>
 	);
+	const rendered = render(extra.router ? inRouter(shown) : shown());
 	/** Shows `next` as the server's file, like a reread does. */
 	const rerender = (next: FileView) =>
 		act(async () => {
@@ -1983,7 +1987,7 @@ describe("FileDiff: agent threads traced into the viewed head", () => {
 			undefined,
 			hunks,
 			"clusters",
-			{ agentPlacements },
+			{ agentPlacements, router: true },
 		);
 		await act(async () => {
 			queryClient.setQueryData(sessionQuery.queryKey, {
@@ -2039,6 +2043,8 @@ describe("FileDiff: agent threads traced into the viewed head", () => {
 		expect(within(open).getByTestId("original-code-label")).toHaveTextContent(
 			"src/a.ts · line 5",
 		);
+		// The nearest surviving line, as a review thread's row has it.
+		expect(within(open).getByTestId("near-line")).toHaveTextContent("near 4");
 		const card = within(open).getByTestId("agent-thread");
 		expect(card).toHaveClass("border-agent-edge");
 		expect(within(card).queryByTestId("agent-outdated")).toBeNull();

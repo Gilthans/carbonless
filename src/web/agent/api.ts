@@ -124,31 +124,54 @@ export const agentPlacementsQuery = (
 	});
 };
 
+/** The agent threads' placements in the viewed snapshot, and how they stand. */
+export interface AgentPlacementsState {
+	/** By thread id; null until they are in, when off, or after a failure. */
+	placements: Placements | null;
+	/** Asked and on their way (retries included): a spinner, never a result. */
+	pending: boolean;
+	/** They couldn't be computed (after the retries). */
+	error: Error | null;
+	/** Asks for them again. */
+	retry: () => void;
+	/** A retry after the error is under way. */
+	retrying: boolean;
+}
+
 /**
  * The agent threads' placements in the viewed snapshot (`revision`), by
- * thread id; null until they are in, when off, or when the answer is
- * another snapshot's (then each shows where it was asked).
+ * thread id; an answer for another snapshot is dropped (each then shows
+ * where it was asked).
  */
 export function useAgentPlacementsFor(args: {
 	to: RereviewTo | null;
 	revision: string | undefined;
 	ids: readonly string[];
 	enabled: boolean;
-}): Placements | null {
+}): AgentPlacementsState {
 	const { to, revision, ids } = args;
 	const on =
 		args.enabled && to !== null && revision !== undefined && ids.length > 0;
-	const { data } = useQuery({
+	const query = useQuery({
 		...agentPlacementsQuery(to ?? { patchset: 1 }, revision ?? "", ids),
 		enabled: on,
 	});
-	return useMemo(
+	const { data, error, isFetching, refetch } = query;
+	const placements = useMemo(
 		() =>
 			on && data && data.revision === revision
 				? new Map(data.threads.map((t) => [t.id, t.placement]))
 				: null,
 		[on, data, revision],
 	);
+	const failed = on && placements === null && error !== null;
+	return {
+		placements,
+		pending: on && placements === null && !failed,
+		error: failed ? error : null,
+		retry: () => void refetch(),
+		retrying: failed && isFetching,
+	};
 }
 
 export const postAgentThread = (req: OpenAgentThreadRequest) =>

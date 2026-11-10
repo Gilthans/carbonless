@@ -93,6 +93,11 @@ export function tracedAgentPlaceables(
 export interface AgentPlacing {
 	placements: Placements | null;
 	until: number | null;
+	/**
+	 * Asked and not in yet: one asked on another head waits for its place
+	 * (a spinner shows, AgentNotInComparison), never shown outdated first.
+	 */
+	pending?: boolean;
 }
 
 const AgentPlacingContext = createContext<AgentPlacing>({
@@ -122,7 +127,10 @@ export function shownAgentPlaceables(
 					// One asked on this very head stays where it was asked.
 					(t) => t.anchor.commit === snapshotHead || Date.parse(t.at) < until,
 				);
-	const shown = tracedAgentPlaceables(kept, snapshotHead, placing.placements);
+	const placed = placing.pending
+		? kept.filter((t) => t.anchor.commit === snapshotHead)
+		: kept;
+	const shown = tracedAgentPlaceables(placed, snapshotHead, placing.placements);
 	return [
 		...shown.filter((p) => !p.thread.resolved),
 		...shown.filter((p) => p.thread.resolved),

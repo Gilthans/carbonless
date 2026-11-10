@@ -495,7 +495,7 @@ const five = (p: string) =>
 const withLine2 = (lines: string[], text: string) =>
 	`${lines.map((l, i) => (i === 1 ? text : l)).join("\n")}\n`;
 
-test("agent threads follow a push: on the moved line; a reverted file's and a renamed file's after the files until traced, the reverted one with its fate", async ({
+test("agent threads follow a push: a spinner while they are traced, then on the moved line; a reverted file's after the files with its fate, a renamed file's under its new path", async ({
 	page,
 	pr,
 	agentCrb,
@@ -530,7 +530,6 @@ test("agent threads follow a push: on the moved line; a reverted file's and a re
 		const card = await ask(page, section, line, text);
 		await expect(card).toHaveAttribute("aria-label", "Agent thread, answered");
 	}
-	const before = p.repo.shas.at(-1) ?? "";
 	// Two lines on top of calc (its line 3 is line 5 now), other.ts back to
 	// the base, ren.ts renamed whole.
 	p.moveHead({
@@ -553,26 +552,22 @@ test("agent threads follow a push: on the moved line; a reverted file's and a re
 	const again = await openFile(page, s.url, CALC);
 	await expect.poll(() => held.hits.length).toBeGreaterThan(0);
 	expect(held.hits.every((q) => q.includes("head="))).toBe(true);
-	// Held: never gone. Calc's in its file's lead, with the head it was
-	// asked on; other's and ren's after the files (their paths aren't in it).
+	// Held: a spinner where they will show, none of them outdated or
+	// listed meanwhile (loading never looks like a result).
+	const loading = page.getByTestId("agent-placements-loading");
+	await expect(loading).toBeVisible();
+	await expect(loading).toHaveAttribute("aria-busy", "true");
 	const lead = again.getByRole("button", {
 		name: /^1 agent thread on this file/,
 	});
-	await lead.click();
-	await expect(
-		again
-			.getByTestId("agent-thread")
-			.filter({ hasText: "About calc" })
-			.getByRole("img", {
-				name: `Asked on an earlier version (${before.slice(0, 7)})`,
-			}),
-	).toBeAttached();
+	await expect(lead).toHaveCount(0);
+	await expect(page.getByTestId("agent-outdated")).toHaveCount(0);
 	const outside = page.getByTestId("agent-not-in-comparison");
 	const outsideRow = (text: string) =>
 		outside.getByTestId("agent-outside").filter({ hasText: text });
-	await expect(outsideRow("About other")).toBeVisible();
-	await expect(outsideRow("About ren")).toBeVisible();
+	await expect(outside).toHaveCount(0);
 	held.release();
+	await expect(loading).toHaveCount(0);
 	// Answered: calc's on line 5 with the agent's bubble, gone from the lead.
 	const bubble = row(again, 5).getByTestId("agent-bubble");
 	await expect(bubble).toHaveAccessibleName("1 agent thread on line 5");
@@ -596,7 +591,7 @@ test("agent threads follow a push: on the moved line; a reverted file's and a re
 	);
 });
 
-test("on a patch set and in the since view: traced from PS1 into the head, then into PS2; a comment and a question name the head they were written on", async ({
+test("on a patch set and in the since view: traced from PS1 into the head (a reworked line: changed since, with its old lines), then into PS2; a comment and a question name the head they were written on", async ({
 	page,
 	pr,
 	agentCrb,
@@ -645,9 +640,29 @@ test("on a patch set and in the since view: traced from PS1 into the head, then 
 	await expect(row(since, 5)).toBeVisible({ timeout: 30_000 });
 	await expect.poll(() => held.hits.length).toBeGreaterThan(0);
 	expect(held.hits.some((q) => q.includes("head="))).toBe(true);
+	// Held: a spinner, not the thread outdated in the lead.
+	await expect(page.getByTestId("agent-placements-loading")).toBeVisible();
+	await expect(
+		since.getByRole("button", { name: /^1 agent thread on this file/ }),
+	).toHaveCount(0);
 	held.release();
 	const bubble = row(since, 5).getByTestId("agent-bubble");
 	await expect(bubble).toHaveAccessibleName("1 agent thread on line 5");
+	// Its line was reworked since: the changed chip and its old lines, as a
+	// review thread's card has them.
+	await bubble.click();
+	const changed = since.getByTestId("agent-changed");
+	await expect(changed.getByTestId("placement-changed")).toHaveText(
+		"changed since",
+	);
+	await expect(changed.getByTestId("placement-changed-line")).toHaveText([
+		/export const total = v1 \+ v2;/,
+		/export const total = v1 \+ v2 \+ v3;/,
+	]);
+	await expect(changed.getByTestId("placement-fate-line")).toContainText(
+		"Line rewritten since PS1",
+	);
+	await bubble.click();
 	// A comment on the head's line 5 starts PS2 (the page views it): it
 	// names the head it was written on, with that head's line.
 	const before = held.hits.length;

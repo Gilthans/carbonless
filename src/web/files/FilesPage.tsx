@@ -941,15 +941,24 @@ export function FilesPage() {
 		() => (agentThreads ?? []).map((t) => t.id),
 		[agentThreads],
 	);
-	const agentPlacements = useAgentPlacementsFor({
+	const agentPlacingState = useAgentPlacementsFor({
 		to: placingTo,
 		revision: data?.revision,
 		ids: agentIds,
 		enabled: agentOn,
 	});
+	const agentPlacements = agentPlacingState.placements;
+	const agentPending = agentPlacingState.pending;
+	// Until they are in, one asked on another head waits (a spinner after
+	// the files), never shown outdated first; a failure shows each where it
+	// was asked, and says so.
 	const agentPlacing = useMemo(
-		() => ({ placements: agentPlacements, until: threadsCutoff }),
-		[agentPlacements, threadsCutoff],
+		() => ({
+			placements: agentPlacements,
+			until: threadsCutoff,
+			pending: agentPending,
+		}),
+		[agentPlacements, threadsCutoff, agentPending],
 	);
 	const agentHead =
 		threads?.snapshotHead ??
@@ -959,6 +968,17 @@ export function FilesPage() {
 	const agentShown = useMemo(
 		() => shownAgentPlaceables(agentThreads ?? [], agentHead, agentPlacing),
 		[agentThreads, agentHead, agentPlacing],
+	);
+	// How many wait for their place (the spinner is for them).
+	const agentWaiting = useMemo(
+		() =>
+			agentPending
+				? shownAgentPlaceables(agentThreads ?? [], agentHead, {
+						...agentPlacing,
+						pending: false,
+					}).filter((p) => p.commit !== agentHead).length
+				: 0,
+		[agentPending, agentThreads, agentHead, agentPlacing],
 	);
 	// The tree's dot: each on the path it shows under now.
 	const agentThreadsByPath = useMemo(() => {
@@ -1108,6 +1128,15 @@ export function FilesPage() {
 				threads={agentOutsideShown}
 				snapshotHead={agentHead}
 				placements={agentPlacements}
+				pending={agentPending}
+				waiting={agentWaiting}
+				failed={
+					agentPlacingState.error && {
+						error: agentPlacingState.error,
+						retry: agentPlacingState.retry,
+						retrying: agentPlacingState.retrying,
+					}
+				}
 			/>
 		</>
 	);
