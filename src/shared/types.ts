@@ -684,6 +684,22 @@ export const MAX_REPLY = 65536;
 /** Threads whose comments one `GET /api/comments` asks for, at most. */
 export const COMMENTS_BATCH = 50;
 
+/** Files one batched hunks request (GET /files/hunks) may ask for. */
+export const HUNKS_BATCH = 25;
+
+/** One file of a batched hunks answer. */
+export interface HunksBatchFile {
+	index: number;
+	hunks?: FileHunks;
+	/** The file's text couldn't be read: this file only, never the batch. */
+	error?: string;
+}
+
+/** Display hunks of several files, in the order asked. */
+export interface HunksBatch {
+	files: HunksBatchFile[];
+}
+
 /** How far a read's review threads have come. */
 export type ThreadsStage = "summary" | "first" | "firstCode" | "full";
 

@@ -43,6 +43,7 @@ import { type AgentPlaceable, agentPlaceable } from "../agent/placeable";
 import { contextQuery, hunksQuery, overviewQuery, sessionQuery } from "../api";
 import {
 	CodeLine,
+	type FindMark,
 	type Mark,
 	useShowInvisibles,
 	type Words,
@@ -66,6 +67,7 @@ import { ErrorMessage } from "../ui";
 import { NOT_PHONE, useMedia } from "../useMedia";
 import { ignoreWhitespace, showInvisibles, sideBySide } from "../viewSettings";
 import { type CellLine, CODE_CELL, cellLine } from "./codeSpan";
+import { contextRanges } from "./contextRanges";
 import { EXPAND_STEP, fileGaps, type Gap, gapState } from "./gaps";
 import { Labelled, labelReserve } from "./HunkHeading";
 import { hiddenLines } from "./hiddenLines";
@@ -108,6 +110,25 @@ export interface DiffThreads {
 	snapshotHead: string;
 	/** The PR's threads; placeThreads picks this file's. */
 	threads: ReviewThread[];
+}
+
+/** The find's view of this file (FilesPage): marks per line, the current hit, and steps onto it. */
+export interface DiffFind {
+	/**
+	 * The hits on the line a cell shows (codeCellOf's side and number).
+	 * Called for every cell on every render: an O(1) lookup (a Map keyed by
+	 * side and line), never a scan of the hits.
+	 */
+	marksOf: (side: DiffSide, line: number) => readonly FindMark[];
+	/** The current hit's line, when it is in this file (painted current). */
+	current: LineRef | null;
+	/**
+	 * A step has shown the current hit (Caret.shown): only then does it keep
+	 * a collapsed whitespace-only cluster open (typing never moves the layout).
+	 */
+	shown: boolean;
+	/** Bumped by each step onto a hit in this file: its row scrolls under the sticky stack. */
+	stepSeq: number;
 }
 
 /**
@@ -715,12 +736,15 @@ function CodeCell(props: {
 	marks: readonly Mark[];
 	/** A pair's changed tokens on the line, tinted (wordBlocks.ts). */
 	words?: Words;
-	/** Side by side only: the cell's own paint, kind, landing, mark and pick. */
+	/** The find's hits on the line's characters. */
+	finds?: readonly FindMark[];
+	/** Side by side only: the cell's own paint, kind, landing, mark, pick and find. */
 	cell?: {
 		paint: string;
 		landed: boolean;
 		commented: boolean;
 		picked: boolean;
+		current: boolean;
 	};
 }) {
 	const { line, cell, bubble, lead, agentBubble } = props;
@@ -740,6 +764,7 @@ function CodeCell(props: {
 			data-landed={cell?.landed || undefined}
 			data-commented={cell?.commented ? "" : undefined}
 			data-picked={cell?.picked || undefined}
+			data-find-current={cell?.current || undefined}
 			// Top-aligned next to its number, however tall the other side makes the row.
 			className={`${cell ? "align-top whitespace-pre-wrap [overflow-wrap:anywhere]" : "whitespace-pre"} ${bubblePad(bubbles)} ${cell?.paint ?? ""}`}
 		>
@@ -761,6 +786,7 @@ function CodeCell(props: {
 				tabWidth={props.tabWidth}
 				newline={!line.noNewline}
 				marks={props.marks}
+				finds={props.finds}
 				words={props.words}
 			/>
 		</td>
@@ -798,6 +824,7 @@ interface RowProps {
 	orderOf?: (line: DiffLine) => number | undefined;
 	picker?: Picker;
 	composers?: RowComposers;
+	find?: DiffFind;
 	agent?: AgentRows;
 	/** The hunk's paired lines' word marks (hunkWordMarks), by line. */
 	words?: ReadonlyMap<DiffLine, readonly Mark[]>;
@@ -1018,6 +1045,9 @@ function LineRow(props: RowProps & { line: RowLine; order?: number }) {
 	// old one: threads ending on either share its bubble.
 	const { commented, ending, endKey, open } = cellThreads(keys, threads);
 	const landed = landedPhase(props.landed, line);
+	// The find's current hit: on either of the row's numbers (a ws row's
+	// other line lands here too), its wash over the row.
+	const current = landingOn(props.find?.current ?? null, line);
 	const rowBg = (reviewed ? REVIEWED_ROW_BG : ROW_BG)[line.kind];
 	const numberBg = (reviewed ? REVIEWED_NUMBER_BG : NUMBER_BG)[line.kind];
 	// A pair row has both numbers: a thread on its old side is named by it.
@@ -1050,7 +1080,8 @@ function LineRow(props: RowProps & { line: RowLine; order?: number }) {
 				data-landed={landed === "on" || undefined}
 				data-commented={commented ? "" : undefined}
 				data-picked={isPicked || undefined}
-				className={`${rowBg} ${landed ? LANDED_CLASS[landed] : ""} ${mark} ${isPicked ? "line-picked" : ""}`}
+				data-find-current={current || undefined}
+				className={`${rowBg} ${landed ? LANDED_CLASS[landed] : ""} ${mark} ${isPicked ? "line-picked" : ""} ${current ? "mark-tint" : ""}`}
 			>
 				<Rail state={state} />
 				<ControlsCell>{props.checkbox}</ControlsCell>
@@ -1076,6 +1107,7 @@ function LineRow(props: RowProps & { line: RowLine; order?: number }) {
 					hunk={props.hunk}
 					order={props.order}
 					marks={marksOf(keys, threads)}
+					finds={props.find?.marksOf(cell.side, cell.line)}
 					words={wordsOf(line, props, reviewed)}
 					bubble={
 						endKey &&
@@ -1139,6 +1171,9 @@ interface Cell {
 	landed?: Landed["phase"];
 	where: string;
 	marks: Mark[];
+	/** The find's hits on the cell's line, and whether the current hit is on it. */
+	finds?: readonly FindMark[];
+	current: boolean;
 	words?: Words;
 	order?: number;
 	pick: NumberPick;
@@ -1182,6 +1217,7 @@ function PairRow(
 		keys: LineKey[],
 		where: string,
 	): Cell => {
+		const code = codeCellOf(line);
 		return {
 			line,
 			keys,
@@ -1189,9 +1225,11 @@ function PairRow(
 			landed: landedPhase(props.landed, line),
 			where,
 			marks: marksOf(keys, threads),
+			finds: props.find?.marksOf(code.side, code.line),
+			current: landingOn(props.find?.current ?? null, line),
 			words: wordsOf(line, props, reviewed),
 			order: props.orderOf?.(source),
-			pick: pickOf(codeCellOf(line), true, picker),
+			pick: pickOf(code, true, picker),
 			agentKeys: agent ? rowKeys(line) : [],
 		};
 	};
@@ -1312,10 +1350,10 @@ function PairRow(
 		if (!cell) return <BlankCells side={side} />;
 		const { line } = cell;
 		const bubbles: Bubbles = own ? {} : bubblesOf(side, cell);
-		// The landing's tint, else the commented range's stripe and numbers;
-		// a pick's wash over either.
+		// The landing's tint (or the find's current hit's), else the
+		// commented range's stripe and numbers; a pick's wash over either.
 		const mark = `${
-			cell.landed === "on"
+			cell.landed === "on" || cell.current
 				? "mark-tint-cell"
 				: cell.commented
 					? "thread-mark-cell"
@@ -1340,6 +1378,7 @@ function PairRow(
 					hunk={props.hunk}
 					order={cell.order}
 					marks={cell.marks}
+					finds={cell.finds}
 					words={cell.words}
 					lead={bubbles.lead}
 					leadCount={lead?.count}
@@ -1349,6 +1388,7 @@ function PairRow(
 						landed: cell.landed === "on",
 						commented: cell.commented,
 						picked: cell.pick.picked,
+						current: cell.current,
 					}}
 					bubble={bubbles.bubble}
 				/>
@@ -1739,8 +1779,10 @@ export function DiffBody(props: {
 	headSure?: boolean;
 	/** The file's bubble and its threads' row (FileDiff). */
 	lead?: FileLead;
+	/** The find's hits in this file and its current one (FilesPage). */
+	find?: DiffFind;
 }) {
-	const { file, revision } = props;
+	const { file, revision, find } = props;
 	const hunks = useQuery(hunksQuery(revision, file.index));
 	const ignoreWs = ignoreWhitespace.use();
 	const view: View = sideBySide.use() ? "side-by-side" : "unified";
@@ -1752,7 +1794,7 @@ export function DiffBody(props: {
 	const columns = columnsOf(view);
 	// Unified, the file bubble is centred on rows that aren't code (FileBubbleSlot).
 	const centred = view === "unified";
-	const [ranges, setRanges] = useState<[number, number][]>([]);
+	const ranges = contextRanges.use(revision, file.index);
 	const contexts = useQueries({
 		queries: ranges.map(([from, to]) =>
 			contextQuery(revision, file.index, from, to),
@@ -1778,10 +1820,11 @@ export function DiffBody(props: {
 		props.landing,
 		hunks.isSuccess,
 	);
+	useFindStep(root, find, hunks.isSuccess);
 	// The line a thread link is about to land on (so a collapsed cluster
 	// holding it is open by the time the landing looks); once it has
 	// landed, `landed` keeps the cluster open while the highlight lasts.
-	const landingLine: LandingLine | null =
+	const landingLine: LineRef | null =
 		pending && props.landing?.line !== undefined && !props.landing.moved
 			? { old: props.landing.side === "LEFT", line: props.landing.line }
 			: null;
@@ -1812,9 +1855,7 @@ export function DiffBody(props: {
 		? fileGaps(hunks.data.hunks, hunks.data.newLineCount)
 		: [];
 	const addRange = (from: number, to: number) =>
-		setRanges((r) =>
-			r.some(([f, t]) => f === from && t === to) ? r : [...r, [from, to]],
-		);
+		contextRanges.add(revision, file.index, from, to);
 
 	// New threads being written on this file's lines, on the viewed head;
 	// those on another head are orphans (their lines are gone).
@@ -2112,6 +2153,7 @@ export function DiffBody(props: {
 					hunk: hunkOf(n),
 					picker,
 					composers,
+					find,
 					agent: agentRows,
 				};
 				rows.push(
@@ -2426,6 +2468,7 @@ export function DiffBody(props: {
 				noteId={noteId}
 				landed={landed}
 				landingLine={landingLine}
+				find={find}
 				threads={rowThreads}
 				ignoreWhitespace={ignoreWs}
 				shape={shape}
@@ -2742,19 +2785,61 @@ const landedPhase = (landed: Landed | null, line: RowLine) =>
 		? landed.phase
 		: undefined;
 
-/** A line a thread link is landing on, by its number on one side. */
-interface LandingLine {
+/** A line by its number on one side (a landing's or the find's). */
+export interface LineRef {
 	old: boolean;
 	line: number;
 }
 
-const landingOn = (target: LandingLine | null, line: RowLine) =>
+const landingOn = (target: LineRef | null, line: RowLine) =>
 	target !== null && (target.old ? line.oldNo : line.newNo) === target.line;
 
 /** Why a landing found no line: the text and its tooltip. */
 interface Hint {
 	text: string;
 	tip: string;
+}
+
+/**
+ * Scrolls the page so `target` sits `margin` px below the sticky stack over
+ * the diff in `root` (the find bar and the app header's row: `--app-header`;
+ * the files bar and the file's section header), and below the find bar
+ * itself should it reach lower.
+ */
+function scrollUnderStack(root: HTMLElement, target: Element, margin: number) {
+	const sticky = stickyBottom(root);
+	window.scrollTo({
+		top: target.getBoundingClientRect().top + window.scrollY - sticky - margin,
+	});
+}
+
+/**
+ * Follows the find's steps onto a hit in this file once the hunks are in:
+ * scrolls the current hit's row under the sticky stack with a few lines of
+ * context above, as a landing does. Each step (`stepSeq`) is taken once,
+ * found or not: a step with no current hit or no row is spent, so the
+ * current hit moving later without a step (typing) never scrolls. The row
+ * is there to find, as a collapsed cluster holding it is kept open.
+ */
+function useFindStep(
+	root: RefObject<HTMLDivElement | null>,
+	find: DiffFind | undefined,
+	ready: boolean,
+) {
+	const done = useRef(0);
+	const seq = find?.stepSeq ?? 0;
+	const old = find?.current?.old;
+	const line = find?.current?.line;
+	useEffect(() => {
+		const el = root.current;
+		if (!el || !ready || seq === 0 || done.current === seq) return;
+		done.current = seq;
+		if (line === undefined) return;
+		const row = el.querySelector(
+			`tr[data-${old ? "old" : "new"}-no="${line}"]`,
+		);
+		if (row) scrollUnderStack(el, row, 60);
+	}, [root, seq, ready, old, line]);
 }
 
 /**
@@ -2779,12 +2864,8 @@ function useLanding(
 		if (!landing || !ready || !el || done.current === landing.seq) return;
 		done.current = landing.seq;
 		const section = el.closest("section");
-		const sticky = stickyBottom(el);
 		const scrollTo = (target: Element, margin: number) =>
-			window.scrollTo({
-				top:
-					target.getBoundingClientRect().top + window.scrollY - sticky - margin,
-			});
+			scrollUnderStack(el, target, margin);
 		const old = landing.side === "LEFT";
 		const where = `${old ? "Old line" : "Line"} ${landing.line}`;
 		const row =
@@ -2860,7 +2941,8 @@ function HunkRows(props: {
 	checkbox: (cluster: ClusterView) => ReactNode;
 	noteId: (cluster: ClusterView) => string | undefined;
 	landed: Landed | null;
-	landingLine: LandingLine | null;
+	landingLine: LineRef | null;
+	find?: DiffFind;
 	threads?: RowThreads;
 	/** Settings' "Ignore whitespace": pair whitespace-only lines (whitespace.ts). */
 	ignoreWhitespace: boolean;
@@ -2956,6 +3038,7 @@ function HunkRows(props: {
 					orderOf,
 					picker: props.picker,
 					composers: props.composers,
+					find: props.find,
 					agent: props.agent,
 					words,
 					hidden,
@@ -2990,9 +3073,11 @@ function HunkRows(props: {
 								);
 							});
 				if (state && ignoreWhitespace && whitespaceOnly(rows)) {
-					// A bubble, a pick or a landed-on line must never be hidden by
-					// the setting: the cluster stays open while it has one. (Keys
-					// are pick keys too: side by side, either side's cell picks.)
+					// A bubble, a pick, a landed-on line or the find's current hit
+					// (once a step showed it: typing never changes the layout)
+					// must never be hidden by the setting: the cluster stays open
+					// while it has one. (Keys are pick keys too: side by side,
+					// either side's cell picks.)
 					const pinned = rows.some((r) => {
 						const line = rowLine(r);
 						const keys = rowKeys(line);
@@ -3006,7 +3091,9 @@ function HunkRows(props: {
 									props.picker?.keys.has(k),
 							) ||
 							landedPhase(props.landed, line) !== undefined ||
-							landingOn(props.landingLine, line)
+							landingOn(props.landingLine, line) ||
+							(props.find?.shown === true &&
+								landingOn(props.find.current, line))
 						);
 					});
 					return (

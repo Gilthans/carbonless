@@ -17,6 +17,7 @@ import { agentThreadsQuery } from "../agent/api";
 import { useAgentComposers } from "../agent/askAgentAction";
 import { agentPlaceable } from "../agent/placeable";
 import { hunksQuery, overviewQuery, sessionQuery } from "../api";
+import type { FindMark } from "../code/Invisibles";
 import { Tooltip, TooltipPath, type TooltipTriggerProps } from "../Tooltip";
 import { newThreadKey, useDrafts } from "../threads/drafts";
 import { NewThread } from "../threads/NewThread";
@@ -29,8 +30,15 @@ import {
 import { OrphanDraft } from "../threads/OrphanDraft";
 import { useThreadWriter } from "../threads/threadWrites";
 import { ChangeKindIcon, changeKindLabel } from "./changeKind";
-import { DiffBody, type DiffThreads, type FileLead } from "./DiffBody";
+import {
+	DiffBody,
+	type DiffFind,
+	type DiffThreads,
+	type FileLead,
+} from "./DiffBody";
 import { finishes, resetChanges } from "./fileFinish";
+import { MarkedText } from "./find/MarkedText";
+import { displayPath } from "./find/pathMarks";
 import type { Landing } from "./landing";
 import { Meter } from "./ProgressBar";
 import { useResolveCollapse } from "./resolveCollapse";
@@ -291,10 +299,13 @@ function FileThreadsRow(props: {
 function PathScroller({
 	text,
 	kind,
+	marks = [],
 	className = "",
 	fade = "from-raised",
 }: {
 	text: string;
+	/** The find's hits on the text. */
+	marks?: readonly FindMark[];
 	/** The fade's start color: the header's background. */
 	fade?: string;
 	/** The kind of change, first in the tooltip (touch and keyboard get it here). */
@@ -348,7 +359,7 @@ function PathScroller({
 						className="overflow-x-auto rounded font-mono text-sm whitespace-nowrap text-ink [scrollbar-width:thin] focus-visible:outline-2 focus-visible:outline-accent"
 					>
 						<span ref={inner} className="inline-block py-1">
-							{text}
+							<MarkedText text={text} marks={marks} />
 						</span>
 					</div>
 				)}
@@ -460,6 +471,10 @@ export function FileDiff(props: {
 	threadsLoading?: boolean;
 	/** The diff shown is the viewed head's (useHeadSure). */
 	headSure?: boolean;
+	/** The find's hits on the header's path (headerPathMarks). */
+	pathFind?: readonly FindMark[];
+	/** The find's view of this file's diff (DiffBody). */
+	find?: DiffFind;
 	/**
 	 * The reviewer's own mark just finished this open file (nothing left
 	 * unreviewed): the owner closes it and moves on (FilesPage opens the
@@ -583,7 +598,7 @@ export function FileDiff(props: {
 	const reset = (changes: StateChange[]) => {
 		save(changes).catch(() => {});
 	};
-	const path = file.oldPath ? `${file.oldPath} → ${file.path}` : file.path;
+	const path = displayPath(file);
 	// One sentence for the header's status, counts and progress. The counts
 	// are the same in every unit; only the progress follows it.
 	const status = fileStatus(file);
@@ -902,6 +917,7 @@ export function FileDiff(props: {
 								<ChangeKindIcon file={file} tooltip />
 								<PathScroller
 									text={path}
+									marks={props.pathFind}
 									fade={file.done ? "from-ok-wash" : "from-raised"}
 									kind={
 										file.status === "renamed"
@@ -1059,6 +1075,7 @@ export function FileDiff(props: {
 					landing={props.landing}
 					threads={props.threads}
 					headSure={props.headSure}
+					find={props.find}
 				/>
 			)}
 		</section>

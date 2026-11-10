@@ -5,6 +5,8 @@
  * scrolls by however far it moved.
  */
 
+import { findBarElement } from "./find/hitSeen";
+
 /** What to find again after the change, and where it was in the viewport. */
 export type ScrollAnchor = {
 	el: Element;
@@ -110,14 +112,15 @@ export function restoreAnchor(anchor: ScrollAnchor, root: ParentNode): void {
 
 /**
  * How far down the viewport the sticky stack over `el` reaches: the app
- * header, the Files bar and its file's header.
+ * header's row (the find bar in it: `--app-header`), the Files bar and its
+ * file's header; and the find bar itself should it reach lower.
  */
 export function stickyBottom(el: Element): number {
 	const header = el.closest("section")?.querySelector("header");
 	const vars = getComputedStyle(el);
-	return (
+	const stack =
 		(Number.parseFloat(vars.getPropertyValue("--app-header")) || 0) +
 		(Number.parseFloat(vars.getPropertyValue("--files-bar")) || 0) +
-		((header as HTMLElement | null | undefined)?.offsetHeight ?? 0)
-	);
+		((header as HTMLElement | null | undefined)?.offsetHeight ?? 0);
+	return Math.max(stack, findBarElement()?.getBoundingClientRect().bottom ?? 0);
 }

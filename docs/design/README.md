@@ -138,6 +138,32 @@ highlight fades the rows stay under the reviewer and the button is back to
 collapse them. A reviewed collapsed row
 keeps the green rail and checked box, as any cluster.
 
+## Find in PR
+
+While the find bar is open, a hit is painted on its matched characters, in
+a code line, a file header's path or a tree name. Two utilities
+(`src/web/index.css`), only while the bar is open:
+
+- `find-mark`: every hit. An opaque `find` tone (`#101c8e`, the accent's
+  hue, more saturated than `span`'s `#182a62`), apart from `span` and every row wash. Every
+  syntax color and `code-ink`, `faint`, `add-ink` and `del-ink` keep 4.5:1
+  on it (`theme.test.ts`). Over a thread's `span-mark` the find shows: it is
+  the thing in hand.
+- `find-current`: the hit being stepped on. The brand orange with `canvas`
+  text (7.1:1), `!important` on the span and its descendants because syntax
+  tokens set inline colors; light text on the orange would be under 3:1.
+
+A hidden-character marker inside a hit is wrapped the same way. Inside a
+pair's word tint the hit is its own element, so its paint is on top.
+
+The bar itself is a strip across the very top of the page, above the app
+header, opaque `surface` with a `line` border and `shadow-header`, sticky
+at the top: it pushes the page down by its height and the sticky stack
+sticks under it. On desktop one row, its controls at the right, the header
+(its buttons too) right under it; on a phone two rows, in the header's
+place (the header is hidden while it shows). Its controls never move while
+it is open.
+
 ## File change kinds
 
 Every file, in its header and in the tree, has a 12px icon before its
@@ -633,3 +659,4 @@ earlier events" (the Load more button's style) sits above the rail.
     - reviewed lines.
   - Reviewed lines no longer use opacity.
   - The compact mark sits in a fixed 28px slot that fades and scales, so the tabs don't shift.
+  - Find in PR: `find-mark` (`--color-find`) and `find-current` (orange, `canvas` text) paint search hits; contrast-tested like `span-mark`.
