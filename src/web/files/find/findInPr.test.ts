@@ -7,6 +7,7 @@ import type {
 	FileHunks,
 	FileView,
 } from "../../../shared/types";
+import { viewRuns } from "../whitespace";
 import {
 	type Caret,
 	caretAfterTyping,
@@ -334,6 +335,9 @@ describe("integrity", () => {
 	const WORDS = ["save", "Save", "x", "  "];
 
 	it("holds for any input", () => {
+		// Old-side hits that unified + Ignore whitespace leaves out, over all
+		// seeds: (f) must have met some.
+		let hidden = 0;
 		for (let seed = 1; seed <= 300; seed++) {
 			const r = rng(seed);
 			const int = (n: number) => Math.floor(r() * n);
@@ -362,6 +366,9 @@ describe("integrity", () => {
 						{ length: removed.length ? int(5) : 1 + int(4) },
 						text,
 					);
+					// Often a whitespace-only change of a removed line.
+					if (removed.length && added.length && r() < 0.5)
+						added[int(added.length)] = `  ${pick(removed)}`;
 					clusters.push({
 						key: `c${clusters.length}`,
 						kind: "lines",
@@ -409,18 +416,36 @@ describe("integrity", () => {
 
 			const hits = findInPr(term, order, hunksOf, contextOf, matchCase);
 
-			// (f) Ignore whitespace only marks old-side hits of pairs: side by
-			// side counts what it did without it; unified leaves out exactly those.
+			// (f) Pairing (unified + Ignore whitespace) only marks hits: the
+			// hits are the plain search's. Unified shows exactly the hits not
+			// on the old line of a two-sided `~` row of the view's own rows
+			// (viewRuns, the oracle: what HunkRows renders).
 			const paired = findInPr(term, order, hunksOf, contextOf, matchCase, true);
 			expect(
 				paired.map(({ twin: _, ...h }) => h),
 				`seed ${seed}`,
 			).toEqual(hits);
+			const offScreen = new Set<string>();
+			for (const f of files) {
+				for (const h of hunksOf(f)?.hunks ?? [])
+					for (const run of viewRuns(h.lines, true))
+						for (const row of run.rows)
+							if (row.kind === "ws" && row.del && row.add)
+								offScreen.add(`${f.index}:${row.del.oldNo}`);
+			}
+			const onScreen = hits.filter(
+				(h) =>
+					h.side !== "LEFT" ||
+					files.find((x) => x.index === h.index)?.binary ||
+					!offScreen.has(`${h.index}:${h.line}`),
+			);
+			hidden += hits.length - onScreen.length;
+			expect(
+				shownHits(paired, true).map(({ twin: _, ...h }) => h),
+				`seed ${seed}`,
+			).toEqual(onScreen);
 			for (const h of paired)
 				if (h.twin !== undefined) expect(h.side, `seed ${seed}`).toBe("LEFT");
-			expect(shownHits(paired, true).length, `seed ${seed}`).toBe(
-				paired.filter((h) => h.twin === undefined).length,
-			);
 
 			// (a) the counts add up to the hits
 			let total = 0;
@@ -531,6 +556,7 @@ describe("integrity", () => {
 					);
 			}
 		}
+		expect(hidden).toBeGreaterThan(0);
 	});
 });
 
@@ -633,10 +659,8 @@ describe("whitespace-only pairs (Ignore whitespace)", () => {
 		const shown = shownHits(all, true);
 		const second = { index: 0, side: "LEFT" as const, line: 2, col: 8 };
 		expect(hiddenHitMoved(all, shown, second)).toEqual({
-			index: 0,
-			side: "RIGHT",
-			line: 2,
-			col: 11,
+			pos: { index: 0, side: "RIGHT", line: 2, col: 11 },
+			sameRow: true,
 		});
 		expect(keptCaret(all, shown, { pos: second, shown: true })).toEqual({
 			pos: { index: 0, side: "RIGHT", line: 2, col: 11 },
@@ -665,7 +689,10 @@ describe("whitespace-only pairs (Ignore whitespace)", () => {
 				line: 2,
 				col: 4,
 			}),
-		).toEqual({ index: 0, side: "RIGHT", line: 2, col: 0 });
+		).toEqual({
+			pos: { index: 0, side: "RIGHT", line: 2, col: 0 },
+			sameRow: true,
+		});
 		// None on the new side ("saveother"): the next shown hit, line 3's.
 		const spaced = search("e o", "save other", "saveother", true);
 		expect(spaced.map(where)).toEqual(["LEFT:2:3", "RIGHT:3:3"]);
@@ -676,6 +703,96 @@ describe("whitespace-only pairs (Ignore whitespace)", () => {
 				line: 2,
 				col: 3,
 			}),
-		).toEqual({ index: 0, side: "RIGHT", line: 3, col: 3 });
+		).toEqual({
+			pos: { index: 0, side: "RIGHT", line: 3, col: 3 },
+			sameRow: false,
+		});
+		// A caret moved off its row is unshown: the next step goes to it.
+		const moved = keptCaret(spaced, shownHits(spaced, true), {
+			pos: { index: 0, side: "LEFT", line: 2, col: 3 },
+			shown: true,
+		});
+		expect(moved).toEqual({
+			pos: { index: 0, side: "RIGHT", line: 3, col: 3 },
+			shown: false,
+		});
+		expect(stepCaret(shownHits(spaced, true), moved, 1)).toEqual({
+			pos: { index: 0, side: "RIGHT", line: 3, col: 3 },
+			shown: true,
+		});
+	});
+});
+
+describe("whitespace pairing's cost (a re-indented PR)", () => {
+	// 30 files, each one hunk of 1,000 lines re-indented: 1,000 removed and
+	// 1,000 added lines, every one a whitespace-only pair (1M cells to match
+	// per hunk).
+	const N = 1000;
+	const reindented = Array.from({ length: 30 }, (_, i) => {
+		const lines: DiffLine[] = [
+			...Array.from(
+				{ length: N },
+				(_, j): DiffLine => ({
+					kind: "del",
+					oldNo: j + 1,
+					text: `value_${j} = old(${j})`,
+					clusterKey: "k",
+				}),
+			),
+			...Array.from(
+				{ length: N },
+				(_, j): DiffLine => ({
+					kind: "add",
+					newNo: j + 1,
+					text: `    value_${j} = old(${j})`,
+					clusterKey: "k",
+				}),
+			),
+		];
+		return {
+			f: file(i, { path: `src/reindent${i}.py` }),
+			hunks: {
+				newLineCount: N,
+				hunks: [{ oldStart: 1, oldCount: N, newStart: 1, newCount: N, lines }],
+			} as FileHunks,
+		};
+	});
+	const files = reindented.map((x) => x.f);
+	const hunksOf = (f: FileView) => reindented[f.index]?.hunks;
+	const cpu = (run: () => void) => {
+		const t = process.threadCpuUsage();
+		run();
+		const { user, system } = process.threadCpuUsage(t);
+		return (user + system) / 1000;
+	};
+
+	it("pairs no hunk while no removed line has a hit, and each hunk once", () => {
+		// A term on paths only: as cheap as not pairing at all.
+		const plain = cpu(() =>
+			findInPr("reindent", files, hunksOf, noContext, false),
+		);
+		const lazy = cpu(() =>
+			findInPr("reindent", files, hunksOf, noContext, false, true),
+		);
+		// A term on every line: every hunk paired, once.
+		let hits: Hit[] = [];
+		const first = cpu(() => {
+			hits = findInPr("value", files, hunksOf, noContext, false, true);
+		});
+		const again = cpu(() =>
+			findInPr("value", files, hunksOf, noContext, false, true),
+		);
+		// The diff's rows (HunkRows' viewRuns) reuse Find's matching.
+		const rows = cpu(() => {
+			for (const x of reindented) viewRuns(x.hunks.hunks[0]?.lines ?? [], true);
+		});
+		console.info(
+			`whitespace pairing CPU ms: plain ${plain.toFixed(1)}, lazy (no del hit) ${lazy.toFixed(1)}, first paired ${first.toFixed(1)}, again ${again.toFixed(1)}, HunkRows after ${rows.toFixed(1)}`,
+		);
+		expect(shownHits(hits, true)).toHaveLength(30 * N);
+		expect(hits.filter((h) => h.twin !== undefined)).toHaveLength(30 * N);
+		expect(lazy).toBeLessThan(plain * 5 + 20);
+		expect(again).toBeLessThan(first / 5);
+		expect(rows).toBeLessThan(first / 5);
 	});
 });

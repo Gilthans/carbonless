@@ -539,8 +539,12 @@ test("unified with ignore whitespace counts a whitespace-only pair once, every s
 	for (let at = 1; at <= UNIFIED; at++) {
 		await next.click();
 		await expect(count(page)).toHaveText(counted(at, UNIFIED), VISIBLE);
-		// Every step paints its hit's characters.
-		await expect(page.locator(".find-current:visible").first()).toBeVisible();
+		// Every step paints its hit's characters: one current mark on a line
+		// hit (a path hit's shows in the tree and the header both).
+		const current = page.locator(".find-current:visible");
+		if (at > DOC_HIT) await expect(current).toHaveCount(1);
+		else await expect(current.first()).toBeVisible();
+		await expect(current.first()).toHaveText(/savedraft/i);
 	}
 	const ws = fileSection(page, WS);
 	await expect(currentSection(page)).toHaveAttribute("aria-label", WS);

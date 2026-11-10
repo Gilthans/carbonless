@@ -234,6 +234,21 @@ export function pairRun(
 	return rows;
 }
 
+/**
+ * matchHunk, once per hunk's lines (the hunks query's arrays, never
+ * changed in place): the diff (HunkRows) and Find in PR (findInPr) share
+ * one O(n·m) matching per hunk.
+ */
+const twinsByHunk = new WeakMap<DiffLine[], ReadonlyMap<DiffLine, DiffLine>>();
+function hunkTwins(lines: DiffLine[]): ReadonlyMap<DiffLine, DiffLine> {
+	let twins = twinsByHunk.get(lines);
+	if (!twins) {
+		twins = matchHunk(lines);
+		twinsByHunk.set(lines, twins);
+	}
+	return twins;
+}
+
 /** A hunk's run and the rows the view shows for it. */
 export interface ViewRun {
 	key?: string;
@@ -251,7 +266,7 @@ export function viewRuns(
 	lines: DiffLine[],
 	ignoreWhitespace: boolean,
 ): ViewRun[] {
-	const twins = ignoreWhitespace ? matchHunk(lines) : null;
+	const twins = ignoreWhitespace ? hunkTwins(lines) : null;
 	return runs(lines).map((run) => ({
 		...run,
 		rows:

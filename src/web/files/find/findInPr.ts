@@ -64,15 +64,19 @@ export interface SourceLine {
 	side: DiffSide;
 	line: number;
 	text: string;
-	/** A whitespace-only pair's old line: the pair's new line number (Hit.twin). */
-	twin?: number;
+	/**
+	 * With `pairs` (fileLines), a hunk's removed line: the hunk's lines and
+	 * the line itself, so a hit on it can ask for its pair (pairsOf) lazily.
+	 */
+	hunk?: DiffLine[];
+	source?: DiffLine;
 }
 
 /**
  * Each hunk's whitespace-only pairs, by the view's own pairing (viewRuns,
- * what HunkRows shows): a two-sided `~` row's removed line → its added
- * line's number. Kept per hunk (the matching is O(n·m)): a search per
- * keystroke never matches a hunk again.
+ * what HunkRows shows, whose O(n·m) matching is cached per hunk and shared
+ * with it): a two-sided `~` row's removed line → its added line's number.
+ * Kept per hunk: a search per keystroke never pairs a hunk again.
  */
 const pairsByHunk = new WeakMap<DiffLine[], ReadonlyMap<DiffLine, number>>();
 function pairsOf(lines: DiffLine[]): ReadonlyMap<DiffLine, number> {
@@ -97,14 +101,14 @@ function pairsOf(lines: DiffLine[]): ReadonlyMap<DiffLine, number> {
  * lies before it and after the previous hunk (sorted by newNo, first of a
  * duplicate newNo wins, one inside a hunk's new range ignored), then the
  * hunk's lines (del → LEFT:oldNo, add and context → RIGHT:newNo); then the
- * expanded lines after the last hunk. With `ignoreWhitespace` (and hunks),
- * a removed line of a whitespace-only pair carries its twin's number.
+ * expanded lines after the last hunk. With `pairs` (and hunks), a removed
+ * line carries its hunk and itself (SourceLine.hunk, .source).
  */
 export function fileLines(
 	file: FileView,
 	hunks: FileHunks | undefined,
 	context: readonly DiffLine[],
-	ignoreWhitespace = false,
+	pairs = false,
 ): SourceLine[] {
 	if (!hunks) {
 		return file.clusters.flatMap((c) => [
@@ -144,16 +148,19 @@ export function fileLines(
 	const lines: SourceLine[] = [];
 	hunks.hunks.forEach((h, i) => {
 		lines.push(...(gaps[i] as SourceLine[]));
-		const pairs = ignoreWhitespace ? pairsOf(h.lines) : null;
 		for (const l of h.lines) {
-			const twin = pairs?.get(l);
 			if (l.kind === "del")
-				lines.push({
-					side: "LEFT",
-					line: l.oldNo as number,
-					text: l.text,
-					...(twin !== undefined && { twin }),
-				});
+				lines.push(
+					pairs
+						? {
+								side: "LEFT",
+								line: l.oldNo as number,
+								text: l.text,
+								hunk: h.lines,
+								source: l,
+							}
+						: { side: "LEFT", line: l.oldNo as number, text: l.text },
+				);
 			else lines.push({ side: "RIGHT", line: l.newNo as number, text: l.text });
 		}
 	});
@@ -164,9 +171,10 @@ export function fileLines(
  * The PR's hits in reading order: for each file (in the order given: the
  * tree's), its path's hits, then its old path's, then its lines' (fileLines)
  * in column order. Binary files and submodules have path hits only. Every
- * line of both sides is searched, as side by side shows it; with
- * `ignoreWhitespace`, a whitespace-only pair's old-side hits carry `twin`
- * (shownHits leaves them out in unified view).
+ * line of both sides is searched. With `pairs` (the view is unified with
+ * Ignore whitespace on: only then is a pair one row), a whitespace-only
+ * pair's old-side hits carry `twin` (shownHits leaves them out). A hunk is
+ * paired (O(n·m), cached) only once one of its removed lines has a hit.
  */
 export function findInPr(
 	term: string,
@@ -174,7 +182,7 @@ export function findInPr(
 	hunksOf: (file: FileView) => FileHunks | undefined,
 	contextOf: (file: FileView) => readonly DiffLine[],
 	matchCase: boolean,
-	ignoreWhitespace = false,
+	pairs = false,
 ): Hit[] {
 	const hits: Hit[] = [];
 	const re = pattern(term, matchCase);
@@ -182,12 +190,21 @@ export function findInPr(
 	for (const file of files) {
 		const index = file.index;
 		// occurrences' loop, inline: no array or closure per line.
-		const push = (side: HitSide, line: number, text: string, twin?: number) => {
+		const push = (
+			side: HitSide,
+			line: number,
+			text: string,
+			from?: SourceLine,
+		) => {
 			re.lastIndex = 0;
+			// The line's pair, asked on its first hit (-1: none).
+			let twin: number | undefined;
 			for (let m = re.exec(text); m; m = re.exec(text)) {
 				const len = m[0].length;
 				const hit: Hit = { index, side, line, col: m.index, len };
-				if (twin !== undefined) hit.twin = twin;
+				if (from?.hunk && twin === undefined)
+					twin = pairsOf(from.hunk).get(from.source as DiffLine) ?? -1;
+				if (twin !== undefined && twin >= 0) hit.twin = twin;
 				hits.push(hit);
 				re.lastIndex = m.index + len;
 			}
@@ -195,13 +212,8 @@ export function findInPr(
 		push("path", 0, file.path);
 		if (file.oldPath) push("oldPath", 0, file.oldPath);
 		if (file.binary || file.submodule) continue;
-		for (const l of fileLines(
-			file,
-			hunksOf(file),
-			contextOf(file),
-			ignoreWhitespace,
-		))
-			push(l.side, l.line, l.text, l.twin);
+		for (const l of fileLines(file, hunksOf(file), contextOf(file), pairs))
+			push(l.side, l.line, l.text, l);
 	}
 	return hits;
 }
@@ -229,7 +241,7 @@ export function hiddenHitMoved(
 	all: readonly Hit[],
 	shown: readonly Hit[],
 	pos: HitPos,
-): HitPos | null {
+): { pos: HitPos; sameRow: boolean } | null {
 	const at = hitIndex(all, pos);
 	if (at < 0 || shown.length === 0) return null;
 	const hit = all[at] as Hit;
@@ -245,21 +257,23 @@ export function hiddenHitMoved(
 			(h) => h.index === hit.index && h.side === "RIGHT" && h.line === twin,
 		);
 		const same = row[nth] ?? row[0];
-		if (same) return posOf(same);
+		if (same) return { pos: posOf(same), sameRow: true };
 	}
 	const key = (h: HitPos) => `${h.index}:${h.side}:${h.line}:${h.col}`;
 	const isShown = new Set(shown.map(key));
 	for (let i = 1; i <= all.length; i++) {
 		const next = all[(at + i) % all.length] as Hit;
-		if (isShown.has(key(next))) return posOf(next);
+		if (isShown.has(key(next))) return { pos: posOf(next), sameRow: false };
 	}
 	return null;
 }
 
 /**
  * The stepped caret as the hits now stand: kept while its hit is shown,
- * moved (hiddenHitMoved) when only hidden, keeping whether it was shown;
- * null when its hit is gone.
+ * moved (hiddenHitMoved) when only hidden; null when its hit is gone. A
+ * move on the same row keeps whether it was shown (the reviewer is looking
+ * at that row); a move elsewhere is unshown, so the next step goes to it
+ * rather than past it, and it pins nothing open.
  */
 export function keptCaret(
 	all: readonly Hit[],
@@ -267,8 +281,9 @@ export function keptCaret(
 	caret: Caret,
 ): Caret | null {
 	if (hitIndex(shown, caret.pos) >= 0) return caret;
-	const pos = hiddenHitMoved(all, shown, caret.pos);
-	return pos ? { pos, shown: caret.shown } : null;
+	const moved = hiddenHitMoved(all, shown, caret.pos);
+	if (!moved) return null;
+	return { pos: moved.pos, shown: moved.sameRow && caret.shown };
 }
 
 export const samePos = (a: HitPos, b: HitPos): boolean =>

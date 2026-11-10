@@ -399,7 +399,9 @@ debounce unless measured to need one.
   same lines. A hit is found by its line's number and side in whatever rows
   are rendered (`tr[data-new-no]` / `tr[data-old-no]`, the landing's way),
   and painted on that line's cell. Switching a view keeps the current hit and
-  repaints.
+  repaints (the count may change: unified with ignore whitespace counts a
+  `~` pair once, §reading order, CAR-103; a current hit on the pair's old
+  side moves to the row's new side).
 - **Thread marks and picks**: a find mark over a `span-mark` shows the find;
   a current row under a `thread-mark` or `line-picked` row shows both washes
   (they are all accent tints; the characters are what differ).
@@ -467,8 +469,9 @@ Playwright (desktop and phone projects):
 - Context: a term only in context lines is counted once the prefetch lands
   (the spinner shows meanwhile: assert its presence before the count
   settles, never a time bound).
-- Side by side and ignore whitespace: the same count and the same current
-  hit after switching.
+- Unified with ignore whitespace counts a `~` pair once and every step
+  paints a mark; side by side counts both; the current hit is kept across
+  the switch.
 - Match case: the count changes when toggled; the setting survives a
   reload.
 - Escape closes and clears marks; reopening starts empty. Leaving Files
@@ -483,10 +486,9 @@ Playwright (desktop and phone projects):
 
 - The exact tones of `find-mark` and `find-current`, within the color
   constraints above and the contrast test.
-- Whether hits in a `ws` row (ignore whitespace pairing two whitespace-equal
-  lines) paint both lines' hits on the one text shown, or step to the same
-  row twice; whichever it is, the count stays the hunks' and the test shows
-  it.
+- (Decided, owner 2026-11-10, CAR-103.) Hits in a `ws` row (ignore
+  whitespace pairing two whitespace-equal lines): unified counts and steps
+  only the text the row shows (the new side's); side by side counts both.
 - The batcher's shape (a small class like `CommentsBatcher`, or a query per
   batch), and how "couldn't be searched" is kept per file.
 - Where `findInPr` and the bar's state live (a small store like

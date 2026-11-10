@@ -192,7 +192,9 @@ export function useFind(opts: {
 				(f) => hunksBy.get(f.index),
 				(f) => contextBy.get(f.index) ?? NO_LINES,
 				matchCase,
-				ignoreWs,
+				// Only unified shows a pair as one row: side by side, or with
+				// Ignore whitespace off, nothing is paired (no O(n·m) matching).
+				ignoreWs && unified,
 			);
 			return { all, hits: shownHits(all, unified) };
 		};

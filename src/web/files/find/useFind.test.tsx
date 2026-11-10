@@ -352,6 +352,37 @@ describe("useFind", () => {
 		expect(result.current.count).toEqual({ at: 3, of: 4 });
 	});
 
+	it("turning Ignore whitespace on in unified moves a current old-side hit onto its `~` row", async () => {
+		const files = [file(0, ["save(a) save"], ["  save(a)  save"])];
+		const { result } = renderFind({ revision: "r1", files, openIndex: 0 });
+		search("save");
+		await waitFor(() => expect(batches).toHaveLength(1));
+		await act(async () => {
+			batches[0]?.held.release({
+				files: [{ index: 0, hunks: hunksOf(files[0] as FileView, "ctx") }],
+			});
+		});
+		await waitFor(() => expect(result.current.searching).toBe(false));
+		// Unified, Ignore whitespace off: two rows, both count.
+		expect(result.current.count).toEqual({ at: 1, of: 4 });
+		act(() => {
+			result.current.step(1);
+			result.current.step(1);
+		});
+		expect(result.current.caret?.pos).toEqual({
+			index: 0,
+			side: "LEFT",
+			line: 2,
+			col: 8,
+		});
+		act(() => ignoreWhitespace.set(true));
+		expect(result.current.count).toEqual({ at: 2, of: 2 });
+		expect(result.current.caret).toEqual({
+			pos: { index: 0, side: "RIGHT", line: 2, col: 11 },
+			shown: true,
+		});
+	});
+
 	it("restarts the prefetch for a new revision and stops it on close", async () => {
 		// More files than two batches: a third waits its turn.
 		const files = Array.from({ length: 60 }, (_, i) => file(i, [], ["y"]));
