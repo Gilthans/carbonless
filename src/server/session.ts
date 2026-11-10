@@ -7,6 +7,7 @@ import type {
 	DiffLine,
 	EditRequest,
 	FileHunks,
+	HunksBatch,
 	NewThreadAnswer,
 	NewThreadRequest,
 	PlacementsAnswer,
@@ -32,6 +33,7 @@ import {
 	buildSnapshot,
 	loadContext,
 	loadFileHunks,
+	loadHunksBatch,
 	snapshotId,
 } from "./diff/snapshot.js";
 import { WriteRefusedError } from "./errors.js";
@@ -94,6 +96,7 @@ import {
 	setResolved,
 	type ThreadWriteTarget,
 } from "./threadWrites.js";
+import { type Tracer, tracer } from "./trace.js";
 import {
 	mapVerdict,
 	ruleOf,
@@ -378,6 +381,36 @@ export class Session {
 		if (options.asOf && options.head) {
 			throw new Error("--head can't be combined with --as-of");
 		}
+		// Opt-in ($CRB_TRACE_DIR): the open, with its slow steps under it.
+		const traced = tracer();
+		if (!traced.enabled) {
+			return Session.#openReview(arg, cwd, progress, options, traced);
+		}
+		const span = traced.start("crb: open review");
+		try {
+			return await traced.run(span, () =>
+				Session.#openReview(arg, cwd, progress, options, traced),
+			);
+		} catch (error) {
+			span.end(undefined, (error as Error).message);
+			throw error;
+		} finally {
+			span.end();
+		}
+	}
+
+	static async #openReview(
+		arg: string,
+		cwd: string,
+		progress: (message: string) => void,
+		options: SessionOptions,
+		traced: Tracer,
+	): Promise<Session> {
+		const step = <T>(name: string, run: () => Promise<T>): Promise<T> => {
+			if (!traced.enabled) return run();
+			const span = traced.start(name);
+			return traced.run(span, run).finally(() => span.end());
+		};
 		await runGh(["auth", "status"]);
 		const ref = await resolvePrRef(arg, cwd);
 		// Independent reads: at once (each gh call is a few hundred ms).
@@ -393,8 +426,10 @@ export class Session {
 			meta = { ...meta, headOid, state: "OPEN" };
 		}
 		const [repo, pinned] = await Promise.all([
-			ensureClone(meta.owner, meta.repo, () =>
-				progress(`cloning ${meta.owner}/${meta.repo}…`),
+			step("crb: clone", () =>
+				ensureClone(meta.owner, meta.repo, () =>
+					progress(`cloning ${meta.owner}/${meta.repo}…`),
+				),
 			),
 			// The head is resolved once: the session keeps it for its life.
 			options.head
@@ -406,10 +441,12 @@ export class Session {
 				: null,
 		]);
 		progress(`fetching PR #${meta.number}…`);
-		const fetched = await fetchPr(repo, meta, {
-			asOf,
-			pinned: pinned ?? undefined,
-		});
+		const fetched = await step("crb: fetch pr", () =>
+			fetchPr(repo, meta, {
+				asOf,
+				pinned: pinned ?? undefined,
+			}),
+		);
 		// Whether the PR is over comes from GitHub's PR state, never from
 		// history shape: squash and rebase merges leave the head outside the
 		// base (docs/git-methodology.md). As of a cutoff, meta says OPEN.
@@ -434,7 +471,9 @@ export class Session {
 		const lastSeen = await readSeen(reviewId);
 		await writeSeen(reviewId, meta.headOid).catch(() => {});
 		const { mergeBase, head } = state.patchset ?? fetched;
-		const snapshot = await buildSnapshot(repo, mergeBase, head);
+		const snapshot = await step("crb: snapshot", () =>
+			buildSnapshot(repo, mergeBase, head),
+		);
 		// The PR's head as fetched: the graph's head dot, with its commits
 		// over the patch set (none for a view that never moves on).
 		const headInfo =
@@ -1447,6 +1486,21 @@ export class Session {
 	 */
 	#read(ready?: Promise<unknown>): OverviewRead {
 		if (this.#closed) throw new SessionClosedError("The session is closed");
+		// Opt-in ($CRB_TRACE_DIR): the read until its overview is in.
+		const traced = tracer();
+		if (!traced.enabled) return this.#newRead(ready);
+		const span = traced.start("crb: overview read", {
+			first: this.#reads.length === 0,
+		});
+		const read = traced.run(span, () => this.#newRead(ready));
+		read.overview.then(
+			() => span.end(),
+			(error: unknown) => span.end(undefined, (error as Error)?.message),
+		);
+		return read;
+	}
+
+	#newRead(ready?: Promise<unknown>): OverviewRead {
 		const { asOf, viewer } = this.options;
 		const read = new OverviewRead({
 			ref: this.#ref(),
@@ -1525,6 +1579,14 @@ export class Session {
 	/** Display hunks of a file of the snapshot with this `revision`. */
 	async fileHunks(revision: string, index: number): Promise<FileHunks> {
 		return loadFileHunks(this.repo, this.#current(revision), index);
+	}
+
+	/** Display hunks of several files of the snapshot with this `revision`. */
+	async fileHunksBatch(
+		revision: string,
+		indexes: readonly number[],
+	): Promise<HunksBatch> {
+		return loadHunksBatch(this.repo, this.#current(revision), indexes);
 	}
 
 	/** Unchanged lines of a file of the snapshot with this `revision`. */
