@@ -307,6 +307,11 @@ export async function buildApp(
 				],
 			});
 	});
+	// The setup modal's "Join from a session" line carries the key (the
+	// page's own cookie is HttpOnly). Behind the key, as the manifest.
+	app.get("/api/mcp/setup", async (_request, reply) =>
+		reply.header("cache-control", "no-store").send({ key: options.accessKey }),
+	);
 	// Opens (or finds) the review of a PR: crb <pr>.
 	app.post("/api/reviews", async (request) => {
 		const req = parseOpenBody(request.body);

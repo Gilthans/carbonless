@@ -24,6 +24,8 @@ import {
 import "./agent";
 import { AgentChip } from "./agent/AgentChip";
 import { AgentSetupHost } from "./agent/AgentSetup";
+import { JoinBar } from "./agent/JoinBar";
+import { JoinToast } from "./agent/JoinToast";
 import { Logo, Mark, Wordmark } from "./brand/Brand";
 import { FindButton } from "./files/find/FindButton";
 import { findFloat, findState } from "./files/find/findState";
@@ -276,7 +278,10 @@ export function App() {
 	// The find bar's slot, above the header (FindSlot).
 	const [slot, setSlot] = useState<HTMLDivElement | null>(null);
 	const findBar = useHeight(() => slot, swapped && slot !== null, !swapped);
-	const above = swapped ? findBar : 0;
+	// A session's join request, above everything (and the find bar).
+	const [joinSlot, setJoinSlot] = useState<HTMLDivElement | null>(null);
+	const joinBar = useHeight(() => joinSlot, joinSlot);
+	const above = joinBar + (swapped ? findBar : 0);
 	const id = useReviewId();
 	const pr = session.data?.pr;
 	const prUrl = safeHref(pr?.url);
@@ -312,13 +317,17 @@ export function App() {
 	return (
 		<AppHeaderHeight.Provider value={stackTop}>
 			<div className="min-h-screen bg-canvas font-sans text-ink">
-				{/* Files changed's open find bar, at the very top (FindSlot). */}
-				<div
-					ref={setSlot}
-					data-find-slot
-					className="sticky z-[35]"
-					style={{ top: "var(--vv-top, 0px)" }}
-				/>
+				{/*
+				 * The top of the page, pinned: a session's join request, then
+				 * Files changed's open find bar (FindSlot). Both push the page
+				 * down; the header sticks under them (`above`).
+				 */}
+				<div className="sticky z-[35]" style={{ top: "var(--vv-top, 0px)" }}>
+					<div ref={setJoinSlot}>
+						<JoinBar />
+					</div>
+					<div ref={setSlot} data-find-slot />
+				</div>
 				<header
 					ref={header}
 					data-app-header
@@ -393,13 +402,13 @@ export function App() {
 							</div>
 						)}
 						{pr && (
-							<p className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-muted">
+							<div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-muted">
 								<span className="break-all">
 									{pr.owner}/{pr.repo}
 								</span>
 								<AgentChip />
 								{session.data?.asOf && <AsOf iso={session.data.asOf} />}
-							</p>
+							</div>
 						)}
 					</div>
 					{refresh.isError && (
@@ -593,6 +602,7 @@ export function App() {
 					<Wordmark className="text-sm" />
 				</footer>
 				<SyncNotices />
+				<JoinToast />
 				<AgentSetupHost />
 			</div>
 		</AppHeaderHeight.Provider>

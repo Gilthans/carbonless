@@ -1744,6 +1744,26 @@ describe("API", () => {
 			expect(open.json().start_url).toBe("/");
 		});
 
+		it("GET /api/mcp/setup gives the key behind the key, null without one", async () => {
+			const keyed = await buildApp(registry, { accessKey: "k3y" });
+			try {
+				expect((await keyed.inject("/api/mcp/setup")).statusCode).toBe(401);
+				const res = await keyed.inject({
+					url: "/api/mcp/setup",
+					cookies: { crb_key: "k3y" },
+				});
+				expect(res.headers["cache-control"]).toBe("no-store");
+				expect(res.json()).toEqual({ key: "k3y" });
+			} finally {
+				await keyed.close();
+			}
+			const open = await app.inject({
+				url: "/api/mcp/setup",
+				headers: { host },
+			});
+			expect(open.json()).toEqual({ key: null });
+		});
+
 		it("POST /api/reviews refuses a bad body (400) and an unreviewable PR (409)", async () => {
 			for (const body of [
 				undefined,

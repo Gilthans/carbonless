@@ -87,6 +87,9 @@ export function bindReview(id: string): boolean {
 	return boundReview === id;
 }
 
+/** The review this page is bound to (null: unbound, as in component tests). */
+export const boundReviewId = (): string | null => boundReview;
+
 /** `/api/<x>` of the bound review: `/api/r/<id>/<x>`. */
 export const reviewApiPath = (path: string): string =>
 	boundReview === null

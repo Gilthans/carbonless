@@ -526,7 +526,7 @@ export function AgentThreadCard(props: {
 					</div>
 				)}
 				{state === "waiting" &&
-					(status && !status.configured ? (
+					(status && !status.configured && !status.joined ? (
 						<button
 							type="button"
 							data-testid="agent-waiting"

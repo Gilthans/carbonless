@@ -41,36 +41,131 @@ export const fetchAgentStatus = () => review<AgentStatus>("agent");
 export const AGENT_BUSY_POLL_MS = 1000;
 
 /**
+ * A hidden tab's poll: slow, but kept, so a join request reaches a tab in
+ * the background (its title says so) and a joined session's leave is
+ * toasted when the tab comes back.
+ */
+export const AGENT_HIDDEN_POLL_MS = 15_000;
+
+const tabHidden = () =>
+	typeof document !== "undefined" && document.visibilityState === "hidden";
+
+/**
  * How often the status is read: every AGENT_POLL_MS, every
- * AGENT_BUSY_POLL_MS while the agent starts or answers (its text streams
- * through the status), and not at all on a review with no agent (404).
- * Hidden tabs skip the ticks (refetchIntervalInBackground), never the
- * interval itself: an answer landing while hidden must not stop the poll.
+ * AGENT_BUSY_POLL_MS while the ACP agent starts or answers (its text
+ * streams through the status; a joined session's doesn't), every
+ * AGENT_HIDDEN_POLL_MS while the tab is hidden, and not at all on a review
+ * with no agent (404).
  */
 export function agentPollMs(
 	status: AgentStatus | undefined,
 	error: unknown,
+	hidden = false,
 ): number | false {
 	if (error instanceof ApiError && error.status === 404) return false;
-	return status?.state === "busy" || status?.state === "starting"
+	if (hidden) return AGENT_HIDDEN_POLL_MS;
+	return status?.via !== "mcp" &&
+		(status?.state === "busy" || status?.state === "starting")
 		? AGENT_BUSY_POLL_MS
 		: AGENT_POLL_MS;
 }
 
 /**
- * The agent's status, polled (agentPollMs) while the page is visible and
- * read again when it comes back. A routine poll shows no spinner anywhere:
- * only a changed answer moves the chip's dot.
+ * The agent's status, polled (agentPollMs) and read again when the page
+ * comes back. A routine poll shows no spinner anywhere: only a changed
+ * answer moves the chip's dot.
  */
 export const agentStatusQuery = queryOptions({
 	queryKey: ["agent"],
 	queryFn: fetchAgentStatus,
-	refetchInterval: (query) => agentPollMs(query.state.data, query.state.error),
-	refetchIntervalInBackground: false,
+	refetchInterval: (query) =>
+		agentPollMs(query.state.data, query.state.error, tabHidden()),
+	refetchIntervalInBackground: true,
 	refetchOnWindowFocus: true,
 	retry: false,
 	staleTime: AGENT_BUSY_POLL_MS,
 });
+
+/** What an Approve or Deny of a join request came to. */
+export type JoinAnswer =
+	| { ok: true }
+	/** Already answered (another tab), replaced or expired. */
+	| { ok: false; code: "stale-join" }
+	/** Another crb server holds the review's agent. */
+	| { ok: false; code: "elsewhere"; port?: number; error: string };
+
+/** Approves or denies join request `request`; a 409 is an answer, not a throw. */
+export async function answerJoin(
+	request: string,
+	approve: boolean,
+): Promise<JoinAnswer> {
+	let response: Response;
+	try {
+		response = await fetch(
+			reviewApiPath(`/api/agent/join/${encodeURIComponent(request)}`),
+			json("POST", { approve }),
+		);
+	} catch {
+		throw new ApiError(0, "Could not reach carbonless. Is crb still running?");
+	}
+	if (response.ok) return { ok: true };
+	const body = (await response.json().catch(() => null)) as {
+		error?: unknown;
+		code?: unknown;
+		port?: unknown;
+	} | null;
+	const error =
+		typeof body?.error === "string"
+			? body.error
+			: `Request failed: ${response.status}`;
+	if (response.status === 409 && body?.code === "elsewhere") {
+		return {
+			ok: false,
+			code: "elsewhere",
+			error,
+			...(typeof body.port === "number" ? { port: body.port } : {}),
+		};
+	}
+	if (response.status === 409) return { ok: false, code: "stale-join" };
+	throw new ApiError(response.status, error);
+}
+
+/** Ends the joined session's attachment (the reviewer's Disconnect). */
+export const postAgentDisconnect = async (): Promise<void> => {
+	await review<{ ok: true }>("agent/disconnect", json("POST"));
+};
+
+/** Turns the ACP buddy on again after a join turned it off. */
+export const postAgentStart = async (): Promise<void> => {
+	await review<{ ok: true }>("agent/start", json("POST"));
+};
+
+/** The access key the setup line carries (null: none needed). */
+export const joinSetupQuery = queryOptions({
+	queryKey: ["join-setup"],
+	queryFn: () => fetchJson<{ key: string | null }>("/api/mcp/setup"),
+	staleTime: Number.POSITIVE_INFINITY,
+	retry: false,
+});
+
+/**
+ * A word quoted for a POSIX shell (and zsh, where an unquoted `?` globs):
+ * in double quotes when nothing there expands, else in single quotes.
+ */
+export function shellWord(word: string): string {
+	if (!/[$`"\\!\n]/.test(word)) return `"${word}"`;
+	return `'${word.replaceAll("'", `'\\''`)}'`;
+}
+
+/** The one-time setup line: adds this crb's /mcp to Claude Code. */
+export function mcpAddLine(origin: string, key: string | null): string {
+	const url = `${origin}/mcp${key ? `?${new URLSearchParams({ key })}` : ""}`;
+	return `claude mcp add --transport http crb ${shellWord(url)}`;
+}
+
+/** The sentence a session is told to join this review. */
+export const joinLine = (origin: string, id: string): string =>
+	`join the carbonless review at ${origin}/r/${encodeURIComponent(id)}`;
 
 /** The review's agent threads; refetched when the status moves (useAgentSync). */
 export const agentThreadsQuery = queryOptions({

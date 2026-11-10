@@ -1,6 +1,7 @@
 import {
 	CheckIcon,
 	CopyIcon,
+	PlugIcon,
 	SparkleFillIcon,
 	XIcon,
 } from "@primer/octicons-react";
@@ -19,6 +20,7 @@ import {
 	AGENT_HARNESSES,
 	type AgentHarness,
 } from "../../shared/agentHarnesses";
+import { boundReviewId } from "../api";
 import { Spinner } from "../Spinner";
 import { Tooltip, TooltipLayer } from "../Tooltip";
 import { NOT_PHONE, useMedia } from "../useMedia";
@@ -26,10 +28,19 @@ import {
 	agentConfigQuery,
 	agentStatusQuery,
 	checkAgentConfig,
+	joinLine,
+	joinSetupQuery,
+	mcpAddLine,
 	putAgentConfig,
 } from "./api";
 import { formatArgs, parseArgs } from "./args";
-import { closeAgentSetup, useAgentSetupOpen } from "./setupStore";
+import {
+	closeAgentSetup,
+	type SetupTab,
+	setAgentSetupTab,
+	useAgentSetupOpen,
+	useAgentSetupTab,
+} from "./setupStore";
 
 type HarnessId = AgentHarness["id"];
 
@@ -91,6 +102,89 @@ function Field(props: { label: string; children: ReactNode }) {
 	);
 }
 
+/** One line to copy: read-only, selected on focus, with an icon Copy button. */
+function CopyRow(props: { label: string; value: string; testId: string }) {
+	const [copied, setCopied] = useState(false);
+	return (
+		<div className="flex min-w-0 gap-1.5">
+			<input
+				readOnly
+				aria-label={props.label}
+				data-testid={props.testId}
+				value={props.value}
+				onFocus={(e) => e.currentTarget.select()}
+				className={FIELD}
+			/>
+			<Tooltip content={copied ? "Copied" : "Copy"} describe={false}>
+				{(trigger) => (
+					<button
+						type="button"
+						{...trigger}
+						aria-label={`Copy ${props.label.toLowerCase()}`}
+						onClick={() => {
+							void navigator.clipboard
+								?.writeText(props.value)
+								.then(() => setCopied(true));
+						}}
+						className={`${BUTTON} w-10 px-0`}
+					>
+						{copied ? (
+							<CheckIcon size={16} aria-hidden className="text-ok" />
+						) : (
+							<CopyIcon size={16} aria-hidden />
+						)}
+					</button>
+				)}
+			</Tooltip>
+		</div>
+	);
+}
+
+/**
+ * "Join from a session": the one-time line that adds this crb's /mcp to
+ * Claude Code (with the access key), and the sentence that has a session
+ * join this review. The key is read from the server (the page's cookie is
+ * HttpOnly); a spinner holds the line's place meanwhile.
+ */
+function JoinTab(props: { open: boolean }) {
+	const id = boundReviewId();
+	const setup = useQuery({ ...joinSetupQuery, enabled: props.open });
+	const origin = window.location.origin;
+	return (
+		<div
+			data-testid="agent-join-tab"
+			className="min-h-0 flex-1 space-y-3 overflow-y-auto px-4 py-3"
+		>
+			<Field label="Once per machine">
+				{setup.data ? (
+					<CopyRow
+						label="Setup line"
+						testId="join-setup-line"
+						value={mcpAddLine(origin, setup.data.key)}
+					/>
+				) : setup.isError ? (
+					<p role="alert" className="text-sm text-bad">
+						{setup.error.message}
+					</p>
+				) : (
+					<div aria-busy="true" className="flex h-10 items-center">
+						<Spinner label="Loading the setup line" size={14} />
+					</div>
+				)}
+			</Field>
+			{id && (
+				<Field label="Tell your session">
+					<CopyRow
+						label="Join line"
+						testId="join-line"
+						value={joinLine(origin, id)}
+					/>
+				</Field>
+			)}
+		</div>
+	);
+}
+
 /**
  * Setting up the reviewer's agent, on one panel: pick a harness (it fills
  * the command and shows its install line, copyable; Other is typed), Check
@@ -100,8 +194,14 @@ function Field(props: { label: string; children: ReactNode }) {
  * sheet on a phone; Escape and Cancel close it, focus going back to what
  * opened it. The page's shortcuts don't fire under it (they skip `:modal`).
  */
-export function AgentSetup(props: { open: boolean; onClose(): void }) {
+export function AgentSetup(props: {
+	open: boolean;
+	onClose(): void;
+	tab?: SetupTab;
+	onTab?(tab: SetupTab): void;
+}) {
 	const { open, onClose } = props;
+	const tab = props.tab ?? "launch";
 	const client = useQueryClient();
 	const wide = useMedia(NOT_PHONE);
 	const stored = useQuery({ ...agentConfigQuery, enabled: open });
@@ -276,7 +376,45 @@ export function AgentSetup(props: { open: boolean; onClose(): void }) {
 						)}
 					</Tooltip>
 				</div>
-				{open && !read && (
+				<div
+					role="tablist"
+					aria-label="How your agent joins"
+					className="flex shrink-0 gap-1 border-b border-line px-2"
+				>
+					{(
+						[
+							["launch", SparkleFillIcon, "Launch an agent", ""],
+							["join", PlugIcon, "Join from a session", "Join"],
+						] as const
+					).map(([t, Icon, label, short]) => (
+						<button
+							key={t}
+							type="button"
+							role="tab"
+							aria-selected={tab === t}
+							aria-label={label}
+							data-testid={`agent-setup-tab-${t}`}
+							onClick={() => props.onTab?.(t)}
+							className={`-mb-px flex min-h-10 items-center gap-1.5 border-b-2 px-2.5 text-sm whitespace-nowrap focus-visible:outline-2 focus-visible:outline-accent ${
+								tab === t
+									? "border-agent-ink text-agent-ink"
+									: "border-transparent text-muted hover:text-ink"
+							}`}
+						>
+							<Icon size={16} aria-hidden />
+							{short && (
+								<span aria-hidden className="sm:hidden">
+									{short}
+								</span>
+							)}
+							<span aria-hidden className="hidden sm:inline">
+								{label}
+							</span>
+						</button>
+					))}
+				</div>
+				{tab === "join" && <JoinTab open={open} />}
+				{tab === "launch" && open && !read && (
 					<div aria-busy="true" className="px-4 py-6">
 						{stored.isError ? (
 							<p role="alert" className="text-sm text-bad">
@@ -287,7 +425,7 @@ export function AgentSetup(props: { open: boolean; onClose(): void }) {
 						)}
 					</div>
 				)}
-				{open && read && (
+				{tab === "launch" && open && read && (
 					<div className="min-h-0 flex-1 space-y-3 overflow-y-auto px-4 py-3">
 						{read.problems.length > 0 && (
 							<ul
@@ -453,43 +591,45 @@ export function AgentSetup(props: { open: boolean; onClose(): void }) {
 						)}
 					</div>
 				)}
-				<div className="flex shrink-0 flex-wrap justify-end gap-2 border-t border-line px-4 py-2.5">
-					{configured && (
+				{tab === "launch" && (
+					<div className="flex shrink-0 flex-wrap justify-end gap-2 border-t border-line px-4 py-2.5">
+						{configured && (
+							<button
+								type="button"
+								disabled={busy}
+								onClick={() => save.mutate(null)}
+								className={`${BUTTON} mr-auto`}
+							>
+								{save.isPending && save.variables === null ? (
+									<Spinner label="Removing" size={14}>
+										Remove
+									</Spinner>
+								) : (
+									"Remove"
+								)}
+							</button>
+						)}
+						<button type="button" onClick={onClose} className={BUTTON}>
+							Cancel
+						</button>
 						<button
 							type="button"
-							disabled={busy}
-							onClick={() => save.mutate(null)}
-							className={`${BUTTON} mr-auto`}
+							disabled={current?.ok !== true || busy}
+							onClick={() => save.mutate(config)}
+							className={`flex h-10 items-center rounded-md px-4 text-sm font-semibold focus-visible:outline-2 focus-visible:outline-accent ${
+								current?.ok === true
+									? "cta text-ink hover:brightness-110"
+									: "border border-line text-faint"
+							}`}
 						>
-							{save.isPending && save.variables === null ? (
-								<Spinner label="Removing" size={14}>
-									Remove
-								</Spinner>
+							{save.isPending && save.variables !== null ? (
+								<Spinner label="Saving" size={14} />
 							) : (
-								"Remove"
+								"Save"
 							)}
 						</button>
-					)}
-					<button type="button" onClick={onClose} className={BUTTON}>
-						Cancel
-					</button>
-					<button
-						type="button"
-						disabled={current?.ok !== true || busy}
-						onClick={() => save.mutate(config)}
-						className={`flex h-10 items-center rounded-md px-4 text-sm font-semibold focus-visible:outline-2 focus-visible:outline-accent ${
-							current?.ok === true
-								? "cta text-ink hover:brightness-110"
-								: "border border-line text-faint"
-						}`}
-					>
-						{save.isPending && save.variables !== null ? (
-							<Spinner label="Saving" size={14} />
-						) : (
-							"Save"
-						)}
-					</button>
-				</div>
+					</div>
+				)}
 			</TooltipLayer.Provider>
 		</dialog>
 	);
@@ -498,5 +638,13 @@ export function AgentSetup(props: { open: boolean; onClose(): void }) {
 /** The page's one agent setup, opened from anywhere (setupStore.ts). */
 export function AgentSetupHost() {
 	const open = useAgentSetupOpen();
-	return <AgentSetup open={open} onClose={closeAgentSetup} />;
+	const tab = useAgentSetupTab();
+	return (
+		<AgentSetup
+			open={open}
+			onClose={closeAgentSetup}
+			tab={tab}
+			onTab={setAgentSetupTab}
+		/>
+	);
 }

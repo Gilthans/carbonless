@@ -10,9 +10,11 @@ import {
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { expectLoadingThen, heldJson } from "../../../test/loading";
 import type { AgentCheck, AgentConfig, AgentStatus } from "../../shared/agent";
 import { AgentSetup } from "./AgentSetup";
 import { agentStatusQuery } from "./api";
+import type { SetupTab } from "./setupStore";
 
 const json = (status: number, body: unknown) =>
 	new Response(JSON.stringify(body), {
@@ -452,5 +454,55 @@ describe("AgentSetup", () => {
 		const dialog = await openIt(user);
 		expect(within(dialog).getByTestId("agent-leash")).toHaveTextContent("open");
 		expect(dialog.textContent).toContain("stricter levels later");
+	});
+});
+
+describe("AgentSetup's Join from a session tab", () => {
+	function JoinHarness() {
+		const [tab, setTab] = useState<SetupTab>("launch");
+		return <AgentSetup open onClose={() => {}} tab={tab} onTab={setTab} />;
+	}
+
+	it("shows the setup line with the key (a spinner while it is read) and the join line", async () => {
+		const held = heldJson();
+		fetchMock.mockImplementation(async (url: string) =>
+			url === "/api/mcp/setup" ? held.response : json(200, stored),
+		);
+		const client = new QueryClient({
+			defaultOptions: { queries: { retry: false } },
+		});
+		render(
+			<QueryClientProvider client={client}>
+				<JoinHarness />
+			</QueryClientProvider>,
+		);
+		const user = userEvent.setup();
+		const dialog = screen.getByTestId("agent-setup");
+		const tab = within(dialog).getByRole("tab", {
+			name: "Join from a session",
+		});
+		expect(tab).toHaveAttribute("aria-selected", "false");
+		await user.click(tab);
+		expect(tab).toHaveAttribute("aria-selected", "true");
+		expect(
+			within(dialog).queryByRole("radiogroup", { name: "Harness" }),
+		).toBeNull();
+		await expectLoadingThen({
+			loading: () =>
+				within(dialog).queryByRole("status", {
+					name: "Loading the setup line",
+				}),
+			release: () => held.release({ key: "k3y" }),
+			result: () => within(dialog).queryByTestId("join-setup-line"),
+		});
+		expect(within(dialog).getByTestId("join-setup-line")).toHaveValue(
+			`claude mcp add --transport http crb "${window.location.origin}/mcp?key=k3y"`,
+		);
+		// Unbound in a component test: no review, so no join line.
+		expect(within(dialog).queryByTestId("join-line")).toBeNull();
+		await user.click(
+			within(dialog).getByRole("tab", { name: "Launch an agent" }),
+		);
+		await within(dialog).findByRole("radiogroup", { name: "Harness" });
 	});
 });
