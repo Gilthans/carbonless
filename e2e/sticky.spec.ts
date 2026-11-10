@@ -211,7 +211,7 @@ test("once stuck, the compact mark goes Home and the number to the PR on GitHub"
 	await expect(page).toHaveURL(`${new URL(s.url).origin}/`);
 });
 
-test("the compact row's keyboard order: mark, tabs, title, number, Refresh", async ({
+test("the compact row's keyboard order: mark, tabs, title, number, Find in PR, Refresh", async ({
 	page,
 	pr,
 	startCrb,
@@ -241,6 +241,8 @@ test("the compact row's keyboard order: mark, tabs, title, number, Refresh", asy
 	await expect(page.locator("[role=tooltip]:not([hidden])")).toHaveText(
 		"Open on GitHub",
 	);
+	await page.keyboard.press("Tab");
+	await expect(page.getByRole("button", { name: "Find in PR" })).toBeFocused();
 	await page.keyboard.press("Tab");
 	await expect(page.getByRole("button", { name: "Refresh" })).toBeFocused();
 	// None of that moved the page: the row is stuck.

@@ -6,10 +6,12 @@
  * use: an unknown option, a count that isn't a whole number in range, no
  * test files.
  */
-export function parseFlakeArgs(argv, cores) {
+export function parseFlakeArgs(argv) {
 	const out = {
 		runs: 5,
-		load: cores,
+		// Busy loops are opt-in: the devbox is loaded by other agents already,
+		// and loops held inside the queue slow their unqueued runs too.
+		load: 0,
 		grep: undefined,
 		projects: [],
 		units: [],
