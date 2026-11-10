@@ -3,6 +3,7 @@ import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { Worker } from "node:worker_threads";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { writeFileAtomic } from "../../test/fake-gh/atomic.mjs";
 
@@ -11,6 +12,8 @@ const HELPER = pathToFileURL(
 ).href;
 /** Rewrites of the file by the writer: enough to overlap many reads. */
 const WRITES = 300;
+/** Writes per thread when two threads write at once. */
+const THREAD_WRITES = 300;
 /** Padding per write, so a half-written file is a likely read. */
 const PAD = "x".repeat(512 * 1024);
 
@@ -96,4 +99,44 @@ describe("writeFileAtomic", () => {
 		// A process writing 150 MB while this one reads: seconds on a loaded
 		// machine.
 	}, 30_000);
+
+	it("two threads of one process writing at once don't clash (the test and the fake gh server)", async () => {
+		const path = join(dir, "scenario.json");
+		// Two fresh threads, each with its own write counter from 0, in
+		// lockstep: with temp names unique per process only, every write of
+		// one would share its temp file with the other's.
+		const step = new Int32Array(new SharedArrayBuffer(4));
+		const writer = (by: string) => {
+			const worker = new Worker(
+				`
+				const { workerData } = await import("node:worker_threads");
+				const { writeFileAtomic } = await import(${JSON.stringify(HELPER)});
+				const step = new Int32Array(workerData.step);
+				const errors = [];
+				for (let n = 0; n < ${THREAD_WRITES}; n++) {
+					// Both arrive, then both write.
+					Atomics.add(step, 0, 1);
+					while (Atomics.load(step, 0) < 2 * (n + 1)) Atomics.wait(step, 0, Atomics.load(step, 0), 50);
+					Atomics.notify(step, 0);
+					try {
+						writeFileAtomic(${JSON.stringify(path)}, JSON.stringify({ by: workerData.by, n }));
+					} catch (error) {
+						errors.push(String(error));
+					}
+				}
+				const { parentPort } = await import("node:worker_threads");
+				parentPort.postMessage(errors);
+				`,
+				{ eval: true, workerData: { step: step.buffer, by } },
+			);
+			return new Promise<string[]>((resolve, reject) => {
+				worker.on("message", resolve);
+				worker.on("error", reject);
+			});
+		};
+		const errors = (await Promise.all([writer("a"), writer("b")])).flat();
+		expect(errors.slice(0, 3)).toEqual([]);
+		expect(JSON.parse(readFileSync(path, "utf8")).n).toBe(THREAD_WRITES - 1);
+		expect(readdirSync(dir)).toEqual(["scenario.json"]);
+	}, 60_000);
 });

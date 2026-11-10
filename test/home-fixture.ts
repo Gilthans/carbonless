@@ -1,7 +1,7 @@
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { FAKE_GH_DIR, type Scenario, writeScenario } from "./fake-gh/scenario";
+import { fakeGhEnv, type Scenario, writeScenario } from "./fake-gh/scenario";
 import { settleGh } from "./settle-gh";
 
 export interface HomeFixture {
@@ -37,7 +37,7 @@ export function createHomeFixture(s: Partial<Scenario> = {}): HomeFixture {
 	};
 	const path = writeScenario(tmp, current);
 	setEnv({
-		PATH: `${FAKE_GH_DIR}:${process.env.PATH ?? ""}`,
+		...fakeGhEnv(),
 		CRB_FAKE_GH: path,
 		CRB_FAKE_GH_LOG: join(tmp, "gh.log"),
 		XDG_CACHE_HOME: join(tmp, "cache"),

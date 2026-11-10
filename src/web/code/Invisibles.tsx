@@ -236,6 +236,29 @@ export function colorPieces(pieces: Piece[], tokens: Token[]): Segment[][] {
 /** A span's characters in a line: UTF-16 offsets, `to` exclusive. */
 export type Mark = readonly [from: number, to: number];
 
+/** A find hit over a line's characters; `current` is the one being stepped on. */
+export interface FindMark {
+	from: number;
+	to: number;
+	current: boolean;
+}
+
+/** How a find paints a stretch of characters: the current hit wins over the rest. */
+function findAt(
+	finds: readonly FindMark[],
+	from: number,
+	to: number,
+): "mark" | "current" | undefined {
+	let found: "mark" | "current" | undefined;
+	for (const find of finds) {
+		if (find.from < to && find.to > from) {
+			if (find.current) return "current";
+			found = "mark";
+		}
+	}
+	return found;
+}
+
 /**
  * The parts of `text` (starting at offset `start`) cut at the ranges'
  * edges, each with the index of the range holding it (-1: none). The
@@ -264,26 +287,55 @@ function cutRanges(
 	return parts;
 }
 
-/** The parts of `text` (starting at offset `start`) inside and outside the marks. */
+/** `text` (starting at offset `start`) cut at the `edges` inside it. */
+function cutAt(
+	text: string,
+	start: number,
+	edges: readonly number[],
+): { text: string }[] {
+	const end = start + text.length;
+	const points = [
+		...new Set([start, end, ...edges.filter((e) => e > start && e < end)]),
+	].sort((a, b) => a - b);
+	const parts: { text: string }[] = [];
+	for (let n = 0; n + 1 < points.length; n++)
+		parts.push({
+			text: text.slice(
+				(points[n] as number) - start,
+				(points[n + 1] as number) - start,
+			),
+		});
+	return parts;
+}
+
+/**
+ * The parts of `text` (starting at offset `start`) inside and outside the
+ * marks, cut at the finds' edges too; a part a find covers carries `find`.
+ */
 export function splitMarks(
 	text: string,
 	start: number,
 	marks: readonly Mark[],
-): { text: string; marked: boolean }[] {
+	finds: readonly FindMark[] = [],
+): { text: string; marked: boolean; find?: "mark" | "current" }[] {
 	const end = start + text.length;
 	const cuts = new Set([start, end]);
-	for (const [from, to] of marks) {
-		if (from > start && from < end) cuts.add(from);
-		if (to > start && to < end) cuts.add(to);
-	}
+	const edges = [
+		...marks.flat(),
+		...finds.flatMap(({ from, to }) => [from, to]),
+	];
+	for (const at of edges) if (at > start && at < end) cuts.add(at);
 	const points = [...cuts].sort((a, b) => a - b);
-	const parts: { text: string; marked: boolean }[] = [];
+	const parts: { text: string; marked: boolean; find?: "mark" | "current" }[] =
+		[];
 	for (let i = 0; i + 1 < points.length; i++) {
 		const from = points[i] as number;
 		const to = points[i + 1] as number;
+		const find = findAt(finds, from, to);
 		parts.push({
 			text: text.slice(from - start, to - start),
 			marked: marks.some(([f, t]) => f <= from && to <= t),
+			...(find ? { find } : {}),
 		});
 	}
 	return parts;
@@ -291,6 +343,9 @@ export function splitMarks(
 
 /** A thread's exact span over its characters (`span-mark`, index.css). */
 const MARKED = "span-mark";
+
+/** A find hit (`find-mark`) and the current one (`find-current`), index.css; over a span. */
+const FIND_CLASS = { mark: "find-mark", current: "find-current" } as const;
 
 /**
  * A pair's word marks on a line (wordBlocks.ts): the changed tokens, and the
@@ -330,13 +385,16 @@ const wordAt = (marks: readonly Mark[], from: number, to: number) =>
 
 /**
  * A text piece's runs: cut by the highlighting tokens (`segments`), a
- * thread's spans and the word marks. A thread's span wins over a word mark
- * where they overlap: that part is the span's alone.
+ * thread's spans, the find hits and the word marks. A thread's span wins
+ * over a word mark where they overlap: that part is the span's alone. A find
+ * hit wins over a thread's span, and sits inside a word mark's tint (painted
+ * on top of it).
  */
 function textLeaves(
 	start: number,
 	segments: Segment[],
 	marks: readonly Mark[],
+	finds: readonly FindMark[],
 	words: readonly Mark[],
 	out: Leaf[],
 ): void {
@@ -346,10 +404,12 @@ function textLeaves(
 		at += segment.text.length;
 		const style = segment.token ? tokenStyle(segment.token) : undefined;
 		let offset = from;
-		for (const part of marks.length
-			? cutRanges(segment.text, from, marks)
-			: [{ text: segment.text, at: -1 }]) {
-			const spanned = part.at >= 0;
+		for (const part of marks.length || finds.length
+			? splitMarks(segment.text, from, marks, finds)
+			: [{ text: segment.text, marked: false }]) {
+			const spanned = part.marked;
+			const find = "find" in part ? part.find : undefined;
+			const span = spanned && !find;
 			for (const piece of spanned || !words.length
 				? [{ text: part.text, at: -1 }]
 				: cutRanges(part.text, offset, words)) {
@@ -359,12 +419,14 @@ function textLeaves(
 					key,
 					word: piece.at,
 					node:
-						spanned || style ? (
+						span || find || style ? (
 							<span
 								key={key}
 								style={style}
-								data-span-mark={spanned || undefined}
-								className={spanned ? MARKED : undefined}
+								data-span-mark={span || undefined}
+								data-find-mark={find === "mark" || undefined}
+								data-find-current={find === "current" || undefined}
+								className={find ? FIND_CLASS[find] : span ? MARKED : undefined}
 							>
 								{piece.text}
 							</span>
@@ -377,20 +439,34 @@ function textLeaves(
 	}
 }
 
-/** A marker, painted as a thread's span when one covers it. */
+/** The wrapper a marker takes when a find or a thread's span covers it (a find wins). */
+function wrapper(
+	find: "mark" | "current" | undefined,
+	spanned: boolean,
+): Record<string, string | true> | null {
+	if (find === "current")
+		return { "data-find-current": true, className: FIND_CLASS.current };
+	if (find === "mark")
+		return { "data-find-mark": true, className: FIND_CLASS.mark };
+	return spanned ? { "data-span-mark": true, className: MARKED } : null;
+}
+
+/** A marker, painted as a find hit or a thread's span when one covers it. */
 function markerLeaf(
 	piece: Exclude<Piece, { kind: "text" }>,
 	marks: readonly Mark[],
+	finds: readonly FindMark[],
 	words: readonly Mark[],
 ): Leaf {
 	const key = `${piece.kind}${piece.start}`;
 	const end = piece.start + piece.raw.length;
 	const spanned = overlaps(marks, piece.start, end);
+	const wrap = wrapper(findAt(finds, piece.start, end), spanned);
 	return {
 		key,
 		word: spanned || !piece.raw ? -1 : wordAt(words, piece.start, end),
-		node: spanned ? (
-			<span key={key} data-span-mark className={MARKED}>
+		node: wrap ? (
+			<span key={key} {...wrap}>
 				<Marker piece={piece} />
 			</span>
 		) : (
@@ -426,18 +502,20 @@ function paintWords(leaves: Leaf[], tone: Words["tone"]): ReactNode[] {
 }
 
 const NO_MARKS: readonly Mark[] = [];
+const NO_FINDS: readonly FindMark[] = [];
 
 /**
  * One line of code, highlighted (plain until the highlighting arrives), with
  * its invisible characters shown (Notepad++ style, see invisibleChars.ts).
  * `newline`: a newline follows the line (false before git's "No newline at
  * end of file"). Copying the line copies the original text. `marks`: a
- * thread's exact characters, painted. `words`: a pair's changed tokens,
- * tinted (background only, under the syntax colors; invisibles inside a
- * mark are tinted with it, a kept emoji selector or joiner there escaped
- * while they show), painted with the first render. The line's text
- * is in one `[data-code]` element holding only its characters (codeSpan.ts
- * reads columns from it).
+ * thread's exact characters, painted. `finds`: search hits, painted over the
+ * thread's marks (the current one apart) and inside the word tint. `words`:
+ * a pair's changed tokens, tinted (background only, under the syntax colors;
+ * invisibles inside a mark are tinted with it, a kept emoji selector or
+ * joiner there escaped while they show), painted with the first render. The
+ * line's text is in one `[data-code]` element holding only its characters
+ * (codeSpan.ts reads columns from it).
  */
 export function CodeLine(props: {
 	text: string;
@@ -445,6 +523,7 @@ export function CodeLine(props: {
 	tabWidth?: number;
 	newline?: boolean;
 	marks?: readonly Mark[];
+	finds?: readonly FindMark[];
 	words?: Words;
 }) {
 	const { text, lang, newline = true } = props;
@@ -474,11 +553,12 @@ export function CodeLine(props: {
 		[pieces, tokens.data],
 	);
 	const marks = props.marks ?? NO_MARKS;
+	const finds = props.finds ?? NO_FINDS;
 	const highlighted = Boolean(tokens.data?.length);
 	const leaves: Leaf[] = [];
 	pieces.forEach((piece, i) => {
 		if (piece.kind === "text") {
-			if (!highlighted && !marks.length && !words.length) {
+			if (!highlighted && !marks.length && !finds.length && !words.length) {
 				leaves.push({ key: `t${piece.start}`, node: piece.raw, word: -1 });
 				return;
 			}
@@ -486,24 +566,31 @@ export function CodeLine(props: {
 				piece.start,
 				highlighted ? (segments[i] ?? []) : [{ text: piece.raw }],
 				marks,
+				finds,
 				words,
 				leaves,
 			);
-		} else if (piece.kind === "space" && words.length) {
-			// A run of spaces cut at the word marks' edges (a changed indent).
+		} else if (piece.kind === "space" && (words.length || finds.length)) {
+			// A run of spaces cut at the word marks' edges (a changed indent)
+			// and the finds' (a hit over some of its spaces paints only those).
+			const edges = [
+				...words.flat(),
+				...finds.flatMap(({ from, to }) => [from, to]),
+			];
 			let at = piece.start;
-			for (const part of cutRanges(piece.raw, piece.start, words)) {
+			for (const part of cutAt(piece.raw, piece.start, edges)) {
 				leaves.push(
 					markerLeaf(
 						{ kind: "space", raw: part.text, start: at },
 						marks,
+						finds,
 						words,
 					),
 				);
 				at += part.text.length;
 			}
 		} else {
-			leaves.push(markerLeaf(piece, marks, words));
+			leaves.push(markerLeaf(piece, marks, finds, words));
 		}
 	});
 	return (
