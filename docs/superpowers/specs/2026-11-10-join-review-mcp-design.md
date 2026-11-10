@@ -209,10 +209,10 @@ machine needs nothing of crb's (POSIX `sh`, one line in practice):
 
 ```sh
 n=0; while :; do
-  r=$({ curl -sfN -H 'Authorization: Bearer <token>' 'http://<host>:4747/mcp/watch/<review-id>?key=<key>'; echo "crb-exit $?"; } | grep -m1 -E '^(carbonless:|crb-exit )')
+  r=$({ curl -sfN --connect-timeout 10 -H 'Authorization: Bearer <token>' 'http://<host>:4747/mcp/watch/<review-id>?key=<key>'; echo "crb-exit $?"; } | grep -m1 -E '^(carbonless:|crb-exit )')
   case $r in
     carbonless:*) printf '%s\n' "$r"; exit 0;;     # crb's line: a question, or you left
-    'crb-exit 22') exit 3;;                         # HTTP 4xx: detached, token revoked
+    'crb-exit 22') exit 3;;                         # HTTP >= 400: detached, token revoked
     'crb-exit 7'|'crb-exit 28') n=$((n+1));;       # refused / timed out: count it
     *) n=0;;                                        # dropped stream (crb restart): retry
   esac

@@ -79,10 +79,12 @@ describe("the watch command", () => {
 	const cmd = (key: string | null = null) =>
 		watchCommand(ORIGIN, ID, TOKEN, key);
 
-	it("passes curl exactly the header and URL, key included", () => {
+	it("passes curl exactly the connect timeout, header and URL, key included", () => {
 		const { args } = runIt(cmd("k3y_-Z9"), [`0 ${LINE}`]);
 		expect(args).toEqual([
 			"-sfN",
+			"--connect-timeout",
+			"10",
 			"-H",
 			`Authorization: Bearer ${TOKEN}`,
 			`${ORIGIN}/mcp/watch/${ID}?key=k3y_-Z9`,

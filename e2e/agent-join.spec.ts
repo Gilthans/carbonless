@@ -139,6 +139,20 @@ interface Watcher {
  * on PATH, the same request streamed with fetch.
  */
 function startWatcher(watch: string, token: string): Watcher {
+	const w = spawnWatcher(watch, token);
+	running.add(w);
+	return w;
+}
+
+/** Every watcher a test started: afterEach kills them, whatever the test did. */
+const running = new Set<Watcher>();
+
+test.afterEach(() => {
+	for (const w of running) w.drop();
+	running.clear();
+});
+
+function spawnWatcher(watch: string, token: string): Watcher {
 	if (hasCurl) {
 		// Its own process group, so a drop takes curl down with sh.
 		const child: ChildProcess = spawn("sh", ["-c", watch], {
@@ -150,7 +164,8 @@ function startWatcher(watch: string, token: string): Watcher {
 			out += b.toString();
 		});
 		const done = new Promise<{ code: number | null; out: string }>((res) =>
-			child.on("exit", (code) => res({ code, out })),
+			// close, not exit: stdout may still be delivering crb's line at exit.
+			child.on("close", (code) => res({ code, out })),
 		);
 		return {
 			done,
@@ -352,65 +367,59 @@ test("the full loop: the watcher wakes the session for a question, its reply lan
 	const request = await attach(s.url);
 	const approved = await approve(page, s.url, request);
 	expect(approved.waiting).toBe(0);
+	// The session runs the watch line in the background at once, as the
+	// instructions say (the grace window runs from the Approve): listening.
+	const first = startWatcher(approved.watch, approved.token);
 	await expect(chip(page)).toHaveAttribute("data-via", "mcp");
-	const watchers: Watcher[] = [];
-	try {
-		// The session runs the watch line in the background: listening.
-		const first = startWatcher(approved.watch, approved.token);
-		watchers.push(first);
-		await expect(chip(page)).toHaveAttribute("data-state", "ready");
-		// A question asked in the page wakes it: crb's one line, exit 0.
-		const card = await ask(page, section, 3, "Why total?");
-		const woke = await first.done;
-		expect(woke.code).toBe(0);
-		expect(woke.out.trim()).toMatch(
-			/^carbonless: a question is waiting on [^\n]+#\d+\. Call crb's next tool/,
-		);
-		expect(woke.out.trim().split("\n")).toHaveLength(1);
-		// next hands it the question; reply lands the answer in the card.
-		const next = await callTool(mcpUrl(s.url), "next", {
-			token: approved.token,
-		});
-		expect(next.thread).toEqual(expect.any(String));
-		expect(JSON.stringify(next.envelope)).toContain("Why total?");
-		await expect(chip(page)).toHaveAttribute("data-state", "busy");
-		const replied = await callTool(mcpUrl(s.url), "reply", {
-			token: approved.token,
-			thread: next.thread,
-			replyTo: next.replyTo,
-			text: "Because the **sum** is needed.",
-		});
-		expect(replied.ok).toBe(true);
-		await expect(card).toHaveAttribute("aria-label", "Agent thread, answered");
-		await expect(card.getByTestId("agent-message-ai")).toHaveText(
-			"Because the sum is needed.",
-		);
-		await expect(card).toContainText(SESSION.name);
-		// The ACP buddy never answered: it was off from the Approve.
-		expect(
-			acpLog(acpLogPath).filter((e) => e.method === "session/prompt"),
-		).toHaveLength(0);
-		// It runs the watch line again: listening.
-		const second = startWatcher(approved.watch, approved.token);
-		watchers.push(second);
-		await expect(chip(page)).toHaveAttribute("data-state", "ready");
-		// The watcher drops (no line, not crb's doing): reconnecting at once…
-		second.drop();
-		await expect(chip(page)).toHaveAttribute("data-state", "reconnecting");
-		await expect(chip(page)).toHaveAttribute("data-via", "mcp");
-		// …and once the (shortened) grace window passes, it has left as lost.
-		// Grace 15 s plus a 5 s poll: longer than the default 10 s expect.
-		const toast = page.getByTestId("join-toast");
-		await expect(toast).toContainText(`${SESSION.name} disconnected`, {
-			timeout: 30_000,
-		});
-		await expect(chip(page)).toHaveAttribute("data-state", "off");
-		await expect(chip(page)).not.toHaveAttribute("data-via", "mcp");
-		// Its token is dead: a watcher run now gets 410, and the line exits 3.
-		const late = startWatcher(approved.watch, approved.token);
-		watchers.push(late);
-		if (hasCurl) expect((await late.done).code).toBe(3);
-	} finally {
-		for (const w of watchers) w.drop();
-	}
+	await expect(chip(page)).toHaveAttribute("data-state", "ready");
+	// A question asked in the page wakes it: crb's one line, exit 0.
+	const card = await ask(page, section, 3, "Why total?");
+	const woke = await first.done;
+	expect(woke.code).toBe(0);
+	expect(woke.out.trim()).toMatch(
+		/^carbonless: a question is waiting on [^\n]+#\d+\. Call crb's next tool/,
+	);
+	expect(woke.out.trim().split("\n")).toHaveLength(1);
+	// next hands it the question; reply lands the answer in the card.
+	const next = await callTool(mcpUrl(s.url), "next", {
+		token: approved.token,
+	});
+	expect(next.thread).toEqual(expect.any(String));
+	expect(JSON.stringify(next.envelope)).toContain("Why total?");
+	await expect(chip(page)).toHaveAttribute("data-state", "busy");
+	const replied = await callTool(mcpUrl(s.url), "reply", {
+		token: approved.token,
+		thread: next.thread,
+		replyTo: next.replyTo,
+		text: "Because the **sum** is needed.",
+	});
+	expect(replied.ok).toBe(true);
+	// It runs the watch line again at once (the grace runs from the reply).
+	const second = startWatcher(approved.watch, approved.token);
+	await expect(card).toHaveAttribute("aria-label", "Agent thread, answered");
+	await expect(card.getByTestId("agent-message-ai")).toHaveText(
+		"Because the sum is needed.",
+	);
+	await expect(card).toContainText(SESSION.name);
+	// The ACP buddy never answered: it was off from the Approve.
+	expect(
+		acpLog(acpLogPath).filter((e) => e.method === "session/prompt"),
+	).toHaveLength(0);
+	// Listening again.
+	await expect(chip(page)).toHaveAttribute("data-state", "ready");
+	// The watcher drops (no line, not crb's doing): reconnecting at once…
+	second.drop();
+	await expect(chip(page)).toHaveAttribute("data-state", "reconnecting");
+	await expect(chip(page)).toHaveAttribute("data-via", "mcp");
+	// …and once the (shortened) grace window passes, it has left as lost.
+	// Grace 15 s plus a 5 s poll: longer than the default 10 s expect.
+	const toast = page.getByTestId("join-toast");
+	await expect(toast).toContainText(`${SESSION.name} disconnected`, {
+		timeout: 30_000,
+	});
+	await expect(chip(page)).toHaveAttribute("data-state", "off");
+	await expect(chip(page)).not.toHaveAttribute("data-via", "mcp");
+	// Its token is dead: a watcher run now gets 410, and the line exits 3.
+	const late = startWatcher(approved.watch, approved.token);
+	if (hasCurl) expect((await late.done).code).toBe(3);
 });

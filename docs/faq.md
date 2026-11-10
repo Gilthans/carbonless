@@ -283,7 +283,10 @@ press Start in the chip. A joined session leaving doesn't bring it back.
 **Does a session that's already running pick up the server?** Not
 through `/mcp`, but `/reload-plugins` does, without a restart. Checked
 2026-11-10 with Claude Code 2.1.322, in a scratch directory, against a
-probe HTTP MCP server:
+probe HTTP MCP server added in the *local* scope (the default). The
+setup line's `--scope user` server is expected to behave the same, but
+that wasn't checked (it would have meant writing to the user's own
+Claude config):
 
 1. Start `claude` in a directory and leave it running.
 2. From another shell, in the same directory: `claude mcp add --transport
@@ -315,8 +318,8 @@ it.
 | Exit | Means | The session |
 |---|---|---|
 | 0 | crb's one line: a question is waiting; or you are no longer joined (detached, disconnected, lost, replaced); or a newer watcher took over | reads the line; on a question, `next` and `reply`, then runs the watch again |
-| 3 | crb answered 4xx: the token is revoked or unknown here | stops; `attach` again if asked |
-| 4 | 60 refused or timed-out connects in a row (crb down for about 5 minutes) | stops; run the watch again once crb is back, or `attach` again |
+| 3 | crb answered an HTTP error (any status from 400 up; a 4xx: the token is revoked or unknown here) | stops; `attach` again if asked |
+| 4 | 60 refused or timed-out connects in a row, 5 s apart, each giving up after 10 s (crb unreachable for 5 to 15 minutes) | stops; run the watch again once crb is back, or `attach` again |
 
 A dropped stream (crb restarting, the network) isn't counted: the loop
 retries every 5 s.
