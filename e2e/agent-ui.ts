@@ -63,6 +63,8 @@ export interface AgentOptions {
 	state?: string;
 	/** crb <pr>'s own flags (--viewer, --as-of). */
 	args?: string[];
+	/** Extra environment for the serve (e.g. test-only CRB_JOIN_GRACE_MS). */
+	env?: NodeJS.ProcessEnv;
 }
 
 export const DEFAULT_SCENARIO: AcpScenario = {
@@ -109,6 +111,7 @@ export const test = base.extend<{
 			const env: NodeJS.ProcessEnv = {
 				...crbEnv(workdir),
 				...(opts.state ? { XDG_STATE_HOME: join(workdir, opts.state) } : {}),
+				...opts.env,
 			};
 			env.PATH = `${FAKE_ACP_BIN}:${env.PATH ?? ""}`;
 			env.CRB_FAKE_ACP = scenario;

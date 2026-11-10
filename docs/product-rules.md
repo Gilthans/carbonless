@@ -520,4 +520,17 @@ question would be on someone else's behalf, or about a past moment.
 - **A question never waits on the agent to be sent.** Ask agent writes
   the thread at once; it waits (yellow) until an agent answers, whether
   none is set up, it is starting, busy, crashed or elsewhere.
+- **The reviewer approves every join.** A session that asks to join
+  through crb's `/mcp` (`attach`) gets nothing from inside the review
+  (threads, code, PR body) until the reviewer presses Approve in the bar
+  on that review's pages; Deny, or no answer within 10 minutes, ends the
+  request. The access key alone lets a session list reviews, never join
+  one (spec 2026-11-10, `docs/faq.md` "Joining a review from a session").
+- **One buddy per review, and the ACP buddy stays off once replaced.**
+  Approving a join stops the ACP buddy and records it off for that review
+  (`acp-off`, kept across restarts). When the joined session leaves
+  (detach, Disconnect, lost, replaced), nothing starts the ACP buddy again:
+  not a status poll, a new question, a config save or a crb restart. Only
+  Start in the chip does. Questions wait (yellow) meanwhile, and a
+  question handed to a session that never replied waits again.
 

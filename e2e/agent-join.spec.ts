@@ -1,3 +1,4 @@
+import { type ChildProcess, execFileSync, spawn } from "node:child_process";
 import type { Locator, Page } from "@playwright/test";
 import { acpLog } from "../test/fake-acp/scenario";
 import { ask, CALC, chip, expect, fixture, openFile, test } from "./agent-ui";
@@ -101,6 +102,84 @@ async function attach(reviewUrl: string): Promise<string> {
 	expect(out.state).toBe("pending");
 	expect(String(out.message)).toContain(reviewLink(reviewUrl));
 	return String(out.request);
+}
+
+/** Approves `request` in the page and collects the approved attach. */
+async function approve(page: Page, reviewUrl: string, request: string) {
+	await joinBar(page).getByRole("button", { name: "Approve" }).click();
+	const out = await callTool(mcpUrl(reviewUrl), "attach", {
+		review: reviewLink(reviewUrl),
+		...SESSION,
+		request,
+	});
+	expect(out.state).toBe("approved");
+	return out as { token: string; watch: string; waiting: number };
+}
+
+const hasCurl = (() => {
+	try {
+		execFileSync("sh", ["-c", "command -v curl"], { stdio: "ignore" });
+		return true;
+	} catch {
+		return false;
+	}
+})();
+
+/** A running watcher: the session's background command. */
+interface Watcher {
+	/** Its exit: code and what it printed. */
+	done: Promise<{ code: number | null; out: string }>;
+	/** Drops it as a lost network would (no line, no exit code of crb's). */
+	drop: () => void;
+}
+
+/**
+ * Runs the watch command `attach` returned, as the session would in the
+ * background: the very line under `sh` with the real curl. Without curl
+ * on PATH, the same request streamed with fetch.
+ */
+function startWatcher(watch: string, token: string): Watcher {
+	if (hasCurl) {
+		// Its own process group, so a drop takes curl down with sh.
+		const child: ChildProcess = spawn("sh", ["-c", watch], {
+			detached: true,
+			stdio: ["ignore", "pipe", "pipe"],
+		});
+		let out = "";
+		child.stdout?.on("data", (b: Buffer) => {
+			out += b.toString();
+		});
+		const done = new Promise<{ code: number | null; out: string }>((res) =>
+			child.on("exit", (code) => res({ code, out })),
+		);
+		return {
+			done,
+			drop: () => {
+				if (child.pid && child.exitCode === null) {
+					try {
+						process.kill(-child.pid, "SIGKILL");
+					} catch {}
+				}
+			},
+		};
+	}
+	const url = watch.match(/'(https?:\/\/[^']+\/mcp\/watch\/[^']+)'/)?.[1];
+	if (!url) throw new Error(`no watch URL in ${watch}`);
+	const abort = new AbortController();
+	const done = (async () => {
+		try {
+			const r = await fetch(url, {
+				headers: { authorization: `Bearer ${token}` },
+				signal: abort.signal,
+			});
+			const text = await r.text();
+			const line = text.split("\n").find((l) => l.startsWith("carbonless:"));
+			return { code: line ? 0 : 1, out: line ? `${line}\n` : "" };
+		} catch {
+			return { code: null, out: "" };
+		}
+	})();
+	return { done, drop: () => abort.abort() };
 }
 
 const joinBar = (page: Page) =>
@@ -255,4 +334,83 @@ test("Deny: the bar goes in every tab of the review, and the session hears denie
 	});
 	expect(out.state).toBe("denied");
 	await expect(chip(page)).not.toHaveAttribute("data-via", "mcp");
+});
+
+test("the full loop: the watcher wakes the session for a question, its reply lands under its name; a dropped watcher reconnects, then leaves as disconnected", async ({
+	page,
+	pr,
+	agentCrb,
+	acpLogPath,
+}) => {
+	// Test-only: a short grace window instead of the real minute, long
+	// enough for the chip's 5 s poll to see `reconnecting` first.
+	test.setTimeout(90_000);
+	await pr(fixture);
+	const s = await agentCrb({ env: { CRB_JOIN_GRACE_MS: "15000" } });
+	const section = await openFile(page, s.url, CALC);
+	await expect(chip(page)).toHaveAttribute("data-state", "ready");
+	const request = await attach(s.url);
+	const approved = await approve(page, s.url, request);
+	expect(approved.waiting).toBe(0);
+	await expect(chip(page)).toHaveAttribute("data-via", "mcp");
+	const watchers: Watcher[] = [];
+	try {
+		// The session runs the watch line in the background: listening.
+		const first = startWatcher(approved.watch, approved.token);
+		watchers.push(first);
+		await expect(chip(page)).toHaveAttribute("data-state", "ready");
+		// A question asked in the page wakes it: crb's one line, exit 0.
+		const card = await ask(page, section, 3, "Why total?");
+		const woke = await first.done;
+		expect(woke.code).toBe(0);
+		expect(woke.out.trim()).toMatch(
+			/^carbonless: a question is waiting on [^\n]+#\d+\. Call crb's next tool/,
+		);
+		expect(woke.out.trim().split("\n")).toHaveLength(1);
+		// next hands it the question; reply lands the answer in the card.
+		const next = await callTool(mcpUrl(s.url), "next", {
+			token: approved.token,
+		});
+		expect(next.thread).toEqual(expect.any(String));
+		expect(JSON.stringify(next.envelope)).toContain("Why total?");
+		await expect(chip(page)).toHaveAttribute("data-state", "busy");
+		const replied = await callTool(mcpUrl(s.url), "reply", {
+			token: approved.token,
+			thread: next.thread,
+			replyTo: next.replyTo,
+			text: "Because the **sum** is needed.",
+		});
+		expect(replied.ok).toBe(true);
+		await expect(card).toHaveAttribute("aria-label", "Agent thread, answered");
+		await expect(card.getByTestId("agent-message-ai")).toHaveText(
+			"Because the sum is needed.",
+		);
+		await expect(card).toContainText(SESSION.name);
+		// The ACP buddy never answered: it was off from the Approve.
+		expect(
+			acpLog(acpLogPath).filter((e) => e.method === "session/prompt"),
+		).toHaveLength(0);
+		// It runs the watch line again: listening.
+		const second = startWatcher(approved.watch, approved.token);
+		watchers.push(second);
+		await expect(chip(page)).toHaveAttribute("data-state", "ready");
+		// The watcher drops (no line, not crb's doing): reconnecting at once…
+		second.drop();
+		await expect(chip(page)).toHaveAttribute("data-state", "reconnecting");
+		await expect(chip(page)).toHaveAttribute("data-via", "mcp");
+		// …and once the (shortened) grace window passes, it has left as lost.
+		// Grace 15 s plus a 5 s poll: longer than the default 10 s expect.
+		const toast = page.getByTestId("join-toast");
+		await expect(toast).toContainText(`${SESSION.name} disconnected`, {
+			timeout: 30_000,
+		});
+		await expect(chip(page)).toHaveAttribute("data-state", "off");
+		await expect(chip(page)).not.toHaveAttribute("data-via", "mcp");
+		// Its token is dead: a watcher run now gets 410, and the line exits 3.
+		const late = startWatcher(approved.watch, approved.token);
+		watchers.push(late);
+		if (hasCurl) expect((await late.done).code).toBe(3);
+	} finally {
+		for (const w of watchers) w.drop();
+	}
 });

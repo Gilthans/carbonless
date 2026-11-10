@@ -26,6 +26,21 @@ import { oneLine } from "./prompt.js";
  * See docs/superpowers/specs/2026-11-10-join-review-mcp-design.md.
  */
 
+/**
+ * Test only: `CRB_JOIN_GRACE_MS` (a positive integer of milliseconds)
+ * replaces JOIN.graceMs, so an end-to-end test sees a dropped watcher's
+ * session leave as `lost` without waiting out the real minute. Anything
+ * else (unset, empty, not a positive integer) keeps the real window.
+ */
+export function joinGraceMs(env: NodeJS.ProcessEnv = process.env): number {
+	const raw = env.CRB_JOIN_GRACE_MS?.trim() ?? "";
+	if (!/^[1-9][0-9]{0,8}$/.test(raw)) return JOIN.graceMs;
+	return Number(raw);
+}
+
+/** Read once, when the server starts (this module loads). */
+const GRACE_MS = joinGraceMs();
+
 export type AttachOutcome =
 	| { state: "pending"; request: string }
 	| { state: "denied" | "expired" }
@@ -510,7 +525,7 @@ export class JoinBroker {
 			? JOIN.expiryMs
 			: this.#handed || this.#woken
 				? JOIN.busyMs
-				: JOIN.graceMs;
+				: GRACE_MS;
 		this.#absence = setTimeout(() => {
 			this.#absence = null;
 			if (this.#joined === j) this.leave("lost");

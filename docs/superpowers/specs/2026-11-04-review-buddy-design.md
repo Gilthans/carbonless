@@ -618,12 +618,11 @@ once.
   actually uses.
 - **Agent-opened threads:** the storage accepts them; a producer is an ACP
   extension method or the MCP door's `open_thread`.
-- **The MCP door:** a carbonless MCP server (`attach`, a non-blocking
-  `requests` poll with a cursor, `thread`, `reply`) over Streamable HTTP
-  with a per-review bearer token, for agents carbonless can't launch
-  (another machine, a harness without ACP). Same thread model, same ref.
-  The owner's preference: the poll returns at once and the agent chooses
-  its cadence.
+- **The MCP door:** designed and built in
+  `2026-11-10-join-review-mcp-design.md` (CAR-81): a session the reviewer
+  already has joins a review through crb's `/mcp` after the reviewer's
+  Approve, and a background watcher wakes it for each question. Same
+  thread model, same ref.
 - Remote ACP agents when the HTTP/WebSocket transport lands.
 - Suggest a review comment from an agent thread (the reviewer edits and
   posts; AI text still never goes straight to GitHub).

@@ -15,6 +15,7 @@ import {
 	JoinBroker,
 	type JoinBrokerDeps,
 	JoinElsewhereError,
+	joinGraceMs,
 	StaleJoinRequestError,
 	type WatchLease,
 } from "./join.js";
@@ -572,5 +573,15 @@ describe("JoinBroker: restart", () => {
 		expect(earlier.acpOff()).toBe(true);
 		await b.setAcpOff(false);
 		expect(make().acpOff()).toBe(false);
+	});
+});
+
+describe("joinGraceMs (test-only CRB_JOIN_GRACE_MS)", () => {
+	it("takes a positive integer, and keeps the real window for anything else", () => {
+		expect(joinGraceMs({ CRB_JOIN_GRACE_MS: "1500" })).toBe(1500);
+		expect(joinGraceMs({ CRB_JOIN_GRACE_MS: " 20 " })).toBe(20);
+		for (const v of [undefined, "", "0", "-5", "1e3", "12ms", "0x10", "1.5"]) {
+			expect(joinGraceMs({ CRB_JOIN_GRACE_MS: v })).toBe(JOIN.graceMs);
+		}
 	});
 });
