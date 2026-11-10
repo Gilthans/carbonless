@@ -425,6 +425,40 @@ describe("useFind", () => {
 		expect(result.current.count).toEqual({ at: 1, of: 4 });
 	});
 
+	it("a current hit moved off its row (whitespace differs in the term) doesn't stick: back in side by side it is the old side's again", async () => {
+		act(() => {
+			ignoreWhitespace.set(true);
+			sideBySide.set(true);
+		});
+		// "e o" is on the old side of the pair (line 2) and on added line 3,
+		// not on the pair's new side ("saveother").
+		const files = [file(0, ["save other"], ["saveother", "save other x"])];
+		const { result } = renderFind({ revision: "r1", files, openIndex: 0 });
+		search("e o");
+		await waitFor(() => expect(batches).toHaveLength(1));
+		await act(async () => {
+			batches[0]?.held.release({
+				files: [{ index: 0, hunks: hunksOf(files[0] as FileView, "ctx") }],
+			});
+		});
+		await waitFor(() => expect(result.current.searching).toBe(false));
+		expect(result.current.count).toEqual({ at: 1, of: 2 });
+		act(() => {
+			result.current.step(1);
+		});
+		const old = { index: 0, side: "LEFT", line: 2, col: 3 };
+		expect(result.current.caret).toEqual({ pos: old, shown: true });
+		act(() => sideBySide.set(false));
+		expect(result.current.count).toEqual({ at: 1, of: 1 });
+		expect(result.current.caret).toEqual({
+			pos: { index: 0, side: "RIGHT", line: 3, col: 3 },
+			shown: false,
+		});
+		act(() => sideBySide.set(true));
+		expect(result.current.caret).toEqual({ pos: old, shown: true });
+		expect(result.current.count).toEqual({ at: 1, of: 2 });
+	});
+
 	it("restarts the prefetch for a new revision and stops it on close", async () => {
 		// More files than two batches: a third waits its turn.
 		const files = Array.from({ length: 60 }, (_, i) => file(i, [], ["y"]));

@@ -73,7 +73,7 @@ export interface SourceLine {
 }
 
 /** A hunk as unified view with Ignore whitespace renders it (pairedHunk). */
-interface PairedHunk {
+export interface PairedHunk {
 	/**
 	 * The hunk's lines in the order of the rows shown (viewRuns): a
 	 * two-sided `~` row's removed line right before its added line, at the
@@ -230,16 +230,7 @@ export function findInPr(
 		let delHit = false;
 		const flush = () => {
 			if (!byLine || !hunk) return;
-			const paired = delHit ? pairedHunk(hunk) : null;
-			for (const l of paired ? paired.order : seen) {
-				const found = byLine.get(l);
-				if (!found) continue;
-				const twin = paired?.twins.get(l);
-				for (const h of found) {
-					if (twin !== undefined) h.twin = twin;
-					hits.push(h);
-				}
-			}
+			emitHunk(hits, seen, byLine, delHit ? pairedHunk(hunk) : null);
 			byLine = null;
 		};
 		for (const l of fileLines(file, hunksOf(file), contextOf(file), pairs)) {
@@ -266,6 +257,32 @@ export function findInPr(
 		flush();
 	}
 	return hits;
+}
+
+/**
+ * A held hunk's hits into `out`: in its rows' order (`paired`), else in
+ * hunk order (`seen`, the lines with hits). Then, so a hit is never lost
+ * should the rows ever miss a line, every line's hits not yet emitted, in
+ * hunk order. Empties `byLine`.
+ */
+export function emitHunk(
+	out: Hit[],
+	seen: readonly DiffLine[],
+	byLine: Map<DiffLine, Hit[]>,
+	paired: PairedHunk | null,
+): void {
+	const emit = (l: DiffLine) => {
+		const found = byLine.get(l);
+		if (!found) return;
+		byLine.delete(l);
+		const twin = paired?.twins.get(l);
+		for (const h of found) {
+			if (twin !== undefined) h.twin = twin;
+			out.push(h);
+		}
+	};
+	if (paired) for (const l of paired.order) emit(l);
+	for (const l of seen) emit(l);
 }
 
 /**
@@ -330,10 +347,27 @@ export function keptCaret(
 	shown: readonly Hit[],
 	caret: Caret,
 ): Caret | null {
-	if (hitIndex(shown, caret.pos) >= 0) return caret;
+	return caretMove(all, shown, caret)?.caret ?? null;
+}
+
+/**
+ * keptCaret, and whether the move sticks (owner, 2026-11-10: you stay on
+ * the line you were looking at): only a move onto the same row does; a
+ * move off it (a term whose whitespace differs between the sides) doesn't,
+ * so the pair's old side is current again once it shows.
+ */
+export function caretMove(
+	all: readonly Hit[],
+	shown: readonly Hit[],
+	caret: Caret,
+): { caret: Caret; sticks: boolean } | null {
+	if (hitIndex(shown, caret.pos) >= 0) return { caret, sticks: false };
 	const moved = hiddenHitMoved(all, shown, caret.pos);
 	if (!moved) return null;
-	return { pos: moved.pos, shown: moved.sameRow && caret.shown };
+	return {
+		caret: { pos: moved.pos, shown: moved.sameRow && caret.shown },
+		sticks: moved.sameRow,
+	};
 }
 
 export const samePos = (a: HitPos, b: HitPos): boolean =>

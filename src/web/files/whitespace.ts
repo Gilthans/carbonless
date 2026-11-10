@@ -64,7 +64,7 @@ export function runs(lines: DiffLine[]): { key?: string; lines: DiffLine[] }[] {
 }
 
 /** One side of a line as the matching sees it. */
-interface Side {
+export interface Side {
 	key: string;
 	context: boolean;
 }
@@ -79,10 +79,30 @@ interface Side {
  * changes: no unmatched line is ever a context side, which is what makes
  * the rows a sound `-w` edit script (a block moved across an unchanged
  * line is never "whitespace only").
+ *
+ * Fast path (`fast`, on but in its test): when both sides are the same
+ * keys line for line, with context sides at the same places (a wholesale
+ * re-indent), the identity is the optimum (each context side matched to
+ * itself, the most changes matched) and the DP's traceback takes exactly
+ * that diagonal: O(n), not O(n·m). whitespace.test.ts checks it gives what
+ * the DP gives.
  */
-function match(a: Side[], b: Side[]): [number, number][] {
+export function matchSides(
+	a: Side[],
+	b: Side[],
+	fast = true,
+): [number, number][] {
 	const n = a.length;
 	const m = b.length;
+	if (
+		fast &&
+		n === m &&
+		a.every(
+			(s, i) =>
+				s.key === (b[i] as Side).key && s.context === (b[i] as Side).context,
+		)
+	)
+		return a.map((_, i) => [i, i]);
 	const w = m + 1;
 	const P = n + m + 1;
 	const weight = (i: number, j: number) =>
@@ -132,7 +152,7 @@ function match(a: Side[], b: Side[]): [number, number][] {
  * line added or removed anywhere in the hunk, or a context line.
  *
  * The rows are sound: dropping the lines left unmatched (shown as add/del)
- * from both sides leaves whitespace-equal sequences. The weights (`match`)
+ * from both sides leaves whitespace-equal sequences. The weights (`matchSides`)
  * see to it that every context side is matched, to its own other side or
  * to a change (two context lines of one key may also match each other
  * across, with their other sides taken by changes: the same thing along a
@@ -170,7 +190,7 @@ export function matchHunk(lines: DiffLine[]): ReadonlyMap<DiffLine, DiffLine> {
 		young.some((l, j) => l.kind === "add" && oldKeys.has((b[j] as Side).key));
 	if (!can) return twins;
 	let contextSides = 0;
-	for (const [i, j] of match(a, b)) {
+	for (const [i, j] of matchSides(a, b)) {
 		const o = old[i] as DiffLine;
 		const n = young[j] as DiffLine;
 		if (o.kind === "context") contextSides++;
@@ -235,8 +255,8 @@ export function pairRun(
 }
 
 /**
- * matchHunk, once per hunk's lines (the hunks query's arrays, never
- * changed in place): the diff (HunkRows) and Find in PR (findInPr) share
+ * matchHunk, once per hunk's lines (the hunks query's arrays: callers must
+ * never change `lines` in place): the diff (HunkRows) and Find in PR (findInPr) share
  * one O(n·m) matching per hunk.
  */
 const twinsByHunk = new WeakMap<DiffLine[], ReadonlyMap<DiffLine, DiffLine>>();

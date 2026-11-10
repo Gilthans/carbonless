@@ -12,6 +12,7 @@ import {
 	type Caret,
 	caretAfterTyping,
 	countsByFile,
+	emitHunk,
 	fileLines,
 	findInPr,
 	type Hit,
@@ -760,6 +761,47 @@ describe("whitespace-only pairs (Ignore whitespace)", () => {
 		expect(caret?.pos).toEqual({ index: 0, side: "RIGHT", line: 2, col: 0 });
 	});
 
+	it("a hunk's hits all come out even should its rows miss a line", () => {
+		const a: DiffLine = {
+			kind: "del",
+			oldNo: 1,
+			text: "save",
+			clusterKey: "k",
+		};
+		const b: DiffLine = {
+			kind: "add",
+			newNo: 1,
+			text: "save",
+			clusterKey: "k",
+		};
+		const c: DiffLine = {
+			kind: "add",
+			newNo: 2,
+			text: "save",
+			clusterKey: "k",
+		};
+		const hit = (side: "LEFT" | "RIGHT", line: number): Hit => ({
+			index: 0,
+			side,
+			line,
+			col: 0,
+			len: 4,
+		});
+		const byLine = new Map([
+			[a, [hit("LEFT", 1)]],
+			[b, [hit("RIGHT", 1)]],
+			[c, [hit("RIGHT", 2)]],
+		]);
+		const out: Hit[] = [];
+		// Rows that lost `a` (a regression in viewRuns would): still emitted.
+		emitHunk(out, [a, b, c], byLine, {
+			order: [b, c],
+			twins: new Map(),
+		});
+		expect(out.map(where)).toEqual(["RIGHT:1:0", "RIGHT:2:0", "LEFT:1:0"]);
+		expect(byLine.size).toBe(0);
+	});
+
 	it("without hunks yet (clusters only), nothing is paired", () => {
 		const { f } = pairFile("save", "  save");
 		const all = findInPr("save", [f], none, noContext, false, true);
@@ -836,75 +878,108 @@ describe("whitespace-only pairs (Ignore whitespace)", () => {
 });
 
 describe("whitespace pairing's cost (a re-indented PR)", () => {
-	// 30 files, each one hunk of 1,000 lines re-indented: 1,000 removed and
-	// 1,000 added lines, every one a whitespace-only pair (1M cells to match
-	// per hunk).
+	// Files of one hunk of 1,000 lines re-indented: 1,000 removed and 1,000
+	// added lines, every one a whitespace-only pair. `header`: one more
+	// added line on top, so the sides' keys differ and the DP runs (1M cells
+	// per hunk) rather than the equal-keys fast path.
 	const N = 1000;
-	const reindented = Array.from({ length: 30 }, (_, i) => {
-		const lines: DiffLine[] = [
-			...Array.from(
-				{ length: N },
-				(_, j): DiffLine => ({
-					kind: "del",
-					oldNo: j + 1,
-					text: `value_${j} = old(${j})`,
-					clusterKey: "k",
-				}),
-			),
-			...Array.from(
-				{ length: N },
-				(_, j): DiffLine => ({
-					kind: "add",
-					newNo: j + 1,
-					text: `    value_${j} = old(${j})`,
-					clusterKey: "k",
-				}),
-			),
-		];
-		return {
-			f: file(i, { path: `src/reindent${i}.py` }),
-			hunks: {
-				newLineCount: N,
-				hunks: [{ oldStart: 1, oldCount: N, newStart: 1, newCount: N, lines }],
-			} as FileHunks,
-		};
-	});
-	const files = reindented.map((x) => x.f);
-	const hunksOf = (f: FileView) => reindented[f.index]?.hunks;
+	const reindent = (count: number, from: number, header: boolean) =>
+		Array.from({ length: count }, (_, k) => {
+			const i = from + k;
+			const lines: DiffLine[] = [
+				...Array.from(
+					{ length: N },
+					(_, j): DiffLine => ({
+						kind: "del",
+						oldNo: j + 1,
+						text: `value_${j} = old(${j})`,
+						clusterKey: "k",
+					}),
+				),
+				...(header
+					? [
+							{
+								kind: "add",
+								newNo: 1,
+								text: "# header",
+								clusterKey: "k",
+							} as DiffLine,
+						]
+					: []),
+				...Array.from(
+					{ length: N },
+					(_, j): DiffLine => ({
+						kind: "add",
+						newNo: j + 1 + (header ? 1 : 0),
+						text: `    value_${j} = old(${j})`,
+						clusterKey: "k",
+					}),
+				),
+			];
+			const newCount = N + (header ? 1 : 0);
+			return {
+				f: file(i, { path: `src/reindent${i}.py` }),
+				hunks: {
+					newLineCount: newCount,
+					hunks: [{ oldStart: 1, oldCount: N, newStart: 1, newCount, lines }],
+				} as FileHunks,
+			};
+		});
 	const cpu = (run: () => void) => {
 		const t = process.threadCpuUsage();
 		run();
 		const { user, system } = process.threadCpuUsage(t);
 		return (user + system) / 1000;
 	};
+	const setOf = (xs: ReturnType<typeof reindent>) => ({
+		files: xs.map((x) => x.f),
+		hunksOf: (f: FileView) => xs.find((x) => x.f.index === f.index)?.hunks,
+		lines: xs.map((x) => x.hunks.hunks[0]?.lines ?? []),
+	});
 
-	it("pairs no hunk while no removed line has a hit, and each hunk once", () => {
+	it("a wholesale re-indent pairs in linear time; no hunk is paired without a removed-line hit, nor twice", () => {
+		const whole = setOf(reindent(30, 0, false));
 		// A term on paths only: as cheap as not pairing at all.
 		const plain = cpu(() =>
-			findInPr("reindent", files, hunksOf, noContext, false),
+			findInPr("reindent", whole.files, whole.hunksOf, noContext, false),
 		);
 		const lazy = cpu(() =>
-			findInPr("reindent", files, hunksOf, noContext, false, true),
+			findInPr("reindent", whole.files, whole.hunksOf, noContext, false, true),
 		);
-		// A term on every line: every hunk paired, once.
+		// A term on every line: every hunk paired (equal keys: the fast path).
 		let hits: Hit[] = [];
 		const first = cpu(() => {
-			hits = findInPr("value", files, hunksOf, noContext, false, true);
+			hits = findInPr(
+				"value",
+				whole.files,
+				whole.hunksOf,
+				noContext,
+				false,
+				true,
+			);
 		});
 		const again = cpu(() =>
-			findInPr("value", files, hunksOf, noContext, false, true),
+			findInPr("value", whole.files, whole.hunksOf, noContext, false, true),
 		);
-		// The diff's rows (HunkRows' viewRuns) reuse Find's matching.
+		// A re-indent with one line added (the DP), and the diff's rows
+		// (HunkRows' viewRuns) after Find: its matching reused, not redone.
+		const partial = setOf(reindent(10, 100, true));
+		const dp = cpu(() =>
+			findInPr("value", partial.files, partial.hunksOf, noContext, false, true),
+		);
 		const rows = cpu(() => {
-			for (const x of reindented) viewRuns(x.hunks.hunks[0]?.lines ?? [], true);
+			for (const lines of partial.lines) viewRuns(lines, true);
 		});
 		console.info(
-			`whitespace pairing CPU ms: plain ${plain.toFixed(1)}, lazy (no del hit) ${lazy.toFixed(1)}, first paired ${first.toFixed(1)}, again ${again.toFixed(1)}, HunkRows after ${rows.toFixed(1)}`,
+			`whitespace pairing CPU ms: plain ${plain.toFixed(1)}, lazy (no del hit) ${lazy.toFixed(1)}, first paired (fast path) ${first.toFixed(1)}, again ${again.toFixed(1)}, DP (10 hunks) ${dp.toFixed(1)}, HunkRows after the DP ${rows.toFixed(1)}`,
 		);
 		expect(shownHits(hits, true)).toHaveLength(30 * N);
 		expect(hits.filter((h) => h.twin !== undefined)).toHaveLength(30 * N);
+		// Bounds against the plain search over the same lines (no pairing):
+		// the O(n²) DP over these 30 hunks was ~25× plain.
 		expect(lazy).toBeLessThan(plain * 5 + 20);
-		expect(again).toBeLessThan(first / 5);
-		expect(rows).toBeLessThan(first / 5);
+		expect(first).toBeLessThan(plain * 5 + 50);
+		expect(again).toBeLessThan(plain * 5 + 50);
+		expect(rows).toBeLessThan(dp / 5);
 	});
 });

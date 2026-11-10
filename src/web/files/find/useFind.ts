@@ -31,6 +31,7 @@ import type { TreeFind } from "../FileTree";
 import {
 	type Caret,
 	caretAfterTyping,
+	caretMove,
 	countsByFile,
 	findInPr,
 	type Hit,
@@ -216,19 +217,19 @@ export function useFind(opts: {
 	// A step's caret whose hit the view stopped showing (a switch to unified
 	// with Ignore whitespace on) moves to the same row's shown hit, never back
 	// to the top (keptCaret).
-	const { caret, moved } = useMemo(() => {
+	const { caret, sticks } = useMemo(() => {
 		const kept =
 			stepped?.key === typingKey && stepped.caret
-				? keptCaret(all, hits, stepped.caret)
+				? caretMove(all, hits, stepped.caret)
 				: null;
 		return {
-			caret: kept ?? caretAfterTyping(hits, order, typedOpen),
-			moved: kept !== null && kept !== stepped?.caret,
+			caret: kept?.caret ?? caretAfterTyping(hits, order, typedOpen),
+			sticks: kept?.sticks === true,
 		};
 	}, [stepped, typingKey, all, hits, order, typedOpen]);
-	// The move sticks (owner, 2026-11-10): back in side by side, or with
-	// Ignore whitespace off, the caret stays on the hit it moved to.
-	if (moved && stepped) setStepped({ key: stepped.key, caret });
+	// A move onto the same row sticks (owner, 2026-11-10): back in side by
+	// side, or with Ignore whitespace off, the caret stays on that row's hit.
+	if (sticks && stepped) setStepped({ key: stepped.key, caret });
 	// Steps read the latest, also two in one frame. While the deferred
 	// search trails the typed term, a step searches the typed term itself
 	// (Enter right after typing goes to the typed term's hit).
