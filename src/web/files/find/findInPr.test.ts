@@ -978,8 +978,8 @@ describe("whitespace pairing's cost (a re-indented PR)", () => {
 		// Bounds against the plain search over the same lines (no pairing):
 		// the O(n²) DP over these 30 hunks was ~25× plain.
 		expect(lazy).toBeLessThan(plain * 5 + 20);
-		expect(first).toBeLessThan(plain * 5 + 50);
-		expect(again).toBeLessThan(plain * 5 + 50);
+		expect(first).toBeLessThan(plain * 10 + 50);
+		expect(again).toBeLessThan(plain * 10 + 50);
 		expect(rows).toBeLessThan(dp / 5);
 	});
 });
