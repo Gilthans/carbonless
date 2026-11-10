@@ -4,7 +4,7 @@
  * The config routes are machine-wide, not the review's.
  */
 import { queryOptions, useQuery } from "@tanstack/react-query";
-import { useEffect, useState, useSyncExternalStore } from "react";
+import { useRef, useSyncExternalStore } from "react";
 import {
 	AGENT_POLL_MS,
 	type AgentCheck,
@@ -115,12 +115,15 @@ export function useTabHidden(): boolean {
 export function useHiddenJoinPoll(on: boolean): JoinPoll | undefined {
 	const hidden = useTabHidden();
 	const poll = useQuery({ ...joinPollQuery, enabled: on && hidden });
-	// An answer from an earlier hidden spell is stale once visible again.
-	const [since, setSince] = useState(0);
-	useEffect(() => {
-		if (hidden) setSince(Date.now());
-	}, [hidden]);
-	return on && hidden && poll.dataUpdatedAt >= since ? poll.data : undefined;
+	// When this hidden spell began, noted in the render that sees the tab
+	// hide: an answer from an earlier spell never counts, not even for that
+	// render.
+	const since = useRef<number | null>(null);
+	if (!hidden) since.current = null;
+	else if (since.current === null) since.current = Date.now();
+	return on && hidden && poll.dataUpdatedAt >= (since.current ?? 0)
+		? poll.data
+		: undefined;
 }
 
 /** What an Approve or Deny of a join request came to. */

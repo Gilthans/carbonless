@@ -144,6 +144,63 @@ describe("the hidden tab's join poll", () => {
 		expect(seen).toBeUndefined();
 	});
 
+	it("an answer from an earlier hidden spell never counts, not even for the render that hides", async () => {
+		const client = new QueryClient({
+			defaultOptions: {
+				queries: { retry: false, refetchOnWindowFocus: false },
+			},
+		});
+		const request = {
+			id: "01req",
+			name: "s",
+			machine: "m",
+			at: "2026-11-10T10:00:00Z",
+		};
+		let release: (() => void) | undefined;
+		let answer: unknown = { joinRequest: request };
+		const fetchMock = vi.fn(
+			(_url: string) =>
+				new Promise<Response>((done) => {
+					const body = answer;
+					release = () => done(new Response(JSON.stringify(body)));
+				}),
+		);
+		vi.stubGlobal("fetch", fetchMock);
+		const renders: Array<JoinPoll | undefined> = [];
+		function Hidden() {
+			renders.push(useHiddenJoinPoll(true));
+			return null;
+		}
+		render(
+			<QueryClientProvider client={client}>
+				<Hidden />
+			</QueryClientProvider>,
+		);
+		act(() => setVisibility("hidden"));
+		await act(async () => {
+			release?.();
+			await vi.advanceTimersByTimeAsync(0);
+		});
+		expect(renders.at(-1)).toEqual({ joinRequest: request });
+		act(() => setVisibility("visible"));
+		await act(async () => vi.advanceTimersByTimeAsync(1000));
+		// Answered meanwhile; hidden again, the new read held.
+		answer = {};
+		const from = renders.length;
+		act(() => setVisibility("hidden"));
+		await act(async () => vi.advanceTimersByTimeAsync(0));
+		expect(fetchMock).toHaveBeenCalledTimes(2);
+		expect(renders.length).toBeGreaterThan(from);
+		expect(renders.slice(from)).toEqual(
+			renders.slice(from).map(() => undefined),
+		);
+		await act(async () => {
+			release?.();
+			await vi.advanceTimersByTimeAsync(0);
+		});
+		expect(renders.at(-1)).toEqual({});
+	});
+
 	it("isn't read on a review with no agent", async () => {
 		const fetchMock = vi.fn();
 		vi.stubGlobal("fetch", fetchMock);
