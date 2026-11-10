@@ -21,10 +21,17 @@ import { clonePath } from "./clone";
 import { buildSnapshot } from "./diff/snapshot";
 import { GhError } from "./errors";
 import { parseHead } from "./pinnedHead";
+import { answerRereview } from "./rereview/engine";
 import { RefStore } from "./review/refStore";
 import { ReviewService, StaleSnapshotError } from "./review/reviews";
 import { refusal, Session, UnknownReadError } from "./session";
 import { ThreadCodeSource } from "./threadCode";
+
+// The engine as is, its answer counted (a batch computes it once).
+vi.mock("./rereview/engine", async (original) => {
+	const engine = await original<typeof import("./rereview/engine")>();
+	return { ...engine, answerRereview: vi.fn(engine.answerRereview) };
+});
 
 // Real git and fake-gh processes: see GIT_TEST_TIMEOUTS.
 vi.setConfig(GIT_TEST_TIMEOUTS);
@@ -1634,6 +1641,51 @@ describe("Session", () => {
 			lines[25] = "line 26 changed";
 			return lines;
 		};
+
+		it("since view batch (the search's prefetch): the engine's answer once per batch, a gone file's interdiff, 404 for an index in neither", async () => {
+			const s = await Session.open(pr.arg, process.cwd());
+			const ps1 = s.snapshot();
+			await s.setStates(
+				ps1.revision,
+				ps1.files.flatMap((f) =>
+					f.clusters.map((c) => ({ key: c.key, state: "reviewed" as const })),
+				),
+			);
+			// PS2 takes a.txt back to the base: gone from the PR, its
+			// interdiff (PS1's changed lines removed) shown under the gone files.
+			const base = Array.from({ length: 30 }, (_, i) => `line ${i + 1}`);
+			const newHead = pr.moveHead({
+				"a.txt": `${base.join("\n")}\n`,
+				"later.txt": "later\n",
+			});
+			await s.checkHead();
+			const answer = await settled(s, 1, { head: newHead });
+			const view = await s.viewHead(newHead);
+			expect(view.files.map((f) => f.path)).toEqual(["later.txt", "new.txt"]);
+			const gone = answer.files.find((f) => f.path === "a.txt");
+			if (!gone) throw new Error("a.txt isn't in the answer");
+			expect(gone.index).toBe(view.files.length);
+			const calls = vi.mocked(answerRereview).mock.calls.length;
+			const two = await s.interdiffHunksBatch(1, view.revision, [0, 1]);
+			expect(vi.mocked(answerRereview).mock.calls.length - calls).toBe(1);
+			expect(two.files[1]?.hunks).toMatchObject({ wholeGap: true });
+			const batch = await s.interdiffHunksBatch(1, view.revision, [
+				1,
+				gone.index,
+			]);
+			expect(batch.files.map((f) => f.index)).toEqual([1, gone.index]);
+			expect(batch.files[1]?.hunks).toEqual(
+				await s.interdiffHunks(1, view.revision, gone.index),
+			);
+			const removed = batch.files[1]?.hunks?.hunks
+				.flatMap((h) => h.lines)
+				.filter((l) => l.kind === "del")
+				.map((l) => l.text);
+			expect(removed).toEqual(["line 2 changed", "line 26 changed"]);
+			await expect(
+				s.interdiffHunksBatch(1, view.revision, [0, gone.index + 1]),
+			).rejects.toThrow(RangeError);
+		});
 
 		it("since view, a file the interdiff only renames: one whole-file gap of its lines", async () => {
 			const { s, view, index } = await sinceAfter(() =>

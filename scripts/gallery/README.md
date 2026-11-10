@@ -48,6 +48,10 @@ Cases:
 - `rr-pieces.sh`: marks per piece in the since view: a cluster in three
   pieces, a removal-only piece inside a cluster (two reviewed clusters
   merged), a reverted piece.
+- `rr-since-search.sh`: Find in PR in the since view searches the
+  interdiff: a term changed only in PS1 finds nothing, one changed in PS2
+  is found at the since view's line numbers (old side as in PS1), and a
+  gone file's removed lines are found too.
 - `rr-showcase.sh`: the demo: one PR through an append (S1), a rebase (S4a)
   and a merge-in with a conflict (S3), marks and comments at each step, a
   verdict on PS1; its body is the guided tour.

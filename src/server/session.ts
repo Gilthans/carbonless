@@ -880,6 +880,51 @@ export class Session {
 		revision: string,
 		index: number,
 	): Promise<FileHunks> {
+		return (await this.#interdiffOf(from, revision)).hunks(index);
+	}
+
+	/**
+	 * The since view's hunks of several files, for the search's prefetch:
+	 * the engine's answer computed once for the batch. As fileHunksBatch, a
+	 * file that fails answers with `error`; an unknown patch set, or an
+	 * index neither in the snapshot nor one of the answer's files (a gone
+	 * file the since view shows), throws (404).
+	 */
+	async interdiffHunksBatch(
+		from: number,
+		revision: string,
+		indexes: readonly number[],
+	): Promise<HunksBatch> {
+		const interdiff = await this.#interdiffOf(from, revision);
+		for (const index of indexes) {
+			if (!interdiff.has(index)) {
+				throw new RangeError(`No file ${index} in this comparison`);
+			}
+		}
+		const files: HunksBatch["files"] = [];
+		for (const index of indexes) {
+			try {
+				files.push({ index, hunks: await interdiff.hunks(index) });
+			} catch {
+				// Not git's message: it can carry the clone cache's path.
+				files.push({ index, error: "Couldn't read this file" });
+			}
+		}
+		return { files };
+	}
+
+	/**
+	 * The since view from patch set `from` to the snapshot with this
+	 * `revision`: the engine's answer and the states, read once, and each
+	 * file's hunks from them (interdiffHunks).
+	 */
+	async #interdiffOf(
+		from: number,
+		revision: string,
+	): Promise<{
+		has: (index: number) => boolean;
+		hunks: (index: number) => Promise<FileHunks>;
+	}> {
 		const snapshot = this.#current(revision);
 		const since = (await this.#progress()).patchsets.find(
 			(p) => p.number === from,
@@ -891,19 +936,34 @@ export class Session {
 		const states =
 			(await this.#progress()).statesByRevision.get(since.revision) ??
 			new Map();
-		const hunks = interdiffFileHunks(traced, snapshot, answer, index, states);
-		if (hunks.hunks.length > 0) return hunks;
-		// A file the interdiff doesn't change (or only renames): its lines
-		// are one gap, so they and the threads on them can be opened.
-		const context = interdiffFileContext(traced, answer, index, 1, 1);
-		if (context === "none") return hunks;
-		const newLineCount =
-			context === "untouched"
-				? (await loadNewText(this.repo, snapshot, index)).newLines.length
-				: hunks.newLineCount;
-		return newLineCount > 0
-			? { hunks: [], newLineCount, wholeGap: true }
-			: { ...hunks, newLineCount };
+		const known = new Set([
+			...snapshot.files.map((f) => f.index),
+			...answer.files.map((f) => f.index),
+		]);
+		return {
+			has: (index) => known.has(index),
+			hunks: async (index) => {
+				const hunks = interdiffFileHunks(
+					traced,
+					snapshot,
+					answer,
+					index,
+					states,
+				);
+				if (hunks.hunks.length > 0) return hunks;
+				// A file the interdiff doesn't change (or only renames): its
+				// lines are one gap, so they and the threads on them can be opened.
+				const context = interdiffFileContext(traced, answer, index, 1, 1);
+				if (context === "none") return hunks;
+				const newLineCount =
+					context === "untouched"
+						? (await loadNewText(this.repo, snapshot, index)).newLines.length
+						: hunks.newLineCount;
+				return newLineCount > 0
+					? { hunks: [], newLineCount, wholeGap: true }
+					: { ...hunks, newLineCount };
+			},
+		};
 	}
 
 	/**

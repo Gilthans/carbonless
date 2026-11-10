@@ -92,7 +92,7 @@ import { ErrorMessage } from "../ui";
 import { NOT_PHONE, useMedia } from "../useMedia";
 import { ignoreWhitespace, showInvisibles, sideBySide } from "../viewSettings";
 import { type CellLine, CODE_CELL, cellLine } from "./codeSpan";
-import { contextRanges } from "./contextRanges";
+import { contextRanges, rangesKeyOf } from "./contextRanges";
 import { findBarElement } from "./find/hitSeen";
 import { EXPAND_STEP, fileGaps, type Gap, gapState } from "./gaps";
 import { Labelled, labelReserve } from "./HunkHeading";
@@ -2029,10 +2029,9 @@ export function DiffBody(props: {
 	// Unified, the file bubble is centred on rows that aren't code (FileBubbleSlot).
 	const centred = view === "unified";
 	// The since view's expanded context is its own (the interdiff's gaps,
-	// not the full diff's): kept apart from the full diff's, which the
-	// search reads.
-	const rangesKey =
-		props.from === undefined ? revision : `${revision}@since${props.from}`;
+	// not the full diff's): kept apart from the full diff's; the search
+	// reads the comparison's own.
+	const rangesKey = rangesKeyOf(revision, props.from);
 	const ranges = contextRanges.use(rangesKey, file.index);
 	const contexts = useQueries({
 		queries: ranges.map(([from, to]) =>
