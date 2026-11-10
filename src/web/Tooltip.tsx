@@ -140,19 +140,33 @@ export function Tooltip(props: {
 			setPos(null);
 			return;
 		}
-		const t = trigger.current?.getBoundingClientRect();
-		const box = tip.current?.getBoundingClientRect();
-		if (!t || !box) return;
-		const vw = document.documentElement.clientWidth || window.innerWidth;
-		const vh = window.innerHeight;
-		const left = Math.max(
-			MARGIN,
-			Math.min(t.left + t.width / 2 - box.width / 2, vw - box.width - MARGIN),
-		);
-		const below = t.bottom + GAP;
-		const top =
-			below + box.height > vh - MARGIN ? t.top - GAP - box.height : below;
-		setPos({ left, top: Math.max(MARGIN, top) });
+		const place = () => {
+			const t = trigger.current?.getBoundingClientRect();
+			const box = tip.current?.getBoundingClientRect();
+			if (!t || !box) return;
+			const vw = document.documentElement.clientWidth || window.innerWidth;
+			const vh = window.innerHeight;
+			const left = Math.max(
+				MARGIN,
+				Math.min(t.left + t.width / 2 - box.width / 2, vw - box.width - MARGIN),
+			);
+			const below = t.bottom + GAP;
+			const top = Math.max(
+				MARGIN,
+				below + box.height > vh - MARGIN ? t.top - GAP - box.height : below,
+			);
+			setPos((at) =>
+				at && at.left === left && at.top === top ? at : { left, top },
+			);
+		};
+		place();
+		// Placed again when its size changes while open (a line that arrives
+		// mid-hover): it never grows over its trigger or past the viewport.
+		const el = tip.current;
+		if (!el || typeof ResizeObserver === "undefined") return;
+		const observer = new ResizeObserver(place);
+		observer.observe(el);
+		return () => observer.disconnect();
 	}, [shown, forced]);
 
 	useEffect(() => {

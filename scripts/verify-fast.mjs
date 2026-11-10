@@ -84,7 +84,17 @@ const E2E_MAP = [
 			"mobile",
 			"saves",
 			"tree-resize",
+			"find",
 		],
+	],
+	[
+		/^src\/web\/files\/find\/|^src\/web\/code\/Invisibles\.tsx$|^src\/web\/App\.tsx$|^src\/server\/diff\/snapshot\.ts$/,
+		["find"],
+	],
+	// The app header's row (tabs, compact title, Find in PR, Refresh).
+	[
+		/^src\/web\/App\.tsx$|^src\/web\/files\/find\/FindButton\.tsx$/,
+		["keepalive", "sticky"],
 	],
 	[
 		/^src\/web\/(viewSettings|useMedia)\.ts$|^src\/web\/Tooltip\.tsx$/,
@@ -180,7 +190,11 @@ for (const s of e2e) if (!specs.includes(s)) e2e.delete(s);
 console.log(`verify:fast against ${base}: ${changed.length} changed file(s)`);
 for (const r of reasons) console.log(`  ${r}`);
 console.log(
-	`  e2e: ${allE2e ? "all specs" : e2e.size ? [...e2e].join(", ") : "none"}`,
+	`  e2e: ${allE2e ? "all specs" : e2e.size ? [...e2e].join(", ") : "none"}${
+		(allE2e || e2e.size) && process.env.CRB_NO_PHONE === "1"
+			? " (no phone)"
+			: ""
+	}`,
 );
 
 const steps = [

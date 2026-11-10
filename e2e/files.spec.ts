@@ -611,6 +611,32 @@ test("loading more lines", async ({ page, pr, startCrb }) => {
 	await expect(line("core 1").getByTestId("old")).toHaveText("1");
 });
 
+test("expanded context is still there after closing and reopening the file", async ({
+	page,
+	pr,
+	startCrb,
+}) => {
+	await pr(fixture);
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	const section = await expand(page, "src/core.ts");
+	const line = (content: string) =>
+		section
+			.getByTestId("diff-line")
+			.filter({ hasText: new RegExp(`${content}$`) });
+	await expect(line("core 9")).toHaveCount(0);
+	await section.getByRole("button", { name: "Load all 3 lines" }).click();
+	await expect(line("core 9")).toHaveCount(1);
+
+	await section.getByRole("button", { name: "Collapse file" }).click();
+	await expect(section.getByTestId("diff-line")).toHaveCount(0);
+	await section.getByRole("button", { name: "Expand file" }).click();
+	await expect(line("core 9")).toHaveCount(1);
+	await expect(
+		section.getByRole("button", { name: "Load all 3 lines" }),
+	).toHaveCount(0);
+});
+
 test("files start collapsed", async ({ page, pr, startCrb }) => {
 	await pr(fixture);
 	const s = await startCrb();
@@ -1503,9 +1529,12 @@ test("tree rows and headers keep change counts in every unit; progress follows i
 		// The row's name ends with the numbers, and focus shows them.
 		await expect(core).toHaveAccessibleName(/core\.ts.*0 of 5 lines reviewed$/);
 		await core.focus();
-		await expect(
-			page.getByText("src/core.ts · 0 of 5 lines reviewed"),
-		).toBeVisible();
+		const tip = page.locator('[role="tooltip"]:not([hidden])');
+		await expect(tip.locator("[data-tooltip-title]")).toHaveText("core.ts");
+		await expect(tip).toContainText("src/core.ts");
+		await expect(tip.locator('[data-tooltip-line="progress"]')).toHaveText(
+			"0 of 5 lines reviewed",
+		);
 		await expect(treeNumbers(tree, /util\.ts/)).toHaveText(
 			"2 of 2 lines reviewed",
 		);
@@ -1697,6 +1726,74 @@ test("paths in tooltips are monospace, like paths everywhere", async ({
 	await withTree(page, async (tree) => {
 		await tree.getByRole("button", { name: /util\.ts/ }).focus();
 		await expect.poll(pathFont).toMatch(/monospace/);
+	});
+});
+
+test("a tree row's tooltip: the name as a title, then one line per indicator", async ({
+	page,
+	pr,
+	startCrb,
+	isMobile,
+}) => {
+	await pr(fixture);
+	const s = await startCrb();
+	await openFiles(page, s.url);
+	const tip = page.locator('[role="tooltip"]:not([hidden])');
+	const lines = tip.locator("[data-tooltip-line]");
+	const shots = process.env.DESIGN_SHOTS;
+	// Hover on desktop; on a phone, focus (a tap focuses the row and opens the
+	// file, closing the sheet).
+	const open = async (row: Locator) => {
+		if (isMobile) await row.focus();
+		else await row.hover();
+		await expect(tip).toBeVisible();
+	};
+	// Escape on a phone would close the sheet: focus moving on closes it there.
+	const close = async () => {
+		if (!isMobile) await page.keyboard.press("Escape");
+	};
+	await withTree(page, async (tree) => {
+		await open(tree.getByRole("button", { name: /util\.ts/ }));
+		await expect(tip.locator("[data-tooltip-title]")).toHaveText("util.ts");
+		await expect(tip).toContainText("src/util.ts");
+		await expect(lines).toHaveText([
+			"Unreviewed",
+			"Modified",
+			"1 line added, 1 deleted · 1 cluster",
+			"0 of 1 cluster reviewed",
+		]);
+		// Inside the page, however narrow.
+		const box = await tip.boundingBox();
+		const width = page.viewportSize()?.width ?? 0;
+		expect(box?.x ?? -1).toBeGreaterThanOrEqual(0);
+		expect((box?.x ?? 0) + (box?.width ?? 0)).toBeLessThanOrEqual(width);
+		if (shots && !isMobile) {
+			await page.screenshot({
+				path: `${shots}/tree-tooltip-plain-desktop.png`,
+			});
+		}
+		// A rename: old → new under its name.
+		await close();
+		await open(tree.getByRole("button", { name: /new\.md/ }));
+		await expect(tip.locator("[data-tooltip-title]")).toHaveText("new.md");
+		await expect(tip).toContainText("docs/old.md → docs/new.md");
+		// The path line says where from: the kind line doesn't repeat it.
+		await expect(tip.locator('[data-tooltip-line="change-kind"]')).toHaveText(
+			"Renamed",
+		);
+		// A folder: its name, its path, its progress.
+		await close();
+		await open(tree.locator('[data-folder="src"]'));
+		await expect(tip.locator("[data-tooltip-title]")).toHaveText("src");
+		await expect(tip.locator('[data-tooltip-line="progress"]')).toHaveText(
+			/^0 \/ \d+ clusters · 2 files left$/,
+		);
+		if (shots && !isMobile) {
+			await page.screenshot({
+				path: `${shots}/tree-tooltip-folder-desktop.png`,
+			});
+		}
+		await close();
 	});
 });
 

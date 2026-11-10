@@ -175,6 +175,134 @@ describe("a thread's span on a line (marks)", () => {
 	});
 });
 
+describe("find marks on a line (finds)", () => {
+	it("paints find marks on their characters, the current one apart, over a thread span", () => {
+		renderLine({
+			text: "a save save",
+			lang: null,
+			marks: [[2, 6]],
+			finds: [
+				{ from: 2, to: 6, current: false },
+				{ from: 7, to: 11, current: true },
+			],
+		});
+		const mark = line().querySelector("[data-find-mark]");
+		expect(mark?.textContent).toBe("save");
+		expect(mark?.hasAttribute("data-span-mark")).toBe(false);
+		expect(line().querySelector("[data-find-current]")?.textContent).toBe(
+			"save",
+		);
+		expect(line().querySelector("[data-code]")?.textContent).toBe(
+			"a save save",
+		);
+	});
+
+	it("a find mark over a hidden-character marker wraps the marker", () => {
+		renderLine({
+			text: "a  b",
+			lang: null,
+			finds: [{ from: 1, to: 3, current: false }],
+		});
+		const wrap = line().querySelector("[data-find-mark]");
+		expect(wrap).not.toBeNull();
+		expect(wrap?.querySelector('[data-inv="space"]')).not.toBeNull();
+	});
+
+	it("a find over part of a run of spaces wraps only its own dots", () => {
+		renderLine({
+			text: "a    b",
+			lang: null,
+			newline: false,
+			finds: [{ from: 2, to: 4, current: true }],
+		});
+		const wraps = [...line().querySelectorAll("[data-find-current]")];
+		expect(wraps).toHaveLength(1);
+		expect(
+			wraps[0]?.querySelector('[data-inv="space"]')?.getAttribute("data-glyph"),
+		).toBe("··");
+		expect(seen(line())).toBe("a····b");
+		expect(line().querySelector("[data-code]")?.textContent).toBe("a    b");
+	});
+
+	it("thread spans, word marks and finds on one line: span over word, find inside a word's tint", () => {
+		// "ab  cd efgh": a thread span over "cd", a word mark over "  cd efgh",
+		// hits on "c" (in the span), "fg" (in the word) and the second space
+		// (a marker in the word).
+		renderLine({
+			text: "ab  cd efgh",
+			lang: null,
+			newline: false,
+			marks: [[4, 6]],
+			words: { marks: [[2, 11]], tone: "add" },
+			finds: [
+				{ from: 4, to: 5, current: false },
+				{ from: 8, to: 10, current: true },
+				{ from: 3, to: 4, current: false },
+			],
+		});
+		const inSpan = [...line().querySelectorAll("[data-find-mark]")].find(
+			(m) => m.textContent === "c",
+		);
+		expect(inSpan).toBeDefined();
+		expect(inSpan?.closest("[data-word]")).toBeNull();
+		const current = line().querySelector("[data-find-current]");
+		expect(current?.textContent).toBe("fg");
+		expect(current?.closest("[data-word]")).not.toBeNull();
+		const marker = line().querySelector('[data-find-mark] [data-inv="space"]');
+		expect(marker?.getAttribute("data-glyph")).toBe("·");
+		expect(marker?.closest("[data-word]")).not.toBeNull();
+		expect(line().querySelector("[data-code]")?.textContent).toBe(
+			"ab  cd efgh",
+		);
+	});
+
+	it("splits text at the finds' edges, a current one winning where it overlaps", () => {
+		expect(
+			splitMarks(
+				"abcdef",
+				0,
+				[],
+				[
+					{ from: 1, to: 4, current: false },
+					{ from: 3, to: 5, current: true },
+				],
+			),
+		).toEqual([
+			{ text: "a", marked: false },
+			{ text: "bc", marked: false, find: "mark" },
+			{ text: "d", marked: false, find: "current" },
+			{ text: "e", marked: false, find: "current" },
+			{ text: "f", marked: false },
+		]);
+	});
+
+	it("paints a find hit inside a word mark's tint, the current hit on top", () => {
+		const text = "const userCount = 1;";
+		renderLine({
+			text,
+			lang: null,
+			words: { marks: [[6, 15]], tone: "add" },
+			finds: [{ from: 10, to: 17, current: true }],
+		});
+		// The overlapped characters carry both: the word tint outside, the
+		// current hit's paint inside it (so it shows on top).
+		const inWord = line().querySelector("[data-word] [data-find-current]");
+		expect(inWord?.textContent).toBe("Count");
+		expect(inWord?.closest("[data-word]")).toHaveClass("bg-add-word");
+		expect(inWord).toHaveClass("find-current");
+		// The hit goes on past the word, without a tint there.
+		const hits = [...line().querySelectorAll("[data-find-current]")];
+		expect(hits.map((h) => h.textContent).join("")).toBe("Count =");
+		expect(hits[1]?.closest("[data-word]")).toBeNull();
+		expect(
+			[...line().querySelectorAll("[data-word]")]
+				.map((w) => w.textContent)
+				.join(""),
+		).toBe("userCount");
+		expect(line().querySelector("[data-code]")?.textContent).toBe(text);
+	});
+});
+
 describe("a pair's word marks on a line (words)", () => {
 	const words = () =>
 		Array.from(line().querySelectorAll<HTMLElement>("[data-word]"));

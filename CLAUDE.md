@@ -45,7 +45,8 @@ These guide every feature. If a change conflicts with one of them, stop and rais
 5. **Mobile is supported.** The reviewer also reads PRs on a phone. Every page
    works down to ~360px wide with no horizontal page scroll (diff lines may
    scroll inside their own container), tap targets are at least 40px, and the
-   Playwright suite runs in a phone project as well as desktop.
+   Playwright suite has a phone project next to desktop, run before every PR
+   and while iterating on layout ("Development").
 
 6. **Concise, icon-first UI.** Keep text short. Icons (each with a tooltip and
    an accessible name) and color carry meaning; no disclaimers, legends or
@@ -89,17 +90,29 @@ loading never looking empty, checking against a real PR):
   React + Vite + TanStack Query + Tailwind (`src/web`), shared types (`src/shared`).
 - `pnpm verify` runs lint (Biome), typecheck, unit tests (Vitest), Playwright
   tests and the package smoke test (`pnpm test:pack`: packs, installs the
-  tarball into a temp dir, runs its `crb`). Run it right before committing
-  and before saying work is done; use `pnpm verify:fast` (below) until then.
+  tarball into a temp dir, runs its `crb`). It takes the machine for ~20
+  minutes after a queue, so it is rare: once, right before finalizing a PR
+  (the coordinator, on the combined branch, before opening or updating the
+  PR). Everything before that uses `pnpm verify:fast` (below): implementing,
+  committing, fix rounds, reviews, and an implementer's "done".
+- The phone project (Playwright's `phone`) doubles an e2e run. The final
+  pre-PR `pnpm verify` always includes it. Before that, run it only when a
+  change touches layout: CSS or Tailwind classes that size, place or wrap
+  things, breakpoints and `useMedia`/`isMobile` code, sticky or scrolling
+  behaviour, touch targets, or anything in `e2e/mobile.spec.ts`'s ground.
+  Otherwise set `CRB_NO_PHONE=1`, which drops the phone project from any
+  Playwright run (`verify:fast`, `test:e2e`, `flake-check`). When unsure,
+  include the phone.
 - Full test runs take turns: `pnpm verify`'s unit and e2e stages, `pnpm
   test:e2e` without spec files, `-g` or `--last-failed`, an all-specs
   `verify:fast` and `pnpm flake-check` wait for a machine-wide lock
   (`scripts/queue.mjs`, `flock` on `~/.cache/carbonless-verify.lock`),
   printing whose run they wait for, so they never overload the machine (or
   share a tree's `dist`) together. Waiting can take longer than a foreground
-  command may: run `pnpm verify` in the background (`run_in_background`);
-  a signal ends the wait. A queued run takes turns with the other full runs,
-  so Playwright takes a worker per core. `CRB_NO_QUEUE=1` skips the queue.
+  command may: run `pnpm verify` and an all-specs `verify:fast` in the
+  background (`run_in_background`); a signal ends the wait. A queued run
+  takes turns with the other full runs, so Playwright takes a worker per
+  core. `CRB_NO_QUEUE=1` skips the queue.
 - While iterating, run only what a change touches:
   - `pnpm verify:fast [base]`: lint, typecheck, the unit tests related to files
     changed since `base`, and the e2e specs mapped to them (`E2E_MAP` in
@@ -157,10 +170,11 @@ loading never looking empty, checking against a real PR):
   and gets fixed. Playwright's expects wait 10 s (a reload's chained reads);
   a test that needs longer says why.
 - `pnpm flake-check <files…> [--runs N] [--load L] [-g title] [--project p]`
-  runs unit files or e2e specs N times (default 5) next to L busy loops
-  (default one per core), which load the whole machine, other agents'
-  unqueued runs too. Run it on every test you add or change that involves
-  timing, concurrency, a spinner or a gate, and on a test you saw fail once.
+  runs unit files or e2e specs N times (default 5), in the queue. `--load L`
+  adds L busy loops (default none: the devbox is loaded enough by other
+  agents, and the loops slow their runs too). Run it on every test you add
+  or change that involves timing, concurrency, a spinner or a gate, and on
+  a test you saw fail once.
 - Every test run traces itself (spans per test, setup phase, crb request,
   git and gh call) into `~/.cache/carbonless/test-traces/<run>/`, kept 7
   days. `pnpm test-profile [run|latest] [--compare <run>] [--jaeger]`
@@ -312,6 +326,9 @@ co-workers get a tarball or run `pnpm release local` in a checkout.
   (`git log --stat` + `git diff -U10` of the range, saved to a file). Findings
   go back to the same implementer as fix rounds, then a scoped re-review; small
   fixes with tests that fail without them may skip the re-review.
+  Implementers, fix rounds and reviewers check with `pnpm verify:fast` and
+  targeted specs, never a full `pnpm verify`: that runs once, at the end
+  (below).
 - Review checklist (every reviewer brief carries it, on top of the brief's own):
   - **Input sanitization.** Text from the reviewer, a PR, GitHub or git
     (bodies, titles, names, paths, refs) is escaped or sanitized wherever it
