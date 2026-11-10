@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	type AcpScenario,
@@ -127,7 +127,7 @@ beforeEach(() => {
 	prHead = origin.shas[1] as string;
 	for (const k of ["PATH", "CRB_FAKE_ACP", "CRB_FAKE_ACP_LOG"])
 		saved[k] = process.env[k];
-	process.env.PATH = `${FAKE_ACP_BIN}:${process.env.PATH}`;
+	process.env.PATH = `${FAKE_ACP_BIN}${delimiter}${process.env.PATH}`;
 	process.env.CRB_FAKE_ACP_LOG = logPath;
 	scenario();
 });

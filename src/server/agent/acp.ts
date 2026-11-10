@@ -1,4 +1,4 @@
-import { type ChildProcess, spawn } from "node:child_process";
+import { type ChildProcess, spawnSync } from "node:child_process";
 import { createWriteStream, mkdirSync, type WriteStream } from "node:fs";
 import { basename, dirname } from "node:path";
 import { Readable, Writable } from "node:stream";
@@ -13,6 +13,7 @@ import {
 	type RequestPermissionResponse,
 	type SessionUpdate,
 } from "@agentclientprotocol/sdk";
+import spawn from "cross-spawn";
 import type {
 	AgentCheck,
 	AgentConfig,
@@ -33,6 +34,8 @@ const STDERR_TAIL = 2048;
 /** A failed turn's reason, as stored on its reply and shown in the status. */
 export const MAX_TURN_ERROR = 300;
 
+const WINDOWS = process.platform === "win32";
+
 /**
  * Names never passed to the agent: secrets of the server's environment
  * (GH_TOKEN, GITHUB_TOKEN, AWS_SECRET_ACCESS_KEY, ANTHROPIC_API_KEY, …).
@@ -48,9 +51,13 @@ export const SECRET_ENV = /TOKEN|SECRET|PASSWORD|KEY$/i;
 export function agentEnv(
 	extra: Record<string, string>,
 ): Record<string, string> {
+	// Windows names are case-insensitive: the config's PATH replaces Path,
+	// never sits beside it for the child to pick one of.
+	const fold = (key: string) => (WINDOWS ? key.toUpperCase() : key);
+	const replaced = new Set(Object.keys(extra).map(fold));
 	const env: Record<string, string> = {};
 	for (const [key, value] of Object.entries(inheritedEnv())) {
-		if (value === undefined) continue;
+		if (value === undefined || replaced.has(fold(key))) continue;
 		if (SECRET_ENV.test(key) && key !== "HOME" && key !== "PATH") continue;
 		env[key] = value;
 	}
@@ -96,6 +103,18 @@ function track(child: ChildProcess): void {
 
 /** Signals the child's process group (its own tools too), else the child. */
 function signalGroup(child: ChildProcess, signal: NodeJS.Signals): void {
+	if (WINDOWS) {
+		// No process groups or signals: the tree goes at once, else killing
+		// a .cmd shim's cmd.exe would orphan the agent under it.
+		if (child.pid === undefined || child.exitCode !== null) return;
+		const kill = spawnSync(
+			"taskkill",
+			["/pid", String(child.pid), "/t", "/f"],
+			{ stdio: "ignore", windowsHide: true },
+		);
+		if (kill.error) child.kill(signal);
+		return;
+	}
 	try {
 		if (child.pid === undefined) throw new Error("not started");
 		process.kill(-child.pid, signal);
@@ -112,7 +131,11 @@ const STOPS: readonly string[] = [
 	"cancelled",
 ] satisfies AgentStop[];
 
-/** A command the spawn takes as given (no shell): a non-empty string without NUL. */
+/**
+ * A command the spawn takes as given (no shell, but on Windows cross-spawn
+ * runs a .cmd/.bat shim through cmd.exe with its args escaped): a non-empty
+ * string without NUL.
+ */
 function checkCommand(command: string, args: string[]): void {
 	if (!command || command.includes("\0") || args.some((a) => a.includes("\0")))
 		throw new AgentStartError(
@@ -157,7 +180,9 @@ async function start(
 		cwd: opts.cwd,
 		env: opts.env,
 		stdio: ["pipe", "pipe", "pipe"],
-		detached: true,
+		// On Windows `detached` means a console window of its own, not a group.
+		detached: !WINDOWS,
+		windowsHide: true,
 	});
 	track(child);
 	child.stderr?.on("data", (chunk: Buffer) => {
