@@ -125,6 +125,11 @@ shows in the `?` help; keys a field handles itself (Ctrl/Cmd+Enter, Escape)
 are listed with `useShortcutHelp`. A shortcut never fires while typing in a
 field, with Ctrl/Cmd/Alt held unless its keys say so (the browser's own,
 like Ctrl/Cmd+C, stay the browser's), or while another modal dialog is open.
+carbonless takes a browser key only where it offers the same thing over
+more (Find in PR over Cmd+F / Ctrl+F on Files changed, which searches every
+file), and always leaves the browser's reachable: a second press with the
+box focused reaches the browser's find, and in a comment box the key stays
+the browser's.
 On a phone there's no keyboard: the help isn't offered there.
 
 ## Writing to GitHub

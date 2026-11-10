@@ -10,6 +10,7 @@ import {
 	timelineReview,
 } from "./fake-gh/scenario";
 import { testGitEnv } from "./git-fixture";
+import { fixtureGit } from "./trace-run";
 
 /**
  * Git-methodology matrix (docs/git-methodology.md): one PR history for each
@@ -152,15 +153,17 @@ export function createMethodologyRepo(
 ): MethodologyRepo {
 	const path = mkdtempSync(join(tmpdir(), "crb-methodology-"));
 	const run = (args: string[], at?: string) =>
-		execFileSync("git", args, {
-			cwd: path,
-			encoding: "utf8",
-			// Piped, so merge chatter stays out of the test output.
-			stdio: "pipe",
-			env: testGitEnv(
-				at ? { GIT_AUTHOR_DATE: at, GIT_COMMITTER_DATE: at } : {},
-			),
-		}).trim();
+		fixtureGit(args, () =>
+			execFileSync("git", args, {
+				cwd: path,
+				encoding: "utf8",
+				// Piped, so merge chatter stays out of the test output.
+				stdio: "pipe",
+				env: testGitEnv(
+					at ? { GIT_AUTHOR_DATE: at, GIT_COMMITTER_DATE: at } : {},
+				),
+			}).trim(),
+		);
 	const git = (...args: string[]) => run(args);
 	const write = (files: Record<string, string>) => {
 		for (const [name, content] of Object.entries(files)) {

@@ -131,6 +131,9 @@
 	/* A thread's exact characters (span-mark): an opaque navy of the accent's hue. */
 	--color-span: #182a62;
 
+	/* A find hit (find-mark): an opaque tone of the accent's hue, apart from span. */
+	--color-find: #101c8e;
+
 	/* Shadows: black at the strength each layer needs. */
 	--color-shade: #000000;
 	--shadow-float: 0 8px 24px -6px
@@ -227,6 +230,23 @@ table[data-selecting="new"] td[data-side="LEFT"] {
 	background-color: var(--color-span);
 	box-shadow: inset 0 -2px 0 var(--color-accent);
 	border-radius: 2px;
+}
+
+/*
+ * Find in PR: a hit over its characters is the `find` tone (every code
+ * color keeps 4.5:1 on it, theme.test.ts), and the current hit is the
+ * brand orange with `canvas` text (inline syntax colors overridden). Both
+ * win over span-mark where they meet.
+ */
+@utility find-mark {
+	background-color: var(--color-find);
+}
+@utility find-current {
+	background-color: var(--color-orange);
+	color: var(--color-canvas) !important;
+	& * {
+		color: var(--color-canvas) !important;
+	}
 }
 
 /*
@@ -377,6 +397,15 @@ html {
 		-1 *
 		(var(--app-header, 0px) + var(--page-sticky, 0px))
 	);
+}
+
+/*
+ * Typing reveals the caret, and that ignores the scroll margin above: the
+ * Find in PR box, in the sticky stack, would take the page to the top on
+ * every key. While it has focus, no padding: it is on screen.
+ */
+html:has([data-find-box]:focus) {
+	scroll-padding-top: 0;
 }
 
 /*
