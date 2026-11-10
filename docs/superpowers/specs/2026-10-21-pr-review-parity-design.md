@@ -10,7 +10,7 @@ The goal is to replace the reviewer's current GitHub PR review workflow with car
 
 There is no AI in this milestone.
 
-The reference PR used throughout is `gytpol/active-directory-domain-agent#27` (24 files, +1580 / −8, 39 clusters, 6 CI checks, 12 review threads from a bot). It is work code from a different organization: point the tool at it, never copy any of it into this repo, its tests or its fixtures.
+The reference PR used throughout is a real work PR (24 files, +1580 / −8, 39 clusters, 6 CI checks, 12 review threads from a bot). It is work code from a different organization: point the tool at it, never copy any of it into this repo, its tests or its fixtures.
 
 ## The reviewer's workflow (what we're matching)
 

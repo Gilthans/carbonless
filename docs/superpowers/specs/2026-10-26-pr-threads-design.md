@@ -205,7 +205,7 @@ empty thread. Closing it returns to the bubble, and the scroll position stays.
   A slowed comment response shows the spinner, then the comments. Opening a
   thread doesn't change review progress. No horizontal page scroll at 360px.
   The Overview card shows the count and expands to the replies.
-- Real PR (gytpol/test-automation#99 as of, read-only, data only in the
+- Real PR (a real work PR as of, read-only, data only in the
   scratchpad): every thread on the viewed head lands on the line GitHub shows
   it on, comment counts match GitHub, and timings are reported.
 

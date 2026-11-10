@@ -27,7 +27,7 @@
 - Progress percentage = `reviewed ÷ (total − crossedOff)`; when the denominator is 0 show 100%.
 - Every file in Files changed starts collapsed. Unified view only. 3 context lines. Expand steps of 20 lines.
 - Non-loopback `--host` requires a per-launch random access key (`?key=`, then an HttpOnly SameSite=Strict cookie `crb_key`); every request, API and static, checks it.
-- Never copy code or data from `gytpol/active-directory-domain-agent` into this repo, tests or fixtures. All `gh` JSON fixtures are synthetic.
+- Never copy code or data from the reference work repo into this repo, tests or fixtures. All `gh` JSON fixtures are synthetic.
 - `pnpm verify` must pass at the end of every task.
 - Web UI uses the TanStack family wherever it fits (reviewer's preference): TanStack Query for every server read and write (`useQuery`/`useMutation`, invalidate on success, no hand-rolled fetch state), TanStack Router for pages, TanStack Form for forms. Don't add TanStack Table/Start.
 
@@ -615,8 +615,8 @@ test("opening without checking anything off creates no snapshot", async ({ page,
 **Files:**
 - Modify: `README.md`, `CLAUDE.md` (Development section: `crb`, fake gh), `docs/review-data-storage.md` (only if the implementation departed from it), `docs/todo.md` (mark "PR review view" done)
 
-- [ ] **Step 1:** `pnpm build && node dist/cli.js https://github.com/gytpol/active-directory-domain-agent/pull/27 --host "$(tailscale ip -4)" --no-open` and open the printed URL.
-- [ ] **Step 2:** Confirm in the UI and via `curl -s '<url-with-key>' ...api/review | jq '.progress'`: **24 files, 39 clusters, 1,588 lines**; the overview shows 6 checks and the unresolved bot threads. Check one cluster, restart, confirm it's still checked. Confirm the reviewer's working copy at `~/active-directory-domain-agent` is untouched (`git -C ~/active-directory-domain-agent status` and its refs unchanged). Report any mismatch instead of adjusting counts.
+- [ ] **Step 1:** `pnpm build && node dist/cli.js <reference PR URL> --host "$(tailscale ip -4)" --no-open` and open the printed URL.
+- [ ] **Step 2:** Confirm in the UI and via `curl -s '<url-with-key>' ...api/review | jq '.progress'`: **24 files, 39 clusters, 1,588 lines**; the overview shows 6 checks and the unresolved bot threads. Check one cluster, restart, confirm it's still checked. Confirm the reviewer's working copy is untouched (`git status` and its refs unchanged). Report any mismatch instead of adjusting counts.
 - [ ] **Step 3:** Update the docs listed above; describe `crb` usage and `pnpm dev` with `CRB_PR=<pr>` in the README.
 - [ ] **Step 4:** `pnpm verify` — PASS.
 - [ ] **Step 5: Commit** `git commit -m "docs: crb usage and milestone status"`

@@ -283,7 +283,7 @@ Not scheduled yet; after everything above.
   a known language" (10/10), and `wordDiff.test.ts`'s 100 ms CPU budget for
   similar pairs (5/5; isolated runs take 51–89 ms, so little headroom).
 - Old agent worktrees under `.worktrees/` and stray processes (e.g. old
-  `threads-c` instances on test-automation#99) pile up; prune them.
+  `threads-c` instances on the real-PR check) pile up; prune them.
 
 ## Final Verdict and Home
 

@@ -21,7 +21,7 @@
 - Icon-first, short text; every icon has a tooltip and accessible name; colours from `src/web/index.css` tokens only (resolved = `ok`, your-turn dot = `warn`); new token pairs added to `src/web/theme.test.ts`.
 - TanStack Query for every new fetch. Dates via `RelativeTime`. Untrusted HTML only through `GithubHtml`.
 - First open is the target: the summary stage (thread list) must not get slower on the real PR; report before/after timings.
-- Real-PR check: gytpol/test-automation#99 as of (memory `real-pr-check`), read-only, data only in the scratchpad.
+- Real-PR check: a real work PR as of (memory `real-pr-check`), read-only, data only in the scratchpad.
 - Never one `gh` request per thread: comments are read in batches (≤ 50 threads per query, as `CONTENT_BATCH`).
 
 ## Review Focus
