@@ -1,4 +1,10 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -207,6 +213,22 @@ describe("JoinBroker: requests", () => {
 		release();
 		await answering;
 		expect((await waited).state).toBe("approved");
+	});
+
+	it("a filesystem step that fails during an Approve rolls it back: no join, not active, expired", async () => {
+		const b = make();
+		// joined.json can't be written: a directory is in its place.
+		mkdirSync(join(dir, "joined.json"));
+		const { request } = b.request(WHO);
+		await expect(b.answer(request, true)).rejects.toThrow();
+		expect(b.view().joined).toBeUndefined();
+		expect(b.isJoined()).toBe(false);
+		expect(b.active()).toBe(false);
+		expect(await b.outcome(request, 0)).toEqual({ state: "expired" });
+		expect(approved).toBe(0);
+		await expect(b.answer(request, true)).rejects.toBeInstanceOf(
+			StaleJoinRequestError,
+		);
 	});
 
 	it("an onApproved that throws doesn't fail the Approve: the join took effect", async () => {

@@ -151,6 +151,8 @@ export class AgentRunner {
 	/** Agents that went away by crashing (their last turn is stored). */
 	readonly #crashedAgents = new WeakSet<AcpAgent>();
 	#pump: Promise<void> | null = null;
+	/** The agent whose turn stop() cancelled: its partial reply isn't stored. */
+	#stopCancelled: AcpAgent | null = null;
 	#again = false;
 	#closed: Promise<void> | null = null;
 
@@ -260,11 +262,17 @@ export class AgentRunner {
 		this.#again = false;
 		if (this.#answering && this.#pump) {
 			const agent = this.#proc?.agent;
-			const timer = setTimeout(() => void agent?.cancel(), ms);
+			// carbonless's cancel, not the reviewer's: the question keeps
+			// waiting for the joined session (principle 2).
+			const timer = setTimeout(() => {
+				this.#stopCancelled = agent ?? null;
+				void agent?.cancel();
+			}, ms);
 			try {
 				await this.#pump;
 			} finally {
 				clearTimeout(timer);
+				this.#stopCancelled = null;
 			}
 		}
 		// Start pressed while the turn finished: the agent stays.
@@ -638,6 +646,8 @@ export class AgentRunner {
 		// nothing half-written lands; the thread still waits for the next one.
 		const stoppedOnPurpose =
 			this.#closed ||
+			// stop()'s cancel at an Approve: the thread waits for the session.
+			this.#stopCancelled === agent ||
 			// The config changed under the turn: the new agent answers it.
 			(this.#proc?.agent === agent && this.#proc.key !== this.#key) ||
 			(this.#proc?.agent !== agent && !this.#crashedLast(agent));

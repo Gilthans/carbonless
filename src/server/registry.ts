@@ -68,6 +68,11 @@ export class SessionRegistry {
 	readonly #idOf = new Map<string, string>();
 	/** Opens by id under way. */
 	readonly #reopening = new Map<string, Promise<Session>>();
+	/**
+	 * Closes under way, by review id: a reopen waits for its review's (the
+	 * old session releases the agent claim a new one restores a join under).
+	 */
+	readonly #closing = new Map<string, Promise<void>>();
 	readonly #timer: NodeJS.Timeout;
 	#closed = false;
 
@@ -108,6 +113,7 @@ export class SessionRegistry {
 		const pending = this.#opening.get(key);
 		if (pending) return pending;
 		const run = (async () => {
+			if (known !== undefined) await this.#afterClose(known);
 			const session = await Session.open(
 				req.pr,
 				req.cwd ?? process.cwd(),
@@ -144,7 +150,7 @@ export class SessionRegistry {
 			existing.lastUsed = this.#now();
 			return existing.session;
 		}
-		if (existing) void existing.session.close();
+		if (existing) void this.#close(session.id, existing.session);
 		this.#open.set(session.id, { session, lastUsed: this.#now(), viewer });
 		return session;
 	}
@@ -166,6 +172,7 @@ export class SessionRegistry {
 		const pending = this.#reopening.get(id);
 		if (pending) return pending;
 		const run = (async () => {
+			await this.#afterClose(id);
 			const found = await findReviewById(cacheDir(), id);
 			if (!found) throw new UnknownReviewError(`No review ${id}`);
 			const { pr, head, asOf } = found.review;
@@ -198,7 +205,26 @@ export class SessionRegistry {
 				e.session.closed,
 		);
 		for (const [id] of idle) this.#open.delete(id);
-		await Promise.all(idle.map(([, e]) => e.session.close()));
+		await Promise.all(idle.map(([id, e]) => this.#close(id, e.session)));
+	}
+
+	/** Closes `session` (review `id`); a reopen of `id` waits for it. */
+	#close(id: string, session: Session): Promise<void> {
+		const closing = session
+			.close()
+			.catch(() => {})
+			.finally(() => {
+				if (this.#closing.get(id) === closing) this.#closing.delete(id);
+			});
+		this.#closing.set(id, closing);
+		return closing;
+	}
+
+	/** Resolves once no close of review `id` is under way. */
+	async #afterClose(id: string): Promise<void> {
+		for (let c = this.#closing.get(id); c; c = this.#closing.get(id)) {
+			await c;
+		}
 	}
 
 	/** Closes every session (shutdown); opens under way close as they finish. */

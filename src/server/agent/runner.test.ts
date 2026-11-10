@@ -910,7 +910,7 @@ describe("AgentRunner", () => {
 			expect((await threads())[0]?.waiting).toBe(true);
 		});
 
-		it("stop() while the agent's initialize is held: the process is closed", async () => {
+		it("ACP turned off (no stop) while the agent's initialize is held: the spawned process is closed, not kept", async () => {
 			scenario({ hold: ["initialize"] });
 			let off = false;
 			await ask("why?");
@@ -921,16 +921,17 @@ describe("AgentRunner", () => {
 				interval: 20,
 			});
 			const pid = spawns()[0]?.pid as number;
+			// A gate with no stop(): e.g. a joined session restored with the
+			// file missing. Only the post-spawn check closes the process.
 			off = true;
-			const stop = r.stop(60 * 60_000);
 			releaseAcp(scenarioPath, "initialize");
-			await stop;
 			await r.settled();
 			await vi.waitFor(() => expect(() => process.kill(pid, 0)).toThrow(), {
 				timeout: 20_000,
 				interval: 20,
 			});
 			expect((await r.status()).state).toBe("off");
+			expect((await threads())[0]?.waiting).toBe(true);
 		});
 
 		it("Start pressed while stop() waits for the turn: the agent stays and answers the next thread", async () => {
@@ -953,7 +954,7 @@ describe("AgentRunner", () => {
 			expect((await r.status()).state).not.toBe("off");
 		});
 
-		it("stop() cancels a turn that runs past its time", async () => {
+		it("stop() cancels a turn that runs past its time; nothing is stored and the question still waits", async () => {
 			scenario({ hold: ["prompt"], answers: [{ text: "a b", chunks: 2 }] });
 			let off = false;
 			await ask("why?");
@@ -961,11 +962,17 @@ describe("AgentRunner", () => {
 			r.poke();
 			await until((s) => s.state === "busy");
 			off = true;
+			// Held for good: only the cancel ends the turn (not a time bound).
 			await r.stop(50);
-			expect((await threads())[0]?.messages[1]).toMatchObject({
-				stop: "cancelled",
-			});
-			expect((await r.status()).state).toBe("off");
+			expect(acpLog(logPath).some((e) => e.method === "session/cancel")).toBe(
+				true,
+			);
+			const [t] = await threads();
+			expect(t?.messages).toHaveLength(1);
+			expect(t?.waiting).toBe(true);
+			const status = await r.status();
+			expect(status.state).toBe("off");
+			expect(status.answering).toBeUndefined();
 		});
 	});
 });

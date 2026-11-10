@@ -147,6 +147,8 @@ export class ReviewClaim {
 	#release: (() => Promise<void>) | null = null;
 	/** One take at a time (two users holding at once take once). */
 	#taking: Promise<ClaimResult> | null = null;
+	/** A release under way: a hold waits for it (else it sees its own claim as another's). */
+	#releasing: Promise<void> | null = null;
 
 	constructor(
 		private readonly dir: string,
@@ -160,6 +162,7 @@ export class ReviewClaim {
 
 	/** Holds the claim for `user`; `{ ok: false, holder }` when another server has it. */
 	async hold(user: ClaimUser): Promise<ClaimResult> {
+		while (this.#releasing && !this.#release) await this.#releasing;
 		if (!this.#release) {
 			this.#taking ??= takeClaim(this.dir, this.self()).finally(() => {
 				this.#taking = null;
@@ -178,6 +181,12 @@ export class ReviewClaim {
 		if (this.#users.size > 0 || !this.#release) return;
 		const release = this.#release;
 		this.#release = null;
-		await release();
+		const releasing: Promise<void> = release()
+			.catch(() => {})
+			.finally(() => {
+				if (this.#releasing === releasing) this.#releasing = null;
+			});
+		this.#releasing = releasing;
+		await releasing;
 	}
 }

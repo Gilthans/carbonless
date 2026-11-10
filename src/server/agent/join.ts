@@ -258,38 +258,47 @@ export class JoinBroker {
 			return;
 		}
 		this.#approving = pending;
-		const claim = await this.#take();
-		if (!claim.ok) {
+		let installed: Joined | null = null;
+		let token: string;
+		try {
+			const claim = await this.#take();
+			if (!claim.ok) throw new JoinElsewhereError(claim.holder);
+			if (this.#closed) throw new StaleJoinRequestError(request);
+			this.#end("replaced", { keepClaim: true });
+			// ACP off first: a crash between the two files never leaves a
+			// restored join beside a running ACP buddy.
+			await this.setAcpOff(true);
+			token = randomBytes(32).toString("base64url");
+			const joined: Joined = {
+				who: pending.who,
+				since: this.#now(),
+				hash: hashOf(token),
+				collected: false,
+			};
+			installed = joined;
+			this.#joined = joined;
+			this.#woken = false;
+			mkdirSync(this.#deps.dir, { recursive: true });
+			writeFileSync(
+				join(this.#deps.dir, JOINED_FILE),
+				JSON.stringify({
+					tokenHash: joined.hash.toString("hex"),
+					who: joined.who,
+					since: new Date(joined.since).toISOString(),
+				}),
+			);
+		} catch (error) {
+			// Nothing half-installed: the request ends, no join, the claim
+			// goes back (ACP may stay off: Start brings it back).
 			this.#finish(pending, { state: "expired" });
-			throw new JoinElsewhereError(claim.holder);
-		}
-		if (this.#closed) {
-			this.#finish(pending, { state: "expired" });
+			if (installed && this.#joined === installed) {
+				this.#joined = null;
+				this.#disarm();
+				rmSync(join(this.#deps.dir, JOINED_FILE), { force: true });
+			}
 			if (!this.#joined) void this.#drop();
-			throw new StaleJoinRequestError(request);
+			throw error;
 		}
-		this.#end("replaced", { keepClaim: true });
-		// ACP off first: a crash between the two files never leaves a
-		// restored join beside a running ACP buddy.
-		await this.setAcpOff(true);
-		const token = randomBytes(32).toString("base64url");
-		const joined: Joined = {
-			who: pending.who,
-			since: this.#now(),
-			hash: hashOf(token),
-			collected: false,
-		};
-		this.#joined = joined;
-		this.#woken = false;
-		mkdirSync(this.#deps.dir, { recursive: true });
-		writeFileSync(
-			join(this.#deps.dir, JOINED_FILE),
-			JSON.stringify({
-				tokenHash: joined.hash.toString("hex"),
-				who: joined.who,
-				since: new Date(joined.since).toISOString(),
-			}),
-		);
 		this.#arm();
 		try {
 			await this.#deps.onApproved();
