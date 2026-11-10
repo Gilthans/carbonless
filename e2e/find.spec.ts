@@ -735,6 +735,20 @@ const filesBarBox = (page: Page) =>
 			?.getBoundingClientRect();
 		return r ? { y: r.y, bottom: r.bottom } : null;
 	});
+/**
+ * The first thing under the app header on Files changed: the patch set
+ * graph when it shows, else the files bar.
+ */
+const firstBelowBox = (page: Page) =>
+	page.evaluate(() => {
+		const el =
+			document.querySelector('[aria-label="Patch sets"]') ??
+			document
+				.querySelector('[role="progressbar"][aria-label="Review progress"]')
+				?.closest(".sticky");
+		const r = el?.getBoundingClientRect();
+		return r ? { y: r.y, bottom: r.bottom } : null;
+	});
 /** The find float's box on screen. */
 const floatBox = (page: Page) =>
 	page.locator("[data-find-float]").evaluate((el) => {
@@ -773,15 +787,20 @@ test("on a phone the open bar takes the header's place in the page, pushing it d
 			.evaluate((el) => getComputedStyle(el).minHeight),
 	).toMatch(/^(0px|auto)$/);
 	expect(opened.height).toBeLessThan(120);
-	// The files bar follows right under it: no gap, no overlap.
+	// The page follows right under it (the patch set graph, else the
+	// files bar): no gap, no overlap.
 	await expect
-		.poll(async () => ((await filesBarBox(page))?.y ?? 0) - opened.height)
+		.poll(async () => ((await firstBelowBox(page))?.y ?? 0) - opened.height)
 		.toBeGreaterThanOrEqual(-0.5);
-	expect(((await filesBarBox(page))?.y ?? 0) - opened.height).toBeLessThan(1);
-	// Focus scrolling clears the bar and the files bar under it (the box,
-	// focused, has none: index.css).
+	expect(((await firstBelowBox(page))?.y ?? 0) - opened.height).toBeLessThan(1);
+	// Focus scrolling clears the bar and the files bar stuck under it (the
+	// box, focused, has none: index.css). At the top the patch set graph
+	// can sit between them: the files bar's own height counts.
 	await box(page).evaluate((el) => (el as HTMLElement).blur());
-	const files2 = await filesBarBox(page);
+	const filesNow = await filesBarBox(page);
+	const files2 = {
+		bottom: opened.height + (filesNow?.bottom ?? 0) - (filesNow?.y ?? 0),
+	};
 	await expect
 		.poll(() =>
 			page.evaluate(() =>
@@ -790,7 +809,7 @@ test("on a phone the open bar takes the header's place in the page, pushing it d
 				),
 			),
 		)
-		.toBeGreaterThanOrEqual((files2?.bottom ?? 0) - 1);
+		.toBeGreaterThanOrEqual(files2.bottom - 1);
 	// The box takes the first row, full width; the buttons the second.
 	const boxAt = await box(page).boundingBox();
 	const nextAt = await bar(page)
