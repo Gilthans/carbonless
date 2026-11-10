@@ -43,8 +43,8 @@ context are ones the reviewer already has:
   configured, "join the carbonless review at <link>" is enough: the tools
   and their replies tell the agent every step, including asking the
   reviewer to approve.
-- **The reviewer approves every join.** An attach is a request; every crb
-  page shows it with the session's machine and name, Approve and Deny.
+- **The reviewer approves every join.** An attach is a request; every page
+  of that review shows it with the session's machine and name, Approve and Deny.
   Before Approve the session sees only the review list (`reviews()`, below),
   which any access-key holder can see on Home anyway; nothing from inside a
   review (threads, code, PR body) reaches it.
@@ -177,17 +177,20 @@ title, etc") lists the reviewer's started reviews, newest activity first
   covering the header): a plug icon, the session name and machine
   ("carbonless · devbox"), the harness in the tooltip, Deny and Approve.
   On phone the same strip, with the name truncated and both buttons 40 px.
-- **It is a push alert: it shows on every crb page** (owner, 2026-11-10:
-  "On any page. It's a push alert"): every review page, whatever review it
-  shows, and Home. The bar names the review ("wants to join
-  Gilthans/carbonless#52") when it isn't the page's own. Every page polls
-  a new `GET /api/joins` (pending requests across reviews; small, every
-  5 s while visible, once on return) **(call)**. A hidden tab's title gets
-  a "⏚ " prefix while a request is pending, so it shows in the tab strip
-  **(call)**. Browser notifications need a secure context (the Tailscale
-  address is plain HTTP), so they are later, with HTTPS.
-- The first press wins, on any page; the other bars go away on the next
-  poll.
+- **It is a push alert on every page of that review** (owner, 2026-11-10:
+  "On any page. It's a push alert", then: "on every page *of that
+  review*. Not for other reviews"): Overview, Files changed, every open tab
+  of it; not Home, not other reviews. The pending request rides on the
+  review's agent status (`GET /api/r/:id/agent`, `joinRequest`), which
+  every page of the review already polls, so no new endpoint. A hidden
+  tab of that review gets a "⏚ " title prefix while a request is pending,
+  so it shows in the tab strip **(call)**. Browser notifications need a
+  secure context (the Tailscale address is plain HTTP), so they are later,
+  with HTTPS.
+- Nothing else surfaces the request, so the `attach` reply's message
+  ("open <link> and press Approve") is the reviewer's pointer to it: it
+  always carries the review's link.
+- The first press wins; the other tabs' bars go away on the next poll.
 - **Approve with an ACP buddy running:** the bar's Approve tooltip says it
   replaces the running agent. On Approve, crb lets the ACP buddy finish
   the turn it is on (or cancels it after 30 s), then closes it and marks
@@ -419,6 +422,8 @@ Run `pnpm flake-check` on the watcher and gate tests.
 ## Owner answers (2026-11-10)
 
 1. `/mcp` is behind the access key: "Yes it should include the access key".
-2. A pending join shows on every page: "On any page. It's a push alert".
+2. A pending join is a push alert on every page of that review: "On any
+   page. It's a push alert", clarified: "on every page *of that review*.
+   Not for other reviews".
 3. A `reviews()` tool lists reviews so the agent can find the one asked
    for (comment on the spec).
